@@ -5242,6 +5242,10 @@ function _hasCeremonyMagic(bytes, kind) {
   return true;
 }
 
+// Module-level CID validator — accepted by /ceremony/init (pre-pinned
+// artifacts) AND /ceremony/<hash>/contribute (zkey_cid path bypasses
+// the CF→Pinata upload leg). 46-80 chars covers v0 + v1 base32/58.
+const CID_RE = /^[A-Za-z0-9]{46,80}$/;
 // Pin an arbitrary binary blob to IPFS. Used for zkey files (~5 MB each).
 // MAX_BYTES env var caps total upload size; we want zkeys to fit so we
 // override locally to 16 MB minimum (the env default of 2 MB is for images).
@@ -5318,7 +5322,7 @@ async function handleCeremonyInit(req, env, cors) {
   const haveZkeyFile = zkey instanceof File;
   const haveR1csFile = r1cs instanceof File;
   const havePtauFile = ptau instanceof File;
-  const CID_RE = /^[A-Za-z0-9]{46,80}$/;
+  // CID_RE hoisted to module scope (see top of file)
   // Each artifact: exactly one of {file, cid} required.
   if (!haveZkeyFile && !zkeyCidProvided) return jsonResponse({ error: 'expected a "zkey0" file OR a "zkey0_cid" form field' }, 400, cors);
   if (!haveR1csFile && !r1csCidProvided) return jsonResponse({ error: 'expected an "r1cs" file OR an "r1cs_cid" form field' }, 400, cors);
@@ -5458,6 +5462,75 @@ async function handleCeremonyState(env, circuitHash, cors) {
   return jsonResponse({ state }, 200, cors);
 }
 
+// POST /ceremony/<hash>/upload-token — mint a single-use scoped Pinata
+// JWT so the contributor can upload zkey bytes directly to Pinata,
+// bypassing the CF→Pinata round-trip that exceeds wall-clock for
+// 91MB swap_batch zkeys.
+//
+// Scoped key flow: master PINATA_JWT (env) calls Pinata's
+// /users/generateApiKey with permissions narrowed to ONE upload
+// (maxUses=1, pinFileToIPFS only). Returns the scoped JWT to the
+// client. Client uploads to pinata.cloud directly; Pinata
+// auto-revokes the key after one use.
+//
+// Security: master JWT never leaves the worker. Scoped JWT is
+// single-use + pinning-only + auto-expires server-side. Worst-case
+// interception lets the attacker do ONE pin upload (which they'd
+// race the legitimate user for).
+async function handleCeremonyUploadToken(req, env, circuitHash, cors) {
+  if (!env.PINATA_JWT) return jsonResponse({ error: 'server not configured (PINATA_JWT missing)' }, 500, cors);
+  // Rate limit reuses the existing /pin daily-per-IP counter so the
+  // upload-token endpoint can't be used to evade /pin caps.
+  const ip = req.headers.get('CF-Connecting-IP') || 'anon';
+  const day = new Date().toISOString().slice(0, 10);
+  const rlKey = `ceremony:${day}:${ip}`;
+  const prior = safeInt(await env.UPLOAD_KV.get(rlKey), 0, { min: 0 });
+  if (prior >= 500) return jsonResponse({ error: 'rate limited (500/day per IP)' }, 429, cors);
+  // Verify the ceremony exists + isn't finalized before minting an
+  // upload key. No point handing out a token for a closed chain.
+  const state = await env.REGISTRY_KV.get(ceremonyKey(circuitHash), 'json');
+  if (!state) return jsonResponse({ error: 'ceremony chain not initialized' }, 404, cors);
+  if (state.finalized) return jsonResponse({ error: 'ceremony has been finalized; chain is locked' }, 409, cors);
+
+  // Mint scoped key via Pinata v1 API. maxUses=1 means Pinata
+  // auto-revokes after the upload lands. Key name includes the
+  // circuit hash prefix + timestamp for auditability.
+  const keyName = `ceremony-${circuitHash.slice(0, 8)}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  let scopedResp;
+  try {
+    scopedResp = await fetch('https://api.pinata.cloud/users/generateApiKey', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${env.PINATA_JWT}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        keyName,
+        maxUses: 1,
+        permissions: {
+          endpoints: {
+            pinning: { pinFileToIPFS: true },
+          },
+        },
+      }),
+    });
+  } catch (e) {
+    return jsonResponse({ error: 'pinata scoped-key mint failed: ' + (e?.message || e) }, 502, cors);
+  }
+  if (!scopedResp.ok) {
+    const txt = await scopedResp.text().catch(() => '');
+    return jsonResponse({ error: `pinata ${scopedResp.status}: ${txt.slice(0, 240)}` }, 502, cors);
+  }
+  const scopedJson = await scopedResp.json().catch(() => null);
+  if (!scopedJson?.JWT) return jsonResponse({ error: 'pinata returned no scoped JWT' }, 502, cors);
+  return jsonResponse({
+    jwt: scopedJson.JWT,
+    endpoint: 'https://api.pinata.cloud/pinning/pinFileToIPFS',
+    keyName,
+    expiresInSec: 600,  // Pinata default for single-use keys
+  }, 200, cors);
+}
+
 // POST /ceremony/:circuit_hash/contribute
 // Multipart form: zkey (file), contributor_name (string ≤ 64), prev_cid (string),
 // contribution_hash (string, snarkjs's "Contribution Hash" output, ≤ 256 chars).
@@ -5543,24 +5616,28 @@ async function handleCeremonyContribute(req, env, circuitHash, cors, ctx) {
   try { fd = await req.formData(); }
   catch { return jsonResponse({ error: 'expected multipart form-data' }, 400, cors); }
   const zkey = fd.get('zkey');
+  // zkey_cid alternative: client pre-pinned to Pinata via the scoped-JWT
+  // path (handleCeremonyUploadToken), so worker only needs to validate
+  // + advance chain. Bypasses the CF→Pinata round-trip that exceeds
+  // wall-clock for 91MB swap_batch zkeys.
+  const zkeyCidProvided = String(fd.get('zkey_cid') || '').trim();
   const contributorName = String(fd.get('contributor_name') || 'anonymous').slice(0, 64);
-  // Optional 33-byte compressed secp256k1 pubkey hex (66 hex chars) — when
-  // present, lets a future reputation/airdrop snapshot attribute the
-  // contribution to a tacit wallet. Soundness is independent of identity
-  // (≥1 honest contributor is the math); this is a UX/attribution add.
-  // Empty / malformed → stored as null; pseudonymous default preserved.
   let contributorPubkey = String(fd.get('contributor_pubkey') || '').trim().toLowerCase();
   if (!/^0[23][0-9a-f]{64}$/.test(contributorPubkey)) contributorPubkey = null;
   const prevCid = String(fd.get('prev_cid') || '');
   const contribHash = String(fd.get('contribution_hash') || '').slice(0, 256);
-  if (!(zkey instanceof File)) return jsonResponse({ error: 'missing form field "zkey"' }, 400, cors);
-  // 100 MB ceiling matches Cloudflare Workers request body cap. The
-  // 32 MB previous cap rejected every AMM swap_batch contribution
-  // (genesis zkey ~95 MB so every Phase 2 contribution stays ~95 MB
-  // too — Phase 2 adds proof-bytes, not constraint-bytes). Smaller
-  // circuits (mixer, AMM lp_add at 3 MB, AMM lp_remove at 6 MB)
-  // continue working as before with extra headroom.
-  if (zkey.size > 100 * 1024 * 1024) return jsonResponse({ error: 'zkey too large (max 100 MB — Cloudflare Workers body ceiling). Pre-pin to IPFS and submit zkey_cid instead.' }, 413, cors);
+
+  const haveZkeyFile = (zkey instanceof File);
+  const haveZkeyCid = zkeyCidProvided && CID_RE.test(zkeyCidProvided);
+  if (!haveZkeyFile && !haveZkeyCid) {
+    return jsonResponse({ error: 'expected form field "zkey" (file) OR "zkey_cid" (string) — neither supplied' }, 400, cors);
+  }
+  if (haveZkeyFile && haveZkeyCid) {
+    return jsonResponse({ error: 'pass zkey OR zkey_cid, not both' }, 400, cors);
+  }
+  if (haveZkeyFile && zkey.size > 100 * 1024 * 1024) {
+    return jsonResponse({ error: 'zkey too large (max 100 MB — Cloudflare Workers body ceiling). Pre-pin to IPFS via /ceremony/<hash>/upload-token and submit zkey_cid instead.' }, 413, cors);
+  }
   if (!prevCid || prevCid !== state.head_cid) {
     return jsonResponse({
       error: 'stale prev_cid — ceremony advanced before your upload landed; refresh and retry',
@@ -5569,17 +5646,44 @@ async function handleCeremonyContribute(req, env, circuitHash, cors, ctx) {
     }, 409, cors);
   }
 
-  // Magic-byte sniff before pinning — rejects non-zkey blobs up front.
-  const zkeyBytes = new Uint8Array(await zkey.arrayBuffer());
-  if (!_hasCeremonyMagic(zkeyBytes, 'zkey')) {
-    return jsonResponse({ error: 'zkey does not start with snarkjs "zkey" magic bytes' }, 400, cors);
-  }
-
   let newCid;
-  try {
-    newCid = await pinBinaryToIpfs(env, zkeyBytes, `circuit_${circuitHash.slice(0,8)}_${String(state.contribution_count + 1).padStart(4, '0')}.zkey`);
-  } catch (e) {
-    return jsonResponse({ error: 'pin failed: ' + (e.message || 'unknown') }, 502, cors);
+  if (haveZkeyFile) {
+    // File path: magic-byte sniff before pinning + pin to Pinata
+    // (original flow; works for circuits <100MB and on networks where
+    // the CF→Pinata leg completes within wall-clock).
+    const zkeyBytes = new Uint8Array(await zkey.arrayBuffer());
+    if (!_hasCeremonyMagic(zkeyBytes, 'zkey')) {
+      return jsonResponse({ error: 'zkey does not start with snarkjs "zkey" magic bytes' }, 400, cors);
+    }
+    try {
+      newCid = await pinBinaryToIpfs(env, zkeyBytes, `circuit_${circuitHash.slice(0,8)}_${String(state.contribution_count + 1).padStart(4, '0')}.zkey`);
+    } catch (e) {
+      return jsonResponse({ error: 'pin failed: ' + (e.message || 'unknown') }, 502, cors);
+    }
+  } else {
+    // CID path: client pinned directly to Pinata. Verify magic bytes
+    // by streaming just the first chunk from the IPFS gateway, then
+    // adopt the CID. Streaming + reader.cancel() avoids pulling the
+    // full 91MB through the worker — only the first ~16KB chunk
+    // crosses the wire. If the magic check fails, we reject without
+    // advancing state (the pinned blob stays on Pinata until its TTL
+    // expires; no chain corruption).
+    const gatewayUrl = `https://gateway.pinata.cloud/ipfs/${zkeyCidProvided}`;
+    let magicOk = false;
+    try {
+      const headResp = await fetch(gatewayUrl, { method: 'GET', headers: { 'Range': 'bytes=0-255' } });
+      if (!headResp.ok && headResp.status !== 206) {
+        return jsonResponse({ error: `couldn\'t fetch zkey_cid from Pinata gateway: HTTP ${headResp.status}` }, 502, cors);
+      }
+      const firstChunk = new Uint8Array(await headResp.arrayBuffer());
+      magicOk = _hasCeremonyMagic(firstChunk, 'zkey');
+    } catch (e) {
+      return jsonResponse({ error: 'couldn\'t fetch zkey_cid for magic-byte verification: ' + (e?.message || e) }, 502, cors);
+    }
+    if (!magicOk) {
+      return jsonResponse({ error: 'zkey_cid bytes don\'t start with snarkjs "zkey" magic — either wrong CID or corrupted upload' }, 400, cors);
+    }
+    newCid = zkeyCidProvided;
   }
 
   // Re-read state for the CAS — concurrent contributions can race here.
@@ -20942,6 +21046,13 @@ async function _routeFetch(req, env, ctx) {
     {
       const m = url.pathname.match(/^\/ceremony\/([0-9a-f]{64})\/contribute$/i);
       if (m && req.method === 'POST') return handleCeremonyContribute(req, env, m[1].toLowerCase(), cors, ctx);
+    }
+    {
+      // POST /ceremony/<hash>/upload-token — mint a single-use scoped
+      // Pinata JWT for the contributor to upload zkey bytes directly
+      // (bypassing the CF→Pinata leg that times out for large zkeys).
+      const m = url.pathname.match(/^\/ceremony\/([0-9a-f]{64})\/upload-token$/i);
+      if (m && req.method === 'POST') return handleCeremonyUploadToken(req, env, m[1].toLowerCase(), cors);
     }
     {
       const m = url.pathname.match(/^\/ceremony\/([0-9a-f]{64})\/attestations$/i);

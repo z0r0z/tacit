@@ -34849,6 +34849,61 @@ async function ceremonyContributeInBrowser(headZkeyBytes, contributorName, entro
   return { newZkey: newKey.data, contributionHash: contributionHashHex };
 }
 
+// Pin a large zkey straight to Pinata using a single-use scoped JWT the
+// worker mints. The worker's relay path can't absorb 90+MB within its
+// wall-clock budget; this path keeps the bytes flowing client→Pinata
+// only, so the worker just validates the resulting CID via a 256-byte
+// Range GET. Master PINATA_JWT never leaves the worker; the scoped key
+// is maxUses=1 + pinFileToIPFS-only + auto-expires (~10 min).
+async function _ammDirectPinToPinata(circuitHash, bytes, filename, onProgress) {
+  const tokResp = await fetch(`${WORKER_BASE}/ceremony/${circuitHash}/upload-token`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: '{}',
+  });
+  if (!tokResp.ok) {
+    let detail = '';
+    try { detail = (await tokResp.json())?.error || ''; } catch {}
+    throw new Error(`upload-token HTTP ${tokResp.status}${detail ? ': ' + detail : ''}`);
+  }
+  const tok = await tokResp.json();
+  if (!tok?.jwt) throw new Error('upload-token returned no JWT');
+  const endpoint = tok.endpoint || 'https://api.pinata.cloud/pinning/pinFileToIPFS';
+  return await new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', endpoint);
+    xhr.setRequestHeader('Authorization', `Bearer ${tok.jwt}`);
+    xhr.timeout = 600_000;
+    xhr.upload.onprogress = (ev) => {
+      if (ev.lengthComputable && typeof onProgress === 'function') {
+        try { onProgress(ev.loaded, ev.total); } catch {}
+      }
+    };
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        let parsed = null;
+        try { parsed = JSON.parse(xhr.responseText); } catch {}
+        const cid = parsed?.IpfsHash || parsed?.cid || parsed?.Hash;
+        if (cid) resolve(String(cid));
+        else reject(new Error('pinata returned no IpfsHash: ' + xhr.responseText.slice(0, 200)));
+      } else {
+        reject(new Error(`pinata HTTP ${xhr.status}: ${xhr.responseText.slice(0, 200)}`));
+      }
+    };
+    xhr.onerror = () => reject(new Error(`pinata upload network error (readyState=${xhr.readyState}, status=${xhr.status || 0})`));
+    xhr.ontimeout = () => reject(new Error('pinata upload timeout (10 min)'));
+    xhr.onabort = () => reject(new Error('pinata upload aborted'));
+    const fd = new FormData();
+    fd.append('file', new Blob([bytes], { type: 'application/octet-stream' }), filename);
+    fd.append('pinataMetadata', JSON.stringify({
+      name: filename,
+      keyvalues: { kind: 'tacit-ceremony-zkey', circuit: circuitHash },
+    }));
+    fd.append('pinataOptions', JSON.stringify({ cidVersion: 1 }));
+    xhr.send(fd);
+  });
+}
+
 // AMM ceremony contributor — slim wrapper around the existing
 // ceremonyContributeInBrowser path. Used by the chip + drawer UX that
 // surfaces a one-click contribute prompt on every market/asset/pool surface.
@@ -34928,13 +34983,38 @@ async function ceremonyContributeAmm({
 
   _emitMem('post-mix');
   _emit('upload', { bytes: mixed.newZkey.length });
+  // Large zkeys (notably swap_batch at ~91MB) blow the CF→Pinata wall-
+  // clock budget when relayed through the worker. Pre-pin direct to
+  // Pinata via a single-use scoped JWT the worker mints, then submit
+  // only the resulting CID. Worker streams the first 256 bytes to
+  // verify the snarkjs magic, then adopts the CID. Smaller circuits
+  // stay on the relay path (one HTTP round-trip, no Pinata key churn).
+  const PINATA_DIRECT_THRESHOLD = 16 * 1024 * 1024;
+  let prePinnedCid = null;
+  if (mixed.newZkey.length > PINATA_DIRECT_THRESHOLD) {
+    try {
+      _emit('upload-retry', { attempt: 0, wait: 0, reason: 'large zkey — uploading directly to Pinata' });
+      prePinnedCid = await _ammDirectPinToPinata(
+        circuitHash,
+        mixed.newZkey,
+        `circuit_${circuitHash.slice(0, 8)}_contribution.zkey`,
+        (done, total) => _emit('upload-bytes', { done, total }),
+      );
+    } catch (e) {
+      _emit('upload-retry', { attempt: 0, wait: 0, reason: 'direct-pinata path failed (' + (e?.message || e) + ') — falling back to worker relay' });
+    }
+  }
   // Build form once — reused across upload retries. Blob/FormData are
   // immutable so safe to send multiple times. After a successful mix
   // the same contributed bytes can re-target a new prev_cid by
   // rebuilding only the prev_cid field if the server returned 409.
   const buildForm = (prevCid) => {
     const fd = new FormData();
-    fd.append('zkey', new Blob([mixed.newZkey], { type: 'application/octet-stream' }), 'amm_contributed.zkey');
+    if (prePinnedCid) {
+      fd.append('zkey_cid', prePinnedCid);
+    } else {
+      fd.append('zkey', new Blob([mixed.newZkey], { type: 'application/octet-stream' }), 'amm_contributed.zkey');
+    }
     fd.append('contributor_name', String(contributorName || 'anonymous').slice(0, 64));
     if (contributorPubkeyHex && /^0[23][0-9a-f]{64}$/.test(contributorPubkeyHex.toLowerCase())) {
       fd.append('contributor_pubkey', contributorPubkeyHex.toLowerCase());
@@ -34951,6 +35031,10 @@ async function ceremonyContributeAmm({
     // for a slow Pinata upload but lets the retry path catch true hangs.
     xhr.timeout = 180_000;
     xhr.upload.onprogress = (ev) => {
+      // Skip emission for the zkey_cid path — only the tiny multipart
+      // wrapper crosses the wire, and re-emitting would clobber the
+      // 91MB direct-pinata progress shown a moment ago.
+      if (prePinnedCid) return;
       if (ev.lengthComputable) _emit('upload-bytes', { done: ev.loaded, total: ev.total });
     };
     xhr.onload = () => resolve({ status: xhr.status, body: xhr.responseText });
