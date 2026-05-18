@@ -977,6 +977,88 @@ async function ctacGetForceCloseThrottle(env, network, height) {
   return parseInt(await env.REGISTRY_KV.get(ctacForceCloseThrottleKey(network, height)) || '0', 10);
 }
 
+// Aggregate counters: SPEC §5.41.2 cap enforcement + §5.45.3 recovery-mode
+// trigger. Bumped on DEPOSIT; decremented on WITHDRAW / SLASH / FORCE_CLOSE.
+// The add helper clamps at 0 so a brief drift can't go negative.
+function ctacTotalBondedSatsKey(network) {
+  return network === 'signet' ? 'ctac-bonded-sats' : `ctac-bonded-sats:${network}`;
+}
+function ctacTotalBondedTacKey(network) {
+  return network === 'signet' ? 'ctac-bonded-tac' : `ctac-bonded-tac:${network}`;
+}
+async function ctacGetTotalBondedSats(env, network) {
+  const v = await env.REGISTRY_KV.get(ctacTotalBondedSatsKey(network));
+  return v ? BigInt(v) : 0n;
+}
+async function ctacAddTotalBondedSats(env, network, deltaSats) {
+  const cur = await ctacGetTotalBondedSats(env, network);
+  const next = cur + BigInt(deltaSats);
+  await env.REGISTRY_KV.put(ctacTotalBondedSatsKey(network), (next < 0n ? 0n : next).toString());
+}
+async function ctacGetTotalBondedTac(env, network) {
+  const v = await env.REGISTRY_KV.get(ctacTotalBondedTacKey(network));
+  return v ? BigInt(v) : 0n;
+}
+async function ctacAddTotalBondedTac(env, network, deltaTac) {
+  const cur = await ctacGetTotalBondedTac(env, network);
+  const next = cur + BigInt(deltaTac);
+  await env.REGISTRY_KV.put(ctacTotalBondedTacKey(network), (next < 0n ? 0n : next).toString());
+}
+
+// SPEC §5.45.1 — stability fee lazy accrual. Returns the TAC amount that
+// should move from the position's bond to the insurance pool, computed as
+//   accrued = bond × STABILITY_FEE_BPS × elapsed_blocks / 10000 / BLOCKS_PER_YEAR
+// MUTATES position.bond_amount_tac and position.last_fee_event_height in
+// place. Caller does ctacAddInsurancePool(+accrued) and the matching
+// ctacAddTotalBondedTac(-accrued) bookkeeping.
+function ctacAccrueStabilityFee(position, currentHeight) {
+  const lastEvent = Number(position.last_fee_event_height ?? position.deposit_height ?? currentHeight);
+  const elapsed = Math.max(0, Number(currentHeight) - lastEvent);
+  if (elapsed === 0) return 0n;
+  const bond = BigInt(position.bond_amount_tac || '0');
+  if (bond === 0n) {
+    position.last_fee_event_height = Number(currentHeight);
+    return 0n;
+  }
+  const accrued = (bond * BigInt(CTAC_STABILITY_FEE_BPS) * BigInt(elapsed))
+                / (10000n * BigInt(CTAC_BLOCKS_PER_YEAR));
+  if (accrued <= 0n) {
+    position.last_fee_event_height = Number(currentHeight);
+    return 0n;
+  }
+  const capped = accrued > bond ? bond : accrued;
+  position.bond_amount_tac = (bond - capped).toString();
+  position.last_fee_event_height = Number(currentHeight);
+  return capped;
+}
+
+// SPEC §5.41.2 — canonical TAC pool depth lookup for MAX_POOL_FRAC.
+// Returns the largest TAC-side reserve across any pool where TAC is one
+// of the assets. Returns null if no qualifying pool exists (callers fail
+// open).
+async function ctacCanonicalTacPoolTacReserve(env, network, opts = {}) {
+  const TAC_ASSET_ID_HEX = (opts.tacAssetIdHex || globalThis.TAC_ASSET_ID_HEX || '').toLowerCase();
+  if (!/^[0-9a-f]{64}$/.test(TAC_ASSET_ID_HEX)) return null;
+  const prefix = network === 'signet' ? 'ammpool:' : `ammpool:${network}:`;
+  let list;
+  try { list = await env.REGISTRY_KV.list({ prefix, limit: 1000 }); }
+  catch { return null; }
+  if (!list || !list.keys?.length) return null;
+  let best = 0n;
+  for (const k of list.keys) {
+    let pool;
+    try { pool = await env.REGISTRY_KV.get(k.name, 'json'); }
+    catch { continue; }
+    if (!pool || typeof pool !== 'object') continue;
+    let tacReserve = null;
+    if (pool.asset_a === TAC_ASSET_ID_HEX) tacReserve = BigInt(pool.reserve_a || '0');
+    else if (pool.asset_b === TAC_ASSET_ID_HEX) tacReserve = BigInt(pool.reserve_b || '0');
+    else continue;
+    if (tacReserve > best) best = tacReserve;
+  }
+  return best > 0n ? best : null;
+}
+
 // ============== cBTC.tac FIXED PARAMETERS (SPEC §5.41) ==============
 // Note: protocol-wide governance (per SPEC-GOVERNANCE-AMENDMENT §6.x) is
 // NOT yet wired in the worker. These are the launch defaults.
@@ -1338,6 +1420,37 @@ async function ctacComputePauseStatus(env, network, currentHeight, opts = {}) {
     const currentSupply = await ctacGetSupply(env, network);
     if (currentSupply > 0n && prospective > currentSupply * 5n) {
       return 'prospective_single_too_large';
+    }
+  }
+
+  // (4) SPEC §5.45.3 aggregate recovery mode. When total bonded TAC value
+  // (at TWAP) falls below AGGREGATE_RECOVERY_RATIO × outstanding cBTC.tac
+  // supply, PAUSE_NEW_DEPOSITS triggers. Withdraws / slash claims / the
+  // existing rug-detection path continue normally — exits are never blocked.
+  //
+  // The spec's second-half effect (tightening effective LIQUIDATION_RATIO
+  // to 1.5x for FORCE_CLOSE) is moot under v1 early-SLASH semantics: the
+  // ratio threshold is fixed at LIQUIDATION_RATIO (1.2x) and the recovery
+  // mode here only pauses new deposits.
+  //
+  // Math mirrors ctacBondRatioThousandths exactly: ratio_thousandths =
+  //   (total_bonded_tac × 1e8 × 1000) / (twap × outstanding_supply_sats).
+  // Calls TWAP a second time — already validated above, expected to succeed.
+  const totalBondedTac = await ctacGetTotalBondedTac(env, network);
+  const totalSupplyCtac = await ctacGetSupply(env, network);
+  if (totalBondedTac > 0n && totalSupplyCtac > 0n) {
+    let twap;
+    try {
+      twap = await ctacTwapSatsPerTac(env, network, currentHeight - CTAC_REORG_SAFETY_DEPTH, {
+        tacAssetIdHex: opts.tacAssetIdHex,
+      });
+    } catch { twap = null; }
+    if (twap !== null && twap !== undefined && BigInt(twap) > 0n) {
+      const ratioThousandths = (totalBondedTac * 100000000n * 1000n)
+                             / (BigInt(twap) * totalSupplyCtac);
+      if (ratioThousandths < BigInt(CTAC_AGGREGATE_RECOVERY_RATIO_THOUSANDTHS)) {
+        return 'aggregate_recovery';
+      }
     }
   }
 
@@ -3300,15 +3413,27 @@ async function ctacScanSlashDetected(env, network, opts = {}) {
     // spend the position would have moved out of 'active' state. If we're
     // here and the position is still 'active' at depth ≥ REORG_SAFETY_DEPTH
     // with K_btc spent, no legitimate envelope claimed this exit. Rug.
-    await ctacAddInsurancePool(env, network, BigInt(position.bond_amount_tac));
+    const ruggedAtHeight = result.spent_at_height || (tipHeight - result.depth + 1);
+    // §5.45.1 stability fee accrual: pre-debit elapsed fee from the bond
+    // before slashing the remainder, so accumulated fees are accounted
+    // separately. Mutates `position` in place.
+    const accruedSlash = ctacAccrueStabilityFee(position, ruggedAtHeight);
+    if (accruedSlash > 0n) await ctacAddInsurancePool(env, network, accruedSlash);
+    const remainingSlashTac = BigInt(position.bond_amount_tac);
+    if (remainingSlashTac > 0n) await ctacAddInsurancePool(env, network, remainingSlashTac);
+    // Aggregate counter bookkeeping: bond TAC (accrued + remainder) leaves
+    // the bonded total; slot's BTC backing leaves the bonded BTC total.
+    await ctacAddTotalBondedTac(env, network, -(remainingSlashTac + accruedSlash));
+    await ctacAddTotalBondedSats(env, network, -BigInt(position.slot_denom_sats));
     position.state = 'rugged';
-    position.rugged_at_height = result.spent_at_height || (tipHeight - result.depth + 1);
+    position.bond_amount_tac = '0';
+    position.rugged_at_height = ruggedAtHeight;
     position.rug_spending_txid = result.spending_txid || null;
     await ctacPutPosition(env, network, position);
     await ctacUnmarkActive(env, network, leafHashHex);
     // Record into the slash-event log so ctacComputePauseStatus's cascade
     // detector can see this in its sliding window (SPEC §5.41.3).
-    await ctacRecordSlashEvent(env, network, position.rugged_at_height, leafHashHex, position);
+    await ctacRecordSlashEvent(env, network, ruggedAtHeight, leafHashHex, position);
     slashed++;
   }
   return { scanned: list.keys.length, slashed };
@@ -8849,9 +8974,14 @@ const MARKET_CACHE_FRESH_MS = 60 * 1000;
 // recompute is the worst of the three (kicks N×3 sub-fetches), so widening
 // the STALE-serve window is highest priority here.
 const MARKET_CACHE_STALE_MS = 15 * 60 * 1000;
-function marketCacheKey(network) {
+function marketCacheKey(network, opts = {}) {
   const params = new URLSearchParams();
   params.set('network', network);
+  // Lite vs full /market are different responses, so different cache keys.
+  // Cron pre-warms the full shape; lite consumers MISS once per
+  // FRESH/STALE window per POP, which is fine — lite is opt-in and the
+  // payload is tiny.
+  if (opts && opts.lite) params.set('lite', '1');
   return new Request(`https://_market-cache_/market?${params.toString()}`, { method: 'GET' });
 }
 
@@ -8869,7 +8999,16 @@ function marketCacheKey(network) {
 // per-asset mints array (assetsComputeAndCache pre-warms with mints=true
 // for the Discover surface; /market historically called with mints=false).
 // On-demand /market requests pass null here and pay full compute.
-async function handleMarket(env, network, cors, prehydratedAssetsBody = null) {
+// `opts.lite` (boolean) — when true, skip the per-asset 4-way listings
+// fan-out entirely and return only the asset summaries. Useful for
+// consumers that just need ticker / counts / floor metadata
+// (e.g. a Browse view that drills into asset detail for full
+// listings) without paying the worker's per-asset cost. On a
+// 76-asset network this cuts ~654 listings × 4 KV.list calls plus
+// associated KV.gets — roughly half the /market compute on dense
+// books like TAC. Default (no opts) returns the full payload —
+// existing consumers see no behaviour change.
+async function handleMarket(env, network, cors, prehydratedAssetsBody = null, opts = {}) {
   let assetsBody;
   if (prehydratedAssetsBody && Array.isArray(prehydratedAssetsBody.assets)) {
     // Shallow-copy each asset entry and drop the mints field; the source
@@ -8888,6 +9027,17 @@ async function handleMarket(env, network, cors, prehydratedAssetsBody = null) {
     assetsBody = JSON.parse(await assetsResp.text());
   }
   const allAssets = assetsBody.assets || [];
+  // Lite shortcut: skip the listings fan-out entirely. Saves all per-asset
+  // KV reads for callers that just need asset summaries.
+  if (opts && opts.lite) {
+    return jsonResponse({
+      network,
+      assets: allAssets,
+      listings: [],
+      meta: assetsBody.meta || null,
+      lite: true,
+    }, 200, cors);
+  }
   const haveAny = allAssets.filter(a =>
     Number(a.listing_count || 0) > 0
     || Number(a.range_listing_count || 0) > 0
@@ -9006,8 +9156,10 @@ async function pmintCreditedComputeAndCache(env, network, aid) {
 // `prehydratedAssetsBody` (optional) is forwarded to handleMarket so the
 // cron can skip re-hydrating assets it just computed for the /assets
 // pre-warm. See handleMarket above for the mint-stripping rationale.
-async function marketComputeAndCache(env, network, prehydratedAssetsBody = null) {
-  const fresh = await handleMarket(env, network, {}, prehydratedAssetsBody);
+// `opts.lite` (optional) forwards to handleMarket and caches under a
+// separate cache key — see marketCacheKey above.
+async function marketComputeAndCache(env, network, prehydratedAssetsBody = null, opts = {}) {
+  const fresh = await handleMarket(env, network, {}, prehydratedAssetsBody, opts);
   const body = await fresh.text();
   if (fresh.status === 200) {
     const ch = new Headers();
@@ -9015,7 +9167,7 @@ async function marketComputeAndCache(env, network, prehydratedAssetsBody = null)
     ch.set('X-Cached-At', String(Date.now()));
     ch.set('Cache-Control', `public, max-age=${Math.floor(MARKET_CACHE_STALE_MS / 1000)}`);
     await caches.default.put(
-      marketCacheKey(network),
+      marketCacheKey(network, opts),
       new Response(body, { status: 200, headers: ch }),
     );
   }
@@ -11722,6 +11874,24 @@ async function handleListingList(assetIdHex, env, network, cors) {
   if (!/^[0-9a-f]{64}$/.test(assetIdHex)) return jsonResponse({ error: 'invalid asset_id' }, 400, cors);
   const listings = await loadListingsForAsset(env, network, assetIdHex);
   return jsonResponse({ asset_id: assetIdHex, count: listings.length, listings }, 200, cors);
+}
+
+// Single-listing fetch. Parallels handleAtomicIntentGet / handleBidIntentGet /
+// handlePreauthSaleGet — same shape, same cost reduction over the bulk
+// /listings + client-side filter (one KV.get vs. 1 list + N gets). Useful
+// for any future "freshness gate before broadcast" pattern in the dapp.
+// Returns 404 when the listing is gone (expired + evicted, or cancelled),
+// or 200 with the live record decorated with `expired`.
+async function handleListingGet(assetIdHex, txidHex, vout, env, network, cors) {
+  if (!/^[0-9a-f]{64}$/.test(assetIdHex)) return jsonResponse({ error: 'invalid asset_id' }, 400, cors);
+  if (!/^[0-9a-f]{64}$/.test(txidHex)) return jsonResponse({ error: 'invalid txid' }, 400, cors);
+  const voutN = parseInt(String(vout), 10);
+  if (!Number.isInteger(voutN) || voutN < 0 || voutN > 0xffff) return jsonResponse({ error: 'invalid vout' }, 400, cors);
+  const listing = await env.REGISTRY_KV.get(listingKey(network, assetIdHex, txidHex, voutN), 'json');
+  if (!listing) return jsonResponse({ error: 'no such listing' }, 404, cors);
+  const now = Math.floor(Date.now() / 1000);
+  listing.expired = (listing.expiry || 0) <= now;
+  return jsonResponse({ asset_id: assetIdHex, listing }, 200, cors);
 }
 
 // Claim lock prevents the multi-taker race in OTC settlement: two takers each
@@ -16119,10 +16289,24 @@ async function scanForEtches(env, network) {
         // Single-position cap (§5.42.3 conservative initial)
         if (BigInt(dep.slot_denom_sats) > CTAC_MAX_SINGLE_POSITION_BTC_SATS) continue;
 
-        // Aggregate pool-fraction cap. Skipped if TAC pool depth isn't
-        // tracked yet — deposit confirms and the SPEC's anti-systemic pause
-        // (§5.41.3) is responsible for catching pathological aggregate
-        // exposure if pool depth subsequently shrinks.
+        // SPEC §5.41.2 MAX_POOL_FRAC: aggregate bonded BTC (including this
+        // prospective deposit) must be ≤ 10% of the canonical TAC pool's
+        // TAC depth measured in BTC at TWAP. Fail-open if pool depth or
+        // TWAP isn't available — the §5.41.3 anti-systemic pause guards
+        // any pathological aggregate exposure.
+        try {
+          const tacPoolDepth = await ctacCanonicalTacPoolTacReserve(env, network);
+          if (tacPoolDepth !== null && tacPoolDepth > 0n) {
+            const currentBondedSats = await ctacGetTotalBondedSats(env, network);
+            const prospectiveTotalBondedSats = currentBondedSats + BigInt(dep.slot_denom_sats);
+            // pool depth in BTC sats: (tac_depth × 1e8) / twap_sats_per_tac (mirrors
+            // ctacBondRatioThousandths convention — twap is "sats-per-TAC"-style).
+            const poolDepthSats = (tacPoolDepth * 100000000n) / BigInt(twap);
+            // cap = poolDepthSats × MAX_POOL_FRAC_THOUSANDTHS / 1000
+            const capSats = (poolDepthSats * BigInt(CTAC_MAX_POOL_FRAC_THOUSANDTHS)) / 1000n;
+            if (prospectiveTotalBondedSats > capSats) continue;
+          }
+        } catch { /* fail open */ }
 
         // Record the position. The bond TAC UTXO MUST be spent in this same
         // reveal tx; envelope-pairing validation is the dapp builder's
@@ -16159,12 +16343,17 @@ async function scanForEtches(env, network) {
           initial_twap: twap.toString(),
           initial_ratio_thousandths: Number(ratioK),
           deposit_height: h,
+          // §5.45.1 stability fee anchor — fee accrues from this height
+          // forward; refreshed on each touch (WITHDRAW / FORCE_CLOSE / SLASH).
+          last_fee_event_height: h,
           deposit_txid: tx.txid,
           network,
         };
         await ctacPutPosition(env, network, position);
         await ctacMarkActive(env, network, dep.target_leaf_hash);
         await ctacAddSupply(env, network, dep.mint_amount);
+        await ctacAddTotalBondedSats(env, network, BigInt(dep.slot_denom_sats));
+        await ctacAddTotalBondedTac(env, network, BigInt(dep.bond_amount_tac));
         found++;
       } else if (decoded.opcode === T_CBTC_TAC_WITHDRAW) {
         // SPEC-CBTC-TAC-AMENDMENT §5.37 — LP-shaped burn of cBTC.tac.
@@ -16178,20 +16367,26 @@ async function scanForEtches(env, network) {
         if (wd.network_tag !== expectedNetTag) continue;
         const position = await ctacGetPosition(env, network, wd.target_leaf_hash);
         if (!position) continue;
-        // Pre-launch guard: per SPEC §5.38.5 a withdraw against a force-closed
-        // position is supposed to draw BTC out of `redemption_reserve_BTC`,
-        // which is funded by the TAC→BTC AMM swap that force-close is
-        // supposed to execute (§5.38.4). The AMM-envelope-pairing rule that
-        // wires that swap isn't shipped yet (see the T_CBTC_TAC_FORCE_CLOSE
-        // handler below for the matching gap), so the reserve is structurally
-        // empty. Accepting a withdraw here would leave the position record
-        // marked `withdrawn` while no BTC is actually returned. Refuse until
-        // the pairing lands; depositors of `active` positions are unaffected.
+        // Only active positions can be cooperatively unwound. force-slashed
+        // and rugged positions have no recoverable bond and the cBTC.tac
+        // minted from them is backed pro-rata by the insurance pool;
+        // holders against those positions must use T_SHARE_SLASH_CLAIM.
         if (position.state !== 'active') continue;
         if (BigInt(wd.burn_amount) !== BigInt(position.mint_amount)) continue;
 
+        // §5.45.1 stability fee accrual: pre-debit the time-elapsed
+        // portion of the bond to the insurance pool before computing the
+        // bond return. Mutates `position` in place.
+        const accruedWd = ctacAccrueStabilityFee(position, h);
+        if (accruedWd > 0n) {
+          await ctacAddInsurancePool(env, network, accruedWd);
+          await ctacAddTotalBondedTac(env, network, -accruedWd);
+        }
+
         // Optional pooled-insurance claim: must match per_share × burn_amount
         // exactly (§5.37.2). per_share = insurance_pool / outstanding_supply.
+        // Computed AFTER stability fee accrual so the burner gets credit
+        // for the freshly-accrued portion.
         const insurancePool = await ctacGetInsurancePool(env, network);
         const outstandingSupply = await ctacGetSupply(env, network);
         if (BigInt(wd.insurance_claim_tac) > 0n) {
@@ -16207,6 +16402,10 @@ async function scanForEtches(env, network) {
         await ctacPutPosition(env, network, position);
         await ctacUnmarkActive(env, network, wd.target_leaf_hash);
         await ctacAddSupply(env, network, -BigInt(wd.burn_amount));
+        // Aggregate counter bookkeeping: the remaining (post-fee) bond
+        // and the slot's BTC backing leave the bonded totals.
+        await ctacAddTotalBondedTac(env, network, -BigInt(position.bond_amount_tac));
+        await ctacAddTotalBondedSats(env, network, -BigInt(position.slot_denom_sats));
         if (BigInt(wd.insurance_claim_tac) > 0n) {
           await ctacAddInsurancePool(env, network, -BigInt(wd.insurance_claim_tac));
         }
@@ -16219,38 +16418,88 @@ async function scanForEtches(env, network) {
         // standard place when the validator processes the spend.
         found++;
       } else if (decoded.opcode === T_CBTC_TAC_FORCE_CLOSE) {
-        // SPEC-CBTC-TAC-AMENDMENT §5.38 — DEFERRED in v1.
+        // SPEC-CBTC-TAC-AMENDMENT §5.38 — trustless EARLY-SLASH semantics.
         //
-        // The spec'd flow is: paired TAC→cBTC.zk_canonical AMM swap in the
-        // same reveal tx, swap output credits `redemption_reserve_BTC`,
-        // liquidator gets 50 bps of swap output, paired WITHDRAW against
-        // the force-closed position draws BTC from the reserve.
+        // The original §5.38 mechanism (paired TAC→cBTC.zk AMM swap into a
+        // protocol-owned `redemption_reserve_BTC` UTXO) requires Bitcoin
+        // script primitives (covenants / OP_CAT) that don't exist on
+        // mainnet today. Every covenant-free realisation either reduces
+        // to a federated signer or lets a griefer steal the reserve.
         //
-        // Implementing this trustlessly requires Bitcoin script primitives
-        // that don't exist on mainnet today: a protocol-owned UTXO that is
-        // spendable only via a paired tacit envelope needs covenant support
-        // (OP_CAT or similar). All existing tacit custody is user-key-owned
-        // and AMM pools are virtual indexer counters with no UTXOs — there
-        // is no in-codebase pattern for protocol-owned reserve UTXOs, and
-        // none of the alternatives (federated signer, optimistic challenge)
-        // are trustless. Rather than ship a half-built mechanism that puts
-        // cBTC.tac holders into an un-redeemable state when a position
-        // force-closes, the v1 posture is to refuse the envelope outright.
+        // v1 redefines FORCE_CLOSE as a permissionless EARLY SLASH on
+        // ratio breach: when current_ratio < LIQUIDATION_RATIO at confirm
+        // time, the bond TAC is moved to the existing pooled insurance
+        // reserve (same path as SLASH_DETECTED), the position transitions
+        // to 'force-slashed', and cBTC.tac holders are made whole via the
+        // already-shipped T_SHARE_SLASH_CLAIM path (§5.39.4). The
+        // depositor's K_btc is never touched by the protocol — they retain
+        // custody. cBTC.tac supply is NOT debited (same as the existing
+        // SLASH path); the outstanding shares represent a pro-rata claim
+        // on the augmented insurance pool.
         //
-        // Under-collateralised positions still resolve safely: when bond
-        // value drops below slot value, the rational depositor rugs (spends
-        // K_btc outside protocol envelope), SLASH_DETECTED fires after the
-        // 6-block reorg-safety window, bond TAC moves to the pooled
-        // insurance reserve, and cBTC.tac holders are made whole via the
-        // existing T_SHARE_SLASH_CLAIM path (§5.39). The bond TAC is sized
-        // (INITIAL_BOND_RATIO = 2.0x) to over-cover the rug loss even
-        // after TAC price decline.
+        // Economics: similar to the SLASH path (depositor rugs K_btc →
+        // bond → insurance) but triggers immediately on ratio breach
+        // rather than waiting for the depositor to spend K_btc. Better
+        // for cBTC.tac holders (insurance backing fills faster); worse
+        // for depositors on TAC recovery (bond is gone even if TAC bounces
+        // back, so depositors carrying healthy positions through TAC
+        // dips should monitor and top-up if needed).
         //
-        // Decoder is left wired (decodeTCbtcTacForceClosePayload at line
-        // 7591) so envelope-parsing tests still pass. When a trustless
-        // reserve mechanism is designed and shipped, replace this branch
-        // with the §5.38.4 validator logic per the follow-up amendment.
-        continue;
+        // No liquidator reward in v1 — cBTC.tac holders' own interest in
+        // securing their backing is the implicit incentive to call.
+        const fc = decodeTCbtcTacForceClosePayload(decoded.payload);
+        if (!fc) continue;
+        const expectedNetTag = network === 'signet' ? 0x01 : network === 'regtest' ? 0x02 : 0x00;
+        if (fc.network_tag !== expectedNetTag) continue;
+        const position = await ctacGetPosition(env, network, fc.target_leaf_hash);
+        if (!position) continue;
+        if (position.state !== 'active') continue;
+
+        // Cascade rate-limit (§5.38.3). MAX_FORCE_CLOSES_PER_BLOCK = 5.
+        const thisBlockCount = await ctacGetForceCloseThrottle(env, network, h);
+        if (thisBlockCount >= CTAC_MAX_FORCE_CLOSES_PER_BLOCK) continue;
+
+        // Health check at reorg-safe TWAP. Fail-closed: if oracle is
+        // stale or volatile (CV>0.30), refuse the FORCE_CLOSE.
+        let twapFc;
+        try { twapFc = await ctacTwapSatsPerTac(env, network, h - CTAC_REORG_SAFETY_DEPTH); }
+        catch { continue; }
+        const currentRatio = ctacBondRatioThousandths(
+          position.bond_amount_tac, twapFc, position.slot_denom_sats,
+        );
+        if (currentRatio >= BigInt(CTAC_LIQUIDATION_RATIO_THOUSANDTHS)) continue;
+
+        // §5.45.1 stability fee accrual: time-elapsed portion of bond
+        // moves to insurance pool BEFORE the slash bump, so accumulated
+        // fees are accounted for separately. Mutates `position` in place.
+        const accruedFc = ctacAccrueStabilityFee(position, h);
+        if (accruedFc > 0n) await ctacAddInsurancePool(env, network, accruedFc);
+
+        // Slash effect: full remaining bond TAC moves to insurance pool.
+        // cBTC.tac supply is left in circulation; holders claim via
+        // T_SHARE_SLASH_CLAIM against the augmented pool (or via the
+        // optional insurance_claim_tac field on a future T_CBTC_TAC_WITHDRAW
+        // against any other active position).
+        const remainingBondFc = BigInt(position.bond_amount_tac);
+        if (remainingBondFc > 0n) await ctacAddInsurancePool(env, network, remainingBondFc);
+
+        // Aggregate-counter bookkeeping: bond TAC (accrued + remainder)
+        // leaves the bonded total; slot denomination leaves the bonded
+        // BTC total.
+        await ctacAddTotalBondedTac(env, network, -(remainingBondFc + accruedFc));
+        await ctacAddTotalBondedSats(env, network, -BigInt(position.slot_denom_sats));
+
+        position.state = 'force-slashed';
+        position.force_close_height = h;
+        position.force_close_txid = tx.txid;
+        position.bond_amount_tac = '0';
+        await ctacPutPosition(env, network, position);
+        await ctacUnmarkActive(env, network, fc.target_leaf_hash);
+        await ctacBumpForceCloseThrottle(env, network, h);
+        // Record into slash-event log for ctacComputePauseStatus's cascade
+        // detector (§5.41.3 — 5% in 100-block window triggers pause).
+        await ctacRecordSlashEvent(env, network, h, fc.target_leaf_hash, position);
+        found++;
       } else if (decoded.opcode === T_SHARE_SLASH_CLAIM) {
         // SPEC-CBTC-TAC-AMENDMENT §5.39.4 — optional pooled-insurance
         // claim by a cBTC.tac holder, separate from withdraw. Burns
@@ -17852,6 +18101,12 @@ export {
   ctacGetRedemptionReserve, ctacAddRedemptionReserve,
   ctacGetSupply, ctacAddSupply,
   ctacGetForceCloseThrottle, ctacBumpForceCloseThrottle,
+  // §5.41.2 aggregate caps + §5.45.3 recovery-mode counters.
+  ctacTotalBondedSatsKey, ctacTotalBondedTacKey,
+  ctacGetTotalBondedSats, ctacAddTotalBondedSats,
+  ctacGetTotalBondedTac, ctacAddTotalBondedTac,
+  // §5.45.1 stability fee + §5.41.2 canonical pool depth.
+  ctacAccrueStabilityFee, ctacCanonicalTacPoolTacReserve,
   ctacBondRatioThousandths, ctacTwapSatsPerTac,
   ctacVariantAssetId,
   ctacScanSlashDetected,
@@ -17868,8 +18123,10 @@ export {
   slotCoverageCacheKey, slotCoverageCursorKey,
   // Constants useful for cross-impl test assertions.
   CTAC_INITIAL_BOND_RATIO_THOUSANDTHS, CTAC_LIQUIDATION_RATIO_THOUSANDTHS,
+  CTAC_AGGREGATE_RECOVERY_RATIO_THOUSANDTHS,
   CTAC_TWAP_WINDOW_BLOCKS, CTAC_REORG_SAFETY_DEPTH,
   CTAC_MAX_FORCE_CLOSES_PER_BLOCK, CTAC_MAX_SINGLE_POSITION_BTC_SATS,
+  CTAC_MAX_POOL_FRAC_THOUSANDTHS, CTAC_STABILITY_FEE_BPS, CTAC_BLOCKS_PER_YEAR,
   deriveSlotKbtc, slotXOnly, slotScriptPubKey,
   slotRegistryKey, slotRegistryPrefix,
   encodeCDropPayload, encodeCDropReclaimPayload, decodeCDropPayload,
@@ -18132,6 +18389,64 @@ async function _routeFetch(req, env, ctx) {
         return jsonResponse({ rotates }, 200, cors);
       } catch (e) {
         return jsonResponse({ error: 'slot-rotates list failed', detail: String(e?.message || e) }, 500, cors);
+      }
+    }
+
+    // SPEC-CBTC-ZK-FUNGIBILITY §5.26 — companion log endpoints for the
+    // three slot-creating ops that also accept an encrypted note tail
+    // (mint, split, merge). Same shape as /slot-rotates: chronological
+    // KV list filtered by since_height, returning the records the
+    // recipient's dapp uses to detect inbound slots without walking
+    // every leaf in every pool.
+    if (url.pathname === '/slot-mints' && req.method === 'GET') {
+      const sinceHeight = parseInt(url.searchParams.get('since_height') || '0', 10) || 0;
+      const limit = Math.min(parseInt(url.searchParams.get('limit') || '500', 10) || 500, 5000);
+      try {
+        const list = await env.REGISTRY_KV.list({ prefix: slotMintLogPrefix(network), limit });
+        const mints = [];
+        for (const k of list.keys) {
+          const val = await env.REGISTRY_KV.get(k.name, 'json');
+          if (!val) continue;
+          if (Number(val.height || 0) < sinceHeight) continue;
+          mints.push(val);
+        }
+        return jsonResponse({ mints }, 200, cors);
+      } catch (e) {
+        return jsonResponse({ error: 'slot-mints list failed', detail: String(e?.message || e) }, 500, cors);
+      }
+    }
+    if (url.pathname === '/slot-splits' && req.method === 'GET') {
+      const sinceHeight = parseInt(url.searchParams.get('since_height') || '0', 10) || 0;
+      const limit = Math.min(parseInt(url.searchParams.get('limit') || '500', 10) || 500, 5000);
+      try {
+        const list = await env.REGISTRY_KV.list({ prefix: slotSplitLogPrefix(network), limit });
+        const splits = [];
+        for (const k of list.keys) {
+          const val = await env.REGISTRY_KV.get(k.name, 'json');
+          if (!val) continue;
+          if (Number(val.height || 0) < sinceHeight) continue;
+          splits.push(val);
+        }
+        return jsonResponse({ splits }, 200, cors);
+      } catch (e) {
+        return jsonResponse({ error: 'slot-splits list failed', detail: String(e?.message || e) }, 500, cors);
+      }
+    }
+    if (url.pathname === '/slot-merges' && req.method === 'GET') {
+      const sinceHeight = parseInt(url.searchParams.get('since_height') || '0', 10) || 0;
+      const limit = Math.min(parseInt(url.searchParams.get('limit') || '500', 10) || 500, 5000);
+      try {
+        const list = await env.REGISTRY_KV.list({ prefix: slotMergeLogPrefix(network), limit });
+        const merges = [];
+        for (const k of list.keys) {
+          const val = await env.REGISTRY_KV.get(k.name, 'json');
+          if (!val) continue;
+          if (Number(val.height || 0) < sinceHeight) continue;
+          merges.push(val);
+        }
+        return jsonResponse({ merges }, 200, cors);
+      } catch (e) {
+        return jsonResponse({ error: 'slot-merges list failed', detail: String(e?.message || e) }, 500, cors);
       }
     }
 
@@ -18504,8 +18819,13 @@ async function _routeFetch(req, env, ctx) {
       // background refresh between FRESH and STALE, MISS path recomputes
       // synchronously. Cron pre-warms /market alongside /assets so the
       // first user after a quiet period lands on a HIT.
+      // `?lite=1` returns asset summaries only (no listings fan-out) —
+      // separate cache key, opt-in for Browse-style consumers that drill
+      // into per-asset endpoints for details.
+      const _mktLite = url.searchParams.get('lite') === '1';
+      const _mktOpts = _mktLite ? { lite: true } : {};
       const cache = caches.default;
-      const cacheKey = marketCacheKey(network);
+      const cacheKey = marketCacheKey(network, _mktOpts);
       const _withCors = (body, status, kind) => {
         const headers = new Headers();
         headers.set('Content-Type', 'application/json');
@@ -18522,12 +18842,12 @@ async function _routeFetch(req, env, ctx) {
         }
         if (ageMs < MARKET_CACHE_STALE_MS) {
           if (ctx && typeof ctx.waitUntil === 'function') {
-            ctx.waitUntil(marketComputeAndCache(env, network).catch(() => null));
+            ctx.waitUntil(marketComputeAndCache(env, network, null, _mktOpts).catch(() => null));
           }
           return _withCors(await cached.text(), cached.status, 'STALE');
         }
       }
-      const result = await marketComputeAndCache(env, network);
+      const result = await marketComputeAndCache(env, network, null, _mktOpts);
       return _withCors(result.body, result.status, cached ? 'EXPIRED-MISS' : 'MISS');
     }
     if (url.pathname === '/holdings' && req.method === 'POST') {
@@ -19196,6 +19516,7 @@ async function _routeFetch(req, env, ctx) {
     if (ml && req.method === 'POST')                           return _mutateAndBustListings(ml[1], () => handleListingPost(ml[1], req, env, network, cors));
     if (ml && req.method === 'GET')                            return _swrServePerAsset(listingsCacheKey(network, ml[1]), LISTINGS_CACHE_FRESH_MS, LISTINGS_CACHE_STALE_MS, () => listingsComputeAndCache(env, network, ml[1]));
     const ml2 = url.pathname.match(/^\/assets\/([0-9a-f]{64})\/listings\/([0-9a-f]{64})\/(\d+)$/);
+    if (ml2 && req.method === 'GET')                           return handleListingGet(ml2[1], ml2[2], ml2[3], env, network, cors);
     if (ml2 && req.method === 'DELETE')                        return _mutateAndBustListings(ml2[1], () => handleListingDelete(ml2[1], ml2[2], ml2[3], req, env, network, cors));
     const ml3 = url.pathname.match(/^\/assets\/([0-9a-f]{64})\/listings\/([0-9a-f]{64})\/(\d+)\/claim$/);
     if (ml3 && req.method === 'POST')                          return _mutateAndBustListings(ml3[1], () => handleListingClaim(ml3[1], ml3[2], ml3[3], req, env, network, cors));
