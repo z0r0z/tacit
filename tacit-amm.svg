@@ -1,7 +1,11 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 1100" width="800" height="1100" font-family="'Instrument Serif', 'Cormorant Garamond', Georgia, serif">
   <defs>
-    <marker id="arrowDown" viewBox="0 0 10 10" refX="5" refY="9" markerWidth="9" markerHeight="9" orient="auto">
-      <path d="M0,0 L5,9 L10,0 z" fill="#f4efe6"/>
+    <marker id="arrowDown" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#aaa"/>
+    </marker>
+
+    <marker id="arrowPale" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#888"/>
     </marker>
 
     <symbol id="g-btc" viewBox="0 0 32 32">
@@ -45,7 +49,7 @@
     <text x="0" y="78" font-size="30" fill="#f4efe6" text-anchor="middle" font-style="italic">your sats</text>
   </g>
 
-  <line x1="400" y1="305" x2="400" y2="360" stroke="#f4efe6" stroke-width="1.2" marker-end="url(#arrowDown)"/>
+  <line x1="400" y1="305" x2="400" y2="360" stroke="#aaa" stroke-width="1" marker-end="url(#arrowDown)"/>
 
   <!-- Stage 2: cBTC.zk -->
   <g transform="translate(400,420)">
@@ -54,7 +58,7 @@
     <text x="0" y="108" font-size="20" fill="#f7931a" text-anchor="middle" font-style="italic">wrap. mix. lp.</text>
   </g>
 
-  <line x1="400" y1="540" x2="400" y2="595" stroke="#f4efe6" stroke-width="1.2" marker-end="url(#arrowDown)"/>
+  <line x1="400" y1="540" x2="400" y2="595" stroke="#aaa" stroke-width="1" marker-end="url(#arrowDown)"/>
 
   <!-- Stage 3: cBTC.tac -->
   <g transform="translate(400,655)">
@@ -63,13 +67,19 @@
     <text x="0" y="108" font-size="20" fill="#f7931a" text-anchor="middle" font-style="italic">still yours. still private.</text>
   </g>
 
-  <line x1="400" y1="775" x2="400" y2="830" stroke="#f4efe6" stroke-width="1.2" marker-end="url(#arrowDown)"/>
+  <line x1="400" y1="775" x2="400" y2="830" stroke="#aaa" stroke-width="1" marker-end="url(#arrowDown)"/>
 
   <!-- Stage 4: AMM -->
   <g transform="translate(400,870)">
     <use href="#g-amm" x="-46" y="-42" width="92" height="84"/>
     <text x="0" y="78" font-size="30" fill="#f4efe6" text-anchor="middle" font-style="italic">swap &amp; earn</text>
   </g>
+
+  <!-- roundtrip indicators: subtle pale arcs flanking the central flow -->
+  <!-- right side: sats → ... → AMM (entry path) -->
+  <path d="M442,220 C680,220 680,860 442,860" fill="none" stroke="#666" stroke-width="0.9" stroke-dasharray="2 4" marker-end="url(#arrowPale)"/>
+  <!-- left side: AMM → ... → sats (exit path) -->
+  <path d="M358,860 C120,860 120,220 358,220" fill="none" stroke="#666" stroke-width="0.9" stroke-dasharray="2 4" marker-end="url(#arrowPale)"/>
 
   <!-- subtle sign-off: self-custody + L1 anchor -->
   <text x="400" y="982" font-size="18" fill="#888" text-anchor="middle" font-style="italic">
