@@ -5298,33 +5298,59 @@ async function handleCeremonyInit(req, env, cors) {
   const existing = await env.REGISTRY_KV.get(ceremonyKey(circuitHash), 'json');
   if (existing) return jsonResponse({ error: 'ceremony already initialized', state: existing }, 409, cors);
 
-  // Bound files at 32 MB each. zkey for our circuit is ~5 MB; ptau14 is ~18 MB;
-  // r1cs is small. CF Worker request body cap is 100 MB so 32 MB × 3 fits.
+  // Each artifact can arrive either as an inline file (mixer-sized
+  // ceremonies — pot14 + ~5 MB zkey + tiny r1cs fit comfortably) or as a
+  // pre-pinned IPFS CID (AMM-sized ceremonies — pot18 ~288 MB, swap_batch
+  // zkey ~91 MB, swap_batch r1cs ~34 MB all exceed CF's 100 MB edge cap).
+  // Per-artifact: coordinator passes ONE of {file, cid}, never both.
   const MAX_PER_FILE = 32 * 1024 * 1024;
   const zkey = fd.get('zkey0');
   const r1cs = fd.get('r1cs');
   const ptau = fd.get('ptau');
-  if (!(zkey instanceof File) || !(r1cs instanceof File) || !(ptau instanceof File)) {
-    return jsonResponse({ error: 'expected files: zkey0, r1cs, ptau' }, 400, cors);
-  }
-  if (zkey.size > MAX_PER_FILE || r1cs.size > MAX_PER_FILE || ptau.size > MAX_PER_FILE) {
-    return jsonResponse({ error: `each file must be <= ${MAX_PER_FILE} bytes` }, 413, cors);
-  }
+  const zkeyCidProvided = String(fd.get('zkey0_cid') || '').trim();
+  const r1csCidProvided = String(fd.get('r1cs_cid')  || '').trim();
+  const ptauCidProvided = String(fd.get('ptau_cid')  || '').trim();
+  const haveZkeyFile = zkey instanceof File;
+  const haveR1csFile = r1cs instanceof File;
+  const havePtauFile = ptau instanceof File;
+  const CID_RE = /^[A-Za-z0-9]{46,80}$/;
+  // Each artifact: exactly one of {file, cid} required.
+  if (!haveZkeyFile && !zkeyCidProvided) return jsonResponse({ error: 'expected a "zkey0" file OR a "zkey0_cid" form field' }, 400, cors);
+  if (!haveR1csFile && !r1csCidProvided) return jsonResponse({ error: 'expected an "r1cs" file OR an "r1cs_cid" form field' }, 400, cors);
+  if (!havePtauFile && !ptauCidProvided) return jsonResponse({ error: 'expected a "ptau" file OR a "ptau_cid" form field' }, 400, cors);
+  if (haveZkeyFile && zkeyCidProvided)   return jsonResponse({ error: 'pass zkey0 OR zkey0_cid, not both' }, 400, cors);
+  if (haveR1csFile && r1csCidProvided)   return jsonResponse({ error: 'pass r1cs OR r1cs_cid, not both' }, 400, cors);
+  if (havePtauFile && ptauCidProvided)   return jsonResponse({ error: 'pass ptau OR ptau_cid, not both' }, 400, cors);
+  if (haveZkeyFile && zkey.size > MAX_PER_FILE) return jsonResponse({ error: `zkey0 file must be <= ${MAX_PER_FILE} bytes — pre-pin and pass zkey0_cid instead` }, 413, cors);
+  if (haveR1csFile && r1cs.size > MAX_PER_FILE) return jsonResponse({ error: `r1cs file must be <= ${MAX_PER_FILE} bytes — pre-pin and pass r1cs_cid instead` }, 413, cors);
+  if (havePtauFile && ptau.size > MAX_PER_FILE) return jsonResponse({ error: `ptau file must be <= ${MAX_PER_FILE} bytes — pre-pin and pass ptau_cid instead` }, 413, cors);
+  // CID-shape validation for any pre-pinned artifact.
+  if (zkeyCidProvided && !CID_RE.test(zkeyCidProvided)) return jsonResponse({ error: 'zkey0_cid must be a valid IPFS CID (46–80 chars)' }, 400, cors);
+  if (r1csCidProvided && !CID_RE.test(r1csCidProvided)) return jsonResponse({ error: 'r1cs_cid must be a valid IPFS CID (46–80 chars)' }, 400, cors);
+  if (ptauCidProvided && !CID_RE.test(ptauCidProvided)) return jsonResponse({ error: 'ptau_cid must be a valid IPFS CID (46–80 chars)' }, 400, cors);
 
-  // Read once + magic-byte sniff before any Pinata I/O. Rejects garbage uploads
-  // up front rather than letting them land in the chain head where the next
-  // contributor's snarkjs verifyFromR1cs would catch them after a 5-MB download.
-  const zkeyBytes = new Uint8Array(await zkey.arrayBuffer());
-  const r1csBytes = new Uint8Array(await r1cs.arrayBuffer());
-  const ptauBytes = new Uint8Array(await ptau.arrayBuffer());
-  if (!_hasCeremonyMagic(zkeyBytes, 'zkey')) {
-    return jsonResponse({ error: 'zkey0 does not start with snarkjs "zkey" magic bytes' }, 400, cors);
+  // Magic-byte sniff for any inline file. Rejects garbage uploads up front
+  // rather than letting them land in the chain head where the next
+  // contributor's snarkjs verifyFromR1cs would catch them after a multi-
+  // MB download. The CID paths skip server-side magic checks (a Worker
+  // request handler can't fetch 91 MB / 288 MB blobs); soundness in those
+  // paths rests on each contributor's snarkjs.zKey.verifyFromR1cs(r1cs,
+  // ptau, head_zkey) — a wrong artifact makes the first verification fail
+  // before any contribution lands, and the coordinator's local hash
+  // precheck (see pin-pot18.sh / pin-amm-swap-batch.sh) is the operator-
+  // side guarantee that pinned artifacts match the canonical files.
+  let zkeyBytes = null, r1csBytes = null, ptauBytes = null;
+  if (haveZkeyFile) {
+    zkeyBytes = new Uint8Array(await zkey.arrayBuffer());
+    if (!_hasCeremonyMagic(zkeyBytes, 'zkey')) return jsonResponse({ error: 'zkey0 does not start with snarkjs "zkey" magic bytes' }, 400, cors);
   }
-  if (!_hasCeremonyMagic(r1csBytes, 'r1cs')) {
-    return jsonResponse({ error: 'r1cs does not start with snarkjs "r1cs" magic bytes' }, 400, cors);
+  if (haveR1csFile) {
+    r1csBytes = new Uint8Array(await r1cs.arrayBuffer());
+    if (!_hasCeremonyMagic(r1csBytes, 'r1cs')) return jsonResponse({ error: 'r1cs does not start with snarkjs "r1cs" magic bytes' }, 400, cors);
   }
-  if (!_hasCeremonyMagic(ptauBytes, 'ptau')) {
-    return jsonResponse({ error: 'ptau does not start with snarkjs "ptau" magic bytes' }, 400, cors);
+  if (havePtauFile) {
+    ptauBytes = new Uint8Array(await ptau.arrayBuffer());
+    if (!_hasCeremonyMagic(ptauBytes, 'ptau')) return jsonResponse({ error: 'ptau does not start with snarkjs "ptau" magic bytes' }, 400, cors);
   }
 
   // Pin filenames are derived from circuit_hash short form, not from a
@@ -5337,9 +5363,9 @@ async function handleCeremonyInit(req, env, cors) {
   const shortHash = circuitHash.slice(0, 8);
   let zkeyCid, r1csCid, ptauCid;
   try {
-    zkeyCid = await pinBinaryToIpfs(env, zkeyBytes, `circuit_${shortHash}_0000.zkey`);
-    r1csCid = await pinBinaryToIpfs(env, r1csBytes, `circuit_${shortHash}.r1cs`);
-    ptauCid = await pinBinaryToIpfs(env, ptauBytes, `circuit_${shortHash}.ptau`);
+    zkeyCid = haveZkeyFile ? await pinBinaryToIpfs(env, zkeyBytes, `circuit_${shortHash}_0000.zkey`) : zkeyCidProvided;
+    r1csCid = haveR1csFile ? await pinBinaryToIpfs(env, r1csBytes, `circuit_${shortHash}.r1cs`)      : r1csCidProvided;
+    ptauCid = havePtauFile ? await pinBinaryToIpfs(env, ptauBytes, `circuit_${shortHash}.ptau`)      : ptauCidProvided;
   } catch (e) {
     return jsonResponse({ error: 'pin failed: ' + (e.message || 'unknown') }, 502, cors);
   }

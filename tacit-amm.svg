@@ -1,0 +1,78 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 1100" width="800" height="1100" font-family="'Instrument Serif', 'Cormorant Garamond', Georgia, serif">
+  <defs>
+    <marker id="arrowDown" viewBox="0 0 10 10" refX="5" refY="9" markerWidth="9" markerHeight="9" orient="auto">
+      <path d="M0,0 L5,9 L10,0 z" fill="#f4efe6"/>
+    </marker>
+
+    <symbol id="g-btc" viewBox="0 0 32 32">
+      <circle cx="16" cy="16" r="13" fill="none" stroke="#f4efe6" stroke-width="2"/>
+      <text x="16" y="22.6" font-size="18" fill="#f7931a" text-anchor="middle"
+            font-family="'Instrument Serif', Georgia, serif" font-weight="700">₿</text>
+    </symbol>
+
+    <symbol id="g-cbtc-zk" viewBox="0 0 32 32">
+      <circle cx="16" cy="16" r="13" fill="none" stroke="#f4efe6" stroke-width="2.5" stroke-dasharray="2.4 1.4"/>
+      <path d="M17.5 7L13 22.5Q13 25 18 24" fill="none" stroke="#f7931a" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="M10 11L21 11" stroke="#f7931a" stroke-width="2.4" stroke-linecap="round"/>
+      <path d="M11 18L19.5 18" stroke="#f7931a" stroke-width="2.4" stroke-linecap="round"/>
+    </symbol>
+
+    <symbol id="g-cbtc-tac" viewBox="0 0 32 32">
+      <circle cx="16" cy="16" r="13" fill="none" stroke="#f4efe6" stroke-width="2.5"/>
+      <path d="M17.5 7L13 22.5Q13 25 18 24" fill="none" stroke="#f7931a" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="M10 11L21 11" stroke="#f7931a" stroke-width="2.4" stroke-linecap="round"/>
+      <path d="M11 18L19.5 18" stroke="#f7931a" stroke-width="2.4" stroke-linecap="round"/>
+    </symbol>
+
+    <symbol id="g-amm" viewBox="0 0 32 32">
+      <circle cx="10" cy="16" r="8" fill="none" stroke="#f4efe6" stroke-width="2"/>
+      <path d="M11.2 10.5L8.5 19.5Q8.5 21 11.2 20.5" fill="none" stroke="#f7931a" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="M6.5 12.8L13.5 12.8" stroke="#f7931a" stroke-width="1.5" stroke-linecap="round"/>
+      <circle cx="22" cy="16" r="8" fill="none" stroke="#f4efe6" stroke-width="2"/>
+      <path d="M20.8 10.5L23.5 19.5Q23.5 21 20.8 20.5" fill="none" stroke="#f7931a" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="M18.5 12.8L25.5 12.8" stroke="#f7931a" stroke-width="1.5" stroke-linecap="round"/>
+    </symbol>
+  </defs>
+
+  <rect width="800" height="1100" fill="#000"/>
+
+  <!-- wordmark -->
+  <text x="400" y="90" font-size="64" fill="#f4efe6" text-anchor="middle" font-style="italic">tacit<tspan fill="#f7931a">.</tspan></text>
+
+  <!-- Stage 1: BTC -->
+  <g transform="translate(400,210)">
+    <use href="#g-btc" x="-42" y="-42" width="84" height="84"/>
+    <text x="0" y="78" font-size="30" fill="#f4efe6" text-anchor="middle" font-style="italic">your sats</text>
+  </g>
+
+  <line x1="400" y1="305" x2="400" y2="360" stroke="#f4efe6" stroke-width="1.2" marker-end="url(#arrowDown)"/>
+
+  <!-- Stage 2: cBTC.zk -->
+  <g transform="translate(400,420)">
+    <use href="#g-cbtc-zk" x="-42" y="-42" width="84" height="84"/>
+    <text x="0" y="78"  font-size="30" fill="#f4efe6" text-anchor="middle" font-style="italic">cBTC.zk</text>
+    <text x="0" y="108" font-size="20" fill="#f7931a" text-anchor="middle" font-style="italic">wrap. mix. lp.</text>
+  </g>
+
+  <line x1="400" y1="540" x2="400" y2="595" stroke="#f4efe6" stroke-width="1.2" marker-end="url(#arrowDown)"/>
+
+  <!-- Stage 3: cBTC.tac -->
+  <g transform="translate(400,655)">
+    <use href="#g-cbtc-tac" x="-42" y="-42" width="84" height="84"/>
+    <text x="0" y="78"  font-size="30" fill="#f4efe6" text-anchor="middle" font-style="italic">cBTC.tac</text>
+    <text x="0" y="108" font-size="20" fill="#f7931a" text-anchor="middle" font-style="italic">still yours. still private.</text>
+  </g>
+
+  <line x1="400" y1="775" x2="400" y2="830" stroke="#f4efe6" stroke-width="1.2" marker-end="url(#arrowDown)"/>
+
+  <!-- Stage 4: AMM -->
+  <g transform="translate(400,870)">
+    <use href="#g-amm" x="-46" y="-42" width="92" height="84"/>
+    <text x="0" y="78" font-size="30" fill="#f4efe6" text-anchor="middle" font-style="italic">swap &amp; earn</text>
+  </g>
+
+  <!-- subtle sign-off: self-custody + L1 anchor -->
+  <text x="400" y="982" font-size="18" fill="#888" text-anchor="middle" font-style="italic">
+    your keys<tspan fill="#f7931a"> · </tspan>on bitcoin
+  </text>
+</svg>

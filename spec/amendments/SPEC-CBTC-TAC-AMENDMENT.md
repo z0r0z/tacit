@@ -136,20 +136,35 @@ mechanics are immutable without a formal SPEC amendment (§5.46.5).
 
 ### 5.34.1 Definition
 
-cBTC.tac is a standard tacit-protocol asset with:
+cBTC.tac is a standard tacit-protocol asset, **per-denomination
+variant** (one asset_id per backing-slot denomination tier), with:
 
-- `asset_id`: a 32-byte identifier (deterministic, derived from
-  the protocol's canonical wrapper-asset namespace; specific value
-  fixed at activation per §5.42)
+- `asset_id`: deterministically derived from the backing cBTC.zk
+  slot's `denom_sats`:
+  ```
+  cBTC.tac@denom.asset_id = SHA256("tacit-cbtc-tac-variant-v1"
+                                    || denom_sats_LE_u64)
+  ```
+  No pre-registration ceremony or per-variant CETCH is required; the
+  asset_id is implied by the denom alone. Within a denomination tier,
+  all cBTC.tac UTXOs are fully fungible regardless of which specific
+  cBTC.zk slot backs each share. Across tiers, the variants are
+  distinct assets; cross-tier mobility routes through AMM pools.
 - `decimals`: 8 (matching BTC's satoshi granularity)
-- `ticker`: `cBTC.tac`
+- `ticker`: per tier. Default canonical: `cBTC.tac` (100,000-sat
+  tier — the cBTC.zk default tier). Other tiers carry suffixed
+  tickers per the dapp's canonical manifest: `cBTC.tac.10k`
+  (10,000-sat), `cBTC.tac.k` (1M-sat), `cBTC.tac.10M`, and
+  `cBTC.tac.1BTC` (100M-sat).
 - `wrapper convention`: `tacit_wrapper.kind = "protocol_bonded"` per
   `SPEC-WRAPPER-AMENDMENT.md`, with `underlying.chain = "bitcoin"`,
   `underlying.asset = "native"`, `underlying.unit = "satoshi"`
 
-It transfers via standard `T_AXFER_VAR`, trades via standard tacit
-AMM and orderbook, and is amount-private at the share level (per
-tacit's Pedersen-commit asset machinery).
+Each variant transfers via standard `T_AXFER_VAR`, trades via
+standard tacit AMM and orderbook, and is amount-private at the share
+level (per tacit's Pedersen-commit asset machinery). All supply,
+backing, and insurance formulas in §5.34.2–§5.34.4 below are stated
+per tier — each (asset_id, tier) is accounted independently.
 
 ### 5.34.2 Supply
 
@@ -214,7 +229,10 @@ indexer:
 
 ```
 position[target_leaf_hash] := {
-  depositor_recovery_pubkey: PubKey,   // where withdraw payout goes
+  depositor_recovery_commit: PedersenCommit, // Pedersen on (recovery_pubkey,
+                                             // blinding); opened at withdraw
+                                             // to route bond + insurance payout
+                                             // (§5.36.5)
   slot_leaf_hash:            32 bytes, // the deposited cBTC.zk slot
   slot_K_btc:                33 bytes, // the slot's Bitcoin UTXO key
   slot_denom_sats:           u64,      // BTC value at deposit
@@ -265,7 +283,14 @@ T_CBTC_TAC_DEPOSIT
    bond_amount_TAC_LE     8 bytes  (u64; TAC amount locked as collateral)
    bond_source_outpoint   36 bytes (TAC UTXO consumed for the bond)
    bond_commit            33 bytes (Pedersen commit of the TAC bond UTXO)
-   depositor_recovery_pk  33 bytes (where withdraw payout will go)
+   depositor_recovery_commit  33 bytes (blinded-pubkey commit per §5.36.7;
+                                    BIP-340 tweak construction
+                                    `commit = recovery_pubkey + blinding · G`.
+                                    The commit is itself a valid BIP-340
+                                    Schnorr verification key AND a valid P2TR
+                                    output key — never opened on chain. Closes
+                                    cross-deposit clustering via repeated
+                                    cleartext recovery pubkeys.)
    mint_amount_LE         8 bytes  (u64; cBTC.tac to mint;
                                     must equal slot_denom_sats)
    mint_recipient_commit  33 bytes (Pedersen commit for the new cBTC.tac UTXO)
@@ -293,11 +318,11 @@ on T_CBTC_TAC_DEPOSIT:
   require groth16_verify(ASSET_SPEND_VK, envelope.proof.bond_spend_part,
                          public_signals=[bond_commit, bond_amount_TAC])
 
-  // Slot ownership proof
+  // Slot ownership proof (binds target_leaf_hash + envelope's bind_hash)
   require groth16_verify(MIXER_WITHDRAW_VK, envelope.proof.slot_part,
                          public_signals=[leaf_record.recipient_commit,
                                          leaf_record.nullifier_hash,
-                                         /* etc. */])
+                                         bind_hash, /* etc. */])
 
   // Collateralization check (§5.41 — fixed INITIAL_BOND_RATIO = 2.0)
   P = TWAP_TAC_per_BTC(at_block = confirm_height − REORG_SAFETY_DEPTH)
@@ -305,32 +330,38 @@ on T_CBTC_TAC_DEPOSIT:
   bond_ratio = bond_value_BTC / slot_denom_sats
   require bond_ratio ≥ INITIAL_BOND_RATIO
 
-  // Aggregate exposure caps (§5.41 — chain-derived formulas)
-  prospective_total_BTC = aggregate_BTC_backing + slot_denom_sats
+  // Aggregate exposure caps (§5.41 — chain-derived formulas, per tier)
+  prospective_total_BTC = aggregate_BTC_backing(slot_denom_sats) + slot_denom_sats
   require prospective_total_BTC × P ≤ MAX_POOL_FRAC × TAC_BTC_pool_TAC_depth
   require slot_denom_sats ≤ MAX_SINGLE_POSITION_BTC
 
   // Effects
   position[target_leaf_hash] := {
-    depositor_recovery_pubkey: depositor_recovery_pk,
-    slot_leaf_hash: target_leaf_hash,
-    slot_K_btc: leaf_record.K_btc,
-    slot_denom_sats: slot_denom_sats,
-    mint_amount: mint_amount,
-    bond_amount_TAC: bond_amount_TAC,
-    bond_TAC_outpoint: deposit_bond_to_escrow(bond_source_outpoint),
-    initial_TWAP_at_deposit: P,
-    initial_ratio: bond_ratio,
-    state: "active",
-    deposit_height: H,
+    slot_leaf_hash:            target_leaf_hash,
+    slot_K_btc:                leaf_record.K_btc,
+    slot_denom_sats:           slot_denom_sats,
+    mint_amount:               mint_amount,
+    bond_amount_TAC:           bond_amount_TAC,
+    bond_TAC_outpoint:         deposit_bond_to_escrow(bond_source_outpoint),
+    depositor_recovery_commit: depositor_recovery_commit,  // opened at withdraw
+    initial_TWAP_at_deposit:   P,
+    initial_ratio:             bond_ratio,
+    state:                     "active",
+    deposit_height:            H,
   }
   leaf_state[target_leaf_hash] := "deposited"
   spend(bond_source_outpoint)
-  mint_asset_utxo(asset_id = cBTC.tac,
+  mint_asset_utxo(asset_id = ctacVariantAssetId(slot_denom_sats),
                   pedersen_commit = mint_recipient_commit,
                   amount = mint_amount)
   emit deposit_event(target_leaf_hash, mint_amount, bond_amount_TAC)
 ```
+
+The slot's `K_btc` UTXO is **not spent** at deposit time — the slot
+remains in the depositor's self-custody under lien (recovered at
+withdraw via the depositor's `r_btc`, see §5.37). The validator
+records `K_btc` from the leaf record to monitor for INV-1 slash
+detection (§5.39).
 
 ### 5.36.3 bind_hash construction
 
@@ -343,11 +374,17 @@ bind_hash = SHA256(
   || bond_amount_TAC_LE
   || bond_source_outpoint
   || bond_commit
-  || depositor_recovery_pk
+  || depositor_recovery_commit
   || mint_amount_LE
   || mint_recipient_commit
 )
 ```
+
+`bind_hash` is included in the MIXER_WITHDRAW_VK public signals
+(per §5.11.x bind-squared construction), binding the slot-ownership
+proof to this specific envelope's full field set. A mempool observer
+who lifts the proof and rebroadcasts with a substituted field fails
+verification.
 
 ### 5.36.4 Auto-buy TAC mode
 
@@ -374,6 +411,261 @@ The bond_ratio TWAP is sampled at `confirm_height − 6` (§5.41
 constant), so the user's own auto-buy swap (in the same Bitcoin tx)
 is excluded from the TWAP — the user cannot inflate their own bond
 valuation.
+
+### 5.36.5 Privacy posture — fungibility-driven, not envelope-driven
+
+The deposit envelope is intrinsically tied to the depositor: it
+references a specific `target_leaf_hash`, consumes a specific TAC
+bond UTXO, and (after the depositor signs the Bitcoin reveal tx
+with `r_btc` at withdraw time) is publicly linked to the depositor's
+wallet via the slot's `K_btc` mapping. **This linkage is
+structural** — `K_btc` must remain publicly monitorable so any
+indexer can detect INV-1 slash conditions (§5.39). Hiding the
+deposit step at the protocol-envelope layer (e.g., via a
+rotation-on-every-deposit construction) does not break this link,
+because the Bitcoin chain graph reveals the rotation spend
+directly and the slot registry maps every `K_btc` to its
+`leaf_hash` publicly.
+
+The privacy posture of cBTC.tac is therefore **not** about hiding
+who deposited. It is about **fungibility-driven downstream
+unlinkability**: cBTC.tac is a bearer instrument whose holders
+are anonymous, and value flows downstream of the mint event are
+amount-private (Pedersen) and amount-rerandomized at every transfer
+and AMM hop. The address-break happens **after** the deposit, not
+inside it.
+
+#### 5.36.5.1 The canonical flow
+
+```
+Alice's BTC ─wrap─▶ K_btc_A ─deposit─▶ position[L_A]
+                                          │
+                                          └─ mints cBTC.tac at
+                                             mint_recipient_commit
+                                             (Pedersen — recipient hidden)
+                                                  │
+   (amount-private T_AXFER_VAR transfers)         │
+                                                  ▼
+                                          downstream holder Bob
+                                          (no on-chain identifier
+                                          tying Bob to position[L_A])
+                                                  │
+                                          ┌───────┴───────┐
+                                          ▼               ▼
+                                 sell on AMM       LP into the
+                                 cBTC.tac → TAC    canonical
+                                 → sats             cBTC.tac/TAC
+                                 (amount-private)   pool (LP share is
+                                                    itself a tacit asset
+                                                    and CAN be deposited
+                                                    into a mixer pool
+                                                    per AMM.md §...)
+```
+
+Per §5.37.5 line 740–744, "a holder who acquired cBTC.tac and
+wants their pure-BTC exposure but holds no specific depositor's
+`r_btc` simply sells their cBTC.tac on the market and buys cBTC.zk
+(or whatever asset they actually want)." The canonical "use the AMM"
+exit decouples downstream holders from the depositor entirely.
+
+#### 5.36.5.2 What the envelope deliberately hides
+
+- **Mint recipient.** `mint_recipient_commit` is a Pedersen commit;
+  the recipient of the fresh cBTC.tac UTXO is unidentifiable from
+  the envelope alone.
+- **Recovery pubkey.** `depositor_recovery_commit` (this amendment's
+  one protocol-level privacy fix over the round-1 design) is a
+  Pedersen commit on `(recovery_pubkey, blinding)`. The recovery
+  pubkey only appears at `T_CBTC_TAC_WITHDRAW` time. A user who
+  deposits multiple positions cannot be clustered by repeated
+  cleartext recovery pubkey — the recovery_pk is hidden until
+  the closing event.
+- **Bond amount.** `bond_commit` is Pedersen-committed on the wire;
+  `bond_amount_TAC_LE` is cleartext because it binds the asset-spend
+  proof's public input, but the future bond-source-obfuscation
+  amendment (§5.36.6) can lift this.
+
+#### 5.36.5.3 What the envelope reveals (and why)
+
+- **`target_leaf_hash`** — names the specific slot under lien.
+  Required so the validator can monitor `K_btc` for slash detection
+  and so the depositor can later present the same position for
+  withdrawal. Structurally bound to the public slot registry
+  anyway.
+- **`slot_denom_sats`** — names the tier; required for tier-routed
+  validation and the variant `asset_id` derivation.
+- **`bond_source_outpoint`** — names the specific TAC UTXO being
+  consumed. Wallet-clusterable. Dapp mitigation: source the bond
+  from a per-deposit staking subkey (`dapp/tacit.js:72139–72151`).
+
+A protocol-only observer reading these fields can derive: "Wallet
+holding `bond_source_outpoint` bonded slot `target_leaf_hash` to
+mint cBTC.tac at amount-hidden commit." That's the inherent leak
+at the deposit layer.
+
+#### 5.36.5.4 Where the address-break actually happens
+
+| Step | Privacy property |
+|---|---|
+| Wrap (`T_SLOT_MINT`) | Public chain-graph link from depositor wallet → `K_btc`. Bitcoin-level fact, structural. |
+| Deposit (this opcode) | Position record tied to `target_leaf_hash`. Recovery pubkey Pedersen-hidden, mint recipient Pedersen-hidden. Bond source is a public UTXO. |
+| Transfer (`T_AXFER_VAR`) | **Address-break starts here.** Amounts hidden by Pedersen; Bitcoin chain shows a dust-UTXO edge (wallet visibility) but no value. After one or more hops to fresh recipients, downstream holders are statistically untraceable to the mint event. |
+| AMM swap (`T_SWAP_VAR` / `T_SWAP_BATCH` on the cBTC.tac/TAC canonical pool) | Amount-private settlement against pool reserves. The chain observer sees "the pool processed N swaps in this block;" individual swap amounts are hidden in T_SWAP_BATCH and per-trade in T_SWAP_VAR (cleartext Δ, amount-private inputs/outputs). |
+| LP into canonical pool (`T_LP_ADD`) | Produces an LP-share UTXO at a fresh recipient_commit. LP shares are normal tacit assets and CAN be deposited into the LP-share mixer pool for full SNARK unlinkability (AMM.md §"Mixer-composable LP shares"). |
+| Withdraw (the depositor's recovery path) | The depositor reveals `(recovery_pubkey, blinding)` to open `depositor_recovery_commit` and spends `K_btc` under their `r_btc`. The depositor's withdrawal is publicly tied to the original deposit; this is fine — the depositor is the same identity throughout. Downstream holders DON'T withdraw; they exit via the AMM. |
+
+#### 5.36.5.5 Dapp implementation: the "private zap" pattern
+
+The reference dapp SHOULD bundle the wrap-to-cBTC.tac flow into a
+single atomic Bitcoin reveal tx that maximizes the available
+privacy primitives. Recommended construction:
+
+1. **Fresh subkeys throughout.** Derive a per-zap staking subkey
+   (`dapp/tacit.js:deriveStakingSubkey`) for the bond source, the
+   recovery commit, and the mint recipient — three distinct
+   subkeys per deposit. The main wallet never holds the deposit's
+   intermediate state.
+2. **Wrap → buy bond → deposit, atomic.** Use the §5.36.4 auto-buy
+   mode envelope-bundle so the BTC funding, the bond AMM swap, and
+   the deposit all settle in one reveal tx. The user signs once;
+   the chain shows a single transaction with all three operations
+   bound together.
+3. **Mint to a fresh recipient.** `mint_recipient_commit` opens to
+   a Pedersen commit at a per-zap subkey, not the user's main
+   wallet pubkey.
+4. **Immediate rerandomization (optional but recommended).**
+   Bundle a follow-up `T_AXFER_VAR` that transfers the freshly-
+   minted cBTC.tac UTXO to a second per-zap subkey. The output
+   commit's blinding is independent of the mint commit's, so the
+   second UTXO is statistically unlinkable to the mint event at
+   the Pedersen layer.
+5. **For LP zaps:** bundle `T_LP_ADD` after the deposit; the LP-share
+   UTXO opens at yet another per-zap subkey. The LP-share itself
+   is mixer-poolable (per AMM.md), so users seeking maximum LP
+   privacy can subsequently deposit the LP share into the
+   LP-share mixer pool and withdraw to a fresh recipient — at
+   which point the LP claim is fully unlinkable to any specific
+   deposit event.
+6. **Funding-source hygiene.** Communicate to the user that the
+   BTC funding source is the structural privacy floor. The dapp
+   should surface a clear "use a fresh BTC wallet for maximum
+   privacy" hint at the wrap step, and SHOULD support funding
+   from a fresh address by default rather than the user's
+   primary spending UTXO.
+
+The protocol's job is to provide the privacy-preserving primitives
+(amount privacy, fungibility, mixer-composable LP shares, Pedersen-
+committed recovery routing). The dapp's job is to compose them so
+the user's default action is the most private one available.
+
+### 5.36.6 Reserved — bond-source obfuscation (future)
+
+The current `bond_amount_TAC_LE` is cleartext in the envelope (binds
+the asset-spend proof). A future amendment MAY upgrade the bond-
+spend circuit to range-prove `bond_amount_TAC ∈ [floor, ceiling]`
+from a Pedersen-committed amount, breaking the link to the specific
+bond UTXO's amount. Defer to a follow-up amendment that ships
+alongside range-proof-friendly bond accounting.
+
+### 5.36.7 Blinded-pubkey recovery commit (normative)
+
+`depositor_recovery_commit` is a single-generator additive blinding
+of the depositor's recovery secp256k1 pubkey — mechanically identical
+to a BIP-341 Taproot key tweak:
+
+```
+depositor_recovery_commit  =  depositor_recovery_pubkey  +  blinding · G
+```
+
+Where `G` is the secp256k1 generator and `blinding` is a uniformly
+random 32-byte scalar `∈ [1, SECP_N − 1]`. The commit is a compressed
+secp256k1 point (33 bytes). The depositor MUST retain
+`(recovery_pubkey, blinding)` — typically derived deterministically
+from the wallet seed (see §5.36.7.1 below) so recovery from the seed
+alone is sufficient even after local-state loss.
+
+#### 5.36.7.1 Recommended derivation
+
+```
+blinding =  HMAC-SHA256(
+              wallet.priv,
+              "tacit-cbtc-tac-recovery-blinding-v1"
+              || network_tag
+              || target_leaf_hash
+            )  reduced mod SECP_N
+recovery_pubkey  =  derived per the standard tacit staking-subkey
+                    derivation (e.g., dapp/tacit.js:deriveStakingSubkey)
+                    using a recovery-specific subkey domain
+```
+
+Both `recovery_pubkey` and `blinding` are deterministic functions of
+`(wallet.priv, target_leaf_hash)`. A user who restores from seed
+recovers both, and can therefore reconstruct
+`tweaked_sk = (recovery_sk + blinding) mod SECP_N` to spend any UTXO
+paid to `P2TR(x_only(depositor_recovery_commit))`.
+
+#### 5.36.7.2 Verifying authorization signatures
+
+Every position-mutating envelope across this amendment (TOP_UP,
+SPLIT, BOND_RELEASE, DEPOSIT_ATOMIC, WITHDRAW_ATOMIC, lien-edge
+opcodes — see §5.46–§5.49) carries a `depositor_sig` field signed
+over `bind_hash`. The validator verifies these via standard BIP-340
+Schnorr against the commit:
+
+```
+BIP340_verify(
+  pubkey  = x_only(position.depositor_recovery_commit),
+  msg     = bind_hash,
+  sig     = depositor_sig
+)
+```
+
+The depositor signs with `tweaked_sk = (recovery_sk + blinding) mod
+SECP_N`. The verifier treats the commit as a normal Schnorr
+verification key — no special handling, no opening, no extra envelope
+fields. This is identical to how Taproot output keys are verified for
+key-path spends.
+
+#### 5.36.7.3 Paying to a position's recovery
+
+Any protocol-emitted payout to a position's depositor (bond return,
+insurance claim, force-close settlement) addresses the commit's P2TR:
+
+```
+script_pubkey  =  OP_PUSHNUM_1 || OP_PUSHBYTES_32
+               || x_only(position.depositor_recovery_commit)
+```
+
+The depositor's tweaked secret unlocks it via key-path Schnorr.
+
+#### 5.36.7.4 Privacy property
+
+The recovery pubkey NEVER appears on chain in cleartext under this
+scheme. The commit appears in (a) the deposit envelope, (b) the
+position record, (c) the P2TR output script of any payout to that
+position. All three references are the same 33-byte (or 32-byte
+x-only) commit — which is computationally indistinguishable from a
+fresh random secp256k1 pubkey for any adversary not given the
+blinding. Cross-position clustering by repeated recovery pubkey is
+structurally impossible: each position uses a fresh derivation, and
+identical underlying pubkeys would still produce distinct commits
+under distinct blindings.
+
+#### 5.36.7.5 Soundness
+
+- **Binding** of the commit to `(recovery_pubkey, blinding)`: standard
+  discrete-log assumption. Given `commit`, an adversary cannot
+  produce a different `(recovery_pubkey′, blinding′)` opening without
+  solving DLOG.
+- **BIP-340 unforgeability** under the commit-as-pubkey: identical to
+  Taproot key-path security. The depositor must possess
+  `tweaked_sk = recovery_sk + blinding` to sign. An adversary who
+  recovers either `recovery_sk` alone OR `blinding` alone cannot
+  forge — they need both (or the sum directly), which DLOG protects.
+- **Recovery atomicity**: the bond-return Bitcoin output is locked to
+  the commit's P2TR; only the depositor can spend it. If the
+  depositor loses their wallet seed, the bond is permanently
+  unrecoverable (same property native Bitcoin already has).
 
 ---
 
@@ -404,11 +696,14 @@ T_CBTC_TAC_WITHDRAW
 
 **Bond return.** The reveal Bitcoin tx MUST produce a TAC-asset UTXO at
 `vout[1]` that opens to `Pedersen(position.bond_amount_TAC, freshBlinding)`
-and matches `bond_return_commit`. The output script is `P2WPKH(position.depositor_recovery_pk)` at `DUST` sats — standard tacit-asset
-convention. The depositor stores `freshBlinding` locally so the recovered
-bond UTXO is spendable via the standard T_AXFER_VAR / CXFER path. Indexers
-recognize the UTXO via `commitmentForUtxo` returning
-`(bond_return_commit, position.tac_asset_id)`.
+and matches `bond_return_commit`. The output script is
+`P2TR(x_only(position.depositor_recovery_commit))` at `DUST` sats —
+the recovery commit is a BIP-340 / P2TR output key directly per §5.36.7,
+spendable by the depositor under their tweaked recovery secret. The
+depositor stores `freshBlinding` locally so the recovered bond UTXO is
+spendable via the standard T_AXFER_VAR / CXFER path. Indexers recognize
+the UTXO via `commitmentForUtxo` returning `(bond_return_commit,
+position.tac_asset_id)`.
 
 The reveal Bitcoin transaction MUST simultaneously spend the slot's
 `K_btc` UTXO (the depositor signs under their `r_btc`). The
@@ -463,16 +758,17 @@ on T_CBTC_TAC_WITHDRAW:
     spent-set[cBTC.tac].add(burn_nullifiers[i])
   outstanding_cBTC.tac_supply -= burn_amount
 
-  // Return bond to depositor
-  // (full bond is returned — there is no withdrawal fee at the
-  // protocol level; depositor compensation comes from holding
-  // cBTC.tac that earns its share of insurance pool growth, plus
-  // any AMM LP fees if they LP'd into cBTC.tac pools)
-  pay_TAC(position.depositor_recovery_pubkey, position.bond_amount_TAC)
+  // Return bond to the recovery commit's P2TR (per §5.36.7 — the commit
+  // is itself a BIP-340 / Taproot output key; the depositor spends under
+  // tweaked secret = (recovery_sk + blinding) mod n)
+  // Full bond returned — no protocol-level withdrawal fee; depositor
+  // compensation comes from holding cBTC.tac that earns its share of
+  // insurance pool growth, plus AMM LP fees if they LP'd cBTC.tac pools.
+  pay_TAC(position.depositor_recovery_commit, position.bond_amount_TAC)
 
   // Pay insurance claim if requested
   if insurance_claim_TAC > 0:
-    pay_TAC(position.depositor_recovery_pubkey, insurance_claim_TAC)
+    pay_TAC(position.depositor_recovery_commit, insurance_claim_TAC)
     insurance_pool_TAC -= insurance_claim_TAC
 
   // The slot's BTC has been spent in reveal_tx (depositor signed
@@ -1603,7 +1899,8 @@ T_CTAC_LIEN_SPLIT
                                        (amount, blinding) tuple)
    lien_inherit_index        1 byte  (which output inherits the lien)
    depositor_sig            64 bytes (BIP-340 Schnorr over bind_hash
-                                      under position.depositor_recovery_pk)
+                                      under x_only(position.depositor_recovery_commit)
+                                      per §5.36.7)
    bind_hash                32 bytes
 ```
 
@@ -1614,7 +1911,8 @@ Validator checks:
 - Sum of revealed amounts equals the lien's `lp_share_amount`.
 - Inheriting output's amount × current LP-share BTC value still
   satisfies `INITIAL_BOND_RATIO × slot_denom_sats` at reorg-safe TWAP.
-- Depositor's Schnorr sig verifies under `depositor_recovery_pk`.
+- Depositor's Schnorr sig verifies under
+  `x_only(position.depositor_recovery_commit)` (§5.36.7).
 
 Effects: source lien deleted; new lien attached at
 `(reveal_tx.txid, lien_inherit_index)` with the smaller amount;
@@ -1687,8 +1985,10 @@ T_CBTC_TAC_DEPOSIT_ATOMIC
    cbtc_zk_input_commit        33 bytes  (Pedersen commit of cBTC.zk input)
    tac_input_outpoint          36 bytes  (UTXO being consumed for TAC side)
    tac_input_commit            33 bytes  (Pedersen commit of TAC input)
-   lp_share_commit             33 bytes  (Pedersen commit of the new LP-share UTXO, recipient = depositor_recovery_pk)
-   depositor_recovery_pk       33 bytes
+   lp_share_commit             33 bytes  (Pedersen commit of the new LP-share UTXO,
+                                          recipient P2TR = x_only(depositor_recovery_commit))
+   depositor_recovery_commit   33 bytes  (blinded-pubkey commit per §5.36.7; BIP-340-
+                                          spendable / P2TR output key; never opened)
    mint_amount_LE               8 bytes  (u64; cBTC.tac to mint; must equal slot_denom_sats)
    mint_recipient_commit       33 bytes  (Pedersen commit for new cBTC.tac UTXO)
    bind_hash                   32 bytes  (per §5.48.4)
@@ -1758,7 +2058,7 @@ bind_hash = SHA256(
   || cbtc_zk_input_outpoint || cbtc_zk_input_commit
   || tac_input_outpoint || tac_input_commit
   || lp_share_commit
-  || depositor_recovery_pk
+  || depositor_recovery_commit
   || mint_amount_LE || mint_recipient_commit
 )
 ```
@@ -1769,8 +2069,10 @@ bind_hash = SHA256(
 vin[0] = commit P2TR (script-path with T_CBTC_TAC_DEPOSIT_ATOMIC envelope)
 vin[1] = cBTC.zk_input_outpoint (asset-spend kernel sig + Groth16)
 vin[2] = tac_input_outpoint (asset-spend kernel sig + Groth16)
-vout[0] = LP-share UTXO at lp_share_commit (DUST P2WPKH to depositor_recovery_pk)
-vout[1] = cBTC.tac mint UTXO at mint_recipient_commit (DUST P2WPKH to depositor_recovery_pk)
+vout[0] = LP-share UTXO at lp_share_commit
+          (DUST P2TR to x_only(depositor_recovery_commit) per §5.36.7)
+vout[1] = cBTC.tac mint UTXO at mint_recipient_commit
+          (DUST P2TR to x_only(depositor_recovery_commit) per §5.36.7)
 ```
 
 ### 5.48.6 UX surface
@@ -2152,7 +2454,8 @@ for i in 0..add_count-1:
 new_bond_commit         33 bytes  (combined LP-share commit)
 new_bond_amount_LE      8 bytes   (sum = old + Σ add)
 new_bond_blinding       32 bytes  (opens new_bond_commit; recoverable via §5.50.8)
-depositor_sig           64 bytes  (Schnorr over bind_hash under depositor_recovery_pk)
+depositor_sig           64 bytes  (Schnorr over bind_hash under
+                                   x_only(position.depositor_recovery_commit) per §5.36.7)
 bind_hash               32 bytes
 ```
 
@@ -2184,7 +2487,8 @@ vin[0] = commit P2TR (script-path with T_CBTC_TAC_TOP_UP envelope)
 vin[1] = old bond LP-share UTXO (currently liened)
 vin[2..1+add_count] = additional LP-share UTXOs (same lp_asset_id, unliened)
 vout[0] = new combined LP-share UTXO at new_bond_commit
-          (DUST P2WPKH to depositor_recovery_pk; gets the transferred lien)
+          (DUST P2TR to x_only(position.depositor_recovery_commit) per §5.36.7;
+           gets the transferred lien)
 ```
 
 ### 5.50.6 Validator algorithm
@@ -2210,7 +2514,7 @@ Refuse the envelope (return without state change) if any of:
     commit for the consumed inputs, NOT the envelope's `_commit` fields
     — the envelope-declared commits are bind-only)
 11. Schnorr sig over `bind_hash` verifies under
-    `position.depositor_recovery_pk.x_only()`
+    `x_only(position.depositor_recovery_commit)` (§5.36.7)
 
 State effects on success:
 
@@ -2309,7 +2613,8 @@ release_commit          33 bytes  (unliened LP-share at vout[1])
 release_amount_LE       8 bytes   (= old_bond_amount - new_bond_amount; > 0)
 release_blinding        32 bytes  (opens release_commit; recoverable via §5.51.8)
 recipient_pk            33 bytes  (compressed; release goes to this key)
-depositor_sig           64 bytes  (Schnorr over bind_hash under depositor_recovery_pk)
+depositor_sig           64 bytes  (Schnorr over bind_hash under
+                                   x_only(position.depositor_recovery_commit) per §5.36.7)
 bind_hash               32 bytes
 ```
 
@@ -2334,7 +2639,8 @@ bind_hash = SHA256(
 ```
 vin[0] = commit P2TR (script-path with T_CBTC_TAC_BOND_RELEASE envelope)
 vin[1] = old bond LP-share UTXO (currently liened)
-vout[0] = new smaller liened LP-share at new_bond_commit (DUST P2WPKH to depositor_recovery_pk)
+vout[0] = new smaller liened LP-share at new_bond_commit
+          (DUST P2TR to x_only(position.depositor_recovery_commit) per §5.36.7)
 vout[1] = release LP-share at release_commit (DUST P2WPKH to recipient_pk)
 ```
 
@@ -2361,7 +2667,8 @@ Refuse if any of:
    ```
    Note: uses `INITIAL` not `LIQUIDATION` — release must leave the
    position in deposit-acceptable territory, not just outside slash.
-10. Schnorr sig over `bind_hash` verifies under `depositor_recovery_pk`
+10. Schnorr sig over `bind_hash` verifies under
+    `x_only(position.depositor_recovery_commit)` (§5.36.7)
 11. Aggregate pause: refuse if `ctacComputePauseStatus()` returns
     `aggregate_recovery` — during global stress depositors cannot
     extract collateral from the system

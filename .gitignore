@@ -47,6 +47,14 @@ dapp/circuits/amm/dev-zkey/*.zkey
 dapp/circuits/amm/dev-zkey/*.wtns
 dapp/circuits/amm/dev-zkey/proof*.json
 dapp/circuits/amm/dev-zkey/public*.json
+# Production AMM ceremony kickoff artifacts — pot18 (288 MB, Hermez source,
+# BLAKE2b-pinned, regenerable via finalize-amm.sh's hash-checked fetch) and
+# the three genesis zkeys produced by `snarkjs groth16 setup` against each
+# circuit's r1cs (swap_batch zkey is 91 MB, above GitHub's 100 MB ceiling
+# even compressed). Once /ceremony/init has accepted them, the worker hosts
+# the canonical chain on IPFS — local copies are operational scratch.
+dapp/circuits/pot18_final.ptau
+dapp/circuits/ceremony-genesis-amm/
 # Test-runner scratch — *.test.mjs harnesses write per-circuit
 # {input,proof,public}.json under `_rt_*` / `_wire_*` prefixes;
 # regenerated on every run.
