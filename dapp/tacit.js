@@ -58495,8 +58495,8 @@ function renderMarketBrowseTable(rows) {
     const totalVolumeCell = !_showTotalVolumeColumn
       ? ''
       : (volumesMatch
-        ? `<td title="Same as 24h — every settled trade for this asset landed in the last 24h."><span class="market-table-sub" style="color:var(--ink-faint);">—</span></td>`
-        : `<td><span class="market-table-value">${escapeHtml(volumeUsd)}</span><span class="market-table-sub">${escapeHtml(volumeBtc)}</span></td>`);
+        ? `<td class="col-voltotal" title="Same as 24h — every settled trade for this asset landed in the last 24h."><span class="market-table-sub" style="color:var(--ink-faint);">—</span></td>`
+        : `<td class="col-voltotal"><span class="market-table-value">${escapeHtml(volumeUsd)}</span><span class="market-table-sub">${escapeHtml(volumeBtc)}</span></td>`);
     // Implied-mcap flag: no trade backing AND no trustless live listings
     // means the mcap was computed against a single OTC ask (PUP-style
     // rows). Dim + italicize + tooltip so the user reads "this $8.5M
@@ -58511,7 +58511,7 @@ function renderMarketBrowseTable(rows) {
     const transfers = Number(a.transfer_count || 0);
     return `
       <tr data-market-asset-row="${escapeHtml(safeAid)}"${_assetHasRecentActivity(a) ? ' data-recent-activity="1"' : ''}>
-        <td>
+        <td class="col-token">
           <div class="market-token-cell">
             ${marketAssetImageHtml(a, 44)}
             <div>
@@ -58520,7 +58520,7 @@ function renderMarketBrowseTable(rows) {
             </div>
           </div>
         </td>
-        <td class="${_priceFlashCls}"${_implied ? ' title="Implied price — single OTC ask, not a settled-trade reference. Compare with caution."' : ''}>
+        <td class="col-price ${_priceFlashCls}"${_implied ? ' title="Implied price — single OTC ask, not a settled-trade reference. Compare with caution."' : ''}>
           <span class="market-table-value ${refUnit != null ? 'market-sats-price' : ''}" ${_implied ? 'style="font-style:italic;color:var(--ink-mid);"' : ''}>${_implied ? '≈ ' : ''}${escapeHtml(floor)}</span>
           <span class="market-table-sub market-usd-price" ${_implied ? 'style="color:var(--ink-faint);"' : ''}>${escapeHtml(floorUsd)}</span>
           ${(() => {
@@ -58571,19 +58571,19 @@ function renderMarketBrowseTable(rows) {
             return `<span class="market-table-sub" title="${_tip}" style="color:${_color};font-size:10px;font-weight:600;${_opacity}">${_glyph} ${_sign}${_pct.toFixed(2)}% ${escapeHtml(_winLbl)}${_suffix}</span>`;
           })()}
         </td>
-        <td${_mcapImplied ? ' title="Implied — derived from a single OTC ask, not from settled trades. Compare with caution."' : ''}>
+        <td class="col-mcap"${_mcapImplied ? ' title="Implied — derived from a single OTC ask, not from settled trades. Compare with caution."' : ''}>
           <span class="market-table-value" ${_mcapImplied ? 'style="font-style:italic;color:var(--ink-mid);"' : ''}>${_mcapImplied ? '≈ ' : ''}${escapeHtml(mcapUsd)}</span>
           <span class="market-table-sub" ${_mcapImplied ? 'style="color:var(--ink-faint);"' : ''}>${escapeHtml(mcapBtc)}</span>
         </td>
-        <td>
+        <td class="col-vol24">
           <span class="market-table-value">${escapeHtml(volume24hUsd)}</span>
           <span class="market-table-sub">${escapeHtml(volume24hBtc)}</span>
         </td>
         ${totalVolumeCell}
-        <td>
+        <td class="col-wallets">
           <span class="market-table-value">${Number(a.holder_count || 0) > 0 ? Number(a.holder_count).toLocaleString('en-US') : (a._marketAssetStatsLoadedAt ? '0' : '…')}</span>
         </td>
-        <td>
+        <td class="col-activity">
           <span class="market-table-sub">${(() => {
             // Compact form for the gallery: aggregate live count + tx count.
             // Earlier iteration showed the full 4-kind breakdown ("374
@@ -58622,13 +58622,13 @@ function renderMarketBrowseTable(rows) {
       <table class="market-token-table">
         <thead>
           <tr>
-            <th>Token</th>
-            <th>Price</th>
-            <th>Market Cap</th>
-            <th title="Strict rolling 24h trade volume — sums every settled trade (atomic-take, preauth-take, bid claim, range fill) with a timestamp in the last 24 hours. Plain transfers and airdrops aren't trades and aren't counted; OTC settlements carry no protocol-enforced price so they can't be priced either.">24h Volume</th>
-            ${_showTotalVolumeColumn ? `<th title="Lifetime trade volume — every settled trade since the worker started indexing this asset. Built from the worker's cumulative counter with the recent-trades ring as a floor for assets that traded before the counter was deployed. Plain transfers, airdrops and OTC settlements aren't counted (no protocol-enforced price).">Total Volume</th>` : ''}
-            <th title="Distinct wallets that have ever received this asset on chain (scriptpubkey-hash level — a wallet, not a user). Coarse popularity signal indexed by the worker.">Wallets</th>
-            <th title="Live trustless listings on the orderbook (left) and lifetime on-chain transfers of this asset (right).">Activity</th>
+            <th class="col-token">Token</th>
+            <th class="col-price">Price</th>
+            <th class="col-mcap">Market Cap</th>
+            <th class="col-vol24" title="Strict rolling 24h trade volume — sums every settled trade (atomic-take, preauth-take, bid claim, range fill) with a timestamp in the last 24 hours. Plain transfers and airdrops aren't trades and aren't counted; OTC settlements carry no protocol-enforced price so they can't be priced either.">24h Volume</th>
+            ${_showTotalVolumeColumn ? `<th class="col-voltotal" title="Lifetime trade volume — every settled trade since the worker started indexing this asset. Built from the worker's cumulative counter with the recent-trades ring as a floor for assets that traded before the counter was deployed. Plain transfers, airdrops and OTC settlements aren't counted (no protocol-enforced price).">Total Volume</th>` : ''}
+            <th class="col-wallets" title="Distinct wallets that have ever received this asset on chain (scriptpubkey-hash level — a wallet, not a user). Coarse popularity signal indexed by the worker.">Wallets</th>
+            <th class="col-activity" title="Live trustless listings on the orderbook (left) and lifetime on-chain transfers of this asset (right).">Activity</th>
           </tr>
         </thead>
         <tbody>${body}</tbody>
