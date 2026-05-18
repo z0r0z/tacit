@@ -35501,19 +35501,22 @@ function _renderAmmCerDrawerBody(opts) {
   const rows = AMM_CEREMONY_CIRCUIT_HASHES.map(c => {
     const s = _ammCeremonyStateByCircuit.get(c.hash);
     const count = s?.contribution_count ?? '—';
-    const finalized = s?.finalized ? ' · ✓ finalized' : '';
+    const isFinalized = !!s?.finalized;
+    const finalizedTag = isFinalized ? ' · ✓ finalized' : '';
     const heavy = AMM_CEREMONY_HEAVY_CIRCUITS.has(c.key);
     const hint = heavy
       ? (mobile
           ? ` <span style="color:var(--orange);font-size:10px;letter-spacing:0.05em;">desktop only</span>`
           : ` <span style="color:var(--ink-mid);font-size:10px;letter-spacing:0.05em;">heavier · ~2–5 min</span>`)
-      : '';
+      : ` <span style="color:var(--ink-mid);font-size:10px;letter-spacing:0.05em;">~30s</span>`;
     const isCurrent = currentKey === c.key;
     const isCompleted = completedKeys.has(c.key);
-    // Visual state per row:
-    //   current      — orange bullet + bold + bg highlight (active focus)
-    //   completed    — ✓ check mark + dim (you contributed this session)
-    //   default      — plain
+    // Picker-clickable when nothing else is contending: not the
+    // currently-running circuit, not finalized, not mobile-heavy, not
+    // mid-contribute. Click sets _ammContribForcedCircuit + fires the
+    // Go button so a user assigned the slow swap_batch can pick a 30s
+    // lp_* instead.
+    const clickable = !isCurrent && !isFinalized && !(mobile && heavy) && !_ammContribInFlight;
     let leadGlyph = '';
     let rowStyle = 'display:flex;justify-content:space-between;align-items:center;gap:8px;padding:6px 8px;border-bottom:1px solid var(--ink-faint);';
     let leftStyle = '';
@@ -35526,9 +35529,25 @@ function _renderAmmCerDrawerBody(opts) {
     } else {
       leadGlyph = '<span style="display:inline-block;width:11px;margin-right:6px;"></span>';
     }
-    return `<div style="${rowStyle}"><span style="${leftStyle}">${leadGlyph}${escapeHtml(c.label)}${hint}</span><span style="color:var(--ink-mid);">${escapeHtml(String(count))} contribs${finalized}</span></div>`;
+    if (clickable) rowStyle += 'cursor:pointer;';
+    const pickTag = clickable
+      ? ` <span style="color:#c97a1a;font-size:10px;letter-spacing:0.05em;text-decoration:underline;">pick</span>`
+      : '';
+    const dataAttr = clickable ? ` data-amm-cer-pick="${escapeHtml(c.key)}"` : '';
+    return `<div${dataAttr} style="${rowStyle}"><span style="${leftStyle}">${leadGlyph}${escapeHtml(c.label)}${hint}</span><span style="color:var(--ink-mid);">${escapeHtml(String(count))} contribs${finalizedTag}${pickTag}</span></div>`;
   }).join('');
   chainsEl.innerHTML = rows;
+  chainsEl.querySelectorAll('[data-amm-cer-pick]').forEach(el => {
+    el.addEventListener('click', () => {
+      if (_ammContribInFlight) return;
+      const key = el.getAttribute('data-amm-cer-pick');
+      const picked = AMM_CEREMONY_CIRCUIT_HASHES.find(c => c.key === key);
+      if (!picked) return;
+      _ammContribForcedCircuit = picked;
+      const go = document.getElementById('amm-cer-go');
+      if (go) go.click();
+    });
+  });
 }
 // Per-session completed set so subsequent contributes in the same drawer
 // session can mark prior wins as ✓ even after fresh round-robin picks
@@ -64869,7 +64888,48 @@ function _wireSwapTile(scope) {
   const slipHelp  = widget.querySelector('[data-swap-slippage-help]');
   const infoEl    = widget.querySelector('[data-swap-info]');
   const actionBtn = widget.querySelector('[data-swap-action]');
+  const modeBtnMarket = widget.querySelector('[data-swap-mode-btn="market"]');
+  const modeBtnLimit  = widget.querySelector('[data-swap-mode-btn="limit"]');
+  const modeChip      = widget.querySelector('[data-swap-mode-chip]');
+  const modeRibbon    = widget.querySelector('[data-swap-mode-ribbon]');
+  const toLabel       = widget.querySelector('[data-swap-to-label]');
   if (!fromInput || !toInput || !actionBtn) return;
+  // Mode-toggle state lives in widget.dataset.swapMode ('market' | 'limit').
+  // The implicit "type both inputs → limit" path still works (auto-flips
+  // the toggle); explicit clicks force the chosen mode. _limitUnitPrice
+  // gates on this value so a user on Market never enters the limit-cap
+  // routing path even if both inputs happen to be filled.
+  const getSwapMode = () => widget.dataset.swapMode === 'limit' ? 'limit' : 'market';
+  const applyMode = () => {
+    const mode = getSwapMode();
+    const isLimit = mode === 'limit';
+    if (modeBtnMarket) {
+      modeBtnMarket.setAttribute('aria-selected', isLimit ? 'false' : 'true');
+      modeBtnMarket.style.background = isLimit ? 'var(--bg)' : 'var(--ink)';
+      modeBtnMarket.style.color      = isLimit ? 'var(--ink)' : 'var(--bg)';
+    }
+    if (modeBtnLimit) {
+      modeBtnLimit.setAttribute('aria-selected', isLimit ? 'true' : 'false');
+      modeBtnLimit.style.background = isLimit ? 'var(--ink)' : 'var(--bg)';
+      modeBtnLimit.style.color      = isLimit ? 'var(--bg)' : 'var(--ink)';
+    }
+    if (modeChip)   modeChip.style.display   = isLimit ? 'inline-block' : 'none';
+    if (modeRibbon) modeRibbon.style.display = isLimit ? 'flex' : 'none';
+    if (toLabel) {
+      const dir = widget.dataset.direction || 'buy';
+      toLabel.textContent = isLimit
+        ? (dir === 'buy' ? 'You buy at' : 'You receive at')
+        : 'You receive (est.)';
+    }
+    if (slipSel) {
+      slipSel.disabled = isLimit;
+      slipSel.style.opacity = isLimit ? '0.4' : '1';
+      slipSel.style.cursor  = isLimit ? 'not-allowed' : 'pointer';
+      slipSel.title = isLimit
+        ? 'Slippage ignored — your typed price is the hard cap. Switch to Market to re-enable.'
+        : 'Cap on how far above mark price the swap will reach. Asks above the cap are skipped; residual unfilled budget posts as a bid AT the cap.';
+    }
+  };
   // Explainer popover. The picker controls a hard price cap on each
   // fill the swap walks — not a tolerance band against execution drift.
   // Tooltip + dialog convey the same idea at two depths; the dialog is
@@ -64972,10 +65032,14 @@ function _wireSwapTile(scope) {
     return (Number.isFinite(sats) && sats > 0) ? sats : null;
   };
   // Limit-mode detection + price derivation. Active when both inputs are
-  // user-typed AND parse to positive numbers. Returns the implied unit
-  // price (sats per whole TICKER unit) for the active direction, or null
-  // when limit mode isn't engaged.
+  // user-typed AND parse to positive numbers AND the explicit mode toggle
+  // is on Limit. Returns the implied unit price (sats per whole TICKER
+  // unit) for the active direction, or null when limit mode isn't
+  // engaged. Gating on dataset.swapMode means a Market user typing into
+  // both inputs (which would historically auto-flip to Limit) only
+  // actually enters the limit routing path once the toggle confirms it.
   const _limitUnitPrice = () => {
+    if (getSwapMode() !== 'limit') return null;
     if (!_isUserTyped('from') || !_isUserTyped('to')) return null;
     const fromRaw = (fromInput.value || '').trim();
     const toRaw   = (toInput.value || '').trim();
@@ -65023,8 +65087,17 @@ function _wireSwapTile(scope) {
   // buyer a 984-TAC overshoot, and "sell 100 TAC" through a 5000-sat
   // outlier bid risks atomic-settlement failure when the buyer's wallet
   // can't actually cover the inflated commitment.
-  const dustFloorUnit  = (Number.isFinite(refUnit) && refUnit > 0) ? refUnit * 0.2 : 0;
-  const outlierCeilUnit = (Number.isFinite(refUnit) && refUnit > 0) ? refUnit * 5 : Infinity;
+  const _dustFloorMarket   = (Number.isFinite(refUnit) && refUnit > 0) ? refUnit * 0.2 : 0;
+  const _outlierCeilMarket = (Number.isFinite(refUnit) && refUnit > 0) ? refUnit * 5 : Infinity;
+  // In Limit mode the user has explicitly typed BOTH amount and price,
+  // so the anti-fat-finger guards (which exist for unsupervised Market
+  // routing) would now silently drop fills inside the user's stated
+  // price range. Bypass them when limit-mode is engaged — the user's
+  // limit IS the authoritative price boundary. The Boolean wrapper has
+  // a valueOf that coerces in `<` / `>` comparisons, so we keep the old
+  // variable names as drop-in replacements without touching call sites.
+  const dustFloorUnit   = { valueOf: () => _limitUnitPrice() != null ? 0        : _dustFloorMarket };
+  const outlierCeilUnit = { valueOf: () => _limitUnitPrice() != null ? Infinity : _outlierCeilMarket };
   // BUY plan: walk ALL ask kinds cheapest-first — preauth (Instant
   // listings, single-tx settle) + whole-UTXO atomic intents (claim →
   // wait for fulfil → take) + variable-amount intents (claim → wait
@@ -65546,6 +65619,10 @@ function _wireSwapTile(scope) {
     // pills that already hold an <img>.
     _resolveAssetLogosIn(widget, 'width:24px;height:24px;border-radius:50%;border:1px solid var(--ink-faint);background:#fff;object-fit:cover;flex-shrink:0;');
     if (typeof renderQuickFill === 'function') renderQuickFill();
+    // Mode-toggle visuals are direction-aware (toLabel reads "You buy at"
+    // vs "You receive at"), so resync after applyDirection has stamped
+    // the new direction in dataset. Idempotent: pure visual refresh.
+    if (typeof applyMode === 'function') applyMode();
     // Auto-fulfil hint — visible only in sell mode. Sells route via
     // atomic intents, which require this tab to sign each buyer's
     // claim response before the buyer can settle on chain. Without
@@ -65710,6 +65787,11 @@ function _wireSwapTile(scope) {
           toInput.value = '';
           _setUserTyped('to', false);
           widget.dataset.activeSide = 'from';
+          // Exit the explicit Limit toggle too — the readout's
+          // "use market price" link is the canonical escape hatch,
+          // so make it sync the visible toggle state.
+          widget.dataset.swapMode = 'market';
+          applyMode();
           update();
         };
       }
@@ -66562,6 +66644,19 @@ function _wireSwapTile(scope) {
   // `input` event), so once a side is pinned it stays pinned until the user
   // clears it. When BOTH flags are set, _limitUnitPrice() returns the
   // implied price and the cap helpers route the whole tile into limit mode.
+  // Auto-flip the explicit Market/Limit toggle when the user pins BOTH
+  // inputs by typing. Keeps the implicit-mode UX from before the toggle
+  // existed — a user who types both sides expecting limit-mode behaviour
+  // still gets it, but now the toggle visually reflects the state.
+  // Trusted user input only; synthetic primes don't auto-flip.
+  const _maybeAutoFlipMode = () => {
+    const bothTyped = _isUserTyped('from') && _isUserTyped('to');
+    const bothFilled = (fromInput.value || '').trim() && (toInput.value || '').trim();
+    if (bothTyped && bothFilled && getSwapMode() === 'market') {
+      widget.dataset.swapMode = 'limit';
+      applyMode();
+    }
+  };
   fromInput.addEventListener('input', (e) => {
     widget.dataset.activeSide = 'from';
     // Only real user typing flips the userTyped flag — programmatic
@@ -66571,14 +66666,46 @@ function _wireSwapTile(scope) {
     // having typed a budget into the other side would silently enter
     // limit mode at a derived price that disagrees with the row's
     // unit price.
-    if (e.isTrusted) _setUserTyped('from', (fromInput.value || '').trim().length > 0);
+    if (e.isTrusted) {
+      _setUserTyped('from', (fromInput.value || '').trim().length > 0);
+      _maybeAutoFlipMode();
+    }
     update();
   });
   toInput.addEventListener('input', (e) => {
     widget.dataset.activeSide = 'to';
-    if (e.isTrusted) _setUserTyped('to', (toInput.value || '').trim().length > 0);
+    if (e.isTrusted) {
+      _setUserTyped('to', (toInput.value || '').trim().length > 0);
+      _maybeAutoFlipMode();
+    }
     update();
   });
+  // Explicit Market/Limit toggle handlers.
+  //   Limit:  pin both userTyped flags (if values are present), update
+  //           visuals, then re-run update() so the planner enters the
+  //           limit-cap routing path immediately.
+  //   Market: clear toUserTyped so the planner reclaims the "to" side
+  //           as a planner-driven estimate; keep fromUserTyped + values
+  //           per user's "keep values, recompute as market" choice.
+  if (modeBtnLimit) modeBtnLimit.onclick = () => {
+    widget.dataset.swapMode = 'limit';
+    if ((fromInput.value || '').trim()) _setUserTyped('from', true);
+    if ((toInput.value || '').trim())   _setUserTyped('to', true);
+    applyMode();
+    // If the receive side is empty, focus it so the user knows where to
+    // type their limit price. Avoid stealing focus when both sides
+    // already have values.
+    if (!(toInput.value || '').trim()) try { toInput.focus(); } catch {}
+    update();
+  };
+  if (modeBtnMarket) modeBtnMarket.onclick = () => {
+    widget.dataset.swapMode = 'market';
+    _setUserTyped('to', false);
+    applyMode();
+    update();
+  };
+  // Initial paint of mode visuals (default 'market').
+  applyMode();
   // Per-asset slippage memory: traders often want tight caps on stable-
   // priced pairs and looser ones on volatile pairs. Persist the user's
   // last-used Limit value per asset_id in localStorage and restore on
@@ -66618,7 +66745,12 @@ function _wireSwapTile(scope) {
     toInput.value = '';
     _setUserTyped('from', false);
     _setUserTyped('to', false);
+    // Direction flip resets to Market mode — values are gone, and the
+    // semantic of "buy at X" vs "sell at X" is direction-specific, so
+    // a stale Limit setting would be confusing. User can re-toggle.
+    widget.dataset.swapMode = 'market';
     applyDirection();
+    applyMode();
     update();
     // Sell-side intent reached — NOW is the moment to warm the holdings
     // cache. scanHoldings ultimately calls ensurePrivkey() which can
