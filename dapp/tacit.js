@@ -54644,7 +54644,7 @@ function applyMarketFilters() {
     // demand-side liquidity.
     const listedPaneHtml = `${_yourOrdersHtmlNoAsks}<div class="empty" style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;"><span>No active asks. Bids below; post one if you want to buy.</span>${_emptyAsksToggleChip}</div>${bidsLadderHtml}`;
     const richStatsHtml = renderMarketAssetStatsHTML(_assetForBids);
-    list.innerHTML = `<div class="market-token-page market-token-page--no-side"><div class="market-token-header">${assetHeaderHtml}</div><div class="market-token-main">${richStatsHtml}${marketAssetTabsHtml(listedPaneHtml, activityPanelHtml, marketTabActionHtml)}</div></div>`;
+    list.innerHTML = `<div class="market-token-page"><div class="market-token-main">${assetHeaderHtml}${richStatsHtml}${marketAssetTabsHtml(listedPaneHtml, activityPanelHtml, marketTabActionHtml)}</div></div>`;
     hydrateMarketImages(list);
     bindMarketAssetHeader(list);
     bindMarketAssetTabs(list);
@@ -55581,23 +55581,7 @@ function applyMarketFilters() {
       }
     }
   }
-  // Side-by-side desktop layout (>= 900px viewport): asset header full
-  // width on top; chart + tape + depth + orderbook + activity in the
-  // LEFT column; swap tile pinned in the RIGHT column (position:
-  // sticky so it stays visible as the user scrolls the orderbook +
-  // activity below). The CSS grid collapses to a single column on
-  // narrower viewports — see .market-token-page in index.html for
-  // the breakpoint rules. Preserve nodes ([data-swap-tile],
-  // [data-market-price-chart], etc.) are looked up by attribute
-  // selector regardless of nesting depth, so the existing detach +
-  // re-attach + scroll-anchor restore still works without code
-  // changes — only the surrounding DOM shape moves.
-  // Render the side column only when there's a swap tile to put in it.
-  // Empty side wrapper would still claim the 340px grid track, leaving
-  // a dead band; instead omit the side and let the grid collapse to
-  // single-column via the CSS :not(:has(.market-token-side)) rule.
-  const _sideHtml = _swapTileHtml ? `<div class="market-token-side">${_swapTileHtml}</div>` : '';
-  list.innerHTML = `<div class="market-token-page${_sideHtml ? '' : ' market-token-page--no-side'}"><div class="market-token-header">${assetHeaderHtml}</div><div class="market-token-main">${richStatsHtml}${marketAssetTabsHtml(listedPaneHtml, activityPanelHtml, marketTabActionHtml)}</div>${_sideHtml}</div>`;
+  list.innerHTML = `<div class="market-token-page"><div class="market-token-main">${assetHeaderHtml}${_swapTileHtml}${richStatsHtml}${marketAssetTabsHtml(listedPaneHtml, activityPanelHtml, marketTabActionHtml)}</div></div>`;
   if (_onAssetDetailReRender) {
     for (const [sel, node] of Object.entries(_preservedNodes)) {
       const placeholder = list.querySelector(`[${sel}]`);
@@ -59053,25 +59037,12 @@ function renderMarketAssetHeader(assetId, rows) {
       <div class="market-asset-title">
         ${marketAssetImageHtml(a, 64, 'market-token-icon market-token-icon--large')}
         <div style="min-width:0;">
-          <!-- Display name from IPFS metadata, rendered in the serif
-               italic the project's logotype uses, when distinct from the
-               ticker. Editorial weight — pairs with the big ticker H2
-               below (also serif via .market-asset-title h2). -->
-          ${_displayName && _displayName.toLowerCase() !== (a.ticker || '').toLowerCase() ? `<div style="font-family:var(--serif);font-style:italic;font-size:14px;color:var(--ink-mid);margin-bottom:2px;">${escapeHtml(_displayName)}</div>` : ''}
+          ${_displayName && _displayName.toLowerCase() !== (a.ticker || '').toLowerCase() ? `<div style="font-size:11px;color:var(--ink-mid);margin-bottom:2px;">${escapeHtml(_displayName)}</div>` : ''}
           <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
-            <h2>${escapeHtml(a.ticker || '?')}</h2>${verifiedBadge}
+            <h2 style="margin:0;line-height:1.05;">${escapeHtml(a.ticker || '?')}</h2>${verifiedBadge}
           </div>
-          <!-- Subtitle: leans into the editorial aesthetic + surfaces
-               Tacit's value props in one inline line. Confidential =
-               the protocol's differentiator vs every other Bitcoin
-               token spec; "on Bitcoin" = settlement layer; "order book
-               + AMM" = the two trading venues the protocol exposes.
-               Discreet, italic, low-contrast — meant to read like
-               a publication standfirst, not a marketing banner. -->
-          <div style="font-family:var(--serif);font-style:italic;font-size:12px;color:var(--ink-mid);margin-top:4px;letter-spacing:0;">
-            confidential token &middot; on Bitcoin &middot; <a href="#" data-act="market-jump-to-amm" title="Open the Tacit AMM tab — paired-token swap + LP for any asset with a live pool (post-ceremony)." style="color:inherit;border-bottom:1px dotted var(--ink-mid);text-decoration:none;">order book + AMM</a>
-          </div>
-          <div style="font-size:10px;color:var(--ink-mid);margin-top:6px;">
+          <div style="font-size:10px;color:var(--ink-mid);margin-top:2px;">
+            <span>id </span>
             <span class="mono-box inline" style="font-size:10px;cursor:pointer;color:${assetIdColorForAsset(a)};" data-act="copy-aid" data-aid="${escapeHtml(safeAid)}" title="Click to copy full asset_id: ${escapeHtml(safeAid)}">${escapeHtml(shorten(safeAid, 12))}</span>
           </div>
         </div>
@@ -67239,18 +67210,7 @@ function bindMarketAssetHeader(scope) {
     el.addEventListener('mouseenter', () => { el.style.color = 'var(--ink)'; });
     el.addEventListener('mouseleave', () => { el.style.color = 'var(--ink-mid)'; });
   });
-  // Editorial subtitle "order book + AMM" link → AMM tab. Subtle by
-  // design — AMM is per-pool and ceremony-pending for many assets, so
-  // we route to the AMM tab generally rather than priming a specific
-  // pool. When the asset has a live pool the AMM tab will surface it;
-  // when it doesn't, the tab shows ceremony status (which itself is
-  // upcoming market-page integration).
-  scope.querySelectorAll('[data-act="market-jump-to-amm"]').forEach(el => {
-    el.onclick = (ev) => {
-      ev.preventDefault();
-      try { _activateTab('pool'); } catch (e) { console.warn('[market] jump-to-amm failed', e?.message); }
-    };
-  });
+
   // Esc-to-browse shortcut: bound on the window so the asset detail can
   // be dismissed without mouse targeting. Cleared on next asset entry
   // (this function runs on every renderMarket → idempotent because the

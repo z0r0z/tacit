@@ -913,51 +913,10 @@ tr[data-recent-activity] .market-token-sub::after {
   min-height: 32px;
   padding: 0 10px;
 }
-/* Trading-page layout. Desktop (>=900px): asset header full width on top,
-   chart/orderbook/activity stacked in the LEFT column, swap tile pinned
-   in the RIGHT column (position: sticky so it stays visible as the user
-   scrolls). Below 900px, the grid collapses to a single column and the
-   side col goes static — the swap tile then sits below the header like
-   it always did on mobile. The --no-side variant (empty-asks branch,
-   wallets with nothing to swap) uses single-column on all sizes. */
 .market-token-page {
   display: block;
 }
 .market-token-main { min-width: 0; }
-.market-token-header { min-width: 0; }
-.market-token-side { min-width: 0; }
-@media (min-width: 900px) {
-  .market-token-page:not(.market-token-page--no-side) {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) 340px;
-    column-gap: 16px;
-    align-items: start;
-  }
-  .market-token-page:not(.market-token-page--no-side) > .market-token-header {
-    grid-column: 1 / -1;
-  }
-  .market-token-page:not(.market-token-page--no-side) > .market-token-main {
-    grid-column: 1;
-  }
-  .market-token-page:not(.market-token-page--no-side) > .market-token-side {
-    grid-column: 2;
-    position: sticky;
-    top: 12px;
-    align-self: start;
-    /* Cap height so a tall swap tile (Advanced mode with all rows
-       expanded) doesn't exceed the viewport and lose its top
-       affordance behind the page chrome. Internal scroll if needed;
-       in practice the tile renders well under this cap. */
-    max-height: calc(100vh - 24px);
-    overflow-y: auto;
-  }
-  /* Hoist the asset-header card visual weight a tiny bit so it reads as
-     a separator above the two columns rather than blending into the left
-     column. No background change — just spacing. */
-  .market-token-page:not(.market-token-page--no-side) > .market-token-header {
-    margin-bottom: 4px;
-  }
-}
 .market-asset-tabbar {
   display: flex;
   align-items: center;
@@ -1436,17 +1395,14 @@ tr[data-recent-activity] .market-token-sub::after {
 }
 .market-asset-title h2 {
   margin: 0;
-  font-family: var(--serif);
-  font-size: 42px;
-  font-style: italic;
+  font-size: 34px;
   font-weight: 400;
-  line-height: 0.95;
-  letter-spacing: -0.01em;
 }
 .market-asset-stats {
   display: grid;
   grid-template-columns: repeat(4, minmax(140px, 1fr));
-  border: 1px solid var(--ink-faint);
+  border: 1px solid var(--ink);
+  box-shadow: 3px 3px 0 var(--ink);
   background: var(--bg-warm);
 }
 .market-asset-stats > div {
@@ -1470,11 +1426,7 @@ tr[data-recent-activity] .market-token-sub::after {
 .market-asset-stats span {
   display: block;
   color: var(--ink-mid);
-  font-family: var(--serif);
-  font-style: italic;
-  font-size: 12px;
-  letter-spacing: 0;
-  text-transform: none;
+  font-size: 10px;
   margin-bottom: 4px;
 }
 .market-asset-stats strong {
