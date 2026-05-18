@@ -347,6 +347,83 @@ group('T_SHARE_SLASH_CLAIM round-trip');
     dapp.decodeTShareSlashClaimPayload(tampered) === null);
 }
 
+// ============== T_CTAC_LIEN_SPLIT round-trip (SPEC §5.47) ==============
+group('T_CTAC_LIEN_SPLIT round-trip');
+
+{
+  const positionLeafHash = sha256(new TextEncoder().encode('test-pos-lien-split'));
+  const sourceOutpoint = new Uint8Array(36);
+  sourceOutpoint.set(sha256(new TextEncoder().encode('lp-utxo-txid')), 0);
+  new DataView(sourceOutpoint.buffer).setUint32(32, 3, true);  // vout=3
+  const outputCount = 3;
+  const outputAmounts = [100_000_000n, 50_000_000n, 50_000_000n];  // sums to 200M
+  const outputBlindings = [];
+  const outputCommits = [];
+  // Use real Pedersen commits (the decoder validates each commit is a valid
+  // secp256k1 point via bytesToPoint). Deterministic for test reproducibility.
+  for (let i = 0; i < outputCount; i++) {
+    const b = sha256(new TextEncoder().encode(`blinding-${i}`));
+    outputBlindings.push(b);
+    const blindingBig = BigInt('0x' + bytesToHex(b)) % dapp.SECP_N;
+    outputCommits.push(dapp.pedersenCommit(outputAmounts[i], blindingBig).toRawBytes(true));
+  }
+  const lienInheritIndex = 0;
+  const bindHash = dapp.computeCtacLienSplitBindHash({
+    networkTag: 0x01,
+    positionLeafHash, sourceOutpoint, outputCount,
+    outputAmounts, outputBlindings, outputCommits, lienInheritIndex,
+  });
+  const depositorSig = new Uint8Array(64).fill(0xaa);  // structural; not crypto-verified at decode
+
+  const payload = dapp.encodeTCtacLienSplitPayload({
+    networkTag: 0x01,
+    positionLeafHash, sourceOutpoint,
+    outputAmounts, outputBlindings, outputCommits,
+    lienInheritIndex, depositorSig, bindHash,
+  });
+
+  ok('payload starts with opcode 0x4F', payload[0] === 0x4F);
+  ok('payload network_tag = signet (0x01)', payload[1] === 0x01);
+
+  // dapp decode
+  const ddapp = dapp.decodeTCtacLienSplitPayload(payload);
+  ok('dapp decode succeeds', ddapp !== null);
+  ok('dapp parity: output_count', ddapp.outputCount === outputCount);
+  ok('dapp parity: lien_inherit_index', ddapp.lienInheritIndex === lienInheritIndex);
+  ok('dapp parity: output_amounts[0]', ddapp.outputAmounts[0] === outputAmounts[0]);
+  ok('dapp parity: source_outpoint round-trips',
+    bytesToHex(ddapp.sourceOutpoint) === bytesToHex(sourceOutpoint));
+
+  // worker decode
+  const dworker = worker.decodeTCtacLienSplitPayload(payload);
+  ok('worker decode succeeds', dworker !== null);
+  ok('worker parity: kind = ctac_lien_split', dworker?.kind === 'ctac_lien_split');
+  ok('worker parity: output_count', dworker?.output_count === outputCount);
+  ok('worker parity: lien_inherit_index', dworker?.lien_inherit_index === lienInheritIndex);
+  ok('worker parity: output_amounts[0] (string-form BigInt)',
+    BigInt(dworker.output_amounts[0]) === outputAmounts[0]);
+  ok('worker parity: bind_hash matches', dworker?.bind_hash === bytesToHex(bindHash));
+
+  // Reject malformed inputs
+  ok('decoder rejects wrong opcode',
+    dapp.decodeTCtacLienSplitPayload(new Uint8Array([0x4C, 0x01])) === null);
+  ok('decoder rejects truncation',
+    dapp.decodeTCtacLienSplitPayload(payload.slice(0, payload.length - 1)) === null);
+  // Tamper with bind_hash → decoder rejects (bind_hash mismatch)
+  const tampered = new Uint8Array(payload);
+  tampered[payload.length - 1] ^= 0xff;
+  ok('decoder rejects bind_hash tamper',
+    dapp.decodeTCtacLienSplitPayload(tampered) === null);
+
+  // Opcode constant parity
+  ok('T_CTAC_LIEN_SPLIT opcode = 0x4F (dapp)', dapp.T_CTAC_LIEN_SPLIT === 0x4F);
+  ok('T_CTAC_LIEN_SPLIT opcode = 0x4F (worker)', worker.T_CTAC_LIEN_SPLIT === 0x4F);
+  ok('T_CTAC_LIEN_CLAIM = T_SHARE_SLASH_CLAIM (dapp)',
+    dapp.T_CTAC_LIEN_CLAIM === dapp.T_SHARE_SLASH_CLAIM && dapp.T_CTAC_LIEN_CLAIM === 0x4C);
+  ok('T_CTAC_LIEN_CLAIM = T_SHARE_SLASH_CLAIM (worker)',
+    worker.T_CTAC_LIEN_CLAIM === worker.T_SHARE_SLASH_CLAIM);
+}
+
 // ============== ctacVariantAssetId — dapp ↔ worker parity ==============
 group('ctacVariantAssetId — cross-impl parity');
 

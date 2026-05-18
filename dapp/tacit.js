@@ -17645,11 +17645,27 @@ async function buildAndBroadcastCbtcTacDeposit({
   };
 }
 
-// SPEC-CBTC-TAC-AMENDMENT §5.37 — LP-shaped burn of cBTC.tac.
+// SPEC-CBTC-TAC-AMENDMENT §5.37 (legacy) → §5.47 (v1 lien model).
 //
-// Atomic: spends the slot's K_btc UTXO (key-path Schnorr under r_btc) +
-// burns M cBTC.tac UTXOs (asset-spend kernel sigs) in one Bitcoin tx.
-// Produces a BTC payout to the redeemer's chosen address.
+// ⚠ NEEDS UPDATE FOR v1 LIEN MODEL ⚠
+//
+// Under §5.47, the bond_return_commit field is unused (no bond is returned
+// — the lien is just released; depositor's LP-share UTXO becomes spendable
+// again in their wallet). The insurance_claim_tac field MUST be 0 (the
+// virtual insurance pool is gone; cBTC.tac holders now claim from the
+// global claim pool via T_CTAC_LIEN_CLAIM). The builder below still
+// constructs a tx that produces a vout[1] bond return — the worker
+// silently accepts it but doesn't process it.
+//
+// Phase 2 Part 2 (separate session): rewrite this function to:
+//   - Drop the vout[1] bond return (lien is just KV-released by worker)
+//   - Hard-set insurance_claim_tac = 0 (worker refuses non-zero in v1)
+//   - Keep the slot K_btc spend at vin[1] (worker enforces this; load-bearing)
+//   - Keep cBTC.tac burns at vin[2..M+1] (worker counts burn for supply)
+//
+// (Legacy v0 description:) Atomic: spends the slot's K_btc UTXO (key-path
+// Schnorr under r_btc) + burns M cBTC.tac UTXOs (asset-spend kernel sigs)
+// in one Bitcoin tx. Produces a BTC payout to the redeemer's chosen address.
 //
 // v1 scope: COOPERATIVE EXIT — withdrawer == depositor. The depositor's
 // own slot record (which contains r_btc + r_pedersen) is required to
@@ -17983,11 +17999,32 @@ async function buildAndBroadcastCbtcTacWithdraw({
   };
 }
 
-// SPEC-CBTC-TAC-AMENDMENT §5.39.4 — pooled insurance claim (T_SHARE_SLASH_CLAIM).
+// SPEC-CBTC-TAC-AMENDMENT §5.47 v1 — T_CTAC_LIEN_CLAIM (opcode 0x4C,
+// repurposed from the original T_SHARE_SLASH_CLAIM).
 //
-// A cBTC.tac holder who chooses NOT to withdraw their position (or doesn't
-// have one to withdraw) but wants their pro-rata slice of the insurance pool
-// burns share_burn_amount of cBTC.tac and receives:
+// ⚠ SEMANTIC CHANGE under v1 lien model ⚠
+//
+// Wire format unchanged (encoder/decoder are bit-identical to the legacy
+// T_SHARE_SLASH_CLAIM), but the meaning of fields has changed:
+//   share_burn_amount = cBTC.tac to burn (same)
+//   claim_TAC         = LP-share amount claimed (RENAMED from "TAC" —
+//                       worker now pays LP shares from the claim pool,
+//                       not raw TAC from a virtual insurance pool)
+//   recipient_commit  = Pedersen commit for the new LP-share UTXO
+//
+// Math: expected_lp_claim = claim_pool_lp_shares × share_burn_amount
+//                         / outstanding_cbtc_tac_supply
+//
+// The builder below still computes claim_TAC using the LEGACY insurance
+// pool formula (insurance_pool_TAC / supply). Under v1 the right formula
+// is claim_pool_lp_shares / supply. Callers MUST update to read the
+// claim pool counter from /ctac/claim-pool (worker endpoint) instead of
+// the insurance pool. Phase 2 Part 2 rewrite required.
+//
+// (Legacy v0 description:) A cBTC.tac holder who chooses NOT to withdraw
+// their position (or doesn't have one to withdraw) but wants their
+// pro-rata slice of the insurance pool burns share_burn_amount of cBTC.tac
+// and receives:
 //
 //   claim_TAC = share_burn_amount × insurance_pool_TAC / outstanding_supply
 //
