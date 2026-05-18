@@ -1068,11 +1068,17 @@ async function ctacCanonicalTacPoolTacReserve(env, network, opts = {}) {
   try { list = await env.REGISTRY_KV.list({ prefix, limit: 1000 }); }
   catch { return null; }
   if (!list || !list.keys?.length) return null;
+  // Parallelize the per-pool KV.get. The prior sequential loop forced
+  // N round-trip latencies in serial — slow on networks with many
+  // pools, given this runs synchronously inside the cBTC.tac deposit
+  // cap check (SPEC §5.41.2 MAX_POOL_FRAC). Promise.allSettled gives
+  // the same per-pool error tolerance as the original try/catch in
+  // the loop body.
+  const settled = await Promise.allSettled(list.keys.map(k => env.REGISTRY_KV.get(k.name, 'json')));
   let best = 0n;
-  for (const k of list.keys) {
-    let pool;
-    try { pool = await env.REGISTRY_KV.get(k.name, 'json'); }
-    catch { continue; }
+  for (const r of settled) {
+    if (r.status !== 'fulfilled') continue;
+    const pool = r.value;
     if (!pool || typeof pool !== 'object') continue;
     let tacReserve = null;
     if (pool.asset_a === TAC_ASSET_ID_HEX) tacReserve = BigInt(pool.reserve_a || '0');
@@ -1269,9 +1275,13 @@ async function ctacTwapSatsPerTac(env, network, sampleAtHeight, opts = {}) {
   if (!list.keys.length) {
     throw new Error('ctacTwapSatsPerTac: no TAC trade events on record');
   }
+  // Parallelize the per-event KV.get. The prior sequential loop forced N
+  // round-trip latencies in serial; this runs synchronously inside the
+  // cBTC.tac deposit/withdraw pricing path (SPEC §5.40 TWAP oracle), so
+  // any latency directly bottlenecks user actions.
+  const fetched = await Promise.all(list.keys.map(k => env.REGISTRY_KV.get(k.name, 'json')));
   const events = [];
-  for (const k of list.keys) {
-    const v = await env.REGISTRY_KV.get(k.name, 'json');
+  for (const v of fetched) {
     if (!v || typeof v.ts !== 'number' || typeof v.price_sats !== 'number') continue;
     events.push({ ts: v.ts, price: v.price_sats });
   }
@@ -16733,10 +16743,19 @@ async function scanForEtches(env, network) {
 
         found++;
       } else if (decoded.opcode === T_CBTC_TAC_DEPOSIT) {
-        // SPEC-CBTC-TAC-AMENDMENT §5.36 — LP-shaped mint of cBTC.tac.
-        // Validates: target cBTC.zk leaf is `live`, bond_ratio meets
-        // INITIAL_BOND_RATIO at the reorg-safe TWAP, bond TAC UTXO is
-        // unspent, and aggregate exposure caps aren't breached.
+        // SPEC-CBTC-TAC-AMENDMENT §5.47 v1 lien model — LP-shaped mint of cBTC.tac.
+        //
+        // The bond is an LP-share UTXO of a (cBTC.zk-variant, TAC) AMM pool.
+        // The wire format is unchanged from the original §5.36 envelope:
+        //   bond_source_outpoint = the LP-share UTXO outpoint
+        //   bond_amount_tac      = the LP-share amount (semantic rename)
+        //   bond_commit          = Pedersen commit of the LP-share UTXO
+        // Worker validates: target slot live, LP-share BTC value >= 2× slot,
+        // pool is TAC-paired, MAX_POOL_FRAC + MAX_SINGLE_POSITION caps,
+        // anti-systemic pauses. On success: attach lien to bond outpoint
+        // and record position. NO bond UTXO is spent — depositor retains
+        // the LP-share UTXO in their wallet but it's economically immobile
+        // via commitmentForUtxo's lien check.
         const dep = decodeTCbtcTacDepositPayload(decoded.payload);
         if (!dep) continue;
         const expectedNetTag = network === 'signet' ? 0x01 : network === 'regtest' ? 0x02 : 0x00;
@@ -16754,66 +16773,89 @@ async function scanForEtches(env, network) {
         if (slotInfo.denom_sats !== dep.slot_denom_sats) continue;
 
         // Anti-systemic pauses (SPEC §5.41.3). Forward-looking gate; if any
-        // pause condition holds, refuse the deposit (existing positions
-        // unaffected). Withdraws / force-closes / slash claims continue
-        // regardless of pause state per §5.41.3 — exits always allowed.
+        // pause condition holds, refuse the deposit. Withdraws / force-closes
+        // / lien claims continue regardless — exits always allowed.
         const pauseReason = await ctacComputePauseStatus(env, network, h, {
           prospectiveDenomSats: dep.slot_denom_sats,
         });
         if (pauseReason !== null) continue;
 
-        // TWAP sample at reorg-safe depth. Fail closed: if oracle is stale
-        // or absent, refuse the deposit — depositor can retry later.
+        // TWAP sample at reorg-safe depth. Fail closed.
         let twap;
         try {
           twap = await ctacTwapSatsPerTac(env, network, h - CTAC_REORG_SAFETY_DEPTH);
         } catch { continue; }
 
-        // Bond ratio check (must meet INITIAL_BOND_RATIO at confirm time).
-        const ratioK = ctacBondRatioThousandths(dep.bond_amount_tac, twap, dep.slot_denom_sats);
-        if (ratioK < BigInt(CTAC_INITIAL_BOND_RATIO_THOUSANDTHS)) continue;
-
-        // Single-position cap (§5.42.3 conservative initial)
+        // Single-position cap (§5.42.3)
         if (BigInt(dep.slot_denom_sats) > CTAC_MAX_SINGLE_POSITION_BTC_SATS) continue;
 
-        // SPEC §5.41.2 MAX_POOL_FRAC: aggregate bonded BTC (including this
-        // prospective deposit) must be ≤ 10% of the canonical TAC pool's
-        // TAC depth measured in BTC at TWAP. Fail-open if pool depth or
-        // TWAP isn't available — the §5.41.3 anti-systemic pause guards
-        // any pathological aggregate exposure.
+        // Resolve the bond UTXO: it must be an LP-share of a TAC-paired pool.
+        // Bypass the lien check (we're about to attach our own lien); also
+        // verify the UTXO doesn't already have a lien from another position.
+        let bondTxid, bondVout, bondInfo;
+        try {
+          const bondOp = hexToBytes(dep.bond_source_outpoint);
+          bondTxid = bytesToHex(bondOp.slice(0, 32));
+          bondVout = new DataView(bondOp.buffer, bondOp.byteOffset + 32, 4).getUint32(0, true);
+          bondInfo = await commitmentForUtxo(env, bondTxid, bondVout, network, { skipLienCheck: true });
+        } catch { continue; }
+        if (!bondInfo || !bondInfo.asset_id) continue;
+        // bondInfo.commitment must match the dep.bond_commit so the
+        // depositor can't claim a different UTXO than they pre-committed to.
+        if (bondInfo.commitment !== dep.bond_commit) continue;
+        // Refuse if the bond UTXO is already liened by another position
+        // (double-lien defense). State 'depositor' or 'claim-pool' both block.
+        const existingLien = await ctacGetLien(env, network, bondTxid, bondVout);
+        if (existingLien && (existingLien.state === 'depositor' || existingLien.state === 'claim-pool')) continue;
+
+        // Find the pool whose lp_asset_id matches the bond UTXO's asset_id.
+        // v1: enumerate all amm-pool records. Cheap with the 1000-key list cap.
+        const ammPoolPrefix = network === 'signet' ? 'ammpool:' : `ammpool:${network}:`;
+        let bondPool = null;
+        let bondPoolIdHex = null;
+        try {
+          const poolList = await env.REGISTRY_KV.list({ prefix: ammPoolPrefix, limit: 1000 });
+          for (const k of poolList.keys) {
+            const p = await env.REGISTRY_KV.get(k.name, 'json');
+            if (!p || typeof p !== 'object') continue;
+            if (p.lp_asset_id === bondInfo.asset_id) {
+              bondPool = p;
+              bondPoolIdHex = k.name.split(':').pop();
+              break;
+            }
+          }
+        } catch { continue; }
+        if (!bondPool || !bondPoolIdHex) continue;
+
+        // Verify pool is TAC-paired (one side must be TAC asset_id).
+        const TAC_AID = (globalThis.TAC_ASSET_ID_HEX || '').toLowerCase();
+        if (!/^[0-9a-f]{64}$/.test(TAC_AID)) continue;
+        if (bondPool.asset_a !== TAC_AID && bondPool.asset_b !== TAC_AID) continue;
+
+        // Compute LP-share BTC value at current pool reserves + TWAP.
+        const lpValue = await ctacLpShareValueSats(env, network, bondPoolIdHex, dep.bond_amount_tac, twap);
+        if (!lpValue.ok) continue;
+
+        // Collateralization: LP-share BTC value must be >= INITIAL_BOND_RATIO × slot_denom_sats.
+        // initial_ratio_thousandths = lpValueSats × 1000 / slot_denom_sats
+        const lpValueSats = lpValue.valueSats;
+        const initialRatioThousandths = (lpValueSats * 1000n) / BigInt(dep.slot_denom_sats);
+        if (initialRatioThousandths < BigInt(CTAC_INITIAL_BOND_RATIO_THOUSANDTHS)) continue;
+
+        // MAX_POOL_FRAC: aggregate bonded BTC + this deposit must be <= 10%
+        // of canonical TAC pool depth in BTC. Fail-open on lookup failure.
         try {
           const tacPoolDepth = await ctacCanonicalTacPoolTacReserve(env, network);
           if (tacPoolDepth !== null && tacPoolDepth > 0n) {
             const currentBondedSats = await ctacGetTotalBondedSats(env, network);
             const prospectiveTotalBondedSats = currentBondedSats + BigInt(dep.slot_denom_sats);
-            // pool depth in BTC sats: (tac_depth × 1e8) / twap_sats_per_tac (mirrors
-            // ctacBondRatioThousandths convention — twap is "sats-per-TAC"-style).
             const poolDepthSats = (tacPoolDepth * 100000000n) / BigInt(twap);
-            // cap = poolDepthSats × MAX_POOL_FRAC_THOUSANDTHS / 1000
             const capSats = (poolDepthSats * BigInt(CTAC_MAX_POOL_FRAC_THOUSANDTHS)) / 1000n;
             if (prospectiveTotalBondedSats > capSats) continue;
           }
         } catch { /* fail open */ }
 
-        // Record the position. The bond TAC UTXO MUST be spent in this same
-        // reveal tx; envelope-pairing validation is the dapp builder's
-        // responsibility (verified at sig + spend time). Slot info is
-        // copied from the leaf-lookup index so SLASH_DETECTED can probe
-        // the slot's K_btc UTXO without re-resolving.
-        //
-        // Resolve the TAC asset_id by dereferencing the bond_source_outpoint.
-        // Stashed in the position so the WITHDRAW commitmentForUtxo path
-        // (vout[1] bond return) can return the right asset_id without
-        // re-resolving. Soft-fail: if the dereference fails the deposit still
-        // confirms — bond return will fall back to manual claim flow.
-        let tacAssetId = null;
-        try {
-          const bondOp = hexToBytes(dep.bond_source_outpoint);
-          const bondTxid = bytesToHex(bondOp.slice(0, 32));
-          const bondVout = new DataView(bondOp.buffer, bondOp.byteOffset + 32, 4).getUint32(0, true);
-          const bondInfo = await commitmentForUtxo(env, bondTxid, bondVout, network);
-          tacAssetId = bondInfo.asset_id;
-        } catch { /* leave null */ }
+        // Effects: record position + attach lien + bump aggregate counters.
         const position = {
           state: 'active',
           target_leaf_hash: dep.target_leaf_hash,
@@ -16822,16 +16864,18 @@ async function scanForEtches(env, network) {
           slot_k_btc_xonly: slotInfo.k_btc_xonly,
           slot_mint_txid: slotInfo.mint_txid,
           mint_amount: dep.mint_amount,
+          // bond_amount_tac field name preserved; semantically now LP-share amount.
           bond_amount_tac: dep.bond_amount_tac,
-          tac_asset_id: tacAssetId,
+          bond_lp_share_amount: dep.bond_amount_tac,  // explicit alias for clarity
+          bond_lp_asset_id: bondInfo.asset_id,
+          bond_pool_id: bondPoolIdHex,
           bond_source_outpoint: dep.bond_source_outpoint,
           depositor_recovery_pk: dep.depositor_recovery_pk,
           mint_recipient_commit: dep.mint_recipient_commit,
           initial_twap: twap.toString(),
-          initial_ratio_thousandths: Number(ratioK),
+          initial_lp_value_sats: lpValueSats.toString(),
+          initial_ratio_thousandths: Number(initialRatioThousandths),
           deposit_height: h,
-          // §5.45.1 stability fee anchor — fee accrues from this height
-          // forward; refreshed on each touch (WITHDRAW / FORCE_CLOSE / SLASH).
           last_fee_event_height: h,
           deposit_txid: tx.txid,
           network,
@@ -16841,68 +16885,60 @@ async function scanForEtches(env, network) {
         await ctacAddSupply(env, network, dep.mint_amount);
         await ctacAddTotalBondedSats(env, network, BigInt(dep.slot_denom_sats));
         await ctacAddTotalBondedTac(env, network, BigInt(dep.bond_amount_tac));
+        // Attach the lien — depositor retains the LP-share UTXO but it's
+        // economically immobile until release.
+        const lienRecord = {
+          position_leaf_hash: dep.target_leaf_hash,
+          lp_share_amount: dep.bond_amount_tac,
+          lp_asset_id: bondInfo.asset_id,
+          pool_id: bondPoolIdHex,
+          state: 'depositor',
+          attached_at_height: h,
+          attached_at_txid: tx.txid,
+        };
+        await ctacPutLien(env, network, bondTxid, bondVout, lienRecord);
+        await ctacPutPositionLien(env, network, dep.target_leaf_hash, bondTxid, bondVout);
         found++;
       } else if (decoded.opcode === T_CBTC_TAC_WITHDRAW) {
-        // SPEC-CBTC-TAC-AMENDMENT §5.37 — LP-shaped burn of cBTC.tac.
-        // The reveal Bitcoin tx MUST atomically spend the slot's K_btc
-        // UTXO (depositor signs under r_btc). Worker verifies the position
-        // exists and is active; chain-side atomicity is implicit (Bitcoin
-        // consensus enforces the spend).
+        // SPEC-CBTC-TAC-AMENDMENT §5.47 v1 — cooperative withdraw via lien release.
+        //
+        // The reveal Bitcoin tx atomically spends the slot's K_btc UTXO
+        // (depositor signs under r_btc, releasing the BTC backing). The
+        // worker releases the lien on the depositor's bond LP-share UTXO,
+        // making it spendable again. cBTC.tac UTXOs are burned via the
+        // standard asset-spend path on the tx's vins. insurance_claim_tac
+        // field is unused in v1 (no virtual insurance pool); must be 0.
         const wd = decodeTCbtcTacWithdrawPayload(decoded.payload);
         if (!wd) continue;
         const expectedNetTag = network === 'signet' ? 0x01 : network === 'regtest' ? 0x02 : 0x00;
         if (wd.network_tag !== expectedNetTag) continue;
         const position = await ctacGetPosition(env, network, wd.target_leaf_hash);
         if (!position) continue;
-        // Only active positions can be cooperatively unwound. force-slashed
-        // and rugged positions have no recoverable bond and the cBTC.tac
-        // minted from them is backed pro-rata by the insurance pool;
-        // holders against those positions must use T_SHARE_SLASH_CLAIM.
         if (position.state !== 'active') continue;
         if (BigInt(wd.burn_amount) !== BigInt(position.mint_amount)) continue;
+        if (BigInt(wd.insurance_claim_tac) !== 0n) continue;
 
-        // §5.45.1 stability fee accrual: pre-debit the time-elapsed
-        // portion of the bond to the insurance pool before computing the
-        // bond return. Mutates `position` in place.
-        const accruedWd = ctacAccrueStabilityFee(position, h);
-        if (accruedWd > 0n) {
-          await ctacAddInsurancePool(env, network, accruedWd);
-          await ctacAddTotalBondedTac(env, network, -accruedWd);
-        }
+        // Verify the position has a lien attached (defensive — should always
+        // hold for active positions). If the lien is missing, refuse rather
+        // than free up backing without releasing anything.
+        const lienRef = await ctacGetPositionLien(env, network, wd.target_leaf_hash);
+        if (!lienRef) continue;
 
-        // Optional pooled-insurance claim: must match per_share × burn_amount
-        // exactly (§5.37.2). per_share = insurance_pool / outstanding_supply.
-        // Computed AFTER stability fee accrual so the burner gets credit
-        // for the freshly-accrued portion.
-        const insurancePool = await ctacGetInsurancePool(env, network);
-        const outstandingSupply = await ctacGetSupply(env, network);
-        if (BigInt(wd.insurance_claim_tac) > 0n) {
-          if (outstandingSupply === 0n) continue;
-          // expected = insurancePool × burn_amount / outstandingSupply (integer floor)
-          const expected = (insurancePool * BigInt(wd.burn_amount)) / outstandingSupply;
-          if (BigInt(wd.insurance_claim_tac) !== expected) continue;
-        }
-
-        // Effects
+        // Effects: release lien, mark position withdrawn, debit counters.
         position.state = 'withdrawn';
         position.withdraw_txid = tx.txid;
+        position.withdraw_height = h;
         await ctacPutPosition(env, network, position);
         await ctacUnmarkActive(env, network, wd.target_leaf_hash);
         await ctacAddSupply(env, network, -BigInt(wd.burn_amount));
-        // Aggregate counter bookkeeping: the remaining (post-fee) bond
-        // and the slot's BTC backing leave the bonded totals.
         await ctacAddTotalBondedTac(env, network, -BigInt(position.bond_amount_tac));
         await ctacAddTotalBondedSats(env, network, -BigInt(position.slot_denom_sats));
-        if (BigInt(wd.insurance_claim_tac) > 0n) {
-          await ctacAddInsurancePool(env, network, -BigInt(wd.insurance_claim_tac));
-        }
-        // burn the cBTC.tac UTXOs (record their nullifiers as spent under cBTC.tac asset)
-        // The exact spent-set key form for cBTC.tac UTXOs is the standard
-        // asset-spent-set per the existing tacit asset machinery; specific
-        // KV key shape depends on the asset-index layout, which is owned
-        // by the existing T_AXFER_VAR consumption path. Worker simply
-        // logs the burn here; the asset-UTXO index updates happen at the
-        // standard place when the validator processes the spend.
+        await ctacDeleteLien(env, network, lienRef.txid, lienRef.vout);
+        await ctacDeletePositionLien(env, network, wd.target_leaf_hash);
+        // cBTC.tac UTXO nullifier-set updates happen in the standard
+        // asset-spend path when the validator processes the tx's vin
+        // spends. The slot's BTC backing is released by the depositor's
+        // r_btc Schnorr sig on the K_btc spend (Bitcoin consensus).
         found++;
       } else if (decoded.opcode === T_CBTC_TAC_FORCE_CLOSE) {
         // SPEC-CBTC-TAC-AMENDMENT §5.38 — trustless EARLY-SLASH semantics.
