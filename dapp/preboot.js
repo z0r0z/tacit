@@ -64,15 +64,42 @@
       '#tab-' + target + '{display:block!important}';
     document.head.appendChild(styleEl);
     document.addEventListener('DOMContentLoaded', function () {
-      var prevTab = document.querySelector('.tab.active');
-      var prevPanel = document.querySelector('.tab-panel.active');
-      var nextTab = document.querySelector('.tab[data-tab="' + target + '"]');
+      // Map child tab → top-level group so we can show the right sub-row.
+      // Kept in sync with TAB_GROUP_OF in tacit.js. The dapp's authoritative
+      // _syncTabChromeFor() runs once tacit.js loads; this is just to avoid
+      // a brief frame where the wrong sub-row is visible above the panel.
+      var GROUP_OF = {
+        wallet: 'wallet', holdings: 'wallet', claim: 'wallet',
+        transfer: 'send',
+        market: 'markets', pool: 'markets', farms: 'markets',
+        discover: 'discover',
+        etch: 'tools', drops: 'tools', mixer: 'tools',
+        about: 'protocol'
+      };
+      var group = GROUP_OF[target] || target;
       var nextPanel = document.getElementById('tab-' + target);
-      if (!nextTab || !nextPanel) return;
-      if (prevTab) prevTab.classList.remove('active');
+      if (!nextPanel) return;
+      // Panels: only `tab-<target>` active.
+      var prevPanel = document.querySelector('.tab-panel.active');
       if (prevPanel) prevPanel.classList.remove('active');
-      nextTab.classList.add('active');
       nextPanel.classList.add('active');
+      // Primary row: only the group's primary active.
+      var primaries = document.querySelectorAll('.tabs-primary .tab');
+      for (var i = 0; i < primaries.length; i++) {
+        if (primaries[i].dataset.group === group) primaries[i].classList.add('active');
+        else primaries[i].classList.remove('active');
+      }
+      // Sub-rows: show only this group's row.
+      var rows = document.querySelectorAll('.tabs.subtabs');
+      for (var j = 0; j < rows.length; j++) {
+        rows[j].style.display = (rows[j].dataset.group === group) ? '' : 'none';
+      }
+      // Within the visible sub-row, mark the active child.
+      var subs = document.querySelectorAll('.tabs.subtabs .tab');
+      for (var k = 0; k < subs.length; k++) {
+        if (subs[k].dataset.tab === target) subs[k].classList.add('active');
+        else subs[k].classList.remove('active');
+      }
       var pre = document.getElementById('_tacit-preactivate-style');
       if (pre && pre.parentNode) pre.parentNode.removeChild(pre);
     });

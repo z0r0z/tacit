@@ -102,8 +102,8 @@
 html, body { background: var(--bg); color: var(--ink); }
 body {
   font-family: 'IBM Plex Mono', ui-monospace, monospace;
-  font-size: 13px; line-height: 1.55; letter-spacing: -0.01em;
-  padding: 24px; max-width: 1100px; margin: 0 auto;
+  font-size: 13px; line-height: 1.5; letter-spacing: -0.01em;
+  padding: 18px 22px; max-width: 1100px; margin: 0 auto;
   background-image: radial-gradient(rgba(0,0,0,0.025) 1px, transparent 1px);
   background-size: 24px 24px;
   /* Prevent horizontal page overflow on narrow viewports. Without this,
@@ -165,19 +165,19 @@ header {
 
 .section {
   border: 1px solid var(--ink);
-  margin-bottom: 24px; background: var(--bg);
+  margin-bottom: 16px; background: var(--bg);
 }
 .section-header {
-  border-bottom: 1px solid var(--ink); padding: 8px 16px;
+  border-bottom: 1px solid var(--ink); padding: 7px 14px;
   background: var(--ink); color: var(--bg);
   font-size: 11px; letter-spacing: 0.18em;
   text-transform: uppercase;
   display: flex; justify-content: space-between; align-items: center;
   font-weight: 500;
 }
-.section-body { padding: 20px; }
+.section-body { padding: 14px 16px; }
 
-.kv { display: grid; grid-template-columns: 130px 1fr; gap: 10px 16px; }
+.kv { display: grid; grid-template-columns: 120px 1fr; gap: 7px 14px; }
 .kv dt {
   font-size: 10px; text-transform: uppercase; letter-spacing: 0.1em;
   color: var(--ink-mid); padding-top: 3px;
@@ -2221,10 +2221,10 @@ label {
 
 .tabs {
   display: flex; border-bottom: 2px solid var(--ink);
-  margin-bottom: 24px; overflow-x: auto;
+  margin-bottom: 16px; overflow-x: auto;
 }
 .tab {
-  padding: 12px 22px; font-size: 11px;
+  padding: 10px 18px; font-size: 11px;
   text-transform: uppercase; letter-spacing: 0.15em;
   cursor: pointer; border: none; background: transparent;
   border-bottom: 2px solid transparent; margin-bottom: -2px;
@@ -2233,6 +2233,19 @@ label {
 }
 .tab.active { color: var(--ink); border-bottom-color: var(--orange); font-weight: 700; }
 .tab:hover:not(.active) { background: var(--ink); color: var(--bg); }
+
+.tabs.subtabs {
+  border-bottom: 1px dashed var(--ink-faint);
+  margin-top: -14px; margin-bottom: 14px;
+  padding-left: 2px; gap: 0;
+}
+.tabs.subtabs .tab {
+  padding: 6px 12px; font-size: 10px;
+  letter-spacing: 0.1em; font-weight: 500;
+}
+.tabs.subtabs .tab.active {
+  border-bottom-color: var(--ink); font-weight: 600;
+}
 
 /* Numeric badge appended to a tab when JS sets `data-count="N"` (Holdings,
    Market, Drops). Filled orange chip on inactive tabs; flips to ink on the
@@ -3088,17 +3101,17 @@ a:hover { color: var(--orange); }
 .hero {
   border: 1px solid var(--ink);
   background: var(--bg);
-  padding: 18px 20px;
-  margin-bottom: 24px;
+  padding: 12px 16px 14px;
+  margin-bottom: 16px;
   display: grid;
   grid-template-columns: 1fr 1fr 1fr;
-  gap: 20px;
+  gap: 14px;
   position: relative;
 }
 .hero::before {
   content: '';
   position: absolute;
-  top: 32px;
+  top: 24px;
   left: 50px;
   right: 50px;
   border-top: 1px dashed var(--ink-mid);
@@ -3106,12 +3119,12 @@ a:hover { color: var(--orange); }
 }
 .hero-step { position: relative; z-index: 1; }
 .hero-close {
-  position: absolute; top: 6px; right: 6px;
-  width: 22px; height: 22px;
+  position: absolute; top: 4px; right: 4px;
+  width: 20px; height: 20px;
   padding: 0; line-height: 1;
   border: 1px solid transparent;
   background: transparent;
-  font-family: inherit; font-size: 16px;
+  font-family: inherit; font-size: 14px;
   color: var(--ink-faint);
   cursor: pointer;
   text-transform: none; letter-spacing: 0;
@@ -3125,19 +3138,19 @@ a:hover { color: var(--orange); }
 .hero-num {
   background: var(--orange);
   color: var(--ink);
-  width: 28px; height: 28px;
+  width: 22px; height: 22px;
   display: inline-flex; align-items: center; justify-content: center;
   font-family: 'Instrument Serif', serif;
-  font-style: italic; font-size: 18px; font-weight: 700;
-  margin-bottom: 10px;
+  font-style: italic; font-size: 15px; font-weight: 700;
+  margin-bottom: 6px;
 }
 .hero-title {
-  font-size: 12px; font-weight: 700;
+  font-size: 11px; font-weight: 700;
   text-transform: uppercase; letter-spacing: 0.1em;
-  margin-bottom: 4px;
+  margin-bottom: 3px;
 }
 .hero-text {
-  font-size: 11px; color: var(--ink-mid); line-height: 1.5;
+  font-size: 11px; color: var(--ink-mid); line-height: 1.45;
 }
 
 footer {
@@ -4465,9 +4478,9 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
   </div>
 </header>
 
-<div id="mainnet-banner" style="display:none;position:relative;background:#fee;border:2px solid var(--red);padding:10px 36px 10px 16px;font-size:12px;color:var(--red);text-align:center;margin-bottom:16px;">
-  <button id="mainnet-banner-close" type="button" aria-label="Acknowledge and hide" title="Acknowledge and hide" style="position:absolute;top:6px;right:8px;background:transparent;border:1px solid transparent;color:var(--red);font-size:16px;line-height:1;width:22px;height:22px;padding:0;cursor:pointer;text-transform:none;letter-spacing:0;">×</button>
-  <strong>⚠ Mainnet — real BTC.</strong> Experimental software, no warranty. Do not put amounts at risk that you can't afford to lose.
+<div id="mainnet-banner" style="display:none;position:relative;background:#fee;border:1px solid var(--red);padding:7px 36px 7px 14px;font-size:11px;color:var(--red);text-align:center;margin-bottom:10px;line-height:1.4;">
+  <button id="mainnet-banner-close" type="button" aria-label="Acknowledge and hide" title="Acknowledge and hide" style="position:absolute;top:4px;right:6px;background:transparent;border:1px solid transparent;color:var(--red);font-size:14px;line-height:1;width:20px;height:20px;padding:0;cursor:pointer;text-transform:none;letter-spacing:0;">×</button>
+  <strong>⚠ Mainnet — real BTC.</strong> Experimental, no warranty. Don't risk what you can't afford to lose.
   <div id="mainnet-extwallet-hint" style="margin-top:6px;font-size:11px;font-weight:normal;display:none;">
     <strong>No external wallet connected.</strong> Tacit is currently using an in-browser burner key. For meaningful balances on mainnet, connect Xverse / Leather / UniSat from the Wallet tab so the BTC funding side lives in a hardware-backed wallet.
   </div>
@@ -4539,24 +4552,36 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
 -->
 <a id="zfi-airdrop-banner"
    href="#claim=3c578c51bbf33f583eee9e571514616775b8d9ae4e1b282e1fb9c4b5b268c545&cid=bafybeihyyqncdp2q6kfdgecaccpdoy7uyzumjgbqxj6xbf472fzhn3drbi&net=mainnet"
-   style="display:none;position:relative;background:var(--bg-warm);border:2px solid var(--orange);padding:11px 40px 11px 16px;font-size:12px;color:var(--ink);text-align:center;margin-bottom:16px;text-decoration:none;line-height:1.45;">
+   style="display:none;position:relative;background:var(--bg-warm);border:1px solid var(--orange);padding:8px 40px 8px 14px;font-size:11px;color:var(--ink);text-align:center;margin-bottom:10px;text-decoration:none;line-height:1.4;">
   <button id="zfi-airdrop-banner-close" type="button" aria-label="Dismiss airdrop banner" title="Dismiss" style="position:absolute;top:6px;right:8px;background:transparent;border:1px solid transparent;color:var(--ink-mid);font-size:18px;line-height:1;width:24px;height:24px;padding:0;cursor:pointer;text-transform:none;letter-spacing:0;">×</button>
   <strong style="color:var(--orange);">TAC airdrop is live</strong> for the zFi community (ZAMM + ZORG holders) — <span style="text-decoration:underline;">claim your share →</span>
 </a>
 
-<div class="tabs">
-  <button class="tab active" data-tab="wallet">Wallet</button>
-  <button class="tab" data-tab="market">Markets</button>
-  <button class="tab" data-tab="discover">Discover</button>
+<div class="tabs tabs-primary">
+  <button class="tab active" data-tab="wallet" data-group="wallet">Wallet</button>
+  <button class="tab" data-tab="market" data-group="markets">Markets</button>
+  <button class="tab" data-tab="discover" data-group="discover">Discover</button>
+  <button class="tab" data-tab="transfer" data-group="send">Send</button>
+  <button class="tab" data-tab="etch" data-group="tools">Forge</button>
+  <button class="tab" data-tab="about" data-group="protocol">Protocol</button>
+</div>
+
+<div class="tabs subtabs" data-group="wallet">
+  <button class="tab active" data-tab="wallet">Overview</button>
   <button class="tab" data-tab="holdings">Holdings</button>
-  <button class="tab" data-tab="transfer">Send</button>
-  <button class="tab" data-tab="etch">Etch</button>
-  <button class="tab" data-tab="drops">Drops</button>
   <button class="tab" data-tab="claim">Claim</button>
+</div>
+
+<div class="tabs subtabs" data-group="markets" style="display:none;">
+  <button class="tab active" data-tab="market">Order book</button>
+  <button class="tab" data-tab="pool" title="AMM swap + LP pool — unlocks after the AMM trusted setup ceremony">AMM</button>
+  <button class="tab" data-tab="farms" title="LP-bond yield farms — stake LP shares to earn reward emissions">Farms</button>
+</div>
+
+<div class="tabs subtabs" data-group="tools" style="display:none;">
+  <button class="tab active" data-tab="etch">Etch</button>
+  <button class="tab" data-tab="drops">Drops</button>
   <button class="tab" data-tab="mixer">Mixer</button>
-  <button class="tab" data-tab="pool" title="AMM swap + LP pool — unlocks after the AMM trusted setup ceremony">Pool</button>
-  <button class="tab" data-tab="farms" title="LP-bond yield farms — stake LP shares to earn reward emissions (SPEC-AMM-FARM-AMENDMENT)">Farms</button>
-  <button class="tab" data-tab="about">Protocol</button>
 </div>
 
 <!-- WALLET TAB -->
@@ -4590,37 +4615,35 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
         <span id="wallet-lock-badge" class="muted" style="font-size:10px;letter-spacing:0.1em;text-transform:uppercase;cursor:default;" title=""></span>
         <span id="wallet-mode-badge" class="muted" style="font-size:10px;letter-spacing:0.1em;text-transform:uppercase;"></span>
         <span id="wallet-backup-badge" class="muted" style="font-size:10px;letter-spacing:0.1em;text-transform:uppercase;"></span>
+        <span class="muted" style="font-size:10px;letter-spacing:0.1em;text-transform:uppercase;" title="Current Bitcoin block height">tip <span id="w-height">—</span></span>
         <span id="wallet-status" class="muted">loading…</span>
       </span>
     </div>
     <div class="section-body">
       <dl class="kv">
-        <dt>Address</dt>
-        <dd>
-          <div style="display:flex;align-items:flex-start;gap:6px;">
-            <div class="mono-box" id="w-address" style="flex:1;min-width:0;">—</div>
-            <button class="btn-copy" data-copy-target="w-address" title="Copy address" type="button">copy</button>
-          </div>
-          <a class="muted" id="explorer-link" target="_blank" rel="noopener noreferrer" style="font-size:10px;margin-top:4px;display:inline-block;">view on explorer ↗</a>
-        </dd>
         <dt>Public key</dt>
         <dd>
           <div style="display:flex;align-items:flex-start;gap:6px;">
             <div class="mono-box" id="w-pubkey" style="flex:1;min-width:0;">—</div>
             <button class="btn-copy" data-copy-target="w-pubkey" title="Copy public key" type="button">copy</button>
           </div>
-          <div class="muted" style="margin-top:4px;">share with senders so they can transfer assets to you</div>
+        </dd>
+        <dt>Address</dt>
+        <dd>
+          <div style="display:flex;align-items:flex-start;gap:6px;">
+            <div class="mono-box" id="w-address" style="flex:1;min-width:0;">—</div>
+            <button class="btn-copy" data-copy-target="w-address" title="Copy address" type="button">copy</button>
+            <a class="muted" id="explorer-link" target="_blank" rel="noopener noreferrer" style="font-size:10px;align-self:center;white-space:nowrap;">explorer ↗</a>
+          </div>
         </dd>
         <dt>Balance</dt>
         <dd><span class="amount" id="w-balance">—</span><span class="unit">sats</span><span class="unit" id="w-balance-usd" style="color:#0a7d3a;"></span></dd>
-        <dt>Block height</dt>
-        <dd id="w-height">—</dd>
       </dl>
 
       <!-- Primary actions row. Visibility is state-driven in renderWalletCard():
            connect-buttons surface only when no ext wallet is bound; top-up shows
            when an ext wallet is connected; faucet shows on signet only. -->
-      <div class="flex" style="margin-top:18px;gap:8px;flex-wrap:wrap;">
+      <div class="flex" style="margin-top:12px;gap:6px;flex-wrap:wrap;">
         <button id="btn-refresh">↻ Refresh</button>
         <button id="btn-lock" title="Lock the in-browser tacit signing key. You'll be prompted for the passphrase on the next action.">Lock</button>
         <button id="btn-drip" class="primary">Demo drip</button>
