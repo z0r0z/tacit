@@ -13695,6 +13695,23 @@ function signP2wpkhInput(tx, idx, prevValue) {
   return [sig, wallet.pub];
 }
 
+// Key-injectable variant of signP2wpkhInput. Used when the input being spent
+// is controlled by a non-wallet key — e.g., a cBTC.tac staking subkey holding
+// a pre-staged bond UTXO. The scriptCode is derived from signerPub's hash160
+// so the BIP-143 sighash matches the UTXO being spent.
+function signP2wpkhInputWithKey(tx, idx, prevValue, signerPriv, signerPub) {
+  if (!(signerPriv instanceof Uint8Array) || signerPriv.length !== 32) {
+    throw new Error('signerPriv must be 32 bytes');
+  }
+  if (!(signerPub instanceof Uint8Array) || signerPub.length !== 33) {
+    throw new Error('signerPub must be 33-byte compressed point');
+  }
+  const scriptCode = concatBytes(new Uint8Array([0x76, 0xa9, 0x14]), hash160(signerPub), new Uint8Array([0x88, 0xac]));
+  const sh = sighashV0(tx, idx, scriptCode, prevValue);
+  const sig = sign(sh, signerPriv);
+  return [sig, signerPub];
+}
+
 // Build a Taproot script-path BIP-341 sighash and signed witness for input 0 of tx
 function signTaprootScriptPathInput(tx, prevouts, envelopeScript, controlBlockBytes) {
   const leaf = tapLeafHash(envelopeScript);
@@ -16127,6 +16144,141 @@ async function scanInboundSlotNotes({
     _saveSlotNoteScanCursor(_net, maxHeightSeen);
   }
   return { scanned, detected, cursor: maxHeightSeen };
+}
+
+// ============== STAKING SUBKEYS (privacy entrypoint for cBTC.tac) ==============
+//
+// T_CBTC_TAC_DEPOSIT envelopes (§5.36) carry a public `depositor_recovery_pk`
+// to which the minted cBTC.tac UTXO opens. Using the main wallet pubkey here
+// links the deposit envelope (and the resulting cBTC.tac UTXO) to the wallet's
+// other on-chain activity, defeating the mixer's anonymity-set contribution
+// from the underlying cBTC.zk slot — any indexer watching the chain sees
+// "this wallet wrapped, this wallet deposited, this wallet now owns cBTC.tac."
+//
+// Staking subkeys are HMAC-derived child secp256k1 keys from wallet.priv,
+// indexed by a uint32. Each cBTC.tac mint allocates a fresh index. The
+// derived pubkey becomes `depositor_recovery_pk`; the privkey signs the
+// eventual T_CBTC_TAC_WITHDRAW. Recovery from a clean wipe is "iterate
+// indexes 0..N against on-chain positions" — deterministic, no separate
+// backup beyond the wallet privkey itself.
+//
+// Tradeoff: compromise of wallet.priv compromises all staking subkeys.
+// Spender/viewer compartmentalisation deferred — same tradeoff as
+// _slotViewingPrivkey above.
+
+const STAKING_SUBKEY_DOMAIN = new TextEncoder().encode('tacit-staking-subkey-v1');
+
+function deriveStakingSubkey(index = 0) {
+  if (!wallet || !wallet.priv) throw new Error('wallet.priv required for staking subkey');
+  if (!Number.isInteger(index) || index < 0 || index > 0xffffffff) {
+    throw new Error('staking subkey index must be uint32 in [0, 0xffffffff]');
+  }
+  const prk = hmac(sha256, STAKING_SUBKEY_DOMAIN, wallet.priv);
+  const idxLE = new Uint8Array(4);
+  new DataView(idxLE.buffer).setUint32(0, index >>> 0, true);
+  const info = concatBytes(new TextEncoder().encode('stake'), idxLE);
+  const t1 = hmac(sha256, prk, info);
+  let bn = bytes32ToBigint(t1) % SECP_N;
+  if (bn === 0n) bn = 1n;
+  const priv = bigintToBytes32(bn);
+  const pub = secp.getPublicKey(priv, true);
+  return { priv, pub, index };
+}
+
+// Per-network localStorage of allocated subkey records. The privkey is NOT
+// persisted — it's rederived from wallet.priv + index on demand. Network-
+// namespaced so signet/mainnet don't share counters.
+const STAKING_SUBKEYS_KEY_BASE = 'tacit-staking-subkeys-v1';
+function _stakingSubkeysKey() { return `${STAKING_SUBKEYS_KEY_BASE}:${NET.name}`; }
+function _loadStakingSubkeyRecords() {
+  try {
+    const raw = localStorage.getItem(_stakingSubkeysKey());
+    if (!raw) return [];
+    const arr = JSON.parse(raw);
+    return Array.isArray(arr) ? arr : [];
+  } catch { return []; }
+}
+function saveStakingSubkeyRecord(record) {
+  // Upsert by index — mirrors saveSlotRecord semantics so callers can
+  // re-save partial updates (status transitions, parentSlotLeafHashHex
+  // attachment after the slot resolves, etc.) without clobbering earlier
+  // fields.
+  const arr = _loadStakingSubkeyRecords();
+  const idx = arr.findIndex(r => r.index === record.index);
+  if (idx >= 0) arr[idx] = { ...arr[idx], ...record };
+  else arr.push(record);
+  try { localStorage.setItem(_stakingSubkeysKey(), JSON.stringify(arr)); } catch {}
+  return arr;
+}
+function getStakingSubkeyRecords({ status = null, parentSlotLeafHashHex = null } = {}) {
+  const arr = _loadStakingSubkeyRecords();
+  return arr.filter(r =>
+    (!status || (r.status || 'reserved') === status) &&
+    (!parentSlotLeafHashHex || r.parentSlotLeafHashHex === parentSlotLeafHashHex)
+  );
+}
+function forgetStakingSubkeyRecord(index) {
+  const arr = _loadStakingSubkeyRecords().filter(r => r.index !== index);
+  try { localStorage.setItem(_stakingSubkeysKey(), JSON.stringify(arr)); } catch {}
+  return arr;
+}
+
+// Allocate a fresh staking subkey for an upcoming cBTC.tac deposit. Bumps
+// the per-network counter (max(index)+1 over existing records), persists
+// the record in 'reserved' state, returns { priv, pub, index, record }.
+// Caller is responsible for transitioning the record to 'active' after the
+// deposit's reveal tx confirms, or 'abandoned' if the flow aborts.
+function allocateStakingSubkey({ parentSlotLeafHashHex = null, label = '' } = {}) {
+  const arr = _loadStakingSubkeyRecords();
+  const maxIdx = arr.reduce((m, r) => (Number.isInteger(r.index) && r.index > m ? r.index : m), -1);
+  const nextIdx = maxIdx + 1;
+  const sk = deriveStakingSubkey(nextIdx);
+  const record = {
+    index: nextIdx,
+    pubkeyHex: bytesToHex(sk.pub),
+    parentSlotLeafHashHex,
+    label,
+    createdAt: Date.now(),
+    status: 'reserved',
+  };
+  saveStakingSubkeyRecord(record);
+  return { priv: sk.priv, pub: sk.pub, index: nextIdx, record };
+}
+
+// Re-derive a known staking subkey by stored index. Returns null if the
+// record doesn't exist, or if the wallet privkey behind this network slot
+// has changed (e.g., user imported a different wallet) — the rederived
+// pubkey won't match the stored one in that case.
+function getStakingSubkeyByIndex(index) {
+  const arr = _loadStakingSubkeyRecords();
+  const record = arr.find(r => r.index === index);
+  if (!record) return null;
+  const sk = deriveStakingSubkey(index);
+  if (bytesToHex(sk.pub) !== record.pubkeyHex) return null;
+  return { priv: sk.priv, pub: sk.pub, index, record };
+}
+
+// Find a staking subkey record by its compressed pubkey hex. Used by the
+// position-recovery scan: given an on-chain position's depositor_recovery_pk,
+// resolve which local subkey index it belongs to so we can sign withdraws.
+function findStakingSubkeyByPubkey(pubkeyHex) {
+  const arr = _loadStakingSubkeyRecords();
+  const record = arr.find(r => r.pubkeyHex === pubkeyHex);
+  if (!record) return null;
+  const sk = deriveStakingSubkey(record.index);
+  if (bytesToHex(sk.pub) !== pubkeyHex) return null;
+  return { priv: sk.priv, pub: sk.pub, index: record.index, record };
+}
+
+// Recovery scan: iterate indexes 0..maxScan and return the derived pubkeys.
+// Caller compares against on-chain depositor_recovery_pk values to repopulate
+// the local subkey records after a clean wipe. Bounded to keep clean-wipe
+// recovery cheap; users with >maxScan positions can rerun with a higher cap.
+function* enumerateStakingSubkeysForRecovery(maxScan = 256) {
+  for (let i = 0; i <= maxScan; i++) {
+    const sk = deriveStakingSubkey(i);
+    yield { priv: sk.priv, pub: sk.pub, index: i };
+  }
 }
 
 // ============== cBTC.tac POSITION RECORDS (local persistence) ==============
@@ -25829,12 +25981,14 @@ const PROGRESS_STRIP_HTML = `
 // Optimistic balance debit applied to a Holdings asset card immediately
 // after a successful CXFER broadcast — bridges the 1-2s gap between
 // "broadcast resolved" and "next chain scan completes". Replaces the
-// rendered .balance text with `prev - delta` and overlays a small "pending
-// -X" pill on the card. The next renderHoldings() naturally rebuilds the
-// card from the chain-truth balance, replacing both. Pure cosmetic — no
-// state is mutated; the card is keyed on data-asset-card-aid (a class +
-// data attribute we add to the asset-card root in renderHoldings so this
-// helper can find the right card).
+// rendered .balance text with `prev - delta` and overlays a small
+// "settling -X" pill on the card (same "settling" vocabulary the
+// listing-tile sold-pending badge + wallet-bar in-flight chip use, so
+// the user reads one concept across surfaces). The next renderHoldings()
+// naturally rebuilds the card from the chain-truth balance, replacing
+// both. Pure cosmetic — no state is mutated; the card is keyed on
+// data-asset-card-aid (a class + data attribute we add to the asset-
+// card root in renderHoldings so this helper can find the right card).
 function applyOptimisticDebit(assetIdHex, delta) {
   // Find the holdings asset card. We can't use `data-aid` alone because
   // many child buttons share that attribute — find the card root.
@@ -25865,14 +26019,19 @@ function applyOptimisticDebit(assetIdHex, delta) {
   if (firstTextNode && firstTextNode.nodeType === Node.TEXT_NODE) {
     firstTextNode.textContent = fmtAssetAmount(next, dec);
   }
-  // Overlay a pending pill so the user sees the action took effect — and
-  // also that the chain hasn't confirmed yet. Removed by the next full
-  // re-render of the card. Idempotent: if a previous debit already left a
-  // pill, update its text instead of stacking.
+  // Overlay a settling pill so the user sees the action took effect —
+  // and also that the chain hasn't confirmed yet. Same "settling"
+  // vocabulary the wallet-bar in-flight chip, listing-tile sold-pending
+  // badge, and the bid-filled / listing-sold toasts already use, so the
+  // pending → settling flow reads as one concept across surfaces.
+  // Removed by the next full re-render of the card. Idempotent: if a
+  // previous debit already left a pill, update its text instead of
+  // stacking.
   let pill = card.querySelector('[data-optimistic-pending]');
   // Multi-fill swaps accumulate. Track running total in a data attr so
-  // the pill reads "pending −X" with X = sum of all deltas applied since
-  // the last renderHoldings reconciliation, not just the latest fill.
+  // the pill reads "settling −X" with X = sum of all deltas applied
+  // since the last renderHoldings reconciliation, not just the latest
+  // fill.
   const prevDebitAttr = card.dataset.optimisticDebit || '0';
   let prevDebit;
   try { prevDebit = BigInt(prevDebitAttr); }
@@ -25886,7 +26045,7 @@ function applyOptimisticDebit(assetIdHex, delta) {
     pill.className = 'pending-pill';
     balanceEl.appendChild(pill);
   }
-  pill.textContent = `pending −${fmtTotal}`;
+  pill.textContent = `settling −${fmtTotal}`;
 }
 
 // ============== PRICE ALERTS ==============
@@ -26152,10 +26311,12 @@ function applyOptimisticCredit(assetIdHex, delta) {
   if (firstTextNode && firstTextNode.nodeType === Node.TEXT_NODE) {
     firstTextNode.textContent = fmtAssetAmount(next, dec);
   }
-  // Track cumulative pending delta in a data attribute so multi-fill
-  // swaps display the running total ("pending +1.5 BTC" after three
-  // fills, not just the last fill's amount). Stored as a base-unit
-  // integer string to avoid float drift across N fills.
+  // Track cumulative settling delta in a data attribute so multi-fill
+  // swaps display the running total ("settling +1.5 BTC" after three
+  // fills, not just the last fill's amount). Same "settling" word the
+  // listing-tile sold-pending badge + wallet-bar in-flight chip use,
+  // so the user reads one concept across surfaces. Stored as a base-
+  // unit integer string to avoid float drift across N fills.
   let pill = card.querySelector('[data-optimistic-pending-credit]');
   const prevCreditAttr = card.dataset.optimisticCredit || '0';
   let prevCredit;
@@ -26170,7 +26331,7 @@ function applyOptimisticCredit(assetIdHex, delta) {
     pill.className = 'pending-pill';
     balanceEl.appendChild(pill);
   }
-  pill.textContent = `pending +${fmtTotal}`;
+  pill.textContent = `settling +${fmtTotal}`;
 }
 
 // Drive a progress strip's per-step state. `stripIdOrEl` is the strip
@@ -66398,6 +66559,14 @@ export {
   encryptSlotNote, decryptSlotNote, slotViewingPubkey,
   appendSlotNoteToPayload, tryExtractSlotNoteFromTail,
   scanInboundSlotNotes,
+  // Staking subkeys — privacy entrypoint for cBTC.tac mints. Per-deposit
+  // child secp256k1 keys derived from wallet.priv so depositor_recovery_pk
+  // on T_CBTC_TAC_DEPOSIT is unlinked from the main wallet's other activity.
+  STAKING_SUBKEY_DOMAIN,
+  deriveStakingSubkey, allocateStakingSubkey,
+  getStakingSubkeyByIndex, findStakingSubkeyByPubkey,
+  enumerateStakingSubkeysForRecovery,
+  saveStakingSubkeyRecord, getStakingSubkeyRecords, forgetStakingSubkeyRecord,
   // Holdings-tab integration: aggregate live slot records into per-tier
   // summary rows. Used by renderHoldings to surface cBTC.zk balances
   // alongside standard tacit-asset balances.
