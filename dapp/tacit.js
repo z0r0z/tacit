@@ -19159,6 +19159,318 @@ async function buildAndBroadcastSwapVarSelfFulfill({
   };
 }
 
+// ============== T_SWAP_ROUTE builder ==============
+//
+// Atomic multi-hop AMM swap. Settles a single trader's N-hop route
+// (2 ≤ N ≤ SWAP_ROUTE_N_HOPS_MAX = 4) through a sequence of AMM pools
+// in one Bitcoin transaction. No Groth16, no ceremony coupling — reuses
+// T_SWAP_VAR's cryptography (Pedersen + BP+ m=2 + kernel sig under
+// `tacit-kernel-v1`).
+//
+// V1 self-fulfill semantics:
+//   - Trader's whole input UTXO is consumed (no change). If the trader
+//     wants partial input, pre-split via T_AXFER_VAR first.
+//   - Receipt blinding `r_receipt` is freshly random + revealed in the
+//     envelope (mirrors T_SWAP_VAR §5.20 self-fulfill).
+//   - Single trader = sole intent signer + sole asset input. Settler-
+//     driven routing (with per-hop tips) is a follow-up amendment.
+//
+// Inputs (all required):
+//   pools                — fresh `fetchAmmPools()` output for routing lookup
+//   assetInputUtxo       — { txid, vout, amount, blinding, asset_id_hex }
+//   traderOutputAssetIdHex — 64-hex
+//   minOut               — bigint; rejects if final hop's delta_out < this
+//   expiryHeight         — u32; 0 = no expiry, else reject at currentHeight > this
+//   recipientPubHex      — optional 66-hex; defaults to wallet's compressed pub
+//
+// Returns the route's `findSwapRoutePath` result + the built envelope:
+//   { payload, envelopeHash, deltaOutLast, hops, cInSecp, cReceiptSecp,
+//     rReceiptScalar, ... }
+async function buildSwapRouteEnvelopeSelfFulfill({
+  pools, assetInputUtxo, traderOutputAssetIdHex,
+  minOut, expiryHeight, recipientPubHex = null,
+}) {
+  await ensurePrivkey();
+  const traderPriv = wallet.priv;
+  const traderPub = wallet.pub;
+
+  if (!Array.isArray(pools)) throw new Error('pools must be an array');
+  const inputAmount = BigInt(assetInputUtxo.amount);
+  if (inputAmount <= 0n) throw new Error('input amount must be > 0');
+
+  const assetInHex = String(assetInputUtxo.asset_id_hex).toLowerCase();
+  const assetOutHex = String(traderOutputAssetIdHex).toLowerCase();
+  if (assetInHex === assetOutHex) {
+    throw new Error('trader_input_asset_id == trader_output_asset_id (use T_AXFER_VAR for same-asset transfers)');
+  }
+
+  // 1. Route discovery. findSwapRoutePath returns a best-scoring path of
+  //    2..N_HOPS_MAX hops with already-computed per-hop deltas.
+  const route = findSwapRoutePath({
+    assetInHex, assetOutHex, amountIn: inputAmount, pools,
+  });
+  if (!route) {
+    throw new Error(`no multi-hop route found from ${assetInHex.slice(0, 12)}… to ${assetOutHex.slice(0, 12)}…`);
+  }
+  if (route.deltaOutLast < BigInt(minOut)) {
+    throw new Error(`route best delta_out_last ${route.deltaOutLast} < min_out ${minOut}`);
+  }
+
+  // 2. Pedersen commits + r_receipt
+  const traderInputAssetIdBytes = hexToBytes(assetInHex);
+  const traderOutputAssetIdBytes = hexToBytes(assetOutHex);
+  const rInBig = typeof assetInputUtxo.blinding === 'bigint'
+    ? assetInputUtxo.blinding
+    : BigInt('0x' + (typeof assetInputUtxo.blinding === 'string' ? assetInputUtxo.blinding : '0'));
+  const cInSecpBytes = pedersenCommit(inputAmount, rInBig).toRawBytes(true);
+
+  // Fresh random r_receipt — bounded to [1, SECP_N).
+  let rReceiptBig;
+  {
+    const buf = new Uint8Array(32);
+    do {
+      crypto.getRandomValues(buf);
+      rReceiptBig = BigInt('0x' + bytesToHex(buf)) % SECP_N;
+    } while (rReceiptBig === 0n);
+  }
+  const cReceiptSecpBytes = pedersenCommit(route.deltaOutLast, rReceiptBig).toRawBytes(true);
+  const rReceiptBytes = bigintToBytes32(rReceiptBig);
+
+  // 3. BP+ aggregated rangeproof over (SENTINEL = ZERO, C_receipt_secp).
+  //    Slot 0 trivially opens to (value=0, blinding=0). Wire-format
+  //    parity with T_SWAP_VAR / T_AXFER_VAR.
+  const rangeProofResult = bpRangeAggProve([0n, route.deltaOutLast], [0n, rReceiptBig]);
+  const rangeProofBytes = rangeProofResult.proof;
+
+  // 4. Per-hop block shape for encoder
+  const hopsForEncode = route.hops.map(h => ({
+    poolId: typeof h.poolId === 'string' ? hexToBytes(h.poolId) : h.poolId,
+    direction: h.direction,
+    feeBps: h.feeBps,
+    R_A_pre: h.R_A_pre,
+    R_B_pre: h.R_B_pre,
+    deltaANetMag: h.deltaANetMag,
+    deltaBNetMag: h.deltaBNetMag,
+  }));
+
+  // 5. Intent sig over route_msg under trader_pubkey
+  const intentMsg = buildSwapRouteIntentMsg({
+    traderPubkey: traderPub,
+    traderInputAssetId: traderInputAssetIdBytes,
+    traderOutputAssetId: traderOutputAssetIdBytes,
+    minOut: BigInt(minOut),
+    expiryHeight,
+    hops: hopsForEncode,
+    cInSecp: cInSecpBytes,
+    cReceiptSecp: cReceiptSecpBytes,
+  });
+  const intentSig = signSchnorr(intentMsg, traderPriv);
+
+  // 6. Kernel sig over kernel_msg. excess = r_receipt − r_in (mod n).
+  //    The verifier's BIP-340 point is
+  //    P = C_receipt − C_in − (delta_out_last − delta_in_0) · H_secp.
+  const deltaIn0 = (() => {
+    const h0 = hopsForEncode[0];
+    return h0.direction === 0 ? h0.deltaANetMag : h0.deltaBNetMag;
+  })();
+  if (deltaIn0 !== inputAmount) {
+    // T_SWAP_ROUTE V1 consumes the whole trader input; findSwapRoutePath
+    // wires hop[0].delta_in == amountIn (= input UTXO amount). A mismatch
+    // here indicates an internal bug in route discovery.
+    throw new Error(`route hop[0] delta_in ${deltaIn0} != input UTXO amount ${inputAmount}`);
+  }
+  const hopsHash = _hashSwapRouteHops(hopsForEncode);
+  const traderInputTxidBE = reverseBytes(hexToBytes(assetInputUtxo.txid));
+  const kernelMsg = buildSwapRouteKernelMsg({
+    traderInputAssetId: traderInputAssetIdBytes,
+    traderOutputAssetId: traderOutputAssetIdBytes,
+    traderInputOutpointTxidBE: traderInputTxidBE,
+    traderInputOutpointVout: assetInputUtxo.vout | 0,
+    deltaIn0,
+    deltaOutLast: route.deltaOutLast,
+    cReceiptSecp: cReceiptSecpBytes,
+    hopsHash,
+  });
+  let excess = (rReceiptBig - rInBig) % SECP_N;
+  if (excess < 0n) excess += SECP_N;
+  if (excess === 0n) {
+    // Same r_in and r_receipt would make P collapse to ZERO. Defensive
+    // re-roll rather than ship a degenerate sig.
+    throw new Error('excess_route == 0 — re-roll r_receipt');
+  }
+  const kernelSig = signSchnorr(kernelMsg, bigintToBytes32(excess));
+
+  // 7. Encode payload
+  const payload = encodeTSwapRoutePayload({
+    traderInputAssetId: traderInputAssetIdBytes,
+    traderOutputAssetId: traderOutputAssetIdBytes,
+    minOut: BigInt(minOut),
+    expiryHeight,
+    traderPubkey: traderPub,
+    hops: hopsForEncode,
+    traderInputOutpointTxidBE: traderInputTxidBE,
+    traderInputOutpointVout: assetInputUtxo.vout | 0,
+    cInSecp: cInSecpBytes,
+    cReceiptSecp: cReceiptSecpBytes,
+    rReceipt: rReceiptBytes,
+    rangeProof: rangeProofBytes,
+    kernelSig, intentSig,
+  });
+  const envelopeHash = computeSwapRouteEnvelopeHash(payload);
+
+  return {
+    payload, envelopeHash,
+    hops: hopsForEncode,
+    deltaOutLast: route.deltaOutLast,
+    deltaIn0,
+    cInSecp: cInSecpBytes,
+    cReceiptSecp: cReceiptSecpBytes,
+    rReceipt: rReceiptBytes,
+    rReceiptScalar: rReceiptBig,
+    intentSig, kernelSig, rangeProof: rangeProofBytes,
+  };
+}
+
+// Full broadcast wrapper for T_SWAP_ROUTE. Bitcoin tx layout (per
+// SPEC-SWAP-ROUTE-AMENDMENT):
+//   commit: sats inputs → P2TR(envelope script) + sats change
+//   reveal:
+//     vin[0]  = commit P2TR (script-path with envelope reveal)
+//     vin[1]  = trader's asset input UTXO (P2WPKH under wallet.priv)
+//     vout[0] = OP_RETURN(envelope_hash) — 0 sat, 34 bytes
+//     vout[1] = trader's final receipt UTXO (DUST sats, recipient P2WPKH)
+//
+// Recipient defaults to wallet.pub. No change vout — V1 consumes the
+// trader's whole input. Use T_AXFER_VAR pre-split if you need partial.
+async function buildAndBroadcastSwapRoute({
+  pools, assetInputUtxo, traderOutputAssetIdHex,
+  minOut, expiryHeight,
+  recipientPubHex = null,
+  onProgress = null,
+}) {
+  await ensurePrivkey();
+  const _progress = (stage, info) => { try { onProgress && onProgress(stage, info); } catch {} };
+
+  _progress('envelope:build');
+  const built = await buildSwapRouteEnvelopeSelfFulfill({
+    pools, assetInputUtxo, traderOutputAssetIdHex,
+    minOut, expiryHeight, recipientPubHex,
+  });
+
+  const envelopeScript = encodeEnvelopeScript(wallet.xonly(), built.payload);
+  const tapLeaf = tapLeafHash(envelopeScript);
+  const { Q_xonly, parity } = tweakedOutputKey(TAP_NUMS, tapLeaf);
+  const commitSpk = p2trScript(Q_xonly);
+  const cb = controlBlock(TAP_NUMS, parity);
+
+  const recipientPub = recipientPubHex
+    ? hexToBytes(recipientPubHex.toLowerCase())
+    : wallet.pub;
+  const recipSpk = p2wpkhScript(recipientPub);
+  const changeSpk = p2wpkhScript(wallet.pub);
+
+  // No change vout in V1 self-fulfill (whole-input). 2 outputs: OP_RETURN + receipt.
+  const vbBaseOuts = 34 /* OP_RETURN */ + 31 /* receipt */;
+  const revealVb = 11 + 41 + 41 + vbBaseOuts
+    + Math.ceil((1 + 1 + 65 + 3 + 45 + built.payload.length + 34 + 109) / 4);
+
+  const feeRate = await getFeeRate();
+  const revealFee = feeFor(revealVb, feeRate);
+  const totalOutputDust = DUST /* receipt */;
+  let commitValue = Math.max(DUST, totalOutputDust + revealFee - DUST /* asset input contributes its DUST */);
+
+  const holdings = await scanHoldings();
+  if (!holdings || !(holdings instanceof Map)) throw new Error('holdings scan failed');
+  const allUtxos = await getUtxos(wallet.address());
+  const assetKey = `${assetInputUtxo.txid}:${assetInputUtxo.vout}`;
+  const sats = sortSatsForCommit(allUtxos
+    .filter(u => `${u.txid}:${u.vout}` !== assetKey && u.value > DUST));
+  if (sats.length === 0) {
+    throw new Error('no plain-sats UTXOs available to fund the route commit');
+  }
+  const picked = []; let total = 0; let commitFee = 500;
+  for (const u of sats) {
+    picked.push(u); total += u.value;
+    commitFee = feeFor(estCommitVb(picked.length), feeRate);
+    if (total >= commitValue + commitFee + DUST) break;
+  }
+  if (total < commitValue + commitFee) {
+    throw new Error(`insufficient sats for route commit: need ${commitValue + commitFee}, have ${total}`);
+  }
+
+  _progress('tx:commit:build');
+  const satsChange = total - commitValue - commitFee;
+  const commitOutputs = [{ value: commitValue, script: commitSpk }];
+  if (satsChange >= DUST) commitOutputs.push({ value: satsChange, script: changeSpk });
+  const commitTx = {
+    version: 2, locktime: 0,
+    inputs: picked.map(u => ({ txid: u.txid, vout: u.vout, sequence: 0xfffffffd, witness: [] })),
+    outputs: commitOutputs,
+  };
+  for (let i = 0; i < commitTx.inputs.length; i++) {
+    commitTx.inputs[i].witness = signP2wpkhInput(commitTx, i, picked[i].value);
+  }
+  const commitHex = bytesToHex(serializeTx(commitTx));
+  const commitTxidHex = txid(commitTx);
+
+  _progress('tx:reveal:build');
+  const opReturnSpk = concatBytes(new Uint8Array([0x6a, 0x20]), built.envelopeHash);
+  const revealOutputs = [
+    { value: 0, script: opReturnSpk },
+    { value: DUST, script: recipSpk },
+  ];
+  const revealTx = {
+    version: 2, locktime: 0,
+    inputs: [
+      { txid: commitTxidHex, vout: 0, sequence: 0xfffffffd, witness: [] },
+      { txid: assetInputUtxo.txid, vout: assetInputUtxo.vout | 0, sequence: 0xfffffffd, witness: [] },
+    ],
+    outputs: revealOutputs,
+  };
+  const revealPrevouts = [
+    { value: commitValue, script: commitSpk },
+    { value: DUST, script: p2wpkhScript(wallet.pub) },
+  ];
+  revealTx.inputs[0].witness = signTaprootScriptPathInput(
+    revealTx, revealPrevouts, envelopeScript, cb,
+  );
+  revealTx.inputs[1].witness = signP2wpkhInput(revealTx, 1, DUST);
+  const revealHex = bytesToHex(serializeTx(revealTx));
+  const revealTxidHex = txid(revealTx);
+
+  // Persist the receipt opening so scanHoldings picks it up.
+  try {
+    recordOpening(revealTxidHex, 1, traderOutputAssetIdHex, built.deltaOutLast, built.rReceiptScalar);
+  } catch {}
+
+  _progress('tx:commit:broadcast');
+  await broadcast(commitHex);
+  _progress('tx:reveal:broadcast');
+  await broadcastWithRetry(revealHex);
+
+  try {
+    recordActivity({
+      kind: 'amm-swap-route',
+      ticker: '',
+      amount: built.deltaOutLast,
+      decimals: 0,
+      assetId: String(traderOutputAssetIdHex).toLowerCase(),
+      txid: revealTxidHex,
+    });
+  } catch {}
+
+  return {
+    commitTxid: commitTxidHex,
+    revealTxid: revealTxidHex,
+    commitHex, revealHex,
+    deltaOutLast: built.deltaOutLast,
+    deltaIn0: built.deltaIn0,
+    hops: built.hops,
+    receiptVout: 1,
+    commitFee, revealFee,
+  };
+}
+
 async function buildAndBroadcastDeposit({ assetIdHex, denomination, onProgress = null }) {
   await ensurePrivkey();
   const _progress = (stage) => { try { onProgress && onProgress(stage); } catch {} };
@@ -67582,6 +67894,17 @@ export {
   // acts as both trader (intent sig) and settler (kernel sig from
   // excess scalar). Single Bitcoin tx, no off-chain coordination.
   buildSwapVarEnvelopeSelfFulfill, buildAndBroadcastSwapVarSelfFulfill,
+  // AMM multi-hop swap (T_SWAP_ROUTE 0x33) — atomic 2..4-hop route in
+  // one Bitcoin tx. Reuses T_SWAP_VAR's crypto stack (Pedersen + BP+
+  // m=2 + kernel sig under tacit-kernel-v1); no Groth16, no ceremony.
+  // findSwapRoutePath discovers the best route over the AMM pool
+  // registry; buildSwapRouteEnvelopeSelfFulfill assembles the envelope;
+  // buildAndBroadcastSwapRoute composes the commit+reveal tx pair and
+  // broadcasts.
+  encodeTSwapRoutePayload, decodeTSwapRoutePayload,
+  buildSwapRouteIntentMsg, buildSwapRouteKernelMsg,
+  computeSwapRouteEnvelopeHash,
+  buildSwapRouteEnvelopeSelfFulfill, buildAndBroadcastSwapRoute,
   // AMM POOL_INIT builder (T_LP_ADD variant 1) — full crypto wiring.
   buildAndBroadcastLpAddPoolInit,
   // AMM variant-0 LP add + LP_REMOVE.
