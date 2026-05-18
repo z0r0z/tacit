@@ -3859,24 +3859,21 @@ body.tacit-amm-ceremony-ready [data-amm-gated] { display: block; }
    the welcome modal because they can stack briefly during the new-wallet flow. */
 .pass-modal {
   position: fixed; inset: 0; z-index: 1010;
-  /* Use flex column with overflow-y so a card taller than the viewport
-     (long ceremony progress pane, multi-paragraph result) scrolls
-     inside the modal backdrop rather than overflowing it. place-items
-     :center previously prevented scroll on tall cards because the
-     centered child can't scroll past viewport edges. */
+  /* Flex with overflow-y:auto + margin:auto on the card centres the
+     card horizontally + vertically when it fits the viewport, AND
+     stays scroll-friendly when the card grows taller than viewport
+     (long ceremony progress pane, multi-paragraph result). align-
+     items:center fights overflow scroll — the centred-flex-item that
+     exceeds the container overflows the START edge and becomes
+     unreachable. margin:auto is the working pattern. */
   display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: flex-start;
+  justify-content: center;
   background: rgba(10, 10, 10, 0.55);
   -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px);
   padding: 24px;
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
-  /* Subtle backdrop fade-in so the modal feels intentional, not jarring.
-     Fires each time display flips from none → grid (animation re-triggers
-     when the element re-enters the rendering tree). The card has its
-     own scale-in below; together they read as one quick "lift" gesture. */
+  /* Subtle backdrop fade-in so the modal feels intentional. */
   animation: pass-modal-fade 0.16s ease-out;
 }
 .pass-card {
@@ -3885,10 +3882,10 @@ body.tacit-amm-ceremony-ready [data-amm-gated] { display: block; }
   padding: 24px 24px 20px;
   animation: pass-card-in 0.18s cubic-bezier(0.2, 0.8, 0.2, 1);
   transform-origin: center center;
-  /* Auto top-margin centers the card vertically when it fits the
-     viewport; sticks to top with safe-area padding when content
-     pushes past viewport height (so the user can scroll down to see
-     buttons). margin-top:auto + margin-bottom:auto is the trick. */
+  /* margin:auto vertically centres a short card AND keeps long cards
+     scroll-friendly (auto margins on a flex item respect overflow:auto
+     unlike align-items:center which clips the start of an overflowing
+     child past the viewport edge). */
   margin: auto;
 }
 /* Mobile: tighter modal chrome so the card uses every available pixel,

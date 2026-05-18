@@ -19203,7 +19203,12 @@ async function buildAndBroadcastCbtcTacWithdraw({
   //    Reveal layout (lien model):
   //      vin[0] = commit P2TR (script-path envelope)
   //      vin[1] = slot K_btc UTXO (key-path Schnorr under r_btc; LOAD-BEARING — worker enforces)
-  //      vin[2..M+1] = cBTC.tac UTXOs being burned (P2WPKH under wallet.priv)
+  //      vin[2..M+1] = cBTC.tac UTXOs being burned. After §5.36.7, the
+  //                   depositor's own mint UTXOs sit at P2TR(x_only(
+  //                   depositor_recovery_commit)) and are spent under the
+  //                   tweaked secret. cBTC.tac UTXOs acquired via T_AXFER_VAR
+  //                   may sit at any script — the dapp must select an input
+  //                   set it can sign for.
   //      vout[0] = BTC payout (slot_denom_sats minus fee) to recipientAddr
   //    No vout[1] bond return (lien is just KV-released by worker).
   _progress('tx:build');
@@ -19284,18 +19289,47 @@ async function buildAndBroadcastCbtcTacWithdraw({
   };
   const slotKbtcXonly = hexToBytes(slotRecord.k_btc_xonly || slotRecord.kBtcXonlyHex || slotRecord.kBtcXOnlyHex);
   const slotSpk = p2trScript(slotKbtcXonly);
+  // Recovery commit (§5.36.7) — derived once. Default prevout script for the
+  // cBTC.tac UTXOs being burned + signing key (tweaked secret) for them.
+  const depositorRecoveryCommitBytes = deriveCbtcTacRecoveryCommit(
+    wallet.priv, wallet.pub, networkTag, targetLeafHash,
+  );
+  const depositorRecoveryCommitXOnly = depositorRecoveryCommitBytes.slice(1);
+  const recoveryTweakedSk = deriveCbtcTacRecoveryTweakedSk(
+    wallet.priv, networkTag, targetLeafHash,
+  );
+  // Each cBTC.tac UTXO carries its prevout script + signing-key info on the
+  // utxo entry. Defaults to the depositor's recovery P2TR (the script the
+  // mint UTXO sits at after §5.36.7). UTXOs acquired via T_AXFER_VAR can
+  // specify `utxo.prevoutScript` + `utxo.sigKind: 'p2wpkh'|'p2tr-recovery'`.
+  const tacPrevouts = cbtcTacUtxos.map(u => {
+    if (u.prevoutScript) return { value: u.utxo.value || DUST, script: u.prevoutScript };
+    return { value: u.utxo.value || DUST, script: p2trScript(depositorRecoveryCommitXOnly) };
+  });
   const revealPrevouts = [
     { value: commitValue, script: commitSpk },
     { value: slotDenomSats, script: slotSpk },
-    ...cbtcTacUtxos.map(() => ({ value: DUST, script: p2wpkhScript(wallet.pub) })),
+    ...tacPrevouts,
   ];
   revealTx.inputs[0].witness = signTaprootScriptPathInput(revealTx, revealPrevouts, envelopeScript, cb);
   // Slot K_btc key-path Schnorr sig under r_btc.
   const rBtcPriv = hexToBytes((slotRecord.r_btc || slotRecord.rBtcHex).toLowerCase());
   revealTx.inputs[1].witness = signTaprootKeyPathInputWithKey(revealTx, 1, revealPrevouts, rBtcPriv);
-  // cBTC.tac asset inputs (P2WPKH under wallet.priv).
+  // cBTC.tac asset inputs. Default: P2TR(x_only(recovery_commit)) spent under
+  // the tweaked secret. Per-UTXO override via `utxo.sigKind` for inputs that
+  // were re-acquired via T_AXFER_VAR (and may sit under a different script).
   for (let i = 0; i < cbtcTacUtxos.length; i++) {
-    revealTx.inputs[2 + i].witness = signP2wpkhInput(revealTx, 2 + i, DUST);
+    const u = cbtcTacUtxos[i];
+    const kind = u.sigKind || 'p2tr-recovery';
+    if (kind === 'p2tr-recovery') {
+      revealTx.inputs[2 + i].witness = signTaprootKeyPathInputWithKey(
+        revealTx, 2 + i, revealPrevouts, recoveryTweakedSk,
+      );
+    } else if (kind === 'p2wpkh') {
+      revealTx.inputs[2 + i].witness = signP2wpkhInput(revealTx, 2 + i, u.utxo.value || DUST);
+    } else {
+      throw new Error(`cbtcTacUtxos[${i}].sigKind unsupported: ${kind}`);
+    }
   }
   const revealHex = bytesToHex(serializeTx(revealTx));
   const revealTxidHex = txid(revealTx);
@@ -19835,9 +19869,6 @@ async function buildAndBroadcastCtacLienSplit({
   if (!Number.isInteger(lienInheritIndex) || lienInheritIndex < 0 || lienInheritIndex >= outputs.length) {
     throw new Error('lienInheritIndex out of range');
   }
-  if (!depositorRecoveryPrivHex || !/^[0-9a-f]{64}$/i.test(depositorRecoveryPrivHex)) {
-    throw new Error('depositorRecoveryPrivHex must be 64 hex chars');
-  }
   const positionLeafHashBytes = hexToBytes(positionLeafHashHex.toLowerCase());
   const sourceAmountBig = BigInt(sourceUtxo.amount);
   const sourceBlindingBig = BigInt('0x' + (sourceUtxo.blinding.startsWith('0x') ? sourceUtxo.blinding.slice(2) : sourceUtxo.blinding));
@@ -19892,8 +19923,12 @@ async function buildAndBroadcastCtacLienSplit({
     outputCommits,
     lienInheritIndex,
   });
-  const depositorPriv = hexToBytes(depositorRecoveryPrivHex.toLowerCase());
-  const depositorSig = schnorr.sign(bindHash, depositorPriv);
+  // SPEC §5.36.7 — sign with tweaked secret = (wallet.priv + blinding) mod SECP_N.
+  // Worker verifies under x_only(position.depositor_recovery_commit).
+  const depositorTweakedSk = deriveCbtcTacRecoveryTweakedSk(
+    wallet.priv, networkTag, positionLeafHashBytes,
+  );
+  const depositorSig = signSchnorr(bindHash, depositorTweakedSk);
 
   // 5. Envelope payload
   const payload = encodeTCtacLienSplitPayload({
@@ -33732,7 +33767,13 @@ function _ammCeremonyAckKey() {
   const pub = wallet?.pub ? bytesToHex(wallet.pub) : 'anon';
   return `tacit-amm-ceremony-ack-v1:${NET.name}:${pub}`;
 }
-function ammCeremonyRecentlyAcked(ttlMs = 24 * 60 * 60 * 1000) {
+// Ack TTL reduced from 24h → 30 min. AMM has three circuits and a
+// user can contribute to each (round-robin to shortest). A 24h ack
+// hid the chip from a user who wanted to contribute again to a
+// different circuit in the same session — over-strict politeness.
+// 30 min strikes the balance: a session-long contributor sees the
+// chip again, a once-and-done contributor isn't pestered immediately.
+function ammCeremonyRecentlyAcked(ttlMs = 30 * 60 * 1000) {
   try {
     const ts = parseInt(localStorage.getItem(_ammCeremonyAckKey()) || '0', 10);
     return Number.isFinite(ts) && (Date.now() - ts) < ttlMs;
@@ -34834,6 +34875,19 @@ async function ceremonyContributeAmm({
   // contributions" indicator updates immediately.
   if (result?.state) _ammCeremonyStateByCircuit.set(circuitHash, result.state);
   ammCeremonyMarkContributed();
+  // Invalidate the contributors-ribbon cache so the just-landed
+  // attestation surfaces in the marquee within seconds, not after
+  // the 5-min TTL expires. Force-refresh + re-render runs in
+  // background — no blocking the success path.
+  try {
+    if (typeof _ammContribCache === 'object' && _ammContribCache) {
+      _ammContribCache.ts = 0;
+      _ammContribCache.items = null;
+    }
+    if (typeof _renderAmmContribTape === 'function') {
+      setTimeout(() => { try { _renderAmmContribTape(); } catch {} }, 600);
+    }
+  } catch {}
   _emit('done', { state: result.state, contribution: result.contribution });
   return result;
 }
