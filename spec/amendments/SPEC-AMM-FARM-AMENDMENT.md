@@ -137,10 +137,21 @@ pool_id                   32 B  (= SHA256("tacit-amm-pool-v1" || asset_A || asse
 farm_nonce                32 B  launcher-supplied randomness; participates in farm_id
                                   derivation. Allows the same launcher to fund multiple
                                   concurrent farms against the same pool.
-launcher_pubkey           33 B  compressed secp256k1. Funder of the treasury and
-                                  attribution recipient for the farm record. NOT a
-                                  privileged operator post-init — see "Permissionlessness
-                                  post-init" below.
+launcher_commit           33 B  Blinded-pubkey commit per SPEC-CBTC-TAC-AMENDMENT
+                                  §5.36.7:  `commit = launcher_pk_inner + blinding · G`,
+                                  where launcher_pk_inner is the launcher's underlying
+                                  secp256k1 pubkey (never appears on chain).
+                                  Used directly as a BIP-340 verification key (for
+                                  `launcher_sig`) AND as a P2TR output key (for the
+                                  T_FARM_REFUND payout). The cleartext launcher pubkey
+                                  NEVER appears on chain. Launcher's wallet does not
+                                  cluster to the farm record. Recommended derivation:
+                                  `blinding = HMAC-SHA256(wallet.priv,
+                                  "tacit-amm-farm-launcher-blinding-v1" || pool_id ||
+                                  farm_nonce) mod SECP_N`; launcher signs with
+                                  `tweaked_sk = (launcher_sk + blinding) mod SECP_N`.
+                                  NOT a privileged operator post-init — see
+                                  "Permissionlessness post-init" below.
 reward_asset_id           32 B  Tacit asset_id of the emission token. Canonical farms
                                   use TAC (env-pinned per network); arbitrary tacit
                                   assets permitted.
@@ -167,7 +178,7 @@ kernel_sig                64 B  BIP-340 over kernel_msg (defined below). Closes 
                                   reward-asset side: vin[1] input balanced against
                                   vout[1] change + cleartext reward_total absorbed
                                   into the virtual treasury.
-launcher_sig              64 B  BIP-340 by launcher_pubkey over init_msg (defined
+launcher_sig              64 B  BIP-340, verifies under x_only(launcher_commit) over init_msg (defined
                                   below). Authorises the farm record.
 ```
 
@@ -203,7 +214,7 @@ rug"* (`AMM.md`:1845).
 farm_id = SHA256(
     "tacit-amm-farm-init-v1"
     || pool_id(32)
-    || launcher_pubkey(33)
+    || launcher_commit(33)
     || reward_asset_id(32)
     || farm_nonce(32)
 )
@@ -241,7 +252,7 @@ the contribution.
 init_msg = SHA256(
     "tacit-amm-farm-init-v1"
     || farm_id(32)
-    || launcher_pubkey(33)
+    || launcher_commit(33)
     || reward_total_LE(8)
     || reward_per_block_LE(8)
     || start_height_LE(4)
@@ -257,7 +268,7 @@ Including `envelope_hash` in the signed pre-image would be self-referential
 (the signature bytes are part of the payload whose hash would be signed
 over), so we deliberately omit it.
 
-`launcher_sig` is BIP-340 by `launcher_pubkey` over `init_msg`. It's
+`launcher_sig` is BIP-340 by `launcher_commit` over `init_msg`. It's
 required so the launcher can be permanently attributed in the farm
 record (useful for off-chain attribution UX) but **carries no
 privileged authority post-init** — see below.
@@ -265,7 +276,7 @@ privileged authority post-init** — see below.
 ### Permissionlessness post-init
 
 The farm record is immutable after `T_FARM_INIT` confirmation. The
-`launcher_pubkey`:
+`launcher_commit`:
 
 - **Cannot** withdraw unspent treasury (treasury is virtual — there is
   no UTXO to spend, no key to sign, no path to recover).
@@ -284,7 +295,7 @@ capability anyone else has equally.
 
 | Field | Set by | Read by |
 |---|---|---|
-| `farm_id`, `pool_id`, `lp_asset_id`, `reward_asset_id`, `launcher_pubkey`, `reward_per_block`, `start_height`, `end_height` | `T_FARM_INIT` | every `T_LP_BOND` / `T_LP_UNBOND` against this farm |
+| `farm_id`, `pool_id`, `lp_asset_id`, `reward_asset_id`, `launcher_commit`, `reward_per_block`, `start_height`, `end_height` | `T_FARM_INIT` | every `T_LP_BOND` / `T_LP_UNBOND` against this farm |
 | `acc_reward_per_share` (Q.96 unsigned, stored as u128) | every `T_LP_BOND` / `T_LP_UNBOND` (lazy crystallization) | next bond/unbond's accrual step |
 | `total_bonded` (u64) | every `T_LP_BOND` (`+= bond_amount`) / `T_LP_UNBOND` (`-= bond.amount`) | next bond/unbond's per-share rate |
 | `last_update_height` (u32) | every `T_LP_BOND` / `T_LP_UNBOND` | next bond/unbond's elapsed-blocks term |
@@ -356,9 +367,18 @@ T_LP_BOND envelope payload:
 
 opcode                     1 B  = 0x35
 farm_id                   32 B
-bonder_pubkey             33 B  compressed secp256k1. Wallet-discovery dust at vout[1]
-                                  pays the x-only form of this key; unbonder must
-                                  re-sign as this key.
+bonder_commit             33 B  Blinded-pubkey commit per SPEC-CBTC-TAC-AMENDMENT
+                                  §5.36.7: `commit = bonder_pk_inner + blinding · G`,
+                                  where bonder_pk_inner is the bonder's underlying
+                                  secp256k1 pubkey (never appears on chain). Used as
+                                  a BIP-340 verification key (for `bonder_sig`,
+                                  `unbonder_sig`, `harvester_sig`) AND as a P2TR
+                                  output key (wallet-discovery dust at vout[1] AND
+                                  payouts at unbond/harvest go to P2TR(x_only(commit))).
+                                  Recommended derivation: `blinding = HMAC-SHA256(
+                                  wallet.priv, "tacit-amm-bond-blinding-v1" ||
+                                  farm_id || bond_nonce) mod SECP_N`; signer signs
+                                  with `tweaked_sk = (bonder_sk + blinding) mod SECP_N`.
 bond_amount                8 B  u64 LE — staked LP shares (cleartext).
 entry_acc_per_share       16 B  u128 LE — bonder's view of farm.acc_reward_per_share
                                   *post-crystallization-at-this-block*. Validator
@@ -376,7 +396,7 @@ range_proof              ~360 B  Aggregated bulletproof, m=1, over
 kernel_sig                64 B  BIP-340 over kernel_msg. Closes the LP-asset side:
                                   vin[1] input balanced against vout[2] change +
                                   cleartext bond_amount absorbed into farm.total_bonded.
-bonder_sig                64 B  BIP-340 by bonder_pubkey over bond_msg.
+bonder_sig                64 B  BIP-340, verifies under x_only(bonder_commit) over bond_msg.
 ```
 
 Fixed-portion payload: **256 bytes** + ~360 B range proof = **~616 bytes** total.
@@ -389,11 +409,11 @@ vin[1]    Bonder's lp_asset_id UTXO. Signed SIGHASH_ALL by bonder.
 vin[2..]  Optional BTC funding inputs.
 
 vout[0]   OP_RETURN(envelope_hash).
-vout[1]   Bond-discovery dust UTXO — dust (e.g. 546 sat) P2WPKH paying the
-          x-only form of bonder_pubkey. Carries NO Pedersen commitment, NO
-          tacit asset class — it's a plain Bitcoin dust output whose only
+vout[1]   Bond-discovery dust UTXO — dust (e.g. 546 sat) P2TR paying
+          x_only(bonder_commit) per §5.36.7. Carries NO Pedersen commitment,
+          NO tacit asset class — it's a plain Bitcoin dust output whose only
           purpose is wallet discovery (scanHoldings can recognise bonds by
-          encountering this dust at the bonder's discovery addresses).
+          encountering this dust at the bonder's commit-derived addresses).
           The outpoint of vout[1] is the canonical bond_id used by the
           worker's bond-record index and referenced by future T_LP_UNBOND.
 vout[2]   Change UTXO — dust P2WPKH paying bonder's change address.
@@ -433,7 +453,7 @@ preserved on any portion of the input that exceeded `bond_amount`.
 bond_msg = SHA256(
     "tacit-amm-farm-bond-v1"
     || farm_id(32)
-    || bonder_pubkey(33)
+    || bonder_commit(33)
     || bond_amount_LE(8)
     || entry_acc_per_share_LE(16)
     || bond_view_height_LE(4)
@@ -468,7 +488,7 @@ bond_record:
     farm_id                : 32 B
     bond_amount            :  8 B  u64
     entry_acc_per_share    : 16 B  u128 (Q.96 snapshot at bond confirmation)
-    bonder_pubkey          : 33 B
+    bonder_commit          : 33 B
     bond_height            :  4 B  u32 (confirmation height of T_LP_BOND)
 ```
 
@@ -501,7 +521,7 @@ for outpoint-free discovery as a fallback (see "Indexer interface").
 ### Pre-conditions
 
 - `bond_id` resolves to a depth-3-confirmed bond record.
-- `unbonder_pubkey == bond_record.bonder_pubkey` (no transfer
+- `unbonder_commit == bond_record.bonder_commit` (no transfer
   mechanism in v1; see "Open questions" for follow-up
   transferability).
 - Farm exists and is depth-3-confirmed; emissions may be exhausted
@@ -517,8 +537,8 @@ opcode                     1 B  = 0x36
 farm_id                   32 B
 bond_id                   36 B  outpoint reference (32-byte txid || 4-byte vout LE)
                                   identifying the bond record to settle.
-unbonder_pubkey           33 B  compressed secp256k1. Must equal
-                                  bond_record.bonder_pubkey.
+unbonder_commit           33 B  compressed secp256k1. Must equal
+                                  bond_record.bonder_commit.
 exit_acc_per_share        16 B  u128 LE — unbonder's view of farm.acc_reward_per_share
                                   post-crystallization.
 exit_view_height           4 B  u32 LE — unbonder's view of canonical height.
@@ -535,7 +555,7 @@ lp_return_r               32 B  Opening scalar for the lp_return UTXO at vout[1]
 reward_r                  32 B  Opening scalar for the reward UTXO at vout[2].
                                   Validator emits reward_C = reward_amount · H +
                                   reward_r · G. Same role as lp_return_r.
-unbonder_sig              64 B  BIP-340 by unbonder_pubkey over unbond_msg.
+unbonder_sig              64 B  BIP-340, verifies under x_only(unbonder_commit) over unbond_msg.
                                   Single authentication signature — no kernel
                                   sigs needed because there are no private
                                   commitments to close (all outputs are minted
@@ -551,12 +571,12 @@ vin[0]    Envelope-bearing input.
 vin[1..]  Optional BTC funding inputs from the unbonder.
 
 vout[0]   OP_RETURN(envelope_hash).
-vout[1]   Re-emitted lp_asset_id UTXO — dust P2WPKH paying unbonder's address.
-          Asset class = farm.lp_asset_id; value = bond_record.bond_amount;
-          Pedersen commit = bond_amount · H + lp_return_r · G.
-vout[2]   Reward UTXO — dust P2WPKH paying unbonder's address. Asset class =
-          farm.reward_asset_id; value = reward_amount; Pedersen commit =
-          reward_amount · H + reward_r · G. Omitted iff reward_amount == 0.
+vout[1]   Re-emitted lp_asset_id UTXO — dust P2TR paying x_only(unbonder_commit)
+          per §5.36.7. Asset class = farm.lp_asset_id; value =
+          bond_record.bond_amount; Pedersen commit = bond_amount · H + lp_return_r · G.
+vout[2]   Reward UTXO — dust P2TR paying x_only(unbonder_commit) per §5.36.7.
+          Asset class = farm.reward_asset_id; value = reward_amount; Pedersen
+          commit = reward_amount · H + reward_r · G. Omitted iff reward_amount == 0.
 ```
 
 **No treasury inputs are consumed.** The reward-asset value is
@@ -574,7 +594,7 @@ unbond_msg = SHA256(
     "tacit-amm-farm-unbond-v1"
     || farm_id(32)
     || bond_id(36)
-    || unbonder_pubkey(33)
+    || unbonder_commit(33)
     || exit_acc_per_share_LE(16)
     || exit_view_height_LE(4)
     || reward_amount_LE(8)
@@ -589,14 +609,14 @@ Domain msg binds structural fields only; replay protection via
 ### State updates (post-confirmation, at depth 3)
 
 1. Look up `bond_record` by `bond_id`. Reject if absent.
-2. Verify `unbonder_pubkey == bond_record.bonder_pubkey`.
+2. Verify `unbonder_commit == bond_record.bonder_commit`.
 3. Crystallize `farm` to `canonical_height` per §5.40.
 4. Verify `exit_acc_per_share == farm.acc_reward_per_share`.
 5. Compute `pending = bond_record.bond_amount * (exit_acc - entry_acc) >> 96`
    (BigInt intermediate; truncate at final `payout` narrowing).
 6. Compute `payout = min(pending, farm.treasury_remaining)`.
 7. Verify `reward_amount == payout`.
-8. Verify `unbonder_sig` against `unbond_msg` under `unbonder_pubkey`.
+8. Verify `unbonder_sig` against `unbond_msg` under `x_only(unbonder_commit)`.
 9. Emit `lp_return` UTXO at `vout[1]` with commit `bond_amount · H + lp_return_r · G`,
    asset_id = `farm.lp_asset_id`.
 10. If `reward_amount > 0`: emit `reward` UTXO at `vout[2]` with commit
@@ -635,7 +655,7 @@ materially more expensive and worse UX.
 ### Pre-conditions
 
 - `bond_id` resolves to a depth-3-confirmed bond record.
-- `harvester_pubkey == bond_record.bonder_pubkey` (no transfer
+- `harvester_commit == bond_record.bonder_commit` (no transfer
   mechanism in v1; see `T_LP_UNBOND` pre-conditions for the same
   rule).
 - Farm exists and is depth-3-confirmed; emissions may be exhausted
@@ -651,8 +671,8 @@ T_LP_HARVEST envelope payload (227 bytes fixed):
 opcode                     1 B  = 0x3B
 farm_id                   32 B
 bond_id                   36 B  outpoint reference identifying the bond record.
-harvester_pubkey          33 B  compressed secp256k1. Must equal
-                                  bond_record.bonder_pubkey.
+harvester_commit          33 B  compressed secp256k1. Must equal
+                                  bond_record.bonder_commit.
 exit_acc_per_share        16 B  u128 LE — harvester's view of
                                   farm.acc_reward_per_share post-crystallization.
 exit_view_height           4 B  u32 LE — harvester's view of canonical height.
@@ -663,7 +683,7 @@ reward_amount              8 B  u64 LE — claimed payout. Validator recomputes:
 reward_r                  32 B  Opening scalar for the reward UTXO at vout[1].
                                   Validator emits reward_C = reward_amount · H +
                                   reward_r · G.
-harvester_sig             64 B  BIP-340 by harvester_pubkey over harvest_msg.
+harvester_sig             64 B  BIP-340, verifies under x_only(harvester_commit) over harvest_msg.
 ```
 
 Fixed payload: **227 bytes**. No bulletproof. No kernel sig.
@@ -675,10 +695,11 @@ vin[0]    Envelope-bearing input.
 vin[1..]  Optional BTC funding inputs from the harvester.
 
 vout[0]   OP_RETURN(envelope_hash).
-vout[1]   Reward UTXO — dust P2WPKH paying harvester's address. Asset class =
-          farm.reward_asset_id; value = reward_amount; Pedersen commit =
-          reward_amount · H + reward_r · G. Omitted iff reward_amount == 0
-          (zero-payout harvest is purely an entry_acc roll-forward).
+vout[1]   Reward UTXO — dust P2TR paying x_only(harvester_commit) per §5.36.7.
+          Asset class = farm.reward_asset_id; value = reward_amount; Pedersen
+          commit = reward_amount · H + reward_r · G. Omitted iff
+          reward_amount == 0 (zero-payout harvest is purely an entry_acc
+          roll-forward).
 ```
 
 **No lp_return UTXO is emitted.** The LP shares remain accounted in
@@ -692,7 +713,7 @@ harvest_msg = SHA256(
     "tacit-amm-farm-harvest-v1"
     || farm_id(32)
     || bond_id(36)
-    || harvester_pubkey(33)
+    || harvester_commit(33)
     || exit_acc_per_share_LE(16)
     || exit_view_height_LE(4)
     || reward_amount_LE(8)
@@ -708,7 +729,7 @@ non-sig fields.
 ### State updates (post-confirmation, at depth 3)
 
 1. Look up `bond_record` by `bond_id`. Reject if absent.
-2. Verify `harvester_pubkey == bond_record.bonder_pubkey`.
+2. Verify `harvester_commit == bond_record.bonder_commit`.
 3. Verify `farm_id` consistency (envelope.farm_id == bond.farm_id == farm.farm_id).
 4. Crystallize `farm` to `canonical_height = min(current_confirmation_height - 3, farm.end_height)`.
 5. Verify `exit_acc_per_share == farm.acc_reward_per_share`.
@@ -716,7 +737,7 @@ non-sig fields.
 7. Compute `pending = bond_record.bond_amount * (exit_acc - entry_acc) >> 96` (BigInt; narrowed at payout).
 8. Compute `payout = min(pending, farm.treasury_remaining)`.
 9. Verify `reward_amount == payout`.
-10. Verify `harvester_sig` against `harvest_msg` under `harvester_pubkey`.
+10. Verify `harvester_sig` against `harvest_msg` under `x_only(harvester_commit)`.
 11. If `reward_amount > 0`: emit `reward` UTXO at `vout[1]` with commit
     `reward_amount · H + reward_r · G`, asset_id = `farm.reward_asset_id`.
 12. **`farm.total_bonded` is NOT modified.**
@@ -724,7 +745,7 @@ non-sig fields.
 14. `farm.last_update_height = canonical_height` (set by crystallize).
 15. `bond_record.entry_acc_per_share = exit_acc_per_share` (the key
     state mutation — bond is now "fresh" relative to the new acc).
-16. Bond record otherwise unchanged: `bond_amount`, `bonder_pubkey`,
+16. Bond record otherwise unchanged: `bond_amount`, `bonder_commit`,
     `bond_height`, and `bond_id` (= `vout[1]` outpoint of the original
     `T_LP_BOND`) all persist. Optional bookkeeping: `last_harvest_height`
     and `last_harvest_txid` SHOULD be recorded for indexer UX but are
@@ -801,7 +822,7 @@ Single-shot semantics — the farm's `refunded` flag prevents replay.
 ### Pre-conditions
 
 - `farm_id` resolves to a depth-3-confirmed farm record.
-- `launcher_pubkey == farm.launcher_pubkey` (privileged operation; only
+- `launcher_commit == farm.launcher_commit` (privileged operation; only
   the original launcher can refund).
 - `canonical_height ≥ farm.end_height + AMM_FARM_REFUND_GRACE_BLOCKS`.
 - `farm.refunded !== true` (single-shot).
@@ -816,14 +837,14 @@ T_FARM_REFUND envelope payload (175 bytes fixed):
 
 opcode              1 B  = 0x3E
 farm_id            32 B
-launcher_pubkey    33 B  compressed secp256k1. Must equal farm.launcher_pubkey.
+launcher_commit    33 B  compressed secp256k1. Must equal farm.launcher_commit.
 refund_amount       8 B  u64 LE — must equal farm.treasury_remaining at
                           canonical_height (recomputed by validator).
 refund_view_height  4 B  u32 LE — launcher's view of canonical height.
 refund_r           32 B  Opening scalar for the refund UTXO at vout[1].
                           Validator emits refund_C = refund_amount · H +
                           refund_r · G.
-launcher_sig       64 B  BIP-340 by launcher_pubkey over refund_msg.
+launcher_sig       64 B  BIP-340, verifies under x_only(launcher_commit) over refund_msg.
 ```
 
 ### Bitcoin tx layout (normative)
@@ -833,8 +854,8 @@ vin[0]    Envelope-bearing input.
 vin[1..]  Optional BTC funding inputs from the launcher.
 
 vout[0]   OP_RETURN(envelope_hash).
-vout[1]   Refund UTXO — dust P2WPKH paying launcher's address. Asset
-          class = farm.reward_asset_id; value = refund_amount; Pedersen
+vout[1]   Refund UTXO — dust P2TR paying x_only(launcher_commit) per §5.36.7.
+          Asset class = farm.reward_asset_id; value = refund_amount; Pedersen
           commit = refund_amount · H + refund_r · G.
 ```
 
@@ -844,7 +865,7 @@ vout[1]   Refund UTXO — dust P2WPKH paying launcher's address. Asset
 refund_msg = SHA256(
     "tacit-amm-farm-refund-v1"
     || farm_id(32)
-    || launcher_pubkey(33)
+    || launcher_commit(33)
     || refund_amount_LE(8)
     || refund_view_height_LE(4)
     || refund_r(32)
@@ -854,7 +875,7 @@ refund_msg = SHA256(
 ### State updates (post-confirmation, at depth 3)
 
 1. Look up `farm` by `farm_id`. Reject if absent.
-2. Verify `launcher_pubkey == farm.launcher_pubkey`.
+2. Verify `launcher_commit == farm.launcher_commit`.
 3. Reject if `farm.refunded === true`.
 4. Compute `canonical_height = currentConfirmationHeight − 3`.
 5. Reject if `canonical_height < farm.end_height + AMM_FARM_REFUND_GRACE_BLOCKS`.
@@ -862,7 +883,7 @@ refund_msg = SHA256(
 7. Reject if `refund_amount !== farm.treasury_remaining` (no partial).
 8. Reject if `refund_amount === 0` (wasted gas).
 9. Public opening sanity on `refund_r` (`0 < refund_r < secp_n`).
-10. Verify `launcher_sig` against `refund_msg` under `launcher_pubkey`.
+10. Verify `launcher_sig` against `refund_msg` under `x_only(launcher_commit)`.
 11. Emit `refund` UTXO at `vout[1]` with commit `refund_amount · H + refund_r · G`,
     `asset_id = farm.reward_asset_id`.
 12. **State updates**:
@@ -1039,8 +1060,8 @@ merge gate requires a domain-tag collision audit against the full
 |---|---|---|
 | `bond_amount` per bond | ✅ public | Required for `total_bonded` accounting. |
 | `reward_amount` per unbond | ✅ public | Required for `treasury_remaining` accounting. |
-| `bonder_pubkey` per bond | ✅ public | Pinned in bond record; doubles as the unbond auth key. |
-| `launcher_pubkey` per farm | ✅ public | Pinned in farm record. |
+| `bonder_commit` per bond | ✅ public | Pinned in bond record; doubles as the unbond auth key. |
+| `launcher_commit` per farm | ✅ public | Pinned in farm record. |
 | `reward_total` per farm | ✅ public | Required for emission-schedule transparency. |
 | Bonder's pre-bond wallet balance | ❌ hidden | Pedersen-committed LP UTXO; input opening not revealed. Kernel sig closes via excess scalar without leaking `r_in`. |
 | Bonder's post-unbond wallet balance | ❌ hidden | Reward / LP-return UTXOs reblinded by downstream `T_CXFER` consumption. |
@@ -1162,7 +1183,7 @@ the farm doesn't mutate (bonded shares stay accounted in `S`).
   "pool_id": "0x...",
   "lp_asset_id": "0x...",
   "reward_asset_id": "0x...",
-  "launcher_pubkey": "0x...",
+  "launcher_commit": "0x...",
   "reward_total": "1000000000000",
   "reward_per_block": "10000000",
   "start_height": 873000,
@@ -1255,15 +1276,15 @@ hidden migration debt.
    (forfeiting any future emissions to themselves) and the new
    owner re-bonds (resetting `entry_acc`). A follow-up amendment
    could add `T_LP_BOND_ASSIGN` that rewrites
-   `bond_record.bonder_pubkey` under a signature from the current
+   `bond_record.bonder_commit` under a signature from the current
    bonder + a destination pubkey. ~3 new fields, no accrual
    interaction. Plausible follow-up if secondary-market demand
    for bonds materialises.
 
    **Additivity: ✅ strictly additive.** New opcode; modifies one
-   field (`bonder_pubkey`) on existing bond records using a new
+   field (`bonder_commit`) on existing bond records using a new
    signature-authorisation primitive. Existing UNBOND/HARVEST
-   validator code is unchanged — it reads `bond.bonder_pubkey`
+   validator code is unchanged — it reads `bond.bonder_commit`
    whatever its current value. Pre-assign bonds and post-assign
    bonds use the same downstream code path.
 
