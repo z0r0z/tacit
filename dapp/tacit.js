@@ -35023,6 +35023,7 @@ async function _ammPinataTusUpload(uploadUrl, bytes, filename, onProgress) {
   const CHUNK = 50 * 1024 * 1024;
   let offset = 0;
   let lastBody = '';
+  let lastCid = '';
   while (offset < bytes.length) {
     const end = Math.min(offset + CHUNK, bytes.length);
     const chunk = bytes.subarray(offset, end);
@@ -35038,7 +35039,11 @@ async function _ammPinataTusUpload(uploadUrl, bytes, filename, onProgress) {
           try { onProgress(baseOffset + ev.loaded, bytes.length); } catch {}
         }
       };
-      xhr.onload = () => resolve({ status: xhr.status, body: xhr.responseText });
+      xhr.onload = () => resolve({
+        status: xhr.status,
+        body: xhr.responseText,
+        uploadCid: xhr.getResponseHeader('Upload-Cid') || xhr.getResponseHeader('upload-cid') || '',
+      });
       xhr.onerror = () => reject(new Error(`pinata tus PATCH network error (readyState=${xhr.readyState}, status=${xhr.status || 0})`));
       xhr.ontimeout = () => reject(new Error('pinata tus PATCH timeout (10 min)'));
       xhr.onabort = () => reject(new Error('pinata tus PATCH aborted'));
@@ -35049,11 +35054,18 @@ async function _ammPinataTusUpload(uploadUrl, bytes, filename, onProgress) {
     }
     offset = end;
     lastBody = resp.body || lastBody;
+    if (resp.uploadCid) lastCid = resp.uploadCid;
   }
-  let parsed = null;
-  try { parsed = JSON.parse(lastBody); } catch {}
-  const cid = parsed?.data?.cid || parsed?.cid;
-  if (!cid) throw new Error('pinata tus completed but final response had no cid: ' + lastBody.slice(0, 200));
+  // Pinata returns the CID as an Upload-Cid response header on the
+  // final 204 PATCH (TUS convention) — not in the body. Body fallback
+  // covers the simple-POST shape in case the SDK contract flips.
+  let cid = lastCid;
+  if (!cid) {
+    let parsed = null;
+    try { parsed = JSON.parse(lastBody); } catch {}
+    cid = parsed?.data?.cid || parsed?.cid;
+  }
+  if (!cid) throw new Error('pinata tus completed but no Upload-Cid header (and no body cid): ' + lastBody.slice(0, 200));
   return String(cid);
 }
 
@@ -56669,11 +56681,21 @@ function applyMarketFilters() {
       }
       return `<div class="swap-tile-strip" data-swap-strip>${sparkSvg ? `<span class="strip-spark">${sparkSvg}</span>` : '<span class="strip-spark"></span>'}${lastHtml}${deltaHtml}${tradeHtml}</div>`;
     })();
-    return `<div data-swap-tile data-aid="${escapeHtml(safeAid)}" data-ticker="${escapeHtml(ticker)}" data-dec="${decimals}" data-ref-unit="${refUnit != null ? refUnit : ''}" data-direction="buy" data-slippage="${slippagePct}" style="margin-bottom:14px;border:1px solid var(--ink);background:var(--bg);padding:16px;">
-      <!-- Header: pair name with logos. Slippage moved to footer row
-           so it doesn't compete with the inputs for horizontal space. -->
-      <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;font-size:13px;font-weight:bold;">
-        ${btcLogoHtml} <span>sats / ${escapeHtml(ticker)}</span> ${assetLogoHtml}
+    return `<div data-swap-tile data-aid="${escapeHtml(safeAid)}" data-ticker="${escapeHtml(ticker)}" data-dec="${decimals}" data-ref-unit="${refUnit != null ? refUnit : ''}" data-direction="buy" data-slippage="${slippagePct}" data-swap-mode="market" style="margin-bottom:14px;border:1px solid var(--ink);background:var(--bg);padding:16px;">
+      <!-- Header: pair name with logos + Market/Limit mode toggle.
+           "Market" = standard slippage-bounded sweep of the orderbook;
+           "Limit" = both inputs pinned, slippage cap ignored, residual
+           budget posts as a passive bid (buy) or ask (sell) at the
+           user's typed price. Toggle is explicit; typing both inputs
+           still auto-flips to Limit for backward compat. -->
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;flex-wrap:wrap;">
+        <div style="display:flex;align-items:center;gap:8px;font-size:13px;font-weight:bold;">
+          ${btcLogoHtml} <span>sats / ${escapeHtml(ticker)}</span> ${assetLogoHtml}
+        </div>
+        <div data-swap-mode-toggle role="tablist" aria-label="Order mode" style="margin-left:auto;display:inline-flex;border:1px solid var(--ink);background:var(--bg);overflow:hidden;font-size:10px;letter-spacing:0.06em;text-transform:uppercase;">
+          <button data-swap-mode-btn="market" role="tab" aria-selected="true" type="button" title="Market: sweep open orders within your slippage cap. Any unfilled budget stays in wallet." style="padding:5px 10px;border:none;background:var(--ink);color:var(--bg);font-weight:700;cursor:pointer;font:inherit;">Market</button>
+          <button data-swap-mode-btn="limit" role="tab" aria-selected="false" type="button" title="Limit: route only at your typed price (or better). Any unfilled budget posts as a 24h passive bid/ask at your exact price." style="padding:5px 10px;border:none;background:var(--bg);color:var(--ink);font-weight:700;cursor:pointer;font:inherit;border-left:1px solid var(--ink);">Limit</button>
+        </div>
       </div>
       ${_swapStripHtml}
       <!-- TOP side: editable input. data-side="from" tracks which
@@ -56710,10 +56732,15 @@ function applyMarketFilters() {
           </svg>
         </button>
       </div>
-      <!-- BOTTOM side: read-only estimate. -->
+      <!-- BOTTOM side: read-only estimate in Market mode, anchored
+           limit-price field in Limit mode. The label text + LIMIT chip
+           are toggled by applyMode() in the wireup. -->
       <div data-swap-side="to" style="border:1px solid var(--ink-faint);background:var(--bg-warm);padding:12px;margin-bottom:10px;">
-        <div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:6px;">
-          <span style="font-size:10px;text-transform:uppercase;letter-spacing:0.06em;color:var(--ink-mid);">You receive (est.)</span>
+        <div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:6px;gap:8px;">
+          <span style="font-size:10px;text-transform:uppercase;letter-spacing:0.06em;color:var(--ink-mid);display:inline-flex;align-items:center;gap:6px;">
+            <span data-swap-to-label>You receive (est.)</span>
+            <span data-swap-mode-chip style="display:none;background:var(--ink);color:var(--bg);padding:1px 6px;font-weight:700;letter-spacing:0.08em;">LIMIT</span>
+          </span>
           <span data-swap-meta="to" class="muted" style="font-size:10px;text-align:right;"></span>
         </div>
         <div style="display:flex;align-items:center;gap:10px;">
@@ -56757,6 +56784,15 @@ function applyMarketFilters() {
            refUnit is unknown (no mark price); the percent value alone
            is the only honest signal there. -->
       <div data-swap-limit-readout style="font-size:11px;line-height:1.4;margin:0 0 10px;padding:6px 10px;text-align:right;display:none;border:1px solid var(--ink-faint);background:var(--bg-warm);color:var(--ink);font-weight:600;"></div>
+      <!-- LIMIT-mode ribbon: a single, unmissable strip directly above the
+           action button so a trader who entered Limit mode (toggle OR
+           by typing both inputs) can't miss that residual budget will
+           post as a passive order. Hidden in Market mode. -->
+      <div data-swap-mode-ribbon style="display:none;align-items:center;gap:8px;margin:0 0 10px;padding:6px 10px;background:var(--ink);color:var(--bg);font-size:11px;font-weight:700;letter-spacing:0.04em;">
+        <span style="display:inline-block;width:6px;height:6px;background:var(--bg);border-radius:50%;"></span>
+        <span>LIMIT ORDER</span>
+        <span style="font-weight:400;opacity:0.85;">· unfilled budget posts as a 24h passive order at your price</span>
+      </div>
       <!-- Primary action -->
       <button data-swap-action type="button" disabled title="Each fill settles atomically on Bitcoin. No public mempool ordering, no MEV bots, no privileged sequencer — Bitcoin's PoW + atomic settlement means no one can reorder your fill or sandwich you." style="display:block;width:100%;padding:14px;font-size:14px;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;background:#0a8f43;color:#fff;border:1px solid #0a7d3a;cursor:pointer;opacity:0.5;">enter an amount</button>
       <div class="muted" style="font-size:10px;line-height:1.4;margin-top:6px;text-align:center;letter-spacing:0.02em;" title="Each fill settles atomically on Bitcoin. No public mempool ordering games, no MEV bots, no privileged sequencer that can reorder or sandwich your trade.">Settles atomically on Bitcoin · no front-running</div>
