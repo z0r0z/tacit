@@ -1472,6 +1472,183 @@ operational dependency.
 
 ---
 
+## §5.47 v1 lien model — trustless collateral without covenants
+
+The original §5.36 / §5.38 design assumed a "deterministic escrow
+address" for bond TAC (§5.35.1 line 232-234: *"no spending key — moves
+only via tacit envelope state transitions"*). Implementing that
+trustlessly on current Bitcoin requires covenant primitives (OP_CAT
+or similar) that are not deployed on mainnet — without them, every
+"protocol-owned UTXO spendable only via paired envelope" construction
+either reduces to a federated signer or lets a griefer steal the
+reserve.
+
+v1 ships a covenant-free alternative: **the bond is an LP-share UTXO
+of a (cBTC.zk-variant, TAC) AMM pool, held in the depositor's own
+wallet, locked by a tacit-protocol-level lien.** The lien is enforced
+by validator coordination (the same trust model that gives all tacit
+assets value) — workers refuse to recognise any spend of a liened
+UTXO, recipients refuse to accept tacit-invalid UTXOs, and the bond
+is therefore economically immobile without the protocol's consent.
+
+### 5.47.1 Why LP-shares (not raw TAC)
+
+- **Fee yield while bonded** — the LP shares stay in the canonical
+  AMM pool earning swap fees the whole time the position is open.
+  Strict improvement over the original spec (where bond TAC sat
+  inert at the depositor's recovery address) and over MakerDAO
+  (where ETH in the vault earns nothing).
+- **Natural BTC anchoring** — half the LP's value is the cBTC.zk
+  side, which tracks BTC 1:1. Under a TAC death-spiral, the cBTC.zk
+  half of the LP retains BTC value even as the TAC side erodes;
+  cBTC.tac holders inherit this when they claim.
+- **No new asset type** — uses tacit's existing LP-share machinery
+  (`ammDeriveLpAssetId`, `T_LP_REMOVE`, etc.) without new primitives.
+
+### 5.47.2 KV schema
+
+```
+ctac-lien:<lp_utxo_txid>:<lp_utxo_vout>     → {
+  position_leaf_hash, lp_share_amount, lp_asset_id, pool_id,
+  state: 'depositor' | 'claim-pool',
+  attached_at_height, attached_at_txid,
+  claim_pool_transferred_at_height?, claim_pool_transferred_reason?
+}
+ctac-pos-lien:<position_leaf_hash>          → "<lp_utxo_txid>:<lp_utxo_vout>"  (reverse index)
+ctac-claim-pool                             → u64 (total LP shares pooled across all
+                                                   force-closed / rugged positions)
+```
+
+### 5.47.3 Enforcement point
+
+Lien enforcement lives in a single helper: `commitmentForUtxo` (the
+worker's universal asset-UTXO resolver). It refuses any outpoint
+whose lien is in `depositor` or `claim-pool` state, throwing as if
+the UTXO doesn't exist. Every downstream consumer (`T_LP_REMOVE`,
+`T_AXFER_VAR`, `T_SWAP_VAR`, `T_CXFER`, and every future asset-spend
+opcode) hits this helper and automatically refuses liened spends.
+
+The cBTC.tac handlers that legitimately need to read liened UTXOs
+(`T_CBTC_TAC_DEPOSIT`, `T_CBTC_TAC_WITHDRAW`, `T_CBTC_TAC_FORCE_CLOSE`,
+`T_CTAC_LIEN_CLAIM`, `T_CTAC_LIEN_SPLIT`) pass `skipLienCheck: true`
+to bypass.
+
+### 5.47.4 Lifecycle
+
+```
+   DEPOSIT (T_CBTC_TAC_DEPOSIT, 0x49)
+       │
+       │ attach lien (state: 'depositor')
+       │
+       ▼
+    [active]  ◄────────── self-rescue via TAC recovery (no envelope)
+       │
+       ├─── cooperative ──── T_CBTC_TAC_WITHDRAW (0x4A) ──→ [withdrawn]
+       │                       releases lien (delete);
+       │                       slot K_btc spent by depositor;
+       │                       cBTC.tac burned
+       │
+       ├─── partial ────── T_CTAC_LIEN_SPLIT (0x4F) ───→ [active, smaller lien]
+       │                       depositor splits liened UTXO;
+       │                       lien inherits onto one chosen output
+       │                       (must still satisfy 2x collateralization)
+       │
+       ├─── force-close ── T_CBTC_TAC_FORCE_CLOSE (0x4B) ──→ [force-slashed]
+       │                       LP-share BTC value < 1.2x slot;
+       │                       lien transferred to claim pool;
+       │                       state flips to 'claim-pool'
+       │
+       └─── rug ────────── SLASH_DETECTED (cron) ────────→ [rugged]
+                              depositor spent K_btc outside protocol;
+                              lien transferred to claim pool;
+                              state flips to 'claim-pool'
+```
+
+### 5.47.5 T_CTAC_LIEN_CLAIM (opcode 0x4C, repurposed)
+
+cBTC.tac holders claim pro-rata LP shares from the claim pool by
+burning cBTC.tac shares. The wire format is the original
+`T_SHARE_SLASH_CLAIM` (0x4C) layout; the semantics rebind
+`claim_TAC` → `claim_LP_shares` and the recipient_commit names the
+new LP-share UTXO. Math:
+
+```
+expected_lp_claim = claim_pool_LP_shares × share_burn_amount
+                  / outstanding_cBTC.tac_supply
+```
+
+The claim mints a synthetic LP-share UTXO at `recipient_commit`.
+The holder can then `T_LP_REMOVE` it for cBTC.zk + TAC at current
+pool ratios, or hold it for AMM fee yield.
+
+### 5.47.6 T_CTAC_LIEN_SPLIT (opcode 0x4F, new)
+
+Lets the depositor split a liened LP-share UTXO into multiple
+outputs while preserving the lien on one chosen output. Wire format:
+
+```
+T_CTAC_LIEN_SPLIT
+   opcode                    1 byte  (0x4F)
+   network_tag               1 byte
+   position_leaf_hash       32 bytes (the liened position)
+   source_outpoint          36 bytes (the liened LP-share UTXO being split)
+   output_count              1 byte  (N, 2..8)
+   for i in 0..N:
+     output_amount_LE        8 bytes (u64; REVEALED — v1 splits are not
+                                       amount-private to preserve the
+                                       Pedersen balance check without
+                                       requiring aggregated range proofs)
+     output_blinding        32 bytes (REVEALED — opens the commit)
+     output_commit          33 bytes (Pedersen commit; verified against
+                                       (amount, blinding) tuple)
+   lien_inherit_index        1 byte  (which output inherits the lien)
+   depositor_sig            64 bytes (BIP-340 Schnorr over bind_hash
+                                      under position.depositor_recovery_pk)
+   bind_hash                32 bytes
+```
+
+Validator checks:
+- Position exists + is `active`; lien exists + is `depositor` state.
+- Source outpoint matches the lien record.
+- Each output's revealed `(amount, blinding)` opens the declared commit.
+- Sum of revealed amounts equals the lien's `lp_share_amount`.
+- Inheriting output's amount × current LP-share BTC value still
+  satisfies `INITIAL_BOND_RATIO × slot_denom_sats` at reorg-safe TWAP.
+- Depositor's Schnorr sig verifies under `depositor_recovery_pk`.
+
+Effects: source lien deleted; new lien attached at
+`(reveal_tx.txid, lien_inherit_index)` with the smaller amount;
+position record updated; aggregate `total_bonded_TAC` counter
+decremented by the split-off portion. The unliened outputs are
+freely spendable by the depositor.
+
+### 5.47.7 Comparison to the original §5.36 / §5.38 design
+
+| Aspect | Original spec | v1 lien model |
+|---|---|---|
+| Bond asset | Raw TAC at "protocol escrow address" | LP-share at depositor's wallet, liened |
+| Escrow mechanism | Covenant ("no spending key") | Worker-enforced lien (social) |
+| Fee yield while bonded | None | AMM swap fees on the LP shares |
+| Force-close mechanism | AMM swap into `redemption_reserve_BTC` UTXO | Lien transfer to claim pool counter |
+| Liquidator reward | 50 bps of swap output | None in v1 (cBTC.tac holders' self-interest) |
+| Holder payout asset | BTC sats from reserve | LP shares (claimant can `T_LP_REMOVE`) |
+| Trust assumption | Bitcoin script covenants | Validator coordination (same as all tacit assets) |
+| Mainnet-shippable today | No (no OP_CAT) | Yes |
+
+The economic invariants (2× initial collateral, 1.2× liquidation
+threshold, pro-rata holder claim on slashed bond) are preserved.
+The custody mechanism changes from covenant-based to coordination-based.
+
+### 5.47.8 Reserved opcodes
+
+`0x4D` and `0x4E` remain reserved per the existing comment block
+(`SPEC-CBTC-ZK-AMOUNT-AMENDMENT` machinery). `0x4F` is allocated to
+`T_CTAC_LIEN_SPLIT`. The original `T_SHARE_SLASH_CLAIM` constant
+name at `0x4C` is preserved for wire-format parity; the
+`T_CTAC_LIEN_CLAIM` identifier is exported as an alias.
+
+---
+
 ## Test plan
 
 1. **Healthy lifecycle.** Wrap BTC → cBTC.zk → deposit (mint

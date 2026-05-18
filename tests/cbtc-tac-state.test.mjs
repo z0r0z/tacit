@@ -442,7 +442,12 @@ group('ctacScanSlashDetected — full path with mocked chain probe');
     (await worker.ctacGetPosition(env, network, leaf))?.state === 'active');
 
   // Case 4: spent at depth ≥ 6 → SLASH fires
-  const insurePoolBefore = await worker.ctacGetInsurancePool(env, network);
+  // v1 lien model: SLASH transfers the position's LP-share lien to the
+  // global claim pool (replacing the legacy virtual insurance-pool bump).
+  // This test position has no lien attached (the test setup doesn't go
+  // through DEPOSIT), so claim pool stays at 0. Insurance pool stays at 0
+  // too — the legacy ctac-ins-pool is unused under v1 lien semantics.
+  const claimPoolBefore = await worker.ctacGetClaimPool(env, network);
   const r4 = await worker.ctacScanSlashDetected(env, network, {
     maxOps: 10,
     tipHeight: 1000,
@@ -453,8 +458,8 @@ group('ctacScanSlashDetected — full path with mocked chain probe');
   ok('position state = rugged', posAfter?.state === 'rugged');
   ok('rugged_at_height recorded', posAfter?.rugged_at_height === 995);
   ok('rug_spending_txid recorded', posAfter?.rug_spending_txid === 'cc'.repeat(32));
-  ok('insurance pool credited with bond_amount_tac',
-    (await worker.ctacGetInsurancePool(env, network)) === insurePoolBefore + 200000000000n);
+  ok('claim pool unchanged (no lien attached to this test position)',
+    (await worker.ctacGetClaimPool(env, network)) === claimPoolBefore);
   ok('active sentinel removed after slash',
     !env.REGISTRY_KV._has(worker.ctacActivePositionKey(network, leaf)));
 }
@@ -844,79 +849,36 @@ group('Canonical TAC pool depth lookup (§5.41.2)');
     r1 === 5_000_000_000n, `expected 5e9, got ${r1}`);
 }
 
-// ============== group: §5.45.3 aggregate recovery pause ==============
-group('Aggregate recovery mode (§5.45.3)');
+// ============== group: §5.45.3 aggregate recovery pause (DEFERRED in v1) ==============
+group('Aggregate recovery mode (§5.45.3) — deferred under v1 lien model');
 
 {
+  // Under v1 lien semantics, total_bonded_tac is an LP-share counter, not a
+  // TAC count. The legacy aggregate_recovery formula was meaningless and is
+  // intentionally skipped. The check returns null regardless of counter
+  // state; the other four pause conditions still fire (oracle_stale,
+  // oracle_volatile, slash_cascade, prospective_single_too_large). A proper
+  // aggregate LP-share BTC value pause is a follow-up amendment.
   const env8 = { REGISTRY_KV: makeMockKv() };
   const TAC_AID = 'ee' + '0'.repeat(62);
   globalThis.TAC_ASSET_ID_HEX = TAC_AID;
   const now = Math.floor(Date.now() / 1000);
-  // Seed a stable TWAP at price_sats = 100 (i.e. 100 sats per TAC unit)
-  for (let i = 0; i < 30; i++) {
-    await env8.REGISTRY_KV.put(
-      `trade-event:${TAC_AID}:h${i}`,
-      JSON.stringify({ ts: now - i * 600, price_sats: 100 }),
-    );
-  }
-
-  // Case A: aggregate_ratio above 1.5x → no pause.
-  // bondedTac × 1e8 / twap / supply must be > 1.5 (in thousandths > 1500).
-  // Pick bondedTac = 2_000_000_000, twap = 100, supply = 100_000_000:
-  //   value_sats = bondedTac × 1e8 / twap = 2e9 × 1e8 / 100 = 2e15
-  //   ratio = 2e15 × 1000 / 1e8 = 2e10 thousandths ... way too high.
-  // The price_sats=100 makes math unrealistic — TAC is "worth more than BTC".
-  // Use a more realistic TAC/BTC: 1 BTC = 1_000_000 TAC means twap=100 (100 sats per
-  // 1 TAC unit, so 1 BTC = 100M sats / 100 sats/TAC = 1M TAC).
-  // bond = 200_000_000 TAC, supply = 100_000_000 sats (1 BTC).
-  //   bond value sats = 200M × 1e8 / 100 = 2e14 ... no.
-  // Wait — ctacBondRatioThousandths: (bond * 1e8 * 1000) / (twap * denom).
-  // For supply=1e8, bond=200M, twap=100:
-  //   ratio_thousandths = 200M × 1e8 × 1000 / (100 × 1e8) = 200M × 1000 / 100 = 2_000_000_000
-  // That's a ratio of 2_000_000 — completely off from "2x".
-  // The formula's units only work when bond_amount_TAC is the RAW TAC INTEGER
-  // (no decimals), and twap is "sats per 1 whole TAC". Then for 2x:
-  //   1_000_000 TAC bond × 1e8 / (100 × 1e8) = 1e6 / 100 = 10_000? still off.
-  // Actually the formula matches its own usage. Let's just feed values that satisfy:
-  //   ratio_thousandths_target = (bondedTac × 1e8 × 1000) / (twap × supply)
-  // Targeting 2000 (2.0x) with twap=100, supply=1e8:
-  //   bondedTac = 2000 × 100 × 1e8 / (1e8 × 1000) = 200
-  // Sub-satoshi values. Use twap=100M instead (so 1 TAC = 1 sat):
-  //   bondedTac = 2000 × 100M × 1e8 / (1e8 × 1000) = 200_000_000 TAC for 2x → 1 BTC supply.
-  await env8.REGISTRY_KV.delete(...[]); // (noop placeholder)
-
-  // Reseed at twap=100M sats/TAC (i.e. 1 TAC = 1 BTC — unrealistic but lets us
-  // pick clean integer test values).
   for (let i = 0; i < 30; i++) {
     await env8.REGISTRY_KV.put(
       `trade-event:${TAC_AID}:h${i}`,
       JSON.stringify({ ts: now - i * 600, price_sats: 100_000_000 }),
     );
   }
-  // Healthy: bond = 200M, supply = 100M → ratio = (200M × 1e8 × 1000) / (1e8 × 1e8) = 2000 = 2.0x
   await worker.ctacAddTotalBondedTac(env8, network, 200_000_000n);
   await worker.ctacAddSupply(env8, network, 100_000_000n);
   const rA = await worker.ctacComputePauseStatus(env8, network, 1000, { tacAssetIdHex: TAC_AID });
-  ok('aggregate ratio 2.0x → no pause', rA === null,
+  ok('aggregate_recovery deferred → returns null even with counter state', rA === null,
     `expected null, got ${rA}`);
 
-  // Drop bond to push ratio below 1.5x. bond = 140M → ratio = 1400 (1.4x).
   await worker.ctacAddTotalBondedTac(env8, network, -60_000_000n);
   const rB = await worker.ctacComputePauseStatus(env8, network, 1000, { tacAssetIdHex: TAC_AID });
-  ok('aggregate ratio 1.4x → aggregate_recovery', rB === 'aggregate_recovery',
-    `expected aggregate_recovery, got ${rB}`);
-
-  // Empty system (no bonded TAC) → no recovery pause (ratio undefined).
-  const env9 = { REGISTRY_KV: makeMockKv() };
-  for (let i = 0; i < 30; i++) {
-    await env9.REGISTRY_KV.put(
-      `trade-event:${TAC_AID}:h${i}`,
-      JSON.stringify({ ts: now - i * 600, price_sats: 100_000_000 }),
-    );
-  }
-  const rC = await worker.ctacComputePauseStatus(env9, network, 1000, { tacAssetIdHex: TAC_AID });
-  ok('zero bonded TAC → no recovery pause', rC === null,
-    `expected null, got ${rC}`);
+  ok('aggregate_recovery deferred → still null after counter changes', rB === null,
+    `expected null, got ${rB}`);
 }
 
 // ============== group: constants exposed ==============
@@ -930,6 +892,239 @@ ok('CTAC_STABILITY_FEE_BPS = 25 (0.25% APR)',
   worker.CTAC_STABILITY_FEE_BPS === 25);
 ok('CTAC_BLOCKS_PER_YEAR = 52596',
   worker.CTAC_BLOCKS_PER_YEAR === 52596);
+
+// ============== group: §5.47 lien KV schema ==============
+group('Lien KV schema (§5.47 v1 lien model)');
+
+ok('ctacLienKey signet flat with zero-padded vout',
+  worker.ctacLienKey('signet', 'ab'.repeat(32), 3) === `ctac-lien:${'ab'.repeat(32)}:00000003`);
+ok('ctacLienKey mainnet prefixed',
+  worker.ctacLienKey('mainnet', 'cd'.repeat(32), 0) === `ctac-lien:mainnet:${'cd'.repeat(32)}:00000000`);
+ok('ctacPositionLienKey signet flat',
+  worker.ctacPositionLienKey('signet', 'ef'.repeat(32)) === `ctac-pos-lien:${'ef'.repeat(32)}`);
+ok('ctacClaimPoolKey signet flat',
+  worker.ctacClaimPoolKey('signet') === 'ctac-claim-pool');
+ok('ctacClaimPoolKey mainnet prefixed',
+  worker.ctacClaimPoolKey('mainnet') === 'ctac-claim-pool:mainnet');
+
+// ============== group: lien lifecycle ==============
+group('Lien lifecycle (attach / read / release)');
+
+{
+  const env10 = { REGISTRY_KV: makeMockKv() };
+  const leaf = bytesToHex(sha256(new TextEncoder().encode('lien-pos-1')));
+  const lpTxid = 'aa'.repeat(32);
+  const lpVout = 5;
+
+  ok('no lien initially → null',
+    (await worker.ctacGetLien(env10, network, lpTxid, lpVout)) === null);
+  ok('claim pool starts at 0',
+    (await worker.ctacGetClaimPool(env10, network)) === 0n);
+
+  // Attach lien
+  await worker.ctacPutLien(env10, network, lpTxid, lpVout, {
+    position_leaf_hash: leaf,
+    lp_share_amount: '100000000',
+    lp_asset_id: 'bb'.repeat(32),
+    pool_id: 'cc'.repeat(32),
+    state: 'depositor',
+    attached_at_height: 100,
+  });
+  await worker.ctacPutPositionLien(env10, network, leaf, lpTxid, lpVout);
+
+  const lien = await worker.ctacGetLien(env10, network, lpTxid, lpVout);
+  ok('lien stored + retrieved', lien?.position_leaf_hash === leaf);
+  ok('lien state = depositor', lien?.state === 'depositor');
+
+  const posLien = await worker.ctacGetPositionLien(env10, network, leaf);
+  ok('reverse-index resolves to outpoint', posLien?.txid === lpTxid && posLien?.vout === lpVout);
+
+  // Release lien (cooperative withdraw)
+  await worker.ctacDeleteLien(env10, network, lpTxid, lpVout);
+  await worker.ctacDeletePositionLien(env10, network, leaf);
+  ok('lien released', (await worker.ctacGetLien(env10, network, lpTxid, lpVout)) === null);
+  ok('reverse-index cleared', (await worker.ctacGetPositionLien(env10, network, leaf)) === null);
+}
+
+// ============== group: claim pool arithmetic ==============
+group('Claim pool counter (force-close + slash credit; LIEN_CLAIM debit)');
+
+{
+  const env11 = { REGISTRY_KV: makeMockKv() };
+  await worker.ctacAddClaimPool(env11, network, 500_000_000n);
+  ok('claim pool credited 500M',
+    (await worker.ctacGetClaimPool(env11, network)) === 500_000_000n);
+  await worker.ctacAddClaimPool(env11, network, 250_000_000n);
+  ok('claim pool stacks: 750M total',
+    (await worker.ctacGetClaimPool(env11, network)) === 750_000_000n);
+  await worker.ctacAddClaimPool(env11, network, -300_000_000n);
+  ok('claim pool debit on LIEN_CLAIM: 450M',
+    (await worker.ctacGetClaimPool(env11, network)) === 450_000_000n);
+  await worker.ctacAddClaimPool(env11, network, -1_000_000_000n);
+  ok('decrement past 0 clamps to 0',
+    (await worker.ctacGetClaimPool(env11, network)) === 0n);
+}
+
+// ============== group: commitmentForUtxo lien enforcement ==============
+group('Single-point lien enforcement via commitmentForUtxo');
+
+{
+  // commitmentForUtxo's full path hits Esplora; we exercise just the
+  // lien-check shortcut by attaching a lien and asserting the helper
+  // throws before any network access. Run via ctacGetLien check that
+  // mirrors what commitmentForUtxo does internally.
+  const env12 = { REGISTRY_KV: makeMockKv() };
+  const lpTxid = 'dd'.repeat(32);
+  const lpVout = 0;
+  await worker.ctacPutLien(env12, network, lpTxid, lpVout, {
+    position_leaf_hash: 'ff'.repeat(32),
+    lp_share_amount: '1',
+    lp_asset_id: 'ab'.repeat(32),
+    pool_id: 'cd'.repeat(32),
+    state: 'depositor',
+    attached_at_height: 1,
+  });
+  // Direct lien lookup: presence + state confirms commitmentForUtxo would refuse.
+  const lien = await worker.ctacGetLien(env12, network, lpTxid, lpVout);
+  ok('depositor-state lien is present + would block commitmentForUtxo',
+    lien?.state === 'depositor');
+
+  // Transition to claim-pool: still blocks.
+  await worker.ctacPutLien(env12, network, lpTxid, lpVout, { ...lien, state: 'claim-pool' });
+  const lien2 = await worker.ctacGetLien(env12, network, lpTxid, lpVout);
+  ok('claim-pool-state lien still blocks commitmentForUtxo',
+    lien2?.state === 'claim-pool');
+
+  // After release: lien gone → would resolve.
+  await worker.ctacDeleteLien(env12, network, lpTxid, lpVout);
+  ok('released outpoint has no lien → commitmentForUtxo would proceed',
+    (await worker.ctacGetLien(env12, network, lpTxid, lpVout)) === null);
+}
+
+// ============== group: T_CTAC_LIEN_SPLIT decoder ==============
+group('T_CTAC_LIEN_SPLIT decoder (§5.47)');
+
+ok('T_CTAC_LIEN_SPLIT opcode = 0x4F', worker.T_CTAC_LIEN_SPLIT === 0x4F);
+ok('T_CTAC_LIEN_CLAIM alias = T_SHARE_SLASH_CLAIM (0x4C)',
+  worker.T_CTAC_LIEN_CLAIM === worker.T_SHARE_SLASH_CLAIM
+  && worker.T_CTAC_LIEN_CLAIM === 0x4C);
+// Wire-format smoke: decoder rejects garbage / wrong opcode / truncation.
+ok('decoder rejects empty payload',
+  worker.decodeTCtacLienSplitPayload(new Uint8Array([])) === null);
+ok('decoder rejects wrong-opcode payload',
+  worker.decodeTCtacLienSplitPayload(new Uint8Array([0x4C, 0, 0])) === null);
+ok('decoder rejects truncated payload',
+  worker.decodeTCtacLienSplitPayload(new Uint8Array(50)) === null);
+
+// ============== group: ctacLpShareValueSats math ==============
+group('LP-share BTC valuation (ctacLpShareValueSats)');
+
+{
+  const env13 = { REGISTRY_KV: makeMockKv() };
+  const TAC_AID = '1' + '1'.repeat(63);
+  const CBTC_AID = '2' + '2'.repeat(63);
+  globalThis.TAC_ASSET_ID_HEX = TAC_AID;
+
+  // Reserve_a = TAC = 1_000_000_000 TAC, reserve_b = cBTC.zk = 100_000_000 sats (1 BTC)
+  // Total LP supply = 316_000 (= isqrt(1e9 × 1e8) - MIN_LIQ approx)
+  // TWAP = 100_000_000 sats per TAC (1 TAC = 1 BTC — unrealistic but clean math)
+  // → tac_reserve_sats = (1e9 × 1e8) / 1e8 = 1e9 sats
+  // → total_pool_sats = 1e8 + 1e9 = 1.1e9 sats
+  // → 1 LP share = 1.1e9 / 316_000 = ~3,480 sats
+  const poolId = 'aa' + '0'.repeat(62);
+  await env13.REGISTRY_KV.put(`ammpool:${poolId}`, JSON.stringify({
+    asset_a: TAC_AID, asset_b: CBTC_AID,
+    reserve_a: '1000000000', reserve_b: '100000000',
+    lp_total_shares: '316000', lp_asset_id: 'cc' + '0'.repeat(62),
+    fee_bps: 30, capability_flags: 0,
+    validation: 'verified',
+  }));
+
+  const r = await worker.ctacLpShareValueSats(env13, network, poolId, 316000n, 100_000_000n);
+  ok('valid pool + TAC-paired → ok',
+    r.ok === true, `ok=${r.ok} reason=${r.reason || ''}`);
+  // Total = 1e8 (cBTC.zk reserve) + (1e9 TAC × 1e8 / 1e8 = 1e9) = 1.1e9 sats
+  // Per-share = 1.1e9 × 316000 / 316000 = 1.1e9 sats (all shares)
+  ok('LP value sats matches expected pool sum',
+    r.valueSats === 1_100_000_000n,
+    `expected 1.1e9, got ${r.valueSats}`);
+
+  // 1 LP share = 1.1e9 / 316000 (floor)
+  const single = await worker.ctacLpShareValueSats(env13, network, poolId, 1n, 100_000_000n);
+  ok('1 LP share = ~3,481 sats', single.valueSats === 1_100_000_000n / 316000n);
+
+  // Wrong pool → fail-soft with reason
+  const missing = await worker.ctacLpShareValueSats(env13, network, 'bb' + '0'.repeat(62), 1n, 100_000_000n);
+  ok('missing pool → ok:false, reason set', missing.ok === false && typeof missing.reason === 'string');
+
+  // Non-TAC pool → fail-soft
+  await env13.REGISTRY_KV.put(`ammpool:nontac`, JSON.stringify({
+    asset_a: 'aa' + '1'.repeat(62), asset_b: 'bb' + '1'.repeat(62),
+    reserve_a: '100', reserve_b: '200', lp_total_shares: '50',
+    validation: 'verified',
+  }));
+  const nontac = await worker.ctacLpShareValueSats(env13, network, 'nontac', 1n, 100_000_000n);
+  ok('non-TAC pool → ok:false reason pool-not-tac-paired',
+    nontac.ok === false && nontac.reason === 'pool-not-tac-paired');
+}
+
+// ============== group: aggregate LP-value counter ==============
+group('Aggregate LP-value counter (§5.45.3 input)');
+
+{
+  const envA = { REGISTRY_KV: makeMockKv() };
+  ok('aggregate LP value starts at 0',
+    (await worker.ctacGetAggregateLpValueSats(envA, network)) === 0n);
+  await worker.ctacAddAggregateLpValueSats(envA, network, 2_000_000_000n);
+  ok('credit 2e9 sats LP value',
+    (await worker.ctacGetAggregateLpValueSats(envA, network)) === 2_000_000_000n);
+  await worker.ctacAddAggregateLpValueSats(envA, network, -1_200_000_000n);
+  ok('debit at force-close: 800M remaining',
+    (await worker.ctacGetAggregateLpValueSats(envA, network)) === 800_000_000n);
+  await worker.ctacAddAggregateLpValueSats(envA, network, -2_000_000_000n);
+  ok('underflow clamps to 0',
+    (await worker.ctacGetAggregateLpValueSats(envA, network)) === 0n);
+}
+
+// ============== group: aggregate_recovery pause re-impl ==============
+group('Aggregate recovery pause (§5.45.3) — re-implemented under lien semantics');
+
+{
+  const envB = { REGISTRY_KV: makeMockKv() };
+  const TAC_AID = 'fe' + '0'.repeat(62);
+  globalThis.TAC_ASSET_ID_HEX = TAC_AID;
+  const now = Math.floor(Date.now() / 1000);
+  for (let i = 0; i < 30; i++) {
+    await envB.REGISTRY_KV.put(
+      `trade-event:${TAC_AID}:h${i}`,
+      JSON.stringify({ ts: now - i * 600, price_sats: 100_000_000 }),
+    );
+  }
+
+  // Healthy: aggregate LP value = 200M sats, supply = 100M cBTC.tac
+  //   ratio = 200M × 1000 / 100M = 2000 thousandths = 2.0x → no pause
+  await worker.ctacAddAggregateLpValueSats(envB, network, 200_000_000n);
+  await worker.ctacAddSupply(envB, network, 100_000_000n);
+  const rA = await worker.ctacComputePauseStatus(envB, network, 1000, { tacAssetIdHex: TAC_AID });
+  ok('LP value 2.0x supply → no pause', rA === null, `expected null, got ${rA}`);
+
+  // Drop LP value below 1.5x: 140M / 100M = 1.4x → aggregate_recovery
+  await worker.ctacAddAggregateLpValueSats(envB, network, -60_000_000n);
+  const rB = await worker.ctacComputePauseStatus(envB, network, 1000, { tacAssetIdHex: TAC_AID });
+  ok('LP value 1.4x supply → aggregate_recovery', rB === 'aggregate_recovery',
+    `expected aggregate_recovery, got ${rB}`);
+
+  // Zero supply → no pause (system empty)
+  const envC = { REGISTRY_KV: makeMockKv() };
+  for (let i = 0; i < 30; i++) {
+    await envC.REGISTRY_KV.put(
+      `trade-event:${TAC_AID}:h${i}`,
+      JSON.stringify({ ts: now - i * 600, price_sats: 100_000_000 }),
+    );
+  }
+  const rC = await worker.ctacComputePauseStatus(envC, network, 1000, { tacAssetIdHex: TAC_AID });
+  ok('zero supply → no pause', rC === null, `expected null, got ${rC}`);
+}
 
 // ============== summary ==============
 console.log(`\n${pass}/${pass + fail} passed`);

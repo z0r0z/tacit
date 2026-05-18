@@ -5111,10 +5111,12 @@ const T_SLOT_SPLIT         = 0x46; // atomic 1→N slot split, ΣD_new = D_old (
 const T_SLOT_MERGE         = 0x47; // atomic N→1 slot merge, ΣD_old ≥ D_new (SPEC §5.25, SPEC-CBTC-ZK-FUNGIBILITY-AMENDMENT)
 // 0x48 reserved for T_SLOT_NOTE.
 // 0x49–0x4C: SPEC-CBTC-TAC-AMENDMENT (cBTC.tac LP-shaped wrapped BTC).
-const T_CBTC_TAC_DEPOSIT     = 0x49; // LP-shaped mint: cBTC.zk slot + TAC → cBTC.tac (SPEC §5.36)
-const T_CBTC_TAC_WITHDRAW    = 0x4A; // LP-shaped burn: cBTC.tac → cBTC.zk slot + TAC (SPEC §5.37)
-const T_CBTC_TAC_FORCE_CLOSE = 0x4B; // permissionless liquidation when ratio < LIQ_RATIO (SPEC §5.38)
-const T_SHARE_SLASH_CLAIM    = 0x4C; // optional pooled-insurance claim by cBTC.tac holder (SPEC §5.39.4)
+const T_CBTC_TAC_DEPOSIT     = 0x49; // LP-share lien mint (SPEC §5.47 v1 lien model)
+const T_CBTC_TAC_WITHDRAW    = 0x4A; // cooperative withdraw via lien release (SPEC §5.47)
+const T_CBTC_TAC_FORCE_CLOSE = 0x4B; // permissionless lien transfer to claim pool (SPEC §5.47)
+const T_SHARE_SLASH_CLAIM    = 0x4C; // T_CTAC_LIEN_CLAIM: cBTC.tac → LP-share from claim pool (SPEC §5.47)
+const T_CTAC_LIEN_CLAIM      = T_SHARE_SLASH_CLAIM; // semantic alias under v1 lien model
+const T_CTAC_LIEN_SPLIT      = 0x4F; // split a liened LP-share UTXO (SPEC §5.47)
 // 0x4D–0x4E reserved for SPEC-CBTC-ZK-AMOUNT-AMENDMENT (T_SLOT_FRACTIONALIZE/T_SLOT_RECONSOLIDATE
 // machinery, activated via SPEC-CBTC-TAC-AMENDMENT envelopes; the unbonded standalone path is
 // not shipped on mainnet).
@@ -8155,6 +8157,119 @@ function decodeTShareSlashClaimPayload(payload) {
     kind: 'share_slash_claim',
     networkTag, shareCount, shareNullifiers, shareCommits,
     shareBurnAmount, shareBalanceProof, claimTAC, recipientCommit, bindHash, proof,
+  };
+}
+
+// SPEC-CBTC-TAC-AMENDMENT §5.47 v1 — T_CTAC_LIEN_SPLIT wire primitives.
+//
+// Splits a depositor's liened LP-share UTXO into multiple outputs while
+// preserving the lien on one chosen output. All output amounts + blindings
+// are REVEALED (no split-privacy in v1) — Pedersen balance check is the
+// homomorphic constraint enforcing sum-of-outputs == source-commit.
+// Depositor's Schnorr sig over bind_hash under depositor_recovery_pk
+// authorises the split.
+const CTAC_LIEN_SPLIT_DOMAIN = new TextEncoder().encode('tacit-ctac-lien-split-v1');
+
+function computeCtacLienSplitBindHash({
+  networkTag, positionLeafHash, sourceOutpoint, outputCount,
+  outputAmounts, outputBlindings, outputCommits, lienInheritIndex,
+}) {
+  const parts = [
+    CTAC_LIEN_SPLIT_DOMAIN,
+    new Uint8Array([networkTag & 0xff]),
+    positionLeafHash,
+    sourceOutpoint,
+    new Uint8Array([outputCount & 0xff]),
+  ];
+  for (let i = 0; i < outputCount; i++) {
+    const amtLE = new Uint8Array(8);
+    const v = new DataView(amtLE.buffer);
+    const a = BigInt(outputAmounts[i]);
+    v.setUint32(0, Number(a & 0xffffffffn), true);
+    v.setUint32(4, Number((a >> 32n) & 0xffffffffn), true);
+    parts.push(amtLE, outputBlindings[i], outputCommits[i]);
+  }
+  parts.push(new Uint8Array([lienInheritIndex & 0xff]));
+  return sha256(concatBytes(...parts));
+}
+
+function encodeTCtacLienSplitPayload({
+  networkTag, positionLeafHash, sourceOutpoint, outputAmounts,
+  outputBlindings, outputCommits, lienInheritIndex, depositorSig, bindHash,
+}) {
+  if ((networkTag & 0xff) > 2) throw new Error('network_tag must be 0|1|2');
+  if (positionLeafHash.length !== 32) throw new Error('position_leaf_hash 32 bytes');
+  if (sourceOutpoint.length !== 36) throw new Error('source_outpoint 36 bytes (32 txid + 4 vout LE)');
+  const N = outputAmounts.length;
+  if (N < 2 || N > 8) throw new Error('output_count must be 2..8');
+  if (outputBlindings.length !== N || outputCommits.length !== N) {
+    throw new Error('output_blindings + output_commits must each have N entries');
+  }
+  if (lienInheritIndex < 0 || lienInheritIndex >= N) throw new Error('lien_inherit_index out of range');
+  if (depositorSig.length !== 64) throw new Error('depositor_sig must be 64 bytes (BIP-340)');
+  if (bindHash.length !== 32) throw new Error('bind_hash 32 bytes');
+  const parts = [
+    new Uint8Array([T_CTAC_LIEN_SPLIT, networkTag & 0xff]),
+    positionLeafHash, sourceOutpoint,
+    new Uint8Array([N & 0xff]),
+  ];
+  for (let i = 0; i < N; i++) {
+    if (outputBlindings[i].length !== 32) throw new Error(`output_blindings[${i}] must be 32 bytes`);
+    if (outputCommits[i].length !== 33) throw new Error(`output_commits[${i}] must be 33 bytes`);
+    const a = BigInt(outputAmounts[i]);
+    if (a === 0n || a >= (1n << BigInt(N_BITS))) throw new Error(`output_amounts[${i}] out of range`);
+    const amtLE = new Uint8Array(8);
+    const v = new DataView(amtLE.buffer);
+    v.setUint32(0, Number(a & 0xffffffffn), true);
+    v.setUint32(4, Number((a >> 32n) & 0xffffffffn), true);
+    parts.push(amtLE, outputBlindings[i], outputCommits[i]);
+  }
+  parts.push(new Uint8Array([lienInheritIndex & 0xff]), depositorSig, bindHash);
+  return concatBytes(...parts);
+}
+
+function decodeTCtacLienSplitPayload(payload) {
+  if (!payload) return null;
+  if (payload[0] !== T_CTAC_LIEN_SPLIT) return null;
+  if (payload.length < 1 + 1 + 32 + 36 + 1 + 2 * 73 + 1 + 64 + 32) return null;
+  let p = 1;
+  const networkTag = payload[p]; p += 1;
+  if (networkTag > 2) return null;
+  const positionLeafHash = payload.slice(p, p + 32); p += 32;
+  const sourceOutpoint = payload.slice(p, p + 36); p += 36;
+  const outputCount = payload[p]; p += 1;
+  if (outputCount < 2 || outputCount > 8) return null;
+  const expectedTail = outputCount * (8 + 32 + 33) + 1 + 64 + 32;
+  if (payload.length !== p + expectedTail) return null;
+  const outputAmounts = [];
+  const outputBlindings = [];
+  const outputCommits = [];
+  for (let i = 0; i < outputCount; i++) {
+    const v = new DataView(payload.buffer, payload.byteOffset + p, 8);
+    const amt = (BigInt(v.getUint32(4, true)) << 32n) | BigInt(v.getUint32(0, true));
+    p += 8;
+    if (amt === 0n || amt >= (1n << BigInt(N_BITS))) return null;
+    outputAmounts.push(amt);
+    outputBlindings.push(payload.slice(p, p + 32)); p += 32;
+    const c = payload.slice(p, p + 33);
+    try { bytesToPoint(c); } catch { return null; }
+    outputCommits.push(c);
+    p += 33;
+  }
+  const lienInheritIndex = payload[p]; p += 1;
+  if (lienInheritIndex >= outputCount) return null;
+  const depositorSig = payload.slice(p, p + 64); p += 64;
+  const bindHash = payload.slice(p, p + 32); p += 32;
+  const expectedBind = computeCtacLienSplitBindHash({
+    networkTag, positionLeafHash, sourceOutpoint, outputCount,
+    outputAmounts, outputBlindings, outputCommits, lienInheritIndex,
+  });
+  for (let i = 0; i < 32; i++) if (expectedBind[i] !== bindHash[i]) return null;
+  return {
+    kind: 'ctac_lien_split',
+    networkTag, positionLeafHash, sourceOutpoint, outputCount,
+    outputAmounts, outputBlindings, outputCommits, lienInheritIndex,
+    depositorSig, bindHash,
   };
 }
 
@@ -17135,14 +17250,36 @@ function getCtacBackupLastExportTs() {
   catch { return 0; }
 }
 
-// SPEC-CBTC-TAC-AMENDMENT §5.36 — LP-shaped mint of cBTC.tac.
+// SPEC-CBTC-TAC-AMENDMENT §5.36 (legacy) → §5.47 (v1 lien model).
 //
-// Locks a cBTC.zk slot's leaf + a TAC bond UTXO; mints cBTC.tac at the
-// depositor's recovery pubkey. The slot stays unspent on Bitcoin (the
-// depositor keeps r_btc); the cron handler tracks the position state.
+// ⚠ NEEDS REWRITE FOR v1 LIEN MODEL ⚠
 //
-// Atomicity: bond TAC UTXO is spent in the same reveal tx that produces
-// the cBTC.tac mint UTXO and carries the deposit envelope.
+// Worker semantics changed under §5.47: the bond is now an LP-share UTXO
+// of a (cBTC.zk, TAC) AMM pool, NOT a raw TAC UTXO. The bond UTXO must
+// NOT be spent in the deposit tx — the worker attaches a lien against
+// the existing unspent LP-share UTXO, leaving it in the depositor's
+// wallet but economically immobile (commitmentForUtxo refuses spends).
+//
+// The CURRENT builder below produces envelopes the new worker REJECTS
+// (it consumes a TAC UTXO and references it as bond_source_outpoint, but
+// the worker looks up the asset_id and refuses if it's not an LP-share
+// asset of a TAC-paired pool).
+//
+// Phase 2 Part 2 (separate session): rewrite this function to:
+//   - Take an LP-share UTXO outpoint (txid, vout) as input
+//   - DO NOT spend it in the deposit tx
+//   - Construct envelope referencing the LP-share UTXO
+//   - Build minimal commit+reveal (vout[0] = cBTC.tac mint at recipient)
+// Until then, calling this builder on a worker with v1 lien semantics
+// will fail at deposit-confirm time (worker refuses; no lien attached).
+//
+// Original docs preserved below for the rewrite reference.
+//
+// (Legacy v0 description:) Locks a cBTC.zk slot's leaf + a TAC bond UTXO;
+// mints cBTC.tac at the depositor's recovery pubkey. The slot stays unspent
+// on Bitcoin (the depositor keeps r_btc); the cron handler tracks the
+// position state. Atomicity: bond TAC UTXO is spent in the same reveal tx
+// that produces the cBTC.tac mint UTXO and carries the deposit envelope.
 //
 // Pre-flight gates:
 //   - Wallet ready (ensurePrivkey)
@@ -18300,6 +18437,236 @@ async function buildAndBroadcastCbtcTacForceClose({
     targetLeafHashHex,
     ammSwapMinBtcOut: minOutBig,
     liquidatorPayoutPubHex: bytesToHex(liquidatorPub),
+    commitFee, revealFee,
+  };
+}
+
+// SPEC-CBTC-TAC-AMENDMENT §5.47 v1 — T_CTAC_LIEN_SPLIT builder.
+//
+// Splits a depositor's liened LP-share UTXO into multiple outputs (2..8).
+// One chosen output INHERITS the lien (must still satisfy 2× collateral
+// at current TWAP); the others become unliened and freely spendable. The
+// source UTXO MUST be spent in the same tx (worker enforces; otherwise
+// asset doubling). Caller provides depositor's r_recovery (for the
+// Schnorr authorization sig) and the source UTXO's full opening
+// (amount + blinding) so the new outputs can be Pedersen-balanced
+// against the source commit.
+//
+// Inputs:
+//   positionLeafHashHex  — the cBTC.tac position whose lien is being split
+//   sourceUtxo           — { txid, vout, amount, blinding } — the liened LP UTXO
+//   sourceLpAssetIdHex   — asset_id of the source UTXO (= bond_lp_asset_id)
+//   outputs              — array of { amount, recipient } where recipient is
+//                          a 33-byte compressed pubkey for P2WPKH; the
+//                          LP-share commit is Pedersen(amount, freshBlinding).
+//                          recipient[lienInheritIndex] is the depositor's
+//                          own recovery pubkey (or any pubkey they control).
+//   lienInheritIndex     — 0..outputs.length-1, which output inherits the lien
+//   depositorRecoveryPrivHex — 32-byte hex; the depositor's r_recovery
+//                              (used to Schnorr-sign bind_hash; the worker
+//                              verifies against position.depositor_recovery_pk)
+//
+// Atomicity: the reveal tx spends the source LP-share UTXO at vin[1]
+// (using the depositor's wallet sig on the P2WPKH). The output asset
+// UTXOs land at vout[0..N-1] as DUST P2WPKH outputs with the per-output
+// recipients. The envelope's output_commits[i] are Pedersen commits over
+// (amount, freshBlinding) that downstream consumers can re-derive.
+async function buildAndBroadcastCtacLienSplit({
+  positionLeafHashHex,
+  sourceUtxo,                    // { txid, vout, amount, blinding } (amount + blinding open the source commit)
+  sourceLpAssetIdHex,            // bond_lp_asset_id from the position
+  outputs,                       // [{ amount, recipientPubHex }]
+  lienInheritIndex,
+  depositorRecoveryPrivHex,
+  onProgress = null,
+}) {
+  await ensurePrivkey();
+  const _progress = (stage, info) => { try { onProgress && onProgress(stage, info); } catch {} };
+  const networkTag = NET.name === 'signet' ? 0x01 : NET.name === 'regtest' ? 0x02 : 0x00;
+
+  // 1. Pre-flight
+  if (!positionLeafHashHex || !/^[0-9a-f]{64}$/i.test(positionLeafHashHex)) {
+    throw new Error('positionLeafHashHex must be 64 hex chars');
+  }
+  if (!sourceUtxo || typeof sourceUtxo.txid !== 'string' || !Number.isInteger(sourceUtxo.vout)) {
+    throw new Error('sourceUtxo must include {txid, vout, amount, blinding}');
+  }
+  if (!sourceLpAssetIdHex || !/^[0-9a-f]{64}$/i.test(sourceLpAssetIdHex)) {
+    throw new Error('sourceLpAssetIdHex must be 64 hex chars');
+  }
+  if (!Array.isArray(outputs) || outputs.length < 2 || outputs.length > 8) {
+    throw new Error('outputs must be an array of 2..8 entries');
+  }
+  if (!Number.isInteger(lienInheritIndex) || lienInheritIndex < 0 || lienInheritIndex >= outputs.length) {
+    throw new Error('lienInheritIndex out of range');
+  }
+  if (!depositorRecoveryPrivHex || !/^[0-9a-f]{64}$/i.test(depositorRecoveryPrivHex)) {
+    throw new Error('depositorRecoveryPrivHex must be 64 hex chars');
+  }
+  const positionLeafHashBytes = hexToBytes(positionLeafHashHex.toLowerCase());
+  const sourceAmountBig = BigInt(sourceUtxo.amount);
+  const sourceBlindingBig = BigInt('0x' + (sourceUtxo.blinding.startsWith('0x') ? sourceUtxo.blinding.slice(2) : sourceUtxo.blinding));
+  // Balance: sum of output amounts must equal source amount (so Pedersen
+  // commits balance — worker enforces, dapp also pre-checks).
+  let sumAmounts = 0n;
+  for (const o of outputs) sumAmounts += BigInt(o.amount);
+  if (sumAmounts !== sourceAmountBig) {
+    throw new Error(`output amount sum ${sumAmounts} != source amount ${sourceAmountBig}`);
+  }
+
+  // 2. Build per-output commits with fresh blindings + the sum constraint.
+  //    For Pedersen balance we need sum(output_blindings) = source_blinding.
+  //    Generate N-1 fresh blindings; derive the N-th as (source_blinding -
+  //    sum(others)) mod SECP_N so the homomorphic balance holds.
+  _progress('lien-split:build-commits');
+  const outputBlindings = [];
+  let blindingSum = 0n;
+  for (let i = 0; i < outputs.length - 1; i++) {
+    const fresh = bytes32ToBigint(randomBytes(32)) % SECP_N;
+    outputBlindings.push(fresh);
+    blindingSum = (blindingSum + fresh) % SECP_N;
+  }
+  // Final blinding closes the sum: (source_blinding - sumOthers) mod N.
+  const finalBlinding = ((sourceBlindingBig - blindingSum) % SECP_N + SECP_N) % SECP_N;
+  outputBlindings.push(finalBlinding);
+  const outputBlindingBytes = outputBlindings.map(b => bigintToBytes32(b));
+  const outputCommits = outputs.map((o, i) =>
+    pedersenCommit(BigInt(o.amount), outputBlindings[i]).toRawBytes(true),
+  );
+
+  // 3. source_outpoint = txid (32 BE-reversed-to-LE? no — Bitcoin outpoint is
+  //    little-endian txid bytes per BIP-141; we use the natural-order hex from
+  //    Esplora which is BE display; outpoint encoding wants LE). For envelope
+  //    bind_hash + worker matching we follow the existing convention used by
+  //    encodeTCbtcTacDepositPayload's bond_source_outpoint: 32-byte natural
+  //    txid bytes (BE display order — what hexToBytes returns) + 4-byte LE vout.
+  const sourceOutpoint = new Uint8Array(36);
+  sourceOutpoint.set(hexToBytes(sourceUtxo.txid.toLowerCase()), 0);
+  new DataView(sourceOutpoint.buffer).setUint32(32, sourceUtxo.vout | 0, true);
+
+  // 4. bind_hash + depositor Schnorr sig
+  _progress('lien-split:sign');
+  const outputAmountsBig = outputs.map(o => BigInt(o.amount));
+  const bindHash = computeCtacLienSplitBindHash({
+    networkTag,
+    positionLeafHash: positionLeafHashBytes,
+    sourceOutpoint,
+    outputCount: outputs.length,
+    outputAmounts: outputAmountsBig,
+    outputBlindings: outputBlindingBytes,
+    outputCommits,
+    lienInheritIndex,
+  });
+  const depositorPriv = hexToBytes(depositorRecoveryPrivHex.toLowerCase());
+  const depositorSig = schnorr.sign(bindHash, depositorPriv);
+
+  // 5. Envelope payload
+  const payload = encodeTCtacLienSplitPayload({
+    networkTag,
+    positionLeafHash: positionLeafHashBytes,
+    sourceOutpoint,
+    outputAmounts: outputAmountsBig,
+    outputBlindings: outputBlindingBytes,
+    outputCommits,
+    lienInheritIndex,
+    depositorSig,
+    bindHash,
+  });
+
+  // 6. Build commit + reveal txs
+  //    Commit: sats inputs → P2TR(envelope) + sats change.
+  //    Reveal: vin[0] = commit P2TR (script-path with envelope reveal);
+  //            vin[1] = source LP-share UTXO (P2WPKH under wallet.priv);
+  //            vout[0..N-1] = N P2WPKH outputs to per-output recipients (DUST).
+  _progress('lien-split:tx:build');
+  const envelopeScript = encodeEnvelopeScript(wallet.xonly(), payload);
+  const tapLeaf = tapLeafHash(envelopeScript);
+  const { Q_xonly, parity } = tweakedOutputKey(TAP_NUMS, tapLeaf);
+  const commitSpk = p2trScript(Q_xonly);
+  const cb = controlBlock(TAP_NUMS, parity);
+
+  const feeRate = await getFeeRate();
+  const revealVb = 11 + 41 + 41 + outputs.length * 31
+    + Math.ceil((1 + 1 + 65 + 3 + 45 + payload.length + 34 + 109) / 4);
+  const revealFee = feeFor(revealVb, feeRate);
+  const dustTotal = DUST * outputs.length;
+  const commitValue = Math.max(DUST, DUST + revealFee + dustTotal - DUST);
+
+  const allUtxos = await getUtxos(wallet.address());
+  const holdings = await scanHoldings();
+  if (!holdings) throw new Error('holdings scan failed');
+  const sats = selectSatsUtxosSafe(allUtxos, holdings).sort((a, b) => {
+    const ac = a.status?.confirmed === true ? 1 : 0;
+    const bc = b.status?.confirmed === true ? 1 : 0;
+    if (ac !== bc) return bc - ac;
+    return b.value - a.value;
+  });
+  const picked = []; let total = 0; let commitFee = 500;
+  for (const u of sats) {
+    picked.push(u); total += u.value;
+    commitFee = feeFor(estCommitVb(picked.length), feeRate);
+    if (total >= commitValue + commitFee + DUST) break;
+  }
+  if (total < commitValue + commitFee) {
+    throw new Error(`insufficient sats for lien-split commit: need ${commitValue + commitFee}, have ${total}`);
+  }
+  const change = total - commitValue - commitFee;
+  const commitOutputs = [{ value: commitValue, script: commitSpk }];
+  if (change >= DUST) commitOutputs.push({ value: change, script: p2wpkhScript(wallet.pub) });
+  const commitTx = {
+    version: 2, locktime: 0,
+    inputs: picked.map(u => ({ txid: u.txid, vout: u.vout, sequence: 0xfffffffd, witness: [] })),
+    outputs: commitOutputs,
+  };
+  for (let i = 0; i < commitTx.inputs.length; i++) {
+    commitTx.inputs[i].witness = signP2wpkhInput(commitTx, i, picked[i].value);
+  }
+  const commitHex = bytesToHex(serializeTx(commitTx));
+  const commitTxidHex = txid(commitTx);
+
+  // Reveal: spend commit P2TR (vin[0]) + source LP-share UTXO (vin[1]).
+  // Output recipients land at vout[0..N-1] as DUST P2WPKH.
+  const revealTx = {
+    version: 2, locktime: 0,
+    inputs: [
+      { txid: commitTxidHex, vout: 0, sequence: 0xfffffffd, witness: [] },
+      { txid: sourceUtxo.txid, vout: sourceUtxo.vout | 0, sequence: 0xfffffffd, witness: [] },
+    ],
+    outputs: outputs.map(o => ({ value: DUST, script: p2wpkhScript(hexToBytes(o.recipientPubHex.toLowerCase())) })),
+  };
+  const revealPrevouts = [
+    { value: commitValue, script: commitSpk },
+    { value: DUST,        script: p2wpkhScript(wallet.pub) },
+  ];
+  revealTx.inputs[0].witness = signTaprootScriptPathInput(revealTx, revealPrevouts, envelopeScript, cb);
+  revealTx.inputs[1].witness = signP2wpkhInput(revealTx, 1, DUST);
+  const revealHex = bytesToHex(serializeTx(revealTx));
+  const revealTxidHex = txid(revealTx);
+
+  _progress('lien-split:broadcast:commit');
+  await broadcast(commitHex);
+  _progress('lien-split:broadcast:reveal');
+  await broadcastWithRetry(revealHex);
+
+  try {
+    recordActivity({
+      kind: 'ctac-lien-split',
+      ticker: 'cBTC.tac',
+      amount: 0n,
+      decimals: 0,
+      txid: revealTxidHex,
+      positionLeafHash: positionLeafHashHex,
+    });
+  } catch {}
+  invalidateHoldingsCache();
+
+  return {
+    commitTxid: commitTxidHex,
+    revealTxid: revealTxidHex,
+    commitHex, revealHex,
+    outputBlindings: outputBlindingBytes.map(b => bytesToHex(b)),
+    outputCommits: outputCommits.map(c => bytesToHex(c)),
+    newLienOutpoint: { txid: revealTxidHex, vout: lienInheritIndex },
     commitFee, revealFee,
   };
 }
@@ -28914,7 +29281,18 @@ async function scanPools() {
       }
       }
     }
-    const remoteNullifiers = Array.isArray(detail.nullifiers) ? detail.nullifiers : [];
+    // SPEC §5.10 reorg-safety gate symmetric with the leaf path: only
+    // mark a nullifier as spent in the local set once the worker says
+    // it's at depth ≥ 3 (`status === 'included'`). Pre-fix, a depth-1
+    // burn that reorged out would still flip mixerIsNullifierSpent →
+    // pre-flight refuses every legitimate re-broadcast attempt forever.
+    // Backwards-compat: legacy worker responses (no `status` field)
+    // treat every nullifier as included, matching pre-depth-gate
+    // behavior — same handling the leaf filter uses (line 28727).
+    const remoteNullifiersAll = Array.isArray(detail.nullifiers) ? detail.nullifiers : [];
+    const remoteNullifiers = remoteNullifiersAll.filter(n =>
+      !('status' in n) || n.status === 'included'
+    );
     for (const n of remoteNullifiers) {
       if (!n.nullifier_hash) continue;
       if (!mixerIsNullifierSpent(aidHex, denom, hexToBytes(n.nullifier_hash))) {
@@ -68469,6 +68847,10 @@ export {
   encodeTCbtcTacWithdrawPayload, decodeTCbtcTacWithdrawPayload,
   encodeTCbtcTacForceClosePayload, decodeTCbtcTacForceClosePayload,
   encodeTShareSlashClaimPayload, decodeTShareSlashClaimPayload,
+  // SPEC §5.47 v1 lien model — split a liened LP-share UTXO.
+  encodeTCtacLienSplitPayload, decodeTCtacLienSplitPayload,
+  computeCtacLienSplitBindHash,
+  T_CTAC_LIEN_SPLIT, T_CTAC_LIEN_CLAIM,
   // AMM T_SWAP_VAR wire primitives (SPEC-SWAP-VAR-AMENDMENT §5.16.3).
   encodeTSwapVarPayload, decodeTSwapVarPayload,
   swapVarCurveDeltaOut, computeSwapVarEnvelopeHash,
@@ -68491,6 +68873,7 @@ export {
   // P2TR. Force-close keeper + slash-claim builders staged separately.
   buildAndBroadcastCbtcTacDeposit, buildAndBroadcastCbtcTacWithdraw,
   buildAndBroadcastShareSlashClaim, buildAndBroadcastCbtcTacForceClose,
+  buildAndBroadcastCtacLienSplit,
   // AMM swap (T_SWAP_VAR) high-level builder. v1 self-fulfill: wallet
   // acts as both trader (intent sig) and settler (kernel sig from
   // excess scalar). Single Bitcoin tx, no off-chain coordination.

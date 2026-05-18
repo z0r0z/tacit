@@ -61,13 +61,13 @@ and pick from the explicitly-listed free slots. The legend:
 | `0x46` | `T_SLOT_SPLIT` | ✅ shipped | `SPEC-CBTC-ZK-FUNGIBILITY-AMENDMENT.md` §5.24 | Atomic 1→N slot split, ΣD_new = D_old. |
 | `0x47` | `T_SLOT_MERGE` | ✅ shipped | `SPEC-CBTC-ZK-FUNGIBILITY-AMENDMENT.md` §5.25 | Atomic N→1 slot merge, ΣD_old ≥ D_new. |
 | `0x48` | `T_SLOT_NOTE` | 🔒 reserved | `SPEC-CBTC-ZK-FUNGIBILITY-AMENDMENT.md` §5.26 | Encrypted slot note attachment. |
-| `0x49` | `T_CBTC_TAC_DEPOSIT` | ✅ shipped | `SPEC-CBTC-TAC-AMENDMENT.md` §5.36 | LP-shaped mint: cBTC.zk slot + TAC → cBTC.tac. |
-| `0x4A` | `T_CBTC_TAC_WITHDRAW` | ✅ shipped | `SPEC-CBTC-TAC-AMENDMENT.md` §5.37 | LP-shaped burn: cBTC.tac → cBTC.zk slot + TAC. |
-| `0x4B` | `T_CBTC_TAC_FORCE_CLOSE` | ✅ shipped (v1 early-SLASH) | `SPEC-CBTC-TAC-AMENDMENT.md` §5.38 | Permissionless early-SLASH on ratio breach: bond → insurance pool; no AMM swap / no liquidator reward in v1 (covenant-based design deferred). |
-| `0x4C` | `T_SHARE_SLASH_CLAIM` | ✅ shipped | `SPEC-CBTC-TAC-AMENDMENT.md` §5.39.4 | Optional pooled-insurance claim by a cBTC.tac holder. |
+| `0x49` | `T_CBTC_TAC_DEPOSIT` | ✅ shipped (v1 lien model) | `SPEC-CBTC-TAC-AMENDMENT.md` §5.47 | LP-share lien mint: cBTC.zk slot + LP-share lien on canonical (cBTC.zk, TAC) pool → cBTC.tac. |
+| `0x4A` | `T_CBTC_TAC_WITHDRAW` | ✅ shipped (v1 lien model) | `SPEC-CBTC-TAC-AMENDMENT.md` §5.47 | Cooperative unwind: burn cBTC.tac → release LP-share lien + spend slot K_btc. |
+| `0x4B` | `T_CBTC_TAC_FORCE_CLOSE` | ✅ shipped (v1 lien model) | `SPEC-CBTC-TAC-AMENDMENT.md` §5.47 | Permissionless lien transfer to claim pool when LP-share BTC value < 1.2× slot. |
+| `0x4C` | `T_CTAC_LIEN_CLAIM` | ✅ shipped (v1 lien model) | `SPEC-CBTC-TAC-AMENDMENT.md` §5.47 | Burn cBTC.tac → mint pro-rata LP-share from claim pool. (Wire format preserved as `T_SHARE_SLASH_CLAIM`.) |
 | `0x4D` | `T_SLOT_FRACTIONALIZE` | 🔒 reserved | `SPEC-CBTC-ZK-AMOUNT-AMENDMENT.md` §5.25 | Slot → standard tacit shares. Reserved for future activation. |
 | `0x4E` | `T_SLOT_RECONSOLIDATE` | 🔒 reserved | `SPEC-CBTC-ZK-AMOUNT-AMENDMENT.md` §5.26 | Standard tacit shares → slot. Reserved for future activation. |
-| `0x4F` | — | ⬜ free | — | Available. |
+| `0x4F` | `T_CTAC_LIEN_SPLIT` | ✅ shipped (v1 lien model) | `SPEC-CBTC-TAC-AMENDMENT.md` §5.47 | Split a liened LP-share UTXO into multiple outputs; lien inherits onto one chosen output (must still meet 2× collateral). |
 | `0x50` | `T_GOV_PROPOSAL` | 📝 drafted | `SPEC-GOVERNANCE-AMENDMENT.md` | TAC DAO proposal. |
 | `0x51` | `T_GOV_VOTE` | 📝 drafted | `SPEC-GOVERNANCE-AMENDMENT.md` | TAC DAO vote. |
 | `0x52` | `T_GOV_VETO` | 📝 drafted | `SPEC-GOVERNANCE-AMENDMENT.md` | TAC DAO veto. |
