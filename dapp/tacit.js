@@ -35574,8 +35574,7 @@ function setupCeremonyHandlers() {
 const TAB_GROUP_OF = {
   wallet: 'wallet', holdings: 'wallet', claim: 'wallet',
   transfer: 'send',
-  market: 'markets', pool: 'markets', farms: 'markets',
-  discover: 'discover',
+  market: 'markets', pool: 'markets', farms: 'markets', discover: 'markets',
   etch: 'create', drops: 'create', mixer: 'mixer',
   about: 'protocol',
 };
