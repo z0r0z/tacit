@@ -30339,13 +30339,22 @@ function wireAssetIdToggles(container) {
   });
 }
 
-function toast(msg, kind = '', ms = 4000, title = '') {
+function toast(msg, kind = '', ms = 4000, titleOrOpts = '') {
+  // Back-compat: 4th arg used to be a string title; some callers now
+  // pass an opts object { title, onClick }. Normalise.
+  const opts = (titleOrOpts && typeof titleOrOpts === 'object') ? titleOrOpts : { title: titleOrOpts };
+  const title = opts.title || '';
+  const onClick = typeof opts.onClick === 'function' ? opts.onClick : null;
   const el = document.createElement('div');
   el.className = 'toast ' + kind;
   el.textContent = msg;
   if (title) {
     el.title = title;
     el.style.cursor = 'help';
+  }
+  if (onClick) {
+    el.style.cursor = 'pointer';
+    el.onclick = () => { try { onClick(); } catch {} try { el.remove(); } catch {} };
   }
   $('#toast-container').appendChild(el);
   setTimeout(() => el.remove(), ms);
@@ -35129,6 +35138,43 @@ function renderAmmCeremonyChip() {
     }
   }).catch(() => {});
 }
+// Mini-chip state: tracks an in-flight contribute so the user can close
+// the drawer without aborting the work. Mix continues in the background;
+// the chip displays live %% + elapsed and reopens the drawer on click.
+// When the contribute completes (success or error), the chip hides and
+// a toast announces the outcome with a click-to-reopen handle.
+let _ammContribInFlight = false;
+let _ammContribCurrentPct = 0;
+let _ammContribStartedAt = 0;
+let _ammContribMiniChipTimer = null;
+function _ammMiniChipShow() {
+  const chip = document.getElementById('amm-cer-mini-chip');
+  if (!chip) return;
+  chip.style.display = 'inline-flex';
+  _ammMiniChipTick();
+  if (_ammContribMiniChipTimer) clearInterval(_ammContribMiniChipTimer);
+  _ammContribMiniChipTimer = setInterval(_ammMiniChipTick, 1000);
+}
+function _ammMiniChipHide() {
+  const chip = document.getElementById('amm-cer-mini-chip');
+  if (chip) chip.style.display = 'none';
+  if (_ammContribMiniChipTimer) { clearInterval(_ammContribMiniChipTimer); _ammContribMiniChipTimer = null; }
+}
+function _ammMiniChipTick() {
+  const pctEl = document.getElementById('amm-cer-mini-chip-pct');
+  const elapsedEl = document.getElementById('amm-cer-mini-chip-elapsed');
+  if (pctEl) pctEl.textContent = Math.round(_ammContribCurrentPct) + '%';
+  if (elapsedEl && _ammContribStartedAt > 0) {
+    const sec = Math.floor((Date.now() - _ammContribStartedAt) / 1000);
+    elapsedEl.textContent = sec < 60 ? `${sec}s` : `${Math.floor(sec/60)}m ${sec%60}s`;
+  }
+}
+function _ammMiniChipSetPct(pct, label) {
+  _ammContribCurrentPct = Math.max(0, Math.min(100, pct));
+  const lblEl = document.getElementById('amm-cer-mini-chip-label');
+  if (lblEl && label) lblEl.textContent = label;
+  _ammMiniChipTick();
+}
 function openAmmCeremonyDrawer() {
   const drawer = document.getElementById('amm-ceremony-drawer');
   if (!drawer) return;
@@ -35153,13 +35199,17 @@ function openAmmCeremonyDrawer() {
 function closeAmmCeremonyDrawer() {
   const drawer = document.getElementById('amm-ceremony-drawer');
   if (drawer) drawer.style.display = 'none';
-  // Re-render the contribute chip on close so users who errored (or
-  // closed without contributing) see the chip reappear immediately
-  // without needing to navigate away and back. Defensive — covers
-  // the "I errored and never saw the chip again" report. Mark-contributed
-  // never runs on error paths so the chip's acked check stays
-  // honest; this just ensures we redraw to reflect that.
-  try { renderAmmCeremonyChip(); } catch {}
+  // If a contribute is mid-flight when the drawer closes, surface the
+  // mini progress chip so the user can monitor + reopen. The XHR + mix
+  // continue regardless (they don't care about the drawer DOM state);
+  // we just need a non-intrusive surface for status while hidden.
+  if (_ammContribInFlight) {
+    _ammMiniChipShow();
+  } else {
+    // Normal close: re-render the floating contribute chip in case the
+    // user errored / dismissed and we need the prompt back.
+    try { renderAmmCeremonyChip(); } catch {}
+  }
 }
 function _renderAmmCerDrawerBody(opts) {
   const chainsEl = document.getElementById('amm-cer-chains');
@@ -35351,6 +35401,11 @@ async function _submitAmmCeremonyContribution() {
   let _currentPhase = 'idle';
   let _phaseStartedAt = Date.now();
   const _contributeStartedAt = Date.now();
+  // Background-close support: mark in-flight + seed mini-chip state so
+  // closing the drawer mid-contribute surfaces a live progress chip.
+  _ammContribInFlight = true;
+  _ammContribStartedAt = _contributeStartedAt;
+  _ammContribCurrentPct = 0;
   let _mixTimer = null;
   const _stopMixTimer = () => { if (_mixTimer) { clearInterval(_mixTimer); _mixTimer = null; } };
   const _setPhase = (phase, labelText, subText) => {
@@ -35379,9 +35434,10 @@ async function _submitAmmCeremonyContribution() {
     _setElapsedDisplay();
   };
   const _setProgress = (pct) => {
-    if (!progressbarFillEl) return;
     const v = Math.max(0, Math.min(100, pct));
-    progressbarFillEl.style.width = v.toFixed(1) + '%';
+    if (progressbarFillEl) progressbarFillEl.style.width = v.toFixed(1) + '%';
+    // Mirror to the mini chip so background-closed drawers see motion.
+    _ammContribCurrentPct = v;
   };
   const _setElapsedDisplay = () => {
     if (!headlineElapsedEl) return;
@@ -35619,6 +35675,24 @@ async function _submitAmmCeremonyContribution() {
     // on any subsequent page nav for the rest of the session.
     try { if (typeof window !== 'undefined') window.removeEventListener('beforeunload', _beforeUnloadHandler); } catch {}
     try { if (typeof document !== 'undefined') document.removeEventListener('visibilitychange', _visHandler); } catch {}
+    // Tear down background-close mini chip state. If the drawer is
+    // hidden (user backgrounded the work), surface a toast with the
+    // outcome so they don't miss the landing/error. The toast handler
+    // reopens the drawer on click so the user can see + share the
+    // success card or the error explanation.
+    _ammContribInFlight = false;
+    _ammMiniChipHide();
+    const drawer = document.getElementById('amm-ceremony-drawer');
+    const drawerHidden = !drawer || drawer.style.display === 'none';
+    if (drawerHidden && typeof toast === 'function') {
+      const landed = (resultEl.style.color === 'var(--ink)') || /Contribution landed/.test(resultEl.textContent || '');
+      const msg = landed
+        ? 'Your AMM ceremony contribution landed. Click to view + share.'
+        : `Ceremony contribute didn\'t finish: ${(resultEl.textContent || '').replace(/^✗\s*/, '').slice(0, 100)} Click to view.`;
+      try {
+        toast(msg, landed ? 'success' : '', 12000, { onClick: () => { try { openAmmCeremonyDrawer(); } catch {} } });
+      } catch { try { toast(msg, landed ? 'success' : '', 12000); } catch {} }
+    }
   }
 }
 function _wireAmmCeremonyChipOnce() {
@@ -35631,6 +35705,18 @@ function _wireAmmCeremonyChipOnce() {
   if (chip) {
     chip.onclick = openAmmCeremonyDrawer;
     chip.onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openAmmCeremonyDrawer(); } };
+  }
+  // Mini progress chip: click reopens the drawer with the in-flight
+  // contribute's progress headline + log restored as-is. Mix continues
+  // throughout — closing the drawer never aborts the work.
+  const miniChip = document.getElementById('amm-cer-mini-chip');
+  if (miniChip) {
+    const reopen = () => {
+      _ammMiniChipHide();
+      try { openAmmCeremonyDrawer(); } catch (e) { console.warn('[amm-mini-chip] reopen failed', e?.message); }
+    };
+    miniChip.onclick = reopen;
+    miniChip.onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); reopen(); } };
   }
   if (cancelBtn) cancelBtn.onclick = closeAmmCeremonyDrawer;
   if (goBtn)     goBtn.onclick = _submitAmmCeremonyContribution;

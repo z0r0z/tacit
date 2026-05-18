@@ -3730,6 +3730,59 @@ body.tacit-amm-ceremony-ready [data-amm-gated] { display: block; }
   background: #c97a1a;
   animation: amm-cer-pulse 2.5s ease-in-out infinite;
 }
+/* Mini progress chip that appears when the ceremony drawer is closed
+   mid-contribute. Positioned bottom-right (above the normal contribute
+   chip if both somehow showed). Click to reopen the drawer. */
+.amm-cer-mini-chip {
+  position: fixed;
+  bottom: 16px;
+  right: 16px;
+  z-index: 901;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  background: var(--bg);
+  border: 1px solid var(--ink);
+  box-shadow: 2px 2px 0 var(--ink);
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--ink);
+  cursor: pointer;
+  user-select: none;
+  transition: transform 80ms ease-out;
+}
+.amm-cer-mini-chip:hover { transform: translate(-1px, -1px); box-shadow: 3px 3px 0 var(--ink); }
+.amm-cer-mini-chip:active { transform: translate(1px, 1px); box-shadow: 1px 1px 0 var(--ink); }
+.amm-cer-mini-chip-label {
+  font-family: var(--serif);
+  font-style: italic;
+  font-weight: 400;
+  font-size: 12px;
+  color: var(--ink);
+}
+.amm-cer-mini-chip-pct {
+  font-family: var(--mono);
+  font-weight: 700;
+  color: var(--ink);
+  font-size: 11px;
+  padding: 1px 6px;
+  background: var(--ink-faint);
+  border-radius: 2px;
+}
+.amm-cer-mini-chip-elapsed {
+  font-family: var(--mono);
+  color: var(--ink-mid);
+  font-size: 10px;
+  font-weight: 500;
+}
+@media (max-width: 600px) {
+  .amm-cer-mini-chip { padding: 6px 10px; gap: 6px; bottom: 10px; right: 10px; box-shadow: 1px 1px 0 var(--ink); }
+  .amm-cer-mini-chip-label { font-size: 10px; }
+  .amm-cer-mini-chip-pct { font-size: 10px; }
+  .amm-cer-mini-chip-elapsed { font-size: 9px; }
+}
 /* Steady heartbeat dot in the ceremony progress headline — assures
    contributor the tab is alive during the 30-60s WASM mix step
    when other UI may visually freeze. Same animation family as the
@@ -6886,6 +6939,18 @@ body.tacit-amm-ceremony-ready [data-amm-gated] { display: block; }
   <span class="amm-cer-chip-dot"></span>
   <span class="amm-cer-chip-text"><span class="amm-cer-chip-text-full">contribute to AMM ceremony</span><span class="amm-cer-chip-text-short">AMM ✦</span></span>
   <span class="amm-cer-chip-count" id="amm-cer-chip-count"></span>
+</div>
+<!-- Mini progress chip: surfaces when the user closes the drawer while
+     a contribute is mid-flight. Lets them background the work, switch
+     tabs, do other things — chip shows live %% + elapsed, click to
+     reopen drawer with full progress log. Auto-hides when contribute
+     completes (success or error); a toast then announces the outcome
+     with a click-to-open affordance. -->
+<div id="amm-cer-mini-chip" class="amm-cer-mini-chip" role="button" tabindex="0" style="display:none;" title="Ceremony contribute in progress — click to reopen the drawer.">
+  <span class="amm-cer-heartbeat" aria-hidden="true" style="width:6px; height:6px; border-radius:50%; background:#c97a1a; flex:0 0 auto;"></span>
+  <span class="amm-cer-mini-chip-label" id="amm-cer-mini-chip-label">contributing…</span>
+  <span class="amm-cer-mini-chip-pct" id="amm-cer-mini-chip-pct">0%</span>
+  <span class="amm-cer-mini-chip-elapsed" id="amm-cer-mini-chip-elapsed">0s</span>
 </div>
 <div id="amm-ceremony-drawer" class="pass-modal" role="dialog" aria-modal="true" aria-labelledby="amm-cer-title" style="display:none;">
   <div class="pass-card" style="max-width: 540px;">
