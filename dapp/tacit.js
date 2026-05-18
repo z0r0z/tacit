@@ -35163,9 +35163,16 @@ async function ceremonyContributeAmm({
           _emit('upload-retry', { attempt: dpAttempt, wait, reason: 'direct-pinata error (' + (e?.message || e) + ') — retrying' });
           await new Promise(r => setTimeout(r, wait));
         } else {
-          _emit('upload-retry', { attempt: 0, wait: 0, reason: 'direct-pinata exhausted (' + (e?.message || e) + ') — falling back to worker relay' });
+          _emit('upload-retry', { attempt: 0, wait: 0, reason: 'direct-pinata exhausted (' + (e?.message || e) + ')' });
         }
       }
+    }
+    // For >100MB zkeys the worker relay can't succeed either (CF wall-
+    // clock cap on the CF→Pinata leg). If direct-pinata is the only
+    // viable path and it exhausted, surface a clean failure now instead
+    // of letting the user watch 8 doomed relay retries.
+    if (!prePinnedCid && mixed.newZkey.length > 100 * 1024 * 1024) {
+      throw new Error('Direct-Pinata upload failed and the file is too large for the worker relay path. Try refreshing and contributing again, or ask in support.');
     }
   }
   // Build form once — reused across upload retries. Blob/FormData are
