@@ -16,7 +16,7 @@ import {
 import { signSchnorr, verifySchnorr } from './composition.mjs';
 import { curveDeltaOut } from './swap-var.mjs';
 import {
-  OPCODE_T_SWAP_ROUTE, ENVELOPE_VERSION, N_HOPS_MAX,
+  OPCODE_T_SWAP_ROUTE, N_HOPS_MAX,
   encodeSwapRoute, decodeSwapRoute, computeSwapRouteEnvelopeHash,
   buildSwapRouteIntentMsg, buildSwapRouteKernelMsg, kernelVerifyPoint,
   hashHops, validateSwapRoute as _validateSwapRoute,
@@ -218,21 +218,21 @@ test('encode+decode 2-hop route roundtrip', () => {
 test('decode rejects opcode mismatch', () => {
   const { env } = buildHonestTwoHopRoute();
   const bytes = encodeSwapRoute(env);
-  const bad = new Uint8Array(bytes); bad[1] = 0x32;
+  const bad = new Uint8Array(bytes); bad[0] = 0x32;
   try { decodeSwapRoute(bad); return false; } catch { return true; }
 });
 
 test('decode rejects nHops < 2', () => {
   const { env } = buildHonestTwoHopRoute();
   const bytes = encodeSwapRoute(env);
-  const bad = new Uint8Array(bytes); bad[2] = 1;
+  const bad = new Uint8Array(bytes); bad[1] = 1;
   try { decodeSwapRoute(bad); return false; } catch { return true; }
 });
 
 test('decode rejects nHops > N_HOPS_MAX', () => {
   const { env } = buildHonestTwoHopRoute();
   const bytes = encodeSwapRoute(env);
-  const bad = new Uint8Array(bytes); bad[2] = N_HOPS_MAX + 1;
+  const bad = new Uint8Array(bytes); bad[1] = N_HOPS_MAX + 1;
   try { decodeSwapRoute(bad); return false; } catch { return true; }
 });
 

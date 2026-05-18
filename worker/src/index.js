@@ -152,7 +152,6 @@ const T_LP_HARVEST  = 0x3B;  // claim reward without unbonding (SPEC §5.43)
 const T_FARM_REFUND = 0x3E;  // launcher reclaims unspent treasury post-grace (SPEC §5.44)
 // Farm-state attestation reuses T_INTENT_ATTEST (0x30) per SPEC §5.45;
 // no dedicated opcode. See buildFarmStateHash usage in amm-farm.mjs.
-const _FARM_ENVELOPE_VERSION = 0x01;
 // Spec-pinned constants (mirror tests/amm-farm.mjs exports):
 const AMM_FARM_MIN_BOND              = 1000n;
 const AMM_FARM_MIN_REWARD_TOTAL      = 1_000_000_000n;
@@ -1942,7 +1941,7 @@ function decodeTSwapVarPayload(payload) {
   if (p !== payload.length) return null;
   return {
     kind: 'swap_var',
-    version, opcode,
+    opcode,
     pool_id: bytesToHex(poolId),
     direction,
     R_A_pre: R_A_pre.toString(),
@@ -2094,7 +2093,7 @@ function decodeTSwapRoutePayload(payload) {
 
   return {
     kind: 'swap_route',
-    version, opcode,
+    opcode,
     n_hops: nHops,
     trader_input_asset_id: bytesToHex(traderInputAssetId),
     trader_output_asset_id: bytesToHex(traderOutputAssetId),
@@ -3544,10 +3543,8 @@ function _readU128LE(payload, o) {
 
 function decodeTFarmInitPayload(payload) {
   if (!payload) return null;
-  if (payload.length < 316 + 2) return null;
+  if (payload.length < 315 + 2) return null;
   let p = 0;
-  const version = payload[p]; p += 1;
-  if (version !== _FARM_ENVELOPE_VERSION) return null;
   const opcode = payload[p]; p += 1;
   if (opcode !== T_FARM_INIT) return null;
   const dv = new DataView(payload.buffer, payload.byteOffset);
@@ -3582,7 +3579,7 @@ function decodeTFarmInitPayload(payload) {
   if (p !== payload.length) return null;
   return {
     kind: 'farm_init',
-    version, opcode,
+    opcode,
     pool_id:         bytesToHex(poolId),
     farm_nonce:      bytesToHex(farmNonce),
     launcher_pubkey: bytesToHex(launcherPubkey),
@@ -3600,10 +3597,8 @@ function decodeTFarmInitPayload(payload) {
 
 function decodeTLpBondPayload(payload) {
   if (!payload) return null;
-  if (payload.length < 256 + 2) return null;
+  if (payload.length < 255 + 2) return null;
   let p = 0;
-  const version = payload[p]; p += 1;
-  if (version !== _FARM_ENVELOPE_VERSION) return null;
   const opcode = payload[p]; p += 1;
   if (opcode !== T_LP_BOND) return null;
   const dv = new DataView(payload.buffer, payload.byteOffset);
@@ -3635,7 +3630,7 @@ function decodeTLpBondPayload(payload) {
   if (p !== payload.length) return null;
   return {
     kind: 'lp_bond',
-    version, opcode,
+    opcode,
     farm_id:         bytesToHex(farmId),
     bonder_pubkey:   bytesToHex(bonderPubkey),
     bond_amount:     bondAmount.toString(),
@@ -3650,10 +3645,8 @@ function decodeTLpBondPayload(payload) {
 
 function decodeTLpUnbondPayload(payload) {
   if (!payload) return null;
-  if (payload.length !== 259) return null;
+  if (payload.length !== 258) return null;
   let p = 0;
-  const version = payload[p]; p += 1;
-  if (version !== _FARM_ENVELOPE_VERSION) return null;
   const opcode = payload[p]; p += 1;
   if (opcode !== T_LP_UNBOND) return null;
   const dv = new DataView(payload.buffer, payload.byteOffset);
@@ -3677,7 +3670,7 @@ function decodeTLpUnbondPayload(payload) {
   if (p !== payload.length) return null;
   return {
     kind: 'lp_unbond',
-    version, opcode,
+    opcode,
     farm_id:         bytesToHex(farmId),
     bond_id:         bytesToHex(bondId),
     unbonder_pubkey: bytesToHex(unbonderPubkey),
@@ -3691,14 +3684,12 @@ function decodeTLpUnbondPayload(payload) {
 }
 
 // T_LP_HARVEST (0x3B) — claim accrued reward without unbonding the
-// underlying LP shares. Fixed 227-byte payload. Mirrors tests/amm-farm.mjs
+// underlying LP shares. Fixed 226-byte payload. Mirrors tests/amm-farm.mjs
 // encodeLpHarvest exactly.
 function decodeTLpHarvestPayload(payload) {
   if (!payload) return null;
-  if (payload.length !== 227) return null;
+  if (payload.length !== 226) return null;
   let p = 0;
-  const version = payload[p]; p += 1;
-  if (version !== _FARM_ENVELOPE_VERSION) return null;
   const opcode = payload[p]; p += 1;
   if (opcode !== T_LP_HARVEST) return null;
   const dv = new DataView(payload.buffer, payload.byteOffset);
@@ -3721,7 +3712,7 @@ function decodeTLpHarvestPayload(payload) {
   if (p !== payload.length) return null;
   return {
     kind: 'lp_harvest',
-    version, opcode,
+    opcode,
     farm_id:         bytesToHex(farmId),
     bond_id:         bytesToHex(bondId),
     harvester_pubkey: bytesToHex(harvesterPubkey),
@@ -3738,12 +3729,10 @@ function decodeTLpHarvestPayload(payload) {
 // payload. Mirrors tests/amm-farm.mjs encodeFarmRefund exactly.
 function decodeTFarmRefundPayload(payload) {
   if (!payload) return null;
-  // Fixed-size: 1 (version) + 1 (opcode) + 32 (farm_id) + 33 (launcher_pubkey)
-  // + 8 (refund_amount) + 4 (refund_view_height) + 32 (refund_r) + 64 (launcher_sig) = 175.
-  if (payload.length !== 175) return null;
+  // Fixed-size: 1 (opcode) + 32 (farm_id) + 33 (launcher_pubkey)
+  // + 8 (refund_amount) + 4 (refund_view_height) + 32 (refund_r) + 64 (launcher_sig) = 174.
+  if (payload.length !== 174) return null;
   let p = 0;
-  const version = payload[p]; p += 1;
-  if (version !== _FARM_ENVELOPE_VERSION) return null;
   const opcode = payload[p]; p += 1;
   if (opcode !== T_FARM_REFUND) return null;
   const dv = new DataView(payload.buffer, payload.byteOffset);
@@ -3764,7 +3753,7 @@ function decodeTFarmRefundPayload(payload) {
   if (p !== payload.length) return null;
   return {
     kind: 'farm_refund',
-    version, opcode,
+    opcode,
     farm_id:         bytesToHex(farmId),
     launcher_pubkey: bytesToHex(launcherPubkey),
     refund_amount:   refundAmount.toString(),

@@ -5157,8 +5157,6 @@ const T_LP_REMOVE  = 0x2E; // LP redeem — share burn → asset A + B
 const T_PROTOCOL_FEE_CLAIM = 0x31; // founder mints accrued LP-fee skim as lp_asset_id UTXO
 const T_SWAP_VAR   = 0x32; // per-trade variable-amount AMM swap (SPEC §5.16.3)
 const T_SWAP_ROUTE = 0x33; // atomic multi-hop AMM routing (SPEC-SWAP-ROUTE-AMENDMENT)
-const SWAP_VAR_ENVELOPE_VERSION = 0x01;
-const SWAP_ROUTE_ENVELOPE_VERSION = 0x01;
 const SWAP_ROUTE_N_HOPS_MAX = 4;       // matches worker + tests/swap-route.mjs
 const SWAP_ROUTE_HOP_BYTES = 32 + 1 + 2 + 8 + 8 + 8 + 8;
 const T_AXFER_VAR = 0x37; // variable-amount atomic settlement (SPEC §5.7.9 / §5.7.6.1 — amended).
@@ -8750,7 +8748,7 @@ function encodeTSwapVarPayload({
     return b;
   }
   return concatBytes(
-    new Uint8Array([SWAP_VAR_ENVELOPE_VERSION, T_SWAP_VAR]),
+    new Uint8Array([T_SWAP_VAR]),
     poolId,
     new Uint8Array([direction & 0xff]),
     u64LE(R_A_pre), u64LE(R_B_pre),
@@ -8881,7 +8879,7 @@ function encodeTSwapRoutePayload({
   if (!(intentSig instanceof Uint8Array) || intentSig.length !== 64) throw new Error('intent_sig 64 bytes');
 
   return concatBytes(
-    new Uint8Array([SWAP_ROUTE_ENVELOPE_VERSION, T_SWAP_ROUTE, hops.length & 0xff]),
+    new Uint8Array([T_SWAP_ROUTE, hops.length & 0xff]),
     traderInputAssetId, traderOutputAssetId,
     _swapRouteU64LE(minOut), _swapRouteU32LE(expiryHeight),
     traderPubkey,
@@ -8901,12 +8899,10 @@ function computeSwapRouteEnvelopeHash(payload) { return sha256(payload); }
 // decodeTSwapRoutePayload and tests/swap-route.mjs::decodeSwapRoute.
 function decodeTSwapRoutePayload(payload) {
   if (!payload) return null;
-  // Min size: header(37) + N=2 hops(134) + outpoint(36) + cIn+cReceipt+rReceipt(98)
-  //         + rpLen(2) + 2 sigs(128). ≈ 435 floor.
-  if (payload.length < 435) return null;
+  // Min size: header(36) + N=2 hops(134) + outpoint(36) + cIn+cReceipt+rReceipt(98)
+  //         + rpLen(2) + 2 sigs(128). ≈ 434 floor.
+  if (payload.length < 434) return null;
   let p = 0;
-  const version = payload[p]; p += 1;
-  if (version !== SWAP_ROUTE_ENVELOPE_VERSION) return null;
   const opcode = payload[p]; p += 1;
   if (opcode !== T_SWAP_ROUTE) return null;
   const nHops = payload[p]; p += 1;
@@ -8968,7 +8964,7 @@ function decodeTSwapRoutePayload(payload) {
 
   return {
     kind: 'swap_route',
-    version, opcode, nHops,
+    opcode, nHops,
     traderInputAssetId, traderOutputAssetId,
     minOut, expiryHeight, traderPubkey,
     hops,
@@ -8980,10 +8976,8 @@ function decodeTSwapRoutePayload(payload) {
 
 function decodeTSwapVarPayload(payload) {
   if (!payload) return null;
-  if (payload.length < 298) return null;
+  if (payload.length < 297) return null;
   let p = 0;
-  const version = payload[p]; p += 1;
-  if (version !== SWAP_VAR_ENVELOPE_VERSION) return null;
   const opcode = payload[p]; p += 1;
   if (opcode !== T_SWAP_VAR) return null;
   const poolId = payload.slice(p, p + 32); p += 32;
@@ -9030,7 +9024,7 @@ function decodeTSwapVarPayload(payload) {
   if (p !== payload.length) return null;
   return {
     kind: 'swap_var',
-    version, opcode,
+    opcode,
     poolId, direction,
     R_A_pre, R_B_pre, deltaIn, deltaInMin, deltaInMax, deltaOut, minOut, tipAmount, tipAsset,
     expiryHeight,
@@ -14498,6 +14492,111 @@ async function _scanHoldingsImpl() {
       }
     }
 
+    if (env.opcode === T_CBTC_TAC_DEPOSIT && u.vout === 0) {
+      // Standard (non-atomic) deposit: vout[0] is the cBTC.tac mint UTXO.
+      // Blinding = HMAC(priv, target_leaf_hash, bondSourceOutpoint) — same
+      // helper as the atomic variant, different anchor (bond LP-share input
+      // here vs. cbtc.zk input there).
+      const dec = decodeTCbtcTacDepositPayload(env.payload);
+      if (dec) {
+        try {
+          const r = _deriveCbtcTacAtomicMintBlinding({
+            privkey: wallet.priv,
+            targetLeafHash: dec.targetLeafHash,
+            anchorOutpoint: dec.bondSourceOutpoint,
+          });
+          if (pedersenCommit(dec.mintAmount, r).equals(bytesToPoint(onChainCommitment))) {
+            recordOpening(u.txid, u.vout, assetIdHex, dec.mintAmount, r);
+            h.balance += dec.mintAmount;
+            h.utxos.push({ utxo: u, amount: dec.mintAmount, blinding: r, commitment: onChainCommitment });
+            continue;
+          }
+        } catch {}
+      }
+    }
+
+    if (env.opcode === T_CBTC_TAC_DEPOSIT_ATOMIC) {
+      // Recovery:
+      //   vout[0] LP-share: blinding = deriveLpAddShareBlinding(priv, pool_id,
+      //                     cbtcZkInputOutpoint, lp_asset_id) — same anchor +
+      //                     derivation as standard LP_ADD variant-0 outputs.
+      //   vout[1] cBTC.tac mint: blinding = _deriveCbtcTacAtomicMintBlinding(
+      //                     priv, target_leaf_hash, cbtcZkInputOutpoint) —
+      //                     scoped to the bonded slot so the same priv key
+      //                     can mint into multiple slots without collision.
+      // Envelope carries pool_id, target_leaf_hash, and cbtcZkInputOutpoint
+      // directly, so no chain ancestry walk is needed.
+      const dec = decodeTCbtcTacDepositAtomicPayload(env.payload);
+      if (dec) {
+        try {
+          if (u.vout === 0) {
+            const lpAssetIdBytes = ammAssetMod.deriveLpAssetId(dec.poolId);
+            const { r_secp } = ammReceiptMod.deriveLpAddShareBlinding({
+              recipientPrivkey: wallet.priv,
+              poolId: dec.poolId,
+              lpInputAOutpoint: dec.cbtcZkInputOutpoint,
+              lpAssetId: lpAssetIdBytes,
+            });
+            if (pedersenCommit(dec.shareAmount, r_secp).equals(bytesToPoint(onChainCommitment))) {
+              recordOpening(u.txid, u.vout, assetIdHex, dec.shareAmount, r_secp);
+              h.balance += dec.shareAmount;
+              h.utxos.push({ utxo: u, amount: dec.shareAmount, blinding: r_secp, commitment: onChainCommitment });
+              continue;
+            }
+          } else if (u.vout === 1) {
+            const r = _deriveCbtcTacAtomicMintBlinding({
+              privkey: wallet.priv,
+              targetLeafHash: dec.targetLeafHash,
+              anchorOutpoint: dec.cbtcZkInputOutpoint,
+            });
+            if (pedersenCommit(dec.mintAmount, r).equals(bytesToPoint(onChainCommitment))) {
+              recordOpening(u.txid, u.vout, assetIdHex, dec.mintAmount, r);
+              h.balance += dec.mintAmount;
+              h.utxos.push({ utxo: u, amount: dec.mintAmount, blinding: r, commitment: onChainCommitment });
+              continue;
+            }
+          }
+        } catch {}
+      }
+    }
+
+    if (env.opcode === T_CBTC_TAC_WITHDRAW_ATOMIC && (u.vout === 1 || u.vout === 2)) {
+      // Recovery for LP_REMOVE proceeds — blinding = HMAC(priv, "tacit-amm-
+      // receipt-secp-v1" || pool_id || lp_share_input_outpoint || asset_id),
+      // identical to standard LP_REMOVE. Pool_id is NOT in the withdraw
+      // envelope, so we look it up via the bonded position record
+      // (targetLeafHash → position.bondPoolIdHex). The recv amounts are
+      // also cached on the position record after a successful withdraw,
+      // which we use to verify the candidate opening — without that we'd
+      // need to replay AMM pool math at the withdraw height.
+      const dec = decodeTCbtcTacWithdrawAtomicPayload(env.payload);
+      if (dec && tx.vin && tx.vin.length >= 3) {
+        const position = getCtacPositionRecords().find(
+          p => bytesToHex(dec.targetLeafHash) === (p.targetLeafHashHex || '').toLowerCase(),
+        );
+        const cached = u.vout === 1 ? position?.recvCbtcZkAmount : position?.recvTacAmount;
+        if (position?.bondPoolIdHex && cached) {
+          try {
+            const lpShareIn = tx.vin[tx.vin.length - 1];
+            const anchor = ammReceiptMod.canonicalOutpoint(lpShareIn.txid, lpShareIn.vout);
+            const { r_secp } = ammReceiptMod.deriveReceiptBlinding({
+              recipientPrivkey: wallet.priv,
+              poolId: hexToBytes(position.bondPoolIdHex.toLowerCase()),
+              anchorOutpoint: anchor,
+              assetId: hexToBytes(assetIdHex.toLowerCase()),
+            });
+            const amt = BigInt(cached);
+            if (pedersenCommit(amt, r_secp).equals(bytesToPoint(onChainCommitment))) {
+              recordOpening(u.txid, u.vout, assetIdHex, amt, r_secp);
+              h.balance += amt;
+              h.utxos.push({ utxo: u, amount: amt, blinding: r_secp, commitment: onChainCommitment });
+              continue;
+            }
+          } catch {}
+        }
+      }
+    }
+
     if (env.opcode === T_SHARE_SLASH_CLAIM && u.vout === 0) {
       // SPEC §5.47 v1 T_CTAC_LIEN_CLAIM recovery: amount = dec.claimTAC
       // (PUBLIC in envelope), blinding = HMAC(priv, first_burn_outpoint).
@@ -17377,6 +17476,162 @@ async function scanInboundSlotNotes({
   return { scanned, detected, cursor: maxHeightSeen };
 }
 
+// Phase 2 of slot privkey-only recovery — companion to the Phase 1 helpers
+// (_deriveSlotSecret / _deriveSlotNullifierPreimage / _slotOutpointBytes).
+// Walks the wallet's outgoing-spend history; for each spent outpoint, treats
+// it as a candidate MINT anchor, derives (secret, ν, K_btc), and checks
+// whether the spending tx's reveal child confirmed a T_SLOT_MINT envelope
+// at the expected K_btc P2TR. Match → reconstruct the slot record from
+// chain + derived secrets and persist via saveSlotRecord. Phase 2A covers
+// the MINT case; ROTATE / SPLIT / MERGE inputs are slot K_btcs (not at
+// wallet.address) and chain off discovered slots — Phase 2B, deferred. For
+// typical users who only mint, Phase 2A is the load-bearing path.
+//
+// scanPools still fills in spent-vs-live status via mixerIsNullifierSpent —
+// recovered slots start at status='live'; a stale slot (already burned or
+// rotated) fails buildAndBroadcastSlotBurn's pre-flight gate.
+async function scanSlotsFromPrivkey({ onProgress = null } = {}) {
+  if (!wallet || !wallet.priv) return { scanned: 0, recovered: 0, slots: [] };
+  const privkey = wallet.priv;
+  const address = wallet.address();
+  const _progress = (msg) => { try { onProgress && onProgress(msg); } catch {} };
+
+  // Anchor candidates = outpoints the wallet has spent. Paginated
+  // /address/:addr/txs/chain walk (25 txs/page, HARD_CAP_PAGES = 4000).
+  const anchors = [];
+  let lastSeen = '';
+  for (let page = 0; page < 4000; page++) {
+    _progress(`walking history · page ${page + 1}`);
+    const path = lastSeen
+      ? `/address/${address}/txs/chain/${lastSeen}`
+      : `/address/${address}/txs/chain`;
+    let batch;
+    try { batch = await apiJson(path); }
+    catch (e) {
+      if (/^API 400/.test(e?.message || '')) break;
+      throw e;
+    }
+    if (!Array.isArray(batch) || batch.length === 0) break;
+    for (const tx of batch) {
+      if (!Array.isArray(tx.vin)) continue;
+      for (const vin of tx.vin) {
+        if (vin?.prevout?.scriptpubkey_address === address && typeof vin.txid === 'string') {
+          anchors.push({ spendingTxid: tx.txid, txid: vin.txid, vout: vin.vout });
+        }
+      }
+    }
+    if (batch.length < 25) break;
+    lastSeen = batch[batch.length - 1]?.txid || '';
+    if (!lastSeen) break;
+  }
+
+  const existingLeafHexes = new Set(getSlotRecords().map(r => r.leafCommitmentHex));
+  const triedAnchors = new Set();
+  const recovered = [];
+  let scanned = 0;
+  for (const a of anchors) {
+    const key = `${a.spendingTxid}:${a.txid}:${a.vout}`;
+    if (triedAnchors.has(key)) continue;
+    triedAnchors.add(key);
+    scanned++;
+    _progress(`testing anchor · ${scanned} / ${anchors.length}`);
+    let candidate;
+    try {
+      candidate = await _scanSlotAnchorCandidate({ privkey, anchor: a, existingLeafHexes });
+    } catch { continue; }
+    if (!candidate) continue;
+    if (existingLeafHexes.has(candidate.leafCommitmentHex)) continue;
+    saveSlotRecord(candidate);
+    existingLeafHexes.add(candidate.leafCommitmentHex);
+    recovered.push(candidate);
+    try {
+      const am = getAssetMeta(candidate.assetIdHex) || {};
+      recordActivity({
+        kind: 'slot-recovered',
+        ticker: am.ticker || 'cBTC.zk',
+        amount: BigInt(candidate.denomination),
+        decimals: am.decimals || 0,
+        assetId: candidate.assetIdHex,
+        txid: candidate.mintTxid,
+      });
+    } catch {}
+  }
+  _progress(`done · ${recovered.length} recovered / ${scanned} anchors`);
+  return { scanned, recovered: recovered.length, slots: recovered };
+}
+
+// Probe one anchor candidate. Returns a slotRecord on confirmed match,
+// null otherwise. Side-effect-free; caller persists via saveSlotRecord.
+async function _scanSlotAnchorCandidate({ privkey, anchor, existingLeafHexes }) {
+  const anchorBytes = _slotOutpointBytes(anchor.txid, anchor.vout);
+  const secret = _deriveSlotSecret({ privkey, anchorOutpoint: anchorBytes, outputIndex: 0 });
+  const nullifierPreimage = _deriveSlotNullifierPreimage({ privkey, anchorOutpoint: anchorBytes, outputIndex: 0 });
+  // r_btc is independent of r_leaf (two-key §5.24.0). Derive K_btc from
+  // r_btc directly, then build the expected slot P2TR scriptpubkey.
+  const rBtcBytes = deriveSlotRBtc(secret, nullifierPreimage);
+  const rBtcBig = bytes32ToBigint(rBtcBytes) % SECP_N;
+  if (rBtcBig === 0n) return null;
+  const kBtcPoint = G.multiply(rBtcBig);
+  const kBtcXOnly = slotXOnly(kBtcPoint);
+  const expectedSpk = bytesToHex(p2trScript(kBtcXOnly));
+
+  let commitTx;
+  try { commitTx = await getTx(anchor.spendingTxid); } catch { return null; }
+  if (!commitTx || !Array.isArray(commitTx.vout)) return null;
+  for (let voi = 0; voi < commitTx.vout.length; voi++) {
+    const vout = commitTx.vout[voi];
+    if (typeof vout?.scriptpubkey !== 'string' || !vout.scriptpubkey.toLowerCase().startsWith('5120')) continue;
+    let outspend;
+    try { outspend = await getOutspend(anchor.spendingTxid, voi); } catch { continue; }
+    if (!outspend?.spent || typeof outspend.txid !== 'string') continue;
+    let revealTx;
+    try { revealTx = await getTx(outspend.txid); } catch { continue; }
+    const wit = revealTx?.vin?.[0]?.witness;
+    if (!Array.isArray(wit) || wit.length < 3) continue;
+    let env;
+    try { env = decodeEnvelopeScript(hexToBytes(wit[1])); } catch { continue; }
+    if (!env || env.opcode !== T_SLOT_MINT) continue;
+    const sm = decodeTSlotMintPayload(env.payload);
+    if (!sm) continue;
+    if (bytesToHex(sm.kBtcXOnly) !== bytesToHex(kBtcXOnly)) continue;
+    const reveal0Spk = revealTx.vout?.[0]?.scriptpubkey;
+    const reveal0Val = revealTx.vout?.[0]?.value;
+    if (typeof reveal0Spk !== 'string' || reveal0Spk.toLowerCase() !== expectedSpk) continue;
+    if (typeof reveal0Val !== 'number' || BigInt(reveal0Val) !== sm.denomination) continue;
+    // Defense-in-depth: re-derive leaf_hash and confirm byte-match.
+    const reLeaf = computePoolLeafCommitment(secret, nullifierPreimage, sm.denomination);
+    if (bytesToHex(reLeaf) !== bytesToHex(sm.leafHash)) continue;
+    if (existingLeafHexes && existingLeafHexes.has(bytesToHex(reLeaf))) return null;
+
+    const rLeaf = poseidonHash(secret, nullifierPreimage);
+    const rLeafBig = bytes32ToBigint(rLeaf) % SECP_N;
+    const recipientCommit = pedersenCommit(sm.denomination, rLeafBig).toRawBytes(true);
+    return {
+      assetIdHex: bytesToHex(sm.assetId),
+      denomination: sm.denomination.toString(),
+      secretHex: bytesToHex(secret),
+      nullifierPreimageHex: bytesToHex(nullifierPreimage),
+      leafCommitmentHex: bytesToHex(reLeaf),
+      recipientCommitHex: bytesToHex(recipientCommit),
+      rLeafHex: bytesToHex(rLeaf),
+      rPedersenHex: bytesToHex(rLeaf),
+      rBtcHex: bytesToHex(rBtcBytes),
+      kBtcXOnlyHex: bytesToHex(kBtcXOnly),
+      slotScriptPubKeyHex: expectedSpk,
+      mintedAt: Date.now(),
+      network: NET.name,
+      commitTxid: anchor.spendingTxid,
+      mintTxid: outspend.txid,
+      anchorOutpointTxid: anchor.txid,
+      anchorOutpointVout: anchor.vout,
+      recoveredFromPrivkey: true,
+      recoveredAt: Date.now(),
+      status: 'live',
+    };
+  }
+  return null;
+}
+
 // ============== STAKING SUBKEYS (privacy entrypoint for cBTC.tac) ==============
 //
 // T_CBTC_TAC_DEPOSIT envelopes (§5.36) carry a public `depositor_recovery_pk`
@@ -17904,9 +18159,16 @@ async function buildAndBroadcastCbtcTacDeposit({
     : wallet.pub;
   if (depositorRecoveryPub.length !== 33) throw new Error('depositorRecoveryPubHex must be 33-byte compressed');
 
-  // mint_recipient_commit: fresh Pedersen commit for the new cBTC.tac UTXO.
-  // Amount = denomBig (= slot_denom_sats), blinding fresh.
-  const mintBlindingBig = bytes32ToBigint(randomBytes(32)) % SECP_N;
+  // mint_recipient_commit: Pedersen commit for the new cBTC.tac UTXO.
+  // Amount = denomBig (= slot_denom_sats), blinding HMAC-derived from
+  // (priv, target_leaf_hash, bondSourceOutpoint) so the depositor recovers
+  // the mint UTXO from priv + chain alone after a localStorage wipe.
+  // Same helper as the atomic deposit variant — anchor differs (here it's
+  // the LP-share input outpoint; for atomic it's the cbtcZkInput outpoint).
+  const mintBlindingBig = _deriveCbtcTacAtomicMintBlinding({
+    privkey: wallet.priv,
+    targetLeafHash, anchorOutpoint: bondSourceOutpoint,
+  });
   const mintRecipientCommit = pedersenCommit(denomBig, mintBlindingBig).toRawBytes(true);
   const mintAmountLE = new Uint8Array(8);
   { const v = new DataView(mintAmountLE.buffer);
@@ -18146,8 +18408,8 @@ async function buildAndBroadcastCbtcTacWithdraw({
   if (positionRecord.status !== 'active') {
     throw new Error(`position must be 'active' to withdraw (got '${positionRecord.status}')`);
   }
-  if (!slotRecord || !slotRecord.mintTxid || !slotRecord.r_btc || !slotRecord.r_pedersen) {
-    throw new Error('slotRecord must include mintTxid + r_btc + r_pedersen for the K_btc spend');
+  if (!slotRecord || !slotRecord.mintTxid || !(slotRecord.r_btc || slotRecord.rBtcHex)) {
+    throw new Error('slotRecord must include mintTxid + r_btc/rBtcHex for the K_btc spend');
   }
   if (!Array.isArray(cbtcTacUtxos) || cbtcTacUtxos.length === 0 || cbtcTacUtxos.length > 16) {
     throw new Error('cbtcTacUtxos must be 1..16 UTXOs');
@@ -18304,7 +18566,7 @@ async function buildAndBroadcastCbtcTacWithdraw({
     ],
     outputs: [{ value: payoutValue, script: payoutSpk }],
   };
-  const slotKbtcXonly = hexToBytes(slotRecord.k_btc_xonly || slotRecord.kBtcXonlyHex);
+  const slotKbtcXonly = hexToBytes(slotRecord.k_btc_xonly || slotRecord.kBtcXonlyHex || slotRecord.kBtcXOnlyHex);
   const slotSpk = p2trScript(slotKbtcXonly);
   const revealPrevouts = [
     { value: commitValue, script: commitSpk },
@@ -18313,10 +18575,8 @@ async function buildAndBroadcastCbtcTacWithdraw({
   ];
   revealTx.inputs[0].witness = signTaprootScriptPathInput(revealTx, revealPrevouts, envelopeScript, cb);
   // Slot K_btc key-path Schnorr sig under r_btc.
-  const rBtcPriv = hexToBytes(slotRecord.r_btc.toLowerCase());
-  const slotSigHash = computeTaprootKeySigHash(revealTx, 1, revealPrevouts);
-  const slotSig = schnorr.sign(slotSigHash, rBtcPriv);
-  revealTx.inputs[1].witness = [slotSig];
+  const rBtcPriv = hexToBytes((slotRecord.r_btc || slotRecord.rBtcHex).toLowerCase());
+  revealTx.inputs[1].witness = signTaprootKeyPathInputWithKey(revealTx, 1, revealPrevouts, rBtcPriv);
   // cBTC.tac asset inputs (P2WPKH under wallet.priv).
   for (let i = 0; i < cbtcTacUtxos.length; i++) {
     revealTx.inputs[2 + i].witness = signP2wpkhInput(revealTx, 2 + i, DUST);
@@ -19029,7 +19289,7 @@ async function buildAndBroadcastCtacLienSplit({
   };
 }
 
-// SPEC-CBTC-TAC-AMENDMENT §5.48 v1.1 — T_CBTC_TAC_DEPOSIT_ATOMIC builder.
+// SPEC-CBTC-TAC-AMENDMENT §5.48 — T_CBTC_TAC_DEPOSIT_ATOMIC builder.
 //
 // Atomic LP_ADD + cBTC.tac DEPOSIT in a single envelope. Depositor provides
 // raw cBTC.zk + TAC asset inputs; worker LPs them, attaches lien on the
@@ -19492,7 +19752,7 @@ async function buildAndBroadcastCbtcTacWithdrawAtomic({
       { value: DUST, script: p2wpkhScript(recvTacPub) },   // vout[2] TAC LP_REMOVE output
     ],
   };
-  const slotKbtcXonly = hexToBytes(slotRecord.k_btc_xonly || slotRecord.kBtcXonlyHex);
+  const slotKbtcXonly = hexToBytes(slotRecord.k_btc_xonly || slotRecord.kBtcXonlyHex || slotRecord.kBtcXOnlyHex);
   const slotSpk = p2trScript(slotKbtcXonly);
   const revealPrevouts = [
     { value: commitValue, script: commitSpk },
@@ -19503,9 +19763,7 @@ async function buildAndBroadcastCbtcTacWithdrawAtomic({
   revealTx.inputs[0].witness = signTaprootScriptPathInput(revealTx, revealPrevouts, envelopeScript, cb);
   // Slot K_btc key-path Schnorr under r_btc
   const rBtcPriv = hexToBytes(_slotRBtc.toLowerCase());
-  const slotSigHash = computeTaprootKeySigHash(revealTx, 1, revealPrevouts);
-  const slotSig = schnorr.sign(slotSigHash, rBtcPriv);
-  revealTx.inputs[1].witness = [slotSig];
+  revealTx.inputs[1].witness = signTaprootKeyPathInputWithKey(revealTx, 1, revealPrevouts, rBtcPriv);
   // cBTC.tac asset inputs
   for (let i = 0; i < cbtcTacUtxos.length; i++) {
     revealTx.inputs[2 + i].witness = signP2wpkhInput(revealTx, 2 + i, DUST);
@@ -70175,7 +70433,8 @@ export {
   encodeTSwapVarPayload, decodeTSwapVarPayload,
   swapVarCurveDeltaOut, computeSwapVarEnvelopeHash,
   ammDerivePoolIdDapp, lexCanonicalAssetPair,
-  T_LP_ADD, T_LP_REMOVE, T_SWAP_VAR, SWAP_VAR_ENVELOPE_VERSION,
+  T_LP_ADD, T_LP_REMOVE, T_SWAP_VAR,
+  T_SWAP_ROUTE,
   computeCbtcTacDepositBindHash, computeCbtcTacWithdrawBindHash,
   computeCbtcTacForceCloseBindHash, computeShareSlashClaimBindHash,
   computeSlotMintMsg, computeSlotRotateMsg, computeSlotSplitMsg, computeSlotMergeMsg,
@@ -70215,7 +70474,6 @@ export {
   // registry; buildSwapRouteEnvelopeSelfFulfill assembles the envelope;
   // buildAndBroadcastSwapRoute composes the commit+reveal tx pair and
   // broadcasts.
-  T_SWAP_ROUTE,
   encodeTSwapRoutePayload, decodeTSwapRoutePayload,
   buildSwapRouteIntentMsg, buildSwapRouteKernelMsg,
   computeSwapRouteEnvelopeHash,
@@ -70247,6 +70505,7 @@ export {
   encryptSlotNote, decryptSlotNote, slotViewingPubkey,
   appendSlotNoteToPayload, tryExtractSlotNoteFromTail,
   scanInboundSlotNotes,
+  scanSlotsFromPrivkey, _scanSlotAnchorCandidate,
   // Staking subkeys — privacy entrypoint for cBTC.tac mints. Per-deposit
   // child secp256k1 keys derived from wallet.priv so depositor_recovery_pk
   // on T_CBTC_TAC_DEPOSIT is unlinked from the main wallet's other activity.

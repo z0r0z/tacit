@@ -58,7 +58,7 @@ import {
 } from '../bulletproofs.mjs';
 import { signSchnorr } from '../composition.mjs';
 import {
-  OPCODE_T_FARM_INIT, ENVELOPE_VERSION,
+  OPCODE_T_FARM_INIT,
   AMM_FARM_MIN_BOND, AMM_FARM_MIN_REWARD_TOTAL,
   AMM_FARM_MAX_START_DELAY, AMM_FARM_VIEW_STALENESS,
   AMM_FARM_REFUND_GRACE_BLOCKS, NO_CHANGE_SENTINEL,

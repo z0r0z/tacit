@@ -333,7 +333,6 @@ export const OPCODE_T_LP_HARVEST = 0x3B;  // claim reward without unbonding (SPE
 export const OPCODE_T_FARM_REFUND = 0x3E; // launcher reclaims unspent treasury (SPEC §5.44)
 // Farm-state attestation reuses T_INTENT_ATTEST (0x30) per SPEC §5.45
 // (scope_id = farm_id, intent_pool_hash = buildFarmStateHash output).
-export const FARM_ENVELOPE_VERSION = 0x01;
 export const FARM_NO_CHANGE_SENTINEL = new Uint8Array(33);
 
 const _FARM_INIT_DOMAIN    = new TextEncoder().encode('tacit-amm-farm-init-v1');
@@ -453,7 +452,7 @@ export function buildFarmStateHash({ treasuryRemaining, totalBonded, accRewardPe
 
 export function encodeFarmInit(args) {
   const parts = [
-    new Uint8Array([FARM_ENVELOPE_VERSION, OPCODE_T_FARM_INIT]),
+    new Uint8Array([OPCODE_T_FARM_INIT]),
     asBytes(args.poolId, 32, 'poolId'),
     asBytes(args.farmNonce, 32, 'farmNonce'),
     asBytes(args.launcherPubkey, 33, 'launcherPubkey'),
@@ -475,7 +474,7 @@ export function encodeFarmInit(args) {
 
 export function encodeLpBond(args) {
   const parts = [
-    new Uint8Array([FARM_ENVELOPE_VERSION, OPCODE_T_LP_BOND]),
+    new Uint8Array([OPCODE_T_LP_BOND]),
     asBytes(args.farmId, 32, 'farmId'),
     asBytes(args.bonderPubkey, 33, 'bonderPubkey'),
     u64LE(args.bondAmount),
@@ -494,7 +493,7 @@ export function encodeLpBond(args) {
 
 export function encodeLpUnbond(args) {
   return concatBytes(
-    new Uint8Array([FARM_ENVELOPE_VERSION, OPCODE_T_LP_UNBOND]),
+    new Uint8Array([OPCODE_T_LP_UNBOND]),
     asBytes(args.farmId, 32, 'farmId'),
     asBytes(args.bondId, 36, 'bondId'),
     asBytes(args.unbonderPubkey, 33, 'unbonderPubkey'),
@@ -509,7 +508,7 @@ export function encodeLpUnbond(args) {
 
 export function encodeLpHarvest(args) {
   return concatBytes(
-    new Uint8Array([FARM_ENVELOPE_VERSION, OPCODE_T_LP_HARVEST]),
+    new Uint8Array([OPCODE_T_LP_HARVEST]),
     asBytes(args.farmId, 32, 'farmId'),
     asBytes(args.bondId, 36, 'bondId'),
     asBytes(args.harvesterPubkey, 33, 'harvesterPubkey'),
@@ -523,7 +522,7 @@ export function encodeLpHarvest(args) {
 
 export function encodeFarmRefund(args) {
   return concatBytes(
-    new Uint8Array([FARM_ENVELOPE_VERSION, OPCODE_T_FARM_REFUND]),
+    new Uint8Array([OPCODE_T_FARM_REFUND]),
     asBytes(args.farmId, 32, 'farmId'),
     asBytes(args.launcherPubkey, 33, 'launcherPubkey'),
     u64LE(args.refundAmount),
@@ -535,9 +534,8 @@ export function encodeFarmRefund(args) {
 
 export function decodeFarmInit(payload) {
   if (!(payload instanceof Uint8Array)) return null;
-  if (payload.length < 316 + 2) return null;
+  if (payload.length < 315 + 2) return null;
   let p = 0;
-  if (payload[p++] !== FARM_ENVELOPE_VERSION) return null;
   if (payload[p++] !== OPCODE_T_FARM_INIT) return null;
   try {
     const poolId          = payload.slice(p, p + 32); p += 32;
@@ -566,9 +564,8 @@ export function decodeFarmInit(payload) {
 
 export function decodeLpBond(payload) {
   if (!(payload instanceof Uint8Array)) return null;
-  if (payload.length < 256 + 2) return null;
+  if (payload.length < 255 + 2) return null;
   let p = 0;
-  if (payload[p++] !== FARM_ENVELOPE_VERSION) return null;
   if (payload[p++] !== OPCODE_T_LP_BOND) return null;
   try {
     const farmId          = payload.slice(p, p + 32); p += 32;
@@ -593,9 +590,8 @@ export function decodeLpBond(payload) {
 
 export function decodeLpUnbond(payload) {
   if (!(payload instanceof Uint8Array)) return null;
-  if (payload.length !== 259) return null;
+  if (payload.length !== 258) return null;
   let p = 0;
-  if (payload[p++] !== FARM_ENVELOPE_VERSION) return null;
   if (payload[p++] !== OPCODE_T_LP_UNBOND) return null;
   try {
     const farmId          = payload.slice(p, p + 32); p += 32;
@@ -619,9 +615,8 @@ export function decodeLpUnbond(payload) {
 
 export function decodeLpHarvest(payload) {
   if (!(payload instanceof Uint8Array)) return null;
-  if (payload.length !== 227) return null;
+  if (payload.length !== 226) return null;
   let p = 0;
-  if (payload[p++] !== FARM_ENVELOPE_VERSION) return null;
   if (payload[p++] !== OPCODE_T_LP_HARVEST) return null;
   try {
     const farmId          = payload.slice(p, p + 32); p += 32;
@@ -644,9 +639,8 @@ export function decodeLpHarvest(payload) {
 
 export function decodeFarmRefund(payload) {
   if (!(payload instanceof Uint8Array)) return null;
-  if (payload.length !== 175) return null;  // 1+1+32+33+8+4+32+64
+  if (payload.length !== 174) return null;  // 1+32+33+8+4+32+64
   let p = 0;
-  if (payload[p++] !== FARM_ENVELOPE_VERSION) return null;
   if (payload[p++] !== OPCODE_T_FARM_REFUND) return null;
   try {
     const farmId         = payload.slice(p, p + 32); p += 32;

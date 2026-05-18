@@ -349,7 +349,7 @@ sender side:
   iv ← all zeros (12 bytes; ephemeral_pubkey provides per-key uniqueness)
   ciphertext ← AES-256-GCM_encrypt(key=key_material, iv, plaintext, ad="")
 
-recipient side (scan every T_SLOT_ROTATE / SPLIT / MERGE):
+recipient side (scan every T_SLOT_MINT / T_SLOT_ROTATE / T_SLOT_SPLIT / T_SLOT_MERGE):
   shared_x ← (sk_view · ephemeral_pubkey).x_only()
   key_material ← SHA256("tacit-slot-note-v1" || shared_x)
   plaintext ← AES-256-GCM_decrypt(key_material, iv=zeros, ciphertext, ad="")
@@ -406,8 +406,8 @@ This is acceptable because:
 
 ### 5.26.5 Recipient scanning cost
 
-Each T_SLOT_ROTATE / SPLIT / MERGE confirmed on chain triggers one
-attempted decrypt per recipient viewing key. ChaCha20Poly1305_decrypt
+Each T_SLOT_MINT / ROTATE / SPLIT / MERGE confirmed on chain triggers
+one attempted decrypt per recipient viewing key. AES-256-GCM decrypt
 on 63 ciphertext bytes is ~0.4 μs on modern hardware; full-chain scan
 of ~10⁶ envelopes/year completes in well under a second.
 
@@ -415,6 +415,25 @@ Recipients with multiple viewing keys (compartmentalisation) attempt
 each viewing key in turn; cost scales linearly. Browser-based scanning
 fits inside a Web Worker, runs in the background between active dapp
 sessions.
+
+The reference indexer (tacit-pin worker) surfaces these as four
+chronological log endpoints, one per slot-creating opcode:
+
+```
+GET /slot-mints   ?network=<net>&since_height=<H>   → { mints:   [...] }
+GET /slot-rotates ?network=<net>&since_height=<H>   → { rotates: [...] }
+GET /slot-splits  ?network=<net>&since_height=<H>   → { splits:  [...] }
+GET /slot-merges  ?network=<net>&since_height=<H>   → { merges:  [...] }
+```
+
+Each record carries `{ asset_id, denomination, new_leaf_hash,
+new_recipient_commitment, <op>_txid, height, tx_index, confirmed_at,
+encrypted_note }` so the recipient's scanner can iterate, decrypt, and
+verify the on-chain leaf without walking every pool's full leaf set.
+Other indexers MAY surface the same data via a different schema; the
+endpoints above are the reference shape consumed by
+`tests/cbtc-zk-slot-lifecycle-signet.mjs` and the dapp's
+`scanInboundSlotNotes`.
 
 ### 5.26.6 Privacy properties
 

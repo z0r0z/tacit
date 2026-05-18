@@ -404,7 +404,7 @@ export function encodeSwapVar(env) {
   } = env;
 
   const parts = [
-    new Uint8Array([ENVELOPE_VERSION, OPCODE_T_SWAP_VAR]),
+    new Uint8Array([OPCODE_T_SWAP_VAR]),
     asBytes(poolId, 32, 'poolId'),
     new Uint8Array([direction & 0xff]),
     u64LE(R_A_pre), u64LE(R_B_pre),
@@ -436,8 +436,6 @@ export function decodeSwapVar(payload) {
     o += n;
     return s;
   }
-  const version = take(1, 'version')[0];
-  if (version !== ENVELOPE_VERSION) throw new Error(`bad envelope_version: ${version}`);
   const opcode = take(1, 'opcode')[0];
   if (opcode !== OPCODE_T_SWAP_VAR) throw new Error(`bad opcode: ${opcode}`);
   const poolId = new Uint8Array(take(32, 'poolId'));
@@ -465,7 +463,7 @@ export function decodeSwapVar(payload) {
   const intentSig = new Uint8Array(take(64, 'intentSig'));
   if (o !== payload.length) throw new Error(`trailing bytes after intentSig: ${payload.length - o}`);
   return {
-    version, opcode, poolId, direction,
+    opcode, poolId, direction,
     R_A_pre, R_B_pre,
     deltaIn, deltaInMin, deltaInMax, deltaOut, minOut, tipAmount, tipAsset,
     expiryHeight, traderPubkey,

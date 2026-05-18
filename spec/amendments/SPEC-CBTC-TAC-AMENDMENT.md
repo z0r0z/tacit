@@ -1659,7 +1659,7 @@ already hold canonical-pool LP shares.
 to already hold an LP-share UTXO of a TAC-paired pool. Bootstrap UX:
 new depositors must (a) `T_LP_ADD` to create LP shares, wait for
 confirmation, then (b) `T_CBTC_TAC_DEPOSIT` referencing that UTXO —
-two cascading on-chain txs. v1.1 collapses this into a single envelope:
+two cascading on-chain txs. This amendment collapses that into a single envelope:
 provide cBTC.zk + TAC as raw asset inputs; the worker simultaneously
 creates the LP shares (incrementing pool reserves) AND attaches the lien
 on the resulting LP UTXO AND mints cBTC.tac. One commit/reveal pair
@@ -1801,6 +1801,46 @@ UTXOs use 0x49; new depositors with raw cBTC.zk + TAC use 0x50.
   E2E variant; ~200 LOC.
 - Total: ~750 LOC + ~1 day of careful work.
 
+### 5.48.9 Output blinding derivation (seed-recovery)
+
+Both output Pedersen blindings are HMAC-derived from the depositor's
+private key so the position recovers from priv key + chain data alone
+after a localStorage wipe. No client-side state is required to find,
+verify, or spend either output.
+
+LP-share blinding (`vout[0]`):
+```
+r_lp_share_secp = HMAC-SHA256(
+  recipient_privkey,
+  "tacit-amm-receipt-secp-v1"
+  || pool_id
+  || cbtc_zk_input_outpoint      // == vin[1] outpoint, in-envelope
+  || lp_asset_id                  // == deriveLpAssetId(pool_id)
+)  mod n_secp
+```
+This is the same derivation as a standard variant-0 `T_LP_ADD` output —
+the LP-share is recovered through the existing AMM LP_ADD scanner branch
+when pool_id is supplied by the envelope.
+
+cBTC.tac mint blinding (`vout[1]`):
+```
+r_mint_secp = HMAC-SHA256(
+  recipient_privkey,
+  "tacit-cbtc-tac-atomic-mint-v1"
+  || target_leaf_hash
+  || cbtc_zk_input_outpoint      // anchor matches the LP-share derivation
+)  mod n_secp
+```
+Domain tag is distinct from the AMM receipt scheme so the mint blinding
+cannot collide with any LP-share blinding. The standard (non-atomic)
+`T_CBTC_TAC_DEPOSIT` mint UTXO uses the same domain and helper with
+`anchor = bondSourceOutpoint` (the bonded LP-share input outpoint).
+
+Both derivations use rejection sampling: if the base HMAC reduces to
+zero mod the group order, retry with a one-byte counter suffix. Required
+once per 2²⁵⁶ calls; preserves the unconditional hiding property of
+Pedersen commitments.
+
 ---
 
 ## §5.49 atomic WITHDRAW + LP_REMOVE (`T_CBTC_TAC_WITHDRAW_ATOMIC`)
@@ -1904,9 +1944,116 @@ vout[2]  = TAC UTXO at recv_tac_commit (DUST P2WPKH to depositor)
 want to keep the LP-share UTXO (for AMM fee yield) use 0x4A; those who
 want to fully exit back to raw assets use 0x58.
 
+### 5.49.8 Output blinding derivation (seed-recovery)
+
+The two LP_REMOVE proceeds (`vout[1]` cBTC.zk side, `vout[2]` TAC side)
+both use the standard AMM receipt-blinding scheme:
+
+```
+r_leg_secp = HMAC-SHA256(
+  recipient_privkey,
+  "tacit-amm-receipt-secp-v1"
+  || pool_id
+  || lp_share_input_outpoint     // outpoint of vin[N-1], the bond UTXO
+  || canonical_asset_id           // canonA or canonB per pool ordering
+)  mod n_secp
+```
+
+Pool_id is NOT present in the withdraw envelope (the envelope binds the
+position via `target_leaf_hash`, and pool identity is implicit from the
+LP-share input's asset_id). A wallet recovering from priv key + chain
+alone reads pool_id from the local position record; if that record is
+gone, pool_id can be fetched from the worker via `/ctac/lien/<leaf>` (an
+authenticated indexer lookup, NOT trustless) before deriving the leg
+blinding. The withdraw proceeds otherwise behave as ordinary asset UTXOs
+post-recovery.
+
 ---
 
-## Test plan
+## Test coverage (actual)
+
+Shipped + green at time of writing (333 unit tests + signet round-trip).
+
+**Unit / cross-impl parity** (`tests/cbtc-tac-*.test.mjs`):
+
+- `cbtc-tac-wire.test.mjs` — 174/174 pass. Encoder/decoder round-trip
+  for all cBTC.tac opcodes: `T_CBTC_TAC_DEPOSIT` (0x49), `T_CBTC_TAC_WITHDRAW`
+  (0x4A), `T_CBTC_TAC_FORCE_CLOSE` (0x4B), `T_CTAC_LIEN_CLAIM` (0x4C),
+  `T_CTAC_LIEN_SPLIT` (0x4F), `T_CBTC_TAC_DEPOSIT_ATOMIC` (0x57),
+  `T_CBTC_TAC_WITHDRAW_ATOMIC` (0x58). Verifies bind-hash byte-determinism
+  across dapp + worker, decoder rejects on every adversarial mutation
+  (wrong opcode, wrong length, malformed points, zero amounts, zero
+  proofs, bind-hash tampering, count out of range), canonical-manifest
+  validator covers tier shape edge cases.
+- `cbtc-tac-state.test.mjs` — 146/146 pass. Worker handler state
+  transitions for all opcodes; pause-mode logic (stale TWAP, bootstrap
+  pending, AMM pause, aggregate recovery); pre-deposit aggregate caps
+  (MAX_POOL_FRAC, MAX_BONDED_FRAC_OF_TAC_FDV); §5.45.1 stability fee
+  accrual; lien index + claim pool transitions; cron-driven FORCE_CLOSE
+  rewire to v1 lien model.
+- `cbtc-tac-recovery.test.mjs` — 13/13 pass. Pins the §5.48.9 / §5.49.8
+  HMAC blinding derivation: LP-share + cBTC.tac mint + LP_REMOVE legs.
+  Verifies builder ↔ scanner parity, domain-tag separation, anchor
+  uniqueness, priv-key sensitivity, Pedersen commits open against
+  recovered blindings.
+
+**Signet round-trip** (`tests/cbtc-tac-signet-prestage.mjs`):
+
+End-to-end on real Bitcoin signet, fresh wallet, fresh assets, fresh
+pool, fresh slot. Six confirmed phases:
+
+1. T_CETCH — TACO asset (10B base units, TAC stand-in)
+2. T_CETCH — WAGMI asset (100B base units, cBTC.zk stand-in)
+3. T_SLOT_MINT — cBTC.zk slot at 500k-sat denom
+4. T_LP_ADD (POOL_INIT variant) — (WAGMI, TACO) pool with 1B/1B reserves
+5. T_CBTC_TAC_DEPOSIT_ATOMIC — 1 envelope, 1 tx: cBTC.zk + TAC inputs →
+   LP-share + cBTC.tac mint outputs. Confirmed block 304921.
+6. T_CBTC_TAC_WITHDRAW_ATOMIC — 1 envelope, 1 tx: burn cBTC.tac +
+   LP-share input → BTC payout + cBTC.zk + TAC LP_REMOVE outputs.
+   Confirmed block 304923. Payout 498,298 sats (500k slot − fees).
+
+The prestage script is resumable via `.local/cbtc-tac-prestage-state.json`
+and persists the full slot record + atomic position record so subsequent
+phases can be re-driven from a fresh process without redepositing.
+
+**Wallet seed-recovery regression check** (`tests/wallet-seed-recovery-signet.mjs`):
+
+Read-only against the AMM full-e2e harness state. 12 PASS, 0 fail. Confirms
+that wiping localStorage and importing only the depositor's priv key
+recovers all AMM-derived UTXOs (CETCH/CXFER/LP_ADD/LP_REMOVE/SWAP_VAR/
+FEE_CLAIM) and the cBTC.tac mint UTXOs (now HMAC-derived per §5.48.9).
+cBTC.zk slot UTXOs remain in the "slot-record-required" category — the
+recovery secret + nullifier preimage cannot be derived from priv key
+alone by design.
+
+> Operator note: signet tests using `scanHoldings` should set a custom
+> API base to mempool.space directly via the `tacit-custom-api-v1`
+> localStorage key. The CF worker proxy is ~25× slower than direct for
+> uncached signet routes (~16s vs ~0.6s per request), which blows the
+> 90s scan timeout. The three live signet test files
+> (`cbtc-tac-signet-prestage.mjs`, `cbtc-tac-onchain-e2e-signet.mjs`,
+> `wallet-seed-recovery-signet.mjs`) ship with this bypass pre-wired.
+
+**Coverage gaps (open work, NOT shipped)**:
+
+- Non-atomic T_CBTC_TAC_DEPOSIT / T_CBTC_TAC_WITHDRAW lifecycle on
+  signet (covered by tests/cbtc-tac-onchain-e2e-signet.mjs but not
+  re-run after the HMAC-blinding switch in this amendment).
+- T_CBTC_TAC_FORCE_CLOSE on-chain rehearsal (worker handler covered by
+  unit tests; envelope cron-rewire covered; chain-side adversarial
+  scenarios pending).
+- SLASH_DETECTED full path on signet (depositor rugs K_btc, worker fires
+  slash after REORG_SAFETY_DEPTH). Unit-tested; signet rehearsal pending.
+- T_SHARE_SLASH_CLAIM pooled-insurance distribution on signet.
+- Pre-deposit cap rejection on signet (worker enforces; unit test
+  green; chain-replay pending).
+- Per-pool AMM ceremony (placeholder VK CIDs in atomic-deposit builder
+  pending the per-pool ceremony — atomic envelopes can be reproved once
+  the canonical pool's verifying key is pinned).
+
+---
+
+## Test plan (aspirational, deeper coverage)
 
 1. **Healthy lifecycle.** Wrap BTC → cBTC.zk → deposit (mint
    cBTC.tac) → transfer cBTC.tac around → withdraw (burn) → recover

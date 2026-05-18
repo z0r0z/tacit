@@ -303,7 +303,7 @@ export function encodeSwapRoute(env) {
     throw new Error(`hops length must be 2..${N_HOPS_MAX} (got ${hops?.length})`);
   }
   const parts = [
-    new Uint8Array([ENVELOPE_VERSION, OPCODE_T_SWAP_ROUTE, hops.length & 0xff]),
+    new Uint8Array([OPCODE_T_SWAP_ROUTE, hops.length & 0xff]),
     asBytes(traderInputAssetId, 32, 'traderInputAssetId'),
     asBytes(traderOutputAssetId, 32, 'traderOutputAssetId'),
     u64LE(minOut),
@@ -332,8 +332,6 @@ export function decodeSwapRoute(payload) {
     o += n;
     return s;
   }
-  const version = take(1, 'version')[0];
-  if (version !== ENVELOPE_VERSION) throw new Error(`bad envelope_version: ${version}`);
   const opcode = take(1, 'opcode')[0];
   if (opcode !== OPCODE_T_SWAP_ROUTE) throw new Error(`bad opcode: ${opcode}`);
   const nHops = take(1, 'nHops')[0];
@@ -371,7 +369,7 @@ export function decodeSwapRoute(payload) {
     throw new Error(`trailing bytes after intentSig: ${payload.length - o}`);
   }
   return {
-    version, opcode, nHops,
+    opcode, nHops,
     traderInputAssetId, traderOutputAssetId,
     minOut, expiryHeight, traderPubkey,
     hops,

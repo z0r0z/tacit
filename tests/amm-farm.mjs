@@ -450,7 +450,7 @@ export function encodeFarmInit(env) {
   } = env;
 
   const parts = [
-    new Uint8Array([ENVELOPE_VERSION, OPCODE_T_FARM_INIT]),
+    new Uint8Array([OPCODE_T_FARM_INIT]),
     asBytes(poolId, 32, 'poolId'),
     asBytes(farmNonce, 32, 'farmNonce'),
     asBytes(launcherPubkey, 33, 'launcherPubkey'),
@@ -479,8 +479,6 @@ export function decodeFarmInit(payload) {
     o += n;
     return s;
   }
-  const version = take(1, 'version')[0];
-  if (version !== ENVELOPE_VERSION) throw new Error(`bad envelope_version: ${version}`);
   const opcode = take(1, 'opcode')[0];
   if (opcode !== OPCODE_T_FARM_INIT) throw new Error(`bad opcode: ${opcode}`);
   const poolId = new Uint8Array(take(32, 'poolId'));
@@ -503,7 +501,7 @@ export function decodeFarmInit(payload) {
     throw new Error(`trailing bytes after launcherSig: ${payload.length - o}`);
   }
   return {
-    version, opcode,
+    opcode,
     poolId, farmNonce, launcherPubkey, rewardAssetId,
     rewardTotal, rewardPerBlock, startHeight, endHeight,
     cChangeOrSentinel, rangeProof, kernelSig, launcherSig,
@@ -520,7 +518,7 @@ export function encodeLpBond(env) {
   } = env;
 
   const parts = [
-    new Uint8Array([ENVELOPE_VERSION, OPCODE_T_LP_BOND]),
+    new Uint8Array([OPCODE_T_LP_BOND]),
     asBytes(farmId, 32, 'farmId'),
     asBytes(bonderPubkey, 33, 'bonderPubkey'),
     u64LE(bondAmount),
@@ -546,8 +544,6 @@ export function decodeLpBond(payload) {
     o += n;
     return s;
   }
-  const version = take(1, 'version')[0];
-  if (version !== ENVELOPE_VERSION) throw new Error(`bad envelope_version: ${version}`);
   const opcode = take(1, 'opcode')[0];
   if (opcode !== OPCODE_T_LP_BOND) throw new Error(`bad opcode: ${opcode}`);
   const farmId = new Uint8Array(take(32, 'farmId'));
@@ -567,7 +563,7 @@ export function decodeLpBond(payload) {
     throw new Error(`trailing bytes after bonderSig: ${payload.length - o}`);
   }
   return {
-    version, opcode,
+    opcode,
     farmId, bonderPubkey, bondAmount,
     entryAccPerShare, bondViewHeight,
     cChangeOrSentinel, rangeProof, kernelSig, bonderSig,
@@ -583,7 +579,7 @@ export function encodeLpUnbond(env) {
     lpReturnR, rewardR, unbonderSig,
   } = env;
   const parts = [
-    new Uint8Array([ENVELOPE_VERSION, OPCODE_T_LP_UNBOND]),
+    new Uint8Array([OPCODE_T_LP_UNBOND]),
     asBytes(farmId, 32, 'farmId'),
     asBytes(bondId, 36, 'bondId'),
     asBytes(unbonderPubkey, 33, 'unbonderPubkey'),
@@ -606,8 +602,6 @@ export function decodeLpUnbond(payload) {
     o += n;
     return s;
   }
-  const version = take(1, 'version')[0];
-  if (version !== ENVELOPE_VERSION) throw new Error(`bad envelope_version: ${version}`);
   const opcode = take(1, 'opcode')[0];
   if (opcode !== OPCODE_T_LP_UNBOND) throw new Error(`bad opcode: ${opcode}`);
   const farmId = new Uint8Array(take(32, 'farmId'));
@@ -626,7 +620,7 @@ export function decodeLpUnbond(payload) {
     throw new Error(`trailing bytes after unbonderSig: ${payload.length - o}`);
   }
   return {
-    version, opcode,
+    opcode,
     farmId, bondId, unbonderPubkey,
     exitAccPerShare, exitViewHeight, rewardAmount,
     lpReturnR, rewardR, unbonderSig,
@@ -642,7 +636,7 @@ export function encodeLpHarvest(env) {
     rewardR, harvesterSig,
   } = env;
   const parts = [
-    new Uint8Array([ENVELOPE_VERSION, OPCODE_T_LP_HARVEST]),
+    new Uint8Array([OPCODE_T_LP_HARVEST]),
     asBytes(farmId, 32, 'farmId'),
     asBytes(bondId, 36, 'bondId'),
     asBytes(harvesterPubkey, 33, 'harvesterPubkey'),
@@ -664,8 +658,6 @@ export function decodeLpHarvest(payload) {
     o += n;
     return s;
   }
-  const version = take(1, 'version')[0];
-  if (version !== ENVELOPE_VERSION) throw new Error(`bad envelope_version: ${version}`);
   const opcode = take(1, 'opcode')[0];
   if (opcode !== OPCODE_T_LP_HARVEST) throw new Error(`bad opcode: ${opcode}`);
   const farmId          = new Uint8Array(take(32, 'farmId'));
@@ -683,7 +675,7 @@ export function decodeLpHarvest(payload) {
     throw new Error(`trailing bytes after harvesterSig: ${payload.length - o}`);
   }
   return {
-    version, opcode,
+    opcode,
     farmId, bondId, harvesterPubkey,
     exitAccPerShare, exitViewHeight, rewardAmount,
     rewardR, harvesterSig,
@@ -698,7 +690,7 @@ export function encodeFarmRefund(env) {
     refundViewHeight, refundR, launcherSig,
   } = env;
   const parts = [
-    new Uint8Array([ENVELOPE_VERSION, OPCODE_T_FARM_REFUND]),
+    new Uint8Array([OPCODE_T_FARM_REFUND]),
     asBytes(farmId, 32, 'farmId'),
     asBytes(launcherPubkey, 33, 'launcherPubkey'),
     u64LE(refundAmount),
@@ -718,8 +710,6 @@ export function decodeFarmRefund(payload) {
     o += n;
     return s;
   }
-  const version = take(1, 'version')[0];
-  if (version !== ENVELOPE_VERSION) throw new Error(`bad envelope_version: ${version}`);
   const opcode = take(1, 'opcode')[0];
   if (opcode !== OPCODE_T_FARM_REFUND) throw new Error(`bad opcode: ${opcode}`);
   const farmId         = new Uint8Array(take(32, 'farmId'));
@@ -735,7 +725,7 @@ export function decodeFarmRefund(payload) {
     throw new Error(`trailing bytes after launcherSig: ${payload.length - o}`);
   }
   return {
-    version, opcode,
+    opcode,
     farmId, launcherPubkey, refundAmount,
     refundViewHeight, refundR, launcherSig,
   };

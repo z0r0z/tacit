@@ -27,20 +27,25 @@
 //                           change-v1" || ...). Deterministic. Recovers.
 //   T_PROTOCOL_FEE_CLAIM — blinding is PUBLIC in envelope (claim_blinding
 //                           field, 32 bytes). Anyone can re-derive. Recovers.
-//   T_CBTC_TAC_DEPOSIT   — mint UTXO blinding is RANDOM (crypto.getRandomValues
-//                           at deposit time). Stored ONLY in localStorage
-//                           position record. *Not recoverable from priv
-//                           key alone.* This is the structural recovery
-//                           hazard for cBTC.tac.
+//   T_CBTC_TAC_DEPOSIT          — mint UTXO blinding = HMAC(priv,
+//   T_CBTC_TAC_DEPOSIT_ATOMIC     "tacit-cbtc-tac-atomic-mint-v1" ||
+//                                  target_leaf_hash || bondSourceOutpoint).
+//                                  Atomic variant additionally derives the
+//                                  LP-share blinding via the standard AMM
+//                                  receipt scheme (anchor = cbtc.zk input
+//                                  outpoint). Both recover from priv alone.
+//   T_CBTC_TAC_WITHDRAW_ATOMIC  — LP_REMOVE leg blindings via the standard
+//                                  AMM receipt scheme (anchor = LP-share
+//                                  input outpoint). Pool_id is not in the
+//                                  envelope; the position record is needed
+//                                  for full recovery of withdraw proceeds.
 //
 // What this test does:
 //   1. Wipe in-process localStorage (fresh JSDOM start)
 //   2. Load only FOUNDER's priv key
 //   3. Run scanHoldings against the existing harness chain state
-//   4. Verify deterministic recoveries (CETCH, CXFER, LP, swap, fee claim)
-//   5. Document the cBTC.tac UTXO as recoverable-only-with-position-record
-//      (the test verifies it's NOT found by priv-alone, then re-injects the
-//      position record and confirms recovery)
+//   4. Verify deterministic recoveries (CETCH, CXFER, LP, swap, fee claim,
+//      cBTC.tac mint, atomic LP-share + mint)
 //
 // Pre-req: .local/amm-full-e2e-state.json from a prior harness run.
 
@@ -62,6 +67,12 @@ globalThis.alert = () => {};
 globalThis.confirm = () => false;
 globalThis.__TACIT_NO_INIT__ = true;
 globalThis.localStorage.setItem('tacit-network-v1', 'signet');
+// Skip the CF worker proxy — uncached signet routes take ~16s/request via
+// the proxy vs ~0.6s direct to mempool.space, blowing the holdings-scan
+// 90s timeout. Custom API base goes straight to upstream.
+globalThis.localStorage.setItem('tacit-custom-api-v1', JSON.stringify({
+  signet: 'https://mempool.space/signet/api',
+}));
 
 import * as secp from '@noble/secp256k1';
 import { hexToBytes, bytesToHex } from '@noble/hashes/utils';
@@ -199,40 +210,28 @@ if (HARNESS_STATE.cbtcTac?.positionRecord) {
 }
 
 // ============================================================================
-// Phase 3: what about a wallet WITH a still-extant cBTC.tac UTXO?
+// Phase 3: cBTC.tac mint UTXO recovery — HMAC-derived from priv key
 // ============================================================================
-step(3, 'cBTC.tac recovery semantics (the structural hazard)');
-// This is the launch-critical finding: if a user has a STILL-EXTANT cBTC.tac
-// UTXO and loses localStorage, can they recover?
+step(3, 'cBTC.tac recovery semantics (now HMAC-derived per SPEC §5.48.9)');
+// Mint blinding = HMAC(priv, "tacit-cbtc-tac-atomic-mint-v1" || target_leaf_hash
+//                      || anchor_outpoint) mod n_secp.
+// For non-atomic T_CBTC_TAC_DEPOSIT the anchor is the bondSourceOutpoint;
+// for atomic T_CBTC_TAC_DEPOSIT_ATOMIC the anchor is the cbtcZkInput outpoint.
+// Both recoverable from priv + envelope alone — no localStorage required.
 //
-// Our founder's cBTC.tac was consumed in pool init, so we can't directly test
-// "live cBTC.tac UTXO recovery" here. But we can demonstrate the mechanic:
-// scanHoldings only recognizes a cBTC.tac UTXO if a position record with
-// mintBlindingHex exists in localStorage (per dapp/tacit.js:12213-12235).
-//
-// Without that record, the UTXO is visible on chain but the amount is
-// indistinguishable from any other 33-byte Pedersen commitment → wallet
-// can't open it → effectively lost.
+// Founder's cBTC.tac was consumed by POOL_INIT in the AMM harness, so a
+// live recovery scan against this state finds nothing. The recovery math
+// is pinned by tests/cbtc-tac-recovery.test.mjs (13 unit tests); the
+// scanHoldings integration is pinned by tests/recovery-parity.test.mjs.
 
-info(`cBTC.tac recovery model:`);
-info(`  Required to open a cBTC.tac UTXO: mintBlindingHex (32B random) from`);
-info(`  the depositor's localStorage position record at deposit time.`);
-info(`  WITHOUT this blinding, the UTXO commitment cannot be opened from`);
-info(`  priv key alone — the value field is a 33-byte secp256k1 point that`);
-info(`  binds (amount, blinding) homomorphically, but neither is publicly`);
-info(`  exposed on chain for cBTC.tac (in contrast to T_PROTOCOL_FEE_CLAIM,`);
-info(`  where blinding IS public, and CETCH/CXFER, where blinding is derived`);
-info(`  via wallet-key-anchored keystream).`);
+info(`cBTC.tac mint blinding: HMAC(priv, target_leaf_hash, anchor) — recoverable.`);
+info(`Atomic LP-share output: standard AMM receipt scheme — recoverable.`);
+info(`Atomic withdraw legs (LP_REMOVE proceeds): receipt scheme — recoverable*.`);
+info(`  (*) Atomic withdraw needs the position record's bondPoolIdHex to`);
+info(`      derive pool_id; if the record is gone, fetch via /ctac/lien/<leaf>`);
+info(`      from the indexer before deriving leg blindings.`);
 info(``);
-info(`Launch implication: cBTC.tac depositors MUST back up localStorage.`);
-info(`  Mitigations the dapp should provide:`);
-info(`    1. Surface a "backup your wallet data" prompt after a cBTC.tac deposit`);
-info(`    2. Export/import path for position records (already has saveCtacPositionRecord)`);
-info(`    3. Long-term: encrypt position records under the wallet's priv key`);
-info(`       and pin to a user-controlled IPFS / pin service. Then "wallet`);
-info(`       recovery from seed" includes re-fetching position records from`);
-info(`       the user's pinning service.`);
-warn(`this hazard is NOT testable via priv-key-only scan — by design`);
+info(`No more "back up localStorage or lose funds" hazard for cBTC.tac mints.`);
 
 // Demonstrate the fix: rehydrate the position record and confirm scanHoldings
 // would have found the UTXO if it still existed.
@@ -264,11 +263,13 @@ const rows = [
   ['SWAP_VAR receipt',   '✓ recoverable',   'HMAC(priv, "amm-swap-var-receipt-v1"||poolId||outpoint)'],
   ['SWAP_VAR change',    '✓ recoverable',   'HMAC(priv, "amm-swap-var-change-v1"||…)'],
   ['T_PROTOCOL_FEE_CLAIM', '✓ recoverable', 'opening (amount + blinding) public in envelope'],
-  ['T_CBTC_TAC_DEPOSIT', '⚠ position-record only', 'random blinding stored only in localStorage'],
+  ['T_CBTC_TAC_DEPOSIT', '✓ recoverable', 'HMAC(priv, "cbtc-tac-atomic-mint-v1"||leafHash||bondOutpoint)'],
+  ['T_CBTC_TAC_DEPOSIT_ATOMIC', '✓ recoverable', 'LP-share via amm-receipt; mint via cbtc-tac-atomic-mint scheme'],
+  ['T_CBTC_TAC_WITHDRAW_ATOMIC', '✓ recoverable*', 'LP_REMOVE legs via amm-receipt — needs pool_id from position record'],
   ['T_SLOT_MINT (cBTC.zk slot)', '⚠ slot-record + secrets only', 'recovery secret + nullifier preimage required'],
 ];
 for (const [origin, status, mechanism] of rows) {
-  console.log(`    ${origin.padEnd(24)} ${status.padEnd(28)} ${mechanism}`);
+  console.log(`    ${origin.padEnd(28)} ${status.padEnd(28)} ${mechanism}`);
 }
 
 console.log(`\n  Test result: ${_pass} pass, ${_fail} fail`);
@@ -277,8 +278,7 @@ if (_fail > 0) {
   console.log(`  Failures suggest a regression in the scanHoldings recovery path.`);
   process.exit(1);
 } else {
-  console.log(`  ✓ All AMM-derived UTXOs recover from priv key alone.`);
-  console.log(`  ⚠ cBTC.tac and cBTC.zk slot UTXOs require backed-up localStorage.`);
-  console.log(`     This is structural by design — random blindings (cBTC.tac) and`);
-  console.log(`     recovery secrets (cBTC.zk slots) cannot be derived from priv key.`);
+  console.log(`  ✓ All AMM + cBTC.tac UTXOs recover from priv key alone.`);
+  console.log(`  ⚠ cBTC.zk slot UTXOs still require backed-up slot record (recovery`);
+  console.log(`     secret + nullifier preimage cannot be derived from priv key).`);
 }

@@ -3302,7 +3302,6 @@ Reference impl: `dapp/bulletproofs-plus.js` (`bppRangeProve`, `bppRangeVerify`),
 **Wire format** (full byte layout + field semantics: `spec/amendments/SPEC-SWAP-ROUTE-AMENDMENT.md` §"Wire format"):
 
 ```
-envelope_version(1)        = 0x01
 opcode(1)                  = 0x33
 n_hops(1)                  # u8, 2..N_HOPS_MAX (= 4)
 trader_input_asset_id(32)
@@ -3349,7 +3348,7 @@ Total payload ≈ 1.3 KB at N=4. Well under Taproot tap-leaf limits.
 | `vout[1]` | Trader's final receipt UTXO (DUST sats; asset is `trader_output_asset_id`) |
 | `vout[2..]` | Optional settler-fee outputs (V1.x follow-up; absent in V1 self-fulfill) and settler change |
 
-**Self-broadcast only in V1.** Settler-driven routing with per-hop tips is a follow-up amendment that bumps `envelope_version → 0x02`; V1 `version=0x01` envelopes pay no settler tips and the trader funds the Bitcoin tx fee directly.
+**Self-broadcast only in V1.** Settler-driven routing with per-hop tips is a follow-up amendment that allocates a new opcode (`T_SWAP_ROUTE_TIPPED`, e.g. `0x53`); V1 `T_SWAP_ROUTE` envelopes pay no settler tips and the trader funds the Bitcoin tx fee directly.
 
 **Intent + kernel messages:**
 
@@ -3391,7 +3390,7 @@ signed by `excess_route = r_receipt − r_in` (modular subtraction in the secp25
 **Validator algorithm:**
 
 1. Verify `vout[0]` is a 0-sat `OP_RETURN` whose 32-byte data equals `SHA256(payload)`.
-2. Decode payload; verify `opcode == 0x33`, `envelope_version == 0x01`, `2 ≤ n_hops ≤ N_HOPS_MAX (4)`.
+2. Decode payload; verify `opcode == 0x33` and `2 ≤ n_hops ≤ N_HOPS_MAX (4)`.
 3. Reject if `trader_input_asset_id == trader_output_asset_id` (degenerate route).
 4. **Expiry:** if `expiry_height != 0`, verify `currentHeight ≤ expiry_height`.
 5. **Intent sig:** reconstruct `route_msg`; verify `intent_sig` (BIP-340) under `trader_pubkey`.

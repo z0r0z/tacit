@@ -8,7 +8,7 @@ import * as worker from '../worker/src/index.js';
 import { encodeLpAdd, OPCODE_T_LP_ADD, OPCODE_T_LP_REMOVE } from './amm-envelope.mjs';
 import { XCURVE_PROOF_LEN } from './amm-sigma-xcurve.mjs';
 import {
-  OPCODE_T_SWAP_VAR, ENVELOPE_VERSION as SWAP_VAR_VERSION,
+  OPCODE_T_SWAP_VAR,
   encodeSwapVar, curveDeltaOut as refCurveDeltaOut,
   computeSwapVarEnvelopeHash, NO_CHANGE_SENTINEL,
 } from './swap-var.mjs';
@@ -359,8 +359,7 @@ group('T_SWAP_VAR — decoder round-trip via reference encoder');
     cChangeOrSentinel: cChange, cReceiptSecp: cReceipt,
     rReceipt, rangeProof, kernelSig, intentSig,
   });
-  ok('payload starts with version 0x01', payload[0] === SWAP_VAR_VERSION);
-  ok('payload[1] opcode 0x32', payload[1] === 0x32);
+  ok('payload[0] opcode 0x32', payload[0] === 0x32);
 
   const dec = worker.decodeTSwapVarPayload(payload);
   ok('worker decodes', dec !== null);
@@ -387,13 +386,11 @@ group('T_SWAP_VAR — decoder rejection cases');
 {
   ok('null payload → null', worker.decodeTSwapVarPayload(null) === null);
   ok('empty payload → null', worker.decodeTSwapVarPayload(new Uint8Array(0)) === null);
-  ok('wrong version → null',
-    worker.decodeTSwapVarPayload(new Uint8Array(300).fill(0xff)) === null);
-  // Wrong opcode
+  ok('wrong opcode → null', worker.decodeTSwapVarPayload(new Uint8Array(300).fill(0xff)) === null);
+  // Specifically: opcode != T_SWAP_VAR
   const bad = new Uint8Array(300).fill(0x00);
-  bad[0] = SWAP_VAR_VERSION;
-  bad[1] = 0x99;
-  ok('wrong opcode → null', worker.decodeTSwapVarPayload(bad) === null);
+  bad[0] = 0x99;
+  ok('non-SWAP_VAR opcode → null', worker.decodeTSwapVarPayload(bad) === null);
 }
 
 group('T_SWAP_VAR — NO_CHANGE_SENTINEL accepted');
@@ -524,7 +521,6 @@ group('Dapp T_SWAP_VAR encoder → worker decoder parity');
   const dapp = await import('../dapp/tacit.js');
 
   ok('dapp T_SWAP_VAR = 0x32', dapp.T_SWAP_VAR === 0x32);
-  ok('dapp SWAP_VAR_ENVELOPE_VERSION = 0x01', dapp.SWAP_VAR_ENVELOPE_VERSION === 0x01);
 
   // Dapp pool ID derivation matches worker
   const a = sha256(new TextEncoder().encode('parity-A'));
@@ -562,8 +558,7 @@ group('Dapp T_SWAP_VAR encoder → worker decoder parity');
     kernelSig: new Uint8Array(64).fill(0x99),
     intentSig: new Uint8Array(64).fill(0xaa),
   });
-  ok('dapp-encoded payload[0] = 0x01 (version)', payload[0] === 0x01);
-  ok('dapp-encoded payload[1] = 0x32 (opcode)', payload[1] === 0x32);
+  ok('dapp-encoded payload[0] = 0x32 (opcode)', payload[0] === 0x32);
 
   const decW = worker.decodeTSwapVarPayload(payload);
   ok('worker decodes dapp-encoded payload', decW !== null);

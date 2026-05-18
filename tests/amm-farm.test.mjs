@@ -250,8 +250,7 @@ test('T_FARM_INIT encode→decode roundtrip', () => {
   const { env } = fixtureFarmInit();
   const payload = encodeFarmInit(env);
   const dec = decodeFarmInit(payload);
-  return dec.version === ENVELOPE_VERSION
-    && dec.opcode === OPCODE_T_FARM_INIT
+  return dec.opcode === OPCODE_T_FARM_INIT
     && bytesEq(dec.poolId, env.poolId)
     && bytesEq(dec.farmNonce, env.farmNonce)
     && bytesEq(dec.launcherPubkey, env.launcherPubkey)
@@ -279,24 +278,16 @@ test('T_FARM_INIT encode→decode→encode byte-identity', () => {
   return bytesEq(p1, p2);
 });
 
-test('T_FARM_INIT fixed-portion payload size: 316 bytes (+ rangeProof + 2B len prefix)', () => {
+test('T_FARM_INIT fixed-portion payload size: 315 bytes (+ rangeProof + 2B len prefix)', () => {
   const { env } = fixtureFarmInit();
   const p = encodeFarmInit({ ...env, rangeProof: new Uint8Array(0) });
-  // Fixed payload = total - 0 rangeProof - 2B length prefix; but with 0-length,
-  // total = 316 + 2 = 318. Validate.
-  return p.length === 316 + 2;
+  return p.length === 315 + 2;
 });
 
-test('T_FARM_INIT rejects bad envelope_version', () => {
-  const { env } = fixtureFarmInit();
-  const p = encodeFarmInit(env);
-  p[0] = 0x99;
-  try { decodeFarmInit(p); return false; } catch { return true; }
-});
 test('T_FARM_INIT rejects bad opcode', () => {
   const { env } = fixtureFarmInit();
   const p = encodeFarmInit(env);
-  p[1] = 0x99;
+  p[0] = 0x99;
   try { decodeFarmInit(p); return false; } catch { return true; }
 });
 test('T_FARM_INIT rejects malformed launcherPubkey leading byte', () => {
@@ -340,8 +331,7 @@ test('T_LP_BOND encode→decode roundtrip', () => {
   const { env } = fixtureLpBond();
   const p = encodeLpBond(env);
   const dec = decodeLpBond(p);
-  return dec.version === ENVELOPE_VERSION
-    && dec.opcode === OPCODE_T_LP_BOND
+  return dec.opcode === OPCODE_T_LP_BOND
     && bytesEq(dec.farmId, env.farmId)
     && bytesEq(dec.bonderPubkey, env.bonderPubkey)
     && dec.bondAmount === env.bondAmount
@@ -361,10 +351,10 @@ test('T_LP_BOND encode→decode→encode byte-identity', () => {
   return bytesEq(p1, p2);
 });
 
-test('T_LP_BOND fixed-portion size: 256 bytes (+ rangeProof + 2B len prefix)', () => {
+test('T_LP_BOND fixed-portion size: 255 bytes (+ rangeProof + 2B len prefix)', () => {
   const { env } = fixtureLpBond();
   const p = encodeLpBond({ ...env, rangeProof: new Uint8Array(0) });
-  return p.length === 256 + 2;
+  return p.length === 255 + 2;
 });
 
 test('T_LP_BOND u128 entry_acc roundtrip preserves full range', () => {
@@ -400,8 +390,7 @@ test('T_LP_UNBOND encode→decode roundtrip', () => {
   const { env } = fixtureLpUnbond();
   const p = encodeLpUnbond(env);
   const dec = decodeLpUnbond(p);
-  return dec.version === ENVELOPE_VERSION
-    && dec.opcode === OPCODE_T_LP_UNBOND
+  return dec.opcode === OPCODE_T_LP_UNBOND
     && bytesEq(dec.farmId, env.farmId)
     && bytesEq(dec.bondId, env.bondId)
     && bytesEq(dec.unbonderPubkey, env.unbonderPubkey)
@@ -413,10 +402,10 @@ test('T_LP_UNBOND encode→decode roundtrip', () => {
     && bytesEq(dec.unbonderSig, env.unbonderSig);
 });
 
-test('T_LP_UNBOND total payload === 259 bytes', () => {
+test('T_LP_UNBOND total payload === 258 bytes', () => {
   const { env } = fixtureLpUnbond();
   const p = encodeLpUnbond(env);
-  return p.length === 259;
+  return p.length === 258;
 });
 
 test('T_LP_UNBOND encode→decode→encode byte-identity', () => {
@@ -1502,10 +1491,9 @@ test('T_LP_HARVEST encode→decode roundtrip', () => {
     harvesterSig: new Uint8Array(64).fill(0x77),
   };
   const p = encodeLpHarvest(env);
-  if (p.length !== 227) return `expected 227 B, got ${p.length}`;
+  if (p.length !== 226) return `expected 226 B, got ${p.length}`;
   const dec = decodeLpHarvest(p);
-  return dec.version === ENVELOPE_VERSION
-    && dec.opcode === OPCODE_T_LP_HARVEST
+  return dec.opcode === OPCODE_T_LP_HARVEST
     && bytesEq(dec.farmId, env.farmId)
     && bytesEq(dec.bondId, env.bondId)
     && bytesEq(dec.harvesterPubkey, env.harvesterPubkey)
@@ -1725,10 +1713,9 @@ test('T_FARM_REFUND encode→decode roundtrip', () => {
     launcherSig: new Uint8Array(64).fill(0x88),
   };
   const p = encodeFarmRefund(env);
-  if (p.length !== 1 + 1 + 32 + 33 + 8 + 4 + 32 + 64) return `unexpected length ${p.length}`;
+  if (p.length !== 1 + 32 + 33 + 8 + 4 + 32 + 64) return `unexpected length ${p.length}`;
   const dec = decodeFarmRefund(p);
-  return dec.version === ENVELOPE_VERSION
-    && dec.opcode === OPCODE_T_FARM_REFUND
+  return dec.opcode === OPCODE_T_FARM_REFUND
     && bytesEq(dec.farmId, env.farmId)
     && bytesEq(dec.launcherPubkey, env.launcherPubkey)
     && dec.refundAmount === env.refundAmount

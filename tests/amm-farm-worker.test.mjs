@@ -166,7 +166,7 @@ test('FARM_INIT: worker decode of ref-impl encode preserves every field', () => 
   return true;
 });
 
-test('FARM_INIT: worker decoder rejects malformed envelope_version', () => {
+test('FARM_INIT: worker decoder rejects bad opcode', () => {
   const env = {
     poolId: POOL_ID, farmNonce: FARM_NONCE, launcherPubkey: LAUNCHER_PUB,
     rewardAssetId: REWARD_ASSET, rewardTotal: 1_000_000_000n,
@@ -178,7 +178,7 @@ test('FARM_INIT: worker decoder rejects malformed envelope_version', () => {
     launcherSig: new Uint8Array(64),
   };
   const p = encodeFarmInit(env);
-  p[0] = 0x99;   // tamper version
+  p[0] = 0x99;   // tamper opcode
   return decodeTFarmInitPayload(p) === null;
 });
 

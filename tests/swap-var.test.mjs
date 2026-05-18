@@ -21,7 +21,7 @@ import {
 } from './bulletproofs.mjs';
 import { signSchnorr, verifySchnorr } from './composition.mjs';
 import {
-  OPCODE_T_SWAP_VAR, ENVELOPE_VERSION, NO_CHANGE_SENTINEL,
+  OPCODE_T_SWAP_VAR, NO_CHANGE_SENTINEL,
   encodeSwapVar, decodeSwapVar, computeSwapVarEnvelopeHash,
   buildSwapVarIntentMsg, buildSwapVarKernelMsg, kernelVerifyPoint,
   deriveSwapVarReceiptScalar, deriveSwapVarChangeScalar,
@@ -211,7 +211,6 @@ test('encode → decode round-trip preserves every field', () => {
   const bytes = encodeSwapVar(env);
   const decoded = decodeSwapVar(bytes);
   return decoded.opcode === OPCODE_T_SWAP_VAR
-      && decoded.version === ENVELOPE_VERSION
       && bytesToHex(decoded.poolId) === bytesToHex(env.poolId)
       && decoded.direction === env.direction
       && decoded.R_A_pre === env.R_A_pre
@@ -235,15 +234,7 @@ test('decode rejects truncated payload', () => {
 test('decode rejects wrong opcode byte', () => {
   const env = buildDummyEnv();
   const bytes = encodeSwapVar(env);
-  bytes[1] = 0x2F; // claim T_SWAP_BATCH instead
-  try { decodeSwapVar(bytes); return false; }
-  catch { return true; }
-});
-
-test('decode rejects wrong version byte', () => {
-  const env = buildDummyEnv();
-  const bytes = encodeSwapVar(env);
-  bytes[0] = 0x02;
+  bytes[0] = 0x2F; // claim T_SWAP_BATCH instead
   try { decodeSwapVar(bytes); return false; }
   catch { return true; }
 });

@@ -28,6 +28,12 @@ globalThis.alert = () => {};
 globalThis.confirm = () => false;
 globalThis.__TACIT_NO_INIT__ = true;
 globalThis.localStorage.setItem('tacit-network-v1', 'signet');
+// Skip the CF worker proxy — uncached signet routes take ~16s/request via
+// the proxy vs ~0.6s direct to mempool.space, blowing the holdings-scan
+// 90s timeout. Custom API base goes straight to upstream.
+globalThis.localStorage.setItem('tacit-custom-api-v1', JSON.stringify({
+  signet: 'https://mempool.space/signet/api',
+}));
 
 import { hexToBytes, bytesToHex } from '@noble/hashes/utils';
 const dapp = await import('../dapp/tacit.js');
