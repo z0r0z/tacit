@@ -35421,7 +35421,7 @@ const TAB_GROUP_OF = {
   transfer: 'send',
   market: 'markets', pool: 'markets', farms: 'markets',
   discover: 'discover',
-  etch: 'etch', drops: 'drops', mixer: 'mixer',
+  etch: 'create', drops: 'create', mixer: 'mixer',
   about: 'protocol',
 };
 
@@ -53171,6 +53171,19 @@ function _bidIntentsSignature(aid) {
   parts.sort();
   return parts.join('|');
 }
+// User-facing label for an order kind. Protocol terms ("preauth",
+// "intent", "range", "opening") are SPEC-level; traders shouldn't need
+// to learn them. Map to plain words; raw kind stays in title= where
+// power users want it.
+function _kindLabel(kind) {
+  switch (kind) {
+    case 'preauth': return 'Instant';
+    case 'intent':  return 'Negotiated';
+    case 'range':   return 'Range OTC';
+    case 'opening': return 'OTC';
+    default:         return kind || 'Listing';
+  }
+}
 function _assetSignatureFull(aid) {
   return `${_assetListingsSignature(aid)}||${_bidIntentsSignature(aid)}`;
 }
@@ -54631,7 +54644,7 @@ function applyMarketFilters() {
     // demand-side liquidity.
     const listedPaneHtml = `${_yourOrdersHtmlNoAsks}<div class="empty" style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;"><span>No active asks. Bids below; post one if you want to buy.</span>${_emptyAsksToggleChip}</div>${bidsLadderHtml}`;
     const richStatsHtml = renderMarketAssetStatsHTML(_assetForBids);
-    list.innerHTML = `<div class="market-token-page"><div class="market-token-main">${assetHeaderHtml}${richStatsHtml}${marketAssetTabsHtml(listedPaneHtml, activityPanelHtml, marketTabActionHtml)}</div></div>`;
+    list.innerHTML = `<div class="market-token-page market-token-page--no-side"><div class="market-token-header">${assetHeaderHtml}</div><div class="market-token-main">${richStatsHtml}${marketAssetTabsHtml(listedPaneHtml, activityPanelHtml, marketTabActionHtml)}</div></div>`;
     hydrateMarketImages(list);
     bindMarketAssetHeader(list);
     bindMarketAssetTabs(list);
@@ -54798,7 +54811,7 @@ function applyMarketFilters() {
     ? (hiddenByMode > 0
         ? `<span style="display:inline-flex;align-items:center;gap:0;font-size:10px;"><button data-act="market-simple-toggle" type="button" title="${escapeHtml(_simpleTooltip)}" style="font-size:10px;padding:3px 10px;background:#0a8f43;border:1px solid #0a7d3a;border-right:none;color:#fff;font-weight:600;cursor:pointer;">Simple</button><button data-act="market-simple-toggle" type="button" title="${escapeHtml(_simpleTooltip)}" style="font-size:10px;padding:3px 10px;background:#fff;border:1px solid #0a7d3a;color:#0a7d3a;font-weight:600;cursor:pointer;">Show ${hiddenByMode} more →</button></span>`
         : `<button data-act="market-simple-toggle" type="button" title="${escapeHtml(_simpleTooltip)}" style="font-size:10px;padding:3px 10px;background:#0a8f43;border:1px solid #0a7d3a;color:#fff;font-weight:600;cursor:pointer;">Simple</button>`)
-    : `<button data-act="market-simple-toggle" type="button" title="Currently showing every listing including atomic intents, OTC offers, and dust asks priced far below mark. Click to switch to Simple (one-click instant listings at fair-market prices only)." style="font-size:10px;padding:3px 10px;background:transparent;border:1px solid var(--ink-faint);color:var(--ink);cursor:pointer;">All offers</button>`;
+    : `<button data-act="market-simple-toggle" type="button" title="Currently showing every offer kind — Instant, Negotiated, Range, OTC — including dust priced far below mark. Click to switch to Simple (one-click Instant offers at fair-market prices only)." style="font-size:10px;padding:3px 10px;background:transparent;border:1px solid var(--ink-faint);color:var(--ink);cursor:pointer;">All offers</button>`;
   // Computed inline (the asset header function has its own copy with the
   // same name; scopes don't share — this one is local to applyMarketFilters).
   const _userHoldsAsset = !!(_holdingsCache?.holdings && _holdingsCache.holdings.get(_marketView.assetId));
@@ -55184,7 +55197,7 @@ function applyMarketFilters() {
     </div>`;
   })();
   const simpleEmptyHint = _marketSimpleMode && rowsForGrid.length === 0 && rowsFull.length > 0
-    ? `<div class="empty" style="padding:14px;text-align:center;font-size:11px;border:1px dashed var(--ink-faint);"><strong>No instant listings.</strong> <span class="muted">${rowsFull.length} offer${rowsFull.length === 1 ? '' : 's'} available - switch to <em>All offers</em> above to see atomic intents and OTC listings.</span></div>`
+    ? `<div class="empty" style="padding:14px;text-align:center;font-size:11px;border:1px dashed var(--ink-faint);"><strong>No Instant offers.</strong> <span class="muted">${rowsFull.length} offer${rowsFull.length === 1 ? '' : 's'} available — switch to <em>All offers</em> above to see Negotiated and OTC.</span></div>`
     : '';
   const _yourOrdersHtml = renderYourOpenOrdersHTML(_marketView.assetId, _assetForBids, myPubHexForMarket);
   // Swap tile hoisted to the top of the asset-detail page (above the
@@ -55568,7 +55581,23 @@ function applyMarketFilters() {
       }
     }
   }
-  list.innerHTML = `<div class="market-token-page"><div class="market-token-main">${assetHeaderHtml}${_swapTileHtml}${richStatsHtml}${marketAssetTabsHtml(listedPaneHtml, activityPanelHtml, marketTabActionHtml)}</div></div>`;
+  // Side-by-side desktop layout (>= 900px viewport): asset header full
+  // width on top; chart + tape + depth + orderbook + activity in the
+  // LEFT column; swap tile pinned in the RIGHT column (position:
+  // sticky so it stays visible as the user scrolls the orderbook +
+  // activity below). The CSS grid collapses to a single column on
+  // narrower viewports — see .market-token-page in index.html for
+  // the breakpoint rules. Preserve nodes ([data-swap-tile],
+  // [data-market-price-chart], etc.) are looked up by attribute
+  // selector regardless of nesting depth, so the existing detach +
+  // re-attach + scroll-anchor restore still works without code
+  // changes — only the surrounding DOM shape moves.
+  // Render the side column only when there's a swap tile to put in it.
+  // Empty side wrapper would still claim the 340px grid track, leaving
+  // a dead band; instead omit the side and let the grid collapse to
+  // single-column via the CSS :not(:has(.market-token-side)) rule.
+  const _sideHtml = _swapTileHtml ? `<div class="market-token-side">${_swapTileHtml}</div>` : '';
+  list.innerHTML = `<div class="market-token-page${_sideHtml ? '' : ' market-token-page--no-side'}"><div class="market-token-header">${assetHeaderHtml}</div><div class="market-token-main">${richStatsHtml}${marketAssetTabsHtml(listedPaneHtml, activityPanelHtml, marketTabActionHtml)}</div>${_sideHtml}</div>`;
   if (_onAssetDetailReRender) {
     for (const [sel, node] of Object.entries(_preservedNodes)) {
       const placeholder = list.querySelector(`[${sel}]`);
@@ -56194,7 +56223,7 @@ function applyMarketFilters() {
       }
     }
     const _bestPriceBadge = (_tileIdx === bestPreauthIdx && l.kind === 'preauth')
-      ? `<span style="display:inline-block;margin-left:6px;padding:1px 7px;background:#0a8f43;color:#fff;font-size:9px;font-weight:700;letter-spacing:0.04em;border-radius:2px;vertical-align:middle;" title="Cheapest preauth (single-tx instant fill) on this page.">BEST PRICE${_bestPriceDeltaStr}</span>`
+      ? `<span style="display:inline-block;margin-left:6px;padding:1px 7px;background:#0a8f43;color:#fff;font-size:9px;font-weight:700;letter-spacing:0.04em;border-radius:2px;vertical-align:middle;" title="Cheapest Instant offer (single-tx fill, no maker handshake) on this page.">BEST PRICE${_bestPriceDeltaStr}</span>`
       : '';
     // "YOU" pill on own asks. Matches the bids-ladder YOU pill (amber
     // background, same dimensions) so a trader's own orders read
@@ -59024,16 +59053,25 @@ function renderMarketAssetHeader(assetId, rows) {
       <div class="market-asset-title">
         ${marketAssetImageHtml(a, 64, 'market-token-icon market-token-icon--large')}
         <div style="min-width:0;">
-          <!-- Display name (from IPFS metadata) sits where the redundant
-               "tacit / TAC" decorative line used to live. Falls through to
-               nothing when no name is set — the big ticker below still
-               carries the asset identity, the pre-line is bonus context. -->
-          ${_displayName && _displayName.toLowerCase() !== (a.ticker || '').toLowerCase() ? `<div style="font-size:11px;color:var(--ink-mid);margin-bottom:2px;">${escapeHtml(_displayName)}</div>` : ''}
+          <!-- Display name from IPFS metadata, rendered in the serif
+               italic the project's logotype uses, when distinct from the
+               ticker. Editorial weight — pairs with the big ticker H2
+               below (also serif via .market-asset-title h2). -->
+          ${_displayName && _displayName.toLowerCase() !== (a.ticker || '').toLowerCase() ? `<div style="font-family:var(--serif);font-style:italic;font-size:14px;color:var(--ink-mid);margin-bottom:2px;">${escapeHtml(_displayName)}</div>` : ''}
           <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
-            <h2 style="margin:0;line-height:1.05;">${escapeHtml(a.ticker || '?')}</h2>${verifiedBadge}
+            <h2>${escapeHtml(a.ticker || '?')}</h2>${verifiedBadge}
           </div>
-          <div style="font-size:10px;color:var(--ink-mid);margin-top:2px;">
-            <span>id </span>
+          <!-- Subtitle: leans into the editorial aesthetic + surfaces
+               Tacit's value props in one inline line. Confidential =
+               the protocol's differentiator vs every other Bitcoin
+               token spec; "on Bitcoin" = settlement layer; "order book
+               + AMM" = the two trading venues the protocol exposes.
+               Discreet, italic, low-contrast — meant to read like
+               a publication standfirst, not a marketing banner. -->
+          <div style="font-family:var(--serif);font-style:italic;font-size:12px;color:var(--ink-mid);margin-top:4px;letter-spacing:0;">
+            confidential token &middot; on Bitcoin &middot; <a href="#" data-act="market-jump-to-amm" title="Open the Tacit AMM tab — paired-token swap + LP for any asset with a live pool (post-ceremony)." style="color:inherit;border-bottom:1px dotted var(--ink-mid);text-decoration:none;">order book + AMM</a>
+          </div>
+          <div style="font-size:10px;color:var(--ink-mid);margin-top:6px;">
             <span class="mono-box inline" style="font-size:10px;cursor:pointer;color:${assetIdColorForAsset(a)};" data-act="copy-aid" data-aid="${escapeHtml(safeAid)}" title="Click to copy full asset_id: ${escapeHtml(safeAid)}">${escapeHtml(shorten(safeAid, 12))}</span>
           </div>
         </div>
@@ -67200,6 +67238,18 @@ function bindMarketAssetHeader(scope) {
     // Bind via addEventListener so the effect survives without a CSP relax.
     el.addEventListener('mouseenter', () => { el.style.color = 'var(--ink)'; });
     el.addEventListener('mouseleave', () => { el.style.color = 'var(--ink-mid)'; });
+  });
+  // Editorial subtitle "order book + AMM" link → AMM tab. Subtle by
+  // design — AMM is per-pool and ceremony-pending for many assets, so
+  // we route to the AMM tab generally rather than priming a specific
+  // pool. When the asset has a live pool the AMM tab will surface it;
+  // when it doesn't, the tab shows ceremony status (which itself is
+  // upcoming market-page integration).
+  scope.querySelectorAll('[data-act="market-jump-to-amm"]').forEach(el => {
+    el.onclick = (ev) => {
+      ev.preventDefault();
+      try { _activateTab('pool'); } catch (e) { console.warn('[market] jump-to-amm failed', e?.message); }
+    };
   });
   // Esc-to-browse shortcut: bound on the window so the asset detail can
   // be dismissed without mouse targeting. Cleared on next asset entry

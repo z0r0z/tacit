@@ -97,6 +97,14 @@
   --red: #c62828;
   --purple: #6a1b9a;
   --mono: 'IBM Plex Mono', ui-monospace, monospace;
+  /* Editorial serif — pair with the IBM Plex Mono body to mirror the
+     logotype + activity rail H3 styling, which already use this face
+     via `font-family: var(--serif)` (previously undefined → silently
+     fell back to the body mono). Defining it here makes those rules
+     work and unlocks reuse for stat-tile labels, section headers,
+     and asset hero names — the editorial pairing the project's
+     aesthetic was always aiming at. */
+  --serif: 'Instrument Serif', 'EB Garamond', Georgia, serif;
 }
 * { box-sizing: border-box; margin: 0; padding: 0; }
 html, body { background: var(--bg); color: var(--ink); }
@@ -905,10 +913,51 @@ tr[data-recent-activity] .market-token-sub::after {
   min-height: 32px;
   padding: 0 10px;
 }
+/* Trading-page layout. Desktop (>=900px): asset header full width on top,
+   chart/orderbook/activity stacked in the LEFT column, swap tile pinned
+   in the RIGHT column (position: sticky so it stays visible as the user
+   scrolls). Below 900px, the grid collapses to a single column and the
+   side col goes static — the swap tile then sits below the header like
+   it always did on mobile. The --no-side variant (empty-asks branch,
+   wallets with nothing to swap) uses single-column on all sizes. */
 .market-token-page {
   display: block;
 }
 .market-token-main { min-width: 0; }
+.market-token-header { min-width: 0; }
+.market-token-side { min-width: 0; }
+@media (min-width: 900px) {
+  .market-token-page:not(.market-token-page--no-side) {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 340px;
+    column-gap: 16px;
+    align-items: start;
+  }
+  .market-token-page:not(.market-token-page--no-side) > .market-token-header {
+    grid-column: 1 / -1;
+  }
+  .market-token-page:not(.market-token-page--no-side) > .market-token-main {
+    grid-column: 1;
+  }
+  .market-token-page:not(.market-token-page--no-side) > .market-token-side {
+    grid-column: 2;
+    position: sticky;
+    top: 12px;
+    align-self: start;
+    /* Cap height so a tall swap tile (Advanced mode with all rows
+       expanded) doesn't exceed the viewport and lose its top
+       affordance behind the page chrome. Internal scroll if needed;
+       in practice the tile renders well under this cap. */
+    max-height: calc(100vh - 24px);
+    overflow-y: auto;
+  }
+  /* Hoist the asset-header card visual weight a tiny bit so it reads as
+     a separator above the two columns rather than blending into the left
+     column. No background change — just spacing. */
+  .market-token-page:not(.market-token-page--no-side) > .market-token-header {
+    margin-bottom: 4px;
+  }
+}
 .market-asset-tabbar {
   display: flex;
   align-items: center;
@@ -1387,14 +1436,17 @@ tr[data-recent-activity] .market-token-sub::after {
 }
 .market-asset-title h2 {
   margin: 0;
-  font-size: 34px;
+  font-family: var(--serif);
+  font-size: 42px;
+  font-style: italic;
   font-weight: 400;
+  line-height: 0.95;
+  letter-spacing: -0.01em;
 }
 .market-asset-stats {
   display: grid;
   grid-template-columns: repeat(4, minmax(140px, 1fr));
-  border: 1px solid var(--ink);
-  box-shadow: 3px 3px 0 var(--ink);
+  border: 1px solid var(--ink-faint);
   background: var(--bg-warm);
 }
 .market-asset-stats > div {
@@ -1418,7 +1470,11 @@ tr[data-recent-activity] .market-token-sub::after {
 .market-asset-stats span {
   display: block;
   color: var(--ink-mid);
-  font-size: 10px;
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: 12px;
+  letter-spacing: 0;
+  text-transform: none;
   margin-bottom: 4px;
 }
 .market-asset-stats strong {
@@ -2051,6 +2107,9 @@ tr[data-recent-activity] .market-token-sub::after {
   .market-asset-stats { grid-template-columns: repeat(2, minmax(120px, 1fr)); }
   .market-token-page { grid-template-columns: 1fr; }
   .market-activity-rail { border-left: 0; padding-left: 0; border-top: 1px solid var(--ink); padding-top: 16px; }
+  /* Tablet bracket — 42px hero is too tall once the layout drops to
+     single column. Phones get the smaller 26px from the <=600 rule. */
+  .market-asset-title h2 { font-size: 34px; }
 }
 @media (max-width: 520px) {
   .market-asset-grid,
@@ -2099,10 +2158,16 @@ tr[data-recent-activity] .market-token-sub::after {
   .market-token-table td { padding: 10px 8px; font-size: 11px; }
   .market-token-icon { width: 36px; height: 36px; }
 
-  /* Asset-header sizing. 34px h2 + 14px gap chews ~60% of width on
-     iPhone SE; trim to fit the price/badge row alongside it. */
-  .market-asset-title h2 { font-size: 22px; }
+  /* Asset-header sizing. 42px serif italic h2 + 14px gap chews ~60% of
+     width on iPhone SE; trim to fit the price/badge row alongside it.
+     The 600-899 tablet bracket gets a separate intermediate size so
+     it doesn't jump from 42 -> 22 with a 1px viewport change. */
+  .market-asset-title h2 { font-size: 26px; line-height: 1; }
   .market-asset-title { gap: 10px; }
+  /* Make the spread-strip best-bid / best-ask buttons tappable on
+     mobile — desktop they're 11px text with ~15px tap area, well
+     below the 44pt touch target floor. */
+  [data-act="market-spread-prime"] { padding: 8px 6px !important; }
 }
 
 label {
@@ -4547,8 +4612,7 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
   <button class="tab" data-tab="market" data-group="markets">Markets</button>
   <button class="tab" data-tab="discover" data-group="discover">Discover</button>
   <button class="tab" data-tab="transfer" data-group="send">Send</button>
-  <button class="tab" data-tab="etch" data-group="etch">Etch</button>
-  <button class="tab" data-tab="drops" data-group="drops">Drops</button>
+  <button class="tab" data-tab="etch" data-group="create" title="Issuer flows — etch a new confidential asset and distribute it via Merkle-gated drops">Create</button>
   <button class="tab" data-tab="mixer" data-group="mixer">Mixer</button>
   <button class="tab" data-tab="about" data-group="protocol">Protocol</button>
 </div>
@@ -4563,6 +4627,14 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
   <button class="tab active" data-tab="market">Order book</button>
   <button class="tab" data-tab="pool" title="AMM swap + LP pool — unlocks after the AMM trusted setup ceremony">AMM</button>
   <button class="tab" data-tab="farms" title="LP-bond yield farms — stake LP shares to earn reward emissions">Farms</button>
+</div>
+
+<!-- Create subtabs: Etch + Drops consolidated under a single "Create"
+     primary tab (both are issuer-side flows). Mixer stays top-level
+     since it's a consumer privacy op, not an issuer flow. -->
+<div class="tabs subtabs" data-group="create" style="display:none;">
+  <button class="tab active" data-tab="etch" title="Mint a new confidential asset with hidden supply">Etch</button>
+  <button class="tab" data-tab="drops" title="Lock supply into a public claim pool, optionally Merkle-gated">Drops</button>
 </div>
 
 <!-- WALLET TAB -->
