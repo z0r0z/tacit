@@ -127,9 +127,95 @@ body {
 
 header {
   border-bottom: 2px solid var(--ink);
-  padding-bottom: 16px; margin-bottom: 32px;
+  padding-bottom: 16px; margin-bottom: 16px;
   display: grid; grid-template-columns: auto 1fr auto;
   align-items: end; gap: 24px;
+}
+/* Global trade tape: single-line marquee under the title-divider.
+   Editorial serif italic, low contrast, minimal — meant to read like
+   a newspaper market briefing, not a brightly-lit ticker. Auto-
+   scrolls left forever; pauses on hover so a trader can read +
+   click a specific entry. Items click → asset market page. */
+.global-tape {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin: 0 0 16px;
+  padding: 6px 0 8px;
+  border-bottom: 1px solid var(--ink-faint);
+  overflow: hidden;
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: 13px;
+  line-height: 1.2;
+  color: var(--ink);
+}
+.global-tape-track {
+  flex: 1 1 auto;
+  display: flex;
+  gap: 28px;
+  min-width: 0;
+  /* mask the edges so items fade in/out at the boundaries rather than
+     hard-clipping mid-text, which reads as "this is a marquee" not
+     "this is cut off." */
+  -webkit-mask-image: linear-gradient(to right, transparent 0, #000 28px, #000 calc(100% - 28px), transparent 100%);
+          mask-image: linear-gradient(to right, transparent 0, #000 28px, #000 calc(100% - 28px), transparent 100%);
+  /* Auto-scroll: 60s for one full cycle. Duration is intentionally
+     slow so the user can read individual entries without rushing. */
+  animation: tape-scroll 60s linear infinite;
+  will-change: transform;
+}
+.global-tape:hover .global-tape-track,
+.global-tape:focus-within .global-tape-track {
+  animation-play-state: paused;
+}
+.global-tape-item {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  white-space: nowrap;
+  text-decoration: none;
+  color: inherit;
+}
+.global-tape-item:hover { color: var(--orange); }
+.global-tape-item .gt-ticker {
+  font-family: var(--mono);
+  font-style: normal;
+  font-weight: 600;
+  font-size: 11px;
+  letter-spacing: 0.02em;
+}
+.global-tape-item .gt-price {
+  font-family: var(--mono);
+  font-style: normal;
+  font-size: 11px;
+}
+.global-tape-item .gt-tick {
+  font-family: var(--mono);
+  font-style: normal;
+  font-size: 11px;
+}
+.global-tape-item.up .gt-tick { color: #0a8f43; }
+.global-tape-item.down .gt-tick { color: #b8341d; }
+.global-tape-item .gt-age {
+  font-family: var(--mono);
+  font-style: normal;
+}
+.global-tape-item .gt-age {
+  color: var(--ink-mid);
+  font-size: 12px;
+}
+@keyframes tape-scroll {
+  from { transform: translateX(0); }
+  to   { transform: translateX(-50%); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .global-tape-track { animation: none; overflow-x: auto; }
+}
+@media (max-width: 600px) {
+  .global-tape { font-size: 12px; }
+  .global-tape-track { gap: 20px; animation-duration: 45s; }
 }
 .logo {
   font-family: 'Instrument Serif', serif;
@@ -3521,6 +3607,28 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
   color: var(--ink-mid);
   font-weight: 500;
 }
+.amm-cer-chip-text-short { display: none; }
+@media (max-width: 600px) {
+  .amm-cer-chip-text-full { display: none; }
+  .amm-cer-chip-text-short { display: inline; }
+  /* Subtle on phones — the chip becomes a small dot-only pill so it
+     doesn't obscure trade affordances or sit awkwardly in the
+     bottom-right thumb zone. Tap-target remains 32px square. */
+  .amm-cer-chip {
+    padding: 6px 8px;
+    font-size: 9px;
+    gap: 5px;
+    box-shadow: 1px 1px 0 var(--ink);
+    bottom: 10px;
+    right: 10px;
+  }
+  .amm-cer-chip .amm-cer-chip-dot { width: 6px; height: 6px; }
+  .amm-cer-chip .amm-cer-chip-text {
+    /* Shorten to one word so the pill fits a phone screen edge. */
+    font-size: 9px;
+    letter-spacing: 0;
+  }
+}
 
 /* First-load welcome modal — shown only when this network has no burner key
    AND no remembered ext-wallet mode. Forces a deliberate choice (connect
@@ -4479,6 +4587,17 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
     </div>
   </div>
 </header>
+
+<!-- Global trade tape. Single-line marquee of recent settled trades
+     across ALL assets, populated by _renderGlobalTape() once the
+     market cache warms. Editorial serif italic, low contrast — meant
+     to read like a publication standfirst, not a financial ticker.
+     Hidden until first paint so the page doesn't show a blank strip
+     on a cold cache. Hover anywhere to pause the scroll. Click any
+     entry to jump to that asset's market page. -->
+<div id="global-tape" class="global-tape" data-global-tape style="display:none;">
+  <div class="global-tape-track" data-global-tape-track></div>
+</div>
 
 <div id="mainnet-banner" style="display:none;position:relative;background:#fee;border:1px solid var(--red);padding:7px 36px 7px 14px;font-size:11px;color:var(--red);text-align:center;margin-bottom:10px;line-height:1.4;">
   <button id="mainnet-banner-close" type="button" aria-label="Acknowledge and hide" title="Acknowledge and hide" style="position:absolute;top:4px;right:6px;background:transparent;border:1px solid transparent;color:var(--red);font-size:14px;line-height:1;width:20px;height:20px;padding:0;cursor:pointer;text-transform:none;letter-spacing:0;">×</button>
@@ -6552,7 +6671,7 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
      contribute button that calls ceremonyContributeAmm(). -->
 <div id="amm-ceremony-chip" class="amm-cer-chip" role="button" tabindex="0" style="display:none;" title="Contribute entropy to the AMM trusted setup ceremony — ~45 seconds in your browser.">
   <span class="amm-cer-chip-dot"></span>
-  <span class="amm-cer-chip-text">contribute to AMM ceremony</span>
+  <span class="amm-cer-chip-text"><span class="amm-cer-chip-text-full">contribute to AMM ceremony</span><span class="amm-cer-chip-text-short">AMM ✦</span></span>
   <span class="amm-cer-chip-count" id="amm-cer-chip-count"></span>
 </div>
 <div id="amm-ceremony-drawer" class="pass-modal" role="dialog" aria-modal="true" aria-labelledby="amm-cer-title" style="display:none;">
@@ -6568,8 +6687,15 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
         <input id="amm-cer-name" type="text" maxlength="64" placeholder="anonymous" style="width:100%; font-size:12px; padding:4px 6px;">
       </label>
     </div>
-    <div style="margin-bottom: 12px; font-size: 11px;">
-      <label><input id="amm-cer-attribute-pubkey" type="checkbox" checked> Log my tacit wallet (for airdrop eligibility) <span id="amm-cer-pubkey-hint" class="muted"></span></label>
+    <div style="margin-bottom: 14px;">
+      <label style="display:flex; align-items:flex-start; gap:10px; font-size:12px; line-height:1.45; cursor:pointer; padding:10px 12px; border:1px solid var(--ink-faint); background:var(--bg-warm);">
+        <input id="amm-cer-attribute-pubkey" type="checkbox" checked
+               style="width:16px; height:16px; margin:1px 0 0; flex-shrink:0; accent-color:var(--orange); cursor:pointer;">
+        <span>
+          Log my tacit wallet <span style="color:var(--ink-mid);">(for airdrop eligibility)</span>
+          <span id="amm-cer-pubkey-hint" class="muted" style="display:block; font-size:11px; margin-top:2px; font-family:var(--mono);"></span>
+        </span>
+      </label>
     </div>
     <div id="amm-cer-progress" style="display:none; margin-bottom: 12px; font-family: var(--mono); font-size: 11px; color: var(--ink-mid); max-height: 200px; overflow-y: auto; padding: 8px; border: 1px solid var(--ink-faint); background: var(--bg-warm); white-space: pre-wrap;"></div>
     <div id="amm-cer-result" style="display:none; margin-bottom: 12px; font-family: var(--mono); font-size: 11px; padding: 8px; border: 1px solid var(--ink-faint);"></div>

@@ -30511,8 +30511,14 @@ let pendingMarketFilter = null;
 // have to re-pick every reload. Read at module load to seed the initial
 // renderRecentEtches.
 let _landerSort = (() => {
-  try { return localStorage.getItem('tacit-lander-sort-v1') === 'active' ? 'active' : 'recent'; }
-  catch { return 'recent'; }
+  // Default to "active" — what's actually moving is more useful as a
+  // lander glance than "just etched, no idea what's real." A user who
+  // explicitly clicks "Recent" gets that preference persisted; otherwise
+  // every reload defaults to Most Active.
+  try {
+    const v = localStorage.getItem('tacit-lander-sort-v1');
+    return v === 'recent' ? 'recent' : 'active';
+  } catch { return 'active'; }
 })();
 
 // ============== TABS ==============
@@ -34724,7 +34730,10 @@ function renderAmmCeremonyChip() {
 function openAmmCeremonyDrawer() {
   const drawer = document.getElementById('amm-ceremony-drawer');
   if (!drawer) return;
-  drawer.style.display = 'flex';
+  // .pass-modal sets `display: grid; place-items: center;` for viewport-
+  // centered framing — override to 'grid' (not 'flex', which loses
+  // place-items support and pins the card to the top-left of the screen).
+  drawer.style.display = 'grid';
   _renderAmmCerDrawerBody();
   refreshAmmCeremonyStatesIfStale(true).then(_renderAmmCerDrawerBody).catch(() => {});
   // Pre-fill the wallet pubkey hint if a wallet is loaded. Empty when no
@@ -38341,14 +38350,12 @@ function unitPriceSats(priceSats, amountBaseUnits, decimals) {
 // (ring length < 3) dim to .thin so users don't trade on noisy deltas.
 function _renderDeltaChip(pct, windowLbl, thin) {
   if (pct == null || !Number.isFinite(pct)) return '';
-  const cls = pct > 0 ? 'pos' : pct < 0 ? 'neg' : 'neu';
-  // Plain colored numbers — green for up, red for down, muted for flat.
-  // True minus sign (U+2212) instead of hyphen-minus so the negative form
-  // visually balances the plus glyph at the same width. Direction is
-  // carried by color + sign; the old ▲/▼ arrows were redundant noise.
-  const valStr = pct === 0
-    ? '0.00%'
-    : (pct > 0 ? `+${pct.toFixed(2)}%` : `−${Math.abs(pct).toFixed(2)}%`);
+  // Suppress exact zero — "0.00% 24h" reads as flat-market FUD when
+  // it usually means "no trades in this window, worker pegged to 0",
+  // not a genuine no-change print.
+  if (pct === 0) return '';
+  const cls = pct > 0 ? 'pos' : 'neg';
+  const valStr = pct > 0 ? `+${pct.toFixed(2)}%` : `−${Math.abs(pct).toFixed(2)}%`;
   const thinCls = thin ? ' thin' : '';
   return `<span class="delta-chip ${cls}${thinCls}" title="${escapeHtml(windowLbl)} price change · outlier-guarded reference">${valStr}<span class="delta-win">${escapeHtml(windowLbl)}</span></span>`;
 }
@@ -50121,29 +50128,54 @@ async function renderRecentEtches() {
     let sorted = [..._curatedAssets].sort((x, y) =>
       (Number(y.etched_at) || 0) - (Number(x.etched_at) || 0));
     if (_landerSort === 'active') {
-      // Composite "activity" signal — for CETCH: transfers + offers + mints +
-      // burns. For petch: transfers + pmint_count (every public mint counts as
-      // one activity event). Without the petch branch, fair launches would
-      // always sort to zero and disappear from the active view.
-      // Activity score: settled trades (preauth_sale_count + atomic_intent_count)
-      // weigh 5× vs other events because settled sales are the cleanest
-      // "real market activity" signal — listings can be posted speculatively,
-      // transfers happen as part of any tx, but a completed sale is someone
-      // actually trading on this asset. Mints (cumulative or array length)
-      // weigh 2× as the next strongest signal: each represents real demand
-      // for new supply. Other events stay at 1×.
+      // Tiered "activity" score. Trade activity dominates mint activity:
+      // a 200k-public-mint fair-launch is single-sided issuance demand
+      // at a fixed price; one orderbook trade is a real two-sided price
+      // discovery event. The lander should surface the latter even when
+      // raw mint counts dwarf trade counts (without this, every petch
+      // ranks above every CETCH because mint counts can be 1000× larger).
+      //
+      // Tier 1: 24h trade volume in sats (real recent market activity)
+      // Tier 2: cumulative trades (asset has ever traded, even if quiet now)
+      // Tier 3: pending public-mints (active issuance demand)
+      // Tier 4: cumulative mints + transfers + listings (historical only)
+      //
+      // Each tier gets a base offset so any asset in a higher tier
+      // outranks every asset in lower tiers regardless of within-tier
+      // count.
+      // Combined weighted activity score. Earlier strict-tier approach
+      // ("any trades > 0 beats any mint count") put a 1-trade asset
+      // above a 200k-mint fair-launch, which under-weights real demand
+      // signal — a popular public mint with thousands of participants
+      // is genuinely active even without an orderbook. Weighted blend
+      // lets large mint counts outrank single-digit-trade assets while
+      // still putting any decent trade count (≥ ~200 trades) above
+      // even huge mint counts.
+      //
+      // Weights (trade-equivalents):
+      //   1 settled trade      = 1000 units   (real two-sided pricing)
+      //   1 sat 24h volume     =    0.001     (recent volume scaled by /1000)
+      //   1 PENDING public-mint =   50        (active issuance demand)
+      //   1 cumulative mint    =    1        (historical issuance)
+      //   1 transfer / listing =    0.5       (low-signal noise)
+      //
+      // So FAIR (202892 cum mints, 0 trades) ≈ 202k score, ranking above
+      // SAT (1 trade) ≈ 1k, but below TAC (1158 trades) ≈ 1.16M.
       const score = (a) => {
         if (a.kind === 'petch') {
-          // Petch has no orderbook; trades-equivalent is each new public mint.
-          return (Number(a.transfer_count || 0))
-               + 2 * (Number(a.pmint_count || 0) + Number(a.pending_pmint_count || 0));
+          const pending = Number(a.pending_pmint_count || 0);
+          const total = Number(a.pmint_count || 0) + pending;
+          return pending * 50 + total + 0.5 * Number(a.transfer_count || 0);
         }
         const trades = Number(a.preauth_sale_count || 0) + Number(a.atomic_intent_count || 0);
+        const vol24 = Number(a.volume_24h_sats || 0);
         const mintsCount = Array.isArray(a.mints) ? a.mints.length : 0;
-        return (Number(a.transfer_count || 0))
-             + (Number(a.listing_count || 0)) + (Number(a.range_listing_count || 0))
-             + 5 * trades
-             + 2 * mintsCount
+        return trades * 1000
+             + vol24 * 0.001
+             + mintsCount
+             + 0.5 * (Number(a.transfer_count || 0)
+                    + Number(a.listing_count || 0)
+                    + Number(a.range_listing_count || 0))
              + (Array.isArray(a.burns) ? a.burns.length : 0);
       };
       sorted = [..._curatedAssets].sort((x, y) => {
@@ -50252,7 +50284,12 @@ async function renderRecentEtches() {
       // and non-zero, so quiet assets stay clean.
       const _pctRaw = Number(a.price_change_primary_pct);
       const _pctWin = a.price_change_primary_window || '';
-      const _hasPct = Number.isFinite(_pctRaw) && _pctWin;
+      // Suppress exact-zero (rounded to 1dp) — "0.0% 24h" reads as
+      // flat-market FUD when usually it means the worker has no trades
+      // in the window so it pegged the delta to 0. Match the same
+      // rule the lander tile + stats strip + chart label use.
+      const _pctRounded = Number.isFinite(_pctRaw) ? Math.round(_pctRaw * 10) / 10 : null;
+      const _hasPct = Number.isFinite(_pctRaw) && _pctWin && _pctRounded !== 0;
       const _pctSign = _hasPct ? (_pctRaw > 0 ? '+' : '') : '';
       const _pctColor = _hasPct ? (_pctRaw > 0 ? 'var(--green, #0a8f43)' : _pctRaw < 0 ? 'var(--red, #b8341d)' : 'var(--ink-mid)') : '';
       const _pctPill = _hasPct
@@ -52861,6 +52898,100 @@ function _computeMarketTickDelay() {
   const factor = Math.pow(2, Math.min(_marketTickFailStreak, 4));
   return Math.min(MARKET_AUTO_REFRESH_MS * factor, MARKET_AUTO_REFRESH_MAX_MS);
 }
+// Global trade tape. Single-line marquee at the top of the dapp showing
+// recent settled trades across ALL assets. Walks _marketCache.assets and
+// reads each asset's last_trade (price_sats, amount, ts). Sorts by ts
+// desc, takes the top N. Renders items twice end-to-end so the CSS
+// `translateX(-50%)` keyframe loops seamlessly without a visible jump.
+// Hidden until the cache warms; idempotent — safe to call on every
+// auto-refresh tick.
+const GLOBAL_TAPE_LIMIT = 24;
+let _globalTapeLastSig = '';
+function _renderGlobalTape() {
+  if (typeof document === 'undefined') return;
+  const root = document.getElementById('global-tape');
+  if (!root) return;
+  const track = root.querySelector('[data-global-tape-track]');
+  if (!track) return;
+  const assets = Array.isArray(_marketCache?.assets) ? _marketCache.assets : [];
+  if (assets.length === 0) { root.style.display = 'none'; return; }
+  // Pull (ticker, unit price, ts) per asset from last_trade, with the
+  // 0.2×/5× mark-band outlier guard so a dust fill from a single asset
+  // doesn't dominate the tape. Skip assets with no usable trade.
+  const items = [];
+  for (const a of assets) {
+    const lt = a?.last_trade;
+    if (!lt || !Number.isInteger(lt.price_sats) || lt.price_sats <= 0) continue;
+    const ts = Number(lt.ts || 0);
+    if (ts <= 0) continue;
+    const dec = Number.isInteger(a.decimals) && a.decimals >= 0 && a.decimals <= 8 ? a.decimals : 0;
+    let amt = 0n;
+    try { amt = BigInt(lt.amount || 0); } catch {}
+    if (amt <= 0n) continue;
+    const u = unitPriceSats(Number(lt.price_sats), amt, dec);
+    if (!Number.isFinite(u) || !(u > 0)) continue;
+    // Outlier guard: drop trades that are >5× or <0.2× the worker's
+    // mark for the same asset, when both are known. Keeps a fat-finger
+    // fill from screaming across the tape.
+    const markU = Number(a?.mark_price?.unit);
+    if (Number.isFinite(markU) && markU > 0) {
+      if (u < markU * 0.2 || u > markU * 5) continue;
+    }
+    // Direction tick: compare to second-most-recent trade in the ring
+    // when present so a real ↑/↓ glyph rides each entry. Falls back to
+    // flat marker when no prior trade is available.
+    let tickDir = 'flat';
+    const ring = Array.isArray(a.trades) ? a.trades.slice().sort((x, y) => Number(y?.ts || 0) - Number(x?.ts || 0)) : [];
+    if (ring.length >= 2) {
+      const prev = ring[1];
+      let prevAmt = 0n;
+      try { prevAmt = BigInt(prev.amount || 0); } catch {}
+      if (prevAmt > 0n && Number.isInteger(prev.price_sats) && prev.price_sats > 0) {
+        const prevU = unitPriceSats(Number(prev.price_sats), prevAmt, dec);
+        if (Number.isFinite(prevU) && prevU > 0) {
+          if (u > prevU) tickDir = 'up';
+          else if (u < prevU) tickDir = 'down';
+        }
+      }
+    }
+    items.push({
+      aid: a.asset_id,
+      ticker: a.ticker || '?',
+      unit: u,
+      ts,
+      tickDir,
+    });
+  }
+  if (items.length === 0) { root.style.display = 'none'; return; }
+  items.sort((a, b) => b.ts - a.ts);
+  const top = items.slice(0, GLOBAL_TAPE_LIMIT);
+  // Signature gate: skip the DOM rewrite when nothing material changed.
+  // Prevents the marquee from resetting its scroll position on every
+  // tick — without this, the auto-scroll animation visibly jumps back
+  // to start every 15s.
+  const sig = top.map(t => `${t.aid}:${t.unit.toFixed(4)}:${t.ts}`).join('|');
+  if (sig === _globalTapeLastSig && root.style.display !== 'none') return;
+  _globalTapeLastSig = sig;
+  const ageShort = (ts) => {
+    const sec = Math.max(0, Math.floor(Date.now() / 1000) - ts);
+    if (sec < 60) return `${sec}s`;
+    if (sec < 3600) return `${Math.floor(sec / 60)}m`;
+    if (sec < 86400) return `${Math.floor(sec / 3600)}h`;
+    return `${Math.floor(sec / 86400)}d`;
+  };
+  const buildItem = (t) => {
+    const tickGlyph = t.tickDir === 'up' ? '↑' : t.tickDir === 'down' ? '↓' : '·';
+    const safeAid = /^[0-9a-f]{64}$/i.test(t.aid || '') ? t.aid : '';
+    const href = safeAid ? `#tab=market&aid=${escapeHtml(safeAid)}` : '#tab=market';
+    return `<a class="global-tape-item ${t.tickDir}" href="${href}" title="${escapeHtml(t.ticker)} last trade ${fmtUnitPriceSats(t.unit)} sats/${escapeHtml(t.ticker)} · ${ageShort(t.ts)} ago"><span class="gt-ticker">${escapeHtml(t.ticker)}</span><span class="gt-tick">${tickGlyph}</span><span class="gt-price">${fmtUnitPriceSats(t.unit)}</span><span class="gt-age">${ageShort(t.ts)}</span></a>`;
+  };
+  const itemsHtml = top.map(buildItem).join('');
+  // Duplicate the items so the CSS keyframe animating from translateX(0)
+  // to translateX(-50%) creates a seamless infinite loop — at -50% the
+  // second copy lines up exactly where the first started.
+  track.innerHTML = itemsHtml + itemsHtml;
+  root.style.display = '';
+}
 function _updateMarketStaleBadge() {
   const el = (typeof document !== 'undefined') ? document.getElementById('market-status') : null;
   if (!el) return;
@@ -52916,6 +53047,7 @@ function _startMarketAutoRefresh() {
       const beforeMine = myPubHex ? (_myListingsSnapshot || _snapshotMyListings(myPubHex)) : null;
       await fetchMarketDataDeduped();
       try { _updateMarketCellsInPlace(); } catch (e) { console.warn('[market] cell-update failed', e?.message); }
+      try { _renderGlobalTape(); } catch (e) { console.warn('[market] global-tape render failed', e?.message); }
       // Cache-side reconciliation: any pending entry whose listing/bid
       // has reappeared in the freshly-fetched cache was a false-positive
       // fill — retract it before the new diff possibly re-flags it.
@@ -54364,6 +54496,10 @@ async function fetchMarketDataDeduped() {
       if (data) {
         _marketCache = data;
         _marketFetchedAt = Date.now();
+        // Paint the global tape as soon as the first cache lands — the
+        // auto-refresh tick wouldn't fire it for ~15s otherwise, leaving
+        // the top strip empty on a cold visit.
+        try { _renderGlobalTape(); } catch {}
       }
       _marketFetchInFlight = null;
       return data;
@@ -55245,9 +55381,9 @@ function applyMarketFilters() {
       // to show a value computed by a different code path.
       const _workerPct = Number(a.price_24h_change_pct);
       let deltaHtml = '';
-      if (Number.isFinite(_workerPct)) {
-        const cls = _workerPct >= 0 ? 'up' : 'down';
-        const sign = _workerPct >= 0 ? '+' : '';
+      if (Number.isFinite(_workerPct) && _workerPct !== 0) {
+        const cls = _workerPct > 0 ? 'up' : 'down';
+        const sign = _workerPct > 0 ? '+' : '';
         deltaHtml = `<span class="strip-delta ${cls}" title="Change over the last 24h · outlier-guarded reference, dust trades ignored.">${sign}${_workerPct.toFixed(2)}% <span class="strip-delta-win">24h</span></span>`;
       }
       return `<div class="swap-tile-strip" data-swap-strip>${sparkSvg ? `<span class="strip-spark">${sparkSvg}</span>` : '<span class="strip-spark"></span>'}${lastHtml}${deltaHtml}${tradeHtml}</div>`;
@@ -58054,9 +58190,9 @@ function renderMarketBrowse(rows) {
       ? a.price_change_primary_window
       : '24h';
     const _windowLbl = primaryWindow === 'all' ? '·' : primaryWindow;
-    const deltaChip = primaryPct == null ? '' : (() => {
-      const sign = primaryPct >= 0 ? '+' : '';
-      const color = primaryPct >= 0 ? '#0a7d3a' : '#b8341d';
+    const deltaChip = (primaryPct == null || primaryPct === 0) ? '' : (() => {
+      const sign = primaryPct > 0 ? '+' : '';
+      const color = primaryPct > 0 ? '#0a7d3a' : '#b8341d';
       const tip = primaryWindow === 'all'
         ? 'Change since first indexed trade — market is younger than 1h or trades are sparse.'
         : `${primaryWindow} price change · vs trade as of ${primaryWindow} ago`;
@@ -58278,7 +58414,13 @@ function renderMarketBrowseTable(rows) {
       && !marketGroupHasTradeBacking(g)
       && !marketGroupHasTrustlessLiveness(g);
     const _priceFlashCls = _priceFlashClassFor(safeAid, refUnit);
-    const floor = refUnit != null ? `${fmtMarketUnitSats(refUnit)}/${ticker}` : 'no trades yet';
+    // Encouraging copy for fresh etches — "no trades yet" alone reads
+    // as "this is dead"; "no trades — be first" reads as opportunity.
+    // Row click already takes the user to the asset page where they
+    // can place a bid or list, so the prompt aligns with the gesture.
+    const floor = refUnit != null
+      ? `${fmtMarketUnitSats(refUnit)}/${ticker}`
+      : 'no trades \u00b7 be first';
     // Sub-row only renders when there's a real price to convert; when
     // refUnit is null the main row's "no trades yet" already conveys
     // the empty state — repeating "no USD price" / "no price" below
@@ -58287,8 +58429,10 @@ function renderMarketBrowseTable(rows) {
     // Recompute market cap against the chosen header price (not the
     // floor-derived g.marketCapSats which would still reflect dust).
     const rowMarketCap = marketCapSats(a, refUnit);
-    const mcapUsd = rowMarketCap != null ? fmtMarketUsdWholeFromSats(rowMarketCap) : 'n/a';
-    const mcapBtc = rowMarketCap != null ? fmtMarketBtc(rowMarketCap) : '0 BTC';
+    // No price → no derivable cap. Render a single muted dash instead
+    // of "n/a / 0 BTC" stack (which read as two empty values).
+    const mcapUsd = rowMarketCap != null ? fmtMarketUsdWholeFromSats(rowMarketCap) : '';
+    const mcapBtc = rowMarketCap != null ? fmtMarketBtc(rowMarketCap) : '';
     // Distinguish "not loaded yet" from "no trades": once per-asset
     // enrichment has fired (_marketAssetStatsLoadedAt set), '—' means
     // truly zero. Before that, show a faint "…" so the user knows data
@@ -58452,6 +58596,9 @@ function renderMarketBrowseTable(rows) {
             const _tip = _tipBits.length
               ? `Live listings: ${_tipBits.join(' · ')}. ${transfers.toLocaleString('en-US')} lifetime on-chain transfers.`
               : `No live listings. ${transfers.toLocaleString('en-US')} lifetime on-chain transfers.`;
+            if (_live === 0 && transfers === 0) {
+              return `<span title="${escapeHtml(_tip)}" style="cursor:help;color:var(--ink-mid);">fresh etch</span>`;
+            }
             return `<span title="${escapeHtml(_tip)}" style="cursor:help;">${_live.toLocaleString('en-US')} live &middot; ${transfers.toLocaleString('en-US')} txs</span>`;
           })()}</span>
         </td>
@@ -71655,6 +71802,15 @@ async function init() {
   setupTabs();
   setupMixerHandlers();
   setupCeremonyHandlers();
+  // Kick the initial /market fetch independently of which tab the user
+  // landed on, so the global trade tape (above the primary nav) paints
+  // even when the user opens straight to Wallet / Send / Create. Soft-
+  // fails — the tape just stays hidden if the worker is unreachable.
+  try {
+    fetchMarketDataDeduped()
+      .then(() => { try { _renderGlobalTape(); } catch {} })
+      .catch(() => {});
+  } catch {}
   // AMM ceremony chip — wire handlers + render once at boot so users
   // landing directly on Market / Pool / Holdings see the contribute prompt
   // without needing to switch tabs first. renderAmmCeremonyChip itself
