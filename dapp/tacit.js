@@ -34854,12 +34854,41 @@ async function ceremonyContributeAmm({
   if (!/^[0-9a-f]{64}$/.test(String(circuitHash || ''))) {
     throw new Error('circuitHash must be 64 hex chars');
   }
+  // WebAssembly pre-check. Snarkjs Phase 2 contribute relies on WASM
+  // for the actual mixing work. Some locked-down browsers (corporate
+  // policy, strict-mode profiles, niche embedded webviews) disable
+  // WebAssembly entirely — snarkjs then throws a cryptic
+  // "WebAssembly is not defined" deep in vendor code. Catch it early
+  // with a recovery hint so the user knows what to do.
+  if (typeof WebAssembly === 'undefined' || typeof WebAssembly.instantiate !== 'function') {
+    throw new Error('Your browser has WebAssembly disabled or unsupported. '
+      + 'Snarkjs (the ceremony engine) needs WASM for the mixing step. '
+      + 'Try a fresh-profile mainstream browser (Chrome / Firefox / Safari) — '
+      + 'or check that no extension / corporate policy is blocking WebAssembly.');
+  }
   const _emit = (phase, info) => { try { onProgress && onProgress(phase, info); } catch {} };
+  // Memory-pressure helper. performance.memory is non-standard but
+  // Chromium-family browsers expose usedJSHeapSize + jsHeapSizeLimit.
+  // Logs once per call so contributors on tight devices see how close
+  // they're running to the heap cap — useful diagnostic if the tab
+  // later crashes during mix. Soft-fails on browsers that don't
+  // expose the field (Safari / Firefox).
+  const _emitMem = (tag) => {
+    try {
+      const m = typeof performance !== 'undefined' && performance.memory;
+      if (!m || !m.usedJSHeapSize || !m.jsHeapSizeLimit) return;
+      const usedMB = (m.usedJSHeapSize / (1024 * 1024)).toFixed(0);
+      const limitMB = (m.jsHeapSizeLimit / (1024 * 1024)).toFixed(0);
+      const pct = ((m.usedJSHeapSize / m.jsHeapSizeLimit) * 100).toFixed(0);
+      _emit('memory', { tag, usedMB, limitMB, pct });
+    } catch {}
+  };
   _emit('refresh');
   const state = await ceremonyFetchState(circuitHash);
   if (!state) throw new Error('ceremony chain not initialized — coordinator hasn\'t POSTed /ceremony/init yet');
   if (state.finalized) throw new Error('ceremony has been finalized; chain is locked');
   _ammCeremonyStateByCircuit.set(circuitHash, state);
+  _emitMem('start');
 
   _emit('fetch-head', { cid: state.head_cid });
   const headBytes = await _ceremonyFetchIpfsWithFailover(
@@ -34875,6 +34904,7 @@ async function ceremonyContributeAmm({
     (done, total) => _emit('fetch-head-bytes', { done, total }),
   );
 
+  _emitMem('pre-mix');
   _emit('mix');
   const entropyBytes = crypto.getRandomValues(new Uint8Array(32));
   const entropy = Array.from(entropyBytes).map(b => b.toString(16).padStart(2, '0')).join('') +
@@ -34887,6 +34917,7 @@ async function ceremonyContributeAmm({
     (phase, info) => _emit('mix-phase', { phase, info }),
   );
 
+  _emitMem('post-mix');
   _emit('upload', { bytes: mixed.newZkey.length });
   // Build form once — reused across upload retries. Blob/FormData are
   // immutable so safe to send multiple times. After a successful mix
@@ -35260,7 +35291,19 @@ async function _submitAmmCeremonyContribution() {
         else if (phase === 'fetch-head') _log(`  Step 1/3 · downloading current ceremony state from IPFS (large zkeys can take 1–3 min)…`);
         else if (phase === 'fetch-head-log') _log('  ' + (info?.msg || ''));
         else if (phase === 'fetch-head-bytes' && info?.total) _updateProgressLine('fetch', info.done || 0, info.total);
-        else if (phase === 'mix')      { _progLineActive = null; _log('  Step 2/3 · mixing your random entropy into the ceremony (~30–60s, browser CPU)…'); }
+        else if (phase === 'mix')      {
+          _progLineActive = null;
+          _log('  Step 2/3 · mixing your random entropy into the ceremony…');
+          _log('    Heavy WASM compute for ~30-60s (up to 2 min for swap_batch).');
+          _log('    If your browser shows a "Page Unresponsive" dialog, click Wait — the tab is busy, not frozen.');
+        }
+        else if (phase === 'memory' && info?.usedMB) {
+          // Diagnostic line — only logs when performance.memory is
+          // exposed (Chromium). Helps post-mortem if user later OOMs.
+          const pctNum = Number(info.pct);
+          const pctTag = pctNum >= 80 ? ' ⚠ tight' : '';
+          _log(`    [mem ${info.tag}: ${info.usedMB} MB / ${info.limitMB} MB · ${info.pct}%${pctTag}]`);
+        }
         else if (phase === 'mix-phase' && info?.phase) {
           if (info.phase === 'contribute') _log('    · computing fresh Phase 2 contribution');
           else if (info.phase === 'verify') _log('    · verifying chain integrity (one bad link would fail here)');
