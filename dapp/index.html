@@ -2176,7 +2176,7 @@ tr[data-recent-activity] .market-token-sub::after {
     overflow-x: visible;
     box-shadow: 1px 1px 0 var(--ink);
   }
-  .market-token-table { min-width: 0; table-layout: fixed; }
+  .market-token-table { min-width: 0; }
   .market-token-table th,
   .market-token-table td {
     padding: 10px 8px;
@@ -2222,10 +2222,13 @@ tr[data-recent-activity] .market-token-sub::after {
   .market-token-cell { min-width: 0; gap: 8px; }
   .market-token-icon { width: 32px; height: 32px; box-shadow: 1px 1px 0 var(--ink); }
   .market-token-title { font-size: 13px; }
-  /* Tighter row heights — single line per cell on mobile by hiding
-     the USD-sub and BTC-sub lines (sats price + activity count are
-     enough at a glance; full detail on tap). */
-  .market-token-table .market-table-sub { display: none; }
+  /* Tighter row heights — drop the USD-sub line under price and the
+     BTC-sub line under 24h volume so each cell collapses to one line.
+     Activity cell uses .market-table-sub for its entire content, so
+     we target only the cells that have a redundant secondary line
+     (price USD sub, vol BTC sub). Activity stays intact. */
+  .market-token-table .col-price .market-table-sub,
+  .market-token-table .col-vol24 .market-table-sub { display: none; }
   .market-token-table td { padding-top: 8px; padding-bottom: 8px; }
   /* "Newest Listing" + sort dropdown filter row on mobile takes too
      much height. Tighten. */

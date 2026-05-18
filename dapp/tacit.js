@@ -59744,10 +59744,37 @@ function renderMarketPriceChartSVG(trades, ticker, decimals, markUnit = null) {
   // but get clamped to the plot edges, so users can still spot them.
   // Falls back to all points if there aren't enough in-band trades for a
   // stable range.
+  // Y-range auto-scope. When outliers exist:
+  //   ≥ 2 in-band points → scope to them; outliers clamp to plot edge
+  //   1 in-band point + mark → centre on mark, span [mark*0.85, mark*1.15]
+  //                          or wider if the single in-band point falls outside
+  //   0 in-band points + mark → centre on mark, span [mark*0.7, mark*1.5]
+  //   no mark → fall back to ALL points (legacy)
+  //
+  // Without this, a 1H window on TAC where only outliers landed (e.g.,
+  // a 27 sats/TAC dust take during a quiet hour) would drag the y-axis
+  // bottom from the real ~183 trading band down to 27 because the
+  // "<2 in-band" fallback used the full point set. Mark-anchored
+  // fallback keeps the axis honest.
   const inBandPts = points.filter(p => !p.isOutlier);
-  const yScopeSource = (outlierCount > 0 && inBandPts.length >= 2) ? inBandPts : points;
   let minU = Infinity, maxU = -Infinity;
-  for (const p of yScopeSource) { if (p.u < minU) minU = p.u; if (p.u > maxU) maxU = p.u; }
+  if (inBandPts.length >= 2) {
+    for (const p of inBandPts) { if (p.u < minU) minU = p.u; if (p.u > maxU) maxU = p.u; }
+  } else if (markValid) {
+    // Anchor on mark, optionally widening to include any in-band lone
+    // trade so a single fresh print isn't hidden against the plot edge.
+    minU = markUnit * 0.85;
+    maxU = markUnit * 1.15;
+    if (inBandPts.length === 1) {
+      minU = Math.min(minU, inBandPts[0].u * 0.97);
+      maxU = Math.max(maxU, inBandPts[0].u * 1.03);
+    } else {
+      minU = markUnit * 0.7;
+      maxU = markUnit * 1.5;
+    }
+  } else {
+    for (const p of points) { if (p.u < minU) minU = p.u; if (p.u > maxU) maxU = p.u; }
+  }
   if (minU === maxU) { minU = Math.max(1e-9, minU * 0.95); maxU = maxU * 1.05 || 1; }
   const isLog = (minU > 0) && (maxU / minU > 50);
   let yLo, yHi, ySpan, yOf;
