@@ -49922,12 +49922,12 @@ function applyMarketFilters() {
     const _emptyAsksToggleChip = `<button data-act="market-row-actions-toggle" type="button" title="${_marketRowActionsHidden ? 'Currently hiding per-row trade buttons — click bid rows to size the Swap tile. Flip to Advanced to surface Sweep sell / +Place a bid here too.' : 'Currently showing per-row direct-commit buttons. Flip to Simple to hide them and route every trade through the Swap tile (cleaner scan + auto-routing).'}" style="font-size:10px;padding:3px 10px;background:${_marketRowActionsHidden ? 'transparent' : 'var(--ink)'};border:1px solid var(--ink);color:${_marketRowActionsHidden ? 'var(--ink)' : 'var(--bg)'};cursor:pointer;font-weight:600;">${_marketRowActionsHidden ? 'Simple trade' : 'Advanced trade'}</button>`;
     const activityPanelHtml = marketActivityPanelHtml(_assetForBids, allAssetRows);
     const _yourOrdersHtmlNoAsks = renderYourOpenOrdersHTML(_marketView.assetId, _assetForBids, (wallet && wallet.pub) ? bytesToHex(wallet.pub) : '');
-    // Empty-asks layout: show the empty message + the Simple/Advanced
-    // toggle ABOVE the bids panel (which now sits at the bottom per
-    // the CEX flip). Copy updated from "Bids above" → "Bids below" to
-    // match the new vertical order. Without this the user reads the
-    // copy, looks up for bids, finds nothing, and gets confused.
-    const listedPaneHtml = `${_yourOrdersHtmlNoAsks}<div class="empty" style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;"><span>No active asks. Bids below; post one if you want to buy.</span>${_emptyAsksToggleChip}</div>${bidsLadderHtml}`;
+    // Empty-asks layout: bids ladder on top (matches the new bids-above-
+    // asks CEX flip), with the "no asks" empty pane + Simple/Advanced
+    // toggle BELOW it so the empty-ask state sits where the asks panel
+    // would normally render. Copy says "Bids above" so users who read it
+    // know to scroll up rather than hunting below.
+    const listedPaneHtml = `${_yourOrdersHtmlNoAsks}${bidsLadderHtml}<div class="empty" style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;"><span>No active asks. Bids above; post one if you want to buy.</span>${_emptyAsksToggleChip}</div>`;
     const richStatsHtml = renderMarketAssetStatsHTML(_assetForBids);
     list.innerHTML = `<div class="market-token-page"><div class="market-token-main">${assetHeaderHtml}${richStatsHtml}${marketAssetTabsHtml(listedPaneHtml, activityPanelHtml, marketTabActionHtml)}</div></div>`;
     hydrateMarketImages(list);
@@ -50582,10 +50582,10 @@ function applyMarketFilters() {
     // existing stats-strip spread colors so the two surfaces agree.
     const spreadColor = isCrossed ? '#c97a1a' : (spreadPct != null && spreadPct < 1 ? '#0a7d3a' : 'var(--ink-mid)');
     const bestBidHtml = highestBid != null
-      ? `<span title="Highest in-band bid — top of the bids ladder below."><strong style="color:#0a8f43;">${fmtUnitPriceSats(highestBid)}</strong> <span class="muted" style="font-size:9px;">best bid</span></span>`
+      ? `<span title="Highest in-band bid — bottom of the bids ladder directly above, adjacent to this spread divider."><strong style="color:#0a8f43;">${fmtUnitPriceSats(highestBid)}</strong> <span class="muted" style="font-size:9px;">best bid</span></span>`
       : `<span class="muted" style="font-size:10px;">no bids</span>`;
     const bestAskHtml = cheapestAsk != null
-      ? `<span title="Cheapest in-band preauth ask — top of the asks ladder above."><strong style="color:#b8341d;">${fmtUnitPriceSats(cheapestAsk)}</strong> <span class="muted" style="font-size:9px;">best ask</span></span>`
+      ? `<span title="Cheapest in-band preauth ask — top of the asks ladder directly below, adjacent to this spread divider."><strong style="color:#b8341d;">${fmtUnitPriceSats(cheapestAsk)}</strong> <span class="muted" style="font-size:9px;">best ask</span></span>`
       : `<span class="muted" style="font-size:10px;">no asks</span>`;
     const spreadMidHtml = spreadAbs != null
       ? (isCrossed
@@ -50662,22 +50662,24 @@ function applyMarketFilters() {
       ${_recentTradesHtml}
     </div>`;
   })();
-  // CEX-standard orderbook layout: asks above, spread divider in the
-  // middle, bids below. Reading top-to-bottom:
-  //   asks (cheapest first → cheapest at top of page, most-relevant
-  //         for the typical buyer-first TAC user)
+  // CEX-standard orderbook layout: bids above, spread divider in the
+  // middle, asks below. Reading top-to-bottom:
+  //   bids (low → high → best bid sits directly above the spread
+  //         divider, lowest bids at the top of the bids panel)
   //   spread divider (explicit best-bid / best-ask / spread / mark)
-  //   bids panel (highest first → best bid adjacent to the spread
-  //         above, lower bids descending)
+  //   asks (cheapest first → best ask sits directly below the spread
+  //         divider, more expensive asks descending)
   //
-  // This puts best-bid visually adjacent to the spread divider, which
-  // matches what a Coinbase / Binance / Bybit trader expects. Best
-  // ask isn't adjacent (it stays at the top of the page), but the
-  // spread divider's explicit "best ask: X sats/TAC" label closes
-  // that gap — and surfacing the cheapest asks at the page entrance
-  // is the right priority for a marketplace where most visits are
-  // buyer-intent. Asks pagination is preserved as-is (page 1 = the 12
-  // cheapest, ascending within the page).
+  // Both best prices meet at the spread divider — the classic CEX
+  // "books crash together at the spread" visualization. The Swap tile
+  // above the orderbook is the primary trade surface for buyer intent
+  // (it auto-routes through asks); the orderbook itself reads as
+  // inspection-mode depth, so leading with bids signals the demand
+  // side of the market without burying the take-side (asks remain
+  // one short scroll past the spread). Asks pagination is preserved
+  // as-is (page 1 = the 12 cheapest, ascending within the page); the
+  // bids ladder is rendered low → high via a reverse() in
+  // populateMarketBidsLadder so best bid lands adjacent to the spread.
   //
   // Your-open-orders panel stays at the very top so a maker managing
   // their own active orders sees them before either ladder.
@@ -50718,10 +50720,10 @@ function applyMarketFilters() {
   })();
   const _mobileTabsHtml = `
     <div class="orderbook-mobile-tabs" role="tablist" aria-label="Orderbook side">
-      <button role="tab" data-act="orderbook-mobile-tab" data-side="asks" aria-selected="true">Asks${rowsForGrid.length ? ` · ${rowsForGrid.length}` : ''}</button>
-      <button role="tab" data-act="orderbook-mobile-tab" data-side="bids" aria-selected="false">Bids${_bidsTabCount != null ? ` · ${_bidsTabCount}` : ''}</button>
+      <button role="tab" data-act="orderbook-mobile-tab" data-side="bids" aria-selected="true">Bids${_bidsTabCount != null ? ` · ${_bidsTabCount}` : ''}</button>
+      <button role="tab" data-act="orderbook-mobile-tab" data-side="asks" aria-selected="false">Asks${rowsForGrid.length ? ` · ${rowsForGrid.length}` : ''}</button>
     </div>`;
-  const listedPaneHtml = `${_yourOrdersHtml}<div data-orderbook-wrap data-orderbook-active="asks">${_mobileTabsHtml}<div data-orderbook-side="asks">${asksHeaderHtml}${noAtomicHint}${simpleEmptyHint}${_asksHeaderRowHtml}<div id="market-grid" class="${_gridClass}" style="${rowsForGrid.length === 0 ? 'display:none;' : ''}"></div>${marketListingPagerHtml(totalAskRows, _marketListingPage, totalAskPages, askShowingStart, askShowingEnd)}</div>${_spreadRowHtml}<div data-orderbook-side="bids">${bidsLadderHtml}</div></div>`;
+  const listedPaneHtml = `${_yourOrdersHtml}<div data-orderbook-wrap data-orderbook-active="bids">${_mobileTabsHtml}<div data-orderbook-side="bids">${bidsLadderHtml}</div>${_spreadRowHtml}<div data-orderbook-side="asks">${asksHeaderHtml}${noAtomicHint}${simpleEmptyHint}${_asksHeaderRowHtml}<div id="market-grid" class="${_gridClass}" style="${rowsForGrid.length === 0 ? 'display:none;' : ''}"></div>${marketListingPagerHtml(totalAskRows, _marketListingPage, totalAskPages, askShowingStart, askShowingEnd)}</div></div>`;
   // Rich stats strip — supply (with IPFS-attestation badge), market cap
   // with proof, 24h Δ, depth chart, recent-trades feed. The header above
   // shows the 4 condensed cells; this strip below carries the deeper
@@ -57323,7 +57325,14 @@ async function populateMarketBidsLadder(scope, asset) {
     return bidTotalDepth > 0 ? Math.min(100, (bidCumSoFar / bidTotalDepth) * 100) : 0;
   });
   const _bidFillableCount = _fillableAmts.reduce((s, a) => s + (a > 0 ? 1 : 0), 0);
-  const rowsHtml = bucketedLadder.map((b, _bidIdx) => {
+  // CEX-flip rendering: bucketedLadder is sorted best-first (highest unit
+  // price at index 0) so cumulative-depth / TOP-badge / vs-mark
+  // computations inside the loop stay "rank 0 = best bid". After the map
+  // produces per-row HTML, the array is reversed so the rendered ladder
+  // reads low → high top-to-bottom, landing the best bid at the BOTTOM
+  // of the bids panel — directly above the spread divider. See the
+  // layout comment in applyMarketFilters above _spreadRowHtml.
+  const _bidRowsHtmlArr = bucketedLadder.map((b, _bidIdx) => {
     // Variable-fill (§5.7.7) display: show the remaining (tradable now)
     // amount, with a subtle min-fill hint. Whole-bid bids unchanged.
     const _bidIsVar = !!(b.min_fill_amount && b.min_fill_amount !== '0');
@@ -57498,7 +57507,9 @@ async function populateMarketBidsLadder(scope, asset) {
         </div>
         <div class="market-bid-action">${action}</div>
       </div>`;
-  }).join('') || `<div class="muted" style="font-size:11px;">No bids match this filter.</div>`;
+  });
+  _bidRowsHtmlArr.reverse();
+  const rowsHtml = _bidRowsHtmlArr.join('') || `<div class="muted" style="font-size:11px;">No bids match this filter.</div>`;
   const mineBidsChip = minedBidsCount > 0
     ? (_marketMineOnlyBids
         ? `<button data-act="market-mine-bids-toggle" type="button" title="Showing only your bids (${minedBidsCount}). Click to show all bids.">Mine - ${minedBidsCount}</button>`
