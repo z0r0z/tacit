@@ -2163,34 +2163,46 @@ tr[data-recent-activity] .market-token-sub::after {
   .market-chip,
   .market-chips-row select.market-chip { font-size: 10px; padding: 6px 24px 6px 9px; }
 
-  /* Market browse table mobile reflow. Drop the 960px min-width that
-     forces horizontal scroll on phones; hide derived columns (Market
-     Cap, Total Volume) so the remaining four (Token, Price, 24h Vol,
-     Activity) fit comfortably on a 360-400px viewport. Activity
-     remains the at-a-glance "is this market alive?" signal; 24h Vol
-     is the only honest "recent" number; Token + Price carry identity
-     + reference. Mcap is derived (supply × mark) and not always
-     trustworthy; Total Vol duplicates 24h on young markets. Tap the
-     row → detail page where every metric is available. */
-  .market-token-table-wrap {
-    overflow-x: visible;
-    box-shadow: 1px 1px 0 var(--ink);
+  /* Mobile market browse: convert table rows to vertical cards.
+     Fighting table cell layout on a 360-400px viewport produced
+     overlapping content (icon + ticker collided with price), so
+     switch each <tr> to display:block with its <td> children
+     stacked. The token cell stays a flex row (icon + ticker
+     inline); other cells stack below it. Headers hide entirely
+     since each cell self-labels in card mode.
+
+     What's visible per card:
+       row 1: [icon] ticker
+       row 2: 183.22 sats/TAC (price)
+       row 3: $2,535 24h vol · 214 live · 1,761 txs (joined)
+     Mcap + Total Vol + Wallets hidden. */
+  .market-token-table-wrap { overflow-x: visible; box-shadow: 1px 1px 0 var(--ink); }
+  .market-token-table { min-width: 0; display: block; }
+  .market-token-table thead { display: none; }
+  .market-token-table tbody { display: block; }
+  .market-token-table tr {
+    display: block;
+    padding: 12px 14px;
+    border-bottom: 1px solid var(--ink-faint);
   }
-  .market-token-table { min-width: 0; }
-  .market-token-table th,
+  .market-token-table tr:last-child { border-bottom: 0; }
   .market-token-table td {
-    padding: 10px 8px;
-    font-size: 11px;
+    display: block;
+    padding: 0;
+    border: 0;
+    font-size: 12px;
   }
-  .market-token-table th {
-    font-size: 9px;
-    letter-spacing: 0.06em;
-  }
-  /* Mobile: hide Market Cap + Total Volume (derived columns).
-     Keep Token + Price + 24h Vol + Activity — the four cells a
-     trader actually scans. Wallets stays hidden site-wide. */
   .market-token-table .col-mcap,
   .market-token-table .col-voltotal { display: none; }
+  .market-token-table .col-token { margin-bottom: 6px; }
+  .market-token-table .col-price { margin-bottom: 2px; font-size: 13px; font-weight: 600; }
+  .market-token-table .col-vol24,
+  .market-token-table .col-activity {
+    display: inline-block;
+    font-size: 11px;
+    color: var(--ink-mid);
+  }
+  .market-token-table .col-vol24::after { content: " · "; opacity: 0.5; }
   /* Page selector pill — desktop's 110px min-width swallowed half the
      pagination row width on phones. Tighter min + smaller font. */
   .market-pagination select { min-width: 64px; font-size: 11px; padding: 4px 6px; }
