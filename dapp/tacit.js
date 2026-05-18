@@ -8353,6 +8353,86 @@ function _deriveShareSlashClaimBlinding({ privkey, anchorOutpoint }) {
   return r;
 }
 
+// ============== SLOT-SECRET DETERMINISTIC DERIVATION (SPEC-CBTC-ZK §5.21-§5.25) ==============
+//
+// Slot UTXOs sit at K_btc P2TR addresses, NOT at wallet.address(). So the
+// standard scanHoldings flow doesn't see them. Recovery requires re-deriving
+// (secret, nullifierPreimage) — and hence K_btc — from priv + chain alone.
+//
+// These helpers replace `crypto.getRandomValues` at the 8 slot-builder call
+// sites in dapp/tacit.js (MINT / BURN / ROTATE / SPLIT / MERGE). The derived
+// secrets are byte-identical across calls so a fresh wallet can re-derive
+// them given (priv, anchorOutpoint, outputIndex), then compute K_btc via the
+// existing deriveSlotKbtc + slotXOnly pipeline.
+//
+// Anchor schema:
+//   MINT       — anchorOutpoint = first commit-funding input outpoint (36 B:
+//                txid_LE || vout_LE). The user re-discovers this by walking
+//                their wallet's outgoing spends; the funding tx is in their
+//                history. outputIndex = 0 (single new slot).
+//   ROTATE 1→1 — anchorOutpoint = input slot's K_btc outpoint. outputIndex = 0.
+//   SPLIT 1→N  — anchorOutpoint = input slot's K_btc outpoint, outputIndex = i
+//                (0..N-1). Each output slot has distinct secrets so they
+//                spend independently.
+//   MERGE N→1  — anchorOutpoint = canonical "first" input slot's K_btc
+//                outpoint (sorted lexicographically). outputIndex = 0.
+//   BURN       — no new slot; helpers not used.
+//
+// Domain tags are distinct between secret and nullifier so the two derived
+// values are computationally independent under HMAC's PRF property — same
+// property the existing deriveSlotRBtc relies on (different SHA domain tag
+// → independent scalar from the same (secret, ν) pair).
+//
+// Rejection sampling: 32-byte HMAC output occasionally exceeds the slot's
+// effective scalar field. Since slot scalars are reduced via Poseidon/SHA
+// downstream (deriveSlotRBtc, leaf-commitment), we don't reject here. The
+// caller's downstream reduction handles the curve-order modulus.
+//
+// Recovery (`scanSlots()`, to be added in a follow-up): iterate the user's
+// outgoing-spend history. For each spent UTXO, treat its outpoint as a
+// candidate anchorOutpoint, derive (secret, ν), and check whether any
+// chain-confirmed tx in the descendant set produced a K_btc P2TR output.
+// If yes → that's the user's slot. Asset metadata + denomination are read
+// off the slot reveal tx's envelope.
+const _SLOT_SECRET_DOMAIN     = new TextEncoder().encode('tacit-slot-secret-v1');
+const _SLOT_NULLIFIER_DOMAIN  = new TextEncoder().encode('tacit-slot-nullifier-v1');
+
+function _deriveSlotSecret({ privkey, anchorOutpoint, outputIndex = 0 }) {
+  if (!(privkey instanceof Uint8Array) || privkey.length !== 32) throw new Error('privkey must be 32 bytes');
+  if (!(anchorOutpoint instanceof Uint8Array) || anchorOutpoint.length !== 36) throw new Error('anchorOutpoint must be 36 bytes (txid_LE 32 + vout_LE 4)');
+  if (!Number.isInteger(outputIndex) || outputIndex < 0 || outputIndex > 0xff) throw new Error('outputIndex must be u8 (0..255)');
+  return hmac(sha256, privkey, concatBytes(
+    _SLOT_SECRET_DOMAIN, anchorOutpoint, new Uint8Array([outputIndex & 0xff]),
+  ));
+}
+
+function _deriveSlotNullifierPreimage({ privkey, anchorOutpoint, outputIndex = 0 }) {
+  if (!(privkey instanceof Uint8Array) || privkey.length !== 32) throw new Error('privkey must be 32 bytes');
+  if (!(anchorOutpoint instanceof Uint8Array) || anchorOutpoint.length !== 36) throw new Error('anchorOutpoint must be 36 bytes (txid_LE 32 + vout_LE 4)');
+  if (!Number.isInteger(outputIndex) || outputIndex < 0 || outputIndex > 0xff) throw new Error('outputIndex must be u8 (0..255)');
+  return hmac(sha256, privkey, concatBytes(
+    _SLOT_NULLIFIER_DOMAIN, anchorOutpoint, new Uint8Array([outputIndex & 0xff]),
+  ));
+}
+
+// Convenience: build the 36-byte outpoint (txid_LE || vout_LE) used as anchor.
+// The chain stores txids in their natural (little-endian) byte order on disk;
+// the dapp's existing helpers (cf. _SHARE_SLASH_CLAIM_BLIND_DOMAIN anchor
+// construction at tacit.js search "reverseBytes(hexToBytes(firstBurn.txid))")
+// reverse the displayed txid hex to LE before concat. Mirrors that pattern.
+function _slotOutpointBytes(txidHex, vout) {
+  if (typeof txidHex !== 'string' || !/^[0-9a-f]{64}$/i.test(txidHex)) {
+    throw new Error('txidHex must be 64 hex chars');
+  }
+  if (!Number.isInteger(vout) || vout < 0 || vout > 0xffffffff) {
+    throw new Error('vout must be u32');
+  }
+  const txidLE = reverseBytes(hexToBytes(txidHex.toLowerCase()));
+  const voutLE = new Uint8Array(4);
+  new DataView(voutLE.buffer).setUint32(0, vout >>> 0, true);
+  return concatBytes(txidLE, voutLE);
+}
+
 function computeCbtcTacDepositAtomicBindHash({
   networkTag, targetLeafHash, slotDenomSats, poolId,
   deltaCbtcZk, deltaTac, shareAmount,
@@ -70100,6 +70180,12 @@ export {
   computeCbtcTacForceCloseBindHash, computeShareSlashClaimBindHash,
   computeSlotMintMsg, computeSlotRotateMsg, computeSlotSplitMsg, computeSlotMergeMsg,
   deriveSlotKbtc, deriveSlotRBtc, slotXOnly, slotScriptPubKeyFromKbtc,
+  // Deterministic slot-secret derivation (SPEC-CBTC-ZK §5.21-§5.25). Replaces
+  // crypto.getRandomValues for (secret, nullifierPreimage) so privkey-only
+  // recovery is possible. See block comment at _deriveSlotSecret for the
+  // anchor schema. Exported for testing; the slot builders will adopt them
+  // in the Phase 2 plumbing pass.
+  _deriveSlotSecret, _deriveSlotNullifierPreimage, _slotOutpointBytes,
   buildSlotMintEnvelope, buildSlotBurnEnvelope, buildSlotRotateEnvelope,
   buildSlotSplitEnvelope, buildSlotMergeEnvelope,
   // High-level dapp builders for the slot wrapper flows. Each does the full
