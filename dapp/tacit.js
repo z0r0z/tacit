@@ -35148,7 +35148,7 @@ async function _submitAmmCeremonyContribution() {
   // the visual progress log.
   const _beforeUnloadHandler = (e) => {
     e.preventDefault();
-    e.returnValue = 'Ceremony contribute in progress — leaving now wastes your entropy and ~$3 of bandwidth. Stay on the page until "Contribution landed" appears.';
+    e.returnValue = 'Ceremony contribute in progress — leaving now wastes the entropy you just downloaded and you\'ll need to restart from scratch (~2 min). Stay on the page until "Contribution landed" appears.';
     return e.returnValue;
   };
   const _visHandler = () => {
@@ -35307,7 +35307,7 @@ async function _submitAmmCeremonyContribution() {
       'Just contributed entropy #' + (myIndex || '?') + ' to the tacit AMM trusted setup ceremony — '
       + 'now ' + totalContribs + ' contributions across the 3 circuits. '
       + 'One honest contributor per circuit is enough.\n\n'
-      + 'contribute at tacit.finance\n\n#tacit';
+      + 'contribute at tacit.finance/?amm=ceremony\n\n#tacit';
     const shareBtn = document.createElement('a');
     shareBtn.href = 'https://x.com/intent/post?text=' + encodeURIComponent(tweetText);
     shareBtn.target = '_blank';
@@ -72531,6 +72531,39 @@ async function init() {
   // attestation fetch. 5min TTL on the cache so the ribbon doesn't
   // burn worker round-trips when the user idles on the wallet page.
   try { _renderAmmContribTape(); } catch {}
+  // AMM ceremony deeplink: ?amm=ceremony (or hash variants like
+  // #amm=ceremony) auto-opens the contribute drawer after boot.
+  // Mirrors the mixer's ?ceremony=<hash> share-link pattern so a
+  // recipient lands directly on the contribute surface without
+  // hunting for the chip. If no wallet is loaded the drawer's own
+  // submit gate will route through the welcome modal (per the
+  // existing ceremonyContributeAmm() wallet-readiness branch).
+  // Compatible accepted forms:
+  //   ?amm=ceremony
+  //   ?ammceremony=1
+  //   #amm=ceremony
+  //   #ammceremony
+  try {
+    if (typeof window !== 'undefined') {
+      const _qs = new URLSearchParams(window.location.search || '');
+      const _hash = (window.location.hash || '').replace(/^#/, '');
+      const _hashQs = new URLSearchParams(_hash.includes('=') ? _hash : '');
+      const wantsAmmCeremony =
+        _qs.get('amm') === 'ceremony'
+        || _qs.has('ammceremony')
+        || _hashQs.get('amm') === 'ceremony'
+        || _hash === 'ammceremony'
+        || _hash === 'amm-ceremony';
+      if (wantsAmmCeremony) {
+        // Defer past the boot tab-activation so the chip + drawer DOM
+        // are fully wired. 250ms is enough on a cold load; the drawer
+        // open is idempotent if the user navigates away first.
+        setTimeout(() => {
+          try { openAmmCeremonyDrawer(); } catch (e) { console.warn('[amm-deeplink] open failed', e?.message); }
+        }, 250);
+      }
+    }
+  } catch {}
   // AMM ceremony chip — wire handlers + render once at boot so users
   // landing directly on Market / Pool / Holdings see the contribute prompt
   // without needing to switch tabs first. renderAmmCeremonyChip itself
