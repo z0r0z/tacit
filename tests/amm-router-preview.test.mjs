@@ -255,4 +255,6 @@ console.log('\nT9: path requiring > N_HOPS_MAX hops rejected');
 }
 
 console.log(`\n${pass}/${pass + fail} router-preview checks passed`);
-if (fail > 0) process.exit(1);
+// Force exit — the dapp module triggers background network fetches at
+// load that would otherwise keep Node alive past the tests' completion.
+process.exit(fail > 0 ? 1 : 0);
