@@ -34689,12 +34689,13 @@ function _ammCerActiveTab() {
     return t?.dataset?.tab || '';
   } catch { return ''; }
 }
-// Master gate for the AMM-ceremony contribute chip. AMM ceremonies are
-// per-pool (SPEC.md §AMM ceremony, AMM.md §Ceremony), not protocol-wide, so
-// a global "contribute to the AMM ceremony" prompt has no pool that will
-// actually consume the contribution. Kept off everywhere until the launch
-// path settles; flip to `true` to re-enable the chip + drawer.
-const AMM_CEREMONY_CHIP_ENABLED = false;
+// Master gate for the AMM-ceremony contribute chip. The V1 AMM ceremony is
+// one canonical bundle (three circuits sharing pot18 + a single Bitcoin-block
+// beacon, per AMM.md §"Ceremony governance"); every V1 POOL_INIT pins the
+// same vk_cid and ceremony_cid, so a single global "contribute" surface is
+// the right unit. Set true once the three /ceremony/init POSTs have landed
+// on the worker — the chip + drawer + market-page section all gate on this.
+const AMM_CEREMONY_CHIP_ENABLED = true;
 function renderAmmCeremonyChip() {
   const chip = document.getElementById('amm-ceremony-chip');
   if (!chip) return;
@@ -34726,12 +34727,17 @@ function openAmmCeremonyDrawer() {
   drawer.style.display = 'flex';
   _renderAmmCerDrawerBody();
   refreshAmmCeremonyStatesIfStale(true).then(_renderAmmCerDrawerBody).catch(() => {});
-  // Pre-fill the wallet pubkey hint if a wallet is loaded.
+  // Pre-fill the wallet pubkey hint if a wallet is loaded. Empty when no
+  // wallet exists yet — the submit handler will open the welcome modal in
+  // that case so the user can onboard inline and still attribute the
+  // contribution.
   const pubHint = document.getElementById('amm-cer-pubkey-hint');
-  if (pubHint && wallet?.pub) pubHint.textContent = `(${bytesToHex(wallet.pub).slice(0, 12)}…)`;
-  // Disable the attribute checkbox if no wallet is loaded.
+  if (pubHint) pubHint.textContent = wallet?.pub ? `(${bytesToHex(wallet.pub).slice(0, 12)}…)` : '';
+  // Keep the attribute checkbox enabled even when no wallet is loaded.
+  // Clicking Contribute with it checked triggers the onboarding flow so the
+  // user can set up a wallet without bailing out of the ceremony surface.
   const attrCb = document.getElementById('amm-cer-attribute-pubkey');
-  if (attrCb && !wallet?.pub) { attrCb.checked = false; attrCb.disabled = true; }
+  if (attrCb) { attrCb.disabled = false; if (!wallet?.pub) attrCb.checked = true; }
 }
 function closeAmmCeremonyDrawer() {
   const drawer = document.getElementById('amm-ceremony-drawer');
@@ -34756,8 +34762,62 @@ async function _submitAmmCeremonyContribution() {
   const nameEl = document.getElementById('amm-cer-name');
   const attrCb = document.getElementById('amm-cer-attribute-pubkey');
   if (!goBtn || !progEl || !resultEl) return;
+  // Wallet readiness gate. Two cases require a detour before we can attribute
+  // the contribution to a wallet pubkey for airdrop eligibility:
+  //   (a) No wallet exists on this device → run onboarding (welcome modal).
+  //       After it returns, we re-check; if the user cancelled we abort.
+  //   (b) Wallet exists but is locked → prompt for passphrase via the same
+  //       _promptUnlockPassphrase the rest of the dapp uses. Cancel aborts.
+  // Anonymous contributions remain possible by un-checking the attribute
+  // checkbox before clicking Contribute — those skip the wallet gate.
+  const wantsAttribution = !!attrCb?.checked;
+  if (wantsAttribution) {
+    if (!wallet?.pub) {
+      try {
+        if (typeof _showWelcomeModal === 'function') {
+          progEl.style.display = 'block';
+          progEl.textContent = '→ opening wallet setup so we can log your contribution for airdrops…\n';
+          await _showWelcomeModal();
+        }
+      } catch { /* user cancel — fall through */ }
+      if (!wallet?.pub) {
+        resultEl.style.display = 'block';
+        resultEl.style.color = 'var(--ink-mid)';
+        resultEl.textContent =
+          'No wallet loaded. Uncheck "log my wallet" to contribute anonymously, or set up a wallet from the Holdings tab first.';
+        return;
+      }
+    }
+    if (!wallet?.priv) {
+      try {
+        if (typeof _promptUnlockPassphrase === 'function') {
+          progEl.style.display = 'block';
+          progEl.textContent = '→ unlock your wallet to attribute this contribution…\n';
+          await _promptUnlockPassphrase('Unlock to attribute your AMM ceremony contribution.');
+        }
+      } catch (e) {
+        if (typeof isUnlockCancelled === 'function' && isUnlockCancelled(e)) {
+          resultEl.style.display = 'block';
+          resultEl.style.color = 'var(--ink-mid)';
+          resultEl.textContent =
+            'Unlock cancelled. Uncheck "log my wallet" to contribute anonymously, or retry to unlock and attribute.';
+          return;
+        }
+        resultEl.style.display = 'block';
+        resultEl.style.color = 'var(--red)';
+        resultEl.textContent = `Unlock failed: ${e?.message || e}`;
+        return;
+      }
+      if (!wallet?.priv) {
+        resultEl.style.display = 'block';
+        resultEl.style.color = 'var(--ink-mid)';
+        resultEl.textContent = 'Wallet still locked — aborting.';
+        return;
+      }
+    }
+  }
   const contributorName = (nameEl?.value || '').trim().slice(0, 64) || 'anonymous';
-  const attributePub = !!attrCb?.checked && !!wallet?.pub;
+  const attributePub = wantsAttribution && !!wallet?.pub;
   const contributorPubkeyHex = attributePub ? bytesToHex(wallet.pub) : null;
   // Round-robin: pick whichever AMM chain currently has the fewest contributions.
   await refreshAmmCeremonyStatesIfStale(true).catch(() => {});
@@ -34827,6 +34887,101 @@ function _wireAmmCeremonyChipOnce() {
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && drawer && drawer.style.display !== 'none') closeAmmCeremonyDrawer();
   });
+}
+
+// Market-page contributor section. Lives at the bottom of #tab-market and
+// mirrors the social proof of the mixer ceremony's attestation list: live
+// total contribution count across all three AMM circuits, an in-page
+// "Contribute" button that opens the same drawer the floating chip uses,
+// and a recent-contributors list with ★you flagging by wallet pubkey.
+// Hides entirely once the canonical vk_cid is pinned (ceremony finalized).
+async function renderMarketAmmCeremonySection() {
+  const sec = document.getElementById('market-ammcer-section');
+  if (!sec) return;
+  // Visibility gates: hidden once ceremony is locked or when there's no
+  // worker to talk to (offline / preboot variants). Anyone explicitly
+  // disabling the chip feature also takes the section out.
+  const visible = AMM_CEREMONY_CHIP_ENABLED && !_isAmmCeremonyUnlocked() && !!WORKER_BASE;
+  sec.style.display = visible ? 'block' : 'none';
+  if (!visible) return;
+  // Wire the in-page button once. Reuses the same drawer the floating chip
+  // opens — same submit handler, same wallet gate, same outcome surface.
+  const btn = document.getElementById('btn-market-ammcer-contribute');
+  if (btn && !btn._ammcerWired) {
+    btn._ammcerWired = true;
+    btn.onclick = () => { try { openAmmCeremonyDrawer(); } catch {} };
+  }
+  // Pull all three chains' attestation lists in parallel. Each
+  // ceremonyFetchAttestations() already returns [] on failure, so a
+  // single-gateway hiccup degrades gracefully (the merged list just drops
+  // the missing circuit's rows for this paint).
+  const fetches = await Promise.all(AMM_CEREMONY_CIRCUIT_HASHES.map(async (c) => {
+    const list = await ceremonyFetchAttestations(c.hash);
+    return list.map(a => ({ ...a, _circuitKey: c.key, _circuitLabel: c.label }));
+  }));
+  const merged = fetches.flat();
+  // Sort newest-first. Worker returns ascending index per chain; we want a
+  // merged stream where the latest contribution across any chain leads.
+  // Tie-break by circuit key so two chains landing at the same index in
+  // the same paint render deterministically.
+  merged.sort((a, b) => {
+    if ((b.index ?? 0) !== (a.index ?? 0)) return (b.index ?? 0) - (a.index ?? 0);
+    return String(a._circuitKey).localeCompare(String(b._circuitKey));
+  });
+  // Aggregate count display. Sums per-circuit contribution counts from the
+  // state cache (already populated by refreshAmmCeremonyStatesIfStale or
+  // by the drawer); falls back to merged-list length if the cache is empty.
+  const totalsEl = document.getElementById('market-ammcer-totals');
+  if (totalsEl) {
+    const stateTotal = AMM_CEREMONY_CIRCUIT_HASHES.reduce(
+      (acc, c) => acc + (_ammCeremonyStateByCircuit.get(c.hash)?.contribution_count ?? 0), 0,
+    );
+    const total = stateTotal || merged.length;
+    totalsEl.textContent = total > 0 ? `${total} contribution${total === 1 ? '' : 's'} across 3 circuits` : 'live';
+  }
+  // Refresh the per-circuit state cache in the background so the totals
+  // chip reflects worker reality on the next paint; ignore errors (display
+  // already showed the merged-list fallback above).
+  refreshAmmCeremonyStatesIfStale().then(() => {
+    const t = document.getElementById('market-ammcer-totals');
+    if (!t) return;
+    const stateTotal = AMM_CEREMONY_CIRCUIT_HASHES.reduce(
+      (acc, c) => acc + (_ammCeremonyStateByCircuit.get(c.hash)?.contribution_count ?? 0), 0,
+    );
+    if (stateTotal > 0) t.textContent = `${stateTotal} contribution${stateTotal === 1 ? '' : 's'} across 3 circuits`;
+  }).catch(() => {});
+  // Render the recent list. Star rows whose contributor_pubkey matches the
+  // loaded wallet so the contributor sees their own entry highlighted. The
+  // pubkey match runs even when the wallet is locked — `wallet.pub` is
+  // available locked, only `wallet.priv` requires unlock. Locked wallets
+  // therefore still get the ★you treatment, which is the right UX.
+  const listEl = document.getElementById('market-ammcer-attestations');
+  if (!listEl) return;
+  if (merged.length === 0) {
+    listEl.innerHTML = '<div class="muted" style="font-size:12px;">No contributions yet — be the first.</div>';
+    return;
+  }
+  const myPubHex = (wallet?.pub) ? bytesToHex(wallet.pub).toLowerCase() : null;
+  const rows = merged.slice(0, 24).map(a => {
+    const apub = (a.contributor_pubkey || '').toLowerCase();
+    const isMine = !!myPubHex && !!apub && apub === myPubHex;
+    const rowStyle = isMine
+      ? 'font-size:11px;padding:6px 8px;border-bottom:1px solid var(--ink-faint);background:var(--bg-warm);border-left:3px solid var(--orange);'
+      : 'font-size:11px;padding:6px 0;border-bottom:1px solid var(--ink-faint);';
+    const mineMarker = isMine
+      ? ' <span style="color:var(--orange);font-weight:600;" title="This is your contribution.">★ you</span>'
+      : '';
+    // Wallet short-id rendered iff the contribution was attributed. 12 hex
+    // chars is enough to be addressable without dominating the row.
+    const walletChip = apub
+      ? ` · <code style="font-size:10px;color:var(--ink-mid);" title="${escapeHtml(apub)}">tacit:${escapeHtml(apub.slice(0, 12))}</code>`
+      : '';
+    const circuitChip = `<span style="display:inline-block;font-size:10px;letter-spacing:0.08em;color:var(--ink-mid);text-transform:uppercase;margin-right:8px;">${escapeHtml(a._circuitLabel || a._circuitKey)}</span>`;
+    return `<div style="${rowStyle}">${circuitChip}#${escapeHtml(String(a.index ?? '?'))} · <strong>${escapeHtml(a.contributor_name || 'anonymous')}</strong>${mineMarker}${walletChip}</div>`;
+  });
+  listEl.innerHTML =
+    `<div class="muted" style="font-size:11px;margin-bottom:6px;">Recent contributions (newest first):</div>${rows.join('')}` +
+    (merged.length > 24 ? `<div class="muted" style="font-size:11px;margin-top:6px;">+ ${merged.length - 24} older</div>` : '');
 }
 
 async function ceremonyContribute() {
@@ -54435,6 +54590,10 @@ async function renderMarket() {
     // Fire-and-forget: chain-check each listing's UTXO in parallel and
     // remove stale tiles as results come in. Doesn't block initial paint.
     startMarketLivenessPrune();
+    // Fire-and-forget: render the AMM-ceremony contributor section at the
+    // bottom of the market tab. Lives outside the try/catch above so a
+    // ceremony-fetch failure can't poison the main market render.
+    try { renderMarketAmmCeremonySection(); } catch (e) { console.warn('[market] AMM ceremony section render failed:', e?.message || e); }
   } catch (e) {
     list.innerHTML = `<div class="error">Market load failed: ${escapeHtml(e.message)}</div>`;
     setStatus(status, 'error');

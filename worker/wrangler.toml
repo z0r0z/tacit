@@ -28,7 +28,7 @@ dataset = "tacit_worker"
 
 [vars]
 # CORS allowlist (comma-separated). "*" allows any origin.
-ALLOWED_ORIGINS = "https://tacit.finance,https://www.tacit.finance,https://tacitscan.io,https://www.tacitscan.io,https://tacit-ioq0.onrender.com,https://tacit.wei.is"
+ALLOWED_ORIGINS = "https://tacit.finance,https://www.tacit.finance,https://tacitscan.io,https://www.tacitscan.io,https://tacit-ioq0.onrender.com,https://tacit.wei.is,http://localhost:8765,http://localhost:5173,http://localhost:3000,http://localhost:8080,http://127.0.0.1:8765,http://127.0.0.1:5173,http://127.0.0.1:3000,http://127.0.0.1:8080"
 
 # Per-IP /pin uploads per UTC day
 DAILY_LIMIT = "20"

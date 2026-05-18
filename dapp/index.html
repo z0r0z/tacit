@@ -50,7 +50,7 @@
   static host instead; see ./_headers for the Cloudflare Pages / Netlify
   config that adds frame-ancestors 'self' (clickjacking defense).
 -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://mempool.space https://*.mempool.space https://mempool.bisq.services https://mempool.emzy.de https://mempool.bitaroo.net https://blockstream.info https://api.coinbase.com https://api.kraken.com https://api.coingecko.com https://cloudflare-eth.com https://tacit-pin.rosscampbell9.workers.dev https://www.tacitscan.io https://content.wrappr.wtf https://ipfs.io https://w3s.link https://*.ipfs.w3s.link https://dweb.link https://*.ipfs.dweb.link; img-src 'self' data: https://content.wrappr.wtf https://tacit-pin.rosscampbell9.workers.dev https://ipfs.io https://w3s.link https://*.ipfs.w3s.link https://dweb.link https://*.ipfs.dweb.link; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' http://localhost:* http://127.0.0.1:* https://mempool.space https://*.mempool.space https://mempool.bisq.services https://mempool.emzy.de https://mempool.bitaroo.net https://blockstream.info https://api.coinbase.com https://api.kraken.com https://api.coingecko.com https://cloudflare-eth.com https://tacit-pin.rosscampbell9.workers.dev https://www.tacitscan.io https://content.wrappr.wtf https://ipfs.io https://w3s.link https://*.ipfs.w3s.link https://dweb.link https://*.ipfs.dweb.link; img-src 'self' data: http://localhost:* http://127.0.0.1:* https://content.wrappr.wtf https://tacit-pin.rosscampbell9.workers.dev https://ipfs.io https://w3s.link https://*.ipfs.w3s.link https://dweb.link https://*.ipfs.dweb.link; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; object-src 'none'; base-uri 'self'; form-action 'none'">
 <title>tacit</title>
 <link rel="icon" type="image/svg+xml" href='data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><style>.r{stroke:%230a0a0a}@media(prefers-color-scheme:dark){.r{stroke:%23f4efe6}}</style><circle class="r" cx="16" cy="16" r="13" fill="none" stroke-width="2.5"/><path d="M17.5 7L13 22.5Q13 25 18 24" fill="none" stroke="%23f7931a" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M10 11L21 11" stroke="%23f7931a" stroke-width="2.4" stroke-linecap="round"/></svg>'>
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -917,6 +917,38 @@ tr[data-recent-activity] .market-token-sub::after {
   display: block;
 }
 .market-token-main { min-width: 0; }
+/* Constrain the swap tile width on desktop so it doesn't span the full
+   page (which makes the tile feel oversized once the page is wide
+   enough that the asks/bids grids don't need every pixel). Centered.
+   Tablet + mobile stay full-width — the tile's inputs need every pixel
+   below ~700px viewport to remain comfortably tappable. */
+@media (min-width: 900px) {
+  [data-swap-tile] {
+    max-width: 560px;
+    margin-left: auto !important;
+    margin-right: auto !important;
+  }
+}
+/* Skeleton placeholder for the swap tile during the brief async load
+   window before _swapTileHtml resolves. Without this the tile area
+   renders as blank space then suddenly populates — the "looks broken
+   for a beat" complaint. Dashed border + faint text echoes the resolved
+   tile's frame so the transition reads as fill-in, not pop-in. */
+[data-swap-tile-skeleton] {
+  display: block;
+  margin: 0 auto 14px;
+  max-width: 560px;
+  border: 1px dashed var(--ink-faint);
+  background: var(--bg);
+  padding: 16px;
+  min-height: 240px;
+  color: var(--ink-mid);
+  font-size: 11px;
+  text-align: center;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
 .market-asset-tabbar {
   display: flex;
   align-items: center;
@@ -5545,7 +5577,7 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
         <div class="progress-step" data-step="1"><span class="progress-num">2</span><span class="progress-label">Sign</span></div>
         <div class="progress-step" data-step="2"><span class="progress-num">3</span><span class="progress-label">Settle</span></div>
       </div>
-      <div id="market-list"><div class="market-asset-grid" aria-busy="true">
+      <div id="market-list" data-market-list><div class="market-asset-grid" aria-busy="true">
         <div class="market-tile-skeleton"><div class="tile-skeleton-head"><div class="tile-skeleton-avatar"></div><div style="flex:1;display:flex;flex-direction:column;gap:6px;"><div class="skeleton-row medium"></div><div class="skeleton-row short"></div></div></div><div class="skeleton-row"></div><div class="skeleton-row short"></div></div>
         <div class="market-tile-skeleton"><div class="tile-skeleton-head"><div class="tile-skeleton-avatar"></div><div style="flex:1;display:flex;flex-direction:column;gap:6px;"><div class="skeleton-row medium"></div><div class="skeleton-row short"></div></div></div><div class="skeleton-row"></div><div class="skeleton-row short"></div></div>
         <div class="market-tile-skeleton"><div class="tile-skeleton-head"><div class="tile-skeleton-avatar"></div><div style="flex:1;display:flex;flex-direction:column;gap:6px;"><div class="skeleton-row medium"></div><div class="skeleton-row short"></div></div></div><div class="skeleton-row"></div><div class="skeleton-row short"></div></div>
@@ -5553,6 +5585,30 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
         <div class="market-tile-skeleton"><div class="tile-skeleton-head"><div class="tile-skeleton-avatar"></div><div style="flex:1;display:flex;flex-direction:column;gap:6px;"><div class="skeleton-row medium"></div><div class="skeleton-row short"></div></div></div><div class="skeleton-row"></div><div class="skeleton-row short"></div></div>
         <div class="market-tile-skeleton"><div class="tile-skeleton-head"><div class="tile-skeleton-avatar"></div><div style="flex:1;display:flex;flex-direction:column;gap:6px;"><div class="skeleton-row medium"></div><div class="skeleton-row short"></div></div></div><div class="skeleton-row"></div><div class="skeleton-row short"></div></div>
       </div></div>
+    </div>
+  </div>
+
+  <!-- AMM ceremony · live · contributor list at the very bottom of the
+       market page. Mirrors the mixer ceremony's social proof pattern: live
+       count, contribute button, recent contributors with ★you. Hidden by
+       renderMarketAmmCeremonySection() once the canonical vk_cid is pinned. -->
+  <div class="section" id="market-ammcer-section" data-section-key="market-ammcer" style="margin-top: 24px; display:none;">
+    <div class="section-header">
+      <span>AMM ceremony · live</span>
+      <span class="muted" id="market-ammcer-totals" style="font-family:var(--mono);font-size:11px;">—</span>
+    </div>
+    <div class="section-body">
+      <p class="muted" style="font-size:12px;line-height:1.55;margin:0 0 12px 0;">
+        The tacit AMM uses a Groth16 trusted setup across three circuits. Anyone can mix browser-local entropy into it — one honest contributor per circuit is enough to make the setup sound. Each click is ~45 seconds in your browser.
+      </p>
+      <p class="muted" style="font-size:11px;line-height:1.55;margin:0 0 14px 0;">
+        Log your tacit wallet on the contribution to stay eligible for future airdrop snapshots.
+      </p>
+      <div style="display:flex;align-items:center;gap:12px;margin-bottom:14px;flex-wrap:wrap;">
+        <button id="btn-market-ammcer-contribute" type="button">Contribute to AMM ceremony</button>
+        <span class="muted" style="font-size:11px;" id="market-ammcer-status"></span>
+      </div>
+      <div id="market-ammcer-attestations"></div>
     </div>
   </div>
 </div>
@@ -6536,7 +6592,7 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
     <div id="amm-cer-title" class="pass-title">AMM trusted setup · contribute</div>
     <div class="pass-reason" style="margin-bottom: 12px;">
       <p style="margin:0 0 8px 0;">Each click advances one of three AMM circuit chains by mixing your local entropy into the proving key. As long as <strong>one</strong> contributor across the chain is honest, the AMM is sound. Takes ~30–60 seconds and ~10 MB of bandwidth in your browser.</p>
-      <p style="margin:0 0 8px 0;font-size:11px;color:var(--ink-mid);">Your contribution is pseudonymous by default. Attribute it to your tacit wallet pubkey to be eligible for future reputation + airdrop snapshots.</p>
+      <p style="margin:0 0 8px 0;font-size:11px;color:var(--ink-mid);">Your contribution is pseudonymous by default. Log your tacit wallet on the contribution to stay eligible for future airdrop snapshots — your wallet pubkey gets recorded alongside the contribution, nothing else.</p>
     </div>
     <div id="amm-cer-chains" style="margin-bottom: 12px; font-family: var(--mono); font-size: 11px;"></div>
     <div style="margin-bottom: 10px;">
@@ -6545,7 +6601,7 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
       </label>
     </div>
     <div style="margin-bottom: 12px; font-size: 11px;">
-      <label><input id="amm-cer-attribute-pubkey" type="checkbox" checked> Attribute to my wallet pubkey <span id="amm-cer-pubkey-hint" class="muted"></span></label>
+      <label><input id="amm-cer-attribute-pubkey" type="checkbox" checked> Log my tacit wallet (for airdrop eligibility) <span id="amm-cer-pubkey-hint" class="muted"></span></label>
     </div>
     <div id="amm-cer-progress" style="display:none; margin-bottom: 12px; font-family: var(--mono); font-size: 11px; color: var(--ink-mid); max-height: 200px; overflow-y: auto; padding: 8px; border: 1px solid var(--ink-faint); background: var(--bg-warm); white-space: pre-wrap;"></div>
     <div id="amm-cer-result" style="display:none; margin-bottom: 12px; font-family: var(--mono); font-size: 11px; padding: 8px; border: 1px solid var(--ink-faint);"></div>
