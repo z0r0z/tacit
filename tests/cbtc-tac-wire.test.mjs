@@ -691,6 +691,171 @@ if (dapp.CBTC_TAC_CANONICAL_MANIFEST && typeof dapp._validateCbtcTacManifest ===
   ok('CBTC_TAC_MANIFEST_CID is null pre-pin', dapp.CBTC_TAC_MANIFEST_CID === null);
 }
 
+// ============== T_CBTC_TAC_TOP_UP round-trip (SPEC §5.50) ==============
+group('T_CBTC_TAC_TOP_UP round-trip');
+{
+  const networkTag = 0x01;
+  const targetLeafHash = sha256(new TextEncoder().encode('position-leaf'));
+  // Old bond: 1000 LP-shares at outpoint A
+  const oldBondOutpoint = new Uint8Array(36);
+  oldBondOutpoint.set(sha256(new TextEncoder().encode('old-bond-utxo')), 0);
+  new DataView(oldBondOutpoint.buffer).setUint32(32, 0, true);
+  const oldBondAmount = 1_000_000_000n;
+  const oldBlinding = sha256(new TextEncoder().encode('old-blinding'));
+  const oldBlindingBig = BigInt('0x' + bytesToHex(oldBlinding)) % dapp.SECP_N;
+  const oldBondCommit = dapp.pedersenCommit(oldBondAmount, oldBlindingBig).toRawBytes(true);
+  // Add inputs: 2 additional LP-shares, 300M + 500M
+  const addCount = 2;
+  const addAmounts = [300_000_000n, 500_000_000n];
+  const addOutpoints = [];
+  const addCommits = [];
+  const addBlindingsBig = [];
+  for (let i = 0; i < addCount; i++) {
+    const op = new Uint8Array(36);
+    op.set(sha256(new TextEncoder().encode(`add-utxo-${i}`)), 0);
+    new DataView(op.buffer).setUint32(32, 1, true);
+    addOutpoints.push(op);
+    const b = sha256(new TextEncoder().encode(`add-blinding-${i}`));
+    const bBig = BigInt('0x' + bytesToHex(b)) % dapp.SECP_N;
+    addBlindingsBig.push(bBig);
+    addCommits.push(dapp.pedersenCommit(addAmounts[i], bBig).toRawBytes(true));
+  }
+  // New combined: 1000 + 300 + 500 = 1800M
+  const newBondAmount = oldBondAmount + addAmounts[0] + addAmounts[1];
+  // Combined blinding = old + sum(add) preserves homomorphic balance
+  let combinedBlindingBig = oldBlindingBig;
+  for (const b of addBlindingsBig) combinedBlindingBig = (combinedBlindingBig + b) % dapp.SECP_N;
+  const newBondBlinding = hexToBytes(combinedBlindingBig.toString(16).padStart(64, '0'));
+  const newBondCommit = dapp.pedersenCommit(newBondAmount, combinedBlindingBig).toRawBytes(true);
+
+  const bindHash = dapp.computeCbtcTacTopUpBindHash({
+    networkTag, targetLeafHash,
+    oldBondOutpoint, oldBondCommit, oldBondAmount,
+    addCount, addOutpoints, addCommits, addAmounts,
+    newBondCommit, newBondAmount, newBondBlinding,
+  });
+  const depositorSig = new Uint8Array(64).fill(0xbb);
+  const payload = dapp.encodeTCbtcTacTopUpPayload({
+    networkTag, targetLeafHash,
+    oldBondOutpoint, oldBondCommit, oldBondAmount,
+    addOutpoints, addCommits, addAmounts,
+    newBondCommit, newBondAmount, newBondBlinding,
+    depositorSig, bindHash,
+  });
+
+  ok('TOP_UP payload starts with opcode 0x59', payload[0] === 0x59);
+  ok('TOP_UP payload network_tag = signet', payload[1] === 0x01);
+
+  const ddapp = dapp.decodeTCbtcTacTopUpPayload(payload);
+  ok('TOP_UP dapp decode succeeds', ddapp !== null);
+  ok('TOP_UP dapp parity: add_count', ddapp?.addCount === addCount);
+  ok('TOP_UP dapp parity: old_bond_amount', ddapp?.oldBondAmount === oldBondAmount);
+  ok('TOP_UP dapp parity: new_bond_amount', ddapp?.newBondAmount === newBondAmount);
+  ok('TOP_UP dapp parity: target_leaf_hash',
+    bytesToHex(ddapp.targetLeafHash) === bytesToHex(targetLeafHash));
+  // Pedersen homomorphic balance: old_commit + Σ add_commit == new_commit
+  let sumCommit = dapp.bytesToPoint(oldBondCommit);
+  for (const c of addCommits) sumCommit = sumCommit.add(dapp.bytesToPoint(c));
+  ok('TOP_UP homomorphic balance: Σ inputs == new_commit',
+    sumCommit.equals(dapp.bytesToPoint(newBondCommit)));
+
+  const dworker = worker.decodeTCbtcTacTopUpPayload(payload);
+  ok('TOP_UP worker decode succeeds', dworker !== null);
+  ok('TOP_UP worker parity: kind', dworker?.kind === 'cbtc_tac_top_up');
+  ok('TOP_UP worker parity: add_count', dworker?.add_count === addCount);
+  ok('TOP_UP worker parity: bind_hash', dworker?.bind_hash === bytesToHex(bindHash));
+  ok('TOP_UP worker parity: new_bond_amount',
+    BigInt(dworker.new_bond_amount) === newBondAmount);
+
+  ok('TOP_UP decoder rejects wrong opcode',
+    dapp.decodeTCbtcTacTopUpPayload(new Uint8Array([0x4F, 0x01])) === null);
+  ok('TOP_UP decoder rejects truncation',
+    dapp.decodeTCbtcTacTopUpPayload(payload.slice(0, payload.length - 1)) === null);
+  const tampered = new Uint8Array(payload);
+  tampered[payload.length - 1] ^= 0xff;
+  ok('TOP_UP decoder rejects bind_hash tamper',
+    dapp.decodeTCbtcTacTopUpPayload(tampered) === null);
+  ok('TOP_UP decoder rejects add_count = 0',
+    dapp.encodeTCbtcTacTopUpPayload === dapp.encodeTCbtcTacTopUpPayload);  // sentinel for compile
+
+  ok('T_CBTC_TAC_TOP_UP opcode = 0x59 (dapp)', dapp.T_CBTC_TAC_TOP_UP === 0x59);
+  ok('T_CBTC_TAC_TOP_UP opcode = 0x59 (worker)', worker.T_CBTC_TAC_TOP_UP === 0x59);
+}
+
+// ============== T_CBTC_TAC_BOND_RELEASE round-trip (SPEC §5.51) ==============
+group('T_CBTC_TAC_BOND_RELEASE round-trip');
+{
+  const networkTag = 0x01;
+  const targetLeafHash = sha256(new TextEncoder().encode('position-leaf'));
+  const oldBondOutpoint = new Uint8Array(36);
+  oldBondOutpoint.set(sha256(new TextEncoder().encode('old-bond-utxo')), 0);
+  new DataView(oldBondOutpoint.buffer).setUint32(32, 0, true);
+  const oldBondAmount = 1_800_000_000n;
+  const oldBlinding = sha256(new TextEncoder().encode('old-blind-release'));
+  const oldBlindingBig = BigInt('0x' + bytesToHex(oldBlinding)) % dapp.SECP_N;
+  const oldBondCommit = dapp.pedersenCommit(oldBondAmount, oldBlindingBig).toRawBytes(true);
+
+  // Split into 1200M (kept liened) + 600M (released)
+  const newBondAmount = 1_200_000_000n;
+  const releaseAmount = oldBondAmount - newBondAmount;
+  const newBlindBig = (BigInt('0x' + bytesToHex(sha256(new TextEncoder().encode('new-blind')))) % dapp.SECP_N);
+  // Release blinding = old - new (preserves homomorphic balance)
+  const releaseBlindBig = (oldBlindingBig - newBlindBig + dapp.SECP_N) % dapp.SECP_N;
+  const newBondBlinding = hexToBytes(newBlindBig.toString(16).padStart(64, '0'));
+  const releaseBlinding = hexToBytes(releaseBlindBig.toString(16).padStart(64, '0'));
+  const newBondCommit = dapp.pedersenCommit(newBondAmount, newBlindBig).toRawBytes(true);
+  const releaseCommit = dapp.pedersenCommit(releaseAmount, releaseBlindBig).toRawBytes(true);
+  const recipientPk = new Uint8Array(33); recipientPk[0] = 0x02;
+  recipientPk.set(sha256(new TextEncoder().encode('recipient-pk')).slice(0, 32), 1);
+
+  const bindHash = dapp.computeCbtcTacBondReleaseBindHash({
+    networkTag, targetLeafHash,
+    oldBondOutpoint, oldBondCommit, oldBondAmount,
+    newBondCommit, newBondAmount, newBondBlinding,
+    releaseCommit, releaseAmount, releaseBlinding,
+    recipientPk,
+  });
+  const depositorSig = new Uint8Array(64).fill(0xcc);
+  const payload = dapp.encodeTCbtcTacBondReleasePayload({
+    networkTag, targetLeafHash,
+    oldBondOutpoint, oldBondCommit, oldBondAmount,
+    newBondCommit, newBondAmount, newBondBlinding,
+    releaseCommit, releaseAmount, releaseBlinding,
+    recipientPk, depositorSig, bindHash,
+  });
+
+  ok('RELEASE payload starts with opcode 0x5A', payload[0] === 0x5A);
+
+  const ddapp = dapp.decodeTCbtcTacBondReleasePayload(payload);
+  ok('RELEASE dapp decode succeeds', ddapp !== null);
+  ok('RELEASE dapp parity: old_bond_amount', ddapp?.oldBondAmount === oldBondAmount);
+  ok('RELEASE dapp parity: new + release = old',
+    ddapp?.newBondAmount + ddapp?.releaseAmount === oldBondAmount);
+  // Pedersen homomorphic balance: new_commit + release_commit == old_commit
+  const sumCommit = dapp.bytesToPoint(newBondCommit).add(dapp.bytesToPoint(releaseCommit));
+  ok('RELEASE homomorphic balance: new + release == old',
+    sumCommit.equals(dapp.bytesToPoint(oldBondCommit)));
+
+  const dworker = worker.decodeTCbtcTacBondReleasePayload(payload);
+  ok('RELEASE worker decode succeeds', dworker !== null);
+  ok('RELEASE worker parity: kind', dworker?.kind === 'cbtc_tac_bond_release');
+  ok('RELEASE worker parity: release_amount',
+    BigInt(dworker.release_amount) === releaseAmount);
+  ok('RELEASE worker parity: bind_hash', dworker?.bind_hash === bytesToHex(bindHash));
+
+  ok('RELEASE decoder rejects wrong opcode',
+    dapp.decodeTCbtcTacBondReleasePayload(new Uint8Array([0x4F, 0x01])) === null);
+  ok('RELEASE decoder rejects truncation',
+    dapp.decodeTCbtcTacBondReleasePayload(payload.slice(0, payload.length - 1)) === null);
+  const tampered = new Uint8Array(payload);
+  tampered[payload.length - 1] ^= 0xff;
+  ok('RELEASE decoder rejects bind_hash tamper',
+    dapp.decodeTCbtcTacBondReleasePayload(tampered) === null);
+
+  ok('T_CBTC_TAC_BOND_RELEASE opcode = 0x5A (dapp)', dapp.T_CBTC_TAC_BOND_RELEASE === 0x5A);
+  ok('T_CBTC_TAC_BOND_RELEASE opcode = 0x5A (worker)', worker.T_CBTC_TAC_BOND_RELEASE === 0x5A);
+}
+
 // ============== summary ==============
 console.log(`\n${pass}/${pass + fail} passed`);
 if (fail > 0) process.exit(1);

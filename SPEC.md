@@ -3114,7 +3114,6 @@ The dapp's swap tile SHOULD default to `T_SWAP_VAR` for typical flow and surface
 
 ```
 opcode(1)                  = 0x32
-envelope_version(1)        = 0x01
 pool_id(32)
 direction(1)               # 0 = A→B, 1 = B→A
 R_A_pre(8)                 # u64 LE — trader's view of asset-A reserve
@@ -3160,7 +3159,7 @@ Total payload ≈ 950–1000 bytes.
 **Validator algorithm:**
 
 1. Verify `vout[0]` is a 0-sat `OP_RETURN` whose 32-byte data equals `SHA256(payload)`.
-2. Decode payload; verify `opcode == 0x32` and `envelope_version == 0x01`.
+2. Decode payload; verify `opcode == 0x32`.
 3. Require existing pool by `pool_id`; verify `direction ∈ {0, 1}`.
 4. **Range gate:** verify `delta_in > 0` and `delta_in_min ≤ delta_in ≤ delta_in_max`.
 5. **Reserves freshness gate:** verify `R_A_pre == pool.reserve_A` AND `R_B_pre == pool.reserve_B` (strict equality at this tx's pre-state — same in-block walking discipline as the running-state model of AMM.md).

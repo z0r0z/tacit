@@ -177,6 +177,8 @@ const T_CTAC_LIEN_CLAIM      = T_SHARE_SLASH_CLAIM; // alias for clarity in v1 l
 const T_CTAC_LIEN_SPLIT      = 0x4F; // split a liened LP-share UTXO; lien inherits onto one chosen output (SPEC §5.47)
 const T_CBTC_TAC_DEPOSIT_ATOMIC = 0x57; // atomic LP_ADD + DEPOSIT in one envelope (SPEC §5.48)
 const T_CBTC_TAC_WITHDRAW_ATOMIC = 0x58; // atomic WITHDRAW + LP_REMOVE in one envelope (SPEC §5.49)
+const T_CBTC_TAC_TOP_UP         = 0x59; // strengthen bond on open position (SPEC §5.50)
+const T_CBTC_TAC_BOND_RELEASE   = 0x5A; // partial bond release on open position (SPEC §5.51)
 const N_BITS = 64; // amount range: [0, 2^64) — bulletproof rangeproof.
 const SECP_N = 0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141n;
 
@@ -8800,6 +8802,186 @@ function decodeTCbtcTacWithdrawAtomicPayload(payload) {
     recv_tac_commit: bytesToHex(recvTacCommit),
     bind_hash: bytesToHex(bindHashBytes),
     proof: bytesToHex(proof),
+  };
+}
+
+// SPEC-CBTC-TAC-AMENDMENT §5.50 — T_CBTC_TAC_TOP_UP decoder.
+// Combines a liened LP-share UTXO with 1..15 additional unliened LP-share
+// UTXOs into a single combined LP-share UTXO with the lien transferred.
+// All amounts + blindings are revealed in the envelope (same privacy
+// model as T_CTAC_LIEN_SPLIT). bind_hash and depositor sig enforce
+// non-malleability + authorization.
+const _CBTC_TAC_TOP_UP_DOMAIN = new TextEncoder().encode('tacit-ctac-topup-v1');
+function _u64LEworker(n) {
+  const b = new Uint8Array(8);
+  const v = new DataView(b.buffer);
+  const a = BigInt(n);
+  v.setUint32(0, Number(a & 0xffffffffn), true);
+  v.setUint32(4, Number((a >> 32n) & 0xffffffffn), true);
+  return b;
+}
+function _readU64LEworker(payload, p) {
+  const v = new DataView(payload.buffer, payload.byteOffset + p, 8);
+  return (BigInt(v.getUint32(4, true)) << 32n) | BigInt(v.getUint32(0, true));
+}
+function _computeCbtcTacTopUpBindHash({
+  networkTag, targetLeafHash,
+  oldBondOutpoint, oldBondCommit, oldBondAmount,
+  addCount, addOutpoints, addCommits, addAmounts,
+  newBondCommit, newBondAmount, newBondBlinding,
+}) {
+  const parts = [
+    _CBTC_TAC_TOP_UP_DOMAIN,
+    new Uint8Array([networkTag & 0xff]),
+    targetLeafHash,
+    oldBondOutpoint, oldBondCommit, _u64LEworker(oldBondAmount),
+    new Uint8Array([addCount & 0xff]),
+  ];
+  for (let i = 0; i < addCount; i++) {
+    parts.push(addOutpoints[i], addCommits[i], _u64LEworker(addAmounts[i]));
+  }
+  parts.push(newBondCommit, _u64LEworker(newBondAmount), newBondBlinding);
+  return sha256(concatBytes(...parts));
+}
+function decodeTCbtcTacTopUpPayload(payload) {
+  if (!payload) return null;
+  if (payload[0] !== T_CBTC_TAC_TOP_UP) return null;
+  if (payload.length < 1 + 1 + 32 + 36 + 33 + 8 + 1 + 77 + 33 + 8 + 32 + 64 + 32) return null;
+  let p = 1;
+  const networkTag = payload[p]; p += 1;
+  if (networkTag > 2) return null;
+  const targetLeafHash = payload.slice(p, p + 32); p += 32;
+  const oldBondOutpoint = payload.slice(p, p + 36); p += 36;
+  const oldBondCommit = payload.slice(p, p + 33); p += 33;
+  try { compressedPointFromHex(bytesToHex(oldBondCommit)); } catch { return null; }
+  const oldBondAmount = _readU64LEworker(payload, p); p += 8;
+  if (oldBondAmount === 0n) return null;
+  const addCount = payload[p]; p += 1;
+  if (addCount < 1 || addCount > 15) return null;
+  const expectedTail = addCount * (36 + 33 + 8) + 33 + 8 + 32 + 64 + 32;
+  if (payload.length !== p + expectedTail) return null;
+  const addOutpoints = [];
+  const addCommits = [];
+  const addAmounts = [];
+  let sumAdd = 0n;
+  for (let i = 0; i < addCount; i++) {
+    addOutpoints.push(payload.slice(p, p + 36)); p += 36;
+    const c = payload.slice(p, p + 33);
+    try { compressedPointFromHex(bytesToHex(c)); } catch { return null; }
+    addCommits.push(c);
+    p += 33;
+    const a = _readU64LEworker(payload, p); p += 8;
+    if (a === 0n) return null;
+    addAmounts.push(a);
+    sumAdd += a;
+  }
+  const newBondCommit = payload.slice(p, p + 33); p += 33;
+  try { compressedPointFromHex(bytesToHex(newBondCommit)); } catch { return null; }
+  const newBondAmount = _readU64LEworker(payload, p); p += 8;
+  if (newBondAmount !== oldBondAmount + sumAdd) return null;
+  const newBondBlinding = payload.slice(p, p + 32); p += 32;
+  const depositorSig = payload.slice(p, p + 64); p += 64;
+  const bindHashBytes = payload.slice(p, p + 32); p += 32;
+  const expectedBind = _computeCbtcTacTopUpBindHash({
+    networkTag, targetLeafHash,
+    oldBondOutpoint, oldBondCommit, oldBondAmount,
+    addCount, addOutpoints, addCommits, addAmounts,
+    newBondCommit, newBondAmount, newBondBlinding,
+  });
+  for (let i = 0; i < 32; i++) if (expectedBind[i] !== bindHashBytes[i]) return null;
+  return {
+    kind: 'cbtc_tac_top_up',
+    network_tag: networkTag,
+    target_leaf_hash: bytesToHex(targetLeafHash),
+    old_bond_outpoint: bytesToHex(oldBondOutpoint),
+    old_bond_commit: bytesToHex(oldBondCommit),
+    old_bond_amount: oldBondAmount.toString(),
+    add_count: addCount,
+    add_outpoints: addOutpoints.map(b => bytesToHex(b)),
+    add_commits: addCommits.map(b => bytesToHex(b)),
+    add_amounts: addAmounts.map(a => a.toString()),
+    new_bond_commit: bytesToHex(newBondCommit),
+    new_bond_amount: newBondAmount.toString(),
+    new_bond_blinding: bytesToHex(newBondBlinding),
+    depositor_sig: bytesToHex(depositorSig),
+    bind_hash: bytesToHex(bindHashBytes),
+  };
+}
+
+// SPEC-CBTC-TAC-AMENDMENT §5.51 — T_CBTC_TAC_BOND_RELEASE decoder.
+// Inverse of TOP_UP: spend a liened LP-share, output a smaller liened
+// LP-share (lien transferred) + an unliened release UTXO to recipient_pk.
+// Validator must re-check post-release ratio against INITIAL_BOND_RATIO.
+const _CBTC_TAC_BOND_RELEASE_DOMAIN = new TextEncoder().encode('tacit-ctac-release-v1');
+function _computeCbtcTacBondReleaseBindHash({
+  networkTag, targetLeafHash,
+  oldBondOutpoint, oldBondCommit, oldBondAmount,
+  newBondCommit, newBondAmount, newBondBlinding,
+  releaseCommit, releaseAmount, releaseBlinding,
+  recipientPk,
+}) {
+  return sha256(concatBytes(
+    _CBTC_TAC_BOND_RELEASE_DOMAIN,
+    new Uint8Array([networkTag & 0xff]),
+    targetLeafHash,
+    oldBondOutpoint, oldBondCommit, _u64LEworker(oldBondAmount),
+    newBondCommit, _u64LEworker(newBondAmount), newBondBlinding,
+    releaseCommit, _u64LEworker(releaseAmount), releaseBlinding,
+    recipientPk,
+  ));
+}
+function decodeTCbtcTacBondReleasePayload(payload) {
+  if (!payload) return null;
+  if (payload[0] !== T_CBTC_TAC_BOND_RELEASE) return null;
+  if (payload.length !== 1 + 1 + 32 + 36 + 33 + 8 + 33 + 8 + 32 + 33 + 8 + 32 + 33 + 64 + 32) return null;
+  let p = 1;
+  const networkTag = payload[p]; p += 1;
+  if (networkTag > 2) return null;
+  const targetLeafHash = payload.slice(p, p + 32); p += 32;
+  const oldBondOutpoint = payload.slice(p, p + 36); p += 36;
+  const oldBondCommit = payload.slice(p, p + 33); p += 33;
+  try { compressedPointFromHex(bytesToHex(oldBondCommit)); } catch { return null; }
+  const oldBondAmount = _readU64LEworker(payload, p); p += 8;
+  if (oldBondAmount === 0n) return null;
+  const newBondCommit = payload.slice(p, p + 33); p += 33;
+  try { compressedPointFromHex(bytesToHex(newBondCommit)); } catch { return null; }
+  const newBondAmount = _readU64LEworker(payload, p); p += 8;
+  if (newBondAmount === 0n) return null;
+  const newBondBlinding = payload.slice(p, p + 32); p += 32;
+  const releaseCommit = payload.slice(p, p + 33); p += 33;
+  try { compressedPointFromHex(bytesToHex(releaseCommit)); } catch { return null; }
+  const releaseAmount = _readU64LEworker(payload, p); p += 8;
+  if (releaseAmount === 0n) return null;
+  if (newBondAmount + releaseAmount !== oldBondAmount) return null;
+  const releaseBlinding = payload.slice(p, p + 32); p += 32;
+  const recipientPk = payload.slice(p, p + 33); p += 33;
+  try { compressedPointFromHex(bytesToHex(recipientPk)); } catch { return null; }
+  const depositorSig = payload.slice(p, p + 64); p += 64;
+  const bindHashBytes = payload.slice(p, p + 32); p += 32;
+  const expectedBind = _computeCbtcTacBondReleaseBindHash({
+    networkTag, targetLeafHash,
+    oldBondOutpoint, oldBondCommit, oldBondAmount,
+    newBondCommit, newBondAmount, newBondBlinding,
+    releaseCommit, releaseAmount, releaseBlinding,
+    recipientPk,
+  });
+  for (let i = 0; i < 32; i++) if (expectedBind[i] !== bindHashBytes[i]) return null;
+  return {
+    kind: 'cbtc_tac_bond_release',
+    network_tag: networkTag,
+    target_leaf_hash: bytesToHex(targetLeafHash),
+    old_bond_outpoint: bytesToHex(oldBondOutpoint),
+    old_bond_commit: bytesToHex(oldBondCommit),
+    old_bond_amount: oldBondAmount.toString(),
+    new_bond_commit: bytesToHex(newBondCommit),
+    new_bond_amount: newBondAmount.toString(),
+    new_bond_blinding: bytesToHex(newBondBlinding),
+    release_commit: bytesToHex(releaseCommit),
+    release_amount: releaseAmount.toString(),
+    release_blinding: bytesToHex(releaseBlinding),
+    recipient_pk: bytesToHex(recipientPk),
+    depositor_sig: bytesToHex(depositorSig),
+    bind_hash: bytesToHex(bindHashBytes),
   };
 }
 
@@ -20312,10 +20494,12 @@ export {
   decodeTCbtcTacForceClosePayload, decodeTShareSlashClaimPayload,
   decodeTCtacLienSplitPayload,
   decodeTCbtcTacDepositAtomicPayload, decodeTCbtcTacWithdrawAtomicPayload,
+  decodeTCbtcTacTopUpPayload, decodeTCbtcTacBondReleasePayload,
   T_SLOT_SPLIT, T_SLOT_MERGE,
   T_CBTC_TAC_DEPOSIT, T_CBTC_TAC_WITHDRAW, T_CBTC_TAC_FORCE_CLOSE,
   T_SHARE_SLASH_CLAIM, T_CTAC_LIEN_CLAIM, T_CTAC_LIEN_SPLIT,
   T_CBTC_TAC_DEPOSIT_ATOMIC, T_CBTC_TAC_WITHDRAW_ATOMIC,
+  T_CBTC_TAC_TOP_UP, T_CBTC_TAC_BOND_RELEASE,
   T_LP_ADD, T_LP_REMOVE, T_SWAP_BATCH, T_SWAP_VAR, T_PROTOCOL_FEE_CLAIM,
   ammPoolIdFromAssets, ammPoolKey, ammPoolGet, ammPoolPut,
   ammPairKey, ammPairGet, ammPairAppend,

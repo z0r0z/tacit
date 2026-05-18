@@ -2107,6 +2107,325 @@ alone by design.
 
 ---
 
+## §5.50 lien top-up (`T_CBTC_TAC_TOP_UP`)
+
+**Status:** ✅ wire spec frozen. Worker handler + dapp builder + scanner
+branch pending.
+
+### 5.50.1 Motivation
+
+Under §5.47 v1 lien model, a position's collateral ratio is fixed at
+deposit time (initial bond) and drifts only with TWAP. A depositor
+facing a TAC price decline today has no in-band response: their only
+options are (a) close the position via `T_CBTC_TAC_WITHDRAW` and
+re-deposit with more collateral (requires holding the full minted
+cBTC.tac, which they may have transferred or sold), or (b) ride out the
+ratio decline and risk SLASH if the position underwater-triggers.
+
+This is strictly worse UX than MakerDAO, where depositors can lock
+additional collateral against an open vault at any time without
+unwinding. `T_CBTC_TAC_TOP_UP` closes that gap: spend the current bond
+LP-share + additional LP-share(s) of the same pool, produce one
+combined LP-share UTXO with the lien transferred, position record
+updated to reflect the larger bond.
+
+cBTC.tac is untouched — no mint, no burn. Pure collateral-strengthening.
+
+### 5.50.2 Opcode allocation
+
+`T_CBTC_TAC_TOP_UP = 0x59`
+
+### 5.50.3 Wire format
+
+```
+opcode                  1 byte    (0x59)
+network_tag             1 byte    (0x00 mainnet, 0x01 signet, 0x02 regtest)
+target_leaf_hash        32 bytes  (position being topped up)
+old_bond_outpoint       36 bytes  (current bond UTXO; vin[1])
+old_bond_commit         33 bytes  (Pedersen point of current bond)
+old_bond_amount_LE      8 bytes   (opens old_bond_commit)
+add_count               1 byte    (1..15 additional inputs)
+for i in 0..add_count-1:
+  add_outpoint[i]       36 bytes  (vin[2+i])
+  add_commit[i]         33 bytes
+  add_amount_LE[i]      8 bytes
+new_bond_commit         33 bytes  (combined LP-share commit)
+new_bond_amount_LE      8 bytes   (sum = old + Σ add)
+new_bond_blinding       32 bytes  (opens new_bond_commit; recoverable via §5.50.8)
+depositor_sig           64 bytes  (Schnorr over bind_hash under depositor_recovery_pk)
+bind_hash               32 bytes
+```
+
+No ZK proof — all amounts + blindings are revealed (same privacy model
+as `T_CTAC_LIEN_SPLIT`). Pedersen balance enforces conservation
+homomorphically against the on-chain input commits resolved by the
+worker.
+
+### 5.50.4 bind_hash construction
+
+```
+bind_hash = SHA256(
+  "tacit-ctac-topup-v1"
+  || network_tag
+  || target_leaf_hash
+  || old_bond_outpoint || old_bond_commit || old_bond_amount_LE
+  || u8(add_count)
+  || add_outpoint[0] || add_commit[0] || add_amount_LE[0]
+  || ...
+  || add_outpoint[add_count-1] || add_commit[add_count-1] || add_amount_LE[add_count-1]
+  || new_bond_commit || new_bond_amount_LE || new_bond_blinding
+)
+```
+
+### 5.50.5 Tx layout
+
+```
+vin[0] = commit P2TR (script-path with T_CBTC_TAC_TOP_UP envelope)
+vin[1] = old bond LP-share UTXO (currently liened)
+vin[2..1+add_count] = additional LP-share UTXOs (same lp_asset_id, unliened)
+vout[0] = new combined LP-share UTXO at new_bond_commit
+          (DUST P2WPKH to depositor_recovery_pk; gets the transferred lien)
+```
+
+### 5.50.6 Validator algorithm
+
+Refuse the envelope (return without state change) if any of:
+
+1. Decoder rejects (length, opcode mismatch, network tag wrong, etc.)
+2. Position lookup fails OR `position.state !== 'active'`
+3. `ctacGetPositionLien(target_leaf_hash)` returns `null` OR the lien's
+   outpoint doesn't match `old_bond_outpoint`
+4. `add_count == 0` OR `add_count > 15`
+5. Source UTXO not actually spent in `tx.vin` (replay-safety gate —
+   prevents synthetic-output attacks identical to §5.47 LIEN_SPLIT)
+6. Any `add_outpoint[i]` is currently liened (`ctacGetLien` returns
+   non-null with `state === 'depositor'`) — refuse top-up with already-
+   committed collateral
+7. Any `add_outpoint[i]` resolves to a different `asset_id` than the
+   position's `bond_lp_asset_id`
+8. Pedersen balance: `pedersen(new_bond_amount, blinding_implicit_via_homomorphy)`
+   must equal `old_bond_commit + Σ add_commit[i]` (point-wise)
+9. Asset balance: `new_bond_amount = old_bond_amount + Σ add_amount[i]`
+10. Each commit opens to its declared amount (use the on-chain UTXO's
+    commit for the consumed inputs, NOT the envelope's `_commit` fields
+    — the envelope-declared commits are bind-only)
+11. Schnorr sig over `bind_hash` verifies under
+    `position.depositor_recovery_pk.x_only()`
+
+State effects on success:
+
+```
+ctacDeleteLien(env, network, old_bond_outpoint.txid, old_bond_outpoint.vout)
+for i in 0..add_count-1: (no-op — these were unliened)
+ctacPutLien(env, network, tx.txid, 0, {
+  ...old_lien,
+  lp_share_amount: new_bond_amount,
+  attached_at_height: h,
+  attached_at_txid: tx.txid,
+  topup_from_outpoint: old_bond_outpoint,
+})
+ctacPutPositionLien(env, network, target_leaf_hash, tx.txid, 0)
+
+position.bond_lp_share_amount = new_bond_amount
+position.bond_source_outpoint = (tx.txid, 0)
+position.last_topup_height = h
+// bond_amount_tac is revalued LAZILY by callers (ctacLpShareValueSats
+// at withdraw / SLASH / cap-check), so we don't snapshot it here.
+ctacAddTotalBondedTac(env, network, +Σ add_amount[i])
+ctacPutPosition(env, network, position)
+```
+
+### 5.50.7 commitmentForUtxo resolution
+
+The new combined LP-share at `(tx.txid, 0)` resolves to
+`(new_bond_commit, position.bond_lp_asset_id)`. The handler attaches the
+lien on this output, so a downstream `T_LP_REMOVE` against it is
+blocked (the lien check fires in the standard LP-share commit path).
+
+### 5.50.8 Output blinding derivation (seed-recovery)
+
+The combined LP-share blinding is HMAC-derived from the depositor's
+private key so the position recovers from priv + chain alone after a
+localStorage wipe:
+
+```
+r_topup_secp = HMAC-SHA256(
+  recipient_privkey,
+  "tacit-ctac-topup-bond-v1"
+  || target_leaf_hash
+  || old_bond_outpoint
+)  mod n_secp
+```
+
+Anchor is the old bond outpoint (unambiguous chain witness — exactly one
+top-up envelope can spend any given liened UTXO). The recovery branch
+in `scanHoldings` decodes the envelope, derives the blinding, opens the
+`new_bond_commit` against `(new_bond_amount, r_topup_secp)`.
+
+### 5.50.9 Backwards compatibility
+
+Additive. Existing positions without top-up activity remain valid; the
+worker's existing handlers (`T_CBTC_TAC_WITHDRAW`, `T_CTAC_LIEN_SPLIT`,
+SLASH_DETECTED) read `position.bond_lp_share_amount` and
+`position.bond_source_outpoint` as before — the top-up handler updates
+both atomically.
+
+---
+
+## §5.51 partial bond release (`T_CBTC_TAC_BOND_RELEASE`)
+
+**Status:** ✅ wire spec frozen. Worker handler + dapp builder + scanner
+branch pending.
+
+### 5.51.1 Motivation
+
+Symmetric inverse of §5.50: a position whose ratio is well above the
+liquidation threshold can release some bonded LP-shares back to the
+depositor without unwinding the cBTC.tac mint. Matches MakerDAO's
+"withdraw excess collateral" UX.
+
+Risk floor: post-release ratio MUST still satisfy
+`INITIAL_BOND_RATIO_THOUSANDTHS` at current TWAP. Releasing below that
+ratio is refused — releases must leave the position safely above the
+liquidation threshold, NOT just above the slash threshold.
+
+### 5.51.2 Opcode allocation
+
+`T_CBTC_TAC_BOND_RELEASE = 0x5A`
+
+### 5.51.3 Wire format
+
+```
+opcode                  1 byte    (0x5A)
+network_tag             1 byte
+target_leaf_hash        32 bytes
+old_bond_outpoint       36 bytes  (current bond UTXO; vin[1])
+old_bond_commit         33 bytes
+old_bond_amount_LE      8 bytes
+new_bond_commit         33 bytes  (smaller liened LP-share at vout[0])
+new_bond_amount_LE      8 bytes   (> 0; < old_bond_amount)
+new_bond_blinding       32 bytes  (opens new_bond_commit; recoverable via §5.51.8)
+release_commit          33 bytes  (unliened LP-share at vout[1])
+release_amount_LE       8 bytes   (= old_bond_amount - new_bond_amount; > 0)
+release_blinding        32 bytes  (opens release_commit; recoverable via §5.51.8)
+recipient_pk            33 bytes  (compressed; release goes to this key)
+depositor_sig           64 bytes  (Schnorr over bind_hash under depositor_recovery_pk)
+bind_hash               32 bytes
+```
+
+No ZK proof — same model as §5.50.
+
+### 5.51.4 bind_hash construction
+
+```
+bind_hash = SHA256(
+  "tacit-ctac-release-v1"
+  || network_tag
+  || target_leaf_hash
+  || old_bond_outpoint || old_bond_commit || old_bond_amount_LE
+  || new_bond_commit || new_bond_amount_LE || new_bond_blinding
+  || release_commit || release_amount_LE || release_blinding
+  || recipient_pk
+)
+```
+
+### 5.51.5 Tx layout
+
+```
+vin[0] = commit P2TR (script-path with T_CBTC_TAC_BOND_RELEASE envelope)
+vin[1] = old bond LP-share UTXO (currently liened)
+vout[0] = new smaller liened LP-share at new_bond_commit (DUST P2WPKH to depositor_recovery_pk)
+vout[1] = release LP-share at release_commit (DUST P2WPKH to recipient_pk)
+```
+
+### 5.51.6 Validator algorithm
+
+Refuse if any of:
+
+1. Decoder rejects
+2. Position lookup fails OR `position.state !== 'active'`
+3. Position lien doesn't match `old_bond_outpoint`
+4. `new_bond_amount == 0` OR `release_amount == 0` (use full withdraw
+   for the all-out case; use top-up to add more — release is strictly
+   non-trivial partial)
+5. `old_bond_amount != new_bond_amount + release_amount`
+6. Source UTXO not actually spent in `tx.vin` (replay-safety gate)
+7. Pedersen balance: `old_bond_commit == new_bond_commit + release_commit`
+   (point-wise sum, mod 2²⁵⁶)
+8. Each output commit opens to its declared amount
+9. Post-release collateralization check:
+   ```
+   lp_value_after = ctacLpShareValueSats(pool_id, new_bond_amount, twap)
+   ratio_after = lp_value_after * 1000 / slot_denom_sats
+   refuse if ratio_after < CTAC_INITIAL_BOND_RATIO_THOUSANDTHS
+   ```
+   Note: uses `INITIAL` not `LIQUIDATION` — release must leave the
+   position in deposit-acceptable territory, not just outside slash.
+10. Schnorr sig over `bind_hash` verifies under `depositor_recovery_pk`
+11. Aggregate pause: refuse if `ctacComputePauseStatus()` returns
+    `aggregate_recovery` — during global stress depositors cannot
+    extract collateral from the system
+
+State effects on success:
+
+```
+ctacDeleteLien(env, network, old_bond_outpoint.txid, old_bond_outpoint.vout)
+ctacPutLien(env, network, tx.txid, 0, {
+  ...old_lien,
+  lp_share_amount: new_bond_amount,
+  attached_at_height: h,
+  attached_at_txid: tx.txid,
+  release_from_outpoint: old_bond_outpoint,
+})
+ctacPutPositionLien(env, network, target_leaf_hash, tx.txid, 0)
+position.bond_lp_share_amount = new_bond_amount
+position.bond_source_outpoint = (tx.txid, 0)
+position.last_release_height = h
+ctacAddTotalBondedTac(env, network, -release_amount)
+ctacPutPosition(env, network, position)
+```
+
+### 5.51.7 commitmentForUtxo resolution
+
+`vout[0]` → `(new_bond_commit, position.bond_lp_asset_id)` with lien.
+`vout[1]` → `(release_commit, position.bond_lp_asset_id)` unliened —
+the recipient can freely `T_LP_REMOVE` or transfer it.
+
+### 5.51.8 Output blinding derivation (seed-recovery)
+
+```
+r_new_bond_secp = HMAC-SHA256(
+  recipient_privkey,
+  "tacit-ctac-release-bond-v1"
+  || target_leaf_hash
+  || old_bond_outpoint
+)  mod n_secp
+
+r_release_secp = HMAC-SHA256(
+  recipient_privkey,
+  "tacit-amm-receipt-secp-v1"
+  || pool_id
+  || old_bond_outpoint
+  || lp_asset_id
+)  mod n_secp
+```
+
+The release blinding piggybacks on the standard AMM receipt scheme so a
+recipient who is not the depositor (cross-key release) can still recover
+the unliened output via the existing AMM scanner branch when the
+recipient's privkey produces the matching commit.
+
+### 5.51.9 Backwards compatibility
+
+Additive. The post-release ratio refusal at `INITIAL_BOND_RATIO` (vs.
+`LIQUIDATION_RATIO`) is intentionally stricter than the slash threshold
+— it prevents users from releasing into a barely-collateralized state
+that would slash on the next TWAP tick. Operators can tune
+`CTAC_RELEASE_RATIO_THOUSANDTHS` independently if a different floor
+becomes desirable post-launch (default == `INITIAL_BOND_RATIO`).
+
+---
+
 ## Open questions
 
 1. **TAC staking integration.** Bonded TAC is locked anyway. If a

@@ -67,7 +67,6 @@ Reference impl: `tests/swap-route.mjs` (`encodeSwapRoute`,
 `decodeSwapRoute`). Byte layout (from the impl, normative):
 
 ```
-version(1)             = 0x01
 opcode(1)              = 0x33
 n_hops(1)              u8, 2..N_HOPS_MAX (= 4)
 trader_input_asset_id (32)

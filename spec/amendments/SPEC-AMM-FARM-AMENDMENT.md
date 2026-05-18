@@ -130,7 +130,6 @@ no ceremony — that materially de-risks pool bootstrap.
 T_FARM_INIT envelope payload (consumed by indexer; OP_RETURN at
 vout[0] carries SHA256(payload) as envelope_hash):
 
-envelope_version           1 B  = 0x01
 opcode                     1 B  = 0x34
 pool_id                   32 B  (= SHA256("tacit-amm-pool-v1" || asset_A || asset_B
                                   || fee_bps || protocol_fee_config || capability_flags),
@@ -355,7 +354,6 @@ assignment.
 ```
 T_LP_BOND envelope payload:
 
-envelope_version           1 B  = 0x01
 opcode                     1 B  = 0x35
 farm_id                   32 B
 bonder_pubkey             33 B  compressed secp256k1. Wallet-discovery dust at vout[1]
@@ -515,7 +513,6 @@ for outpoint-free discovery as a fallback (see "Indexer interface").
 ```
 T_LP_UNBOND envelope payload:
 
-envelope_version           1 B  = 0x01
 opcode                     1 B  = 0x36
 farm_id                   32 B
 bond_id                   36 B  outpoint reference (32-byte txid || 4-byte vout LE)
@@ -651,7 +648,6 @@ materially more expensive and worse UX.
 ```
 T_LP_HARVEST envelope payload (227 bytes fixed):
 
-envelope_version           1 B  = 0x01
 opcode                     1 B  = 0x3B
 farm_id                   32 B
 bond_id                   36 B  outpoint reference identifying the bond record.
@@ -818,7 +814,6 @@ Single-shot semantics — the farm's `refunded` flag prevents replay.
 ```
 T_FARM_REFUND envelope payload (175 bytes fixed):
 
-envelope_version    1 B  = 0x01
 opcode              1 B  = 0x3E
 farm_id            32 B
 launcher_pubkey    33 B  compressed secp256k1. Must equal farm.launcher_pubkey.

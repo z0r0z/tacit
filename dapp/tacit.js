@@ -5147,6 +5147,8 @@ const T_CTAC_LIEN_CLAIM      = T_SHARE_SLASH_CLAIM; // semantic alias under v1 l
 const T_CTAC_LIEN_SPLIT      = 0x4F; // split a liened LP-share UTXO (SPEC §5.47)
 const T_CBTC_TAC_DEPOSIT_ATOMIC = 0x57; // atomic LP_ADD + DEPOSIT in one envelope (SPEC §5.48)
 const T_CBTC_TAC_WITHDRAW_ATOMIC = 0x58; // atomic WITHDRAW + LP_REMOVE in one envelope (SPEC §5.49)
+const T_CBTC_TAC_TOP_UP         = 0x59; // strengthen bond on open position (SPEC §5.50)
+const T_CBTC_TAC_BOND_RELEASE   = 0x5A; // partial bond release on open position (SPEC §5.51)
 // 0x4D–0x4E reserved for SPEC-CBTC-ZK-AMOUNT-AMENDMENT (T_SLOT_FRACTIONALIZE/T_SLOT_RECONSOLIDATE
 // machinery, activated via SPEC-CBTC-TAC-AMENDMENT envelopes; the unbonded standalone path is
 // not shipped on mainnet).
@@ -8692,6 +8694,262 @@ function decodeTCbtcTacWithdrawAtomicPayload(payload) {
     networkTag, targetLeafHash, slotDenomSats,
     burnCount, burnNullifiers, burnCommits, burnAmount, lpShareAmount,
     recvCbtcZkCommit, recvTacCommit, bindHash, proof,
+  };
+}
+
+// SPEC-CBTC-TAC-AMENDMENT §5.50 — T_CBTC_TAC_TOP_UP wire primitives.
+// Strengthen the bond on an open position by combining the current liened
+// LP-share UTXO with additional unliened LP-share(s) of the same pool.
+// All amounts + blindings are revealed (no v1 split-privacy); Pedersen
+// homomorphic balance check enforces conservation against chain-resolved
+// input commits. Depositor's Schnorr sig over bind_hash authorises.
+const CBTC_TAC_TOP_UP_DOMAIN = new TextEncoder().encode('tacit-ctac-topup-v1');
+
+function _u64LE(n) {
+  const b = new Uint8Array(8);
+  const v = new DataView(b.buffer);
+  const a = BigInt(n);
+  v.setUint32(0, Number(a & 0xffffffffn), true);
+  v.setUint32(4, Number((a >> 32n) & 0xffffffffn), true);
+  return b;
+}
+function _readU64LE(payload, p) {
+  const v = new DataView(payload.buffer, payload.byteOffset + p, 8);
+  return (BigInt(v.getUint32(4, true)) << 32n) | BigInt(v.getUint32(0, true));
+}
+
+function computeCbtcTacTopUpBindHash({
+  networkTag, targetLeafHash,
+  oldBondOutpoint, oldBondCommit, oldBondAmount,
+  addCount, addOutpoints, addCommits, addAmounts,
+  newBondCommit, newBondAmount, newBondBlinding,
+}) {
+  const parts = [
+    CBTC_TAC_TOP_UP_DOMAIN,
+    new Uint8Array([networkTag & 0xff]),
+    targetLeafHash,
+    oldBondOutpoint, oldBondCommit, _u64LE(oldBondAmount),
+    new Uint8Array([addCount & 0xff]),
+  ];
+  for (let i = 0; i < addCount; i++) {
+    parts.push(addOutpoints[i], addCommits[i], _u64LE(addAmounts[i]));
+  }
+  parts.push(newBondCommit, _u64LE(newBondAmount), newBondBlinding);
+  return sha256(concatBytes(...parts));
+}
+
+function encodeTCbtcTacTopUpPayload({
+  networkTag, targetLeafHash,
+  oldBondOutpoint, oldBondCommit, oldBondAmount,
+  addOutpoints, addCommits, addAmounts,
+  newBondCommit, newBondAmount, newBondBlinding,
+  depositorSig, bindHash,
+}) {
+  if ((networkTag & 0xff) > 2) throw new Error('network_tag must be 0|1|2');
+  if (targetLeafHash.length !== 32) throw new Error('target_leaf_hash 32 bytes');
+  if (oldBondOutpoint.length !== 36) throw new Error('old_bond_outpoint 36 bytes');
+  if (oldBondCommit.length !== 33) throw new Error('old_bond_commit 33 bytes');
+  const addCount = addOutpoints.length;
+  if (addCount < 1 || addCount > 15) throw new Error('add_count must be 1..15');
+  if (addCommits.length !== addCount || addAmounts.length !== addCount) {
+    throw new Error('addCommits + addAmounts length must match addOutpoints');
+  }
+  if (newBondCommit.length !== 33) throw new Error('new_bond_commit 33 bytes');
+  if (newBondBlinding.length !== 32) throw new Error('new_bond_blinding 32 bytes');
+  if (depositorSig.length !== 64) throw new Error('depositor_sig 64 bytes (BIP-340)');
+  if (bindHash.length !== 32) throw new Error('bind_hash 32 bytes');
+  const oldAmt = BigInt(oldBondAmount);
+  if (oldAmt <= 0n || oldAmt >= (1n << BigInt(N_BITS))) throw new Error('old_bond_amount out of range');
+  const newAmt = BigInt(newBondAmount);
+  if (newAmt <= 0n || newAmt >= (1n << BigInt(N_BITS))) throw new Error('new_bond_amount out of range');
+  let sumAdd = 0n;
+  for (let i = 0; i < addCount; i++) {
+    if (addOutpoints[i].length !== 36) throw new Error(`add_outpoints[${i}] 36 bytes`);
+    if (addCommits[i].length !== 33) throw new Error(`add_commits[${i}] 33 bytes`);
+    const a = BigInt(addAmounts[i]);
+    if (a <= 0n || a >= (1n << BigInt(N_BITS))) throw new Error(`add_amounts[${i}] out of range`);
+    sumAdd += a;
+  }
+  if (newAmt !== oldAmt + sumAdd) throw new Error('new_bond_amount must equal old + Σ add_amounts');
+  const parts = [
+    new Uint8Array([T_CBTC_TAC_TOP_UP, networkTag & 0xff]),
+    targetLeafHash,
+    oldBondOutpoint, oldBondCommit, _u64LE(oldAmt),
+    new Uint8Array([addCount & 0xff]),
+  ];
+  for (let i = 0; i < addCount; i++) {
+    parts.push(addOutpoints[i], addCommits[i], _u64LE(addAmounts[i]));
+  }
+  parts.push(newBondCommit, _u64LE(newAmt), newBondBlinding, depositorSig, bindHash);
+  return concatBytes(...parts);
+}
+
+function decodeTCbtcTacTopUpPayload(payload) {
+  if (!payload) return null;
+  if (payload[0] !== T_CBTC_TAC_TOP_UP) return null;
+  // Min: opcode(1) + net(1) + leaf(32) + oldOp(36) + oldCommit(33) + oldAmt(8)
+  //      + addCount(1) + 1*(36+33+8) + newCommit(33) + newAmt(8) + newBlind(32)
+  //      + sig(64) + bind(32) = 358
+  if (payload.length < 1 + 1 + 32 + 36 + 33 + 8 + 1 + 77 + 33 + 8 + 32 + 64 + 32) return null;
+  let p = 1;
+  const networkTag = payload[p]; p += 1;
+  if (networkTag > 2) return null;
+  const targetLeafHash = payload.slice(p, p + 32); p += 32;
+  const oldBondOutpoint = payload.slice(p, p + 36); p += 36;
+  const oldBondCommit = payload.slice(p, p + 33); p += 33;
+  try { bytesToPoint(oldBondCommit); } catch { return null; }
+  const oldBondAmount = _readU64LE(payload, p); p += 8;
+  if (oldBondAmount === 0n || oldBondAmount >= (1n << BigInt(N_BITS))) return null;
+  const addCount = payload[p]; p += 1;
+  if (addCount < 1 || addCount > 15) return null;
+  const expectedTail = addCount * (36 + 33 + 8) + 33 + 8 + 32 + 64 + 32;
+  if (payload.length !== p + expectedTail) return null;
+  const addOutpoints = [];
+  const addCommits = [];
+  const addAmounts = [];
+  let sumAdd = 0n;
+  for (let i = 0; i < addCount; i++) {
+    addOutpoints.push(payload.slice(p, p + 36)); p += 36;
+    const c = payload.slice(p, p + 33);
+    try { bytesToPoint(c); } catch { return null; }
+    addCommits.push(c);
+    p += 33;
+    const a = _readU64LE(payload, p); p += 8;
+    if (a === 0n || a >= (1n << BigInt(N_BITS))) return null;
+    addAmounts.push(a);
+    sumAdd += a;
+  }
+  const newBondCommit = payload.slice(p, p + 33); p += 33;
+  try { bytesToPoint(newBondCommit); } catch { return null; }
+  const newBondAmount = _readU64LE(payload, p); p += 8;
+  if (newBondAmount === 0n || newBondAmount >= (1n << BigInt(N_BITS))) return null;
+  if (newBondAmount !== oldBondAmount + sumAdd) return null;
+  const newBondBlinding = payload.slice(p, p + 32); p += 32;
+  const depositorSig = payload.slice(p, p + 64); p += 64;
+  const bindHash = payload.slice(p, p + 32); p += 32;
+  const expectedBind = computeCbtcTacTopUpBindHash({
+    networkTag, targetLeafHash,
+    oldBondOutpoint, oldBondCommit, oldBondAmount,
+    addCount, addOutpoints, addCommits, addAmounts,
+    newBondCommit, newBondAmount, newBondBlinding,
+  });
+  for (let i = 0; i < 32; i++) if (expectedBind[i] !== bindHash[i]) return null;
+  return {
+    kind: 'cbtc_tac_top_up',
+    networkTag, targetLeafHash,
+    oldBondOutpoint, oldBondCommit, oldBondAmount,
+    addCount, addOutpoints, addCommits, addAmounts,
+    newBondCommit, newBondAmount, newBondBlinding,
+    depositorSig, bindHash,
+  };
+}
+
+// SPEC-CBTC-TAC-AMENDMENT §5.51 — T_CBTC_TAC_BOND_RELEASE wire primitives.
+// Symmetric inverse of §5.50: spend the current liened LP-share, output a
+// smaller liened LP-share (lien transferred) + an unliened release LP-share
+// to the recipient_pk. Post-release ratio must satisfy INITIAL_BOND_RATIO.
+const CBTC_TAC_BOND_RELEASE_DOMAIN = new TextEncoder().encode('tacit-ctac-release-v1');
+
+function computeCbtcTacBondReleaseBindHash({
+  networkTag, targetLeafHash,
+  oldBondOutpoint, oldBondCommit, oldBondAmount,
+  newBondCommit, newBondAmount, newBondBlinding,
+  releaseCommit, releaseAmount, releaseBlinding,
+  recipientPk,
+}) {
+  return sha256(concatBytes(
+    CBTC_TAC_BOND_RELEASE_DOMAIN,
+    new Uint8Array([networkTag & 0xff]),
+    targetLeafHash,
+    oldBondOutpoint, oldBondCommit, _u64LE(oldBondAmount),
+    newBondCommit, _u64LE(newBondAmount), newBondBlinding,
+    releaseCommit, _u64LE(releaseAmount), releaseBlinding,
+    recipientPk,
+  ));
+}
+
+function encodeTCbtcTacBondReleasePayload({
+  networkTag, targetLeafHash,
+  oldBondOutpoint, oldBondCommit, oldBondAmount,
+  newBondCommit, newBondAmount, newBondBlinding,
+  releaseCommit, releaseAmount, releaseBlinding,
+  recipientPk, depositorSig, bindHash,
+}) {
+  if ((networkTag & 0xff) > 2) throw new Error('network_tag must be 0|1|2');
+  if (targetLeafHash.length !== 32) throw new Error('target_leaf_hash 32 bytes');
+  if (oldBondOutpoint.length !== 36) throw new Error('old_bond_outpoint 36 bytes');
+  if (oldBondCommit.length !== 33) throw new Error('old_bond_commit 33 bytes');
+  if (newBondCommit.length !== 33) throw new Error('new_bond_commit 33 bytes');
+  if (newBondBlinding.length !== 32) throw new Error('new_bond_blinding 32 bytes');
+  if (releaseCommit.length !== 33) throw new Error('release_commit 33 bytes');
+  if (releaseBlinding.length !== 32) throw new Error('release_blinding 32 bytes');
+  if (recipientPk.length !== 33) throw new Error('recipient_pk 33 bytes');
+  if (depositorSig.length !== 64) throw new Error('depositor_sig 64 bytes (BIP-340)');
+  if (bindHash.length !== 32) throw new Error('bind_hash 32 bytes');
+  const oldAmt = BigInt(oldBondAmount);
+  const newAmt = BigInt(newBondAmount);
+  const relAmt = BigInt(releaseAmount);
+  if (oldAmt <= 0n || oldAmt >= (1n << BigInt(N_BITS))) throw new Error('old_bond_amount out of range');
+  if (newAmt <= 0n || newAmt >= (1n << BigInt(N_BITS))) throw new Error('new_bond_amount out of range');
+  if (relAmt <= 0n || relAmt >= (1n << BigInt(N_BITS))) throw new Error('release_amount out of range');
+  if (newAmt + relAmt !== oldAmt) throw new Error('new + release must equal old');
+  return concatBytes(
+    new Uint8Array([T_CBTC_TAC_BOND_RELEASE, networkTag & 0xff]),
+    targetLeafHash,
+    oldBondOutpoint, oldBondCommit, _u64LE(oldAmt),
+    newBondCommit, _u64LE(newAmt), newBondBlinding,
+    releaseCommit, _u64LE(relAmt), releaseBlinding,
+    recipientPk, depositorSig, bindHash,
+  );
+}
+
+function decodeTCbtcTacBondReleasePayload(payload) {
+  if (!payload) return null;
+  if (payload[0] !== T_CBTC_TAC_BOND_RELEASE) return null;
+  // Fixed-size: opcode(1)+net(1)+leaf(32)+oldOp(36)+oldCommit(33)+oldAmt(8)
+  //   + newCommit(33)+newAmt(8)+newBlind(32)
+  //   + relCommit(33)+relAmt(8)+relBlind(32)
+  //   + recip(33)+sig(64)+bind(32) = 384
+  if (payload.length !== 1 + 1 + 32 + 36 + 33 + 8 + 33 + 8 + 32 + 33 + 8 + 32 + 33 + 64 + 32) return null;
+  let p = 1;
+  const networkTag = payload[p]; p += 1;
+  if (networkTag > 2) return null;
+  const targetLeafHash = payload.slice(p, p + 32); p += 32;
+  const oldBondOutpoint = payload.slice(p, p + 36); p += 36;
+  const oldBondCommit = payload.slice(p, p + 33); p += 33;
+  try { bytesToPoint(oldBondCommit); } catch { return null; }
+  const oldBondAmount = _readU64LE(payload, p); p += 8;
+  if (oldBondAmount === 0n || oldBondAmount >= (1n << BigInt(N_BITS))) return null;
+  const newBondCommit = payload.slice(p, p + 33); p += 33;
+  try { bytesToPoint(newBondCommit); } catch { return null; }
+  const newBondAmount = _readU64LE(payload, p); p += 8;
+  if (newBondAmount === 0n || newBondAmount >= (1n << BigInt(N_BITS))) return null;
+  const newBondBlinding = payload.slice(p, p + 32); p += 32;
+  const releaseCommit = payload.slice(p, p + 33); p += 33;
+  try { bytesToPoint(releaseCommit); } catch { return null; }
+  const releaseAmount = _readU64LE(payload, p); p += 8;
+  if (releaseAmount === 0n || releaseAmount >= (1n << BigInt(N_BITS))) return null;
+  if (newBondAmount + releaseAmount !== oldBondAmount) return null;
+  const releaseBlinding = payload.slice(p, p + 32); p += 32;
+  const recipientPk = payload.slice(p, p + 33); p += 33;
+  try { bytesToPoint(recipientPk); } catch { return null; }
+  const depositorSig = payload.slice(p, p + 64); p += 64;
+  const bindHash = payload.slice(p, p + 32); p += 32;
+  const expectedBind = computeCbtcTacBondReleaseBindHash({
+    networkTag, targetLeafHash,
+    oldBondOutpoint, oldBondCommit, oldBondAmount,
+    newBondCommit, newBondAmount, newBondBlinding,
+    releaseCommit, releaseAmount, releaseBlinding,
+    recipientPk,
+  });
+  for (let i = 0; i < 32; i++) if (expectedBind[i] !== bindHash[i]) return null;
+  return {
+    kind: 'cbtc_tac_bond_release',
+    networkTag, targetLeafHash,
+    oldBondOutpoint, oldBondCommit, oldBondAmount,
+    newBondCommit, newBondAmount, newBondBlinding,
+    releaseCommit, releaseAmount, releaseBlinding,
+    recipientPk, depositorSig, bindHash,
   };
 }
 
@@ -14629,6 +14887,49 @@ async function _scanHoldingsImpl() {
       if (dec && u.vout < dec.outputCount) {
         const amount = BigInt(dec.outputAmounts[u.vout]);
         const r = bytes32ToBigint(dec.outputBlindings[u.vout]) % SECP_N;
+        try {
+          if (pedersenCommit(amount, r).equals(bytesToPoint(onChainCommitment))) {
+            recordOpening(u.txid, u.vout, assetIdHex, amount, r);
+            h.balance += amount;
+            h.utxos.push({ utxo: u, amount, blinding: r, commitment: onChainCommitment });
+            continue;
+          }
+        } catch {}
+      }
+    }
+
+    if (env.opcode === T_CBTC_TAC_TOP_UP && u.vout === 0) {
+      // SPEC §5.50 — top-up output: new combined LP-share at vout[0] with
+      // lien transferred. (amount, blinding) revealed in envelope (same
+      // public-opening model as T_CTAC_LIEN_SPLIT). Wallet just reads.
+      const dec = decodeTCbtcTacTopUpPayload(env.payload);
+      if (dec) {
+        const amount = BigInt(dec.newBondAmount);
+        const r = bytes32ToBigint(dec.newBondBlinding) % SECP_N;
+        try {
+          if (pedersenCommit(amount, r).equals(bytesToPoint(onChainCommitment))) {
+            recordOpening(u.txid, u.vout, assetIdHex, amount, r);
+            h.balance += amount;
+            h.utxos.push({ utxo: u, amount, blinding: r, commitment: onChainCommitment });
+            continue;
+          }
+        } catch {}
+      }
+    }
+
+    if (env.opcode === T_CBTC_TAC_BOND_RELEASE && (u.vout === 0 || u.vout === 1)) {
+      // SPEC §5.51 — release outputs:
+      //   vout[0] = new smaller liened LP-share (depositor-owned)
+      //   vout[1] = unliened release LP-share (recipient-owned)
+      // Both blindings revealed in envelope. Scanner reads.
+      const dec = decodeTCbtcTacBondReleasePayload(env.payload);
+      if (dec) {
+        const amount = u.vout === 0
+          ? BigInt(dec.newBondAmount)
+          : BigInt(dec.releaseAmount);
+        const r = u.vout === 0
+          ? bytes32ToBigint(dec.newBondBlinding) % SECP_N
+          : bytes32ToBigint(dec.releaseBlinding) % SECP_N;
         try {
           if (pedersenCommit(amount, r).equals(bytesToPoint(onChainCommitment))) {
             recordOpening(u.txid, u.vout, assetIdHex, amount, r);

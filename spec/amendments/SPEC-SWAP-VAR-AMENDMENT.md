@@ -95,7 +95,6 @@ final once SPEC.md merge lands.)
 T_SWAP_VAR envelope payload (consumed by indexer; OP_RETURN at
 vout[0] carries SHA256(payload) as envelope_hash):
 
-envelope_version           1 B  = 0x01
 opcode                     1 B  = 0x32
 pool_id                   32 B  (= SHA256("tacit-amm-pool-v1" || asset_A || asset_B),
                                   see AMM.md §"Pool state")
@@ -417,7 +416,6 @@ no off-chain state required, full UTXO restoration from seed.
 on T_SWAP_VAR envelope at confirmation depth ≥ FINALITY_DEPTH:
 
     require envelope.opcode == 0x32
-    require envelope_version == 0x01
     require pool_id is registered (confirmed POOL_INIT exists; AMM.md §"POOL_INIT")
     require direction ∈ {0, 1}
     require delta_in_min ≤ delta_in ≤ delta_in_max
