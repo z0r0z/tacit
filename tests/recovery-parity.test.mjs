@@ -136,6 +136,25 @@ const ALLOWLIST = {
   // wallet-address scan — no tacit envelope decoding needed.
   T_CBTC_TAC_WITHDRAW:    'SPEC-CBTC-TAC-AMENDMENT §5.37 v1 lien model. Reveal produces ONLY a native BTC payout at vout[0] (slot_denom_sats - fee → recipientAddr). Lien is KV-released by worker; no bond return UTXO under v1. BTC recovery is via standard wallet-address scan, not scanHoldings.',
   T_CBTC_TAC_FORCE_CLOSE: 'SPEC-CBTC-TAC-AMENDMENT §5.38 v1 lien model. Permissionless early-SLASH; reveal produces ONLY a liquidator-marker DUST P2WPKH at vout[0]. No tacit-asset UTXO; reward (if any) accrues via worker ledger under v1. BTC recovery via standard wallet scan.',
+
+  // Farm opcodes. Two categories:
+  //   (a) Burn-into-virtual-treasury — produce no tacit UTXO at all.
+  //   (b) Worker decree-mint — produce a DUST P2WPKH at vout[1+] whose tacit
+  //       value is established by the worker's KV ledger, not by a chain-side
+  //       Pedersen-committed envelope output. Openings are PUBLIC in the
+  //       envelope (amount + blinding); the gap is that scanHoldings's
+  //       ancestry walk (validateOutpoint) fails for these because there's
+  //       no tacit-chain ancestor on the input side — the reveal tx spends
+  //       only sats + commit P2TR.
+  // Proper scanner integration requires either teaching validateOutpoint to
+  // recognize farm-decree outputs, or routing them through a new h.farm
+  // bucket. Tracked as follow-up to SPEC-AMM-FARM-AMENDMENT §5.45 once the
+  // farm code lands (dapp/amm-farm-actions.js is currently uncommitted).
+  T_FARM_INIT:    'SPEC-AMM-FARM-AMENDMENT §5.40 (category a). Launcher burns reward-asset UTXO into VIRTUAL treasury (worker KV). Sentinel-case builder produces no change vout — no tacit UTXO recoverable. Refund path (T_FARM_REFUND) handles unspent treasury return.',
+  T_LP_BOND:      'SPEC-AMM-FARM-AMENDMENT §5.41 (category a). Bonder burns LP-share UTXO into virtual bond pool; vout[1] P2WPKH(bonder) DUST is a chain-discovery marker, not a tacit-asset UTXO. Bond identity = (revealTxid, 1). LP shares recovered at unbond.',
+  T_LP_UNBOND:    'SPEC-AMM-FARM-AMENDMENT §5.42 (category b — decree-mint). vout[1] returns the bonded LP shares (amount from T_LP_BOND ancestry, blinding=lpReturnR PUBLIC); vout[2] reward (amount + rewardR PUBLIC). Scanner integration deferred: validateOutpoint must learn to recognize worker-decree-minted outputs that have no on-chain tacit ancestor.',
+  T_LP_HARVEST:   'SPEC-AMM-FARM-AMENDMENT §5.43 (category b — decree-mint). vout[1] reward UTXO with PUBLIC (rewardAmount, rewardR). Scanner integration deferred for the same reason as T_LP_UNBOND: needs validateOutpoint to recognize decree-minted farm outputs.',
+  T_FARM_REFUND:  'SPEC-AMM-FARM-AMENDMENT §5.44 (category b — decree-mint). vout[1] refund UTXO with PUBLIC (refundAmount, refundR). Scanner integration deferred (same reason as T_LP_UNBOND/HARVEST).',
 };
 
 // ---- Tests --------------------------------------------------------------
