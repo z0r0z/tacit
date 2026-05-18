@@ -40,6 +40,7 @@ All design docs live under [`spec/design/`](./spec/design/).
 | Batched preauth-take | ✅ Merged | No new opcode. Formalizes a property of existing `T_AXFER` (`0x26`) under §5.7.8: BIP-143 `SIGHASH_SINGLE_ACP` preimages are position-independent for matching payout content, so N preauth sales by N distinct sellers settle in one (commit, reveal) pair using `asset_input_count = N` (already permitted by the wire format). ~70% fee reduction for multi-fill buys. SPEC.md §5.7.8.1 carries the canonical text; amendment file kept as historical record. | Shipped at `dc7a48e` + `79763f5` + `6648e7d` (fill_count). `tests/preauth-take.test.mjs` 55/55 + `tests/bid-fulfil-batch.test.mjs` 13/13 + `tests/bid-fulfil-batch-e2e.test.mjs` 11/11 + `tests/preauth-recovery-banner.test.mjs` 17/17 + `tests/worker-batched-axfer-index.test.mjs` 24/24 = 120 batch tests. Worker redeploy required for `fill_count` storage (deployed at `b317006e`). | [`spec/amendments/SPEC-PREAUTH-BATCH-AMENDMENT.md`](./spec/amendments/SPEC-PREAUTH-BATCH-AMENDMENT.md) |
 | Bulletproofs+ confidential transfer | ✅ Merged (signet bake in flight) | `T_CXFER_BPP` (`0x22`); byte-identical to `T_CXFER` (`0x23`) except the rangeproof is Bulletproofs+ instead of Bulletproofs. ~14% smaller witnesses across `m ∈ {1,2,4,8}`. Same kernel sig, same Pedersen commitments, same ECDH amount recovery, same `tacit-kernel-v1` domain tag, same NUMS generators (`tacit-bp-G-v1` / `tacit-bp-H-v1` / `tacit-bp-Q-v1` reused from §3.1). Universal fee cut across every CXFER edge — touches every transfer + AMM/orderbook follow-on consumption. No new domain tags. Mixed-ancestry walks recurse through both verifiers. Soft-fork-additive per §5.5 unknown-opcode rule. | Shipped: `dapp/bulletproofs-plus.js` (907 LOC BP+ prover/verifier + Pippenger MSM in `bppRangeVerify` closing perf parity to BP); `dapp/tacit.js` (encoder + decoder + validator dispatch + send-path `useBpp` flag); `worker/src/index.js` (decoder + ancestry-walk + canonical-order branches). Tests: 11 BP+ test files (roundtrip / adversarial / malicious-prover / monero-scenarios / pinned-fixtures / property-fuzz / symbolic-identity / witness-extractor / python-parity / bounded-exhaustive / prover-smoke) + `cxfer-bpp-wire.test.mjs` (136 wire-format tests) + `cxfer-bpp-integration.test.mjs` (full envelope → validator pipeline) + `bulletproofs-plus.bench.mjs` (verify-perf parity vs BP). On-chain harness `tests/cxfer-bpp-onchain-e2e-signet.mjs` exercises ≥5-hop mixed-ancestry CETCH → BPP → CXFER → BPP → BPP round-trip. Activation gated by `bppEnabled()` — default ON for signet, OFF for mainnet (`localStorage['tacit-bpp-enable-mainnet-v1']`). SPEC.md §5.21 ✅ + §1.1 opcode table row + §5.5 dispatch branch landed. | [`spec/amendments/SPEC-CXFER-BPP-AMENDMENT.md`](./spec/amendments/SPEC-CXFER-BPP-AMENDMENT.md) |
 | Bulletproofs+ atomic OTC settlement | 📝 Draft (round-1) | `T_AXFER_BPP` (`0x3C`) + `T_AXFER_VAR_BPP` (`0x3D`); BP+ variants of `T_AXFER` (`0x26`) and `T_AXFER_VAR` (`0x37`) respectively. Byte-identical wire formats modulo opcode + rangeproof bytes. ~14% witness reduction on every atomic OTC settlement (listings, fills, variable-amount partial fills, batched preauth-take routes). Same kernel-msg construction (`tacit-kernel-v1`), same Pedersen, same OP_RETURN(80) dual-recovery for T_AXFER_VAR_BPP. No new domain tags. Reuses the production BP+ prover/verifier from `T_CXFER_BPP`. Mixed-ancestry walks across BP and BP+ AXFER variants. | Wire-format infra landed in `dapp/tacit.js` (encoders/decoders/validator dispatch/getParentEnvelopeData/scanHoldings) + `worker/src/index.js` (constants + decoders). `tests/axfer-bpp-wire.test.mjs` pins encode/decode roundtrip + rejection cases + byte-level structural invariants vs BP twins. Pending: worker scan-loop integration, signet on-chain harness, send-path `useBpp` flag on the AXFER builders. | [`spec/amendments/SPEC-AXFER-BPP-AMENDMENT.md`](./spec/amendments/SPEC-AXFER-BPP-AMENDMENT.md) |
+| LP-bond yield farms | 📝 Draft (round-1, post-sanity-check) | `T_FARM_INIT` (`0x34`) + `T_LP_BOND` (`0x35`) + `T_LP_UNBOND` (`0x36`); MasterChef-style staked-LP rewards on tacit AMM pools. Permissionless launcher-funded reward treasuries via **virtual bookkeeping** (matches AMM reserves, mixer pool, cBTC.tac insurance — no on-chain treasury UTXOs, no NUMS-spendable pattern); lazy per-Bitcoin-block accrual mirroring the protocol-fee `mintFee` Q.96 pattern; per-bond worker-indexed records keyed by `T_LP_BOND.vout[1].outpoint`; bond authentication via BIP-340 by `bonder_pubkey` recorded at bond time. Bond receipts are plain P2WPKH dust markers for wallet discovery (NOT a tacit asset class — bonds non-transferable in v1, see open questions for follow-up). Reuses kernel-sig + Pedersen + bulletproof stack from `T_SWAP_VAR` / `T_AXFER_VAR` (m=1 on change for `T_FARM_INIT` / `T_LP_BOND`; no bulletproof for `T_LP_UNBOND`). No Groth16, no new ceremony, no coupling to AMM Phase-2 ceremony. Bootstrap target: TAC/cBTC.tac and cBTC.tac/cBTC.zk pair pools. Total wire across the three opcodes: ~1.5 KB. | Spec drafted; round-1 sanity check applied (2026-05-18). Reference impl pending. Target SPEC.md §5.40 / §5.41 / §5.42 merge. | [`spec/amendments/SPEC-AMM-FARM-AMENDMENT.md`](./spec/amendments/SPEC-AMM-FARM-AMENDMENT.md) |
 | Protocol oracle + canonical cBTC + canonical cUSD | 🪦 Superseded by `SPEC-CBTC-TAC-AMENDMENT.md` + `SPEC-CUSD-TAC-AMENDMENT.md` (AMM-oracle architecture removes the need for FROST + dedicated price-attest opcodes). Earlier opcode reservations `0x39`–`0x42` are RETIRED and reusable; `0x39` is reassigned to `T_TRADE_BATCH`, `0x3A` to `T_RANGE_ATTEST`. | n/a — design path retired | [`spec/amendments/SPEC-CUSD-TAC-AMENDMENT.md`](./spec/amendments/SPEC-CUSD-TAC-AMENDMENT.md) |
 
 ### Supporting docs (not amendments, informative only)
@@ -631,6 +632,162 @@ maximum trust window.
 
 ---
 
+## LP-bond yield farms
+
+### Summary
+
+Adds MasterChef-style staked-LP rewards to the tacit AMM via three
+new opcodes: `T_FARM_INIT` (`0x34`), `T_LP_BOND` (`0x35`),
+`T_LP_UNBOND` (`0x36`). A launcher posts a `T_FARM_INIT` envelope
+that consumes a tacit-asset UTXO (typically TAC) via kernel-sig
+closure; the worker records a virtual `farm.treasury_remaining =
+reward_total` balance in canonical farm state — **no on-chain
+treasury UTXO is created.** This matches the existing tacit
+virtual-pool pattern (`AMM.md`:1845: *"no UTXO holding pool funds,
+so there is no key that can rug"*) used by AMM reserves, the mixer
+pool, and the cBTC.tac insurance reserve.
+
+LPs `T_LP_BOND` their `lp_asset_id` shares; the validator records a
+per-outpoint bond record `{farm_id, bond_amount,
+entry_acc_per_share, bonder_pubkey, bond_height}` indexed by
+`vout[1].outpoint` of the bond tx, and increments `farm.total_bonded`.
+Rewards crystallize lazily on every farm-mutating event using a
+Q.96 fixed-point `acc_reward_per_share`, identical arithmetic shape
+to the existing Uniswap-V2-style protocol-fee `mintFee`
+(`AMM.md` §3352). `T_LP_UNBOND` references `bond_id` (the outpoint
+of the bond's wallet-discovery dust), authenticates with a BIP-340
+sig under `bonder_pubkey`, and the validator mints fresh
+`lp_asset_id` + `reward_asset_id` UTXOs by decree — decrementing
+`treasury_remaining` and deleting the bond record.
+
+Bond receipts are **plain P2WPKH dust markers** at `vout[1]` of
+`T_LP_BOND` — not a tacit asset class, not Pedersen-committed, not
+transferable via tacit opcodes. They exist for wallet-discovery
+convenience; ScanHoldings can also enumerate bonds by pubkey via
+the `/farm/:farm_id/bonds?bonder=:pubkey` indexer endpoint. Bonds
+are **non-transferable in v1**; reassignment requires unbond +
+re-bond. A future `T_LP_BOND_ASSIGN` opcode could add explicit
+transferability if secondary-market demand materialises.
+
+Launcher is **not** a privileged operator post-init: cannot withdraw
+unspent treasury (treasury is virtual — no UTXO, no key, no path
+to recover), cannot modify parameters, cannot pause emissions. The
+`start_height ≥ current_height + 3` gate ensures any LP can
+position before the first reward block.
+
+Pre-ceremony viable. Reuses the kernel-sig + Pedersen + bulletproof
+stack from `T_SWAP_VAR` / `T_AXFER_VAR` (m=1 bulletproof on change
+for `T_FARM_INIT` / `T_LP_BOND`; no bulletproof for `T_LP_UNBOND`).
+No Groth16. No new ceremony.
+
+### Key additions
+
+- **Opcode `0x34`** `T_FARM_INIT` — launcher-funded farm creation;
+  consumes reward-asset UTXO via kernel-sig closure into a virtual
+  `treasury_remaining` balance (no on-chain treasury UTXO).
+  ~676 bytes total wire.
+- **Opcode `0x35`** `T_LP_BOND` — bond LP shares; consumes
+  `lp_asset_id` UTXO via kernel-sig closure into virtual
+  `farm.total_bonded`; emits per-outpoint bond record with Q.96
+  `entry_acc_per_share` snapshot; emits plain P2WPKH dust at
+  `vout[1]` for wallet discovery (NOT a tacit asset class).
+  ~616 bytes total wire.
+- **Opcode `0x36`** `T_LP_UNBOND` — references `bond_id`,
+  authenticates via BIP-340 by `bonder_pubkey`; validator mints
+  fresh `lp_asset_id` + `reward_asset_id` UTXOs by decree and
+  decrements virtual `treasury_remaining`. No range proof, no
+  kernel sigs (all openings public). ~259 bytes total wire.
+- **SPEC.md §5.40 / §5.41 / §5.42** (final section numbers pinned
+  at merge) — wire formats + validator algorithm + accrual math +
+  conservation invariants + reorg discipline
+- **3 new domain tags**:
+  `tacit-amm-farm-init-v1` (farm_id derivation + init_msg),
+  `tacit-amm-farm-bond-v1` (bond_msg),
+  `tacit-amm-farm-unbond-v1` (unbond_msg).
+  No tags for receipt asset_id or treasury sentinel — those
+  constructs are gone in the post-sanity-check design.
+- **No new cryptographic primitives** — reuses CXFER N=1
+  bulletproof + kernel sig from `T_AXFER_VAR` / `T_SWAP_VAR`
+- **No new circuit / no new ceremony** — accrual is pure indexer
+  arithmetic; conservation enforced by depth-3-pinned state +
+  range_proof + kernel sigs
+- **Bonds non-transferable in v1.** No `T_CXFER` interaction with
+  bond records. Reassignment via unbond + re-bond.
+- **Lock multipliers / veToken curves: NOT in this draft.** Every
+  bond is 1x. Linear-bonus follow-up reserved.
+
+### Dependencies
+
+- **AMM.md** — defines `lp_asset_id`, pool state, depth-3
+  confirmation gate, lazy `mintFee` accrual shape.
+- **`SPEC.md` §5.20 `T_SWAP_VAR`** — kernel-sig + Pedersen opening
+  pattern + bulletproof m=2/m=3 construction + no-change sentinel
+  rule reused verbatim.
+- **`SPEC-CBTC-TAC-AMENDMENT.md`** — canonical TAC asset_id and the
+  cBTC.tac / TAC pool semantics referenced by the bootstrap
+  section (TAC / cBTC.tac and cBTC.tac / cBTC.zk are the
+  flagship farm targets).
+- **NO dependency on the AMM V1 Groth16 ceremony.** All three
+  opcodes ship pre-ceremony — the only AMM state they touch is
+  POOL_INIT data (`pool_id`, `lp_asset_id`) which is ceremony-
+  independent.
+
+### Merge criteria
+
+- [ ] Peer review round-1 (open questions tracked in amendment file,
+      non-blocking for round-2)
+- [ ] Reference implementation: `tests/amm-farm.mjs` (envelope
+      build + validator + Q.96 accrual + reorg roll-forward)
+- [ ] Wire-format roundtrip tests: encode → decode → re-encode
+      byte-identity across `T_FARM_INIT` / `T_LP_BOND` / `T_LP_UNBOND`
+- [ ] Adversarial tests: stale `entry_acc`, oversized
+      `reward_amount`, under-funded treasury, replayed `bond_id`,
+      cross-farm `bond_id` confusion, pubkey-rotation race on
+      receipt `T_CXFER`
+- [ ] Property fuzz: ≥10k random bond/unbond/transfer sequences
+      against a reference oracle; conservation invariants 1–5 hold
+- [ ] Signet on-chain harness: bond-emit-unbond cycle confirmed
+      with mid-cycle receipt transfer
+- [ ] Domain-tag collision audit (5 new tags vs SPEC.md inventory)
+- [ ] SPEC.md §1.1 opcode table entries for `0x34` / `0x35` / `0x36`
+- [ ] SPEC.md §5.40 / §5.41 / §5.42 (final numbers pinned at merge)
+      authoritative-text merge
+- [ ] AMM.md §"Pool state" baseline table update noting bonded LP
+      shares stay accounted in `S` (no decrement at bond)
+- [ ] Dapp integration: farm-tile UI (bond / unbond / pending
+      reward display per-outpoint) — dapp work, separate from
+      this amendment
+- [ ] Worker integration: farm state slice + bond-record index +
+      `/farm/:farm_id` and `/farm/:farm_id/bonds` endpoints
+
+### Tracker notes
+
+Round-1 initial draft 2026-05-18. Sanity-check pass same day
+identified five corrections vs. existing tacit primitives:
+treasury custody moved to virtual bookkeeping (matches AMM
+reserves / mixer / cBTC.tac insurance — NUMS-spendable UTXO
+pattern doesn't exist in tacit; `AMM.md`:770 NUMS_recipient is
+permanently-unspendable only); bond receipts demoted from
+fungible tacit asset class to plain P2WPKH dust markers (per-
+outpoint `entry_acc` snapshots are inherently non-fungible);
+input openings dropped to match `T_SWAP_VAR` privacy pattern;
+bulletproof scope reduced (m=1 on `T_FARM_INIT` / `T_LP_BOND`,
+none on `T_LP_UNBOND`); single sig on `T_LP_UNBOND` (kernel sigs
+redundant when all openings public). Net wire weight: ~3.1 KB →
+~1.5 KB.
+
+Bootstrap target unchanged: TAC / cBTC.tac and cBTC.tac /
+cBTC.zk pair pools — the two structurally important pairs for
+the tacit ecosystem. Farm rewards stack additively on top of
+AMM swap-fee compounding and (for cBTC.tac / TAC) the existing
+protocol-fee insurance-pool sentinel, giving LPs three
+concurrent yields. Permissionless launcher model — anyone (the
+protocol team, a third-party launcher, a community treasury)
+can fund a farm against any pool with a single `T_FARM_INIT`
+broadcast.
+
+---
+
 ## Cross-amendment dependencies
 
 ```
@@ -789,6 +946,55 @@ threshold schemes, new domain tags binding novel inputs):
 ---
 
 ## Recent activity (changelog)
+
+- **2026-05-18** — **Round-1 sanity-check pass on LP-bond yield
+  farms amendment.** Verified the draft against existing tacit
+  primitives and corrected five issues. (1) Treasury custody moved
+  from NUMS-sentinel on-chain UTXOs to virtual bookkeeping —
+  NUMS-spendable-with-worker-enforcement is **not** a precedented
+  tacit pattern (`AMM.md`:770 NUMS_recipient is used for
+  *permanently unspendable* MINIMUM_LIQUIDITY only; `AMM.md`:1845
+  is explicit that no party custodies pool funds and reserves are
+  virtual indexer state). The corrected design mirrors AMM
+  reserves, mixer pool, and cBTC.tac insurance custody exactly.
+  (2) Dropped `lp_input_r` / `launcher_input_r` openings that
+  would have leaked pre-tx wallet balance; adopted the `T_SWAP_VAR`
+  pattern of closing via kernel-sig on the excess scalar.
+  (3) Bond receipts demoted from a fungible tacit-asset class
+  (`bond_receipt_asset_id`) with `T_CXFER` pubkey-rotation logic
+  to plain P2WPKH dust markers — per-outpoint `entry_acc` snapshots
+  are inherently non-fungible, so the fungibility framing was
+  misleading. Bonds non-transferable in v1; reassignment by
+  unbond + re-bond. Future `T_LP_BOND_ASSIGN` opcode reserved as
+  follow-up. (4) Dropped both `kernel_sig_lp` and `kernel_sig_reward`
+  on `T_LP_UNBOND` — with virtual treasury and all output openings
+  public, only the BIP-340 envelope sig is load-bearing.
+  (5) Bulletproof scope reduced: m=1 on change for `T_FARM_INIT`
+  / `T_LP_BOND` (~360 B); none for `T_LP_UNBOND` (all amounts
+  cleartext, openings public). Domain tags reduced from 5 to 3
+  (`bond-receipt-v1` and `treasury-v1` eliminated). Total wire
+  weight across the three opcodes: ~3.1 KB → ~1.5 KB. The
+  bootstrap value proposition for TAC / cBTC.tac and cBTC.tac /
+  cBTC.zk is unchanged.
+
+- **2026-05-18** — **Round-1 draft of LP-bond yield farms amendment
+  (`T_FARM_INIT` `0x34` / `T_LP_BOND` `0x35` / `T_LP_UNBOND` `0x36`)
+  landed at `spec/amendments/SPEC-AMM-FARM-AMENDMENT.md`.**
+  MasterChef-style staked-LP rewards on tacit AMM pools.
+  Permissionless launcher-funded reward treasuries with NUMS-
+  sentinel custody (no privileged operator post-init); Q.96 lazy
+  per-Bitcoin-block accrual mirroring the protocol-fee `mintFee`
+  pattern; UTXO-native bond receipts indexed by `vout[1]` outpoint
+  with `{farm_id, bond_amount, entry_acc_per_share, bonder_pubkey}`
+  records; receipt transferability via `T_CXFER` with worker-side
+  pubkey rotation. Reuses kernel-sig + Pedersen + bulletproof from
+  `T_SWAP_VAR` / `T_AXFER_VAR`; no Groth16, no new ceremony, no
+  coupling to AMM Phase-2 ceremony. Bootstrap target: TAC /
+  cBTC.tac and cBTC.tac / cBTC.zk pair pools, stacking additively
+  on existing AMM swap-fee compounding and the cBTC.tac insurance-
+  pool sentinel skim. Lock multipliers / veToken curves explicitly
+  deferred to a follow-up amendment. Reference impl + signet
+  harness + SPEC.md §5.40-§5.42 merge pending.
 
 - **2026-05-18** — **First `T_CXFER_BPP` (`0x22`) envelope
   confirmed on signet.** End-to-end smoke via
