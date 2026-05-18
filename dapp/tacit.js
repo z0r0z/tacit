@@ -32,6 +32,41 @@ import { bppRangeProve, bppRangeVerify } from './bulletproofs-plus.js';
 // in tests/dapp-amm-primitives.test.mjs). Aliased as `*Mod` to avoid
 // shadowing the dapp's existing inline pedersenCommit / etc.
 import * as ammBjjMod from './amm-bjj.js';
+
+// crypto.getRandomValues caps each call at 65,536 bytes (per Web Crypto
+// spec — every major browser enforces). snarkjs Phase 2 contribute on
+// large circuits requests bigger random vectors in one shot: AMM
+// swap_batch (~3M constraints) needs ~683k bytes per zKey.contribute
+// call, which throws:
+//   QuotaExceededError: Failed to execute 'getRandomValues' on 'Crypto':
+//   The ArrayBufferView's byte length (683808) exceeds the number of
+//   bytes of entropy available via this API (65536).
+// Smaller circuits (lp_add 12k constraints, lp_remove 6k) stay under
+// the cap so most users never see it; only those who land swap_batch
+// as their round-robin target hit it. Polyfill: replace
+// crypto.getRandomValues with a chunked version that fills any view
+// > 64 KB in CHUNK-sized slices. CSPRNG output is unchanged — chunking
+// is a transport quirk, not a security boundary (each chunk is a
+// fresh kernel-RNG call). Idempotent: if the runtime ever lifts the
+// cap, this still works (the chunked loop ends in one iteration).
+if (typeof crypto !== 'undefined' && typeof crypto.getRandomValues === 'function') {
+  const _origGetRandomValues = crypto.getRandomValues.bind(crypto);
+  const RAND_CHUNK = 65536;
+  crypto.getRandomValues = function _patchedGetRandomValues(view) {
+    if (!view || typeof view.byteLength !== 'number' || view.byteLength <= RAND_CHUNK) {
+      return _origGetRandomValues(view);
+    }
+    // Walk the view byte-for-byte via a Uint8Array overlay so the
+    // chunked fill works regardless of the caller's TypedArray flavor
+    // (Uint8Array, Uint16Array, BigUint64Array, etc.).
+    const u8 = new Uint8Array(view.buffer, view.byteOffset, view.byteLength);
+    for (let off = 0; off < u8.byteLength; off += RAND_CHUNK) {
+      const slice = u8.subarray(off, Math.min(off + RAND_CHUNK, u8.byteLength));
+      _origGetRandomValues(slice);
+    }
+    return view;
+  };
+}
 import * as ammSigmaMod from './amm-sigma.js';
 import * as ammAssetMod from './amm-asset.js';
 import * as ammReceiptMod from './amm-receipt.js';
