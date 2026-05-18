@@ -61436,11 +61436,29 @@ async function _populateDepthChart(section, aid, decimals, ticker, markUnit) {
   // continuous fill — they just leave the visible viewport. Falls
   // back to unclamped extremes when mark is unknown or every order is
   // outside the [0.1×, 10×] band.
+  // Domain clamp band. When the book is crossed, anchor on the cross-zone
+  // MIDPOINT (best bid + best ask) / 2 with a ±2× multiplicative window
+  // — pulls the cross visually into the centre 30-50% of the chart so a
+  // trader can actually read the bid/ask collision. Otherwise anchor on
+  // mark with the wider 0.1×/10× band so dust + outlier orders don't
+  // pull the viewport across multiple decades. Falls back to the wider
+  // band when in-band bid/ask aren't both known.
   const _markValid = Number.isFinite(markUnit) && markUnit > 0;
-  const _bandXLo = _markValid ? markUnit * 0.1 : 0;
-  const _bandXHi = _markValid ? markUnit * 10 : Infinity;
-  const xLoClamped = _markValid ? Math.max(xLoRawUnclamped, _bandXLo) : xLoRawUnclamped;
-  const xHiClamped = _markValid ? Math.min(xHiRawUnclamped, _bandXHi) : xHiRawUnclamped;
+  const _crossMidAvailable = isCrossed
+    && Number.isFinite(inBandBestBid) && inBandBestBid > 0
+    && Number.isFinite(inBandBestAsk) && inBandBestAsk > 0;
+  const _crossMid = _crossMidAvailable ? (inBandBestBid + inBandBestAsk) / 2 : null;
+  const _bandXLo = _crossMid != null
+    ? _crossMid * 0.5
+    : (_markValid ? markUnit * 0.1 : 0);
+  const _bandXHi = _crossMid != null
+    ? _crossMid * 2
+    : (_markValid ? markUnit * 10 : Infinity);
+  // Gate clamping on having ANY band reference (cross-mid or mark) —
+  // cross-mid path supplies a real band even when worker mark is absent.
+  const _haveBand = _crossMid != null || _markValid;
+  const xLoClamped = _haveBand ? Math.max(xLoRawUnclamped, _bandXLo) : xLoRawUnclamped;
+  const xHiClamped = _haveBand ? Math.min(xHiRawUnclamped, _bandXHi) : xHiRawUnclamped;
   // Make sure the clamped window still encloses the IN-BAND best bid
   // and best ask — using the raw bestBid / bestAsk here would self-
   // defeat: those are often outliers themselves (a 0.19-sat dust ask,
