@@ -16,6 +16,16 @@ id = "0079941fcc274de191d6b69a67f0ba72"
 [triggers]
 crons = ["*/5 * * * *"]
 
+# Workers Analytics Engine — per-request observability without instrumenting
+# Cloudflare's account-wide metrics. Free tier covers 10M datapoints/mo;
+# the worker samples 1-in-N requests (see _logAnalytics in src/index.js)
+# to stay comfortably under the cap. Queryable via the SQL API or the
+# Cloudflare dashboard. Used to identify the next round of hot paths
+# without guessing.
+[[analytics_engine_datasets]]
+binding = "ANALYTICS"
+dataset = "tacit_worker"
+
 [vars]
 # CORS allowlist (comma-separated). "*" allows any origin.
 ALLOWED_ORIGINS = "https://tacit.finance,https://www.tacit.finance,https://tacitscan.io,https://www.tacitscan.io,https://tacit-ioq0.onrender.com,https://tacit.wei.is"

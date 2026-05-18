@@ -11649,6 +11649,60 @@ const CLAIM_TTL_SECONDS = 5 * 60;
 // it just frees the marketplace slot.
 const FULFILMENT_TTL_SECONDS = 24 * 3600;
 
+// ============== Workers Analytics Engine ==============
+//
+// Per-request observability without manual instrumentation everywhere.
+// One sampled datapoint per request; reads in the Cloudflare dashboard
+// or via the GraphQL API. Used to find the next round of hot paths
+// after Phase 1-3 reshaped most of the cost surface.
+//
+// Sampling: 1-in-N requests to stay under the 10M-datapoint/mo free tier.
+// At 5s polling × 100 active tabs × 7 cached endpoints, the worker fires
+// ~25k req/hour; 1/10 sampling → ~60k/day → ~1.8M/mo, ~5× under the cap.
+// On a quiet day the sampling still gives useful per-path traffic share.
+//
+// Schema (writeDataPoint semantics):
+//   indexes[0]   path bucket (route family, max 96 bytes — used as query
+//                filter dimension; coarsened to avoid cardinality blow-up
+//                from asset_ids in the path).
+//   blobs[0..3]  exact path, method, X-Cache state, network.
+//   doubles[0]   response status (200, 404, etc).
+//   doubles[1]   response time in milliseconds.
+//
+// Errors are swallowed — analytics failures must never affect the
+// response path. `env.ANALYTICS` may be undefined in local dev / older
+// deploys; check before calling.
+const ANALYTICS_SAMPLE_RATE = 10;  // log 1 in N requests
+function _bucketPath(pathname) {
+  // Coarsen asset_id / txid hex strings to keep index cardinality bounded.
+  // /assets/abc..def/listings → /assets/:id/listings
+  return pathname
+    .replace(/[0-9a-f]{64}/gi, ':id')
+    .replace(/[0-9a-f]{32}/gi, ':id32')
+    .replace(/\/\d+\b/g, '/:n');
+}
+function _logAnalytics(env, request, response, durationMs, network) {
+  try {
+    if (!env || !env.ANALYTICS) return;
+    if (Math.floor(Math.random() * ANALYTICS_SAMPLE_RATE) !== 0) return;
+    const url = new URL(request.url);
+    const bucket = _bucketPath(url.pathname);
+    env.ANALYTICS.writeDataPoint({
+      indexes: [bucket.slice(0, 96)],
+      blobs: [
+        url.pathname.slice(0, 1024),
+        request.method,
+        (response && response.headers && response.headers.get('X-Cache')) || '',
+        network || '',
+      ],
+      doubles: [
+        response ? response.status : 0,
+        Math.max(0, durationMs || 0),
+      ],
+    });
+  } catch { /* swallow — analytics never fails the response path */ }
+}
+
 // ============== Marketplace record auto-expiry ==============
 // Marketplace records (listings, range-listings, atomic-intents,
 // preauth-sales, bid-intents) carry an `expiry` field but were
@@ -17679,8 +17733,12 @@ export {
 };
 
 // ============== ROUTER ==============
-export default {
-  async fetch(req, env, ctx) {
+// Thin observability wrapper around the route dispatch body. Captures
+// the response + duration in a finally so every request — including
+// error fallthroughs — gets a (sampled) datapoint written to Workers
+// Analytics Engine. Existing dispatch logic moved verbatim to
+// _routeFetch below; fetch is now a one-liner.
+async function _routeFetch(req, env, ctx) {
     const url = new URL(req.url);
     const cors = corsHeaders(env, req.headers.get('Origin') || '');
     if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: cors });
@@ -19754,6 +19812,23 @@ export default {
     }
 
     return jsonResponse({ error: 'not found' }, 404, cors);
+}
+
+export default {
+  async fetch(req, env, ctx) {
+    const _startTs = Date.now();
+    let _resp;
+    try {
+      _resp = await _routeFetch(req, env, ctx);
+      return _resp;
+    } finally {
+      // Sampled analytics — see _logAnalytics. Never blocks the response.
+      try {
+        const _u = new URL(req.url);
+        const _net = _u.searchParams.get('network') === 'signet' ? 'signet' : 'mainnet';
+        _logAnalytics(env, req, _resp, Date.now() - _startTs, _net);
+      } catch { /* swallow */ }
+    }
   },
 
   async scheduled(_event, env, ctx) {
@@ -19794,13 +19869,27 @@ export default {
       // instantly. We pre-warm the default (no-limit, mints=true) shape since
       // that's what Discover/Market/lander all hit; specialized callers with
       // ?limit= or ?mints=0 still pay one MISS but they're rare paths.
+      //
+      // Idle-network throttle: signet sees ~0 real users in production while
+      // mainnet is hot. Pre-warming signet on every 5-min tick burns ~800 KV
+      // reads × 12 ticks/hr = ~9.6k KV reads/hr that no user benefits from
+      // (the first user after a long quiet period pays one MISS regardless).
+      // Reduce signet pre-warm to every 5th tick (≈25 min cadence) so
+      // chain-scan correctness is unaffected (scanForEtches runs every tick
+      // above; new etches surface immediately on /assets/hint POST regardless
+      // of pre-warm) but ~80% of signet pre-warm cost vanishes. Mainnet stays
+      // every tick. Tick index is derived from wall-clock so it's
+      // deterministic across worker instances.
+      const _tickIdx = Math.floor(Date.now() / (5 * 60 * 1000));
+      const _shouldPrewarm = (net) => net === 'mainnet' || (_tickIdx % 5) === 0;
+      const _prewarmNetworks = NETWORKS.filter(_shouldPrewarm);
       // Capture the per-network assets pre-warm results so the /market
       // pre-warm below can reuse the (heavy) hydration instead of running
       // it a second time per tick. Each entry is { net, parsedBody|null }.
       // The mints=true pre-warm is the canonical Discover surface; /market
       // strips mints in handleMarket when reusing this body.
       const _assetsPrewarmResults = await Promise.all(
-        NETWORKS.map(net => assetsComputeAndCache(env, net, { limit: null, includeMints: true })
+        _prewarmNetworks.map(net => assetsComputeAndCache(env, net, { limit: null, includeMints: true })
           .then(r => {
             try {
               const parsed = (r && r.status === 200 && r.body) ? JSON.parse(r.body) : null;
