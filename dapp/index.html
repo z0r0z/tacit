@@ -3730,6 +3730,20 @@ body.tacit-amm-ceremony-ready [data-amm-gated] { display: block; }
   background: #c97a1a;
   animation: amm-cer-pulse 2.5s ease-in-out infinite;
 }
+/* Steady heartbeat dot in the ceremony progress headline — assures
+   contributor the tab is alive during the 30-60s WASM mix step
+   when other UI may visually freeze. Same animation family as the
+   chip pulse below, faster cadence to read as "actively working". */
+.amm-cer-heartbeat {
+  animation: amm-cer-heartbeat 1.0s ease-in-out infinite;
+}
+@keyframes amm-cer-heartbeat {
+  0%, 100% { opacity: 0.35; transform: scale(0.85); }
+  50%      { opacity: 1.0;  transform: scale(1.10); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .amm-cer-heartbeat { animation: none; opacity: 0.8; }
+}
 @keyframes amm-cer-pulse {
   0%, 100% { opacity: 0.5; }
   50%      { opacity: 1.0; }
@@ -6895,6 +6909,21 @@ body.tacit-amm-ceremony-ready [data-amm-gated] { display: block; }
           <span id="amm-cer-pubkey-hint" class="muted" style="display:block; font-size:11px; margin-top:2px; font-family:var(--mono);"></span>
         </span>
       </label>
+    </div>
+    <!-- Headline: live progress bar + elapsed timer + heartbeat dot.
+         Sits above the verbose log so a glancing user gets a single
+         take on progress without parsing log lines. Updates from the
+         contribute onProgress hook in tacit.js. -->
+    <div id="amm-cer-headline" style="display:none; margin-bottom: 10px;">
+      <div style="display:flex; align-items:center; gap:8px; margin-bottom: 4px;">
+        <span class="amm-cer-heartbeat" aria-hidden="true" style="width:8px; height:8px; border-radius:50%; background:#c97a1a; flex:0 0 auto;"></span>
+        <span id="amm-cer-headline-label" style="font-family:var(--serif); font-style:italic; font-size:14px; color:var(--ink); flex:1 1 auto; line-height:1.2;"></span>
+        <span id="amm-cer-headline-elapsed" style="font-family:var(--mono); font-size:11px; color:var(--ink-mid); flex:0 0 auto;"></span>
+      </div>
+      <div id="amm-cer-progressbar" style="height:6px; background:var(--ink-faint); position:relative; overflow:hidden;">
+        <div id="amm-cer-progressbar-fill" style="position:absolute; left:0; top:0; height:100%; width:0%; background:var(--ink); transition:width 200ms linear;"></div>
+      </div>
+      <div id="amm-cer-headline-sub" style="font-family:var(--serif); font-style:italic; font-size:11px; color:var(--ink-mid); margin-top: 4px;"></div>
     </div>
     <div id="amm-cer-progress" style="display:none; margin-bottom: 12px; font-family: var(--mono); font-size: 11px; color: var(--ink-mid); max-height: 200px; overflow-y: auto; padding: 8px; border: 1px solid var(--ink-faint); background: var(--bg-warm); white-space: pre-wrap;"></div>
     <div id="amm-cer-result" style="display:none; margin-bottom: 12px; font-family: var(--mono); font-size: 11px; padding: 8px; border: 1px solid var(--ink-faint);"></div>

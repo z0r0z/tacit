@@ -34955,28 +34955,78 @@ async function ceremonyContributeAmm({
   //     re-download + re-mix if it chooses, but we surface a clean
   //     "CASRACE" tag so the UI can prompt rather than just error.
   //   • 4xx others → don't retry (validation failure, our fault).
+  // Post-error reconciliation. The most insidious failure mode is the
+  // "got through but locked out" race: the upload bytes reach the
+  // worker, the worker pins + advances state successfully, but the
+  // HTTP response is dropped on the way back (Cloudflare connection
+  // close, client-side TCP/TLS hiccup). The client sees a network
+  // error, retries, hits 409 CASRACE on the second try (because the
+  // first one actually landed and advanced the chain), then surfaces
+  // an opaque failure even though the contribution is recorded.
+  //
+  // Check for our contribution_hash on chain via the attestations
+  // endpoint. If found, treat as success regardless of the original
+  // HTTP failure. ceremonyFetchAttestations returns up to 100 recent
+  // attestations for the circuit — fast (~1 KB JSON) and bypasses
+  // the full state read.
+  const _checkLandedByHash = async () => {
+    if (!mixed?.contributionHash) return null;
+    try {
+      const list = await ceremonyFetchAttestations(circuitHash);
+      const hit = list.find(a => a && a.contribution_hash === mixed.contributionHash);
+      return hit || null;
+    } catch { return null; }
+  };
   let upResp = null;
   let attempt = 0;
-  const MAX_UPLOAD_ATTEMPTS = 3;
+  // 8 attempts (was 3) with exponential backoff. swap_batch contributors
+  // who waited ~5 min for mix shouldn't lose it to a single transient
+  // network blip. Total worst-case retry wait ≈ 30s; the in-progress
+  // mix bytes are already in memory and reused per attempt (no
+  // re-download / re-mix).
+  const MAX_UPLOAD_ATTEMPTS = 8;
   while (attempt < MAX_UPLOAD_ATTEMPTS) {
     attempt++;
     try {
       upResp = await _doUpload(buildForm(state.head_cid));
     } catch (e) {
-      // Network-level failure (no HTTP response). Retry with backoff if
-      // budget remains; else surface.
+      // Reconcile against chain — was our hash already pinned by an
+      // earlier attempt whose response dropped on the way back?
+      const landed = await _checkLandedByHash();
+      if (landed) {
+        // Synthesize a success response from the attestation record.
+        upResp = { status: 200, body: JSON.stringify({ state: null, contribution: landed, reconciled: true }) };
+        _emit('upload-retry', { attempt, wait: 0, reason: 'reconciled — your contribution actually landed despite the network error' });
+        break;
+      }
       if (attempt < MAX_UPLOAD_ATTEMPTS) {
-        const wait = Math.min(8000, 500 * Math.pow(2, attempt - 1));
+        const wait = Math.min(15000, 500 * Math.pow(2, attempt - 1));
         _emit('upload-retry', { attempt, wait, reason: e?.message || 'network' });
         await new Promise(r => setTimeout(r, wait));
         continue;
+      }
+      // Final pre-throw reconciliation — last chance to catch a landed
+      // contribution before we lie to the user with "failed".
+      const finalLanded = await _checkLandedByHash();
+      if (finalLanded) {
+        upResp = { status: 200, body: JSON.stringify({ state: null, contribution: finalLanded, reconciled: true }) };
+        break;
       }
       throw new Error(`upload failed after ${MAX_UPLOAD_ATTEMPTS} attempts: ${e?.message || e}`);
     }
     // HTTP response received. 2xx → done. 5xx → retry. 409/429/4xx → don't retry.
     if (upResp.status >= 200 && upResp.status < 300) break;
+    // 409 CASRACE could mean an earlier dropped-response attempt actually
+    // landed; check the chain before treating as failure.
+    if (upResp.status === 409) {
+      const landed = await _checkLandedByHash();
+      if (landed) {
+        upResp = { status: 200, body: JSON.stringify({ state: null, contribution: landed, reconciled: true }) };
+        break;
+      }
+    }
     if (upResp.status >= 500 && upResp.status < 600 && attempt < MAX_UPLOAD_ATTEMPTS) {
-      const wait = Math.min(8000, 500 * Math.pow(2, attempt - 1));
+      const wait = Math.min(15000, 500 * Math.pow(2, attempt - 1));
       _emit('upload-retry', { attempt, wait, reason: `HTTP ${upResp.status}` });
       await new Promise(r => setTimeout(r, wait));
       continue;
@@ -35111,26 +35161,51 @@ function closeAmmCeremonyDrawer() {
   // honest; this just ensures we redraw to reflect that.
   try { renderAmmCeremonyChip(); } catch {}
 }
-function _renderAmmCerDrawerBody() {
+function _renderAmmCerDrawerBody(opts) {
   const chainsEl = document.getElementById('amm-cer-chains');
   if (!chainsEl) return;
   const mobile = _isMobileBrowser();
+  // `currentKey` highlights the circuit being actively contributed to
+  // right now (set by _submitAmmCeremonyContribution). `completedKeys`
+  // marks circuits the contributor finished in this session.
+  const currentKey = opts?.currentKey || null;
+  const completedKeys = opts?.completedKeys instanceof Set ? opts.completedKeys : new Set();
   const rows = AMM_CEREMONY_CIRCUIT_HASHES.map(c => {
     const s = _ammCeremonyStateByCircuit.get(c.hash);
     const count = s?.contribution_count ?? '—';
     const finalized = s?.finalized ? ' · ✓ finalized' : '';
-    // Heavy-circuit hint. On mobile the round-robin auto-skips this one,
-    // so explain why; on desktop, nudge that it's slower than the others.
     const heavy = AMM_CEREMONY_HEAVY_CIRCUITS.has(c.key);
     const hint = heavy
       ? (mobile
           ? ` <span style="color:var(--orange);font-size:10px;letter-spacing:0.05em;">desktop only</span>`
           : ` <span style="color:var(--ink-mid);font-size:10px;letter-spacing:0.05em;">heavier · ~2–5 min</span>`)
       : '';
-    return `<div style="display:flex; justify-content:space-between; align-items:center; gap:8px; padding:4px 0; border-bottom:1px solid var(--ink-faint);"><span>${escapeHtml(c.label)}${hint}</span><span style="color:var(--ink-mid);">${escapeHtml(String(count))} contribs${finalized}</span></div>`;
+    const isCurrent = currentKey === c.key;
+    const isCompleted = completedKeys.has(c.key);
+    // Visual state per row:
+    //   current      — orange bullet + bold + bg highlight (active focus)
+    //   completed    — ✓ check mark + dim (you contributed this session)
+    //   default      — plain
+    let leadGlyph = '';
+    let rowStyle = 'display:flex;justify-content:space-between;align-items:center;gap:8px;padding:6px 8px;border-bottom:1px solid var(--ink-faint);';
+    let leftStyle = '';
+    if (isCurrent) {
+      leadGlyph = '<span style="color:#c97a1a;margin-right:6px;font-weight:700;">▸</span>';
+      rowStyle += 'background:#fff8eb;font-weight:600;';
+    } else if (isCompleted) {
+      leadGlyph = '<span style="color:#0a7d3a;margin-right:6px;font-weight:700;">✓</span>';
+      leftStyle = 'color:var(--ink-mid);';
+    } else {
+      leadGlyph = '<span style="display:inline-block;width:11px;margin-right:6px;"></span>';
+    }
+    return `<div style="${rowStyle}"><span style="${leftStyle}">${leadGlyph}${escapeHtml(c.label)}${hint}</span><span style="color:var(--ink-mid);">${escapeHtml(String(count))} contribs${finalized}</span></div>`;
   }).join('');
   chainsEl.innerHTML = rows;
 }
+// Per-session completed set so subsequent contributes in the same drawer
+// session can mark prior wins as ✓ even after fresh round-robin picks
+// move on. Cleared on full page reload (sessionless).
+const _ammCeremonyCompletedThisSession = new Set();
 async function _submitAmmCeremonyContribution() {
   const goBtn = document.getElementById('amm-cer-go');
   const cancelBtn = document.getElementById('amm-cer-cancel');
@@ -35217,12 +35292,17 @@ async function _submitAmmCeremonyContribution() {
     e.returnValue = 'Ceremony contribute in progress — leaving now wastes the entropy you just downloaded and you\'ll need to restart from scratch (~2 min). Stay on the page until "Contribution landed" appears.';
     return e.returnValue;
   };
+  let _visLogged = false;
   const _visHandler = () => {
     if (typeof document === 'undefined') return;
-    if (document.hidden) {
-      _log('  ↶ tab backgrounded — browser may throttle progress updates. Mix continues but the log might freeze. Come back when done.');
-    } else {
-      _log('  ↷ tab foregrounded.');
+    // Throttle: log the FIRST background event only. Subsequent
+    // toggles add nothing (user already knows backgrounding throttles
+    // the browser). Without this the log fills with repeating
+    // "↶ backgrounded / ↷ foregrounded" pairs on long mixes where
+    // the contributor switches tabs to do something else.
+    if (document.hidden && !_visLogged) {
+      _visLogged = true;
+      _log('  ↶ tab backgrounded — browser may throttle progress updates. Mix continues; come back when "Contribution landed" appears.');
     }
   };
   if (typeof window !== 'undefined') {
@@ -35237,6 +35317,94 @@ async function _submitAmmCeremonyContribution() {
   // is in the contributions list once landed.
   progEl.textContent = `→ Contributing to ${target.label}…\n  Total round-trip ~2–5 min for swap_batch; ~30s for the lp circuits. Keep this tab open.\n`;
   resultEl.style.display = 'none';
+  // ---- Headline progress bar wiring -------------------------------------
+  // Visible, low-cognitive-load summary above the verbose log. Updates from
+  // the contribute onProgress callbacks below. Phases are time-budgeted so
+  // the bar moves forward even during the WASM-blocked mix step where
+  // snarkjs gives us no granular progress signal. Time budgets are coarse
+  // (heuristic from observed contributes); the bar is "elapsed-time vs
+  // total-estimate" not "actual progress" during mix.
+  //
+  // Phase weights (sum to 100%):
+  //   fetch   30%  (download head + r1cs + ptau ~ 95-300 MB)
+  //   verify  10%  (snarkjs.zKey.verifyFromR1cs)
+  //   mix     45%  (snarkjs.zKey.contribute — the heavy WASM step)
+  //   upload  15%  (95 MB upload)
+  const headlineEl = document.getElementById('amm-cer-headline');
+  const headlineLabelEl = document.getElementById('amm-cer-headline-label');
+  const headlineElapsedEl = document.getElementById('amm-cer-headline-elapsed');
+  const headlineSubEl = document.getElementById('amm-cer-headline-sub');
+  const progressbarFillEl = document.getElementById('amm-cer-progressbar-fill');
+  const PHASE_PCTS = { idle: 0, fetch: 5, verify: 35, mix: 45, upload: 90, done: 100 };
+  // Heuristic per-circuit mix duration estimates (seconds). Used to drive
+  // the bar forward during the snarkjs-blocked mix. Observed averages on
+  // a 2024-era laptop:
+  // Mix-time heuristic. swap_batch raised from 90s → 360s based on
+  // observed contributes in the wild (5+ min on mid-tier laptops).
+  // The bar caps at 95% during the heuristic interval; the actual
+  // landing event flips it to 100%, so over-estimating is fine —
+  // the bar plateaus visibly close to done. Under-estimating is the
+  // worse failure mode (bar hits 95% then sits there for minutes).
+  const _mixEstSec = /swap_batch|swap batch/i.test(target.label) ? 360
+                   : /lp_remove|lp remove/i.test(target.label)   ? 25
+                   : 18;  // lp_add
+  let _currentPhase = 'idle';
+  let _phaseStartedAt = Date.now();
+  const _contributeStartedAt = Date.now();
+  let _mixTimer = null;
+  const _stopMixTimer = () => { if (_mixTimer) { clearInterval(_mixTimer); _mixTimer = null; } };
+  const _setPhase = (phase, labelText, subText) => {
+    _currentPhase = phase;
+    _phaseStartedAt = Date.now();
+    if (headlineEl) headlineEl.style.display = phase === 'idle' ? 'none' : '';
+    if (headlineLabelEl && labelText != null) headlineLabelEl.textContent = labelText;
+    if (headlineSubEl) headlineSubEl.textContent = subText || '';
+    _setProgress(PHASE_PCTS[phase] || 0);
+    if (phase === 'mix') {
+      // Drive the bar between PHASE_PCTS.mix and PHASE_PCTS.upload-2 over
+      // _mixEstSec seconds. Smooth tick at 1Hz so a watcher sees motion
+      // even though snarkjs has paused the main thread for chunks.
+      _stopMixTimer();
+      const mixStart = PHASE_PCTS.mix;
+      const mixEnd = PHASE_PCTS.upload - 2;
+      _mixTimer = setInterval(() => {
+        const elapsed = (Date.now() - _phaseStartedAt) / 1000;
+        const frac = Math.min(0.95, elapsed / _mixEstSec);  // cap at 95% — last 5% on success
+        _setProgress(mixStart + frac * (mixEnd - mixStart));
+        _setElapsedDisplay();
+      }, 1000);
+    } else {
+      _stopMixTimer();
+    }
+    _setElapsedDisplay();
+  };
+  const _setProgress = (pct) => {
+    if (!progressbarFillEl) return;
+    const v = Math.max(0, Math.min(100, pct));
+    progressbarFillEl.style.width = v.toFixed(1) + '%';
+  };
+  const _setElapsedDisplay = () => {
+    if (!headlineElapsedEl) return;
+    const sec = Math.floor((Date.now() - _contributeStartedAt) / 1000);
+    headlineElapsedEl.textContent = sec < 60 ? `${sec}s` : `${Math.floor(sec/60)}m ${sec%60}s`;
+  };
+  // Fine-grained progress hook for byte-streaming phases (fetch / upload):
+  // map (done / total) to the slice of the bar allocated to that phase.
+  const _setBytesProgress = (kind, done, total) => {
+    if (!total) return;
+    const frac = Math.max(0, Math.min(1, done / total));
+    if (kind === 'fetch') {
+      const a = PHASE_PCTS.fetch;
+      const b = PHASE_PCTS.verify;
+      _setProgress(a + frac * (b - a));
+    } else if (kind === 'upload') {
+      const a = PHASE_PCTS.upload;
+      const b = 99;
+      _setProgress(a + frac * (b - a));
+    }
+    _setElapsedDisplay();
+  };
+  _setPhase('idle', '', '');
   // Append-only log for phase transitions ("refreshing…", "mixing…").
   const _log = (line) => { progEl.textContent += line + '\n'; progEl.scrollTop = progEl.scrollHeight; };
   // In-place progress line + throttle. Without this a 95 MB download
@@ -35287,34 +35455,39 @@ async function _submitAmmCeremonyContribution() {
       contributorName,
       contributorPubkeyHex,
       onProgress: (phase, info) => {
-        if (phase === 'refresh')       _log('  refreshing chain state…');
-        else if (phase === 'fetch-head') _log(`  Step 1/3 · downloading current ceremony state from IPFS (large zkeys can take 1–3 min)…`);
+        if (phase === 'refresh')       { _setPhase('fetch', `Preparing ${target.label}…`, 'refreshing chain state from worker'); _renderAmmCerDrawerBody({ currentKey: target.key, completedKeys: _ammCeremonyCompletedThisSession }); _log('  refreshing chain state…'); }
+        else if (phase === 'fetch-head') { _setPhase('fetch', `Downloading ${target.label} state`, 'large zkeys can take 1–3 min over IPFS'); _log(`  Step 1/3 · downloading current ceremony state from IPFS (large zkeys can take 1–3 min)…`); }
         else if (phase === 'fetch-head-log') _log('  ' + (info?.msg || ''));
-        else if (phase === 'fetch-head-bytes' && info?.total) _updateProgressLine('fetch', info.done || 0, info.total);
+        else if (phase === 'fetch-head-bytes' && info?.total) { _setBytesProgress('fetch', info.done || 0, info.total); _updateProgressLine('fetch', info.done || 0, info.total); }
         else if (phase === 'mix')      {
           _progLineActive = null;
+          _setPhase('mix', `Mixing entropy into ${target.label}`, 'heavy WASM compute — keep this tab open');
           _log('  Step 2/3 · mixing your random entropy into the ceremony…');
-          _log('    Heavy WASM compute for ~30-60s (up to 2 min for swap_batch).');
-          _log('    If your browser shows a "Page Unresponsive" dialog, click Wait — the tab is busy, not frozen.');
+          _log(`    Heavy WASM compute for ~${_mixEstSec}s. If your browser shows a "Page Unresponsive" dialog, click Wait — the tab is busy, not frozen.`);
         }
         else if (phase === 'memory' && info?.usedMB) {
-          // Diagnostic line — only logs when performance.memory is
-          // exposed (Chromium). Helps post-mortem if user later OOMs.
           const pctNum = Number(info.pct);
           const pctTag = pctNum >= 80 ? ' ⚠ tight' : '';
           _log(`    [mem ${info.tag}: ${info.usedMB} MB / ${info.limitMB} MB · ${info.pct}%${pctTag}]`);
         }
         else if (phase === 'mix-phase' && info?.phase) {
-          if (info.phase === 'contribute') _log('    · computing fresh Phase 2 contribution');
-          else if (info.phase === 'verify') _log('    · verifying chain integrity (one bad link would fail here)');
+          if (info.phase === 'contribute') { if (headlineSubEl) headlineSubEl.textContent = 'computing your Phase 2 contribution'; _log('    · computing fresh Phase 2 contribution'); }
+          else if (info.phase === 'verify') { if (headlineSubEl) headlineSubEl.textContent = 'verifying chain integrity'; _log('    · verifying chain integrity (one bad link would fail here)'); }
         }
-        else if (phase === 'upload')   _log(`  Step 3/3 · uploading your contribution (${_fmtMB(info?.bytes || 0)} MB to worker)…`);
-        else if (phase === 'upload-bytes' && info?.total) _updateProgressLine('upload', info.done || 0, info.total);
+        else if (phase === 'upload')   { _setPhase('upload', `Uploading contribution (${_fmtMB(info?.bytes || 0)} MB)`, 'final step — landing on chain'); _log(`  Step 3/3 · uploading your contribution (${_fmtMB(info?.bytes || 0)} MB to worker)…`); }
+        else if (phase === 'upload-bytes' && info?.total) { _setBytesProgress('upload', info.done || 0, info.total); _updateProgressLine('upload', info.done || 0, info.total); }
         else if (phase === 'upload-retry') {
-          _progLineActive = null;  // re-append fresh on next bytes event
+          _progLineActive = null;
+          if (headlineSubEl) headlineSubEl.textContent = `upload hiccup, retry ${info.attempt}/3 in ${Math.round((info.wait || 0) / 1000)}s`;
           _log(`    · upload hiccup (${info.reason || 'network'}), retrying in ${Math.round((info.wait || 0) / 1000)}s (attempt ${info.attempt}/3)…`);
         }
-        else if (phase === 'done')     { _progLineActive = null; _log('  ✓ Contribution landed on chain. Thank you.'); }
+        else if (phase === 'done')     {
+          _progLineActive = null;
+          _setPhase('done', 'Contribution landed in ' + target.label + '.', 'Thank you for strengthening the ceremony.');
+          _ammCeremonyCompletedThisSession.add(target.key);
+          _renderAmmCerDrawerBody({ currentKey: null, completedKeys: _ammCeremonyCompletedThisSession });
+          _log('  ✓ Contribution landed on chain. Thank you.');
+        }
       },
     });
     resultEl.style.display = 'block';
