@@ -22656,6 +22656,135 @@ async function _routeFetch(req, env, ctx) {
         return jsonResponse(await rewindLastScanned(env, from, network), 200, cors);
       } catch (e) { return jsonResponse({ error: e.message }, 400, cors); }
     }
+    // /debug/route?txid=<reveal_txid> — one-shot synchronous T_SWAP_ROUTE
+    // validator replay. Returns the gate where the route would fail (or
+    // 'accept' on success). Bypasses the cron scan loop so we can pinpoint
+    // why a confirmed route doesn't advance pool state. Debug-only.
+    if (url.pathname === '/debug/route' && req.method === 'GET') {
+      if (!checkDebugAuth(req, env)) return jsonResponse({ error: 'not found' }, 404, cors);
+      try {
+        const txid = (url.searchParams.get('txid') || '').toLowerCase();
+        if (!/^[0-9a-f]{64}$/.test(txid)) return jsonResponse({ error: 'bad txid' }, 400, cors);
+        const tx = await apiJson(env, `/tx/${txid}`, {}, network);
+        if (!tx?.vin?.[0]?.witness || tx.vin[0].witness.length < 3) return jsonResponse({ error: 'no script-path witness' }, 400, cors);
+        const decoded = decodeEnvelopeScript(hexToBytes(tx.vin[0].witness[1]));
+        if (!decoded) return jsonResponse({ stage: 'decodeEnvelopeScript', result: 'null' }, 200, cors);
+        const gates = [];
+        const stage = (s, info) => gates.push({ s, info });
+        stage('decodeEnvelopeScript', { opcode_hex: '0x' + decoded.opcode.toString(16), payload_len: decoded.payload.length });
+        if (decoded.opcode !== T_SWAP_ROUTE) return jsonResponse({ result: 'wrong_opcode', gates }, 200, cors);
+        const sr = decodeTSwapRoutePayload(decoded.payload);
+        if (!sr) return jsonResponse({ result: 'decode_payload_null', gates }, 200, cors);
+        stage('decodeTSwapRoutePayload', { n_hops: sr.n_hops, expiry: sr.expiry_height });
+        const vout0sr = tx.vout?.[0];
+        if (!vout0sr || typeof vout0sr.scriptpubkey !== 'string') return jsonResponse({ result: 'no_vout0', gates }, 200, cors);
+        const opReturnSpkSr = vout0sr.scriptpubkey.toLowerCase();
+        if (opReturnSpkSr.length !== 68 || !opReturnSpkSr.startsWith('6a20')) return jsonResponse({ result: 'bad_op_return', gates, spk: opReturnSpkSr.slice(0, 16) }, 200, cors);
+        const opReturnHashSr = hexToBytes(opReturnSpkSr.slice(4));
+        const expectedHashSr = ammSwapRouteEnvelopeHash(decoded.payload);
+        for (let i = 0; i < 32; i++) {
+          if (opReturnHashSr[i] !== expectedHashSr[i]) return jsonResponse({ result: 'op_return_hash_mismatch', gates, on_chain: bytesToHex(opReturnHashSr).slice(0, 16), expected: bytesToHex(expectedHashSr).slice(0, 16) }, 200, cors);
+        }
+        stage('op_return', 'ok');
+        const h = tx.status?.block_height ?? 0;
+        if (sr.expiry_height !== 0 && h > sr.expiry_height) return jsonResponse({ result: 'expired', gates }, 200, cors);
+        const poolSnapshot = new Map();
+        for (const hop of sr.hops) {
+          if (poolSnapshot.has(hop.pool_id)) continue;
+          const p = await ammPoolGet(env, network, hop.pool_id);
+          if (!p) return jsonResponse({ result: 'pool_missing', gates, pool_id: hop.pool_id }, 200, cors);
+          if (p.validation !== 'xcurve-verified' && p.validation !== 'verified') return jsonResponse({ result: 'pool_unverified', gates, pool_id: hop.pool_id, validation: p.validation }, 200, cors);
+          poolSnapshot.set(hop.pool_id, {
+            asset_A: hexToBytes(p.asset_a), asset_B: hexToBytes(p.asset_b),
+            reserve_A: BigInt(p.reserve_a), reserve_B: BigInt(p.reserve_b),
+            fee_bps: p.fee_bps, _orig: p,
+          });
+        }
+        stage('pool_snapshot', { n: poolSnapshot.size });
+        const traderInputAssetIdHex = sr.trader_input_asset_id;
+        const traderOutputAssetIdHex = sr.trader_output_asset_id;
+        let hopInputAssetHex = traderInputAssetIdHex;
+        let prevDeltaOut = null, deltaIn0 = null, deltaOutLast = null;
+        for (let k = 0; k < sr.hops.length; k++) {
+          const Hk = sr.hops[k];
+          const snap = poolSnapshot.get(Hk.pool_id);
+          if (Hk.fee_bps !== snap.fee_bps) return jsonResponse({ result: `hop${k}_fee_bps`, gates, hop: Hk.fee_bps, snap: snap.fee_bps }, 200, cors);
+          if (BigInt(Hk.R_A_pre) !== snap.reserve_A) return jsonResponse({ result: `hop${k}_R_A_pre`, gates, hop: Hk.R_A_pre, snap: snap.reserve_A.toString() }, 200, cors);
+          if (BigInt(Hk.R_B_pre) !== snap.reserve_B) return jsonResponse({ result: `hop${k}_R_B_pre`, gates, hop: Hk.R_B_pre, snap: snap.reserve_B.toString() }, 200, cors);
+          let assetInHex, assetOutHex, R_in, R_out, delta_in, delta_out;
+          if (Hk.direction === 0) {
+            assetInHex = bytesToHex(snap.asset_A); assetOutHex = bytesToHex(snap.asset_B);
+            R_in = snap.reserve_A; R_out = snap.reserve_B;
+            delta_in = BigInt(Hk.delta_a_net_mag); delta_out = BigInt(Hk.delta_b_net_mag);
+          } else {
+            assetInHex = bytesToHex(snap.asset_B); assetOutHex = bytesToHex(snap.asset_A);
+            R_in = snap.reserve_B; R_out = snap.reserve_A;
+            delta_in = BigInt(Hk.delta_b_net_mag); delta_out = BigInt(Hk.delta_a_net_mag);
+          }
+          if (delta_in <= 0n || delta_out <= 0n) return jsonResponse({ result: `hop${k}_delta_nonpos`, gates }, 200, cors);
+          if (assetInHex !== hopInputAssetHex) return jsonResponse({ result: `hop${k}_asset_chain`, gates, got: assetInHex.slice(0, 16), expected: hopInputAssetHex.slice(0, 16) }, 200, cors);
+          if (k > 0 && delta_in !== prevDeltaOut) return jsonResponse({ result: `hop${k}_amount_chain`, gates, delta_in: delta_in.toString(), prev: prevDeltaOut.toString() }, 200, cors);
+          if (R_out < delta_out) return jsonResponse({ result: `hop${k}_R_out_lt_delta`, gates }, 200, cors);
+          const gNum = 10000n - BigInt(snap.fee_bps);
+          const gDen = 10000n;
+          const lhs = delta_out * (R_in * gDen + gNum * delta_in);
+          const rhs = R_out * gNum * delta_in;
+          if (lhs > rhs) return jsonResponse({ result: `hop${k}_cfmm`, gates, lhs: lhs.toString(), rhs: rhs.toString() }, 200, cors);
+          if (Hk.direction === 0) { snap.reserve_A = R_in + delta_in; snap.reserve_B = R_out - delta_out; }
+          else { snap.reserve_B = R_in + delta_in; snap.reserve_A = R_out - delta_out; }
+          if (k === 0) deltaIn0 = delta_in;
+          deltaOutLast = delta_out; prevDeltaOut = delta_out; hopInputAssetHex = assetOutHex;
+        }
+        stage('hops_chain', { deltaIn0: deltaIn0.toString(), deltaOutLast: deltaOutLast.toString() });
+        if (hopInputAssetHex !== traderOutputAssetIdHex) return jsonResponse({ result: 'final_asset_mismatch', gates, got: hopInputAssetHex.slice(0, 16), expected: traderOutputAssetIdHex.slice(0, 16) }, 200, cors);
+        if (deltaOutLast < BigInt(sr.min_out)) return jsonResponse({ result: 'min_out', gates }, 200, cors);
+        let rReceiptBigSr;
+        try { rReceiptBigSr = modN(BigInt('0x' + sr.r_receipt)); } catch { return jsonResponse({ result: 'r_receipt_parse', gates }, 200, cors); }
+        if (rReceiptBigSr === 0n) return jsonResponse({ result: 'r_receipt_zero', gates }, 200, cors);
+        const expectedReceiptSr = pedersenCommit(deltaOutLast, rReceiptBigSr);
+        let cReceiptPointSr;
+        try { cReceiptPointSr = compressedPointFromHex(sr.c_receipt_secp); } catch { return jsonResponse({ result: 'c_receipt_decode', gates }, 200, cors); }
+        if (!cReceiptPointSr.equals(expectedReceiptSr)) return jsonResponse({ result: 'receipt_opening_mismatch', gates, claimed: sr.c_receipt_secp.slice(0, 16), expected: bytesToHex(expectedReceiptSr.toRawBytes(true)).slice(0, 16) }, 200, cors);
+        stage('receipt_opening', 'ok');
+        const traderInpSr = tx.vin?.[1];
+        if (!traderInpSr || typeof traderInpSr.txid !== 'string' || typeof traderInpSr.vout !== 'number') return jsonResponse({ result: 'no_vin1', gates }, 200, cors);
+        let parentSr;
+        try { parentSr = await commitmentForUtxo(env, traderInpSr.txid, traderInpSr.vout, network); }
+        catch (e) { return jsonResponse({ result: 'commitmentForUtxo_throw', gates, msg: e.message }, 200, cors); }
+        if (!parentSr) return jsonResponse({ result: 'parent_null', gates }, 200, cors);
+        if (parentSr.asset_id !== traderInputAssetIdHex) return jsonResponse({ result: 'parent_asset_id', gates, parent: parentSr.asset_id?.slice(0, 16), sr: traderInputAssetIdHex.slice(0, 16) }, 200, cors);
+        if (parentSr.commitment !== sr.c_in_secp) return jsonResponse({ result: 'parent_commitment', gates, parent: parentSr.commitment?.slice(0, 16), sr: sr.c_in_secp.slice(0, 16) }, 200, cors);
+        stage('chain_binding', 'ok');
+        let routeIntentOk = false;
+        try {
+          const intentMsgSr = ammSwapRouteIntentMsg(sr);
+          const traderPtSr = compressedPointFromHex(sr.trader_pubkey);
+          routeIntentOk = verifySchnorr(hexToBytes(sr.intent_sig), intentMsgSr, traderPtSr.toRawBytes(true).slice(1));
+        } catch (e) { return jsonResponse({ result: 'intent_throw', gates, msg: e.message }, 200, cors); }
+        if (!routeIntentOk) return jsonResponse({ result: 'intent_sig_fail', gates }, 200, cors);
+        stage('intent_sig', 'ok');
+        let routeKernelOk = false;
+        try {
+          const cInPtSr = compressedPointFromHex(sr.c_in_secp);
+          let delta_diff = (deltaOutLast - deltaIn0) % SECP_N;
+          if (delta_diff < 0n) delta_diff += SECP_N;
+          const ddH = delta_diff === 0n ? PEDERSEN_ZERO : PEDERSEN_H.multiply(delta_diff);
+          const Pkernel = cReceiptPointSr.add(cInPtSr.negate()).add(ddH.negate());
+          if (!Pkernel.equals(PEDERSEN_ZERO)) {
+            const kMsgSr = ammSwapRouteKernelMsg(sr, deltaIn0, deltaOutLast);
+            routeKernelOk = verifySchnorr(hexToBytes(sr.kernel_sig), kMsgSr, Pkernel.toRawBytes(true).slice(1));
+          } else { return jsonResponse({ result: 'kernel_P_zero', gates }, 200, cors); }
+        } catch (e) { return jsonResponse({ result: 'kernel_throw', gates, msg: e.message }, 200, cors); }
+        if (!routeKernelOk) return jsonResponse({ result: 'kernel_sig_fail', gates }, 200, cors);
+        stage('kernel_sig', 'ok');
+        let bpOkSr = false;
+        try { bpOkSr = bpRangeAggVerify([PEDERSEN_ZERO, cReceiptPointSr], hexToBytes(sr.range_proof)); }
+        catch (e) { return jsonResponse({ result: 'bp_throw', gates, msg: e.message }, 200, cors); }
+        if (!bpOkSr) return jsonResponse({ result: 'bp_fail', gates }, 200, cors);
+        stage('bulletproof', 'ok');
+        return jsonResponse({ result: 'accept', gates }, 200, cors);
+      } catch (e) { return jsonResponse({ error: e.message, stack: e.stack?.slice(0, 200) }, 500, cors); }
+    }
     // POST /admin/backfill-holders?aid=...&network=...[&cursor=&limit=]
     // Walks the worker's already-indexed transfer records for one asset
     // and bumps holderCount for each previously-unseen recipient. Pure
