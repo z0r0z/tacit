@@ -6956,7 +6956,7 @@ body.tacit-amm-ceremony-ready [data-amm-gated] { display: block; }
   <div class="pass-card" style="max-width: 540px;">
     <div id="amm-cer-title" class="pass-title">AMM trusted setup · contribute</div>
     <div class="pass-reason" style="margin-bottom: 12px;">
-      <p style="margin:0 0 8px 0;">Each click advances one of three AMM circuit chains by mixing your local entropy into the proving key. As long as <strong>one</strong> contributor across the chain is honest, the AMM is sound. Takes ~30–60 seconds and ~10 MB of bandwidth in your browser.</p>
+      <p style="margin:0 0 8px 0;">Each click advances one of three AMM circuit chains by mixing your local entropy into the proving key. As long as <strong>one</strong> contributor across each chain is honest, the AMM is sound. The two <code>lp_*</code> circuits take ~30s and ~10 MB; the larger <code>swap_batch</code> circuit takes ~3–5 min and ~180 MB. Keep the tab open while it runs.</p>
       <p style="margin:0 0 8px 0;font-size:11px;color:var(--ink-mid);">Your contribution is pseudonymous by default. Log your tacit wallet on the contribution to stay eligible for future airdrop snapshots — your wallet pubkey gets recorded alongside the contribution, nothing else.</p>
     </div>
     <div id="amm-cer-chains" style="margin-bottom: 12px; font-family: var(--mono); font-size: 11px;"></div>
