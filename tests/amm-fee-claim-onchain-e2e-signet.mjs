@@ -130,6 +130,29 @@ async function waitForPool(poolIdHex, label, attempts = 20, delayMs = 30_000) {
   }
   return null;
 }
+// Poll the worker until pool.reserve_a OR pool.reserve_b differs from the
+// (raSnapshot, rbSnapshot) values — meaning the worker has indexed AT LEAST
+// one state-mutating event since the snapshot was taken. Used between
+// swaps + after Phase 4 before LP_ADD to enforce strict serialization
+// against signet block + worker indexer lag.
+//
+// Returns the fresh pool record; throws on timeout. ~10 min default budget
+// (one signet block + a bit of slack for the worker cron).
+async function waitForReservesAdvance(poolIdHex, raSnapshot, rbSnapshot, label, attempts = 20, delayMs = 30_000) {
+  info(`polling worker for reserves advance on ${label} (was R_A=${raSnapshot}, R_B=${rbSnapshot})`);
+  for (let i = 1; i <= attempts; i++) {
+    const p = await fetchPool(poolIdHex);
+    if (p && (p.reserve_a !== String(raSnapshot) || p.reserve_b !== String(rbSnapshot))) {
+      ok(`worker indexed advance: R_A=${p.reserve_a}, R_B=${p.reserve_b}  (k_last=${p.k_last})`);
+      return p;
+    }
+    info(`  attempt ${i}/${attempts}: still R_A=${p?.reserve_a}, R_B=${p?.reserve_b}`);
+    if (i < attempts) await sleep(delayMs);
+  }
+  warn(`reserves did NOT advance within ${attempts * delayMs / 60000} min — worker may be behind, or no mutating tx confirmed yet`);
+  return null;
+}
+
 function cetchAssetId(revealTxid) {
   const txid_BE = new Uint8Array(32);
   for (let i = 0; i < 32; i++) txid_BE[i] = parseInt(revealTxid.slice((31 - i) * 2, (31 - i) * 2 + 2), 16);
@@ -350,8 +373,13 @@ for (let i = 0; i < N_SWAPS; i++) {
   };
   saveState(state);
   ok(`swap ${i} reveal ${r.revealTxid.slice(0, 16)}…  deltaOut=${r.deltaOut}`);
-  info(`waiting 60s for confirmation…`);
-  await sleep(60_000);
+  // Strict serialization: wait for the worker to index THIS swap's
+  // reserve advance before broadcasting the next. Without this, each
+  // subsequent swap sees the same stale pool snapshot and the worker
+  // rejects 4/5 of them via its R_A_pre/R_B_pre freshness gate.
+  // The Phase 5 LP_ADD likewise relies on the post-swap reserves so
+  // its R_A_pre matches what the worker sees.
+  await waitForReservesAdvance(state.pool.pool_id_hex, R_A, R_B, `post-swap-${i}`, 30, 30_000);
 }
 
 // =========================================================================

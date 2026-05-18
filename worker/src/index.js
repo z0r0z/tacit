@@ -1083,6 +1083,123 @@ async function ctacCanonicalTacPoolTacReserve(env, network, opts = {}) {
   return best > 0n ? best : null;
 }
 
+// ============== cBTC.tac LIEN INDEX (SPEC §5.47 v1 lien model) ==============
+//
+// Trustless collateral lock without covenants. The bond UTXO is an LP-share
+// of a (cBTC.zk-variant, TAC) AMM pool; at deposit, the worker records a
+// lien against its outpoint. Any tacit-recognised spend of the liened
+// outpoint is refused by commitmentForUtxo (single enforcement point) so
+// the depositor cannot transfer or LP-remove it without protocol consent.
+// The "lock" is enforced by validator coordination, identical trust profile
+// to any other tacit asset (recipients refuse tacit-invalid UTXOs).
+//
+// Lifecycle states:
+//   'depositor'  — lien attached to depositor's active position. Released
+//                  on cooperative T_CBTC_TAC_WITHDRAW (lien deleted) or
+//                  transferred to 'claim-pool' on T_CBTC_TAC_FORCE_CLOSE
+//                  / SLASH_DETECTED.
+//   'claim-pool' — lien transferred to global claim pool after a force-close
+//                  or rug. cBTC.tac holders burn shares pro-rata to mint
+//                  synthetic LP-share UTXOs against the pool counter via
+//                  T_CTAC_LIEN_CLAIM (opcode 0x4C, repurposed from the
+//                  earlier T_SHARE_SLASH_CLAIM stub). The depositor's UTXO
+//                  stays tacit-invalid forever (represents lost LP value).
+//
+// Lien split (T_CTAC_LIEN_SPLIT at 0x4F) lets the depositor split a liened
+// UTXO into multiple outputs while preserving the lien on one chosen output
+// (must have amount >= original lien). Source lien is removed; new lien is
+// inserted in the same atomic update.
+function ctacLienKey(network, lpUtxoTxidHex, lpUtxoVout) {
+  const v = String(lpUtxoVout >>> 0).padStart(8, '0');
+  return network === 'signet'
+    ? `ctac-lien:${lpUtxoTxidHex}:${v}`
+    : `ctac-lien:${network}:${lpUtxoTxidHex}:${v}`;
+}
+function ctacPositionLienKey(network, positionLeafHashHex) {
+  return network === 'signet'
+    ? `ctac-pos-lien:${positionLeafHashHex}`
+    : `ctac-pos-lien:${network}:${positionLeafHashHex}`;
+}
+function ctacClaimPoolKey(network) {
+  return network === 'signet' ? 'ctac-claim-pool' : `ctac-claim-pool:${network}`;
+}
+async function ctacGetLien(env, network, lpUtxoTxidHex, lpUtxoVout) {
+  return env.REGISTRY_KV.get(ctacLienKey(network, lpUtxoTxidHex, lpUtxoVout), 'json');
+}
+async function ctacPutLien(env, network, lpUtxoTxidHex, lpUtxoVout, lienRecord) {
+  await env.REGISTRY_KV.put(
+    ctacLienKey(network, lpUtxoTxidHex, lpUtxoVout),
+    JSON.stringify(lienRecord),
+  );
+}
+async function ctacDeleteLien(env, network, lpUtxoTxidHex, lpUtxoVout) {
+  await env.REGISTRY_KV.delete(ctacLienKey(network, lpUtxoTxidHex, lpUtxoVout));
+}
+async function ctacGetPositionLien(env, network, positionLeafHashHex) {
+  const ref = await env.REGISTRY_KV.get(ctacPositionLienKey(network, positionLeafHashHex));
+  if (!ref) return null;
+  const parts = ref.split(':');
+  if (parts.length !== 2 || parts[0].length !== 64) return null;
+  const vout = parseInt(parts[1], 10);
+  if (!Number.isInteger(vout) || vout < 0) return null;
+  return { txid: parts[0], vout };
+}
+async function ctacPutPositionLien(env, network, positionLeafHashHex, lpUtxoTxidHex, lpUtxoVout) {
+  const v = String(lpUtxoVout >>> 0).padStart(8, '0');
+  await env.REGISTRY_KV.put(
+    ctacPositionLienKey(network, positionLeafHashHex),
+    `${lpUtxoTxidHex}:${v}`,
+  );
+}
+async function ctacDeletePositionLien(env, network, positionLeafHashHex) {
+  await env.REGISTRY_KV.delete(ctacPositionLienKey(network, positionLeafHashHex));
+}
+async function ctacGetClaimPool(env, network) {
+  const v = await env.REGISTRY_KV.get(ctacClaimPoolKey(network));
+  return v ? BigInt(v) : 0n;
+}
+async function ctacAddClaimPool(env, network, deltaLpShares) {
+  const cur = await ctacGetClaimPool(env, network);
+  const next = cur + BigInt(deltaLpShares);
+  await env.REGISTRY_KV.put(ctacClaimPoolKey(network), (next < 0n ? 0n : next).toString());
+}
+
+// Compute LP-share BTC value for collateralization checks (§5.47).
+// LP_value_in_sats = (cBTC.zk_reserve_sats + TAC_reserve_sats_value) ×
+//                    lp_share_amount / total_lp_supply
+// where TAC_reserve_sats_value = (TAC_reserve × 1e8) / twap_sats_per_TAC
+// (mirroring ctacBondRatioThousandths' units convention).
+async function ctacLpShareValueSats(env, network, poolIdHex, lpShareAmount, twapSatsPerTac, opts = {}) {
+  const pool = await ammPoolGet(env, network, poolIdHex);
+  if (!pool) return { ok: false, reason: 'pool-not-found' };
+  if (pool.validation !== 'xcurve-verified' && pool.validation !== 'verified') {
+    return { ok: false, reason: 'pool-not-verified' };
+  }
+  const TAC_AID = (opts.tacAssetIdHex || globalThis.TAC_ASSET_ID_HEX || '').toLowerCase();
+  if (!/^[0-9a-f]{64}$/.test(TAC_AID)) return { ok: false, reason: 'no-tac-asset-id' };
+  let tacReserve = null;
+  let btcSideReserve = null;
+  if (pool.asset_a === TAC_AID) {
+    tacReserve = BigInt(pool.reserve_a);
+    btcSideReserve = BigInt(pool.reserve_b);
+  } else if (pool.asset_b === TAC_AID) {
+    tacReserve = BigInt(pool.reserve_b);
+    btcSideReserve = BigInt(pool.reserve_a);
+  } else {
+    return { ok: false, reason: 'pool-not-tac-paired' };
+  }
+  const totalShares = BigInt(pool.lp_total_shares || '0');
+  if (totalShares === 0n) return { ok: false, reason: 'pool-empty-lp-supply' };
+  const shareAmount = BigInt(lpShareAmount);
+  if (shareAmount === 0n) return { ok: false, reason: 'zero-share-amount' };
+  const twap = BigInt(twapSatsPerTac);
+  if (twap === 0n) return { ok: false, reason: 'zero-twap' };
+  const tacReserveSats = (tacReserve * 100000000n) / twap;
+  const totalPoolSats = btcSideReserve + tacReserveSats;
+  const lpShareSats = (totalPoolSats * shareAmount) / totalShares;
+  return { ok: true, valueSats: lpShareSats };
+}
+
 // ============== cBTC.tac FIXED PARAMETERS (SPEC §5.41) ==============
 // Note: protocol-wide governance (per SPEC-GOVERNANCE-AMENDMENT §6.x) is
 // NOT yet wired in the worker. These are the launch defaults.
@@ -3624,6 +3741,25 @@ async function ammFarmPoolAppend(env, network, poolIdHex, farmIdHex) {
     list.push(farmIdHex);
     await env.REGISTRY_KV.put(ammFarmsByPoolKey(network, poolIdHex), JSON.stringify(list));
   }
+}
+
+// Per-unbond receipt index. Keyed by unbond txid; stores the (asset_id,
+// commitment, amount) pair for vout[1] (lp_return) and vout[2] (reward).
+// Populated at chain-scan time and read at downstream-spend ancestry
+// resolution time. Required because the bond record is deleted by
+// T_LP_UNBOND (per SPEC §5.42 step 14), but the lp_return commitment
+// derivation requires `bond.bond_amount` — without persisting it here,
+// the lp_return UTXO would become unspendable after unbond.
+function ammFarmUnbondReceiptKey(network, txid) {
+  return network === 'signet'
+    ? `ammfarmreceipt:${txid}`
+    : `ammfarmreceipt:${network}:${txid}`;
+}
+async function ammFarmUnbondReceiptGet(env, network, txid) {
+  return env.REGISTRY_KV.get(ammFarmUnbondReceiptKey(network, txid), 'json');
+}
+async function ammFarmUnbondReceiptPut(env, network, txid, value) {
+  await env.REGISTRY_KV.put(ammFarmUnbondReceiptKey(network, txid), JSON.stringify(value));
 }
 
 // ---- Crystallization (mirrors tests/amm-farm.mjs crystallizeFarm) ----
@@ -11331,7 +11467,21 @@ function verifySchnorr(sig64, msgHash, pubXonly32) {
 // UTXO by walking its parent tx's envelope. Mirrors the dApp's
 // getParentEnvelopeData but lives server-side so the worker can validate
 // openings without trusting the submitter.
-async function commitmentForUtxo(env, txidHex, vout, network) {
+//
+// SPEC §5.47 v1 lien enforcement: refuses to resolve any outpoint that has
+// an active cBTC.tac lien ('depositor' or 'claim-pool' state). Downstream
+// consumers (T_AXFER_VAR, T_LP_REMOVE, T_SWAP_VAR, every asset-spend path)
+// call this helper and treat the throw as "UTXO not found" — single point
+// of lien enforcement. The cBTC.tac handlers that legitimately read liened
+// UTXOs (DEPOSIT / WITHDRAW / FORCE_CLOSE / LIEN_CLAIM / LIEN_SPLIT) pass
+// `opts.skipLienCheck: true` to bypass.
+async function commitmentForUtxo(env, txidHex, vout, network, opts = {}) {
+  if (!opts.skipLienCheck) {
+    const lien = await ctacGetLien(env, network, txidHex, vout);
+    if (lien && (lien.state === 'depositor' || lien.state === 'claim-pool')) {
+      throw new Error(`outpoint ${txidHex}:${vout} is liened (cBTC.tac position ${lien.position_leaf_hash})`);
+    }
+  }
   const tx = await apiJson(env, `/tx/${txidHex}`, {}, network);
   if (!tx?.vin?.[0]?.witness || tx.vin[0].witness.length < 3) {
     throw new Error('parent tx has no taproot script-path witness');
@@ -11578,6 +11728,36 @@ async function commitmentForUtxo(env, txidHex, vout, network) {
     const sr = decodeTSwapRoutePayload(decoded.payload);
     if (!sr) throw new Error('invalid T_SWAP_ROUTE payload');
     return { commitment: sr.c_receipt_secp, asset_id: sr.trader_output_asset_id };
+  }
+  if (decoded.opcode === T_LP_UNBOND) {
+    // SPEC-AMM-FARM-AMENDMENT §5.42. T_LP_UNBOND mints two tacit-asset
+    // UTXOs by validator decree:
+    //   vout[0] = OP_RETURN(envelope_hash), not a tacit UTXO
+    //   vout[1] = lp_return UTXO on farm.lp_asset_id
+    //              commit = bond.bond_amount · H + lp_return_r · G
+    //   vout[2] = reward UTXO on farm.reward_asset_id
+    //              commit = reward_amount · H + reward_r · G
+    //              (absent iff reward_amount == 0)
+    // The per-unbond receipt index (ammFarmUnbondReceiptGet) was populated
+    // at chain-scan time and persists bond.bond_amount for the lp_return
+    // commitment derivation. Without it, lp_return would become
+    // unspendable after the bond record is deleted.
+    const receipt = await ammFarmUnbondReceiptGet(env, network, txidHex);
+    if (!receipt) throw new Error(`T_LP_UNBOND receipt index missing for txid ${txidHex}`);
+    if (vout === 1) {
+      return {
+        commitment: receipt.lp_return.commitment,
+        asset_id: receipt.lp_return.asset_id,
+      };
+    }
+    if (vout === 2) {
+      if (!receipt.reward) throw new Error('T_LP_UNBOND vout 2 absent (zero payout)');
+      return {
+        commitment: receipt.reward.commitment,
+        asset_id: receipt.reward.asset_id,
+      };
+    }
+    throw new Error(`T_LP_UNBOND vout ${vout} out of range for asset UTXO resolution`);
   }
   throw new Error('unsupported envelope opcode');
 }
@@ -18038,6 +18218,382 @@ async function scanForEtches(env, network) {
           await ammPoolPut(env, network, pid_hex, newPool);
         }
         found++;
+      } else if (decoded.opcode === T_FARM_INIT) {
+        // SPEC-AMM-FARM-AMENDMENT §5.40. Launcher creates a reward farm
+        // over a registered AMM pool by consuming a reward-asset UTXO via
+        // kernel-sig closure into virtual `treasury_remaining`. No on-chain
+        // treasury UTXO — mirrors AMM virtual-pool custody.
+        const fi = decodeTFarmInitPayload(decoded.payload);
+        if (!fi) continue;
+
+        // OP_RETURN binding.
+        const vout0fi = tx.vout?.[0];
+        if (!vout0fi || typeof vout0fi.scriptpubkey !== 'string') continue;
+        const opReturnSpkFi = vout0fi.scriptpubkey.toLowerCase();
+        if (opReturnSpkFi.length !== 68 || !opReturnSpkFi.startsWith('6a20')) continue;
+        const opReturnHashFi = hexToBytes(opReturnSpkFi.slice(4));
+        const expectedHashFi = sha256(decoded.payload);
+        let opReturnOkFi = true;
+        for (let i = 0; i < 32; i++) {
+          if (opReturnHashFi[i] !== expectedHashFi[i]) { opReturnOkFi = false; break; }
+        }
+        if (!opReturnOkFi) continue;
+
+        // Pool must be a verified V1 pool.
+        const farmPool = await ammPoolGet(env, network, fi.pool_id);
+        if (!farmPool) continue;
+        if (farmPool.validation !== 'verified' && farmPool.validation !== 'xcurve-verified') continue;
+
+        // Schedule sanity.
+        const rewardTotal = BigInt(fi.reward_total);
+        const rewardPerBlock = BigInt(fi.reward_per_block);
+        if (rewardPerBlock === 0n) continue;
+        if (rewardTotal < AMM_FARM_MIN_REWARD_TOTAL) continue;
+        if (rewardTotal % rewardPerBlock !== 0n) continue;
+        const initLock = farmPool.amm_initial_lp_lock_blocks ?? 6;
+        const initHeight = farmPool.init_height || 0;
+        if (fi.start_height < initHeight + initLock) continue;
+        if (fi.start_height < h + 3) continue;
+        if (fi.start_height > h + AMM_FARM_MAX_START_DELAY) continue;
+        const durationBlocks = rewardTotal / rewardPerBlock;
+        if (durationBlocks > BigInt(0xffffffff)) continue;
+        const expectedEnd = fi.start_height + Number(durationBlocks);
+        if (expectedEnd > 0xffffffff) continue;
+        if (fi.end_height !== expectedEnd) continue;
+
+        // launcher_sig over init_msg (BIP-340, x-only of launcher_pubkey).
+        const farmIdBytes = ammDeriveFarmId(
+          hexToBytes(fi.pool_id),
+          hexToBytes(fi.launcher_pubkey),
+          hexToBytes(fi.reward_asset_id),
+          hexToBytes(fi.farm_nonce),
+        );
+        const initMsg = (() => {
+          const dom = new TextEncoder().encode('tacit-amm-farm-init-v1');
+          const buf = new Uint8Array(dom.length + 32 + 33 + 8 + 8 + 4 + 4);
+          let p = 0;
+          buf.set(dom, p); p += dom.length;
+          buf.set(farmIdBytes, p); p += 32;
+          buf.set(hexToBytes(fi.launcher_pubkey), p); p += 33;
+          new DataView(buf.buffer).setBigUint64(p, rewardTotal, true); p += 8;
+          new DataView(buf.buffer).setBigUint64(p, rewardPerBlock, true); p += 8;
+          new DataView(buf.buffer).setUint32(p, fi.start_height, true); p += 4;
+          new DataView(buf.buffer).setUint32(p, fi.end_height, true); p += 4;
+          return sha256(buf);
+        })();
+        let launcherOk = false;
+        try {
+          const launcherXOnly = hexToBytes(fi.launcher_pubkey).slice(1);
+          launcherOk = verifySchnorr(hexToBytes(fi.launcher_sig), initMsg, launcherXOnly);
+        } catch { launcherOk = false; }
+        if (!launcherOk) continue;
+
+        // Input commit binding + kernel sig: vin[1] is launcher's reward-
+        // asset UTXO; its commitment must match the kernel-sig pre-image.
+        const launcherInp = tx.vin?.[1];
+        if (!launcherInp || typeof launcherInp.txid !== 'string' || typeof launcherInp.vout !== 'number') continue;
+        let parentFi;
+        try { parentFi = await commitmentForUtxo(env, launcherInp.txid, launcherInp.vout, network); }
+        catch { continue; }
+        if (!parentFi) continue;
+        if (parentFi.asset_id !== fi.reward_asset_id) continue;
+
+        const cChangeFi = fi.c_change_or_sentinel;
+        const isSentinelFi = cChangeFi === '00'.repeat(33);
+        const kernelMsgFi = ammKernelMsgV1(
+          hexToBytes(fi.reward_asset_id),
+          [{ txid: launcherInp.txid, vout: launcherInp.vout }],
+          [hexToBytes(cChangeFi)],
+          rewardTotal,
+        );
+        let kernelOkFi = false;
+        try {
+          const cIn = compressedPointFromHex(parentFi.commitment);
+          const cChangeOrZero = isSentinelFi ? PEDERSEN_ZERO : compressedPointFromHex(cChangeFi);
+          const burnedH = rewardTotal === 0n ? PEDERSEN_ZERO : PEDERSEN_H.multiply(rewardTotal);
+          const Pfi = cChangeOrZero.add(cIn.negate()).add(burnedH);
+          if (!Pfi.equals(PEDERSEN_ZERO)) {
+            kernelOkFi = verifySchnorr(
+              hexToBytes(fi.kernel_sig), kernelMsgFi,
+              Pfi.toRawBytes(true).slice(1),
+            );
+          }
+        } catch { kernelOkFi = false; }
+        if (!kernelOkFi) continue;
+
+        // Bulletproof m=1 over C_change_or_sentinel. Sentinel-aware:
+        // treat ZERO as a structural placeholder for whole-input case.
+        let bpOkFi = false;
+        try {
+          const cChangePt = isSentinelFi ? PEDERSEN_ZERO : compressedPointFromHex(cChangeFi);
+          if (cChangePt.equals(PEDERSEN_ZERO)) {
+            bpOkFi = fi.range_proof.length > 0;
+          } else {
+            bpOkFi = bpRangeAggVerify([cChangePt], hexToBytes(fi.range_proof));
+          }
+        } catch { bpOkFi = false; }
+        if (!bpOkFi) continue;
+
+        const farmIdHex = bytesToHex(farmIdBytes);
+        const existingFarm = await ammFarmGet(env, network, farmIdHex);
+        if (existingFarm && existingFarm.confirmed_txid && existingFarm.confirmed_txid !== tx.txid) continue;
+
+        const lpAssetIdBytes = ammDeriveLpAssetId(hexToBytes(fi.pool_id));
+        const farmRecord = {
+          farm_id:           farmIdHex,
+          pool_id:           fi.pool_id,
+          lp_asset_id:       bytesToHex(lpAssetIdBytes),
+          reward_asset_id:   fi.reward_asset_id,
+          launcher_pubkey:   fi.launcher_pubkey,
+          reward_total:      fi.reward_total,
+          reward_per_block:  fi.reward_per_block,
+          start_height:      fi.start_height,
+          end_height:        fi.end_height,
+          acc_reward_per_share: '0',
+          total_bonded:      '0',
+          last_update_height: fi.start_height,
+          treasury_remaining: fi.reward_total,
+          confirmed_txid:    tx.txid,
+          confirmed_height:  h,
+          confirmed_at:      tx.status?.block_time || Math.floor(Date.now() / 1000),
+          network,
+        };
+        await ammFarmPut(env, network, farmIdHex, farmRecord);
+        await ammFarmPoolAppend(env, network, fi.pool_id, farmIdHex);
+        found++;
+      } else if (decoded.opcode === T_LP_BOND) {
+        // SPEC-AMM-FARM-AMENDMENT §5.41. Bonder consumes lp_asset_id UTXO
+        // via kernel-sig closure into virtual farm.total_bonded; worker
+        // indexes a bond record keyed by vout[1].outpoint.
+        const lb = decodeTLpBondPayload(decoded.payload);
+        if (!lb) continue;
+
+        const vout0lb = tx.vout?.[0];
+        if (!vout0lb || typeof vout0lb.scriptpubkey !== 'string') continue;
+        const opReturnSpkLb = vout0lb.scriptpubkey.toLowerCase();
+        if (opReturnSpkLb.length !== 68 || !opReturnSpkLb.startsWith('6a20')) continue;
+        const opReturnHashLb = hexToBytes(opReturnSpkLb.slice(4));
+        const expectedHashLb = sha256(decoded.payload);
+        let opReturnOkLb = true;
+        for (let i = 0; i < 32; i++) {
+          if (opReturnHashLb[i] !== expectedHashLb[i]) { opReturnOkLb = false; break; }
+        }
+        if (!opReturnOkLb) continue;
+
+        const farm = await ammFarmGet(env, network, lb.farm_id);
+        if (!farm) continue;
+        if (h >= farm.end_height) continue;
+
+        const bondAmount = BigInt(lb.bond_amount);
+        if (bondAmount < AMM_FARM_MIN_BOND) continue;
+
+        const canonicalHeight = h > farm.end_height ? farm.end_height : h;
+        const farmCopy = { ...farm };
+        _farmCrystallize(farmCopy, canonicalHeight);
+        if (BigInt(lb.entry_acc_per_share) !== BigInt(farmCopy.acc_reward_per_share)) continue;
+        if (lb.bond_view_height < canonicalHeight - AMM_FARM_VIEW_STALENESS) continue;
+
+        const bondMsg = (() => {
+          const dom = new TextEncoder().encode('tacit-amm-farm-bond-v1');
+          const buf = new Uint8Array(dom.length + 32 + 33 + 8 + 16 + 4);
+          let p = 0;
+          buf.set(dom, p); p += dom.length;
+          buf.set(hexToBytes(lb.farm_id), p); p += 32;
+          buf.set(hexToBytes(lb.bonder_pubkey), p); p += 33;
+          new DataView(buf.buffer).setBigUint64(p, bondAmount, true); p += 8;
+          const acc = BigInt(lb.entry_acc_per_share);
+          for (let i = 0; i < 16; i++) { buf[p + i] = Number((acc >> BigInt(i * 8)) & 0xffn); }
+          p += 16;
+          new DataView(buf.buffer).setUint32(p, lb.bond_view_height, true); p += 4;
+          return sha256(buf);
+        })();
+        let bonderOk = false;
+        try {
+          const bonderXOnly = hexToBytes(lb.bonder_pubkey).slice(1);
+          bonderOk = verifySchnorr(hexToBytes(lb.bonder_sig), bondMsg, bonderXOnly);
+        } catch { bonderOk = false; }
+        if (!bonderOk) continue;
+
+        const bonderInp = tx.vin?.[1];
+        if (!bonderInp || typeof bonderInp.txid !== 'string' || typeof bonderInp.vout !== 'number') continue;
+        let parentLb;
+        try { parentLb = await commitmentForUtxo(env, bonderInp.txid, bonderInp.vout, network); }
+        catch { continue; }
+        if (!parentLb) continue;
+        if (parentLb.asset_id !== farm.lp_asset_id) continue;
+
+        const cChangeLb = lb.c_change_or_sentinel;
+        const isSentinelLb = cChangeLb === '00'.repeat(33);
+        const kernelMsgLb = ammKernelMsgV1(
+          hexToBytes(farm.lp_asset_id),
+          [{ txid: bonderInp.txid, vout: bonderInp.vout }],
+          [hexToBytes(cChangeLb)],
+          bondAmount,
+        );
+        let kernelOkLb = false;
+        try {
+          const cInLb = compressedPointFromHex(parentLb.commitment);
+          const cChangeLbPt = isSentinelLb ? PEDERSEN_ZERO : compressedPointFromHex(cChangeLb);
+          const burnedHLb = bondAmount === 0n ? PEDERSEN_ZERO : PEDERSEN_H.multiply(bondAmount);
+          const Plb = cChangeLbPt.add(cInLb.negate()).add(burnedHLb);
+          if (!Plb.equals(PEDERSEN_ZERO)) {
+            kernelOkLb = verifySchnorr(
+              hexToBytes(lb.kernel_sig), kernelMsgLb,
+              Plb.toRawBytes(true).slice(1),
+            );
+          }
+        } catch { kernelOkLb = false; }
+        if (!kernelOkLb) continue;
+
+        let bpOkLb = false;
+        try {
+          const cChangeLbPt = isSentinelLb ? PEDERSEN_ZERO : compressedPointFromHex(cChangeLb);
+          if (cChangeLbPt.equals(PEDERSEN_ZERO)) {
+            bpOkLb = lb.range_proof.length > 0;
+          } else {
+            bpOkLb = bpRangeAggVerify([cChangeLbPt], hexToBytes(lb.range_proof));
+          }
+        } catch { bpOkLb = false; }
+        if (!bpOkLb) continue;
+
+        // bond_id = vout[1].outpoint (txid_BE || vout_LE, 36 bytes).
+        const bondIdBytes = new Uint8Array(36);
+        bondIdBytes.set(reverseBytes(hexToBytes(tx.txid)), 0);
+        new DataView(bondIdBytes.buffer).setUint32(32, 1, true);
+        const bondIdHex = bytesToHex(bondIdBytes);
+        const existingBond = await ammFarmBondGet(env, network, bondIdHex);
+        if (existingBond) continue;
+
+        const bondRecord = {
+          bond_id:             bondIdHex,
+          farm_id:             lb.farm_id,
+          bond_amount:         lb.bond_amount,
+          entry_acc_per_share: lb.entry_acc_per_share,
+          bonder_pubkey:       lb.bonder_pubkey,
+          bond_height:         h,
+          confirmed_txid:      tx.txid,
+          confirmed_at:        tx.status?.block_time || Math.floor(Date.now() / 1000),
+        };
+        await ammFarmBondPut(env, network, bondIdHex, bondRecord);
+        await ammFarmBonderAppend(env, network, lb.bonder_pubkey, bondIdHex);
+        const newFarmLb = {
+          ...farmCopy,
+          total_bonded: (BigInt(farmCopy.total_bonded) + bondAmount).toString(),
+        };
+        await ammFarmPut(env, network, lb.farm_id, newFarmLb);
+        found++;
+      } else if (decoded.opcode === T_LP_UNBOND) {
+        // SPEC-AMM-FARM-AMENDMENT §5.42. Unbonder authenticates with
+        // BIP-340 over unbond_msg; validator mints lp_return + reward
+        // UTXOs by decree and decrements virtual treasury_remaining.
+        const lu = decodeTLpUnbondPayload(decoded.payload);
+        if (!lu) continue;
+
+        const vout0lu = tx.vout?.[0];
+        if (!vout0lu || typeof vout0lu.scriptpubkey !== 'string') continue;
+        const opReturnSpkLu = vout0lu.scriptpubkey.toLowerCase();
+        if (opReturnSpkLu.length !== 68 || !opReturnSpkLu.startsWith('6a20')) continue;
+        const opReturnHashLu = hexToBytes(opReturnSpkLu.slice(4));
+        const expectedHashLu = sha256(decoded.payload);
+        let opReturnOkLu = true;
+        for (let i = 0; i < 32; i++) {
+          if (opReturnHashLu[i] !== expectedHashLu[i]) { opReturnOkLu = false; break; }
+        }
+        if (!opReturnOkLu) continue;
+
+        const farmLu = await ammFarmGet(env, network, lu.farm_id);
+        if (!farmLu) continue;
+        const bondLu = await ammFarmBondGet(env, network, lu.bond_id);
+        if (!bondLu) continue;
+        if (bondLu.farm_id !== lu.farm_id) continue;
+        if (bondLu.bonder_pubkey !== lu.unbonder_pubkey) continue;
+
+        const canonicalHeightLu = h > farmLu.end_height ? farmLu.end_height : h;
+        const farmCopyLu = { ...farmLu };
+        _farmCrystallize(farmCopyLu, canonicalHeightLu);
+        if (BigInt(lu.exit_acc_per_share) !== BigInt(farmCopyLu.acc_reward_per_share)) continue;
+        if (lu.exit_view_height < canonicalHeightLu - AMM_FARM_VIEW_STALENESS) continue;
+
+        const exitAcc = BigInt(lu.exit_acc_per_share);
+        const entryAcc = BigInt(bondLu.entry_acc_per_share);
+        if (exitAcc < entryAcc) continue;
+        const delta = exitAcc - entryAcc;
+        const bondAmountLu = BigInt(bondLu.bond_amount);
+        const pending = (bondAmountLu * delta) >> FARM_ACC_FIXED_POINT_SHIFT;
+        const treasuryRemaining = BigInt(farmCopyLu.treasury_remaining);
+        const payout = pending > treasuryRemaining ? treasuryRemaining : pending;
+        if (BigInt(lu.reward_amount) !== payout) continue;
+
+        const lpReturnRBig = BigInt('0x' + lu.lp_return_r);
+        if (lpReturnRBig === 0n || lpReturnRBig >= SECP_N) continue;
+        const rewardRBig = BigInt('0x' + lu.reward_r);
+        if (payout > 0n) {
+          if (rewardRBig === 0n || rewardRBig >= SECP_N) continue;
+        }
+
+        const unbondMsg = (() => {
+          const dom = new TextEncoder().encode('tacit-amm-farm-unbond-v1');
+          const buf = new Uint8Array(dom.length + 32 + 36 + 33 + 16 + 4 + 8 + 32 + 32);
+          let p = 0;
+          buf.set(dom, p); p += dom.length;
+          buf.set(hexToBytes(lu.farm_id), p); p += 32;
+          buf.set(hexToBytes(lu.bond_id), p); p += 36;
+          buf.set(hexToBytes(lu.unbonder_pubkey), p); p += 33;
+          for (let i = 0; i < 16; i++) { buf[p + i] = Number((exitAcc >> BigInt(i * 8)) & 0xffn); }
+          p += 16;
+          new DataView(buf.buffer).setUint32(p, lu.exit_view_height, true); p += 4;
+          new DataView(buf.buffer).setBigUint64(p, payout, true); p += 8;
+          buf.set(hexToBytes(lu.lp_return_r), p); p += 32;
+          buf.set(hexToBytes(lu.reward_r), p); p += 32;
+          return sha256(buf);
+        })();
+        let unbonderOk = false;
+        try {
+          const unbonderXOnly = hexToBytes(lu.unbonder_pubkey).slice(1);
+          unbonderOk = verifySchnorr(hexToBytes(lu.unbonder_sig), unbondMsg, unbonderXOnly);
+        } catch { unbonderOk = false; }
+        if (!unbonderOk) continue;
+
+        const newFarmLu = {
+          ...farmCopyLu,
+          total_bonded: (BigInt(farmCopyLu.total_bonded) - bondAmountLu).toString(),
+          treasury_remaining: (treasuryRemaining - payout).toString(),
+        };
+        await ammFarmPut(env, network, lu.farm_id, newFarmLu);
+        // Persist per-unbond receipt index BEFORE deleting the bond record,
+        // so downstream UTXO ancestry resolution can recover the lp_return
+        // commitment (it needs bond.bond_amount, which lives only here
+        // post-delete). vout[1] = lp_return; vout[2] = reward (omitted if
+        // payout == 0).
+        {
+          const cLpReturn = pedersenCommit(bondAmountLu, lpReturnRBig);
+          const receipt = {
+            unbond_txid: tx.txid,
+            farm_id: lu.farm_id,
+            bond_id: lu.bond_id,
+            lp_return: {
+              asset_id: farmLu.lp_asset_id,
+              commitment: bytesToHex(cLpReturn.toRawBytes(true)),
+              amount: bondLu.bond_amount,
+              r: lu.lp_return_r,
+              vout: 1,
+            },
+          };
+          if (payout > 0n) {
+            const cReward = pedersenCommit(payout, rewardRBig);
+            receipt.reward = {
+              asset_id: farmLu.reward_asset_id,
+              commitment: bytesToHex(cReward.toRawBytes(true)),
+              amount: lu.reward_amount,
+              r: lu.reward_r,
+              vout: 2,
+            };
+          }
+          await ammFarmUnbondReceiptPut(env, network, tx.txid, receipt);
+        }
+        await ammFarmBondDelete(env, network, lu.bond_id);
+        await ammFarmBonderRemove(env, network, bondLu.bonder_pubkey, lu.bond_id);
+        found++;
       } else if (decoded.opcode === T_DROP) {
         // SPEC §5.12. Two payload shapes share opcode 0x2B:
         //   - Standard (per_claim > 0): registers a new claim pool keyed by
@@ -18644,6 +19200,142 @@ async function _routeFetch(req, env, ctx) {
         return jsonResponse(response, 200, cors);
       } catch (e) {
         return jsonResponse({ error: 'amm pool lookup failed', detail: String(e?.message || e) }, 500, cors);
+      }
+    }
+
+    // LP-bond yield farms — SPEC-AMM-FARM-AMENDMENT.md endpoints.
+    //
+    // /farm/:farm_id — single-farm state with post-crystallization view.
+    // /farm/:farm_id/bonds?bonder=:pubkey — bonds owned by pubkey (with
+    //   computed pending_reward at canonical tip).
+    // /farms?pool=:pool_id — list farms for a pool.
+    if (url.pathname.startsWith('/farm/') && req.method === 'GET') {
+      // Parse path: /farm/:farm_id (and optional /bonds suffix).
+      const tail = url.pathname.slice('/farm/'.length);
+      const parts = tail.split('/').filter(Boolean);
+      const farmIdHex = (parts[0] || '').toLowerCase();
+      const sub = parts[1] || null;
+      if (!/^[0-9a-f]{64}$/.test(farmIdHex)) {
+        return jsonResponse({ error: 'farm_id must be 64 hex chars' }, 400, cors);
+      }
+      try {
+        const farm = await ammFarmGet(env, network, farmIdHex);
+        if (!farm) {
+          return jsonResponse({ error: 'farm not found', farm_id: farmIdHex, network }, 404, cors);
+        }
+        if (sub === 'bonds') {
+          const bonderPubkey = (url.searchParams.get('bonder') || '').toLowerCase();
+          if (bonderPubkey && !/^[0-9a-f]{66}$/.test(bonderPubkey)) {
+            return jsonResponse({ error: 'bonder must be 66 hex chars (compressed secp256k1)' }, 400, cors);
+          }
+          // Crystallize a copy to compute live pending against the tip.
+          const tipFarm = { ...farm };
+          let canonicalH = farm.last_update_height;
+          try {
+            const tipH = await fetchTipHeight(env, network);
+            if (Number.isInteger(tipH) && tipH >= 3) {
+              canonicalH = Math.min(tipH - 3, farm.end_height);
+            }
+          } catch {}
+          _farmCrystallize(tipFarm, canonicalH);
+
+          let bondIds;
+          if (bonderPubkey) {
+            bondIds = await ammFarmBondsForBonder(env, network, bonderPubkey);
+          } else {
+            // No bonder filter: list all bonds for this farm via KV scan.
+            // Bounded by KV.list per-call limit; pagination via ?cursor=.
+            const prefix = network === 'signet'
+              ? `ammfarmbond:`
+              : `ammfarmbond:${network}:`;
+            const cursor = url.searchParams.get('cursor') || undefined;
+            const limit = Math.min(parseInt(url.searchParams.get('limit') || '100', 10) || 100, 500);
+            const list = await env.REGISTRY_KV.list({ prefix, limit, cursor });
+            const recs = await Promise.all(list.keys.map(k => env.REGISTRY_KV.get(k.name, 'json')));
+            bondIds = recs.filter(r => r && r.farm_id === farmIdHex).map(r => r.bond_id);
+          }
+          const bonds = await Promise.all(bondIds.map(async (bondIdHex) => {
+            const b = await ammFarmBondGet(env, network, bondIdHex);
+            if (!b) return null;
+            if (bonderPubkey && b.bonder_pubkey !== bonderPubkey) return null;
+            const exitAcc = BigInt(tipFarm.acc_reward_per_share);
+            const entryAcc = BigInt(b.entry_acc_per_share);
+            const delta = exitAcc < entryAcc ? 0n : exitAcc - entryAcc;
+            const pending = (BigInt(b.bond_amount) * delta) >> FARM_ACC_FIXED_POINT_SHIFT;
+            const treasury = BigInt(tipFarm.treasury_remaining);
+            const payout = pending > treasury ? treasury : pending;
+            return {
+              ...b,
+              pending_reward: pending.toString(),
+              claimable_now: payout.toString(),
+              canonical_height: canonicalH,
+              tip_acc_reward_per_share: tipFarm.acc_reward_per_share,
+            };
+          }));
+          return jsonResponse({
+            farm_id: farmIdHex,
+            bonder: bonderPubkey || null,
+            canonical_height: canonicalH,
+            bonds: bonds.filter(Boolean),
+          }, 200, cors);
+        }
+        // Plain /farm/:farm_id — return farm record + crystallized view.
+        const tipFarm = { ...farm };
+        let canonicalH = farm.last_update_height;
+        try {
+          const tipH = await fetchTipHeight(env, network);
+          if (Number.isInteger(tipH) && tipH >= 3) {
+            canonicalH = Math.min(tipH - 3, farm.end_height);
+          }
+        } catch {}
+        _farmCrystallize(tipFarm, canonicalH);
+        return jsonResponse({
+          ...farm,
+          crystallized: {
+            acc_reward_per_share: tipFarm.acc_reward_per_share,
+            last_update_height: tipFarm.last_update_height,
+            canonical_height: canonicalH,
+          },
+        }, 200, cors);
+      } catch (e) {
+        return jsonResponse({ error: 'farm lookup failed', detail: String(e?.message || e) }, 500, cors);
+      }
+    }
+
+    // /farms?pool=:pool_id — list farms targeting a pool.
+    if (url.pathname === '/farms' && req.method === 'GET') {
+      const poolIdHex = (url.searchParams.get('pool') || '').toLowerCase();
+      if (!poolIdHex) {
+        // Global list: paginated KV scan.
+        const cursor = url.searchParams.get('cursor') || undefined;
+        const limit = Math.min(parseInt(url.searchParams.get('limit') || '100', 10) || 100, 500);
+        try {
+          const prefix = network === 'signet' ? `ammfarm:` : `ammfarm:${network}:`;
+          const list = await env.REGISTRY_KV.list({ prefix, limit, cursor });
+          // Filter out the pool-index keys (different prefix variant — they
+          // live under `ammfarmpool:`/`ammfarmbond:` so the bare-prefix scan
+          // is safe).
+          const fetched = await Promise.all(list.keys.map(k => env.REGISTRY_KV.get(k.name, 'json')));
+          const farms = fetched.filter(v => v && v.farm_id);
+          return jsonResponse({
+            farms, cursor: list.list_complete ? null : (list.cursor || null),
+          }, 200, cors);
+        } catch (e) {
+          return jsonResponse({ error: 'farms list failed', detail: String(e?.message || e) }, 500, cors);
+        }
+      }
+      if (!/^[0-9a-f]{64}$/.test(poolIdHex)) {
+        return jsonResponse({ error: 'pool must be 64 hex chars' }, 400, cors);
+      }
+      try {
+        const farmIds = await ammFarmsForPool(env, network, poolIdHex);
+        const farms = await Promise.all(farmIds.map(id => ammFarmGet(env, network, id)));
+        return jsonResponse({
+          pool_id: poolIdHex,
+          farms: farms.filter(Boolean),
+        }, 200, cors);
+      } catch (e) {
+        return jsonResponse({ error: 'farms-by-pool lookup failed', detail: String(e?.message || e) }, 500, cors);
       }
     }
 
