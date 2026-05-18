@@ -6082,7 +6082,7 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
   <div class="section" data-pool-ceremony-gated="true">
     <div class="section-header"><span>swap</span></div>
     <div class="section-body">
-      <div class="muted" style="margin-bottom:10px;">Trade against a pool's curve. Settlement is one Bitcoin tx with a slippage floor — if the pool moves past your floor before the reveal lands, the tx fails on chain and your input UTXO stays where it was.</div>
+      <div class="muted" style="margin-bottom:10px;">Trade against a pool's curve. The router compares the direct pool against multi-hop paths (up to 4 pools) and picks whichever yields more — a single-hop swap settles via T_SWAP_VAR, a multi-hop route settles via T_SWAP_ROUTE atomically across every pool it touches. Either way it's one Bitcoin commit-reveal pair with a slippage floor on the final delivery — if the route can't clear your floor before the reveal lands, the tx fails on chain and your input UTXO stays where it was.</div>
       <div class="flex" style="gap:8px;flex-wrap:wrap;align-items:flex-end;">
         <label style="flex:1;min-width:160px;">From
           <select id="pool-swap-from"><option value="">— pick an asset —</option></select>
