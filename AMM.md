@@ -48,7 +48,7 @@ implementer checklist, failure-mode catalog), and the post-launch
 evolution path. SPEC.md is the canonical wire-format authority;
 AMM.md is the canonical architectural reference.
 
-**Document version:** 2026-05-16. See
+**Document version:** 2026-05-19. See
 [`AMENDMENTS.md`](./AMENDMENTS.md) for the changelog.
 
 **Dapp implementation status.** The reference dapp (`dapp/tacit.js`)
@@ -2674,7 +2674,12 @@ chain observers do not.
   on chain in `T_SWAP_BATCH` envelopes. Per-trader identity is
   linkable across intents under the same pubkey; only per-trader
   *amounts* are hidden. Traders who want intent-level identity
-  privacy SHOULD use a fresh `trader_pubkey` per intent.
+  privacy SHOULD use a fresh `trader_pubkey` per intent — either
+  via a fresh-subkey derivation OR via the blinded-pubkey commit
+  construction described under "LP privacy via blinded-pubkey
+  commits" below (the on-chain `trader_pubkey` field is then a
+  Pedersen-style commit, indistinguishable from a fresh secp256k1
+  pubkey, with the underlying identity never revealed).
 
 This is the **same posture as the mixer**: aggregate state visible,
 individual user activity hidden — for the same reason (trustless
@@ -2697,6 +2702,25 @@ LP-share UTXO and observers cannot link back to the original
 deposit. Anonymity scales with concurrent LP-share activity in that
 pool's `lp_asset_id`; the dapp surfaces a live anonymity-set count,
 same UX discipline as the mixer.
+
+**LP privacy via blinded-pubkey commits.** A complementary, dapp-only
+discipline keeps individual LP positions structurally unlinkable to
+the depositor's main wallet without requiring a mixer round-trip.
+The construction (SPEC-CBTC-TAC-AMENDMENT.md §5.36.7) is a BIP-340
+tweak: `commit = recipient_pubkey + blinding · G`, where `blinding =
+HMAC(wallet.priv, domain || op-specific anchor)`. The commit serves
+as both a Schnorr verification key (if the op signs under the
+recipient) AND a P2TR output key (so payouts go to `P2TR(x_only(
+commit))`). Cleartext recipient pubkey never appears on chain;
+deposits with the same underlying wallet but different anchors
+produce uncorrelated commits. Zero byte cost — same 33-byte field
+width as a cleartext pubkey — and no new ceremony. The pattern is
+canonical for `T_FARM_INIT` launcher identity, `T_LP_BOND` bond-
+receipt markers, and `T_CBTC_TAC_DEPOSIT` recovery routing (see
+SPEC-AMM-FARM-AMENDMENT.md §5.41 and the cBTC.tac amendment for
+worked examples). A dapp implementing AMM-trader privacy can apply
+the same pattern to `trader_pubkey` on intent submission without
+any protocol change — same construction, no wire-format impact.
 
 **Trader privacy in a batch.** With `n_intents ≥ 2`, no observer
 can attribute a specific amount to a specific trader — per-intent
