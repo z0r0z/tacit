@@ -56176,13 +56176,21 @@ function applyMarketFilters() {
     // stays green (it IS the best available offer); the delta is just
     // honest context. No delta when the cheapest is within ±20% of mark
     // (i.e. a normal best-price scenario — no surprise to flag).
-    const _bestPriceMarkUnit = Number(a?.mark_price?.unit);
+    // Reference for the BEST PRICE delta: midpoint when the book is
+    // crossed, mark otherwise. Matches the rest of the ladder which
+    // also recolors against mid on a crossed book — without this the
+    // badge alone would still claim "vs mark -57%" while every row
+    // header / cell below it reads "vs mid". _effectiveReferenceUnit
+    // returns { unit, label } or null.
+    const _bestPriceRef = _effectiveReferenceUnit(a?.asset_id, a);
     let _bestPriceDeltaStr = '';
-    if (Number.isFinite(_bestPriceMarkUnit) && _bestPriceMarkUnit > 0 && Number.isFinite(unit) && unit > 0) {
-      const _pct = ((unit - _bestPriceMarkUnit) / _bestPriceMarkUnit) * 100;
+    if (_bestPriceRef && Number.isFinite(unit) && unit > 0) {
+      const _refUnit = _bestPriceRef.unit;
+      const _pct = ((unit - _refUnit) / _refUnit) * 100;
       if (Math.abs(_pct) >= 20) {
         const _sign = _pct >= 0 ? '+' : '−';
-        _bestPriceDeltaStr = ` <span style="opacity:0.85;font-weight:600;" title="Mark price for ${escapeHtml(a.ticker || 'token')} is ${fmtUnitPriceSats(_bestPriceMarkUnit)} sats. This cheapest ask is ${Math.abs(_pct).toFixed(0)}% ${_pct >= 0 ? 'above' : 'below'} mark — often a stale listing or deliberate underpricing; verify before buying.">vs mark ${_sign}${Math.abs(_pct).toFixed(0)}%</span>`;
+        const _refLabel = _bestPriceRef.label === 'mid' ? 'mid' : 'mark';
+        _bestPriceDeltaStr = ` <span style="opacity:0.85;font-weight:600;" title="${_refLabel === 'mid' ? 'Midpoint of best bid / best ask (the honest reference on a crossed book; last-trade mark is stale).' : 'Mark price'} for ${escapeHtml(a.ticker || 'token')} is ${fmtUnitPriceSats(_refUnit)} sats. This cheapest ask is ${Math.abs(_pct).toFixed(0)}% ${_pct >= 0 ? 'above' : 'below'} ${_refLabel} — often a stale listing or deliberate underpricing; verify before buying.">vs ${_refLabel} ${_sign}${Math.abs(_pct).toFixed(0)}%</span>`;
       }
     }
     const _bestPriceBadge = (_tileIdx === bestPreauthIdx && l.kind === 'preauth')
@@ -58443,7 +58451,7 @@ function marketAssetListCtaHtml(asset) {
   // checks so we don't promise a fast path that doesn't exist.
   const _entry = safeAid && _holdingsCache?.holdings ? _holdingsCache.holdings.get(safeAid) : null;
   const userHoldsAsset = !!(_entry && Array.isArray(_entry.utxos) && _entry.utxos.length > 0);
-  return `<button class="primary" data-act="market-ask-place" data-aid="${escapeHtml(safeAid)}" data-preview-only="${userHoldsAsset ? '0' : '1'}" title="${userHoldsAsset ? 'You hold this asset - list one of your UTXOs for sale via an Instant listing.' : 'Preview the listing panel. Connect a wallet holding this asset (with at least one verified UTXO) to publish.'}">List Assets</button>`;
+  return `<button class="primary" data-act="market-ask-place" data-aid="${escapeHtml(safeAid)}" data-preview-only="${userHoldsAsset ? '0' : '1'}" title="${userHoldsAsset ? 'You hold this asset - list one of your UTXOs for sale via an Instant listing.' : 'Preview the listing panel. Connect a wallet holding this asset (with at least one verified UTXO) to publish.'}">+ List for sale</button>`;
 }
 
 function findMarketAssetById(assetId) {
@@ -58953,9 +58961,20 @@ function renderMarketAssetHeader(assetId, rows) {
   // feed. Falls back to referenceUnit (floor / last trade) when no
   // mark price is available yet.
   const markUnit = Number(a.mark_price?.unit);
-  const headerUnit = (Number.isFinite(markUnit) && markUnit > 0)
-    ? markUnit
-    : priceGroup.referenceUnit;
+  // Crossed-book override: when the book is crossed the worker's
+  // last-trade mark is stale relative to live liquidity. Promote the
+  // (best bid + best ask) / 2 midpoint to the header tile so the most
+  // prominent number on the page agrees with the spread divider and
+  // the asks/bids ladders (which already recolor "vs mark" → "vs mid").
+  // _effectiveReferenceUnit returns { unit, label, crossed } or null;
+  // fall back to mark / floor when no crossed-book mid is available.
+  const _headerRef = _effectiveReferenceUnit(safeAid, a);
+  const _headerCrossed = _headerRef?.crossed === true;
+  const headerUnit = _headerCrossed
+    ? _headerRef.unit
+    : (Number.isFinite(markUnit) && markUnit > 0)
+      ? markUnit
+      : priceGroup.referenceUnit;
   const headerMarketCapSats = marketCapSats(priceGroup.asset || a, headerUnit);
   scheduleMarketSupplyEnrichment([priceGroup]);
   const total = Number(allGroup.total || 0);
@@ -59021,7 +59040,7 @@ function renderMarketAssetHeader(assetId, rows) {
       </div>
       <div>
         <div class="market-asset-stats">
-          <div><span>Price</span><strong class="market-sats-price ${_priceFlashClassFor(safeAid, headerUnit)}" data-market-header="price-sats">${escapeHtml(priceLine)}/${escapeHtml(a.ticker || 'token')}</strong><small class="market-usd-price" data-market-header="price-usd">${escapeHtml(priceUsd || (_marketOracleLoading() ? 'loading USD…' : '—'))}</small></div>
+          <div><span>${_headerCrossed ? 'Price · mid' : 'Price'}${_headerCrossed ? ` <span style="font-size:8px;font-weight:600;color:#7a4d00;background:#fff3cf;padding:0 4px;border:1px solid #c97a1a;letter-spacing:0.04em;" title="Book is crossed (best bid > best ask). Using midpoint of (best bid + best ask) / 2 as the price reference; the worker\'s last-trade mark (${escapeHtml(fmtUnitPriceSats(markUnit))} sats/${escapeHtml(a.ticker || 'token')}) is stale right now. The spread divider above the bids ladder shows both numbers.">CROSSED</span>` : ''}</span><strong class="market-sats-price ${_priceFlashClassFor(safeAid, headerUnit)}" data-market-header="price-sats">${escapeHtml(priceLine)}/${escapeHtml(a.ticker || 'token')}</strong><small class="market-usd-price" data-market-header="price-usd">${escapeHtml(priceUsd || (_marketOracleLoading() ? 'loading USD…' : '—'))}</small></div>
           <div><span>24h Volume</span><strong data-market-header="vol24-usd">${escapeHtml(allGroup.volume24hSats != null ? fmtMarketUsdWholeFromSats(allGroup.volume24hSats, '—') : '—')}</strong><small data-market-header="vol24-btc">${escapeHtml(allGroup.volume24hSats != null ? fmtMarketBtc(allGroup.volume24hSats) : '—')}</small></div>
           <div><span>Market Cap</span><strong data-market-header="mcap-usd">${escapeHtml(mcapUsd)}</strong><small data-market-header="mcap-btc">${escapeHtml(mcapBtc)}</small></div>
           ${(() => {
@@ -59162,29 +59181,47 @@ function renderMarketAssetStatsHTML(asset) {
   const _tfRowHtml = `<div class="chart-tf-row" data-chart-tf-row>${_tfChips}</div>`;
   return `
     <div data-market-asset-stats data-aid="${aid}" style="border:1px solid var(--ink);background:var(--bg);padding:10px 12px;margin-bottom:14px;">
+      <!-- Stats strip: trader-relevant metrics that are NOT already in the
+           header tiles. Header already carries price, 24h volume, market
+           cap; "last trade" / "24h Δ" / "24h volume" / "market cap" used
+           to live here too — strict duplication, sometimes with different
+           numbers (delta strip used last-close, this row used VWAP, so
+           "24h Δ" disagreed across the page). Now: only 24h high/low
+           and the "more stats" power-user roll-up. The spread cell
+           was also redundant with the spread divider between the
+           ladders — dropped.  -->
       <div style="display:flex;align-items:baseline;gap:18px;flex-wrap:wrap;font-size:11px;">
-        <div><span class="muted">last trade</span> <strong data-market-stat-last>—</strong></div>
-        <div><span class="muted">24h Δ</span> <strong data-market-stat-delta>—</strong></div>
-        <div data-market-stat-delta7d-wrap style="display:none;"><span class="muted">7d Δ</span> <strong data-market-stat-delta7d>—</strong></div>
-        <div data-market-stat-deltaall-wrap style="display:none;"><span class="muted" data-market-stat-deltaall-label>all-time Δ</span> <strong data-market-stat-deltaall>—</strong></div>
         <div><span class="muted">24h high</span> <strong data-market-stat-high>—</strong></div>
         <div><span class="muted">24h low</span> <strong data-market-stat-low>—</strong></div>
-        <div><span class="muted">24h volume</span> <strong data-market-stat-vol24>—</strong></div>
-        <div data-market-stat-vwap24-wrap style="display:none;"><span class="muted" title="Volume-weighted average price over the last 24h: Σ(unit_price × fill_sats) / Σ(fill_sats). The price weighted by trade size — execution benchmark that resists single-fill skew (a big fill near the median moves VWAP more than a dust fill at an extreme).">24h VWAP</span> <strong data-market-stat-vwap24>—</strong></div>
-        <div data-market-stat-twap1h-wrap style="display:none;"><span class="muted" title="Time-weighted average price over the last hour. Each fill's unit price is weighted by the duration it was the most recent print. Useful as a short-term execution benchmark: a fill above TWAP is paying premium, below is below-market.">1h TWAP</span> <strong data-market-stat-twap1h>—</strong></div>
-        <div><span class="muted">transfers</span> <strong data-market-stat-xfers title="On-chain confidential transfers tracked by the indexer (includes sends, drops, OTC settles — not just market trades). For market trades only, see the recent-trades list below.">—</strong></div>
-        <div data-market-stat-spread-wrap style="display:none;"><span class="muted">spread</span> <strong data-market-stat-spread>—</strong></div>
+        <!-- Hidden last-trade cell kept for backward compat: the chart-
+             cursor / set-alert flow reads its text content to echo the
+             current mark when opening the alert dialog. Display: none so
+             it doesn't render in the strip; populator still fills it. -->
+        <div style="display:none;"><span class="muted">last trade</span> <strong data-market-stat-last>—</strong></div>
+        <div style="display:none;"><span class="muted">24h Δ</span> <strong data-market-stat-delta>—</strong></div>
+        <div style="display:none;"><span class="muted">24h volume</span> <strong data-market-stat-vol24>—</strong></div>
       </div>
       <details data-market-supplycap-row style="margin-top:8px;padding-top:8px;border-top:1px dashed var(--ink-faint);font-size:11px;">
         <summary style="cursor:pointer;color:var(--ink-mid);font-size:10px;text-transform:uppercase;letter-spacing:0.08em;padding:2px 0;list-style:none;">
           <span style="display:inline-block;transition:transform 0.1s;font-size:9px;">▸</span> more stats
         </summary>
         <div style="margin-top:8px;display:flex;align-items:baseline;gap:18px;flex-wrap:wrap;">
-          <div><span class="muted">market cap</span> <strong data-market-stat-mcap title="Total supply × current mark price. Computed only when the etcher has attested the total supply (revealed supply + blinding so observers can verify pedersen_commit(supply, blinding) == on-chain commitment). Without an attestation, supply is cryptographically hidden and market cap can't be derived.">—</strong></div>
+          <div data-market-stat-delta7d-wrap style="display:none;"><span class="muted">7d Δ</span> <strong data-market-stat-delta7d>—</strong></div>
+          <div data-market-stat-deltaall-wrap style="display:none;"><span class="muted" data-market-stat-deltaall-label>all-time Δ</span> <strong data-market-stat-deltaall>—</strong></div>
+          <div data-market-stat-vwap24-wrap style="display:none;"><span class="muted" title="Volume-weighted average price over the last 24h: Σ(unit_price × fill_sats) / Σ(fill_sats). The price weighted by trade size — execution benchmark that resists single-fill skew (a big fill near the median moves VWAP more than a dust fill at an extreme).">24h VWAP</span> <strong data-market-stat-vwap24>—</strong></div>
+          <div data-market-stat-twap1h-wrap style="display:none;"><span class="muted" title="Time-weighted average price over the last hour. Each fill's unit price is weighted by the duration it was the most recent print. Useful as a short-term execution benchmark: a fill above TWAP is paying premium, below is below-market.">1h TWAP</span> <strong data-market-stat-twap1h>—</strong></div>
+          <div><span class="muted">transfers</span> <strong data-market-stat-xfers title="On-chain confidential transfers tracked by the indexer (includes sends, drops, OTC settles — not just market trades). For market trades only, see the recent-trades list below.">—</strong></div>
           <div><span class="muted">total supply</span> <strong data-market-stat-supply title="Total amount issued at etch, revealed via the etcher's attestation. When hidden, the etcher hasn't published (supply, blinding); the commitment is on chain but its value is confidential.">—</strong></div>
           <div data-market-stat-supplymin-wrap><span class="muted">disclosed ≥</span> <strong data-market-stat-supplymin title="Sum of amounts across all published per-UTXO openings — a public lower bound on circulating supply that any observer can reproduce.">—</strong></div>
           <div data-market-stat-liq-asks><span class="muted">asks liquidity</span> <strong data-market-stat-asksval>—</strong></div>
           <div data-market-stat-liq-bids><span class="muted">bids liquidity</span> <strong data-market-stat-bidsval>—</strong></div>
+          <!-- market cap moved out (header tile owns this) but kept in DOM
+               so the populator still writes it; visible in the header. -->
+          <div style="display:none;"><span class="muted">market cap</span> <strong data-market-stat-mcap>—</strong></div>
+          <!-- spread kept hidden — the spread divider between asks/bids
+               ladders is the authoritative surface; populator still writes
+               here for any consumer reading the text. -->
+          <div data-market-stat-spread-wrap style="display:none;"><span class="muted">spread</span> <strong data-market-stat-spread>—</strong></div>
         </div>
       </details>
       <div data-market-attest-cta style="display:none;margin-top:8px;padding:8px 10px;background:var(--bg-warm);border:1px dashed var(--ink-faint);font-size:11px;line-height:1.5;"></div>
@@ -60601,7 +60638,7 @@ function renderMarketBidsLadderHTML(asset) {
       <div class="market-bids-head">
         <div class="market-bids-title">
           <strong>Bids &middot; <span data-market-bids-count>&mdash;</span></strong>
-          <span title="Signed buy offers. Bidder's sats stay in their own wallet until a matched seller claims (CoW / 0x-style maker model). Each bid is partial-fillable — sellers can take any chunk between min_fill and the full amount in one Bitcoin tx, per SPEC §5.7.7.">partial-fillable</span>
+          <span title="Signed buy offers. Bidder's sats stay in their own wallet until a matched seller claims (CoW / 0x-style maker model). Each bid supports partial fills — sellers can take any chunk between min_fill and the full amount in one Bitcoin tx, per SPEC §5.7.7." style="font-size:10px;color:var(--ink-mid);">partial fills OK</span>
         </div>
         <div class="market-bids-actions">
           <button data-act="auto-fulfil-toggle" type="button" title="Automatically signs claim responses for atomic intents (asks AND bid fulfilments) while this tab is open. Required for sell-side swaps to settle without you babysitting.">Auto-fulfil: OFF</button>
@@ -61339,7 +61376,7 @@ async function _populateDepthChart(section, aid, decimals, ticker, markUnit) {
   out.innerHTML = `
     <div style="font-size:10px;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:4px;display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;">
       <strong>Depth</strong>${_logBadge}${_crossedBadge}
-      <span class="muted" style="text-transform:none;letter-spacing:0;font-size:10px;">· <span title="Depth chart counts after the in-band outlier filter (0.2×–5× mark price): dust + fat-finger orders are excluded from the chart's bands and from these counts. The asset-header card's 'Active orders' is the unfiltered total across every kind; the orderbook panel below uses its own Simple-mode filter (preauth-only). Different surfaces filter differently — hover each cell for the specifics." style="cursor:help;border-bottom:1px dotted var(--ink-faint);">${bids.length} bid${bids.length === 1 ? '' : 's'} · ${asks.length} ask${asks.length === 1 ? '' : 's'}</span> · <span${_inBandTitle ? ` title="${escapeHtml(_inBandTitle)}" style="cursor:help;border-bottom:1px dotted var(--ink-faint);"` : ''}>best bid ${escapeHtml(fmtUnitPriceSats(headerBestBid))} · best ask ${escapeHtml(fmtUnitPriceSats(headerBestAsk))} sats/${escapeHtml(ticker)}</span>${centerU != null ? ` · mark ${escapeHtml(fmtUnitPriceSats(centerU))}` : ''} · hover to inspect, click to prime swap</span>
+      <span class="muted" style="text-transform:none;letter-spacing:0;font-size:10px;">· <span title="In-band counts after the 0.2×–5× outlier filter — dust + fat-finger orders are excluded from the chart's bands. The asset-header tile shows the unfiltered total, so its number is higher. The asks/bids ladders below use their own Simple-mode filter (preauth-only)." style="cursor:help;border-bottom:1px dotted var(--ink-faint);">${bids.length} bid${bids.length === 1 ? '' : 's'} · ${asks.length} ask${asks.length === 1 ? '' : 's'} <span style="font-size:9px;opacity:0.7;">in-band</span></span> · <span${_inBandTitle ? ` title="${escapeHtml(_inBandTitle)}" style="cursor:help;border-bottom:1px dotted var(--ink-faint);"` : ''}>best bid ${escapeHtml(fmtUnitPriceSats(headerBestBid))} · best ask ${escapeHtml(fmtUnitPriceSats(headerBestAsk))} sats/${escapeHtml(ticker)}</span>${centerU != null ? ` · mark ${escapeHtml(fmtUnitPriceSats(centerU))}` : ''} · hover to inspect, click to prime swap</span>
     </div>
     <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet" style="width:100%;height:auto;max-height:200px;display:block;background:var(--bg-warm, #faf9f5);border:1px solid var(--ink-faint);">
       ${isCrossed ? (() => {
@@ -61360,12 +61397,20 @@ async function _populateDepthChart(section, aid, decimals, ticker, markUnit) {
         const _zoneCx = (_zoneXLo + _zoneXHi) / 2;
         const _zoneCy = PT + plotH / 2;
         const _showLabel = _zoneW >= 36;
-        const _spreadPct = (headerBestAsk > 0) ? ((headerBestBid - headerBestAsk) / headerBestAsk) * 100 : null;
-        const _pctTag = _spreadPct != null && Number.isFinite(_spreadPct) && _spreadPct < 10000
-          ? ` +${_spreadPct.toFixed(_spreadPct < 10 ? 1 : 0)}%`
+        // Spread as % of midpoint — honest framing of how crossed the
+        // book is. Previously rendered "+160%" which a trader reads as
+        // "guaranteed +160% return", but it's the cross WIDTH not a
+        // realized PnL (you need both sides of liquidity to actually
+        // capture it, and atomic settle adds latency / re-org risk).
+        // Reword to "crossed by N%" so the label describes the book
+        // anomaly without implying riskless profit.
+        const _mid = (headerBestBid + headerBestAsk) / 2;
+        const _spreadPctOfMid = (_mid > 0) ? ((headerBestBid - headerBestAsk) / _mid) * 100 : null;
+        const _pctTag = _spreadPctOfMid != null && Number.isFinite(_spreadPctOfMid) && _spreadPctOfMid < 10000
+          ? ` ${_spreadPctOfMid.toFixed(_spreadPctOfMid < 10 ? 1 : 0)}%`
           : '';
-        const _zoneTip = `Arbitrage zone: best bid (${fmtUnitPriceSats(headerBestBid)}) is higher than best ask (${fmtUnitPriceSats(headerBestAsk)}) sats/${ticker}${_spreadPct != null ? ` — a +${_spreadPct.toFixed(0)}% gap` : ''}. A real-liquidity cross drains immediately as arbitrageurs buy the ask and sell to the bid; persistent crosses usually mean one side is stale or fat-finger.`;
-        return `<rect x="${_zoneXLo.toFixed(2)}" y="${PT}" width="${_zoneW.toFixed(2)}" height="${plotH.toFixed(2)}" fill="#ffcc33" fill-opacity="0.42" stroke="#c97a1a" stroke-width="1" stroke-opacity="0.55" stroke-dasharray="4,3" pointer-events="none"><title>${escapeHtml(_zoneTip)}</title></rect>${_showLabel ? `<text x="${_zoneCx.toFixed(2)}" y="${_zoneCy.toFixed(2)}" font-size="10" font-family="var(--mono, monospace)" fill="#7a4d00" text-anchor="middle" font-weight="800" letter-spacing="0.12em" pointer-events="none">ARB ZONE${escapeHtml(_pctTag)}</text>` : ''}`;
+        const _zoneTip = `Book is crossed: best bid (${fmtUnitPriceSats(headerBestBid)}) is higher than best ask (${fmtUnitPriceSats(headerBestAsk)}) sats/${ticker}${_spreadPctOfMid != null ? ` — gap is ${_spreadPctOfMid.toFixed(0)}% of midpoint` : ''}. Capturing the spread needs liquidity on both sides plus two on-chain fills; persistent crosses usually mean one side is stale or fat-finger.`;
+        return `<rect x="${_zoneXLo.toFixed(2)}" y="${PT}" width="${_zoneW.toFixed(2)}" height="${plotH.toFixed(2)}" fill="#ffcc33" fill-opacity="0.42" stroke="#c97a1a" stroke-width="1" stroke-opacity="0.55" stroke-dasharray="4,3" pointer-events="none"><title>${escapeHtml(_zoneTip)}</title></rect>${_showLabel ? `<text x="${_zoneCx.toFixed(2)}" y="${_zoneCy.toFixed(2)}" font-size="10" font-family="var(--mono, monospace)" fill="#7a4d00" text-anchor="middle" font-weight="800" letter-spacing="0.12em" pointer-events="none">CROSSED${escapeHtml(_pctTag)}</text>` : ''}`;
       })() : ''}
       <path data-depth-bid d="${bidPath}" fill="#0a8f43" fill-opacity="0.32" stroke="#0a8f43" stroke-width="1.6" pointer-events="none"/>
       <path data-depth-ask d="${askPath}" fill="#b8341d" fill-opacity="0.32" stroke="#b8341d" stroke-width="1.6" pointer-events="none"/>
@@ -61374,7 +61419,10 @@ async function _populateDepthChart(section, aid, decimals, ticker, markUnit) {
       ${centerX != null ? `<line x1="${centerX.toFixed(2)}" y1="${PT}" x2="${centerX.toFixed(2)}" y2="${(PT + plotH).toFixed(2)}" stroke="var(--ink)" stroke-width="1.4" stroke-dasharray="5,3" stroke-opacity="0.85" pointer-events="none"/><rect x="${(centerX - 36).toFixed(2)}" y="${PT}" width="72" height="11" rx="2" fill="#faf9f5" stroke="var(--ink)" stroke-width="0.8" opacity="0.95" pointer-events="none"/><text x="${centerX.toFixed(2)}" y="${(PT + 8).toFixed(2)}" font-size="9" fill="var(--ink)" font-family="var(--mono, monospace)" text-anchor="middle" font-weight="600" pointer-events="none">mark ${escapeHtml(fmtUnitPriceSats(centerU))}</text>` : ''}
       <text x="${PL}" y="${H - 5}" font-size="9" fill="var(--ink-mid)" font-family="var(--mono, monospace)" pointer-events="none">${escapeHtml(fmtUnitPriceSats(xLo))}</text>
       <text x="${W - PR}" y="${H - 5}" font-size="9" fill="var(--ink-mid)" font-family="var(--mono, monospace)" text-anchor="end" pointer-events="none">${escapeHtml(fmtUnitPriceSats(xHi))}</text>
-      <text x="${PL}" y="${(PT + 9).toFixed(0)}" font-size="9" fill="var(--ink-mid)" font-family="var(--mono, monospace)" pointer-events="none">${yMax.toLocaleString(undefined, { maximumFractionDigits: 2 })} ${escapeHtml(ticker)}</text>
+      <!-- Magnitude-compacted y-axis label: 1,251,247.86 TAC reads as
+           "1.25M TAC" at a glance. Full value lives in the SVG <title>
+           hover so power users can still pull the exact depth. -->
+      <text x="${PL}" y="${(PT + 9).toFixed(0)}" font-size="9" fill="var(--ink-mid)" font-family="var(--mono, monospace)" pointer-events="none"><title>${yMax.toLocaleString(undefined, { maximumFractionDigits: 2 })} ${escapeHtml(ticker)}</title>${escapeHtml(yMax >= 1e6 ? `${(yMax / 1e6).toFixed(yMax >= 1e7 ? 1 : 2)}M` : yMax >= 1e4 ? `${(yMax / 1e3).toFixed(yMax >= 1e5 ? 0 : 1)}k` : yMax >= 1 ? yMax.toLocaleString(undefined, { maximumFractionDigits: 0 }) : yMax.toFixed(3))} ${escapeHtml(ticker)}</text>
       <rect data-depth-overlay x="${PL}" y="${PT}" width="${plotW}" height="${plotH}" fill="transparent" style="cursor:crosshair;"/>
       <g data-depth-cursor style="display:none;" pointer-events="none">
         <line data-cursor-line x1="0" y1="${PT}" x2="0" y2="${(PT + plotH).toFixed(2)}" stroke="var(--ink)" stroke-width="0.8" stroke-dasharray="2,2"/>
