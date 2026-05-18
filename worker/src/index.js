@@ -1872,6 +1872,81 @@ function ammSwapVarKernelVerifyPoint(cChangeOrSentinelBytes, cInSecpBytes, delta
   return cChange.add(cIn.negate()).add(ditH);
 }
 
+// ============== T_SWAP_ROUTE msg builders ==============
+//
+// route_msg + kernel_msg byte-identical to tests/swap-route.mjs:
+// `buildSwapRouteIntentMsg` and `buildSwapRouteKernelMsg`. The worker
+// reconstructs each from the decoded `sr` object so the same bytes the
+// dapp signed are what verifySchnorr checks against.
+const _SWAP_ROUTE_INTENT_DOMAIN_WORKER = new TextEncoder().encode('tacit-swap-route-v1');
+const _SWAP_ROUTE_KERNEL_DOMAIN_WORKER = new TextEncoder().encode('tacit-kernel-v1');
+const AMM_SWAP_ROUTE_U64_MAX = (1n << 64n) - 1n;
+
+function _srU64LE(n) {
+  const b = new Uint8Array(8);
+  let x = BigInt(n);
+  for (let i = 0; i < 8; i++) { b[i] = Number(x & 0xffn); x >>= 8n; }
+  return b;
+}
+function _srU32LE(n) {
+  const b = new Uint8Array(4);
+  new DataView(b.buffer).setUint32(0, n >>> 0, true);
+  return b;
+}
+function _srU16LE(n) {
+  const b = new Uint8Array(2);
+  new DataView(b.buffer).setUint16(0, n & 0xffff, true);
+  return b;
+}
+function _srEncodeHopBlock(hop) {
+  return concatBytes(
+    hexToBytes(hop.pool_id),
+    new Uint8Array([hop.direction & 0xff]),
+    _srU16LE(hop.fee_bps),
+    _srU64LE(hop.R_A_pre),
+    _srU64LE(hop.R_B_pre),
+    _srU64LE(hop.delta_a_net_mag),
+    _srU64LE(hop.delta_b_net_mag),
+  );
+}
+function _srHashHops(sr) {
+  return sha256(concatBytes(...sr.hops.map(_srEncodeHopBlock)));
+}
+function ammSwapRouteIntentMsg(sr) {
+  const hopBlocks = sr.hops.map(_srEncodeHopBlock);
+  return sha256(concatBytes(
+    _SWAP_ROUTE_INTENT_DOMAIN_WORKER,
+    hexToBytes(sr.trader_pubkey),
+    hexToBytes(sr.trader_input_asset_id),
+    hexToBytes(sr.trader_output_asset_id),
+    _srU64LE(sr.min_out),
+    _srU32LE(sr.expiry_height),
+    new Uint8Array([sr.n_hops & 0xff]),
+    ...hopBlocks,
+    hexToBytes(sr.c_in_secp),
+    hexToBytes(sr.c_receipt_secp),
+  ));
+}
+function ammSwapRouteKernelMsg(sr, deltaIn0, deltaOutLast) {
+  const hopsHash = _srHashHops(sr);
+  // Outpoint encoding: txid_BE(32) || vout_LE(4).
+  const opBytes = concatBytes(
+    hexToBytes(sr.trader_input_txid_be),
+    _srU32LE(sr.trader_input_vout),
+  );
+  return sha256(concatBytes(
+    _SWAP_ROUTE_KERNEL_DOMAIN_WORKER,
+    hexToBytes(sr.trader_input_asset_id),
+    hexToBytes(sr.trader_output_asset_id),
+    new Uint8Array([0x01]),
+    opBytes,
+    hexToBytes(sr.c_receipt_secp),
+    _srU64LE(deltaIn0),
+    _srU64LE(deltaOutLast),
+    hopsHash,
+  ));
+}
+
 // ============== LP_ADD + LP_REMOVE kernel msg / key / verify ==============
 //
 // LP_ADD kernel sig is per-side (A and B). Each side signs:
@@ -8576,6 +8651,106 @@ async function holdingsCacheKey(network, ownerPubHex, aidsSortedJoined) {
   const digest = await crypto.subtle.digest('SHA-256', bytes);
   const hex = bytesToHex(new Uint8Array(digest)).slice(0, 32);
   return new Request(`https://_holdings-cache_/holdings/${hex}`, { method: 'GET' });
+}
+
+// ============== Phase 1B per-asset GET edge caches ==============
+// Same SWR pattern as the bid-intents cache above, applied to the four
+// remaining uncached per-asset GET endpoints — listings, listings-range,
+// atomic-intents, preauth-sales. Each was a 1 KV.list + N KV.gets fan-
+// out per request before caching. SWR collapses concurrent polls within
+// a colo to one real fan-out per FRESH window; mutations bust through
+// _mutateAndBustWith below so fresh state surfaces to the next reader
+// without waiting on the FRESH window.
+//
+// FRESH windows are tuned per endpoint's churn rate:
+//   listings        : 10s — moderately polled; preauth + opening kinds
+//   listings-range  : 15s — least polled; per-maker single record
+//   atomic-intents  : 10s — claim TTL is 5min, so a 10s window is fine
+//   preauth-sales   : 10s — same shape as listings, similar churn
+//
+// STALE uniformly 60s — covers transient KV blips and burst dedupe.
+const LISTINGS_CACHE_FRESH_MS = 10_000;
+const LISTINGS_CACHE_STALE_MS = 60_000;
+function listingsCacheKey(network, aid) {
+  return new Request(`https://_listings-cache_/listings/${network}/${aid}`, { method: 'GET' });
+}
+async function listingsComputeAndCache(env, network, aid) {
+  const fresh = await handleListingList(aid, env, network, {});
+  const body = await fresh.text();
+  if (fresh.status === 200) {
+    const ch = new Headers();
+    ch.set('Content-Type', 'application/json');
+    ch.set('X-Cached-At', String(Date.now()));
+    ch.set('Cache-Control', `public, max-age=${Math.floor(LISTINGS_CACHE_STALE_MS / 1000)}`);
+    await caches.default.put(listingsCacheKey(network, aid), new Response(body, { status: 200, headers: ch }));
+  }
+  return { body, status: fresh.status };
+}
+async function _bustListingsCache(network, aid) {
+  try { await caches.default.delete(listingsCacheKey(network, aid)); } catch {}
+}
+
+const LISTINGS_RANGE_CACHE_FRESH_MS = 15_000;
+const LISTINGS_RANGE_CACHE_STALE_MS = 60_000;
+function listingsRangeCacheKey(network, aid) {
+  return new Request(`https://_listings-range-cache_/listings-range/${network}/${aid}`, { method: 'GET' });
+}
+async function listingsRangeComputeAndCache(env, network, aid) {
+  const fresh = await handleRangeListingList(aid, env, network, {});
+  const body = await fresh.text();
+  if (fresh.status === 200) {
+    const ch = new Headers();
+    ch.set('Content-Type', 'application/json');
+    ch.set('X-Cached-At', String(Date.now()));
+    ch.set('Cache-Control', `public, max-age=${Math.floor(LISTINGS_RANGE_CACHE_STALE_MS / 1000)}`);
+    await caches.default.put(listingsRangeCacheKey(network, aid), new Response(body, { status: 200, headers: ch }));
+  }
+  return { body, status: fresh.status };
+}
+async function _bustListingsRangeCache(network, aid) {
+  try { await caches.default.delete(listingsRangeCacheKey(network, aid)); } catch {}
+}
+
+const ATOMIC_INTENTS_CACHE_FRESH_MS = 10_000;
+const ATOMIC_INTENTS_CACHE_STALE_MS = 60_000;
+function atomicIntentsCacheKey(network, aid) {
+  return new Request(`https://_atomic-intents-cache_/atomic-intents/${network}/${aid}`, { method: 'GET' });
+}
+async function atomicIntentsComputeAndCache(env, network, aid) {
+  const fresh = await handleAtomicIntentList(aid, env, network, {});
+  const body = await fresh.text();
+  if (fresh.status === 200) {
+    const ch = new Headers();
+    ch.set('Content-Type', 'application/json');
+    ch.set('X-Cached-At', String(Date.now()));
+    ch.set('Cache-Control', `public, max-age=${Math.floor(ATOMIC_INTENTS_CACHE_STALE_MS / 1000)}`);
+    await caches.default.put(atomicIntentsCacheKey(network, aid), new Response(body, { status: 200, headers: ch }));
+  }
+  return { body, status: fresh.status };
+}
+async function _bustAtomicIntentsCache(network, aid) {
+  try { await caches.default.delete(atomicIntentsCacheKey(network, aid)); } catch {}
+}
+
+const PREAUTH_SALES_CACHE_FRESH_MS = 10_000;
+const PREAUTH_SALES_CACHE_STALE_MS = 60_000;
+function preauthSalesCacheKey(network, aid) {
+  return new Request(`https://_preauth-sales-cache_/preauth-sales/${network}/${aid}`, { method: 'GET' });
+}
+async function preauthSalesComputeAndCache(env, network, aid) {
+  const fresh = await handlePreauthSaleList(aid, env, network, {});
+  const body = await fresh.text();
+  if (fresh.status === 200) {
+    const ch = new Headers();
+    ch.set('Content-Type', 'application/json');
+    ch.set('X-Cached-At', String(Date.now()));
+    ch.set('Cache-Control', `public, max-age=${Math.floor(PREAUTH_SALES_CACHE_STALE_MS / 1000)}`);
+    await caches.default.put(preauthSalesCacheKey(network, aid), new Response(body, { status: 200, headers: ch }));
+  }
+  return { body, status: fresh.status };
+}
+async function _bustPreauthSalesCache(network, aid) {
+  try { await caches.default.delete(preauthSalesCacheKey(network, aid)); } catch {}
 }
 
 // ============== /market aggregate (worker-side join) ==============
@@ -16859,7 +17034,7 @@ async function scanForEtches(env, network) {
           // Amount continuity (k ≥ 1).
           if (k > 0 && delta_in !== prevDeltaOut) { routeOk = false; break; }
           // Reserve-bound guards.
-          if (R_in + delta_in > AMM_U64_MAX) { routeOk = false; break; }
+          if (R_in + delta_in > AMM_SWAP_ROUTE_U64_MAX) { routeOk = false; break; }
           if (R_out < delta_out) { routeOk = false; break; }
 
           // CFMM curve floor: delta_out·(R_in·gDen + gNum·delta_in)
@@ -17303,6 +17478,10 @@ export {
   POOL_CAP_SOLO_INTENT_ALLOWED, AMM_PROTOCOL_FEE_BPS_MAX,
   decodeTSwapVarPayload, ammCurveDeltaOut, ammSwapVarEnvelopeHash,
   ammKernelMsgV1, ammSwapVarIntentMsg, ammSwapVarKernelVerifyPoint,
+  // T_SWAP_ROUTE (atomic multi-hop AMM routing) — see SPEC-SWAP-ROUTE-AMENDMENT.
+  T_SWAP_ROUTE, SWAP_ROUTE_N_HOPS_MAX,
+  decodeTSwapRoutePayload, ammSwapRouteEnvelopeHash,
+  ammSwapRouteIntentMsg, ammSwapRouteKernelMsg,
   // BJJ + XCurve primitives for cross-curve LP commits.
   pedersenBJJ, H_BJJ, G_BJJ, bjjDeriveGenerator,
   verifyXCurve, XCURVE_PROOF_LEN,
@@ -18609,42 +18788,100 @@ export default {
     const md = url.pathname.match(/^\/assets\/([0-9a-f]{64})\/disclosures$/);
     if (md && req.method === 'POST')                           return _mutateAndBust(md[1], () => handleDisclosurePost(md[1], req, env, network, cors));
     if (md && req.method === 'GET')                            return handleDisclosureList(md[1], env, network, cors);
+    // Phase 1B mutation bust wrappers. _mutateAndBust handles the asset-
+    // detail cache; these per-endpoint wrappers chain on the per-asset
+    // GET cache bust so a fresh POST/DELETE/claim surfaces to the next
+    // polling reader without waiting on the FRESH window. Mirrors
+    // _mutateAndBustBidIntents below; fire-and-forget via ctx.waitUntil.
+    const _mutateAndBustListings = async (aid, makeResp) => {
+      const resp = await _mutateAndBust(aid, makeResp);
+      if (resp.status >= 200 && resp.status < 400 && ctx && typeof ctx.waitUntil === 'function') {
+        ctx.waitUntil(_bustListingsCache(network, aid));
+      }
+      return resp;
+    };
+    const _mutateAndBustListingsRange = async (aid, makeResp) => {
+      const resp = await _mutateAndBust(aid, makeResp);
+      if (resp.status >= 200 && resp.status < 400 && ctx && typeof ctx.waitUntil === 'function') {
+        ctx.waitUntil(_bustListingsRangeCache(network, aid));
+      }
+      return resp;
+    };
+    const _mutateAndBustAtomicIntents = async (aid, makeResp) => {
+      const resp = await _mutateAndBust(aid, makeResp);
+      if (resp.status >= 200 && resp.status < 400 && ctx && typeof ctx.waitUntil === 'function') {
+        ctx.waitUntil(_bustAtomicIntentsCache(network, aid));
+      }
+      return resp;
+    };
+    const _mutateAndBustPreauthSales = async (aid, makeResp) => {
+      const resp = await _mutateAndBust(aid, makeResp);
+      if (resp.status >= 200 && resp.status < 400 && ctx && typeof ctx.waitUntil === 'function') {
+        ctx.waitUntil(_bustPreauthSalesCache(network, aid));
+      }
+      return resp;
+    };
+    // Phase 1B generic SWR serve. Shared by all four per-asset list GETs;
+    // each call passes its own cache key + windows + compute fn. Mirrors
+    // the inlined SWR pattern used by /assets, /market, bid-intents.
+    const _swrServePerAsset = async (cacheKey, freshMs, staleMs, computeFn) => {
+      const cache = caches.default;
+      const _withCors = (b, status, kind) => {
+        const headers = new Headers();
+        headers.set('Content-Type', 'application/json');
+        for (const [k, v] of Object.entries(cors)) headers.set(k, v);
+        headers.set('X-Cache', kind);
+        return new Response(b, { status, headers });
+      };
+      const cached = await cache.match(cacheKey);
+      if (cached) {
+        const cachedAtStr = cached.headers.get('X-Cached-At');
+        const ageMs = cachedAtStr ? Date.now() - parseInt(cachedAtStr, 10) : Infinity;
+        if (ageMs < freshMs) return _withCors(await cached.text(), cached.status, 'HIT');
+        if (ageMs < staleMs) {
+          if (ctx && typeof ctx.waitUntil === 'function') ctx.waitUntil(computeFn().catch(() => null));
+          return _withCors(await cached.text(), cached.status, 'STALE');
+        }
+      }
+      const result = await computeFn();
+      return _withCors(result.body, result.status, cached ? 'EXPIRED-MISS' : 'MISS');
+    };
     const ml = url.pathname.match(/^\/assets\/([0-9a-f]{64})\/listings$/);
-    if (ml && req.method === 'POST')                           return _mutateAndBust(ml[1], () => handleListingPost(ml[1], req, env, network, cors));
-    if (ml && req.method === 'GET')                            return handleListingList(ml[1], env, network, cors);
+    if (ml && req.method === 'POST')                           return _mutateAndBustListings(ml[1], () => handleListingPost(ml[1], req, env, network, cors));
+    if (ml && req.method === 'GET')                            return _swrServePerAsset(listingsCacheKey(network, ml[1]), LISTINGS_CACHE_FRESH_MS, LISTINGS_CACHE_STALE_MS, () => listingsComputeAndCache(env, network, ml[1]));
     const ml2 = url.pathname.match(/^\/assets\/([0-9a-f]{64})\/listings\/([0-9a-f]{64})\/(\d+)$/);
-    if (ml2 && req.method === 'DELETE')                        return _mutateAndBust(ml2[1], () => handleListingDelete(ml2[1], ml2[2], ml2[3], req, env, network, cors));
+    if (ml2 && req.method === 'DELETE')                        return _mutateAndBustListings(ml2[1], () => handleListingDelete(ml2[1], ml2[2], ml2[3], req, env, network, cors));
     const ml3 = url.pathname.match(/^\/assets\/([0-9a-f]{64})\/listings\/([0-9a-f]{64})\/(\d+)\/claim$/);
-    if (ml3 && req.method === 'POST')                          return _mutateAndBust(ml3[1], () => handleListingClaim(ml3[1], ml3[2], ml3[3], req, env, network, cors));
+    if (ml3 && req.method === 'POST')                          return _mutateAndBustListings(ml3[1], () => handleListingClaim(ml3[1], ml3[2], ml3[3], req, env, network, cors));
     const mlr = url.pathname.match(/^\/assets\/([0-9a-f]{64})\/listings-range$/);
-    if (mlr && req.method === 'POST')                          return _mutateAndBust(mlr[1], () => handleRangeListingPost(mlr[1], req, env, network, cors));
-    if (mlr && req.method === 'GET')                           return handleRangeListingList(mlr[1], env, network, cors);
+    if (mlr && req.method === 'POST')                          return _mutateAndBustListingsRange(mlr[1], () => handleRangeListingPost(mlr[1], req, env, network, cors));
+    if (mlr && req.method === 'GET')                           return _swrServePerAsset(listingsRangeCacheKey(network, mlr[1]), LISTINGS_RANGE_CACHE_FRESH_MS, LISTINGS_RANGE_CACHE_STALE_MS, () => listingsRangeComputeAndCache(env, network, mlr[1]));
     const mlr2 = url.pathname.match(/^\/assets\/([0-9a-f]{64})\/listings-range\/(0[23][0-9a-f]{64})$/);
-    if (mlr2 && req.method === 'DELETE')                       return _mutateAndBust(mlr2[1], () => handleRangeListingDelete(mlr2[1], mlr2[2], req, env, network, cors));
+    if (mlr2 && req.method === 'DELETE')                       return _mutateAndBustListingsRange(mlr2[1], () => handleRangeListingDelete(mlr2[1], mlr2[2], req, env, network, cors));
     const mlr3 = url.pathname.match(/^\/assets\/([0-9a-f]{64})\/listings-range\/(0[23][0-9a-f]{64})\/claim$/);
-    if (mlr3 && req.method === 'POST')                         return _mutateAndBust(mlr3[1], () => handleRangeListingClaim(mlr3[1], mlr3[2], req, env, network, cors));
+    if (mlr3 && req.method === 'POST')                         return _mutateAndBustListingsRange(mlr3[1], () => handleRangeListingClaim(mlr3[1], mlr3[2], req, env, network, cors));
     // Atomic intents (browse-and-take T_AXFER marketplace).
     const mai = url.pathname.match(/^\/assets\/([0-9a-f]{64})\/atomic-intents$/);
-    if (mai && req.method === 'POST')                          return _mutateAndBust(mai[1], () => handleAtomicIntentPost(mai[1], req, env, network, cors));
-    if (mai && req.method === 'GET')                           return handleAtomicIntentList(mai[1], env, network, cors);
+    if (mai && req.method === 'POST')                          return _mutateAndBustAtomicIntents(mai[1], () => handleAtomicIntentPost(mai[1], req, env, network, cors));
+    if (mai && req.method === 'GET')                           return _swrServePerAsset(atomicIntentsCacheKey(network, mai[1]), ATOMIC_INTENTS_CACHE_FRESH_MS, ATOMIC_INTENTS_CACHE_STALE_MS, () => atomicIntentsComputeAndCache(env, network, mai[1]));
     const mai2 = url.pathname.match(/^\/assets\/([0-9a-f]{64})\/atomic-intents\/([0-9a-f]{32})$/);
-    if (mai2 && req.method === 'DELETE')                       return _mutateAndBust(mai2[1], () => handleAtomicIntentDelete(mai2[1], mai2[2], req, env, network, cors));
+    if (mai2 && req.method === 'DELETE')                       return _mutateAndBustAtomicIntents(mai2[1], () => handleAtomicIntentDelete(mai2[1], mai2[2], req, env, network, cors));
     const mai3 = url.pathname.match(/^\/assets\/([0-9a-f]{64})\/atomic-intents\/([0-9a-f]{32})\/claim$/);
-    if (mai3 && req.method === 'POST')                         return _mutateAndBust(mai3[1], () => handleAtomicIntentClaim(mai3[1], mai3[2], req, env, network, cors));
+    if (mai3 && req.method === 'POST')                         return _mutateAndBustAtomicIntents(mai3[1], () => handleAtomicIntentClaim(mai3[1], mai3[2], req, env, network, cors));
     const mai4 = url.pathname.match(/^\/assets\/([0-9a-f]{64})\/atomic-intents\/([0-9a-f]{32})\/fulfilment$/);
-    if (mai4 && req.method === 'POST')                         return _mutateAndBust(mai4[1], () => handleAtomicIntentFulfil(mai4[1], mai4[2], req, env, network, cors));
+    if (mai4 && req.method === 'POST')                         return _mutateAndBustAtomicIntents(mai4[1], () => handleAtomicIntentFulfil(mai4[1], mai4[2], req, env, network, cors));
     if (mai4 && req.method === 'GET')                          return handleAtomicIntentFulfilGet(mai4[1], mai4[2], env, network, cors);
     const mai5 = url.pathname.match(/^\/assets\/([0-9a-f]{64})\/atomic-intents\/([0-9a-f]{32})\/finalize$/);
-    if (mai5 && req.method === 'POST')                         return _mutateAndBust(mai5[1], () => _handleAtomicIntentFinalizeVar(mai5[1], mai5[2], req, env, network, cors));
+    if (mai5 && req.method === 'POST')                         return _mutateAndBustAtomicIntents(mai5[1], () => _handleAtomicIntentFinalizeVar(mai5[1], mai5[2], req, env, network, cors));
 
     // Preauth sales (buyer-completable T_AXFER — SPEC §5.7.8). Seller signs once,
     // buyer completes settlement alone via ECDH-derived recipient blinding.
     const mps = url.pathname.match(/^\/assets\/([0-9a-f]{64})\/preauth-sales$/);
-    if (mps && req.method === 'POST')                          return _mutateAndBust(mps[1], () => handlePreauthSalePost(mps[1], req, env, network, cors));
-    if (mps && req.method === 'GET')                           return handlePreauthSaleList(mps[1], env, network, cors);
+    if (mps && req.method === 'POST')                          return _mutateAndBustPreauthSales(mps[1], () => handlePreauthSalePost(mps[1], req, env, network, cors));
+    if (mps && req.method === 'GET')                           return _swrServePerAsset(preauthSalesCacheKey(network, mps[1]), PREAUTH_SALES_CACHE_FRESH_MS, PREAUTH_SALES_CACHE_STALE_MS, () => preauthSalesComputeAndCache(env, network, mps[1]));
     const mps2 = url.pathname.match(/^\/assets\/([0-9a-f]{64})\/preauth-sales\/([0-9a-f]{32})$/);
     if (mps2 && req.method === 'GET')                          return handlePreauthSaleGet(mps2[1], mps2[2], env, network, cors);
-    if (mps2 && req.method === 'DELETE')                       return _mutateAndBust(mps2[1], () => handlePreauthSaleDelete(mps2[1], mps2[2], req, env, network, cors));
+    if (mps2 && req.method === 'DELETE')                       return _mutateAndBustPreauthSales(mps2[1], () => handlePreauthSaleDelete(mps2[1], mps2[2], req, env, network, cors));
 
     // Bid intents (off-chain bid book — SPEC §5.7.7). Buyer-initiated mirror
     // of atomic intents; settlement is via the seller spinning up an
