@@ -188,10 +188,12 @@ Beyond what the mixer needs, the AMM adds three things:
    sandwich attacks become structurally impossible (frontrun gets
    the same price as the victim). **Cross-batch curation MEV is
    bounded but not eliminated** — a settler can choose to exclude
-   intents from a batch they assemble; defenses are tip economics +
-   opt-in m-of-n arbiter pools + arbitrage realignment in the next
-   batch (see §"Security properties" below for the
-   full attack/defense table).
+   intents from a batch they assemble; v1 defenses are tip
+   economics + T_INTENT_ATTEST preconf-equivocation proof +
+   arbitrage realignment in the next batch (see §"Security
+   properties" below for the full attack/defense table, and
+   §"Curation-MEV mitigation" for the follow-up consensus-level
+   path via the reserved `T_EXCLUSION_CLAIM` opcode).
 3. **LP shares as a confidential tacit asset** — minted at deposit
    time. Because LP shares are themselves tacit assets, the
    existing mixer just works on them: an LP can mix their share
@@ -332,7 +334,7 @@ transitions.
 | Atomic settle | EVM tx revert | End-of-block batch action | Bitcoin tx all-or-nothing: consumes N trader inputs, emits N receipts |
 | LP share token | ERC20 | LPNFT (Penumbra position) | Confidential tacit asset minted at pool init; mixer-composable |
 | Pricing model | Per-swap constant product | Per-block uniform clearing | Per-block uniform clearing |
-| MEV mitigation | None native | Eliminated within batch | Intra-batch eliminated (uniform price); cross-batch curation mitigated by opt-in arbiter |
+| MEV mitigation | None native | Eliminated within batch | Intra-batch eliminated (uniform price); cross-batch curation mitigated by preconf-equivocation proof + tip economics |
 | BTC custody | N/A | N/A | Out of scope — handled by cBTC wrapper |
 
 Every primitive the AMM needs was already in tacit. Pedersen
@@ -741,16 +743,14 @@ for the authorization mechanism and settlement flow.
 Pool creation reuses opcode `0x2D` with a `variant = 1` sentinel —
 the same pattern the mixer uses for `POOL_INIT` (§5.10.1). The init
 payload pins `(asset_A, asset_B, fee_bps, vk_cid, ceremony_cid,
-min_liquidity, inclusion_arbiter_pubkeys[])` and seeds initial
-reserves. Initial **total shares** = `isqrt(Δa · Δb)` (Uniswap V2
-convention); the founder receives `isqrt(Δa · Δb) −
-MINIMUM_LIQUIDITY` of those shares, and the remaining
-`MINIMUM_LIQUIDITY` (Uniswap V2: 1000 base units) is locked at init via the
-construction below. The optional `inclusion_arbiter_pubkeys` field
-gates mandatory-inclusion enforcement (see Indexer determinism).
-First canonically-ordered confirmed init wins, subject to any
-`amm_launcher_pubkey` gate declared by the assets; **no other
-privilege governs pool initialization**.
+min_liquidity)` and seeds initial reserves. Initial **total shares**
+= `isqrt(Δa · Δb)` (Uniswap V2 convention); the founder receives
+`isqrt(Δa · Δb) − MINIMUM_LIQUIDITY` of those shares, and the
+remaining `MINIMUM_LIQUIDITY` (Uniswap V2: 1000 base units) is
+locked at init via the construction below. First canonically-
+ordered confirmed init wins, subject to any `amm_launcher_pubkey`
+gate declared by the assets; **no other privilege governs pool
+initialization**.
 
 #### MINIMUM_LIQUIDITY burn-output construction
 
@@ -1257,8 +1257,9 @@ single point. With a loose `min_out` the settler retains discretion
 in a bounded range above `min_out` and below the no-fee curve.
 Either way the in-circuit `amount_out_i ≥ min_out_i` check is the
 trader's per-intent veto; subset selection is further constrained
-by mandatory-inclusion for pools that pin an arbiter. No delegated
-clearing-price-signing needed.
+by `T_INTENT_ATTEST` preconf-equivocation accountability (and, in
+a follow-up, the reserved `T_EXCLUSION_CLAIM` opcode). No
+delegated clearing-price-signing needed.
 
 ## Uniform clearing
 
@@ -1300,8 +1301,10 @@ envelope (which depends on the solve's output). The protocol is:
    using only public intent metadata (direction, pubkey,
    `min_out`, `tip`, `expiry`, `input_utxos`, receive script —
    never the cleartext amount, which is hidden by both Pedersen
-   commitments). Subset must include all qualifying intents if the
-   pool pins an arbiter.
+   commitments). Subset selection is accountable through
+   `T_INTENT_ATTEST` preconf-equivocation: any intent the worker
+   preconfirmed for this height that the resulting batch omits is
+   provable misbehavior on chain.
 
 2. **RTT 1 — opening collection.** Settler sends each included
    trader (via the worker websocket) the candidate composition
@@ -1318,9 +1321,7 @@ envelope (which depends on the solve's output). The protocol is:
    runs the deterministic clearing solve, derives `P_clear` and
    `amount_out_i` for each trader. If any `amount_out_i <
    min_out_i`, drops that intent and re-solves (which may push
-   other intents below their `min_out` — iterate until stable, or
-   until the subset cannot satisfy mandatory-inclusion, in which
-   case abort and try a different subset).
+   other intents below their `min_out` — iterate until stable).
 
 4. Settler computes each receipt's `C_out_secp_i = amount_out_i ·
    H + r_out_secp_i · G` (using the trader's revealed
@@ -1478,9 +1479,9 @@ priority within a batch — pricing is uniform clearing for
 everyone in the batch. Tips only buy *inclusion* across batches:
 a settler picking a candidate subset has an economic incentive
 to maximize aggregate tip, which means including all intents
-whose `min_out` is satisfiable. This is the protocol's primary
-defense against settler curation MEV in pools without an
-inclusion arbiter.
+whose `min_out` is satisfiable. At v1 this is the protocol's
+primary defense against settler curation MEV, alongside
+`T_INTENT_ATTEST` preconf-equivocation accountability.
 
 **Deterministic clearing solve.** v1 specifies an **exact-output**
 clearing rule, not an inequality with slack. The solve takes only
@@ -1581,7 +1582,7 @@ solve up to ≤ N base units of per-trader floor dust accruing to
 the pool. Subset selection — which intents the settler claims for
 a batch — remains the only settler-side degree of freedom, and is
 addressed separately under "Cross-batch ordering" + tip
-economics + opt-in arbiter pools.
+economics + `T_INTENT_ATTEST` preconf-equivocation.
 
 **Why the curve floor identity matters in defense-in-depth.**
 Without (4), constraints (1)–(3) alone admit a 1-parameter family
@@ -1700,7 +1701,7 @@ on every reorg-affected block:
 
 | Baseline | Pinned at depth | Set by | Read by |
 |---|---|---|---|
-| `pool_id`, `asset_A`, `asset_B`, `vk_cid`, `fee_bps`, `inclusion_arbiter_pubkeys`, `protocol_fee_address`, `protocol_fee_bps`, `capability_flags` | 3 (POOL_INIT) | `T_LP_ADD variant=1` | every subsequent envelope against this pool |
+| `pool_id`, `asset_A`, `asset_B`, `vk_cid`, `fee_bps`, `protocol_fee_address`, `protocol_fee_bps`, `capability_flags` | 3 (POOL_INIT) | `T_LP_ADD variant=1` | every subsequent envelope against this pool |
 | `init_height` | 3 (POOL_INIT) | `T_LP_ADD variant=1` | `T_LP_ADD variant=0` (lock-window gate, AMM_INITIAL_LP_LOCK_BLOCKS) |
 | `reserve_A`, `reserve_B` | 3 | every `T_LP_ADD`, `T_LP_REMOVE`, `T_SWAP_BATCH`, `T_SWAP_VAR` | every subsequent envelope (used as `R_A_pre` / `R_B_pre`) |
 | `lp_total_shares` (`S`) | 3 | `T_LP_ADD`, `T_LP_REMOVE`, `T_PROTOCOL_FEE_CLAIM` | every subsequent LP envelope + protocol-fee crystallization |
@@ -1850,20 +1851,22 @@ The reference worker (and any settler) can DoS users (refuse to
 relay, refuse to settle) but cannot cheat them. Traders' `min_out`
 defends against settler price manipulation. **Intra-batch MEV
 (sandwich, priority-fee ordering) is eliminated** by uniform
-clearing. **Cross-batch curation MEV is mitigated** by the opt-in
-mandatory-inclusion rule for pools that pin an arbiter; for pools
-that do not pin one, curation MEV is bounded only by tip-revenue
-economics. Burn-grief — settlers broadcasting Bitcoin-valid but
-tacit-invalid txs to destroy trader UTXOs — is structurally
-impossible because trader `SIGHASH_ALL` sigs commit to
-`envelope_hash` via `vout[0]` `OP_RETURN` (see Cross-asset
-authorization for swaps). Liveness depends on at least one working
-indexer + one available settler; both are permissionless. Anyone
-can run their own indexer **from chain data alone** — validation
-is fully chain-local. Running a settler additionally requires
-access to the intent-relay layer (worker websocket, Nostr, or
-direct trader↔settler messaging) so that openings and sigs can
-be exchanged with traders during the two-RTT settlement flow.
+clearing. **Cross-batch curation MEV is mitigated** by
+`T_INTENT_ATTEST` preconf-equivocation accountability (reputation-
+level) and tip-revenue economics; a follow-up amendment may add
+the reserved `T_EXCLUSION_CLAIM` opcode for consensus-level
+discipline (see §"Curation-MEV mitigation"). Burn-grief — settlers
+broadcasting Bitcoin-valid but tacit-invalid txs to destroy trader
+UTXOs — is structurally impossible because trader `SIGHASH_ALL`
+sigs commit to `envelope_hash` via `vout[0]` `OP_RETURN` (see
+Cross-asset authorization for swaps). Liveness depends on at least
+one working indexer + one available settler; both are
+permissionless. Anyone can run their own indexer **from chain data
+alone** — validation is fully chain-local. Running a settler
+additionally requires access to the intent-relay layer (worker
+websocket, Nostr, or direct trader↔settler messaging) so that
+openings and sigs can be exchanged with traders during the two-RTT
+settlement flow.
 
 **Worker is a message relay, not an escrow or privacy
 intermediary.** Under v1's interactive PSBT signing, per-trader
@@ -1877,11 +1880,7 @@ privacy intermediary** — it can only DoS (refuse to forward
 messages). Pre-signed sigs and openings never sit on the worker.
 Trust-conscious traders self-host a worker, use a peer-to-peer
 pubsub layer (e.g., Nostr) instead, or run their own settler with
-direct trader↔settler messaging. Pools that pin an
-`inclusion_arbiter_pubkey` add the arbiter as a separate liveness
-+ data-availability dependency for that pool's mandatory-inclusion
-enforcement; that role is independent of the worker role and can
-be carried by a different operator or a quorum.
+direct trader↔settler messaging.
 
 **Default-deployment trust posture (v1).** Distinct *protocol*
 roles do not imply distinct *operators*. Soundness (no rug, no
@@ -2167,7 +2166,7 @@ pinned at POOL_INIT and immutable thereafter.
 | Settler claims spot when non-spot (or vice versa) | is_spot derivation via IsZero + sign-bit consistency check on declared deltas |
 | Settler exploits padding slot | padded slots use identity (0, 1) commitment + zero amounts; circuit constraints hold trivially only for that exact pattern (adversarial-test.mjs validates) |
 | Settler burns trader's UTXO via re-witness | vout[0] OP_RETURN(envelope_hash) bound by SIGHASH_ALL |
-| Settler skips an intent (curation MEV) | tip economics + optional arbiter mandatory-inclusion rule |
+| Settler skips an intent (curation MEV) | tip economics + T_INTENT_ATTEST preconf-equivocation proof (reputation-level); reserved `T_EXCLUSION_CLAIM` for follow-up consensus-level discipline |
 | Trader inflates input via fake C_in_BJJ | chain UTXO's secp256k1 commitment is what counts; sigma binding to BJJ + Groth16 opening to amount means same `a` |
 | LP claims wrong share_amount | indexer share-formula check (out-of-circuit) + Groth16 BJJ opening to public share_amount |
 | LP claims wrong receipt deltas in LP_REMOVE | proportional formula check (out-of-circuit) + two Groth16 BJJ openings |
@@ -2360,28 +2359,16 @@ mixer (§5.11.4): anonymity-set size for LP withdraws, Bitcoin-level
 fee linkage on the broadcast tx (use a fresh wallet or a relayer),
 and network/timing correlation (Tor + delay).
 
-**MEV-resistance vs amount-confidentiality trade-off.** Pools may
-opt in to a mandatory-inclusion arbiter (see §"5. Qualifying-intent
-fixed-point algorithm") to obtain MEV resistance against settler
-censorship. **This trade-off is normative and unavoidable: traders
-who want their intents force-included by an arbiter MUST send
-cleartext amounts to that arbiter (encrypted to the arbiter's
-pubkey at intent-post time) so the arbiter can run the deterministic
-qualifying-set fixed-point.** The arbiter therefore learns
-per-trader amounts for every intent in its pool. Two consequences:
-
-- The arbiter is a confidentiality-trusted party for amounts in
-  arbiter-pinned pools, even though it is NOT trusted for batch
-  validity (the Groth16 proof binds that independently). Arbiter
-  compromise leaks historical amounts; it does not allow theft.
-- Default (no-arbiter) pools retain full amount confidentiality from
-  every observer including settlers (settlers only learn amounts of
-  intents they include in their own batch). Arbiter-pinned pools
-  trade some confidentiality for MEV protection.
-
-The dapp MUST surface this trade-off at pool-creation time and at
-intent-post time for arbiter-pinned pools, so traders make the
-choice explicitly rather than discovering it after the fact.
+**MEV-resistance and amount confidentiality.** V1 pools retain
+full amount confidentiality from every observer including settlers
+(a settler only learns amounts of intents they include in their
+own batch). Cross-batch curation MEV is mitigated by
+T_INTENT_ATTEST preconf-equivocation accountability and tip
+economics (see §"Curation-MEV mitigation"); neither requires
+traders to reveal amounts to any additional party. A follow-up
+amendment may layer in `T_EXCLUSION_CLAIM` (consensus-level
+slashing on equivocation) or time-lock-encrypted intent submission,
+both of which preserve amount confidentiality.
 
 ## What's novel here
 
@@ -2472,7 +2459,7 @@ custody** — running as a meta-protocol on Bitcoin L1.
 | Pool custody | Pool contract holds tokens | Validator notes | None — virtual reserves |
 | Pricing model | Per-swap CFMM | Per-block uniform clearing | Per-block uniform clearing |
 | LP shares | ERC20 (public balances) | Concentrated-liquidity NFT | Confidential tacit asset; mixer-composable |
-| MEV (sandwich) | Native exposure | Eliminated within batch | Intra-batch eliminated; cross-batch curation mitigated by opt-in arbiter |
+| MEV (sandwich) | Native exposure | Eliminated within batch | Intra-batch eliminated; cross-batch curation mitigated by preconf-equivocation proof + tip economics |
 | Per-trade privacy | None | Hidden | Hidden from chain observers; claiming settler learns its batch's per-trader amounts |
 | Settlement actor | Anyone (gas-paid tx) | Validator set | Permissionless settler |
 | Trust beyond consensus | Contract bug ⇒ total loss | Cosmos validators | Indexer rules + Groth16 — no custody surface |

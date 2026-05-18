@@ -354,15 +354,20 @@ A T_SWAP_ROUTE envelope exposes:
 It hides:
 - The trader's identity (binds to a fresh trader_pubkey per
   intent; not necessarily a wallet's long-term key)
-- The trader's input + output blindings (Pedersen-committed)
-- The intermediate amounts at each bridge boundary (Pedersen-
-  committed; range-proof-bounded but not opened)
+- The trader's input blinding (Pedersen-committed on the input
+  UTXO; only the trader knows the blinding scalar)
 
-The per-hop deltas are cleartext, identical to what *N
-sequential T_SWAP_VAR envelopes* would reveal. The amendment
-trades amount-confidentiality at intermediate boundaries
-(which the trader doesn't have anyway under T_SWAP_VAR) for
-atomicity. **No privacy regression vs the status-quo path.**
+The receipt's blinding `r_receipt` is REVEALED on chain (mirrors
+T_SWAP_VAR §5.20 self-fulfill semantics) so the trader can later
+spend their receipt UTXO without an extra ECDH key-derivation
+step. For a settler-driven follow-up, the receipt blinding can
+be ECDH-derived from a trader↔settler shared secret and dropped
+from the envelope — out of scope here.
+
+The per-hop deltas are cleartext, identical to what *N sequential
+T_SWAP_VAR envelopes* would reveal. The route's privacy posture
+is **exactly equivalent** to the sequential path (no privacy
+regression); atomicity is the upgrade.
 
 Confidentiality follow-ups (mixing route output into the
 mixer's anonymity set, or batching multiple traders' routes
@@ -383,9 +388,11 @@ the trader signs an *intent* (off-chain), a settler assembles
 the envelope and broadcasts, and the trader pays the settler
 a tip per hop. The tip mechanic would mirror T_SWAP_VAR's
 single-hop tip (a per-hop output spending a fraction of the
-delta_in or delta_out of that hop). The wire format reserves
-space for a `tip_count` byte at the end of the closure block
-for forward-compatibility; V1 envelopes MUST emit `tip_count = 0`.
+delta_in or delta_out of that hop). Adding tips changes the
+wire-format closure block AND the kernel-msg preimage, so the
+follow-up amendment graduates to a new envelope version
+(`version = 0x02`) and rolls a fresh validator branch; the V1
+opcode `0x33` envelopes remain unchanged at validator level.
 
 ---
 
