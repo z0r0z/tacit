@@ -38258,12 +38258,23 @@ function _startLiveAgeTicker() {
   const tick = () => {
     if (typeof document === 'undefined' || document.hidden) return;
     const els = document.querySelectorAll('[data-age-ts]');
+    const nowSec = Math.floor(Date.now() / 1000);
     for (const el of els) {
       const ts = Number(el.getAttribute('data-age-ts') || 0);
       if (!ts) continue;
-      const rel = relativeAge(ts);
-      if (!rel) continue;
       const fmt = el.getAttribute('data-age-fmt') || 'ago';
+      // Forward-looking ("in") cells must use relativeUntil — relativeAge
+      // clamps future deltas to 0, which would tick every asks-ladder
+      // expiry cell down to "in 0m" after the first interval. Past-
+      // looking cells ("ago", "raw") stay on relativeAge.
+      let rel;
+      if (fmt === 'in') {
+        if (ts <= nowSec) { if (el.textContent !== 'expired') el.textContent = 'expired'; continue; }
+        rel = relativeUntil(ts);
+      } else {
+        rel = relativeAge(ts);
+      }
+      if (!rel) continue;
       const next = fmt === 'in' ? `in ${rel}` : fmt === 'raw' ? rel : `${rel} ago`;
       if (el.textContent !== next) el.textContent = next;
     }
@@ -52634,6 +52645,58 @@ const _recentLocalBidCancels = new Set();
 // Pair with a visible "data Xs old" badge so the user knows when
 // the feed is degraded vs healthy.
 let _marketAutoRefreshTimer = null;
+// Interact-idle guard for the asset-detail auto-refresh. Bumped by scroll /
+// wheel / touch / mouse-move-within-orderbook. Structural re-renders defer
+// while interact is recent (within MARKET_INTERACT_IDLE_MS) and resume on
+// the next tick that catches the user idle. Without this, a 15s tick fires
+// applyMarketFilters() mid-scroll and the user loses their place even
+// though the existing anchor-restore code does its best — anchor-restore
+// can't hide the rebuild reliably when scroll momentum is active.
+let _marketLastInteractTs = 0;
+let _marketPendingRerender = false;
+let _marketInteractListenerInstalled = false;
+const MARKET_INTERACT_IDLE_MS = 1500;
+function _marketUserIsInteracting() {
+  return (Date.now() - _marketLastInteractTs) < MARKET_INTERACT_IDLE_MS;
+}
+function _installMarketInteractListener() {
+  if (_marketInteractListenerInstalled) return;
+  if (typeof window === 'undefined') return;
+  _marketInteractListenerInstalled = true;
+  const bump = () => { _marketLastInteractTs = Date.now(); };
+  // Scroll + wheel + touch all bump regardless of target — the user can
+  // scroll the page anywhere and not just over the orderbook to count as
+  // "actively reading". Capture phase so framework-handled scroll events
+  // still register.
+  window.addEventListener('scroll', bump, { passive: true, capture: true });
+  window.addEventListener('wheel', bump, { passive: true });
+  window.addEventListener('touchmove', bump, { passive: true });
+  // Mouse move only counts when over the market list — pointer drift in
+  // an unrelated tab area shouldn't pin the orderbook from updating.
+  document.addEventListener('mousemove', (e) => {
+    const list = document.getElementById('market-list');
+    if (list && list.contains(e.target)) bump();
+  }, { passive: true });
+  // Idle-resume: also schedule a fast follow-up rerender attempt shortly
+  // after interaction stops, so the user doesn't wait up to a full 15s
+  // tick for a deferred update to land. Uses the same idle threshold so
+  // it never fires while the user is still moving.
+  let _idleTimer = null;
+  const _scheduleIdleResume = () => {
+    if (_idleTimer) clearTimeout(_idleTimer);
+    _idleTimer = setTimeout(() => {
+      _idleTimer = null;
+      if (!_marketPendingRerender) return;
+      if (_marketUserIsInteracting()) { _scheduleIdleResume(); return; }
+      if (!(_marketView && _marketView.mode === 'asset' && _marketView.assetId)) return;
+      _marketPendingRerender = false;
+      try { applyMarketFilters(); } catch {}
+    }, MARKET_INTERACT_IDLE_MS + 250);
+  };
+  window.addEventListener('scroll', _scheduleIdleResume, { passive: true, capture: true });
+  window.addEventListener('wheel', _scheduleIdleResume, { passive: true });
+  window.addEventListener('touchmove', _scheduleIdleResume, { passive: true });
+}
 let _marketTickFailStreak = 0;
 let _marketLastSuccessTs = 0;
 const MARKET_AUTO_REFRESH_MS = 15_000;
@@ -52669,6 +52732,7 @@ function _updateMarketStaleBadge() {
 }
 function _startMarketAutoRefresh() {
   if (_marketAutoRefreshTimer) return;
+  _installMarketInteractListener();
   const tick = async () => {
     _marketAutoRefreshTimer = null;
     let success = true;
@@ -52722,7 +52786,18 @@ function _startMarketAutoRefresh() {
           try { await _fetchBidIntentsCached(aid, { force: true }); } catch {}
         }
         const freshSig = _assetSignatureFull(aid);
-        if (_renderedAssetSignature.aid === aid && _renderedAssetSignature.sig && freshSig !== _renderedAssetSignature.sig) {
+        const _sigChanged = _renderedAssetSignature.aid === aid && _renderedAssetSignature.sig && freshSig !== _renderedAssetSignature.sig;
+        if (_sigChanged) _marketPendingRerender = true;
+        // Interact-idle guard: if the user is actively scrolling, wheeling,
+        // touch-scrolling, or moving the mouse inside the orderbook, defer
+        // the structural re-render to a later tick. Auto-refresh used to
+        // yank the page out from under a user mid-read because the 15s tick
+        // fires unconditionally — anchor-restore helps but can't perfectly
+        // hide the rebuild when scroll momentum is active. Pending flag
+        // ensures the deferred update fires on the next idle tick (or
+        // immediately if the user idles before the next tick).
+        if (_marketPendingRerender && !_marketUserIsInteracting()) {
+          _marketPendingRerender = false;
           // Do NOT bust the stats cache here. applyMarketFilters'
           // pre-paint reads from it to show the prior chart immediately
           // while the live fetch is in flight; busting it would force
@@ -53098,6 +53173,66 @@ function _bidIntentsSignature(aid) {
 }
 function _assetSignatureFull(aid) {
   return `${_assetListingsSignature(aid)}||${_bidIntentsSignature(aid)}`;
+}
+// Effective reference price for "vs mark" coloring. When the book is
+// crossed (best in-band bid > best in-band ask) the worker's last-trade
+// mark is stale relative to live liquidity, and coloring asks/bids
+// against it inverts ("cheapest ask is -57% dust" when it's actually
+// the real clearing price). In that case the midpoint of best bid /
+// best ask is the honest reference. Non-crossed books keep the standard
+// mark so cold-cache assets without a midpoint don't lose coloring.
+// Returns { unit, label } where label is "mark" or "mid".
+function _effectiveReferenceUnit(aid, asset) {
+  const markUnit = Number(asset?.mark_price?.unit);
+  const markValid = Number.isFinite(markUnit) && markUnit > 0;
+  if (!aid) return markValid ? { unit: markUnit, label: 'mark', crossed: false } : null;
+  const dec = Number.isInteger(asset?.decimals) ? asset.decimals : 0;
+  const bandLo = markValid ? markUnit * 0.2 : 0;
+  const bandHi = markValid ? markUnit * 5 : Infinity;
+  const nowSec = Math.floor(Date.now() / 1000);
+  const expiryGuard = nowSec + 60;
+  let cheapestAsk = null;
+  const ls = _marketCache?.listings;
+  if (Array.isArray(ls)) {
+    for (const l of ls) {
+      if ((l._asset?.asset_id || l.asset_id) !== aid) continue;
+      if (l.kind !== 'preauth') continue;
+      if (l.expired) continue;
+      if (l._takenPending) continue;
+      if (Number(l.expiry || 0) <= expiryGuard) continue;
+      const amt = l.asset_opening?.amount;
+      const ps = Number(l.min_price_sats || 0);
+      const u = unitPriceSats(ps, BigInt(amt || 0), dec);
+      if (u == null || !(u > 0)) continue;
+      if (markValid && (u < bandLo || u > bandHi)) continue;
+      if (cheapestAsk == null || u < cheapestAsk) cheapestAsk = u;
+    }
+  }
+  let highestBid = null;
+  const bids = (typeof _bidCachePeek === 'function') ? _bidCachePeek(aid) : null;
+  if (Array.isArray(bids)) {
+    for (const b of bids) {
+      if (b._isReserved) continue;
+      if (Number(b.expiry || 0) <= nowSec) continue;
+      const isVar = !!(b.min_fill_amount && b.min_fill_amount !== '0');
+      if (isVar) {
+        let rem = 0n, mf = 0n;
+        try { rem = BigInt(b.remaining_amount || b.amount || '0'); } catch {}
+        try { mf = BigInt(b.min_fill_amount || '0'); } catch {}
+        if (rem < mf) continue;
+      }
+      const amtBig = (() => { try { return BigInt(b.amount || '0'); } catch { return 0n; } })();
+      if (amtBig <= 0n) continue;
+      const u = unitPriceSats(Number(b.price_sats || 0), amtBig, dec);
+      if (u == null || !(u > 0)) continue;
+      if (markValid && (u < bandLo || u > bandHi)) continue;
+      if (highestBid == null || u > highestBid) highestBid = u;
+    }
+  }
+  if (highestBid != null && cheapestAsk != null && highestBid > cheapestAsk) {
+    return { unit: (highestBid + cheapestAsk) / 2, label: 'mid', crossed: true };
+  }
+  return markValid ? { unit: markUnit, label: 'mark', crossed: false } : null;
 }
 // Track the last-rendered signature per view so the auto-refresh tick
 // can decide whether the visible asset-detail ladder is stale relative
@@ -55147,20 +55282,35 @@ function applyMarketFilters() {
     // spread = fillable midpoint), neutral otherwise. Matches the
     // existing stats-strip spread colors so the two surfaces agree.
     const spreadColor = isCrossed ? '#c97a1a' : (spreadPct != null && spreadPct < 1 ? '#0a7d3a' : 'var(--ink-mid)');
+    // Both best-price chips are clickable — they prime the Swap tile
+    // above with the matching side and the corresponding cap. Saves a
+    // scroll + a click for the common "buy at this price / sell at this
+    // price" intent. Wired in applyMarketFilters's post-render bind pass
+    // by data-act="market-spread-prime".
     const bestBidHtml = highestBid != null
-      ? `<span title="Highest in-band bid — top of the bids ladder directly below, adjacent to this spread divider."><strong style="color:#0a8f43;">${fmtUnitPriceSats(highestBid)}</strong> <span class="muted" style="font-size:9px;">best bid</span></span>`
+      ? `<button type="button" data-act="market-spread-prime" data-side="sell" data-cap-unit="${escapeHtml(String(highestBid))}" data-amt-base="${escapeHtml(String(highestBidAmt || '0'))}" data-aid="${escapeHtml(aidForSpread)}" title="Sell into the top bid (${fmtUnitPriceSats(highestBid)} sats/${escapeHtml(tickerForSpread)}). Clicking primes the Swap tile above in Sell mode with this price as the floor." style="background:none;border:none;padding:0;font:inherit;cursor:pointer;color:inherit;display:inline-flex;align-items:center;gap:4px;border-bottom:1px dotted #0a8f43;"><strong style="color:#0a8f43;">${fmtUnitPriceSats(highestBid)}</strong> <span class="muted" style="font-size:9px;">best bid ↑</span></button>`
       : `<span class="muted" style="font-size:10px;">no bids</span>`;
     const bestAskHtml = cheapestAsk != null
-      ? `<span title="Cheapest in-band preauth ask — bottom of the asks ladder directly above, adjacent to this spread divider."><strong style="color:#b8341d;">${fmtUnitPriceSats(cheapestAsk)}</strong> <span class="muted" style="font-size:9px;">best ask</span></span>`
+      ? `<button type="button" data-act="market-spread-prime" data-side="buy" data-cap-unit="${escapeHtml(String(cheapestAsk))}" data-amt-base="${escapeHtml(String(cheapestAskAmt || '0'))}" data-aid="${escapeHtml(aidForSpread)}" title="Buy the cheapest ask (${fmtUnitPriceSats(cheapestAsk)} sats/${escapeHtml(tickerForSpread)}). Clicking primes the Swap tile above in Buy mode with this price as the cap." style="background:none;border:none;padding:0;font:inherit;cursor:pointer;color:inherit;display:inline-flex;align-items:center;gap:4px;border-bottom:1px dotted #b8341d;"><strong style="color:#b8341d;">${fmtUnitPriceSats(cheapestAsk)}</strong> <span class="muted" style="font-size:9px;">best ask ↓</span></button>`
       : `<span class="muted" style="font-size:10px;">no asks</span>`;
     const spreadMidHtml = spreadAbs != null
       ? (isCrossed
           ? `<span style="color:${spreadColor};font-weight:700;letter-spacing:0.04em;" title="Best in-band bid exceeds best in-band ask — arbitrage opportunity (also shown on the depth chart).">CROSSED ${fmtUnitPriceSats(Math.abs(spreadAbs))}${spreadPct != null ? ` · ${Math.abs(spreadPct).toFixed(1)}%` : ''}</span>`
           : `<span style="color:${spreadColor};" title="Bid-ask spread in sats per ${escapeHtml(tickerForSpread)} (and as a percent of the midpoint). Tighter spread = the book agrees on price.">spread ${fmtUnitPriceSats(spreadAbs)}${spreadPct != null ? ` · ${spreadPct.toFixed(2)}%` : ''}</span>`)
       : `<span class="muted" style="font-size:10px;">spread —</span>`;
-    const markHtml = markValid
-      ? `<span class="muted" style="font-size:10px;" title="Outlier-guarded reference price from recent trades (same value the price chart and depth chart anchor on).">mark ${fmtUnitPriceSats(markUnit)}</span>`
-      : '';
+    // When the book is crossed, the worker's last-trade-based mark is
+    // necessarily stale relative to live liquidity — the asks ladder's
+    // "vs mark" column would invert (cheapest ask reads as a -57% dust
+    // outlier when it's actually the real clearing price). Surface the
+    // midpoint prominently in this case so the user has a usable
+    // reference price; the asks/bids ladders below switch their "vs
+    // mark" coloring to "vs mid" too (see _vsRefAsk in the per-tile
+    // builder). Non-crossed books keep the standard "mark X" display.
+    const markHtml = isCrossed && midpoint != null
+      ? `<span style="font-size:10px;font-weight:700;color:#7a4d00;background:#fff3cf;padding:1px 6px;border:1px solid #c97a1a;" title="Book is crossed so the worker\'s last-trade mark (${fmtUnitPriceSats(markUnit)} sats/${escapeHtml(tickerForSpread)}) is stale. Midpoint = (best bid + best ask) / 2 — the realistic clearing price right now. The asks/bids ladders below recolor &quot;vs mark&quot; to &quot;vs mid&quot; while the book stays crossed.">mid ${fmtUnitPriceSats(midpoint)}</span>${markValid ? ` <span class="muted" style="font-size:9px;opacity:0.55;text-decoration:line-through;" title="Stale last-trade mark; book is crossed so this is no longer a useful reference.">mark ${fmtUnitPriceSats(markUnit)}</span>` : ''}`
+      : (markValid
+          ? `<span class="muted" style="font-size:10px;" title="Outlier-guarded reference price from recent trades (same value the price chart and depth chart anchor on).">mark ${fmtUnitPriceSats(markUnit)}</span>`
+          : '');
     // Recent-trades sub-strip: last 5 prints inline at the spread, so the
     // "what just happened" question doesn't require a tab switch. Pulled
     // from asset.trades (full ring, has size + price) when available;
@@ -55257,13 +55407,18 @@ function applyMarketFilters() {
   // paired halves of the same two-sided book — same column count, same
   // black header background, same uppercase letter-spaced labels. Hidden
   // in cards-mode and when there are no asks to show.
+  // Effective reference label flips "vs mark" → "vs mid" when the book
+  // is crossed. Matches the per-row coloring above which uses
+  // _effectiveReferenceUnit.
+  const _asksRefForHeader = _effectiveReferenceUnit(_marketView?.assetId, _assetForBids);
+  const _marketAsksRefLabel = (_asksRefForHeader?.label === 'mid') ? 'vs mid' : 'vs mark';
   const _asksHeaderRowHtml = (_marketLadderView === 'rows' && rowsForGrid.length > 0)
     ? `<div class="market-listing-grid market-listing-rows-mode market-listing-header-only">
          <div class="market-listing-tile market-listing-row-head" role="row" aria-hidden="true">
            <span>Ask</span>
            <span>Quantity</span>
            <span>Total</span>
-           <span title="Percentage premium (red) or discount (green) versus the asset's mark price. YOU pill on your own asks.">vs mark</span>
+           <span title="Percentage premium (red) or discount (green) versus the asset's mark price. When the book is crossed the column header reads &quot;vs mid&quot; — the midpoint of best bid / best ask is the honest clearing reference while mark (last-trade) is stale. YOU pill on your own asks.">${_marketAsksRefLabel}</span>
            <span>Expires</span>
            <span>${_marketRowActionsHidden ? '' : 'Action'}</span>
          </div>
@@ -55527,6 +55682,31 @@ function applyMarketFilters() {
       // harmless, the user can still click the input themselves.
       const input = widget.querySelector('input[data-swap-input="from"]');
       if (input) setTimeout(() => { try { input.focus({ preventScroll: true }); } catch { input.focus(); } }, 250);
+    };
+  });
+  // Spread-strip best-bid / best-ask chips → prime the Swap tile with
+  // the matching side, cap unit, and amount in base units. Saves a
+  // scroll + a click for "I want to take exactly this price."
+  list.querySelectorAll('[data-act="market-spread-prime"]').forEach(btn => {
+    btn.onclick = () => {
+      const aid = btn.dataset.aid || _marketView?.assetId || '';
+      const side = btn.dataset.side === 'sell' ? 'sell' : 'buy';
+      const capUnit = parseFloat(btn.dataset.capUnit || '');
+      const amtBaseStr = btn.dataset.amtBase || '0';
+      const _asset = (_marketCache?.assets || []).find(x => x.asset_id === aid) || _assetForBids;
+      const decimals = Number.isInteger(_asset?.decimals) ? _asset.decimals : 0;
+      const ticker = _asset?.ticker || '?';
+      try {
+        primeSwapTileFromOrderbook({
+          aid, direction: side, amountBaseStr: amtBaseStr,
+          decimals, ticker,
+          targetUnit: Number.isFinite(capUnit) ? capUnit : null,
+        });
+      } catch (e) { console.warn('[market] spread-prime failed', e?.message); }
+      const widget = document.querySelector('[data-swap-tile]');
+      if (widget) {
+        try { widget.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch { widget.scrollIntoView(); }
+      }
     };
   });
   // Recent-trades strip → Activity tab. Scrolls the asset-detail tabs
@@ -56079,20 +56259,26 @@ function applyMarketFilters() {
     // opposite things for buyers vs sellers. User's own asks show
     // a YOU pill in this cell. Level rows show "N makers" since
     // per-bucket delta is misleading.
-    const _askMarkUnit = Number(a?.mark_price?.unit);
-    const _markValidAsk = Number.isFinite(_askMarkUnit) && _askMarkUnit > 0;
-    const _vsMarkPctAsk = (_markValidAsk && unit != null && unit > 0)
-      ? ((unit - _askMarkUnit) / _askMarkUnit) * 100
+    // Effective reference: when the book is crossed, mark is stale and
+    // coloring against it inverts (cheapest ask reads as -57% red when
+    // it's the real clearing price). _effectiveReferenceUnit swaps in
+    // the (best bid + best ask) / 2 midpoint while the book stays
+    // crossed; non-crossed books keep the standard mark. Label flips
+    // from "vs mark" to "vs mid" so the column header is honest.
+    const _askRef = _effectiveReferenceUnit(a?.asset_id, a);
+    const _vsRefPctAsk = (_askRef && unit != null && unit > 0)
+      ? ((unit - _askRef.unit) / _askRef.unit) * 100
       : null;
-    const _vsMarkClsAsk = _vsMarkPctAsk == null ? '' : (_vsMarkPctAsk >= 0 ? 'color:#b8341d;' : 'color:#0a7d3a;');
-    const _vsMarkStrAsk = _vsMarkPctAsk == null
+    const _vsRefClsAsk = _vsRefPctAsk == null ? '' : (_vsRefPctAsk >= 0 ? 'color:#b8341d;' : 'color:#0a7d3a;');
+    const _vsRefStrAsk = _vsRefPctAsk == null
       ? '&mdash;'
-      : `${_vsMarkPctAsk >= 0 ? '+' : ''}${_vsMarkPctAsk.toFixed(2)}%`;
+      : `${_vsRefPctAsk >= 0 ? '+' : ''}${_vsRefPctAsk.toFixed(2)}%`;
+    const _vsRefLabelAsk = _askRef?.label === 'mid' ? 'vs mid' : 'vs mark';
     const _vsMarkCellHtml = _isLevel
       ? `<strong>${l._levelCount} makers</strong><small>at this tick</small>`
       : (_isMineAsk
           ? `<strong style="color:#7a5e00;">YOU</strong><small>your listing</small>`
-          : `<strong style="${_vsMarkClsAsk}">${_vsMarkStrAsk}</strong><small>vs mark</small>`);
+          : `<strong style="${_vsRefClsAsk}">${_vsRefStrAsk}</strong><small>${_vsRefLabelAsk}</small>`);
     // Dedicated expires cell. recencyLine already carries the
     // "expires in Xd · listed Yh ago" + the data-age-ts hooks for
     // the live ticker; we lift the relative expiry into a strong
@@ -56453,6 +56639,9 @@ function applyMarketFilters() {
   });
   list.querySelectorAll('button[data-act="your-orders-cancel-ask-group"]').forEach(btn => {
     btn.onclick = async () => marketCancelPreauthGroupHandler(btn);
+  });
+  list.querySelectorAll('button[data-act="your-orders-cancel-intent"]').forEach(btn => {
+    btn.onclick = async () => marketCancelIntentHandler(btn);
   });
   list.querySelectorAll('button[data-act="your-orders-cancel-bid"]').forEach(btn => {
     btn.onclick = async () => {
@@ -58816,9 +59005,13 @@ function renderMarketAssetHeader(assetId, rows) {
       <div class="market-asset-title">
         ${marketAssetImageHtml(a, 64, 'market-token-icon market-token-icon--large')}
         <div style="min-width:0;">
-          <div style="font-size:12px;text-transform:uppercase;letter-spacing:0.08em;color:var(--ink-mid);">tacit / ${escapeHtml(a.ticker || '?')}</div>
+          <!-- Display name (from IPFS metadata) sits where the redundant
+               "tacit / TAC" decorative line used to live. Falls through to
+               nothing when no name is set — the big ticker below still
+               carries the asset identity, the pre-line is bonus context. -->
+          ${_displayName && _displayName.toLowerCase() !== (a.ticker || '').toLowerCase() ? `<div style="font-size:11px;color:var(--ink-mid);margin-bottom:2px;">${escapeHtml(_displayName)}</div>` : ''}
           <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
-            <h2>${escapeHtml(a.ticker || '?')}</h2>${verifiedBadge}
+            <h2 style="margin:0;line-height:1.05;">${escapeHtml(a.ticker || '?')}</h2>${verifiedBadge}
           </div>
           <div style="font-size:10px;color:var(--ink-mid);margin-top:2px;">
             <span>id </span>
@@ -58851,7 +59044,22 @@ function renderMarketAssetHeader(assetId, rows) {
               ? `${_asksN.toLocaleString('en-US')} <span class="muted" style="font-weight:400;font-size:11px;">ask${_asksN === 1 ? '' : 's'}</span> · ${_bidsN.toLocaleString('en-US')} <span class="muted" style="font-weight:400;font-size:11px;">bid${_bidsN === 1 ? '' : 's'}</span>`
               : _asksN.toLocaleString('en-US');
             const _label = _bidsKnown ? 'Active orders' : 'Listings';
-            return `<div title="Live orders on both sides of the book. Asks (sell offers — preauth + atomic intent + range + opening) and bids (buy offers — bid intents). The depth chart, asks-liquidity row, and Open Orders pane each filter this set differently, so their counts can be slightly lower than this header figure."><span>${_label}</span><strong>${_display}</strong></div>`;
+            // Tiny ratio bar so a glance at the tile tells the supply /
+            // demand imbalance story. Width-of-asks-segment = asks /
+            // (asks + bids). Skewed bars (e.g. 96% asks vs 4% bids on
+            // TAC) are immediately legible without parsing the count.
+            let _ratioBarHtml = '';
+            if (_bidsKnown && (_asksN + _bidsN) > 0) {
+              const _denom = _asksN + _bidsN;
+              const _askPct = (_asksN / _denom) * 100;
+              const _bidPct = 100 - _askPct;
+              const _skewed = Math.abs(_askPct - 50) > 25;
+              const _skewHint = _skewed
+                ? (_askPct > _bidPct ? ' · supply-heavy' : ' · demand-heavy')
+                : '';
+              _ratioBarHtml = `<div style="margin-top:4px;display:flex;height:3px;width:100%;border:1px solid var(--ink-faint);overflow:hidden;" title="Asks ${_askPct.toFixed(0)}% / bids ${_bidPct.toFixed(0)}%${_skewHint}"><div style="width:${_askPct.toFixed(2)}%;background:#b8341d;"></div><div style="width:${_bidPct.toFixed(2)}%;background:#0a8f43;"></div></div>`;
+            }
+            return `<div title="Live orders on both sides of the book. Asks (sell offers — preauth + atomic intent + range + opening) and bids (buy offers — bid intents). The depth chart, asks-liquidity row, and Open Orders pane each filter this set differently, so their counts can be slightly lower than this header figure."><span>${_label}</span><strong>${_display}</strong>${_ratioBarHtml}</div>`;
           })()}
           ${(() => {
             // Wallets — distinct on-chain recipients indexed by the worker.
@@ -58989,8 +59197,13 @@ function renderMarketAssetStatsHTML(asset) {
       </div>
       <div data-chart-tf-wrap style="margin-top:10px;${prePaintedChartHtml ? '' : 'display:none;'}">${_tfRowHtml}</div>
       <div data-market-price-chart style="${prePaintedChartStyle}">${prePaintedChartHtml}</div>
-      <div data-market-trades-tape style="margin-top:8px;display:none;"></div>
-      <div data-market-depth-chart style="margin-top:10px;font-size:11px;display:none;"></div>
+      <!-- Reserved layout space so the first populate doesn't pop the
+           page (push the Listed/Activity tabs below down a chunk). The
+           inner container stays hidden until data lands; the outer
+           reservation holds the slot. min-height matches the rendered
+           size of a populated tape (one row) / depth chart (compact). -->
+      <div data-market-trades-tape style="margin-top:8px;display:none;min-height:28px;"></div>
+      <div data-market-depth-chart style="margin-top:10px;font-size:11px;display:none;min-height:160px;"></div>
       <!-- The standalone Recent-trades table from earlier was removed in
            favor of (a) the spatial price chart above, (b) the trades
            tape (one-line live tape of the last few fills, scrolls
@@ -60413,6 +60626,19 @@ function renderYourOpenOrdersHTML(aid, asset, myPubHex) {
     Number(l.expiry || 0) > nowSec,
   );
   const askGrouped = groupChunkedPreauthListings(askRows);
+  // Intent asks (atomic / axfer-var): swap-tile limit sells that don't
+  // fully match against bids post the residual as an axfer-var intent
+  // via _postResidualAskListing. Simple mode hides intents from the
+  // asks ladder, so without surfacing them here the maker has no
+  // visible Cancel button anywhere. Whole-UTXO atomic-intent listings
+  // (publishAxferIntent) land in the same bucket.
+  const intentAsks = (_marketCache?.listings || []).filter(l =>
+    l.kind === 'intent' &&
+    l._asset?.asset_id === aid &&
+    l.maker_pubkey === myPubHex &&
+    !l.expired &&
+    Number(l.expiry || 0) > nowSec,
+  );
   // Bids: synchronous peek. _bidCachePeek returns null when no fetch has
   // resolved yet — in that case we render a placeholder and trigger a
   // populator (see populateYourOpenOrders below).
@@ -60427,8 +60653,8 @@ function renderYourOpenOrdersHTML(aid, asset, myPubHex) {
   // empty. If the bid cache is still cold and there are no asks, hide
   // the panel and let the next render pick it up once bids resolve —
   // avoids a flash of "no orders" before any data lands.
-  if (askGrouped.length === 0 && myBidsKnown && myBids.length === 0) return '';
-  if (askGrouped.length === 0 && !myBidsKnown) {
+  if (askGrouped.length === 0 && intentAsks.length === 0 && myBidsKnown && myBids.length === 0) return '';
+  if (askGrouped.length === 0 && intentAsks.length === 0 && !myBidsKnown) {
     // Try a fetch in the background so the next render has data.
     if (typeof _fetchBidIntentsCached === 'function') {
       try { _fetchBidIntentsCached(aid); } catch {}
@@ -60457,6 +60683,30 @@ function renderYourOpenOrdersHTML(aid, asset, myPubHex) {
       <td><strong>${totalSats.toLocaleString('en-US')}</strong> sats${usdTail}</td>
       <td class="muted" style="font-size:10px;">${escapeHtml(ageStr)}</td>
       <td>${cancelBtn}</td>
+    </tr>`;
+  }).join('');
+
+  // Intent-kind ask rows. Same column layout as the preauth rows so they
+  // slot into the same table. Cancel routes through marketCancelIntentHandler
+  // which handles the asset-spent / fulfilment-pending edge cases.
+  const intentAskRowsHtml = intentAsks.map(l => {
+    const amt = BigInt(l.amount || '0');
+    const priceSats = Number(l.price_sats || 0);
+    const u = unitPriceSats(priceSats, amt, decimals);
+    const unitStr = u != null ? `${fmtUnitPriceSats(u)} sats/${escapeHtml(ticker)}` : `${priceSats.toLocaleString()} sats`;
+    const usdTotal = fmtMarketUsdFromSats(priceSats, '');
+    const usdTail = usdTotal ? ` <small class="muted" style="font-size:9px;">· ${escapeHtml(usdTotal)}</small>` : '';
+    const ageStr = relativeAge(l.created_at || l.listed_at) ? `${relativeAge(l.created_at || l.listed_at)} ago` : '';
+    const isVar = !!(l.min_take_amount && l.min_take_amount !== '0');
+    const varTail = isVar ? ` <span class="muted" style="font-size:10px;">· partial-fillable</span>` : '';
+    const claimTail = l.claim ? ` <span class="muted" style="font-size:10px;">· claimed (cancel self-spends)</span>` : '';
+    return `<tr>
+      <td><span class="market-bid-state market-bid-state--mine" style="background:#fee;border:1px solid #b8341d;color:#b8341d;font-size:9px;padding:1px 6px;font-weight:600;text-transform:uppercase;">Sell</span></td>
+      <td><strong>${escapeHtml(fmtAssetAmount(amt, decimals))}</strong> ${escapeHtml(ticker)}${varTail}${claimTail}</td>
+      <td>${unitStr}</td>
+      <td><strong>${priceSats.toLocaleString('en-US')}</strong> sats${usdTail}</td>
+      <td class="muted" style="font-size:10px;">${escapeHtml(ageStr)}</td>
+      <td><button data-act="your-orders-cancel-intent" data-aid="${escapeHtml(aid)}" data-iid="${escapeHtml(l.intent_id || '')}" title="Cancel this intent — removes from the marketplace${l.claim ? '; if a taker has claimed, you will be prompted to self-spend the asset UTXO to invalidate their pending tx' : ''}" style="font-size:10px;padding:3px 8px;background:transparent;color:var(--ink-mid);border:1px solid var(--ink-faint);">Cancel</button></td>
     </tr>`;
   }).join('');
 
@@ -60510,7 +60760,7 @@ function renderYourOpenOrdersHTML(aid, asset, myPubHex) {
     </tr>`;
   }).join('');
 
-  const totalCount = askGrouped.length + myBids.length;
+  const totalCount = askGrouped.length + intentAsks.length + myBids.length;
   const bidsPlaceholder = !myBidsKnown
     ? `<tr><td colspan="6" class="muted" style="font-size:10px;text-align:center;padding:8px;"><span class="live-dots">checking your bids</span></td></tr>`
     : '';
@@ -60530,7 +60780,7 @@ function renderYourOpenOrdersHTML(aid, asset, myPubHex) {
             <th style="padding:4px 6px;font-weight:600;">Action</th>
           </tr>
         </thead>
-        <tbody>${askRowsHtml}${bidRowsHtml}${bidsPlaceholder}</tbody>
+        <tbody>${askRowsHtml}${intentAskRowsHtml}${bidRowsHtml}${bidsPlaceholder}</tbody>
       </table>
     </div>`;
 }
@@ -61258,7 +61508,7 @@ function _populateTradesTape(section, trades, ticker, decimals, markUnit) {
       }
     }
     const age = relativeAge(ts) || 'now';
-    const amtStr = fmtAssetAmount(amtBig, decimals);
+    const amtStr = fmtAssetAmountCompact(amtBig, decimals);
     const animAttr = isNew ? ' data-market-anim="new"' : '';
     const borderColor = isOutlier ? '#c97a1a' : 'var(--ink-faint)';
     const _gc = Number(t._groupCount || 1);
@@ -61435,6 +61685,9 @@ function refreshYourOpenOrdersPanel(scope, aid) {
   });
   next.querySelectorAll('button[data-act="your-orders-cancel-ask-group"]').forEach(btn => {
     btn.onclick = async () => marketCancelPreauthGroupHandler(btn);
+  });
+  next.querySelectorAll('button[data-act="your-orders-cancel-intent"]').forEach(btn => {
+    btn.onclick = async () => marketCancelIntentHandler(btn);
   });
   next.querySelectorAll('button[data-act="your-orders-cancel-bid"]').forEach(btn => {
     btn.onclick = async () => {
@@ -61636,6 +61889,16 @@ function renderHoldingsOpenOrdersHTML(myPubHex) {
     !l.expired &&
     Number(l.expiry || 0) > nowSec,
   );
+  // Intent-kind asks (swap-tile limit-sell residuals + whole-UTXO atomic
+  // intents). Simple mode hides intents from the asks ladder, so the
+  // dashboard is the only cross-asset place a maker can find + cancel
+  // them without flipping to Advanced trade per asset.
+  const myIntentAsks = _marketCache.listings.filter(l =>
+    l.kind === 'intent' &&
+    l.maker_pubkey === myPubHex &&
+    !l.expired &&
+    Number(l.expiry || 0) > nowSec,
+  );
   // Also walk _bidsCache for the user's open bids. The cache is keyed
   // per-asset and only contains assets the user has navigated to (or
   // any other code path has populated), so this misses bids on assets
@@ -61657,7 +61920,7 @@ function renderHoldingsOpenOrdersHTML(myPubHex) {
       }
     }
   }
-  if (myAsks.length === 0 && myBids.length === 0) return '';
+  if (myAsks.length === 0 && myIntentAsks.length === 0 && myBids.length === 0) return '';
   // Sort by asset then by created_at so rows from the same asset cluster.
   myAsks.sort((a, b) => {
     const aa = a._asset?.asset_id || '';
@@ -61696,6 +61959,40 @@ function renderHoldingsOpenOrdersHTML(myPubHex) {
       <td>${cancelBtn}</td>
     </tr>`;
   }).join('');
+  // Intent-kind ask rows. Same column layout as the preauth rows; cancel
+  // routes through marketCancelIntentHandler (handles asset-spent and
+  // fulfilment-pending edge cases).
+  myIntentAsks.sort((a, b) => {
+    const aa = a._asset?.asset_id || '';
+    const bb = b._asset?.asset_id || '';
+    if (aa !== bb) return aa.localeCompare(bb);
+    return (b.created_at || 0) - (a.created_at || 0);
+  });
+  const intentRowsHtml = myIntentAsks.map(l => {
+    const aid = l._asset?.asset_id || l.asset_id || '';
+    const ticker = l._asset?.ticker || l.ticker || '?';
+    const dec = Number.isInteger(l._asset?.decimals) ? l._asset.decimals
+              : Number.isInteger(l.decimals) ? l.decimals : 0;
+    const amt = BigInt(l.amount || '0');
+    const priceSats = Number(l.price_sats || 0);
+    const u = unitPriceSats(priceSats, amt, dec);
+    const unitStr = u != null ? `${fmtUnitPriceSats(u)} sats/${escapeHtml(ticker)}` : `${priceSats.toLocaleString()} sats`;
+    const usdTotal = fmtMarketUsdFromSats(priceSats, '');
+    const usdTail = usdTotal ? ` <small class="muted" style="font-size:9px;">· ${escapeHtml(usdTotal)}</small>` : '';
+    const ageStr = relativeAge(l.created_at || l.listed_at) ? `${relativeAge(l.created_at || l.listed_at)} ago` : '';
+    const isVar = !!(l.min_take_amount && l.min_take_amount !== '0');
+    const varTail = isVar ? ` <span class="muted" style="font-size:10px;">· partial-fillable</span>` : '';
+    const claimTail = l.claim ? ` <span class="muted" style="font-size:10px;">· claimed</span>` : '';
+    return `<tr>
+      <td><a href="#" data-act="holdings-orders-open-market" data-aid="${escapeHtml(aid)}" style="font-weight:600;color:var(--ink);text-decoration:underline dotted;" title="Open ${escapeHtml(ticker)} market">${escapeHtml(ticker)}</a></td>
+      <td><span class="market-bid-state market-bid-state--mine" style="background:#fee;border:1px solid #b8341d;color:#b8341d;font-size:9px;padding:1px 6px;font-weight:600;text-transform:uppercase;">Sell</span></td>
+      <td><strong>${escapeHtml(fmtAssetAmount(amt, dec))}</strong>${varTail}${claimTail}</td>
+      <td>${unitStr}</td>
+      <td><strong>${priceSats.toLocaleString('en-US')}</strong> sats${usdTail}</td>
+      <td class="muted" style="font-size:10px;">${escapeHtml(ageStr)}</td>
+      <td><button data-act="holdings-orders-cancel-intent" data-aid="${escapeHtml(aid)}" data-iid="${escapeHtml(l.intent_id || '')}" title="Cancel this intent — removes from the marketplace${l.claim ? '; if a taker has claimed, you will be prompted to self-spend the asset UTXO to invalidate their pending tx' : ''}" style="font-size:10px;padding:3px 8px;background:transparent;color:var(--ink-mid);border:1px solid var(--ink-faint);">Cancel</button></td>
+    </tr>`;
+  }).join('');
   // Per-bid row builder. Mirrors the ask-row layout so both kinds slot
   // into the same table with a "Buy" badge in the Side column. Bid
   // cancellation routes through the asset's market page (the cancel
@@ -61732,13 +62029,15 @@ function renderHoldingsOpenOrdersHTML(myPubHex) {
   // Summary chip — count + total sats across BOTH asks and bids, so the
   // user gets a portfolio-wide "I have N orders worth ~$X" glance.
   const totalAskSats = grouped.reduce((s, l) => s + Number(l.min_price_sats || 0) * (l._isGroup ? l._groupSize : 1), 0);
+  const totalIntentSats = myIntentAsks.reduce((s, l) => s + Number(l.price_sats || 0), 0);
   const totalBidSats = myBids.reduce((s, b) => s + Number(b.price_sats || 0), 0);
-  const totalSatsAll = totalAskSats + totalBidSats;
-  const totalOrders = grouped.length + myBids.length;
+  const totalSatsAll = totalAskSats + totalIntentSats + totalBidSats;
+  const totalSells = grouped.length + myIntentAsks.length;
+  const totalOrders = totalSells + myBids.length;
   const totalUsdAll = fmtMarketUsdFromSats(totalSatsAll, '');
   const summary = `${totalOrders} open order${totalOrders === 1 ? '' : 's'} · ${totalSatsAll.toLocaleString('en-US')} sats${totalUsdAll ? ` · ${totalUsdAll}` : ''}`;
-  const breakdownChip = (grouped.length > 0 && myBids.length > 0)
-    ? ` <span class="muted" style="font-size:9.5px;">(${grouped.length} sell · ${myBids.length} buy)</span>`
+  const breakdownChip = (totalSells > 0 && myBids.length > 0)
+    ? ` <span class="muted" style="font-size:9.5px;">(${totalSells} sell · ${myBids.length} buy)</span>`
     : '';
   return `
     <div data-holdings-open-orders style="margin-bottom:14px;border:1px solid var(--ink);background:var(--bg-warm);padding:10px 12px;">
@@ -61758,7 +62057,7 @@ function renderHoldingsOpenOrdersHTML(myPubHex) {
             <th style="padding:4px 6px;font-weight:600;">Action</th>
           </tr>
         </thead>
-        <tbody>${rowsHtml}${bidRowsHtml}</tbody>
+        <tbody>${rowsHtml}${intentRowsHtml}${bidRowsHtml}</tbody>
       </table>
     </div>`;
 }
@@ -61773,6 +62072,9 @@ function wireHoldingsOpenOrdersActions(node) {
   });
   node.querySelectorAll('button[data-act="holdings-orders-cancel-ask-group"]').forEach(btn => {
     btn.onclick = async () => marketCancelPreauthGroupHandler(btn);
+  });
+  node.querySelectorAll('button[data-act="holdings-orders-cancel-intent"]').forEach(btn => {
+    btn.onclick = async () => marketCancelIntentHandler(btn);
   });
   node.querySelectorAll('a[data-act="holdings-orders-open-market"]').forEach(a => {
     a.onclick = (ev) => {
@@ -61981,7 +62283,10 @@ async function populateMarketBidsLadder(scope, asset) {
     // amount, with a subtle min-fill hint. Whole-bid bids unchanged.
     const _bidIsVar = !!(b.min_fill_amount && b.min_fill_amount !== '0');
     const _amtBigForRow = _bidIsVar ? BigInt(b.remaining_amount || b.amount || 0) : BigInt(b.amount || 0);
-    const amtStr = fmtAssetAmount(_amtBigForRow, decimals);
+    // Compact display caps fractional digits by magnitude so the bids
+    // ladder doesn't show unreadable strings like "13,058.28435538 TAC".
+    const amtStr = fmtAssetAmountCompact(_amtBigForRow, decimals);
+    const amtStrFull = fmtAssetAmount(_amtBigForRow, decimals);
     // Partial-fill indicator for variable bids: when remaining < original
     // amount, surface "N% filled" so traders can distinguish a fresh
     // 10k-TAC bid from a 50k-TAC bid that's already 80% consumed. Whole-
@@ -62138,22 +62443,26 @@ async function populateMarketBidsLadder(scope, asset) {
     // "N makers" semantics — bucketing makes a per-row delta
     // misleading (the bucket spans a small range; the median delta
     // is more honest but harder to render in one cell).
-    const _markValid = Number.isFinite(_bidMarkUnit) && _bidMarkUnit > 0;
-    const _vsMarkPct = (_markValid && b._unit != null && b._unit > 0)
-      ? ((b._unit - _bidMarkUnit) / _bidMarkUnit) * 100
+    // Effective reference: midpoint when crossed (mark is stale then),
+    // else the worker mark. Keeps coloring honest — a top bid sitting
+    // above mid should still read green even on a crossed book.
+    const _bidRef = _effectiveReferenceUnit(asset?.asset_id, asset);
+    const _vsRefPct = (_bidRef && b._unit != null && b._unit > 0)
+      ? ((b._unit - _bidRef.unit) / _bidRef.unit) * 100
       : null;
-    const _vsMarkCls = _vsMarkPct == null ? '' : (_vsMarkPct >= 0 ? 'color:#0a7d3a;' : 'color:#b8341d;');
-    const _vsMarkStr = _vsMarkPct == null
+    const _vsRefCls = _vsRefPct == null ? '' : (_vsRefPct >= 0 ? 'color:#0a7d3a;' : 'color:#b8341d;');
+    const _vsRefStr = _vsRefPct == null
       ? '&mdash;'
-      : `${_vsMarkPct >= 0 ? '+' : ''}${_vsMarkPct.toFixed(2)}%`;
+      : `${_vsRefPct >= 0 ? '+' : ''}${_vsRefPct.toFixed(2)}%`;
+    const _vsRefLabel = _bidRef?.label === 'mid' ? 'vs mid' : 'vs mark';
     // Mine pill on the cell subtitle so the user can spot their own
     // bid across a long ladder without scanning the wallet column.
     const _mineSub = b._isMine
       ? `<span style="background:#fdf3cf;border:1px solid #c9a116;color:#7a5e00;font-size:8px;font-weight:700;padding:0 4px;letter-spacing:0.04em;border-radius:2px;">YOU</span>`
-      : 'vs mark';
+      : _vsRefLabel;
     const _bidderHtml = _isLevel
       ? `<strong>${b._levelCount} makers</strong><small>at this tick</small>`
-      : `<strong style="${_vsMarkCls}">${_vsMarkStr}</strong><small>${_mineSub}</small>`;
+      : `<strong style="${_vsRefCls}">${_vsRefStr}</strong><small>${_mineSub}</small>`;
     // Expires line for level rows uses the bucket's MAX expiry (the
     // latest bid in the bucket) so the seller sees how long the level
     // is broadly available; min-expiry would be misleading since
@@ -62164,9 +62473,9 @@ async function populateMarketBidsLadder(scope, asset) {
           <strong class="market-sats-price">${_isLevel ? '≥ ' : ''}${escapeHtml(unitVal)} sats/${escapeHtml(ticker)}${_levelBadge}${_topBadge}</strong>
           ${_isLevel ? _levelSpread : `<small class="market-usd-price">${unitUsd ? `${escapeHtml(unitUsd)} per token` : 'no USD quote'}</small>`}
         </div>
-        <div class="market-bid-cell">
+        <div class="market-bid-cell" title="${escapeHtml(amtStrFull)} ${escapeHtml(ticker)}">
           <strong>${escapeHtml(amtStr)}</strong>
-          <small>${_bidIsVar ? `${escapeHtml(ticker)} · min ${escapeHtml(fmtAssetAmount(BigInt(b.min_fill_amount), decimals))}${_fillPctLbl}` : escapeHtml(ticker)}</small>
+          <small>${_bidIsVar ? `${escapeHtml(ticker)} · min ${escapeHtml(fmtAssetAmountCompact(BigInt(b.min_fill_amount), decimals))}${_fillPctLbl}` : escapeHtml(ticker)}</small>
         </div>
         <div class="market-bid-cell">
           <strong>${escapeHtml(fmtMarketBtc(sats))}</strong>
@@ -62201,6 +62510,10 @@ async function populateMarketBidsLadder(scope, asset) {
     }
     return '';
   })();
+  // Flip header label "vs mark" → "vs mid" when the book is crossed,
+  // matching per-row coloring above which uses _effectiveReferenceUnit.
+  const _bidsRefForHeader = _effectiveReferenceUnit(asset?.asset_id, asset);
+  const _marketBidsRefLabel = (_bidsRefForHeader?.label === 'mid') ? 'vs mid' : 'vs mark';
   const _filterChips = [mineBidsChip, _outlierChip].filter(Boolean).join('');
   const mineFilterRow = _filterChips
     ? `<div class="market-bids-filter-row">${_filterChips}</div>`
@@ -62225,7 +62538,7 @@ async function populateMarketBidsLadder(scope, asset) {
         <span>Bid</span>
         <span>Quantity</span>
         <span>Total</span>
-        <span title="Percentage premium (green) or discount (red) versus the asset's mark price. Replaces the maker-address column which was low signal for a partial-fillable book — vs-mark is universally meaningful at a glance.">vs mark</span>
+        <span title="Percentage premium (green) or discount (red) versus the asset's mark price. When the book is crossed the column header reads &quot;vs mid&quot; — the midpoint of best bid / best ask is the honest clearing reference while mark (last-trade) is stale.">${_marketBidsRefLabel}</span>
         <span>Expires</span>
         <span>Action</span>
       </div>
