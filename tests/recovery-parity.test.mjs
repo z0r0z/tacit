@@ -130,6 +130,12 @@ const ALLOWLIST = {
 
   // Worker-internal opcodes that don't have a dapp surface.
   T_SWAP_BATCH:      'batched uniform-clearing settlement (SPEC §5.16); ceremony-gated, not yet emitted by dapp; per-trader receipts are equivalent to T_SWAP_VAR outputs and will be added when batch ships.',
+
+  // cBTC.tac opcodes that produce only native-BTC outputs (no tacit-asset UTXO
+  // to credit). The user recovers their BTC via the standard getUtxos
+  // wallet-address scan — no tacit envelope decoding needed.
+  T_CBTC_TAC_WITHDRAW:    'SPEC-CBTC-TAC-AMENDMENT §5.37 v1 lien model. Reveal produces ONLY a native BTC payout at vout[0] (slot_denom_sats - fee → recipientAddr). Lien is KV-released by worker; no bond return UTXO under v1. BTC recovery is via standard wallet-address scan, not scanHoldings.',
+  T_CBTC_TAC_FORCE_CLOSE: 'SPEC-CBTC-TAC-AMENDMENT §5.38 v1 lien model. Permissionless early-SLASH; reveal produces ONLY a liquidator-marker DUST P2WPKH at vout[0]. No tacit-asset UTXO; reward (if any) accrues via worker ledger under v1. BTC recovery via standard wallet scan.',
 };
 
 // ---- Tests --------------------------------------------------------------

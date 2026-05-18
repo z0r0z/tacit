@@ -8330,6 +8330,29 @@ function _deriveCbtcTacAtomicMintBlinding({ privkey, targetLeafHash, anchorOutpo
   return r;
 }
 
+// HMAC-derived blinding for the new LP-share UTXO minted by T_SHARE_SLASH_CLAIM
+// (a.k.a. T_CTAC_LIEN_CLAIM under §5.47 v1). Replaces the previous random
+// blinding so a claimant can recover the (claim_TAC, blinding) opening from
+// priv + chain alone after a localStorage wipe.
+//
+// Anchor: first burned cBTC.tac input's outpoint (tx.vin[1] of the reveal),
+// which the chain commits to via the spent-input set. Scanner re-derives by
+// reading the same outpoint off the on-chain tx.
+const _SHARE_SLASH_CLAIM_BLIND_DOMAIN = new TextEncoder().encode('tacit-share-slash-claim-blind-v1');
+function _deriveShareSlashClaimBlinding({ privkey, anchorOutpoint }) {
+  if (!(privkey instanceof Uint8Array) || privkey.length !== 32) throw new Error('privkey must be 32 bytes');
+  if (!(anchorOutpoint instanceof Uint8Array) || anchorOutpoint.length !== 36) throw new Error('anchorOutpoint must be 36 bytes');
+  const base = concatBytes(_SHARE_SLASH_CLAIM_BLIND_DOMAIN, anchorOutpoint);
+  let seed = hmac(sha256, privkey, base);
+  let r = bytes32ToBigint(seed) % SECP_N;
+  for (let counter = 1; r === 0n && counter < 256; counter++) {
+    seed = hmac(sha256, privkey, concatBytes(base, new Uint8Array([counter & 0xff])));
+    r = bytes32ToBigint(seed) % SECP_N;
+  }
+  if (r === 0n) throw new Error('share-slash-claim blinding: rejection sampling exhausted');
+  return r;
+}
+
 function computeCbtcTacDepositAtomicBindHash({
   networkTag, targetLeafHash, slotDenomSats, poolId,
   deltaCbtcZk, deltaTac, shareAmount,
@@ -13913,6 +13936,37 @@ async function _scanHoldingsImpl() {
       const meta = getAssetMeta(assetIdHex);
       if (meta) { ticker = meta.ticker; decimals = meta.decimals; }
       onChainCommitment = dec.cReceiptSecp;
+    } else if (env.opcode === T_SHARE_SLASH_CLAIM) {
+      // SPEC §5.47 v1 T_CTAC_LIEN_CLAIM. vout[0] = new LP-share UTXO at
+      // recipient with PUBLIC amount = dec.claimTAC and HMAC-derived blinding.
+      // asset_id maps to the claim pool's lp_asset_id; under v1 the worker
+      // determines this from chain state. For privkey-only recovery we use a
+      // network-scoped synthetic placeholder so the opening still surfaces;
+      // the worker upgrades the metadata once §5.47 lien semantics finalize.
+      if (u.vout !== 0) continue;
+      const dec = decodeTShareSlashClaimPayload(env.payload);
+      if (!dec) continue;
+      assetIdHex = bytesToHex(sha256(concatBytes(
+        new TextEncoder().encode('tacit-claim-pool-lp-asset-v1'),
+        new Uint8Array([dec.networkTag & 0xff]),
+      )));
+      onChainCommitment = dec.recipientCommit;
+    } else if (env.opcode === T_CTAC_LIEN_SPLIT) {
+      // SPEC §5.47 — split a liened LP-share UTXO into N (2..8) outputs at
+      // vout[0..N-1]. Each output's (amount, blinding, commit) is fully PUBLIC
+      // in the envelope, so recovery is anchor-free. asset_id: same as the
+      // parent at sourceOutpoint (lp_asset_id of the bonded pool). For now we
+      // use a network-scoped placeholder; full ancestry-walk resolution is a
+      // follow-up once §5.47 worker rewrite finalizes the LP-share asset_id
+      // semantics for split outputs.
+      const dec = decodeTCtacLienSplitPayload(env.payload);
+      if (!dec) continue;
+      if (u.vout >= dec.outputCount) continue;
+      assetIdHex = bytesToHex(sha256(concatBytes(
+        new TextEncoder().encode('tacit-claim-pool-lp-asset-v1'),
+        new Uint8Array([dec.networkTag & 0xff]),
+      )));
+      onChainCommitment = dec.outputCommits[u.vout];
     } else continue;
 
     if (!holdings.has(assetIdHex)) {
@@ -14358,6 +14412,49 @@ async function _scanHoldingsImpl() {
             recordOpening(u.txid, u.vout, assetIdHex, deltaOutLast, r);
             h.balance += deltaOutLast;
             h.utxos.push({ utxo: u, amount: deltaOutLast, blinding: r, commitment: onChainCommitment });
+            continue;
+          }
+        } catch {}
+      }
+    }
+
+    if (env.opcode === T_SHARE_SLASH_CLAIM && u.vout === 0) {
+      // SPEC §5.47 v1 T_CTAC_LIEN_CLAIM recovery: amount = dec.claimTAC
+      // (PUBLIC in envelope), blinding = HMAC(priv, first_burn_outpoint).
+      // The first burn UTXO is at tx.vin[1] (vin[0] is commit P2TR).
+      const dec = decodeTShareSlashClaimPayload(env.payload);
+      if (dec && tx.vin && tx.vin.length >= 2) {
+        const firstBurn = tx.vin[1];
+        const anchor = concatBytes(
+          reverseBytes(hexToBytes(firstBurn.txid)),
+          (() => { const b = new Uint8Array(4); new DataView(b.buffer).setUint32(0, firstBurn.vout >>> 0, true); return b; })(),
+        );
+        try {
+          const r = _deriveShareSlashClaimBlinding({ privkey: wallet.priv, anchorOutpoint: anchor });
+          if (pedersenCommit(dec.claimTAC, r).equals(bytesToPoint(onChainCommitment))) {
+            recordOpening(u.txid, u.vout, assetIdHex, dec.claimTAC, r);
+            h.balance += dec.claimTAC;
+            h.utxos.push({ utxo: u, amount: dec.claimTAC, blinding: r, commitment: onChainCommitment });
+            continue;
+          }
+        } catch {}
+      }
+    }
+
+    if (env.opcode === T_CTAC_LIEN_SPLIT) {
+      // SPEC §5.47 lien-split recovery: each output's (amount, blinding) is
+      // fully PUBLIC in the envelope at dec.outputAmounts[u.vout] /
+      // dec.outputBlindings[u.vout]. Anyone with the envelope can credit the
+      // matching UTXO. No priv-derived secret needed.
+      const dec = decodeTCtacLienSplitPayload(env.payload);
+      if (dec && u.vout < dec.outputCount) {
+        const amount = BigInt(dec.outputAmounts[u.vout]);
+        const r = bytes32ToBigint(dec.outputBlindings[u.vout]) % SECP_N;
+        try {
+          if (pedersenCommit(amount, r).equals(bytesToPoint(onChainCommitment))) {
+            recordOpening(u.txid, u.vout, assetIdHex, amount, r);
+            h.balance += amount;
+            h.utxos.push({ utxo: u, amount, blinding: r, commitment: onChainCommitment });
             continue;
           }
         } catch {}
@@ -18305,12 +18402,26 @@ async function buildAndBroadcastShareSlashClaim({
     shareCommits.push(pedersenCommit(amtBig, blindingBig).toRawBytes(true));
   }
 
-  // recipient_commit: fresh Pedersen commit for the new LP-share UTXO.
+  // recipient_commit: fresh Pedersen commit for the new LP-share UTXO. The
+  // blinding is HMAC-derived from priv + first-burn-outpoint so a claimant
+  // can re-derive (claim_TAC, blinding) from priv + chain alone after a
+  // localStorage wipe — privkey-only recovery property per SPEC §3.5.
   const recipientPub = recipientPubHex
     ? hexToBytes(recipientPubHex.toLowerCase())
     : wallet.pub;
   if (recipientPub.length !== 33) throw new Error('recipientPubHex must be 33-byte compressed');
-  const recipientBlindingBig = bytes32ToBigint(randomBytes(32)) % SECP_N;
+  // Anchor = first burned cBTC.tac UTXO's outpoint. Scanner reads vin[1] off
+  // the reveal tx and recomputes the same HMAC. The first burn is at tx.vin[1]
+  // (vin[0] is the commit P2TR), matching the buildAndBroadcastShareSlashClaim
+  // tx layout below.
+  const firstBurn = cbtcTacUtxos[0].utxo;
+  const firstBurnAnchor = concatBytes(
+    reverseBytes(hexToBytes(firstBurn.txid.toLowerCase())),
+    (() => { const b = new Uint8Array(4); new DataView(b.buffer).setUint32(0, firstBurn.vout >>> 0, true); return b; })(),
+  );
+  const recipientBlindingBig = _deriveShareSlashClaimBlinding({
+    privkey: wallet.priv, anchorOutpoint: firstBurnAnchor,
+  });
   const recipientCommit = pedersenCommit(claimLpShares, recipientBlindingBig).toRawBytes(true);
 
   const shareBalanceProof = new Uint8Array(688);  // placeholder bulletproof
@@ -69974,6 +70085,8 @@ export {
   encodeTCbtcTacDepositAtomicPayload, decodeTCbtcTacDepositAtomicPayload,
   computeCbtcTacDepositAtomicBindHash,
   T_CBTC_TAC_DEPOSIT_ATOMIC,
+  // §5.48.9 / §5.49.8 — seed-recoverable mint-blinding derivation.
+  _deriveCbtcTacAtomicMintBlinding as deriveCbtcTacAtomicMintBlinding,
   // SPEC §5.49 — atomic WITHDRAW + LP_REMOVE in one envelope.
   encodeTCbtcTacWithdrawAtomicPayload, decodeTCbtcTacWithdrawAtomicPayload,
   computeCbtcTacWithdrawAtomicBindHash,
