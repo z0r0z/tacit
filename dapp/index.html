@@ -4555,6 +4555,7 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
   <button class="tab" data-tab="claim">Claim</button>
   <button class="tab" data-tab="mixer">Mixer</button>
   <button class="tab" data-tab="pool" title="AMM swap + LP pool — unlocks after the AMM trusted setup ceremony">Pool</button>
+  <button class="tab" data-tab="farms" title="LP-bond yield farms — stake LP shares to earn reward emissions (SPEC-AMM-FARM-AMENDMENT)">Farms</button>
   <button class="tab" data-tab="about">Protocol</button>
 </div>
 
@@ -5796,45 +5797,75 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
     </div>
   </div>
 
-  <!-- SPEC-CBTC-TAC-AMENDMENT §5.36 — cBTC.tac LP-shaped mint helper.
-       Locks a live cBTC.zk slot's leaf + a TAC bond UTXO; mints a single
-       cBTC.tac UTXO at the depositor's recovery pubkey in the same reveal
-       tx that carries the T_CBTC_TAC_DEPOSIT envelope. asset_id is the
-       per-denomination ctacVariantAssetId — distinct pool for each tier. -->
+  <!-- SPEC-CBTC-TAC-AMENDMENT §5.47 v1 lien model — cBTC.tac mint helper.
+       Locks a live cBTC.zk slot's leaf + attaches a lien on a depositor's
+       LP-share UTXO of the canonical (cBTC.zk, TAC) AMM pool. The LP-share
+       UTXO stays in the depositor's wallet but is economically immobile
+       (worker refuses any spend via commitmentForUtxo's lien check). Mints
+       cBTC.tac at the depositor's recipient_commit. -->
   <div class="section" data-mixer-pool-op="true" id="cbtc-tac-deposit-section">
-    <div class="section-header"><span>deposit slot → cBTC.tac</span></div>
+    <div class="section-header"><span>deposit slot → cBTC.tac (v1 lien model)</span></div>
     <div class="section-body">
       <div class="muted" style="margin-bottom:10px;">
-        Bond TAC against a live cBTC.zk slot to mint cBTC.tac — a tacit-asset wrapper for BTC, transferable amount-privately and tradeable on the marketplace. The slot is locked into the position until withdraw closes it; the TAC bond backs the wrapper's solvency.
+        Bond LP-shares against a live cBTC.zk slot to mint cBTC.tac — a tacit-asset wrapper for BTC. cBTC.tac is transferable amount-privately and tradeable on the marketplace.
+      </div>
+      <div style="margin-bottom:10px;">
+        <label style="display:inline-flex;align-items:center;gap:6px;font-size:12px;">
+          <input type="radio" name="cbtc-tac-deposit-mode" id="cbtc-tac-deposit-mode-lien" value="lien" checked>
+          <span><strong>Lien mode</strong> — bond an existing LP-share UTXO (continues earning fees)</span>
+        </label>
+        <label style="display:inline-flex;align-items:center;gap:6px;font-size:12px;margin-left:14px;">
+          <input type="radio" name="cbtc-tac-deposit-mode" id="cbtc-tac-deposit-mode-atomic" value="atomic">
+          <span><strong>Atomic mode</strong> — LP + deposit in one tx; bring raw cBTC.zk + TAC</span>
+        </label>
       </div>
       <div class="flex" style="gap:8px;flex-wrap:wrap;align-items:flex-end;">
         <label style="flex:2;min-width:280px;">Live slot to deposit
           <select id="cbtc-tac-deposit-slot"><option value="">— pick a live slot —</option></select>
         </label>
-        <label style="flex:1;min-width:140px;">TAC bond amount
-          <input id="cbtc-tac-deposit-bond" type="number" min="1" placeholder="e.g. 100000" style="width:100%;font-family:monospace;font-size:12px;">
+        <label style="flex:2;min-width:280px;" id="cbtc-tac-deposit-lp-utxo-wrap">LP-share UTXO to lien as bond
+          <select id="cbtc-tac-deposit-lp-utxo"><option value="">— pick an LP-share UTXO (must be ≥ 2× slot value) —</option></select>
         </label>
         <button id="btn-cbtc-tac-deposit-broadcast" disabled>Deposit &amp; broadcast</button>
       </div>
-      <div class="flex" style="gap:8px;flex-wrap:wrap;align-items:flex-end;margin-top:8px;">
-        <label style="flex:2;min-width:280px;">TAC asset_id <span class="muted" style="font-size:11px;">(auto-detected from holdings; override if needed)</span>
-          <input id="cbtc-tac-deposit-tac-aid" type="text" placeholder="64 hex chars — canonical TAC asset_id" style="width:100%;font-family:monospace;font-size:12px;">
+      <div class="flex" style="gap:8px;flex-wrap:wrap;align-items:flex-end;margin-top:8px;display:none;" id="cbtc-tac-deposit-atomic-fields">
+        <label style="flex:2;min-width:280px;">Pool (cBTC.zk/TAC) to LP into
+          <select id="cbtc-tac-deposit-atomic-pool"><option value="">— pick a TAC-paired pool —</option></select>
+        </label>
+        <label style="flex:1;min-width:200px;">cBTC.zk input UTXO
+          <select id="cbtc-tac-deposit-atomic-cbtc"><option value="">— pick cBTC.zk UTXO —</option></select>
+        </label>
+        <label style="flex:1;min-width:200px;">TAC input UTXO
+          <select id="cbtc-tac-deposit-atomic-tac"><option value="">— pick TAC UTXO —</option></select>
         </label>
       </div>
       <div id="cbtc-tac-deposit-out" class="muted" style="margin-top:10px;display:none;white-space:pre-wrap;font-family:monospace;font-size:12px;"></div>
     </div>
   </div>
 
-  <!-- SPEC-CBTC-TAC-AMENDMENT §5.37 — cBTC.tac LP-shaped burn helper.
+  <!-- SPEC-CBTC-TAC-AMENDMENT §5.47 v1 lien model — cooperative withdraw.
        Closes an active cBTC.tac position: spends the slot's K_btc UTXO
-       (key-path Schnorr under r_btc) + burns the cBTC.tac mint UTXO
-       (asset-spend kernel sig) in one Bitcoin tx. Sats payout lands at
-       the chosen address. v1 = cooperative exit (withdrawer == depositor). -->
+       (key-path Schnorr under r_btc) + burns the cBTC.tac UTXOs (asset-
+       spend kernel sigs) in one Bitcoin tx. The worker releases the lien
+       on the depositor's LP-share UTXO atomically (no on-chain bond
+       return — the LP-share UTXO stays in your wallet, just unliened).
+       Sats payout lands at the chosen address. v1 = cooperative exit
+       (withdrawer == depositor). -->
   <div class="section" data-mixer-pool-op="true" id="cbtc-tac-withdraw-section">
-    <div class="section-header"><span>withdraw cBTC.tac → sats</span></div>
+    <div class="section-header"><span>withdraw cBTC.tac → sats (v1 lien release)</span></div>
     <div class="section-body">
       <div class="muted" style="margin-bottom:10px;">
         Close an active cBTC.tac position. Spends the underlying slot UTXO atomically with the cBTC.tac burn; sats land at the chosen payout address. Same-wallet redemption only in v1 (the depositor's r_btc is required to sign the slot input).
+      </div>
+      <div style="margin-bottom:10px;">
+        <label style="display:inline-flex;align-items:center;gap:6px;font-size:12px;">
+          <input type="radio" name="cbtc-tac-withdraw-mode" id="cbtc-tac-withdraw-mode-release" value="release" checked>
+          <span><strong>Release mode</strong> — burn cBTC.tac, get BTC payout; LP shares stay liened then become spendable</span>
+        </label>
+        <label style="display:inline-flex;align-items:center;gap:6px;font-size:12px;margin-left:14px;">
+          <input type="radio" name="cbtc-tac-withdraw-mode" id="cbtc-tac-withdraw-mode-atomic" value="atomic">
+          <span><strong>Atomic mode</strong> — also LP_REMOVE; get BTC + cBTC.zk + TAC back in one tx</span>
+        </label>
       </div>
       <div class="flex" style="gap:8px;flex-wrap:wrap;align-items:flex-end;">
         <label style="flex:2;min-width:280px;">Active position to withdraw
@@ -5852,6 +5883,30 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
         </div>
         <div id="cbtc-tac-positions-list"><div class="muted" style="font-size:11px;">No cBTC.tac positions yet on this network.</div></div>
       </div>
+    </div>
+  </div>
+
+  <!-- SPEC-CBTC-TAC-AMENDMENT §5.47 v1 — T_CTAC_LIEN_CLAIM (opcode 0x4C).
+       cBTC.tac holder burns shares pro-rata for LP-share UTXOs from the
+       global claim pool (filled by force-closed / rugged positions'
+       liens). The new LP-share UTXO can be T_LP_REMOVE'd for cBTC.zk +
+       TAC at current pool ratios, or held for AMM fee yield. -->
+  <div class="section" data-mixer-pool-op="true" id="ctac-lien-claim-section" style="display:none;">
+    <div class="section-header"><span>claim LP shares from cBTC.tac claim pool</span></div>
+    <div class="section-body">
+      <div class="muted" style="margin-bottom:10px;">
+        Burn cBTC.tac to claim your pro-rata slice of the global claim pool — LP shares of the canonical (cBTC.zk, TAC) AMM pool released by force-closed or rugged positions. The claimed LP shares are minted to your recipient_commit; you can later T_LP_REMOVE them for cBTC.zk + TAC, or hold for AMM fee yield.
+      </div>
+      <div class="muted" style="font-size:11px;margin-bottom:10px;">
+        <strong>Claim pool size:</strong> <span id="ctac-claim-pool-size">—</span> LP shares · <strong>Outstanding cBTC.tac:</strong> <span id="ctac-outstanding-supply">—</span> · <strong>Per-share rate:</strong> <span id="ctac-per-share-rate">—</span>
+      </div>
+      <div class="flex" style="gap:8px;flex-wrap:wrap;align-items:flex-end;">
+        <label style="flex:2;min-width:280px;">cBTC.tac UTXOs to burn
+          <select id="ctac-lien-claim-utxos" multiple style="height:80px;font-family:monospace;font-size:12px;"></select>
+        </label>
+        <button id="btn-ctac-lien-claim-broadcast" disabled>Claim &amp; broadcast</button>
+      </div>
+      <div id="ctac-lien-claim-out" class="muted" style="margin-top:10px;display:none;white-space:pre-wrap;font-family:monospace;font-size:12px;"></div>
     </div>
   </div>
 
@@ -6163,6 +6218,59 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
         <button id="btn-pool-lpremove-broadcast" type="button">Remove &amp; broadcast</button>
       </div>
       <div id="pool-lpremove-preview-out" class="muted" style="margin-top:10px;display:none;white-space:pre-wrap;font-family:monospace;font-size:12px;"></div>
+    </div>
+  </div>
+</div>
+
+<!-- FARMS TAB — LP-bond yield farms (SPEC-AMM-FARM-AMENDMENT.md) -->
+<div class="tab-panel" id="tab-farms">
+  <div class="section">
+    <div class="section-header"><span>farms</span></div>
+    <div class="section-body">
+      <p class="muted" style="margin-bottom:12px;">
+        Stake LP shares against a farm to earn streamed reward emissions.
+        Each farm runs over a fixed Bitcoin block range (start_height →
+        end_height), with rewards distributed pro-rata by bonded share.
+        Harvest accrued rewards anytime without unbonding; unbond returns
+        your LP shares plus any final reward. Launchers can reclaim
+        unspent treasury 7 days post-end.
+      </p>
+      <div style="margin-bottom:10px;">
+        <button id="farms-refresh-btn" class="btn-secondary">Refresh</button>
+        <span id="farms-status" class="muted" style="margin-left:8px;font-size:11px;"></span>
+      </div>
+      <div id="farms-list" style="display:flex;flex-direction:column;gap:12px;"></div>
+      <div id="farms-empty" class="muted" style="display:none;text-align:center;padding:24px 0;font-size:12px;">
+        No farms registered yet. Launchers can create one via
+        <code style="font-family:monospace;font-size:11px;">node tests/tools/create-farm.mjs --help</code>.
+      </div>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-header"><span>your bonds</span></div>
+    <div class="section-body">
+      <div id="farms-bonds-list" style="display:flex;flex-direction:column;gap:8px;"></div>
+      <div id="farms-bonds-empty" class="muted" style="display:none;text-align:center;padding:16px 0;font-size:12px;">
+        You have no active bonds. Bond LP shares against a farm above to
+        earn rewards.
+      </div>
+    </div>
+  </div>
+
+  <div class="section" style="font-size:11px;">
+    <div class="section-header"><span>actions (CLI for now)</span></div>
+    <div class="section-body muted" style="line-height:1.75;">
+      Bond / Harvest / Unbond / Refund actions are wired in
+      <code>dapp/amm-farm-actions.js</code>
+      (<code>buildAndBroadcastLpBond</code>, etc.) but not yet bound to
+      buttons here. Until the next dapp build, use the encoders from a
+      script context or the
+      <code>tests/amm-farm-e2e-signet.mjs</code> harness. The data view
+      above polls
+      <code>/farms</code> and
+      <code>/farm/&lt;id&gt;/bonds?bonder=&lt;your_pubkey&gt;</code> on the
+      worker for live state.
     </div>
   </div>
 </div>

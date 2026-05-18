@@ -644,7 +644,7 @@ export function decodeLpHarvest(payload) {
 
 export function decodeFarmRefund(payload) {
   if (!(payload instanceof Uint8Array)) return null;
-  if (payload.length !== 170) return null;
+  if (payload.length !== 175) return null;  // 1+1+32+33+8+4+32+64
   let p = 0;
   if (payload[p++] !== FARM_ENVELOPE_VERSION) return null;
   if (payload[p++] !== OPCODE_T_FARM_REFUND) return null;

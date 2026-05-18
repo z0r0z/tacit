@@ -1649,6 +1649,263 @@ name at `0x4C` is preserved for wire-format parity; the
 
 ---
 
+## §5.48 atomic LP_ADD + DEPOSIT (`T_CBTC_TAC_DEPOSIT_ATOMIC`)
+
+**Status:** ✅ shipped (worker + dapp + wire-parity tests). Follow-up addition
+to §5.47 lien model providing one-tx bootstrap UX for depositors who don't
+already hold canonical-pool LP shares.
+
+**Motivation.** v1's `T_CBTC_TAC_DEPOSIT` (§5.47) requires the depositor
+to already hold an LP-share UTXO of a TAC-paired pool. Bootstrap UX:
+new depositors must (a) `T_LP_ADD` to create LP shares, wait for
+confirmation, then (b) `T_CBTC_TAC_DEPOSIT` referencing that UTXO —
+two cascading on-chain txs. v1.1 collapses this into a single envelope:
+provide cBTC.zk + TAC as raw asset inputs; the worker simultaneously
+creates the LP shares (incrementing pool reserves) AND attaches the lien
+on the resulting LP UTXO AND mints cBTC.tac. One commit/reveal pair
+instead of two.
+
+### 5.48.1 Opcode allocation
+
+`T_CBTC_TAC_DEPOSIT_ATOMIC = 0x57` (next free after the drafted governance
+opcodes 0x50–0x53 and cUSD.tac opcodes 0x54–0x56 — see SPEC.md §1.1
+opcode table).
+
+### 5.48.2 Wire format
+
+```
+T_CBTC_TAC_DEPOSIT_ATOMIC
+   opcode                       1 byte   (0x57)
+   network_tag                  1 byte
+   target_leaf_hash            32 bytes  (the cBTC.zk slot's leaf hash)
+   slot_denom_sats_LE           8 bytes  (u64)
+   pool_id                     32 bytes  (the TAC-paired pool to LP into)
+   delta_cbtc_zk_LE             8 bytes  (u64; cBTC.zk amount being LP'd)
+   delta_tac_LE                 8 bytes  (u64; TAC amount being LP'd)
+   share_amount_LE              8 bytes  (u64; LP shares minted to depositor — derived from pool curve)
+   cbtc_zk_input_outpoint      36 bytes  (UTXO being consumed for cBTC.zk side)
+   cbtc_zk_input_commit        33 bytes  (Pedersen commit of cBTC.zk input)
+   tac_input_outpoint          36 bytes  (UTXO being consumed for TAC side)
+   tac_input_commit            33 bytes  (Pedersen commit of TAC input)
+   lp_share_commit             33 bytes  (Pedersen commit of the new LP-share UTXO, recipient = depositor_recovery_pk)
+   depositor_recovery_pk       33 bytes
+   mint_amount_LE               8 bytes  (u64; cBTC.tac to mint; must equal slot_denom_sats)
+   mint_recipient_commit       33 bytes  (Pedersen commit for new cBTC.tac UTXO)
+   bind_hash                   32 bytes  (per §5.48.4)
+   proof_length                 2 bytes  (u16 LE)
+   groth16_proof               VAR bytes (asset-spend over both inputs + slot-ownership over target_leaf_hash)
+```
+
+### 5.48.3 Validator algorithm
+
+```
+on T_CBTC_TAC_DEPOSIT_ATOMIC:
+  require envelope.network_tag matches local network
+  require slot target_leaf_hash is live (existing §5.47 deposit check)
+  require position[target_leaf_hash] does not exist
+  require mint_amount == slot_denom_sats == leaf_record.denom_sats
+  require anti-systemic pauses are clear (§5.41.3)
+
+  // Input validation (both sides)
+  cbtc_zk_input  := commitmentForUtxo(cbtc_zk_input_outpoint, skipLienCheck=true)
+  tac_input      := commitmentForUtxo(tac_input_outpoint, skipLienCheck=true)
+  require cbtc_zk_input.commitment == cbtc_zk_input_commit
+  require tac_input.commitment == tac_input_commit
+  // Neither input may already be liened (would double-encumber)
+  require ctacGetLien(cbtc_zk_input_outpoint) is null
+  require ctacGetLien(tac_input_outpoint) is null
+
+  // Pool lookup + reserve math
+  pool := ammPoolGet(pool_id)
+  require pool exists and is validated
+  require one side of pool is TAC (asset_a == TAC_AID or asset_b == TAC_AID)
+  require cbtc_zk_input.asset_id is the non-TAC side
+  require tac_input.asset_id == TAC_AID
+  // Compute LP shares from pool curve (mirrors §5.46.6 ammLpAddShares variant 0)
+  computed_shares := floor(min(delta_cbtc_zk × S / R_cbtc_zk,
+                                delta_tac     × S / R_tac))
+  require share_amount == computed_shares  // strict; no slop
+
+  // Collateralization check at TWAP
+  twap := ctacTwapSatsPerTac(at = confirm_height - REORG_SAFETY_DEPTH)
+  lp_value_sats := ctacLpShareValueSats(pool_id, share_amount, twap).valueSats
+  require lp_value_sats >= INITIAL_BOND_RATIO × slot_denom_sats
+
+  // Aggregate caps (§5.41.2)
+  require aggregate-MAX_POOL_FRAC check passes (existing §5.47 logic)
+
+  // Effects — atomically:
+  //   1. Consume both inputs (standard asset-spend nullification)
+  //   2. Update pool reserves: R_cbtc_zk += delta_cbtc_zk, R_tac += delta_tac
+  //   3. Update pool.lp_total_shares += share_amount
+  //   4. Create LP-share UTXO at (this_tx.txid, 0) with commit lp_share_commit
+  //   5. Create cBTC.tac mint UTXO at (this_tx.txid, 1) with commit mint_recipient_commit
+  //   6. Attach lien on (this_tx.txid, 0) for position target_leaf_hash
+  //   7. Record position (mirrors §5.47 deposit)
+  //   8. Update aggregate counters (bonded_sats, bonded_lp_shares, agg_lp_value_sats)
+```
+
+### 5.48.4 bind_hash construction
+
+```
+bind_hash = SHA256(
+  "tacit-ctac-deposit-atomic-v1"
+  || network_tag
+  || target_leaf_hash
+  || slot_denom_sats_LE
+  || pool_id
+  || delta_cbtc_zk_LE || delta_tac_LE || share_amount_LE
+  || cbtc_zk_input_outpoint || cbtc_zk_input_commit
+  || tac_input_outpoint || tac_input_commit
+  || lp_share_commit
+  || depositor_recovery_pk
+  || mint_amount_LE || mint_recipient_commit
+)
+```
+
+### 5.48.5 Tx layout
+
+```
+vin[0] = commit P2TR (script-path with T_CBTC_TAC_DEPOSIT_ATOMIC envelope)
+vin[1] = cBTC.zk_input_outpoint (asset-spend kernel sig + Groth16)
+vin[2] = tac_input_outpoint (asset-spend kernel sig + Groth16)
+vout[0] = LP-share UTXO at lp_share_commit (DUST P2WPKH to depositor_recovery_pk)
+vout[1] = cBTC.tac mint UTXO at mint_recipient_commit (DUST P2WPKH to depositor_recovery_pk)
+```
+
+### 5.48.6 UX surface
+
+Dapp adds an "atomic deposit" toggle to the cBTC.tac deposit section.
+When enabled:
+- Depositor picks slot + provides cBTC.zk + TAC inputs
+- Pool selector defaults to the deepest TAC-paired pool with the slot's
+  cBTC.zk variant on the other side
+- Single click → single Bitcoin tx → atomic position open
+
+When disabled (default): the v1.0 flow (depositor must pre-LP, then
+deposit referencing existing LP UTXO).
+
+### 5.48.7 Backwards compatibility
+
+`T_CBTC_TAC_DEPOSIT_ATOMIC` is purely additive — `T_CBTC_TAC_DEPOSIT`
+(0x49) continues to function unchanged. Depositors with existing LP
+UTXOs use 0x49; new depositors with raw cBTC.zk + TAC use 0x50.
+
+### 5.48.8 Implementation scope
+
+- Worker: new envelope decoder + handler; ~250 LOC. Reuses existing
+  ammLpAddShares math + ctacLpShareValueSats + lien helpers.
+- Dapp: new wire primitives + builder; ~300 LOC. Builds tx with 2 asset
+  inputs instead of 0.
+- Tests: cross-impl wire parity + handler integration tests + signet
+  E2E variant; ~200 LOC.
+- Total: ~750 LOC + ~1 day of careful work.
+
+---
+
+## §5.49 atomic WITHDRAW + LP_REMOVE (`T_CBTC_TAC_WITHDRAW_ATOMIC`)
+
+**Status:** ✅ shipped (worker + dapp + wire-parity tests). Symmetry-mirror
+of §5.48: one envelope that closes a cBTC.tac position, removes the freed
+LP shares from the pool, and pays out BTC + cBTC.zk + TAC to the depositor.
+
+### 5.49.1 Motivation
+
+Cooperative withdraw under §5.47 frees the LP-share UTXO (lien deleted)
+but leaves the depositor holding LP shares. To fully exit back to raw
+cBTC.zk + TAC, they'd then need a separate `T_LP_REMOVE` tx — UX cost.
+`T_CBTC_TAC_WITHDRAW_ATOMIC` collapses both into one tx.
+
+### 5.49.2 Opcode allocation
+
+`T_CBTC_TAC_WITHDRAW_ATOMIC = 0x58`.
+
+### 5.49.3 Wire format
+
+```
+T_CBTC_TAC_WITHDRAW_ATOMIC
+   opcode                   1 byte   (0x58)
+   network_tag              1 byte
+   target_leaf_hash        32 bytes
+   slot_denom_sats_LE       8 bytes
+   burn_count               1 byte   (M, 1..16)
+   burn_nullifiers         M × 32 bytes
+   burn_commits            M × 33 bytes  (must Pedersen-sum to burn_amount)
+   burn_amount_LE           8 bytes  (must = position.mint_amount = slot_denom_sats)
+   lp_share_amount_LE       8 bytes  (must = position lien.lp_share_amount)
+   recv_cbtc_zk_commit     33 bytes  (Pedersen commit for cBTC.zk LP_REMOVE output)
+   recv_tac_commit         33 bytes  (Pedersen commit for TAC LP_REMOVE output)
+   bind_hash               32 bytes
+   proof_length             2 bytes
+   groth16_proof           VAR bytes  (asset-spend over cBTC.tac UTXOs + LP UTXO)
+```
+
+### 5.49.4 Validator algorithm
+
+```
+on T_CBTC_TAC_WITHDRAW_ATOMIC:
+  require envelope.network_tag matches local network
+  position := positions[target_leaf_hash]
+  require position exists and position.state == "active"
+  require burn_amount == position.mint_amount == slot_denom_sats
+  require lp_share_amount == position.bond_amount_tac
+
+  // SAFETY GATE 1: slot K_btc must be spent in this tx
+  require tx.vin contains (position.slot_mint_txid, 0)
+
+  // SAFETY GATE 2: lien LP-share UTXO must be spent in this tx
+  lien := liens[position.lien_outpoint]
+  require lien exists and lien.state == "depositor"
+  require tx.vin contains lien.outpoint
+
+  // LP_REMOVE math against current pool reserves
+  pool := pools[position.bond_pool_id]
+  require pool is verified
+  require pool side mapping consistent with TAC asset_id
+  delta_cbtc := lp_share_amount × R_cbtc / pool.lp_total_shares
+  delta_tac  := lp_share_amount × R_tac / pool.lp_total_shares
+  require delta_cbtc > 0 and delta_tac > 0
+
+  // Effects (atomic)
+  pool.reserve_cbtc -= delta_cbtc
+  pool.reserve_tac  -= delta_tac
+  pool.lp_total_shares -= lp_share_amount
+  position.state := "withdrawn"
+  position.atomic_withdraw := true
+  outstanding_cBTC.tac_supply -= burn_amount
+  total_bonded_lp_shares -= lp_share_amount
+  total_bonded_sats -= slot_denom_sats
+  aggregate_lp_value_sats -= position.initial_lp_value_sats
+  delete lien
+  emit withdraw_event(target_leaf_hash, burn_amount)
+```
+
+### 5.49.5 Tx layout
+
+```
+vin[0]   = commit P2TR (script-path with envelope)
+vin[1]   = slot K_btc UTXO (key-path Schnorr under r_btc — SAFETY GATE 1)
+vin[2..M+1] = cBTC.tac UTXOs (asset-spend kernel sigs)
+vin[M+2] = liened LP-share UTXO (worker bypasses lien check for this
+           outpoint via skipLienCheck — SAFETY GATE 2 requires it spent)
+vout[0]  = BTC payout (slot_denom_sats minus fees) to recipientAddr
+vout[1]  = cBTC.zk UTXO at recv_cbtc_zk_commit (DUST P2WPKH to depositor)
+vout[2]  = TAC UTXO at recv_tac_commit (DUST P2WPKH to depositor)
+```
+
+### 5.49.6 commitmentForUtxo resolution
+
+`commitmentForUtxo` recognises vout[1] as `(recv_cbtc_zk_commit, position.slot_asset_id)` and vout[2] as `(recv_tac_commit, TAC_ASSET_ID)`. The depositor can then spend these as ordinary asset UTXOs.
+
+### 5.49.7 Backwards compatibility
+
+`T_CBTC_TAC_WITHDRAW_ATOMIC` is additive — the existing
+`T_CBTC_TAC_WITHDRAW` (0x4A, §5.47) continues to function. Depositors who
+want to keep the LP-share UTXO (for AMM fee yield) use 0x4A; those who
+want to fully exit back to raw assets use 0x58.
+
+---
+
 ## Test plan
 
 1. **Healthy lifecycle.** Wrap BTC → cBTC.zk → deposit (mint

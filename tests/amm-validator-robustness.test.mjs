@@ -23,11 +23,20 @@ import { sha256 } from '@noble/hashes/sha256';
 import { hexToBytes } from '@noble/hashes/utils';
 
 import {
-  validateLpAdd, validateLpRemove, validateSwapBatch, validateSwapVar,
+  validateLpAdd as _validateLpAdd, validateLpRemove as _validateLpRemove,
+  validateSwapBatch, validateSwapVar,
   validateProtocolFeeClaim,
   SKIP_GROTH16_VERIFY_UNSAFE, SKIP_MIN_LIQ_VERIFY_UNSAFE,
+  SKIP_OP_RETURN_VERIFY_UNSAFE,
 } from './amm-validator.mjs';
 import { encodeSwapVar } from './swap-var.mjs';
+
+function validateLpAdd(args) {
+  return _validateLpAdd({ opReturnData: SKIP_OP_RETURN_VERIFY_UNSAFE, ...args });
+}
+function validateLpRemove(args) {
+  return _validateLpRemove({ opReturnData: SKIP_OP_RETURN_VERIFY_UNSAFE, ...args });
+}
 
 let pass = 0, fail = 0;
 function test(label, fn) {

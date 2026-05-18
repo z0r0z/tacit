@@ -14,7 +14,7 @@
 > peer at the time of writing.
 
 This document is the architecture and reference summary for the
-AMM extension to the tacit protocol. It contributes six normative
+AMM extension to the tacit protocol. It contributes twelve normative
 opcodes to `SPEC.md`:
 
 | Opcode | Section | Role |
@@ -22,9 +22,15 @@ opcodes to `SPEC.md`:
 | `T_LP_ADD` `0x2D` | SPEC.md §5.14 | Liquidity deposit; `variant=1` sentinel doubles as `POOL_INIT` |
 | `T_LP_REMOVE` `0x2E` | SPEC.md §5.15 | Proportional withdrawal |
 | `T_SWAP_BATCH` `0x2F` | SPEC.md §5.16 | Batched uniform-price settlement (Groth16, MEV-resistant, ceremony-gated) |
-| `T_INTENT_ATTEST` `0x30` | SPEC.md §5.17 | Preconfirmation channel attestation (scope-generic; reused by orderbook) |
+| `T_INTENT_ATTEST` `0x30` | SPEC.md §5.17 | Preconfirmation channel attestation (scope-generic; reused by orderbook **and farm-state attestations** per `SPEC-AMM-FARM-AMENDMENT.md` §5.45) |
 | `T_PROTOCOL_FEE_CLAIM` `0x31` | SPEC.md §5.18 | Founder-pinned protocol-fee mint |
 | `T_SWAP_VAR` `0x32` | SPEC.md §5.20 | Per-trade variable-amount swap (no Groth16, ships independent of the AMM ceremony) |
+| `T_SWAP_ROUTE` `0x33` | SPEC.md §5.22 | Atomic multi-hop AMM routing (2..N_HOPS_MAX=4 pools, one Bitcoin tx); reuses `T_SWAP_VAR` cryptography |
+| `T_FARM_INIT` `0x34` | SPEC-AMM-FARM-AMENDMENT.md §5.40 | Launcher-funded LP-staking reward farm creation; virtual treasury |
+| `T_LP_BOND` `0x35` | SPEC-AMM-FARM-AMENDMENT.md §5.41 | Bond `lp_asset_id` shares against a farm; per-bond worker-indexed record |
+| `T_LP_UNBOND` `0x36` | SPEC-AMM-FARM-AMENDMENT.md §5.42 | Settle bond: mint fresh LP shares + reward UTXO, delete bond record |
+| `T_LP_HARVEST` `0x3B` | SPEC-AMM-FARM-AMENDMENT.md §5.43 | Claim accrued reward without unbonding (MasterChef `harvest()` equivalent) |
+| `T_FARM_REFUND` `0x3E` | SPEC-AMM-FARM-AMENDMENT.md §5.44 | Launcher reclaims unspent treasury strictly after `end_height + 1008` blocks (~7 days) |
 
 Plus a deterministic `lp_asset_id` derivation rule (SPEC.md §4.1),
 AMM-specific receipt-recovery derivations (SPEC.md §6 path 10), an

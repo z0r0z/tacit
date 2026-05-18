@@ -278,6 +278,43 @@ function resolveMinLiqOutput(arg, fnName) {
   );
 }
 
+// Sentinel a caller passes to skip the on-chain OP_RETURN(envelope_hash)
+// binding check. AMM.md §"Per-vin Bitcoin-layer signature" makes the
+// vout[0] = OP_RETURN(sha256(payload)) binding mandatory for every AMM op
+// envelope — it's what binds trader SIGHASH_ALL sigs to the envelope
+// content and blocks settler envelope-swap. Production indexers MUST pass
+// the 32-byte data from tx.vout[0]'s OP_RETURN; the skip path is reserved
+// for unit tests that don't model the on-chain tx layout. Same prod-
+// refusal gate as the Groth16 and MIN_LIQ skip sentinels.
+export const SKIP_OP_RETURN_VERIFY_UNSAFE = Symbol('tacit-amm-skip-op-return-verify-unsafe');
+
+let _skipOpReturnWarned = false;
+function resolveOpReturnData(arg, fnName) {
+  if (arg === SKIP_OP_RETURN_VERIFY_UNSAFE) {
+    if (_isProductionEnv()) {
+      throw new Error(
+        `${fnName}: SKIP_OP_RETURN_VERIFY_UNSAFE refused in production ` +
+        `(NODE_ENV=production or TACIT_FORCE_PROD_GUARDS=1). Pass the ` +
+        `32-byte data from tx.vout[0]'s OP_RETURN.`,
+      );
+    }
+    if (!_skipOpReturnWarned && typeof process !== 'undefined' && process.stderr) {
+      _skipOpReturnWarned = true;
+      process.stderr.write(
+        '[tacit-amm] WARNING: SKIP_OP_RETURN_VERIFY_UNSAFE in use — ' +
+        'envelope-swap defense disabled, dev/test only.\n',
+      );
+    }
+    return null;
+  }
+  if (arg instanceof Uint8Array && arg.length === 32) return arg;
+  throw new Error(
+    `${fnName}: opReturnData is required — pass the 32-byte data from ` +
+    `tx.vout[0]'s OP_RETURN (verified against sha256(envelope_payload)) ` +
+    `or SKIP_OP_RETURN_VERIFY_UNSAFE for dev/test.`,
+  );
+}
+
 // =========================================================================
 // vk_cid integrity self-check
 // =========================================================================
@@ -688,6 +725,8 @@ export function validateLpAdd({
   metadataA = null, metadataB = null,
   groth16Verify,
   currentHeight,
+  opReturnData,                   // 32 bytes from tx.vout[0]'s OP_RETURN, or SKIP_OP_RETURN_VERIFY_UNSAFE.
+                                  // AMM.md §"Per-vin Bitcoin-layer signature" makes this binding mandatory.
   vkBytes,                        // optional Uint8Array — if provided, integrity-checked against pool.vk_cid
   minLiqOutput,                   // {commitBytes(33), amtCt(8), p2wpkh(20)} from on-chain vout[k_min_liq];
                                   // REQUIRED for POOL_INIT (variant=1). Pass SKIP_MIN_LIQ_VERIFY_UNSAFE
@@ -695,12 +734,20 @@ export function validateLpAdd({
                                   // Ignored on variant=0.
 }) {
   const verify = resolveGroth16Verify(groth16Verify, 'validateLpAdd');
+  const opReturnBytes = resolveOpReturnData(opReturnData, 'validateLpAdd');
   if (typeof currentHeight !== 'number' || currentHeight < 0) {
     throw new Error('validateLpAdd: currentHeight (u32) is required');
   }
   let env;
   try { env = decodeLpAdd(payload); }
   catch (e) { return { valid: false, reason: `decode error: ${e.message}` }; }
+
+  if (opReturnBytes !== null) {
+    const expectedHash = computeEnvelopeHash(payload);
+    if (!bytesEqual(opReturnBytes, expectedHash)) {
+      return { valid: false, reason: 'OP_RETURN data != SHA256(envelope_payload)' };
+    }
+  }
 
   // Canonical asset ordering: assetA MUST be strictly less than assetB.
   // AMM.md §"Pool state" requires byte inequality at POOL_INIT — a same-
@@ -958,12 +1005,20 @@ export function validateLpRemove({
   payload, pool,
   lpInputCommitments, lpInputs,
   groth16Verify,
+  opReturnData,                   // 32 bytes from tx.vout[0]'s OP_RETURN, or SKIP_OP_RETURN_VERIFY_UNSAFE.
   vkBytes,                        // optional Uint8Array — if provided, integrity-checked against pool.vk_cid
 }) {
   const verify = resolveGroth16Verify(groth16Verify, 'validateLpRemove');
+  const opReturnBytes = resolveOpReturnData(opReturnData, 'validateLpRemove');
   let env;
   try { env = decodeLpRemove(payload); }
   catch (e) { return { valid: false, reason: `decode error: ${e.message}` }; }
+  if (opReturnBytes !== null) {
+    const expectedHash = computeEnvelopeHash(payload);
+    if (!bytesEqual(opReturnBytes, expectedHash)) {
+      return { valid: false, reason: 'OP_RETURN data != SHA256(envelope_payload)' };
+    }
+  }
   if (!pool) return { valid: false, reason: 'pool not registered' };
   const orderErr = checkAssetPairCanonical(env.assetA, env.assetB);
   if (orderErr) return { valid: false, reason: orderErr };

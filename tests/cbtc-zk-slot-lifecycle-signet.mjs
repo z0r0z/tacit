@@ -47,7 +47,6 @@ globalThis.__TACIT_NO_INIT__ = true;
 globalThis.localStorage.setItem('tacit-network-v1', 'signet');
 
 import * as secp from '@noble/secp256k1';
-import { sha256 } from '@noble/hashes/sha256';
 import { hexToBytes, bytesToHex } from '@noble/hashes/utils';
 
 const dapp = await import('../dapp/tacit.js');
@@ -83,11 +82,14 @@ function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 const WORKER_BASE = 'https://tacit-pin.rosscampbell9.workers.dev';
 
-// Deterministic test asset_id — derived from a fixed seed so reruns hit
-// the same pool. Distinct from any real CETCHed asset on the worker.
-const TEST_SEED = 'cbtc-zk-slot-lifecycle-v1';
-const TEST_ASSET_ID = bytesToHex(sha256(new TextEncoder().encode(TEST_SEED)));
-const DENOM = 10_000n;  // 10k sats — cheap to mint + burn on signet
+// Target an already-indexed signet mixer pool with canonical CIDs so
+// Phase 1 (POOL_INIT) skips to ✓-reuse and the harness can exercise
+// Phase 5 (T_SLOT_BURN) past the mixerIsPoolCanonical gate. Override
+// with TACIT_TEST_ASSET_ID + TACIT_TEST_DENOM env vars to point at a
+// different pool. Default: TST0 mixer pool at 10k-sat denomination.
+const TEST_ASSET_ID = (process.env.TACIT_TEST_ASSET_ID
+  || 'e1519c848859cc59487defa2d198c62f0181962fc26e40101eb685665c2b9671').toLowerCase();
+const DENOM = BigInt(process.env.TACIT_TEST_DENOM || 10_000n);
 
 const state = loadState();
 
@@ -143,14 +145,21 @@ async function waitForPoolInit(maxMin = 15) {
   return null;
 }
 
-async function waitForLeaf(leafCommitHex, maxMin = 15) {
-  info('index', `polling /pools for leaf ${leafCommitHex.slice(0, 16)}… (up to ${maxMin}min)…`);
+// SPEC §5.10 depth gate: only `status==='included'` (depth ≥ 3) leaves
+// get applied to the dapp's local tree, so phases 3-4 won't see the leaf
+// until it crosses that threshold. Wait here instead of letting Phase 4
+// surface a misleading "null proof" warning that looks like the pre-fix
+// bug. Same gate applies to nullifiers.
+async function waitForLeaf(leafCommitHex, maxMin = 30, requireIncluded = true) {
+  info('index', `polling /pools for leaf ${leafCommitHex.slice(0, 16)}… (status='included', up to ${maxMin}min)…`);
   const target = leafCommitHex.toLowerCase();
   for (let i = 0; i < maxMin * 2; i++) {
     try {
       const p = await workerGetPool();
-      if (p?.leaves?.some(l => (l.leaf_commitment || '').toLowerCase() === target)) {
-        return p.leaves.find(l => (l.leaf_commitment || '').toLowerCase() === target);
+      const leaf = p?.leaves?.find(l => (l.leaf_commitment || '').toLowerCase() === target);
+      if (leaf) {
+        if (!requireIncluded || leaf.status === 'included') return leaf;
+        if ((i % 4) === 0) info('index', `  · leaf at depth=${leaf.depth} status=${leaf.status}, waiting for included…`);
       }
     } catch (e) {
       info('index', `  · transient fetch error (${e.message?.slice(0, 60)}), retrying…`);
@@ -160,14 +169,16 @@ async function waitForLeaf(leafCommitHex, maxMin = 15) {
   return null;
 }
 
-async function waitForNullifier(nullifierHashHex, maxMin = 15) {
-  info('index', `polling /pools for nullifier ${nullifierHashHex.slice(0, 16)}… (up to ${maxMin}min)…`);
+async function waitForNullifier(nullifierHashHex, maxMin = 30, requireIncluded = true) {
+  info('index', `polling /pools for nullifier ${nullifierHashHex.slice(0, 16)}… (status='included', up to ${maxMin}min)…`);
   const target = nullifierHashHex.toLowerCase();
   for (let i = 0; i < maxMin * 2; i++) {
     try {
       const p = await workerGetPool();
-      if (p?.nullifiers?.some(n => (n.nullifier_hash || '').toLowerCase() === target)) {
-        return p.nullifiers.find(n => (n.nullifier_hash || '').toLowerCase() === target);
+      const null_ = p?.nullifiers?.find(n => (n.nullifier_hash || '').toLowerCase() === target);
+      if (null_) {
+        if (!requireIncluded || null_.status === 'included') return null_;
+        if ((i % 4) === 0) info('index', `  · nullifier at depth=${null_.depth} status=${null_.status}, waiting for included…`);
       }
     } catch (e) {
       info('index', `  · transient fetch error (${e.message?.slice(0, 60)}), retrying…`);
@@ -198,8 +209,13 @@ if (state.poolInit?.indexed) {
   const r = await dapp.buildAndBroadcastPoolInit({
     assetIdHex: TEST_ASSET_ID,
     poolDenom: DENOM,
-    vkCid: 'bafy-cbtc-zk-smoke-vk',
-    ceremonyCid: 'bafy-cbtc-zk-smoke-ceremony',
+    // Canonical mixer-ceremony CIDs — required so buildAndBroadcastSlotBurn's
+    // mixerIsPoolCanonical gate (dapp/tacit.js L15749) accepts the pool for
+    // Groth16 proof generation. The first lifecycle run with synthetic CIDs
+    // gets past Phase 4 (which is the audit-critical validation point) but
+    // fails Phase 5; this fixes Phase 5-6 too.
+    vkCid: dapp.CANONICAL_VK_CID,
+    ceremonyCid: dapp.CANONICAL_CEREMONY_CID,
     onProgress: (s) => info('pool-init', `  · ${s}`),
   });
   ok('pool-init', `reveal ${r.revealTxid.slice(0, 16)}…`);

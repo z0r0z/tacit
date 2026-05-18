@@ -19,8 +19,22 @@ import {
   OPCODE_T_SWAP_ROUTE, ENVELOPE_VERSION, N_HOPS_MAX,
   encodeSwapRoute, decodeSwapRoute, computeSwapRouteEnvelopeHash,
   buildSwapRouteIntentMsg, buildSwapRouteKernelMsg, kernelVerifyPoint,
-  hashHops, validateSwapRoute,
+  hashHops, validateSwapRoute as _validateSwapRoute,
 } from './swap-route.mjs';
+
+// Test wrapper that defaults the two REQUIRED contextual params —
+// opReturnData (= SHA256(payload)) and inputCommitment (= C_IN_BYTES from
+// the shared trader-input fixture) — so individual tests can override
+// either to exercise the new gates without restating the boilerplate.
+function validateSwapRoute(args) {
+  const opReturnData = args.opReturnData !== undefined
+    ? args.opReturnData
+    : computeSwapRouteEnvelopeHash(args.payload);
+  const inputCommitment = args.inputCommitment !== undefined
+    ? args.inputCommitment
+    : C_IN_BYTES;
+  return _validateSwapRoute({ ...args, opReturnData, inputCommitment });
+}
 
 let pass = 0, fail = 0;
 function test(label, fn) {
@@ -602,6 +616,161 @@ test('hop[0].fee_bps != pool.fee_bps rejected', () => {
     bulletproofVerify: bpRangeAggVerify,
   });
   return res.valid === false && /fee_bps/.test(res.reason);
+});
+
+// =========================================================================
+// Section 5: OP_RETURN binding + input-commit binding (SPEC §5.22 step 1
+// and the input-side inflation defense that mirrors validateSwapVar's
+// 2026-05-15 receipt-side fix). Both gates are caller-supplied REQUIRED
+// inputs; the validator throws on missing args and returns invalid on
+// shape/value mismatch.
+// =========================================================================
+console.log('\nOP_RETURN + input-commit gates');
+
+test('missing opReturnData throws', () => {
+  const { env } = buildHonestTwoHopRoute();
+  const payload = encodeSwapRoute(env);
+  try {
+    _validateSwapRoute({
+      payload, pools: buildPools(), currentHeight: 100,
+      bulletproofVerify: bpRangeAggVerify,
+      inputCommitment: C_IN_BYTES,
+      // opReturnData omitted
+    });
+    return false;
+  } catch (e) { return /opReturnData is required/.test(e.message); }
+});
+
+test('opReturnData wrong length rejected', () => {
+  const { env } = buildHonestTwoHopRoute();
+  const payload = encodeSwapRoute(env);
+  const res = validateSwapRoute({
+    payload, pools: buildPools(), currentHeight: 100,
+    bulletproofVerify: bpRangeAggVerify,
+    opReturnData: new Uint8Array(31),  // off-by-one
+  });
+  return res.valid === false && /32-byte Uint8Array/.test(res.reason);
+});
+
+test('opReturnData mismatch rejected (envelope-swap defense)', () => {
+  const { env } = buildHonestTwoHopRoute();
+  const payload = encodeSwapRoute(env);
+  // 32 bytes of garbage; nothing the settler could fabricate would match
+  // SHA256(payload) without also re-running the payload encoder.
+  const res = validateSwapRoute({
+    payload, pools: buildPools(), currentHeight: 100,
+    bulletproofVerify: bpRangeAggVerify,
+    opReturnData: new Uint8Array(32).fill(0xab),
+  });
+  return res.valid === false && /OP_RETURN data != SHA256/.test(res.reason);
+});
+
+test('opReturnData honest match passes through', () => {
+  const { env } = buildHonestTwoHopRoute();
+  const payload = encodeSwapRoute(env);
+  const res = _validateSwapRoute({
+    payload, pools: buildPools(), currentHeight: 100,
+    bulletproofVerify: bpRangeAggVerify,
+    opReturnData: computeSwapRouteEnvelopeHash(payload),
+    inputCommitment: C_IN_BYTES,
+  });
+  return res.valid === true;
+});
+
+test('missing inputCommitment throws', () => {
+  const { env } = buildHonestTwoHopRoute();
+  const payload = encodeSwapRoute(env);
+  try {
+    _validateSwapRoute({
+      payload, pools: buildPools(), currentHeight: 100,
+      bulletproofVerify: bpRangeAggVerify,
+      opReturnData: computeSwapRouteEnvelopeHash(payload),
+      // inputCommitment omitted
+    });
+    return false;
+  } catch (e) { return /inputCommitment is required/.test(e.message); }
+});
+
+test('inputCommitment wrong length rejected', () => {
+  const { env } = buildHonestTwoHopRoute();
+  const payload = encodeSwapRoute(env);
+  const res = validateSwapRoute({
+    payload, pools: buildPools(), currentHeight: 100,
+    bulletproofVerify: bpRangeAggVerify,
+    inputCommitment: new Uint8Array(32),  // should be 33 (compressed point)
+  });
+  return res.valid === false && /33-byte compressed point/.test(res.reason);
+});
+
+test('inputCommitment wrong type rejected', () => {
+  const { env } = buildHonestTwoHopRoute();
+  const payload = encodeSwapRoute(env);
+  const res = validateSwapRoute({
+    payload, pools: buildPools(), currentHeight: 100,
+    bulletproofVerify: bpRangeAggVerify,
+    inputCommitment: 'aa'.repeat(33),  // hex string, not bytes or point
+  });
+  return res.valid === false && /ProjectivePoint or Uint8Array/.test(res.reason);
+});
+
+test('inputCommitment mismatch rejected (claim r_in = 0 inflation defense)', () => {
+  // Trader claims env.cInSecp commits to TRADER_IN_AMOUNT with r_in = 0
+  // (so the on-chain UTXO of value TRADER_IN_AMOUNT with the real r_in
+  // doesn't match) — without the input-commit binding the kernel sig
+  // would still verify, but the trader would be lying about r_in and
+  // could inflate the input side. The new gate catches this directly.
+  const { env, delta_out_last } = buildHonestTwoHopRoute();
+  const fakeRIn = 0n;  // attacker uses r_in = 0 in their claim
+  const fakeCIn = pedersenCommit(TRADER_IN_AMOUNT, fakeRIn);
+  const fakeCInBytes = pointToBytes(fakeCIn);
+  // Recompute receipt + sigs under the lie. The receipt opens honestly
+  // (so we don't trip the receipt-binding check) but cInSecp diverges
+  // from C_IN_BYTES.
+  const R_RECEIPT = modN(BigInt('0x' + 'bb'.repeat(32)));
+  const C_RECEIPT = pedersenCommit(delta_out_last, R_RECEIPT);
+  const C_RECEIPT_BYTES = pointToBytes(C_RECEIPT);
+  const intentMsg = buildSwapRouteIntentMsg({
+    traderPubkey: env.traderPubkey,
+    traderInputAssetId: env.traderInputAssetId,
+    traderOutputAssetId: env.traderOutputAssetId,
+    minOut: env.minOut, expiryHeight: env.expiryHeight,
+    hops: env.hops,
+    cInSecp: fakeCInBytes, cReceiptSecp: C_RECEIPT_BYTES,
+  });
+  const intentSig = signSchnorr(intentMsg, TRADER_PRIVKEY);
+  const excess = modN(R_RECEIPT - fakeRIn);
+  const excessKey = hexToBytes(excess.toString(16).padStart(64, '0'));
+  const kernelMsg = buildSwapRouteKernelMsg({
+    traderInputAssetId: env.traderInputAssetId,
+    traderOutputAssetId: env.traderOutputAssetId,
+    traderInputOutpointTxid: env.traderInputOutpointTxid,
+    traderInputOutpointVout: env.traderInputOutpointVout,
+    deltaIn0: env.hops[0].deltaANetMag,
+    deltaOutLast: delta_out_last,
+    cReceiptSecp: C_RECEIPT_BYTES,
+    hopsHash: hashHops(env.hops),
+  });
+  const kernelSig = signSchnorr(kernelMsg, excessKey);
+  const tamperedEnv = { ...env, cInSecp: fakeCInBytes, intentSig, kernelSig };
+  const payload = encodeSwapRoute(tamperedEnv);
+  const res = validateSwapRoute({
+    payload, pools: buildPools(), currentHeight: 100,
+    bulletproofVerify: bpRangeAggVerify,
+    // wrapper defaults inputCommitment = C_IN_BYTES (the REAL on-chain commit)
+  });
+  return res.valid === false
+    && /cInSecp does not match on-chain input UTXO/.test(res.reason);
+});
+
+test('inputCommitment accepted as ProjectivePoint (parity with bytes form)', () => {
+  const { env } = buildHonestTwoHopRoute();
+  const payload = encodeSwapRoute(env);
+  const res = validateSwapRoute({
+    payload, pools: buildPools(), currentHeight: 100,
+    bulletproofVerify: bpRangeAggVerify,
+    inputCommitment: C_IN,  // ProjectivePoint, not bytes
+  });
+  return res.valid === true;
 });
 
 // =========================================================================

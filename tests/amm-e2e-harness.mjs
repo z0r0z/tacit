@@ -64,8 +64,17 @@ import {
   encodeLpAdd, encodeLpRemove, encodeSwapBatch,
 } from './amm-envelope.mjs';
 import {
-  validateLpAdd, validateLpRemove, validateSwapBatch, SKIP_GROTH16_VERIFY_UNSAFE, SKIP_MIN_LIQ_VERIFY_UNSAFE,
+  validateLpAdd as _validateLpAdd, validateLpRemove as _validateLpRemove,
+  validateSwapBatch, SKIP_GROTH16_VERIFY_UNSAFE, SKIP_MIN_LIQ_VERIFY_UNSAFE,
+  SKIP_OP_RETURN_VERIFY_UNSAFE,
 } from './amm-validator.mjs';
+
+function validateLpAdd(args) {
+  return _validateLpAdd({ opReturnData: SKIP_OP_RETURN_VERIFY_UNSAFE, ...args });
+}
+function validateLpRemove(args) {
+  return _validateLpRemove({ opReturnData: SKIP_OP_RETURN_VERIFY_UNSAFE, ...args });
+}
 import {
   solveClearing, amountOutForTrader, lpInitShares, lpAddShares, lpRemoveOutputs,
 } from './amm-clearing.mjs';

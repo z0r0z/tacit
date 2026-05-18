@@ -27,7 +27,11 @@ import { N_BJJ, pedersenBJJ, packPoint } from './amm-bjj.mjs';
 import { encodeLpAdd } from './amm-envelope.mjs';
 import { lpAddKernelSign } from './amm-kernel.mjs';
 import { proveXCurve } from './amm-sigma-xcurve.mjs';
-import { validateLpAdd, SKIP_GROTH16_VERIFY_UNSAFE, SKIP_MIN_LIQ_VERIFY_UNSAFE } from './amm-validator.mjs';
+import { validateLpAdd as _validateLpAdd, SKIP_GROTH16_VERIFY_UNSAFE, SKIP_MIN_LIQ_VERIFY_UNSAFE, SKIP_OP_RETURN_VERIFY_UNSAFE } from './amm-validator.mjs';
+
+function validateLpAdd(args) {
+  return _validateLpAdd({ opReturnData: SKIP_OP_RETURN_VERIFY_UNSAFE, ...args });
+}
 import { deriveMinLiqCommitment, deriveMinLiqAmountCt, deriveMinLiqNumsRecipient } from './amm-min-liq.mjs';
 import {
   deriveAssetIdFromReveal, derivePoolId, deriveLpAssetId,

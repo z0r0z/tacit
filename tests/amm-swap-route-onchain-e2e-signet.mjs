@@ -113,6 +113,36 @@ async function fetchAllPools() {
     return Array.isArray(j.pools) ? j.pools : [];
   } catch { return []; }
 }
+
+// Poll mempool.space until the given txid lands in a block. Returns the
+// confirmation height on success, null on timeout. Critical when chaining
+// broadcasts on signet (10-min average blocks): without confirmation the
+// mempool-ancestor chain grows deep enough that some downstream broadcast
+// fails with "bad-txns-inputs-missingorspent" because mempool.space's
+// /utxo endpoint hasn't reindexed the just-spent UTXO yet. Polling the
+// LAST broadcast's confirmation guarantees the entire ancestor chain is
+// resolved on chain before the next phase issues its first carve.
+async function waitForTxConfirmed(txid, label, attempts = 40, delayMs = 30_000) {
+  info(`polling for ${label} confirmation (${txid.slice(0, 16)}…)`);
+  for (let i = 1; i <= attempts; i++) {
+    try {
+      const r = await fetch(`https://mempool.space/signet/api/tx/${txid}/status`);
+      if (r.ok) {
+        const s = await r.json();
+        if (s.confirmed) {
+          ok(`${label} confirmed at height ${s.block_height} (after ${i} polls)`);
+          return s.block_height;
+        }
+      }
+    } catch {}
+    if (i < attempts) {
+      info(`  attempt ${i}/${attempts}: still in mempool…`);
+      await sleep(delayMs);
+    }
+  }
+  warn(`${label} did not confirm within ${attempts * delayMs / 1000}s; continuing anyway`);
+  return null;
+}
 function cetchAssetId(revealTxid) {
   const txid_BE = new Uint8Array(32);
   for (let i = 0; i < 32; i++) txid_BE[i] = parseInt(revealTxid.slice((31 - i) * 2, (31 - i) * 2 + 2), 16);
@@ -168,6 +198,27 @@ const A_AID      = C_A.asset_id;
 const BRIDGE_AID = C_BRIDGE.asset_id;
 const C_AID      = C_C.asset_id;
 
+// Before Phase 2, wait for the LAST CETCH reveal to confirm. Three CETCHes
+// back-to-back build a deep mempool ancestor chain on the founder's sats
+// UTXOs; the next phase's carveExactAmount spends a sats UTXO whose
+// parent may still be mempool-only. mempool.space's /utxo endpoint can
+// lag the actual mempool state for chained txs, so a fresh broadcast
+// referencing one of those UTXOs sometimes hits "bad-txns-inputs-
+// missingorspent". Polling for confirmation guarantees the chain is
+// fully resolved before the carve. ~10 min worst-case on signet.
+if (!state.cetchesConfirmed) {
+  await waitForTxConfirmed(C_C.reveal_txid, 'CETCH C reveal');
+  state.cetchesConfirmed = true;
+  saveState(state);
+}
+dapp.invalidateHoldingsCache();
+// mempool.space's /utxo endpoint lags chain state by ~30–60s after a
+// confirmation, even with the tx itself reporting confirmed. Waiting
+// longer here forces the next carve's getUtxos to fetch fresh data from
+// a post-reindex view, avoiding "bad-txns-inputs-missingorspent" on
+// inputs that mempool.space transiently reports as available.
+await sleep(60_000);
+
 // =========================================================================
 // Phase 2: POOL_INIT × 2 — (A, BRIDGE)@30bps + (BRIDGE, C)@30bps
 // =========================================================================
@@ -198,12 +249,26 @@ async function poolInit(label, assetAHex, assetBHex, deltaA, deltaB, feeBps) {
   };
   saveState(state);
   ok(`POOL_INIT ${label} reveal ${r.revealTxid.slice(0, 16)}…  pool ${r.poolIdHex.slice(0, 16)}…`);
-  info(`waiting 60s for confirmation…`);
-  await sleep(60_000);
   return state.pools[label];
 }
+
+// Wait for any in-flight pool reveal to confirm + give mempool.space's
+// /utxo endpoint ~60s post-reindex window. Runs every harness invocation
+// (including resumes after a partial state file), so a fresh broadcast
+// issued seconds after process startup doesn't hit "bad-txns-inputs-
+// missingorspent" on sats UTXOs the chain just spent. Without this on
+// the resume path, the prior session's broadcasts may still be at the
+// "indexed-but-/utxo-lagging" boundary.
+async function settleBeforeNextBroadcast(label, revealTxid) {
+  await waitForTxConfirmed(revealTxid, label);
+  dapp.invalidateHoldingsCache();
+  await sleep(60_000);
+}
+
 await poolInit('AB', A_AID, BRIDGE_AID, POOL_DELTA, POOL_DELTA, 30);
+await settleBeforeNextBroadcast('POOL_INIT AB reveal', state.pools.AB.reveal_txid);
 await poolInit('BC', BRIDGE_AID, C_AID, POOL_DELTA, POOL_DELTA, 30);
+await settleBeforeNextBroadcast('POOL_INIT BC reveal', state.pools.BC.reveal_txid);
 
 // Wait for the worker to index both pools.
 const poolAB = await waitForPool(state.pools.AB.pool_id_hex, 'AB');
@@ -272,9 +337,18 @@ if (state.swapRoute?.completed) {
   };
   saveState(state);
   ok(`T_SWAP_ROUTE reveal ${r.revealTxid.slice(0, 16)}…  delta_out_last=${r.deltaOutLast}`);
-  info(`waiting 90s for confirmation…`);
-  await sleep(90_000);
 }
+
+// Wait for the route to confirm on chain before Phase 4 fetches pool state.
+// Without this, the worker may report pre-route reserves and Phase 4 logs
+// the harmless-looking "pools unchanged — re-run later" warning instead of
+// confirming atomicity.
+await waitForTxConfirmed(state.swapRoute.reveal_txid, 'T_SWAP_ROUTE reveal');
+
+// Give the worker time to ingest the confirmed route + walk it through the
+// validator before re-fetching pool state.
+info(`giving the worker ~30s to walk the confirmed route through the validator`);
+await sleep(30_000);
 
 // =========================================================================
 // Phase 4: post-confirm worker checks
@@ -282,8 +356,21 @@ if (state.swapRoute?.completed) {
 step(4, 'post-confirm worker reads (pools advanced atomically + receipt indexed)');
 
 info(`re-fetching pools to confirm reserves advanced via the route`);
-const poolABPost = await fetchPool(state.pools.AB.pool_id_hex);
-const poolBCPost = await fetchPool(state.pools.BC.pool_id_hex);
+let poolABPost = await fetchPool(state.pools.AB.pool_id_hex);
+let poolBCPost = await fetchPool(state.pools.BC.pool_id_hex);
+// One more graceful retry if the worker is slow to walk the validator on
+// the confirmed route — covers the case where the cron-driven scan window
+// straddles the route's confirmation height.
+if (poolABPost && poolBCPost) {
+  const abAdvanced = poolABPost.reserve_a !== poolAB.reserve_a || poolABPost.reserve_b !== poolAB.reserve_b;
+  const bcAdvanced = poolBCPost.reserve_a !== poolBC.reserve_a || poolBCPost.reserve_b !== poolBC.reserve_b;
+  if (!abAdvanced && !bcAdvanced) {
+    info(`pools still at pre-route reserves; waiting another 60s for worker indexer…`);
+    await sleep(60_000);
+    poolABPost = await fetchPool(state.pools.AB.pool_id_hex);
+    poolBCPost = await fetchPool(state.pools.BC.pool_id_hex);
+  }
+}
 if (!poolABPost || !poolBCPost) {
   warn(`pool fetch after route returned null — worker may still be re-indexing. Re-run later to verify.`);
 } else {
@@ -306,7 +393,12 @@ if (!poolABPost || !poolBCPost) {
 // Sanity-check: trader now holds C, no longer holds the A that was spent.
 info(`re-scanning holdings for the C receipt + A spend`);
 dapp.invalidateHoldingsCache();
-await sleep(5_000);
+// mempool.space's /utxo endpoint lags chain state by ~30–60s after a
+// confirmation, even with the tx itself reporting confirmed. Waiting
+// longer here forces the next carve's getUtxos to fetch fresh data from
+// a post-reindex view, avoiding "bad-txns-inputs-missingorspent" on
+// inputs that mempool.space transiently reports as available.
+await sleep(60_000);
 const holdingsPost = await dapp.scanHoldings(true);
 const cHold = holdingsPost.get(C_AID.toLowerCase());
 if (cHold && cHold.balance >= BigInt(state.swapRoute.delta_out_last)) {

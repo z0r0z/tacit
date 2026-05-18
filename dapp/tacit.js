@@ -2045,6 +2045,28 @@ async function api(path, opts = {}) {
       path = `${m[1]}${m[2]}${m[4]}`;
     }
   }
+  // Worker-mounted paths (e.g. /amm/*, /ctac/*, /farm/*, /assets/*) bypass
+  // the Esplora rotation: chain providers don't host them, and routing
+  // through the worker's /chain/ proxy fails the whitelist with a 400.
+  // Hit WORKER_BASE directly — single round-trip, no rotation needed.
+  if (typeof path === 'string' && WORKER_BASE) {
+    const isEsplora =
+         /^\/tx(\/|$|\?)/.test(path)        // POST /tx, GET /tx/HEX/*
+      || /^\/address\//.test(path)
+      || /^\/block\//.test(path)
+      || /^\/blocks(\/|$)/.test(path)       // /blocks/tip/{height,hash}
+      || /^\/block-height\//.test(path)
+      || /^\/v1\/fees\/recommended$/.test(path)
+      || /^\/fee-estimates$/.test(path);
+    if (!isEsplora) {
+      const r = await fetch(`${WORKER_BASE}${path}`, opts);
+      if (!r.ok) {
+        const t = await r.text().catch(() => '');
+        throw new Error(`API ${r.status}: ${t.slice(0, 240)}`);
+      }
+      return r;
+    }
+  }
   await _apiAcquire();
   try {
     const bases = _apiBases();
@@ -3239,10 +3261,15 @@ async function broadcastWithRetry(hex, attempts = 4, baseDelayMs = 1000) {
       }
       // Only retry on errors that suggest propagation/indexing delay. Notably we
       // do NOT retry on `non-mandatory-script-verify-flag` (the tx is invalid
-      // under mainnet policy — retry just hides the real bug) or
-      // `bad-txns-inputs-missingorspent` (already covered by `missing inputs`
-      // and otherwise indicates a permanent double-spend, not a race).
-      if (!/missing inputs|mempool-conflict/i.test(msg)) {
+      // under mainnet policy — retry just hides the real bug).
+      //
+      // `bad-txns-inputs-missingorspent` is retried because a commit→reveal
+      // pair broadcast back-to-back can race: the reveal's view of "spendable
+      // inputs" may not include the commit's vout[0] yet if the commit hasn't
+      // propagated to the broadcast endpoint. Retry with backoff resolves the
+      // race; if the error is truly permanent (double-spend), all retries
+      // fail and we surface the error.
+      if (!/missing inputs|mempool-conflict|bad-txns-inputs-missingorspent/i.test(msg)) {
         throw e;
       }
     }
@@ -3752,6 +3779,7 @@ const bytesToPoint = b => {
 };
 function bigintToBytes32(n) { const m = modN(n); return hexToBytes(m.toString(16).padStart(64, '0')); }
 const bytes32ToBigint = b => BigInt('0x' + bytesToHex(b));
+function randomBytes(n) { const b = new Uint8Array(n); crypto.getRandomValues(b); return b; }
 
 // ---- ECDH-derived blinding factor ----
 // Including anchorBytes prevents cross-tx commitment correlation: two transfers
@@ -5117,6 +5145,8 @@ const T_CBTC_TAC_FORCE_CLOSE = 0x4B; // permissionless lien transfer to claim po
 const T_SHARE_SLASH_CLAIM    = 0x4C; // T_CTAC_LIEN_CLAIM: cBTC.tac → LP-share from claim pool (SPEC §5.47)
 const T_CTAC_LIEN_CLAIM      = T_SHARE_SLASH_CLAIM; // semantic alias under v1 lien model
 const T_CTAC_LIEN_SPLIT      = 0x4F; // split a liened LP-share UTXO (SPEC §5.47)
+const T_CBTC_TAC_DEPOSIT_ATOMIC = 0x57; // atomic LP_ADD + DEPOSIT in one envelope (SPEC §5.48)
+const T_CBTC_TAC_WITHDRAW_ATOMIC = 0x58; // atomic WITHDRAW + LP_REMOVE in one envelope (SPEC §5.49)
 // 0x4D–0x4E reserved for SPEC-CBTC-ZK-AMOUNT-AMENDMENT (T_SLOT_FRACTIONALIZE/T_SLOT_RECONSOLIDATE
 // machinery, activated via SPEC-CBTC-TAC-AMENDMENT envelopes; the unbonded standalone path is
 // not shipped on mainnet).
@@ -8270,6 +8300,297 @@ function decodeTCtacLienSplitPayload(payload) {
     networkTag, positionLeafHash, sourceOutpoint, outputCount,
     outputAmounts, outputBlindings, outputCommits, lienInheritIndex,
     depositorSig, bindHash,
+  };
+}
+
+// SPEC-CBTC-TAC-AMENDMENT §5.48 — T_CBTC_TAC_DEPOSIT_ATOMIC wire primitives.
+const CBTC_TAC_DEPOSIT_ATOMIC_DOMAIN = new TextEncoder().encode('tacit-ctac-deposit-atomic-v1');
+
+// HMAC-derived blinding for the cBTC.tac mint output of a DEPOSIT_ATOMIC.
+// Mirrors the AMM receipt pattern (HMAC over priv + identity + anchor) so a
+// depositor can recover the mint UTXO from priv key + chain alone after
+// localStorage is wiped — same recovery guarantee as the AMM positions.
+// Identity = target_leaf_hash (uniquely identifies the slot being bonded);
+// anchor = first asset-input outpoint (the cbtc.zk input, vin[1] in the
+// reveal tx) so the validator binds both the on-chain commit and the
+// recovery seed to the same chain witness.
+const _CBTC_TAC_ATOMIC_MINT_DOMAIN = new TextEncoder().encode('tacit-cbtc-tac-atomic-mint-v1');
+function _deriveCbtcTacAtomicMintBlinding({ privkey, targetLeafHash, anchorOutpoint }) {
+  if (!(privkey instanceof Uint8Array) || privkey.length !== 32) throw new Error('privkey must be 32 bytes');
+  if (!(targetLeafHash instanceof Uint8Array) || targetLeafHash.length !== 32) throw new Error('targetLeafHash must be 32 bytes');
+  if (!(anchorOutpoint instanceof Uint8Array) || anchorOutpoint.length !== 36) throw new Error('anchorOutpoint must be 36 bytes');
+  const base = concatBytes(_CBTC_TAC_ATOMIC_MINT_DOMAIN, targetLeafHash, anchorOutpoint);
+  let seed = hmac(sha256, privkey, base);
+  let r = bytes32ToBigint(seed) % SECP_N;
+  for (let counter = 1; r === 0n && counter < 256; counter++) {
+    seed = hmac(sha256, privkey, concatBytes(base, new Uint8Array([counter & 0xff])));
+    r = bytes32ToBigint(seed) % SECP_N;
+  }
+  if (r === 0n) throw new Error('cbtc-tac atomic mint blinding: rejection sampling exhausted (statistically impossible)');
+  return r;
+}
+
+function computeCbtcTacDepositAtomicBindHash({
+  networkTag, targetLeafHash, slotDenomSats, poolId,
+  deltaCbtcZk, deltaTac, shareAmount,
+  cbtcZkInputOutpoint, cbtcZkInputCommit,
+  tacInputOutpoint, tacInputCommit,
+  lpShareCommit, depositorRecoveryPk,
+  mintAmount, mintRecipientCommit,
+}) {
+  const denomLE = new Uint8Array(8);
+  { const v = new DataView(denomLE.buffer); const d = BigInt(slotDenomSats);
+    v.setUint32(0, Number(d & 0xffffffffn), true); v.setUint32(4, Number((d >> 32n) & 0xffffffffn), true); }
+  const dCbtcLE = new Uint8Array(8);
+  { const v = new DataView(dCbtcLE.buffer); const d = BigInt(deltaCbtcZk);
+    v.setUint32(0, Number(d & 0xffffffffn), true); v.setUint32(4, Number((d >> 32n) & 0xffffffffn), true); }
+  const dTacLE = new Uint8Array(8);
+  { const v = new DataView(dTacLE.buffer); const d = BigInt(deltaTac);
+    v.setUint32(0, Number(d & 0xffffffffn), true); v.setUint32(4, Number((d >> 32n) & 0xffffffffn), true); }
+  const shareLE = new Uint8Array(8);
+  { const v = new DataView(shareLE.buffer); const s = BigInt(shareAmount);
+    v.setUint32(0, Number(s & 0xffffffffn), true); v.setUint32(4, Number((s >> 32n) & 0xffffffffn), true); }
+  const mintLE = new Uint8Array(8);
+  { const v = new DataView(mintLE.buffer); const m = BigInt(mintAmount);
+    v.setUint32(0, Number(m & 0xffffffffn), true); v.setUint32(4, Number((m >> 32n) & 0xffffffffn), true); }
+  return sha256(concatBytes(
+    CBTC_TAC_DEPOSIT_ATOMIC_DOMAIN, new Uint8Array([networkTag & 0xff]),
+    targetLeafHash, denomLE, poolId,
+    dCbtcLE, dTacLE, shareLE,
+    cbtcZkInputOutpoint, cbtcZkInputCommit,
+    tacInputOutpoint, tacInputCommit,
+    lpShareCommit, depositorRecoveryPk,
+    mintLE, mintRecipientCommit,
+  ));
+}
+
+function encodeTCbtcTacDepositAtomicPayload({
+  networkTag, targetLeafHash, slotDenomSats, poolId,
+  deltaCbtcZk, deltaTac, shareAmount,
+  cbtcZkInputOutpoint, cbtcZkInputCommit,
+  tacInputOutpoint, tacInputCommit,
+  lpShareCommit, depositorRecoveryPk,
+  mintAmount, mintRecipientCommit,
+  bindHash, proof,
+}) {
+  if ((networkTag & 0xff) > 2) throw new Error('network_tag must be 0|1|2');
+  if (targetLeafHash.length !== 32) throw new Error('target_leaf_hash 32 bytes');
+  if (poolId.length !== 32) throw new Error('pool_id 32 bytes');
+  if (cbtcZkInputOutpoint.length !== 36 || tacInputOutpoint.length !== 36) throw new Error('outpoint 36 bytes');
+  if (cbtcZkInputCommit.length !== 33 || tacInputCommit.length !== 33) throw new Error('input commit 33 bytes');
+  if (lpShareCommit.length !== 33) throw new Error('lp_share_commit 33 bytes');
+  if (depositorRecoveryPk.length !== 33) throw new Error('depositor_recovery_pk 33 bytes');
+  if (mintRecipientCommit.length !== 33) throw new Error('mint_recipient_commit 33 bytes');
+  if (bindHash.length !== 32) throw new Error('bind_hash 32 bytes');
+  if (!proof || proof.length === 0 || proof.length > 65535) throw new Error('proof length out of range');
+  const denomLE = new Uint8Array(8);
+  { const v = new DataView(denomLE.buffer); const d = BigInt(slotDenomSats);
+    v.setUint32(0, Number(d & 0xffffffffn), true); v.setUint32(4, Number((d >> 32n) & 0xffffffffn), true); }
+  const dCbtcLE = new Uint8Array(8);
+  { const v = new DataView(dCbtcLE.buffer); const d = BigInt(deltaCbtcZk);
+    v.setUint32(0, Number(d & 0xffffffffn), true); v.setUint32(4, Number((d >> 32n) & 0xffffffffn), true); }
+  const dTacLE = new Uint8Array(8);
+  { const v = new DataView(dTacLE.buffer); const d = BigInt(deltaTac);
+    v.setUint32(0, Number(d & 0xffffffffn), true); v.setUint32(4, Number((d >> 32n) & 0xffffffffn), true); }
+  const shareLE = new Uint8Array(8);
+  { const v = new DataView(shareLE.buffer); const s = BigInt(shareAmount);
+    v.setUint32(0, Number(s & 0xffffffffn), true); v.setUint32(4, Number((s >> 32n) & 0xffffffffn), true); }
+  const mintLE = new Uint8Array(8);
+  { const v = new DataView(mintLE.buffer); const m = BigInt(mintAmount);
+    v.setUint32(0, Number(m & 0xffffffffn), true); v.setUint32(4, Number((m >> 32n) & 0xffffffffn), true); }
+  const proofLenLE = new Uint8Array(2);
+  new DataView(proofLenLE.buffer).setUint16(0, proof.length & 0xffff, true);
+  return concatBytes(
+    new Uint8Array([T_CBTC_TAC_DEPOSIT_ATOMIC, networkTag & 0xff]),
+    targetLeafHash, denomLE, poolId,
+    dCbtcLE, dTacLE, shareLE,
+    cbtcZkInputOutpoint, cbtcZkInputCommit,
+    tacInputOutpoint, tacInputCommit,
+    lpShareCommit, depositorRecoveryPk,
+    mintLE, mintRecipientCommit,
+    bindHash, proofLenLE, proof,
+  );
+}
+
+function decodeTCbtcTacDepositAtomicPayload(payload) {
+  if (!payload) return null;
+  if (payload[0] !== T_CBTC_TAC_DEPOSIT_ATOMIC) return null;
+  const HEADER = 1 + 1 + 32 + 8 + 32 + 8 + 8 + 8 + 36 + 33 + 36 + 33 + 33 + 33 + 8 + 33 + 32 + 2;
+  if (payload.length < HEADER) return null;
+  let p = 1;
+  const networkTag = payload[p]; p += 1;
+  if (networkTag > 2) return null;
+  const targetLeafHash = payload.slice(p, p + 32); p += 32;
+  const denomView = new DataView(payload.buffer, payload.byteOffset + p, 8);
+  const slotDenomSats = (BigInt(denomView.getUint32(4, true)) << 32n) | BigInt(denomView.getUint32(0, true));
+  p += 8;
+  const poolId = payload.slice(p, p + 32); p += 32;
+  const dCbtcView = new DataView(payload.buffer, payload.byteOffset + p, 8);
+  const deltaCbtcZk = (BigInt(dCbtcView.getUint32(4, true)) << 32n) | BigInt(dCbtcView.getUint32(0, true));
+  p += 8;
+  const dTacView = new DataView(payload.buffer, payload.byteOffset + p, 8);
+  const deltaTac = (BigInt(dTacView.getUint32(4, true)) << 32n) | BigInt(dTacView.getUint32(0, true));
+  p += 8;
+  const shareView = new DataView(payload.buffer, payload.byteOffset + p, 8);
+  const shareAmount = (BigInt(shareView.getUint32(4, true)) << 32n) | BigInt(shareView.getUint32(0, true));
+  p += 8;
+  const cbtcZkInputOutpoint = payload.slice(p, p + 36); p += 36;
+  const cbtcZkInputCommit = payload.slice(p, p + 33); p += 33;
+  try { bytesToPoint(cbtcZkInputCommit); } catch { return null; }
+  const tacInputOutpoint = payload.slice(p, p + 36); p += 36;
+  const tacInputCommit = payload.slice(p, p + 33); p += 33;
+  try { bytesToPoint(tacInputCommit); } catch { return null; }
+  const lpShareCommit = payload.slice(p, p + 33); p += 33;
+  try { bytesToPoint(lpShareCommit); } catch { return null; }
+  const depositorRecoveryPk = payload.slice(p, p + 33); p += 33;
+  try { bytesToPoint(depositorRecoveryPk); } catch { return null; }
+  const mintView = new DataView(payload.buffer, payload.byteOffset + p, 8);
+  const mintAmount = (BigInt(mintView.getUint32(4, true)) << 32n) | BigInt(mintView.getUint32(0, true));
+  p += 8;
+  if (mintAmount !== slotDenomSats) return null;
+  const mintRecipientCommit = payload.slice(p, p + 33); p += 33;
+  try { bytesToPoint(mintRecipientCommit); } catch { return null; }
+  const bindHash = payload.slice(p, p + 32); p += 32;
+  const proofLen = new DataView(payload.buffer, payload.byteOffset + p, 2).getUint16(0, true);
+  p += 2;
+  if (proofLen === 0) return null;
+  if (p + proofLen !== payload.length) return null;
+  const proof = payload.slice(p, p + proofLen);
+  const expectedBind = computeCbtcTacDepositAtomicBindHash({
+    networkTag, targetLeafHash, slotDenomSats, poolId,
+    deltaCbtcZk, deltaTac, shareAmount,
+    cbtcZkInputOutpoint, cbtcZkInputCommit,
+    tacInputOutpoint, tacInputCommit,
+    lpShareCommit, depositorRecoveryPk,
+    mintAmount, mintRecipientCommit,
+  });
+  for (let i = 0; i < 32; i++) if (expectedBind[i] !== bindHash[i]) return null;
+  return {
+    kind: 'cbtc_tac_deposit_atomic',
+    networkTag, targetLeafHash, slotDenomSats, poolId,
+    deltaCbtcZk, deltaTac, shareAmount,
+    cbtcZkInputOutpoint, cbtcZkInputCommit,
+    tacInputOutpoint, tacInputCommit,
+    lpShareCommit, depositorRecoveryPk,
+    mintAmount, mintRecipientCommit,
+    bindHash, proof,
+  };
+}
+
+// SPEC-CBTC-TAC-AMENDMENT §5.49 — T_CBTC_TAC_WITHDRAW_ATOMIC wire primitives.
+const CBTC_TAC_WITHDRAW_ATOMIC_DOMAIN = new TextEncoder().encode('tacit-ctac-withdraw-atomic-v1');
+
+function computeCbtcTacWithdrawAtomicBindHash({
+  networkTag, targetLeafHash, slotDenomSats, burnCount,
+  burnNullifiers, burnCommits, burnAmount, lpShareAmount,
+  recvCbtcZkCommit, recvTacCommit,
+}) {
+  const denomLE = new Uint8Array(8);
+  { const v = new DataView(denomLE.buffer); const d = BigInt(slotDenomSats);
+    v.setUint32(0, Number(d & 0xffffffffn), true); v.setUint32(4, Number((d >> 32n) & 0xffffffffn), true); }
+  const burnLE = new Uint8Array(8);
+  { const v = new DataView(burnLE.buffer); const b = BigInt(burnAmount);
+    v.setUint32(0, Number(b & 0xffffffffn), true); v.setUint32(4, Number((b >> 32n) & 0xffffffffn), true); }
+  const lpLE = new Uint8Array(8);
+  { const v = new DataView(lpLE.buffer); const l = BigInt(lpShareAmount);
+    v.setUint32(0, Number(l & 0xffffffffn), true); v.setUint32(4, Number((l >> 32n) & 0xffffffffn), true); }
+  return sha256(concatBytes(
+    CBTC_TAC_WITHDRAW_ATOMIC_DOMAIN, new Uint8Array([networkTag & 0xff]),
+    targetLeafHash, denomLE,
+    new Uint8Array([burnCount & 0xff]),
+    ...burnNullifiers, ...burnCommits,
+    burnLE, lpLE,
+    recvCbtcZkCommit, recvTacCommit,
+  ));
+}
+
+function encodeTCbtcTacWithdrawAtomicPayload({
+  networkTag, targetLeafHash, slotDenomSats,
+  burnNullifiers, burnCommits, burnAmount, lpShareAmount,
+  recvCbtcZkCommit, recvTacCommit, bindHash, proof,
+}) {
+  if ((networkTag & 0xff) > 2) throw new Error('network_tag must be 0|1|2');
+  if (targetLeafHash.length !== 32) throw new Error('target_leaf_hash 32 bytes');
+  const burnCount = burnNullifiers.length;
+  if (burnCount < 1 || burnCount > 16) throw new Error('burn_count 1..16');
+  if (burnCommits.length !== burnCount) throw new Error('burn_nullifiers + burn_commits length mismatch');
+  if (recvCbtcZkCommit.length !== 33) throw new Error('recv_cbtc_zk_commit 33 bytes');
+  if (recvTacCommit.length !== 33) throw new Error('recv_tac_commit 33 bytes');
+  if (bindHash.length !== 32) throw new Error('bind_hash 32 bytes');
+  if (!proof || proof.length === 0) throw new Error('proof required');
+  const denomLE = new Uint8Array(8);
+  { const v = new DataView(denomLE.buffer); const d = BigInt(slotDenomSats);
+    v.setUint32(0, Number(d & 0xffffffffn), true); v.setUint32(4, Number((d >> 32n) & 0xffffffffn), true); }
+  const burnLE = new Uint8Array(8);
+  { const v = new DataView(burnLE.buffer); const b = BigInt(burnAmount);
+    v.setUint32(0, Number(b & 0xffffffffn), true); v.setUint32(4, Number((b >> 32n) & 0xffffffffn), true); }
+  const lpLE = new Uint8Array(8);
+  { const v = new DataView(lpLE.buffer); const l = BigInt(lpShareAmount);
+    v.setUint32(0, Number(l & 0xffffffffn), true); v.setUint32(4, Number((l >> 32n) & 0xffffffffn), true); }
+  const proofLenLE = new Uint8Array(2);
+  new DataView(proofLenLE.buffer).setUint16(0, proof.length & 0xffff, true);
+  return concatBytes(
+    new Uint8Array([T_CBTC_TAC_WITHDRAW_ATOMIC, networkTag & 0xff]),
+    targetLeafHash, denomLE,
+    new Uint8Array([burnCount & 0xff]),
+    ...burnNullifiers, ...burnCommits,
+    burnLE, lpLE,
+    recvCbtcZkCommit, recvTacCommit,
+    bindHash, proofLenLE, proof,
+  );
+}
+
+function decodeTCbtcTacWithdrawAtomicPayload(payload) {
+  if (!payload) return null;
+  if (payload[0] !== T_CBTC_TAC_WITHDRAW_ATOMIC) return null;
+  if (payload.length < 1 + 1 + 32 + 8 + 1 + 32 + 33 + 8 + 8 + 33 + 33 + 32 + 2) return null;
+  let p = 1;
+  const networkTag = payload[p]; p += 1;
+  if (networkTag > 2) return null;
+  const targetLeafHash = payload.slice(p, p + 32); p += 32;
+  const denomView = new DataView(payload.buffer, payload.byteOffset + p, 8);
+  const slotDenomSats = (BigInt(denomView.getUint32(4, true)) << 32n) | BigInt(denomView.getUint32(0, true));
+  p += 8;
+  const burnCount = payload[p]; p += 1;
+  if (burnCount < 1 || burnCount > 16) return null;
+  if (payload.length < p + burnCount * 32 + burnCount * 33 + 8 + 8 + 33 + 33 + 32 + 2) return null;
+  const burnNullifiers = [];
+  for (let i = 0; i < burnCount; i++) { burnNullifiers.push(payload.slice(p, p + 32)); p += 32; }
+  const burnCommits = [];
+  for (let i = 0; i < burnCount; i++) {
+    const c = payload.slice(p, p + 33);
+    try { bytesToPoint(c); } catch { return null; }
+    burnCommits.push(c);
+    p += 33;
+  }
+  const burnAmtView = new DataView(payload.buffer, payload.byteOffset + p, 8);
+  const burnAmount = (BigInt(burnAmtView.getUint32(4, true)) << 32n) | BigInt(burnAmtView.getUint32(0, true));
+  p += 8;
+  if (burnAmount !== slotDenomSats) return null;
+  const lpView = new DataView(payload.buffer, payload.byteOffset + p, 8);
+  const lpShareAmount = (BigInt(lpView.getUint32(4, true)) << 32n) | BigInt(lpView.getUint32(0, true));
+  p += 8;
+  const recvCbtcZkCommit = payload.slice(p, p + 33); p += 33;
+  try { bytesToPoint(recvCbtcZkCommit); } catch { return null; }
+  const recvTacCommit = payload.slice(p, p + 33); p += 33;
+  try { bytesToPoint(recvTacCommit); } catch { return null; }
+  const bindHash = payload.slice(p, p + 32); p += 32;
+  const proofLen = new DataView(payload.buffer, payload.byteOffset + p, 2).getUint16(0, true);
+  p += 2;
+  if (proofLen === 0) return null;
+  if (p + proofLen !== payload.length) return null;
+  const proof = payload.slice(p, p + proofLen);
+  const expectedBind = computeCbtcTacWithdrawAtomicBindHash({
+    networkTag, targetLeafHash, slotDenomSats, burnCount,
+    burnNullifiers, burnCommits, burnAmount, lpShareAmount,
+    recvCbtcZkCommit, recvTacCommit,
+  });
+  for (let i = 0; i < 32; i++) if (expectedBind[i] !== bindHash[i]) return null;
+  return {
+    kind: 'cbtc_tac_withdraw_atomic',
+    networkTag, targetLeafHash, slotDenomSats,
+    burnCount, burnNullifiers, burnCommits, burnAmount, lpShareAmount,
+    recvCbtcZkCommit, recvTacCommit, bindHash, proof,
   };
 }
 
@@ -17303,163 +17624,120 @@ function getCtacBackupLastExportTs() {
 //      to the depositor's recovery_pk; the asset-side ledger entry will
 //      come from a parallel worker patch.
 async function buildAndBroadcastCbtcTacDeposit({
-  slotRecord,
-  bondAmountTAC,
-  tacAssetIdHex,
-  depositorRecoveryPubHex = null,
-  stagedBondId = null,            // NEW: consume a pre-staged bond (privacy path)
+  slotRecord,                       // local cBTC.zk slot record (provides leaf hash + denom)
+  lpShareUtxo,                      // { txid, vout, amount, blinding } — depositor's LP-share UTXO (the bond)
+  lpShareAssetIdHex,                // asset_id of lpShareUtxo (= lp_asset_id of canonical TAC pool)
+  depositorRecoveryPubHex = null,   // 33-byte compressed; null = wallet.pub
   onProgress = null,
 }) {
   await ensurePrivkey();
   const _progress = (stage, info) => { try { onProgress && onProgress(stage, info); } catch {} };
   const networkTag = NET.name === 'signet' ? 0x01 : NET.name === 'regtest' ? 0x02 : 0x00;
 
-  // 1. Pre-flight validation
+  // 1. Pre-flight
   if (!slotRecord || !slotRecord.leafCommitmentHex || !slotRecord.assetIdHex) {
     throw new Error('slotRecord must include leafCommitmentHex + assetIdHex');
   }
-  const slotState = slotRecord.status || 'live';
-  if (slotState !== 'live') {
-    throw new Error(`slot state must be 'live' (got '${slotState}')`);
+  if ((slotRecord.status || 'live') !== 'live') {
+    throw new Error(`slot state must be 'live' (got '${slotRecord.status}')`);
   }
   const denomBig = BigInt(slotRecord.denomination);
   if (denomBig <= 0n || denomBig >= (1n << BigInt(N_BITS))) {
     throw new Error('slot denomination out of range');
   }
-  const bondBig = BigInt(bondAmountTAC);
-  if (bondBig <= 0n || bondBig >= (1n << BigInt(N_BITS))) {
-    throw new Error('bondAmountTAC out of range');
+  if (!lpShareUtxo || typeof lpShareUtxo.txid !== 'string' || !Number.isInteger(lpShareUtxo.vout)) {
+    throw new Error('lpShareUtxo must include {txid, vout, amount, blinding}');
   }
-  if (!tacAssetIdHex || !/^[0-9a-f]{64}$/i.test(tacAssetIdHex)) {
-    throw new Error('tacAssetIdHex must be 64 hex chars (the canonical TAC asset_id)');
+  const lpAmountBig = BigInt(lpShareUtxo.amount);
+  if (lpAmountBig <= 0n || lpAmountBig >= (1n << BigInt(N_BITS))) {
+    throw new Error('lpShareUtxo.amount out of range');
   }
-  const tacAid = tacAssetIdHex.toLowerCase();
+  const lpBlindingHex = (lpShareUtxo.blinding || '').toLowerCase();
+  if (!/^[0-9a-f]{64}$/.test(lpBlindingHex)) {
+    throw new Error('lpShareUtxo.blinding must be 64 hex chars');
+  }
+  if (!lpShareAssetIdHex || !/^[0-9a-f]{64}$/i.test(lpShareAssetIdHex)) {
+    throw new Error('lpShareAssetIdHex must be 64 hex chars (the LP-share asset_id)');
+  }
 
   // Existing-position dedupe
   const existingPos = getCtacPositionRecords().find(p => p.targetLeafHashHex === slotRecord.leafCommitmentHex);
-  if (existingPos && existingPos.status !== 'withdrawn' && existingPos.status !== 'rugged') {
+  if (existingPos && existingPos.status !== 'withdrawn' && existingPos.status !== 'rugged'
+      && existingPos.status !== 'force-slashed') {
     throw new Error(`cBTC.tac position already exists for this slot (state=${existingPos.status})`);
   }
 
-  // 2. Resolve bond source: staged bond (privacy path) OR live-carve from
-  //    wallet.pub (backwards-compatible legacy path).
-  //
-  //    Privacy path: stagedBondId names a pre-staged TAC UTXO at a staking-
-  //    subkey address. The deposit reveal tx then spends only the subkey-
-  //    owned bond UTXO + the slot UTXO, so wallet.pub never appears on the
-  //    deposit's inputs. depositorRecoveryPub is forced to the subkey pub
-  //    (overriding any depositorRecoveryPubHex param) so all on-envelope
-  //    identifiers point at the subkey, not the main wallet.
-  //
-  //    Legacy path: live-carve from wallet.pub. depositorRecoveryPub falls
-  //    back to depositorRecoveryPubHex or wallet.pub. Used by older callers
-  //    and the rendered-on-screen one-click path until UI migrates.
-  let bondSigner = null;             // { priv, pub, subkeyIndex } when staged
-  let bondPrevoutPub = wallet.pub;   // pubkey controlling the bond UTXO (for prevout scriptCode)
-  let tacUtxo;                       // { utxo: { txid, vout }, blinding }
-  let stagedBondRecord = null;
-  if (stagedBondId) {
-    _progress('bond:load-staged', { id: stagedBondId });
-    const loaded = loadStagedBondForConsumption(stagedBondId);
-    if (!loaded) {
-      throw new Error(`staged bond not found, not 'staged', or wallet identity changed: ${stagedBondId}`);
-    }
-    if (loaded.record.assetIdHex !== tacAid) {
-      throw new Error(`staged bond asset_id ${loaded.record.assetIdHex} doesn't match tacAssetIdHex ${tacAid}`);
-    }
-    if (BigInt(loaded.record.amount) !== bondBig) {
-      throw new Error(`staged bond amount ${loaded.record.amount} doesn't match bondAmountTAC ${bondBig}`);
-    }
-    if (!loaded.record.utxo || !loaded.record.utxo.txid) {
-      throw new Error('staged bond record missing utxo');
-    }
-    tacUtxo = {
-      utxo: { txid: loaded.record.utxo.txid, vout: loaded.record.utxo.vout | 0 },
-      blinding: '0x' + loaded.record.blindingHex,
-    };
-    bondSigner = { priv: loaded.subkeyPriv, pub: loaded.subkeyPub, subkeyIndex: loaded.record.subkeyIndex };
-    bondPrevoutPub = loaded.subkeyPub;
-    stagedBondRecord = loaded.record;
-  } else {
-    _progress('carve:tac-bond');
-    tacUtxo = await carveExactAmount({ assetIdHex: tacAid, amount: bondBig });
-    if (!tacUtxo || !tacUtxo.utxo) {
-      throw new Error('failed to carve TAC bond UTXO');
-    }
-  }
-
-  // 3. Derive deposit values
-  const targetLeafHashBytes = hexToBytes(slotRecord.leafCommitmentHex);
-  // depositorRecoveryPub: staged path forces it to the subkey pub (otherwise
-  // we'd leak by minting cBTC.tac back to wallet.pub). Legacy path honors
-  // depositorRecoveryPubHex or falls back to wallet.pub.
-  let depositorRecoveryPub;
-  if (bondSigner) {
-    depositorRecoveryPub = bondSigner.pub;
-  } else if (depositorRecoveryPubHex) {
-    depositorRecoveryPub = hexToBytes(depositorRecoveryPubHex);
-  } else {
-    depositorRecoveryPub = wallet.pub;
-  }
-  if (depositorRecoveryPub.length !== 33) {
-    throw new Error('depositorRecoveryPub must be 33-byte compressed point');
-  }
-  // Fresh blinding for the cBTC.tac mint UTXO. amount = mint_amount = slot_denom_sats (§5.36.2).
-  const mintBlindingBytes = new Uint8Array(32); crypto.getRandomValues(mintBlindingBytes);
-  let mintBlindingBig = bytes32ToBigint(mintBlindingBytes) % SECP_N;
-  if (mintBlindingBig === 0n) mintBlindingBig = 1n;
-  const mintRecipientCommit = pedersenCommit(denomBig, mintBlindingBig).toRawBytes(true);
-
-  // bond_source_outpoint: 32-byte txid + 4-byte vout (LE)
-  const bondTxidBytes = hexToBytes(tacUtxo.utxo.txid);
-  const bondSourceOutpoint = new Uint8Array(36);
-  bondSourceOutpoint.set(bondTxidBytes, 0);
-  new DataView(bondSourceOutpoint.buffer).setUint32(32, tacUtxo.utxo.vout | 0, true);
-  // bond_commit: Pedersen commit of the bond UTXO (we know its opening from
-  // the carve/stage step; the worker re-derives this from the asset-UTXO
-  // index for verification).
-  const bondBlindingBig = BigInt(tacUtxo.blinding);
-  const bondCommit = pedersenCommit(bondBig, bondBlindingBig).toRawBytes(true);
-
-  // 4. Compute bind_hash + payload
+  // 2. Build envelope
   _progress('envelope:build');
-  const assetIdBytes = hexToBytes(slotRecord.assetIdHex);
+  const targetLeafHash = hexToBytes(slotRecord.leafCommitmentHex);
+  const denomLE = new Uint8Array(8);
+  { const v = new DataView(denomLE.buffer);
+    v.setUint32(0, Number(denomBig & 0xffffffffn), true);
+    v.setUint32(4, Number((denomBig >> 32n) & 0xffffffffn), true); }
+  const bondLE = new Uint8Array(8);
+  { const v = new DataView(bondLE.buffer);
+    v.setUint32(0, Number(lpAmountBig & 0xffffffffn), true);
+    v.setUint32(4, Number((lpAmountBig >> 32n) & 0xffffffffn), true); }
+  const bondSourceOutpoint = new Uint8Array(36);
+  bondSourceOutpoint.set(hexToBytes(lpShareUtxo.txid.toLowerCase()), 0);
+  new DataView(bondSourceOutpoint.buffer).setUint32(32, lpShareUtxo.vout | 0, true);
+  // bond_commit MUST open to (lpAmountBig, lpBlinding) — worker checks this.
+  const lpBlindingBig = BigInt('0x' + lpBlindingHex) % SECP_N;
+  const bondCommit = pedersenCommit(lpAmountBig, lpBlindingBig).toRawBytes(true);
+
+  // depositor_recovery_pk: where withdraw payout / future claims accrue.
+  // Also: under §5.47, the depositor's r_recovery is what signs T_CTAC_LIEN_SPLIT
+  // auth (the Schnorr sig the worker verifies against position.depositor_recovery_pk).
+  const depositorRecoveryPub = depositorRecoveryPubHex
+    ? hexToBytes(depositorRecoveryPubHex.toLowerCase())
+    : wallet.pub;
+  if (depositorRecoveryPub.length !== 33) throw new Error('depositorRecoveryPubHex must be 33-byte compressed');
+
+  // mint_recipient_commit: fresh Pedersen commit for the new cBTC.tac UTXO.
+  // Amount = denomBig (= slot_denom_sats), blinding fresh.
+  const mintBlindingBig = bytes32ToBigint(randomBytes(32)) % SECP_N;
+  const mintRecipientCommit = pedersenCommit(denomBig, mintBlindingBig).toRawBytes(true);
+  const mintAmountLE = new Uint8Array(8);
+  { const v = new DataView(mintAmountLE.buffer);
+    v.setUint32(0, Number(denomBig & 0xffffffffn), true);
+    v.setUint32(4, Number((denomBig >> 32n) & 0xffffffffn), true); }
+
   const bindHash = computeCbtcTacDepositBindHash({
     networkTag,
-    targetLeafHash: targetLeafHashBytes,
+    targetLeafHash,
     slotDenomSats: denomBig,
-    bondAmountTAC: bondBig,
+    bondAmountTAC: lpAmountBig,
     bondSourceOutpoint,
     bondCommit,
     depositorRecoveryPk: depositorRecoveryPub,
     mintAmount: denomBig,
     mintRecipientCommit,
   });
-  // Placeholder proof. Spec §5.36.1 declares a Groth16 proof composing
-  // bond-spend + slot-ownership; the worker currently accepts any non-empty
-  // proof bytes. Real proof generation requires the mixer-withdraw circuit
-  // + a new asset-spend statement (forthcoming circuit work).
-  const proofBytes = new Uint8Array(256);
+
+  // Placeholder Groth16 proof — worker does not yet verify (asset-spend
+  // proofs are out of scope for v1 worker; the dapp is the trusted prover).
+  const placeholderProof = new Uint8Array(256);
   const payload = encodeTCbtcTacDepositPayload({
     networkTag,
-    targetLeafHash: targetLeafHashBytes,
+    targetLeafHash,
     slotDenomSats: denomBig,
-    bondAmountTAC: bondBig,
+    bondAmountTAC: lpAmountBig,
     bondSourceOutpoint,
     bondCommit,
     depositorRecoveryPk: depositorRecoveryPub,
-    mintAmount: denomBig,            // MUST equal slot_denom_sats per §5.36.2
+    mintAmount: denomBig,
     mintRecipientCommit,
     bindHash,
-    proof: proofBytes,
+    proof: placeholderProof,
   });
 
-  // 5. Build commit + reveal Bitcoin transaction pair
-  // Commit: sats inputs → vout[0] = P2TR(envelope script) (funds reveal fee) + sats change
-  // Reveal: vin[0] = commit P2TR (script-path with envelope)
-  //         vin[1] = bond TAC UTXO (key-path P2WPKH spend, signed under wallet.priv)
-  //         vout[0] = cBTC.tac mint UTXO at depositorRecoveryPub (P2WPKH at DUST)
-  //         vout[1] = (optional) sats change from bond input over DUST
+  // 3. Build commit + reveal txs (minimal — NO bond consumption).
+  //    Commit: sats inputs → P2TR(envelope script) + sats change.
+  //    Reveal: vin[0] = commit P2TR (script-path with envelope);
+  //            vout[0] = cBTC.tac mint at depositor_recovery_pk (DUST P2WPKH).
+  //    The bond LP-share UTXO is NOT touched — it stays in the depositor's
+  //    wallet but worker attaches a lien at deposit-confirm time.
+  _progress('tx:build');
   const envelopeScript = encodeEnvelopeScript(wallet.xonly(), payload);
   const tapLeaf = tapLeafHash(envelopeScript);
   const { Q_xonly, parity } = tweakedOutputKey(TAP_NUMS, tapLeaf);
@@ -17467,23 +17745,19 @@ async function buildAndBroadcastCbtcTacDeposit({
   const cb = controlBlock(TAP_NUMS, parity);
 
   const feeRate = await getFeeRate();
-  // Reveal vbytes: 2 inputs (script-path P2TR + key-path P2WPKH) + 1 P2WPKH out.
-  // Rough estimate; tighten via dedicated estimator if needed.
-  const revealVb = 11 + (41 + 41) + 31 + Math.ceil((1 + 1 + 65 + 3 + 45 + payload.length + 34 + 109) / 4);
+  const revealVb = 11 + 41 + 31 + Math.ceil((1 + 1 + 65 + 3 + 45 + payload.length + 34) / 4);
   const revealFee = feeFor(revealVb, feeRate);
-  const commitValue = Math.max(DUST, revealFee);
+  const commitValue = Math.max(DUST, DUST + revealFee);
 
-  // Fund the commit with sats UTXOs
-  const holdings = await scanHoldings();
-  if (!holdings || !(holdings instanceof Map)) throw new Error('holdings scan failed');
   const allUtxos = await getUtxos(wallet.address());
+  const holdings = await scanHoldings();
+  if (!holdings) throw new Error('holdings scan failed');
   const sats = selectSatsUtxosSafe(allUtxos, holdings).sort((a, b) => {
     const ac = a.status?.confirmed === true ? 1 : 0;
     const bc = b.status?.confirmed === true ? 1 : 0;
     if (ac !== bc) return bc - ac;
     return b.value - a.value;
   });
-  if (sats.length === 0) throw new Error('no plain-sats UTXOs available to fund the deposit commit');
   const picked = []; let total = 0; let commitFee = 500;
   for (const u of sats) {
     picked.push(u); total += u.value;
@@ -17491,11 +17765,8 @@ async function buildAndBroadcastCbtcTacDeposit({
     if (total >= commitValue + commitFee + DUST) break;
   }
   if (total < commitValue + commitFee) {
-    throw new Error(`insufficient sats for deposit-commit fees: need ${commitValue + commitFee}, have ${total}`);
+    throw new Error(`insufficient sats for deposit commit: need ${commitValue + commitFee}, have ${total}`);
   }
-
-  // Commit tx
-  _progress('tx:commit:build');
   const change = total - commitValue - commitFee;
   const commitOutputs = [{ value: commitValue, script: commitSpk }];
   if (change >= DUST) commitOutputs.push({ value: change, script: p2wpkhScript(wallet.pub) });
@@ -17510,48 +17781,28 @@ async function buildAndBroadcastCbtcTacDeposit({
   const commitHex = bytesToHex(serializeTx(commitTx));
   const commitTxidHex = txid(commitTx);
 
-  // Reveal tx — bond TAC UTXO is a P2WPKH at DUST (standard tacit asset UTXO).
-  // The bond prevout script + signer depend on bondPrevoutPub: staged path
-  // uses the subkey, legacy path uses wallet.pub.
   _progress('tx:reveal:build');
   const recipSpk = p2wpkhScript(depositorRecoveryPub);
   const revealTx = {
     version: 2, locktime: 0,
-    inputs: [
-      { txid: commitTxidHex, vout: 0, sequence: 0xfffffffd, witness: [] },
-      { txid: tacUtxo.utxo.txid, vout: tacUtxo.utxo.vout | 0, sequence: 0xfffffffd, witness: [] },
-    ],
+    inputs: [{ txid: commitTxidHex, vout: 0, sequence: 0xfffffffd, witness: [] }],
     outputs: [{ value: DUST, script: recipSpk }],
   };
-  const revealPrevouts = [
-    { value: commitValue, script: commitSpk },
-    { value: DUST,        script: p2wpkhScript(bondPrevoutPub) },
-  ];
-  // vin[0]: P2TR script-path with envelope reveal (signed under wallet.priv —
-  // the commit output was funded by wallet, so the envelope/script-path
-  // schnorr sig is wallet's regardless of bond source).
+  const revealPrevouts = [{ value: commitValue, script: commitSpk }];
   revealTx.inputs[0].witness = signTaprootScriptPathInput(revealTx, revealPrevouts, envelopeScript, cb);
-  // vin[1]: P2WPKH sig under whichever key controls the bond UTXO.
-  if (bondSigner) {
-    revealTx.inputs[1].witness = signP2wpkhInputWithKey(revealTx, 1, DUST, bondSigner.priv, bondSigner.pub);
-  } else {
-    revealTx.inputs[1].witness = signP2wpkhInput(revealTx, 1, DUST);
-  }
   const revealHex = bytesToHex(serializeTx(revealTx));
   const revealTxidHex = txid(revealTx);
 
-  // 6. Persist position record BEFORE broadcasting — same recovery
-  // discipline as the slot-mint flow. If broadcast fails or page closes,
-  // the local record preserves the mint blinding so the user can later
-  // identify their cBTC.tac UTXO and withdraw against the position.
+  // 4. Persist position record BEFORE broadcasting (recovery discipline).
   const positionRecord = {
     targetLeafHashHex: slotRecord.leafCommitmentHex,
     slotAssetIdHex: slotRecord.assetIdHex,
     slotDenomSats: denomBig.toString(),
-    bondAmountTAC: bondBig.toString(),
-    tacAssetIdHex: tacAid,
+    bondAmountTAC: lpAmountBig.toString(),         // semantically = LP-share amount under §5.47
+    bondLpShareAmount: lpAmountBig.toString(),     // explicit alias
+    bondLpAssetIdHex: lpShareAssetIdHex.toLowerCase(),
     bondSourceOutpointHex: bytesToHex(bondSourceOutpoint),
-    bondBlindingHex: bondBlindingBig.toString(16).padStart(64, '0'),
+    bondBlindingHex: lpBlindingHex,
     depositorRecoveryPubHex: bytesToHex(depositorRecoveryPub),
     mintAmount: denomBig.toString(),
     mintRecipientCommitHex: bytesToHex(mintRecipientCommit),
@@ -17562,15 +17813,10 @@ async function buildAndBroadcastCbtcTacDeposit({
     depositRevealTxid: revealTxidHex,
     status: 'deposit-pending',
     createdAt: Date.now(),
-    // Privacy-path metadata. When set, the position's recovery key is a
-    // deterministic subkey derived from wallet.priv + index — withdraw flow
-    // rederives the privkey rather than relying on wallet.priv directly.
-    stakingSubkeyIndex: bondSigner ? bondSigner.subkeyIndex : null,
-    stagedBondId: stagedBondRecord ? stagedBondRecord.id : null,
   };
   saveCtacPositionRecord(positionRecord);
 
-  // 7. Broadcast
+  // 5. Broadcast
   _progress('tx:commit:broadcast');
   await broadcast(commitHex);
   saveCtacPositionRecord({
@@ -17586,28 +17832,7 @@ async function buildAndBroadcastCbtcTacDeposit({
     activatedAt: Date.now(),
   });
 
-  // Privacy-path bookkeeping: mark the consumed staged bond + bind the
-  // subkey record to this position's leaf so recovery scans can pair them.
-  if (stagedBondRecord && bondSigner) {
-    try {
-      saveStagedBondRecord({
-        id: stagedBondRecord.id,
-        status: 'consumed',
-        consumedByPositionLeafHashHex: slotRecord.leafCommitmentHex,
-        consumedAt: Date.now(),
-      });
-    } catch {}
-    try {
-      saveStakingSubkeyRecord({
-        index: bondSigner.subkeyIndex,
-        status: 'active',
-        parentSlotLeafHashHex: slotRecord.leafCommitmentHex,
-      });
-    } catch {}
-  }
-
-  // Mark the underlying slot record as 'deposited' so the burn flow refuses
-  // to spend it under r_btc until the position is closed via withdraw.
+  // Mark slot as deposited (burn refuses to spend under r_btc until withdraw closes).
   try {
     const arr = _loadSlotRecords();
     const idx = arr.findIndex(r => r.leafCommitmentHex === slotRecord.leafCommitmentHex);
@@ -17693,11 +17918,10 @@ async function buildAndBroadcastCbtcTacDeposit({
 //     The dapp builder constructs vout[1] correctly today; enforcement
 //     is a defense-in-depth follow-up.
 async function buildAndBroadcastCbtcTacWithdraw({
-  positionRecord,
-  slotRecord,
-  cbtcTacUtxos,
-  recipientAddr = null,
-  insuranceClaimTAC = 0n,
+  positionRecord,                   // local cBTC.tac position to close
+  slotRecord,                       // underlying cBTC.zk slot (provides r_btc + mintTxid)
+  cbtcTacUtxos,                     // [{utxo:{txid,vout}, amount, blinding}] summing to position.mintAmount
+  recipientAddr = null,             // bech32 P2WPKH; null → wallet's own
   onProgress = null,
 }) {
   await ensurePrivkey();
@@ -17706,116 +17930,94 @@ async function buildAndBroadcastCbtcTacWithdraw({
 
   // 1. Pre-flight
   if (!positionRecord || !positionRecord.targetLeafHashHex) {
-    throw new Error('positionRecord required');
+    throw new Error('positionRecord must include targetLeafHashHex');
   }
-  const posState = positionRecord.status || 'active';
-  if (posState !== 'active') {
-    throw new Error(`position state must be 'active' (got '${posState}')`);
+  if (positionRecord.status !== 'active') {
+    throw new Error(`position must be 'active' to withdraw (got '${positionRecord.status}')`);
   }
-  if (!slotRecord || !slotRecord.mintTxid) {
-    throw new Error('slotRecord must include mintTxid (slot UTXO is at mintTxid:0)');
+  if (!slotRecord || !slotRecord.mintTxid || !slotRecord.r_btc || !slotRecord.r_pedersen) {
+    throw new Error('slotRecord must include mintTxid + r_btc + r_pedersen for the K_btc spend');
   }
-  if (slotRecord.leafCommitmentHex !== positionRecord.targetLeafHashHex) {
-    throw new Error('slotRecord leaf does not match positionRecord target_leaf_hash');
+  if (!Array.isArray(cbtcTacUtxos) || cbtcTacUtxos.length === 0 || cbtcTacUtxos.length > 16) {
+    throw new Error('cbtcTacUtxos must be 1..16 UTXOs');
   }
-  if (!Array.isArray(cbtcTacUtxos) || cbtcTacUtxos.length < 1 || cbtcTacUtxos.length > 16) {
-    throw new Error('cbtcTacUtxos must be 1..16 entries');
-  }
+  const mintAmountBig = BigInt(positionRecord.mintAmount);
   let burnSum = 0n;
-  for (const u of cbtcTacUtxos) {
-    if (!u || !u.utxo || u.amount === undefined || u.blinding === undefined) {
-      throw new Error('each cbtcTacUtxo must be {utxo:{txid,vout}, amount, blinding}');
-    }
-    burnSum += BigInt(u.amount);
-  }
-  const mintAmt = BigInt(positionRecord.mintAmount);
-  if (burnSum !== mintAmt) {
-    throw new Error(`cbtcTacUtxos sum ${burnSum} must equal position.mintAmount ${mintAmt}`);
-  }
-  const denomBig = BigInt(slotRecord.denomination);
-  const insuranceClaimBig = BigInt(insuranceClaimTAC);
-  if (insuranceClaimBig < 0n || insuranceClaimBig >= (1n << BigInt(N_BITS))) {
-    throw new Error('insuranceClaimTAC out of range');
+  for (const u of cbtcTacUtxos) burnSum += BigInt(u.amount);
+  if (burnSum !== mintAmountBig) {
+    throw new Error(`cbtcTacUtxos amounts sum to ${burnSum}, must equal position.mintAmount ${mintAmountBig}`);
   }
 
-  // 2. Derive r_btc from slot record (slot was minted with two-key construction)
-  const slotSecret = hexToBytes(slotRecord.secretHex);
-  const slotNullPre = hexToBytes(slotRecord.nullifierPreimageHex);
-  const rBtcBytes = slotRecord.rBtcHex
-    ? hexToBytes(slotRecord.rBtcHex)
-    : deriveSlotRBtc(slotSecret, slotNullPre);
-
-  // 3. Compute envelope fields
-  const targetLeafHashBytes = hexToBytes(positionRecord.targetLeafHashHex);
-  const burnNullifiers = cbtcTacUtxos.map(u => {
-    // Nullifier for each cBTC.tac UTXO. For standard tacit asset UTXOs the
-    // nullifier is the asset-spend kernel uniqueness derivation. Caller is
-    // responsible for supplying these alongside each UTXO; for v1 we
-    // derive a deterministic value from (txid, vout, blinding).
-    if (u.nullifier instanceof Uint8Array && u.nullifier.length === 32) return u.nullifier;
-    return sha256(concatBytes(
-      new TextEncoder().encode('cbtc-tac-burn-nullifier-v1'),
-      hexToBytes(u.utxo.txid),
-      (() => { const b = new Uint8Array(4); new DataView(b.buffer).setUint32(0, u.utxo.vout | 0, true); return b; })(),
-      typeof u.blinding === 'bigint'
-        ? bigintToBytes32(u.blinding)
-        : hexToBytes(typeof u.blinding === 'string' ? u.blinding.padStart(64, '0') : '00'.repeat(32)),
-    ));
-  });
-  const burnCommits = cbtcTacUtxos.map(u => {
-    const amt = BigInt(u.amount);
-    const r = typeof u.blinding === 'bigint' ? u.blinding : BigInt('0x' + (typeof u.blinding === 'string' ? u.blinding : '0'));
-    return pedersenCommit(amt, r).toRawBytes(true);
-  });
-
-  // Placeholder bulletproof + Groth16 proof (real proof gen deferred).
-  const burnBalanceProof = new Uint8Array(192);
-  const proofBytes = new Uint8Array(256);
-
-  // Fresh blinding for the TAC bond return UTXO. The depositor recorded
-  // their bondAmountTAC at deposit; on withdraw they get it back as a
-  // first-class tacit-asset UTXO at vout[1], with a Pedersen commit to
-  // (bondAmountTAC, freshBlinding). Worker recognizes the UTXO via
-  // commitmentForUtxo → envelope.bond_return_commit + position.tac_asset_id.
-  const bondReturnBig = BigInt(positionRecord.bondAmountTAC);
-  const bondReturnBlindingBytes = new Uint8Array(32);
-  crypto.getRandomValues(bondReturnBlindingBytes);
-  let bondReturnBlindingBig = bytes32ToBigint(bondReturnBlindingBytes) % SECP_N;
-  if (bondReturnBlindingBig === 0n) bondReturnBlindingBig = 1n;
-  const bondReturnCommit = pedersenCommit(bondReturnBig, bondReturnBlindingBig).toRawBytes(true);
-
-  // 4. bind_hash + payload
+  // 2. Build envelope. Under §5.47 v1 lien model:
+  //    - insurance_claim_tac MUST be 0 (worker refuses non-zero).
+  //    - bond_return_commit is unused but the wire format still requires it;
+  //      we set it to a NUMS-derived placeholder for forward-compat.
   _progress('envelope:build');
+  const targetLeafHash = hexToBytes(positionRecord.targetLeafHashHex);
+  const burnCount = cbtcTacUtxos.length;
+  const burnNullifiers = [];
+  const burnCommits = [];
+  for (const u of cbtcTacUtxos) {
+    // Nullifier derivation: SHA256("tacit-cbtc-tac-nullifier-v1" || utxo_txid_LE || utxo_vout_LE || blinding)
+    // (Pattern matches existing slot-nullifier derivation; cross-impl parity
+    // would be verified at handler-side under future work.)
+    const txidLE = reverseBytes(hexToBytes(u.utxo.txid.toLowerCase()));
+    const voutLE = new Uint8Array(4);
+    new DataView(voutLE.buffer).setUint32(0, u.utxo.vout | 0, true);
+    const blindingBytes = hexToBytes((u.blinding || '').toLowerCase());
+    if (blindingBytes.length !== 32) throw new Error('cbtcTacUtxos[].blinding must be 64 hex chars');
+    const nullifier = sha256(concatBytes(
+      new TextEncoder().encode('tacit-cbtc-tac-nullifier-v1'),
+      txidLE, voutLE, blindingBytes,
+    ));
+    burnNullifiers.push(nullifier);
+    const amtBig = BigInt(u.amount);
+    const blindingBig = BigInt('0x' + bytesToHex(blindingBytes)) % SECP_N;
+    burnCommits.push(pedersenCommit(amtBig, blindingBig).toRawBytes(true));
+  }
+
+  // bond_return_commit: under §5.47 the bond is just unliened (no return UTXO),
+  // so this field is structural. Use a deterministic NUMS-derived placeholder
+  // so the bind_hash is reproducible and future-validators can detect "this
+  // was a v1 lien-model withdraw" by recognising the placeholder.
+  const bondReturnPlaceholder = pedersenCommit(0n, 1n).toRawBytes(true);  // (0 amount, blinding=1) — deterministic, unspendable
+
+  const burnBalanceProof = new Uint8Array(688);  // placeholder bulletproof (worker doesn't yet verify)
+  const insuranceClaimTAC = 0n;                  // MUST be 0 under v1 lien model
+
   const bindHash = computeCbtcTacWithdrawBindHash({
     networkTag,
-    targetLeafHash: targetLeafHashBytes,
-    burnCount: cbtcTacUtxos.length,
+    targetLeafHash,
+    burnCount,
     burnNullifiers,
     burnCommits,
-    burnAmount: burnSum,
-    insuranceClaimTAC: insuranceClaimBig,
-    bondReturnCommit,
-  });
-  const payload = encodeTCbtcTacWithdrawPayload({
-    networkTag,
-    targetLeafHash: targetLeafHashBytes,
-    burnNullifiers,
-    burnCommits,
-    burnAmount: burnSum,
-    insuranceClaimTAC: insuranceClaimBig,
-    burnBalanceProof,
-    bondReturnCommit,
-    bindHash,
-    proof: proofBytes,
+    burnAmount: mintAmountBig,
+    insuranceClaimTAC,
+    bondReturnCommit: bondReturnPlaceholder,
   });
 
-  // 5. Commit-reveal Bitcoin tx pair
-  // Commit: sats inputs → P2TR(envelope script) + change
-  // Reveal: vin[0]   = commit P2TR (script-path with envelope)
-  //         vin[1]   = slot UTXO (key-path under r_btc, SIGHASH_ALL)
-  //         vin[2..] = cBTC.tac UTXOs being burned (P2WPKH under wallet.priv)
-  //         vout[0]  = BTC payout to recipient (denom_sats from slot minus fees)
-  //         vout[1]  = TAC bond return UTXO at depositor recovery pubkey (DUST sats)
+  const placeholderProof = new Uint8Array(256);
+  const payload = encodeTCbtcTacWithdrawPayload({
+    networkTag,
+    targetLeafHash,
+    burnNullifiers,
+    burnCommits,
+    burnAmount: mintAmountBig,
+    burnBalanceProof,
+    insuranceClaimTAC,
+    bondReturnCommit: bondReturnPlaceholder,
+    bindHash,
+    proof: placeholderProof,
+  });
+
+  // 3. Build commit + reveal txs.
+  //    Reveal layout (lien model):
+  //      vin[0] = commit P2TR (script-path envelope)
+  //      vin[1] = slot K_btc UTXO (key-path Schnorr under r_btc; LOAD-BEARING — worker enforces)
+  //      vin[2..M+1] = cBTC.tac UTXOs being burned (P2WPKH under wallet.priv)
+  //      vout[0] = BTC payout (slot_denom_sats minus fee) to recipientAddr
+  //    No vout[1] bond return (lien is just KV-released by worker).
+  _progress('tx:build');
   const envelopeScript = encodeEnvelopeScript(wallet.xonly(), payload);
   const tapLeaf = tapLeafHash(envelopeScript);
   const { Q_xonly, parity } = tweakedOutputKey(TAP_NUMS, tapLeaf);
@@ -17823,22 +18025,31 @@ async function buildAndBroadcastCbtcTacWithdraw({
   const cb = controlBlock(TAP_NUMS, parity);
 
   const feeRate = await getFeeRate();
-  // Reveal vbytes: 2 + M inputs; 1 output. Envelope dominates.
-  const revealVb = 11 + 41 + 41 + (41 * cbtcTacUtxos.length) + 31 +
-    Math.ceil((1 + 1 + 65 + 3 + 45 + payload.length + 34 + 109 + cbtcTacUtxos.length * 109) / 4);
+  // Reveal vbytes: 11 base + 41 (commit vin) + 57 (taproot key-path slot vin)
+  //   + 109 × M (asset vins, P2WPKH) + 31 (BTC payout vout) + envelope witness ceil.
+  const revealVb = 11 + 41 + 57 + 109 * cbtcTacUtxos.length + 31
+    + Math.ceil((1 + 1 + 65 + 3 + 45 + payload.length + 34) / 4);
   const revealFee = feeFor(revealVb, feeRate);
-  const commitValue = Math.max(DUST, revealFee);
 
-  const holdings = await scanHoldings();
-  if (!holdings || !(holdings instanceof Map)) throw new Error('holdings scan failed');
+  // Slot UTXO value at K_btc = slot_denom_sats (set at T_SLOT_MINT). The reveal
+  // pays out slot_denom_sats - revealFee to the redeemer (commit value covers
+  // tx fee accounting separately — commit produces DUST at vout[0], plus the
+  // slot input value flows through to BTC payout).
+  const slotDenomSats = Number(BigInt(positionRecord.slotDenomSats));
+  // Commit funds the reveal's commit input only (DUST). The actual payout is
+  // funded by the slot K_btc input.
+  const commitValue = DUST;
+
+  // Fund commit
   const allUtxos = await getUtxos(wallet.address());
+  const holdings = await scanHoldings();
+  if (!holdings) throw new Error('holdings scan failed');
   const sats = selectSatsUtxosSafe(allUtxos, holdings).sort((a, b) => {
     const ac = a.status?.confirmed === true ? 1 : 0;
     const bc = b.status?.confirmed === true ? 1 : 0;
     if (ac !== bc) return bc - ac;
     return b.value - a.value;
   });
-  if (sats.length === 0) throw new Error('no plain-sats UTXOs available to fund the withdraw commit');
   const picked = []; let total = 0; let commitFee = 500;
   for (const u of sats) {
     picked.push(u); total += u.value;
@@ -17846,11 +18057,8 @@ async function buildAndBroadcastCbtcTacWithdraw({
     if (total >= commitValue + commitFee + DUST) break;
   }
   if (total < commitValue + commitFee) {
-    throw new Error(`insufficient sats for withdraw-commit fees: need ${commitValue + commitFee}, have ${total}`);
+    throw new Error(`insufficient sats for withdraw commit: need ${commitValue + commitFee}, have ${total}`);
   }
-
-  // Commit tx
-  _progress('tx:commit:build');
   const change = total - commitValue - commitFee;
   const commitOutputs = [{ value: commitValue, script: commitSpk }];
   if (change >= DUST) commitOutputs.push({ value: change, script: p2wpkhScript(wallet.pub) });
@@ -17865,109 +18073,65 @@ async function buildAndBroadcastCbtcTacWithdraw({
   const commitHex = bytesToHex(serializeTx(commitTx));
   const commitTxidHex = txid(commitTx);
 
-  // Reveal tx — payout output: denom_sats from slot minus all fees, to recipient.
-  // bond return is conceptual (worker ledger) for v1.
+  // Payout address
+  const payoutSpk = recipientAddr
+    ? bech32ToScriptPubKey(recipientAddr)
+    : p2wpkhScript(wallet.pub);
+
+  // Reveal
   _progress('tx:reveal:build');
-  let payoutSpk;
-  if (recipientAddr) {
-    const decoded = decodeP2wpkhAddress(recipientAddr);
-    if (!decoded) throw new Error('recipientAddr is not a valid P2WPKH bech32 address');
-    if (decoded.hrp !== NET.hrp) throw new Error(`recipient is for ${decoded.hrp}, current network is ${NET.name}`);
-    payoutSpk = p2wpkhScriptFromProgram(decoded.program);
-  } else {
-    payoutSpk = p2wpkhScript(wallet.pub);
-  }
-  const slotPrevoutScript = slotRecord.slotScriptPubKeyHex
-    ? hexToBytes(slotRecord.slotScriptPubKeyHex)
-    : slotScriptPubKeyFromKbtc(deriveSlotKbtc(hexToBytes(slotRecord.recipientCommitHex), denomBig));
-  // Bond return TAC UTXO at vout[1]: P2WPKH(depositor_recovery_pk) at DUST.
-  // Depositor uses the saved bondReturnBlinding to spend this later. The
-  // BTC payout at vout[0] is reduced by DUST + fees to fund this output.
-  const depositorRecoveryPub = hexToBytes(positionRecord.depositorRecoveryPubHex);
-  const bondReturnSpk = p2wpkhScript(depositorRecoveryPub);
-  const btcPayoutValue = Number(denomBig) - DUST;
-  if (btcPayoutValue < DUST) {
-    throw new Error(`slot denom ${denomBig} too small to fund BTC payout + bond return UTXO`);
+  const payoutValue = slotDenomSats - revealFee + (commitValue - DUST);
+  if (payoutValue < DUST) {
+    throw new Error(`slot value too small to cover withdraw fee: payout=${payoutValue}`);
   }
   const revealTx = {
     version: 2, locktime: 0,
     inputs: [
       { txid: commitTxidHex, vout: 0, sequence: 0xfffffffd, witness: [] },
       { txid: slotRecord.mintTxid, vout: 0, sequence: 0xfffffffd, witness: [] },
-      ...cbtcTacUtxos.map(u => ({
-        txid: u.utxo.txid, vout: u.utxo.vout | 0, sequence: 0xfffffffd, witness: [],
-      })),
+      ...cbtcTacUtxos.map(u => ({ txid: u.utxo.txid, vout: u.utxo.vout | 0, sequence: 0xfffffffd, witness: [] })),
     ],
-    outputs: [
-      { value: btcPayoutValue, script: payoutSpk },
-      { value: DUST, script: bondReturnSpk },
-    ],
+    outputs: [{ value: payoutValue, script: payoutSpk }],
   };
+  const slotKbtcXonly = hexToBytes(slotRecord.k_btc_xonly || slotRecord.kBtcXonlyHex);
+  const slotSpk = p2trScript(slotKbtcXonly);
   const revealPrevouts = [
     { value: commitValue, script: commitSpk },
-    { value: Number(denomBig), script: slotPrevoutScript },
-    ...cbtcTacUtxos.map(_ => ({ value: DUST, script: p2wpkhScript(wallet.pub) })),
+    { value: slotDenomSats, script: slotSpk },
+    ...cbtcTacUtxos.map(() => ({ value: DUST, script: p2wpkhScript(wallet.pub) })),
   ];
-  // vin[0]: Taproot script-path with envelope reveal
   revealTx.inputs[0].witness = signTaprootScriptPathInput(revealTx, revealPrevouts, envelopeScript, cb);
-  // vin[1]: Taproot key-path under r_btc, SIGHASH_ALL (binds the entire tx so
-  // a third party can't strip the cBTC.tac burn inputs and pocket the slot's BTC)
-  revealTx.inputs[1].witness = signTaprootKeyPathInputWithKey(revealTx, 1, revealPrevouts, rBtcBytes, 0x01);
-  // vin[2..]: standard P2WPKH BIP-143 sigs under wallet.priv for the cBTC.tac inputs
+  // Slot K_btc key-path Schnorr sig under r_btc.
+  const rBtcPriv = hexToBytes(slotRecord.r_btc.toLowerCase());
+  const slotSigHash = computeTaprootKeySigHash(revealTx, 1, revealPrevouts);
+  const slotSig = schnorr.sign(slotSigHash, rBtcPriv);
+  revealTx.inputs[1].witness = [slotSig];
+  // cBTC.tac asset inputs (P2WPKH under wallet.priv).
   for (let i = 0; i < cbtcTacUtxos.length; i++) {
     revealTx.inputs[2 + i].witness = signP2wpkhInput(revealTx, 2 + i, DUST);
   }
   const revealHex = bytesToHex(serializeTx(revealTx));
   const revealTxidHex = txid(revealTx);
 
-  // 6. Persist position update BEFORE broadcasting (recovery discipline).
-  // bondReturnBlindingHex MUST be saved before broadcast — without it the
-  // depositor can never spend the recovered TAC bond UTXO at vout[1].
-  saveCtacPositionRecord({
-    targetLeafHashHex: positionRecord.targetLeafHashHex,
-    status: 'withdraw-pending',
-    withdrawCommitTxid: commitTxidHex,
-    withdrawTxid: revealTxidHex,
-    bondReturnBlindingHex: bondReturnBlindingBig.toString(16).padStart(64, '0'),
-    bondReturnCommitHex: bytesToHex(bondReturnCommit),
-  });
-
-  // 7. Broadcast
   _progress('tx:commit:broadcast');
   await broadcast(commitHex);
-  saveCtacPositionRecord({
-    targetLeafHashHex: positionRecord.targetLeafHashHex,
-    status: 'withdraw-committing',
-  });
   _progress('tx:reveal:broadcast');
   await broadcastWithRetry(revealHex);
+
+  // Update local position record
   saveCtacPositionRecord({
     targetLeafHashHex: positionRecord.targetLeafHashHex,
     status: 'withdrawn',
+    withdrawTxid: revealTxidHex,
     withdrawnAt: Date.now(),
   });
 
-  // Record the bond return UTXO opening so the holdings scanner finds it
-  // and the depositor can spend it via standard T_AXFER_VAR / CXFER flow.
-  try {
-    recordOpening(revealTxidHex, 1,
-      positionRecord.tacAssetIdHex,
-      bondReturnBig,
-      bondReturnBlindingBig);
-  } catch {}
-
-  // Update slot record state — slot's K_btc has been spent atomically.
+  // Mark slot record as redeemed (BTC has been spent out)
   try {
     const arr = _loadSlotRecords();
-    const idx = arr.findIndex(r => r.leafCommitmentHex === slotRecord.leafCommitmentHex);
+    const idx = arr.findIndex(r => r.leafCommitmentHex === positionRecord.targetLeafHashHex);
     if (idx >= 0) {
-      arr[idx] = {
-        ...arr[idx],
-        status: 'redeemed',
-        burnTxid: revealTxidHex,
-        redeemedAt: Date.now(),
-        redeemedViaCbtcTacWithdraw: true,
-      };
+      arr[idx] = { ...arr[idx], status: 'redeemed', redeemedAt: Date.now() };
       try { localStorage.setItem(_slotRecordsKey(), JSON.stringify(arr)); } catch {}
     }
   } catch {}
@@ -17976,9 +18140,8 @@ async function buildAndBroadcastCbtcTacWithdraw({
     recordActivity({
       kind: 'cbtc-tac-withdraw',
       ticker: 'cBTC.tac',
-      amount: denomBig,
+      amount: mintAmountBig,
       decimals: 0,
-      assetId: positionRecord.slotAssetIdHex,
       txid: revealTxidHex,
     });
   } catch {}
@@ -17988,14 +18151,7 @@ async function buildAndBroadcastCbtcTacWithdraw({
     commitTxid: commitTxidHex,
     revealTxid: revealTxidHex,
     commitHex, revealHex,
-    payoutValueSats: btcPayoutValue,
-    commitFee, revealFee,
-    burnedAmount: burnSum,
-    insuranceClaimTAC: insuranceClaimBig,
-    bondReturnAmount: bondReturnBig,
-    bondReturnCommitHex: bytesToHex(bondReturnCommit),
-    bondReturnBlindingHex: bondReturnBlindingBig.toString(16).padStart(64, '0'),
-    bondReturnOutpoint: `${revealTxidHex}:1`,
+    payoutValue, commitFee, revealFee,
   };
 }
 
@@ -18059,105 +18215,100 @@ async function buildAndBroadcastCbtcTacWithdraw({
 // worker validator does NOT yet verify either (it only checks the supply
 // + pool decrements). Placeholders satisfy the wire decoder.
 async function buildAndBroadcastShareSlashClaim({
-  cbtcTacUtxos,                  // array of M (1..16) UTXOs to burn:
-                                  // [{ utxo:{txid,vout}, amount, blinding, nullifier? }]
-  claimTAC,                      // pre-queried from worker; must equal
-                                  // floor(burn × pool / supply)
-  tacAssetIdHex,                 // canonical TAC asset_id for the output UTXO
-  recipientPubHex = null,        // 33-byte compressed; null = wallet.pub
+  cbtcTacUtxos,                     // [{utxo:{txid,vout}, amount, blinding}] to burn
+  recipientPubHex = null,           // P2WPKH recipient for the new LP-share UTXO
   onProgress = null,
 }) {
   await ensurePrivkey();
   const _progress = (stage, info) => { try { onProgress && onProgress(stage, info); } catch {} };
   const networkTag = NET.name === 'signet' ? 0x01 : NET.name === 'regtest' ? 0x02 : 0x00;
 
+  // §5.47 v1: this is T_CTAC_LIEN_CLAIM. cBTC.tac holder burns shares to
+  // claim pro-rata LP shares from the global claim pool. The claim mints
+  // a synthetic LP-share UTXO at recipient_commit; claimant can later
+  // T_LP_REMOVE it for cBTC.zk + TAC or hold for AMM fee yield.
+  //
+  // Math: expected_lp_claim = claim_pool_lp_shares × share_burn_amount
+  //                         / outstanding_cbtc_tac_supply
+  // The dapp fetches both numbers from the worker's /ctac state endpoint.
+
   // 1. Pre-flight
-  if (!Array.isArray(cbtcTacUtxos) || cbtcTacUtxos.length < 1 || cbtcTacUtxos.length > 16) {
-    throw new Error('cbtcTacUtxos must be 1..16 entries');
+  if (!Array.isArray(cbtcTacUtxos) || cbtcTacUtxos.length === 0 || cbtcTacUtxos.length > 16) {
+    throw new Error('cbtcTacUtxos must be 1..16 UTXOs');
   }
   let burnSum = 0n;
+  for (const u of cbtcTacUtxos) burnSum += BigInt(u.amount);
+  if (burnSum === 0n) throw new Error('total burn amount must be > 0');
+
+  // 2. Fetch claim pool + outstanding supply
+  _progress('claim-pool:lookup');
+  const stateJson = await apiJson(`/ctac/state?network=${NET.name}`);
+  const claimPool = BigInt(stateJson.claim_pool_lp_shares || stateJson.claim_pool || '0');
+  const outstandingSupply = BigInt(stateJson.outstanding_supply || stateJson.supply || '0');
+  if (outstandingSupply === 0n) throw new Error('no cBTC.tac outstanding — claim pool unreachable');
+  if (claimPool === 0n) throw new Error('claim pool is empty — no slashed positions');
+  const claimLpShares = (claimPool * burnSum) / outstandingSupply;
+  if (claimLpShares === 0n) throw new Error('burn amount too small to claim any LP shares');
+
+  // 3. Build envelope
+  _progress('envelope:build');
+  const burnCount = cbtcTacUtxos.length;
+  const shareNullifiers = [];
+  const shareCommits = [];
   for (const u of cbtcTacUtxos) {
-    if (!u || !u.utxo || u.amount === undefined || u.blinding === undefined) {
-      throw new Error('each cbtcTacUtxo must be {utxo:{txid,vout}, amount, blinding}');
-    }
-    burnSum += BigInt(u.amount);
-  }
-  if (burnSum <= 0n || burnSum >= (1n << BigInt(N_BITS))) {
-    throw new Error('share_burn_amount out of range');
-  }
-  const claimBig = BigInt(claimTAC);
-  if (claimBig <= 0n || claimBig >= (1n << BigInt(N_BITS))) {
-    throw new Error('claimTAC must be > 0 (use buildAndBroadcastCbtcTacWithdraw if claim is zero)');
-  }
-  if (!tacAssetIdHex || !/^[0-9a-f]{64}$/i.test(tacAssetIdHex)) {
-    throw new Error('tacAssetIdHex must be 64 hex chars (canonical TAC asset_id)');
-  }
-  const tacAidHex = tacAssetIdHex.toLowerCase();
-
-  // 2. Derive nullifiers + commits per share UTXO (mirrors withdraw pattern)
-  const shareNullifiers = cbtcTacUtxos.map(u => {
-    if (u.nullifier instanceof Uint8Array && u.nullifier.length === 32) return u.nullifier;
-    return sha256(concatBytes(
-      new TextEncoder().encode('cbtc-tac-burn-nullifier-v1'),
-      hexToBytes(u.utxo.txid),
-      (() => { const b = new Uint8Array(4); new DataView(b.buffer).setUint32(0, u.utxo.vout | 0, true); return b; })(),
-      typeof u.blinding === 'bigint'
-        ? bigintToBytes32(u.blinding)
-        : hexToBytes(typeof u.blinding === 'string' ? u.blinding.padStart(64, '0') : '00'.repeat(32)),
+    const txidLE = reverseBytes(hexToBytes(u.utxo.txid.toLowerCase()));
+    const voutLE = new Uint8Array(4);
+    new DataView(voutLE.buffer).setUint32(0, u.utxo.vout | 0, true);
+    const blindingBytes = hexToBytes((u.blinding || '').toLowerCase());
+    if (blindingBytes.length !== 32) throw new Error('cbtcTacUtxos[].blinding must be 64 hex chars');
+    const nullifier = sha256(concatBytes(
+      new TextEncoder().encode('tacit-cbtc-tac-nullifier-v1'),
+      txidLE, voutLE, blindingBytes,
     ));
-  });
-  const shareCommits = cbtcTacUtxos.map(u => {
-    const amt = BigInt(u.amount);
-    const r = typeof u.blinding === 'bigint' ? u.blinding : BigInt('0x' + (typeof u.blinding === 'string' ? u.blinding : '0'));
-    return pedersenCommit(amt, r).toRawBytes(true);
-  });
+    shareNullifiers.push(nullifier);
+    const amtBig = BigInt(u.amount);
+    const blindingBig = BigInt('0x' + bytesToHex(blindingBytes)) % SECP_N;
+    shareCommits.push(pedersenCommit(amtBig, blindingBig).toRawBytes(true));
+  }
 
-  // 3. Fresh blinding for the new TAC payout UTXO (recipientCommit binds
-  // the unblinded claim amount + blinding to the output position).
+  // recipient_commit: fresh Pedersen commit for the new LP-share UTXO.
   const recipientPub = recipientPubHex
     ? hexToBytes(recipientPubHex.toLowerCase())
     : wallet.pub;
-  if (recipientPub.length !== 33) {
-    throw new Error('recipientPubHex must be 33-byte compressed point');
-  }
-  const recipientBlindingBytes = new Uint8Array(32); crypto.getRandomValues(recipientBlindingBytes);
-  let recipientBlindingBig = bytes32ToBigint(recipientBlindingBytes) % SECP_N;
-  if (recipientBlindingBig === 0n) recipientBlindingBig = 1n;
-  const recipientCommit = pedersenCommit(claimBig, recipientBlindingBig).toRawBytes(true);
+  if (recipientPub.length !== 33) throw new Error('recipientPubHex must be 33-byte compressed');
+  const recipientBlindingBig = bytes32ToBigint(randomBytes(32)) % SECP_N;
+  const recipientCommit = pedersenCommit(claimLpShares, recipientBlindingBig).toRawBytes(true);
 
-  // 4. Placeholder bulletproof + Groth16 proof (worker doesn't verify yet).
-  const shareBalanceProof = new Uint8Array(192);
-  const proofBytes = new Uint8Array(256);
-
-  // 5. bind_hash + envelope payload
-  _progress('envelope:build');
+  const shareBalanceProof = new Uint8Array(688);  // placeholder bulletproof
   const bindHash = computeShareSlashClaimBindHash({
     networkTag,
-    shareCount: cbtcTacUtxos.length,
+    shareCount: burnCount,
     shareNullifiers,
     shareCommits,
     shareBurnAmount: burnSum,
-    claimTAC: claimBig,
+    claimTAC: claimLpShares,
     recipientCommit,
   });
+
+  const placeholderProof = new Uint8Array(256);
   const payload = encodeTShareSlashClaimPayload({
     networkTag,
     shareNullifiers,
     shareCommits,
     shareBurnAmount: burnSum,
     shareBalanceProof,
-    claimTAC: claimBig,
+    claimTAC: claimLpShares,
     recipientCommit,
     bindHash,
-    proof: proofBytes,
+    proof: placeholderProof,
   });
 
-  // 6. Build commit + reveal Bitcoin transactions
-  // Commit: sats inputs → P2TR(envelope script) + sats change
-  // Reveal: vin[0]   = commit P2TR (script-path with envelope reveal)
-  //         vin[1..M] = burned cBTC.tac UTXOs (P2WPKH under wallet.priv)
-  //         vout[0]  = new TAC UTXO at recipientPub (P2WPKH, DUST sats)
-  //         vout[1]  = sats change to wallet (if any)
+  // 4. Build commit + reveal txs
+  //    Reveal layout:
+  //      vin[0] = commit P2TR (script-path envelope)
+  //      vin[1..M] = cBTC.tac UTXOs being burned (P2WPKH under wallet.priv)
+  //      vout[0] = new LP-share UTXO at recipient (DUST P2WPKH)
+  _progress('tx:build');
   const envelopeScript = encodeEnvelopeScript(wallet.xonly(), payload);
   const tapLeaf = tapLeafHash(envelopeScript);
   const { Q_xonly, parity } = tweakedOutputKey(TAP_NUMS, tapLeaf);
@@ -18165,35 +18316,21 @@ async function buildAndBroadcastShareSlashClaim({
   const cb = controlBlock(TAP_NUMS, parity);
 
   const feeRate = await getFeeRate();
-  // Reveal vbytes: 1 + M inputs; 1 P2WPKH out + optional sats change.
-  // Envelope dominates witness; M asset inputs are P2WPKH (109 wt bytes each).
-  const revealVb = 11 + 41 + (41 * cbtcTacUtxos.length) + 31
-    + Math.ceil((1 + 1 + 65 + 3 + 45 + payload.length + 34 + cbtcTacUtxos.length * 109) / 4);
+  const revealVb = 11 + 41 + 109 * cbtcTacUtxos.length + 31
+    + Math.ceil((1 + 1 + 65 + 3 + 45 + payload.length + 34) / 4);
   const revealFee = feeFor(revealVb, feeRate);
+  const assetInputTotal = DUST * cbtcTacUtxos.length;
+  const commitValue = Math.max(DUST, DUST + revealFee - assetInputTotal);
 
-  // The reveal's BTC math: commit P2TR + M × DUST (asset inputs) = DUST (TAC
-  // output) + sats change + revealFee. Solve for commit value.
-  const assetInputTotalSats = DUST * cbtcTacUtxos.length;
-  // We want sats change >= DUST or zero; start with commitValue minimal then
-  // bump if math says we'd produce sub-DUST change.
-  let commitValue = Math.max(DUST, DUST + revealFee - assetInputTotalSats);
-  let revealSatsChange = commitValue + assetInputTotalSats - DUST - revealFee;
-  if (revealSatsChange < DUST) {
-    // round up so change is at least DUST OR drop the change output
-    revealSatsChange = 0;
-    commitValue = Math.max(DUST, DUST + revealFee - assetInputTotalSats);
-  }
-
-  const holdings = await scanHoldings();
-  if (!holdings || !(holdings instanceof Map)) throw new Error('holdings scan failed');
   const allUtxos = await getUtxos(wallet.address());
-  const assetUtxoKeys = new Set(cbtcTacUtxos.map(u => `${u.utxo.txid}:${u.utxo.vout}`));
-  const sats = sortSatsForCommit(allUtxos
-    .filter(u => !assetUtxoKeys.has(`${u.txid}:${u.vout}`))
-    .filter(u => u.value > DUST));
-  if (sats.length === 0) {
-    throw new Error('no plain-sats UTXOs available to fund the slash-claim commit');
-  }
+  const holdings = await scanHoldings();
+  if (!holdings) throw new Error('holdings scan failed');
+  const sats = selectSatsUtxosSafe(allUtxos, holdings).sort((a, b) => {
+    const ac = a.status?.confirmed === true ? 1 : 0;
+    const bc = b.status?.confirmed === true ? 1 : 0;
+    if (ac !== bc) return bc - ac;
+    return b.value - a.value;
+  });
   const picked = []; let total = 0; let commitFee = 500;
   for (const u of sats) {
     picked.push(u); total += u.value;
@@ -18201,10 +18338,8 @@ async function buildAndBroadcastShareSlashClaim({
     if (total >= commitValue + commitFee + DUST) break;
   }
   if (total < commitValue + commitFee) {
-    throw new Error(`insufficient sats for slash-claim commit fees: need ${commitValue + commitFee}, have ${total}`);
+    throw new Error(`insufficient sats for lien-claim commit: need ${commitValue + commitFee}, have ${total}`);
   }
-
-  _progress('tx:commit:build');
   const change = total - commitValue - commitFee;
   const commitOutputs = [{ value: commitValue, script: commitSpk }];
   if (change >= DUST) commitOutputs.push({ value: change, script: p2wpkhScript(wallet.pub) });
@@ -18219,88 +18354,49 @@ async function buildAndBroadcastShareSlashClaim({
   const commitHex = bytesToHex(serializeTx(commitTx));
   const commitTxidHex = txid(commitTx);
 
-  // Reveal tx
   _progress('tx:reveal:build');
-  const recipSpk = p2wpkhScript(recipientPub);
-  const revealInputs = [{ txid: commitTxidHex, vout: 0, sequence: 0xfffffffd, witness: [] }];
-  for (const u of cbtcTacUtxos) {
-    revealInputs.push({ txid: u.utxo.txid, vout: u.utxo.vout | 0, sequence: 0xfffffffd, witness: [] });
-  }
-  const revealOutputs = [{ value: DUST, script: recipSpk }];
-  if (revealSatsChange >= DUST) {
-    revealOutputs.push({ value: revealSatsChange, script: p2wpkhScript(wallet.pub) });
-  }
   const revealTx = {
     version: 2, locktime: 0,
-    inputs: revealInputs,
-    outputs: revealOutputs,
+    inputs: [
+      { txid: commitTxidHex, vout: 0, sequence: 0xfffffffd, witness: [] },
+      ...cbtcTacUtxos.map(u => ({ txid: u.utxo.txid, vout: u.utxo.vout | 0, sequence: 0xfffffffd, witness: [] })),
+    ],
+    outputs: [{ value: DUST, script: p2wpkhScript(recipientPub) }],
   };
   const revealPrevouts = [
     { value: commitValue, script: commitSpk },
-    ...cbtcTacUtxos.map(_ => ({ value: DUST, script: p2wpkhScript(wallet.pub) })),
+    ...cbtcTacUtxos.map(() => ({ value: DUST, script: p2wpkhScript(wallet.pub) })),
   ];
-  revealTx.inputs[0].witness = signTaprootScriptPathInput(
-    revealTx, revealPrevouts, envelopeScript, cb,
-  );
+  revealTx.inputs[0].witness = signTaprootScriptPathInput(revealTx, revealPrevouts, envelopeScript, cb);
   for (let i = 0; i < cbtcTacUtxos.length; i++) {
     revealTx.inputs[1 + i].witness = signP2wpkhInput(revealTx, 1 + i, DUST);
   }
   const revealHex = bytesToHex(serializeTx(revealTx));
   const revealTxidHex = txid(revealTx);
 
-  // 7. Persist a local record BEFORE broadcasting so we can recover the
-  // blinding even if the page closes mid-broadcast.
-  try {
-    const r = {
-      kind: 'share-slash-claim',
-      network: NET.name,
-      tacAssetIdHex: tacAidHex,
-      claimTAC: claimBig.toString(),
-      recipientPubHex: bytesToHex(recipientPub),
-      recipientBlindingHex: recipientBlindingBig.toString(16).padStart(64, '0'),
-      recipientCommitHex: bytesToHex(recipientCommit),
-      shareBurnAmount: burnSum.toString(),
-      shareCount: cbtcTacUtxos.length,
-      shareNullifierHexes: shareNullifiers.map(n => bytesToHex(n)),
-      commitTxid: commitTxidHex,
-      revealTxid: revealTxidHex,
-      status: 'pending',
-      createdAt: Date.now(),
-    };
-    // Reuse the existing opening-record machinery so the new TAC UTXO is
-    // discoverable by scanHoldings on subsequent refreshes.
-    recordOpening(revealTxidHex, 0, tacAidHex, claimBig, recipientBlindingBig);
-    recordActivity({
-      kind: 'cbtc-tac-slash-claim',
-      ticker: 'TAC',
-      amount: claimBig,
-      decimals: 8,
-      assetId: tacAidHex,
-      txid: revealTxidHex,
-    });
-    // Light-weight breadcrumb. The recordActivity above is the
-    // user-visible surface; this exists for headless drivers that need
-    // the full envelope shape after broadcast.
-    try {
-      const key = `tacit-share-slash-claim-records:${NET.name}`;
-      const arr = JSON.parse(localStorage.getItem(key) || '[]');
-      arr.push(r);
-      localStorage.setItem(key, JSON.stringify(arr));
-    } catch {}
-  } catch {}
-
   _progress('tx:commit:broadcast');
   await broadcast(commitHex);
   _progress('tx:reveal:broadcast');
   await broadcastWithRetry(revealHex);
+
+  try {
+    recordActivity({
+      kind: 'ctac-lien-claim',
+      ticker: 'cBTC.tac',
+      amount: burnSum,
+      decimals: 0,
+      txid: revealTxidHex,
+      claimedLpShares: claimLpShares.toString(),
+    });
+  } catch {}
   invalidateHoldingsCache();
 
   return {
     commitTxid: commitTxidHex,
     revealTxid: revealTxidHex,
     commitHex, revealHex,
-    claimTAC: claimBig,
-    shareBurnAmount: burnSum,
+    burnAmount: burnSum.toString(),
+    claimedLpShares: claimLpShares.toString(),
     recipientCommitHex: bytesToHex(recipientCommit),
     recipientBlindingHex: recipientBlindingBig.toString(16).padStart(64, '0'),
     commitFee, revealFee,
@@ -18704,6 +18800,533 @@ async function buildAndBroadcastCtacLienSplit({
     outputBlindings: outputBlindingBytes.map(b => bytesToHex(b)),
     outputCommits: outputCommits.map(c => bytesToHex(c)),
     newLienOutpoint: { txid: revealTxidHex, vout: lienInheritIndex },
+    commitFee, revealFee,
+  };
+}
+
+// SPEC-CBTC-TAC-AMENDMENT §5.48 v1.1 — T_CBTC_TAC_DEPOSIT_ATOMIC builder.
+//
+// Atomic LP_ADD + cBTC.tac DEPOSIT in a single envelope. Depositor provides
+// raw cBTC.zk + TAC asset inputs; worker LPs them, attaches lien on the
+// new LP-share UTXO at (reveal.txid, 0), mints cBTC.tac UTXO at
+// (reveal.txid, 1). Saves the multi-step T_LP_ADD → T_CBTC_TAC_DEPOSIT
+// round-trip into one tx.
+//
+// Inputs:
+//   slotRecord         — cBTC.zk slot record (locked into the position)
+//   poolIdHex          — canonical (cBTC.zk, TAC) pool to LP into
+//   cbtcZkInput        — { utxo:{txid,vout}, amount, blinding }
+//   tacInput           — { utxo:{txid,vout}, amount, blinding }
+//   depositorRecoveryPubHex (optional, defaults to wallet.pub)
+async function buildAndBroadcastCbtcTacDepositAtomic({
+  slotRecord,
+  poolIdHex,
+  cbtcZkInput,
+  tacInput,
+  depositorRecoveryPubHex = null,
+  onProgress = null,
+}) {
+  await ensurePrivkey();
+  const _progress = (stage, info) => { try { onProgress && onProgress(stage, info); } catch {} };
+  const networkTag = NET.name === 'signet' ? 0x01 : NET.name === 'regtest' ? 0x02 : 0x00;
+
+  // 1. Pre-flight
+  if (!slotRecord || !slotRecord.leafCommitmentHex || !slotRecord.assetIdHex) {
+    throw new Error('slotRecord must include leafCommitmentHex + assetIdHex');
+  }
+  const denomBig = BigInt(slotRecord.denomination);
+  if (!poolIdHex || !/^[0-9a-f]{64}$/i.test(poolIdHex)) {
+    throw new Error('poolIdHex must be 64 hex chars');
+  }
+  if (!cbtcZkInput || !tacInput) throw new Error('cbtcZkInput + tacInput required');
+  const deltaCbtcBig = BigInt(cbtcZkInput.amount);
+  const deltaTacBig = BigInt(tacInput.amount);
+  if (deltaCbtcBig <= 0n || deltaTacBig <= 0n) throw new Error('deltas must be > 0');
+
+  // 2. Lookup pool to compute LP shares (worker enforces strict equality).
+  _progress('pool:lookup');
+  const poolJson = await apiJson(`/amm/pool/${poolIdHex.toLowerCase()}?network=${NET.name}`);
+  if (!poolJson || !poolJson.pool_id) throw new Error(`pool ${poolIdHex} not found`);
+  const totalShares = BigInt(poolJson.lp_total_shares || '0');
+  if (totalShares === 0n) throw new Error('pool has zero LP supply (use POOL_INIT instead)');
+  // Identify TAC side via canonical TAC_ASSET_ID_HEX (slot asset_id is
+  // independent of pool composition — slot is BTC backing only).
+  const TAC_AID = (globalThis.TAC_ASSET_ID_HEX || '').toLowerCase();
+  if (!/^[0-9a-f]{64}$/.test(TAC_AID)) throw new Error('TAC_ASSET_ID_HEX not set globally');
+  if (poolJson.asset_a !== TAC_AID && poolJson.asset_b !== TAC_AID) {
+    throw new Error(`pool ${poolIdHex} is not TAC-paired`);
+  }
+  const tacIsA = poolJson.asset_a === TAC_AID;
+  const R_cbtc = tacIsA ? BigInt(poolJson.reserve_b) : BigInt(poolJson.reserve_a);
+  const R_tac  = tacIsA ? BigInt(poolJson.reserve_a) : BigInt(poolJson.reserve_b);
+  // shares = floor(min(Δcbtc × S / R_cbtc, Δtac × S / R_tac))
+  const sharesA = (deltaCbtcBig * totalShares) / R_cbtc;
+  const sharesB = (deltaTacBig * totalShares) / R_tac;
+  const shareAmountBig = sharesA < sharesB ? sharesA : sharesB;
+  if (shareAmountBig === 0n) throw new Error('computed LP shares = 0; inputs too small for pool size');
+
+  // 3. Build envelope fields
+  _progress('envelope:build');
+  const targetLeafHash = hexToBytes(slotRecord.leafCommitmentHex);
+  const poolIdBytes = hexToBytes(poolIdHex.toLowerCase());
+
+  const cbtcZkInputOutpoint = new Uint8Array(36);
+  cbtcZkInputOutpoint.set(hexToBytes(cbtcZkInput.utxo.txid.toLowerCase()), 0);
+  new DataView(cbtcZkInputOutpoint.buffer).setUint32(32, cbtcZkInput.utxo.vout | 0, true);
+  const tacInputOutpoint = new Uint8Array(36);
+  tacInputOutpoint.set(hexToBytes(tacInput.utxo.txid.toLowerCase()), 0);
+  new DataView(tacInputOutpoint.buffer).setUint32(32, tacInput.utxo.vout | 0, true);
+
+  // Input commits (Pedersen open against provided amount+blinding).
+  const cbtcZkBlindingBig = BigInt('0x' + cbtcZkInput.blinding.toLowerCase()) % SECP_N;
+  const tacBlindingBig = BigInt('0x' + tacInput.blinding.toLowerCase()) % SECP_N;
+  const cbtcZkInputCommit = pedersenCommit(deltaCbtcBig, cbtcZkBlindingBig).toRawBytes(true);
+  const tacInputCommit = pedersenCommit(deltaTacBig, tacBlindingBig).toRawBytes(true);
+
+  const depositorRecoveryPub = depositorRecoveryPubHex
+    ? hexToBytes(depositorRecoveryPubHex.toLowerCase())
+    : wallet.pub;
+  if (depositorRecoveryPub.length !== 33) throw new Error('depositorRecoveryPub must be 33 bytes');
+
+  // LP-share + cBTC.tac mint blindings — HMAC-derived from priv key so the
+  // depositor can recover both UTXOs from priv + chain alone after a wallet
+  // wipe (mirrors the AMM LP_ADD recovery pattern in scanHoldings). Anchor
+  // is vin[1] outpoint = cbtcZkInput (same anchor the validator binds to via
+  // cbtcZkInputOutpoint in the envelope).
+  const lpAssetIdBytes = ammAssetMod.deriveLpAssetId(poolIdBytes);
+  const { r_secp: lpShareBlindingBig } = ammReceiptMod.deriveLpAddShareBlinding({
+    recipientPrivkey: wallet.priv,
+    poolId: poolIdBytes,
+    lpInputAOutpoint: cbtcZkInputOutpoint,
+    lpAssetId: lpAssetIdBytes,
+  });
+  const lpShareCommit = pedersenCommit(shareAmountBig, lpShareBlindingBig).toRawBytes(true);
+  const mintBlindingBig = _deriveCbtcTacAtomicMintBlinding({
+    privkey: wallet.priv,
+    targetLeafHash, anchorOutpoint: cbtcZkInputOutpoint,
+  });
+  const mintRecipientCommit = pedersenCommit(denomBig, mintBlindingBig).toRawBytes(true);
+
+  const bindHash = computeCbtcTacDepositAtomicBindHash({
+    networkTag,
+    targetLeafHash, slotDenomSats: denomBig, poolId: poolIdBytes,
+    deltaCbtcZk: deltaCbtcBig, deltaTac: deltaTacBig, shareAmount: shareAmountBig,
+    cbtcZkInputOutpoint, cbtcZkInputCommit,
+    tacInputOutpoint, tacInputCommit,
+    lpShareCommit, depositorRecoveryPk: depositorRecoveryPub,
+    mintAmount: denomBig, mintRecipientCommit,
+  });
+  const placeholderProof = new Uint8Array(256);
+  const payload = encodeTCbtcTacDepositAtomicPayload({
+    networkTag,
+    targetLeafHash, slotDenomSats: denomBig, poolId: poolIdBytes,
+    deltaCbtcZk: deltaCbtcBig, deltaTac: deltaTacBig, shareAmount: shareAmountBig,
+    cbtcZkInputOutpoint, cbtcZkInputCommit,
+    tacInputOutpoint, tacInputCommit,
+    lpShareCommit, depositorRecoveryPk: depositorRecoveryPub,
+    mintAmount: denomBig, mintRecipientCommit,
+    bindHash, proof: placeholderProof,
+  });
+
+  // 4. Build commit + reveal txs
+  //    Reveal: vin[0] = commit envelope; vin[1] = cBTC.zk input; vin[2] = TAC input.
+  //            vout[0] = LP-share UTXO at depositor_recovery_pk;
+  //            vout[1] = cBTC.tac mint UTXO at depositor_recovery_pk.
+  _progress('tx:build');
+  const envelopeScript = encodeEnvelopeScript(wallet.xonly(), payload);
+  const tapLeaf = tapLeafHash(envelopeScript);
+  const { Q_xonly, parity } = tweakedOutputKey(TAP_NUMS, tapLeaf);
+  const commitSpk = p2trScript(Q_xonly);
+  const cb = controlBlock(TAP_NUMS, parity);
+
+  const feeRate = await getFeeRate();
+  const revealVb = 11 + 41 + 109 * 2 + 31 * 2
+    + Math.ceil((1 + 1 + 65 + 3 + 45 + payload.length + 34) / 4);
+  const revealFee = feeFor(revealVb, feeRate);
+  const dustTotal = DUST * 2;
+  const assetInputTotal = DUST * 2;
+  const commitValue = Math.max(DUST, DUST + revealFee + dustTotal - assetInputTotal);
+
+  const allUtxos = await getUtxos(wallet.address());
+  const holdings = await scanHoldings();
+  if (!holdings) throw new Error('holdings scan failed');
+  const sats = selectSatsUtxosSafe(allUtxos, holdings).sort((a, b) => {
+    const ac = a.status?.confirmed === true ? 1 : 0;
+    const bc = b.status?.confirmed === true ? 1 : 0;
+    if (ac !== bc) return bc - ac;
+    return b.value - a.value;
+  });
+  const picked = []; let total = 0; let commitFee = 500;
+  for (const u of sats) {
+    picked.push(u); total += u.value;
+    commitFee = feeFor(estCommitVb(picked.length), feeRate);
+    if (total >= commitValue + commitFee + DUST) break;
+  }
+  if (total < commitValue + commitFee) {
+    throw new Error(`insufficient sats for atomic deposit commit: need ${commitValue + commitFee}, have ${total}`);
+  }
+  const change = total - commitValue - commitFee;
+  const commitOutputs = [{ value: commitValue, script: commitSpk }];
+  if (change >= DUST) commitOutputs.push({ value: change, script: p2wpkhScript(wallet.pub) });
+  const commitTx = {
+    version: 2, locktime: 0,
+    inputs: picked.map(u => ({ txid: u.txid, vout: u.vout, sequence: 0xfffffffd, witness: [] })),
+    outputs: commitOutputs,
+  };
+  for (let i = 0; i < commitTx.inputs.length; i++) {
+    commitTx.inputs[i].witness = signP2wpkhInput(commitTx, i, picked[i].value);
+  }
+  const commitHex = bytesToHex(serializeTx(commitTx));
+  const commitTxidHex = txid(commitTx);
+
+  _progress('tx:reveal:build');
+  const recipSpk = p2wpkhScript(depositorRecoveryPub);
+  const revealTx = {
+    version: 2, locktime: 0,
+    inputs: [
+      { txid: commitTxidHex, vout: 0, sequence: 0xfffffffd, witness: [] },
+      { txid: cbtcZkInput.utxo.txid, vout: cbtcZkInput.utxo.vout | 0, sequence: 0xfffffffd, witness: [] },
+      { txid: tacInput.utxo.txid, vout: tacInput.utxo.vout | 0, sequence: 0xfffffffd, witness: [] },
+    ],
+    outputs: [
+      { value: DUST, script: recipSpk },  // LP-share UTXO
+      { value: DUST, script: recipSpk },  // cBTC.tac mint UTXO
+    ],
+  };
+  const revealPrevouts = [
+    { value: commitValue, script: commitSpk },
+    { value: DUST, script: p2wpkhScript(wallet.pub) },
+    { value: DUST, script: p2wpkhScript(wallet.pub) },
+  ];
+  revealTx.inputs[0].witness = signTaprootScriptPathInput(revealTx, revealPrevouts, envelopeScript, cb);
+  revealTx.inputs[1].witness = signP2wpkhInput(revealTx, 1, DUST);
+  revealTx.inputs[2].witness = signP2wpkhInput(revealTx, 2, DUST);
+  const revealHex = bytesToHex(serializeTx(revealTx));
+  const revealTxidHex = txid(revealTx);
+
+  // 5. Persist position record BEFORE broadcasting (recovery discipline).
+  const positionRecord = {
+    targetLeafHashHex: slotRecord.leafCommitmentHex,
+    slotAssetIdHex: slotRecord.assetIdHex,
+    slotDenomSats: denomBig.toString(),
+    bondAmountTAC: shareAmountBig.toString(),
+    bondLpShareAmount: shareAmountBig.toString(),
+    bondLpAssetIdHex: (poolJson.lp_asset_id || '').toLowerCase(),
+    bondPoolIdHex: poolIdHex.toLowerCase(),
+    bondSourceOutpointHex: bytesToHex(concatBytes(hexToBytes(revealTxidHex), (() => {
+      const b = new Uint8Array(4); new DataView(b.buffer).setUint32(0, 0, true); return b;
+    })())),
+    bondBlindingHex: lpShareBlindingBig.toString(16).padStart(64, '0'),
+    depositorRecoveryPubHex: bytesToHex(depositorRecoveryPub),
+    mintAmount: denomBig.toString(),
+    mintRecipientCommitHex: bytesToHex(mintRecipientCommit),
+    mintBlindingHex: mintBlindingBig.toString(16).padStart(64, '0'),
+    bindHashHex: bytesToHex(bindHash),
+    network: NET.name,
+    depositCommitTxid: commitTxidHex,
+    depositRevealTxid: revealTxidHex,
+    status: 'deposit-pending',
+    atomicDeposit: true,
+    createdAt: Date.now(),
+  };
+  saveCtacPositionRecord(positionRecord);
+
+  _progress('tx:commit:broadcast');
+  await broadcast(commitHex);
+  saveCtacPositionRecord({
+    targetLeafHashHex: positionRecord.targetLeafHashHex,
+    status: 'deposit-committing',
+  });
+
+  _progress('tx:reveal:broadcast');
+  await broadcastWithRetry(revealHex);
+  saveCtacPositionRecord({
+    targetLeafHashHex: positionRecord.targetLeafHashHex,
+    status: 'active',
+    activatedAt: Date.now(),
+  });
+
+  // Mark slot as deposited
+  try {
+    const arr = _loadSlotRecords();
+    const idx = arr.findIndex(r => r.leafCommitmentHex === slotRecord.leafCommitmentHex);
+    if (idx >= 0) {
+      arr[idx] = { ...arr[idx], status: 'deposited', depositedAt: Date.now() };
+      try { localStorage.setItem(_slotRecordsKey(), JSON.stringify(arr)); } catch {}
+    }
+  } catch {}
+
+  try {
+    recordActivity({
+      kind: 'cbtc-tac-deposit-atomic',
+      ticker: 'cBTC.tac',
+      amount: denomBig,
+      decimals: 0,
+      txid: revealTxidHex,
+    });
+  } catch {}
+  invalidateHoldingsCache();
+
+  return {
+    commitTxid: commitTxidHex,
+    revealTxid: revealTxidHex,
+    commitHex, revealHex,
+    positionRecord,
+    shareAmount: shareAmountBig.toString(),
+    lpShareCommitHex: bytesToHex(lpShareCommit),
+    lpShareBlindingHex: lpShareBlindingBig.toString(16).padStart(64, '0'),
+    mintRecipientCommitHex: bytesToHex(mintRecipientCommit),
+    mintBlindingHex: mintBlindingBig.toString(16).padStart(64, '0'),
+    commitFee, revealFee,
+  };
+}
+
+// SPEC-CBTC-TAC-AMENDMENT §5.49 — T_CBTC_TAC_WITHDRAW_ATOMIC builder.
+//
+// Closes a cBTC.tac position + LP-removes the freed LP shares + pays out
+// BTC + cBTC.zk + TAC in one Bitcoin tx. Inverse of buildAndBroadcastCbtcTacDepositAtomic.
+//
+// Inputs:
+//   positionRecord       — local cBTC.tac position record (must be 'active')
+//   slotRecord           — underlying cBTC.zk slot (provides r_btc + mintTxid + k_btc_xonly)
+//   cbtcTacUtxos         — [{utxo, amount, blinding}] summing to position.mintAmount
+//   lpShareUtxo          — {utxo:{txid,vout}, amount, blinding} — the bond LP-share UTXO
+//                          (worker bypasses lien check for this specific outpoint at handler time)
+//   recipientAddr        — bech32 P2WPKH for BTC payout
+//   recvCbtcZkRecipientPubHex — 33-byte compressed pub for cBTC.zk LP_REMOVE output
+//   recvTacRecipientPubHex    — 33-byte compressed pub for TAC LP_REMOVE output
+async function buildAndBroadcastCbtcTacWithdrawAtomic({
+  positionRecord, slotRecord, cbtcTacUtxos, lpShareUtxo,
+  recipientAddr = null,
+  recvCbtcZkRecipientPubHex = null,
+  recvTacRecipientPubHex = null,
+  onProgress = null,
+}) {
+  await ensurePrivkey();
+  const _progress = (stage, info) => { try { onProgress && onProgress(stage, info); } catch {} };
+  const networkTag = NET.name === 'signet' ? 0x01 : NET.name === 'regtest' ? 0x02 : 0x00;
+
+  if (!positionRecord || positionRecord.status !== 'active') throw new Error('position must be active');
+  const _slotRBtc = slotRecord && (slotRecord.r_btc || slotRecord.rBtcHex);
+  if (!slotRecord || !slotRecord.mintTxid || !_slotRBtc) throw new Error('slot record incomplete');
+  if (!Array.isArray(cbtcTacUtxos) || cbtcTacUtxos.length === 0) throw new Error('cbtcTacUtxos required');
+  if (!lpShareUtxo || !lpShareUtxo.utxo) throw new Error('lpShareUtxo required (bond LP-share UTXO)');
+
+  const mintAmountBig = BigInt(positionRecord.mintAmount);
+  const lpShareAmountBig = BigInt(lpShareUtxo.amount);
+  const slotDenomBig = BigInt(positionRecord.slotDenomSats);
+
+  // Pool lookup for LP-share math.
+  _progress('pool:lookup');
+  const poolJson = await apiJson(`/amm/pool/${positionRecord.bondPoolIdHex}?network=${NET.name}`);
+  if (!poolJson || !poolJson.pool_id) throw new Error(`pool ${positionRecord.bondPoolIdHex} not found`);
+  const TAC_AID = (positionRecord.tacAssetIdHex || globalThis.TAC_ASSET_ID_HEX || '').toLowerCase();
+  const tacIsA = poolJson.asset_a === TAC_AID;
+  const R_cbtc = tacIsA ? BigInt(poolJson.reserve_b) : BigInt(poolJson.reserve_a);
+  const R_tac  = tacIsA ? BigInt(poolJson.reserve_a) : BigInt(poolJson.reserve_b);
+  const totalShares = BigInt(poolJson.lp_total_shares);
+  const deltaCbtcBig = (lpShareAmountBig * R_cbtc) / totalShares;
+  const deltaTacBig  = (lpShareAmountBig * R_tac) / totalShares;
+
+  // Recipient pubs for LP_REMOVE outputs (default to wallet.pub).
+  const recvCbtcPub = recvCbtcZkRecipientPubHex
+    ? hexToBytes(recvCbtcZkRecipientPubHex.toLowerCase())
+    : wallet.pub;
+  const recvTacPub = recvTacRecipientPubHex
+    ? hexToBytes(recvTacRecipientPubHex.toLowerCase())
+    : wallet.pub;
+
+  // LP_REMOVE leg blindings — HMAC-derived per AMM receipt pattern so the
+  // depositor can recover both legs from priv + chain alone (mirrors the
+  // standard LP_REMOVE recovery branch in scanHoldings). Anchor = LP-share
+  // input outpoint (the consumed bond UTXO). Recovery only succeeds for the
+  // wallet that built the tx; an alternate recipient relies on the receipt
+  // record persisted client-side, same as standard LP_REMOVE.
+  const lpShareInputOutpoint = ammReceiptMod.canonicalOutpoint(
+    lpShareUtxo.utxo.txid, lpShareUtxo.utxo.vout,
+  );
+  const poolForRemove = hexToBytes(positionRecord.bondPoolIdHex.toLowerCase());
+  const cbtcZkSideAssetIdHex = slotRecord.assetIdHex.toLowerCase();
+  const tacAssetIdHex = (globalThis.TAC_ASSET_ID_HEX || '').toLowerCase();
+  if (!/^[0-9a-f]{64}$/.test(tacAssetIdHex)) throw new Error('TAC_ASSET_ID_HEX not set globally');
+  // Canonical (assetA, assetB) order matches what LP_REMOVE recovery and the
+  // pool registry use — leg order tracks canon, not (cbtc, tac).
+  const [canonA, canonB] = ammAssetMod.canonicalAssetPair(cbtcZkSideAssetIdHex, tacAssetIdHex);
+  const cbtcZkIsA = bytesToHex(canonA) === cbtcZkSideAssetIdHex;
+  const { legA, legB } = ammReceiptMod.deriveLpRemoveBlindings({
+    recipientPrivkey: wallet.priv,
+    poolId: poolForRemove,
+    lpShareInputOutpoint,
+    assetIdA: canonA, assetIdB: canonB,
+  });
+  const recvCbtcBlindingBig = cbtcZkIsA ? legA.r_secp : legB.r_secp;
+  const recvTacBlindingBig  = cbtcZkIsA ? legB.r_secp : legA.r_secp;
+  const recvCbtcZkCommit = pedersenCommit(deltaCbtcBig, recvCbtcBlindingBig).toRawBytes(true);
+  const recvTacCommit = pedersenCommit(deltaTacBig, recvTacBlindingBig).toRawBytes(true);
+
+  // Envelope build
+  _progress('envelope:build');
+  const targetLeafHash = hexToBytes(positionRecord.targetLeafHashHex);
+  const burnNullifiers = [];
+  const burnCommits = [];
+  for (const u of cbtcTacUtxos) {
+    const txidLE = reverseBytes(hexToBytes(u.utxo.txid.toLowerCase()));
+    const voutLE = new Uint8Array(4);
+    new DataView(voutLE.buffer).setUint32(0, u.utxo.vout | 0, true);
+    const blindingBytes = hexToBytes((u.blinding || '').toLowerCase());
+    if (blindingBytes.length !== 32) throw new Error('cbtcTacUtxos[].blinding must be 64 hex chars');
+    burnNullifiers.push(sha256(concatBytes(
+      new TextEncoder().encode('tacit-cbtc-tac-nullifier-v1'),
+      txidLE, voutLE, blindingBytes,
+    )));
+    const blindingBig = BigInt('0x' + bytesToHex(blindingBytes)) % SECP_N;
+    burnCommits.push(pedersenCommit(BigInt(u.amount), blindingBig).toRawBytes(true));
+  }
+
+  const bindHash = computeCbtcTacWithdrawAtomicBindHash({
+    networkTag,
+    targetLeafHash, slotDenomSats: slotDenomBig, burnCount: cbtcTacUtxos.length,
+    burnNullifiers, burnCommits,
+    burnAmount: mintAmountBig, lpShareAmount: lpShareAmountBig,
+    recvCbtcZkCommit, recvTacCommit,
+  });
+  const placeholderProof = new Uint8Array(256);
+  const payload = encodeTCbtcTacWithdrawAtomicPayload({
+    networkTag,
+    targetLeafHash, slotDenomSats: slotDenomBig,
+    burnNullifiers, burnCommits,
+    burnAmount: mintAmountBig, lpShareAmount: lpShareAmountBig,
+    recvCbtcZkCommit, recvTacCommit,
+    bindHash, proof: placeholderProof,
+  });
+
+  // Build commit + reveal txs
+  _progress('tx:build');
+  const envelopeScript = encodeEnvelopeScript(wallet.xonly(), payload);
+  const tapLeaf = tapLeafHash(envelopeScript);
+  const { Q_xonly, parity } = tweakedOutputKey(TAP_NUMS, tapLeaf);
+  const commitSpk = p2trScript(Q_xonly);
+  const cb = controlBlock(TAP_NUMS, parity);
+
+  const feeRate = await getFeeRate();
+  // Reveal vbytes: commit + slot K_btc + M cBTC.tac + LP UTXO + 3 outputs (BTC + 2 asset)
+  const revealVb = 11 + 41 + 57 + 109 * cbtcTacUtxos.length + 109 + 31 * 3
+    + Math.ceil((1 + 1 + 65 + 3 + 45 + payload.length + 34) / 4);
+  const revealFee = feeFor(revealVb, feeRate);
+  const slotDenomSatsNum = Number(slotDenomBig);
+  const commitValue = DUST;
+
+  const allUtxos = await getUtxos(wallet.address());
+  const holdings = await scanHoldings();
+  if (!holdings) throw new Error('holdings scan failed');
+  const sats = selectSatsUtxosSafe(allUtxos, holdings).sort((a, b) => {
+    const ac = a.status?.confirmed === true ? 1 : 0;
+    const bc = b.status?.confirmed === true ? 1 : 0;
+    if (ac !== bc) return bc - ac;
+    return b.value - a.value;
+  });
+  const picked = []; let total = 0; let commitFee = 500;
+  for (const u of sats) {
+    picked.push(u); total += u.value;
+    commitFee = feeFor(estCommitVb(picked.length), feeRate);
+    if (total >= commitValue + commitFee + DUST) break;
+  }
+  if (total < commitValue + commitFee) {
+    throw new Error(`insufficient sats for atomic withdraw commit: need ${commitValue + commitFee}, have ${total}`);
+  }
+  const change = total - commitValue - commitFee;
+  const commitOutputs = [{ value: commitValue, script: commitSpk }];
+  if (change >= DUST) commitOutputs.push({ value: change, script: p2wpkhScript(wallet.pub) });
+  const commitTx = {
+    version: 2, locktime: 0,
+    inputs: picked.map(u => ({ txid: u.txid, vout: u.vout, sequence: 0xfffffffd, witness: [] })),
+    outputs: commitOutputs,
+  };
+  for (let i = 0; i < commitTx.inputs.length; i++) {
+    commitTx.inputs[i].witness = signP2wpkhInput(commitTx, i, picked[i].value);
+  }
+  const commitHex = bytesToHex(serializeTx(commitTx));
+  const commitTxidHex = txid(commitTx);
+
+  const payoutSpk = recipientAddr ? bech32ToScriptPubKey(recipientAddr) : p2wpkhScript(wallet.pub);
+  const payoutValue = slotDenomSatsNum + DUST - revealFee - DUST * 2;
+  if (payoutValue < DUST) throw new Error(`slot too small to cover atomic withdraw fees: payout=${payoutValue}`);
+
+  _progress('tx:reveal:build');
+  const revealTx = {
+    version: 2, locktime: 0,
+    inputs: [
+      { txid: commitTxidHex, vout: 0, sequence: 0xfffffffd, witness: [] },
+      { txid: slotRecord.mintTxid, vout: 0, sequence: 0xfffffffd, witness: [] },
+      ...cbtcTacUtxos.map(u => ({ txid: u.utxo.txid, vout: u.utxo.vout | 0, sequence: 0xfffffffd, witness: [] })),
+      { txid: lpShareUtxo.utxo.txid, vout: lpShareUtxo.utxo.vout | 0, sequence: 0xfffffffd, witness: [] },
+    ],
+    outputs: [
+      { value: payoutValue, script: payoutSpk },           // vout[0] BTC payout
+      { value: DUST, script: p2wpkhScript(recvCbtcPub) },  // vout[1] cBTC.zk LP_REMOVE output
+      { value: DUST, script: p2wpkhScript(recvTacPub) },   // vout[2] TAC LP_REMOVE output
+    ],
+  };
+  const slotKbtcXonly = hexToBytes(slotRecord.k_btc_xonly || slotRecord.kBtcXonlyHex);
+  const slotSpk = p2trScript(slotKbtcXonly);
+  const revealPrevouts = [
+    { value: commitValue, script: commitSpk },
+    { value: slotDenomSatsNum, script: slotSpk },
+    ...cbtcTacUtxos.map(() => ({ value: DUST, script: p2wpkhScript(wallet.pub) })),
+    { value: DUST, script: p2wpkhScript(wallet.pub) },  // LP-share UTXO (depositor-owned)
+  ];
+  revealTx.inputs[0].witness = signTaprootScriptPathInput(revealTx, revealPrevouts, envelopeScript, cb);
+  // Slot K_btc key-path Schnorr under r_btc
+  const rBtcPriv = hexToBytes(_slotRBtc.toLowerCase());
+  const slotSigHash = computeTaprootKeySigHash(revealTx, 1, revealPrevouts);
+  const slotSig = schnorr.sign(slotSigHash, rBtcPriv);
+  revealTx.inputs[1].witness = [slotSig];
+  // cBTC.tac asset inputs
+  for (let i = 0; i < cbtcTacUtxos.length; i++) {
+    revealTx.inputs[2 + i].witness = signP2wpkhInput(revealTx, 2 + i, DUST);
+  }
+  // LP-share input (depositor's wallet)
+  revealTx.inputs[2 + cbtcTacUtxos.length].witness = signP2wpkhInput(
+    revealTx, 2 + cbtcTacUtxos.length, DUST,
+  );
+  const revealHex = bytesToHex(serializeTx(revealTx));
+  const revealTxidHex = txid(revealTx);
+
+  _progress('tx:commit:broadcast');
+  await broadcast(commitHex);
+  _progress('tx:reveal:broadcast');
+  await broadcastWithRetry(revealHex);
+
+  saveCtacPositionRecord({
+    targetLeafHashHex: positionRecord.targetLeafHashHex,
+    status: 'withdrawn',
+    withdrawTxid: revealTxidHex,
+    withdrawnAt: Date.now(),
+    atomicWithdraw: true,
+  });
+
+  try {
+    recordActivity({
+      kind: 'cbtc-tac-withdraw-atomic',
+      ticker: 'cBTC.tac',
+      amount: mintAmountBig,
+      decimals: 0,
+      txid: revealTxidHex,
+    });
+  } catch {}
+  invalidateHoldingsCache();
+
+  return {
+    commitTxid: commitTxidHex,
+    revealTxid: revealTxidHex,
+    commitHex, revealHex,
+    payoutValue,
+    recvCbtcZkAmount: deltaCbtcBig.toString(),
+    recvCbtcZkCommitHex: bytesToHex(recvCbtcZkCommit),
+    recvCbtcZkBlindingHex: recvCbtcBlindingBig.toString(16).padStart(64, '0'),
+    recvTacAmount: deltaTacBig.toString(),
+    recvTacCommitHex: bytesToHex(recvTacCommit),
+    recvTacBlindingHex: recvTacBlindingBig.toString(16).padStart(64, '0'),
     commitFee, revealFee,
   };
 }
@@ -30911,27 +31534,103 @@ function setupMixerHandlers() {
   // Positions list: persisted localStorage records (saveCtacPositionRecord) — backup-critical.
   const ctacDepBtn   = document.getElementById('btn-cbtc-tac-deposit-broadcast');
   const ctacDepSlot  = document.getElementById('cbtc-tac-deposit-slot');
+  const ctacDepLpUtxo = document.getElementById('cbtc-tac-deposit-lp-utxo');
+  const ctacDepLpUtxoWrap = document.getElementById('cbtc-tac-deposit-lp-utxo-wrap');
+  const ctacDepOut   = document.getElementById('cbtc-tac-deposit-out');
+  // §5.48 atomic deposit mode pickers
+  const ctacDepModeLien = document.getElementById('cbtc-tac-deposit-mode-lien');
+  const ctacDepModeAtomic = document.getElementById('cbtc-tac-deposit-mode-atomic');
+  const ctacDepAtomicFields = document.getElementById('cbtc-tac-deposit-atomic-fields');
+  const ctacDepAtomicPool = document.getElementById('cbtc-tac-deposit-atomic-pool');
+  const ctacDepAtomicCbtc = document.getElementById('cbtc-tac-deposit-atomic-cbtc');
+  const ctacDepAtomicTac = document.getElementById('cbtc-tac-deposit-atomic-tac');
+  // §5.49 atomic withdraw mode picker
+  const ctacWithModeRelease = document.getElementById('cbtc-tac-withdraw-mode-release');
+  const ctacWithModeAtomic = document.getElementById('cbtc-tac-withdraw-mode-atomic');
+  // §5.47 v1 lien model: LP-share UTXO is the bond (replaces TAC-amount input).
+  // ctacDepBond + ctacDepTacAid kept as null lookups for backward compat with
+  // any external code that still references them (no-op if elements absent).
   const ctacDepBond  = document.getElementById('cbtc-tac-deposit-bond');
   const ctacDepTacAid = document.getElementById('cbtc-tac-deposit-tac-aid');
-  const ctacDepOut   = document.getElementById('cbtc-tac-deposit-out');
   const ctacWithBtn   = document.getElementById('btn-cbtc-tac-withdraw-broadcast');
   const ctacWithSel   = document.getElementById('cbtc-tac-withdraw-position');
   const ctacWithPayout = document.getElementById('cbtc-tac-withdraw-payout');
   const ctacWithOut   = document.getElementById('cbtc-tac-withdraw-out');
   const ctacPosList  = document.getElementById('cbtc-tac-positions-list');
 
-  // Best-effort: prefill TAC asset_id from holdings (any aid whose ticker === 'TAC').
-  const _autofillCtacTacAid = () => {
-    if (!ctacDepTacAid || ctacDepTacAid.value.trim().length > 0) return;
+  // §5.47 v1 lien model: scan wallet for LP-share UTXOs of any TAC-paired pool.
+  // Returns array of {utxo:{txid,vout}, amount, blinding, assetIdHex, poolIdHex,
+  // tacPoolDepth} sorted by amount desc. Filters: must be unspent, must belong
+  // to a pool where one side is TAC.
+  const _scanCtacLpUtxos = async () => {
+    const out = [];
     try {
       const map = _holdingsCache?.holdings || new Map();
+      // Identify TAC asset_id (any holding ticker'd TAC).
+      let tacAid = null;
       for (const [aid, h] of map.entries()) {
-        if (h && h.ticker === 'TAC' && /^[0-9a-f]{64}$/i.test(aid)) {
-          ctacDepTacAid.value = aid; ctacDepTacAid.placeholder = aid; break;
+        if (h && h.ticker === 'TAC' && /^[0-9a-f]{64}$/i.test(aid)) { tacAid = aid.toLowerCase(); break; }
+      }
+      if (!tacAid) return out;
+      // Fetch all AMM pools; identify which lp_asset_ids are TAC-paired.
+      let pools = [];
+      try {
+        const poolsJson = await apiJson(`/amm/pools?limit=500`);
+        pools = Array.isArray(poolsJson?.pools) ? poolsJson.pools : (poolsJson?.items || []);
+      } catch {}
+      const tacPairedLpAssetIds = new Map();  // lp_asset_id → {pool_id, tac_reserve}
+      for (const p of pools) {
+        if (!p || !p.lp_asset_id) continue;
+        if (p.asset_a === tacAid) {
+          tacPairedLpAssetIds.set(p.lp_asset_id.toLowerCase(), { poolId: p.pool_id, tacReserve: p.reserve_a });
+        } else if (p.asset_b === tacAid) {
+          tacPairedLpAssetIds.set(p.lp_asset_id.toLowerCase(), { poolId: p.pool_id, tacReserve: p.reserve_b });
         }
       }
+      if (tacPairedLpAssetIds.size === 0) return out;
+      // Walk wallet holdings for matching LP-share UTXOs.
+      for (const [aid, h] of map.entries()) {
+        const aidLower = (aid || '').toLowerCase();
+        const meta = tacPairedLpAssetIds.get(aidLower);
+        if (!meta) continue;
+        for (const u of (h.utxos || [])) {
+          if (!u || !u.txid || u.amount === undefined) continue;
+          out.push({
+            utxo: { txid: u.txid, vout: u.vout },
+            amount: u.amount.toString(),
+            blinding: u.blinding || '',
+            assetIdHex: aidLower,
+            poolIdHex: meta.poolId,
+            tacReserve: meta.tacReserve,
+          });
+        }
+      }
+      out.sort((a, b) => Number(BigInt(b.amount) - BigInt(a.amount)));
     } catch {}
+    return out;
   };
+
+  // Populate the LP-share UTXO select with TAC-paired LP UTXOs from wallet.
+  let _ctacLpCandidatesCache = [];
+  const _refreshCtacLpOptions = async () => {
+    if (!ctacDepLpUtxo) return;
+    const prior = ctacDepLpUtxo.value || '';
+    _ctacLpCandidatesCache = await _scanCtacLpUtxos();
+    ctacDepLpUtxo.innerHTML = '<option value="">— pick an LP-share UTXO (must be ≥ 2× slot value) —</option>'
+      + _ctacLpCandidatesCache.map((c, idx) => {
+          const amtDisp = c.amount;
+          const aidShort = c.assetIdHex.slice(0, 8) + '…';
+          const txShort = c.utxo.txid.slice(0, 12) + '…';
+          return `<option value="${idx}">${escapeHtml(amtDisp)} LP · ${escapeHtml(aidShort)} · ${escapeHtml(txShort)}:${c.utxo.vout}</option>`;
+        }).join('');
+    if (prior && Array.from(ctacDepLpUtxo.options).some(o => o.value === prior)) {
+      ctacDepLpUtxo.value = prior;
+    }
+    _refreshCtacDepBtn();
+  };
+
+  // Backward-compat legacy autofill helper — no-op under lien model.
+  const _autofillCtacTacAid = () => {};
 
   const _refreshCtacDepOptions = () => {
     if (!ctacDepSlot) return;
@@ -30959,19 +31658,99 @@ function setupMixerHandlers() {
     }
     _refreshCtacDepBtn();
   };
+  const _ctacDepMode = () => (ctacDepModeAtomic && ctacDepModeAtomic.checked) ? 'atomic' : 'lien';
   const _refreshCtacDepBtn = () => {
     if (!ctacDepBtn) return;
     const haveSlot = !!(ctacDepSlot && ctacDepSlot.value);
-    const haveBond = /^\d+$/.test((ctacDepBond?.value || '').trim())
-                   && BigInt((ctacDepBond?.value || '0').trim()) > 0n;
-    const haveTacAid = /^[0-9a-f]{64}$/i.test((ctacDepTacAid?.value || '').trim());
-    ctacDepBtn.disabled = !(haveSlot && haveBond && haveTacAid);
+    if (_ctacDepMode() === 'atomic') {
+      const havePool = !!(ctacDepAtomicPool && ctacDepAtomicPool.value);
+      const haveCbtc = !!(ctacDepAtomicCbtc && ctacDepAtomicCbtc.value);
+      const haveTac = !!(ctacDepAtomicTac && ctacDepAtomicTac.value);
+      ctacDepBtn.disabled = !(haveSlot && havePool && haveCbtc && haveTac);
+    } else {
+      const haveLp = !!(ctacDepLpUtxo && ctacDepLpUtxo.value);
+      ctacDepBtn.disabled = !(haveSlot && haveLp);
+    }
   };
-  if (ctacDepSlot)   ctacDepSlot.addEventListener('change', _refreshCtacDepBtn);
-  if (ctacDepBond)   ctacDepBond.addEventListener('input', _refreshCtacDepBtn);
-  if (ctacDepTacAid) ctacDepTacAid.addEventListener('input', _refreshCtacDepBtn);
-  _autofillCtacTacAid();
+
+  // §5.48 atomic mode populator: TAC-paired AMM pool dropdown + cBTC.zk + TAC UTXO dropdowns
+  let _ctacDepPoolCache = [];
+  let _ctacDepCbtcCache = [];
+  let _ctacDepTacCache = [];
+  const _refreshCtacAtomicOptions = async () => {
+    if (!ctacDepAtomicPool) return;
+    const prior = ctacDepAtomicPool.value || '';
+    _ctacDepPoolCache = [];
+    try {
+      const map = _holdingsCache?.holdings || new Map();
+      let tacAid = null;
+      for (const [aid, h] of map.entries()) {
+        if (h && h.ticker === 'TAC' && /^[0-9a-f]{64}$/i.test(aid)) { tacAid = aid.toLowerCase(); break; }
+      }
+      if (!tacAid) tacAid = (globalThis.TAC_ASSET_ID_HEX || '').toLowerCase();
+      if (/^[0-9a-f]{64}$/.test(tacAid)) {
+        const poolsJson = await apiJson(`/amm/pools?limit=500`);
+        const pools = Array.isArray(poolsJson?.pools) ? poolsJson.pools : (poolsJson?.items || []);
+        for (const p of pools) {
+          if (!p || !p.pool_id) continue;
+          if (p.asset_a === tacAid || p.asset_b === tacAid) {
+            _ctacDepPoolCache.push(p);
+          }
+        }
+      }
+    } catch {}
+    ctacDepAtomicPool.innerHTML = '<option value="">— pick a TAC-paired pool —</option>'
+      + _ctacDepPoolCache.map((p, idx) => {
+          const other = (p.asset_a === (globalThis.TAC_ASSET_ID_HEX || '').toLowerCase()) ? p.asset_b : p.asset_a;
+          return `<option value="${idx}">${escapeHtml(other.slice(0,8))}…/TAC · ${escapeHtml(p.pool_id.slice(0,12))}…</option>`;
+        }).join('');
+    if (prior && Array.from(ctacDepAtomicPool.options).some(o => o.value === prior)) {
+      ctacDepAtomicPool.value = prior;
+    }
+    _refreshCtacAtomicAssetOptions();
+  };
+  const _refreshCtacAtomicAssetOptions = () => {
+    if (!ctacDepAtomicCbtc || !ctacDepAtomicTac) return;
+    _ctacDepCbtcCache = [];
+    _ctacDepTacCache = [];
+    const poolIdx = parseInt(ctacDepAtomicPool?.value || '', 10);
+    const pool = Number.isInteger(poolIdx) ? _ctacDepPoolCache[poolIdx] : null;
+    if (!pool) { ctacDepAtomicCbtc.innerHTML = ''; ctacDepAtomicTac.innerHTML = ''; _refreshCtacDepBtn(); return; }
+    const tacAid = (globalThis.TAC_ASSET_ID_HEX || '').toLowerCase();
+    const cbtcAid = pool.asset_a === tacAid ? pool.asset_b : pool.asset_a;
+    try {
+      const map = _holdingsCache?.holdings || new Map();
+      const cbtcH = map.get(cbtcAid);
+      const tacH = map.get(tacAid);
+      for (const u of (cbtcH?.utxos || [])) {
+        _ctacDepCbtcCache.push({ utxo: { txid: u.txid, vout: u.vout }, amount: u.amount.toString(), blinding: u.blinding || '' });
+      }
+      for (const u of (tacH?.utxos || [])) {
+        _ctacDepTacCache.push({ utxo: { txid: u.txid, vout: u.vout }, amount: u.amount.toString(), blinding: u.blinding || '' });
+      }
+    } catch {}
+    ctacDepAtomicCbtc.innerHTML = '<option value="">— pick cBTC.zk UTXO —</option>'
+      + _ctacDepCbtcCache.map((c, idx) => `<option value="${idx}">${escapeHtml(c.amount)} · ${escapeHtml(c.utxo.txid.slice(0,12))}…:${c.utxo.vout}</option>`).join('');
+    ctacDepAtomicTac.innerHTML = '<option value="">— pick TAC UTXO —</option>'
+      + _ctacDepTacCache.map((c, idx) => `<option value="${idx}">${escapeHtml(c.amount)} · ${escapeHtml(c.utxo.txid.slice(0,12))}…:${c.utxo.vout}</option>`).join('');
+    _refreshCtacDepBtn();
+  };
+  const _toggleCtacDepMode = () => {
+    const mode = _ctacDepMode();
+    if (ctacDepLpUtxoWrap) ctacDepLpUtxoWrap.style.display = mode === 'lien' ? '' : 'none';
+    if (ctacDepAtomicFields) ctacDepAtomicFields.style.display = mode === 'atomic' ? 'flex' : 'none';
+    if (mode === 'atomic') _refreshCtacAtomicOptions().catch(() => {});
+    _refreshCtacDepBtn();
+  };
+  if (ctacDepModeLien) ctacDepModeLien.addEventListener('change', _toggleCtacDepMode);
+  if (ctacDepModeAtomic) ctacDepModeAtomic.addEventListener('change', _toggleCtacDepMode);
+  if (ctacDepSlot)    ctacDepSlot.addEventListener('change', _refreshCtacDepBtn);
+  if (ctacDepLpUtxo)  ctacDepLpUtxo.addEventListener('change', _refreshCtacDepBtn);
+  if (ctacDepAtomicPool) ctacDepAtomicPool.addEventListener('change', _refreshCtacAtomicAssetOptions);
+  if (ctacDepAtomicCbtc) ctacDepAtomicCbtc.addEventListener('change', _refreshCtacDepBtn);
+  if (ctacDepAtomicTac) ctacDepAtomicTac.addEventListener('change', _refreshCtacDepBtn);
   _refreshCtacDepOptions();
+  _refreshCtacLpOptions().catch(() => {});
 
   const _refreshCtacWithOptions = () => {
     if (!ctacWithSel) return;
@@ -30982,9 +31761,9 @@ function setupMixerHandlers() {
     ctacWithSel.innerHTML = '<option value="">— pick an active position —</option>'
       + active.map(p => {
           const denom = p.slotDenomSats || '?';
-          const bond = p.bondAmountTAC || '?';
+          const bond = p.bondLpShareAmount || p.bondAmountTAC || '?';
           const leaf = (p.targetLeafHashHex || '').slice(0, 12) + '…';
-          return `<option value="${escapeHtml(p.targetLeafHashHex)}">${escapeHtml(denom)} sats · bond ${escapeHtml(bond)} TAC · leaf ${escapeHtml(leaf)}</option>`;
+          return `<option value="${escapeHtml(p.targetLeafHashHex)}">${escapeHtml(denom)} sats · bond ${escapeHtml(bond)} LP shares · leaf ${escapeHtml(leaf)}</option>`;
         }).join('');
     if (prior && Array.from(ctacWithSel.options).some(o => o.value === prior)) {
       ctacWithSel.value = prior;
@@ -31008,14 +31787,14 @@ function setupMixerHandlers() {
     }
     const rows = positions.map(p => {
       const denom = p.slotDenomSats || '?';
-      const bond = p.bondAmountTAC || '?';
+      const bond = p.bondLpShareAmount || p.bondAmountTAC || '?';
       const leaf = (p.targetLeafHashHex || '').slice(0, 16) + '…';
       const tx = (p.depositRevealTxid || '').slice(0, 16) + '…';
       const status = p.status || '?';
       const j = JSON.stringify(p);
       return `<div style="display:flex;gap:8px;align-items:center;font-family:monospace;font-size:11px;padding:6px 8px;border:1px solid var(--ink-faint);margin-bottom:4px;">
         <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;">
-          <strong>${escapeHtml(denom)} sats</strong> · bond ${escapeHtml(bond)} TAC · ${escapeHtml(leaf)} · ${escapeHtml(tx)}
+          <strong>${escapeHtml(denom)} sats</strong> · bond ${escapeHtml(bond)} LP shares · ${escapeHtml(leaf)} · ${escapeHtml(tx)}
           <span class="muted" style="margin-left:8px;">[${escapeHtml(status)}]</span>
         </span>
         <button type="button" data-act="ctac-pos-copy" data-rec='${escapeHtml(j)}' style="font-size:10px;padding:2px 8px;">Copy JSON</button>
@@ -31042,23 +31821,54 @@ function setupMixerHandlers() {
         if (ctacDepOut) { ctacDepOut.style.display = 'block'; ctacDepOut.textContent = '✗ slot record not found in local storage'; }
         return;
       }
-      const bondBig = BigInt((ctacDepBond?.value || '0').trim());
-      const tacAidHex = (ctacDepTacAid?.value || '').trim().toLowerCase();
+      const mode = _ctacDepMode();
       const denomDisp = slotRecord.denomination || '?';
+
+      // Mode-specific input selection.
+      let lpCandidate = null;
+      let atomicPool = null;
+      let atomicCbtc = null;
+      let atomicTac = null;
+      if (mode === 'lien') {
+        const lpIdx = parseInt(ctacDepLpUtxo?.value || '', 10);
+        lpCandidate = Number.isInteger(lpIdx) ? _ctacLpCandidatesCache[lpIdx] : null;
+        if (!lpCandidate) {
+          if (ctacDepOut) { ctacDepOut.style.display = 'block'; ctacDepOut.textContent = '✗ LP-share UTXO not selected'; }
+          return;
+        }
+      } else {
+        const poolIdx = parseInt(ctacDepAtomicPool?.value || '', 10);
+        const cbtcIdx = parseInt(ctacDepAtomicCbtc?.value || '', 10);
+        const tacIdx = parseInt(ctacDepAtomicTac?.value || '', 10);
+        atomicPool = Number.isInteger(poolIdx) ? _ctacDepPoolCache[poolIdx] : null;
+        atomicCbtc = Number.isInteger(cbtcIdx) ? _ctacDepCbtcCache[cbtcIdx] : null;
+        atomicTac = Number.isInteger(tacIdx) ? _ctacDepTacCache[tacIdx] : null;
+        if (!atomicPool || !atomicCbtc || !atomicTac) {
+          if (ctacDepOut) { ctacDepOut.style.display = 'block'; ctacDepOut.textContent = '✗ atomic-mode inputs incomplete'; }
+          return;
+        }
+      }
+
       const confirmed = await tacitConfirm({
-        title: 'Deposit slot → cBTC.tac',
-        body:
-          `On broadcast, the dapp will:\n\n` +
-          `  1. Carve an exact ${bondBig.toString()}-TAC bond UTXO from your holdings.\n` +
-          `  2. Build a T_CBTC_TAC_DEPOSIT envelope binding the slot leaf + bond.\n` +
-          `  3. Broadcast commit/reveal — the reveal tx outputs your cBTC.tac UTXO\n` +
-          `     (${denomDisp} sats face value) at your recovery pubkey, vout[0].\n` +
-          `  4. Save the position record locally (status='deposit-pending' → 'active').\n\n` +
-          `⚠ The underlying slot is locked while the position is open — you cannot redeem it\n` +
-          `   directly. Use the withdraw flow to close the position when ready.\n\n` +
-          `⚠ Losing the position record = losing the mint blinding needed to identify\n` +
-          `   your cBTC.tac UTXO. Back up before clearing browser data.\n\n` +
-          `Continue?`,
+        title: mode === 'atomic' ? 'Atomic deposit slot → cBTC.tac' : 'Lien deposit slot → cBTC.tac',
+        body: mode === 'atomic'
+          ? `On broadcast, the dapp will:\n\n` +
+            `  1. Build a T_CBTC_TAC_DEPOSIT_ATOMIC envelope (one tx).\n` +
+            `  2. Pool: ${atomicPool.pool_id.slice(0,16)}…  (cBTC.zk + TAC sides).\n` +
+            `  3. Add ${atomicCbtc.amount} cBTC.zk + ${atomicTac.amount} TAC to the pool.\n` +
+            `  4. Mint LP shares (liened) + cBTC.tac (${denomDisp} sats face value)\n` +
+            `     in the same reveal tx.\n\n` +
+            `⚠ Back up both the mint blinding AND the LP-share blinding (you'll need\n` +
+            `   the LP-share blinding to spend the bond after cooperative withdraw).\n\n` +
+            `Continue?`
+          : `On broadcast, the dapp will:\n\n` +
+            `  1. Build a T_CBTC_TAC_DEPOSIT envelope referencing your LP-share UTXO\n` +
+            `     (${lpCandidate.amount} shares of pool ${lpCandidate.poolIdHex.slice(0,12)}…).\n` +
+            `  2. Broadcast commit/reveal — mints cBTC.tac (${denomDisp} sats face value).\n` +
+            `  3. Worker attaches LIEN on your LP-share UTXO. Stays in YOUR wallet,\n` +
+            `     continues earning AMM fees; cannot be spent until withdraw.\n\n` +
+            `⚠ Losing the position record = losing the mint blinding for cBTC.tac.\n` +
+            `Continue?`,
         confirmLabel: 'Deposit & broadcast',
         cancelLabel: 'Cancel',
       });
@@ -31066,52 +31876,73 @@ function setupMixerHandlers() {
       ctacDepBtn.disabled = true;
       const origLabel = ctacDepBtn.textContent;
       ctacDepBtn.textContent = 'Depositing…';
-      if (ctacDepOut) { ctacDepOut.style.display = 'block'; ctacDepOut.textContent = 'Carving TAC bond UTXO…'; }
+      if (ctacDepOut) { ctacDepOut.style.display = 'block'; ctacDepOut.textContent = `Building ${mode === 'atomic' ? 'atomic' : 'lien'} envelope…`; }
       try {
-        const result = await buildAndBroadcastCbtcTacDeposit({
-          slotRecord,
-          bondAmountTAC: bondBig,
-          tacAssetIdHex: tacAidHex,
-          onProgress: (stage) => {
-            if (!ctacDepOut) return;
-            const stages = {
-              'carve:tac-bond':       'Carving TAC bond UTXO…',
-              'envelope:build':       'Building T_CBTC_TAC_DEPOSIT envelope…',
-              'tx:commit:build':      'Building commit tx…',
-              'tx:reveal:build':      'Building reveal tx…',
-              'tx:commit:broadcast':  'Commit broadcasting…',
-              'tx:reveal:broadcast':  'Reveal broadcasting…',
-            };
-            ctacDepOut.textContent = stages[stage] || stage;
-          },
-        });
+        const result = mode === 'atomic'
+          ? await buildAndBroadcastCbtcTacDepositAtomic({
+              slotRecord,
+              poolIdHex: atomicPool.pool_id,
+              cbtcZkInput: atomicCbtc,
+              tacInput: atomicTac,
+              onProgress: (stage) => { if (ctacDepOut) ctacDepOut.textContent = stage; },
+            })
+          : await buildAndBroadcastCbtcTacDeposit({
+              slotRecord,
+              lpShareUtxo: {
+                txid: lpCandidate.utxo.txid,
+                vout: lpCandidate.utxo.vout,
+                amount: lpCandidate.amount,
+                blinding: lpCandidate.blinding,
+              },
+              lpShareAssetIdHex: lpCandidate.assetIdHex,
+              onProgress: (stage) => { if (ctacDepOut) ctacDepOut.textContent = stage; },
+            });
         if (ctacDepOut) {
-          ctacDepOut.textContent =
-            `✓ cBTC.tac position active\n` +
-            `  commit_txid: ${result.commitTxid}\n` +
-            `  reveal_txid: ${result.revealTxid}\n` +
-            `  mint UTXO:   ${result.revealTxid}:0  (${denomDisp} sats face value)\n` +
-            `  bond:        ${bondBig.toString()} TAC locked\n` +
-            `\nPosition record saved locally (back it up below).`;
+          if (mode === 'atomic') {
+            ctacDepOut.textContent =
+              `✓ atomic cBTC.tac position active\n` +
+              `  commit_txid:        ${result.commitTxid}\n` +
+              `  reveal_txid:        ${result.revealTxid}\n` +
+              `  LP-share UTXO:      ${result.revealTxid}:0  (${result.shareAmount} shares, LIENED)\n` +
+              `  cBTC.tac mint UTXO: ${result.revealTxid}:1  (${denomDisp} sats face value)\n` +
+              `  LP-share blinding:  ${result.lpShareBlindingHex}\n` +
+              `  mint blinding:      ${result.mintBlindingHex}\n` +
+              `\n⚠ BACK UP BOTH BLINDINGS — needed to spend the LP-share UTXO (post-withdraw)\n` +
+              `  and the cBTC.tac mint UTXO. Position record saved locally.`;
+          } else {
+            ctacDepOut.textContent =
+              `✓ cBTC.tac position active\n` +
+              `  commit_txid: ${result.commitTxid}\n` +
+              `  reveal_txid: ${result.revealTxid}\n` +
+              `  mint UTXO:   ${result.revealTxid}:0  (${denomDisp} sats face value)\n` +
+              `  bond LP UTXO ${lpCandidate.utxo.txid.slice(0,12)}…:${lpCandidate.utxo.vout} is now LIENED\n` +
+              `              (still in your wallet, earning AMM fees; cannot be spent\n` +
+              `               until cooperative withdraw closes the position)\n` +
+              `\nPosition record saved locally (back it up below).`;
+          }
         }
         _refreshCtacDepOptions();
         _refreshCtacWithOptions();
         _renderCtacPosList();
-        // Post-deposit backup gate. The mint blinding is random per-deposit
-        // and stored ONLY in this browser's localStorage — unlike AMM-derived
-        // UTXOs whose blindings re-derive from priv key alone (shipped at
-        // e1f4a47). Wiping the browser without a backup loses access to this
-        // UTXO. Modal fires unconditionally; explicit choice required.
+        // Post-deposit backup gate. Mint + (atomic) LP-share blindings are
+        // random per-deposit and stored ONLY in this browser's localStorage.
+        // Wiping the browser without a backup loses access to the underlying
+        // UTXOs forever. Modal fires unconditionally; explicit choice required.
         try {
+          const atomicSuffix = mode === 'atomic'
+            ? `\n\n⚠ ATOMIC MODE: also backs up the LP-share blinding ` +
+              `(${result.lpShareBlindingHex.slice(0,16)}…). You need it to spend ` +
+              `the bond LP-share UTXO after withdraw releases the lien.`
+            : '';
           const wantsExport = await tacitConfirm({
             title: 'Back up cBTC.tac position record',
             kind: 'danger',
             body:
-              `This deposit minted a cBTC.tac UTXO at ${result.revealTxid.slice(0, 16)}…:0.\n\n` +
-              `The mint blinding is random per deposit and lives ONLY in this browser.\n` +
-              `It is NOT recoverable from your priv key alone (unlike AMM positions).\n\n` +
+              `This deposit minted a cBTC.tac UTXO at ${result.revealTxid.slice(0, 16)}…:${mode === 'atomic' ? 1 : 0}.\n\n` +
+              `Blindings are random per deposit and live ONLY in this browser.\n` +
+              `They are NOT recoverable from your priv key alone.\n\n` +
               `If you wipe browser data without a JSON backup, the BTC underneath is\n` +
-              `unrecoverable.\n\n` +
+              `unrecoverable.${atomicSuffix}\n\n` +
               `Download a backup now? You can re-import on any device.`,
             confirmLabel: 'Download backup JSON',
             cancelLabel: `I have a backup`,
@@ -31157,29 +31988,64 @@ function setupMixerHandlers() {
         if (ctacWithOut) { ctacWithOut.style.display = 'block'; ctacWithOut.textContent = '✗ underlying slot record not found (needed for r_btc — withdraw requires depositor wallet)'; }
         return;
       }
-      // Synthesize the single cBTC.tac UTXO from the position record. The mint
-      // landed at reveal_txid:0 with amount = mintAmount and the stored
-      // mintBlindingHex. (Multi-UTXO support is a follow-up.)
+      // cBTC.tac UTXO: under atomic-mode deposits it lands at vout[1], else vout[0].
+      // Use the position record's atomicDeposit flag (set by atomic deposit builder).
+      const mintVout = position.atomicDeposit ? 1 : 0;
       const cbtcTacUtxos = [{
-        utxo: { txid: position.depositRevealTxid, vout: 0 },
+        utxo: { txid: position.depositRevealTxid, vout: mintVout },
         amount: BigInt(position.mintAmount),
-        blinding: BigInt('0x' + position.mintBlindingHex),
+        blinding: position.mintBlindingHex,  // hex string — builders accept both
       }];
       const payoutAddr = (ctacWithPayout?.value || '').trim() || null;
       const denomDisp = position.slotDenomSats || '?';
+      const atomicWithdraw = ctacWithModeAtomic && ctacWithModeAtomic.checked;
+
+      // Atomic withdraw needs the bond LP-share UTXO too. The atomic deposit
+      // builder records it at (depositRevealTxid, 0); the lien-mode deposit
+      // builder records it at position.bondSourceOutpointHex.
+      let lpShareUtxo = null;
+      if (atomicWithdraw) {
+        if (position.atomicDeposit) {
+          lpShareUtxo = {
+            utxo: { txid: position.depositRevealTxid, vout: 0 },
+            amount: position.bondLpShareAmount || position.bondAmountTAC,
+            blinding: position.bondBlindingHex,
+          };
+        } else {
+          // Lien-mode deposit: bondSourceOutpointHex encodes (txid32 || voutLE).
+          const bondOp = position.bondSourceOutpointHex;
+          if (!bondOp || !/^[0-9a-f]{72}$/.test(bondOp)) {
+            if (ctacWithOut) { ctacWithOut.style.display = 'block'; ctacWithOut.textContent = '✗ position missing bondSourceOutpointHex; cannot use atomic withdraw'; }
+            ctacWithBtn.disabled = false; return;
+          }
+          const bondTxid = bondOp.slice(0, 64);
+          const bondVout = parseInt(bondOp.slice(64), 16);  // big-endian per encoding
+          lpShareUtxo = {
+            utxo: { txid: bondTxid, vout: bondVout },
+            amount: position.bondLpShareAmount || position.bondAmountTAC,
+            blinding: position.bondBlindingHex,
+          };
+        }
+      }
+
       const confirmed = await tacitConfirm({
-        title: 'Withdraw cBTC.tac → sats',
-        body:
-          `On broadcast, the dapp will:\n\n` +
-          `  1. Build a T_CBTC_TAC_WITHDRAW envelope (burns the cBTC.tac UTXO).\n` +
-          `  2. Spend the slot's K_btc UTXO (key-path Schnorr under r_btc).\n` +
-          `  3. Broadcast commit/reveal — sats payout (${denomDisp}, minus fee) lands at\n` +
-          `     ${payoutAddr || '(this wallet)'}.\n` +
-          `  4. Position record marked 'withdrawn'; slot record marked 'spent'.\n\n` +
-          `⚠ Same-wallet redemption only (the depositor's r_btc is required).\n` +
-          `⚠ The cBTC.tac UTXO is consumed — make sure you haven't transferred it away\n` +
-          `   from the depositor recovery pubkey, or this will fail at broadcast.\n\n` +
-          `Continue?`,
+        title: atomicWithdraw ? 'Atomic withdraw cBTC.tac → BTC + cBTC.zk + TAC' : 'Withdraw cBTC.tac → sats',
+        body: atomicWithdraw
+          ? `On broadcast, the dapp will:\n\n` +
+            `  1. Build a T_CBTC_TAC_WITHDRAW_ATOMIC envelope.\n` +
+            `  2. Spend slot K_btc (BTC payout to ${payoutAddr || 'this wallet'}).\n` +
+            `  3. Burn cBTC.tac UTXOs.\n` +
+            `  4. Spend the liened LP-share UTXO (worker bypasses lien check).\n` +
+            `  5. LP_REMOVE the freed shares from the pool — get cBTC.zk + TAC back.\n` +
+            `\n⚠ Single tx, fully exits the position to underlying assets.\n` +
+            `Continue?`
+          : `On broadcast, the dapp will:\n\n` +
+            `  1. Build a T_CBTC_TAC_WITHDRAW envelope (burns cBTC.tac).\n` +
+            `  2. Spend the slot's K_btc UTXO (key-path Schnorr under r_btc).\n` +
+            `  3. Sats payout (${denomDisp}, minus fee) lands at ${payoutAddr || '(this wallet)'}.\n` +
+            `  4. Worker releases lien on bond LP-share UTXO; it becomes spendable.\n` +
+            `\n⚠ Same-wallet redemption (depositor's r_btc required).\n` +
+            `Continue?`,
         confirmLabel: 'Withdraw & broadcast',
         cancelLabel: 'Cancel',
       });
@@ -31187,32 +32053,45 @@ function setupMixerHandlers() {
       ctacWithBtn.disabled = true;
       const origLabel = ctacWithBtn.textContent;
       ctacWithBtn.textContent = 'Withdrawing…';
-      if (ctacWithOut) { ctacWithOut.style.display = 'block'; ctacWithOut.textContent = 'Building T_CBTC_TAC_WITHDRAW envelope…'; }
+      if (ctacWithOut) { ctacWithOut.style.display = 'block'; ctacWithOut.textContent = `Building ${atomicWithdraw ? 'atomic' : ''} withdraw envelope…`; }
       try {
-        const result = await buildAndBroadcastCbtcTacWithdraw({
-          positionRecord: position,
-          slotRecord,
-          cbtcTacUtxos,
-          recipientAddr: payoutAddr,
-          onProgress: (stage) => {
-            if (!ctacWithOut) return;
-            const stages = {
-              'envelope:build':       'Building withdraw envelope…',
-              'tx:commit:build':      'Building commit tx…',
-              'tx:reveal:build':      'Building reveal tx…',
-              'tx:commit:broadcast':  'Commit broadcasting…',
-              'tx:reveal:broadcast':  'Reveal broadcasting…',
-            };
-            ctacWithOut.textContent = stages[stage] || stage;
-          },
-        });
+        const result = atomicWithdraw
+          ? await buildAndBroadcastCbtcTacWithdrawAtomic({
+              positionRecord: position,
+              slotRecord,
+              cbtcTacUtxos,
+              lpShareUtxo,
+              recipientAddr: payoutAddr,
+              onProgress: (s) => { if (ctacWithOut) ctacWithOut.textContent = s; },
+            })
+          : await buildAndBroadcastCbtcTacWithdraw({
+              positionRecord: position,
+              slotRecord,
+              cbtcTacUtxos,
+              recipientAddr: payoutAddr,
+              onProgress: (s) => { if (ctacWithOut) ctacWithOut.textContent = s; },
+            });
         if (ctacWithOut) {
-          ctacWithOut.textContent =
-            `✓ cBTC.tac position closed\n` +
-            `  commit_txid: ${result.commitTxid}\n` +
-            `  reveal_txid: ${result.revealTxid}\n` +
-            `  payout:      ${result.payoutValueSats || denomDisp} sats → ${payoutAddr || 'this wallet'}\n` +
-            `\nPosition marked withdrawn; slot marked spent. Refresh holdings to see the sats arrive.`;
+          if (atomicWithdraw) {
+            ctacWithOut.textContent =
+              `✓ atomic withdraw complete — position fully exited\n` +
+              `  commit_txid: ${result.commitTxid}\n` +
+              `  reveal_txid: ${result.revealTxid}\n` +
+              `  BTC payout:  ${result.payoutValue?.toLocaleString?.() || result.payoutValue} sats → ${payoutAddr || 'this wallet'}\n` +
+              `  cBTC.zk back: ${result.recvCbtcZkAmount}\n` +
+              `  TAC back:     ${result.recvTacAmount}\n` +
+              `\nBack up output blindings:\n` +
+              `  cBTC.zk blinding: ${result.recvCbtcZkBlindingHex}\n` +
+              `  TAC blinding:     ${result.recvTacBlindingHex}\n`;
+          } else {
+            ctacWithOut.textContent =
+              `✓ cBTC.tac position closed (lien-release mode)\n` +
+              `  commit_txid: ${result.commitTxid}\n` +
+              `  reveal_txid: ${result.revealTxid}\n` +
+              `  payout:      ${result.payoutValue?.toLocaleString?.() || denomDisp} sats → ${payoutAddr || 'this wallet'}\n` +
+              `\nBond LP-share UTXO is now unliened — you can T_LP_REMOVE it any time.\n` +
+              `Position marked withdrawn; slot marked spent.`;
+          }
         }
         _refreshCtacDepOptions();
         _refreshCtacWithOptions();
@@ -31222,6 +32101,148 @@ function setupMixerHandlers() {
       } finally {
         ctacWithBtn.textContent = origLabel;
         _refreshCtacWithBtn();
+      }
+    };
+  }
+
+  // ===== T_CTAC_LIEN_CLAIM (SPEC §5.47) UI glue =====
+  // Burn cBTC.tac UTXOs pro-rata to claim LP shares from the global
+  // claim pool. Show pool size + per-share rate from /ctac/state.
+  const ctacClaimSection = document.getElementById('ctac-lien-claim-section');
+  const ctacClaimPoolSize = document.getElementById('ctac-claim-pool-size');
+  const ctacClaimSupply = document.getElementById('ctac-outstanding-supply');
+  const ctacClaimRate = document.getElementById('ctac-per-share-rate');
+  const ctacClaimUtxos = document.getElementById('ctac-lien-claim-utxos');
+  const ctacClaimBtn = document.getElementById('btn-ctac-lien-claim-broadcast');
+  const ctacClaimOut = document.getElementById('ctac-lien-claim-out');
+
+  const _refreshCtacClaimState = async () => {
+    if (!ctacClaimSection) return;
+    let stateJson;
+    try { stateJson = await apiJson(`/ctac/state?network=${NET.name}`); }
+    catch { return; }
+    const claimPool = BigInt(stateJson?.claim_pool_lp_shares || '0');
+    const supply = BigInt(stateJson?.outstanding_supply || '0');
+    // Show the section only if there's a non-zero claim pool — otherwise
+    // the LIEN_CLAIM action is unreachable (nothing to claim against).
+    ctacClaimSection.style.display = claimPool > 0n ? 'block' : 'none';
+    if (ctacClaimPoolSize) ctacClaimPoolSize.textContent = claimPool.toString();
+    if (ctacClaimSupply) ctacClaimSupply.textContent = supply.toString();
+    if (ctacClaimRate) {
+      if (supply > 0n) {
+        // per_share = claimPool/supply, expressed as a decimal-ish ratio
+        // (using integer division then a fractional view).
+        const wholePart = (claimPool * 1000n) / supply;
+        ctacClaimRate.textContent = `${wholePart} per 1000 cBTC.tac shares`;
+      } else {
+        ctacClaimRate.textContent = '(no supply)';
+      }
+    }
+  };
+
+  let _ctacClaimUtxoCache = [];
+  const _refreshCtacClaimUtxos = async () => {
+    if (!ctacClaimUtxos) return;
+    _ctacClaimUtxoCache = [];
+    try {
+      const map = _holdingsCache?.holdings || new Map();
+      // cBTC.tac UTXOs: synthetic asset_id per denomination. Walk all holdings
+      // whose ticker starts with 'cBTC.tac' (the synthetic-meta-derived ticker).
+      for (const [aid, h] of map.entries()) {
+        if (!h || typeof h.ticker !== 'string' || !h.ticker.startsWith('cBTC.tac')) continue;
+        for (const u of (h.utxos || [])) {
+          if (!u || !u.txid || u.amount === undefined) continue;
+          _ctacClaimUtxoCache.push({
+            utxo: { txid: u.txid, vout: u.vout },
+            amount: u.amount.toString(),
+            blinding: u.blinding || '',
+            ticker: h.ticker,
+          });
+        }
+      }
+    } catch {}
+    ctacClaimUtxos.innerHTML = _ctacClaimUtxoCache.map((c, idx) =>
+      `<option value="${idx}">${escapeHtml(c.amount)} ${escapeHtml(c.ticker)} · ${escapeHtml(c.utxo.txid.slice(0,12))}…:${c.utxo.vout}</option>`,
+    ).join('');
+    _refreshCtacClaimBtn();
+  };
+
+  const _refreshCtacClaimBtn = () => {
+    if (!ctacClaimBtn) return;
+    const haveAny = ctacClaimUtxos && Array.from(ctacClaimUtxos.selectedOptions || []).length > 0;
+    ctacClaimBtn.disabled = !haveAny;
+  };
+  if (ctacClaimUtxos) ctacClaimUtxos.addEventListener('change', _refreshCtacClaimBtn);
+
+  _refreshCtacClaimState().catch(() => {});
+  _refreshCtacClaimUtxos().catch(() => {});
+
+  if (ctacClaimBtn) {
+    ctacClaimBtn.onclick = async () => {
+      if (ctacClaimBtn.disabled) return;
+      const selectedIdxs = Array.from(ctacClaimUtxos?.selectedOptions || []).map(o => parseInt(o.value, 10));
+      const picked = selectedIdxs.map(i => _ctacClaimUtxoCache[i]).filter(Boolean);
+      if (picked.length === 0) {
+        if (ctacClaimOut) { ctacClaimOut.style.display = 'block'; ctacClaimOut.textContent = '✗ no cBTC.tac UTXOs selected'; }
+        return;
+      }
+      const totalBurn = picked.reduce((s, u) => s + BigInt(u.amount), 0n);
+      const confirmed = await tacitConfirm({
+        title: 'Claim LP shares from cBTC.tac claim pool',
+        body:
+          `On broadcast, the dapp will:\n\n` +
+          `  1. Build a T_CTAC_LIEN_CLAIM envelope burning ${totalBurn} cBTC.tac.\n` +
+          `  2. Compute your pro-rata LP-share claim from the global claim pool.\n` +
+          `  3. Broadcast commit/reveal — a synthetic LP-share UTXO is minted at\n` +
+          `     your recipient_commit (vout[0]).\n` +
+          `  4. You can later T_LP_REMOVE the LP-share UTXO for cBTC.zk + TAC,\n` +
+          `     or hold it for AMM fee yield.\n\n` +
+          `⚠ The cBTC.tac UTXOs you selected will be burned (consumed forever).\n` +
+          `⚠ Claim is pro-rata against current pool size — claiming when the pool\n` +
+          `   is small means less per share burned.\n\n` +
+          `Continue?`,
+        confirmLabel: 'Claim & broadcast',
+        cancelLabel: 'Cancel',
+      });
+      if (!confirmed) return;
+      ctacClaimBtn.disabled = true;
+      const origLabel = ctacClaimBtn.textContent;
+      ctacClaimBtn.textContent = 'Claiming…';
+      if (ctacClaimOut) { ctacClaimOut.style.display = 'block'; ctacClaimOut.textContent = 'Building T_CTAC_LIEN_CLAIM envelope…'; }
+      try {
+        const result = await buildAndBroadcastShareSlashClaim({
+          cbtcTacUtxos: picked,
+          recipientPubHex: null,  // null = wallet.pub
+          onProgress: (stage) => {
+            if (!ctacClaimOut) return;
+            const stages = {
+              'claim-pool:lookup':    'Reading claim pool state…',
+              'envelope:build':       'Building T_CTAC_LIEN_CLAIM envelope…',
+              'tx:build':             'Building commit + reveal txs…',
+              'tx:reveal:build':      'Building reveal tx…',
+              'tx:commit:broadcast':  'Commit broadcasting…',
+              'tx:reveal:broadcast':  'Reveal broadcasting…',
+            };
+            ctacClaimOut.textContent = stages[stage] || stage;
+          },
+        });
+        if (ctacClaimOut) {
+          ctacClaimOut.textContent =
+            `✓ LP shares claimed from claim pool\n` +
+            `  commit_txid:   ${result.commitTxid}\n` +
+            `  reveal_txid:   ${result.revealTxid}\n` +
+            `  burned:        ${result.burnAmount} cBTC.tac\n` +
+            `  received:      ${result.claimedLpShares} LP shares at ${result.revealTxid}:0\n` +
+            `  blinding:      ${result.recipientBlindingHex}\n\n` +
+            `Save the recipientBlindingHex — needed to spend the LP-share UTXO later.`;
+        }
+        await _refreshCtacClaimState();
+        await _refreshCtacClaimUtxos();
+      } catch (e) {
+        if (ctacClaimOut) ctacClaimOut.textContent = `✗ claim failed: ${e?.message || e}`;
+      } finally {
+        ctacClaimBtn.textContent = origLabel;
+        _refreshCtacClaimBtn();
       }
     };
   }
@@ -68788,6 +69809,27 @@ function openInlineForm(triggerBtn, { content, submitLabel = 'Confirm', submitCl
   return { host, errEl, close };
 }
 
+// Initialise the Farms tab (SPEC-AMM-FARM-AMENDMENT.md). Wires the
+// refresh button + tab-click auto-refresh. The full builder surface
+// lives in dapp/amm-farm-actions.js; the UI render logic lives in
+// dapp/amm-farm-ui.js. We import dynamically here so the rest of the
+// dapp loads even if the farm modules aren't bundled.
+if (typeof document !== 'undefined') {
+  const _initFarms = async () => {
+    try {
+      const { initFarmsTab } = await import('./amm-farm-ui.js');
+      initFarmsTab();
+    } catch (e) {
+      // Module load failed — likely missing in the bundle. The Farms tab
+      // will still render the static "CLI for now" notice; data view
+      // just won't auto-populate.
+      console.warn('[farms] UI module load failed:', e?.message || e);
+    }
+  };
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', _initFarms);
+  else _initFarms();
+}
+
 // Named exports: index.html loads this file via <script type="module"> with
 // no importer, so these are inert in production. Their sole purpose is to let
 // tests/dapp-parity.test.mjs import the canonical dApp implementations and
@@ -68855,6 +69897,12 @@ export {
   signP2wpkhInput, signTaprootScriptPathInput,
   serializeTx, txid,
   hash160, recordOpening,
+  // P2WPKH script + tap-NUMS internal key + modN scalar reducer —
+  // exposed for the farm builders (dapp/amm-farm-actions.js) + signet
+  // harness so they can compose dust outputs and envelope-bearing
+  // taproot inputs without duplicating constants. Read-only /
+  // pure-function exports; safe.
+  p2wpkhScript, TAP_NUMS, modN,
   // Additional builders exposed for the signet dryrun harness — same
   // jsdom-shim entry point as the daemon, exercises full flow end-to-end.
   buildAndBroadcastCXfer, buildAndBroadcastCEtch, buildAndBroadcastCMint,
@@ -68888,6 +69936,14 @@ export {
   encodeTCtacLienSplitPayload, decodeTCtacLienSplitPayload,
   computeCtacLienSplitBindHash,
   T_CTAC_LIEN_SPLIT, T_CTAC_LIEN_CLAIM,
+  // SPEC §5.48 — atomic LP_ADD + DEPOSIT in one envelope.
+  encodeTCbtcTacDepositAtomicPayload, decodeTCbtcTacDepositAtomicPayload,
+  computeCbtcTacDepositAtomicBindHash,
+  T_CBTC_TAC_DEPOSIT_ATOMIC,
+  // SPEC §5.49 — atomic WITHDRAW + LP_REMOVE in one envelope.
+  encodeTCbtcTacWithdrawAtomicPayload, decodeTCbtcTacWithdrawAtomicPayload,
+  computeCbtcTacWithdrawAtomicBindHash,
+  T_CBTC_TAC_WITHDRAW_ATOMIC,
   // AMM T_SWAP_VAR wire primitives (SPEC-SWAP-VAR-AMENDMENT §5.16.3).
   encodeTSwapVarPayload, decodeTSwapVarPayload,
   swapVarCurveDeltaOut, computeSwapVarEnvelopeHash,
@@ -68911,6 +69967,10 @@ export {
   buildAndBroadcastCbtcTacDeposit, buildAndBroadcastCbtcTacWithdraw,
   buildAndBroadcastShareSlashClaim, buildAndBroadcastCbtcTacForceClose,
   buildAndBroadcastCtacLienSplit,
+  // §5.48 atomic LP_ADD + DEPOSIT in one envelope.
+  buildAndBroadcastCbtcTacDepositAtomic,
+  // §5.49 atomic WITHDRAW + LP_REMOVE in one envelope.
+  buildAndBroadcastCbtcTacWithdrawAtomic,
   // AMM swap (T_SWAP_VAR) high-level builder. v1 self-fulfill: wallet
   // acts as both trader (intent sig) and settler (kernel sig from
   // excess scalar). Single Bitcoin tx, no off-chain coordination.

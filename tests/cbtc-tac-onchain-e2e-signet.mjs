@@ -173,15 +173,28 @@ if (state.positionRecord) {
   positionRecord = state.positionRecord;
 } else {
   setWallet(DEP_SK, DEP_PUB);
-  info(`depositing slot + ${BOND_AMOUNT_TAC} TAC bond…`);
+  // §5.47 v1 lien model: bond is an LP-share UTXO of a canonical (cBTC.zk,
+  // TAC) pool. Caller provides the LP-share UTXO outpoint + amount + blinding.
+  // For the E2E test, callers can pre-stage an LP-share UTXO via T_LP_ADD
+  // and pass it through state.lpShareUtxo. If absent, the test fails with
+  // a clear message instructing the operator.
+  const lpShareUtxo = state.lpShareUtxo || null;
+  const lpShareAssetIdHex = state.lpShareAssetIdHex || process.env.LP_SHARE_ASSET_ID || null;
+  if (!lpShareUtxo || !lpShareAssetIdHex) {
+    fail('v1 lien model: state.lpShareUtxo {txid, vout, amount, blinding} + '
+      + 'state.lpShareAssetIdHex required. Pre-stage via T_LP_ADD on a '
+      + '(cBTC.zk, TAC) pool and populate state file before re-running.');
+  }
+  info(`depositing slot + LP-share lien (UTXO ${lpShareUtxo.txid.slice(0,16)}…:${lpShareUtxo.vout}, amount ${lpShareUtxo.amount})…`);
   const res = await dapp.buildAndBroadcastCbtcTacDeposit({
     slotRecord,
-    bondAmountTAC: BOND_AMOUNT_TAC,
-    tacAssetIdHex: TAC_ASSET_ID,
+    lpShareUtxo,
+    lpShareAssetIdHex,
     onProgress: (s) => info(`  · ${s}`),
   });
   ok(`deposit broadcast: commit ${res.commitTxid.slice(0,16)}…  reveal ${res.revealTxid.slice(0,16)}…`);
   ok(`mint UTXO at ${res.revealTxid.slice(0,16)}…:0 = ${SLOT_DENOM_SATS} sats (face) of cBTC.tac`);
+  ok(`bond LP-share UTXO ${lpShareUtxo.txid.slice(0,16)}…:${lpShareUtxo.vout} is now liened (still in wallet, economically immobile)`);
   info(`waiting 60s for confirmation…`);
   await sleep(60_000);
   const positions = dapp.getCtacPositionRecords();
@@ -197,13 +210,13 @@ if (SKIP_WITHDRAW) {
   console.log('\n--- SKIP_WITHDRAW set — stopping here ---');
   process.exit(0);
 }
-step(6, 'T_CBTC_TAC_WITHDRAW (close position; verify bond return)');
+step(6, 'T_CBTC_TAC_WITHDRAW (close position; v1 lien model — no bond return UTXO)');
 setWallet(DEP_SK, DEP_PUB);
 // Construct cbtcTacUtxos array from the position's mint UTXO.
 const cbtcTacUtxos = [{
   utxo: { txid: positionRecord.depositRevealTxid, vout: 0 },
   amount: BigInt(positionRecord.mintAmount),
-  blinding: BigInt('0x' + positionRecord.mintBlindingHex),
+  blinding: positionRecord.mintBlindingHex,
 }];
 info(`withdrawing position; payout → ${DEP_ADDR}`);
 const wd = await dapp.buildAndBroadcastCbtcTacWithdraw({
@@ -214,14 +227,13 @@ const wd = await dapp.buildAndBroadcastCbtcTacWithdraw({
   onProgress: (s) => info(`  · ${s}`),
 });
 ok(`withdraw broadcast: commit ${wd.commitTxid.slice(0,16)}…  reveal ${wd.revealTxid.slice(0,16)}…`);
-ok(`BTC payout: ${wd.payoutValueSats.toLocaleString()} sats → vout[0]`);
-ok(`bond return: ${wd.bondReturnAmount} TAC → vout[1] (outpoint ${wd.bondReturnOutpoint})`);
+ok(`BTC payout: ${wd.payoutValue.toLocaleString()} sats → vout[0]`);
+ok(`bond LP-share UTXO is now UNLIENED — depositor can spend it freely`);
 
 state.withdrawResult = {
   commitTxid: wd.commitTxid,
   revealTxid: wd.revealTxid,
-  bondReturnOutpoint: wd.bondReturnOutpoint,
-  bondReturnAmount: wd.bondReturnAmount.toString(),
+  payoutValue: wd.payoutValue,
 };
 saveState(state);
 
@@ -229,17 +241,24 @@ info(`waiting 60s for withdraw confirmation…`);
 await sleep(60_000);
 
 // ---- Phase 7: post-flight ----
-step(7, 'post-flight (re-scan holdings; verify bond UTXO appears)');
+step(7, 'post-flight (re-scan holdings; verify lien released)');
 setWallet(DEP_SK, DEP_PUB);
 dapp.invalidateHoldingsCache();
-const postHoldings = await dapp.scanHoldings();
-const postTac = postHoldings.get(TAC_ASSET_ID);
-info(`depositor TAC balance: ${postTac?.balance ?? 0} (had ${tacHolding.balance} before)`);
-const bondUtxoFound = (postTac?.utxos || []).some(u =>
-  u.txid === wd.revealTxid && u.vout === 1 && u.amount === BigInt(wd.bondReturnAmount)
-);
-if (bondUtxoFound) ok(`BOND RETURN VERIFIED: vout[1] UTXO found in holdings with correct amount`);
-else info(`bond UTXO not yet visible in holdings (may need worker re-scan); raw outpoint ${wd.bondReturnOutpoint}`);
+// Under v1 lien model the LP-share UTXO doesn't move at withdraw — it stays
+// at the same outpoint but the worker has released the lien. Verify by
+// querying the worker's lien state for that outpoint.
+const lpUtxo = state.lpShareUtxo;
+try {
+  const lienCheck = await fetch(`https://tacit.finance/ctac/lien?network=signet&txid=${lpUtxo.txid}&vout=${lpUtxo.vout}`);
+  const lienJson = await lienCheck.json();
+  if (lienJson.lien === null || lienJson.lien === undefined) {
+    ok(`LIEN RELEASE VERIFIED: bond LP-share UTXO ${lpUtxo.txid.slice(0,16)}…:${lpUtxo.vout} is no longer liened`);
+  } else {
+    info(`lien state still '${lienJson.lien?.state}' — may need worker re-scan after withdraw confirmation`);
+  }
+} catch (e) {
+  info(`lien-state probe failed: ${e?.message || e}`);
+}
 
 const postSats = await balanceSats(DEP_ADDR);
 info(`depositor BTC balance: ${postSats.toLocaleString()} sats (had ${depSats.toLocaleString()} before)`);

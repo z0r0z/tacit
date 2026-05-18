@@ -21,7 +21,14 @@ import { N_BJJ, pedersenBJJ, packPoint } from './amm-bjj.mjs';
 import { lpAddKernelSign, lpRemoveKernelSign } from './amm-kernel.mjs';
 import { buildIntentMsg, signIntent, deriveIntentId, computeEnvelopeHash } from './amm-intent.mjs';
 import { solveClearing, lpInitShares } from './amm-clearing.mjs';
-import { validateLpAdd, validateLpRemove, validateSwapBatch, SKIP_GROTH16_VERIFY_UNSAFE, SKIP_MIN_LIQ_VERIFY_UNSAFE, computeQualifyingSetHash, deriveVkCid, verifyVkCidBinding, buildPublicSignalsSwapBatch, buildPublicSignalsLpAdd, buildPublicSignalsLpRemove, derivePoolIdFr, PUBLIC_SIGNALS_SWAP_BATCH_LENGTH, PUBLIC_SIGNALS_LP_ADD_LENGTH, PUBLIC_SIGNALS_LP_REMOVE_LENGTH } from './amm-validator.mjs';
+import { validateLpAdd as _validateLpAdd, validateLpRemove as _validateLpRemove, validateSwapBatch, SKIP_GROTH16_VERIFY_UNSAFE, SKIP_MIN_LIQ_VERIFY_UNSAFE, SKIP_OP_RETURN_VERIFY_UNSAFE, computeQualifyingSetHash, deriveVkCid, verifyVkCidBinding, buildPublicSignalsSwapBatch, buildPublicSignalsLpAdd, buildPublicSignalsLpRemove, derivePoolIdFr, PUBLIC_SIGNALS_SWAP_BATCH_LENGTH, PUBLIC_SIGNALS_LP_ADD_LENGTH, PUBLIC_SIGNALS_LP_REMOVE_LENGTH } from './amm-validator.mjs';
+
+function validateLpAdd(args) {
+  return _validateLpAdd({ opReturnData: SKIP_OP_RETURN_VERIFY_UNSAFE, ...args });
+}
+function validateLpRemove(args) {
+  return _validateLpRemove({ opReturnData: SKIP_OP_RETURN_VERIFY_UNSAFE, ...args });
+}
 import { deriveMinLiqCommitment, deriveMinLiqAmountCt, deriveMinLiqNumsRecipient } from './amm-min-liq.mjs';
 
 let pass = 0, fail = 0;
@@ -1687,6 +1694,81 @@ console.log('\nGroth16 publicSignals canonical serialization — LP_ADD + LP_REM
         { shareAmount: 1n, deltaA: 1n, deltaB: 1n, recvABjjU: 1n }, pool);
       return false;
     } catch (e) { return /recvABjjU\/V and recvBBjjU\/V/.test(e.message); }
+  });
+}
+
+// =========================================================================
+// T_LP_ADD / T_LP_REMOVE OP_RETURN binding (envelope-swap defense)
+// =========================================================================
+//
+// AMM.md §"Per-vin Bitcoin-layer signature" makes vout[0] OP_RETURN(SHA256(
+// payload)) binding mandatory for every AMM op. validateLpAdd /
+// validateLpRemove require an opReturnData arg; SKIP_OP_RETURN_VERIFY_UNSAFE
+// is reserved for unit tests that don't model the on-chain tx layout.
+console.log('\nT_LP_ADD / T_LP_REMOVE OP_RETURN binding');
+{
+  const args = buildPoolInitArgs(1_000_000n, 2_000_000n);
+  const payload = encodeLpAdd(args);
+  const expectedHash = computeEnvelopeHash(payload);
+  const goodMinLiq = buildCanonicalMinLiqOutput();
+
+  test('validateLpAdd: honest opReturnData = SHA256(payload) accepted', () => {
+    const r = _validateLpAdd({
+      payload, pool: null,
+      inputCommitmentsA: args._ctx.inputCommitmentsA,
+      inputCommitmentsB: args._ctx.inputCommitmentsB,
+      inputsA: args._ctx.inputsA, inputsB: args._ctx.inputsB,
+      groth16Verify: SKIP_GROTH16_VERIFY_UNSAFE,
+      currentHeight: 1000,
+      minLiqOutput: goodMinLiq,
+      opReturnData: expectedHash,
+    });
+    return r.valid === true;
+  });
+
+  test('validateLpAdd: missing opReturnData throws', () => {
+    try {
+      _validateLpAdd({
+        payload, pool: null,
+        inputCommitmentsA: args._ctx.inputCommitmentsA,
+        inputCommitmentsB: args._ctx.inputCommitmentsB,
+        inputsA: args._ctx.inputsA, inputsB: args._ctx.inputsB,
+        groth16Verify: SKIP_GROTH16_VERIFY_UNSAFE,
+        currentHeight: 1000,
+        minLiqOutput: goodMinLiq,
+      });
+      return false;
+    } catch (e) { return /opReturnData is required/.test(e.message); }
+  });
+
+  test('validateLpAdd: wrong-length opReturnData throws (wire-format defense)', () => {
+    try {
+      _validateLpAdd({
+        payload, pool: null,
+        inputCommitmentsA: args._ctx.inputCommitmentsA,
+        inputCommitmentsB: args._ctx.inputCommitmentsB,
+        inputsA: args._ctx.inputsA, inputsB: args._ctx.inputsB,
+        groth16Verify: SKIP_GROTH16_VERIFY_UNSAFE,
+        currentHeight: 1000,
+        minLiqOutput: goodMinLiq,
+        opReturnData: new Uint8Array(31),
+      });
+      return false;
+    } catch (e) { return /opReturnData is required/.test(e.message); }
+  });
+
+  test('validateLpAdd: mismatched opReturnData rejected (envelope-swap defense)', () => {
+    const r = _validateLpAdd({
+      payload, pool: null,
+      inputCommitmentsA: args._ctx.inputCommitmentsA,
+      inputCommitmentsB: args._ctx.inputCommitmentsB,
+      inputsA: args._ctx.inputsA, inputsB: args._ctx.inputsB,
+      groth16Verify: SKIP_GROTH16_VERIFY_UNSAFE,
+      currentHeight: 1000,
+      minLiqOutput: goodMinLiq,
+      opReturnData: new Uint8Array(32).fill(0xab),
+    });
+    return r.valid === false && /OP_RETURN data != SHA256/.test(r.reason);
   });
 }
 

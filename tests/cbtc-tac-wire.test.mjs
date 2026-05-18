@@ -424,6 +424,168 @@ group('T_CTAC_LIEN_SPLIT round-trip');
     worker.T_CTAC_LIEN_CLAIM === worker.T_SHARE_SLASH_CLAIM);
 }
 
+// ============== T_CBTC_TAC_DEPOSIT_ATOMIC round-trip (SPEC §5.48) ==============
+group('T_CBTC_TAC_DEPOSIT_ATOMIC round-trip');
+
+{
+  const targetLeafHash = sha256(new TextEncoder().encode('atomic-test-leaf'));
+  const slotDenomSats = 100_000_000n;
+  const poolId = sha256(new TextEncoder().encode('atomic-test-pool'));
+  const deltaCbtcZk = 50_000_000n;
+  const deltaTac = 200_000_000n;
+  const shareAmount = 1_000_000n;
+  const cbtcZkInputOutpoint = new Uint8Array(36);
+  cbtcZkInputOutpoint.set(sha256(new TextEncoder().encode('cbtc-input')), 0);
+  new DataView(cbtcZkInputOutpoint.buffer).setUint32(32, 2, true);
+  const tacInputOutpoint = new Uint8Array(36);
+  tacInputOutpoint.set(sha256(new TextEncoder().encode('tac-input')), 0);
+  new DataView(tacInputOutpoint.buffer).setUint32(32, 5, true);
+  // Real Pedersen commits (decoder validates each is a valid point).
+  const cbtcZkInputCommit = dapp.pedersenCommit(
+    deltaCbtcZk,
+    BigInt('0x' + bytesToHex(sha256(new TextEncoder().encode('blind-cbtc')))) % dapp.SECP_N,
+  ).toRawBytes(true);
+  const tacInputCommit = dapp.pedersenCommit(
+    deltaTac,
+    BigInt('0x' + bytesToHex(sha256(new TextEncoder().encode('blind-tac')))) % dapp.SECP_N,
+  ).toRawBytes(true);
+  const lpShareCommit = dapp.pedersenCommit(
+    shareAmount,
+    BigInt('0x' + bytesToHex(sha256(new TextEncoder().encode('blind-lp')))) % dapp.SECP_N,
+  ).toRawBytes(true);
+  const depositorRecoveryPk = dapp.pedersenCommit(
+    1n,
+    BigInt('0x' + bytesToHex(sha256(new TextEncoder().encode('blind-dep')))) % dapp.SECP_N,
+  ).toRawBytes(true);
+  const mintRecipientCommit = dapp.pedersenCommit(
+    slotDenomSats,
+    BigInt('0x' + bytesToHex(sha256(new TextEncoder().encode('blind-mint')))) % dapp.SECP_N,
+  ).toRawBytes(true);
+
+  const bindHash = dapp.computeCbtcTacDepositAtomicBindHash({
+    networkTag: 0x01,
+    targetLeafHash, slotDenomSats, poolId,
+    deltaCbtcZk, deltaTac, shareAmount,
+    cbtcZkInputOutpoint, cbtcZkInputCommit,
+    tacInputOutpoint, tacInputCommit,
+    lpShareCommit, depositorRecoveryPk,
+    mintAmount: slotDenomSats, mintRecipientCommit,
+  });
+  const proof = new Uint8Array(256).fill(0xaa);
+  const payload = dapp.encodeTCbtcTacDepositAtomicPayload({
+    networkTag: 0x01,
+    targetLeafHash, slotDenomSats, poolId,
+    deltaCbtcZk, deltaTac, shareAmount,
+    cbtcZkInputOutpoint, cbtcZkInputCommit,
+    tacInputOutpoint, tacInputCommit,
+    lpShareCommit, depositorRecoveryPk,
+    mintAmount: slotDenomSats, mintRecipientCommit,
+    bindHash, proof,
+  });
+
+  ok('payload starts with opcode 0x57', payload[0] === 0x57);
+  ok('payload network_tag = signet (0x01)', payload[1] === 0x01);
+
+  // dapp decode
+  const ddapp = dapp.decodeTCbtcTacDepositAtomicPayload(payload);
+  ok('dapp decode succeeds', ddapp !== null);
+  ok('dapp parity: slot_denom_sats', ddapp.slotDenomSats === slotDenomSats);
+  ok('dapp parity: delta_cbtc_zk', ddapp.deltaCbtcZk === deltaCbtcZk);
+  ok('dapp parity: delta_tac', ddapp.deltaTac === deltaTac);
+  ok('dapp parity: share_amount', ddapp.shareAmount === shareAmount);
+
+  // worker decode
+  const dworker = worker.decodeTCbtcTacDepositAtomicPayload(payload);
+  ok('worker decode succeeds', dworker !== null);
+  ok('worker parity: kind = cbtc_tac_deposit_atomic',
+    dworker?.kind === 'cbtc_tac_deposit_atomic');
+  ok('worker parity: slot_denom_sats matches',
+    dworker?.slot_denom_sats === slotDenomSats.toString());
+  ok('worker parity: delta_cbtc_zk matches',
+    dworker?.delta_cbtc_zk === deltaCbtcZk.toString());
+  ok('worker parity: bind_hash matches',
+    dworker?.bind_hash === bytesToHex(bindHash));
+
+  // Reject malformed / tampered
+  ok('decoder rejects wrong opcode',
+    dapp.decodeTCbtcTacDepositAtomicPayload(new Uint8Array([0x4F, 0x01])) === null);
+  ok('decoder rejects truncated payload',
+    dapp.decodeTCbtcTacDepositAtomicPayload(payload.slice(0, payload.length - 10)) === null);
+  // Tamper with bind_hash → decoder rejects
+  const tampered = new Uint8Array(payload);
+  tampered[payload.length - proof.length - 2 - 1] ^= 0xff;  // last byte of bind_hash
+  ok('decoder rejects bind_hash tamper',
+    dapp.decodeTCbtcTacDepositAtomicPayload(tampered) === null);
+
+  // Opcode constant parity
+  ok('T_CBTC_TAC_DEPOSIT_ATOMIC opcode = 0x57 (dapp)',
+    dapp.T_CBTC_TAC_DEPOSIT_ATOMIC === 0x57);
+  ok('T_CBTC_TAC_DEPOSIT_ATOMIC opcode = 0x57 (worker)',
+    worker.T_CBTC_TAC_DEPOSIT_ATOMIC === 0x57);
+}
+
+// ============== T_CBTC_TAC_WITHDRAW_ATOMIC round-trip (SPEC §5.49) ==============
+group('T_CBTC_TAC_WITHDRAW_ATOMIC round-trip');
+
+{
+  const targetLeafHash = sha256(new TextEncoder().encode('atomic-wd-leaf'));
+  const slotDenomSats = 100_000_000n;
+  const burnNullifiers = [sha256(new TextEncoder().encode('nullifier-0'))];
+  const burnCommits = [dapp.pedersenCommit(
+    slotDenomSats,
+    BigInt('0x' + bytesToHex(sha256(new TextEncoder().encode('blind-burn')))) % dapp.SECP_N,
+  ).toRawBytes(true)];
+  const lpShareAmount = 500_000n;
+  const recvCbtcZkCommit = dapp.pedersenCommit(
+    50_000_000n,
+    BigInt('0x' + bytesToHex(sha256(new TextEncoder().encode('blind-cbtc')))) % dapp.SECP_N,
+  ).toRawBytes(true);
+  const recvTacCommit = dapp.pedersenCommit(
+    100_000_000n,
+    BigInt('0x' + bytesToHex(sha256(new TextEncoder().encode('blind-tac')))) % dapp.SECP_N,
+  ).toRawBytes(true);
+
+  const bindHash = dapp.computeCbtcTacWithdrawAtomicBindHash({
+    networkTag: 0x01,
+    targetLeafHash, slotDenomSats, burnCount: 1,
+    burnNullifiers, burnCommits,
+    burnAmount: slotDenomSats, lpShareAmount,
+    recvCbtcZkCommit, recvTacCommit,
+  });
+  const proof = new Uint8Array(256).fill(0xaa);
+  const payload = dapp.encodeTCbtcTacWithdrawAtomicPayload({
+    networkTag: 0x01,
+    targetLeafHash, slotDenomSats,
+    burnNullifiers, burnCommits,
+    burnAmount: slotDenomSats, lpShareAmount,
+    recvCbtcZkCommit, recvTacCommit,
+    bindHash, proof,
+  });
+
+  ok('payload starts with opcode 0x58', payload[0] === 0x58);
+
+  const ddapp = dapp.decodeTCbtcTacWithdrawAtomicPayload(payload);
+  ok('dapp decode succeeds', ddapp !== null);
+  ok('dapp parity: slot_denom_sats', ddapp.slotDenomSats === slotDenomSats);
+  ok('dapp parity: lp_share_amount', ddapp.lpShareAmount === lpShareAmount);
+
+  const dworker = worker.decodeTCbtcTacWithdrawAtomicPayload(payload);
+  ok('worker decode succeeds', dworker !== null);
+  ok('worker parity: kind = cbtc_tac_withdraw_atomic',
+    dworker?.kind === 'cbtc_tac_withdraw_atomic');
+  ok('worker parity: lp_share_amount matches',
+    dworker?.lp_share_amount === lpShareAmount.toString());
+  ok('worker parity: bind_hash matches',
+    dworker?.bind_hash === bytesToHex(bindHash));
+
+  ok('decoder rejects wrong opcode',
+    dapp.decodeTCbtcTacWithdrawAtomicPayload(new Uint8Array([0x57, 0x01])) === null);
+  ok('T_CBTC_TAC_WITHDRAW_ATOMIC opcode = 0x58 (dapp)',
+    dapp.T_CBTC_TAC_WITHDRAW_ATOMIC === 0x58);
+  ok('T_CBTC_TAC_WITHDRAW_ATOMIC opcode = 0x58 (worker)',
+    worker.T_CBTC_TAC_WITHDRAW_ATOMIC === 0x58);
+}
+
 // ============== ctacVariantAssetId — dapp ↔ worker parity ==============
 group('ctacVariantAssetId — cross-impl parity');
 

@@ -247,9 +247,16 @@ init_msg = SHA256(
     || reward_per_block_LE(8)
     || start_height_LE(4)
     || end_height_LE(4)
-    || envelope_hash(32)
 )
 ```
+
+The domain hash binds the launcher to the load-bearing farm parameters
+*structurally*. Replay protection comes from the `OP_RETURN(SHA256(payload))`
+binding the validator enforces separately — same convention as
+`T_SWAP_VAR` `intent_msg` (`SPEC.md` §5.20) and `T_SWAP_ROUTE` `route_msg`.
+Including `envelope_hash` in the signed pre-image would be self-referential
+(the signature bytes are part of the payload whose hash would be signed
+over), so we deliberately omit it.
 
 `launcher_sig` is BIP-340 by `launcher_pubkey` over `init_msg`. It's
 required so the launcher can be permanently attributed in the farm
@@ -432,9 +439,11 @@ bond_msg = SHA256(
     || bond_amount_LE(8)
     || entry_acc_per_share_LE(16)
     || bond_view_height_LE(4)
-    || envelope_hash(32)
 )
 ```
+
+Domain msg binds structural fields only; replay protection via
+`OP_RETURN(SHA256(payload))` per the convention noted in §5.40 init_msg.
 
 ### Freshness check
 
@@ -574,9 +583,11 @@ unbond_msg = SHA256(
     || reward_amount_LE(8)
     || lp_return_r(32)
     || reward_r(32)
-    || envelope_hash(32)
 )
 ```
+
+Domain msg binds structural fields only; replay protection via
+`OP_RETURN(SHA256(payload))` per the §5.40 convention.
 
 ### State updates (post-confirmation, at depth 3)
 
@@ -805,7 +816,7 @@ Single-shot semantics — the farm's `refunded` flag prevents replay.
 ### Wire format
 
 ```
-T_FARM_REFUND envelope payload (170 bytes fixed):
+T_FARM_REFUND envelope payload (175 bytes fixed):
 
 envelope_version    1 B  = 0x01
 opcode              1 B  = 0x3E
@@ -1221,14 +1232,45 @@ new vulnerability surface.
 
 ## Open questions for round-2 review
 
-1. **Transferable bonds.** v1 has no transfer mechanism — to reassign
-   a bond, the original bonder unbonds (forfeiting any future
-   emissions to themselves) and the new owner re-bonds (resetting
-   `entry_acc`). A follow-up amendment could add `T_LP_BOND_ASSIGN`
-   that rewrites `bond_record.bonder_pubkey` under a signature from
-   the current bonder + a destination pubkey. ~3 new fields, no
-   accrual interaction. Plausible follow-up if secondary-market
-   demand for bonds materialises.
+### Additivity guarantee for deferred follow-ups (normative)
+
+All five deferred follow-up amendments below are designed to be
+**strictly additive** against existing farms. v1 farms and their
+outstanding bonds continue to function unchanged when any of these
+ship; no migration, no schema rewrite, no breaking change to the
+existing opcode validators. The additivity is enforced by:
+
+- **New opcodes only** for new behaviour (no modifications to
+  `T_FARM_INIT` / `T_LP_BOND` / `T_LP_UNBOND` / `T_LP_HARVEST` /
+  `T_FARM_REFUND` validator logic).
+- **New optional fields** on records, with absence = v1 semantics
+  (defaults: `unlock_height = 0`, `multiplier = 1×`).
+- **Parallel state structures** for new farm types (multi-asset
+  farms get a separate farm record class; existing single-asset
+  farms remain in the original `ammfarm:*` namespace).
+
+This is verified per-follow-up below. Anyone reviewing or rolling
+back the v1 amendment can confirm the deferred items don't impose
+hidden migration debt.
+
+### Follow-ups
+
+1. **Transferable bonds (`T_LP_BOND_ASSIGN`).** v1 has no transfer
+   mechanism — to reassign a bond, the original bonder unbonds
+   (forfeiting any future emissions to themselves) and the new
+   owner re-bonds (resetting `entry_acc`). A follow-up amendment
+   could add `T_LP_BOND_ASSIGN` that rewrites
+   `bond_record.bonder_pubkey` under a signature from the current
+   bonder + a destination pubkey. ~3 new fields, no accrual
+   interaction. Plausible follow-up if secondary-market demand
+   for bonds materialises.
+
+   **Additivity: ✅ strictly additive.** New opcode; modifies one
+   field (`bonder_pubkey`) on existing bond records using a new
+   signature-authorisation primitive. Existing UNBOND/HARVEST
+   validator code is unchanged — it reads `bond.bonder_pubkey`
+   whatever its current value. Pre-assign bonds and post-assign
+   bonds use the same downstream code path.
 
 2. **Lock multipliers / boost curves.** This draft ships **no**
    lock-bonus mechanism — every bond is 1x. Adding `unlock_height`
@@ -1236,20 +1278,49 @@ new vulnerability surface.
    (`multiplier = 1 + min((unlock_height - bond_height) / MAX_LOCK_BLOCKS, MAX_BOOST - 1)`)
    would let LPs commit to longer holds in exchange for higher
    emission share. This is the veCRV-style mechanism. Adds ~24 bytes
-   to the bond record and an `unlock_height` gate at unbond. Lower-
-   priority than getting the unmultipliered version shipped; flagged
-   for a follow-up amendment.
+   to the bond record and an `unlock_height` gate at unbond.
+
+   **Additivity: ✅ additive with default-on-absence semantics.**
+   A new `T_LP_BOND_LOCKED` opcode (or capability-flag bit on
+   `T_LP_BOND`) creates bonds with `unlock_height > bond_height`
+   and `multiplier > 1×`. Existing bond records have `unlock_height
+   = 0` and `multiplier = 1×` (implicit defaults). Crystallization
+   math generalises to `acc_delta = (reward_units << 96) /
+   weighted_total_bonded` where `weighted_total_bonded =
+   Σ bond.amount × bond.multiplier`; for the all-1× set this is
+   identical to the v1 formula. Existing farms see no change in
+   payout math when no locked bonds exist. The follow-up amendment
+   needs to define how `weighted_total_bonded` migrates from
+   `total_bonded` (one-time recompute at the activation height) and
+   how locked-vs-unlocked bonds coexist within a single farm.
+   Lower-priority than getting the unmultipliered version shipped.
 
 3. **Batched unbond (`T_LP_UNBOND_MULTI`).** A bonder with N bond
    records pays N tx fees to unbond all positions. A batched variant
    (multiple `bond_id` references in one envelope) cuts that to one
    tx — comparable to the `T_AXFER` batched-preauth amendment's gas
-   savings. Plausible follow-up.
+   savings.
+
+   **Additivity: ✅ strictly additive.** New opcode wraps N
+   individual UNBOND operations atomically. The per-bond validator
+   logic is reused unchanged (delete bond record, decrement
+   treasury, mint outputs). Existing single-unbond `T_LP_UNBOND`
+   envelopes remain valid and unaffected.
 
 4. **Farm-init capability flags.** A `capability_flags` byte on
    `T_FARM_INIT` would allow opting into / out of transferable
    bonds, lock multipliers, etc. without consuming more opcodes.
    Reserved for the follow-up that adds the first capability bit.
+
+   **Additivity: ⚠ requires wire-format extension to `T_FARM_INIT`.**
+   Adding `capability_flags` mid-stream is NOT strictly additive
+   because existing farms have no such field. Three resolution
+   paths: (a) ship as `T_FARM_INIT_V2` opcode (fully additive,
+   one extra opcode slot); (b) reinterpret the highest-order byte
+   of an existing reserved field if any exists (none in v1, so
+   N/A); (c) reserve a capability_flags byte NOW in v1 and accept
+   the slight wire overhead. Recommendation: defer; spin up
+   `T_FARM_INIT_V2` if/when first capability is needed.
 
 5. **Per-pool farm allocation weights.** MasterChef's `allocPoint`
    model splits a single emission budget across N pools by weight.
@@ -1262,12 +1333,30 @@ new vulnerability surface.
    opcode is a clear follow-up if the simpler model proves too
    rigid.
 
+   **Additivity: ✅ strictly additive.** An "allocator" opcode
+   would create a new record class (e.g., `farm_allocator:<id>`)
+   that owns multiple farms and redistributes their emissions
+   per a weight schedule. Existing farms remain unchanged —
+   they continue emitting at their fixed `reward_per_block` per
+   their original schedule. The allocator opcode is a pure
+   coordination layer on top.
+
 6. **Multi-asset rewards.** Single `reward_asset_id` per farm in
    this draft. Two-token farms (e.g., TAC + cBTC.tac dual
    emissions) would require two parallel farms against the same
    pool, which works but doubles the `T_LP_BOND` cost per bonder.
    A future `T_LP_BOND_MULTI_FARM` could let a bonder join N farms
    in one envelope; not blocking for v1.
+
+   **Additivity: ✅ strictly additive.** New opcode wraps N farm
+   memberships in one bond envelope; under the hood, the worker
+   creates N standard bond records (one per farm), each in the
+   existing single-farm bond namespace. Unbond/harvest path is
+   unchanged — each bond independently follows the v1 flow. Or
+   alternatively a separate `T_FARM_INIT_MULTI` creates a new
+   farm-class record (`ammfarmmulti:<id>`) with multiple
+   `reward_asset_id`s and per-asset emission rates; bonds against
+   it are also a new class. Either path leaves v1 farms untouched.
 
 7. **Domain-tag collision audit.** The three new domain tags listed
    under "Constants" need to be cross-checked against the full

@@ -43,18 +43,19 @@ and pick from the explicitly-listed free slots. The legend:
 | `0x30` | `T_INTENT_ATTEST` | 📝 drafted | `AMM.md` §5.17 | Scope-generic preconfirmation channel attestation. Used by batched-AMM coordinators and other scoped settlement surfaces. No Groth16 / no ceremony. |
 | `0x31` | `T_PROTOCOL_FEE_CLAIM` | 📝 drafted | `AMM.md` §5.18 | Mint accrued protocol fee shares from a pool's `protocol_fee_reserve` to the configured fee recipient. |
 | `0x32` | `T_SWAP_VAR` | 📝 drafted | `SPEC-SWAP-VAR-AMENDMENT.md` §5.20 | Per-trade variable-amount AMM swap. No batching, no clearing price, no Groth16 — sigma cross-curve proof binds trader's `delta_in_commitment` to the pool's reserve delta. |
-| `0x33` | `T_LP_ADD_RANGE` | 🔒 reserved | `SPEC-AMM-RANGE-LP-AMENDMENT.md` | Range-LP add (follow-up amendment). |
-| `0x34` | `T_LP_REMOVE_RANGE` | 🔒 reserved | `SPEC-AMM-RANGE-LP-AMENDMENT.md` | Range-LP remove (follow-up amendment). |
-| `0x35` | `T_LP_REPOSITION` | 🔒 reserved | `SPEC-AMM-RANGE-LP-AMENDMENT.md` | Range-LP reposition (follow-up amendment). |
-| `0x36` | `T_LP_MIGRATE_V` | 🔒 reserved | `SPEC-AMM-RANGE-LP-AMENDMENT.md` | Range-LP version migration (follow-up amendment). |
+| `0x33` | `T_SWAP_ROUTE` | 📝 drafted | `SPEC-SWAP-ROUTE-AMENDMENT.md` §5.22 | Atomic multi-hop AMM routing (2..N_HOPS_MAX=4 hops in one Bitcoin tx). Reuses `T_SWAP_VAR` kernel-sig + bulletproof stack; no Groth16, no ceremony. (Reassigned from `T_LP_ADD_RANGE` reservation — range-LP amendment never drafted; range-LP allocation moved to `0x3F`–`0x42`.) |
+| `0x34` | `T_FARM_INIT` | 📝 drafted | `SPEC-AMM-FARM-AMENDMENT.md` §5.40 | Launcher-funded LP-staking reward farm creation. Virtual treasury (no on-chain UTXO); kernel-sig closure on launcher's reward-asset input. (Reassigned from `T_LP_REMOVE_RANGE` reservation.) |
+| `0x35` | `T_LP_BOND` | 📝 drafted | `SPEC-AMM-FARM-AMENDMENT.md` §5.41 | Bond `lp_asset_id` shares against a farm. Per-bond worker-indexed record keyed by `vout[1].outpoint`; Q.96 `entry_acc_per_share` snapshot for lazy accrual. (Reassigned from `T_LP_REPOSITION` reservation.) |
+| `0x36` | `T_LP_UNBOND` | 📝 drafted | `SPEC-AMM-FARM-AMENDMENT.md` §5.42 | Settle bond: validator mints fresh `lp_asset_id` + reward UTXOs by decree, deletes bond record. BIP-340 sig by `bonder_pubkey`. (Reassigned from `T_LP_MIGRATE_V` reservation.) |
 | `0x37` | `T_AXFER_VAR` | ✅ shipped | SPEC §5.7.6.1, §5.7.9 | Variable-amount atomic settlement: T_AXFER with a bulletproofs range proof on the buyer's auxiliary BTC leg. |
 | `0x38` | `T_WRAPPER_ATTEST` | ✅ shipped | SPEC §5.19 | Optional on-chain wrapper-issuer attestation pinning an external-wallet → tacit-key binding so wallet-portable identity becomes auditable by third parties. |
 | `0x39` | `T_TRADE_BATCH` | 📝 drafted | `SPEC-TRADE-BATCH-AMENDMENT.md` §5.20 | Atomic cross-surface settlement: settles N AMM intents + K orderbook bilateral pairs in one Bitcoin tx. (Reassigned from 0x43 to fix collision with `T_SLOT_MINT`.) |
 | `0x3A` | `T_RANGE_ATTEST` | 📝 drafted | `SPEC-RANGE-ATTEST-AMENDMENT.md` §5.21 | Persistent on-chain range-attestation envelope binding a holder pubkey to a `commitment ≥ K` claim. Power-user feature (KYC tier proofs, reputation, governance weight). (Reassigned from 0x44 to fix collision with `T_SLOT_BURN`.) |
-| `0x3B` | — | ⬜ free | — | Available. |
+| `0x3B` | `T_LP_HARVEST` | 📝 drafted | `SPEC-AMM-FARM-AMENDMENT.md` §5.43 | Claim accrued farm reward without unbonding the underlying LP shares (MasterChef `harvest()` equivalent). Updates `bond.entry_acc_per_share` to canonical exit; does NOT touch `farm.total_bonded`. |
 | `0x3C` | `T_AXFER_BPP` | 📝 drafted | `SPEC-AXFER-BPP-AMENDMENT.md` | BP+ variant of `T_AXFER` (`0x26`). Byte-identical wire shape modulo opcode + rangeproof bytes; ~14% smaller witness on every atomic OTC settlement. |
 | `0x3D` | `T_AXFER_VAR_BPP` | 📝 drafted | `SPEC-AXFER-BPP-AMENDMENT.md` | BP+ variant of `T_AXFER_VAR` (`0x37`). Byte-identical wire shape (N=2 + asset_input_count=1 tightenings + interleaved vout layout + mandatory OP_RETURN(80) preserved) modulo opcode + rangeproof bytes. |
-| `0x3E` – `0x42` | — | ⬜ free | — | Available. Previously reserved by retired cUSD-CDP / FROST oracle amendments — those reservations are released per `SPEC-CUSD-TAC-AMENDMENT.md`. |
+| `0x3E` | `T_FARM_REFUND` | 📝 drafted | `SPEC-AMM-FARM-AMENDMENT.md` §5.44 | Launcher reclaims unspent `treasury_remaining` strictly after `end_height + AMM_FARM_REFUND_GRACE_BLOCKS` (~7 days). Single-shot, full-amount. Preserves "no privileged operator mid-stream" property. |
+| `0x3F` – `0x42` | `T_LP_ADD_RANGE` / `T_LP_REMOVE_RANGE` / `T_LP_REPOSITION` / `T_LP_MIGRATE_V` | 🔒 reserved | `SPEC-AMM-RANGE-LP-AMENDMENT.md` (TBD) | Concentrated-liquidity / range-LP follow-up amendment. Reassigned from the original `0x33`–`0x36` block when those slots were taken over by `T_SWAP_ROUTE` and the farm opcodes. |
 | `0x43` | `T_SLOT_MINT` | ✅ shipped | `SPEC-CBTC-ZK-AMENDMENT.md` §5.21 | Self-custody-slot wrapper atomic mint. Locks BTC at `K_btc = r_leaf · G_secp256k1`. |
 | `0x44` | `T_SLOT_BURN` | ✅ shipped | `SPEC-CBTC-ZK-AMENDMENT.md` §5.22 | Self-custody-slot wrapper atomic redeem. |
 | `0x45` | `T_SLOT_ROTATE` | ✅ shipped | `SPEC-CBTC-ZK-AMENDMENT.md` §5.23 | Self-custody-slot wrapper atomic transfer (key rotation). |
@@ -75,7 +76,9 @@ and pick from the explicitly-listed free slots. The legend:
 | `0x54` | `T_CUSD_TAC_DEPOSIT` | 📝 drafted | `SPEC-CUSD-TAC-AMENDMENT.md` §6.3 | Open cUSD.tac position. |
 | `0x55` | `T_CUSD_TAC_WITHDRAW` | 📝 drafted | `SPEC-CUSD-TAC-AMENDMENT.md` §6.4 | Close cUSD.tac position. |
 | `0x56` | `T_CUSD_TAC_FORCE_CLOSE` | 📝 drafted | `SPEC-CUSD-TAC-AMENDMENT.md` §6.5 | Permissionless cUSD.tac liquidation. |
-| `0x57` – `0xFF` | — | ⬜ free | — | Available. |
+| `0x57` | `T_CBTC_TAC_DEPOSIT_ATOMIC` | ✅ shipped | `SPEC-CBTC-TAC-AMENDMENT.md` §5.48 | Atomic LP_ADD + cBTC.tac DEPOSIT — single envelope; depositor provides raw cBTC.zk + TAC inputs, worker LPs them and attaches lien on new LP-share UTXO and mints cBTC.tac. |
+| `0x58` | `T_CBTC_TAC_WITHDRAW_ATOMIC` | ✅ shipped | `SPEC-CBTC-TAC-AMENDMENT.md` §5.49 | Atomic cBTC.tac WITHDRAW + LP_REMOVE — single envelope; burns cBTC.tac, spends slot K_btc, removes the freed LP shares, pays out BTC + cBTC.zk + TAC. |
+| `0x59` – `0xFF` | — | ⬜ free | — | Available. |
 
 **Process for claiming a new opcode**:
 1. Scan the table above for free slots (⬜ rows).
@@ -3273,6 +3276,164 @@ if envelope.opcode == T_CXFER_BPP:
 **Activation gating.** The reference dapp's send-path accepts `useBpp` per-call; `bppEnabled()` defaults ON for signet and OFF for mainnet (mainnet flip via `localStorage['tacit-bpp-enable-mainnet-v1']`). Indexers MUST accept `T_CXFER_BPP` envelopes on both networks unconditionally — the gate is sender-side only.
 
 Reference impl: `dapp/bulletproofs-plus.js` (`bppRangeProve`, `bppRangeVerify`), `dapp/tacit.js` (`encodeCXferBppPayload`, `decodeCXferBppPayload`, `validateOutpoint` dispatch, `bppEnabled`), `worker/src/index.js` (`T_CXFER_BPP` constant + `decodeCXferBppPayload` + ancestry-walk + canonical-order branches). Test suite: `tests/bulletproofs-plus-*.test.mjs` (11 test files covering roundtrip, adversarial, malicious-prover, Monero-scenarios, pinned fixtures, property fuzz, prover smoke, Python parity, symbolic identity, witness extractor, bounded exhaustive), `tests/cxfer-bpp-wire.test.mjs`, `tests/cxfer-bpp-integration.test.mjs`. Signet harness: `tests/cxfer-bpp-onchain-e2e-signet.mjs` (mixed-ancestry CETCH → T_CXFER_BPP → T_CXFER round-trip). Extended-narrative draft preserved at `spec/amendments/SPEC-CXFER-BPP-AMENDMENT.md`.
+
+### 5.22 T_SWAP_ROUTE (`0x33`) — atomic multi-hop AMM swap
+
+> Section appears after §5.21 to preserve back-reference stability;
+> in opcode order this sits between §5.20 (`T_SWAP_VAR`, 0x32) and
+> §5.19 (`T_WRAPPER_ATTEST`, 0x38). Full architectural rationale,
+> threat model, and tip-mechanic follow-up are in
+> `spec/amendments/SPEC-SWAP-ROUTE-AMENDMENT.md`.
+
+`T_SWAP_ROUTE` settles a single trader's N-hop swap atomically across up to `N_HOPS_MAX = 4` AMM pools in one Bitcoin tx — Uniswap-V2-router parity for tacit. Hop *k*'s public output delta feeds hop *k+1*'s input; the trader's Pedersen-committed input UTXO and a fresh Pedersen-committed receipt UTXO close under a single kernel sig that binds the entire route. Pre-ceremony viable: reuses the bulletproof rangeproof + kernel-sig stack from `T_SWAP_VAR` (§5.20); introduces no new Groth16 circuit and no new ceremony coupling. Distinct from `T_TRADE_BATCH` (`0x39` — cross-surface AMM↔orderbook; ships independently).
+
+**Trade-offs vs sequential `T_SWAP_VAR`:**
+
+| Property | `T_SWAP_ROUTE` (this section) | N × `T_SWAP_VAR` (§5.20) |
+|---|---|---|
+| Bitcoin txs to settle N hops | 1 | N |
+| Intermediate-asset price risk | None — atomic | Exposed at each tx boundary |
+| Intermediate UTXOs held by trader | None | One per hop |
+| Total Bitcoin fee | ~1.3 KB envelope, single tx | ~950 B × N envelopes, N txs |
+| Per-hop kernel sigs | 1 global | N |
+| Slippage gate | Terminal-only on `delta_out_last` (Uni-V2 router parity) | Per-hop |
+| Privacy posture | Per-hop deltas cleartext (identical to N sequential T_SWAP_VAR) | Same |
+
+**Wire format** (full byte layout + field semantics: `spec/amendments/SPEC-SWAP-ROUTE-AMENDMENT.md` §"Wire format"):
+
+```
+opcode(1)                  = 0x33
+envelope_version(1)        = 0x01
+n_hops(1)                  # u8, 2..N_HOPS_MAX (= 4)
+trader_input_asset_id(32)
+trader_output_asset_id(32)
+min_out(8)                 # u64 LE — slippage gate on FINAL hop's
+                           #          output (per-hop slippage NOT
+                           #          enforced; Uni-V2 router parity)
+expiry_height(4)           # u32 LE; 0 = no expiry
+trader_pubkey(33)          # compressed secp256k1
+
+# Per-hop block × N (67 bytes each)
+[for hop k ∈ {0, …, n_hops−1}]:
+    pool_id(32)
+    direction(1)               # 0 = asset_A is input side, 1 = asset_B
+    fee_bps(2)                 # u16 LE — pool's fee_bps at settle
+    R_A_pre(8)                 # u64 LE — pool reserve A pre-hop
+    R_B_pre(8)                 # u64 LE
+    delta_a_net_mag(8)         # u64 LE — magnitude of pool's net A change
+    delta_b_net_mag(8)         # u64 LE
+
+# Trader chain bindings
+trader_input_outpoint:
+    txid(32 BE) || vout(4 LE)
+C_in_secp(33)                  # Pedersen commit at the input outpoint
+C_receipt_secp(33)             # fresh receipt commit (trader's output)
+r_receipt(32)                  # receipt blinding (revealed; mirrors §5.20)
+
+# Closures
+range_proof_len(2)             # u16 LE
+range_proof(variable)          # aggregated BP m=2 over (SENTINEL, C_receipt_secp)
+kernel_sig(64)                 # BIP-340 over kernel_msg
+intent_sig(64)                 # BIP-340 over route_msg under trader_pubkey
+```
+
+Total payload ≈ 1.3 KB at N=4. Well under Taproot tap-leaf limits.
+
+**Bitcoin tx layout (normative — indexers reject deviations):**
+
+| Index | Role |
+|---|---|
+| `vin[0]` | Envelope-bearing input (Taproot script-path); witness carries the T_SWAP_ROUTE payload |
+| `vin[1]` | Trader's tacit asset UTXO of `trader_input_asset_id`; signed SIGHASH_ALL |
+| `vout[0]` | `OP_RETURN(envelope_hash)` — 0 sat, 32-byte data; `envelope_hash = SHA256(payload)` |
+| `vout[1]` | Trader's final receipt UTXO (DUST sats; asset is `trader_output_asset_id`) |
+| `vout[2..]` | Optional settler-fee outputs (V1.x follow-up; absent in V1 self-fulfill) and settler change |
+
+**Self-broadcast only in V1.** Settler-driven routing with per-hop tips is a follow-up amendment that bumps `envelope_version → 0x02`; V1 `version=0x01` envelopes pay no settler tips and the trader funds the Bitcoin tx fee directly.
+
+**Intent + kernel messages:**
+
+```
+route_msg = SHA256(
+    "tacit-swap-route-v1"
+    || trader_pubkey(33)
+    || trader_input_asset_id(32) || trader_output_asset_id(32)
+    || min_out_LE(8) || expiry_height_LE(4)
+    || n_hops_LE(1)
+    || hop_block_concat                # all per-hop blocks back-to-back
+    || C_in_secp(33) || C_receipt_secp(33)
+)
+
+hops_hash = SHA256(hop_block_0 || hop_block_1 || …)
+
+kernel_msg = SHA256(
+    "tacit-kernel-v1"                  # reused from CXFER + T_SWAP_VAR
+    || trader_input_asset_id(32) || trader_output_asset_id(32)
+    || asset_input_count_LE(1) = 0x01
+    || trader_input_outpoint           # txid_BE(32) || vout_LE(4)
+    || C_receipt_secp(33)
+    || delta_in_0_LE(8)                # hop[0]'s input-side delta
+    || delta_out_last_LE(8)            # hop[n_hops-1]'s output-side delta
+    || hops_hash(32)                   # binds the exact hop sequence
+)
+```
+
+`hops_hash` in `kernel_msg` closes the "settler swaps the hop sequence under the same kernel sig" attack: any reorder, substitution, or pool-id swap changes `hops_hash` and invalidates the kernel sig.
+
+The kernel-sig verification point is:
+
+```
+P = C_receipt_secp − C_in_secp − (delta_out_last − delta_in_0) · H_secp
+```
+
+signed by `excess_route = r_receipt − r_in` (modular subtraction in the secp256k1 scalar field). When the route round-trips back to the input asset at exactly break-even (`delta_out_last == delta_in_0`), the `H_secp` term collapses to ZERO and the sig closes a pure `(r_receipt − r_in)·G` balance — the same structural pattern as `T_AXFER_VAR`'s break-even closure.
+
+**Validator algorithm:**
+
+1. Verify `vout[0]` is a 0-sat `OP_RETURN` whose 32-byte data equals `SHA256(payload)`.
+2. Decode payload; verify `opcode == 0x33`, `envelope_version == 0x01`, `2 ≤ n_hops ≤ N_HOPS_MAX (4)`.
+3. Reject if `trader_input_asset_id == trader_output_asset_id` (degenerate route).
+4. **Expiry:** if `expiry_height != 0`, verify `currentHeight ≤ expiry_height`.
+5. **Intent sig:** reconstruct `route_msg`; verify `intent_sig` (BIP-340) under `trader_pubkey`.
+6. Snapshot each touched pool's reserves (so a route that re-visits the same pool advances state correctly hop-by-hop).
+7. **Per-hop iteration** (`k ∈ {0, …, n_hops−1}`):
+   - Require `snap = poolSnapshot[H.pool_id]` exists and `snap.tradable == true`.
+   - Verify `H.fee_bps == snap.fee_bps`, `H.R_A_pre == snap.reserve_A`, `H.R_B_pre == snap.reserve_B` (strict equality against the running snapshot — same in-block walking discipline as §5.20).
+   - Resolve `(asset_in, asset_out, R_in, R_out, delta_in, delta_out)` from `H.direction`.
+   - Require `delta_in > 0 AND delta_out > 0`; `R_in + delta_in ≤ U64_MAX`; `R_out ≥ delta_out`.
+   - **Asset continuity:** `asset_in == hop_input_asset` (initialized to `trader_input_asset_id`, advances to `asset_out` after each hop).
+   - **Amount continuity** (`k ≥ 1`): `delta_in == prev_delta_out`.
+   - **CFMM curve floor identity** (with-fee, integer upper bound; with `γ_num = 10000 − snap.fee_bps`, `γ_den = 10000`):
+     ```
+     delta_out · (R_in · γ_den + γ_num · delta_in)
+       ≤ R_out · γ_num · delta_in
+     ```
+     Per-trader floor dust can only push the actual `delta_out` *down* from the curve; a settler attempt to claim a higher `delta_out` breaks this identity and the indexer rejects.
+   - Advance snapshot reserves; track `delta_in_0`, `delta_out_last`, `prev_delta_out`, `hop_input_asset`.
+8. **Final asset closure:** `hop_input_asset == trader_output_asset_id`.
+9. **Min-out gate (terminal-only):** `delta_out_last ≥ min_out`.
+10. **Receipt opening:** `r_receipt != 0` AND `pedersenCommit(delta_out_last, r_receipt) == C_receipt_secp`.
+11. **Kernel sig:** construct `P = C_receipt_secp − C_in_secp − (delta_out_last − delta_in_0) · H_secp`; reject if `P == ZERO`; verify `kernel_sig` (BIP-340) over `kernel_msg` under `P.x_only`.
+12. **Bulletproof:** aggregated `m=2` over `(ZERO_SENTINEL, C_receipt_secp)` (slot 0 is the additive identity; slot 1 is the receipt). Wire-format parity with `T_AXFER_VAR` / `T_SWAP_VAR` keeps the verifier hot path identical across opcodes.
+13. On success: apply each pool's snapshot to canonical pool state; consume `vin[1]`; credit `vout[1]` receipt UTXO. **Protocol fees are NOT crystallized here** (Uniswap-V2-lazy, same as §5.20).
+
+If ANY hop fails the freshness check, fee_bps mismatch, asset/amount chain check, reserve-bound guard, CFMM curve floor, kernel sig, intent sig, receipt opening, or bulletproof verification, the entire envelope is rejected. The Bitcoin tx still confirms (Bitcoin doesn't care about indexer semantics) but the indexer doesn't update state — no pool advances, no UTXO credit. Atomic at the indexer-state-transition layer (mirrors `T_SWAP_BATCH` / `T_TRADE_BATCH` posture).
+
+**Within-block ordering:** when multiple `T_SWAP_ROUTE` / `T_SWAP_VAR` / `T_SWAP_BATCH` envelopes touch the same pool in the same block, AMM.md §"Indexer determinism rules" applies: `(tx_index, vin[0] outpoint)` ascending. Earlier-in-block envelopes apply state first; later ones see the updated reserves. A route that re-visits the same pool walks the snapshot hop-by-hop within the same envelope.
+
+**Reorg safety:** identical to §5.20. Pool state advances at depth ≥ 3; intermediate observers MAY display "settling (provisional)" status at depths 1–2.
+
+**Domain-tag additions:**
+
+| Tag | Use |
+|---|---|
+| `tacit-swap-route-v1` | `route_msg` SHA256 domain (intent sig) |
+
+`kernel_msg` reuses the shared `tacit-kernel-v1` domain from §5.4 / §5.7.9 / §5.20.
+
+**Backwards compatibility.** Purely additive. Pre-amendment indexers see opcode `0x33` as unknown and ignore (per §5.5 unknown-opcode forward-compat rule). `T_SWAP_VAR` and `T_SWAP_BATCH` paths are unchanged.
+
+Reference impl: `tests/swap-route.mjs` (`validateSwapRoute`, `encodeSwapRoute`, `decodeSwapRoute`, `buildSwapRouteIntentMsg`, `buildSwapRouteKernelMsg`, `hashHops`); re-exported from `tests/amm-validator.mjs`. Worker dispatch: `worker/src/index.js` (`T_SWAP_ROUTE = 0x33` + `decodeTSwapRoutePayload` + scan-loop branch). Dapp builder + UI: `dapp/tacit.js` (`buildAndBroadcastSwapRoute`, `previewSwapRoute`, `findSwapRoutePath`). Tests: `tests/swap-route.test.mjs` (24/24 — wire roundtrip, msg builders, honest 2-hop, 13 adversarial cases incl. cross-pool kernel-sig replay, asset chain break, amount chain break, drained pool, fee_bps mismatch, expiry, min_out violation, tampered sigs, receipt-opening forgery), `tests/swap-route-dapp-worker-parity.test.mjs` (13/13 cross-impl byte parity), `tests/amm-router-preview.test.mjs` (13/13 dapp routing topology). Signet harness: `tests/amm-swap-route-onchain-e2e-signet.mjs`. Extended-narrative draft preserved at `spec/amendments/SPEC-SWAP-ROUTE-AMENDMENT.md`.
 
 ## 6. Recovery semantics
 

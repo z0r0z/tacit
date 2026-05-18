@@ -423,6 +423,13 @@ function cfmmFloorOk({ delta_in, delta_out, R_in, R_out, fee_bps }) {
 //                        carries { pool_id, asset_A, asset_B, fee_bps,
 //                        reserve_A, reserve_B, tradable }.
 //   currentHeight      : block height at confirmation
+//   opReturnData       : REQUIRED — 32-byte data from vout[0]'s OP_RETURN.
+//                        Checked against SHA256(payload) per SPEC §5.22 step 1.
+//   inputCommitment    : REQUIRED — 33-byte compressed Pedersen commit or a
+//                        ProjectivePoint; the on-chain commitment at vin[1].
+//                        Without binding env.cInSecp to the actual UTXO, the
+//                        trader can pick any (a_in_claimed, r_in) consistent
+//                        with the kernel sig and inflate asset_in.
 //   bulletproofVerify  : injected (V_pts, proofBytes) -> bool. Pass the
 //                        real bpRangeAggVerify from bulletproofs.mjs in
 //                        production; tests pass a stub.
@@ -430,15 +437,58 @@ function cfmmFloorOk({ delta_in, delta_out, R_in, R_out, fee_bps }) {
 const U64_MAX = (1n << 64n) - 1n;
 
 export function validateSwapRoute({
-  payload, pools, currentHeight, bulletproofVerify,
+  payload, pools, currentHeight,
+  opReturnData,
+  inputCommitment,
+  bulletproofVerify,
 }) {
   if (typeof bulletproofVerify !== 'function') {
     throw new Error('validateSwapRoute: bulletproofVerify is required');
+  }
+  if (opReturnData === undefined) {
+    throw new Error(
+      'validateSwapRoute: opReturnData is required — pass the 32-byte ' +
+      "data from tx.vout[0]'s OP_RETURN so the validator can verify " +
+      'SHA256(envelope_payload) == opReturnData per SPEC §5.22 step 1.',
+    );
+  }
+  if (inputCommitment === undefined) {
+    throw new Error(
+      'validateSwapRoute: inputCommitment is required — pass the on-chain ' +
+      "Pedersen commit at (traderInputOutpointTxid, traderInputOutpointVout) " +
+      'so the validator can verify env.cInSecp matches.',
+    );
   }
 
   let env;
   try { env = decodeSwapRoute(payload); }
   catch (e) { return { valid: false, reason: `decode error: ${e.message}` }; }
+
+  if (!(opReturnData instanceof Uint8Array) || opReturnData.length !== 32) {
+    return { valid: false, reason: 'opReturnData must be 32-byte Uint8Array' };
+  }
+  const expectedHash = computeSwapRouteEnvelopeHash(payload);
+  if (!bytesEqual(opReturnData, expectedHash)) {
+    return { valid: false, reason: 'OP_RETURN data != SHA256(envelope_payload)' };
+  }
+
+  let inputCommitmentBytes;
+  if (inputCommitment instanceof Uint8Array) {
+    if (inputCommitment.length !== 33) {
+      return { valid: false, reason: 'inputCommitment must be 33-byte compressed point' };
+    }
+    inputCommitmentBytes = inputCommitment;
+  } else if (inputCommitment && typeof inputCommitment.toRawBytes === 'function') {
+    inputCommitmentBytes = inputCommitment.toRawBytes(true);
+  } else {
+    return { valid: false, reason: 'inputCommitment must be ProjectivePoint or Uint8Array(33)' };
+  }
+  if (!bytesEqual(env.cInSecp, inputCommitmentBytes)) {
+    return {
+      valid: false,
+      reason: 'env.cInSecp does not match on-chain input UTXO commit at outpoint',
+    };
+  }
 
   if (env.expiryHeight !== 0 && currentHeight > env.expiryHeight) {
     return { valid: false, reason: `route expired (currentHeight ${currentHeight} > expiry ${env.expiryHeight})` };
