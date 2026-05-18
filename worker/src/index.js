@@ -164,11 +164,13 @@ const T_SLOT_MERGE         = 0x47; // atomic N→1 slot merge, ΣD_old ≥ D_new
 // 0x4D-0x4E reserved for SPEC-CBTC-ZK-AMOUNT-AMENDMENT (T_SLOT_FRACTIONALIZE/T_SLOT_RECONSOLIDATE
 // machinery, activated via SPEC-CBTC-TAC-AMENDMENT envelopes; the unbonded standalone path is
 // not shipped on mainnet).
-// 0x49–0x4C: SPEC-CBTC-TAC-AMENDMENT (cBTC.tac LP-shaped wrapped BTC).
-const T_CBTC_TAC_DEPOSIT     = 0x49; // LP-shaped mint: cBTC.zk slot + TAC → cBTC.tac (SPEC §5.36)
-const T_CBTC_TAC_WITHDRAW    = 0x4A; // LP-shaped burn: cBTC.tac → cBTC.zk slot + TAC (SPEC §5.37)
-const T_CBTC_TAC_FORCE_CLOSE = 0x4B; // permissionless liquidation when ratio < LIQ_RATIO (SPEC §5.38)
-const T_SHARE_SLASH_CLAIM    = 0x4C; // optional pooled-insurance claim by cBTC.tac holder (SPEC §5.39.4)
+// 0x49–0x4C, 0x4F: SPEC-CBTC-TAC-AMENDMENT (cBTC.tac LP-shaped wrapped BTC).
+const T_CBTC_TAC_DEPOSIT     = 0x49; // LP-shaped mint: cBTC.zk slot + LP-share lien → cBTC.tac (SPEC §5.47)
+const T_CBTC_TAC_WITHDRAW    = 0x4A; // cooperative withdraw via lien release (SPEC §5.47)
+const T_CBTC_TAC_FORCE_CLOSE = 0x4B; // permissionless lien transfer to claim pool (SPEC §5.47)
+const T_SHARE_SLASH_CLAIM    = 0x4C; // T_CTAC_LIEN_CLAIM: burn cBTC.tac → mint LP-share from claim pool (SPEC §5.47); opcode constant name preserved for wire-format parity
+const T_CTAC_LIEN_CLAIM      = T_SHARE_SLASH_CLAIM; // alias for clarity in v1 lien semantics
+const T_CTAC_LIEN_SPLIT      = 0x4F; // split a liened LP-share UTXO; lien inherits onto one chosen output (SPEC §5.47)
 const N_BITS = 64; // amount range: [0, 2^64) — bulletproof rangeproof.
 const SECP_N = 0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141n;
 
@@ -3864,22 +3866,36 @@ async function ctacScanSlashDetected(env, network, opts = {}) {
     // Also: legitimate exits (WITHDRAW / FORCE_CLOSE) flip the position state
     // BEFORE the K_btc spend confirms, so by the time we observe the K_btc
     // spend the position would have moved out of 'active' state. If we're
-    // here and the position is still 'active' at depth ≥ REORG_SAFETY_DEPTH
+    // here and the position is still 'active' at depth >= REORG_SAFETY_DEPTH
     // with K_btc spent, no legitimate envelope claimed this exit. Rug.
     const ruggedAtHeight = result.spent_at_height || (tipHeight - result.depth + 1);
-    // §5.45.1 stability fee accrual: pre-debit elapsed fee from the bond
-    // before slashing the remainder, so accumulated fees are accounted
-    // separately. Mutates `position` in place.
-    const accruedSlash = ctacAccrueStabilityFee(position, ruggedAtHeight);
-    if (accruedSlash > 0n) await ctacAddInsurancePool(env, network, accruedSlash);
-    const remainingSlashTac = BigInt(position.bond_amount_tac);
-    if (remainingSlashTac > 0n) await ctacAddInsurancePool(env, network, remainingSlashTac);
-    // Aggregate counter bookkeeping: bond TAC (accrued + remainder) leaves
-    // the bonded total; slot's BTC backing leaves the bonded BTC total.
-    await ctacAddTotalBondedTac(env, network, -(remainingSlashTac + accruedSlash));
+
+    // SPEC §5.47 v1 lien model: transfer the depositor's bond LP-share lien
+    // to the global claim pool. The depositor's UTXO becomes tacit-invalid
+    // forever (state 'claim-pool' blocks commitmentForUtxo); cBTC.tac
+    // holders claim pro-rata via T_CTAC_LIEN_CLAIM (0x4C). Identical to
+    // FORCE_CLOSE outcome — both paths converge on lien transfer.
+    const lienRef = await ctacGetPositionLien(env, network, leafHashHex);
+    if (lienRef) {
+      const lien = await ctacGetLien(env, network, lienRef.txid, lienRef.vout);
+      if (lien && lien.state === 'depositor') {
+        await ctacAddClaimPool(env, network, BigInt(lien.lp_share_amount));
+        const updatedLien = {
+          ...lien,
+          state: 'claim-pool',
+          claim_pool_transferred_at_height: ruggedAtHeight,
+          claim_pool_transferred_reason: 'slash',
+        };
+        await ctacPutLien(env, network, lienRef.txid, lienRef.vout, updatedLien);
+        await ctacDeletePositionLien(env, network, leafHashHex);
+      }
+    }
+    // Aggregate counter bookkeeping: bond TAC + slot's BTC backing leave
+    // the bonded totals.
+    await ctacAddTotalBondedTac(env, network, -BigInt(position.bond_amount_tac));
     await ctacAddTotalBondedSats(env, network, -BigInt(position.slot_denom_sats));
+
     position.state = 'rugged';
-    position.bond_amount_tac = '0';
     position.rugged_at_height = ruggedAtHeight;
     position.rug_spending_txid = result.spending_txid || null;
     await ctacPutPosition(env, network, position);
@@ -16941,32 +16957,21 @@ async function scanForEtches(env, network) {
         // r_btc Schnorr sig on the K_btc spend (Bitcoin consensus).
         found++;
       } else if (decoded.opcode === T_CBTC_TAC_FORCE_CLOSE) {
-        // SPEC-CBTC-TAC-AMENDMENT §5.38 — trustless EARLY-SLASH semantics.
+        // SPEC-CBTC-TAC-AMENDMENT §5.47 v1 lien model — permissionless lien transfer.
         //
-        // The original §5.38 mechanism (paired TAC→cBTC.zk AMM swap into a
-        // protocol-owned `redemption_reserve_BTC` UTXO) requires Bitcoin
-        // script primitives (covenants / OP_CAT) that don't exist on
-        // mainnet today. Every covenant-free realisation either reduces
-        // to a federated signer or lets a griefer steal the reserve.
+        // When LP-share BTC value (at TWAP) drops below LIQUIDATION_RATIO ×
+        // slot_denom_sats, anyone can trigger force-close. The worker
+        // transfers the depositor's lien on the bond LP-share UTXO to the
+        // global claim pool. The UTXO stays in the depositor's wallet but
+        // becomes tacit-invalid forever (commitmentForUtxo refuses; lien
+        // state 'claim-pool' is also refused for ordinary spends — only
+        // T_CTAC_LIEN_CLAIM can convert the claim-pool counter into
+        // synthetic LP-share UTXOs at cBTC.tac holders' recipients).
+        // The depositor's K_btc is never touched — they retain BTC custody.
         //
-        // v1 redefines FORCE_CLOSE as a permissionless EARLY SLASH on
-        // ratio breach: when current_ratio < LIQUIDATION_RATIO at confirm
-        // time, the bond TAC is moved to the existing pooled insurance
-        // reserve (same path as SLASH_DETECTED), the position transitions
-        // to 'force-slashed', and cBTC.tac holders are made whole via the
-        // already-shipped T_SHARE_SLASH_CLAIM path (§5.39.4). The
-        // depositor's K_btc is never touched by the protocol — they retain
-        // custody. cBTC.tac supply is NOT debited (same as the existing
-        // SLASH path); the outstanding shares represent a pro-rata claim
-        // on the augmented insurance pool.
-        //
-        // Economics: similar to the SLASH path (depositor rugs K_btc →
-        // bond → insurance) but triggers immediately on ratio breach
-        // rather than waiting for the depositor to spend K_btc. Better
-        // for cBTC.tac holders (insurance backing fills faster); worse
-        // for depositors on TAC recovery (bond is gone even if TAC bounces
-        // back, so depositors carrying healthy positions through TAC
-        // dips should monitor and top-up if needed).
+        // cBTC.tac supply is NOT debited; outstanding shares now represent
+        // pro-rata claims on the augmented claim pool. Holders convert via
+        // T_CTAC_LIEN_CLAIM (opcode 0x4C).
         //
         // No liquidator reward in v1 — cBTC.tac holders' own interest in
         // securing their backing is the implicit incentive to call.
@@ -16982,73 +16987,93 @@ async function scanForEtches(env, network) {
         const thisBlockCount = await ctacGetForceCloseThrottle(env, network, h);
         if (thisBlockCount >= CTAC_MAX_FORCE_CLOSES_PER_BLOCK) continue;
 
-        // Health check at reorg-safe TWAP. Fail-closed: if oracle is
-        // stale or volatile (CV>0.30), refuse the FORCE_CLOSE.
+        // Resolve lien — must exist for an active position.
+        const lienRef = await ctacGetPositionLien(env, network, fc.target_leaf_hash);
+        if (!lienRef) continue;
+        const lien = await ctacGetLien(env, network, lienRef.txid, lienRef.vout);
+        if (!lien || lien.state !== 'depositor') continue;
+
+        // Health check at reorg-safe TWAP. Fail-closed.
         let twapFc;
         try { twapFc = await ctacTwapSatsPerTac(env, network, h - CTAC_REORG_SAFETY_DEPTH); }
         catch { continue; }
-        const currentRatio = ctacBondRatioThousandths(
-          position.bond_amount_tac, twapFc, position.slot_denom_sats,
+
+        // Compute current LP-share BTC value and check liquidation ratio:
+        // current_ratio_thousandths = lpValueSats × 1000 / slot_denom_sats.
+        const lpValueNow = await ctacLpShareValueSats(
+          env, network, lien.pool_id, lien.lp_share_amount, twapFc,
         );
-        if (currentRatio >= BigInt(CTAC_LIQUIDATION_RATIO_THOUSANDTHS)) continue;
+        if (!lpValueNow.ok) continue;
+        const currentRatioThousandths =
+          (lpValueNow.valueSats * 1000n) / BigInt(position.slot_denom_sats);
+        if (currentRatioThousandths >= BigInt(CTAC_LIQUIDATION_RATIO_THOUSANDTHS)) continue;
 
-        // §5.45.1 stability fee accrual: time-elapsed portion of bond
-        // moves to insurance pool BEFORE the slash bump, so accumulated
-        // fees are accounted for separately. Mutates `position` in place.
-        const accruedFc = ctacAccrueStabilityFee(position, h);
-        if (accruedFc > 0n) await ctacAddInsurancePool(env, network, accruedFc);
-
-        // Slash effect: full remaining bond TAC moves to insurance pool.
-        // cBTC.tac supply is left in circulation; holders claim via
-        // T_SHARE_SLASH_CLAIM against the augmented pool (or via the
-        // optional insurance_claim_tac field on a future T_CBTC_TAC_WITHDRAW
-        // against any other active position).
-        const remainingBondFc = BigInt(position.bond_amount_tac);
-        if (remainingBondFc > 0n) await ctacAddInsurancePool(env, network, remainingBondFc);
-
-        // Aggregate-counter bookkeeping: bond TAC (accrued + remainder)
-        // leaves the bonded total; slot denomination leaves the bonded
-        // BTC total.
-        await ctacAddTotalBondedTac(env, network, -(remainingBondFc + accruedFc));
+        // Effects: transfer lien to claim pool + mark position force-slashed.
+        const lpSharesToClaimPool = BigInt(lien.lp_share_amount);
+        await ctacAddClaimPool(env, network, lpSharesToClaimPool);
+        await ctacAddTotalBondedTac(env, network, -BigInt(position.bond_amount_tac));
         await ctacAddTotalBondedSats(env, network, -BigInt(position.slot_denom_sats));
+
+        const updatedLien = {
+          ...lien,
+          state: 'claim-pool',
+          claim_pool_transferred_at_height: h,
+          claim_pool_transferred_at_txid: tx.txid,
+        };
+        await ctacPutLien(env, network, lienRef.txid, lienRef.vout, updatedLien);
+        // Position-lien reverse-index entry deleted: the position's lien is
+        // no longer "the depositor's" — it's pooled. The lien KV record
+        // stays (state 'claim-pool') so commitmentForUtxo still refuses
+        // any depositor spend forever.
+        await ctacDeletePositionLien(env, network, fc.target_leaf_hash);
 
         position.state = 'force-slashed';
         position.force_close_height = h;
         position.force_close_txid = tx.txid;
-        position.bond_amount_tac = '0';
         await ctacPutPosition(env, network, position);
         await ctacUnmarkActive(env, network, fc.target_leaf_hash);
         await ctacBumpForceCloseThrottle(env, network, h);
-        // Record into slash-event log for ctacComputePauseStatus's cascade
-        // detector (§5.41.3 — 5% in 100-block window triggers pause).
+        // Slash-event log for ctacComputePauseStatus's cascade detector.
         await ctacRecordSlashEvent(env, network, h, fc.target_leaf_hash, position);
         found++;
       } else if (decoded.opcode === T_SHARE_SLASH_CLAIM) {
-        // SPEC-CBTC-TAC-AMENDMENT §5.39.4 — optional pooled-insurance
-        // claim by a cBTC.tac holder, separate from withdraw. Burns
-        // share_burn_amount of cBTC.tac, claims share_burn_amount ×
-        // per_share_insurance_TAC out of the pool.
+        // SPEC-CBTC-TAC-AMENDMENT §5.47 v1 — T_CTAC_LIEN_CLAIM (opcode 0x4C
+        // repurposed from the original T_SHARE_SLASH_CLAIM stub). cBTC.tac
+        // holder burns shares to claim pro-rata LP shares from the global
+        // claim pool. The claim mints a synthetic LP-share UTXO at the
+        // claimant's recipient_commit, drawing against the claim pool
+        // counter. The claimant can then T_LP_REMOVE the LP shares for the
+        // underlying cBTC.zk + TAC at current pool ratios, or hold the LP
+        // for AMM fee yield.
+        //
+        // Wire format unchanged from the original T_SHARE_SLASH_CLAIM:
+        //   share_burn_amount = cBTC.tac to burn
+        //   claim_tac         = LP shares claimed (semantic rename)
+        //   recipient_commit  = Pedersen commit for the new LP-share UTXO
+        // Math: expected_lp = claim_pool_lp_shares × share_burn_amount /
+        //                     outstanding_cbtc_tac_supply
         const cl = decodeTShareSlashClaimPayload(decoded.payload);
         if (!cl) continue;
         const expectedNetTag = network === 'signet' ? 0x01 : network === 'regtest' ? 0x02 : 0x00;
         if (cl.network_tag !== expectedNetTag) continue;
 
-        const insurancePool = await ctacGetInsurancePool(env, network);
+        const claimPool = await ctacGetClaimPool(env, network);
         const outstandingSupply = await ctacGetSupply(env, network);
         if (outstandingSupply === 0n) continue;
-        const expectedClaim = (insurancePool * BigInt(cl.share_burn_amount)) / outstandingSupply;
-        if (BigInt(cl.claim_tac) !== expectedClaim) continue;
-        if (expectedClaim === 0n) continue;
-        if (insurancePool < expectedClaim) continue;
+        if (claimPool === 0n) continue;
+        const expectedLpClaim = (claimPool * BigInt(cl.share_burn_amount)) / outstandingSupply;
+        if (BigInt(cl.claim_tac) !== expectedLpClaim) continue;
+        if (expectedLpClaim === 0n) continue;
+        if (claimPool < expectedLpClaim) continue;
 
-        // Effects
-        await ctacAddInsurancePool(env, network, -expectedClaim);
+        // Effects: decrement claim pool, debit supply by burn amount.
+        // The synthetic LP-share UTXO at recipient_commit is recognised by
+        // downstream consumers (the validator will mark cl.claim_tac LP
+        // shares of the appropriate lp_asset_id as available at
+        // recipient_commit). cBTC.tac UTXO burns are handled by the
+        // standard asset-spend path on the tx's vin spends.
+        await ctacAddClaimPool(env, network, -expectedLpClaim);
         await ctacAddSupply(env, network, -BigInt(cl.share_burn_amount));
-        // The actual cBTC.tac UTXO burn (mark commits spent, add nullifiers
-        // to spent-set) is again handled by the standard asset-spend path
-        // when the validator processes the embedded asset spends in the
-        // reveal tx. The claim-payout TAC UTXO is created via standard
-        // asset-output machinery referencing recipient_commit.
         found++;
       } else if (decoded.opcode === T_LP_ADD) {
         // SPEC AMM.md §"Envelope byte layouts" + §"Pool state".
