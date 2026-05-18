@@ -30644,6 +30644,12 @@ function _ammCerActiveTab() {
     return t?.dataset?.tab || '';
   } catch { return ''; }
 }
+// Master gate for the AMM-ceremony contribute chip. AMM ceremonies are
+// per-pool (SPEC.md §AMM ceremony, AMM.md §Ceremony), not protocol-wide, so
+// a global "contribute to the AMM ceremony" prompt has no pool that will
+// actually consume the contribution. Kept off everywhere until the launch
+// path settles; flip to `true` to re-enable the chip + drawer.
+const AMM_CEREMONY_CHIP_ENABLED = false;
 function renderAmmCeremonyChip() {
   const chip = document.getElementById('amm-ceremony-chip');
   if (!chip) return;
@@ -30651,7 +30657,7 @@ function renderAmmCeremonyChip() {
   const tab = _ammCerActiveTab();
   const onTargetTab = AMM_CEREMONY_CHIP_TABS.has(tab);
   const acked = ammCeremonyRecentlyAcked();
-  const show = !finalized && onTargetTab && !acked && !!WORKER_BASE;
+  const show = AMM_CEREMONY_CHIP_ENABLED && !finalized && onTargetTab && !acked && !!WORKER_BASE;
   chip.style.display = show ? 'inline-flex' : 'none';
   if (!show) return;
   // Async refresh of per-circuit states so the count chip stays current.
