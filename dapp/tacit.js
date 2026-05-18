@@ -4991,7 +4991,11 @@ const T_LP_ADD     = 0x2D; // pool init (variant 1) or standard LP add (variant 
 const T_LP_REMOVE  = 0x2E; // LP redeem — share burn → asset A + B
 const T_PROTOCOL_FEE_CLAIM = 0x31; // founder mints accrued LP-fee skim as lp_asset_id UTXO
 const T_SWAP_VAR   = 0x32; // per-trade variable-amount AMM swap (SPEC §5.16.3)
+const T_SWAP_ROUTE = 0x33; // atomic multi-hop AMM routing (SPEC-SWAP-ROUTE-AMENDMENT)
 const SWAP_VAR_ENVELOPE_VERSION = 0x01;
+const SWAP_ROUTE_ENVELOPE_VERSION = 0x01;
+const SWAP_ROUTE_N_HOPS_MAX = 4;       // matches worker + tests/swap-route.mjs
+const SWAP_ROUTE_HOP_BYTES = 32 + 1 + 2 + 8 + 8 + 8 + 8;
 const T_AXFER_VAR = 0x37; // variable-amount atomic settlement (SPEC §5.7.9 / §5.7.6.1 — amended).
                           // N=2 partial reveal (recipient + maker change), single asset input,
                           // interleaved BTC-payment vout. Read-only as of this commit: validator
@@ -8086,6 +8090,88 @@ function encodeTSwapVarPayload({
     u16LE(rangeProof.length), rangeProof,
     kernelSig, intentSig,
   );
+}
+
+// Decoder for T_SWAP_ROUTE (opcode 0x33). Returns the decoded route object
+// or null on any structural mismatch. Byte-format-equivalent to worker's
+// decodeTSwapRoutePayload and tests/swap-route.mjs::decodeSwapRoute.
+function decodeTSwapRoutePayload(payload) {
+  if (!payload) return null;
+  // Min size: header(37) + N=2 hops(134) + outpoint(36) + cIn+cReceipt+rReceipt(98)
+  //         + rpLen(2) + 2 sigs(128). ≈ 435 floor.
+  if (payload.length < 435) return null;
+  let p = 0;
+  const version = payload[p]; p += 1;
+  if (version !== SWAP_ROUTE_ENVELOPE_VERSION) return null;
+  const opcode = payload[p]; p += 1;
+  if (opcode !== T_SWAP_ROUTE) return null;
+  const nHops = payload[p]; p += 1;
+  if (nHops < 2 || nHops > SWAP_ROUTE_N_HOPS_MAX) return null;
+
+  const traderInputAssetId = payload.slice(p, p + 32); p += 32;
+  const traderOutputAssetId = payload.slice(p, p + 32); p += 32;
+  let sameAsset = true;
+  for (let i = 0; i < 32; i++) {
+    if (traderInputAssetId[i] !== traderOutputAssetId[i]) { sameAsset = false; break; }
+  }
+  if (sameAsset) return null;
+
+  const dv = new DataView(payload.buffer, payload.byteOffset);
+  function readU64() {
+    const lo = BigInt(dv.getUint32(p, true));
+    const hi = BigInt(dv.getUint32(p + 4, true));
+    p += 8;
+    return (hi << 32n) | lo;
+  }
+  const minOut = readU64();
+  const expiryHeight = dv.getUint32(p, true); p += 4;
+  const traderPubkey = payload.slice(p, p + 33); p += 33;
+  try { bytesToPoint(traderPubkey); } catch { return null; }
+
+  if (p + nHops * SWAP_ROUTE_HOP_BYTES > payload.length) return null;
+  const hops = [];
+  for (let k = 0; k < nHops; k++) {
+    const poolId = payload.slice(p, p + 32); p += 32;
+    const direction = payload[p]; p += 1;
+    if (direction !== 0 && direction !== 1) return null;
+    const feeBps = dv.getUint16(p, true); p += 2;
+    if (feeBps > 1000) return null;
+    const R_A_pre = readU64();
+    const R_B_pre = readU64();
+    const deltaANetMag = readU64();
+    const deltaBNetMag = readU64();
+    hops.push({ poolId, direction, feeBps, R_A_pre, R_B_pre, deltaANetMag, deltaBNetMag });
+  }
+
+  if (p + 36 > payload.length) return null;
+  const traderInputTxidBE = payload.slice(p, p + 32); p += 32;
+  const traderInputVout = dv.getUint32(p, true); p += 4;
+
+  if (p + 33 + 33 + 32 + 2 > payload.length) return null;
+  const cInSecp = payload.slice(p, p + 33); p += 33;
+  try { bytesToPoint(cInSecp); } catch { return null; }
+  const cReceiptSecp = payload.slice(p, p + 33); p += 33;
+  try { bytesToPoint(cReceiptSecp); } catch { return null; }
+  const rReceipt = payload.slice(p, p + 32); p += 32;
+
+  const rpLen = dv.getUint16(p, true); p += 2;
+  if (rpLen === 0) return null;
+  if (p + rpLen + 64 + 64 > payload.length) return null;
+  const rangeProof = payload.slice(p, p + rpLen); p += rpLen;
+  const kernelSig = payload.slice(p, p + 64); p += 64;
+  const intentSig = payload.slice(p, p + 64); p += 64;
+  if (p !== payload.length) return null;
+
+  return {
+    kind: 'swap_route',
+    version, opcode, nHops,
+    traderInputAssetId, traderOutputAssetId,
+    minOut, expiryHeight, traderPubkey,
+    hops,
+    traderInputTxidBE, traderInputVout,
+    cInSecp, cReceiptSecp, rReceipt,
+    rangeProof, kernelSig, intentSig,
+  };
 }
 
 function decodeTSwapVarPayload(payload) {
@@ -11983,6 +12069,20 @@ async function _validateOutpointSingle(txidHex, vout, validatedSet, fetchTx, met
       for (let i = 0; i < 33; i++) if (dec.cChangeOrSentinel[i] !== 0) { isSentinel = false; break; }
       if (isSentinel) { validatedSet.set(key, false); return false; }
     }
+    validatedSet.set(key, true);
+    return true;
+  }
+
+  if (env.opcode === T_SWAP_ROUTE) {
+    // vout[0] = OP_RETURN(envelope_hash); vout[1] = trader's final receipt
+    // commitment on trader_output_asset_id. Worker enforces every gate
+    // (CFMM curve floor per hop, asset/amount chain continuity, kernel
+    // sig, intent sig, BP+ rangeproof, receipt opening) — dapp validator's
+    // role here is structural recognition so scanHoldings / ancestry walks
+    // surface vout[1] as a spendable tacit UTXO.
+    if (vout !== 1) { validatedSet.set(key, false); return false; }
+    const dec = decodeTSwapRoutePayload(env.payload);
+    if (!dec) { validatedSet.set(key, false); return false; }
     validatedSet.set(key, true);
     return true;
   }
@@ -32042,6 +32142,157 @@ function _lpRemoveOutputsProportional(shareAmount, R_A, R_B, S) {
   if (s === 0n) throw new Error('cannot remove from empty pool');
   if (sa > s) throw new Error('shareAmount exceeds total shares');
   return { deltaA: (ra * sa) / s, deltaB: (rb * sa) / s };
+}
+
+// ============== T_SWAP_ROUTE routing-strategy helper ==============
+//
+// Finds a path from `assetInHex` to `assetOutHex` through up to
+// SWAP_ROUTE_HOPS_MAX (= 4) AMM pools and returns the per-hop block
+// shape that buildAndBroadcastSwapRoute consumes (pool_id, direction,
+// fee_bps, R_A_pre, R_B_pre, delta_a_net_mag, delta_b_net_mag) along
+// with the final-hop delta_out_last.
+//
+// Strategy: greedy bidirectional BFS over the pool registry, scoring
+// each candidate route by its terminal `delta_out_last` under the
+// declared `amountIn`. Skips pools whose `validation` is neither
+// 'verified' nor 'xcurve-verified' (those refuse swap envelopes).
+//
+// Returns `null` if no path exists. Returns `{ hops, deltaOutLast }`
+// for the best-scoring path (tie-break: shortest hop count).
+const SWAP_ROUTE_HOPS_MAX = 4;
+
+function _ammCurveDeltaOutLocal(direction, R_A_pre, R_B_pre, delta_in, fee_bps) {
+  const ra = BigInt(R_A_pre), rb = BigInt(R_B_pre), din = BigInt(delta_in);
+  const fbps = BigInt(fee_bps);
+  if (ra <= 0n || rb <= 0n) throw new Error('reserves must be > 0');
+  if (din <= 0n) throw new Error('delta_in must be > 0');
+  const gNum = 10000n - fbps;
+  const gDen = 10000n;
+  let deltaOut, raPost, rbPost;
+  if (direction === 0) {
+    deltaOut = (rb * gNum * din) / (ra * gDen + gNum * din);
+    raPost = ra + din;
+    rbPost = rb - deltaOut;
+  } else {
+    deltaOut = (ra * gNum * din) / (rb * gDen + gNum * din);
+    raPost = ra - deltaOut;
+    rbPost = rb + din;
+  }
+  if (deltaOut <= 0n) throw new Error('delta_out == 0 (slippage too tight)');
+  if (raPost <= 0n || rbPost <= 0n) throw new Error('post-reserve non-positive');
+  if (raPost >= 1n << 64n || rbPost >= 1n << 64n) throw new Error('post-reserve u64 overflow');
+  return { deltaOut, raPost, rbPost };
+}
+
+// Build a map keyed by asset_id_hex → array of { pool, direction } records,
+// where direction = 0 if pool.asset_a == assetId, else 1. Lets the search
+// pick "outgoing" hops from any asset in O(1).
+function _ammPoolAdjacency(pools) {
+  const adj = new Map();
+  for (const p of pools) {
+    if (p.validation !== 'verified' && p.validation !== 'xcurve-verified') continue;
+    if (!p.asset_a || !p.asset_b) continue;
+    if (!p.reserve_a || !p.reserve_b) continue;
+    if (BigInt(p.reserve_a) <= 0n || BigInt(p.reserve_b) <= 0n) continue;
+    const a = String(p.asset_a).toLowerCase();
+    const b = String(p.asset_b).toLowerCase();
+    if (!adj.has(a)) adj.set(a, []);
+    if (!adj.has(b)) adj.set(b, []);
+    adj.get(a).push({ pool: p, direction: 0, otherAsset: b });
+    adj.get(b).push({ pool: p, direction: 1, otherAsset: a });
+  }
+  return adj;
+}
+
+// Try every path of length [1, SWAP_ROUTE_HOPS_MAX] from assetIn to
+// assetOut; score by delta_out_last. Returns best path or null.
+//
+// NOTE: T_SWAP_ROUTE wire format requires n_hops >= 2. A direct
+// single-pool path (n_hops = 1) does NOT use this opcode — the dapp
+// builder routes that case through T_SWAP_VAR. So this helper REJECTS
+// paths of length 1; the caller must dispatch to swap-var for single-
+// hop trades.
+export function findSwapRoutePath({ assetInHex, assetOutHex, amountIn, pools }) {
+  const a_in = String(assetInHex).toLowerCase();
+  const a_out = String(assetOutHex).toLowerCase();
+  if (a_in === a_out) throw new Error('assetIn == assetOut (degenerate route)');
+  const amount = BigInt(amountIn);
+  if (amount <= 0n) throw new Error('amountIn must be > 0');
+
+  const adj = _ammPoolAdjacency(pools);
+  if (!adj.has(a_in)) return null;
+
+  // DFS that materializes every reachable path up to depth 4 from a_in
+  // to a_out, applying the CFMM curve at each step against a snapshot
+  // of pool reserves (clones each step so re-visiting the same pool
+  // composes correctly).
+  let best = null;
+  function _key(p, dir) { return `${p.pool_id}:${dir}`; }
+  function _dfs(asset, amountAtAsset, hops, snapshots, depth) {
+    if (depth > SWAP_ROUTE_HOPS_MAX) return;
+    const edges = adj.get(asset) || [];
+    for (const { pool, direction, otherAsset } of edges) {
+      const snapKey = pool.pool_id;
+      let R_A, R_B;
+      if (snapshots.has(snapKey)) {
+        const s = snapshots.get(snapKey);
+        R_A = s.R_A; R_B = s.R_B;
+      } else {
+        R_A = BigInt(pool.reserve_a);
+        R_B = BigInt(pool.reserve_b);
+      }
+      const R_in  = direction === 0 ? R_A : R_B;
+      const R_out = direction === 0 ? R_B : R_A;
+      if (R_in <= 0n || R_out <= 0n) continue;
+      let dOut;
+      try {
+        const curve = _ammCurveDeltaOutLocal(direction, R_A, R_B, amountAtAsset, pool.fee_bps);
+        dOut = curve.deltaOut;
+      } catch { continue; }
+      if (dOut <= 0n) continue;
+
+      const newHop = {
+        poolId: pool.pool_id,
+        direction,
+        feeBps: pool.fee_bps,
+        R_A_pre: R_A,
+        R_B_pre: R_B,
+        deltaANetMag: direction === 0 ? amountAtAsset : dOut,
+        deltaBNetMag: direction === 0 ? dOut : amountAtAsset,
+      };
+      const advancedSnapshot = new Map(snapshots);
+      if (direction === 0) {
+        advancedSnapshot.set(snapKey, { R_A: R_A + amountAtAsset, R_B: R_B - dOut });
+      } else {
+        advancedSnapshot.set(snapKey, { R_A: R_A - dOut, R_B: R_B + amountAtAsset });
+      }
+
+      const newHops = hops.concat([newHop]);
+      if (otherAsset === a_out && newHops.length >= 2) {
+        // Score = terminal delta_out_last; longer paths only win on
+        // strictly greater dOut (tie-break = shorter).
+        if (best === null
+            || dOut > best.deltaOutLast
+            || (dOut === best.deltaOutLast && newHops.length < best.hops.length)) {
+          best = { hops: newHops, deltaOutLast: dOut };
+        }
+      }
+      if (newHops.length < SWAP_ROUTE_HOPS_MAX && otherAsset !== a_out) {
+        _dfs(otherAsset, dOut, newHops, advancedSnapshot, depth + 1);
+      }
+      // ALSO recurse when otherAsset == a_out and depth < max — a longer
+      // path might still yield a better dOut if subsequent hops have
+      // favorable depth. Bounded by max depth so the search tree is
+      // small (≤ 4 deep, ≤ ~20 edges per pool — single-digit
+      // milliseconds in practice).
+      if (newHops.length < SWAP_ROUTE_HOPS_MAX && otherAsset === a_out) {
+        _dfs(otherAsset, dOut, newHops, advancedSnapshot, depth + 1);
+      }
+    }
+  }
+  _dfs(a_in, amount, [], new Map(), 1);
+
+  return best;
 }
 
 let _poolListCache = null;
