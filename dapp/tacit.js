@@ -59817,7 +59817,22 @@ function _wireMarketPriceChartCursor(host) {
   // state across re-renders. The SVG itself gets swapped out via
   // innerHTML, but the parent host stays — so its dataset survives.
   const chartHost = svg.closest('[data-market-price-chart]');
+  // Page-scroll fires synthetic mousemove events with the SAME
+  // clientX/Y but the SVG underneath has moved — without this guard
+  // the crosshair jumps to a new SVG-relative position on every
+  // scroll tick (the visible "glitch when scrolling over charts").
+  // Track the last real screen position; a phantom move with
+  // identical coords means scroll-induced, not user-driven — hide
+  // the crosshair so it doesn't sit at the wrong chart location
+  // and let a real mouse move re-show it.
+  let _lastMoveX = null, _lastMoveY = null;
   overlay.addEventListener('mousemove', (ev) => {
+    if (ev.clientX === _lastMoveX && ev.clientY === _lastMoveY) {
+      cross.style.display = 'none';
+      return;
+    }
+    _lastMoveX = ev.clientX;
+    _lastMoveY = ev.clientY;
     move(ev);
     // Persist the hover position so a re-render (auto-refresh tick on
     // new data) can replay the cursor after the SVG is swapped.
@@ -59831,6 +59846,8 @@ function _wireMarketPriceChartCursor(host) {
   });
   overlay.addEventListener('mouseleave', () => {
     cross.style.display = 'none';
+    _lastMoveX = null;
+    _lastMoveY = null;
     // Clear stashed position on real leave so a stale value doesn't
     // re-summon the crosshair after the next re-render when the
     // cursor is no longer over the chart.
@@ -59839,6 +59856,7 @@ function _wireMarketPriceChartCursor(host) {
       delete chartHost.dataset.lastHoverClientY;
     }
   });
+
   // Replay last hover position if the chart was re-rendered while the
   // user was hovering. Defer to next frame so the SVG layout is settled
   // (so getScreenCTM returns the new transform). Skips silently when
@@ -61615,7 +61633,19 @@ function _wireDepthChartInteractivity(out, ctx) {
     if (tipX < PL) tipX = PL + 4;
     tipEl.setAttribute('transform', `translate(${tipX.toFixed(1)}, ${PT + 4})`);
   };
+  // Phantom-mousemove guard + page-scroll hide. Scroll fires synthetic
+  // mousemove events with the SAME clientX/Y but the SVG underneath
+  // has moved — without the guard the cursor line jumps along X on
+  // every scroll tick (the visible "glitch over charts"). See the
+  // price-chart wire for the matching logic.
+  let _dLastMoveX = null, _dLastMoveY = null;
   overlay.addEventListener('mousemove', (e) => {
+    if (e.clientX === _dLastMoveX && e.clientY === _dLastMoveY) {
+      cursor.style.display = 'none';
+      return;
+    }
+    _dLastMoveX = e.clientX;
+    _dLastMoveY = e.clientY;
     const x = _svgX(e);
     const xClamped = Math.max(PL, Math.min(PL + plotW, x));
     const price = _xToPrice(xClamped);
@@ -61630,7 +61660,8 @@ function _wireDepthChartInteractivity(out, ctx) {
     l2.textContent = `${side === 'ask' ? 'buy' : 'sell'} ${depth.toLocaleString(undefined, { maximumFractionDigits: 2 })} ${ticker}`;
     l3.textContent = depth > 0 ? `~ ${fmtMarketBtc(sats)} · ${sats.toLocaleString('en-US')} sats` : 'no liquidity at this price';
   });
-  overlay.addEventListener('mouseleave', () => { cursor.style.display = 'none'; });
+  overlay.addEventListener('mouseleave', () => { cursor.style.display = 'none'; _dLastMoveX = null; _dLastMoveY = null; });
+
   overlay.addEventListener('click', (e) => {
     const x = _svgX(e);
     const xClamped = Math.max(PL, Math.min(PL + plotW, x));
