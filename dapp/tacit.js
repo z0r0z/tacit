@@ -13901,6 +13901,18 @@ async function _scanHoldingsImpl() {
       }
       const meta = getAssetMeta(assetIdHex);
       if (meta) { ticker = meta.ticker; decimals = meta.decimals; }
+    } else if (env.opcode === T_SWAP_ROUTE) {
+      // SPEC-SWAP-ROUTE-AMENDMENT. vout[0] = OP_RETURN(envelope_hash); vout[1]
+      // = receipt UTXO in trader_output_asset (DUST P2WPKH(recipientPub)).
+      // V1 consumes the trader's whole input — no change vout. asset_id is
+      // carried directly in the envelope (no pool registry lookup needed).
+      if (u.vout !== 1) continue;
+      const dec = decodeTSwapRoutePayload(env.payload);
+      if (!dec) continue;
+      assetIdHex = bytesToHex(dec.traderOutputAssetId);
+      const meta = getAssetMeta(assetIdHex);
+      if (meta) { ticker = meta.ticker; decimals = meta.decimals; }
+      onChainCommitment = dec.cReceiptSecp;
     } else continue;
 
     if (!holdings.has(assetIdHex)) {
@@ -14327,6 +14339,28 @@ async function _scanHoldingsImpl() {
             }
           } catch {}
         }
+      }
+    }
+
+    if (env.opcode === T_SWAP_ROUTE && u.vout === 1) {
+      // Recovery: receipt opening is fully public in the envelope per
+      // SPEC-SWAP-ROUTE-AMENDMENT. amount = last hop's delta_out (direction-
+      // dependent); blinding = rReceipt (32 B PUBLIC in envelope). No anchor
+      // walk, no priv-derived secret — anyone with the envelope + UTXO can
+      // verify and credit. Mirrors T_SWAP_VAR's receipt path.
+      const dec = decodeTSwapRoutePayload(env.payload);
+      if (dec && dec.hops.length >= 2) {
+        const lastHop = dec.hops[dec.hops.length - 1];
+        const deltaOutLast = lastHop.direction === 0 ? lastHop.deltaBNetMag : lastHop.deltaANetMag;
+        const r = bytes32ToBigint(dec.rReceipt) % SECP_N;
+        try {
+          if (pedersenCommit(deltaOutLast, r).equals(bytesToPoint(onChainCommitment))) {
+            recordOpening(u.txid, u.vout, assetIdHex, deltaOutLast, r);
+            h.balance += deltaOutLast;
+            h.utxos.push({ utxo: u, amount: deltaOutLast, blinding: r, commitment: onChainCommitment });
+            continue;
+          }
+        } catch {}
       }
     }
 
@@ -69982,6 +70016,7 @@ export {
   // registry; buildSwapRouteEnvelopeSelfFulfill assembles the envelope;
   // buildAndBroadcastSwapRoute composes the commit+reveal tx pair and
   // broadcasts.
+  T_SWAP_ROUTE,
   encodeTSwapRoutePayload, decodeTSwapRoutePayload,
   buildSwapRouteIntentMsg, buildSwapRouteKernelMsg,
   computeSwapRouteEnvelopeHash,
