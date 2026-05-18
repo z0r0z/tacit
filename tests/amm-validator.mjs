@@ -97,15 +97,23 @@ export {
   validateFarmInit, verifyFarmInitKernelSig,
   validateLpBond, verifyLpBondKernelSig,
   validateLpUnbond,
+  validateLpHarvest,
+  validateFarmRefund,
   // Wire format
   encodeFarmInit, decodeFarmInit,
   encodeLpBond,   decodeLpBond,
   encodeLpUnbond, decodeLpUnbond,
+  encodeLpHarvest, decodeLpHarvest,
+  encodeFarmRefund, decodeFarmRefund,
   computeEnvelopeHash as computeFarmEnvelopeHash,
   // Msg builders
   buildFarmInitMsg, buildFarmInitKernelMsg,
   buildLpBondMsg,   buildLpBondKernelMsg,
   buildLpUnbondMsg,
+  buildLpHarvestMsg,
+  buildFarmRefundMsg,
+  // Attestation: reuse T_INTENT_ATTEST with this canonical hash
+  buildFarmStateHash,
   // Derivations
   deriveFarmId, deriveLpAssetIdFromPoolId,
   encodeBondId,  decodeBondId,
@@ -115,9 +123,11 @@ export {
   FarmState,
   // Opcodes
   OPCODE_T_FARM_INIT, OPCODE_T_LP_BOND, OPCODE_T_LP_UNBOND,
+  OPCODE_T_LP_HARVEST, OPCODE_T_FARM_REFUND,
   // Constants
   AMM_FARM_MIN_BOND, AMM_FARM_MIN_REWARD_TOTAL,
   AMM_FARM_MAX_START_DELAY, AMM_FARM_VIEW_STALENESS,
+  AMM_FARM_REFUND_GRACE_BLOCKS,
   ACC_FIXED_POINT_SHIFT,
   // Helpers
   isNoChangeSentinel as isFarmNoChangeSentinel,

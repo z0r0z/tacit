@@ -1,9 +1,12 @@
-# SPEC AMM Amendment — LP-Bond Yield Farms (`T_FARM_INIT` / `T_LP_BOND` / `T_LP_UNBOND`)
+# SPEC AMM Amendment — LP-Bond Yield Farms (`T_FARM_INIT` / `T_LP_BOND` / `T_LP_UNBOND` / `T_LP_HARVEST` / `T_FARM_REFUND`)
 
-> **Status: 📝 Draft (round-1, post-sanity-check revision).** Adds
-> MasterChef-style staked-LP rewards to the tacit AMM via three new
-> opcodes — `T_FARM_INIT` (`0x34`), `T_LP_BOND` (`0x35`),
-> `T_LP_UNBOND` (`0x36`). Permissionless launcher-funded reward
+> **Status: 📝 Draft (round-1, post-sanity-check + harvest + refund +
+> attestation-via-reuse).** Adds MasterChef-style staked-LP rewards to
+> the tacit AMM via **five** new opcodes — `T_FARM_INIT` (`0x34`),
+> `T_LP_BOND` (`0x35`), `T_LP_UNBOND` (`0x36`), `T_LP_HARVEST` (`0x3B`),
+> `T_FARM_REFUND` (`0x3E`) — plus a documented convention for
+> farm-state attestation via the existing scope-generic
+> `T_INTENT_ATTEST` (`0x30`), so no separate attestation opcode is needed. Permissionless launcher-funded reward
 > treasuries, lazy per-block accrual mirroring the existing
 > protocol-fee `mintFee` pattern, virtual-bookkeeping treasury
 > custody (no on-chain treasury UTXOs), per-bond worker-indexed
@@ -606,6 +609,384 @@ treasury and the second gets `payout = 0`. Bonders racing for
 last-block emissions see this exactly the way MasterChef bonders
 see end-of-emissions: deterministic, public ordering, no MEV
 opportunity beyond what tip-revenue economics already capture.
+
+---
+
+## §5.43 `T_LP_HARVEST` (`0x3B`) — claim accrued reward without unbonding
+
+This is the MasterChef-equivalent of the `harvest()` / `deposit(0)`
+pattern: the bonder claims pending TAC (or whatever
+`farm.reward_asset_id` is) and **keeps the underlying LP shares
+bonded**, with `bond.entry_acc_per_share` rolled forward to the
+exit value so subsequent harvests/unbonds pay only the delta. Without
+this opcode, the bonder must `unbond + re-bond` (two Bitcoin tx fees,
+two state mutations, fresh `bond_id`) to claim accrued rewards while
+keeping their position — which is functionally equivalent but
+materially more expensive and worse UX.
+
+### Pre-conditions
+
+- `bond_id` resolves to a depth-3-confirmed bond record.
+- `harvester_pubkey == bond_record.bonder_pubkey` (no transfer
+  mechanism in v1; see `T_LP_UNBOND` pre-conditions for the same
+  rule).
+- Farm exists and is depth-3-confirmed; emissions may be exhausted
+  (`treasury_remaining == 0`) — harvest still succeeds with zero
+  payout in that case, but still rolls forward `entry_acc` so a
+  future harvest doesn't double-count the same accrual window.
+
+### Wire format
+
+```
+T_LP_HARVEST envelope payload (227 bytes fixed):
+
+envelope_version           1 B  = 0x01
+opcode                     1 B  = 0x3B
+farm_id                   32 B
+bond_id                   36 B  outpoint reference identifying the bond record.
+harvester_pubkey          33 B  compressed secp256k1. Must equal
+                                  bond_record.bonder_pubkey.
+exit_acc_per_share        16 B  u128 LE — harvester's view of
+                                  farm.acc_reward_per_share post-crystallization.
+exit_view_height           4 B  u32 LE — harvester's view of canonical height.
+reward_amount              8 B  u64 LE — claimed payout. Validator recomputes:
+                                    pending = bond_amount * (exit_acc - entry_acc) >> 96
+                                    payout  = min(pending, farm.treasury_remaining)
+                                  and requires reward_amount == payout.
+reward_r                  32 B  Opening scalar for the reward UTXO at vout[1].
+                                  Validator emits reward_C = reward_amount · H +
+                                  reward_r · G.
+harvester_sig             64 B  BIP-340 by harvester_pubkey over harvest_msg.
+```
+
+Fixed payload: **227 bytes**. No bulletproof. No kernel sig.
+
+### Bitcoin tx layout (normative)
+
+```
+vin[0]    Envelope-bearing input.
+vin[1..]  Optional BTC funding inputs from the harvester.
+
+vout[0]   OP_RETURN(envelope_hash).
+vout[1]   Reward UTXO — dust P2WPKH paying harvester's address. Asset class =
+          farm.reward_asset_id; value = reward_amount; Pedersen commit =
+          reward_amount · H + reward_r · G. Omitted iff reward_amount == 0
+          (zero-payout harvest is purely an entry_acc roll-forward).
+```
+
+**No lp_return UTXO is emitted.** The LP shares remain accounted in
+`farm.total_bonded` and the bond record persists. This is the
+defining difference vs. `T_LP_UNBOND`.
+
+### harvest_msg
+
+```
+harvest_msg = SHA256(
+    "tacit-amm-farm-harvest-v1"
+    || farm_id(32)
+    || bond_id(36)
+    || harvester_pubkey(33)
+    || exit_acc_per_share_LE(16)
+    || exit_view_height_LE(4)
+    || reward_amount_LE(8)
+    || reward_r(32)
+)
+```
+
+Distinct domain tag (`tacit-amm-farm-harvest-v1`) prevents replay
+between the harvest and unbond surfaces — a harvest signature
+cannot be re-used as an unbond signature even with identical
+non-sig fields.
+
+### State updates (post-confirmation, at depth 3)
+
+1. Look up `bond_record` by `bond_id`. Reject if absent.
+2. Verify `harvester_pubkey == bond_record.bonder_pubkey`.
+3. Verify `farm_id` consistency (envelope.farm_id == bond.farm_id == farm.farm_id).
+4. Crystallize `farm` to `canonical_height = min(current_confirmation_height - 3, farm.end_height)`.
+5. Verify `exit_acc_per_share == farm.acc_reward_per_share`.
+6. Verify `exit_view_height ≥ canonical_height - AMM_FARM_VIEW_STALENESS`.
+7. Compute `pending = bond_record.bond_amount * (exit_acc - entry_acc) >> 96` (BigInt; narrowed at payout).
+8. Compute `payout = min(pending, farm.treasury_remaining)`.
+9. Verify `reward_amount == payout`.
+10. Verify `harvester_sig` against `harvest_msg` under `harvester_pubkey`.
+11. If `reward_amount > 0`: emit `reward` UTXO at `vout[1]` with commit
+    `reward_amount · H + reward_r · G`, asset_id = `farm.reward_asset_id`.
+12. **`farm.total_bonded` is NOT modified.**
+13. `farm.treasury_remaining -= reward_amount`.
+14. `farm.last_update_height = canonical_height` (set by crystallize).
+15. `bond_record.entry_acc_per_share = exit_acc_per_share` (the key
+    state mutation — bond is now "fresh" relative to the new acc).
+16. Bond record otherwise unchanged: `bond_amount`, `bonder_pubkey`,
+    `bond_height`, and `bond_id` (= `vout[1]` outpoint of the original
+    `T_LP_BOND`) all persist. Optional bookkeeping: `last_harvest_height`
+    and `last_harvest_txid` SHOULD be recorded for indexer UX but are
+    not load-bearing for protocol correctness.
+
+### Canonical block ordering
+
+Same `(tx_index, vin[0] outpoint)` rule as `T_LP_UNBOND` applies.
+A harvest and unbond against the same bond in the same block are
+**not** independent — the canonically-first envelope mutates state
+first, and the second sees the rolled-forward `entry_acc_per_share`
+(harvest) or deleted bond record (unbond). The second envelope of a
+same-block (harvest, unbond) pair is structurally fine: harvest
+rolls `entry_acc` forward, unbond then computes `delta = 0` and
+pays nothing on the reward side while still returning the LP shares.
+A same-block (unbond, harvest) pair has the harvest reject (bond
+record absent) and is silently dropped — no protocol harm but worth
+noting for wallet UX.
+
+### Conservation impact
+
+All five invariants from §"Conservation invariants" continue to hold
+under harvest:
+
+1. **Treasury conservation.** `treasury_remaining` is decremented by
+   `reward_amount`, identical to unbond's treasury flow. The sum-of-
+   payouts identity includes harvest payouts.
+2. **Bond conservation.** `total_bonded == Σ outstanding bonds.bond_amount`
+   — harvest doesn't change either side. The bond record persists with
+   its original `bond_amount`.
+3. **LP-asset conservation.** No LP UTXO is consumed or minted at
+   harvest. The bond's notional claim on `bond_amount` LP shares
+   continues to be redeemable via a future `T_LP_UNBOND`.
+4. **No accrual without depth.** Same depth-3 gate as bond/unbond.
+5. **Emission cap.** `payout = min(pending, treasury_remaining)`
+   clamp; total payouts across all opcodes (unbond + harvest) cannot
+   exceed `reward_total`.
+
+### Indexer interface (informative)
+
+`/farm/:farm_id/bonds?bonder=:pubkey` MUST surface `last_harvest_height`
+and `last_harvest_txid` on each bond record so wallet UI can show
+"last harvested at block X" without re-scanning the chain.
+
+The `pending_reward` field on each bond record is computed against
+`bond.entry_acc_per_share` (which is the post-most-recent-harvest
+value, not the original bond entry). This means the displayed
+`pending` is "claimable now via either harvest or unbond" — exactly
+what the user wants to see.
+
+---
+
+## §5.44 `T_FARM_REFUND` (`0x3E`) — launcher reclaims unspent treasury
+
+Without this opcode, emissions forfeited during zero-bonded intervals
+(e.g., the period between `start_height` and the first bond, or after
+all LPs exit early) become permanently locked in the virtual treasury:
+`treasury_remaining > 0` with no path to return it to the launcher.
+For a launcher sizing a farm conservatively, this dead capital is a
+significant deterrent.
+
+`T_FARM_REFUND` lets the launcher reclaim **exactly** `treasury_remaining`
+strictly after `end_height + AMM_FARM_REFUND_GRACE_BLOCKS` (~7 days at
+10-min cadence). The grace window:
+
+- Gives LPs a generous post-end interval to harvest/unbond their
+  final positions, so refund doesn't race against in-flight claims.
+- Keeps the **"no privileged operator mid-stream"** property intact:
+  the launcher cannot drain while the farm is active or even
+  immediately after end_height; only after grace.
+
+Single-shot semantics — the farm's `refunded` flag prevents replay.
+
+### Pre-conditions
+
+- `farm_id` resolves to a depth-3-confirmed farm record.
+- `launcher_pubkey == farm.launcher_pubkey` (privileged operation; only
+  the original launcher can refund).
+- `canonical_height ≥ farm.end_height + AMM_FARM_REFUND_GRACE_BLOCKS`.
+- `farm.refunded !== true` (single-shot).
+- `refund_amount == farm.treasury_remaining` (no partial refunds).
+- `treasury_remaining > 0` (zero-treasury refund attempts rejected as
+  wasted gas).
+
+### Wire format
+
+```
+T_FARM_REFUND envelope payload (170 bytes fixed):
+
+envelope_version    1 B  = 0x01
+opcode              1 B  = 0x3E
+farm_id            32 B
+launcher_pubkey    33 B  compressed secp256k1. Must equal farm.launcher_pubkey.
+refund_amount       8 B  u64 LE — must equal farm.treasury_remaining at
+                          canonical_height (recomputed by validator).
+refund_view_height  4 B  u32 LE — launcher's view of canonical height.
+refund_r           32 B  Opening scalar for the refund UTXO at vout[1].
+                          Validator emits refund_C = refund_amount · H +
+                          refund_r · G.
+launcher_sig       64 B  BIP-340 by launcher_pubkey over refund_msg.
+```
+
+### Bitcoin tx layout (normative)
+
+```
+vin[0]    Envelope-bearing input.
+vin[1..]  Optional BTC funding inputs from the launcher.
+
+vout[0]   OP_RETURN(envelope_hash).
+vout[1]   Refund UTXO — dust P2WPKH paying launcher's address. Asset
+          class = farm.reward_asset_id; value = refund_amount; Pedersen
+          commit = refund_amount · H + refund_r · G.
+```
+
+### refund_msg
+
+```
+refund_msg = SHA256(
+    "tacit-amm-farm-refund-v1"
+    || farm_id(32)
+    || launcher_pubkey(33)
+    || refund_amount_LE(8)
+    || refund_view_height_LE(4)
+    || refund_r(32)
+)
+```
+
+### State updates (post-confirmation, at depth 3)
+
+1. Look up `farm` by `farm_id`. Reject if absent.
+2. Verify `launcher_pubkey == farm.launcher_pubkey`.
+3. Reject if `farm.refunded === true`.
+4. Compute `canonical_height = currentConfirmationHeight − 3`.
+5. Reject if `canonical_height < farm.end_height + AMM_FARM_REFUND_GRACE_BLOCKS`.
+6. Reject if `refund_view_height < canonical_height − AMM_FARM_VIEW_STALENESS`.
+7. Reject if `refund_amount !== farm.treasury_remaining` (no partial).
+8. Reject if `refund_amount === 0` (wasted gas).
+9. Public opening sanity on `refund_r` (`0 < refund_r < secp_n`).
+10. Verify `launcher_sig` against `refund_msg` under `launcher_pubkey`.
+11. Emit `refund` UTXO at `vout[1]` with commit `refund_amount · H + refund_r · G`,
+    `asset_id = farm.reward_asset_id`.
+12. **State updates**:
+    - `farm.treasury_remaining = 0`
+    - `farm.refunded = true`
+    - `farm.refunded_height = canonical_height`
+    - `farm.refunded_amount = refund_amount`
+    - `farm.refunded_txid = current_tx.txid`
+
+### Why post-grace launcher refund preserves the "no privileged operator" promise
+
+The launcher *can* recover unspent treasury — but only after the farm's
+declared lifecycle is fully complete plus a one-week buffer. During
+the entire active window of the farm (`start_height` through
+`end_height + grace`), the launcher has **no spending authority over
+the treasury**. LPs who bond during the active window are guaranteed:
+
+1. Their pending reward (per `acc_reward_per_share` math) is claimable
+   via `T_LP_HARVEST` or `T_LP_UNBOND` at any time during the farm.
+2. The launcher cannot intercept or front-run their claims.
+3. The launcher cannot shorten the farm's lifecycle.
+
+The refund opcode is structurally constrained to fire *only after the
+farm's value to LPs has already been fully realized*. This is the same
+trust posture as MasterChef contracts that allow the deployer to
+recover unused reward tokens after the emission period ends.
+
+### Conservation impact
+
+For any farm `F` over its full lifecycle:
+
+```
+F.reward_total = Σ over LP_UNBOND.reward_amount
+               + Σ over LP_HARVEST.reward_amount
+               + (F.refunded ? F.refunded_amount : F.treasury_remaining)
+               + (forfeited emissions during zero-bonded intervals)
+```
+
+The forfeited-emissions term is captured implicitly: if `total_bonded == 0`
+during interval `[h_a, h_b]`, `acc_reward_per_share` doesn't advance and
+those `reward_per_block × (h_b − h_a)` units are still tracked in
+`treasury_remaining` — which the launcher can refund post-grace. So
+**no value is permanently locked** unless the launcher chooses not to
+refund.
+
+---
+
+## §5.45 Farm-state attestations (reuse `T_INTENT_ATTEST` `0x30`)
+
+There is **no dedicated farm-state attestation opcode**. The existing
+`T_INTENT_ATTEST` (`0x30`, see `SPEC.md` §5.17 and
+`AMM.md` §"Preconfirmation layer") is already:
+
+- **Scope-generic**: `scope_id` is a 32B opaque discriminator; the
+  validator doesn't enforce its semantic interpretation.
+- **Hash-bound**: the `intent_pool_hash` field carries any 32B commitment
+  the attester signs to.
+- **Equivocation-detecting**: per-`(scope_id, attester_pubkey, observed_height)`
+  uniqueness is already enforced. Two different hashes at the same key →
+  attester flagged as equivocator, sigs permanently on-chain.
+
+Farm-state attestation reuses this primitive with the following
+conventions (no new opcode, no new validator logic, no new domain tag
+*for the attestation envelope itself* — only the hash composition tag):
+
+### scope_id derivation
+
+```
+scope_id = farm_id
+```
+
+`farm_id` is already domain-tagged (`tacit-amm-farm-init-v1`) so it
+cannot collide with pool_ids, mixer scope_ids, orderbook scope_ids, or
+any other 32B scope discriminator used elsewhere in the protocol.
+
+### intent_pool_hash composition
+
+```
+intent_pool_hash = SHA256(
+    "tacit-farm-state-v1"
+    || treasury_remaining_LE(8)
+    || total_bonded_LE(8)
+    || acc_reward_per_share_LE(16)
+)
+```
+
+The three fields are the canonical farm state at the attested height.
+Recomputable by any indexer from the same chain history. Equivocation
+is structurally detected by the existing `T_INTENT_ATTEST` validator —
+two different `intent_pool_hash` values from the same attester at the
+same `(scope_id, observed_height)` are a proof of equivocation.
+
+### snapshot_uri (informational)
+
+```
+snapshot_uri = "/farm/<farm_id>?height=<observed_height>"
+```
+
+Optional but recommended — points at a worker endpoint serving the
+cleartext snapshot fields. Auditors fetch the cleartext, recompute
+`buildFarmStateHash`, compare to the on-chain `intent_pool_hash`.
+Multiple independent attesters publishing identical hashes for the same
+`(farm_id, observed_height)` constitute trustless verification
+waypoints.
+
+### Reference impl
+
+```js
+import { buildFarmStateHash } from './tests/amm-farm.mjs';
+
+const hash = buildFarmStateHash({
+  treasuryRemaining: farm.treasury_remaining,
+  totalBonded:       farm.total_bonded,
+  accRewardPerShare: farm.acc_reward_per_share,
+});
+
+// Publish via T_INTENT_ATTEST with scope_id = farm.farm_id,
+// intent_pool_hash = hash, observed_height = canonical_height.
+```
+
+### Why no separate opcode
+
+Adding a dedicated `T_FARM_ATTEST` would duplicate ~400 LOC of
+validator/equivocation-detection/wire-format code that already exists
+for `T_INTENT_ATTEST`. The only difference would be cosmetic
+(`intent_pool_hash` field naming). Reuse keeps the spec smaller and
+the validator surface unchanged — and the same convention extends
+trivially to AMM pool state attestations (`scope_id = pool_id`,
+hash composition `tacit-pool-state-v1 || reserve_a || reserve_b || ...`)
+and mixer pool snapshots without any further protocol additions.
 
 ---
 

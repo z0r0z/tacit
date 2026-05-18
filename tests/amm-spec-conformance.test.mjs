@@ -36,10 +36,15 @@ const EXPECTED_OPCODES = {
   T_INTENT_ATTEST:       0x30,
   T_PROTOCOL_FEE_CLAIM:  0x31,
   T_SWAP_VAR:            0x32,  // implemented (SPEC.md §5.16.3)
-  // LP-bond yield farms (SPEC-AMM-FARM-AMENDMENT.md §5.40/§5.41/§5.42).
+  // LP-bond yield farms (SPEC-AMM-FARM-AMENDMENT.md §5.40/§5.41/§5.42/§5.43).
   T_FARM_INIT:           0x34,
   T_LP_BOND:             0x35,
   T_LP_UNBOND:           0x36,
+  T_LP_HARVEST:          0x3b,
+  T_FARM_REFUND:         0x3e,
+  // Note: there is NO T_FARM_ATTEST opcode. Farm-state attestations
+  // reuse the existing T_INTENT_ATTEST (0x30) per SPEC-AMM-FARM-AMENDMENT.md
+  // §5.45 with scope_id=farm_id and intent_pool_hash=buildFarmStateHash(...).
 };
 
 // ----- Pinned: every domain-tag string the protocol uses, byte-by-byte. -----
@@ -74,12 +79,15 @@ const EXPECTED_DOMAIN_TAGS = [
   'tacit-amm-swap-var-change-v1',
   'tacit-amm-swap-var-tip-v1',
   // LP-bond yield farms (SPEC-AMM-FARM-AMENDMENT.md §"Constants").
-  // Three tags only — receipts are plain P2WPKH dust (no asset class),
-  // treasury is virtual (no NUMS sentinel). The kernel-sig domain reuses
+  // Four tags — receipts are plain P2WPKH dust (no asset class),
+  // treasury is virtual (no NUMS sentinel). Kernel-sig domain reuses
   // the shared "tacit-kernel-v1" from composition.mjs.
   'tacit-amm-farm-init-v1',     // farm_id derivation + init_msg
   'tacit-amm-farm-bond-v1',     // bond_msg
   'tacit-amm-farm-unbond-v1',   // unbond_msg
+  'tacit-amm-farm-harvest-v1',  // harvest_msg (claim reward without unbonding)
+  'tacit-amm-farm-refund-v1',   // refund_msg (launcher reclaims unspent treasury)
+  'tacit-farm-state-v1',        // buildFarmStateHash domain (T_INTENT_ATTEST payload)
   // Deterministic-nonce derivation tags for proveXCurveDeterministic
   // Internal-only — never appear in on-chain bytes, so
   // they don't need normative SPEC documentation, but we whitelist them
@@ -176,13 +184,16 @@ console.log('Opcode bytes (spec-literal pinning)');
   const { OPCODE_T_SWAP_VAR } = await import('./swap-var.mjs');
   test(`T_SWAP_VAR == 0x32`, () => OPCODE_T_SWAP_VAR === EXPECTED_OPCODES.T_SWAP_VAR);
 
-  // T_FARM_INIT / T_LP_BOND / T_LP_UNBOND — SPEC-AMM-FARM-AMENDMENT.md.
+  // T_FARM_INIT / T_LP_BOND / T_LP_UNBOND / T_LP_HARVEST / T_FARM_REFUND — SPEC-AMM-FARM-AMENDMENT.md.
   const {
     OPCODE_T_FARM_INIT, OPCODE_T_LP_BOND, OPCODE_T_LP_UNBOND,
+    OPCODE_T_LP_HARVEST, OPCODE_T_FARM_REFUND,
   } = await import('./amm-farm.mjs');
-  test(`T_FARM_INIT == 0x34`, () => OPCODE_T_FARM_INIT === EXPECTED_OPCODES.T_FARM_INIT);
-  test(`T_LP_BOND   == 0x35`, () => OPCODE_T_LP_BOND   === EXPECTED_OPCODES.T_LP_BOND);
-  test(`T_LP_UNBOND == 0x36`, () => OPCODE_T_LP_UNBOND === EXPECTED_OPCODES.T_LP_UNBOND);
+  test(`T_FARM_INIT   == 0x34`, () => OPCODE_T_FARM_INIT   === EXPECTED_OPCODES.T_FARM_INIT);
+  test(`T_LP_BOND     == 0x35`, () => OPCODE_T_LP_BOND     === EXPECTED_OPCODES.T_LP_BOND);
+  test(`T_LP_UNBOND   == 0x36`, () => OPCODE_T_LP_UNBOND   === EXPECTED_OPCODES.T_LP_UNBOND);
+  test(`T_LP_HARVEST  == 0x3b`, () => OPCODE_T_LP_HARVEST  === EXPECTED_OPCODES.T_LP_HARVEST);
+  test(`T_FARM_REFUND == 0x3e`, () => OPCODE_T_FARM_REFUND === EXPECTED_OPCODES.T_FARM_REFUND);
 
   // amm-validator.mjs re-exports the T_SWAP_VAR surface so integrators
   // have a single canonical entry point for every AMM-opcode validator.
@@ -203,6 +214,16 @@ console.log('Opcode bytes (spec-literal pinning)');
        () => ammv.OPCODE_T_LP_BOND === EXPECTED_OPCODES.T_LP_BOND);
   test(`amm-validator re-exports OPCODE_T_LP_UNBOND == 0x36`,
        () => ammv.OPCODE_T_LP_UNBOND === EXPECTED_OPCODES.T_LP_UNBOND);
+  test(`amm-validator re-exports validateLpHarvest`,
+       () => typeof ammv.validateLpHarvest === 'function');
+  test(`amm-validator re-exports OPCODE_T_LP_HARVEST == 0x3b`,
+       () => ammv.OPCODE_T_LP_HARVEST === EXPECTED_OPCODES.T_LP_HARVEST);
+  test(`amm-validator re-exports validateFarmRefund`,
+       () => typeof ammv.validateFarmRefund === 'function');
+  test(`amm-validator re-exports OPCODE_T_FARM_REFUND == 0x3e`,
+       () => ammv.OPCODE_T_FARM_REFUND === EXPECTED_OPCODES.T_FARM_REFUND);
+  test(`amm-validator re-exports buildFarmStateHash (for T_INTENT_ATTEST attestation reuse)`,
+       () => typeof ammv.buildFarmStateHash === 'function');
 }
 
 // =========================================================================

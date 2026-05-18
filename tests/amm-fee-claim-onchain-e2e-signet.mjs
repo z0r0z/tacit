@@ -163,16 +163,27 @@ function cetchAssetId(revealTxid) {
 
 const state = loadState();
 
-// Tunables. Reserves chosen large enough that crystallization rounds
-// non-zero on a handful of swaps (the round-to-zero threshold falls
-// when S ~< (fee_bps × root_k_growth / denominator); 1M:1M cleanly
-// avoids it for a 100bps fee + a few 5k swaps).
+// Tunables — picked to robustly produce accrued > 0 against signet's
+// indexer cadence. The crystallization formula's round-to-zero threshold
+// is ~`isqrt_k_growth >= 10000 / protocol_fee_bps`. To clear it without
+// gambling on indexer timing across multiple swaps, this rehearsal uses:
+//
+//   * protocol_fee_bps = 1000  (10%, the spec-defined max)
+//   * 1 large swap = 50% of pool (huge k growth in one tx → no
+//     between-swap indexer race to lose)
+//   * Smaller pool seed (100K) so the 50k swap is half the pool
+//
+// Math check (POOL_DELTA=100K, SWAP_AMOUNT=50K, fee_bps=30, pf_bps=1000):
+//   dout = (100K · 9970 · 50K) / (100K · 10000 + 9970 · 50K) = 33267
+//   R_A_post=66733  R_B_post=150000  k_post=1.001e10  k_growth=1M
+//   isqrt_growth = 50
+//   accrued ≈ S·pf_bps·50 / (9000·rootK_now + 1000·rootK_pre) ≈ 5 shares.
 const SUPPLY        = 1_000_000n;
-const POOL_DELTA_A  = 200_000n;
-const POOL_DELTA_B  = 200_000n;
-const SWAP_AMOUNT   = 5_000n;
-const N_SWAPS       = 5;
-const PROTOCOL_FEE_BPS = 100;   // 1% of LP-fee growth → fast accrual
+const POOL_DELTA_A  = 100_000n;
+const POOL_DELTA_B  = 100_000n;
+const SWAP_AMOUNT   = 50_000n;
+const N_SWAPS       = 1;
+const PROTOCOL_FEE_BPS = 1000;  // 10% of LP-fee growth (spec max)
 
 console.log(`\n=== T_PROTOCOL_FEE_CLAIM on-chain end-to-end signet harness ===\n`);
 console.log(`  founder: ${FOUNDER.addr}  ← also acts as protocol-fee recipient`);

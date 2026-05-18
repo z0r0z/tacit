@@ -27,21 +27,28 @@ import {
 import { signSchnorr, verifySchnorr } from './composition.mjs';
 import {
   OPCODE_T_FARM_INIT, OPCODE_T_LP_BOND, OPCODE_T_LP_UNBOND,
+  OPCODE_T_LP_HARVEST, OPCODE_T_FARM_REFUND,
   ENVELOPE_VERSION,
   AMM_FARM_MIN_BOND, AMM_FARM_MIN_REWARD_TOTAL,
   AMM_FARM_MAX_START_DELAY, AMM_FARM_VIEW_STALENESS,
+  AMM_FARM_REFUND_GRACE_BLOCKS,
   ACC_FIXED_POINT_SHIFT, NO_CHANGE_SENTINEL,
   deriveFarmId, deriveLpAssetIdFromPoolId, encodeBondId,
   buildFarmInitMsg, buildFarmInitKernelMsg,
   buildLpBondMsg, buildLpBondKernelMsg,
-  buildLpUnbondMsg, kernelVerifyPoint,
+  buildLpUnbondMsg, buildLpHarvestMsg,
+  buildFarmRefundMsg, buildFarmStateHash,
+  kernelVerifyPoint,
   encodeFarmInit, decodeFarmInit,
   encodeLpBond, decodeLpBond,
   encodeLpUnbond, decodeLpUnbond,
+  encodeLpHarvest, decodeLpHarvest,
+  encodeFarmRefund, decodeFarmRefund,
   computeEnvelopeHash, crystallizeFarm,
   validateFarmInit, verifyFarmInitKernelSig,
   validateLpBond, verifyLpBondKernelSig,
-  validateLpUnbond,
+  validateLpUnbond, validateLpHarvest,
+  validateFarmRefund,
   FarmState, isNoChangeSentinel,
 } from './amm-farm.mjs';
 
@@ -157,6 +164,9 @@ console.log('\n--- Section 1: Constants + derivations ---');
 test('OPCODE_T_FARM_INIT === 0x34', () => OPCODE_T_FARM_INIT === 0x34);
 test('OPCODE_T_LP_BOND   === 0x35', () => OPCODE_T_LP_BOND === 0x35);
 test('OPCODE_T_LP_UNBOND === 0x36', () => OPCODE_T_LP_UNBOND === 0x36);
+test('OPCODE_T_LP_HARVEST=== 0x3b', () => OPCODE_T_LP_HARVEST === 0x3b);
+test('OPCODE_T_FARM_REFUND === 0x3e', () => OPCODE_T_FARM_REFUND === 0x3e);
+test('AMM_FARM_REFUND_GRACE_BLOCKS === 1008', () => AMM_FARM_REFUND_GRACE_BLOCKS === 1008);
 test('ENVELOPE_VERSION   === 0x01', () => ENVELOPE_VERSION === 0x01);
 
 test('AMM_FARM_MIN_BOND === 1000', () => AMM_FARM_MIN_BOND === 1000n);
@@ -1442,6 +1452,519 @@ test('Two farms on the same pool accrue independently', () => {
   return accA === accB
     && farmA.last_update_height === 200
     && farmB.last_update_height === 200;
+});
+
+// ============================================================
+// Section 7.5: T_LP_HARVEST validator
+// ============================================================
+
+console.log('\n--- Section 7.5: LP_HARVEST validator ---');
+
+function buildSignedLpHarvest({
+  farm, bondRecord, bondId, harvesterPriv = BONDER_A_PRIV, harvesterPub = BONDER_A_PUB,
+  currentConfirmationHeight,
+} = {}) {
+  const canonicalHeight = currentConfirmationHeight - 3 > farm.end_height
+    ? farm.end_height
+    : currentConfirmationHeight - 3;
+  const farmCopy = { ...farm };
+  crystallizeFarm(farmCopy, canonicalHeight);
+  const exitAcc = farmCopy.acc_reward_per_share;
+  const delta = exitAcc - bondRecord.entry_acc_per_share;
+  const pending = (bondRecord.bond_amount * delta) >> ACC_FIXED_POINT_SHIFT;
+  const payout = pending > farmCopy.treasury_remaining ? farmCopy.treasury_remaining : pending;
+
+  const rewardR = payout === 0n ? new Uint8Array(32) : bigintToBytes32(randomScalar());
+  const harvestMsg = buildLpHarvestMsg({
+    farmId: farm.farm_id, bondId, harvesterPubkey: harvesterPub,
+    exitAccPerShare: exitAcc, exitViewHeight: canonicalHeight,
+    rewardAmount: payout, rewardR,
+  });
+  const harvesterSig = signSchnorr(harvestMsg, harvesterPriv);
+
+  const env = {
+    farmId: farm.farm_id, bondId, harvesterPubkey: harvesterPub,
+    exitAccPerShare: exitAcc, exitViewHeight: canonicalHeight,
+    rewardAmount: payout, rewardR, harvesterSig,
+  };
+  return { env, payload: encodeLpHarvest(env), pending, payout, exitAcc, canonicalHeight };
+}
+
+test('T_LP_HARVEST encode→decode roundtrip', () => {
+  const farmId = sha256(TE.encode('harvest-roundtrip'));
+  const bondId = encodeBondId(mkTxid('h-rt'), 1);
+  const env = {
+    farmId, bondId, harvesterPubkey: BONDER_A_PUB,
+    exitAccPerShare: (1n << 90n) + 12345n,
+    exitViewHeight: 500,
+    rewardAmount: 999_999n,
+    rewardR: bigintToBytes32(modN(0xfeedn)),
+    harvesterSig: new Uint8Array(64).fill(0x77),
+  };
+  const p = encodeLpHarvest(env);
+  if (p.length !== 227) return `expected 227 B, got ${p.length}`;
+  const dec = decodeLpHarvest(p);
+  return dec.version === ENVELOPE_VERSION
+    && dec.opcode === OPCODE_T_LP_HARVEST
+    && bytesEq(dec.farmId, env.farmId)
+    && bytesEq(dec.bondId, env.bondId)
+    && bytesEq(dec.harvesterPubkey, env.harvesterPubkey)
+    && dec.exitAccPerShare === env.exitAccPerShare
+    && dec.exitViewHeight === env.exitViewHeight
+    && dec.rewardAmount === env.rewardAmount
+    && bytesEq(dec.rewardR, env.rewardR)
+    && bytesEq(dec.harvesterSig, env.harvesterSig);
+});
+
+test('LP_HARVEST: pays exact pending and bond persists', () => {
+  const farm = mkFarm({ start_height: 100, last_update_height: 100, total_bonded: 1000n });
+  const bondRecord = { farm_id: farm.farm_id, bond_amount: 1000n, entry_acc_per_share: 0n, bonder_pubkey: BONDER_A_PUB, bond_height: 100 };
+  const bondId = encodeBondId(mkTxid('harvest-1'), 1);
+  const h = buildSignedLpHarvest({ farm, bondRecord, bondId, currentConfirmationHeight: 203 });
+  const opReturnData = computeEnvelopeHash(h.payload);
+  const r = validateLpHarvest({
+    payload: h.payload, farm, bondRecord,
+    currentConfirmationHeight: 203,
+    opReturnData,
+  });
+  if (!r.valid) return `validator rejected: ${r.reason}`;
+  // Pending = 100 blocks × 100k/block × bond_amount/total_bonded = 100 × 100k × 1000/1000 = 10M
+  if (h.payout !== 10_000_000n) return `expected payout 10M, got ${h.payout}`;
+  if (r.newFarm.total_bonded !== 1000n) return `total_bonded changed: ${r.newFarm.total_bonded}`;
+  if (r.newBondRecord.entry_acc_per_share !== h.exitAcc) return `entry_acc not rolled forward`;
+  if (r.newBondRecord.bond_amount !== bondRecord.bond_amount) return `bond_amount changed`;
+  if (r.receipts.length !== 1) return `expected 1 receipt, got ${r.receipts.length}`;
+  if (r.receipts[0].kind !== 'farm_reward') return `expected farm_reward receipt`;
+  if (r.receipts[0].amount !== h.payout) return `receipt amount mismatch`;
+  return true;
+});
+
+test('LP_HARVEST: second consecutive harvest pays only the new delta', () => {
+  const farm = mkFarm({ start_height: 100, last_update_height: 100, total_bonded: 1000n });
+  let bondRecord = { farm_id: farm.farm_id, bond_amount: 1000n, entry_acc_per_share: 0n, bonder_pubkey: BONDER_A_PUB, bond_height: 100 };
+  const bondId = encodeBondId(mkTxid('harvest-2x'), 1);
+
+  // First harvest at confirmation height 203 (canonical=200, elapsed=100).
+  const h1 = buildSignedLpHarvest({ farm, bondRecord, bondId, currentConfirmationHeight: 203 });
+  const r1 = validateLpHarvest({
+    payload: h1.payload, farm, bondRecord,
+    currentConfirmationHeight: 203,
+    opReturnData: computeEnvelopeHash(h1.payload),
+  });
+  if (!r1.valid) return `first harvest rejected: ${r1.reason}`;
+  if (h1.payout !== 10_000_000n) return `first payout wrong: ${h1.payout}`;
+
+  // Roll forward farm + bond.
+  const farm2 = { ...r1.newFarm };
+  bondRecord = r1.newBondRecord;
+
+  // Second harvest at confirmation 303 (canonical=300, elapsed since
+  // last_update=200 → 100 more blocks of emission).
+  const h2 = buildSignedLpHarvest({ farm: farm2, bondRecord, bondId, currentConfirmationHeight: 303 });
+  const r2 = validateLpHarvest({
+    payload: h2.payload, farm: farm2, bondRecord,
+    currentConfirmationHeight: 303,
+    opReturnData: computeEnvelopeHash(h2.payload),
+  });
+  if (!r2.valid) return `second harvest rejected: ${r2.reason}`;
+  if (h2.payout !== 10_000_000n) return `second payout wrong (expected 10M, got ${h2.payout})`;
+  // Treasury decremented by both payouts.
+  if (r2.newFarm.treasury_remaining !== farm.treasury_remaining - 20_000_000n) {
+    return `treasury wrong: ${r2.newFarm.treasury_remaining}`;
+  }
+  return true;
+});
+
+test('LP_HARVEST: rejects harvester_pubkey != bond.bonder_pubkey', () => {
+  const farm = mkFarm({ total_bonded: 1000n });
+  const bondRecord = { farm_id: farm.farm_id, bond_amount: 1000n, entry_acc_per_share: 0n, bonder_pubkey: BONDER_A_PUB, bond_height: 100 };
+  const bondId = encodeBondId(mkTxid('harvest-imp'), 1);
+  const h = buildSignedLpHarvest({
+    farm, bondRecord, bondId,
+    harvesterPriv: ATTACKER_PRIV, harvesterPub: ATTACKER_PUB,
+    currentConfirmationHeight: 203,
+  });
+  const r = validateLpHarvest({
+    payload: h.payload, farm, bondRecord,
+    currentConfirmationHeight: 203,
+    opReturnData: computeEnvelopeHash(h.payload),
+  });
+  return !r.valid && r.reason.includes('harvester_pubkey');
+});
+
+test('LP_HARVEST: rejects tampered reward_amount', () => {
+  const farm = mkFarm({ start_height: 100, last_update_height: 100, total_bonded: 1000n });
+  const bondRecord = { farm_id: farm.farm_id, bond_amount: 1000n, entry_acc_per_share: 0n, bonder_pubkey: BONDER_A_PUB, bond_height: 100 };
+  const bondId = encodeBondId(mkTxid('harvest-tamper'), 1);
+  const h = buildSignedLpHarvest({ farm, bondRecord, bondId, currentConfirmationHeight: 203 });
+  const dec = decodeLpHarvest(h.payload);
+  const tampered = encodeLpHarvest({ ...dec, rewardAmount: dec.rewardAmount * 2n });
+  const r = validateLpHarvest({
+    payload: tampered, farm, bondRecord,
+    currentConfirmationHeight: 203,
+    opReturnData: computeEnvelopeHash(tampered),
+  });
+  return !r.valid && r.reason.includes('reward_amount');
+});
+
+test('LP_HARVEST: rejects cross-farm bond_id confusion', () => {
+  const farmA = mkFarm({ farm_id: new Uint8Array(32).fill(0xa1), total_bonded: 1000n });
+  const farmB = mkFarm({ farm_id: new Uint8Array(32).fill(0xb2), total_bonded: 1000n });
+  const bondRecord = { farm_id: farmB.farm_id, bond_amount: 1000n, entry_acc_per_share: 0n, bonder_pubkey: BONDER_A_PUB, bond_height: 100 };
+  const bondId = encodeBondId(mkTxid('cross-h'), 1);
+  // Validator gets farmA but bondRecord belongs to farmB.
+  const h = buildSignedLpHarvest({ farm: farmA, bondRecord, bondId, currentConfirmationHeight: 203 });
+  const r = validateLpHarvest({
+    payload: h.payload, farm: farmA, bondRecord,
+    currentConfirmationHeight: 203,
+    opReturnData: computeEnvelopeHash(h.payload),
+  });
+  return !r.valid && (r.reason.includes('cross-farm') || r.reason.includes('farm_id'));
+});
+
+test('LP_HARVEST: caps payout at treasury_remaining', () => {
+  const farm = mkFarm({ start_height: 100, last_update_height: 100, total_bonded: 1000n, treasury_remaining: 500n });
+  const bondRecord = { farm_id: farm.farm_id, bond_amount: 1000n, entry_acc_per_share: 0n, bonder_pubkey: BONDER_A_PUB, bond_height: 100 };
+  const bondId = encodeBondId(mkTxid('harvest-cap'), 1);
+  const h = buildSignedLpHarvest({ farm, bondRecord, bondId, currentConfirmationHeight: 203 });
+  const r = validateLpHarvest({
+    payload: h.payload, farm, bondRecord,
+    currentConfirmationHeight: 203,
+    opReturnData: computeEnvelopeHash(h.payload),
+  });
+  if (!r.valid) return `validator rejected: ${r.reason}`;
+  if (h.payout !== 500n) return `expected payout 500, got ${h.payout}`;
+  if (r.newFarm.treasury_remaining !== 0n) return `treasury not drained: ${r.newFarm.treasury_remaining}`;
+  return true;
+});
+
+test('FarmState: harvest mid-cycle then unbond pays remaining', () => {
+  const farm = mkFarm({ start_height: 100, last_update_height: 100 });
+  const fs = new FarmState();
+  fs.applyFarmInit(farm);
+
+  // Bond 1000 at height 110.
+  const bondId = encodeBondId(mkTxid('hu-1'), 1);
+  const farmCopy1 = { ...farm };
+  crystallizeFarm(farmCopy1, 107);
+  fs.applyLpBond({
+    newFarm: { ...farmCopy1, total_bonded: 1000n },
+    bondRecord: { farm_id: farm.farm_id, bond_amount: 1000n, entry_acc_per_share: farmCopy1.acc_reward_per_share, bonder_pubkey: BONDER_A_PUB, bond_height: 110 },
+    bondId,
+  });
+
+  // Harvest at confirmation 203 (canonical=200, ~93 blocks of accrual at 1000-bonded).
+  let bondRec = fs.getBond(bondId);
+  let stateFarm = fs.getFarm(farm.farm_id);
+  const h1 = buildSignedLpHarvest({ farm: stateFarm, bondRecord: bondRec, bondId, currentConfirmationHeight: 203 });
+  const r1 = validateLpHarvest({
+    payload: h1.payload, farm: stateFarm, bondRecord: bondRec,
+    currentConfirmationHeight: 203,
+    opReturnData: computeEnvelopeHash(h1.payload),
+  });
+  if (!r1.valid) return `harvest rejected: ${r1.reason}`;
+  fs.applyLpHarvest({ newFarm: r1.newFarm, newBondRecord: r1.newBondRecord, bondId });
+  const harvestedSoFar = h1.payout;
+
+  // Total_bonded UNCHANGED after harvest — this is the core invariant.
+  if (fs.getFarm(farm.farm_id).total_bonded !== 1000n) {
+    return `total_bonded changed across harvest: ${fs.getFarm(farm.farm_id).total_bonded}`;
+  }
+
+  // Unbond at height 303. Should pay the delta since last harvest.
+  bondRec = fs.getBond(bondId);
+  stateFarm = fs.getFarm(farm.farm_id);
+  const u = buildSignedLpUnbond({ farm: stateFarm, bondRecord: bondRec, bondId, currentConfirmationHeight: 303 });
+  // Total payments (harvest1 + unbond) should equal what a single unbond
+  // at height 303 from the original bond would pay — modulo Q.96 truncation.
+  const totalPaid = harvestedSoFar + u.payout;
+  // Sanity: at least the harvested amount, less than reward_total.
+  if (totalPaid < harvestedSoFar) return `unbond paid negative remainder`;
+  if (totalPaid > farm.reward_total) return `total payments exceed reward_total`;
+  return true;
+});
+
+// ============================================================
+// Section 7.6: T_FARM_REFUND validator
+// ============================================================
+
+console.log('\n--- Section 7.6: FARM_REFUND validator ---');
+
+function buildSignedFarmRefund({
+  farm, currentConfirmationHeight, launcherPriv = LAUNCHER_PRIV, launcherPub = LAUNCHER_PUB,
+} = {}) {
+  const canonicalHeight = currentConfirmationHeight - 3;
+  const refundR = bigintToBytes32(randomScalar());
+  const refundAmount = farm.treasury_remaining;
+  const refundMsg = buildFarmRefundMsg({
+    farmId: farm.farm_id,
+    launcherPubkey: launcherPub,
+    refundAmount,
+    refundViewHeight: canonicalHeight,
+    refundR,
+  });
+  const launcherSig = signSchnorr(refundMsg, launcherPriv);
+  const env = {
+    farmId: farm.farm_id,
+    launcherPubkey: launcherPub,
+    refundAmount,
+    refundViewHeight: canonicalHeight,
+    refundR,
+    launcherSig,
+  };
+  return { env, payload: encodeFarmRefund(env), canonicalHeight };
+}
+
+test('T_FARM_REFUND encode→decode roundtrip', () => {
+  const env = {
+    farmId: new Uint8Array(32).fill(0x99),
+    launcherPubkey: LAUNCHER_PUB,
+    refundAmount: 12_345_678n,
+    refundViewHeight: 9999,
+    refundR: bigintToBytes32(modN(0xfacefeedn)),
+    launcherSig: new Uint8Array(64).fill(0x88),
+  };
+  const p = encodeFarmRefund(env);
+  if (p.length !== 1 + 1 + 32 + 33 + 8 + 4 + 32 + 64) return `unexpected length ${p.length}`;
+  const dec = decodeFarmRefund(p);
+  return dec.version === ENVELOPE_VERSION
+    && dec.opcode === OPCODE_T_FARM_REFUND
+    && bytesEq(dec.farmId, env.farmId)
+    && bytesEq(dec.launcherPubkey, env.launcherPubkey)
+    && dec.refundAmount === env.refundAmount
+    && dec.refundViewHeight === env.refundViewHeight
+    && bytesEq(dec.refundR, env.refundR)
+    && bytesEq(dec.launcherSig, env.launcherSig);
+});
+
+test('FARM_REFUND: pays exact treasury_remaining post-grace', () => {
+  const farm = mkFarm({
+    start_height: 100, end_height: 200,
+    last_update_height: 200, total_bonded: 0n,
+    treasury_remaining: 12_345_678n,
+    launcher_pubkey: LAUNCHER_PUB,
+  });
+  // Confirmation height = end + grace + extra; canonical = conf - 3.
+  const confHeight = 200 + AMM_FARM_REFUND_GRACE_BLOCKS + 10;
+  const r = buildSignedFarmRefund({ farm, currentConfirmationHeight: confHeight });
+  const result = validateFarmRefund({
+    payload: r.payload, farm,
+    currentConfirmationHeight: confHeight,
+    opReturnData: computeEnvelopeHash(r.payload),
+  });
+  if (!result.valid) return `rejected: ${result.reason}`;
+  if (result.newFarm.treasury_remaining !== 0n) return `treasury not drained`;
+  if (result.newFarm.refunded !== true) return `refunded flag not set`;
+  if (result.receipts.length !== 1) return `expected 1 receipt`;
+  if (result.receipts[0].amount !== 12_345_678n) return `receipt amount wrong`;
+  if (!bytesEq(result.receipts[0].recipient_pubkey, LAUNCHER_PUB)) return `recipient wrong`;
+  return true;
+});
+
+test('FARM_REFUND: rejects pre-grace (premature refund)', () => {
+  const farm = mkFarm({
+    end_height: 200, treasury_remaining: 1_000_000n,
+    launcher_pubkey: LAUNCHER_PUB,
+  });
+  // Confirmation height = end + grace - 1 (one block too early).
+  const confHeight = 200 + AMM_FARM_REFUND_GRACE_BLOCKS - 1 + 3;
+  const r = buildSignedFarmRefund({ farm, currentConfirmationHeight: confHeight });
+  const result = validateFarmRefund({
+    payload: r.payload, farm,
+    currentConfirmationHeight: confHeight,
+    opReturnData: computeEnvelopeHash(r.payload),
+  });
+  return !result.valid && result.reason.includes('refund window not open');
+});
+
+test('FARM_REFUND: rejects already-refunded farm', () => {
+  const farm = mkFarm({
+    end_height: 200, treasury_remaining: 0n,
+    refunded: true, launcher_pubkey: LAUNCHER_PUB,
+  });
+  const confHeight = 200 + AMM_FARM_REFUND_GRACE_BLOCKS + 10;
+  // Build a signed envelope manually with refundAmount=0 to bypass the
+  // amount-matches-treasury check and hit the already-refunded reject.
+  // (treasury_remaining=0 already triggers the "nothing to refund" path;
+  // we set refunded=true explicitly to test the dedicated reject.)
+  const farmWithBalance = { ...farm, treasury_remaining: 1n };
+  const r = buildSignedFarmRefund({ farm: farmWithBalance, currentConfirmationHeight: confHeight });
+  const result = validateFarmRefund({
+    payload: r.payload, farm,   // pass the already-refunded farm to validator
+    currentConfirmationHeight: confHeight,
+    opReturnData: computeEnvelopeHash(r.payload),
+  });
+  return !result.valid && (result.reason.includes('already refunded') || result.reason.includes('nothing to refund'));
+});
+
+test('FARM_REFUND: rejects wrong launcher pubkey', () => {
+  const farm = mkFarm({
+    end_height: 200, treasury_remaining: 1_000_000n,
+    launcher_pubkey: LAUNCHER_PUB,
+  });
+  const confHeight = 200 + AMM_FARM_REFUND_GRACE_BLOCKS + 10;
+  // Sign with attacker, but envelope sets launcher_pubkey=LAUNCHER_PUB.
+  // Re-sign the message under attacker's privkey but leave the
+  // launcher_pubkey field as LAUNCHER_PUB → sig verification will fail
+  // because the message was signed by a different key.
+  const r = buildSignedFarmRefund({
+    farm, currentConfirmationHeight: confHeight,
+    launcherPriv: ATTACKER_PRIV, launcherPub: LAUNCHER_PUB,
+  });
+  const result = validateFarmRefund({
+    payload: r.payload, farm,
+    currentConfirmationHeight: confHeight,
+    opReturnData: computeEnvelopeHash(r.payload),
+  });
+  return !result.valid && result.reason.includes('launcher_sig');
+});
+
+test('FARM_REFUND: rejects launcher_pubkey != farm.launcher_pubkey', () => {
+  const farm = mkFarm({
+    end_height: 200, treasury_remaining: 1_000_000n,
+    launcher_pubkey: BONDER_A_PUB,  // farm's launcher is bonder_a
+  });
+  const confHeight = 200 + AMM_FARM_REFUND_GRACE_BLOCKS + 10;
+  // Envelope is signed by LAUNCHER (different pubkey).
+  const r = buildSignedFarmRefund({ farm, currentConfirmationHeight: confHeight });
+  const result = validateFarmRefund({
+    payload: r.payload, farm,
+    currentConfirmationHeight: confHeight,
+    opReturnData: computeEnvelopeHash(r.payload),
+  });
+  return !result.valid && result.reason.includes('launcher_pubkey');
+});
+
+test('FARM_REFUND: rejects partial-amount refund', () => {
+  const farm = mkFarm({
+    end_height: 200, treasury_remaining: 1_000_000n,
+    launcher_pubkey: LAUNCHER_PUB,
+  });
+  const confHeight = 200 + AMM_FARM_REFUND_GRACE_BLOCKS + 10;
+  const r = buildSignedFarmRefund({ farm, currentConfirmationHeight: confHeight });
+  const dec = decodeFarmRefund(r.payload);
+  const tampered = encodeFarmRefund({ ...dec, refundAmount: 500_000n });
+  const result = validateFarmRefund({
+    payload: tampered, farm,
+    currentConfirmationHeight: confHeight,
+    opReturnData: computeEnvelopeHash(tampered),
+  });
+  return !result.valid && result.reason.includes('refund_amount mismatch');
+});
+
+test('FARM_REFUND: rejects zero-treasury refund attempt', () => {
+  const farm = mkFarm({
+    end_height: 200, treasury_remaining: 0n,
+    launcher_pubkey: LAUNCHER_PUB,
+  });
+  const confHeight = 200 + AMM_FARM_REFUND_GRACE_BLOCKS + 10;
+  const r = buildSignedFarmRefund({ farm, currentConfirmationHeight: confHeight });
+  const result = validateFarmRefund({
+    payload: r.payload, farm,
+    currentConfirmationHeight: confHeight,
+    opReturnData: computeEnvelopeHash(r.payload),
+  });
+  return !result.valid && result.reason.includes('nothing to refund');
+});
+
+test('FarmState: full bond cycle then refund leaves zero residue', () => {
+  const farm = mkFarm({
+    start_height: 100, end_height: 200,
+    last_update_height: 100,
+    launcher_pubkey: LAUNCHER_PUB,
+  });
+  const fs = new FarmState();
+  fs.applyFarmInit(farm);
+
+  // Bond at h=110 for 20 blocks of accrual, then unbond at h=130 — leaves
+  // a chunk of treasury unspent (zero-bonded for the remaining 70 blocks).
+  const bondId = encodeBondId(mkTxid('refund-cycle'), 1);
+  const farmCopy = { ...farm };
+  crystallizeFarm(farmCopy, 107);   // canonical=107 at conf=110
+  fs.applyLpBond({
+    newFarm: { ...farmCopy, total_bonded: 1000n },
+    bondRecord: { farm_id: farm.farm_id, bond_amount: 1000n, entry_acc_per_share: farmCopy.acc_reward_per_share, bonder_pubkey: BONDER_A_PUB, bond_height: 110 },
+    bondId,
+  });
+
+  // Unbond at conf=130 (canonical=127). 20 blocks of emission at 100k/block = 2M paid.
+  const farm2 = { ...fs.getFarm(farm.farm_id) };
+  crystallizeFarm(farm2, 127);
+  const bondA = fs.getBond(bondId);
+  const delta = farm2.acc_reward_per_share - bondA.entry_acc_per_share;
+  const pending = (bondA.bond_amount * delta) >> ACC_FIXED_POINT_SHIFT;
+  fs.applyLpUnbond({
+    newFarm: {
+      ...farm2,
+      total_bonded: 0n,
+      treasury_remaining: farm2.treasury_remaining - pending,
+    },
+    bondId,
+  });
+
+  // Treasury still has the "zero-bonded interval" leftover. Refund post-grace.
+  const refundFarm = fs.getFarm(farm.farm_id);
+  if (refundFarm.treasury_remaining === 0n) return `treasury fully drained (unexpected for this trace)`;
+  const confHeight = 200 + AMM_FARM_REFUND_GRACE_BLOCKS + 5;
+  const r = buildSignedFarmRefund({ farm: refundFarm, currentConfirmationHeight: confHeight });
+  const result = validateFarmRefund({
+    payload: r.payload, farm: refundFarm,
+    currentConfirmationHeight: confHeight,
+    opReturnData: computeEnvelopeHash(r.payload),
+  });
+  if (!result.valid) return `refund rejected: ${result.reason}`;
+  fs.applyFarmRefund({ newFarm: result.newFarm });
+  const finalFarm = fs.getFarm(farm.farm_id);
+  if (finalFarm.treasury_remaining !== 0n) return `treasury not drained`;
+  if (finalFarm.refunded !== true) return `refunded flag not set`;
+  // Conservation across the full cycle: pending + refund_amount === reward_total.
+  if (pending + result.receipts[0].amount !== farm.reward_total) {
+    return `conservation violated: ${pending} + ${result.receipts[0].amount} != ${farm.reward_total}`;
+  }
+  return true;
+});
+
+// ---- Farm-state hash for T_INTENT_ATTEST attestations ----
+
+test('buildFarmStateHash is deterministic + 32 bytes', () => {
+  const a = buildFarmStateHash({
+    treasuryRemaining: 1234n, totalBonded: 56n, accRewardPerShare: 789n,
+  });
+  const b = buildFarmStateHash({
+    treasuryRemaining: 1234n, totalBonded: 56n, accRewardPerShare: 789n,
+  });
+  return bytesEq(a, b) && a.length === 32;
+});
+
+test('buildFarmStateHash distinguishes treasury changes', () => {
+  const a = buildFarmStateHash({ treasuryRemaining: 100n, totalBonded: 1n, accRewardPerShare: 0n });
+  const b = buildFarmStateHash({ treasuryRemaining: 101n, totalBonded: 1n, accRewardPerShare: 0n });
+  return !bytesEq(a, b);
+});
+
+test('buildFarmStateHash distinguishes bond changes', () => {
+  const a = buildFarmStateHash({ treasuryRemaining: 100n, totalBonded: 1n, accRewardPerShare: 0n });
+  const b = buildFarmStateHash({ treasuryRemaining: 100n, totalBonded: 2n, accRewardPerShare: 0n });
+  return !bytesEq(a, b);
+});
+
+test('buildFarmStateHash distinguishes acc changes', () => {
+  const a = buildFarmStateHash({ treasuryRemaining: 100n, totalBonded: 1n, accRewardPerShare: 0n });
+  const b = buildFarmStateHash({ treasuryRemaining: 100n, totalBonded: 1n, accRewardPerShare: 1n });
+  return !bytesEq(a, b);
+});
+
+test('buildFarmStateHash carries domain tag (cross-context safe)', () => {
+  // Compose the equivalent hash WITHOUT the domain tag and verify the
+  // helper's output differs — i.e., the domain tag is structurally
+  // load-bearing, not cosmetic.
+  const naive = sha256(concatBytes(
+    new Uint8Array(8),                                     // treasuryRemaining = 0
+    new Uint8Array(8),                                     // totalBonded = 0
+    new Uint8Array(16),                                    // accRewardPerShare = 0
+  ));
+  const tagged = buildFarmStateHash({ treasuryRemaining: 0n, totalBonded: 0n, accRewardPerShare: 0n });
+  return !bytesEq(naive, tagged);
 });
 
 // ============================================================

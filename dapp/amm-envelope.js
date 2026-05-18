@@ -329,13 +329,20 @@ export function decodeLpRemove(payload) {
 export const OPCODE_T_FARM_INIT  = 0x34;
 export const OPCODE_T_LP_BOND    = 0x35;
 export const OPCODE_T_LP_UNBOND  = 0x36;
+export const OPCODE_T_LP_HARVEST = 0x3B;  // claim reward without unbonding (SPEC §5.43)
+export const OPCODE_T_FARM_REFUND = 0x3E; // launcher reclaims unspent treasury (SPEC §5.44)
+// Farm-state attestation reuses T_INTENT_ATTEST (0x30) per SPEC §5.45
+// (scope_id = farm_id, intent_pool_hash = buildFarmStateHash output).
 export const FARM_ENVELOPE_VERSION = 0x01;
 export const FARM_NO_CHANGE_SENTINEL = new Uint8Array(33);
 
-const _FARM_INIT_DOMAIN   = new TextEncoder().encode('tacit-amm-farm-init-v1');
-const _FARM_BOND_DOMAIN   = new TextEncoder().encode('tacit-amm-farm-bond-v1');
-const _FARM_UNBOND_DOMAIN = new TextEncoder().encode('tacit-amm-farm-unbond-v1');
-const _LP_ASSET_DOMAIN    = new TextEncoder().encode('tacit-amm-lp-v1');
+const _FARM_INIT_DOMAIN    = new TextEncoder().encode('tacit-amm-farm-init-v1');
+const _FARM_BOND_DOMAIN    = new TextEncoder().encode('tacit-amm-farm-bond-v1');
+const _FARM_UNBOND_DOMAIN  = new TextEncoder().encode('tacit-amm-farm-unbond-v1');
+const _FARM_HARVEST_DOMAIN = new TextEncoder().encode('tacit-amm-farm-harvest-v1');
+const _FARM_REFUND_DOMAIN  = new TextEncoder().encode('tacit-amm-farm-refund-v1');
+const _FARM_STATE_DOMAIN   = new TextEncoder().encode('tacit-farm-state-v1');
+const _LP_ASSET_DOMAIN     = new TextEncoder().encode('tacit-amm-lp-v1');
 
 function u32LE(n) {
   const buf = new Uint8Array(4);
@@ -409,6 +416,40 @@ export function buildLpUnbondMsg({ farmId, bondId, unbonderPubkey, exitAccPerSha
     asBytes(rewardR, 32, 'rewardR'),
   ));
 }
+export function buildLpHarvestMsg({ farmId, bondId, harvesterPubkey, exitAccPerShare, exitViewHeight, rewardAmount, rewardR }) {
+  return sha256(concatBytes(
+    _FARM_HARVEST_DOMAIN,
+    asBytes(farmId, 32, 'farmId'),
+    asBytes(bondId, 36, 'bondId'),
+    asBytes(harvesterPubkey, 33, 'harvesterPubkey'),
+    u128LE(exitAccPerShare),
+    u32LE(exitViewHeight),
+    u64LE(rewardAmount),
+    asBytes(rewardR, 32, 'rewardR'),
+  ));
+}
+export function buildFarmRefundMsg({ farmId, launcherPubkey, refundAmount, refundViewHeight, refundR }) {
+  return sha256(concatBytes(
+    _FARM_REFUND_DOMAIN,
+    asBytes(farmId, 32, 'farmId'),
+    asBytes(launcherPubkey, 33, 'launcherPubkey'),
+    u64LE(refundAmount),
+    u32LE(refundViewHeight),
+    asBytes(refundR, 32, 'refundR'),
+  ));
+}
+
+// Canonical farm-state hash for T_INTENT_ATTEST attestations (SPEC §5.45).
+// Attesters publish this 32B value as the `intent_pool_hash` of a
+// T_INTENT_ATTEST envelope with scope_id = farm_id.
+export function buildFarmStateHash({ treasuryRemaining, totalBonded, accRewardPerShare }) {
+  return sha256(concatBytes(
+    _FARM_STATE_DOMAIN,
+    u64LE(treasuryRemaining),
+    u64LE(totalBonded),
+    u128LE(accRewardPerShare),
+  ));
+}
 
 export function encodeFarmInit(args) {
   const parts = [
@@ -463,6 +504,32 @@ export function encodeLpUnbond(args) {
     asBytes(args.lpReturnR, 32, 'lpReturnR'),
     asBytes(args.rewardR, 32, 'rewardR'),
     asBytes(args.unbonderSig, 64, 'unbonderSig'),
+  );
+}
+
+export function encodeLpHarvest(args) {
+  return concatBytes(
+    new Uint8Array([FARM_ENVELOPE_VERSION, OPCODE_T_LP_HARVEST]),
+    asBytes(args.farmId, 32, 'farmId'),
+    asBytes(args.bondId, 36, 'bondId'),
+    asBytes(args.harvesterPubkey, 33, 'harvesterPubkey'),
+    u128LE(args.exitAccPerShare),
+    u32LE(args.exitViewHeight),
+    u64LE(args.rewardAmount),
+    asBytes(args.rewardR, 32, 'rewardR'),
+    asBytes(args.harvesterSig, 64, 'harvesterSig'),
+  );
+}
+
+export function encodeFarmRefund(args) {
+  return concatBytes(
+    new Uint8Array([FARM_ENVELOPE_VERSION, OPCODE_T_FARM_REFUND]),
+    asBytes(args.farmId, 32, 'farmId'),
+    asBytes(args.launcherPubkey, 33, 'launcherPubkey'),
+    u64LE(args.refundAmount),
+    u32LE(args.refundViewHeight),
+    asBytes(args.refundR, 32, 'refundR'),
+    asBytes(args.launcherSig, 64, 'launcherSig'),
   );
 }
 
@@ -546,6 +613,53 @@ export function decodeLpUnbond(payload) {
       farmId, bondId, unbonderPubkey,
       exitAccPerShare, exitViewHeight, rewardAmount,
       lpReturnR, rewardR, unbonderSig,
+    };
+  } catch { return null; }
+}
+
+export function decodeLpHarvest(payload) {
+  if (!(payload instanceof Uint8Array)) return null;
+  if (payload.length !== 227) return null;
+  let p = 0;
+  if (payload[p++] !== FARM_ENVELOPE_VERSION) return null;
+  if (payload[p++] !== OPCODE_T_LP_HARVEST) return null;
+  try {
+    const farmId          = payload.slice(p, p + 32); p += 32;
+    const bondId          = payload.slice(p, p + 36); p += 36;
+    const harvesterPubkey = payload.slice(p, p + 33); p += 33;
+    if (harvesterPubkey[0] !== 0x02 && harvesterPubkey[0] !== 0x03) return null;
+    const exitAccPerShare = _readU128LE(payload, p); p += 16;
+    const exitViewHeight  = _readU32LE(payload, p); p += 4;
+    const rewardAmount    = _readU64LE(payload, p); p += 8;
+    const rewardR         = payload.slice(p, p + 32); p += 32;
+    const harvesterSig    = payload.slice(p, p + 64); p += 64;
+    if (p !== payload.length) return null;
+    return {
+      farmId, bondId, harvesterPubkey,
+      exitAccPerShare, exitViewHeight, rewardAmount,
+      rewardR, harvesterSig,
+    };
+  } catch { return null; }
+}
+
+export function decodeFarmRefund(payload) {
+  if (!(payload instanceof Uint8Array)) return null;
+  if (payload.length !== 170) return null;
+  let p = 0;
+  if (payload[p++] !== FARM_ENVELOPE_VERSION) return null;
+  if (payload[p++] !== OPCODE_T_FARM_REFUND) return null;
+  try {
+    const farmId         = payload.slice(p, p + 32); p += 32;
+    const launcherPubkey = payload.slice(p, p + 33); p += 33;
+    if (launcherPubkey[0] !== 0x02 && launcherPubkey[0] !== 0x03) return null;
+    const refundAmount   = _readU64LE(payload, p); p += 8;
+    const refundViewHeight = _readU32LE(payload, p); p += 4;
+    const refundR        = payload.slice(p, p + 32); p += 32;
+    const launcherSig    = payload.slice(p, p + 64); p += 64;
+    if (p !== payload.length) return null;
+    return {
+      farmId, launcherPubkey, refundAmount, refundViewHeight,
+      refundR, launcherSig,
     };
   } catch { return null; }
 }

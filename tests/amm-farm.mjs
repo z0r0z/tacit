@@ -54,6 +54,30 @@ import {
 export const OPCODE_T_FARM_INIT  = 0x34;
 export const OPCODE_T_LP_BOND    = 0x35;
 export const OPCODE_T_LP_UNBOND  = 0x36;
+// T_LP_HARVEST claims accrued reward without unbonding the underlying LP
+// shares. Updates the bond's entry_acc_per_share to the canonical exit
+// value; does NOT touch farm.total_bonded or delete the bond record.
+// MasterChef-equivalent of the `harvest()` / `deposit(0)` pattern.
+// Wire is ~227 bytes (no bulletproof, no lp_return UTXO).
+export const OPCODE_T_LP_HARVEST = 0x3B;
+// T_FARM_REFUND lets the launcher reclaim unspent `treasury_remaining`
+// strictly after the farm's `end_height + AMM_FARM_REFUND_GRACE_BLOCKS`
+// (a fixed delay giving LPs time to harvest/unbond their final positions).
+// Without it, emissions forfeited during zero-bonded intervals become
+// permanently locked in the virtual treasury. The grace gate keeps the
+// "no privileged operator mid-stream" property intact — launcher cannot
+// drain while the farm is active.
+export const OPCODE_T_FARM_REFUND = 0x3E;
+// Farm-state attestations REUSE T_INTENT_ATTEST (0x30) — that opcode is
+// already scope-generic, has equivocation detection wired in its validator,
+// and accepts an opaque 32B hash. Farms populate it with:
+//   scope_id          = farm_id
+//   intent_pool_hash  = buildFarmStateHash({treasury_remaining, total_bonded,
+//                                            acc_reward_per_share})
+//   snapshot_uri      = "/farm/<farm_id>?height=<H>" (optional)
+// See SPEC-AMM-FARM-AMENDMENT.md §5.44 + the buildFarmStateHash helper
+// below. No dedicated T_FARM_ATTEST opcode — reuse keeps the spec smaller
+// and the validator surface unchanged.
 export const ENVELOPE_VERSION    = 0x01;
 
 // Anti-spam dust floor on individual bonds (matches MINIMUM_LIQUIDITY-class numeric).
@@ -73,6 +97,12 @@ export const AMM_FARM_MAX_START_DELAY = 4320;
 // ≈ 1 hour at 10-min cadence.
 export const AMM_FARM_VIEW_STALENESS = 6;
 
+// Refund grace window — blocks after end_height before launcher can
+// reclaim treasury_remaining. ~7 days at 10-min cadence; gives LPs a
+// generous window to harvest/unbond their final positions before
+// leftover treasury becomes refundable.
+export const AMM_FARM_REFUND_GRACE_BLOCKS = 1008;
+
 // Q.96 fixed-point for acc_reward_per_share. Chosen so that
 //   numerator (reward_units << 96) fits in u192 for reward_per_block ≤ u64,
 //   elapsed ≤ u32, total_bonded ≥ 1; pending fits in u192 for
@@ -83,11 +113,14 @@ export const ACC_FIXED_POINT_SHIFT = 96n;
 export const NO_CHANGE_SENTINEL = new Uint8Array(33);
 
 // Domain tags
-const DOMAIN_FARM_ID    = new TextEncoder().encode('tacit-amm-farm-init-v1');
-const DOMAIN_INIT_MSG   = DOMAIN_FARM_ID;            // shared with farm_id derivation
-const DOMAIN_BOND_MSG   = new TextEncoder().encode('tacit-amm-farm-bond-v1');
-const DOMAIN_UNBOND_MSG = new TextEncoder().encode('tacit-amm-farm-unbond-v1');
-const DOMAIN_LP_ASSET   = new TextEncoder().encode('tacit-amm-lp-v1');
+const DOMAIN_FARM_ID     = new TextEncoder().encode('tacit-amm-farm-init-v1');
+const DOMAIN_INIT_MSG    = DOMAIN_FARM_ID;            // shared with farm_id derivation
+const DOMAIN_BOND_MSG    = new TextEncoder().encode('tacit-amm-farm-bond-v1');
+const DOMAIN_UNBOND_MSG  = new TextEncoder().encode('tacit-amm-farm-unbond-v1');
+const DOMAIN_HARVEST_MSG = new TextEncoder().encode('tacit-amm-farm-harvest-v1');
+const DOMAIN_REFUND_MSG  = new TextEncoder().encode('tacit-amm-farm-refund-v1');
+const DOMAIN_FARM_STATE  = new TextEncoder().encode('tacit-farm-state-v1');
+const DOMAIN_LP_ASSET    = new TextEncoder().encode('tacit-amm-lp-v1');
 
 // Limits guarded at decode time.
 const U64_MAX = (1n << 64n) - 1n;
@@ -286,6 +319,64 @@ export function buildLpUnbondMsg({
     u64LE(rewardAmount),
     asBytes(lpReturnR, 32, 'lpReturnR'),
     asBytes(rewardR, 32, 'rewardR'),
+  ));
+}
+
+// harvest_msg — signed by harvester_pubkey (BIP-340). Same structural
+// shape as unbond_msg minus the lp_return blinding (no LP UTXO returned).
+// Distinct domain tag prevents replay across the harvest/unbond surface.
+export function buildLpHarvestMsg({
+  farmId, bondId, harvesterPubkey,
+  exitAccPerShare, exitViewHeight, rewardAmount, rewardR,
+}) {
+  return sha256(concatBytes(
+    DOMAIN_HARVEST_MSG,
+    asBytes(farmId, 32, 'farmId'),
+    asBytes(bondId, 36, 'bondId'),
+    asBytes(harvesterPubkey, 33, 'harvesterPubkey'),
+    u128LE(exitAccPerShare),
+    u32LE(exitViewHeight),
+    u64LE(rewardAmount),
+    asBytes(rewardR, 32, 'rewardR'),
+  ));
+}
+
+// refund_msg — signed by launcher_pubkey (BIP-340). Authorises reclaim
+// of farm.treasury_remaining post-end_height + grace window. refund_amount
+// MUST equal current treasury_remaining at canonical_height — the
+// launcher refunds exactly what's left, no partial-refund mode.
+export function buildFarmRefundMsg({
+  farmId, launcherPubkey, refundAmount, refundViewHeight, refundR,
+}) {
+  return sha256(concatBytes(
+    DOMAIN_REFUND_MSG,
+    asBytes(farmId, 32, 'farmId'),
+    asBytes(launcherPubkey, 33, 'launcherPubkey'),
+    u64LE(refundAmount),
+    u32LE(refundViewHeight),
+    asBytes(refundR, 32, 'refundR'),
+  ));
+}
+
+// Canonical farm-state hash for T_INTENT_ATTEST attestations.
+// Attesters publish this 32B value as the `intent_pool_hash` field of
+// a T_INTENT_ATTEST envelope with `scope_id = farm_id`. Auditors
+// recompute it from the canonical farm-state snapshot at the attested
+// height and compare. Two different hashes by the same attester at the
+// same (scope_id, observed_height) trip T_INTENT_ATTEST's existing
+// equivocation detector.
+//
+// Hash composition is content-addressed over the three load-bearing
+// canonical fields. Domain tag prevents collision with any other
+// scope_kind that might be attested via the same envelope.
+export function buildFarmStateHash({
+  treasuryRemaining, totalBonded, accRewardPerShare,
+}) {
+  return sha256(concatBytes(
+    DOMAIN_FARM_STATE,
+    u64LE(treasuryRemaining),
+    u64LE(totalBonded),
+    u128LE(accRewardPerShare),
   ));
 }
 
@@ -539,6 +630,114 @@ export function decodeLpUnbond(payload) {
     farmId, bondId, unbonderPubkey,
     exitAccPerShare, exitViewHeight, rewardAmount,
     lpReturnR, rewardR, unbonderSig,
+  };
+}
+
+// ---- T_LP_HARVEST ----
+
+export function encodeLpHarvest(env) {
+  const {
+    farmId, bondId, harvesterPubkey,
+    exitAccPerShare, exitViewHeight, rewardAmount,
+    rewardR, harvesterSig,
+  } = env;
+  const parts = [
+    new Uint8Array([ENVELOPE_VERSION, OPCODE_T_LP_HARVEST]),
+    asBytes(farmId, 32, 'farmId'),
+    asBytes(bondId, 36, 'bondId'),
+    asBytes(harvesterPubkey, 33, 'harvesterPubkey'),
+    u128LE(exitAccPerShare),
+    u32LE(exitViewHeight),
+    u64LE(rewardAmount),
+    asBytes(rewardR, 32, 'rewardR'),
+    asBytes(harvesterSig, 64, 'harvesterSig'),
+  ];
+  return concatBytes(...parts);
+}
+
+export function decodeLpHarvest(payload) {
+  if (!(payload instanceof Uint8Array)) throw new Error('payload must be Uint8Array');
+  let o = 0;
+  function take(n, name) {
+    if (o + n > payload.length) throw new Error(`decode: truncated at ${name} (need ${n}, have ${payload.length - o})`);
+    const s = payload.subarray(o, o + n);
+    o += n;
+    return s;
+  }
+  const version = take(1, 'version')[0];
+  if (version !== ENVELOPE_VERSION) throw new Error(`bad envelope_version: ${version}`);
+  const opcode = take(1, 'opcode')[0];
+  if (opcode !== OPCODE_T_LP_HARVEST) throw new Error(`bad opcode: ${opcode}`);
+  const farmId          = new Uint8Array(take(32, 'farmId'));
+  const bondId          = new Uint8Array(take(36, 'bondId'));
+  const harvesterPubkey = new Uint8Array(take(33, 'harvesterPubkey'));
+  if (harvesterPubkey[0] !== 0x02 && harvesterPubkey[0] !== 0x03) {
+    throw new Error(`harvesterPubkey not a valid compressed secp256k1 point`);
+  }
+  const exitAccPerShare = readU128LE(payload, o); o += 16;
+  const exitViewHeight  = readU32LE(payload, o); o += 4;
+  const rewardAmount    = readU64LE(payload, o); o += 8;
+  const rewardR         = new Uint8Array(take(32, 'rewardR'));
+  const harvesterSig    = new Uint8Array(take(64, 'harvesterSig'));
+  if (o !== payload.length) {
+    throw new Error(`trailing bytes after harvesterSig: ${payload.length - o}`);
+  }
+  return {
+    version, opcode,
+    farmId, bondId, harvesterPubkey,
+    exitAccPerShare, exitViewHeight, rewardAmount,
+    rewardR, harvesterSig,
+  };
+}
+
+// ---- T_FARM_REFUND ----
+
+export function encodeFarmRefund(env) {
+  const {
+    farmId, launcherPubkey, refundAmount,
+    refundViewHeight, refundR, launcherSig,
+  } = env;
+  const parts = [
+    new Uint8Array([ENVELOPE_VERSION, OPCODE_T_FARM_REFUND]),
+    asBytes(farmId, 32, 'farmId'),
+    asBytes(launcherPubkey, 33, 'launcherPubkey'),
+    u64LE(refundAmount),
+    u32LE(refundViewHeight),
+    asBytes(refundR, 32, 'refundR'),
+    asBytes(launcherSig, 64, 'launcherSig'),
+  ];
+  return concatBytes(...parts);
+}
+
+export function decodeFarmRefund(payload) {
+  if (!(payload instanceof Uint8Array)) throw new Error('payload must be Uint8Array');
+  let o = 0;
+  function take(n, name) {
+    if (o + n > payload.length) throw new Error(`decode: truncated at ${name} (need ${n}, have ${payload.length - o})`);
+    const s = payload.subarray(o, o + n);
+    o += n;
+    return s;
+  }
+  const version = take(1, 'version')[0];
+  if (version !== ENVELOPE_VERSION) throw new Error(`bad envelope_version: ${version}`);
+  const opcode = take(1, 'opcode')[0];
+  if (opcode !== OPCODE_T_FARM_REFUND) throw new Error(`bad opcode: ${opcode}`);
+  const farmId         = new Uint8Array(take(32, 'farmId'));
+  const launcherPubkey = new Uint8Array(take(33, 'launcherPubkey'));
+  if (launcherPubkey[0] !== 0x02 && launcherPubkey[0] !== 0x03) {
+    throw new Error(`launcherPubkey not a valid compressed secp256k1 point`);
+  }
+  const refundAmount   = readU64LE(payload, o); o += 8;
+  const refundViewHeight = readU32LE(payload, o); o += 4;
+  const refundR        = new Uint8Array(take(32, 'refundR'));
+  const launcherSig    = new Uint8Array(take(64, 'launcherSig'));
+  if (o !== payload.length) {
+    throw new Error(`trailing bytes after launcherSig: ${payload.length - o}`);
+  }
+  return {
+    version, opcode,
+    farmId, launcherPubkey, refundAmount,
+    refundViewHeight, refundR, launcherSig,
   };
 }
 
@@ -1055,6 +1254,267 @@ export function validateLpUnbond({
   };
 }
 
+// ---- validateLpHarvest ----
+//
+// Claim accrued reward without unbonding the underlying LP shares. The
+// bond record's entry_acc_per_share is advanced to the canonical exit
+// value; farm.total_bonded is unchanged; the bond record persists.
+//
+// Inputs mirror validateLpUnbond minus the lp_return surface.
+//
+// Returns { valid: true, newFarm, newBondRecord, receipts, harvestMsg }
+// or { valid: false, reason }. The newBondRecord carries the rolled-forward
+// entry_acc_per_share; caller commits to KV under the same bond_id.
+
+export function validateLpHarvest({
+  payload, farm, bondRecord, currentConfirmationHeight, opReturnData,
+}) {
+  if (!farm) return { valid: false, reason: 'farm not registered' };
+  if (!bondRecord) return { valid: false, reason: 'bond record not found for bond_id' };
+  let env;
+  try { env = decodeLpHarvest(payload); }
+  catch (e) { return { valid: false, reason: `decode error: ${e.message}` }; }
+
+  if (!(opReturnData instanceof Uint8Array) || opReturnData.length !== 32) {
+    return { valid: false, reason: 'missing or malformed vout[0] OP_RETURN data' };
+  }
+  const envelopeHash = sha256(payload);
+  if (!bytesEqual(opReturnData, envelopeHash)) {
+    return { valid: false, reason: 'OP_RETURN data != SHA256(envelope_payload)' };
+  }
+  if (!bytesEqual(env.farmId, farm.farm_id)) {
+    return { valid: false, reason: 'farm_id mismatch' };
+  }
+  if (!bytesEqual(env.farmId, bondRecord.farm_id)) {
+    return { valid: false, reason: 'bond.farm_id does not match envelope.farm_id (cross-farm bond_id)' };
+  }
+  if (!bytesEqual(env.harvesterPubkey, bondRecord.bonder_pubkey)) {
+    return { valid: false, reason: 'harvester_pubkey != bond.bonder_pubkey' };
+  }
+  if (currentConfirmationHeight < 3) {
+    return { valid: false, reason: 'currentConfirmationHeight < 3 (no canonical state yet)' };
+  }
+
+  const canonicalHeight = currentConfirmationHeight - 3 > farm.end_height
+    ? farm.end_height
+    : currentConfirmationHeight - 3;
+  const stalenessFloor = canonicalHeight - AMM_FARM_VIEW_STALENESS;
+  if (env.exitViewHeight < stalenessFloor) {
+    return { valid: false, reason: `exit_view_height ${env.exitViewHeight} < canonical-staleness ${stalenessFloor}` };
+  }
+
+  const farmCopy = { ...farm };
+  crystallizeFarm(farmCopy, canonicalHeight);
+  if (env.exitAccPerShare !== farmCopy.acc_reward_per_share) {
+    return {
+      valid: false,
+      reason: `exit_acc_per_share mismatch (got ${env.exitAccPerShare}, canonical ${farmCopy.acc_reward_per_share})`,
+    };
+  }
+  if (env.exitAccPerShare < bondRecord.entry_acc_per_share) {
+    return { valid: false, reason: 'exit_acc_per_share < entry_acc_per_share (farm state corruption)' };
+  }
+
+  const delta = env.exitAccPerShare - bondRecord.entry_acc_per_share;
+  const pending = (bondRecord.bond_amount * delta) >> ACC_FIXED_POINT_SHIFT;
+  const payout = pending > farmCopy.treasury_remaining ? farmCopy.treasury_remaining : pending;
+  if (env.rewardAmount !== payout) {
+    return {
+      valid: false,
+      reason: `reward_amount mismatch (got ${env.rewardAmount}, expected payout ${payout} = min(pending ${pending}, treasury_remaining ${farmCopy.treasury_remaining}))`,
+    };
+  }
+
+  // Public opening sanity on reward_r (zero/oversized blinding rejected).
+  const rewardRScalar = bytesToBigintBE(env.rewardR);
+  if (env.rewardAmount > 0n) {
+    if (rewardRScalar === 0n) return { valid: false, reason: 'rewardR is zero (degenerate blinding)' };
+    if (rewardRScalar >= SECP_N) return { valid: false, reason: 'rewardR >= n_secp' };
+  }
+
+  const harvestMsg = buildLpHarvestMsg({
+    farmId: env.farmId,
+    bondId: env.bondId,
+    harvesterPubkey: env.harvesterPubkey,
+    exitAccPerShare: env.exitAccPerShare,
+    exitViewHeight: env.exitViewHeight,
+    rewardAmount: env.rewardAmount,
+    rewardR: env.rewardR,
+  });
+  const harvesterXOnly = env.harvesterPubkey.subarray(1);
+  let harvesterOk;
+  try { harvesterOk = verifySchnorr(env.harvesterSig, harvestMsg, harvesterXOnly); }
+  catch { harvesterOk = false; }
+  if (!harvesterOk) return { valid: false, reason: 'harvester_sig verification failed' };
+
+  // Validator-decreed reward commitment (zero-payout case omits the receipt).
+  const cReward = env.rewardAmount === 0n
+    ? null
+    : pedersenCommit(env.rewardAmount, rewardRScalar);
+
+  // Farm state: decrement treasury, do NOT touch total_bonded.
+  const newFarm = {
+    ...farmCopy,
+    treasury_remaining: farmCopy.treasury_remaining - env.rewardAmount,
+  };
+
+  // Bond record: roll forward entry_acc; preserve bond_amount, bonder, height.
+  const newBondRecord = {
+    ...bondRecord,
+    entry_acc_per_share: env.exitAccPerShare,
+  };
+
+  const receipts = [];
+  if (env.rewardAmount > 0n) {
+    receipts.push({
+      kind: 'farm_reward',
+      asset_id: farm.reward_asset_id,
+      amount: env.rewardAmount,
+      commitment: pointToBytes(cReward),
+      r: env.rewardR,
+      recipient_pubkey: env.harvesterPubkey,
+      vout: 1,
+    });
+  }
+
+  return {
+    valid: true,
+    newFarm,
+    newBondRecord,
+    receipts,
+    harvestMsg,
+    canonicalHeight,
+    envelopeHash,
+  };
+}
+
+// ---- validateFarmRefund ----
+//
+// Launcher reclaims unspent farm.treasury_remaining strictly after
+// end_height + AMM_FARM_REFUND_GRACE_BLOCKS. Single-shot: sets
+// treasury_remaining = 0, marks farm.refunded = true. Subsequent refund
+// attempts on the same farm reject. Inputs mirror validateLpUnbond:
+//
+//   payload                       : envelope bytes
+//   farm                          : current farm record
+//   currentConfirmationHeight     : block height at confirmation
+//   opReturnData                  : 32-byte vout[0] OP_RETURN
+//
+// Returns { valid: true, newFarm, receipts, refundMsg } or { valid: false, reason }.
+
+export function validateFarmRefund({
+  payload, farm, currentConfirmationHeight, opReturnData,
+}) {
+  if (!farm) return { valid: false, reason: 'farm not registered' };
+  let env;
+  try { env = decodeFarmRefund(payload); }
+  catch (e) { return { valid: false, reason: `decode error: ${e.message}` }; }
+
+  if (!(opReturnData instanceof Uint8Array) || opReturnData.length !== 32) {
+    return { valid: false, reason: 'missing or malformed vout[0] OP_RETURN data' };
+  }
+  const envelopeHash = sha256(payload);
+  if (!bytesEqual(opReturnData, envelopeHash)) {
+    return { valid: false, reason: 'OP_RETURN data != SHA256(envelope_payload)' };
+  }
+  if (!bytesEqual(env.farmId, farm.farm_id)) {
+    return { valid: false, reason: 'farm_id mismatch' };
+  }
+  if (!bytesEqual(env.launcherPubkey, farm.launcher_pubkey)) {
+    return { valid: false, reason: 'launcher_pubkey != farm.launcher_pubkey' };
+  }
+  if (currentConfirmationHeight < 3) {
+    return { valid: false, reason: 'currentConfirmationHeight < 3 (no canonical state yet)' };
+  }
+
+  // Grace gate — refund only allowed at end_height + grace.
+  const refundFloor = farm.end_height + AMM_FARM_REFUND_GRACE_BLOCKS;
+  const canonicalHeight = currentConfirmationHeight - 3;
+  if (canonicalHeight < refundFloor) {
+    return {
+      valid: false,
+      reason: `refund window not open: canonical_height ${canonicalHeight} < end_height+grace ${refundFloor}`,
+    };
+  }
+
+  // Already refunded → reject (single-shot semantics; treasury_remaining
+  // is set to 0 below, so a stale envelope would also fail the amount
+  // match, but the explicit flag gives a clearer error).
+  if (farm.refunded === true) {
+    return { valid: false, reason: 'farm already refunded' };
+  }
+
+  // Freshness gate on launcher view.
+  if (env.refundViewHeight < canonicalHeight - AMM_FARM_VIEW_STALENESS) {
+    return { valid: false, reason: `refund_view_height ${env.refundViewHeight} < canonical-staleness ${canonicalHeight - AMM_FARM_VIEW_STALENESS}` };
+  }
+
+  // Refund amount must equal current treasury_remaining exactly. No
+  // partial refunds — keeps the spec + state machine simple and ensures
+  // launcher can't slowly drain across multiple txns (would be a privacy
+  // leak about LP exit timing).
+  if (env.refundAmount !== farm.treasury_remaining) {
+    return {
+      valid: false,
+      reason: `refund_amount mismatch (got ${env.refundAmount}, treasury_remaining ${farm.treasury_remaining})`,
+    };
+  }
+
+  // Zero-treasury refund is a no-op envelope; reject as wasted gas.
+  if (env.refundAmount === 0n) {
+    return { valid: false, reason: 'treasury_remaining == 0 (nothing to refund)' };
+  }
+
+  // Public opening sanity on refund_r.
+  const refundRScalar = bytesToBigintBE(env.refundR);
+  if (refundRScalar === 0n) return { valid: false, reason: 'refundR is zero (degenerate blinding)' };
+  if (refundRScalar >= SECP_N) return { valid: false, reason: 'refundR >= n_secp' };
+
+  // BIP-340 launcher sig over refund_msg.
+  const refundMsg = buildFarmRefundMsg({
+    farmId: env.farmId,
+    launcherPubkey: env.launcherPubkey,
+    refundAmount: env.refundAmount,
+    refundViewHeight: env.refundViewHeight,
+    refundR: env.refundR,
+  });
+  const launcherXOnly = env.launcherPubkey.subarray(1);
+  let launcherOk;
+  try { launcherOk = verifySchnorr(env.launcherSig, refundMsg, launcherXOnly); }
+  catch { launcherOk = false; }
+  if (!launcherOk) return { valid: false, reason: 'launcher_sig verification failed' };
+
+  // Validator-decreed refund commitment: refund_amount · H + refund_r · G.
+  const cRefund = pedersenCommit(env.refundAmount, refundRScalar);
+
+  const newFarm = {
+    ...farm,
+    treasury_remaining: 0n,
+    refunded: true,
+    refunded_height: canonicalHeight,
+    refunded_amount: env.refundAmount,
+  };
+  const receipts = [
+    {
+      kind: 'farm_refund',
+      asset_id: farm.reward_asset_id,
+      amount: env.refundAmount,
+      commitment: pointToBytes(cRefund),
+      r: env.refundR,
+      recipient_pubkey: env.launcherPubkey,
+      vout: 1,
+    },
+  ];
+  return {
+    valid: true,
+    newFarm,
+    receipts,
+    refundMsg,
+    canonicalHeight,
+    envelopeHash,
+  };
+}
+
 // =========================================================================
 // In-memory state machine
 // =========================================================================
@@ -1116,6 +1576,27 @@ export class FarmState {
       set.delete(bKey);
       if (set.size === 0) this.bondsByBonder.delete(pKey);
     }
+    this.checkInvariants(newFarm);
+  }
+
+  applyLpHarvest({ newFarm, newBondRecord, bondId }) {
+    const fKey = bytesToHex(newFarm.farm_id);
+    if (!this.farms.has(fKey)) throw new Error('farm not present');
+    const bKey = bytesToHex(asBytes(bondId, 36, 'bondId'));
+    const prev = this.bonds.get(bKey);
+    if (!prev) throw new Error('bond not present');
+    this.farms.set(fKey, { ...newFarm });
+    // Persist the rolled-forward entry_acc_per_share. bond_amount /
+    // bonder / bond_height / bond_id unchanged so by-pubkey index is
+    // intact.
+    this.bonds.set(bKey, { ...newBondRecord, bond_id: prev.bond_id || asBytes(bondId, 36, 'bondId') });
+    this.checkInvariants(newFarm);
+  }
+
+  applyFarmRefund({ newFarm }) {
+    const fKey = bytesToHex(newFarm.farm_id);
+    if (!this.farms.has(fKey)) throw new Error('farm not present');
+    this.farms.set(fKey, { ...newFarm });
     this.checkInvariants(newFarm);
   }
 
