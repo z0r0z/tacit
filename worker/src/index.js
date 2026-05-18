@@ -547,6 +547,13 @@ function corsHeaders(env, reqOrigin) {
     // it the dapp's fetch() can't read the upstream's recommended cooldown
     // when /chain proxies a 429. Other entries are existing pass-throughs.
     'Access-Control-Expose-Headers': 'Retry-After',
+    // Cache the preflight for 24h so browsers stop re-firing OPTIONS on
+    // every cross-origin call. Chrome/Edge cap at ~2h, Firefox at 24h,
+    // Safari at 5min — we advertise 24h so the most-permissive browsers
+    // honour it. Methods + headers are static; ALLOWED_ORIGINS changes
+    // are infrequent and rolled with redeploys so a 24h preflight cache
+    // doesn't risk stale CORS state past a deploy window.
+    'Access-Control-Max-Age': '86400',
     'Vary': 'Origin',
   };
 }
