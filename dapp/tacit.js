@@ -7859,7 +7859,7 @@ function encodeTCbtcTacDepositPayload({
   if (targetLeafHash.length !== 32) throw new Error('target_leaf_hash 32 bytes');
   if (bondSourceOutpoint.length !== 36) throw new Error('bond_source_outpoint 36 bytes (32 txid + 4 vout)');
   if (bondCommit.length !== 33) throw new Error('bond_commit 33 bytes');
-  if (depositorRecoveryCommit.length !== 33) throw new Error('depositor_recovery_pk 33 bytes');
+  if (depositorRecoveryCommit.length !== 33) throw new Error('depositor_recovery_commit 33 bytes');
   if (mintRecipientCommit.length !== 33) throw new Error('mint_recipient_commit 33 bytes');
   if (bindHash.length !== 32) throw new Error('bind_hash 32 bytes');
   if (!(proof instanceof Uint8Array) || proof.length === 0 || proof.length > 0xffff) {
@@ -8604,7 +8604,7 @@ function encodeTCbtcTacDepositAtomicPayload({
   if (cbtcZkInputOutpoint.length !== 36 || tacInputOutpoint.length !== 36) throw new Error('outpoint 36 bytes');
   if (cbtcZkInputCommit.length !== 33 || tacInputCommit.length !== 33) throw new Error('input commit 33 bytes');
   if (lpShareCommit.length !== 33) throw new Error('lp_share_commit 33 bytes');
-  if (depositorRecoveryCommit.length !== 33) throw new Error('depositor_recovery_pk 33 bytes');
+  if (depositorRecoveryCommit.length !== 33) throw new Error('depositor_recovery_commit 33 bytes');
   if (mintRecipientCommit.length !== 33) throw new Error('mint_recipient_commit 33 bytes');
   if (bindHash.length !== 32) throw new Error('bind_hash 32 bytes');
   if (!proof || proof.length === 0 || proof.length > 65535) throw new Error('proof length out of range');
@@ -22302,6 +22302,17 @@ const TACIT_DEFAULT_CEREMONY_HASH = '1373a3bc34153c291d057b44edaba11d5a4aa779d09
 // to a different ptau, recompute via `shasum -a 256 powersOfTau28_hez_*.ptau`.
 const TACIT_DEFAULT_PTAU_SHA256 = '489be9e5ac65d524f7b1685baac8a183c6e77924fdb73d2b8105e335f277895d';
 
+// pot18_final.ptau (BN254, 2^18 ≈ 262k constraints) — the AMM circuits
+// (amm_lp_add, amm_lp_remove, amm_swap_batch) all use this Powers-of-
+// Tau file because their constraint counts exceed pot14's ~16k ceiling
+// (swap_batch alone is ~3 M constraints — uses pot18's 262k ceiling
+// after constraint reduction). The mixer ceremony was built against
+// pot14 (above) so the two sha anchors must coexist; ceremonyVerify-
+// Chain picks the right one based on whether state.circuit_hash is in
+// AMM_CEREMONY_CIRCUIT_HASHES. To rotate, recompute via
+// `shasum -a 256 pot18_final.ptau`.
+const TACIT_AMM_PTAU_SHA256 = 'e970efa7774da80101e0ac336d083ef3339855c98112539338d706b2b89ac694';
+
 // Local same-origin path to the witness-generator wasm. Same bytes as
 // circom output deterministically; sha256 baked into release notes for
 // integrity verification.
@@ -34686,13 +34697,28 @@ async function _ceremonyFetchBlobCached(cid, label, expectedSha256Hex, onBytes) 
 }
 
 async function ceremonyVerifyChain(state, snarkjs, headZkeyBytes, onPhase) {
-  // r1cs sha256 IS the ceremony hash — by definition. No separate constant
-  // needed; the active ceremony's hardcoded identity is the validator.
+  // Expected r1cs sha = state.circuit_hash by definition (the worker
+  // sets circuit_hash := sha256(r1cs) at init time, per worker
+  // line 5293). Falls back to _ceremonyActiveHash only when state
+  // doesn't carry the field (legacy mixer-era cache).
+  //
+  // Expected ptau sha depends on WHICH ceremony this is. AMM circuits
+  // use pot18 (262k constraints); mixer used pot14 (16k constraints).
+  // Both shas are pinned at build time as TACIT_AMM_PTAU_SHA256 +
+  // TACIT_DEFAULT_PTAU_SHA256. Earlier code only used the default
+  // (pot14 sha) which caused every AMM contribute to fail with
+  // "sha256 does not match expected" — the gateway-served pot18 bytes
+  // hashed correctly to the AMM ptau sha but were compared against
+  // the mixer's pot14 sha. Now: select by circuit_hash lookup.
+  const expectedR1cs = String(state.circuit_hash || _ceremonyActiveHash || '').toLowerCase();
+  const isAmm = Array.isArray(AMM_CEREMONY_CIRCUIT_HASHES)
+    && AMM_CEREMONY_CIRCUIT_HASHES.some(c => c.hash === expectedR1cs);
+  const expectedPtau = isAmm ? TACIT_AMM_PTAU_SHA256 : TACIT_DEFAULT_PTAU_SHA256;
   if (onPhase) onPhase('download-r1cs');
-  const r1csBytes = await _ceremonyFetchBlobCached(state.r1cs_cid, 'r1cs', _ceremonyActiveHash,
+  const r1csBytes = await _ceremonyFetchBlobCached(state.r1cs_cid, 'r1cs', expectedR1cs,
     (done, total) => { if (onPhase) onPhase('download-r1cs', { done, total }); });
   if (onPhase) onPhase('download-ptau');
-  const ptauBytes = await _ceremonyFetchBlobCached(state.ptau_cid, 'ptau', TACIT_DEFAULT_PTAU_SHA256,
+  const ptauBytes = await _ceremonyFetchBlobCached(state.ptau_cid, 'ptau', expectedPtau,
     (done, total) => { if (onPhase) onPhase('download-ptau', { done, total }); });
   _ceremonyLogToProgress(`Verifying chain (${state.contribution_count} contribution${state.contribution_count === 1 ? '' : 's'})…`);
   if (onPhase) onPhase('verify');

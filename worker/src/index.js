@@ -912,7 +912,7 @@ function slotMergeLogPrefix(network) {
 //     slot_denom_sats:         u64-string,
 //     mint_amount:             u64-string,
 //     bond_amount_tac:         u64-string,
-//     depositor_recovery_pk:   hex,
+//     depositor_recovery_commit:   hex,
 //     mint_recipient_commit:   hex,
 //     initial_twap:            u64-string (sats-per-TAC at deposit),
 //     initial_ratio_thousandths: u32 (bond_ratio × 1000 for fixed-point storage),
@@ -8216,7 +8216,7 @@ const _SHARE_SLASH_CLAIM_DOMAIN    = new TextEncoder().encode('tacit-share-slash
 
 function _computeCbtcTacDepositBindHash({
   networkTag, targetLeafHash, slotDenomSats, bondAmountTAC,
-  bondSourceOutpoint, bondCommit, depositorRecoveryPk, mintAmount, mintRecipientCommit,
+  bondSourceOutpoint, bondCommit, depositorRecoveryCommit, mintAmount, mintRecipientCommit,
 }) {
   const denomLE = new Uint8Array(8);
   { const v = new DataView(denomLE.buffer); const d = BigInt(slotDenomSats);
@@ -8230,7 +8230,7 @@ function _computeCbtcTacDepositBindHash({
   return sha256(concatBytes(
     _CBTC_TAC_DEPOSIT_DOMAIN, new Uint8Array([networkTag & 0xff]),
     targetLeafHash, denomLE, bondLE, bondSourceOutpoint, bondCommit,
-    depositorRecoveryPk, mintLE, mintRecipientCommit,
+    depositorRecoveryCommit, mintLE, mintRecipientCommit,
   ));
 }
 
@@ -8254,8 +8254,8 @@ function decodeTCbtcTacDepositPayload(payload) {
   const bondSourceOutpoint = payload.slice(p, p + 36); p += 36;
   const bondCommit = payload.slice(p, p + 33); p += 33;
   try { compressedPointFromHex(bytesToHex(bondCommit)); } catch { return null; }
-  const depositorRecoveryPk = payload.slice(p, p + 33); p += 33;
-  try { compressedPointFromHex(bytesToHex(depositorRecoveryPk)); } catch { return null; }
+  const depositorRecoveryCommit = payload.slice(p, p + 33); p += 33;
+  try { compressedPointFromHex(bytesToHex(depositorRecoveryCommit)); } catch { return null; }
   const mintView = new DataView(payload.buffer, payload.byteOffset + p, 8);
   const mintAmount = (BigInt(mintView.getUint32(4, true)) << 32n) | BigInt(mintView.getUint32(0, true));
   p += 8;
@@ -8271,7 +8271,7 @@ function decodeTCbtcTacDepositPayload(payload) {
   const proof = payload.slice(p, p + proofLen);
   const expectedBind = _computeCbtcTacDepositBindHash({
     networkTag, targetLeafHash, slotDenomSats, bondAmountTAC,
-    bondSourceOutpoint, bondCommit, depositorRecoveryPk, mintAmount, mintRecipientCommit,
+    bondSourceOutpoint, bondCommit, depositorRecoveryCommit, mintAmount, mintRecipientCommit,
   });
   for (let i = 0; i < 32; i++) if (expectedBind[i] !== bindHashBytes[i]) return null;
   return {
@@ -8282,7 +8282,7 @@ function decodeTCbtcTacDepositPayload(payload) {
     bond_amount_tac: bondAmountTAC.toString(),
     bond_source_outpoint: bytesToHex(bondSourceOutpoint),
     bond_commit: bytesToHex(bondCommit),
-    depositor_recovery_pk: bytesToHex(depositorRecoveryPk),
+    depositor_recovery_commit: bytesToHex(depositorRecoveryCommit),
     mint_amount: mintAmount.toString(),
     mint_recipient_commit: bytesToHex(mintRecipientCommit),
     bind_hash: bytesToHex(bindHashBytes),
@@ -8499,7 +8499,7 @@ function decodeTShareSlashClaimPayload(payload) {
 // Lets the depositor split a liened LP-share UTXO into multiple outputs
 // while preserving the lien on one chosen output (the "inheriting" output).
 // The other outputs become unliened, freely spendable. Authorised by the
-// depositor's Schnorr sig over bind_hash under depositor_recovery_pk.
+// depositor's Schnorr sig over bind_hash under depositor_recovery_commit.
 //
 // All output amounts + blindings are REVEALED in v1 (no privacy on split —
 // the depositor accepts on-chain visibility of their split portions in
@@ -8520,7 +8520,7 @@ function decodeTShareSlashClaimPayload(payload) {
 //     output_blinding        32 bytes (REVEALED)
 //     output_commit          33 bytes (Pedersen commit; verified against amount+blinding)
 //   lien_inherit_index        1 byte  (0..N-1)
-//   depositor_sig            64 bytes (BIP-340 Schnorr over bind_hash by depositor_recovery_pk)
+//   depositor_sig            64 bytes (BIP-340 Schnorr over bind_hash by depositor_recovery_commit)
 //   bind_hash                32 bytes
 const _CTAC_LIEN_SPLIT_DOMAIN = new TextEncoder().encode('tacit-ctac-lien-split-v1');
 function _computeCtacLienSplitBindHash({
@@ -8617,7 +8617,7 @@ function _computeCbtcTacDepositAtomicBindHash({
   deltaCbtcZk, deltaTac, shareAmount,
   cbtcZkInputOutpoint, cbtcZkInputCommit,
   tacInputOutpoint, tacInputCommit,
-  lpShareCommit, depositorRecoveryPk,
+  lpShareCommit, depositorRecoveryCommit,
   mintAmount, mintRecipientCommit,
 }) {
   const denomLE = new Uint8Array(8);
@@ -8641,7 +8641,7 @@ function _computeCbtcTacDepositAtomicBindHash({
     dCbtcLE, dTacLE, shareLE,
     cbtcZkInputOutpoint, cbtcZkInputCommit,
     tacInputOutpoint, tacInputCommit,
-    lpShareCommit, depositorRecoveryPk,
+    lpShareCommit, depositorRecoveryCommit,
     mintLE, mintRecipientCommit,
   ));
 }
@@ -8683,8 +8683,8 @@ function decodeTCbtcTacDepositAtomicPayload(payload) {
   try { compressedPointFromHex(bytesToHex(tacInputCommit)); } catch { return null; }
   const lpShareCommit = payload.slice(p, p + 33); p += 33;
   try { compressedPointFromHex(bytesToHex(lpShareCommit)); } catch { return null; }
-  const depositorRecoveryPk = payload.slice(p, p + 33); p += 33;
-  try { compressedPointFromHex(bytesToHex(depositorRecoveryPk)); } catch { return null; }
+  const depositorRecoveryCommit = payload.slice(p, p + 33); p += 33;
+  try { compressedPointFromHex(bytesToHex(depositorRecoveryCommit)); } catch { return null; }
   const mintView = new DataView(payload.buffer, payload.byteOffset + p, 8);
   const mintAmount = (BigInt(mintView.getUint32(4, true)) << 32n) | BigInt(mintView.getUint32(0, true));
   p += 8;
@@ -8702,7 +8702,7 @@ function decodeTCbtcTacDepositAtomicPayload(payload) {
     deltaCbtcZk, deltaTac, shareAmount,
     cbtcZkInputOutpoint, cbtcZkInputCommit,
     tacInputOutpoint, tacInputCommit,
-    lpShareCommit, depositorRecoveryPk,
+    lpShareCommit, depositorRecoveryCommit,
     mintAmount, mintRecipientCommit,
   });
   for (let i = 0; i < 32; i++) if (expectedBind[i] !== bindHashBytes[i]) return null;
@@ -8720,7 +8720,7 @@ function decodeTCbtcTacDepositAtomicPayload(payload) {
     tac_input_outpoint: bytesToHex(tacInputOutpoint),
     tac_input_commit: bytesToHex(tacInputCommit),
     lp_share_commit: bytesToHex(lpShareCommit),
-    depositor_recovery_pk: bytesToHex(depositorRecoveryPk),
+    depositor_recovery_commit: bytesToHex(depositorRecoveryCommit),
     mint_amount: mintAmount.toString(),
     mint_recipient_commit: bytesToHex(mintRecipientCommit),
     bind_hash: bytesToHex(bindHashBytes),
@@ -12234,7 +12234,7 @@ async function commitmentForUtxo(env, txidHex, vout, network, opts = {}) {
   }
   if (decoded.opcode === T_CBTC_TAC_DEPOSIT) {
     // The deposit reveal tx produces the cBTC.tac mint UTXO at vout[0]
-    // (the P2WPKH at depositor_recovery_pk). The dapp builder enforces
+    // (the P2WPKH at depositor_recovery_commit). The dapp builder enforces
     // this layout; here we just bind (commit, asset_id) for downstream
     // holdings / transfer / marketplace queries.
     if (vout !== 0) throw new Error('T_CBTC_TAC_DEPOSIT mint UTXO lives at vout 0 only');
@@ -12291,7 +12291,7 @@ async function commitmentForUtxo(env, txidHex, vout, network, opts = {}) {
   if (decoded.opcode === T_CBTC_TAC_WITHDRAW) {
     // The withdraw reveal tx layout (SPEC-CBTC-TAC-AMENDMENT §5.37):
     //   vout[0] = BTC payout to recipient (slot_denom_sats sats)
-    //   vout[1] = TAC bond return UTXO at depositor_recovery_pk (DUST sats)
+    //   vout[1] = TAC bond return UTXO at depositor_recovery_commit (DUST sats)
     // commitmentForUtxo doesn't resolve plain-sats outputs, so vout[0]
     // is out of scope. vout[1] is the bond-return tacit-asset UTXO —
     // commit comes from the envelope's bond_return_commit; asset_id is
@@ -17737,7 +17737,7 @@ async function scanForEtches(env, network) {
           bond_lp_asset_id: bondInfo.asset_id,
           bond_pool_id: bondPoolIdHex,
           bond_source_outpoint: dep.bond_source_outpoint,
-          depositor_recovery_pk: dep.depositor_recovery_pk,
+          depositor_recovery_commit: dep.depositor_recovery_commit,
           mint_recipient_commit: dep.mint_recipient_commit,
           initial_twap: twap.toString(),
           initial_lp_value_sats: lpValueSats.toString(),
@@ -18034,7 +18034,7 @@ async function scanForEtches(env, network) {
         // Splits a liened LP-share UTXO into multiple outputs. Exactly one
         // output inherits the lien (with revealed amount); the others
         // become unliened. Authorised by the depositor's Schnorr sig under
-        // depositor_recovery_pk. The inheriting output's amount must still
+        // depositor_recovery_commit. The inheriting output's amount must still
         // satisfy the LP-share collateralization requirement
         // (>= INITIAL_BOND_RATIO × slot_denom_sats at current TWAP).
         const sp = decodeTCtacLienSplitPayload(decoded.payload);
@@ -18076,11 +18076,11 @@ async function scanForEtches(env, network) {
         if (!sourceSpent) continue;
 
         // Verify depositor's Schnorr sig over bind_hash under their recovery
-        // pk. depositor_recovery_pk is 33-byte compressed; verifySchnorr
+        // pk. depositor_recovery_commit is 33-byte compressed; verifySchnorr
         // expects x-only (32 bytes).
         let depXOnly;
         try {
-          const depPt = compressedPointFromHex(position.depositor_recovery_pk);
+          const depPt = compressedPointFromHex(position.depositor_recovery_commit);
           depXOnly = depPt.toRawBytes(true).slice(1);
         } catch { continue; }
         if (!verifySchnorr(hexToBytes(sp.depositor_sig), hexToBytes(sp.bind_hash), depXOnly)) continue;
@@ -18232,7 +18232,7 @@ async function scanForEtches(env, network) {
         // Verify depositor sig
         let depXOnly;
         try {
-          const depPt = compressedPointFromHex(position.depositor_recovery_pk);
+          const depPt = compressedPointFromHex(position.depositor_recovery_commit);
           depXOnly = depPt.toRawBytes(true).slice(1);
         } catch { continue; }
         if (!verifySchnorr(hexToBytes(tp.depositor_sig), hexToBytes(tp.bind_hash), depXOnly)) continue;
@@ -18309,7 +18309,7 @@ async function scanForEtches(env, network) {
         // Verify depositor sig
         let depXOnly;
         try {
-          const depPt = compressedPointFromHex(position.depositor_recovery_pk);
+          const depPt = compressedPointFromHex(position.depositor_recovery_commit);
           depXOnly = depPt.toRawBytes(true).slice(1);
         } catch { continue; }
         if (!verifySchnorr(hexToBytes(rl.depositor_sig), hexToBytes(rl.bind_hash), depXOnly)) continue;
@@ -18502,7 +18502,7 @@ async function scanForEtches(env, network) {
             hexToBytes(tx.txid),
             (() => { const b = new Uint8Array(4); new DataView(b.buffer).setUint32(0, 0, true); return b; })(),
           )),
-          depositor_recovery_pk: dep.depositor_recovery_pk,
+          depositor_recovery_commit: dep.depositor_recovery_commit,
           mint_recipient_commit: dep.mint_recipient_commit,
           initial_twap: twap.toString(),
           initial_lp_value_sats: lpValueSats.toString(),
