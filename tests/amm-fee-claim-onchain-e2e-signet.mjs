@@ -187,25 +187,33 @@ const B_AID = C_B.asset_id;
 // =========================================================================
 // Phase 2: CXFER founder → trader (fund trader with asset A for swaps)
 // =========================================================================
-step(2, 'CXFER founder → trader (asset A for trader to swap with)');
-if (state.fundTrader?.completed) {
-  ok(`reusing transfer: ${state.fundTrader.reveal_txid.slice(0, 16)}…`);
+step(2, `CXferMulti founder → trader (× ${N_SWAPS} pre-split exact-amount UTXOs)`);
+if (state.fundTraderSplit?.completed) {
+  ok(`reusing split transfer: ${state.fundTraderSplit.reveal_txid.slice(0, 16)}…  ${N_SWAPS} × ${SWAP_AMOUNT} UTXOs`);
 } else {
   useWallet(FOUNDER);
-  const fundAmount = SWAP_AMOUNT * BigInt(N_SWAPS) + 10_000n;
-  info(`CXFER ${fundAmount} A → trader…`);
-  const r = await dapp.buildAndBroadcastCXfer({
+  // Pre-split into N_SWAPS exact-amount UTXOs so each swap's
+  // assetInputUtxo lookup in Phase 4 hits a ready-to-spend UTXO and
+  // never needs to call carveExactAmount (which would race the
+  // prior swap's reveal in mempool at signet's slow block cadence).
+  const recipients = [];
+  for (let k = 0; k < N_SWAPS; k++) {
+    recipients.push({ pubHex: bytesToHex(TRADER.pub), amount: SWAP_AMOUNT });
+  }
+  info(`CXferMulti: ${N_SWAPS} outputs × ${SWAP_AMOUNT} A to trader…`);
+  const r = await dapp.buildAndBroadcastCXferMulti({
     assetIdHex: A_AID.toLowerCase(),
-    recipientPubHex: bytesToHex(TRADER.pub),
-    amount: fundAmount,
+    recipients,
+    allowDuplicateRecipients: true,
   });
-  state.fundTrader = {
+  state.fundTraderSplit = {
     completed: true,
     reveal_txid: r.revealTxid,
-    amount: fundAmount.toString(),
+    n_outputs: N_SWAPS,
+    each_amount: SWAP_AMOUNT.toString(),
   };
   saveState(state);
-  ok(`fund trader reveal ${r.revealTxid.slice(0, 16)}…  amount=${fundAmount}`);
+  ok(`split transfer reveal ${r.revealTxid.slice(0, 16)}…  ${N_SWAPS} × ${SWAP_AMOUNT}`);
   info(`waiting 60s for confirmation…`);
   await sleep(60_000);
 }
@@ -257,30 +265,26 @@ ok(`worker confirms protocol_fee_bps=${pool0.protocol_fee_bps}`);
 // =========================================================================
 // Phase 4: swap × N (grow k; accrued stays 0 lazily)
 // =========================================================================
-step(4, `swap × ${N_SWAPS} (alternating directions, ${SWAP_AMOUNT} A per swap)`);
+step(4, `swap × ${N_SWAPS} (trader's funded-asset side, ${SWAP_AMOUNT} per swap)`);
 state.swaps = state.swaps || {};
 useWallet(TRADER);
+
+// Trader was funded with A_AID in Phase 2. Determine which canonical
+// side that maps to so direction is correct regardless of the lex
+// ordering of asset_id bytes. Crystallization fires regardless of
+// direction; we always swap from the funded side.
+const traderFundedAssetHex = A_AID.toLowerCase();
+const direction = (traderFundedAssetHex === state.pool.canonical_asset_a.toLowerCase()) ? 0 : 1;
+const assetInHex = traderFundedAssetHex;
+const assetOutHex = direction === 0
+  ? state.pool.canonical_asset_b.toLowerCase()
+  : state.pool.canonical_asset_a.toLowerCase();
+info(`trader funded with ${traderFundedAssetHex.slice(0,12)}… → canonical direction ${direction === 0 ? 'A→B' : 'B→A'}`);
+
 for (let i = 0; i < N_SWAPS; i++) {
   const swapLabel = `swap_${i}`;
   if (state.swaps[swapLabel]) {
     ok(`reusing ${swapLabel}: ${state.swaps[swapLabel].reveal_txid.slice(0, 16)}…`);
-    continue;
-  }
-  const direction = i % 2;
-  const assetInHex = direction === 0
-    ? state.pool.canonical_asset_a.toLowerCase()
-    : state.pool.canonical_asset_b.toLowerCase();
-  const assetOutHex = direction === 0
-    ? state.pool.canonical_asset_b.toLowerCase()
-    : state.pool.canonical_asset_a.toLowerCase();
-
-  // For B-direction swaps, founder needs to CXFER trader a tiny B
-  // balance once — but for simplicity we only test A→B direction here
-  // (direction = 0) for every swap. The crystallization fires regardless
-  // of direction; alternating just makes k grow faster but isn't
-  // necessary for the FEE_CLAIM rehearsal.
-  if (direction !== 0) {
-    info(`skipping B→A swap (trader has no B); A→B swap exercises crystallization equally`);
     continue;
   }
 
@@ -291,8 +295,27 @@ for (let i = 0; i < N_SWAPS; i++) {
   if (!ah || ah.balance < SWAP_AMOUNT) {
     fail(`trader ${assetInHex.slice(0,12)} balance ${ah?.balance ?? 0} < ${SWAP_AMOUNT}`);
   }
-  const carved = await dapp.carveExactAmount({ assetIdHex: assetInHex, amount: SWAP_AMOUNT });
-  if (!carved?.utxo) fail(`swap ${i}: carveExactAmount failed`);
+  // Pick directly from the pre-split UTXOs in Phase 2 (5 × exact
+  // SWAP_AMOUNT outputs to the trader's pubkey). Filter for unspent,
+  // already-tracked-as-spent in this run's state file, and pick the
+  // first remaining. This avoids carveExactAmount's mempool-race
+  // (back-to-back identical-feerate replacements) at signet's slow
+  // block cadence.
+  state.spentUtxos = state.spentUtxos || [];
+  const spentKeys = new Set(state.spentUtxos);
+  const candidate = ah.utxos
+    .filter(u => u.amount === SWAP_AMOUNT && !spentKeys.has(`${u.utxo.txid}:${u.utxo.vout | 0}`))
+    .sort((a, b) =>
+      a.utxo.txid !== b.utxo.txid
+        ? (a.utxo.txid < b.utxo.txid ? -1 : 1)
+        : ((a.utxo.vout | 0) - (b.utxo.vout | 0)),
+    )[0];
+  if (!candidate) {
+    fail(`swap ${i}: no remaining exact-${SWAP_AMOUNT} UTXO of asset ${assetInHex.slice(0,12)}… (spent so far: ${state.spentUtxos.length})`);
+  }
+  const carved = candidate;
+  state.spentUtxos.push(`${carved.utxo.txid}:${carved.utxo.vout | 0}`);
+  saveState(state);
   const poolR = await fetchPool(state.pool.pool_id_hex);
   if (!poolR) fail(`swap ${i}: pool fetch failed`);
   const R_A = BigInt(poolR.reserve_a), R_B = BigInt(poolR.reserve_b);
