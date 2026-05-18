@@ -2196,6 +2196,18 @@ tr[data-recent-activity] .market-token-sub::after {
   .market-pagination select { min-width: 64px; font-size: 11px; padding: 4px 6px; }
   .market-pagination button { min-width: 28px; min-height: 28px; padding: 0 8px; }
   .market-pagination { gap: 4px; font-size: 10px; }
+  /* Hide-on-mobile utility for inline span suffixes like " tokens · N per page". */
+  .hide-mobile { display: none; }
+  /* Market status strip: long breakdown ("· 51 instant · 51 atomic · 14 OTC")
+     wraps awkwardly on phones. Single-line truncate with ellipsis;
+     full text available via title hover (or scroll). */
+  #market-status {
+    display: block;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 100%;
+  }
   /* Browse table card visual: lose the heavy 4px hard-shadow on mobile
      (was creating a perceived right gutter). 1px is enough separation
      on a tight viewport. */
@@ -2210,6 +2222,14 @@ tr[data-recent-activity] .market-token-sub::after {
   .market-token-cell { min-width: 0; gap: 8px; }
   .market-token-icon { width: 32px; height: 32px; box-shadow: 1px 1px 0 var(--ink); }
   .market-token-title { font-size: 13px; }
+  /* Tighter row heights — single line per cell on mobile by hiding
+     the USD-sub and BTC-sub lines (sats price + activity count are
+     enough at a glance; full detail on tap). */
+  .market-token-table .market-table-sub { display: none; }
+  .market-token-table td { padding-top: 8px; padding-bottom: 8px; }
+  /* "Newest Listing" + sort dropdown filter row on mobile takes too
+     much height. Tighten. */
+  .market-chips-row select.market-chip { padding: 5px 22px 5px 8px; min-height: 30px; }
   /* Price + value cells: keep two lines (sats price + USD sub) but
      drop the "per token" suffix tail which repeats across every row. */
   .market-table-value { font-size: 12px; }

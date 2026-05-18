@@ -57897,7 +57897,7 @@ function marketBrowsePagerHtml(total, page, totalPages, start, end) {
   // the empty-state copy above is the user's signal, not a pager.
   if (total <= 0) return '';
   if (totalPages <= 1) {
-    return `<div class="market-pagination"><span>${start}-${end} of ${total} tokens</span><span>${MARKET_BROWSE_PAGE_SIZE} per page</span></div>`;
+    return `<div class="market-pagination"><span>${start}-${end} of ${total} tokens</span><span class="hide-mobile">${MARKET_BROWSE_PAGE_SIZE} per page</span></div>`;
   }
   const opts = Array.from({ length: totalPages }, (_, i) => {
     const p = i + 1;
@@ -57905,7 +57905,7 @@ function marketBrowsePagerHtml(total, page, totalPages, start, end) {
   }).join('');
   return `
     <div class="market-pagination">
-      <span>${start}-${end} of ${total} tokens &middot; ${MARKET_BROWSE_PAGE_SIZE} per page</span>
+      <span>${start}-${end} of ${total}<span class="hide-mobile"> tokens &middot; ${MARKET_BROWSE_PAGE_SIZE} per page</span></span>
       <div class="market-pagination-controls">
         <button type="button" data-market-page="prev"${page <= 1 ? ' disabled' : ''}>&lsaquo;</button>
         <select data-market-page-select aria-label="Market token page">${opts}</select>
@@ -58064,6 +58064,9 @@ function _formatMarketStatus(rows, opts = {}) {
   const total = universe.length;
   const showing = rows.length;
   const breakdown = `${instant} instant - ${atomic} atomic - ${otc} OTC`;
+  // CSS-driven mobile collapse via _formatMarketStatusMobile reading the
+  // same fields. For now we render the same text; mobile CSS truncates
+  // visually via max-width + overflow hidden on the parent.
   if (showing === total) return `${total} listing${total === 1 ? '' : 's'} - ${breakdown}`;
   return `Showing ${showing} of ${total} - ${breakdown}`;
 }
