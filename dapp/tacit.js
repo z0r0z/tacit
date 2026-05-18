@@ -51452,12 +51452,20 @@ async function renderRecentEtches() {
       if (a.kind === 'petch' && safeAssetId) tile.dataset.petchAid = safeAssetId;
       tile.onclick = (e) => {
         e.preventDefault();
-        // Drive the navigation through the deeplink hash so the resulting
-        // URL is shareable + reload-stable. hashchange fires
-        // _consumeTabUrlHash, which sets pendingDiscoverFocus and clicks
-        // the tab — same effect as the prior direct call, plus URL parity.
-        if (safeAssetId) location.hash = `#tab=discover&aid=${safeAssetId}`;
-        else $('.tab[data-tab="discover"]').click();
+        // Route assets with any market footprint (live listings, completed
+        // trades, 24h volume) to the Market tab so users land on price +
+        // book rather than the directory card. Petches stay on Discover
+        // since their primary surface is the public-mint UI, not trading.
+        const hasMarket = a.kind !== 'petch' && (
+          Number(a.preauth_sale_count || 0) > 0 ||
+          Number(a.atomic_intent_count || 0) > 0 ||
+          Number(a.listing_count || 0) > 0 ||
+          Number(a.range_listing_count || 0) > 0 ||
+          Number(a.volume_24h_sats || 0) > 0
+        );
+        const target = hasMarket ? 'market' : 'discover';
+        if (safeAssetId) location.hash = `#tab=${target}&aid=${safeAssetId}`;
+        else $(`.tab[data-tab="${target}"]`).click();
       };
       paintTile(tile, a, null, null);
       // If this asset's activity total (credited + pending) exceeds the
