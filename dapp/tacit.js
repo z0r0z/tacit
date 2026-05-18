@@ -60850,6 +60850,13 @@ function primeSwapTileFromOrderbook({ aid, direction, amountBaseStr, decimals, t
   if (targetInput) {
     targetInput.focus({ preventScroll: true });
     targetInput.value = displayStr;
+    // Clear both userTyped flags — a row prime is a fresh trade intent
+    // at the row's unit price (slippage was just bumped to cover it).
+    // Without the reset, stale flags from a prior limit-mode session
+    // would put the tile into limit mode with a derived price that
+    // disagrees with the row's actual unit price.
+    delete widget.dataset.fromUserTyped;
+    delete widget.dataset.toUserTyped;
     targetInput.dispatchEvent(new Event('input', { bubbles: true }));
   }
   // Scroll behavior depends on whether the user is in Simple mode (where
@@ -62118,6 +62125,83 @@ function _wireSwapTile(scope) {
     const pct = parseFloat(slipSel?.value || '10');
     return Number.isFinite(pct) ? pct / 100 : 0.20;
   };
+  // Limit-mode state: when the user has typed BOTH the pay and receive
+  // sides, the implied unit price (pay / receive, decimal-adjusted)
+  // becomes a hard manual cap — no more slippage-derived ref ± %. The
+  // existing residual-as-bid path (buy) and residual-as-ask path (sell)
+  // automatically post any unfilled budget AT that exact limit price,
+  // so a single field-pair entry produces a routed fill plus a passive
+  // bid/ask remainder. Dataset flags survive across planner writebacks
+  // (planner clears the OTHER side's flag when it overwrites that input).
+  const _isUserTyped = (side) => widget.dataset[side === 'from' ? 'fromUserTyped' : 'toUserTyped'] === '1';
+  const _setUserTyped = (side, val) => {
+    const key = side === 'from' ? 'fromUserTyped' : 'toUserTyped';
+    if (val) widget.dataset[key] = '1';
+    else delete widget.dataset[key];
+  };
+  // Read the user-typed sats on the buy side, ticker amount on the sell
+  // side. Returns null on parse failure or non-positive.
+  const _readPaySats = () => {
+    const raw = (fromInput.value || '').trim();
+    if (!raw) return null;
+    const payUnit = getPayUnit();
+    let sats;
+    if (payUnit === 'usd') {
+      // Limit mode requires a price-anchored sats value. If the BTC/USD
+      // oracle is cold, return null so limit mode disables itself and the
+      // existing exact-in path surfaces the "BTC/USD unavailable" error
+      // rather than letting "$10" silently parse as 10 sats.
+      if (!Number.isFinite(btcUsd) || btcUsd <= 0) return null;
+      const usd = parseFloat(raw.replace(/[$, ]/g, ''));
+      if (!Number.isFinite(usd) || usd <= 0) return null;
+      sats = Math.floor(usd * 100_000_000 / btcUsd);
+    } else {
+      sats = parseInt(raw.replace(/[, ]/g, ''), 10);
+    }
+    return (Number.isFinite(sats) && sats > 0) ? sats : null;
+  };
+  // Limit-mode detection + price derivation. Active when both inputs are
+  // user-typed AND parse to positive numbers. Returns the implied unit
+  // price (sats per whole TICKER unit) for the active direction, or null
+  // when limit mode isn't engaged.
+  const _limitUnitPrice = () => {
+    if (!_isUserTyped('from') || !_isUserTyped('to')) return null;
+    const fromRaw = (fromInput.value || '').trim();
+    const toRaw   = (toInput.value || '').trim();
+    if (!fromRaw || !toRaw) return null;
+    const dir = getDirection();
+    try {
+      if (dir === 'buy') {
+        const sats = _readPaySats();
+        const amt = parseAssetAmount(toRaw, decimals);
+        if (!sats || amt <= 0n) return null;
+        // unit = sats × 10^decimals / amt
+        const unit = (sats * Math.pow(10, decimals)) / Number(amt);
+        return (Number.isFinite(unit) && unit > 0) ? unit : null;
+      } else {
+        // SELL: from is ticker, to is sats
+        const amt = parseAssetAmount(fromRaw, decimals);
+        const sats = parseInt(toRaw.replace(/[, ]/g, ''), 10);
+        if (!sats || amt <= 0n) return null;
+        const unit = (sats * Math.pow(10, decimals)) / Number(amt);
+        return (Number.isFinite(unit) && unit > 0) ? unit : null;
+      }
+    } catch { return null; }
+  };
+  // Effective cap / floor for the routing planners. Honors limit mode
+  // first; falls back to refUnit × (1 ± slippage). Routing modules use
+  // these wrappers so a single override point flips the entire tile
+  // (planners, action handlers, readouts) between market and limit price.
+  const _buyCapUnit = () => {
+    const lim = _limitUnitPrice();
+    if (lim != null) return lim;
+    return (Number.isFinite(refUnit) && refUnit > 0) ? refUnit * (1 + getSlipRatio()) : Infinity;
+  };
+  const _sellFloorUnit = () => {
+    const lim = _limitUnitPrice();
+    if (lim != null) return lim;
+    return (Number.isFinite(refUnit) && refUnit > 0) ? refUnit * (1 - getSlipRatio()) : 0;
+  };
   // Dust floor / outlier ceiling for swap-tile auto-routing. Asks below
   // 0.2× ref or bids above 5× ref are treated as anomalies (likely
   // fat-finger or stale listings) and skipped — same thresholds the
@@ -62147,7 +62231,7 @@ function _wireSwapTile(scope) {
   // sell 500 tokens for 10000 sats.
   const planBuy = (satsBudget) => {
     if (!Number.isFinite(satsBudget) || satsBudget <= 0) return null;
-    const cap = Number.isFinite(refUnit) && refUnit > 0 ? refUnit * (1 + getSlipRatio()) : Infinity;
+    const cap = _buyCapUnit();
     const nowSec = Math.floor(Date.now() / 1000);
     const asks = (_marketCache?.listings || [])
       .filter(l => l._asset?.asset_id === aid)
@@ -62446,7 +62530,7 @@ function _wireSwapTile(scope) {
     catch { return null; }
     if (!Array.isArray(bids) || bids.length === 0) return null;
     const nowSec = Math.floor(Date.now() / 1000);
-    const floor = Number.isFinite(refUnit) && refUnit > 0 ? refUnit * (1 - getSlipRatio()) : 0;
+    const floor = _sellFloorUnit();
     const candidates = [];
     for (const b of bids) {
       if (b.buyer_pubkey === myPubHex) continue;
@@ -62501,7 +62585,7 @@ function _wireSwapTile(scope) {
   // overshoot by ≤ one lot.
   const planBuyExactOut = (targetTacBig) => {
     if (targetTacBig <= 0n) return null;
-    const cap = Number.isFinite(refUnit) && refUnit > 0 ? refUnit * (1 + getSlipRatio()) : Infinity;
+    const cap = _buyCapUnit();
     const nowSec = Math.floor(Date.now() / 1000);
     const asks = (_marketCache?.listings || [])
       .filter(l => l._asset?.asset_id === aid)
@@ -62570,7 +62654,7 @@ function _wireSwapTile(scope) {
     catch { return null; }
     if (!Array.isArray(bids) || bids.length === 0) return null;
     const nowSec = Math.floor(Date.now() / 1000);
-    const floor = Number.isFinite(refUnit) && refUnit > 0 ? refUnit * (1 - getSlipRatio()) : 0;
+    const floor = _sellFloorUnit();
     const candidates = bids
       .filter(b => b.buyer_pubkey !== myPubHex)
       .filter(b => Number(b.expiry || 0) > nowSec)
@@ -62770,6 +62854,8 @@ function _wireSwapTile(scope) {
         widget.dataset.activeSide = 'from';
         fromInput.value = btn.dataset.value || '';
         toInput.value = '';
+        _setUserTyped('from', !!(btn.dataset.value || '').length);
+        _setUserTyped('to', false);
         update();
         fromInput.focus();
       };
@@ -62792,13 +62878,38 @@ function _wireSwapTile(scope) {
   const _paintLimitReadout = () => {
     const readout = widget.querySelector('[data-swap-limit-readout]');
     if (!readout) return;
+    const dir = getDirection();
+    // Limit-mode override: user typed both fields → implied unit price is
+    // the manual cap. Surface it as "limit: X sats/T (manual)" with a
+    // small "use market" link that clears the receive side and reverts
+    // to slippage-derived auto-routing.
+    const lim = _limitUnitPrice();
+    if (lim != null) {
+      readout.style.display = 'block';
+      const sideHint = dir === 'buy' ? 'won\'t pay more than' : 'won\'t accept less than';
+      readout.innerHTML = `${sideHint} <strong>${escapeHtml(fmtUnitPriceSats(lim))} sats/${escapeHtml(ticker)}</strong> · <span style="font-weight:400;color:var(--ink-mid);">your limit · </span><button data-swap-clear-limit type="button" style="background:none;border:none;color:var(--ink-mid);padding:0;font:inherit;text-decoration:underline;text-decoration-style:dotted;cursor:pointer;">use market price</button>`;
+      // "Use market price" exits limit mode by clearing the BOTTOM input
+      // (the one whose value, combined with the top, pinned the manual
+      // cap). After the clear, update() falls through to the exact-in
+      // path which uses the slippage selector for the cap again.
+      const clearBtn = readout.querySelector('[data-swap-clear-limit]');
+      if (clearBtn) {
+        clearBtn.onclick = (e) => {
+          e.preventDefault();
+          toInput.value = '';
+          _setUserTyped('to', false);
+          widget.dataset.activeSide = 'from';
+          update();
+        };
+      }
+      return;
+    }
     if (!(Number.isFinite(refUnit) && refUnit > 0)) {
       readout.style.display = 'none';
       readout.textContent = '';
       return;
     }
     const slip = getSlipRatio();
-    const dir = getDirection();
     const cap = dir === 'buy' ? refUnit * (1 + slip) : refUnit * (1 - slip);
     // "won't pay more than X" already conveys the cap semantics; the
     // earlier `≤` glyph in front of X was decorative math jargon that
@@ -62865,10 +62976,225 @@ function _wireSwapTile(scope) {
     return ` · ${arrow} ${abs.toFixed(abs < 1 ? 2 : 1)}% ${tone}${tag}`;
   };
 
+  // Limit-mode update: user pinned BOTH inputs → derive cap from
+  // sats/tokens, run planner against that cap, post residual as a passive
+  // bid/ask at the same price. Does NOT overwrite user inputs (so the
+  // "5,000,000,000 TICKER for 1,000 sats" intent stays visible while the
+  // tile breaks down which portion fills immediately vs. sits as a
+  // resting order). Falls through naturally to the existing swap-action
+  // click handlers — they re-call planBuy/planSell which read the cap
+  // through _buyCapUnit/_sellFloorUnit, so result.cap = user's limit price
+  // and the residual-as-bid / residual-as-ask paths post there.
+  const _updateLimitMode = async (myToken) => {
+    const dir = getDirection();
+    const limitUnit = _limitUnitPrice();
+    if (limitUnit == null) return;
+    // Force exact-in routing on click. The user has BOTH sides pinned —
+    // the bottom field is their target ("≥ this much"), not an exact-out
+    // request. Exact-in is the right semantic: walk fills under the
+    // limit cap up to the sats/token budget, then post residual budget as
+    // a passive bid/ask at the user's exact price. The exact-out planners
+    // would stop at the target and leave no residual hook.
+    widget.dataset.activeSide = 'from';
+    // Slippage selector is dimmed visually in limit mode but kept enabled
+    // so changing it doesn't have to fight focus. (Cap helper ignores it
+    // anyway as long as limitUnit is non-null.)
+    if (slipSel) {
+      slipSel.style.opacity = '0.4';
+      slipSel.title = 'Slippage cap ignored — your typed receive amount defines a manual limit price. Clear the receive field to return to auto-routing under slippage.';
+    }
+    // Reset state the existing branches normally manage.
+    delete actionBtn.dataset.swapNeedsFunds;
+    delete actionBtn.dataset.action;
+    delete actionBtn.dataset.bidAmt;
+    delete actionBtn.dataset.bidSats;
+    delete actionBtn.dataset.bidUnitCap;
+    if (dir === 'buy') {
+      const sats = _readPaySats();
+      let targetAmt = 0n;
+      try { targetAmt = parseAssetAmount((toInput.value || '').trim(), decimals); } catch {}
+      if (!sats || targetAmt <= 0n) {
+        actionBtn.disabled = true; actionBtn.style.opacity = '0.5';
+        actionBtn.textContent = 'enter both amounts';
+        infoEl.textContent = '';
+        fromMeta.textContent = ''; toMeta.textContent = '';
+        return;
+      }
+      const result = planBuy(sats);
+      if (myToken !== updateToken) return;
+      const filledSats = result ? result.totalSats : 0;
+      const filledAmt = result ? result.totalAmt : 0n;
+      const residualSats = Math.max(0, sats - filledSats);
+      const residualBidAmt = (residualSats >= DUST)
+        ? BigInt(Math.floor(residualSats * Math.pow(10, decimals) / limitUnit))
+        : 0n;
+      const totalAmt = filledAmt + residualBidAmt;
+      const satBal = Number(_walletCardState?.balance || 0);
+      const feeEst = result ? result.plan.length * 800 : 0;
+      const insufficientBudget = satBal > 0 && sats > satBal;
+      const insufficientForFees = !insufficientBudget && satBal > 0 && (sats + feeEst) > satBal;
+      const fromUsd = btcUsd ? fmtSatsAsUsd(sats, btcUsd) : null;
+      const fromTail = insufficientBudget
+        ? ` · ⚠ wallet holds ${satBal.toLocaleString()}`
+        : (insufficientForFees ? ' · ⚠ low sat reserve for fees' : '');
+      fromMeta.textContent = fromUsd
+        ? `spending ${sats.toLocaleString()} sats · ${fromUsd}${fromTail}`
+        : `spending ${sats.toLocaleString()} sats${fromTail}`;
+      // toMeta: anchor on the user's limit price + flag any bonus from
+      // cheaper fills (avg unit below user's limit). When fills happen
+      // below the limit, the same sats budget at the cap-priced residual
+      // ends up overshooting the user's target by `totalAmt - targetAmt`.
+      const bonus = totalAmt > targetAmt ? totalAmt - targetAmt : 0n;
+      const limitPriceUsd = btcUsd ? fmtUnitUsd(limitUnit, btcUsd) : null;
+      const bonusStr = bonus > 0n
+        ? ` · <span style="color:#0a8f43;">bonus +${escapeHtml(fmtAssetAmountCompact(bonus, decimals))} ${escapeHtml(ticker)} from cheap fills</span>`
+        : '';
+      toMeta.innerHTML = `<strong style="color:var(--ink);">limit ${escapeHtml(fmtUnitPriceSats(limitUnit))} sats/${escapeHtml(ticker)}</strong>${limitPriceUsd ? ` (${escapeHtml(limitPriceUsd)})` : ''}${bonusStr}`;
+      // Info line: fills now + residual-as-bid breakdown
+      let info;
+      const _residNote = residualBidAmt > 0n
+        ? `+${escapeHtml(fmtAssetAmountCompact(residualBidAmt, decimals))} ${escapeHtml(ticker)} more stays open as a <span title="The leftover sats post as a partial-fill bid in this asset's Bids panel below at your exact limit price. Sellers can hit it any time. Auto-expires in 24h." style="border-bottom:1px dotted var(--ink-mid);cursor:help;">passive bid</span> @ ${escapeHtml(fmtUnitPriceSats(limitUnit))} sats/${escapeHtml(ticker)}`
+        : (residualSats > 0
+            ? `${residualSats.toLocaleString()} sats stay in wallet (below ${DUST}-sat dust floor for a passive bid)`
+            : '');
+      if (result && result.plan.length > 0) {
+        const cheapU = result.plan[0].u;
+        const dearU = result.plan[result.plan.length - 1].u;
+        const rangeStr = result.plan.length === 1
+          ? `${fmtUnitPriceSats(cheapU)} sats/${ticker}`
+          : `${fmtUnitPriceSats(cheapU)}–${fmtUnitPriceSats(dearU)} sats/${ticker}`;
+        const impactStr = _computeImpactStr(filledSats, filledAmt, 'buy');
+        info = _renderRouteRows(
+          `${result.plan.length} fill${result.plan.length === 1 ? '' : 's'} now · ${rangeStr} · fees ~${feeEst.toLocaleString()} sats${impactStr}`,
+          [_residNote ? { html: _residNote } : null]
+        );
+      } else {
+        // No fills under cap → entire budget posts as bid at limit
+        info = _renderRouteRows(
+          residualBidAmt > 0n
+            ? `no asks at your limit price — your full target stays open as a bid until a seller matches`
+            : `budget below DUST (${DUST} sats) at your limit price — nothing posts`,
+          [_residNote ? { html: _residNote } : null]
+        );
+      }
+      infoEl.innerHTML = info;
+      // Wire the bid-only short-circuit when planBuy returned null — same
+      // dataset shape the existing no-route path uses, so the swap-action
+      // click handler routes through publishBidIntent at the user's price.
+      if (!result && residualBidAmt > 0n) {
+        actionBtn.dataset.action = 'bid-only';
+        actionBtn.dataset.bidAmt = residualBidAmt.toString();
+        actionBtn.dataset.bidSats = String(residualSats);
+        actionBtn.dataset.bidUnitCap = String(limitUnit);
+      }
+      if (insufficientBudget || insufficientForFees) {
+        actionBtn.disabled = false; actionBtn.style.opacity = '1';
+        actionBtn.dataset.swapNeedsFunds = '1';
+        actionBtn.textContent = insufficientBudget
+          ? `+ Add funds to buy ${fmtAssetAmountCompact(targetAmt, decimals)} ${ticker}`
+          : '+ Add funds for tx fees';
+      } else if (totalAmt === 0n) {
+        actionBtn.disabled = true; actionBtn.style.opacity = '0.5';
+        actionBtn.textContent = 'amount too small at your limit';
+      } else {
+        actionBtn.disabled = false; actionBtn.style.opacity = '1';
+        actionBtn.textContent = swapLabel(`BUY ${fmtAssetAmountCompact(totalAmt, decimals)} ${ticker} for ${sats.toLocaleString()} sats @ limit`);
+      }
+      return;
+    }
+    // SELL limit mode
+    let sellAmt = 0n;
+    try { sellAmt = parseAssetAmount((fromInput.value || '').trim(), decimals); } catch {}
+    const targetSats = parseInt((toInput.value || '').trim().replace(/[, ]/g, ''), 10);
+    if (sellAmt <= 0n || !Number.isFinite(targetSats) || targetSats <= 0) {
+      actionBtn.disabled = true; actionBtn.style.opacity = '0.5';
+      actionBtn.textContent = 'enter both amounts';
+      infoEl.textContent = '';
+      fromMeta.textContent = ''; toMeta.textContent = '';
+      return;
+    }
+    const _balCacheReady = _holdingsCache != null;
+    const bal = _balCacheReady ? (_holdingsCache.holdings?.get(aid)?.balance || 0n) : 0n;
+    const insufficient = _balCacheReady && sellAmt > bal;
+    const balStr = fmtAssetAmount(bal, decimals);
+    fromMeta.textContent = !_balCacheReady
+      ? `balance: checking your wallet…`
+      : (insufficient
+          ? `balance: ${balStr} ${ticker} · ⚠ only hold ${balStr}`
+          : `balance: ${balStr} ${ticker}`);
+    infoEl.textContent = 'finding route…';
+    const result = await planSell(sellAmt);
+    if (myToken !== updateToken) return;
+    const filledAmt = result ? result.totalAmt : 0n;
+    const filledSats = result ? result.totalSats : 0;
+    const residualAmt = sellAmt > filledAmt ? sellAmt - filledAmt : 0n;
+    const residualSats = (residualAmt > 0n)
+      ? Math.floor(Number(residualAmt) * limitUnit / Math.pow(10, decimals))
+      : 0;
+    const totalSats = filledSats + residualSats;
+    const bonusSats = totalSats > targetSats ? totalSats - targetSats : 0;
+    const limitPriceUsd = btcUsd ? fmtUnitUsd(limitUnit, btcUsd) : null;
+    const bonusStr = bonusSats > 0
+      ? ` · <span style="color:#0a8f43;">bonus +${bonusSats.toLocaleString()} sats from richer fills</span>`
+      : '';
+    toMeta.innerHTML = `<strong style="color:var(--ink);">limit ${escapeHtml(fmtUnitPriceSats(limitUnit))} sats/${escapeHtml(ticker)}</strong>${limitPriceUsd ? ` (${escapeHtml(limitPriceUsd)})` : ''}${bonusStr}`;
+    const _residSellNote = (residualAmt > 0n && residualSats >= DUST)
+      ? `+${escapeHtml(fmtAssetAmountCompact(residualAmt, decimals))} ${escapeHtml(ticker)} stays open as an <span title="The unfilled portion posts as a variable-amount listing at your exact limit price. Any buyer can take any chunk. Auto-expires in 24h." style="border-bottom:1px dotted var(--ink-mid);cursor:help;">open listing</span> @ ${escapeHtml(fmtUnitPriceSats(limitUnit))} sats/${escapeHtml(ticker)}`
+      : '';
+    let info;
+    if (result && result.plan.length > 0) {
+      const highU = result.plan[0].u;
+      const lowU = result.plan[result.plan.length - 1].u;
+      const rangeStr = result.plan.length === 1
+        ? `${fmtUnitPriceSats(highU)} sats/${ticker}`
+        : `${fmtUnitPriceSats(lowU)}–${fmtUnitPriceSats(highU)} sats/${ticker}`;
+      const feeEst = result.plan.length * 800 * 2;
+      const impactStr = _computeImpactStr(filledSats, filledAmt, 'sell');
+      const autoHint = _isAutoFulfilEnabled() ? '' : 'enable Auto-fulfil to auto-sign claims';
+      info = _renderRouteRows(
+        `${result.plan.length} bid${result.plan.length === 1 ? '' : 's'} fill now · ${rangeStr} · fees ~${feeEst.toLocaleString()} sats${impactStr}`,
+        [_residSellNote ? { html: _residSellNote } : null, autoHint]
+      );
+    } else {
+      info = _renderRouteRows(
+        _residSellNote
+          ? `no bids at your limit price — your full sale stays open as a listing until a buyer matches`
+          : `target sats below DUST (${DUST}) at your limit — listing wouldn't post`,
+        [_residSellNote ? { html: _residSellNote } : null]
+      );
+    }
+    infoEl.innerHTML = info;
+    if (!_balCacheReady) {
+      actionBtn.disabled = true; actionBtn.style.opacity = '0.5';
+      actionBtn.textContent = 'checking your balance…';
+    } else if (insufficient) {
+      actionBtn.disabled = true; actionBtn.style.opacity = '0.5';
+      actionBtn.textContent = `only hold ${fmtAssetAmountCompact(bal, decimals)} ${ticker}`;
+    } else if (totalSats === 0) {
+      actionBtn.disabled = true; actionBtn.style.opacity = '0.5';
+      actionBtn.textContent = 'amount too small at your limit';
+    } else {
+      actionBtn.disabled = false; actionBtn.style.opacity = '1';
+      actionBtn.textContent = swapLabel(`SELL ${fmtAssetAmountCompact(sellAmt, decimals)} ${ticker} for ${totalSats.toLocaleString()} sats @ limit`);
+    }
+  };
   const update = async () => {
     _paintLimitReadout();
     const myToken = ++updateToken;
     const dir = getDirection();
+    // Limit mode — user pinned both inputs → dedicated branch keeps their
+    // typed values intact and breaks down fills vs. residual at the
+    // user-derived price. Returns early; the rest of update() is the
+    // single-side-typed path (exact-in / exact-out).
+    if (_limitUnitPrice() != null) {
+      await _updateLimitMode(myToken);
+      return;
+    }
+    // Restore slippage selector visual after a limit-mode exit.
+    if (slipSel) {
+      slipSel.style.opacity = '';
+      slipSel.title = 'Cap on how far above mark price the swap will reach. Asks above the cap are skipped; residual unfilled budget posts as a bid AT the cap.';
+    }
     const activeSide = getActiveSide();
     // Read whichever input the user is driving. The inactive side gets
     // cleared + filled by the planner output. 'from' → exact-in (existing
@@ -63065,7 +63391,8 @@ function _wireSwapTile(scope) {
       // atomic settlement as taking, just async. This is the DEX-feel
       // closure: any sats budget produces a tradeable order.
       if (!result) {
-        const _capUnit = Number.isFinite(refUnit) && refUnit > 0 ? refUnit * (1 + getSlipRatio()) : null;
+        const _capUnitRaw = _buyCapUnit();
+        const _capUnit = Number.isFinite(_capUnitRaw) && _capUnitRaw > 0 ? _capUnitRaw : null;
         if (_capUnit != null && _capUnit > 0 && sats >= DUST) {
           const _bidAmt = BigInt(Math.floor(sats * Math.pow(10, decimals) / _capUnit));
           if (_bidAmt > 0n) {
@@ -63132,13 +63459,12 @@ function _wireSwapTile(scope) {
       // style framing — clearer for traders than only seeing the cap unit
       // price. Bolded so it leads the meta line above the est. amount.
       let _minRecvHtml = '';
-      if (Number.isFinite(refUnit) && refUnit > 0) {
-        const _capUnitBuy = refUnit * (1 + getSlipRatio());
-        if (_capUnitBuy > 0) {
-          const _minAmt = BigInt(Math.floor(Number(result.totalSats) * Math.pow(10, decimals) / _capUnitBuy));
-          if (_minAmt > 0n) {
-            _minRecvHtml = `<strong style="color:var(--ink);">min ${escapeHtml(fmtAssetAmount(_minAmt, decimals))} ${escapeHtml(ticker)}</strong> at ±${escapeHtml(String(slipSel?.value || ''))}% limit · `;
-          }
+      const _capUnitBuy = _buyCapUnit();
+      if (Number.isFinite(_capUnitBuy) && _capUnitBuy > 0) {
+        const _minAmt = BigInt(Math.floor(Number(result.totalSats) * Math.pow(10, decimals) / _capUnitBuy));
+        if (_minAmt > 0n) {
+          const _limTag = _limitUnitPrice() != null ? 'at your limit price' : `at ±${escapeHtml(String(slipSel?.value || ''))}% limit`;
+          _minRecvHtml = `<strong style="color:var(--ink);">min ${escapeHtml(fmtAssetAmount(_minAmt, decimals))} ${escapeHtml(ticker)}</strong> ${_limTag} · `;
         }
       }
       const _avgStr = avgU != null ? `avg ${fmtUnitPriceSats(avgU)} sats/${ticker}${avgUsd ? ` (${avgUsd})` : ''}` : '';
@@ -63292,14 +63618,14 @@ function _wireSwapTile(scope) {
         // A normie typing in the sell input gets a clear path
         // (your swap will land as a listing) rather than a dead end.
         if (Number.isFinite(refUnit) && refUnit > 0) {
-          const _floor = refUnit * (1 - getSlipRatio());
+          const _floor = _sellFloorUnit();
           // Estimated sats at the floor price for the visual.
           let _est = 0;
           try {
             const _whole = Number(amt) / Math.pow(10, decimals);
             _est = Math.floor(_whole * _floor);
           } catch {}
-          toInput.value = _est ? _est.toLocaleString() : '';
+          if (!_isUserTyped('to')) toInput.value = _est ? _est.toLocaleString() : '';
           const _usd = btcUsd && _est ? fmtSatsAsUsd(_est, btcUsd) : null;
           toMeta.textContent = _usd
             ? `≈ ${_usd} · at floor ${fmtUnitPriceSats(_floor)} sats/${ticker} · auto-expires 24h`
@@ -63328,12 +63654,13 @@ function _wireSwapTile(scope) {
       // limit" prefix so the trader sees the protected worst-case before
       // the estimated headline number.
       let _minSatsHtml = '';
-      if (Number.isFinite(refUnit) && refUnit > 0 && amt > 0n) {
-        const _capUnitSell = refUnit * (1 - getSlipRatio());
+      if (amt > 0n) {
+        const _capUnitSell = _sellFloorUnit();
         if (_capUnitSell > 0) {
           const _minSats = Math.floor(Number(amt) * _capUnitSell / Math.pow(10, decimals));
           if (_minSats > 0) {
-            _minSatsHtml = `<strong style="color:var(--ink);">min ${_minSats.toLocaleString()} sats</strong> at ±${escapeHtml(String(slipSel?.value || ''))}% limit · `;
+            const _limTag = _limitUnitPrice() != null ? 'at your limit price' : `at ±${escapeHtml(String(slipSel?.value || ''))}% limit`;
+            _minSatsHtml = `<strong style="color:var(--ink);">min ${_minSats.toLocaleString()} sats</strong> ${_limTag} · `;
           }
         }
       }
@@ -63362,8 +63689,10 @@ function _wireSwapTile(scope) {
       // buyers to take." Without it the "unfilled at floor" copy reads
       // as "we couldn't sell that part" when really the dapp is going
       // to do it for you.
-      const _residFloor = (Number.isFinite(refUnit) && refUnit > 0)
-        ? refUnit * (1 - getSlipRatio()) : null;
+      const _residFloor = (() => {
+        const f = _sellFloorUnit();
+        return (Number.isFinite(f) && f > 0) ? f : null;
+      })();
       const residHint = result.residualAmt > 0n
         ? (_residFloor != null
             ? ` · +${fmtAssetAmount(result.residualAmt, decimals)} ${ticker} stays open @ ${fmtUnitPriceSats(_residFloor)} sats/${ticker} (fills when buyers take)`
@@ -63417,13 +63746,26 @@ function _wireSwapTile(scope) {
   update();
   // Typing in either input flags it as the active side. Top → exact-in;
   // bottom → exact-out. update() reads the active side and routes through
-  // the appropriate planner.
-  fromInput.addEventListener('input', () => {
+  // the appropriate planner. The userTyped dataset flags are sticky — they
+  // survive across planner writebacks (programmatic writes don't fire the
+  // `input` event), so once a side is pinned it stays pinned until the user
+  // clears it. When BOTH flags are set, _limitUnitPrice() returns the
+  // implied price and the cap helpers route the whole tile into limit mode.
+  fromInput.addEventListener('input', (e) => {
     widget.dataset.activeSide = 'from';
+    // Only real user typing flips the userTyped flag — programmatic
+    // primes (orderbook row clicks, quick-fill chips, residual-bid
+    // value restorations) dispatch synthetic input events with
+    // isTrusted=false. Without this guard, clicking an ask row after
+    // having typed a budget into the other side would silently enter
+    // limit mode at a derived price that disagrees with the row's
+    // unit price.
+    if (e.isTrusted) _setUserTyped('from', (fromInput.value || '').trim().length > 0);
     update();
   });
-  toInput.addEventListener('input', () => {
+  toInput.addEventListener('input', (e) => {
     widget.dataset.activeSide = 'to';
+    if (e.isTrusted) _setUserTyped('to', (toInput.value || '').trim().length > 0);
     update();
   });
   // Per-asset slippage memory: traders often want tight caps on stable-
@@ -63463,6 +63805,8 @@ function _wireSwapTile(scope) {
     widget.dataset.activeSide = 'from';
     fromInput.value = '';
     toInput.value = '';
+    _setUserTyped('from', false);
+    _setUserTyped('to', false);
     applyDirection();
     update();
     // Sell-side intent reached — NOW is the moment to warm the holdings
@@ -64504,10 +64848,13 @@ function _wireSwapTile(scope) {
         // BigInt-anchored amount derivation: `_residualSats * 10^decimals`
         // breaks Number precision once residual sats × 10^dec crosses 2^53
         // (~0.9 BTC residual at 8-decimal assets like TAC). Compute the
-        // floor-quotient in BigInt with a 6-digit cap-scale so fractional
-        // user caps survive without rounding to 0.
+        // floor-quotient in BigInt with a 12-digit cap-scale so fractional
+        // user caps survive without rounding to 0. Limit-mode lets the
+        // user set arbitrarily low unit prices on high-supply tokens
+        // (e.g. a 5B-supply 8-dec token at ~2e-7 sats/whole); the older
+        // 1e6 scale rounded such caps to zero and silently lost the bid.
         const _residualSatsBI = BigInt(Math.floor(_residualSats));
-        const _CAP_SCALE = 1_000_000n;
+        const _CAP_SCALE = 1_000_000_000_000n;
         const _capScaled = BigInt(Math.floor(result.cap * Number(_CAP_SCALE)));
         const _bidAmt = _capScaled > 0n
           ? (_residualSatsBI * (10n ** BigInt(decimals)) * _CAP_SCALE) / _capScaled
@@ -64630,11 +64977,11 @@ function _wireSwapTile(scope) {
       // The swap-sell becomes a maker-side listing that any partial-fill
       // buyer can drain over time.
       if (!result) {
-        if (!(Number.isFinite(refUnit) && refUnit > 0)) {
+        const _floor = _sellFloorUnit();
+        if (!(Number.isFinite(_floor) && _floor > 0)) {
           toast('No route + no mark price · this asset has never traded', 'error');
           return;
         }
-        const _floor = refUnit * (1 - getSlipRatio());
         if (!await tacitConfirm({
           title: `Sell ${fmtAssetAmount(amt, decimals)} ${ticker} as an open listing?`,
           body:
@@ -64754,8 +65101,9 @@ function _wireSwapTile(scope) {
       // path; closes the orderbook loop so a sell at any size produces a
       // tradeable position even with thin bid depth.
       let listingPosted = null;
-      if (!lastErr && filled > 0 && result.residualAmt > 0n && Number.isFinite(refUnit) && refUnit > 0) {
-        const _floor = refUnit * (1 - getSlipRatio());
+      const _residListingFloor = _sellFloorUnit();
+      if (!lastErr && filled > 0 && result.residualAmt > 0n && Number.isFinite(_residListingFloor) && _residListingFloor > 0) {
+        const _floor = _residListingFloor;
         try {
           const r = await _postResidualAskListing({
             residualBase: result.residualAmt, floorUnit: _floor,
@@ -64772,7 +65120,7 @@ function _wireSwapTile(scope) {
       else if (lastErr) toast(`Partial · ${filled}/${result.plan.length} fulfilled${_feeSuffix} · ${friendlyTradeErrorMsg(lastErr?.message || String(lastErr))}`, 'error', 10000);
       else if (_stoppedEarly && filled > 0) toast(`Stopped · ${filled}/${result.plan.length} fulfilled${_feeSuffix} · remaining fills cancelled`, 'warn', 8000);
       else if (listingPosted) {
-        toast(`Selling ${accStr} ${ticker} ✓${_feeSuffix} · ${fmtAssetAmount(listingPosted.amount, decimals)} ${ticker} more open @ ${fmtUnitPriceSats(refUnit * (1 - getSlipRatio()))} sats/${ticker}`, 'success', 9000);
+        toast(`Selling ${accStr} ${ticker} ✓${_feeSuffix} · ${fmtAssetAmount(listingPosted.amount, decimals)} ${ticker} more open @ ${fmtUnitPriceSats(_residListingFloor)} sats/${ticker}`, 'success', 9000);
       } else {
         toast(`Selling ${accStr} ${ticker} ✓${_feeSuffix} · pending bidder Takes`, 'success', 5000);
       }
@@ -65041,7 +65389,9 @@ function _wireMarketSweepBuy(section, asset) {
             // Number(residualAmt2) silently rounds once base-unit count
             // exceeds 2^53 (whales on 8-decimal assets), so multiply in
             // BigInt with a scaled cap and only coerce the final result.
-            const _CAP_SCALE = 1_000_000n;
+            // 1e12 scale (was 1e6) so limit-mode caps below 1e-6 sats/whole
+            // — realistic on high-supply tokens — don't round to zero.
+            const _CAP_SCALE = 1_000_000_000_000n;
             const _capScaled = BigInt(Math.floor(capUnit * Number(_CAP_SCALE)));
             const _decFactor = 10n ** BigInt(decimals);
             const _den = _decFactor * _CAP_SCALE;
