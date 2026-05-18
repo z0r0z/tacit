@@ -16431,10 +16431,26 @@ function _saveSlotNoteScanCursor(network, height) {
 // `useCursor: false` to ignore the persisted cursor AND not advance it
 // (useful for ad-hoc inspections).
 //
-// The worker exposes slot rotations at GET /slot-rotates?network=<net>
-// &since_height=<H>. Failure modes (auth-tag fail, malformed envelope,
-// network error) are all silent; scanning is best-effort and converges
-// to the canonical chain state.
+// The worker exposes four chronological event logs that mirror the four
+// slot-creating ops (SPEC-CBTC-ZK-FUNGIBILITY §5.26):
+//   GET /slot-rotates / /slot-mints / /slot-splits / /slot-merges
+// Each returns records of the same shape — { network, asset_id,
+// denomination, new_leaf_hash, new_recipient_commitment, <op>_txid,
+// height, tx_index, confirmed_at, encrypted_note } — differing only in
+// the txid field name. Scanning all four covers every channel through
+// which a recipient can be sent a slot they don't already hold.
+//
+// Stale-balance filter: a received slot may have been rotated, split,
+// merged, or burned again before the recipient's dapp opens. Before
+// writing status='live' we consult the canonical nullifier set via
+// mixerIsNullifierSpent — the leaf's own nullifier_hash, derived from
+// the recovered nullifierPreimage, must NOT already be in the spent
+// set. If it is, surface as status='spent-elsewhere' so the holdings
+// UI can flag the slot as no longer redeemable.
+//
+// Failure modes (auth-tag fail, malformed envelope, network error,
+// endpoint not yet deployed) are all silent; scanning is best-effort
+// and converges to the canonical chain state.
 async function scanInboundSlotNotes({
   network = null,
   sinceHeight = null,
@@ -16448,80 +16464,99 @@ async function scanInboundSlotNotes({
   const skView = _slotViewingPrivkey();
   let scanned = 0, detected = 0;
   let maxHeightSeen = cursorHeight;
-  try {
-    const res = await fetch(`${WORKER_BASE}/slot-rotates?network=${_net}&since_height=${effectiveSince}`);
-    if (!res.ok) return { scanned: 0, detected: 0 };
-    const body = await res.json().catch(() => ({}));
-    const rotates = Array.isArray(body?.rotates) ? body.rotates : [];
-    const existingLeafSet = new Set(_loadSlotRecords().map(r => r.leafCommitmentHex));
-    for (const r of rotates) {
-      scanned++;
-      try { onProgress && onProgress({ scanned, detected }); } catch {}
-      const h = Number(r.height || 0);
-      if (Number.isInteger(h) && h > maxHeightSeen) maxHeightSeen = h;
-      // Worker writes the encrypted-note tail as `encrypted_note` (hex
-      // string or null), per scanForEtches T_SLOT_ROTATE indexing.
-      // `encrypted_note_hex` / `note_hex` retained as aliases for any
-      // future indexer that uses the more-explicit naming.
-      const noteHex = r.encrypted_note || r.encrypted_note_hex || r.note_hex;
-      if (!noteHex) continue;
-      let noteBytes;
-      try { noteBytes = hexToBytes(noteHex); } catch { continue; }
-      if (noteBytes.length !== 122) continue;
-      const decoded = await decryptSlotNote(noteBytes, skView);
-      if (!decoded) continue;
-      // Verify the decoded amount + leaf_hash match the on-chain envelope.
-      // The rotation envelope's new_leaf_hash is the canonical record;
-      // decoded.amount must equal the variant's denom_sats, and recomputing
-      // poseidon(secret, ν, denom) should reproduce the on-chain new_leaf_hash.
-      const assetIdHex = (r.asset_id || '').toLowerCase();
-      const denomBig = BigInt(r.denomination || r.denom_sats || 0);
-      if (denomBig !== decoded.amountSats) continue;
-      const reLeaf = computePoolLeafCommitment(decoded.secretBytes, decoded.nullifierPreimageBytes, denomBig);
-      const reLeafHex = bytesToHex(reLeaf);
-      if (r.new_leaf_hash && reLeafHex !== r.new_leaf_hash.toLowerCase()) continue;
-      if (existingLeafSet.has(reLeafHex)) continue;
-      // Reconstruct r_leaf + recipient_commit + K_btc for the new slot.
-      const reRLeaf = poseidonHash(decoded.secretBytes, decoded.nullifierPreimageBytes);
-      const reRLeafBig = bytes32ToBigint(reRLeaf) % SECP_N;
-      const reRecipientCommit = pedersenCommit(denomBig, reRLeafBig).toRawBytes(true);
-      const reKBtc = deriveSlotKbtc(reRecipientCommit, denomBig);
-      const reSpk = slotScriptPubKeyFromKbtc(reKBtc);
-      const newRecord = {
-        assetIdHex,
-        denomination: denomBig.toString(),
-        secretHex: bytesToHex(decoded.secretBytes),
-        nullifierPreimageHex: bytesToHex(decoded.nullifierPreimageBytes),
-        leafCommitmentHex: reLeafHex,
-        recipientCommitHex: bytesToHex(reRecipientCommit),
-        rLeafHex: bytesToHex(reRLeaf),
-        kBtcXOnlyHex: bytesToHex(slotXOnly(reKBtc)),
-        slotScriptPubKeyHex: bytesToHex(reSpk),
-        mintedAt: r.confirmed_at || Date.now(),
-        network: _net,
-        mintTxid: r.rotate_txid || r.txid || null,
-        status: 'live',
-        inboundDetectedAt: Date.now(),
-        inboundFromRotate: true,
-      };
-      saveSlotRecord(newRecord);
-      existingLeafSet.add(reLeafHex);
-      detected++;
-      try {
-        const am = getAssetMeta(assetIdHex) || {};
-        recordActivity({
-          kind: 'slot-receive',
-          ticker: am.ticker || 'cBTC.zk',
-          amount: denomBig,
-          decimals: am.decimals || 0,
-          assetId: assetIdHex,
-          txid: newRecord.mintTxid,
-        });
-      } catch {}
+  const existingLeafSet = new Set(_loadSlotRecords().map(r => r.leafCommitmentHex));
+
+  // Each entry: { path, listField, txidField, inboundFromTag }.
+  const channels = [
+    { path: '/slot-rotates', listField: 'rotates', txidField: 'rotate_txid', tag: 'inboundFromRotate' },
+    { path: '/slot-mints',   listField: 'mints',   txidField: 'mint_txid',   tag: 'inboundFromMint' },
+    { path: '/slot-splits',  listField: 'splits',  txidField: 'split_txid',  tag: 'inboundFromSplit' },
+    { path: '/slot-merges',  listField: 'merges',  txidField: 'merge_txid',  tag: 'inboundFromMerge' },
+  ];
+
+  for (const ch of channels) {
+    try {
+      const res = await fetch(`${WORKER_BASE}${ch.path}?network=${_net}&since_height=${effectiveSince}`);
+      if (!res.ok) continue;
+      const body = await res.json().catch(() => ({}));
+      const records = Array.isArray(body?.[ch.listField]) ? body[ch.listField] : [];
+      for (const r of records) {
+        scanned++;
+        try { onProgress && onProgress({ scanned, detected }); } catch {}
+        const h = Number(r.height || 0);
+        if (Number.isInteger(h) && h > maxHeightSeen) maxHeightSeen = h;
+        const noteHex = r.encrypted_note || r.encrypted_note_hex || r.note_hex;
+        if (!noteHex) continue;
+        let noteBytes;
+        try { noteBytes = hexToBytes(noteHex); } catch { continue; }
+        if (noteBytes.length !== 122) continue;
+        const decoded = await decryptSlotNote(noteBytes, skView);
+        if (!decoded) continue;
+        // Verify decoded note matches the on-chain leaf: amount, asset_id,
+        // and the Poseidon₃(secret, ν, denom) reconstruction.
+        const assetIdHex = (r.asset_id || '').toLowerCase();
+        const denomBig = BigInt(r.denomination || r.denom_sats || 0);
+        if (denomBig !== decoded.amountSats) continue;
+        const reLeaf = computePoolLeafCommitment(decoded.secretBytes, decoded.nullifierPreimageBytes, denomBig);
+        const reLeafHex = bytesToHex(reLeaf);
+        if (r.new_leaf_hash && reLeafHex !== r.new_leaf_hash.toLowerCase()) continue;
+        if (existingLeafSet.has(reLeafHex)) continue;
+        // Stale-balance check: derive the nullifier hash and see if it's
+        // already been spent (a follow-on rotate/split/merge/burn on the
+        // same leaf). Only meaningful when the pool is registered locally;
+        // if it isn't, fall through to status='live' — the next mixer-tab
+        // refresh will catch the divergence and the consume-time gate in
+        // buildAndBroadcastSlotBurn re-checks anyway.
+        let liveStatus = 'live';
+        try {
+          const nullifierHash = computeNullifierHash(decoded.nullifierPreimageBytes);
+          if (mixerIsPoolRegistered(assetIdHex, denomBig)) {
+            if (mixerIsNullifierSpent(assetIdHex, denomBig, nullifierHash)) {
+              liveStatus = 'spent-elsewhere';
+            }
+          }
+        } catch { /* nullifier derive failed — treat as live, consume-time guard remains */ }
+        const reRLeaf = poseidonHash(decoded.secretBytes, decoded.nullifierPreimageBytes);
+        const reRLeafBig = bytes32ToBigint(reRLeaf) % SECP_N;
+        const reRecipientCommit = pedersenCommit(denomBig, reRLeafBig).toRawBytes(true);
+        const reKBtc = deriveSlotKbtc(reRecipientCommit, denomBig);
+        const reSpk = slotScriptPubKeyFromKbtc(reKBtc);
+        const newRecord = {
+          assetIdHex,
+          denomination: denomBig.toString(),
+          secretHex: bytesToHex(decoded.secretBytes),
+          nullifierPreimageHex: bytesToHex(decoded.nullifierPreimageBytes),
+          leafCommitmentHex: reLeafHex,
+          recipientCommitHex: bytesToHex(reRecipientCommit),
+          rLeafHex: bytesToHex(reRLeaf),
+          kBtcXOnlyHex: bytesToHex(slotXOnly(reKBtc)),
+          slotScriptPubKeyHex: bytesToHex(reSpk),
+          mintedAt: r.confirmed_at || Date.now(),
+          network: _net,
+          mintTxid: r[ch.txidField] || r.txid || null,
+          status: liveStatus,
+          inboundDetectedAt: Date.now(),
+          [ch.tag]: true,
+        };
+        saveSlotRecord(newRecord);
+        existingLeafSet.add(reLeafHex);
+        detected++;
+        try {
+          const am = getAssetMeta(assetIdHex) || {};
+          recordActivity({
+            kind: 'slot-receive',
+            ticker: am.ticker || 'cBTC.zk',
+            amount: denomBig,
+            decimals: am.decimals || 0,
+            assetId: assetIdHex,
+            txid: newRecord.mintTxid,
+          });
+        } catch {}
+      }
+    } catch (e) {
+      // Endpoint not deployed yet, network blip, etc. — silent best-effort.
+      if (typeof console !== 'undefined') console.debug?.(`slot-note scan: ${ch.path} unavailable, skipping`, e?.message || e);
     }
-  } catch (e) {
-    // Worker endpoint may not be deployed yet — silent best-effort scan.
-    if (typeof console !== 'undefined') console.debug?.('slot-note scan: worker endpoint unavailable, skipping', e?.message || e);
   }
   // Advance the cursor only when this scan call was using cursor mode.
   // Ad-hoc full scans (useCursor: false) don't touch the cursor so they
@@ -17935,37 +17970,37 @@ async function buildAndBroadcastShareSlashClaim({
   };
 }
 
-// SPEC-CBTC-TAC-AMENDMENT §5.38 — permissionless liquidation (T_CBTC_TAC_FORCE_CLOSE).
+// SPEC-CBTC-TAC-AMENDMENT §5.38 — permissionless early-SLASH (T_CBTC_TAC_FORCE_CLOSE).
 //
-// Any keeper can trigger a force-close on a cBTC.tac position whose
+// Any caller can trigger a force-close on a cBTC.tac position whose
 // current bond ratio has fallen below LIQUIDATION_RATIO (1.2x). The
 // envelope is signature-free and permissionless: the worker validator
-// computes current_ratio independently from chain state, so any caller
-// could in principle trigger the liquidation. In practice the 50 bps
-// (LIQUIDATOR_REWARD_FRACTION, SPEC §5.41.1) of the swap output is the
-// keeper's economic incentive.
+// computes current_ratio independently from chain state.
 //
 // The fixed 107-byte payload (no Groth16 proof, no Schnorr sig) makes
-// this the cheapest tacit envelope to construct — a force-close keeper
-// can run as a permissionless bot with negligible per-tx work.
+// this the cheapest tacit envelope to construct — a keeper can run as a
+// permissionless bot with negligible per-tx work.
 //
 // Wire format (SPEC §5.38.1):
 //   opcode(1)=0x4B + network_tag(1) + target_leaf_hash(32)
 //   + liquidator_payout_pk(33) + amm_swap_min_BTC_out_LE(8) + bind_hash(32)
 //
-// v1 / AMM-chaining note (SPEC §5.38 + worker validator at line ~12744):
-// The actual TAC→BTC AMM swap that settles the bond is intended to be
-// carried in the same reveal Bitcoin tx via tacit envelope chaining.
-// The worker currently records the position transition to 'force-closed'
-// and increments the per-block throttle, but the AMM-swap accounting
-// (redemption_reserve_BTC credit + liquidator's 50 bps payout) requires
-// the envelope-pair validation rule shipped separately. Until then, the
-// dapp builder here produces a structurally-valid envelope that triggers
-// the position-state transition; the liquidator reward credits via worker
-// ledger on a forthcoming envelope-pair pass. Keepers running this v1
-// flow are gambling on the future swap settlement, but the position
-// transition itself is what prevents further leak from underwater
-// positions.
+// v1 SEMANTICS (early-SLASH; SPEC §5.38 v1 amendment):
+//   The spec's original mechanism (paired TAC→cBTC.zk AMM swap into a
+//   protocol-owned redemption_reserve_BTC UTXO + 50 bps liquidator reward)
+//   requires Bitcoin script primitives (covenants / OP_CAT) that aren't
+//   on mainnet. v1 redefines FORCE_CLOSE as a permissionless early SLASH:
+//   bond TAC moves to the existing pooled insurance reserve, position
+//   state flips to 'force-slashed', cBTC.tac holders claim pro-rata via
+//   T_SHARE_SLASH_CLAIM (§5.39.4). Depositor retains K_btc; cBTC.tac
+//   supply is NOT debited.
+//
+//   Fields kept on the envelope for forward-compatibility:
+//   - `liquidator_payout_pk`: unused in v1 (no reward); reserved for the
+//     future covenant-based mechanism.
+//   - `amm_swap_min_BTC_out`: unused in v1 (no AMM swap); reserved.
+//   Pass any well-formed values for these in v1; they have no on-chain
+//   effect beyond being committed in bind_hash.
 async function buildAndBroadcastCbtcTacForceClose({
   targetLeafHashHex,
   ammSwapMinBtcOut,               // u64 BigInt or compatible — slippage floor on TAC→BTC swap
@@ -68276,6 +68311,7 @@ export {
   // (SPEC §5.11.4 #1) negative-test coverage on both sides.
   computeDepositKernelMsg, verifyMixerDepositKernelOnChain,
   verifySlotLeafOnChain,
+  TACIT_DEFAULT_CEREMONY_HASH,
   // Canonical-position pinning helpers — exported so the conservation
   // test file can negative-test the tx_index-against-block defense
   // without driving a full scanPools refresh.
