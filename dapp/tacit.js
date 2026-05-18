@@ -18779,7 +18779,8 @@ function getCtacBackupLastExportTs() {
 //   - Wallet ready (ensurePrivkey)
 //   - Slot record exists locally, state is 'live'
 //   - Wallet has TAC of >= bondAmountTAC (auto-carved via carveExactAmount)
-//   - depositorRecoveryPub defaults to wallet.pub
+//   - depositor_recovery_commit derived deterministically from
+//     (wallet.priv, network_tag, target_leaf_hash) per §5.36.7
 //
 // Notes on what's NOT included in this build:
 //   1. Groth16 proof generation. SPEC §5.36.1 declares a `groth16_proof`
@@ -19793,11 +19794,13 @@ async function buildAndBroadcastCbtcTacForceClose({
 //                          a 33-byte compressed pubkey for P2WPKH; the
 //                          LP-share commit is Pedersen(amount, freshBlinding).
 //                          recipient[lienInheritIndex] is the depositor's
-//                          own recovery pubkey (or any pubkey they control).
+//                          own recovery commit P2TR (or any pubkey they control).
 //   lienInheritIndex     — 0..outputs.length-1, which output inherits the lien
-//   depositorRecoveryPrivHex — 32-byte hex; the depositor's r_recovery
-//                              (used to Schnorr-sign bind_hash; the worker
-//                              verifies against position.depositor_recovery_pk)
+//
+// The depositor's Schnorr sig is computed under the tweaked secret
+// `(wallet.priv + blinding) mod SECP_N` per §5.36.7. Worker verifies
+// against x_only(position.depositor_recovery_commit). No explicit
+// privkey parameter — derived from wallet seed + position leaf hash.
 //
 // Atomicity: the reveal tx spends the source LP-share UTXO at vin[1]
 // (using the depositor's wallet sig on the P2WPKH). The output asset
@@ -19810,7 +19813,6 @@ async function buildAndBroadcastCtacLienSplit({
   sourceLpAssetIdHex,            // bond_lp_asset_id from the position
   outputs,                       // [{ amount, recipientPubHex }]
   lienInheritIndex,
-  depositorRecoveryPrivHex,
   onProgress = null,
 }) {
   await ensurePrivkey();
@@ -20084,10 +20086,12 @@ async function buildAndBroadcastCbtcTacDepositAtomic({
   const cbtcZkInputCommit = pedersenCommit(deltaCbtcBig, cbtcZkBlindingBig).toRawBytes(true);
   const tacInputCommit = pedersenCommit(deltaTacBig, tacBlindingBig).toRawBytes(true);
 
-  const depositorRecoveryPub = depositorRecoveryPubHex
-    ? hexToBytes(depositorRecoveryPubHex.toLowerCase())
-    : wallet.pub;
-  if (depositorRecoveryPub.length !== 33) throw new Error('depositorRecoveryPub must be 33 bytes');
+  // depositor_recovery_commit (SPEC §5.36.7) — blinded-pubkey commit
+  // derived deterministically from (wallet.priv, network_tag, target_leaf_hash).
+  const depositorRecoveryCommitBytes = deriveCbtcTacRecoveryCommit(
+    wallet.priv, wallet.pub, networkTag, targetLeafHash,
+  );
+  const depositorRecoveryCommitXOnly = depositorRecoveryCommitBytes.slice(1);
 
   // LP-share + cBTC.tac mint blindings — HMAC-derived from priv key so the
   // depositor can recover both UTXOs from priv + chain alone after a wallet
@@ -20114,7 +20118,7 @@ async function buildAndBroadcastCbtcTacDepositAtomic({
     deltaCbtcZk: deltaCbtcBig, deltaTac: deltaTacBig, shareAmount: shareAmountBig,
     cbtcZkInputOutpoint, cbtcZkInputCommit,
     tacInputOutpoint, tacInputCommit,
-    lpShareCommit, depositorRecoveryCommit: depositorRecoveryPub,
+    lpShareCommit, depositorRecoveryCommit: depositorRecoveryCommitBytes,
     mintAmount: denomBig, mintRecipientCommit,
   });
   const placeholderProof = new Uint8Array(256);
@@ -20124,7 +20128,7 @@ async function buildAndBroadcastCbtcTacDepositAtomic({
     deltaCbtcZk: deltaCbtcBig, deltaTac: deltaTacBig, shareAmount: shareAmountBig,
     cbtcZkInputOutpoint, cbtcZkInputCommit,
     tacInputOutpoint, tacInputCommit,
-    lpShareCommit, depositorRecoveryCommit: depositorRecoveryPub,
+    lpShareCommit, depositorRecoveryCommit: depositorRecoveryCommitBytes,
     mintAmount: denomBig, mintRecipientCommit,
     bindHash, proof: placeholderProof,
   });
@@ -20181,7 +20185,8 @@ async function buildAndBroadcastCbtcTacDepositAtomic({
   const commitTxidHex = txid(commitTx);
 
   _progress('tx:reveal:build');
-  const recipSpk = p2wpkhScript(depositorRecoveryPub);
+  // P2TR at x_only(depositor_recovery_commit) per §5.36.7.
+  const recipSpk = p2trScript(depositorRecoveryCommitXOnly);
   const revealTx = {
     version: 2, locktime: 0,
     inputs: [
@@ -20218,7 +20223,7 @@ async function buildAndBroadcastCbtcTacDepositAtomic({
       const b = new Uint8Array(4); new DataView(b.buffer).setUint32(0, 0, true); return b;
     })())),
     bondBlindingHex: lpShareBlindingBig.toString(16).padStart(64, '0'),
-    depositorRecoveryPubHex: bytesToHex(depositorRecoveryPub),
+    depositorRecoveryCommitHex: bytesToHex(depositorRecoveryCommitBytes),
     mintAmount: denomBig.toString(),
     mintRecipientCommitHex: bytesToHex(mintRecipientCommit),
     mintBlindingHex: mintBlindingBig.toString(16).padStart(64, '0'),
@@ -34748,15 +34753,22 @@ async function ceremonyContributeAmm({
   );
 
   _emit('upload', { bytes: mixed.newZkey.length });
-  const fd = new FormData();
-  fd.append('zkey', new Blob([mixed.newZkey], { type: 'application/octet-stream' }), 'amm_contributed.zkey');
-  fd.append('contributor_name', String(contributorName || 'anonymous').slice(0, 64));
-  if (contributorPubkeyHex && /^0[23][0-9a-f]{64}$/.test(contributorPubkeyHex.toLowerCase())) {
-    fd.append('contributor_pubkey', contributorPubkeyHex.toLowerCase());
-  }
-  fd.append('prev_cid', state.head_cid);
-  fd.append('contribution_hash', mixed.contributionHash);
-  const upResp = await new Promise((resolve, reject) => {
+  // Build form once — reused across upload retries. Blob/FormData are
+  // immutable so safe to send multiple times. After a successful mix
+  // the same contributed bytes can re-target a new prev_cid by
+  // rebuilding only the prev_cid field if the server returned 409.
+  const buildForm = (prevCid) => {
+    const fd = new FormData();
+    fd.append('zkey', new Blob([mixed.newZkey], { type: 'application/octet-stream' }), 'amm_contributed.zkey');
+    fd.append('contributor_name', String(contributorName || 'anonymous').slice(0, 64));
+    if (contributorPubkeyHex && /^0[23][0-9a-f]{64}$/.test(contributorPubkeyHex.toLowerCase())) {
+      fd.append('contributor_pubkey', contributorPubkeyHex.toLowerCase());
+    }
+    fd.append('prev_cid', prevCid);
+    fd.append('contribution_hash', mixed.contributionHash);
+    return fd;
+  };
+  const _doUpload = (fd) => new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     xhr.open('POST', `${WORKER_BASE}/ceremony/${circuitHash}/contribute`);
     xhr.upload.onprogress = (ev) => {
@@ -34767,9 +34779,54 @@ async function ceremonyContributeAmm({
     xhr.onabort = () => reject(new Error('upload aborted'));
     xhr.send(fd);
   });
-  if (upResp.status < 200 || upResp.status >= 300) {
-    let parsed = null; try { parsed = JSON.parse(upResp.body); } catch {}
-    throw new Error(parsed?.error || `upload failed (HTTP ${upResp.status})`);
+  // Retry strategy:
+  //   • Transient network / 5xx errors → up to 3 attempts with backoff.
+  //     Same bytes, same form — re-sends if Cloudflare hiccups.
+  //   • 429 rate limit → don't retry (caller decides — usually wait)
+  //   • 409 stale prev_cid → don't retry on the upload itself; the
+  //     contribution math is bound to the OLD head_cid, so a new prev
+  //     would invalidate the proof. Outer logic in the caller can
+  //     re-download + re-mix if it chooses, but we surface a clean
+  //     "CASRACE" tag so the UI can prompt rather than just error.
+  //   • 4xx others → don't retry (validation failure, our fault).
+  let upResp = null;
+  let attempt = 0;
+  const MAX_UPLOAD_ATTEMPTS = 3;
+  while (attempt < MAX_UPLOAD_ATTEMPTS) {
+    attempt++;
+    try {
+      upResp = await _doUpload(buildForm(state.head_cid));
+    } catch (e) {
+      // Network-level failure (no HTTP response). Retry with backoff if
+      // budget remains; else surface.
+      if (attempt < MAX_UPLOAD_ATTEMPTS) {
+        const wait = Math.min(8000, 500 * Math.pow(2, attempt - 1));
+        _emit('upload-retry', { attempt, wait, reason: e?.message || 'network' });
+        await new Promise(r => setTimeout(r, wait));
+        continue;
+      }
+      throw new Error(`upload failed after ${MAX_UPLOAD_ATTEMPTS} attempts: ${e?.message || e}`);
+    }
+    // HTTP response received. 2xx → done. 5xx → retry. 409/429/4xx → don't retry.
+    if (upResp.status >= 200 && upResp.status < 300) break;
+    if (upResp.status >= 500 && upResp.status < 600 && attempt < MAX_UPLOAD_ATTEMPTS) {
+      const wait = Math.min(8000, 500 * Math.pow(2, attempt - 1));
+      _emit('upload-retry', { attempt, wait, reason: `HTTP ${upResp.status}` });
+      await new Promise(r => setTimeout(r, wait));
+      continue;
+    }
+    break;  // 4xx — caller handles
+  }
+  if (!upResp || upResp.status < 200 || upResp.status >= 300) {
+    let parsed = null; try { parsed = upResp ? JSON.parse(upResp.body) : null; } catch {}
+    const msg = parsed?.error || (upResp ? `upload failed (HTTP ${upResp.status})` : 'upload failed');
+    // Tag 409 specifically so the caller can offer "re-mix and retry"
+    // UX rather than just an opaque error string.
+    const err = new Error(msg);
+    if (upResp && upResp.status === 409) err.code = 'CASRACE';
+    else if (upResp && upResp.status === 429) err.code = 'RATELIMIT';
+    else if (upResp && upResp.status === 413) err.code = 'TOOLARGE';
+    throw err;
   }
   let result;
   try { result = JSON.parse(upResp.body); } catch { throw new Error('upload returned non-JSON'); }
@@ -34871,11 +34928,20 @@ function closeAmmCeremonyDrawer() {
 function _renderAmmCerDrawerBody() {
   const chainsEl = document.getElementById('amm-cer-chains');
   if (!chainsEl) return;
+  const mobile = _isMobileBrowser();
   const rows = AMM_CEREMONY_CIRCUIT_HASHES.map(c => {
     const s = _ammCeremonyStateByCircuit.get(c.hash);
     const count = s?.contribution_count ?? '—';
     const finalized = s?.finalized ? ' · ✓ finalized' : '';
-    return `<div style="display:flex; justify-content:space-between; padding:4px 0; border-bottom:1px solid var(--ink-faint);"><span>${escapeHtml(c.label)}</span><span style="color:var(--ink-mid);">${escapeHtml(String(count))} contribs${finalized}</span></div>`;
+    // Heavy-circuit hint. On mobile the round-robin auto-skips this one,
+    // so explain why; on desktop, nudge that it's slower than the others.
+    const heavy = AMM_CEREMONY_HEAVY_CIRCUITS.has(c.key);
+    const hint = heavy
+      ? (mobile
+          ? ` <span style="color:var(--orange);font-size:10px;letter-spacing:0.05em;">desktop only</span>`
+          : ` <span style="color:var(--ink-mid);font-size:10px;letter-spacing:0.05em;">heavier · ~2–5 min</span>`)
+      : '';
+    return `<div style="display:flex; justify-content:space-between; align-items:center; gap:8px; padding:4px 0; border-bottom:1px solid var(--ink-faint);"><span>${escapeHtml(c.label)}${hint}</span><span style="color:var(--ink-mid);">${escapeHtml(String(count))} contribs${finalized}</span></div>`;
   }).join('');
   chainsEl.innerHTML = rows;
 }
@@ -34933,7 +34999,11 @@ async function _submitAmmCeremonyContribution() {
   if (cancelBtn) cancelBtn.disabled = true;
   goBtn.textContent = 'Working…';
   progEl.style.display = 'block';
-  progEl.textContent = `→ advancing ${target.label} (${target.hash.slice(0, 12)}…)\n`;
+  // Friendlier intro. "advancing" was protocol-speak; "contributing
+  // to" reads as user action. Drop the truncated circuit hash —
+  // most readers don't know what to do with it, and the full hash
+  // is in the contributions list once landed.
+  progEl.textContent = `→ Contributing to ${target.label}…\n  Total round-trip ~2–5 min for swap_batch; ~30s for the lp circuits. Keep this tab open.\n`;
   resultEl.style.display = 'none';
   // Append-only log for phase transitions ("refreshing…", "mixing…").
   const _log = (line) => { progEl.textContent += line + '\n'; progEl.scrollTop = progEl.scrollHeight; };
@@ -34986,17 +35056,21 @@ async function _submitAmmCeremonyContribution() {
       contributorPubkeyHex,
       onProgress: (phase, info) => {
         if (phase === 'refresh')       _log('  refreshing chain state…');
-        else if (phase === 'fetch-head') _log(`  fetching head ${(info?.cid || '').slice(0, 16)}… (large zkey can take 1-3 min)`);
+        else if (phase === 'fetch-head') _log(`  Step 1/3 · downloading current ceremony state from IPFS (large zkeys can take 1–3 min)…`);
         else if (phase === 'fetch-head-log') _log('  ' + (info?.msg || ''));
         else if (phase === 'fetch-head-bytes' && info?.total) _updateProgressLine('fetch', info.done || 0, info.total);
-        else if (phase === 'mix')      { _progLineActive = null; _log('  mixing your entropy (~30-60s)…'); }
+        else if (phase === 'mix')      { _progLineActive = null; _log('  Step 2/3 · mixing your random entropy into the ceremony (~30–60s, browser CPU)…'); }
         else if (phase === 'mix-phase' && info?.phase) {
-          if (info.phase === 'contribute') _log('  computing contribution…');
-          else if (info.phase === 'verify') _log('  verifying chain…');
+          if (info.phase === 'contribute') _log('    · computing fresh Phase 2 contribution');
+          else if (info.phase === 'verify') _log('    · verifying chain integrity (one bad link would fail here)');
         }
-        else if (phase === 'upload')   _log(`  uploading ${_fmtMB(info?.bytes || 0)} MB to worker…`);
+        else if (phase === 'upload')   _log(`  Step 3/3 · uploading your contribution (${_fmtMB(info?.bytes || 0)} MB to worker)…`);
         else if (phase === 'upload-bytes' && info?.total) _updateProgressLine('upload', info.done || 0, info.total);
-        else if (phase === 'done')     { _progLineActive = null; _log('  ✓ landed on chain'); }
+        else if (phase === 'upload-retry') {
+          _progLineActive = null;  // re-append fresh on next bytes event
+          _log(`    · upload hiccup (${info.reason || 'network'}), retrying in ${Math.round((info.wait || 0) / 1000)}s (attempt ${info.attempt}/3)…`);
+        }
+        else if (phase === 'done')     { _progLineActive = null; _log('  ✓ Contribution landed on chain. Thank you.'); }
       },
     });
     resultEl.style.display = 'block';
@@ -35042,7 +35116,31 @@ async function _submitAmmCeremonyContribution() {
   } catch (e) {
     resultEl.style.display = 'block';
     resultEl.style.color = 'var(--red)';
-    resultEl.textContent = `✗ ${e?.message || e}`;
+    // Friendly + specific copy per failure mode. Generic e.message
+    // exposed raw worker errors ("stale prev_cid — ceremony advanced
+    // before your upload landed; refresh and retry") which read as
+    // protocol-soup. Map known codes to clear human language with a
+    // concrete next step.
+    let msg;
+    if (e?.code === 'CASRACE') {
+      msg = 'Another contributor landed first while your contribution was uploading. '
+          + 'Your entropy is wasted (the math binds to a prior chain state). '
+          + 'Click Contribute again — the next try downloads the new head and re-mixes.';
+    } else if (e?.code === 'RATELIMIT') {
+      msg = 'Worker rate-limited this IP for the day (500 contributions per day per IP). '
+          + 'Wait until 00:00 UTC or try from a different network.';
+    } else if (e?.code === 'TOOLARGE') {
+      msg = 'Zkey exceeded the 100 MB worker upload ceiling. '
+          + 'This circuit needs the IPFS pre-pin path — contact the coordinator.';
+    } else if (/network|aborted|fetch/i.test(String(e?.message || ''))) {
+      msg = 'Network error — your connection dropped before the contribution landed. '
+          + 'Click Contribute again to retry; the download + mix runs again from scratch.';
+    } else if (/cancelled|cancelled|user/i.test(String(e?.message || ''))) {
+      msg = String(e?.message || 'Cancelled.');
+    } else {
+      msg = `Couldn\'t finish: ${e?.message || e}. Click Contribute again to retry.`;
+    }
+    resultEl.textContent = `✗ ${msg}`;
     goBtn.textContent = origLabel;
   } finally {
     goBtn.disabled = false;
