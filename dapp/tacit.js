@@ -8433,6 +8433,66 @@ function _slotOutpointBytes(txidHex, vout) {
   return concatBytes(txidLE, voutLE);
 }
 
+// ============== MIXER + AXINTENT DETERMINISTIC DERIVATION ==============
+//
+// Same priv-anchored HMAC pattern the slot system uses, applied to two
+// recovery surfaces that historically generated random secrets stored
+// only in localStorage:
+//
+//   1. Bare mixer deposit (T_DEPOSIT) — pair (secret, ν) for the zk
+//      withdrawal proof. Domain tags '-secret-' and '-nullifier-' so the
+//      two are computationally independent under HMAC's PRF property.
+//      Anchor = asset input UTXO outpoint, which the worker binds into
+//      kernel_msg (so the depositor can recompute (secret, ν) given priv
+//      + the funding UTXO outpoint, both of which are on-chain or in
+//      the depositor's spend history).
+//
+//   2. Maker-side axintent commit blinding — used to commit the maker's
+//      reserved amount in publishAxferIntent. ECDH(priv, taker_pub) isn't
+//      available at commit time (the taker isn't known yet), so the
+//      maker must produce their own blinding. Random + localStorage was
+//      the historical answer; this anchors the blinding to priv + the
+//      maker's spent UTXO outpoint instead.
+//
+// All three functions take `anchorOutpoint` as a 36-byte
+// (txid_LE || vout_LE) value built via _slotOutpointBytes; the chain
+// commits to this same 36-byte value via the spent-input set, so the
+// scanner can iterate the wallet's outgoing-spend history and reproduce
+// the derivation. Pattern matches _deriveSlotSecret / _deriveSlotNullifierPreimage.
+const _MIXER_DEPOSIT_SECRET_DOMAIN     = new TextEncoder().encode('tacit-mixer-deposit-secret-v1');
+const _MIXER_DEPOSIT_NULLIFIER_DOMAIN  = new TextEncoder().encode('tacit-mixer-deposit-nullifier-v1');
+const _AXINTENT_MAKER_BLIND_DOMAIN     = new TextEncoder().encode('tacit-axintent-maker-blind-v1');
+
+function _deriveMixerDepositSecret({ privkey, anchorOutpoint }) {
+  if (!(privkey instanceof Uint8Array) || privkey.length !== 32) throw new Error('privkey must be 32 bytes');
+  if (!(anchorOutpoint instanceof Uint8Array) || anchorOutpoint.length !== 36) throw new Error('anchorOutpoint must be 36 bytes (txid_LE 32 + vout_LE 4)');
+  return hmac(sha256, privkey, concatBytes(_MIXER_DEPOSIT_SECRET_DOMAIN, anchorOutpoint));
+}
+
+function _deriveMixerDepositNullifierPreimage({ privkey, anchorOutpoint }) {
+  if (!(privkey instanceof Uint8Array) || privkey.length !== 32) throw new Error('privkey must be 32 bytes');
+  if (!(anchorOutpoint instanceof Uint8Array) || anchorOutpoint.length !== 36) throw new Error('anchorOutpoint must be 36 bytes (txid_LE 32 + vout_LE 4)');
+  return hmac(sha256, privkey, concatBytes(_MIXER_DEPOSIT_NULLIFIER_DOMAIN, anchorOutpoint));
+}
+
+// Returns a BigInt scalar in [1, SECP_N). Rejection-resamples on r=0
+// (statistically impossible but defensively bounded). Mirrors the
+// rejection pattern in _deriveCbtcTacAtomicMintBlinding /
+// _deriveShareSlashClaimBlinding.
+function _deriveAxintentMakerBlinding({ privkey, anchorOutpoint }) {
+  if (!(privkey instanceof Uint8Array) || privkey.length !== 32) throw new Error('privkey must be 32 bytes');
+  if (!(anchorOutpoint instanceof Uint8Array) || anchorOutpoint.length !== 36) throw new Error('anchorOutpoint must be 36 bytes (txid_LE 32 + vout_LE 4)');
+  const base = concatBytes(_AXINTENT_MAKER_BLIND_DOMAIN, anchorOutpoint);
+  let seed = hmac(sha256, privkey, base);
+  let r = bytes32ToBigint(seed) % SECP_N;
+  for (let counter = 1; r === 0n && counter < 256; counter++) {
+    seed = hmac(sha256, privkey, concatBytes(base, new Uint8Array([counter & 0xff])));
+    r = bytes32ToBigint(seed) % SECP_N;
+  }
+  if (r === 0n) throw new Error('axintent maker blinding: rejection sampling exhausted (statistically impossible)');
+  return r;
+}
+
 function computeCbtcTacDepositAtomicBindHash({
   networkTag, targetLeafHash, slotDenomSats, poolId,
   deltaCbtcZk, deltaTac, shareAmount,
@@ -9963,11 +10023,27 @@ async function _ammProveLpRemove({ poolIdBytes, shareAmount, deltaA, deltaB, rec
 // construction (commit/reveal pattern) elsewhere — these just produce the
 // envelope payload bytes, kernel sigs, and helper output for share-link UX.
 
-// Generate a fresh (secret, nullifier_preimage) pair from CSPRNG. Both are
-// 32-byte values the depositor stores until withdraw time. These are the
-// only secrets the depositor must back up; losing them means losing the
-// deposit (no chain-side recovery possible — it's a zk system).
-function mixerGenerateDepositSecrets() {
+// Generate a (secret, nullifier_preimage) pair for a mixer deposit. If a
+// 36-byte `assetInputAnchor` is supplied (the asset input UTXO outpoint
+// in txid_LE || vout_LE form, which the kernel sig binds to via
+// kernel_msg), derive both via priv-anchored HMAC so the pair is
+// reconstructible from priv + chain alone. Otherwise fall back to CSPRNG
+// for unit tests / callers that don't have an anchor at hand.
+//
+// Pre-derivation: losing (secret, ν) meant losing the deposit (no chain-
+// side recovery possible — it's a zk system). With deterministic
+// derivation, a depositor's priv + the funding UTXO outpoint (visible in
+// their outgoing-spend history) are sufficient to recover the withdrawal
+// secrets. The slot wrapper (cBTC.zk) layers on top of this — its Phase 2
+// recovery becomes load-bearing once the bare mixer flow also recovers.
+function mixerGenerateDepositSecrets({ privkey = null, assetInputAnchor = null } = {}) {
+  if (privkey && assetInputAnchor) {
+    return {
+      secret: _deriveMixerDepositSecret({ privkey, anchorOutpoint: assetInputAnchor }),
+      nullifierPreimage: _deriveMixerDepositNullifierPreimage({ privkey, anchorOutpoint: assetInputAnchor }),
+    };
+  }
+  // Back-compat fallback for callers that don't supply an anchor.
   const secret = new Uint8Array(32);
   const nullifierPreimage = new Uint8Array(32);
   crypto.getRandomValues(secret);
@@ -21935,8 +22011,15 @@ async function buildAndBroadcastDeposit({ assetIdHex, denomination, onProgress =
     blinding: carved.blinding,
   };
 
-  // Generate fresh (secret, ν) for this deposit.
-  const { secret, nullifierPreimage } = mixerGenerateDepositSecrets();
+  // Derive (secret, ν) from priv + asset input outpoint so the deposit is
+  // privkey-recoverable. The asset input outpoint is the same anchor the
+  // kernel sig binds to via kernel_msg, so the worker's record of this
+  // tx commits to a value the depositor can reproduce from priv + their
+  // outgoing-spend history.
+  const assetInputAnchor = _slotOutpointBytes(exactUtxo.utxo.txid, exactUtxo.utxo.vout);
+  const { secret, nullifierPreimage } = mixerGenerateDepositSecrets({
+    privkey: wallet.priv, assetInputAnchor,
+  });
   const assetIdBytes = hexToBytes(assetIdHex);
   const inputTxidBE = reverseBytes(hexToBytes(exactUtxo.utxo.txid));
   const inputVout = exactUtxo.utxo.vout;
@@ -24450,7 +24533,17 @@ async function publishAxferIntent({ utxoTxid, utxoVout, priceSats, expiry, onPro
 
   const amt = target.amount;
   const inBlinding = BigInt(target.blinding);
-  const recipBlinding = randomScalar();
+  // Derive recipBlinding from priv + asset input outpoint so the maker can
+  // recover the intent's commitment opening from priv + chain alone (their
+  // outgoing-spend history contains this outpoint). Pre-derivation, the
+  // blinding was random + stored in AXINTENT_SECRETS_KEY_BASE — a
+  // localStorage wipe before fulfill or expire locked the maker out of
+  // their own commit. ECDH-with-counterparty isn't available here (the
+  // taker isn't bound yet); the priv-anchored HMAC fills that gap.
+  const axintentAnchor = _slotOutpointBytes(utxoTxid, utxoVout);
+  const recipBlinding = _deriveAxintentMakerBlinding({
+    privkey: wallet.priv, anchorOutpoint: axintentAnchor,
+  });
   const recipCommitment = pedersenCommit(amt, recipBlinding);
   const recipCommitmentBytes = pointToBytes(recipCommitment);
 
@@ -35328,7 +35421,7 @@ const TAB_GROUP_OF = {
   transfer: 'send',
   market: 'markets', pool: 'markets', farms: 'markets',
   discover: 'discover',
-  etch: 'tools', drops: 'tools', mixer: 'tools',
+  etch: 'etch', drops: 'drops', mixer: 'mixer',
   about: 'protocol',
 };
 
@@ -52543,9 +52636,9 @@ const _recentLocalBidCancels = new Set();
 let _marketAutoRefreshTimer = null;
 let _marketTickFailStreak = 0;
 let _marketLastSuccessTs = 0;
-const MARKET_AUTO_REFRESH_MS = 5000;
-const MARKET_AUTO_REFRESH_MAX_MS = 60_000;
-const MARKET_STALE_THRESHOLD_MS = 15_000;
+const MARKET_AUTO_REFRESH_MS = 15_000;
+const MARKET_AUTO_REFRESH_MAX_MS = 90_000;
+const MARKET_STALE_THRESHOLD_MS = 45_000;
 function _computeMarketTickDelay() {
   if (_marketTickFailStreak === 0) return MARKET_AUTO_REFRESH_MS;
   const factor = Math.pow(2, Math.min(_marketTickFailStreak, 4));
@@ -71401,6 +71494,12 @@ export {
   // anchor schema. Exported for testing; the slot builders will adopt them
   // in the Phase 2 plumbing pass.
   _deriveSlotSecret, _deriveSlotNullifierPreimage, _slotOutpointBytes,
+  // Mixer + axintent deterministic derivation. Same anchored-HMAC pattern
+  // as the slot helpers; replaces crypto.getRandomValues for bare mixer
+  // deposits (mixerGenerateDepositSecrets) and maker-side AXINTENT commit
+  // blindings (publishAxferIntent). See block comment at _deriveMixerDepositSecret.
+  _deriveMixerDepositSecret, _deriveMixerDepositNullifierPreimage,
+  _deriveAxintentMakerBlinding,
   buildSlotMintEnvelope, buildSlotBurnEnvelope, buildSlotRotateEnvelope,
   buildSlotSplitEnvelope, buildSlotMergeEnvelope,
   // High-level dapp builders for the slot wrapper flows. Each does the full
