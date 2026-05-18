@@ -16845,8 +16845,18 @@ async function buildAndBroadcastSlotRotate({
     throw new Error('this slot was already redeemed or rotated');
   }
 
-  const newSec = newSecret || (() => { const b = new Uint8Array(32); crypto.getRandomValues(b); return b; })();
-  const newNu = newNullifierPreimage || (() => { const b = new Uint8Array(32); crypto.getRandomValues(b); return b; })();
+  // Phase 2B: derive the new slot's (secret, ν) from priv + parent K_btc
+  // outpoint so scanSlotsFromPrivkey's descendant walk can recover it.
+  // Anchor = the K_btc UTXO being consumed in this rotate, which sits at
+  // vout[0] of slotRecord's locator tx (mintTxid is updated to the current
+  // locator on each rotate). outputIndex = 0 (single new slot).
+  const parentKBtcAnchor = _slotOutpointBytes(slotRecord.mintTxid, 0);
+  const newSec = newSecret || _deriveSlotSecret({
+    privkey: wallet.priv, anchorOutpoint: parentKBtcAnchor, outputIndex: 0,
+  });
+  const newNu = newNullifierPreimage || _deriveSlotNullifierPreimage({
+    privkey: wallet.priv, anchorOutpoint: parentKBtcAnchor, outputIndex: 0,
+  });
   if (newSec.length !== 32 || newNu.length !== 32) throw new Error('new (secret, ν) must each be 32 bytes');
 
   _progress('proof:merkle');
@@ -17145,12 +17155,19 @@ async function buildAndBroadcastSlotSplit({
     }
   }
 
-  // Generate (secret, ν) per output upfront so we can emit notes against them.
+  // Phase 2B: per-output (secret, ν) derived from priv + parent K_btc outpoint
+  // + outputIndex i. Each output gets a distinct deterministic pair so the
+  // scanner's descendant walk recovers all N. outputIndex namespaces the
+  // outputs within one SPLIT envelope; the helper's u8 cap (0..255) is well
+  // above the wire-format max of 16 outputs.
+  const splitParentKBtcAnchor = _slotOutpointBytes(slotRecord.mintTxid, 0);
   const outputSecrets = outputs.map((o, i) => ({
-    secret: o.secret
-      || (() => { const b = new Uint8Array(32); crypto.getRandomValues(b); return b; })(),
-    nullifierPreimage: o.nullifierPreimage
-      || (() => { const b = new Uint8Array(32); crypto.getRandomValues(b); return b; })(),
+    secret: o.secret || _deriveSlotSecret({
+      privkey: wallet.priv, anchorOutpoint: splitParentKBtcAnchor, outputIndex: i,
+    }),
+    nullifierPreimage: o.nullifierPreimage || _deriveSlotNullifierPreimage({
+      privkey: wallet.priv, anchorOutpoint: splitParentKBtcAnchor, outputIndex: i,
+    }),
   }));
   if (recipientViewingPubs) {
     encryptedNotes = [];
@@ -17436,10 +17453,20 @@ async function buildAndBroadcastSlotMerge({
 
   // Optional encrypted note to a recipient (consolidate-and-send pattern).
   let encryptedNote = null;
-  const newSec = newSecret
-    || (() => { const b = new Uint8Array(32); crypto.getRandomValues(b); return b; })();
-  const newNu = newNullifierPreimage
-    || (() => { const b = new Uint8Array(32); crypto.getRandomValues(b); return b; })();
+  // Phase 2B: (secret, ν) derived from priv + canonical input anchor.
+  // MERGE consumes N input slots; the anchor is whichever input K_btc
+  // outpoint sorts lexicographically smallest. Scanner reproduces this
+  // sort over the spending tx's vin set to find the match.
+  const mergeInputAnchorsHex = oldSlotRecords
+    .map(r => bytesToHex(_slotOutpointBytes(r.mintTxid, 0)))
+    .sort();
+  const canonicalMergeAnchor = hexToBytes(mergeInputAnchorsHex[0]);
+  const newSec = newSecret || _deriveSlotSecret({
+    privkey: wallet.priv, anchorOutpoint: canonicalMergeAnchor, outputIndex: 0,
+  });
+  const newNu = newNullifierPreimage || _deriveSlotNullifierPreimage({
+    privkey: wallet.priv, anchorOutpoint: canonicalMergeAnchor, outputIndex: 0,
+  });
   if (recipientViewingPub) {
     if (!(recipientViewingPub instanceof Uint8Array) || recipientViewingPub.length !== 33) {
       throw new Error('recipientViewingPub must be 33-byte compressed point');
@@ -17798,10 +17825,16 @@ async function scanInboundSlotNotes({
 // it as a candidate MINT anchor, derives (secret, ν, K_btc), and checks
 // whether the spending tx's reveal child confirmed a T_SLOT_MINT envelope
 // at the expected K_btc P2TR. Match → reconstruct the slot record from
-// chain + derived secrets and persist via saveSlotRecord. Phase 2A covers
-// the MINT case; ROTATE / SPLIT / MERGE inputs are slot K_btcs (not at
-// wallet.address) and chain off discovered slots — Phase 2B, deferred. For
-// typical users who only mint, Phase 2A is the load-bearing path.
+// chain + derived secrets and persist via saveSlotRecord.
+//
+// Phase 2A discovers MINT-rooted slots. Phase 2B chains off each discovered
+// slot by probing its K_btc outspend: if the K_btc UTXO has been consumed
+// by a ROTATE / SPLIT / MERGE envelope, derive the new slot(s) using the
+// parent's K_btc outpoint as the anchor (per the anchor schema documented
+// at _deriveSlotSecret) and recurse. BURN terminates the descendant walk
+// (no new slot; BTC payout already shows up in the wallet's standard UTXO
+// set). The full chain — mint → rotate → split → merge → ... → burn —
+// is recoverable from priv + chain alone with no localStorage dependency.
 //
 // scanPools still fills in spent-vs-live status via mixerIsNullifierSpent —
 // recovered slots start at status='live'; a stale slot (already burned or
@@ -17871,9 +17904,229 @@ async function scanSlotsFromPrivkey({ onProgress = null } = {}) {
         txid: candidate.mintTxid,
       });
     } catch {}
+    // Phase 2B: chase descendants of this MINT through ROTATE / SPLIT / MERGE.
+    // Best-effort; failures here don't lose the MINT recovery.
+    try {
+      _progress(`chasing descendants of ${candidate.leafCommitmentHex.slice(0, 16)}…`);
+      await _scanSlotChildren({ privkey, parentSlot: candidate, existingLeafHexes, recovered });
+    } catch (e) {
+      if (typeof console !== 'undefined') console.debug?.(`descendant walk failed for ${candidate.leafCommitmentHex.slice(0, 16)}: ${e?.message || e}`);
+    }
   }
   _progress(`done · ${recovered.length} recovered / ${scanned} anchors`);
   return { scanned, recovered: recovered.length, slots: recovered };
+}
+
+// Phase 2B helper: probe a recovered slot's K_btc outspend and, if it's been
+// consumed by a ROTATE / SPLIT / MERGE envelope, derive the descendant
+// slot(s), persist them, and recurse. BURN returns early (no new slot to
+// recover; BTC payout shows up via the standard wallet UTXO scan).
+async function _scanSlotChildren({ privkey, parentSlot, existingLeafHexes, recovered }) {
+  // parentSlot.mintTxid is the current K_btc UTXO locator: vout[0] of the
+  // mint tx for a fresh slot, or vout[0] of the previous rotate/merge tx
+  // for a chained descendant (set when we save the descendant record below).
+  let outspend;
+  try { outspend = await getOutspend(parentSlot.mintTxid, 0); } catch { return; }
+  if (!outspend?.spent || typeof outspend.txid !== 'string') return;
+
+  let spendTx;
+  try { spendTx = await getTx(outspend.txid); } catch { return; }
+  if (!spendTx || !Array.isArray(spendTx.vin) || !Array.isArray(spendTx.vout)) return;
+
+  // Slot reveal txs script-path-spend the commit P2TR at vin[0]; that vin
+  // carries the envelope in witness[1]. K_btc inputs at vin[1+] use key-path
+  // and have no envelope.
+  const commitWit = spendTx.vin[0]?.witness;
+  if (!Array.isArray(commitWit) || commitWit.length < 3) return;
+  let env;
+  try { env = decodeEnvelopeScript(hexToBytes(commitWit[1])); } catch { return; }
+  if (!env) return;
+
+  if (env.opcode === T_SLOT_BURN) return;
+
+  if (env.opcode === T_SLOT_ROTATE) {
+    const child = await _scanSlotRotateChild({ privkey, parentSlot, spendTx, env });
+    if (child && !existingLeafHexes.has(child.leafCommitmentHex)) {
+      saveSlotRecord(child);
+      existingLeafHexes.add(child.leafCommitmentHex);
+      recovered.push(child);
+      try {
+        const am = getAssetMeta(child.assetIdHex) || {};
+        recordActivity({
+          kind: 'slot-recovered', ticker: am.ticker || 'cBTC.zk',
+          amount: BigInt(child.denomination), decimals: am.decimals || 0,
+          assetId: child.assetIdHex, txid: child.mintTxid,
+        });
+      } catch {}
+      await _scanSlotChildren({ privkey, parentSlot: child, existingLeafHexes, recovered });
+    }
+    return;
+  }
+
+  if (env.opcode === T_SLOT_SPLIT) {
+    const children = await _scanSlotSplitChildren({ privkey, parentSlot, spendTx, env });
+    for (const child of children) {
+      if (existingLeafHexes.has(child.leafCommitmentHex)) continue;
+      saveSlotRecord(child);
+      existingLeafHexes.add(child.leafCommitmentHex);
+      recovered.push(child);
+      try {
+        const am = getAssetMeta(child.assetIdHex) || {};
+        recordActivity({
+          kind: 'slot-recovered', ticker: am.ticker || 'cBTC.zk',
+          amount: BigInt(child.denomination), decimals: am.decimals || 0,
+          assetId: child.assetIdHex, txid: child.mintTxid,
+        });
+      } catch {}
+      await _scanSlotChildren({ privkey, parentSlot: child, existingLeafHexes, recovered });
+    }
+    return;
+  }
+
+  if (env.opcode === T_SLOT_MERGE) {
+    const child = await _scanSlotMergeChild({ privkey, spendTx, env });
+    if (child && !existingLeafHexes.has(child.leafCommitmentHex)) {
+      saveSlotRecord(child);
+      existingLeafHexes.add(child.leafCommitmentHex);
+      recovered.push(child);
+      try {
+        const am = getAssetMeta(child.assetIdHex) || {};
+        recordActivity({
+          kind: 'slot-recovered', ticker: am.ticker || 'cBTC.zk',
+          amount: BigInt(child.denomination), decimals: am.decimals || 0,
+          assetId: child.assetIdHex, txid: child.mintTxid,
+        });
+      } catch {}
+      await _scanSlotChildren({ privkey, parentSlot: child, existingLeafHexes, recovered });
+    }
+    return;
+  }
+}
+
+// Materialize a slot record from derived (secret, ν, denom, assetId).
+// Pure builder — caller persists via saveSlotRecord. Shared by all three
+// descendant-resolution paths since the record shape is identical.
+function _materializeSlotRecord({
+  secret, nullifierPreimage, assetId, denomination, mintTxid, commitTxid,
+  anchorOutpointTxid, anchorOutpointVout, recoveryKind,
+}) {
+  const rBtcBytes = deriveSlotRBtc(secret, nullifierPreimage);
+  const rBtcBig = bytes32ToBigint(rBtcBytes) % SECP_N;
+  if (rBtcBig === 0n) return null;
+  const kBtcPoint = G.multiply(rBtcBig);
+  const kBtcXOnly = slotXOnly(kBtcPoint);
+  const expectedSpk = bytesToHex(p2trScript(kBtcXOnly));
+  const leafHash = computePoolLeafCommitment(secret, nullifierPreimage, denomination);
+  const rLeaf = poseidonHash(secret, nullifierPreimage);
+  const rLeafBig = bytes32ToBigint(rLeaf) % SECP_N;
+  const recipientCommit = pedersenCommit(denomination, rLeafBig).toRawBytes(true);
+  return {
+    record: {
+      assetIdHex: bytesToHex(assetId),
+      denomination: denomination.toString(),
+      secretHex: bytesToHex(secret),
+      nullifierPreimageHex: bytesToHex(nullifierPreimage),
+      leafCommitmentHex: bytesToHex(leafHash),
+      recipientCommitHex: bytesToHex(recipientCommit),
+      rLeafHex: bytesToHex(rLeaf),
+      rPedersenHex: bytesToHex(rLeaf),
+      rBtcHex: bytesToHex(rBtcBytes),
+      kBtcXOnlyHex: bytesToHex(kBtcXOnly),
+      slotScriptPubKeyHex: expectedSpk,
+      mintedAt: Date.now(),
+      network: NET.name,
+      commitTxid,
+      mintTxid,
+      anchorOutpointTxid,
+      anchorOutpointVout,
+      recoveredFromPrivkey: true,
+      recoveredAt: Date.now(),
+      recoveryKind,
+      status: 'live',
+    },
+    kBtcXOnly, expectedSpk, leafHash,
+  };
+}
+
+// ROTATE child: derive (secret, ν) from priv + parent K_btc outpoint, match
+// against envelope's claimed K_btc + leaf and on-chain vout[0] script.
+async function _scanSlotRotateChild({ privkey, parentSlot, spendTx, env }) {
+  const dec = decodeTSlotRotatePayload(env.payload);
+  if (!dec) return null;
+  const anchor = _slotOutpointBytes(parentSlot.mintTxid, 0);
+  const secret = _deriveSlotSecret({ privkey, anchorOutpoint: anchor, outputIndex: 0 });
+  const nullifierPreimage = _deriveSlotNullifierPreimage({ privkey, anchorOutpoint: anchor, outputIndex: 0 });
+  const m = _materializeSlotRecord({
+    secret, nullifierPreimage,
+    assetId: dec.assetId, denomination: dec.denomination,
+    mintTxid: spendTx.txid, commitTxid: spendTx.vin[0]?.txid || null,
+    anchorOutpointTxid: parentSlot.mintTxid, anchorOutpointVout: 0,
+    recoveryKind: 'rotate',
+  });
+  if (!m) return null;
+  if (bytesToHex(m.kBtcXOnly) !== bytesToHex(dec.newKBtcXOnly)) return null;
+  const vout0Spk = spendTx.vout?.[0]?.scriptpubkey;
+  if (typeof vout0Spk !== 'string' || vout0Spk.toLowerCase() !== m.expectedSpk) return null;
+  if (bytesToHex(m.leafHash) !== bytesToHex(dec.newLeafHash)) return null;
+  return m.record;
+}
+
+// SPLIT children: per-output (secret_i, ν_i) from priv + parent K_btc
+// outpoint + outputIndex i. Match each against envelope's per-output leaf
+// claim and vout[i] script.
+async function _scanSlotSplitChildren({ privkey, parentSlot, spendTx, env }) {
+  const dec = decodeTSlotSplitPayload(env.payload);
+  if (!dec) return [];
+  const anchor = _slotOutpointBytes(parentSlot.mintTxid, 0);
+  const out = [];
+  for (let i = 0; i < dec.nOutputs; i++) {
+    const o = dec.outputs[i];
+    const secret = _deriveSlotSecret({ privkey, anchorOutpoint: anchor, outputIndex: i });
+    const nullifierPreimage = _deriveSlotNullifierPreimage({ privkey, anchorOutpoint: anchor, outputIndex: i });
+    const m = _materializeSlotRecord({
+      secret, nullifierPreimage,
+      assetId: o.assetIdNew, denomination: o.denomNew,
+      mintTxid: spendTx.txid, commitTxid: spendTx.vin[0]?.txid || null,
+      anchorOutpointTxid: parentSlot.mintTxid, anchorOutpointVout: 0,
+      recoveryKind: `split[${i}]`,
+    });
+    if (!m) continue;
+    if (bytesToHex(m.leafHash) !== bytesToHex(o.newLeafHash)) continue;
+    const voutSpk = spendTx.vout?.[i]?.scriptpubkey;
+    if (typeof voutSpk !== 'string' || voutSpk.toLowerCase() !== m.expectedSpk) continue;
+    out.push(m.record);
+  }
+  return out;
+}
+
+// MERGE child: canonical anchor = lexicographically smallest input K_btc
+// outpoint among spendTx.vin[1+] (vin[0] is the commit P2TR). Matches the
+// convention in buildAndBroadcastSlotMerge so scanner ↔ builder agree.
+async function _scanSlotMergeChild({ privkey, spendTx, env }) {
+  const dec = decodeTSlotMergePayload(env.payload);
+  if (!dec) return null;
+  const kBtcVins = spendTx.vin.slice(1);
+  if (kBtcVins.length < 2) return null;
+  const anchorsHex = kBtcVins
+    .filter(v => typeof v.txid === 'string' && Number.isInteger(v.vout))
+    .map(v => bytesToHex(_slotOutpointBytes(v.txid, v.vout)))
+    .sort();
+  if (anchorsHex.length === 0) return null;
+  const canonicalAnchor = hexToBytes(anchorsHex[0]);
+  const secret = _deriveSlotSecret({ privkey, anchorOutpoint: canonicalAnchor, outputIndex: 0 });
+  const nullifierPreimage = _deriveSlotNullifierPreimage({ privkey, anchorOutpoint: canonicalAnchor, outputIndex: 0 });
+  const m = _materializeSlotRecord({
+    secret, nullifierPreimage,
+    assetId: dec.assetIdNew, denomination: dec.denomNew,
+    mintTxid: spendTx.txid, commitTxid: spendTx.vin[0]?.txid || null,
+    anchorOutpointTxid: null, anchorOutpointVout: null,
+    recoveryKind: 'merge',
+  });
+  if (!m) return null;
+  if (bytesToHex(m.leafHash) !== bytesToHex(dec.newLeafHash)) return null;
+  const vout0Spk = spendTx.vout?.[0]?.scriptpubkey;
+  if (typeof vout0Spk !== 'string' || vout0Spk.toLowerCase() !== m.expectedSpk) return null;
+  return m.record;
 }
 
 // Probe one anchor candidate. Returns a slotRecord on confirmed match,
@@ -29430,11 +29683,27 @@ function setProgressStrip(stripIdOrEl, activeIdx, opts = {}) {
 // Numeric badge on a tab — `name` is the tab's data-tab value
 // (holdings / market / drops / discover / etc.). Pass 0/null/undefined to
 // clear. CSS at .tab[data-count]::after renders the chip when count > 0.
+// Writes to every .tab matching the name (sub-tab + primary leader when
+// they share data-tab) and rolls a sum onto the group's primary so the
+// chip stays visible when the sub-row is collapsed.
+const _tabBadgeCounts = Object.create(null);
 function setTabBadge(name, count) {
-  const tab = document.querySelector(`.tab[data-tab="${name}"]`);
-  if (!tab) return;
-  if (count == null || count === 0 || Number.isNaN(count)) tab.removeAttribute('data-count');
-  else tab.setAttribute('data-count', String(count > 999 ? '999+' : count));
+  const n = (count == null || Number.isNaN(count)) ? 0 : Math.max(0, count | 0);
+  _tabBadgeCounts[name] = n;
+  document.querySelectorAll(`.tab[data-tab="${name}"]`).forEach(el => {
+    if (n === 0) el.removeAttribute('data-count');
+    else el.setAttribute('data-count', String(n > 999 ? '999+' : n));
+  });
+  const group = (typeof TAB_GROUP_OF !== 'undefined') ? TAB_GROUP_OF[name] : null;
+  if (!group) return;
+  let sum = 0;
+  for (const [k, v] of Object.entries(_tabBadgeCounts)) {
+    if (TAB_GROUP_OF[k] === group) sum += v;
+  }
+  const primary = document.querySelector(`.tabs-primary .tab[data-group="${group}"]`);
+  if (!primary) return;
+  if (sum === 0) primary.removeAttribute('data-count');
+  else primary.setAttribute('data-count', String(sum > 999 ? '999+' : sum));
 }
 
 // Set element textContent and briefly flash an orange background if the
@@ -35050,64 +35319,76 @@ function setupCeremonyHandlers() {
   } catch {}
 }
 
+// Tab grouping. Primary tabs (`.tabs-primary .tab`) map to a group; sub-tab
+// rows (`.tabs.subtabs`) below the primary row swap between children of the
+// active group. Single-child groups (send, discover, protocol) have no
+// visible sub-row.
+const TAB_GROUP_OF = {
+  wallet: 'wallet', holdings: 'wallet', claim: 'wallet',
+  transfer: 'send',
+  market: 'markets', pool: 'markets', farms: 'markets',
+  discover: 'discover',
+  etch: 'tools', drops: 'tools', mixer: 'tools',
+  about: 'protocol',
+};
+
+// Reconcile primary-row and sub-row visibility + active marks for a given
+// child name. Side-effect-free — call after preboot pre-activates a panel
+// via deep-link, so the visible tab chrome matches the active panel.
+function _syncTabChromeFor(name) {
+  const group = TAB_GROUP_OF[name] || name;
+  $$('.tabs-primary .tab').forEach(t => {
+    t.classList.toggle('active', t.dataset.group === group);
+  });
+  $$('.tabs.subtabs').forEach(row => {
+    row.style.display = (row.dataset.group === group) ? '' : 'none';
+  });
+  $$('.tabs.subtabs .tab').forEach(t => {
+    t.classList.toggle('active', t.dataset.tab === name);
+  });
+}
+
+function _activateTab(name) {
+  $$('.tab-panel').forEach(p => p.classList.remove('active'));
+  const panel = document.getElementById('tab-' + name);
+  if (panel) panel.classList.add('active');
+  _syncTabChromeFor(name);
+  _writeTabHash(name);
+  if (name === 'wallet') { refreshWallet(); renderRecentEtches(); }
+  if (name === 'holdings') { renderHoldings(); renderOffers(); renderActivity(); }
+  else stopHoldingsAutoRefresh();
+  if (name === 'transfer') { refreshAssetSelect(); refreshRecipientRecents(); updateDerivedAddressHint(); refreshSatsSendBalance(); }
+  if (name === 'drops') refreshDropsTab();
+  if (name === 'claim') { refreshClaimTab(); startClaimAutoRefresh(); }
+  else stopClaimAutoRefresh();
+  {
+    const zfiB = $('#zfi-airdrop-banner');
+    if (zfiB) {
+      const dismissed = localStorage.getItem('tacit-zfi-airdrop-banner-dismissed-v1') === '1';
+      zfiB.style.display = (NET.name === 'mainnet' && !dismissed && name !== 'claim') ? 'block' : 'none';
+    }
+  }
+  if (name === 'discover') { renderDiscover(); startPetchAutoRefresh(); }
+  else stopPetchAutoRefresh();
+  if (name === 'market') {
+    const _wasOnAssetView = typeof _marketView === 'object' && _marketView && _marketView.mode === 'asset';
+    if (_wasOnAssetView && !pendingMarketFilter && typeof goToMarketBrowse === 'function') {
+      goToMarketBrowse();
+    } else {
+      renderMarket();
+    }
+  } else { _stopMarketAutoRefresh(); _resetMarketLiveSnapshot(); }
+  if (name === 'mixer') { renderMixer(); startMixerAutoRefresh(); }
+  else stopMixerAutoRefresh();
+  if (name === 'pool') { renderPool(); startPoolAutoRefresh(); }
+  else stopPoolAutoRefresh();
+  try { _renderOtcClaimBanner(); } catch {}
+  try { _wireAmmCeremonyChipOnce(); renderAmmCeremonyChip(); } catch {}
+}
+
 function setupTabs() {
   $$('.tab').forEach(tab => {
-    tab.onclick = () => {
-      $$('.tab').forEach(t => t.classList.remove('active'));
-      $$('.tab-panel').forEach(p => p.classList.remove('active'));
-      tab.classList.add('active');
-      $('#tab-' + tab.dataset.tab).classList.add('active');
-      // Reflect tab state into the URL so refresh + share-URL restore the
-      // user's view. Guarded inside _writeTabHash against clobbering an
-      // unconsumed #recv= / #claim= hash during init.
-      _writeTabHash(tab.dataset.tab);
-      if (tab.dataset.tab === 'wallet') { refreshWallet(); renderRecentEtches(); }
-      if (tab.dataset.tab === 'holdings') { renderHoldings(); renderOffers(); renderActivity(); }
-      else stopHoldingsAutoRefresh();
-      if (tab.dataset.tab === 'transfer') { refreshAssetSelect(); refreshRecipientRecents(); updateDerivedAddressHint(); refreshSatsSendBalance(); }
-      if (tab.dataset.tab === 'drops') refreshDropsTab();
-      if (tab.dataset.tab === 'claim') { refreshClaimTab(); startClaimAutoRefresh(); }
-      else stopClaimAutoRefresh();
-      // Hide the zFi airdrop banner once the user is on Claim (redundant
-      // there) and show it again when they leave Claim — visibility otherwise
-      // stays stale until the next setupNetworkSelect tick.
-      {
-        const zfiB = $('#zfi-airdrop-banner');
-        if (zfiB) {
-          const dismissed = localStorage.getItem('tacit-zfi-airdrop-banner-dismissed-v1') === '1';
-          zfiB.style.display = (NET.name === 'mainnet' && !dismissed && tab.dataset.tab !== 'claim') ? 'block' : 'none';
-        }
-      }
-      if (tab.dataset.tab === 'discover') { renderDiscover(); startPetchAutoRefresh(); }
-      else stopPetchAutoRefresh();
-      if (tab.dataset.tab === 'market') {
-        // If the user is clicking the Market tab while already viewing
-        // a specific asset's detail page (and there's no deep-link
-        // navigation queued), treat the click as "back to gallery" —
-        // same effect as clicking "← All markets" or pressing Esc.
-        // pendingMarketFilter is set only during _consumeTabUrlHash
-        // deep-link consumption, so checking it null distinguishes a
-        // user-initiated re-click from a programmatic activation.
-        const _wasOnAssetView = typeof _marketView === 'object' && _marketView && _marketView.mode === 'asset';
-        if (_wasOnAssetView && !pendingMarketFilter && typeof goToMarketBrowse === 'function') {
-          goToMarketBrowse();
-        } else {
-          renderMarket();
-        }
-      } else { _stopMarketAutoRefresh(); _resetMarketLiveSnapshot(); }
-      if (tab.dataset.tab === 'mixer') { renderMixer(); startMixerAutoRefresh(); }
-      else stopMixerAutoRefresh();
-      if (tab.dataset.tab === 'pool') { renderPool(); startPoolAutoRefresh(); }
-      else stopPoolAutoRefresh();
-      // Re-evaluate the cross-tab OTC claim banner: when the user lands on
-      // Holdings, the per-asset claim row is now visible so the banner is
-      // redundant and we hide it; when they leave Holdings, restore it.
-      try { _renderOtcClaimBanner(); } catch {}
-      // AMM ceremony chip — surfaces on Market / Pool / Holdings during the
-      // ceremony contribution window. Hidden when ceremony is finalized or
-      // user contributed in the last 24h.
-      try { _wireAmmCeremonyChipOnce(); renderAmmCeremonyChip(); } catch {}
-    };
+    tab.onclick = () => _activateTab(tab.dataset.tab);
   });
   // Wire the banner's "Open Holdings" CTA once at setup. Click → simulate
   // a Holdings tab click so the existing handler runs all its side effects
@@ -44201,43 +44482,44 @@ function _consumeTabUrlHash() {
   if (!btn) return;
   if (!btn.classList.contains('active')) {
     btn.click();
-  } else if (parsed.aid && parsed.tab === 'market') {
-    // Already on Market — drive the asset-detail view directly so a
-    // hash-only change re-routes without requiring a tab re-click.
-    if (typeof goToMarketAsset === 'function') goToMarketAsset(parsed.aid);
-  } else if (parsed.tab === 'market') {
-    // Tab is already .active because preboot.js pre-activated it from
-    // the #tab=market deep-link during head parse — BEFORE this script
-    // loaded. The onclick handler never fired, so renderMarket() never
-    // ran and the page sits blank. Fire it now. (The aid-bearing case
-    // above already covers #tab=market&aid=X via goToMarketAsset; this
-    // branch handles the aid-less variant.)
-    if (typeof renderMarket === 'function') { try { renderMarket(); } catch (e) { console.warn('[init] renderMarket failed:', e?.message || e); } }
-  } else if (parsed.tab === 'discover') {
-    // Same preboot-pre-activates-too-early problem for Discover.
-    if (typeof renderDiscover === 'function') { try { renderDiscover(); } catch {} }
-    if (typeof startPetchAutoRefresh === 'function') { try { startPetchAutoRefresh(); } catch {} }
-  } else if (parsed.tab === 'holdings') {
-    if (typeof renderHoldings === 'function') { try { renderHoldings(); } catch {} }
-    if (typeof renderOffers === 'function') { try { renderOffers(); } catch {} }
-    if (typeof renderActivity === 'function') { try { renderActivity(); } catch {} }
-  } else if (parsed.tab === 'mixer') {
-    if (typeof renderMixer === 'function') { try { renderMixer(); } catch {} }
-    if (typeof startMixerAutoRefresh === 'function') { try { startMixerAutoRefresh(); } catch {} }
-  } else if (parsed.aid && parsed.tab === 'discover') {
-    // Already on Discover but aid changed — re-resolve focus against the
-    // already-mounted lists so a hash-only change scrolls/highlights too.
-    requestAnimationFrame(() => {
-      const cetchCard = document.querySelector(`#discover-list .asset-card[data-aid="${parsed.aid}"]`);
-      const petchCard = document.querySelector(`#petch-discover-list .asset-card[data-petch-aid="${parsed.aid}"]`);
-      const card = cetchCard || petchCard;
-      if (card) {
-        pendingDiscoverFocus = null;
-        card.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        card.classList.add('highlight-pulse');
-        setTimeout(() => card.classList.remove('highlight-pulse'), 1800);
-      }
-    });
+  } else {
+    // Preboot pre-activated the panel via deep-link but couldn't update
+    // the primary-row + sub-row chrome (it doesn't know about groups).
+    // Sync chrome + run the same render dispatch the click handler would.
+    try { _syncTabChromeFor(parsed.tab); } catch {}
+    if (parsed.aid && parsed.tab === 'market') {
+      // Already on Market — drive the asset-detail view directly so a
+      // hash-only change re-routes without requiring a tab re-click.
+      if (typeof goToMarketAsset === 'function') goToMarketAsset(parsed.aid);
+    } else if (parsed.tab === 'market') {
+      // Aid-less variant: renderMarket() never fired because preboot
+      // pre-activated before this script loaded.
+      if (typeof renderMarket === 'function') { try { renderMarket(); } catch (e) { console.warn('[init] renderMarket failed:', e?.message || e); } }
+    } else if (parsed.tab === 'discover') {
+      if (typeof renderDiscover === 'function') { try { renderDiscover(); } catch {} }
+      if (typeof startPetchAutoRefresh === 'function') { try { startPetchAutoRefresh(); } catch {} }
+    } else if (parsed.tab === 'holdings') {
+      if (typeof renderHoldings === 'function') { try { renderHoldings(); } catch {} }
+      if (typeof renderOffers === 'function') { try { renderOffers(); } catch {} }
+      if (typeof renderActivity === 'function') { try { renderActivity(); } catch {} }
+    } else if (parsed.tab === 'mixer') {
+      if (typeof renderMixer === 'function') { try { renderMixer(); } catch {} }
+      if (typeof startMixerAutoRefresh === 'function') { try { startMixerAutoRefresh(); } catch {} }
+    } else if (parsed.aid && parsed.tab === 'discover') {
+      // Already on Discover but aid changed — re-resolve focus against the
+      // already-mounted lists so a hash-only change scrolls/highlights too.
+      requestAnimationFrame(() => {
+        const cetchCard = document.querySelector(`#discover-list .asset-card[data-aid="${parsed.aid}"]`);
+        const petchCard = document.querySelector(`#petch-discover-list .asset-card[data-petch-aid="${parsed.aid}"]`);
+        const card = cetchCard || petchCard;
+        if (card) {
+          pendingDiscoverFocus = null;
+          card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          card.classList.add('highlight-pulse');
+          setTimeout(() => card.classList.remove('highlight-pulse'), 1800);
+        }
+      });
+    }
   }
 }
 // Browser back/forward navigation: hashchange fires for in-page hash mutations
