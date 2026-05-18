@@ -8781,9 +8781,33 @@ function marketCacheKey(network) {
 // filter and the floor/breakdown tiles). Computing on this flavour keeps the
 // /market payload lean even for users on the Market tab without ever hitting
 // Discover, which still pre-warms its own mints=true cache.
-async function handleMarket(env, network, cors) {
-  const assetsResp = await handleAssetsList(env, network, {}, { limit: null, includeMints: false });
-  const assetsBody = JSON.parse(await assetsResp.text());
+// `prehydratedAssetsBody` (optional) lets the cron pre-warm path skip the
+// internal handleAssetsList call when it has already computed the same
+// per-asset hydration for the /assets cache pre-warm. The cron passes
+// the parsed body from `assetsComputeAndCache` so handleMarket reuses
+// the (expensive) ~16-ops-per-asset hydration instead of running it
+// twice per tick. Mints are stripped because /market doesn't carry the
+// per-asset mints array (assetsComputeAndCache pre-warms with mints=true
+// for the Discover surface; /market historically called with mints=false).
+// On-demand /market requests pass null here and pay full compute.
+async function handleMarket(env, network, cors, prehydratedAssetsBody = null) {
+  let assetsBody;
+  if (prehydratedAssetsBody && Array.isArray(prehydratedAssetsBody.assets)) {
+    // Shallow-copy each asset entry and drop the mints field; the source
+    // body is from the mints=true pre-warm. Other fields (counts,
+    // attestations, trades ring, holder count, etc.) carry over.
+    assetsBody = {
+      ...prehydratedAssetsBody,
+      assets: prehydratedAssetsBody.assets.map(a => {
+        if (!a || !a.mints) return a;
+        const { mints, ...rest } = a;
+        return rest;
+      }),
+    };
+  } else {
+    const assetsResp = await handleAssetsList(env, network, {}, { limit: null, includeMints: false });
+    assetsBody = JSON.parse(await assetsResp.text());
+  }
   const allAssets = assetsBody.assets || [];
   const haveAny = allAssets.filter(a =>
     Number(a.listing_count || 0) > 0
@@ -8888,8 +8912,11 @@ async function pmintCreditedComputeAndCache(env, network, aid) {
   return { body, status: fresh.status };
 }
 
-async function marketComputeAndCache(env, network) {
-  const fresh = await handleMarket(env, network, {});
+// `prehydratedAssetsBody` (optional) is forwarded to handleMarket so the
+// cron can skip re-hydrating assets it just computed for the /assets
+// pre-warm. See handleMarket above for the mint-stripping rationale.
+async function marketComputeAndCache(env, network, prehydratedAssetsBody = null) {
+  const fresh = await handleMarket(env, network, {}, prehydratedAssetsBody);
   const body = await fresh.text();
   if (fresh.status === 200) {
     const ch = new Headers();
@@ -19767,15 +19794,30 @@ export default {
       // instantly. We pre-warm the default (no-limit, mints=true) shape since
       // that's what Discover/Market/lander all hit; specialized callers with
       // ?limit= or ?mints=0 still pay one MISS but they're rare paths.
-      await Promise.allSettled(
-        NETWORKS.map(net => assetsComputeAndCache(env, net, { limit: null, includeMints: true }).catch(() => {})),
+      // Capture the per-network assets pre-warm results so the /market
+      // pre-warm below can reuse the (heavy) hydration instead of running
+      // it a second time per tick. Each entry is { net, parsedBody|null }.
+      // The mints=true pre-warm is the canonical Discover surface; /market
+      // strips mints in handleMarket when reusing this body.
+      const _assetsPrewarmResults = await Promise.all(
+        NETWORKS.map(net => assetsComputeAndCache(env, net, { limit: null, includeMints: true })
+          .then(r => {
+            try {
+              const parsed = (r && r.status === 200 && r.body) ? JSON.parse(r.body) : null;
+              return { net, parsed };
+            } catch { return { net, parsed: null }; }
+          })
+          .catch(() => ({ net, parsed: null }))),
       );
-      // Pre-warm the /market aggregate too. Internally calls handleAssetsList
-      // with mints=false (a separate cache shape from the Discover pre-warm
-      // above), so /market clients get the lean joined payload from cache
-      // without ever waiting on a synchronous KV fan-out.
+      // Pre-warm the /market aggregate too. Reuses the assets pre-warm's
+      // hydration via the prehydratedAssetsBody arg — without this, the
+      // cron re-runs the ~16-ops-per-asset hydration a second time per
+      // tick (~800 KV reads on a 50-asset network). With reuse, /market
+      // only pays the additional per-asset 4-way listings fan-out
+      // (atomic-intents + range + preauth + opening listings).
       await Promise.allSettled(
-        NETWORKS.map(net => marketComputeAndCache(env, net).catch(() => {})),
+        _assetsPrewarmResults.map(({ net, parsed }) =>
+          marketComputeAndCache(env, net, parsed).catch(() => {})),
       );
       // Refresh per-asset cap-progress snapshots for assets that received
       // new pmints this tick (dirty markers set by scanForEtches's T_PMINT
