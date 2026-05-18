@@ -155,6 +155,45 @@ const ALLOWLIST = {
   T_LP_UNBOND:    'SPEC-AMM-FARM-AMENDMENT §5.42 (category b — decree-mint). vout[1] returns the bonded LP shares (amount from T_LP_BOND ancestry, blinding=lpReturnR PUBLIC); vout[2] reward (amount + rewardR PUBLIC). Scanner integration deferred: validateOutpoint must learn to recognize worker-decree-minted outputs that have no on-chain tacit ancestor.',
   T_LP_HARVEST:   'SPEC-AMM-FARM-AMENDMENT §5.43 (category b — decree-mint). vout[1] reward UTXO with PUBLIC (rewardAmount, rewardR). Scanner integration deferred for the same reason as T_LP_UNBOND: needs validateOutpoint to recognize decree-minted farm outputs.',
   T_FARM_REFUND:  'SPEC-AMM-FARM-AMENDMENT §5.44 (category b — decree-mint). vout[1] refund UTXO with PUBLIC (refundAmount, refundR). Scanner integration deferred (same reason as T_LP_UNBOND/HARVEST).',
+
+  // Slot opcodes. cBTC.zk self-custody slots use a fundamentally different
+  // recovery model from the rest of the protocol:
+  //
+  //   - A slot UTXO sits at K_btc (a P2TR address), NOT at wallet.address().
+  //     So scanHoldings's getUtxos(wallet.address()) never sees it.
+  //
+  //   - K_btc is derived as p2tr(slotXOnly(recipientCommitment, denomination))
+  //     where recipientCommitment = pedersenCommit(denomination, secret).
+  //     Two of those secrets — `secret` and `nullifierPreimage` — are today
+  //     generated with crypto.getRandomValues at 8+ call sites in dapp/tacit.js
+  //     (slot mint / burn / rotate / split / merge builders) and persisted only
+  //     in localStorage via saveSlotRecord. A clean wipe loses them.
+  //
+  // Closing the recovery gap requires TWO pieces of work, both architectural:
+  //
+  //   (1) Deterministic secret derivation. Replace each crypto.getRandomValues
+  //       call with HMAC(priv, "tacit-slot-secret-v1" || funding_outpoint) and
+  //       HMAC(priv, "tacit-slot-nullifier-v1" || funding_outpoint). For
+  //       ROTATE/SPLIT/MERGE, the anchor is the input slot's K_btc outpoint.
+  //
+  //   (2) A new scanSlots() function distinct from scanHoldings. It enumerates
+  //       candidate K_btc addresses by deriving (secret, nullifier) for each
+  //       (priv, funding_outpoint, denomination) tuple the user could have
+  //       used, and queries chain for any UTXOs at p2tr(slotXOnly(...)).
+  //       Found UTXOs are the user's slots; their state (live / redeemed /
+  //       rotated) is derived from on-chain spend status.
+  //
+  // Allowlisted as a unified architectural gap rather than 5 per-opcode
+  // scanner stubs because the right fix is the new scanSlots() function +
+  // deterministic derivation, not 5 branches in scanHoldings that wouldn't
+  // find the slots anyway. Tracked for a focused follow-up alongside the
+  // cBTC.zk ceremony finalization (currently slot opcodes are "not shipped
+  // on mainnet" per dapp/tacit.js:5152).
+  T_SLOT_MINT:    'SPEC-CBTC-ZK-AMENDMENT §5.21. See block comment above on the slot-recovery architecture gap.',
+  T_SLOT_BURN:    'SPEC-CBTC-ZK-AMENDMENT §5.22. Slot redeem to native BTC; recovery via scanSlots() architectural follow-up.',
+  T_SLOT_ROTATE:  'SPEC-CBTC-ZK-AMENDMENT §5.23. Slot transfer producing a new K_btc; same recovery follow-up.',
+  T_SLOT_SPLIT:   'SPEC-CBTC-ZK-FUNGIBILITY-AMENDMENT §5.24. Atomic 1→N slot split; same recovery follow-up.',
+  T_SLOT_MERGE:   'SPEC-CBTC-ZK-FUNGIBILITY-AMENDMENT §5.25. Atomic N→1 slot merge; same recovery follow-up.',
 };
 
 // ---- Tests --------------------------------------------------------------
