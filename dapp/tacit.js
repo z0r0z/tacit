@@ -72255,8 +72255,25 @@ function _showWelcomeModal() {
     // will land on the wallet tab, not the ceremony.
     try {
       const ctx = document.getElementById('welcome-ceremony-context');
-      const fromUrl = new URLSearchParams(window.location.search).get('ceremony');
-      if (ctx && fromUrl && fromUrl.toLowerCase() === TACIT_DEFAULT_CEREMONY_HASH) {
+      const _qs = new URLSearchParams(window.location.search);
+      const _hash = (window.location.hash || '').replace(/^#/, '');
+      const _hashQs = new URLSearchParams(_hash.includes('=') ? _hash : '');
+      const fromUrl = _qs.get('ceremony');
+      const wantsMixer = fromUrl && fromUrl.toLowerCase() === TACIT_DEFAULT_CEREMONY_HASH;
+      const wantsAmm =
+        _qs.get('amm') === 'ceremony'
+        || _qs.has('ammceremony')
+        || _hashQs.get('amm') === 'ceremony'
+        || _hash === 'ammceremony'
+        || _hash === 'amm-ceremony';
+      if (ctx && (wantsMixer || wantsAmm)) {
+        if (wantsAmm) {
+          // Swap the mixer-specific copy for AMM framing when the
+          // deeplink is for the AMM ceremony. Same banner element,
+          // just different text — keeps the visual treatment
+          // consistent across both share-link flows.
+          ctx.innerHTML = 'You followed a share link to the <strong>tacit AMM trusted setup ceremony</strong>. Pick a wallet setup below — passkey is the one-tap path; your contribution gets logged against your wallet for airdrop eligibility. The contribute drawer opens right after.';
+        }
         ctx.style.display = 'block';
       }
     } catch {}
@@ -72555,11 +72572,25 @@ async function init() {
         || _hash === 'ammceremony'
         || _hash === 'amm-ceremony';
       if (wantsAmmCeremony) {
-        // Defer past the boot tab-activation so the chip + drawer DOM
-        // are fully wired. 250ms is enough on a cold load; the drawer
-        // open is idempotent if the user navigates away first.
-        setTimeout(() => {
-          try { openAmmCeremonyDrawer(); } catch (e) { console.warn('[amm-deeplink] open failed', e?.message); }
+        // New-user smooth flow: if no wallet is loaded, show the welcome
+        // modal FIRST (with AMM-customized context banner) so the user
+        // onboards their wallet inline. After they pick an option (or
+        // dismiss), open the contribute drawer. If a wallet is already
+        // loaded, skip straight to the drawer. Deferred 250ms past boot
+        // so the chip + drawer + welcome-modal DOM are fully wired
+        // before opening.
+        setTimeout(async () => {
+          try {
+            const haveWallet = !!(wallet && wallet.pub);
+            if (!haveWallet && typeof _showWelcomeModal === 'function') {
+              try { await _showWelcomeModal(); } catch { /* user cancelled */ }
+            }
+            // Open drawer regardless of wallet result — if user cancelled
+            // the welcome modal they can still contribute anonymously
+            // (uncheck the "log my wallet" box). Drawer's submit gate
+            // handles the wallet.pub null case downstream.
+            openAmmCeremonyDrawer();
+          } catch (e) { console.warn('[amm-deeplink] open failed', e?.message); }
         }, 250);
       }
     }
