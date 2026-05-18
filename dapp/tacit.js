@@ -48806,6 +48806,27 @@ function _saveMarketSimple(on) {
   try { localStorage.setItem(_MARKET_SIMPLE_KEY, on ? '1' : '0'); } catch {}
 }
 let _marketSimpleMode = _loadMarketSimple();
+// Hide-outlier-bids toggle. Same 0.2×/5× mark band the chart, spread
+// row, and best-bid/best-ask selectors use. Hiding the long tail of
+// -90%+ bids and >5× ask-side noise by default cleans up the visual
+// scan on intent-heavy markets like TAC where 10+ trolling bids sit
+// at 0.05 sats/TAC alongside the real liquidity at 200+ sats/TAC.
+// State persists; default ON because the outliers are essentially
+// always spam from the trader's POV. Power users can flip to see the
+// raw book.
+const _MARKET_HIDE_OUTLIER_BIDS_KEY = 'tacit-market-hide-outlier-bids-v1';
+function _loadMarketHideOutlierBids() {
+  try {
+    const v = localStorage.getItem(_MARKET_HIDE_OUTLIER_BIDS_KEY);
+    if (v === '0') return false;
+    if (v === '1') return true;
+  } catch {}
+  return true;
+}
+function _saveMarketHideOutlierBids(on) {
+  try { localStorage.setItem(_MARKET_HIDE_OUTLIER_BIDS_KEY, on ? '1' : '0'); } catch {}
+}
+let _marketHideOutlierBids = _loadMarketHideOutlierBids();
 // Per-row trade buttons (Buy / Buy chunks / Buy level / Sell / Sell level)
 // can be hidden in favor of a single "Swap" surface: clicking any row
 // primes the Swap tile in the matching direction, scrolls to it, and
@@ -50672,7 +50693,29 @@ function applyMarketFilters() {
          </div>
        </div>`
     : '';
-  const listedPaneHtml = `${_yourOrdersHtml}${asksHeaderHtml}${noAtomicHint}${simpleEmptyHint}${_asksHeaderRowHtml}<div id="market-grid" class="${_gridClass}" style="${rowsForGrid.length === 0 ? 'display:none;' : ''}"></div>${marketListingPagerHtml(totalAskRows, _marketListingPage, totalAskPages, askShowingStart, askShowingEnd)}${_spreadRowHtml}${bidsLadderHtml}`;
+  // Mobile-only asks/bids tab toggle. Both ladders stacked on a phone
+  // is ~2-3 viewport heights of scroll on intent-heavy markets like
+  // TAC (26+ bid rows alone). A 2-tab switcher above the orderbook
+  // halves the vertical real estate — desktop layout is untouched
+  // since the tabs are hidden via @media (min-width: 521px).
+  // data-orderbook-active flips the visibility of the asks vs bids
+  // sub-sections; the spread row + your-orders panel stay visible on
+  // both tabs (they're not inside either side wrapper).
+  const _asksHidden = _asksHeaderRowHtml === ''
+    ? rowsForGrid.length === 0
+    : false;
+  const _bidsTabCount = (() => {
+    const peek = (typeof _bidCachePeek === 'function') ? _bidCachePeek(_marketView.assetId) : null;
+    if (!Array.isArray(peek)) return null;
+    const ns = Math.floor(Date.now() / 1000);
+    return peek.filter(b => !b.axintent_id && Number(b.expiry || 0) > ns).length;
+  })();
+  const _mobileTabsHtml = `
+    <div class="orderbook-mobile-tabs" role="tablist" aria-label="Orderbook side">
+      <button role="tab" data-act="orderbook-mobile-tab" data-side="asks" aria-selected="true">Asks${rowsForGrid.length ? ` · ${rowsForGrid.length}` : ''}</button>
+      <button role="tab" data-act="orderbook-mobile-tab" data-side="bids" aria-selected="false">Bids${_bidsTabCount != null ? ` · ${_bidsTabCount}` : ''}</button>
+    </div>`;
+  const listedPaneHtml = `${_yourOrdersHtml}<div data-orderbook-wrap data-orderbook-active="asks">${_mobileTabsHtml}<div data-orderbook-side="asks">${asksHeaderHtml}${noAtomicHint}${simpleEmptyHint}${_asksHeaderRowHtml}<div id="market-grid" class="${_gridClass}" style="${rowsForGrid.length === 0 ? 'display:none;' : ''}"></div>${marketListingPagerHtml(totalAskRows, _marketListingPage, totalAskPages, askShowingStart, askShowingEnd)}</div>${_spreadRowHtml}<div data-orderbook-side="bids">${bidsLadderHtml}</div></div>`;
   // Rich stats strip — supply (with IPFS-attestation badge), market cap
   // with proof, 24h Δ, depth chart, recent-trades feed. The header above
   // shows the 4 condensed cells; this strip below carries the deeper
@@ -50872,6 +50915,22 @@ function applyMarketFilters() {
   // a Swap-routed fill would atomically capture. Now clickable: scrolls
   // the Swap tile into view + focuses the buy-side input so they can
   // start typing immediately.
+  // Mobile orderbook tabs. Flips data-orderbook-active on the wrap so
+  // the CSS rule shows only the selected side at narrow viewports.
+  // Desktop layout is unchanged (the .orderbook-mobile-tabs container
+  // is display:none above 520px, both sides remain visible together).
+  list.querySelectorAll('[data-act="orderbook-mobile-tab"]').forEach(btn => {
+    btn.onclick = () => {
+      const wrap = btn.closest('[data-orderbook-wrap]');
+      if (!wrap) return;
+      const side = btn.dataset.side;
+      if (side !== 'asks' && side !== 'bids') return;
+      wrap.setAttribute('data-orderbook-active', side);
+      wrap.querySelectorAll('[data-act="orderbook-mobile-tab"]').forEach(t => {
+        t.setAttribute('aria-selected', t.dataset.side === side ? 'true' : 'false');
+      });
+    };
+  });
   list.querySelectorAll('[data-act="market-jump-to-swap"]').forEach(btn => {
     btn.onclick = () => {
       const widget = document.querySelector('[data-swap-tile]');
@@ -51761,6 +51820,22 @@ function applyMarketFilters() {
       if (ev.key === 'Enter' || ev.key === ' ') {
         ev.preventDefault();
         _fire(ev);
+        return;
+      }
+      // Arrow navigation between adjacent focusable ask tiles.
+      // ArrowDown / Right → next; ArrowUp / Left → previous. Allows
+      // a trader to scan the ladder without grabbing the mouse, then
+      // Enter to prime the swap at the focused row. The query scope
+      // is the grid container so cross-section nav (asks → bids)
+      // stays a separate keystroke (Tab).
+      if (ev.key === 'ArrowDown' || ev.key === 'ArrowUp'
+          || ev.key === 'ArrowRight' || ev.key === 'ArrowLeft') {
+        const sibs = Array.from(grid.querySelectorAll('.market-listing-tile[data-fill-aid][tabindex="0"]'));
+        const idx = sibs.indexOf(tile);
+        if (idx < 0) return;
+        const dir = (ev.key === 'ArrowDown' || ev.key === 'ArrowRight') ? 1 : -1;
+        const next = sibs[idx + dir];
+        if (next) { ev.preventDefault(); next.focus(); }
       }
     };
   });
@@ -57185,6 +57260,36 @@ async function populateMarketBidsLadder(scope, asset) {
   // would leave nothing to bucket, so we run aggregation regardless of
   // mode (mine bids pass through individually anyway).
   const _bidMarkUnit = Number(asset?.mark_price?.unit);
+  // Outlier filter (default ON). Same 0.2×/5× mark band the chart,
+  // spread row, and best-bid/best-ask selectors use. Hides the long
+  // tail of -90%+ bids that on intent-heavy markets clutter the
+  // ladder with spam/trolling. Tracked separately as _hiddenOutlier
+  // count so the toggle chip can surface "N hidden" for the user.
+  // Skipped entirely on never-traded markets (no markUnit = no band).
+  // Mine-bids and active claims always pass through so the user
+  // never loses sight of their own orders or in-flight settlement.
+  let _hiddenOutlierCount = 0;
+  if (_marketHideOutlierBids && Number.isFinite(_bidMarkUnit) && _bidMarkUnit > 0) {
+    const _bandLo = _bidMarkUnit * 0.2;
+    const _bandHi = _bidMarkUnit * 5;
+    const _filtered = ladder.filter(b => {
+      if (b._isMine) return true;            // never hide own orders
+      if (b.axintent_id) return true;        // in-flight settlements visible
+      const u = b._unit;
+      if (u == null) return true;            // can't classify → keep
+      if (u >= _bandLo && u <= _bandHi) return true;
+      _hiddenOutlierCount++;
+      return false;
+    });
+    if (_filtered.length > 0) {
+      ladder.length = 0;
+      for (const b of _filtered) ladder.push(b);
+    }
+    // If filtering would empty the ladder, leave it unfiltered so the
+    // user sees something rather than a blank "no bids" pane. Reset
+    // the count so the chip doesn't claim hidden ones that aren't.
+    else _hiddenOutlierCount = 0;
+  }
   let bucketedLadder = _aggregateBidsForLadder(ladder, _bidMarkUnit, decimals);
   // USD pricing on every row when the oracle cache is hot. Decorative;
   // a missing price falls through to sats-only without breaking layout.
@@ -57393,8 +57498,23 @@ async function populateMarketBidsLadder(scope, asset) {
         ? `<button data-act="market-mine-bids-toggle" type="button" title="Showing only your bids (${minedBidsCount}). Click to show all bids.">Mine - ${minedBidsCount}</button>`
         : `<button data-act="market-mine-bids-toggle" type="button" title="Filter to your bids only (${minedBidsCount} active).">Mine</button>`)
     : '';
-  const mineFilterRow = mineBidsChip
-    ? `<div class="market-bids-filter-row">${mineBidsChip}</div>`
+  // Outlier-bid toggle. Only meaningful when the filter actually hid
+  // something OR when it's currently OFF (so the user can re-enable it).
+  // The default is ON; the chip lets a power user flip to see the raw
+  // book. Same chip style as mineBidsChip so the filter row reads as
+  // a coherent toolbar.
+  const _outlierChip = (() => {
+    if (_marketHideOutlierBids && _hiddenOutlierCount > 0) {
+      return `<button data-act="market-outlier-bids-toggle" type="button" title="${_hiddenOutlierCount} dust/troll bid${_hiddenOutlierCount === 1 ? '' : 's'} outside the 0.2×–5× mark band hidden. Click to show all.">Hidden ${_hiddenOutlierCount} outlier${_hiddenOutlierCount === 1 ? '' : 's'} · show all</button>`;
+    }
+    if (!_marketHideOutlierBids) {
+      return `<button data-act="market-outlier-bids-toggle" type="button" title="Currently showing every bid including outliers outside the 0.2×–5× mark band. Click to hide the dust + troll tail.">Hide outliers</button>`;
+    }
+    return '';
+  })();
+  const _filterChips = [mineBidsChip, _outlierChip].filter(Boolean).join('');
+  const mineFilterRow = _filterChips
+    ? `<div class="market-bids-filter-row">${_filterChips}</div>`
     : '';
   // Snapshot existing bid rows + viewport positions BEFORE the rewrite
   // so we can preserve DOM identity for unchanged bid_ids (avoiding
@@ -57556,6 +57676,20 @@ async function populateMarketBidsLadder(scope, asset) {
       };
       row.addEventListener('click', _fire);
       row.addEventListener('keydown', (ev) => {
+        // Arrow navigation between adjacent focusable bid rows. Same
+        // semantics as the asks-side keydown: ArrowDown/Right → next,
+        // ArrowUp/Left → previous. Enter/Space still fires the
+        // click-to-prime flow.
+        if (ev.key === 'ArrowDown' || ev.key === 'ArrowUp'
+            || ev.key === 'ArrowRight' || ev.key === 'ArrowLeft') {
+          const sibs = Array.from(list.querySelectorAll('[data-bid-row][data-fill-aid][tabindex="0"]'));
+          const idx = sibs.indexOf(row);
+          if (idx >= 0) {
+            const dir = (ev.key === 'ArrowDown' || ev.key === 'ArrowRight') ? 1 : -1;
+            const next = sibs[idx + dir];
+            if (next) { ev.preventDefault(); next.focus(); return; }
+          }
+        }
         if (ev.key === 'Enter' || ev.key === ' ') {
           ev.preventDefault();
           _fire(ev);
@@ -57568,6 +57702,13 @@ async function populateMarketBidsLadder(scope, asset) {
     btn.onclick = () => {
       _marketMineOnlyBids = !_marketMineOnlyBids;
       _saveMarketMine(_MARKET_MINE_BIDS_KEY, _marketMineOnlyBids);
+      populateMarketBidsLadder(scope, asset);
+    };
+  });
+  list.querySelectorAll('[data-act="market-outlier-bids-toggle"]').forEach(btn => {
+    btn.onclick = () => {
+      _marketHideOutlierBids = !_marketHideOutlierBids;
+      _saveMarketHideOutlierBids(_marketHideOutlierBids);
       populateMarketBidsLadder(scope, asset);
     };
   });

@@ -3861,6 +3861,47 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
 }
 .swap-tile-strip .strip-trade.cold .strip-trade-dot { background: var(--ink-faint); }
 
+/* Mobile-only asks/bids tab toggle. On phones, stacking both ladders
+   on intent-heavy markets (26+ bid rows alone) wastes vertical space.
+   The toggle lets the user view one side at a time while keeping the
+   spread row visible between them. Desktop stays unchanged: tabs are
+   display:none and both ladder sides render together as before. */
+.orderbook-mobile-tabs { display: none; }
+@media (max-width: 520px) {
+  .orderbook-mobile-tabs {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0;
+    margin-bottom: 8px;
+    border: 1px solid var(--ink);
+    background: var(--bg);
+  }
+  .orderbook-mobile-tabs button {
+    appearance: none;
+    background: var(--bg);
+    color: var(--ink-mid);
+    border: 0;
+    padding: 8px 10px;
+    font-family: inherit;
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    cursor: pointer;
+  }
+  .orderbook-mobile-tabs button + button {
+    border-left: 1px solid var(--ink-faint);
+  }
+  .orderbook-mobile-tabs button[aria-selected="true"] {
+    background: var(--ink);
+    color: var(--bg);
+  }
+  /* Spread row stays visible (it's not inside either side wrapper).
+     Hide the inactive side entirely so only one ladder shows below. */
+  [data-orderbook-wrap][data-orderbook-active="asks"] [data-orderbook-side="bids"] { display: none; }
+  [data-orderbook-wrap][data-orderbook-active="bids"] [data-orderbook-side="asks"] { display: none; }
+}
+
 /* Swap-tile flip button. Circular toggle that overlaps the pay/receive
    cells. Desktop: 36px circle, thin ink border, no decorative shadow —
    minimal so it reads as a control without dominating the inputs.
