@@ -647,28 +647,21 @@ button.market-chip .chip-caret {
   outline-offset: -2px;
   z-index: 1;
 }
-/* Live indicator: a small pulsing dot near the orderbook header to
-   signal that auto-refresh is on. */
+/* Live indicator: static green dot near the orderbook header to
+   signal that auto-refresh is on. Pulse removed — the in-place cell
+   updates carry the liveness signal. */
 .market-live-dot {
   display: inline-block;
   width: 7px;
   height: 7px;
   border-radius: 50%;
   background: #0a8f43;
-  box-shadow: 0 0 0 0 rgba(10,143,67,0.6);
-  animation: market-live-pulse 1800ms infinite ease-out;
   vertical-align: middle;
   margin-right: 4px;
-}
-@keyframes market-live-pulse {
-  0%   { box-shadow: 0 0 0 0 rgba(10,143,67,0.55); }
-  70%  { box-shadow: 0 0 0 7px rgba(10,143,67,0); }
-  100% { box-shadow: 0 0 0 0 rgba(10,143,67,0); }
 }
 @media (prefers-reduced-motion: reduce) {
   .market-listing-tile[data-market-anim],
   [data-market-anim] { animation: none !important; }
-  .market-live-dot { animation: none !important; }
   [data-recent-activity] { animation: none !important; }
 }
 /* Recent-activity indicator on market cards/rows. The original was an
@@ -1375,20 +1368,12 @@ tr[data-recent-activity] .market-token-sub::after {
   align-items: stretch;
   margin-bottom: 14px;
 }
-/* "LIVE" status dot — gentle pulse so the orderbook reads as
-   actively updating rather than a static snapshot. 1.4s cadence
-   matches the eye's flicker-fusion threshold without distracting. */
-@keyframes market-live-pulse {
-  0%   { opacity: 1;   transform: scale(1); }
-  50%  { opacity: 0.4; transform: scale(0.85); }
-  100% { opacity: 1;   transform: scale(1); }
-}
+/* "LIVE" status dot — static green dot. Previously pulsed every 1.4s
+   which read as the most attention-grabbing thing on the page. The
+   in-place cell updates already signal liveness; the dot's job is just
+   to confirm auto-refresh is on. */
 .market-live-dot {
-  animation: market-live-pulse 1.4s ease-in-out infinite;
-  box-shadow: 0 0 0 0 rgba(10, 143, 67, 0.3);
-}
-@media (prefers-reduced-motion: reduce) {
-  .market-live-dot { animation: none; }
+  box-shadow: none;
 }
 .market-asset-detail > div:last-child {
   display: flex;
@@ -4562,7 +4547,9 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
   <button class="tab" data-tab="market" data-group="markets">Markets</button>
   <button class="tab" data-tab="discover" data-group="discover">Discover</button>
   <button class="tab" data-tab="transfer" data-group="send">Send</button>
-  <button class="tab" data-tab="etch" data-group="tools">Forge</button>
+  <button class="tab" data-tab="etch" data-group="etch">Etch</button>
+  <button class="tab" data-tab="drops" data-group="drops">Drops</button>
+  <button class="tab" data-tab="mixer" data-group="mixer">Mixer</button>
   <button class="tab" data-tab="about" data-group="protocol">Protocol</button>
 </div>
 
@@ -4576,12 +4563,6 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
   <button class="tab active" data-tab="market">Order book</button>
   <button class="tab" data-tab="pool" title="AMM swap + LP pool — unlocks after the AMM trusted setup ceremony">AMM</button>
   <button class="tab" data-tab="farms" title="LP-bond yield farms — stake LP shares to earn reward emissions">Farms</button>
-</div>
-
-<div class="tabs subtabs" data-group="tools" style="display:none;">
-  <button class="tab active" data-tab="etch">Etch</button>
-  <button class="tab" data-tab="drops">Drops</button>
-  <button class="tab" data-tab="mixer">Mixer</button>
 </div>
 
 <!-- WALLET TAB -->

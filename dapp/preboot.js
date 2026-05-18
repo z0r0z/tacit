@@ -73,7 +73,9 @@
         transfer: 'send',
         market: 'markets', pool: 'markets', farms: 'markets',
         discover: 'discover',
-        etch: 'tools', drops: 'tools', mixer: 'tools',
+        etch: 'etch',
+        drops: 'drops',
+        mixer: 'mixer',
         about: 'protocol'
       };
       var group = GROUP_OF[target] || target;
