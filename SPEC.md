@@ -63,7 +63,7 @@ and pick from the explicitly-listed free slots. The legend:
 | `0x48` | `T_SLOT_NOTE` | 🔒 reserved | `SPEC-CBTC-ZK-FUNGIBILITY-AMENDMENT.md` §5.26 | Encrypted slot note attachment. |
 | `0x49` | `T_CBTC_TAC_DEPOSIT` | ✅ shipped | `SPEC-CBTC-TAC-AMENDMENT.md` §5.36 | LP-shaped mint: cBTC.zk slot + TAC → cBTC.tac. |
 | `0x4A` | `T_CBTC_TAC_WITHDRAW` | ✅ shipped | `SPEC-CBTC-TAC-AMENDMENT.md` §5.37 | LP-shaped burn: cBTC.tac → cBTC.zk slot + TAC. |
-| `0x4B` | `T_CBTC_TAC_FORCE_CLOSE` | ✅ shipped | `SPEC-CBTC-TAC-AMENDMENT.md` §5.38 | Permissionless liquidation when bond ratio < liquidation threshold. |
+| `0x4B` | `T_CBTC_TAC_FORCE_CLOSE` | ✅ shipped (v1 early-SLASH) | `SPEC-CBTC-TAC-AMENDMENT.md` §5.38 | Permissionless early-SLASH on ratio breach: bond → insurance pool; no AMM swap / no liquidator reward in v1 (covenant-based design deferred). |
 | `0x4C` | `T_SHARE_SLASH_CLAIM` | ✅ shipped | `SPEC-CBTC-TAC-AMENDMENT.md` §5.39.4 | Optional pooled-insurance claim by a cBTC.tac holder. |
 | `0x4D` | `T_SLOT_FRACTIONALIZE` | 🔒 reserved | `SPEC-CBTC-ZK-AMOUNT-AMENDMENT.md` §5.25 | Slot → standard tacit shares. Reserved for future activation. |
 | `0x4E` | `T_SLOT_RECONSOLIDATE` | 🔒 reserved | `SPEC-CBTC-ZK-AMOUNT-AMENDMENT.md` §5.26 | Standard tacit shares → slot. Reserved for future activation. |

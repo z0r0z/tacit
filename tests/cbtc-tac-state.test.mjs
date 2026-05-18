@@ -738,6 +738,199 @@ group('ctacVariantAssetId (per-denomination tier asset_id)');
     a1.length === 64 && /^[0-9a-f]{64}$/.test(a1));
 }
 
+// ============== group: aggregate-bonded counters (§5.41.2 cap inputs) ==============
+group('Aggregate bonded counters');
+
+{
+  const env6 = { REGISTRY_KV: makeMockKv() };
+  ok('total bonded sats starts at 0',
+    (await worker.ctacGetTotalBondedSats(env6, network)) === 0n);
+  ok('total bonded TAC starts at 0',
+    (await worker.ctacGetTotalBondedTac(env6, network)) === 0n);
+
+  await worker.ctacAddTotalBondedSats(env6, network, 100_000_000n);
+  await worker.ctacAddTotalBondedTac(env6, network, 200_000_000_000n);
+  ok('add 100M sats → total = 100M',
+    (await worker.ctacGetTotalBondedSats(env6, network)) === 100_000_000n);
+  ok('add 200B TAC → total = 200B',
+    (await worker.ctacGetTotalBondedTac(env6, network)) === 200_000_000_000n);
+
+  // Underflow clamps to 0 rather than going negative.
+  await worker.ctacAddTotalBondedSats(env6, network, -500_000_000n);
+  ok('decrement past 0 clamps to 0',
+    (await worker.ctacGetTotalBondedSats(env6, network)) === 0n);
+}
+
+// ============== group: §5.45.1 stability fee accrual ==============
+group('Stability fee lazy accrual');
+
+{
+  // 0.25% APR × 52596 blocks/year × 200B TAC bond × 52596 blocks elapsed (1 year)
+  //   = 200B × 25 / 10000 = 500M TAC.
+  const pos = {
+    bond_amount_tac: '200000000000',
+    deposit_height: 1000,
+    last_fee_event_height: 1000,
+  };
+  const accrued = worker.ctacAccrueStabilityFee(pos, 1000 + worker.CTAC_BLOCKS_PER_YEAR);
+  ok('1-year accrual ≈ 25 bps of bond',
+    accrued === 500_000_000n,
+    `expected 500000000, got ${accrued}`);
+  ok('position bond reduced by accrued amount',
+    BigInt(pos.bond_amount_tac) === 200_000_000_000n - 500_000_000n);
+  ok('last_fee_event_height advanced',
+    pos.last_fee_event_height === 1000 + worker.CTAC_BLOCKS_PER_YEAR);
+}
+
+{
+  // Idempotent: calling twice at the same height accrues nothing the second
+  // time (elapsed = 0).
+  const pos = {
+    bond_amount_tac: '100000000000',
+    deposit_height: 500,
+    last_fee_event_height: 500,
+  };
+  const a1 = worker.ctacAccrueStabilityFee(pos, 500 + 1000);
+  const a2 = worker.ctacAccrueStabilityFee(pos, 500 + 1000);
+  ok('first call accrues some TAC', a1 > 0n);
+  ok('second call at same height accrues 0', a2 === 0n);
+}
+
+{
+  // Zero-bond position: returns 0 but advances anchor (no math on empty bond).
+  const pos = { bond_amount_tac: '0', deposit_height: 100, last_fee_event_height: 100 };
+  const a = worker.ctacAccrueStabilityFee(pos, 200);
+  ok('zero bond → accrues 0', a === 0n);
+  ok('zero bond → anchor still advances', pos.last_fee_event_height === 200);
+}
+
+{
+  // Falls back to deposit_height if last_fee_event_height is missing
+  // (handles positions created before the §5.45.1 schema addition).
+  const pos = { bond_amount_tac: '200000000000', deposit_height: 1000 };
+  const accrued = worker.ctacAccrueStabilityFee(pos, 1000 + worker.CTAC_BLOCKS_PER_YEAR);
+  ok('missing last_fee_event_height → falls back to deposit_height',
+    accrued === 500_000_000n);
+}
+
+// ============== group: ctacCanonicalTacPoolTacReserve ==============
+group('Canonical TAC pool depth lookup (§5.41.2)');
+
+{
+  const env7 = { REGISTRY_KV: makeMockKv() };
+  const TAC_AID = 'dd' + '0'.repeat(62);
+  globalThis.TAC_ASSET_ID_HEX = TAC_AID;
+
+  // No pools yet → null
+  const r0 = await worker.ctacCanonicalTacPoolTacReserve(env7, network);
+  ok('no pools → null', r0 === null);
+
+  // Three pools: pool1 has TAC as asset_a, pool2 has TAC as asset_b, pool3 has no TAC.
+  await env7.REGISTRY_KV.put('ammpool:pool1', JSON.stringify({
+    asset_a: TAC_AID, asset_b: 'aa' + '0'.repeat(62),
+    reserve_a: '1000000000', reserve_b: '5000',
+  }));
+  await env7.REGISTRY_KV.put('ammpool:pool2', JSON.stringify({
+    asset_a: 'bb' + '0'.repeat(62), asset_b: TAC_AID,
+    reserve_a: '3000', reserve_b: '5000000000',  // deeper pool
+  }));
+  await env7.REGISTRY_KV.put('ammpool:pool3', JSON.stringify({
+    asset_a: 'cc' + '0'.repeat(62), asset_b: 'ee' + '0'.repeat(62),
+    reserve_a: '999999', reserve_b: '999999',
+  }));
+
+  const r1 = await worker.ctacCanonicalTacPoolTacReserve(env7, network);
+  ok('picks deepest TAC reserve across pools',
+    r1 === 5_000_000_000n, `expected 5e9, got ${r1}`);
+}
+
+// ============== group: §5.45.3 aggregate recovery pause ==============
+group('Aggregate recovery mode (§5.45.3)');
+
+{
+  const env8 = { REGISTRY_KV: makeMockKv() };
+  const TAC_AID = 'ee' + '0'.repeat(62);
+  globalThis.TAC_ASSET_ID_HEX = TAC_AID;
+  const now = Math.floor(Date.now() / 1000);
+  // Seed a stable TWAP at price_sats = 100 (i.e. 100 sats per TAC unit)
+  for (let i = 0; i < 30; i++) {
+    await env8.REGISTRY_KV.put(
+      `trade-event:${TAC_AID}:h${i}`,
+      JSON.stringify({ ts: now - i * 600, price_sats: 100 }),
+    );
+  }
+
+  // Case A: aggregate_ratio above 1.5x → no pause.
+  // bondedTac × 1e8 / twap / supply must be > 1.5 (in thousandths > 1500).
+  // Pick bondedTac = 2_000_000_000, twap = 100, supply = 100_000_000:
+  //   value_sats = bondedTac × 1e8 / twap = 2e9 × 1e8 / 100 = 2e15
+  //   ratio = 2e15 × 1000 / 1e8 = 2e10 thousandths ... way too high.
+  // The price_sats=100 makes math unrealistic — TAC is "worth more than BTC".
+  // Use a more realistic TAC/BTC: 1 BTC = 1_000_000 TAC means twap=100 (100 sats per
+  // 1 TAC unit, so 1 BTC = 100M sats / 100 sats/TAC = 1M TAC).
+  // bond = 200_000_000 TAC, supply = 100_000_000 sats (1 BTC).
+  //   bond value sats = 200M × 1e8 / 100 = 2e14 ... no.
+  // Wait — ctacBondRatioThousandths: (bond * 1e8 * 1000) / (twap * denom).
+  // For supply=1e8, bond=200M, twap=100:
+  //   ratio_thousandths = 200M × 1e8 × 1000 / (100 × 1e8) = 200M × 1000 / 100 = 2_000_000_000
+  // That's a ratio of 2_000_000 — completely off from "2x".
+  // The formula's units only work when bond_amount_TAC is the RAW TAC INTEGER
+  // (no decimals), and twap is "sats per 1 whole TAC". Then for 2x:
+  //   1_000_000 TAC bond × 1e8 / (100 × 1e8) = 1e6 / 100 = 10_000? still off.
+  // Actually the formula matches its own usage. Let's just feed values that satisfy:
+  //   ratio_thousandths_target = (bondedTac × 1e8 × 1000) / (twap × supply)
+  // Targeting 2000 (2.0x) with twap=100, supply=1e8:
+  //   bondedTac = 2000 × 100 × 1e8 / (1e8 × 1000) = 200
+  // Sub-satoshi values. Use twap=100M instead (so 1 TAC = 1 sat):
+  //   bondedTac = 2000 × 100M × 1e8 / (1e8 × 1000) = 200_000_000 TAC for 2x → 1 BTC supply.
+  await env8.REGISTRY_KV.delete(...[]); // (noop placeholder)
+
+  // Reseed at twap=100M sats/TAC (i.e. 1 TAC = 1 BTC — unrealistic but lets us
+  // pick clean integer test values).
+  for (let i = 0; i < 30; i++) {
+    await env8.REGISTRY_KV.put(
+      `trade-event:${TAC_AID}:h${i}`,
+      JSON.stringify({ ts: now - i * 600, price_sats: 100_000_000 }),
+    );
+  }
+  // Healthy: bond = 200M, supply = 100M → ratio = (200M × 1e8 × 1000) / (1e8 × 1e8) = 2000 = 2.0x
+  await worker.ctacAddTotalBondedTac(env8, network, 200_000_000n);
+  await worker.ctacAddSupply(env8, network, 100_000_000n);
+  const rA = await worker.ctacComputePauseStatus(env8, network, 1000, { tacAssetIdHex: TAC_AID });
+  ok('aggregate ratio 2.0x → no pause', rA === null,
+    `expected null, got ${rA}`);
+
+  // Drop bond to push ratio below 1.5x. bond = 140M → ratio = 1400 (1.4x).
+  await worker.ctacAddTotalBondedTac(env8, network, -60_000_000n);
+  const rB = await worker.ctacComputePauseStatus(env8, network, 1000, { tacAssetIdHex: TAC_AID });
+  ok('aggregate ratio 1.4x → aggregate_recovery', rB === 'aggregate_recovery',
+    `expected aggregate_recovery, got ${rB}`);
+
+  // Empty system (no bonded TAC) → no recovery pause (ratio undefined).
+  const env9 = { REGISTRY_KV: makeMockKv() };
+  for (let i = 0; i < 30; i++) {
+    await env9.REGISTRY_KV.put(
+      `trade-event:${TAC_AID}:h${i}`,
+      JSON.stringify({ ts: now - i * 600, price_sats: 100_000_000 }),
+    );
+  }
+  const rC = await worker.ctacComputePauseStatus(env9, network, 1000, { tacAssetIdHex: TAC_AID });
+  ok('zero bonded TAC → no recovery pause', rC === null,
+    `expected null, got ${rC}`);
+}
+
+// ============== group: constants exposed ==============
+group('v1 constants exported');
+
+ok('CTAC_AGGREGATE_RECOVERY_RATIO_THOUSANDTHS = 1500',
+  worker.CTAC_AGGREGATE_RECOVERY_RATIO_THOUSANDTHS === 1500);
+ok('CTAC_MAX_POOL_FRAC_THOUSANDTHS = 100 (10%)',
+  worker.CTAC_MAX_POOL_FRAC_THOUSANDTHS === 100);
+ok('CTAC_STABILITY_FEE_BPS = 25 (0.25% APR)',
+  worker.CTAC_STABILITY_FEE_BPS === 25);
+ok('CTAC_BLOCKS_PER_YEAR = 52596',
+  worker.CTAC_BLOCKS_PER_YEAR === 52596);
+
 // ============== summary ==============
 console.log(`\n${pass}/${pass + fail} passed`);
 if (fail > 0) process.exit(1);

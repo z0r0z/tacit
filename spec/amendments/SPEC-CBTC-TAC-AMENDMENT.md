@@ -546,6 +546,39 @@ the depositor; secondary holders trade through markets.
 
 ## §5.38 T_CBTC_TAC_FORCE_CLOSE — automatic liquidation
 
+> **v1 amendment — early-SLASH semantics.** The mechanism described
+> below (paired TAC→cBTC.zk AMM swap, protocol-owned
+> `redemption_reserve_BTC` UTXO, 50 bps liquidator reward, paired
+> WITHDRAW that draws from the reserve) requires Bitcoin script
+> primitives (covenants / OP_CAT) that are not deployed on mainnet.
+> Every covenant-free realisation either reduces to a federated signer
+> or lets a griefer steal the reserve.
+>
+> **v1 redefines T_CBTC_TAC_FORCE_CLOSE as a permissionless EARLY SLASH
+> on ratio breach:** when `current_ratio < LIQUIDATION_RATIO` at confirm
+> time, the bond TAC moves to the existing pooled insurance reserve
+> (same path as `SLASH_DETECTED`, §5.39), the position transitions to
+> `force-slashed`, and cBTC.tac holders are made whole via
+> `T_SHARE_SLASH_CLAIM` (§5.39.4). The depositor's `K_btc` is never
+> touched by the protocol — they retain custody. `cBTC.tac` supply is
+> NOT debited; the outstanding shares represent a pro-rata claim on the
+> augmented insurance pool.
+>
+> **No liquidator reward in v1** — cBTC.tac holders' own interest in
+> securing their backing is the implicit incentive. The
+> `liquidator_payout_pk` and `amm_swap_min_BTC_out` envelope fields are
+> reserved (committed in `bind_hash`) but have no on-chain effect.
+>
+> **Redemption_reserve_BTC** is therefore unused in v1. §5.38.5
+> (post-force-close redemption via reserve draw) does not apply —
+> holders against `force-slashed` positions use `T_SHARE_SLASH_CLAIM`
+> instead, identical to the rugged-position path.
+>
+> The validator-algorithm pseudocode in §5.38.4 below describes the
+> covenant-based design retained for the follow-up amendment when
+> trustless protocol-owned UTXOs become possible. The shipped v1
+> behaviour is summarised above.
+
 ### 5.38.1 Trigger condition
 
 When `position[L].current_ratio < LIQUIDATION_RATIO`, anyone may
