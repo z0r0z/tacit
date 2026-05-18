@@ -52970,6 +52970,9 @@ function _renderGlobalTape() {
       unit: u,
       ts,
       tickDir,
+      amt,           // BigInt trade amount in base units
+      dec,           // asset decimals (for compact display)
+      priceSats: Number(lt.price_sats || 0),  // total sats of the fill
     });
   }
   if (items.length === 0) { root.style.display = 'none'; return; }
@@ -52979,7 +52982,7 @@ function _renderGlobalTape() {
   // Prevents the marquee from resetting its scroll position on every
   // tick — without this, the auto-scroll animation visibly jumps back
   // to start every 15s.
-  const sig = top.map(t => `${t.aid}:${t.unit.toFixed(4)}:${t.ts}`).join('|');
+  const sig = top.map(t => `${t.aid}:${t.unit.toFixed(4)}:${t.ts}:${t.amt}`).join('|');
   if (sig === _globalTapeLastSig && root.style.display !== 'none') return;
   _globalTapeLastSig = sig;
   const ageShort = (ts) => {
@@ -52993,7 +52996,27 @@ function _renderGlobalTape() {
     const tickGlyph = t.tickDir === 'up' ? '↑' : t.tickDir === 'down' ? '↓' : '·';
     const safeAid = /^[0-9a-f]{64}$/i.test(t.aid || '') ? t.aid : '';
     const href = safeAid ? `#tab=market&aid=${escapeHtml(safeAid)}` : '#tab=market';
-    return `<a class="global-tape-item ${t.tickDir}" href="${href}" title="${escapeHtml(t.ticker)} last trade ${fmtUnitPriceSats(t.unit)} sats/${escapeHtml(t.ticker)} · ${ageShort(t.ts)} ago"><span class="gt-ticker">${escapeHtml(t.ticker)}</span><span class="gt-tick">${tickGlyph}</span><span class="gt-price">${fmtUnitPriceSats(t.unit)}</span><span class="gt-age">${ageShort(t.ts)}</span></a>`;
+    const amtStr = fmtAssetAmountCompact(t.amt, t.dec);
+    const dirLabel = t.tickDir === 'up' ? 'up vs prior fill'
+                   : t.tickDir === 'down' ? 'down vs prior fill'
+                   : 'no prior fill to compare';
+    const tip = `${t.ticker} · last fill ${fmtUnitPriceSats(t.unit)} sats/${t.ticker} · `
+              + `size ${amtStr} ${t.ticker} (~${t.priceSats.toLocaleString('en-US')} sats total) · `
+              + `${dirLabel} · ${ageShort(t.ts)} ago. Click → asset market page.`;
+    // Layout: TICKER  ↑  230 sats  × 5K  · 3m
+    //         (asset) (tick) (price) (size) (age)
+    // "sats" suffix makes the unit explicit (was just "230" before).
+    // "× 5K" shows trade size — fills the "buy or sell, how much?"
+    // question. Direction is via the ↑/↓ tick (price moved up/down
+    // vs prior fill); a literal buy/sell tag isn't available per-
+    // trade since every settled fill has both sides.
+    return `<a class="global-tape-item ${t.tickDir}" href="${href}" title="${escapeHtml(tip)}">`
+         + `<span class="gt-ticker">${escapeHtml(t.ticker)}</span>`
+         + `<span class="gt-tick">${tickGlyph}</span>`
+         + `<span class="gt-price">${fmtUnitPriceSats(t.unit)}<span class="gt-unit"> sats</span></span>`
+         + `<span class="gt-size">× ${escapeHtml(amtStr)}</span>`
+         + `<span class="gt-age">${ageShort(t.ts)} ago</span>`
+         + `</a>`;
   };
   const itemsHtml = top.map(buildItem).join('');
   // Duplicate the items so the CSS keyframe animating from translateX(0)
