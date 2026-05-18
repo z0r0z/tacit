@@ -59799,6 +59799,22 @@ function renderMarketPriceChartSVG(trades, ticker, decimals, markUnit = null) {
     for (const p of points) { if (p.u < minU) minU = p.u; if (p.u > maxU) maxU = p.u; }
   }
   if (minU === maxU) { minU = Math.max(1e-9, minU * 0.95); maxU = maxU * 1.05 || 1; }
+  // Trade range for the chart header — actual lowest/highest in-band
+  // trade prices, NOT the y-axis bounds (which add 8% padding above
+  // and below). Previously the header read "27 – 357" when the y-axis
+  // happened to pad down to 27 below the lowest in-band trade ~30,
+  // misleading the user into thinking there was a 27-sats trade
+  // (the 27 was empty plot padding). Now reads the real trade
+  // extremes from in-band points; falls back to all-points when
+  // in-band is empty.
+  let _inBandTradeLo = Infinity, _inBandTradeHi = -Infinity;
+  const _tradeRangeSrc = inBandPts.length >= 1 ? inBandPts : points;
+  for (const p of _tradeRangeSrc) {
+    if (p.u < _inBandTradeLo) _inBandTradeLo = p.u;
+    if (p.u > _inBandTradeHi) _inBandTradeHi = p.u;
+  }
+  if (!Number.isFinite(_inBandTradeLo)) _inBandTradeLo = minU;
+  if (!Number.isFinite(_inBandTradeHi)) _inBandTradeHi = maxU;
   const isLog = (minU > 0) && (maxU / minU > 50);
   let yLo, yHi, ySpan, yOf;
   if (isLog) {
@@ -59955,7 +59971,16 @@ function renderMarketPriceChartSVG(trades, ticker, decimals, markUnit = null) {
     }
     return parts.join(' ');
   };
-  const linePath = _smoothPath(points);
+  // Line + area paths follow IN-BAND points only — without this the
+  // trace dips through outlier dust trades (e.g. a 27 sats/TAC dust
+  // take on a market where mark is ~180), producing tall downward
+  // spikes that misrepresent the trading band. Outliers still render
+  // as discrete faded amber dots via the dots loop (clamped to the
+  // plot edge via yOfClamped) so the user can spot them; the trace
+  // stays smooth and honest. Falls back to all points when there
+  // aren't enough in-band trades for a usable curve (≥2 required).
+  const _linePts = (inBandPts.length >= 2) ? inBandPts : points;
+  const linePath = _smoothPath(_linePts);
   const areaPath = linePath
     ? `${linePath} L ${xOf(tsN).toFixed(2)} ${(PT + plotH).toFixed(2)} L ${xOf(ts0).toFixed(2)} ${(PT + plotH).toFixed(2)} Z`
     : '';
@@ -60104,7 +60129,7 @@ function renderMarketPriceChartSVG(trades, ticker, decimals, markUnit = null) {
   return `
     <div style="margin-bottom:6px;display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;">
       <span style="font-family:var(--serif);font-style:italic;font-size:18px;line-height:1;letter-spacing:-0.005em;">Price history</span>${_logBadge}
-      <span class="muted" style="font-size:10px;letter-spacing:0;">${points.length} trades &middot; ${escapeHtml(fmtUnitPriceSats(yLo))}${yLo !== yHi ? ` – ${escapeHtml(fmtUnitPriceSats(yHi))}` : ''} sats/${escapeHtml(ticker)}${outlierCount > 0 ? ` &middot; <span style="color:#b8651d;" title="Trades priced &lt;0.2× or &gt;5× of mark price — typically fat-finger fills or dust takes. Shown as small faded amber dots so the eye can spot anomalies without them dominating the in-band trend.">${outlierCount} outlier${outlierCount === 1 ? '' : 's'} flagged</span>` : ''}</span>
+      <span class="muted" style="font-size:10px;letter-spacing:0;">${points.length} trades &middot; ${escapeHtml(fmtUnitPriceSats(_inBandTradeLo))}${_inBandTradeLo !== _inBandTradeHi ? ` – ${escapeHtml(fmtUnitPriceSats(_inBandTradeHi))}` : ''} sats/${escapeHtml(ticker)}${outlierCount > 0 ? ` &middot; <span style="color:#b8651d;" title="Trades priced &lt;0.2× or &gt;5× of mark price — typically fat-finger fills or dust takes. Shown as small faded amber dots so the eye can spot anomalies without them dominating the in-band trend.">${outlierCount} outlier${outlierCount === 1 ? '' : 's'} flagged</span>` : ''}</span>
     </div>
     <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet" data-chart-svg data-cursor-points="${cursorDataAttr}" data-plot-pl="${PL}" data-plot-pr="${PR}" data-plot-pt="${PT}" data-plot-pb="${PB}" data-plot-w="${W}" data-plot-h="${H}" data-ticker="${escapeHtml(ticker)}" style="width:100%;height:auto;max-height:300px;display:block;background:var(--bg-warm, #faf9f5);border:1px solid var(--ink-faint);cursor:crosshair;">
       <defs>
@@ -60880,8 +60905,19 @@ async function populateMarketAssetStats(scope, asset) {
     const _paintChart = () => {
       const tf = _loadChartTimeFrame();
       const tradesForTf = _filterTradesByTimeFrame(trades, tf);
+      // Signature gate: skip the SVG rewrite when the underlying data
+      // hasn't changed. The 15s auto-refresh tick would otherwise rebuild
+      // the SVG every cycle even when the trades ring + mark + time-
+      // frame are byte-identical to the last paint — triggering the
+      // morph animation on identical paths, which the user perceives
+      // as flickering. Sig covers tf + mark + (ts, price_sats, amount)
+      // per trade so any real change still busts the cache.
+      const _chartSig = `${tf}:${_markForChart}:` + tradesForTf.map(t =>
+        `${t.ts}|${t.price_sats}|${t.amount}`).join(',');
+      if (chartEl.dataset.chartSig === _chartSig) return;
       const chartHtml = renderMarketPriceChartSVG(tradesForTf, ticker, decimals, Number.isFinite(_markForChart) && _markForChart > 0 ? _markForChart : null);
       if (chartHtml) {
+        chartEl.dataset.chartSig = _chartSig;
         const _oldLineD = chartEl.querySelector('[data-chart-line]')?.getAttribute('d') || null;
         const _oldAreaD = chartEl.querySelector('[data-chart-area]')?.getAttribute('d') || null;
         chartEl.innerHTML = chartHtml;
@@ -61761,6 +61797,16 @@ async function _populateDepthChart(section, aid, decimals, ticker, markUnit) {
   const _inBandTitle = (inBandBestBid != null || inBandBestAsk != null)
     ? `In-band (0.2×–5× mark) — dust outliers excluded. Raw best bid ${fmtUnitPriceSats(bestBid)}, raw best ask ${fmtUnitPriceSats(bestAsk)} sats/${ticker}.`
     : '';
+  // Signature gate: skip the SVG rewrite when nothing material has
+  // changed since the last paint. Without this the 15s auto-refresh
+  // tick rebuilds the depth chart every cycle, triggering the path
+  // morph animation on identical-d paths — the user perceives this
+  // as flickering even though the chart is visually unchanged. Sig
+  // covers the in-band best bid + ask, cumulative depth totals, mark,
+  // and crossed state — anything that would change the visible chart.
+  const _depthSig = `${headerBestBid}|${headerBestAsk}|${cumA}|${cumB}|${markUnit}|${isCrossed ? 1 : 0}|${asks.length}|${bids.length}`;
+  if (out.dataset.depthSig === _depthSig) return;
+  out.dataset.depthSig = _depthSig;
   // Capture old bid + ask path `d` attributes before the swap so the
   // post-write WAAPI animation can morph them into place.
   const _oldDepthBidD = out.querySelector('[data-depth-bid]')?.getAttribute('d') || null;
