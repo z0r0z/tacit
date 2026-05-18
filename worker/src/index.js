@@ -11573,7 +11573,11 @@ async function handleListingPost(assetIdHex, req, env, network, cors) {
     listed_at: now,
     network,
   };
-  await env.REGISTRY_KV.put(listingKey(network, assetIdHex, txidHex, vout), JSON.stringify(listing));
+  await env.REGISTRY_KV.put(
+    listingKey(network, assetIdHex, txidHex, vout),
+    JSON.stringify(listing),
+    { expirationTtl: _ttlFromExpiry(expiryRaw) },
+  );
   return jsonResponse({ ok: true, listing }, 200, cors);
 }
 
@@ -11617,6 +11621,34 @@ const CLAIM_TTL_SECONDS = 5 * 60;
 // behind their own SIGHASH_ALL signature so this doesn't risk anyone's funds;
 // it just frees the marketplace slot.
 const FULFILMENT_TTL_SECONDS = 24 * 3600;
+
+// ============== Marketplace record auto-expiry ==============
+// Marketplace records (listings, range-listings, atomic-intents,
+// preauth-sales, bid-intents) carry an `expiry` field but were
+// historically written WITHOUT a KV expirationTtl, so expired records
+// accumulated indefinitely in storage. Readers already filter
+// `expired=true` at decoration time so consumers don't see stale rows,
+// but KV storage was billed forever. Writing with expirationTtl =
+// (expiry - now) + grace causes KV to auto-evict the record some
+// time after expiry, capping storage growth.
+//
+// GRACE is 7 days — long enough for the cron + post-fill sweep paths
+// to still observe an expired record (e.g. for auto-prune of orphaned
+// outpoint reverse-indexes, abandoned-claim re-credit, audit log
+// reconciliation), short enough that storage doesn't bloat
+// indefinitely. Outpoint reverse-indexes inherit the same TTL so
+// they don't outlive the record they point at.
+//
+// KV's expirationTtl floor is 60s; we clamp to that minimum so a
+// post-expiry republish (e.g. cron writing back to an already-expired
+// bid in the partial-claim re-credit path) doesn't 400 the put.
+const MARKETPLACE_RECORD_EXPIRY_GRACE_SEC = 7 * 24 * 3600;
+function _ttlFromExpiry(expiryRaw, graceSec) {
+  const grace = (typeof graceSec === 'number' && graceSec >= 0) ? graceSec : MARKETPLACE_RECORD_EXPIRY_GRACE_SEC;
+  const now = Math.floor(Date.now() / 1000);
+  const remaining = (Number(expiryRaw) || 0) - now + grace;
+  return Math.max(60, remaining);
+}
 
 function claimMsg(assetIdHex, txidHex, vout, takerPubHex) {
   const txidBE = reverseBytes(hexToBytes(txidHex));
@@ -11855,7 +11887,11 @@ async function handleRangeListingPost(assetIdHex, req, env, network, cors) {
     listed_at: now,
     network,
   };
-  await env.REGISTRY_KV.put(rangeListingKey(network, assetIdHex, ownerPubHex), JSON.stringify(listing));
+  await env.REGISTRY_KV.put(
+    rangeListingKey(network, assetIdHex, ownerPubHex),
+    JSON.stringify(listing),
+    { expirationTtl: _ttlFromExpiry(expiryRaw) },
+  );
   return jsonResponse({ ok: true, listing }, 200, cors);
 }
 
@@ -12403,14 +12439,21 @@ async function _handleAtomicIntentPostVar(assetIdHex, body, env, network, cors) 
     // p2tr_spk_hex / commit_value. Per §5.7.6.1 *Commit-phase timing*, those
     // fields are populated at fulfilment time, not publish.
   };
-  await env.REGISTRY_KV.put(atomicIntentKey(network, assetIdHex, intentIdHex), JSON.stringify(intent));
+  const _intentTtl = _ttlFromExpiry(expiryRaw);
+  await env.REGISTRY_KV.put(
+    atomicIntentKey(network, assetIdHex, intentIdHex),
+    JSON.stringify(intent),
+    { expirationTtl: _intentTtl },
+  );
   // Outpoint reverse index — cron's chain backfill walks a reveal's
   // commit-tx and resolves the spent asset_utxo back to its intent
   // (and therefore its price_sats) via this entry. Idempotent under
-  // republish — the new value overwrites cleanly.
+  // republish — the new value overwrites cleanly. Inherits the parent
+  // intent's TTL so it doesn't outlive the record it indexes.
   await env.REGISTRY_KV.put(
     atomicIntentOutpointIndexKey(network, assetIdHex, assetUtxoTxid, assetUtxoVout),
     intentIdHex,
+    { expirationTtl: _intentTtl },
   );
   return jsonResponse({ ok: true, intent }, 200, cors);
 }
@@ -12876,13 +12919,20 @@ async function handleAtomicIntentPost(assetIdHex, req, env, network, cors) {
     created_at: now,
     network,
   };
-  await env.REGISTRY_KV.put(atomicIntentKey(network, assetIdHex, intentIdHex), JSON.stringify(intent));
+  const _intentTtl = _ttlFromExpiry(expiryRaw);
+  await env.REGISTRY_KV.put(
+    atomicIntentKey(network, assetIdHex, intentIdHex),
+    JSON.stringify(intent),
+    { expirationTtl: _intentTtl },
+  );
   // Outpoint reverse index — same role as in the variable-amount publish:
   // lets the cron's chain backfill resolve a reveal's commit-tx-vin back
-  // to this intent and pick up price_sats without a hint POST.
+  // to this intent and pick up price_sats without a hint POST. Inherits
+  // the parent intent's TTL.
   await env.REGISTRY_KV.put(
     atomicIntentOutpointIndexKey(network, assetIdHex, assetUtxoTxid, assetUtxoVout),
     intentIdHex,
+    { expirationTtl: _intentTtl },
   );
   return jsonResponse({ ok: true, intent }, 200, cors);
 }
@@ -13332,10 +13382,17 @@ async function handlePreauthSalePost(assetIdHex, req, env, network, cors) {
     created_at: now,
     network,
   };
-  await env.REGISTRY_KV.put(preauthSaleKey(network, assetIdHex, saleIdHex), JSON.stringify(sale));
+  const _saleTtl = _ttlFromExpiry(expiryRaw);
+  await env.REGISTRY_KV.put(
+    preauthSaleKey(network, assetIdHex, saleIdHex),
+    JSON.stringify(sale),
+    { expirationTtl: _saleTtl },
+  );
+  // Outpoint reverse index inherits the parent sale's TTL.
   await env.REGISTRY_KV.put(
     preauthOutpointIndexKey(network, assetIdHex, assetOutpointTxidHex, assetOutpointVoutRaw),
     saleIdHex,
+    { expirationTtl: _saleTtl },
   );
   return jsonResponse({ ok: true, sale }, 200, cors);
 }
@@ -14214,7 +14271,11 @@ async function handleBidIntentPost(assetIdHex, req, env, network, cors) {
     intent.min_fill_amount = minFillStr;
     intent.remaining_amount = amountStr;  // starts at full amount; decrements as fills settle
   }
-  await env.REGISTRY_KV.put(bidIntentKey(network, assetIdHex, bidIdHex), JSON.stringify(intent));
+  await env.REGISTRY_KV.put(
+    bidIntentKey(network, assetIdHex, bidIdHex),
+    JSON.stringify(intent),
+    { expirationTtl: _ttlFromExpiry(expiryRaw) },
+  );
   return jsonResponse({ ok: true, intent }, 200, cors);
 }
 
@@ -14358,7 +14419,14 @@ async function sweepBidPartialClaims(env, network) {
           if (bid.state === 'CLOSED' && newRemaining >= BigInt(bid.min_fill_amount)) {
             bid.state = 'PARTIALLY_RESERVED';
           }
-          await env.REGISTRY_KV.put(bidIntentKey(network, aid, claim.bid_id), JSON.stringify(bid));
+          // Re-write inherits the parent's expirationTtl (KV resets TTL
+          // on put). Compute from the bid's own expiry so the re-credit
+          // doesn't accidentally extend a bid that should auto-evict.
+          await env.REGISTRY_KV.put(
+            bidIntentKey(network, aid, claim.bid_id),
+            JSON.stringify(bid),
+            { expirationTtl: _ttlFromExpiry(bid.expiry) },
+          );
           refunded++;
         } catch { /* skip on parse errors */ }
       }
@@ -14527,7 +14595,13 @@ async function handleBidIntentClaim(assetIdHex, bidIdHex, req, env, network, cor
     } else if (!intent.state || intent.state === 'OPEN') {
       intent.state = survivors.length > 0 ? 'PARTIALLY_RESERVED' : 'OPEN';
     }
-    await env.REGISTRY_KV.put(bidIntentKey(network, assetIdHex, bidIdHex), JSON.stringify(intent));
+    // Preserve the bid's auto-evict horizon on the partial-claim update
+    // (KV resets TTL on put). Computed from the loaded intent's expiry.
+    await env.REGISTRY_KV.put(
+      bidIntentKey(network, assetIdHex, bidIdHex),
+      JSON.stringify(intent),
+      { expirationTtl: _ttlFromExpiry(intent.expiry) },
+    );
     if (ourEvicted) {
       return jsonResponse({
         error: 'bid remaining insufficient (lost race to concurrent fill; retry with smaller fill_amount or another bid)',
