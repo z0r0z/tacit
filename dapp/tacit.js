@@ -34766,7 +34766,23 @@ async function ceremonyVerifyChain(state, snarkjs, headZkeyBytes, onPhase) {
 }
 
 async function ceremonyContributeInBrowser(headZkeyBytes, contributorName, entropy, state, onPhase) {
-  const { snarkjs } = await import('./vendor/tacit-mixer.min.js');
+  // Snarkjs module load can fail in two distinct ways:
+  //   • Network error: CDN / asset blocked / connection dropped while
+  //     the browser was loading vendor/tacit-mixer.min.js.
+  //   • CSP block: a content blocker or strict-CSP browser extension
+  //     refused the module load.
+  // Either way, snarkjs throws a raw "Failed to load module" with no
+  // recovery guidance for the contributor. Wrap with a clear message
+  // that says what to do.
+  let snarkjs;
+  try {
+    ({ snarkjs } = await import('./vendor/tacit-mixer.min.js'));
+  } catch (e) {
+    throw new Error('Could not load the snarkjs ceremony engine in your browser. '
+      + 'Most likely cause: a content blocker / strict-CSP extension is blocking the JS module, '
+      + 'or the network dropped mid-load. Refresh the page and try again; '
+      + 'if it persists, try a different browser or disable extensions for this site.');
+  }
   // Pre-flight verify (gap #3 from security review). Catches corrupt heads
   // and gateway-substituted r1cs/ptau before we waste entropy.
   await ceremonyVerifyChain(state, snarkjs, headZkeyBytes, onPhase);
@@ -35103,6 +35119,52 @@ async function _submitAmmCeremonyContribution() {
   if (cancelBtn) cancelBtn.disabled = true;
   goBtn.textContent = 'Working…';
   progEl.style.display = 'block';
+  // Low-RAM pre-flight. AMM swap_batch contribute peak memory is roughly
+  // 95 MB zkey + 288 MB ptau + snarkjs WASM working set ≈ 500-800 MB.
+  // Phones with <4 GB device memory frequently OOM during the mix step
+  // — silently, with the tab just crashing. navigator.deviceMemory is a
+  // coarse signal (rounded to 0.25/0.5/1/2/4/8 GB and only set on
+  // Chromium); when present and < 4 GB we surface a warning so the user
+  // can switch to a laptop. Doesn't block — some phones complete fine,
+  // some 4GB+ devices fail. Informational, not gating.
+  const _deviceMem = (typeof navigator !== 'undefined' && Number(navigator.deviceMemory)) || 0;
+  if (_deviceMem > 0 && _deviceMem < 4 && target.label && /swap_batch|swap batch/i.test(target.label)) {
+    const _confirm = (typeof window !== 'undefined' && typeof window.confirm === 'function')
+      ? window.confirm(`Heads up: your device reports ~${_deviceMem}GB RAM. The swap_batch circuit needs ~500-800MB of peak memory; phones below 4GB often crash mid-contribute. The lp_add / lp_remove circuits are smaller (under 200MB) — try those instead, or come back on a laptop. Continue anyway?`)
+      : true;
+    if (!_confirm) {
+      goBtn.disabled = false;
+      if (cancelBtn) cancelBtn.disabled = false;
+      goBtn.textContent = origLabel;
+      progEl.style.display = 'none';
+      return;
+    }
+  }
+  // beforeunload + visibility guards. Contribute spans 1-5 minutes total
+  // (download + mix + upload); a stray tab close, navigation, or even an
+  // accidental refresh wastes all of that. visibilitychange surfaces a
+  // hint when the user backgrounds the tab — modern browsers throttle
+  // background JS to ~1 Hz, which won't pause snarkjs but will stall
+  // the visual progress log.
+  const _beforeUnloadHandler = (e) => {
+    e.preventDefault();
+    e.returnValue = 'Ceremony contribute in progress — leaving now wastes your entropy and ~$3 of bandwidth. Stay on the page until "Contribution landed" appears.';
+    return e.returnValue;
+  };
+  const _visHandler = () => {
+    if (typeof document === 'undefined') return;
+    if (document.hidden) {
+      _log('  ↶ tab backgrounded — browser may throttle progress updates. Mix continues but the log might freeze. Come back when done.');
+    } else {
+      _log('  ↷ tab foregrounded.');
+    }
+  };
+  if (typeof window !== 'undefined') {
+    window.addEventListener('beforeunload', _beforeUnloadHandler);
+  }
+  if (typeof document !== 'undefined') {
+    document.addEventListener('visibilitychange', _visHandler);
+  }
   // Friendlier intro. "advancing" was protocol-speak; "contributing
   // to" reads as user action. Drop the truncated circuit hash —
   // most readers don't know what to do with it, and the full hash
@@ -35300,6 +35362,12 @@ async function _submitAmmCeremonyContribution() {
     // guards against any state drift. On success the renderAmmCeremony-
     // Chip will respect the new 30-min ack and hide.
     try { renderAmmCeremonyChip(); } catch {}
+    // Detach the contribute-in-progress guards. Done in finally so they
+    // come off whether we landed, errored, or the user cancelled mid-
+    // flow. Without removal the beforeunload prompt would keep firing
+    // on any subsequent page nav for the rest of the session.
+    try { if (typeof window !== 'undefined') window.removeEventListener('beforeunload', _beforeUnloadHandler); } catch {}
+    try { if (typeof document !== 'undefined') document.removeEventListener('visibilitychange', _visHandler); } catch {}
   }
 }
 function _wireAmmCeremonyChipOnce() {
