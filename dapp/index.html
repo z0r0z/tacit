@@ -217,6 +217,24 @@ header {
   font-size: 10px;
   margin-left: 2px;
 }
+/* AMM contributors ribbon shares the global-tape skeleton but lives
+   inside a #amm-contrib-section card on the wallet lander. Slight
+   tone-down: no border-bottom (the section already has its own), and
+   highlight the user's own contribution if present. */
+#amm-contrib-section .section-body { padding: 8px 14px; }
+.global-tape-item.amm-contrib-item .gt-ticker {
+  color: var(--ink-mid);
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.global-tape-item.amm-contrib-item .gt-tick {
+  color: var(--ink-mid);
+  font-weight: 600;
+}
+.global-tape-item.amm-contrib-item.mine {
+  color: var(--orange);
+}
 .global-tape-item .gt-age {
   color: var(--ink-mid);
   font-size: 12px;
@@ -4981,6 +4999,23 @@ body.tacit-amm-ceremony-ready [data-amm-gated] { display: block; }
         <button class="filter-pill" data-lander-sort="recent" type="button" title="Newest 6 etches on this network">Recent</button>
       </div>
       <div id="recent-etches-list"><div class="skeleton compact"><div class="skeleton-row medium"></div><div class="skeleton-row short"></div><div class="skeleton-row medium"></div></div></div>
+    </div>
+  </div>
+
+  <!-- AMM ceremony contributors ribbon. Single-line marquee of the most
+       recent attestations across the three AMM Phase 2 circuits (LP add /
+       LP remove / swap batch). Hidden when the ceremony has 0 attestations
+       or is already finalized (no new contributions coming). Click any
+       entry to open the AMM ceremony drawer. Populated by
+       _renderAmmContribTape() on tab activate; module-level cache with
+       5min TTL keeps worker hits to ~1 round-trip per 5min per user
+       per active session. -->
+  <div class="section" id="amm-contrib-section" style="display:none;">
+    <div class="section-header"><span>amm ceremony contributors</span></div>
+    <div class="section-body" style="padding:0;">
+      <div id="amm-contrib-tape" class="global-tape" data-amm-contrib-tape style="display:none;margin:0;border-bottom:0;">
+        <div class="global-tape-track" data-amm-contrib-tape-track></div>
+      </div>
     </div>
   </div>
 </div>

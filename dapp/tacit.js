@@ -7767,10 +7767,72 @@ const CBTC_TAC_WITHDRAW_DOMAIN    = new TextEncoder().encode('tacit-cbtc-tac-wit
 const CBTC_TAC_FORCE_CLOSE_DOMAIN = new TextEncoder().encode('tacit-cbtc-tac-force-close-v1');
 const SHARE_SLASH_CLAIM_DOMAIN    = new TextEncoder().encode('tacit-share-slash-claim-v1');
 
-// SPEC §5.36.3 bind_hash.
+// SPEC-CBTC-TAC-AMENDMENT §5.36.7 — blinded-pubkey recovery commit.
+//
+// Construction: `commit = wallet.pub + blinding · G` where
+// `blinding = HMAC-SHA256(wallet.priv, domain || network_tag || target_leaf_hash) mod SECP_N`.
+//
+// The commit is a BIP-340 / Taproot tweak: it serves as BOTH the Schnorr
+// verification key for any depositor sigs across §5.36–§5.51 AND the
+// P2TR output key for protocol-emitted payouts (bond return, insurance
+// claim, force-close settlement) to the depositor. The cleartext recovery
+// pubkey NEVER appears on chain. Cross-deposit clustering by repeated
+// pubkey is structurally impossible — every deposit derives a fresh
+// blinding from its own `target_leaf_hash`.
+//
+// Recovery from seed: given `wallet.priv` and `target_leaf_hash` (the
+// latter readable from the on-chain T_CBTC_TAC_DEPOSIT envelope), the
+// depositor re-derives `blinding` deterministically and recovers the
+// tweaked secret `(wallet.priv + blinding) mod SECP_N` for spending
+// any UTXO paid to `P2TR(x_only(commit))`.
+const CBTC_TAC_RECOVERY_BLINDING_DOMAIN =
+  new TextEncoder().encode('tacit-cbtc-tac-recovery-blinding-v1');
+
+function deriveCbtcTacRecoveryBlinding(walletPriv32, networkTag, targetLeafHash) {
+  if (!(walletPriv32 instanceof Uint8Array) || walletPriv32.length !== 32) {
+    throw new Error('deriveCbtcTacRecoveryBlinding: walletPriv32 must be 32 bytes');
+  }
+  if (!(targetLeafHash instanceof Uint8Array) || targetLeafHash.length !== 32) {
+    throw new Error('deriveCbtcTacRecoveryBlinding: targetLeafHash must be 32 bytes');
+  }
+  const mac = hmac(sha256, walletPriv32, concatBytes(
+    CBTC_TAC_RECOVERY_BLINDING_DOMAIN,
+    new Uint8Array([networkTag & 0xff]),
+    targetLeafHash,
+  ));
+  const b = bytes32ToBigint(mac) % SECP_N;
+  if (b === 0n) {
+    throw new Error('cbtc-tac recovery blinding derived zero (statistically impossible)');
+  }
+  return b;
+}
+
+function deriveCbtcTacRecoveryCommit(walletPriv32, walletPub33, networkTag, targetLeafHash) {
+  if (!(walletPub33 instanceof Uint8Array) || walletPub33.length !== 33) {
+    throw new Error('deriveCbtcTacRecoveryCommit: walletPub33 must be 33 bytes');
+  }
+  const b = deriveCbtcTacRecoveryBlinding(walletPriv32, networkTag, targetLeafHash);
+  const innerPt = secp.ProjectivePoint.fromHex(bytesToHex(walletPub33));
+  const commitPt = innerPt.add(G.multiply(b));
+  return commitPt.toRawBytes(true);
+}
+
+function deriveCbtcTacRecoveryTweakedSk(walletPriv32, networkTag, targetLeafHash) {
+  const b = deriveCbtcTacRecoveryBlinding(walletPriv32, networkTag, targetLeafHash);
+  const d = bytes32ToBigint(walletPriv32);
+  if (d <= 0n || d >= SECP_N) throw new Error('wallet priv scalar out of secp range');
+  const tweaked = (d + b) % SECP_N;
+  if (tweaked === 0n) {
+    throw new Error('cbtc-tac tweaked secret derived zero (statistically impossible)');
+  }
+  return bigintToBytes32(tweaked);
+}
+
+// SPEC §5.36.3 bind_hash. `depositorRecoveryCommit` is the blinded-pubkey
+// commit per §5.36.7 (replaces the round-1 `depositorRecoveryPk` field).
 function computeCbtcTacDepositBindHash({
   networkTag, targetLeafHash, slotDenomSats, bondAmountTAC,
-  bondSourceOutpoint, bondCommit, depositorRecoveryPk, mintAmount, mintRecipientCommit,
+  bondSourceOutpoint, bondCommit, depositorRecoveryCommit, mintAmount, mintRecipientCommit,
 }) {
   const denomLE = new Uint8Array(8);
   { const v = new DataView(denomLE.buffer); const d = BigInt(slotDenomSats);
@@ -7784,7 +7846,7 @@ function computeCbtcTacDepositBindHash({
   return sha256(concatBytes(
     CBTC_TAC_DEPOSIT_DOMAIN, new Uint8Array([networkTag & 0xff]),
     targetLeafHash, denomLE, bondLE, bondSourceOutpoint, bondCommit,
-    depositorRecoveryPk, mintLE, mintRecipientCommit,
+    depositorRecoveryCommit, mintLE, mintRecipientCommit,
   ));
 }
 
@@ -35620,7 +35682,7 @@ function _activateTab(name) {
   if (panel) panel.classList.add('active');
   _syncTabChromeFor(name);
   _writeTabHash(name);
-  if (name === 'wallet') { refreshWallet(); renderRecentEtches(); }
+  if (name === 'wallet') { refreshWallet(); renderRecentEtches(); try { _renderAmmContribTape(); } catch {} }
   if (name === 'holdings') { renderHoldings(); renderOffers(); renderActivity(); }
   else stopHoldingsAutoRefresh();
   if (name === 'transfer') { refreshAssetSelect(); refreshRecipientRecents(); updateDerivedAddressHint(); refreshSatsSendBalance(); }
@@ -53025,6 +53087,108 @@ function _renderGlobalTape() {
   track.innerHTML = itemsHtml + itemsHtml;
   root.style.display = '';
 }
+// AMM ceremony contributors tape. Single-line marquee of recent
+// attestations across the three Phase 2 circuits (LP add / LP remove /
+// swap batch). Cached aggressively — Cloudflare worker hits to
+// /ceremony/<hash>/attestations are once per 5 min per active session
+// regardless of how often this function runs. Hidden when the ceremony
+// has no attestations OR is already finalized (no new contributions
+// coming, so the strip is just noise).
+const AMM_CONTRIB_TAPE_TTL_MS = 5 * 60 * 1000;
+const AMM_CONTRIB_TAPE_LIMIT = 30;
+let _ammContribCache = { ts: 0, items: null, inflight: null };
+let _ammContribLastSig = '';
+async function _fetchAmmContribAttestations(force = false) {
+  if (!force && _ammContribCache.items && (Date.now() - _ammContribCache.ts) < AMM_CONTRIB_TAPE_TTL_MS) {
+    return _ammContribCache.items;
+  }
+  if (_ammContribCache.inflight) return _ammContribCache.inflight;
+  _ammContribCache.inflight = (async () => {
+    // Fetch all three circuits in parallel. Each endpoint caps at 100
+    // attestations; we keep the latest ~10 per circuit which is plenty
+    // for a marquee. ceremonyFetchAttestations swallows its own errors
+    // and returns [] on failure so a single failing circuit doesn't
+    // poison the whole tape.
+    const results = await Promise.all(AMM_CEREMONY_CIRCUIT_HASHES.map(async (c) => {
+      const list = await ceremonyFetchAttestations(c.hash);
+      return list.slice(0, 10).map(a => ({ ...a, _circuitLabel: c.label, _circuitKey: c.key, _circuitHash: c.hash }));
+    }));
+    const merged = [];
+    for (const arr of results) for (const a of arr) merged.push(a);
+    // Sort by index desc within each circuit — without a per-attestation
+    // timestamp we can't cross-circuit time-sort, so interleave by
+    // index so the strip alternates circuits rather than dumping one
+    // circuit's entire prefix before showing another. Tiebreak by
+    // circuit key for stable order on equal indices.
+    merged.sort((x, y) => {
+      const xi = Number(x.index ?? -1);
+      const yi = Number(y.index ?? -1);
+      if (yi !== xi) return yi - xi;
+      return (x._circuitKey || '').localeCompare(y._circuitKey || '');
+    });
+    _ammContribCache.items = merged.slice(0, AMM_CONTRIB_TAPE_LIMIT);
+    _ammContribCache.ts = Date.now();
+    _ammContribCache.inflight = null;
+    return _ammContribCache.items;
+  })();
+  return _ammContribCache.inflight;
+}
+function _renderAmmContribTape() {
+  if (typeof document === 'undefined') return;
+  const section = document.getElementById('amm-contrib-section');
+  const tape = document.getElementById('amm-contrib-tape');
+  if (!section || !tape) return;
+  // Hide entirely when the ceremony has finalized — no new contributions
+  // coming, ribbon serves no purpose. Same gate the contribute chip
+  // uses for the same reason.
+  if (typeof _isAmmCeremonyUnlocked === 'function' && _isAmmCeremonyUnlocked()) {
+    section.style.display = 'none';
+    return;
+  }
+  if (!AMM_CEREMONY_CHIP_ENABLED || !WORKER_BASE) {
+    section.style.display = 'none';
+    return;
+  }
+  const track = tape.querySelector('[data-amm-contrib-tape-track]');
+  if (!track) return;
+  // Fetch (cached) then render. Soft-fail — ribbon just stays hidden
+  // until the next attempt.
+  _fetchAmmContribAttestations().then(items => {
+    if (!Array.isArray(items) || items.length === 0) {
+      section.style.display = 'none';
+      return;
+    }
+    // Sig gate so the marquee scroll position doesn't reset on every
+    // _renderAmmContribTape call when nothing changed.
+    const sig = items.map(a => `${a._circuitKey}:${a.index}:${a.contributor_name || ''}:${a.contributor_pubkey || ''}`).join('|');
+    if (sig === _ammContribLastSig && section.style.display !== 'none') return;
+    _ammContribLastSig = sig;
+    const myPubHex = (wallet?.pub) ? bytesToHex(wallet.pub).toLowerCase() : null;
+    const buildItem = (a) => {
+      const apub = (a.contributor_pubkey || '').toLowerCase();
+      const isMine = !!myPubHex && !!apub && apub === myPubHex;
+      const name = a.contributor_name || 'anonymous';
+      const idx = Number.isFinite(Number(a.index)) ? `#${a.index}` : '';
+      const tip = `${a._circuitLabel} ${idx} · ${name}${apub ? ` · tacit:${apub.slice(0, 12)}` : ''}. Click → open AMM ceremony drawer to contribute or verify.`;
+      const mineClass = isMine ? ' mine' : '';
+      // Render: [circuit label]  #N  contributor_name
+      return `<a class="global-tape-item amm-contrib-item${mineClass}" href="#" data-act="amm-contrib-open" title="${escapeHtml(tip)}">`
+           + `<span class="gt-ticker">${escapeHtml(a._circuitLabel || 'AMM')}</span>`
+           + `<span class="gt-tick">${escapeHtml(idx)}</span>`
+           + `<span class="gt-price">${escapeHtml(name)}</span>`
+           + (isMine ? `<span class="gt-age" style="color:var(--orange);font-weight:600;">★ you</span>` : '')
+           + `</a>`;
+    };
+    const itemsHtml = items.map(buildItem).join('');
+    // Duplicate for seamless marquee loop (same trick as global tape).
+    track.innerHTML = itemsHtml + itemsHtml;
+    section.style.display = '';
+    tape.style.display = '';
+  }).catch(e => {
+    console.warn('[amm-contrib-tape] render failed', e?.message);
+    section.style.display = 'none';
+  });
+}
 function _updateMarketStaleBadge() {
   const el = (typeof document !== 'undefined') ? document.getElementById('market-status') : null;
   if (!el) return;
@@ -59670,6 +59834,12 @@ function _saveChartTimeFrame(v) {
 // the new TF from localStorage.
 if (typeof document !== 'undefined') {
   document.addEventListener('click', (e) => {
+    const ammLink = e.target.closest?.('[data-act="amm-contrib-open"]');
+    if (ammLink) {
+      e.preventDefault();
+      try { openAmmCeremonyDrawer(); } catch (err) { console.warn('[amm-contrib-tape] drawer open failed', err?.message); }
+      return;
+    }
     const btn = e.target.closest?.('[data-chart-tf]');
     if (!btn) return;
     const next = btn.getAttribute('data-chart-tf');
@@ -71920,6 +72090,10 @@ async function init() {
       .then(() => { try { _renderGlobalTape(); } catch {} })
       .catch(() => {});
   } catch {}
+  // AMM ceremony contributors ribbon — paint on boot via cached
+  // attestation fetch. 5min TTL on the cache so the ribbon doesn't
+  // burn worker round-trips when the user idles on the wallet page.
+  try { _renderAmmContribTape(); } catch {}
   // AMM ceremony chip — wire handlers + render once at boot so users
   // landing directly on Market / Pool / Holdings see the contribute prompt
   // without needing to switch tabs first. renderAmmCeremonyChip itself
