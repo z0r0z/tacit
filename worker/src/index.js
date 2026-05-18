@@ -8713,21 +8713,36 @@ async function _bustListingsRangeCache(network, aid) {
 
 const ATOMIC_INTENTS_CACHE_FRESH_MS = 10_000;
 const ATOMIC_INTENTS_CACHE_STALE_MS = 60_000;
-function atomicIntentsCacheKey(network, aid) {
-  return new Request(`https://_atomic-intents-cache_/atomic-intents/${network}/${aid}`, { method: 'GET' });
+// Pagination-aware cache key. Each (limit, cursor) tuple caches separately
+// so different pages don't collide. The default page (no opts) caches at
+// the legacy key shape so existing readers — including the mutation
+// bust — keep working without coordination.
+function atomicIntentsCacheKey(network, aid, opts = {}) {
+  const hasOpts = (opts && (opts.limit || opts.cursor));
+  if (!hasOpts) {
+    return new Request(`https://_atomic-intents-cache_/atomic-intents/${network}/${aid}`, { method: 'GET' });
+  }
+  const params = new URLSearchParams();
+  if (opts.limit) params.set('limit', String(opts.limit));
+  if (opts.cursor) params.set('cursor', String(opts.cursor));
+  return new Request(`https://_atomic-intents-cache_/atomic-intents/${network}/${aid}?${params.toString()}`, { method: 'GET' });
 }
-async function atomicIntentsComputeAndCache(env, network, aid) {
-  const fresh = await handleAtomicIntentList(aid, env, network, {});
+async function atomicIntentsComputeAndCache(env, network, aid, opts = {}) {
+  const fresh = await handleAtomicIntentList(aid, env, network, {}, opts);
   const body = await fresh.text();
   if (fresh.status === 200) {
     const ch = new Headers();
     ch.set('Content-Type', 'application/json');
     ch.set('X-Cached-At', String(Date.now()));
     ch.set('Cache-Control', `public, max-age=${Math.floor(ATOMIC_INTENTS_CACHE_STALE_MS / 1000)}`);
-    await caches.default.put(atomicIntentsCacheKey(network, aid), new Response(body, { status: 200, headers: ch }));
+    await caches.default.put(atomicIntentsCacheKey(network, aid, opts), new Response(body, { status: 200, headers: ch }));
   }
   return { body, status: fresh.status };
 }
+// Mutations bust only the default (no-pagination) cache entry. Paginated
+// pages refresh on FRESH/STALE expiry — KV Cache API doesn't expose
+// prefix-delete, and tracking every (limit, cursor) tuple per asset
+// would be more state than the small staleness savings warrant.
 async function _bustAtomicIntentsCache(network, aid) {
   try { await caches.default.delete(atomicIntentsCacheKey(network, aid)); } catch {}
 }
@@ -8829,7 +8844,12 @@ async function handleMarket(env, network, cors, prehydratedAssetsBody = null) {
         ? loadRangeListingsForAsset(env, network, aid).catch(() => [])
         : Promise.resolve([]),
       Number(a.atomic_intent_count || 0) > 0
-        ? loadAtomicIntentsForAsset(env, network, aid).catch(() => [])
+        // loadAtomicIntentsForAsset returns { intents, next_cursor } since
+        // pagination support landed (audit recommendation #2). /market
+        // doesn't paginate — it wants the full set — so unwrap to the
+        // intents array. The default limit=1000 still covers any
+        // realistic asset; pagination is opt-in via the per-asset GET.
+        ? loadAtomicIntentsForAsset(env, network, aid).then(r => r?.intents || []).catch(() => [])
         : Promise.resolve([]),
       Number(a.preauth_sale_count || 0) > 0
         ? loadPreauthSalesForAsset(env, network, aid).catch(() => [])
@@ -13018,8 +13038,20 @@ async function handleAtomicIntentPost(assetIdHex, req, env, network, cors) {
   return jsonResponse({ ok: true, intent }, 200, cors);
 }
 
-async function loadAtomicIntentsForAsset(env, network, assetIdHex) {
-  const list = await env.REGISTRY_KV.list({ prefix: atomicIntentPrefix(network, assetIdHex), limit: 1000 });
+// `opts.limit` (1..1000, default 1000) — page size for KV.list.
+// `opts.cursor` (string, optional) — KV pagination cursor from prior page.
+// When opts is omitted or both fields are absent, behaviour is identical
+// to the pre-pagination version (one shot, up to 1000 records). Callers
+// that opt into pagination get `intents` for the current page plus
+// `next_cursor` (or null when the page is the final one).
+async function loadAtomicIntentsForAsset(env, network, assetIdHex, opts = {}) {
+  const limit = Number.isInteger(opts.limit) && opts.limit > 0 ? Math.min(opts.limit, 1000) : 1000;
+  const cursor = (typeof opts.cursor === 'string' && opts.cursor) ? opts.cursor : undefined;
+  const list = await env.REGISTRY_KV.list({
+    prefix: atomicIntentPrefix(network, assetIdHex),
+    limit,
+    ...(cursor ? { cursor } : {}),
+  });
   const now = Math.floor(Date.now() / 1000);
   // intent_id is the last `:`-separated segment of the KV key (see
   // atomicIntentKey). Parsing it from the key lets us issue intent + claim
@@ -13057,13 +13089,21 @@ async function loadAtomicIntentsForAsset(env, network, assetIdHex) {
     intents.push(v);
   }
   intents.sort((a, b) => (b.created_at || 0) - (a.created_at || 0));
-  return intents;
+  // KV.list semantics: when `list_complete` is true OR `cursor` is null the
+  // page is the last one. Normalize to a single `next_cursor` (string or
+  // null) so clients have one boolean-ish field to drive pagination.
+  const nextCursor = (list.list_complete || !list.cursor) ? null : String(list.cursor);
+  return { intents, next_cursor: nextCursor };
 }
 
-async function handleAtomicIntentList(assetIdHex, env, network, cors) {
+// `?limit` (1..1000, default 1000 — preserves pre-pagination shape) caps
+// the per-page intent count. `?cursor` (opaque string from a prior page's
+// `next_cursor`) walks subsequent pages. Omit both for the legacy single-
+// shot response. `next_cursor` is null on the final page.
+async function handleAtomicIntentList(assetIdHex, env, network, cors, opts = {}) {
   if (!/^[0-9a-f]{64}$/.test(assetIdHex)) return jsonResponse({ error: 'invalid asset_id' }, 400, cors);
-  const intents = await loadAtomicIntentsForAsset(env, network, assetIdHex);
-  return jsonResponse({ asset_id: assetIdHex, count: intents.length, intents }, 200, cors);
+  const { intents, next_cursor } = await loadAtomicIntentsForAsset(env, network, assetIdHex, opts);
+  return jsonResponse({ asset_id: assetIdHex, count: intents.length, intents, next_cursor }, 200, cors);
 }
 
 async function handleAtomicIntentDelete(assetIdHex, intentIdHex, req, env, network, cors) {
@@ -19022,7 +19062,22 @@ async function _routeFetch(req, env, ctx) {
     // Atomic intents (browse-and-take T_AXFER marketplace).
     const mai = url.pathname.match(/^\/assets\/([0-9a-f]{64})\/atomic-intents$/);
     if (mai && req.method === 'POST')                          return _mutateAndBustAtomicIntents(mai[1], () => handleAtomicIntentPost(mai[1], req, env, network, cors));
-    if (mai && req.method === 'GET')                           return _swrServePerAsset(atomicIntentsCacheKey(network, mai[1]), ATOMIC_INTENTS_CACHE_FRESH_MS, ATOMIC_INTENTS_CACHE_STALE_MS, () => atomicIntentsComputeAndCache(env, network, mai[1]));
+    if (mai && req.method === 'GET') {
+      // Parse pagination params. Empty params keep the legacy
+      // single-shot shape so existing callers (Browse aggregate,
+      // /market internal fan-out) see no behaviour change.
+      const _aiLimit = parseInt(url.searchParams.get('limit') || '', 10);
+      const _aiOpts = {};
+      if (Number.isInteger(_aiLimit) && _aiLimit > 0) _aiOpts.limit = Math.min(_aiLimit, 1000);
+      const _aiCursor = url.searchParams.get('cursor');
+      if (_aiCursor) _aiOpts.cursor = _aiCursor;
+      return _swrServePerAsset(
+        atomicIntentsCacheKey(network, mai[1], _aiOpts),
+        ATOMIC_INTENTS_CACHE_FRESH_MS,
+        ATOMIC_INTENTS_CACHE_STALE_MS,
+        () => atomicIntentsComputeAndCache(env, network, mai[1], _aiOpts),
+      );
+    }
     const mai2 = url.pathname.match(/^\/assets\/([0-9a-f]{64})\/atomic-intents\/([0-9a-f]{32})$/);
     if (mai2 && req.method === 'DELETE')                       return _mutateAndBustAtomicIntents(mai2[1], () => handleAtomicIntentDelete(mai2[1], mai2[2], req, env, network, cors));
     const mai3 = url.pathname.match(/^\/assets\/([0-9a-f]{64})\/atomic-intents\/([0-9a-f]{32})\/claim$/);
