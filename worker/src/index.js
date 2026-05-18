@@ -13106,6 +13106,34 @@ async function handleAtomicIntentList(assetIdHex, env, network, cors, opts = {})
   return jsonResponse({ asset_id: assetIdHex, count: intents.length, intents, next_cursor }, 200, cors);
 }
 
+// Single-intent fetch. Pre-claim freshness gate (the dapp's
+// fetchAxferIntentFresh) used to fetch the full /atomic-intents list
+// and filter client-side for one intent_id — ~3 KV reads when this
+// endpoint serves the same data directly vs. 1 list + 3N reads when
+// the same lookup goes through the bulk endpoint. ~500× cheaper on
+// dense assets like TAC's 542-intent book.
+async function handleAtomicIntentGet(assetIdHex, intentIdHex, env, network, cors) {
+  if (!/^[0-9a-f]{64}$/.test(assetIdHex)) return jsonResponse({ error: 'invalid asset_id' }, 400, cors);
+  if (!/^[0-9a-f]{32}$/.test(intentIdHex)) return jsonResponse({ error: 'invalid intent_id' }, 400, cors);
+  const [intent, claim, fulfil] = await Promise.all([
+    env.REGISTRY_KV.get(atomicIntentKey(network, assetIdHex, intentIdHex), 'json'),
+    env.REGISTRY_KV.get(atomicClaimKey(network, assetIdHex, intentIdHex), 'json'),
+    env.REGISTRY_KV.get(atomicFulfilmentKey(network, assetIdHex, intentIdHex), 'json'),
+  ]);
+  if (!intent) return jsonResponse({ error: 'no such intent' }, 404, cors);
+  const now = Math.floor(Date.now() / 1000);
+  intent.expired = (intent.expiry || 0) <= now;
+  if (claim && claim.expires_at > now) intent.claim = claim;
+  if (fulfil) {
+    const fulfilledAt = Number(fulfil.fulfilled_at) || 0;
+    if (fulfilledAt && (now - fulfilledAt) <= FULFILMENT_TTL_SECONDS) {
+      intent.fulfilment_pending = true;
+      intent.fulfilled_at = fulfilledAt;
+    }
+  }
+  return jsonResponse({ asset_id: assetIdHex, intent }, 200, cors);
+}
+
 async function handleAtomicIntentDelete(assetIdHex, intentIdHex, req, env, network, cors) {
   if (!/^[0-9a-f]{64}$/.test(assetIdHex)) return jsonResponse({ error: 'invalid asset_id' }, 400, cors);
   if (!/^[0-9a-f]{32}$/.test(intentIdHex)) return jsonResponse({ error: 'invalid intent_id' }, 400, cors);
@@ -16057,53 +16085,38 @@ async function scanForEtches(env, network) {
         // standard place when the validator processes the spend.
         found++;
       } else if (decoded.opcode === T_CBTC_TAC_FORCE_CLOSE) {
-        // SPEC-CBTC-TAC-AMENDMENT §5.38 — permissionless liquidation
-        // when current_ratio < LIQUIDATION_RATIO.
-        const fc = decodeTCbtcTacForceClosePayload(decoded.payload);
-        if (!fc) continue;
-        const expectedNetTag = network === 'signet' ? 0x01 : network === 'regtest' ? 0x02 : 0x00;
-        if (fc.network_tag !== expectedNetTag) continue;
-        const position = await ctacGetPosition(env, network, fc.target_leaf_hash);
-        if (!position) continue;
-        if (position.state !== 'active') continue;
-
-        // Cascade rate-limit (§5.38.3)
-        const thisBlockCount = await ctacGetForceCloseThrottle(env, network, h);
-        if (thisBlockCount >= CTAC_MAX_FORCE_CLOSES_PER_BLOCK) continue;
-
-        // Current health check
-        let twap;
-        try { twap = await ctacTwapSatsPerTac(env, network, h - CTAC_REORG_SAFETY_DEPTH); }
-        catch { continue; }
-        const currentRatio = ctacBondRatioThousandths(
-          position.bond_amount_tac, twap, position.slot_denom_sats,
-        );
-        if (currentRatio >= BigInt(CTAC_LIQUIDATION_RATIO_THOUSANDTHS)) continue;
-
-        // The actual TAC→BTC AMM swap is intended to be carried in the
-        // same reveal Bitcoin tx as the FORCE_CLOSE envelope, via tacit
-        // envelope chaining. The worker records the position transition
-        // here; AMM-swap accounting requires AMM-envelope-pair validation
-        // which is staged separately (envelope-chaining design lives in
-        // amm-validator + a forthcoming envelope-pairing rule).
+        // SPEC-CBTC-TAC-AMENDMENT §5.38 — DEFERRED in v1.
         //
-        // For now: mark the position force-closed, increment the throttle,
-        // and let the cBTC.tac supply remain in circulation backed by the
-        // (deferred) redemption_reserve_BTC pool. The reserve_credit_BTC
-        // accounting happens when the paired AMM swap envelope confirms in
-        // the same tx — that's a future cron pass.
-        position.state = 'force-closed';
-        position.force_close_height = h;
-        position.force_close_txid = tx.txid;
-        await ctacPutPosition(env, network, position);
-        await ctacUnmarkActive(env, network, fc.target_leaf_hash);
-        await ctacBumpForceCloseThrottle(env, network, h);
-        // NOTE: supply is NOT debited here — the minted cBTC.tac is still
-        // outstanding, now backed by redemption_reserve_BTC (once the AMM
-        // swap settles). On subsequent T_CBTC_TAC_WITHDRAW against this
-        // force-closed position, the WITHDRAW handler debits supply as
-        // normal.
-        found++;
+        // The spec'd flow is: paired TAC→cBTC.zk_canonical AMM swap in the
+        // same reveal tx, swap output credits `redemption_reserve_BTC`,
+        // liquidator gets 50 bps of swap output, paired WITHDRAW against
+        // the force-closed position draws BTC from the reserve.
+        //
+        // Implementing this trustlessly requires Bitcoin script primitives
+        // that don't exist on mainnet today: a protocol-owned UTXO that is
+        // spendable only via a paired tacit envelope needs covenant support
+        // (OP_CAT or similar). All existing tacit custody is user-key-owned
+        // and AMM pools are virtual indexer counters with no UTXOs — there
+        // is no in-codebase pattern for protocol-owned reserve UTXOs, and
+        // none of the alternatives (federated signer, optimistic challenge)
+        // are trustless. Rather than ship a half-built mechanism that puts
+        // cBTC.tac holders into an un-redeemable state when a position
+        // force-closes, the v1 posture is to refuse the envelope outright.
+        //
+        // Under-collateralised positions still resolve safely: when bond
+        // value drops below slot value, the rational depositor rugs (spends
+        // K_btc outside protocol envelope), SLASH_DETECTED fires after the
+        // 6-block reorg-safety window, bond TAC moves to the pooled
+        // insurance reserve, and cBTC.tac holders are made whole via the
+        // existing T_SHARE_SLASH_CLAIM path (§5.39). The bond TAC is sized
+        // (INITIAL_BOND_RATIO = 2.0x) to over-cover the rug loss even
+        // after TAC price decline.
+        //
+        // Decoder is left wired (decodeTCbtcTacForceClosePayload at line
+        // 7591) so envelope-parsing tests still pass. When a trustless
+        // reserve mechanism is designed and shipped, replace this branch
+        // with the §5.38.4 validator logic per the follow-up amendment.
+        continue;
       } else if (decoded.opcode === T_SHARE_SLASH_CLAIM) {
         // SPEC-CBTC-TAC-AMENDMENT §5.39.4 — optional pooled-insurance
         // claim by a cBTC.tac holder, separate from withdraw. Burns
@@ -19079,6 +19092,7 @@ async function _routeFetch(req, env, ctx) {
       );
     }
     const mai2 = url.pathname.match(/^\/assets\/([0-9a-f]{64})\/atomic-intents\/([0-9a-f]{32})$/);
+    if (mai2 && req.method === 'GET')                          return handleAtomicIntentGet(mai2[1], mai2[2], env, network, cors);
     if (mai2 && req.method === 'DELETE')                       return _mutateAndBustAtomicIntents(mai2[1], () => handleAtomicIntentDelete(mai2[1], mai2[2], req, env, network, cors));
     const mai3 = url.pathname.match(/^\/assets\/([0-9a-f]{64})\/atomic-intents\/([0-9a-f]{32})\/claim$/);
     if (mai3 && req.method === 'POST')                         return _mutateAndBustAtomicIntents(mai3[1], () => handleAtomicIntentClaim(mai3[1], mai3[2], req, env, network, cors));

@@ -248,6 +248,10 @@ const RANGE_LISTINGS_URL = (assetIdHex) => WORKER_BASE ? `${WORKER_BASE}/assets/
 const RANGE_LISTING_DELETE_URL = (assetIdHex, ownerPubHex) => WORKER_BASE ? `${WORKER_BASE}/assets/${assetIdHex}/listings-range/${ownerPubHex}` : '';
 const RANGE_LISTING_CLAIM_URL = (assetIdHex, ownerPubHex) => WORKER_BASE ? `${WORKER_BASE}/assets/${assetIdHex}/listings-range/${ownerPubHex}/claim` : '';
 const ATOMIC_INTENTS_URL = (assetIdHex) => WORKER_BASE ? `${WORKER_BASE}/assets/${assetIdHex}/atomic-intents` : '';
+// Single-intent fetch. Used by fetchAxferIntentFresh to verify
+// claim/fulfilment state for one specific intent without paying the
+// 1 KV.list + 3N reads cost of fetching the full bulk list.
+const ATOMIC_INTENT_GET_URL = (assetIdHex, intentIdHex) => WORKER_BASE ? `${WORKER_BASE}/assets/${assetIdHex}/atomic-intents/${intentIdHex}` : '';
 const ATOMIC_INTENT_DELETE_URL = (assetIdHex, intentIdHex) => WORKER_BASE ? `${WORKER_BASE}/assets/${assetIdHex}/atomic-intents/${intentIdHex}` : '';
 const ATOMIC_INTENT_CLAIM_URL = (assetIdHex, intentIdHex) => WORKER_BASE ? `${WORKER_BASE}/assets/${assetIdHex}/atomic-intents/${intentIdHex}/claim` : '';
 const ATOMIC_INTENT_FULFILMENT_URL = (assetIdHex, intentIdHex) => WORKER_BASE ? `${WORKER_BASE}/assets/${assetIdHex}/atomic-intents/${intentIdHex}/fulfilment` : '';
@@ -9130,6 +9134,143 @@ async function verifyMixerDepositKernelOnChain(depositTxidHex, expectedAssetIdHe
     dec.assetId, denomBig, inputTxidBE, inp.vout, dec.leafCommitment,
   );
   return verifySchnorr(dec.kernelSig, kernelMsg, ExBytes);
+}
+
+// Slot-leaf re-verifier — counterpart to verifyMixerDepositKernelOnChain
+// for slot-derived pool leaves (SPEC-CBTC-ZK §5.21–§5.23 and FUNGIBILITY
+// §5.24–§5.25). Each cBTC.zk pool leaf carries a `kind` of 'slot_mint',
+// 'slot_rotate_new', 'slot_split_new', or 'slot_merge_new' instead of the
+// T_DEPOSIT shape, so the Mimblewimble conservation check does not apply;
+// instead we mirror the worker's slot-op gates: envelope decode, asset_id
+// + denom + leaf_hash match, inner Schnorr signature, vout shape + value.
+//
+// Same tri-state contract as verifyMixerDepositKernelOnChain — true on
+// full pass, false on cryptographic rejection (caller logs + breaks the
+// apply-loop), null on transient fetch failure (caller silently retries).
+async function verifySlotLeafOnChain(leafRec, expectedAssetIdHex, expectedDenom, leafCommitmentBytes, fetchTx, expectedHeight) {
+  if (typeof fetchTx !== 'function') return false;
+  if (!leafRec || typeof leafRec.deposit_txid !== 'string') return false;
+  const tx = await fetchTx(leafRec.deposit_txid);
+  if (!tx) return null;
+  if (Number.isInteger(expectedHeight)) {
+    if (!tx.status || tx.status.confirmed !== true) return false;
+    if (Number(tx.status.block_height) !== Number(expectedHeight)) return false;
+  }
+  const wit = tx.vin?.[0]?.witness;
+  if (!Array.isArray(wit) || wit.length < 3) return false;
+  let env;
+  try { env = decodeEnvelopeScript(hexToBytes(wit[1])); } catch { return false; }
+  if (!env) return false;
+
+  const aidLower = expectedAssetIdHex.toLowerCase();
+  const lcHex = bytesToHex(leafCommitmentBytes).toLowerCase();
+  const denomBig = BigInt(expectedDenom);
+  const _xonlyFromPubkey = (pk33) => {
+    try { return bytesToPoint(pk33).toRawBytes(true).slice(1); } catch { return null; }
+  };
+
+  if (leafRec.kind === 'slot_mint') {
+    if (env.opcode !== T_SLOT_MINT) return false;
+    const sm = decodeTSlotMintPayload(env.payload);
+    if (!sm) return false;
+    if (bytesToHex(sm.assetId).toLowerCase() !== aidLower) return false;
+    if (sm.denomination !== denomBig) return false;
+    if (bytesToHex(sm.leafHash).toLowerCase() !== lcHex) return false;
+    const minterMsg = computeSlotMintMsg(
+      sm.networkTag, sm.assetId, sm.denomination, sm.recipientCommit,
+      sm.leafHash, sm.paymentAssetId, sm.paymentAmount, sm.kBtcXOnly,
+    );
+    const minterXOnly = _xonlyFromPubkey(sm.minterPubkey);
+    if (!minterXOnly) return false;
+    if (!verifySchnorr(sm.minterSig, minterMsg, minterXOnly)) return false;
+    const expectedSpk = p2trScript(sm.kBtcXOnly);
+    const vout0Spk = tx.vout?.[0]?.scriptpubkey;
+    if (typeof vout0Spk !== 'string' || vout0Spk.toLowerCase() !== bytesToHex(expectedSpk)) return false;
+    const vout0Val = tx.vout?.[0]?.value;
+    if (typeof vout0Val !== 'number' || BigInt(vout0Val) !== denomBig) return false;
+    return true;
+  }
+
+  if (leafRec.kind === 'slot_rotate_new') {
+    if (env.opcode !== T_SLOT_ROTATE) return false;
+    const sr = decodeTSlotRotatePayload(env.payload);
+    if (!sr) return false;
+    if (bytesToHex(sr.assetId).toLowerCase() !== aidLower) return false;
+    if (sr.denomination !== denomBig) return false;
+    if (bytesToHex(sr.newLeafHash).toLowerCase() !== lcHex) return false;
+    const rotateMsg = computeSlotRotateMsg(
+      sr.networkTag, sr.assetId, sr.denomination, sr.oldNullifierHash,
+      sr.newRecipientCommit, sr.newLeafHash, sr.paymentAssetId, sr.paymentAmount, sr.newKBtcXOnly,
+    );
+    const ownerXOnly = _xonlyFromPubkey(sr.oldOwnerPubkey);
+    if (!ownerXOnly) return false;
+    if (!verifySchnorr(sr.oldOwnerSig, rotateMsg, ownerXOnly)) return false;
+    const expectedSpk = p2trScript(sr.newKBtcXOnly);
+    const vout0Spk = tx.vout?.[0]?.scriptpubkey;
+    if (typeof vout0Spk !== 'string' || vout0Spk.toLowerCase() !== bytesToHex(expectedSpk)) return false;
+    const vout0Val = tx.vout?.[0]?.value;
+    if (typeof vout0Val !== 'number' || BigInt(vout0Val) !== denomBig) return false;
+    return true;
+  }
+
+  if (leafRec.kind === 'slot_split_new') {
+    if (env.opcode !== T_SLOT_SPLIT) return false;
+    const ss = decodeTSlotSplitPayload(env.payload);
+    if (!ss) return false;
+    const idx = leafRec.split_vout_index;
+    if (!Number.isInteger(idx) || idx < 0 || idx >= ss.outputs.length) return false;
+    const out = ss.outputs[idx];
+    if (bytesToHex(out.assetIdNew).toLowerCase() !== aidLower) return false;
+    if (out.denomNew !== denomBig) return false;
+    if (bytesToHex(out.newLeafHash).toLowerCase() !== lcHex) return false;
+    const splitMsg = computeSlotSplitMsg(
+      ss.networkTag, ss.assetIdOld, ss.denomOld, ss.oldNullifierHash,
+      ss.outputs.map(o => ({
+        assetIdNew: o.assetIdNew,
+        denomNew: o.denomNew,
+        newRecipientCommit: o.newRecipientCommit,
+        newLeafHash: o.newLeafHash,
+      })),
+    );
+    const ownerXOnly = _xonlyFromPubkey(ss.oldOwnerPubkey);
+    if (!ownerXOnly) return false;
+    if (!verifySchnorr(ss.oldOwnerSig, splitMsg, ownerXOnly)) return false;
+    const voutI = tx.vout?.[idx];
+    if (!voutI || typeof voutI.value !== 'number') return false;
+    if (BigInt(voutI.value) !== denomBig) return false;
+    const spkLower = (voutI.scriptpubkey || '').toLowerCase();
+    if (spkLower.length !== 68 || !spkLower.startsWith('5120')) return false;
+    return true;
+  }
+
+  if (leafRec.kind === 'slot_merge_new') {
+    if (env.opcode !== T_SLOT_MERGE) return false;
+    const smg = decodeTSlotMergePayload(env.payload);
+    if (!smg) return false;
+    if (bytesToHex(smg.assetIdNew).toLowerCase() !== aidLower) return false;
+    if (smg.denomNew !== denomBig) return false;
+    if (bytesToHex(smg.newLeafHash).toLowerCase() !== lcHex) return false;
+    const mergeMsg = computeSlotMergeMsg(
+      smg.networkTag,
+      smg.inputs.map(inp => ({
+        assetIdOld: inp.assetIdOld,
+        denomOld: inp.denomOld,
+        oldNullifierHash: inp.oldNullifierHash,
+      })),
+      smg.assetIdNew, smg.denomNew, smg.newRecipientCommit, smg.newLeafHash,
+    );
+    const ownerXOnly = _xonlyFromPubkey(smg.newOwnerPubkey);
+    if (!ownerXOnly) return false;
+    if (!verifySchnorr(smg.newOwnerSig, mergeMsg, ownerXOnly)) return false;
+    const vout0 = tx.vout?.[0];
+    if (!vout0 || typeof vout0.value !== 'number') return false;
+    if (BigInt(vout0.value) !== denomBig) return false;
+    const spkLower = (vout0.scriptpubkey || '').toLowerCase();
+    if (spkLower.length !== 68 || !spkLower.startsWith('5120')) return false;
+    return true;
+  }
+
+  return false;
 }
 
 // In-memory cache of (block_hash → ordered txid list). Block contents are
@@ -22429,14 +22570,20 @@ async function prepareTakerSatsUtxo({ requiredSats, label = 'atomic intent claim
 // never burns the consolidate fee.
 async function fetchAxferIntentFresh(assetIdHex, intentIdHex) {
   if (!WORKER_BASE) throw new Error('worker disabled — cannot verify intent freshness');
+  // Single-intent endpoint (~3 KV reads worker-side) replaces the prior
+  // approach of fetching the full /atomic-intents list and filtering
+  // client-side (~1 list + 3N reads on dense assets like TAC's 542-
+  // intent book). Same freshness semantics; the worker returns `intent`
+  // with claim/fulfilment decoration already applied.
   let resp;
-  try { resp = await fetch(withNet(ATOMIC_INTENTS_URL(assetIdHex))); }
+  try { resp = await fetch(withNet(ATOMIC_INTENT_GET_URL(assetIdHex, intentIdHex))); }
   catch (e) {
     throw new Error(`could not verify intent is still live (worker unreachable: ${e?.message || e})`);
   }
+  if (resp.status === 404) throw new Error('intent not found at worker — already settled or cancelled. Refresh Market.');
   if (!resp.ok) throw new Error(`could not verify intent (worker HTTP ${resp.status})`);
   const j = await resp.json().catch(() => ({}));
-  const intent = (Array.isArray(j.intents) ? j.intents : []).find(x => x.intent_id === intentIdHex);
+  const intent = j && j.intent;
   if (!intent) throw new Error('intent not found at worker — already settled or cancelled. Refresh Market.');
   const nowSec = Math.floor(Date.now() / 1000);
   if (Number(intent.expiry || 0) <= nowSec) throw new Error('intent expired — refresh Market and pick another.');
@@ -28496,15 +28643,32 @@ async function scanPools() {
           ? remoteLeaves[i].deposited_at_height : null;
         const claimedTxIndex = Number.isInteger(remoteLeaves[i].tx_index)
           ? remoteLeaves[i].tx_index : null;
+        // SPEC §5.11.4 three-verifier model: re-verify the leaf is a real,
+        // properly-signed creation event on chain before adding it to the
+        // local tree. Mixer T_DEPOSIT leaves use the Mimblewimble conservation
+        // kernel; cBTC.zk slot leaves (kind: slot_mint / slot_rotate_new /
+        // slot_split_new / slot_merge_new — SPEC-CBTC-ZK §5.21–5.23 + FUNG
+        // §5.24–5.25) use the Schnorr-owner-sig + vout-shape check instead,
+        // since their reveal tx is a slot envelope, not a T_DEPOSIT.
+        const leafKind = remoteLeaves[i].kind || null;
+        const isSlotLeaf = leafKind &&
+          (leafKind === 'slot_mint' || leafKind === 'slot_rotate_new' ||
+           leafKind === 'slot_split_new' || leafKind === 'slot_merge_new');
         let kernelOk;
         try {
-          kernelOk = await verifyMixerDepositKernelOnChain(
-            dtxid, aidHex, denom, lcBytes, getTx, claimedHeight,
-          );
+          if (isSlotLeaf) {
+            kernelOk = await verifySlotLeafOnChain(
+              remoteLeaves[i], aidHex, denom, lcBytes, getTx, claimedHeight,
+            );
+          } else {
+            kernelOk = await verifyMixerDepositKernelOnChain(
+              dtxid, aidHex, denom, lcBytes, getTx, claimedHeight,
+            );
+          }
         } catch { kernelOk = null; }
         if (kernelOk !== true) {
           if (kernelOk === false && typeof console !== 'undefined') {
-            console.warn('[mixer] rejected unbacked leaf in pool', aidHex.slice(0, 8), 'denom', denom.toString(), 'tx', dtxid);
+            console.warn('[mixer] rejected unbacked leaf in pool', aidHex.slice(0, 8), 'denom', denom.toString(), 'kind', leafKind || 'deposit', 'tx', dtxid);
           }
           break;
         }
@@ -68082,6 +68246,7 @@ export {
   // verifyMixerDepositKernel export to give the Conservation invariant
   // (SPEC §5.11.4 #1) negative-test coverage on both sides.
   computeDepositKernelMsg, verifyMixerDepositKernelOnChain,
+  verifySlotLeafOnChain,
   // Canonical-position pinning helpers — exported so the conservation
   // test file can negative-test the tx_index-against-block defense
   // without driving a full scanPools refresh.
