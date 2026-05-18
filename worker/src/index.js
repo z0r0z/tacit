@@ -5496,6 +5496,7 @@ async function handleCeremonyUploadToken(req, env, circuitHash, cors) {
       },
       body: JSON.stringify({
         network: 'public',
+        date: Math.floor(Date.now() / 1000),
         expires: expiresInSec,
         filename,
         max_file_size: 200 * 1024 * 1024,
@@ -14531,6 +14532,30 @@ async function _handleAtomicIntentFulfilVar(assetIdHex, intentIdHex, intent, cla
   if (!/^[0-9a-f]{66}$/.test(controlBlockHex)) return jsonResponse({ error: 'control_block_hex must be 33-byte hex (parity_byte + 32-byte internal key)' }, 400, cors);
   if (!/^5120[0-9a-f]{64}$/.test(p2trSpkHex)) return jsonResponse({ error: 'p2tr_spk_hex must be a P2TR scriptPubKey: 34 bytes (51 20 + 32-byte tweaked output key)' }, 400, cors);
 
+  // Structural binding of the variable-amount envelope. Mirrors the legacy
+  // handleAtomicIntentPost validation but against T_AXFER_VAR semantics
+  // (opcode 0x37, asset_input_count == 1, N == 2). Without this a malicious
+  // maker can ship a CXFER / different-asset / opcode-confused envelope to
+  // the claimant; the eventual reveal would fail to relay but the taker
+  // would already have spent the CLAIM_TTL window for nothing. The legacy
+  // (whole-UTXO) path does this at /atomic-intents POST; variable-amount
+  // can't, because §5.7.6.1 defers commit-phase to fulfilment time, so
+  // this is the first opportunity to bind the envelope.
+  let _env_decoded;
+  try { _env_decoded = decodeEnvelopeScript(hexToBytes(envelopeScriptHex)); }
+  catch (e) { return jsonResponse({ error: 'envelope_script_hex decode threw: ' + e.message }, 400, cors); }
+  if (!_env_decoded) return jsonResponse({ error: 'envelope_script_hex is structurally invalid' }, 400, cors);
+  if (_env_decoded.opcode !== T_AXFER_VAR) {
+    return jsonResponse({ error: `envelope opcode 0x${_env_decoded.opcode.toString(16)} != T_AXFER_VAR (0x37)` }, 400, cors);
+  }
+  const _ax = decodeAxferVarPayload(_env_decoded.payload);
+  if (!_ax) return jsonResponse({ error: 'T_AXFER_VAR payload decode failed' }, 400, cors);
+  if (_ax.asset_input_count !== 1) return jsonResponse({ error: `asset_input_count must be 1 for variable-amount atomic intent (got ${_ax.asset_input_count})` }, 400, cors);
+  if (_ax.n !== 2) return jsonResponse({ error: `T_AXFER_VAR requires exactly N=2 outputs (recipient + maker change), got ${_ax.n}` }, 400, cors);
+  if (_ax.asset_id !== assetIdHex) {
+    return jsonResponse({ error: 'envelope.asset_id does not match URL asset_id' }, 400, cors);
+  }
+
   const requestedAmountStr = String(claim.requested_amount ?? '');
   if (!/^\d+$/.test(requestedAmountStr)) {
     return jsonResponse({ error: 'claim is missing requested_amount; cannot fulfil under v2 path' }, 400, cors);
@@ -19689,6 +19714,11 @@ async function scanForEtches(env, network) {
         try { cReceiptPoint = compressedPointFromHex(sv.c_receipt_secp); }
         catch { continue; }
         const rReceiptBig = bytes32ToBigint(hexToBytes(sv.r_receipt)) % SECP_N;
+        // Parity with T_SWAP_ROUTE (see below): r_receipt == 0 collapses the
+        // Pedersen commitment to plaintext delta_out · H, leaking the receipt
+        // amount. Soundness is preserved (BP+ still binds) but the privacy
+        // guarantee dissolves. Reject outright.
+        if (rReceiptBig === 0n) continue;
         const expectedReceipt = pedersenCommit(BigInt(sv.delta_out), rReceiptBig);
         if (!cReceiptPoint.equals(expectedReceipt)) continue;
 
