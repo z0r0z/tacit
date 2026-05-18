@@ -59617,8 +59617,11 @@ function renderMarketPriceChartSVG(trades, ticker, decimals, markUnit = null) {
   // rather than index-evenly, so a market with a burst of trades followed
   // by quiet shows the burst as a dense cluster (true to chain timing)
   // rather than a smeared line.
-  const W = 600, H = 196;     // taller to accommodate volume strip below price
-  const PL = 36, PR = 8, PT = 12, PB = 22;
+  // Canvas tuned for editorial readability: taller H so the trend
+  // doesn't feel cramped, symmetric L/R padding so y-labels (left)
+  // and right-edge mark label (right) sit balanced.
+  const W = 600, H = 220;
+  const PL = 44, PR = 16, PT = 14, PB = 22;
   const VOL_H = 28;           // volume strip height
   const VOL_GAP = 4;          // gap between price and volume sections
   const plotW = W - PL - PR;
@@ -59870,7 +59873,7 @@ function renderMarketPriceChartSVG(trades, ticker, decimals, markUnit = null) {
   // the chart is √(lo·hi) under log), arithmetic mean on linear scale.
   const yMid = isLog ? Math.sqrt(yLo * yHi) : (yLo + yHi) / 2;
   const gridlines = [yLo, yMid, yHi].map(u =>
-    `<line x1="${PL}" x2="${(PL + plotW).toFixed(0)}" y1="${yOf(u).toFixed(2)}" y2="${yOf(u).toFixed(2)}" stroke="var(--ink-faint)" stroke-width="0.5" stroke-dasharray="2,3"/>`
+    `<line x1="${PL}" x2="${(PL + plotW).toFixed(0)}" y1="${yOf(u).toFixed(2)}" y2="${yOf(u).toFixed(2)}" stroke="var(--ink-faint)" stroke-width="0.5" opacity="0.7"/>`
   ).join('');
   const minLbl = fmtUnitPriceSats(yLo);
   const midLbl = fmtUnitPriceSats(yMid);
@@ -59889,15 +59892,15 @@ function renderMarketPriceChartSVG(trades, ticker, decimals, markUnit = null) {
   // other's defs. Random-ish but deterministic within a render.
   const _gradId = `cg-${(ts0 ^ tsN ^ points.length).toString(36)}`;
   return `
-    <div style="font-size:10px;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:4px;display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;">
-      <strong>Price history</strong>${_logBadge}
-      <span class="muted" style="text-transform:none;letter-spacing:0;font-size:10px;">· ${points.length} trades · ${escapeHtml(fmtUnitPriceSats(yLo))} – ${escapeHtml(fmtUnitPriceSats(yHi))} sats/${escapeHtml(ticker)}${outlierCount > 0 ? ` · <span style="color:#b8651d;" title="Trades priced &lt;0.2× or &gt;5× of mark price — typically fat-finger fills or dust takes. Shown as small faded amber dots so the eye can spot anomalies without them dominating the in-band trend.">${outlierCount} outlier${outlierCount === 1 ? '' : 's'} flagged</span>` : ''}</span>
+    <div style="margin-bottom:6px;display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;">
+      <span style="font-family:var(--serif);font-style:italic;font-size:18px;line-height:1;letter-spacing:-0.005em;">Price history</span>${_logBadge}
+      <span class="muted" style="font-size:10px;letter-spacing:0;">${points.length} trades &middot; ${escapeHtml(fmtUnitPriceSats(yLo))}${yLo !== yHi ? ` – ${escapeHtml(fmtUnitPriceSats(yHi))}` : ''} sats/${escapeHtml(ticker)}${outlierCount > 0 ? ` &middot; <span style="color:#b8651d;" title="Trades priced &lt;0.2× or &gt;5× of mark price — typically fat-finger fills or dust takes. Shown as small faded amber dots so the eye can spot anomalies without them dominating the in-band trend.">${outlierCount} outlier${outlierCount === 1 ? '' : 's'} flagged</span>` : ''}</span>
     </div>
-    <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet" data-chart-svg data-cursor-points="${cursorDataAttr}" data-plot-pl="${PL}" data-plot-pr="${PR}" data-plot-pt="${PT}" data-plot-pb="${PB}" data-plot-w="${W}" data-plot-h="${H}" data-ticker="${escapeHtml(ticker)}" style="width:100%;height:auto;max-height:240px;display:block;background:var(--bg-warm, #faf9f5);border:1px solid var(--ink-faint);border-radius:4px;cursor:crosshair;">
+    <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet" data-chart-svg data-cursor-points="${cursorDataAttr}" data-plot-pl="${PL}" data-plot-pr="${PR}" data-plot-pt="${PT}" data-plot-pb="${PB}" data-plot-w="${W}" data-plot-h="${H}" data-ticker="${escapeHtml(ticker)}" style="width:100%;height:auto;max-height:300px;display:block;background:var(--bg-warm, #faf9f5);border:1px solid var(--ink-faint);cursor:crosshair;">
       <defs>
         <linearGradient id="${_gradId}" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stop-color="#0a8f43" stop-opacity="0.28"/>
-          <stop offset="60%" stop-color="#0a8f43" stop-opacity="0.10"/>
+          <stop offset="0%" stop-color="#0a8f43" stop-opacity="0.18"/>
+          <stop offset="55%" stop-color="#0a8f43" stop-opacity="0.06"/>
           <stop offset="100%" stop-color="#0a8f43" stop-opacity="0.00"/>
         </linearGradient>
       </defs>
@@ -59905,7 +59908,7 @@ function renderMarketPriceChartSVG(trades, ticker, decimals, markUnit = null) {
       ${vwapLineStroke}
       ${markLineStroke}
       ${areaPath ? `<path data-chart-area d="${areaPath}" fill="url(#${_gradId})" stroke="none"/>` : ''}
-      ${linePath ? `<path data-chart-line d="${linePath}" fill="none" stroke="#0a8f43" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round" stroke-opacity="0.95" vector-effect="non-scaling-stroke"/>` : ''}
+      ${linePath ? `<path data-chart-line d="${linePath}" fill="none" stroke="#0a8f43" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round" stroke-opacity="0.92" vector-effect="non-scaling-stroke"/>` : ''}
       ${dots}
       ${vwapLineLabel}
       ${markLineLabel}
@@ -59913,22 +59916,16 @@ function renderMarketPriceChartSVG(trades, ticker, decimals, markUnit = null) {
            Same color as the trend line, faded so it reads as a quiet
            secondary chart rather than competing with the price signal. -->
       ${volBars}
-      <!-- "vol rel" label tucked at the top-left of the volume strip.
-           The "rel" qualifier signals that bar heights are scaled to the
-           BUCKET-LOCAL max within the current time-frame — flipping
-           1H → 1D rescales every bar, so absolute heights are not
-           comparable across views. Per-bar tooltips carry the real
-           sat count for hover-time forensics. -->
-      <text x="${PL - 4}" y="${(volTop + 3).toFixed(2)}" font-size="8" fill="var(--ink-mid)" font-family="var(--mono, monospace)" text-anchor="end" dominant-baseline="hanging" opacity="0.8"><title>Bar heights scaled to the highest-volume bucket in the current time-frame. Hover any bar for the exact sat total.</title>vol · rel</text>
-      <text x="${PL - 4}" y="${yOf(yHi).toFixed(2)}" font-size="9" fill="var(--ink-mid)" font-family="var(--mono, monospace)" text-anchor="end" dominant-baseline="middle">${escapeHtml(maxLbl)}</text>
-      <text x="${PL - 4}" y="${yOf(yMid).toFixed(2)}" font-size="9" fill="var(--ink-mid)" font-family="var(--mono, monospace)" text-anchor="end" dominant-baseline="middle">${escapeHtml(midLbl)}</text>
-      <text x="${PL - 4}" y="${yOf(yLo).toFixed(2)}" font-size="9" fill="var(--ink-mid)" font-family="var(--mono, monospace)" text-anchor="end" dominant-baseline="middle">${escapeHtml(minLbl)}</text>
+
+      <text x="${PL - 6}" y="${yOf(yHi).toFixed(2)}" font-size="10" fill="var(--ink-mid)" font-family="var(--mono, monospace)" text-anchor="end" dominant-baseline="middle">${escapeHtml(maxLbl)}</text>
+      <text x="${PL - 6}" y="${yOf(yMid).toFixed(2)}" font-size="10" fill="var(--ink-mid)" font-family="var(--mono, monospace)" text-anchor="end" dominant-baseline="middle" opacity="0.7">${escapeHtml(midLbl)}</text>
+      <text x="${PL - 6}" y="${yOf(yLo).toFixed(2)}" font-size="10" fill="var(--ink-mid)" font-family="var(--mono, monospace)" text-anchor="end" dominant-baseline="middle">${escapeHtml(minLbl)}</text>
       <!-- X-axis labels: oldest at left, midpoint in the middle, newest at right.
            Midpoint helps users orient when the span is long (e.g., "23h ago"
            vs "28m ago" leaves a big middle the eye can't anchor without help). -->
-      <text x="${PL}" y="${H - 5}" font-size="9" fill="var(--ink-mid)">${escapeHtml(oldLbl)}</text>
-      <text x="${(PL + plotW / 2).toFixed(0)}" y="${H - 5}" font-size="9" fill="var(--ink-mid)" text-anchor="middle">${escapeHtml(_ageStr(Math.floor((ts0 + tsN) / 2)))}</text>
-      <text x="${W - PR}" y="${H - 5}" font-size="9" fill="var(--ink-mid)" text-anchor="end">${escapeHtml(newLbl)}</text>
+      <text x="${PL}" y="${H - 5}" font-size="10" fill="var(--ink-mid)" font-family="var(--serif)" font-style="italic">${escapeHtml(oldLbl)}</text>
+      <text x="${(PL + plotW / 2).toFixed(0)}" y="${H - 5}" font-size="10" fill="var(--ink-mid)" font-family="var(--serif)" font-style="italic" text-anchor="middle" opacity="0.7">${escapeHtml(_ageStr(Math.floor((ts0 + tsN) / 2)))}</text>
+      <text x="${W - PR}" y="${H - 5}" font-size="10" fill="var(--ink-mid)" font-family="var(--serif)" font-style="italic" text-anchor="end">${escapeHtml(newLbl)}</text>
       <!-- Cursor overlay: invisible rect captures mousemove across the
            full plot area. The crosshair group below is positioned by
            _wireMarketPriceChartCursor on mousemove; hidden until first
