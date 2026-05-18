@@ -2013,6 +2013,13 @@ function _coolingMsLeft(base) {
   return h ? Math.max(0, h.cooldownUntil - Date.now()) : 0;
 }
 
+// User-facing message for "every provider returned 429" — kept as a constant
+// so the in-flight rotation throw and the fast-fail short-circuit emit the
+// identical string. The literal `rate limited` prefix is load-bearing: the
+// wallet-bar and Holdings stale-pill detectors match on /rate limited|429/i
+// to render the soft "stale · rate limited" indicator.
+const _API_RATE_LIMITED_MSG = 'rate limited — Bitcoin chain indexers are throttling tacit right now. Wait ~60s, then retry. To bypass public limits, set your own Esplora URL in Manage wallet → Advanced: chain indexer.';
+
 async function api(path, opts = {}) {
   // Defensive normalization: mempool.space's /tx/:txid endpoint only
   // accepts a bare 64-hex txid. A caller somewhere is constructing
@@ -2052,6 +2059,18 @@ async function api(path, opts = {}) {
     const healthySaturated  = healthy.filter(b => _baseSlotsFree(b) === 0);
     const cooling = bases.filter(_isCooling)
       .sort((a, b) => _coolingMsLeft(a) - _coolingMsLeft(b));
+    // Fast-fail when every base is in a non-trivial rate-limit cooldown.
+    // Re-trying a cooling provider just earns another 429 (and another 30s
+    // cooldown stacked on top), so a user mashing Preview/Retry actively
+    // deepens the throttle. If the nearest-recovery base is more than 2s
+    // away, throw immediately with the standard rate-limited message so
+    // the caller's UI surfaces "wait ~60s" instead of paying one
+    // round-trip per cooling base before saying the same thing. The 2s
+    // skew lets near-expiry cooldowns still take their last-resort
+    // attempt (sometimes the upstream has recovered slightly early).
+    if (healthy.length === 0 && cooling.length > 0 && _coolingMsLeft(cooling[0]) > 2000) {
+      throw new Error(_API_RATE_LIMITED_MSG);
+    }
     const order = healthyWithSlots.length
       ? [...healthyWithSlots, ...healthySaturated, ...cooling]
       : (healthy.length ? [...healthy, ...cooling] : cooling);
@@ -2145,7 +2164,7 @@ async function api(path, opts = {}) {
     // /rate limited|429/i to swap to the "stale · rate limited" indicator
     // instead of the red "offline" block.
     if (lastRes && lastRes.status === 429) {
-      throw new Error('rate limited — chain indexers are throttling this network. Wait ~60s and retry. If this persists, point at your own node via Wallet → Advanced → Chain indexer.');
+      throw new Error(_API_RATE_LIMITED_MSG);
     }
     if (lastRes) throw new Error(`API ${lastRes.status} (all providers)`);
     throw lastErr || new Error('all chain APIs unreachable');
@@ -3123,6 +3142,18 @@ async function broadcastWithRetry(hex, attempts = 4, baseDelayMs = 1000) {
           'then retry. Or top up from a fresh source (e.g. signet faucet) — ' +
           'fresh sats have no shared ancestry and bypass the limit.'
         );
+      }
+      // Rate-limit cascade: every Esplora upstream returned 429 (worker's
+      // /chain now propagates this end-to-end after the May 2026 fix). The
+      // built+signed tx is idempotent to re-broadcast, so absorbing a 429
+      // here saves the user from having to rebuild from scratch (which would
+      // re-fire scanHoldings + getUtxos and likely throttle again). Longer
+      // base delay than the propagation-retry path because cooldowns are
+      // measured in tens of seconds, not the 1-3s a mempool-propagation
+      // race takes. Caps each backoff at 8s so 4 attempts ≤ ~20s total.
+      if (/rate limited|429/i.test(msg)) {
+        await new Promise(r => setTimeout(r, Math.min(8000, (i + 1) * 3000)));
+        continue;
       }
       // Only retry on errors that suggest propagation/indexing delay. Notably we
       // do NOT retry on `non-mandatory-script-verify-flag` (the tx is invalid
@@ -12951,6 +12982,43 @@ async function scanHoldings(force = false) {
   })();
   return _holdingsInFlight;
 }
+
+// scanHoldings wrapper with a rate-limit-ONLY stale-cache fallback. Used by
+// flows where blocking the user behind a 429 is worse than proceeding with
+// slightly-old asset classification.
+//
+// SAFETY CONTRACT — readers of this helper should not generalize naively:
+//   • selectSatsUtxosSafe() relies on `holdings` to EXCLUDE asset UTXOs
+//     from the sats picker. A stale `holdings` that misses a freshly-
+//     received CXFER would cause the picker to treat that UTXO as plain
+//     sats and spend it as fee/change → asset loss.
+//   • Sats-only-OUT flows are the *only* place this is currently safe to
+//     adopt unconditionally: the user is moving sats out of tacit
+//     entirely, the window between buy + send-out is small, and the user
+//     accepts a "stale classification" toast in exchange for not being
+//     stuck behind throttled providers. Token/asset/AMM/mixer flows must
+//     NOT call this — they should fail fast on 429 and let the user
+//     retry once cooldowns clear.
+//
+// `maxAgeMs` bounds how stale a cached scan is allowed to be when the live
+// call 429s; pass Infinity for "any age". Non-rate-limit errors always
+// rethrow, regardless of cache state.
+async function scanHoldingsOrStale(maxAgeMs = Infinity) {
+  try {
+    return await scanHoldings();
+  } catch (e) {
+    const msg = String(e && e.message || '');
+    const isRateLimited = /rate limited|429/i.test(msg);
+    if (!isRateLimited) throw e;
+    if (!_holdingsCache || !(_holdingsCache.holdings instanceof Map)) throw e;
+    const ageMs = Date.now() - (_holdingsCache.fetchedAt || 0);
+    if (ageMs > maxAgeMs) throw e;
+    const ageSec = Math.max(0, Math.floor(ageMs / 1000));
+    try { toast(`Chain indexers throttled — using cached asset classification (${ageSec}s old) to proceed.`, ''); } catch {}
+    return _holdingsCache.holdings;
+  }
+}
+
 async function _scanHoldingsImpl() {
   // Refresh the pool registry before walking UTXOs. Without this, a user who
   // receives a pay-to-other T_WITHDRAW and hasn't visited the Mixer tab sees
@@ -54595,8 +54663,16 @@ function marketListingPagerHtml(total, page, totalPages, start, end) {
   // ("No instant listings — switch to All offers") already tell the
   // user why the grid is empty; another "0 of 0" line adds nothing.
   if (total <= 0) return '';
+  // The pager total is the filtered + chunk-grouped count for the
+  // currently-active panel filter (Simple mode / Mine toggle / dust
+  // filter). It differs deliberately from the asset-header 'Active
+  // orders' figure (which is the unfiltered total of every kind) and
+  // from the depth-chart count (which applies the in-band 0.2×–5×
+  // mark filter). Surfacing the explanation here so users don't read
+  // mismatched numbers as a bug.
+  const _pagerTitle = `${total} listings under the panel's current filter (Simple mode + Mine toggle + dust cutoff, then chunked groups counted once each). The asset-header card and depth chart count from different filtered sets — see their tooltips for the specifics.`;
   if (totalPages <= 1) {
-    return `<div class="market-pagination"><span>${start}-${end} of ${total} listings</span><span>${MARKET_LISTING_PAGE_SIZE} per page</span></div>`;
+    return `<div class="market-pagination"><span title="${escapeHtml(_pagerTitle)}" style="cursor:help;border-bottom:1px dotted var(--ink-faint);">${start}-${end} of ${total} listings</span><span>${MARKET_LISTING_PAGE_SIZE} per page</span></div>`;
   }
   const opts = Array.from({ length: totalPages }, (_, i) => {
     const p = i + 1;
@@ -54604,7 +54680,7 @@ function marketListingPagerHtml(total, page, totalPages, start, end) {
   }).join('');
   return `
     <div class="market-pagination market-listing-pagination">
-      <span>${start}-${end} of ${total} listings &middot; ${MARKET_LISTING_PAGE_SIZE} per page</span>
+      <span title="${escapeHtml(_pagerTitle)}" style="cursor:help;border-bottom:1px dotted var(--ink-faint);">${start}-${end} of ${total} listings &middot; ${MARKET_LISTING_PAGE_SIZE} per page</span>
       <div class="market-pagination-controls">
         <button type="button" data-market-listing-page="prev"${page <= 1 ? ' disabled' : ''}>&lsaquo;</button>
         <select data-market-listing-page-select aria-label="Listing page">${opts}</select>
@@ -58250,7 +58326,7 @@ async function _populateDepthChart(section, aid, decimals, ticker, markUnit) {
   out.innerHTML = `
     <div style="font-size:10px;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:4px;display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;">
       <strong>Depth</strong>${_logBadge}${_crossedBadge}
-      <span class="muted" style="text-transform:none;letter-spacing:0;font-size:10px;">· ${bids.length} bid${bids.length === 1 ? '' : 's'} · ${asks.length} ask${asks.length === 1 ? '' : 's'} · <span${_inBandTitle ? ` title="${escapeHtml(_inBandTitle)}" style="cursor:help;border-bottom:1px dotted var(--ink-faint);"` : ''}>best bid ${escapeHtml(fmtUnitPriceSats(headerBestBid))} · best ask ${escapeHtml(fmtUnitPriceSats(headerBestAsk))} sats/${escapeHtml(ticker)}</span>${centerU != null ? ` · mark ${escapeHtml(fmtUnitPriceSats(centerU))}` : ''} · hover to inspect, click to prime swap</span>
+      <span class="muted" style="text-transform:none;letter-spacing:0;font-size:10px;">· <span title="Depth chart counts after the in-band outlier filter (0.2×–5× mark price): dust + fat-finger orders are excluded from the chart's bands and from these counts. The asset-header card's 'Active orders' is the unfiltered total across every kind; the orderbook panel below uses its own Simple-mode filter (preauth-only). Different surfaces filter differently — hover each cell for the specifics." style="cursor:help;border-bottom:1px dotted var(--ink-faint);">${bids.length} bid${bids.length === 1 ? '' : 's'} · ${asks.length} ask${asks.length === 1 ? '' : 's'}</span> · <span${_inBandTitle ? ` title="${escapeHtml(_inBandTitle)}" style="cursor:help;border-bottom:1px dotted var(--ink-faint);"` : ''}>best bid ${escapeHtml(fmtUnitPriceSats(headerBestBid))} · best ask ${escapeHtml(fmtUnitPriceSats(headerBestAsk))} sats/${escapeHtml(ticker)}</span>${centerU != null ? ` · mark ${escapeHtml(fmtUnitPriceSats(centerU))}` : ''} · hover to inspect, click to prime swap</span>
     </div>
     <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet" style="width:100%;height:auto;max-height:200px;display:block;background:var(--bg-warm, #faf9f5);border:1px solid var(--ink-faint);">
       ${isCrossed ? (() => {
