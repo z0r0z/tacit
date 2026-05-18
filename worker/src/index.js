@@ -526,6 +526,10 @@ function corsHeaders(env, reqOrigin) {
     'Access-Control-Allow-Origin': allow,
     'Access-Control-Allow-Methods': 'POST, GET, DELETE, OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type',
+    // Retry-After is not a CORS-safelisted response header; without exposing
+    // it the dapp's fetch() can't read the upstream's recommended cooldown
+    // when /chain proxies a 429. Other entries are existing pass-throughs.
+    'Access-Control-Expose-Headers': 'Retry-After',
     'Vary': 'Origin',
   };
 }
@@ -820,6 +824,42 @@ function slotRotateLogKey(network, height, txIndex, txid) {
 function slotRotateLogPrefix(network) {
   return network === 'signet' ? 'slotrot:' : `slotrot:${network}:`;
 }
+// SPEC-CBTC-ZK-FUNGIBILITY §5.26: T_SLOT_MINT, T_SLOT_SPLIT, and T_SLOT_MERGE
+// also accept the optional encrypted-note tail (mint and merge: one note;
+// split: per-output via has_note bitmap). Each gets its own log namespace so
+// recipients can scan chronologically without having to walk every leaf in
+// every (asset_id, denomination) pool, mirroring the slot-rotate flow.
+function slotMintLogKey(network, height, txIndex, txid) {
+  const h = String(height || 0).padStart(10, '0');
+  const idx = String(txIndex || 0).padStart(6, '0');
+  return network === 'signet'
+    ? `slotmint:${h}:${idx}:${txid}`
+    : `slotmint:${network}:${h}:${idx}:${txid}`;
+}
+function slotMintLogPrefix(network) {
+  return network === 'signet' ? 'slotmint:' : `slotmint:${network}:`;
+}
+function slotSplitLogKey(network, height, txIndex, txid, voutIndex) {
+  const h = String(height || 0).padStart(10, '0');
+  const idx = String(txIndex || 0).padStart(6, '0');
+  const vi = String(voutIndex || 0).padStart(3, '0');
+  return network === 'signet'
+    ? `slotsplit:${h}:${idx}:${txid}:${vi}`
+    : `slotsplit:${network}:${h}:${idx}:${txid}:${vi}`;
+}
+function slotSplitLogPrefix(network) {
+  return network === 'signet' ? 'slotsplit:' : `slotsplit:${network}:`;
+}
+function slotMergeLogKey(network, height, txIndex, txid) {
+  const h = String(height || 0).padStart(10, '0');
+  const idx = String(txIndex || 0).padStart(6, '0');
+  return network === 'signet'
+    ? `slotmerge:${h}:${idx}:${txid}`
+    : `slotmerge:${network}:${h}:${idx}:${txid}`;
+}
+function slotMergeLogPrefix(network) {
+  return network === 'signet' ? 'slotmerge:' : `slotmerge:${network}:`;
+}
 
 // ============== cBTC.tac KV SCHEMA (SPEC-CBTC-TAC-AMENDMENT §5.35+) ==============
 //
@@ -942,14 +982,18 @@ async function ctacGetForceCloseThrottle(env, network, height) {
 // NOT yet wired in the worker. These are the launch defaults.
 const CTAC_INITIAL_BOND_RATIO_THOUSANDTHS = 2000;   // 2.0x → 2000 thousandths
 const CTAC_LIQUIDATION_RATIO_THOUSANDTHS  = 1200;   // 1.2x → 1200 thousandths
-const CTAC_LIQUIDATOR_REWARD_NUM = 5;               // 0.005 (0.5%)
-const CTAC_LIQUIDATOR_REWARD_DEN = 1000;
+const CTAC_AGGREGATE_RECOVERY_RATIO_THOUSANDTHS = 1500; // 1.5x → 1500 thousandths (SPEC §5.45.3)
 const CTAC_TWAP_WINDOW_BLOCKS = 180;                // SPEC §5.41.1
 const CTAC_REORG_SAFETY_DEPTH = 6;                  // SPEC §5.34.3
 const CTAC_MAX_FORCE_CLOSES_PER_BLOCK = 5;          // SPEC §5.41.1
 const CTAC_MAX_SINGLE_POSITION_BTC_SATS = 1_000_000_000n; // 10 BTC SPEC §5.42.3 conservative initial
-const CTAC_MAX_POOL_FRAC_THOUSANDTHS = 50;          // 0.05 → 50/1000 SPEC §5.42.3 conservative initial
+const CTAC_MAX_POOL_FRAC_THOUSANDTHS = 100;         // 0.10 → 100/1000 SPEC §5.41.2 (10% of TAC/cBTC.zk pool TAC depth)
 const CTAC_STABILITY_FEE_BPS = 25;                  // 0.25% APR — accrued lazily on position events
+const CTAC_BLOCKS_PER_YEAR = 52596;                 // ~Bitcoin block target, SPEC §5.45.1
+// NOTE: CTAC_LIQUIDATOR_REWARD_* removed in v1 — FORCE_CLOSE no longer
+// performs an AMM swap (early-SLASH semantics, see §5.38 v1 amendment);
+// no per-call reward. cBTC.tac holders' interest in securing backing is
+// the implicit incentive.
 
 // Deterministic derivation of the cBTC.tac variant asset_id per denomination.
 // The single global rule: cBTC.tac@denom_sats has asset_id =
@@ -6228,6 +6272,8 @@ async function handleChainProxy(req, env, network, cors) {
   const timeoutMs = isChainWalk ? 25_000 : 15_000;
   let lastErr = null;
   let lastStatus = null;
+  let lastRetryAfter = null;
+  let sawUpstream429 = false;
   for (const upstreamBase of upstreams) {
     const { init, cleanup } = _buildUpstreamInit({ cacheTtl, timeoutMs });
     let r = null;
@@ -6247,6 +6293,11 @@ async function handleChainProxy(req, env, network, cors) {
     // same query, so retrying just wastes round-trips.
     if (r.status === 429 || r.status >= 500) {
       lastStatus = r.status;
+      if (r.status === 429) {
+        sawUpstream429 = true;
+        const ra = r.headers.get('retry-after');
+        if (ra) lastRetryAfter = ra;
+      }
       // Drain the body so the connection releases.
       try { await r.text(); } catch {}
       continue;
@@ -6258,7 +6309,20 @@ async function handleChainProxy(req, env, network, cors) {
     if (cacheTtl > 0 && r.ok) respHeaders.set('Cache-Control', 'public, max-age=60');
     return new Response(body, { status: r.status, headers: respHeaders });
   }
-  // Every upstream exhausted (all returned 429/5xx, or all threw).
+  // Every upstream exhausted. If any returned 429, propagate the rate-limit
+  // signal (with upstream Retry-After if present) so the dapp's api()
+  // rotation can honor the cooldown instead of treating the worker as a
+  // generic 5xx and immediately re-trying direct providers from the user's
+  // IP — which stacks a fresh 429 cooldown on top of the upstream throttle.
+  if (sawUpstream429) {
+    const respHeaders = new Headers(cors);
+    respHeaders.set('Content-Type', 'application/json');
+    if (lastRetryAfter) respHeaders.set('Retry-After', lastRetryAfter);
+    return new Response(JSON.stringify({ error: 'all upstreams rate-limited', path }), {
+      status: 429,
+      headers: respHeaders,
+    });
+  }
   const errMsg = lastErr
     ? `all upstreams unreachable: ${lastErr.message}`
     : `all upstreams returned ${lastStatus}`;
@@ -8857,10 +8921,17 @@ async function handleMarket(env, network, cors, prehydratedAssetsBody = null) {
     ]);
     // Strip expired and attach kind + _asset reference so the client can sort
     // and filter without needing to re-join against the assets array.
-    const opens = openings.filter(l => !l.expired).map(l => ({ ...l, kind: 'opening', _asset: a }));
-    const ranges_ = ranges.filter(l => !l.expired).map(l => ({ ...l, kind: 'range', _asset: a }));
-    const intents_ = intents.filter(i => !i.expired).map(i => ({ ...i, kind: 'intent', _asset: a }));
-    const preauths_ = preauths.filter(p => !p.expired).map(p => ({ ...p, kind: 'preauth', _asset: a }));
+    // Don't attach the full _asset record to every listing — every kind
+    // already carries asset_id from the underlying KV record, and the
+    // dapp rejoins against the assets[] array on receipt (see
+    // fetchMarketData in dapp/tacit.js). On TAC alone the _asset
+    // duplication cost ~615 KB out of a ~1.9 MB /market response
+    // (~32%); dropping it cuts egress + cache-entry size across every
+    // /market HIT without changing observable behaviour.
+    const opens = openings.filter(l => !l.expired).map(l => ({ ...l, kind: 'opening' }));
+    const ranges_ = ranges.filter(l => !l.expired).map(l => ({ ...l, kind: 'range' }));
+    const intents_ = intents.filter(i => !i.expired).map(i => ({ ...i, kind: 'intent' }));
+    const preauths_ = preauths.filter(p => !p.expired).map(p => ({ ...p, kind: 'preauth' }));
     return [...opens, ...ranges_, ...intents_, ...preauths_];
   }));
   return jsonResponse({
@@ -15412,8 +15483,33 @@ async function scanForEtches(env, network) {
           network,
           kind: 'slot_mint',
           recipient_commitment: sm.recipient_commitment,
+          // SPEC-CBTC-ZK-FUNGIBILITY §5.26: T_SLOT_MINT MAY carry an
+          // encrypted-note tail when the minter is not the recipient
+          // (AMM-driven mint, paid distribution, OTC sale). Persist it on
+          // the leaf record so the /pools detail endpoint and the
+          // /slot-mints chronological log can return it for recipient
+          // detection — same pattern as slot_rotate_new.
+          encrypted_note: sm.encrypted_note || null,
         };
         await env.REGISTRY_KV.put(leafKey, JSON.stringify(leafMeta));
+        // Chronological log for recipient-side scanning. Mirrors
+        // slotRotateLog so scanInboundSlotNotes can fold mint-with-note
+        // into the same scan path without walking every pool's leaves.
+        await env.REGISTRY_KV.put(
+          slotMintLogKey(network, h, txIndex, tx.txid),
+          JSON.stringify({
+            network,
+            asset_id: sm.asset_id,
+            denomination: sm.denomination,
+            new_leaf_hash: sm.leaf_hash,
+            new_recipient_commitment: sm.recipient_commitment,
+            mint_txid: tx.txid,
+            height: h,
+            tx_index: txIndex,
+            confirmed_at: tx.status?.block_time || Math.floor(Date.now() / 1000),
+            encrypted_note: sm.encrypted_note || null,
+          }),
+        );
         await env.REGISTRY_KV.put(cntKey, String(cnt + 1));
         const xonlyHex = sm.k_btc_xonly;
         const slotKey = slotRegistryKey(network, sm.asset_id, sm.denomination, xonlyHex);
@@ -15731,6 +15827,26 @@ async function scanForEtches(env, network) {
             split_predecessor_nullifier: ss.old_nullifier_hash,
             split_vout_index: i,
           }));
+          // Per-output entry in the chronological split log so recipients
+          // can scan T_SLOT_SPLIT distributions the same way they scan
+          // rotations and mints. One entry per output preserves canonical
+          // ordering by (height, txIndex, txid, voutIndex).
+          await env.REGISTRY_KV.put(
+            slotSplitLogKey(network, h, txIndex, tx.txid, i),
+            JSON.stringify({
+              network,
+              asset_id: out.asset_id_new,
+              denomination: dNew.toString(),
+              new_leaf_hash: out.new_leaf_hash,
+              new_recipient_commitment: out.new_recipient_commit,
+              split_txid: tx.txid,
+              height: h,
+              tx_index: txIndex,
+              split_vout_index: i,
+              confirmed_at: tx.status?.block_time || Math.floor(Date.now() / 1000),
+              encrypted_note: ss.encrypted_notes ? ss.encrypted_notes[i] : null,
+            }),
+          );
           await env.REGISTRY_KV.put(cntKey, String(cnt + 1));
           await env.REGISTRY_KV.put(
             slotRegistryKey(network, out.asset_id_new, dNew, xonlyHex),
@@ -15879,6 +15995,24 @@ async function scanForEtches(env, network) {
           encrypted_note: sm.encrypted_note || null,
           merge_predecessor_nullifiers: sm.inputs.map(i => i.old_nullifier_hash),
         }));
+        // Chronological merge log for recipient-side scanning. One entry
+        // per merge tx (single output by construction); shape mirrors the
+        // mint and rotate logs.
+        await env.REGISTRY_KV.put(
+          slotMergeLogKey(network, h, txIndex, tx.txid),
+          JSON.stringify({
+            network,
+            asset_id: sm.asset_id_new,
+            denomination: dNew.toString(),
+            new_leaf_hash: sm.new_leaf_hash,
+            new_recipient_commitment: sm.new_recipient_commit,
+            merge_txid: tx.txid,
+            height: h,
+            tx_index: txIndex,
+            confirmed_at: tx.status?.block_time || Math.floor(Date.now() / 1000),
+            encrypted_note: sm.encrypted_note || null,
+          }),
+        );
         await env.REGISTRY_KV.put(cntKey, String(cnt + 1));
         await env.REGISTRY_KV.put(
           slotRegistryKey(network, sm.asset_id_new, dNew, newKBtcXOnlyHex),

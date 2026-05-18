@@ -2140,9 +2140,12 @@ async function api(path, opts = {}) {
     }
     // Every base exhausted. Normalize the error message so the wallet bar
     // shows a short, actionable pill instead of the provider's multi-
-    // paragraph pricing-notice JSON.
+    // paragraph pricing-notice JSON. Keep the literal `rate limited` prefix
+    // — the stale-pill detectors at renderWallet/renderHoldings match on
+    // /rate limited|429/i to swap to the "stale · rate limited" indicator
+    // instead of the red "offline" block.
     if (lastRes && lastRes.status === 429) {
-      throw new Error('rate limited — all providers throttled');
+      throw new Error('rate limited — chain indexers are throttling this network. Wait ~60s and retry. If this persists, point at your own node via Wallet → Advanced → Chain indexer.');
     }
     if (lastRes) throw new Error(`API ${lastRes.status} (all providers)`);
     throw lastErr || new Error('all chain APIs unreachable');
@@ -25486,7 +25489,32 @@ async function buildAndBroadcastSatsSend({ recipientAddr, amountSats }) {
 
   // (3) Ground-truth holdings for the asset-UTXO exclusion set. If this throws,
   // we MUST bail — no fallback to "assume nothing is asset UTXO."
-  const holdings = await scanHoldings();
+  //
+  // Stale-cache exception (rate-limit only): when every chain indexer is
+  // currently 429'ing AND we have a successful prior scan in `_holdingsCache`,
+  // reuse those holdings rather than refusing the send. A UTXO that was
+  // classified as asset by an earlier scan doesn't reclassify to "spendable
+  // sats" without a user action, so the exclusion set stays sound; the only
+  // risk is missing a brand-new asset CXFER that landed since the cache was
+  // taken — acceptable for a user who is otherwise stuck behind throttled
+  // providers and just wants to move their remaining sats out. The
+  // post-build re-classification at step (6) below still runs against
+  // whatever scanHoldings returns; if a fresh scan succeeds by then it
+  // catches the race.
+  let holdings;
+  try {
+    holdings = await scanHoldings();
+  } catch (e) {
+    const msg = String(e && e.message || '');
+    const isRateLimited = /rate limited|429/i.test(msg);
+    if (isRateLimited && _holdingsCache && _holdingsCache.holdings instanceof Map) {
+      holdings = _holdingsCache.holdings;
+      const ageSec = Math.max(0, Math.floor((Date.now() - (_holdingsCache.fetchedAt || 0)) / 1000));
+      try { toast(`Chain indexers throttled — using cached asset classification (${ageSec}s old) to proceed.`, ''); } catch {}
+    } else {
+      throw e;
+    }
+  }
   if (!holdings || !(holdings instanceof Map)) {
     throw new Error('could not classify asset UTXOs (holdings scan failed); not safe to send. Try again or hit ↻ Refresh first.');
   }
@@ -50752,17 +50780,18 @@ async function fetchMarketData() {
   // duplicate-ticker warning by listing a copycat asset before the original.
   markTickerCollisions(assets);
   const listings = Array.isArray(j.listings) ? j.listings : [];
-  // Rebind each listing's _asset to the marked registry entry so the
-  // verified / copycat / duplicate signals flow through to listing-tile
-  // and asset-page renders. The worker serializes listing._asset as a
-  // separate object copy of the registry asset; without this remap, the
-  // ticker-collision marks set above on `assets[]` never reach the
-  // listing-side render paths (which is why the asset-page header was
-  // missing the green verified pill while the browse-grid tile had it).
+  // Hydrate each listing's _asset from the assets[] array. Worker stopped
+  // attaching _asset on each listing to cut /market egress by ~615 KB on
+  // TAC-scale responses (~32% of total size); each listing now carries
+  // only its asset_id and we join client-side here. Downstream code
+  // continues to read l._asset.* unchanged. Also picks up ticker-
+  // collision / verified marks set on the assets[] array above so they
+  // flow through to listing-tile and asset-page renders without a
+  // second pass.
   if (assets.length && listings.length) {
     const byId = new Map(assets.map(a => [a.asset_id, a]));
     for (const l of listings) {
-      const id = l._asset?.asset_id;
+      const id = l._asset?.asset_id || l.asset_id;
       if (!id) continue;
       const reg = byId.get(id);
       if (reg) l._asset = reg;
