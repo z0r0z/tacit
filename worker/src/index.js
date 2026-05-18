@@ -1891,14 +1891,11 @@ async function ammPairAppend(env, network, lowHex, highHex, poolIdHex) {
 }
 
 // ============== T_SWAP_VAR (SPEC-SWAP-VAR-AMENDMENT §5.16.3) ==============
-const _SWAP_VAR_VERSION = 0x01;
 
 function decodeTSwapVarPayload(payload) {
   if (!payload) return null;
-  if (payload.length < 298) return null;
+  if (payload.length < 297) return null;
   let p = 0;
-  const version = payload[p]; p += 1;
-  if (version !== _SWAP_VAR_VERSION) return null;
   const opcode = payload[p]; p += 1;
   if (opcode !== T_SWAP_VAR) return null;
   const poolId = payload.slice(p, p + 32); p += 32;
@@ -2020,17 +2017,14 @@ function ammSwapVarEnvelopeHash(payload) {
 // Per-hop block: 67 bytes
 //   pool_id(32) || direction(1) || fee_bps(2) || R_A_pre(8) || R_B_pre(8)
 //   || delta_a_net_mag(8) || delta_b_net_mag(8)
-const _SWAP_ROUTE_VERSION = 0x01;
 const _SWAP_ROUTE_HOP_BYTES = 32 + 1 + 2 + 8 + 8 + 8 + 8;
 
 function decodeTSwapRoutePayload(payload) {
   if (!payload) return null;
-  // Minimum size: header (37) + N=2 hops (134) + IO + closures + min rangeproof
-  // = 37 + 134 + 36 + 33 + 33 + 32 + 2 + 64 + 64 ≈ 435 bytes floor.
-  if (payload.length < 435) return null;
+  // Minimum size: header (36) + N=2 hops (134) + IO + closures + min rangeproof
+  // = 36 + 134 + 36 + 33 + 33 + 32 + 2 + 64 + 64 ≈ 434 bytes floor.
+  if (payload.length < 434) return null;
   let p = 0;
-  const version = payload[p]; p += 1;
-  if (version !== _SWAP_ROUTE_VERSION) return null;
   const opcode = payload[p]; p += 1;
   if (opcode !== T_SWAP_ROUTE) return null;
   const nHops = payload[p]; p += 1;
@@ -13077,6 +13071,27 @@ function _logAnalytics(env, request, response, durationMs, network) {
   } catch { /* swallow — analytics never fails the response path */ }
 }
 
+// Cron error surface. The scheduled handler wraps each per-network call
+// in Promise.allSettled + .catch(), so a throw silently kills that
+// network's tick — we hit exactly this with signet scanForEtches freezing
+// for hours. Route catches through here so failures land in Analytics
+// Engine + console.warn under index `cron:<op>:<network>`, making the
+// freeze alertable.
+function _logCronError(env, op, network, e) {
+  try {
+    if (typeof console !== 'undefined') {
+      console.warn(`[cron] ${op}(${network}) threw: ${String(e?.message || e)}`);
+    }
+    if (env?.ANALYTICS) {
+      env.ANALYTICS.writeDataPoint({
+        indexes: [`cron:${op}:${network}`.slice(0, 96)],
+        blobs: [op, network || '', String(e?.message || e).slice(0, 1024), String(e?.stack || '').slice(0, 1024)],
+        doubles: [Date.now()],
+      });
+    }
+  } catch { /* never fail cron */ }
+}
+
 // ============== Marketplace record auto-expiry ==============
 // Marketplace records (listings, range-listings, atomic-intents,
 // preauth-sales, bid-intents) carry an `expiry` field but were
@@ -22867,10 +22882,13 @@ export default {
   },
 
   async scheduled(_event, env, ctx) {
-    // Scan both networks each cron tick. Failures in one don't affect the other.
+    // Scan both networks each cron tick. Failures in one don't affect the
+    // other; errors surface via _logCronError so the silent-freeze pattern
+    // (signet last_scanned stuck for hours because the catch swallowed the
+    // throw) is alertable instead of invisible.
     ctx.waitUntil((async () => {
       await Promise.allSettled(
-        NETWORKS.map(net => scanForEtches(env, net).catch(() => {})),
+        NETWORKS.map(net => scanForEtches(env, net).catch(e => _logCronError(env, 'scanForEtches', net, e))),
       );
       // Sweep abandoned variable-fill bid partial-claims and refund their
       // fill_amount back to the parent bid (§5.7.7 *Re-credit on
