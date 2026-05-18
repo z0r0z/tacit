@@ -15882,28 +15882,13 @@ async function buildAndBroadcastSlotMint({
   // network_tag: signet → 0x01, regtest → 0x02, anything else (mainnet) → 0x00.
   const networkTag = NET.name === 'signet' ? 0x01 : NET.name === 'regtest' ? 0x02 : 0x00;
 
-  // Generate fresh mixer secrets for this slot. Both must be persisted to
-  // localStorage — losing them means losing the backing BTC permanently.
-  const secret = new Uint8Array(32); crypto.getRandomValues(secret);
-  const nullifierPreimage = new Uint8Array(32); crypto.getRandomValues(nullifierPreimage);
-
-  // Build the envelope. minterPriv = wallet.priv: the trader is the "minter"
-  // for a self-mint (they sign over slot_mint_msg attesting they accept the
-  // trade terms — which here are paymentAmount=0, so the sig is purely
-  // ceremonial but still binds the envelope's claimed leaf/K_btc).
-  const env = await buildSlotMintEnvelope({
-    networkTag, assetId, denomination: denomBig,
-    secret, nullifierPreimage,
-    paymentAssetId, paymentAmount: paymentAmt,
-    minterPriv: wallet.priv,
-  });
-
-  const envelopeScript = encodeEnvelopeScript(wallet.xonly(), env.payload);
-  const leaf = tapLeafHash(envelopeScript);
-  const { Q_xonly, parity } = tweakedOutputKey(TAP_NUMS, leaf);
-  const commitSpk = p2trScript(Q_xonly);
-  const cb = controlBlock(TAP_NUMS, parity);
-
+  // Pick sats UTXOs FIRST (before envelope build) so the (secret, ν) for this
+  // slot can be HMAC-derived from priv + picked[0]'s outpoint. This makes the
+  // slot recoverable from priv + chain alone via scanSlotsFromPrivkey: the
+  // scanner iterates the user's outgoing spends, treats each spent prevout
+  // as a candidate anchor, and the picked[0] outpoint here will be one of
+  // them. Without deterministic derivation, losing the slot's localStorage
+  // record permanently locks the backing BTC.
   const feeRate = await getFeeRate();
   const revealVb = estSlotMintRevealVb();
   const revealFee = feeFor(revealVb, feeRate);
@@ -15936,6 +15921,36 @@ async function buildAndBroadcastSlotMint({
   if (total < commitValue + commitFee) {
     throw new Error(`insufficient sats: need ${commitValue + commitFee} for denomination ${denomBig} + fees, have ${total}`);
   }
+
+  // Anchor = picked[0]'s outpoint. Scanner's recovery loop matches this by
+  // iterating the user's outgoing-spend history and trying each prevout. The
+  // commit tx puts picked[i] at vin[i] (cf. commitTx construction below), so
+  // picked[0] becomes vin[0] of the commit tx — visible to the scanner.
+  const fundingAnchor = picked[0];
+  const fundingAnchorBytes = _slotOutpointBytes(fundingAnchor.txid, fundingAnchor.vout);
+  const secret = _deriveSlotSecret({
+    privkey: wallet.priv, anchorOutpoint: fundingAnchorBytes, outputIndex: 0,
+  });
+  const nullifierPreimage = _deriveSlotNullifierPreimage({
+    privkey: wallet.priv, anchorOutpoint: fundingAnchorBytes, outputIndex: 0,
+  });
+
+  // Build the envelope. minterPriv = wallet.priv: the trader is the "minter"
+  // for a self-mint (they sign over slot_mint_msg attesting they accept the
+  // trade terms — which here are paymentAmount=0, so the sig is purely
+  // ceremonial but still binds the envelope's claimed leaf/K_btc).
+  const env = await buildSlotMintEnvelope({
+    networkTag, assetId, denomination: denomBig,
+    secret, nullifierPreimage,
+    paymentAssetId, paymentAmount: paymentAmt,
+    minterPriv: wallet.priv,
+  });
+
+  const envelopeScript = encodeEnvelopeScript(wallet.xonly(), env.payload);
+  const leaf = tapLeafHash(envelopeScript);
+  const { Q_xonly, parity } = tweakedOutputKey(TAP_NUMS, leaf);
+  const commitSpk = p2trScript(Q_xonly);
+  const cb = controlBlock(TAP_NUMS, parity);
 
   const change = total - commitValue - commitFee;
   const commitOutputs = [{ value: commitValue, script: commitSpk }];
@@ -70779,6 +70794,14 @@ export {
   encodeTCbtcTacWithdrawAtomicPayload, decodeTCbtcTacWithdrawAtomicPayload,
   computeCbtcTacWithdrawAtomicBindHash,
   T_CBTC_TAC_WITHDRAW_ATOMIC,
+  // SPEC §5.50 — top-up bond on open position.
+  encodeTCbtcTacTopUpPayload, decodeTCbtcTacTopUpPayload,
+  computeCbtcTacTopUpBindHash,
+  T_CBTC_TAC_TOP_UP,
+  // SPEC §5.51 — partial bond release on open position.
+  encodeTCbtcTacBondReleasePayload, decodeTCbtcTacBondReleasePayload,
+  computeCbtcTacBondReleaseBindHash,
+  T_CBTC_TAC_BOND_RELEASE,
   // AMM T_SWAP_VAR wire primitives (SPEC-SWAP-VAR-AMENDMENT §5.16.3).
   encodeTSwapVarPayload, decodeTSwapVarPayload,
   swapVarCurveDeltaOut, computeSwapVarEnvelopeHash,
