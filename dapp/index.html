@@ -1680,6 +1680,7 @@ tr[data-recent-activity] .market-token-sub::after {
   border-top: 1px solid var(--ink);
   display: flex;
   justify-content: space-between;
+  flex-wrap: wrap;
   gap: 10px;
   font-weight: 700;
   white-space: nowrap;
@@ -1692,6 +1693,17 @@ tr[data-recent-activity] .market-token-sub::after {
 }
 .market-listing-total span:last-child {
   text-align: right;
+}
+/* Chunked-group "× N = X BTC" inline subtotal is a <div> appended after
+   the BTC + USD spans (see _groupTotalInline in tacit.js). Flex defaults
+   put it on the SAME row as the spans, causing the BTC/USD/×N glyphs to
+   overlap on tight ask tiles (visible on chunked TAC listings). Force
+   any direct <div> child to claim a full row of the flex container so
+   it sits BELOW the BTC + USD pair, on its own line with its dashed
+   border-top intact. */
+.market-listing-total > div {
+  flex-basis: 100%;
+  width: 100%;
 }
 .market-listing-total .market-usd-price {
   color: var(--ink);
