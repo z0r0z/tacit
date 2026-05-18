@@ -44712,7 +44712,7 @@ async function renderHoldings() {
             const bidsPeek = (typeof _bidCachePeek === 'function') ? _bidCachePeek(aid) : null;
             let bestBidUnit = null;
             for (const b of (bidsPeek || [])) {
-              if (b.axintent_id) continue;
+              if (b._isReserved) continue;
               if (Number(b.expiry || 0) <= nowSec) continue;
               const amt = (() => { try { return BigInt(b.amount || '0'); } catch { return 0n; } })();
               if (amt <= 0n) continue;
@@ -47804,14 +47804,15 @@ async function openDiscoverBidPanel(card, assetIdHex, ticker, decimals) {
     // even if a prior chunk was claimed. Whole-bid stays binary (claimed / open).
     const fullyClaimed = isVar
       ? (remBig < minBig)
-      : !!b.axintent_id;
+      : b._isReserved;
+    const _claimAxintentId = b.claim?.axintent_id || '';
     const isMine = myPub && b.buyer_pubkey === myPub;
     const fulfilTitle = isVar
       ? `Variable-fill bid: any chunk in ${fmtAssetAmountPlain(minBig, decimals)}–${fmtAssetAmountPlain(remBig, decimals)} ${ticker} settles atomically. Click to pick a chunk.`
       : `Spin up an atomic intent targeted at this bidder, signed by your asset UTXO. Settles atomically on Bitcoin.`;
     let actionsHtml;
     if (fullyClaimed && !isVar) {
-      actionsHtml = `<span class="muted" style="font-size:10px;">claimed via atomic intent ${escapeHtml(shorten(b.axintent_id, 6))}</span>`;
+      actionsHtml = `<span class="muted" style="font-size:10px;">claimed via atomic intent ${escapeHtml(shorten(_claimAxintentId, 6))}</span>`;
     } else if (fullyClaimed && isVar) {
       actionsHtml = `<span class="muted" style="font-size:10px;">closed · ${fmtAssetAmountPlain(remBig, decimals)} remaining below min</span>`;
     } else if (isMine) {
@@ -48555,10 +48556,11 @@ function _snapshotMyBids(myPubHex) {
       if (b.buyer_pubkey !== myPubHex) continue;
       if (Number(b.expiry || 0) <= nowSec) continue;
       if (!b.bid_id) continue;
-      // axintent_id means a seller already claimed and we're mid-fulfilment.
-      // Don't snapshot mid-flight bids as "active" since vanish means
-      // settlement completed, not "fill arrived from nowhere".
-      if (b.axintent_id) continue;
+      // _isReserved means a seller already claimed (b.claim attached by
+      // worker, decorated by _decorateBidForReservation) — we're mid-
+      // fulfilment. Don't snapshot mid-flight bids as "active" since
+      // vanish means settlement completed, not "fill arrived from nowhere".
+      if (b._isReserved) continue;
       const _asset = _marketCache?.assets?.find?.(a => a.asset_id === aid) || null;
       out.set(b.bid_id, {
         aid,
@@ -49049,7 +49051,7 @@ function _bidIntentsSignature(aid) {
   const parts = [];
   const nowSec = Math.floor(Date.now() / 1000);
   for (const b of bids) {
-    if (b.axintent_id) continue;
+    if (b._isReserved) continue;
     if (Number(b.expiry || 0) > 0 && Number(b.expiry || 0) <= nowSec) continue;
     parts.push(`${b.bid_id || ''}:${b.price_sats || 0}:${b.amount || '0'}:${b.expiry || 0}`);
   }
@@ -51076,7 +51078,7 @@ function applyMarketFilters() {
     const cachedBids = (typeof _bidCachePeek === 'function') ? _bidCachePeek(aidForSpread) : null;
     if (Array.isArray(cachedBids)) {
       for (const b of cachedBids) {
-        if (b.axintent_id) continue;
+        if (b._isReserved) continue;
         if (Number(b.expiry || 0) <= nowSec) continue;
         const isVar = !!(b.min_fill_amount && b.min_fill_amount !== '0');
         if (isVar) {
@@ -51245,7 +51247,7 @@ function applyMarketFilters() {
     const peek = (typeof _bidCachePeek === 'function') ? _bidCachePeek(_marketView.assetId) : null;
     if (!Array.isArray(peek)) return null;
     const ns = Math.floor(Date.now() / 1000);
-    return peek.filter(b => !b.axintent_id && Number(b.expiry || 0) > ns).length;
+    return peek.filter(b => !b._isReserved && Number(b.expiry || 0) > ns).length;
   })();
   const _mobileTabsHtml = `
     <div class="orderbook-mobile-tabs" role="tablist" aria-label="Orderbook side">
@@ -53166,7 +53168,8 @@ function _aggregatePreauthRowsForLadder(rows, markUnit, decimals) {
 //     granularity matters to a seller picking a partial fill; bucketing
 //     would hide it.
 //   · the user's own bids — keep them distinct + cancellable.
-//   · claimed bids (axintent_id set) — mid-lifecycle, individual fate.
+//   · claimed bids (b._isReserved=true; the worker attached b.claim and
+//     _decorateBidForReservation set the flag) — mid-lifecycle, individual fate.
 //
 // Bucketed bids share the bucket's best (highest) unit price as the
 // canonical "fill at this level" price. A seller fulfilling the level
@@ -53186,7 +53189,7 @@ function _aggregateBidsForLadder(bids, markUnit, decimals) {
     // via the same min_fill check the per-row renderer uses.
     const isVar = !!(b.min_fill_amount && b.min_fill_amount !== '0');
     const isMine = !!b._isMine;
-    const isClaimed = !!b.axintent_id;
+    const isClaimed = !!b._isReserved;
     const isExpired = (b._expiresIn != null && b._expiresIn <= 0);
     if (isVar || isMine || isClaimed || isExpired) { passthrough.push(b); continue; }
     const unit = b._unit;
@@ -53247,8 +53250,13 @@ function _aggregateBidsForLadder(bids, markUnit, decimals) {
       // Bucket-level claim/lifecycle fields don't transfer — fulfilment
       // of a level fans out across the underlying bids. Strip any per-
       // proto bid identity that would confuse the single-bid renderer.
+      // Bucketed rows are only built from non-reserved bids (claimed
+      // bids are filtered before bucketing), so the reservation flags
+      // on the virtual row are always false / null.
       bid_id: _levelKey,
-      axintent_id: undefined,
+      _isReserved: false,
+      _claimedAtTs: null,
+      _claimExpiresAtTs: null,
     });
   }
   // Sort all rows (bucketed + pass-through) by unit price descending so
@@ -54788,7 +54796,7 @@ function renderMarketAssetHeader(assetId, rows) {
             const _bidsKnown = Array.isArray(_bidsPeek);
             const _nowSec = Math.floor(Date.now() / 1000);
             const _bidsN = _bidsKnown
-              ? _bidsPeek.filter(b => !b.axintent_id && Number(b.expiry || 0) > _nowSec).length
+              ? _bidsPeek.filter(b => !b._isReserved && Number(b.expiry || 0) > _nowSec).length
               : null;
             const _display = _bidsKnown
               ? `${_asksN.toLocaleString('en-US')} <span class="muted" style="font-weight:400;font-size:11px;">ask${_asksN === 1 ? '' : 's'}</span> · ${_bidsN.toLocaleString('en-US')} <span class="muted" style="font-weight:400;font-size:11px;">bid${_bidsN === 1 ? '' : 's'}</span>`
@@ -55873,7 +55881,7 @@ async function populateMarketAssetStats(scope, asset) {
     if (Array.isArray(bids)) {
       for (const b of bids) {
         if (Number(b.expiry || 0) <= nowSec) continue;
-        if (b.axintent_id) continue;  // already claimed
+        if (b._isReserved) continue;  // already claimed
         const ps = Number(b.price_sats || 0);
         if (ps > 0) {
           bidsTotalSats += ps; bidsCount++;
@@ -56380,7 +56388,7 @@ function renderYourOpenOrdersHTML(aid, asset, myPubHex) {
   const bidsPeek = (typeof _bidCachePeek === 'function') ? _bidCachePeek(aid) : null;
   const myBidsKnown = bidsPeek != null;
   const myBids = (bidsPeek || []).filter(b =>
-    !b.axintent_id &&  // claimed bids are off the open list — they're in flight
+    !b._isReserved &&  // claimed bids are off the open list — they're in flight
     Number(b.expiry || 0) > nowSec &&
     b.buyer_pubkey === myPubHex,
   );
@@ -56429,7 +56437,7 @@ function renderYourOpenOrdersHTML(aid, asset, myPubHex) {
   // breaking the confidentiality design — we don't see other wallets'
   // balances, but we can see what they're bidding.
   const _allBidsSortedDesc = (bidsPeek || [])
-    .filter(b => !b.axintent_id && Number(b.expiry || 0) > nowSec)
+    .filter(b => !b._isReserved && Number(b.expiry || 0) > nowSec)
     .map(b => {
       const a = BigInt(b.amount || '0');
       const s = Number(b.price_sats || 0);
@@ -56503,6 +56511,44 @@ function renderYourOpenOrdersHTML(aid, asset, myPubHex) {
 // form's "Beat best bid" chip) can read without re-awaiting.
 const _BIDS_FETCH_TTL_MS = 30 * 1000;
 const _bidsCache = new Map();  // aid → { ts, promise, value? }
+// Bid reservation derivation. The worker attaches `claim` (whole-bid) or
+// `partial_claims` (variable-fill) to active bid intents, but does NOT set
+// any top-level `axintent_id` field on the bid record itself — that lives
+// inside the claim record(s). A previous dapp version keyed "claimed"
+// state off `b._isReserved`, which silently always read as undefined,
+// leaving claimed bids visible as takeable in the ladder + counted in
+// depth, spread, router. This decoration centralises the derivation so
+// every consumer sees a coherent `b._isReserved` boolean + claim
+// timestamps for staleness display.
+//
+// Semantics:
+//   whole-bid:    _isReserved = !!b.claim (worker only attaches active claims)
+//   variable-fill: _isReserved = false (still takeable while remaining ≥
+//                  min_fill; the `_ladderInput` filter already drops fully-
+//                  reserved variable bids by checking remaining vs min_fill)
+//   _claimedAtTs / _claimExpiresAtTs: the most recent claim's timestamps,
+//                                     for the staleness countdown badge.
+function _decorateBidForReservation(b) {
+  if (!b || typeof b !== 'object') return;
+  const isVar = !!(b.min_fill_amount && b.min_fill_amount !== '0');
+  if (!isVar && b.claim) {
+    b._isReserved = true;
+    b._claimedAtTs = Number(b.claim.claimed_at) || null;
+    b._claimExpiresAtTs = Number(b.claim.expires_at) || null;
+  } else if (isVar && Array.isArray(b.partial_claims) && b.partial_claims.length > 0) {
+    // Surface the newest claim ts for the "X partials in flight" hint, but
+    // don't mark _isReserved — the bid remains takeable for `remaining`.
+    b._isReserved = false;
+    const claimedAts = b.partial_claims.map(c => Number(c?.claimed_at) || 0).filter(t => t > 0);
+    b._claimedAtTs = claimedAts.length ? Math.max(...claimedAts) : null;
+    const expiresAts = b.partial_claims.map(c => Number(c?.expires_at) || 0).filter(t => t > 0);
+    b._claimExpiresAtTs = expiresAts.length ? Math.min(...expiresAts) : null;
+  } else {
+    b._isReserved = false;
+    b._claimedAtTs = null;
+    b._claimExpiresAtTs = null;
+  }
+}
 function _fetchBidIntentsCached(aid, opts) {
   const force = !!(opts && opts.force);
   const cached = _bidsCache.get(aid);
@@ -56514,6 +56560,7 @@ function _fetchBidIntentsCached(aid, opts) {
   if (cached && !('value' in cached)) return cached.promise;
   const promise = browseBidIntents(aid).then(raw => {
     const arr = Array.isArray(raw?.intents) ? raw.intents : [];
+    for (const b of arr) _decorateBidForReservation(b);
     const entry = _bidsCache.get(aid);
     if (entry && entry.promise === promise) entry.value = arr;
     return arr;
@@ -56588,7 +56635,7 @@ async function _populateBidAskSpread(section, aid, decimals, ticker, markUnit = 
   const nowSec = Math.floor(Date.now() / 1000);
   let highestBid = null;
   for (const b of intents) {
-    if (b.axintent_id) continue;
+    if (b._isReserved) continue;
     if (Number(b.expiry || 0) <= nowSec) continue;
     // Closed-var filter: a variable-fill bid whose remaining_amount has
     // dropped below min_fill_amount is effectively unfillable — no seller
@@ -56804,13 +56851,13 @@ async function _populateDepthChart(section, aid, decimals, ticker, markUnit) {
   const nowSec = Math.floor(Date.now() / 1000);
   const bids = [];
   for (const b of intents) {
-    if (b.axintent_id) continue;
+    if (b._isReserved) continue;
     if (Number(b.expiry || 0) <= nowSec) continue;
     // Variable-fill (§5.7.7): depth is the TRADEABLE remaining, not the
-    // bid's full posted amount. A whole-bid that's been claimed already
-    // shows axintent_id and is filtered above; a variable-fill bid stays
-    // visible with the residual remaining. Without this fix, a partially-
-    // filled bid would inflate depth-chart liquidity.
+    // bid's full posted amount. A whole-bid that's been claimed has
+    // b._isReserved=true and is filtered above; a variable-fill bid
+    // stays visible with the residual remaining. Without this fix, a
+    // partially-filled bid would inflate depth-chart liquidity.
     const _isVar = !!(b.min_fill_amount && b.min_fill_amount !== '0');
     const amtRaw = _isVar ? (b.remaining_amount || b.amount || '0') : (b.amount || '0');
     let amtBig = 0n; try { amtBig = BigInt(amtRaw); } catch {}
@@ -57547,7 +57594,7 @@ function renderHoldingsOpenOrdersHTML(myPubHex) {
       for (const b of bids) {
         if (b.buyer_pubkey !== myPubHex) continue;
         if (Number(b.expiry || 0) <= nowSec) continue;
-        if (b.axintent_id) continue;  // already claimed, no longer cancellable
+        if (b._isReserved) continue;  // already claimed, no longer cancellable
         myBids.push({ ...b, _asset_id: aid });
       }
     }
@@ -57828,7 +57875,7 @@ async function populateMarketBidsLadder(scope, asset) {
     const _bandHi = _bidMarkUnit * 5;
     const _filtered = ladder.filter(b => {
       if (b._isMine) return true;            // never hide own orders
-      if (b.axintent_id) return true;        // in-flight settlements visible
+      if (b._isReserved) return true;        // in-flight settlements visible
       const u = b._unit;
       if (u == null) return true;            // can't classify → keep
       if (u >= _bandLo && u <= _bandHi) return true;
@@ -57856,7 +57903,7 @@ async function populateMarketBidsLadder(scope, asset) {
   // / expired rows from the total so the bar reflects fillable depth.
   let bidTotalDepth = 0;
   const _fillableAmts = bucketedLadder.map(b => {
-    if (b.axintent_id) return 0;
+    if (b._isReserved) return 0;
     if (b._expiresIn <= 0) return 0;
     // For bucketed levels, `amount` was rewritten to the bucket's
     // cumulative total in _aggregateBidsForLadder, so this naturally
@@ -57910,12 +57957,42 @@ async function populateMarketBidsLadder(scope, asset) {
     const expiry = b._expiresIn > 0
       ? `${Math.floor(b._expiresIn / 3600)}h${Math.floor((b._expiresIn % 3600) / 60)}m`
       : 'expired';
-    const claimed = !!b.axintent_id;
+    const claimed = !!b._isReserved;
     let action;
     let state = '';
     if (claimed) {
       state = 'claimed';
-      action = `<span class="market-bid-state market-bid-state--pending">Awaiting fulfil</span>`;
+      // Claim staleness: BID_CLAIM_TTL is 5min on the worker, so a claim
+      // sitting > 3min looks like the taker is stalling; > 4min it's
+      // almost certainly stuck (the worker will auto-GC at TTL). Surface
+      // age + a one-glance staleness signal so the maker knows whether
+      // to expect the bid to free up soon or to plan around it.
+      const _nowSec = Math.floor(Date.now() / 1000);
+      const _ageSec = b._claimedAtTs ? Math.max(0, _nowSec - Number(b._claimedAtTs)) : null;
+      const _ttlLeftSec = b._claimExpiresAtTs ? Math.max(0, Number(b._claimExpiresAtTs) - _nowSec) : null;
+      const _ageLabel = _ageSec == null
+        ? ''
+        : (_ageSec < 60 ? `${_ageSec}s ago` : `${Math.floor(_ageSec / 60)}m${_ageSec % 60 > 0 ? Math.floor(_ageSec % 60 / 10) * 10 : ''}s ago`).replace(/0s$/, '');
+      const _stalled = _ageSec != null && _ageSec >= 180;
+      const _veryStalled = _ageSec != null && _ageSec >= 240;
+      const _stalledBg = _veryStalled ? '#fee' : (_stalled ? '#fff3cd' : '');
+      const _stalledColor = _veryStalled ? '#a04030' : (_stalled ? '#7a5e00' : '');
+      const _stalledBorder = _veryStalled ? '1px solid #b8341d' : (_stalled ? '1px solid #c9a116' : '');
+      const _tipParts = [];
+      if (_ageLabel) _tipParts.push(`claimed ${_ageLabel}`);
+      if (_ttlLeftSec != null) _tipParts.push(`auto-expires in ${_ttlLeftSec < 60 ? `${_ttlLeftSec}s` : `${Math.floor(_ttlLeftSec / 60)}m${_ttlLeftSec % 60 ? Math.floor(_ttlLeftSec % 60 / 10) * 10 : ''}s`}`);
+      if (_veryStalled) _tipParts.push('likely stalled — taker may have ghosted; if so the worker will auto-release shortly');
+      else if (_stalled) _tipParts.push('taking longer than usual — most claims fulfil within 1–2m');
+      const _tip = _tipParts.length
+        ? `Bid is mid-fulfilment: a seller has claimed it and is constructing the settlement tx. ${_tipParts.join('. ')}.`
+        : `Bid is mid-fulfilment: a seller has claimed it and is constructing the settlement tx.`;
+      const _ageHint = _ageLabel
+        ? ` <small class="muted" style="font-size:9px;font-weight:400;">· ${escapeHtml(_ageLabel)}</small>`
+        : '';
+      const _stalledStyle = _stalledBg
+        ? ` style="background:${_stalledBg};color:${_stalledColor};border:${_stalledBorder};"`
+        : '';
+      action = `<span class="market-bid-state market-bid-state--pending"${_stalledStyle} title="${escapeHtml(_tip)}">Awaiting fulfil${_ageHint}</span>`;
     } else if (b._isMine) {
       state = 'mine';
       action = `<button class="market-bid-cancel" data-bid-action="cancel-mkt" data-bid-id="${escapeHtml(bidId)}" type="button">Cancel</button>`;
@@ -57956,7 +58033,7 @@ async function populateMarketBidsLadder(scope, asset) {
     // Click-to-fill metadata on the row root so the bind pass can prime
     // the swap tile in SELL mode at this row's amount + auto-set the
     // slippage cap. Suppressed on the user's own bids and on already-
-    // claimed bids (`axintent_id` set or expired). For bucketed levels
+    // claimed bids (`b._isReserved` true, or expired). For bucketed levels
     // we pass the bucket's MIN unit (the floor the seller is guaranteed
     // to clear) so a click primes a sell at the worst-case price across
     // the level — conservative and honest.
@@ -58837,7 +58914,7 @@ function _wireSwapTile(scope) {
     for (const b of bids) {
       if (b.buyer_pubkey === myPubHex) continue;
       if (Number(b.expiry || 0) <= nowSec) continue;
-      if (b.axintent_id) continue; // already claimed
+      if (b._isReserved) continue; // already claimed
       const isVar = !!(b.min_fill_amount && b.min_fill_amount !== '0');
       const fullAmt = (() => { try { return BigInt(b.amount || '0'); } catch { return 0n; } })();
       if (fullAmt <= 0n) continue;
@@ -58980,7 +59057,7 @@ function _wireSwapTile(scope) {
     for (const b of bids) {
       if (b.buyer_pubkey === myPubHex) continue;
       if (Number(b.expiry || 0) <= nowSec) continue;
-      if (b.axintent_id) continue;
+      if (b._isReserved) continue;
       const fullAmt = BigInt(b.amount || 0);
       const fullPs  = Number(b.price_sats || 0);
       const u       = unitPriceSats(fullPs, fullAmt, decimals);
@@ -59103,7 +59180,7 @@ function _wireSwapTile(scope) {
     const candidates = bids
       .filter(b => b.buyer_pubkey !== myPubHex)
       .filter(b => Number(b.expiry || 0) > nowSec)
-      .filter(b => !b.axintent_id)
+      .filter(b => !b._isReserved)
       .map(b => {
         const amt = BigInt(b.amount || 0);
         const ps  = Number(b.price_sats || 0);
@@ -61680,7 +61757,7 @@ function _wireMarketSweepSell(section, asset) {
         let best = 0;
         for (const b of cached) {
           if (Number(b.expiry || 0) <= nowSec) continue;
-          if (b.axintent_id) continue;
+          if (b._isReserved) continue;
           const u = unitPriceSats(Number(b.price_sats || 0), BigInt(b.amount || 0), decimals);
           if (u != null && u > 0 && u <= cap && u > best) best = u;
         }
@@ -61783,7 +61860,7 @@ function _wireMarketSweepSell(section, asset) {
       const candidates = bids
         .filter(b => b.buyer_pubkey !== myPub)
         .filter(b => Number(b.expiry || 0) > nowSec)
-        .filter(b => !b.axintent_id)
+        .filter(b => !b._isReserved)
         .map(b => {
           // Variable-fill bids (§5.7.7) carry remaining_amount that decays
           // as sellers partial-fill them. The sweep plan must walk the
@@ -62006,7 +62083,7 @@ function _wireMarketBidPlace(section, asset) {
         let bestAny  = 0;
         for (const b of cached) {
           if (Number(b.expiry || 0) <= nowSec) continue;
-          if (b.axintent_id) continue;
+          if (b._isReserved) continue;
           const u = unitPriceSats(Number(b.price_sats || 0), BigInt(b.amount || 0), decimals);
           if (u == null || u <= 0) continue;
           if (u > bestAny) bestAny = u;
@@ -62580,7 +62657,7 @@ function _renderMarketAskForm(formHost, aid) {
     const bidsPeek = (typeof _bidCachePeek === 'function') ? _bidCachePeek(aid) : null;
     let bestBidUnit = null;
     for (const b of (bidsPeek || [])) {
-      if (b.axintent_id) continue;
+      if (b._isReserved) continue;
       if (Number(b.expiry || 0) <= nowSec) continue;
       const amt = (() => { try { return BigInt(b.amount || '0'); } catch { return 0n; } })();
       if (amt <= 0n) continue;
