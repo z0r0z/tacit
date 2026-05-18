@@ -135,6 +135,8 @@ const T_LP_REMOVE  = 0x2E; // LP redeem — share burn → asset A + B
 const T_SWAP_BATCH = 0x2F; // batched uniform-clearing settlement (ceremony-gated)
 const T_PROTOCOL_FEE_CLAIM = 0x31; // founder-pinned recipient mints accrued LP-fee skim
 const T_SWAP_VAR   = 0x32; // per-trade variable-amount AMM swap (SPEC §5.16.3)
+const T_SWAP_ROUTE = 0x33; // atomic multi-hop AMM routing (SPEC-SWAP-ROUTE-AMENDMENT)
+const SWAP_ROUTE_N_HOPS_MAX = 4; // matches tests/swap-route.mjs N_HOPS_MAX
 const XCURVE_PROOF_LEN_AMM = 169; // tacit-amm sigma proof length
 const T_SLOT_MINT          = 0x43; // self-custody-slot wrapper atomic mint (SPEC §5.21, SPEC-CBTC-ZK-AMENDMENT)
 const T_SLOT_BURN          = 0x44; // self-custody-slot wrapper atomic redeem (SPEC §5.22, SPEC-CBTC-ZK-AMENDMENT)
@@ -1670,6 +1672,120 @@ function ammCurveDeltaOut(direction, R_A_pre, R_B_pre, deltaIn, feeBps) {
 }
 
 function ammSwapVarEnvelopeHash(payload) {
+  return sha256(payload);
+}
+
+// ============== T_SWAP_ROUTE (SPEC-SWAP-ROUTE-AMENDMENT) ==============
+//
+// Atomic multi-hop AMM routing. One trader pays into hop 0 of asset A,
+// the hops compose CFMM math through up to SWAP_ROUTE_N_HOPS_MAX pools,
+// and the trader receives one receipt UTXO of the final hop's output
+// asset. Single Bitcoin tx → all hops apply atomically. Wire format
+// pinned by tests/swap-route.mjs.
+//
+// Per-hop block: 67 bytes
+//   pool_id(32) || direction(1) || fee_bps(2) || R_A_pre(8) || R_B_pre(8)
+//   || delta_a_net_mag(8) || delta_b_net_mag(8)
+const _SWAP_ROUTE_VERSION = 0x01;
+const _SWAP_ROUTE_HOP_BYTES = 32 + 1 + 2 + 8 + 8 + 8 + 8;
+
+function decodeTSwapRoutePayload(payload) {
+  if (!payload) return null;
+  // Minimum size: header (37) + N=2 hops (134) + IO + closures + min rangeproof
+  // = 37 + 134 + 36 + 33 + 33 + 32 + 2 + 64 + 64 ≈ 435 bytes floor.
+  if (payload.length < 435) return null;
+  let p = 0;
+  const version = payload[p]; p += 1;
+  if (version !== _SWAP_ROUTE_VERSION) return null;
+  const opcode = payload[p]; p += 1;
+  if (opcode !== T_SWAP_ROUTE) return null;
+  const nHops = payload[p]; p += 1;
+  if (nHops < 2 || nHops > SWAP_ROUTE_N_HOPS_MAX) return null;
+
+  const traderInputAssetId = payload.slice(p, p + 32); p += 32;
+  const traderOutputAssetId = payload.slice(p, p + 32); p += 32;
+  let same = true;
+  for (let i = 0; i < 32; i++) {
+    if (traderInputAssetId[i] !== traderOutputAssetId[i]) { same = false; break; }
+  }
+  if (same) return null;
+
+  const dv = new DataView(payload.buffer, payload.byteOffset);
+  function readU64() {
+    const lo = BigInt(dv.getUint32(p, true));
+    const hi = BigInt(dv.getUint32(p + 4, true));
+    p += 8;
+    return (hi << 32n) | lo;
+  }
+  const minOut = readU64();
+  const expiryHeight = dv.getUint32(p, true); p += 4;
+  const traderPubkey = payload.slice(p, p + 33); p += 33;
+  try { compressedPointFromHex(bytesToHex(traderPubkey)); } catch { return null; }
+
+  if (p + nHops * _SWAP_ROUTE_HOP_BYTES > payload.length) return null;
+  const hops = [];
+  for (let k = 0; k < nHops; k++) {
+    const poolId = payload.slice(p, p + 32); p += 32;
+    const direction = payload[p]; p += 1;
+    if (direction !== 0 && direction !== 1) return null;
+    const feeBps = dv.getUint16(p, true); p += 2;
+    if (feeBps > 1000) return null;
+    const R_A_pre = readU64();
+    const R_B_pre = readU64();
+    const deltaANetMag = readU64();
+    const deltaBNetMag = readU64();
+    hops.push({
+      pool_id: bytesToHex(poolId),
+      direction, fee_bps: feeBps,
+      R_A_pre: R_A_pre.toString(),
+      R_B_pre: R_B_pre.toString(),
+      delta_a_net_mag: deltaANetMag.toString(),
+      delta_b_net_mag: deltaBNetMag.toString(),
+    });
+  }
+
+  // trader_input_outpoint(36)
+  if (p + 36 > payload.length) return null;
+  const traderInputTxidBE = payload.slice(p, p + 32); p += 32;
+  const traderInputVout = dv.getUint32(p, true); p += 4;
+
+  if (p + 33 + 33 + 32 + 2 > payload.length) return null;
+  const cInSecp = payload.slice(p, p + 33); p += 33;
+  try { compressedPointFromHex(bytesToHex(cInSecp)); } catch { return null; }
+  const cReceiptSecp = payload.slice(p, p + 33); p += 33;
+  try { compressedPointFromHex(bytesToHex(cReceiptSecp)); } catch { return null; }
+  const rReceipt = payload.slice(p, p + 32); p += 32;
+
+  const rpLen = dv.getUint16(p, true); p += 2;
+  if (rpLen === 0) return null;
+  if (p + rpLen + 64 + 64 > payload.length) return null;
+  const rangeProof = payload.slice(p, p + rpLen); p += rpLen;
+  const kernelSig = payload.slice(p, p + 64); p += 64;
+  const intentSig = payload.slice(p, p + 64); p += 64;
+  if (p !== payload.length) return null;
+
+  return {
+    kind: 'swap_route',
+    version, opcode,
+    n_hops: nHops,
+    trader_input_asset_id: bytesToHex(traderInputAssetId),
+    trader_output_asset_id: bytesToHex(traderOutputAssetId),
+    min_out: minOut.toString(),
+    expiry_height: expiryHeight,
+    trader_pubkey: bytesToHex(traderPubkey),
+    hops,
+    trader_input_txid_be: bytesToHex(traderInputTxidBE),
+    trader_input_vout: traderInputVout,
+    c_in_secp: bytesToHex(cInSecp),
+    c_receipt_secp: bytesToHex(cReceiptSecp),
+    r_receipt: bytesToHex(rReceipt),
+    range_proof: bytesToHex(rangeProof),
+    kernel_sig: bytesToHex(kernelSig),
+    intent_sig: bytesToHex(intentSig),
+  };
+}
+
+function ammSwapRouteEnvelopeHash(payload) {
   return sha256(payload);
 }
 
@@ -8408,6 +8524,60 @@ async function _bustAirdropClaimsCache(network, rootHex) {
   try { await caches.default.delete(airdropClaimsCacheKey(network, rootHex, null, null)); } catch {}
 }
 
+// ============== /assets/:id/bid-intents edge cache ==============
+// The dapp polls this endpoint every 5s while a user has an asset detail
+// open. Each uncached request does 1 KV.list + N KV.gets for active bids,
+// plus for variable-fill bids another list + M gets for partial claims —
+// worst case on an asset with 30 variable bids each carrying 10 partials:
+// ~330 KV reads per poll. SWR collapses concurrent polls within a colo to
+// one real fan-out per FRESH window.
+//
+// FRESH 5s matches the dapp's poll cadence so adjacent polls hit the cache.
+// STALE 60s gives ~12 chances for a background refresh to land before the
+// next reader falls into a synchronous MISS recompute.
+const BID_INTENTS_CACHE_FRESH_MS = 5_000;
+const BID_INTENTS_CACHE_STALE_MS = 60_000;
+function bidIntentsCacheKey(network, aid) {
+  return new Request(`https://_bid-intents-cache_/bid-intents/${network}/${aid}`, { method: 'GET' });
+}
+async function bidIntentsComputeAndCache(env, network, aid) {
+  const fresh = await handleBidIntentList(aid, env, network, {});
+  const body = await fresh.text();
+  if (fresh.status === 200) {
+    const ch = new Headers();
+    ch.set('Content-Type', 'application/json');
+    ch.set('X-Cached-At', String(Date.now()));
+    ch.set('Cache-Control', `public, max-age=${Math.floor(BID_INTENTS_CACHE_STALE_MS / 1000)}`);
+    await caches.default.put(bidIntentsCacheKey(network, aid), new Response(body, { status: 200, headers: ch }));
+  }
+  return { body, status: fresh.status };
+}
+async function _bustBidIntentsCache(network, aid) {
+  try { await caches.default.delete(bidIntentsCacheKey(network, aid)); } catch {}
+}
+
+// ============== /holdings edge cache ==============
+// POST endpoint; cache key is derived from the request body components
+// (owner_pubkey + sorted asset_ids hashed). Each uncached request fans
+// out 3 KV ops per asset × up to 200 assets = ~600 reads worst case.
+// The Holdings tab polls every ~30s while visible; a 15s FRESH window
+// catches two-adjacent polls per fan-out and STALE 60s keeps users on
+// cached data across transient blips. No targeted bust — the FRESH
+// window is short enough that settlement transitions surface in the
+// user's natural poll cadence without per-mutation bust complexity.
+const HOLDINGS_CACHE_FRESH_MS = 15_000;
+const HOLDINGS_CACHE_STALE_MS = 60_000;
+async function holdingsCacheKey(network, ownerPubHex, aidsSortedJoined) {
+  // sha256 of normalised payload → first 32 hex chars for a compact
+  // collision-resistant cache key. URL hostname is synthetic so the
+  // deployed worker hostname doesn't leak into the cache namespace.
+  const payload = `${network}|${ownerPubHex}|${aidsSortedJoined}`;
+  const bytes = new TextEncoder().encode(payload);
+  const digest = await crypto.subtle.digest('SHA-256', bytes);
+  const hex = bytesToHex(new Uint8Array(digest)).slice(0, 32);
+  return new Request(`https://_holdings-cache_/holdings/${hex}`, { method: 'GET' });
+}
+
 // ============== /market aggregate (worker-side join) ==============
 // Collapses the client's per-asset 3-way fan-out (openings + ranges + intents)
 // into a single round-trip. Without this, the Market tab issued N parallel
@@ -8572,11 +8742,20 @@ async function marketComputeAndCache(env, network) {
 async function handleHoldings(req, env, network, cors) {
   let body;
   try { body = await req.json(); } catch { return jsonResponse({ error: 'invalid JSON body' }, 400, cors); }
-  const ownerPubHex = String(body.owner_pubkey ?? '').toLowerCase();
+  return handleHoldingsWithBody(body, env, network, cors);
+}
+
+// Split out so the route handler can parse the body once, derive a
+// cache key from it, and reuse the same parsed body on cache MISS
+// without re-reading the (one-shot) Request stream. Behaviour
+// identical to the original handler — same validation, same response
+// shape — only the parameter shape changed.
+async function handleHoldingsWithBody(body, env, network, cors) {
+  const ownerPubHex = String(body?.owner_pubkey ?? '').toLowerCase();
   if (!/^0[23][0-9a-f]{64}$/.test(ownerPubHex)) {
     return jsonResponse({ error: 'owner_pubkey must be 33-byte compressed hex' }, 400, cors);
   }
-  const aids = Array.isArray(body.asset_ids) ? body.asset_ids : [];
+  const aids = Array.isArray(body?.asset_ids) ? body.asset_ids : [];
   if (aids.length === 0) {
     return jsonResponse({ openings: {}, listings: {}, range_listings: {} }, 200, cors);
   }
@@ -10634,6 +10813,19 @@ async function commitmentForUtxo(env, txidHex, vout, network) {
       return { commitment: sv.c_change_or_sentinel, asset_id: changeAssetId };
     }
     throw new Error(`T_SWAP_VAR vout ${vout} out of range for asset UTXO resolution`);
+  }
+  if (decoded.opcode === T_SWAP_ROUTE) {
+    // T_SWAP_ROUTE emits:
+    //   vout[0] = OP_RETURN(envelope_hash), not a tacit UTXO
+    //   vout[1] = trader's final receipt commitment on
+    //             trader_output_asset_id (the last hop's output)
+    //   vout[2+] = (reserved for future settler tip outputs; v1 envelopes
+    //              MUST emit none — see SPEC-SWAP-ROUTE-AMENDMENT §"Tip
+    //              mechanics")
+    if (vout !== 1) throw new Error(`T_SWAP_ROUTE vout ${vout} out of range for asset UTXO resolution`);
+    const sr = decodeTSwapRoutePayload(decoded.payload);
+    if (!sr) throw new Error('invalid T_SWAP_ROUTE payload');
+    return { commitment: sr.c_receipt_secp, asset_id: sr.trader_output_asset_id };
   }
   throw new Error('unsupported envelope opcode');
 }
@@ -16581,6 +16773,198 @@ async function scanForEtches(env, network) {
         };
         await ammPoolPut(env, network, sv.pool_id, newPool);
         found++;
+      } else if (decoded.opcode === T_SWAP_ROUTE) {
+        // SPEC-SWAP-ROUTE-AMENDMENT §"Validator algorithm". Atomic
+        // N-hop AMM routing (2 ≤ N ≤ SWAP_ROUTE_N_HOPS_MAX = 4). Reuses
+        // T_SWAP_VAR's cryptography stack: kernel sig under
+        // `tacit-kernel-v1`, m=2 BP+ rangeproof over (SENTINEL, receipt).
+        // Hops compose CFMM curve-floor identity per pool in declared
+        // order; intermediate amounts are public cleartext deltas.
+        const sr = decodeTSwapRoutePayload(decoded.payload);
+        if (!sr) continue;
+
+        // OP_RETURN binding.
+        const vout0sr = tx.vout?.[0];
+        if (!vout0sr || typeof vout0sr.scriptpubkey !== 'string') continue;
+        const opReturnSpkSr = vout0sr.scriptpubkey.toLowerCase();
+        if (opReturnSpkSr.length !== 68 || !opReturnSpkSr.startsWith('6a20')) continue;
+        const opReturnHashSr = hexToBytes(opReturnSpkSr.slice(4));
+        const expectedHashSr = ammSwapRouteEnvelopeHash(decoded.payload);
+        let opReturnOkSr = true;
+        for (let i = 0; i < 32; i++) {
+          if (opReturnHashSr[i] !== expectedHashSr[i]) { opReturnOkSr = false; break; }
+        }
+        if (!opReturnOkSr) continue;
+
+        // Expiry.
+        if (sr.expiry_height !== 0 && h > sr.expiry_height) continue;
+
+        // Snapshot each touched pool (so a route revisiting the same
+        // pool advances state correctly hop-by-hop).
+        const poolSnapshot = new Map();
+        let anyMissingPool = false;
+        for (const hop of sr.hops) {
+          if (poolSnapshot.has(hop.pool_id)) continue;
+          const p = await ammPoolGet(env, network, hop.pool_id);
+          if (!p || (p.validation !== 'xcurve-verified' && p.validation !== 'verified')) {
+            anyMissingPool = true; break;
+          }
+          poolSnapshot.set(hop.pool_id, {
+            asset_A: hexToBytes(p.asset_a),
+            asset_B: hexToBytes(p.asset_b),
+            reserve_A: BigInt(p.reserve_a),
+            reserve_B: BigInt(p.reserve_b),
+            fee_bps: p.fee_bps,
+            _orig: p,
+          });
+        }
+        if (anyMissingPool) continue;
+
+        // Per-hop chain: asset + amount continuity + CFMM curve floor.
+        const traderInputAssetIdHex = sr.trader_input_asset_id;
+        const traderOutputAssetIdHex = sr.trader_output_asset_id;
+        let hopInputAssetHex = traderInputAssetIdHex;
+        let prevDeltaOut = null;
+        let deltaIn0 = null;
+        let deltaOutLast = null;
+        let routeOk = true;
+
+        for (let k = 0; k < sr.hops.length; k++) {
+          const Hk = sr.hops[k];
+          const snap = poolSnapshot.get(Hk.pool_id);
+          if (Hk.fee_bps !== snap.fee_bps) { routeOk = false; break; }
+          if (BigInt(Hk.R_A_pre) !== snap.reserve_A) { routeOk = false; break; }
+          if (BigInt(Hk.R_B_pre) !== snap.reserve_B) { routeOk = false; break; }
+
+          let assetInHex, assetOutHex, R_in, R_out, delta_in, delta_out;
+          if (Hk.direction === 0) {
+            assetInHex  = bytesToHex(snap.asset_A);
+            assetOutHex = bytesToHex(snap.asset_B);
+            R_in        = snap.reserve_A;
+            R_out       = snap.reserve_B;
+            delta_in    = BigInt(Hk.delta_a_net_mag);
+            delta_out   = BigInt(Hk.delta_b_net_mag);
+          } else {
+            assetInHex  = bytesToHex(snap.asset_B);
+            assetOutHex = bytesToHex(snap.asset_A);
+            R_in        = snap.reserve_B;
+            R_out       = snap.reserve_A;
+            delta_in    = BigInt(Hk.delta_b_net_mag);
+            delta_out   = BigInt(Hk.delta_a_net_mag);
+          }
+          if (delta_in <= 0n || delta_out <= 0n) { routeOk = false; break; }
+
+          // Asset continuity.
+          if (assetInHex !== hopInputAssetHex) { routeOk = false; break; }
+          // Amount continuity (k ≥ 1).
+          if (k > 0 && delta_in !== prevDeltaOut) { routeOk = false; break; }
+          // Reserve-bound guards.
+          if (R_in + delta_in > AMM_U64_MAX) { routeOk = false; break; }
+          if (R_out < delta_out) { routeOk = false; break; }
+
+          // CFMM curve floor: delta_out·(R_in·gDen + gNum·delta_in)
+          //                  ≤ R_out·gNum·delta_in
+          const gNum = 10000n - BigInt(snap.fee_bps);
+          const gDen = 10000n;
+          const lhs = delta_out * (R_in * gDen + gNum * delta_in);
+          const rhs = R_out * gNum * delta_in;
+          if (lhs > rhs) { routeOk = false; break; }
+
+          // Advance snapshot for the next hop's freshness check.
+          if (Hk.direction === 0) {
+            snap.reserve_A = R_in  + delta_in;
+            snap.reserve_B = R_out - delta_out;
+          } else {
+            snap.reserve_B = R_in  + delta_in;
+            snap.reserve_A = R_out - delta_out;
+          }
+
+          if (k === 0) deltaIn0 = delta_in;
+          deltaOutLast    = delta_out;
+          prevDeltaOut    = delta_out;
+          hopInputAssetHex = assetOutHex;
+        }
+        if (!routeOk) continue;
+        if (hopInputAssetHex !== traderOutputAssetIdHex) continue;
+
+        // Terminal min_out gate.
+        if (deltaOutLast < BigInt(sr.min_out)) continue;
+
+        // Receipt opening: C_receipt_secp == delta_out_last·H + r_receipt·G.
+        let rReceiptBigSr;
+        try { rReceiptBigSr = modN(BigInt('0x' + sr.r_receipt)); }
+        catch { continue; }
+        if (rReceiptBigSr === 0n) continue;       // leaks delta_out (defense in depth)
+        const expectedReceiptSr = pedersenCommit(deltaOutLast, rReceiptBigSr);
+        let cReceiptPointSr;
+        try { cReceiptPointSr = compressedPointFromHex(sr.c_receipt_secp); }
+        catch { continue; }
+        if (!cReceiptPointSr.equals(expectedReceiptSr)) continue;
+
+        // Verify C_in_secp matches the on-chain Pedersen commit at vin[1].
+        const traderInpSr = tx.vin?.[1];
+        if (!traderInpSr || typeof traderInpSr.txid !== 'string' || typeof traderInpSr.vout !== 'number') continue;
+        let parentSr;
+        try { parentSr = await commitmentForUtxo(env, traderInpSr.txid, traderInpSr.vout, network); }
+        catch { continue; }
+        if (!parentSr) continue;
+        if (parentSr.asset_id !== traderInputAssetIdHex) continue;
+        if (parentSr.commitment !== sr.c_in_secp) continue;
+
+        // Intent sig over route_msg (binds the entire route under
+        // trader_pubkey).
+        let routeIntentOk = false;
+        try {
+          const intentMsgSr = ammSwapRouteIntentMsg(sr);
+          const traderPtSr = compressedPointFromHex(sr.trader_pubkey);
+          routeIntentOk = verifySchnorr(
+            hexToBytes(sr.intent_sig), intentMsgSr,
+            traderPtSr.toRawBytes(true).slice(1),
+          );
+        } catch { routeIntentOk = false; }
+        if (!routeIntentOk) continue;
+
+        // Kernel sig over kernel_msg under
+        // P = C_receipt − C_in − (delta_out_last − delta_in_0)·H_secp.
+        let routeKernelOk = false;
+        try {
+          const cInPtSr = compressedPointFromHex(sr.c_in_secp);
+          let delta_diff = (deltaOutLast - deltaIn0) % SECP_N;
+          if (delta_diff < 0n) delta_diff += SECP_N;
+          const ddH = delta_diff === 0n ? PEDERSEN_ZERO : PEDERSEN_H.multiply(delta_diff);
+          const Pkernel = cReceiptPointSr.add(cInPtSr.negate()).add(ddH.negate());
+          if (!Pkernel.equals(PEDERSEN_ZERO)) {
+            const kMsgSr = ammSwapRouteKernelMsg(sr, deltaIn0, deltaOutLast);
+            routeKernelOk = verifySchnorr(
+              hexToBytes(sr.kernel_sig), kMsgSr,
+              Pkernel.toRawBytes(true).slice(1),
+            );
+          }
+        } catch { routeKernelOk = false; }
+        if (!routeKernelOk) continue;
+
+        // Bulletproof m=2 over (SENTINEL = PEDERSEN_ZERO, C_receipt_secp).
+        let bpOkSr = false;
+        try {
+          bpOkSr = bpRangeAggVerify([PEDERSEN_ZERO, cReceiptPointSr], hexToBytes(sr.range_proof));
+        } catch { bpOkSr = false; }
+        if (!bpOkSr) continue;
+
+        // All gates pass — commit per-pool state transitions atomically.
+        for (const [pid_hex, snap] of poolSnapshot) {
+          const newPool = {
+            ...snap._orig,
+            reserve_a: snap.reserve_A.toString(),
+            reserve_b: snap.reserve_B.toString(),
+            k_last: (snap.reserve_A * snap.reserve_B).toString(),
+            last_swap_txid: tx.txid,
+            last_swap_height: h,
+            last_swap_at: tx.status?.block_time || Math.floor(Date.now() / 1000),
+            validation: 'verified',
+          };
+          await ammPoolPut(env, network, pid_hex, newPool);
+        }
+        found++;
       } else if (decoded.opcode === T_DROP) {
         // SPEC §5.12. Two payload shapes share opcode 0x2B:
         //   - Standard (per_claim > 0): registers a new claim pool keyed by
@@ -17621,7 +18005,59 @@ export default {
       const result = await marketComputeAndCache(env, network);
       return _withCors(result.body, result.status, cached ? 'EXPIRED-MISS' : 'MISS');
     }
-    if (url.pathname === '/holdings' && req.method === 'POST') return handleHoldings(req, env, network, cors);
+    if (url.pathname === '/holdings' && req.method === 'POST') {
+      // SWR edge cache. Body-derived key (sha256 of owner + sorted asset_ids).
+      // Read the body once here; on cache MISS we reuse the same parsed body
+      // for the actual compute. Validation errors fall through to the wrapped
+      // handler so error contract stays identical.
+      let _hBody;
+      try { _hBody = await req.json(); }
+      catch { return jsonResponse({ error: 'invalid JSON body' }, 400, cors); }
+      const _hOwner = String(_hBody?.owner_pubkey ?? '').toLowerCase();
+      const _hAids = Array.isArray(_hBody?.asset_ids) ? _hBody.asset_ids : [];
+      const _hValidForCache = /^0[23][0-9a-f]{64}$/.test(_hOwner)
+        && _hAids.length > 0 && _hAids.length <= 200
+        && _hAids.every(a => typeof a === 'string' && /^[0-9a-f]{64}$/.test(a));
+      if (!_hValidForCache) {
+        // Bad-shape body: hand off to the wrapped handler so it returns the
+        // canonical 400 error response with the precise field-level reason.
+        return handleHoldingsWithBody(_hBody, env, network, cors);
+      }
+      const _hAidsSorted = [..._hAids].sort();
+      const _hCacheKey = await holdingsCacheKey(network, _hOwner, _hAidsSorted.join(','));
+      const _hCache = caches.default;
+      const _hWithCors = (b, status, kind) => {
+        const headers = new Headers();
+        headers.set('Content-Type', 'application/json');
+        for (const [k, v] of Object.entries(cors)) headers.set(k, v);
+        headers.set('X-Cache', kind);
+        return new Response(b, { status, headers });
+      };
+      const _hRecompute = async () => {
+        const fresh = await handleHoldingsWithBody(_hBody, env, network, {});
+        const freshBody = await fresh.text();
+        if (fresh.status === 200) {
+          const ch = new Headers();
+          ch.set('Content-Type', 'application/json');
+          ch.set('X-Cached-At', String(Date.now()));
+          ch.set('Cache-Control', `public, max-age=${Math.floor(HOLDINGS_CACHE_STALE_MS / 1000)}`);
+          await _hCache.put(_hCacheKey, new Response(freshBody, { status: 200, headers: ch }));
+        }
+        return { body: freshBody, status: fresh.status };
+      };
+      const _hCached = await _hCache.match(_hCacheKey);
+      if (_hCached) {
+        const cachedAtStr = _hCached.headers.get('X-Cached-At');
+        const ageMs = cachedAtStr ? Date.now() - parseInt(cachedAtStr, 10) : Infinity;
+        if (ageMs < HOLDINGS_CACHE_FRESH_MS) return _hWithCors(await _hCached.text(), _hCached.status, 'HIT');
+        if (ageMs < HOLDINGS_CACHE_STALE_MS) {
+          if (ctx && typeof ctx.waitUntil === 'function') ctx.waitUntil(_hRecompute().catch(() => null));
+          return _hWithCors(await _hCached.text(), _hCached.status, 'STALE');
+        }
+      }
+      const result = await _hRecompute();
+      return _hWithCors(result.body, result.status, _hCached ? 'EXPIRED-MISS' : 'MISS');
+    }
     if (url.pathname === '/assets/hint' && req.method === 'POST') return handleAssetHint(req, env, network, cors, ctx);
     // Permissionless-mint registry (T_PETCH-rooted). Kept separate from
     // /assets so consumers can filter cleanly without one mode polluting the
@@ -18213,14 +18649,52 @@ export default {
     // Bid intents (off-chain bid book — SPEC §5.7.7). Buyer-initiated mirror
     // of atomic intents; settlement is via the seller spinning up an
     // axintent targeted at the bidder, no new wire format.
+    // Wraps _mutateAndBust to also bust the per-asset bid-intents cache on
+    // 2xx/3xx response. The base helper only busts the asset-detail cache;
+    // bid-intent mutations also need to invalidate the dedicated
+    // /assets/:id/bid-intents SWR cache so a fresh POST/claim/cancel
+    // surfaces to the next polling reader without waiting for the 5s FRESH
+    // window. Fire-and-forget via ctx.waitUntil so it doesn't delay the
+    // response path.
+    const _mutateAndBustBidIntents = async (aid, makeResp) => {
+      const resp = await _mutateAndBust(aid, makeResp);
+      if (resp.status >= 200 && resp.status < 400 && ctx && typeof ctx.waitUntil === 'function') {
+        ctx.waitUntil(_bustBidIntentsCache(network, aid));
+      }
+      return resp;
+    };
     const mbi = url.pathname.match(/^\/assets\/([0-9a-f]{64})\/bid-intents$/);
-    if (mbi && req.method === 'POST')                          return _mutateAndBust(mbi[1], () => handleBidIntentPost(mbi[1], req, env, network, cors));
-    if (mbi && req.method === 'GET')                           return handleBidIntentList(mbi[1], env, network, cors);
+    if (mbi && req.method === 'POST')                          return _mutateAndBustBidIntents(mbi[1], () => handleBidIntentPost(mbi[1], req, env, network, cors));
+    if (mbi && req.method === 'GET') {
+      // SWR edge cache. See bidIntentsComputeAndCache for rationale.
+      const aid = mbi[1];
+      const cache = caches.default;
+      const cacheKey = bidIntentsCacheKey(network, aid);
+      const _withCors = (b, status, kind) => {
+        const headers = new Headers();
+        headers.set('Content-Type', 'application/json');
+        for (const [k, v] of Object.entries(cors)) headers.set(k, v);
+        headers.set('X-Cache', kind);
+        return new Response(b, { status, headers });
+      };
+      const cached = await cache.match(cacheKey);
+      if (cached) {
+        const cachedAtStr = cached.headers.get('X-Cached-At');
+        const ageMs = cachedAtStr ? Date.now() - parseInt(cachedAtStr, 10) : Infinity;
+        if (ageMs < BID_INTENTS_CACHE_FRESH_MS) return _withCors(await cached.text(), cached.status, 'HIT');
+        if (ageMs < BID_INTENTS_CACHE_STALE_MS) {
+          if (ctx && typeof ctx.waitUntil === 'function') ctx.waitUntil(bidIntentsComputeAndCache(env, network, aid).catch(() => null));
+          return _withCors(await cached.text(), cached.status, 'STALE');
+        }
+      }
+      const result = await bidIntentsComputeAndCache(env, network, aid);
+      return _withCors(result.body, result.status, cached ? 'EXPIRED-MISS' : 'MISS');
+    }
     const mbi2 = url.pathname.match(/^\/assets\/([0-9a-f]{64})\/bid-intents\/([0-9a-f]{32})$/);
     if (mbi2 && req.method === 'GET')                          return handleBidIntentGet(mbi2[1], mbi2[2], env, network, cors);
-    if (mbi2 && req.method === 'DELETE')                       return _mutateAndBust(mbi2[1], () => handleBidIntentDelete(mbi2[1], mbi2[2], req, env, network, cors));
+    if (mbi2 && req.method === 'DELETE')                       return _mutateAndBustBidIntents(mbi2[1], () => handleBidIntentDelete(mbi2[1], mbi2[2], req, env, network, cors));
     const mbi3 = url.pathname.match(/^\/assets\/([0-9a-f]{64})\/bid-intents\/([0-9a-f]{32})\/claim$/);
-    if (mbi3 && req.method === 'POST')                         return _mutateAndBust(mbi3[1], () => handleBidIntentClaim(mbi3[1], mbi3[2], req, env, network, cors));
+    if (mbi3 && req.method === 'POST')                         return _mutateAndBustBidIntents(mbi3[1], () => handleBidIntentClaim(mbi3[1], mbi3[2], req, env, network, cors));
 
     // Airdrop claim queue.
     const mac = url.pathname.match(/^\/airdrops\/([0-9a-f]{64})\/claims$/);
