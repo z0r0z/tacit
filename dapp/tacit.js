@@ -34849,12 +34849,12 @@ async function ceremonyContributeInBrowser(headZkeyBytes, contributorName, entro
   return { newZkey: newKey.data, contributionHash: contributionHashHex };
 }
 
-// Pin a large zkey straight to Pinata using a single-use scoped JWT the
-// worker mints. The worker's relay path can't absorb 90+MB within its
-// wall-clock budget; this path keeps the bytes flowing client→Pinata
-// only, so the worker just validates the resulting CID via a 256-byte
-// Range GET. Master PINATA_JWT never leaves the worker; the scoped key
-// is maxUses=1 + pinFileToIPFS-only + auto-expires (~10 min).
+// Pin a large zkey straight to Pinata using a v3 presigned upload URL
+// the worker mints. The browser POSTs to a URL that's already signed,
+// so no Authorization header is sent cross-origin — that's the only
+// pattern Pinata exposes to browsers without CORS preflight failures
+// (the older /pinning/pinFileToIPFS endpoint won't accept Authorization
+// from arbitrary origins). Master PINATA_JWT stays server-side.
 async function _ammDirectPinToPinata(circuitHash, bytes, filename, onProgress) {
   const tokResp = await fetch(`${WORKER_BASE}/ceremony/${circuitHash}/upload-token`, {
     method: 'POST',
@@ -34867,12 +34867,11 @@ async function _ammDirectPinToPinata(circuitHash, bytes, filename, onProgress) {
     throw new Error(`upload-token HTTP ${tokResp.status}${detail ? ': ' + detail : ''}`);
   }
   const tok = await tokResp.json();
-  if (!tok?.jwt) throw new Error('upload-token returned no JWT');
-  const endpoint = tok.endpoint || 'https://api.pinata.cloud/pinning/pinFileToIPFS';
+  if (!tok?.upload_url) throw new Error('upload-token returned no upload_url');
+  const uploadName = tok.filename || filename;
   return await new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
-    xhr.open('POST', endpoint);
-    xhr.setRequestHeader('Authorization', `Bearer ${tok.jwt}`);
+    xhr.open('POST', tok.upload_url);
     xhr.timeout = 600_000;
     xhr.upload.onprogress = (ev) => {
       if (ev.lengthComputable && typeof onProgress === 'function') {
@@ -34883,9 +34882,9 @@ async function _ammDirectPinToPinata(circuitHash, bytes, filename, onProgress) {
       if (xhr.status >= 200 && xhr.status < 300) {
         let parsed = null;
         try { parsed = JSON.parse(xhr.responseText); } catch {}
-        const cid = parsed?.IpfsHash || parsed?.cid || parsed?.Hash;
+        const cid = parsed?.data?.cid || parsed?.cid || parsed?.IpfsHash;
         if (cid) resolve(String(cid));
-        else reject(new Error('pinata returned no IpfsHash: ' + xhr.responseText.slice(0, 200)));
+        else reject(new Error('pinata returned no cid: ' + xhr.responseText.slice(0, 200)));
       } else {
         reject(new Error(`pinata HTTP ${xhr.status}: ${xhr.responseText.slice(0, 200)}`));
       }
@@ -34894,12 +34893,8 @@ async function _ammDirectPinToPinata(circuitHash, bytes, filename, onProgress) {
     xhr.ontimeout = () => reject(new Error('pinata upload timeout (10 min)'));
     xhr.onabort = () => reject(new Error('pinata upload aborted'));
     const fd = new FormData();
-    fd.append('file', new Blob([bytes], { type: 'application/octet-stream' }), filename);
-    fd.append('pinataMetadata', JSON.stringify({
-      name: filename,
-      keyvalues: { kind: 'tacit-ceremony-zkey', circuit: circuitHash },
-    }));
-    fd.append('pinataOptions', JSON.stringify({ cidVersion: 1 }));
+    fd.append('file', new Blob([bytes], { type: 'application/octet-stream' }), uploadName);
+    fd.append('network', 'public');
     xhr.send(fd);
   });
 }

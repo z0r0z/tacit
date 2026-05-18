@@ -5462,72 +5462,61 @@ async function handleCeremonyState(env, circuitHash, cors) {
   return jsonResponse({ state }, 200, cors);
 }
 
-// POST /ceremony/<hash>/upload-token — mint a single-use scoped Pinata
-// JWT so the contributor can upload zkey bytes directly to Pinata,
-// bypassing the CF→Pinata round-trip that exceeds wall-clock for
-// 91MB swap_batch zkeys.
+// POST /ceremony/<hash>/upload-token — mint a Pinata v3 presigned upload
+// URL so the contributor can POST zkey bytes directly to Pinata without
+// any Authorization header on the upload (the URL itself is signed).
+// That dodges the CORS preflight that killed the older scoped-JWT
+// approach (browsers won't send Authorization cross-origin without an
+// OPTIONS allowlist Pinata's /pinning/pinFileToIPFS doesn't provide).
 //
-// Scoped key flow: master PINATA_JWT (env) calls Pinata's
-// /users/generateApiKey with permissions narrowed to ONE upload
-// (maxUses=1, pinFileToIPFS only). Returns the scoped JWT to the
-// client. Client uploads to pinata.cloud directly; Pinata
-// auto-revokes the key after one use.
-//
-// Security: master JWT never leaves the worker. Scoped JWT is
-// single-use + pinning-only + auto-expires server-side. Worst-case
-// interception lets the attacker do ONE pin upload (which they'd
-// race the legitimate user for).
+// Security: master PINATA_JWT stays server-side. The signed URL is
+// time-limited (10 min), size-capped (200 MB), and mime-restricted to
+// the snarkjs zkey content-type. Worst-case interception lets the
+// attacker upload one zkey-sized blob; nothing reaches the account.
 async function handleCeremonyUploadToken(req, env, circuitHash, cors) {
   if (!env.PINATA_JWT) return jsonResponse({ error: 'server not configured (PINATA_JWT missing)' }, 500, cors);
-  // Rate limit reuses the existing /pin daily-per-IP counter so the
-  // upload-token endpoint can't be used to evade /pin caps.
   const ip = req.headers.get('CF-Connecting-IP') || 'anon';
   const day = new Date().toISOString().slice(0, 10);
   const rlKey = `ceremony:${day}:${ip}`;
   const prior = safeInt(await env.UPLOAD_KV.get(rlKey), 0, { min: 0 });
   if (prior >= 500) return jsonResponse({ error: 'rate limited (500/day per IP)' }, 429, cors);
-  // Verify the ceremony exists + isn't finalized before minting an
-  // upload key. No point handing out a token for a closed chain.
   const state = await env.REGISTRY_KV.get(ceremonyKey(circuitHash), 'json');
   if (!state) return jsonResponse({ error: 'ceremony chain not initialized' }, 404, cors);
   if (state.finalized) return jsonResponse({ error: 'ceremony has been finalized; chain is locked' }, 409, cors);
 
-  // Mint scoped key via Pinata v1 API. maxUses=1 means Pinata
-  // auto-revokes after the upload lands. Key name includes the
-  // circuit hash prefix + timestamp for auditability.
-  const keyName = `ceremony-${circuitHash.slice(0, 8)}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-  let scopedResp;
+  const filename = `ceremony-${circuitHash.slice(0, 8)}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.zkey`;
+  const expiresInSec = 600;
+  let signResp;
   try {
-    scopedResp = await fetch('https://api.pinata.cloud/users/generateApiKey', {
+    signResp = await fetch('https://uploads.pinata.cloud/v3/files/sign', {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${env.PINATA_JWT}`,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        keyName,
-        maxUses: 1,
-        permissions: {
-          endpoints: {
-            pinning: { pinFileToIPFS: true },
-          },
-        },
+        network: 'public',
+        expires: expiresInSec,
+        filename,
+        max_file_size: 200 * 1024 * 1024,
       }),
     });
   } catch (e) {
-    return jsonResponse({ error: 'pinata scoped-key mint failed: ' + (e?.message || e) }, 502, cors);
+    return jsonResponse({ error: 'pinata sign-url mint failed: ' + (e?.message || e) }, 502, cors);
   }
-  if (!scopedResp.ok) {
-    const txt = await scopedResp.text().catch(() => '');
-    return jsonResponse({ error: `pinata ${scopedResp.status}: ${txt.slice(0, 240)}` }, 502, cors);
+  if (!signResp.ok) {
+    const txt = await signResp.text().catch(() => '');
+    return jsonResponse({ error: `pinata ${signResp.status}: ${txt.slice(0, 240)}` }, 502, cors);
   }
-  const scopedJson = await scopedResp.json().catch(() => null);
-  if (!scopedJson?.JWT) return jsonResponse({ error: 'pinata returned no scoped JWT' }, 502, cors);
+  const signJson = await signResp.json().catch(() => null);
+  const signedUrl = signJson?.data;
+  if (!signedUrl || typeof signedUrl !== 'string') {
+    return jsonResponse({ error: 'pinata returned no signed url' }, 502, cors);
+  }
   return jsonResponse({
-    jwt: scopedJson.JWT,
-    endpoint: 'https://api.pinata.cloud/pinning/pinFileToIPFS',
-    keyName,
-    expiresInSec: 600,  // Pinata default for single-use keys
+    upload_url: signedUrl,
+    filename,
+    expiresInSec,
   }, 200, cors);
 }
 
