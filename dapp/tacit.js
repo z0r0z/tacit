@@ -2003,6 +2003,13 @@ function _markUnhealthy(base, ms, label) {
       }
     } catch { /* sessionStorage hostile env — fall through, in-memory cooldown still applies */ }
   }
+  // Notify the global throttle banner so cross-tab visibility tracks the
+  // current cooldown set without each surface having to poll _apiHealth.
+  // Render is cheap (just a DOM update) and bails early when fewer than 2
+  // bases are cooling, so calling on every _markUnhealthy is fine.
+  if (label === 'rate-limited') {
+    try { renderChainThrottleBanner?.(); } catch {}
+  }
 }
 function _isCooling(base) {
   const h = _apiHealth.get(base);
@@ -2655,8 +2662,22 @@ function _isRecentlySpent(txid, vout) {
   }
   return true;
 }
+// Light-address /utxo cache. Heavy addresses have their own tx-count-keyed
+// cache above; this one covers the common-case <500-UTXO wallet whose /utxo
+// endpoint is one round-trip per call. Two TTLs:
+//   • _UTXO_LIGHT_FRESH_TTL_MS — when a hit within this window, skip the
+//     network call entirely (cuts duplicate fetches when Preview, refresh,
+//     and broadcast all run within seconds of each other).
+//   • _UTXO_LIGHT_STALE_TTL_MS — when the live call fails with a rate-limit
+//     error AND the cached entry is no older than this, return the cached
+//     UTXOs so the user can still proceed. Non-rate-limit errors bypass
+//     the stale fallback (so a "too many UTXOs" 4xx still pivots to heavy).
+const _utxoLightCache = new Map(); // addr -> { utxos, fetchedAt }
+const _UTXO_LIGHT_FRESH_TTL_MS = 15_000;
+const _UTXO_LIGHT_STALE_TTL_MS = 5 * 60_000;
 function invalidateUtxoCache() {
   _utxoCacheByTxCount.clear();
+  _utxoLightCache.clear();
   // DON'T clear _heavyAddresses: a single broadcast won't take a 1500-UTXO
   // wallet down to <500. Clearing forces the next refresh to fire a /utxo
   // call which 400s, just to re-discover the address is heavy. Once flagged,
@@ -2713,8 +2734,14 @@ async function getUtxos(a, onProgress) {
   //   "Address has too many transactions"           — community-mirror variant
   // The history walk handles each — provider limits differ, so even when
   // mempool.space refuses, blockstream often succeeds (see api() rotation).
+  const lightCached = _utxoLightCache.get(a);
+  if (lightCached && Date.now() - lightCached.fetchedAt < _UTXO_LIGHT_FRESH_TTL_MS) {
+    return _filterRecent(lightCached.utxos);
+  }
   try {
-    return _filterRecent(await apiJson(`/address/${a}/utxo`));
+    const utxos = await apiJson(`/address/${a}/utxo`);
+    _utxoLightCache.set(a, { utxos, fetchedAt: Date.now() });
+    return _filterRecent(utxos);
   } catch (e) {
     const msg = String(e && e.message || '');
     const isHeavyAddrError = /^API 4\d\d/.test(msg) && (
@@ -2728,6 +2755,17 @@ async function getUtxos(a, onProgress) {
       const utxos = await _getUtxosViaTxHistory(a, onProgress);
       _populateUtxoCache(a, utxos);
       return _filterRecent(utxos);
+    }
+    // Rate-limit stale-fallback: if every provider is currently throttled
+    // AND we have a recent successful fetch, serve the cached UTXOs.
+    // Bounded to _UTXO_LIGHT_STALE_TTL_MS so we never silently return
+    // arbitrarily old data — beyond that window, the cooldown wait + a
+    // fresh fetch is the right behavior.
+    const isRateLimited = /rate limited|429/i.test(msg);
+    if (isRateLimited && lightCached && Date.now() - lightCached.fetchedAt < _UTXO_LIGHT_STALE_TTL_MS) {
+      const ageSec = Math.max(0, Math.floor((Date.now() - lightCached.fetchedAt) / 1000));
+      try { toast(`Chain indexers throttled — using cached UTXOs (${ageSec}s old).`, ''); } catch {}
+      return _filterRecent(lightCached.utxos);
     }
     throw e;
   }
@@ -2784,6 +2822,50 @@ function renderChainDivergenceBanner() {
   const secondaryHost = (() => { try { return new URL(NET.api2).host; } catch { return 'secondary'; } })();
   el.style.display = 'block';
   el.textContent = `⚠ Chain-data divergence: ${primaryHost} reports tip ${primary}, ${secondaryHost} reports tip ${secondary} (Δ${Math.abs(primary - secondary)}). Treat balances as stale until this resolves; one of the endpoints may be lagging or compromised.`;
+}
+
+// Global chain-indexer throttle banner. Visible on every tab when ≥2 of the
+// configured chain API bases are simultaneously in a rate-limit cooldown,
+// so users on Swap / Drops / Market / Mixer surfaces have the same context
+// the wallet pill + Holdings stale banner already give. Pure read of
+// `_apiHealth` — no extra network. While visible, a 1Hz tick refreshes the
+// countdown to recovery; the tick stops itself once the banner hides, so
+// idle pages don't burn timers.
+let _throttleBannerTimer = null;
+function _throttleBannerState() {
+  let throttled = 0;
+  let minRemainingMs = Infinity;
+  const now = Date.now();
+  for (const [, h] of _apiHealth) {
+    if (!h || h.lastErr !== 'rate-limited') continue;
+    if (!(h.cooldownUntil > now)) continue;
+    throttled++;
+    const left = h.cooldownUntil - now;
+    if (left < minRemainingMs) minRemainingMs = left;
+  }
+  return { throttled, minRemainingMs };
+}
+function renderChainThrottleBanner() {
+  const el = (typeof document !== 'undefined') ? document.getElementById('chain-throttle-banner') : null;
+  if (!el) return;
+  const { throttled, minRemainingMs } = _throttleBannerState();
+  // Threshold of 2 avoids surfacing the banner when a single transient
+  // upstream blip cools just the worker proxy — direct providers usually
+  // recover the request without the user ever noticing. Two bases cooling
+  // simultaneously means the user is meaningfully impaired.
+  if (throttled < 2) {
+    el.style.display = 'none';
+    if (_throttleBannerTimer) { clearInterval(_throttleBannerTimer); _throttleBannerTimer = null; }
+    return;
+  }
+  const secs = Math.max(1, Math.ceil(minRemainingMs / 1000));
+  el.style.display = 'block';
+  el.textContent = `⏱ Bitcoin chain indexers are throttling tacit (${throttled} providers cooling, recovering in ${secs}s). Refresh / scan / preview will resume automatically — or set your own Esplora URL in Manage wallet → Advanced: chain indexer to bypass public rate limits.`;
+  if (!_throttleBannerTimer) {
+    _throttleBannerTimer = setInterval(() => {
+      try { renderChainThrottleBanner(); } catch {}
+    }, 1000);
+  }
 }
 
 // Bulletproofs+ signet status banner. Shown on signet wallets when the
@@ -25593,31 +25675,9 @@ async function buildAndBroadcastSatsSend({ recipientAddr, amountSats }) {
   // (3) Ground-truth holdings for the asset-UTXO exclusion set. If this throws,
   // we MUST bail — no fallback to "assume nothing is asset UTXO."
   //
-  // Stale-cache exception (rate-limit only): when every chain indexer is
-  // currently 429'ing AND we have a successful prior scan in `_holdingsCache`,
-  // reuse those holdings rather than refusing the send. A UTXO that was
-  // classified as asset by an earlier scan doesn't reclassify to "spendable
-  // sats" without a user action, so the exclusion set stays sound; the only
-  // risk is missing a brand-new asset CXFER that landed since the cache was
-  // taken — acceptable for a user who is otherwise stuck behind throttled
-  // providers and just wants to move their remaining sats out. The
-  // post-build re-classification at step (6) below still runs against
-  // whatever scanHoldings returns; if a fresh scan succeeds by then it
-  // catches the race.
-  let holdings;
-  try {
-    holdings = await scanHoldings();
-  } catch (e) {
-    const msg = String(e && e.message || '');
-    const isRateLimited = /rate limited|429/i.test(msg);
-    if (isRateLimited && _holdingsCache && _holdingsCache.holdings instanceof Map) {
-      holdings = _holdingsCache.holdings;
-      const ageSec = Math.max(0, Math.floor((Date.now() - (_holdingsCache.fetchedAt || 0)) / 1000));
-      try { toast(`Chain indexers throttled — using cached asset classification (${ageSec}s old) to proceed.`, ''); } catch {}
-    } else {
-      throw e;
-    }
-  }
+  // Stale-cache fallback (rate-limit only, sats-only-out is the safe flow —
+  // see scanHoldingsOrStale's safety contract for why this isn't generalized).
+  const holdings = await scanHoldingsOrStale(/*maxAgeMs=*/Infinity);
   if (!holdings || !(holdings instanceof Map)) {
     throw new Error('could not classify asset UTXOs (holdings scan failed); not safe to send. Try again or hit ↻ Refresh first.');
   }
@@ -36092,6 +36152,54 @@ function setupTransferForm() {
 // tacit holdings. See the SATS SEND section above for the underlying
 // primitives; everything UI-side here is plumbing on top of those.
 let pendingSatsSend = null;
+// Auto-retry timers for the Send-sats Preview button. When the live click
+// fails with a chain-indexer rate-limit, we schedule a one-shot re-fire of
+// the same Preview click after cooldowns elapse, with a 1Hz countdown so
+// the user sees progress instead of a frozen error. Cleared on:
+//   • form-field edit (invalidatePreview)        — the address/amount
+//                                                   the auto-retry was
+//                                                   computed against is
+//                                                   gone.
+//   • manual button click                        — the user is retrying
+//                                                   right now; the
+//                                                   scheduled fire would
+//                                                   be redundant.
+//   • successful preview                         — nothing to retry.
+let _satsPreviewRetryTimer = null;
+let _satsPreviewRetryCountdownTimer = null;
+function _cancelSatsPreviewRetry() {
+  if (_satsPreviewRetryTimer) { clearTimeout(_satsPreviewRetryTimer); _satsPreviewRetryTimer = null; }
+  if (_satsPreviewRetryCountdownTimer) { clearInterval(_satsPreviewRetryCountdownTimer); _satsPreviewRetryCountdownTimer = null; }
+}
+function _scheduleSatsPreviewRetry() {
+  _cancelSatsPreviewRetry();
+  // Use the nearest-recovery cooldown from _apiHealth as the wait floor
+  // (so we don't fire before any base recovers), clamped to [15s, 60s].
+  // 15s minimum gives upstream time to settle even on very short
+  // Retry-After hints; 60s ceiling caps the worst case so an upstream
+  // sending a 5-minute Retry-After doesn't park the page indefinitely.
+  let nearestMs = Infinity;
+  try { nearestMs = _throttleBannerState().minRemainingMs; } catch {}
+  const delayMs = Math.min(60_000, Math.max(15_000, (Number.isFinite(nearestMs) ? nearestMs : 30_000) + 1000));
+  const target = Date.now() + delayMs;
+  const errEl = (typeof document !== 'undefined') ? document.getElementById('sats-error') : null;
+  const repaint = () => {
+    const left = Math.max(0, Math.ceil((target - Date.now()) / 1000));
+    if (errEl) errEl.textContent = `Chain indexers throttling tacit — auto-retrying preview in ${left}s. Click Preview to retry now, or set your own indexer in Manage wallet → Advanced: chain indexer.`;
+  };
+  repaint();
+  _satsPreviewRetryCountdownTimer = setInterval(repaint, 1000);
+  _satsPreviewRetryTimer = setTimeout(() => {
+    _cancelSatsPreviewRetry();
+    const btn = (typeof document !== 'undefined') ? document.getElementById('btn-sats-preview') : null;
+    // Skip the auto-fire if the user already navigated away or the
+    // button is disabled (mid-flight). The next manual click will
+    // pick up the (hopefully recovered) state.
+    if (btn && !btn.disabled && document.querySelector('.tab.active[data-tab="transfer"]')) {
+      btn.click();
+    }
+  }, delayMs);
+}
 
 // Cached snapshot of the most-recent sats-utxo classification. Lets the amount
 // hint and Max button render synchronously without re-scanning chain on every
@@ -36224,6 +36332,9 @@ function setupSatsSendForm() {
     const preview = $('#sats-preview');
     if (preview) preview.style.display = 'none';
     setStatus('#sats-status', '');
+    // Form-field edited or job invalidated — any pending auto-retry was
+    // scheduled against the OLD recipient/amount; let it lapse.
+    _cancelSatsPreviewRetry();
   };
 
   const recipInput = $('#s-recipient-addr');
@@ -36274,6 +36385,10 @@ function setupSatsSendForm() {
     btn.disabled = true; btn.textContent = 'previewing…';
     $('#sats-error').textContent = '';
     $('#sats-success').style.display = 'none';
+    // Drop any scheduled auto-retry: the user (or the auto-fire) is
+    // running the preview right now, so the timer would just re-fire on
+    // top of the current attempt.
+    _cancelSatsPreviewRetry();
     // Mirror scan progress (#holdings-status emissions from _scanHoldingsImpl)
     // into the Send-sats inline status so the user sees movement during the
     // cold ancestor walk instead of a frozen "previewing…". Removed in the
@@ -36349,6 +36464,13 @@ function setupSatsSendForm() {
       pendingSatsSend = null;
       $('#btn-sats-broadcast').disabled = true;
       $('#sats-preview').style.display = 'none';
+      // Auto-retry the preview after cooldowns elapse so the user isn't
+      // stuck mashing the button. Only kicks in for rate-limit failures;
+      // any other error (insufficient sats, dust, invalid recipient,
+      // etc.) is a user-actionable problem that auto-retry can't fix.
+      if (/rate limited|429/i.test(String(e?.message || ''))) {
+        _scheduleSatsPreviewRetry();
+      }
     } finally {
       btn.disabled = false; btn.textContent = orig;
       removeStatusMirror('#holdings-status', '#sats-status');
@@ -60160,6 +60282,40 @@ function _wireSwapTile(scope) {
     if (!plan.length) return null;
     return { plan, totalAmt, totalSats, residualSats: satsBudget - totalSats, satsBudget, cap };
   };
+  // Companion to planBuy that surfaces the WHY when planBuy returns null.
+  // The most common reason on dense markets like TAC: the cheapest ask is
+  // a preauth whole-UTXO listing whose total sats exceeds the user's
+  // budget. The orderbook shows the ask, the dust filter passes it, but
+  // planBuy skips it because preauth is take-whole-or-nothing. Without
+  // this companion, the swap tile's no-match message reads as "no asks
+  // match your price" — false-feeling when an obviously-cheap ask is
+  // visible. With it, the message names the whole-lot minimum so the
+  // user knows whether to bump their budget or wait.
+  //
+  // Returns the cheapest in-band, non-mine, non-pending preauth whose
+  // total sats price exceeds `satsBudget`. Null when no such listing
+  // exists (orderbook is genuinely empty for the buyer, or every
+  // affordable preauth was already taken in planBuy).
+  const _cheapestUnaffordablePreauth = (satsBudget) => {
+    if (!Number.isFinite(satsBudget) || satsBudget <= 0) return null;
+    const nowSec = Math.floor(Date.now() / 1000);
+    let best = null;
+    for (const l of (_marketCache?.listings || [])) {
+      if (l._asset?.asset_id !== aid) continue;
+      if (l.kind !== 'preauth') continue;
+      if (Number(l.expiry || 0) <= nowSec || l.expired) continue;
+      if (l._takenPending) continue;
+      if (l.seller_pubkey === myPubHex) continue;
+      const amt = BigInt(l.asset_opening?.amount || 0);
+      const ps  = Number(l.min_price_sats || 0);
+      if (amt <= 0n || ps <= 0) continue;
+      if (ps <= satsBudget) continue;  // affordable — planBuy would have taken it
+      const u = unitPriceSats(ps, amt, decimals);
+      if (!Number.isFinite(u) || u <= 0 || u < dustFloorUnit) continue;
+      if (best == null || u < best.u) best = { ps, u, amt };
+    }
+    return best;
+  };
   // Depth simulator — read-only walk of the orderbook at an arbitrary
   // unit-price cap. Returns the (fillCount, totalAmt, totalSats) that
   // would land if planBuy ran at this cap. Used by the depth-at-
@@ -60987,7 +61143,19 @@ function _wireSwapTile(scope) {
               ? `${sats.toLocaleString()} sats · ${_bidUsd} · open until matched${satBal > 0 && sats > satBal ? ` · ⚠ wallet holds ${satBal.toLocaleString()}` : ''}`
               : `${sats.toLocaleString()} sats · open until matched${satBal > 0 && sats > satBal ? ` · ⚠ wallet holds ${satBal.toLocaleString()}` : ''}`;
             toMeta.textContent = `at ${fmtUnitPriceSats(_capUnit)} sats/${ticker} · cancel anytime`;
-            infoEl.innerHTML = `no instant match at your price &mdash; <strong>your swap stays open</strong> until a seller takes it. On-chain Bitcoin settlement; cancel anytime; auto-expires in 24h.`;
+            // If the orderbook has a cheaper unit-price ask but its
+            // whole-lot total exceeds the user's budget, name the gap
+            // explicitly. Otherwise (genuinely empty book at this price)
+            // fall through to the generic no-match copy. Preauth is
+            // take-whole-or-nothing per SPEC §5.7.8, which surprises
+            // users whose mental model is partial-fillable.
+            const _cheapestOver = _cheapestUnaffordablePreauth(sats);
+            if (_cheapestOver) {
+              const _gapUsd = btcUsd ? fmtSatsAsUsd(_cheapestOver.ps, btcUsd) : null;
+              infoEl.innerHTML = `cheapest ask wants <strong>${_cheapestOver.ps.toLocaleString()} sats${_gapUsd ? ` (${_gapUsd})` : ''}</strong> whole-lot at ${fmtUnitPriceSats(_cheapestOver.u)} sats/${escapeHtml(ticker)} &mdash; above your ${sats.toLocaleString()} sats budget. Preauth listings settle whole-UTXO; raise the budget to ${_cheapestOver.ps.toLocaleString()} sats to instant-fill, or leave the swap open as a bid (current setting) and a smaller seller will match.`;
+            } else {
+              infoEl.innerHTML = `no instant match at your price &mdash; <strong>your swap stays open</strong> until a seller takes it. On-chain Bitcoin settlement; cancel anytime; auto-expires in 24h.`;
+            }
             actionBtn.disabled = false; actionBtn.style.opacity = '1';
             actionBtn.textContent = 'swap';
             actionBtn.dataset.action = 'bid-only';
