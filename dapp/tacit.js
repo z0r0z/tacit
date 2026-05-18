@@ -7829,7 +7829,7 @@ function deriveCbtcTacRecoveryTweakedSk(walletPriv32, networkTag, targetLeafHash
 }
 
 // SPEC §5.36.3 bind_hash. `depositorRecoveryCommit` is the blinded-pubkey
-// commit per §5.36.7 (replaces the round-1 `depositorRecoveryPk` field).
+// commit per §5.36.7 (replaces the round-1 `depositorRecoveryCommit` field).
 function computeCbtcTacDepositBindHash({
   networkTag, targetLeafHash, slotDenomSats, bondAmountTAC,
   bondSourceOutpoint, bondCommit, depositorRecoveryCommit, mintAmount, mintRecipientCommit,
@@ -7853,13 +7853,13 @@ function computeCbtcTacDepositBindHash({
 // SPEC §5.36.1 wire format. Variable-length only at the trailing proof.
 function encodeTCbtcTacDepositPayload({
   networkTag, targetLeafHash, slotDenomSats, bondAmountTAC, bondSourceOutpoint,
-  bondCommit, depositorRecoveryPk, mintAmount, mintRecipientCommit, bindHash, proof,
+  bondCommit, depositorRecoveryCommit, mintAmount, mintRecipientCommit, bindHash, proof,
 }) {
   if ((networkTag & 0xff) > 2) throw new Error('network_tag must be 0|1|2');
   if (targetLeafHash.length !== 32) throw new Error('target_leaf_hash 32 bytes');
   if (bondSourceOutpoint.length !== 36) throw new Error('bond_source_outpoint 36 bytes (32 txid + 4 vout)');
   if (bondCommit.length !== 33) throw new Error('bond_commit 33 bytes');
-  if (depositorRecoveryPk.length !== 33) throw new Error('depositor_recovery_pk 33 bytes');
+  if (depositorRecoveryCommit.length !== 33) throw new Error('depositor_recovery_pk 33 bytes');
   if (mintRecipientCommit.length !== 33) throw new Error('mint_recipient_commit 33 bytes');
   if (bindHash.length !== 32) throw new Error('bind_hash 32 bytes');
   if (!(proof instanceof Uint8Array) || proof.length === 0 || proof.length > 0xffff) {
@@ -7885,7 +7885,7 @@ function encodeTCbtcTacDepositPayload({
   return concatBytes(
     new Uint8Array([T_CBTC_TAC_DEPOSIT, networkTag & 0xff]),
     targetLeafHash, denomLE, bondLE, bondSourceOutpoint, bondCommit,
-    depositorRecoveryPk, mintLE, mintRecipientCommit, bindHash, proofLen, proof,
+    depositorRecoveryCommit, mintLE, mintRecipientCommit, bindHash, proofLen, proof,
   );
 }
 
@@ -7912,8 +7912,8 @@ function decodeTCbtcTacDepositPayload(payload) {
   const bondSourceOutpoint = payload.slice(p, p + 36); p += 36;
   const bondCommit = payload.slice(p, p + 33); p += 33;
   try { bytesToPoint(bondCommit); } catch { return null; }
-  const depositorRecoveryPk = payload.slice(p, p + 33); p += 33;
-  try { bytesToPoint(depositorRecoveryPk); } catch { return null; }
+  const depositorRecoveryCommit = payload.slice(p, p + 33); p += 33;
+  try { bytesToPoint(depositorRecoveryCommit); } catch { return null; }
   const mintView = new DataView(payload.buffer, payload.byteOffset + p, 8);
   const mintAmount = (BigInt(mintView.getUint32(4, true)) << 32n) | BigInt(mintView.getUint32(0, true));
   p += 8;
@@ -7931,13 +7931,13 @@ function decodeTCbtcTacDepositPayload(payload) {
   // Recompute bind_hash; reject mismatch (cross-impl indexer-determinism).
   const expectedBind = computeCbtcTacDepositBindHash({
     networkTag, targetLeafHash, slotDenomSats, bondAmountTAC,
-    bondSourceOutpoint, bondCommit, depositorRecoveryPk, mintAmount, mintRecipientCommit,
+    bondSourceOutpoint, bondCommit, depositorRecoveryCommit, mintAmount, mintRecipientCommit,
   });
   for (let i = 0; i < 32; i++) if (expectedBind[i] !== bindHash[i]) return null;
   return {
     kind: 'cbtc_tac_deposit',
     networkTag, targetLeafHash, slotDenomSats, bondAmountTAC,
-    bondSourceOutpoint, bondCommit, depositorRecoveryPk,
+    bondSourceOutpoint, bondCommit, depositorRecoveryCommit,
     mintAmount, mintRecipientCommit, bindHash, proof,
   };
 }
@@ -8560,7 +8560,7 @@ function computeCbtcTacDepositAtomicBindHash({
   deltaCbtcZk, deltaTac, shareAmount,
   cbtcZkInputOutpoint, cbtcZkInputCommit,
   tacInputOutpoint, tacInputCommit,
-  lpShareCommit, depositorRecoveryPk,
+  lpShareCommit, depositorRecoveryCommit,
   mintAmount, mintRecipientCommit,
 }) {
   const denomLE = new Uint8Array(8);
@@ -8584,7 +8584,7 @@ function computeCbtcTacDepositAtomicBindHash({
     dCbtcLE, dTacLE, shareLE,
     cbtcZkInputOutpoint, cbtcZkInputCommit,
     tacInputOutpoint, tacInputCommit,
-    lpShareCommit, depositorRecoveryPk,
+    lpShareCommit, depositorRecoveryCommit,
     mintLE, mintRecipientCommit,
   ));
 }
@@ -8594,7 +8594,7 @@ function encodeTCbtcTacDepositAtomicPayload({
   deltaCbtcZk, deltaTac, shareAmount,
   cbtcZkInputOutpoint, cbtcZkInputCommit,
   tacInputOutpoint, tacInputCommit,
-  lpShareCommit, depositorRecoveryPk,
+  lpShareCommit, depositorRecoveryCommit,
   mintAmount, mintRecipientCommit,
   bindHash, proof,
 }) {
@@ -8604,7 +8604,7 @@ function encodeTCbtcTacDepositAtomicPayload({
   if (cbtcZkInputOutpoint.length !== 36 || tacInputOutpoint.length !== 36) throw new Error('outpoint 36 bytes');
   if (cbtcZkInputCommit.length !== 33 || tacInputCommit.length !== 33) throw new Error('input commit 33 bytes');
   if (lpShareCommit.length !== 33) throw new Error('lp_share_commit 33 bytes');
-  if (depositorRecoveryPk.length !== 33) throw new Error('depositor_recovery_pk 33 bytes');
+  if (depositorRecoveryCommit.length !== 33) throw new Error('depositor_recovery_pk 33 bytes');
   if (mintRecipientCommit.length !== 33) throw new Error('mint_recipient_commit 33 bytes');
   if (bindHash.length !== 32) throw new Error('bind_hash 32 bytes');
   if (!proof || proof.length === 0 || proof.length > 65535) throw new Error('proof length out of range');
@@ -8631,7 +8631,7 @@ function encodeTCbtcTacDepositAtomicPayload({
     dCbtcLE, dTacLE, shareLE,
     cbtcZkInputOutpoint, cbtcZkInputCommit,
     tacInputOutpoint, tacInputCommit,
-    lpShareCommit, depositorRecoveryPk,
+    lpShareCommit, depositorRecoveryCommit,
     mintLE, mintRecipientCommit,
     bindHash, proofLenLE, proof,
   );
@@ -8667,8 +8667,8 @@ function decodeTCbtcTacDepositAtomicPayload(payload) {
   try { bytesToPoint(tacInputCommit); } catch { return null; }
   const lpShareCommit = payload.slice(p, p + 33); p += 33;
   try { bytesToPoint(lpShareCommit); } catch { return null; }
-  const depositorRecoveryPk = payload.slice(p, p + 33); p += 33;
-  try { bytesToPoint(depositorRecoveryPk); } catch { return null; }
+  const depositorRecoveryCommit = payload.slice(p, p + 33); p += 33;
+  try { bytesToPoint(depositorRecoveryCommit); } catch { return null; }
   const mintView = new DataView(payload.buffer, payload.byteOffset + p, 8);
   const mintAmount = (BigInt(mintView.getUint32(4, true)) << 32n) | BigInt(mintView.getUint32(0, true));
   p += 8;
@@ -8686,7 +8686,7 @@ function decodeTCbtcTacDepositAtomicPayload(payload) {
     deltaCbtcZk, deltaTac, shareAmount,
     cbtcZkInputOutpoint, cbtcZkInputCommit,
     tacInputOutpoint, tacInputCommit,
-    lpShareCommit, depositorRecoveryPk,
+    lpShareCommit, depositorRecoveryCommit,
     mintAmount, mintRecipientCommit,
   });
   for (let i = 0; i < 32; i++) if (expectedBind[i] !== bindHash[i]) return null;
@@ -8696,7 +8696,7 @@ function decodeTCbtcTacDepositAtomicPayload(payload) {
     deltaCbtcZk, deltaTac, shareAmount,
     cbtcZkInputOutpoint, cbtcZkInputCommit,
     tacInputOutpoint, tacInputCommit,
-    lpShareCommit, depositorRecoveryPk,
+    lpShareCommit, depositorRecoveryCommit,
     mintAmount, mintRecipientCommit,
     bindHash, proof,
   };
@@ -18800,9 +18800,10 @@ async function buildAndBroadcastCbtcTacDeposit({
   slotRecord,                       // local cBTC.zk slot record (provides leaf hash + denom)
   lpShareUtxo,                      // { txid, vout, amount, blinding } — depositor's LP-share UTXO (the bond)
   lpShareAssetIdHex,                // asset_id of lpShareUtxo (= lp_asset_id of canonical TAC pool)
-  depositorRecoveryPubHex = null,   // 33-byte compressed; null = wallet.pub
   onProgress = null,
 }) {
+  // depositor_recovery_commit (SPEC §5.36.7) is derived deterministically
+  // from (wallet.priv, network_tag, target_leaf_hash); no override param.
   await ensurePrivkey();
   const _progress = (stage, info) => { try { onProgress && onProgress(stage, info); } catch {} };
   const networkTag = NET.name === 'signet' ? 0x01 : NET.name === 'regtest' ? 0x02 : 0x00;
@@ -18858,13 +18859,18 @@ async function buildAndBroadcastCbtcTacDeposit({
   const lpBlindingBig = BigInt('0x' + lpBlindingHex) % SECP_N;
   const bondCommit = pedersenCommit(lpAmountBig, lpBlindingBig).toRawBytes(true);
 
-  // depositor_recovery_pk: where withdraw payout / future claims accrue.
-  // Also: under §5.47, the depositor's r_recovery is what signs T_CTAC_LIEN_SPLIT
-  // auth (the Schnorr sig the worker verifies against position.depositor_recovery_pk).
-  const depositorRecoveryPub = depositorRecoveryPubHex
-    ? hexToBytes(depositorRecoveryPubHex.toLowerCase())
-    : wallet.pub;
-  if (depositorRecoveryPub.length !== 33) throw new Error('depositorRecoveryPubHex must be 33-byte compressed');
+  // depositor_recovery_commit: blinded-pubkey commit per §5.36.7.
+  // commit = wallet.pub + blinding · G,  blinding = HMAC(wallet.priv, ...).
+  // The commit serves as BIP-340 verification key for §5.47 position-mutating
+  // sigs AND as the P2TR output key for protocol-emitted payouts to the
+  // depositor (bond return, insurance claim, force-close settlement).
+  // Recovery from seed is deterministic: given (wallet.priv, target_leaf_hash)
+  // the depositor re-derives blinding and the tweaked secret to spend any
+  // P2TR(x_only(commit)) output.
+  const depositorRecoveryCommitBytes = deriveCbtcTacRecoveryCommit(
+    wallet.priv, wallet.pub, networkTag, targetLeafHash,
+  );
+  const depositorRecoveryCommitXOnly = depositorRecoveryCommitBytes.slice(1);
 
   // mint_recipient_commit: Pedersen commit for the new cBTC.tac UTXO.
   // Amount = denomBig (= slot_denom_sats), blinding HMAC-derived from
@@ -18889,7 +18895,7 @@ async function buildAndBroadcastCbtcTacDeposit({
     bondAmountTAC: lpAmountBig,
     bondSourceOutpoint,
     bondCommit,
-    depositorRecoveryPk: depositorRecoveryPub,
+    depositorRecoveryCommit: depositorRecoveryCommitBytes,
     mintAmount: denomBig,
     mintRecipientCommit,
   });
@@ -18904,7 +18910,7 @@ async function buildAndBroadcastCbtcTacDeposit({
     bondAmountTAC: lpAmountBig,
     bondSourceOutpoint,
     bondCommit,
-    depositorRecoveryPk: depositorRecoveryPub,
+    depositorRecoveryCommit: depositorRecoveryPub,
     mintAmount: denomBig,
     mintRecipientCommit,
     bindHash,
@@ -20105,7 +20111,7 @@ async function buildAndBroadcastCbtcTacDepositAtomic({
     deltaCbtcZk: deltaCbtcBig, deltaTac: deltaTacBig, shareAmount: shareAmountBig,
     cbtcZkInputOutpoint, cbtcZkInputCommit,
     tacInputOutpoint, tacInputCommit,
-    lpShareCommit, depositorRecoveryPk: depositorRecoveryPub,
+    lpShareCommit, depositorRecoveryCommit: depositorRecoveryPub,
     mintAmount: denomBig, mintRecipientCommit,
   });
   const placeholderProof = new Uint8Array(256);
@@ -20115,7 +20121,7 @@ async function buildAndBroadcastCbtcTacDepositAtomic({
     deltaCbtcZk: deltaCbtcBig, deltaTac: deltaTacBig, shareAmount: shareAmountBig,
     cbtcZkInputOutpoint, cbtcZkInputCommit,
     tacInputOutpoint, tacInputCommit,
-    lpShareCommit, depositorRecoveryPk: depositorRecoveryPub,
+    lpShareCommit, depositorRecoveryCommit: depositorRecoveryPub,
     mintAmount: denomBig, mintRecipientCommit,
     bindHash, proof: placeholderProof,
   });
@@ -33918,11 +33924,15 @@ async function ceremonyFetchAttestations(circuitHash) {
 // per-gateway failure reasons if every gateway fails.
 async function _ceremonyFetchIpfsWithFailover(cid, validate, onProgress, onBytes) {
   const errors = [];
-  // Per-gateway wallclock cap. Without this, a slow/hung gateway can hold
-  // the UI on "Fetching zkey from IPFS (~5 MB)…" indefinitely. 45s fits a
-  // 5 MB zkey at 1 Mbps with margin; faster gateways finish well under it.
-  // Per-gateway (not total) so the outer failover can move on to the next.
-  const PER_GATEWAY_TIMEOUT_MS = 45_000;
+  // Per-gateway wallclock cap. AMM swap_batch genesis zkey is ~95 MB
+  // (lp_add 3 MB, lp_remove 6 MB, swap_batch 95 MB). 45s was sized for
+  // a 5 MB mixer-era zkey at 1 Mbps; at AMM swap_batch sizes the user
+  // would time out before download finished on anything under
+  // ~17 Mbps. 300s (5 min) fits 95 MB at ~2.5 Mbps with margin —
+  // enough that a typical home connection completes well within it
+  // and the failover only fires on truly dead gateways. Per-gateway
+  // (not total) so the outer failover can move on to the next.
+  const PER_GATEWAY_TIMEOUT_MS = 300_000;
   for (const gw of IPFS_GATEWAYS_FALLBACK) {
     const url = `${gw}${cid}`;
     const _ac = new AbortController();
@@ -34921,12 +34931,41 @@ async function _submitAmmCeremonyContribution() {
     resultEl.style.display = 'block';
     resultEl.style.color = 'var(--green, #0a7d3a)';
     const newState = _ammCeremonyStateByCircuit.get(target.hash);
-    resultEl.textContent =
+    const summary =
       `✓ Contribution landed.\n` +
       `   chain: ${target.label}\n` +
       `   new count: ${newState?.contribution_count ?? '?'}\n` +
       (contributorPubkeyHex ? `   attributed to: ${contributorPubkeyHex.slice(0, 12)}…\n` : '   pseudonymous\n') +
-      `\nThanks! Re-open the drawer in 24h to contribute again.`;
+      `\nThanks!`;
+    // Render the summary + a "share on X" intent button. Built with
+    // createElement (not innerHTML) so the dapp's strict CSP3 surface
+    // stays intact — no inline handlers, no eval.
+    resultEl.textContent = '';
+    const summaryNode = document.createElement('div');
+    summaryNode.style.whiteSpace = 'pre-wrap';
+    summaryNode.textContent = summary;
+    resultEl.appendChild(summaryNode);
+    const shareWrap = document.createElement('div');
+    shareWrap.style.cssText = 'margin-top:10px; display:flex; gap:10px; align-items:center; flex-wrap:wrap;';
+    const tweetText =
+      'contributed entropy to the tacit AMM trusted setup ceremony.\n\n' +
+      'contribute at tacit.finance\n\n' +
+      '#tacit';
+    const shareBtn = document.createElement('a');
+    shareBtn.href = 'https://x.com/intent/post?text=' + encodeURIComponent(tweetText);
+    shareBtn.target = '_blank';
+    shareBtn.rel = 'noopener noreferrer';
+    shareBtn.textContent = 'share on x';
+    shareBtn.style.cssText =
+      'display:inline-block; padding:6px 12px; border:1px solid var(--ink); background:var(--ink); color:var(--bg); ' +
+      'text-decoration:none; font-size:12px; cursor:pointer;';
+    shareWrap.appendChild(shareBtn);
+    const shareHint = document.createElement('span');
+    shareHint.className = 'muted';
+    shareHint.style.cssText = 'font-size:11px;';
+    shareHint.textContent = 're-open in 24h to contribute again';
+    shareWrap.appendChild(shareHint);
+    resultEl.appendChild(shareWrap);
     goBtn.textContent = 'Contribute again';
     try { renderAmmCeremonyChip(); } catch {}
   } catch (e) {

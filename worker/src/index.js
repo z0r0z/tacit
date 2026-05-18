@@ -5303,7 +5303,12 @@ async function handleCeremonyInit(req, env, cors) {
   // pre-pinned IPFS CID (AMM-sized ceremonies — pot18 ~288 MB, swap_batch
   // zkey ~91 MB, swap_batch r1cs ~34 MB all exceed CF's 100 MB edge cap).
   // Per-artifact: coordinator passes ONE of {file, cid}, never both.
-  const MAX_PER_FILE = 32 * 1024 * 1024;
+  // 100 MB = Cloudflare Workers request body ceiling. AMM swap_batch
+  // genesis zkey is ~95 MB so 32 MB (prior cap) rejected the artifact
+  // outright. Operator-side scripts pre-pin via Pinata + pass *_cid
+  // form fields, but raising the cap here lets the genesis init also
+  // accept the file directly when smaller circuits are pinned.
+  const MAX_PER_FILE = 100 * 1024 * 1024;
   const zkey = fd.get('zkey0');
   const r1cs = fd.get('r1cs');
   const ptau = fd.get('ptau');
@@ -5549,7 +5554,13 @@ async function handleCeremonyContribute(req, env, circuitHash, cors, ctx) {
   const prevCid = String(fd.get('prev_cid') || '');
   const contribHash = String(fd.get('contribution_hash') || '').slice(0, 256);
   if (!(zkey instanceof File)) return jsonResponse({ error: 'missing form field "zkey"' }, 400, cors);
-  if (zkey.size > 32 * 1024 * 1024) return jsonResponse({ error: 'zkey too large (max 32 MB)' }, 413, cors);
+  // 100 MB ceiling matches Cloudflare Workers request body cap. The
+  // 32 MB previous cap rejected every AMM swap_batch contribution
+  // (genesis zkey ~95 MB so every Phase 2 contribution stays ~95 MB
+  // too — Phase 2 adds proof-bytes, not constraint-bytes). Smaller
+  // circuits (mixer, AMM lp_add at 3 MB, AMM lp_remove at 6 MB)
+  // continue working as before with extra headroom.
+  if (zkey.size > 100 * 1024 * 1024) return jsonResponse({ error: 'zkey too large (max 100 MB — Cloudflare Workers body ceiling). Pre-pin to IPFS and submit zkey_cid instead.' }, 413, cors);
   if (!prevCid || prevCid !== state.head_cid) {
     return jsonResponse({
       error: 'stale prev_cid — ceremony advanced before your upload landed; refresh and retry',
@@ -5946,7 +5957,10 @@ async function handleCeremonyFinalize(req, env, circuitHash, cors, ctx) {
     return jsonResponse({ error: 'missing expected_head_cid — required for the CAS gate that prevents lost contributions during the IPFS pin window' }, 400, cors);
   }
   if (!(zkey instanceof File)) return jsonResponse({ error: 'missing form field "zkey"' }, 400, cors);
-  if (zkey.size > 32 * 1024 * 1024) return jsonResponse({ error: 'zkey too large' }, 413, cors);
+  // Same ceiling rationale as contribute path. Beacon-applied final zkey
+  // is the same size as a regular Phase 2 contribution; AMM swap_batch
+  // would have stayed blocked at 32 MB without this bump.
+  if (zkey.size > 100 * 1024 * 1024) return jsonResponse({ error: 'zkey too large (max 100 MB)' }, 413, cors);
   // 64 hex = sha256 / Bitcoin block hash — what snarkjs's beacon stage expects.
   // The previous regex accepted any-length hex which let through e.g. "ab".
   if (!/^[0-9a-f]{64}$/.test(beaconHash)) {
