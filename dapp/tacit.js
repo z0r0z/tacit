@@ -18910,7 +18910,7 @@ async function buildAndBroadcastCbtcTacDeposit({
     bondAmountTAC: lpAmountBig,
     bondSourceOutpoint,
     bondCommit,
-    depositorRecoveryCommit: depositorRecoveryPub,
+    depositorRecoveryCommit: depositorRecoveryCommitBytes,
     mintAmount: denomBig,
     mintRecipientCommit,
     bindHash,
@@ -18920,7 +18920,7 @@ async function buildAndBroadcastCbtcTacDeposit({
   // 3. Build commit + reveal txs (minimal — NO bond consumption).
   //    Commit: sats inputs → P2TR(envelope script) + sats change.
   //    Reveal: vin[0] = commit P2TR (script-path with envelope);
-  //            vout[0] = cBTC.tac mint at depositor_recovery_pk (DUST P2WPKH).
+  //            vout[0] = cBTC.tac mint at P2TR(x_only(recovery_commit)) (DUST).
   //    The bond LP-share UTXO is NOT touched — it stays in the depositor's
   //    wallet but worker attaches a lien at deposit-confirm time.
   _progress('tx:build');
@@ -18968,7 +18968,9 @@ async function buildAndBroadcastCbtcTacDeposit({
   const commitTxidHex = txid(commitTx);
 
   _progress('tx:reveal:build');
-  const recipSpk = p2wpkhScript(depositorRecoveryPub);
+  // P2TR at x_only(depositor_recovery_commit) per §5.36.7 — depositor spends
+  // under tweaked_sk = (wallet.priv + blinding) mod SECP_N.
+  const recipSpk = p2trScript(depositorRecoveryCommitXOnly);
   const revealTx = {
     version: 2, locktime: 0,
     inputs: [{ txid: commitTxidHex, vout: 0, sequence: 0xfffffffd, witness: [] }],
@@ -18989,7 +18991,7 @@ async function buildAndBroadcastCbtcTacDeposit({
     bondLpAssetIdHex: lpShareAssetIdHex.toLowerCase(),
     bondSourceOutpointHex: bytesToHex(bondSourceOutpoint),
     bondBlindingHex: lpBlindingHex,
-    depositorRecoveryPubHex: bytesToHex(depositorRecoveryPub),
+    depositorRecoveryCommitHex: bytesToHex(depositorRecoveryCommitBytes),
     mintAmount: denomBig.toString(),
     mintRecipientCommitHex: bytesToHex(mintRecipientCommit),
     mintBlindingHex: mintBlindingBig.toString(16).padStart(64, '0'),
@@ -20015,13 +20017,14 @@ async function buildAndBroadcastCtacLienSplit({
 //   poolIdHex          — canonical (cBTC.zk, TAC) pool to LP into
 //   cbtcZkInput        — { utxo:{txid,vout}, amount, blinding }
 //   tacInput           — { utxo:{txid,vout}, amount, blinding }
-//   depositorRecoveryPubHex (optional, defaults to wallet.pub)
+//
+// depositor_recovery_commit (SPEC §5.36.7) is derived deterministically
+// from (wallet.priv, network_tag, target_leaf_hash); no override param.
 async function buildAndBroadcastCbtcTacDepositAtomic({
   slotRecord,
   poolIdHex,
   cbtcZkInput,
   tacInput,
-  depositorRecoveryPubHex = null,
   onProgress = null,
 }) {
   await ensurePrivkey();
@@ -33683,10 +33686,34 @@ async function refreshAmmCeremonyStatesIfStale(force = false) {
 // clicking the chip's "contribute" button advances whichever chain most
 // needs entropy. Falls back to the first circuit when all states are
 // equal or missing.
+// Mobile carve-out: phones skip the heavy amm_swap_batch circuit. Its
+// ~91 MB zkey fetch is fragile on iOS Safari (large streamed bodies abort
+// under memory pressure) and the 2–10 min compute pegs the CPU long
+// enough to trigger thermal throttling + tab-suspension. Desktops carry
+// that circuit; phones still advance lp_add + lp_remove.
+function _isMobileBrowser() {
+  try {
+    if (navigator.userAgentData && typeof navigator.userAgentData.mobile === 'boolean') {
+      return !!navigator.userAgentData.mobile;
+    }
+  } catch {}
+  try {
+    return /Mobi|Android|iPhone|iPad|iPod|webOS|BlackBerry/i.test(navigator.userAgent || '');
+  } catch { return false; }
+}
+const AMM_CEREMONY_HEAVY_CIRCUITS = new Set(['amm_swap_batch']);
+
 function pickShortestAmmCircuit() {
-  let best = AMM_CEREMONY_CIRCUIT_HASHES[0];
+  const mobile = _isMobileBrowser();
+  const eligible = mobile
+    ? AMM_CEREMONY_CIRCUIT_HASHES.filter(c => !AMM_CEREMONY_HEAVY_CIRCUITS.has(c.key))
+    : AMM_CEREMONY_CIRCUIT_HASHES;
+  // Defensive fallback so the picker never returns null even if every
+  // circuit gets flagged heavy by future tuning.
+  const pool = eligible.length ? eligible : AMM_CEREMONY_CIRCUIT_HASHES;
+  let best = pool[0];
   let bestCount = Infinity;
-  for (const c of AMM_CEREMONY_CIRCUIT_HASHES) {
+  for (const c of pool) {
     const s = _ammCeremonyStateByCircuit.get(c.hash);
     const count = s?.contribution_count ?? -1;  // not-yet-fetched first
     if (count < bestCount) { best = c; bestCount = count; }
@@ -34908,7 +34935,50 @@ async function _submitAmmCeremonyContribution() {
   progEl.style.display = 'block';
   progEl.textContent = `→ advancing ${target.label} (${target.hash.slice(0, 12)}…)\n`;
   resultEl.style.display = 'none';
+  // Append-only log for phase transitions ("refreshing…", "mixing…").
   const _log = (line) => { progEl.textContent += line + '\n'; progEl.scrollTop = progEl.scrollHeight; };
+  // In-place progress line + throttle. Without this a 95 MB download
+  // emits hundreds of byte-progress events that bury readable phase
+  // logs; with this the last line of the progress pane updates in
+  // place every ~250ms with formatted MB/MB + percent + speed.
+  const _fmtMB = (b) => (b / (1024 * 1024)).toFixed(b >= 100 * 1024 * 1024 ? 0 : 1);
+  let _progLineTs = 0;
+  let _progLineActive = null;  // 'fetch' | 'upload' | null
+  let _progStartedAt = 0;
+  let _progStartedBytes = 0;
+  const _updateProgressLine = (kind, done, total) => {
+    if (_progLineActive !== kind) {
+      // Phase started — first event for this kind. Append a placeholder
+      // line we'll subsequently overwrite in place.
+      _progLineActive = kind;
+      _progStartedAt = Date.now();
+      _progStartedBytes = done || 0;
+      const verb = kind === 'fetch' ? 'downloading' : 'uploading';
+      _log(`  ${verb} ${_fmtMB(total)} MB…`);
+      return;
+    }
+    const now = Date.now();
+    if (now - _progLineTs < 250 && done < total) return;  // throttle
+    _progLineTs = now;
+    const pctNum = total > 0 ? (done / total) * 100 : 0;
+    const pct = pctNum >= 99.95 ? '100' : pctNum.toFixed(pctNum >= 10 ? 0 : 1);
+    const elapsedSec = Math.max(0.5, (now - _progStartedAt) / 1000);
+    const speedMBps = ((done - _progStartedBytes) / (1024 * 1024)) / elapsedSec;
+    const speedStr = speedMBps > 0.05 ? ` · ${speedMBps.toFixed(1)} MB/s` : '';
+    const remainingBytes = Math.max(0, total - done);
+    const etaSec = (speedMBps > 0.05 && done < total) ? remainingBytes / (speedMBps * 1024 * 1024) : 0;
+    const etaStr = etaSec > 2 && etaSec < 600
+      ? ` · ~${etaSec < 60 ? `${Math.ceil(etaSec)}s` : `${Math.ceil(etaSec / 60)}m`} left`
+      : '';
+    const verb = kind === 'fetch' ? 'downloading' : 'uploading';
+    const line = `  ${verb} ${_fmtMB(done)} / ${_fmtMB(total)} MB · ${pct}%${speedStr}${etaStr}`;
+    // Overwrite last line in-place.
+    const cur = progEl.textContent;
+    const lastNl = cur.lastIndexOf('\n', cur.length - 2);
+    progEl.textContent = (lastNl >= 0 ? cur.slice(0, lastNl + 1) : cur) + line + '\n';
+    progEl.scrollTop = progEl.scrollHeight;
+    if (done >= total) _progLineActive = null;  // phase complete; next phase appends fresh
+  };
   try {
     await ceremonyContributeAmm({
       circuitHash: target.hash,
@@ -34916,16 +34986,17 @@ async function _submitAmmCeremonyContribution() {
       contributorPubkeyHex,
       onProgress: (phase, info) => {
         if (phase === 'refresh')       _log('  refreshing chain state…');
-        else if (phase === 'fetch-head') _log(`  fetching head ${(info?.cid || '').slice(0, 16)}…`);
+        else if (phase === 'fetch-head') _log(`  fetching head ${(info?.cid || '').slice(0, 16)}… (large zkey can take 1-3 min)`);
         else if (phase === 'fetch-head-log') _log('  ' + (info?.msg || ''));
-        else if (phase === 'fetch-head-bytes' && info?.total) _log(`  download: ${info.done}/${info.total} bytes`);
-        else if (phase === 'mix')      _log('  mixing your entropy (~30-60s)…');
+        else if (phase === 'fetch-head-bytes' && info?.total) _updateProgressLine('fetch', info.done || 0, info.total);
+        else if (phase === 'mix')      { _progLineActive = null; _log('  mixing your entropy (~30-60s)…'); }
         else if (phase === 'mix-phase' && info?.phase) {
           if (info.phase === 'contribute') _log('  computing contribution…');
           else if (info.phase === 'verify') _log('  verifying chain…');
         }
-        else if (phase === 'upload')   _log(`  uploading ${info?.bytes || 0} bytes…`);
-        else if (phase === 'done')     _log('  ✓ landed on chain');
+        else if (phase === 'upload')   _log(`  uploading ${_fmtMB(info?.bytes || 0)} MB to worker…`);
+        else if (phase === 'upload-bytes' && info?.total) _updateProgressLine('upload', info.done || 0, info.total);
+        else if (phase === 'done')     { _progLineActive = null; _log('  ✓ landed on chain'); }
       },
     });
     resultEl.style.display = 'block';
