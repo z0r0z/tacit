@@ -1,20 +1,19 @@
 # SPEC Amendment — Atomic Multi-Hop AMM Routing (`T_SWAP_ROUTE`)
 
-> Status: 📝 Draft (round-1) — **wire format + validator algorithm**
-> **sketched**; reference implementation deferred until routing
-> UX demand justifies the engineering work. Pre-ceremony viable:
-> reuses the bulletproof rangeproof + sigma + kernel-sig stack
-> from `T_SWAP_VAR` (SPEC.md §5.20), introduces no new Groth16
+> Status: ✅ Reference impl shipped (`tests/swap-route.mjs`,
+> `tests/swap-route.test.mjs` 24/24 passing). SPEC.md merge pending.
+> Pre-ceremony viable: reuses the bulletproof rangeproof + kernel-sig
+> stack from `T_SWAP_VAR` (SPEC.md §5.20); introduces no new Groth16
 > circuit and no new ceremony coupling.
 >
 > Adds opcode `T_SWAP_ROUTE` (`0x33`) — atomically settles a
-> single-trader N-hop swap that traverses up to `N_HOPS_MAX`
-> distinct AMM pools in one Bitcoin transaction. The chain
-> output of hop *i* feeds the chain input of hop *i+1* via a
-> shared per-hop Pedersen commitment; final receipt is the
-> trader's output UTXO. Uniswap-V2-router parity (without the
-> smart-contract footprint) at the cost of one new opcode and
-> one new BIP-340 domain tag.
+> single-trader N-hop swap that traverses up to `N_HOPS_MAX = 4`
+> AMM pools in one Bitcoin transaction. Hop *k*'s output amount
+> feeds hop *k+1*'s input amount as a cleartext public delta;
+> the trader's Pedersen-committed input UTXO and fresh Pedersen-
+> committed receipt UTXO are bound under a single kernel sig that
+> closes the route. Uniswap-V2-router parity at the cost of one
+> new opcode and one new BIP-340 domain tag.
 >
 > Distinct from `T_TRADE_BATCH` (`0x39` — drafted): that opcode
 > composes AMM ↔ orderbook for cross-surface atomicity; this
@@ -64,21 +63,25 @@ SPEC.md-merged §5.20 entry.)
 
 ### Wire format
 
-```
-opcode(1)              = 0x33
-n_hops(1)              u8, 2..N_HOPS_MAX (default N_HOPS_MAX = 4)
-trader_input_asset_id  (32)   first hop's input asset
-trader_output_asset_id (32)   last hop's output asset
-min_out(8)             u64 LE — slippage gate on the final hop's
-                       output (Uni-V2 router semantics: per-hop
-                       slippage is NOT enforced; intermediate
-                       hops may absorb worse-than-spot pricing
-                       as long as the final delivery clears
-                       min_out)
-expiry_height(4)       u32 LE — refuse if currentHeight > expiry
-intent_sig(64)         BIP-340 over route_msg (see below)
+Reference impl: `tests/swap-route.mjs` (`encodeSwapRoute`,
+`decodeSwapRoute`). Byte layout (from the impl, normative):
 
-# ----- Per-hop block, N copies ordered hop_index ascending -----
+```
+version(1)             = 0x01
+opcode(1)              = 0x33
+n_hops(1)              u8, 2..N_HOPS_MAX (= 4)
+trader_input_asset_id (32)
+trader_output_asset_id(32)
+min_out(8)             u64 LE — slippage gate on the FINAL hop's
+                       output (Uni-V2 router semantics: per-hop
+                       slippage is NOT enforced; intermediate hops
+                       may absorb worse-than-spot pricing as long
+                       as the final delivery clears min_out)
+expiry_height(4)       u32 LE — refuse if currentHeight > expiry;
+                       0 = no expiry
+trader_pubkey(33)      compressed secp256k1 — verifies intent_sig
+
+# Per-hop block × N (67 bytes each)
 [for hop k ∈ {0, …, n_hops-1}]:
     pool_id(32)
     direction(1)               0 = pool's asset_A is input side,
@@ -88,46 +91,46 @@ intent_sig(64)         BIP-340 over route_msg (see below)
     R_A_pre(8)                 u64 LE — pool reserve A pre-hop
     R_B_pre(8)                 u64 LE — pool reserve B pre-hop
     delta_a_net_mag(8)         u64 LE — magnitude of pool's net A
-                               change for this hop (sign derived
-                               from direction)
+                               change for this hop
     delta_b_net_mag(8)         u64 LE — same for asset B
 
-# ----- Trader input commitment (consumed by hop 0) -----
-C_in_secp(33)                  trader's input UTXO Pedersen commit
-C_in_BJJ(32)                   same hidden amount on BabyJubJub
-input_sigma(169)               secp ↔ BJJ binding (§3.10)
+# Trader chain bindings
+trader_input_outpoint:
+    txid(32 BE) || vout(4 LE)  — the trader's tacit input UTXO
+C_in_secp(33)                  Pedersen commit at that outpoint
+C_receipt_secp(33)             fresh receipt commit (trader output)
+r_receipt(32)                  receipt blinding (revealed so the
+                               recipient can spend the receipt
+                               UTXO; mirrors T_SWAP_VAR §5.20)
 
-# ----- Trader output commitment (produced by hop n_hops-1) -----
-C_out_secp(33)                 trader's final receipt commit
-C_out_BJJ(32)                  same on BabyJubJub
-output_sigma(169)              secp ↔ BJJ binding
-
-# ----- Per-hop bridge commitments, N-1 copies -----
-# (Hop k's output is hop k+1's input; one Pedersen pair per
-# intermediate boundary, ordered k ascending.)
-[for boundary k ∈ {0, …, n_hops-2}]:
-    C_bridge_secp(33)          shared output_k = input_{k+1}
-    C_bridge_BJJ(32)           same on BJJ
-    bridge_sigma(169)          secp ↔ BJJ binding
-
-# ----- Closure -----
-kernel_sig(64)                 Mimblewimble balance over the
-                               whole route (see kernel_msg below)
-bulletproof(variable)          aggregated u64 range proof over
-                               (C_in_secp, C_bridge_secp_0,
-                                C_bridge_secp_1, …, C_out_secp);
-                               m = next_pow_of_2(n_hops + 1) in
-                               BP+ aggregation slots
+# Closures
+range_proof_len(2)             u16 LE
+range_proof(variable)          aggregated BP+ m=2 over
+                               (SENTINEL=infinity, C_receipt_secp).
+                               Wire-format parity with T_AXFER_VAR /
+                               T_SWAP_VAR keeps the verifier hot
+                               path identical across opcodes.
+kernel_sig(64)                 BIP-340 over kernel_msg
+intent_sig(64)                 BIP-340 over route_msg under
+                               trader_pubkey
 ```
 
 **Approximate wire size at N_HOPS_MAX = 4:**
-- Per-hop block × 4: 4 × (32+1+2+8+8+8+8) = 268 B
-- Trader IO commits + sigmas: 2 × (33 + 32 + 169) = 468 B
-- Bridge commits × 3: 3 × (33 + 32 + 169) = 702 B
-- Closures (intent_sig + kernel_sig + min_out + expiry + asset_ids
-  + opcode/n_hops): ~210 B
-- BP+ aggregated rangeproof (m=8): ~789 B
-- **Total ≈ 2.4 KB at N=4.** Well under Taproot tap-leaf limits.
+- Per-hop block × 4: 4 × 67 = 268 B
+- Trader I/O + outpoint + receipt fields: 36 + 33 + 33 + 32 = 134 B
+- Closures (opcode + version + n_hops + asset IO + min_out + expiry
+  + trader_pubkey + sigs + length prefix): ~248 B
+- BP+ aggregated rangeproof (m=2 over u64): ~657 B
+- **Total ≈ 1.3 KB at N=4.** Well under Taproot tap-leaf limits.
+
+Note vs the initial draft (round-0): bridge Pedersen commitments
+between hops were dropped — intermediate amounts are public
+cleartext per-hop deltas, so a hop boundary needs no Pedersen
+encoding beyond the indexer's continuity check
+`hop_k.delta_out == hop_{k+1}.delta_in`. Privacy posture is
+unchanged from N sequential `T_SWAP_VAR` calls (per-hop deltas
+were always public there too); the simpler design saves ~700 B
+per envelope at N=4.
 
 ### Intent message + signature
 
@@ -140,9 +143,9 @@ route_msg = SHA256(
     || min_out_LE(8)
     || expiry_height_LE(4)
     || n_hops_LE(1)
-    || hop_block_concat            # all per-hop blocks back-to-back
+    || hop_block_concat              # all per-hop blocks back-to-back
     || C_in_secp(33)
-    || C_out_secp(33)
+    || C_receipt_secp(33)
 )
 
 intent_sig = BIP-340(trader_pubkey, route_msg)
@@ -153,26 +156,49 @@ The trader signs ONCE over the entire route. Indexers verify
 
 ### Kernel message + signature
 
+The kernel sig closes the trader's net asset flow across the
+whole route: the trader pays `delta_in_0` of `trader_input_asset_id`
+(hop 0's input side) and receives `delta_out_last` of
+`trader_output_asset_id` (hop n_hops-1's output side). Both
+deltas are public; intermediate hop deltas balance internally
+via the per-hop CFMM check.
+
 ```
+hops_hash = SHA256(hop_block_0 || hop_block_1 || …)
+
 kernel_msg = SHA256(
     "tacit-kernel-v1"               # reused from CXFER + T_SWAP_VAR
     || trader_input_asset_id(32)
-    || asset_input_count_LE(1) = 0x01    # exactly one trader input
+    || trader_output_asset_id(32)
+    || asset_input_count_LE(1) = 0x01
     || trader_input_outpoint        # txid_BE(32) || vout_LE(4)
-    || C_out_secp(33)               # trader's final receipt
-    || burned_amount_LE(8) = 0      # routes never burn (refer
-                                    #  hops produce exact bridges)
+    || C_receipt_secp(33)
+    || delta_in_0_LE(8)             # trader's input amount = hop[0]'s
+                                    # input-side delta
+    || delta_out_last_LE(8)         # trader's output amount =
+                                    # hop[n_hops-1]'s output-side delta
+    || hops_hash(32)                # binds the exact hop sequence;
+                                    # closes the "settler swaps hops
+                                    # under same kernel sig" attack
 )
 ```
 
-Kernel sig closes under
-`(C_out_secp − C_in_secp).x_only`
-with `excess_route = r_out_secp − r_in_secp`. The bridge
-commitments are *internal* — they cancel pairwise across hops
-(hop *k* emits `C_bridge_k_secp`, hop *k+1* consumes it; their
-sum drops out of the chain-side aggregate identity). The
-kernel sig therefore only needs to close the trader's net
-input → output flow.
+The kernel-sig verification point is:
+
+```
+P = C_receipt_secp − C_in_secp − (delta_out_last − delta_in_0) · H_secp
+```
+
+signed by `excess_route = r_receipt − r_in` (modular subtraction in
+the secp256k1 scalar field). `(delta_out_last − delta_in_0)` is
+encoded mod `SECP_N`; when the route round-trips back to the input
+asset at exactly the same value (arbitrage break-even), the H term
+collapses to ZERO and the sig closes a pure (r_receipt − r_in)·G
+balance.
+
+The two-asset closure (input asset → output asset) is the only
+structural difference from `T_SWAP_VAR`'s single-asset closure;
+the per-hop CFMM math handles the asset transitions internally.
 
 ### Bitcoin tx layout (normative)
 
@@ -192,12 +218,6 @@ vout[2 .. ]             Optional settler-fee outputs (see "Tip
                         mechanics" below) and settler change.
 ```
 
-The bridge commitments (`C_bridge_secp_k`) live ONLY inside
-the envelope — they are NOT chain outputs. Each is the
-indexer-visible Pedersen commit that closes hop *k*'s output
-and opens hop *k+1*'s input within the per-hop CFMM math. They
-never appear as UTXOs.
-
 Indexers MUST reject any T_SWAP_ROUTE whose Bitcoin tx layout
 deviates from the schema above.
 
@@ -207,81 +227,105 @@ deviates from the schema above.
 on T_SWAP_ROUTE envelope at confirmation depth ≥ FINALITY_DEPTH:
 
     require envelope.opcode == 0x33
-    decode payload; reject on structural error
+    decode payload; reject on structural error (incl. degenerate
+        trader_input_asset_id == trader_output_asset_id)
     require 2 <= n_hops <= N_HOPS_MAX (4)
-    require currentHeight <= expiry_height
-    require trader_input_asset_id ≠ trader_output_asset_id
+    if expiry_height != 0:
+        require currentHeight <= expiry_height
 
     verify intent_sig under trader_pubkey over route_msg
-    verify aggregated BP+ rangeproof over all (n_hops + 1) Pedersen
-        commits — bounds each hidden amount to u64
-    verify input_sigma, output_sigma, and all bridge_sigma
-        cross-curve bindings (§3.10)
-    verify kernel_sig closes the route (excess_route = r_out − r_in)
+    snapshot each touched pool's reserves (so a route that re-visits
+        the same pool advances state correctly hop-by-hop)
 
     # ----- Per-hop iteration -----
-    let chain_pre_commit = C_in_secp
-    let hop_input_asset  = trader_input_asset_id
+    let hop_input_asset = trader_input_asset_id
+    let prev_delta_out  = null
+    let delta_in_0, delta_out_last
+
     for hop k ∈ {0, …, n_hops-1}:
         let H = hop[k]
-        # (1) pool lookup + state freshness
-        let pool = lookupPool(H.pool_id)
-        require pool exists AND pool.tradable == true
-        require H.fee_bps == pool.fee_bps
-        require H.R_A_pre == pool.reserve_A
-        require H.R_B_pre == pool.reserve_B
-        # (2) direction → input/output asset
+        let snap = poolSnapshot[H.pool_id]
+        require snap exists AND snap.tradable == true
+        require H.fee_bps == snap.fee_bps
+        require H.R_A_pre == snap.reserve_A
+        require H.R_B_pre == snap.reserve_B
+
+        # direction → input/output asset + amounts
         let (asset_in, asset_out, R_in, R_out, delta_in, delta_out) =
             H.direction == 0
-                ? (pool.asset_A, pool.asset_B, H.R_A_pre, H.R_B_pre,
+                ? (snap.asset_A, snap.asset_B, snap.reserve_A, snap.reserve_B,
                    H.delta_a_net_mag, H.delta_b_net_mag)
-                : (pool.asset_B, pool.asset_A, H.R_B_pre, H.R_A_pre,
+                : (snap.asset_B, snap.asset_A, snap.reserve_B, snap.reserve_A,
                    H.delta_b_net_mag, H.delta_a_net_mag)
+        require delta_in > 0 AND delta_out > 0
+
+        # Asset continuity
         require asset_in == hop_input_asset
-        # (3) CFMM curve floor identity (with-fee, integer)
-        let gNum = 10000 - pool.fee_bps
+        # Amount continuity (for k ≥ 1)
+        if k > 0: require delta_in == prev_delta_out
+
+        # Reserve-bound guards (u64 overflow / drain)
+        require R_in + delta_in ≤ U64_MAX
+        require R_out ≥ delta_out
+
+        # CFMM curve floor identity (with-fee, integer upper bound).
+        # Per-trader floor dust can only push the actual delta_out
+        # DOWN from the curve; settler attempts to claim a higher
+        # delta_out break this identity.
+        let gNum = 10000 - snap.fee_bps
         let gDen = 10000
         require delta_out * (R_in * gDen + gNum * delta_in)
               <= R_out * gNum * delta_in
-        # (4) chain-side commit identity: input_commit − delta_in·H_secp
-        #     == output_commit − delta_out·H_secp + (r_in − r_out)·G_secp
-        let next_commit = (k == n_hops - 1) ? C_out_secp : C_bridge_secp[k]
-        # Per-hop Pedersen identity (closes asset-side balance for this hop):
-        require chain_pre_commit − delta_in · H_secp
-              == next_commit − delta_out · H_secp
-                 + r_hop_excess[k] · G_secp
-        # (r_hop_excess[k] is a per-hop excess scalar revealed in the
-        #  envelope alongside the hop block; sum of per-hop excesses
-        #  matches kernel_sig's excess_route by construction.)
-        # (5) advance for next iteration
-        chain_pre_commit = next_commit
-        hop_input_asset  = asset_out
+
+        # Advance snapshot for the next hop's freshness check.
+        snap.reserve_in  += delta_in
+        snap.reserve_out -= delta_out
+
+        if k == 0: delta_in_0 = delta_in
+        delta_out_last  = delta_out
+        prev_delta_out  = delta_out
+        hop_input_asset = asset_out
+
+    # ----- Final consistency -----
+    require hop_input_asset == trader_output_asset_id
+
+    # ----- Min-out gate (terminal-only; Uni-V2 router parity) -----
+    require delta_out_last >= min_out
+
+    # ----- Receipt opening -----
+    require r_receipt != 0
+    require pedersenCommit(delta_out_last, r_receipt) == C_receipt_secp
+
+    # ----- Kernel sig -----
+    let P = C_receipt_secp − C_in_secp − (delta_out_last − delta_in_0)·H_secp
+    require P != ZERO            # would accept any sig
+    require BIP-340 verify(kernel_sig, kernel_msg, P.x_only)
+
+    # ----- Bulletproof m=2 over (SENTINEL, C_receipt_secp) -----
+    # Slot 0 is the additive identity (ZERO). Wire-format parity
+    # with T_AXFER_VAR / T_SWAP_VAR keeps the verifier hot path
+    # identical across opcodes.
+    require bulletproofVerify([ZERO, C_receipt_secp], range_proof)
 
     # ----- Final consistency -----
     require chain_pre_commit == C_out_secp
     require hop_input_asset  == trader_output_asset_id
 
     # ----- Min-out gate -----
-    let final_delta_out = hop[n_hops-1].direction == 0
-        ? hop[n_hops-1].delta_b_net_mag
-        : hop[n_hops-1].delta_a_net_mag
-    require final_delta_out >= min_out
-
     # ----- All checks pass: apply state transitions atomically -----
-    for hop k ∈ {0, …, n_hops-1}:
-        advance pool[k].reserve_in  += delta_in
-        advance pool[k].reserve_out -= delta_out
+    for each touched pool_id:
+        commit poolSnapshot[pool_id] to canonical pool state
     consume trader_input UTXO at vin[1]
     credit trader_output UTXO at vout[1]
 ```
 
-If ANY hop fails the curve-floor identity, pool lookup, fresh-
-reserves check, or chain-side commit identity, the entire
-envelope is rejected. The Bitcoin tx still confirms (Bitcoin
-doesn't care about indexer semantics) but the indexer doesn't
-update state — no pool advances, no UTXO credit. Atomic at the
-indexer-state-transition layer (mirrors T_SWAP_BATCH /
-T_TRADE_BATCH posture).
+If ANY hop fails the freshness check, fee_bps mismatch, asset/amount
+chain check, reserve-bound guard, CFMM curve floor, kernel sig,
+intent sig, receipt opening, or bulletproof verification, the entire
+envelope is rejected. The Bitcoin tx still confirms (Bitcoin doesn't
+care about indexer semantics) but the indexer doesn't update state —
+no pool advances, no UTXO credit. Atomic at the indexer-state-
+transition layer (mirrors T_SWAP_BATCH / T_TRADE_BATCH posture).
 
 ### Within-block ordering rule
 

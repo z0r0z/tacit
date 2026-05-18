@@ -1742,198 +1742,64 @@ and visible in pool state — traders can inspect a pool's flags
 before routing intents. See "Solo-intent confidentiality" under
 "Open / honest caveats" for the rationale.
 
-**Reorg handling for arbiter pools.** The `qualifying_set_hash` +
-`arbiter_sigs` in a `T_SWAP_BATCH` are cryptographic commitments
-over `(pool_id, expected_height, list_hash)`. The signature is
-**height-bound but reorg-stable**: it doesn't matter whether the
-batch eventually confirms at `expected_height` or at a shifted
-height after a reorg — the arbiter's claim "these intents were
-canonical at expected_height" is a historical statement, not a
-prediction. Concretely:
-
-- If the batch confirms at exactly `expected_height` with no
-  reorg, indexer crediting at depth-3 runs the deterministic
-  qualifying-intent computation against the chain state at
-  `expected_height` and verifies the listed intents match.
-- If the batch confirms at a different height (e.g., mining was
-  slow, no reorg), indexer still uses `expected_height` from the
-  envelope as the reference height for the qualifying computation.
-  The arbiter's signature is over that height; the indexer's
-  determinism check is against that height.
-- If the chain reorgs between broadcast and depth-3 crediting,
-  the batch's expected_height may now point to a different chain
-  state than originally signed. The indexer re-runs the qualifying
-  computation against the new canonical chain at `expected_height`.
-  If the new canonical chain at H makes a different intent set
-  qualifying, the previously-signed list may now be wrong (missing
-  intents that newly qualify, or including intents whose UTXOs
-  were reorged out). The batch becomes invalid and the settler
-  must re-broadcast with a fresh arbiter signature.
-
-**The arbiter does NOT need to re-sign on every reorg.** Their
-signature is purely an attestation of "I observed this set at
-this height under this chain"; the indexer's verification is the
-authoritative reconciliation. Arbiter liveness during reorgs is
-only required if settlers want to immediately re-broadcast a
-reorged batch — otherwise the next block's normal flow resumes
-with the next height's freshly-signed list. The arbiter is a
-data attestor, not a chain participant.
-
 **Canonical ordering.** Within a block, AMM envelopes apply in
 `(tx_index, vin[0] outpoint)` order. Within a `T_SWAP_BATCH`
 envelope, per-trader inputs (`vin[1+i]`) and outputs (`vout[1+i]`)
 MUST appear in `intent_id` ascending byte-order, with the OP_RETURN
 at `vout[0]` ahead of all receipts; indexers reject violations.
 
-**Mandatory inclusion of qualifying intents (opt-in mitigation).**
-To **mitigate** cross-batch curation MEV (the settler's incentive
-to selectively exclude intents that would move price against their
-own LP position), pools that pin an inclusion arbiter enforce a
-forced-inclusion rule. Pools without an arbiter operate in
-best-effort mode and rely on tip-revenue economics alone.
+**Curation-MEV mitigation (no trust quorum).** A single settler
+that builds `T_SWAP_BATCH` envelopes has a theoretical incentive to
+selectively exclude qualifying intents that would move price
+against their own LP position. V1 addresses this risk **without
+importing a trust quorum**, relying on two existing mechanisms:
 
-An intent is **qualifying for height H against the pool's
-spot-price-derived candidate set** if (a) it has been open in the
-worker's intent pool since at least height `H − K` (default
-`AMM_MANDATORY_INCLUSION_DEPTH = 2`), (b) its `expiry` has not
-lapsed, and (c) its `min_out` is satisfiable against the **spot
-clearing price** the pool would produce if the qualifying set
-alone were settled (recursively: re-run the deterministic clearing
-solve over the qualifying set; check `min_out` for each member
-against that solve's `P_clear`). This is a deterministic
-fixed-point computation over the qualifying-set seed, not a free
-parameter the settler can tune; if it does not converge in 3
-iterations the indexer treats the empty set as canonical for that
-height.
+1. **T_INTENT_ATTEST preconfirmation layer.** The worker signs
+   commitments to intents it will settle. If a confirmed
+   `T_SWAP_BATCH` omits an intent the worker preconfirmed for the
+   matching height, that is **provable cryptographic
+   equivocation** — two signed-by-worker messages contradict and
+   any party can publish the proof. The reputational cost is
+   severe even without protocol-level slashing, and the proof is
+   permanent on-chain.
 
-**On-chain commitment to the canonical list.** For arbiter-pinned
-pools, every `T_SWAP_BATCH` envelope MUST carry two extra fields:
+2. **Tip-revenue economics.** Excluded intents leave tip revenue
+   on the table; a chronically curating settler loses fees to
+   less-curating competitors; arbitrageurs realign spot drift.
+   Worst case is *delayed inclusion + bounded slippage drift*,
+   never value extraction.
 
-```
-expected_height      -- 4 B   u32 LE, equals settle height
-qualifying_set_hash  -- 32 B  sha256("tacit-amm-qset-v1" || pool_id
-                                      || height_LE(4) || canonical_list_bytes)
-m                    -- 1 B   u8, threshold (1..16), MUST equal
-                              pool.inclusion_arbiter_threshold_m
-signer_indices       -- m B   u8[m] ascending distinct indices into
-                              pool.inclusion_arbiter_pubkeys
-arbiter_sigs         -- 64m B BIP-340 sigs over qualifying_set_hash,
-                              one per signer_index, in the same order
-```
+These are reputation- and market-discipline defenses, not
+consensus-level. They are judged sufficient at v1 TVL scale.
 
-`canonical_list_bytes` is the sorted, length-prefixed concatenation of
-the qualifying `intent_id`s for that height:
-`u8(count) || count × intent_id(32)`, `intent_id`s in ascending byte
-order. Count is bounded by N_MAX (=16 in v1). The hash + sigs commit
-the chain to *which* list was canonical at H; the list bytes themselves
-remain off-chain, served by the worker at
-`GET /pools/:pool_id/qualifying-intents/:height`. Indexers verify all
-`m` `arbiter_sigs` against `pool.inclusion_arbiter_pubkeys[signer_index]`,
-fetch the list by its hash from any available source (worker, peer
-indexer, archival pin), and reject the envelope if any listed
-`intent_id` is missing from the batch.
+**Follow-up path: consensus-level discipline without trust.** A
+follow-up amendment may introduce one or both of:
 
-The commitment closes the worst arbiter abuse: an arbiter cannot sign
-one list off-chain and then claim a different list was canonical
-later. Indexers that disagree about list contents reach the same
-accept/reject verdict because the hash they're each checking against
-is the same on-chain value. The residual off-chain dependency is
-narrower than before — it's "fetch the list bytes by their hash,"
-not "trust whatever the worker serves." Content-addressed retrieval
-plus signature verification means any indexer with the bytes reaches
-the canonical answer.
+- **`T_EXCLUSION_CLAIM`** (reserved opcode, see §"Opcode space
+  reservation"): trader submits (signed intent + worker preconf
+  attestation + confirmed batch that omits the intent); validator
+  verifies the omission is real and applies a consensus-level
+  consequence (slash worker tip revenue, or flag worker
+  reputation). Closes the equivocation loop with protocol-level
+  discipline.
+- **Time-lock-encrypted intent submission** (e.g., drand-bound or
+  threshold-decryption): traders commit-then-reveal under a public
+  time-lock; the settler cannot read intent direction/amount to
+  selectively curate, so curation becomes structurally impossible
+  rather than reputationally costly.
 
-**Inclusion arbiter pubkey (optional).** The default for `POOL_INIT`
-is to pin **no arbiter**. Default pools work fine for trading —
-they are fully trustless, fully L1-reconstructible, and rely on
-tip economics + arbitrage to keep settlers from chronically
-curating (excluded intents leave tip revenue on the table; a
-chronically curating settler loses fees to less-curating
-competitors; arbitrageurs realign any spot drift). The worst case
-is **delayed inclusion + bounded slippage drift**, never value
-extraction or burn.
+Neither requires a trust quorum embedded in the pool; both are
+strictly stronger than v1's mitigations once shipped.
 
-Pools that want a stronger cryptographic guarantee against
-cross-batch curation MEV can additionally pin one or more
-`inclusion_arbiter_pubkey` values at `POOL_INIT`. Indexers then
-accept the qualifying-intents list for that pool only if signed
-by at least one of the pinned arbiters, and reject any
-`T_SWAP_BATCH` that excludes a qualifying intent. This is an
-opt-in upgrade — typically wanted only by very-high-volume pools
-where curation profit could become material.
-
-**Trust shape: m-of-n threshold.** The arbiter is a true m-of-n
-threshold: the pool pins `n ≤ 16` arbiter pubkeys at `POOL_INIT`
-plus a threshold `m ∈ [1, n]`. Every arbiter-pinned envelope carries
-`m` BIP-340 signatures (each from a distinct pinned key, identified
-by ascending `signer_index`), all over the same `qualifying_set_hash`.
-Indexers verify all `m` signatures against the declared signer
-pubkeys before accepting the envelope.
-
-`m = 1` is the lightest setup — any one of `n` keys can sign. Good
-for high-availability pools that want operator diversity for liveness;
-*not* a Byzantine-fault-tolerance posture (any single compromised key
-can curate). `m = 2..n` is the BFT-shape: requires a coalition to
-curate, defends against single-key compromise. Typical high-volume
-deployments pick `m ≥ ⌈n/2⌉ + 1` or `m = 2` for a small `n = 3` quorum.
-
-Pools that pin a single key (`n = m = 1`) are explicitly fragile —
-a lost or compromised key kills mandatory-inclusion enforcement for
-that pool — and the dapp SHOULD warn at pool-creation time if `n = 1`.
-
-**MuSig2 as a compact-sig usage pattern (no protocol change).** Pool
-launchers who want a k-of-n threshold quorum WITHOUT growing the
-envelope linearly in `m` can use MuSig2 (BIP-327) off-chain:
-
-1. The quorum runs MuSig2 KeyAgg over their n individual keys to
-   produce a single aggregated pubkey.
-2. The pool pins `(n=1, threshold_m=1, pubkeys=[aggregated_musig2_key])`
-   at `POOL_INIT`.
-3. To sign a `qualifying_set_hash`, the quorum runs the MuSig2 two-round
-   nonce-coordination + partial-sig protocol off-chain and produces a
-   single 64-byte BIP-340 signature under the aggregated key.
-4. On chain, the envelope's arbiter_block carries this single signature
-   under the 1-of-1 wire format. The indexer's standard BIP-340 check
-   accepts it.
-
-Trade-off: MuSig2 requires interactive nonce coordination among the
-quorum signers (off-chain); the m-of-n separate-sig path is
-non-interactive but grows wire size linearly in `m`. Both are
-supported by the same on-chain wire format.
-
-Default pools (no arbiter pinned) are the right v1 starting point
-and what the dapp creates by default. Pinning an arbiter is a
-deliberate choice the pool founder makes to delegate one specific
-MEV defense to a quorum, in exchange for the off-chain data
-dependency described next.
-
-**Trade-off vs. L1-only reconstruction.** Mandatory-inclusion
-enforcement is the one place this protocol references data outside
-the Bitcoin chain, but the on-chain `qualifying_set_hash` +
-`arbiter_sig` commitment narrows that dependency to **content
-addressing**, not trust. An indexer with only confirmed L1 envelopes
-can verify (a) the arbiter signature, (b) what list-hash was
-canonical at H. To check (c) "did the settler honor that list,"
-the indexer additionally needs the list bytes — but they're
-content-addressed by the chain-committed hash, so any source (worker,
-peer indexer, archival pin, gossip) returning the right bytes is
-indistinguishable from any other. Indexers that disagree about list
-contents reach the same accept/reject verdict because they're all
-checking against the same on-chain hash.
-
-Pools that pin no `inclusion_arbiter_pubkey` keep zero off-chain
-dependency at the cost of weaker cross-batch MEV resistance; pools
-that pin one gain MEV resistance at the cost of needing access to
-the list bytes (not trust in their source). This is the strongest
-mandatory-inclusion guarantee achievable without smart-contract
-enforcement at L1 — the arbiter is bounded to picking the list at
-sign time and cannot rewrite history afterwards.
-
-This closes the curation loop for opt-in pools: settlers may pick
-which fresh-arrival intents to include from the current block's
-pool, but anything ≥ K blocks old MUST be included if
-`min_out`-satisfiable. A settler trying to chronically curate
-would fail to settle.
+V1 wire format reserves three POOL_INIT bytes (`arbiter_count`,
+`arbiter_threshold_m`, and any per-arbiter pubkey payload) that
+MUST be zero/empty. The validator rejects non-zero values. The
+reserved bytes are available for a follow-up amendment to repurpose
+(e.g., for `T_EXCLUSION_CLAIM` slashing-target metadata,
+time-lock-encryption public-key references, or whatever the right
+defense ends up being). No `T_SWAP_BATCH` arbiter block is emitted
+at v1; the conditional that would have produced one is
+structurally unreachable.
 
 **Intent cancellation.** A trader can cancel an intent before
 expiry by signing a cancel message under `trader_pubkey` (BIP-340
@@ -2665,9 +2531,18 @@ ceremony_cid_len(1)        # u8, 1..64
 ceremony_cid(ceremony_cid_len)  # IPFS CID, UTF-8 — directory CID for the
                                 # public ceremony audit bundle (attestation
                                 # chains, ptau, pre/post-beacon zkeys).
-arbiter_count(1)           # u8, 0..16 — number of pinned arbiter pubkeys (n)
-arbiter_threshold_m(1)     # u8, 0 if arbiter_count==0 else 1..arbiter_count
-arbiter_pubkeys(33 * arbiter_count)  # compressed secp256k1
+reserved_count(1)          # u8 — MUST be 0 at v1 (validator rejects
+                            #      non-zero). Wire-format slot reserved for
+                            #      a follow-up amendment's per-pool payload
+                            #      (e.g., T_EXCLUSION_CLAIM slashing-target
+                            #      metadata, time-lock-encryption public-key
+                            #      reference). At v1 the value is structurally
+                            #      not present (the variable-length payload
+                            #      below is zero bytes).
+reserved_threshold(1)      # u8 — MUST be 0 at v1. Reserved for the same
+                            #      follow-up amendment.
+reserved_payload(33 * reserved_count)  # variable-length payload — empty at
+                                        # v1 since reserved_count==0.
 launcher_sig_count(1)      # u8, 0..2 — number of launcher-gate sigs
 launcher_sigs(64 * launcher_sig_count)  # BIP-340 each, ordered by
                                         # asset_A's pubkey first
@@ -2742,14 +2617,10 @@ tip_A_C_secp(33)           # aggregate asset-A tip commitment
 tip_B_C_secp(33)
 r_tip_A_LE(32)             # secp256k1 scalar — opening for tip_A_C_secp
 r_tip_B_LE(32)             # opening for tip_B_C_secp
-# arbiter block (present iff pool has inclusion_arbiter_pubkeys):
-expected_height_LE(4)
-qualifying_set_hash(32)
-arbiter_m(1)               # u8, MUST equal pool.inclusion_arbiter_threshold_m
-arbiter_signer_indices(arbiter_m)        # u8[m], ascending distinct,
-                                          # indices into pool.inclusion_arbiter_pubkeys
-arbiter_sigs(64 * arbiter_m)             # BIP-340 sigs, one per signer_index,
-                                          # all over qualifying_set_hash
+# (No optional block at v1. Wire format reserved by AMM.md
+# §"Curation-MEV mitigation" — a follow-up amendment that ships
+# T_EXCLUSION_CLAIM or time-lock-encrypted intents may add an
+# optional appended block here without breaking v1 envelopes.)
 # per-intent block, repeated n_intents times in STRICTLY ascending
 # intent_id byte-order (duplicates rejected — Bitcoin's UTXO model already
 # prevents same-outpoint reuse, but the indexer rejects defensively):
@@ -3567,6 +3438,131 @@ The validator:
 
 After claiming, the recipient holds `lp_asset_id` UTXOs that can be redeemed via `T_LP_REMOVE` (or held to compound — they accrue fees like any other LP position from that point on).
 
+### Insurance-pool sentinel (cBTC.tac/TAC canonical pool)
+
+The default `protocol_fee_address` recipient is a 33-byte
+compressed secp256k1 pubkey whose privkey-holder claims accrued
+fees as an `lp_asset_id` UTXO. The canonical cBTC.tac/TAC pool
+can ALSO opt into a **privkey-less sentinel** recipient that
+routes fee accrual directly into the cBTC.tac insurance pool —
+turning the protocol fee into a structurally aligned safety
+buffer for the cBTC.tac asset rather than a captured rent stream
+for any individual key holder.
+
+**Sentinel value.** A 33-byte structurally-not-a-pubkey constant:
+
+```
+AMM_PROTOCOL_FEE_SENTINEL_INSURANCE
+    = 0x01 || SHA256("tacit-amm-protocol-fee-insurance-v1")
+```
+
+The leading `0x01` byte ensures the value is **not** a valid
+SEC1-encoded compressed secp256k1 pubkey (which requires a leading
+`0x02` or `0x03`), so no privkey can ever exist for it. The hash
+of the domain tag fills the remaining 32 bytes deterministically;
+any reader can recompute and verify the sentinel locally.
+
+**POOL_INIT validation.** When `protocol_fee_address` equals the
+sentinel, the validator additionally requires:
+
+1. `protocol_fee_bps > 0` (the joint-non-zero rule applies; the
+   sentinel is treated as a non-zero address).
+2. The pool's `(asset_A, asset_B)` pair is exactly **(cBTC.tac
+   denomination variant, TAC)** for the current network. The
+   cBTC.tac denomination variant is any `asset_id` matching
+   `SHA256("tacit-cbtc-tac-variant-v1" || denom_sats_LE_u64)`
+   per SPEC-CBTC-TAC-AMENDMENT.md §4 — pools at any denomination
+   tier are allowed. TAC is the canonical TAC asset_id configured
+   per network.
+
+Any POOL_INIT with the sentinel value but a non-(cBTC.tac, TAC)
+pair is rejected. Other (asset, insurance-pool) combinations may
+be enabled by a follow-up amendment defining additional sentinels
+(e.g., for future tacit-issued assets with their own
+pooled-insurance reserves). All such sentinels share the same
+structural invariant: leading byte ∉ {0x02, 0x03}.
+
+**T_PROTOCOL_FEE_CLAIM behavior for sentinel pools.** The envelope
+wire format is unchanged. Validation differs in three ways:
+
+1. **Permissionless.** `claimer_pubkey_x_only` and `claim_sig`
+   are **not verified** against `pool.protocol_fee_address` (the
+   sentinel has no privkey). The submitter may set those fields
+   to anything; anti-spam is the Bitcoin tx fee the submitter
+   pays to broadcast.
+
+2. **Inline redemption.** Instead of emitting an `lp_asset_id`
+   UTXO at `vout[0]` payable to the claimer, the validator
+   applies a synthetic `T_LP_REMOVE` inline against the pool
+   reserves:
+
+   ```
+   dA = floor(protocol_fee_accrued · R_A / S)
+   dB = floor(protocol_fee_accrued · R_B / S)
+   ```
+
+   `dA` is the redeemed amount on `asset_A`'s side; `dB` on
+   `asset_B`'s side. The validator identifies which side is TAC
+   and which is cBTC.tac (per POOL_INIT validation above) and
+   routes:
+
+   - TAC amount → `insurance_pool_TAC += dTAC` (credit cBTC.tac's
+     pooled insurance reserve per SPEC-CBTC-TAC-AMENDMENT.md
+     §5.39).
+   - cBTC.tac amount → `outstanding_cBTC.tac_supply -= dCBTC`
+     (supply burn: anti-dilutive for remaining cBTC.tac holders,
+     since `per_share_insurance_TAC = insurance_pool_TAC /
+     outstanding_supply` rises when the supply denominator
+     drops).
+
+   Pool state updates: `R_A -= dA`, `R_B -= dB`,
+   `S -= protocol_fee_accrued`, `protocol_fee_accrued = 0`,
+   `k_last = R_A · R_B` (post-redemption baseline, so subsequent
+   crystallization measures growth from the new `k`).
+
+3. **No `lp_asset_id` UTXO at `vout[0]`.** The envelope's
+   broadcaster pays the Bitcoin tx fee but receives no LP shares.
+   The on-chain tx carries the OP_RETURN binding at `vout[0]` and
+   optionally a change output for the submitter; no
+   protocol-fee-claim payout UTXO.
+
+The `claim_amount_LE` field MUST still equal
+`protocol_fee_accrued` post-crystallization, as a sanity-check
+that the broadcaster computed the right value (and to prevent
+envelopes that hash-bind to a wrong amount). `claim_C_secp` and
+`claim_blinding` are decoded but their opening is not verified
+for sentinel pools (there is no emitted UTXO to commit against);
+broadcasters MAY zero them.
+
+**Permissionless submitter incentive.** None on-chain. The
+submitter pays Bitcoin tx fees and receives nothing. In practice
+the submitter is expected to be (a) an MEV bot or maintainer that
+treats periodic flushes as a public-goods cost, (b) an LP joining
+or leaving the pool who already crystallizes anyway and bundles a
+flush envelope in the same block, or (c) the indexer/worker
+operator submitting reflexively. There is no formal incentive
+layer — the assumption is that someone with even a marginal
+stake in cBTC.tac solvency will flush, and the flushed value is
+the structural reward to the cBTC.tac holder set as a whole.
+
+**Economic alignment.** The sentinel mechanism creates a closed
+loop on the canonical pool:
+
+- Trading volume on cBTC.tac/TAC → LP fees grow `k`.
+- A configured `protocol_fee_bps` (recommended modest: 100–250
+  bps = 1–2.5% of LP-fee growth, NOT the 1000 max) crystallizes
+  into accrued LP shares.
+- Anyone can flush; flushed value splits proportionally to
+  reserves: TAC side buffers insurance, cBTC.tac side retires
+  supply.
+- Both effects are anti-dilutive / pro-solvency for remaining
+  cBTC.tac holders. No party extracts rent.
+
+Choosing `protocol_fee_bps` modestly keeps the canonical pool's
+round-trip arb cost close to the no-skim variant's, avoiding TWAP
+staleness when the cUSD CDP oracle (post-launch) consumes the
+canonical pool's price.
+
 ### Forward-compatibility implications
 
 V1's protocol-fee mechanism is **forward-compatible by omission**:
@@ -3655,6 +3651,17 @@ Follow-up release (hypothetical concentrated-liquidity extension):
   —     T_SWAP_BATCH_RANGE      batched settlement against tick-walking liquidity
                                 (different circuit, fresh ceremony; slot allocated
                                  at the time of that follow-up amendment)
+
+Follow-up release (curation-MEV consensus discipline):
+  —     T_EXCLUSION_CLAIM       trader-submitted proof of worker equivocation:
+                                (signed intent + worker preconf attestation +
+                                 confirmed T_SWAP_BATCH that omits the intent).
+                                Validator verifies the omission and applies a
+                                consensus-level consequence (slash worker tip
+                                revenue, or flag worker reputation). Replaces
+                                v1's reputation-only mitigation of cross-batch
+                                curation MEV. Slot allocated at the time of
+                                that follow-up amendment.
 
 Note: 0x37–0x42 are claimed by other amendments (T_AXFER_VAR 0x37,
 T_WRAPPER_ATTEST 0x38, oracle + cBTC + cUSD 0x39–0x42 per the

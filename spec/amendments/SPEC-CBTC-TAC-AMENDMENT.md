@@ -1517,10 +1517,28 @@ operational dependency.
    amendment is informal; consider formalizing in v1.x.
 
 4. **AMM pool fee accrual.** This amendment defines a 30 bps swap
-   fee on the canonical cBTC.tac/TAC AMM pool, but doesn't specify
-   where the fees go. Options: to AMM LPs (standard), to insurance
-   pool (additional safety buffer), split (e.g., 75/25). Defer to
-   AMM amendment that handles pool-level fee distribution.
+   fee on the canonical cBTC.tac/TAC AMM pool. The default LP-fee
+   accrues to LPs (standard Uniswap-V2 path). The pool MAY ALSO
+   pin a **protocol-fee skim** on top, with the recipient address
+   set to the **insurance-pool sentinel** defined in AMM.md
+   §"Insurance-pool sentinel (cBTC.tac/TAC canonical pool)":
+
+   - `protocol_fee_address = 0x01 || SHA256("tacit-amm-protocol-fee-insurance-v1")`
+   - `protocol_fee_bps` set modestly (recommended 100–250 bps =
+     1–2.5% of LP-fee growth, NOT the 1000 cap).
+
+   When the sentinel is pinned, `T_PROTOCOL_FEE_CLAIM` is
+   permissionless (no claim_sig verification) and applies a
+   synthetic LP_REMOVE inline: the TAC side of the redeemed
+   reserves credits `insurance_pool_TAC`, and the cBTC.tac side
+   burns `outstanding_cBTC.tac_supply` (anti-dilutive: raises
+   `per_share_insurance_TAC` for remaining holders). See AMM.md
+   for the full validator algorithm; this amendment is the
+   accounting authority for the `insurance_pool_TAC` credit and
+   the `outstanding_cBTC.tac_supply` debit that result. The
+   canonical pool's launcher SHOULD choose the sentinel at
+   POOL_INIT to align the protocol-fee stream with cBTC.tac
+   solvency rather than route it to any individual pubkey.
 
 5. **Cross-tier deposits.** Currently a deposit consumes one
    cBTC.zk slot at one denomination. Allowing batch deposits of

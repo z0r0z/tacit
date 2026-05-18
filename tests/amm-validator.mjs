@@ -69,6 +69,23 @@ export {
   NO_CHANGE_SENTINEL,
 } from './swap-var.mjs';
 
+// T_SWAP_ROUTE (opcode 0x33) — atomic multi-hop AMM routing. Reuses the
+// T_SWAP_VAR cryptography stack (Pedersen + BP+ aggregated rangeproof +
+// kernel sig under `tacit-kernel-v1`) extended over N hops; no Groth16,
+// no ceremony coupling. See SPEC-SWAP-ROUTE-AMENDMENT.md for wire format
+// + validator algorithm.
+export {
+  validateSwapRoute,
+  decodeSwapRoute,
+  encodeSwapRoute,
+  computeSwapRouteEnvelopeHash,
+  buildSwapRouteIntentMsg,
+  buildSwapRouteKernelMsg,
+  hashHops as hashSwapRouteHops,
+  OPCODE_T_SWAP_ROUTE,
+  N_HOPS_MAX,
+} from './swap-route.mjs';
+
 function bytesEqual(a, b) {
   if (a.length !== b.length) return false;
   for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
@@ -657,6 +674,13 @@ export function validateLpAdd({
   // POOL_INIT path (variant 1): create pool. Otherwise require existing pool.
   if (env.variant === 1) {
     if (pool) return { valid: false, reason: 'POOL_INIT but pool already exists' };
+
+    // v1 hard-disable of arbiter mechanism (AMM.md §"Mandatory inclusion of
+    // qualifying intents" — DISABLED AT V1 note). Trust-quorum opt-in is
+    // deferred to a follow-up amendment; wire-format positions stay reserved.
+    if ((env.arbiterPubkeys?.length ?? 0) !== 0 || (env.arbiterThresholdM ?? 0) !== 0) {
+      return { valid: false, reason: 'arbiter feature disabled at v1 — deferred to follow-up amendment' };
+    }
 
     // Launcher gate (AMM.md §"Optional launcher gate").
     const gateA = metadataA ? extractLauncherPubkey(metadataA) : null;

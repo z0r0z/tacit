@@ -15625,6 +15625,13 @@ async function scanForEtches(env, network) {
           // encoder guard at dapp/amm-envelope.js's encodeLpAdd.
           if ((lp.pool_capability_flags ?? 0) !== 0) continue;
 
+          // v1 hard-disable of arbiter mechanism (AMM.md §"Mandatory
+          // inclusion of qualifying intents" — DISABLED AT V1 note).
+          // Trust-quorum opt-in is deferred to a follow-up amendment.
+          // Wire-format reservation preserved; validator rejects non-zero.
+          if ((lp.arbiter_pubkeys?.length ?? 0) !== 0) continue;
+          if ((lp.arbiter_threshold_m ?? 0) !== 0) continue;
+
           // Pool ID per SPEC: includes fee_bps + capability_flags +
           // (size-discriminated) protocol-fee config so (A, B) at different
           // fee tiers OR with different protocol-fee configs are different
