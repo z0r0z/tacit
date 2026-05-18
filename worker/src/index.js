@@ -138,6 +138,23 @@ const T_SWAP_VAR   = 0x32; // per-trade variable-amount AMM swap (SPEC §5.16.3)
 const T_SWAP_ROUTE = 0x33; // atomic multi-hop AMM routing (SPEC-SWAP-ROUTE-AMENDMENT)
 const SWAP_ROUTE_N_HOPS_MAX = 4; // matches tests/swap-route.mjs N_HOPS_MAX
 const XCURVE_PROOF_LEN_AMM = 169; // tacit-amm sigma proof length
+// LP-bond yield farms (SPEC-AMM-FARM-AMENDMENT.md). Three opcodes:
+//   T_FARM_INIT  : launcher-funded reward farm creation; virtual treasury.
+//   T_LP_BOND    : bond lp_asset_id shares against a farm; emit bond-discovery
+//                  P2WPKH dust at vout[1] (canonical bond_id).
+//   T_LP_UNBOND  : settle bond; validator-decree-mint lp_return + reward UTXOs.
+// Reuses kernel-sig + Pedersen + m=1 bulletproof stack from T_SWAP_VAR.
+// No Groth16, no new ceremony.
+const T_FARM_INIT  = 0x34;
+const T_LP_BOND    = 0x35;
+const T_LP_UNBOND  = 0x36;
+const _FARM_ENVELOPE_VERSION = 0x01;
+// Spec-pinned constants (mirror tests/amm-farm.mjs exports):
+const AMM_FARM_MIN_BOND           = 1000n;
+const AMM_FARM_MIN_REWARD_TOTAL   = 1_000_000_000n;
+const AMM_FARM_MAX_START_DELAY    = 4320;
+const AMM_FARM_VIEW_STALENESS     = 6;
+const FARM_ACC_FIXED_POINT_SHIFT  = 96n;
 const T_SLOT_MINT          = 0x43; // self-custody-slot wrapper atomic mint (SPEC §5.21, SPEC-CBTC-ZK-AMENDMENT)
 const T_SLOT_BURN          = 0x44; // self-custody-slot wrapper atomic redeem (SPEC §5.22, SPEC-CBTC-ZK-AMENDMENT)
 const T_SLOT_ROTATE        = 0x45; // self-custody-slot wrapper atomic transfer (SPEC §5.23, SPEC-CBTC-ZK-AMENDMENT)
@@ -3346,6 +3363,289 @@ function decodeTLpAddPayload(payload) {
   result.proof = bytesToHex(proof);
   return result;
 }
+
+// ============== LP-bond yield farms decoders + KV (SPEC-AMM-FARM-AMENDMENT) ==============
+//
+// Three opcodes ship in this block:
+//   T_FARM_INIT  (0x34) — fixed payload 316 B + variable rangeProof
+//   T_LP_BOND    (0x35) — fixed payload 256 B + variable rangeProof
+//   T_LP_UNBOND  (0x36) — fixed payload 259 B (no rangeProof)
+//
+// Conventions match tests/amm-farm.mjs exactly (single source of truth for
+// the math + wire format). Worker validators are foundation-only at v1:
+// structural decode + chain-scan KV updates + emit-resolver wiring for the
+// T_LP_UNBOND-minted UTXOs. Deep crypto verification (kernel sigs against
+// on-chain Pedersen commits, range proof verify, BIP-340 over signed msgs)
+// is deferred to follow-up sessions, matching the T_LP_ADD precedent of
+// 'sigs-and-arithmetic-verified' staging tags. Pools transacted-against
+// via T_LP_BOND/T_LP_UNBOND still go through full T_LP_ADD validation; the
+// farm subsystem only adds reward-distribution metadata on top.
+
+function _readU128LE(payload, o) {
+  const dv = new DataView(payload.buffer, payload.byteOffset);
+  let n = 0n;
+  for (let i = 0; i < 16; i++) n |= BigInt(payload[o + i]) << BigInt(i * 8);
+  return n;
+}
+
+function decodeTFarmInitPayload(payload) {
+  if (!payload) return null;
+  if (payload.length < 316 + 2) return null;
+  let p = 0;
+  const version = payload[p]; p += 1;
+  if (version !== _FARM_ENVELOPE_VERSION) return null;
+  const opcode = payload[p]; p += 1;
+  if (opcode !== T_FARM_INIT) return null;
+  const dv = new DataView(payload.buffer, payload.byteOffset);
+  function readU64() {
+    const lo = BigInt(dv.getUint32(p, true));
+    const hi = BigInt(dv.getUint32(p + 4, true));
+    p += 8;
+    return (hi << 32n) | lo;
+  }
+  const poolId = payload.slice(p, p + 32); p += 32;
+  const farmNonce = payload.slice(p, p + 32); p += 32;
+  const launcherPubkey = payload.slice(p, p + 33); p += 33;
+  if (launcherPubkey[0] !== 0x02 && launcherPubkey[0] !== 0x03) return null;
+  try { compressedPointFromHex(bytesToHex(launcherPubkey)); } catch { return null; }
+  const rewardAssetId = payload.slice(p, p + 32); p += 32;
+  const rewardTotal     = readU64();
+  const rewardPerBlock  = readU64();
+  const startHeight = dv.getUint32(p, true); p += 4;
+  const endHeight   = dv.getUint32(p, true); p += 4;
+  const cChangeOrSentinel = payload.slice(p, p + 33); p += 33;
+  let isSentinel = true;
+  for (let i = 0; i < 33; i++) if (cChangeOrSentinel[i] !== 0) { isSentinel = false; break; }
+  if (!isSentinel) {
+    try { compressedPointFromHex(bytesToHex(cChangeOrSentinel)); } catch { return null; }
+  }
+  if (p + 2 > payload.length) return null;
+  const rpLen = dv.getUint16(p, true); p += 2;
+  if (p + rpLen + 64 + 64 > payload.length) return null;
+  const rangeProof = payload.slice(p, p + rpLen); p += rpLen;
+  const kernelSig   = payload.slice(p, p + 64); p += 64;
+  const launcherSig = payload.slice(p, p + 64); p += 64;
+  if (p !== payload.length) return null;
+  return {
+    kind: 'farm_init',
+    version, opcode,
+    pool_id:         bytesToHex(poolId),
+    farm_nonce:      bytesToHex(farmNonce),
+    launcher_pubkey: bytesToHex(launcherPubkey),
+    reward_asset_id: bytesToHex(rewardAssetId),
+    reward_total:    rewardTotal.toString(),
+    reward_per_block:rewardPerBlock.toString(),
+    start_height:    startHeight,
+    end_height:      endHeight,
+    c_change_or_sentinel: bytesToHex(cChangeOrSentinel),
+    range_proof:     bytesToHex(rangeProof),
+    kernel_sig:      bytesToHex(kernelSig),
+    launcher_sig:    bytesToHex(launcherSig),
+  };
+}
+
+function decodeTLpBondPayload(payload) {
+  if (!payload) return null;
+  if (payload.length < 256 + 2) return null;
+  let p = 0;
+  const version = payload[p]; p += 1;
+  if (version !== _FARM_ENVELOPE_VERSION) return null;
+  const opcode = payload[p]; p += 1;
+  if (opcode !== T_LP_BOND) return null;
+  const dv = new DataView(payload.buffer, payload.byteOffset);
+  function readU64() {
+    const lo = BigInt(dv.getUint32(p, true));
+    const hi = BigInt(dv.getUint32(p + 4, true));
+    p += 8;
+    return (hi << 32n) | lo;
+  }
+  const farmId = payload.slice(p, p + 32); p += 32;
+  const bonderPubkey = payload.slice(p, p + 33); p += 33;
+  if (bonderPubkey[0] !== 0x02 && bonderPubkey[0] !== 0x03) return null;
+  try { compressedPointFromHex(bytesToHex(bonderPubkey)); } catch { return null; }
+  const bondAmount = readU64();
+  const entryAccPerShare = _readU128LE(payload, p); p += 16;
+  const bondViewHeight = dv.getUint32(p, true); p += 4;
+  const cChangeOrSentinel = payload.slice(p, p + 33); p += 33;
+  let isSentinel = true;
+  for (let i = 0; i < 33; i++) if (cChangeOrSentinel[i] !== 0) { isSentinel = false; break; }
+  if (!isSentinel) {
+    try { compressedPointFromHex(bytesToHex(cChangeOrSentinel)); } catch { return null; }
+  }
+  if (p + 2 > payload.length) return null;
+  const rpLen = dv.getUint16(p, true); p += 2;
+  if (p + rpLen + 64 + 64 > payload.length) return null;
+  const rangeProof = payload.slice(p, p + rpLen); p += rpLen;
+  const kernelSig = payload.slice(p, p + 64); p += 64;
+  const bonderSig = payload.slice(p, p + 64); p += 64;
+  if (p !== payload.length) return null;
+  return {
+    kind: 'lp_bond',
+    version, opcode,
+    farm_id:         bytesToHex(farmId),
+    bonder_pubkey:   bytesToHex(bonderPubkey),
+    bond_amount:     bondAmount.toString(),
+    entry_acc_per_share: entryAccPerShare.toString(),
+    bond_view_height: bondViewHeight,
+    c_change_or_sentinel: bytesToHex(cChangeOrSentinel),
+    range_proof:     bytesToHex(rangeProof),
+    kernel_sig:      bytesToHex(kernelSig),
+    bonder_sig:      bytesToHex(bonderSig),
+  };
+}
+
+function decodeTLpUnbondPayload(payload) {
+  if (!payload) return null;
+  if (payload.length !== 259) return null;
+  let p = 0;
+  const version = payload[p]; p += 1;
+  if (version !== _FARM_ENVELOPE_VERSION) return null;
+  const opcode = payload[p]; p += 1;
+  if (opcode !== T_LP_UNBOND) return null;
+  const dv = new DataView(payload.buffer, payload.byteOffset);
+  function readU64() {
+    const lo = BigInt(dv.getUint32(p, true));
+    const hi = BigInt(dv.getUint32(p + 4, true));
+    p += 8;
+    return (hi << 32n) | lo;
+  }
+  const farmId = payload.slice(p, p + 32); p += 32;
+  const bondId = payload.slice(p, p + 36); p += 36;
+  const unbonderPubkey = payload.slice(p, p + 33); p += 33;
+  if (unbonderPubkey[0] !== 0x02 && unbonderPubkey[0] !== 0x03) return null;
+  try { compressedPointFromHex(bytesToHex(unbonderPubkey)); } catch { return null; }
+  const exitAccPerShare = _readU128LE(payload, p); p += 16;
+  const exitViewHeight = dv.getUint32(p, true); p += 4;
+  const rewardAmount = readU64();
+  const lpReturnR = payload.slice(p, p + 32); p += 32;
+  const rewardR   = payload.slice(p, p + 32); p += 32;
+  const unbonderSig = payload.slice(p, p + 64); p += 64;
+  if (p !== payload.length) return null;
+  return {
+    kind: 'lp_unbond',
+    version, opcode,
+    farm_id:         bytesToHex(farmId),
+    bond_id:         bytesToHex(bondId),
+    unbonder_pubkey: bytesToHex(unbonderPubkey),
+    exit_acc_per_share: exitAccPerShare.toString(),
+    exit_view_height:   exitViewHeight,
+    reward_amount:   rewardAmount.toString(),
+    lp_return_r:     bytesToHex(lpReturnR),
+    reward_r:        bytesToHex(rewardR),
+    unbonder_sig:    bytesToHex(unbonderSig),
+  };
+}
+
+// farm_id derivation. Mirrors tests/amm-farm.mjs deriveFarmId exactly.
+//   farm_id = SHA256("tacit-amm-farm-init-v1" || pool_id || launcher_pubkey ||
+//                     reward_asset_id || farm_nonce)
+function ammDeriveFarmId(poolIdBytes, launcherPubkeyBytes, rewardAssetIdBytes, farmNonceBytes) {
+  const domain = new TextEncoder().encode('tacit-amm-farm-init-v1');
+  const preimage = new Uint8Array(
+    domain.length + 32 + 33 + 32 + 32
+  );
+  let p = 0;
+  preimage.set(domain, p); p += domain.length;
+  preimage.set(poolIdBytes, p); p += 32;
+  preimage.set(launcherPubkeyBytes, p); p += 33;
+  preimage.set(rewardAssetIdBytes, p); p += 32;
+  preimage.set(farmNonceBytes, p); p += 32;
+  return sha256(preimage);
+}
+
+// ---- KV helpers ----
+
+function ammFarmKey(network, farmIdHex) {
+  return network === 'signet' ? `ammfarm:${farmIdHex}` : `ammfarm:${network}:${farmIdHex}`;
+}
+function ammFarmBondKey(network, bondIdHex) {
+  return network === 'signet' ? `ammfarmbond:${bondIdHex}` : `ammfarmbond:${network}:${bondIdHex}`;
+}
+function ammFarmBondsByBonderKey(network, bonderPubkeyHex) {
+  return network === 'signet'
+    ? `ammfarmbonder:${bonderPubkeyHex}`
+    : `ammfarmbonder:${network}:${bonderPubkeyHex}`;
+}
+function ammFarmsByPoolKey(network, poolIdHex) {
+  return network === 'signet'
+    ? `ammfarmpool:${poolIdHex}`
+    : `ammfarmpool:${network}:${poolIdHex}`;
+}
+
+async function ammFarmGet(env, network, farmIdHex) {
+  return env.REGISTRY_KV.get(ammFarmKey(network, farmIdHex), 'json');
+}
+async function ammFarmPut(env, network, farmIdHex, value) {
+  await env.REGISTRY_KV.put(ammFarmKey(network, farmIdHex), JSON.stringify(value));
+}
+async function ammFarmBondGet(env, network, bondIdHex) {
+  return env.REGISTRY_KV.get(ammFarmBondKey(network, bondIdHex), 'json');
+}
+async function ammFarmBondPut(env, network, bondIdHex, value) {
+  await env.REGISTRY_KV.put(ammFarmBondKey(network, bondIdHex), JSON.stringify(value));
+}
+async function ammFarmBondDelete(env, network, bondIdHex) {
+  await env.REGISTRY_KV.delete(ammFarmBondKey(network, bondIdHex));
+}
+async function ammFarmBondsForBonder(env, network, bonderPubkeyHex) {
+  const v = await env.REGISTRY_KV.get(ammFarmBondsByBonderKey(network, bonderPubkeyHex), 'json');
+  return Array.isArray(v) ? v : [];
+}
+async function ammFarmBonderAppend(env, network, bonderPubkeyHex, bondIdHex) {
+  const list = await ammFarmBondsForBonder(env, network, bonderPubkeyHex);
+  if (!list.includes(bondIdHex)) {
+    list.push(bondIdHex);
+    await env.REGISTRY_KV.put(ammFarmBondsByBonderKey(network, bonderPubkeyHex), JSON.stringify(list));
+  }
+}
+async function ammFarmBonderRemove(env, network, bonderPubkeyHex, bondIdHex) {
+  const list = await ammFarmBondsForBonder(env, network, bonderPubkeyHex);
+  const filtered = list.filter(x => x !== bondIdHex);
+  if (filtered.length === 0) {
+    await env.REGISTRY_KV.delete(ammFarmBondsByBonderKey(network, bonderPubkeyHex));
+  } else if (filtered.length !== list.length) {
+    await env.REGISTRY_KV.put(ammFarmBondsByBonderKey(network, bonderPubkeyHex), JSON.stringify(filtered));
+  }
+}
+async function ammFarmsForPool(env, network, poolIdHex) {
+  const v = await env.REGISTRY_KV.get(ammFarmsByPoolKey(network, poolIdHex), 'json');
+  return Array.isArray(v) ? v : [];
+}
+async function ammFarmPoolAppend(env, network, poolIdHex, farmIdHex) {
+  const list = await ammFarmsForPool(env, network, poolIdHex);
+  if (!list.includes(farmIdHex)) {
+    list.push(farmIdHex);
+    await env.REGISTRY_KV.put(ammFarmsByPoolKey(network, poolIdHex), JSON.stringify(list));
+  }
+}
+
+// ---- Crystallization (mirrors tests/amm-farm.mjs crystallizeFarm) ----
+//
+// Mutates farm in place. farm fields use string-encoded BigInts in KV; the
+// caller is responsible for round-tripping. We do the math on BigInts then
+// stringify back at the end. Idempotent for same height.
+
+function _farmCrystallize(farm, currentHeight) {
+  const h = currentHeight > farm.end_height ? farm.end_height : currentHeight;
+  if (h <= farm.last_update_height) return;
+  if (h < farm.start_height) {
+    farm.last_update_height = h;
+    return;
+  }
+  const baseline = farm.last_update_height < farm.start_height
+    ? farm.start_height
+    : farm.last_update_height;
+  const elapsed = BigInt(h - baseline);
+  const totalBonded = BigInt(farm.total_bonded);
+  if (totalBonded > 0n && elapsed > 0n) {
+    const rewardUnits = elapsed * BigInt(farm.reward_per_block);
+    const accDelta = (rewardUnits << FARM_ACC_FIXED_POINT_SHIFT) / totalBonded;
+    farm.acc_reward_per_share = (BigInt(farm.acc_reward_per_share) + accDelta).toString();
+  }
+  farm.last_update_height = h;
+}
+
+// ============== /LP-bond yield farms ==============
 
 // ============== SLASH_DETECTED MONITOR (SPEC §5.39.1-2) ==============
 //
@@ -18378,24 +18678,55 @@ async function _routeFetch(req, env, ctx) {
       }
     }
 
-    if (url.pathname === '/slot-rotates' && req.method === 'GET') {
+    // Shared loader for the four chronological slot-event logs. Two
+    // optimisations vs. the prior per-endpoint inline code:
+    //
+    //   1. KEY-LEVEL since_height pre-filter. The log keys are
+    //      zero-padded height-first ('slotmint:0000949875:...'), so a
+    //      string comparison against the padded since_height drops
+    //      old records BEFORE issuing the KV.get — old polls used to
+    //      fetch every record and filter post-load, paying N reads on
+    //      every incremental scan. The dapp's slot scanner polls all
+    //      four endpoints on each tick with a since_height that's
+    //      usually just behind the chain tip; the typical poll
+    //      returned 0-5 new records but loaded 100-1000.
+    //
+    //   2. Parallel KV.get. The prior sequential await loop forced
+    //      N round-trip latencies in serial; Promise.all collapses to
+    //      one parallel fan-out within the worker invocation.
+    //
+    // Field name varies per log (rotates / mints / splits / merges)
+    // so callers pass the response key name explicitly. Network
+    // prefix length differs (signet has no network segment in the
+    // key — see slotMintLogKey) so we extract via split-on-':' and
+    // pick the segment based on the network.
+    const _slotLogServe = async (prefix, responseKey) => {
       const sinceHeight = parseInt(url.searchParams.get('since_height') || '0', 10) || 0;
       const limit = Math.min(parseInt(url.searchParams.get('limit') || '500', 10) || 500, 5000);
+      const sinceHStr = String(sinceHeight).padStart(10, '0');
       try {
-        const list = await env.REGISTRY_KV.list({ prefix: slotRotateLogPrefix(network), limit });
-        const rotates = [];
-        for (const k of list.keys) {
-          const val = await env.REGISTRY_KV.get(k.name, 'json');
-          if (!val) continue;
-          if (Number(val.height || 0) < sinceHeight) continue;
-          rotates.push(val);
-        }
-        return jsonResponse({ rotates }, 200, cors);
+        const list = await env.REGISTRY_KV.list({ prefix, limit });
+        // Key shape:
+        //   signet:  'slotXXX:HHHHHHHHHH:...'           → height = parts[1]
+        //   mainnet: 'slotXXX:mainnet:HHHHHHHHHH:...'   → height = parts[2]
+        const heightIdx = network === 'signet' ? 1 : 2;
+        const wantedKeys = sinceHeight > 0
+          ? list.keys.filter(k => {
+              const parts = k.name.split(':');
+              const hPart = parts[heightIdx] || '';
+              return hPart >= sinceHStr;
+            })
+          : list.keys;
+        const fetched = await Promise.all(wantedKeys.map(k => env.REGISTRY_KV.get(k.name, 'json')));
+        const out = fetched.filter(Boolean);
+        return jsonResponse({ [responseKey]: out }, 200, cors);
       } catch (e) {
-        return jsonResponse({ error: 'slot-rotates list failed', detail: String(e?.message || e) }, 500, cors);
+        return jsonResponse({ error: `${responseKey} list failed`, detail: String(e?.message || e) }, 500, cors);
       }
+    };
+    if (url.pathname === '/slot-rotates' && req.method === 'GET') {
+      return _slotLogServe(slotRotateLogPrefix(network), 'rotates');
     }
-
     // SPEC-CBTC-ZK-FUNGIBILITY §5.26 — companion log endpoints for the
     // three slot-creating ops that also accept an encrypted note tail
     // (mint, split, merge). Same shape as /slot-rotates: chronological
@@ -18403,55 +18734,13 @@ async function _routeFetch(req, env, ctx) {
     // recipient's dapp uses to detect inbound slots without walking
     // every leaf in every pool.
     if (url.pathname === '/slot-mints' && req.method === 'GET') {
-      const sinceHeight = parseInt(url.searchParams.get('since_height') || '0', 10) || 0;
-      const limit = Math.min(parseInt(url.searchParams.get('limit') || '500', 10) || 500, 5000);
-      try {
-        const list = await env.REGISTRY_KV.list({ prefix: slotMintLogPrefix(network), limit });
-        const mints = [];
-        for (const k of list.keys) {
-          const val = await env.REGISTRY_KV.get(k.name, 'json');
-          if (!val) continue;
-          if (Number(val.height || 0) < sinceHeight) continue;
-          mints.push(val);
-        }
-        return jsonResponse({ mints }, 200, cors);
-      } catch (e) {
-        return jsonResponse({ error: 'slot-mints list failed', detail: String(e?.message || e) }, 500, cors);
-      }
+      return _slotLogServe(slotMintLogPrefix(network), 'mints');
     }
     if (url.pathname === '/slot-splits' && req.method === 'GET') {
-      const sinceHeight = parseInt(url.searchParams.get('since_height') || '0', 10) || 0;
-      const limit = Math.min(parseInt(url.searchParams.get('limit') || '500', 10) || 500, 5000);
-      try {
-        const list = await env.REGISTRY_KV.list({ prefix: slotSplitLogPrefix(network), limit });
-        const splits = [];
-        for (const k of list.keys) {
-          const val = await env.REGISTRY_KV.get(k.name, 'json');
-          if (!val) continue;
-          if (Number(val.height || 0) < sinceHeight) continue;
-          splits.push(val);
-        }
-        return jsonResponse({ splits }, 200, cors);
-      } catch (e) {
-        return jsonResponse({ error: 'slot-splits list failed', detail: String(e?.message || e) }, 500, cors);
-      }
+      return _slotLogServe(slotSplitLogPrefix(network), 'splits');
     }
     if (url.pathname === '/slot-merges' && req.method === 'GET') {
-      const sinceHeight = parseInt(url.searchParams.get('since_height') || '0', 10) || 0;
-      const limit = Math.min(parseInt(url.searchParams.get('limit') || '500', 10) || 500, 5000);
-      try {
-        const list = await env.REGISTRY_KV.list({ prefix: slotMergeLogPrefix(network), limit });
-        const merges = [];
-        for (const k of list.keys) {
-          const val = await env.REGISTRY_KV.get(k.name, 'json');
-          if (!val) continue;
-          if (Number(val.height || 0) < sinceHeight) continue;
-          merges.push(val);
-        }
-        return jsonResponse({ merges }, 200, cors);
-      } catch (e) {
-        return jsonResponse({ error: 'slot-merges list failed', detail: String(e?.message || e) }, 500, cors);
-      }
+      return _slotLogServe(slotMergeLogPrefix(network), 'merges');
     }
 
     // ============== /chain/* — Esplora read-only proxy ==============
