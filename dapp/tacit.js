@@ -8092,6 +8092,138 @@ function encodeTSwapVarPayload({
   );
 }
 
+// ============== T_SWAP_ROUTE wire + msg helpers ==============
+//
+// Mirror tests/swap-route.mjs byte-for-byte so the dapp emits envelopes
+// the worker scan-loop validator accepts. Helpers are kept inline (not
+// imported) so the dapp build stays single-bundle.
+
+const _SWAP_ROUTE_INTENT_DOMAIN = new TextEncoder().encode('tacit-swap-route-v1');
+const _SWAP_ROUTE_KERNEL_DOMAIN = new TextEncoder().encode('tacit-kernel-v1');
+
+function _swapRouteU64LE(n) {
+  const b = new Uint8Array(8);
+  let x = BigInt(n);
+  if (x < 0n || x >= 1n << 64n) throw new Error('u64 overflow');
+  for (let i = 0; i < 8; i++) { b[i] = Number(x & 0xffn); x >>= 8n; }
+  return b;
+}
+function _swapRouteU32LE(n) {
+  const b = new Uint8Array(4);
+  new DataView(b.buffer).setUint32(0, n >>> 0, true);
+  return b;
+}
+function _swapRouteU16LE(n) {
+  const b = new Uint8Array(2);
+  new DataView(b.buffer).setUint16(0, n & 0xffff, true);
+  return b;
+}
+
+// Per-hop block (67 bytes): pool_id(32) || direction(1) || fee_bps(2) ||
+// R_A_pre(8) || R_B_pre(8) || delta_a_net_mag(8) || delta_b_net_mag(8).
+function _encodeSwapRouteHop(hop) {
+  if (!(hop.poolId instanceof Uint8Array) || hop.poolId.length !== 32) {
+    throw new Error('hop.poolId must be 32 bytes');
+  }
+  if (hop.direction !== 0 && hop.direction !== 1) {
+    throw new Error('hop.direction must be 0|1');
+  }
+  if (!Number.isInteger(hop.feeBps) || hop.feeBps < 0 || hop.feeBps > 1000) {
+    throw new Error('hop.feeBps must be 0..1000');
+  }
+  return concatBytes(
+    hop.poolId,
+    new Uint8Array([hop.direction & 0xff]),
+    _swapRouteU16LE(hop.feeBps),
+    _swapRouteU64LE(hop.R_A_pre),
+    _swapRouteU64LE(hop.R_B_pre),
+    _swapRouteU64LE(hop.deltaANetMag),
+    _swapRouteU64LE(hop.deltaBNetMag),
+  );
+}
+
+function _hashSwapRouteHops(hops) {
+  return sha256(concatBytes(...hops.map(_encodeSwapRouteHop)));
+}
+
+// route_msg per SPEC-SWAP-ROUTE-AMENDMENT §"Intent message + signature".
+function buildSwapRouteIntentMsg({
+  traderPubkey, traderInputAssetId, traderOutputAssetId,
+  minOut, expiryHeight, hops, cInSecp, cReceiptSecp,
+}) {
+  if (!Array.isArray(hops) || hops.length < 2 || hops.length > SWAP_ROUTE_N_HOPS_MAX) {
+    throw new Error(`hops length must be 2..${SWAP_ROUTE_N_HOPS_MAX}`);
+  }
+  return sha256(concatBytes(
+    _SWAP_ROUTE_INTENT_DOMAIN,
+    traderPubkey, traderInputAssetId, traderOutputAssetId,
+    _swapRouteU64LE(minOut), _swapRouteU32LE(expiryHeight),
+    new Uint8Array([hops.length & 0xff]),
+    ...hops.map(_encodeSwapRouteHop),
+    cInSecp, cReceiptSecp,
+  ));
+}
+
+// kernel_msg per SPEC-SWAP-ROUTE-AMENDMENT §"Kernel message + signature".
+// Closes the trader's net asset flow input→output across the whole route.
+function buildSwapRouteKernelMsg({
+  traderInputAssetId, traderOutputAssetId,
+  traderInputOutpointTxidBE, traderInputOutpointVout,
+  deltaIn0, deltaOutLast, cReceiptSecp, hopsHash,
+}) {
+  return sha256(concatBytes(
+    _SWAP_ROUTE_KERNEL_DOMAIN,
+    traderInputAssetId, traderOutputAssetId,
+    new Uint8Array([0x01]),
+    traderInputOutpointTxidBE,
+    _swapRouteU32LE(traderInputOutpointVout),
+    cReceiptSecp,
+    _swapRouteU64LE(deltaIn0),
+    _swapRouteU64LE(deltaOutLast),
+    hopsHash,
+  ));
+}
+
+function encodeTSwapRoutePayload({
+  traderInputAssetId, traderOutputAssetId,
+  minOut, expiryHeight, traderPubkey,
+  hops,
+  traderInputOutpointTxidBE, traderInputOutpointVout,
+  cInSecp, cReceiptSecp, rReceipt,
+  rangeProof, kernelSig, intentSig,
+}) {
+  if (!Array.isArray(hops) || hops.length < 2 || hops.length > SWAP_ROUTE_N_HOPS_MAX) {
+    throw new Error(`hops length must be 2..${SWAP_ROUTE_N_HOPS_MAX}`);
+  }
+  if (!(traderInputAssetId instanceof Uint8Array) || traderInputAssetId.length !== 32) throw new Error('trader_input_asset_id 32 bytes');
+  if (!(traderOutputAssetId instanceof Uint8Array) || traderOutputAssetId.length !== 32) throw new Error('trader_output_asset_id 32 bytes');
+  if (!(traderPubkey instanceof Uint8Array) || traderPubkey.length !== 33) throw new Error('trader_pubkey 33 bytes');
+  if (!(traderInputOutpointTxidBE instanceof Uint8Array) || traderInputOutpointTxidBE.length !== 32) throw new Error('trader_input_outpoint_txid_be 32 bytes');
+  if (!(cInSecp instanceof Uint8Array) || cInSecp.length !== 33) throw new Error('c_in_secp 33 bytes');
+  if (!(cReceiptSecp instanceof Uint8Array) || cReceiptSecp.length !== 33) throw new Error('c_receipt_secp 33 bytes');
+  if (!(rReceipt instanceof Uint8Array) || rReceipt.length !== 32) throw new Error('r_receipt 32 bytes');
+  if (!(rangeProof instanceof Uint8Array) || rangeProof.length === 0 || rangeProof.length > 0xffff) {
+    throw new Error('range_proof len 1..65535');
+  }
+  if (!(kernelSig instanceof Uint8Array) || kernelSig.length !== 64) throw new Error('kernel_sig 64 bytes');
+  if (!(intentSig instanceof Uint8Array) || intentSig.length !== 64) throw new Error('intent_sig 64 bytes');
+
+  return concatBytes(
+    new Uint8Array([SWAP_ROUTE_ENVELOPE_VERSION, T_SWAP_ROUTE, hops.length & 0xff]),
+    traderInputAssetId, traderOutputAssetId,
+    _swapRouteU64LE(minOut), _swapRouteU32LE(expiryHeight),
+    traderPubkey,
+    ...hops.map(_encodeSwapRouteHop),
+    traderInputOutpointTxidBE,
+    _swapRouteU32LE(traderInputOutpointVout),
+    cInSecp, cReceiptSecp, rReceipt,
+    _swapRouteU16LE(rangeProof.length), rangeProof,
+    kernelSig, intentSig,
+  );
+}
+
+function computeSwapRouteEnvelopeHash(payload) { return sha256(payload); }
+
 // Decoder for T_SWAP_ROUTE (opcode 0x33). Returns the decoded route object
 // or null on any structural mismatch. Byte-format-equivalent to worker's
 // decodeTSwapRoutePayload and tests/swap-route.mjs::decodeSwapRoute.
@@ -52301,8 +52433,12 @@ function applyMarketFilters() {
     // compact "N chunks left" line, plus surface the cumulative group total
     // (chunk_amount × N) in the total row so buyers see both per-chunk and
     // group-level liquidity at a glance.
+    // Inline-block + margin-left gives visible breathing room between
+    // the quantity glyphs and the badge so "536.526" and "5 listings"
+    // read as separate facts (the bare-CSS inline span was crunching
+    // them tight on dense numeric rows).
     const _groupBadge = l._isGroup
-      ? ` <span class="unit" style="background:var(--bg-warm);border:1px solid var(--ink);padding:1px 5px;font-size:10px;font-weight:600;border-radius:2px;" title="${l._groupSize} identical-price listings · pick any subset (Buy chunks · up to ${l._groupSize}) and each settles atomically in its own Bitcoin tx">${l._groupSize} listings</span>`
+      ? ` <span style="display:inline-block;margin-left:6px;background:var(--bg-warm);border:1px solid var(--ink);padding:1px 5px;font-size:10px;font-weight:600;border-radius:2px;vertical-align:middle;" title="${l._groupSize} identical-price listings · pick any subset (Buy chunks · up to ${l._groupSize}) and each settles atomically in its own Bitcoin tx">${l._groupSize} listings</span>`
       : '';
     const _groupTotalLine = (l._isGroup && unit != null)
       ? (() => {
