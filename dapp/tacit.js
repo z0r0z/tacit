@@ -65548,8 +65548,11 @@ function _wireSwapTile(scope) {
       if (c.kind === 'bid-var') {
         const gap = targetTacBig - totalAmt;
         let chunk = gap > c.remaining ? c.remaining : gap;
-        if (chunk < c.minFill) chunk = c.minFill;  // overshoot if gap < min_fill
-        if (chunk > c.remaining) continue;
+        // If the user's remaining gap is below this bid's min_fill, skip
+        // — let the unfilled tail land as a residual ask at the floor
+        // rather than over-selling the user's typed amount. Symmetric
+        // with planBuy's `if (requestedAmt < c.minTake) continue;`.
+        if (chunk < c.minFill) continue;
         const scaledSats = Number((chunk * BigInt(c.fullPs)) / c.fullAmt);
         if (scaledSats < DUST) continue;
         plan.push({ kind: 'bid-var', b: c.b, amt: chunk, ps: scaledSats, u: c.u });
@@ -65560,7 +65563,8 @@ function _wireSwapTile(scope) {
       }
     }
     if (!plan.length) return null;
-    return { plan, totalAmt, totalSats, residualAmt: targetTacBig - totalAmt, targetAmt: targetTacBig, floor };
+    const residualAmt = totalAmt < targetTacBig ? targetTacBig - totalAmt : 0n;
+    return { plan, totalAmt, totalSats, residualAmt, targetAmt: targetTacBig, floor };
   };
   // BUY exact-out: user types target TICKER amount; walk asks cheapest-
   // first under slippage cap, accumulate until cumulative ≥ target.
