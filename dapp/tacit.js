@@ -34841,24 +34841,18 @@ async function _ceremonyFetchBlobCached(cid, label, expectedSha256Hex, onBytes) 
   return bytes;
 }
 
-async function ceremonyVerifyChain(state, snarkjs, headZkeyBytes, onPhase) {
-  // Expected r1cs sha = state.circuit_hash by definition (the worker
-  // sets circuit_hash := sha256(r1cs) at init time, per worker
-  // line 5293). Falls back to _ceremonyActiveHash only when state
-  // doesn't carry the field (legacy mixer-era cache).
-  //
-  // Expected ptau sha depends on WHICH ceremony this is. AMM circuits
-  // use pot18 (262k constraints); mixer used pot14 (16k constraints).
-  // Both shas are pinned at build time as TACIT_AMM_PTAU_SHA256 +
-  // TACIT_DEFAULT_PTAU_SHA256. Earlier code only used the default
-  // (pot14 sha) which caused every AMM contribute to fail with
-  // "sha256 does not match expected" — the gateway-served pot18 bytes
-  // hashed correctly to the AMM ptau sha but were compared against
-  // the mixer's pot14 sha. Now: select by circuit_hash lookup.
-  const expectedR1cs = String(state.circuit_hash || _ceremonyActiveHash || '').toLowerCase();
-  const isAmm = Array.isArray(AMM_CEREMONY_CIRCUIT_HASHES)
-    && AMM_CEREMONY_CIRCUIT_HASHES.some(c => c.hash === expectedR1cs);
-  const expectedPtau = isAmm ? TACIT_AMM_PTAU_SHA256 : TACIT_DEFAULT_PTAU_SHA256;
+async function ceremonyVerifyChain(state, snarkjs, headZkeyBytes, onPhase, opts) {
+  // Each ceremony class (mixer / AMM / future) pins its own
+  // (r1cs sha, ptau sha) pair at build time and passes them in
+  // explicitly. The helper does not derive them from module-level
+  // defaults — that was the source of the "5a67cdcc vs 1373a3bc"
+  // mismatch when an AMM contributor's flow accidentally fell
+  // through to the mixer hash.
+  const expectedR1cs = String(opts?.expectedR1cs || '').toLowerCase();
+  const expectedPtau = String(opts?.expectedPtau || '').toLowerCase();
+  if (!/^[0-9a-f]{64}$/.test(expectedR1cs) || !/^[0-9a-f]{64}$/.test(expectedPtau)) {
+    throw new Error('ceremonyVerifyChain: caller must pass { expectedR1cs, expectedPtau } as 64-hex sha256 strings');
+  }
   if (onPhase) onPhase('download-r1cs');
   const r1csBytes = await _ceremonyFetchBlobCached(state.r1cs_cid, 'r1cs', expectedR1cs,
     (done, total) => { if (onPhase) onPhase('download-r1cs', { done, total }); });
@@ -34893,7 +34887,7 @@ async function ceremonyVerifyChain(state, snarkjs, headZkeyBytes, onPhase) {
   _ceremonyLogToProgress('✓ chain verified');
 }
 
-async function ceremonyContributeInBrowser(headZkeyBytes, contributorName, entropy, state, onPhase) {
+async function ceremonyContributeInBrowser(headZkeyBytes, contributorName, entropy, state, onPhase, opts) {
   // Snarkjs module load can fail in two distinct ways:
   //   • Network error: CDN / asset blocked / connection dropped while
   //     the browser was loading vendor/tacit-mixer.min.js.
@@ -34913,7 +34907,7 @@ async function ceremonyContributeInBrowser(headZkeyBytes, contributorName, entro
   }
   // Pre-flight verify (gap #3 from security review). Catches corrupt heads
   // and gateway-substituted r1cs/ptau before we waste entropy.
-  await ceremonyVerifyChain(state, snarkjs, headZkeyBytes, onPhase);
+  await ceremonyVerifyChain(state, snarkjs, headZkeyBytes, onPhase, opts);
   if (onPhase) onPhase('contribute');
   const oldKey = { type: 'mem', data: headZkeyBytes };
   const newKey = { type: 'mem' };
@@ -35246,6 +35240,7 @@ async function ceremonyContributeAmm({
         entropy,
         state,
         (phase, info) => _emit('mix-phase', { phase, info }),
+        { expectedR1cs: String(circuitHash).toLowerCase(), expectedPtau: TACIT_AMM_PTAU_SHA256 },
       );
     } catch (e) {
       const msg = String(e?.message || e || '');
@@ -60919,22 +60914,136 @@ function renderMarketAssetHeader(assetId, rows) {
        </div>`
     : '';
 
+  // Inline sparkline next to the big price — replaces the standalone
+  // "Price history" chart per designer feedback: "tiny and inline next
+  // to the price (where the eye already is), not as its own chart."
+  // Same helper the browse-grid tiles use; in-band outlier filter via
+  // mark price. Empty string when no summary yet so the row collapses.
+  const _heroSparkSvg = (() => {
+    try {
+      const _summary = Array.isArray(a.price_summary) ? a.price_summary : [];
+      if (_summary.length < 1) return '';
+      const _markRaw = Number(a?.mark_price?.unit);
+      return _renderTileSparklineSVG(_summary, Number.isFinite(_markRaw) && _markRaw > 0 ? _markRaw : null) || '';
+    } catch { return ''; }
+  })();
+  // Last trade age + live dot for the identity row. Quiet markets read
+  // "last fill 2d ago · ● cold", active markets "last fill 38m ago · ● live".
+  const _lastTradeTsHero = Number(a?.last_trade?.ts || 0);
+  const _heroAgeSec = _lastTradeTsHero > 0 ? Math.max(0, Math.floor(Date.now() / 1000) - _lastTradeTsHero) : -1;
+  const _heroIsHot = _heroAgeSec >= 0 && _heroAgeSec < 3600;
+  const _heroAgeStr = _lastTradeTsHero > 0 ? (relativeAge(_lastTradeTsHero) || `${_heroAgeSec}s`) : '';
+  const _heroStatusHtml = _lastTradeTsHero > 0
+    ? `<span class="mkt-hero-status">last fill <span data-age-ts="${_lastTradeTsHero}" data-age-fmt="ago">${escapeHtml(_heroAgeStr)} ago</span> · <span class="${_heroIsHot ? 'mkt-hero-live' : 'mkt-hero-cold'}">● ${_heroIsHot ? 'live' : 'cold'}</span></span>`
+    : '';
+  // External URL display — kept compact "github.com/z0r0z/tacit" form
+  // when possible, else hidden. Lives on the id row so the description
+  // block below can stay focused on the prose.
+  const _heroExternalDisplay = _externalUrl ? (() => {
+    try {
+      const u = new URL(_externalUrl);
+      const path = u.pathname && u.pathname !== '/' ? u.pathname.replace(/\/$/, '') : '';
+      return escapeHtml(u.host + path);
+    } catch { return escapeHtml(_externalUrl); }
+  })() : '';
+  // Avatar — black circle with brand-orange initial in italic serif,
+  // matching the designer's hero. The existing marketAssetImageHtml
+  // returns the user's uploaded image when present; fall back to the
+  // initial avatar when none.
+  const _heroAvatarHtml = (a.image_uri || a.imageUri)
+    ? marketAssetImageHtml(a, 42, 'mkt-hero-avatar mkt-hero-avatar--img')
+    : `<div class="mkt-hero-avatar mkt-hero-avatar--initial">${escapeHtml((a.ticker || '?').charAt(0).toLowerCase())}</div>`;
+  // Active orders summary for the stats strip — same logic as the
+  // legacy stats grid but rendered as a compact "Na / Mb" chip.
+  const _heroOrdersHtml = (() => {
+    const _asksN = Number(total) || 0;
+    const _bidsPeek = (typeof _bidCachePeek === 'function') ? _bidCachePeek(safeAid) : null;
+    const _bidsKnown = Array.isArray(_bidsPeek);
+    const _nowSec = Math.floor(Date.now() / 1000);
+    const _bidsN = _bidsKnown
+      ? _bidsPeek.filter(b => !b._isReserved && Number(b.expiry || 0) > _nowSec).length
+      : null;
+    return _bidsKnown
+      ? `<strong>${_asksN.toLocaleString('en-US')}</strong>a / <strong>${_bidsN.toLocaleString('en-US')}</strong>b`
+      : `<strong>${_asksN.toLocaleString('en-US')}</strong>`;
+  })();
+  // Per-window Δ chips for the stats strip. Reads worker's canonical
+  // price_*_change_pct fields (same source as the existing delta strip).
+  const _heroDeltasHtml = (() => {
+    const _fmt = (pct, win) => {
+      if (pct == null || !Number.isFinite(pct) || pct === 0) return '';
+      const cls = pct > 0 ? 'up' : 'down';
+      const sign = pct > 0 ? '+' : '−';
+      return `<span class="mkt-hero-delta-win">${escapeHtml(win)}</span> <span class="mkt-hero-delta-${cls}">${sign}${Math.abs(pct).toFixed(2)}</span>`;
+    };
+    const parts = [
+      _fmt(Number(a.price_1h_change_pct), '1h'),
+      _fmt(Number(a.price_4h_change_pct), '4h'),
+      _fmt(Number(a.price_24h_change_pct), '24h'),
+    ].filter(Boolean);
+    return parts.length > 0 ? `<span class="mkt-hero-deltas">${parts.join(' · ')}</span>` : '';
+  })();
+  // Headline 24h Δ chip next to the big price (matches the designer's
+  // hero — the eye lands on the big number, so the most-relevant delta
+  // sits adjacent rather than buried in the stats strip).
+  const _heroPrimaryDeltaHtml = (() => {
+    const pct = Number(a.price_24h_change_pct);
+    if (!Number.isFinite(pct) || pct === 0) return '';
+    const cls = pct > 0 ? 'up' : 'down';
+    const sign = pct > 0 ? '+' : '−';
+    return `<span class="mkt-hero-price-delta mkt-hero-delta-${cls}">${sign}${Math.abs(pct).toFixed(2)}%</span><span class="mkt-hero-price-delta-win">24h</span>`;
+  })();
+  const _heroVolUsdHtml = allGroup.volume24hSats != null ? escapeHtml(fmtMarketUsdWholeFromSats(allGroup.volume24hSats, '—')) : '—';
+  const _heroHolderHtml = (() => {
+    const hc = Number(a.holder_count || 0);
+    const enriched = !!a._marketAssetStatsLoadedAt;
+    return hc > 0 ? hc.toLocaleString('en-US') : (enriched ? '0' : '…');
+  })();
+
   return breadcrumb + `
-      <div data-market-asset-header class="market-asset-detail">
-      <div class="market-asset-title">
-        ${marketAssetImageHtml(a, 64, 'market-token-icon market-token-icon--large')}
-        <div style="min-width:0;">
-          ${_displayName && _displayName.toLowerCase() !== (a.ticker || '').toLowerCase() ? `<div style="font-size:11px;color:var(--ink-mid);margin-bottom:2px;">${escapeHtml(_displayName)}</div>` : ''}
-          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
-            <h2 style="margin:0;line-height:1.05;">${escapeHtml(a.ticker || '?')}</h2>${verifiedBadge}
+      <div data-market-asset-header class="mkt-hero">
+      <div class="mkt-hero-identity">
+        ${_heroAvatarHtml}
+        <div class="mkt-hero-name">
+          <div class="mkt-hero-name-row">
+            ${_displayName && _displayName.toLowerCase() !== (a.ticker || '').toLowerCase() ? `<span class="mkt-hero-fullname">${escapeHtml(_displayName)}</span>` : ''}
+            <span class="mkt-hero-ticker">${escapeHtml(a.ticker || '?')}</span>
+            ${verifiedBadge}
+            ${_heroStatusHtml}
           </div>
-          <div style="font-size:10px;color:var(--ink-mid);margin-top:2px;">
-            <span>id </span>
-            <span class="mono-box inline" style="font-size:10px;cursor:pointer;color:${assetIdColorForAsset(a)};" data-act="copy-aid" data-aid="${escapeHtml(safeAid)}" title="Click to copy full asset_id: ${escapeHtml(safeAid)}">${escapeHtml(shorten(safeAid, 12))}</span>
+          <div class="mkt-hero-meta-row">
+            <span class="muted">id</span>
+            <span class="mono-box inline mkt-id-chip" style="cursor:pointer;color:${assetIdColorForAsset(a)};" data-act="copy-aid" data-aid="${escapeHtml(safeAid)}" title="Click to copy full asset_id: ${escapeHtml(safeAid)}">${escapeHtml(shorten(safeAid, 12))}</span>
+            ${_heroExternalDisplay ? `<span class="muted">·</span><a href="${escapeHtml(_externalUrl)}" target="_blank" rel="noopener noreferrer" class="mkt-hero-external">${_heroExternalDisplay}</a>` : ''}
           </div>
         </div>
       </div>
-      <div>
+
+      <div class="mkt-hero-price-row">
+        ${_headerCrossed ? `<span class="mkt-hero-price-label">${escapeHtml('Price · mid')} <span class="mkt-hero-crossed-chip" title="Book is crossed (best bid > best ask). Showing midpoint of (best bid + best ask) / 2; the worker's last-trade mark (${escapeHtml(fmtUnitPriceSats(markUnit))} sats/${escapeHtml(a.ticker || 'token')}) is stale right now.">CROSSED</span></span>` : ''}
+        <span class="mkt-hero-price-num ${_priceFlashClassFor(safeAid, headerUnit)}" data-market-header="price-sats">${escapeHtml(priceLine)}</span>
+        <span class="mkt-hero-price-unit">sats/${escapeHtml(a.ticker || 'TAC')}</span>
+        <span class="mkt-hero-price-usd" data-market-header="price-usd">${escapeHtml(priceUsd || (_marketOracleLoading() ? 'loading USD…' : '—'))}</span>
+        ${_heroPrimaryDeltaHtml}
+        ${_heroSparkSvg ? `<span class="mkt-hero-spark">${_heroSparkSvg}</span>` : ''}
+      </div>
+
+      <div class="mkt-hero-stats-row">
+        <span><span class="muted">vol</span> <strong data-market-header="vol24-usd">${_heroVolUsdHtml}</strong></span>
+        <span><span class="muted">mcap</span> <strong data-market-header="mcap-usd">${escapeHtml(mcapUsd)}</strong></span>
+        <span><span class="muted">holders</span> <strong>${_heroHolderHtml}</strong></span>
+        <span><span class="muted">orders</span> ${_heroOrdersHtml}</span>
+        ${_heroDeltasHtml}
+      </div>
+
+      <!-- Legacy hooks for async hydration (mcap-btc, vol24-btc, price-usd
+           target stays the same node above). Hidden — they remain in the
+           DOM so populateMarketAssetStats keeps writing without conditional
+           guards. -->
+      <span data-market-header="mcap-btc" hidden></span>
+      <span data-market-header="vol24-btc" hidden></span>
+
+      <div hidden>
         <div class="market-asset-stats">
           <div><span>${_headerCrossed ? 'Price · mid' : 'Price'}${_headerCrossed ? ` <span style="font-size:8px;font-weight:600;color:#7a4d00;background:#fff3cf;padding:0 4px;border:1px solid #c97a1a;letter-spacing:0.04em;" title="Book is crossed (best bid > best ask). Using midpoint of (best bid + best ask) / 2 as the price reference; the worker\'s last-trade mark (${escapeHtml(fmtUnitPriceSats(markUnit))} sats/${escapeHtml(a.ticker || 'token')}) is stale right now. The spread divider above the bids ladder shows both numbers.">CROSSED</span>` : ''}</span><strong class="market-sats-price ${_priceFlashClassFor(safeAid, headerUnit)}" data-market-header="price-sats">${escapeHtml(priceLine)}/${escapeHtml(a.ticker || 'token')}</strong><small class="market-usd-price" data-market-header="price-usd">${escapeHtml(priceUsd || (_marketOracleLoading() ? 'loading USD…' : '—'))}</small></div>
           <div><span>24h Volume</span><strong data-market-header="vol24-usd">${escapeHtml(allGroup.volume24hSats != null ? fmtMarketUsdWholeFromSats(allGroup.volume24hSats, '—') : '—')}</strong><small data-market-header="vol24-btc">${escapeHtml(allGroup.volume24hSats != null ? fmtMarketBtc(allGroup.volume24hSats) : '—')}</small></div>
@@ -62120,7 +62229,12 @@ async function populateMarketAssetStats(scope, asset) {
   // resolved values up into the header cells inline so the user gets
   // the populated card without waiting for the 5s auto-refresh tick.
   {
-    const headerCard = scope.querySelector('.market-asset-stats');
+    // Hero block carries the visible data-market-header hooks; the legacy
+    // .market-asset-stats grid is kept hidden for backwards compat. Query
+    // from the parent [data-market-asset-header] so the hero's visible
+    // nodes win (they precede the hidden legacy grid in DOM order).
+    const headerCard = scope.querySelector('[data-market-asset-header]')
+      || scope.querySelector('.market-asset-stats');
     if (headerCard) {
       const setHeader = (key, text) => {
         const el = headerCard.querySelector(`[data-market-header="${key}"]`);

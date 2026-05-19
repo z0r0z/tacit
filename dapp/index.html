@@ -1572,6 +1572,175 @@ tr[data-recent-activity] .market-token-sub::after {
   flex-wrap: wrap;
   align-items: baseline;
 }
+/* === Redesigned market hero (per designer review) ===
+   Single coherent token block: identity row + price row + stats row,
+   separated by hairlines instead of by section padding. Reads as one
+   information unit, not three stacked cards. */
+.mkt-hero {
+  border: 1px solid var(--ink);
+  background: var(--bg-warm);
+  margin-bottom: 14px;
+  font-size: 12px;
+  line-height: 1.45;
+}
+.mkt-hero-identity {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px 16px 10px;
+}
+.mkt-hero-avatar {
+  width: 42px;
+  height: 42px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--ink);
+  color: var(--orange);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: Georgia, 'Times New Roman', serif;
+  font-style: italic;
+  font-size: 24px;
+  line-height: 1;
+}
+.mkt-hero-avatar--img {
+  object-fit: cover;
+  background: #fff;
+  border: 1px solid var(--ink-faint);
+}
+.mkt-hero-name { flex: 1; min-width: 0; }
+.mkt-hero-name-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.mkt-hero-fullname {
+  font-size: 13px;
+  color: var(--ink-mid);
+}
+.mkt-hero-ticker {
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+.mkt-hero-status {
+  margin-left: auto;
+  font-size: 10px;
+  color: var(--ink-mid);
+  white-space: nowrap;
+}
+.mkt-hero-live { color: #0a7d3a; }
+.mkt-hero-cold { color: var(--ink-mid); }
+.mkt-hero-meta-row {
+  margin-top: 4px;
+  font-size: 10px;
+  color: var(--ink-mid);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.mkt-hero-meta-row .mkt-id-chip {
+  font-size: 10px;
+  padding: 1px 6px;
+}
+.mkt-hero-external {
+  color: var(--ink-mid);
+  text-decoration: none;
+  border-bottom: 0.5px dashed var(--ink-faint);
+}
+.mkt-hero-external:hover { color: var(--ink); }
+
+.mkt-hero-price-row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 10px 16px;
+  border-top: 1px dashed var(--ink-faint);
+  flex-wrap: wrap;
+}
+.mkt-hero-price-label {
+  font-size: 10px;
+  color: var(--ink-mid);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  align-self: center;
+}
+.mkt-hero-crossed-chip {
+  display: inline-block;
+  font-size: 9px;
+  font-weight: 600;
+  color: #7a4d00;
+  background: #fff3cf;
+  padding: 1px 5px;
+  border: 1px solid #c97a1a;
+  letter-spacing: 0.04em;
+  margin-left: 4px;
+  cursor: help;
+}
+.mkt-hero-price-num {
+  font-size: 26px;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  line-height: 1;
+}
+.mkt-hero-price-unit {
+  font-size: 11px;
+  color: var(--ink-mid);
+}
+.mkt-hero-price-usd {
+  font-size: 13px;
+  color: var(--ink-mid);
+  font-weight: 600;
+}
+.mkt-hero-price-delta {
+  font-size: 12px;
+  font-weight: 600;
+}
+.mkt-hero-price-delta-win {
+  font-size: 10px;
+  color: var(--ink-mid);
+  margin-left: -4px;
+}
+.mkt-hero-spark {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  height: 24px;
+}
+.mkt-hero-spark svg {
+  height: 24px;
+  width: auto;
+  max-width: 160px;
+}
+
+.mkt-hero-stats-row {
+  display: flex;
+  gap: 14px;
+  padding: 8px 16px 10px;
+  border-top: 1px dashed var(--ink-faint);
+  font-size: 10px;
+  color: var(--ink-mid);
+  flex-wrap: wrap;
+  align-items: baseline;
+}
+.mkt-hero-stats-row strong {
+  color: var(--ink);
+  font-weight: 500;
+  margin-left: 2px;
+}
+.mkt-hero-deltas {
+  margin-left: auto;
+  white-space: nowrap;
+}
+.mkt-hero-delta-win {
+  color: var(--ink-mid);
+  margin-right: 1px;
+}
+.mkt-hero-delta-up { color: #0a7d3a; }
+.mkt-hero-delta-down { color: #b8341d; }
 .portfolio-total-bar {
   border: 1px solid var(--ink);
   background: var(--bg-warm);
