@@ -61238,8 +61238,17 @@ function renderMarketAssetStatsHTML(asset) {
       <div style="margin-top:8px;display:flex;justify-content:flex-end;">
         <button data-act="open-price-alert" data-aid="${aid}" data-ticker="${escapeHtml(asset.ticker || '?')}" type="button" title="Get notified when this asset's price crosses a threshold" class="price-alert-btn">🔔 Set price alert</button>
       </div>
-      <div data-chart-tf-wrap style="margin-top:10px;${prePaintedChartHtml ? '' : 'display:none;'}">${_tfRowHtml}</div>
-      <div data-market-price-chart style="${prePaintedChartStyle}">${prePaintedChartHtml}</div>
+      <!-- Price history chart — collapsed by default per designer review
+           since the hero sparkline gives glanceable trend. Open the
+           disclosure to surface the full chart with TF chips + cursor
+           crosshair + outlier flags. -->
+      <details data-market-price-chart-wrap style="margin-top:10px;">
+        <summary style="cursor:pointer;color:var(--ink-mid);font-size:10px;text-transform:uppercase;letter-spacing:0.08em;padding:2px 0;list-style:none;">
+          <span style="display:inline-block;transition:transform 0.1s;font-size:9px;">▸</span> price history
+        </summary>
+        <div data-chart-tf-wrap style="margin-top:8px;${prePaintedChartHtml ? '' : 'display:none;'}">${_tfRowHtml}</div>
+        <div data-market-price-chart style="${prePaintedChartStyle}">${prePaintedChartHtml}</div>
+      </details>
       <!-- Reserved layout space so the first populate doesn't pop the
            page (push the Listed/Activity tabs below down a chunk). The
            inner container stays hidden until data lands; the outer
