@@ -63787,55 +63787,49 @@ function _populateTradesTape(section, trades, ticker, decimals, markUnit) {
     // glance. Outlier prints get an orange ring on the row border
     // instead so anomaly status stays surfaced.
     const prevU = recentUnits[i + 1];
-    let tickGlyph = '<span style="color:var(--ink-mid);font-size:11px;" title="No prior trade to compare.">·</span>';
+    // Designer pass: drop the per-entry border + background; use
+    // directional triangles (▲/▼/·) instead of arrows; time renders as
+    // small muted hint after the price. Same momentum semantics, half
+    // the visual weight — the tape reads as one tight line of trades.
+    let tickGlyph = '<span style="color:var(--ink-mid);font-size:10px;" title="No prior trade to compare.">·</span>';
     let priceColor = isOutlier ? '#a04030' : 'var(--ink)';
     if (u != null && prevU != null && prevU > 0) {
-      // Compare DISPLAYED (rounded) values so the tick arrow always
+      // Compare DISPLAYED (rounded) values so the tick triangle always
       // agrees with what the user sees on the row. Comparing raw `u`
       // floats let two trades that both display as "335 sats/TAC"
-      // disagree on direction (e.g. 335.4 vs 335.1 raw → ↓ arrow with
-      // visually-identical price labels) — confusing for traders who
-      // can't see the sub-rounding move. If displayed values match,
-      // it's flat by definition.
+      // disagree on direction — confusing.
       const thisDisp = fmtMarketUnitSats(u);
       const prevDisp = fmtMarketUnitSats(prevU);
       if (thisDisp === prevDisp) {
-        tickGlyph = '<span style="color:var(--ink-mid);font-size:11px;" title="Flat from prior fill">·</span>';
+        tickGlyph = '<span style="color:var(--ink-mid);font-size:10px;" title="Flat from prior fill">·</span>';
         if (!isOutlier) priceColor = 'var(--ink)';
       } else if (u > prevU) {
-        tickGlyph = `<span style="color:#0a7d3a;font-size:12px;font-weight:700;" title="Up from ${fmtUnitPriceSats(prevU)} sats/${ticker}">↑</span>`;
+        tickGlyph = `<span style="color:#0a7d3a;font-size:9px;font-weight:700;" title="Up from ${fmtUnitPriceSats(prevU)} sats/${ticker}">▲</span>`;
         if (!isOutlier) priceColor = '#0a7d3a';
       } else if (u < prevU) {
-        tickGlyph = `<span style="color:#b8341d;font-size:12px;font-weight:700;" title="Down from ${fmtUnitPriceSats(prevU)} sats/${ticker}">↓</span>`;
+        tickGlyph = `<span style="color:#b8341d;font-size:9px;font-weight:700;" title="Down from ${fmtUnitPriceSats(prevU)} sats/${ticker}">▼</span>`;
         if (!isOutlier) priceColor = '#b8341d';
       }
     }
     const age = relativeAge(ts) || 'now';
     const amtStr = fmtAssetAmountCompact(amtBig, decimals);
     const animAttr = isNew ? ' data-market-anim="new"' : '';
-    const borderColor = isOutlier ? '#c97a1a' : 'var(--ink-faint)';
     const _gc = Number(t._groupCount || 1);
     const _gcSuffix = _gc > 1
       ? ` <span class="muted" style="color:var(--ink-mid);font-weight:600;" title="${escapeHtml(_gc)} consecutive fills at this price/size/time bucket. Txids: ${escapeHtml((t._groupTxids || []).map(x => x.slice(0, 8)).join(', '))}">×${_gc}</span>`
       : '';
-    // fill_count badge: separate from the visual-collapse ×N suffix. A
-    // single tape entry with fill_count > 1 came from a buy-side batched
-    // preauth-take that aggregated N seller fills into one settlement tx
-    // (SPEC §5.7.8 amendment). The price + amount on this entry are
-    // Σ-aggregated across those N fills; the badge tells the trader
-    // "this print is one batched buy of N preauths, not a single fill."
     const _fc = Number(t.fill_count || 1);
     const _fcSuffix = _fc > 1
-      ? ` <span style="font-size:9px;padding:0 4px;background:#0a8f43;color:#fff;font-weight:700;letter-spacing:0.03em;" title="Batched buy: ${_fc} preauth fills settled in one Bitcoin tx. The displayed price + amount are aggregates across those fills.">batch ${_fc}</span>`
+      ? ` <span style="font-size:8px;padding:0 3px;background:#0a8f43;color:#fff;font-weight:700;letter-spacing:0.03em;" title="Batched buy: ${_fc} preauth fills settled in one Bitcoin tx. The displayed price + amount are aggregates across those fills.">batch ${_fc}</span>`
       : '';
-    const _tipBase = isOutlier
-      ? 'Outlier vs mark (priced &lt;0.2× or &gt;5× the worker\'s outlier-guarded mark price). Probably a dust take or fat-finger fill.'
+    const _outlierTip = isOutlier
+      ? ' title="Outlier vs mark (priced &lt;0.2× or &gt;5× the worker\'s outlier-guarded mark price). Probably a dust take or fat-finger fill."'
       : '';
-    return `<span${animAttr} style="display:inline-flex;align-items:center;gap:6px;padding:3px 8px;border:1px solid ${borderColor};background:var(--bg-warm);font-size:10px;font-family:var(--mono, monospace);white-space:nowrap;flex:0 0 auto;"${_tipBase ? ` title="${_tipBase}"` : ''}>
-      <span class="muted" data-age-ts="${ts}" data-age-fmt="ago">${escapeHtml(age)} ago</span>
+    return `<span${animAttr} style="display:inline-flex;align-items:baseline;gap:5px;font-size:11px;font-family:var(--mono, monospace);white-space:nowrap;flex:0 0 auto;padding:0 4px;"${_outlierTip}>
       ${tickGlyph}
-      <strong style="color:${priceColor};">${escapeHtml(fmtMarketUnitSats(u))}/${escapeHtml(ticker)}</strong>
-      <span class="muted">× ${escapeHtml(amtStr)}</span>${_gcSuffix}${_fcSuffix}
+      <strong style="color:${priceColor};font-weight:600;">${escapeHtml(fmtMarketUnitSats(u))}</strong>
+      <span class="muted" data-age-ts="${ts}" data-age-fmt="ago" style="font-size:9px;color:var(--ink-mid);">${escapeHtml(age)}</span>
+      <span class="muted" style="font-size:9px;color:var(--ink-mid);">×${escapeHtml(amtStr)}</span>${_gcSuffix}${_fcSuffix}
     </span>`;
   }).filter(Boolean).join('');
   if (!itemsHtml) {
