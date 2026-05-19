@@ -3760,6 +3760,26 @@ body[data-market-mode="asset"] #market-list {
   line-height: 1.45;
   color: #1A1A1A;
 }
+/* Constrain top nav + sub-nav + airdrop banner to the same 720px width
+   so the whole page reads as one stacked card on cream — matches
+   design.html's vertical flow. The zfi banner stays visually inside
+   the column; nav rows align with the card edges. */
+body[data-market-mode="asset"] #zfi-airdrop-banner,
+body[data-market-mode="asset"] .tabs.tabs-primary,
+body[data-market-mode="asset"] .tabs.subtabs {
+  max-width: 720px;
+  margin-left: auto;
+  margin-right: auto;
+}
+body[data-market-mode="asset"] .tabs.tabs-primary {
+  border-bottom: 1px dashed rgba(26,26,26,0.25);
+  margin-bottom: 0;
+}
+body[data-market-mode="asset"] .tabs.subtabs[data-group="markets"] {
+  border-bottom: 0.5px solid rgba(26,26,26,0.15);
+  margin-top: 0;
+  margin-bottom: 0;
+}
 body[data-market-mode="asset"] #market-list > .market-tile-skeleton,
 body[data-market-mode="asset"] .market-asset-grid {
   display: none;
