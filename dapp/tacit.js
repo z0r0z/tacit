@@ -34130,7 +34130,9 @@ async function ceremonyFetchAttestations(circuitHash) {
 //
 // Returns the validated bytes. Throws an Error with the concatenated
 // per-gateway failure reasons if every gateway fails.
-async function _ceremonyFetchIpfsWithFailover(cid, validate, onProgress, onBytes) {
+async function _ceremonyFetchIpfsWithFailover(cid, validate, onProgress, onBytes, opts = {}) {
+  const _skip = opts.skipGateways instanceof Set ? opts.skipGateways : null;
+  const _trackedGw = opts.trackedGw || null;
   const errors = [];
   // Per-gateway wallclock cap. AMM swap_batch genesis zkey is ~95 MB
   // (lp_add 3 MB, lp_remove 6 MB, swap_batch 95 MB). 45s was sized for
@@ -34158,8 +34160,10 @@ async function _ceremonyFetchIpfsWithFailover(cid, validate, onProgress, onBytes
     } catch { return 'gateway'; }
   };
   for (const gw of IPFS_GATEWAYS_FALLBACK) {
+    if (_skip && _skip.has(gw)) continue;
     const url = `${gw}${cid}`;
     const label = _gwLabel(gw);
+    if (_trackedGw) _trackedGw.gw = gw;
     const _ac = new AbortController();
     const _timer = setTimeout(() => _ac.abort(), PER_GATEWAY_TIMEOUT_MS);
     try {
@@ -35196,15 +35200,19 @@ async function ceremonyContributeAmm({
 
   // Pre-mix loop: fetch head + verify. If verify fails (a gateway
   // served corrupted bytes that passed the magic-byte check but failed
-  // snarkjs's full chain verify), re-fetch and retry once with a fresh
-  // gateway round. The mix hasn't run yet — re-fetching is cheap
-  // compared to losing a full mix's worth of entropy work.
+  // snarkjs's full chain verify), re-fetch from a DIFFERENT gateway
+  // and retry. We track which gateway served the bytes that failed
+  // and skip it on subsequent attempts so the retry doesn't just hit
+  // the same bad cache. Cap at 4 attempts (covers all gateways in
+  // IPFS_GATEWAYS_FALLBACK with one to spare).
   let mixed = null;
   let mixAttempt = 0;
-  const VERIFY_RETRY_LIMIT = 2;
+  const VERIFY_RETRY_LIMIT = 4;
+  const _badGateways = new Set();
   while (mixAttempt < VERIFY_RETRY_LIMIT && !mixed) {
     mixAttempt++;
     _emit('fetch-head', { cid: state.head_cid });
+    const _gwTracker = { gw: null };
     const headBytes = await _ceremonyFetchIpfsWithFailover(
       state.head_cid,
       (bytes) => {
@@ -35216,6 +35224,7 @@ async function ceremonyContributeAmm({
       },
       (msg) => _emit('fetch-head-log', { msg }),
       (done, total) => _emit('fetch-head-bytes', { done, total }),
+      { skipGateways: _badGateways, trackedGw: _gwTracker },
     );
 
     _emitMem('pre-mix');
@@ -35235,7 +35244,12 @@ async function ceremonyContributeAmm({
       const msg = String(e?.message || e || '');
       const looksLikeVerifyFailure = /chain verify failed|Aborting before wasting/i.test(msg);
       if (looksLikeVerifyFailure && mixAttempt < VERIFY_RETRY_LIMIT) {
-        _emit('fetch-head-log', { msg: '✗ verify failed — likely a corrupted gateway response. Re-fetching head from a fresh gateway…' });
+        if (_gwTracker.gw) {
+          _badGateways.add(_gwTracker.gw);
+          _emit('fetch-head-log', { msg: `✗ verify failed on bytes from this gateway — marking it bad and rotating to next…` });
+        } else {
+          _emit('fetch-head-log', { msg: '✗ verify failed — re-fetching head…' });
+        }
         continue;
       }
       throw e;
