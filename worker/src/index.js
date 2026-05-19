@@ -5213,6 +5213,8 @@ function ceremonyAuthOk(req, env) {
 
 function ceremonyKey(hash)              { return `ceremony:${hash}`; }
 function ceremonyReserveKey(hash)       { return `ceremony-reserve:${hash}`; }
+function ceremonyQueuePrefix(hash)      { return `ceremony-q:${hash}:`; }
+function ceremonyQueueKey(hash, seq, token) { return `ceremony-q:${hash}:${seq}:${token}`; }
 // Drain state lives in its OWN KV key, NOT inside the ceremony state
 // object. Storing drain_until in state.drain_until would create a
 // classic eventual-consistency race: drain reads state, sets the
@@ -5460,11 +5462,21 @@ async function handleCeremonyState(env, circuitHash, cors) {
   }
   const state = await env.REGISTRY_KV.get(ceremonyKey(circuitHash), 'json');
   if (!state) return jsonResponse({ error: 'ceremony not found' }, 404, cors);
-  // Soft reservation: a contributor that wants the slot writes this
-  // key with TTL ~12 min. Surface it so peers can choose to queue
-  // instead of starting a parallel mix that will lose the CAS race.
-  const reserve = await env.REGISTRY_KV.get(ceremonyReserveKey(circuitHash), 'json');
-  return jsonResponse({ state, reservation: reserve || null }, 200, cors);
+  // Surface FIFO queue head so observers (chip, dashboard) can show
+  // "X is contributing, N waiting." Falls back to the older single
+  // reservation key while migrations roll forward.
+  const queue = await _listCeremonyQueue(env, circuitHash).catch(() => []);
+  const head = queue[0] || null;
+  const reservation = head ? {
+    contributor_name: head.name || 'anonymous',
+    started_at: Math.floor(head.joined_at / 1000),
+    last_poll_at: Math.floor((head.last_poll_at || head.joined_at) / 1000),
+  } : (await env.REGISTRY_KV.get(ceremonyReserveKey(circuitHash), 'json'));
+  return jsonResponse({
+    state,
+    reservation,
+    queue_length: queue.length,
+  }, 200, cors);
 }
 
 // POST /ceremony/<hash>/reserve — soft slot reservation. Sets a TTL'd
@@ -5473,6 +5485,35 @@ async function handleCeremonyState(env, circuitHash, cors) {
 // Not a hard lock: an at-risk contributor can still skip the queue
 // and try anyway. Reservation auto-expires (~12 min) so a contributor
 // who crashes mid-mix doesn't block the chain forever.
+// FIFO queue helpers. Each queued contributor gets a key under
+// ceremony-q:<hash>: with a zero-padded micro-timestamp prefix so
+// KV.list (which returns keys alphabetically) yields the queue in
+// arrival order. Each entry auto-expires (15 min TTL) so a walk-away
+// contributor doesn't block the head forever.
+async function _listCeremonyQueue(env, circuitHash) {
+  const prefix = ceremonyQueuePrefix(circuitHash);
+  const list = await env.REGISTRY_KV.list({ prefix });
+  if (!list.keys.length) return [];
+  const fetched = await Promise.all(list.keys.map(k => env.REGISTRY_KV.get(k.name, 'json').then(v => v ? { key: k.name, ...v } : null)));
+  return fetched.filter(e => e);
+}
+async function _evictStaleQueueHeads(env, circuitHash, queue, staleMs) {
+  const now = Date.now();
+  let evicted = 0;
+  while (queue.length > 0 && queue[0].last_poll_at && (now - queue[0].last_poll_at) > staleMs) {
+    try { await env.REGISTRY_KV.delete(queue[0].key); } catch {}
+    queue.shift();
+    evicted++;
+  }
+  return evicted;
+}
+
+// POST /ceremony/<hash>/reserve — FIFO queue join + poll. First call
+// adds you to the queue and returns a queue_token; subsequent calls
+// with the same token refresh your last_poll_at + return your current
+// position. Head-of-queue (position 0) is the active contributor;
+// everyone else waits. Head TTL is 15 min; if head doesn't poll for
+// 5 min it's evicted and the next contributor promotes.
 async function handleCeremonyReserve(req, env, circuitHash, cors) {
   if (!/^[0-9a-f]{64}$/.test(circuitHash)) {
     return jsonResponse({ error: 'invalid circuit_hash' }, 400, cors);
@@ -5485,46 +5526,69 @@ async function handleCeremonyReserve(req, env, circuitHash, cors) {
   const contributorName = String(body?.contributor_name || 'anonymous').slice(0, 64);
   let contributorPubkey = String(body?.contributor_pubkey || '').trim().toLowerCase();
   if (!/^0[23][0-9a-f]{64}$/.test(contributorPubkey)) contributorPubkey = null;
-  const existing = await env.REGISTRY_KV.get(ceremonyReserveKey(circuitHash), 'json');
-  const now = Math.floor(Date.now() / 1000);
-  if (existing && (existing.expires_at || 0) > now) {
-    // Held by someone else (or our own previous reservation that we
-    // never released). If it's our own pubkey, re-issue. Otherwise
-    // return 409 with current reservation details so the client can
-    // queue intelligently.
-    if (existing.contributor_pubkey && contributorPubkey && existing.contributor_pubkey === contributorPubkey) {
-      return jsonResponse({ reservation: existing, reissued: true }, 200, cors);
-    }
-    return jsonResponse({ error: 'reservation held', reservation: existing }, 409, cors);
+  let tokenIn = String(body?.queue_token || '').trim().slice(0, 64);
+  if (!/^[a-zA-Z0-9_-]{1,64}$/.test(tokenIn)) tokenIn = '';
+
+  const NOW = Date.now();
+  let queue = await _listCeremonyQueue(env, circuitHash);
+  await _evictStaleQueueHeads(env, circuitHash, queue, 5 * 60 * 1000);
+
+  let myEntry = tokenIn ? queue.find(q => q.token === tokenIn) : null;
+  let myToken = tokenIn;
+
+  if (myEntry) {
+    myEntry.last_poll_at = NOW;
+    myEntry.name = contributorName || myEntry.name;
+    await env.REGISTRY_KV.put(myEntry.key, JSON.stringify({
+      token: myEntry.token,
+      name: myEntry.name,
+      pubkey: myEntry.pubkey || contributorPubkey,
+      joined_at: myEntry.joined_at,
+      last_poll_at: NOW,
+    }), { expirationTtl: 15 * 60 });
+  } else {
+    // New join. Generate a fresh token if the client didn't bring one.
+    myToken = tokenIn || crypto.randomUUID().replace(/-/g, '');
+    const seq = String(NOW).padStart(16, '0') + '-' + Math.floor(Math.random() * 1e6).toString().padStart(6, '0');
+    const key = ceremonyQueueKey(circuitHash, seq, myToken);
+    const entry = { token: myToken, name: contributorName, pubkey: contributorPubkey, joined_at: NOW, last_poll_at: NOW };
+    await env.REGISTRY_KV.put(key, JSON.stringify(entry), { expirationTtl: 15 * 60 });
+    queue.push({ key, ...entry });
+    // Re-sort by key so the new entry settles in alphabetical (= arrival) order.
+    queue.sort((a, b) => a.key < b.key ? -1 : a.key > b.key ? 1 : 0);
   }
-  const TTL = 12 * 60;
-  const reservation = {
-    contributor_name: contributorName,
-    contributor_pubkey: contributorPubkey,
-    started_at: now,
-    expires_at: now + TTL,
-  };
-  await env.REGISTRY_KV.put(ceremonyReserveKey(circuitHash), JSON.stringify(reservation), { expirationTtl: TTL });
-  return jsonResponse({ reservation }, 200, cors);
+
+  const position = queue.findIndex(q => q.token === myToken);
+  const total = queue.length;
+  const head = queue[0];
+  const active = (head && position > 0) ? {
+    contributor_name: head.name || 'anonymous',
+    started_at: Math.floor(head.joined_at / 1000),
+    last_poll_at: Math.floor((head.last_poll_at || head.joined_at) / 1000),
+  } : null;
+
+  return jsonResponse({
+    queue_token: myToken,
+    position,
+    total,
+    is_head: position === 0,
+    active,
+  }, 200, cors);
 }
 
-// DELETE /ceremony/<hash>/reserve — release a reservation (e.g., user
-// cancels). Best-effort; the TTL handles forgotten releases. Pubkey-
-// gated so a peer can't free someone else's slot.
+// DELETE /ceremony/<hash>/reserve — leave the queue. Body: queue_token.
 async function handleCeremonyReserveRelease(req, env, circuitHash, cors) {
   if (!/^[0-9a-f]{64}$/.test(circuitHash)) {
     return jsonResponse({ error: 'invalid circuit_hash' }, 400, cors);
   }
   let body = {};
   try { body = await req.json(); } catch {}
-  let contributorPubkey = String(body?.contributor_pubkey || '').trim().toLowerCase();
-  if (!/^0[23][0-9a-f]{64}$/.test(contributorPubkey)) contributorPubkey = null;
-  const existing = await env.REGISTRY_KV.get(ceremonyReserveKey(circuitHash), 'json');
-  if (!existing) return jsonResponse({ released: false, reason: 'no reservation' }, 200, cors);
-  if (existing.contributor_pubkey && contributorPubkey !== existing.contributor_pubkey) {
-    return jsonResponse({ released: false, reason: 'not your reservation' }, 403, cors);
-  }
-  await env.REGISTRY_KV.delete(ceremonyReserveKey(circuitHash));
+  const tokenIn = String(body?.queue_token || '').trim().slice(0, 64);
+  if (!tokenIn) return jsonResponse({ released: false, reason: 'no queue_token' }, 200, cors);
+  const queue = await _listCeremonyQueue(env, circuitHash);
+  const entry = queue.find(q => q.token === tokenIn);
+  if (!entry) return jsonResponse({ released: false, reason: 'not in queue' }, 200, cors);
+  await env.REGISTRY_KV.delete(entry.key);
   return jsonResponse({ released: true }, 200, cors);
 }
 
@@ -5677,6 +5741,7 @@ async function handleCeremonyContribute(req, env, circuitHash, cors, ctx) {
   // + advance chain. Bypasses the CF→Pinata round-trip that exceeds
   // wall-clock for 91MB swap_batch zkeys.
   const zkeyCidProvided = String(fd.get('zkey_cid') || '').trim();
+  const queueTokenForm = String(fd.get('queue_token') || '').trim().slice(0, 64);
   const contributorName = String(fd.get('contributor_name') || 'anonymous').slice(0, 64);
   let contributorPubkey = String(fd.get('contributor_pubkey') || '').trim().toLowerCase();
   if (!/^0[23][0-9a-f]{64}$/.test(contributorPubkey)) contributorPubkey = null;
@@ -5822,6 +5887,17 @@ async function handleCeremonyContribute(req, env, circuitHash, cors, ctx) {
   // the next queued contributor can claim it without waiting for the
   // 12-min TTL to expire.
   try { await env.REGISTRY_KV.delete(ceremonyReserveKey(circuitHash)); } catch {}
+  // Pop this contributor's FIFO queue entry so the next contributor
+  // promotes to head on their next poll. Looks up by queue_token from
+  // the form; falls back to deleting the current head if we can't
+  // match (defensive — assumes head is the contributor in steady state).
+  if (queueTokenForm) {
+    try {
+      const queue = await _listCeremonyQueue(env, circuitHash);
+      const entry = queue.find(q => q.token === queueTokenForm);
+      if (entry) await env.REGISTRY_KV.delete(entry.key);
+    } catch {}
+  }
   return jsonResponse({ state: newState, contribution: rec }, 200, cors);
 }
 

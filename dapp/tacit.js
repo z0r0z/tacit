@@ -35077,58 +35077,71 @@ async function _ammPinataTusUpload(uploadUrl, bytes, filename, onProgress) {
 // shortest. contributorPubkeyHex is optional — when omitted, the upload
 // is pseudonymous (matches mixer pattern). Returns the worker's POST
 // response on success; throws on any pipeline failure.
-// Claim a soft reservation on this circuit's slot. If another
-// contributor holds it, poll the worker every 10s and surface the
-// hold info (who, how long, ETA) until it frees, then re-claim.
-// Cap waits at 15 min so a stuck holder's TTL (12 min) gets us
-// through; past that we proceed at-risk.
+// Join the FIFO queue for this circuit's slot. First POST registers
+// us + returns a queue_token; subsequent polls (every 10s) refresh
+// our last_poll_at and report our current position. We proceed when
+// position === 0 (head of queue = active contributor). Cap at 15 min
+// so a stuck head's TTL (15 min, 5 min stale-evict) clears us through.
+// Token is stored on the module-level _ammQueueToken so the abort
+// path and /contribute form can include it.
+let _ammQueueToken = '';
 async function _ammClaimReservationWithQueue(circuitHash, contributorName, contributorPubkeyHex, onPhase) {
-  const body = JSON.stringify({
-    contributor_name: String(contributorName || 'anonymous').slice(0, 64),
-    contributor_pubkey: contributorPubkeyHex && /^0[23][0-9a-f]{64}$/.test(contributorPubkeyHex.toLowerCase())
-      ? contributorPubkeyHex.toLowerCase() : null,
-  });
+  _ammQueueToken = '';
   const url = `${WORKER_BASE}/ceremony/${circuitHash}/reserve`;
   const start = Date.now();
   const MAX_WAIT_MS = 15 * 60_000;
+  const _basePayload = {
+    contributor_name: String(contributorName || 'anonymous').slice(0, 64),
+    contributor_pubkey: contributorPubkeyHex && /^0[23][0-9a-f]{64}$/.test(contributorPubkeyHex.toLowerCase())
+      ? contributorPubkeyHex.toLowerCase() : null,
+  };
   while (Date.now() - start < MAX_WAIT_MS) {
     let resp;
-    try { resp = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body }); }
+    const payload = { ..._basePayload };
+    if (_ammQueueToken) payload.queue_token = _ammQueueToken;
+    try { resp = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }); }
     catch (e) {
       try { onPhase?.('reserve-error', { msg: e?.message || String(e) }); } catch {}
       return;
     }
-    if (resp.ok) {
-      try { onPhase?.('reserve-ok'); } catch {}
+    if (!resp.ok) {
+      try { onPhase?.('reserve-error', { msg: `HTTP ${resp.status}` }); } catch {}
       return;
     }
-    if (resp.status === 409) {
-      const j = await resp.json().catch(() => ({}));
-      const r = j.reservation || {};
-      const heldName = r.contributor_name || 'another contributor';
-      const heldSec  = Math.max(0, (Math.floor(Date.now() / 1000)) - (r.started_at || 0));
-      const etaSec   = Math.max(0, (r.expires_at || 0) - Math.floor(Date.now() / 1000));
-      try { onPhase?.('reserve-wait', { heldName, heldSec, etaSec }); } catch {}
-      await new Promise(r => setTimeout(r, 10_000));
-      continue;
+    const j = await resp.json().catch(() => ({}));
+    if (j.queue_token) _ammQueueToken = String(j.queue_token);
+    if (j.is_head) {
+      try { onPhase?.('reserve-ok', { position: 0, total: j.total || 1 }); } catch {}
+      return;
     }
-    try { onPhase?.('reserve-error', { msg: `HTTP ${resp.status}` }); } catch {}
-    return;
+    const active = j.active || {};
+    const heldName = active.contributor_name || 'another contributor';
+    const heldSec  = Math.max(0, Math.floor(Date.now() / 1000) - (active.started_at || 0));
+    try {
+      onPhase?.('reserve-wait', {
+        heldName,
+        heldSec,
+        position: j.position || 0,
+        total: j.total || 0,
+      });
+    } catch {}
+    await new Promise(r => setTimeout(r, 10_000));
   }
   try { onPhase?.('reserve-timeout'); } catch {}
 }
 
-// Best-effort release; the worker also releases on successful contribute
-// and a 12-min TTL covers anything else.
-async function _ammReleaseReservation(circuitHash, contributorPubkeyHex) {
+// Best-effort: leave the queue. Sends the stored queue_token so the
+// worker knows which entry to drop. The 15-min TTL is the backstop
+// for missed releases (tab closed, network drop).
+async function _ammReleaseReservation(circuitHash, _unusedPubkey) {
+  if (!_ammQueueToken) return;
+  const token = _ammQueueToken;
+  _ammQueueToken = '';
   try {
     await fetch(`${WORKER_BASE}/ceremony/${circuitHash}/reserve`, {
       method: 'DELETE',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        contributor_pubkey: contributorPubkeyHex && /^0[23][0-9a-f]{64}$/.test(contributorPubkeyHex.toLowerCase())
-          ? contributorPubkeyHex.toLowerCase() : null,
-      }),
+      body: JSON.stringify({ queue_token: token }),
     });
   } catch {}
 }
@@ -35266,6 +35279,7 @@ async function ceremonyContributeAmm({
     }
     fd.append('prev_cid', prevCid);
     fd.append('contribution_hash', mixed.contributionHash);
+    if (_ammQueueToken) fd.append('queue_token', _ammQueueToken);
     return fd;
   };
   const _doUpload = (fd) => new Promise((resolve, reject) => {
@@ -35899,9 +35913,11 @@ async function _submitAmmCeremonyContribution() {
       onProgress: (phase, info) => {
         if (phase === 'refresh')       { _setPhase('fetch', `Preparing ${target.label}…`, 'refreshing chain state from worker'); _renderAmmCerDrawerBody({ currentKey: target.key, completedKeys: _ammCeremonyCompletedThisSession }); _log('  refreshing chain state…'); }
         else if (phase === 'reserve-wait') {
-          const mins = Math.ceil((info?.etaSec || 0) / 60);
-          _setPhase('fetch', `Queued — ${escapeHtml(info?.heldName || 'someone')} is contributing`, `polling every 10s · slot frees in ~${mins} min or sooner`);
-          _log(`  ⏳ Queued — ${info?.heldName || 'another contributor'} started ${Math.round((info?.heldSec || 0) / 60)} min ago (slot frees in ~${mins} min). Polling…`);
+          const pos = Number(info?.position || 0);
+          const total = Number(info?.total || 0);
+          const positionLabel = (pos > 0 && total > 0) ? ` · position ${pos} of ${total}` : '';
+          _setPhase('fetch', `Queued — ${escapeHtml(info?.heldName || 'someone')} is contributing${positionLabel}`, 'polling every 10s · pick a lighter circuit above to skip the wait');
+          _log(`  ⏳ Queued — ${info?.heldName || 'another contributor'} active for ${Math.round((info?.heldSec || 0) / 60)} min${positionLabel ? ` (you're ${positionLabel.trim()})` : ''}. Polling…`);
         }
         else if (phase === 'reserve-ok')      { _log('  ✓ Slot claimed — starting mix'); }
         else if (phase === 'reserve-timeout') { _log('  ⚠ Reservation poll timed out — proceeding at-risk (may hit CASRACE)'); }
