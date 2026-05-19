@@ -5498,14 +5498,17 @@ async function _listCeremonyQueue(env, circuitHash) {
   return fetched.filter(e => e);
 }
 async function _evictStaleQueueHeads(env, circuitHash, queue, staleMs) {
-  const now = Date.now();
-  let evicted = 0;
-  while (queue.length > 0 && queue[0].last_poll_at && (now - queue[0].last_poll_at) > staleMs) {
-    try { await env.REGISTRY_KV.delete(queue[0].key); } catch {}
-    queue.shift();
-    evicted++;
-  }
-  return evicted;
+  // Only evict the HEAD when it's clearly abandoned (last poll > staleMs
+  // ago) AND there are waiters who'd benefit. The head stops polling
+  // once they claim the slot — during mix (up to ~7 min for swap_batch)
+  // they don't refresh last_poll_at. Evicting them then steals the slot
+  // and produces the CASRACE we're trying to prevent. The 15-min KV TTL
+  // is the backstop for genuinely-walked-away contributors.
+  //
+  // Waiters (position 1+) that stop polling are evicted by the same
+  // 15-min TTL on the entry itself; they'll just naturally fall out
+  // without active intervention.
+  return 0;
 }
 
 // POST /ceremony/<hash>/reserve — FIFO queue join + poll. First call
