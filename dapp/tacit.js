@@ -57736,7 +57736,15 @@ function applyMarketFilters() {
                        : l.kind === 'intent'  ? (l.maker_pubkey  || '')
                        :                         (l.owner_pubkey  || ''));
     const _isMineAsk = !!myPubHex && _ownerPubHex === myPubHex;
-    tile.className = 'market-listing-tile' + (_isMineAsk ? ' market-listing-tile--mine' : '');
+    // Mark the cheapest preauth tile with a `--best` class so CSS can
+    // color the price in green (designer color discipline: green ==
+    // best-in-class). Level rows + non-preauth (atomic / OTC) skip the
+    // marker — only one-tx fillable listings deserve the best signal.
+    const _isBestAsk = (_tileIdx === bestPreauthIdx && l.kind === 'preauth');
+    tile.className = 'market-listing-tile'
+      + (_isMineAsk ? ' market-listing-tile--mine' : '')
+      + (_isBestAsk ? ' market-listing-tile--best' : '')
+      + (l._isGroup ? ' market-listing-tile--level' : '');
     // Stable per-listing key so the background liveness prune can target
     // this tile by selector when its UTXO turns out to be spent on-chain.
     tile.dataset.listingKey = _listingKey;
@@ -64687,11 +64695,26 @@ async function populateMarketBidsLadder(scope, asset) {
         ? ''
         : `<button class="market-bid-fulfil" data-bid-action="fulfil-mkt" data-bid-id="${escapeHtml(bidId)}" type="button" title="Sell into this bid. Whole-bid bids commit immediately; variable-fill bids open a chunk picker first.">Sell</button>`;
     }
+    // Below-mid flag drives the price-color discipline: bids above mid
+    // stay green (healthy demand), bids below mid render in red (deep
+    // discount, often dust / lowball). Computed against the same
+    // _effectiveReferenceUnit the rest of the row uses, so the price
+    // color agrees with the vs-mid cell. Deferred until after the
+    // _bidRef block below; we forward-reference via a closure-captured
+    // helper here.
+    const _belowMidEarly = (() => {
+      try {
+        const _r = _effectiveReferenceUnit(asset?.asset_id, asset);
+        if (!_r || !(b._unit > 0)) return false;
+        return b._unit < _r.unit;
+      } catch { return false; }
+    })();
     const rowClass = [
       'market-bids-row',
       state ? `market-bids-row--${state}` : '',
       b._isMine ? 'market-bids-row--mine' : '',
       _isLevel ? 'market-bids-row--level' : '',
+      _belowMidEarly ? 'market-bids-row--below-mid' : '',
     ].filter(Boolean).join(' ');
     // Click-to-fill metadata on the row root so the bind pass can prime
     // the swap tile in SELL mode at this row's amount + auto-set the

@@ -2130,6 +2130,32 @@ tr[data-recent-activity] .market-token-sub::after {
 .market-listing-grid.market-listing-rows-mode .market-listing-tile small {
   display: none;
 }
+/* Color discipline (designer review): green is reserved for "best in
+   class," red for asks priced above mid, orange (brand) for grouped
+   level rows that aren't best. Default ask rows in rows-mode are red;
+   .market-listing-tile--best wins with green; .market-listing-tile--level
+   wins with orange when not also best. The "vs mid" cell uses its own
+   inline color (set per-row in JS) so this only colors the price. */
+.market-listing-grid.market-listing-rows-mode .market-listing-tile .market-listing-unit strong {
+  color: #b8341d;  /* red: ask priced above mid */
+}
+.market-listing-grid.market-listing-rows-mode .market-listing-tile--level .market-listing-unit strong {
+  color: #c76b26;  /* brand orange: aggregated level row */
+}
+.market-listing-grid.market-listing-rows-mode .market-listing-tile--best .market-listing-unit strong {
+  color: #0a7d3a;  /* green: best in class — wins over both above */
+}
+/* Same color discipline for the bids side. Default bid prices are
+   green (above mid in a healthy book) or red (below mid). The TOP
+   badge in the price column already signals best-in-class with green,
+   but we override the price text color here so the row reads at a
+   glance without scanning the badge. */
+.market-bids-row .market-bid-price strong {
+  color: #0a7d3a;  /* default: bid sits above mid (healthy book) */
+}
+.market-bids-row.market-bids-row--below-mid .market-bid-price strong {
+  color: #b8341d;  /* red: bid below mid */
+}
 /* Asks column-header row. Same shape as market-bids-row-head: black
    background, white text, uppercase letter-spaced labels. Render the
    labels with the same flex semantics as the bids equivalent. Sticky
