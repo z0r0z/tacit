@@ -92,29 +92,38 @@ Surfaces with no live mainnet state. Adopt the construction directly when the op
 
 ## §3. Phased rollout — shipped surfaces, careful migration
 
-### CXFER / AXFER transfer recipients (biggest user-flow upgrade)
+The amendment splits stealth use into two classes (see SPEC-BLINDED-PUBKEY-AMENDMENT.md §C):
+
+- **Class 1 — validator-coordinated commits.** Envelope carries a commit field the validator dispatches on. Per-opcode wire-format change required.
+- **Class 2 — pure-dapp transfer recipients.** The recipient marker is a Bitcoin output script chosen by the sender's dapp; the protocol layer doesn't see it. **No opcode reservation, no wire-format change.**
+
+### Class 2 — CXFER / AXFER transfer recipients (biggest user-flow upgrade)
+
+**Critical design insight:** no new opcodes needed. The protocol-layer envelope (`T_CXFER`, `T_AXFER`, `T_AXFER_VAR`, BP+ twins) carries `recipient_commit` as a Pedersen amount commitment at the protocol layer. The validator identifies the recipient by the Pedersen commit, not by the Bitcoin script of the dust marker. The worker indexes by `(txid, vout)` plus envelope commits — the Bitcoin output script is irrelevant to protocol-level state. **Only the recipient's wallet cares**, and the recipient finds receipts via the scanner rule in SPEC-BLINDED-PUBKEY-AMENDMENT.md §D.2.
 
 | Opcode | Status | Migration approach |
 |---|---|---|
-| `T_CXFER` (`0x23`) | 📝 proposed: `T_CXFER_STEALTH` (new opcode TBD, `0x60`-block reservation) | Soft-fork-additive. Old opcode keeps working. New opcode emits recipient marker at `P2WPKH(hash160(commit))`. Address-format capability signal per `§D` of the amendment. |
-| `T_AXFER` (`0x26`) | 📝 proposed: `T_AXFER_STEALTH` | Same shape |
-| `T_AXFER_VAR` (`0x37`) | 📝 proposed: `T_AXFER_VAR_STEALTH` | Same shape |
-| `T_CXFER_BPP` (`0x22`) | 📝 proposed: `T_CXFER_BPP_STEALTH` | Same construction over BP+ rangeproof variant |
-| `T_AXFER_BPP` (`0x3C`) | 📝 proposed: `T_AXFER_BPP_STEALTH` | Same |
-| `T_AXFER_VAR_BPP` (`0x3D`) | 📝 proposed: `T_AXFER_VAR_BPP_STEALTH` | Same |
+| `T_CXFER` (`0x23`) | 📝 proposed (dapp + scanner only; no opcode reservation) | Sender's dapp emits dust marker at `P2WPKH(hash160(commit_compressed))` instead of `P2WPKH(hash160(P_recipient))` when paying a stealth-capable address. Recipient's scanner dual-scans per §D.2. **Zero envelope-level changes, zero worker changes.** |
+| `T_CXFER_BPP` (`0x22`) | 📝 proposed (dapp + scanner only) | Same |
+| `T_AXFER` (`0x26`) | 📝 proposed (dapp + scanner only) | Same |
+| `T_AXFER_BPP` (`0x3C`) | 📝 proposed (dapp + scanner only) | Same |
+| `T_AXFER_VAR` (`0x37`) | 📝 proposed (dapp + scanner only) | Same |
+| `T_AXFER_VAR_BPP` (`0x3D`) | 📝 proposed (dapp + scanner only) | Same |
+| `T_LP_ADD` (`0x2D`) LP-share recipient marker | 📝 proposed (dapp + scanner only) | Same |
+| `T_LP_REMOVE` (`0x2E`) payout markers | 📝 proposed (dapp + scanner only) | Same |
 
-**Effort:** focused amendment per opcode family — wire format + dapp builder/scanner + worker decoder/validator + tests. The cryptographic primitive is already defined; this is integration work. Roughly 1–2 weeks careful per opcode family.
+**Effort:** focused dapp+scanner work per surface — no spec amendment per opcode required (one global address-format amendment + scanner spec covers all of them simultaneously). Per-opcode is maybe 1–2 days of dapp scanner integration work. The aggregate work is in one amendment + one dapp scanner refactor, not per-opcode amendments.
 
-### Mixer / slot payouts
+### Class 1 — Mixer / slot payouts (wire-format change required)
 
 | Opcode | Status | Migration approach |
 |---|---|---|
-| `T_WITHDRAW` (`0x2A`) | 📝 proposed: add optional `recovery_commit` field to envelope; payout at `P2TR(x_only(commit))` | Optional field; old envelopes (no field) keep working. New envelopes opt into stealth recipient. |
+| `T_WITHDRAW` (`0x2A`) | 📝 proposed: add optional `recovery_commit` field to envelope; payout at `P2TR(x_only(commit))` | Optional field; old envelopes (no field) keep working. New envelopes opt into stealth recipient. Wire-format change because the validator needs to construct the payout script from the envelope. |
 | `T_SLOT_BURN` (`0x44`) | 📝 proposed: same shape | Same |
-| `T_SLOT_SPLIT` (`0x46`) | 📝 proposed: per-output recipient commit | Same |
+| `T_SLOT_SPLIT` (`0x46`) | 📝 proposed: per-output recipient commit | Same; validator routes per-output payouts |
 | `T_SLOT_MERGE` (`0x47`) | 📝 proposed: recipient commit on the produced slot | Same |
 
-**Effort:** lighter than CXFER family — these envelopes are less common in volume, the wire-format extension is small (one optional 33-byte field), and the dapp scanner already handles slot/withdraw recipient detection.
+**Effort:** lighter than originally scoped — the wire-format extension is small (one optional 33-byte field per envelope), and the dapp scanner already handles slot/withdraw recipient detection.
 
 ### Orderbook intent records (off-chain coordination)
 

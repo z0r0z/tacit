@@ -170,6 +170,95 @@ Recovery from seed: given the recipient's wallet seed and on-chain tx
 data, the recipient re-derives every credit deterministically. No
 local subkey index, no scan-window limit.
 
+### §A.2.5 Input-pubkey selection rule (ECDH variant)
+
+For the ECDH-derived variant, the recipient must extract a
+deterministic `P_sender` from the tx's input witnesses. Multi-input
+transactions and adversarially-crafted input sets force a
+specification: a naïve "use vin[0]" rule is breakable (an attacker
+can prepend a dust input under their own key, breaking the
+recipient's derivation; or split a payment across multiple senders,
+ambiguating which input is the "sender"). This subsection specifies
+the rule normatively.
+
+**`P_sender` (the ECDH-eligible aggregate):**
+
+```
+P_sender  =  Σ over eligible inputs i of  P_i
+```
+
+where `P_i` is the input's signing pubkey, extracted per the
+following input-eligibility rules (adapted from BIP-352 §"Inputs For
+Shared Secret Derivation" with tacit-specific extensions):
+
+1. **P2TR key-path spends** — include the input's `output_key` (the
+   x-only key under which the Schnorr signature was generated),
+   converted to a full pubkey by re-deriving Y per BIP-340 even-Y
+   convention.
+2. **P2WPKH spends** — include the pubkey from `witness[1]` (the
+   33-byte compressed pubkey in the standard P2WPKH witness).
+3. **Tacit envelope inputs (commit-reveal P2TR script-path)** —
+   include the wallet's `xonly` pubkey carried in the envelope
+   script, converted to a full pubkey per BIP-340.
+4. **P2WSH or other script-path inputs** — **excluded.** The signing
+   key may be a multisig aggregate or unspecified; not usable as a
+   sender identity for ECDH.
+5. **P2TR script-path spends (non-key-path)** — **excluded** for the
+   same reason.
+6. **Inputs already in the spent-set / mixer pool (e.g., `T_DEPOSIT`,
+   `T_WITHDRAW` inputs)** — handled per their opcode-specific rule;
+   typically excluded since the "sender" is a notional protocol-
+   layer counterparty, not a Bitcoin-layer pubkey.
+
+The sum is taken in the secp256k1 group. If `P_sender = O` (the
+point at infinity — vanishingly improbable for uniformly random
+input pubkeys, but possible if an attacker constructs a tx where
+inputs sum to zero), the recipient treats the tx as ineligible for
+ECDH-variant matching and skips it.
+
+**Sender-side derivation** uses the corresponding aggregate
+private key. For inputs the sender controls, this is
+`sk_sender = Σ over eligible inputs i of sk_i mod SECP_N`. The
+sender's wallet must enumerate which inputs it owns + the eligibility
+class of each, sum the corresponding scalars, and use the result
+for the ECDH:
+
+```
+shared  =  sk_sender  ·  P_recipient
+```
+
+Note that `sk_sender · G = P_sender` by linearity, so the recipient's
+symmetric derivation `recipient_priv · P_sender` yields the same
+`shared`. Both sides land on the same secret without either
+revealing their individual inputs to the other.
+
+**Multi-sender transactions** (inputs from multiple wallets, e.g.,
+CoinJoin-shaped settlements) require all participating senders to
+contribute their `sk_sender` portion via a multi-party ECDH protocol
+(or the recipient is paid via a separate, single-sender output).
+The amendment does NOT specify multi-sender ECDH for v1; the dapp
+SHOULD refuse to emit a blinded-recipient output in a multi-sender
+tx for v1.
+
+**Adversarial input injection.** An attacker who adds a dust input
+to the sender's tx (e.g., a pin-down attempt) shifts `P_sender` by
+the attacker's `P_extra`. The recipient's derivation becomes
+`shared' = recipient_priv · (P_sender + P_extra)`, which differs from
+the sender's `(sk_sender + sk_extra) · P_recipient` only if the
+attacker doesn't actually contribute `sk_extra` to the tx (i.e.,
+they pin without signing under the attacker's pubkey). Bitcoin
+consensus requires every input to sign, so this attack reduces to
+"the attacker contributes a fully-signed input." Under that
+assumption, sender + attacker must both compute the ECDH using
+their respective scalars and produce signatures consistent with
+the aggregate. This is feasible only if they coordinate — i.e., if
+the "attacker" is effectively a co-sender. The recipient receives
+the payment normally.
+
+The pin-down-without-signing attack is therefore structurally
+blocked by Bitcoin's input-signing requirement, not by an additional
+spec rule.
+
 ### §A.3 Spending
 
 A holder spending a UTXO whose script binds the commit:
@@ -280,22 +369,48 @@ The registry standardizes which value plays the role of `anchor` /
 new entry requires a one-line registry update; the construction
 itself is unchanged.
 
+**Class 1 — validator-coordinated commits (require per-opcode
+wire-format change).** The envelope itself carries a commit field
+that the validator dispatches on.
+
 | Opcode / role | Variant | Anchor | Domain tag | Status |
 |---|---|---|---|---|
 | `T_CBTC_TAC_DEPOSIT` depositor recovery | self-derived | `target_leaf_hash` | `tacit-cbtc-tac-recovery-blinding-v1` | normative; shipped in SPEC-CBTC-TAC §5.36.7 |
 | `T_FARM_INIT` launcher | self-derived | `pool_id \|\| farm_nonce` | `tacit-amm-farm-launcher-blinding-v1` | normative; shipped in SPEC-AMM-FARM |
 | `T_LP_BOND` bonder | self-derived | `farm_id \|\| bond_nonce` | `tacit-amm-bond-blinding-v1` | normative; shipped in SPEC-AMM-FARM |
-| `T_CXFER` recipient | ECDH-derived | `vin[0].outpoint` | `tacit-cxfer-stealth-v1` | proposed; phased rollout in §E |
-| `T_AXFER` recipient | ECDH-derived | `vin[0].outpoint` | `tacit-axfer-stealth-v1` | proposed; phased rollout in §E |
-| `T_AXFER_VAR` recipient | ECDH-derived | `vin[0].outpoint` | `tacit-axfer-var-stealth-v1` | proposed |
-| `T_WITHDRAW` recipient | self-derived | `nullifier_hash` | `tacit-mixer-withdraw-recovery-v1` | proposed |
-| `T_SLOT_BURN` recipient | self-derived | `nullifier_hash` | `tacit-slot-burn-recovery-v1` | proposed |
-| `T_SWAP_BATCH` trader | self-derived | `intent_id` | `tacit-amm-trader-v1` | proposed; ceremony-gated rollout |
-| `T_SWAP_VAR` trader | self-derived | `intent_id` | `tacit-amm-trader-var-v1` | proposed |
-| Orderbook intent `maker_commit` | self-derived | `intent_id` | `tacit-axintent-maker-v1` | proposed; deferred for shipped intents per §E.3 |
+| `T_WITHDRAW` recovery | self-derived | `nullifier_hash` | `tacit-mixer-withdraw-recovery-v1` | proposed; envelope adds optional `recovery_commit` field |
+| `T_SLOT_BURN` recovery | self-derived | `nullifier_hash` | `tacit-slot-burn-recovery-v1` | proposed; envelope adds optional `recovery_commit` field |
+| `T_SWAP_BATCH` trader | self-derived | `intent_id` | `tacit-amm-trader-v1` | proposed; ceremony-gated; envelope field replaces `trader_pubkey` |
+| `T_SWAP_VAR` trader | self-derived | `intent_id` | `tacit-amm-trader-var-v1` | proposed; envelope field replaces `trader_pubkey` |
+| Orderbook intent `maker_commit` | self-derived | `intent_id` | `tacit-axintent-maker-v1` | proposed; off-chain schema-versioned record per §E.3 |
+
+**Class 2 — pure-dapp transfer recipients (no wire-format change).**
+The recipient marker is a Bitcoin output script chosen by the
+sender's dapp; the protocol-layer envelope does not reference it.
+The dapp + recipient wallet coordinate via the address-format
+capability signal in §D and the scanner rule in §D.2. No opcode
+reservation; no envelope change.
+
+| Surface | Variant | Anchor | Domain tag | Status |
+|---|---|---|---|---|
+| `T_CXFER` recipient marker | ECDH-derived | `vin[0].outpoint \|\| vout_index` | `tacit-cxfer-stealth-v1` | proposed; dapp + scanner only |
+| `T_CXFER_BPP` recipient marker | ECDH-derived | `vin[0].outpoint \|\| vout_index` | `tacit-cxfer-bpp-stealth-v1` | proposed; dapp + scanner only |
+| `T_AXFER` recipient marker | ECDH-derived | `vin[0].outpoint \|\| vout_index` | `tacit-axfer-stealth-v1` | proposed; dapp + scanner only |
+| `T_AXFER_BPP` recipient marker | ECDH-derived | `vin[0].outpoint \|\| vout_index` | `tacit-axfer-bpp-stealth-v1` | proposed; dapp + scanner only |
+| `T_AXFER_VAR` recipient marker | ECDH-derived | `vin[0].outpoint \|\| vout_index` | `tacit-axfer-var-stealth-v1` | proposed; dapp + scanner only |
+| `T_AXFER_VAR_BPP` recipient marker | ECDH-derived | `vin[0].outpoint \|\| vout_index` | `tacit-axfer-var-bpp-stealth-v1` | proposed; dapp + scanner only |
+| `T_LP_ADD` LP-share recipient marker | ECDH-derived | `pool_id \|\| vin[0].outpoint \|\| vout_index` | `tacit-lp-add-stealth-v1` | proposed; dapp + scanner only |
+| `T_LP_REMOVE` payout markers | ECDH-derived | `pool_id \|\| vin[0].outpoint \|\| vout_index` | `tacit-lp-remove-stealth-v1` | proposed; dapp + scanner only |
+
+The `vout_index` suffix in the class-2 anchors prevents collision when
+a single tx produces multiple outputs to the same recipient — without
+it, two outputs paying the same address would land at the same
+stealth commit and observers could cluster them.
 
 Future opcodes that bear a cleartext pubkey field SHOULD add a registry
-row rather than re-deriving the construction inline.
+row rather than re-deriving the construction inline. Class-1 entries
+require an opcode-specific amendment; class-2 entries require only a
+dapp/scanner implementation note plus a row here.
 
 ---
 
@@ -305,27 +420,86 @@ The blinded-pubkey scheme is opt-in per recipient. Senders need a way
 to know whether a given recipient will detect a blinded output before
 emitting one.
 
-### §D.1 Address-format encoding
+### §D.1 Address-format encoding (normative)
 
 This amendment reserves a new tacit address format variant. The
-encoding piggybacks on the existing bech32m address scheme; the
-discriminator distinguishes the two capabilities:
+encoding piggybacks on the existing bech32m machinery; the
+discriminator distinguishes the two capabilities.
 
-- **Classical receiving address** (existing): bech32m encoding of
-  `(network_hrp, 0, hash160(P_recipient))`. Signals "send me classical
-  P2WPKH outputs at P_recipient."
-- **Stealth-capable receiving address** (new): bech32m encoding of
-  `(network_hrp, 1, P_recipient_compressed[1:33])` — i.e., a longer
-  payload that publishes the recipient's compressed pubkey (or
-  scan-pubkey if dual-key for light-client scanning per §D.3 below)
-  instead of its hash. Signals "I support the blinded-pubkey scheme;
-  use ECDH-derived commits when paying me."
+**Classical receiving address** (existing, unchanged):
 
-Senders parse the address, observe the discriminator, and pick the
-output script accordingly. Wallets that don't understand the new
-discriminator reject the address with a parse error (no silent
-fallback to classical — the user must know they're sending to a
-stealth-capable recipient).
+```
+hrp           =  network HRP per SPEC.md §4.3
+                 ("bc" mainnet, "tb" signet, "bcrt" regtest)
+witness_ver   =  0          (P2WPKH)  OR  1 (P2TR)
+payload       =  hash160(P_recipient) (20 bytes for WPKH)
+                 OR x_only(P_recipient) (32 bytes for P2TR)
+address       =  bech32m_encode(hrp, [witness_ver] ++ payload_5bit)
+```
+
+Standard Bitcoin segwit address shape; no tacit-specific changes.
+Signals "send me classical outputs at `P_recipient`."
+
+**Stealth-capable receiving address** (new):
+
+```
+hrp           =  tacit-specific HRP per network:
+                   "tcs"   on mainnet (tacit stealth)
+                   "tcsts" on signet
+                   "tcsrt" on regtest
+                 (distinct from segwit HRPs to prevent classical-
+                  segwit parsers from silently accepting and
+                  misinterpreting these addresses)
+version       =  0x00  (one byte; this amendment's format version;
+                        future revisions increment)
+mode          =  0x00  for single-pubkey scheme
+                 0x01  for dual-pubkey (scan/spend split) per §D.3
+payload       =
+  mode == 0x00:  P_recipient_compressed             (33 bytes)
+  mode == 0x01:  P_scan_compressed  ||
+                 P_spend_compressed                  (66 bytes)
+checksum      =  bech32m checksum (6 chars, post-encoding)
+address       =  bech32m_encode(hrp,
+                                [version, mode] ++ payload ++ checksum)
+```
+
+Encoded payload length:
+
+| mode | payload bytes | 5-bit groups | total bech32m chars (incl. checksum + sep) |
+|---|---|---|---|
+| 0x00 single | 35 | 56 | ~70 chars on mainnet (incl. 3-char HRP + 1-char separator + 6-char checksum) |
+| 0x01 dual | 68 | 109 | ~125 chars on mainnet |
+
+Parser rules:
+
+1. If the address's HRP matches a known **segwit** HRP (`bc` /
+   `tb` / `bcrt`), parse as a classical Bitcoin segwit address.
+   This amendment does not affect classical-address parsing.
+2. If the address's HRP matches a known **tacit-stealth** HRP
+   (`tcs` / `tcsts` / `tcsrt`), parse the payload as
+   `[version, mode] ++ pubkey(s)`.
+3. The `version` byte gates forward-compat: a parser MUST reject
+   any version it doesn't understand (no silent fallback). v1
+   parsers accept version `0x00` only.
+4. The `mode` byte gates the payload layout: v0 parsers accept
+   `0x00` and `0x01` only.
+5. The pubkey(s) MUST be valid compressed secp256k1 points; the
+   parser rejects malformed or non-curve points.
+6. Wallets that don't recognize the tacit-stealth HRP MUST fail
+   address parsing with an explicit error ("this wallet does not
+   support tacit stealth addresses; please update"). No silent
+   fallback to "extract a classical pubkey somehow" — the user
+   must know their wallet can't reach the recipient under their
+   intended privacy mode.
+
+The HRP choice prevents the failure mode where a classical Bitcoin
+wallet silently accepts a tacit-stealth address and emits a
+malformed classical output. Classical segwit parsers reject `tcs`
+HRPs at the bech32m HRP-validation step.
+
+**Cross-network HRP collisions** are avoided by network-specific
+prefixes (`tcs` vs `tcsts` vs `tcsrt`), matching the existing
+segwit-HRP convention.
 
 ### §D.2 Recipient-side dual-scan
 
@@ -424,22 +598,91 @@ distinction.
 
 ### §E.4 Shipped surfaces with persistent state
 
-CXFER / AXFER UTXOs don't expire. Migration plan:
+CXFER / AXFER / AXFER_VAR UTXOs don't expire. The migration approach
+here is **subtler than it first appears** — the right answer for
+transfer-recipient stealth is **zero new opcodes, zero wire-format
+changes**. Reasoning:
 
-1. Reserve new opcodes for blinded variants: `T_CXFER_STEALTH`,
-   `T_AXFER_STEALTH` (specific opcode bytes TBD; reserve from the
-   `0x60`-block per the opcode-space convention).
-2. Wire format is byte-identical to the classical variant except the
-   recipient marker output script is `P2WPKH(hash160(commit))` or
-   `P2TR(x_only(commit))` instead of `P2WPKH(hash160(P_recipient))`.
-3. Old wallets ignore unknown opcodes per `SPEC.md §5.5`; they don't
-   process new-variant envelopes but their classical-variant flows
-   keep working unchanged.
-4. New wallets dual-scan per §D.2.
-5. Senders pick variant based on the recipient's address format
-   per §D.1.
-6. No sunset. The two variants coexist indefinitely; the protocol
-   never forces a migration.
+The protocol-layer envelope (`T_CXFER`, `T_AXFER`, `T_AXFER_VAR`)
+carries `recipient_commit` as a Pedersen amount commitment at the
+protocol layer. The validator identifies the recipient by this
+Pedersen point, not by the Bitcoin script of the dust marker. The
+worker indexes the resulting asset UTXO by `(txid, vout)` plus the
+envelope's commits — the Bitcoin output script is irrelevant to
+protocol-level state.
+
+The only party that cares about the dust output's Bitcoin script is
+the **recipient's wallet**, which uses it to identify its receipts.
+A wallet supporting the stealth scheme scans for both classical-
+shaped outputs (at its own `hash160(P_recipient)`) AND stealth-
+derived outputs (per §D.2). A wallet not supporting stealth scans
+only its classical address — but no sender will emit stealth-shaped
+outputs to a recipient whose published address signals classical
+only, per §D.1's address-format capability signaling.
+
+**Migration plan for transfer-recipient stealth:**
+
+1. **No envelope-level changes.** `T_CXFER` (`0x23`), `T_AXFER`
+   (`0x26`), `T_AXFER_VAR` (`0x37`), and their BP+ twins (`0x22`,
+   `0x3C`, `0x3D`) all keep their current wire formats unchanged.
+2. **Dapp-level changes only.** The sender's wallet, when emitting
+   to a stealth-capable address, computes the recipient marker at
+   `P2WPKH(hash160(commit_compressed))` instead of
+   `P2WPKH(hash160(P_recipient))`. The recipient's wallet's scanner
+   adds an ECDH + commit-derivation pass per §D.2.
+3. **No worker change.** The validator dispatch, the asset-UTXO
+   indexer, the OP_RETURN handling, and the ancestry-walk logic are
+   all unaffected. The worker doesn't see a difference between a
+   classical CXFER and a stealth CXFER.
+4. **Old wallets unaffected.** They don't recognize tacit-stealth
+   address formats (per §D.1) and so don't receive stealth-shaped
+   payments; their classical address keeps receiving classical
+   outputs from any sender.
+
+**Design rationale — why this works without new opcodes.**
+
+Two classes of stealth use exist in tacit:
+
+- **Class 1 — validator-coordinated commits.** The envelope's
+  payload carries a commit field that the validator dispatches on
+  (Schnorr sig verification, payout routing, position lookup, etc.).
+  Examples: cBTC.tac `depositor_recovery_commit`, farm
+  `launcher_commit`/`bonder_commit`/`unbonder_commit`/
+  `harvester_commit`, future `T_WITHDRAW` and `T_SLOT_BURN`
+  `recovery_commit` fields. **These DO need per-opcode wire-format
+  changes** — already handled in the respective amendments
+  (SPEC-CBTC-TAC §5.36.7, SPEC-AMM-FARM, future SPEC-MIXER-STEALTH-
+  WITHDRAW, etc.). The protocol-layer state machine needs to know
+  the commit value.
+
+- **Class 2 — pure-dapp transfer recipients.** The recipient marker
+  is purely a Bitcoin output script chosen by the sender's dapp.
+  The protocol-layer envelope doesn't reference the marker's script;
+  the validator never inspects it. Examples: CXFER, AXFER,
+  AXFER_VAR, their BP+ twins, T_LP_ADD/T_LP_REMOVE recipient outputs,
+  any future transfer-shaped opcode. **These need zero wire-format
+  changes.** The dapp's output-script choice is invisible to the
+  protocol; only the recipient's scanner cares.
+
+The distinction is whether the validator's state machine needs to
+*know* the commit, or whether the commit is only relevant for
+recipient-side wallet identification. Wherever the answer is the
+latter, no opcode change is required.
+
+**Why earlier drafts considered new opcodes — and why that's wrong
+for class 2.** A first-pass design assumed every privacy-mode change
+needed a protocol-layer signal (new opcode, flag bit, or inline
+kind byte). On reflection, this conflates two genuinely independent
+concerns: what the protocol coordinates (validator state) vs what
+the participants coordinate off-chain (recipient wallet scan). For
+class-1 cases the protocol must coordinate; for class-2 cases it
+doesn't have to and shouldn't. Adding new opcodes for class 2 would
+bloat the opcode table without giving the protocol any new
+authority — pure overhead.
+
+The amendment therefore reserves NO new opcodes for transfer-
+recipient stealth. The class-1 cases continue to land via their
+own per-opcode amendments as previously planned.
 
 ### §E.5 Wire-format compatibility statement
 
@@ -516,6 +759,69 @@ For P2WPKH (ECDSA), there is no Y constraint; the signer uses
 `tweaked_sk` directly and the witness carries `commit_compressed`
 (including its parity byte).
 
+### §F.6 Adversarial scan-flooding
+
+A recipient performing the ECDH-derived scan does one ECDH + one
+HMAC + one EC scalar multiplication per candidate tx. An adversary
+who broadcasts many transactions with arbitrary sender pubkeys
+forces every stealth-capable wallet to perform that work even
+though none of the transactions actually pay them. With chain
+growth bounded by Bitcoin's blockspace, this is a rate-limited
+attack — an attacker can't make a wallet do more ECDH work than the
+chain itself can produce (typically 5–50 transactions per block,
+~720–7200 per hour).
+
+For a full-wallet client on commodity hardware (~100 µs per ECDH),
+the worst-case scan cost is bounded at ~700 ms per hour of chain
+growth — well within practical wallet refresh budgets. For
+constrained clients (mobile, watch, embedded), the cost is higher
+and may motivate the scan-filter and dual-pubkey optimizations
+described in §H.5.
+
+**Mitigation paths** (in priority order, none required for v1):
+
+1. **Scan filters (deferred, see §H.5).** A wallet pre-screens
+   candidate txs using a compact filter (analogous to BIP-158)
+   that lets it skip txs it could not possibly own a stealth
+   output in. Reduces ECDH cost to O(actual relevant txs) rather
+   than O(all txs).
+2. **Scan-pubkey delegation (§D.3).** A wallet hands its
+   `P_scan` to a light-client server, which does the per-tx ECDH
+   work on behalf of many wallets, batching costs across users.
+3. **Tier-restriction.** A future amendment MAY require the
+   sender-side aggregate `P_sender` to satisfy a structural
+   property (e.g., correspond to inputs from a specific class
+   of UTXOs) that scan-flooding attackers can't easily satisfy.
+   Not required for v1; mitigation paths 1 and 2 are sufficient.
+
+The scan-flooding attack is well-known in BIP-352 literature and
+the mitigations parallel BIP-352's compact-filter design. Tacit
+inherits both the attack surface and the mitigation toolkit; this
+amendment does not block the path to either.
+
+### §F.7 Sender-pubkey unextractable inputs
+
+For ECDH-variant derivation, the recipient extracts `P_sender` from
+the tx's input witnesses per §A.2.5. Some input types deliberately
+exclude themselves from this extraction:
+
+- **P2WSH and P2TR script-path inputs**: the signing key is a
+  multisig aggregate or unspecified, not a single-identity pubkey.
+  Excluded per §A.2.5 rule 4–5.
+- **Already-spent mixer-pool inputs** (`T_WITHDRAW` recipient
+  UTXOs spent by their owners, etc.): the spending key is fresh
+  per-output; the "sender" notion is the protocol counterparty,
+  not a Bitcoin pubkey.
+
+If every eligible input under §A.2.5 is excluded, the aggregate
+`P_sender = O` and the tx is ineligible for ECDH-variant matching.
+The recipient skips such txs. A sender's dapp emitting a stealth-
+shaped output in such a tx (where the recipient cannot derive the
+shared secret) creates an unrecoverable payment — funds are at the
+output script but no one can identify or spend them. The dapp
+MUST refuse to emit a stealth output unless the tx contains at
+least one eligible input under §A.2.5's rules.
+
 ---
 
 ## §G. Composition with existing primitives
@@ -563,18 +869,57 @@ nullifier and, post-amendment, can carry a recovery commit).
 
 ### §G.5 With BIP-352 Silent Payments
 
-The construction is functionally equivalent to BIP-352. Differences
-are purely in derivation specifics: BIP-352 specifies a particular
-shared-secret-to-tweak derivation (with optional dual scan/spend
-pubkey for light clients); this amendment uses tacit's existing HMAC
-stack with opcode-specific domain tags. A wallet implementing BIP-352
-on Bitcoin and this amendment on tacit shares the same custody
-primitives and the same scanner architecture; only the per-protocol
-derivation inputs differ.
+The construction is **functionally equivalent** to BIP-352 — same
+user-visible property (recipient publishes one address, sender
+derives per-tx unique output address, recipient retains custody
+via a deterministic seed-derived tweak), same underlying BIP-341
+key-tweak math, same security argument.
 
-Tacit MAY adopt BIP-352-byte-compatibility as a future amendment
-(useful for cross-protocol wallet libraries); the present amendment
-does not require it.
+The construction is **not byte-compatible** with BIP-352. Specific
+differences:
+
+| Aspect | BIP-352 | This amendment |
+|---|---|---|
+| Shared-secret derivation | `tn = hash_BIP0352/Inputs(A_sum)` + per-output counter | `HMAC-SHA256(ECDH-shared, domain ‖ network ‖ tx_anchor)` |
+| Input-pubkey aggregation rule | BIP-352 §"Inputs For Shared Secret Derivation" | §A.2.5 of this amendment (adapted, plus tacit envelope inputs) |
+| Address format | bech32m, HRP `sp` / `tsp` / `sprt`, BIP-352 §"Encoding addresses" | bech32m, HRP `tcs` / `tcsts` / `tcsrt`, payload per §D.1 |
+| Scan/spend key split | first-class in BIP-352; default for light clients | optional per §D.3 mode `0x01` |
+| Scan filter spec | BIP-352 §"Scanning" with specific filter formats | deferred to future amendment per §H.5 |
+| Scope | Bitcoin sat transfers | tacit confidential-asset surface (transfers, mixer withdraws, slot burns, AMM trader, marketplace makers, validator-coordinated commits) |
+
+**Practical consequence:** a wallet library implementing BIP-352
+for Bitcoin will not automatically work for tacit-stealth payments,
+and vice versa. Cross-protocol wallet ergonomics (one wallet, both
+chains, single scan path) would require BIP-352-byte-compatibility
+which this amendment does not provide.
+
+**Why tacit-native rather than BIP-352-byte-compatible.** Three
+reasons drove the choice:
+
+1. **Tacit-specific input eligibility.** BIP-352's `A_sum` rule
+   covers Bitcoin script types. Tacit has additional input shapes
+   (commit-reveal P2TR envelopes, mixer-pool-consumed inputs,
+   slot K_btc inputs) that BIP-352's rule doesn't anticipate.
+   §A.2.5 specifies the tacit-specific rule directly.
+2. **Composition with tacit ECDH stack.** The same shared secret
+   that drives stealth address derivation also drives existing
+   amount-encryption keystreams (`SPEC.md §5.7.6`). Using the
+   tacit HMAC stack lets one ECDH call drive both privacy planes
+   via domain separation; using BIP-352's derivation would require
+   either two ECDH calls or carrying both schemes in parallel.
+3. **Scope mismatch.** BIP-352 specifies one application (sat
+   transfers). Tacit's anchor registry (§C) covers a dozen
+   different opcodes with different anchor needs. A tacit-native
+   primitive accommodates these naturally; a BIP-352 port would
+   need an extension per opcode.
+
+**Future BIP-352 byte-compatibility (optional).** A follow-up
+amendment MAY add a BIP-352-byte-compatible variant for the
+specific case of CXFER/AXFER transfer recipients (the class-2
+surface most likely to share users with Bitcoin-only wallets).
+The variant would coexist with the tacit-native form per the same
+address-format capability signaling shape. Not required for v1;
+viable as a cross-protocol-ergonomics enhancement post-launch.
 
 ---
 
@@ -622,6 +967,62 @@ sender picks stealth.
 The "privacy mode" toggle in the dapp's settings governs the default:
 on (stealth address advertised by default) or off (classical only).
 Per-transaction overrides remain available via an advanced toggle.
+
+### §H.5 Historical-bootstrap and scan filters
+
+Wallets joining the network fresh (new install, recovery from seed
+after extended offline period) must scan chain history back to their
+relevant horizon. Per-tx scan cost (§H.1) is bounded but cumulative;
+for a wallet rejoining after a year of offline time, the chain may
+contain hundreds of thousands of stealth-eligible txs that the
+wallet must process before its balance display stabilizes.
+
+This amendment does NOT specify a compact-filter design for v1.
+Justification: the primary v1 deployment surface is class-1
+(validator-coordinated commits), where the wallet scans only its
+own positions (typically tens, not millions). For class-2 transfer
+recipients, full-history scan is workable for moderate-usage
+wallets and the optimization can be deferred.
+
+**Sync-cost estimates** (rough, for sizing the future-work problem):
+
+| Scenario | Eligible txs / day | Scan cost / day | One-year backfill |
+|---|---|---|---|
+| Class-1 only (cBTC.tac + farms) | tens | seconds | seconds |
+| Class-2 sparse (early stealth adoption) | hundreds | ~minute | tens of minutes |
+| Class-2 dense (mature stealth adoption) | thousands | ~minutes | hours |
+| Adversarial flood (§F.6) | bounded by blockspace | ~hour | ~hours |
+
+The "dense + adversarial" worst case suggests that compact-filter
+support becomes valuable once class-2 stealth volume exceeds
+~1000 txs/day. Below that threshold, full-history scan on
+commodity hardware completes in well under an hour even for
+year-long recoveries.
+
+**Deferred design directions** (to be addressed in a follow-up
+amendment when class-2 volume motivates it):
+
+1. **BIP-158-style compact block filters for tacit stealth.** Each
+   block emits a Golomb-coded set of "stealth output candidate"
+   identifiers. A wallet downloads filters, pre-screens which
+   blocks contain candidate matches, and only does ECDH on those.
+   Reduces scan cost to O(actual blocks with relevant txs).
+2. **Scan-pubkey delegation infrastructure.** A wallet's `P_scan`
+   (per §D.3) can be handed to a light-client server that does the
+   ECDH work and returns a candidate-receipts list. Multiple
+   wallets share the server's per-tx ECDH cost. The server cannot
+   spend (no `P_spend`).
+3. **Birthday hint in the address.** The stealth address format
+   could carry an optional "wallet birthday" hint (block height
+   before which the wallet didn't exist), letting fresh wallets
+   skip scanning earlier history. Trivial to add to the v0
+   address format in a v1 revision.
+
+For the present amendment, the deferred status is honest: scan-
+filter design is future-work, and the v1 deployment surfaces
+don't exercise the failure mode that filters would solve. Wallets
+that need long-history scans before filters land SHOULD use a
+trusted-server scan-delegation arrangement.
 
 ---
 
