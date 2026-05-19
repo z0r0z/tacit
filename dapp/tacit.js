@@ -60946,13 +60946,15 @@ function renderMarketAssetHeader(assetId, rows) {
       return escapeHtml(u.host + path);
     } catch { return escapeHtml(_externalUrl); }
   })() : '';
-  // Avatar — black circle with brand-orange initial in italic serif,
-  // matching the designer's hero. The existing marketAssetImageHtml
-  // returns the user's uploaded image when present; fall back to the
-  // initial avatar when none.
+  // Avatar — keep the .market-token-icon class so its inner-<img>
+  // sizing rules (position:absolute; inset:0; width/height 100%;
+  // object-fit cover) constrain the hydrated IPFS image to the avatar
+  // box. Without it the img renders at natural size and "jumps out"
+  // when the metadata fetch lands. .mkt-hero-avatar layers circular
+  // border-radius + brand-orange initial color on top.
   const _heroAvatarHtml = (a.image_uri || a.imageUri)
-    ? marketAssetImageHtml(a, 42, 'mkt-hero-avatar mkt-hero-avatar--img')
-    : `<div class="mkt-hero-avatar mkt-hero-avatar--initial">${escapeHtml((a.ticker || '?').charAt(0).toLowerCase())}</div>`;
+    ? marketAssetImageHtml(a, 42, 'market-token-icon mkt-hero-avatar')
+    : `<div class="mkt-hero-avatar mkt-hero-avatar--initial" aria-hidden="true">${escapeHtml((a.ticker || '?').charAt(0).toLowerCase())}</div>`;
   // Active orders summary for the stats strip — same logic as the
   // legacy stats grid but rendered as a compact "Na / Mb" chip.
   const _heroOrdersHtml = (() => {
