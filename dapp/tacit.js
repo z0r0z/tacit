@@ -60907,11 +60907,11 @@ function renderMarketAssetHeader(assetId, rows) {
   // gets full width and doesn't squeeze the ticker / floor stats out of
   // the top row. Both lines are optional; if neither is present the block
   // collapses entirely.
-  const descriptionBlockHtml = (_description || _externalUrl)
-    ? `<div style="margin-bottom:14px;padding:10px 12px;border:1px dashed var(--ink-faint);background:var(--bg);font-size:11px;line-height:1.55;">
-        ${_description ? `<div>${escapeHtml(_description)}</div>` : ''}
-        ${_externalUrl ? `<div style="margin-top:${_description ? '6px' : '0'};"><a href="${escapeHtml(_externalUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(_externalUrl)} ↗</a></div>` : ''}
-       </div>`
+  // Description is inline-muted (no bordered box) per design.html — the
+  // external URL is already in the hero meta row, so this only renders
+  // the description prose itself. Skipped entirely when missing.
+  const descriptionBlockHtml = _description
+    ? `<div style="margin:0 0 14px;padding:0 2px;font-size:11px;line-height:1.55;color:var(--ink-mid);">${escapeHtml(_description)}</div>`
     : '';
 
   // Inline sparkline next to the big price — replaces the standalone
