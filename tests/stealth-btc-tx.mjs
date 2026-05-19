@@ -136,11 +136,39 @@ function trimLeadingZeros(bytes) {
   return bytes.slice(i);
 }
 
-// BIP-340 Schnorr signature.
+// BIP-340 Schnorr signature — hand-rolled to match dapp/tacit.js
+// signSchnorr (line 4816). noble v2 doesn't expose secp.schnorr in
+// our import shape.
+function bytes32ToBigint_(b) { return BigInt('0x' + bytesToHex(b)); }
+function bigintToBytes32_(n) {
+  let hex = n.toString(16); while (hex.length < 64) hex = '0' + hex;
+  return hexToBytes(hex);
+}
+function _xor32(a, b) { const r = new Uint8Array(32); for (let i = 0; i < 32; i++) r[i] = a[i] ^ b[i]; return r; }
+function _taggedHash(tag, ...msgs) {
+  const tagHash = sha256(new TextEncoder().encode(tag));
+  return sha256(concatBytes(tagHash, tagHash, ...msgs));
+}
+const G_ = secp.ProjectivePoint.BASE;
 export function schnorrSign(msgHash32, priv32) {
-  // noble v2: secp.schnorr.sign returns 64-byte sig.
+  const dPrime = bytes32ToBigint_(priv32);
+  if (dPrime <= 0n || dPrime >= SECP_N) throw new Error('schnorr: invalid private key');
+  const P = G_.multiply(dPrime);
+  const Pbytes = P.toRawBytes(true);
+  const Px = Pbytes.slice(1);
+  const d = (Pbytes[0] === 0x02) ? dPrime : (SECP_N - dPrime);
   const aux = crypto.getRandomValues(new Uint8Array(32));
-  return secp.schnorr.sign(msgHash32, priv32, aux);
+  const t = _xor32(bigintToBytes32_(d), _taggedHash('BIP0340/aux', aux));
+  const rand = _taggedHash('BIP0340/nonce', t, Px, msgHash32);
+  let kPrime = bytes32ToBigint_(rand) % SECP_N;
+  if (kPrime === 0n) throw new Error('schnorr: nonce was zero');
+  const R = G_.multiply(kPrime);
+  const Rbytes = R.toRawBytes(true);
+  const Rx = Rbytes.slice(1);
+  const k = (Rbytes[0] === 0x02) ? kPrime : (SECP_N - kPrime);
+  const e = bytes32ToBigint_(_taggedHash('BIP0340/challenge', Rx, Px, msgHash32)) % SECP_N;
+  const s = (k + e * d) % SECP_N;
+  return concatBytes(Rx, bigintToBytes32_(s));
 }
 
 // Sign a P2WPKH input — returns witness [sig+sighash, pubkey].
