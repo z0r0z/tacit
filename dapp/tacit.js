@@ -35470,7 +35470,10 @@ function renderAmmCeremonyChip() {
   const tab = _ammCerActiveTab();
   const onTargetTab = AMM_CEREMONY_CHIP_TABS == null || AMM_CEREMONY_CHIP_TABS.has(tab);
   const acked = ammCeremonyRecentlyAcked();
-  const show = AMM_CEREMONY_CHIP_ENABLED && !finalized && onTargetTab && !acked && !!WORKER_BASE;
+  // Hide the contribute CTA while a contribute is mid-flight — the
+  // mini progress chip already occupies the same bottom-right slot,
+  // and prompting "contribute" while one is running is misleading.
+  const show = AMM_CEREMONY_CHIP_ENABLED && !finalized && onTargetTab && !acked && !!WORKER_BASE && !_ammContribInFlight;
   chip.style.display = show ? 'inline-flex' : 'none';
   if (!show) return;
   // Async refresh of per-circuit states so the count chip stays current.
@@ -35850,6 +35853,7 @@ async function _submitAmmCeremonyContribution() {
   _ammContribInFlight = true;
   _ammContribStartedAt = _contributeStartedAt;
   _ammContribCurrentPct = 0;
+  try { renderAmmCeremonyChip(); } catch {}
   let _mixTimer = null;
   const _stopMixTimer = () => { if (_mixTimer) { clearInterval(_mixTimer); _mixTimer = null; } };
   const _setPhase = (phase, labelText, subText) => {
@@ -61990,14 +61994,24 @@ async function populateMarketAssetStats(scope, asset) {
         setHeader('vol24-usd', fmtMarketUsdWholeFromSats(volSats, '—'));
         setHeader('vol24-btc', fmtMarketBtc(volSats));
       }
-      if (resolvedSupplyBig != null && markUnit != null) {
+      // Crossed-book parity: the synchronous header swaps to "Price · mid"
+      // when best in-band bid > best in-band ask (mark is stale). This
+      // async hydration must use the same midpoint, or the displayed
+      // price-usd / market-cap drift away from the sats label they sit
+      // next to. _effectiveReferenceUnit returns mid when crossed, mark
+      // otherwise — exactly what the sync renderer uses for headerUnit.
+      const _headerRefHdr = _effectiveReferenceUnit(aid, j);
+      const _headerUnitHdr = (_headerRefHdr && Number.isFinite(_headerRefHdr.unit) && _headerRefHdr.unit > 0)
+        ? _headerRefHdr.unit
+        : markUnit;
+      if (resolvedSupplyBig != null && _headerUnitHdr != null) {
         const _wholeSupplyHdr = Number(resolvedSupplyBig) / Math.pow(10, decimals);
-        const _mcapSatsHdr = Math.round(_wholeSupplyHdr * markUnit);
+        const _mcapSatsHdr = Math.round(_wholeSupplyHdr * _headerUnitHdr);
         setHeader('mcap-usd', fmtMarketUsdWholeFromSats(_mcapSatsHdr));
         setHeader('mcap-btc', fmtMarketBtc(_mcapSatsHdr));
       }
-      if (markUnit != null && btcUsd != null) {
-        const _priceUsdHdr = fmtMarketUsdUnitFromSats(markUnit, '');
+      if (_headerUnitHdr != null && btcUsd != null) {
+        const _priceUsdHdr = fmtMarketUsdUnitFromSats(_headerUnitHdr, '');
         if (_priceUsdHdr) setHeader('price-usd', _priceUsdHdr);
       }
     }
@@ -63280,7 +63294,18 @@ async function _populateDepthChart(section, aid, decimals, ticker, markUnit) {
   // as flickering even though the chart is visually unchanged. Sig
   // covers the in-band best bid + ask, cumulative depth totals, mark,
   // and crossed state — anything that would change the visible chart.
-  const _depthSig = `${headerBestBid}|${headerBestAsk}|${cumA}|${cumB}|${markUnit}|${isCrossed ? 1 : 0}|${asks.length}|${bids.length}`;
+  // True in-band counts for the subheader. The label has read "N bids ·
+  // M asks in-band" with a tooltip claiming the 0.2×/5× outlier filter
+  // was applied, but `bids.length` / `asks.length` are the raw arrays
+  // (only reserved / expired / null-unit are stripped). Compute the
+  // actual in-band totals so the label matches the tooltip. Falls back
+  // to the raw lengths when mark is unknown — same convention as the
+  // asks/bids ladder spread-row helpers.
+  const _bandLoCount = _markValid ? markUnit * 0.2 : 0;
+  const _bandHiCount = _markValid ? markUnit * 5 : Infinity;
+  const asksInBand = _markValid ? asks.reduce((n, x) => n + (x.u >= _bandLoCount && x.u <= _bandHiCount ? 1 : 0), 0) : asks.length;
+  const bidsInBand = _markValid ? bids.reduce((n, x) => n + (x.u >= _bandLoCount && x.u <= _bandHiCount ? 1 : 0), 0) : bids.length;
+  const _depthSig = `${headerBestBid}|${headerBestAsk}|${cumA}|${cumB}|${markUnit}|${isCrossed ? 1 : 0}|${asks.length}|${bids.length}|${asksInBand}|${bidsInBand}`;
   if (out.dataset.depthSig === _depthSig) return;
   out.dataset.depthSig = _depthSig;
   // Capture old bid + ask path `d` attributes before the swap so the
