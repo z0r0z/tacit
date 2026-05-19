@@ -5214,7 +5214,7 @@ function ceremonyAuthOk(req, env) {
 function ceremonyKey(hash)              { return `ceremony:${hash}`; }
 function ceremonyReserveKey(hash)       { return `ceremony-reserve:${hash}`; }
 function ceremonyQueuePrefix(hash)      { return `ceremony-q:${hash}:`; }
-function ceremonyQueueKey(hash, seq, token) { return `ceremony-q:${hash}:${seq}:${token}`; }
+function ceremonyQueueKey(hash, token)  { return `ceremony-q:${hash}:${token}`; }
 // Drain state lives in its OWN KV key, NOT inside the ceremony state
 // object. Storing drain_until in state.drain_until would create a
 // classic eventual-consistency race: drain reads state, sets the
@@ -5536,30 +5536,39 @@ async function handleCeremonyReserve(req, env, circuitHash, cors) {
   let queue = await _listCeremonyQueue(env, circuitHash);
   await _evictStaleQueueHeads(env, circuitHash, queue, 5 * 60 * 1000);
 
-  let myEntry = tokenIn ? queue.find(q => q.token === tokenIn) : null;
-  let myToken = tokenIn;
-
+  // Deterministic key per token — direct KV.get is stronger than the
+  // eventually-consistent KV.list, so we never duplicate ourselves
+  // into the queue with a fresh joined_at when a poll lands on an
+  // edge POP that hasn't seen the prior write yet.
+  let myToken = tokenIn || crypto.randomUUID().replace(/-/g, '');
+  const myKey = ceremonyQueueKey(circuitHash, myToken);
+  let myEntry = await env.REGISTRY_KV.get(myKey, 'json');
   if (myEntry) {
-    myEntry.last_poll_at = NOW;
-    myEntry.name = contributorName || myEntry.name;
-    await env.REGISTRY_KV.put(myEntry.key, JSON.stringify({
-      token: myEntry.token,
-      name: myEntry.name,
+    await env.REGISTRY_KV.put(myKey, JSON.stringify({
+      token: myToken,
+      name: contributorName || myEntry.name || 'anonymous',
       pubkey: myEntry.pubkey || contributorPubkey,
       joined_at: myEntry.joined_at,
       last_poll_at: NOW,
     }), { expirationTtl: 15 * 60 });
+    myEntry = { ...myEntry, last_poll_at: NOW };
   } else {
-    // New join. Generate a fresh token if the client didn't bring one.
-    myToken = tokenIn || crypto.randomUUID().replace(/-/g, '');
-    const seq = String(NOW).padStart(16, '0') + '-' + Math.floor(Math.random() * 1e6).toString().padStart(6, '0');
-    const key = ceremonyQueueKey(circuitHash, seq, myToken);
-    const entry = { token: myToken, name: contributorName, pubkey: contributorPubkey, joined_at: NOW, last_poll_at: NOW };
-    await env.REGISTRY_KV.put(key, JSON.stringify(entry), { expirationTtl: 15 * 60 });
-    queue.push({ key, ...entry });
-    // Re-sort by key so the new entry settles in alphabetical (= arrival) order.
-    queue.sort((a, b) => a.key < b.key ? -1 : a.key > b.key ? 1 : 0);
+    myEntry = { token: myToken, name: contributorName, pubkey: contributorPubkey, joined_at: NOW, last_poll_at: NOW };
+    await env.REGISTRY_KV.put(myKey, JSON.stringify(myEntry), { expirationTtl: 15 * 60 });
   }
+
+  // Refresh queue view + ensure our entry is represented even if
+  // KV.list is briefly stale on this POP.
+  queue = await _listCeremonyQueue(env, circuitHash);
+  if (!queue.find(q => q.token === myToken)) queue.push({ key: myKey, ...myEntry });
+  // Sort by joined_at (FIFO). Tiebreak by token for determinism if
+  // two contributors hit the worker in the same millisecond.
+  queue.sort((a, b) => {
+    const da = Number(a.joined_at) || 0;
+    const db = Number(b.joined_at) || 0;
+    if (da !== db) return da - db;
+    return String(a.token).localeCompare(String(b.token));
+  });
 
   const position = queue.findIndex(q => q.token === myToken);
   const total = queue.length;
