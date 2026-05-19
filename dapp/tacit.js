@@ -70539,12 +70539,23 @@ function bindMarketAssetHeader(scope) {
       ev.preventDefault();
       const aid = btn.dataset.aid;
       if (!aid) return;
-      if (!wallet || !wallet.priv) { showMarketListPreviewModal(aid); return; }
+      // Symmetric with +bid: always open the inline form dropdown.
+      // The form itself handles wallet-locked + no-holdings states
+      // with in-form placeholders + an Unlock CTA — no modal
+      // overlay. Optimistic UX: user can read the form, pick params,
+      // and unlock is only prompted at Sign & List time.
       const origLabel = btn.textContent;
       btn.textContent = 'opening…';
       btn.disabled = true;
-      try { await _openMarketListingFlow(aid); }
-      catch (e) { toast('Open listing form failed: ' + (e?.message || String(e)), 'error'); }
+      try {
+        // Make sure we're on the asset's market page so the form slot
+        // exists in the DOM. _openMarketListingFlow handles all three
+        // wallet states (locked / unlocked-no-holdings / unlocked-with-
+        // holdings) by routing through _renderMarketAskForm whose
+        // placeholder paths render an inline unlock/acquire prompt
+        // instead of the legacy modal overlay.
+        await _openMarketListingFlow(aid);
+      } catch (e) { toast('Open listing form failed: ' + (e?.message || String(e)), 'error'); }
       finally { btn.textContent = origLabel; btn.disabled = false; }
     };
   });
@@ -70565,21 +70576,16 @@ async function _openMarketListingFlow(aid) {
     const t = holdingsMap?.get(aid);
     return !!(t && Array.isArray(t.utxos) && t.utxos.length > 0);
   };
-  // Use scanHoldings's return value directly rather than re-reading
-  // _holdingsCache afterwards. scanHoldings has a stale-write guard
-  // (tacit.js:7715) that drops the cache assignment if another scan
-  // was kicked off in the meantime — without this, the post-unlock
-  // path could see a stale-null cache and fall through to the preview
-  // modal even though the fresh scan succeeded. That race manifested
-  // as the user needing to click "List Assets" twice to land on the
-  // inline form.
+  // Best-effort holdings scan ONLY if wallet is unlocked. When locked
+  // we render the inline form with an Unlock CTA instead — symmetric
+  // with +bid which never blocks the form on lock state. Used to
+  // fall through to showMarketListPreviewModal() (a heavy overlay
+  // listing the locked-state copy); the inline placeholder reads
+  // cleaner and keeps the user in context.
   let holdingsMap = _holdingsCache?.holdings || null;
-  if (!_sellableIn(holdingsMap)) {
+  const _walletUnlocked = !!(wallet && wallet.priv);
+  if (_walletUnlocked && !_sellableIn(holdingsMap)) {
     try { holdingsMap = await scanHoldings(true); } catch {}
-  }
-  if (!_sellableIn(holdingsMap)) {
-    showMarketListPreviewModal(aid);
-    return;
   }
   const onAsset = (typeof _marketView === 'object' && _marketView?.mode === 'asset' && _marketView?.assetId === aid);
   if (!onAsset) {
@@ -70601,7 +70607,13 @@ async function _openMarketListingFlow(aid) {
       host.appendChild(slot);
     }
   }
-  if (!slot) { showMarketListPreviewModal(aid); return; }
+  // Slot creation failed (no asks-header host yet — happens on a cold
+  // market load where renderMarket hasn't finished). Toast + soft-fail
+  // rather than the legacy modal-overlay fallback.
+  if (!slot) {
+    toast('Listing form unavailable — give the orderbook a moment to load and try again.', 'warn', 4000);
+    return;
+  }
   _renderMarketAskForm(slot, aid);
   slot.scrollIntoView({ behavior: 'smooth', block: 'center' });
 }
@@ -70615,17 +70627,40 @@ async function _openMarketListingFlow(aid) {
 // min price (sats), days (1–30). Submit calls publishPreauthSale and
 // re-fetches the market on success.
 function _renderMarketAskForm(formHost, aid) {
+  // Symmetric with the +bid form: render inline placeholders for the
+  // lock/no-holdings states instead of the legacy modal overlay.
+  // Single "Unlock wallet" CTA when locked; "Manage wallet ↗" CTA
+  // when unlocked but the user doesn't hold the asset.
+  formHost.style.display = 'block';
+  formHost.dataset.open = '1';
+  const _walletLocked = !(wallet && wallet.priv);
+  if (_walletLocked) {
+    formHost.innerHTML = `<div class="inline-form" style="border:1px dashed var(--ink-faint);background:var(--bg-warm);padding:12px;font-size:11px;line-height:1.5;display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;">
+      <span>🔒 Unlock to load your lots and price an instant listing.</span>
+      <button type="button" data-market-ask-unlock data-aid="${escapeHtml(aid)}" class="primary" style="font-size:11px;padding:6px 14px;">Unlock wallet</button>
+    </div>`;
+    formHost.querySelector('[data-market-ask-unlock]')?.addEventListener('click', async () => {
+      try {
+        await ensurePrivkey();
+        // Re-run the flow after unlock so the inline form replaces this
+        // placeholder with the real picker + price + expiry fields.
+        await _openMarketListingFlow(aid);
+      } catch (e) {
+        if (!isUnlockCancelled(e)) toast('Unlock failed: ' + (e?.message || String(e)), 'error');
+      }
+    }, { once: true });
+    return;
+  }
   if (!_holdingsCache?.holdings) {
-    formHost.style.display = 'block';
-    formHost.dataset.open = '1';
-    formHost.innerHTML = `<div class="empty" style="padding:14px;border:1px dashed var(--ink-faint);background:var(--bg);">Holdings haven't been scanned yet. Open Holdings tab once to populate, then come back.</div>`;
+    formHost.innerHTML = `<div class="inline-form" style="border:1px dashed var(--ink-faint);background:var(--bg-warm);padding:12px;font-size:11px;line-height:1.5;">Holdings haven't been scanned yet. Open the Holdings tab once to populate, then come back.</div>`;
     return;
   }
   const target = _holdingsCache.holdings.get(aid);
   if (!target || !target.utxos?.length) {
-    formHost.style.display = 'block';
-    formHost.dataset.open = '1';
-    formHost.innerHTML = `<div class="empty" style="padding:14px;border:1px dashed var(--ink-faint);background:var(--bg);">You don't have any UTXOs to list for this asset.</div>`;
+    formHost.innerHTML = `<div class="inline-form" style="border:1px dashed var(--ink-faint);background:var(--bg-warm);padding:12px;font-size:11px;line-height:1.5;display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;">
+      <span>No lots to list for this asset in the active wallet.</span>
+      <a href="#tab=holdings" style="font-size:11px;color:var(--ink-mid);border-bottom:0.5px dashed rgba(26,26,26,0.4);text-decoration:none;">manage wallet ↗</a>
+    </div>`;
     return;
   }
   formHost.style.display = 'block';

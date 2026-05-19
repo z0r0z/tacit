@@ -60,7 +60,7 @@
   <g transform="translate(225,290)">
     <use href="#g-merkle" x="-32" y="-24" width="64" height="48"/>
     <text x="0" y="58" font-size="26" fill="#f4efe6" text-anchor="middle" font-style="italic">withdraw.circom</text>
-    <text x="0" y="86" font-size="17" fill="#f7931a" text-anchor="middle" font-style="italic">anonymous spend</text>
+    <text x="0" y="86" font-size="17" fill="#f7931a" text-anchor="middle" font-style="italic">anonymous unique-spend</text>
     <text x="0" y="112" font-size="14" fill="#888" text-anchor="middle" font-style="italic">Poseidon leaf<tspan fill="#666"> · </tspan>Merkle path<tspan fill="#666"> · </tspan>nullifier</text>
   </g>
 
@@ -103,7 +103,7 @@
     <use href="#g-cbtc-tac" x="-32" y="-32" width="64" height="64"/>
     <text x="0" y="60" font-size="28" fill="#f4efe6" text-anchor="middle" font-style="italic">cBTC.tac</text>
     <text x="0" y="88" font-size="16" fill="#f7931a" text-anchor="middle" font-style="italic">composes both families</text>
-    <text x="0" y="114" font-size="14" fill="#888" text-anchor="middle" font-style="italic">cBTC.zk anchor<tspan fill="#666"> + </tspan>LP-share lien</text>
+    <text x="0" y="114" font-size="14" fill="#888" text-anchor="middle" font-style="italic">cBTC.zk slashable commitment<tspan fill="#666"> + </tspan>LP-share collateral lien</text>
   </g>
 
   <!-- footer -->

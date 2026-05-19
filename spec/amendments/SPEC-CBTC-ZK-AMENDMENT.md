@@ -20,6 +20,38 @@
 
 ---
 
+## What cBTC.zk is for
+
+cBTC.zk is **trustless wrapped BTC + slashable BTC-commitment
+primitive**. The two roles are facets of the same construction:
+
+1. **Trustless wrapped BTC.** Real BTC is locked at a Taproot
+   output whose spending key is mathematically derived from a
+   mixer note's secret (`K_btc = r_leaf · G_secp256k1`). The
+   note-holder is the only party who can spend the underlying
+   sats. No federation, no co-signer, no oracle. Lost notes lock
+   BTC permanently — same property native Bitcoin has.
+2. **Slashable BTC-commitment primitive.** Because `K_btc` is
+   publicly derivable from the slot's on-chain leaf metadata, any
+   spend of that specific UTXO is observable from chain alone.
+   Tacit-aware spends (`T_SLOT_BURN` / ROTATE / SPLIT / MERGE)
+   consume the leaf's nullifier through the protocol's spent-set;
+   any spend without a matching protocol envelope is an INV-1
+   violation the indexer detects automatically. This is what makes
+   downstream constructions like cBTC.tac trustless: the TAC bond
+   layer can rely on `SLASH_DETECTED` triggering automatically
+   when a depositor rugs.
+
+Privacy of slot operations is at the **protocol-tree layer**
+(the SNARK hides *which leaf* was touched among the canonical
+Merkle tree's unspent leaves), **not at the Bitcoin layer** (each
+slot's `K_btc` is its own UTXO; the chain graph is a public
+linear sequence per slot). Conflating cBTC.zk with a Tornado-shape
+BTC mixer is a category error — see §"Privacy scope" below for
+the precise framing. Aggregated-UTXO mixing requires covenants
+(deferred to Stage 3) or a separate CoinSwap-style coordinator
+amendment.
+
 ## Motivation
 
 The wrapper convention (§4.2 / `SPEC-WRAPPER-AMENDMENT.md`) defines
@@ -56,7 +88,7 @@ Users self-select.
 | Custody | Per-user self-custody slot + TAC bond | Per-user self-custody slot, no co-signer |
 | Redemption co-signer | None — depositor `r_btc` alone | None — note-holder alone |
 | Granularity | Amount-granular (fungible) | Unit-granular at fixed denominations |
-| Mixer-shielded by default | Yes (cBTC.tac is a standard tacit asset) | Yes (every op is a mixer note) |
+| Privacy on share-form ops | Tacit-asset mixer composition (real chain-graph unlinkability) | Protocol-tree layer only (which leaf is hidden); BTC layer per-slot UTXO is publicly trackable |
 | Lost-key consequence | Sats permanently locked + bond TAC eventually returns | Sats permanently locked |
 | Trust assumption at trade | TAC over-collateralization remains margined | secp256k1 + Groth16 + indexer rules |
 | AMM-poolable | Yes (standard tacit asset, fungible amounts) | Whole-slot only (orderbook / virtual-AMM) |
@@ -955,7 +987,27 @@ opcodes 0x4D / 0x4E for this purpose. The cryptographic spec
 semantics, validator algorithms) is already complete — only the
 Bitcoin-side enforcement is missing.
 
-The three stages coexist when stage 3 activates: cBTC.zk for
+Stage 3 also unlocks the **aggregated-UTXO path** that would let
+cBTC.zk graduate into a true BTC mixer in the Tornado sense: many
+slots share one backing BTC UTXO, with the SNARK gating which
+slot's withdrawal releases value from the shared pool. Bitcoin
+today has no aggregation primitive (one signature can only spend
+one outpoint), so anonymity-set-style chain-graph unlinkability
+isn't reachable from the existing slot construction. Covenants
+change that.
+
+**Stage 3 alternative — CoinSwap coordinator (future amendment):**
+a separate path to BTC chain-graph mixing that doesn't wait on
+covenants — a Coinswap-style coordinator built natively on tacit,
+where multiple users batch BTC inputs and outputs into one
+CoinJoin-shaped Bitcoin tx with the input→output pairing hidden
+by signature blinding. Tacit envelopes serve as the off-chain
+coordination channel (intent + signed unblinded participant proof
++ aggregate-sig coordination). Non-trivial amendment with its own
+threat model; tracked as a follow-up. Orthogonal to cBTC.zk —
+operates on BTC UTXOs directly, not on slot leaves.
+
+The stages coexist when stage 3 activates: cBTC.zk for
 trust-minimization, cBTC.tac for current AMM/DeFi composability,
 trustless-fungible cBTC.zk for the future. Users self-select by
 trust-vs-yield preference. The protocol itself doesn't deprecate

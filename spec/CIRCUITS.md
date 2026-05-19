@@ -189,6 +189,9 @@ composition is the architecture.
 
 ## References
 
+- [`spec/GLOSSARY.md`](./GLOSSARY.md) — term definitions that
+  overlap across surfaces (shielded amount vs shielded address;
+  leaf vs slot; lien vs bond).
 - [`MIXER.md`](../MIXER.md) — mixer architecture; original
   `withdraw.circom` use case.
 - [`AMM.md`](../AMM.md) — AMM architecture; three circuit roles

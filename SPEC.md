@@ -160,7 +160,10 @@ What is **not** trusted:
 > The primitives below are the building blocks. For how they
 > compose into the protocol's two circuit families and where each
 > family is reused across surfaces (mixer, cBTC.zk slots, AMM,
-> cBTC.tac), see [`spec/CIRCUITS.md`](./spec/CIRCUITS.md).
+> cBTC.tac), see [`spec/CIRCUITS.md`](./spec/CIRCUITS.md). For
+> term definitions that overlap across surfaces (shielded amount
+> vs shielded address; leaf vs slot; lien vs bond), see
+> [`spec/GLOSSARY.md`](./spec/GLOSSARY.md).
 
 ### 3.1 Curve and generators
 
@@ -534,12 +537,12 @@ Implementations MUST use the *backing-per-tacit-unit* form (`denominator / numer
 
 **`peg.kind`**:
 - `"fixed"` — peg is constant. Reserves backing is checked as `reserves ≥ supply × denominator / numerator`.
-- `"oracle_priced"` — peg varies (e.g., USD-pegged stablecoin collateralized in sats). Coverage check requires an oracle price feed; the canonical oracle is specified by the cUSD CDP amendment (out of scope here). v1 wrappers SHOULD use `"fixed"` unless they target the canonical oracle.
+- `"oracle_priced"` — peg varies (e.g., USD-pegged stablecoin collateralized in sats). Coverage check requires an oracle price feed; the canonical oracle is specified by the cUSD TAC amendment (out of scope here). v1 wrappers SHOULD use `"fixed"` unless they target the canonical oracle.
 
 **`custody.kind`** determines both the backing model and which custody fields are required:
 
 - `"multisig"` — issuer custodies reserves in an N-of-M Taproot multisig at `reserve_address` (required). `threshold_k` and `threshold_n` describe the signing threshold. Coverage = chain-summed UTXOs at `reserve_address` ÷ expected_reserves (§4.2.3).
-- `"user_dlc"` — reserves are individually held in per-user 2-of-2 DLCs (MakerDAO-style). `reserve_address` is OMITTED; backing is tracked per CDP in indexer state rather than at a single address. Coverage is derived from indexer state (Σ open-CDP collateral ÷ Σ open-CDP mints) and is 1.0 by construction except during liquidation events. Concrete realisation specified by the cUSD CDP amendment.
+- `"user_dlc"` — reserves are individually held in per-user 2-of-2 DLCs (MakerDAO-style). `reserve_address` is OMITTED; backing is tracked per CDP in indexer state rather than at a single address. Coverage is derived from indexer state (Σ open-CDP collateral ÷ Σ open-CDP mints) and is 1.0 by construction except during liquidation events. Concrete realisation specified by the cUSD TAC amendment.
 - `"burn"` — reserves are provably destroyed (one-way wrapping; no redemption path). `reserve_address` is the burn address (required) — typically an OP_RETURN-locked or NUMS-locked output the indexer can verify is unspendable.
 - `"user_custody"` — each holder custodies their own backing (e.g., HTLC-locked sats per cBTC unit). `reserve_address` is OMITTED; backing is per-holder and fungibility constraints make this research-grade only — placeholder, no current realisation.
 
@@ -590,7 +593,7 @@ Where:
 - `reserves_balance(addr)` is the sum of `underlying.asset` balances at `addr` (for bitcoin native: sum of UTXO values in satoshis; for runes: per-rune balance per the rune protocol; for ordinals: count of inscriptions held). For `kind = "burn"`, `reserves_balance` is monotonically non-decreasing and `supply` is monotonically non-increasing, so coverage trends upward over time (or stays flat once issuance halts).
 - `supply(asset)` is the cumulative issued supply minus burned supply, derived from tacit indexer state: `Σ T_MINT amounts − Σ T_BURN amounts` for the asset_id.
 
-**Path B — indexer-derived (`custody.kind = "user_dlc"` or `"user_custody"`).** No single `reserve_address` exists. Indexers compute `backing` as `Σ collateral across all open per-holder lockups` tracked in indexer state, and `supply` as `Σ mints against those lockups`. By construction the two move together at every open/close event, so coverage ≡ 1.0 outside in-flight liquidation windows. The specific bookkeeping is defined by the custody-kind amendment (e.g., the cUSD CDP amendment for `user_dlc`).
+**Path B — indexer-derived (`custody.kind = "user_dlc"` or `"user_custody"`).** No single `reserve_address` exists. Indexers compute `backing` as `Σ collateral across all open per-holder lockups` tracked in indexer state, and `supply` as `Σ mints against those lockups`. By construction the two move together at every open/close event, so coverage ≡ 1.0 outside in-flight liquidation windows. The specific bookkeeping is defined by the custody-kind amendment (e.g., the cUSD TAC amendment for `user_dlc`).
 
 **Indexer support scope (Path A).** Path A is `SHOULD` (not `MUST`) because indexers cannot compute coverage for underlyings they don't speak. A tacit indexer that only knows the Bitcoin chain layer can compute coverage for `underlying.chain="bitcoin", underlying.asset="native"` trivially (UTXO sum), but for `"rune:..."` or `"ordinal:..."` it must either embed rune/ordinal protocol parsing or mark coverage as **unknown** in registry queries.
 
@@ -600,7 +603,7 @@ Indexers that DO support a given `(chain, asset)` pair MUST surface under-collat
 
 **No trust transferral.** The coverage check is a pure function of public on-chain data (Path A) or public indexer state derived from chain data (Path B). Anyone running an indexer can compute it. Disagreements between indexers indicate data-fetch bugs, not adversarial issuers.
 
-**No protocol-level rejection (convention default).** Per this convention, an indexer does NOT reject transactions involving under-collateralised wrapper assets; the asset's UTXOs remain valid and spendable. The convention is advisory: it lets the ecosystem *see* under-collateralisation, not *prevent* it. Issuer competition + market pricing handle the rest. **Exception:** specific custody-kind amendments MAY impose additional protocol-level rules on transactions involving their assets (e.g., the cUSD CDP amendment constrains AMM-pool init for canonical assets). Such rules are amendment-scoped and do not override this convention's "no rejection" default for other variants.
+**No protocol-level rejection (convention default).** Per this convention, an indexer does NOT reject transactions involving under-collateralised wrapper assets; the asset's UTXOs remain valid and spendable. The convention is advisory: it lets the ecosystem *see* under-collateralisation, not *prevent* it. Issuer competition + market pricing handle the rest. **Exception:** specific custody-kind amendments MAY impose additional protocol-level rules on transactions involving their assets (e.g., the cUSD TAC amendment constrains AMM-pool init for canonical assets). Such rules are amendment-scoped and do not override this convention's "no rejection" default for other variants.
 
 #### 4.2.4 Issuer attestation
 
@@ -644,7 +647,7 @@ wrapper_registry: Map<(underlying.chain, underlying.asset), Set<asset_id>>
 Populated by:
 
 1. **CETCH scan (primary).** Every confirmed CETCH whose metadata blob carries a `tacit_wrapper` field with a known `version` is added to the registry under its `(underlying.chain, underlying.asset)` key.
-2. **Protocol-derived assets (amendment-defined).** Future amendments MAY define wrapper-tagged assets whose asset_ids are computed from spec constants rather than CETCH transactions. Such assets have no on-chain CETCH; their `tacit_wrapper` metadata is **synthesized** by the indexer per the amendment's spec text (the amendment provides the exact JCS template). Indexers post-amendment MUST include synthesized assets in the registry alongside CETCH-scanned ones. The cUSD CDP amendment defines the first such assets (canonical cBTC, canonical cUSD); see that amendment's §6.4.3.
+2. **Protocol-derived assets (amendment-defined).** Future amendments MAY define wrapper-tagged assets whose asset_ids are computed from spec constants rather than CETCH transactions. Such assets have no on-chain CETCH; their `tacit_wrapper` metadata is **synthesized** by the indexer per the amendment's spec text (the amendment provides the exact JCS template). Indexers post-amendment MUST include synthesized assets in the registry alongside CETCH-scanned ones. The cUSD TAC amendment defines the first such assets (canonical cBTC, canonical cUSD); see that amendment's §6.4.3.
 
 Indexers MUST treat CETCH-scanned and synthesized variants identically for routing, coverage queries, and registry membership — the discovery path is metadata-source-specific; downstream consumers see one uniform registry.
 
@@ -686,7 +689,7 @@ Where:
 
 - `amm_price_vs_peg` is the spot price reported by the deepest AMM pool containing this variant against the underlying-equivalent reference (e.g., for a `cBTC.*` variant, the deepest pool pairing it with any `cBTC.*` variant whose `coverage_ratio ≥ 0.98`, falling back to TAC-pair price × external BTC-quote if no same-underlying counterpart exists). Pegged at 1.0 in absence of any pool.
 - `amm_total_tvl_sats` is the sat-denominated TVL across **all AMM pools containing this variant on either side**, summed: `Σ (pool.reserve_in_sats_equivalent × 2)` over those pools. Pools whose other side has no defensible sat-equivalent are skipped. Same-variant double-counting across pools is allowed (a pool's full TVL contributes to the score of both legs).
-- `attestation_freshness_factor` follows the per-§4.2.4 reference formula based on the variant's declared `schedule_blocks` and observed attestation gap. Synthesized canonical variants (§4.2.5) inherit freshness from the protocol-state component they're synthesized against (e.g., for `user_dlc` canonical assets, the oracle threshold's latest T_PRICE_ATTEST height per the cUSD CDP amendment).
+- `attestation_freshness_factor` follows the per-§4.2.4 reference formula based on the variant's declared `schedule_blocks` and observed attestation gap. Synthesized canonical variants (§4.2.5) inherit freshness from the protocol-state component they're synthesized against (e.g., for `user_dlc` canonical assets, the oracle threshold's latest T_PRICE_ATTEST height per the cUSD TAC amendment).
 
 Reference weights (dapp-tunable, subject to change as the ecosystem matures): `w_coverage = 1.0, w_deviation = 0.5, w_liveness = 0.3, w_fee = 0.2, w_depth = 0.4`. Variants with `coverage < 0.98` are flagged for user attention. Variants with `attestation_freshness_factor < 0.3` are demoted in routing.
 

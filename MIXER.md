@@ -8,7 +8,9 @@
 > Bitcoin L1 has no live production peer that we know of.
 
 This document is a short positioning + architecture summary. The normative
-spec lives in [`SPEC.md` §5.10–§5.11 and §11](./SPEC.md).
+spec lives in [`SPEC.md` §5.10–§5.11 and §11](./SPEC.md). Term definitions
+that overlap with the AMM / cBTC.zk / cBTC.tac surfaces live in
+[`spec/GLOSSARY.md`](./spec/GLOSSARY.md).
 
 ## What it is
 
@@ -74,9 +76,21 @@ even though everything is on a public chain.
 
 - **Not a native-BTC mixer.** The pool key is `(asset_id, denomination)` where
   `asset_id` is a tacit token's identifier. Native sats don't have an
-  `asset_id`. To mix BTC value, BTC must first be wrapped into a tacit asset,
-  and that wrapping step has its own trust model (single-issuer wBTC,
-  federated mint, sidechain peg) independent of the mixer.
+  `asset_id`. To mix BTC value, BTC must first be wrapped into a tacit asset.
+  Tacit's trustless wrapping (`cBTC.zk`) closes the wrapping-step trust gap
+  cryptographically — but cBTC.zk itself is **not** a BTC mixer either: each
+  cBTC.zk slot is its own Bitcoin UTXO at a unique `K_btc`, and slot
+  operations (T_SLOT_BURN / ROTATE / SPLIT / MERGE) preserve a public
+  Bitcoin chain-graph edge per op. The mixer's withdraw circuit, reused
+  by cBTC.zk for soundness (anonymous-unique-spend at the protocol-tree
+  layer), does not deliver Bitcoin-chain-graph anonymity because Bitcoin
+  Script can't aggregate multiple slots into one shared UTXO. A real BTC
+  mixer requires either (a) Bitcoin covenants (CTV / OP_VAULT / OP_CAT —
+  reserved as Stage 3 of the cBTC.zk roadmap), or (b) a CoinSwap-style
+  coordinator amendment built natively on tacit envelopes (separate
+  follow-up). For amount-confidential BTC value that *does* compose with
+  the tacit-asset mixer, wrap to `cBTC.tac` (TAC-bonded fungible) and
+  deposit cBTC.tac into the regular mixer pool at the desired denomination.
 - **Not novel cryptography.** The circuit (Tornado-derived, Poseidon merkle
   tree + Groth16), the curve (BN254 / alt_bn128), the commitment scheme
   (secp256k1 Pedersen), the meta-protocol pattern (Runes / Ordinals indexer

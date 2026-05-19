@@ -530,7 +530,7 @@ at the deposit layer.
 | Deposit (this opcode) | Position record tied to `target_leaf_hash`. Recovery pubkey Pedersen-hidden, mint recipient Pedersen-hidden. Bond source is a public UTXO. |
 | Transfer (`T_AXFER_VAR`) | **Address-break starts here.** Amounts hidden by Pedersen; Bitcoin chain shows a dust-UTXO edge (wallet visibility) but no value. After one or more hops to fresh recipients, downstream holders are statistically untraceable to the mint event. |
 | AMM swap (`T_SWAP_VAR` / `T_SWAP_BATCH` on the cBTC.tac/TAC canonical pool) | Amount-private settlement against pool reserves. The chain observer sees "the pool processed N swaps in this block;" individual swap amounts are hidden in T_SWAP_BATCH and per-trade in T_SWAP_VAR (cleartext Δ, amount-private inputs/outputs). |
-| LP into canonical pool (`T_LP_ADD`) | Produces an LP-share UTXO at a fresh recipient_commit. LP shares are normal tacit assets and CAN be deposited into the LP-share mixer pool for full SNARK unlinkability (AMM.md §"Mixer-composable LP shares"). |
+| LP into canonical pool (`T_LP_ADD`) | Produces an LP-share UTXO at a fresh recipient_commit. LP shares are normal tacit assets and CAN be deposited into the LP-share mixer pool for full SNARK unlinkability (AMM.md §"LP privacy via mixer composition"). |
 | Withdraw (the depositor's recovery path) | The depositor reveals `(recovery_pubkey, blinding)` to open `depositor_recovery_commit` and spends `K_btc` under their `r_btc`. The depositor's withdrawal is publicly tied to the original deposit; this is fine — the depositor is the same identity throughout. Downstream holders DON'T withdraw; they exit via the AMM. |
 
 #### 5.36.5.5 Dapp implementation: the "private zap" pattern

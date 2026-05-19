@@ -22,6 +22,7 @@ privacy and Groth16 circuits do the work a VM would do elsewhere.
 > [`AMM.md`](./AMM.md) — confidential AMM architecture ·
 > [`MIXER.md`](./MIXER.md) — shielded-pool architecture ·
 > [`spec/CIRCUITS.md`](./spec/CIRCUITS.md) — how the ZK stack composes ·
+> [`spec/GLOSSARY.md`](./spec/GLOSSARY.md) — terms that overlap across surfaces ·
 > [`spec/amendments/`](./spec/amendments/) — cBTC.zk, cBTC.tac, farms, orderbook, governance.
 
 ---

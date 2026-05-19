@@ -818,7 +818,7 @@ Before this amendment merges into `SPEC.md`:
   §5.5 validator dispatch extended with the T_WRAPPER_ATTEST branch.
 - [ ] Independent review of the `tacit-wrapper-attest-v1` BIP-340
   message construction (post-merge, alongside crypto review of
-  the cUSD CDP amendment which builds on the same primitive).
+  the cUSD TAC amendment which builds on the same primitive).
 - [ ] Indexer + dapp + worker implementation PR opened (separate).
 - [ ] Wrapper-registry integration tests landed.
 - [ ] cBTC reference issuer operational design doc landed

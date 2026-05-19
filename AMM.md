@@ -44,7 +44,8 @@ canonical wire-format authority; AMM.md is the canonical
 architectural reference. Byte-level wire formats, the dapp
 implementer's checklist, the failure-mode catalog, and full
 ceremony detail live under
-[`spec/amm/`](./spec/amm/).
+[`spec/amm/`](./spec/amm/). Cross-surface term definitions live
+in [`spec/GLOSSARY.md`](./spec/GLOSSARY.md).
 
 Two AMM trader surfaces are defined:
 
@@ -136,8 +137,8 @@ Practical implications for readers:
   invariant on `R_A`, `R_B`, and `S`, not on whether `asset_A` is
   itself backed by something off-protocol.
 
-The protocol-oracle + canonical-cUSD work
-([`spec/amendments/SPEC-CUSD-CDP-AMENDMENT.md`](./spec/amendments/SPEC-CUSD-CDP-AMENDMENT.md))
+The canonical-cUSD work
+([`spec/amendments/SPEC-CUSD-TAC-AMENDMENT.md`](./spec/amendments/SPEC-CUSD-TAC-AMENDMENT.md))
 extends this by sourcing prices from AMM TWAPs of canonical pools.
 That dependency runs in the other direction (oracle depends on AMM),
 so AMM V1 operates standalone; the oracle ships only after AMM has
@@ -2015,9 +2016,9 @@ on-chain Pedersen check, so honest LPs withdraw unaffected.
 `T_SWAP_VAR` and `T_PROTOCOL_FEE_CLAIM` carry no `vk` dependency
 and stay safe. Only `T_LP_ADD` against the affected pool becomes
 economically unsafe; the dapp disables it post-disclosure. A
-follow-up `T_LP_MIGRATE_CEREMONY` opcode (slot reserved) burns a
-V1 share UTXO and re-mints under a fresh-ceremony vk in one
-envelope.
+follow-up `T_LP_MIGRATE_V` opcode (slot reserved at `0x3F`–`0x42`
+per SPEC.md §1.1) burns a V1 share UTXO and re-mints under a
+fresh-ceremony vk in one envelope.
 
 Full ceremony detail — contributor endpoints, bundle layout, the
 six-step audit walk, drift-guard pinning — lives at
@@ -2904,20 +2905,21 @@ future amendments are free to extend it.
 0x32  T_SWAP_VAR            per-trade variable-amount swap (no ceremony)
 ```
 
-`0x33`–`0x36` are suggested (non-normative) for a follow-up
-concentrated-liquidity extension: `T_LP_ADD_RANGE`,
-`T_LP_REMOVE_RANGE`, `T_LP_REPOSITION`, `T_LP_MIGRATE_FULLRANGE`.
-`T_EXCLUSION_CLAIM` (curation-MEV consensus discipline) and any
-follow-up batched-range settlement claim fresh slots when shipped.
-`0x37`–`0x42` are claimed by other amendments (`T_AXFER_VAR`,
-`T_WRAPPER_ATTEST`, oracle + cBTC + cUSD per the cUSD CDP
-amendment).
+`0x33` (`T_SWAP_ROUTE`), `0x34`–`0x36` and `0x3B`, `0x3E` (the
+`T_FARM_*` opcodes), and `0x37`–`0x38` (`T_AXFER_VAR`,
+`T_WRAPPER_ATTEST`) are all assigned. `0x3F`–`0x42` are reserved
+for a follow-up concentrated-liquidity extension
+(`T_LP_ADD_RANGE`, `T_LP_REMOVE_RANGE`, `T_LP_REPOSITION`,
+`T_LP_MIGRATE_V`); `T_EXCLUSION_CLAIM` (curation-MEV consensus
+discipline) and any follow-up batched-range settlement claim
+fresh slots when shipped. SPEC.md §1.1 is the canonical opcode
+table — single source of truth for assignments.
 
 **Migration paths for V1 LPs.** When a follow-up release ships, a
 V1 LP can stay put (V1 pool keeps operating), manually migrate via
 `T_LP_REMOVE` + new-pool LP deposit (two txs, slippage exposure),
-or use a future `T_LP_MIGRATE_FULLRANGE` opcode for atomic single-
-envelope migration.
+or use a future `T_LP_MIGRATE_V` opcode for atomic single-
+envelope migration (slot reserved at `0x3F`–`0x42`).
 
 **Preconfirmation layer is version-agnostic.** `T_INTENT_ATTEST`
 just commits a SHA-256 hash over an open intent set. The same
@@ -3214,11 +3216,11 @@ failure) lives at
     arbitrageur routing orderbook fills against it. With the
     protocol-enforced LP lock window, arbitrageurs have a guaranteed
     first window to correct price before naive LPs can be exposed.
-  - **Oracle cross-check (V2+ when oracle ships).** The canonical
-    cUSD work (`spec/amendments/SPEC-CUSD-CDP-AMENDMENT.md`) introduces a
-    protocol-level oracle that the dapp can consult to flag any pool
-    deviating from oracle price by more than a configured threshold.
-    Not in V1's critical path.
+  - **Oracle cross-check (follow-up).** The canonical cUSD work
+    ([`spec/amendments/SPEC-CUSD-TAC-AMENDMENT.md`](./spec/amendments/SPEC-CUSD-TAC-AMENDMENT.md))
+    introduces a protocol-level oracle that the dapp can consult
+    to flag any pool deviating from oracle price by more than a
+    configured threshold. Not in V1's critical path.
   - **Not adding a min-TVL gate at POOL_INIT.** Considered and
     rejected: gating POOL_INIT on TVL doesn't compose with permissionless
     pool creation and would block legitimate new-asset bootstrapping.
