@@ -56945,7 +56945,7 @@ function applyMarketFilters() {
       }
       return `<div class="swap-tile-strip" data-swap-strip>${sparkSvg ? `<span class="strip-spark">${sparkSvg}</span>` : '<span class="strip-spark"></span>'}${lastHtml}${deltaHtml}${tradeHtml}</div>`;
     })();
-    return `<div data-swap-tile data-aid="${escapeHtml(safeAid)}" data-ticker="${escapeHtml(ticker)}" data-dec="${decimals}" data-ref-unit="${refUnit != null ? refUnit : ''}" data-direction="buy" data-slippage="${slippagePct}" data-swap-mode="market" style="margin-bottom:14px;border:1px solid var(--ink);background:var(--bg);padding:16px;">
+    return `<div data-swap-tile data-aid="${escapeHtml(safeAid)}" data-ticker="${escapeHtml(ticker)}" data-dec="${decimals}" data-ref-unit="${refUnit != null ? refUnit : ''}" data-direction="buy" data-slippage="${slippagePct}" data-swap-mode="market" style="margin-bottom:14px;background:rgba(255,255,255,0.35);border-top:1px dashed rgba(26,26,26,0.25);border-bottom:1px dashed rgba(26,26,26,0.25);padding:14px 18px 12px;">
       <!-- Header: pair name with logos + Market/Limit mode toggle.
            "Market" = standard slippage-bounded sweep of the orderbook;
            "Limit" = both inputs pinned, slippage cap ignored, residual
@@ -56965,7 +56965,7 @@ function applyMarketFilters() {
       <!-- TOP side: editable input. data-side="from" tracks which
            token is on top regardless of direction (the wireup swaps
            the labels + logos in place on flip). -->
-      <div data-swap-side="from" style="border:1px solid var(--ink-faint);background:var(--bg-warm);padding:12px;margin-bottom:6px;">
+      <div data-swap-side="from" style="background:var(--bg-warm);border:0.5px solid rgba(26,26,26,0.2);padding:10px 12px;margin-bottom:6px;">
         <div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:6px;">
           <span style="font-size:10px;text-transform:uppercase;letter-spacing:0.06em;color:var(--ink-mid);">You pay</span>
           <span data-swap-meta="from" class="muted" style="font-size:10px;text-align:right;"></span>
@@ -56999,7 +56999,7 @@ function applyMarketFilters() {
       <!-- BOTTOM side: read-only estimate in Market mode, anchored
            limit-price field in Limit mode. The label text + LIMIT chip
            are toggled by applyMode() in the wireup. -->
-      <div data-swap-side="to" style="border:1px solid var(--ink-faint);background:var(--bg-warm);padding:12px;margin-bottom:10px;">
+      <div data-swap-side="to" style="background:var(--bg-warm);border:0.5px solid rgba(26,26,26,0.2);padding:10px 12px;margin-bottom:10px;">
         <div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:6px;gap:8px;">
           <span style="font-size:10px;text-transform:uppercase;letter-spacing:0.06em;color:var(--ink-mid);display:inline-flex;align-items:center;gap:6px;">
             <span data-swap-to-label>You receive (est.)</span>
