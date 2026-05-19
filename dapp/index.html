@@ -606,34 +606,30 @@ button.market-chip .chip-caret {
 .market-listing-tile:hover {
   box-shadow: 4px 4px 0 var(--ink);
 }
-/* Live-reactivity animations. Tiles are tagged with data-market-anim by
-   the diff-aware renderer; the attribute is cleared on animationend so
-   each transition only plays once per real change. */
-@keyframes market-fade-in {
-  from { opacity: 0; transform: translateY(4px); }
-  to   { opacity: 1; transform: translateY(0); }
-}
+/* Live-reactivity flashes. Per designer feedback (site flashes too
+   much, animations should stay inside their box):
+     - Drop the translateY new-row fade-in entirely; instant insert
+       reads as liveness, not jank.
+     - Flash-up/down kept as a brief 500ms background tint only — no
+       box-shadow ring (which read as a flashing outline pulsing in
+       and out). Background change stays inside the row's border. */
 @keyframes market-flash-up {
-  0%   { background: var(--bg-warm); box-shadow: inset 0 0 0 0 rgba(10,143,67,0); }
-  20%  { background: rgba(10,143,67,0.14); box-shadow: inset 0 0 0 2px rgba(10,143,67,0.45); }
-  100% { background: var(--bg-warm); box-shadow: inset 0 0 0 0 rgba(10,143,67,0); }
+  0%   { background: transparent; }
+  20%  { background: rgba(10,143,67,0.12); }
+  100% { background: transparent; }
 }
 @keyframes market-flash-down {
-  0%   { background: var(--bg-warm); box-shadow: inset 0 0 0 0 rgba(184,52,29,0); }
-  20%  { background: rgba(184,52,29,0.14); box-shadow: inset 0 0 0 2px rgba(184,52,29,0.45); }
-  100% { background: var(--bg-warm); box-shadow: inset 0 0 0 0 rgba(184,52,29,0); }
-}
-.market-listing-tile[data-market-anim="new"],
-[data-market-anim="new"] {
-  animation: market-fade-in 360ms ease-out;
+  0%   { background: transparent; }
+  20%  { background: rgba(184,52,29,0.12); }
+  100% { background: transparent; }
 }
 .market-listing-tile[data-market-anim="up"],
 [data-market-anim="up"] {
-  animation: market-flash-up 1100ms ease-out;
+  animation: market-flash-up 500ms ease-out;
 }
 .market-listing-tile[data-market-anim="down"],
 [data-market-anim="down"] {
-  animation: market-flash-down 1100ms ease-out;
+  animation: market-flash-down 500ms ease-out;
 }
 /* Swap action pulse — fires when a row click in Simple mode primes the
    Swap tile, so the trader sees the now-loaded quote land instead of
@@ -3748,23 +3744,28 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
    140ms is below the perceptible-jank threshold for most users while
    still long enough to be visible as "smooth update" rather than
    "instant slam." */
-[data-market-price-chart] svg,
-[data-market-depth-chart] svg {
-  animation: chart-fade-in 140ms ease-out;
+/* Animations removed (designer feedback: site flashes and glitches a
+   lot, want rendering limited to the relevant boxes). The chart-fade-in
+   replayed every auto-refresh tick that touched the SVG; the trades-tape
+   opacity transition pulsed on every innerHTML rewrite. Both read as
+   "the whole panel just flashed." Drop them — instant repaint reads as
+   liveness, not jank. */
+[data-market-price-chart],
+[data-market-depth-chart],
+[data-market-trades-tape],
+[data-orderbook-wrap],
+[data-orderbook-side],
+.market-bids-table,
+.market-bids-list {
+  contain: layout paint style;
+  overflow: hidden;
 }
-@keyframes chart-fade-in {
-  from { opacity: 0.45; }
-  to   { opacity: 1; }
-}
-/* Same softening for the inline trades-tape replacement so the
-   moving ticker doesn't pop. */
-[data-market-trades-tape] {
-  transition: opacity 140ms ease-out;
-}
-@media (prefers-reduced-motion: reduce) {
-  [data-market-price-chart] svg,
-  [data-market-depth-chart] svg { animation: none; }
-  [data-market-trades-tape] { transition: none; }
+/* Contain repaint on the asset-detail card so any descendant flash
+   stays inside it instead of reading as a whole-page redraw. */
+[data-market-asset-header],
+[data-market-asset-stats],
+[data-swap-tile] {
+  contain: layout paint style;
 }
 
 /* Discover filter pills. Single-selection toggle group sitting under the

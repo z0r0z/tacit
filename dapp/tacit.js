@@ -58289,13 +58289,11 @@ function applyMarketFilters() {
     frag.appendChild(tile);
   }
   grid.appendChild(frag);
-  // FLIP slide for reused tiles whose grid slot moved between old and
-  // new renders (price moved → re-sorted into a different position).
-  // Standard pattern: counter-translate each moved tile back to its
-  // captured old position, then on the next frame trigger a transition
-  // back to translate(0,0) so the browser interpolates between the
-  // two. Untouched tiles (dx === dy === 0) skip the animation entirely.
-  if (_pendingTilePositions && _pendingTilePositions.size > 0) {
+  // FLIP slide removed (designer feedback: animations should stay inside
+  // their box, no panel-wide motion). The 260ms transform on reorders
+  // read as the asks grid "jumping around" on every auto-refresh tick.
+  // Instant repaint reads as liveness, not jank.
+  if (false && _pendingTilePositions && _pendingTilePositions.size > 0) {
     const tiles = Array.from(grid.children);
     const deltas = [];
     for (const tile of tiles) {
@@ -62699,20 +62697,15 @@ async function populateMarketAssetStats(scope, asset) {
       const chartHtml = renderMarketPriceChartSVG(tradesForTf, ticker, decimals, Number.isFinite(_markForChart) && _markForChart > 0 ? _markForChart : null, { crossed: _chartCrossed });
       if (chartHtml) {
         chartEl.dataset.chartSig = _chartSig;
-        const _oldLineD = chartEl.querySelector('[data-chart-line]')?.getAttribute('d') || null;
-        const _oldAreaD = chartEl.querySelector('[data-chart-area]')?.getAttribute('d') || null;
+        // Path-morph WAAPI animation removed (designer pass: keep
+        // rendering inside the box, no animated movement). The
+        // signature gate above already prevents redundant repaints
+        // when data is unchanged; when it changes, instant paint reads
+        // as a fresh data point rather than a glitchy reflow.
         chartEl.innerHTML = chartHtml;
         chartEl.style.display = '';
         if (tfWrap) tfWrap.style.display = '';
         _wireMarketPriceChartCursor(chartEl);
-        const _newLine = chartEl.querySelector('[data-chart-line]');
-        const _newArea = chartEl.querySelector('[data-chart-area]');
-        if (_oldLineD && _newLine && typeof _newLine.animate === 'function') {
-          try { _newLine.animate([{ d: `path('${_oldLineD}')` }, { d: `path('${_newLine.getAttribute('d')}')` }], { duration: 280, easing: 'cubic-bezier(0.2, 0.8, 0.2, 1)', fill: 'forwards' }); } catch {}
-        }
-        if (_oldAreaD && _newArea && typeof _newArea.animate === 'function') {
-          try { _newArea.animate([{ d: `path('${_oldAreaD}')` }, { d: `path('${_newArea.getAttribute('d')}')` }], { duration: 280, easing: 'cubic-bezier(0.2, 0.8, 0.2, 1)', fill: 'forwards' }); } catch {}
-        }
       } else {
         chartEl.innerHTML = '';
         chartEl.style.display = 'none';
@@ -63690,24 +63683,11 @@ async function _populateDepthChart(section, aid, decimals, ticker, markUnit) {
   // shape across renders (only the cumulative heights / x positions
   // shift as new listings come / go), so the interpolation reads as
   // the curves "growing" or "shrinking" rather than swapping.
-  const _newDepthBid = out.querySelector('[data-depth-bid]');
-  const _newDepthAsk = out.querySelector('[data-depth-ask]');
-  if (_oldDepthBidD && _newDepthBid && typeof _newDepthBid.animate === 'function') {
-    try {
-      _newDepthBid.animate(
-        [{ d: `path('${_oldDepthBidD}')` }, { d: `path('${_newDepthBid.getAttribute('d')}')` }],
-        { duration: 280, easing: 'cubic-bezier(0.2, 0.8, 0.2, 1)', fill: 'forwards' },
-      );
-    } catch {}
-  }
-  if (_oldDepthAskD && _newDepthAsk && typeof _newDepthAsk.animate === 'function') {
-    try {
-      _newDepthAsk.animate(
-        [{ d: `path('${_oldDepthAskD}')` }, { d: `path('${_newDepthAsk.getAttribute('d')}')` }],
-        { duration: 280, easing: 'cubic-bezier(0.2, 0.8, 0.2, 1)', fill: 'forwards' },
-      );
-    } catch {}
-  }
+  // Depth-chart bid/ask path morph removed (designer pass: keep
+  // rendering inside the box). The signature gate above already drops
+  // redundant repaints; when data does change, instant paint reads as
+  // a fresh data point rather than animated reflow that pulses the
+  // panel.
   _wireDepthChartInteractivity(out, {
     xLo, xHi, isLog, plotW, plotH, PL, PT,
     askCum, bidCum, centerU,
@@ -64917,10 +64897,14 @@ async function populateMarketBidsLadder(scope, asset) {
     newRow.parentNode.replaceChild(oldRow, newRow);
     _flipRows.push({ id, row: oldRow });
   });
-  // FLIP slide for rows that moved between renders. Uses translateY
-  // only since the bids table is a vertical ladder; X movement is
-  // negligible (cells stay column-aligned).
-  if (_flipRows.length > 0) {
+  // FLIP slide animations removed (designer feedback: site flashes too
+  // much; animations should stay inside their box). The 220ms translateY
+  // transitions on row reorders read as the panel "jumping around" when
+  // many rows shifted in the same tick (intent-heavy markets like TAC).
+  // Instant repaint reads as liveness, not jank. Live-flash tints on
+  // price changes (market-flash-up/down) still fire — those stay on a
+  // single row and don't move.
+  if (false && _flipRows.length > 0) {
     const deltas = [];
     for (const { id, row } of _flipRows) {
       const oldRect = _oldRowPositions.get(id);
