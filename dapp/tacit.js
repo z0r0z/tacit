@@ -57303,10 +57303,10 @@ function applyMarketFilters() {
   const _asksHeaderRowHtml = (_marketLadderView === 'rows' && rowsForGrid.length > 0)
     ? `<div class="market-listing-grid market-listing-rows-mode market-listing-header-only">
          <div class="market-listing-tile market-listing-row-head" role="row" aria-hidden="true">
-           <span>Ask</span>
-           <span>Quantity</span>
+           <span>price ↑</span>
+           <span style="text-align:right;">qty</span>
            <span>Total</span>
-           <span title="Percentage premium (red) or discount (green) versus the asset's mark price. When the book is crossed the column header reads &quot;vs mid&quot; — the midpoint of best bid / best ask is the honest clearing reference while mark (last-trade) is stale. YOU pill on your own asks.">${_marketAsksRefLabel}</span>
+           <span style="text-align:right;" title="Percentage premium (red) or discount (green) versus the asset's mark price. When the book is crossed the column header reads &quot;vs mid&quot; — the midpoint of best bid / best ask is the honest clearing reference while mark (last-trade) is stale. YOU pill on your own asks.">${_marketAsksRefLabel}</span>
            <span>Expires</span>
            <span>${_marketRowActionsHidden ? '' : 'Action'}</span>
          </div>
@@ -64864,10 +64864,10 @@ async function populateMarketBidsLadder(scope, asset) {
     ${mineFilterRow}
     <div class="market-bids-table" role="table" aria-label="${escapeHtml(ticker)} bids">
       <div class="market-bids-row market-bids-row-head" role="row">
-        <span>Bid</span>
-        <span>Quantity</span>
+        <span>price ↓</span>
+        <span style="text-align:right;">qty</span>
         <span>Total</span>
-        <span title="Percentage premium (green) or discount (red) versus the asset's mark price. When the book is crossed the column header reads &quot;vs mid&quot; — the midpoint of best bid / best ask is the honest clearing reference while mark (last-trade) is stale.">${_marketBidsRefLabel}</span>
+        <span style="text-align:right;" title="Percentage premium (green) or discount (red) versus the asset's mark price. When the book is crossed the column header reads &quot;vs mid&quot; — the midpoint of best bid / best ask is the honest clearing reference while mark (last-trade) is stale.">${_marketBidsRefLabel}</span>
         <span>Expires</span>
         <span>Action</span>
       </div>

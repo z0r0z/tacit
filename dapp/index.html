@@ -1251,16 +1251,16 @@ tr[data-recent-activity] .market-token-sub::after {
 .market-bids-row .market-sats-price { color: var(--ink); font-weight: 500; }
 .market-bids-row:last-child { border-bottom: 0; }
 .market-bids-row-head {
-  background: var(--ink);
-  color: var(--bg);
+  /* Light muted labels per designer spec; matches the asks-side
+     row-head. No heavy bar, just a subtle column-label row. */
+  background: transparent;
+  color: var(--ink-mid);
   font-size: 10px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  border-bottom: 1px solid var(--ink);
-  /* Sticky to viewport top while scrolling the bids ladder. Matches
-     the asks-side market-listing-row-head treatment for symmetric
-     scan-affordance on both sides of the two-sided book. */
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: 0.04em;
+  border-bottom: 0.5px solid rgba(26,26,26,0.12);
+  padding: 4px 12px;
   position: sticky;
   top: 0;
   z-index: 2;
@@ -2152,28 +2152,25 @@ tr[data-recent-activity] .market-token-sub::after {
 .market-bids-row.market-bids-row--below-mid .market-bid-price strong {
   color: #b8341d;  /* red: bid below mid */
 }
-/* Asks column-header row. Same shape as market-bids-row-head: black
-   background, white text, uppercase letter-spaced labels. Render the
-   labels with the same flex semantics as the bids equivalent. Sticky
-   to the viewport top so the column labels stay visible while the
-   user scrolls through a long ladder — pure quality-of-life win, no
-   layout shift since the header height is already accounted for. */
+/* Column-header row — light muted labels per designer spec, no heavy
+   black bar. Reads as a subtle subtitle for the ladder, not a chrome
+   header. Sticky to viewport top so labels stay visible while scrolling. */
 .market-listing-grid.market-listing-rows-mode .market-listing-tile.market-listing-row-head {
-  background: var(--ink);
-  color: var(--bg);
+  background: transparent;
+  color: var(--ink-mid);
   font-size: 10px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: 0.04em;
   border-top: 0;
-  border-bottom: 1px solid var(--ink);
-  padding: 8px 14px;
+  border-bottom: 0.5px solid rgba(26,26,26,0.12);
+  padding: 4px 12px;
   position: sticky;
   top: 0;
   z-index: 2;
 }
 .market-listing-grid.market-listing-rows-mode .market-listing-tile.market-listing-row-head span {
-  color: var(--bg);
+  color: var(--ink-mid);
 }
 /* vs-mark + expires cells — typography mirrors the bids
    .market-bid-cell convention so both ladders feel uniform. */
