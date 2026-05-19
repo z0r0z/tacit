@@ -54500,9 +54500,11 @@ function _renderAmmContribTape() {
     const itemsHtml = items.map(buildItem).join('');
     // Duplicate for seamless marquee loop (same trick as global tape).
     track.innerHTML = itemsHtml + itemsHtml;
-    // Update the social-metrics count badge in the section header.
-    // Reads per-circuit contribution_count from the cache that the
-    // chip's refresh path already populates (no extra worker hit).
+    // Update the count for the slim footer strip ("N contribs"). The
+    // full marquee was promoted out of the orderbook view into the
+    // ceremony drawer per the designer's spec; the hidden #amm-contrib-tape
+    // element stays in the DOM only because this populator's track
+    // selector still needs to resolve without throwing.
     try {
       const countEl = document.getElementById('amm-contrib-count');
       if (countEl) {
@@ -54511,15 +54513,10 @@ function _renderAmmContribTape() {
           const s = _ammCeremonyStateByCircuit.get(c.hash);
           total += Number(s?.contribution_count) || 0;
         }
-        if (total > 0) {
-          countEl.textContent = `${total} contribution${total === 1 ? '' : 's'} across 3 circuits`;
-        } else {
-          countEl.textContent = '';
-        }
+        countEl.textContent = total > 0 ? `${total.toLocaleString('en-US')} contribs` : '—';
       }
     } catch {}
     section.style.display = '';
-    tape.style.display = '';
   }).catch(e => {
     console.warn('[amm-contrib-tape] render failed', e?.message);
     section.style.display = 'none';

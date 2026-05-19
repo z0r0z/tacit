@@ -5362,19 +5362,24 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
        _renderAmmContribTape() on tab activate; module-level cache with
        5min TTL keeps worker hits to ~1 round-trip per 5min per user
        per active session. -->
-  <div class="section" id="amm-contrib-section" style="display:none;">
-    <div class="section-header">
-      <span>amm ceremony contributors</span>
-      <!-- Lean social-metric badge: shows total contributions across the
-           three AMM circuits + the per-circuit progress bar. Populated by
-           _renderAmmContribTape() from the same cache the marquee uses;
-           no extra worker round-trips. -->
-      <span id="amm-contrib-count" style="font-family:var(--mono);font-style:normal;font-size:10px;color:var(--bg);letter-spacing:0.04em;text-transform:none;font-weight:400;opacity:0.85;"></span>
+  <!-- Bottom strip: single-line footer matching the designer's spec —
+       three groups (brand · ceremony · BIPs) on one row, equal weight.
+       The ceremony marquee that lived here previously was promoted /
+       demoted into this slim strip — the bottom-right floating chip
+       still surfaces the full drawer for users who want to contribute.
+       _renderAmmContribTape() writes the count into #amm-contrib-count;
+       the full contribution log moved into the drawer (open via the
+       "contribute →" link or the bottom-right chip). -->
+  <div class="section" id="amm-contrib-section" style="display:none;border:0;box-shadow:none;background:transparent;margin-bottom:0;">
+    <div id="amm-contrib-strip" style="font-family:var(--mono,monospace);font-size:10px;color:var(--ink-mid);display:flex;justify-content:space-between;align-items:center;letter-spacing:0.04em;padding:14px 18px;border-top:1px dashed var(--ink-faint);flex-wrap:wrap;gap:8px 18px;">
+      <span><b style="color:var(--ink);font-weight:600;letter-spacing:0.06em;">TACIT</b> <span style="color:var(--ink-mid);">open-source · zero fees</span></span>
+      <span><span style="color:var(--orange);">●</span> AMM ceremony <b id="amm-contrib-count" style="color:var(--ink);font-weight:600;">—</b> · <a href="#" data-act="amm-contrib-open" style="color:var(--ink-mid);text-decoration:none;border-bottom:0.5px dashed var(--ink-faint);">contribute →</a></span>
+      <span style="color:var(--ink-mid);">BIP-341 · BIP-340 · CT</span>
     </div>
-    <div class="section-body" style="padding:0;">
-      <div id="amm-contrib-tape" class="global-tape" data-amm-contrib-tape style="display:none;margin:0;border-bottom:0;">
-        <div class="global-tape-track" data-amm-contrib-tape-track></div>
-      </div>
+    <!-- Legacy marquee container kept hidden so _renderAmmContribTape()
+         doesn't error querying for it; the count update still works. -->
+    <div id="amm-contrib-tape" data-amm-contrib-tape style="display:none;">
+      <div class="global-tape-track" data-amm-contrib-tape-track></div>
     </div>
   </div>
 </div>
