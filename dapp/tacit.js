@@ -56437,6 +56437,7 @@ function applyMarketFilters() {
     // return, so the chip would otherwise be inert — leaving the user
     // unable to flip out of Simple mode on an empty-asks asset.
     list.querySelectorAll('[data-act="market-row-actions-toggle"]').forEach(btn => {
+      btn.classList.add('market-toggle-chip');
       btn.onclick = () => {
         _marketRowActionsHidden = !_marketRowActionsHidden;
         _saveMarketRowActionsHidden(_marketRowActionsHidden);
@@ -57448,6 +57449,7 @@ function applyMarketFilters() {
   // persists to localStorage, and re-applies filters so the ladder
   // redraws immediately with the new set.
   list.querySelectorAll('[data-act="market-simple-toggle"]').forEach(btn => {
+    btn.classList.add('market-toggle-chip');
     btn.onclick = () => {
       _marketSimpleMode = !_marketSimpleMode;
       _saveMarketSimple(_marketSimpleMode);
@@ -57455,6 +57457,7 @@ function applyMarketFilters() {
     };
   });
   list.querySelectorAll('[data-act="market-row-actions-toggle"]').forEach(btn => {
+    btn.classList.add('market-toggle-chip');
     btn.onclick = () => {
       _marketRowActionsHidden = !_marketRowActionsHidden;
       _saveMarketRowActionsHidden(_marketRowActionsHidden);
@@ -57540,6 +57543,7 @@ function applyMarketFilters() {
     };
   });
   list.querySelectorAll('[data-act="market-mine-asks-toggle"]').forEach(btn => {
+    btn.classList.add('market-toggle-chip');
     btn.onclick = () => {
       _marketMineOnlyAsks = !_marketMineOnlyAsks;
       _saveMarketMine(_MARKET_MINE_ASKS_KEY, _marketMineOnlyAsks);
@@ -57547,6 +57551,7 @@ function applyMarketFilters() {
     };
   });
   list.querySelectorAll('[data-act="market-ladder-toggle"]').forEach(btn => {
+    btn.classList.add('market-toggle-chip');
     btn.onclick = () => {
       _marketLadderView = (_marketLadderView === 'rows') ? 'cards' : 'rows';
       _saveMarketLadderView(_marketLadderView);

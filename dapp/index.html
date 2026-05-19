@@ -79,7 +79,7 @@
      script-src 'self' covers all three.
      `?cb=` is auto-set by build/build.mjs to a sha256 prefix of tacit.js
      so iOS Safari's stale-modulepreload cache flushes on every change. -->
-<link rel="modulepreload" href="./tacit.js?cb=8dd0b89f">
+<link rel="modulepreload" href="./tacit.js?cb=fd3242a1">
 <link rel="modulepreload" href="./vendor/tacit-deps.min.js">
 <link rel="modulepreload" href="./prf-wallet.js">
 <style>
@@ -3716,6 +3716,20 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
    ceremony is running. renderAmmCeremonyChip() toggles display based on
    active tab + 24h-ack localStorage + ceremony-finalized check. Drawer
    click opens #amm-ceremony-drawer with the contribute flow. */
+.market-toggle-chip {
+  transition: transform 100ms ease, box-shadow 120ms ease, filter 120ms ease;
+}
+.market-toggle-chip:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 2px 4px rgba(0,0,0,0.10);
+  filter: brightness(1.04);
+}
+.market-toggle-chip:active {
+  transform: translateY(0);
+  box-shadow: none;
+  filter: brightness(0.94);
+}
+
 .amm-cer-chip {
   position: fixed;
   bottom: 16px;
@@ -7392,7 +7406,7 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
   </div>
 </div>
 
-<script type="module" src="./tacit.js?cb=8dd0b89f"></script>
+<script type="module" src="./tacit.js?cb=fd3242a1"></script>
 
 <!-- Service worker registration moved into tacit.js (the dapp's CSP forbids
      inline scripts; only 'self' module scripts are allowed). See sw.js for
