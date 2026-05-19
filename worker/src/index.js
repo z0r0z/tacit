@@ -5724,45 +5724,42 @@ async function handleCeremonyContribute(req, env, circuitHash, cors, ctx) {
     // crosses the wire. If the magic check fails, we reject without
     // advancing state (the pinned blob stays on Pinata until its TTL
     // expires; no chain corruption).
-    // Just-pinned CIDs can take several seconds to propagate to the
-    // public gateway. We try two paths per attempt:
-    //   1. Pinata's authenticated content endpoint (master JWT) — pins
-    //      land here first since it's our own account's view.
-    //   2. The public gateway as a fallback.
-    // Then we retry up to 12× with 1s backoff (~12s total wall-clock).
-    // 91MB swap_batch pins observed propagating in 5-10s; smaller files
-    // are typically <2s. Worker CPU budget covers this comfortably.
-    const authUrl = `https://api.pinata.cloud/v3/files/public/cid/${zkeyCidProvided}`;
-    const gatewayUrl = `https://gateway.pinata.cloud/ipfs/${zkeyCidProvided}`;
-    let magicOk = false;
+    // Verify the CID by confirming it's pinned in our Pinata account.
+    // Magic-byte sniffing via gateway was unreliable for fresh pins
+    // (public gateway propagation can lag 30+ seconds for large files,
+    // and Pinata has no auth-content endpoint for raw bytes). The
+    // existence check via the API is immediate and provides equivalent
+    // assurance: only uploads through our scoped signed URL land in
+    // our account, so a CID present there came through our flow.
+    //
+    // Trade-off: we no longer enforce snarkjs "zkey" magic at /contribute
+    // time. The next contributor's chain-verify (snarkjs.zKey.verifyFromR1cs)
+    // is the real soundness check; a malformed CID would surface there
+    // and the coordinator can roll back the bad attestation.
+    const apiUrl = `https://api.pinata.cloud/v3/files/public?cid=${encodeURIComponent(zkeyCidProvided)}&limit=1`;
+    let pinFound = false;
     let lastErr = '';
-    const _tryFetch = async (url, useAuth) => {
-      const headers = { 'Range': 'bytes=0-255' };
-      if (useAuth && env.PINATA_JWT) headers['Authorization'] = `Bearer ${env.PINATA_JWT}`;
-      const r = await fetch(url, { method: 'GET', headers });
-      if (!r.ok && r.status !== 206) throw new Error(`HTTP ${r.status}`);
-      return new Uint8Array(await r.arrayBuffer());
-    };
-    for (let attempt = 0; attempt < 12 && !magicOk; attempt++) {
+    for (let attempt = 0; attempt < 8 && !pinFound; attempt++) {
       try {
-        let firstChunk;
-        try {
-          firstChunk = await _tryFetch(authUrl, true);
-        } catch {
-          firstChunk = await _tryFetch(gatewayUrl, false);
+        const r = await fetch(apiUrl, {
+          method: 'GET',
+          headers: { 'Authorization': `Bearer ${env.PINATA_JWT}` },
+        });
+        if (!r.ok) {
+          lastErr = `HTTP ${r.status}`;
+        } else {
+          const j = await r.json().catch(() => null);
+          const files = j?.data?.files || j?.files || [];
+          pinFound = files.some(f => (f?.cid || '').toLowerCase() === zkeyCidProvided.toLowerCase());
+          if (!pinFound) lastErr = 'CID not yet visible in account file list';
         }
-        magicOk = _hasCeremonyMagic(firstChunk, 'zkey');
-        if (magicOk) break;
-        lastErr = 'fetched bytes did not start with zkey magic';
       } catch (e) {
         lastErr = e?.message || String(e);
       }
-      if (!magicOk && attempt < 11) {
-        await new Promise(r => setTimeout(r, 1000));
-      }
+      if (!pinFound && attempt < 7) await new Promise(r => setTimeout(r, 1000));
     }
-    if (!magicOk) {
-      return jsonResponse({ error: `couldn\'t verify zkey_cid after 12 attempts: ${lastErr}` }, 502, cors);
+    if (!pinFound) {
+      return jsonResponse({ error: `zkey_cid not found in account after 8 attempts: ${lastErr}` }, 502, cors);
     }
     newCid = zkeyCidProvided;
   }
