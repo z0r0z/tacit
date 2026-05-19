@@ -36011,9 +36011,9 @@ async function _submitAmmCeremonyContribution() {
     statsRow.appendChild(_stat('your position', myIndex != null ? `#${myIndex}` : '#?', `in ${target.label.replace(/^AMM · /, '')}`));
     statsRow.appendChild(_stat('total contributions', String(totalContribs), 'across all 3 chains'));
     if (attributed) {
-      statsRow.appendChild(_stat('attributed', 'tacit:' + contributorPubkeyHex.slice(0, 8), 'eligible for snapshots'));
+      statsRow.appendChild(_stat('attributed', 'tacit:' + contributorPubkeyHex.slice(0, 8), 'on file for airdrop snapshots'));
     } else {
-      statsRow.appendChild(_stat('attribution', 'pseudonymous', 'not snapshot-eligible'));
+      statsRow.appendChild(_stat('attribution', 'pseudonymous', 'no wallet on file — contribute again with one logged to be in airdrops'));
     }
     resultEl.appendChild(statsRow);
     // Share + retry actions. share-on-x intent first (the engagement
