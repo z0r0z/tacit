@@ -486,6 +486,30 @@ test('e2e: scanner skips tx with no eligible inputs (P2WSH-only)', () => {
   assertEq(credits.length, 0, 'P2WSH-only tx is ineligible; recipient skips');
 });
 
+// §F.7 fund-critical refusal check: an emitter MUST refuse to produce a
+// stealth output for a tx where no eligible input exists. The reference
+// implementation here surfaces this via aggregateEligibleInputPubkeys
+// returning {aggregatePub: null, eligibleCount: 0}; a real builder
+// inspects that result before emitting and aborts. This test asserts
+// the underlying aggregation rule reports the empty case correctly so
+// builders can rely on it.
+test('refusal-path: aggregation flags fully-ineligible input sets', () => {
+  const a = newKeypair(), b = newKeypair();
+  const { aggregatePub, eligibleCount } = aggregateEligibleInputPubkeys([
+    { kind: 'p2wsh', pub: a.pub },
+    { kind: 'p2tr-scriptpath', pub: b.pub },
+  ]);
+  assertEq(eligibleCount, 0);
+  assert(aggregatePub === null,
+    'fully-ineligible input set MUST yield null aggregate — builders depend on this signal to refuse stealth emission');
+});
+
+test('refusal-path: aggregation flags empty input list', () => {
+  const { aggregatePub, eligibleCount } = aggregateEligibleInputPubkeys([]);
+  assertEq(eligibleCount, 0);
+  assert(aggregatePub === null);
+});
+
 test('e2e: P2TR output also detected (dual-match)', () => {
   const alice = newKeypair();
   const bob = newKeypair();

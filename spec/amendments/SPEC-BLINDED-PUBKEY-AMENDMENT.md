@@ -501,6 +501,18 @@ HRPs at the bech32m HRP-validation step.
 prefixes (`tcs` vs `tcsts` vs `tcsrt`), matching the existing
 segwit-HRP convention.
 
+**HRP namespace claim.** The `tcs` / `tcsts` / `tcsrt` HRPs are
+not registered with any external standards body (Bitcoin doesn't
+maintain a formal HRP registry beyond the segwit and silent-payment
+BIPs). This amendment claims them by first-deployment convention
+for tacit-stealth addresses on mainnet / signet / regtest
+respectively. The prefixes are distinct from every HRP currently in
+production use across the Bitcoin ecosystem (`bc`, `tb`, `bcrt`,
+`sp`, `tsp`, `sprt`, plus Lightning's `lnbc`/`lntb`/`lnbcrt`); they
+do not collide with any deployed scheme at the time of this
+amendment. Future cross-protocol claims on the `tcs*` namespace
+should defer to this amendment's prior use.
+
 ### §D.2 Recipient-side dual-scan
 
 A wallet implementing the new scheme MUST scan for receipts at:
@@ -521,6 +533,22 @@ scanner MUST handle both shapes. The address format (§D.1) does NOT
 encode a script-type preference — the recipient's scanner tries
 both shapes for every candidate commit.
 
+**Domain-tag dispatch.** The scan loop iterates the set of
+domain tags for opcodes the wallet supports. For class-2
+transfer recipients (CXFER, AXFER, AXFER_VAR, BPP twins, LP_ADD,
+LP_REMOVE per §C), the wallet first identifies the tx's tacit
+envelope opcode (parsing the OP_RETURN at vout[0] if present)
+and dispatches to the matching domain tag from the anchor
+registry. For txs with no recognizable tacit envelope (a pure
+Bitcoin tx, or a tacit envelope opcode the wallet doesn't
+support), the wallet skips stealth scanning for that tx — there
+is no domain context, so no candidate commit can be derived.
+
+A wallet supporting multiple stealth-using opcodes runs the inner
+HMAC + EC scalar multiplication pass once per matching opcode's
+domain tag. The ECDH (the dominant cost) is computed once and
+shared across all per-domain passes for the same tx.
+
 The scan loop per-tx (single-pubkey mode):
 
 ```
@@ -530,11 +558,19 @@ for tx in chain since last_scan:
         if output.script == P2WPKH(hash160(wallet.pub)):
             credit(output)  // classical receipt
 
+    // Identify the tx's tacit envelope opcode (if any).
+    envelope_opcode = parse_envelope_opcode(tx) or None
+    if envelope_opcode is None:
+        continue   // pure Bitcoin tx — no stealth scan possible
+    domain = lookup_anchor_registry_domain(envelope_opcode) or None
+    if domain is None:
+        continue   // opcode not in §C; no stealth domain applies
+
     // Stealth receipts (new — class-2 dual scan)
     P_sender = aggregate_eligible_input_pubkeys(tx)  // per §A.2.5
     if P_sender == O:                                 // point at infinity
         continue                                       // tx ineligible; skip
-    shared = ECDH(wallet.priv, P_sender)
+    shared = ECDH(wallet.priv, P_sender)               // ONE ECDH per tx
     for (vout_index, output) in enumerate(tx.outputs):
         b = HMAC(shared,
                  domain ||                            // per anchor registry §C
@@ -561,11 +597,23 @@ same recipient in the same tx (e.g., merchant batched payouts) —
 without it, two outputs at the same recipient would land at identical
 addresses, defeating the per-payment unlinkability.
 
-Scan cost: one ECDH per tx (cached across all output candidates) +
-one HMAC + one EC scalar multiplication + two hash comparisons per
-output. For a typical single-output tx, ~120 µs on commodity
-hardware; for a 100-output batch tx, ~1.2 ms. The ECDH is the dominant
-cost and is amortized across outputs.
+**Scan cost summary** (cost authority — overrides any conflicting
+phrasing elsewhere in this amendment):
+
+| Operation | Per | Cost |
+|---|---|---|
+| ECDH | tx | ~100 µs (dominant) |
+| HMAC + EC scalar mul | output | ~20 µs |
+| Hash compare (P2WPKH) | output | ~1 µs |
+| Hash compare (P2TR) | output | ~1 µs |
+
+For a single-output tx: ~120 µs total. For a 100-output batch tx:
+~100 µs (ECDH) + 100 × 22 µs (per-output) = ~2.3 ms.
+
+For multi-domain wallets (supporting CXFER + AXFER + AXFER_VAR
+stealth simultaneously, three domain tags), per-tx cost is ECDH +
+3 × (HMAC + EC scalar mul + 2 hash compares) per output. ECDH
+amortized.
 
 **Stored credit metadata.** When the scanner credits a stealth
 receipt, it persists `(txid, vout, sender_pub_aggregate, vout_index,
@@ -587,8 +635,22 @@ The address format then encodes both `(P_scan, P_spend)`. The scan
 server identifies candidate receipts; the wallet performs the
 tweaked-sk computation only at spend time.
 
-Light-client variant is optional; single-pubkey is sufficient for
-self-scanning wallets.
+**Privacy trade-off (load-bearing).** Sharing `P_scan` with a scan
+server gives that server the same on-chain identification ability
+the wallet has — the server learns every receipt to the wallet, the
+exact amount on Bitcoin-script-level outputs, and the wallet's
+chain-graph footprint. This is equivalent in posture to a watch-only
+address handed to a third party. It does NOT leak spending authority
+(the server can't move funds without `P_spend`'s private key), but
+it DOES leak full receipt-side privacy to the server. Wallet
+implementers MUST NOT present scan-key delegation as "free privacy"
+— it trades chain-graph exposure to the user's chosen scan server
+for scan performance against an arbitrary public observer.
+
+Single-pubkey mode (no scan delegation) is sufficient for self-
+scanning wallets and preserves stronger privacy properties. The
+dual-pubkey variant exists for genuinely resource-constrained
+clients that can't afford full-chain scans; use it accordingly.
 
 ---
 
@@ -863,6 +925,18 @@ output script but no one can identify or spend them. The dapp
 MUST refuse to emit a stealth output unless the tx contains at
 least one eligible input under §A.2.5's rules.
 
+**Implementation test obligation (load-bearing).** This refusal
+check is fund-critical: a buggy dapp that emits a stealth output to
+a tx with no eligible inputs burns the recipient's funds. Reference
+implementations of class-2 stealth-output emission MUST include an
+adversarial unit test that constructs a tx with only ineligible
+inputs (P2WSH, P2TR script-path) and verifies the emitter refuses
+to produce the stealth output. The signet harness MUST exercise
+the refusal path (e.g., by constructing a deliberately-bad tx and
+asserting the dapp rejects it before broadcast). Failure to
+implement this check is a release-blocker for any wallet shipping
+class-2 stealth support.
+
 ---
 
 ## §G. Composition with existing primitives
@@ -969,13 +1043,37 @@ viable as a cross-protocol-ergonomics enhancement post-launch.
 ### §H.1 Scanner
 
 Wallets implementing variant-2 (ECDH-derived) must add an ECDH +
-commit-derivation pass to their chain scan. Cost is one ECDH + one
-EC scalar multiplication per (tx-input, tx-output) pair. For a
-single-input tx, that's a few hundred microseconds on commodity
-hardware — well within wallet refresh budgets.
+commit-derivation pass to their chain scan. Per the loop in §D.2,
+the per-tx cost is:
 
-Implementations SHOULD cache the per-tx shared secret across all
-candidate outputs in the same tx (single ECDH per tx).
+- **One ECDH per tx** — computed once over the aggregate
+  `P_sender` (§A.2.5) and cached across all candidate outputs in
+  the same tx. NOT one ECDH per output, NOT one per tx-input.
+- **One HMAC + one EC scalar multiplication per output** —
+  varies the per-vout_index portion of the anchor.
+- **Two hash comparisons per output** — one for the candidate
+  P2WPKH script, one for the candidate P2TR script.
+
+For a single-output tx, ~120 µs total on commodity hardware
+(dominated by the one ECDH). For a 100-output batch tx, ~1.2 ms.
+The ECDH cost is amortized across outputs.
+
+For cold-load (wallet bootstrap or post-offline-rejoin), the
+aggregate cost is `O(eligible_chain_txs × 120 µs)` for a
+single-stealth-opcode wallet. With domain-tag fanout across N
+stealth-using opcodes that a wallet supports simultaneously
+(currently just one — CXFER stealth in v1; more in follow-up
+amendments), the cost scales linearly in N because the ECDH is
+shared but each opcode requires its own HMAC pass per output.
+Practical implementations SHOULD also cache `b · G` derivations
+per-(domain, vout_index) pair when scanning the same anchor
+repeatedly under different domains.
+
+A benchmark commitment of "≥ 500 txs/sec single-opcode scan rate
+on commodity hardware" suffices for v1 and is achievable with
+straightforward implementation. Performance regressions below this
+threshold are a release blocker for the stealth-default address
+format toggle.
 
 ### §H.2 Spend-path key derivation
 
@@ -1013,12 +1111,26 @@ Per-transaction overrides remain available via an advanced toggle.
 stealth-capable address is mechanically valid: `ECDH(self_priv,
 self_pub)` produces a well-defined shared secret, the dapp computes
 the commit, the recipient (same wallet) re-derives the same secret
-and finds the receipt. The privacy benefit at the sender↔recipient
-unlinkability dimension is trivially zero (same identity), but the
-per-tx address rotation still hides "this user received funds from
-some source" from chain observers, which IS useful (e.g., for
-consolidation flows where the user moves UTXOs between their own
-addresses).
+and finds the receipt. The privacy benefit is narrower than for
+cross-party transfers and worth stating precisely:
+
+- **Not gained**: sender↔recipient unlinkability (trivially zero —
+  same identity).
+- **Not gained**: hiding from a chain analyst who has already
+  clustered the wallet's input UTXOs. Such an analyst sees the
+  input cluster spend and the new output address derived from it;
+  the wallet's `P_underlying` is implicitly in the cluster.
+- **Gained**: the derived output address does NOT cluster with the
+  wallet's OTHER receiving addresses (classical receipts, prior
+  stealth receipts from external senders, etc.). Each self-payment
+  lands at a fresh address that, considered in isolation, looks
+  unrelated to the wallet's other receive points.
+
+That last property is useful for consolidation flows where the user
+wants UTXOs to land at fresh addresses rather than at a single
+re-used wallet address. It's not a substitute for Bitcoin-level
+mixing if the user's goal is to break the input-cluster ↔ output
+link entirely.
 
 The dapp need not special-case self-payments. The recipient scanner
 will find the receipt via the standard ECDH dual-scan path. A dapp
