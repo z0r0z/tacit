@@ -4200,6 +4200,18 @@ function atomicClaimUtxoIndexKey(network, txidHex, vout) {
     ? `axclaim-utxo:${txidHex}:${vout}`
     : `axclaim-utxo:${network}:${txidHex}:${vout}`;
 }
+// Mirror index for bid claims: a seller's axintent_id can pledge to
+// only one active bid claim at a time. Without this, one seller-owned
+// asset UTXO (already encoded into the axintent) could grief N
+// different bids by submitting one bid claim per bid, each linking the
+// same axintent_id. BID_CLAIM_TTL_SECONDS is 30 min (6× the
+// atomic-claim TTL), so the grief window is larger and the index is
+// strictly more valuable on the bid side.
+function bidClaimAxintentIndexKey(network, axintentIdHex) {
+  return network === 'signet'
+    ? `bidclaim-ax:${axintentIdHex}`
+    : `bidclaim-ax:${network}:${axintentIdHex}`;
+}
 function atomicFulfilmentKey(network, aid, intentIdHex) {
   return network === 'signet'
     ? `axfulfil:${aid}:${intentIdHex}`
@@ -14574,6 +14586,16 @@ async function _handleAtomicIntentClaimVar(assetIdHex, intentIdHex, intent, body
   if (!Number.isInteger(utxoValue) || utxoValue < requiredSats) {
     return jsonResponse({ error: `taker_utxo value (${utxoValue}) is below scaled price (${requiredSats}) for requested_amount ${requestedAmountStr}` }, 400, cors);
   }
+  // Outspend liveness: same gate as the legacy claim path. A spent
+  // outpoint can't fund the eventual settlement, so let the claim fail
+  // fast rather than dead-reserving the intent until TTL.
+  const takerSp = await chainOutspendProbe(env, network, takerUtxoTxid, takerUtxoVout, null);
+  if (takerSp === null) {
+    return jsonResponse({ error: 'taker_utxo outspend check failed (transient mempool API error); retry' }, 503, cors);
+  }
+  if (takerSp.spent) {
+    return jsonResponse({ error: 'taker_utxo is already spent' }, 400, cors);
+  }
 
   const msg = atomicIntentClaimMsgVar(assetIdHex, intentIdHex, takerPubHex, takerUtxoTxid, takerUtxoVout, requestedAmountStr);
   if (!verifySchnorr(hexToBytes(sigHex), msg, hexToBytes(takerPubHex).slice(1))) {
@@ -15252,6 +15274,19 @@ async function handleAtomicIntentClaim(assetIdHex, intentIdHex, req, env, networ
   const utxoValue = Number(takerOut.value);
   if (!Number.isInteger(utxoValue) || utxoValue < priceSats) {
     return jsonResponse({ error: `taker_utxo value (${utxoValue}) is below price_sats (${priceSats})` }, 400, cors);
+  }
+  // Outspend liveness: refuse claims whose taker_utxo is already spent.
+  // Without this, a griefer could pledge an already-spent outpoint as
+  // taker_utxo to capture the 5-min reservation at zero cost
+  // (fulfilment would fail eventually, but the bid is dead-reserved
+  // until the TTL clears). Symmetric to the maker-side check at
+  // handleAtomicIntentPost.
+  const takerSp = await chainOutspendProbe(env, network, takerUtxoTxid, takerUtxoVout, null);
+  if (takerSp === null) {
+    return jsonResponse({ error: 'taker_utxo outspend check failed (transient mempool API error); retry' }, 503, cors);
+  }
+  if (takerSp.spent) {
+    return jsonResponse({ error: 'taker_utxo is already spent' }, 400, cors);
   }
 
   const msg = atomicIntentClaimMsg(assetIdHex, intentIdHex, takerPubHex, takerUtxoTxid, takerUtxoVout);
@@ -16678,6 +16713,22 @@ async function handleBidIntentClaim(assetIdHex, bidIdHex, req, env, network, cor
     }
   }
 
+  // Cross-bid axintent pledge gate. A seller's axintent_id can pledge
+  // to only one active bid claim at a time across all bids. Without
+  // this, one seller-owned asset UTXO (encoded into the axintent at
+  // publish time) could grief N different bids by submitting one bid
+  // claim per bid against the same axintent_id, dead-reserving each
+  // for the full BID_CLAIM_TTL (30 min). Same-(bid_id, axintent_id)
+  // retries fall through (idempotent path above already handled).
+  const axintentPledge = await env.REGISTRY_KV.get(bidClaimAxintentIndexKey(network, axintentIdHex), 'json');
+  if (axintentPledge && axintentPledge.expires_at > now &&
+      !(axintentPledge.bid_id === bidIdHex && axintentPledge.asset_id === assetIdHex)) {
+    return jsonResponse({
+      error: 'axintent_id already pledged to another active bid claim',
+      pledged: { bid_id: axintentPledge.bid_id, expires_at: axintentPledge.expires_at },
+    }, 409, cors);
+  }
+
   const msg = bidClaimMsg(assetIdHex, bidIdHex, sellerPubHex, axintentIdHex, fillAmountStr);
   if (!verifySchnorr(hexToBytes(sigHex), msg, hexToBytes(sellerPubHex).slice(1))) {
     return jsonResponse({ error: 'invalid claim signature' }, 403, cors);
@@ -16749,12 +16800,27 @@ async function handleBidIntentClaim(assetIdHex, bidIdHex, req, env, network, cor
       JSON.stringify(claim),
       { expirationTtl: BID_CLAIM_TTL_SECONDS + 60 },
     );
+    // Cross-bid axintent pledge — written before the overshoot
+    // resolution so a racing claim sees the pledge immediately. If
+    // our claim ends up evicted by the resolver, we delete the
+    // pledge below.
+    await env.REGISTRY_KV.put(
+      bidClaimAxintentIndexKey(network, axintentIdHex),
+      JSON.stringify({ bid_id: bidIdHex, asset_id: assetIdHex, expires_at: claim.expires_at }),
+      { expirationTtl: BID_CLAIM_TTL_SECONDS + 60 },
+    );
     const listed = await env.REGISTRY_KV.list({ prefix: bidPartialClaimPrefix(network, assetIdHex, bidIdHex), limit: 1000 });
     const recs = await Promise.all(listed.keys.map(k => env.REGISTRY_KV.get(k.name, 'json')));
     const { kept, survivors, evicted } = _resolveBidPartialOvershoot(recs, intentAmtBI, now);
     if (evicted.length > 0) {
       await Promise.all(evicted.map(p =>
         env.REGISTRY_KV.delete(bidPartialClaimKey(network, assetIdHex, bidIdHex, p.axintent_id))
+      ));
+      // Mirror the eviction into the cross-bid pledge index so the
+      // evicted axintent_ids free up for re-pledging immediately
+      // instead of waiting for the TTL.
+      await Promise.all(evicted.map(p =>
+        env.REGISTRY_KV.delete(bidClaimAxintentIndexKey(network, p.axintent_id))
       ));
     }
     const ourEvicted = evicted.some(p => p.axintent_id === axintentIdHex);
@@ -16782,6 +16848,16 @@ async function handleBidIntentClaim(assetIdHex, bidIdHex, req, env, network, cor
   }
 
   await env.REGISTRY_KV.put(bidClaimKey(network, assetIdHex, bidIdHex), JSON.stringify(claim));
+  // Cross-bid axintent pledge index (see gate above). Whole-bid
+  // claim records lack an explicit TTL on the KV put — historical
+  // behavior is to let them sit until natural expiry — so size the
+  // pledge index TTL to BID_CLAIM_TTL_SECONDS so the index doesn't
+  // outlive the active window it indexes.
+  await env.REGISTRY_KV.put(
+    bidClaimAxintentIndexKey(network, axintentIdHex),
+    JSON.stringify({ bid_id: bidIdHex, asset_id: assetIdHex, expires_at: claim.expires_at }),
+    { expirationTtl: BID_CLAIM_TTL_SECONDS + 60 },
+  );
   return jsonResponse({ ok: true, claim, intent }, 200, cors);
 }
 
