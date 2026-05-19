@@ -4596,10 +4596,17 @@ body > #amm-contrib-section {
   align-self: center !important;
   min-width: 0 !important;
 }
-/* Balance row promoted to hero: big serif number, USD subtitle in muted
-   gray after. Drops the .amount/.unit chip styling to match the
-   market hero's price-row aesthetic. */
-#tab-wallet dl.kv dd:has(#w-balance) {
+/* Balance row promoted to hero: big serif number, sats unit + USD
+   subtitle as muted mono after, all baseline-aligned via flex. Drops
+   the `:has()` rule because :has on dd was inheriting the 28px-italic
+   down to the .unit child, which made "0sats" render glued together
+   in Georgia serif. Flex-row with gap is more predictable. */
+#tab-wallet dl.kv dd.balance-row {
+  display: inline-flex !important;
+  align-items: baseline !important;
+  gap: 8px !important;
+}
+#tab-wallet #w-balance {
   font-family: Georgia, 'Times New Roman', serif !important;
   font-style: italic !important;
   font-size: 28px !important;
@@ -4607,34 +4614,20 @@ body > #amm-contrib-section {
   letter-spacing: -0.01em !important;
   font-weight: 500 !important;
 }
-#tab-wallet #w-balance {
-  font-family: Georgia, 'Times New Roman', serif !important;
-  font-style: italic !important;
-  font-size: 28px !important;
-  font-weight: 500 !important;
-}
-#tab-wallet .amount#w-balance + .unit {
+/* Force the immediate .unit sibling (the "sats" tag) back to compact
+   mono so it doesn't render as 28px serif italic via inheritance. */
+#tab-wallet #w-balance ~ .unit {
   font-family: var(--mono) !important;
   font-style: normal !important;
   font-size: 11px !important;
   font-weight: 400 !important;
   color: var(--ink-mid) !important;
-  margin-left: 4px !important;
   letter-spacing: 0 !important;
+  text-transform: lowercase !important;
 }
 #tab-wallet #w-balance-usd {
-  font-family: var(--mono) !important;
-  font-style: normal !important;
-  font-size: 13px !important;
+  font-size: 12px !important;
   color: var(--ink-mid) !important;
-  margin-left: 8px !important;
-}
-/* Balance row label: not "BALANCE" uppercase chip — promote the
-   row to hero-style. The label disappears visually since the big
-   number IS the data. */
-#tab-wallet dl.kv dt:has(+ dd #w-balance) {
-  font-size: 9px !important;
-  opacity: 0.7 !important;
 }
 /* Pubkey/address mono-box + copy button: single inline row, no
    row break, compact. The 0.5px dashed border + subtle bg tint
@@ -4659,20 +4652,35 @@ body > #amm-contrib-section {
   color: var(--bg) !important;
   border-color: var(--ink) !important;
 }
-/* Section header for wallet: dashed bottom-border instead of solid
-   ink — matches the market-tile section dividers. */
+/* Section header for wallet: dashed bottom-border + compact uppercase
+   sub-section label, matching the design.html asks/bids header style
+   ("● ASKS 250 of 635") rather than the Georgia italic which read
+   as an under-emphasized inline tag. Sub-stats strip on the right
+   wraps cleanly so SYNCED · 1 SAT/VB never clips at the page edge. */
 #tab-wallet .section > .section-header {
   border-bottom: 0.5px dashed rgba(26,26,26,0.25) !important;
   padding: 8px 0 !important;
   margin-bottom: 12px !important;
+  flex-wrap: wrap !important;
+  row-gap: 4px !important;
 }
 #tab-wallet .section > .section-header > span:first-child {
-  font-family: Georgia, 'Times New Roman', serif !important;
-  font-style: italic !important;
-  font-size: 14px !important;
-  letter-spacing: -0.01em !important;
-  text-transform: lowercase !important;
+  font-family: var(--mono) !important;
+  font-style: normal !important;
+  font-size: 11px !important;
+  letter-spacing: 0.08em !important;
+  text-transform: uppercase !important;
+  font-weight: 500 !important;
   color: var(--ink) !important;
+}
+/* Sub-stats wrapper (lock badge · mode · backup · tip · sync · sat/vB):
+   allow wrapping at narrow widths so the right-edge items don't clip.
+   Was forced inline at fixed gap; now flex-wrap kicks in below the
+   tile's content width. */
+#tab-wallet .section > .section-header > span:last-child {
+  flex-wrap: wrap !important;
+  row-gap: 4px !important;
+  justify-content: flex-end !important;
 }
 /* Sub-stats row in the wallet header (LOCKED · PASSKEY · TIP · SYNCED · 1 SAT/VB)
    — make uniformly muted so the row reads as a single status strip
@@ -6489,7 +6497,7 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
           </div>
         </dd>
         <dt>Balance</dt>
-        <dd><span class="amount" id="w-balance">—</span><span class="unit">sats</span><span class="unit" id="w-balance-usd" style="color:#0a7d3a;"></span></dd>
+        <dd class="balance-row"><span class="amount" id="w-balance">—</span><span class="unit">sats</span><span class="unit" id="w-balance-usd"></span></dd>
       </dl>
 
       <!-- Primary actions row. Visibility is state-driven in renderWalletCard():
