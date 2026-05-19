@@ -24144,13 +24144,23 @@ async function buildAndBroadcastCXferMulti({ assetIdHex, recipients, forceUtxos 
     (() => { const b = new Uint8Array(4); new DataView(b.buffer).setUint32(0, firstAssetIn.vout >>> 0, true); return b; })(),
   );
 
+  // Amount-channel ECDH must use the scalar matching vin[1].witness[1].
+  // For a stealth-received asset UTXO at pickedAssetUtxos[0], that witness
+  // pubkey is commit = wallet.pub + b·G — so the matching scalar is
+  // tweakedSk = wallet.priv + b. Recipient does ECDH(recipient.priv, commit);
+  // by ECDH symmetry, sender must use tweakedSk (not wallet.priv) for the
+  // shared point to agree. Self-derived change/padding stays on wallet.priv
+  // (intra-wallet, symmetric on both sides).
+  const amountChannelSenderPriv = pickedAssetUtxos[0].stealthTweakedSk
+    ? hexToBytes(pickedAssetUtxos[0].stealthTweakedSk)
+    : wallet.priv;
   const amounts = [];
   const blindings = [];
   const keystreams = [];
   for (let i = 0; i < K; i++) {
     amounts.push(parsed[i].amount);
-    blindings.push(deriveBlinding(wallet.priv, parsed[i].pub, anchorBytes, i));
-    keystreams.push(deriveAmountKeystreamECDH(wallet.priv, parsed[i].pub, anchorBytes, i));
+    blindings.push(deriveBlinding(amountChannelSenderPriv, parsed[i].pub, anchorBytes, i));
+    keystreams.push(deriveAmountKeystreamECDH(amountChannelSenderPriv, parsed[i].pub, anchorBytes, i));
   }
   amounts.push(changeAmt);
   blindings.push(deriveChangeBlinding(wallet.priv, anchorBytes, K));
@@ -24233,10 +24243,12 @@ async function buildAndBroadcastCXferMulti({ assetIdHex, recipients, forceUtxos 
     const domain = STEALTH_DOMAIN_BY_OPCODE.get(useBpp ? T_CXFER_BPP : T_CXFER);
     // §A.2 privSum = Σ priv_i over eligible inputs. Reveal-tx eligibles are
     // the K_asset P2WPKH asset inputs (vin[0] is script-path P2TR →
-    // ineligible). All K_asset are signed with wallet.priv, so privSum =
-    // K_asset · wallet.priv. Pass K_asset copies so the scalar matches the
-    // recipient's aggregatePub from §A.2.5 (= K_asset · wallet.pub).
-    const eligiblePrivs = pickedAssetUtxos.map(() => wallet.priv);
+    // ineligible). Each is signed with either wallet.priv (classical UTXO)
+    // or its persisted stealthTweakedSk (a stealth-received UTXO being
+    // forwarded). Per-input effective priv matches the recipient's §A.2.5
+    // aggregatePub = Σ (wallet.pub or commit_i) by ECDH-sum symmetry.
+    const eligiblePrivs = pickedAssetUtxos.map((x) =>
+      x.stealthTweakedSk ? hexToBytes(x.stealthTweakedSk) : wallet.priv);
     stealthCommitsByVout = new Map();
     for (let i = 0; i < K; i++) {
       if (!parsed[i].isStealth) continue;
@@ -52225,20 +52237,16 @@ async function renderRecentEtches() {
       if (a.kind === 'petch' && safeAssetId) tile.dataset.petchAid = safeAssetId;
       tile.onclick = (e) => {
         e.preventDefault();
-        // Route assets with any market footprint (live listings, completed
-        // trades, 24h volume) to the Market tab so users land on price +
-        // book rather than the directory card. Petches stay on Discover
-        // since their primary surface is the public-mint UI, not trading.
-        const hasMarket = a.kind !== 'petch' && (
-          Number(a.preauth_sale_count || 0) > 0 ||
-          Number(a.atomic_intent_count || 0) > 0 ||
-          Number(a.listing_count || 0) > 0 ||
-          Number(a.range_listing_count || 0) > 0 ||
-          Number(a.volume_24h_sats || 0) > 0
-        );
-        const target = hasMarket ? 'market' : 'discover';
-        if (safeAssetId) location.hash = `#tab=${target}&aid=${safeAssetId}`;
-        else $(`.tab[data-tab="${target}"]`).click();
+        // Always route tile clicks to the asset's market page directly
+        // (`#tab=market&aid=…`) so the user lands on price + orderbook
+        // + swap tile in one click. Previously routed market-quiet
+        // assets and petches to Discover; the market page now handles
+        // both states (empty asks → "no active asks · post a bid"
+        // pane; petch supply + mint chip surface inside the hero), so
+        // a single destination keeps the wallet → coin → trade flow
+        // consistent regardless of the asset's activity level.
+        if (safeAssetId) location.hash = `#tab=market&aid=${safeAssetId}`;
+        else $('.tab[data-tab="market"]').click();
       };
       paintTile(tile, a, null, null);
       // If this asset's activity total (credited + pending) exceeds the
@@ -55807,6 +55815,15 @@ const _PRICE_FLASH_CACHE_CAP = 500;
 // a price change vs the cached previous value for this asset_id. Updates
 // the cache as a side-effect. Used by the tile grid, table row, and
 // asset-detail header so they all flash from the same source of truth.
+// First-paint timestamps per aid so the price-flash animation doesn't
+// fire on hydration (when the synchronous render seeds from a possibly-
+// stale `_marketCache` and the next tick lands fresh worker data with
+// a different value — e.g. cached "crossed → mid 139.78" reverting to
+// "uncrossed → mark 203.53" produces a misleading green flash on load).
+// Reload-only behaviour: cleared on cold load, so power users still
+// see legitimate price-change flashes after the initial settle window.
+const _PRICE_FLASH_SETTLE_MS = 6_000;
+const _marketAssetFirstPaintAt = new Map();
 function _priceFlashClassFor(aidKey, refUnit) {
   if (refUnit == null || !aidKey) return '';
   const prev = _marketLastRefUnit.get(aidKey);
@@ -55821,6 +55838,15 @@ function _priceFlashClassFor(aidKey, refUnit) {
     _marketLastRefUnit.clear();
   }
   _marketLastRefUnit.set(aidKey, refUnit);
+  // Settle-window guard: the FIRST few seconds after an asset is first
+  // rendered, suppress the flash class so stale-cache → fresh-worker
+  // hydration doesn't read as a real price tick.
+  const firstAt = _marketAssetFirstPaintAt.get(aidKey);
+  if (firstAt == null) {
+    _marketAssetFirstPaintAt.set(aidKey, Date.now());
+    return '';
+  }
+  if ((Date.now() - firstAt) < _PRICE_FLASH_SETTLE_MS) return '';
   return cls;
 }
 const MARKET_BROWSE_PAGE_SIZE = 20;
@@ -57368,7 +57394,7 @@ function applyMarketFilters() {
     : '';
   const asksHeaderHtml = `<div data-market-sweep-buy-section data-aid="${escapeHtml(_marketView.assetId)}">
     <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:8px;">
-      <div style="font-size:11px;text-transform:uppercase;letter-spacing:0.08em;"><span class="market-live-dot" title="Live: order book refreshes every 15s while this tab is open"></span><strong title="${escapeHtml(_countTitle)}"><span style="color:#b8341d;font-size:9px;margin-right:4px;">●</span>ASKS <span class="muted" style="font-weight:400;font-size:10px;letter-spacing:0;">${rowsForGrid.length - _pendingCount}${_countSuffix}</span></strong>${_pendingPillHtml}</div>
+      <div style="font-size:11px;text-transform:uppercase;letter-spacing:0.08em;"><strong title="${escapeHtml(_countTitle)}"><span style="color:#b8341d;font-size:9px;margin-right:4px;">●</span>ASKS <span class="muted" style="font-weight:400;font-size:10px;letter-spacing:0;">${rowsForGrid.length - _pendingCount}${_countSuffix}</span></strong>${_pendingPillHtml}</div>
       <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">${_listChip}${_advancedChipsHtml}</div>
     </div>${_rowTypesExplainerHtml}${_askFormSlot}
     <div data-market-sweep-form style="display:none;margin-bottom:10px;"></div>
@@ -61215,21 +61241,12 @@ function showMarketListPreviewModal(assetId) {
           <div class="market-buy-sub">Soft cancel anytime to pull the listing. Hard cancel (self-spend the lot) makes the signed sale tx unbroadcastable on Bitcoin.</div>
         </div>
       </div>
-      <div class="market-buy-row">
-        <div>
-          <div class="market-buy-label">Orderbook context</div>
-          <div class="market-buy-sub">What you're competing with</div>
-        </div>
-        <div>
-          <div class="market-buy-value">${_activeAsksCount.toLocaleString('en-US')} active offer${_activeAsksCount === 1 ? '' : 's'}</div>
-          <div class="market-buy-sub">${_activeAsksCount > 0
-            ? `Your listing will appear in the asks ladder ranked by price. Cheaper than mark fills faster; above mark waits for premium buyers.`
-            : `No active offers — you'll be the first. The price you set defines the floor until someone undercuts.`}</div>
-        </div>
-      </div>
-      <div class="market-buy-note" title="Instant Listing · preauth (SPEC §5.7.8) — you sign a sale authorization once at publish time. Buyer completes the trade alone in a single Bitcoin tx.">
-        <strong>Instant listing:</strong> you sign once now. Any buyer can complete the trade alone — settles atomically on Bitcoin, no claim window, no follow-up step from you. Tokens move only if you're paid in the same transaction.
-      </div>
+      <!-- Per design pass: dropped the "Orderbook context" + "Instant
+           listing" verbose sections. The orderbook is visible below
+           the modal anyway, and the instant-listing semantics live
+           in the title= tooltip + the publish toast. Keeping the
+           modal to LOT / PRICE / EXPIRY / Sign matches the bid-form
+           dropdown shape. -->
       <div class="market-buy-actions">
         <button type="button" data-market-list-preview-close>Close</button>
         ${_locked
