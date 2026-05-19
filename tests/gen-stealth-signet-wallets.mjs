@@ -91,6 +91,7 @@ if (!existsSync(STATE_DIR)) mkdirSync(STATE_DIR, { recursive: true });
 
 const ALICE_FILE = path.join(STATE_DIR, 'stealth-signet-alice.json');
 const BOB_FILE   = path.join(STATE_DIR, 'stealth-signet-bob.json');
+const CAROL_FILE = path.join(STATE_DIR, 'stealth-signet-carol.json');
 
 function persistOrSkip(file, label) {
   if (existsSync(file)) {
@@ -111,10 +112,12 @@ function persistOrSkip(file, label) {
 console.log(`\n=== Generating stealth signet wallets ===\n`);
 const alice = persistOrSkip(ALICE_FILE, 'Alice (recipient)');
 const bob   = persistOrSkip(BOB_FILE,   'Bob (sender)');
+const carol = persistOrSkip(CAROL_FILE, 'Carol (downstream recipient)');
 
 console.log(`\nNext steps:`);
 console.log(`  1. Fund Bob's classical address with signet sats:`);
 console.log(`       ${bob.address}`);
 console.log(`     (e.g. via https://signet.bublina.eu.org/ — 20,000 sats is enough)`);
 console.log(`  2. Run: node tests/stealth-signet-e2e.mjs`);
+console.log(`  3. Then: node tests/stealth-signet-extended.mjs (multi-output, P2TR, chained)`);
 console.log();
