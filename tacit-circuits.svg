@@ -1,0 +1,114 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 1100" width="900" height="1100" font-family="'Instrument Serif', 'Cormorant Garamond', Georgia, serif">
+  <defs>
+    <marker id="arrowDown" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#aaa"/>
+    </marker>
+
+    <marker id="arrowConverge" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#888"/>
+    </marker>
+
+    <!-- mixer-family icon: a tiny merkle tree -->
+    <symbol id="g-merkle" viewBox="0 0 64 48">
+      <line x1="32" y1="6"  x2="14" y2="22" stroke="#f7931a" stroke-width="1.6"/>
+      <line x1="32" y1="6"  x2="50" y2="22" stroke="#f7931a" stroke-width="1.6"/>
+      <line x1="14" y1="22" x2="6"  y2="40" stroke="#f7931a" stroke-width="1.6"/>
+      <line x1="14" y1="22" x2="22" y2="40" stroke="#f7931a" stroke-width="1.6"/>
+      <line x1="50" y1="22" x2="42" y2="40" stroke="#f7931a" stroke-width="1.6"/>
+      <line x1="50" y1="22" x2="58" y2="40" stroke="#f7931a" stroke-width="1.6"/>
+      <circle cx="32" cy="6"  r="3.6" fill="#000" stroke="#f4efe6" stroke-width="1.4"/>
+      <circle cx="14" cy="22" r="3.2" fill="#000" stroke="#f4efe6" stroke-width="1.3"/>
+      <circle cx="50" cy="22" r="3.2" fill="#000" stroke="#f4efe6" stroke-width="1.3"/>
+      <circle cx="6"  cy="40" r="2.8" fill="#000" stroke="#f4efe6" stroke-width="1.2"/>
+      <circle cx="22" cy="40" r="2.8" fill="#f7931a" stroke="#f7931a"/>
+      <circle cx="42" cy="40" r="2.8" fill="#000" stroke="#f4efe6" stroke-width="1.2"/>
+      <circle cx="58" cy="40" r="2.8" fill="#000" stroke="#f4efe6" stroke-width="1.2"/>
+    </symbol>
+
+    <!-- amm-family icon: two reserve crescents -->
+    <symbol id="g-reserves" viewBox="0 0 64 48">
+      <circle cx="20" cy="24" r="14" fill="none" stroke="#f4efe6" stroke-width="2"/>
+      <path d="M22 12L17 33Q17 36 21.5 35.5" fill="none" stroke="#f7931a" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="M13 17L26 17" stroke="#f7931a" stroke-width="2" stroke-linecap="round"/>
+      <circle cx="44" cy="24" r="14" fill="none" stroke="#f4efe6" stroke-width="2"/>
+      <path d="M42 12L47 33Q47 36 42.5 35.5" fill="none" stroke="#f7931a" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="M38 17L51 17" stroke="#f7931a" stroke-width="2" stroke-linecap="round"/>
+    </symbol>
+
+    <!-- cBTC.tac convergence icon -->
+    <symbol id="g-cbtc-tac" viewBox="0 0 32 32">
+      <circle cx="16" cy="16" r="13" fill="none" stroke="#f4efe6" stroke-width="2.5"/>
+      <path d="M17.5 7L13 22.5Q13 25 18 24" fill="none" stroke="#f7931a" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="M10 11L21 11" stroke="#f7931a" stroke-width="2.4" stroke-linecap="round"/>
+      <path d="M11 18L19.5 18" stroke="#f7931a" stroke-width="2.4" stroke-linecap="round"/>
+    </symbol>
+  </defs>
+
+  <rect width="900" height="1100" fill="#000"/>
+
+  <!-- wordmark -->
+  <text x="450" y="78" font-size="56" fill="#f4efe6" text-anchor="middle" font-style="italic">tacit<tspan fill="#f7931a">.</tspan></text>
+  <text x="450" y="120" font-size="22" fill="#888" text-anchor="middle" font-style="italic">circuits</text>
+
+  <!-- shared foundation strip -->
+  <text x="450" y="180" font-size="18" fill="#888" text-anchor="middle" font-style="italic">
+    Groth16<tspan fill="#f7931a"> · </tspan>BN254<tspan fill="#f7931a"> · </tspan>Hermez Phase 1<tspan fill="#f7931a"> · </tspan>BIP-340<tspan fill="#f7931a"> · </tspan>secp256k1 Pedersen
+  </text>
+  <line x1="160" y1="200" x2="740" y2="200" stroke="#222" stroke-width="0.6"/>
+
+  <!-- LEFT column: mixer family -->
+  <g transform="translate(225,290)">
+    <use href="#g-merkle" x="-32" y="-24" width="64" height="48"/>
+    <text x="0" y="58" font-size="26" fill="#f4efe6" text-anchor="middle" font-style="italic">withdraw.circom</text>
+    <text x="0" y="86" font-size="17" fill="#f7931a" text-anchor="middle" font-style="italic">anonymous spend</text>
+    <text x="0" y="112" font-size="14" fill="#888" text-anchor="middle" font-style="italic">Poseidon leaf<tspan fill="#666"> · </tspan>Merkle path<tspan fill="#666"> · </tspan>nullifier</text>
+  </g>
+
+  <!-- RIGHT column: amm family -->
+  <g transform="translate(675,290)">
+    <use href="#g-reserves" x="-32" y="-24" width="64" height="48"/>
+    <text x="0" y="58" font-size="26" fill="#f4efe6" text-anchor="middle" font-style="italic">amm circuits</text>
+    <text x="0" y="86" font-size="17" fill="#f7931a" text-anchor="middle" font-style="italic">amount confidentiality</text>
+    <text x="0" y="112" font-size="14" fill="#888" text-anchor="middle" font-style="italic">BabyJubJub Pedersen openings<tspan fill="#666"> · </tspan>range bounds</text>
+  </g>
+
+  <!-- vertical arrows down to surfaces -->
+  <line x1="225" y1="430" x2="225" y2="490" stroke="#aaa" stroke-width="1" marker-end="url(#arrowDown)"/>
+  <line x1="675" y1="430" x2="675" y2="490" stroke="#aaa" stroke-width="1" marker-end="url(#arrowDown)"/>
+
+  <!-- LEFT surfaces: mixer + cBTC.zk -->
+  <g transform="translate(225,540)">
+    <text x="0" y="0"   font-size="22" fill="#f4efe6" text-anchor="middle" font-style="italic">mixer pool</text>
+    <text x="0" y="26"  font-size="14" fill="#666"   text-anchor="middle" font-style="italic">T_WITHDRAW</text>
+    <text x="0" y="68"  font-size="22" fill="#f4efe6" text-anchor="middle" font-style="italic">cBTC.zk slot</text>
+    <text x="0" y="94"  font-size="14" fill="#666"   text-anchor="middle" font-style="italic">T_SLOT_BURN<tspan fill="#444"> · </tspan>ROTATE<tspan fill="#444"> · </tspan>SPLIT<tspan fill="#444"> · </tspan>MERGE</text>
+    <text x="0" y="122" font-size="13" fill="#888"   text-anchor="middle" font-style="italic">K<tspan font-size="10">btc</tspan> = r<tspan font-size="10">leaf</tspan> · G<tspan font-size="10">secp256k1</tspan></text>
+  </g>
+
+  <!-- RIGHT surfaces: AMM ops -->
+  <g transform="translate(675,540)">
+    <text x="0" y="0"   font-size="22" fill="#f4efe6" text-anchor="middle" font-style="italic">AMM pool</text>
+    <text x="0" y="26"  font-size="14" fill="#666"   text-anchor="middle" font-style="italic">T_LP_ADD<tspan fill="#444"> · </tspan>T_LP_REMOVE</text>
+    <text x="0" y="68"  font-size="22" fill="#f4efe6" text-anchor="middle" font-style="italic">batch swap</text>
+    <text x="0" y="94"  font-size="14" fill="#666"   text-anchor="middle" font-style="italic">T_SWAP_BATCH<tspan fill="#444"> · </tspan>uniform clearing price</text>
+    <text x="0" y="122" font-size="13" fill="#888"   text-anchor="middle" font-style="italic">hidden amounts<tspan fill="#666"> · </tspan>public reserves</text>
+  </g>
+
+  <!-- converging arrows to cBTC.tac -->
+  <path d="M225,690 C225,790 400,820 425,830" fill="none" stroke="#666" stroke-width="0.9" stroke-dasharray="2 4" marker-end="url(#arrowConverge)"/>
+  <path d="M675,690 C675,790 500,820 475,830" fill="none" stroke="#666" stroke-width="0.9" stroke-dasharray="2 4" marker-end="url(#arrowConverge)"/>
+
+  <!-- cBTC.tac convergence node -->
+  <g transform="translate(450,880)">
+    <use href="#g-cbtc-tac" x="-32" y="-32" width="64" height="64"/>
+    <text x="0" y="60" font-size="28" fill="#f4efe6" text-anchor="middle" font-style="italic">cBTC.tac</text>
+    <text x="0" y="88" font-size="16" fill="#f7931a" text-anchor="middle" font-style="italic">composes both families</text>
+    <text x="0" y="114" font-size="14" fill="#888" text-anchor="middle" font-style="italic">cBTC.zk anchor<tspan fill="#666"> + </tspan>LP-share lien</text>
+  </g>
+
+  <!-- footer -->
+  <line x1="160" y1="1030" x2="740" y2="1030" stroke="#222" stroke-width="0.6"/>
+  <text x="450" y="1058" font-size="15" fill="#888" text-anchor="middle" font-style="italic">
+    out-of-circuit bridge<tspan fill="#f7931a"> · </tspan>sigma cross-curve binding<tspan fill="#666">  (169 B, no setup, secp256k1 ↔ BabyJubJub)</tspan>
+  </text>
+</svg>

@@ -199,8 +199,37 @@ function bip143Sighash({ tx, inputIndex, prevoutScript, prevoutValue }) {
 
 function ecdsaSign(msgHash32, priv32) {
   // Deterministic ECDSA per RFC-6979 with low-S enforcement.
+  // Return DER-encoded signature (Bitcoin Core requires DER for P2WPKH).
   const sig = secp.sign(msgHash32, priv32, { lowS: true });
-  return sig.toDERRawBytes();
+  return derEncodeSig(sig.r, sig.s);
+}
+
+// Encode (r, s) BigInts as a DER signature.
+//   0x30 || len || 0x02 || rlen || r || 0x02 || slen || s
+// Each integer gets a leading 0x00 if its high bit is set (to avoid being
+// interpreted as negative).
+function derEncodeSig(r, s) {
+  const rBytes = bigintTo32Bytes(r);
+  const sBytes = bigintTo32Bytes(s);
+  const rTrimmed = trimLeadingZeros(rBytes);
+  const sTrimmed = trimLeadingZeros(sBytes);
+  const rPad = (rTrimmed[0] & 0x80) ? concatBytes(new Uint8Array([0x00]), rTrimmed) : rTrimmed;
+  const sPad = (sTrimmed[0] & 0x80) ? concatBytes(new Uint8Array([0x00]), sTrimmed) : sTrimmed;
+  const body = concatBytes(
+    new Uint8Array([0x02, rPad.length]), rPad,
+    new Uint8Array([0x02, sPad.length]), sPad,
+  );
+  return concatBytes(new Uint8Array([0x30, body.length]), body);
+}
+function bigintTo32Bytes(n) {
+  let hex = n.toString(16);
+  while (hex.length < 64) hex = '0' + hex;
+  return hexToBytes(hex);
+}
+function trimLeadingZeros(bytes) {
+  let i = 0;
+  while (i < bytes.length - 1 && bytes[i] === 0) i++;
+  return bytes.slice(i);
 }
 
 function signP2wpkhInput({ tx, inputIndex, prevoutScript, prevoutValue, priv, pub }) {

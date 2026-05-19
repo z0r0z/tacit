@@ -7849,6 +7849,11 @@ function deriveCbtcTacRecoveryCommit(walletPriv32, walletPub33, networkTag, targ
   const b = deriveCbtcTacRecoveryBlinding(walletPriv32, networkTag, targetLeafHash);
   const innerPt = secp.ProjectivePoint.fromHex(bytesToHex(walletPub33));
   const commitPt = innerPt.add(G.multiply(b));
+  // Defense in depth (audit 1.3): probability ~2⁻²⁵⁶, but the
+  // downstream tweaked-sk-zero check is the only safeguard otherwise.
+  if (commitPt.equals(secp.ProjectivePoint.ZERO)) {
+    throw new Error('deriveCbtcTacRecoveryCommit: commit is point at infinity (statistically impossible)');
+  }
   return commitPt.toRawBytes(true);
 }
 
@@ -30223,9 +30228,12 @@ function verifiedBadgeHTML(asset, { size = 'sm' } = {}) {
   const tip = ticker
     ? `Verified: ${escapeHtml(ticker)} is in the tacit-curated allowlist. Editorial endorsement from the tacit operators that this asset_id is the official representation of the named token (not a copycat etching). Add via /admin/verify on the worker.`
     : `Verified: tacit-curated allowlist endorses this asset_id as the official representation.`;
-  const padding = size === 'lg' ? '2px 7px' : '1px 5px';
-  const fontSize = size === 'lg' ? '10px' : '9px';
-  return `<span style="display:inline-block;padding:${padding};background:#0a8f43;color:#fff;font-size:${fontSize};border-radius:2px;margin-left:5px;cursor:help;font-weight:600;letter-spacing:0.04em;" title="${tip}">✓ verified</span>`;
+  // design.html line 67: solid forest-green pill #1A7548, cream text
+  // #F2EBD4, no radius, uppercase ✓ VERIFIED — quieter than the prior
+  // bright #0a8f43 + white + bold + 2px radius pop.
+  const padding = size === 'lg' ? '2px 6px' : '1px 5px';
+  const fontSize = size === 'lg' ? '9px' : '9px';
+  return `<span style="display:inline-block;padding:${padding};background:#1A7548;color:#F2EBD4;font-size:${fontSize};margin-left:5px;cursor:help;font-weight:500;letter-spacing:0.05em;" title="${tip}">✓ VERIFIED</span>`;
 }
 function assetIdColorForAsset(asset) {
   return isAssetVerified(asset) ? '#0a7d3a' : 'var(--ink-mid)';
@@ -55414,6 +55422,13 @@ function _saveMarketMine(key, on) {
   try { localStorage.setItem(key, on ? '1' : '0'); } catch {}
 }
 let _marketMineOnlyAsks = _loadMarketMine(_MARKET_MINE_ASKS_KEY);
+// design.html convention: collapse both ladders to the first 8 rows
+// by default; "show all" link at the bottom expands. State is
+// in-memory only (resets on reload — the maker dashboard preserves
+// open orders across reloads through the wallet, these toggles don't
+// need that).
+let _marketBidsShowAll = false;
+let _marketAsksShowAll = false;
 let _marketMineOnlyBids = _loadMarketMine(_MARKET_MINE_BIDS_KEY);
 // Mirror Market navigation into the URL hash so a tile click produces a
 // shareable deep-link (#tab=market&aid=<aid>) and browser navigation can
@@ -55956,7 +55971,19 @@ function startMarketLivenessPrune() {
     if (!tile) return;
     tile.remove();
     if (!grid.querySelector('[data-listing-key]')) {
-      grid.innerHTML = '<div class="empty">No live listings.</div>';
+      // Liveness prune drained the asks grid. Don't wipe to a hard
+      // "No live listings" message — that collapses the visible
+      // structure and reads like the page broke. Render a subtle
+      // skeleton placeholder so the column keeps its shape; the
+      // next applyMarketFilters tick will re-populate from fresh
+      // worker data.
+      grid.innerHTML = `
+        <div class="market-skeleton-rows" aria-hidden="true" style="padding:10px 12px;font-size:11px;color:var(--ink-faint);line-height:1.4;">
+          <div style="opacity:0.55;display:grid;grid-template-columns:minmax(0,1fr) minmax(50px,max-content) minmax(40px,max-content);gap:8px;padding:3px 0;"><span class="skeleton-row" style="height:11px;"></span><span class="skeleton-row" style="height:11px;"></span><span class="skeleton-row" style="height:11px;"></span></div>
+          <div style="opacity:0.45;display:grid;grid-template-columns:minmax(0,1fr) minmax(50px,max-content) minmax(40px,max-content);gap:8px;padding:3px 0;"><span class="skeleton-row" style="height:11px;"></span><span class="skeleton-row" style="height:11px;"></span><span class="skeleton-row" style="height:11px;"></span></div>
+          <div style="opacity:0.35;display:grid;grid-template-columns:minmax(0,1fr) minmax(50px,max-content) minmax(40px,max-content);gap:8px;padding:3px 0;"><span class="skeleton-row" style="height:11px;"></span><span class="skeleton-row" style="height:11px;"></span><span class="skeleton-row" style="height:11px;"></span></div>
+          <div style="text-align:center;font-style:italic;margin-top:6px;font-size:10px;">refreshing…</div>
+        </div>`;
     }
   };
   const onTakenPending = (l) => {
@@ -56078,6 +56105,13 @@ async function renderMarket() {
   //      a previously-rendered asset, manual goToMarketAsset call) should
   //      see the URL reflect that state for shareability.
   if (_marketView && typeof _marketView === 'object' && _marketView.mode === 'asset' && _marketView.assetId) {
+    // Defensive: any path that lands here in asset mode (auto-refresh
+    // tick, back-button restore, deep-link consumption) sets the body
+    // attr so the design.html card styling applies. Otherwise an
+    // asset-mode render with the attr missing falls back to the legacy
+    // full-width layout for one frame, which reads as the page
+    // "refreshing into nothingness."
+    try { document.body.setAttribute('data-market-mode', 'asset'); } catch {}
     _writeMarketHash(_marketView.assetId);
     // Cold-load latency cut: when the deep-link is for a specific asset,
     // fire its /assets/<aid> stats fetch IN PARALLEL with the marketplace
@@ -56439,13 +56473,22 @@ function applyMarketFilters() {
     // to RE-RENDERS where we previously had asks; the first paint of
     // a genuinely empty market still falls through to the empty
     // pane below.
-    const prevSig = String(_renderedAssetSignature.sig || '');
-    const prevListingsSig = prevSig.split('||')[0] || '';
-    const prevHadAsks = !!prevListingsSig
-      && _renderedAssetSignature.aid === _marketView.assetId
-      && document.querySelector('#market-list [data-listing-key]');
-    if (prevHadAsks) {
-      console.warn('[market] skip empty asset re-render — prior state had listings, treating as transient cache miss');
+    // Broader skip guard: any prior asset-detail content for THIS asset
+    // is enough to skip the empty-state re-render. The previous check
+    // only fired when ask tiles were still in DOM, so a transient
+    // liveness-prune wipe of the asks grid (mempool.space race on
+    // getOutspend, or a worker SWR gap that briefly returned 0 listings)
+    // would let the empty path proceed and collapse the whole tile —
+    // user reports "site flashes and everything disappears." Now we
+    // hold the previous DOM if ANY part of it (hero, swap tile, bids
+    // ladder, depth chart) is still present for the same asset.
+    const prevAssetDetail = !!document.querySelector('#market-list .market-token-page [data-market-asset-header]')
+      || !!document.querySelector('#market-list .market-token-page [data-swap-tile]')
+      || !!document.querySelector('#market-list [data-listing-key]')
+      || !!document.querySelector('#market-list [data-market-bids-section]')
+      || !!document.querySelector('#market-list [data-market-depth-chart]');
+    if (prevAssetDetail && _renderedAssetSignature.aid === _marketView.assetId) {
+      console.warn('[market] skip empty asset re-render — prior state present, treating as transient cache miss');
       return;
     }
     // No asks but bids might still exist — render the ladder + place-bid CTA
@@ -56469,9 +56512,44 @@ function applyMarketFilters() {
     // asks slot at the top, then the bids ladder below. Copy says
     // "Bids below" so users know to scroll past the empty pane to see
     // demand-side liquidity.
-    const listedPaneHtml = `${_yourOrdersHtmlNoAsks}<div class="empty" style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;"><span>No active asks. Bids below; post one if you want to buy.</span>${_emptyAsksToggleChip}</div>${bidsLadderHtml}`;
-    const richStatsHtml = renderMarketAssetStatsHTML(_assetForBids);
-    list.innerHTML = `<div class="market-token-page"><div class="market-token-main">${assetHeaderHtml}${richStatsHtml}${marketAssetTabsHtml(listedPaneHtml, activityPanelHtml, marketTabActionHtml)}</div></div>`;
+    const _yourOrdersDiscloseEmpty = _yourOrdersHtmlNoAsks
+      ? `<details class="mkt-your-orders-disclose"><summary>▾ your open orders</summary>${_yourOrdersHtmlNoAsks}</details>`
+      : '';
+    // Activity table dropped from asset-detail page entirely per the
+    // design.html port. The tape's "→ N trades today" link is no-op
+    // for now; full activity history needs a dedicated route or
+    // separate page. Keep the variable so downstream references stay
+    // benign.
+    const _activityModalHtmlEmpty = '';
+    // Empty-asks render: same design.html-shaped tile as the populated
+    // path, with a one-line "no active asks" notice in the asks column
+    // and the bids ladder + tape + footer below.
+    const listedPaneHtml = `
+      <div class="mkt-depth-wrap">
+        <div data-market-depth-chart class="market-tile-section market-tile-depth" style="display:none;font-size:11px;"></div>
+      </div>
+      ${_yourOrdersDiscloseEmpty}
+      <div class="mkt-orderbook" data-orderbook-wrap data-orderbook-active="asks">
+        <div data-orderbook-side="asks">
+          <div style="padding:10px 18px;font-size:11px;color:var(--ink-mid);display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;">
+            <span>No active asks &middot; post a bid below to set demand.</span>
+            ${_emptyAsksToggleChip}
+          </div>
+        </div>
+        <div data-orderbook-side="bids">
+          ${bidsLadderHtml}
+        </div>
+      </div>
+      <div data-market-trades-tape class="market-tile-section market-tile-tape" style="display:none;min-height:28px;"></div>
+      <div class="mkt-trade-footer">
+        <span><b>TACIT</b> open-source &middot; zero fees</span>
+        <span>BIP-341 &middot; BIP-340 &middot; CT</span>
+      </div>
+      ${_activityModalHtmlEmpty}`;
+    // richStatsHtml stub appended hidden — populateMarketAssetStats
+    // requires `[data-market-asset-stats]` in scope to gate depth +
+    // tape population. CSS hides the block from default view.
+    list.innerHTML = `<div class="market-token-page"><div class="market-token-main">${assetHeaderHtml}${listedPaneHtml}${richStatsHtml}</div></div>`;
     hydrateMarketImages(list);
     bindMarketAssetHeader(list);
     bindMarketAssetTabs(list);
@@ -56598,7 +56676,16 @@ function applyMarketFilters() {
   if (!Number.isInteger(_marketListingPage) || _marketListingPage < 1) _marketListingPage = 1;
   if (_marketListingPage > totalAskPages) _marketListingPage = totalAskPages;
   const askStartIndex = (_marketListingPage - 1) * MARKET_LISTING_PAGE_SIZE;
-  const pageRows = rowsForGrid.slice(askStartIndex, askStartIndex + MARKET_LISTING_PAGE_SIZE);
+  // design.html convention: cap visible asks to 8 on page 1 unless
+  // the user clicks "N more asks" to expand. Powerusers can still
+  // page via the (hidden) pager when expanded — the cap is purely
+  // a default-view trim.
+  const _ASKS_VISIBLE_DEFAULT = 8;
+  const _pageRowsFull = rowsForGrid.slice(askStartIndex, askStartIndex + MARKET_LISTING_PAGE_SIZE);
+  const pageRows = (!_marketAsksShowAll && _marketListingPage === 1)
+    ? _pageRowsFull.slice(0, _ASKS_VISIBLE_DEFAULT)
+    : _pageRowsFull;
+  const _asksHiddenCount = Math.max(0, totalAskRows - pageRows.length);
   const askShowingStart = totalAskRows ? askStartIndex + 1 : 0;
   const askShowingEnd = askStartIndex + pageRows.length;
   const noAtomicHint = !_marketSimpleMode && atomicCount === 0 && trustCount > 0
@@ -56643,12 +56730,18 @@ function applyMarketFilters() {
   // Computed inline (the asset header function has its own copy with the
   // same name; scopes don't share — this one is local to applyMarketFilters).
   const _userHoldsAsset = !!(_holdingsCache?.holdings && _holdingsCache.holdings.get(_marketView.assetId));
-  const _listChip = _userHoldsAsset
-    ? `<button class="primary" data-act="market-ask-place" data-aid="${escapeHtml(_marketView.assetId)}" title="You hold this asset — list one of your UTXOs for sale via an instant listing (signed once at listing time, buyer completes settlement)." style="font-size:10px;padding:3px 10px;background:transparent;border:1px solid var(--ink);color:var(--ink);cursor:pointer;">+ List</button>`
-    : '';
-  const _askFormSlot = _userHoldsAsset
-    ? `<div data-market-ask-form data-aid="${escapeHtml(_marketView.assetId)}" style="display:none;margin-bottom:10px;"></div>`
-    : '';
+  // design.html convention: subtle text-only "+ list" chip with hover
+  // underline, no border. Always visible (clicking when user doesn't
+  // hold opens the wallet-unlock / acquire-asset preview). Modal opens
+  // the explicit ask form; tacit's variable-amount intents default to
+  // partial-fill so the maker can leave a single open order that
+  // multiple buyers can chip away at.
+  const _listChip = `<button class="mkt-chip" data-act="market-ask-place" data-aid="${escapeHtml(_marketView.assetId)}" title="${_userHoldsAsset ? 'List one of your UTXOs for sale (variable-amount, partial-fill enabled by default).' : `Acquire ${escapeHtml(_marketView.assetId.slice(0,8))}… first to list. Click to open Holdings.`}">+ list</button>`;
+  // Always render the ask-form slot — clicking "+ list" routes through
+  // the same handler whether or not the user currently holds. The
+  // handler shows the unlock/acquire preview when needed; the slot
+  // hosts the explicit-params form otherwise.
+  const _askFormSlot = `<div data-market-ask-form data-aid="${escapeHtml(_marketView.assetId)}" style="display:none;margin-bottom:10px;"></div>`;
   const mineAsksChip = minedAsksCount > 0
     ? (_marketMineOnlyAsks
         ? `<button data-act="market-mine-asks-toggle" type="button" title="Showing only your asks (${minedAsksCount}). Click to show all asks." style="font-size:10px;padding:3px 10px;background:var(--ink);border:1px solid var(--ink);color:#fff;cursor:pointer;">Mine - ${minedAsksCount}</button>`
@@ -56735,18 +56828,17 @@ function applyMarketFilters() {
         <span style="background:#f7931a;color:#fff;padding:0 4px;border-radius:2px;font-weight:600;font-size:9px;">Buy&nbsp;level</span> / <span style="background:#f7931a;color:#fff;padding:0 4px;border-radius:2px;font-weight:600;font-size:9px;">Buy&nbsp;chunks</span> = atomically fills several listings at once (one tx per listing, cheaper to monitor than running N separate Buys).
       </div>`
     : '';
-  // Asks-section header. Designer pass: one primary CTA (+List, when
-  // the user holds the asset) sits inline with the ASKS title; power-
-  // user chips (Mine filter, Simple/All toggle, row-actions toggle,
-  // ladder-view toggle, Sweep buy) collapse behind a `more ▾`
-  // disclosure so the header reads as one tight row at 50% column
-  // width without chip overflow. The disclosure stays open via the
-  // browser's <details> behaviour — no JS state to track.
+  // Asks-section header: `+ list` is the always-visible primary chip.
+  // Power-user toggles (Mine filter, Simple/All offers, row-actions
+  // toggle, ladder view, Sweep buy) collapse behind a single
+  // `+ advanced` disclosure chip so the default header stays clean
+  // per design.html, but power users can still reach them. Default
+  // user story = swap / + list / + bid / click row to fill at best.
   const _advancedChips = `${mineAsksChip}${modeChip}${_rowActionsChip}${_ladderToggleChip}${_sweepBuyChip}`;
   const _advancedChipsHtml = _advancedChips
-    ? `<details data-market-asks-more style="position:relative;">
-        <summary style="cursor:pointer;list-style:none;font-size:10px;padding:3px 10px;border:1px solid var(--ink-faint);color:var(--ink-mid);background:transparent;letter-spacing:0.04em;">more ▾</summary>
-        <div style="position:absolute;right:0;top:calc(100% + 4px);z-index:5;display:flex;flex-wrap:wrap;gap:6px;padding:8px;border:1px solid var(--ink);background:var(--bg-warm);box-shadow:2px 2px 0 var(--ink);min-width:240px;justify-content:flex-end;">${_advancedChips}</div>
+    ? `<details data-market-asks-more class="mkt-advanced-disclose">
+        <summary class="mkt-chip">+ advanced</summary>
+        <div class="mkt-advanced-panel">${_advancedChips}</div>
       </details>`
     : '';
   const asksHeaderHtml = `<div data-market-sweep-buy-section data-aid="${escapeHtml(_marketView.assetId)}">
@@ -57344,7 +57436,52 @@ function applyMarketFilters() {
   // whole point of the flip. Above the grid, it reads as a toolbar
   // for the asks panel.
   const _asksPagerHtml = marketListingPagerHtml(totalAskRows, _marketListingPage, totalAskPages, askShowingStart, askShowingEnd);
-  const listedPaneHtml = `${_yourOrdersHtml}<div data-orderbook-wrap data-orderbook-active="asks">${_mobileTabsHtml}<div data-orderbook-side="asks">${asksHeaderHtml}${noAtomicHint}${simpleEmptyHint}${_asksPagerHtml}${_asksHeaderRowHtml}<div id="market-grid" class="${_gridClass}" style="${rowsForGrid.length === 0 ? 'display:none;' : ''}"></div></div>${_spreadRowHtml}<div data-orderbook-side="bids">${bidsLadderHtml}</div></div>`;
+  // design.html-shaped unified market tile. Order: hero → swap → depth
+  // (with spread strip inline) → two-col asks|bids → tape (with → all
+  // trades link to modal) → tiny footer. Listed/Activity tabs are gone
+  // from the DOM entirely (no marketAssetTabsHtml wrap). The detail
+  // stats block (richStatsHtml) also drops out of default DOM —
+  // disclosures for 24h high/low · supply · charts · alert can return
+  // as a separate `▾ more details` toggle later if needed.
+  //
+  // Your-open-orders: rendered inside a closed <details> disclosure so
+  // the panel is reachable but doesn't bloat default vertical. Returns
+  // '' when user has no orders so the disclosure collapses entirely.
+  const _yourOrdersDisclose = _yourOrdersHtml
+    ? `<details class="mkt-your-orders-disclose"><summary>▾ your open orders</summary>${_yourOrdersHtml}</details>`
+    : '';
+  // Activity modal: hidden overlay containing the full activity table.
+  // Opens when the user clicks the tape's `N trades today →` link.
+  // Kept minimal — × close, backdrop-click close, Esc close.
+  const _activityModalHtml = `<div class="mkt-activity-modal" data-mkt-activity-modal hidden><div class="mkt-activity-modal-panel"><button class="mkt-activity-modal-close" data-act="market-activity-modal-close" type="button" aria-label="Close">×</button><div class="mkt-activity-modal-body">${activityPanelHtml}</div></div></div>`;
+  const listedPaneHtml = `
+    <div class="mkt-depth-wrap">
+      <div data-market-depth-chart class="market-tile-section market-tile-depth" style="display:none;font-size:11px;"></div>
+    </div>
+    ${_yourOrdersDisclose}
+    <div class="mkt-orderbook" data-orderbook-wrap data-orderbook-active="asks">
+      ${_mobileTabsHtml}
+      <div data-orderbook-side="asks">
+        ${asksHeaderHtml}
+        ${noAtomicHint}
+        ${simpleEmptyHint}
+        ${_asksHeaderRowHtml}
+        <div id="market-grid" class="${_gridClass}" style="${rowsForGrid.length === 0 ? 'display:none;' : ''}"></div>
+        ${_asksHiddenCount > 0 || _marketAsksShowAll
+          ? `<div style="text-align:center;font-size:10px;color:#95907F;padding:8px 0 4px;"><button data-act="market-asks-show-all" type="button" style="background:none;border:0;border-bottom:0.5px dashed rgba(26,26,26,0.4);color:#95907F;padding:0;font:inherit;cursor:pointer;font-size:10px;text-transform:none;letter-spacing:0;">${_marketAsksShowAll ? 'show fewer asks' : `${_asksHiddenCount} more ask${_asksHiddenCount === 1 ? '' : 's'}`}</button></div>`
+          : ''}
+      </div>
+      <div data-orderbook-side="bids">
+        ${bidsLadderHtml}
+      </div>
+    </div>
+    <div data-market-trades-tape class="market-tile-section market-tile-tape" style="display:none;min-height:28px;"></div>
+    <div class="mkt-trade-footer">
+      <span><b>TACIT</b> open-source &middot; zero fees</span>
+      <span><span style="color:#C76B26;">●</span> AMM ceremony &middot; <a href="#tab=protocol" style="color:var(--ink-mid);text-decoration:none;border-bottom:0.5px dashed rgba(26,26,26,0.4);">contribute &rarr;</a></span>
+      <span>BIP-341 &middot; BIP-340 &middot; CT</span>
+    </div>
+    ${_activityModalHtml}`;
   // Rich stats strip — supply (with IPFS-attestation badge), market cap
   // with proof, 24h Δ, depth chart, recent-trades feed. The header above
   // shows the 4 condensed cells; this strip below carries the deeper
@@ -57459,7 +57596,20 @@ function applyMarketFilters() {
       }
     }
   }
-  list.innerHTML = `<div class="market-token-page"><div class="market-token-main">${assetHeaderHtml}${_swapTileHtml}${richStatsHtml}${marketAssetTabsHtml(listedPaneHtml, activityPanelHtml, marketTabActionHtml)}</div></div>`;
+  // design.html-shaped flow: hero → swap → depth → asks|bids → tape →
+  // footer. listedPaneHtml IS the unified market tile; no Listed/
+  // Activity tab wrap. Activity history lives inside the modal
+  // overlay rendered at the tail of listedPaneHtml — accessed via
+  // the tape's "→ N trades" link.
+  //
+  // richStatsHtml is appended hidden at the tail: populateMarketAssetStats
+  // gates its entire body on finding `[data-market-asset-stats]` via
+  // scope.querySelector, and that body in turn drives _populateDepthChart
+  // and _populateTradesTape. Without this stub, the depth chart + tape
+  // would never paint. CSS hides the stats block from default view; the
+  // populator still writes its hidden cells (24h high/low, supply,
+  // delta strips) for any consumer that later promotes them.
+  list.innerHTML = `<div class="market-token-page"><div class="market-token-main">${assetHeaderHtml}${_swapTileHtml}${listedPaneHtml}${richStatsHtml}</div></div>`;
   if (_onAssetDetailReRender) {
     for (const [sel, node] of Object.entries(_preservedNodes)) {
       const placeholder = list.querySelector(`[${sel}]`);
@@ -57577,11 +57727,17 @@ function applyMarketFilters() {
       if (input) setTimeout(() => { try { input.focus({ preventScroll: true }); } catch { input.focus(); } }, 250);
     };
   });
-  // Spread-strip best-bid / best-ask chips → prime the Swap tile with
-  // the matching side, cap unit, and amount in base units. Saves a
-  // scroll + a click for "I want to take exactly this price."
-  list.querySelectorAll('[data-act="market-spread-prime"]').forEach(btn => {
-    btn.onclick = () => {
+  // Spread-prime click handler: best-bid / best-ask chips inside the
+  // depth chart footer (and anywhere else) prime the Swap tile with
+  // the matching side + cap unit + amount. Uses delegation on `list`
+  // so the handler survives the depth chart's async re-render — when
+  // _populateDepthChart rewrites innerHTML, the buttons remain
+  // clickable without needing re-binding.
+  if (!list._spreadPrimeDelegated) {
+    list._spreadPrimeDelegated = true;
+    list.addEventListener('click', (ev) => {
+      const btn = ev.target.closest('[data-act="market-spread-prime"]');
+      if (!btn || !list.contains(btn)) return;
       const aid = btn.dataset.aid || _marketView?.assetId || '';
       const side = btn.dataset.side === 'sell' ? 'sell' : 'buy';
       const capUnit = parseFloat(btn.dataset.capUnit || '');
@@ -57600,8 +57756,8 @@ function applyMarketFilters() {
       if (widget) {
         try { widget.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch { widget.scrollIntoView(); }
       }
-    };
-  });
+    });
+  }
   // Recent-trades strip → Activity tab. Scrolls the asset-detail tabs
   // into view first, then clicks the Activity chip so the full trade
   // history (price + size + counterparty + tx link per row) lands
@@ -57609,13 +57765,24 @@ function applyMarketFilters() {
   // can still navigate manually.
   list.querySelectorAll('[data-act="market-jump-activity"]').forEach(btn => {
     btn.onclick = () => {
-      const activityTab = document.querySelector('[data-market-detail-tab="activity"]')
-                       || document.querySelector('[data-act="market-detail-tab"][data-tab="activity"]')
-                       || document.querySelector('[data-market-tab="activity"]');
-      if (activityTab) {
-        try { activityTab.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch {}
-        setTimeout(() => { try { activityTab.click(); } catch {} }, 250);
-      }
+      // Activity table now lives in a modal overlay (`.mkt-activity-modal`)
+      // appended to listedPaneHtml. Click "→ all trades" opens it;
+      // close via the × button (data-act="market-activity-modal-close")
+      // or Escape key (wired below).
+      const modal = document.querySelector('[data-mkt-activity-modal]');
+      if (modal) modal.hidden = false;
+    };
+  });
+  list.querySelectorAll('[data-act="market-activity-modal-close"]').forEach(btn => {
+    btn.onclick = () => {
+      const modal = btn.closest('[data-mkt-activity-modal]');
+      if (modal) modal.hidden = true;
+    };
+  });
+  // Backdrop click + Esc both close the modal so it doesn't trap the user.
+  list.querySelectorAll('[data-mkt-activity-modal]').forEach(modal => {
+    modal.onclick = (e) => {
+      if (e.target === modal) modal.hidden = true;
     };
   });
   list.querySelectorAll('[data-act="market-mine-asks-toggle"]').forEach(btn => {
@@ -57623,6 +57790,12 @@ function applyMarketFilters() {
     btn.onclick = () => {
       _marketMineOnlyAsks = !_marketMineOnlyAsks;
       _saveMarketMine(_MARKET_MINE_ASKS_KEY, _marketMineOnlyAsks);
+      applyMarketFilters();
+    };
+  });
+  list.querySelectorAll('[data-act="market-asks-show-all"]').forEach(btn => {
+    btn.onclick = () => {
+      _marketAsksShowAll = !_marketAsksShowAll;
       applyMarketFilters();
     };
   });
@@ -57692,12 +57865,17 @@ function applyMarketFilters() {
     return Number.isFinite(amtN) && amtN > 0 ? amtN : 0;
   });
   let _askTotalDepth = 0;
-  for (const a of _askFillableAmts) _askTotalDepth += a;
-  let _askCumSoFar = 0;
-  const _askCumPct = _askFillableAmts.map(a => {
-    _askCumSoFar += a;
-    return _askTotalDepth > 0 ? Math.min(100, (_askCumSoFar / _askTotalDepth) * 100) : 0;
-  });
+  let _askMaxAmt = 0;
+  for (const a of _askFillableAmts) {
+    _askTotalDepth += a;
+    if (a > _askMaxAmt) _askMaxAmt = a;
+  }
+  // Per-row bar percent: qty as % of column max. design.html style — the
+  // largest row fills the bar (~98%), smaller rows scale down. More
+  // legible than cumulative-depth (which loaded later rows toward 100%
+  // regardless of their individual size) and matches the user-shipped
+  // reference exactly.
+  const _askRowPct = _askFillableAmts.map(a => _askMaxAmt > 0 ? Math.min(100, (a / _askMaxAmt) * 100) : 0);
   const _askFillableCount = _askFillableAmts.reduce((s, a) => s + (a > 0 ? 1 : 0), 0);
   // Build all tiles into a DocumentFragment first; one reflow at the end
   // instead of N reflows during the loop. Material on busy markets.
@@ -57778,9 +57956,13 @@ function applyMarketFilters() {
         && _askTotalDepth > 0
         && _askFillableCount >= 2
         && _askFillableAmts[_tileIdx] > 0) {
-      const _askCum = _askCumPct[_tileIdx];
+      // Per-row depth bar per design.html: width = qty / column-max,
+      // grows leftward (asks side). Color = green tint for the best
+      // ask (best-in-class), red tint for everything else above mid.
+      const _pct = _askRowPct[_tileIdx];
+      const _color = _isBestAsk ? 'rgba(26,117,72,0.12)' : 'rgba(178,58,46,0.07)';
       tile.style.backgroundImage =
-        `linear-gradient(to right, rgba(184, 52, 29, 0.10) ${_askCum.toFixed(1)}%, transparent ${_askCum.toFixed(1)}%)`;
+        `linear-gradient(to right, ${_color} ${_pct.toFixed(1)}%, transparent ${_pct.toFixed(1)}%)`;
     } else {
       tile.style.backgroundImage = '';
     }
@@ -58185,11 +58367,14 @@ function applyMarketFilters() {
       ? '&mdash;'
       : `${_vsRefPctAsk >= 0 ? '+' : ''}${_vsRefPctAsk.toFixed(2)}%`;
     const _vsRefLabelAsk = _askRef?.label === 'mid' ? 'vs mid' : 'vs mark';
+    // Single-line vs-mid cell per design.html — just the % chip, no sub-label.
+    // Level rows show the bucket size (already in the price column as ×N);
+    // own-listings show YOU; everything else shows the colored percent.
     const _vsMarkCellHtml = _isLevel
-      ? `<strong>${l._levelCount} makers</strong><small>at this tick</small>`
+      ? `<strong class="muted" style="font-size:10px;">${l._levelCount} makers</strong>`
       : (_isMineAsk
-          ? `<strong style="color:#7a5e00;">YOU</strong><small>your listing</small>`
-          : `<strong style="${_vsRefClsAsk}">${_vsRefStrAsk}</strong><small>${_vsRefLabelAsk}</small>`);
+          ? `<strong style="color:#7a5e00;">YOU</strong>`
+          : `<strong style="${_vsRefClsAsk}">${_vsRefStrAsk}</strong>`);
     // Dedicated expires cell. recencyLine already carries the
     // "expires in Xd · listed Yh ago" + the data-age-ts hooks for
     // the live ticker; we lift the relative expiry into a strong
@@ -58201,23 +58386,40 @@ function applyMarketFilters() {
     const _expCellHtml = _expRelForCell
       ? `<strong data-age-ts="${_expSecCell}" data-age-fmt="in" title="Expires ${escapeHtml(expIso)}">in ${escapeHtml(_expRelForCell)}</strong>${listedRel && listedTs > 0 ? `<small>listed <span data-age-ts="${listedTs}" data-age-fmt="ago">${escapeHtml(listedRel)} ago</span></small>` : '<small>open</small>'}`
       : `<strong style="opacity:0.6;">expired</strong><small>${escapeHtml(expIso)}</small>`;
+    // design.html-shaped compact row: price | qty | vs-mid, single line each,
+    // no USD sub-prices, no maker counts, no fill bars, no "spread X-Y"
+    // sublabels, no "sats" suffix. Grouped levels use "≤price ×N"
+    // notation (matches design.html line 197). BEST/YOU chips stay
+    // inline with price.
+    const _compactPricePrefix = _isLevel ? '≤' : (l.kind === 'range' ? '≥' : '');
+    // fmtUnitPriceSats returns just the number — fmtMarketUnitSats
+    // appends " sats" which design.html drops in row-mode.
+    const _compactPriceNum = _displayUnit != null
+      ? fmtUnitPriceSats(_displayUnit)
+      : `${priceSatsRaw.toLocaleString('en-US')}`;
+    const _compactLevelMul = _isLevel
+      ? ` <span class="muted" style="font-size:10px;">×${l._levelCount}</span>`
+      : '';
+    const _compactBestChip = (_tileIdx === bestPreauthIdx && l.kind === 'preauth')
+      ? ` <span style="display:inline-block;padding:1px 5px;background:#0a7d3a;color:#F2EBD4;font-size:9px;letter-spacing:0.04em;vertical-align:middle;" title="Cheapest Instant offer on this page.">BEST</span>`
+      : '';
+    const _compactYouChip = (_isMineAsk && !l._takenPending)
+      ? ` <span style="display:inline-block;padding:1px 5px;background:#fdf3cf;border:0.5px solid #c9a116;color:#7a5e00;font-size:9px;letter-spacing:0.04em;vertical-align:middle;">YOU</span>`
+      : '';
+    const _compactQty = (() => {
+      try {
+        const _amtBig = _isVariableIntent
+          ? (_remAmtBig > 0n ? _remAmtBig : _origAmtBig)
+          : BigInt(amount || '0');
+        return escapeHtml(fmtAssetAmountCompact(_amtBig, dec));
+      } catch { return ''; }
+    })();
     const rowsModeHtml = `
-      <div class="market-listing-unit" title="${escapeHtml(_rowMetaTitle)}">
-        <strong>${unitStr || `${priceSatsRaw.toLocaleString('en-US')} sats`}</strong>
-        <small class="market-usd-price">${escapeHtml(fmtMarketUsdUnitFromSats(unit || 0, ''))}${unit ? ` /token` : ''}</small>
-        ${_levelSpread}
-      </div>
-      <div class="market-listing-amount" style="font-size:12px;font-weight:600;text-align:left;line-height:1.3;">
-        ${_amountLine}${_groupBadge}${_bestPriceBadge}${_youBadge}${_levelBadge}${_perChunkSuffix}
-        ${_fillProgressBar}
-      </div>
-      <div class="market-listing-total">
-        <span class="market-btc-price">${escapeHtml(fmtMarketBtc(priceSatsRaw))}</span>
-        <span class="market-usd-price">${escapeHtml(fmtMarketUsdFromSats(priceSatsRaw, ''))}</span>
-        ${_groupTotalInline}
-      </div>
+      <div class="market-listing-unit" title="${escapeHtml(_rowMetaTitle)}"><strong>${_compactPricePrefix}${_compactPriceNum}${_compactLevelMul}${_compactBestChip}${_compactYouChip}</strong></div>
+      <div class="market-listing-amount">${_compactQty}</div>
+      <div class="market-listing-total" hidden></div>
       <div class="market-listing-vsmark">${_vsMarkCellHtml}</div>
-      <div class="market-listing-expires">${_expCellHtml}</div>
+      <div class="market-listing-expires" hidden></div>
       ${_rowActionRow}`;
     const cardsModeHtml = `
       ${_tileTopHtml}
@@ -58674,6 +58876,18 @@ function fmtMarketUsdWholeFromSats(sats, empty = 'n/a') {
   const n = Number(marketSatsToUsd(sats));
   if (!Number.isFinite(n) || n <= 0) return empty;
   return `$${Math.trunc(n).toLocaleString('en-US')}`;
+}
+// Compact USD: $2.26M / $342K / $5,081 / $0.16. Used in tight one-line
+// hero stats so the row doesn't wrap at 720px (mcap $3,283,964 alone is
+// wide enough to push the 1h/4h/24h Δ chips to a second line).
+function fmtMarketUsdCompactFromSats(sats, empty = 'n/a') {
+  const n = Number(marketSatsToUsd(sats));
+  if (!Number.isFinite(n) || n <= 0) return empty;
+  if (n >= 1e9) return `$${(n / 1e9).toFixed(n >= 1e10 ? 1 : 2)}B`;
+  if (n >= 1e6) return `$${(n / 1e6).toFixed(n >= 1e7 ? 1 : 2)}M`;
+  if (n >= 1e4) return `$${(n / 1e3).toFixed(n >= 1e5 ? 0 : 1)}K`;
+  if (n >= 1) return `$${Math.round(n).toLocaleString('en-US')}`;
+  return `$${n.toFixed(4).replace(/0+$/, '').replace(/\.$/, '')}`;
 }
 function fmtMarketUsdUnitFromSats(sats, empty = 'n/a') {
   const n = Number(marketSatsToUsd(sats));
@@ -59643,6 +59857,18 @@ function renderMarketBrowse(rows) {
   const status = $('#market-status');
   if (status) status.textContent = _formatMarketStatus(rows, { scope: 'browse' });
   if (!rows.length) {
+    // Skip the empty wipe when we already have rendered content AND
+    // the worker round-trip hasn't proved the network is genuinely
+    // empty (cache might be cold/refreshing). Preserves the previously-
+    // populated browse table during transient SWR gaps so users don't
+    // see the entire list collapse to "No live listings yet" between
+    // ticks. The first cold-paint (no prior table) still falls through.
+    const _prevBrowseTable = list && list.querySelector('.market-token-table tbody tr, .market-asset-grid > div, [data-market-page-token]');
+    const _cacheHasInflightFetch = !_marketCache || !_marketCache.fetchedAt;
+    if (_prevBrowseTable && _cacheHasInflightFetch) {
+      console.warn('[market] skip empty browse re-render — prior content present, treating as transient cache miss');
+      return;
+    }
     // Differentiate "filter excluded everything" from "the network has
     // nothing listed." Both render an empty grid, but the actionable
     // guidance is different — clear-filters vs go-be-the-first.
@@ -60253,6 +60479,11 @@ function marketAssetTabsHtml(listedHtml, activityHtml, actionHtml = '') {
 
 function bindMarketAssetTabs(scope) {
   const tabs = Array.from(scope.querySelectorAll('[data-market-asset-tab]'));
+  // Activity table wiring (filter dropdown, pagination) doesn't depend on
+  // tabs existing — call it unconditionally so the activity modal stays
+  // wired up in the design.html-shaped layout where the tabbar was
+  // dropped. Tab activation logic below is still gated on tabs existing.
+  bindMarketActivityTable(scope);
   if (!tabs.length) return;
   const panes = Array.from(scope.querySelectorAll('[data-market-asset-pane]'));
   const activate = (name) => {
@@ -60268,7 +60499,8 @@ function bindMarketAssetTabs(scope) {
   tabs.forEach(tab => {
     tab.onclick = () => activate(tab.dataset.marketAssetTab || 'listed');
   });
-  bindMarketActivityTable(scope);
+  // bindMarketActivityTable is called once at the top regardless of
+  // tabs existing — no second call here.
 }
 
 function bindMarketActivityTable(scope) {
@@ -60878,7 +61110,9 @@ function renderMarketAssetHeader(assetId, rows) {
   const total = Number(allGroup.total || 0);
   const priceLine = headerUnit != null ? fmtMarketUnitSats(headerUnit) : 'no price';
   const priceUsd = headerUnit != null ? fmtMarketUsdUnitFromSats(headerUnit, '') : '';
-  const mcapUsd = headerMarketCapSats != null ? fmtMarketUsdWholeFromSats(headerMarketCapSats) : 'n/a';
+  // Compact form for the hero one-line stats row ($2.26M vs $2,261,234)
+  // so the row doesn't wrap at the design.html 720px tile width.
+  const mcapUsd = headerMarketCapSats != null ? fmtMarketUsdCompactFromSats(headerMarketCapSats) : 'n/a';
   const mcapBtc = headerMarketCapSats != null ? fmtMarketBtc(headerMarketCapSats) : '0 BTC';
   const transfers = Number(a.transfer_count || 0);
   const verifiedBadge = a._copycatInfo
@@ -60910,12 +61144,12 @@ function renderMarketAssetHeader(assetId, rows) {
   // gets full width and doesn't squeeze the ticker / floor stats out of
   // the top row. Both lines are optional; if neither is present the block
   // collapses entirely.
-  // Description is inline-muted (no bordered box) per design.html — the
-  // external URL is already in the hero meta row, so this only renders
-  // the description prose itself. Skipped entirely when missing.
-  const descriptionBlockHtml = _description
-    ? `<div style="margin:0 0 14px;padding:0 2px;font-size:11px;line-height:1.55;color:var(--ink-mid);">${escapeHtml(_description)}</div>`
-    : '';
+  // design.html convention: drop the per-asset description line under
+  // the hero. The token's identity (avatar, ticker, verified, github
+  // link in the meta row, full description in the IPFS metadata
+  // tooltip) is enough; the prose paragraph adds vertical bulk that
+  // design.html doesn't reserve for it.
+  const descriptionBlockHtml = '';
 
   // Inline sparkline next to the big price — replaces the standalone
   // "Price history" chart per designer feedback: "tiny and inline next
@@ -60998,7 +61232,7 @@ function renderMarketAssetHeader(assetId, rows) {
     const sign = pct > 0 ? '+' : '−';
     return `<span class="mkt-hero-price-delta mkt-hero-delta-${cls}">${sign}${Math.abs(pct).toFixed(2)}%</span><span class="mkt-hero-price-delta-win">24h</span>`;
   })();
-  const _heroVolUsdHtml = allGroup.volume24hSats != null ? escapeHtml(fmtMarketUsdWholeFromSats(allGroup.volume24hSats, '—')) : '—';
+  const _heroVolUsdHtml = allGroup.volume24hSats != null ? escapeHtml(fmtMarketUsdCompactFromSats(allGroup.volume24hSats, '—')) : '—';
   const _heroHolderHtml = (() => {
     const hc = Number(a.holder_count || 0);
     const enriched = !!a._marketAssetStatsLoadedAt;
@@ -61025,7 +61259,6 @@ function renderMarketAssetHeader(assetId, rows) {
       </div>
 
       <div class="mkt-hero-price-row">
-        ${_headerCrossed ? `<span class="mkt-hero-price-label">${escapeHtml('Price · mid')} <span class="mkt-hero-crossed-chip" title="Book is crossed (best bid > best ask). Showing midpoint of (best bid + best ask) / 2; the worker's last-trade mark (${escapeHtml(fmtUnitPriceSats(markUnit))} sats/${escapeHtml(a.ticker || 'token')}) is stale right now.">CROSSED</span></span>` : ''}
         <span class="mkt-hero-price-num ${_priceFlashClassFor(safeAid, headerUnit)}" data-market-header="price-sats">${escapeHtml(priceLine)}</span>
         <span class="mkt-hero-price-unit">sats/${escapeHtml(a.ticker || 'TAC')}</span>
         <span class="mkt-hero-price-usd" data-market-header="price-usd">${escapeHtml(priceUsd || (_marketOracleLoading() ? 'loading USD…' : '—'))}</span>
@@ -61255,13 +61488,12 @@ function renderMarketAssetStatsHTML(asset) {
         <div data-chart-tf-wrap style="margin-top:8px;${prePaintedChartHtml ? '' : 'display:none;'}">${_tfRowHtml}</div>
         <div data-market-price-chart style="${prePaintedChartStyle}">${prePaintedChartHtml}</div>
       </details>
-      <!-- Reserved layout space so the first populate doesn't pop the
-           page (push the Listed/Activity tabs below down a chunk). The
-           inner container stays hidden until data lands; the outer
-           reservation holds the slot. min-height matches the rendered
-           size of a populated tape (one row) / depth chart (compact). -->
-      <div data-market-trades-tape style="margin-top:8px;display:none;min-height:28px;"></div>
-      <div data-market-depth-chart style="margin-top:10px;font-size:11px;display:none;min-height:160px;"></div>
+      <!-- depth chart + trades tape used to live here as separate slots
+           above the Listed/Activity tabs; both moved inline into the
+           Listed pane so the trade surface reads as one tile (swap →
+           depth → asks|bids → tape). populators (_populateDepthChart,
+           _populateTradesTape) query against the whole #market-list
+           scope, so the new positions are discovered transparently. -->
       <!-- The standalone Recent-trades table from earlier was removed in
            favor of (a) the spatial price chart above, (b) the trades
            tape (one-line live tape of the last few fills, scrolls
@@ -62285,7 +62517,7 @@ async function populateMarketAssetStats(scope, asset) {
       // can disagree with the price-usd we just wrote above (priceUsd is
       // derived from _headerUnitHdr, so they must share a source).
       if (_headerUnitHdr != null) {
-        const _priceSatsHdr = `${fmtMarketUnitSats(_headerUnitHdr)}/${a.ticker || 'token'}`;
+        const _priceSatsHdr = `${fmtMarketUnitSats(_headerUnitHdr)}/${asset?.ticker || j.ticker || 'token'}`;
         const _priceSatsEl = headerCard.querySelector('[data-market-header="price-sats"]');
         if (_priceSatsEl) _priceSatsEl.textContent = _priceSatsHdr;
       }
@@ -62657,18 +62889,12 @@ async function populateMarketAssetStats(scope, asset) {
   // don't double-RTT).
   _populateBidAskSpread(section, aid, decimals, ticker, _deltaMarkUnit).catch(() => {});
 
-  // Depth chart: stacked area of cumulative bid vs ask volume. Reads asks
-  // from _marketCache.listings (already loaded) and bids from the same
-  // _bidsForSpreadCache that populateBidAskSpread fills, so it triggers
-  // exactly one bid-intents fetch shared across spread + depth + ladder.
-  // markUnit (from j.mark_price) anchors the chart's center line and
-  // drives the log-scale switch when the orderbook spans many decades.
-  _populateDepthChart(section, aid, decimals, ticker, _deltaMarkUnit).catch(() => {});
-  // Trades tape: one-line live tape of the last few fills, classic CEX
-  // ticker. Reads from `trades` (the same worker-supplied ring the
-  // chart uses), so it picks up fresh fills every time the asset stats
-  // cache busts.
-  try { _populateTradesTape(section, trades, ticker, decimals, _deltaMarkUnit); } catch (e) { console.warn('[market] trades tape failed', e?.message); }
+  // Depth chart + trades tape: their placeholders moved from inside
+  // [data-market-asset-stats] up into the unified market tile (listed
+  // pane). Pass `scope` (the wider #market-list container) so the
+  // populators' section.querySelector finds them in their new home.
+  _populateDepthChart(scope, aid, decimals, ticker, _deltaMarkUnit).catch(() => {});
+  try { _populateTradesTape(scope, trades, ticker, decimals, _deltaMarkUnit); } catch (e) { console.warn('[market] trades tape failed', e?.message); }
   // Price chart: rendered above the trade table when we have ≥2 trades.
   // Time-frame chips filter the trades ring before paint; localStorage
   // remembers the user's pick across asset switches and reloads.
@@ -62828,16 +63054,18 @@ function renderMarketBidsLadderHTML(asset) {
           <strong title="Signed buy offers. Bidder's sats stay in their own wallet until a matched seller claims (CoW / 0x-style maker model). Each bid supports partial fills — sellers can take any chunk between min_fill and the full amount in one Bitcoin tx, per SPEC §5.7.7."><span style="color:#0a7d3a;font-size:9px;margin-right:4px;">●</span>BIDS <span class="muted" style="font-weight:400;font-size:10px;letter-spacing:0;" data-market-bids-count>&mdash;</span></strong>
         </div>
         <div class="market-bids-actions">
-          <!-- Auto-fulfil stays visible: the ON/OFF label IS the state
-               indicator; tucking it inside "more ▾" would mean users
-               miss the warning that an active sell needs it enabled. -->
-          <button data-act="auto-fulfil-toggle" type="button" title="Automatically signs claim responses for atomic intents (asks AND bid fulfilments) while this tab is open. Required for sell-side swaps to settle without you babysitting.">Auto-fulfil: OFF</button>
-          <button class="primary" data-act="market-bid-place" data-aid="${aid}" type="button" title="Post a bid for ${ticker} — signed buy offer at your price/amount/expiry. Sellers can match it any time before expiry; your sats stay in your wallet until they do." style="font-size:10px;padding:3px 10px;background:transparent;border:1px solid var(--ink);color:var(--ink);cursor:pointer;">+ Bid</button>
-          <details data-market-bids-more style="position:relative;">
-            <summary style="cursor:pointer;list-style:none;font-size:10px;padding:3px 10px;border:1px solid var(--ink-faint);color:var(--ink-mid);background:transparent;letter-spacing:0.04em;">more ▾</summary>
-            <div style="position:absolute;right:0;top:calc(100% + 4px);z-index:5;display:flex;flex-direction:column;gap:6px;padding:8px;border:1px solid var(--ink);background:var(--bg-warm);box-shadow:2px 2px 0 var(--ink);min-width:200px;">
-              <button data-act="market-bids-toggle" type="button" aria-expanded="true" title="Collapse the bid ladder.">Hide bids</button>
-              ${_sweepSellBtn}
+          <!-- Default: just +bid. Advanced toggles (Auto-fulfil daemon,
+               Sweep sell, Mine bids, Hide outliers) tuck behind a
+               single +advanced disclosure chip — same convention
+               as the asks header. Most users just want to swap or
+               place a bid; the advanced intent capabilities sit one
+               click away for traders who need explicit control. -->
+          <button class="mkt-chip" data-act="market-bid-place" data-aid="${aid}" type="button" title="Post a bid for ${ticker} — variable-amount partial-fill bid. Your sats stay in your wallet until a seller claims. Multiple sellers can fill against a single open bid.">+ bid</button>
+          <details data-market-bids-more class="mkt-advanced-disclose">
+            <summary class="mkt-chip">+ advanced</summary>
+            <div class="mkt-advanced-panel">
+              <button data-act="auto-fulfil-toggle" type="button" title="Automatically sign claim responses for atomic-intent fulfilments while this tab stays open. Required for sell-side swaps to settle without manually fulfilling each claim. Wallet must be unlocked.">🤖 Auto-fulfil: OFF</button>
+              <button data-act="market-sweep-sell" data-aid="${aid}" type="button" title="Sell-route audit: pick a floor + amount; each fill publishes an atomic intent. The Swap tile above is simpler for most cases — this exposes the per-bid plan so you can review before signing.">Sweep sell</button>
             </div>
           </details>
         </div>
@@ -63571,11 +63799,23 @@ async function _populateDepthChart(section, aid, decimals, ticker, markUnit) {
     centerU = (bestBid + bestAsk) / 2;
   }
   const centerX = centerU != null ? xOf(centerU) : null;
-  const _logBadge = isLog
-    ? `<span title="Auto-switched to log scale because the orderbook spans &gt;50× from low to high. Mark price line stays anchored to the real trading band." style="font-size:9px;padding:1px 5px;background:var(--ink-faint);color:var(--ink);border-radius:2px;letter-spacing:0.05em;cursor:help;">log</span>`
-    : '';
+  // design.html drops the log-scale chip — auto-switch still happens
+  // internally when the book spans >50×; user feedback was that the
+  // visible chip read as power-user clutter without explaining what
+  // the user should do with the info. Tooltip on the mark line still
+  // surfaces the log mode for those who hover.
+  const _logBadge = '';
+  // Crossed badge per design.html line 32: "CROSSED 86%" — uppercase
+  // label + spread-percent-of-midpoint inline. The previously-separate
+  // explainer sentence below covers the "why".
+  const _spreadPctForBadge = (() => {
+    if (!isCrossed || !Number.isFinite(headerBestBid) || !Number.isFinite(headerBestAsk)) return null;
+    const mid = (headerBestBid + headerBestAsk) / 2;
+    if (!(mid > 0)) return null;
+    return ((headerBestBid - headerBestAsk) / mid) * 100;
+  })();
   const _crossedBadge = isCrossed
-    ? `<span title="Best bid &gt; best ask — typically caused by stale or dust orders. The visible book is unbalanced; mark price line shows where TAC actually trades." style="font-size:9px;padding:1px 5px;background:#c97a1a;color:#fff;border-radius:2px;letter-spacing:0.05em;cursor:help;">crossed</span>`
+    ? `<span title="Best bid &gt; best ask — Swap fills sweep this band at favorable prices. The CROSSED %% is the spread expressed as a % of midpoint." style="font-size:9px;padding:1px 6px;background:#F2D67C;color:#5A4400;letter-spacing:0.05em;cursor:help;font-weight:500;">CROSSED${_spreadPctForBadge != null && Number.isFinite(_spreadPctForBadge) ? ` ${Math.round(Math.abs(_spreadPctForBadge))}%` : ''}</span>`
     : '';
   // Plain-language CROSSED explainer. Designer feedback: the most novel
   // thing on the page (an orderbook where best bid sits above best ask
@@ -63618,12 +63858,20 @@ async function _populateDepthChart(section, aid, decimals, ticker, markUnit) {
   // post-write WAAPI animation can morph them into place.
   const _oldDepthBidD = out.querySelector('[data-depth-bid]')?.getAttribute('d') || null;
   const _oldDepthAskD = out.querySelector('[data-depth-ask]')?.getAttribute('d') || null;
+  // design.html line 135-137: simple "DEPTH [CROSSED N%] best bid sits
+  // above best ask — Swap fills sweep this band at favorable prices."
+  // No in-band counts / no "hover to inspect" hint / no sats suffix.
+  // Power-user counts stay in the badge title= tooltip.
   out.innerHTML = `
-    <div style="font-size:10px;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:4px;display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;">
-      <strong>Depth</strong>${_logBadge}${_crossedBadge}${_crossedExplainerHtml}
-      <span class="muted" style="text-transform:none;letter-spacing:0;font-size:10px;">· <span title="In-band counts after the 0.2×–5× outlier filter — dust + fat-finger orders are excluded from the chart's bands. &quot;N of M&quot; surfaces both numbers when outliers are present so depth reads honestly. The asset-header tile shows the unfiltered total." style="cursor:help;border-bottom:1px dotted var(--ink-faint);">${_markValid && bidsInBand < bids.length ? `${bidsInBand} of ${bids.length}` : bids.length} bid${bids.length === 1 ? '' : 's'} · ${_markValid && asksInBand < asks.length ? `${asksInBand} of ${asks.length}` : asks.length} ask${asks.length === 1 ? '' : 's'} <span style="font-size:9px;opacity:0.7;">in-band</span></span> · <span${_inBandTitle ? ` title="${escapeHtml(_inBandTitle)}" style="cursor:help;border-bottom:1px dotted var(--ink-faint);"` : ''}>best bid ${escapeHtml(fmtUnitPriceSats(headerBestBid))} · best ask ${escapeHtml(fmtUnitPriceSats(headerBestAsk))} sats/${escapeHtml(ticker)}</span>${centerU != null ? ` · mark ${escapeHtml(fmtUnitPriceSats(centerU))}` : ''} · hover to inspect, click to prime swap</span>
+    <div style="font-size:11px;letter-spacing:0.06em;margin-bottom:4px;display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;">
+      <strong style="text-transform:uppercase;letter-spacing:0.08em;">Depth</strong>${_logBadge}${_crossedBadge}${_crossedExplainerHtml}
     </div>
-    <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet" style="width:100%;height:auto;max-height:200px;display:block;background:var(--bg-warm, #faf9f5);border:1px solid var(--ink-faint);">
+    <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" style="width:100%;height:100px;display:block;background:transparent;">
+      <defs>
+        <pattern id="depth-hatch" patternUnits="userSpaceOnUse" width="6" height="6" patternTransform="rotate(45)">
+          <line x1="0" y1="0" x2="0" y2="6" stroke="#F2D67C" stroke-width="3"/>
+        </pattern>
+      </defs>
       ${isCrossed ? (() => {
         // Crossed zone: best bid > best ask, so the band between them is a
         // real arbitrage opportunity (someone could buy at the best ask and
@@ -63655,19 +63903,37 @@ async function _populateDepthChart(section, aid, decimals, ticker, markUnit) {
           ? ` ${_spreadPctOfMid.toFixed(_spreadPctOfMid < 10 ? 1 : 0)}%`
           : '';
         const _zoneTip = `Book is crossed: best bid (${fmtUnitPriceSats(headerBestBid)}) is higher than best ask (${fmtUnitPriceSats(headerBestAsk)}) sats/${ticker}${_spreadPctOfMid != null ? ` — gap is ${_spreadPctOfMid.toFixed(0)}% of midpoint` : ''}. Capturing the spread needs liquidity on both sides plus two on-chain fills; persistent crosses usually mean one side is stale or fat-finger.`;
-        return `<rect x="${_zoneXLo.toFixed(2)}" y="${PT}" width="${_zoneW.toFixed(2)}" height="${plotH.toFixed(2)}" fill="#ffcc33" fill-opacity="0.42" stroke="#c97a1a" stroke-width="1" stroke-opacity="0.55" stroke-dasharray="4,3" pointer-events="none"><title>${escapeHtml(_zoneTip)}</title></rect>${_showLabel ? `<text x="${_zoneCx.toFixed(2)}" y="${_zoneCy.toFixed(2)}" font-size="10" font-family="var(--mono, monospace)" fill="#7a4d00" text-anchor="middle" font-weight="800" letter-spacing="0.12em" pointer-events="none">CROSSED${escapeHtml(_pctTag)}</text>` : ''}`;
+        // Hatched yellow rect per design.html line 145. Pattern defined
+        // in <defs> above; stroke kept as the same dashed amber outline.
+        return `<rect x="${_zoneXLo.toFixed(2)}" y="${PT}" width="${_zoneW.toFixed(2)}" height="${plotH.toFixed(2)}" fill="url(#depth-hatch)" stroke="#D6A800" stroke-width="1" stroke-dasharray="3,2" pointer-events="none"><title>${escapeHtml(_zoneTip)}</title></rect>${_showLabel ? `<text x="${_zoneCx.toFixed(2)}" y="${_zoneCy.toFixed(2)}" font-size="13" font-family="var(--mono, monospace)" fill="#5A4400" text-anchor="middle" font-weight="500" letter-spacing="0.08em" pointer-events="none">CROSSED${escapeHtml(_pctTag)}</text>` : ''}`;
       })() : ''}
-      <path data-depth-bid d="${bidPath}" fill="#0a8f43" fill-opacity="0.32" stroke="#0a8f43" stroke-width="1.6" pointer-events="none"/>
-      <path data-depth-ask d="${askPath}" fill="#b8341d" fill-opacity="0.32" stroke="#b8341d" stroke-width="1.6" pointer-events="none"/>
-      <line x1="${bestBidX.toFixed(2)}" y1="${PT}" x2="${bestBidX.toFixed(2)}" y2="${(PT + plotH).toFixed(2)}" stroke="#0a8f43" stroke-width="${isCrossed ? '1.5' : '1'}" stroke-opacity="${isCrossed ? '1' : '0.8'}" stroke-dasharray="2,2" pointer-events="none"/>
-      <line x1="${bestAskX.toFixed(2)}" y1="${PT}" x2="${bestAskX.toFixed(2)}" y2="${(PT + plotH).toFixed(2)}" stroke="#b8341d" stroke-width="${isCrossed ? '1.5' : '1'}" stroke-opacity="${isCrossed ? '1' : '0.8'}" stroke-dasharray="2,2" pointer-events="none"/>
-      ${centerX != null ? `<line x1="${centerX.toFixed(2)}" y1="${PT}" x2="${centerX.toFixed(2)}" y2="${(PT + plotH).toFixed(2)}" stroke="var(--ink)" stroke-width="1.4" stroke-dasharray="5,3" stroke-opacity="0.85" pointer-events="none"/><rect x="${(centerX - 36).toFixed(2)}" y="${PT}" width="72" height="11" rx="2" fill="#faf9f5" stroke="var(--ink)" stroke-width="0.8" opacity="0.95" pointer-events="none"/><text x="${centerX.toFixed(2)}" y="${(PT + 8).toFixed(2)}" font-size="9" fill="var(--ink)" font-family="var(--mono, monospace)" text-anchor="middle" font-weight="600" pointer-events="none">mark ${escapeHtml(fmtUnitPriceSats(centerU))}</text>` : ''}
-      <text x="${PL}" y="${H - 5}" font-size="9" fill="var(--ink-mid)" font-family="var(--mono, monospace)" pointer-events="none">${escapeHtml(fmtUnitPriceSats(xLo))}</text>
-      <text x="${W - PR}" y="${H - 5}" font-size="9" fill="var(--ink-mid)" font-family="var(--mono, monospace)" text-anchor="end" pointer-events="none">${escapeHtml(fmtUnitPriceSats(xHi))}</text>
-      <!-- Magnitude-compacted y-axis label: 1,251,247.86 TAC reads as
-           "1.25M TAC" at a glance. Full value lives in the SVG <title>
-           hover so power users can still pull the exact depth. -->
-      <text x="${PL}" y="${(PT + 9).toFixed(0)}" font-size="9" fill="var(--ink-mid)" font-family="var(--mono, monospace)" pointer-events="none"><title>${yMax.toLocaleString(undefined, { maximumFractionDigits: 2 })} ${escapeHtml(ticker)}</title>${escapeHtml(yMax >= 1e6 ? `${(yMax / 1e6).toFixed(yMax >= 1e7 ? 1 : 2)}M` : yMax >= 1e4 ? `${(yMax / 1e3).toFixed(yMax >= 1e5 ? 0 : 1)}k` : yMax >= 1 ? yMax.toLocaleString(undefined, { maximumFractionDigits: 0 }) : yMax.toFixed(3))} ${escapeHtml(ticker)}</text>
+      <!-- Baseline floor + x-axis tick per design.html line 143. -->
+      <line x1="0" y1="${(PT + plotH).toFixed(2)}" x2="${W}" y2="${(PT + plotH).toFixed(2)}" stroke="rgba(26,26,26,0.2)" stroke-width="0.5" pointer-events="none"/>
+      <!-- Bid + ask cumulative areas: design.html palette
+           green = #1A7548 fill-opacity:0.25 stroke 1px
+           red   = #B23A2E fill-opacity:0.18 stroke 1px -->
+      <path data-depth-bid d="${bidPath}" fill="#1A7548" fill-opacity="0.25" stroke="#1A7548" stroke-width="1" pointer-events="none"/>
+      <path data-depth-ask d="${askPath}" fill="#B23A2E" fill-opacity="0.18" stroke="#B23A2E" stroke-width="1" pointer-events="none"/>
+      <!-- Best-bid / best-ask vertical guides: subtle dotted lines matching
+           the bid/ask path colors at low opacity. Skipped in design.html
+           but retained for click-to-prime-swap precision. -->
+      <line x1="${bestBidX.toFixed(2)}" y1="${PT}" x2="${bestBidX.toFixed(2)}" y2="${(PT + plotH).toFixed(2)}" stroke="#1A7548" stroke-width="1" stroke-opacity="0.55" stroke-dasharray="2,3" pointer-events="none"/>
+      <line x1="${bestAskX.toFixed(2)}" y1="${PT}" x2="${bestAskX.toFixed(2)}" y2="${(PT + plotH).toFixed(2)}" stroke="#B23A2E" stroke-width="1" stroke-opacity="0.55" stroke-dasharray="2,3" pointer-events="none"/>
+      ${(() => {
+        // Mid line: midpoint of (best bid + best ask). Always rendered
+        // when both sides exist — matches design.html line 148 "mid
+        // 139.78" label inside the chart.
+        const midUnit = (Number.isFinite(headerBestBid) && Number.isFinite(headerBestAsk) && headerBestBid > 0 && headerBestAsk > 0)
+          ? (headerBestBid + headerBestAsk) / 2
+          : null;
+        const midX = midUnit != null ? xOf(midUnit) : null;
+        return midX != null
+          ? `<line x1="${midX.toFixed(2)}" y1="${PT}" x2="${midX.toFixed(2)}" y2="${(PT + plotH).toFixed(2)}" stroke="#1A1A1A" stroke-width="1" stroke-dasharray="3,2" pointer-events="none"/><text x="${midX.toFixed(2)}" y="${(PT + 9).toFixed(2)}" font-size="9" fill="#1A1A1A" font-family="var(--mono, monospace)" text-anchor="middle" font-weight="500" pointer-events="none">mid ${escapeHtml(fmtUnitPriceSats(midUnit))}</text>`
+          : '';
+      })()}
+      ${centerX != null ? `<line x1="${centerX.toFixed(2)}" y1="${PT}" x2="${centerX.toFixed(2)}" y2="${(PT + plotH).toFixed(2)}" stroke="#B23A2E" stroke-width="0.8" stroke-dasharray="2,2" stroke-opacity="0.6" pointer-events="none"/><text x="${centerX.toFixed(2)}" y="${(PT + 9).toFixed(2)}" font-size="9" fill="#B23A2E" font-family="var(--mono, monospace)" text-anchor="middle" pointer-events="none">mark ${escapeHtml(fmtUnitPriceSats(centerU))}</text>` : ''}
+      <text x="${PL}" y="${H - 5}" font-size="9" fill="#95907F" font-family="var(--mono, monospace)" pointer-events="none">${escapeHtml(fmtUnitPriceSats(xLo))}</text>
+      <text x="${W - PR}" y="${H - 5}" font-size="9" fill="#95907F" font-family="var(--mono, monospace)" text-anchor="end" pointer-events="none">${escapeHtml(fmtUnitPriceSats(xHi))}</text>
       <rect data-depth-overlay x="${PL}" y="${PT}" width="${plotW}" height="${plotH}" fill="transparent" style="cursor:crosshair;"/>
       <g data-depth-cursor style="display:none;" pointer-events="none">
         <line data-cursor-line x1="0" y1="${PT}" x2="0" y2="${(PT + plotH).toFixed(2)}" stroke="var(--ink)" stroke-width="0.8" stroke-dasharray="2,2"/>
@@ -63678,7 +63944,32 @@ async function _populateDepthChart(section, aid, decimals, ticker, markUnit) {
           <text data-tip-l3 x="6" y="40" font-size="10" font-family="var(--mono, monospace)" fill="var(--ink-mid)"></text>
         </g>
       </g>
-    </svg>`;
+    </svg>
+    ${(() => {
+      // design.html line 156-160 footer: best bid ↑ · spread · % crossed · best ask ↓.
+      // Replaces the separate `_spreadRowHtml` strip (which lives further
+      // below) for the asset-detail page so the depth section is
+      // self-contained per design.html.
+      const _hasBid = Number.isFinite(headerBestBid) && headerBestBid > 0;
+      const _hasAsk = Number.isFinite(headerBestAsk) && headerBestAsk > 0;
+      const _spreadAbs = (_hasBid && _hasAsk) ? (headerBestAsk - headerBestBid) : null;
+      const _mid = (_hasBid && _hasAsk) ? (headerBestBid + headerBestAsk) / 2 : null;
+      const _spreadPct = (_spreadAbs != null && _mid != null && _mid > 0) ? (_spreadAbs / _mid) * 100 : null;
+      // Click-to-prime-swap on best bid / best ask — same data-act
+      // pattern the dropped _spreadRowHtml used. Sell side primes at
+      // the best bid; buy side primes at the best ask. Subtle dotted
+      // underline signals affordance without bordering the chip.
+      const _bidHtml = _hasBid
+        ? `<button type="button" data-act="market-spread-prime" data-side="sell" data-cap-unit="${escapeHtml(String(headerBestBid))}" data-aid="${escapeHtml(aid)}" title="Sell into the top bid — primes the Swap tile in Sell mode at this price." style="background:none;border:0;padding:0;font:inherit;cursor:pointer;color:inherit;display:inline-flex;align-items:baseline;gap:4px;border-bottom:0.5px dotted rgba(26,117,72,0.5);text-transform:none;letter-spacing:0;"><span style="color:#1A7548;font-weight:500;">${escapeHtml(fmtUnitPriceSats(headerBestBid))}</span> <span style="color:#95907F;font-size:10px;">best bid ↑</span></button>`
+        : `<span style="color:#95907F;font-size:10px;">no bids</span>`;
+      const _askHtml = _hasAsk
+        ? `<button type="button" data-act="market-spread-prime" data-side="buy" data-cap-unit="${escapeHtml(String(headerBestAsk))}" data-aid="${escapeHtml(aid)}" title="Buy the cheapest ask — primes the Swap tile in Buy mode at this price." style="background:none;border:0;padding:0;font:inherit;cursor:pointer;color:inherit;display:inline-flex;align-items:baseline;gap:4px;border-bottom:0.5px dotted rgba(178,58,46,0.5);text-transform:none;letter-spacing:0;"><span style="color:#95907F;font-size:10px;">best ask ↓</span> <span style="color:#B23A2E;font-weight:500;">${escapeHtml(fmtUnitPriceSats(headerBestAsk))}</span></button>`
+        : `<span style="color:#95907F;font-size:10px;">no asks</span>`;
+      const _midSpreadHtml = (_spreadAbs != null)
+        ? `<span style="color:#95907F;font-size:10px;">spread <span style="color:${isCrossed ? '#C76B26' : '#1A1A1A'};font-weight:500;">${isCrossed ? '−' : ''}${escapeHtml(fmtUnitPriceSats(Math.abs(_spreadAbs)))}</span>${isCrossed && _spreadPct != null ? ` · ${Math.round(Math.abs(_spreadPct))}% crossed` : (_spreadPct != null ? ` · ${_spreadPct.toFixed(2)}%` : '')}</span>`
+        : `<span style="color:#95907F;font-size:10px;">spread —</span>`;
+      return `<div style="display:flex;justify-content:space-between;align-items:center;font-size:11px;margin-top:6px;font-family:var(--mono, monospace);">${_bidHtml}${_midSpreadHtml}${_askHtml}</div>`;
+    })()}`;
   out.style.display = '';
   // Path-level morph for the depth chart's bid + ask areas. Same
   // pattern as the price chart line — interpolates between captured
@@ -63820,25 +64111,33 @@ function _populateTradesTape(section, trades, ticker, decimals, markUnit) {
     const _outlierTip = isOutlier
       ? ' title="Outlier vs mark (priced &lt;0.2× or &gt;5× the worker\'s outlier-guarded mark price). Probably a dust take or fat-finger fill."'
       : '';
-    return `<span${animAttr} style="display:inline-flex;align-items:baseline;gap:5px;font-size:11px;font-family:var(--mono, monospace);white-space:nowrap;flex:0 0 auto;padding:0 4px;"${_outlierTip}>
-      ${tickGlyph}
-      <strong style="color:${priceColor};font-weight:600;">${escapeHtml(fmtMarketUnitSats(u))}</strong>
-      <span class="muted" data-age-ts="${ts}" data-age-fmt="ago" style="font-size:9px;color:var(--ink-mid);">${escapeHtml(age)}</span>
-      <span class="muted" style="font-size:9px;color:var(--ink-mid);">×${escapeHtml(amtStr)}</span>${_gcSuffix}${_fcSuffix}
-    </span>`;
+    // design.html convention (line 244-249): compact `direction price age`
+    // per item — no "sats" suffix, no size, no group/batch chips. Size
+    // and txids stay in the tooltip title= for power users.
+    const _tipTitle = `${fmtUnitPriceSats(u)} sats/${ticker} · ${amtStr} ${ticker} · ${age} ago${_gc > 1 ? ` · ${_gc} fills at this bucket` : ''}${_fc > 1 ? ` · batched ${_fc} preauth fills` : ''}`;
+    return `<span${animAttr} style="display:inline-flex;align-items:baseline;gap:4px;font-size:11px;font-family:var(--mono, monospace);white-space:nowrap;flex:0 0 auto;padding:0 4px;" title="${escapeHtml(_tipTitle)}">${tickGlyph}<strong style="color:${priceColor};font-weight:500;">${escapeHtml(fmtUnitPriceSats(u))}</strong><span class="muted" data-age-ts="${ts}" data-age-fmt="ago" style="font-size:9px;color:#95907F;">${escapeHtml(age)}</span></span>`;
   }).filter(Boolean).join('');
   if (!itemsHtml) {
     tape.style.display = 'none';
     tape.innerHTML = '';
     return;
   }
+  // design.html line 249: trailing "N trades today →" link auto-tally
+  // from today's slice of the sorted trades. Used as the activity-modal
+  // trigger via the existing `data-act="market-jump-activity"` handler.
+  const _todayCutoff = Math.floor(Date.now() / 1000) - 24 * 3600;
+  const _todayCount = sorted.filter(t => Number(t.ts || 0) >= _todayCutoff).length;
+  const _todayLinkHtml = _todayCount > 0
+    ? `<button data-act="market-jump-activity" type="button" style="background:none;border:0;color:#95907F;padding:0 4px;font:inherit;cursor:pointer;font-size:10px;text-transform:none;letter-spacing:0;border-bottom:0.5px dashed rgba(26,26,26,0.4);flex:0 0 auto;margin-left:auto;" title="See the full trade history">${_todayCount} trade${_todayCount === 1 ? '' : 's'} today &rarr;</button>`
+    : '';
   tape.style.display = 'block';
   tape.innerHTML = `
     <div style="display:flex;align-items:center;gap:8px;font-size:10px;">
-      <span class="muted" style="text-transform:uppercase;letter-spacing:0.08em;flex:0 0 auto;cursor:help;" title="Recent settled trades, newest first. The leading glyph compares each fill to the one immediately before it in time: ↑ = filled above the prior price (uptick), ↓ = filled below (downtick), · = flat or no prior fill to compare. Hover any row for the exact prior-fill price.">Tape</span>
+      <span class="muted" style="text-transform:uppercase;letter-spacing:0.08em;flex:0 0 auto;cursor:help;" title="Recent settled trades, newest first. The leading glyph compares each fill to the one immediately before it in time: ▲ = filled above the prior price (uptick), ▼ = filled below (downtick), · = flat or no prior fill to compare.">Tape</span>
       <div class="market-tape-scroll" data-market-tape-scroll>
         ${itemsHtml}
       </div>
+      ${_todayLinkHtml}
     </div>`;
   // Toggle .at-end on the scroll container so the right-edge mask fade
   // disappears once the user has scrolled to the last entry. Without
@@ -64584,14 +64883,26 @@ async function populateMarketBidsLadder(scope, asset) {
     const amt = Number(b.amount || 0);
     return Number.isFinite(amt) && amt > 0 ? amt : 0;
   });
-  for (const a of _fillableAmts) bidTotalDepth += a;
-  let bidCumSoFar = 0;
-  const bidCumPct = _fillableAmts.map(a => {
-    bidCumSoFar += a;
-    return bidTotalDepth > 0 ? Math.min(100, (bidCumSoFar / bidTotalDepth) * 100) : 0;
-  });
+  let _bidMaxAmt = 0;
+  for (const a of _fillableAmts) {
+    bidTotalDepth += a;
+    if (a > _bidMaxAmt) _bidMaxAmt = a;
+  }
+  // Per-row bar percent: qty as % of column max (design.html style).
+  // The largest bid fills the bar (~98%); smaller bids scale down. More
+  // readable than cumulative-from-top, which always pushed bottom rows
+  // to 100% regardless of their individual size.
+  const bidRowPct = _fillableAmts.map(a => _bidMaxAmt > 0 ? Math.min(100, (a / _bidMaxAmt) * 100) : 0);
   const _bidFillableCount = _fillableAmts.reduce((s, a) => s + (a > 0 ? 1 : 0), 0);
-  const rowsHtml = bucketedLadder.map((b, _bidIdx) => {
+  // design.html convention: show first 8 bid rows, then a "show all bids"
+  // link. Capped slice + computed remainder for the trailing link.
+  const _BIDS_VISIBLE_DEFAULT = 8;
+  const _bidsTotal = bucketedLadder.length;
+  const _bidsHiddenCount = Math.max(0, _bidsTotal - _BIDS_VISIBLE_DEFAULT);
+  const _bidsDisplayLadder = _marketBidsShowAll
+    ? bucketedLadder
+    : bucketedLadder.slice(0, _BIDS_VISIBLE_DEFAULT);
+  const rowsHtml = _bidsDisplayLadder.map((b, _bidIdx) => {
     // Variable-fill (§5.7.7) display: show the remaining (tradable now)
     // amount, with a subtle min-fill hint. Whole-bid bids unchanged.
     const _bidIsVar = !!(b.min_fill_amount && b.min_fill_amount !== '0');
@@ -64731,18 +65042,14 @@ async function populateMarketBidsLadder(scope, asset) {
     const _fillable = !b._isMine && !claimed && !(b._expiresIn === 0);
     const _fillUnitForRow = _isLevel ? b._levelMinUnit : b._unit;
     const _fillUnitAttr = (_fillable && _fillUnitForRow != null) ? ` data-fill-unit="${_fillUnitForRow}"` : '';
-    // Cumulative-depth bar style: left-anchored translucent green covering
-    // [0%, cumPct]. Bars only render when there's meaningful depth to
-    // visualize (≥ 2 fillable rows); single-row ladders look weird with
-    // a 100% bar so we skip them.
-    const _cumPct = bidCumPct[_bidIdx];
-    // Mirror the asks ladder: asks grow leftward (red gradient from left
-    // edge), bids grow rightward from the right edge per designer spec —
-    // standard pro orderbook orientation. Same magnitude / opacity for
-    // visual parity. Bars only render when there's meaningful depth (≥ 2
-    // fillable rows); single-row ladders skip them.
+    // Per-row depth bar per design.html: width = qty / column-max,
+    // grows rightward (bids side, mirrored from the asks side which
+    // grows leftward). Color follows the same green-for-best-or-above-
+    // mid, red-for-below-mid discipline as the price text.
+    const _rowPct = bidRowPct[_bidIdx];
+    const _barColor = _belowMidEarly ? 'rgba(178,58,46,0.07)' : 'rgba(26,117,72,0.12)';
     const _depthStyle = (bidTotalDepth > 0 && _bidFillableCount >= 2 && _fillableAmts[_bidIdx] > 0)
-      ? `background:linear-gradient(to left, rgba(10, 143, 67, 0.16) ${_cumPct.toFixed(1)}%, transparent ${_cumPct.toFixed(1)}%);`
+      ? `background:linear-gradient(to left, ${_barColor} ${_rowPct.toFixed(1)}%, transparent ${_rowPct.toFixed(1)}%);`
       : '';
     const _baseCursor = _fillable ? 'cursor:pointer;' : '';
     const _styleAttr = (_depthStyle || _baseCursor) ? ` style="${_depthStyle}${_baseCursor}"` : '';
@@ -64800,30 +65107,38 @@ async function populateMarketBidsLadder(scope, asset) {
     // latest bid in the bucket) so the seller sees how long the level
     // is broadly available; min-expiry would be misleading since
     // earlier-expiring bids are still fillable for now.
+    // design.html-shaped compact bid row: price | qty | vs-mid, single line.
+    // Drops "sats/TICKER" suffix, USD per-token sub-text, BTC total cell,
+    // expires cell, action cell from default visible. Level rows use
+    // "≥price ×N" — no space after ≥ per design.html line 217.
+    const _compactBidPrefix = _isLevel ? '≥' : '';
+    const _compactBidLevelMul = _isLevel
+      ? ` <span class="muted" style="font-size:10px;">×${b._levelCount}</span>`
+      : '';
+    const _compactBidTopChip = (_bidIdx === 0 && _fillable)
+      ? ` <span style="display:inline-block;padding:1px 5px;background:#0a7d3a;color:#F2EBD4;font-size:9px;letter-spacing:0.04em;vertical-align:middle;" title="Best bid in the book.">TOP</span>`
+      : '';
+    const _compactBidYou = b._isMine
+      ? ` <span style="display:inline-block;padding:1px 5px;background:#fdf3cf;border:0.5px solid #c9a116;color:#7a5e00;font-size:9px;letter-spacing:0.04em;vertical-align:middle;">YOU</span>`
+      : '';
     return `
       <div data-bid-row data-bid-id="${escapeHtml(bidId)}" class="${rowClass}"${_fillAttrs}>
-        <div class="market-bid-price">
-          <strong class="market-sats-price">${_isLevel ? '≥ ' : ''}${escapeHtml(unitVal)} sats/${escapeHtml(ticker)}${_levelBadge}${_topBadge}</strong>
-          ${_isLevel ? _levelSpread : `<small class="market-usd-price">${unitUsd ? `${escapeHtml(unitUsd)} per token` : 'no USD quote'}</small>`}
-        </div>
-        <div class="market-bid-cell" title="${escapeHtml(amtStrFull)} ${escapeHtml(ticker)}">
-          <strong>${escapeHtml(amtStr)}</strong>
-          <small>${_bidIsVar ? `${escapeHtml(ticker)} · min ${escapeHtml(fmtAssetAmountCompact(BigInt(b.min_fill_amount), decimals))}${_fillPctLbl}` : escapeHtml(ticker)}</small>
-        </div>
-        <div class="market-bid-cell">
-          <strong>${escapeHtml(fmtMarketBtc(sats))}</strong>
-          <small><span class="market-sats-price">${escapeHtml(sats.toLocaleString('en-US'))} sats</span>${fmtMarketUsdFromSats(sats, '') ? ` &middot; <span class="market-usd-price">${escapeHtml(fmtMarketUsdFromSats(sats, ''))}</span>` : ''}</small>
-        </div>
-        <div class="market-bid-cell">
-          ${_bidderHtml}
-        </div>
-        <div class="market-bid-cell">
-          <strong class="${state === 'expired' ? 'market-bid-expired' : ''}">${escapeHtml(expiry)}</strong>
-          <small>${_isLevel ? 'latest in tick' : 'expires'}</small>
-        </div>
-        <div class="market-bid-action">${action}</div>
+        <div class="market-bid-price"><strong class="market-sats-price">${_compactBidPrefix}${escapeHtml(unitVal)}${_compactBidLevelMul}${_compactBidTopChip}${_compactBidYou}</strong></div>
+        <div class="market-bid-cell" title="${escapeHtml(amtStrFull)} ${escapeHtml(ticker)}"><strong>${escapeHtml(amtStr)}</strong></div>
+        <div class="market-bid-cell" hidden></div>
+        <div class="market-bid-cell">${_isLevel ? `<strong class="muted" style="font-size:10px;">${b._levelCount} makers</strong>` : `<strong style="${_vsRefCls}">${_vsRefStr}</strong>`}</div>
+        <div class="market-bid-cell" hidden></div>
+        <div class="market-bid-action" hidden>${action}</div>
       </div>`;
   }).join('') || `<div class="muted" style="font-size:11px;">No bids match this filter.</div>`;
+  // design.html-shaped trailing rows: when the ladder is truncated to
+  // the default 8 visible, show a "X outliers · hidden" italic row +
+  // a "show all bids" click-to-expand link. When expanded, swap the
+  // link text to "show fewer". Matches design.html line 234-238.
+  const _bidsTrailHtml = (_bidsHiddenCount > 0)
+    ? (`<div class="market-bids-trailing" style="display:grid;grid-template-columns:1fr minmax(50px,max-content) minmax(40px,max-content);gap:8px;padding:5px 12px;font-size:11px;color:#95907F;border-bottom:0.5px solid rgba(26,26,26,0.06);"><span style="font-style:italic;">${_bidsHiddenCount} outlier${_bidsHiddenCount === 1 ? '' : 's'}</span><span style="text-align:right;">—</span><span style="text-align:right;">hidden</span></div>
+        <div style="text-align:center;font-size:10px;color:#95907F;padding:8px 0 4px;"><button data-act="market-bids-show-all" type="button" style="background:none;border:0;border-bottom:0.5px dashed rgba(26,26,26,0.4);color:#95907F;padding:0;font:inherit;cursor:pointer;font-size:10px;text-transform:none;letter-spacing:0;">${_marketBidsShowAll ? 'show fewer bids' : 'show all bids'}</button></div>`)
+    : '';
   const mineBidsChip = minedBidsCount > 0
     ? (_marketMineOnlyBids
         ? `<button data-act="market-mine-bids-toggle" type="button" title="Showing only your bids (${minedBidsCount}). Click to show all bids.">Mine - ${minedBidsCount}</button>`
@@ -64834,15 +65149,11 @@ async function populateMarketBidsLadder(scope, asset) {
   // The default is ON; the chip lets a power user flip to see the raw
   // book. Same chip style as mineBidsChip so the filter row reads as
   // a coherent toolbar.
-  const _outlierChip = (() => {
-    if (_marketHideOutlierBids && _hiddenOutlierCount > 0) {
-      return `<button data-act="market-outlier-bids-toggle" type="button" title="${_hiddenOutlierCount} dust/troll bid${_hiddenOutlierCount === 1 ? '' : 's'} outside the 0.2×–5× mark band hidden. Click to show all.">Hidden ${_hiddenOutlierCount} outlier${_hiddenOutlierCount === 1 ? '' : 's'} · show all</button>`;
-    }
-    if (!_marketHideOutlierBids) {
-      return `<button data-act="market-outlier-bids-toggle" type="button" title="Currently showing every bid including outliers outside the 0.2×–5× mark band. Click to hide the dust + troll tail.">Hide outliers</button>`;
-    }
-    return '';
-  })();
+  // design.html convention: drop the top "Hidden N outliers · show all"
+  // chip entirely. The trailing `N outliers — hidden` row + "show all
+  // bids" link at the bottom of the ladder (line 64967) already
+  // conveys the same affordance in design.html's exact shape.
+  const _outlierChip = '';
   // Flip header label "vs mark" → "vs mid" when the book is crossed,
   // matching per-row coloring above which uses _effectiveReferenceUnit.
   const _bidsRefForHeader = _effectiveReferenceUnit(asset?.asset_id, asset);
@@ -64876,6 +65187,7 @@ async function populateMarketBidsLadder(scope, asset) {
         <span>Action</span>
       </div>
       ${rowsHtml}
+      ${_bidsTrailHtml}
     </div>`;
   // For each freshly-templated row that matches an old bid_id, swap
   // it for the preserved old row (transferring the new attrs + inner
@@ -65031,6 +65343,12 @@ async function populateMarketBidsLadder(scope, asset) {
     btn.onclick = () => {
       _marketHideOutlierBids = !_marketHideOutlierBids;
       _saveMarketHideOutlierBids(_marketHideOutlierBids);
+      populateMarketBidsLadder(scope, asset);
+    };
+  });
+  list.querySelectorAll('[data-act="market-bids-show-all"]').forEach(btn => {
+    btn.onclick = () => {
+      _marketBidsShowAll = !_marketBidsShowAll;
       populateMarketBidsLadder(scope, asset);
     };
   });

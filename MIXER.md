@@ -24,6 +24,18 @@ transactions. Bitcoin nodes don't interpret the envelopes; indexers
 (reference: tacit's worker + every dapp client) reconstruct pool state from
 chain alone and enforce the protocol's rules client-side.
 
+**Where the mixer sits in the broader protocol.** Beyond the
+original privacy use case, `withdraw.circom` is the protocol's
+**anonymous-unique-spend primitive** — set membership via Poseidon-
+Merkle path + nullifier reveal. The same circuit is reused without
+modification for `cBTC.zk` slot operations (every slot is a mixer
+leaf, the slot's BTC spending key is derived from the leaf's own
+secret), making the mixer ceremony's verifying key the trust anchor
+for trustless wrapped BTC. See
+[`spec/CIRCUITS.md`](./spec/CIRCUITS.md) for how this composes with
+the AMM's amount-confidentiality circuit family across the rest of
+the protocol.
+
 ### At a glance
 
 ```
@@ -97,6 +109,18 @@ denomination)` rather than per-deployed-contract, one mixer composition
 works uniformly for every tacit asset, present and future, with no new
 deployment per token. The mixer adds two envelope opcodes and a Groth16
 circuit; everything else recombines existing machinery.
+
+**The mixer's `withdraw.circom` is one of two circuit families in
+the tacit ZK stack.** It's the "anonymous unique-spend from a
+tracked set" primitive — set membership via Poseidon-Merkle path
++ nullifier reveal. Beyond its original mixer use, the same
+circuit (no modification) is reused for **cBTC.zk slot
+operations**: every cBTC.zk slot is a mixer leaf, and the slot's
+spending key `K_btc = r_leaf · G_secp256k1` is derived from the
+leaf's own Poseidon-derived secret. One leaf, two locks. The
+second family — amount-confidentiality for AMM ops — lives in the
+AMM circuits. See [`spec/CIRCUITS.md`](./spec/CIRCUITS.md) for
+how the two families compose across surfaces.
 
 ### Cryptographic flow (deposit → withdraw)
 

@@ -79,7 +79,7 @@
      script-src 'self' covers all three.
      `?cb=` is auto-set by build/build.mjs to a sha256 prefix of tacit.js
      so iOS Safari's stale-modulepreload cache flushes on every change. -->
-<link rel="modulepreload" href="./tacit.js?cb=503924b2">
+<link rel="modulepreload" href="./tacit.js?cb=1757bf41">
 <link rel="modulepreload" href="./vendor/tacit-deps.min.js">
 <link rel="modulepreload" href="./prf-wallet.js">
 <style>
@@ -1658,14 +1658,22 @@ tr[data-recent-activity] .market-token-sub::after {
   gap: 8px;
   flex-wrap: wrap;
 }
+/* design.html line 67: full token name is the primary label (14px,
+   500 weight, dark ink); the ticker `TAC` is the muted suffix in
+   light gray, regular weight. Currently we had them inverted, which
+   made the page read as "TAC" (huge bold) "tacit coin" (small gray)
+   — opposite of the design's quieter typography. */
 .mkt-hero-fullname {
-  font-size: 13px;
-  color: var(--ink-mid);
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--ink);
+  letter-spacing: 0;
 }
 .mkt-hero-ticker {
-  font-size: 16px;
-  font-weight: 600;
-  letter-spacing: 0.01em;
+  font-size: 13px;
+  color: #95907F;
+  font-weight: 400;
+  letter-spacing: 0;
 }
 .mkt-hero-status {
   margin-left: auto;
@@ -1684,9 +1692,17 @@ tr[data-recent-activity] .market-token-sub::after {
   gap: 6px;
   flex-wrap: wrap;
 }
+/* design.html line 68: id chip is a thin dashed outline (0.5px) over
+   a near-transparent green tint, monospace, no heavy background pop.
+   Overrides the default .mono-box which uses a 1px dashed black border
+   + bg-alt fill (designed for the more prominent paste-target use
+   case, too heavy in the inline hero meta row). */
 .mkt-hero-meta-row .mkt-id-chip {
   font-size: 10px;
   padding: 1px 6px;
+  border: 0.5px dashed rgba(26,26,26,0.4) !important;
+  background: rgba(26,117,72,0.06) !important;
+  font-family: var(--mono);
 }
 .mkt-hero-external {
   color: var(--ink-mid);
@@ -3746,74 +3762,843 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
    the page, matching design.html's hero unit. The browse view stays
    full-width so the grid of asset tiles can breathe. The card itself
    uses a slightly warmer cream than the page bg + a 0.5px hairline. */
-body[data-market-mode="asset"] {
-  background: #E8E0CC;
+/* === Global designer-card aesthetic (replaces the legacy wide layout) ===
+   The entire dapp now lives inside a 720px centered card on warm cream,
+   matching design.html. Applies to every tab — markets, wallet, mixer,
+   etc. — so the visual rhythm is consistent across the app. */
+html, body {
+  background: #E8E0CC !important;
+  color: #1A1A1A;
 }
-body[data-market-mode="asset"] #market-list {
-  max-width: 720px;
-  margin: 0 auto;
-  background: #F2EBD4;
-  border: 0.5px solid rgba(26,26,26,0.15);
-  padding: 0;
+body {
   font-family: 'IBM Plex Mono', ui-monospace, monospace;
   font-size: 12px;
   line-height: 1.45;
-  color: #1A1A1A;
+  padding: 24px 16px !important;
 }
-/* Inner-box bg + swap-side bg flatten to the card cream so they blend
-   seamlessly per design.html. Previously --bg-warm (#fff8eb) was
-   near-white which made every nested panel pop out of the cream card. */
-body[data-market-mode="asset"] [data-swap-side],
-body[data-market-mode="asset"] [data-swap-tile],
-body[data-market-mode="asset"] .market-bids-table,
-body[data-market-mode="asset"] .market-listing-grid {
-  background: transparent;
+/* Slim header per design.html — logo small (24px italic serif),
+   tagline two-line vertical next to it with a left divider, action
+   cluster (⌘K / bell / ? / MAINNET) on the right, all aligned to
+   one row. Drops the heavy 60px logo + 2px ink border + 16px padding
+   the legacy header used. */
+body > header {
+  border: 0.5px solid rgba(26,26,26,0.15) !important;
+  border-bottom: 1px dashed rgba(26,26,26,0.25) !important;
+  padding: 14px 18px !important;
+  margin-bottom: 0 !important;
+  grid-template-columns: auto auto 1fr !important;
+  align-items: center !important;
+  gap: 12px !important;
 }
-/* Ultra-tight rows per design.html — both ladders at ~24px tall with
-   font-size 11px, padding 3px 10px, no min-height. */
-body[data-market-mode="asset"] .market-bids-row,
-body[data-market-mode="asset"] .market-listing-grid.market-listing-rows-mode .market-listing-tile {
-  padding: 3px 10px;
-  font-size: 11px;
-  line-height: 1.2;
-  min-height: 0;
-  gap: 8px;
+body > header .logo {
+  font-size: 24px !important;
+  line-height: 0.9 !important;
+  letter-spacing: -0.02em !important;
 }
-body[data-market-mode="asset"] .market-bid-price strong,
-body[data-market-mode="asset"] .market-bid-cell strong,
-body[data-market-mode="asset"] .market-listing-unit strong,
-body[data-market-mode="asset"] .market-listing-amount,
-body[data-market-mode="asset"] .market-listing-vsmark strong {
-  font-size: 11px;
-  font-weight: 500;
+body > header .tagline {
+  font-size: 10px !important;
+  line-height: 1.5 !important;
+  letter-spacing: 0.06em !important;
+  color: #6B6557 !important;
+  border-left: 1px solid rgba(26,26,26,0.25) !important;
+  padding-left: 12px !important;
 }
-/* Hide the activity panel + sweep-buy form clutter so the asset card
-   ends at the AMM ceremony footer per design.html. The activity tab
-   surfaces via the Listed/Activity tab toggle when the user clicks
-   in; default state is just the orderbook. */
-body[data-market-mode="asset"] .market-activity-panel {
-  max-width: 720px;
-  margin: 0 auto;
+body > header .tagline br + em,
+body > header .tagline em {
+  display: none !important;
 }
-/* Constrain top nav + sub-nav + airdrop banner to the same 720px width
-   so the whole page reads as one stacked card on cream — matches
-   design.html's vertical flow. The zfi banner stays visually inside
-   the column; nav rows align with the card edges. */
-body[data-market-mode="asset"] #zfi-airdrop-banner,
-body[data-market-mode="asset"] .tabs.tabs-primary,
-body[data-market-mode="asset"] .tabs.subtabs {
+body > header .tagline {
+  /* Show only the two lines "CONFIDENTIAL TOKENS / verifiable on bitcoin"
+     per design.html — the "private amounts · no federation · privkey-only
+     recovery" em was breaking the color discipline. */
+}
+body > header .net-control {
+  flex-direction: row !important;
+  gap: 6px !important;
+  margin-left: auto;
+}
+body > header .net-row {
+  gap: 6px !important;
+}
+body > header .btn-help,
+body > header .net-select {
+  font-size: 11px !important;
+  padding: 3px 9px !important;
+  border: 0.5px solid rgba(26,26,26,0.3) !important;
+}
+body > header .net-select {
+  background: #1A1A1A !important;
+  color: #F2EBD4 !important;
+  font-weight: 500 !important;
+  letter-spacing: 0.05em !important;
+  padding: 5px 13px !important;
+  text-transform: uppercase !important;
+}
+/* Hide the "▸ HOW IT WORKS" + "← All markets" + heavy "MARKET 634
+   LISTINGS · ..." status bar — the asset detail page doesn't need
+   these chrome rows above the hero. */
+body > .tab-panel#tab-market #market-status,
+body > .tab-panel#tab-market .market-onboarding-row,
+body[data-market-mode="asset"] #market-filters {
+  display: none !important;
+}
+/* Sections everywhere: drop the solid-ink border + dark header bar
+   per design.html's blended aesthetic. Section header becomes a muted
+   lowercase label, body sits flat on the card cream. */
+.section {
+  border: 0 !important;
+  background: transparent !important;
+  margin-bottom: 14px !important;
+}
+.section-header {
+  background: transparent !important;
+  color: var(--ink-mid) !important;
+  border-bottom: 1px dashed rgba(26,26,26,0.25) !important;
+  text-transform: uppercase !important;
+  letter-spacing: 0.08em !important;
+  font-size: 10px !important;
+  font-weight: 500 !important;
+  padding: 8px 14px !important;
+}
+.section-body {
+  padding: 12px 14px !important;
+}
+/* The dark "MARKET" section header above the asset-detail card looks
+   like a chrome bar in design.html's flow — hide it entirely on the
+   market tab so the hero is the first thing the eye lands on. */
+body > #tab-market > .section > .section-header {
+  display: none !important;
+}
+/* Tape: clean format matching design.html's "NEW · PIZZA · SPACEXAI ..."
+   pattern. Drop the per-item box-shadow + heavy borders. */
+.global-tape {
+  background: transparent !important;
+  border-bottom: 1px dashed rgba(26,26,26,0.25) !important;
+  border-top: 0 !important;
+  padding: 7px 18px !important;
+}
+.global-tape-item {
+  border: 0 !important;
+  background: transparent !important;
+  font-size: 11px !important;
+  padding: 0 8px !important;
+}
+/* Asset detail card-end discipline: in asset-mode the card flows
+   hero → swap → depth → orderbook → tape → AMM footer, then STOPS.
+   Hide anything below that doesn't appear in design.html so the card
+   visually closes at the footer instead of trailing into recent-etches,
+   activity tables, or other auxiliary surfaces. */
+body[data-market-mode="asset"] #recent-etches-section,
+body[data-market-mode="asset"] [data-market-trades-list],
+body[data-market-mode="asset"] [data-market-onboarding] {
+  display: none !important;
+}
+/* Activity pane belongs behind the Listed/Activity tab toggle —
+   when the user has Listed open (default), the Activity pane must
+   stay collapsed. The legacy .market-asset-pane CSS handles this
+   but recently-added overrides could leak. Belt-and-suspenders. */
+body[data-market-mode="asset"] [data-market-asset-pane="activity"]:not(.active) {
+  display: none !important;
+}
+/* If the asset detail is in flight (skeleton / placeholder) inside
+   the markets browse view, the "Scheduling" empty-grid + AMM
+   ceremony block read as the only content. That's the markets
+   browse loading state, not a bug — but to soften the visual
+   shock, fade the empty grid in. */
+.market-asset-grid[aria-busy="true"] {
+  opacity: 0.55;
+}
+/* If the Listed/Activity tabbar exists, only the active pane shows
+   (already enforced by .market-asset-pane.active in the main CSS).
+   Make sure the tabbar itself reads as muted dashed-underline tabs
+   per design.html, not a heavy chrome bar. */
+.market-asset-tabbar {
+  border-bottom: 0.5px solid rgba(26,26,26,0.15) !important;
+  margin: 8px 0 !important;
+}
+.market-asset-tabs .market-asset-tab {
+  background: transparent !important;
+  border: 0 !important;
+  border-bottom: 2px solid transparent !important;
+  padding: 6px 12px !important;
+  font-size: 11px !important;
+  letter-spacing: 0.06em !important;
+  text-transform: uppercase !important;
+  color: var(--ink-mid) !important;
+}
+.market-asset-tabs .market-asset-tab.active {
+  color: #1A1A1A !important;
+  border-bottom-color: #1A1A1A !important;
+  font-weight: 500 !important;
+}
+/* Depth + orderbook should sit close together visually, like the
+   designer's tight stack. Drop the heavy vertical gaps between the
+   swap tile, depth chart, and orderbook. */
+[data-market-asset-stats],
+[data-market-depth-chart],
+[data-market-trades-tape] {
+  margin: 0 !important;
+}
+[data-market-depth-chart] {
+  padding: 12px 18px !important;
+}
+[data-orderbook-wrap] {
+  padding: 0 18px !important;
+}
+/* The frame: header + tape + tabs + tab panels all wrapped inside a
+   720px column with subtle hairline border + warmer cream card bg. */
+body > header,
+body > #zfi-airdrop-banner,
+body > #global-tape,
+body > .tabs,
+body > .tab-panel,
+body > #amm-contrib-section {
   max-width: 720px;
   margin-left: auto;
   margin-right: auto;
+  background: #F2EBD4;
 }
-body[data-market-mode="asset"] .tabs.tabs-primary {
+body > header {
+  border: 0.5px solid rgba(26,26,26,0.15);
+  border-bottom: 0;
+}
+body > .tabs.tabs-primary {
+  border-left: 0.5px solid rgba(26,26,26,0.15);
+  border-right: 0.5px solid rgba(26,26,26,0.15);
   border-bottom: 1px dashed rgba(26,26,26,0.25);
   margin-bottom: 0;
 }
-body[data-market-mode="asset"] .tabs.subtabs[data-group="markets"] {
+body > .tabs.subtabs {
+  border-left: 0.5px solid rgba(26,26,26,0.15);
+  border-right: 0.5px solid rgba(26,26,26,0.15);
   border-bottom: 0.5px solid rgba(26,26,26,0.15);
   margin-top: 0;
   margin-bottom: 0;
+}
+body > .tab-panel {
+  border-left: 0.5px solid rgba(26,26,26,0.15);
+  border-right: 0.5px solid rgba(26,26,26,0.15);
+  border-bottom: 0.5px solid rgba(26,26,26,0.15);
+}
+body > #global-tape,
+body > #zfi-airdrop-banner {
+  border-left: 0.5px solid rgba(26,26,26,0.15);
+  border-right: 0.5px solid rgba(26,26,26,0.15);
+}
+body > #amm-contrib-section {
+  border: 0.5px solid rgba(26,26,26,0.15);
+  border-top: 0;
+}
+/* Tab typography per design.html. Primary tabs (WALLET / MARKETS / SEND
+   / ...) stay uppercase per design.html line 49. Sub-tabs (order book
+   / amm / farms / discover) are lowercase per design.html line 56. */
+.tabs.tabs-primary .tab {
+  font-size: 12px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  padding: 8px 14px;
+}
+.tabs.subtabs .tab {
+  font-size: 11px;
+  letter-spacing: 0.05em;
+  text-transform: lowercase;
+  padding: 6px 14px;
+  color: var(--ink-mid);
+}
+.tabs.subtabs .tab.active {
+  color: var(--ink);
+  font-weight: 500;
+}
+.tabs.tabs-primary .tab.active {
+  border-bottom-color: #1A1A1A;
+  font-weight: 500;
+}
+/* Strip "tile within tile" borders inside the card. Nested panels in the
+   markets tab — both ladders, depth chart SVG, bids panel, stats card
+   — blend into the card cream, separated by dashed hairlines only.
+   Swap tile excluded from the border strip: its inline border-top +
+   border-bottom dashed lines ARE the section's visual hand-off and
+   must survive (design.html line 94 carries the same lines). */
+#market-list,
+[data-market-asset-stats],
+.market-listing-grid.market-listing-rows-mode,
+.market-bids-panel,
+.market-bids-table,
+.market-activity-panel,
+[data-swap-side] {
+  background: transparent !important;
+  border: 0 !important;
+  box-shadow: none !important;
+  padding-left: 0 !important;
+  padding-right: 0 !important;
+}
+/* Swap tile: keep inline border-top + border-bottom dashed (section
+   hand-off), strip box-shadow + side borders only. Background stays
+   from the inline rgba(255,255,255,0.35) — subtle warm tint. */
+[data-swap-tile] {
+  box-shadow: none !important;
+  border-left: 0 !important;
+  border-right: 0 !important;
+}
+[data-market-depth-chart] svg,
+[data-market-price-chart] svg {
+  border: 0 !important;
+  background: transparent !important;
+}
+/* =============================================================
+   DESIGN.HTML PORT — unified market tile
+   ============================================================= */
+/* The trade tile is the only thing on the page: swap → depth →
+   asks|bids → tape. Sections separated by dashed hairlines.
+   Listed/Activity tab split is dropped — activity tucks behind a
+   `→ N trades` link in the tape. Tacit-specific complexity (atomic
+   intents · OTC openings · range listings · Mine filter · ladder
+   view toggle · Sweep buy/sell · +List/+Bid forms) all collapse
+   behind a single `more ▾` per ladder column or get suppressed in
+   the default view. */
+
+/* Drop the heavy Listed/Activity tabbar. Listed pane is always-on,
+   Activity pane stays in the DOM (kept for the populator's table
+   rendering) but is hidden until the user toggles it via the tape
+   "all →" link. */
+.market-token-main .market-asset-tabbar { display: none !important; }
+.market-token-main .market-asset-pane[data-market-asset-pane="listed"] { display: block !important; }
+.market-token-main .market-asset-pane[data-market-asset-pane="activity"] { display: none !important; }
+.market-token-main .market-asset-pane[data-market-asset-pane="activity"].show-activity { display: block !important; padding: 12px 18px; border-top: 1px dashed rgba(26,26,26,0.25); }
+/* Hide the detailed stats strip (24h high/low · supply · price-history
+   chart · attestation CTA · alert button). All collapsed disclosures
+   sit below the tile as quiet reference info — only the tile is
+   visible by default. */
+.market-token-main > [data-market-asset-stats] { display: none !important; }
+
+/* Suppress the asks pager + Tacit-specific informational rows that
+   bulk out the asks header in design.html (no pager, no kind-
+   breakdown text, no "row types explainer" — just the rows). */
+.market-pagination.market-listing-pagination { display: none !important; }
+/* Row-types explainer is the dashed box describing Buy vs Buy level
+   vs Buy chunks — only meaningful in Advanced; hide in default. */
+[data-orderbook-side="asks"] > div[style*="dashed var(--ink-faint)"][style*="margin-bottom:8px"] { display: none !important; }
+
+/* Tighten your-open-orders so it sits inline at the top of the tile
+   rather than as its own bordered card. Stays visible when the user
+   has orders for this asset (otherwise the function returns ''). */
+[data-your-orders] {
+  border: 0 !important;
+  background: transparent !important;
+  padding: 6px 18px !important;
+  margin-bottom: 0 !important;
+  border-bottom: 1px dashed rgba(26,26,26,0.25) !important;
+  font-size: 10px !important;
+}
+
+/* Unified tile sections per design.html — depth and tape share the
+   same 18px gutter and dashed top hairline. */
+.market-tile-section {
+  padding: 10px 18px 12px;
+  border-top: 1px dashed rgba(26,26,26,0.25);
+}
+.market-tile-depth { border-top: 0; }
+.market-tile-tape {
+  font-size: 10px;
+  color: var(--ink-mid);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+/* Depth chart — compact strip. design.html's SVG is 640×100 in a
+   viewBox; we cap the rendered height so the chart never dominates
+   vertical space. Also kill the 160px placeholder min-height the
+   inline style sets — once the SVG renders at 100px the surrounding
+   slot should be exactly the SVG's size + tiny header padding. */
+[data-market-depth-chart] svg { max-height: 100px !important; height: 100px !important; }
+[data-market-depth-chart] { min-height: 0 !important; }
+
+/* Collapse the gap between swap tile and the orderbook so the tile
+   reads as one piece (no margin-induced seam). */
+.market-token-main > [data-swap-tile] { margin-bottom: 0 !important; }
+.market-token-main > [data-swap-tile] + .market-asset-pane,
+.market-token-main > .market-asset-pane[data-market-asset-pane="listed"] {
+  padding: 0;
+}
+
+/* Asks-side header — drop the chip overflow per design.html.
+   Default view: ASKS · count + a single `+ list` chip. Everything
+   else (Mine · Simple/All · ladder view · Sweep buy · Advanced toggle)
+   stays available behind the existing `more ▾` disclosure. */
+[data-market-sweep-buy-section] > div:first-child {
+  padding: 10px 18px 4px !important;
+  margin-bottom: 0 !important;
+}
+[data-orderbook-side="asks"] [data-market-listings-pager],
+[data-orderbook-side="asks"] .market-pagination { display: none !important; }
+
+/* Bids panel head — drop the heavy 1px solid border underneath the
+   title for a dashed hairline that matches the rest of the tile. */
+.market-bids-head {
+  border-bottom: 0.5px dashed rgba(26,26,26,0.25) !important;
+  padding: 10px 18px 6px !important;
+  margin: 0 !important;
+}
+.market-bids-panel { margin-bottom: 0 !important; padding: 0 !important; }
+.market-bids-list { padding: 0 6px 6px !important; margin-top: 0 !important; }
+
+/* Spread row + mobile orderbook tabs get the same 18px gutter. */
+[data-orderbook-wrap] > .orderbook-mobile-tabs,
+[data-orderbook-wrap] > [data-market-spread-row] {
+  padding-left: 18px;
+  padding-right: 18px;
+}
+
+/* Compact spread row — drop the recent-trades sub-strip (the tape
+   below the orderbook covers this). */
+.market-spread-divider [data-market-recent-trades] { display: none !important; }
+.market-spread-divider {
+  padding: 6px 0 !important;
+  margin: 0 !important;
+  border-top: 1px dashed rgba(26,26,26,0.25) !important;
+}
+
+/* Tight asks/bids row heights — match design.html's 22px row. */
+.market-listing-grid.market-listing-rows-mode .market-listing-tile,
+.market-bids-row {
+  min-height: 22px !important;
+  padding: 3px 12px !important;
+  font-size: 11px !important;
+  line-height: 1.35 !important;
+}
+.market-listing-grid.market-listing-rows-mode {
+  padding: 0 6px !important;
+}
+
+/* Compact the asks-header chip row — single line, no wrap, drop
+   the "more ▾" border so it reads as a tertiary control. */
+[data-market-asks-more] > summary {
+  border: 0 !important;
+  padding: 2px 6px !important;
+  font-size: 9px !important;
+  color: var(--ink-faint) !important;
+}
+
+/* Single-line rows per design.html — applies even if the JS row
+   builder still emits secondary metadata (cached tacit.js, future
+   edits). Belt-and-suspenders: hide every `<small>`, every fill bar,
+   every USD/BTC sub-price node inside both ladders. Each row cell
+   becomes single-line with center alignment + nowrap + overflow
+   ellipsis so tall multi-line tiles collapse to 22px tight rows. */
+.market-listing-grid.market-listing-rows-mode .market-listing-tile small,
+.market-listing-grid.market-listing-rows-mode .market-listing-tile .market-listing-fill-bar,
+.market-listing-grid.market-listing-rows-mode .market-listing-tile .market-usd-price,
+.market-listing-grid.market-listing-rows-mode .market-listing-tile .market-btc-price,
+.market-bids-row small,
+.market-bids-row .market-usd-price,
+.market-bids-row .market-btc-price {
+  display: none !important;
+}
+.market-listing-grid.market-listing-rows-mode .market-listing-tile > div,
+.market-bids-row > div {
+  white-space: nowrap !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  line-height: 1.25 !important;
+}
+/* Strong (price/qty/vs-mid value) sits flush inline — no flex column
+   stacking that would push small siblings onto a second line. */
+.market-listing-grid.market-listing-rows-mode .market-listing-tile > div > strong,
+.market-bids-row > div > strong {
+  display: inline !important;
+  font-weight: 500 !important;
+  font-size: 11px !important;
+}
+
+/* design.html port: force bids/asks rows to 3-col single-row layout at
+   ALL widths. design.html is a fixed 720px tile with no mobile reflow,
+   so the legacy @media (max-width: 600px) bids vertical-stack
+   (1 row → 3 rows × 2 cols) shouldn't trigger here. Override with
+   higher specificity + !important — placed AFTER the media query so
+   cascade wins. */
+.market-bids-row,
+.market-listing-grid.market-listing-rows-mode .market-listing-tile {
+  display: grid !important;
+  grid-template-columns: minmax(0, 1fr) minmax(50px, max-content) minmax(40px, max-content) !important;
+  grid-template-rows: auto !important;
+  gap: 8px !important;
+  align-items: center !important;
+  padding: 3px 12px !important;
+  font-size: 11px !important;
+  line-height: 1.35 !important;
+}
+/* Reset all nth-child grid-row/grid-column overrides from the mobile
+   media query — restore default grid-auto-flow row placement. */
+.market-bids-row > *:nth-child(1),
+.market-bids-row > *:nth-child(2),
+.market-bids-row > *:nth-child(4),
+.market-listing-grid.market-listing-rows-mode .market-listing-tile > *:nth-child(1),
+.market-listing-grid.market-listing-rows-mode .market-listing-tile > *:nth-child(2),
+.market-listing-grid.market-listing-rows-mode .market-listing-tile > *:nth-child(4) {
+  grid-row: auto !important;
+  grid-column: auto !important;
+  text-align: initial !important;
+}
+.market-bids-row > *:nth-child(2),
+.market-bids-row > *:nth-child(4),
+.market-listing-grid.market-listing-rows-mode .market-listing-tile > *:nth-child(2),
+.market-listing-grid.market-listing-rows-mode .market-listing-tile > *:nth-child(4) {
+  text-align: right !important;
+}
+/* Per-row price coloring per design.html color discipline:
+   - asks: best ask = green (best-in-class); non-best above mid = red;
+     grouped levels (≤price ×N) = orange
+   - bids: best bid + bids above mid = green; bids below mid = red;
+     grouped levels (≥price ×N) = green
+   Color is applied to the primary <strong> that carries the price
+   text. Grouped levels override best/non-best (the bucket spans a
+   range so "best-in-class" doesn't apply). */
+.market-listing-grid.market-listing-rows-mode .market-listing-tile .market-listing-unit strong { color: #b8341d; }
+.market-listing-grid.market-listing-rows-mode .market-listing-tile--best .market-listing-unit strong { color: #0a7d3a !important; }
+.market-listing-grid.market-listing-rows-mode .market-listing-tile--level .market-listing-unit strong { color: #c76b26 !important; }
+.market-bids-row .market-bid-price strong { color: #0a7d3a !important; }
+.market-bids-row.market-bids-row--below-mid .market-bid-price strong { color: #b8341d !important; }
+.market-bids-row.market-bids-row--level .market-bid-price strong { color: #0a7d3a !important; }
+
+/* BEST / TOP chip styling per design.html — solid green pill, cream
+   text, tight padding, low font weight on the chip itself (the pill
+   is the signal). Targets the inline spans the tile builder injects
+   when _isBestAsk / _bidIdx === 0. */
+.market-listing-tile--best .market-mode-badge,
+.market-bids-row[data-bid-row]:first-child .market-mode-badge {
+  background: #0a7d3a;
+  color: #f2ebd4;
+  letter-spacing: 0.04em;
+}
+
+/* design.html-shaped trade tile additions */
+
+/* Depth section wraps the chart + spread-row tightly. */
+.mkt-depth-wrap {
+  border-top: 1px dashed rgba(26,26,26,0.25);
+  padding: 10px 18px 0;
+}
+.mkt-depth-wrap [data-market-depth-chart] {
+  padding: 0 !important;
+  border-top: 0 !important;
+}
+.mkt-depth-wrap .market-spread-divider {
+  border-top: 0 !important;
+  padding: 4px 0 8px !important;
+  margin: 0 !important;
+}
+
+/* Orderbook 2-col grid lives inside the unified tile; same dashed top
+   hairline as the rest of the sections. */
+.mkt-orderbook {
+  border-top: 1px dashed rgba(26,26,26,0.25);
+  border-bottom: 1px dashed rgba(26,26,26,0.25);
+}
+/* Lower the 2-col breakpoint from 960px to 520px so the 720px tile
+   always renders asks|bids side-by-side per design.html — not just on
+   very-wide viewports. The mobile @media block above kicks in below
+   520px for narrow phones. */
+@media (min-width: 520px) {
+  .mkt-orderbook {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    column-gap: 0;
+  }
+  .mkt-orderbook > [data-orderbook-side="asks"] {
+    grid-column: 1;
+    border-right: 1px dashed rgba(26,26,26,0.25);
+    padding: 8px 12px 8px 18px;
+    min-width: 0;
+  }
+  .mkt-orderbook > [data-orderbook-side="bids"] {
+    grid-column: 2;
+    padding: 8px 18px 8px 12px;
+    min-width: 0;
+  }
+  .mkt-orderbook > [data-market-spread-row] {
+    grid-column: 1 / -1;
+  }
+}
+
+/* Footer one-liner — matches design.html line 252-256. */
+.mkt-trade-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 18px;
+  font-size: 10px;
+  color: var(--ink-mid);
+  letter-spacing: 0.04em;
+  border-top: 1px dashed rgba(26,26,26,0.25);
+  flex-wrap: wrap;
+}
+.mkt-trade-footer b {
+  color: var(--ink);
+  font-weight: 500;
+  letter-spacing: 0.06em;
+}
+
+/* design.html "+ list" / "+ bid" chip: subtle text-only chip, no
+   border, hover underlines. Click opens the modal/form for the
+   explicit order params (variable-amount partial-fill by default,
+   leveraging tacit's bid-intent abstraction). Matches design.html
+   line 168 / 207 visual. */
+.mkt-chip {
+  background: transparent !important;
+  border: 0 !important;
+  box-shadow: none !important;
+  padding: 2px 6px !important;
+  font-size: 10px !important;
+  color: var(--ink-mid) !important;
+  letter-spacing: 0 !important;
+  text-transform: lowercase !important;
+  cursor: pointer !important;
+  font-weight: 400 !important;
+  min-height: 0 !important;
+}
+.mkt-chip:hover:not(:disabled) {
+  background: transparent !important;
+  color: var(--ink) !important;
+  text-decoration: underline !important;
+  text-underline-offset: 2px !important;
+}
+
+/* `+ advanced` disclosure: reveals a dropdown panel with power-user
+   toggles (Mine filter, Simple/All offers, Sweep buy/sell, Auto-
+   fulfil, ladder view). Default UX = swap / +list / +bid / click
+   row to fill at best — power features sit one click away under
+   +advanced for advanced tacit users. */
+.mkt-advanced-disclose {
+  position: relative;
+  display: inline-block;
+}
+.mkt-advanced-disclose > summary {
+  list-style: none;
+}
+.mkt-advanced-disclose > summary::-webkit-details-marker { display: none; }
+.mkt-advanced-disclose[open] > summary { color: var(--ink) !important; }
+.mkt-advanced-panel {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 4px);
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px;
+  background: var(--bg-warm);
+  border: 0.5px solid rgba(26,26,26,0.4);
+  min-width: 220px;
+  white-space: nowrap;
+}
+.mkt-advanced-panel button {
+  text-align: left;
+  font-size: 11px;
+  padding: 4px 8px;
+  background: transparent;
+  border: 0.5px solid transparent;
+  color: var(--ink);
+  cursor: pointer;
+  text-transform: none;
+  letter-spacing: 0;
+  font-weight: 400;
+  min-height: 0;
+  white-space: nowrap;
+}
+.mkt-advanced-panel button:hover:not(:disabled) {
+  background: rgba(26,26,26,0.06);
+  border-color: rgba(26,26,26,0.2);
+  color: var(--ink);
+}
+
+/* Hide the legacy `▸ STATS` and `▸ PRICE HISTORY` collapsed disclosures
+   that sit BELOW the unified market tile. Their data lives inside the
+   richStats hidden stub for populator writes; nothing visible. */
+.market-token-main details[data-market-stats-disclose],
+.market-token-main details[data-market-price-chart-wrap],
+.market-token-main [data-market-supplycap-row],
+.market-token-main [data-market-attest-cta],
+.market-token-main .price-alert-btn {
+  display: none !important;
+}
+
+/* Your-open-orders disclosure — closed by default, opens to show the
+   maker's active asks/bids panel. Summary is a tiny inline chip. */
+.mkt-your-orders-disclose {
+  border-top: 1px dashed rgba(26,26,26,0.25);
+  padding: 6px 18px 0;
+}
+.mkt-your-orders-disclose > summary {
+  cursor: pointer;
+  list-style: none;
+  font-size: 10px;
+  color: var(--ink-mid);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 2px 0;
+}
+.mkt-your-orders-disclose[open] > summary {
+  color: var(--ink);
+}
+.mkt-your-orders-disclose [data-your-orders] {
+  border-bottom: 0 !important;
+  padding: 6px 0 !important;
+}
+
+/* Activity modal — fixed-position overlay, dim backdrop, centered
+   panel with the activity table inside. Hidden by default via the
+   `hidden` HTML attribute the markup carries; the tape link toggles
+   that attribute. */
+.mkt-activity-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 9000;
+  background: rgba(26,26,26,0.55);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 40px 20px;
+  overflow-y: auto;
+}
+.mkt-activity-modal[hidden] { display: none !important; }
+.mkt-activity-modal-panel {
+  width: 100%;
+  max-width: 720px;
+  background: #F2EBD4;
+  border: 0.5px solid rgba(26,26,26,0.15);
+  position: relative;
+  padding: 14px 18px 18px;
+  max-height: calc(100vh - 80px);
+  overflow-y: auto;
+}
+.mkt-activity-modal-close {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  background: transparent !important;
+  border: 0 !important;
+  font-size: 20px;
+  line-height: 1;
+  color: var(--ink-mid);
+  cursor: pointer;
+  padding: 4px 8px !important;
+  font-weight: 400;
+  box-shadow: none !important;
+}
+.mkt-activity-modal-close:hover {
+  color: var(--ink);
+  background: transparent !important;
+}
+/* Inside the modal, the activity panel needs its display:none CSS
+   override neutralized so the actual table renders. The default
+   `.market-token-main .market-asset-pane[data-market-asset-pane="activity"]
+   { display: none !important; }` rule no longer applies because the
+   modal lives outside .market-token-main. But the base
+   `.market-asset-pane { display: none; }` rule still hides it — so
+   force display inside the modal. */
+.mkt-activity-modal .market-asset-pane,
+.mkt-activity-modal [data-market-asset-pane] {
+  display: block !important;
+  padding: 0 !important;
+}
+
+/* Asset-detail mode hides the tab-market chrome that surrounds
+   `#market-list`. The MARKETS tab panel has more than just the
+   asset detail: a section header, a "how it works" disclosure,
+   search/sort chips, and the AMM ceremony attestations list at
+   the bottom — all useful in browse mode, all extraneous when the
+   user is looking at one asset's orderbook. Body attribute
+   `data-market-mode="asset"` is set by goToMarketAsset(); cleared
+   by goToMarketBrowse(). */
+body[data-market-mode="asset"] #tab-market > .section > .section-header,
+body[data-market-mode="asset"] #tab-market > .section > .section-body > details,
+body[data-market-mode="asset"] #tab-market > .section > .section-body > .market-controls,
+body[data-market-mode="asset"] #tab-market > .section > .section-body > #market-take-progress,
+body[data-market-mode="asset"] #tab-market > .section > .section-body > [data-pending-settlements-strip],
+body[data-market-mode="asset"] #market-ammcer-section {
+  display: none !important;
+}
+/* Strip the .section + .section-body wrapper styling too so the
+   unified market tile sits flush against the tab-panel edges. */
+body[data-market-mode="asset"] #tab-market > .section,
+body[data-market-mode="asset"] #tab-market > .section > .section-body {
+  padding: 0 !important;
+  background: transparent !important;
+  border: 0 !important;
+  box-shadow: none !important;
+  margin: 0 !important;
+}
+/* Ultra-tight orderbook rows per design.html — both ladders FORCED to
+   3-column grid, ONE LINE per row, 22px row height, ellipsis on
+   overflow. Overrides the legacy 6-col grid (price/qty/total/vs/exp/act)
+   which fought with hiding 3 cells via display:none. */
+.market-bids-row,
+.market-listing-grid.market-listing-rows-mode .market-listing-tile {
+  display: grid !important;
+  grid-template-columns: 1fr minmax(50px, max-content) minmax(40px, max-content) !important;
+  gap: 8px !important;
+  align-items: center !important;
+  padding: 2px 10px !important;
+  font-size: 11px !important;
+  line-height: 1.3 !important;
+  min-height: 22px !important;
+  border-bottom: 0.5px solid rgba(26,26,26,0.06) !important;
+}
+/* The qty + vs-mid cells are positionally 2 and 3 in the visible
+   layout, but in DOM they're cell-2 (qty) and cell-4 (vs-mark) for
+   asks; cell-2 (qty) and cell-4 (vs-mid) for bids. nth-child(3/5/6)
+   hide rules cover the rest. */
+.market-bids-row > *:nth-child(3),
+.market-bids-row > *:nth-child(5),
+.market-bids-row > *:nth-child(6),
+.market-listing-grid.market-listing-rows-mode .market-listing-tile > *:nth-child(3),
+.market-listing-grid.market-listing-rows-mode .market-listing-tile > *:nth-child(5),
+.market-listing-grid.market-listing-rows-mode .market-listing-tile > *:nth-child(6) {
+  display: none !important;
+}
+/* Force every direct child to single-line + ellipsis. */
+.market-bids-row > *,
+.market-listing-grid.market-listing-rows-mode .market-listing-tile > * {
+  white-space: nowrap !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  min-width: 0 !important;
+}
+/* Right-align numeric columns (qty + vs-mid). */
+.market-bids-row > *:nth-child(2),
+.market-bids-row > *:nth-child(4),
+.market-listing-grid.market-listing-rows-mode .market-listing-tile > *:nth-child(2),
+.market-listing-grid.market-listing-rows-mode .market-listing-tile > *:nth-child(4) {
+  text-align: right !important;
+}
+/* Strong + small inside the visible cells: inline strong, hidden small. */
+.market-bid-price strong,
+.market-bid-cell strong,
+.market-listing-unit strong,
+.market-listing-amount,
+.market-listing-vsmark strong {
+  font-size: 11px !important;
+  font-weight: 500;
+  display: inline !important;
+  margin: 0 !important;
+}
+.market-bids-row small,
+.market-listing-grid.market-listing-rows-mode .market-listing-tile small,
+.market-listing-grid.market-listing-rows-mode .market-listing-tile .muted {
+  display: none !important;
+}
+/* Hero rows: tighter padding to match design.html's compact rhythm. */
+.mkt-hero-identity { padding: 14px 18px 10px; }
+.mkt-hero-price-row { padding: 8px 18px; }
+.mkt-hero-stats-row { padding: 8px 18px 12px; }
+/* Bids head: drop the redundant border underneath. */
+[data-market-bids-section] .market-bids-head {
+  border-bottom: 0;
 }
 body[data-market-mode="asset"] #market-list > .market-tile-skeleton,
 body[data-market-mode="asset"] .market-asset-grid {
@@ -5181,7 +5966,7 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
      CSP is `script-src 'self' 'wasm-unsafe-eval'` — no 'unsafe-inline',
      so an inline <script> would be CSP-blocked. Same-origin .js file
      satisfies 'self'. See preboot.js for the activation logic. -->
-<script src="./preboot.js?cb=1"></script>
+<script src="./preboot.js?cb=swkill"></script>
 </head>
 <body>
 
@@ -7144,12 +7929,12 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
   <div class="section">
     <div class="section-header"><span>protocol</span></div>
     <div class="section-body" style="line-height:1.75;">
-      <p>Confidential token meta-protocol on Bitcoin. Amounts are hidden by default via Pedersen commitments + bulletproof rangeproofs + Mimblewimble-style kernel signatures. <strong>Full address-graph privacy is available</strong> through the built-in shielded mixer pool (Poseidon Merkle tree + Groth16 zk-SNARK withdrawals) — so tacit covers both amount-hiding and unlinkability, not just one or the other. The protocol also includes atomic single-tx OTC settlement, permissionless fair-launch mints with publicly-auditable caps, and on-chain claim pools (airdrops). Single asset per envelope.</p>
+      <p>An indexer-validated meta-protocol on Bitcoin that scales the Runes/Ordinals pattern past plain tokens. Tacit applies the same indexer-consensus trust model to a wider surface: <strong>shielded amounts</strong> (Pedersen + bulletproofs + kernel signatures) and an opt-in <strong>shielded address</strong> primitive (BIP-341-style blinded-pubkey commits) for transfer privacy; a <strong>shielded mixer pool</strong> (Poseidon Merkle tree + Groth16 + nullifiers) for anonymous spend; a <strong>native AMM</strong> (uniform-clearing-price block-batched market with confidential per-trader amounts, plus a per-trade variable-amount path that needs no Groth16); <strong>trustless wrapped BTC</strong> (cBTC.zk locks real BTC at a key derived from a mixer leaf's secret) and <strong>fungible wrapped BTC</strong> (cBTC.tac layers an LP-share lien with TAC over-collateralization); atomic single-tx OTC settlement; permissionless fair-launch mints; on-chain claim pools. Every surface settles in regular Bitcoin transactions.</p>
 
       <h3 class="protocol-h3" id="proto-validation">Validation model</h3>
-      <p style="margin-top:8px;">Like every Bitcoin token meta-protocol (Runes, BRC-20, Ordinals, Taproot Assets, RGB, Counterparty), tacit's token rules are <strong>not enforced by Bitcoin nodes</strong>. Bitcoin validates the underlying tx structure and Taproot signatures; an external indexer validates the token-level rules (commitments, rangeproofs, kernel signatures, asset_id consistency, pool nullifier sets).</p>
-      <p>Architecturally tacit is an <strong>indexer-validated meta-protocol</strong> — same family as Runes, BRC-20, and Ordinals. All data needed to validate any UTXO lives on Bitcoin's chain. An indexer with chain-only access can recursively walk every UTXO back to its etch root (CETCH or T_PETCH) and reach the same verdict as any other indexer running the same rules. No consensus change, no federation, no out-of-band proof exchange.</p>
-      <p>This is distinct from <strong>proof-distribution protocols</strong> (RGB, Taproot Assets) where the recipient must receive validity proofs out-of-band; an indexer with chain-only access cannot reconstruct token state. It's also distinct from <strong>fully-validated chains</strong> (Liquid, Mimblewimble) where consensus enforces the rules natively. Tacit's contribution is bringing CT-style amount-hiding into the indexer-validated meta-protocol family — the only thing that ever travels out-of-band is the recipient's own opening (cleartext amount + blinding) via share-link, which lets them <em>see</em> their balance but is not required for any indexer to <em>validate</em> the UTXO.</p>
+      <p style="margin-top:8px;">Like every Bitcoin token meta-protocol (Runes, BRC-20, Ordinals, Taproot Assets, RGB, Counterparty), tacit's token rules are <strong>not enforced by Bitcoin nodes</strong>. Bitcoin validates the underlying tx structure and Taproot signatures; an external indexer validates the token-level rules (commitments, rangeproofs, kernel signatures, asset_id consistency, AMM pool reserves, pool nullifier sets, slot key derivations, lien states).</p>
+      <p>Architecturally tacit is an <strong>indexer-validated meta-protocol</strong> — same family as Runes, BRC-20, and Ordinals. All data needed to validate any UTXO lives on Bitcoin's chain. An indexer with chain-only access can recursively walk every UTXO back to its origin (CETCH, T_PETCH, mixer withdraw, AMM pool, cBTC.zk slot mint) and reach the same verdict as any other indexer running the same rules. No consensus change, no federation, no out-of-band proof exchange.</p>
+      <p>This is distinct from <strong>proof-distribution protocols</strong> (RGB, Taproot Assets) where the recipient must receive validity proofs out-of-band, and from <strong>fully-validated chains</strong> (Liquid, Mimblewimble) where consensus enforces the rules natively. Tacit's contribution beyond plain tokens is leveraging the same consensus-of-indexers substrate into a richer surface: confidential value, AMM market-making, and a native collateral substrate that backs trustless wrapped BTC. The market-validated value of indexer-defined assets (the same kind of value a Rune carries) becomes the bond mechanism for cBTC.tac's fungibility leg — same trust model, structurally aligned. See the <a href="https://github.com/z0r0z/tacit/blob/main/spec/CIRCUITS.md" target="_blank" rel="noopener noreferrer">CIRCUITS.md</a> overview for how the two Groth16 circuit families (anonymous-spend + amount-confidentiality) compose across these surfaces.</p>
 
       <nav class="protocol-toc" aria-label="Protocol sections">
         <strong>Jump to:</strong>
@@ -7166,21 +7951,62 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
 
       <details class="protocol-section" id="proto-ops" open>
         <summary class="protocol-h3">Operations</summary>
-      <p style="margin-top:8px;">v1 envelope version is <code>0x01</code>; live opcodes span <code>0x21</code>–<code>0x38</code> (reserved range <code>0x21</code>–<code>0x4F</code> for future extensions). Every op is a 2-tx commit/reveal pair carrying the envelope inside <code>tx.vin[0].witness[1]</code> of the reveal.</p>
+      <p style="margin-top:8px;">v1 envelope version is <code>0x01</code>. Every op is a 2-tx commit/reveal pair carrying the envelope inside <code>tx.vin[0].witness[1]</code> of the reveal. SPEC.md §1.1 is the canonical opcode table — full assignments, drafted/reserved status, source amendment.</p>
+      <p style="margin-top:8px;font-size:11px;color:var(--ink-mid);text-transform:uppercase;letter-spacing:0.08em;">Core asset lifecycle</p>
       <div class="script-decode" style="margin:10px 0;">
         <span class="hex">0x21</span><span class="op">CETCH</span><span class="desc">issue new asset; hidden initial supply, optionally mintable</span>
         <span class="hex">0x23</span><span class="op">CXFER</span><span class="desc">confidential transfer; split into 1, 2, 4, or 8 outputs</span>
         <span class="hex">0x24</span><span class="op">T_MINT</span><span class="desc">issuer-signed additional supply on a mintable CETCH</span>
         <span class="hex">0x25</span><span class="op">T_BURN</span><span class="desc">any holder destroys supply; public burned_amount</span>
-        <span class="hex">0x26</span><span class="op">T_AXFER</span><span class="desc">CXFER variant with aux BTC inputs — single-tx atomic OTC + preauth sales + batched multi-fill takes (§5.7.8.1)</span>
         <span class="hex">0x27</span><span class="op">T_PETCH</span><span class="desc">permissionless-mint deployment: cap + per-mint amount + height window; deployer gets zero tokens</span>
-        <span class="hex">0x28</span><span class="op">T_PMINT</span><span class="desc">anyone mints exactly <code>mint_limit</code>; reveals (amount, blinding) so the cap is auditable from chain</span>
+        <span class="hex">0x28</span><span class="op">T_PMINT</span><span class="desc">anyone mints exactly <code>mint_limit</code>; reveals (amount, blinding) so the cap is auditable</span>
+      </div>
+      <p style="margin-top:8px;font-size:11px;color:var(--ink-mid);text-transform:uppercase;letter-spacing:0.08em;">Marketplace (atomic OTC + orderbook)</p>
+      <div class="script-decode" style="margin:10px 0;">
+        <span class="hex">0x26</span><span class="op">T_AXFER</span><span class="desc">CXFER variant with aux BTC inputs — single-tx atomic OTC + preauth sales + batched multi-fill takes (§5.7.8.1)</span>
+        <span class="hex">0x37</span><span class="op">T_AXFER_VAR</span><span class="desc">variable-amount atomic settlement — one signed offer up to X, any taker fills any chunk in [min, X] (§5.7.6.1 / §5.7.9)</span>
+      </div>
+      <p style="margin-top:8px;font-size:11px;color:var(--ink-mid);text-transform:uppercase;letter-spacing:0.08em;">Mixer (anonymous spend)</p>
+      <div class="script-decode" style="margin:10px 0;">
         <span class="hex">0x29</span><span class="op">T_DEPOSIT</span><span class="desc">lock a fixed-denomination UTXO into a shielded pool (Poseidon leaf)</span>
         <span class="hex">0x2A</span><span class="op">T_WITHDRAW</span><span class="desc">Groth16-gated mint from a pool; recipient unlinkable to any specific deposit</span>
         <span class="hex">0x2B</span><span class="op">T_DROP</span><span class="desc">lock existing supply into a public claim pool with optional Merkle eligibility gate</span>
         <span class="hex">0x2C</span><span class="op">T_DCLAIM</span><span class="desc">permissionless claim from a drop; reveals (per_claim, blinding) for audit</span>
-        <span class="hex">0x37</span><span class="op">T_AXFER_VAR</span><span class="desc">variable-amount atomic settlement — one signed offer up to X, any taker fills any chunk in [min, X] (§5.7.6.1 / §5.7.9)</span>
-        <span class="hex">0x38</span><span class="op">T_WRAPPER_ATTEST</span><span class="desc">wrapper convention attestation — issuer binds a tacit asset to an external collateral claim with coverage check (§5.19)</span>
+      </div>
+      <p style="margin-top:8px;font-size:11px;color:var(--ink-mid);text-transform:uppercase;letter-spacing:0.08em;">Native AMM (AMM.md)</p>
+      <div class="script-decode" style="margin:10px 0;">
+        <span class="hex">0x2D</span><span class="op">T_LP_ADD</span><span class="desc">add liquidity to a confidential AMM pool; variant=1 sentinel doubles as POOL_INIT</span>
+        <span class="hex">0x2E</span><span class="op">T_LP_REMOVE</span><span class="desc">burn LP shares for proportional withdrawal of pool reserves</span>
+        <span class="hex">0x2F</span><span class="op">T_SWAP_BATCH</span><span class="desc">batched uniform-price settlement; N intents at one P_clear via Groth16 over hidden per-trader amounts</span>
+        <span class="hex">0x30</span><span class="op">T_INTENT_ATTEST</span><span class="desc">scope-generic preconfirmation channel attestation (~30 s soft-confirm UX)</span>
+        <span class="hex">0x31</span><span class="op">T_PROTOCOL_FEE_CLAIM</span><span class="desc">mint accrued protocol fee shares to the founder-pinned recipient (or insurance-pool sentinel)</span>
+        <span class="hex">0x32</span><span class="op">T_SWAP_VAR</span><span class="desc">per-trade variable-amount swap; cleartext amounts against curve, no Groth16, no ceremony coupling</span>
+        <span class="hex">0x33</span><span class="op">T_SWAP_ROUTE</span><span class="desc">atomic multi-hop AMM routing (2..4 pools in one Bitcoin tx); reuses T_SWAP_VAR cryptography</span>
+      </div>
+      <p style="margin-top:8px;font-size:11px;color:var(--ink-mid);text-transform:uppercase;letter-spacing:0.08em;">LP-staking farms (SPEC-AMM-FARM-AMENDMENT)</p>
+      <div class="script-decode" style="margin:10px 0;">
+        <span class="hex">0x34</span><span class="op">T_FARM_INIT</span><span class="desc">launcher-funded LP-staking reward farm; virtual treasury</span>
+        <span class="hex">0x35</span><span class="op">T_LP_BOND</span><span class="desc">bond lp_asset_id shares against a farm; per-bond worker-indexed record</span>
+        <span class="hex">0x36</span><span class="op">T_LP_UNBOND</span><span class="desc">settle bond: mint fresh LP shares + reward UTXO</span>
+        <span class="hex">0x3B</span><span class="op">T_LP_HARVEST</span><span class="desc">claim accrued reward without unbonding (MasterChef harvest() equivalent)</span>
+        <span class="hex">0x3E</span><span class="op">T_FARM_REFUND</span><span class="desc">launcher reclaims unspent treasury after end_height + ~7 days</span>
+      </div>
+      <p style="margin-top:8px;font-size:11px;color:var(--ink-mid);text-transform:uppercase;letter-spacing:0.08em;">Wrapper convention + trustless wrapped BTC</p>
+      <div class="script-decode" style="margin:10px 0;">
+        <span class="hex">0x38</span><span class="op">T_WRAPPER_ATTEST</span><span class="desc">wrapper attestation — issuer binds a tacit asset to an external collateral claim (§5.19)</span>
+        <span class="hex">0x43</span><span class="op">T_SLOT_MINT</span><span class="desc">cBTC.zk: lock BTC at K_btc = r_leaf · G_secp256k1, derived from a mixer leaf's secret</span>
+        <span class="hex">0x44</span><span class="op">T_SLOT_BURN</span><span class="desc">cBTC.zk: redeem BTC by proving anonymous-unique-spend via the mixer's withdraw circuit</span>
+        <span class="hex">0x45</span><span class="op">T_SLOT_ROTATE</span><span class="desc">cBTC.zk: atomic key rotation / transfer of a slot</span>
+        <span class="hex">0x46</span><span class="op">T_SLOT_SPLIT</span><span class="desc">cBTC.zk: atomic 1→N slot split, ΣD_new = D_old</span>
+        <span class="hex">0x47</span><span class="op">T_SLOT_MERGE</span><span class="desc">cBTC.zk: atomic N→1 slot merge</span>
+      </div>
+      <p style="margin-top:8px;font-size:11px;color:var(--ink-mid);text-transform:uppercase;letter-spacing:0.08em;">Fungible wrapped BTC via collateralized lien</p>
+      <div class="script-decode" style="margin:10px 0;">
+        <span class="hex">0x49</span><span class="op">T_CBTC_TAC_DEPOSIT</span><span class="desc">cBTC.tac: lien on canonical (cBTC.zk, TAC) LP-share → mint fungible cBTC.tac</span>
+        <span class="hex">0x4A</span><span class="op">T_CBTC_TAC_WITHDRAW</span><span class="desc">cooperative unwind: burn cBTC.tac → release LP-share lien + spend slot</span>
+        <span class="hex">0x4B</span><span class="op">T_CBTC_TAC_FORCE_CLOSE</span><span class="desc">permissionless transfer to claim pool when collateral ratio falls below threshold</span>
+        <span class="hex">0x57</span><span class="op">T_CBTC_TAC_DEPOSIT_ATOMIC</span><span class="desc">atomic LP_ADD + cBTC.tac mint in one envelope</span>
+        <span class="hex">0x58</span><span class="op">T_CBTC_TAC_WITHDRAW_ATOMIC</span><span class="desc">atomic cBTC.tac burn + LP_REMOVE + slot redeem</span>
       </div>
       <p style="margin-top:8px;">Wire-format examples below cover the core four (CETCH / CXFER / T_MINT / T_BURN). The remaining opcodes follow the same envelope shape with their own payload layouts and validator rules — see <a href="https://github.com/z0r0z/tacit/blob/main/SPEC.md" target="_blank" rel="noopener noreferrer">SPEC.md</a> §5.7–§5.19 for the byte-exact specifications.</p>
       <p style="margin-top:8px;">Marketplace primitives live in §5.7 and route through <code>T_AXFER</code> / <code>T_AXFER_VAR</code> settlement — no separate opcodes needed: <strong>atomic intents</strong> (§5.7.6 — seller publishes one signed offer, any taker claims it within 5 min and settles atomically on Bitcoin); <strong>preauth sales</strong> (§5.7.8 — seller pre-signs everything, then goes offline; any buyer settles whenever); <strong>batched preauth-take</strong> (§5.7.8.1 — buyer sweeps N preauths in ONE reveal tx, ~70% Bitcoin-fee reduction vs N separate settlements; pure flow-level optimization leveraging position-independent <code>SIGHASH_SINGLE_ACP</code>); <strong>variable-amount intents</strong> (§5.7.6.1 — partial-fillable seller offers); and <strong>bid intents</strong> (§5.7.7 — partial-fillable buyer offers, off-chain coordination, on-chain settlement via <code>T_AXFER</code>/<code>T_AXFER_VAR</code>). All marketplace flows share the same kernel-sig + rangeproof crypto as base CXFER; the difference is the coordination layer, not the on-chain primitive.</p>
@@ -7188,9 +8014,20 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
 
       <details class="protocol-section" id="proto-cryptography" open>
         <summary class="protocol-h3">Cryptography</summary>
+      <p style="margin-top:8px;">The full ZK + commitment toolkit composes across all surfaces. See <a href="https://github.com/z0r0z/tacit/blob/main/spec/CIRCUITS.md" target="_blank" rel="noopener noreferrer">CIRCUITS.md</a> for the canonical walkthrough.</p>
+      <h4 style="margin-top:14px;font-size:12px;color:var(--purple);">On-chain commitments — Pedersen on secp256k1</h4>
       <p style="margin-top:8px;">Commitments: <code>C = a·H + r·G</code>, additively homomorphic. <code>H</code> is a NUMS generator (no known discrete log w.r.t. <code>G</code>) derived deterministically by hash-to-curve from the seed <code>"tacit-generator-H-v1"</code>. The protocol carries <code>C</code> on chain; <code>(a, r)</code> stay private.</p>
-      <p>Rangeproofs: <strong>aggregated Bulletproofs</strong> (Bünz et al. 2017) at n=64 bits, meaning each committed value is proven to lie in <code>[0, 2⁶⁴)</code>. A single proof can cover m ∈ {1, 2, 4, 8} commitments simultaneously via the inner-product argument, with witness size O(log(n·m)). On secp256k1: <strong>688 B at m=1, 754 B at m=2, 820 B at m=4, 886 B at m=8</strong>. ~250 ms to prove and ~150 ms to verify in-browser per proof; the indexer batches multiple proofs into a single multi-scalar multiplication for sub-linear amortized cost.</p>
-      <p>64-bit range bounds any single Pedersen commitment to 2⁶⁴ − 1 ≈ 1.84 × 10¹⁹ base units (~184 billion display units at the maximum 8 decimals; ~18 quintillion at 0 decimals). Wallets still spread holdings across multiple UTXOs (1–8 per CXFER) for change tracking, but the per-UTXO cap is not a practical constraint.</p>
+      <h4 style="margin-top:14px;font-size:12px;color:var(--purple);">Rangeproofs — aggregated Bulletproofs</h4>
+      <p style="margin-top:8px;">Bünz et al. 2017, at n=64 bits — each committed value proven to lie in <code>[0, 2⁶⁴)</code>. A single proof covers m ∈ {1, 2, 4, 8} commitments simultaneously via the inner-product argument, witness size O(log(n·m)). On secp256k1: <strong>688 B at m=1, 754 B at m=2, 820 B at m=4, 886 B at m=8</strong>. ~250 ms prove, ~150 ms verify in-browser per proof; the indexer batches multiple proofs into a single multi-scalar multiplication for sub-linear amortized cost. 64-bit range bounds any single Pedersen commitment to ~184 billion display units at 8 decimals.</p>
+      <h4 style="margin-top:14px;font-size:12px;color:var(--purple);">ZK circuits — two families, one stack</h4>
+      <p style="margin-top:8px;">All Groth16 circuits run over BN254 with Phase 1 inherited from the Polygon Hermez ceremony. Two families do all the in-circuit work:</p>
+      <ul style="margin-left:20px;margin-top:8px;">
+        <li><strong>Anonymous unique-spend</strong> — the mixer's <code>withdraw.circom</code> (Poseidon-Merkle leaf membership + nullifier reveal, ~3K constraints, <code>pot14</code> Phase 1). Reused without modification for cBTC.zk slot spending (T_SLOT_BURN / ROTATE / SPLIT / MERGE) — the slot's spending key <code>K_btc = r_leaf · G_secp256k1</code> is derived from the leaf's own Poseidon secret, so one secret proves mixer-set membership and signs the backing BTC UTXO.</li>
+        <li><strong>Amount confidentiality</strong> — the AMM's three circuits (<code>amm_lp_add</code> 5K, <code>amm_lp_remove</code> 10K, <code>amm_swap_batch</code> 171K @ N≤16 traders; <code>pot18</code> Phase 1). BabyJubJub Pedersen openings + range proofs + in-circuit AMM arithmetic (clearing-price derivation from private aggregates in the batch case).</li>
+      </ul>
+      <p>Chain commitments live on secp256k1; in-circuit work lives on BabyJubJub (the embedded curve over BN254 Fr). A <strong>169-byte Camenisch–Stadler sigma proof</strong> binds the two, out-of-circuit, with no trusted setup. This avoids ~1M constraints per opening that an in-circuit secp256k1 gadget would cost.</p>
+      <h4 style="margin-top:14px;font-size:12px;color:var(--purple);">Shielded-address primitive — blinded-pubkey commits</h4>
+      <p style="margin-top:8px;">Opt-in BIP-341-style construction: <code>commit = recipient_pubkey + blinding · G</code> where <code>blinding = HMAC(wallet.priv, domain || op-specific anchor)</code>. The commit serves as both a Schnorr verification key (if the op signs under the recipient) AND a P2TR output key (so payouts go to <code>P2TR(x_only(commit))</code>). Hides the recipient pubkey itself — on-chain markers sit at per-transaction unique addresses with no apparent link to the recipient's published identity. Same crypto as BIP-340 / BIP-341 / BIP-352; no new ceremony. Composes orthogonally with shielded amounts; both schemes remain valid indefinitely, wallets pick at tx-build time based on the recipient's signaled capability.</p>
       </details>
 
       <details class="protocol-section" id="proto-wire">
@@ -7301,14 +8138,19 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
 
       <details class="protocol-section" id="proto-privacy">
         <summary class="protocol-h3">Privacy scope</summary>
-        <p style="margin-top:8px;"><strong>Amounts:</strong> hidden by default in every CETCH, T_MINT, CXFER, T_AXFER, and BURN-change commitment (32-byte commitment + 8-byte HMAC-encrypted u64 on chain).</p>
-        <p><strong>Address graph:</strong> publicly linkable on the base layer, but the mixer pool (T_DEPOSIT / T_WITHDRAW, §5.10–§5.11) cuts the link. A holder deposits a fixed-denomination UTXO into a Poseidon Merkle tree, then later withdraws under a Groth16 proof of unspent leaf membership. The withdraw recipient is unlinkable to any specific deposit; the anonymity set is the count of currently-unspent leaves at withdraw time. So end-to-end: amount-hiding is on by default and full address-graph privacy is opt-in via the pool — a stricter posture than Liquid CT and approaching the privacy scope of Mimblewimble or shielded Zcash for the assets that route through it.</p>
-        <p>What remains public, even after pooling:</p>
+        <p style="margin-top:8px;">Tacit surfaces three orthogonal privacy capabilities:</p>
+        <ul style="margin-left:20px;margin-top:8px;">
+          <li><strong>Shielded amount</strong> (default) — hidden in every CETCH, T_MINT, CXFER, T_AXFER, and BURN-change commitment (32-byte Pedersen commit + 8-byte HMAC-encrypted u64). In <code>T_SWAP_BATCH</code>, per-trader amounts stay hidden during settlement via BabyJubJub Pedersen openings inside Groth16.</li>
+          <li><strong>Shielded address</strong> (opt-in, blinded-pubkey commit primitive) — BIP-341-style construction <code>commit = recipient_pubkey + blinding·G</code> with <code>blinding = HMAC(wallet.priv, domain || op-specific anchor)</code>. The commit doubles as Schnorr key and P2TR output key, so on-chain markers sit at per-transaction unique addresses with no apparent link to the recipient's published identity. Same crypto as BIP-340/341/352 silent payments, no new ceremony. Composes orthogonally with shielded amounts.</li>
+          <li><strong>Anonymous spend via mixer pool</strong> (opt-in) — deposit a fixed-denomination UTXO into the Poseidon-Merkle pool (<code>T_DEPOSIT</code>), later withdraw under a Groth16 proof of unspent leaf membership (<code>T_WITHDRAW</code>). The withdraw recipient is unlinkable to any specific deposit; the anonymity set is the count of currently-unspent leaves at withdraw time. The same circuit underpins cBTC.zk slot semantics — every slot spend is anonymous-unique-spend by construction.</li>
+        </ul>
+        <p style="margin-top:12px;">End-to-end: amount-hiding is on by default; address-graph unlinkability is opt-in two ways (shielded-address per transfer, or mixer-pool round-trip for full anonymity-set unlinkability). Stricter posture than Liquid CT, approaching Mimblewimble or shielded Zcash for assets that route through the pool.</p>
+        <p style="margin-top:8px;">What remains public:</p>
       <ul style="margin-left:20px;margin-top:8px;">
-        <li><strong>Asset_id.</strong> Which asset is being transferred is public (32-byte asset_id in every non-pool envelope).</li>
-        <li><strong>Sender pubkey.</strong> Visible in <code>tx.vin[1].witness[1]</code> (P2WPKH witness) on non-pool transfers; recipient needs it for ECDH blinding recovery.</li>
-        <li><strong>Pool participation.</strong> Deposit and withdraw events themselves are public — observers see <em>that</em> an address deposited or withdrew, just not which deposit corresponds to which withdrawal.</li>
-        <li><strong>Pool size and denomination.</strong> Public on chain; the same fact that grants anonymity sets is visible to observers.</li>
+        <li><strong>Asset_id.</strong> Which asset is being transferred is public (32-byte asset_id in every non-pool envelope). Surjection proofs are on the roadmap.</li>
+        <li><strong>Sender pubkey</strong> on non-pool transfers — visible in <code>tx.vin[1].witness[1]</code>; recipient needs it for ECDH blinding recovery.</li>
+        <li><strong>Pool participation</strong> — observers see <em>that</em> an address deposited or withdrew, just not which deposit corresponds to which withdrawal.</li>
+        <li><strong>AMM pool reserves and per-batch net deltas</strong> — public by design (cost of trustless reconstruction). Per-trader amounts within a batch are hidden.</li>
       </ul>
       </details>
 
@@ -7322,12 +8164,14 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
         <p style="margin-top:8px;"><strong>Issuer at CETCH.</strong> The initial supply commitment is hidden, so no kernel-sig constraint applies — the issuer chooses any value in <code>[0, 2⁶⁴)</code>. The dApp publishes the <code>(supply, blinding)</code> opening by default — embedded in the asset's IPFS metadata blob (content-addressed) and pinned to the discovery worker as a cache. Anyone verifies <code>C == supply·H + r·G</code> against the on-chain commitment, no issuer trust required. Issuers explicitly opt out of attestation only if they have a reason to keep the total confidential; the dApp surfaces that as a deliberate uncheck.</p>
       <p style="margin-top:8px;"><strong>Mint authority for mintable assets.</strong> If <code>mint_authority ≠ 0</code> in the CETCH envelope, that x-only pubkey can issue additional supply via <code>T_MINT</code> envelopes — bounded only by 2⁶⁴ per envelope, unlimited in count. Standard signature-gated mint pattern: holders trust the mint-authority key not to be abused, and compromise of that private key means uncapped inflation. The dApp auto-attests every mint by default so supply remains publicly auditable. Fixed-supply CETCHes (<code>mint_authority</code> all-zero) cannot be expanded — for those, etch-time attestation gives provably and permanently public supply.</p>
       <p style="margin-top:8px;"><strong>T_PETCH (permissionless mints).</strong> No issuer trust at all. The deploy declares <code>cap_amount</code>, <code>mint_limit</code>, and an optional height window; deployer receives zero tokens. Each <code>T_PMINT</code> reveals <code>(amount, blinding)</code> on chain, so cumulative supply against the cap is auditable from chain alone — no attestation channel needed.</p>
-      <p style="margin-top:8px;"><strong>Mixer pools (T_DEPOSIT / T_WITHDRAW).</strong> Each pool runs its own per-circuit Groth16 MPC ceremony at init time; soundness rests on ≥ 1 honest contributor in that ceremony. Privacy (zero-knowledge) is unconditional and does <em>not</em> depend on the ceremony. Pools pin ceremony transcripts to IPFS by content hash; the canonical mixer-circuit ceremony for v1 (Phase 2, beacon-finalized 2026-05-11, 2,227 contributors) is hardcoded in the dApp. Consumers should verify contributor diversity before depositing into any pool not bound to the canonical bundle.</p>
-      <p style="margin-top:8px;"><strong>After issuance.</strong> No participant can inflate (kernel sig blocks unbalanced CXFER / T_AXFER / T_BURN; <code>T_PMINT</code> caps are chain-auditable), burn covertly (BURN's <code>burned_amount</code> is public and bound into the kernel msg), or substitute assets (asset_id consistency checked across every input's parent envelope). Recursive client-side validation guarantees this independent of any indexer's honesty.</p>
+      <p style="margin-top:8px;"><strong>Mixer + cBTC.zk (Groth16 + Phase 2 ceremony).</strong> Both share the same <code>withdraw.circom</code> primitive. Soundness rests on ≥ 1 honest contributor in the Phase 2 ceremony; privacy (zero-knowledge) is unconditional and does <em>not</em> depend on the ceremony. The canonical v1 mixer ceremony (Phase 2, beacon-finalized 2026-05-11, 2,227 contributors) is hardcoded in the dApp as the trust anchor; cBTC.zk slots reuse the same vk. cBTC.zk's BTC anchor is cryptographic — the slot's spending key is derived from a mixer leaf's secret — so no federation and no co-signer.</p>
+      <p style="margin-top:8px;"><strong>AMM circuits (Phase 2 ceremony in flight).</strong> The three AMM circuits run independent Phase 2 chains under one shared <code>pot18</code> Phase 1, with one Bitcoin-block beacon at finalization. Same ≥ 1-honest-per-circuit assumption as the mixer. Pool reserves are virtual public quantities the indexer tracks — no UTXO holds any pool's funds, so no party can rug. The constant-product invariant is plain arithmetic on public reserves; Groth16 binds hidden per-trader amounts to public batch deltas.</p>
+      <p style="margin-top:8px;"><strong>cBTC.tac (collateralized lien).</strong> Two trust legs: the BTC anchor at L1 (cryptographic — cBTC.zk's slot lock works as long as Bitcoin + Groth16 + secp256k1 hardness hold) and the TAC collateral substrate (economic — TAC stays valuable enough relative to BTC that bonded slots remain over-margined). The collateral leg reuses the same indexer-consensus trust model that already makes Runes/Ordinals tradeable at scale: TAC's market-validated value becomes the bond that makes wrapped BTC trustless without federation. Same shape as MakerDAO's ETH-collateralized stablecoins; not the same shape as wBTC's BitGo + auditors.</p>
+      <p style="margin-top:8px;"><strong>After issuance.</strong> No participant can inflate (kernel sig blocks unbalanced CXFER / T_AXFER / T_BURN; <code>T_PMINT</code> caps are chain-auditable; AMM circuits bind hidden amounts to public deltas), burn covertly (BURN's <code>burned_amount</code> is public and bound into the kernel msg), or substitute assets (asset_id consistency checked across every input's parent envelope). Recursive client-side validation guarantees this independent of any indexer's honesty.</p>
       </details>
 
       <p class="muted" style="margin-top:24px;font-size:11px;">
-        Pedersen commits via @noble/secp256k1 projective ops. NUMS H from deterministic hash-to-curve. BIP-340 Schnorr + BIP-341 Taproot inlined. Aggregated bulletproofs (Bünz et al. 2017) + Mimblewimble-style kernel sigs in pure JS, with Pippenger MSM for batched verification.
+        Pedersen commits via @noble/secp256k1 projective ops. NUMS H from deterministic hash-to-curve. BIP-340 Schnorr + BIP-341 Taproot inlined. Aggregated bulletproofs (Bünz et al. 2017) + Mimblewimble-style kernel sigs in pure JS, with Pippenger MSM for batched verification. Groth16 prover + verifier via snarkjs (vendored); Poseidon-Merkle (mixer / cBTC.zk anonymous-spend) and BabyJubJub Pedersen (AMM amount-confidentiality) inside the circuits; Camenisch–Stadler sigma cross-curve binding between secp256k1 and BabyJubJub at 169 bytes, no trusted setup.
       </p>
     </div>
   </div>
@@ -7475,7 +8319,7 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
   <div class="welcome-card">
     <div class="welcome-title" id="welcome-title">welcome to <span class="accent">tacit</span></div>
     <div class="welcome-lede">
-      tacit holds confidential tokens on bitcoin. the signing key lives in this browser — <strong>pick how to set it up below</strong>.
+      tacit is bitcoin with shielded amounts, anonymous spend, native AMM, and trustless wrapped BTC — all settled on Bitcoin L1. the signing key lives in this browser — <strong>pick how to set it up below</strong>.
     </div>
     <!-- Contextual prepend for visitors arriving via ?ceremony=… share links.
          Hidden by default; revealed in JS when the URL param is canonical.
@@ -7611,22 +8455,26 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
     <div class="faq-body">
       <div class="faq-q">What is tacit?</div>
       <div class="faq-a">
-        Confidential tokens on Bitcoin. Issue, send, mint, burn — with amounts hidden by Pedersen commitments and rangeproofs, settled in regular Bitcoin transactions. No federation, no off-chain proofs, no third-party trust. Your privkey plus the chain reconstruct your full balance, even years later on a fresh device.
+        An indexer-validated meta-protocol on Bitcoin that scales the Runes/Ordinals pattern past plain tokens. Confidential value (Pedersen + bulletproofs), anonymous spend (a Tornado-style shielded pool with Groth16 + nullifiers), a native AMM with confidential per-trader amounts, and trustless wrapped BTC (cBTC.zk) plus fungible wrapped BTC backed by collateralized LP shares (cBTC.tac) — all settled in regular Bitcoin transactions, all enforced by indexers anyone can run and reach the same verdict from chain data alone. No federation, no sidechain, no off-chain proofs, no third-party trust. Your privkey plus the chain reconstruct your full balance, even years later on a fresh device.
       </div>
 
-      <div class="faq-q">Why not just use Runes / Liquid / RGB?</div>
+      <div class="faq-q">Why not just use Runes / Liquid / RGB / a rollup?</div>
       <div class="faq-a">
-        Runes and BRC-20 publish amounts in cleartext — anyone with a block explorer sees your balance. Liquid hides amounts (and asset IDs too) but runs on a federated sidechain with ~15 KYC'd functionaries; that's not really Bitcoin. RGB hides amounts on Bitcoin proper, but the recipient has to receive a proof chain from the sender off-chain — lose the proof, lose the asset. Tacit hides amounts on Bitcoin and you recover from privkey + chain alone, the way Bitcoin itself works.
+        Runes and BRC-20 publish amounts in cleartext and do tokens only — no AMM, no wrapped BTC. Liquid hides amounts (and offers a sidechain AMM, SideSwap) but lives on a federated sidechain with ~15 KYC'd functionaries; that's not really Bitcoin. RGB and Taproot Assets hide amounts on Bitcoin proper, but the recipient must receive a proof chain from the sender off-chain — lose the proof, lose the asset. Bitcoin rollup DEXes (Citrea, Botanix) inherit operator-set or fraud-proof trust. Tacit hides amounts on Bitcoin L1, hosts a native confidential AMM on the same indexer-validated substrate, and offers trustless wrapped BTC via cBTC.zk — all without federation, sidechain, or rollup operators. You recover from privkey + chain alone, the way Bitcoin itself works.
+      </div>
+
+      <div class="faq-q">What's actually new here architecturally?</div>
+      <div class="faq-a">
+        Indexer-validated meta-protocols (Runes, Ordinals, BRC-20) already prove at production scale that <em>consensus of indexers over chain state</em> can underwrite real market value with no Bitcoin-consensus enforcement. Tacit takes that same substrate and layers two things on it: <strong>cryptographic primitives</strong> where they must be cryptographic (Pedersen + bulletproofs for shielded amounts, BIP-341-style blinded-pubkey commits for shielded addresses, Groth16 + Poseidon-Merkle for anonymous spend, BabyJubJub Pedersen for in-circuit AMM logic, secp256k1 slot locks for trustless wrapped BTC), and <strong>economic discipline</strong> where indexer-validated value can carry it (TAC over-collateralization for cBTC.tac, slash-on-violation for liened LP-share UTXOs). Indexer consensus + cryptographic privacy + market-validated collateral = smart-contract-shaped properties (AMM, collateralized wrapping, batched settlement) on Bitcoin L1, with no VM, no sidechain, no rollup. See <a href="https://github.com/z0r0z/tacit/blob/main/spec/CIRCUITS.md" target="_blank" rel="noopener noreferrer">CIRCUITS.md</a> for the full primitive walkthrough.
       </div>
 
       <div class="faq-q">What else can I do besides send / receive?</div>
       <div class="faq-a">
-        <strong>Trade</strong> on the built-in orderbook — five marketplace flows, all settling via <code>T_AXFER</code> / <code>T_AXFER_VAR</code>: <em>preauth sales</em> (§5.7.8 — seller pre-signs once, buyer settles whenever; the "Instant listing" you see most often), <em>batched preauth-take</em> (§5.7.8.1 — N preauths settle in ONE reveal tx, ~70% Bitcoin-fee reduction), <em>atomic intents</em> (§5.7.6 — claim &amp; take), <em>variable-amount intents</em> (§5.7.6.1 — partial-fillable seller offers), and <em>variable-fill bids</em> (§5.7.7 — partial-fillable buyer offers). Every fill settles atomically on Bitcoin, signed by both parties.
-        <strong>Drops</strong> (<code>T_DROP</code> / <code>T_DCLAIM</code>) — lock existing supply into a public claim pool, optionally Merkle-gated.
-        <strong>Mixer</strong> (<code>T_DEPOSIT</code> / <code>T_WITHDRAW</code>) — break the on-chain link between deposit and withdraw via Groth16. Canonical v1 ceremony beacon-finalized 2026-05-11 with 2,227 contributors.
-        <strong>Fair-launch mints</strong> (<code>T_PETCH</code> / <code>T_PMINT</code>) — permissionless cap-gated minting.
-        <strong>Wrapper convention</strong> (<code>T_WRAPPER_ATTEST</code> §4.2 + §5.19) — issuers bind a tacit asset to an external collateral claim (e.g. cBTC = sats reserves) with on-chain coverage verification.
-        <em>Shipping next:</em> confidential block-batched AMM (SPEC §5.14–§5.18, Phase 2 trusted setup in progress) for AMM-curve liquidity alongside the orderbook.
+        <strong>Trade on the orderbook</strong> — five marketplace flows, all settling via <code>T_AXFER</code> / <code>T_AXFER_VAR</code>: <em>preauth sales</em> (§5.7.8 — seller pre-signs once, buyer settles whenever), <em>batched preauth-take</em> (§5.7.8.1 — N preauths in ONE reveal tx, ~70% fee reduction), <em>atomic intents</em> (§5.7.6 — claim &amp; take), <em>variable-amount intents</em> (§5.7.6.1 — partial-fillable seller offers), and <em>variable-fill bids</em> (§5.7.7 — partial-fillable buyer offers). Every fill settles atomically on Bitcoin, signed by both parties.
+        <strong>Native AMM</strong> (<code>T_LP_ADD</code> / <code>T_LP_REMOVE</code> / <code>T_SWAP_BATCH</code> / <code>T_SWAP_VAR</code> / <code>T_SWAP_ROUTE</code>, AMM.md) — uniform-clearing block-batched market with confidential per-trader amounts (Groth16) plus a per-trade variable-amount path that needs no Groth16 at all. LP shares are themselves tacit assets — mixer-composable for anonymous positions, and the collateral substrate for cBTC.tac.
+        <strong>Trustless wrapped BTC</strong> (<code>cBTC.zk</code>, §5.21–§5.23) — lock real BTC at a Taproot output whose spending key is derived from a mixer leaf's secret. No federation, no co-signer, no oracle. <strong>Fungible wrapped BTC</strong> (<code>cBTC.tac</code>) layers an LP-share lien on top with TAC over-collateralization, so amount-granular wrapped BTC is itself a standard tacit asset.
+        <strong>Mixer</strong> (<code>T_DEPOSIT</code> / <code>T_WITHDRAW</code>) — break the on-chain link between deposit and withdraw via Groth16. Canonical v1 ceremony beacon-finalized 2026-05-11 with 2,227 contributors. The same circuit underpins cBTC.zk slot semantics.
+        <strong>Drops</strong> (<code>T_DROP</code> / <code>T_DCLAIM</code>) — public claim pools, optionally Merkle-gated. <strong>Fair-launch mints</strong> (<code>T_PETCH</code> / <code>T_PMINT</code>) — permissionless cap-gated minting.
       </div>
 
       <div class="faq-q">How does the DEX / orderbook actually work for a trader?</div>
@@ -7636,7 +8484,7 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
 
       <div class="faq-q">Is there MEV / front-running?</div>
       <div class="faq-a">
-        Not by construction. Every orderbook fill commits asset + sats atomically — once the maker and taker both sign, only the holder of the signed bundle can broadcast, and the trade either settles fully or doesn't. There's no public mempool ordering game, no privileged sequencer, no sandwich window. Atomic-intent claims have a 5-min first-come window where another buyer could claim before you (not MEV — just race condition), but the rest of the orderbook (preauth sales + batched takes) is sealed-bid by signature. When the AMM ships, it batches all swap intents per block at one uniform clearing price so sandwich attacks have nothing to sandwich.
+        Not by construction. Every orderbook fill commits asset + sats atomically — once the maker and taker both sign, only the holder of the signed bundle can broadcast, and the trade either settles fully or doesn't. There's no public mempool ordering game, no privileged sequencer, no sandwich window. Atomic-intent claims have a 5-min first-come window where another buyer could claim before you (not MEV — just race condition), but the rest of the orderbook (preauth sales + batched takes) is sealed-bid by signature. The AMM's <code>T_SWAP_BATCH</code> path batches all swap intents per block at one uniform clearing price, so intra-batch sandwich attacks have nothing to sandwich; per-trade <code>T_SWAP_VAR</code> uses public amounts against a known pre-state curve, so the settler has zero pricing freedom (the indexer recomputes the curve output and requires strict equality).
       </div>
 
       <div class="faq-q">How do I see my tacit balances?</div>
@@ -7656,7 +8504,7 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
 
       <div class="faq-q">Is amount privacy actually enough?</div>
       <div class="faq-a">
-        For most fungible-token use cases — yes. Tacit hides what's load-bearing: <em>how much</em> is moving. For users who also need <em>address-graph</em> privacy (so observers can't link your wallet to your trading history), the built-in shielded mixer pool (<code>T_DEPOSIT</code> / <code>T_WITHDRAW</code>, SPEC §5.10–§5.11) cuts the link via Groth16 zk-SNARK withdrawals: deposit a fixed-denomination UTXO, later withdraw under a proof of unspent-leaf membership, recipient unlinkable to any specific deposit. So tacit covers both amount-hiding (by default) and unlinkability (opt-in via mixer) — a stricter privacy posture than Liquid CT, approaching shielded Zcash for assets that route through the pool. Asset-id remains public on chain regardless; BIP-352 Silent Payments and Asset Surjection Proofs are on the roadmap for further coverage.
+        For most fungible-token use cases — yes. Tacit hides what's load-bearing: <em>how much</em> is moving. The protocol surfaces privacy on two orthogonal axes: <strong>shielded amount</strong> (the default — Pedersen + bulletproofs on every transfer; BabyJubJub Pedersen + Groth16 inside <code>T_SWAP_BATCH</code> so per-trader amounts stay hidden during batched AMM settlement), and <strong>shielded address</strong> (opt-in — a BIP-341-style blinded-pubkey commit <code>commit = recipient_pubkey + blinding·G</code> that hides the recipient pubkey itself, so on-chain markers sit at per-transaction unique addresses with no apparent link to the recipient's published identity). Same crypto as BIP-340 / BIP-341 / BIP-352 silent payments, no new ceremony. Plus the <strong>shielded mixer pool</strong> (<code>T_DEPOSIT</code> / <code>T_WITHDRAW</code>, §5.10–§5.11) breaks the on-chain link between deposit and withdrawal via Groth16 proof of unspent-leaf membership — the same circuit underpins cBTC.zk slot semantics, so trustless wrapped BTC inherits the same anonymous-spend primitive without new ZK machinery. Asset-id remains public on chain; asset surjection proofs are on the roadmap.
       </div>
 
       <div class="faq-q">How do I trust the announced supply when amounts are hidden?</div>
@@ -7667,7 +8515,7 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
       <div class="faq-q">Can I trade BTC here?</div>
       <div class="faq-a">
         Yes — directly, today. Every orderbook trade pays in real Bitcoin satoshis: maker signs, taker signs, asset ↔ sats settles atomically in one Bitcoin tx. No wrap needed.
-        Wrapped BTC (cBTC) is only relevant when you need a <em>tacit-side token</em> denomination — for the AMM (pools are tacit-asset ↔ tacit-asset by design), for amount-confidential BTC balances, or as CDP collateral. The wrapper convention (SPEC §4.2, merged) defines the standard; the first cBTC variant launches alongside the AMM. Straight BTC ↔ asset trading on the orderbook uses real sats today.
+        Wrapped BTC matters when you want amount-confidential BTC balances or a tacit-side BTC token for the AMM (pools are tacit-asset ↔ tacit-asset by design). Tacit has two wrappers, both trustless: <strong>cBTC.zk</strong> locks real BTC at a Taproot output whose spending key is derived from a mixer leaf's secret — no federation, no co-signer, no oracle. <strong>cBTC.tac</strong> layers an LP-share lien on top of a cBTC.zk anchor with TAC over-collateralization, giving you fungible amount-granular wrapped BTC that behaves like any other tacit asset (CXFER it, swap it, LP it, mix it). Same trust model that already makes Runes/Ordinals tradeable, structurally aligned into a bond.
       </div>
 
       <div class="faq-q">What's the cost per transfer / swap?</div>
@@ -7804,7 +8652,7 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
   </div>
 </div>
 
-<script type="module" src="./tacit.js?cb=503924b2"></script>
+<script type="module" src="./tacit.js?cb=swkill"></script>
 
 <!-- Service worker registration moved into tacit.js (the dapp's CSP forbids
      inline scripts; only 'self' module scripts are allowed). See sw.js for

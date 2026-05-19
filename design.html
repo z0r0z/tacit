@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Tacit Finance — Orderbook Redesign v2</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@2.47.0/tabler-icons.min.css">
+<style>
+  html, body { margin: 0; padding: 0; background: #E8E0CC; font-family: 'JetBrains Mono', 'Menlo', ui-monospace, monospace; }
+  body { display: flex; justify-content: center; padding: 40px 20px; min-height: 100vh; box-sizing: border-box; }
+  .frame { width: 720px; max-width: 100%; }
+  .ti { font-family: 'tabler-icons' !important; }
+</style>
+</head>
+<body>
+<div class="frame">
+
+<div style="background:#F2EBD4;color:#1A1A1A;font-family:'JetBrains Mono','IBM Plex Mono','Menlo',ui-monospace,monospace;font-size:12px;line-height:1.45;padding:0;border-radius:4px;overflow:hidden;border:0.5px solid rgba(26,26,26,0.15)">
+
+<div style="display:flex;align-items:flex-start;justify-content:space-between;padding:14px 18px 12px">
+<div style="display:flex;align-items:flex-start;gap:14px">
+<div style="font-family:Georgia,'Times New Roman',serif;font-style:italic;font-size:24px;line-height:0.9;letter-spacing:-0.02em">tacit</div>
+<div style="border-left:1px solid rgba(26,26,26,0.25);padding-left:12px;font-size:10px;line-height:1.5;letter-spacing:0.06em;color:#6B6557">
+<div>CONFIDENTIAL TOKENS</div>
+<div>VERIFIABLE ON BITCOIN</div>
+</div>
+</div>
+<div style="display:flex;align-items:center;gap:6px;font-size:11px">
+<span style="color:#1A7548;font-size:9px">●</span>
+<span style="border:0.5px solid rgba(26,26,26,0.3);padding:3px 7px">⌘K</span>
+<span style="border:0.5px solid rgba(26,26,26,0.3);padding:3px 7px;position:relative"><i class="ti ti-bell" style="font-size:12px;vertical-align:-1px"></i><span style="position:absolute;top:-4px;right:-4px;background:#C76B26;color:#F2EBD4;border-radius:8px;font-size:9px;padding:1px 4px;line-height:1.2">21</span></span>
+<span style="border:0.5px solid rgba(26,26,26,0.3);padding:3px 7px">?</span>
+<span style="background:#1A1A1A;color:#F2EBD4;padding:5px 11px;font-weight:500;letter-spacing:0.05em;font-size:11px">MAINNET <i class="ti ti-chevron-down" style="font-size:11px;vertical-align:-1px"></i></span>
+</div>
+</div>
+
+<div style="border-top:1px dashed rgba(26,26,26,0.25);border-bottom:1px dashed rgba(26,26,26,0.25);padding:7px 18px;font-size:11px;color:#6B6557;overflow:hidden;white-space:nowrap;display:flex;gap:22px;align-items:center">
+<span style="color:#95907F;letter-spacing:0.06em;font-size:10px">NEW</span>
+<span><b style="color:#1A1A1A;font-weight:500">PIZZA</b> 0.5 × 100k · 2d</span>
+<span><b style="color:#1A1A1A;font-weight:500">SPACEXAI</b> 20 × 1k · 3d</span>
+<span><b style="color:#1A1A1A;font-weight:500">ASTEROID</b> 2 × 5k · 5d</span>
+<span style="color:#95907F;margin-left:auto">all listings →</span>
+</div>
+
+<div style="padding:12px 18px 0;display:flex;gap:24px;font-size:12px;letter-spacing:0.05em">
+<span style="color:#6B6557">WALLET</span>
+<span style="font-weight:500;border-bottom:2px solid #1A1A1A;padding-bottom:8px;margin-bottom:-1px">MARKETS <span style="background:#1A1A1A;color:#F2EBD4;padding:1px 5px;font-size:10px;margin-left:2px">680</span></span>
+<span style="color:#6B6557">SEND</span>
+<span style="color:#6B6557">CREATE</span>
+<span style="color:#6B6557">MIXER</span>
+<span style="color:#6B6557">PROTOCOL</span>
+</div>
+<div style="border-bottom:0.5px solid rgba(26,26,26,0.15);padding:7px 18px;display:flex;gap:20px;font-size:11px;letter-spacing:0.05em;color:#6B6557">
+<span style="color:#1A1A1A;font-weight:500">order book <span style="color:#95907F;font-weight:400">680</span></span>
+<span>amm</span>
+<span>farms</span>
+<span>discover</span>
+<span style="margin-left:auto;color:#95907F"><i class="ti ti-arrow-left" style="font-size:11px;vertical-align:-1px"></i> all markets</span>
+</div>
+
+<div style="padding:16px 18px 12px">
+<div style="display:flex;align-items:center;gap:12px;margin-bottom:10px">
+<div style="width:42px;height:42px;background:#1A1A1A;color:#C76B26;display:flex;align-items:center;justify-content:center;font-family:Georgia,serif;font-style:italic;font-size:24px;border-radius:50%;flex-shrink:0">t</div>
+<div style="flex:1;min-width:0">
+<div style="display:flex;align-items:center;gap:7px;flex-wrap:wrap"><span style="font-weight:500;font-size:14px">Tacit Coin</span><span style="color:#95907F;font-size:13px">TAC</span><span style="background:#1A7548;color:#F2EBD4;font-size:9px;padding:2px 6px;letter-spacing:0.05em">✓ VERIFIED</span><span style="font-size:10px;color:#95907F;margin-left:auto">last fill 38m ago · <span style="color:#1A7548">● live</span></span></div>
+<div style="font-size:10px;color:#6B6557;display:flex;align-items:center;gap:6px;margin-top:3px">id <span style="border:0.5px dashed rgba(26,26,26,0.4);padding:1px 6px;color:#1A7548;background:rgba(26,117,72,0.06);font-family:'JetBrains Mono',monospace">f0bbe868af10…bde43f94762b</span> <i class="ti ti-copy" style="font-size:11px;color:#95907F"></i> · github.com/z0r0z/tacit</div>
+</div>
+</div>
+
+<div style="display:flex;align-items:baseline;gap:14px;padding:6px 0 4px;border-top:0.5px solid rgba(26,26,26,0.12);margin-top:4px">
+<div style="display:flex;align-items:baseline;gap:8px">
+<div style="font-size:28px;font-weight:500;line-height:1;letter-spacing:-0.01em">139.78</div>
+<div style="font-size:11px;color:#6B6557">sats/TAC</div>
+</div>
+<div style="font-size:13px;color:#6B6557">$0.1074</div>
+<div style="font-size:12px;color:#B23A2E;font-weight:500">−4.46%</div>
+<div style="font-size:10px;color:#95907F">24h</div>
+<svg viewBox="0 0 140 28" style="height:24px;width:auto;margin-left:auto" preserveAspectRatio="none">
+<path d="M 0 10 L 12 8 L 24 9 L 36 6 L 48 14 L 60 13 L 72 11 L 84 12 L 96 16 L 108 22 L 120 24 L 140 21" fill="none" stroke="#B23A2E" stroke-width="1.2"/>
+</svg>
+</div>
+
+<div style="display:flex;gap:14px;font-size:10px;color:#6B6557;padding-top:8px;border-top:0.5px solid rgba(26,26,26,0.12);flex-wrap:wrap">
+<span>vol <b style="color:#1A1A1A;font-weight:500">$5,081</b></span>
+<span>mcap <b style="color:#1A1A1A;font-weight:500">$2.26M</b></span>
+<span>holders <b style="color:#1A1A1A;font-weight:500">1,537</b></span>
+<span>orders <b style="color:#1A1A1A;font-weight:500">635</b>a / <b style="color:#1A1A1A;font-weight:500">16</b>b</span>
+<span style="margin-left:auto">1h <span style="color:#1A7548">+3.73</span> · 4h <span style="color:#B23A2E">−10.48</span> · 24h <span style="color:#B23A2E">−4.46</span></span>
+</div>
+</div>
+
+<div style="padding:14px 18px 12px;background:rgba(255,255,255,0.35);border-top:1px dashed rgba(26,26,26,0.25);border-bottom:1px dashed rgba(26,26,26,0.25)">
+<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+<div style="display:flex;align-items:center;gap:10px;font-size:12px;font-weight:500"><span style="background:#F7931A;color:#1A1A1A;width:18px;height:18px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-weight:600;font-size:10px">₿</span> sats <span style="color:#95907F;font-weight:400">/</span> <span style="background:#1A1A1A;color:#C76B26;width:18px;height:18px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-family:Georgia,serif;font-style:italic;font-size:11px">t</span> TAC</div>
+<div style="display:flex;font-size:11px;border:0.5px solid rgba(26,26,26,0.3)"><span style="background:#1A1A1A;color:#F2EBD4;padding:3px 10px">MARKET</span><span style="padding:3px 10px;color:#6B6557">LIMIT</span></div>
+</div>
+
+<div style="background:#F2EBD4;border:0.5px solid rgba(26,26,26,0.2);padding:10px 12px;margin-bottom:6px">
+<div style="display:flex;justify-content:space-between;font-size:10px;color:#6B6557;letter-spacing:0.05em;margin-bottom:2px"><span>YOU PAY</span><span>≈ 7,726 sats</span></div>
+<div style="display:flex;justify-content:space-between;align-items:center">
+<div style="font-size:22px;font-weight:500">$10<span style="color:#95907F;font-size:11px;margin-left:4px">.00</span></div>
+<div style="display:flex;gap:4px;align-items:center">
+<span style="border:0.5px solid rgba(26,26,26,0.3);padding:3px 7px;font-size:10px">$10</span>
+<span style="border:0.5px solid rgba(26,26,26,0.3);padding:3px 7px;font-size:10px">$50</span>
+<span style="border:0.5px solid rgba(26,26,26,0.3);padding:3px 7px;font-size:10px">$200</span>
+<span style="font-size:11px;font-weight:500;margin-left:6px">USD <i class="ti ti-chevron-down" style="font-size:10px;vertical-align:-1px;color:#95907F"></i></span>
+</div>
+</div>
+</div>
+
+<div style="display:flex;justify-content:center;margin:-2px 0;position:relative;z-index:2"><div style="background:#F2EBD4;border:0.5px solid rgba(26,26,26,0.3);width:24px;height:24px;border-radius:50%;display:flex;align-items:center;justify-content:center"><i class="ti ti-arrows-up-down" style="font-size:11px"></i></div></div>
+
+<div style="background:#F2EBD4;border:0.5px solid rgba(26,26,26,0.2);padding:10px 12px;margin-top:-2px">
+<div style="display:flex;justify-content:space-between;font-size:10px;color:#6B6557;letter-spacing:0.05em;margin-bottom:2px"><span>YOU RECEIVE <span style="color:#95907F">est.</span></span><span>avg 191.5 sats/TAC</span></div>
+<div style="display:flex;justify-content:space-between;align-items:center">
+<div style="font-size:22px;font-weight:500">40.3532<span style="font-size:11px;color:#95907F">316</span></div>
+<div style="display:flex;align-items:center;gap:6px"><span style="background:#1A1A1A;color:#C76B26;border-radius:50%;width:22px;height:22px;display:inline-flex;align-items:center;justify-content:center;font-family:Georgia,serif;font-style:italic;font-size:13px">t</span><span style="font-size:11px;font-weight:500">TAC <i class="ti ti-chevron-down" style="font-size:10px;vertical-align:-1px;color:#95907F"></i></span></div>
+</div>
+</div>
+
+<div style="font-size:10px;color:#6B6557;margin:10px 2px 8px;display:flex;justify-content:space-between;align-items:center">
+<span>3 fills · max 214.5 · fee ≈ 2.4k sat · <span style="color:#B23A2E">+7.1% above mark</span> · slippage <span style="color:#1A1A1A">±20%</span></span>
+<span style="border-bottom:0.5px dashed rgba(26,26,26,0.4);cursor:pointer">details ▾</span>
+</div>
+
+<div style="background:#1A7548;color:#F2EBD4;padding:13px;text-align:center;font-size:13px;font-weight:500;letter-spacing:0.04em">
+<i class="ti ti-lock" style="font-size:13px;vertical-align:-1px"></i> UNLOCK &amp; BUY 40.35 TAC FOR 7,726 SATS
+</div>
+<div style="text-align:center;font-size:10px;color:#6B6557;margin-top:5px">settles atomically on bitcoin · no front-running</div>
+</div>
+
+<div style="padding:14px 18px 12px;border-bottom:1px dashed rgba(26,26,26,0.25)">
+<div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:6px">
+<div style="font-size:11px;letter-spacing:0.06em"><b style="font-weight:500">DEPTH</b> <span style="background:#F2D67C;color:#5A4400;padding:2px 7px;font-size:10px;margin-left:6px">CROSSED 86%</span> <span style="color:#95907F;font-size:10px;margin-left:4px">best bid 200 sits above best ask 79.55 — SWAP fills sweep the band at favorable prices <i class="ti ti-info-circle" style="font-size:10px;vertical-align:-1px"></i></span></div>
+</div>
+
+<svg viewBox="0 0 640 100" style="width:100%;height:auto;display:block">
+<defs>
+<pattern id="hatch2" patternUnits="userSpaceOnUse" width="6" height="6" patternTransform="rotate(45)"><line x1="0" y1="0" x2="0" y2="6" stroke="#F2D67C" stroke-width="3"/></pattern>
+</defs>
+<line x1="0" y1="92" x2="640" y2="92" stroke="rgba(26,26,26,0.2)" stroke-width="0.5"/>
+<rect x="20" y="70" width="68" height="22" fill="#1A7548" fill-opacity="0.25" stroke="#1A7548" stroke-width="1"/>
+<rect x="88" y="14" width="232" height="78" fill="url(#hatch2)" stroke="#D6A800" stroke-width="1" stroke-dasharray="3,2"/>
+<text x="204" y="54" text-anchor="middle" font-family="'JetBrains Mono',monospace" font-size="13" font-weight="500" fill="#5A4400" letter-spacing="0.08em">CROSSED 86%</text>
+<path d="M 320 87 L 360 84 L 400 78 L 440 70 L 480 58 L 520 42 L 560 27 L 620 14 L 620 92 L 320 92 Z" fill="#B23A2E" fill-opacity="0.18" stroke="#B23A2E" stroke-width="1"/>
+<line x1="320" y1="4" x2="320" y2="92" stroke="#1A1A1A" stroke-width="1" stroke-dasharray="3,2"/>
+<text x="320" y="11" text-anchor="middle" font-family="'JetBrains Mono',monospace" font-size="9" fill="#1A1A1A">mid 139.78</text>
+<line x1="240" y1="4" x2="240" y2="92" stroke="#B23A2E" stroke-width="0.8" stroke-dasharray="2,2" opacity="0.6"/>
+<text x="240" y="11" text-anchor="middle" font-family="'JetBrains Mono',monospace" font-size="9" fill="#B23A2E">mark 178.7</text>
+<text x="10" y="98" font-family="'JetBrains Mono',monospace" font-size="9" fill="#95907F">61.50</text>
+<text x="620" y="98" text-anchor="end" font-family="'JetBrains Mono',monospace" font-size="9" fill="#95907F">287.94</text>
+</svg>
+
+<div style="display:flex;justify-content:space-between;font-size:11px;margin-top:6px">
+<span><span style="color:#1A7548;font-weight:500">200.00</span> <span style="color:#95907F;font-size:10px">best bid ↑</span></span>
+<span style="color:#95907F;font-size:10px">spread <span style="color:#C76B26;font-weight:500">−120.45</span> · 86% crossed</span>
+<span><span style="color:#95907F;font-size:10px">best ask ↓</span> <span style="color:#B23A2E;font-weight:500">79.55</span></span>
+</div>
+</div>
+
+<div style="display:grid;grid-template-columns:1fr 1fr;border-bottom:1px dashed rgba(26,26,26,0.25)">
+
+<div style="padding:12px 12px 12px 18px;border-right:1px dashed rgba(26,26,26,0.25)">
+<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+<div style="font-size:11px;letter-spacing:0.06em;font-weight:500"><span style="color:#B23A2E">●</span> ASKS <span style="color:#95907F;font-weight:400">250 of 635</span></div>
+<div style="font-size:10px;color:#95907F"><i class="ti ti-plus" style="font-size:10px;vertical-align:-1px"></i> list</div>
+</div>
+<div style="display:grid;grid-template-columns:auto 1fr auto;gap:4px 8px;font-size:10px;color:#95907F;letter-spacing:0.05em;padding-bottom:3px;border-bottom:0.5px solid rgba(26,26,26,0.12)">
+<span>price ↑</span><span style="text-align:right">qty</span><span style="text-align:right">vs mid</span>
+</div>
+
+<div style="display:grid;grid-template-columns:auto 1fr auto;gap:6px 8px;font-size:11px;padding:5px 4px 5px;border-bottom:0.5px solid rgba(26,26,26,0.06);background:linear-gradient(to right,rgba(26,117,72,0.10) 4%,transparent 4%)">
+<span style="color:#1A7548;font-weight:500">79.55 <span style="font-size:9px;background:#1A7548;color:#F2EBD4;padding:1px 4px;letter-spacing:0.04em">BEST</span></span><span style="text-align:right">628.5</span><span style="text-align:right;color:#1A7548">−43%</span>
+</div>
+<div style="display:grid;grid-template-columns:auto 1fr auto;gap:6px 8px;font-size:11px;padding:5px 4px;border-bottom:0.5px solid rgba(26,26,26,0.06);background:linear-gradient(to right,rgba(178,58,46,0.07) 6%,transparent 6%)">
+<span style="color:#B23A2E">148.94</span><span style="text-align:right">1,007</span><span style="text-align:right;color:#95907F">+6.6%</span>
+</div>
+<div style="display:grid;grid-template-columns:auto 1fr auto;gap:6px 8px;font-size:11px;padding:5px 4px;border-bottom:0.5px solid rgba(26,26,26,0.06);background:linear-gradient(to right,rgba(178,58,46,0.07) 1%,transparent 1%)">
+<span style="color:#B23A2E">150.00</span><span style="text-align:right">30</span><span style="text-align:right;color:#95907F">+7.3%</span>
+</div>
+<div style="display:grid;grid-template-columns:auto 1fr auto;gap:6px 8px;font-size:11px;padding:5px 4px;border-bottom:0.5px solid rgba(26,26,26,0.06);background:linear-gradient(to right,rgba(178,58,46,0.07) 27%,transparent 27%)">
+<span style="color:#B23A2E">168.01</span><span style="text-align:right">4,633</span><span style="text-align:right;color:#B23A2E">+20%</span>
+</div>
+<div style="display:grid;grid-template-columns:auto 1fr auto;gap:6px 8px;font-size:11px;padding:5px 4px;border-bottom:0.5px solid rgba(26,26,26,0.06);background:linear-gradient(to right,rgba(178,58,46,0.07) 44%,transparent 44%)">
+<span style="color:#B23A2E">169.38</span><span style="text-align:right">7,379</span><span style="text-align:right;color:#B23A2E">+21%</span>
+</div>
+<div style="display:grid;grid-template-columns:auto 1fr auto;gap:6px 8px;font-size:11px;padding:5px 4px;border-bottom:0.5px solid rgba(26,26,26,0.06);background:linear-gradient(to right,rgba(178,58,46,0.07) 2%,transparent 2%)">
+<span style="color:#B23A2E">175.36</span><span style="text-align:right">285</span><span style="text-align:right;color:#B23A2E">+26%</span>
+</div>
+<div style="display:grid;grid-template-columns:auto 1fr auto;gap:6px 8px;font-size:11px;padding:5px 4px;border-bottom:0.5px solid rgba(26,26,26,0.06);background:linear-gradient(to right,rgba(178,58,46,0.07) 16%,transparent 16%)">
+<span style="color:#C76B26">≤180.00 <span style="font-size:9px;color:#95907F">×2</span></span><span style="text-align:right">2,667</span><span style="text-align:right;color:#B23A2E">+29%</span>
+</div>
+<div style="display:grid;grid-template-columns:auto 1fr auto;gap:6px 8px;font-size:11px;padding:5px 4px;border-bottom:0.5px solid rgba(26,26,26,0.06);background:linear-gradient(to right,rgba(178,58,46,0.07) 98%,transparent 98%)">
+<span style="color:#C76B26">≤182.59 <span style="font-size:9px;color:#95907F">×3</span></span><span style="text-align:right">16,599</span><span style="text-align:right;color:#B23A2E">+31%</span>
+</div>
+<div style="display:grid;grid-template-columns:auto 1fr auto;gap:6px 8px;font-size:11px;padding:5px 4px;border-bottom:0.5px solid rgba(26,26,26,0.06);background:linear-gradient(to right,rgba(178,58,46,0.07) 30%,transparent 30%)">
+<span style="color:#C76B26">≤185.19 <span style="font-size:9px;color:#95907F">×4</span></span><span style="text-align:right">5,113</span><span style="text-align:right;color:#B23A2E">+33%</span>
+</div>
+<div style="font-size:10px;color:#95907F;padding:8px 0 0;text-align:center"><span style="border-bottom:0.5px dashed rgba(26,26,26,0.4);cursor:pointer">241 more asks</span></div>
+</div>
+
+<div style="padding:12px 18px 12px 12px">
+<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+<div style="font-size:11px;letter-spacing:0.06em;font-weight:500"><span style="color:#1A7548">●</span> BIDS <span style="color:#95907F;font-weight:400">16 active</span></div>
+<div style="font-size:10px;color:#95907F"><i class="ti ti-plus" style="font-size:10px;vertical-align:-1px"></i> bid</div>
+</div>
+<div style="display:grid;grid-template-columns:auto 1fr auto;gap:4px 8px;font-size:10px;color:#95907F;letter-spacing:0.05em;padding-bottom:3px;border-bottom:0.5px solid rgba(26,26,26,0.12)">
+<span>price ↓</span><span style="text-align:right">qty</span><span style="text-align:right">vs mid</span>
+</div>
+
+<div style="display:grid;grid-template-columns:auto 1fr auto;gap:6px 8px;font-size:11px;padding:5px 4px;border-bottom:0.5px solid rgba(26,26,26,0.06);background:linear-gradient(to left,rgba(26,117,72,0.10) 95%,transparent 95%)">
+<span style="color:#1A7548;font-weight:500">200.00 <span style="font-size:9px;background:#1A7548;color:#F2EBD4;padding:1px 4px;letter-spacing:0.04em">TOP</span></span><span style="text-align:right">7,124</span><span style="text-align:right;color:#1A7548">+43%</span>
+</div>
+<div style="display:grid;grid-template-columns:auto 1fr auto;gap:6px 8px;font-size:11px;padding:5px 4px;border-bottom:0.5px solid rgba(26,26,26,0.06);background:linear-gradient(to left,rgba(26,117,72,0.10) 16%,transparent 16%)">
+<span style="color:#1A7548">≥185.00 <span style="font-size:9px;color:#95907F">×2</span></span><span style="text-align:right">1,176</span><span style="text-align:right;color:#1A7548">+32%</span>
+</div>
+<div style="display:grid;grid-template-columns:auto 1fr auto;gap:6px 8px;font-size:11px;padding:5px 4px;border-bottom:0.5px solid rgba(26,26,26,0.06);background:linear-gradient(to left,rgba(26,117,72,0.10) 5%,transparent 5%)">
+<span style="color:#1A7548">163.84</span><span style="text-align:right">396</span><span style="text-align:right;color:#1A7548">+17%</span>
+</div>
+<div style="display:grid;grid-template-columns:auto 1fr auto;gap:6px 8px;font-size:11px;padding:5px 4px;border-bottom:0.5px solid rgba(26,26,26,0.06);background:linear-gradient(to left,rgba(26,117,72,0.10) 5%,transparent 5%)">
+<span style="color:#1A7548">163.84</span><span style="text-align:right">396</span><span style="text-align:right;color:#1A7548">+17%</span>
+</div>
+<div style="display:grid;grid-template-columns:auto 1fr auto;gap:6px 8px;font-size:11px;padding:5px 4px;border-bottom:0.5px solid rgba(26,26,26,0.06);background:linear-gradient(to left,rgba(26,117,72,0.10) 7%,transparent 7%)">
+<span style="color:#C76B26">150.00</span><span style="text-align:right">500</span><span style="text-align:right;color:#95907F">+7.3%</span>
+</div>
+<div style="display:grid;grid-template-columns:auto 1fr auto;gap:6px 8px;font-size:11px;padding:5px 4px;border-bottom:0.5px solid rgba(26,26,26,0.06);background:linear-gradient(to left,rgba(178,58,46,0.06) 13%,transparent 13%)">
+<span style="color:#B23A2E">100.00</span><span style="text-align:right">1,000</span><span style="text-align:right;color:#B23A2E">−28%</span>
+</div>
+<div style="display:grid;grid-template-columns:auto 1fr auto;gap:6px 8px;font-size:11px;padding:5px 4px;border-bottom:0.5px solid rgba(26,26,26,0.06);background:linear-gradient(to left,rgba(178,58,46,0.06) 13%,transparent 13%)">
+<span style="color:#B23A2E">50.00</span><span style="text-align:right">1,000</span><span style="text-align:right;color:#B23A2E">−64%</span>
+</div>
+<div style="display:grid;grid-template-columns:auto 1fr auto;gap:6px 8px;font-size:11px;padding:5px 4px;border-bottom:0.5px solid rgba(26,26,26,0.06);color:#95907F">
+<span style="font-style:italic">7 outliers</span><span style="text-align:right">—</span><span style="text-align:right">hidden</span>
+</div>
+<div style="font-size:10px;color:#95907F;padding:8px 0 0;text-align:center"><span style="border-bottom:0.5px dashed rgba(26,26,26,0.4);cursor:pointer">show all bids</span></div>
+</div>
+
+</div>
+
+<div style="padding:9px 18px;font-size:10px;color:#6B6557;border-bottom:0.5px solid rgba(26,26,26,0.15);display:flex;align-items:center;gap:8px;overflow:hidden;white-space:nowrap">
+<span style="letter-spacing:0.06em;color:#95907F">TAPE</span>
+<span style="color:#1A7548">▲ 178.73</span><span style="color:#95907F;font-size:9px">38m</span>
+<span style="color:#B23A2E;margin-left:6px">▼ 148.94</span><span style="color:#95907F;font-size:9px">2h</span>
+<span style="margin-left:6px">200.00</span><span style="color:#95907F;font-size:9px">4h</span>
+<span style="margin-left:6px">225.53</span><span style="color:#95907F;font-size:9px">4h</span>
+<span style="margin-left:6px">238.51</span><span style="color:#95907F;font-size:9px">4h</span>
+<span style="margin-left:auto;color:#95907F;border-bottom:0.5px dashed rgba(26,26,26,0.4)">32 trades today →</span>
+</div>
+
+<div style="padding:10px 18px;font-size:10px;color:#6B6557;display:flex;justify-content:space-between;align-items:center;letter-spacing:0.04em">
+<span><b style="color:#1A1A1A;font-weight:500;letter-spacing:0.06em">TACIT</b> <span style="color:#95907F">open-source · zero fees</span></span>
+<span><span style="color:#C76B26">●</span> AMM ceremony <b style="color:#1A1A1A;font-weight:500">2,485</b> contribs · <span style="border-bottom:0.5px dashed rgba(26,26,26,0.4)">contribute →</span></span>
+<span style="color:#95907F">BIP-341 · BIP-340 · CT</span>
+</div>
+
+</div>
+
+</div>
+</body>
+</html>

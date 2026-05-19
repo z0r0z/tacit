@@ -4,12 +4,58 @@
 
 ## 1. Overview
 
-tacit is a **confidential token meta-protocol on Bitcoin**. It rides on Bitcoin's existing consensus by encoding asset-protocol envelopes inside Taproot script-path witness data. Token validity is enforced by an **indexer** running over chain data — there is no consensus change, no federation, no off-chain proof exchange.
+tacit is an **indexer-validated meta-protocol on Bitcoin** that
+extends the Runes/Ordinals pattern past plain tokens. It rides on
+Bitcoin's existing consensus by encoding asset-protocol envelopes
+inside Taproot script-path witness data. Validity is enforced by
+**indexers** that any party can run and reach the same verdict
+from chain data alone — no consensus change, no federation, no
+off-chain proof exchange.
+
+Tacit applies that pattern across a wider surface than earlier
+Bitcoin meta-protocols:
+
+- **Confidential value** — every on-chain amount is a Pedersen
+  commitment with an aggregated bulletproof rangeproof and a
+  Mimblewimble-style kernel signature; supply conservation holds
+  without revealing amounts.
+- **Anonymous spend** — a Tornado-style shielded pool (Poseidon-
+  Merkle tree + Groth16 + nullifier) decouples deposit from
+  withdrawal; the same circuit is reused for the cBTC.zk slot
+  semantics that lock real BTC at a Taproot key derived from a
+  mixer note's secret.
+- **Native AMM** — uniform-clearing-price block-batched market
+  with confidential per-trader amounts and mixer-composable LP
+  shares; pool reserves are public numbers the indexer tracks, no
+  UTXO holds any pool's funds.
+- **Trustless wrapped BTC** — `cBTC.zk` slots use the mixer's
+  cryptographic primitives to lock and redeem BTC with no
+  federation and no co-signer.
+- **Fungible wrapped BTC** — `cBTC.tac` composes a cBTC.zk anchor
+  with an LP-share lien on the canonical (cBTC.zk, TAC) AMM pool,
+  with TAC over-collateralization providing the bond. The
+  collateral substrate is itself indexer-validated value (the same
+  market-validated value any Rune carries), structurally aligned
+  into the wrapping mechanism.
+
+See [`spec/CIRCUITS.md`](./spec/CIRCUITS.md) for how the two
+Groth16 circuit families (mixer's anonymous-spend +
+AMM's amount-confidentiality) compose across these surfaces.
 
 Compared to other Bitcoin token meta-protocols:
-- **Runes / BRC-20** — public amounts. tacit hides amounts via Pedersen commitments + bulletproofs + Mimblewimble-style kernel signatures.
-- **RGB / Taproot Assets** — privacy via off-chain proof distribution; recipient must receive validity proofs from the sender out-of-band. tacit keeps everything on chain at the cost of larger witnesses, with the benefit of trustless privkey-only recovery.
-- **Liquid Confidential Transactions** — same CT primitives, federated sidechain. tacit lives on Bitcoin proper.
+- **Runes / BRC-20** — public amounts, tokens only. tacit hides
+  amounts and goes further into AMM, wrapped BTC, anonymous spend.
+- **RGB / Taproot Assets** — privacy via off-chain proof
+  distribution; recipient must receive validity proofs from the
+  sender out-of-band. tacit keeps everything on chain at the cost
+  of larger witnesses, with the benefit of trustless privkey-only
+  recovery.
+- **Liquid Confidential Transactions** — same CT primitives,
+  federated sidechain. tacit lives on Bitcoin proper.
+- **Bitcoin rollups / sidechain AMMs (Citrea, Botanix, Liquid
+  SideSwap)** — provide AMM and wrapped BTC under rollup operator
+  or federation trust. tacit's AMM and cBTC.zk wrapping live on
+  L1 indexer-validated state with no operator set.
 
 ### 1.1 Canonical opcode table
 
@@ -111,6 +157,11 @@ What is **not** trusted:
 
 ## 3. Cryptographic primitives
 
+> The primitives below are the building blocks. For how they
+> compose into the protocol's two circuit families and where each
+> family is reused across surfaces (mixer, cBTC.zk slots, AMM,
+> cBTC.tac), see [`spec/CIRCUITS.md`](./spec/CIRCUITS.md).
+
 ### 3.1 Curve and generators
 
 - Curve: **secp256k1** (BIP-340 conventions for Schnorr).
@@ -197,7 +248,7 @@ Tagged by a v1 domain string + per-output `(anchor || vout_LE)`. Domain tags **f
 
 Other domain-separated v1 tags appear where they're used and are not part of this table:
 
-- **BIP-340 Schnorr signature-message tags:** `tacit-kernel-v1` (§5.2, §5.4, §5.7, §5.20), `tacit-mint-v1` (§5.3), `tacit-disclosure-v1` (§5.6), `tacit-axintent-{v1,claim-v2,fulfilment-v1,cancel-v1}` (§5.7.6), `tacit-axintent-{publish-v1,claim-v3,fulfilment-v2}` (§5.7.6.1 variable-amount intents), `tacit-bid-{intent-v1,claim-v1,cancel-v1}` (§5.7.7), `tacit-preauth-sale-{v1,cancel-v1}` (§5.7.8), `tacit-pool-init-v1` (§5.10.1), `tacit-deposit-v1` (§5.10), `tacit-drop-v1` (§5.12), `tacit-drop-reclaim-v1` (§5.12.1), `tacit-amm-{lp-add-v1,lp-remove-v1,intent-v1,launcher-gate-v1,protocol-fee-claim-v1,qset-v1}` (§5.14–§5.16, §5.18; AMM.md is the architectural reference), `tacit-amm-swap-var-v1` (§5.20 `intent_msg` domain), `tacit-intent-attest-v1` (§5.17; scope-generic preconfirmation channel attestation — used by both AMM and orderbook surfaces, see `spec/amendments/SPEC-ORDERBOOK-CHANNEL-AMENDMENT.md` for orderbook scope schemas), `tacit-wrapper-attest-v1` (§4.2.4, §5.19).
+- **BIP-340 Schnorr signature-message tags:** `tacit-kernel-v1` (§5.2, §5.4, §5.7, §5.20), `tacit-mint-v1` (§5.3), `tacit-disclosure-v1` (§5.6), `tacit-axintent-{v1,claim-v2,fulfilment-v1,cancel-v1}` (§5.7.6), `tacit-axintent-{publish-v1,claim-v3,fulfilment-v2}` (§5.7.6.1 variable-amount intents), `tacit-bid-{intent-v1,claim-v1,cancel-v1}` (§5.7.7), `tacit-preauth-sale-{v1,cancel-v1}` (§5.7.8), `tacit-pool-init-v1` (§5.10.1), `tacit-deposit-v1` (§5.10), `tacit-drop-v1` (§5.12), `tacit-drop-reclaim-v1` (§5.12.1), `tacit-amm-{lp-add-v1,lp-remove-v1,intent-v1,launcher-gate-v1,protocol-fee-claim-v1}` (§5.14–§5.16, §5.18; AMM.md is the architectural reference), `tacit-amm-swap-var-v1` (§5.20 `intent_msg` domain), `tacit-intent-attest-v1` (§5.17; scope-generic preconfirmation channel attestation — used by both AMM and orderbook surfaces, see `spec/amendments/SPEC-ORDERBOOK-CHANNEL-AMENDMENT.md` for orderbook scope schemas), `tacit-wrapper-attest-v1` (§4.2.4, §5.19).
 - **SHA256 domains (not Schnorr messages):** `tacit-withdraw-bind-v1` is the SHA256 domain for the `T_WITHDRAW` `bind_hash` (§5.11); `tacit-axintent-id-v1` is the SHA256 domain for the content-addressed `intent_id` derivation for variable-amount intents (§5.7.6.1 *Intent record*).
 - **HMAC keystream domains:** `tacit-axintent-blinding-v1` for the per-intent `r` encryption ciphertext stored in the worker fulfilment record (§5.7.6); `tacit-axintent-onchain-amount-v1` and `tacit-axintent-onchain-blinding-v1` for the on-chain encrypted `(amount, r)` carried in the optional `OP_RETURN(40)` at the reveal tx (§5.7.6 *Recovery model*); `tacit-axintent-change-v1` for the maker's self-change blinding scalar at variable-amount fulfilment (§5.7.6.1); `tacit-axintent-onchain-maker-amount-v1` and `tacit-axintent-onchain-maker-blinding-v1` for the maker's half of the mandatory `OP_RETURN(80)` recovery payload (§5.7.6.1 *On-chain recovery*). For T_SWAP_VAR (§5.20): `tacit-amm-swap-var-receipt-v1` (HMAC of `r_receipt` from trader privkey + pool + anchor), `tacit-amm-swap-var-recv-v1` (HMAC of receipt P2WPKH recipient address), `tacit-amm-swap-var-change-v1` (HMAC of `r_change` for the change UTXO), `tacit-amm-swap-var-tip-v1` (HMAC of `r_tip` for the settler-tip output).
 - **Generator derivations:** `tacit-generator-H-v1` and `tacit-bp-{G,H,Q}-v1` (§3.1).
@@ -971,7 +1022,7 @@ if envelope.opcode == T_SWAP_BATCH (0x2F):
     # Groth16 batch proof verifies in-circuit BabyJubJub openings + clearing
     # arithmetic. Chain-side aggregate Pedersen check on secp256k1.
     require vout[0] == OP_RETURN(sha256(payload))
-    decode payload; if pool has arbiter, verify arbiter_sig + qualifying_set_hash
+    decode payload
     for each per-intent and per-receipt sigma proof: verify against (C_secp, C_BJJ)
     verify Groth16 batch proof under pool.vk
     verify chain-side aggregate Pedersen check per asset
@@ -2623,7 +2674,7 @@ The two flows coexist: an issuer may publish both an §8 announcement and a `T_D
 
 ### 5.14 T_LP_ADD (`0x2D`) — add liquidity / POOL_INIT
 
-**Architectural summary in `AMM.md` §"The three opcodes" and §1 of "Implementation specification."** This subsection pins the byte-level wire format and validator algorithm.
+**Architectural summary in `AMM.md` §"Core opcodes" + [`spec/amm/wire-formats.md`](./spec/amm/wire-formats.md) §"Envelope byte layouts".** This subsection pins the byte-level wire format and validator algorithm.
 
 Two variants:
 - `variant = 0` — add liquidity to an existing pool at the current ratio.
@@ -2677,9 +2728,13 @@ ceremony_cid(ceremony_cid_len)      # IPFS CID, UTF-8 — directory CID for the 
                                     #   beacon zkeys, ptau, beacon transcript) under
                                     #   one IPFS dir; indexers/auditors fetch via
                                     #   <ceremony_cid>/<file>.
-arbiter_count(1)                    # u8, 0..16 (= n in m-of-n)
-arbiter_threshold_m(1)              # u8; encoded as 0 iff arbiter_count == 0; otherwise 1..arbiter_count
-arbiter_pubkeys(33 * arbiter_count) # compressed secp256k1
+arbiter_count(1)                    # u8; V1: MUST be 0. Reserved for a follow-up
+                                    #   amendment to repurpose (e.g., T_EXCLUSION_CLAIM
+                                    #   slashing-target metadata, time-lock-encryption
+                                    #   public-key references). See AMM.md
+                                    #   §"Curation-MEV mitigation".
+arbiter_threshold_m(1)              # u8; V1: MUST be 0. Reserved.
+arbiter_pubkeys(33 * arbiter_count) # V1: empty (arbiter_count == 0). Reserved.
 launcher_sig_count(1)               # u8, 0..2
 launcher_sigs(64 * launcher_sig_count)  # BIP-340 each
 protocol_fee_address(33)            # compressed secp256k1; all-zeros = disabled
@@ -2722,13 +2777,14 @@ Sign with `excess_X = Σᵢ r_in_secp,X,i`. The `variant` byte distinguishes reg
 4. **If `variant == 1`:**
    a. Reject if a pool already exists for this `pool_id`.
    a.1. Reject if `fee_bps > 1000` (= 10% protocol cap; also wire-format-rejected since `fee_bps_LE` is u16 0..1000, echoed here as an explicit validator step so non-reference implementations cannot accidentally fork by accepting higher fees). Reject if `protocol_fee_bps > 1000`.
+   a.2. **V1 reserved-bytes check.** Reject if `arbiter_count != 0` or `arbiter_threshold_m != 0` or `arbiter_pubkeys.length != 0`. V1 has no on-chain arbiter mode; these bytes exist as reserved wire slots for a follow-up amendment to repurpose (AMM.md §"Curation-MEV mitigation").
    b. Fetch each asset's metadata blob by its envelope-committed CID; if `tacit_amm_launcher` is set per the JCS rules of §3.9 / §4.1, verify the corresponding BIP-340 sig in `launcher_sigs` over `SHA256("tacit-amm-launcher-gate-v1" || pool_id || vk_cid_bytes || fee_bps_LE)`. Reject on missing or invalid sig.
    c. Verify `share_amount == isqrt(delta_A · delta_B) − MINIMUM_LIQUIDITY` (founder portion; v1 fixes `MINIMUM_LIQUIDITY = 1000`).
-   d. Verify the MINIMUM_LIQUIDITY locked output at `vout[1]` matches the deterministic NUMS construction (AMM.md §"MINIMUM_LIQUIDITY burn-output construction"; reference impl `tests/amm-min-liq.mjs`).
+   d. Verify the MINIMUM_LIQUIDITY locked output at `vout[1]` matches the deterministic NUMS construction (AMM.md §"MINIMUM_LIQUIDITY burn-output construction").
 5. **If `variant == 0`:** require an existing pool with `pool.pool_id == pool_id`. Verify `share_amount == floor(min(delta_A·S/R_A, delta_B·S/R_B))`.
 6. Verify `kernel_sig_A` and `kernel_sig_B` under the respective `(Σ C_in_X − delta_X·H_secp).x_only()` keys.
 7. Verify `share_xcurve_sigma` binds `share_C_secp` and `share_C_BJJ` to a shared u64 amount (§3.10).
-8. Verify Groth16 `proof` under the `"lp_add"` entry of the JSON resolved at `pool.vk_cid` (see §5.14 wire format note on the per-kind vk wrapper) over the canonical public-input vector (AMM.md §6 of "Implementation specification"). Integrity-check the wrapper bytes against `pool.vk_cid` per §5.16 step 8.
+8. Verify Groth16 `proof` under the `"lp_add"` entry of the JSON resolved at `pool.vk_cid` (see §5.14 wire format note on the per-kind vk wrapper) over the canonical public-input vector ([`spec/amm/wire-formats.md`](./spec/amm/wire-formats.md) §"Groth16 public-input vector"). Integrity-check the wrapper bytes against `pool.vk_cid` per §5.16 step 8.
 9. If all checks pass: register pool (POOL_INIT) or apply `R_A += delta_A, R_B += delta_B, S += share_amount`; credit the LP-share UTXO at the declared `vout`.
 
 Reference impl: `tests/amm-validator.mjs` (`validateLpAdd`).
@@ -2799,18 +2855,11 @@ tip_B_C_secp(33)
 r_tip_A_LE(32)             # secp256k1 scalar — opening for tip_A_C_secp (published for indexer verification)
 r_tip_B_LE(32)
 
-# Arbiter block, present iff pool has inclusion_arbiter_pubkeys:
-#   m-of-n threshold quorum (m == pool.inclusion_arbiter_threshold_m, n ==
-#   pool.inclusion_arbiter_pubkeys.length). signer_indices MUST be strictly
-#   ascending and distinct into pool.inclusion_arbiter_pubkeys[]; each sig at
-#   position k verifies under the pubkey at signer_indices[k]. BIP-340 sig
-#   message is qualifying_set_hash; reference impl: tests/amm-validator.mjs
-#   computeQualifyingSetHash + validator step 4 below.
-expected_height_LE(4)
-qualifying_set_hash(32)
-arbiter_m(1)                                # u8, 1..16, must equal pool.inclusion_arbiter_threshold_m
-signer_indices(arbiter_m)                   # u8 each, strictly ascending distinct, < pool.inclusion_arbiter_pubkeys.length
-arbiter_sigs(64 * arbiter_m)                # concat of m BIP-340 sigs over qualifying_set_hash
+# (V1: no arbiter block. POOL_INIT requires arbiter_count == 0
+#  per §5.14 step 4.a.2, so the conditional that would have
+#  produced an arbiter block here is structurally unreachable in
+#  V1. The wire slot is reserved for a follow-up amendment to
+#  repurpose; see AMM.md §"Curation-MEV mitigation".)
 
 # Per-intent block, repeated n_intents times in intent_id ascending order:
 direction(1)               # 0 = A→B, 1 = B→A
@@ -2841,7 +2890,7 @@ settler_meta_uri(settler_meta_uri_len)      # UTF-8 — informational settler me
 
 Per-intent block: **352 B** (= 340 + 12 from the 157→169-byte sigma upgrade). Per-receipt block: **234 B** (= 222 + 12). For N=16, envelope ≈ 9.5 KB (see AMM.md §"Fee-market sensitivity" for the full size table). Spec-conformance pins: `PER_INTENT_BYTES = 352`, `PER_RECEIPT_BYTES = 234`.
 
-**intent_msg** is constructed per AMM.md §"Cross-asset authorization for swaps"; reference impl: `tests/amm-intent.mjs` `buildIntentMsg`.
+**intent_msg** is constructed per AMM.md §"Cross-asset authorization for swaps".
 
 **Bitcoin transaction layout (normative — indexers reject deviations):**
 
@@ -2860,14 +2909,14 @@ The `vout[0]` OP_RETURN binding rule is what makes trader `SIGHASH_ALL` signatur
 
 **Validator algorithm:**
 1. Verify `vout[0]` is a 0-sat `OP_RETURN` whose 32-byte data equals `SHA256(payload)`.
-2. Decode payload (with `hasArbiter` hint from `pool.inclusion_arbiter_pubkeys`). Reject if `n_intents == 0` (empty batches are forbidden — see "Degenerate-empty batch" in AMM.md §"Uniform clearing"; also wire-format-rejected since `n_intents` is u8 1..16) or `n_intents > N_MAX` (= 16). Reject if `n_intents < AMM_MIN_BATCH_SIZE` (= 2) **unless** `pool.capability_flags & POOL_CAP_SOLO_INTENT_ALLOWED` (= `0x02`); this is the solo-intent privacy-collapse defense (AMM.md §"Minimum batch size for amount confidentiality"). Default V1 pools reject solo batches; pools that opt in at POOL_INIT trade amount confidentiality for liveness in low-volume regimes. Decode the trailing `settler_meta_uri_len` (REQUIRED, u8, may be 0) and `settler_meta_uri` (UTF-8, 0..255 bytes); reject any trailing bytes after the URI. The URI is informational and indexer-opaque, but the length byte is consensus-bound (envelope hash covers it).
+2. Decode payload. Reject if `n_intents == 0` (empty batches are forbidden — see "Degenerate-empty batch" in AMM.md §"Uniform clearing"; also wire-format-rejected since `n_intents` is u8 1..16) or `n_intents > N_MAX` (= 16). Reject if `n_intents < AMM_MIN_BATCH_SIZE` (= 2) **unless** `pool.capability_flags & POOL_CAP_SOLO_INTENT_ALLOWED` (= `0x02`); this is the solo-intent privacy-collapse defense. Default V1 pools reject solo batches; pools that opt in at POOL_INIT trade amount confidentiality for liveness in low-volume regimes. Decode the trailing `settler_meta_uri_len` (REQUIRED, u8, may be 0) and `settler_meta_uri` (UTF-8, 0..255 bytes); reject any trailing bytes after the URI. The URI is informational and indexer-opaque, but the length byte is consensus-bound (envelope hash covers it).
 3. Require existing pool. Recompute `pool_id` and verify match. Verify `fee_bps_at_settle == pool.fee_bps`. Reject if `fee_bps_at_settle > 1000` (= 10% protocol cap; also wire-format-rejected since `fee_bps_LE` is u16 0..1000, but echoed here as an explicit validator step so non-reference implementations cannot accidentally fork by accepting higher fees).
-4. **Arbiter block (m-of-n threshold quorum):** if pool has pinned arbiters (`pool.inclusion_arbiter_pubkeys.length > 0`), verify the arbiter block is present. Verify `arbiter_m == pool.inclusion_arbiter_threshold_m` and `arbiter_m ≥ 1`. Verify `signer_indices` is strictly ascending, distinct, each `< pool.inclusion_arbiter_pubkeys.length`. For each `k ∈ [0, arbiter_m)`, verify the 64-byte BIP-340 sig at `arbiter_sigs[k]` over `qualifying_set_hash` under the pubkey at `pool.inclusion_arbiter_pubkeys[signer_indices[k]]`. Fetch the canonical list bytes by `qualifying_set_hash` (caller-provided `qualifyingSetResolver`); reject if resolver absent or list-hash mismatch. Verify `expected_height == current_height`. Verify every listed `intent_id` appears in the batch's intent set. If pool has no arbiter (`inclusion_arbiter_pubkeys.length == 0`) and envelope contains an arbiter block, reject.
+4. **No V1 arbiter block.** V1 pools have `arbiter_count == 0` (enforced at POOL_INIT per §5.14 step 4.a.2), so no arbiter block can appear in a T_SWAP_BATCH envelope against a V1 pool. The wire slot is reserved for a follow-up amendment (AMM.md §"Curation-MEV mitigation").
 5. Verify per-intent ordering: `intent_id` values are strictly ascending byte-order.
 6. For each intent: verify `intent_sig` (BIP-340 over `SHA256(intent_msg)` under `trader_pubkey`); verify `in_xcurve_sigma` binds `C_in_secp` and `C_in_BJJ` (§3.10); reject if `expiry_height < current_height`.
 7. For each receipt: verify `out_xcurve_sigma` binds `C_out_secp` and `C_out_BJJ`.
 8. **vk_cid integrity self-check** (normative). Before passing vk bytes to the Groth16 verifier, recompute the canonical V1 CID from the resolved bytes and verify it matches `pool.vk_cid` byte-for-byte. Canonical V1 format: CIDv1 with raw codec (0x55) + sha2-256 multihash (0x12 0x20), multibase-base32 lowercase no-padding (starts with `"bafkrei..."`). The CID hashes the **entire** JSON wrapper resolved at `vk_cid` (the `{lp_add, lp_remove, swap_batch}` object — see §5.14 wire format note), not the per-kind entry inside it: one CID pins the full triple. The indexer parses the JSON after integrity-checking and selects the `"swap_batch"` entry for `T_SWAP_BATCH` verification. Reference impl: `tests/amm-validator.mjs` `deriveVkCid()` / `verifyVkCidBinding()`. **Production indexers MUST run this check; failure rejects the envelope before any snarkjs call.** Closes the "misconfigured IPFS gateway returns malicious vk bytes" hazard.
-9. Verify Groth16 batch `proof` under the `"swap_batch"` entry of the integrity-checked vk wrapper over the canonical public-input vector (AMM.md §6 of "Implementation specification").
+9. Verify Groth16 batch `proof` under the `"swap_batch"` entry of the integrity-checked vk wrapper over the canonical public-input vector ([`spec/amm/wire-formats.md`](./spec/amm/wire-formats.md) §"Groth16 public-input vector").
 10. **Chain-side aggregate Pedersen check** (per asset `X ∈ {A, B}`):
     ```
     Σ_{X→Y traders} C_in_secp,i  −  Σ_{Y→X traders} C_out_secp,i
@@ -2882,7 +2931,7 @@ The `vout[0]` OP_RETURN binding rule is what makes trader `SIGHASH_ALL` signatur
     All inputs are public quantities (pool reserves, declared deltas, fee_bps). No private witness needed. See AMM.md §"Uniform clearing" constraint (4) for the rationale.
 14. On success: apply reserves; credit each receipt UTXO at `vout[1+i]`.
 
-The deterministic clearing-solve algorithm (§AMM.md §4 of "Implementation specification") is verified implicitly: the Groth16 proof binds per-trader amounts to per-trader Pedersen commitments and to `P_clear = X/(Y+Δb_net)` (or its B-dom equivalent), and the aggregate Pedersen check binds the batch totals to the declared deltas.
+The deterministic clearing-solve algorithm (AMM.md §"Deterministic clearing solve") is verified implicitly: the Groth16 proof binds per-trader amounts to per-trader Pedersen commitments and to `P_clear = X/(Y+Δb_net)` (or its B-dom equivalent), and the aggregate Pedersen check binds the batch totals to the declared deltas.
 
 Reference impl: `tests/amm-validator.mjs` (`validateSwapBatch`).
 
@@ -2962,7 +3011,7 @@ Different-scope attestations from the same worker at the same height are indepen
 
 **Settlement does NOT depend on T_INTENT_ATTEST.** Any surface (AMM pool, orderbook scope) can operate indefinitely without any T_INTENT_ATTEST envelopes ever being broadcast — traders just don't get the soft-confirm UX. The hard-confirm paths (T_SWAP_BATCH §5.16, T_SWAP_VAR §5.20, T_AXFER_VAR §5.7.9) are all independent.
 
-**Channel framing (informative):** the preconf layer is a *tacit channel* — a multi-party off-chain commitment where the worker is the channel operator, the open intent pool is the channel state, and each T_INTENT_ATTEST envelope is a periodic anchor of the state to L1. The worker cannot steal (never holds funds; intents are commitments, not value transfers), cannot censor unilaterally (traders have unconditional unilateral exit via self-broadcast — T_SWAP_VAR self-broadcast for AMM, direct T_AXFER_VAR fulfilment against any maker UTXO for orderbook), and cannot equivocate without leaving on-chain evidence. No funding tx, no commitment-tx exchange, no penalty-tx mechanism, no challenge protocol, no covenants — just a hash commitment and a signature, fitting Bitcoin natively. See AMM.md §"Worker as channel operator (informative)" for the analogy table with payment channels.
+**Channel framing (informative):** the preconf layer is a *tacit channel* — a multi-party off-chain commitment where the worker is the channel operator, the open intent pool is the channel state, and each T_INTENT_ATTEST envelope is a periodic anchor of the state to L1. The worker cannot steal (never holds funds; intents are commitments, not value transfers), cannot censor unilaterally (traders have unconditional unilateral exit via self-broadcast — T_SWAP_VAR self-broadcast for AMM, direct T_AXFER_VAR fulfilment against any maker UTXO for orderbook), and cannot equivocate without leaving on-chain evidence. No funding tx, no commitment-tx exchange, no penalty-tx mechanism, no challenge protocol, no covenants — just a hash commitment and a signature, fitting Bitcoin natively. See AMM.md §"Worker as channel operator" for the analogy table with payment channels.
 
 Reference impl: `tests/amm-attest.mjs` (`OpenIntentSMT`, `validateAmmAttest`, `verifySoftConfirm`). Parity suite: `tests/amm-attest.test.mjs` (32 tests).
 
@@ -3649,7 +3698,7 @@ Indexer implementers MUST follow these byte-for-byte to arrive at the same pool 
 - `T_LP_ADD` (standard): `share_amount = floor(min(delta_A · S / R_A, delta_B · S / R_B))`.
 - `T_LP_ADD` (POOL_INIT): `total_shares = isqrt(delta_A · delta_B)` via Newton-method integer square root; founder receives `total_shares − MINIMUM_LIQUIDITY` (with `MINIMUM_LIQUIDITY = 1000` base units locked to the NUMS recipient per AMM.md §"MINIMUM_LIQUIDITY burn-output construction").
 - `T_LP_REMOVE`: `delta_A = floor(R_A · share_amount / S)`, `delta_B = floor(R_B · share_amount / S)`.
-- `T_SWAP_BATCH` net deltas: per AMM.md §4 "Deterministic clearing-solve algorithm" — γ-scaling carried in u128, floor toward zero (favoring the pool). Indexer recomputes byte-identically and rejects any declared `(delta_A_net, delta_B_net)` that disagrees. Reference impl: `tests/amm-clearing.mjs`.
+- `T_SWAP_BATCH` net deltas: per AMM.md §"Deterministic clearing solve" — γ-scaling carried in u128, floor toward zero (favoring the pool). Indexer recomputes byte-identically and rejects any declared `(delta_A_net, delta_B_net)` that disagrees.
 
 **Envelope-hash binding (T_SWAP_BATCH only).** Every T_SWAP_BATCH Bitcoin transaction MUST include `vout[0]` as a 0-sat `OP_RETURN` whose 32-byte data equals `SHA256(payload)`, where `payload` is the full T_SWAP_BATCH envelope payload (opcode byte through final byte of `proof`). Indexers reject any T_SWAP_BATCH whose `vout[0]` data does not match the recomputed hash. `T_LP_ADD` and `T_LP_REMOVE` do NOT require this OP_RETURN — they are single-party ops where the LP signs their own envelope and no third-party substitution is possible.
 
@@ -3663,7 +3712,7 @@ Indexer implementers MUST follow these byte-for-byte to arrive at the same pool 
 
 **Three-origin asset-id resolution.** When resolving an unrecognized `asset_id`, indexers check CETCH (§5.1) → T_PETCH (§5.8) → POOL_INIT (§5.14 variant=1, via path 3 of §4.1) in order. Constant-time lookup via a reverse map keyed by `asset_id`. Cross-origin collisions are negligible (different SHA256 preimage lengths under distinct domain tags).
 
-**Qualifying-intent fixed-point** (arbiter-pinned pools only). Per AMM.md §5 of "Implementation specification": iterate `len(candidate_set)` times maximum; each iter strictly shrinks the set or converges; on non-convergence return empty set. The fixed-point computation is over cleartext amounts the arbiter has obtained out-of-band (encrypted to the arbiter's pubkey by trader dapps at intent-post time). Reference impl: `tests/amm-clearing.mjs` `qualifyingFixedPoint`.
+**Min-out fixed-point iteration** (settler subset selection, see AMM.md §"Min-out fixed-point iteration"): the settler iterates over candidate intents and the deterministic clearing solve, dropping any intent whose `min_out` is unsatisfiable at the current `P_clear`, until the set stabilises or empties. The loop strictly shrinks the set each iteration; convergence is bounded by `len(candidate_set)`.
 
 **Cross-batch ordering.** Multiple T_SWAP_BATCH envelopes against the same pool in the same block: apply in `(tx_index, vin[0] outpoint)` order; for each subsequent batch, re-run the deterministic clearing solve against the post-earlier reserves and reject any envelope whose declared `(delta_A_net, delta_B_net)` does not match.
 

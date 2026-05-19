@@ -4,151 +4,249 @@
 
 # tacit
 
-Confidential token meta-protocol on Bitcoin. Amounts hidden, supply enforced from chain data, indexer-validated in the browser.
+A meta-protocol on Bitcoin that scales the Runes/Ordinals pattern past
+plain tokens — confidential value, anonymous spend, native AMM,
+trustless wrapped BTC, all enforced by indexers anyone can run and
+reach the same verdict from chain alone. No federation, no
+sidechain, no bridge, no smart-contract runtime. Cryptographic
+privacy and Groth16 circuits do the work a VM would do elsewhere.
 
-> **Status:** signet + mainnet. Sign in with an existing browser wallet (Xverse / UniSat / Leather), import a privkey, or — on signet — let the dApp generate one and grab faucet sats.
+> **Status:** signet + mainnet. Sign in with Xverse / UniSat /
+> Leather, import a privkey, or — on signet — let the dApp generate
+> one and grab faucet sats.
 >
 > **Live demo:** [tacit.finance](https://tacit.finance)
 >
-> **Protocol spec:** [SPEC.md](./SPEC.md) — wire format, security properties, threat model. Authoritative reference for indexer implementations and audit review.
+> **Protocol specs:**
+> [`SPEC.md`](./SPEC.md) — canonical wire-format authority ·
+> [`AMM.md`](./AMM.md) — confidential AMM architecture ·
+> [`MIXER.md`](./MIXER.md) — shielded-pool architecture ·
+> [`spec/CIRCUITS.md`](./spec/CIRCUITS.md) — how the ZK stack composes ·
+> [`spec/amendments/`](./spec/amendments/) — cBTC.zk, cBTC.tac, farms, orderbook, governance.
 
 ---
 
 ## What it is
 
-Like Runes or BRC-20, tacit is a token meta-protocol on Bitcoin: token rules
-aren't enforced by Bitcoin nodes, they're enforced by an indexer that anyone
-can run and reach the same verdict. Unlike Runes/BRC-20, tacit hides the
-**amounts**: each on-chain commitment is a Pedersen point, accompanied by
-an aggregated bulletproof rangeproof and (for transfers) a Mimblewimble-style
-kernel signature that together prove conservation of supply without revealing
-individual balances.
+**Tacit is what Runes becomes when you push the indexer-validated
+meta-protocol pattern past plain tokens.** Same trust model — token
+rules aren't enforced by Bitcoin nodes, they're enforced by
+indexers that anyone can run and reach the same verdict from chain
+data alone. Tacit applies that pattern to a much wider surface:
 
-The indexer in this repo runs **inside the dApp**, in your browser, against
-chain data fetched from `mempool.space` (with `blockstream.info` queried in
-parallel by a tip-divergence watchdog so a single Esplora-endpoint outage
-or tampering surfaces as an in-app banner). There's no server-side
-authority, no federation, no off-band proof exchange. Two browsers running
-the same file against the same chain reach the same verdict.
+- **Confidential value.** Every on-chain commitment is a Pedersen
+  point with an aggregated bulletproof rangeproof and a
+  Mimblewimble-style kernel signature. Supply conservation holds
+  without ever revealing individual amounts.
+- **Anonymous spend.** A Tornado-style shielded pool (Groth16 + a
+  Poseidon-Merkle tree + nullifiers) lets any holder deposit a
+  fixed-denomination UTXO and withdraw to a fresh address with no
+  on-chain edge linking the two.
+- **Native AMM.** A uniform-clearing-price block-batched AMM
+  between any two tacit assets, with confidential per-trader
+  amounts and mixer-composable LP shares. The pool reserves are
+  public numbers the indexer tracks; no UTXO holds any pool's
+  funds.
+- **Trustless wrapped BTC.** `cBTC.zk` locks real BTC at a
+  Taproot output whose spending key is derived from a mixer
+  leaf's secret — one note, two locks, no federation and no
+  co-signer.
+- **Fungible wrapped BTC.** `cBTC.tac` composes a cBTC.zk anchor
+  with an LP-share lien on the canonical (cBTC.zk, TAC) pool, so
+  amount-granular wrapped BTC is itself a standard tacit asset:
+  CXFER it, swap it, LP it, mix it. Trustless on the anchor side,
+  over-collateralized in TAC on the fungibility side.
+- **Native marketplace.** Atomic OTC settlement of a confidential
+  token against a BTC payment in one Bitcoin tx (`T_AXFER`), plus
+  a continuous-amount orderbook (`T_AXFER_VAR`) for makers and
+  takers who want range-tolerant flow.
+- **Airdrops, fair-launches, drops.** `T_PETCH` / `T_PMINT` for
+  permissionless-mint assets with publicly auditable caps;
+  `T_DROP` / `T_DCLAIM` for ETH-gated public-claim pools;
+  batched confidential CXFER airdrops for issuer-side
+  distributions.
 
-What that buys you, concretely:
+**The architectural move.** Indexer-validated meta-protocols
+(Runes, Ordinals, BRC-20) trade real market value purely on
+indexer agreement over chain state. Tacit leverages that same
+consensus-of-indexers into a **collateral substrate**: TAC's
+market-validated value (the same kind of value a Rune carries)
+becomes the bond that makes wrapped BTC trustless without
+federation. Cryptographic primitives (Pedersen, Groth16,
+BabyJubJub-Pedersen, sigma binding) handle the parts that must
+be cryptographic — custody of real BTC, amount confidentiality,
+anonymous spend. The result is smart-contract-shaped properties
+— AMM trading, collateralized wrapping, batched settlement —
+delivered without a VM, without a sidechain, without leaving
+Bitcoin L1.
 
-- A user can **etch** a confidential asset with a hidden initial supply, and
-  optionally make it **mintable** (the etcher's pubkey becomes the mint
-  authority and can issue more supply later via signed `T_MINT` envelopes).
-- Or **deploy a fair-launch asset** (`T_PETCH`) — declares ticker + lifetime
-  cap + per-mint amount + height window; produces no supply at deploy time.
-  Anyone (including the deployer) can then broadcast `T_PMINT` to mint a
-  fixed tranche, with cumulative supply publicly auditable against the cap
-  via canonically-ordered chain history. The trade vs. CETCH is supply-side
-  confidentiality for permissionless issuance and on-chain auditable cap.
-- They can **transfer** privately — observers see commitments + an aggregated
-  rangeproof in the witness, never amounts.
-- Any holder can **burn** part or all of their balance — the burned amount
-  is public so observers can audit supply reduction.
-- A recipient with only their privkey can **recover their balance from chain
-  alone** — no share-link required (each commitment carries an ECDH-encrypted
-  amount field that only the recipient and sender can decrypt).
-- Anyone can **validate** every UTXO's ancestry independently.
-- A holder can **publish a per-UTXO opening** to make a specific UTXO's
-  amount publicly verifiable (auditor flows, listing collateral) while their
-  other UTXOs stay confidential.
-- A holder can publish a **range disclosure** ("`balance ≥ K`") that reveals
-  only a lower bound — bulletproof on the homomorphic sum of their UTXOs
-  for an asset, no exact amount leaked.
-- A maker can list a UTXO on the **public marketplace** (OTC, opening-based
-  or range-disclosed) or as an **atomic intent** (browse-and-take) — both
-  surface on the Market tab. Settlement uses `T_AXFER` (SPEC §5.7) and is
-  **trustless single-Bitcoin-tx** for atomic flows: maker can't redirect the
-  buyer's payment, buyer can't get tokens without paying, all in one block.
-- A holder can deposit a fixed-denomination UTXO into a **shielded mixer
-  pool** (`T_DEPOSIT` → `T_WITHDRAW`, Tornado-style; SPEC §5.10–§5.11) and
-  withdraw to a fresh pubkey, breaking the on-chain edge between deposit
-  and withdraw via a Groth16 proof of unspent-leaf membership. **Status:
-  production.** Wire format, worker indexing, browser-side Groth16 prover
-  + verifier (snarkjs vendored), deposit/withdraw broadcast flows, and a
-  finalized Phase 2 trusted-setup ceremony (2,227 community contributions
-  + Bitcoin-block beacon) are all shipped. The canonical ceremony bundle
-  is pinned at IPFS
-  `bafybeidq2ahzte4sfiqjsmhqta62ufenpppzpch5ppry55tzxzlvltxy2u` and
-  hardcoded as the trust anchor in the dapp. See [MIXER.md](./MIXER.md)
-  for full status + caveats.
-- A holder can **lock existing supply into a public-claim pool** (`T_DROP`
-  → `T_DCLAIM`, SPEC §5.12–§5.13) — recipients self-claim a fixed
-  `per_claim` tranche on a first-come-first-served basis until the
-  declared `cap_amount` drains, optionally gated by an ETH-address Merkle
-  list (eth_sig + merkle proof). Each claimant pays their own Bitcoin tx
-  fee. Supply-preserving: tokens shift from depositor to pool to claimant
-  with no destruction/re-mint. **Status: production.** Wire format, kernel
-  sig over the asset-side balance equation, optional eligibility-witness
-  verification, and the browser-side claim flow are all shipped.
+See [`spec/CIRCUITS.md`](./spec/CIRCUITS.md) for how the two
+Groth16 circuit families (`withdraw.circom` for anonymous spend
++ AMM circuits for amount-confidentiality) compose across these
+surfaces.
 
-What it doesn't do:
+What tacit doesn't do:
 
-- Hide the address graph (sender/recipient bitcoin addresses are visible).
-- Hide the asset ID (which token is being moved is public).
-- *(For confidential-supply assets)* protect against issuers announcing a
-  fake supply at etch — the commitment hides the value, so there's nothing
-  to verify against unless the issuer publishes `(supply, blinding)`. **The
-  dApp publishes by default** (etch UI ships with attestation on, embedded
-  into IPFS metadata), so any asset etched through this client has provably
-  public supply unless the issuer explicitly opts into the centralized-
-  stablecoin trust model.
+- Hide the address graph (sender/recipient Bitcoin addresses are
+  visible — same as every Bitcoin-substrate protocol).
+- Hide the asset ID (which token is moving is public).
+- Run general-purpose code (no Turing-complete VM — the protocol
+  grows by adding opcodes and circuits, not by executing user
+  scripts).
+- Eliminate issuer trust for confidential-supply assets unless
+  the issuer publishes `(supply, blinding)`. The dApp publishes
+  by default; opt-out is explicit.
 
 ---
 
 ## How tacit compares
 
-Bitcoin's token-protocol space sorts along three axes: **where validity is
-enforced**, **whether amounts are exposed**, and **what's required to
-recover a balance**. Tacit sits at the intersection "Bitcoin-substrate,
-indexer-validated" + "amounts hidden" + "privkey-only recovery" — no
-other protocol hits all three.
+Bitcoin's protocol surface sorts roughly along these axes: **where
+validity is enforced**, **whether amounts are exposed**, **whether
+the protocol does more than tokens**, and **whether wrapped BTC is
+trustless**.
 
-| | Substrate | Validity | Amounts | Privkey-only recovery | Federation |
-|---|---|---|---|---|---|
-| Ordinals / BRC-20 | Bitcoin | Indexer | Public | Yes | None |
-| Runes | Bitcoin | Indexer | Public | Yes | None |
-| RGB | Bitcoin (anchor) | Off-chain client-side proofs | Hidden | **No** — needs proof chain from sender | None |
-| Taproot Assets | Bitcoin (anchor) | Off-chain client-side proofs | Partial | **No** | None |
-| Liquid CT | **Federated sidechain** | Sidechain consensus | Hidden | Yes (on Liquid) | **15-of-N** |
-| **tacit** | **Bitcoin** | **Indexer** | **Hidden** | **Yes** | **None** |
+| | Substrate | Validity | Amounts | AMM | Trustless wBTC | Federation |
+|---|---|---|---|---|---|---|
+| Ordinals / BRC-20 | Bitcoin | Indexer | Public | — | — | None |
+| Runes | Bitcoin | Indexer | Public | — | — | None |
+| RGB | Bitcoin (anchor) | Off-chain client-side proofs | Hidden | — | — | None |
+| Taproot Assets | Bitcoin (anchor) | Off-chain client-side proofs | Partial | — | — | None |
+| Liquid CT + Liquid AMM | **Federated sidechain** | Sidechain consensus | Hidden | Yes | — | **15-of-N** |
+| Citrea / Botanix / rollups | Bitcoin (rollup) | Rollup operator / fraud proofs | Varies | Yes | Varies | Operator set |
+| **tacit** | **Bitcoin** | **Indexer** | **Hidden** | **Native** | **Yes (cBTC.zk)** | **None** |
 
-What tacit does that nothing else does in one package:
+What tacit does that nothing else does in one stack:
 
-- **Confidential fungibles on Bitcoin proper.** Liquid CT uses the same
-  Pedersen + Bulletproof primitives but lives on a federated sidechain —
-  moving value in or out costs a peg. Tacit is just Bitcoin: every CXFER
-  is a Bitcoin tx, every UTXO is a Bitcoin UTXO, no bridge.
-- **No off-chain proof exchange.** RGB and Taproot Assets buy privacy by
-  moving validity off-chain — the recipient must receive a proof chain
-  from the sender, and losing it loses the balance. Tacit keeps everything
-  on-chain. The trade is larger witnesses (~10 KB per CXFER), but a wallet
-  recovers full balance from privkey + chain alone, even years later, with
-  no surviving relationship to the sender.
-- **Hidden amounts that aren't a federation away.** Same crypto as Liquid,
-  no federation. Same privacy as RGB, no proof distribution. Same
-  indexer-validated simplicity as Runes, with hidden amounts.
-- **OTC settlement in one Bitcoin tx (`T_AXFER`).** A confidential token
-  transfer and the BTC payment that pays for it close in the same tx,
-  atomically. Ordinals atomic listings are the closest precedent, but
-  they're public-amount; tacit gets the same atomicity over hidden balances.
+- **Confidential fungibles on Bitcoin proper.** Liquid CT uses the
+  same Pedersen + Bulletproof primitives but lives on a federated
+  sidechain. Tacit is just Bitcoin: every CXFER is a Bitcoin tx,
+  every UTXO is a Bitcoin UTXO, no bridge.
+- **Native AMM on Bitcoin L1.** Uniform-clearing-price block-batched
+  AMM with confidential per-trader amounts and mixer-composable LP
+  shares. No L2, no rollup, no smart-contract runtime — the
+  "contract" is a Groth16 circuit + indexer rules fixed at pool
+  init. AMMs on Bitcoin sidechains (Liquid SideSwap) inherit
+  federation trust; AMMs on Bitcoin rollups (Citrea, Botanix)
+  inherit operator-set / fraud-proof trust. Tacit has neither.
+- **Trustless wrapped BTC.** `cBTC.zk` locks real BTC at a Taproot
+  output `K_btc = r_leaf · G_secp256k1` derived from a mixer note's
+  own secret. No federation, no co-signer, no oracle. WBTC,
+  tBTC, RBTC: all federated or threshold-bonded. cBTC.zk is
+  cryptographic.
+- **Fungible wrapped BTC, also without federation.** `cBTC.tac`
+  layers an LP-share lien on top of a cBTC.zk anchor with TAC
+  over-collateral. Trust model: TAC stays valuable enough
+  relative to BTC. Same shape as DAI's ETH-collateralization risk;
+  not the same shape as wBTC's BitGo + auditors.
+- **No off-chain proof exchange.** RGB and Taproot Assets push
+  validity off-chain — the recipient must receive a proof chain
+  from the sender, and losing it loses the balance. Tacit keeps
+  everything on-chain; a wallet recovers full state from privkey
+  + chain alone, even years later, with no surviving relationship
+  to the sender.
+- **OTC settlement in one Bitcoin tx (`T_AXFER`).** A confidential
+  token transfer and the BTC payment that pays for it close in
+  the same tx, atomically. Ordinals atomic listings are the
+  closest precedent, but they're public-amount; tacit gets the
+  same atomicity over hidden balances.
 
 Where tacit isn't the right choice:
 
-- **On-chain inscriptions (file bytes in Bitcoin witnesses).** Ordinals
-  embeds the file directly into the witness; tacit carries only an
-  `imageUri` on-chain and pins media to IPFS. Unique-token use cases
-  (0-decimal asset with cap = 1 + an image) work fine on tacit — what's
-  out of scope is "the JPEG is provably on Bitcoin forever."
-- **Lightning-native assets.** Taproot Assets is built into the LN stack;
-  tacit is on-chain only in v1.
-- **Highest-frequency, lowest-cost fungible transfers.** Runes wins on raw
-  cost (~hundreds of bytes vs. tacit's ~10 KB witness).
-- **Asset-graph privacy.** `asset_id` is visible in CXFER / MINT / BURN
-  payloads. Liquid hides this with surjection proofs; tacit v1 doesn't.
-- **Address-graph privacy.** Same as every Bitcoin-substrate protocol. No
-  CoinJoin or shielded pool.
+- **On-chain inscriptions (file bytes in Bitcoin witnesses).**
+  Ordinals embeds the file directly into the witness; tacit
+  carries only an `imageUri` on-chain and pins media to IPFS.
+- **Lightning-native assets.** Taproot Assets is built into the
+  LN stack; tacit is on-chain only in v1.
+- **Highest-frequency, lowest-cost fungible transfers.** Runes
+  wins on raw cost (~hundreds of bytes vs. tacit's ~10 KB
+  witness).
+- **Asset-graph privacy.** `asset_id` is visible in every
+  envelope. Liquid hides this with surjection proofs; tacit v1
+  doesn't.
+- **Address-graph privacy.** Same as every Bitcoin-substrate
+  protocol. No CoinJoin in v1; BIP-352 silent-payments
+  composition is on the roadmap.
+
+---
+
+## Architecture in one screen
+
+The protocol grows by applying a small number of primitives across
+many surfaces. Two Groth16 circuit families and a uniform
+out-of-circuit toolkit do all the cryptographic work; the indexer
+does the accounting; Bitcoin holds the data.
+
+```
+                  Bitcoin L1 (substrate)
+                          │
+       ┌──────────────────┴───────────────────┐
+       │      indexer-validated rules         │
+       │   (same trust model as Runes; any    │
+       │    party reaches the same verdict    │
+       │    from chain data alone)            │
+       └──────────────────┬───────────────────┘
+                          │
+       ┌──────────────────┴───────────────────┐
+       │  out-of-circuit cryptographic stack  │
+       │   secp256k1 Pedersen · bulletproofs  │
+       │   BIP-340 Schnorr · 169-byte sigma   │
+       │   cross-curve binding (secp ↔ BJJ)   │
+       └─────┬─────────────────────────┬──────┘
+             │                         │
+       ┌─────┴─────┐             ┌─────┴─────┐
+       │ withdraw  │             │    AMM    │
+       │ .circom   │             │ circuits  │
+       │           │             │           │
+       │ Poseidon  │             │ BabyJubJub│
+       │ leaf +    │             │ Pedersen +│
+       │ Merkle +  │             │ range +   │
+       │ nullifier │             │ in-circuit│
+       │           │             │ AMM logic │
+       └─────┬─────┘             └─────┬─────┘
+   anonymous-spend                 amount-confidentiality
+       │                                 │
+   ┌───┴────┐                    ┌───────┴────────┐
+   │ mixer  │                    │ T_LP_ADD/REMOVE│
+   │ pool   │                    │ T_SWAP_BATCH   │
+   │        │                    │ T_SWAP_VAR (*) │
+   │ cBTC.zk│                    │ T_SWAP_ROUTE   │
+   │ slot   │                    │ T_FARM_*       │
+   │ ops    │                    │                │
+   └────┬───┘                    └───────┬────────┘
+        │                                │
+        └────────────┬───────────────────┘
+                     │
+              ┌──────┴──────┐
+              │  cBTC.tac   │  composes both families:
+              │             │  cBTC.zk slot (cryptographic anchor)
+              │             │  + AMM LP-share lien (indexer-enforced
+              │             │  collateral, TAC over-collateralized)
+              └─────────────┘
+
+(*) T_SWAP_VAR uses no Groth16 — Pedersen + bulletproof + kernel
+    sig only. The "two trader paths" model picks circuits where
+    confidentiality is load-bearing and skips them where amounts
+    can be public.
+```
+
+The diagram and full primitive-by-primitive walkthrough live at
+[`spec/CIRCUITS.md`](./spec/CIRCUITS.md). The single-image version
+is [`tacit-circuits.svg`](./tacit-circuits.svg).
+
+**Why this stack matters.** Indexer-validated meta-protocols like
+Runes already prove at scale that consensus-of-indexers can
+underwrite real market value. Tacit takes the same consensus model
+and **leverages indexer-validated value into the collateral
+substrate for native-BTC wrapping** — TAC's market price (the same
+kind of value a Rune carries) becomes the bond that makes cBTC.tac
+trustless without a federation. Cryptographic primitives handle the
+parts that must be cryptographic (real BTC custody at L1, amount
+confidentiality, anonymous spend). Circuits handle privacy where
+it's load-bearing, and stay out of the way where it isn't. The
+result is smart-contract-shaped properties — AMM trading,
+collateralized wrapping, batched settlement — delivered without a
+VM, without a sidechain, without leaving Bitcoin L1.
 
 ---
 
@@ -977,62 +1075,12 @@ deposit corresponds to which withdrawal. Phase 2 trusted setup finalized
 
 ## Future directions
 
-Concepts the protocol enables but the v1 dApp doesn't build. Sketched here so the
-shape is on record.
-
-### Confidential wrapped BTC (`cBTC`)
-
-A tacit asset where 1 unit = 1 satoshi, transferable confidentially on
-Bitcoin. Same idea as wBTC on Ethereum, but with **per-transfer amounts
-hidden** — observers see "some amount of cBTC moved between two
-addresses" but never the value.
-
-Buildable today on existing primitives, no protocol changes:
-
-```
-mint  : user sends BTC → bridge address → bridge T_MINTs cBTC to user's tacit pubkey
-hold  : cBTC sits in user's wallet as a confidential UTXO
-xfer  : user sends cBTC to anyone via standard CXFER — amount hidden
-redeem: user CXFERs cBTC to bridge → bridge ECDH-decrypts the opening →
-        bridge sends N sats of real BTC back to a payout address
-```
-
-**Setup.** Etch `cBTC` mintable, decimals=8, mint_authority = bridge's pubkey.
-The bridge runs a deposit watcher (cron over a known Bitcoin address) and a
-redemption processor (scans incoming CXFERs to its tacit pubkey, decodes the
-opening via ECDH, sends BTC out).
-
-**Trust model.** Same as wBTC / USDC — the bridge is custodial. It can rug,
-pause, or mint without backing. The protocol guarantees only "no inflation
-downstream of `T_MINT`" — issuer honesty about the BTC reserves is
-out-of-band. The dApp's existing `(supply, blinding)` attestation flow makes
-proof-of-reserves trivial for the bridge: total cBTC minted is publicly
-attested; total BTC locked at the deposit address is publicly verifiable
-on-chain; the ratio should be ≤ 1.
-
-**What's better than wBTC.** Every wBTC transfer publishes its value on
-Ethereum/Solana. cBTC transfers publish only the asset_id and address graph
-— amounts stay confidential. For payroll, treasury moves, or
-privacy-conscious payments, this is a meaningful upgrade.
-
-**What atomic settlement adds.** Once cBTC exists in the network, holders
-can swap it for real BTC **trustlessly** via `T_AXFER` listings — no bridge
-involvement, no custodian for the trade itself. The bridge is only the
-edge: mint and redeem. Internal trading is trustless. Liquidity providers
-arbitrage the bridge spread on the open market.
-
-**MVP shape:** ~500 LOC of bridge code (deposit watcher + redemption
-processor + proof-of-reserves attestation cron) + a small client UI for
-deposit/redemption flows. Deploy alongside the existing tacit Worker;
-share the asset registry. Maybe a week of focused work.
-
-**What this can't be (yet).** Trustless wrapping — BTC locked in a script
-that releases only when a corresponding cBTC burn is observed by Bitcoin
-consensus — requires Bitcoin-layer primitives that don't exist in stable
-form: federated multisig (Liquid-style; still trust, just spread), a soft
-fork (OP_CAT/CTV covenants, BIP-300 drivechains), or BitVM-style ZK proofs
-in tapscript. None of these are tacit-protocol problems; tacit can host the
-asset, but the peg's trustlessness is upstream.
+Beyond the v1 dApp surface, the protocol opens onto several further
+extensions. The wrapped-BTC story (originally sketched here as a
+custodial bridge MVP) has since landed as the cBTC.zk / cBTC.tac
+amendments — see the [`spec/amendments/`](./spec/amendments/)
+folder for the normative spec. What follows is the directional
+notes for what's still in flight.
 
 ### Receiver privacy via BIP-352 Silent Payments
 
@@ -1217,15 +1265,32 @@ Setup steps live in `worker/README.md`. Deploy your own (and update
 
 ## Cryptography credits
 
-- Pedersen commitments + Mimblewimble kernel sigs — Maxwell, Poelstra,
-  Jedusor.
-- Aggregated Bulletproofs — Bünz, Bootle, Boneh, Poelstra, Wuille, Maxwell
-  (2017).
+- Pedersen commitments + Mimblewimble kernel sigs — Maxwell,
+  Poelstra, Jedusor.
+- Aggregated Bulletproofs — Bünz, Bootle, Boneh, Poelstra, Wuille,
+  Maxwell (2017).
 - BIP-340 Schnorr / BIP-341 Taproot — Wuille, Nick, Towns.
-- The "indexer-validated meta-protocol" framing comes from Runes / Ordinals;
-  tacit is a CT-flavored cousin in the same family.
+- Tornado-style Poseidon-Merkle anonymity set + nullifier scheme —
+  Pertsev, Storm, Semenov; Tornado.cash team (2019). Tacit's
+  `withdraw.circom` adapts theirs; cBTC.zk's slot semantics reuse
+  it without modification (see [`spec/CIRCUITS.md`](./spec/CIRCUITS.md)).
+- Groth16 zk-SNARK over BN254 — Groth (2016); Phase 1 inherited
+  from the Polygon Hermez ceremony.
+- BabyJubJub (embedded curve over BN254 Fr) + Camenisch–Stadler
+  sigma cross-curve binding — used for the AMM's amount-
+  confidentiality circuits.
+- Uniform-clearing-price batch auctions — Walras (1874); Gnosis
+  Protocol (2019); Penumbra ZSwap (2023).
+- Constant-product AMM curve — Uniswap V2 (2020); Bancor (2017).
+- The "indexer-validated meta-protocol" framing comes from
+  Runes / Ordinals; tacit is the same trust model applied to a
+  wider surface (confidential value, anonymous spend, native AMM,
+  trustless wrapped BTC).
 - All primitives come from [`@noble/secp256k1`](https://github.com/paulmillr/noble-secp256k1)
-  and [`@noble/hashes`](https://github.com/paulmillr/noble-hashes).
+  and [`@noble/hashes`](https://github.com/paulmillr/noble-hashes),
+  with [snarkjs](https://github.com/iden3/snarkjs) +
+  [circomlib](https://github.com/iden3/circomlib) for the Groth16
+  proving/verification path.
 
 ---
 

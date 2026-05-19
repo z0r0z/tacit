@@ -71,6 +71,17 @@ balance = unrecoverable ETH).
 
 ## Cryptographic alignment
 
+cBTC.zk **reuses the mixer's `withdraw.circom` without
+modification** as its slot-spend proof. Every cBTC.zk slot is
+literally a mixer leaf, every slot-spending operation proves
+anonymous unique-spend the same way `T_WITHDRAW` does. The
+construction below explains how the same secret that proves
+mixer-set membership also signs the backing BTC UTXO at L1 — one
+leaf, two locks. See [`spec/CIRCUITS.md`](../CIRCUITS.md) for how
+this fits with the protocol's broader two-circuit-family stack
+(mixer's anonymous-spend circuit + the AMM's amount-confidentiality
+circuits).
+
 Tacit's mixer note carries a **secp256k1 Pedersen commitment** (SPEC
 §3.2, §5.11):
 

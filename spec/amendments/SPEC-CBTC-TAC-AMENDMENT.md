@@ -28,14 +28,18 @@
 >   break (slot's K_btc spent without matching T_SLOT_BURN). Moves
 >   the position's TAC contribution to the shared insurance pool.
 >
-> **Trust profile.** cBTC.tac is **not** trustless — it is
-> over-collateralized in TAC. The trust model is "TAC stays valuable
-> enough relative to BTC that bonded slots remain over-margined."
-> Same shape as MakerDAO (DAI), Liquity (LUSD), or any over-
-> collateralized DeFi construction. **Not** the same shape as WETH on
-> Ethereum: WETH's contract holds ETH and cannot be drained outside
-> protocol; cBTC.tac shares are economic claims backed by slashable
-> collateral. For trustless pure-BTC self-custody, use cBTC.zk.
+> **Trust profile.** cBTC.tac has two trust legs by construction:
+> the BTC anchor at L1 (cryptographic — cBTC.zk's slot lock works
+> as long as Bitcoin + Groth16 + Pedersen + secp256k1 hardness
+> hold) and the TAC collateral substrate (economic — TAC stays
+> valuable enough relative to BTC that bonded slots remain
+> over-margined). Same shape as MakerDAO (DAI), Liquity (LUSD), or
+> any over-collateralized DeFi construction. The collateral leg
+> reuses the same trust model that already makes Runes / Ordinals
+> tradeable at scale: indexer consensus over chain state. Tacit
+> leverages indexer-validated value into a structurally aligned
+> bond. For pure cryptographic BTC self-custody with no economic
+> leg, use cBTC.zk.
 >
 > **Governance: scoped + bounded.** The protocol ships fully
 > operational with fixed default parameters; no governance vote is
@@ -94,6 +98,21 @@ supply, with its TAC contribution serving as bond. cBTC.tac itself
 is a regular tacit asset; it is not the LP token of any AMM pool.
 (Users may LP cBTC.tac into AMM pools downstream — those LP tokens
 are separate from cBTC.tac itself.)
+
+**Where cBTC.tac sits in the tacit ZK stack.** A cBTC.tac position
+composes both of the protocol's circuit families:
+
+- The cBTC.zk slot on the BTC-anchor side uses the **mixer's
+  anonymous-unique-spend circuit** (`withdraw.circom`) — every
+  slot is a mixer leaf, the slot key is the leaf's secret.
+- The TAC-collateral side, in the v1 lien model (§5.47), uses an
+  LP-share UTXO of the canonical `(cBTC.zk, TAC)` AMM pool minted
+  via the **AMM's amount-confidentiality circuits**
+  (`amm_lp_add`); the lien is enforced at the indexer layer.
+
+cBTC.tac is the cleanest example of the protocol's
+two-circuit-family composition at work. See
+[`spec/CIRCUITS.md`](../CIRCUITS.md) for the broader picture.
 
 ---
 
