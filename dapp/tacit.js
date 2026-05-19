@@ -61188,17 +61188,17 @@ function renderMarketAssetStatsHTML(asset) {
   ).join('');
   const _tfRowHtml = `<div class="chart-tf-row" data-chart-tf-row>${_tfChips}</div>`;
   return `
-    <div data-market-asset-stats data-aid="${aid}" style="border:1px solid var(--ink);background:var(--bg);padding:10px 12px;margin-bottom:14px;">
-      <!-- Stats strip: trader-relevant metrics that are NOT already in the
-           header tiles. Header already carries price, 24h volume, market
-           cap; "last trade" / "24h Δ" / "24h volume" / "market cap" used
-           to live here too — strict duplication, sometimes with different
-           numbers (delta strip used last-close, this row used VWAP, so
-           "24h Δ" disagreed across the page). Now: only 24h high/low
-           and the "more stats" power-user roll-up. The spread cell
-           was also redundant with the spread divider between the
-           ladders — dropped.  -->
-      <div style="display:flex;align-items:baseline;gap:18px;flex-wrap:wrap;font-size:11px;">
+    <div data-market-asset-stats data-aid="${aid}" style="padding:10px 0;margin-bottom:8px;">
+      <!-- Stats strip wrapped in a details disclosure per design pass —
+           the hero already carries 1h/4h/24h Δ and depth/spread info
+           sits below in the depth chart subheader, so 24h high/low can
+           sit behind "▸ stats" rather than always-on. The "more stats"
+           power-user roll-up further down stays nested. -->
+      <details data-market-stats-disclose style="font-size:11px;">
+        <summary style="cursor:pointer;color:var(--ink-mid);font-size:10px;text-transform:uppercase;letter-spacing:0.08em;padding:2px 0;list-style:none;">
+          <span style="display:inline-block;font-size:9px;">▸</span> stats
+        </summary>
+        <div style="display:flex;align-items:baseline;gap:18px;flex-wrap:wrap;font-size:11px;margin-top:6px;">
         <div><span class="muted">24h high</span> <strong data-market-stat-high>—</strong></div>
         <div><span class="muted">24h low</span> <strong data-market-stat-low>—</strong></div>
         <!-- Hidden last-trade cell kept for backward compat: the chart-
@@ -61240,6 +61240,7 @@ function renderMarketAssetStatsHTML(asset) {
       <div style="margin-top:8px;display:flex;justify-content:flex-end;">
         <button data-act="open-price-alert" data-aid="${aid}" data-ticker="${escapeHtml(asset.ticker || '?')}" type="button" title="Get notified when this asset's price crosses a threshold" class="price-alert-btn">🔔 Set price alert</button>
       </div>
+      </details>
       <!-- Price history chart — collapsed by default per designer review
            since the hero sparkline gives glanceable trend. Open the
            disclosure to surface the full chart with TF chips + cursor
