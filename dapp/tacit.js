@@ -24220,19 +24220,21 @@ async function buildAndBroadcastCXferMulti({ assetIdHex, recipients, forceUtxos 
     }
   }
 
-  const holdings = await scanHoldings();
-  const h = holdings.get(assetIdHex);
-  if (!h) throw new Error(`no holdings for asset ${assetIdHex}`);
-  if (h.balance < totalSendAmt) throw new Error(`insufficient balance: have ${h.balance}, need ${totalSendAmt}`);
-
   let pickedAssetUtxos, inAmt = 0n, inBlindingSum = 0n;
   if (forceUtxos && forceUtxos.length > 0) {
+    // forceUtxos bypasses the holdings.get check — caller is supplying the
+    // input directly (used by stealth-discovery flows where the input
+    // doesn't surface through wallet.address()-keyed scanHoldings).
     pickedAssetUtxos = forceUtxos;
     for (const x of pickedAssetUtxos) {
       inAmt += x.amount; inBlindingSum = modN(inBlindingSum + BigInt(x.blinding));
     }
     if (inAmt < totalSendAmt) throw new Error(`forced utxos provide ${inAmt}, need ${totalSendAmt}`);
   } else {
+    const holdings = await scanHoldings();
+    const h = holdings.get(assetIdHex);
+    if (!h) throw new Error(`no holdings for asset ${assetIdHex}`);
+    if (h.balance < totalSendAmt) throw new Error(`insufficient balance: have ${h.balance}, need ${totalSendAmt}`);
     const sortedUtxos = [...h.utxos].sort((a, b) => a.amount < b.amount ? 1 : a.amount > b.amount ? -1 : 0);
     pickedAssetUtxos = [];
     for (const x of sortedUtxos) {

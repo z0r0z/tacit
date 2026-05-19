@@ -79,7 +79,7 @@
      script-src 'self' covers all three.
      `?cb=` is auto-set by build/build.mjs to a sha256 prefix of tacit.js
      so iOS Safari's stale-modulepreload cache flushes on every change. -->
-<link rel="modulepreload" href="./tacit.js?cb=c930591c">
+<link rel="modulepreload" href="./tacit.js?cb=bc84a266">
 <link rel="modulepreload" href="./vendor/tacit-deps.min.js">
 <link rel="modulepreload" href="./prf-wallet.js">
 <style>
@@ -4513,6 +4513,95 @@ body > #amm-contrib-section {
   color: var(--ink) !important;
 }
 
+/* =============================================================
+   Wallet tab — clean minimalist look per design.html
+   ============================================================= */
+/* Wallet card buttons: drop the bulky orange .primary fill in favor
+   of quieter text-with-thin-border chips. Action row reads as
+   "options" not "shouting for attention." The single most-important
+   action (Buy/Receive BTC when relevant, or the swap CTA on the
+   market page) keeps the brand-orange treatment elsewhere; here
+   every button is a sibling option. */
+#tab-wallet button.primary {
+  background: transparent !important;
+  border: 1px solid var(--ink) !important;
+  color: var(--ink) !important;
+  font-weight: 500 !important;
+  letter-spacing: 0.04em !important;
+  box-shadow: none !important;
+  padding: 7px 12px !important;
+  min-height: 32px !important;
+  font-size: 11px !important;
+}
+#tab-wallet button.primary:hover:not(:disabled) {
+  background: var(--ink) !important;
+  color: var(--bg) !important;
+}
+/* Plain (non-primary) buttons get the same quiet treatment so the
+   row reads as a single consistent set rather than mixed fills. */
+#tab-wallet button:not(.primary):not(.btn-copy):not(.tab):not(.mkt-chip):not([data-act]) {
+  background: transparent !important;
+  border: 1px solid var(--ink-faint) !important;
+  color: var(--ink) !important;
+  font-weight: 500 !important;
+  padding: 7px 12px !important;
+  min-height: 32px !important;
+  font-size: 11px !important;
+  box-shadow: none !important;
+}
+#tab-wallet button:not(.primary):not(.btn-copy):not(.tab):not(.mkt-chip):not([data-act]):hover:not(:disabled) {
+  background: var(--ink) !important;
+  color: var(--bg) !important;
+  border-color: var(--ink) !important;
+}
+/* Wallet action row: tighter gap, vertical-align baseline so the
+   buttons read as a coherent strip. Wraps cleanly on narrow
+   viewports without the heavy 6px gaps. */
+#tab-wallet .section-body > .flex {
+  gap: 6px !important;
+  flex-wrap: wrap !important;
+}
+/* Key/address rows: drop the bulky 1px dashed mono-box border in
+   favor of a thin dotted underline so the address reads as inline
+   data rather than a heavy bordered cell. */
+#tab-wallet .mono-box {
+  background: rgba(26,26,26,0.025) !important;
+  border: 0.5px dashed rgba(26,26,26,0.25) !important;
+  padding: 5px 10px !important;
+  font-size: 11px !important;
+  box-shadow: none !important;
+}
+/* Key-value table: tighter typography for the wallet overview. */
+#tab-wallet dl.kv dt {
+  font-size: 10px !important;
+  letter-spacing: 0.08em !important;
+  color: var(--ink-mid) !important;
+  text-transform: uppercase !important;
+}
+#tab-wallet dl.kv dd { font-size: 11px !important; }
+/* Sub-stats row in the wallet header (LOCKED · PASSKEY · TIP · SYNCED · 1 SAT/VB)
+   — make uniformly muted so the row reads as a single status strip
+   instead of competing badges. */
+#tab-wallet .section-header > span:last-child > span {
+  font-size: 9.5px !important;
+  letter-spacing: 0.06em !important;
+}
+/* Manage Wallet disclosure: tighter, design.html details style. */
+#tab-wallet details > summary {
+  letter-spacing: 0.05em !important;
+}
+/* "Show getting started" link: subtler, no underline, dashed
+   border-bottom on hover — matches the design.html small-link
+   aesthetic. */
+#hero-show-link {
+  color: var(--ink-mid) !important;
+  text-decoration: none !important;
+  border-bottom: 0.5px dashed rgba(26,26,26,0.4) !important;
+  text-transform: none !important;
+  letter-spacing: 0 !important;
+}
+#hero-show-link:hover { color: var(--ink) !important; }
+
 /* Hide the legacy `▸ STATS` and `▸ PRICE HISTORY` collapsed disclosures
    that sit BELOW the unified market tile. Their data lives inside the
    richStats hidden stub for populator writes; nothing visible. */
@@ -8749,7 +8838,7 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
   </div>
 </div>
 
-<script type="module" src="./tacit.js?cb=c930591c"></script>
+<script type="module" src="./tacit.js?cb=bc84a266"></script>
 
 <!-- Service worker registration moved into tacit.js (the dapp's CSP forbids
      inline scripts; only 'self' module scripts are allowed). See sw.js for
