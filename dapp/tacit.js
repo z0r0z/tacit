@@ -34225,6 +34225,18 @@ async function _ceremonyFetchIpfsWithFailover(cid, validate, onProgress, onBytes
         bytes = new Uint8Array(await resp2.arrayBuffer());
         if (onBytes) { try { onBytes(bytes.length, bytes.length); } catch {} }
       }
+      // Silent-truncation guard. Without this check, a mid-stream HTTP/2 close
+      // or iOS Safari memory abort that completes the reader loop without
+      // throwing leaves us with a partial body that still passes the magic-
+      // byte check — snarkjs then runs verify on a truncated zkey and returns
+      // false, surfacing as the misleading "head zkey is not a valid extension"
+      // error. r1cs/ptau survive truncation via their sha256 validators, but
+      // the head fetch has no such anchor (the head's sha256 changes per
+      // contribution), so Content-Length is the only available length check.
+      if (totalHdr > 0 && bytes.length !== totalHdr) {
+        errors.push(`${label}: truncated body (${bytes.length}/${totalHdr} bytes)`);
+        continue;
+      }
       // Validator may be sync or async (the r1cs/ptau path awaits a CID hash
       // check). Awaiting handles both — without await, a Promise return value
       // is truthy and gets stringified as "[object Promise]", silently
