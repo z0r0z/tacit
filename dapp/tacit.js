@@ -35538,6 +35538,7 @@ function openAmmCeremonyDrawer() {
   drawer.style.display = 'grid';
   _renderAmmCerDrawerBody();
   refreshAmmCeremonyStatesIfStale(true).then(_renderAmmCerDrawerBody).catch(() => {});
+  _renderMyAmmContribs().catch(() => {});
   // Pre-fill the wallet pubkey hint if a wallet is loaded. Empty when no
   // wallet exists yet — the submit handler will open the welcome modal in
   // that case so the user can onboard inline and still attribute the
@@ -35565,6 +35566,49 @@ function closeAmmCeremonyDrawer() {
     try { renderAmmCeremonyChip(); } catch {}
   }
 }
+// Personal contributions panel — lists this wallet's per-circuit
+// contribution counts inside the drawer. Hidden when no wallet is
+// loaded. 60s memoized so repeat opens don't re-fetch attestations.
+let _myAmmContribsCache = { pubkey: null, ts: 0, data: null };
+async function _renderMyAmmContribs(force) {
+  const panel = document.getElementById('amm-cer-my-contribs');
+  if (!panel) return;
+  if (!wallet?.pub) { panel.style.display = 'none'; return; }
+  const pubHex = bytesToHex(wallet.pub).toLowerCase();
+  const NOW = Date.now();
+  if (!force && _myAmmContribsCache.pubkey === pubHex && _myAmmContribsCache.data && (NOW - _myAmmContribsCache.ts) < 60_000) {
+    _paintMyAmmContribs(_myAmmContribsCache.data, pubHex);
+    return;
+  }
+  panel.style.display = 'block';
+  panel.innerHTML = '<span class="muted">Looking up your contributions…</span>';
+  const counts = await Promise.all(AMM_CEREMONY_CIRCUIT_HASHES.map(async c => {
+    const list = await ceremonyFetchAttestations(c.hash);
+    const n = list.filter(a => (a?.contributor_pubkey || '').toLowerCase() === pubHex).length;
+    return { key: c.key, label: c.label, count: n };
+  }));
+  _myAmmContribsCache = { pubkey: pubHex, ts: NOW, data: counts };
+  _paintMyAmmContribs(counts, pubHex);
+}
+function _paintMyAmmContribs(counts, pubHex) {
+  const panel = document.getElementById('amm-cer-my-contribs');
+  if (!panel) return;
+  const total = counts.reduce((a, c) => a + c.count, 0);
+  if (total === 0) {
+    panel.innerHTML = `<span style="color:var(--ink-mid);">your wallet (${escapeHtml(pubHex.slice(0, 12))}…) — no contributions yet</span>`;
+    panel.style.display = 'block';
+    return;
+  }
+  const rows = counts.map(c =>
+    `<div style="display:flex;justify-content:space-between;gap:8px;padding:2px 0;"><span style="color:var(--ink-mid);">${escapeHtml(c.label)}</span><span>${c.count}</span></div>`
+  ).join('');
+  panel.innerHTML =
+    `<div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:6px;"><span style="font-weight:600;">your contributions</span><span style="color:var(--ink-mid);font-size:10px;">${escapeHtml(pubHex.slice(0, 12))}…</span></div>` +
+    rows +
+    `<div style="display:flex;justify-content:space-between;gap:8px;padding:4px 0 0 0;border-top:1px solid var(--ink-faint);margin-top:4px;"><span>total</span><span><strong>${total}</strong></span></div>`;
+  panel.style.display = 'block';
+}
+
 function _renderAmmCerDrawerBody(opts) {
   const chainsEl = document.getElementById('amm-cer-chains');
   if (!chainsEl) return;
@@ -35952,6 +35996,7 @@ async function _submitAmmCeremonyContribution() {
           _setPhase('done', 'Contribution landed in ' + target.label + '.', 'Thank you for strengthening the ceremony.');
           _ammCeremonyCompletedThisSession.add(target.key);
           _renderAmmCerDrawerBody({ currentKey: null, completedKeys: _ammCeremonyCompletedThisSession });
+          _renderMyAmmContribs(true).catch(() => {});
           _log('  ✓ Contribution landed on chain. Thank you.');
         }
       },
