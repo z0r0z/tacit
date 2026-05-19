@@ -507,29 +507,70 @@ A wallet implementing the new scheme MUST scan for receipts at:
 
 - Its classical P2WPKH address (for senders who used the old scheme).
 - All candidate commit-derived addresses (for senders who used the
-  new scheme).
+  new scheme), iterating both `P2WPKH(hash160(commit))` and
+  `P2TR(x_only(commit))` output script shapes per output.
 
-The scan loop per-tx:
+**Dust output script type (normative).** Senders emitting class-2
+stealth outputs SHOULD default to `P2WPKH(hash160(commit_compressed))`.
+Rationale: P2WPKH is the cheapest output type (22-byte scriptpubkey)
+and is universally supported by Bitcoin tooling. Senders MAY emit
+`P2TR(x_only(commit))` instead for use cases that already use P2TR
+(e.g., a sender whose other outputs are P2TR and wants script-type
+uniformity), but the choice is per-tx and per-output; the recipient
+scanner MUST handle both shapes. The address format (§D.1) does NOT
+encode a script-type preference — the recipient's scanner tries
+both shapes for every candidate commit.
+
+The scan loop per-tx (single-pubkey mode):
 
 ```
 for tx in chain since last_scan:
+    // Classical receipts (existing behavior, unchanged)
     for output in tx.outputs:
         if output.script == P2WPKH(hash160(wallet.pub)):
             credit(output)  // classical receipt
-        else:
-            for sender_pub in extract_sender_pubkeys(tx.inputs):
-                shared = ECDH(wallet.priv, sender_pub)
-                b = HMAC(shared, "tacit-cxfer-stealth-v1" || network ||
-                                  tx.vin[0].outpoint)
-                C = wallet.pub + b·G
-                if output.script == P2WPKH(hash160(C_compressed)):
-                    credit(output, tweaked_sk = wallet.priv + b)
+
+    // Stealth receipts (new — class-2 dual scan)
+    P_sender = aggregate_eligible_input_pubkeys(tx)  // per §A.2.5
+    if P_sender == O:                                 // point at infinity
+        continue                                       // tx ineligible; skip
+    shared = ECDH(wallet.priv, P_sender)
+    for (vout_index, output) in enumerate(tx.outputs):
+        b = HMAC(shared,
+                 domain ||                            // per anchor registry §C
+                 network_tag ||
+                 tx.vin[0].outpoint ||                // tx_anchor head
+                 u32_LE(vout_index))                  // per-output disambiguator
+        C = wallet.pub + b · G
+        C_compressed = compress(C)
+        C_xonly      = x_only(C)
+        if output.script == P2WPKH(hash160(C_compressed)):
+            credit(output,
+                   tweaked_sk     = (wallet.priv + b) mod SECP_N,
+                   script_kind    = 'p2wpkh',
+                   sigKind        = 'ecdsa')
+        elif output.script == P2TR(C_xonly):
+            credit(output,
+                   tweaked_sk     = (wallet.priv + b) mod SECP_N,
+                   script_kind    = 'p2tr',
+                   sigKind        = 'schnorr')
 ```
 
-Scan cost: one ECDH + one HMAC + one EC scalar multiplication + one
-hash comparison per tx-output × sender-input combination. For a
-typical wallet observing single-input txs, this is a few thousand
-operations per second — well within practical limits.
+The `vout_index` in the anchor disambiguates multiple outputs to the
+same recipient in the same tx (e.g., merchant batched payouts) —
+without it, two outputs at the same recipient would land at identical
+addresses, defeating the per-payment unlinkability.
+
+Scan cost: one ECDH per tx (cached across all output candidates) +
+one HMAC + one EC scalar multiplication + two hash comparisons per
+output. For a typical single-output tx, ~120 µs on commodity
+hardware; for a 100-output batch tx, ~1.2 ms. The ECDH is the dominant
+cost and is amortized across outputs.
+
+**Stored credit metadata.** When the scanner credits a stealth
+receipt, it persists `(txid, vout, sender_pub_aggregate, vout_index,
+domain_tag)` so the spend-path can re-derive `b` and `tweaked_sk` on
+demand. No persistent storage of `tweaked_sk` itself.
 
 ### §D.3 Optional dual-pubkey for light clients
 
@@ -967,6 +1008,26 @@ sender picks stealth.
 The "privacy mode" toggle in the dapp's settings governs the default:
 on (stealth address advertised by default) or off (classical only).
 Per-transaction overrides remain available via an advanced toggle.
+
+**Self-payments (sender = recipient).** A wallet paying its own
+stealth-capable address is mechanically valid: `ECDH(self_priv,
+self_pub)` produces a well-defined shared secret, the dapp computes
+the commit, the recipient (same wallet) re-derives the same secret
+and finds the receipt. The privacy benefit at the sender↔recipient
+unlinkability dimension is trivially zero (same identity), but the
+per-tx address rotation still hides "this user received funds from
+some source" from chain observers, which IS useful (e.g., for
+consolidation flows where the user moves UTXOs between their own
+addresses).
+
+The dapp need not special-case self-payments. The recipient scanner
+will find the receipt via the standard ECDH dual-scan path. A dapp
+MAY surface a hint that the user is paying themselves with stealth
+derivation engaged, but this is UX polish, not a correctness
+requirement. Self-payments to one's own classical address remain
+valid too — the choice between stealth-self-payment and classical-
+self-payment is a per-tx user choice, same as for cross-party
+transfers.
 
 ### §H.5 Historical-bootstrap and scan filters
 
