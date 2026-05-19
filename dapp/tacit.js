@@ -57251,7 +57251,7 @@ function applyMarketFilters() {
            <button data-act="market-jump-activity" type="button" style="background:none;border:none;color:var(--ink-mid);padding:0 4px;font:inherit;text-decoration:underline;text-decoration-style:dotted;cursor:pointer;font-size:10px;" title="See the full trade history">all →</button>
          </div>`
       : '';
-    return `<div data-market-spread-row class="market-spread-divider" style="display:block;padding:8px 12px;margin:8px 0 12px;border-top:1px solid var(--ink);border-bottom:1px solid var(--ink);background:var(--bg-warm,#faf9f5);font-family:var(--mono);font-size:11px;">
+    return `<div data-market-spread-row class="market-spread-divider" style="display:block;padding:8px 0;margin:8px 0 4px;border-top:1px dashed var(--ink-faint);font-family:var(--mono);font-size:11px;">
       <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;">
         <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
           ${bestBidHtml}
