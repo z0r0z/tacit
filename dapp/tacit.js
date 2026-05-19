@@ -36008,7 +36008,7 @@ async function _submitAmmCeremonyContribution() {
       'Just contributed entropy #' + (myIndex || '?') + ' to the tacit AMM trusted setup ceremony — '
       + 'now ' + totalContribs + ' contributions across the 3 circuits. '
       + 'One honest contributor per circuit is enough.\n\n'
-      + 'contribute at tacit.finance/?amm=ceremony\n\n#tacit';
+      + 'contribute at https://tacit.finance/?amm=ceremony\n\n#tacit';
     const shareBtn = document.createElement('a');
     shareBtn.href = 'https://x.com/intent/post?text=' + encodeURIComponent(tweetText);
     shareBtn.target = '_blank';
