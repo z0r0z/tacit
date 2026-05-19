@@ -4539,6 +4539,52 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
   [data-orderbook-wrap][data-orderbook-active="bids"] [data-orderbook-side="asks"] { display: none; }
 }
 
+/* Desktop two-sided orderbook (designer spec): asks LEFT, bids RIGHT,
+   separated by a dashed vertical divider. Mobile keeps the stacked
+   tabbed layout via the @media block above. Only activates on
+   viewports wide enough that the asks toolbar chips don't wrap into
+   a tangle (~960px and up). The market-spread-row that lives between
+   asks and bids in source order spans both columns as a footer below
+   the two ladders. */
+@media (min-width: 960px) {
+  [data-orderbook-wrap] {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    column-gap: 0;
+    border-top: 1px dashed rgba(26,26,26,0.25);
+    border-bottom: 1px dashed rgba(26,26,26,0.25);
+  }
+  [data-orderbook-wrap] > [data-orderbook-side="asks"] {
+    grid-column: 1;
+    grid-row: 1;
+    border-right: 1px dashed rgba(26,26,26,0.25);
+    padding: 4px 12px 4px 0;
+    min-width: 0;
+  }
+  [data-orderbook-wrap] > [data-orderbook-side="bids"] {
+    grid-column: 2;
+    grid-row: 1;
+    padding: 4px 0 4px 12px;
+    min-width: 0;
+  }
+  /* Spread row lives between asks and bids in source order; in the
+     2-col grid we pin it under both columns. data-market-spread-row
+     is the marker. */
+  [data-orderbook-wrap] > [data-market-spread-row] {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    margin-top: 8px;
+  }
+  /* Mobile tabs are hidden on desktop via their own media query (the
+     .orderbook-mobile-tabs class only renders on narrow viewports),
+     but defensively position any straggler so the grid stays clean. */
+  [data-orderbook-wrap] > .orderbook-mobile-tabs {
+    grid-column: 1 / -1;
+    grid-row: 0;
+    display: none;
+  }
+}
+
 /* Swap-tile flip button. Circular toggle that overlaps the pay/receive
    cells. Desktop: 36px circle, thin ink border, no decorative shadow —
    minimal so it reads as a control without dominating the inputs.
