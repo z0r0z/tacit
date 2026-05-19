@@ -3760,6 +3760,41 @@ body[data-market-mode="asset"] #market-list {
   line-height: 1.45;
   color: #1A1A1A;
 }
+/* Inner-box bg + swap-side bg flatten to the card cream so they blend
+   seamlessly per design.html. Previously --bg-warm (#fff8eb) was
+   near-white which made every nested panel pop out of the cream card. */
+body[data-market-mode="asset"] [data-swap-side],
+body[data-market-mode="asset"] [data-swap-tile],
+body[data-market-mode="asset"] .market-bids-table,
+body[data-market-mode="asset"] .market-listing-grid {
+  background: transparent;
+}
+/* Ultra-tight rows per design.html — both ladders at ~24px tall with
+   font-size 11px, padding 3px 10px, no min-height. */
+body[data-market-mode="asset"] .market-bids-row,
+body[data-market-mode="asset"] .market-listing-grid.market-listing-rows-mode .market-listing-tile {
+  padding: 3px 10px;
+  font-size: 11px;
+  line-height: 1.2;
+  min-height: 0;
+  gap: 8px;
+}
+body[data-market-mode="asset"] .market-bid-price strong,
+body[data-market-mode="asset"] .market-bid-cell strong,
+body[data-market-mode="asset"] .market-listing-unit strong,
+body[data-market-mode="asset"] .market-listing-amount,
+body[data-market-mode="asset"] .market-listing-vsmark strong {
+  font-size: 11px;
+  font-weight: 500;
+}
+/* Hide the activity panel + sweep-buy form clutter so the asset card
+   ends at the AMM ceremony footer per design.html. The activity tab
+   surfaces via the Listed/Activity tab toggle when the user clicks
+   in; default state is just the orderbook. */
+body[data-market-mode="asset"] .market-activity-panel {
+  max-width: 720px;
+  margin: 0 auto;
+}
 /* Constrain top nav + sub-nav + airdrop banner to the same 720px width
    so the whole page reads as one stacked card on cream — matches
    design.html's vertical flow. The zfi banner stays visually inside
