@@ -56864,7 +56864,19 @@ function applyMarketFilters() {
       if (refPoint && refPoint !== latest && refPoint.u > 0) {
         delta24Pct = ((latest.u - refPoint.u) / refPoint.u) * 100;
       }
-      const lastHtml = `<span class="strip-last" title="Latest unit price from the recent-trades ring">${fmtUnitPriceSats(latest.u)} sats/${escapeHtml(ticker)}</span>`;
+      // Crossed-book awareness. When best in-band bid > best in-band ask the
+      // page header swaps to "Price · mid"; the swap-tile strip has to follow
+      // or the user reads two different "current prices" on the same page
+      // (header mid + strip last_trade). On crossed books surface mid as the
+      // primary number with last-trade as muted context; otherwise stay with
+      // the latest unit price (mark and last typically agree on a healthy
+      // book). _effectiveReferenceUnit is the same helper the rest of the
+      // page uses, so all crossed-aware surfaces stay locked together.
+      const _stripRef = _effectiveReferenceUnit(safeAid, a);
+      const _stripCrossed = _stripRef?.crossed === true && Number.isFinite(_stripRef?.unit) && _stripRef.unit > 0;
+      const lastHtml = _stripCrossed
+        ? `<span class="strip-last" title="Book is crossed (best in-band bid > best in-band ask); midpoint of (best bid + best ask) / 2 is the realistic clearing reference. Last trade (${fmtUnitPriceSats(latest.u)} sats/${ticker}) is shown for context but is stale relative to live liquidity."><strong>${fmtUnitPriceSats(_stripRef.unit)} mid</strong> <span class="muted" style="font-size:9px;">· last ${fmtUnitPriceSats(latest.u)}</span></span>`
+        : `<span class="strip-last" title="Latest unit price from the recent-trades ring">${fmtUnitPriceSats(latest.u)} sats/${escapeHtml(ticker)}</span>`;
       // Recent-trade activity hint. Pulls the most recent trade timestamp
       // (worker last_trade.ts is authoritative; falls back to the latest
       // price_summary point) and counts trades in the past 24h. Gives a
@@ -62052,6 +62064,28 @@ async function populateMarketAssetStats(scope, asset) {
       if (_headerUnitHdr != null && btcUsd != null) {
         const _priceUsdHdr = fmtMarketUsdUnitFromSats(_headerUnitHdr, '');
         if (_priceUsdHdr) setHeader('price-usd', _priceUsdHdr);
+      }
+      // Refresh the sats price label from the fresh worker payload too.
+      // The synchronous render computed it from the cached `a`, which may
+      // be 5-60s stale on a busy book; without this resync the sats value
+      // can disagree with the price-usd we just wrote above (priceUsd is
+      // derived from _headerUnitHdr, so they must share a source).
+      if (_headerUnitHdr != null) {
+        const _priceSatsHdr = `${fmtMarketUnitSats(_headerUnitHdr)}/${a.ticker || 'token'}`;
+        const _priceSatsEl = headerCard.querySelector('[data-market-header="price-sats"]');
+        if (_priceSatsEl) _priceSatsEl.textContent = _priceSatsHdr;
+      }
+      // Refresh the multi-window Δ strip from the fresh worker payload so
+      // the header chips agree with the stats panel below (which already
+      // reads from `j`) and the swap-tile mini-strip (which reads from
+      // `a.price_24h_change_pct`, also kept in sync via _marketAssetStatsCache).
+      // The synchronous render rendered chips from cached `a` and could
+      // show -4.34% while the stats panel below shows -4.33% — same field,
+      // different snapshot. One source of truth now.
+      const _deltaStripEl = scope.querySelector('.market-asset-stats-delta');
+      if (_deltaStripEl) {
+        const _freshDeltaHtml = _renderDeltaStrip(j);
+        if (_freshDeltaHtml) _deltaStripEl.innerHTML = _freshDeltaHtml;
       }
     }
   }
