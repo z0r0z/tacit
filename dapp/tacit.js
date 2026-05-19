@@ -58317,32 +58317,15 @@ function applyMarketFilters() {
   // grid doesn't shift again, then transition opacity + scale and
   // remove on transitionend (with a setTimeout fallback in case the
   // event never fires — e.g. parent removed mid-animation).
-  if (_pendingTileReuse && _pendingTileReuse.size > 0 && _pendingTilePositions && document.body) {
-    for (const [key, orphan] of _pendingTileReuse) {
-      const oldRect = _pendingTilePositions.get(key);
-      if (!oldRect) { try { orphan.remove(); } catch {} continue; }
-      orphan.style.position = 'fixed';
-      orphan.style.left = `${oldRect.left}px`;
-      orphan.style.top = `${oldRect.top}px`;
-      orphan.style.width = `${oldRect.width}px`;
-      orphan.style.height = `${oldRect.height}px`;
-      orphan.style.margin = '0';
-      orphan.style.zIndex = '5';
-      orphan.style.pointerEvents = 'none';
-      orphan.style.transition = 'none';
-      orphan.style.transform = 'scale(1)';
-      orphan.style.opacity = '1';
-      document.body.appendChild(orphan);
-      void orphan.offsetHeight;
-      requestAnimationFrame(() => {
-        orphan.style.transition = 'opacity 220ms ease-out, transform 220ms ease-out';
-        orphan.style.opacity = '0';
-        orphan.style.transform = 'scale(0.92)';
-      });
-      let cleaned = false;
-      const cleanup = () => { if (cleaned) return; cleaned = true; try { orphan.remove(); } catch {} };
-      orphan.addEventListener('transitionend', cleanup, { once: true });
-      setTimeout(cleanup, 400);
+  // Removed: ask-tile vanish animation. Same bug as the bids side —
+  // pinning detached orphans to document.body at captured viewport
+  // coords caused phantom rows to flash at random screen positions
+  // when the user had scrolled, the asks grid had overflow, or
+  // multiple tiles cleared at once. innerHTML replacement above
+  // already removed them; just drop the references.
+  if (_pendingTileReuse && _pendingTileReuse.size > 0) {
+    for (const [, orphan] of _pendingTileReuse) {
+      try { orphan.remove(); } catch {}
     }
   }
   _pendingTileReuse = null;
@@ -64728,8 +64711,13 @@ async function populateMarketBidsLadder(scope, asset) {
     // visualize (≥ 2 fillable rows); single-row ladders look weird with
     // a 100% bar so we skip them.
     const _cumPct = bidCumPct[_bidIdx];
+    // Mirror the asks ladder: asks grow leftward (red gradient from left
+    // edge), bids grow rightward from the right edge per designer spec —
+    // standard pro orderbook orientation. Same magnitude / opacity for
+    // visual parity. Bars only render when there's meaningful depth (≥ 2
+    // fillable rows); single-row ladders skip them.
     const _depthStyle = (bidTotalDepth > 0 && _bidFillableCount >= 2 && _fillableAmts[_bidIdx] > 0)
-      ? `background:linear-gradient(to right, rgba(10, 143, 67, 0.16) ${_cumPct.toFixed(1)}%, transparent ${_cumPct.toFixed(1)}%);`
+      ? `background:linear-gradient(to left, rgba(10, 143, 67, 0.16) ${_cumPct.toFixed(1)}%, transparent ${_cumPct.toFixed(1)}%);`
       : '';
     const _baseCursor = _fillable ? 'cursor:pointer;' : '';
     const _styleAttr = (_depthStyle || _baseCursor) ? ` style="${_depthStyle}${_baseCursor}"` : '';
@@ -64915,36 +64903,19 @@ async function populateMarketBidsLadder(scope, asset) {
       });
     }
   }
-  // Vanish animation for bid rows that disappeared (bid claimed,
-  // cancelled, or expired). Pin orphan to its captured viewport rect
-  // and fade + slight shrink, mirroring the ask-tile vanish path.
-  if (_oldRows.size > 0 && document.body) {
-    for (const [id, orphan] of _oldRows) {
-      const oldRect = _oldRowPositions.get(id);
-      if (!oldRect) { try { orphan.remove(); } catch {} continue; }
-      orphan.style.position = 'fixed';
-      orphan.style.left = `${oldRect.left}px`;
-      orphan.style.top = `${oldRect.top}px`;
-      orphan.style.width = `${oldRect.width}px`;
-      orphan.style.height = `${oldRect.height}px`;
-      orphan.style.margin = '0';
-      orphan.style.zIndex = '5';
-      orphan.style.pointerEvents = 'none';
-      orphan.style.transition = 'none';
-      orphan.style.transform = 'scale(1)';
-      orphan.style.opacity = '1';
-      document.body.appendChild(orphan);
-      void orphan.offsetHeight;
-      requestAnimationFrame(() => {
-        orphan.style.transition = 'opacity 220ms ease-out, transform 220ms ease-out';
-        orphan.style.opacity = '0';
-        orphan.style.transform = 'scale(0.96)';
-      });
-      let cleaned = false;
-      const cleanup = () => { if (cleaned) return; cleaned = true; try { orphan.remove(); } catch {} };
-      orphan.addEventListener('transitionend', cleanup, { once: true });
-      setTimeout(cleanup, 400);
+  // Removed: bid-row vanish animation. Pinning detached orphans to
+  // document.body via position:fixed at their captured viewport rect
+  // caused "flashes of bid rows across the screen" when the user had
+  // scrolled, the bids panel had horizontal overflow, or multiple
+  // bids cleared in the same tick — the captured coords no longer
+  // matched the row's natural slot, so 220ms of phantom rows would
+  // render at random screen positions. innerHTML replacement above
+  // already removed them; just drop the references.
+  if (_oldRows.size > 0) {
+    for (const [, orphan] of _oldRows) {
+      try { orphan.remove(); } catch {}
     }
+    _oldRows.clear();
   }
   // Live-reactivity for bids: same diff annotation as asks but applied
   // post-render since these rows use innerHTML template strings rather
