@@ -56732,10 +56732,24 @@ function applyMarketFilters() {
         <span style="background:#f7931a;color:#fff;padding:0 4px;border-radius:2px;font-weight:600;font-size:9px;">Buy&nbsp;level</span> / <span style="background:#f7931a;color:#fff;padding:0 4px;border-radius:2px;font-weight:600;font-size:9px;">Buy&nbsp;chunks</span> = atomically fills several listings at once (one tx per listing, cheaper to monitor than running N separate Buys).
       </div>`
     : '';
+  // Asks-section header. Designer pass: one primary CTA (+List, when
+  // the user holds the asset) sits inline with the ASKS title; power-
+  // user chips (Mine filter, Simple/All toggle, row-actions toggle,
+  // ladder-view toggle, Sweep buy) collapse behind a `more ▾`
+  // disclosure so the header reads as one tight row at 50% column
+  // width without chip overflow. The disclosure stays open via the
+  // browser's <details> behaviour — no JS state to track.
+  const _advancedChips = `${mineAsksChip}${modeChip}${_rowActionsChip}${_ladderToggleChip}${_sweepBuyChip}`;
+  const _advancedChipsHtml = _advancedChips
+    ? `<details data-market-asks-more style="position:relative;">
+        <summary style="cursor:pointer;list-style:none;font-size:10px;padding:3px 10px;border:1px solid var(--ink-faint);color:var(--ink-mid);background:transparent;letter-spacing:0.04em;">more ▾</summary>
+        <div style="position:absolute;right:0;top:calc(100% + 4px);z-index:5;display:flex;flex-wrap:wrap;gap:6px;padding:8px;border:1px solid var(--ink);background:var(--bg-warm);box-shadow:2px 2px 0 var(--ink);min-width:240px;justify-content:flex-end;">${_advancedChips}</div>
+      </details>`
+    : '';
   const asksHeaderHtml = `<div data-market-sweep-buy-section data-aid="${escapeHtml(_marketView.assetId)}">
     <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:8px;">
-      <div style="font-size:11px;text-transform:uppercase;letter-spacing:0.08em;"><span class="market-live-dot" title="Live: order book refreshes every 15s while this tab is open"></span><strong title="${escapeHtml(_countTitle)}"><span style="color:#b8341d;font-size:9px;margin-right:4px;">●</span>ASKS <span class="muted" style="font-weight:400;font-size:10px;letter-spacing:0;">${rowsForGrid.length - _pendingCount}${_countSuffix}</span></strong>${_pendingPillHtml} <span class="muted" style="font-size:10px;text-transform:none;letter-spacing:0;">· ${sortLabel} · ${_marketRowActionsHidden ? `click any row or use ` : `use `}<button data-act="market-jump-to-swap" type="button" title="Jump to the Swap widget above. Swap auto-routes across the cheapest listings to fill your target amount in one go." style="background:none;border:none;color:inherit;padding:0;font:inherit;text-decoration:underline;text-decoration-style:dotted;cursor:pointer;">Swap</button> above for routed fills</span></div>
-      <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">${_listChip}${mineAsksChip}${modeChip}${_rowActionsChip}${_ladderToggleChip}${_sweepBuyChip}</div>
+      <div style="font-size:11px;text-transform:uppercase;letter-spacing:0.08em;"><span class="market-live-dot" title="Live: order book refreshes every 15s while this tab is open"></span><strong title="${escapeHtml(_countTitle)}"><span style="color:#b8341d;font-size:9px;margin-right:4px;">●</span>ASKS <span class="muted" style="font-weight:400;font-size:10px;letter-spacing:0;">${rowsForGrid.length - _pendingCount}${_countSuffix}</span></strong>${_pendingPillHtml}</div>
+      <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">${_listChip}${_advancedChipsHtml}</div>
     </div>${_rowTypesExplainerHtml}${_askFormSlot}
     <div data-market-sweep-form style="display:none;margin-bottom:10px;"></div>
   </div>`;
