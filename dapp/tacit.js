@@ -35194,32 +35194,54 @@ async function ceremonyContributeAmm({
   // owns the lifetime — release on success/error in the finally.
   await _ammClaimReservationWithQueue(circuitHash, contributorName, contributorPubkeyHex, (phase, info) => _emit(phase, info));
 
-  _emit('fetch-head', { cid: state.head_cid });
-  const headBytes = await _ceremonyFetchIpfsWithFailover(
-    state.head_cid,
-    (bytes) => {
-      if (bytes.length < 256) return `unexpectedly small (${bytes.length} bytes — likely error page)`;
-      if (bytes[0] !== 0x7a || bytes[1] !== 0x6b || bytes[2] !== 0x65 || bytes[3] !== 0x79) {
-        return `does not start with "zkey" magic bytes`;
-      }
-      return null;
-    },
-    (msg) => _emit('fetch-head-log', { msg }),
-    (done, total) => _emit('fetch-head-bytes', { done, total }),
-  );
+  // Pre-mix loop: fetch head + verify. If verify fails (a gateway
+  // served corrupted bytes that passed the magic-byte check but failed
+  // snarkjs's full chain verify), re-fetch and retry once with a fresh
+  // gateway round. The mix hasn't run yet — re-fetching is cheap
+  // compared to losing a full mix's worth of entropy work.
+  let mixed = null;
+  let mixAttempt = 0;
+  const VERIFY_RETRY_LIMIT = 2;
+  while (mixAttempt < VERIFY_RETRY_LIMIT && !mixed) {
+    mixAttempt++;
+    _emit('fetch-head', { cid: state.head_cid });
+    const headBytes = await _ceremonyFetchIpfsWithFailover(
+      state.head_cid,
+      (bytes) => {
+        if (bytes.length < 256) return `unexpectedly small (${bytes.length} bytes — likely error page)`;
+        if (bytes[0] !== 0x7a || bytes[1] !== 0x6b || bytes[2] !== 0x65 || bytes[3] !== 0x79) {
+          return `does not start with "zkey" magic bytes`;
+        }
+        return null;
+      },
+      (msg) => _emit('fetch-head-log', { msg }),
+      (done, total) => _emit('fetch-head-bytes', { done, total }),
+    );
 
-  _emitMem('pre-mix');
-  _emit('mix');
-  const entropyBytes = crypto.getRandomValues(new Uint8Array(32));
-  const entropy = Array.from(entropyBytes).map(b => b.toString(16).padStart(2, '0')).join('') +
-                  ':' + Date.now() + ':' + Math.random();
-  const mixed = await ceremonyContributeInBrowser(
-    headBytes,
-    String(contributorName || 'anonymous').slice(0, 64),
-    entropy,
-    state,
-    (phase, info) => _emit('mix-phase', { phase, info }),
-  );
+    _emitMem('pre-mix');
+    _emit('mix');
+    const entropyBytes = crypto.getRandomValues(new Uint8Array(32));
+    const entropy = Array.from(entropyBytes).map(b => b.toString(16).padStart(2, '0')).join('') +
+                    ':' + Date.now() + ':' + Math.random();
+    try {
+      mixed = await ceremonyContributeInBrowser(
+        headBytes,
+        String(contributorName || 'anonymous').slice(0, 64),
+        entropy,
+        state,
+        (phase, info) => _emit('mix-phase', { phase, info }),
+      );
+    } catch (e) {
+      const msg = String(e?.message || e || '');
+      const looksLikeVerifyFailure = /chain verify failed|Aborting before wasting/i.test(msg);
+      if (looksLikeVerifyFailure && mixAttempt < VERIFY_RETRY_LIMIT) {
+        _emit('fetch-head-log', { msg: '✗ verify failed — likely a corrupted gateway response. Re-fetching head from a fresh gateway…' });
+        continue;
+      }
+      throw e;
+    }
+  }
+  if (!mixed) throw new Error('mix never produced a result — internal error');
 
   _emitMem('post-mix');
   _emit('upload', { bytes: mixed.newZkey.length });
@@ -35963,9 +35985,21 @@ async function _submitAmmCeremonyContribution() {
         else if (phase === 'reserve-wait') {
           const pos = Number(info?.position || 0);
           const total = Number(info?.total || 0);
+          // Per-circuit average round-trip used for the ETA hint.
+          // swap_batch ~7 min, lp_remove ~50s, lp_add ~30s.
+          const perContribSec = /swap_batch|swap batch/i.test(target.label) ? 420
+                              : /lp_remove|lp remove/i.test(target.label)   ? 50
+                              : 30;
+          const waitSec = pos * perContribSec;
+          const waitMin = Math.ceil(waitSec / 60);
+          const etaLabel = pos > 0 ? ` · est. wait ~${waitMin} min` : '';
           const positionLabel = (pos > 0 && total > 0) ? ` · position ${pos} of ${total}` : '';
-          _setPhase('fetch', `Queued — ${escapeHtml(info?.heldName || 'someone')} is contributing${positionLabel}`, 'polling every 10s · pick a lighter circuit above to skip the wait');
-          _log(`  ⏳ Queued — ${info?.heldName || 'another contributor'} active for ${Math.round((info?.heldSec || 0) / 60)} min${positionLabel ? ` (you're ${positionLabel.trim()})` : ''}. Polling…`);
+          const heavyWait = waitMin >= 2 && /swap_batch|swap batch/i.test(target.label);
+          const subHint = heavyWait
+            ? 'click "pick" on lp_add above (~30s) to skip the wait · polling every 10s'
+            : 'pick a lighter circuit above to skip the wait · polling every 10s';
+          _setPhase('fetch', `Queued — ${escapeHtml(info?.heldName || 'someone')} is contributing${positionLabel}${etaLabel}`, subHint);
+          _log(`  ⏳ Queued — ${info?.heldName || 'another contributor'} active for ${Math.round((info?.heldSec || 0) / 60)} min${positionLabel ? ` (you're at${positionLabel.trim()})` : ''}${etaLabel}. Polling…`);
         }
         else if (phase === 'reserve-ok')      { _log('  ✓ Slot claimed — starting mix'); }
         else if (phase === 'reserve-timeout') { _log('  ⚠ Reservation poll timed out — proceeding at-risk (may hit CASRACE)'); }
