@@ -3741,6 +3741,41 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
    140ms is below the perceptible-jank threshold for most users while
    still long enough to be visible as "smooth update" rather than
    "instant slam." */
+/* Designer card mode — when the body has data-market-mode="asset" the
+   asset-detail content is constrained to a 720px-wide card centered on
+   the page, matching design.html's hero unit. The browse view stays
+   full-width so the grid of asset tiles can breathe. The card itself
+   uses a slightly warmer cream than the page bg + a 0.5px hairline. */
+body[data-market-mode="asset"] {
+  background: #E8E0CC;
+}
+body[data-market-mode="asset"] #market-list {
+  max-width: 720px;
+  margin: 0 auto;
+  background: #F2EBD4;
+  border: 0.5px solid rgba(26,26,26,0.15);
+  padding: 0;
+  font-family: 'IBM Plex Mono', ui-monospace, monospace;
+  font-size: 12px;
+  line-height: 1.45;
+  color: #1A1A1A;
+}
+body[data-market-mode="asset"] #market-list > .market-tile-skeleton,
+body[data-market-mode="asset"] .market-asset-grid {
+  display: none;
+}
+body[data-market-mode="asset"] [data-market-asset-header] {
+  margin: 0;
+}
+/* Pull the breadcrumb + asset-detail content tight to the card edges
+   instead of the wider default padding. */
+body[data-market-mode="asset"] #market-list > div:first-child,
+body[data-market-mode="asset"] [data-market-sweep-buy-section],
+body[data-market-mode="asset"] [data-market-bids-section] {
+  padding-left: 16px;
+  padding-right: 16px;
+}
+
 /* Animations removed (designer feedback: site flashes and glitches a
    lot, want rendering limited to the relevant boxes). The chart-fade-in
    replayed every auto-refresh tick that touched the SVG; the trades-tape

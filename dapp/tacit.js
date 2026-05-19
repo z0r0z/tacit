@@ -55432,6 +55432,7 @@ function marketViewScope() {
 }
 function goToMarketBrowse() {
   _marketView = 'browse';
+  try { document.body.removeAttribute('data-market-mode'); } catch {}
   // Reset asset-detail sub-tab so the next asset opened starts on
   // Listed (the trader-default) regardless of where the previous
   // asset visit left off. Auto-refresh-tick persistence stays
@@ -55499,6 +55500,7 @@ function goToMarketAsset(assetIdHex) {
   }
   const aid = String(assetIdHex).toLowerCase();
   _marketView = { mode: 'asset', assetId: aid };
+  try { document.body.setAttribute('data-market-mode', 'asset'); } catch {}
   _marketListingPage = 1;
   _applyMarketPrefsToControls('asset');
   _writeMarketHash(aid);
@@ -56061,6 +56063,7 @@ async function renderMarket() {
   if (pendingMarketFilter) {
     if (/^[0-9a-f]{64}$/.test(pendingMarketFilter)) {
       _marketView = { mode: 'asset', assetId: pendingMarketFilter };
+      try { document.body.setAttribute('data-market-mode', 'asset'); } catch {}
       _applyMarketPrefsToControls('asset');
     }
     pendingMarketFilter = null;
