@@ -1195,18 +1195,64 @@ tr[data-recent-activity] .market-token-sub::after {
   color: var(--bg);
 }
 .market-bids-table {
-  min-width: 860px;
+  /* Designer pass: compact 3-column layout matching the asks ladder.
+     Was 860px+ with 6 columns (price / qty / total / vs-mid / expiry /
+     action) — felt like a separate UI from asks. Now mirrors the
+     asks grid: price / qty / vs-mid, with total + expiry + action
+     hidden via the rules below (still in DOM for hover tooltips and
+     click-to-prime-swap data-fill-* on the row). */
+  min-width: 0;
   border: 1px solid var(--ink);
   background: var(--bg-warm);
 }
 .market-bids-row {
   display: grid;
-  grid-template-columns: minmax(160px, 1.2fr) minmax(110px, 0.9fr) minmax(150px, 1fr) minmax(120px, 0.9fr) minmax(90px, 0.7fr) minmax(100px, 0.7fr);
+  grid-template-columns: minmax(140px, 1.4fr) minmax(80px, 1fr) minmax(60px, 0.6fr);
   align-items: center;
-  gap: 12px;
-  padding: 10px 12px;
-  border-bottom: 1px solid var(--ink-faint);
+  gap: 10px;
+  padding: 5px 10px;
+  border-bottom: 0.5px solid rgba(26,26,26,0.08);
+  font-size: 11px;
+  line-height: 1.3;
+  position: relative;
 }
+/* Hide the Total / Expires / Action cells so the visible grid mirrors
+   asks (3 columns). Header cells are <span>s, data cells are <div>s —
+   covering both via nth-child positional selectors. The action button
+   is replaced by the row's click-to-prime-swap affordance (data-fill-*
+   stamped above); Cancel on your own bids stays accessible via the
+   "Your open orders" panel up above. */
+.market-bids-row > *:nth-child(3),
+.market-bids-row > *:nth-child(5),
+.market-bids-row > *:nth-child(6) {
+  display: none;
+}
+/* Compact price/cell typography — drop the multi-line subtitle stack
+   the original card layout used. Subtitles stay in the DOM for screen
+   readers / hover but visually collapse to a single tight row. */
+.market-bids-row .market-bid-price strong,
+.market-bids-row .market-bid-cell strong {
+  font-size: 11px;
+  font-weight: 500;
+  display: inline;
+  margin-right: 4px;
+}
+.market-bids-row .market-bid-price small,
+.market-bids-row .market-bid-cell small {
+  display: none;
+}
+/* "YOU" pill + level badges + TOP badge can stay inline. Keep small
+   margin so they don't crush the price text. */
+.market-bids-row .market-bid-price strong > span,
+.market-bids-row .market-bid-cell strong > span {
+  display: inline-block;
+}
+/* Best bid (top of ladder) green, others use the existing vs-mark
+   color from the vs-mid cell. Override the global orange-strong rule
+   below so price text doesn't read as the brand-orange-for-everything
+   it was before. */
+.market-bids-row .market-bid-price strong { color: var(--ink); }
+.market-bids-row .market-sats-price { color: var(--ink); font-weight: 500; }
 .market-bids-row:last-child { border-bottom: 0; }
 .market-bids-row-head {
   background: var(--ink);
