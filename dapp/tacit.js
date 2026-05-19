@@ -35077,6 +35077,62 @@ async function _ammPinataTusUpload(uploadUrl, bytes, filename, onProgress) {
 // shortest. contributorPubkeyHex is optional — when omitted, the upload
 // is pseudonymous (matches mixer pattern). Returns the worker's POST
 // response on success; throws on any pipeline failure.
+// Claim a soft reservation on this circuit's slot. If another
+// contributor holds it, poll the worker every 10s and surface the
+// hold info (who, how long, ETA) until it frees, then re-claim.
+// Cap waits at 15 min so a stuck holder's TTL (12 min) gets us
+// through; past that we proceed at-risk.
+async function _ammClaimReservationWithQueue(circuitHash, contributorName, contributorPubkeyHex, onPhase) {
+  const body = JSON.stringify({
+    contributor_name: String(contributorName || 'anonymous').slice(0, 64),
+    contributor_pubkey: contributorPubkeyHex && /^0[23][0-9a-f]{64}$/.test(contributorPubkeyHex.toLowerCase())
+      ? contributorPubkeyHex.toLowerCase() : null,
+  });
+  const url = `${WORKER_BASE}/ceremony/${circuitHash}/reserve`;
+  const start = Date.now();
+  const MAX_WAIT_MS = 15 * 60_000;
+  while (Date.now() - start < MAX_WAIT_MS) {
+    let resp;
+    try { resp = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body }); }
+    catch (e) {
+      try { onPhase?.('reserve-error', { msg: e?.message || String(e) }); } catch {}
+      return;
+    }
+    if (resp.ok) {
+      try { onPhase?.('reserve-ok'); } catch {}
+      return;
+    }
+    if (resp.status === 409) {
+      const j = await resp.json().catch(() => ({}));
+      const r = j.reservation || {};
+      const heldName = r.contributor_name || 'another contributor';
+      const heldSec  = Math.max(0, (Math.floor(Date.now() / 1000)) - (r.started_at || 0));
+      const etaSec   = Math.max(0, (r.expires_at || 0) - Math.floor(Date.now() / 1000));
+      try { onPhase?.('reserve-wait', { heldName, heldSec, etaSec }); } catch {}
+      await new Promise(r => setTimeout(r, 10_000));
+      continue;
+    }
+    try { onPhase?.('reserve-error', { msg: `HTTP ${resp.status}` }); } catch {}
+    return;
+  }
+  try { onPhase?.('reserve-timeout'); } catch {}
+}
+
+// Best-effort release; the worker also releases on successful contribute
+// and a 12-min TTL covers anything else.
+async function _ammReleaseReservation(circuitHash, contributorPubkeyHex) {
+  try {
+    await fetch(`${WORKER_BASE}/ceremony/${circuitHash}/reserve`, {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contributor_pubkey: contributorPubkeyHex && /^0[23][0-9a-f]{64}$/.test(contributorPubkeyHex.toLowerCase())
+          ? contributorPubkeyHex.toLowerCase() : null,
+      }),
+    });
+  } catch {}
+}
+
 async function ceremonyContributeAmm({
   circuitHash, contributorName = 'anonymous', contributorPubkeyHex = null, onProgress = null,
 }) {
@@ -35118,6 +35174,12 @@ async function ceremonyContributeAmm({
   if (state.finalized) throw new Error('ceremony has been finalized; chain is locked');
   _ammCeremonyStateByCircuit.set(circuitHash, state);
   _emitMem('start');
+  // Soft reservation: claim the slot so concurrent contributors queue
+  // behind us instead of racing through their own mix only to lose the
+  // CAS check at upload time. On 409, poll until the slot frees (or
+  // the holder's TTL expires), then re-claim. ceremonyContributeAmm
+  // owns the lifetime — release on success/error in the finally.
+  await _ammClaimReservationWithQueue(circuitHash, contributorName, contributorPubkeyHex, (phase, info) => _emit(phase, info));
 
   _emit('fetch-head', { cid: state.head_cid });
   const headBytes = await _ceremonyFetchIpfsWithFailover(
@@ -35836,6 +35898,14 @@ async function _submitAmmCeremonyContribution() {
       contributorPubkeyHex,
       onProgress: (phase, info) => {
         if (phase === 'refresh')       { _setPhase('fetch', `Preparing ${target.label}…`, 'refreshing chain state from worker'); _renderAmmCerDrawerBody({ currentKey: target.key, completedKeys: _ammCeremonyCompletedThisSession }); _log('  refreshing chain state…'); }
+        else if (phase === 'reserve-wait') {
+          const mins = Math.ceil((info?.etaSec || 0) / 60);
+          _setPhase('fetch', `Queued — ${escapeHtml(info?.heldName || 'someone')} is contributing`, `polling every 10s · slot frees in ~${mins} min or sooner`);
+          _log(`  ⏳ Queued — ${info?.heldName || 'another contributor'} started ${Math.round((info?.heldSec || 0) / 60)} min ago (slot frees in ~${mins} min). Polling…`);
+        }
+        else if (phase === 'reserve-ok')      { _log('  ✓ Slot claimed — starting mix'); }
+        else if (phase === 'reserve-timeout') { _log('  ⚠ Reservation poll timed out — proceeding at-risk (may hit CASRACE)'); }
+        else if (phase === 'reserve-error')   { _log(`  reservation skipped (${info?.msg || 'error'}) — proceeding`); }
         else if (phase === 'fetch-head') { _setPhase('fetch', `Downloading ${target.label} state`, 'large zkeys can take 1–3 min over IPFS'); _log(`  Step 1/3 · downloading current ceremony state from IPFS (large zkeys can take 1–3 min)…`); }
         else if (phase === 'fetch-head-log') _log('  ' + (info?.msg || ''));
         else if (phase === 'fetch-head-bytes' && info?.total) { _setBytesProgress('fetch', info.done || 0, info.total); _updateProgressLine('fetch', info.done || 0, info.total); }
@@ -35956,6 +36026,10 @@ async function _submitAmmCeremonyContribution() {
     goBtn.textContent = 'Contribute again';
     try { renderAmmCeremonyChip(); } catch {}
   } catch (e) {
+    // Free the reservation slot eagerly so the next contributor doesn't
+    // wait through the 12-min TTL. Best-effort; the worker auto-releases
+    // on success and TTL backstops cancellation/crash paths.
+    try { _ammReleaseReservation(target.hash, contributorPubkeyHex); } catch {}
     resultEl.style.display = 'block';
     resultEl.style.color = 'var(--red)';
     // Friendly + specific copy per failure mode. Generic e.message
@@ -35965,9 +36039,8 @@ async function _submitAmmCeremonyContribution() {
     // concrete next step.
     let msg;
     if (e?.code === 'CASRACE') {
-      msg = 'Another contributor landed first while your contribution was uploading. '
-          + 'Your entropy is wasted (the math binds to a prior chain state). '
-          + 'Click Contribute again — the next try downloads the new head and re-mixes.';
+      msg = 'Someone else\'s contribution landed just before yours — the ceremony advances one entry at a time, '
+          + 'so this round didn\'t take. Click Contribute again to mix against the new head.';
     } else if (e?.code === 'RATELIMIT') {
       msg = 'Worker rate-limited this IP for the day (500 contributions per day per IP). '
           + 'Wait until 00:00 UTC or try from a different network.';

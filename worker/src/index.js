@@ -5212,6 +5212,7 @@ function ceremonyAuthOk(req, env) {
 }
 
 function ceremonyKey(hash)              { return `ceremony:${hash}`; }
+function ceremonyReserveKey(hash)       { return `ceremony-reserve:${hash}`; }
 // Drain state lives in its OWN KV key, NOT inside the ceremony state
 // object. Storing drain_until in state.drain_until would create a
 // classic eventual-consistency race: drain reads state, sets the
@@ -5459,7 +5460,72 @@ async function handleCeremonyState(env, circuitHash, cors) {
   }
   const state = await env.REGISTRY_KV.get(ceremonyKey(circuitHash), 'json');
   if (!state) return jsonResponse({ error: 'ceremony not found' }, 404, cors);
-  return jsonResponse({ state }, 200, cors);
+  // Soft reservation: a contributor that wants the slot writes this
+  // key with TTL ~12 min. Surface it so peers can choose to queue
+  // instead of starting a parallel mix that will lose the CAS race.
+  const reserve = await env.REGISTRY_KV.get(ceremonyReserveKey(circuitHash), 'json');
+  return jsonResponse({ state, reservation: reserve || null }, 200, cors);
+}
+
+// POST /ceremony/<hash>/reserve — soft slot reservation. Sets a TTL'd
+// KV key that other contributors can read via GET /ceremony/<hash>
+// and queue against. Avoids the wasted-5-min-mix race on swap_batch.
+// Not a hard lock: an at-risk contributor can still skip the queue
+// and try anyway. Reservation auto-expires (~12 min) so a contributor
+// who crashes mid-mix doesn't block the chain forever.
+async function handleCeremonyReserve(req, env, circuitHash, cors) {
+  if (!/^[0-9a-f]{64}$/.test(circuitHash)) {
+    return jsonResponse({ error: 'invalid circuit_hash' }, 400, cors);
+  }
+  const state = await env.REGISTRY_KV.get(ceremonyKey(circuitHash), 'json');
+  if (!state) return jsonResponse({ error: 'ceremony chain not initialized' }, 404, cors);
+  if (state.finalized) return jsonResponse({ error: 'ceremony finalized; chain locked' }, 409, cors);
+  let body = {};
+  try { body = await req.json(); } catch {}
+  const contributorName = String(body?.contributor_name || 'anonymous').slice(0, 64);
+  let contributorPubkey = String(body?.contributor_pubkey || '').trim().toLowerCase();
+  if (!/^0[23][0-9a-f]{64}$/.test(contributorPubkey)) contributorPubkey = null;
+  const existing = await env.REGISTRY_KV.get(ceremonyReserveKey(circuitHash), 'json');
+  const now = Math.floor(Date.now() / 1000);
+  if (existing && (existing.expires_at || 0) > now) {
+    // Held by someone else (or our own previous reservation that we
+    // never released). If it's our own pubkey, re-issue. Otherwise
+    // return 409 with current reservation details so the client can
+    // queue intelligently.
+    if (existing.contributor_pubkey && contributorPubkey && existing.contributor_pubkey === contributorPubkey) {
+      return jsonResponse({ reservation: existing, reissued: true }, 200, cors);
+    }
+    return jsonResponse({ error: 'reservation held', reservation: existing }, 409, cors);
+  }
+  const TTL = 12 * 60;
+  const reservation = {
+    contributor_name: contributorName,
+    contributor_pubkey: contributorPubkey,
+    started_at: now,
+    expires_at: now + TTL,
+  };
+  await env.REGISTRY_KV.put(ceremonyReserveKey(circuitHash), JSON.stringify(reservation), { expirationTtl: TTL });
+  return jsonResponse({ reservation }, 200, cors);
+}
+
+// DELETE /ceremony/<hash>/reserve — release a reservation (e.g., user
+// cancels). Best-effort; the TTL handles forgotten releases. Pubkey-
+// gated so a peer can't free someone else's slot.
+async function handleCeremonyReserveRelease(req, env, circuitHash, cors) {
+  if (!/^[0-9a-f]{64}$/.test(circuitHash)) {
+    return jsonResponse({ error: 'invalid circuit_hash' }, 400, cors);
+  }
+  let body = {};
+  try { body = await req.json(); } catch {}
+  let contributorPubkey = String(body?.contributor_pubkey || '').trim().toLowerCase();
+  if (!/^0[23][0-9a-f]{64}$/.test(contributorPubkey)) contributorPubkey = null;
+  const existing = await env.REGISTRY_KV.get(ceremonyReserveKey(circuitHash), 'json');
+  if (!existing) return jsonResponse({ released: false, reason: 'no reservation' }, 200, cors);
+  if (existing.contributor_pubkey && contributorPubkey !== existing.contributor_pubkey) {
+    return jsonResponse({ released: false, reason: 'not your reservation' }, 403, cors);
+  }
+  await env.REGISTRY_KV.delete(ceremonyReserveKey(circuitHash));
+  return jsonResponse({ released: true }, 200, cors);
 }
 
 // POST /ceremony/<hash>/upload-token — mint a Pinata v3 presigned upload
@@ -5755,6 +5821,10 @@ async function handleCeremonyContribute(req, env, circuitHash, cors, ctx) {
   // a fresh response, not a 30s-stale cache miss-as-not-found. Uses
   // ctx.waitUntil so the cache.delete fanout doesn't block the response.
   await _invalidateCeremonyCache(ctx, circuitHash);
+  // Release the reservation now that the slot has been consumed, so
+  // the next queued contributor can claim it without waiting for the
+  // 12-min TTL to expire.
+  try { await env.REGISTRY_KV.delete(ceremonyReserveKey(circuitHash)); } catch {}
   return jsonResponse({ state: newState, contribution: rec }, 200, cors);
 }
 
@@ -21097,6 +21167,16 @@ async function _routeFetch(req, env, ctx) {
       // (bypassing the CF→Pinata leg that times out for large zkeys).
       const m = url.pathname.match(/^\/ceremony\/([0-9a-f]{64})\/upload-token$/i);
       if (m && req.method === 'POST') return handleCeremonyUploadToken(req, env, m[1].toLowerCase(), cors);
+    }
+    {
+      // POST/DELETE /ceremony/<hash>/reserve — soft slot reservation so
+      // peers can queue against in-flight mixes instead of racing.
+      const m = url.pathname.match(/^\/ceremony\/([0-9a-f]{64})\/reserve$/i);
+      if (m) {
+        const h = m[1].toLowerCase();
+        if (req.method === 'POST')   return handleCeremonyReserve(req, env, h, cors);
+        if (req.method === 'DELETE') return handleCeremonyReserveRelease(req, env, h, cors);
+      }
     }
     {
       const m = url.pathname.match(/^\/ceremony\/([0-9a-f]{64})\/attestations$/i);
