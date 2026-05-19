@@ -61734,11 +61734,34 @@ function renderMarketPriceChartSVG(trades, ticker, decimals, markUnit = null, op
 // the nearest point by x-distance and reveals the crosshair group with
 // tooltip showing price + age. Idempotent — re-binding the same host
 // is safe since we set a sentinel on the svg element.
+// Shared scroll-suppress for chart crosshairs. The per-chart phantom-
+// mousemove guard catches scroll-fired moves with identical clientX/Y,
+// but when the user scrolls *while* the mouse is moving (trackpad
+// two-finger scroll-and-glance is the common case) the clientX/Y
+// differs from the prior frame and the guard misses — the crosshair
+// then tracks whichever chart pixel is sliding under the cursor,
+// reading as a "glitch" as you scroll past the chart.
+// One global scroll listener stamps a timestamp; both chart cursor
+// handlers refuse to draw within 140ms of the last scroll tick. A
+// real mouse move after scroll quiets re-summons the crosshair.
+let _chartCursorScrollTs = 0;
+let _chartCursorScrollGuardInstalled = false;
+function _installChartCursorScrollGuard() {
+  if (_chartCursorScrollGuardInstalled || typeof window === 'undefined') return;
+  _chartCursorScrollGuardInstalled = true;
+  const bump = () => { _chartCursorScrollTs = Date.now(); };
+  window.addEventListener('scroll', bump, { passive: true, capture: true });
+  window.addEventListener('wheel', bump, { passive: true });
+  window.addEventListener('touchmove', bump, { passive: true });
+}
+const _chartCursorScrollActive = () => (Date.now() - _chartCursorScrollTs) < 140;
+
 function _wireMarketPriceChartCursor(host) {
   if (!host) return;
   const svg = host.querySelector('[data-chart-svg]');
   if (!svg || svg._cursorBound) return;
   svg._cursorBound = true;
+  _installChartCursorScrollGuard();
   let points = [];
   try { points = JSON.parse(svg.dataset.cursorPoints || '[]'); } catch { points = []; }
   if (!points.length) return;
@@ -61816,6 +61839,14 @@ function _wireMarketPriceChartCursor(host) {
   // and let a real mouse move re-show it.
   let _lastMoveX = null, _lastMoveY = null;
   overlay.addEventListener('mousemove', (ev) => {
+    // Suppress while the page is actively scrolling — see the global
+    // scroll guard above. Two-finger trackpad scrolls fire real
+    // mousemove events with shifting coords that the phantom-coord
+    // guard alone can't filter, so we gate on time-since-scroll.
+    if (_chartCursorScrollActive()) {
+      cross.style.display = 'none';
+      return;
+    }
     if (ev.clientX === _lastMoveX && ev.clientY === _lastMoveY) {
       cross.style.display = 'none';
       return;
@@ -63726,8 +63757,16 @@ function _wireDepthChartInteractivity(out, ctx) {
   // has moved — without the guard the cursor line jumps along X on
   // every scroll tick (the visible "glitch over charts"). See the
   // price-chart wire for the matching logic.
+  _installChartCursorScrollGuard();
   let _dLastMoveX = null, _dLastMoveY = null;
   overlay.addEventListener('mousemove', (e) => {
+    // See _wireMarketPriceChartCursor for the rationale; trackpad
+    // scroll-and-glance feeds real mousemoves through that the
+    // identical-coord guard can't filter out.
+    if (_chartCursorScrollActive()) {
+      cursor.style.display = 'none';
+      return;
+    }
     if (e.clientX === _dLastMoveX && e.clientY === _dLastMoveY) {
       cursor.style.display = 'none';
       return;
