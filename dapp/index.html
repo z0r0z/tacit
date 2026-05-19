@@ -79,7 +79,7 @@
      script-src 'self' covers all three.
      `?cb=` is auto-set by build/build.mjs to a sha256 prefix of tacit.js
      so iOS Safari's stale-modulepreload cache flushes on every change. -->
-<link rel="modulepreload" href="./tacit.js?cb=d1e2e06a">
+<link rel="modulepreload" href="./tacit.js?cb=f2294525">
 <link rel="modulepreload" href="./vendor/tacit-deps.min.js">
 <link rel="modulepreload" href="./prf-wallet.js">
 <style>
@@ -7787,7 +7787,7 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
     </div>
     <div class="section-body">
       <div class="muted" style="margin-bottom:14px;">
-        Constant-product AMM (x·y=k) over confidential tacit assets. Pool-side fee is a single bps knob (default 30 = 0.3%). Pool reserves are public; swap inputs + LP shares are amount-hidden via Pedersen + Bulletproof + a cross-curve sigma binding (secp256k1 ↔ BabyJubJub). LP shares per pool are deterministic from contributed reserves (Uniswap V2 mint formula). Swaps settle in one Bitcoin commit-reveal pair, no sequencer.
+        Constant-product AMM (x·y=k) over confidential tacit assets. Pool reserves are public so any indexer reconstructs state from chain alone; LP shares are amount-hidden via Pedersen + bulletproof. Two swap paths share these pools: <strong>T_SWAP_VAR</strong> for per-trade fills against the spot curve (cleartext amount, no Groth16, ships independent of the ceremony) and <strong>T_SWAP_BATCH</strong> for batched uniform-price settlement (hidden per-trader amounts via Groth16, MEV-resistant, ceremony-gated). Pool-side fee is a single bps knob (default 30 = 0.3%); LP shares mint by the Uniswap V2 formula. Every swap settles in one Bitcoin commit-reveal pair, no sequencer.
       </div>
     </div>
   </div>
@@ -8652,7 +8652,7 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
   </div>
 </div>
 
-<script type="module" src="./tacit.js?cb=d1e2e06a"></script>
+<script type="module" src="./tacit.js?cb=f2294525"></script>
 
 <!-- Service worker registration moved into tacit.js (the dapp's CSP forbids
      inline scripts; only 'self' module scripts are allowed). See sw.js for
