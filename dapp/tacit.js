@@ -3907,6 +3907,355 @@ function deriveAmountKeystreamSelf(myPriv, anchorBytes, voutIdx) {
   return hmac(sha256, myPriv, concatBytes(AMOUNT_SELF_DOMAIN, anchorBytes, voutLE)).slice(0, 8);
 }
 
+// ============================================================================
+// Blinded-pubkey commits (SPEC-BLINDED-PUBKEY-AMENDMENT §A — class-2 stealth)
+// ============================================================================
+//
+// Sender computes commit = recipientPub + b·G where b is HMAC-bound to
+// ECDH(senderInputPrivSum, recipientPub) + network_tag + domain + tx_anchor.
+// Recipient scans tx for outputs whose script is P2WPKH(commit) or P2TR(commit)
+// using the aggregated sender pubkey from §A.2.5-eligible inputs and the same
+// HMAC binding. The matching UTXO is spent with tweaked_sk = (sk + b) mod N —
+// same custody, different on-chain identity. Pedersen amount-commit channel
+// is orthogonal, so a stealth recipient is *doubly private* under our model.
+
+const STEALTH_HRP_BY_NETWORK = {
+  mainnet: 'tcs',
+  signet:  'tcsts',
+  regtest: 'tcsrt',
+};
+
+const DOMAIN_CXFER_STEALTH = new TextEncoder().encode('tacit-cxfer-stealth-v1');
+const DOMAIN_AXFER_STEALTH = new TextEncoder().encode('tacit-axfer-stealth-v1');
+const DOMAIN_AXFER_VAR_STEALTH = new TextEncoder().encode('tacit-axfer-var-stealth-v1');
+
+const STEALTH_DOMAIN_BY_OPCODE = new Map([
+  [0x22, DOMAIN_CXFER_STEALTH],     // T_CXFER_BPP
+  [0x23, DOMAIN_CXFER_STEALTH],     // T_CXFER
+  [0x26, DOMAIN_AXFER_STEALTH],     // T_AXFER
+  [0x37, DOMAIN_AXFER_VAR_STEALTH], // T_AXFER_VAR
+  [0x3C, DOMAIN_AXFER_STEALTH],     // T_AXFER_BPP
+  [0x3D, DOMAIN_AXFER_VAR_STEALTH], // T_AXFER_VAR_BPP
+]);
+
+// §A.2.5 rule 6 — prevouts whose vout[0] OP_RETURN carries one of these
+// opcodes are mixer-derived and MUST NOT contribute to P_sender.
+const MIXER_EMITTING_OPCODES = new Set([
+  0x2A,  // T_WITHDRAW
+  0x44,  // T_SLOT_BURN
+]);
+
+function _stealthNetworkTagByte(net) {
+  if (net === 'mainnet') return 0x00;
+  if (net === 'signet')  return 0x01;
+  if (net === 'regtest') return 0x02;
+  if (typeof net === 'number') return net & 0xff;
+  throw new Error(`unknown network: ${net}`);
+}
+
+// Hand-rolled bech32m (BIP-350). Vendor bundle ships bech32 only.
+const _BECH32M_ALPHABET = 'qpzry9x8gf2tvdw0s3jn54khce6mua7l';
+const _BECH32M_CONST = 0x2bc830a3;
+function _bech32mPolymod(values) {
+  const GEN = [0x3b6a57b2, 0x26508e6d, 0x1ea119fa, 0x3d4233dd, 0x2a1462b3];
+  let chk = 1;
+  for (const v of values) {
+    const top = chk >>> 25;
+    chk = ((chk & 0x1ffffff) << 5) ^ v;
+    for (let i = 0; i < 5; i++) if ((top >>> i) & 1) chk ^= GEN[i];
+  }
+  return chk;
+}
+function _bech32mExpandHrp(hrp) {
+  const r = [];
+  for (let i = 0; i < hrp.length; i++) r.push(hrp.charCodeAt(i) >>> 5);
+  r.push(0);
+  for (let i = 0; i < hrp.length; i++) r.push(hrp.charCodeAt(i) & 31);
+  return r;
+}
+function _bech32mChecksum(hrp, data) {
+  const v = _bech32mExpandHrp(hrp).concat(data).concat([0, 0, 0, 0, 0, 0]);
+  const pm = _bech32mPolymod(v) ^ _BECH32M_CONST;
+  const out = [];
+  for (let i = 0; i < 6; i++) out.push((pm >>> (5 * (5 - i))) & 31);
+  return out;
+}
+function _bech32mConvertBits(data, fromBits, toBits, pad) {
+  let acc = 0, bits = 0;
+  const ret = [];
+  const maxv = (1 << toBits) - 1;
+  for (const v of data) {
+    if (v < 0 || (v >>> fromBits) !== 0) throw new Error('convertBits: invalid input');
+    acc = (acc << fromBits) | v;
+    bits += fromBits;
+    while (bits >= toBits) { bits -= toBits; ret.push((acc >>> bits) & maxv); }
+  }
+  if (pad) {
+    if (bits > 0) ret.push((acc << (toBits - bits)) & maxv);
+  } else if (bits >= fromBits || ((acc << (toBits - bits)) & maxv)) {
+    throw new Error('convertBits: invalid padding');
+  }
+  return ret;
+}
+function _bech32mEncode(hrp, dataBytes) {
+  const d5 = _bech32mConvertBits(Array.from(dataBytes), 8, 5, true);
+  const cs = _bech32mChecksum(hrp, d5);
+  let out = hrp + '1';
+  for (const v of d5.concat(cs)) out += _BECH32M_ALPHABET[v];
+  return out;
+}
+function _bech32mDecode(addr) {
+  const lower = addr.toLowerCase();
+  const upper = addr.toUpperCase();
+  if (lower !== addr && upper !== addr) throw new Error('mixed case');
+  addr = lower;
+  const sep = addr.lastIndexOf('1');
+  if (sep < 1 || sep + 7 > addr.length) throw new Error('invalid separator position');
+  const hrp = addr.slice(0, sep);
+  const d5 = [];
+  for (let i = sep + 1; i < addr.length; i++) {
+    const idx = _BECH32M_ALPHABET.indexOf(addr[i]);
+    if (idx === -1) throw new Error(`invalid char ${addr[i]}`);
+    d5.push(idx);
+  }
+  if (_bech32mPolymod(_bech32mExpandHrp(hrp).concat(d5)) !== _BECH32M_CONST) {
+    throw new Error('checksum');
+  }
+  const payload5 = d5.slice(0, d5.length - 6);
+  return { hrp, payloadBytes: new Uint8Array(_bech32mConvertBits(payload5, 5, 8, false)) };
+}
+
+function encodeStealthAddress({ network, recipientPub, scanPub, spendPub }) {
+  const hrp = STEALTH_HRP_BY_NETWORK[network];
+  if (!hrp) throw new Error(`unknown network: ${network}`);
+  const version = 0x00;
+  let mode, payload;
+  if (recipientPub && !scanPub && !spendPub) {
+    if (!(recipientPub instanceof Uint8Array) || recipientPub.length !== 33) {
+      throw new Error('recipientPub must be 33-byte compressed');
+    }
+    mode = 0x00; payload = recipientPub;
+  } else if (scanPub && spendPub) {
+    if (scanPub.length !== 33 || spendPub.length !== 33) {
+      throw new Error('scan/spend pubkeys must be 33-byte compressed each');
+    }
+    mode = 0x01; payload = concatBytes(scanPub, spendPub);
+  } else {
+    throw new Error('provide either {recipientPub} or {scanPub, spendPub}');
+  }
+  return _bech32mEncode(hrp, concatBytes(new Uint8Array([version, mode]), payload));
+}
+
+function decodeStealthAddress(addr) {
+  const { hrp, payloadBytes } = _bech32mDecode(addr);
+  let network = null;
+  for (const [k, v] of Object.entries(STEALTH_HRP_BY_NETWORK)) if (hrp === v) network = k;
+  if (!network) throw new Error(`HRP ${hrp} is not a tacit stealth HRP`);
+  if (payloadBytes.length < 2) throw new Error('payload too short');
+  const version = payloadBytes[0], mode = payloadBytes[1];
+  if (version !== 0x00) throw new Error(`unsupported version ${version}`);
+  if (mode === 0x00) {
+    if (payloadBytes.length !== 2 + 33) throw new Error('single-mode payload must be 33 bytes');
+    const recipientPub = payloadBytes.slice(2, 35);
+    bytesToPoint(recipientPub);
+    return { network, mode: 'single', recipientPub };
+  } else if (mode === 0x01) {
+    if (payloadBytes.length !== 2 + 66) throw new Error('dual-mode payload must be 66 bytes');
+    const scanPub  = payloadBytes.slice(2, 35);
+    const spendPub = payloadBytes.slice(35, 68);
+    bytesToPoint(scanPub); bytesToPoint(spendPub);
+    return { network, mode: 'dual', scanPub, spendPub };
+  } else throw new Error(`unsupported mode ${mode}`);
+}
+
+// ECDH-derived blinding per §A.2 — NORMATIVE x-only point serialization.
+function deriveStealthEcdhBlinding({
+  ourPriv, theirPub, networkTag, domain, txAnchor,
+}) {
+  if (ourPriv.length !== 32) throw new Error('ourPriv must be 32 bytes');
+  if (theirPub.length !== 33) throw new Error('theirPub must be 33 bytes compressed');
+  const ourPrivBig = BigInt('0x' + bytesToHex(ourPriv));
+  const theirPt = secp.ProjectivePoint.fromHex(bytesToHex(theirPub));
+  const sharedPt = theirPt.multiply(ourPrivBig);
+  const sharedXonly = sharedPt.toRawBytes(true).slice(1);
+  const shared = sha256(sharedXonly);
+  const tag = new Uint8Array([_stealthNetworkTagByte(networkTag) & 0xff]);
+  const mac = hmac(sha256, shared, concatBytes(domain, tag, txAnchor));
+  const b = BigInt('0x' + bytesToHex(mac)) % SECP_N;
+  if (b === 0n) throw new Error('ECDH blinding derived zero (statistically impossible)');
+  return b;
+}
+
+function computeStealthCommit({ underlyingPub, blinding }) {
+  if (underlyingPub.length !== 33) throw new Error('underlyingPub must be 33 bytes compressed');
+  const Pt = secp.ProjectivePoint.fromHex(bytesToHex(underlyingPub));
+  const commitPt = Pt.add(G.multiply(blinding));
+  if (commitPt.equals(ZERO)) throw new Error('stealth commit equals point at infinity');
+  return commitPt.toRawBytes(true);
+}
+
+function computeStealthTweakedSk({ underlyingPriv, blinding }) {
+  if (underlyingPriv.length !== 32) throw new Error('underlyingPriv must be 32 bytes');
+  const d = BigInt('0x' + bytesToHex(underlyingPriv));
+  if (d <= 0n || d >= SECP_N) throw new Error('underlyingPriv scalar out of range');
+  const tweaked = (d + blinding) % SECP_N;
+  if (tweaked === 0n) throw new Error('tweaked secret derived zero (statistically impossible)');
+  let hex = tweaked.toString(16); while (hex.length < 64) hex = '0' + hex;
+  return hexToBytes(hex);
+}
+
+// Per-input descriptor for §A.2.5 aggregation.
+function classifyStealthInput({ witness, prevoutScript, prevoutOpReturn }) {
+  if (witness && witness.length === 2 && witness[1].length === 33 &&
+      prevoutScript && prevoutScript[0] === 0x00 && prevoutScript[1] === 0x14) {
+    return { kind: 'p2wpkh', pub: witness[1] };
+  }
+  if (witness && witness.length === 1 && (witness[0].length === 64 || witness[0].length === 65) &&
+      prevoutScript && prevoutScript[0] === 0x51 && prevoutScript[1] === 0x20) {
+    const xOnly = prevoutScript.slice(2, 34);
+    try {
+      const pub = concatBytes(new Uint8Array([0x02]), xOnly);
+      secp.ProjectivePoint.fromHex(bytesToHex(pub));
+      return { kind: 'p2tr-keypath', pub };
+    } catch { return { kind: 'unknown', pub: null }; }
+  }
+  if (prevoutScript && prevoutScript[0] === 0x00 && prevoutScript[1] === 0x20) {
+    return { kind: 'p2wsh', pub: null };
+  }
+  if (witness && witness.length >= 2 && prevoutScript &&
+      prevoutScript[0] === 0x51 && prevoutScript[1] === 0x20) {
+    return { kind: 'p2tr-scriptpath', pub: null };
+  }
+  if (prevoutOpReturn && MIXER_EMITTING_OPCODES.has(prevoutOpReturn)) {
+    return { kind: 'mixer-derived', pub: null };
+  }
+  return { kind: 'unknown', pub: null };
+}
+
+function isStealthEligibleKind(kind) {
+  return kind === 'p2wpkh' || kind === 'p2tr-keypath' || kind === 'tacit-envelope';
+}
+
+function aggregateStealthEligibleInputPubkeys(inputs) {
+  let acc = ZERO, count = 0;
+  for (const inp of inputs) {
+    if (!isStealthEligibleKind(inp.kind)) continue;
+    if (!inp.pub || inp.pub.length !== 33) continue;
+    const Pt = secp.ProjectivePoint.fromHex(bytesToHex(inp.pub));
+    acc = acc.add(Pt); count += 1;
+  }
+  if (count === 0 || acc.equals(ZERO)) return { aggregatePub: null, eligibleCount: 0 };
+  return { aggregatePub: acc.toRawBytes(true), eligibleCount: count };
+}
+
+// §A.2.5 rule 6 (audit 2.2). Caller supplies prevoutTx; we read vout[0]'s
+// OP_RETURN opcode byte and check against MIXER_EMITTING_OPCODES.
+function isMixerDerivedInput({ prevoutTx, prevoutVout }) {
+  if (!prevoutTx || !Array.isArray(prevoutTx.outputs) || prevoutTx.outputs.length === 0) return false;
+  const vout0 = prevoutTx.outputs[0];
+  if (!vout0?.script || vout0.script.length === 0) return false;
+  if (vout0.script[0] !== 0x6a) return false;
+  let opcodeIndex;
+  if (vout0.script.length >= 3 && vout0.script[1] < 0x4c) opcodeIndex = 2;
+  else if (vout0.script.length >= 4 && vout0.script[1] === 0x4c) opcodeIndex = 3;
+  else return false;
+  if (opcodeIndex >= vout0.script.length) return false;
+  return MIXER_EMITTING_OPCODES.has(vout0.script[opcodeIndex]);
+}
+
+// §F.7 NORMATIVE refusal rule (audit 2.1) — EVERY eligible input must be
+// wallet-owned. eachInputIsOurs() is supplied by the caller (validator
+// ledger lookup, or — in dapp single-signer context — a constant true).
+function checkStealthEmissionSafety({ inputs, eachInputIsOurs }) {
+  if (!Array.isArray(inputs) || inputs.length === 0) {
+    return { safe: false, reason: 'no inputs' };
+  }
+  const eligible = inputs.filter(inp => isStealthEligibleKind(inp.kind));
+  if (eligible.length === 0) return { safe: false, reason: 'no eligible inputs under §A.2.5' };
+  for (let i = 0; i < eligible.length; i++) {
+    if (!eachInputIsOurs(eligible[i])) {
+      return {
+        safe: false,
+        reason: `eligible input #${i} (${eligible[i].kind}) not wallet-owned — multi-owner stealth out of scope for v1`,
+      };
+    }
+  }
+  return { safe: true, reason: 'all eligible inputs wallet-owned' };
+}
+
+// Compose tx_anchor head per §C: vin[0].outpoint = txid_LE(32) || vout_LE(4).
+function stealthTxAnchorHead(vin0TxidHex, vin0Vout) {
+  const txidLE = reverseBytes(hexToBytes(vin0TxidHex));
+  const voutLE = new Uint8Array(4);
+  new DataView(voutLE.buffer).setUint32(0, vin0Vout >>> 0, true);
+  return concatBytes(txidLE, voutLE);
+}
+
+function _stealthU32le(n) {
+  const b = new Uint8Array(4);
+  new DataView(b.buffer).setUint32(0, n >>> 0, true);
+  return b;
+}
+
+// Sender: compute commit for a stealth payment at (vin[0], vout=v).
+function senderComputeStealthCommit({
+  senderEligibleInputPrivs, recipientPub, networkTag, domain, txAnchorHead, voutIndex,
+}) {
+  if (!Array.isArray(senderEligibleInputPrivs) || senderEligibleInputPrivs.length === 0) {
+    throw new Error('senderEligibleInputPrivs must be non-empty');
+  }
+  let sum = 0n;
+  for (const priv of senderEligibleInputPrivs) {
+    if (priv.length !== 32) throw new Error('priv must be 32 bytes');
+    const d = BigInt('0x' + bytesToHex(priv));
+    if (d <= 0n || d >= SECP_N) throw new Error('priv scalar out of range');
+    sum = (sum + d) % SECP_N;
+  }
+  if (sum === 0n) throw new Error('eligible priv sum is zero');
+  let hex = sum.toString(16); while (hex.length < 64) hex = '0' + hex;
+  const sumBytes = hexToBytes(hex);
+  const txAnchor = concatBytes(txAnchorHead, _stealthU32le(voutIndex));
+  const b = deriveStealthEcdhBlinding({
+    ourPriv: sumBytes, theirPub: recipientPub, networkTag, domain, txAnchor,
+  });
+  const commit = computeStealthCommit({ underlyingPub: recipientPub, blinding: b });
+  return { commit, blinding: b };
+}
+
+// Recipient: scan a tx for stealth-shaped outputs paying us.
+function recipientScanTxForStealth({
+  classifiedInputs, outputs, walletPriv, walletPub, networkTag, domain, txAnchorHead,
+}) {
+  const { aggregatePub } = aggregateStealthEligibleInputPubkeys(classifiedInputs);
+  if (!aggregatePub) return [];
+  const credits = [];
+  for (let v = 0; v < outputs.length; v++) {
+    const txAnchor = concatBytes(txAnchorHead, _stealthU32le(v));
+    let b;
+    try {
+      b = deriveStealthEcdhBlinding({
+        ourPriv: walletPriv, theirPub: aggregatePub, networkTag, domain, txAnchor,
+      });
+    } catch { continue; }
+    let commit;
+    try { commit = computeStealthCommit({ underlyingPub: walletPub, blinding: b }); }
+    catch { continue; }
+    const wpkh = p2wpkhScript(commit);
+    const tr = p2trScript(commit.slice(1));
+    const out = outputs[v].script;
+    let scriptKind = null;
+    if (out.length === wpkh.length && out.every((x, i) => x === wpkh[i])) scriptKind = 'p2wpkh';
+    else if (out.length === tr.length && out.every((x, i) => x === tr[i])) scriptKind = 'p2tr';
+    if (scriptKind) {
+      const tweakedSk = computeStealthTweakedSk({ underlyingPriv: walletPriv, blinding: b });
+      credits.push({
+        voutIndex: v, scriptKind, tweakedSk, commit, blinding: b, senderAggregatePub: aggregatePub,
+      });
+    }
+  }
+  return credits;
+}
+
 // 32-byte ECDH keystream used to encrypt the maker's recipient_blinding to the
 // claimant at atomic-intent fulfilment time. Symmetric: maker derives with
 // (maker.priv, taker.pub); taker derives with (taker.priv, maker.pub) — both
@@ -15206,6 +15555,43 @@ async function _scanHoldingsImpl() {
             } catch {}
           }
         }
+        // SPEC-BLINDED-PUBKEY §A.2 — class-2 stealth recipient detection.
+        // CXFER/CXFER_BPP only in v1. The amount channel already decrypted
+        // via the ECDH branch above (sender did ECDH against our underlying
+        // recipientPub, independent of the stealth commit). What's left is
+        // detecting that the on-chain script is P2WPKH(commit) rather than
+        // P2WPKH(walletPub), and persisting tweaked_sk so the wallet can
+        // spend the UTXO later with the matching pubkey.
+        let stealthTweakedSkHex = null;
+        if (recovered && (env.opcode === T_CXFER || env.opcode === T_CXFER_BPP)) {
+          const outScript = hexToBytes(tx.vout[u.vout]?.scriptpubkey || '');
+          const classical = p2wpkhScript(wallet.pub);
+          const isClassical = outScript.length === classical.length &&
+            outScript.every((x, i) => x === classical[i]);
+          if (!isClassical) {
+            try {
+              const classifiedInputs = tx.vin.map((vin) => {
+                const witness = (vin.witness || []).map(h => hexToBytes(h));
+                const prevoutScript = vin.prevout?.scriptpubkey
+                  ? hexToBytes(vin.prevout.scriptpubkey) : null;
+                return classifyStealthInput({ witness, prevoutScript });
+              });
+              const credits = recipientScanTxForStealth({
+                classifiedInputs,
+                outputs: tx.vout.map(o => ({ script: hexToBytes(o.scriptpubkey || '') })),
+                walletPriv: wallet.priv, walletPub: wallet.pub,
+                networkTag: currentNetworkName(),
+                domain: STEALTH_DOMAIN_BY_OPCODE.get(env.opcode),
+                txAnchorHead: stealthTxAnchorHead(tx.vin[1].txid, tx.vin[1].vout),
+              });
+              const hit = credits.find(c => c.voutIndex === u.vout);
+              if (hit) {
+                stealthTweakedSkHex = bytesToHex(hit.tweakedSk);
+                recoveryPath = 'stealth-cxfer';
+              }
+            } catch {}
+          }
+        }
         if (recovered) {
           // Persist for future scans (cheap)
           recordOpening(u.txid, u.vout, assetIdHex, recovered.amount, recovered.blinding);
@@ -15218,7 +15604,8 @@ async function _scanHoldingsImpl() {
           // distinct from us.
           h.utxos.push({
             utxo: u, amount: recovered.amount, blinding: recovered.blinding, commitment: onChainCommitment,
-            senderPubHex: recoveryPath === 'ecdh' ? senderPubHex : null,
+            senderPubHex: (recoveryPath === 'ecdh' || recoveryPath === 'stealth-cxfer') ? senderPubHex : null,
+            stealthTweakedSk: stealthTweakedSkHex,
             blockTime: u.status?.block_time || null,
           });
           continue;
@@ -23673,13 +24060,33 @@ async function buildAndBroadcastCXferMulti({ assetIdHex, recipients, forceUtxos 
   if (K > 7) throw new Error('max 7 recipients per CXFER (m=8 with 1 change output)');
 
   const parsed = recipients.map((r, i) => {
-    if (!r || typeof r.pubHex !== 'string') throw new Error(`recipients[${i}].pubHex required`);
+    if (!r) throw new Error(`recipients[${i}] missing`);
+    if (typeof r.stealthAddress === 'string' && r.stealthAddress.length > 0) {
+      const dec = decodeStealthAddress(r.stealthAddress);
+      const netName = currentNetworkName();
+      if (dec.network !== netName) {
+        throw new Error(`recipients[${i}].stealthAddress is for ${dec.network}, wallet is on ${netName}`);
+      }
+      if (dec.mode !== 'single') {
+        throw new Error(`recipients[${i}].stealthAddress dual-mode not supported in this revision`);
+      }
+      const amt = BigInt(r.amount);
+      if (amt < 0n || amt >= (1n << BigInt(N_BITS))) throw new Error(`recipients[${i}].amount out of range`);
+      return {
+        isStealth: true,
+        stealthRecipientPub: dec.recipientPub,
+        pub: dec.recipientPub,
+        pubHex: bytesToHex(dec.recipientPub),
+        amount: amt,
+      };
+    }
+    if (typeof r.pubHex !== 'string') throw new Error(`recipients[${i}].pubHex required`);
     const pubHex = r.pubHex.trim().toLowerCase().replace(/\s/g, '');
     if (!/^0[23][0-9a-f]{64}$/.test(pubHex)) throw new Error(`recipients[${i}].pubHex invalid format`);
     try { secp.ProjectivePoint.fromHex(pubHex); } catch { throw new Error(`recipients[${i}].pubHex not on curve`); }
     const amt = BigInt(r.amount);
     if (amt < 0n || amt >= (1n << BigInt(N_BITS))) throw new Error(`recipients[${i}].amount out of range`);
-    return { pubHex, pub: hexToBytes(pubHex), amount: amt };
+    return { isStealth: false, pubHex, pub: hexToBytes(pubHex), amount: amt };
   });
   const totalSendAmt = parsed.reduce((s, r) => s + r.amount, 0n);
   if (totalSendAmt <= 0n) throw new Error('total recipient amount must be > 0');
@@ -23800,11 +24207,58 @@ async function buildAndBroadcastCXferMulti({ assetIdHex, recipients, forceUtxos 
   const revealFee = feeFor(revealVb, feeRate);
 
   // Reveal tx outputs: m DUST P2WPKH (K to recipients, m-K to sender), then
-  // optional sats change.
+  // optional sats change. When parsed[i].isStealth, the recipient P2WPKH is
+  // computed over commit = recipientPub + b·G (§A.2 blinded-pubkey commit);
+  // the underlying recipientPub is still used by the amount-encryption channel
+  // (Pedersen blinding + keystream), so the recipient decrypts via ECDH as
+  // usual but the on-chain pubkey is unlinkable to their identity.
+  const hasStealth = parsed.some(r => r.isStealth);
+  let stealthCommitsByVout = null;
+  if (hasStealth) {
+    // assetSigner override signs asset inputs with a non-wallet priv. v1
+    // stealth integration assumes a single key controls every eligible
+    // input (so privSum = K_asset · signer.priv matches the recipient's
+    // aggregatePub = K_asset · signer.pub). Out of scope for this revision.
+    if (assetSigner) throw new Error('stealth recipient + assetSigner not supported in this revision');
+    // §F.7 (audit 2.1) sanity-net. The dapp single-signer builder by
+    // construction never co-signs foreign inputs — every asset UTXO came
+    // from scanHoldings (ours). Assert it so a future multi-signer
+    // regression fails closed.
+    const safety = checkStealthEmissionSafety({
+      inputs: pickedAssetUtxos.map(() => ({ kind: 'tacit-envelope', pub: wallet.pub, _ours: true })),
+      eachInputIsOurs: (inp) => inp._ours === true,
+    });
+    if (!safety.safe) throw new Error(`stealth emission unsafe: ${safety.reason}`);
+    const txAnchorHead = stealthTxAnchorHead(firstAssetIn.txid, firstAssetIn.vout);
+    const domain = STEALTH_DOMAIN_BY_OPCODE.get(useBpp ? T_CXFER_BPP : T_CXFER);
+    // §A.2 privSum = Σ priv_i over eligible inputs. Reveal-tx eligibles are
+    // the K_asset P2WPKH asset inputs (vin[0] is script-path P2TR →
+    // ineligible). All K_asset are signed with wallet.priv, so privSum =
+    // K_asset · wallet.priv. Pass K_asset copies so the scalar matches the
+    // recipient's aggregatePub from §A.2.5 (= K_asset · wallet.pub).
+    const eligiblePrivs = pickedAssetUtxos.map(() => wallet.priv);
+    stealthCommitsByVout = new Map();
+    for (let i = 0; i < K; i++) {
+      if (!parsed[i].isStealth) continue;
+      const { commit } = senderComputeStealthCommit({
+        senderEligibleInputPrivs: eligiblePrivs,
+        recipientPub: parsed[i].stealthRecipientPub,
+        networkTag: currentNetworkName(),
+        domain,
+        txAnchorHead,
+        voutIndex: i,
+      });
+      stealthCommitsByVout.set(i, commit);
+    }
+  }
   const senderP2wpkh = p2wpkhScript(wallet.pub);
   const revealPkScripts = [];
   for (let i = 0; i < K; i++) {
-    revealPkScripts.push(concatBytes(new Uint8Array([0x00, 0x14]), hash160(parsed[i].pub)));
+    if (parsed[i].isStealth) {
+      revealPkScripts.push(p2wpkhScript(stealthCommitsByVout.get(i)));
+    } else {
+      revealPkScripts.push(concatBytes(new Uint8Array([0x00, 0x14]), hash160(parsed[i].pub)));
+    }
   }
   for (let i = K; i < m; i++) revealPkScripts.push(senderP2wpkh);
 
@@ -23876,17 +24330,27 @@ async function buildAndBroadcastCXferMulti({ assetIdHex, recipients, forceUtxos 
       throw new Error('assetSigner.pub must be 33-byte compressed point');
     }
   }
+  // Per-input signing key selection. Default: wallet.priv (or assetSigner
+  // when overridden). For stealth-received UTXOs, the on-chain pubkey is
+  // commit = walletPub + b·G and the signing key is tweaked_sk = walletPriv
+  // + b mod N — both stashed on the UTXO record by scanHoldings.
+  const assetSigners = pickedAssetUtxos.map((x) => {
+    if (assetSigner) return { priv: assetSigner.priv, pub: assetSigner.pub };
+    if (x.stealthTweakedSk) {
+      const priv = hexToBytes(x.stealthTweakedSk);
+      const pub = secp.getPublicKey(priv, true);
+      return { priv, pub };
+    }
+    return { priv: wallet.priv, pub: wallet.pub };
+  });
   const prevouts = [
     { value: commitValue, script: p2trSpk },
-    ...pickedAssetUtxos.map(x => ({ value: x.utxo.value, script: p2wpkhScript(assetPrevoutPub) })),
+    ...pickedAssetUtxos.map((x, i) => ({ value: x.utxo.value, script: p2wpkhScript(assetSigners[i].pub) })),
   ];
   revealTx.inputs[0].witness = signTaprootScriptPathInput(revealTx, prevouts, envelopeScript, cb);
   for (let i = 1; i < revealTx.inputs.length; i++) {
-    if (assetSigner) {
-      revealTx.inputs[i].witness = signP2wpkhInputWithKey(revealTx, i, prevouts[i].value, assetSigner.priv, assetSigner.pub);
-    } else {
-      revealTx.inputs[i].witness = signP2wpkhInput(revealTx, i, prevouts[i].value);
-    }
+    const s = assetSigners[i - 1];
+    revealTx.inputs[i].witness = signP2wpkhInputWithKey(revealTx, i, prevouts[i].value, s.priv, s.pub);
   }
   const revealHex = bytesToHex(serializeTx(revealTx));
   const revealTxid = txid(revealTx);
@@ -55008,10 +55472,16 @@ function _assetListingsSignature(aid) {
     const lid = String(l._asset?.asset_id || l.asset_id || '');
     if (lid !== aid) continue;
     const id = l.sale_id || l.intent_id || l.listing_id || `${l.txid || ''}:${l.vout | 0}`;
-    // _takenPending flips trigger a redraw so the grey-out + struck-
-    // through styling appears on the next auto-refresh tick (not just
-    // when the buyer scrolls or clicks something).
-    parts.push(`${id}:${l.kind || ''}:${l.min_price_sats || l.price_sats || 0}:${l.expired ? 1 : 0}:${l.expiry || 0}:${l._takenPending ? 1 : 0}`);
+    // STRUCTURAL signature only — id, kind, expired flag, takenPending
+    // flag, expiry bucket (60s granularity so countdown ticks don't
+    // trip it). Price is intentionally OMITTED: live price ticks
+    // updated _marketCache.listings, but the orderbook structure
+    // (which rows exist) didn't change, so a full re-render flashes
+    // the page for no structural gain. Price-only updates are picked
+    // up on the NEXT structural tick — acceptable trade-off for a
+    // stable page that doesn't refresh every 15s.
+    const _expBucket = Math.floor(Number(l.expiry || 0) / 60);
+    parts.push(`${id}:${l.kind || ''}:${l.expired ? 1 : 0}:${_expBucket}:${l._takenPending ? 1 : 0}`);
   }
   parts.sort();
   return parts.join('|');
@@ -55032,7 +55502,14 @@ function _bidIntentsSignature(aid) {
   for (const b of bids) {
     if (b._isReserved) continue;
     if (Number(b.expiry || 0) > 0 && Number(b.expiry || 0) <= nowSec) continue;
-    parts.push(`${b.bid_id || ''}:${b.price_sats || 0}:${b.amount || '0'}:${b.expiry || 0}`);
+    // STRUCTURAL signature only — bid_id, expiry bucket. Price and
+    // amount intentionally omitted: a bid tick changes _bidCache
+    // values, but the orderbook structure (which bids exist) didn't
+    // change. The full re-render flashes the page; the price/amount
+    // refresh happens on the next structural tick. Same trade-off as
+    // _assetListingsSignature: stability over per-tick price accuracy.
+    const _expBucket = Math.floor(Number(b.expiry || 0) / 60);
+    parts.push(`${b.bid_id || ''}:${_expBucket}`);
   }
   parts.sort();
   return parts.join('|');
@@ -56863,11 +57340,17 @@ function applyMarketFilters() {
   // are inspection-only, click-to-prime-Swap), so the explainer would
   // be describing buttons the user can't see.
   const _bundleRowCount = rowsForGrid.reduce((n, l) => n + ((l._isLevel || l._isGroup) ? 1 : 0), 0);
-  const _rowTypesExplainerHtml = (_bundleRowCount > 0 && !_marketRowActionsHidden)
-    ? `<div style="font-size:10px;color:var(--ink-mid);background:var(--bg-warm,#faf9f5);border:1px dashed var(--ink-faint);padding:5px 9px;margin-bottom:8px;line-height:1.45;">
-        <strong style="color:var(--ink);">Each row is one fill.</strong>
-        <span style="background:var(--ink);color:var(--bg);padding:0 4px;border-radius:2px;font-weight:600;font-size:9px;">Buy</span> = one specific listing (atomic, one Bitcoin tx).
-        <span style="background:#f7931a;color:#fff;padding:0 4px;border-radius:2px;font-weight:600;font-size:9px;">Buy&nbsp;level</span> / <span style="background:#f7931a;color:#fff;padding:0 4px;border-radius:2px;font-weight:600;font-size:9px;">Buy&nbsp;chunks</span> = atomically fills several listings at once (one tx per listing, cheaper to monitor than running N separate Buys).
+  // Subtle one-line explainer with a ✕ dismiss control. Persists the
+  // dismissed state in localStorage so users who already understand
+  // the bundle-row affordance don't see the hint again. Only renders
+  // in Advanced mode (per-row Buy buttons visible) AND when the page
+  // actually has bundled rows that the hint is explaining.
+  let _explainerDismissed = false;
+  try { _explainerDismissed = localStorage.getItem('tacit-row-types-explainer-dismissed') === '1'; } catch {}
+  const _rowTypesExplainerHtml = (_bundleRowCount > 0 && !_marketRowActionsHidden && !_explainerDismissed)
+    ? `<div data-market-row-types-explainer style="font-size:10px;color:var(--ink-mid);padding:4px 18px 6px;line-height:1.4;display:flex;align-items:baseline;gap:8px;">
+        <span style="flex:1;min-width:0;">Bundled rows fill multiple listings in one click — one Bitcoin tx per listing.</span>
+        <button data-act="market-row-types-explainer-dismiss" type="button" title="Hide this hint" style="background:none;border:0;color:var(--ink-faint);padding:0 4px;font:inherit;cursor:pointer;text-transform:none;letter-spacing:0;font-size:11px;line-height:1;">×</button>
       </div>`
     : '';
   // Asks-section header: `+ list` is the always-visible primary chip.
@@ -57605,6 +58088,17 @@ function applyMarketFilters() {
       // to wipe it. Preserving the section keeps the form open AND
       // the user's typed values intact across reactivity ticks.
       'data-market-sweep-buy-section',
+      // Hero (token name, price, stats) — was rebuilt from scratch
+      // every tick, causing the visible "flash" the user reported.
+      // The hero's price + delta cells get hydrated in place by
+      // populateMarketAssetStats's setHeader path, so preservation
+      // is safe (data still freshens, the bordered card just
+      // doesn't pulse on every re-render).
+      'data-market-asset-header',
+      // Activity modal — keeps its hidden state + populated table
+      // across re-renders so a user reading the activity history
+      // doesn't get the modal yanked out from under them.
+      'data-mkt-activity-modal',
     ]) {
       const node = list.querySelector(`[${sel}]`);
       if (node && node.parentNode) {
@@ -57839,6 +58333,13 @@ function applyMarketFilters() {
     btn.onclick = () => {
       _marketAsksShowAll = !_marketAsksShowAll;
       applyMarketFilters();
+    };
+  });
+  list.querySelectorAll('[data-act="market-row-types-explainer-dismiss"]').forEach(btn => {
+    btn.onclick = () => {
+      try { localStorage.setItem('tacit-row-types-explainer-dismissed', '1'); } catch {}
+      const el = btn.closest('[data-market-row-types-explainer]');
+      if (el) el.remove();
     };
   });
   list.querySelectorAll('[data-act="market-ladder-toggle"]').forEach(btn => {
