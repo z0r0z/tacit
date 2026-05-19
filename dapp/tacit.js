@@ -62831,11 +62831,14 @@ function renderMarketBidsLadderHTML(asset) {
           <strong title="Signed buy offers. Bidder's sats stay in their own wallet until a matched seller claims (CoW / 0x-style maker model). Each bid supports partial fills — sellers can take any chunk between min_fill and the full amount in one Bitcoin tx, per SPEC §5.7.7."><span style="color:#0a7d3a;font-size:9px;margin-right:4px;">●</span>BIDS <span class="muted" style="font-weight:400;font-size:10px;letter-spacing:0;" data-market-bids-count>&mdash;</span></strong>
         </div>
         <div class="market-bids-actions">
+          <!-- Auto-fulfil stays visible: the ON/OFF label IS the state
+               indicator; tucking it inside "more ▾" would mean users
+               miss the warning that an active sell needs it enabled. -->
+          <button data-act="auto-fulfil-toggle" type="button" title="Automatically signs claim responses for atomic intents (asks AND bid fulfilments) while this tab is open. Required for sell-side swaps to settle without you babysitting.">Auto-fulfil: OFF</button>
           <button class="primary" data-act="market-bid-place" data-aid="${aid}" type="button" title="Post a bid for ${ticker} — signed buy offer at your price/amount/expiry. Sellers can match it any time before expiry; your sats stay in your wallet until they do." style="font-size:10px;padding:3px 10px;background:transparent;border:1px solid var(--ink);color:var(--ink);cursor:pointer;">+ Bid</button>
           <details data-market-bids-more style="position:relative;">
             <summary style="cursor:pointer;list-style:none;font-size:10px;padding:3px 10px;border:1px solid var(--ink-faint);color:var(--ink-mid);background:transparent;letter-spacing:0.04em;">more ▾</summary>
             <div style="position:absolute;right:0;top:calc(100% + 4px);z-index:5;display:flex;flex-direction:column;gap:6px;padding:8px;border:1px solid var(--ink);background:var(--bg-warm);box-shadow:2px 2px 0 var(--ink);min-width:200px;">
-              <button data-act="auto-fulfil-toggle" type="button" title="Automatically signs claim responses for atomic intents (asks AND bid fulfilments) while this tab is open. Required for sell-side swaps to settle without you babysitting.">Auto-fulfil: OFF</button>
               <button data-act="market-bids-toggle" type="button" aria-expanded="true" title="Collapse the bid ladder.">Hide bids</button>
               ${_sweepSellBtn}
             </div>
