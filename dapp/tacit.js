@@ -36548,7 +36548,7 @@ async function ceremonyContribute() {
         _ceremonyProgressIndeterminate(true);
       }
     };
-    const _mixed = await ceremonyContributeInBrowser(headBytes, contributorName, entropy, _ceremonyState, onPhase);
+    const _mixed = await ceremonyContributeInBrowser(headBytes, contributorName, entropy, _ceremonyState, onPhase, { expectedR1cs: TACIT_DEFAULT_CEREMONY_HASH, expectedPtau: TACIT_DEFAULT_PTAU_SHA256 });
     newZkey = _mixed.newZkey;
     contributionHash = _mixed.contributionHash;
     _ceremonyLogToProgress(`Contributed in ${((Date.now() - t0)/1000).toFixed(1)}s. Hash: ${contributionHash.slice(0, 32)}…`);
