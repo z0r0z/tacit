@@ -3698,6 +3698,19 @@ body.tacit-amm-ceremony-ready [data-amm-gated] { display: block; }
   pointer-events: none;
 }
 
+#tab-farms #farms-lock-banner { display: none; }
+body:not(.tacit-amm-ceremony-ready) #tab-farms #farms-lock-banner { display: block; }
+body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] {
+  opacity: 0.55;
+  filter: saturate(0.6);
+}
+body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .section-body button,
+body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .section-body input,
+body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .section-body select,
+body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .section-body textarea {
+  pointer-events: none;
+}
+
 /* AMM ceremony chip — subtle fixed-position growth-hack prompt that appears
    on Market / Holdings / Pool / asset-detail surfaces while the AMM Phase 2
    ceremony is running. renderAmmCeremonyChip() toggles display based on
@@ -6661,7 +6674,10 @@ body.tacit-amm-ceremony-ready [data-amm-gated] { display: block; }
 
 <!-- FARMS TAB — LP-bond yield farms (SPEC-AMM-FARM-AMENDMENT.md) -->
 <div class="tab-panel" id="tab-farms">
-  <div class="section">
+  <div id="farms-lock-banner" style="margin-bottom:14px;border:1px dashed var(--ink-faint);background:var(--bg-warm);color:var(--ink-mid);padding:10px 12px;font-size:12px;border-radius:4px;">
+    AMM trusted setup ceremony in progress. Farm bonding + harvest unlock once the canonical verifying key is published — farm metadata and your bonds are visible now, but stake/harvest/unbond actions activate when the ceremony attestation verifies.
+  </div>
+  <div class="section" data-farms-ceremony-gated="1">
     <div class="section-header"><span>farms</span></div>
     <div class="section-body">
       <p class="muted" style="margin-bottom:12px;">
@@ -6684,7 +6700,7 @@ body.tacit-amm-ceremony-ready [data-amm-gated] { display: block; }
     </div>
   </div>
 
-  <div class="section">
+  <div class="section" data-farms-ceremony-gated="1">
     <div class="section-header"><span>your bonds</span></div>
     <div class="section-body">
       <div id="farms-bonds-list" style="display:flex;flex-direction:column;gap:8px;"></div>
