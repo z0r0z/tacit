@@ -34143,14 +34143,16 @@ async function _ceremonyFetchIpfsWithFailover(cid, validate, onProgress, onBytes
   const _trackedGw = opts.trackedGw || null;
   const errors = [];
   // Per-gateway wallclock cap. AMM swap_batch genesis zkey is ~95 MB
-  // (lp_add 3 MB, lp_remove 6 MB, swap_batch 95 MB). 45s was sized for
-  // a 5 MB mixer-era zkey at 1 Mbps; at AMM swap_batch sizes the user
-  // would time out before download finished on anything under
-  // ~17 Mbps. 300s (5 min) fits 95 MB at ~2.5 Mbps with margin —
-  // enough that a typical home connection completes well within it
-  // and the failover only fires on truly dead gateways. Per-gateway
-  // (not total) so the outer failover can move on to the next.
-  const PER_GATEWAY_TIMEOUT_MS = 300_000;
+  // (lp_add 3 MB, lp_remove 6 MB, swap_batch 95 MB; ptau 302 MB). 45s
+  // was sized for a 5 MB mixer-era zkey at 1 Mbps; at AMM swap_batch
+  // sizes the user would time out before download finished on anything
+  // under ~17 Mbps. 600s (10 min) fits 302 MB ptau at ~4 Mbps and
+  // 95 MB swap_batch at ~1.3 Mbps with margin — covers most home
+  // connections. Per-gateway (not total) so the outer failover can
+  // move on to the next. Was 300s before; that timed out swap_batch
+  // contributors on sub-2.5 Mbps connections mid-download with no
+  // recoverable path.
+  const PER_GATEWAY_TIMEOUT_MS = 600_000;
   // Friendly gateway labels — shows e.g. "tacit cache" instead of the
   // raw "tacit-pin.rosscampbell9.workers.dev/ipfs/" URL in user-facing
   // progress logs. Falls back to a short host if the gateway isn't in
@@ -35219,6 +35221,31 @@ async function ceremonyContributeAmm({
   // owns the lifetime — release on success/error in the finally.
   await _ammClaimReservationWithQueue(circuitHash, contributorName, contributorPubkeyHex, (phase, info) => _emit(phase, info));
 
+  // Mid-mix keepalive. Worker's queue entry has a 15-min KV TTL and
+  // doesn't auto-refresh during mix (we're not polling reserve while
+  // snarkjs is busy). On weak phones a swap_batch mix can exceed 15 min;
+  // when the TTL expires, the next queue waiter promotes to head and both
+  // contributors race to upload — one wins CAS, the other sees CASRACE.
+  // Re-POSTing /reserve with our token is treated like a normal poll by
+  // the worker (handleCeremonyReserve) and resets last_poll_at + extends
+  // the TTL. 4-min cadence keeps us safely under the 15-min ceiling with
+  // room for one missed poll. Soft-fails — a single missed keepalive is
+  // recovered by the next tick.
+  const _keepalivePayload = {
+    contributor_name: String(contributorName || 'anonymous').slice(0, 64),
+    contributor_pubkey: contributorPubkeyHex && /^0[23][0-9a-f]{64}$/.test(contributorPubkeyHex.toLowerCase())
+      ? contributorPubkeyHex.toLowerCase() : null,
+  };
+  const _keepaliveTimer = setInterval(() => {
+    if (!_ammQueueToken) return;
+    fetch(`${WORKER_BASE}/ceremony/${circuitHash}/reserve`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ..._keepalivePayload, queue_token: _ammQueueToken }),
+    }).catch(() => {});
+  }, 4 * 60_000);
+
+  try {
   // Pre-mix loop: fetch head + verify. If verify fails (a gateway
   // served corrupted bytes that passed the magic-byte check but failed
   // snarkjs's full chain verify), re-fetch from a DIFFERENT gateway
@@ -35482,6 +35509,9 @@ async function ceremonyContributeAmm({
   } catch {}
   _emit('done', { state: result.state, contribution: result.contribution });
   return result;
+  } finally {
+    clearInterval(_keepaliveTimer);
+  }
 }
 
 // AMM ceremony chip — ambient prompt on Market / Holdings / Pool / asset-
