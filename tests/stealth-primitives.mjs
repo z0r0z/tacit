@@ -225,18 +225,21 @@ export function deriveSelfBlinding({ walletPriv, networkTag, domain, anchor }) {
 }
 
 // ECDH-derived variant (§A.2 variant 2).
-// shared = senderPriv · P_recipient = recipientPriv · P_sender
+// sharedPt = senderPriv · P_recipient = recipientPriv · P_sender
+// shared   = SHA256(x_only(sharedPt))    // NORMATIVE per §A.2 — x-only,
+//                                          matches existing dapp ECDH stack
 // blinding = HMAC(shared, domain || network_tag || tx_anchor) mod SECP_N
 export function deriveEcdhBlinding({ ourPriv, theirPub, networkTag, domain, txAnchor }) {
   if (ourPriv.length !== 32) throw new Error('ourPriv must be 32 bytes');
   if (theirPub.length !== 33) throw new Error('theirPub must be 33 bytes compressed');
   const ourPrivBig = BigInt('0x' + bytesToHex(ourPriv));
   const theirPt = secp.ProjectivePoint.fromHex(bytesToHex(theirPub));
-  // ECDH shared secret = SHA256 of compressed serialization of (ourPriv · theirPub).
-  // This matches BIP-352's hash-of-ECDH-point pattern; gives uniform-random
-  // 32-byte secret suitable for HMAC keying.
   const sharedPt = theirPt.multiply(ourPrivBig);
-  const shared = sha256(sharedPt.toRawBytes(true));
+  // x-only serialization (32 bytes, parity byte stripped) — NORMATIVE per
+  // §A.2. Matches dapp/tacit.js amount-keystream derivation so a single
+  // ECDH point drives both keystreams via domain separation.
+  const sharedXonly = sharedPt.toRawBytes(true).slice(1);
+  const shared = sha256(sharedXonly);
   const tagByte = typeof networkTag === 'number'
     ? new Uint8Array([networkTag & 0xff])
     : new Uint8Array([networkTagByte(networkTag) & 0xff]);
@@ -336,6 +339,91 @@ export function isEligibleKind(kind) {
   //   5. P2TR script-path (non-keypath) ✗ excluded
   //   6. mixer-pool consumed           ✗ excluded
   return kind === 'p2wpkh' || kind === 'p2tr-keypath' || kind === 'tacit-envelope';
+}
+
+// §A.2.5 rule 6 NORMATIVE classifier (audit 2.2): an input is
+// mixer-derived iff its prevout was emitted as the recipient marker
+// UTXO of a confirmed mixer-emitting envelope (T_WITHDRAW, T_SLOT_BURN,
+// and future additions per their class-1 amendments). Sender and
+// recipient classify identically from chain data alone.
+//
+//   prevoutTx: the source tx of the input being classified (the tx
+//     whose output the current tx is spending). Caller fetches it
+//     from chain or local store.
+//   prevoutVout: which output of prevoutTx is being spent.
+//
+// Returns true iff this input should be excluded from §A.2.5 aggregation.
+//
+// Implementation: parses the tacit envelope at prevoutTx's OP_RETURN
+// (vout[0] per tacit convention) and checks the opcode byte.
+export const MIXER_EMITTING_OPCODES = new Set([
+  0x2A,  // T_WITHDRAW
+  0x44,  // T_SLOT_BURN
+  // Future class-1 amendments add entries here.
+]);
+
+export function isMixerDerivedInput({ prevoutTx, prevoutVout }) {
+  if (!prevoutTx || !Array.isArray(prevoutTx.outputs) || prevoutTx.outputs.length === 0) {
+    return false;
+  }
+  // The envelope opcode for tacit txs lives in the OP_RETURN at vout[0]
+  // (per SPEC.md §5.5). Locate it.
+  const vout0 = prevoutTx.outputs[0];
+  if (!vout0 || !vout0.script || vout0.script.length === 0) return false;
+  // OP_RETURN scripts start with 0x6a (OP_RETURN); the payload follows
+  // as a single push. Locate the push and read its first byte = opcode.
+  const script = vout0.script;
+  if (script[0] !== 0x6a) return false;  // not OP_RETURN
+  // Standard tacit envelope: OP_RETURN <push-length> <opcode> <...payload>
+  // Push length is at script[1]; for <76 bytes, it's a direct byte length.
+  // For larger, OP_PUSHDATA1 (0x4c) etc. — tacit envelopes typically fit
+  // in the direct-length range for the opcode byte access.
+  let opcodeIndex;
+  if (script.length >= 3 && script[1] < 0x4c) opcodeIndex = 2;
+  else if (script.length >= 4 && script[1] === 0x4c) opcodeIndex = 3;
+  else return false;  // unrecognized push form
+  if (opcodeIndex >= script.length) return false;
+  const opcode = script[opcodeIndex];
+  if (!MIXER_EMITTING_OPCODES.has(opcode)) return false;
+  // Additional check: only the recipient marker outputs are mixer-derived.
+  // For T_WITHDRAW per SPEC.md §5.11, the recipient marker is vout[0]'s
+  // OP_RETURN-companion; for v1 we conservatively classify ALL outputs
+  // of a mixer-emitting tx as mixer-derived, since the dust outputs at
+  // any vout are protocol-emitted under the withdrawer's chosen recipient.
+  // Future amendments may tighten this per opcode.
+  return true;
+}
+
+// §F.7 NORMATIVE refusal rule (audit 2.1): an emitter MUST verify
+// every eligible input is wallet-owned BEFORE emitting a class-2
+// stealth output. Returns true iff emission is safe.
+//
+//   inputs: array of input descriptors per aggregateEligibleInputPubkeys
+//   eachInputIsOurs(inp): predicate the caller supplies — returns true
+//     iff that input is owned by the emitting wallet. Caller-side logic
+//     because input ownership is wallet-state-dependent.
+//
+// Returns:
+//   { safe: true,  reason: 'all eligible inputs wallet-owned' }
+//   { safe: false, reason: '<diagnostic>' }
+export function checkStealthEmissionSafety({ inputs, eachInputIsOurs }) {
+  if (!Array.isArray(inputs) || inputs.length === 0) {
+    return { safe: false, reason: 'no inputs' };
+  }
+  const eligible = inputs.filter(inp => isEligibleKind(inp.kind));
+  if (eligible.length === 0) {
+    return { safe: false, reason: 'no eligible inputs under §A.2.5' };
+  }
+  for (let i = 0; i < eligible.length; i++) {
+    const inp = eligible[i];
+    if (!eachInputIsOurs(inp)) {
+      return {
+        safe: false,
+        reason: `eligible input #${i} (${inp.kind}) not wallet-owned — multi-owner stealth out of scope for v1`,
+      };
+    }
+  }
+  return { safe: true, reason: 'all eligible inputs wallet-owned' };
 }
 
 // =============================================================================

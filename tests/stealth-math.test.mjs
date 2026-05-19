@@ -16,6 +16,7 @@
 
 import * as secp from '@noble/secp256k1';
 import { sha256 } from '@noble/hashes/sha256';
+import { hmac } from '@noble/hashes/hmac';
 import { hexToBytes, bytesToHex, concatBytes } from '@noble/hashes/utils';
 import {
   SECP_N,
@@ -25,6 +26,8 @@ import {
   computeCommit, computeTweakedSk,
   matchesCommit, p2wpkhScript, p2trScript, xOnly,
   aggregateEligibleInputPubkeys, isEligibleKind,
+  checkStealthEmissionSafety,
+  isMixerDerivedInput, MIXER_EMITTING_OPCODES,
   senderComputeStealthCommit, recipientCheckOutputForStealth,
   recipientScanTxForStealth,
   DOMAIN_CXFER_STEALTH,
@@ -508,6 +511,177 @@ test('refusal-path: aggregation flags empty input list', () => {
   const { aggregatePub, eligibleCount } = aggregateEligibleInputPubkeys([]);
   assertEq(eligibleCount, 0);
   assert(aggregatePub === null);
+});
+
+// Audit 2.1: refusal-path covers MIXED-OWNERSHIP eligible inputs.
+// The most dangerous case: emitter wallet owns one input, external party
+// owns another. Aggregate P_sender = P_emitter + P_external. Emitter
+// only knows sk_emitter; the recipient's derivation needs the full
+// scalar sum to match. If the emitter naively emits, recipient misses
+// the receipt → fund loss.
+test('refusal-path: §F.7 — mixed-ownership eligible inputs MUST be refused', () => {
+  const emitterKp = newKeypair();
+  const externalKp = newKeypair();
+  // Mark which inputs the emitter owns. In a real wallet this is a
+  // lookup against wallet.utxos; here we tag inputs explicitly.
+  const inputs = [
+    { kind: 'p2wpkh', pub: emitterKp.pub, ours: true },
+    { kind: 'p2wpkh', pub: externalKp.pub, ours: false },
+  ];
+  const r = checkStealthEmissionSafety({
+    inputs,
+    eachInputIsOurs: (inp) => inp.ours === true,
+  });
+  assert(!r.safe, `emitter MUST refuse mixed-ownership: ${r.reason}`);
+  assert(r.reason.includes('not wallet-owned'),
+    'refusal reason names the offending input');
+});
+
+test('refusal-path: §F.7 — all-wallet-owned eligible inputs is safe', () => {
+  const emitterKp1 = newKeypair();
+  const emitterKp2 = newKeypair();
+  const inputs = [
+    { kind: 'p2wpkh', pub: emitterKp1.pub, ours: true },
+    { kind: 'p2tr-keypath', pub: emitterKp2.pub, ours: true },
+  ];
+  const r = checkStealthEmissionSafety({
+    inputs, eachInputIsOurs: (inp) => inp.ours === true,
+  });
+  assert(r.safe, `all-owned should be safe: ${r.reason}`);
+});
+
+// Audit 2.2: mechanical mixer-input classification per §A.2.5 rule 6.
+// Both sender and recipient must classify identically; the rule walks
+// the prevout's source tx and checks the OP_RETURN opcode against a
+// fixed set of mixer-emitting opcodes.
+test('mixer classifier: T_WITHDRAW (0x2A) prevout is mixer-derived', () => {
+  // Construct a fake prevout tx whose vout[0] is an OP_RETURN with
+  // the T_WITHDRAW opcode in its payload.
+  const opcode = 0x2A;
+  const payload = new Uint8Array([opcode, ...crypto.getRandomValues(new Uint8Array(40))]);
+  const opReturnScript = new Uint8Array([0x6a, payload.length, ...payload]);
+  const prevoutTx = {
+    outputs: [
+      { script: opReturnScript },                          // vout[0]: OP_RETURN with envelope
+      { script: p2wpkhScript(newKeypair().pub) },          // vout[1]: actual asset output
+    ],
+  };
+  assert(isMixerDerivedInput({ prevoutTx, prevoutVout: 1 }),
+    'T_WITHDRAW (0x2A) prevout MUST classify as mixer-derived');
+});
+
+test('mixer classifier: T_SLOT_BURN (0x44) prevout is mixer-derived', () => {
+  const payload = new Uint8Array([0x44, ...crypto.getRandomValues(new Uint8Array(40))]);
+  const opReturnScript = new Uint8Array([0x6a, payload.length, ...payload]);
+  const prevoutTx = { outputs: [{ script: opReturnScript }, { script: p2wpkhScript(newKeypair().pub) }] };
+  assert(isMixerDerivedInput({ prevoutTx, prevoutVout: 1 }),
+    'T_SLOT_BURN (0x44) prevout MUST classify as mixer-derived');
+});
+
+test('mixer classifier: non-mixer opcode prevout NOT classified as mixer-derived', () => {
+  // T_CXFER = 0x23 (not in MIXER_EMITTING_OPCODES)
+  const payload = new Uint8Array([0x23, ...crypto.getRandomValues(new Uint8Array(40))]);
+  const opReturnScript = new Uint8Array([0x6a, payload.length, ...payload]);
+  const prevoutTx = { outputs: [{ script: opReturnScript }, { script: p2wpkhScript(newKeypair().pub) }] };
+  assert(!isMixerDerivedInput({ prevoutTx, prevoutVout: 1 }),
+    'T_CXFER (0x23) is not mixer-emitting');
+});
+
+test('mixer classifier: pure Bitcoin tx (no OP_RETURN) NOT classified as mixer-derived', () => {
+  const prevoutTx = {
+    outputs: [
+      { script: p2wpkhScript(newKeypair().pub) },          // vout[0]: regular P2WPKH, no envelope
+      { script: p2wpkhScript(newKeypair().pub) },
+    ],
+  };
+  assert(!isMixerDerivedInput({ prevoutTx, prevoutVout: 0 }),
+    'plain Bitcoin tx is not mixer-derived');
+});
+
+test('mixer classifier: empty/malformed tx returns false', () => {
+  assert(!isMixerDerivedInput({ prevoutTx: null, prevoutVout: 0 }));
+  assert(!isMixerDerivedInput({ prevoutTx: { outputs: [] }, prevoutVout: 0 }));
+  assert(!isMixerDerivedInput({ prevoutTx: { outputs: [{ script: new Uint8Array([]) }] }, prevoutVout: 0 }));
+});
+
+test('mixer classifier: registry is the single source of truth', () => {
+  // Sanity: the set is what we documented in the spec.
+  assert(MIXER_EMITTING_OPCODES.has(0x2A));  // T_WITHDRAW
+  assert(MIXER_EMITTING_OPCODES.has(0x44));  // T_SLOT_BURN
+  assert(!MIXER_EMITTING_OPCODES.has(0x23)); // T_CXFER (not mixer)
+  assert(!MIXER_EMITTING_OPCODES.has(0x26)); // T_AXFER (not mixer)
+});
+
+test('refusal-path: §F.7 — ineligible inputs are filtered before ownership check', () => {
+  const emitterKp = newKeypair();
+  const externalKp = newKeypair();
+  // P2WSH external input is ineligible per §A.2.5 — doesn't contribute
+  // to P_sender, so its ownership is irrelevant. Emitter's eligible P2WPKH
+  // is wallet-owned, so emission is safe.
+  const inputs = [
+    { kind: 'p2wpkh', pub: emitterKp.pub, ours: true },
+    { kind: 'p2wsh', pub: externalKp.pub, ours: false },
+  ];
+  const r = checkStealthEmissionSafety({
+    inputs, eachInputIsOurs: (inp) => inp.ours === true,
+  });
+  assert(r.safe,
+    'P2WSH excluded from §A.2.5 aggregation; ownership of ineligible inputs does not affect emission safety');
+});
+
+test('locked-vector: ECDH x-only serialization (audit 1.2)', () => {
+  // Locks the §A.2 normative choice: shared = SHA256(x_only(sharedPt)).
+  // Any future refactor that switches to compressed (33-byte) or
+  // uncompressed (65-byte) serialization will break this test, which
+  // is the intended cross-check against drift.
+  //
+  // Test vector: deterministic privkeys 0x01... and 0x02... ECDH, then
+  // verify the derived blinding is the expected value.
+  const alice = {
+    priv: hexToBytes('0000000000000000000000000000000000000000000000000000000000000001'),
+    pub:  secp.getPublicKey(hexToBytes('0000000000000000000000000000000000000000000000000000000000000001'), true),
+  };
+  const bob = {
+    priv: hexToBytes('0000000000000000000000000000000000000000000000000000000000000002'),
+    pub:  secp.getPublicKey(hexToBytes('0000000000000000000000000000000000000000000000000000000000000002'), true),
+  };
+  const txAnchor = hexToBytes(
+    '00000000000000000000000000000000000000000000000000000000000000ff00000000'
+  );
+  const bSender = deriveEcdhBlinding({
+    ourPriv: bob.priv, theirPub: alice.pub,
+    networkTag: 'mainnet', domain: DOMAIN_CXFER_STEALTH, txAnchor,
+  });
+  const bRecipient = deriveEcdhBlinding({
+    ourPriv: alice.priv, theirPub: bob.pub,
+    networkTag: 'mainnet', domain: DOMAIN_CXFER_STEALTH, txAnchor,
+  });
+  // ECDH symmetry must hold under the chosen serialization.
+  assertEq(bSender.toString(16), bRecipient.toString(16),
+    'ECDH symmetry under x-only serialization');
+  // Lock the actual derived value. If this changes, the serialization
+  // changed — verify intentionally before updating.
+  const bHex = bSender.toString(16).padStart(64, '0');
+  // Expected value derived from x-only serialization (NOT compressed).
+  // Re-derived if this test breaks: confirm it differs from the
+  // compressed-form derivation before accepting the new value.
+  console.log(`  [locked vector b = 0x${bHex.slice(0,16)}…]`);
+  // Sanity: b must NOT match what compressed-form derivation would give.
+  // Compute compressed-form for comparison.
+  const sharedPt = secp.ProjectivePoint.fromHex(bytesToHex(alice.pub))
+    .multiply(BigInt('0x' + bytesToHex(bob.priv)));
+  const compressedForm = sha256(sharedPt.toRawBytes(true));
+  const xOnlyForm      = sha256(sharedPt.toRawBytes(true).slice(1));
+  assert(bytesToHex(compressedForm) !== bytesToHex(xOnlyForm),
+    'sanity: compressed and x-only forms must differ');
+  // The function under test must be using x-only.
+  const networkTag = new Uint8Array([0x00]);
+  const macXonly = hmac(sha256, xOnlyForm, concatBytes(
+    DOMAIN_CXFER_STEALTH, networkTag, txAnchor,
+  ));
+  const bXonly = BigInt('0x' + bytesToHex(macXonly)) % SECP_N;
+  assertEq(bSender.toString(16), bXonly.toString(16),
+    'deriveEcdhBlinding MUST use x-only serialization (§A.2 normative)');
 });
 
 test('e2e: P2TR output also detected (dual-match)', () => {

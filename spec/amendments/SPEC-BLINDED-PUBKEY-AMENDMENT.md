@@ -146,9 +146,11 @@ Used when one party (the sender) computes the commit, and a different
 party (the recipient) must independently re-derive it. Anchors:
 
 ```
-shared    =  ECDH( sender_priv,  P_recipient )
+sharedPt  =  ECDH( sender_priv,  P_recipient )
                 =  sender_priv · P_recipient
                 =  recipient_priv · P_sender          (by ECDH symmetry)
+
+shared    =  SHA256( x_only(sharedPt) )                // 32 bytes — NORMATIVE
 
 b  =  HMAC-SHA256( shared,
                    domain  ||  network_tag  ||  tx_anchor )  mod SECP_N
@@ -156,15 +158,36 @@ b  =  HMAC-SHA256( shared,
 commit  =  P_recipient  +  b · G
 ```
 
+**Shared-secret serialization (NORMATIVE).** The HMAC key `shared` is
+**`SHA256(x_only(sharedPt))`** — the SHA256 hash of the x-only (32-byte)
+serialization of the ECDH point, with parity byte stripped. This
+matches the convention already in production in `dapp/tacit.js` for
+amount-keystream ECDH derivation (per `SPEC.md §5.7.6` line 202),
+fulfilling §G.2's promise that a single ECDH call drives both planes.
+Two implementations that disagree on this byte-form will silently miss
+each other's stealth receipts; the choice is pinned here once and
+must NOT be substituted with the compressed (33-byte) or uncompressed
+(65-byte) form.
+
 The recipient knows `recipient_priv` and observes `P_sender` on chain
-(from the tx's input witnesses). They re-derive the same `shared`
-secret via symmetric ECDH, compute the same `b`, and recover
+(from the tx's input witnesses, aggregated per §A.2.5). They re-derive
+the same `sharedPt` via symmetric ECDH, hash to `shared` per above,
+compute the same `b`, and recover
 `tweaked_sk = (recipient_priv + b) mod SECP_N`.
 
 `tx_anchor` is opcode-specific (typically `vin[0]` outpoint or a
 similar per-tx unique value) — ensures each transfer between the same
 sender / recipient pair produces a distinct commit. `domain` is from
 the registry in §C.
+
+**txid byte-order in `tx_anchor` (NORMATIVE).** When an anchor
+includes `vin[0].outpoint` or any txid reference, the txid bytes are
+serialized in **little-endian Bitcoin wire order** (the natural raw
+bytes of the txid as it appears in the tx's serialization, before
+the "display-reverse" convention applied by block explorers).
+Specifically: `tx_anchor_head = txid_LE_bytes(32) || vout_LE(4)`.
+Sender and recipient MUST agree on this; the wire-order convention
+is deterministic from the tx alone (no display-string round-trip).
 
 Recovery from seed: given the recipient's wallet seed and on-chain tx
 data, the recipient re-derives every credit deterministically. No
@@ -205,10 +228,32 @@ Shared Secret Derivation" with tacit-specific extensions):
    sender identity for ECDH.
 5. **P2TR script-path spends (non-key-path)** — **excluded** for the
    same reason.
-6. **Inputs already in the spent-set / mixer pool (e.g., `T_DEPOSIT`,
-   `T_WITHDRAW` inputs)** — handled per their opcode-specific rule;
-   typically excluded since the "sender" is a notional protocol-
-   layer counterparty, not a Bitcoin-layer pubkey.
+6. **Mixer-derived inputs** — **excluded.** Defined mechanically:
+   an input is mixer-derived iff its `prevout` was emitted as the
+   recipient marker UTXO of a confirmed `T_WITHDRAW` envelope (per
+   `SPEC.md §5.11`). The classification is observable from chain
+   alone by walking the prevout's source tx, parsing the envelope
+   at vout[0], and checking the opcode byte equals `T_WITHDRAW`
+   (`0x2A`). No off-chain state required; sender and recipient
+   classifications are guaranteed identical.
+
+   Rationale: the "sender" of a mixer-withdraw output is the
+   anonymous-set holder who proved a leaf, not a Bitcoin-layer
+   identity. ECDH against the withdraw recipient's fresh pubkey
+   would not match any meaningful sender; treating the input as
+   ineligible avoids ambiguity. Class-1 follow-up amendments that
+   add stealth to T_WITHDRAW itself (via the `recovery_commit`
+   field, per §C registry) handle their own commit construction
+   independently — they don't pass through this aggregate.
+
+   The same classification rule extends symmetrically to other
+   mixer-pool-emitting opcodes (`T_SLOT_BURN` recipient markers,
+   etc.) once their class-1 follow-up amendments specify them. A
+   reference matcher (in code: `isMixerDerivedInput(prevoutTx)`)
+   walks the prevout's parent tx and returns true iff the parent
+   tx's vout[0] envelope opcode is in the mixer-emitting set
+   `{ T_WITHDRAW (0x2A), T_SLOT_BURN (0x44), ... }`. Future class-1
+   additions extend this set via their amendment.
 
 The sum is taken in the secp256k1 group. If `P_sender = O` (the
 point at infinity — vanishingly improbable for uniformly random
@@ -375,9 +420,9 @@ that the validator dispatches on.
 
 | Opcode / role | Variant | Anchor | Domain tag | Status |
 |---|---|---|---|---|
-| `T_CBTC_TAC_DEPOSIT` depositor recovery | self-derived | `target_leaf_hash` | `tacit-cbtc-tac-recovery-blinding-v1` | normative; shipped in SPEC-CBTC-TAC §5.36.7 |
-| `T_FARM_INIT` launcher | self-derived | `pool_id \|\| farm_nonce` | `tacit-amm-farm-launcher-blinding-v1` | normative; shipped in SPEC-AMM-FARM |
-| `T_LP_BOND` bonder | self-derived | `farm_id \|\| bond_nonce` | `tacit-amm-bond-blinding-v1` | normative; shipped in SPEC-AMM-FARM |
+| `T_CBTC_TAC_DEPOSIT` depositor recovery | self-derived | `target_leaf_hash` | `tacit-cbtc-tac-recovery-blinding-v1` | normative; **code shipped** in `dapp/tacit.js` + `worker/src/index.js` per SPEC-CBTC-TAC §5.36.7 (modulo cBTC.tac §5.42 bootstrap) |
+| `T_FARM_INIT` launcher | self-derived | `pool_id \|\| farm_nonce` | `tacit-amm-farm-launcher-blinding-v1` | normative; **code pending** — SPEC-AMM-FARM amendment specifies `launcher_commit`, but `worker/src/index.js` decoder still reads `launcher_pubkey`. Migration is a follow-up; the construction is reserved. |
+| `T_LP_BOND` bonder | self-derived | `farm_id \|\| bond_nonce` | `tacit-amm-bond-blinding-v1` | normative; **code pending** — same shape as the T_FARM_INIT row |
 | `T_WITHDRAW` recovery | self-derived | `nullifier_hash` | `tacit-mixer-withdraw-recovery-v1` | proposed; envelope adds optional `recovery_commit` field |
 | `T_SLOT_BURN` recovery | self-derived | `nullifier_hash` | `tacit-slot-burn-recovery-v1` | proposed; envelope adds optional `recovery_commit` field |
 | `T_SWAP_BATCH` trader | self-derived | `intent_id` | `tacit-amm-trader-v1` | proposed; ceremony-gated; envelope field replaces `trader_pubkey` |
@@ -921,21 +966,54 @@ If every eligible input under §A.2.5 is excluded, the aggregate
 The recipient skips such txs. A sender's dapp emitting a stealth-
 shaped output in such a tx (where the recipient cannot derive the
 shared secret) creates an unrecoverable payment — funds are at the
-output script but no one can identify or spend them. The dapp
-MUST refuse to emit a stealth output unless the tx contains at
-least one eligible input under §A.2.5's rules.
+output script but no one can identify or spend them.
+
+**Mixed-ownership inputs are the harder failure mode.** A subtler
+fund-loss case arises when the tx contains eligible inputs from
+multiple parties (e.g., the emitting wallet contributes one
+P2WPKH input + an external co-signer contributes another P2WPKH
+input). The aggregate `P_sender = P_emitter + P_external`, but the
+emitting wallet only knows `sk_emitter` — it cannot compute the
+correct ECDH shared secret using `sk_emitter + sk_external` (which
+would be needed to land on the same `b` the recipient derives via
+`recipient_priv · (P_emitter + P_external)`). If the emitter
+naively does `ECDH(sk_emitter, P_recipient)` and emits a commit
+under that, the recipient's derivation will produce a different
+commit and miss the receipt — funds are at an unmatchable script
+and cannot be spent by either party.
+
+**Refusal rule (NORMATIVE, load-bearing).** An emitter MUST refuse
+to produce a class-2 stealth output unless **every** eligible input
+(per §A.2.5) in the tx is owned by the emitting wallet. Multi-
+owner eligible inputs are explicitly out of scope for v1.
+Equivalently: the emitter must hold the full set of secret scalars
+whose sum corresponds to `P_sender`. This MUST be verified BEFORE
+the tx is signed — even a fully-signed tx with mixed-ownership
+eligible inputs cannot retroactively be made stealth-spendable
+because the emitter never knew `sk_external` to begin with.
+
+In PSBT-style flows where some inputs may be filled in by an
+external co-signer after the emitting dapp decides whether to
+emit stealth, the dapp MUST either:
+1. Fix the input set before emitting (no later co-signer inputs
+   permitted in this tx), OR
+2. Refuse to emit stealth and fall back to a classical-recipient
+   output instead.
 
 **Implementation test obligation (load-bearing).** This refusal
-check is fund-critical: a buggy dapp that emits a stealth output to
-a tx with no eligible inputs burns the recipient's funds. Reference
-implementations of class-2 stealth-output emission MUST include an
-adversarial unit test that constructs a tx with only ineligible
-inputs (P2WSH, P2TR script-path) and verifies the emitter refuses
-to produce the stealth output. The signet harness MUST exercise
-the refusal path (e.g., by constructing a deliberately-bad tx and
-asserting the dapp rejects it before broadcast). Failure to
-implement this check is a release-blocker for any wallet shipping
-class-2 stealth support.
+check is fund-critical: a buggy dapp that emits a stealth output
+to a tx with even one external-owned eligible input burns the
+recipient's funds. Reference implementations of class-2 stealth-
+output emission MUST include adversarial unit tests that:
+
+1. Construct a tx with only ineligible inputs (P2WSH, P2TR
+   script-path) — emitter must refuse.
+2. Construct a tx with mixed-ownership eligible inputs (one wallet-
+   owned P2WPKH + one foreign P2WPKH) — emitter must refuse.
+
+The signet harness MUST exercise both refusal paths. Failure to
+implement these checks is a release-blocker for any wallet
+shipping class-2 stealth support.
 
 ---
 

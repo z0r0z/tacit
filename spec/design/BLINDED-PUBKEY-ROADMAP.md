@@ -35,7 +35,7 @@ Recipients opt into the stronger mode via address format; senders honor the choi
 
 ---
 
-## §1. Already shipped — uses the construction
+## §1. Spec-normative deployments (some still pending code migration)
 
 ### cBTC.tac (`SPEC-CBTC-TAC-AMENDMENT.md`)
 
@@ -49,13 +49,20 @@ Recipients opt into the stronger mode via address format; senders honor the choi
 
 ### AMM farms (`SPEC-AMM-FARM-AMENDMENT.md`)
 
+⚠️ **Status correction (audit 3.1):** the farm amendment specifies
+these commit fields normatively, but the dapp and worker
+implementations still decode cleartext `*_pubkey` fields. The
+spec-side rename is complete; the code-side migration is pending.
+Treat the rows below as "🛠️ spec normative; code pending" rather
+than "shipped."
+
 | Opcode | Field | Status | Anchor |
 |---|---|---|---|
-| `T_FARM_INIT` (`0x34`) | `launcher_commit` | ✅ shipped | `pool_id \|\| farm_nonce` |
-| `T_FARM_REFUND` (`0x3E`) | `launcher_commit` (matched to farm record); refund payout at `P2TR(x_only(commit))` | ✅ shipped | (uses farm record field) |
-| `T_LP_BOND` (`0x35`) | `bonder_commit`; bond-receipt marker `P2TR(x_only(commit))` at `vout[1]` | ✅ shipped | `farm_id \|\| bond_nonce` |
-| `T_LP_UNBOND` (`0x36`) | `unbonder_commit` (must match `bond.bonder_commit`); payouts at `P2TR(x_only(commit))` | ✅ shipped | (uses bond record field) |
-| `T_LP_HARVEST` (`0x3B`) | `harvester_commit` (must match `bond.bonder_commit`); reward at `P2TR(x_only(commit))` | ✅ shipped | (uses bond record field) |
+| `T_FARM_INIT` (`0x34`) | `launcher_commit` | 🛠️ spec normative; dapp + worker pending | `pool_id \|\| farm_nonce` |
+| `T_FARM_REFUND` (`0x3E`) | `launcher_commit` (matched to farm record); refund payout at `P2TR(x_only(commit))` | 🛠️ spec normative; code pending | (uses farm record field) |
+| `T_LP_BOND` (`0x35`) | `bonder_commit`; bond-receipt marker `P2TR(x_only(commit))` at `vout[1]` | 🛠️ spec normative; code pending | `farm_id \|\| bond_nonce` |
+| `T_LP_UNBOND` (`0x36`) | `unbonder_commit` (must match `bond.bonder_commit`); payouts at `P2TR(x_only(commit))` | 🛠️ spec normative; code pending | (uses bond record field) |
+| `T_LP_HARVEST` (`0x3B`) | `harvester_commit` (must match `bond.bonder_commit`); reward at `P2TR(x_only(commit))` | 🛠️ spec normative; code pending | (uses bond record field) |
 
 ---
 
