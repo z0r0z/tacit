@@ -61054,7 +61054,8 @@ function renderMarketAssetStatsHTML(asset) {
       const ticker = asset.ticker || '?';
       const _mark = Number(asset?.mark_price?.unit ?? cached.data.mark_price?.unit);
       const tradesForTf = _filterTradesByTimeFrame(cached.data.trades, currentTf);
-      const svg = renderMarketPriceChartSVG(tradesForTf, ticker, dec, Number.isFinite(_mark) && _mark > 0 ? _mark : null);
+      const _prepaintRef = _effectiveReferenceUnit(aid, asset);
+      const svg = renderMarketPriceChartSVG(tradesForTf, ticker, dec, Number.isFinite(_mark) && _mark > 0 ? _mark : null, { crossed: _prepaintRef?.crossed === true });
       if (svg) {
         prePaintedChartHtml = svg;
         prePaintedChartStyle = 'margin-top:10px;font-size:11px;';
@@ -61245,7 +61246,14 @@ function _filterTradesByTimeFrame(trades, tf) {
   return trades.filter(t => Number(t.ts || 0) >= cutoff);
 }
 
-function renderMarketPriceChartSVG(trades, ticker, decimals, markUnit = null) {
+function renderMarketPriceChartSVG(trades, ticker, decimals, markUnit = null, opts = {}) {
+  // opts.crossed (bool) flips the mark-line label from "mark" to "last"
+  // since on a crossed book the worker's mark is just the last trade and
+  // calling it "mark" implies a fair-value reference that no longer holds.
+  // Header, depth chart, and swap mini-strip all surface the mid in that
+  // state; the price-history chart's line stays at mark for continuity
+  // (it's a historical chart) but the label gets honest.
+  const _markLineLabelText = opts && opts.crossed ? 'last' : 'mark';
   // Empty / single-point state — render a placeholder card instead of an
   // empty chart. Users picking a tight time-frame (1H, 4H) on a quiet asset
   // would otherwise see an unchanged chart and assume the chips are broken.
@@ -61604,7 +61612,7 @@ function renderMarketPriceChartSVG(trades, ticker, decimals, markUnit = null) {
       // "what fair value reads RIGHT NOW." The mark has its own ts on the
       // worker side (mark_price.ts when source === 'last_trade'), but for
       // the visual semantics here "now" is the honest framing.
-      const markLbl = `mark ${fmtUnitPriceSats(markUnit)} sats/${ticker} · now`;
+      const markLbl = `${_markLineLabelText} ${fmtUnitPriceSats(markUnit)} sats/${ticker} · now`;
       markLineStroke = `<line x1="${PL}" x2="${(PL + plotW).toFixed(0)}" y1="${yMark.toFixed(2)}" y2="${yMark.toFixed(2)}" stroke="#0a8f43" stroke-width="1" stroke-dasharray="3,3" opacity="0.5"/>`;
       markLineLabel = `<text x="${(PL + plotW - 4).toFixed(0)}" y="${(yMark - 3.5).toFixed(2)}" font-size="9" fill="#0a8f43" stroke="#faf9f5" stroke-width="3" paint-order="stroke fill" font-family="var(--mono, monospace)" text-anchor="end" font-weight="600">${escapeHtml(markLbl)}</text>`;
     }
@@ -62489,10 +62497,16 @@ async function populateMarketAssetStats(scope, asset) {
       // morph animation on identical paths, which the user perceives
       // as flickering. Sig covers tf + mark + (ts, price_sats, amount)
       // per trade so any real change still busts the cache.
-      const _chartSig = `${tf}:${_markForChart}:` + tradesForTf.map(t =>
+      // Crossed-book flag flips the mark-line label to "last" — it's
+      // honest about what the line shows when the worker's mark goes
+      // stale relative to live mid. Read on every paint so the chart
+      // catches re-crosses without waiting for a full asset re-render.
+      const _chartCrossedRef = _effectiveReferenceUnit(aid, asset);
+      const _chartCrossed = _chartCrossedRef?.crossed === true;
+      const _chartSig = `${tf}:${_markForChart}:${_chartCrossed ? 1 : 0}:` + tradesForTf.map(t =>
         `${t.ts}|${t.price_sats}|${t.amount}`).join(',');
       if (chartEl.dataset.chartSig === _chartSig) return;
-      const chartHtml = renderMarketPriceChartSVG(tradesForTf, ticker, decimals, Number.isFinite(_markForChart) && _markForChart > 0 ? _markForChart : null);
+      const chartHtml = renderMarketPriceChartSVG(tradesForTf, ticker, decimals, Number.isFinite(_markForChart) && _markForChart > 0 ? _markForChart : null, { crossed: _chartCrossed });
       if (chartHtml) {
         chartEl.dataset.chartSig = _chartSig;
         const _oldLineD = chartEl.querySelector('[data-chart-line]')?.getAttribute('d') || null;
