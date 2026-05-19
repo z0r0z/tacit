@@ -35142,10 +35142,16 @@ async function ceremonyRender() {
       : '(unknown)';
     const beaconTitle = beaconFull ? `Bitcoin-block beacon (full): ${beaconFull}` : '';
     const celebKey = `tacit:ceremony:${_ceremonyActiveHash}:celebrated`;
-    // Fire the celebration toast once per browser per ceremony — either on
-    // the live transition we just observed, or for users arriving after
-    // finalize who haven't seen the toast yet.
-    if ((!_prevFinalized || !localStorage.getItem(celebKey))) {
+    // Fire the celebration toast at most ONCE per browser per ceremony.
+    // Was OR-gated against `_prevFinalized` which defaults to false on
+    // every page load — meaning the toast (and its persisted entry in
+    // the notifications panel) re-fired on every refresh after a
+    // user had already seen + dismissed it. Strict localStorage gate
+    // now: if the key is set we already celebrated; never repeat.
+    // Covers both live-transition (first observation flips
+    // _prevFinalized AND sets the key) and arrived-after-finalize
+    // (first observation just sets the key) in one branch.
+    if (!localStorage.getItem(celebKey)) {
       try {
         toast(`🎉 Ceremony finalized — mixer is now live. Beacon ${beaconDisplay}`, 'success', 12000, beaconTitle);
         localStorage.setItem(celebKey, '1');
