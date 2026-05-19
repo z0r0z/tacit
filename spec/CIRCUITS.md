@@ -15,7 +15,7 @@ cBTC.zk / cBTC.tac amendments under
 | Layer | Primitive |
 |---|---|
 | Proof system | Groth16 over BN254 |
-| Phase 1 (powers of tau) | Polygon Hermez ceremony output — `pot14` for mixer, `pot18` for AMM batch |
+| Phase 1 (powers of tau) | Polygon Hermez ceremony output — `pot14` for mixer, `pot18` shared by all three AMM circuits |
 | In-circuit set membership | Poseidon hashes (BN254-native) |
 | In-circuit amount commitments | BabyJubJub Pedersen (embedded curve over BN254 Fr) |
 | Chain-side amount commitments | secp256k1 Pedersen (Bitcoin's curve) |
@@ -39,8 +39,8 @@ Merkle tree, and `Poseidon₁(ν)` has not been used."
 + nullifier reveal. Anonymity set is the leaves in the pool;
 double-spend defense is the nullifier set.
 
-**The circuit:** `withdraw.circom` (mixer). ~3K constraints,
-verifies against `pot14`.
+**The circuit:** `withdraw.circom` (mixer). 11,938 constraints,
+verifies against `pot14` (2^14 = 16,384 constraint ceiling).
 
 **Where it is reused, without modification:**
 

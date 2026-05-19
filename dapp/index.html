@@ -79,7 +79,7 @@
      script-src 'self' covers all three.
      `?cb=` is auto-set by build/build.mjs to a sha256 prefix of tacit.js
      so iOS Safari's stale-modulepreload cache flushes on every change. -->
-<link rel="modulepreload" href="./tacit.js?cb=c62198b4">
+<link rel="modulepreload" href="./tacit.js?cb=9fef8f19">
 <link rel="modulepreload" href="./vendor/tacit-deps.min.js">
 <link rel="modulepreload" href="./prf-wallet.js">
 <style>
@@ -4465,24 +4465,34 @@ body > #amm-contrib-section {
      stay readable. Drop padding so the form fits a 360px viewport. */
   [data-swap-tile] { padding: 12px 14px !important; }
 }
+/* Override the existing chip inline-styles (border:1px solid var(--ink-faint)
+   etc.) so panel rows read as quiet list items rather than competing
+   bordered chips. `!important` because the chips ship with style="..."
+   attributes baked into the inline emitter. */
 .mkt-advanced-panel button {
-  text-align: left;
-  font-size: 11px;
-  padding: 4px 8px;
-  background: transparent;
-  border: 0.5px solid transparent;
-  color: var(--ink);
-  cursor: pointer;
-  text-transform: none;
-  letter-spacing: 0;
-  font-weight: 400;
-  min-height: 0;
-  white-space: nowrap;
+  display: block !important;
+  width: 100% !important;
+  text-align: left !important;
+  font-size: 11px !important;
+  padding: 5px 8px !important;
+  background: transparent !important;
+  border: 0 !important;
+  border-bottom: 0.5px dashed rgba(26,26,26,0.15) !important;
+  color: var(--ink) !important;
+  cursor: pointer !important;
+  text-transform: none !important;
+  letter-spacing: 0 !important;
+  font-weight: 400 !important;
+  min-height: 0 !important;
+  white-space: nowrap !important;
+  box-shadow: none !important;
+}
+.mkt-advanced-panel button:last-child {
+  border-bottom: 0 !important;
 }
 .mkt-advanced-panel button:hover:not(:disabled) {
-  background: rgba(26,26,26,0.06);
-  border-color: rgba(26,26,26,0.2);
-  color: var(--ink);
+  background: rgba(26,26,26,0.06) !important;
+  color: var(--ink) !important;
 }
 
 /* Hide the legacy `▸ STATS` and `▸ PRICE HISTORY` collapsed disclosures
@@ -8721,7 +8731,7 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
   </div>
 </div>
 
-<script type="module" src="./tacit.js?cb=c62198b4"></script>
+<script type="module" src="./tacit.js?cb=9fef8f19"></script>
 
 <!-- Service worker registration moved into tacit.js (the dapp's CSP forbids
      inline scripts; only 'self' module scripts are allowed). See sw.js for

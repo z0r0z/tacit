@@ -35,6 +35,22 @@
 //
 // Run: `node ceremony.test.mjs`
 
+// Cloudflare Workers expose a `caches` API the worker uses to memoize the
+// /atomic-intents and /market list endpoints. Node has no such global, so
+// stub a no-op cache that always misses (`match` returns undefined) and
+// silently accepts puts/deletes. Lets the contribute + finalize paths
+// drive through their cache-invalidation hooks without throwing
+// "caches is not defined" and masking the actual assertion.
+if (typeof globalThis.caches === 'undefined') {
+  globalThis.caches = {
+    default: {
+      async match() { return undefined; },
+      async put() {},
+      async delete() { return false; },
+    },
+  };
+}
+
 const worker = await import('../worker/src/index.js');
 
 let pass = 0, fail = 0;
@@ -490,6 +506,190 @@ await test('reset: a fresh init on the same circuit_hash succeeds after reset', 
   if (second.status !== 200) return false;
   const body = await second.json();
   return body.state.initiator === 'second' && body.state.contribution_count === 0;
+});
+
+// ============================================================
+// /reserve DoS hardening (NFTDADE23 botted-queue report)
+//
+// The /reserve endpoint used to accept anonymous queue joins, letting
+// one bot fill the FIFO queue with thousands of random UUIDs from a
+// single IP and push honest contributors to the back of a fake queue.
+// The fix layers three gates: (1) Schnorr sig binds each entry to a
+// pubkey; (2) one queue slot per pubkey at a time; (3) per-IP cap of
+// 20 fresh joins/day. Tests below exercise each gate.
+// ============================================================
+
+import * as _secp from '@noble/secp256k1';
+import { sha256 as _sha256 } from '@noble/hashes/sha256';
+import { hexToBytes as _hexToBytes, bytesToHex as _bytesToHex, concatBytes as _concatBytes } from '@noble/hashes/utils';
+
+// Minimal BIP-340 Schnorr signer. Ported from the dapp's signSchnorr
+// (dapp/tacit.js:5165) so test sigs verify byte-for-byte against
+// worker.verifySchnorr — same primitive pair production uses. Importing
+// the full dapp module would require JSDOM shims; this avoids that.
+const _SECP_N = _secp.CURVE.n;
+const _G = _secp.ProjectivePoint.BASE;
+const _b32n = (b) => _secp.etc.bytesToNumberBE(b);
+const _n32b = (n) => _secp.etc.numberToBytesBE(n, 32);
+const _xor32 = (a, b) => { const r = new Uint8Array(32); for (let i = 0; i < 32; i++) r[i] = a[i] ^ b[i]; return r; };
+function _tagged(tag, ...msgs) {
+  const th = _sha256(new TextEncoder().encode(tag));
+  return _sha256(_concatBytes(th, th, ...msgs));
+}
+function _signSchnorr(msgHash, priv32) {
+  const dPrime = _b32n(priv32);
+  if (dPrime <= 0n || dPrime >= _SECP_N) throw new Error('schnorr: invalid privkey');
+  const P = _G.multiply(dPrime);
+  const Pbytes = P.toRawBytes(true);
+  const Px = Pbytes.slice(1);
+  const d = (Pbytes[0] === 0x02) ? dPrime : (_SECP_N - dPrime);
+  const aux = crypto.getRandomValues(new Uint8Array(32));
+  const t = _xor32(_n32b(d), _tagged('BIP0340/aux', aux));
+  const rand = _tagged('BIP0340/nonce', t, Px, msgHash);
+  let kPrime = _b32n(rand) % _SECP_N;
+  if (kPrime === 0n) throw new Error('schnorr: nonce zero');
+  const R = _G.multiply(kPrime);
+  const Rbytes = R.toRawBytes(true);
+  const Rx = Rbytes.slice(1);
+  const k = (Rbytes[0] === 0x02) ? kPrime : (_SECP_N - kPrime);
+  const e = _b32n(_tagged('BIP0340/challenge', Rx, Px, msgHash)) % _SECP_N;
+  const s = (k + e * d) % _SECP_N;
+  return _concatBytes(Rx, _n32b(s));
+}
+
+function genKeypair() {
+  let priv;
+  do { priv = crypto.getRandomValues(new Uint8Array(32)); }
+  while (!_secp.utils.isValidPrivateKey(priv));
+  const pubXY = _secp.getPublicKey(priv, true);  // 33-byte compressed
+  return { priv, pubHex: _bytesToHex(pubXY) };
+}
+const _CER_DOMAIN = new TextEncoder().encode('tacit-ceremony-reserve-v1');
+function reserveSig(circuitHash, pubHex, priv, queueToken) {
+  const msg = _sha256(_concatBytes(
+    _CER_DOMAIN,
+    _hexToBytes(circuitHash),
+    _hexToBytes(pubHex),
+    new TextEncoder().encode(queueToken || ''),
+  ));
+  return _bytesToHex(_signSchnorr(msg, priv));
+}
+async function postReserve(env, { hash = CIRCUIT_HASH, name = 'alice', pubHex, priv, queueToken = '', ip = '1.2.3.4' } = {}) {
+  const body = { contributor_name: name };
+  if (pubHex) body.contributor_pubkey = pubHex;
+  if (queueToken) body.queue_token = queueToken;
+  if (pubHex && priv) body.sig = reserveSig(hash, pubHex, priv, queueToken);
+  return worker.default.fetch(
+    new Request(`http://localhost/ceremony/${hash}/reserve`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'CF-Connecting-IP': ip },
+      body: JSON.stringify(body),
+    }),
+    env,
+  );
+}
+
+await test('reserve: 400 when contributor_pubkey is missing', async () => {
+  const env = makeEnv();
+  await postInit(env, { token: env.CEREMONY_INIT_TOKEN });
+  const res = await postReserve(env, {});
+  if (res.status !== 400) return false;
+  const j = await res.json();
+  return /contributor_pubkey/i.test(j.error || '');
+});
+
+await test('reserve: 400 when sig is missing', async () => {
+  const env = makeEnv();
+  await postInit(env, { token: env.CEREMONY_INIT_TOKEN });
+  const { pubHex } = genKeypair();
+  const res = await worker.default.fetch(
+    new Request(`http://localhost/ceremony/${CIRCUIT_HASH}/reserve`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ contributor_pubkey: pubHex, contributor_name: 'x' }),
+    }), env,
+  );
+  if (res.status !== 400) return false;
+  const j = await res.json();
+  return /sig required/i.test(j.error || '');
+});
+
+await test('reserve: 403 when sig does not verify against the supplied pubkey', async () => {
+  const env = makeEnv();
+  await postInit(env, { token: env.CEREMONY_INIT_TOKEN });
+  const a = genKeypair();
+  const b = genKeypair();
+  // Sign with B's privkey but submit A's pubkey — must fail at verify.
+  const res = await worker.default.fetch(
+    new Request(`http://localhost/ceremony/${CIRCUIT_HASH}/reserve`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contributor_pubkey: a.pubHex,
+        contributor_name: 'mismatched',
+        sig: reserveSig(CIRCUIT_HASH, b.pubHex, b.priv, ''),
+      }),
+    }), env,
+  );
+  return res.status === 403;
+});
+
+await test('reserve: valid sig joins the queue and returns a token', async () => {
+  const env = makeEnv();
+  await postInit(env, { token: env.CEREMONY_INIT_TOKEN });
+  const k = genKeypair();
+  const res = await postReserve(env, { pubHex: k.pubHex, priv: k.priv });
+  if (res.status !== 200) return false;
+  const j = await res.json();
+  return typeof j.queue_token === 'string' && j.queue_token.length > 0 && j.is_head === true;
+});
+
+await test('reserve: same pubkey + same token re-poll is treated as a refresh, not duplicated', async () => {
+  const env = makeEnv();
+  await postInit(env, { token: env.CEREMONY_INIT_TOKEN });
+  const k = genKeypair();
+  const first = await (await postReserve(env, { pubHex: k.pubHex, priv: k.priv })).json();
+  const second = await (await postReserve(env, { pubHex: k.pubHex, priv: k.priv, queueToken: first.queue_token })).json();
+  return second.queue_token === first.queue_token && second.total === 1;
+});
+
+await test('reserve: 409 when the same pubkey tries to claim a second slot under a fresh token', async () => {
+  const env = makeEnv();
+  await postInit(env, { token: env.CEREMONY_INIT_TOKEN });
+  const k = genKeypair();
+  await postReserve(env, { pubHex: k.pubHex, priv: k.priv });
+  // Second join with same pubkey but no queue_token → worker would mint a
+  // new token. The pubkey-uniqueness gate must reject it.
+  const res = await postReserve(env, { pubHex: k.pubHex, priv: k.priv });
+  if (res.status !== 409) return false;
+  const j = await res.json();
+  return /pubkey already in queue/i.test(j.error || '');
+});
+
+await test('reserve: per-IP cap rejects > 20 fresh joins/day from the same IP', async () => {
+  const env = makeEnv();
+  await postInit(env, { token: env.CEREMONY_INIT_TOKEN });
+  // 20 fresh joins succeed (each with a distinct pubkey so the per-pubkey
+  // gate doesn't fire first). 21st must 429.
+  for (let i = 0; i < 20; i++) {
+    const k = genKeypair();
+    const res = await postReserve(env, { pubHex: k.pubHex, priv: k.priv, ip: '9.9.9.9' });
+    if (res.status !== 200) return false;
+  }
+  const k21 = genKeypair();
+  const r = await postReserve(env, { pubHex: k21.pubHex, priv: k21.priv, ip: '9.9.9.9' });
+  return r.status === 429;
+});
+
+await test('reserve: per-IP cap does NOT count existing-token polls toward the limit', async () => {
+  const env = makeEnv();
+  await postInit(env, { token: env.CEREMONY_INIT_TOKEN });
+  const k = genKeypair();
+  const first = await (await postReserve(env, { pubHex: k.pubHex, priv: k.priv, ip: '5.5.5.5' })).json();
+  // Poll 50 times with the same token — must all 200 OK despite the cap.
+  for (let i = 0; i < 50; i++) {
+    const r = await postReserve(env, { pubHex: k.pubHex, priv: k.priv, queueToken: first.queue_token, ip: '5.5.5.5' });
+    if (r.status !== 200) return false;
+  }
+  return true;
 });
 
 console.log(`\n${pass} passed, ${fail} failed.`);

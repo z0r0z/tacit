@@ -35587,20 +35587,46 @@ async function _ammPinataTusUpload(uploadUrl, bytes, filename, onProgress) {
 // Token is stored on the module-level _ammQueueToken so the abort
 // path and /contribute form can include it.
 let _ammQueueToken = '';
+// Worker-side /reserve requires a Schnorr sig binding (circuit_hash,
+// pubkey, queue_token) — closes the cheap "spam 10k anon tokens" DoS
+// where one bot could fill the FIFO queue with fake entries. Domain
+// string matches worker handleCeremonyReserve. Fresh joins (no token
+// yet) sign over empty token bytes; subsequent polls re-sign for the
+// assigned token, so a captured sig is only valid for its exact
+// (circuit, identity, slot) triple.
+const _CEREMONY_RESERVE_DOMAIN = new TextEncoder().encode('tacit-ceremony-reserve-v1');
+function _ceremonyReserveSig(circuitHash, contributorPubkeyHex, queueToken) {
+  if (!wallet?.priv) throw new Error('wallet privkey not loaded — unlock to sign the queue join');
+  const msg = sha256(concatBytes(
+    _CEREMONY_RESERVE_DOMAIN,
+    hexToBytes(circuitHash),
+    hexToBytes(contributorPubkeyHex.toLowerCase()),
+    new TextEncoder().encode(queueToken || ''),
+  ));
+  return bytesToHex(signSchnorr(msg, wallet.priv));
+}
 async function _ammClaimReservationWithQueue(circuitHash, contributorName, contributorPubkeyHex, onPhase) {
   _ammQueueToken = '';
+  if (!contributorPubkeyHex || !/^0[23][0-9a-f]{64}$/.test(contributorPubkeyHex.toLowerCase())) {
+    try { onPhase?.('reserve-error', { msg: 'ceremony queue requires a wallet pubkey — load or generate a wallet first' }); } catch {}
+    return;
+  }
   const url = `${WORKER_BASE}/ceremony/${circuitHash}/reserve`;
   const start = Date.now();
   const MAX_WAIT_MS = 15 * 60_000;
   const _basePayload = {
     contributor_name: String(contributorName || 'anonymous').slice(0, 64),
-    contributor_pubkey: contributorPubkeyHex && /^0[23][0-9a-f]{64}$/.test(contributorPubkeyHex.toLowerCase())
-      ? contributorPubkeyHex.toLowerCase() : null,
+    contributor_pubkey: contributorPubkeyHex.toLowerCase(),
   };
   while (Date.now() - start < MAX_WAIT_MS) {
     let resp;
     const payload = { ..._basePayload };
     if (_ammQueueToken) payload.queue_token = _ammQueueToken;
+    try { payload.sig = _ceremonyReserveSig(circuitHash, contributorPubkeyHex, _ammQueueToken); }
+    catch (e) {
+      try { onPhase?.('reserve-error', { msg: e?.message || 'sig failed' }); } catch {}
+      return;
+    }
     try { resp = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }); }
     catch (e) {
       try { onPhase?.('reserve-error', { msg: e?.message || String(e) }); } catch {}
@@ -35720,10 +35746,14 @@ async function ceremonyContributeAmm({
   };
   const _keepaliveTimer = setInterval(() => {
     if (!_ammQueueToken) return;
+    if (!_keepalivePayload.contributor_pubkey) return;  // can't sign w/o pubkey
+    let sig;
+    try { sig = _ceremonyReserveSig(circuitHash, _keepalivePayload.contributor_pubkey, _ammQueueToken); }
+    catch { return; }  // wallet locked mid-mix — soft-fail; next tick retries
     fetch(`${WORKER_BASE}/ceremony/${circuitHash}/reserve`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ..._keepalivePayload, queue_token: _ammQueueToken }),
+      body: JSON.stringify({ ..._keepalivePayload, queue_token: _ammQueueToken, sig }),
     }).catch(() => {});
   }, 4 * 60_000);
 
@@ -40287,6 +40317,20 @@ function _renderDeltaStrip(asset, opts) {
 // zeros, keeps thousands separators for whole-sat values, falls through to
 // 8-digit fractional for sub-1-sat prices, and finally to scientific
 // notation for sub-pico-sat prices so the display never collapses to "0".
+// Percent formatter for vs-mid / vs-mark columns per design.html line 175-200.
+// Rounds based on magnitude so the column doesn't read as noisy:
+//   |pct| ≥ 10  → whole number  (−43%, +20%)
+//   |pct| ≥ 1   → 1 decimal     (+6.6%, −2.5%)
+//   |pct| < 1   → 2 decimals    (+0.33%)
+// Always uses '−' (U+2212 minus) instead of ASCII '-' for monospace alignment.
+function fmtVsMidPct(pct) {
+  if (pct == null || !Number.isFinite(pct)) return '';
+  const sign = pct >= 0 ? '+' : '−';
+  const a = Math.abs(pct);
+  if (a >= 10) return `${sign}${Math.round(a)}%`;
+  if (a >= 1)  return `${sign}${a.toFixed(1)}%`;
+  return         `${sign}${a.toFixed(2)}%`;
+}
 function fmtUnitPriceSats(sats) {
   if (sats == null) return '';
   if (sats >= 1) return sats.toLocaleString('en-US', { maximumFractionDigits: 4 });
@@ -58011,6 +58055,23 @@ function applyMarketFilters() {
   // Opens when the user clicks the tape's `N trades today →` link.
   // Kept minimal — × close, backdrop-click close, Esc close.
   const _activityModalHtml = `<div class="mkt-activity-modal" data-mkt-activity-modal hidden><div class="mkt-activity-modal-panel"><button class="mkt-activity-modal-close" data-act="market-activity-modal-close" type="button" aria-label="Close">×</button><div class="mkt-activity-modal-body">${activityPanelHtml}</div></div></div>`;
+  // Live AMM ceremony contributor count for the footer chip. Sums the
+  // per-circuit contribution_count from _ammCeremonyStateByCircuit
+  // (warmed by refreshAmmCeremonyStatesIfStale on tab activation).
+  // Falls back to no count when the cache is cold so the footer
+  // doesn't render a stale or misleading number.
+  const _ammContribCount = (() => {
+    try {
+      if (typeof AMM_CEREMONY_CIRCUIT_HASHES === 'undefined') return 0;
+      if (typeof _ammCeremonyStateByCircuit === 'undefined') return 0;
+      return AMM_CEREMONY_CIRCUIT_HASHES.reduce(
+        (acc, c) => acc + (_ammCeremonyStateByCircuit.get(c.hash)?.contribution_count ?? 0), 0,
+      );
+    } catch { return 0; }
+  })();
+  const _ammContribChip = _ammContribCount > 0
+    ? ` <strong style="color:var(--ink);font-weight:500;">${_ammContribCount.toLocaleString('en-US')}</strong> contribs &middot;`
+    : '';
   const listedPaneHtml = `
     <div class="mkt-depth-wrap">
       <div data-market-depth-chart class="market-tile-section market-tile-depth" style="display:none;font-size:11px;"></div>
@@ -58035,7 +58096,7 @@ function applyMarketFilters() {
     <div data-market-trades-tape class="market-tile-section market-tile-tape" style="display:none;min-height:28px;"></div>
     <div class="mkt-trade-footer">
       <span><b>TACIT</b> open-source &middot; zero fees</span>
-      <span><span style="color:#C76B26;">●</span> AMM ceremony &middot; <a href="#tab=protocol" style="color:var(--ink-mid);text-decoration:none;border-bottom:0.5px dashed rgba(26,26,26,0.4);">contribute &rarr;</a></span>
+      <span><span style="color:#C76B26;">●</span> AMM ceremony${_ammContribChip} <a href="#tab=protocol" style="color:var(--ink-mid);text-decoration:none;border-bottom:0.5px dashed rgba(26,26,26,0.4);">contribute &rarr;</a></span>
       <span>BIP-341 &middot; BIP-340 &middot; CT</span>
     </div>
     ${_activityModalHtml}`;
@@ -58938,9 +58999,7 @@ function applyMarketFilters() {
       ? ((unit - _askRef.unit) / _askRef.unit) * 100
       : null;
     const _vsRefClsAsk = _vsRefPctAsk == null ? '' : (_vsRefPctAsk >= 0 ? 'color:#b8341d;' : 'color:#0a7d3a;');
-    const _vsRefStrAsk = _vsRefPctAsk == null
-      ? '&mdash;'
-      : `${_vsRefPctAsk >= 0 ? '+' : ''}${_vsRefPctAsk.toFixed(2)}%`;
+    const _vsRefStrAsk = _vsRefPctAsk == null ? '&mdash;' : fmtVsMidPct(_vsRefPctAsk);
     const _vsRefLabelAsk = _askRef?.label === 'mid' ? 'vs mid' : 'vs mark';
     // Single-line vs-mid cell per design.html — just the % chip, no sub-label.
     // Level rows show the bucket size (already in the price column as ×N);
@@ -65657,9 +65716,7 @@ async function populateMarketBidsLadder(scope, asset) {
       ? ((b._unit - _bidRef.unit) / _bidRef.unit) * 100
       : null;
     const _vsRefCls = _vsRefPct == null ? '' : (_vsRefPct >= 0 ? 'color:#0a7d3a;' : 'color:#b8341d;');
-    const _vsRefStr = _vsRefPct == null
-      ? '&mdash;'
-      : `${_vsRefPct >= 0 ? '+' : ''}${_vsRefPct.toFixed(2)}%`;
+    const _vsRefStr = _vsRefPct == null ? '&mdash;' : fmtVsMidPct(_vsRefPct);
     const _vsRefLabel = _bidRef?.label === 'mid' ? 'vs mid' : 'vs mark';
     // Mine pill on the cell subtitle so the user can spot their own
     // bid across a long ladder without scanning the wallet column.

@@ -4188,6 +4188,18 @@ function atomicClaimKey(network, aid, intentIdHex) {
     ? `axclaim:${aid}:${intentIdHex}`
     : `axclaim:${network}:${aid}:${intentIdHex}`;
 }
+// Reverse index for cross-intent uniqueness of taker_utxo on atomic
+// claims. Without this, one funded P2WPKH UTXO of value V can grief
+// every intent with price_sats ≤ V across every asset on the worker
+// simultaneously (a claim doesn't actually spend the UTXO, so the
+// same outpoint is unlimited-reuse). Writing this index alongside the
+// claim record forces a griefer to hold one UTXO per concurrently
+// griefed intent.
+function atomicClaimUtxoIndexKey(network, txidHex, vout) {
+  return network === 'signet'
+    ? `axclaim-utxo:${txidHex}:${vout}`
+    : `axclaim-utxo:${network}:${txidHex}:${vout}`;
+}
 function atomicFulfilmentKey(network, aid, intentIdHex) {
   return network === 'signet'
     ? `axfulfil:${aid}:${intentIdHex}`
@@ -5527,14 +5539,54 @@ async function handleCeremonyReserve(req, env, circuitHash, cors) {
   let body = {};
   try { body = await req.json(); } catch {}
   const contributorName = String(body?.contributor_name || 'anonymous').slice(0, 64);
-  let contributorPubkey = String(body?.contributor_pubkey || '').trim().toLowerCase();
-  if (!/^0[23][0-9a-f]{64}$/.test(contributorPubkey)) contributorPubkey = null;
+  // contributor_pubkey is REQUIRED. Earlier the field was advisory and
+  // anonymous queue entries let one bot fill thousands of slots with
+  // random UUIDs from a single IP, pushing honest contributors to the
+  // back of a fake queue. Binding each entry to a Schnorr keypair plus
+  // the per-pubkey + per-IP gates below makes every fake slot cost a
+  // fresh keypair AND a slot of the daily per-IP join cap.
+  const contributorPubkey = String(body?.contributor_pubkey || '').trim().toLowerCase();
+  if (!/^0[23][0-9a-f]{64}$/.test(contributorPubkey)) {
+    return jsonResponse({ error: 'contributor_pubkey required (33-byte compressed hex)' }, 400, cors);
+  }
+  const sigHex = String(body?.sig || '').toLowerCase();
+  if (!/^[0-9a-f]{128}$/.test(sigHex)) {
+    return jsonResponse({ error: 'sig required (128-hex Schnorr over circuit_hash || pubkey || queue_token)' }, 400, cors);
+  }
   let tokenIn = String(body?.queue_token || '').trim().slice(0, 64);
   if (!/^[a-zA-Z0-9_-]{1,64}$/.test(tokenIn)) tokenIn = '';
+  // Sig msg binds (circuit_hash, pubkey, queue_token). Fresh joins
+  // (no token yet) sign over empty token bytes; the worker assigns a
+  // token on success and the client must re-sign for that token on
+  // subsequent polls. A captured sig only works for the exact (circuit,
+  // identity, slot) triple — circuit_hash binding kills cross-circuit
+  // replay; the assigned token (unguessable random UUID) kills cross-
+  // slot replay.
+  const reserveMsg = sha256(concatBytes(
+    new TextEncoder().encode('tacit-ceremony-reserve-v1'),
+    hexToBytes(circuitHash),
+    hexToBytes(contributorPubkey),
+    new TextEncoder().encode(tokenIn),
+  ));
+  if (!verifySchnorr(hexToBytes(sigHex), reserveMsg, hexToBytes(contributorPubkey).slice(1))) {
+    return jsonResponse({ error: 'invalid sig over (circuit_hash || pubkey || queue_token)' }, 403, cors);
+  }
 
   const NOW = Date.now();
   let queue = await _listCeremonyQueue(env, circuitHash);
   await _evictStaleQueueHeads(env, circuitHash, queue, 5 * 60 * 1000);
+
+  // One queue slot per pubkey. A pubkey already in queue under a
+  // DIFFERENT token cannot open a second slot — the client must reuse
+  // its existing queue_token to poll. Defeats "spin up N tokens from
+  // the same keypair" attempts; combined with the per-IP join cap
+  // below, defeats the cheap reservation-flood DoS.
+  const existingForPubkey = queue.find(q => (q.pubkey || '').toLowerCase() === contributorPubkey);
+  if (existingForPubkey && existingForPubkey.token !== tokenIn) {
+    return jsonResponse({
+      error: 'pubkey already in queue under a different queue_token; reuse the existing token to poll',
+    }, 409, cors);
+  }
 
   // Deterministic key per token — direct KV.get is stronger than the
   // eventually-consistent KV.list, so we never duplicate ourselves
@@ -5543,6 +5595,32 @@ async function handleCeremonyReserve(req, env, circuitHash, cors) {
   let myToken = tokenIn || crypto.randomUUID().replace(/-/g, '');
   const myKey = ceremonyQueueKey(circuitHash, myToken);
   let myEntry = await env.REGISTRY_KV.get(myKey, 'json');
+  // Defense in depth: refuse a poll where the supplied pubkey doesn't
+  // match the pubkey originally bound to this queue_token. Tokens are
+  // generated client-side as random UUIDs and never surfaced via the
+  // state endpoint, so a third party can't realistically steal one,
+  // but this check makes the binding explicit.
+  if (myEntry && myEntry.pubkey && myEntry.pubkey.toLowerCase() !== contributorPubkey) {
+    return jsonResponse({
+      error: 'queue_token is bound to a different pubkey',
+    }, 403, cors);
+  }
+  // Per-IP fresh-join rate limit. Only fires on NEW entries (no KV row
+  // for this token yet) so honest contributors' own keepalive polls
+  // stay unlimited. 20 fresh joins/day per IP is generous for shared
+  // NATs (small office, university VPN) while killing the cheap "10k
+  // tokens from one bot" attack. Reuses UPLOAD_KV alongside the
+  // existing /contribute counter — same daily-rotation key shape.
+  if (!myEntry) {
+    const ip = req.headers.get('CF-Connecting-IP') || 'anon';
+    const day = new Date().toISOString().slice(0, 10);
+    const joinKey = `ceremony:join:${day}:${ip}`;
+    const prior = safeInt(await env.UPLOAD_KV.get(joinKey), 0, { min: 0 });
+    if (prior >= 20) {
+      return jsonResponse({ error: 'rate limited (20 fresh queue joins/day per IP)' }, 429, cors);
+    }
+    await env.UPLOAD_KV.put(joinKey, String(prior + 1), { expirationTtl: 25 * 3600 });
+  }
   if (myEntry) {
     await env.REGISTRY_KV.put(myKey, JSON.stringify({
       token: myToken,
@@ -14517,6 +14595,16 @@ async function _handleAtomicIntentClaimVar(assetIdHex, intentIdHex, intent, body
     JSON.stringify(claim),
     { expirationTtl: CLAIM_TTL_SECONDS + 60 },
   );
+  // Mirror the legacy-claim handler's cross-intent UTXO pledge write so
+  // a var-claim's taker_utxo also blocks reuse on other intents during
+  // the claim window. The dispatcher (handleAtomicIntentClaim) already
+  // ran the gate before delegating here, so we only need to record the
+  // pledge for the next claim attempt to observe.
+  await env.REGISTRY_KV.put(
+    atomicClaimUtxoIndexKey(network, takerUtxoTxid, takerUtxoVout),
+    JSON.stringify({ asset_id: assetIdHex, intent_id: intentIdHex, expires_at: claim.expires_at }),
+    { expirationTtl: CLAIM_TTL_SECONDS + 60 },
+  );
   return jsonResponse({ ok: true, claim, intent }, 200, cors);
 }
 
@@ -15105,6 +15193,28 @@ async function handleAtomicIntentClaim(assetIdHex, intentIdHex, req, env, networ
     }, 409, cors);
   }
 
+  // Cross-intent UTXO pledge gate. A taker_utxo already attached to an
+  // active claim on a DIFFERENT intent cannot be reused here. Without
+  // this, a griefer with one funded P2WPKH UTXO of value V could lock
+  // every intent with price_sats ≤ V across every asset for the full
+  // CLAIM_TTL (the claim doesn't actually spend the UTXO, so the same
+  // outpoint was unlimited-reuse). The index TTL matches the claim's,
+  // so a stale pledge clears itself. Self-rebinding (same taker
+  // refreshing their own claim on the same intent) is fine — the
+  // existing-taker branch above already short-circuits before we
+  // reach this gate; here we only fire when intent+taker would
+  // conflict with a DIFFERENT outstanding claim.
+  const utxoPledge = await env.REGISTRY_KV.get(
+    atomicClaimUtxoIndexKey(network, takerUtxoTxid, takerUtxoVout), 'json',
+  );
+  if (utxoPledge && utxoPledge.expires_at > now &&
+      !(utxoPledge.asset_id === assetIdHex && utxoPledge.intent_id === intentIdHex)) {
+    return jsonResponse({
+      error: 'taker_utxo already pledged to another active claim',
+      pledged: { expires_at: utxoPledge.expires_at },
+    }, 409, cors);
+  }
+
   // Dispatch variable-amount claims (§5.7.6.1) to the dedicated handler. The
   // intent's `min_take_amount` field is the discriminator — legacy intents
   // omit it and fall through to the existing path. A taker who tries to
@@ -15162,6 +15272,14 @@ async function handleAtomicIntentClaim(assetIdHex, intentIdHex, req, env, networ
   await env.REGISTRY_KV.put(
     atomicClaimKey(network, assetIdHex, intentIdHex),
     JSON.stringify(claim),
+    { expirationTtl: CLAIM_TTL_SECONDS + 60 },
+  );
+  // Cross-intent UTXO pledge index (see gate above). TTL matches the
+  // claim's so a stale pledge clears itself without an explicit
+  // delete on fulfilment.
+  await env.REGISTRY_KV.put(
+    atomicClaimUtxoIndexKey(network, takerUtxoTxid, takerUtxoVout),
+    JSON.stringify({ asset_id: assetIdHex, intent_id: intentIdHex, expires_at: claim.expires_at }),
     { expirationTtl: CLAIM_TTL_SECONDS + 60 },
   );
   return jsonResponse({ ok: true, claim, intent }, 200, cors);

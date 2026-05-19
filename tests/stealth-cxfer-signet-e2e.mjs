@@ -85,6 +85,24 @@ function asAlice() { dapp.wallet.priv = hexToBytes(ALICE.priv_hex); dapp.wallet.
 function asBob()   { dapp.wallet.priv = hexToBytes(BOB.priv_hex);   dapp.wallet.pub = hexToBytes(BOB.pub_hex);   dapp.invalidateHoldingsCache(); }
 function asCarol() { dapp.wallet.priv = hexToBytes(CAROL.priv_hex); dapp.wallet.pub = hexToBytes(CAROL.pub_hex); dapp.invalidateHoldingsCache(); }
 
+// scanHoldings has a hardcoded 90s timeout against mempool.space, which
+// rate-limits aggressively. Wrap with retry-on-timeout — the scan is
+// idempotent and cache-warming means the retry usually completes quickly.
+async function scanHoldingsRetry(maxAttempts = 5) {
+  let last;
+  for (let i = 0; i < maxAttempts; i++) {
+    try {
+      return await dapp.scanHoldings();
+    } catch (e) {
+      last = e;
+      if (!String(e?.message || '').includes('exceeded 90s')) throw e;
+      info(`scanHoldings timed out (attempt ${i + 1}/${maxAttempts}); retrying in 15s…`);
+      await sleep(15000);
+    }
+  }
+  throw last;
+}
+
 async function satsBalance(addr) {
   const r = await fetch(`https://mempool.space/signet/api/address/${addr}`);
   const j = await r.json();
@@ -180,7 +198,7 @@ if (!assetIdHex) {
 if (!state.p3RevealTxid) {
   step(3, 'BASELINE: Bob → Alice CLASSICAL CXFER (regression — must still work)');
   asBob();
-  await dapp.scanHoldings();
+  await scanHoldingsRetry();
   const r = await dapp.buildAndBroadcastCXfer({
     assetIdHex,
     recipientPubHex: ALICE.pub_hex,
@@ -197,7 +215,7 @@ if (!state.p3RevealTxid) {
 // Alice scans, must see the classical credit.
 asAlice();
 {
-  const h = await dapp.scanHoldings();
+  const h = await scanHoldingsRetry();
   const ah = h.get(assetIdHex);
   if (!ah || ah.balance < 200_000n) fail(`Alice missing classical credit (have ${ah?.balance ?? 0n})`);
   const classicalCount = ah.utxos.filter(u => !u.stealthTweakedSk).length;
@@ -211,7 +229,7 @@ asAlice();
 if (!state.p4RevealTxid) {
   step(4, 'STEALTH SEND: Bob → Alice CXFER with stealth recipient');
   asBob();
-  await dapp.scanHoldings();
+  await scanHoldingsRetry();
   const r = await dapp.buildAndBroadcastCXferMulti({
     assetIdHex,
     recipients: [{ stealthAddress: ALICE.stealth_address, amount: 150_000n }],
@@ -227,7 +245,7 @@ if (!state.p4RevealTxid) {
 // Alice scans for stealth credit.
 asAlice();
 {
-  const h = await dapp.scanHoldings();
+  const h = await scanHoldingsRetry();
   const ah = h.get(assetIdHex);
   if (!ah) fail(`Alice has no holdings for asset`);
   const stealthUtxos = ah.utxos.filter(u => u.stealthTweakedSk);
@@ -255,7 +273,7 @@ asAlice();
 if (!state.p5RevealTxid) {
   step(5, 'STEALTH SPEND: Alice → Bob CLASSICAL CXFER spending the stealth UTXO');
   asAlice();
-  const h = await dapp.scanHoldings();
+  const h = await scanHoldingsRetry();
   const ah = h.get(assetIdHex);
   const stealthUtxo = ah.utxos.find(u => u.stealthTweakedSk);
   if (!stealthUtxo) fail(`Alice's stealth UTXO not found`);
@@ -276,7 +294,7 @@ if (!state.p5RevealTxid) {
 // Bob scans; must see the credit (proves amount channel symmetry held).
 asBob();
 {
-  const h = await dapp.scanHoldings();
+  const h = await scanHoldingsRetry();
   const bh = h.get(assetIdHex);
   if (!bh) fail(`Bob lost all balance — scan failed`);
   // Bob's balance should be: supply - 200k (p3) - 150k (p4) + 100k (p5 back to Bob)
@@ -294,7 +312,7 @@ asBob();
 if (!state.p6aRevealTxid) {
   step(6, 'STEALTH → STEALTH chain: Bob → Carol stealth (hop A)');
   asBob();
-  await dapp.scanHoldings();
+  await scanHoldingsRetry();
   const r = await dapp.buildAndBroadcastCXferMulti({
     assetIdHex,
     recipients: [{ stealthAddress: CAROL.stealth_address, amount: 80_000n }],
@@ -310,7 +328,7 @@ if (!state.p6aRevealTxid) {
 // Carol scans, picks up stealth credit.
 asCarol();
 {
-  const h = await dapp.scanHoldings();
+  const h = await scanHoldingsRetry();
   const ch = h.get(assetIdHex);
   const stealth = ch?.utxos?.find(u => u.stealthTweakedSk && u.amount === 80_000n);
   if (!stealth) fail(`Carol missing stealth credit`);
@@ -320,7 +338,7 @@ asCarol();
 if (!state.p6bRevealTxid) {
   info('hop B: Carol → Bob STEALTH spending the stealth UTXO');
   asCarol();
-  const h = await dapp.scanHoldings();
+  const h = await scanHoldingsRetry();
   const ch = h.get(assetIdHex);
   const stealth = ch.utxos.find(u => u.stealthTweakedSk && u.amount === 80_000n);
   const r = await dapp.buildAndBroadcastCXferMulti({
@@ -339,7 +357,7 @@ if (!state.p6bRevealTxid) {
 // Bob scans; must see the new stealth credit.
 asBob();
 {
-  const h = await dapp.scanHoldings();
+  const h = await scanHoldingsRetry();
   const bh = h.get(assetIdHex);
   const newStealth = bh?.utxos?.find(u =>
     u.stealthTweakedSk && u.utxo.txid === state.p6bRevealTxid,
