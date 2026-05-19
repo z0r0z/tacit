@@ -24036,6 +24036,120 @@ async function buildAndBroadcastPmint({ etchTxidHex, onProgress = null }) {
 }
 
 // ============== CXFER (commit-reveal) ==============
+// ============================================================================
+// Stealth-recipient discovery (SPEC-BLINDED-PUBKEY-AMENDMENT §A class-2)
+// ============================================================================
+//
+// scanHoldings walks UTXOs at wallet.address(), so it can't autonomously find
+// stealth-received UTXOs (those sit at P2WPKH(commit), a distinct address).
+// The recipient must either:
+//   (a) Receive the reveal-tx txid out-of-band from the sender and call
+//       discoverStealthFromTxid(txid) below. This is the v1 UX.
+//   (b) Run scanAssetForStealthReceipts(assetIdHex) which walks every reveal
+//       tx that has ever spent a UTXO of this asset and trial-derives — the
+//       §F.6 "scan-flooding" model. Expensive on long-lived assets; bounded
+//       by asset history depth.
+// A future view-tag amendment would let (b) filter cheaply before trial-derive.
+
+async function discoverStealthFromTxid(txidHex, { merge = true } = {}) {
+  await ensurePrivkey();
+  const tx = await getTx(txidHex);
+  if (!tx || !tx.vin || tx.vin.length < 2) throw new Error(`tx ${txidHex.slice(0,16)}… missing or malformed`);
+  const wit0 = tx.vin[0]?.witness;
+  if (!wit0 || wit0.length < 3) return [];
+  let envBytes;
+  try { envBytes = hexToBytes(wit0[1]); } catch { return []; }
+  const env = decodeEnvelopeScript(envBytes);
+  if (!env) return [];
+  if (!STEALTH_DOMAIN_BY_OPCODE.has(env.opcode)) return [];
+
+  const dec = env.opcode === T_CXFER       ? decodeCXferPayload(env.payload)
+            : env.opcode === T_CXFER_BPP   ? decodeCXferBppPayload(env.payload)
+            : null;
+  if (!dec) return [];
+
+  const classifiedInputs = tx.vin.map((vin) => {
+    const witness = (vin.witness || []).map(h => { try { return hexToBytes(h); } catch { return new Uint8Array(0); } });
+    const prevoutScript = vin.prevout?.scriptpubkey
+      ? hexToBytes(vin.prevout.scriptpubkey) : null;
+    return classifyStealthInput({ witness, prevoutScript });
+  });
+  const credits = recipientScanTxForStealth({
+    classifiedInputs,
+    outputs: tx.vout.map(o => ({ script: hexToBytes(o.scriptpubkey || '') })),
+    walletPriv: wallet.priv, walletPub: wallet.pub,
+    networkTag: currentNetworkName(),
+    domain: STEALTH_DOMAIN_BY_OPCODE.get(env.opcode),
+    txAnchorHead: stealthTxAnchorHead(tx.vin[1].txid, tx.vin[1].vout),
+  });
+  if (credits.length === 0) return [];
+
+  // Verify amount channel + Pedersen for each candidate. Without this we'd
+  // credit garbage if the stealth-trial somehow false-positives.
+  const senderPubHex = tx.vin[1]?.witness?.[1];
+  if (!senderPubHex || senderPubHex.length !== 66) return [];
+  const senderPub = hexToBytes(senderPubHex);
+  const anchorBytes = concatBytes(
+    reverseBytes(hexToBytes(tx.vin[1].txid)),
+    (() => { const b = new Uint8Array(4); new DataView(b.buffer).setUint32(0, tx.vin[1].vout >>> 0, true); return b; })(),
+  );
+  const assetIdHex = bytesToHex(dec.assetId);
+  const discovered = [];
+  for (const credit of credits) {
+    if (credit.voutIndex >= dec.outputs.length) continue;
+    const ct = dec.outputs[credit.voutIndex].encryptedAmount;
+    const ks = deriveAmountKeystreamECDH(wallet.priv, senderPub, anchorBytes, credit.voutIndex);
+    const amount = decryptAmount(ct, ks);
+    if (amount < 0n || amount >= (1n << 64n)) continue;
+    const r = deriveBlinding(wallet.priv, senderPub, anchorBytes, credit.voutIndex);
+    const onChainCommitment = dec.outputs[credit.voutIndex].commitment;
+    try {
+      if (!pedersenCommit(amount, r).equals(bytesToPoint(onChainCommitment))) continue;
+    } catch { continue; }
+    discovered.push({
+      txid: txidHex, vout: credit.voutIndex, assetIdHex, amount, blinding: r,
+      commitment: onChainCommitment,
+      stealthTweakedSk: bytesToHex(credit.tweakedSk),
+      senderPubHex,
+    });
+  }
+  if (!merge || discovered.length === 0) return discovered;
+
+  // Persist the recovered opening so future scans recognize the (txid, vout).
+  // (The holdings cache itself is rebuilt from scratch on every scanHoldings;
+  // the persistent opening + the explicit stealth-utxo list survive.)
+  for (const d of discovered) {
+    recordOpening(d.txid, d.vout, d.assetIdHex, d.amount, d.blinding);
+  }
+  // Merge into the live cache if present. scanHoldings rebuilds via
+  // _holdingsCache = { fetchedAt, holdings: Map }, so we patch holdings
+  // directly.
+  if (_holdingsCache?.holdings instanceof Map) {
+    for (const d of discovered) {
+      const meta = getAssetMeta(d.assetIdHex);
+      const synth = (typeof _cbtcTacSyntheticMeta === 'function') ? _cbtcTacSyntheticMeta(d.assetIdHex) : null;
+      const h = _holdingsCache.holdings.get(d.assetIdHex) || {
+        ticker: meta?.ticker || synth?.ticker || '???',
+        decimals: meta?.decimals ?? synth?.decimals ?? 0,
+        balance: 0n, utxos: [],
+      };
+      const exists = h.utxos.some(x => x.utxo.txid === d.txid && x.utxo.vout === d.vout);
+      if (!exists) {
+        h.balance += d.amount;
+        h.utxos.push({
+          utxo: { txid: d.txid, vout: d.vout, value: DUST, status: tx.status || {} },
+          amount: d.amount, blinding: d.blinding, commitment: d.commitment,
+          senderPubHex: d.senderPubHex,
+          stealthTweakedSk: d.stealthTweakedSk,
+          blockTime: tx.status?.block_time || null,
+        });
+      }
+      _holdingsCache.holdings.set(d.assetIdHex, h);
+    }
+  }
+  return discovered;
+}
+
 // forceUtxos (optional) lets callers pre-select the exact asset UTXO(s) to
 // consume — used by the cancel-atomic-offer flow, which must spend the
 // specific UTXO referenced by an outstanding T_AXFER partial reveal in order
@@ -75249,6 +75363,7 @@ export {
   buildAndBroadcastCXferMulti,
   carveExactAmount,
   scanHoldings, invalidateHoldingsCache,
+  discoverStealthFromTxid,
   getFeeRate, getFeeTierPref, setFeeTierPref, FEE_TIERS,
   broadcast, broadcastWithRetry, getTx,
   estCXferRevealVb, estCommitVb, feeFor,

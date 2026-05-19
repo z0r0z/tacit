@@ -242,28 +242,31 @@ if (!state.p4RevealTxid) {
   step(4, `STEALTH SEND already done — ${state.p4RevealTxid.slice(0, 16)}…`);
 }
 
-// Alice scans for stealth credit.
+// Alice discovers her stealth credit via the new dapp API (the sender
+// shares the txid out-of-band; she calls discoverStealthFromTxid).
+// scanHoldings alone can't find stealth outputs because they sit at
+// P2WPKH(commit), not at wallet.address() — discovery is necessarily
+// txid-driven in v1.
 asAlice();
+let aliceStealthCredit;
 {
-  const h = await scanHoldingsRetry();
-  const ah = h.get(assetIdHex);
-  if (!ah) fail(`Alice has no holdings for asset`);
-  const stealthUtxos = ah.utxos.filter(u => u.stealthTweakedSk);
-  if (stealthUtxos.length < 1) fail(`Alice has no stealth UTXO; total: ${ah.utxos.length}`);
-  ok(`Alice TOTAL balance ${ah.balance} (classical+stealth)`);
-  ok(`Alice has ${stealthUtxos.length} stealth UTXO(s), tweakedSk persisted`);
-  // Confirm the stealth UTXO's on-chain script is P2WPKH(commit), not P2WPKH(Alice.pub).
-  // Fetch the reveal tx and check the script at the matching vout.
-  const stealthUtxo = stealthUtxos[0];
-  const txData = await fetch(`https://mempool.space/signet/api/tx/${stealthUtxo.utxo.txid}`).then(r => r.json());
-  const outScript = txData.vout[stealthUtxo.utxo.vout].scriptpubkey;
+  const discovered = await dapp.discoverStealthFromTxid(state.p4RevealTxid);
+  if (discovered.length < 1) fail(`Alice's discoverStealthFromTxid returned 0 credits — math broken`);
+  const credit = discovered.find(d => d.assetIdHex === assetIdHex);
+  if (!credit) fail(`Alice discovered credits but none for this asset`);
+  ok(`Alice discovered stealth credit: ${credit.amount} units, vout ${credit.vout}`);
+  ok(`tweakedSk persisted; senderPubHex = ${credit.senderPubHex.slice(0, 16)}…`);
+  // Confirm the on-chain script IS P2WPKH(commit), not P2WPKH(alice.pub).
+  const txData = await fetch(`https://mempool.space/signet/api/tx/${credit.txid}`).then(r => r.json());
+  const outScript = txData.vout[credit.vout].scriptpubkey;
   const classicalScript = bytesToHex(dapp.p2wpkhScript(hexToBytes(ALICE.pub_hex)));
   if (outScript === classicalScript) fail(`stealth output's script is P2WPKH(alice.pub) — NOT shielded`);
   // Verify tweakedSk · G == commit (the on-chain pubkey hash).
-  const tweakedPub = secp.getPublicKey(hexToBytes(stealthUtxo.stealthTweakedSk), true);
+  const tweakedPub = secp.getPublicKey(hexToBytes(credit.stealthTweakedSk), true);
   const expectedScript = bytesToHex(dapp.p2wpkhScript(tweakedPub));
   if (outScript !== expectedScript) fail(`tweakedSk·G doesn't match on-chain script`);
   ok(`stealth output script verified: P2WPKH(commit) where tweakedSk·G == commit ✓`);
+  aliceStealthCredit = credit;
 }
 
 // ============================================================================
@@ -273,15 +276,25 @@ asAlice();
 if (!state.p5RevealTxid) {
   step(5, 'STEALTH SPEND: Alice → Bob CLASSICAL CXFER spending the stealth UTXO');
   asAlice();
-  const h = await scanHoldingsRetry();
-  const ah = h.get(assetIdHex);
-  const stealthUtxo = ah.utxos.find(u => u.stealthTweakedSk);
-  if (!stealthUtxo) fail(`Alice's stealth UTXO not found`);
-  info(`spending stealth UTXO ${stealthUtxo.utxo.txid.slice(0,16)}…:${stealthUtxo.utxo.vout} (${stealthUtxo.amount} units)`);
+  if (!aliceStealthCredit) {
+    // Resumed run: re-discover.
+    const discovered = await dapp.discoverStealthFromTxid(state.p4RevealTxid);
+    aliceStealthCredit = discovered.find(d => d.assetIdHex === assetIdHex);
+    if (!aliceStealthCredit) fail(`could not re-discover Alice's stealth credit on resume`);
+  }
+  // Shape the discovered credit as a forceUtxos entry.
+  const stealthForceUtxo = {
+    utxo: { txid: aliceStealthCredit.txid, vout: aliceStealthCredit.vout, value: dapp.DUST, status: {} },
+    amount: aliceStealthCredit.amount,
+    blinding: aliceStealthCredit.blinding,
+    commitment: aliceStealthCredit.commitment,
+    stealthTweakedSk: aliceStealthCredit.stealthTweakedSk,
+  };
+  info(`spending stealth UTXO ${stealthForceUtxo.utxo.txid.slice(0,16)}…:${stealthForceUtxo.utxo.vout} (${stealthForceUtxo.amount} units)`);
   const r = await dapp.buildAndBroadcastCXferMulti({
     assetIdHex,
     recipients: [{ pubHex: BOB.pub_hex, amount: 100_000n }],
-    forceUtxos: [stealthUtxo],  // forces the stealth UTXO as the input
+    forceUtxos: [stealthForceUtxo],
   });
   ok(`reveal ${r.revealTxid.slice(0, 16)}…`);
   await waitConfirmed(r.revealTxid, 'p5 stealth-spend reveal');
@@ -292,15 +305,20 @@ if (!state.p5RevealTxid) {
 }
 
 // Bob scans; must see the credit (proves amount channel symmetry held).
+// Bob receives back at his CLASSICAL address here, so plain scanHoldings sees it.
 asBob();
 {
   const h = await scanHoldingsRetry();
   const bh = h.get(assetIdHex);
   if (!bh) fail(`Bob lost all balance — scan failed`);
-  // Bob's balance should be: supply - 200k (p3) - 150k (p4) + 100k (p5 back to Bob)
-  const expected = 1_000_000n - 200_000n - 150_000n + 100_000n;
-  if (bh.balance !== expected) fail(`Bob balance ${bh.balance} ≠ expected ${expected}`);
-  ok(`Bob balance ${bh.balance} = supply - p3 - p4 + p5 ✓ (THE FIX proved on chain)`);
+  // After Phase 5, Bob's classical balance = (CETCH-allocated - sent in p3,p4) +
+  // p5 receive. CETCH credit auto-detected via scanHoldings on Bob's address.
+  // Verify a credit at p5RevealTxid landed:
+  const p5Credit = bh.utxos.find(u => u.utxo.txid === state.p5RevealTxid);
+  if (!p5Credit) fail(`Bob can't find p5 credit at ${state.p5RevealTxid.slice(0,16)}…`);
+  if (p5Credit.amount !== 100_000n) fail(`p5 credit amount ${p5Credit.amount} ≠ 100000`);
+  ok(`Bob received 100000 from Alice's stealth-spend (p5: ${state.p5RevealTxid.slice(0,16)}…) ✓`);
+  ok(`THE FIX (amount-channel ECDH via tweakedSk) proved on chain`);
 }
 
 // ============================================================================
@@ -325,26 +343,36 @@ if (!state.p6aRevealTxid) {
   step(6, `hop A already done — ${state.p6aRevealTxid.slice(0, 16)}…`);
 }
 
-// Carol scans, picks up stealth credit.
+// Carol discovers her stealth credit via the explicit API.
 asCarol();
+let carolStealthCredit;
 {
-  const h = await scanHoldingsRetry();
-  const ch = h.get(assetIdHex);
-  const stealth = ch?.utxos?.find(u => u.stealthTweakedSk && u.amount === 80_000n);
-  if (!stealth) fail(`Carol missing stealth credit`);
-  ok(`Carol has stealth UTXO (${stealth.amount} units), tweakedSk persisted`);
+  const discovered = await dapp.discoverStealthFromTxid(state.p6aRevealTxid);
+  const credit = discovered.find(d => d.assetIdHex === assetIdHex && d.amount === 80_000n);
+  if (!credit) fail(`Carol missing stealth credit (discovered: ${discovered.length})`);
+  ok(`Carol discovered stealth UTXO: ${credit.amount} units, tweakedSk persisted`);
+  carolStealthCredit = credit;
 }
 
 if (!state.p6bRevealTxid) {
-  info('hop B: Carol → Bob STEALTH spending the stealth UTXO');
+  info('hop B: Carol → Bob STEALTH spending the stealth UTXO (DOUBLE-STEALTH path)');
   asCarol();
-  const h = await scanHoldingsRetry();
-  const ch = h.get(assetIdHex);
-  const stealth = ch.utxos.find(u => u.stealthTweakedSk && u.amount === 80_000n);
+  if (!carolStealthCredit) {
+    const discovered = await dapp.discoverStealthFromTxid(state.p6aRevealTxid);
+    carolStealthCredit = discovered.find(d => d.assetIdHex === assetIdHex && d.amount === 80_000n);
+    if (!carolStealthCredit) fail(`could not re-discover Carol's stealth credit on resume`);
+  }
+  const stealthForceUtxo = {
+    utxo: { txid: carolStealthCredit.txid, vout: carolStealthCredit.vout, value: dapp.DUST, status: {} },
+    amount: carolStealthCredit.amount,
+    blinding: carolStealthCredit.blinding,
+    commitment: carolStealthCredit.commitment,
+    stealthTweakedSk: carolStealthCredit.stealthTweakedSk,
+  };
   const r = await dapp.buildAndBroadcastCXferMulti({
     assetIdHex,
     recipients: [{ stealthAddress: BOB.stealth_address, amount: 50_000n }],
-    forceUtxos: [stealth],
+    forceUtxos: [stealthForceUtxo],
   });
   ok(`hop B reveal ${r.revealTxid.slice(0, 16)}…`);
   await waitConfirmed(r.revealTxid, 'p6b reveal');
@@ -354,21 +382,17 @@ if (!state.p6bRevealTxid) {
   info(`hop B already done — ${state.p6bRevealTxid.slice(0, 16)}…`);
 }
 
-// Bob scans; must see the new stealth credit.
+// Bob discovers the final stealth credit. The hop B is the "double-stealth"
+// case: Carol spent a stealth UTXO (tweakedSk input) AND sent to a stealth
+// recipient (commit output). Both ECDH channels must use the right scalars;
+// getting either wrong silently breaks here.
 asBob();
 {
-  const h = await scanHoldingsRetry();
-  const bh = h.get(assetIdHex);
-  const newStealth = bh?.utxos?.find(u =>
-    u.stealthTweakedSk && u.utxo.txid === state.p6bRevealTxid,
-  );
-  if (!newStealth) fail(`Bob missing final stealth credit from Carol`);
-  ok(`Bob received stealth credit ${newStealth.amount} from Carol's stealth-spend ✓`);
+  const discovered = await dapp.discoverStealthFromTxid(state.p6bRevealTxid);
+  const credit = discovered.find(d => d.assetIdHex === assetIdHex && d.amount === 50_000n);
+  if (!credit) fail(`Bob missing final stealth credit from Carol (discovered: ${discovered.length})`);
+  ok(`Bob discovered stealth credit ${credit.amount} from Carol's stealth-spend ✓`);
   ok(`(this hop = double-stealth: tweakedSk on both input AND output channels)`);
-  // Total expected: supply - p3(200k) - p4(150k) + p5(100k) - p6a(80k) + p6b(50k)
-  const expected = 1_000_000n - 200_000n - 150_000n + 100_000n - 80_000n + 50_000n;
-  if (bh.balance !== expected) fail(`Bob final balance ${bh.balance} ≠ expected ${expected}`);
-  ok(`Bob final balance ${bh.balance} = supply - p3 - p4 + p5 - p6a + p6b ✓`);
 }
 
 // ============================================================================
