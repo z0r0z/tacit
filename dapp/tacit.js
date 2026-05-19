@@ -35189,6 +35189,13 @@ async function ceremonyContributeAmm({
   const state = await ceremonyFetchState(circuitHash);
   if (!state) throw new Error('ceremony chain not initialized — coordinator hasn\'t POSTed /ceremony/init yet');
   if (state.finalized) throw new Error('ceremony has been finalized; chain is locked');
+  // Belt-and-suspenders: worker always returns circuit_hash, but if a
+  // proxy/cache stripped it we'd silently fall through to the mixer
+  // default in ceremonyVerifyChain and bogusly mismatch the AMM r1cs sha
+  // (the 5a67cdcc vs 1373a3bc error pattern users have reported).
+  // Force-set it from the caller-known circuitHash so the AMM verify
+  // path is impossible to confuse with the mixer hash.
+  state.circuit_hash = String(circuitHash).toLowerCase();
   _ammCeremonyStateByCircuit.set(circuitHash, state);
   _emitMem('start');
   // Soft reservation: claim the slot so concurrent contributors queue
@@ -61216,6 +61223,31 @@ if (typeof document !== 'undefined') {
       try { openAmmCeremonyDrawer(); } catch (err) { console.warn('[amm-contrib-tape] drawer open failed', err?.message); }
       return;
     }
+    // Swap-tile route-details disclosure. Per designer feedback the
+    // helper text under the swap form collapses to one headline line
+    // and pushes residual / fee-impact / auto-fulfil hints behind a
+    // `details ▾` toggle. Body-level delegation because the route
+    // HTML gets rewritten on every input change, so per-button wiring
+    // would need a re-bind dance on every paint.
+    const detailsBtn = e.target.closest?.('[data-act="route-details-toggle"]');
+    if (detailsBtn) {
+      const widget = detailsBtn.closest('[data-swap-tile]');
+      const wrap = detailsBtn.closest('.route-line-headline')?.parentElement
+        || detailsBtn.parentElement?.parentElement;
+      const extras = wrap?.querySelector('[data-route-extras]');
+      if (extras) {
+        const isOpen = !extras.hasAttribute('hidden');
+        if (isOpen) extras.setAttribute('hidden', '');
+        else extras.removeAttribute('hidden');
+        detailsBtn.setAttribute('aria-expanded', String(!isOpen));
+        detailsBtn.textContent = isOpen ? 'details ▾' : 'details ▴';
+        // Persist across the swap tile's input-driven re-renders so the
+        // panel doesn't slam shut on the next keystroke. _renderRouteRows
+        // reads this flag on its way back out.
+        if (widget) widget.dataset.routeDetailsOpen = isOpen ? '0' : '1';
+      }
+      return;
+    }
     const btn = e.target.closest?.('[data-chart-tf]');
     if (!btn) return;
     const next = btn.getAttribute('data-chart-tf');
@@ -63414,6 +63446,17 @@ async function _populateDepthChart(section, aid, decimals, ticker, markUnit) {
   const _crossedBadge = isCrossed
     ? `<span title="Best bid &gt; best ask — typically caused by stale or dust orders. The visible book is unbalanced; mark price line shows where TAC actually trades." style="font-size:9px;padding:1px 5px;background:#c97a1a;color:#fff;border-radius:2px;letter-spacing:0.05em;cursor:help;">crossed</span>`
     : '';
+  // Plain-language CROSSED explainer. Designer feedback: the most novel
+  // thing on the page (an orderbook where best bid sits above best ask
+  // because makers run independent atomic intents) was unexplained, so
+  // first-time visitors saw the badge as "scary error" rather than
+  // "swap fills sweep this band at favorable prices." A one-line tail
+  // next to the depth title teaches the gesture without spawning a
+  // dedicated paragraph; the existing tooltip on the badge keeps the
+  // detail accessible.
+  const _crossedExplainerHtml = isCrossed && Number.isFinite(headerBestBid) && Number.isFinite(headerBestAsk)
+    ? ` <span class="muted" style="text-transform:none;letter-spacing:0;font-size:10px;color:#6B6557;">best bid (${escapeHtml(fmtUnitPriceSats(headerBestBid))}) sits above best ask (${escapeHtml(fmtUnitPriceSats(headerBestAsk))}) — Swap fills sweep this band at favorable prices.</span>`
+    : '';
   const bestBidX = xOf(headerBestBid);
   const bestAskX = xOf(headerBestAsk);
   const _inBandTitle = (inBandBestBid != null || inBandBestAsk != null)
@@ -63446,7 +63489,7 @@ async function _populateDepthChart(section, aid, decimals, ticker, markUnit) {
   const _oldDepthAskD = out.querySelector('[data-depth-ask]')?.getAttribute('d') || null;
   out.innerHTML = `
     <div style="font-size:10px;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:4px;display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;">
-      <strong>Depth</strong>${_logBadge}${_crossedBadge}
+      <strong>Depth</strong>${_logBadge}${_crossedBadge}${_crossedExplainerHtml}
       <span class="muted" style="text-transform:none;letter-spacing:0;font-size:10px;">· <span title="In-band counts after the 0.2×–5× outlier filter — dust + fat-finger orders are excluded from the chart's bands. &quot;N of M&quot; surfaces both numbers when outliers are present so depth reads honestly. The asset-header tile shows the unfiltered total." style="cursor:help;border-bottom:1px dotted var(--ink-faint);">${_markValid && bidsInBand < bids.length ? `${bidsInBand} of ${bids.length}` : bids.length} bid${bids.length === 1 ? '' : 's'} · ${_markValid && asksInBand < asks.length ? `${asksInBand} of ${asks.length}` : asks.length} ask${asks.length === 1 ? '' : 's'} <span style="font-size:9px;opacity:0.7;">in-band</span></span> · <span${_inBandTitle ? ` title="${escapeHtml(_inBandTitle)}" style="cursor:help;border-bottom:1px dotted var(--ink-faint);"` : ''}>best bid ${escapeHtml(fmtUnitPriceSats(headerBestBid))} · best ask ${escapeHtml(fmtUnitPriceSats(headerBestAsk))} sats/${escapeHtml(ticker)}</span>${centerU != null ? ` · mark ${escapeHtml(fmtUnitPriceSats(centerU))}` : ''} · hover to inspect, click to prime swap</span>
     </div>
     <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet" style="width:100%;height:auto;max-height:200px;display:block;background:var(--bg-warm, #faf9f5);border:1px solid var(--ink-faint);">
@@ -66186,24 +66229,38 @@ function _wireSwapTile(scope) {
   // scan them. Each extra hint is fed in already-prefixed with " · " from
   // its source — strip that here so it stands alone.
   const _renderRouteRows = (headline, extras) => {
-    const rows = [headline];
+    // Headline always renders. Extras (residual hint, auto-fulfil tip,
+    // depth-bump suggestion, low-funds warning) collapse behind a
+    // `details ▾` disclosure per designer feedback — a confident trader
+    // wants `3 fills · range · fees · impact` and that's it. Power
+    // users open the disclosure to see the rest. Empty / null extras
+    // skip the disclosure entirely so we never render an empty toggle.
+    const headlineHtml = typeof headline === 'object' && headline && typeof headline.html === 'string'
+      ? headline.html
+      : escapeHtml(String(headline || ''));
+    const _extras = [];
     for (const e of extras) {
       if (!e) continue;
-      // Trusted-HTML row (e.g. depth hint with clickable Apply button):
-      // pass as { html: '<…>' } to bypass escapeHtml. Plain strings are
-      // escaped as before. Only buyer-side callers ever pass html rows;
-      // every callsite that does so builds the HTML from trusted inputs
-      // (slippage option values + integer fill counts, no user text).
-      if (typeof e === 'object' && e && typeof e.html === 'string') {
-        rows.push({ html: e.html });
-      } else {
-        rows.push(String(e).replace(/^\s*·\s*/, ''));
-      }
+      if (typeof e === 'object' && e && typeof e.html === 'string') _extras.push(e.html);
+      else _extras.push(escapeHtml(String(e).replace(/^\s*·\s*/, '')));
     }
-    return rows.map(r => typeof r === 'object'
-      ? `<div class="route-line">${r.html}</div>`
-      : `<div class="route-line">${escapeHtml(r)}</div>`
-    ).join('');
+    if (_extras.length === 0) {
+      return `<div class="route-line route-line-headline">${headlineHtml}</div>`;
+    }
+    // Preserve toggle state across re-renders. The swap tile's infoEl
+    // gets its innerHTML rewritten on every input keystroke + every
+    // 15s tick, so we read the open flag off the widget dataset (set
+    // by the body-level toggle handler) instead of letting the panel
+    // snap shut every paint.
+    const _detailsOpen = widget?.dataset?.routeDetailsOpen === '1';
+    const hiddenAttr = _detailsOpen ? '' : ' hidden';
+    const chevron = _detailsOpen ? 'details ▴' : 'details ▾';
+    const extrasHtml = _extras.map(r => `<div class="route-line">${r}</div>`).join('');
+    return `<div class="route-line route-line-headline" style="display:flex;justify-content:space-between;gap:8px;align-items:baseline;">
+      <span style="flex:1;min-width:0;">${headlineHtml}</span>
+      <button type="button" data-act="route-details-toggle" aria-expanded="${_detailsOpen ? 'true' : 'false'}" style="background:none;border:none;padding:0;font:inherit;color:var(--ink-mid);cursor:pointer;border-bottom:0.5px dashed var(--ink-faint);letter-spacing:0;font-size:10px;flex:0 0 auto;">${chevron}</button>
+    </div>
+    <div class="route-extras" data-route-extras${hiddenAttr}>${extrasHtml}</div>`;
   };
   const _computeImpactStr = (totalSats, totalAmtBI, direction) => {
     if (!(Number.isFinite(refUnit) && refUnit > 0)) return '';
