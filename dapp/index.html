@@ -79,7 +79,7 @@
      script-src 'self' covers all three.
      `?cb=` is auto-set by build/build.mjs to a sha256 prefix of tacit.js
      so iOS Safari's stale-modulepreload cache flushes on every change. -->
-<link rel="modulepreload" href="./tacit.js?cb=bc84a266">
+<link rel="modulepreload" href="./tacit.js?cb=331e204b">
 <link rel="modulepreload" href="./vendor/tacit-deps.min.js">
 <link rel="modulepreload" href="./prf-wallet.js">
 <style>
@@ -8779,6 +8779,9 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
         <span class="welcome-option-title">generate a local wallet<span class="welcome-option-rec" id="welcome-local-rec" style="display:none;">(recommended)</span></span>
         <span class="welcome-option-meta">works in every browser. tacit creates a signing key locked behind a passphrase you set next — you'll re-enter it on each refresh. you can export the key any time. fund via the signet faucet, or send sats from any wallet.</span>
       </button>
+      <div style="font-size:11px;color:var(--ink-mid);margin:2px 4px 0;line-height:1.5;">
+        already have a tacit private key? <a href="#" id="welcome-import" style="color:var(--ink);text-decoration:underline;">restore from key</a>
+      </div>
       <div class="welcome-divider">already have a bitcoin wallet?</div>
       <button id="welcome-xverse" class="welcome-option" type="button">
         <span class="welcome-option-title">connect xverse / leather</span>
@@ -9088,7 +9091,7 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
   </div>
 </div>
 
-<script type="module" src="./tacit.js?cb=bc84a266"></script>
+<script type="module" src="./tacit.js?cb=331e204b"></script>
 
 <!-- Service worker registration moved into tacit.js (the dapp's CSP forbids
      inline scripts; only 'self' module scripts are allowed). See sw.js for

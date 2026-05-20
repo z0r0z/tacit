@@ -76045,9 +76045,16 @@ function _showWelcomeModal() {
       if (passkeyRec) passkeyRec.style.display = 'none';
       if (localRec) localRec.style.display = '';
     }
+    // Import-existing-key secondary affordance under the local-wallet option.
+    // Quiet inline link (not a peer button) so it doesn't compete with the
+    // primary "create new" path — the import flow is rare-but-critical
+    // (cross-device restore for non-passkey users) and only needs to be
+    // discoverable, not loud.
+    const iLink = document.getElementById('welcome-import');
     const close = (choice) => {
       xBtn.onclick = uBtn.onclick = pBtn.onclick = lBtn.onclick = null;
       if (cBtn) cBtn.onclick = null;
+      if (iLink) iLink.onclick = null;
       modal.style.display = 'none';
       settle(choice);
     };
@@ -76056,7 +76063,55 @@ function _showWelcomeModal() {
     pBtn.onclick = () => close('passkey');
     lBtn.onclick = () => close('local');
     if (cBtn) cBtn.onclick = () => close('crossnet');
+    if (iLink) iLink.onclick = (e) => { e.preventDefault(); close('import'); };
     modal.style.display = 'grid';
+  });
+}
+
+// Collect a 64-hex tacit private key via the existing #import-modal. Returns
+// the cleaned hex string on confirm; throws the unlock-cancelled sentinel on
+// dismiss so callers (today: the welcome-modal restore-from-key path) can
+// route cancellation back through the same retry loop they use for the
+// passphrase modal. The wallet-tab Import button has its own inline copy of
+// this flow because it pre-warns about overwriting the loaded wallet — the
+// fresh-restore case from welcome modal has no wallet to overwrite, so the
+// helper takes a `reason` to customize the explainer copy.
+async function _promptImportKey({ reason } = {}) {
+  const modal = document.getElementById('import-modal');
+  const txt = document.getElementById('import-key-text');
+  const reasonEl = document.getElementById('import-reason');
+  const errEl = document.getElementById('import-error');
+  const okBtn = document.getElementById('import-confirm');
+  const cancelBtn = document.getElementById('import-cancel');
+  if (!modal || !txt || !okBtn || !cancelBtn) {
+    // Fallback for cached HTML missing the modal markup. prompt() is OK here
+    // — this only runs on click, so Chrome's user-activation suppression
+    // doesn't apply.
+    const v = prompt('Paste tacit private key (64 hex chars):');
+    if (!v) throw _newUnlockCancelledError();
+    return v.trim();
+  }
+  txt.value = '';
+  if (errEl) errEl.textContent = '';
+  if (reasonEl && reason) reasonEl.textContent = reason;
+  modal.style.display = '';
+  setTimeout(() => { try { txt.focus(); } catch {} }, 50);
+  return new Promise((resolve, reject) => {
+    const cleanup = () => {
+      okBtn.onclick = null;
+      cancelBtn.onclick = null;
+      modal.style.display = 'none';
+      if (errEl) errEl.textContent = '';
+      txt.value = '';
+    };
+    okBtn.onclick = () => {
+      const v = (txt.value || '').trim();
+      if (!v) { if (errEl) errEl.textContent = 'paste a private key first'; return; }
+      if (!/^[0-9a-f]{64}$/i.test(v)) { if (errEl) errEl.textContent = 'must be 64 hex chars'; return; }
+      cleanup();
+      resolve(v);
+    };
+    cancelBtn.onclick = () => { cleanup(); reject(_newUnlockCancelledError()); };
   });
 }
 
@@ -76086,6 +76141,25 @@ async function _runFirstLoadChoice() {
         if (!await _showPasskeyModal()) throw new Error('cancelled');
         // _showPasskeyModal → prfWallet.register/login already called
         // setActiveWalletMode('passkey') via _setupSession.
+      } else if (choice === 'import') {
+        // Restore from existing tacit private key. Two-step flow:
+        //   1) collect the hex key via the existing #import-modal,
+        //   2) wallet.setPriv encrypts it under a fresh passphrase the
+        //      user sets next (its own _promptNewPassphrase call).
+        // Cancellation at either step throws the unlock-cancelled
+        // sentinel; the catch below routes through `continue` so the
+        // user lands back on the welcome modal cleanly. There's nothing
+        // to roll back on the local-wallet slot — setPriv only writes
+        // localStorage on success.
+        const hex = await _promptImportKey({
+          reason: 'paste a 64-char hex tacit private key to restore your wallet. you\'ll set a fresh passphrase next to encrypt it at rest in this browser.',
+        });
+        await wallet.setPriv(hex);
+        setActiveWalletMode('local');
+        try {
+          const addrStr = wallet.pub ? wallet.address() : '';
+          toast(`Restored ${shorten(addrStr || '', 10)} from key.`, 'success', 6000);
+        } catch {}
       } else if (choice === 'crossnet') {
         // Cross-network restore: import the other-network local wallet
         // so the same priv signs on this network too. Matches passkey
