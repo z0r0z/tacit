@@ -15081,6 +15081,14 @@ async function handleAtomicIntentPost(assetIdHex, req, env, network, cors) {
     return jsonResponse({ error: `commit_value mismatch (declared ${commitValueRaw}, on-chain ${commitVout0.value})` }, 400, cors);
   }
 
+  // Anti-spam ceiling on atomic-intent posts. Like preauth listings, each
+  // requires real on-chain capital (commit tx) so the natural cost is high;
+  // the per-pubkey/IP daily cap is the defense against a maker who's
+  // already paid the commit fees and now wants to flood the ladder. 100/day
+  // matches the preauth limit for symmetry.
+  const _orderRl = await _orderbookWriteRateLimit(req, env, makerPubHex, 'intent');
+  if (!_orderRl.ok) return jsonResponse({ error: `intent rate limited: ${_orderRl.reason}` }, 429, cors);
+
   const intent = {
     asset_id: assetIdHex,
     intent_id: intentIdHex,
@@ -15622,6 +15630,20 @@ async function handlePreauthSalePost(assetIdHex, req, env, network, cors) {
     return jsonResponse({ error: 'seller_asset_spend_sig does not verify against the BIP-143 sighash' }, 403, cors);
   }
 
+  // ---------- rate limit ----------
+  // Charge after sig verification so a malformed/unsigned body can't burn
+  // the seller's daily slots. Anti-spam ceiling on listing creation —
+  // each preauth requires a real on-chain UTXO (the one-live-sale-per-
+  // outpoint check below makes outpoint-recycling impossible without a
+  // cancel), so the natural rate limit is "how many UTXOs you have" —
+  // but a seller who pre-fragments their balance into 1000 small UTXOs
+  // could still flood the asks ladder with listings to grief the UI.
+  // 100 listings/day/pubkey is generous for legitimate market-making
+  // (rotating offers, adjusting prices) and tight enough to make
+  // sustained ladder-spam expensive.
+  const _orderRl = await _orderbookWriteRateLimit(req, env, sellerPubHex, 'preauth');
+  if (!_orderRl.ok) return jsonResponse({ error: `listing rate limited: ${_orderRl.reason}` }, 429, cors);
+
   // ---------- one-live-sale-per-outpoint ----------
   // Check the outpoint index BEFORE the main record so a duplicate doesn't
   // leak a partial KV write. KV's eventual consistency means two near-
@@ -15768,6 +15790,44 @@ const AIRDROP_LIST_HARD_CAP = 900;  // total per response; bound size + subreque
 //      identity from spamming many leaves in one drop.
 //
 // DELETE only checks ip-global + ip-per-root (no signed pubkey to bind).
+// Per-pubkey + per-IP daily limit for orderbook writes (preauth listings,
+// atomic intents). Each listing/intent already requires real on-chain
+// capital (a committed UTXO), so this is anti-grief on top of the natural
+// economic gate — a maker who pre-fragments their balance to 1000 small
+// UTXOs could otherwise flood the ladder with junk listings to either
+// (a) hide legitimate offers in noise OR (b) snipe their own bait once
+// the UI shows them, harming buyers' ability to discover real liquidity.
+//
+// 100 listings/day/pubkey is generous for real market-making (rotate
+// asks every few minutes through the day) and tight enough that a
+// single attacker can't sustain a UI-drowning level of noise. IP cap
+// at 300/day catches one-pubkey-per-listing patterns where the attacker
+// runs a fresh keypair for each spam-listing.
+//
+// `kind` ('preauth' | 'intent') segregates buckets so a flood in one
+// listing kind doesn't burn the other kind's quota — the buckets are
+// independent.
+async function _orderbookWriteRateLimit(req, env, pubHex, kind) {
+  const ip = req.headers.get('CF-Connecting-IP') || 'anon';
+  const day = new Date().toISOString().slice(0, 10);
+  const ipKey = `ob-write-rl:ip:${day}:${kind}:${ip}`;
+  const ipLimit = safeInt(env.ORDERBOOK_WRITE_IP_DAILY, 300, { min: 1 });
+  const ipPrior = safeInt(await env.REGISTRY_KV.get(ipKey), 0, { min: 0 });
+  if (ipPrior >= ipLimit) return { ok: false, reason: `${kind} IP daily limit (${ipLimit}/day)` };
+  let pkKey = null;
+  let pkPrior = 0;
+  if (pubHex) {
+    pkKey = `ob-write-rl:pk:${day}:${kind}:${pubHex}`;
+    const pkLimit = safeInt(env.ORDERBOOK_WRITE_PUBKEY_DAILY, 100, { min: 1 });
+    pkPrior = safeInt(await env.REGISTRY_KV.get(pkKey), 0, { min: 0 });
+    if (pkPrior >= pkLimit) return { ok: false, reason: `${kind} pubkey daily limit (${pkLimit}/day)` };
+  }
+  // Commit counters only after every gate has passed.
+  await env.REGISTRY_KV.put(ipKey, String(ipPrior + 1), { expirationTtl: 90000 });
+  if (pkKey) await env.REGISTRY_KV.put(pkKey, String(pkPrior + 1), { expirationTtl: 90000 });
+  return { ok: true };
+}
+
 async function _airdropRateLimit(req, env, tacitPubHex, rootHex) {
   const ip = req.headers.get('CF-Connecting-IP') || 'anon';
   const day = new Date().toISOString().slice(0, 10);

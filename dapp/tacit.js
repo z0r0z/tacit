@@ -71344,22 +71344,53 @@ function _wireSwapTile(scope) {
       invalidateMarketCache();
       invalidateHoldingsCache();
 
-      // Residual-bid placement: if budget remains AND all attempted fills
-      // succeeded (no lastErr), post a bid for the unspent sats at the
-      // user's slippage cap. Closes the seamless-DEX loop: any amount
-      // produces a tradeable order — fills immediately if asks cover,
-      // sits as a bid otherwise. Skipped if filled === 0 (the no-asks
-      // path is handled earlier as a bid-only action). Also skipped on
-      // a take failure so we don't strand a passive bid against unknown
-      // state.
+      // Residual-bid placement: if budget remains, post a bid for the
+      // unspent sats at the user's cap. Closes the seamless-DEX loop:
+      // every Buy click produces a tradeable order — fills immediately
+      // if asks cover, sits as a bid otherwise. Two cases produce
+      // residual:
+      //   (a) Happy path: some fills succeeded, sats budget partially
+      //       consumed (planBuy's `result.residualSats` captures it).
+      //   (b) Snipe-out path: planBuy gave us a route at click time but
+      //       between confirm and broadcast every ask in the plan got
+      //       sniped, so `filled` ended at 0 + `lastErr` is stale-ask-
+      //       family. The user came to TRADE; falling back to a bid at
+      //       their cap preserves their intent rather than dumping
+      //       them at "everything got sniped, your sats sit idle".
+      // User-cancel (stop after this fill) is the one case we DON'T
+      // auto-bid — that's an explicit "I want out" gesture.
+      const _isStaleErrForBid = (msg) => {
+        const s = String(msg || '');
+        if (/Commit tx broadcast|locked at|recovery record/.test(s)) return false;
+        return /already spent|expired|stale|refresh listings|preauth sale not found|just got taken/i.test(s);
+      };
+      const _userCancelled = !!(_cancelState && _cancelState.cancelled);
+      const _budgetUnspent = sats - (result.totalSats - Number(result.residualSats || 0)) * 0; // placeholder; recomputed below
+      // Effective unspent budget = original budget - sats actually broadcast
+      // (filled fills × their ps). result.totalSats includes ALL planned ps,
+      // but only the ones that actually went through chain-side count.
+      let _broadcastSats = 0;
+      for (let i = 0; i < progressItems.length; i++) {
+        if (progressItems[i].status === 'done') {
+          const _planRow = result.plan[i];
+          if (_planRow && Number.isFinite(_planRow.ps)) _broadcastSats += _planRow.ps;
+        }
+      }
+      const _unspentBudget = Math.max(0, sats - _broadcastSats);
+      const _snipeFallback = filled === 0 && lastErr && _isStaleErrForBid(lastErr);
+      const _shouldAutoBidResidual = !_userCancelled
+        && _unspentBudget >= DUST
+        && Number.isFinite(result.cap) && result.cap > 0
+        && (!lastErr || _snipeFallback);
       let bidPosted = null;
-      // Residual sats that ARE above the DUST floor but ended up unposted —
-      // either because the user's cap can't buy one base unit (`_bidAmt === 0n`,
-      // can hit on low-decimal assets at high cap), or because publishBidIntent
-      // threw. Surfaced in the final toast so the buyer knows the sats are
-      // still in their wallet rather than silently assuming a bid is open.
       let _residualUnposted = null;
-      if (!lastErr && filled > 0 && result.residualSats >= DUST && Number.isFinite(result.cap) && result.cap > 0) {
+      if (_shouldAutoBidResidual) {
+        // Pin residualSats to the actually-unspent figure (handles both
+        // the happy "some fills succeeded" path and the snipe-fallback
+        // "all fills got sniped" path uniformly).
+        result.residualSats = _unspentBudget;
+      }
+      if (_shouldAutoBidResidual && result.residualSats >= DUST && Number.isFinite(result.cap) && result.cap > 0) {
         const _residualSats = Number(result.residualSats);
         // BigInt-anchored amount derivation: `_residualSats * 10^decimals`
         // breaks Number precision once residual sats × 10^dec crosses 2^53
@@ -71412,7 +71443,19 @@ function _wireSwapTile(scope) {
       }
       if (progressEl) { progressEl.__swapCancelState = null; progressEl.__swapActionBtn = null; }
       const _feeSuffix = _totalFeesSats > 0 ? ` · paid ${_totalFeesSats.toLocaleString()} sats fees` : '';
-      if (lastErr && filled === 0) toast(friendlyTradeErrorMsg(lastErr?.message || String(lastErr)), 'error', 12000);
+      // Snipe-fallback toast: every ask in the plan got sniped pre-
+      // broadcast, but the unspent budget posted as a bid at the user's
+      // cap so they're not stuck with idle sats. Treats as success
+      // because the user's intent (buy at price X) is now expressed in
+      // the orderbook waiting for sellers. Skipped if a non-stale
+      // failure occurred (genuine bug or unlock-cancel — those still
+      // route to error toasts).
+      if (bidPosted && filled === 0 && _snipeFallback) {
+        toast(
+          `All matching asks got sniped before broadcast — your full ${_unspentBudget.toLocaleString()} sats posted as a bid: ${fmtAssetAmount(bidPosted.amount, decimals)} ${ticker} @ ${fmtUnitPriceSats(bidPosted.cap)} sats/${ticker} (24h, partial-fill OK). Now resting in the orderbook — track in Your Open Orders.`,
+          'success', 14000,
+        );
+      } else if (lastErr && filled === 0) toast(friendlyTradeErrorMsg(lastErr?.message || String(lastErr)), 'error', 12000);
       else if (lastErr) toast(`Partial · ${filled}/${result.plan.length} filled${_feeSuffix} · ${friendlyTradeErrorMsg(lastErr?.message || String(lastErr))}`, 'error', 10000);
       else if (_stoppedEarly && filled > 0) toast(`Stopped · ${filled}/${result.plan.length} filled${_feeSuffix} · remaining fills cancelled`, 'warn', 8000);
       else if (bidPosted) {
