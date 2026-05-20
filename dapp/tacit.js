@@ -59603,7 +59603,7 @@ function applyMarketFilters() {
         ${_asksHeaderRowHtml}
         <div id="market-grid" class="${_gridClass}" style="${rowsForGrid.length === 0 ? 'display:none;' : ''}"></div>
         ${_asksHiddenCount > 0 || _marketAsksShowAll
-          ? `<div style="text-align:center;font-size:10px;color:#95907F;padding:8px 0 4px;"><button data-act="market-asks-show-all" type="button" style="background:none;border:0;border-bottom:0.5px dashed rgba(26,26,26,0.4);color:#95907F;padding:0;font:inherit;cursor:pointer;font-size:10px;text-transform:none;letter-spacing:0;">${_marketAsksShowAll ? 'show fewer asks' : `${_asksHiddenCount} more ask${_asksHiddenCount === 1 ? '' : 's'}`}</button></div>`
+          ? `<div style="text-align:center;padding:10px 0 4px;"><button data-act="market-asks-show-all" data-asks-shown="${_marketAsksShowAll ? '1' : '0'}" type="button" title="${_marketAsksShowAll ? 'Collapse back to the 8 cheapest asks' : `Expand the ladder to show all ${_asksHiddenCount + pageRows.length} active asks, not just the top 8 cheapest`}" style="font-size:11px;padding:6px 14px;background:var(--bg,#faf9f5);border:1px solid var(--ink-faint);color:var(--ink);cursor:pointer;font-family:var(--mono);letter-spacing:0.02em;display:inline-flex;align-items:center;gap:6px;transition:background 0.08s, border-color 0.08s;" onmouseover="this.style.background='var(--bg-warm)';this.style.borderColor='var(--ink)';" onmouseout="this.style.background='var(--bg, #faf9f5)';this.style.borderColor='var(--ink-faint)';">${_marketAsksShowAll ? '▴ Show fewer asks' : `▾ Show ${_asksHiddenCount} more ask${_asksHiddenCount === 1 ? '' : 's'}`}</button></div>`
           : ''}
       </div>
       <div data-orderbook-side="bids">
@@ -59942,8 +59942,39 @@ function applyMarketFilters() {
   });
   list.querySelectorAll('[data-act="market-asks-show-all"]').forEach(btn => {
     btn.onclick = () => {
+      // Capture pre-expansion state so we can give the user a smooth
+      // visual cue that the click did something. Without this, the
+      // re-render produces a flash of new rows below the fold and the
+      // user often misses the change entirely — the button text flips
+      // ("show fewer") but nothing else read as different.
+      const _wasExpanded = _marketAsksShowAll;
+      const _btnRect = btn.getBoundingClientRect();
       _marketAsksShowAll = !_marketAsksShowAll;
       applyMarketFilters();
+      // After the re-render lands, scroll the newly-revealed content
+      // into view smoothly. We pivot off the button's new position
+      // (which moved either up — when expanding — or stayed in place,
+      // depending on viewport size). requestAnimationFrame waits for
+      // the re-render's DOM swap before measuring.
+      requestAnimationFrame(() => {
+        // Find the re-rendered button (the same data-act, but a
+        // different DOM node after applyMarketFilters' replace).
+        const newBtn = document.querySelector('[data-act="market-asks-show-all"]');
+        if (!newBtn) return;
+        if (!_wasExpanded) {
+          // Just expanded: scroll the button into view so the user sees
+          // BOTH the freshly-revealed rows above it AND the "show fewer"
+          // affordance below — the eye anchors on the change. Center
+          // alignment so half a viewport's worth of new asks are visible
+          // above the button.
+          try {
+            newBtn.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          } catch {
+            // Fallback for browsers without smooth-scroll support.
+            try { newBtn.scrollIntoView(); } catch {}
+          }
+        }
+      });
     };
   });
   list.querySelectorAll('[data-act="market-row-types-explainer-dismiss"]').forEach(btn => {
@@ -68106,7 +68137,7 @@ async function populateMarketBidsLadder(scope, asset) {
   // link text to "show fewer". Matches design.html line 234-238.
   const _bidsTrailHtml = (_bidsHiddenCount > 0)
     ? (`<div class="market-bids-trailing" style="display:grid;grid-template-columns:1fr minmax(50px,max-content) minmax(40px,max-content);gap:8px;padding:5px 12px;font-size:11px;color:#95907F;border-bottom:0.5px solid rgba(26,26,26,0.06);"><span style="font-style:italic;">${_bidsHiddenCount} outlier${_bidsHiddenCount === 1 ? '' : 's'}</span><span style="text-align:right;">—</span><span style="text-align:right;">hidden</span></div>
-        <div style="text-align:center;font-size:10px;color:#95907F;padding:8px 0 4px;"><button data-act="market-bids-show-all" type="button" style="background:none;border:0;border-bottom:0.5px dashed rgba(26,26,26,0.4);color:#95907F;padding:0;font:inherit;cursor:pointer;font-size:10px;text-transform:none;letter-spacing:0;">${_marketBidsShowAll ? 'show fewer bids' : 'show all bids'}</button></div>`)
+        <div style="text-align:center;padding:10px 0 4px;"><button data-act="market-bids-show-all" type="button" title="${_marketBidsShowAll ? 'Collapse back to the top bids' : `Expand the ladder to show all ${_bidsTotal} active bids, including the ${_bidsHiddenCount} outlier${_bidsHiddenCount === 1 ? '' : 's'} below the visible range`}" style="font-size:11px;padding:6px 14px;background:var(--bg,#faf9f5);border:1px solid var(--ink-faint);color:var(--ink);cursor:pointer;font-family:var(--mono);letter-spacing:0.02em;display:inline-flex;align-items:center;gap:6px;transition:background 0.08s, border-color 0.08s;" onmouseover="this.style.background='var(--bg-warm)';this.style.borderColor='var(--ink)';" onmouseout="this.style.background='var(--bg, #faf9f5)';this.style.borderColor='var(--ink-faint)';">${_marketBidsShowAll ? '▴ Show fewer bids' : `▾ Show all ${_bidsTotal} bids`}</button></div>`)
     : '';
   const mineBidsChip = minedBidsCount > 0
     ? (_marketMineOnlyBids
@@ -68317,8 +68348,20 @@ async function populateMarketBidsLadder(scope, asset) {
   });
   list.querySelectorAll('[data-act="market-bids-show-all"]').forEach(btn => {
     btn.onclick = () => {
+      // Same pattern as the asks-side show-all: capture state, toggle,
+      // re-render, then scroll the new button into view so the user
+      // anchors on the freshly-revealed rows above it.
+      const _wasExpanded = _marketBidsShowAll;
       _marketBidsShowAll = !_marketBidsShowAll;
       populateMarketBidsLadder(scope, asset);
+      requestAnimationFrame(() => {
+        const newBtn = document.querySelector('[data-act="market-bids-show-all"]');
+        if (!newBtn) return;
+        if (!_wasExpanded) {
+          try { newBtn.scrollIntoView({ behavior: 'smooth', block: 'center' }); }
+          catch { try { newBtn.scrollIntoView(); } catch {} }
+        }
+      });
     };
   });
   list.querySelectorAll('[data-bid-action="fulfil-mkt"]').forEach(btn => {
