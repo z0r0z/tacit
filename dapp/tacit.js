@@ -55838,10 +55838,28 @@ function _assetSignatureFull(aid) {
 // best ask is the honest reference. Non-crossed books keep the standard
 // mark so cold-cache assets without a midpoint don't lose coloring.
 // Returns { unit, label } where label is "mark" or "mid".
+// Staleness-decayed mark. Bitcoin's ~10-min block time means there are
+// *structural* periods where no settled trade can land; in those windows
+// the last on-chain print is genuinely stale and the in-band book is the
+// freshest economic signal we have. Tacit bids carry real economic
+// commitment (sats locked in a specific UTXO that can't be double-spent
+// while the bid is live), so weighting them is honest — not the
+// fake-orders-move-mark risk a CEX would face. Schedule:
+//
+//   age < 1h               → mark = last_trade (settled wins on fresh prints)
+//   1h ≤ age ≤ 6h          → mark = blend(last_trade, mid) linear by age
+//   age > 6h               → mark = mid                    (book wins on stale)
+//
+// `label` returned alongside the unit tells callers which regime won
+// so the hero can surface "mark · 3h stale · book-derived" instead of
+// silently flipping the number. Falls back to raw mark when the live
+// book lacks both sides (no mid computable).
+const _MARK_FRESH_AGE_SEC = 3600;        // 1h
+const _MARK_DECAY_END_SEC = 6 * 3600;    // 6h
 function _effectiveReferenceUnit(aid, asset) {
   const markUnit = Number(asset?.mark_price?.unit);
   const markValid = Number.isFinite(markUnit) && markUnit > 0;
-  if (!aid) return markValid ? { unit: markUnit, label: 'mark', crossed: false } : null;
+  if (!aid) return markValid ? { unit: markUnit, label: 'mark', crossed: false, ageSec: null, source: 'mark' } : null;
   const dec = Number.isInteger(asset?.decimals) ? asset.decimals : 0;
   const bandLo = markValid ? markUnit * 0.2 : 0;
   const bandHi = markValid ? markUnit * 5 : Infinity;
@@ -55885,10 +55903,38 @@ function _effectiveReferenceUnit(aid, asset) {
       if (highestBid == null || u > highestBid) highestBid = u;
     }
   }
-  if (highestBid != null && cheapestAsk != null && highestBid > cheapestAsk) {
-    return { unit: (highestBid + cheapestAsk) / 2, label: 'mid', crossed: true };
+  const midUnit = (highestBid != null && cheapestAsk != null && highestBid > 0 && cheapestAsk > 0)
+    ? (highestBid + cheapestAsk) / 2
+    : null;
+  const crossed = (midUnit != null && highestBid > cheapestAsk);
+  const markTs = Number(asset?.mark_price?.ts);
+  const ageSec = (markValid && Number.isFinite(markTs) && markTs > 0)
+    ? Math.max(0, nowSec - markTs)
+    : null;
+  // Staleness-decayed selection.
+  if (!markValid) {
+    // No settled trade at all — fall back to mid if available.
+    if (midUnit != null) return { unit: midUnit, label: 'mid', crossed, ageSec, source: 'book' };
+    return null;
   }
-  return markValid ? { unit: markUnit, label: 'mark', crossed: false } : null;
+  if (midUnit == null) {
+    // One-sided book — settled trade is all we've got, regardless of age.
+    return { unit: markUnit, label: 'mark', crossed: false, ageSec, source: 'mark' };
+  }
+  if (crossed) {
+    // Existing crossed-book semantics preserved: mid is the truthful
+    // anchor when the book is structurally crossed.
+    return { unit: midUnit, label: 'mid', crossed: true, ageSec, source: 'book' };
+  }
+  if (ageSec == null || ageSec < _MARK_FRESH_AGE_SEC) {
+    return { unit: markUnit, label: 'mark', crossed: false, ageSec, source: 'mark' };
+  }
+  if (ageSec > _MARK_DECAY_END_SEC) {
+    return { unit: midUnit, label: 'mid', crossed: false, ageSec, source: 'book' };
+  }
+  // Linear blend across [1h, 6h]: w=0 fresh, w=1 stale.
+  const w = (ageSec - _MARK_FRESH_AGE_SEC) / (_MARK_DECAY_END_SEC - _MARK_FRESH_AGE_SEC);
+  return { unit: markUnit * (1 - w) + midUnit * w, label: 'blend', crossed: false, ageSec, source: 'blend' };
 }
 // Track the last-rendered signature per view so the auto-refresh tick
 // can decide whether the visible asset-detail ladder is stale relative
@@ -62115,20 +62161,22 @@ function renderMarketAssetHeader(assetId, rows) {
       if (Number.isFinite(_cachedMark) && _cachedMark > 0 && _hasTradeBacking) markUnit = _cachedMark;
     } catch { /* cache miss is fine */ }
   }
-  // Hero anchor stays on the mark price (last-trade outlier-guarded
-  // median) regardless of whether the live book is crossed. Mark is
-  // the stable settled-trade reference; promoting the (best bid +
-  // best ask) / 2 midpoint when crossed caused the header to flash
-  // between mark and a midpoint that wanders with every new dust
-  // listing or fat-finger bid. Crossed state is still surfaced on
-  // the depth chart's CROSSED badge + the spread row beneath it.
+  // Staleness-decayed mark. _effectiveReferenceUnit returns one of:
+  //   { source: 'mark',  ageSec }            — fresh print (<1h)
+  //   { source: 'blend', ageSec }            — linear blend 1h-6h
+  //   { source: 'book',  crossed }           — stale (>6h) or crossed
+  // Bitcoin's ~10-min block time creates structural windows where no
+  // settled trade can land; the in-band book is the freshest signal
+  // there. Tacit bids carry on-chain capital commitment, so weighting
+  // them is honest. The hero label below surfaces the regime so users
+  // see "mark · 3h stale · book-derived" instead of an opaque flip.
   const _headerRef = _effectiveReferenceUnit(safeAid, a);
   const _headerCrossed = _headerRef?.crossed === true;
-  const headerUnit = (Number.isFinite(markUnit) && markUnit > 0)
-    ? markUnit
-    : (_headerCrossed && _headerRef?.unit
-        ? _headerRef.unit
-        : priceGroup.referenceUnit);
+  const _headerSource = _headerRef?.source || (markUnit > 0 ? 'mark' : null);
+  const _headerAgeSec = _headerRef?.ageSec ?? null;
+  const headerUnit = (_headerRef && Number.isFinite(_headerRef.unit) && _headerRef.unit > 0)
+    ? _headerRef.unit
+    : ((Number.isFinite(markUnit) && markUnit > 0) ? markUnit : priceGroup.referenceUnit);
   const headerMarketCapSats = marketCapSats(priceGroup.asset || a, headerUnit);
   scheduleMarketSupplyEnrichment([priceGroup]);
   const total = Number(allGroup.total || 0);
@@ -62287,6 +62335,22 @@ function renderMarketAssetHeader(assetId, rows) {
         <span class="mkt-hero-price-unit">sats/${escapeHtml(a.ticker || 'TAC')}</span>
         <span class="mkt-hero-price-usd" data-market-header="price-usd">${escapeHtml(priceUsd || (_marketOracleLoading() ? 'loading USD…' : '—'))}</span>
         ${_heroPrimaryDeltaHtml}
+        ${(() => {
+          // Provenance chip — surfaces which regime resolved the hero number:
+          //   mark   → fresh settled trade (no chip; the default)
+          //   blend  → mark/mid blend during the 1h-6h decay window
+          //   book   → mid only, mark too stale (>6h) or one-sided
+          // Hidden when source is 'mark' so the common-case doesn't add chrome.
+          if (!_headerSource || _headerSource === 'mark') return '';
+          const _ageStr = (_headerAgeSec != null && _headerAgeSec > 0)
+            ? (_headerAgeSec < 3600 ? `${Math.floor(_headerAgeSec / 60)}m` : `${Math.floor(_headerAgeSec / 3600)}h`)
+            : '';
+          const _label = _headerSource === 'blend' ? 'blend' : 'book';
+          const _tip = _headerSource === 'blend'
+            ? `Last on-chain print was ${_ageStr} ago — mark blended with the in-band (best bid + best ask)/2 midpoint. Decays from settled-trade-only at 1h-old to book-only at 6h-old. Fresh trade snaps the hero back to the settled price.`
+            : `Last on-chain print was ${_ageStr} ago — older than the 6h decay window, so the hero shows the in-band book midpoint (best bid + best ask)/2 instead of stuck-stale mark. The depth chart's mark line still shows the prior settled price.`;
+          return `<span class="mkt-hero-mark-source" title="${escapeHtml(_tip)}" style="display:inline-flex;align-items:center;gap:4px;font-size:9px;padding:2px 7px;border:0.5px dashed rgba(26,26,26,0.4);color:var(--ink-mid);letter-spacing:0.04em;text-transform:uppercase;cursor:help;"><span>${escapeHtml(_label)}</span>${_ageStr ? `<span style="opacity:0.7;">· ${escapeHtml(_ageStr)} stale</span>` : ''}</span>`;
+        })()}
         ${_heroSparkSvg ? `<span class="mkt-hero-spark">${_heroSparkSvg}</span>` : ''}
       </div>
 
@@ -63523,16 +63587,15 @@ async function populateMarketAssetStats(scope, asset) {
         setHeader('vol24-usd', fmtMarketUsdWholeFromSats(_heroVolSats, '—'));
         setHeader('vol24-btc', fmtMarketBtc(_heroVolSats));
       }
-      // Always anchor the hero sats/USD/mcap to MARK price (settled-
-      // trade reference). The sync render path was changed to do the
-      // same; this async hydrator used to swap in MID on crossed books
-      // which produced a visible flicker between mark and mid every
-      // /assets/<aid> tick. Crossed-book signal stays on the depth
-      // chart's CROSSED badge + the spread row beneath it; the hero
-      // anchor is honest mark-only.
-      const _headerUnitHdr = (Number.isFinite(markUnit) && markUnit > 0)
-        ? markUnit
-        : null;
+      // Route through the staleness-decayed _effectiveReferenceUnit so
+      // the async hydrate stays consistent with the sync render. Fresh
+      // print → mark; 1h-6h → blend; >6h → mid. Crossed-book → mid
+      // (preserved). Removes the prior "flicker between mark and mid"
+      // by giving both writers a single source of truth.
+      const _hdrEff = _effectiveReferenceUnit(aid, j);
+      const _headerUnitHdr = (_hdrEff && Number.isFinite(_hdrEff.unit) && _hdrEff.unit > 0)
+        ? _hdrEff.unit
+        : ((Number.isFinite(markUnit) && markUnit > 0) ? markUnit : null);
       if (resolvedSupplyBig != null && _headerUnitHdr != null) {
         const _wholeSupplyHdr = Number(resolvedSupplyBig) / Math.pow(10, decimals);
         const _mcapSatsHdr = Math.round(_wholeSupplyHdr * _headerUnitHdr);
