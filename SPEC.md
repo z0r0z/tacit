@@ -73,7 +73,7 @@ and pick from the explicitly-listed free slots. The legend:
 |---|---|---|---|---|
 | `0x21` | `T_CETCH` | ✅ shipped | SPEC §5.1 | Issue a new asset with a hidden initial supply. Optionally mintable. |
 | `0x22` | `T_CXFER_BPP` | ✅ shipped (signet bake) | SPEC §5.21 | Confidential transfer with Bulletproofs+ aggregated rangeproof. Byte-identical to `T_CXFER` (`0x23`) except for the rangeproof bytes; ~14% smaller witness. Mainnet activation pending signet bake completion (`bppEnabled()` defaults ON for signet, OFF for mainnet via `tacit-bpp-enable-mainnet-v1` localStorage flag). |
-| `0x23` | `T_CXFER` | ✅ shipped | SPEC §5.2 | Transfer (split) confidential value between parties. |
+| `0x23` | `T_CXFER` | ✅ shipped | SPEC §5.2 | Transfer (split) confidential value between parties. Optional opt-in shielded recipient (§5.2.1) emits per-tx unique recipient marker — see SPEC-BLINDED-PUBKEY amendment. |
 | `0x24` | `T_MINT` | ✅ shipped | SPEC §5.3 | Issuer issues additional supply on a mintable asset. |
 | `0x25` | `T_BURN` | ✅ shipped | SPEC §5.4 | Any holder destroys part or all of their balance. Burn amount is public. |
 | `0x26` | `T_AXFER` | ✅ shipped | SPEC §5.7 | CXFER variant that allows non-tacit auxiliary inputs (e.g., a buyer's BTC payment) in the same Bitcoin tx, enabling atomic single-tx OTC settlement. |
@@ -776,6 +776,20 @@ The kernel sig verifies under `E'.x_only()` where:
 E' = (Σ output_commitments) − (Σ input_commitments)
 ```
 Sign with `excess = (Σ output_blindings) − (Σ input_blindings)`. If amounts balance, `E' = excess · G` (no H component) and the signature verifies. If amounts don't balance, `E'` has a non-zero H component (`δ · H + excess · G`) and producing a valid sig requires breaking DLP for H w.r.t. G — which is hard since H is NUMS.
+
+#### 5.2.1 Shielded recipient (opt-in extension)
+
+CXFER recipients can additionally opt into address-graph privacy via the **shielded address** primitive defined in [`spec/amendments/SPEC-BLINDED-PUBKEY-AMENDMENT.md`](./spec/amendments/SPEC-BLINDED-PUBKEY-AMENDMENT.md) (class-2). On-the-wire bytes are unchanged — the envelope, kernel sig, range proof, and Pedersen commitment are all identical. The difference is at the recipient output's `scriptPubKey`:
+
+```
+classical recipient: vout[i].script = P2WPKH(hash160(recipient_pubkey))
+shielded recipient:  vout[i].script = P2WPKH(hash160(commit))
+  where commit = recipient_pubkey + b·G
+        b      = HMAC(sha256(ECDH(sender_eligible_input_priv_sum, recipient_pubkey).x),
+                      DOMAIN_CXFER_STEALTH || network_tag || tx_anchor_head || vout_index_LE(4))
+```
+
+Recipients publish a bech32m-encoded handle (`tcs1…` mainnet, `tcsts1…` signet, `tcsrt1…` regtest) that opaquely carries their pubkey; senders decode it and emit `P2WPKH(commit)` per recipient vout. The recipient's wallet trial-derives `b` against `wallet.priv` per eligible output, matches the on-chain script, and persists `tweaked_sk = wallet.priv + b mod n` for later spend. Amount-channel ECDH (Pedersen blinding + amount keystream) continues to use the underlying `recipient_pubkey`, so the two channels remain orthogonal. Validator and indexer behavior is unchanged — class-2 stealth is fully transparent to the trust-bearing protocol per the compatibility audit in `spec/design/BLINDED-PUBKEY-COMPAT-AUDIT.md`.
 
 ### 5.3 T_MINT (`0x24`) — issue more supply on a mintable asset
 
@@ -3631,7 +3645,7 @@ Cron (`*/5 * * * *`) scans recent signet AND mainnet blocks for CETCH, T_MINT, T
 
 - **Multisig mint authority.** Requires FROST or MuSig2 plumbing on top of single-key Schnorr. The on-chain `mint_authority` field can hold any 32-byte x-only pubkey, so multisig is implementable later without changing the wire format.
 - **Asset_id confidentiality.** Liquid CT uses surjection proofs to also hide which asset is moving. Not in tacit v1.
-- **Address-graph privacy.** No CoinJoin, no shielded pool. Privacy scope is amount-only.
+- **BIP-352 silent payments for plain BTC sats.** Tacit-native receiver privacy for tacit tokens ships via the shielded address primitive (SPEC-BLINDED-PUBKEY amendment, class-2) — recipients publish a `tcs1…` bech32m handle that produces per-tx-unique on-chain markers on every CXFER receipt. The mixer pool (T_DEPOSIT / T_WITHDRAW, §5.10–§5.11) provides full anonymity-set unlinkability for assets routed through it. BIP-352 silent payments for plain BTC sats (without a tacit envelope) is deferred until upstream wallet support converges; until then, the mixer pool covers the same use case with a stronger posture.
 - **Bulletproofs+** (Chung et al. 2020) — ~17% smaller proofs at the cost of additional implementation complexity. Deferred to v1.5.
 - **Lightning compatibility.** Tacit transfers are on-chain only; no LN-style payment channels.
 - **Multi-asset transfers in one envelope.** Each CXFER carries a single `asset_id`.

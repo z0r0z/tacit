@@ -1106,56 +1106,52 @@ amendments — see the [`spec/amendments/`](./spec/amendments/)
 folder for the normative spec. What follows is the directional
 notes for what's still in flight.
 
-### Receiver privacy via BIP-352 Silent Payments
+### Receiver privacy — shipped for tacit tokens (CXFER)
 
-Hide the **address graph** — every payment to a recipient lands at a fresh
-one-time address, so an observer can't link "Alice's address has 17 USDA
-txs" because there's no recurring address to link. Composable with v1
-amount-only privacy; not a replacement for it.
+Tacit's **shielded address** primitive (SPEC-BLINDED-PUBKEY amendment, class-2)
+shipped for CXFER in production. Recipients publish a `tcs1…` / `tcsts1…` /
+`tcsrt1…` bech32m address that opaquely encodes their pubkey. Senders who
+paste that handle into the recipient field produce per-tx-unique on-chain
+markers — `P2WPKH(hash160(commit))` where `commit = recipient_pubkey + b·G`
+and `b = HMAC(ECDH(sender_priv, recipient_pub) || domain || tx_anchor || vout)`.
+No recurring on-chain address links one payment to the next; observers see
+a fresh recipient address on every receipt.
 
 ```
-recipient publishes: sp1<scan_xpub><spend_xpub>   (one static address)
-sender derives:      shared = ECDH(sender_priv, scan_pub)
-                     one_time_pub = spend_pub + tweak(shared)·G
-                     CXFER vout[0] → P2WPKH(hash160(one_time_pub))
-recipient scans:     for each Taproot output, derive expected one_time_pub
-                     from (scan_priv, sender_pub); match → it's mine
+recipient publishes: tcs1<bech32m(recipient_pubkey)>     (one static handle)
+sender derives:      shared = ECDH(sender_priv, recipient_pub)
+                     b      = HMAC(sha256(shared.x), domain || network || tx_anchor || vout)
+                     commit = recipient_pubkey + b·G
+                     CXFER vout[0] → P2WPKH(hash160(commit))
+recipient scans:     trial-derive commit for each eligible tx output;
+                     match → tweaked_sk = recipient_priv + b mod n
 ```
 
-**Tacit composition is clean.** Tacit's existing recipient blinding is
-`HMAC(ECDH(sender_priv, recipient_pub).x, …)` — the BIP-352 derivation
-already produces the same shared secret as a side effect, so we'd thread
-it through both paths. No protocol change to CXFER, no envelope change,
-no kernel-sig change.
+The ECDH shared secret is reused for both pubkey-blinding (new) and the
+existing amount-keystream (so no extra ECDH cost on the sender). Cryptography
+is BIP-340 / BIP-341 family; no new ceremony. Recipient-side discovery uses
+the worker's per-asset `xferseen` index — bounded scan, not the every-block
+walk BIP-352 requires.
 
-**Forward-compat for existing tokens: full.** Tokens etched today live at
-standard P2WPKH addresses and stay valid forever. BIP-352 is a per-receive
-opt-in: a recipient publishes a `sp1...` address if they want stealth,
-their traditional pubkey continues to work for senders that don't support
-silent payments. Existing wallets keep their privkey — it becomes
-`spend_priv`; a sibling `scan_priv` derives via BIP-32 from the same
-seed.
+**Receiver privacy for plain BTC sats — BIP-352 Silent Payments (deferred).**
 
-**Effort: ~4–6 weeks.** ~300 LOC of crypto (well-spec'd, reference impls
-exist), ~250 LOC of two-key wallet UX, ~50 LOC of tacit blinding
-composition. **The real cost is the scanner**: BIP-352 receivers need to
-check every Taproot output on chain for a tweak match. Light-client
-filters (BIP-158) narrow the candidate set; for serious adoption, an
-indexer service (or "view server" pattern using the scan key) is
-required. ~400 LOC of scanner integration on top.
+BIP-352 solves the same problem for plain bitcoin (not just tacit tokens).
+A separate ceremony from the tacit shielded-address scheme: two-key wallet
+(scan + spend), every-block scanner on the receiver side, P2TR(tweaked)
+output type. The shielded-address scheme above doesn't apply to plain sats
+because the receiver-side discovery corpus is bounded by tacit's xferseen
+index — for sats there is no equivalent bounded corpus, so recipients would
+need to walk every Bitcoin tx. That's BIP-352's job.
 
-**Tradeoff vs v1 baseline.** Today: amounts hidden, address graph
-public. With BIP-352 layered on: amounts hidden + address graph
-unlinkable per-payment, at the cost of recovery time (scanner has to
-walk every recent Taproot output, not just `getUtxos(my_addr)`).
-Chain analysts lose the "Alice's address transacted 17 times in USDA"
-view.
-
-**Defer until.** BIP-352 wallet adoption hits critical mass — Cake,
-BlueWallet, Sparrow are shipping native support in early 2026; once
-5+ wallets ship and a public silent-payment indexer landscape stabilizes,
-integration shifts from "build from scratch" to "use existing
-infrastructure." Likely 6–12 months out.
+**Defer until** BIP-352 wallet adoption converges. Cake, Sparrow, Silentium
+ship native support; once 5+ wallets ship and a public silent-payment
+indexer landscape stabilizes, integration shifts from "invent a tacit-
+flavored stealth-sats scheme" (which would compete with the standard) to
+"use the standard." Likely 6–12 months out. Tacit users who want plain
+shielded sats today route through the **mixer pool** (T_DEPOSIT / T_WITHDRAW,
+live in production) for full anonymity-set unlinkability — a stronger
+posture than BIP-352's per-payment unlinkability against a sophisticated
+graph analyst.
 
 ### Asset_id privacy via Asset Surjection Proofs (ASPs)
 

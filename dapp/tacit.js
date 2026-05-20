@@ -75643,7 +75643,13 @@ function consumePendingNetFlipToast() {
 // (ext-bound) blob inaccessible. Falling through to the welcome modal lets
 // them re-connect their ext wallet or pick another mode.
 function _hasUnboundLocalWallet() {
-  return localStorage.getItem(walletStorageKey()) !== null;
+  const raw = localStorage.getItem(walletStorageKey());
+  // A stale empty / whitespace value (some browsers / extensions can write
+  // these) must not route through the eager-unlock path — wallet.load()
+  // would treat shape='empty' as "create a new burner" and pop the set-
+  // passphrase modal in front of the welcome modal. Treat falsy values as
+  // "no wallet stored" so init falls through to _runFirstLoadChoice instead.
+  return typeof raw === 'string' && raw.trim().length > 0;
 }
 
 // Cross-network wallet detection. Returns the OTHER network's local
