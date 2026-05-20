@@ -108,16 +108,14 @@ the pair at any `k ∈ [1, 255]` as long as both shift together.
 
 ## Bid-context OP_RETURN binding
 
-The canonical output the buyer's sig commits to is a 41-byte
-OP_RETURN:
+The canonical output the buyer's sig commits to is a 34-byte
+`OP_RETURN(32)` carrying the full bid-context hash with no
+on-chain tag prefix:
 
 ```
 vout[k] = {
   value:    0,
-  script:   OP_RETURN OP_PUSHBYTES_39 (
-              "tacit-preauth-bid-v1"(20 bytes ASCII)
-              || bid_context_hash[:19]
-            )
+  script:   OP_RETURN(0x6a) || OP_PUSHBYTES_32(0x20) || bid_context_hash(32)
 }
 
 bid_context_hash = SHA256(
@@ -131,20 +129,61 @@ bid_context_hash = SHA256(
 )
 ```
 
-The 19-byte truncation matches the available room in a 40-byte
-OP_RETURN data push (20 bytes domain tag + 19 bytes hash). The
-domain tag is human-readable so the OP_RETURN is greppable on chain
-explorers — same convention `T_AXFER_VAR` (§5.7.9) uses for
-dual-party recovery.
+This matches the **envelope-hash commit** pattern tacit already
+uses for `T_SWAP_BATCH` (§5.16) `vout[0] =
+OP_RETURN(SHA256(payload))` and `T_WRAPPER_ATTEST` (§5.19)
+`vout[0] = OP_RETURN(envelope_hash)`. Domain-tagging lives in the
+hash construction (the `tacit-preauth-bid-context-v1` ASCII prefix
+inside the SHA256 input), not in the on-chain bytes — same
+convention as every existing tacit HMAC keystream and every shipped
+envelope-hash binding.
 
-A 19-byte hash truncation provides 152 bits of collision
-resistance, which is more than sufficient for binding (the
-collision attacker would need to construct a different
-`(asset_id, recipient, amount, blinding, price_sats)` tuple
-matching the truncated hash — combinatorially infeasible for any
-adversary). The full 32-byte hash is reconstructible from the bid
-record stored at the worker layer; the on-chain truncation is the
-lookup key.
+### Why no on-chain ASCII tag
+
+Comparison with the four other on-chain OP_RETURN forms tacit
+already uses:
+
+| Surface | Shape | Length | Domain tag bytes on chain? | Purpose |
+|---|---|---|---|---|
+| `T_AXFER` recovery (§5.7.6) | `OP_RETURN(0x6a) \|\| OP_PUSHBYTES_40 \|\| ciphertext_40` | 42 B | none — keystream HMAC is domain-tagged | encrypted `(amount, r)` recovery payload |
+| `T_AXFER_VAR` recovery (§5.7.6.1) | `OP_RETURN(0x6a) \|\| OP_PUSHDATA1 \|\| 0x50 \|\| ciphertext_80` | 83 B | none — both keystream HMACs are domain-tagged | dual-party encrypted recovery |
+| `T_SWAP_BATCH` envelope commit (§5.16) | `OP_RETURN(0x6a) \|\| OP_PUSHBYTES_32 \|\| SHA256(payload)` | 34 B | none — full 32-byte hash | binds trader `SIGHASH_ALL` to envelope content |
+| `T_WRAPPER_ATTEST` envelope commit (§5.19) | `OP_RETURN(0x6a) \|\| OP_PUSHBYTES_32 \|\| envelope_hash` | 34 B | none — full 32-byte hash | binds 159-byte attestation payload via commit-reveal |
+| **`T_PREAUTH_BID` bid-context commit (this amendment)** | `OP_RETURN(0x6a) \|\| OP_PUSHBYTES_32 \|\| bid_context_hash` | 34 B | none — full 32-byte hash | binds buyer's `SIGHASH_SINGLE_ACP` sig to envelope recipient + amount |
+
+Tacit's existing on-chain OP_RETURN bytes are either **opaque
+ciphertext** (recovery payloads) or **raw 32-byte hashes**
+(envelope commits). None carry an ASCII tag in the wire bytes.
+Adding one here would be a one-off departure with no payoff:
+
+- **Dispatch is opcode-driven, not OP_RETURN-prefix-driven.** The
+  validator already knows the tx is a preauth-bid because the
+  envelope at `vin[0].witness` decodes to opcode `0x59`. The
+  OP_RETURN at `vout[k]` is found by position (matching the
+  buyer's pre-signed `vin[k]`), not by ASCII scanning.
+- **Greppability is at the envelope opcode layer.** Chain explorers
+  index tacit envelopes by their decoded opcode (the existing
+  worker scanner already enumerates `0x21`–`0x4F` and the dapp UI
+  surfaces them by name). The OP_RETURN bytes carrying a 32-byte
+  hash are not human-meaningful regardless of prefix.
+- **32-byte hash gives 256-bit binding security**, vs ~152 bits
+  for a 19-byte truncation. The full hash is the safer default.
+- **Saves 8 bytes on-chain** (~80 sats at 10 sat/vB) per
+  settlement vs the 40-byte tagged form. Pure win.
+- **Forward-compatible.** Future preauth-bid variants (variable
+  amount, batched fill) can reuse the same `OP_RETURN(32)` shape
+  with different hash-input layouts — same as how `T_SWAP_BATCH`
+  and `T_WRAPPER_ATTEST` share the `OP_RETURN(SHA256(payload))`
+  shape with different payload schemas.
+
+The encrypted-recovery OP_RETURNs (§5.7.6, §5.7.6.1) **are** tagged
+in their HMAC keystream construction — see the
+`tacit-axintent-onchain-{amount,blinding}-v1` and
+`tacit-axintent-onchain-maker-{amount,blinding}-v1` keystream
+domains in §3. The on-chain bytes themselves carry no tag.
+`T_PREAUTH_BID` follows the same pattern: tagged in the hash
+input (`tacit-preauth-bid-context-v1` inside the SHA256), opaque
+in the on-chain bytes.
 
 ---
 
@@ -347,17 +386,17 @@ standard `T_AXFER` checks (Pedersen conservation, bulletproof
 range, kernel-sig verification, opcode-byte dispatch):
 
 1. **OP_RETURN presence.** Some `vout[k]` in the broadcast tx MUST
-   match the canonical pattern `OP_RETURN OP_PUSHBYTES_39
-   "tacit-preauth-bid-v1" || hash19`.
+   match the canonical pattern `OP_RETURN OP_PUSHBYTES_32 || hash32`
+   (34-byte scriptPubKey, value = 0).
 2. **Buyer-input position match.** Some `vin[k]` MUST share the
    same `k` as the OP_RETURN vout. Its witness MUST contain a
    valid ECDSA signature with trailing byte `0x83` (SIGHASH_SINGLE
    | ANYONECANPAY) over the BIP-143 preimage of that input pinning
    `vout[k]` to the canonical OP_RETURN.
-3. **Recipient binding.** The hash bytes embedded in the OP_RETURN
+3. **Recipient binding.** The 32-byte hash embedded in the OP_RETURN
    MUST equal `SHA256("tacit-preauth-bid-context-v1" || asset_id
-   || bid_id || recipient_pubkey || amount_LE || blinding_LE ||
-   price_sats_LE)[:19]` where:
+   || bid_id || recipient_pubkey || amount_LE || blinding(32) ||
+   price_sats_LE)` where:
    - `asset_id` matches the envelope's asset_id field,
    - `recipient_pubkey` is the buyer-published recipient,
    - `amount`, `blinding` open the envelope's `output[0].commitment`,
@@ -505,10 +544,11 @@ Add to §3 *BIP-340 Schnorr signature-message tags*:
   (the canonical hash the buyer's `SIGHASH_SINGLE_ACP` signature
   pins to vout).
 
-Add to §3 *OP_RETURN data tags*:
-
-- `tacit-preauth-bid-v1` (20 bytes ASCII prefix in the OP_RETURN
-  data push, followed by the 19-byte truncated context hash).
+No new on-chain ASCII tags. The OP_RETURN payload is the raw
+32-byte `bid_context_hash` — same shape as `T_SWAP_BATCH` (§5.16)
+and `T_WRAPPER_ATTEST` (§5.19) envelope-hash commits. Domain
+tagging lives in the hash-input prefix
+(`tacit-preauth-bid-context-v1`), not on chain.
 
 No new HMAC keystream domains — blinding derivation reuses the
 existing self-blinding HMAC keystream from §3.5 / §6 path 4 (with
@@ -597,8 +637,8 @@ recompute bid_context_hash and verify it matches the take request's
 - [ ] BIP-143 preimage construction parity dapp ↔ worker (4 fixture
       vectors: amount=1, amount=2^32, amount=2^63-1, blinding= all-zero)
 - [ ] `bid_context_hash` derivation parity dapp ↔ worker
-- [ ] OP_RETURN bytes pinning (20-byte tag + 19-byte hash = 39 bytes
-      data push; total OP_RETURN script = 41 bytes after `0x6a 0x27` prefix)
+- [ ] OP_RETURN bytes pinning (32-byte hash data push; total
+      scriptPubKey = 34 bytes: `0x6a 0x20 || hash32`)
 - [ ] Recipient binding check rejects tampering with envelope
       `output[0].commitment`
 - [ ] Recipient binding check rejects tampering with `vout[0].script`
@@ -678,10 +718,20 @@ matrix: §5.7.8 made the **ask** side offline-capable for the
 seller; this amendment makes the **bid** side offline-capable for
 the buyer.
 
-Round-1 open question: should the OP_RETURN binding domain tag
-length be 20 bytes (current draft, leaves 19 bytes for hash =
-152-bit security) or shorter (e.g., 4 bytes `"TPB1"`, leaving 35
-bytes for full hash = 280-bit security)? The 20-byte ASCII tag is
-greppable on chain explorers and matches the §5.7.9 `T_AXFER_VAR`
-convention; 152-bit binding is comfortably above any practical
-collision attack. Leaving as-is pending round-2 review.
+**Round-1 open question — resolved.** The original draft proposed
+a 20-byte ASCII tag (`"tacit-preauth-bid-v1"`) prepended to a
+19-byte truncated hash inside a 40-byte OP_RETURN data push.
+Survey of the four existing on-chain OP_RETURN forms (§5.7.6
+recovery, §5.7.6.1 dual-party recovery, §5.16 T_SWAP_BATCH
+envelope commit, §5.19 T_WRAPPER_ATTEST envelope commit) showed
+that **none** carry an ASCII tag in their on-chain bytes —
+recovery payloads are opaque ciphertext, envelope commits are raw
+32-byte SHA256 hashes. The amendment now follows the
+envelope-commit convention: `OP_RETURN(32)` carrying the full
+`bid_context_hash`, with domain-tagging inside the SHA256 input
+(`tacit-preauth-bid-context-v1`) per tacit's existing HMAC and
+hash-derivation pattern. Saves 8 bytes per settlement, doubles the
+binding security (256-bit vs 152-bit), removes the dispatch
+complexity, and stays consistent with the rest of the protocol.
+See the *Why no on-chain ASCII tag* subsection above for the full
+comparison table.

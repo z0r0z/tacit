@@ -52480,7 +52480,15 @@ async function renderRecentEtches() {
       const safeAssetId = /^[0-9a-f]{64}$/.test(a.asset_id || '') ? a.asset_id : '';
       const tile = document.createElement('a');
       tile.className = 'recent-tile';
-      tile.href = '#';
+      // Set href to the full deep-link target so middle-click / right-
+      // click → "open in new tab" preserves the asset focus. Previous
+      // href="#" caused some users to land on the bare tab after a
+      // service-worker-cached old tacit.js executed the click handler
+      // pre-fix; the explicit href is the belt to that suspender.
+      const _tileTarget = safeAssetId
+        ? (a.kind === 'petch' ? `#tab=discover&aid=${safeAssetId}` : `#tab=market&aid=${safeAssetId}`)
+        : (a.kind === 'petch' ? '#tab=discover' : '#tab=market');
+      tile.href = _tileTarget;
       // data-petch-aid is the hook the mint-flash animation targets — petch
       // tiles in the lander get the same purple flash as Discover tiles when
       // their `credited_pmint_count` ticks up between polls. Only set for
@@ -56222,6 +56230,36 @@ function _saveSwapIncludeIntents(on) {
   try { localStorage.setItem(_MARKET_SWAP_INCLUDE_INTENTS_KEY, on ? '1' : '0'); } catch {}
 }
 let _marketSwapIncludeIntents = _loadSwapIncludeIntents();
+// Your-open-orders disclose state. Defaults closed for a clean first-
+// paint, but persists across reloads so a user who expanded it stays
+// expanded the next time the asset detail mounts. Auto-opens after a
+// successful swap so the freshly-posted bid/ask is one scroll away
+// instead of buried under a closed disclosure summary the user has to
+// hunt for. Empty-state is handled by the caller's `_yourOrdersHtml`
+// ternary (no orders → no disclose rendered at all), so this just
+// controls the open attribute when the disclose IS in the DOM.
+const _MARKET_YOUR_ORDERS_OPEN_KEY = 'tacit-market-your-orders-open-v1';
+function _loadYourOrdersOpen() {
+  try {
+    const v = localStorage.getItem(_MARKET_YOUR_ORDERS_OPEN_KEY);
+    if (v === '1') return true;
+    if (v === '0') return false;
+  } catch {}
+  return false;  // default: closed
+}
+function _saveYourOrdersOpen(on) {
+  try { localStorage.setItem(_MARKET_YOUR_ORDERS_OPEN_KEY, on ? '1' : '0'); } catch {}
+}
+function _yourOrdersDiscloseOpenAttr() {
+  return _loadYourOrdersOpen() ? ' open' : '';
+}
+function _setYourOrdersDiscloseOpen(on) {
+  _saveYourOrdersOpen(!!on);
+  try {
+    const el = document.querySelector('[data-mkt-your-orders-disclose]');
+    if (el) el.open = !!on;
+  } catch {}
+}
 // Hide-outlier-bids toggle. Same 0.2×/5× mark band the chart, spread
 // row, and best-bid/best-ask selectors use. Hiding the long tail of
 // -90%+ bids and >5× ask-side noise by default cleans up the visual
@@ -57394,7 +57432,7 @@ function applyMarketFilters() {
     // "Bids below" so users know to scroll past the empty pane to see
     // demand-side liquidity.
     const _yourOrdersDiscloseEmpty = _yourOrdersHtmlNoAsks
-      ? `<details class="mkt-your-orders-disclose"><summary>▾ your open orders</summary>${_yourOrdersHtmlNoAsks}</details>`
+      ? `<details class="mkt-your-orders-disclose" data-mkt-your-orders-disclose${_yourOrdersDiscloseOpenAttr()}><summary>▾ your open orders</summary>${_yourOrdersHtmlNoAsks}</details>`
       : '';
     // Activity table dropped from asset-detail page entirely per the
     // design.html port. The tape's "→ N trades today" link is no-op
@@ -58355,7 +58393,7 @@ function applyMarketFilters() {
   // the panel is reachable but doesn't bloat default vertical. Returns
   // '' when user has no orders so the disclosure collapses entirely.
   const _yourOrdersDisclose = _yourOrdersHtml
-    ? `<details class="mkt-your-orders-disclose"><summary>▾ your open orders</summary>${_yourOrdersHtml}</details>`
+    ? `<details class="mkt-your-orders-disclose" data-mkt-your-orders-disclose${_yourOrdersDiscloseOpenAttr()}><summary>▾ your open orders</summary>${_yourOrdersHtml}</details>`
     : '';
   // Inline activity section — collapsed <details> below the orderbook/tape
   // so the table is reachable without a modal overlay. The tape's
@@ -58618,6 +58656,14 @@ function applyMarketFilters() {
       _saveMarketSimple(_marketSimpleMode);
       applyMarketFilters();
     };
+  });
+  // Persist user's open/close toggle on Your Open Orders disclose. Browser
+  // fires `toggle` on <details> elements when the open attribute flips —
+  // capture it once per render so a manual collapse sticks across reloads
+  // + future renders (rendering uses _yourOrdersDiscloseOpenAttr() which
+  // reads localStorage).
+  list.querySelectorAll('[data-mkt-your-orders-disclose]').forEach(el => {
+    el.ontoggle = () => { try { _saveYourOrdersOpen(!!el.open); } catch {} };
   });
   list.querySelectorAll('[data-act="market-row-actions-toggle"]').forEach(btn => {
     btn.classList.add('market-toggle-chip');
@@ -63464,16 +63510,16 @@ async function populateMarketAssetStats(scope, asset) {
         setHeader('vol24-usd', fmtMarketUsdWholeFromSats(_heroVolSats, '—'));
         setHeader('vol24-btc', fmtMarketBtc(_heroVolSats));
       }
-      // Crossed-book parity: the synchronous header swaps to "Price · mid"
-      // when best in-band bid > best in-band ask (mark is stale). This
-      // async hydration must use the same midpoint, or the displayed
-      // price-usd / market-cap drift away from the sats label they sit
-      // next to. _effectiveReferenceUnit returns mid when crossed, mark
-      // otherwise — exactly what the sync renderer uses for headerUnit.
-      const _headerRefHdr = _effectiveReferenceUnit(aid, j);
-      const _headerUnitHdr = (_headerRefHdr && Number.isFinite(_headerRefHdr.unit) && _headerRefHdr.unit > 0)
-        ? _headerRefHdr.unit
-        : markUnit;
+      // Always anchor the hero sats/USD/mcap to MARK price (settled-
+      // trade reference). The sync render path was changed to do the
+      // same; this async hydrator used to swap in MID on crossed books
+      // which produced a visible flicker between mark and mid every
+      // /assets/<aid> tick. Crossed-book signal stays on the depth
+      // chart's CROSSED badge + the spread row beneath it; the hero
+      // anchor is honest mark-only.
+      const _headerUnitHdr = (Number.isFinite(markUnit) && markUnit > 0)
+        ? markUnit
+        : null;
       if (resolvedSupplyBig != null && _headerUnitHdr != null) {
         const _wholeSupplyHdr = Number(resolvedSupplyBig) / Math.pow(10, decimals);
         const _mcapSatsHdr = Math.round(_wholeSupplyHdr * _headerUnitHdr);
@@ -64907,18 +64953,26 @@ async function _populateDepthChart(section, aid, decimals, ticker, markUnit) {
       <line x1="${bestBidX.toFixed(2)}" y1="${PT}" x2="${bestBidX.toFixed(2)}" y2="${(PT + plotH).toFixed(2)}" stroke="#1A7548" stroke-width="1" stroke-opacity="0.55" stroke-dasharray="2,3" pointer-events="none"/>
       <line x1="${bestAskX.toFixed(2)}" y1="${PT}" x2="${bestAskX.toFixed(2)}" y2="${(PT + plotH).toFixed(2)}" stroke="#B23A2E" stroke-width="1" stroke-opacity="0.55" stroke-dasharray="2,3" pointer-events="none"/>
       ${(() => {
-        // Mid line: midpoint of (best bid + best ask). Always rendered
-        // when both sides exist — matches design.html line 148 "mid
-        // 139.78" label inside the chart.
+        // Mid + mark guide lines. Both render at top of chart by
+        // default. When the two guides land within ~50px of each
+        // other (their text labels would mash together — e.g. TAC's
+        // mid 205.56 vs mark 203.53), stagger the mark label below
+        // the mid label so both stay readable.
         const midUnit = (Number.isFinite(headerBestBid) && Number.isFinite(headerBestAsk) && headerBestBid > 0 && headerBestAsk > 0)
           ? (headerBestBid + headerBestAsk) / 2
           : null;
         const midX = midUnit != null ? xOf(midUnit) : null;
-        return midX != null
+        const _markY = (midX != null && centerX != null && Math.abs(midX - centerX) < 50)
+          ? (PT + 22)
+          : (PT + 9);
+        const midOut = midX != null
           ? `<line x1="${midX.toFixed(2)}" y1="${PT}" x2="${midX.toFixed(2)}" y2="${(PT + plotH).toFixed(2)}" stroke="#1A1A1A" stroke-width="1" stroke-dasharray="3,2" pointer-events="none"/><text x="${midX.toFixed(2)}" y="${(PT + 9).toFixed(2)}" font-size="9" fill="#1A1A1A" font-family="var(--mono, monospace)" text-anchor="middle" font-weight="500" pointer-events="none">mid ${escapeHtml(fmtUnitPriceSats(midUnit))}</text>`
           : '';
+        const markOut = centerX != null
+          ? `<line x1="${centerX.toFixed(2)}" y1="${PT}" x2="${centerX.toFixed(2)}" y2="${(PT + plotH).toFixed(2)}" stroke="#B23A2E" stroke-width="0.8" stroke-dasharray="2,2" stroke-opacity="0.6" pointer-events="none"/><text x="${centerX.toFixed(2)}" y="${_markY.toFixed(2)}" font-size="9" fill="#B23A2E" font-family="var(--mono, monospace)" text-anchor="middle" pointer-events="none">mark ${escapeHtml(fmtUnitPriceSats(centerU))}</text>`
+          : '';
+        return midOut + markOut;
       })()}
-      ${centerX != null ? `<line x1="${centerX.toFixed(2)}" y1="${PT}" x2="${centerX.toFixed(2)}" y2="${(PT + plotH).toFixed(2)}" stroke="#B23A2E" stroke-width="0.8" stroke-dasharray="2,2" stroke-opacity="0.6" pointer-events="none"/><text x="${centerX.toFixed(2)}" y="${(PT + 9).toFixed(2)}" font-size="9" fill="#B23A2E" font-family="var(--mono, monospace)" text-anchor="middle" pointer-events="none">mark ${escapeHtml(fmtUnitPriceSats(centerU))}</text>` : ''}
       <text x="${PL}" y="${H - 5}" font-size="9" fill="#95907F" font-family="var(--mono, monospace)" pointer-events="none">${escapeHtml(fmtUnitPriceSats(xLo))}</text>
       <text x="${W - PR}" y="${H - 5}" font-size="9" fill="#95907F" font-family="var(--mono, monospace)" text-anchor="end" pointer-events="none">${escapeHtml(fmtUnitPriceSats(xHi))}</text>
       <rect data-depth-overlay x="${PL}" y="${PT}" width="${plotW}" height="${plotH}" fill="transparent" style="cursor:crosshair;"/>
@@ -69256,8 +69310,15 @@ function _wireSwapTile(scope) {
         if (/Commit tx broadcast|locked at|recovery record/.test(s)) return false;
         return /already spent|expired|stale|refresh listings|preauth sale not found|intent not found|bid (already claimed|expired|remaining insufficient|not found)|claim.*expired|did not fulfil/i.test(s);
       };
-      let _perFillStaleRetryUsed = false;
-      let _midSwapStaleRetryUsed = false;
+      // Bounded retry budgets — was one-shot bool each. With 200ms races
+      // between buyers on a busy book, one retry isn't enough to recover
+      // when 2-3 cheap listings get swept in succession before our reroute
+      // lands. Cap at 3 so a pathological thrashing orderbook can't loop
+      // forever; in practice the user gets the same "no liquidity left"
+      // failure copy after the cap, but with 3 chances to land instead of 1.
+      let _perFillStaleRetries = 0;
+      let _midSwapStaleRetries = 0;
+      const _MAX_STALE_RETRIES = 3;
       let i = 0;
       while (i < result.plan.length) {
         if (_batchedSet.has(i)) { i++; continue; }
@@ -69318,8 +69379,8 @@ function _wireSwapTile(scope) {
           //       remaining-sats arithmetic which is more error-prone.
           //       Each tier gets its own one-shot budget so a thrashing
           //       orderbook can't loop forever.
-          if (filled === 0 && _isStaleErrPerFill(msg) && !_perFillStaleRetryUsed) {
-            _perFillStaleRetryUsed = true;
+          if (filled === 0 && _isStaleErrPerFill(msg) && _perFillStaleRetries < _MAX_STALE_RETRIES) {
+            _perFillStaleRetries++;
             const _noun = dir === 'buy' ? 'listing' : 'bid';
             actionBtn.textContent = `a ${_noun} just changed — refreshing & retrying…`;
             progressItems[i].status = 'queued';
@@ -69360,8 +69421,8 @@ function _wireSwapTile(scope) {
           // and had to manually re-Swap for the missing 3. Now we
           // re-plan the remaining 3 against the refreshed orderbook
           // and continue inline.
-          if (dir === 'buy' && filled > 0 && _isStaleErrPerFill(msg) && !_midSwapStaleRetryUsed) {
-            _midSwapStaleRetryUsed = true;
+          if (dir === 'buy' && filled > 0 && _isStaleErrPerFill(msg) && _midSwapStaleRetries < _MAX_STALE_RETRIES) {
+            _midSwapStaleRetries++;
             // Sum the AMOUNT already filled (not sats); the remaining
             // target is the original amt minus what we got.
             const _alreadyAmt = result.plan
@@ -69549,6 +69610,13 @@ function _wireSwapTile(scope) {
           );
           invalidateMarketCache();
           _invalidateBidsCache(aid);
+          // Auto-open the Your Open Orders disclose so the freshly-posted
+          // bid is visible on the next render without the user hunting
+          // for a closed <details> summary. Persists across reloads via
+          // localStorage (tacit-market-your-orders-open-v1) so the user
+          // who just placed an order stays in "open" state until they
+          // explicitly collapse it.
+          _setYourOrdersDiscloseOpen(true);
           setTimeout(() => {
             try {
               renderMarket();
