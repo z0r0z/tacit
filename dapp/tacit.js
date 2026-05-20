@@ -68006,12 +68006,44 @@ function _renderSwapProgressStep(item) {
       <span style="font-family:var(--mono);font-size:10px;">${escapeHtml((item.err || '').slice(0, 60))}</span>
     </div>`;
   }
+  // Skipped: never attempted because a prior fill failed (all-or-nothing
+  // semantics) OR because the user clicked Stop mid-route. Visually
+  // distinct from 'queued' so the banner reads as terminal (no row is
+  // still in flight), which lets the persisted-state TTL + dismiss
+  // affordance recognize it as a finished session.
+  if (item.status === 'skipped') {
+    return `<div style="display:flex;align-items:center;gap:6px;padding:3px 0;color:var(--ink-mid);opacity:0.55;">
+      <span>↷</span>
+      <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(label)}</span>
+      <span class="muted" style="font-size:10px;font-style:italic;">${escapeHtml(item.reason || 'skipped after prior failure')}</span>
+    </div>`;
+  }
   return `<div style="display:flex;align-items:center;gap:6px;padding:3px 0;color:var(--ink-mid);opacity:0.6;">
     <span>·</span>
     <span style="flex:1;min-width:0;">${escapeHtml(label)}</span>
     <span class="muted" style="font-size:10px;">queued</span>
   </div>`;
 }
+// Terminal-state normalization: when a broadcast loop exits (success,
+// failure, or user-stop), any rows still in non-terminal status (queued
+// / broadcasting / awaiting-fulfil) will never resolve. Without this
+// pass, persisted-banner restores show "queued" rows forever AND the
+// _allDone gate that lets the dismiss link appear never trips. Mark
+// them 'skipped' with a contextual reason so the banner reads as
+// honestly-finished.
+function _finalizeSwapProgressItems(items, { cancelled, lastErr } = {}) {
+  if (!Array.isArray(items)) return;
+  for (let i = 0; i < items.length; i++) {
+    const _s = items[i]?.status;
+    if (_s === 'queued' || _s === 'broadcasting' || _s === 'awaiting-fulfil') {
+      items[i].status = 'skipped';
+      items[i].reason = cancelled
+        ? 'cancelled after prior fills'
+        : (lastErr ? 'skipped after prior failure' : 'skipped');
+    }
+  }
+}
+
 // Session-scoped persistence for the swap-progress banner. Tracks the last-
 // rendered progress state per asset id so refresh / tab navigation
 // (Holdings → back to Market) restore the banner in-place instead of
@@ -68046,7 +68078,7 @@ function _saveSwapProgressState(host, items) {
       status: String(it?.status || ''),
       txid: it?.txid || null,
     }));
-    const allDone = summary.every(it => it.status === 'done' || it.status === 'failed');
+    const allDone = summary.every(it => it.status === 'done' || it.status === 'failed' || it.status === 'skipped');
     sessionStorage.setItem(key, JSON.stringify({ items: summary, savedAt: Date.now(), allDone }));
   } catch {}
 }
@@ -71036,6 +71068,8 @@ function _wireSwapTile(scope) {
       // Clear cancel state so a subsequent swap on the same widget starts
       // fresh (otherwise the stale `cancelled: true` would suppress the
       // next swap's cancel button).
+      _finalizeSwapProgressItems(progressItems, { cancelled: _cancelState && _cancelState.cancelled, lastErr });
+      if (progressEl) _renderSwapProgress(progressEl, progressItems);
       if (progressEl) { progressEl.__swapCancelState = null; progressEl.__swapActionBtn = null; }
       const _feeSuffix = _totalFeesSats > 0 ? ` · paid ${_totalFeesSats.toLocaleString()} sats fees` : '';
       const _stoppedSuffix = _stoppedEarly ? ` · stopped after ${filled}/${result.plan.length} (you clicked stop)` : '';
@@ -71452,6 +71486,8 @@ function _wireSwapTile(scope) {
           _residualUnposted = { sats: _residualSats, reason: `too small to bid one ${ticker} unit at ${fmtUnitPriceSats(result.cap)} sats/${ticker}` };
         }
       }
+      _finalizeSwapProgressItems(progressItems, { cancelled: _cancelState && _cancelState.cancelled, lastErr });
+      if (progressEl) _renderSwapProgress(progressEl, progressItems);
       if (progressEl) { progressEl.__swapCancelState = null; progressEl.__swapActionBtn = null; }
       const _feeSuffix = _totalFeesSats > 0 ? ` · paid ${_totalFeesSats.toLocaleString()} sats fees` : '';
       // Snipe-fallback toast: every ask in the plan got sniped pre-
@@ -71717,6 +71753,8 @@ function _wireSwapTile(scope) {
           if (!isUnlockCancelled(e)) console.warn('[swap] residual listing failed:', e.message);
         }
       }
+      _finalizeSwapProgressItems(progressItems, { cancelled: _cancelState && _cancelState.cancelled, lastErr });
+      if (progressEl) _renderSwapProgress(progressEl, progressItems);
       if (progressEl) { progressEl.__swapCancelState = null; progressEl.__swapActionBtn = null; }
       const _feeSuffix = _totalFeesSats > 0 ? ` · paid ${_totalFeesSats.toLocaleString()} sats fees` : '';
       if (lastErr && filled === 0) toast(friendlyTradeErrorMsg(lastErr?.message || String(lastErr)), 'error', 12000);
