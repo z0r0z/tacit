@@ -60912,6 +60912,9 @@ function applyMarketFilters() {
   list.querySelectorAll('button[data-act="your-orders-bid-take-instead"]').forEach(btn => {
     btn.onclick = async () => _bidTakeInsteadHandler(btn);
   });
+  list.querySelectorAll('button[data-act="your-orders-improve-bid"]').forEach(btn => {
+    btn.onclick = async () => _improveBidHandler(btn);
+  });
   list.querySelectorAll('button[data-act="quick-buy-intent"]').forEach(btn => {
     btn.onclick = async () => marketClaimIntentHandler(btn);
   });
@@ -65432,6 +65435,26 @@ function renderYourOpenOrdersHTML(aid, asset, myPubHex) {
       </div>`;
   }
 
+  // Asks-side rank ladder. Mirror of the bids-side rank computation: a
+  // seller-side Swap-buy walks the asks ladder cheapest-first, so the
+  // cheapest unit price wins next-fill. Rank #1 = next to be hit.
+  // Computed once outside the per-row map to keep render O(N) instead
+  // of O(N²) on big books.
+  const _allPreauthsForAid = (_marketCache?.listings || [])
+    .filter(l => l.kind === 'preauth' && !l.expired && (l._asset?.asset_id === aid))
+    .map(l => {
+      const a = BigInt(l.asset_opening?.amount || '0');
+      const s = Number(l.min_price_sats || 0);
+      if (a <= 0n || s <= 0) return null;
+      return { l, u: unitPriceSats(s, a, decimals), createdAt: Number(l.created_at || 0) };
+    })
+    .filter(x => x && Number.isFinite(x.u) && x.u > 0)
+    .sort((x, y) => x.u - y.u);
+  const _askRankBySid = new Map();
+  _allPreauthsForAid.forEach((entry, idx) => {
+    if (entry.l?.sale_id) _askRankBySid.set(entry.l.sale_id, idx + 1);
+  });
+  const _askLadderTotal = _allPreauthsForAid.length;
   const askRowsHtml = askGrouped.map(l => {
     const amtBase = BigInt(l.asset_opening?.amount || '0');
     const chunks = l._isGroup ? l._groupSize : 1;
@@ -65443,12 +65466,38 @@ function renderYourOpenOrdersHTML(aid, asset, myPubHex) {
     const usdTotal = fmtMarketUsdFromSats(totalSats, '');
     const usdTail = usdTotal ? ` <small class="muted" style="font-size:9px;">· ${escapeHtml(usdTotal)}</small>` : '';
     const ageStr = relativeAge(l.created_at || l.listed_at) ? `${relativeAge(l.created_at || l.listed_at)} ago` : '';
+    // Ask rank chip: position in the asks ladder (cheapest first). #1 =
+    // any buyer-Swap's first hit. Only meaningful for non-group rows
+    // since groups collapse multiple sale_ids into one display row.
+    let _askRankTail = '';
+    let _undercutTail = '';
+    if (!l._isGroup && l.sale_id && _askLadderTotal > 1) {
+      const _rank = _askRankBySid.get(l.sale_id);
+      if (_rank != null) {
+        _askRankTail = ` <span class="muted" style="display:inline-block;white-space:nowrap;font-size:9px;padding:1px 5px;border:1px solid var(--ink-faint);" title="Your ask's position in the ladder, sorted cheapest unit price first. #1 = next fill any buyer's Swap-buy would hit. Lower-ranked asks fill slower; cancel + re-list cheaper to climb.">#${_rank} of ${_askLadderTotal}</span>`;
+        // Outbid-risk: a newer listing priced strictly below ours has
+        // probably been posted to undercut. We're not the cheapest AND
+        // there's a more-recent cheaper listing → seller-attention
+        // signal.
+        const _myCreatedAt = Number(l.created_at || l.listed_at || 0);
+        const _newerCheaperCount = _allPreauthsForAid.filter(e =>
+          e.l?.sale_id !== l.sale_id
+          && Number.isFinite(e.u)
+          && e.u < u
+          && e.createdAt > _myCreatedAt
+        ).length;
+        if (_newerCheaperCount > 0) {
+          const _tip = `${_newerCheaperCount} newer listing${_newerCheaperCount === 1 ? '' : 's'} priced below yours since you posted. Sellers are competing for buyer attention by undercutting; consider cancelling + re-listing cheaper to stay near the top of the ladder.`;
+          _undercutTail = ` <span title="${escapeHtml(_tip)}" style="display:inline-block;white-space:nowrap;background:#fff3e0;border:0.5px solid #c97a1a;color:#7a4d00;font-size:9px;padding:1px 5px;letter-spacing:0.04em;cursor:help;">⚠ undercut × ${_newerCheaperCount}</span>`;
+        }
+      }
+    }
     const cancelBtn = l._isGroup
       ? `<button data-act="your-orders-cancel-ask-group" data-aid="${escapeHtml(aid)}" data-sids="${escapeHtml((l._groupChunks || []).map(c => c.sale_id).filter(Boolean).join(','))}" data-ticker="${escapeHtml(ticker)}" title="Cancel all ${chunks} chunks in this group" class="orders-action">cancel all</button>`
       : `<button data-act="your-orders-cancel-ask" data-aid="${escapeHtml(aid)}" data-sid="${escapeHtml(l.sale_id || '')}" data-price="${perChunkPrice}" data-ticker="${escapeHtml(ticker)}" data-amount="${escapeHtml(l.asset_opening?.amount || '0')}" data-dec="${decimals}" title="Cancel this listing — removes from the marketplace" class="orders-action">cancel</button>`;
     return `<tr>
       <td><span class="market-bid-state market-bid-state--mine" style="background:#fee;border:1px solid #b8341d;color:#b8341d;font-size:9px;padding:1px 6px;font-weight:600;text-transform:uppercase;">Sell</span></td>
-      <td><strong>${escapeHtml(fmtAssetAmount(totalAmt, decimals))}</strong> ${escapeHtml(ticker)}${l._isGroup ? ` <span class="muted" style="font-size:10px;">× ${chunks} chunk${chunks === 1 ? '' : 's'}</span>` : ''}</td>
+      <td><strong>${escapeHtml(fmtAssetAmount(totalAmt, decimals))}</strong> ${escapeHtml(ticker)}${l._isGroup ? ` <span class="muted" style="font-size:10px;">× ${chunks} chunk${chunks === 1 ? '' : 's'}</span>` : ''}${_askRankTail}${_undercutTail}</td>
       <td>${unitStr}</td>
       <td><strong>${totalSats.toLocaleString('en-US')}</strong> sats${usdTail}</td>
       <td class="muted" style="font-size:10px;">${escapeHtml(ageStr)}</td>
@@ -65520,6 +65569,39 @@ function renderYourOpenOrdersHTML(aid, asset, myPubHex) {
     const _rankTail = (_rank != null && _bidLadderTotal > 1)
       ? ` <span class="muted" style="display:inline-block;white-space:nowrap;font-size:9px;padding:1px 5px;border:1px solid var(--ink-faint);" title="Your bid's position in the ladder, sorted highest unit price first. #1 = next fill any seller's Swap-sell would hit. Higher ranks fill slower; cancel + re-bid higher to climb.">#${_rank} of ${_bidLadderTotal}</span>`
       : '';
+    // Estimated time-to-fill: divide the TAC demand strictly above this
+    // bid (a seller working top-down would clear it before reaching us)
+    // by the asset's 24h trade rate. Coarse — the actual rate fluctuates
+    // and isn't strictly first-in-line — but useful as a "days/hours/
+    // weeks" magnitude check vs the user's patience. Skipped on #1 bids
+    // (no demand above them; their fill is fully seller-dependent) and
+    // on assets with zero 24h volume (we can't estimate a rate).
+    let _etaTail = '';
+    if (_rank != null && _rank > 1 && _bidLadderTotal > 0) {
+      const _v24Sats = Number(asset?.volume_24h_sats || 0);
+      const _markUnit = Number(asset?.mark_price?.unit || asset?.markPrice || 0);
+      if (_v24Sats > 0 && _markUnit > 0) {
+        const _dec = decimals || 0;
+        let _tacAhead = 0;
+        for (let i = 0; i < _allBidsSortedDesc.length && i < _rank - 1; i++) {
+          const _entry = _allBidsSortedDesc[i];
+          if (!_entry?.b || _entry.b.bid_id === b.bid_id) continue;
+          try { _tacAhead += Number(BigInt(_entry.b.amount || '0')) / Math.pow(10, _dec); } catch {}
+        }
+        const _myTac = Number(amt) / Math.pow(10, _dec);
+        const _tacPerDay = (_v24Sats / _markUnit) * Math.pow(10, _dec - 8);  // sats→TAC rate
+        if (_tacPerDay > 0) {
+          const _daysAhead = (_tacAhead + _myTac * 0.5) / _tacPerDay;  // halfway through own fill
+          let _label;
+          if (_daysAhead < 1/24) _label = '~minutes at this pace';
+          else if (_daysAhead < 1) _label = `~${Math.max(1, Math.round(_daysAhead * 24))}h at this pace`;
+          else if (_daysAhead < 14) _label = `~${Math.round(_daysAhead)}d at this pace`;
+          else _label = '> 2 weeks at this pace';
+          const _tip = `${_tacAhead.toFixed(2)} ${ticker} of higher-priced demand sits above this bid. At the asset's current 24h trade pace (${_tacPerDay.toFixed(1)} ${ticker}/day), fully clearing it before your bid fires would take roughly this long. The estimate IS coarse — sellers don't always hit bids top-down, and the rate fluctuates — but use it as a magnitude check. ▲ Improve below jumps you to the top by raising price.`;
+          _etaTail = ` <span title="${escapeHtml(_tip)}" style="display:inline-block;white-space:nowrap;font-size:9px;padding:1px 5px;color:var(--ink-mid);font-style:italic;cursor:help;">${escapeHtml(_label)}</span>`;
+        }
+      }
+    }
     // Stranded-bid escape hatch: scan the in-memory listings cache for
     // asks priced at-or-below this bid's unit price AND whose total sats
     // fits inside the bid's budget. On dense whole-UTXO markets (like
@@ -65540,13 +65622,37 @@ function renderYourOpenOrdersHTML(aid, asset, myPubHex) {
     const _takeBtn = _matchable.length > 0
       ? `<button data-act="your-orders-bid-take-instead" data-aid="${escapeHtml(aid)}" data-bid-id="${escapeHtml(b.bid_id || '')}" data-cap-unit="${_matchable[0].askUnit}" data-bid-sats="${sats}" data-bid-amt-base="${amt.toString()}" title="Atomic: cancel this bid AND broadcast a take of ${_matchable.length} affordable ask${_matchable.length === 1 ? '' : 's'} priced at-or-below your bid, in one click. One confirm with full route preview, no second submit step." class="orders-action orders-action--take">take →</button>`
       : '';
+    // ▲ Improve: jumps to #1 in the bid ladder by cancelling + re-posting
+    // at top + 1%. Skipped if already #1 (nothing to improve) OR if the
+    // top bid is the user's own (improving past yourself is incoherent).
+    // Power user can still use Advanced bid for any price; this is the
+    // common-case one-click "be first" affordance.
+    let _improveBtn = '';
+    if (_rank != null && _rank > 1 && _allBidsSortedDesc.length > 0) {
+      const _topEntry = _allBidsSortedDesc[0];
+      const _topUnit = _topEntry?.u;
+      if (Number.isFinite(_topUnit) && _topUnit > 0 && _topEntry?.b?.buyer_pubkey !== myPubHex) {
+        // Target = top + 1% (or +1 sat/TAC, whichever is more material).
+        // Keeping it modest so the user doesn't accidentally pay a lot
+        // more — they can always Advanced-bid higher manually if they
+        // want a wider gap.
+        const _bumpFactor = 1.01;
+        const _minBump = 1 / Math.pow(10, Math.max(0, decimals - 4));  // ~0.0001 sat/TAC at TAC's 8 decimals
+        const _targetUnit = Math.max(_topUnit * _bumpFactor, _topUnit + _minBump);
+        const _topUnitStr = fmtUnitPriceSats(_topUnit);
+        const _targetUnitStr = fmtUnitPriceSats(_targetUnit);
+        const _newPriceSats = Math.max(DUST, Math.ceil(_targetUnit * Number(amt) / Math.pow(10, decimals)));
+        const _diffSats = _newPriceSats - sats;
+        _improveBtn = `<button data-act="your-orders-improve-bid" data-aid="${escapeHtml(aid)}" data-bid-id="${escapeHtml(b.bid_id || '')}" data-target-unit="${_targetUnit}" data-bid-amt-base="${amt.toString()}" data-current-sats="${sats}" title="Atomic: cancel this bid and re-post it at ${_targetUnitStr} sats/${ticker} (top bid is ${_topUnitStr}, this is +1%). New total ${_newPriceSats.toLocaleString()} sats (${_diffSats >= 0 ? '+' : ''}${_diffSats.toLocaleString()} from current). Jumps you to #1 in the ladder. Same amount of ${ticker}, slightly higher price." class="orders-action orders-action--improve">▲ improve</button>`;
+      }
+    }
     return `<tr>
       <td><span class="market-bid-state market-bid-state--mine" style="background:#e8f5ec;border:1px solid #0a8f43;color:#0a8f43;font-size:9px;padding:1px 6px;font-weight:600;text-transform:uppercase;">Buy</span></td>
-      <td><strong>${escapeHtml(fmtAssetAmount(amt, decimals))}</strong> ${escapeHtml(ticker)}${_rankTail}${_matchBadge}</td>
+      <td><strong>${escapeHtml(fmtAssetAmount(amt, decimals))}</strong> ${escapeHtml(ticker)}${_rankTail}${_etaTail}${_matchBadge}</td>
       <td>${unitStr}</td>
       <td><strong>${sats.toLocaleString('en-US')}</strong> sats${usdTail}</td>
       <td class="muted" style="font-size:10px;">${escapeHtml(ageStr)}</td>
-      <td class="orders-actions-cell">${_takeBtn}<button data-act="your-orders-cancel-bid" data-aid="${escapeHtml(aid)}" data-bid-id="${escapeHtml(b.bid_id || '')}" title="Cancel this bid — removes from the marketplace" class="orders-action">cancel</button></td>
+      <td class="orders-actions-cell">${_takeBtn}${_improveBtn}<button data-act="your-orders-cancel-bid" data-aid="${escapeHtml(aid)}" data-bid-id="${escapeHtml(b.bid_id || '')}" title="Cancel this bid — removes from the marketplace" class="orders-action">cancel</button></td>
     </tr>`;
   }).join('');
 
@@ -66657,6 +66763,9 @@ function refreshYourOpenOrdersPanel(scope, aid) {
   next.querySelectorAll('button[data-act="your-orders-bid-take-instead"]').forEach(btn => {
     btn.onclick = async () => _bidTakeInsteadHandler(btn);
   });
+  next.querySelectorAll('button[data-act="your-orders-improve-bid"]').forEach(btn => {
+    btn.onclick = async () => _improveBidHandler(btn);
+  });
 }
 
 // Pre-populate the asset-detail swap tile from an orderbook click. Flips
@@ -66716,6 +66825,91 @@ function _previewBidTakeRoute(aid, decimals, bidUnit, satsBudget, myPubHex) {
 //   • Cancel succeeds, take broadcasts then errors mid-loop → the
 //     existing maybePromptRecoveryFromError flow + the persisted swap
 //     progress banner surface the recovery UI on the next page render.
+// Atomic "improve this bid to #1" — cancel current bid + re-post at the
+// target unit price (top + 1%) so the user jumps to the head of the
+// ladder in one click. Same risk shape as _bidTakeInsteadHandler: if
+// step 2 (re-post) fails after step 1 (cancel) succeeds, the bid is
+// gone — but the re-post mirrors a normal bid post, which has its own
+// over-commit guards and retry semantics. Worst case: user is back to
+// "no bid" state with sats intact, exactly what they'd have if they
+// manually cancelled.
+async function _improveBidHandler(btn) {
+  if (!btn || btn.disabled) return;
+  const aid = btn.dataset.aid;
+  const bidId = btn.dataset.bidId;
+  const targetUnit = Number(btn.dataset.targetUnit || '0');
+  const bidAmtBase = btn.dataset.bidAmtBase || '0';
+  const currentSats = Number(btn.dataset.currentSats || '0');
+  if (!aid || !bidId || !(targetUnit > 0) || bidAmtBase === '0') {
+    toast('Improve: missing inputs (refresh the page and retry).', 'error');
+    return;
+  }
+  const asset = (_marketCache?.assets || []).find(a => a.asset_id === aid)
+    || (_marketCache?.listings || []).find(l => l._asset?.asset_id === aid)?._asset
+    || null;
+  const decimals = Number.isInteger(asset?.decimals) ? asset.decimals : 0;
+  const ticker = asset?.ticker || '?';
+  const bidAmt = (() => { try { return BigInt(bidAmtBase); } catch { return 0n; } })();
+  if (bidAmt <= 0n) { toast('Improve: invalid bid amount.', 'error'); return; }
+  const newPriceSats = Math.max(DUST, Math.ceil(targetUnit * Number(bidAmt) / Math.pow(10, decimals)));
+  const _diffSats = newPriceSats - currentSats;
+  const _proceed = await tacitConfirm({
+    title: `Improve bid to #1 — ${fmtUnitPriceSats(targetUnit)} sats/${ticker}?`,
+    body:
+      `Atomic two-step:\n` +
+      `  1. Cancel your current bid (${currentSats.toLocaleString()} sats, signed off-chain, no fee)\n` +
+      `  2. Post a new bid at ${fmtUnitPriceSats(targetUnit)} sats/${ticker} for ${fmtAssetAmount(bidAmt, decimals)} ${ticker} (${newPriceSats.toLocaleString()} sats, ${_diffSats >= 0 ? '+' : ''}${_diffSats.toLocaleString()} from current)\n\n` +
+      `Jumps you to #1 in the bid ladder. Same amount of ${ticker}, slightly higher price per token.\n\n` +
+      `If step 2 fails after step 1 succeeds, your bid is gone but your sats are intact — re-bid manually via Advanced or another Swap.`,
+    confirmLabel: `Improve to #1 (${_diffSats >= 0 ? '+' : ''}${_diffSats.toLocaleString()} sats)`,
+  });
+  if (!_proceed) return;
+  btn.disabled = true; const _origLabel = btn.textContent; btn.textContent = 'improving…';
+  let _cancelled = false;
+  try {
+    await cancelBidIntent({ assetIdHex: aid, bidIdHex: bidId });
+    _cancelled = true;
+    await publishBidIntent({
+      assetIdHex: aid,
+      amount: bidAmt,
+      priceSats: newPriceSats,
+      expiry: Math.floor(Date.now() / 1000) + 24 * 3600,
+      // Mirror the swap-tile bid-only path's variable-fill default so the
+      // new bid is partial-fillable like the original.
+      minFillAmount: (() => {
+        let _mf = bidAmt / 10n;
+        const _dustFloor = (BigInt(DUST) * bidAmt + BigInt(newPriceSats) - 1n) / BigInt(newPriceSats);
+        if (_dustFloor > _mf) _mf = _dustFloor;
+        if (_mf >= bidAmt) _mf = 0n;
+        return _mf;
+      })(),
+    });
+    toast(
+      `Bid improved · now ${fmtAssetAmount(bidAmt, decimals)} ${ticker} @ ${fmtUnitPriceSats(targetUnit)} sats/${ticker} for ${newPriceSats.toLocaleString()} sats · #1 in ladder.`,
+      'success', 9000,
+    );
+    _invalidateBidsCache(aid);
+    setTimeout(() => { try { refreshYourOpenOrdersPanel(document, aid); } catch {} }, 200);
+  } catch (e) {
+    if (isUnlockCancelled(e)) {
+      toast(_cancelled
+        ? `Cancel succeeded; new bid was unlock-cancelled. Your sats are intact; re-bid manually if you want a position.`
+        : 'Unlock cancelled — bid unchanged.',
+        '', 10000,
+      );
+    } else {
+      toast(
+        _cancelled
+          ? `Improve failed at re-post (${e?.message || String(e)}). Your bid was cancelled but the new bid didn't land — sats intact, re-bid manually.`
+          : `Improve failed: ${e?.message || String(e)}`,
+        'error', 12000,
+      );
+    }
+  } finally {
+    btn.disabled = false; btn.textContent = _origLabel;
+  }
+}
+
 async function _bidTakeInsteadHandler(btn) {
   if (!btn || btn.disabled) return;
   const aid = btn.dataset.aid;
