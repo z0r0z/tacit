@@ -41546,9 +41546,20 @@ function setupTransferForm() {
       // for stealth, the marker is a per-tx-unique address derived from a
       // commit only the sender and recipient can compute, so the preview shows
       // the shielded handle instead of a chain-address it cannot predict.
+      // Both the user-facing badge (recipientLabel) and the technical-details
+      // settlement-output row (recipientChainText) share the same derivation
+      // — recipientChainText is the chain address / stealth note in plain
+      // text for the lower technical section. Hoisting it here so the
+      // template literal below can reference it without recomputing.
+      const recipientChainAddr = stealthAddress
+        ? null
+        : bech32.encode(NET.hrp, [0, ...bech32.toWords(hash160(recipientPub))]);
       const recipientLabel = stealthAddress
         ? `<span class="badge" style="background:var(--bg-warm);border:1px dashed var(--ink-faint);padding:2px 6px;font-size:10px;letter-spacing:0.08em;text-transform:uppercase;">SHIELDED</span> ${escapeHtml(shorten(stealthAddress, 14))}`
-        : escapeHtml(shorten(bech32.encode(NET.hrp, [0, ...bech32.toWords(hash160(recipientPub))]), 14));
+        : escapeHtml(shorten(recipientChainAddr, 14));
+      const recipientChainText = stealthAddress
+        ? 'per-tx unique address (derived from sender + recipient ECDH; observers can\'t link it to the recipient)'
+        : escapeHtml(shorten(recipientChainAddr, 14));
       const rate = await getFeeRate();
       const commitFeeEst = feeFor(estCommitVb(1), rate);
       // m=2 (recipient + change) is the standard transfer shape; assume 1
@@ -41572,7 +41583,7 @@ function setupTransferForm() {
               <div class="row"><span class="idx">[1]</span><span class="label">submit tx</span> creates the on-chain envelope (P2TR commit)</div>
               <div class="row"><span class="idx">[2]</span><span class="label">settlement tx</span> spends the envelope + your asset lot; the witness carries a ~1 KB privacy proof</div>
               <h4 style="margin-top:10px;">Settlement tx outputs</h4>
-              <div class="row"><span class="idx">[0]</span><span class="label">recipient</span> ${fmtSats(DUST)} sats → ${escapeHtml(shorten(recipientAddr, 14))}</div>
+              <div class="row"><span class="idx">[0]</span><span class="label">recipient</span> ${fmtSats(DUST)} sats → ${recipientChainText}</div>
               <div class="row"><span class="idx">[1]</span><span class="label">your change</span> ${fmtSats(DUST)} sats</div>
               <h4 style="margin-top:10px;">Privacy footprint</h4>
               <div class="row">Observers see only 33-byte commitments + a single 754-byte privacy proof — neither amount is visible.</div>

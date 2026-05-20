@@ -15798,11 +15798,13 @@ const AIRDROP_LIST_HARD_CAP = 900;  // total per response; bound size + subreque
 // (a) hide legitimate offers in noise OR (b) snipe their own bait once
 // the UI shows them, harming buyers' ability to discover real liquidity.
 //
-// 100 listings/day/pubkey is generous for real market-making (rotate
-// asks every few minutes through the day) and tight enough that a
-// single attacker can't sustain a UI-drowning level of noise. IP cap
-// at 300/day catches one-pubkey-per-listing patterns where the attacker
-// runs a fresh keypair for each spam-listing.
+// Sized against current TAC mainnet volume (~16 trades/24h, dozens of
+// active orders, single-digit active makers at any moment). 50 listings
+// /day/pubkey is enough for a real market-maker rotating offers every
+// ~30 minutes around the clock, tight enough that any sustained spam
+// stands out and stops fast. IP cap at 150/day catches the obvious
+// one-pubkey-per-listing pattern; both env-tunable upward if a credible
+// market-maker hits the ceiling.
 //
 // `kind` ('preauth' | 'intent') segregates buckets so a flood in one
 // listing kind doesn't burn the other kind's quota — the buckets are
@@ -15811,14 +15813,14 @@ async function _orderbookWriteRateLimit(req, env, pubHex, kind) {
   const ip = req.headers.get('CF-Connecting-IP') || 'anon';
   const day = new Date().toISOString().slice(0, 10);
   const ipKey = `ob-write-rl:ip:${day}:${kind}:${ip}`;
-  const ipLimit = safeInt(env.ORDERBOOK_WRITE_IP_DAILY, 300, { min: 1 });
+  const ipLimit = safeInt(env.ORDERBOOK_WRITE_IP_DAILY, 150, { min: 1 });
   const ipPrior = safeInt(await env.REGISTRY_KV.get(ipKey), 0, { min: 0 });
   if (ipPrior >= ipLimit) return { ok: false, reason: `${kind} IP daily limit (${ipLimit}/day)` };
   let pkKey = null;
   let pkPrior = 0;
   if (pubHex) {
     pkKey = `ob-write-rl:pk:${day}:${kind}:${pubHex}`;
-    const pkLimit = safeInt(env.ORDERBOOK_WRITE_PUBKEY_DAILY, 100, { min: 1 });
+    const pkLimit = safeInt(env.ORDERBOOK_WRITE_PUBKEY_DAILY, 50, { min: 1 });
     pkPrior = safeInt(await env.REGISTRY_KV.get(pkKey), 0, { min: 0 });
     if (pkPrior >= pkLimit) return { ok: false, reason: `${kind} pubkey daily limit (${pkLimit}/day)` };
   }
