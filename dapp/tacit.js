@@ -28471,26 +28471,32 @@ async function publishBidIntent({ assetIdHex, amount, priceSats, expiry, minFill
   // had to remember to invalidate the bids cache + refresh the panel
   // themselves — and most didn't, so a fresh bid only showed up after
   // the next 1.5s renderMarket tick or a manual page refresh.
-  // Fire-and-forget so a benign UI render glitch doesn't fail the
-  // protocol-level return value.
-  try {
-    if (typeof _invalidateBidsCache === 'function') _invalidateBidsCache(assetIdHex);
-    if (typeof _fetchBidIntentsCached === 'function') {
-      // Force-fetch in background; the panel refresh below reads from
-      // the now-warm cache. Promise-then with empty catch keeps this
-      // detached from the main return.
-      Promise.resolve(_fetchBidIntentsCached(assetIdHex, { force: true })).catch(() => {});
-    }
-    if (typeof refreshYourOpenOrdersPanel === 'function') {
-      // Run on a microtask so we yield once before mutating the DOM —
-      // some callers (snipe-fallback) are mid-progress-render when
-      // publishBidIntent returns and a synchronous DOM swap would
-      // race against their in-flight render.
-      queueMicrotask(() => {
-        try { refreshYourOpenOrdersPanel(document, assetIdHex); } catch {}
-      });
-    }
-  } catch {}
+  //
+  // Order matters: invalidate → AWAIT the fresh fetch → then refresh
+  // the panel. refreshYourOpenOrdersPanel reads from the bid cache
+  // SYNCHRONOUSLY via _bidCachePeek; if we don't wait for the new
+  // worker round-trip, the panel re-renders from the just-invalidated
+  // (empty/stale) cache and the user sees "no second bid". Awaiting
+  // here adds ~200-500ms before the new bid is visible, but the bid
+  // is already returned to the caller (which IS j.intent below) so
+  // the protocol-level operation isn't blocked.
+  //
+  // Wrapped in an IIFE so the return below isn't blocked on the
+  // fetch+refresh; the worker has accepted the bid by this point,
+  // so the protocol contract is fulfilled regardless of UI refresh
+  // timing. The IIFE's `await` chain still runs to completion in
+  // the background; UI just appears ~0.5s after the return.
+  (async () => {
+    try {
+      if (typeof _invalidateBidsCache === 'function') _invalidateBidsCache(assetIdHex);
+      if (typeof _fetchBidIntentsCached === 'function') {
+        await _fetchBidIntentsCached(assetIdHex, { force: true });
+      }
+      if (typeof refreshYourOpenOrdersPanel === 'function') {
+        refreshYourOpenOrdersPanel(document, assetIdHex);
+      }
+    } catch {}
+  })();
   return j.intent;
 }
 
@@ -66920,7 +66926,12 @@ async function _improveBidHandler(btn) {
   btn.disabled = true; const _origLabel = btn.textContent; btn.textContent = 'improving…';
   let _cancelled = false;
   try {
-    await cancelBidIntent({ assetIdHex: aid, bidIdHex: bidId });
+    // cancelBidIntent takes POSITIONAL args (assetIdHex, bidIdHex) —
+    // separate convention from cancelPreauthSale / cancelAxferIntent
+    // which take a destructured object. Easy bug to write; caught by
+    // the user as "hex string expected, got object" out of the
+    // underlying hexToBytes call.
+    await cancelBidIntent(aid, bidId);
     _cancelled = true;
     await publishBidIntent({
       assetIdHex: aid,
@@ -66996,9 +67007,11 @@ async function _cancelAllOrdersHandler(btn) {
   btn.disabled = true; const _origLabel = btn.textContent; btn.textContent = 'cancelling…';
   let _ok = 0, _failed = 0;
   // Bids first — fastest path (off-chain signed message + KV delete).
+  // cancelBidIntent takes POSITIONAL args, unlike its preauth/intent
+  // siblings — see _improveBidHandler for the same easy-to-miss bug.
   for (const bidId of bidIds) {
     try {
-      await cancelBidIntent({ assetIdHex: aid, bidIdHex: bidId });
+      await cancelBidIntent(aid, bidId);
       _ok++;
     } catch (e) {
       if (isUnlockCancelled(e)) { _failed = total - _ok; break; }
