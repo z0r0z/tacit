@@ -4801,7 +4801,7 @@ async function _deriveAxferTradeFromChain(env, network, revealTx, opcode, assetI
         try { amt = BigInt(sale.asset_opening?.amount || '0'); } catch {}
         totalPriceSats += px;
         totalAmount += amt;
-        fills.push({ kind: 'preauth', sale_id: saleIdHex, price_sats: px });
+        fills.push({ kind: 'preauth', sale_id: saleIdHex, price_sats: px, outpoint: { txid: ctxid, vout: cvout } });
         continue;
       }
     }
@@ -4824,7 +4824,7 @@ async function _deriveAxferTradeFromChain(env, network, revealTx, opcode, assetI
         try { amt = BigInt(intent.amount || '0'); } catch {}
         totalPriceSats += px;
         totalAmount += amt;
-        fills.push({ kind: 'intent', intent_id: intentIdHex, price_sats: px });
+        fills.push({ kind: 'intent', intent_id: intentIdHex, price_sats: px, outpoint: { txid: ctxid, vout: cvout } });
         continue;
       }
       // Variable-amount: scale by maker's stamped requested_amount.
@@ -4837,7 +4837,7 @@ async function _deriveAxferTradeFromChain(env, network, revealTx, opcode, assetI
       if (!Number.isFinite(scaledPx) || scaledPx <= 0) continue;
       totalPriceSats += scaledPx;
       totalAmount += req;
-      fills.push({ kind: 'intent-var', intent_id: intentIdHex, price_sats: scaledPx, amount: req.toString() });
+      fills.push({ kind: 'intent-var', intent_id: intentIdHex, price_sats: scaledPx, amount: req.toString(), outpoint: { txid: ctxid, vout: cvout } });
     }
   }
 
@@ -16740,6 +16740,17 @@ async function handleBidIntentClaim(assetIdHex, bidIdHex, req, env, network, cor
   const axintent = await env.REGISTRY_KV.get(atomicIntentKey(network, assetIdHex, axintentIdHex), 'json');
   if (!axintent) return jsonResponse({ error: 'linked axintent_id not found in atomic-intent registry' }, 400, cors);
   if ((axintent.expiry || 0) <= now) return jsonResponse({ error: 'linked axintent already expired' }, 400, cors);
+  // The claim reserves the bid for BID_CLAIM_TTL_SECONDS. If the linked
+  // axintent expires before that window ends, the buyer is trapped:
+  // the claim is held but the only path to take it is dead. Refuse the
+  // claim so the seller picks an axintent with sufficient expiry runway.
+  if ((axintent.expiry || 0) < now + BID_CLAIM_TTL_SECONDS) {
+    return jsonResponse({
+      error: 'linked axintent expires before bid claim TTL ends — extend the axintent expiry first',
+      axintent_expiry: axintent.expiry,
+      claim_expires_at: now + BID_CLAIM_TTL_SECONDS,
+    }, 400, cors);
+  }
   if (axintent.maker_pubkey !== sellerPubHex) {
     return jsonResponse({ error: 'linked axintent.maker_pubkey != seller_pubkey' }, 400, cors);
   }
@@ -17122,6 +17133,34 @@ async function scanForEtches(env, network) {
         const dx = decoder(decoded.payload);
         if (!dx) continue;
         const counted = await _bumpTransferOnce(dx.asset_id, tx.txid);
+        // Implicit-cancel detection for opening listings. Any tx that
+        // spends the asset_id's UTXOs (CXFER consolidate, AXFER settle,
+        // or the maker shuffling funds around) terminates whichever
+        // opening listing was backed by that outpoint. Without this
+        // sweep the listing sits in KV until expiry, shows up as a
+        // ghost ask in the ladder, and a fresh listing on the same
+        // outpoint can't be posted (per-outpoint listingKey uniqueness).
+        //
+        // Restricted to opening kind: opening listings pin a specific
+        // (txid, vout) so spend = death. Range listings claim aggregate
+        // balance and the threshold may still hold after a partial
+        // spend, so a smarter check is needed — out of scope here.
+        // Preauth + atomic-intent records are GC'd by the settlement
+        // sweep at ~17170 and don't need an implicit-cancel pass.
+        //
+        // Idempotent on re-scan (KV.delete on a missing key is a no-op).
+        if (Array.isArray(tx.vin)) {
+          for (const vin of tx.vin) {
+            const itxid = String(vin?.txid || '').toLowerCase();
+            const ivout = vin?.vout;
+            if (!/^[0-9a-f]{64}$/.test(itxid) || !Number.isInteger(ivout)) continue;
+            try {
+              const lk = listingKey(network, dx.asset_id, itxid, ivout);
+              const existing = await env.REGISTRY_KV.get(lk);
+              if (existing) await env.REGISTRY_KV.delete(lk);
+            } catch { /* KV blip — next scan retries */ }
+          }
+        }
         // Per-asset holder counter: each output's recipient scriptpubkey is
         // a candidate new wallet. Walk the tx outputs that correspond to
         // tacit asset commitments. For T_CXFER and T_AXFER the mapping is
@@ -17165,6 +17204,26 @@ async function scanForEtches(env, network) {
                 source: 'cron-chain-backfill',
               };
               await _recordSettledTradeVolume(env, network, dx.asset_id, lastTrade);
+              // Settlement cleanup: each fill consumed a live preauth-sale
+              // or atomic-intent record. Without this, the stale record
+              // sits in KV until its 30-day expiry, showing up in /listings
+              // GETs and blocking a fresh listing on the same outpoint.
+              // Idempotent on re-scan (KV.delete on missing key is a no-op).
+              for (const f of derived.fills) {
+                const op = f.outpoint;
+                if (!op || !/^[0-9a-f]{64}$/.test(String(op.txid || '')) || !Number.isInteger(op.vout)) continue;
+                try {
+                  if (f.kind === 'preauth' && f.sale_id) {
+                    await env.REGISTRY_KV.delete(preauthSaleKey(network, dx.asset_id, f.sale_id));
+                    await env.REGISTRY_KV.delete(preauthOutpointIndexKey(network, dx.asset_id, op.txid, op.vout));
+                  } else if ((f.kind === 'intent' || f.kind === 'intent-var') && f.intent_id) {
+                    await env.REGISTRY_KV.delete(atomicIntentKey(network, dx.asset_id, f.intent_id));
+                    await env.REGISTRY_KV.delete(atomicClaimKey(network, dx.asset_id, f.intent_id));
+                    await env.REGISTRY_KV.delete(atomicFulfilmentKey(network, dx.asset_id, f.intent_id));
+                    await env.REGISTRY_KV.delete(atomicIntentOutpointIndexKey(network, dx.asset_id, op.txid, op.vout));
+                  }
+                } catch { /* KV blip — next scan retries via the disagree path's get fall-through */ }
+              }
             }
           } catch { /* derivation is best-effort — the transfer count still landed */ }
         } else if (!counted && (decoded.opcode === T_AXFER || decoded.opcode === T_AXFER_VAR)) {
