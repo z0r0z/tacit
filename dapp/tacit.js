@@ -11560,6 +11560,12 @@ function recordActivity(entry) {
   if (arr.length > ACTIVITY_MAX) arr.length = ACTIVITY_MAX;
   try { localStorage.setItem(activityKey(), JSON.stringify(arr)); } catch {}
   _invalidateLocalActivityCaches();  // any pill might be affected by a new entry
+  // OTC reservations add to the in-flight pill's count. Refresh now so
+  // the user sees the indicator update instantly rather than waiting for
+  // the next render tick. Cheap.
+  if (out.kind === 'otc-reserved') {
+    try { if (typeof _renderInflightPill === 'function') _renderInflightPill(); } catch {}
+  }
 }
 
 // Cached per-pill Sets of asset_ids the user has locally interacted with.
@@ -15818,6 +15824,10 @@ function _reconcileOtcSettlements(holdings) {
     if (typeof document !== 'undefined') {
       try { if (document.querySelector('.tab.active[data-tab="holdings"]')) renderActivity(); } catch {}
     }
+    // Settled OTC reservations drop out of the pill's pending count;
+    // refresh so "3 in flight" becomes "2 in flight" the moment the
+    // CXFER lands in holdings, not on the next render tick.
+    try { if (typeof _renderInflightPill === 'function') _renderInflightPill(); } catch {}
   }
 }
 
@@ -25364,6 +25374,8 @@ async function publishAxferIntent({ utxoTxid, utxoVout, priceSats, expiry, onPro
     if (u) { target = { ...u, decimals: h.decimals, ticker: h.ticker }; assetIdHex = aid; break; }
   }
   if (!target) throw new Error(`UTXO ${utxoTxid}:${utxoVout} not found in holdings`);
+  const _conflict = _localUtxoListedConflict(assetIdHex, utxoTxid, utxoVout);
+  if (_conflict) throw new Error(`UTXO ${utxoTxid}:${utxoVout} is already listed as a live ${_conflict.kind} — cancel that listing first`);
 
   const amt = target.amount;
   const inBlinding = BigInt(target.blinding);
@@ -25584,6 +25596,8 @@ async function publishAxferVarIntent({ utxoTxid, utxoVout, priceSats, expiry, mi
     if (u) { target = { ...u, decimals: h.decimals, ticker: h.ticker }; assetIdHex = aid; break; }
   }
   if (!target) throw new Error(`UTXO ${utxoTxid}:${utxoVout} not found in holdings`);
+  const _conflict = _localUtxoListedConflict(assetIdHex, utxoTxid, utxoVout);
+  if (_conflict) throw new Error(`UTXO ${utxoTxid}:${utxoVout} is already listed as a live ${_conflict.kind} — cancel that listing first`);
 
   const amt = target.amount;                  // BigInt
   const minTakeBI = BigInt(minTakeAmount);
@@ -26684,6 +26698,8 @@ async function publishPreauthSale({ utxoTxid, utxoVout, minPriceSats, expiry, se
     }
     if (!target) throw new Error(`UTXO ${utxoTxid}:${utxoVout} not found in holdings`);
   }
+  const _conflict = _localUtxoListedConflict(assetIdHex, utxoTxid, utxoVout);
+  if (_conflict) throw new Error(`UTXO ${utxoTxid}:${utxoVout} is already listed as a live ${_conflict.kind} — cancel that listing first`);
 
   // Payout script default = P2WPKH(wallet.pub). Caller may override to
   // direct proceeds to another address; worker enforces P2WPKH/P2TR only.
@@ -31597,6 +31613,11 @@ function _formatCountdown(expiresAt) {
   return `${Math.floor(remaining / 3600)}h ${Math.floor((remaining % 3600) / 60)}m left`;
 }
 function _tickCountdowns() {
+  // Piggyback the 15s tick to refresh the in-flight pill so OTC
+  // reservations whose claim_expires_at just passed drop out of the
+  // pending count promptly. Without this the pill would show stale
+  // "N in flight" until any other trigger refreshed it. Cheap call.
+  try { if (typeof _renderInflightPill === 'function') _renderInflightPill(); } catch {}
   const nodes = document.querySelectorAll('[data-expires-at]');
   if (!nodes.length) return;
   for (const el of nodes) {
@@ -34451,10 +34472,30 @@ async function refreshAmmCeremonyStatesIfStale(force = false) {
   await Promise.all(AMM_CEREMONY_CIRCUIT_HASHES.map(async ({ hash }) => {
     try {
       const s = await ceremonyFetchState(hash);
-      if (s) _ammCeremonyStateByCircuit.set(hash, s);
+      if (s) _setAmmCeremonyStateMonotonic(hash, s);
     } catch {}
   }));
   _ammCeremonyStateLastFetchAt = Date.now();
+}
+// Monotonic accept gate for the per-circuit state cache. Worker
+// snapshots occasionally return a transiently lower contribution_count
+// (KV read-after-write races, edge cache lag during a contribute
+// burst), which surfaced in the UI as the global contribs total
+// drifting BACKWARDS between paints (e.g. 6,684 → 6,220). Contributions
+// are append-only — the count can't actually decrease — so silently
+// drop the lower snapshot and keep the higher cached count. Non-count
+// fields from the newer snapshot are merged in so head_index /
+// finalized / vk updates still propagate.
+function _setAmmCeremonyStateMonotonic(hash, s) {
+  if (!s || typeof s !== 'object') return;
+  const prev = _ammCeremonyStateByCircuit.get(hash);
+  const prevCount = Number(prev?.contribution_count);
+  const nextCount = Number(s?.contribution_count);
+  if (Number.isFinite(prevCount) && Number.isFinite(nextCount) && nextCount < prevCount) {
+    _ammCeremonyStateByCircuit.set(hash, { ...s, contribution_count: prevCount });
+    return;
+  }
+  _ammCeremonyStateByCircuit.set(hash, s);
 }
 // Round-robin selector: returns the AMM circuit whose chain currently has
 // the fewest contributions (or the first not-yet-fetched chain). A user
@@ -35836,7 +35877,7 @@ async function ceremonyContributeAmm({
   // Force-set it from the caller-known circuitHash so the AMM verify
   // path is impossible to confuse with the mixer hash.
   state.circuit_hash = String(circuitHash).toLowerCase();
-  _ammCeremonyStateByCircuit.set(circuitHash, state);
+  _setAmmCeremonyStateMonotonic(circuitHash, state);
   _emitMem('start');
   // Soft reservation: claim the slot so concurrent contributors queue
   // behind us instead of racing through their own mix only to lose the
@@ -36120,7 +36161,7 @@ async function ceremonyContributeAmm({
   try { result = JSON.parse(upResp.body); } catch { throw new Error('upload returned non-JSON'); }
   // Refresh the local state cache for this circuit so the chip's "X/N
   // contributions" indicator updates immediately.
-  if (result?.state) _ammCeremonyStateByCircuit.set(circuitHash, result.state);
+  if (result?.state) _setAmmCeremonyStateMonotonic(circuitHash, result.state);
   ammCeremonyMarkContributed();
   // Invalidate the contributors-ribbon cache so the just-landed
   // attestation surfaces in the marquee within seconds, not after
@@ -38784,6 +38825,11 @@ function _cancelWalletRetry() {
 }
 
 async function refreshWallet() {
+  if (!wallet?.pub) {
+    setStatus('#wallet-status', 'locked');
+    renderWalletCard({ balance: null, faucetReady: false });
+    return;
+  }
   $('#w-address').textContent = wallet.address();
   $('#w-pubkey').textContent = wallet.pubHex();
   $('#explorer-link').href = `${NET.explorer}/address/${wallet.address()}`;
@@ -40013,6 +40059,15 @@ function setupEtchForm() {
         $('#e-mintable').checked = false;
         const successEl = $('#etch-success');
         if (successEl) {
+          const carryoverFields = [
+            $('#e-image')?.value.trim() ? 'image' : '',
+            $('#e-description')?.value.trim() ? 'description' : '',
+            $('#e-external-url')?.value.trim() ? 'external URL' : '',
+          ].filter(Boolean);
+          const carryoverHint = carryoverFields.length === 0 ? '' : `
+              <div class="muted" style="font-size:11px;margin-top:8px;color:var(--orange);">
+                Note: ${carryoverFields.join(' / ')} ${carryoverFields.length === 1 ? 'is' : 'are'} kept in the form for re-use. Clear ${carryoverFields.length === 1 ? 'it' : 'them'} before "Etch another" if the next asset is a different project.
+              </div>`;
           successEl.style.display = 'block';
           successEl.innerHTML = `
             <div class="warn" style="border-left-color:var(--green);background:var(--bg-warm);">
@@ -40020,7 +40075,7 @@ function setupEtchForm() {
               <div class="muted" style="font-size:11px;margin-top:4px;">
                 Asset ID <span class="mono-box inline">${escapeHtml(shorten(r.assetIdHex, 8))}</span>
                 — your wallet has indexed this asset; the supply opening is cached locally. Export your key from the Wallet tab to back it up.
-              </div>
+              </div>${carryoverHint}
               <div class="flex" style="margin-top:10px;">
                 <button class="primary" id="btn-etch-goto-holdings">View on Holdings →</button>
                 <a class="btn" href="${NET.explorer}/tx/${r.revealTxid}" target="_blank" rel="noopener noreferrer">Reveal tx ↗</a>
@@ -40151,6 +40206,13 @@ function setupPetchForm() {
       if (!Number.isInteger(mintEndHeight) || mintEndHeight < 0 || mintEndHeight > 0xffffffff) throw new Error('mint end height must be a non-negative integer ≤ 2³²−1');
       if (mintStartHeight !== 0 && mintEndHeight !== 0 && mintEndHeight <= mintStartHeight) {
         throw new Error('mint end height must be greater than mint start height (or leave end blank for open-ended)');
+      }
+      if (mintStartHeight !== 0) {
+        let _tip = 0;
+        try { _tip = await getTip(); } catch {}
+        if (_tip > 0 && mintStartHeight <= _tip + 1) {
+          throw new Error(`mint start height must be at least 2 blocks ahead of the current chain tip (${_tip}); use ${_tip + 2} or later`);
+        }
       }
     } catch (e) {
       errEl.textContent = e.message;
@@ -41610,11 +41672,19 @@ function refreshDropAssetSelect() {
   scanHoldings().then(holdings => {
     const prev = sel.value;
     sel.innerHTML = '<option value="">— select —</option>';
+    let added = 0;
     for (const [aid, h] of holdings) {
       if (h.balance <= 0n) continue;
       const opt = document.createElement('option');
       opt.value = aid;
       opt.textContent = `${h.ticker || '???'} · balance ${fmtAssetAmount(h.balance, h.decimals)} · ${shorten(aid, 10)}`;
+      sel.appendChild(opt);
+      added++;
+    }
+    if (added === 0) {
+      const opt = document.createElement('option');
+      opt.disabled = true;
+      opt.textContent = '(no assets with balance — etch one in Create → Etch first)';
       sel.appendChild(opt);
     }
     if (prev) sel.value = prev;
@@ -41633,9 +41703,11 @@ function renderSavedDropsList() {
     return;
   }
   drops.sort((a, b) => b.created_at - a.created_at);
+  let _skipped = 0;
   list.innerHTML = drops.map(d => {
+    let total;
+    try { total = BigInt(d.total_amount); } catch { _skipped++; return ''; }
     const fulfilledCount = (d.fulfilled || []).length;
-    const total = BigInt(d.total_amount);
     const remainingLeaves = d.count - fulfilledCount;
     const cidLine = d.snapshot_cid
       ? `<a href="https://gateway.pinata.cloud/ipfs/${escapeHtml(d.snapshot_cid.replace(/^ipfs:\/\//, ''))}" target="_blank" rel="noopener">${escapeHtml(shorten(d.snapshot_cid, 12))}</a>`
@@ -41693,6 +41765,9 @@ function renderSavedDropsList() {
       </div>
     `;
   }).join('');
+  if (_skipped > 0) {
+    list.insertAdjacentHTML('beforeend', `<div class="muted" style="font-size:11px;margin-top:8px;color:var(--red);">⚠ ${_skipped} drop record${_skipped === 1 ? '' : 's'} skipped (malformed total_amount — likely corrupt localStorage or a tampered import). Export from a known-good device and re-import to recover.</div>`);
+  }
   // Wire row buttons
   list.querySelectorAll('button[data-act]').forEach(btn => {
     btn.onclick = () => _handleDropRowAction(btn.dataset.act, btn.dataset.dropId);
@@ -43542,6 +43617,10 @@ function _importDropJSON(text) {
   const count = Number(obj.count);
   if (!Number.isInteger(count) || count < 1) throw new Error('count must be a positive integer');
   if (!Array.isArray(obj.rows) || obj.rows.length !== count) throw new Error(`rows.length (${obj.rows?.length}) must equal count (${count})`);
+  if (obj.total_amount != null) {
+    const _ts = String(obj.total_amount);
+    if (!/^[0-9]+$/.test(_ts)) throw new Error('total_amount must be a base-10 non-negative integer string');
+  }
 
   // drop_id must equal _dropIdFor(rootHex, assetIdHex). An attacker-edited
   // JSON could otherwise reuse a legitimate drop_id with mismatched root/asset
@@ -52403,16 +52482,15 @@ async function renderRecentEtches() {
       if (a.kind === 'petch' && safeAssetId) tile.dataset.petchAid = safeAssetId;
       tile.onclick = (e) => {
         e.preventDefault();
-        // Always route tile clicks to the asset's market page directly
-        // (`#tab=market&aid=…`) so the user lands on price + orderbook
-        // + swap tile in one click. Previously routed market-quiet
-        // assets and petches to Discover; the market page now handles
-        // both states (empty asks → "no active asks · post a bid"
-        // pane; petch supply + mint chip surface inside the hero), so
-        // a single destination keeps the wallet → coin → trade flow
-        // consistent regardless of the asset's activity level.
-        if (safeAssetId) location.hash = `#tab=market&aid=${safeAssetId}`;
-        else $('.tab[data-tab="market"]').click();
+        // Public-mint (T_PETCH) tiles route to Discover where the live mint
+        // form is wired; every other tile goes straight to the asset's
+        // market page (price + orderbook + swap tile).
+        if (safeAssetId) {
+          const target = (a.kind === 'petch') ? 'discover' : 'market';
+          location.hash = `#tab=${target}&aid=${safeAssetId}`;
+        } else {
+          $(`.tab[data-tab="${a.kind === 'petch' ? 'discover' : 'market'}"]`).click();
+        }
       };
       paintTile(tile, a, null, null);
       // If this asset's activity total (credited + pending) exceeds the
@@ -54234,22 +54312,47 @@ function _renderInflightPill() {
   let strandedCount = 0;
   try { strandedCount = Object.keys(loadPreauthTakePendings() || {}).length; } catch {}
   const pendingCount = _pendingSettlements ? _pendingSettlements.size : 0;
-  const total = pendingCount + strandedCount;
+  // Pending OTC reservations: marketTakeHandler stamps an `otc-reserved`
+  // activity entry on confirm with a 5-min `claim_expires_at`. Surface
+  // unsettled, unexpired entries in the pill so the user can't lose
+  // track of a reservation by closing the Market tab. Reconciler at
+  // _reconcileOtcSettlements stamps `extra.settled_txid` when a maker
+  // CXFER lands; that branch is filtered out here so settled rows
+  // don't double-count.
+  let otcReservedCount = 0;
+  try {
+    const nowSec = Math.floor(Date.now() / 1000);
+    const arr = loadActivity();
+    for (const e of arr) {
+      if (e.kind !== 'otc-reserved') continue;
+      if (e.extra?.settled_txid) continue;
+      const exp = Number(e.extra?.claim_expires_at || 0);
+      if (exp > 0 && exp <= nowSec) continue;
+      otcReservedCount++;
+    }
+  } catch {}
+  const total = pendingCount + strandedCount + otcReservedCount;
   if (total === 0) {
     el.style.display = 'none';
     el.removeAttribute('data-has-stranded');
+    el.removeAttribute('data-has-otc');
     return;
   }
   el.style.display = 'inline-flex';
   if (strandedCount > 0) el.setAttribute('data-has-stranded', '1');
   else el.removeAttribute('data-has-stranded');
+  if (otcReservedCount > 0) el.setAttribute('data-has-otc', '1');
+  else el.removeAttribute('data-has-otc');
   const strandedHint = strandedCount > 0
     ? ` · ${strandedCount} need${strandedCount === 1 ? 's' : ''} recovery`
     : '';
   el.innerHTML = `<span class="inflight-dot" aria-hidden="true"></span><span>${total} in flight</span>`;
+  const _otcTitleBit = otcReservedCount > 0
+    ? ` · ${otcReservedCount} OTC reservation${otcReservedCount === 1 ? '' : 's'} awaiting your BTC payment (see Activity)`
+    : '';
   el.title = strandedCount > 0
-    ? `${pendingCount} trade${pendingCount === 1 ? '' : 's'} settling on Bitcoin · ${strandedCount} commit${strandedCount === 1 ? '' : 's'} stranded (one-click recovery in Holdings). Click to jump.`
-    : `${pendingCount} trade${pendingCount === 1 ? '' : 's'} settling on Bitcoin (~10 min for first confirmation). Click to jump to Holdings.`;
+    ? `${pendingCount} trade${pendingCount === 1 ? '' : 's'} settling on Bitcoin · ${strandedCount} commit${strandedCount === 1 ? '' : 's'} stranded (one-click recovery in Holdings)${_otcTitleBit}. Click to jump.`
+    : `${pendingCount} trade${pendingCount === 1 ? '' : 's'} settling on Bitcoin (~10 min for first confirmation)${_otcTitleBit}. Click to jump to Holdings.`;
   if (!el.dataset.wired) {
     el.dataset.wired = '1';
     const goHoldings = (ev) => {
@@ -55053,13 +55156,15 @@ function _renderGlobalTape() {
   const sig = top.map(t => `${t.aid}:${t.unit.toFixed(4)}:${t.ts}:${t.amt}`).join('|');
   if (sig === _globalTapeLastSig && root.style.display !== 'none') return;
   _globalTapeLastSig = sig;
-  const ageShort = (ts) => {
-    const sec = Math.max(0, Math.floor(Date.now() / 1000) - ts);
-    if (sec < 60) return `${sec}s`;
-    if (sec < 3600) return `${Math.floor(sec / 60)}m`;
-    if (sec < 86400) return `${Math.floor(sec / 3600)}h`;
-    return `${Math.floor(sec / 86400)}d`;
-  };
+  // Use relativeAge (m/h/d, minutes-elapsed rounding) so the global
+  // tape's age agrees with every other "X ago" surface — asset hero's
+  // "last fill", the strip's "last", the per-asset tape. The previous
+  // local helper floored seconds directly which could drift one unit at
+  // the hour boundary, making the global tape read "7h ago" while the
+  // hero / strip read "8h ago" for the same trade. The data-age-ts hooks
+  // below let the live age ticker (~30s cadence) keep these in sync
+  // without forcing a global-tape DOM rewrite.
+  const ageShort = (ts) => relativeAge(ts) || '0m';
   const buildItem = (t) => {
     const tickGlyph = t.tickDir === 'up' ? '↑' : t.tickDir === 'down' ? '↓' : '·';
     const safeAid = /^[0-9a-f]{64}$/i.test(t.aid || '') ? t.aid : '';
@@ -55071,19 +55176,12 @@ function _renderGlobalTape() {
     const tip = `${t.ticker} · last fill ${fmtUnitPriceSats(t.unit)} sats/${t.ticker} · `
               + `size ${amtStr} ${t.ticker} (~${t.priceSats.toLocaleString('en-US')} sats total) · `
               + `${dirLabel} · ${ageShort(t.ts)} ago. Click → asset market page.`;
-    // Layout: TICKER  ↑  230 sats  × 5K  · 3m
-    //         (asset) (tick) (price) (size) (age)
-    // "sats" suffix makes the unit explicit (was just "230" before).
-    // "× 5K" shows trade size — fills the "buy or sell, how much?"
-    // question. Direction is via the ↑/↓ tick (price moved up/down
-    // vs prior fill); a literal buy/sell tag isn't available per-
-    // trade since every settled fill has both sides.
     return `<a class="global-tape-item ${t.tickDir}" href="${href}" title="${escapeHtml(tip)}">`
          + `<span class="gt-ticker">${escapeHtml(t.ticker)}</span>`
          + `<span class="gt-tick">${tickGlyph}</span>`
          + `<span class="gt-price">${fmtUnitPriceSats(t.unit)}<span class="gt-unit"> sats</span></span>`
          + `<span class="gt-size">× ${escapeHtml(amtStr)}</span>`
-         + `<span class="gt-age">${ageShort(t.ts)} ago</span>`
+         + `<span class="gt-age" data-age-ts="${t.ts}" data-age-fmt="ago">${ageShort(t.ts)} ago</span>`
          + `</a>`;
   };
   const itemsHtml = top.map(buildItem).join('');
@@ -55817,8 +55915,30 @@ function _marketFloorByAsset() {
     const priceSats = l.kind === 'preauth' ? Number(l.min_price_sats || 0) : Number(l.price_sats || 0);
     const u = unitPriceSats(priceSats, BigInt(amount || 0), dec);
     if (u == null) continue;
-    const cur = map.get(a.asset_id);
-    if (!cur || u < cur.unit) map.set(a.asset_id, { unit: u, ticker: a.ticker || 'token' });
+    const isTrustless = l.kind === 'preauth' || l.kind === 'intent';
+    let cur = map.get(a.asset_id);
+    if (!cur) {
+      cur = { unit: u, ticker: a.ticker || 'token', trustlessUnit: null, otcUnit: null, floorKind: l.kind };
+      map.set(a.asset_id, cur);
+    }
+    // Track per-trust-mode floors separately so callers can prefer the
+    // trustless quote and demote OTC to a secondary metric. Without this
+    // split a maker can post a fake 1-sat opening (trust-OTC) ask and
+    // drag the visible floor for everyone pricing against the asset.
+    if (isTrustless) {
+      if (cur.trustlessUnit == null || u < cur.trustlessUnit) cur.trustlessUnit = u;
+    } else {
+      if (cur.otcUnit == null || u < cur.otcUnit) cur.otcUnit = u;
+    }
+    // `unit` is the headline floor: prefer the trustless floor when one
+    // exists, fall back to OTC only when no trustless ask is live. Older
+    // callers reading `.unit` keep working but no longer see fake-OTC
+    // drag-down on assets with real trustless quotes.
+    const headline = cur.trustlessUnit != null ? cur.trustlessUnit : cur.otcUnit;
+    if (headline != null) {
+      cur.unit = headline;
+      cur.floorKind = (cur.trustlessUnit != null) ? 'trustless' : 'otc';
+    }
   }
   _marketFloorCache = { src: _marketCache.listings, map };
   return map;
@@ -56168,6 +56288,7 @@ function goToMarketBrowse() {
   _writeMarketHash(null);
   _applyMarketPrefsToControls('browse');
   renderMarket();
+  try { window.scrollTo({ top: 0, behavior: 'instant' }); } catch { try { window.scrollTo(0, 0); } catch {} }
 }
 // Hover-prefetch: when the user hovers a market browse row or an "open
 // market" button for >120ms (filters out mouse-flyby), kick the worker's
@@ -56231,6 +56352,7 @@ function goToMarketAsset(assetIdHex) {
   _applyMarketPrefsToControls('asset');
   _writeMarketHash(aid);
   renderMarket();
+  try { window.scrollTo({ top: 0, behavior: 'instant' }); } catch { try { window.scrollTo(0, 0); } catch {} }
 }
 
 function normalizeMarketPetchAssets(payload) {
@@ -57118,7 +57240,14 @@ function applyMarketFilters() {
   // still see opening/range offers, but the recommended path is on top.
   // For price sorts, atomic ↔ non-atomic at the same price stay grouped:
   // atomics first, then opening/range tied by price.
-  const atomicScore = l => (l.kind === 'intent' || l.kind === 'preauth') ? 0 : 1;
+  // Trustless-first tiebreaker: when two asks are at the same price, the
+  // strictly-better one for the taker is the one with the shorter / safer
+  // settlement path. Preauth (~10 min, one-click commit+reveal) beats
+  // atomic intent (claim → fulfil → take, hours), which beats OTC opening
+  // / range (manual settlement, requires maker trust).
+  const atomicScore = l => l.kind === 'preauth' ? 0
+                         : l.kind === 'intent'  ? 1
+                         : 2;
   // Cache the unit price per row so the comparator doesn't recompute it on
   // every pairwise call. Listings whose unit price can't be derived (zero
   // amount, malformed price) sort to the bottom under unit-asc, top under
@@ -57506,10 +57635,16 @@ function applyMarketFilters() {
   const _totalActiveListings = rowsFull.length;
   const _filteredOut = _totalActiveListings - rowsForGrid.length;
   const _countTitle = _filteredOut > 0
-    ? `Showing ${rowsForGrid.length} of ${_totalActiveListings} active listings. ${_filteredOut} hidden by the current filter (Simple mode / Mine toggle). Open the filter chip above to expand.`
+    ? `${rowsForGrid.length} listings in the current panel filter (Simple mode + Mine toggle); ${_totalActiveListings} is the unfiltered active total across all kinds (preauth · opening · range · atomic intent). The asset-header card and depth chart count from different filtered sets — so 229 here, 628 in the header, and a smaller in-band count in the depth chart can all be correct simultaneously.`
     : `${rowsForGrid.length} active listings across all kinds (preauth · opening · range · atomic intent). Header card may show a slightly different total — that comes from the worker's pre-aggregated count which can lag by ~1 refresh tick.`;
+  // Suffix tags the denominator with "(filtered)" so "229 of 628" no
+  // longer parses as plain pagination ("229 records out of 628 records")
+  // — 229 is the post-filter total, 628 is the unfiltered active total,
+  // and there's a SEPARATE per-page paginator below. Without the tag,
+  // users read the two as contradictory; with it, the scope is explicit
+  // at one extra word of ink.
   const _countSuffix = _filteredOut > 0
-    ? ` <span class="muted" style="font-weight:400;font-size:10px;">of ${_totalActiveListings}</span>`
+    ? ` <span class="muted" style="font-weight:400;font-size:10px;">of ${_totalActiveListings} <span style="opacity:0.7;">(filtered)</span></span>`
     : '';
   // Sold-pending pill. When the liveness prune has flipped one or more
   // visible rows to _takenPending (preauth/intent UTXO observed spent
@@ -57734,9 +57869,23 @@ function applyMarketFilters() {
         const _ageSec = nowSec - _lastTradeTs;
         const _isHot = _ageSec >= 0 && _ageSec < 3600;
         const _24hCount = sortedNewestFirst.filter(p => p.ts >= cutoff).length;
+        // price_summary is capped at 10 entries by the worker, so on an
+        // active market this count is a lower bound — the tape link
+        // below (which reads from the larger trades ring) can legitimately
+        // show 22 while this strip caps at 10. Append "+" when every
+        // summary entry fell inside the 24h window AND the ring is at
+        // or past its cap, so the user reads "10+ today" instead of a
+        // misleadingly precise "10".
+        const _summaryRingCap = 10;
+        const _maybeTruncated = sortedNewestFirst.length >= _summaryRingCap
+                              && _24hCount === sortedNewestFirst.length;
+        const _countStr = _maybeTruncated ? `${_24hCount}+` : String(_24hCount);
         const _ageStr = relativeAge(_lastTradeTs) || `${_ageSec}s`;
-        const _countSuffix = _24hCount > 1 ? ` · ${_24hCount} today` : '';
-        tradeHtml = `<span class="strip-trade${_isHot ? '' : ' cold'}" title="Most recent trade was ${escapeHtml(_ageStr)} ago. ${_24hCount} settled trade${_24hCount === 1 ? '' : 's'} in the last 24h (from the recent-trades summary)."><span class="strip-trade-dot"></span>last <span data-age-ts="${_lastTradeTs}" data-age-fmt="ago">${escapeHtml(_ageStr)} ago</span>${_countSuffix}</span>`;
+        const _countSuffix = _24hCount > 1 ? ` · ${_countStr} today` : '';
+        const _tipCountStr = _maybeTruncated
+          ? `≥${_24hCount} settled trades in the last 24h (the recent-trades summary is capped at ${_summaryRingCap}; the full Tape below counts every fill)`
+          : `${_24hCount} settled trade${_24hCount === 1 ? '' : 's'} in the last 24h (from the recent-trades summary)`;
+        tradeHtml = `<span class="strip-trade${_isHot ? '' : ' cold'}" title="Most recent trade was ${escapeHtml(_ageStr)} ago. ${escapeHtml(_tipCountStr)}."><span class="strip-trade-dot"></span>last <span data-age-ts="${_lastTradeTs}" data-age-fmt="ago">${escapeHtml(_ageStr)} ago</span>${_countSuffix}</span>`;
       }
       // Prefer the worker's canonical windowed Δ (1h / 4h / 24h / 7d / all,
       // Strict 24h Δ — pulls the worker's canonical price_24h_change_pct
@@ -58167,10 +58316,12 @@ function applyMarketFilters() {
   const _yourOrdersDisclose = _yourOrdersHtml
     ? `<details class="mkt-your-orders-disclose"><summary>▾ your open orders</summary>${_yourOrdersHtml}</details>`
     : '';
-  // Activity modal: hidden overlay containing the full activity table.
-  // Opens when the user clicks the tape's `N trades today →` link.
-  // Kept minimal — × close, backdrop-click close, Esc close.
-  const _activityModalHtml = `<div class="mkt-activity-modal" data-mkt-activity-modal hidden><div class="mkt-activity-modal-panel"><button class="mkt-activity-modal-close" data-act="market-activity-modal-close" type="button" aria-label="Close">×</button><div class="mkt-activity-modal-body">${activityPanelHtml}</div></div></div>`;
+  // Inline activity section — collapsed <details> below the orderbook/tape
+  // so the table is reachable without a modal overlay. The tape's
+  // `N trades today →` button expands this section and scrolls it into
+  // view (see tape post-render binding). Wrap in a marked container so
+  // we can target it from the tape handler regardless of nesting.
+  const _activityDiscloseHtml = `<details class="mkt-activity-disclose" data-mkt-activity-disclose><summary>▾ activity &middot; <span class="muted" style="text-transform:none;letter-spacing:0;font-weight:400;">recent trades &amp; listings</span></summary>${activityPanelHtml}</details>`;
   // Live AMM ceremony contributor count for the footer chip. Sums the
   // per-circuit contribution_count from _ammCeremonyStateByCircuit
   // (warmed by refreshAmmCeremonyStatesIfStale on tab activation).
@@ -58210,12 +58361,12 @@ function applyMarketFilters() {
       </div>
     </div>
     <div data-market-trades-tape class="market-tile-section market-tile-tape" style="display:none;min-height:28px;"></div>
+    ${_activityDiscloseHtml}
     <div class="mkt-trade-footer">
       <span><b>TACIT</b> open-source &middot; zero fees</span>
-      <span><span style="color:#C76B26;">●</span> AMM ceremony${_ammContribChip} <a href="#tab=protocol" style="color:var(--ink-mid);text-decoration:none;border-bottom:0.5px dashed rgba(26,26,26,0.4);">contribute &rarr;</a></span>
+      <span><span style="color:#C76B26;">●</span> AMM ceremony${_ammContribChip} <a href="#" data-act="amm-ceremony-open" style="color:var(--ink-mid);text-decoration:none;border-bottom:0.5px dashed rgba(26,26,26,0.4);">contribute &rarr;</a></span>
       <span>BIP-341 &middot; BIP-340 &middot; CT</span>
-    </div>
-    ${_activityModalHtml}`;
+    </div>`;
   // Rich stats strip — supply (with IPFS-attestation badge), market cap
   // with proof, 24h Δ, depth chart, recent-trades feed. The header above
   // shows the 4 condensed cells; this strip below carries the deeper
@@ -58304,10 +58455,10 @@ function applyMarketFilters() {
       // is safe (data still freshens, the bordered card just
       // doesn't pulse on every re-render).
       'data-market-asset-header',
-      // Activity modal — keeps its hidden state + populated table
-      // across re-renders so a user reading the activity history
-      // doesn't get the modal yanked out from under them.
-      'data-mkt-activity-modal',
+      // Inline activity disclosure — preserve open/closed state +
+      // populated table across re-renders so the user's reading
+      // position isn't lost between ticks.
+      'data-mkt-activity-disclose',
     ]) {
       const node = list.querySelector(`[${sel}]`);
       if (node && node.parentNode) {
@@ -58510,24 +58661,17 @@ function applyMarketFilters() {
   // can still navigate manually.
   list.querySelectorAll('[data-act="market-jump-activity"]').forEach(btn => {
     btn.onclick = () => {
-      // Activity table now lives in a modal overlay (`.mkt-activity-modal`)
-      // appended to listedPaneHtml. Click "→ all trades" opens it;
-      // close via the × button (data-act="market-activity-modal-close")
-      // or Escape key (wired below).
-      const modal = document.querySelector('[data-mkt-activity-modal]');
-      if (modal) modal.hidden = false;
+      const disclose = document.querySelector('[data-mkt-activity-disclose]');
+      if (disclose) {
+        disclose.open = true;
+        try { disclose.scrollIntoView({ behavior: 'smooth', block: 'start' }); } catch {}
+      }
     };
   });
-  list.querySelectorAll('[data-act="market-activity-modal-close"]').forEach(btn => {
-    btn.onclick = () => {
-      const modal = btn.closest('[data-mkt-activity-modal]');
-      if (modal) modal.hidden = true;
-    };
-  });
-  // Backdrop click + Esc both close the modal so it doesn't trap the user.
-  list.querySelectorAll('[data-mkt-activity-modal]').forEach(modal => {
-    modal.onclick = (e) => {
-      if (e.target === modal) modal.hidden = true;
+  list.querySelectorAll('[data-act="amm-ceremony-open"]').forEach(el => {
+    el.onclick = (ev) => {
+      ev.preventDefault();
+      try { openAmmCeremonyDrawer(); } catch (e) { console.warn('[amm-contrib-link] open failed', e?.message); }
     };
   });
   list.querySelectorAll('[data-act="market-mine-asks-toggle"]').forEach(btn => {
@@ -58721,7 +58865,14 @@ function applyMarketFilters() {
     // Composite kind+trust badge. Both atomic-intent and preauth-sale are
     // trustless; the distinction is whether the seller must come back online
     // (atomic intent requires fulfilment after a buyer claims; instant does not).
-    const kindTrustBadge = `<span class="market-mode-badge ${escapeHtml(marketModeClass(l))}" title="${escapeHtml(marketModeLabel(l))}">${escapeHtml(marketModeLabel(l))}</span>`;
+    // OTC kinds get a richer tooltip so the trust profile is explained
+    // on hover (and via the badge text itself), not only at click time
+    // when the take gate modal fires.
+    const _isOtcKind = (l.kind === 'opening' || l.kind === 'range');
+    const _badgeTitle = _isOtcKind
+      ? `${marketModeLabel(l)} — settles OFF-CHAIN. You pay the maker's BTC address sats; they must then broadcast a CXFER to deliver the tokens. The maker can take your sats without delivering. Prefer ⚡ atomic intents / instant listings when available.`
+      : marketModeLabel(l);
+    const kindTrustBadge = `<span class="market-mode-badge ${escapeHtml(marketModeClass(l))}" title="${escapeHtml(_badgeTitle)}">${escapeHtml(marketModeLabel(l))}</span>`;
     // Tile action surface: split into a status line (passive state) and an
     // action row (primary CTA + optional secondary). Sentences-inside-disabled-
     // buttons are status, not action — so they live above the row in muted
@@ -60116,15 +60267,23 @@ function marketGroupHasTrustlessLiveness(group) {
 function marketModeLabel(l) {
   if (l.kind === 'preauth') return 'Instant listing';
   if (l.kind === 'intent') return l.min_take_amount ? 'Variable intent' : 'Atomic intent';
-  if (l.kind === 'range') return 'Range listing';
-  if (l.kind === 'opening') return 'Opening listing';
+  // OTC kinds carry an inline ⚠ glyph so the trust profile is legible
+  // at-a-glance on the tile itself — not only at click time. Lets a user
+  // scanning a crossed book distinguish "looks cheap, but trust the
+  // maker" from atomic asks without reading badge tooltips.
+  if (l.kind === 'range') return '⚠ Range OTC';
+  if (l.kind === 'opening') return '⚠ Opening OTC';
   return 'Listing';
 }
 function marketModeClass(l) {
+  // `trust-required` modifier lets CSS distinguish OTC visually (border
+  // tint, badge color) from trustless preauth/intent without duplicating
+  // selectors. Existing `.opening` / `.range` styles stay; the modifier
+  // is additive.
   return l.kind === 'preauth' ? 'preauth'
        : l.kind === 'intent' ? (l.min_take_amount ? 'intent intent-variable' : 'intent')
-       : l.kind === 'range' ? 'range'
-       : l.kind === 'opening' ? 'opening'
+       : l.kind === 'range' ? 'range trust-required'
+       : l.kind === 'opening' ? 'opening trust-required'
        : 'indexed';
 }
 function marketListingKey(l, asset) {
@@ -61973,7 +62132,7 @@ function renderMarketAssetHeader(assetId, rows) {
     const sign = pct > 0 ? '+' : '−';
     return `<span class="mkt-hero-price-delta mkt-hero-delta-${cls}">${sign}${Math.abs(pct).toFixed(2)}%</span><span class="mkt-hero-price-delta-win">24h</span>`;
   })();
-  const _heroVolUsdHtml = allGroup.volume24hSats != null ? escapeHtml(fmtMarketUsdCompactFromSats(allGroup.volume24hSats, '—')) : '—';
+  const _heroVolUsdHtml = allGroup.volumeSats != null ? escapeHtml(fmtMarketUsdCompactFromSats(allGroup.volumeSats, '—')) : '—';
   const _heroHolderHtml = (() => {
     const hc = Number(a.holder_count || 0);
     const enriched = !!a._marketAssetStatsLoadedAt;
@@ -63228,9 +63387,17 @@ async function populateMarketAssetStats(scope, asset) {
         const el = headerCard.querySelector(`[data-market-header="${key}"]`);
         if (el && text != null && String(text).length > 0) el.textContent = text;
       };
-      if (volSats > 0) {
-        setHeader('vol24-usd', fmtMarketUsdWholeFromSats(volSats, '—'));
-        setHeader('vol24-btc', fmtMarketBtc(volSats));
+      const _heroVolSats = (() => {
+        const candidates = [j.sale_volume_sats, j.total_sale_volume_sats, j.total_volume_sats, j.volume_sats];
+        for (const v of candidates) {
+          const n = Number(v);
+          if (Number.isFinite(n) && n > 0) return n;
+        }
+        return volSats;
+      })();
+      if (_heroVolSats > 0) {
+        setHeader('vol24-usd', fmtMarketUsdWholeFromSats(_heroVolSats, '—'));
+        setHeader('vol24-btc', fmtMarketBtc(_heroVolSats));
       }
       // Crossed-book parity: the synchronous header swaps to "Price · mid"
       // when best in-band bid > best in-band ask (mark is stale). This
@@ -64114,6 +64281,7 @@ async function _computeInBandBookStats(aid, decimals, markUnit) {
   const _expiryGuard = _nowSec + 60;
 
   let cheapestAsk = null;
+  let cheapestAskTotalSats = null;
   const listings = (_marketCache?.listings || []).filter(l =>
     l._asset?.asset_id === aid
     && !l.expired
@@ -64127,7 +64295,10 @@ async function _computeInBandBookStats(aid, decimals, markUnit) {
     const u = unitPriceSats(ps, BigInt(amt || 0), decimals);
     if (u == null) continue;
     if (markValid && (u < lo || u > hi)) continue;
-    if (cheapestAsk == null || u < cheapestAsk) cheapestAsk = u;
+    if (cheapestAsk == null || u < cheapestAsk) {
+      cheapestAsk = u;
+      cheapestAskTotalSats = ps > 0 ? ps : null;
+    }
   }
 
   const intents = await _fetchBidIntentsCached(aid);
@@ -64151,7 +64322,7 @@ async function _computeInBandBookStats(aid, decimals, markUnit) {
     if (highestBid == null || u > highestBid) highestBid = u;
   }
 
-  const value = { cheapestAsk, highestBid };
+  const value = { cheapestAsk, highestBid, cheapestAskTotalSats };
   _bookStatsCache.set(aid, { ts: Date.now(), key, value });
   return value;
 }
@@ -64556,7 +64727,7 @@ async function _populateDepthChart(section, aid, decimals, ticker, markUnit) {
     return ((headerBestBid - headerBestAsk) / mid) * 100;
   })();
   const _crossedBadge = isCrossed
-    ? `<span title="Best bid &gt; best ask — Swap fills sweep this band at favorable prices. The CROSSED %% is the spread expressed as a % of midpoint." style="font-size:9px;padding:1px 6px;background:#F2D67C;color:#5A4400;letter-spacing:0.05em;cursor:help;font-weight:500;">CROSSED${_spreadPctForBadge != null && Number.isFinite(_spreadPctForBadge) ? ` ${Math.round(Math.abs(_spreadPctForBadge))}%` : ''}</span>`
+    ? `<span title="Best bid &gt; best ask — the spread inverts. Whether you can actually sweep at the best-ask price depends on the listing kind: whole-UTXO preauths take or leave the full lot. The CROSSED %% is the spread expressed as a % of midpoint." style="font-size:9px;padding:1px 6px;background:#F2D67C;color:#5A4400;letter-spacing:0.05em;cursor:help;font-weight:500;">CROSSED${_spreadPctForBadge != null && Number.isFinite(_spreadPctForBadge) ? ` ${Math.round(Math.abs(_spreadPctForBadge))}%` : ''}</span>`
     : '';
   // Plain-language CROSSED explainer. Designer feedback: the most novel
   // thing on the page (an orderbook where best bid sits above best ask
@@ -64566,8 +64737,18 @@ async function _populateDepthChart(section, aid, decimals, ticker, markUnit) {
   // next to the depth title teaches the gesture without spawning a
   // dedicated paragraph; the existing tooltip on the badge keeps the
   // detail accessible.
+  // When the cheapest ask is a whole-UTXO preauth too large to take at
+  // small-retail budgets, the rosy "Swap fills sweep this band at
+  // favorable prices" hint misleads — a $10 budget can't sweep a
+  // 50,000-sat whole-UTXO no matter how cheap its unit price reads.
+  // Surface the budget requirement instead, so the user sees the
+  // structural reason the cross persists.
+  const _cheapestAskTotal = _sharedStats?.cheapestAskTotalSats;
+  const _bigWholeUtxo = Number.isFinite(_cheapestAskTotal) && _cheapestAskTotal > 20000;
   const _crossedExplainerHtml = isCrossed && Number.isFinite(headerBestBid) && Number.isFinite(headerBestAsk)
-    ? ` <span class="muted" style="text-transform:none;letter-spacing:0;font-size:10px;color:#6B6557;">best bid (${escapeHtml(fmtUnitPriceSats(headerBestBid))}) sits above best ask (${escapeHtml(fmtUnitPriceSats(headerBestAsk))}) — Swap fills sweep this band at favorable prices.</span>`
+    ? (_bigWholeUtxo
+        ? ` <span class="muted" style="text-transform:none;letter-spacing:0;font-size:10px;color:#6B6557;">best bid (${escapeHtml(fmtUnitPriceSats(headerBestBid))}) sits above best ask (${escapeHtml(fmtUnitPriceSats(headerBestAsk))}) — the best ask is a whole-UTXO listing; sweeping it costs ${_cheapestAskTotal.toLocaleString()} sats. Smaller budgets fill at the next-cheapest asks above.</span>`
+        : ` <span class="muted" style="text-transform:none;letter-spacing:0;font-size:10px;color:#6B6557;">best bid (${escapeHtml(fmtUnitPriceSats(headerBestBid))}) sits above best ask (${escapeHtml(fmtUnitPriceSats(headerBestAsk))}) — Swap fills sweep this band at favorable prices.</span>`)
     : '';
   const bestBidX = xOf(headerBestBid);
   const bestAskX = xOf(headerBestAsk);
@@ -67439,28 +67620,70 @@ function _wireSwapTile(scope) {
     <div class="route-extras" data-route-extras${hiddenAttr}>${extrasHtml}</div>`;
   };
   const _computeImpactStr = (totalSats, totalAmtBI, direction) => {
-    if (!(Number.isFinite(refUnit) && refUnit > 0)) return '';
     if (!(totalAmtBI > 0n) || !(totalSats > 0)) return '';
     const avgU = (totalSats * Math.pow(10, decimals)) / Number(totalAmtBI);
     if (!Number.isFinite(avgU) || avgU <= 0) return '';
-    // Sign convention: positive pct means the user got a WORSE-than-mark
-    // fill (premium when buying, discount when selling). Both directions
-    // are normalized to the same sign so the framing below works for both.
+    // Reference flips to mid on crossed books. Mark (last-trade) is
+    // stale when the spread inverts, so the depth widget + asks/bids
+    // ladders already recolor against (best bid + best ask) / 2 — this
+    // impact figure has to agree or the swap reads "▼ 22% below mark ·
+    // cheap fill" on an avg that mid says is actually a +12% premium.
+    const _impactRef = aid
+      ? _effectiveReferenceUnit(aid, (_marketCache?.listings || []).find(l => l._asset?.asset_id === aid)?._asset || null)
+      : null;
+    const _refUnit = (_impactRef && Number.isFinite(_impactRef.unit) && _impactRef.unit > 0)
+      ? _impactRef.unit
+      : ((Number.isFinite(refUnit) && refUnit > 0) ? refUnit : null);
+    if (_refUnit == null) return '';
+    const _refLabel = _impactRef?.label === 'mid' ? 'mid' : 'mark';
     const pct = direction === 'buy'
-      ? ((avgU - refUnit) / refUnit) * 100
-      : ((refUnit - avgU) / refUnit) * 100;
+      ? ((avgU - _refUnit) / _refUnit) * 100
+      : ((_refUnit - avgU) / _refUnit) * 100;
     if (!Number.isFinite(pct)) return '';
     const abs = Math.abs(pct);
-    if (abs < 0.01) return ' · at mark';
-    // Reframe so the buyer sees a -41% fill as "cheap" rather than as a
-    // scary-looking negative number. Magnitude ≥ 5% gets an explicit
-    // tag ("cheap fill" / "premium") so users can read the magnitude
-    // without parsing the sign-and-window mentally.
-    const better = pct < 0; // user beat the mark
+    if (abs < 0.01) return ` · at ${_refLabel}`;
+    const better = pct < 0;
     const arrow = better ? '▼' : '▲';
-    const tone = better ? 'below mark' : 'above mark';
+    const tone = better ? `below ${_refLabel}` : `above ${_refLabel}`;
     const tag = abs >= 5 ? (better ? ' · cheap fill' : ' · premium') : '';
     return ` · ${arrow} ${abs.toFixed(abs < 1 ? 2 : 1)}% ${tone}${tag}`;
+  };
+  // Fee headline composer. On small trades the per-fill ~800-sat miner
+  // fee compounds fast: a 5-fill $10 buy at 12,702 sats burns ~4,000
+  // sats in fees, 31% of the trade. The raw "fees ~4,000 sats" line
+  // hides that ratio behind a tidy absolute number. When the fee share
+  // crosses 5% of trade value, append "(N% of trade)" so users see the
+  // burden before clicking — and consider sizing up to amortize.
+  const _feeHeadlineStr = (feeEst, tradeSats) => {
+    const base = `~${feeEst.toLocaleString()} sats`;
+    if (!(Number.isFinite(tradeSats) && tradeSats > 0)) return base;
+    if (!(Number.isFinite(feeEst) && feeEst > 0)) return base;
+    const pct = (feeEst / tradeSats) * 100;
+    if (pct < 5) return base;
+    return `${base} (${pct.toFixed(pct >= 10 ? 0 : 1)}% of trade)`;
+  };
+  // When planBuy fills succeed but the cheapest visible preauth was
+  // structurally too big to take (whole-UTXO costs more than budget),
+  // surface that as a route extra. Without this hint the swap reads
+  // "5 fills at 159 avg" while the orderbook shows a 79.55 BEST ask —
+  // and the user has no way to tell why the cheaper ask was skipped.
+  // Returns an `{html}` extra usable by _renderRouteRows, or null when
+  // no cheaper unaffordable preauth exists (genuine route is best).
+  const _skippedAskExtra = (result, budgetSats) => {
+    if (!result || !result.plan || result.plan.length === 0) return null;
+    const _budget = Number.isFinite(budgetSats) && budgetSats > 0
+      ? budgetSats
+      : (Number.isFinite(result.satsBudget) && result.satsBudget > 0 ? result.satsBudget : result.totalSats);
+    if (!(Number.isFinite(_budget) && _budget > 0)) return null;
+    const cheapest = _cheapestUnaffordablePreauth(_budget);
+    if (!cheapest) return null;
+    const planCheapU = result.plan[0]?.u;
+    if (!(Number.isFinite(planCheapU) && cheapest.u < planCheapU)) return null;
+    const _unitStr = escapeHtml(fmtUnitPriceSats(cheapest.u));
+    const _tip = `The cheapest visible ask (${_unitStr} sats/${ticker}) is a whole-UTXO listing — preauth takes are all-or-nothing, and its ${cheapest.ps.toLocaleString()}-sat total exceeds your ${_budget.toLocaleString()}-sat budget. The route fills at the next-cheapest asks instead. Bump your budget to ≥ ${cheapest.ps.toLocaleString()} sats to take the whole lot.`;
+    return {
+      html: `<span title="${escapeHtml(_tip)}" style="border-bottom:1px dotted var(--ink-mid);cursor:help;">cheaper ${_unitStr} ask skipped — ${cheapest.ps.toLocaleString()}-sat whole-UTXO, &gt; your ${_budget.toLocaleString()} budget</span>`,
+    };
   };
 
   // Limit-mode update: user pinned BOTH inputs → derive cap from
@@ -67551,9 +67774,10 @@ function _wireSwapTile(scope) {
           ? `${fmtUnitPriceSats(cheapU)} sats/${ticker}`
           : `${fmtUnitPriceSats(cheapU)}–${fmtUnitPriceSats(dearU)} sats/${ticker}`;
         const impactStr = _computeImpactStr(filledSats, filledAmt, 'buy');
+        const _skippedNote = _skippedAskExtra(result, sats);
         info = _renderRouteRows(
-          `${result.plan.length} fill${result.plan.length === 1 ? '' : 's'} now · ${rangeStr} · fees ~${feeEst.toLocaleString()} sats${impactStr}`,
-          [_residNote ? { html: _residNote } : null]
+          `${result.plan.length} fill${result.plan.length === 1 ? '' : 's'} now · ${rangeStr} · fees ${_feeHeadlineStr(feeEst, result.totalSats)}${impactStr}`,
+          [_residNote ? { html: _residNote } : null, _skippedNote]
         );
       } else {
         // No fills under cap → entire budget posts as bid at limit
@@ -67639,7 +67863,7 @@ function _wireSwapTile(scope) {
       const impactStr = _computeImpactStr(filledSats, filledAmt, 'sell');
       const autoHint = _isAutoFulfilEnabled() ? '' : 'enable Auto-fulfil to auto-sign claims';
       info = _renderRouteRows(
-        `${result.plan.length} bid${result.plan.length === 1 ? '' : 's'} fill now · ${rangeStr} · fees ~${feeEst.toLocaleString()} sats${impactStr}`,
+        `${result.plan.length} bid${result.plan.length === 1 ? '' : 's'} fill now · ${rangeStr} · fees ${_feeHeadlineStr(feeEst, result.totalSats)}${impactStr}`,
         [_residSellNote ? { html: _residSellNote } : null, autoHint]
       );
     } else {
@@ -67744,7 +67968,7 @@ function _wireSwapTile(scope) {
         const impactStr = _computeImpactStr(result.totalSats, result.totalAmt, 'buy');
         const _depthHintEO = _buyDepthHint(result.totalSats, result);
         infoEl.innerHTML = _renderRouteRows(
-          `${result.plan.length} fill${result.plan.length === 1 ? '' : 's'} · ${rangeStr} · fees ~${feeEst.toLocaleString()} sats${impactStr}`,
+          `${result.plan.length} fill${result.plan.length === 1 ? '' : 's'} · ${rangeStr} · fees ${_feeHeadlineStr(feeEst, result.totalSats)}${impactStr}`,
           ['exact-out (≥ requested)', _depthHintEO]
         );
         const _widenBtnEO = infoEl.querySelector('[data-act="swap-widen-slip"]');
@@ -67810,7 +68034,7 @@ function _wireSwapTile(scope) {
       const impactStr = _computeImpactStr(result.totalSats, result.totalAmt, 'sell');
       const _depthHintSEO = _sellDepthHint(result);
       infoEl.innerHTML = _renderRouteRows(
-        `${result.plan.length} bid${result.plan.length === 1 ? '' : 's'} · ${rangeStr} · fees ~${feeEst.toLocaleString()} sats${impactStr}`,
+        `${result.plan.length} bid${result.plan.length === 1 ? '' : 's'} · ${rangeStr} · fees ${_feeHeadlineStr(feeEst, result.totalSats)}${impactStr}`,
         ['exact-out (≥ requested)', autoHint, _depthHintSEO]
       );
       const _widenBtnSEO = infoEl.querySelector('[data-act="swap-widen-slip"]');
@@ -68040,9 +68264,10 @@ function _wireSwapTile(scope) {
       // suggested option. Silent when the current cap isn't binding
       // (budget already fully spent at this cap).
       const _depthHint = _buyDepthHint(sats, result);
+      const _skippedNote = _skippedAskExtra(result, sats);
       infoEl.innerHTML = _renderRouteRows(
-        `${result.plan.length} fill${result.plan.length === 1 ? '' : 's'} · ${rangeStr} · fees ~${feeEst.toLocaleString()} sats${impactStr}`,
-        [residHint, _depthHint, insufficientHint]
+        `${result.plan.length} fill${result.plan.length === 1 ? '' : 's'} · ${rangeStr} · fees ${_feeHeadlineStr(feeEst, result.totalSats)}${impactStr}`,
+        [residHint, _depthHint, _skippedNote, insufficientHint]
       );
       // Wire the Apply button on the depth hint (innerHTML strips event
       // handlers; bind them after the write).
@@ -68192,7 +68417,7 @@ function _wireSwapTile(scope) {
       const impactStr = _computeImpactStr(result.totalSats, result.totalAmt, 'sell');
       const _depthHintS = _sellDepthHint(result);
       infoEl.innerHTML = _renderRouteRows(
-        `${result.plan.length} bid${result.plan.length === 1 ? '' : 's'} · ${rangeStr} · fees ~${feeEst.toLocaleString()} sats${impactStr}`,
+        `${result.plan.length} bid${result.plan.length === 1 ? '' : 's'} · ${rangeStr} · fees ${_feeHeadlineStr(feeEst, result.totalSats)}${impactStr}`,
         [reserveHint, residHint, _depthHintS, autoHint, insufficientTokensHint]
       );
       const _widenBtnS = infoEl.querySelector('[data-act="swap-widen-slip"]');
@@ -71543,13 +71768,15 @@ async function marketCancelIntentHandler(btn) {
   }
 }
 
-// Count atomic alternatives for an asset — intent listings that aren't
-// already locked by another taker. Used by the OTC take gate to suggest
-// a trustless path when one exists for the same asset.
+// Count trustless alternatives for an asset — atomic intents AND preauth
+// sales that aren't already locked by another taker. Used by the OTC take
+// gate to suggest a trustless path when one exists for the same asset.
+// Preauth was missing before, so the gate undersold trustless availability
+// on assets that only had preauth sales live (no atomic intents).
 function _countAtomicAlternativesForAsset(assetIdHex) {
   if (!_marketCache?.listings) return 0;
   return _marketCache.listings.filter(l =>
-    l.kind === 'intent'
+    (l.kind === 'intent' || l.kind === 'preauth')
     && (l._asset?.asset_id || '') === assetIdHex
     && !l.claim
   ).length;
@@ -72496,6 +72723,10 @@ async function marketTakeHandler(btn) {
   const expiry = parseInt(btn.dataset.expiry || '0', 10) || 0;
   if (expiry > 0 && expiry <= Math.floor(Date.now() / 1000)) {
     toast('This listing has expired - refresh the Market tab.', 'error');
+    return;
+  }
+  if (!wallet?.pub) {
+    toast('Set up a wallet first (Wallet tab) — taking a listing needs your pubkey to send to the maker.', 'error', 8000);
     return;
   }
   const myPub = bytesToHex(wallet.pub);
@@ -74651,15 +74882,18 @@ function setupCommandPalette() {
 // between connecting an existing bitcoin wallet (ext) and generating a fresh
 // local burner. Resolves to 'ext-xverse' | 'ext-unisat' | 'local'. Caller
 // dispatches to the appropriate flow; on failure the modal can be re-shown.
+let _welcomeModalInflight = null;
 function _showWelcomeModal() {
-  return new Promise((resolve) => {
+  if (_welcomeModalInflight) return _welcomeModalInflight;
+  _welcomeModalInflight = new Promise((resolve) => {
+    const settle = (v) => { _welcomeModalInflight = null; resolve(v); };
     const modal = document.getElementById('welcome-modal');
     const xBtn = document.getElementById('welcome-xverse');
     const uBtn = document.getElementById('welcome-unisat');
     const pBtn = document.getElementById('welcome-passkey');
     const lBtn = document.getElementById('welcome-local');
     const cBtn = document.getElementById('welcome-crossnet');
-    if (!modal || !xBtn || !uBtn || !pBtn || !lBtn) { resolve('local'); return; }
+    if (!modal || !xBtn || !uBtn || !pBtn || !lBtn) { settle('local'); return; }
     // Cross-network restore. If the user already has a local wallet on
     // the OTHER network, prepend a one-tap "use it here too" option
     // and demote the passkey/local-burner recommendations — most users
@@ -74750,7 +74984,7 @@ function _showWelcomeModal() {
       xBtn.onclick = uBtn.onclick = pBtn.onclick = lBtn.onclick = null;
       if (cBtn) cBtn.onclick = null;
       modal.style.display = 'none';
-      resolve(choice);
+      settle(choice);
     };
     xBtn.onclick = () => close('ext-xverse');
     uBtn.onclick = () => close('ext-unisat');

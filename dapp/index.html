@@ -1191,15 +1191,12 @@ tr[data-recent-activity] .market-token-sub::after {
   color: var(--bg);
 }
 .market-bids-table {
-  /* Designer pass: compact 3-column layout matching the asks ladder.
-     Was 860px+ with 6 columns (price / qty / total / vs-mid / expiry /
-     action) — felt like a separate UI from asks. Now mirrors the
-     asks grid: price / qty / vs-mid, with total + expiry + action
-     hidden via the rules below (still in DOM for hover tooltips and
-     click-to-prime-swap data-fill-* on the row). */
+  /* Compact 3-column layout matching the asks ladder. Borderless +
+     transparent so the .mkt-orderbook wrapper's dashed boundary +
+     vertical divider read cleanly per design.html. */
   min-width: 0;
-  border: 1px solid var(--ink);
-  background: var(--bg-warm);
+  border: 0;
+  background: transparent;
 }
 .market-bids-row {
   display: grid;
@@ -1977,6 +1974,14 @@ tr[data-recent-activity] .market-token-sub::after {
 .market-mode-badge.intent { border-color: var(--purple); color: var(--purple); background: rgba(125,79,247,0.08); }
 .market-mode-badge.opening,
 .market-mode-badge.range { border-color: #a04030; color: #a04030; background: #fff8eb; }
+/* Trust-required tiles get a stronger inline cue beyond the badge color:
+   a left border tint on the whole tile so the row is visually segmented
+   from trustless asks even when the badge wraps off-screen on narrow
+   viewports. Subtle — not alarming — but unmistakable in a crossed book. */
+.market-listing-tile:has(.market-mode-badge.trust-required) {
+  border-left: 3px solid #a04030 !important;
+  background-image: linear-gradient(to right, rgba(160,64,48,0.03), transparent 24%) !important;
+}
 .market-listing-amount {
   margin-top: 18px;
   text-align: center;
@@ -2097,17 +2102,15 @@ tr[data-recent-activity] .market-token-sub::after {
   display: flex;
   flex-direction: column;
   gap: 0;
-  border: 1px solid var(--ink);
-  background: var(--bg);
+  border: 0;
+  background: transparent;
   /* Compact ladder per designer review — both sides now 3 columns so
      the min-width drops dramatically (no horizontal scroller). The two
-     ladders sit as paired halves of a two-sided book. */
+     ladders sit inside .mkt-orderbook which already provides the
+     dashed boundary — no inner border so the panel reads cleanly per
+     design.html. */
   min-width: 0;
 }
-/* Standalone header-only wrapper — used to render the column-header row
-   above #market-grid without nesting tiles inside the same container.
-   Drops the bordered outline so the header reads as a cap on the grid
-   below, not a separate panel. */
 .market-listing-grid.market-listing-rows-mode.market-listing-header-only {
   border-bottom: 0;
 }
@@ -4472,13 +4475,9 @@ body > #amm-contrib-section {
   /* Listing modal: head h3 is 34px serif on desktop — feels gigantic
      on phone screens; cap at 22px. */
   .market-buy-head h3 { font-size: 22px; }
-  /* Activity modal: use full-screen instead of centered with padding
-     so the table actually fits — its 8 columns need every pixel. */
-  .mkt-activity-modal { padding: 8px; }
-  .mkt-activity-modal-panel {
-    max-height: calc(100vh - 16px);
-    padding: 12px;
-  }
+  /* Inline activity disclosure: tighter padding on small screens so the
+     8-column trade table can flow without overlapping the tile edge. */
+  .mkt-activity-disclose { padding: 6px 12px 4px; }
   /* Swap tile: the YOU PAY $10 input + chips wraps; ensure inputs
      stay readable. Drop padding so the form fits a 360px viewport. */
   [data-swap-tile] { padding: 12px 14px !important; }
@@ -4652,32 +4651,23 @@ body > #amm-contrib-section {
   color: var(--bg) !important;
   border-color: var(--ink) !important;
 }
-/* Section header for wallet: dashed bottom-border + compact uppercase
-   sub-section label, matching the design.html asks/bids header style
-   ("● ASKS 250 of 635") rather than the Georgia italic which read
-   as an under-emphasized inline tag. Sub-stats strip on the right
-   wraps cleanly so SYNCED · 1 SAT/VB never clips at the page edge. */
+/* Section header for wallet: dashed bottom-border, no left text label
+   (WALLET / ETCHED dropped — context made them redundant). Right-aligned
+   badge strip with horizontal padding so SYNCED · 1 SAT/VB doesn't clip
+   at the right edge. */
 #tab-wallet .section > .section-header {
   border-bottom: 0.5px dashed rgba(26,26,26,0.25) !important;
-  padding: 8px 0 !important;
+  padding: 8px 14px !important;
   margin-bottom: 12px !important;
   flex-wrap: wrap !important;
   row-gap: 4px !important;
-}
-#tab-wallet .section > .section-header > span:first-child {
-  font-family: var(--mono) !important;
-  font-style: normal !important;
-  font-size: 11px !important;
-  letter-spacing: 0.08em !important;
-  text-transform: uppercase !important;
-  font-weight: 500 !important;
-  color: var(--ink) !important;
+  justify-content: flex-end !important;
 }
 /* Sub-stats wrapper (lock badge · mode · backup · tip · sync · sat/vB):
    allow wrapping at narrow widths so the right-edge items don't clip.
    Was forced inline at fixed gap; now flex-wrap kicks in below the
    tile's content width. */
-#tab-wallet .section > .section-header > span:last-child {
+#tab-wallet .section > .section-header > span {
   flex-wrap: wrap !important;
   row-gap: 4px !important;
   justify-content: flex-end !important;
@@ -4685,7 +4675,7 @@ body > #amm-contrib-section {
 /* Sub-stats row in the wallet header (LOCKED · PASSKEY · TIP · SYNCED · 1 SAT/VB)
    — make uniformly muted so the row reads as a single status strip
    instead of competing badges. */
-#tab-wallet .section-header > span:last-child > span {
+#tab-wallet .section-header > span > span {
   font-size: 9.5px !important;
   letter-spacing: 0.06em !important;
 }
@@ -4693,15 +4683,12 @@ body > #amm-contrib-section {
 #tab-wallet details > summary {
   letter-spacing: 0.05em !important;
 }
-/* "Show getting started" link: subtler, no underline, dashed
-   border-bottom on hover — matches the design.html small-link
-   aesthetic. */
+/* "Show getting started" icon-only affordance — single ↺ glyph rather
+   than text+glyph so the row doesn't clip at narrow widths. */
 #hero-show-link {
   color: var(--ink-mid) !important;
   text-decoration: none !important;
-  border-bottom: 0.5px dashed rgba(26,26,26,0.4) !important;
-  text-transform: none !important;
-  letter-spacing: 0 !important;
+  border-bottom: 0 !important;
 }
 #hero-show-link:hover { color: var(--ink) !important; }
 
@@ -4743,57 +4730,30 @@ body > #amm-contrib-section {
    panel with the activity table inside. Hidden by default via the
    `hidden` HTML attribute the markup carries; the tape link toggles
    that attribute. */
-.mkt-activity-modal {
-  position: fixed;
-  inset: 0;
-  z-index: 9000;
-  background: rgba(26,26,26,0.55);
-  display: flex;
-  align-items: flex-start;
-  justify-content: center;
-  padding: 40px 20px;
-  overflow-y: auto;
+/* Inline activity disclosure — sits below the trades tape inside the
+   asset card. Collapsed by default; tape's "N trades today →" expands
+   it. Subtle design.html aesthetic: dashed top border, muted summary
+   label, no heavy chrome. */
+.mkt-activity-disclose {
+  border-top: 0.5px dashed rgba(26,26,26,0.25);
+  padding: 8px 18px 4px;
+  margin-top: 4px;
 }
-.mkt-activity-modal[hidden] { display: none !important; }
-.mkt-activity-modal-panel {
-  width: 100%;
-  max-width: 720px;
-  background: #F2EBD4;
-  border: 0.5px solid rgba(26,26,26,0.15);
-  position: relative;
-  padding: 14px 18px 18px;
-  max-height: calc(100vh - 80px);
-  overflow-y: auto;
-}
-.mkt-activity-modal-close {
-  position: absolute;
-  top: 6px;
-  right: 8px;
-  background: transparent !important;
-  border: 0 !important;
-  font-size: 20px;
-  line-height: 1;
-  color: var(--ink-mid);
+.mkt-activity-disclose > summary {
   cursor: pointer;
-  padding: 4px 8px !important;
-  font-weight: 400;
-  box-shadow: none !important;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-mid);
+  padding: 6px 0;
+  list-style: none;
 }
-.mkt-activity-modal-close:hover {
-  color: var(--ink);
-  background: transparent !important;
-}
-/* Inside the modal, the activity panel needs its display:none CSS
-   override neutralized so the actual table renders. The default
-   `.market-token-main .market-asset-pane[data-market-asset-pane="activity"]
-   { display: none !important; }` rule no longer applies because the
-   modal lives outside .market-token-main. But the base
-   `.market-asset-pane { display: none; }` rule still hides it — so
-   force display inside the modal. */
-.mkt-activity-modal .market-asset-pane,
-.mkt-activity-modal [data-market-asset-pane] {
+.mkt-activity-disclose > summary::-webkit-details-marker { display: none; }
+.mkt-activity-disclose[open] > summary { color: var(--ink); }
+.mkt-activity-disclose .market-asset-pane,
+.mkt-activity-disclose [data-market-asset-pane] {
   display: block !important;
-  padding: 0 !important;
+  padding: 8px 0 12px !important;
 }
 
 /* Asset-detail mode hides the tab-market chrome that surrounds
@@ -6248,6 +6208,87 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
   .faq-a { font-size: 12px; }
   .faq-foot { padding: 10px 16px 12px; line-height: 1.6; }
 }
+
+/* Create-tab tile: drop the heavy dark section-header in favor of
+   the same minimalist wallet-tile treatment (transparent background,
+   dashed hairline between groups). Lets the etch form breathe and
+   matches the wallet tab's clean look. */
+.etch-tile {
+  border: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+.etch-tile > .section-body {
+  padding: 12px 14px !important;
+}
+.etch-tile label {
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  color: var(--ink-mid);
+  text-transform: uppercase;
+}
+.etch-tile input[type="text"],
+.etch-tile input[type="number"],
+.etch-tile textarea {
+  border: 0.5px solid rgba(26,26,26,0.4) !important;
+  background: var(--bg);
+}
+.etch-tile .etch-why {
+  border-top: 0.5px dashed rgba(26,26,26,0.25);
+  margin-top: 18px !important;
+  padding-top: 6px;
+}
+.etch-tile .etch-why > summary {
+  font-size: 10px !important;
+  letter-spacing: 0.08em !important;
+}
+
+/* Network-warning banner (mainnet caveat + signet BP+ indicator).
+   Compact single-line by default; wraps cleanly on narrow viewports.
+   Earlier oversized padding made these dominate the lander; the new
+   sizing keeps the signal readable without competing with the wallet
+   tile below. */
+.tacit-warn-banner {
+  font-size: 10.5px;
+  line-height: 1.45;
+  padding: 6px 30px 6px 12px;
+  margin-bottom: 10px;
+  text-align: left;
+  border-radius: 0;
+}
+.tacit-warn-banner--red {
+  background: #fee;
+  border: 0.5px solid var(--red);
+  color: var(--red);
+}
+.tacit-warn-banner--green {
+  background: #eef9f0;
+  border: 0.5px solid #2e7d3a;
+  color: #1d4d27;
+}
+.tacit-warn-banner__close {
+  position: absolute;
+  top: 2px;
+  right: 4px;
+  background: transparent !important;
+  border: 0 !important;
+  color: inherit !important;
+  font-size: 14px;
+  line-height: 1;
+  width: 20px;
+  height: 20px;
+  padding: 0 !important;
+  cursor: pointer;
+  text-transform: none !important;
+  letter-spacing: 0 !important;
+  box-shadow: none !important;
+}
+@media (max-width: 640px) {
+  .tacit-warn-banner {
+    font-size: 10px;
+    padding: 6px 26px 6px 10px;
+  }
+}
 </style>
 <!-- Pre-boot script: deep-link tab pre-activation. Runs synchronously
      during head parse so a fresh load with #tab=market doesn't paint
@@ -6335,8 +6376,8 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
   <div class="global-tape-track" data-global-tape-track></div>
 </div>
 
-<div id="mainnet-banner" style="display:none;position:relative;background:#fee;border:1px solid var(--red);padding:7px 36px 7px 14px;font-size:11px;color:var(--red);text-align:center;margin-bottom:10px;line-height:1.4;">
-  <button id="mainnet-banner-close" type="button" aria-label="Acknowledge and hide" title="Acknowledge and hide" style="position:absolute;top:4px;right:6px;background:transparent;border:1px solid transparent;color:var(--red);font-size:14px;line-height:1;width:20px;height:20px;padding:0;cursor:pointer;text-transform:none;letter-spacing:0;">×</button>
+<div id="mainnet-banner" class="tacit-warn-banner tacit-warn-banner--red" style="display:none;position:relative;">
+  <button id="mainnet-banner-close" type="button" aria-label="Acknowledge and hide" title="Acknowledge and hide" class="tacit-warn-banner__close">×</button>
   <strong>⚠ Mainnet — real BTC.</strong> Experimental, no warranty. Don't risk what you can't afford to lose.
   <div id="mainnet-extwallet-hint" style="margin-top:6px;font-size:11px;font-weight:normal;display:none;">
     <strong>No external wallet connected.</strong> Tacit is currently using an in-browser burner key. For meaningful balances on mainnet, connect Xverse / Leather / UniSat from the Wallet tab so the BTC funding side lives in a hardware-backed wallet.
@@ -6374,7 +6415,7 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
   upstream-mainnet savings. Dismissable via localStorage flag; appears
   again on signet wallets that haven't dismissed.
 -->
-<div id="bpp-signet-banner" style="display:none;background:#eef9f0;border:2px solid #2e7d3a;color:#1d4d27;padding:10px 16px;font-size:12px;text-align:center;margin-bottom:16px;"></div>
+<div id="bpp-signet-banner" class="tacit-warn-banner tacit-warn-banner--green" style="display:none;"></div>
 
 <!--
   Sats fragmentation indicator. Appears when the wallet holds enough
@@ -6464,13 +6505,12 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
       <div class="hero-text">Send to a recipient's pubkey. The amount stays hidden from observers; the recipient auto-discovers their balance from chain data on their next scan — no share-link or messaging needed.</div>
     </div>
   </div>
-  <div id="hero-show" style="display:none;text-align:right;margin-top:-16px;margin-bottom:16px;">
-    <a href="#" id="hero-show-link" class="muted" style="font-size:10px;text-transform:uppercase;letter-spacing:0.1em;text-decoration:underline;text-underline-offset:2px;">↺ show getting started</a>
+  <div id="hero-show" style="display:none;text-align:right;margin-top:-16px;margin-bottom:16px;padding-right:14px;">
+    <a href="#" id="hero-show-link" class="muted" title="Show getting started" aria-label="Show getting started" style="font-size:14px;text-decoration:none;line-height:1;display:inline-block;padding:2px 6px;">↺</a>
   </div>
 
   <div class="section">
     <div class="section-header">
-      <span>wallet</span>
       <span style="display:flex;align-items:center;gap:10px;">
         <span id="wallet-lock-badge" class="muted" style="font-size:10px;letter-spacing:0.1em;text-transform:uppercase;cursor:default;" title=""></span>
         <span id="wallet-mode-badge" class="muted" style="font-size:10px;letter-spacing:0.1em;text-transform:uppercase;"></span>
@@ -6593,8 +6633,7 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
 
   <div class="section" id="recent-etches-section">
     <div class="section-header">
-      <span>etched</span>
-      <a href="#" id="recent-etches-all" class="muted" style="text-transform:none;letter-spacing:0;font-size:10px;color:var(--bg);">browse all ↗</a>
+      <a href="#" id="recent-etches-all" class="muted" style="text-transform:none;letter-spacing:0;font-size:10px;color:var(--bg);margin-left:auto;">browse all ↗</a>
     </div>
     <div class="section-body">
       <div id="recent-etches-stats" style="margin-bottom:10px;font-size:11px;display:none;"></div>
@@ -6638,8 +6677,7 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
 
 <!-- ETCH TAB -->
 <div class="tab-panel" id="tab-etch">
-  <div class="section">
-    <div class="section-header"><span>etch · define a new asset</span></div>
+  <div class="section etch-tile">
     <div class="section-body">
       <div class="form-row two">
         <div>
@@ -7385,13 +7423,15 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
       <details style="margin-bottom:14px;">
         <summary style="cursor:pointer;font-size:11px;color:var(--ink-mid);padding:4px 0;">
           <span class="det-arrow" style="display:inline-block;transition:transform 0.1s;margin-right:4px;">▸</span><span style="text-transform:uppercase;letter-spacing:0.08em;">how it works</span>
-          <span style="margin-left:8px;font-style:italic;">non-custodial, Bitcoin-native, zero fee</span>
+          <span style="margin-left:8px;font-style:italic;">non-custodial · Bitcoin-native · zero protocol fee</span>
         </summary>
         <div class="muted" style="margin-top:8px;font-size:12px;line-height:1.55;">
-          <p style="margin:0;">Type how much to buy or sell, click Swap. Trades settle atomically on Bitcoin — asset and sats change hands together or not at all. Zero fee — you pay only Bitcoin's miner fees (shown in the swap preview before you sign).</p>
-          <p style="margin:8px 0 0;">No MEV. No reordering window, no sequencer, no front-running — Bitcoin's PoW handles it.</p>
-          <p style="margin:8px 0 0;">If your swap can't fully fill at your limit price — including when nothing matches at all — the unfilled amount rests as a passive order for 24h. Either way, you get a tradeable position from one click.</p>
-          <p style="margin:8px 0 0;">You keep custody throughout. Balances stay private on-chain.</p>
+          <p style="margin:0;"><strong>Trade.</strong> Type an amount, click Swap. Every fill is a single Bitcoin transaction — your asset and the counterparty's sats change hands in the same tx or neither moves. No bridges, no custodians, no settlement layer.</p>
+          <p style="margin:8px 0 0;"><strong>Fees.</strong> Zero protocol fee. You pay only Bitcoin miner fees, shown in the preview before you sign.</p>
+          <p style="margin:8px 0 0;"><strong>No MEV.</strong> Orders are pre-signed by the maker against a specific outpoint, so the only valid fill is the one that spends it. No sequencer to reorder you, no privileged relayer, no protocol surface to bribe. Bitcoin's PoW is the only orderer.</p>
+          <p style="margin:8px 0 0;"><strong>Limit + rest.</strong> If your swap doesn't fully fill at your limit price — including when nothing matches — the unfilled remainder rests as a passive order for 24h. One click either fills, posts a tradeable order, or both.</p>
+          <p style="margin:8px 0 0;"><strong>Private amounts.</strong> Trade sizes are hidden on-chain via Pedersen commitments + bulletproof rangeproofs. Asset IDs and tickers are public; the size you move is not.</p>
+          <p style="margin:8px 0 0;"><strong>Custody.</strong> Your signing key never leaves this browser. Tacit can't move your funds — only your wallet can.</p>
         </div>
       </details>
       <div class="market-controls">
@@ -7400,12 +7440,19 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
           <span class="market-search-icon" aria-hidden="true">⌕</span>
         </div>
         <div class="market-chips-row">
-          <!-- Per-kind filter dropdown removed: the swap tile + ask ladder
-               now route across ALL ask kinds uniformly (preauth + whole-UTXO
-               atomic + variable-amount), so a "filter by kind" choice
-               contradicts the unified-orderbook abstraction. JS reads of
-               #market-filter-kind fall through to "all" automatically when
-               the element is gone. -->
+          <!-- Trust-mode chip: lets a user hide trust-OTC asks (opening
+               + range) from the ladder when they only want trustless
+               atomic settlement. The swap tile already routes
+               trustless-only regardless of this filter; the chip only
+               affects the visible orderbook. JS supports 'all' +
+               'trustless' values at applyMarketFilters / sortMarketGroups
+               (per-kind drilling was retired with the unified ladder). -->
+          <div class="market-chip-wrap">
+            <select id="market-filter-kind" class="market-chip" aria-label="Trust mode" title="Filter listings by counterparty trust profile">
+              <option value="all" selected>All kinds</option>
+              <option value="trustless" title="Show only ⚡ instant + atomic-intent asks; hides OTC opening + range listings that require counterparty trust">⚡ Trustless only</option>
+            </select>
+          </div>
           <div class="market-chip-wrap">
             <select id="market-sort" class="market-chip" aria-label="Sort order">
               <option value="volume-desc" selected>Most Volume</option>
