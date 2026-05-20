@@ -70707,6 +70707,47 @@ function _wireSwapTile(scope) {
         if (bidAmt <= 0n || !Number.isFinite(bidSats) || bidSats < DUST) {
           toast('Bid params invalid; refresh and retry', 'error'); return;
         }
+        // Pre-submit verify: force a fresh market fetch + re-plan. The
+        // bid-only flag was set during a typing-tick when the cache might
+        // have been cold/stale (deep-link arrival, ~30s post-broadcast
+        // invalidation window, slow worker). If asks have appeared since,
+        // honor them — taking is what the user actually wanted, posting a
+        // bid is the fallback. Updates the tile in place so the trader
+        // sees the new route + click again to broadcast it instead of
+        // silently overriding their submit gesture.
+        const _origPreLabel = actionBtn.textContent;
+        actionBtn.disabled = true;
+        actionBtn.textContent = 'verifying route…';
+        try {
+          invalidateMarketCache();
+          await fetchMarketDataDeduped();
+        } catch {}
+        const _freshResult = (typeof planBuy === 'function') ? planBuy(bidSats) : null;
+        actionBtn.disabled = false;
+        actionBtn.textContent = _origPreLabel;
+        if (_freshResult && Array.isArray(_freshResult.plan) && _freshResult.plan.length > 0) {
+          // Fresh asks appeared. Clear the bid-only short-circuit, re-run
+          // update() so the tile recomputes against the live cache, and
+          // toast the user to confirm the better outcome. The user will
+          // click Submit again to broadcast the take — no silent override
+          // of their intent.
+          delete actionBtn.dataset.action;
+          delete actionBtn.dataset.bidAmt;
+          delete actionBtn.dataset.bidSats;
+          delete actionBtn.dataset.bidUnitCap;
+          const _newTotalTac = fmtAssetAmount(_freshResult.totalAmt, decimals);
+          toast(
+            `Fresh asks just appeared — your ${bidSats.toLocaleString()} sats can TAKE ${_newTotalTac} ${ticker} from ${_freshResult.plan.length} listing${_freshResult.plan.length === 1 ? '' : 's'} now (vs posting a bid). Click the action button again to broadcast the take.`,
+            'success', 12000,
+          );
+          // Trigger an input event so the tile recomputes with fresh
+          // cache (action button text + route preview both refresh).
+          try {
+            const _toEl = widget.querySelector('input[data-swap-input="to"]');
+            if (_toEl) _toEl.dispatchEvent(new Event('input', { bubbles: true }));
+          } catch {}
+          return;
+        }
         if (!await tacitConfirm({
           title: `Swap ${bidSats.toLocaleString()} sats → ${fmtAssetAmount(bidAmt, decimals)} ${ticker}?`,
           body:
@@ -71035,7 +71076,40 @@ function _wireSwapTile(scope) {
         if (raw) _prefillSwapHandoffAmount(raw);
         return;
       }
-      const result = await planSell(amt);
+      let result = await planSell(amt);
+      // Pre-submit verify (sell side): if planSell came back null, the bid
+      // intents cache might have been cold/stale when the user typed. Force
+      // a fresh bid-intents fetch and re-plan before falling through to the
+      // ask-listing fallback. Mirrors the buy-side bid-only verify path
+      // above — the user came to TRADE; posting a passive order is the
+      // backup, not the goal.
+      if (!result) {
+        const _origPreLabel = actionBtn.textContent;
+        actionBtn.disabled = true;
+        actionBtn.textContent = 'verifying route…';
+        try {
+          if (typeof _invalidateBidsCache === 'function') _invalidateBidsCache(aid);
+          if (typeof _fetchBidIntentsCached === 'function') await _fetchBidIntentsCached(aid, { force: true });
+        } catch {}
+        try { result = await planSell(amt); } catch { result = null; }
+        actionBtn.disabled = false;
+        actionBtn.textContent = _origPreLabel;
+        if (result && Array.isArray(result.plan) && result.plan.length > 0) {
+          // Fresh bids appeared. Re-fire the tile update so the action
+          // button text + route preview refresh; toast the user so the
+          // submit gesture isn't silently overridden.
+          const _newSatsTotal = result.totalSats.toLocaleString();
+          toast(
+            `Fresh bids just appeared — your ${fmtAssetAmount(amt, decimals)} ${ticker} can SELL for ${_newSatsTotal} sats now (vs posting a listing). Click the action button again to broadcast the sell.`,
+            'success', 12000,
+          );
+          try {
+            const _fromEl = widget.querySelector('input[data-swap-input="from"]');
+            if (_fromEl) _fromEl.dispatchEvent(new Event('input', { bubbles: true }));
+          } catch {}
+          return;
+        }
+      }
       // No-bids path: post a listing for the full amount at the user's
       // floor unit price (mirrors the buy-side no-route → place-bid path).
       // The swap-sell becomes a maker-side listing that any partial-fill
