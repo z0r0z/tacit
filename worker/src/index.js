@@ -16774,6 +16774,136 @@ async function sweepBidPartialClaims(env, network) {
   return { processed, refunded, deleted };
 }
 
+// Phantom-listing sweep: walks active preauth listings + atomic intents,
+// probes each asset_outpoint's on-chain spend status, and deletes the
+// record (sale + outpoint reverse index) when the chain says the UTXO
+// is already spent. The existing cron-based cleanup path
+// (_deriveAxferTradeFromChain in scanForEtches' counted branch) only
+// fires when a tx's opcode parses as T_AXFER/T_AXFER_VAR; preauth takes
+// settle via a different reveal envelope (the preauth seller's pre-
+// signed P2WPKH spend rides vin[1] of a buyer-built P2TR reveal — the
+// opcode parse doesn't always reach the seller-payout cleanup branch),
+// so phantom preauths accumulate over weeks. This sweep is the
+// catch-all: chain truth, not opcode inference, drives the prune.
+//
+// Bounded at PREAUTH_PHANTOM_SWEEP_LIMIT entries per network per tick to
+// keep cron CPU + subrequest count under budget. Round-robins across the
+// KV via a per-network cursor so a deep backlog drains over multiple
+// ticks without starving other cron work.
+const PREAUTH_PHANTOM_SWEEP_LIMIT = 60;  // per-tick per-network ceiling
+const PREAUTH_PHANTOM_CURSOR_KEY = (network) =>
+  network === 'signet' ? 'sweep-preauth-phantoms:cursor' : `sweep-preauth-phantoms:${network}:cursor`;
+async function sweepPreauthPhantoms(env, network) {
+  const prefix = network === 'signet' ? 'presale:' : `presale:${network}:`;
+  const cursorKey = PREAUTH_PHANTOM_CURSOR_KEY(network);
+  const startCursor = await env.REGISTRY_KV.get(cursorKey);
+  let cursor = startCursor || null;
+  let probed = 0;
+  let deleted = 0;
+  while (probed < PREAUTH_PHANTOM_SWEEP_LIMIT) {
+    const opts = { prefix, limit: 30 };
+    if (cursor) opts.cursor = cursor;
+    const list = await env.REGISTRY_KV.list(opts);
+    if (!list.keys.length) {
+      // End of sweep — reset cursor so the next tick starts from the
+      // beginning. Otherwise a freshly-listed phantom posted after our
+      // cursor's position waits a full cycle to get pruned.
+      cursor = null;
+      break;
+    }
+    for (const k of list.keys) {
+      if (probed >= PREAUTH_PHANTOM_SWEEP_LIMIT) break;
+      probed++;
+      // Skip the outpoint reverse-index keys (different prefix shape but
+      // overlaps when network='signet' uses `presale:` and the reverse
+      // index uses `presale-by-outpoint:`). KV.list with the exact prefix
+      // catches both because `presale:` is a prefix of `presale-by-outpoint:`.
+      if (k.name.startsWith(prefix + 'by-outpoint:') || k.name.startsWith('presale-by-outpoint:')) continue;
+      const sale = await env.REGISTRY_KV.get(k.name, 'json');
+      if (!sale) continue;
+      const op = sale.asset_outpoint;
+      if (!op || !/^[0-9a-f]{64}$/.test(String(op.txid || '')) || !Number.isInteger(op.vout)) continue;
+      // Chain-truth probe. Cached at CF edge (1h TTL on confirmed
+      // outspends), so repeated phantom sweeps don't burn fresh API hits.
+      const probe = await chainOutspendProbe(env, network, op.txid, op.vout).catch(() => null);
+      if (!probe || probe.spent !== true) continue;
+      // UTXO is spent on chain — listing is a phantom. Delete the sale
+      // record + its outpoint reverse index. Idempotent: KV.delete on a
+      // missing key is a no-op, so re-running this sweep is safe.
+      try {
+        await env.REGISTRY_KV.delete(k.name);
+        await env.REGISTRY_KV.delete(preauthOutpointIndexKey(network, sale.asset_id, op.txid, op.vout));
+        deleted++;
+      } catch { /* KV blip — next sweep tick retries */ }
+    }
+    if (list.list_complete || !list.cursor) {
+      cursor = null;  // reached end; reset for next tick
+      break;
+    }
+    cursor = list.cursor;
+  }
+  // Persist cursor (or null to restart) so the next tick resumes from
+  // where this one stopped. 25h TTL so the cursor itself doesn't
+  // accumulate indefinitely if cron stops.
+  if (cursor) {
+    await env.REGISTRY_KV.put(cursorKey, cursor, { expirationTtl: 90000 });
+  } else {
+    await env.REGISTRY_KV.delete(cursorKey);
+  }
+  return { probed, deleted, cursor_reset: !cursor };
+}
+
+// Same idea for atomic intents: a phantom intent (asset UTXO already
+// spent on chain via a successful take) blocks discoverability the same
+// way phantom preauths do. Same bound + cursor pattern.
+const ATOMIC_PHANTOM_SWEEP_LIMIT = 60;
+const ATOMIC_PHANTOM_CURSOR_KEY = (network) =>
+  network === 'signet' ? 'sweep-atomic-phantoms:cursor' : `sweep-atomic-phantoms:${network}:cursor`;
+async function sweepAtomicIntentPhantoms(env, network) {
+  const prefix = network === 'signet' ? 'axintent:' : `axintent:${network}:`;
+  const cursorKey = ATOMIC_PHANTOM_CURSOR_KEY(network);
+  const startCursor = await env.REGISTRY_KV.get(cursorKey);
+  let cursor = startCursor || null;
+  let probed = 0, deleted = 0;
+  while (probed < ATOMIC_PHANTOM_SWEEP_LIMIT) {
+    const opts = { prefix, limit: 30 };
+    if (cursor) opts.cursor = cursor;
+    const list = await env.REGISTRY_KV.list(opts);
+    if (!list.keys.length) { cursor = null; break; }
+    for (const k of list.keys) {
+      if (probed >= ATOMIC_PHANTOM_SWEEP_LIMIT) break;
+      // Skip side-indexes that share the prefix root.
+      if (k.name.startsWith('axintent-by-outpoint:') || k.name.includes(':by-outpoint:')) continue;
+      probed++;
+      const intent = await env.REGISTRY_KV.get(k.name, 'json');
+      if (!intent || !intent.asset_utxo) continue;
+      const op = intent.asset_utxo;
+      if (!op || !/^[0-9a-f]{64}$/.test(String(op.txid || '')) || !Number.isInteger(op.vout)) continue;
+      const probe = await chainOutspendProbe(env, network, op.txid, op.vout).catch(() => null);
+      if (!probe || probe.spent !== true) continue;
+      try {
+        await env.REGISTRY_KV.delete(k.name);
+        await env.REGISTRY_KV.delete(atomicIntentOutpointIndexKey(network, intent.asset_id, op.txid, op.vout));
+        // Also drop any orphaned claim / fulfilment records — they're
+        // referenced by intent_id, so delete those too.
+        if (intent.intent_id) {
+          await env.REGISTRY_KV.delete(atomicClaimKey(network, intent.asset_id, intent.intent_id));
+          await env.REGISTRY_KV.delete(atomicFulfilmentKey(network, intent.asset_id, intent.intent_id));
+        }
+        deleted++;
+      } catch {}
+    }
+    if (list.list_complete || !list.cursor) { cursor = null; break; }
+    cursor = list.cursor;
+  }
+  if (cursor) {
+    await env.REGISTRY_KV.put(cursorKey, cursor, { expirationTtl: 90000 });
+  } else {
+    await env.REGISTRY_KV.delete(cursorKey);
+  }
+  return { probed, deleted, cursor_reset: !cursor };
+}
+
 async function handleBidIntentClaim(assetIdHex, bidIdHex, req, env, network, cors) {
   if (!/^[0-9a-f]{64}$/.test(assetIdHex)) return jsonResponse({ error: 'invalid asset_id' }, 400, cors);
   if (!/^[0-9a-f]{32}$/.test(bidIdHex))   return jsonResponse({ error: 'invalid bid_id' }, 400, cors);
@@ -23555,6 +23685,45 @@ async function _routeFetch(req, env, ctx) {
         return jsonResponse({ result: 'accept', gates }, 200, cors);
       } catch (e) { return jsonResponse({ error: e.message, stack: e.stack?.slice(0, 200) }, 500, cors); }
     }
+    // POST /admin/sweep-phantoms?network=...[&max=200]
+    // One-shot phantom-listing drain. The scheduled cron runs the same
+    // sweep at PREAUTH_PHANTOM_SWEEP_LIMIT=60/network/tick, so a deep
+    // backlog (e.g., 6-day accumulation on TAC mainnet showing 25+
+    // phantom asks under 200 sats/TAC) takes many ticks to clear.
+    // This endpoint accepts a larger `max` and walks more sales per
+    // invocation, returning counts so a human can confirm the drain.
+    if (url.pathname === '/admin/sweep-phantoms' && req.method === 'POST') {
+      if (!checkDebugAuth(req, env)) return jsonResponse({ error: 'not found' }, 404, cors);
+      try {
+        const maxRaw = parseInt(url.searchParams.get('max') || '200', 10);
+        const cap = Math.max(10, Math.min(1000, Number.isFinite(maxRaw) ? maxRaw : 200));
+        const _origLimit = PREAUTH_PHANTOM_SWEEP_LIMIT;  // const, can't actually mutate; use multiple ticks instead
+        let preauthTotalProbed = 0, preauthTotalDeleted = 0;
+        let atomicTotalProbed = 0, atomicTotalDeleted = 0;
+        // Run as many internal ticks as fit under `cap`.
+        const maxTicks = Math.max(1, Math.ceil(cap / _origLimit));
+        for (let t = 0; t < maxTicks; t++) {
+          const r1 = await sweepPreauthPhantoms(env, network).catch(e => ({ err: e.message }));
+          if (r1?.err) break;
+          preauthTotalProbed += r1.probed || 0;
+          preauthTotalDeleted += r1.deleted || 0;
+          if (r1.cursor_reset) break;  // walked the full prefix
+        }
+        for (let t = 0; t < maxTicks; t++) {
+          const r2 = await sweepAtomicIntentPhantoms(env, network).catch(e => ({ err: e.message }));
+          if (r2?.err) break;
+          atomicTotalProbed += r2.probed || 0;
+          atomicTotalDeleted += r2.deleted || 0;
+          if (r2.cursor_reset) break;
+        }
+        return jsonResponse({
+          network,
+          preauth: { probed: preauthTotalProbed, deleted: preauthTotalDeleted },
+          atomic_intent: { probed: atomicTotalProbed, deleted: atomicTotalDeleted },
+          requested_max: cap,
+        }, 200, cors);
+      } catch (e) { return jsonResponse({ error: e.message }, 500, cors); }
+    }
     // POST /admin/backfill-holders?aid=...&network=...[&cursor=&limit=]
     // Walks the worker's already-indexed transfer records for one asset
     // and bumps holderCount for each previously-unseen recipient. Pure
@@ -24216,6 +24385,23 @@ export default {
       // abandonment*). Bounded per network to keep cron CPU under budget.
       await Promise.allSettled(
         NETWORKS.map(net => sweepBidPartialClaims(env, net).catch(() => {})),
+      );
+      // Phantom-listing reconciliation: walk preauth listings + atomic
+      // intents and prune any whose asset_outpoint is already spent on
+      // chain. The existing opcode-driven cleanup misses many cases
+      // (preauth reveal envelopes don't always trip the T_AXFER branch
+      // of scanForEtches), so phantom listings accumulate over days /
+      // weeks. Without this catch-all sweep, the asks ladder shows
+      // 6-day-old "available" listings that 100% fail at take-time —
+      // a real UX nightmare for users trying to buy cheap inventory.
+      // Bounded per-network per-tick + cursor-paginated so a deep
+      // backlog drains over several ticks. See sweepPreauthPhantoms
+      // / sweepAtomicIntentPhantoms for full rationale.
+      await Promise.allSettled(
+        NETWORKS.map(net => sweepPreauthPhantoms(env, net).catch(e => _logCronError(env, 'sweepPreauthPhantoms', net, e))),
+      );
+      await Promise.allSettled(
+        NETWORKS.map(net => sweepAtomicIntentPhantoms(env, net).catch(e => _logCronError(env, 'sweepAtomicIntentPhantoms', net, e))),
       );
       // Heal a small batch of height-0 orphan T_PMINTs each tick. Bounded
       // to 15 ops/network/tick so the cron isolate stays under the 128 MiB
