@@ -71268,6 +71268,47 @@ function _wireSwapTile(scope) {
         const _origLabel = actionBtn.textContent;
         actionBtn.textContent = 'opening…';
         try {
+          // Over-commitment guard. Bids in tacit are signed off-chain
+          // promises — sats stay in the buyer's wallet until a seller
+          // matches. A buyer can legally post bids whose SUM exceeds
+          // their wallet balance, but only the first matched bid will
+          // actually settle; subsequent matches fail at seller-broadcast
+          // when the buyer's UTXO doesn't have the promised sats. Warn
+          // (don't refuse — power users sometimes intentionally over-
+          // commit at different price tiers knowing only one will fill).
+          let _existingBidCommitments = 0;
+          try {
+            const _existing = (typeof _bidCachePeek === 'function') ? _bidCachePeek(aid) : null;
+            if (Array.isArray(_existing) && wallet?.pub) {
+              const _myPubHex = bytesToHex(wallet.pub);
+              const _nowSec = Math.floor(Date.now() / 1000);
+              for (const b of _existing) {
+                if (b?.buyer_pubkey !== _myPubHex) continue;
+                if (b?._isReserved) continue;
+                if (Number(b?.expiry || 0) <= _nowSec) continue;
+                _existingBidCommitments += Number(b?.price_sats || 0);
+              }
+            }
+          } catch {}
+          const _walletSats = Number(_walletCardState?.balance || 0);
+          const _totalCommitted = _existingBidCommitments + bidSats;
+          if (_walletSats > 0 && _totalCommitted > _walletSats && _existingBidCommitments > 0) {
+            const _overBy = _totalCommitted - _walletSats;
+            const _proceed = await tacitConfirm({
+              title: `Over-committing wallet — at most one of your bids on ${ticker} can settle`,
+              body:
+                `You already have bids on ${ticker} promising ${_existingBidCommitments.toLocaleString()} sats. ` +
+                `Adding this ${bidSats.toLocaleString()}-sat bid brings your total to ${_totalCommitted.toLocaleString()} sats — but your wallet only holds ${_walletSats.toLocaleString()} sats.\n\n` +
+                `Tacit bids are signed promises, not escrowed. When a seller takes your bid, your wallet's sats UTXO funds it atomically. After the first match settles ~${_walletSats.toLocaleString()} sats are gone — your remaining bids reference a wallet that's now ${_overBy.toLocaleString()} sats short, and the next seller's tx will fail to broadcast.\n\n` +
+                `Either: cancel one of your existing bids before posting this one, OR proceed knowing only one of your bids on this asset can actually fill (the rest are dead-on-arrival once the first matches).`,
+              confirmLabel: 'Post anyway (only one will fill)',
+            });
+            if (!_proceed) {
+              actionBtn.disabled = false; actionBtn.style.opacity = '1';
+              actionBtn.textContent = _origLabel;
+              return;
+            }
+          }
           // Variable-fill default (§5.7.7): make the no-route open swap
           // partial-fillable too. Same floor formula as the residual-bid
           // path so even a tiny budget gets a multi-seller-matchable order.
@@ -71304,13 +71345,21 @@ function _wireSwapTile(scope) {
           // who just placed an order stays in "open" state until they
           // explicitly collapse it.
           _setYourOrdersDiscloseOpen(true);
-          setTimeout(() => {
+          // Force-fresh the bid-intents cache + targeted refresh of just
+          // the Your Open Orders panel so the new bid lands instantly
+          // (the 1.5s setTimeout-renderMarket below is the fallback for
+          // surfaces that need a fuller re-render). Without this, the
+          // user has to wait 1.5s OR refresh the page to see their
+          // just-posted bid in the panel — a real "did it actually post?"
+          // moment.
+          (async () => {
             try {
-              renderMarket();
-              // After the post-bid re-render lands, scroll the new bid
-              // into view and flash the Your Open Orders panel so the
-              // user visually anchors on it without scrolling around to
-              // confirm. requestAnimationFrame waits for the DOM swap.
+              if (typeof _fetchBidIntentsCached === 'function') {
+                await _fetchBidIntentsCached(aid, { force: true });
+              }
+              if (typeof refreshYourOpenOrdersPanel === 'function') {
+                refreshYourOpenOrdersPanel(document, aid);
+              }
               requestAnimationFrame(() => {
                 const panel = document.querySelector(`[data-your-orders][data-aid="${aid}"]`);
                 if (panel && typeof panel.scrollIntoView === 'function') {
@@ -71321,7 +71370,11 @@ function _wireSwapTile(scope) {
                 }
               });
             } catch {}
-          }, 1500);
+          })();
+          // Full re-render still fires on a longer delay for surfaces
+          // outside the open-orders panel (bid ladder count, depth chart,
+          // etc.) that the targeted refresh doesn't touch.
+          setTimeout(() => { try { renderMarket(); } catch {} }, 1500);
         } catch (e) {
           if (isUnlockCancelled(e)) toast('Unlock cancelled — nothing was posted.', '');
           else toast(`Bid post failed: ${e.message}`, 'error');
