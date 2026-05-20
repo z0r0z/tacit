@@ -79,7 +79,7 @@
      script-src 'self' covers all three.
      `?cb=` is auto-set by build/build.mjs to a sha256 prefix of tacit.js
      so iOS Safari's stale-modulepreload cache flushes on every change. -->
-<link rel="modulepreload" href="./tacit.js?cb=af980800">
+<link rel="modulepreload" href="./tacit.js?cb=27f82236">
 <link rel="modulepreload" href="./vendor/tacit-deps.min.js">
 <link rel="modulepreload" href="./prf-wallet.js">
 <style>
@@ -6566,7 +6566,7 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
 
 <div class="tabs tabs-primary">
   <button class="tab active" data-tab="wallet" data-group="wallet">Wallet</button>
-  <button class="tab" data-tab="market" data-group="markets">Markets</button>
+  <button class="tab" data-tab="market" data-group="markets">Markets<span id="nav-open-orders-badge" style="display:none;margin-left:6px;font-size:9px;font-weight:600;padding:1px 6px;background:var(--orange,#f7931a);color:#fff;border-radius:9px;letter-spacing:0.04em;vertical-align:middle;" title="You have open orders. Click to see them."></span></button>
   <button class="tab" data-tab="transfer" data-group="send">Send</button>
   <button class="tab" data-tab="etch" data-group="create" title="Issuer flows — etch a new confidential asset and distribute it via Merkle-gated drops">Create</button>
   <button class="tab" data-tab="mixer" data-group="mixer">Mixer</button>
@@ -9116,7 +9116,7 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
   </div>
 </div>
 
-<script type="module" src="./tacit.js?cb=af980800"></script>
+<script type="module" src="./tacit.js?cb=27f82236"></script>
 
 <!-- Service worker registration moved into tacit.js (the dapp's CSP forbids
      inline scripts; only 'self' module scripts are allowed). See sw.js for

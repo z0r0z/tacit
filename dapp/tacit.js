@@ -32067,6 +32067,50 @@ function _renderOtcClaimBanner() {
   if (pluralEl) pluralEl.textContent = n === 1 ? '' : 's';
   banner.style.display = '';
 }
+
+// Cross-tab orders discoverability: count the user's resting orders
+// across every asset the bid-intents cache has touched + every preauth
+// listing the market cache holds, render the count as a tiny pill on
+// the Markets nav tab. No new poll — piggybacks on the maker-claim
+// poller's tick + every applyMarketFilters render, both of which
+// already touch the cached state we need. Reads from in-memory caches
+// only (no extra worker round-trip) so it's free.
+function _updateNavOpenOrdersBadge() {
+  const badge = document.getElementById('nav-open-orders-badge');
+  if (!badge) return;
+  if (!wallet || !wallet.pub) { badge.style.display = 'none'; return; }
+  let myPubHex;
+  try { myPubHex = bytesToHex(wallet.pub); } catch { badge.style.display = 'none'; return; }
+  const nowSec = Math.floor(Date.now() / 1000);
+  let count = 0;
+  // Bids: walk every per-asset cache entry that's already resolved.
+  if (typeof _bidsCache !== 'undefined' && _bidsCache?.forEach) {
+    _bidsCache.forEach(entry => {
+      if (!entry || !Array.isArray(entry.value)) return;
+      for (const b of entry.value) {
+        if (b?._isReserved) continue;
+        if (Number(b?.expiry || 0) <= nowSec) continue;
+        if (b?.buyer_pubkey !== myPubHex) continue;
+        count++;
+      }
+    });
+  }
+  // Asks: walk the market listings cache for preauth + intent kinds
+  // this wallet owns.
+  if (_marketCache?.listings) {
+    for (const l of _marketCache.listings) {
+      if (l?.expired || Number(l?.expiry || 0) <= nowSec) continue;
+      if (l?.kind === 'preauth' && l.seller_pubkey === myPubHex) count++;
+      else if (l?.kind === 'intent' && l.maker_pubkey === myPubHex) count++;
+    }
+  }
+  if (count > 0) {
+    badge.textContent = String(count);
+    badge.style.display = '';
+  } else {
+    badge.style.display = 'none';
+  }
+}
 function _onMakerClaimArrival({ kind, aid, listing, claim, ticker }) {
   const price = Number(listing.price_sats) || 0;
   const takerShort = shorten(claim.taker_pubkey || '', 6);
@@ -38231,6 +38275,7 @@ function _activateTab(name) {
   if (name === 'pool') { renderPool(); startPoolAutoRefresh(); }
   else stopPoolAutoRefresh();
   try { _renderOtcClaimBanner(); } catch {}
+  try { _updateNavOpenOrdersBadge(); } catch {}
   try { _wireAmmCeremonyChipOnce(); renderAmmCeremonyChip(); } catch {}
 }
 
@@ -66353,21 +66398,63 @@ function refreshYourOpenOrdersPanel(scope, aid) {
 // view, and focuses the input. Bails silently if the swap tile is on a
 // different asset (only paints when the click was inside the active
 // asset's orderbook anyway, so the mismatch path is defensive).
-// "Take instead" shortcut for the Open Orders bid row: cancel the bid AND
-// prime the Swap tile in BUY mode at the bid's exact price/budget so the
-// freed sats route through planBuy against the matchable asks the
-// scanner flagged. Two-step (cancel first, then user reviews + submits
-// the Swap tile) so wallet-impacting writes stay explicit. If the user
-// dismisses the Swap submit, they end up with the budget back in their
-// wallet — no half-done state.
+// Compute the route a Take→ would execute: greedy walk of preauth asks
+// at-or-below the bid's unit price whose total sats fits the bid's budget,
+// cheapest first. Preauth-only (single-tx atomic settle, doesn't need
+// maker liveness) so the Take→ broadcast can't get stranded waiting on
+// an offline atomic-intent maker. Returns { plan, totalSats, totalAmt }
+// or null if no fillable asks exist right now.
+function _previewBidTakeRoute(aid, decimals, bidUnit, satsBudget, myPubHex) {
+  const nowSec = Math.floor(Date.now() / 1000);
+  const candidates = [];
+  for (const l of (_marketCache?.listings || [])) {
+    if (l._asset?.asset_id !== aid) continue;
+    if (l.kind !== 'preauth') continue;
+    if (l.expired || Number(l.expiry || 0) <= nowSec) continue;
+    if (l._takenPending) continue;
+    if (l.seller_pubkey === myPubHex) continue;
+    const amt = BigInt(l.asset_opening?.amount || 0);
+    const ps = Number(l.min_price_sats || 0);
+    if (amt <= 0n || ps <= 0) continue;
+    const u = unitPriceSats(ps, amt, decimals);
+    if (!Number.isFinite(u) || u <= 0 || u > bidUnit) continue;
+    candidates.push({ l, amt, ps, u });
+  }
+  candidates.sort((a, b) => a.u - b.u);
+  const plan = [];
+  let totalSats = 0; let totalAmt = 0n;
+  for (const c of candidates) {
+    if (totalSats + c.ps > satsBudget) continue;
+    plan.push(c);
+    totalSats += c.ps;
+    totalAmt += c.amt;
+  }
+  return plan.length > 0 ? { plan, totalSats, totalAmt } : null;
+}
+
+// Atomic Take→ for a resting bid: single confirm cancels the bid AND
+// broadcasts the matching-asks take in one continuous flow. Cancel runs
+// first (signed off-chain message; no fee; ~1s) so a parallel seller
+// can't match the about-to-be-redundant bid while the take broadcast is
+// in flight. Then takePreauthSaleBatch fires the chain-side commit +
+// reveal pair. Progress renders through the swap tile's [data-swap-
+// progress] banner so the persistence layer (sessionStorage) picks it
+// up — user can refresh / tab-nav and the in-flight take stays visible.
+//
+// Failure cases:
+//   • Cancel fails → bid still in book; user re-clicks Take→.
+//   • Cancel succeeds, take fails pre-broadcast (stale ask, dust, etc.)
+//     → bid is gone, sats are intact, route refresh hint shown.
+//   • Cancel succeeds, take broadcasts then errors mid-loop → the
+//     existing maybePromptRecoveryFromError flow + the persisted swap
+//     progress banner surface the recovery UI on the next page render.
 async function _bidTakeInsteadHandler(btn) {
   if (!btn || btn.disabled) return;
   const aid = btn.dataset.aid;
   const bidId = btn.dataset.bidId;
-  const capUnit = parseFloat(btn.dataset.capUnit || '');
   const bidSats = Number(btn.dataset.bidSats || '0');
   const bidAmtBase = btn.dataset.bidAmtBase || '0';
-  if (!aid || !bidId || !Number.isFinite(capUnit) || capUnit <= 0 || !bidSats) {
+  if (!aid || !bidId || !bidSats) {
     toast('Take-instead: missing inputs (refresh the page and retry).', 'error');
     return;
   }
@@ -66377,70 +66464,110 @@ async function _bidTakeInsteadHandler(btn) {
   const decimals = Number.isInteger(asset?.decimals) ? asset.decimals : 0;
   const ticker = asset?.ticker || '?';
   const myPubHex = wallet?.pub ? bytesToHex(wallet.pub) : null;
-  // Re-scan matchable asks at click time (cache might have updated since
-  // the row was rendered) so the confirm dialog shows what's actually
-  // takeable RIGHT NOW. Stale "this looked matchable 30s ago" is the
-  // failure mode this re-check defends against.
-  const freshMatchable = myPubHex
-    ? _matchableAsksForBid({ amount: bidAmtBase, price_sats: bidSats }, aid, decimals, myPubHex)
-    : [];
-  if (freshMatchable.length === 0) {
-    toast('No affordable asks at or below your bid price right now — refresh + retry, or cancel manually.', '');
+  if (!myPubHex) { toast('Wallet not loaded — unlock first.', 'error'); return; }
+  const bidUnit = unitPriceSats(bidSats, BigInt(bidAmtBase), decimals);
+  if (!Number.isFinite(bidUnit) || bidUnit <= 0) {
+    toast('Take-instead: invalid bid unit price.', 'error');
     return;
   }
-  const cheapestUnit = freshMatchable[0].askUnit;
-  const cheapestPs = freshMatchable[0].askPs;
-  const _cheapestPriceStr = fmtUnitPriceSats(cheapestUnit);
-  const ok = confirm(
-    `Cancel bid + take ${freshMatchable.length} affordable ask${freshMatchable.length === 1 ? '' : 's'}?\n\n` +
-    `• Bid: ${bidSats.toLocaleString()} sats budget at your set unit price.\n` +
-    `• Cheapest takeable: ${_cheapestPriceStr} sats/${ticker} for ${cheapestPs.toLocaleString()} sats.\n\n` +
-    `Step 1: this cancels your bid (one signed message, no on-chain fee).\n` +
-    `Step 2: Swap tile primes with the same budget — review the route, then submit to broadcast the buy.\n\n` +
-    `Proceed?`,
-  );
-  if (!ok) return;
-  btn.disabled = true; const orig = btn.textContent; btn.textContent = 'cancelling…';
+  // Force-refresh market so the route preview reflects right-now liquidity.
+  // The bid row's badge data could be 30s stale; a Take→ click is the
+  // user committing to a real broadcast, so it earns one round-trip to
+  // confirm the route still exists.
+  btn.disabled = true; const orig = btn.textContent; btn.textContent = 'checking route…';
+  try { invalidateMarketCache(); await fetchMarketDataDeduped(); } catch {}
+  const route = _previewBidTakeRoute(aid, decimals, bidUnit, bidSats, myPubHex);
+  btn.disabled = false; btn.textContent = orig;
+  if (!route) {
+    toast('No affordable asks at or below your bid price right now — your bid is still open. Refresh and try again, or cancel manually.', '', 8000);
+    return;
+  }
+  // Comprehensive confirm: full route preview so the user knows exactly
+  // what's going to happen on chain. No second confirmation downstream —
+  // this click IS the broadcast authorization.
+  const effectiveUnit = Number(route.totalSats) / (Number(route.totalAmt) / Math.pow(10, decimals));
+  const _routeLines = route.plan.map((c, i) =>
+    `  ${i + 1}. ${fmtAssetAmount(c.amt, decimals)} ${ticker} @ ${fmtUnitPriceSats(c.u)} sats/${ticker} → ${c.ps.toLocaleString()} sats`,
+  ).join('\n');
+  const refundSats = bidSats - route.totalSats;
+  const refundLine = refundSats >= DUST
+    ? `\n• Refund: ${refundSats.toLocaleString()} sats stays in your wallet (not re-bid)`
+    : '';
+  const okConfirm = await tacitConfirm({
+    title: `Cancel bid + take ${fmtAssetAmount(route.totalAmt, decimals)} ${ticker} for ${route.totalSats.toLocaleString()} sats?`,
+    body:
+      `One click does both. No second confirmation.\n\n` +
+      `Route (${route.plan.length} fill${route.plan.length === 1 ? '' : 's'}, cheapest first):\n${_routeLines}\n\n` +
+      `• Effective: ${effectiveUnit.toFixed(2)} sats/${ticker} (vs your bid's ${fmtUnitPriceSats(bidUnit)} ceiling)${refundLine}\n` +
+      `• Step 1: cancel the bid (signed off-chain, no fee)\n` +
+      `• Step 2: broadcast a ${route.plan.length === 1 ? 'preauth take' : 'batched preauth take'} (single Bitcoin tx pair, settles in ~10 min)\n\n` +
+      `If step 2 fails after step 1, your sats are intact but your bid is gone — re-bid manually.`,
+    confirmLabel: route.plan.length === 1 ? 'Cancel bid + take' : `Cancel bid + take ${route.plan.length} asks`,
+  });
+  if (!okConfirm) return;
+  // Find the swap tile's progress element so we can render the broadcast
+  // steps there — it's the same surface the normal swap submit uses, so
+  // sessionStorage persistence + the dismiss affordance both work for
+  // free.
+  const widget = document.querySelector(`[data-swap-tile][data-aid="${aid}"]`);
+  const progressEl = widget?.querySelector('[data-swap-progress]') || null;
+  const progressItems = [
+    { label: `1. cancel bid (${bidSats.toLocaleString()} sats budget)`, status: 'broadcasting', txid: null },
+    ...route.plan.map((c, i) => ({
+      label: `${i + 2}. ${fmtAssetAmount(c.amt, decimals)} ${ticker} @ ${fmtUnitPriceSats(c.u)} sats/${ticker} — ${c.ps.toLocaleString()} sats`,
+      status: 'queued', txid: null,
+    })),
+  ];
+  if (progressEl) {
+    try { _renderSwapProgress(progressEl, progressItems); } catch {}
+    try { widget.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch {}
+  }
+  btn.disabled = true; btn.textContent = 'cancelling…';
+  // Step 1: cancel
   try {
     await cancelBidIntent(aid, bidId);
-    toast(`Bid cancelled. Swap tile primed — submit to take.`, 'success', 8000);
     _invalidateBidsCache(aid);
+    progressItems[0].status = 'done';
+    if (progressEl) _renderSwapProgress(progressEl, progressItems);
   } catch (e) {
+    progressItems[0].status = 'failed';
+    if (progressEl) _renderSwapProgress(progressEl, progressItems);
     btn.disabled = false; btn.textContent = orig;
-    if (isUnlockCancelled(e)) {
-      toast('Unlock cancelled — bid is still open, nothing changed.', '');
-      return;
-    }
-    toast('Cancel failed: ' + (e?.message || String(e)), 'error');
+    if (isUnlockCancelled(e)) toast('Unlock cancelled — bid still open, nothing broadcast.', '');
+    else toast('Cancel failed: ' + (e?.message || String(e)) + ' — bid still open, retry.', 'error');
     return;
   }
-  // Prime the Swap tile in BUY mode. Pass the bid's asset target as
-  // amountBaseStr so the tile populates the "to" input (the receive
-  // target); targetUnit = bid's effective unit price drives slippage
-  // auto-bump so the planner walks all asks ≤ that cap. _updateLimit-
-  // Mode will fire on the dispatched input event and surface the route
-  // preview with "X fills now · cheaper ask captured" hints.
+  // Step 2: broadcast take (batched for ≥2 preauths, single-take for 1)
+  for (let i = 1; i < progressItems.length; i++) progressItems[i].status = 'broadcasting';
+  if (progressEl) _renderSwapProgress(progressEl, progressItems);
+  btn.textContent = 'broadcasting take…';
   try {
-    const bidUnit = unitPriceSats(bidSats, BigInt(bidAmtBase), decimals);
-    primeSwapTileFromOrderbook({
-      aid,
-      direction: 'buy',
-      amountBaseStr: bidAmtBase,
-      decimals,
-      ticker,
-      targetUnit: Number.isFinite(bidUnit) ? bidUnit : capUnit,
-    });
+    const sales = route.plan.map(c => ({ saleIdHex: c.l.sale_id, sale: c.l }));
+    const batch = await takePreauthSaleBatch({ assetIdHex: aid, sales });
+    const settledTxid = batch?.reveal_txid || batch?.commit_txid || batch?.txid || null;
+    for (let i = 1; i < progressItems.length; i++) {
+      progressItems[i].status = 'done';
+      progressItems[i].txid = settledTxid;
+    }
+    if (progressEl) _renderSwapProgress(progressEl, progressItems);
+    invalidateHoldingsCache();
+    invalidateMarketCache();
+    toast(
+      `Take broadcast ✓ ${fmtAssetAmount(route.totalAmt, decimals)} ${ticker} for ${route.totalSats.toLocaleString()} sats. Settles in ~10 min on Bitcoin (1 confirmation).`,
+      'success', 12000,
+    );
   } catch (e) {
-    console.warn('[take-instead] swap prime failed', e?.message);
+    for (let i = 1; i < progressItems.length; i++) progressItems[i].status = 'failed';
+    if (progressEl) _renderSwapProgress(progressEl, progressItems);
+    if (isUnlockCancelled(e)) {
+      toast('Unlock cancelled mid-take — your bid is cancelled but no take broadcast. Sats intact; re-bid via Advanced if you still want this fill.', '', 12000);
+    } else {
+      toast(`Take broadcast failed: ${e?.message || String(e)} — your sats are intact; re-bid via Advanced if needed.`, 'error', 12000);
+    }
+  } finally {
+    btn.disabled = false; btn.textContent = orig;
+    setTimeout(() => { try { refreshYourOpenOrdersPanel(document, aid); } catch {} }, 500);
   }
-  // Targeted Open Orders refresh (drops the now-cancelled bid row) — NOT
-  // renderMarket(), which would tear down and re-render the entire
-  // detail view including the Swap tile we just primed, wiping the
-  // populated inputs. refreshYourOpenOrdersPanel replaces only the
-  // [data-your-orders] panel, leaving the swap tile + ladders intact.
-  setTimeout(() => {
-    try { refreshYourOpenOrdersPanel(document, aid); } catch {}
-  }, 500);
 }
 
 function primeSwapTileFromOrderbook({ aid, direction, amountBaseStr, decimals, ticker, targetUnit = null }) {
