@@ -64147,16 +64147,27 @@ function renderYourOpenOrdersHTML(aid, asset, myPubHex) {
     b.buyer_pubkey === myPubHex,
   );
   // Bail entirely when there's nothing to show AND we KNOW bids are
-  // empty. If the bid cache is still cold and there are no asks, hide
-  // the panel and let the next render pick it up once bids resolve —
-  // avoids a flash of "no orders" before any data lands.
+  // empty (cache resolved, returned no rows for this pubkey).
   if (askGrouped.length === 0 && intentAsks.length === 0 && myBidsKnown && myBids.length === 0) return '';
+  // Cold-cache path: bids haven't resolved yet, no asks visible. Used
+  // to return '' here and hide the panel until bids landed — which
+  // produced the "land on market page → no open orders panel →
+  // refresh → suddenly my open orders appear" UX the user reported.
+  // Now render the panel with a `checking your bids…` placeholder so
+  // a returning trader sees their position load in-place instead of
+  // having the panel appear out of nowhere on the second tick. Kicks
+  // the bid-cache fetch in the background; the next render upgrades
+  // the placeholder to real rows.
   if (askGrouped.length === 0 && intentAsks.length === 0 && !myBidsKnown) {
-    // Try a fetch in the background so the next render has data.
     if (typeof _fetchBidIntentsCached === 'function') {
       try { _fetchBidIntentsCached(aid); } catch {}
     }
-    return '';
+    return `
+      <div data-your-orders data-aid="${escapeHtml(aid)}" data-pub="${escapeHtml(myPubHex)}" style="margin-bottom:14px;border:1px solid var(--ink);background:var(--bg-warm);padding:10px 12px;">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:6px;">
+          <strong style="font-size:11px;text-transform:uppercase;letter-spacing:0.08em;">Your open orders <span class="muted" style="font-weight:normal;font-size:10px;text-transform:none;letter-spacing:0;">· <span class="live-dots">checking your bids</span></span></strong>
+        </div>
+      </div>`;
   }
 
   const askRowsHtml = askGrouped.map(l => {
