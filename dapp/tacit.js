@@ -2938,7 +2938,7 @@ function renderBppSignetBanner() {
   try { dismissed = localStorage.getItem(BPP_BANNER_DISMISS_KEY) === '1'; } catch {}
   if (!isSignet || !bppEnabled() || dismissed) { el.style.display = 'none'; return; }
   el.style.display = 'block';
-  el.innerHTML = `<span>⚡ <strong>Bulletproofs+ active.</strong> Confidential transfers on this client use Tacit's BP+ port on secp256k1 (SPEC §5.47) — ~5% lower fees per send. Mainnet activation follows the signet exercise.</span> <a href="https://github.com/z0r0z/tacit/blob/main/spec/amendments/cxfer-bpp/README.md" target="_blank" rel="noopener noreferrer" style="color:#1d4d27;margin-left:8px;">verify ↗</a> <a href="#" id="bpp-banner-dismiss" style="color:#1d4d27;text-decoration:underline;margin-left:8px;">dismiss</a>`;
+  el.innerHTML = `<span>⚡ <strong>Bulletproofs+ active</strong> on signet — confidential transfers run the BP+ port (SPEC §5.47), ~5% lower fees per send.</span> <a href="https://github.com/z0r0z/tacit/blob/main/spec/amendments/cxfer-bpp/README.md" target="_blank" rel="noopener noreferrer" style="color:#1d4d27;margin-left:8px;">verify ↗</a> <a href="#" id="bpp-banner-dismiss" style="color:#1d4d27;text-decoration:underline;margin-left:8px;">dismiss</a>`;
   const dismiss = el.querySelector('#bpp-banner-dismiss');
   if (dismiss) {
     dismiss.onclick = (ev) => {
@@ -11399,6 +11399,82 @@ function getOpening(txidHex, vout) {
     blinding: BigInt('0x' + e.blinding),
   };
 }
+
+// Stealth-credit persistence (SPEC-BLINDED-PUBKEY §A.2 class-2).
+// scanHoldings walks UTXOs at wallet.address(); stealth-received UTXOs sit at
+// P2WPKH(commit) on a distinct scriptpubkey, so they are not in that walk.
+// To survive page reload (and recovery-from-seed via scanAssetForStealthReceipts)
+// we persist each discovered credit keyed by (txid, vout), with the
+// tweaked_sk needed to spend it.
+// Schema:
+//   tacit-stealth-credits-v1:<network>:<walletPubHex> →
+//     { "<txid>:<vout>": {
+//         assetIdHex, amount, blinding, tweakedSkHex,
+//         commitmentHex, senderPubHex, blockTime } }
+// Bytes-of-value: ~330 bytes/entry × N receipts. Well within localStorage budget.
+let _stealthCreditsCache = null;
+function _stealthCreditsKey() {
+  if (!wallet.pub) return null;
+  let pubHex; try { pubHex = bytesToHex(wallet.pub); } catch { return null; }
+  return `tacit-stealth-credits-v1:${NET.name}:${pubHex}`;
+}
+function loadStealthCredits() {
+  if (_stealthCreditsCache) return _stealthCreditsCache;
+  const k = _stealthCreditsKey();
+  if (!k) return {};
+  try { _stealthCreditsCache = JSON.parse(localStorage.getItem(k) || '{}') || {}; }
+  catch { _stealthCreditsCache = {}; }
+  return _stealthCreditsCache;
+}
+function _writeStealthCreditsNow() {
+  const k = _stealthCreditsKey();
+  if (!k || !_stealthCreditsCache) return;
+  try { localStorage.setItem(k, JSON.stringify(_stealthCreditsCache)); } catch {}
+}
+let _stealthCreditsFlushTimer = null;
+function _scheduleStealthCreditsFlush() {
+  if (_stealthCreditsFlushTimer) clearTimeout(_stealthCreditsFlushTimer);
+  _stealthCreditsFlushTimer = setTimeout(() => {
+    _stealthCreditsFlushTimer = null;
+    _writeStealthCreditsNow();
+  }, 50);
+}
+function recordStealthCredit({ txidHex, vout, assetIdHex, amount, blinding, tweakedSkHex, commitmentHex, senderPubHex, blockTime }) {
+  const o = loadStealthCredits();
+  o[`${txidHex}:${vout}`] = {
+    assetIdHex,
+    amount: amount.toString(),
+    blinding: bytesToHex(bigintToBytes32(blinding)),
+    tweakedSkHex,
+    commitmentHex: commitmentHex || null,
+    senderPubHex: senderPubHex || null,
+    blockTime: blockTime || null,
+  };
+  _stealthCreditsCache = o;
+  _scheduleStealthCreditsFlush();
+}
+function getStealthCredit(txidHex, vout) {
+  const o = loadStealthCredits();
+  const e = o[`${txidHex}:${vout}`];
+  if (!e) return null;
+  return {
+    assetIdHex: e.assetIdHex,
+    amount: BigInt(e.amount),
+    blinding: BigInt('0x' + e.blinding),
+    tweakedSkHex: e.tweakedSkHex,
+    commitmentHex: e.commitmentHex || null,
+    senderPubHex: e.senderPubHex || null,
+    blockTime: e.blockTime || null,
+  };
+}
+function removeStealthCredit(txidHex, vout) {
+  const o = loadStealthCredits();
+  if (!o[`${txidHex}:${vout}`]) return;
+  delete o[`${txidHex}:${vout}`];
+  _stealthCreditsCache = o;
+  _scheduleStealthCreditsFlush();
+}
+
 // Encrypt-to-self key derivation for the buyer-opening cache. ECDH(priv,
 // pub) when priv*G = pub gives priv²·G — a value only the wallet holder
 // can derive. SHA256 of the x-coord becomes a 32-byte AES-GCM key.
@@ -15607,6 +15683,16 @@ async function _scanHoldingsImpl() {
         if (recovered) {
           // Persist for future scans (cheap)
           recordOpening(u.txid, u.vout, assetIdHex, recovered.amount, recovered.blinding);
+          if (stealthTweakedSkHex) {
+            recordStealthCredit({
+              txidHex: u.txid, vout: u.vout, assetIdHex,
+              amount: recovered.amount, blinding: recovered.blinding,
+              tweakedSkHex: stealthTweakedSkHex,
+              commitmentHex: bytesToHex(onChainCommitment),
+              senderPubHex,
+              blockTime: u.status?.block_time || null,
+            });
+          }
           h.balance += recovered.amount;
           // Stamp senderPubHex onto the UTXO entry so the post-scan OTC
           // settlement reconciler can match received deliveries against
@@ -15733,6 +15819,71 @@ async function _scanHoldingsImpl() {
 
     h.ghosts.push({ utxo: u, commitment: onChainCommitment });
   }
+
+  // SPEC-BLINDED-PUBKEY §A.2 recovery: rehydrate persisted stealth credits.
+  // The classical address scan above only sees UTXOs at P2WPKH(wallet.pub).
+  // Stealth-received UTXOs sit at P2WPKH(commit) on distinct scriptpubkeys
+  // and are never enumerated by getUtxos(wallet.address()). Without this
+  // step, a page reload would silently drop them from the user's balance.
+  //
+  // Per-credit liveness check via the existing outspend cache (cheap on
+  // re-renders because confirmed-spent results are persisted). Spent
+  // credits get removed from the store so the next scan doesn't re-pay
+  // the outspend call.
+  try {
+    const credits = loadStealthCredits();
+    const creditKeys = Object.keys(credits);
+    if (creditKeys.length > 0) {
+      const liveChecks = creditKeys.map(async (k) => {
+        const [txid, voutStr] = k.split(':');
+        const vout = parseInt(voutStr, 10);
+        if (!txid || !Number.isFinite(vout)) return { k, alive: false };
+        try {
+          const os = await getOutspend(txid, vout);
+          return { k, alive: !(os && os.spent === true) };
+        } catch { return { k, alive: true }; }  // fail-open on transient errors; classifier will re-check next scan
+      });
+      const results = await Promise.all(liveChecks);
+      for (const { k, alive } of results) {
+        const e = credits[k];
+        if (!e) continue;
+        const [txid, voutStr] = k.split(':');
+        const vout = parseInt(voutStr, 10);
+        if (!alive) { removeStealthCredit(txid, vout); continue; }
+        const aid = e.assetIdHex;
+        const meta = getAssetMeta(aid);
+        const synth = (typeof _cbtcTacSyntheticMeta === 'function') ? _cbtcTacSyntheticMeta(aid) : null;
+        let h = holdings.get(aid);
+        if (!h) {
+          h = {
+            assetIdHex: aid,
+            ticker: meta?.ticker || synth?.ticker || '???',
+            decimals: meta?.decimals ?? synth?.decimals ?? 0,
+            balance: 0n, utxos: [], ghosts: [], pending: [], inflated: [], unverified: [],
+          };
+          holdings.set(aid, h);
+        }
+        // De-dupe: if the classical loop already added this UTXO (e.g. a
+        // self-stealth-to-self that came back to wallet.pub), skip.
+        if (h.utxos.some(x => x.utxo.txid === txid && x.utxo.vout === vout)) continue;
+        const amount = BigInt(e.amount);
+        const blinding = BigInt('0x' + e.blinding);
+        const commitment = e.commitmentHex
+          ? hexToBytes(e.commitmentHex)
+          : null;
+        h.balance += amount;
+        h.utxos.push({
+          utxo: { txid, vout, value: DUST, status: {} },
+          amount, blinding,
+          commitment,
+          senderPubHex: e.senderPubHex || null,
+          stealthTweakedSk: e.tweakedSkHex,
+          blockTime: e.blockTime || null,
+        });
+      }
+    }
+  } catch (err) { console.warn('stealth-credit rehydration failed:', err); }
+
   // Merge confirmed-true entries into the session-persistent cache so the
   // next scan (Refresh, post-broadcast, 30s-TTL expiry) skips this ancestry.
   // Only true entries — false may be transient (mempool pending, T_PMINT
@@ -24135,7 +24286,28 @@ async function discoverStealthFromTxid(txidHex, { merge = true } = {}) {
   // (The holdings cache itself is rebuilt from scratch on every scanHoldings;
   // the persistent opening + the explicit stealth-utxo list survive.)
   for (const d of discovered) {
+    // Dedupe at the credit store: if we've already recorded this (txid, vout),
+    // skip the Activity stamp so repeated rescans (or scanAssetForStealth-
+    // Receipts re-walking history) don't pile up duplicate entries.
+    const alreadySeen = !!getStealthCredit(d.txid, d.vout);
     recordOpening(d.txid, d.vout, d.assetIdHex, d.amount, d.blinding);
+    recordStealthCredit({
+      txidHex: d.txid, vout: d.vout, assetIdHex: d.assetIdHex,
+      amount: d.amount, blinding: d.blinding,
+      tweakedSkHex: d.stealthTweakedSk,
+      commitmentHex: bytesToHex(d.commitment),
+      senderPubHex: d.senderPubHex,
+      blockTime: tx.status?.block_time || null,
+    });
+    if (!alreadySeen) {
+      const am = getAssetMeta(d.assetIdHex) || {};
+      recordActivity({
+        kind: 'transfer-in', ticker: am.ticker || '?',
+        amount: d.amount, decimals: am.decimals ?? 0,
+        assetId: d.assetIdHex, txid: d.txid,
+        extra: { shielded: true, vout: d.vout },
+      });
+    }
   }
   // Merge into the live cache if present. scanHoldings rebuilds via
   // _holdingsCache = { fetchedAt, holdings: Map }, so we patch holdings
@@ -24164,6 +24336,50 @@ async function discoverStealthFromTxid(txidHex, { merge = true } = {}) {
     }
   }
   return discovered;
+}
+
+// SPEC-BLINDED-PUBKEY §A.2 asset-wide recipient discovery. Walks the worker's
+// xferseen index for `assetIdHex` and runs `discoverStealthFromTxid` on every
+// reveal tx. Used by the holdings card's "Rescan for shielded receipts"
+// button and the auto-scan-on-small-history path so a recipient who lost
+// localStorage can recover stealth credits from priv-key alone (no txid
+// required, no out-of-band share-link).
+//
+// Bounded cost: maxPages × pageLimit tx fetches. Default 4 × 50 = up to
+// 200 txs/call — same order as a heavy wallet's classical-address scan.
+// onProgress({ pagesScanned, txsScanned, found }) streams a status pill.
+async function scanAssetForStealthReceipts(assetIdHex, { onProgress = null, maxPages = 4, pageLimit = 50 } = {}) {
+  if (!WORKER_BASE) throw new Error('worker base URL not configured');
+  if (!/^[0-9a-f]{64}$/.test(String(assetIdHex || ''))) throw new Error('invalid assetIdHex');
+  await ensurePrivkey();
+  const discovered = [];
+  let cursor = null;
+  let pagesScanned = 0;
+  let txsScanned = 0;
+  let complete = false;
+  for (let page = 0; page < maxPages; page++) {
+    const url = `${WORKER_BASE}/assets/${assetIdHex}/recent-xfer-txids?network=${encodeURIComponent(NET.name)}&limit=${pageLimit}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`;
+    let resp;
+    try { resp = await fetch(url); } catch (e) { throw new Error(`worker fetch failed: ${e.message || e}`); }
+    if (!resp.ok) throw new Error(`worker returned ${resp.status}`);
+    const j = await resp.json();
+    const txids = Array.isArray(j.txids) ? j.txids : [];
+    pagesScanned++;
+    // Sequential walk — most stealth scans return empty for the bulk of
+    // history, so parallelism trades little win for tx-fetch budget.
+    for (const t of txids) {
+      txsScanned++;
+      try {
+        const credits = await discoverStealthFromTxid(t, { merge: true });
+        for (const c of credits) discovered.push(c);
+      } catch { /* skip; an indexer hiccup on one tx shouldn't sink the walk */ }
+      if (onProgress) { try { onProgress({ pagesScanned, txsScanned, found: discovered.length }); } catch {} }
+    }
+    if (j.done) { complete = true; break; }
+    if (!j.next_cursor) { complete = true; break; }
+    cursor = j.next_cursor;
+  }
+  return { discovered, pagesScanned, txsScanned, complete };
 }
 
 // forceUtxos (optional) lets callers pre-select the exact asset UTXO(s) to
@@ -24384,7 +24600,7 @@ async function buildAndBroadcastCXferMulti({ assetIdHex, recipients, forceUtxos 
     stealthCommitsByVout = new Map();
     for (let i = 0; i < K; i++) {
       if (!parsed[i].isStealth) continue;
-      const { commit } = senderComputeStealthCommit({
+      const { commit, blinding: stealthBlinding } = senderComputeStealthCommit({
         senderEligibleInputPrivs: eligiblePrivs,
         recipientPub: parsed[i].stealthRecipientPub,
         networkTag: currentNetworkName(),
@@ -24393,6 +24609,16 @@ async function buildAndBroadcastCXferMulti({ assetIdHex, recipients, forceUtxos 
         voutIndex: i,
       });
       stealthCommitsByVout.set(i, commit);
+      // Self-shielded send: when the recipient pub IS this wallet's pub, the
+      // sender holds the tweakedSk too and can pre-emptively persist a stealth
+      // credit so the post-broadcast holdings render finds it without forcing
+      // a manual rescan. Tracked alongside the commit for use after broadcast.
+      const isSelf = parsed[i].stealthRecipientPub.length === wallet.pub.length &&
+        parsed[i].stealthRecipientPub.every((x, k) => x === wallet.pub[k]);
+      if (isSelf) {
+        parsed[i].selfStealthBlinding = stealthBlinding;
+        parsed[i].selfStealthCommit = commit;
+      }
     }
   }
   const senderP2wpkh = p2wpkhScript(wallet.pub);
@@ -24512,6 +24738,27 @@ async function buildAndBroadcastCXferMulti({ assetIdHex, recipients, forceUtxos 
     recordOpening(revealTxid, v, assetIdHex, amounts[v], blindings[v]);
   }
 
+  // Self-shielded send: when the sender used their own shielded address as a
+  // recipient, persist the stealth credit immediately so the next holdings
+  // refresh shows the received UTXO without forcing a manual rescan. The
+  // sender holds both the recipient priv (== wallet.priv) and the blinding,
+  // so this is a closed-form derivation — no chain walk needed.
+  for (let i = 0; i < K; i++) {
+    if (!parsed[i].isStealth || parsed[i].selfStealthBlinding == null) continue;
+    const tweakedSkBytes = computeStealthTweakedSk({
+      underlyingPriv: wallet.priv, blinding: parsed[i].selfStealthBlinding,
+    });
+    recordOpening(revealTxid, i, assetIdHex, amounts[i], blindings[i]);
+    recordStealthCredit({
+      txidHex: revealTxid, vout: i, assetIdHex,
+      amount: amounts[i], blinding: blindings[i],
+      tweakedSkHex: bytesToHex(tweakedSkBytes),
+      commitmentHex: bytesToHex(commitmentBytesList[i]),
+      senderPubHex: bytesToHex(wallet.pub),
+      blockTime: null,
+    });
+  }
+
   {
     const am = getAssetMeta(assetIdHex) || {};
     for (let i = 0; i < K; i++) {
@@ -24519,7 +24766,20 @@ async function buildAndBroadcastCXferMulti({ assetIdHex, recipients, forceUtxos 
         kind: 'transfer-out', ticker: am.ticker || '',
         amount: parsed[i].amount, decimals: am.decimals || 0,
         assetId: assetIdHex, txid: revealTxid,
+        ...(parsed[i].isStealth ? { extra: { shielded: true } } : {}),
       });
+      // Self-shielded send is also a transfer-in to the same wallet. Tag both
+      // so the Activity tab shows the round-trip explicitly (a self-send to a
+      // shielded address is the canonical privacy move and shouldn't look
+      // like a leak from the wallet).
+      if (parsed[i].isStealth && parsed[i].selfStealthBlinding != null) {
+        recordActivity({
+          kind: 'transfer-in', ticker: am.ticker || '',
+          amount: parsed[i].amount, decimals: am.decimals || 0,
+          assetId: assetIdHex, txid: revealTxid,
+          extra: { shielded: true, self: true, vout: i },
+        });
+      }
     }
   }
 
@@ -24540,10 +24800,14 @@ async function buildAndBroadcastCXferMulti({ assetIdHex, recipients, forceUtxos 
 // Backwards-compatible single-recipient wrapper. The send-form UI handler and
 // other internal flows (cancel-axfer-offer, cancel-fulfilled-intent) call this
 // with the legacy { assetIdHex, recipientPubHex, amount, forceUtxos } shape.
-async function buildAndBroadcastCXfer({ assetIdHex, recipientPubHex, amount, forceUtxos = null, onProgress = null, useBpp = bppEnabled() }) {
+// stealthAddress (optional) takes precedence over recipientPubHex when set.
+async function buildAndBroadcastCXfer({ assetIdHex, recipientPubHex, stealthAddress = null, amount, forceUtxos = null, onProgress = null, useBpp = bppEnabled() }) {
+  const recipient = stealthAddress
+    ? { stealthAddress, amount }
+    : { pubHex: recipientPubHex, amount };
   const r = await buildAndBroadcastCXferMulti({
     assetIdHex,
-    recipients: [{ pubHex: recipientPubHex, amount }],
+    recipients: [recipient],
     forceUtxos,
     onProgress,
     useBpp,
@@ -24676,6 +24940,15 @@ const SIGHASH_SINGLE_ACP = 0x83;
 
 async function buildAxferOffer({ utxoTxid, utxoVout, recipientPubHex, priceSats, expiry }) {
   await ensurePrivkey();
+  // Forward-compat guard: SPEC-BLINDED-PUBKEY domains for T_AXFER/T_AXFER_VAR
+  // are registered but the AXFER builders don't emit stealth recipients yet
+  // (CXFER-only in v1). A caller passing a tcs1.../tcsts1.../tcsrt1... handle
+  // would silently bytestring-encode it through hexToBytes below and produce
+  // a malformed offer. Reject cleanly so the failure surfaces at the form
+  // edge rather than mid-broadcast.
+  if (typeof recipientPubHex === 'string' && /^tcs(ts|rt)?1[02-9ac-hj-np-z]+$/.test(recipientPubHex.trim().toLowerCase())) {
+    throw new Error('shielded addresses on AXFER are not supported yet — use a 33-byte compressed pubkey (66 hex chars). The CXFER send path supports shielded recipients.');
+  }
   if (!Number.isInteger(priceSats) || priceSats < DUST) throw new Error(`price_sats must be ≥ ${DUST}`);
   if (!Number.isInteger(expiry) || expiry <= Math.floor(Date.now() / 1000)) {
     throw new Error('expiry must be a future unix-seconds timestamp');
@@ -30181,15 +30454,63 @@ async function importShareLink(linkOrHash) {
   if (bytesToHex(pointToBytes(expectedC)) !== bytesToHex(onChainC)) {
     throw new Error('commitment mismatch — share-link does not open the on-chain commitment');
   }
+  // Dedupe Activity by snapshotting the opening cache BEFORE we record the
+  // current import — a prior import of the same share-link already wrote an
+  // opening, so the activity stamp below uses this snapshot to skip the
+  // duplicate transfer-in entry.
+  const priorOpening = getOpening(d.txid, d.vout);
   recordOpening(d.txid, d.vout, d.assetIdHex, d.amount, blinding);
+  // SPEC-BLINDED-PUBKEY §A.2: a share-link for a stealth-recipient send arrives
+  // identical-on-the-wire (same envelope, same Pedersen commitment, same
+  // ECDH-derivable amount), but the on-chain scriptPubKey at vout d.vout is
+  // P2WPKH(commit) rather than P2WPKH(wallet.pub). scanHoldings walks
+  // getUtxos(wallet.address()) and won't enumerate this UTXO across reload.
+  // Persist a stealth credit so rehydration restores it.
+  let isShielded = false;
+  try {
+    const outScript = hexToBytes(tx.vout[d.vout]?.scriptpubkey || '');
+    const classical = p2wpkhScript(wallet.pub);
+    const isClassical = outScript.length === classical.length &&
+      outScript.every((x, i) => x === classical[i]);
+    if (!isClassical) {
+      const classifiedInputs = tx.vin.map((vin) => {
+        const witness = (vin.witness || []).map(h => { try { return hexToBytes(h); } catch { return new Uint8Array(0); } });
+        const prevoutScript = vin.prevout?.scriptpubkey ? hexToBytes(vin.prevout.scriptpubkey) : null;
+        return classifyStealthInput({ witness, prevoutScript });
+      });
+      const credits = recipientScanTxForStealth({
+        classifiedInputs,
+        outputs: tx.vout.map(o => ({ script: hexToBytes(o.scriptpubkey || '') })),
+        walletPriv: wallet.priv, walletPub: wallet.pub,
+        networkTag: currentNetworkName(),
+        domain: STEALTH_DOMAIN_BY_OPCODE.get(env.opcode),
+        txAnchorHead: stealthTxAnchorHead(tx.vin[1].txid, tx.vin[1].vout),
+      });
+      const hit = credits.find(c => c.voutIndex === d.vout);
+      if (hit) {
+        isShielded = true;
+        recordStealthCredit({
+          txidHex: d.txid, vout: d.vout, assetIdHex: d.assetIdHex,
+          amount: d.amount, blinding,
+          tweakedSkHex: bytesToHex(hit.tweakedSk),
+          commitmentHex: bytesToHex(onChainC),
+          senderPubHex,
+          blockTime: tx.status?.block_time || null,
+        });
+      }
+    }
+  } catch { /* best-effort: discoverStealthFromTxid is the explicit fallback */ }
   // Register asset metadata under canonical (CETCH-sourced) values
   if (!getAssetMeta(d.assetIdHex)) {
     registerAsset({ assetIdHex: d.assetIdHex, ticker, decimals, etchTxid: canonical.etchTxid, etchVout: 0, imageUri: canonical.imageUri || null });
   }
-  recordActivity({
-    kind: 'transfer-in', ticker, amount: d.amount, decimals,
-    assetId: d.assetIdHex, txid: d.txid,
-  });
+  if (!priorOpening) {
+    recordActivity({
+      kind: 'transfer-in', ticker, amount: d.amount, decimals,
+      assetId: d.assetIdHex, txid: d.txid,
+      ...(isShielded ? { extra: { shielded: true } } : {}),
+    });
+  }
   return { ticker, amount: d.amount, decimals, assetIdHex: d.assetIdHex };
 }
 
@@ -38838,6 +39159,17 @@ async function refreshWallet() {
   }
   $('#w-address').textContent = wallet.address();
   $('#w-pubkey').textContent = wallet.pubHex();
+  // SPEC-BLINDED-PUBKEY §A.2: opt-in shielded receive address. Failure to
+  // encode (unknown network HRP, etc.) is graceful — the slot just shows '—'
+  // so a bad state doesn't blank the rest of the wallet card.
+  try {
+    const stealthAddrEl = $('#w-stealth-address');
+    if (stealthAddrEl) {
+      stealthAddrEl.textContent = encodeStealthAddress({
+        network: currentNetworkName(), recipientPub: wallet.pub,
+      });
+    }
+  } catch { /* leave the dash in place */ }
   $('#explorer-link').href = `${NET.explorer}/address/${wallet.address()}`;
   // First-load only: render with conservative defaults so badges + connect/
   // faucet visibility evaluate against a known state. On subsequent refreshes
@@ -40713,10 +41045,18 @@ function loadRecentRecipients() {
   try { return JSON.parse(localStorage.getItem(RECENT_RECIPIENTS_KEY()) || '[]'); }
   catch { return []; }
 }
-function saveRecentRecipient(pubHex) {
-  if (!/^0[23][0-9a-f]{64}$/.test(pubHex)) return;
-  const cur = loadRecentRecipients().filter(p => p !== pubHex);
-  cur.unshift(pubHex);
+function saveRecentRecipient(handle) {
+  // Accepts either a classical pubkey hex (33-byte compressed) or a stealth
+  // address (tcs1.../tcsts1.../tcsrt1...). Storing the original input keeps
+  // the autocomplete honest about how the user addressed the recipient last
+  // time — re-sending to the same shielded contact suggests the tcs1 handle
+  // instead of silently resolving back to the underlying pubkey.
+  const h = String(handle || '').trim().toLowerCase();
+  const isPub = /^0[23][0-9a-f]{64}$/.test(h);
+  const isStealth = /^tcs(ts|rt)?1[02-9ac-hj-np-z]+$/.test(h);
+  if (!isPub && !isStealth) return;
+  const cur = loadRecentRecipients().filter(p => p !== h);
+  cur.unshift(h);
   localStorage.setItem(RECENT_RECIPIENTS_KEY(), JSON.stringify(cur.slice(0, RECENT_RECIPIENTS_MAX)));
   refreshRecipientRecents();
 }
@@ -40725,6 +41065,9 @@ function refreshRecipientRecents() {
   if (!dl) return;
   const items = loadRecentRecipients();
   dl.innerHTML = items.map(p => {
+    if (/^tcs(ts|rt)?1[02-9ac-hj-np-z]+$/.test(p)) {
+      return `<option value="${escapeHtml(p)}" label="${escapeHtml(shorten(p, 8))} (shielded)"></option>`;
+    }
     try {
       const addr = bech32.encode(NET.hrp, [0, ...bech32.toWords(hash160(hexToBytes(p)))]);
       return `<option value="${p}" label="${escapeHtml(shorten(addr, 10))}"></option>`;
@@ -40761,28 +41104,62 @@ function classifyRecipientMisinput(raw) {
   return null;
 }
 
+// Returns one of:
+//   { kind: 'pubkey',   pubHex }                    — classical 33-byte compressed
+//   { kind: 'stealth',  stealthAddress, recipientPub, network }
+//   { kind: 'error',    message }
+//   { kind: 'empty' }
+// Used by both updateDerivedAddressHint and the send-preview handler so the
+// two stay in sync on parsing rules.
+function parseRecipientInput(raw) {
+  if (!raw) return { kind: 'empty' };
+  // Stealth HRPs are tcs1 (mainnet), tcsts1 (signet), tcsrt1 (regtest).
+  if (/^tcs(ts|rt)?1[02-9ac-hj-np-z]+$/.test(raw)) {
+    try {
+      const dec = decodeStealthAddress(raw);
+      const netName = currentNetworkName();
+      if (dec.network !== netName) {
+        return { kind: 'error', message: `shielded address is for ${dec.network}; wallet is on ${netName}` };
+      }
+      if (dec.mode !== 'single') {
+        return { kind: 'error', message: 'dual-mode shielded addresses are not supported in this revision' };
+      }
+      return { kind: 'stealth', stealthAddress: raw, recipientPub: dec.recipientPub, network: dec.network };
+    } catch (e) {
+      return { kind: 'error', message: `shielded address: ${e.message || 'invalid bech32m'}` };
+    }
+  }
+  if (!/^0[23][0-9a-f]{64}$/.test(raw)) {
+    const targeted = classifyRecipientMisinput(raw);
+    return { kind: 'error', message: targeted || `${raw.length}/66 chars · expecting compressed pubkey starting with 02 or 03 (or a shielded address starting with tcs1/tcsts1/tcsrt1)` };
+  }
+  try { secp.ProjectivePoint.fromHex(raw); }
+  catch { return { kind: 'error', message: 'not a valid secp256k1 point' }; }
+  return { kind: 'pubkey', pubHex: raw };
+}
+
 function updateDerivedAddressHint() {
   const inputEl = $('#x-recipient-pub');
   const hintEl = $('#x-recipient-derived');
   if (!inputEl || !hintEl) return;
   const raw = inputEl.value.trim().toLowerCase().replace(/\s/g, '');
-  if (!raw) { hintEl.style.display = 'none'; hintEl.textContent = ''; return; }
-  if (!/^0[23][0-9a-f]{64}$/.test(raw)) {
-    const targeted = classifyRecipientMisinput(raw);
-    hintEl.style.display = '';
-    hintEl.style.color = targeted ? 'var(--red)' : 'var(--ink-mid)';
-    hintEl.textContent = targeted || `${raw.length}/66 chars · expecting compressed pubkey starting with 02 or 03`;
-    return;
-  }
-  try { secp.ProjectivePoint.fromHex(raw); }
-  catch {
+  const parsed = parseRecipientInput(raw);
+  if (parsed.kind === 'empty') { hintEl.style.display = 'none'; hintEl.textContent = ''; return; }
+  if (parsed.kind === 'error') {
     hintEl.style.display = '';
     hintEl.style.color = 'var(--red)';
-    hintEl.textContent = 'not a valid secp256k1 point';
+    hintEl.textContent = parsed.message;
     return;
   }
+  if (parsed.kind === 'stealth') {
+    hintEl.style.display = '';
+    hintEl.style.color = 'var(--ink-mid)';
+    hintEl.innerHTML = `<span class="badge" style="background:var(--bg-warm);border:1px dashed var(--ink-faint);padding:2px 6px;font-size:10px;letter-spacing:0.08em;text-transform:uppercase;">SHIELDED</span> recipient hidden on-chain — per-tx unique address`;
+    return;
+  }
+  // kind === 'pubkey'
   try {
-    const addr = bech32.encode(NET.hrp, [0, ...bech32.toWords(hash160(hexToBytes(raw)))]);
+    const addr = bech32.encode(NET.hrp, [0, ...bech32.toWords(hash160(hexToBytes(parsed.pubHex)))]);
     hintEl.style.display = '';
     hintEl.style.color = 'var(--ink-mid)';
     hintEl.innerHTML = `→ <span class="mono-box inline" style="font-size:10px;">${escapeHtml(addr)}</span>`;
@@ -40863,9 +41240,14 @@ function setupTransferForm() {
     try {
       const assetIdHex = $('#x-asset').value;
       if (!assetIdHex) throw new Error('select an asset');
-      const recipientPubHex = $('#x-recipient-pub').value.trim().toLowerCase().replace(/\s/g, '');
-      if (!/^0[23][0-9a-f]{64}$/.test(recipientPubHex)) throw new Error('recipient pubkey must be 33-byte compressed hex');
-      try { secp.ProjectivePoint.fromHex(recipientPubHex); } catch { throw new Error('recipient pubkey is not a valid point'); }
+      const raw = $('#x-recipient-pub').value.trim().toLowerCase().replace(/\s/g, '');
+      const parsedRecipient = parseRecipientInput(raw);
+      if (parsedRecipient.kind === 'empty') throw new Error('enter a recipient pubkey or shielded address');
+      if (parsedRecipient.kind === 'error') throw new Error(parsedRecipient.message);
+      const recipientPubHex = parsedRecipient.kind === 'stealth'
+        ? bytesToHex(parsedRecipient.recipientPub)
+        : parsedRecipient.pubHex;
+      const stealthAddress = parsedRecipient.kind === 'stealth' ? parsedRecipient.stealthAddress : null;
       const meta = getAssetMeta(assetIdHex);
       if (!meta) throw new Error('unknown asset');
       const amountStr = $('#x-amount').value.trim();
@@ -40895,10 +41277,16 @@ function setupTransferForm() {
         forceUtxos = [u];
       }
 
-      pendingCXfer = { assetIdHex, recipientPubHex, amount, ticker: meta.ticker, decimals: meta.decimals, forceUtxos };
+      pendingCXfer = { assetIdHex, recipientPubHex, stealthAddress, amount, ticker: meta.ticker, decimals: meta.decimals, forceUtxos };
 
       const recipientPub = hexToBytes(recipientPubHex);
-      const recipientAddr = bech32.encode(NET.hrp, [0, ...bech32.toWords(hash160(recipientPub))]);
+      // For classical pubkey, the on-chain output goes to bech32(hash160(pub));
+      // for stealth, the marker is a per-tx-unique address derived from a
+      // commit only the sender and recipient can compute, so the preview shows
+      // the shielded handle instead of a chain-address it cannot predict.
+      const recipientLabel = stealthAddress
+        ? `<span class="badge" style="background:var(--bg-warm);border:1px dashed var(--ink-faint);padding:2px 6px;font-size:10px;letter-spacing:0.08em;text-transform:uppercase;">SHIELDED</span> ${escapeHtml(shorten(stealthAddress, 14))}`
+        : escapeHtml(shorten(bech32.encode(NET.hrp, [0, ...bech32.toWords(hash160(recipientPub))]), 14));
       const rate = await getFeeRate();
       const commitFeeEst = feeFor(estCommitVb(1), rate);
       // m=2 (recipient + change) is the standard transfer shape; assume 1
@@ -40911,10 +41299,10 @@ function setupTransferForm() {
       $('#transfer-preview').innerHTML = `
         <div class="tx-preview" style="margin-top:14px;">
           <h4>What's about to happen</h4>
-          <div class="row"><span class="label">Sending</span> ${fmtAssetAmount(amount, meta.decimals)} ${escapeHtml(meta.ticker)} to ${escapeHtml(shorten(recipientAddr, 14))}</div>
+          <div class="row"><span class="label">Sending</span> ${fmtAssetAmount(amount, meta.decimals)} ${escapeHtml(meta.ticker)} to ${recipientLabel}</div>
           <div class="row"><span class="label">Your change</span> ${fmtAssetAmount(h.balance - amount, meta.decimals)} ${escapeHtml(meta.ticker)} stays in your wallet</div>
           <div class="row"><span class="label">Network fee</span> ~${totalFeeEst} sats <span class="muted">(2 Bitcoin txs: submit + settlement, @ ${rate} sat/vB)</span></div>
-          <div class="row" style="color:var(--ink-mid);font-style:italic;margin-top:8px;">Confidential transfer — observers see valid math but neither amount. Recipient discovers their balance automatically on next scan; the share-link below lets them import instantly.</div>
+          <div class="row" style="color:var(--ink-mid);font-style:italic;margin-top:8px;">Confidential transfer — observers see valid math but neither amount.${stealthAddress ? ' Recipient address is hidden too: the on-chain marker is a per-tx unique address. The recipient discovers it by scanning the reveal tx; share the txid (or the share-link below) so they don’t have to re-walk the whole asset history.' : ' Recipient discovers their balance automatically on next scan; the share-link below lets them import instantly.'}</div>
           <details style="margin-top:12px;">
             <summary class="muted" style="cursor:pointer;font-size:11px;">Technical details</summary>
             <div style="margin-top:8px;font-size:11px;line-height:1.5;">
@@ -41015,7 +41403,10 @@ function setupTransferForm() {
       // their action take effect immediately. The overlay is purely visual;
       // the actual balance source of truth is still the chain scan.
       applyOptimisticDebit(job.assetIdHex, BigInt(r.sendAmount));
-      saveRecentRecipient(job.recipientPubHex);
+      // Save the recipient AS THE USER ADDRESSED THEM: shielded handle if
+      // they pasted a tcs1, classical pubkey otherwise. Keeps the next-send
+      // autocomplete consistent with the user's mental model.
+      saveRecentRecipient(job.stealthAddress || job.recipientPubHex);
       // Trader-facing receipt: state what shipped, not the underlying
       // two-tx mechanics. Tx hashes remain available in the Activity tab.
       toast(`Sent ✓ · ${fmtAssetAmount(BigInt(r.sendAmount), job.decimals || 0)} ${job.ticker || ''} · settles in ~10 min`, 'success', 8000);
@@ -41029,8 +41420,10 @@ function setupTransferForm() {
       $('#transfer-share').style.display = 'block';
       $('#transfer-share').innerHTML = `
         <div class="warn" style="border-left-color:var(--green);background:var(--bg-warm);">
-          <strong>↓ Send this share-link to the recipient (optional notification)</strong>
-          <div class="muted" style="font-size:11px;margin-top:4px;">A compatible wallet auto-recovers the amount from chain (the on-chain <code>amount_ct</code> is decryptable by the recipient via ECDH against your pubkey). The share-link just lets them import immediately and verify without waiting for a rescan.</div>
+          <strong>↓ Send this share-link to the recipient${job.stealthAddress ? ' (required for shielded delivery)' : ' (optional notification)'}</strong>
+          <div class="muted" style="font-size:11px;margin-top:4px;">${job.stealthAddress
+            ? 'You sent to a shielded address — the recipient marker is a per-tx unique address on chain, so a wallet won’t find it via a normal scan. The share-link points the recipient at the exact reveal tx so their wallet can derive and credit the receipt.'
+            : 'A compatible wallet auto-recovers the amount from chain (the on-chain <code>amount_ct</code> is decryptable by the recipient via ECDH against your pubkey). The share-link just lets them import immediately and verify without waiting for a rescan.'}</div>
           <div class="mono-box" style="margin-top:10px;font-size:10px;">${escapeHtml(link)}</div>
           <div class="flex" style="margin-top:10px;">
             <button id="btn-copy-share" class="primary">Copy share-link</button>
@@ -49262,6 +49655,26 @@ async function renderHoldings() {
             <button data-act="copy-pub" data-aid="${h.assetIdHex}" style="padding:2px 8px;font-size:10px;">Copy pubkey</button>
             <button data-act="hide-receive" data-aid="${h.assetIdHex}" style="padding:2px 8px;font-size:10px;">Close</button>
           </div>
+          ${(() => {
+            // SPEC-BLINDED-PUBKEY §A.2: opt-in opaque address. Senders who paste
+            // this instead of the pubkey emit per-tx-unique on-chain markers
+            // (P2WPKH(commit)) so observers can't link receipts to this wallet.
+            // Bech32m-encoded with tcs/tcsts/tcsrt HRPs.
+            let stealthAddr = '';
+            try { stealthAddr = encodeStealthAddress({ network: currentNetworkName(), recipientPub: wallet.pub }); }
+            catch { return ''; }
+            return `
+              <div style="margin-top:10px;padding-top:10px;border-top:1px dashed var(--ink-faint);">
+                <strong>Your shielded address <span class="muted" style="font-weight:normal;text-transform:none;letter-spacing:0;font-size:10px;">(opt-in, hides recipient on-chain)</span></strong>
+                <div class="muted" style="margin-top:4px;">When a sender uses this instead of your pubkey, the recipient marker on-chain is a per-tx unique address with no apparent link to your published identity. Same balance — you receive normally.</div>
+                <div class="mono-box" style="margin-top:6px;font-size:10px;word-break:break-all;">${escapeHtml(stealthAddr)}</div>
+                <div class="flex" style="margin-top:8px;flex-wrap:wrap;">
+                  <button data-act="copy-stealth" data-stealth-addr="${escapeHtml(stealthAddr)}" data-aid="${h.assetIdHex}" style="padding:2px 8px;font-size:10px;">Copy shielded address</button>
+                  <button data-act="rescan-stealth" data-aid="${h.assetIdHex}" style="padding:2px 8px;font-size:10px;" title="Walk recent transfers of this asset and trial-derive any shielded receipts paid to you. Use this if you received a shielded send without a share-link, or if you lost localStorage and are recovering from privkey only.">Rescan for shielded receipts</button>
+                </div>
+                <div data-stealth-rescan-status="${h.assetIdHex}" class="muted" style="margin-top:6px;font-size:11px;display:none;"></div>
+              </div>`;
+          })()}
         </div>
         ${discloseButtons ? `
           <details class="actions-group">
@@ -49355,6 +49768,46 @@ async function renderHoldings() {
         } else if (b.dataset.act === 'copy-pub') {
           try { await navigator.clipboard.writeText(wallet.pubHex()); toast('Pubkey copied', 'success'); }
           catch { toast('Could not copy — select the text manually', 'error'); }
+        } else if (b.dataset.act === 'copy-stealth') {
+          const addr = b.dataset.stealthAddr || '';
+          if (!addr) { toast('Could not generate shielded address', 'error'); return; }
+          try { await navigator.clipboard.writeText(addr); toast('Shielded address copied', 'success'); }
+          catch { toast('Could not copy — select the text manually', 'error'); }
+        } else if (b.dataset.act === 'rescan-stealth') {
+          const aid = b.dataset.aid;
+          const statusEl = list.querySelector(`[data-stealth-rescan-status="${aid}"]`);
+          b.disabled = true;
+          const orig = b.textContent;
+          b.textContent = 'scanning…';
+          if (statusEl) {
+            statusEl.style.display = '';
+            statusEl.style.color = 'var(--ink-mid)';
+            statusEl.textContent = 'walking recent transfers…';
+          }
+          try {
+            const res = await scanAssetForStealthReceipts(aid, {
+              onProgress: ({ txsScanned, found }) => {
+                if (statusEl) statusEl.textContent = `scanned ${txsScanned} tx · ${found} shielded receipt${found === 1 ? '' : 's'} found`;
+              },
+            });
+            if (res.discovered.length > 0) {
+              if (statusEl) {
+                statusEl.style.color = 'var(--green)';
+                statusEl.textContent = `↻ found ${res.discovered.length} shielded receipt${res.discovered.length === 1 ? '' : 's'} · refreshing…`;
+              }
+              invalidateHoldingsCache();
+              await scanHoldings(true);
+              renderHoldings();
+              toast(`Found ${res.discovered.length} shielded receipt${res.discovered.length === 1 ? '' : 's'} for this asset.`, 'success', 6000);
+            } else {
+              if (statusEl) statusEl.textContent = `no shielded receipts found · scanned ${res.txsScanned} tx${res.complete ? '' : ' (more available — rescan to continue)'}`;
+            }
+          } catch (e) {
+            if (statusEl) { statusEl.style.color = 'var(--red)'; statusEl.textContent = `scan failed: ${e.message || String(e)}`; }
+          } finally {
+            b.disabled = false;
+            b.textContent = orig;
+          }
         } else if (b.dataset.act === 'retry-inflated') {
           // User-driven retry for UTXOs that fell into h.inflated last scan.
           // Common cause: an indexer /tx fetch returned null mid-walk and
@@ -51864,7 +52317,7 @@ function renderActivity() {
     return `
       <div class="activity-row">
         <span class="activity-kind activity-${escapeHtml(e.kind)}">${escapeHtml(verb)}</span>
-        <span class="activity-amount">${escapeHtml(amtStr)}${tickerStr ? ' ' + tickerStr : ''}</span>
+        <span class="activity-amount">${escapeHtml(amtStr)}${tickerStr ? ' ' + tickerStr : ''}${e.extra?.shielded ? ' <span class="badge" style="background:var(--bg-warm);border:1px dashed var(--ink-faint);padding:1px 5px;font-size:9px;letter-spacing:0.08em;text-transform:uppercase;" title="SPEC-BLINDED-PUBKEY §A.2 — recipient hidden on chain via per-tx unique address">SHIELDED</span>' : ''}</span>
         <span class="activity-time muted">${escapeHtml(relTime(e.ts))}</span>
         <span class="activity-tx">${txLink}</span>
         ${extraLine}
@@ -52185,10 +52638,25 @@ function postHint(revealTxid, revealVout = 0, opts = {}) {
   })();
 }
 
+// Tracks whether the wallet-lander grid has been successfully painted at
+// least once for the current network. Lets the tab-switch path skip the
+// clear-and-rebuild when there's nothing new to show, and lets the catch
+// branch leave existing tiles intact instead of stamping "discovery
+// unavailable" over a perfectly good grid (the previous behavior: a Market
+// → Wallet tab switch that hit a transient fetch hiccup wiped the tiles
+// the boot-time render had already drawn).
+let _recentEtchesPaintedNet = null;
+let _recentEtchesInflight = null;
 async function renderRecentEtches() {
   const section = $('#recent-etches-section');
   const list = $('#recent-etches-list');
   if (!REGISTRY_URL) { section.style.display = 'none'; return; }
+  // In-flight dedup. Tab-switch handlers fire-and-forget this fn alongside
+  // the boot-time call; without dedup two concurrent invocations race on
+  // list.innerHTML (the second one's clear can land between the first
+  // one's clear and appendChild). Share the same promise instead.
+  if (_recentEtchesInflight) return _recentEtchesInflight;
+  _recentEtchesInflight = (async () => {
   try {
     // Reuse loadDiscoverRegistry's 60s cache rather than a separate
     // limit=6 fetch. Two reasons:
@@ -52549,6 +53017,7 @@ async function renderRecentEtches() {
     });
     list.innerHTML = '';
     list.appendChild(grid);
+    _recentEtchesPaintedNet = NET.name;
     // Image fetches use the canonical image_uri from the verified envelope so
     // a bad worker can't redirect tile thumbnails through a tracking IPFS CID.
     // Per-tile pipeline: verify → repaint with badge → resolve image → repaint
@@ -52584,9 +53053,19 @@ async function renderRecentEtches() {
         .catch(() => {});
     }
   } catch (e) {
-    list.innerHTML = `<div class="muted" style="padding:14px;text-align:center;">discovery unavailable</div>`;
+    // Only stamp the "discovery unavailable" fallback when there's no
+    // prior successful paint to preserve. A Market → Wallet tab-switch
+    // that races into a transient fetch hiccup used to overwrite the
+    // previously-rendered tiles with this empty-state message; keeping
+    // the prior grid is strictly more useful than blanking it.
+    if (_recentEtchesPaintedNet !== NET.name) {
+      list.innerHTML = `<div class="muted" style="padding:14px;text-align:center;">discovery unavailable</div>`;
+    }
     console.error(e);
   }
+  })();
+  try { return await _recentEtchesInflight; }
+  finally { _recentEtchesInflight = null; }
 }
 
 // ============== DISCOVER CLIENT-VALIDATION ==============
@@ -53441,6 +53920,10 @@ async function loadDiscoverRegistry(force = false) {
 // update without manually clicking Refresh.
 function invalidateDiscoverRegistryCache() {
   _discoverRegistryCache = { net: null, fetchedAt: 0, data: null };
+  // The wallet-lander grid is rendered off the same cache — drop its
+  // "paint stamp" so the next renderRecentEtches() actually rebuilds
+  // instead of trusting a stale prior paint.
+  _recentEtchesPaintedNet = null;
   // Also drop the per-asset attest / mint / burn negative-cache entries
   // — those are cheap to refetch and stale negatives can hide updates.
   // (Etch verifies are immutable so we keep those.)
@@ -55135,14 +55618,35 @@ function _computeMarketTickDelay() {
   return Math.min(base * factor, MARKET_AUTO_REFRESH_MAX_MS);
 }
 // Global trade tape. Single-line marquee at the top of the dapp showing
-// recent settled trades across ALL assets. Walks _marketCache.assets and
-// reads each asset's last_trade (price_sats, amount, ts). Sorts by ts
-// desc, takes the top N. Renders items twice end-to-end so the CSS
-// `translateX(-50%)` keyframe loops seamlessly without a visible jump.
-// Hidden until the cache warms; idempotent — safe to call on every
-// auto-refresh tick.
-const GLOBAL_TAPE_LIMIT = 24;
+// recent settled trades. Leads with the 8 most recent TAC fills (the
+// project's home asset — readers want to see TAC's recent activity
+// dense and contiguous, not interleaved with one TAC + one of every
+// other ticker), then a single most-recent fill per other asset for
+// breadth. Timestamps deliberately omitted from the rendered strip:
+// "2d ago" / "7d ago" labels on quieter tickers read as bearish color
+// on assets that are simply low-velocity rather than dying. The marquee
+// is for showing activity, not pricing-tower the stale ones. Renders
+// items twice end-to-end so the CSS `translateX(-50%)` keyframe loops
+// seamlessly. Hidden until the cache warms; idempotent.
+const GLOBAL_TAPE_TAC_LIMIT = 8;
+const GLOBAL_TAPE_OTHERS_LIMIT = 16;
+const GLOBAL_TAPE_LIMIT = GLOBAL_TAPE_TAC_LIMIT + GLOBAL_TAPE_OTHERS_LIMIT;
+// Canonical TAC asset_id per network. The /market endpoint returns assets
+// with only a `last_trade` field — no `trades` ring — so to lead the
+// global tape with 8 *distinct* TAC fills we have to fetch the
+// /assets/<aid> detail (which carries the ring up to 200 entries).
+// Hard-coding the canonical aid avoids both ambiguity (multiple TAC
+// tickers can be etched on the same network) and an extra round trip
+// to resolve "which TAC is the home one." Mainnet aid is the verified
+// project asset at tacit.finance. Signet has no canonical TAC yet
+// (test mints come and go); the tape will fall through to the
+// "best by holder_count" heuristic on signet and just skip TAC if
+// nothing matches with non-zero activity.
+const TACIT_HOME_ASSET_ID_BY_NET = {
+  mainnet: 'f0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b',
+};
 let _globalTapeLastSig = '';
+let _globalTapeTacRefetchPending = false;
 function _renderGlobalTape() {
   if (typeof document === 'undefined') return;
   const root = document.getElementById('global-tape');
@@ -55151,74 +55655,107 @@ function _renderGlobalTape() {
   if (!track) return;
   const assets = Array.isArray(_marketCache?.assets) ? _marketCache.assets : [];
   if (assets.length === 0) { root.style.display = 'none'; return; }
-  // Pull (ticker, unit price, ts) per asset from last_trade, with the
-  // 0.2×/5× mark-band outlier guard so a dust fill from a single asset
-  // doesn't dominate the tape. Skip assets with no usable trade.
-  const items = [];
-  for (const a of assets) {
-    const lt = a?.last_trade;
-    if (!lt || !Number.isInteger(lt.price_sats) || lt.price_sats <= 0) continue;
+  // Helper: build a tape item from {asset, trade}. Returns null when the
+  // trade fails the dust / outlier guard, when the amount can't be parsed,
+  // or when the resulting unit price is nonsensical. Keeps the two
+  // collection passes (TAC ring, others' last_trade) symmetric — they
+  // share the same shape, outlier filter, and tick-direction logic.
+  const _buildTapeItem = (a, lt, prevTrade) => {
+    if (!lt || !Number.isInteger(lt.price_sats) || lt.price_sats <= 0) return null;
     const ts = Number(lt.ts || 0);
-    if (ts <= 0) continue;
+    if (ts <= 0) return null;
     const dec = Number.isInteger(a.decimals) && a.decimals >= 0 && a.decimals <= 8 ? a.decimals : 0;
     let amt = 0n;
     try { amt = BigInt(lt.amount || 0); } catch {}
-    if (amt <= 0n) continue;
+    if (amt <= 0n) return null;
     const u = unitPriceSats(Number(lt.price_sats), amt, dec);
-    if (!Number.isFinite(u) || !(u > 0)) continue;
-    // Outlier guard: drop trades that are >5× or <0.2× the worker's
-    // mark for the same asset, when both are known. Keeps a fat-finger
-    // fill from screaming across the tape.
+    if (!Number.isFinite(u) || !(u > 0)) return null;
+    // Outlier guard — drop fills outside 0.2×/5× mark so a fat-finger
+    // doesn't dominate the strip.
     const markU = Number(a?.mark_price?.unit);
-    if (Number.isFinite(markU) && markU > 0) {
-      if (u < markU * 0.2 || u > markU * 5) continue;
-    }
-    // Direction tick: compare to second-most-recent trade in the ring
-    // when present so a real ↑/↓ glyph rides each entry. Falls back to
-    // flat marker when no prior trade is available.
+    if (Number.isFinite(markU) && markU > 0 && (u < markU * 0.2 || u > markU * 5)) return null;
     let tickDir = 'flat';
-    const ring = Array.isArray(a.trades) ? a.trades.slice().sort((x, y) => Number(y?.ts || 0) - Number(x?.ts || 0)) : [];
-    if (ring.length >= 2) {
-      const prev = ring[1];
+    if (prevTrade && Number.isInteger(prevTrade.price_sats) && prevTrade.price_sats > 0) {
       let prevAmt = 0n;
-      try { prevAmt = BigInt(prev.amount || 0); } catch {}
-      if (prevAmt > 0n && Number.isInteger(prev.price_sats) && prev.price_sats > 0) {
-        const prevU = unitPriceSats(Number(prev.price_sats), prevAmt, dec);
+      try { prevAmt = BigInt(prevTrade.amount || 0); } catch {}
+      if (prevAmt > 0n) {
+        const prevU = unitPriceSats(Number(prevTrade.price_sats), prevAmt, dec);
         if (Number.isFinite(prevU) && prevU > 0) {
           if (u > prevU) tickDir = 'up';
           else if (u < prevU) tickDir = 'down';
         }
       }
     }
-    items.push({
+    return {
       aid: a.asset_id,
       ticker: a.ticker || '?',
       unit: u,
       ts,
       tickDir,
-      amt,           // BigInt trade amount in base units
-      dec,           // asset decimals (for compact display)
-      priceSats: Number(lt.price_sats || 0),  // total sats of the fill
-    });
+      amt,
+      dec,
+      priceSats: Number(lt.price_sats || 0),
+      txid: lt.txid || '',
+    };
+  };
+  // Pick the "home" TAC asset to lead the tape. Multiple TAC tickers can
+  // exist on a network (squatters / test mints); pick the one with the
+  // highest holder_count as a robust proxy for canonical, then prefer
+  // verified when counts tie. Falls through to null when no TAC is in
+  // the cache (e.g. signet network without a TAC etch).
+  const _tacAsset = (() => {
+    let best = null;
+    for (const a of assets) {
+      if ((a?.ticker || '').toUpperCase() !== 'TAC') continue;
+      if (!best
+          || Number(a.holder_count || 0) > Number(best.holder_count || 0)
+          || (Number(a.holder_count || 0) === Number(best.holder_count || 0) && a.verified && !best.verified)) {
+        best = a;
+      }
+    }
+    return best;
+  })();
+  // Lead: up to 8 most recent TAC fills from its trades ring. Each entry's
+  // tick direction is computed against the next-older trade in the same
+  // ring so a real ↑/↓ glyph rides each fill (not just the latest).
+  const tacItems = [];
+  if (_tacAsset && Array.isArray(_tacAsset.trades)) {
+    const ring = _tacAsset.trades.slice().sort((x, y) => Number(y?.ts || 0) - Number(x?.ts || 0));
+    for (let i = 0; i < ring.length && tacItems.length < GLOBAL_TAPE_TAC_LIMIT; i++) {
+      const item = _buildTapeItem(_tacAsset, ring[i], ring[i + 1] || null);
+      if (item) tacItems.push(item);
+    }
   }
-  if (items.length === 0) { root.style.display = 'none'; return; }
-  items.sort((a, b) => b.ts - a.ts);
-  const top = items.slice(0, GLOBAL_TAPE_LIMIT);
+  // Tail: one most-recent fill per OTHER asset (skip the TAC we just
+  // covered), sorted newest first and capped at GLOBAL_TAPE_OTHERS_LIMIT
+  // so the strip has breadth without growing unbounded.
+  const tacAid = _tacAsset?.asset_id || null;
+  const otherItems = [];
+  for (const a of assets) {
+    if (tacAid && a?.asset_id === tacAid) continue;
+    const ring = Array.isArray(a.trades) ? a.trades.slice().sort((x, y) => Number(y?.ts || 0) - Number(x?.ts || 0)) : [];
+    const item = _buildTapeItem(a, a?.last_trade, ring[1] || null);
+    if (item) otherItems.push(item);
+  }
+  otherItems.sort((x, y) => y.ts - x.ts);
+  const top = [...tacItems, ...otherItems.slice(0, GLOBAL_TAPE_OTHERS_LIMIT)];
+  if (top.length === 0) { root.style.display = 'none'; return; }
   // Signature gate: skip the DOM rewrite when nothing material changed.
   // Prevents the marquee from resetting its scroll position on every
   // tick — without this, the auto-scroll animation visibly jumps back
   // to start every 15s.
-  const sig = top.map(t => `${t.aid}:${t.unit.toFixed(4)}:${t.ts}:${t.amt}`).join('|');
+  // Sig includes txid for the TAC ring entries so two distinct fills at
+  // the same unit price don't collapse into one signature key. (ts + amt
+  // already disambiguate in practice, but with multiple TAC fills on the
+  // same tape an explicit txid is the cheapest safety net.)
+  const sig = top.map(t => `${t.aid}:${t.txid || t.ts}:${t.unit.toFixed(4)}:${t.amt}`).join('|');
   if (sig === _globalTapeLastSig && root.style.display !== 'none') return;
   _globalTapeLastSig = sig;
-  // Use relativeAge (m/h/d, minutes-elapsed rounding) so the global
-  // tape's age agrees with every other "X ago" surface — asset hero's
-  // "last fill", the strip's "last", the per-asset tape. The previous
-  // local helper floored seconds directly which could drift one unit at
-  // the hour boundary, making the global tape read "7h ago" while the
-  // hero / strip read "8h ago" for the same trade. The data-age-ts hooks
-  // below let the live age ticker (~30s cadence) keep these in sync
-  // without forcing a global-tape DOM rewrite.
+  // relativeAge stays around for the tooltip — useful detail when a user
+  // hovers an entry. The visible strip itself no longer carries the age:
+  // "7d ago" / "2d ago" tail labels stamped quiet-but-alive tickers with
+  // unwarranted bearish color when really they're just low-velocity. The
+  // marquee is for surfacing activity, not for cross-asset recency-shaming.
   const ageShort = (ts) => relativeAge(ts) || '0m';
   const buildItem = (t) => {
     const tickGlyph = t.tickDir === 'up' ? '↑' : t.tickDir === 'down' ? '↓' : '·';
@@ -55228,7 +55765,7 @@ function _renderGlobalTape() {
     const dirLabel = t.tickDir === 'up' ? 'up vs prior fill'
                    : t.tickDir === 'down' ? 'down vs prior fill'
                    : 'no prior fill to compare';
-    const tip = `${t.ticker} · last fill ${fmtUnitPriceSats(t.unit)} sats/${t.ticker} · `
+    const tip = `${t.ticker} · fill ${fmtUnitPriceSats(t.unit)} sats/${t.ticker} · `
               + `size ${amtStr} ${t.ticker} (~${t.priceSats.toLocaleString('en-US')} sats total) · `
               + `${dirLabel} · ${ageShort(t.ts)} ago. Click → asset market page.`;
     return `<a class="global-tape-item ${t.tickDir}" href="${href}" title="${escapeHtml(tip)}">`
@@ -55236,7 +55773,6 @@ function _renderGlobalTape() {
          + `<span class="gt-tick">${tickGlyph}</span>`
          + `<span class="gt-price">${fmtUnitPriceSats(t.unit)}<span class="gt-unit"> sats</span></span>`
          + `<span class="gt-size">× ${escapeHtml(amtStr)}</span>`
-         + `<span class="gt-age" data-age-ts="${t.ts}" data-age-fmt="ago">${ageShort(t.ts)} ago</span>`
          + `</a>`;
   };
   const itemsHtml = top.map(buildItem).join('');
@@ -58071,24 +58607,14 @@ function applyMarketFilters() {
           : `${_24hCount} settled trade${_24hCount === 1 ? '' : 's'} in the last 24h (from the recent-trades summary)`;
         tradeHtml = `<span class="strip-trade${_isHot ? '' : ' cold'}" title="Most recent trade was ${escapeHtml(_ageStr)} ago. ${escapeHtml(_tipCountStr)}."><span class="strip-trade-dot"></span>last <span data-age-ts="${_lastTradeTs}" data-age-fmt="ago">${escapeHtml(_ageStr)} ago</span>${_countSuffix}</span>`;
       }
-      // Prefer the worker's canonical windowed Δ (1h / 4h / 24h / 7d / all,
-      // Strict 24h Δ — pulls the worker's canonical price_24h_change_pct
-      // so this surface, the asset-header delta strip, and the stats
-      // section all show the SAME number. A previous version read
-      // price_change_primary_pct (the tightest non-null window, which
-      // can be 1h / 4h / 7d / all on quiet markets) and labelled it
-      // "24h" anyway — that caused the three surfaces to disagree on
-      // active markets where primary happened to use a different
-      // window than 24h. Local fallback dropped: better to hide than
-      // to show a value computed by a different code path.
-      const _workerPct = Number(a.price_24h_change_pct);
-      let deltaHtml = '';
-      if (Number.isFinite(_workerPct) && _workerPct !== 0) {
-        const cls = _workerPct > 0 ? 'up' : 'down';
-        const sign = _workerPct > 0 ? '+' : '';
-        deltaHtml = `<span class="strip-delta ${cls}" title="Change over the last 24h · outlier-guarded reference, dust trades ignored.">${sign}${_workerPct.toFixed(2)}% <span class="strip-delta-win">24h</span></span>`;
-      }
-      return `<div class="swap-tile-strip" data-swap-strip>${sparkSvg ? `<span class="strip-spark">${sparkSvg}</span>` : '<span class="strip-spark"></span>'}${lastHtml}${deltaHtml}${tradeHtml}</div>`;
+      // 24h Δ deliberately omitted from this strip — the hero above
+      // already surfaces it twice (big chip beside the price + the
+      // 1h/4h/24h per-window strip on the next line). Restating it
+      // here read as triple-print of the same fact immediately above
+      // the buy button. Keep this strip focused on "mark · last fill
+      // · count today" — the trader-decision context the hero doesn't
+      // already make obvious.
+      return `<div class="swap-tile-strip" data-swap-strip>${sparkSvg ? `<span class="strip-spark">${sparkSvg}</span>` : '<span class="strip-spark"></span>'}${lastHtml}${tradeHtml}</div>`;
     })();
     return `<div data-swap-tile data-aid="${escapeHtml(safeAid)}" data-ticker="${escapeHtml(ticker)}" data-dec="${decimals}" data-ref-unit="${refUnit != null ? refUnit : ''}" data-direction="buy" data-slippage="${slippagePct}" data-swap-mode="market" style="margin-bottom:14px;background:rgba(255,255,255,0.35);border-top:1px dashed rgba(26,26,26,0.25);border-bottom:1px dashed rgba(26,26,26,0.25);padding:14px 18px 12px;">
       <!-- Header: pair name with logos + Market/Limit mode toggle.
@@ -62282,14 +62808,25 @@ function renderMarketAssetHeader(assetId, rows) {
       return _renderTileSparklineSVG(_summary, Number.isFinite(_markRaw) && _markRaw > 0 ? _markRaw : null) || '';
     } catch { return ''; }
   })();
-  // Last trade age + live dot for the identity row. Quiet markets read
-  // "last fill 2d ago · ● cold", active markets "last fill 38m ago · ● live".
+  // Last trade age + status dot. Three-state so the dot stays a
+  // high-signal indicator instead of contradicting the age right
+  // beside it ("● live · last fill 22m ago" read as nonsense):
+  //   < 10min (≤ one Bitcoin block): ● live
+  //   10min – 24h                  : no dot, just the age
+  //   > 24h                        : ● cold
+  // 10min matches the chain's block cadence — anything fresher than
+  // a block is genuinely "live" by Bitcoin standards; older than 24h
+  // is a stale market worth flagging.
   const _lastTradeTsHero = Number(a?.last_trade?.ts || 0);
   const _heroAgeSec = _lastTradeTsHero > 0 ? Math.max(0, Math.floor(Date.now() / 1000) - _lastTradeTsHero) : -1;
-  const _heroIsHot = _heroAgeSec >= 0 && _heroAgeSec < 3600;
+  const _heroIsLive = _heroAgeSec >= 0 && _heroAgeSec < 600;
+  const _heroIsCold = _heroAgeSec >= 86400;
   const _heroAgeStr = _lastTradeTsHero > 0 ? (relativeAge(_lastTradeTsHero) || `${_heroAgeSec}s`) : '';
+  const _heroDotHtml = _heroIsLive
+    ? ` · <span class="mkt-hero-live">● live</span>`
+    : (_heroIsCold ? ` · <span class="mkt-hero-cold">● cold</span>` : '');
   const _heroStatusHtml = _lastTradeTsHero > 0
-    ? `<span class="mkt-hero-status">last fill <span data-age-ts="${_lastTradeTsHero}" data-age-fmt="ago">${escapeHtml(_heroAgeStr)} ago</span> · <span class="${_heroIsHot ? 'mkt-hero-live' : 'mkt-hero-cold'}">● ${_heroIsHot ? 'live' : 'cold'}</span></span>`
+    ? `<span class="mkt-hero-status">last fill <span data-age-ts="${_lastTradeTsHero}" data-age-fmt="ago">${escapeHtml(_heroAgeStr)} ago</span>${_heroDotHtml}</span>`
     : '';
   // External URL display — kept compact "github.com/z0r0z/tacit" form
   // when possible, else hidden. Lives on the id row so the description
@@ -62312,6 +62849,11 @@ function renderMarketAssetHeader(assetId, rows) {
     : `<div class="mkt-hero-avatar mkt-hero-avatar--initial" aria-hidden="true">${escapeHtml((a.ticker || '?').charAt(0).toLowerCase())}</div>`;
   // Active orders summary for the stats strip — same logic as the
   // legacy stats grid but rendered as a compact "Na / Mb" chip.
+  // Suffixes the ask-only branch with "a" so the cold-cache render reads
+  // honestly as "606a" (asks only) instead of an ambiguous "606" that
+  // looks like a two-sided total. populateMarketAssetStats rewrites this
+  // node (data-market-header="orders") with the merged "606a / 37b"
+  // once bid intents resolve.
   const _heroOrdersHtml = (() => {
     const _asksN = Number(total) || 0;
     const _bidsPeek = (typeof _bidCachePeek === 'function') ? _bidCachePeek(safeAid) : null;
@@ -62322,7 +62864,7 @@ function renderMarketAssetHeader(assetId, rows) {
       : null;
     return _bidsKnown
       ? `<strong>${_asksN.toLocaleString('en-US')}</strong>a / <strong>${_bidsN.toLocaleString('en-US')}</strong>b`
-      : `<strong>${_asksN.toLocaleString('en-US')}</strong>`;
+      : `<strong>${_asksN.toLocaleString('en-US')}</strong>a`;
   })();
   // Per-window Δ chips for the stats strip. Reads worker's canonical
   // price_*_change_pct fields (same source as the existing delta strip).
@@ -62404,7 +62946,7 @@ function renderMarketAssetHeader(assetId, rows) {
         <span><span class="muted">vol</span> <strong data-market-header="vol24-usd">${_heroVolUsdHtml}</strong></span>
         <span><span class="muted">mcap</span> <strong data-market-header="mcap-usd">${escapeHtml(mcapUsd)}</strong></span>
         <span><span class="muted">holders</span> <strong>${_heroHolderHtml}</strong></span>
-        <span><span class="muted">orders</span> ${_heroOrdersHtml}</span>
+        <span><span class="muted">orders</span> <span data-market-header="orders">${_heroOrdersHtml}</span></span>
         ${_heroDeltasHtml}
       </div>
 
@@ -63761,6 +64303,19 @@ async function populateMarketAssetStats(scope, asset) {
       }
     }
   } catch {}
+  // Repaint the hero "orders" chip with the merged "Na / Mb" once both
+  // sides are known. The sync render writes asks-only ("606a") because
+  // the bid cache is cold on first paint; this is the post-fetch update
+  // so the chip matches the bids ladder below the fold (which renders
+  // off the same _fetchBidIntentsCached call).
+  try {
+    const _ordersEl = (scope.querySelector('[data-market-asset-header]') || scope)
+      .querySelector('[data-market-header="orders"]');
+    if (_ordersEl) {
+      _ordersEl.innerHTML =
+        `<strong>${asksCount.toLocaleString('en-US')}</strong>a / <strong>${bidsCount.toLocaleString('en-US')}</strong>b`;
+    }
+  } catch {}
   const bidsUsd = btcUsd ? fmtSatsAsUsd(bidsTotalSats, btcUsd) : null;
   // Order-book imbalance badge: when ask side meaningfully dominates bid
   // side (or vice versa), surface the ratio so traders read sentiment at
@@ -65071,7 +65626,7 @@ async function _populateDepthChart(section, aid, decimals, ticker, markUnit) {
         const _zoneTip = `Book is crossed: best bid (${fmtUnitPriceSats(headerBestBid)}) is higher than best ask (${fmtUnitPriceSats(headerBestAsk)}) sats/${ticker}${_spreadPctOfMid != null ? ` — gap is ${_spreadPctOfMid.toFixed(0)}% of midpoint` : ''}. Capturing the spread needs liquidity on both sides plus two on-chain fills; persistent crosses usually mean one side is stale or fat-finger.`;
         // Hatched yellow rect per design.html line 145. Pattern defined
         // in <defs> above; stroke kept as the same dashed amber outline.
-        return `<rect x="${_zoneXLo.toFixed(2)}" y="${PT}" width="${_zoneW.toFixed(2)}" height="${plotH.toFixed(2)}" fill="url(#depth-hatch)" stroke="#D6A800" stroke-width="1" stroke-dasharray="3,2" pointer-events="none"><title>${escapeHtml(_zoneTip)}</title></rect>${_showLabel ? `<text x="${_zoneCx.toFixed(2)}" y="${_zoneCy.toFixed(2)}" font-size="13" font-family="var(--mono, monospace)" fill="#5A4400" text-anchor="middle" font-weight="500" letter-spacing="0.08em" pointer-events="none">CROSSED${escapeHtml(_pctTag)}</text>` : ''}`;
+        return `<rect x="${_zoneXLo.toFixed(2)}" y="${PT}" width="${_zoneW.toFixed(2)}" height="${plotH.toFixed(2)}" fill="url(#depth-hatch)" stroke="#D6A800" stroke-width="1" stroke-dasharray="3,2" pointer-events="none"><title>${escapeHtml(_zoneTip)}</title></rect>${_showLabel ? `<text x="${_zoneCx.toFixed(2)}" y="${_zoneCy.toFixed(2)}" font-size="9" font-family="var(--mono, monospace)" fill="#5A4400" text-anchor="middle" font-weight="500" letter-spacing="0.08em" pointer-events="none" opacity="0.8">crossed</text>` : ''}`;
       })() : ''}
       <!-- Baseline floor + x-axis tick per design.html line 143. -->
       <line x1="0" y1="${(PT + plotH).toFixed(2)}" x2="${W}" y2="${(PT + plotH).toFixed(2)}" stroke="rgba(26,26,26,0.2)" stroke-width="0.5" pointer-events="none"/>
@@ -68448,7 +69003,7 @@ function _wireSwapTile(scope) {
         const _minAmt = BigInt(Math.floor(Number(result.totalSats) * Math.pow(10, decimals) / _capUnitBuy));
         if (_minAmt > 0n) {
           const _limTag = _limitUnitPrice() != null ? 'at your limit price' : `at ±${escapeHtml(String(slipSel?.value || ''))}% limit`;
-          _minRecvHtml = `<strong style="color:var(--ink);">min ${escapeHtml(fmtAssetAmount(_minAmt, decimals))} ${escapeHtml(ticker)}</strong> ${_limTag} · `;
+          _minRecvHtml = `<strong style="color:var(--ink);">min ${escapeHtml(fmtAssetAmountCompact(_minAmt, decimals))} ${escapeHtml(ticker)}</strong> ${_limTag} · `;
         }
       }
       const _avgStr = avgU != null ? `avg ${fmtUnitPriceSats(avgU)} sats/${ticker}${avgUsd ? ` (${avgUsd})` : ''}` : '';
@@ -75900,7 +76455,9 @@ export {
   buildAndBroadcastCXferMulti,
   carveExactAmount,
   scanHoldings, invalidateHoldingsCache,
-  discoverStealthFromTxid,
+  discoverStealthFromTxid, scanAssetForStealthReceipts,
+  recordStealthCredit, getStealthCredit, loadStealthCredits, removeStealthCredit,
+  parseRecipientInput,
   getFeeRate, getFeeTierPref, setFeeTierPref, FEE_TIERS,
   broadcast, broadcastWithRetry, getTx,
   estCXferRevealVb, estCommitVb, feeFor,

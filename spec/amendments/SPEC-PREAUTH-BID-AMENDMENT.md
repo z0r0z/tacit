@@ -197,7 +197,10 @@ opcode             = 0x59 (T_PREAUTH_BID, 1 byte)
 asset_id           = 32 bytes
 asset_input_count  = N ≥ 1     (single-seller fill: N=1; multi-seller fan is reserved
                                 for a future amendment, position-independent under
-                                the same SIGHASH_SINGLE_ACP invariant as §5.7.8.1)
+                                the same SIGHASH_SINGLE_ACP invariant as §5.7.8.1.
+                                Counts SELLER asset inputs only — the buyer's sats
+                                input is auxiliary BTC, NOT part of the tacit
+                                kernel_msg input_outpoints list)
 kernel_sig         = 64 bytes (BIP-340 over kernel_msg, signed by seller with `excess`)
 N_outputs          = 1 or 2   (∈ {1, 2} for v1 — 1 = exact-amount fill, 2 = seller has asset change)
 output[0]:                                          ← buyer's tacit recipient
@@ -313,6 +316,15 @@ The bid record carries the funding outpoint cleartext (txid + vout
 + value) so the seller can fetch it from a node and assemble the
 settlement without an additional buyer round-trip.
 
+**Fee-spike unfillability.** `max_fee_budget` is capped at 10_000
+sats per bid (≈ a 30-day mainnet ceiling at typical conditions).
+If network fees spike above the bid's budget mid-window, the
+settlement becomes uneconomical and sellers will skip the bid until
+fees relax (or the bid expires and the buyer reclaims). Buyers
+exposed to long-duration high-fee regimes should either size
+`max_fee_budget` toward the cap, accept reduced fill probability,
+or fall back to the §5.7.7 online-buyer bid path.
+
 ---
 
 ## Bid record (off-chain)
@@ -384,9 +396,12 @@ OP_RETURN matches.
                      price_sats + DUST + max_fee_budget at buyer's P2WPKH
 [publish]   buyer:   build bid record + buyer_sats_spend signature → POST /preauth-bids
 [browse]    anyone:  GET /preauth-bids → discover open bids
-[take]      seller:  GET /preauth-bids/:bid_id → assemble T_PREAUTH_BID envelope
-                     + kernel sig + bulletproof, append buyer's pre-signed sats input,
-                     append canonical OP_RETURN, append seller payout, broadcast settlement
+[take]      seller:  GET /preauth-bids/:bid_id → build T_PREAUTH_BID envelope
+                     + kernel sig + bulletproof, broadcast COMMIT tx funding a
+                     P2TR(envelope-script-leaf), then broadcast REVEAL tx with
+                     vin[0]=commit P2TR (script-path), vin[1]=seller asset UTXO,
+                     vin[2]=buyer's pre-signed sats input, vouts per the canonical
+                     layout including the OP_RETURN at vout[2] matching vin[2]
 [settled]   anyone:  on-chain T_PREAUTH_BID indexes; buyer's wallet finds the new lot at
                      vout[0] via the published (amount, blinding)
 [cancel]    buyer:   POST /preauth-bids/:bid_id/cancel (signed) → status = 'cancelled';
@@ -596,8 +611,12 @@ verify funding_outpoint exists, is unspent, is P2WPKH(buyer_pubkey),
 verify max_fee_budget ≤ 10_000
 verify recipient_pubkey is a valid compressed secp256k1 point
 reconstruct buyer_sats_spend sighash preimage (BIP-143, 0x83 flag,
-  buyer's outpoint, OP_RETURN at matching vout per the canonical layout)
-  and verify ecdsa(sighash, signature[:-1], buyer_pubkey) succeeds
+  this.outpoint = funding_outpoint, this.scriptCode = P2WPKH(buyer_pubkey),
+  this.value = funding_outpoint.value, this.nSequence = 0xfffffffd,
+  hashOutputs = dSHA256(serialize(canonical_op_return_vout))) — the index k
+  is irrelevant since the canonical OP_RETURN bytes fix hashOutputs k-invariantly
+  (position-independence per §5.7.8.1).
+verify ecdsa(sighash, signature[:-1], buyer_pubkey) succeeds
   and signature[-1] == 0x83
 reject if a live preauth-bid already exists for the same funding_outpoint
 enforce expiry ≤ 30 days from now
@@ -676,8 +695,12 @@ recompute bid_context_hash and verify it matches the take request's
       (no cache; re-derive blinding via self-blinding HMAC)
 - [ ] Unknown-opcode forward-compat: pre-amendment indexer treats
       `0x59` as no-op (no asset credit, no state error)
-- [ ] Mainnet activation gate — same `tacit-preauth-bid-enable-mainnet-v1`
-      localStorage flip pattern as §5.21 BPP
+- [ ] `encryptedAmount` self-keystream parity dapp ↔ worker
+      (buyer recovers amount from privkey + chain alone, no bid-record
+      dependency)
+- [ ] Fee-spike unfillability: bid with `max_fee_budget = 1000` and
+      simulated mempool minfee = 5000 — sellers correctly skip,
+      bid expires cleanly, funding outpoint reclaimable
 
 ---
 

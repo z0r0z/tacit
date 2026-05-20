@@ -692,5 +692,99 @@ await test('reserve: per-IP cap does NOT count existing-token polls toward the l
   return true;
 });
 
+// ============================================================
+// /reserve head-residency deadline (indefinite-poll DoS fix)
+//
+// Pre-fix: handleCeremonyReserve refreshed the queue entry's 15-min
+// KV TTL on every poll, so a contributor at position 0 could keep
+// the head slot forever without calling /contribute. Blocked the
+// AMM swap_batch / lp_add / lp_remove ceremonies. Fix: stamp
+// head_started_at on first observation at position 0, and evict on
+// any later poll where NOW - head_started_at > CEREMONY_MAX_HEAD_MS.
+// Tests use a Date.now mock so the 10-min deadline elapses in milliseconds.
+// ============================================================
+
+function withMockedNow(fn) {
+  return async () => {
+    const real = Date.now.bind(Date);
+    let now = real();
+    Date.now = () => now;
+    const advance = (ms) => { now += ms; };
+    try { return await fn(advance); }
+    finally { Date.now = real; }
+  };
+}
+
+await test('reserve: polling head past 10-min deadline gets evicted with 409 evicted=true', withMockedNow(async (advance) => {
+  const env = makeEnv();
+  await postInit(env, { token: env.CEREMONY_INIT_TOKEN });
+  const k = genKeypair();
+  const first = await (await postReserve(env, { pubHex: k.pubHex, priv: k.priv })).json();
+  if (!first.is_head || !first.head_expires_at) return false;
+
+  advance(11 * 60 * 1000);
+
+  const res = await postReserve(env, { pubHex: k.pubHex, priv: k.priv, queueToken: first.queue_token });
+  if (res.status !== 409) return false;
+  const j = await res.json();
+  return j.evicted === true && /head slot expired/i.test(j.error || '');
+}));
+
+await test('reserve: after head eviction, next contributor promotes to position 0', withMockedNow(async (advance) => {
+  const env = makeEnv();
+  await postInit(env, { token: env.CEREMONY_INIT_TOKEN });
+  const a = genKeypair();
+  const b = genKeypair();
+  const aFirst = await (await postReserve(env, { pubHex: a.pubHex, priv: a.priv, ip: '7.7.7.1' })).json();
+  if (!aFirst.is_head) return false;
+  advance(1);
+  const bFirst = await (await postReserve(env, { pubHex: b.pubHex, priv: b.priv, ip: '7.7.7.2' })).json();
+  if (bFirst.is_head || bFirst.position !== 1) return false;
+
+  advance(11 * 60 * 1000);
+
+  // A's own poll evicts A (path A: position-0 deadline check).
+  const aEvict = await postReserve(env, { pubHex: a.pubHex, priv: a.priv, queueToken: aFirst.queue_token, ip: '7.7.7.1' });
+  if (aEvict.status !== 409) return false;
+
+  const bSecond = await (await postReserve(env, { pubHex: b.pubHex, priv: b.priv, queueToken: bFirst.queue_token, ip: '7.7.7.2' })).json();
+  return bSecond.is_head === true && bSecond.position === 0 && bSecond.head_expires_at > 0;
+}));
+
+await test('reserve: head_started_at survives repeated polls (deadline does not reset)', withMockedNow(async (advance) => {
+  const env = makeEnv();
+  await postInit(env, { token: env.CEREMONY_INIT_TOKEN });
+  const k = genKeypair();
+  const first = await (await postReserve(env, { pubHex: k.pubHex, priv: k.priv })).json();
+  const deadline = first.head_expires_at;
+  if (!deadline) return false;
+
+  for (let i = 0; i < 5; i++) {
+    advance(60 * 1000);
+    const r = await (await postReserve(env, { pubHex: k.pubHex, priv: k.priv, queueToken: first.queue_token })).json();
+    if (r.head_expires_at !== deadline) return false;
+  }
+  return true;
+}));
+
+await test('reserve: stale head is evicted by another contributor’s poll (path B)', withMockedNow(async (advance) => {
+  const env = makeEnv();
+  await postInit(env, { token: env.CEREMONY_INIT_TOKEN });
+  const a = genKeypair();
+  const b = genKeypair();
+  const aFirst = await (await postReserve(env, { pubHex: a.pubHex, priv: a.priv, ip: '8.8.8.1' })).json();
+  if (!aFirst.is_head) return false;
+  advance(1);
+  const bFirst = await (await postReserve(env, { pubHex: b.pubHex, priv: b.priv, ip: '8.8.8.2' })).json();
+  if (bFirst.position !== 1) return false;
+
+  // A goes silent; only B keeps polling. B's poll past A's deadline
+  // must trigger eviction even though A never made another request.
+  advance(11 * 60 * 1000);
+
+  const bSecond = await (await postReserve(env, { pubHex: b.pubHex, priv: b.priv, queueToken: bFirst.queue_token, ip: '8.8.8.2' })).json();
+  return bSecond.is_head === true && bSecond.position === 0;
+}));
+
 console.log(`\n${pass} passed, ${fail} failed.`);
 if (fail > 0) process.exit(1);

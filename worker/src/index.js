@@ -5491,10 +5491,14 @@ async function handleCeremonyState(env, circuitHash, cors) {
   // reservation key while migrations roll forward.
   const queue = await _listCeremonyQueue(env, circuitHash).catch(() => []);
   const head = queue[0] || null;
+  const headStartedAt = head ? Number(head.head_started_at) || Number(head.joined_at) : 0;
+  const headExpiresAt = headStartedAt ? headStartedAt + CEREMONY_MAX_HEAD_MS : 0;
   const reservation = head ? {
     contributor_name: head.name || 'anonymous',
     started_at: Math.floor(head.joined_at / 1000),
     last_poll_at: Math.floor((head.last_poll_at || head.joined_at) / 1000),
+    head_started_at: headStartedAt ? Math.floor(headStartedAt / 1000) : null,
+    head_expires_at: headExpiresAt ? Math.floor(headExpiresAt / 1000) : null,
   } : (await env.REGISTRY_KV.get(ceremonyReserveKey(circuitHash), 'json'));
   return jsonResponse({
     state,
@@ -5514,25 +5518,54 @@ async function handleCeremonyState(env, circuitHash, cors) {
 // KV.list (which returns keys alphabetically) yields the queue in
 // arrival order. Each entry auto-expires (15 min TTL) so a walk-away
 // contributor doesn't block the head forever.
+//
+// MAX_HEAD_MS caps how long any one contributor can occupy position 0
+// before /contribute. Without it, an attacker who keeps polling
+// refreshes the 15-min KV TTL forever and never uploads, blocking the
+// whole queue. The cap covers swap_batch's ~7-min mix budget plus
+// slack; lp_add and lp_remove finish well inside the same envelope so
+// one constant fits all three AMM circuits.
+const CEREMONY_MAX_HEAD_MS = 10 * 60 * 1000;
 async function _listCeremonyQueue(env, circuitHash) {
   const prefix = ceremonyQueuePrefix(circuitHash);
   const list = await env.REGISTRY_KV.list({ prefix });
   if (!list.keys.length) return [];
   const fetched = await Promise.all(list.keys.map(k => env.REGISTRY_KV.get(k.name, 'json').then(v => v ? { key: k.name, ...v } : null)));
-  return fetched.filter(e => e);
+  // KV.list returns keys in alphabetical order by token (the suffix
+  // after the prefix), not in FIFO arrival order. Sort by joined_at
+  // so queue[0] reliably means "head of line" for every caller —
+  // _evictStaleQueueHeads, handleCeremonyState, and handleCeremonyReserve
+  // all assume FIFO ordering.
+  return fetched.filter(e => e).sort((a, b) => {
+    const da = Number(a.joined_at) || 0;
+    const db = Number(b.joined_at) || 0;
+    if (da !== db) return da - db;
+    return String(a.token).localeCompare(String(b.token));
+  });
 }
-async function _evictStaleQueueHeads(env, circuitHash, queue, staleMs) {
-  // Only evict the HEAD when it's clearly abandoned (last poll > staleMs
-  // ago) AND there are waiters who'd benefit. The head stops polling
-  // once they claim the slot — during mix (up to ~7 min for swap_batch)
-  // they don't refresh last_poll_at. Evicting them then steals the slot
-  // and produces the CASRACE we're trying to prevent. The 15-min KV TTL
-  // is the backstop for genuinely-walked-away contributors.
-  //
-  // Waiters (position 1+) that stop polling are evicted by the same
-  // 15-min TTL on the entry itself; they'll just naturally fall out
-  // without active intervention.
-  return 0;
+// Evict the head when it has held position 0 longer than CEREMONY_MAX_HEAD_MS.
+// Mutates the queue array so callers see the new head on this request.
+// The 15-min KV TTL still backstops walked-away heads that never poll
+// again; this deadline backstops heads that keep polling but never
+// upload — the indefinite-poll DoS that the older "no-op evict" left
+// open.
+async function _evictStaleQueueHeads(env, circuitHash, queue) {
+  let evicted = 0;
+  while (queue.length) {
+    const head = queue[0];
+    // Only evict heads we've already stamped at position 0. A queue
+    // entry whose joined_at is old but whose head_started_at is unset
+    // is a fresh promotee — handleCeremonyReserve will stamp it on
+    // this same request. Evicting on joined_at would punish anyone
+    // who waited in line.
+    const startedAt = Number(head.head_started_at) || 0;
+    if (!startedAt) break;
+    if (Date.now() - startedAt <= CEREMONY_MAX_HEAD_MS) break;
+    await env.REGISTRY_KV.delete(head.key);
+    queue.shift();
+    evicted += 1;
+  }
+  return evicted;
 }
 
 // POST /ceremony/<hash>/reserve — FIFO queue join + poll. First call
@@ -5585,20 +5618,6 @@ async function handleCeremonyReserve(req, env, circuitHash, cors) {
   }
 
   const NOW = Date.now();
-  let queue = await _listCeremonyQueue(env, circuitHash);
-  await _evictStaleQueueHeads(env, circuitHash, queue, 5 * 60 * 1000);
-
-  // One queue slot per pubkey. A pubkey already in queue under a
-  // DIFFERENT token cannot open a second slot — the client must reuse
-  // its existing queue_token to poll. Defeats "spin up N tokens from
-  // the same keypair" attempts; combined with the per-IP join cap
-  // below, defeats the cheap reservation-flood DoS.
-  const existingForPubkey = queue.find(q => (q.pubkey || '').toLowerCase() === contributorPubkey);
-  if (existingForPubkey && existingForPubkey.token !== tokenIn) {
-    return jsonResponse({
-      error: 'pubkey already in queue under a different queue_token; reuse the existing token to poll',
-    }, 409, cors);
-  }
 
   // Deterministic key per token — direct KV.get is stronger than the
   // eventually-consistent KV.list, so we never duplicate ourselves
@@ -5617,6 +5636,34 @@ async function handleCeremonyReserve(req, env, circuitHash, cors) {
       error: 'queue_token is bound to a different pubkey',
     }, 403, cors);
   }
+
+  // Head-residency deadline (self-evict). Checked here, before
+  // _evictStaleQueueHeads, so the stale poller can't reach the fresh-
+  // join branch (which would re-stamp head_started_at). The deleted
+  // KV row is NOT re-PUT — the contributor must rejoin from the back
+  // of the queue, paying a fresh-join slot of their per-IP cap.
+  if (myEntry && myEntry.head_started_at && NOW - Number(myEntry.head_started_at) > CEREMONY_MAX_HEAD_MS) {
+    await env.REGISTRY_KV.delete(myKey);
+    return jsonResponse({
+      error: `head slot expired (must call /contribute within ${Math.round(CEREMONY_MAX_HEAD_MS / 60000)} min of reaching position 0)`,
+      evicted: true,
+    }, 409, cors);
+  }
+
+  let queue = await _listCeremonyQueue(env, circuitHash);
+  await _evictStaleQueueHeads(env, circuitHash, queue);
+
+  // One queue slot per pubkey. A pubkey already in queue under a
+  // DIFFERENT token cannot open a second slot — the client must reuse
+  // its existing queue_token to poll. Defeats "spin up N tokens from
+  // the same keypair" attempts; combined with the per-IP join cap
+  // below, defeats the cheap reservation-flood DoS.
+  const existingForPubkey = queue.find(q => (q.pubkey || '').toLowerCase() === contributorPubkey);
+  if (existingForPubkey && existingForPubkey.token !== tokenIn) {
+    return jsonResponse({
+      error: 'pubkey already in queue under a different queue_token; reuse the existing token to poll',
+    }, 409, cors);
+  }
   // Per-IP fresh-join rate limit. Only fires on NEW entries (no KV row
   // for this token yet) so honest contributors' own keepalive polls
   // stay unlimited. 20 fresh joins/day per IP is generous for shared
@@ -5634,14 +5681,18 @@ async function handleCeremonyReserve(req, env, circuitHash, cors) {
     await env.UPLOAD_KV.put(joinKey, String(prior + 1), { expirationTtl: 25 * 3600 });
   }
   if (myEntry) {
-    await env.REGISTRY_KV.put(myKey, JSON.stringify({
+    myEntry = {
       token: myToken,
       name: contributorName || myEntry.name || 'anonymous',
       pubkey: myEntry.pubkey || contributorPubkey,
       joined_at: myEntry.joined_at,
       last_poll_at: NOW,
-    }), { expirationTtl: 15 * 60 });
-    myEntry = { ...myEntry, last_poll_at: NOW };
+      // Preserve head_started_at across polls. Stripping it on each
+      // re-PUT was the bug that let a polling head reset its own
+      // deadline indefinitely.
+      ...(myEntry.head_started_at ? { head_started_at: myEntry.head_started_at } : {}),
+    };
+    await env.REGISTRY_KV.put(myKey, JSON.stringify(myEntry), { expirationTtl: 15 * 60 });
   } else {
     myEntry = { token: myToken, name: contributorName, pubkey: contributorPubkey, joined_at: NOW, last_poll_at: NOW };
     await env.REGISTRY_KV.put(myKey, JSON.stringify(myEntry), { expirationTtl: 15 * 60 });
@@ -5660,13 +5711,29 @@ async function handleCeremonyReserve(req, env, circuitHash, cors) {
     return String(a.token).localeCompare(String(b.token));
   });
 
-  const position = queue.findIndex(q => q.token === myToken);
+  let position = queue.findIndex(q => q.token === myToken);
+
+  // Stamp head_started_at the first time an entry observes itself at
+  // position 0. The deadline enforcement happens at the top of this
+  // handler (early return path) — by the time we reach here, any
+  // myEntry that arrived with an expired head_started_at has already
+  // been evicted. So we only need to stamp fresh promotees here.
+  if (position === 0 && !myEntry.head_started_at) {
+    myEntry.head_started_at = NOW;
+    await env.REGISTRY_KV.put(myKey, JSON.stringify(myEntry), { expirationTtl: 15 * 60 });
+    queue[0] = { key: myKey, ...myEntry };
+  }
+
   const total = queue.length;
   const head = queue[0];
+  const headStartedAt = head ? Number(head.head_started_at) || Number(head.joined_at) : 0;
+  const headExpiresAt = headStartedAt ? headStartedAt + CEREMONY_MAX_HEAD_MS : 0;
   const active = (head && position > 0) ? {
     contributor_name: head.name || 'anonymous',
     started_at: Math.floor(head.joined_at / 1000),
     last_poll_at: Math.floor((head.last_poll_at || head.joined_at) / 1000),
+    head_started_at: headStartedAt ? Math.floor(headStartedAt / 1000) : null,
+    head_expires_at: headExpiresAt ? Math.floor(headExpiresAt / 1000) : null,
   } : null;
 
   return jsonResponse({
@@ -5674,6 +5741,7 @@ async function handleCeremonyReserve(req, env, circuitHash, cors) {
     position,
     total,
     is_head: position === 0,
+    head_expires_at: position === 0 && headExpiresAt ? Math.floor(headExpiresAt / 1000) : null,
     active,
   }, 200, cors);
 }
@@ -22980,6 +23048,33 @@ async function _routeFetch(req, env, ctx) {
     if (mm && req.method === 'POST')                           return _mutateAndBust(mm[1], () => handleMintAttest(mm[1], mm[2], req, env, network, cors));
     const mo = url.pathname.match(/^\/assets\/([0-9a-f]{64})\/openings$/);
     if (mo && req.method === 'GET')                            return handleAssetOpenings(mo[1], env, network, cors);
+    // SPEC-BLINDED-PUBKEY §A.2 recipient discovery aid. Read-only enumeration
+    // of the xferseen index (30-day TTL window) for an asset, used by the
+    // dapp's scanAssetForStealthReceipts to walk recent reveal tx-ids and
+    // trial-derive shielded credits when the recipient lost localStorage and
+    // doesn't have the txid handy. Returns at most `limit` txids per call
+    // (default 50, max 200) with an opaque cursor for pagination.
+    const mxt = url.pathname.match(/^\/assets\/([0-9a-f]{64})\/recent-xfer-txids$/);
+    if (mxt && req.method === 'GET') {
+      const aidHex = mxt[1];
+      const limit = Math.min(200, Math.max(1, parseInt(url.searchParams.get('limit') || '50', 10) || 50));
+      const cursor = url.searchParams.get('cursor') || undefined;
+      const prefix = network === 'signet' ? `xferseen:${aidHex}:` : `xferseen:${network}:${aidHex}:`;
+      const listOpts = { prefix, limit };
+      if (cursor) listOpts.cursor = cursor;
+      const list = await env.REGISTRY_KV.list(listOpts);
+      const txids = list.keys
+        .map(k => (k.name.match(/([0-9a-f]{64})$/i) || [])[1])
+        .filter(Boolean)
+        .map(t => t.toLowerCase());
+      return jsonResponse({
+        asset_id: aidHex,
+        network,
+        txids,
+        next_cursor: list.list_complete ? null : (list.cursor || null),
+        done: !!list.list_complete,
+      }, 200, cors);
+    }
     const mu = url.pathname.match(/^\/utxos\/([0-9a-f]{64})\/(\d+)\/opening$/);
     // UTXO opening posts mutate /assets/:id (opening_count, disclosed_supply_min).
     // The handler computes the aid from the chain; rather than reach into it,
