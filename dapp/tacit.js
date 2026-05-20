@@ -65117,8 +65117,8 @@ function renderYourOpenOrdersHTML(aid, asset, myPubHex) {
     const usdTail = usdTotal ? ` <small class="muted" style="font-size:9px;">· ${escapeHtml(usdTotal)}</small>` : '';
     const ageStr = relativeAge(l.created_at || l.listed_at) ? `${relativeAge(l.created_at || l.listed_at)} ago` : '';
     const cancelBtn = l._isGroup
-      ? `<button data-act="your-orders-cancel-ask-group" data-aid="${escapeHtml(aid)}" data-sids="${escapeHtml((l._groupChunks || []).map(c => c.sale_id).filter(Boolean).join(','))}" data-ticker="${escapeHtml(ticker)}" title="Cancel all ${chunks} chunks in this group" style="font-size:10px;padding:3px 8px;background:transparent;color:var(--ink-mid);border:1px solid var(--ink-faint);">Cancel all</button>`
-      : `<button data-act="your-orders-cancel-ask" data-aid="${escapeHtml(aid)}" data-sid="${escapeHtml(l.sale_id || '')}" data-price="${perChunkPrice}" data-ticker="${escapeHtml(ticker)}" data-amount="${escapeHtml(l.asset_opening?.amount || '0')}" data-dec="${decimals}" title="Cancel this listing — removes from the marketplace" style="font-size:10px;padding:3px 8px;background:transparent;color:var(--ink-mid);border:1px solid var(--ink-faint);">Cancel</button>`;
+      ? `<button data-act="your-orders-cancel-ask-group" data-aid="${escapeHtml(aid)}" data-sids="${escapeHtml((l._groupChunks || []).map(c => c.sale_id).filter(Boolean).join(','))}" data-ticker="${escapeHtml(ticker)}" title="Cancel all ${chunks} chunks in this group" class="orders-action">cancel all</button>`
+      : `<button data-act="your-orders-cancel-ask" data-aid="${escapeHtml(aid)}" data-sid="${escapeHtml(l.sale_id || '')}" data-price="${perChunkPrice}" data-ticker="${escapeHtml(ticker)}" data-amount="${escapeHtml(l.asset_opening?.amount || '0')}" data-dec="${decimals}" title="Cancel this listing — removes from the marketplace" class="orders-action">cancel</button>`;
     return `<tr>
       <td><span class="market-bid-state market-bid-state--mine" style="background:#fee;border:1px solid #b8341d;color:#b8341d;font-size:9px;padding:1px 6px;font-weight:600;text-transform:uppercase;">Sell</span></td>
       <td><strong>${escapeHtml(fmtAssetAmount(totalAmt, decimals))}</strong> ${escapeHtml(ticker)}${l._isGroup ? ` <span class="muted" style="font-size:10px;">× ${chunks} chunk${chunks === 1 ? '' : 's'}</span>` : ''}</td>
@@ -65149,7 +65149,7 @@ function renderYourOpenOrdersHTML(aid, asset, myPubHex) {
       <td>${unitStr}</td>
       <td><strong>${priceSats.toLocaleString('en-US')}</strong> sats${usdTail}</td>
       <td class="muted" style="font-size:10px;">${escapeHtml(ageStr)}</td>
-      <td><button data-act="your-orders-cancel-intent" data-aid="${escapeHtml(aid)}" data-iid="${escapeHtml(l.intent_id || '')}" title="Cancel this intent — removes from the marketplace${l.claim ? '; if a taker has claimed, you will be prompted to self-spend the asset UTXO to invalidate their pending tx' : ''}" style="font-size:10px;padding:3px 8px;background:transparent;color:var(--ink-mid);border:1px solid var(--ink-faint);">Cancel</button></td>
+      <td><button data-act="your-orders-cancel-intent" data-aid="${escapeHtml(aid)}" data-iid="${escapeHtml(l.intent_id || '')}" title="Cancel this intent — removes from the marketplace${l.claim ? '; if a taker has claimed, you will be prompted to self-spend the asset UTXO to invalidate their pending tx' : ''}" class="orders-action">cancel</button></td>
     </tr>`;
   }).join('');
 
@@ -65211,7 +65211,7 @@ function renderYourOpenOrdersHTML(aid, asset, myPubHex) {
         })()
       : '';
     const _takeBtn = _matchable.length > 0
-      ? `<button data-act="your-orders-bid-take-instead" data-aid="${escapeHtml(aid)}" data-bid-id="${escapeHtml(b.bid_id || '')}" data-cap-unit="${_matchable[0].askUnit}" data-bid-sats="${sats}" data-bid-amt-base="${amt.toString()}" title="Cancel this bid and use its ${sats.toLocaleString()} sats to take ${_matchable.length} affordable ask${_matchable.length === 1 ? '' : 's'} priced at-or-below your bid. Primes the Swap tile at ≤${escapeHtml(fmtUnitPriceSats(_matchable[0].askUnit))} sats/${ticker} so the planner walks the cheap asks first." style="font-size:10px;padding:3px 8px;background:#fff8eb;color:#7a4d00;border:1px solid #c97a1a;cursor:pointer;margin-right:4px;">Take →</button>`
+      ? `<button data-act="your-orders-bid-take-instead" data-aid="${escapeHtml(aid)}" data-bid-id="${escapeHtml(b.bid_id || '')}" data-cap-unit="${_matchable[0].askUnit}" data-bid-sats="${sats}" data-bid-amt-base="${amt.toString()}" title="Cancel this bid and use its ${sats.toLocaleString()} sats to take ${_matchable.length} affordable ask${_matchable.length === 1 ? '' : 's'} priced at-or-below your bid. Primes the Swap tile at ≤${escapeHtml(fmtUnitPriceSats(_matchable[0].askUnit))} sats/${ticker} so the planner walks the cheap asks first." class="orders-action orders-action--take">take →</button>`
       : '';
     return `<tr>
       <td><span class="market-bid-state market-bid-state--mine" style="background:#e8f5ec;border:1px solid #0a8f43;color:#0a8f43;font-size:9px;padding:1px 6px;font-weight:600;text-transform:uppercase;">Buy</span></td>
@@ -65219,7 +65219,7 @@ function renderYourOpenOrdersHTML(aid, asset, myPubHex) {
       <td>${unitStr}</td>
       <td><strong>${sats.toLocaleString('en-US')}</strong> sats${usdTail}</td>
       <td class="muted" style="font-size:10px;">${escapeHtml(ageStr)}</td>
-      <td>${_takeBtn}<button data-act="your-orders-cancel-bid" data-aid="${escapeHtml(aid)}" data-bid-id="${escapeHtml(b.bid_id || '')}" title="Cancel this bid — removes from the marketplace" style="font-size:10px;padding:3px 8px;background:transparent;color:var(--ink-mid);border:1px solid var(--ink-faint);">Cancel</button></td>
+      <td>${_takeBtn}<button data-act="your-orders-cancel-bid" data-aid="${escapeHtml(aid)}" data-bid-id="${escapeHtml(b.bid_id || '')}" title="Cancel this bid — removes from the marketplace" class="orders-action">cancel</button></td>
     </tr>`;
   }).join('');
 

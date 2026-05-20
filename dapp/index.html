@@ -4146,6 +4146,27 @@ body > #amm-contrib-section {
   font-size: 10px !important;
 }
 
+/* Subtle inline-text actions on your-open-orders rows (take / cancel).
+   Replaces the prior bordered buttons that overflowed the action
+   column on narrow viewports. Reads as a quiet link, expands the
+   per-row hover hit area without growing the row height. */
+[data-your-orders] .orders-action {
+  background: transparent;
+  border: 0;
+  padding: 0;
+  margin-right: 8px;
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.02em;
+  color: var(--ink-mid);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+[data-your-orders] .orders-action:hover { color: var(--ink); }
+[data-your-orders] .orders-action--take { color: #b06a00; }
+[data-your-orders] .orders-action--take:hover { color: #7a4d00; }
+
 /* Unified tile sections per design.html — depth and tape share the
    same 18px gutter and dashed top hairline. */
 .market-tile-section {
@@ -5742,33 +5763,38 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
    display:none and both ladder sides render together as before. */
 .orderbook-mobile-tabs { display: none; }
 @media (max-width: 520px) {
+  /* Quiet text-style toggle — drops the heavy filled-segment look in
+     favour of the dapp's mono-link / dashed-hairline aesthetic.
+     Active tab: solid ink + dashed underline marker. Inactive: muted. */
   .orderbook-mobile-tabs {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 0;
-    margin-bottom: 8px;
-    border: 1px solid var(--ink);
-    background: var(--bg);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 18px;
+    margin: 4px 0 10px;
+    padding: 6px 0 8px;
+    border-bottom: 1px dashed rgba(26,26,26,0.25);
+    background: transparent;
   }
   .orderbook-mobile-tabs button {
     appearance: none;
-    background: var(--bg);
+    background: transparent;
     color: var(--ink-mid);
     border: 0;
-    padding: 8px 10px;
-    font-family: inherit;
+    padding: 2px 2px 4px;
+    font-family: var(--mono);
     font-size: 11px;
-    font-weight: 700;
+    font-weight: 500;
     text-transform: uppercase;
-    letter-spacing: 0.06em;
+    letter-spacing: 0.08em;
     cursor: pointer;
+    border-bottom: 1px dashed transparent;
   }
-  .orderbook-mobile-tabs button + button {
-    border-left: 1px solid var(--ink-faint);
-  }
+  .orderbook-mobile-tabs button:hover { color: var(--ink); }
   .orderbook-mobile-tabs button[aria-selected="true"] {
-    background: var(--ink);
-    color: var(--bg);
+    color: var(--ink);
+    font-weight: 700;
+    border-bottom-color: var(--ink);
   }
   /* Spread row stays visible (it's not inside either side wrapper).
      Hide the inactive side entirely so only one ladder shows below. */
