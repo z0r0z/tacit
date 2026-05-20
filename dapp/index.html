@@ -6019,9 +6019,66 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
   .swap-flip-btn:active { transform: none; }
 }
 @media (max-width: 520px) {
-  .swap-flip-wrap { margin: -12px 0; }
-  .swap-flip-btn { width: 30px; height: 30px; }
-  .swap-flip-btn svg { width: 10px; height: 10px; }
+  /* Flip button BIGGER on mobile (was previously shrunk to 30px which
+     is below the 44px platform tap-target guideline). Now 40px with a
+     slightly larger glyph — still doesn't dominate the tile but is
+     reliably tappable with a thumb. */
+  .swap-flip-wrap { margin: -14px 0; }
+  .swap-flip-btn { width: 40px; height: 40px; border-width: 1.5px; }
+  .swap-flip-btn svg { width: 13px; height: 13px; }
+}
+/* Swap-tile-wide mobile polish. The inline-style emitter in tacit.js
+   sets desktop-friendly padding/spacing; these rules tighten + enlarge
+   the right things for thumb interaction on phone screens (≤640px).
+   Targets:
+     • Pay/Receive boxes: roomier padding so the 22px input has tap
+       headroom on either side
+     • Token pills: bigger tap target (taller + chunkier) — they're
+       toggles to flip sats↔USD
+     • Market/Limit toggle: bigger buttons with sufficient finger area
+     • Action button: more vertical padding so it reads as the obvious
+       commit gesture
+     • Max-price row: stacks the readout + selector when the inline-
+       flex row would otherwise wrap awkwardly */
+@media (max-width: 640px) {
+  [data-swap-tile] [data-swap-side] {
+    padding: 12px 14px !important;
+  }
+  [data-swap-tile] [data-swap-pill] {
+    padding: 8px 14px !important;
+    font-size: 14px !important;
+    min-height: 36px;
+    align-items: center !important;
+  }
+  [data-swap-tile] [data-swap-mode-toggle] button {
+    padding: 8px 14px !important;
+    font-size: 11px !important;
+    min-height: 36px;
+  }
+  [data-swap-tile] [data-swap-action] {
+    padding: 16px !important;
+    font-size: 15px !important;
+    min-height: 52px;
+  }
+  /* Max-price row: on narrow viewports the info text + label + select
+     compete for ~340px of horizontal space and wrap awkwardly (the
+     three pieces split across two lines with the select dangling).
+     Stack the readout above the picker row instead so each gets full
+     width and the picker stays legible. */
+  [data-swap-tile] [data-swap-info] {
+    flex: 1 1 100% !important;
+  }
+  [data-swap-tile] [data-swap-slippage] {
+    height: 36px !important;
+    font-size: 13px !important;
+    padding: 6px 28px 6px 10px !important;
+  }
+  /* Quickfill chips: bigger tap targets without dominating the row. */
+  [data-swap-tile] [data-swap-quickfill] button {
+    padding: 6px 12px !important;
+    font-size: 12px !important;
+    min-height: 32px;
+  }
 }
 
 /* "Set price alert" trigger button on the market asset stats strip. Subtle
