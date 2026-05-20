@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1500 500" width="1500" height="500">
+  <defs>
+    <style>
+      @import url('https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&amp;family=IBM+Plex+Mono:wght@400;500&amp;display=swap');
+      .wordmark { font-family: 'Instrument Serif', 'EB Garamond', Georgia, serif; fill: #f4efe6; font-style: italic; text-anchor: end; }
+      .tagline  { font-family: 'Instrument Serif', 'EB Garamond', Georgia, serif; fill: #f4efe6; text-anchor: end; }
+    </style>
+    <pattern id="dots" x="0" y="0" width="24" height="24" patternUnits="userSpaceOnUse">
+      <circle cx="1" cy="1" r="1" fill="#f4efe6" fill-opacity="0.04"/>
+    </pattern>
+  </defs>
+
+  <!-- Background -->
+  <rect width="1500" height="500" fill="#0a0a0a"/>
+  <rect width="1500" height="500" fill="url(#dots)"/>
+
+  <!-- Wordmark (right-anchored) -->
+  <text x="1410" y="300" class="wordmark" font-size="220">tacit<tspan fill="#F7931A">.</tspan></text>
+
+  <!-- Tagline (right-anchored) -->
+  <text x="1410" y="362" class="tagline" font-size="40">trade <tspan fill="#F7931A">bitcoin</tspan> assets, <tspan fill="#F7931A">privately.</tspan></text>
+</svg>
