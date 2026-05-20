@@ -27078,6 +27078,46 @@ async function takeAxferIntent({ intent, fulfilment, onProgress = null }) {
   return result;
 }
 
+// Canonical message for the buyer-side claim-cancel sig. Mirrors the
+// worker's atomicClaimCancelMsg — domain "tacit-axclaim-cancel-v1" so
+// it can't collide with the maker-side intent cancel.
+function _axintentClaimCancelMsg(assetIdBytes, intentIdBytes, takerPubBytes) {
+  return sha256(concatBytes(
+    new TextEncoder().encode('tacit-axclaim-cancel-v1'),
+    assetIdBytes,
+    intentIdBytes,
+    takerPubBytes,
+  ));
+}
+
+// Buyer-side claim abort. Lets the taker drop their reservation before
+// the claim's natural TTL expires — freeing the intent for other takers
+// and releasing the taker_utxo cross-intent pledge. Used when a maker
+// hasn't fulfilled within the buyer's patience window (currently 30s
+// via the soft-deadline path); the alternative was hostage-by-TTL for
+// the full 5 minutes.
+async function cancelAxferClaim({ assetIdHex, intentIdHex }) {
+  await ensurePrivkey();
+  if (!WORKER_BASE) throw new Error('worker disabled');
+  const msg = _axintentClaimCancelMsg(
+    hexToBytes(assetIdHex),
+    hexToBytes(intentIdHex),
+    wallet.pub,
+  );
+  const sig = signSchnorr(msg, wallet.priv);
+  const resp = await fetch(withNet(ATOMIC_INTENT_CLAIM_URL(assetIdHex, intentIdHex)), {
+    method: 'DELETE',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      taker_pubkey: bytesToHex(wallet.pub),
+      sig: bytesToHex(sig),
+    }),
+  });
+  const j = await resp.json().catch(() => ({}));
+  if (!resp.ok) throw new Error(j.error || `HTTP ${resp.status}`);
+  return j;
+}
+
 async function cancelAxferIntent({ assetIdHex, intentIdHex }) {
   await ensurePrivkey();
   if (!WORKER_BASE) throw new Error('worker disabled');
@@ -70592,10 +70632,21 @@ function _wireSwapTile(scope) {
     // "broadcasting…" (which is no longer true — broadcast is done; we're
     // now waiting on the maker's auto-fulfiller).
     const _start = Date.now();
-    const _deadline = _start + 300_000;
-    try { cb.onClaimed?.({ deadlineAt: _deadline }); } catch {}
+    // Soft deadline (30s) — caller's patience window for casual $10
+    // trades. If the maker hasn't fulfilled by then we auto-cancel the
+    // claim, freeing the intent for other takers + releasing the cross-
+    // intent UTXO pledge so the buyer can move on without waiting out
+    // the full 5min TTL. Callers can extend by passing a larger
+    // c.claimSoftDeadlineMs (e.g., for known-slow makers or for whales
+    // who want the full TTL window).
+    const _softDeadlineMs = Number.isFinite(c.claimSoftDeadlineMs)
+      ? Math.max(5_000, Math.min(300_000, c.claimSoftDeadlineMs))
+      : 30_000;
+    const _softDeadline = _start + _softDeadlineMs;
+    const _hardDeadline = _start + 300_000;
+    try { cb.onClaimed?.({ deadlineAt: _softDeadline, hardDeadlineAt: _hardDeadline }); } catch {}
     // Wait for maker fulfilment. Poll with exponential backoff up to
-    // 5 min (claim TTL). The previous 3s constant cadence generated
+    // the soft deadline. The previous 3s constant cadence generated
     // ~100 polls per claim, each surfacing a 404 in the browser
     // console while the maker hadn't yet posted a fulfilment — the
     // 404s were correct protocol behavior ("not yet") but read as
@@ -70605,9 +70656,9 @@ function _wireSwapTile(scope) {
     // online makers respond.
     let fulfilmentResp = null;
     let _pollDelayMs = 3000;
-    while (Date.now() < _deadline) {
+    while (Date.now() < _softDeadline) {
       await new Promise(r => setTimeout(r, _pollDelayMs));
-      try { cb.onPollTick?.({ elapsedMs: Date.now() - _start, deadlineAt: _deadline }); } catch {}
+      try { cb.onPollTick?.({ elapsedMs: Date.now() - _start, deadlineAt: _softDeadline }); } catch {}
       try {
         const fr = await fetchAxferFulfilment({ assetIdHex: aid, intentIdHex: c.l.intent_id });
         if (fr?.fulfilment || fr?.partial_reveal) { fulfilmentResp = fr; break; }
@@ -70615,7 +70666,15 @@ function _wireSwapTile(scope) {
       _pollDelayMs = Math.min(_pollDelayMs + 3000, 30000);
     }
     if (!fulfilmentResp) {
-      throw new Error('maker did not fulfil within 5 min — claim expired (their auto-fulfil may be off or they\'re offline)');
+      // Soft deadline elapsed. Best-effort drop the claim via the
+      // worker's DELETE so the intent + UTXO pledge free up immediately
+      // instead of hostage-by-TTL for the remaining 4.5 minutes. If the
+      // worker DELETE fails (network blip, race with maker fulfilment
+      // landing right at the deadline), we still throw the clean error
+      // below — the natural TTL will clear the claim within 5 minutes
+      // regardless.
+      try { await cancelAxferClaim({ assetIdHex: aid, intentIdHex: c.l.intent_id }); } catch {}
+      throw new Error(`maker didn't fulfil within ${Math.round(_softDeadlineMs/1000)}s — claim dropped, your sats stayed in your wallet, try a different ask`);
     }
     if (c.kind === 'intent-var') {
       return finalizeAxferVarTake({

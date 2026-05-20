@@ -14180,6 +14180,24 @@ function atomicIntentCancelMsg(assetIdHex, intentIdHex) {
   ));
 }
 
+// Buyer-side claim abort. Signed by the claimant (taker_pubkey) so only
+// the original claim holder can drop their reservation early. Frees the
+// intent for other takers AND releases the UTXO pledge before the
+// CLAIM_TTL expires. Domain-separated from the maker-side intent cancel
+// msg (-axintent-cancel-) so an old maker-cancel sig can't be replayed
+// here. The taker_pubkey is bound into the msg so a captured cancel sig
+// can't be replayed against a different taker's claim on the same
+// intent (paranoia — the worker also checks claim.taker_pubkey
+// matches before deleting, so this is belt + suspenders).
+function atomicClaimCancelMsg(assetIdHex, intentIdHex, takerPubHex) {
+  return sha256(concatBytes(
+    new TextEncoder().encode('tacit-axclaim-cancel-v1'),
+    hexToBytes(assetIdHex),
+    hexToBytes(intentIdHex),
+    hexToBytes(takerPubHex),
+  ));
+}
+
 // ======== T_AXFER_VAR (§5.7.6.1 + §5.7.9) — variable-amount atomic intents ========
 // Pure-function message helpers + intent_id derivation for the variable-amount
 // flow. Land before any handler changes so PR2/PR3 can call into a stable
@@ -15250,6 +15268,70 @@ async function handleAtomicIntentDelete(assetIdHex, intentIdHex, req, env, netwo
     ));
   }
   return jsonResponse({ ok: true }, 200, cors);
+}
+
+// Buyer-side claim cancellation. Decouples the maker-side TTL (generous,
+// so casual makers without an auto-fulfil daemon can ship) from buyer-
+// side patience (impatient, so a $10 trade doesn't lock attention for
+// 5 minutes if the maker is offline). The buyer holds a Schnorr sig
+// over (asset_id, intent_id, taker_pubkey); presenting it lets them
+// drop their reservation + free the UTXO pledge before the natural TTL
+// elapses. After the drop, OTHER takers can claim the intent
+// immediately, and the original buyer can move on without their
+// taker_utxo being held against further trades.
+//
+// Only the original claimant can cancel — the worker verifies that the
+// presented taker_pubkey matches the stored claim's. Maker-side abort
+// is a separate flow (the `/atomic-intents/:iid` DELETE path), and a
+// successful claim-cancel here doesn't drop the underlying intent —
+// the maker's intent stays available for the next taker.
+async function handleAtomicIntentClaimCancel(assetIdHex, intentIdHex, req, env, network, cors) {
+  if (!/^[0-9a-f]{64}$/.test(assetIdHex)) return jsonResponse({ error: 'invalid asset_id' }, 400, cors);
+  if (!/^[0-9a-f]{32}$/.test(intentIdHex)) return jsonResponse({ error: 'invalid intent_id' }, 400, cors);
+  let body;
+  try { body = await req.json(); } catch { return jsonResponse({ error: 'invalid JSON body' }, 400, cors); }
+  const takerPubHex = String(body.taker_pubkey ?? '').toLowerCase();
+  const sigHex = String(body.sig ?? '').toLowerCase();
+  if (!/^0[23][0-9a-f]{64}$/.test(takerPubHex))         return jsonResponse({ error: 'taker_pubkey must be 33-byte compressed hex' }, 400, cors);
+  if (!/^[0-9a-f]{128}$/.test(sigHex))                  return jsonResponse({ error: 'sig must be 128 hex chars (Schnorr 64-byte)' }, 400, cors);
+
+  // Verify sig over the canonical cancel msg. Domain-separated from the
+  // maker-side intent cancel sig, so a captured maker-cancel can't be
+  // replayed as a claim-cancel.
+  const msg = atomicClaimCancelMsg(assetIdHex, intentIdHex, takerPubHex);
+  if (!verifySchnorr(hexToBytes(sigHex), msg, hexToBytes(takerPubHex).slice(1))) {
+    return jsonResponse({ error: 'invalid cancel signature' }, 403, cors);
+  }
+
+  // Idempotent: no claim = nothing to cancel, return 200 anyway. The dapp's
+  // retry logic shouldn't be punished for a network blip that already
+  // completed a cancel on the worker side.
+  const existing = await env.REGISTRY_KV.get(atomicClaimKey(network, assetIdHex, intentIdHex), 'json');
+  if (!existing) {
+    return jsonResponse({ ok: true, already_cleared: true }, 200, cors);
+  }
+
+  // Only the claimant can cancel. A stranger presenting a valid sig over a
+  // different taker_pubkey can't drop someone else's reservation. The
+  // takerPubHex was already bound into the msg + checked above, so this
+  // is just enforcing the claim-ownership invariant.
+  if (existing.taker_pubkey !== takerPubHex) {
+    return jsonResponse({ error: 'claim is held by a different taker' }, 403, cors);
+  }
+
+  // Drop the claim + its UTXO pledge index. KV.delete on a missing key is
+  // a no-op, so partial-completion is recoverable on retry.
+  try {
+    await env.REGISTRY_KV.delete(atomicClaimKey(network, assetIdHex, intentIdHex));
+    if (existing.taker_utxo?.txid && Number.isInteger(existing.taker_utxo?.vout)) {
+      await env.REGISTRY_KV.delete(
+        atomicClaimUtxoIndexKey(network, existing.taker_utxo.txid, existing.taker_utxo.vout),
+      );
+    }
+  } catch (e) {
+    return jsonResponse({ error: 'KV delete failed: ' + e.message }, 500, cors);
+  }
+  return jsonResponse({ ok: true, dropped: { intent_id: intentIdHex, taker_pubkey: takerPubHex } }, 200, cors);
 }
 
 async function handleAtomicIntentClaim(assetIdHex, intentIdHex, req, env, network, cors) {
@@ -23377,6 +23459,7 @@ async function _routeFetch(req, env, ctx) {
     if (mai2 && req.method === 'DELETE')                       return _mutateAndBustAtomicIntents(mai2[1], () => handleAtomicIntentDelete(mai2[1], mai2[2], req, env, network, cors));
     const mai3 = url.pathname.match(/^\/assets\/([0-9a-f]{64})\/atomic-intents\/([0-9a-f]{32})\/claim$/);
     if (mai3 && req.method === 'POST')                         return _mutateAndBustAtomicIntents(mai3[1], () => handleAtomicIntentClaim(mai3[1], mai3[2], req, env, network, cors));
+    if (mai3 && req.method === 'DELETE')                       return _mutateAndBustAtomicIntents(mai3[1], () => handleAtomicIntentClaimCancel(mai3[1], mai3[2], req, env, network, cors));
     const mai4 = url.pathname.match(/^\/assets\/([0-9a-f]{64})\/atomic-intents\/([0-9a-f]{32})\/fulfilment$/);
     if (mai4 && req.method === 'POST')                         return _mutateAndBustAtomicIntents(mai4[1], () => handleAtomicIntentFulfil(mai4[1], mai4[2], req, env, network, cors));
     if (mai4 && req.method === 'GET')                          return handleAtomicIntentFulfilGet(mai4[1], mai4[2], env, network, cors);
