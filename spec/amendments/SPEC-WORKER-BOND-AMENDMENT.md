@@ -6,19 +6,26 @@
 > `SPEC-ORDERBOOK-CHANNEL-AMENDMENT.md` and the AMM channel scope
 > schemas (`spec/amm/dapp-checklist.md`, `spec/amm/wire-formats.md`)
 > consume this primitive today.
-> `SPEC-CBTC-TAC-AMENDMENT.md` established the protocol-controlled
-> TAC-bond UTXO pattern (§5.35.2: "Locked at a protocol-controlled
-> escrow … cannot be spent except via valid withdraw, force-close,
-> or slash envelopes … moves only via tacit envelope state
-> transitions") and the indexer-state slashing precedent
-> (`SLASH_DETECTED`, §5.39.2; insurance plumbing at
-> `T_SHARE_SLASH_CLAIM`, §5.39.4). **Critically — and contrary to
-> an earlier draft of this amendment — cBTC.tac is explicitly
-> federation-free** (§5.35.2: "there is no federation, no multisig,
-> no co-signer"). This amendment inherits the same trustless-escrow
-> shape: the bond UTXO is constructed as a no-spending-key Taproot
-> output and never spends on Bitcoin; all TAC movement is by
-> indexer-state reattribution per envelope.
+> `SPEC-CBTC-TAC-AMENDMENT.md` established the covenant-free
+> TAC-bond pattern this amendment inherits directly. Note that
+> §5.35.2's original "no-spending-key escrow" framing requires
+> covenant primitives Bitcoin does not have on mainnet; **§5.47
+> ("v1 lien model — trustless collateral without covenants") is
+> the shipped construction** and the one this amendment uses. In
+> the §5.47 model, the bond UTXO is a standard tacit asset UTXO
+> in the worker's own wallet (single-sig Schnorr key-path P2TR);
+> the "bondedness" is enforced at the indexer / worker layer by
+> a **lien** recorded in `bond_state` that validator coordination
+> refuses to honor unauthorized spends of (per cBTC.tac §5.47.3
+> — the `commitmentForUtxo` enforcement point). Authorized
+> lien-release paths: `T_WORKER_BOND_CLOSE` step 2 (cooperative)
+> and `T_WORKER_SLASH` (forced, on equivocation evidence). The
+> indexer-state slashing precedent is `SLASH_DETECTED` (§5.39.2);
+> the conservation-exception precedent for TAC-creation-without-
+> per-tx-input is `T_SHARE_SLASH_CLAIM` (§5.39.4). cBTC.tac is
+> explicitly federation-free (§5.35.2: "no federation, no
+> multisig, no co-signer"); this amendment inherits that trust
+> profile.
 > `SPEC-GOVERNANCE-AMENDMENT.md` supplies the safety-band
 > parameter framework (`INITIAL_BOND_RATIO`,
 > `MAX_BONDED_FRAC_OF_TAC_FDV`).
@@ -35,14 +42,17 @@
 > redirected to the slash submitter as a reporter bounty before
 > the burn.
 >
-> The bond is denominated in **TAC**. No new cryptographic
-> primitive. No new ceremony. No new trust assumption. No change
-> to `T_INTENT_ATTEST`'s wire format or validator. Every TAC
-> movement — open, cooperative close, slash — is implemented as
-> indexer-state reattribution of TAC value across outpoints; the
-> bond UTXO sits permanently on Bitcoin as unspendable dust and
-> all lifecycle transitions are gated by envelope validation
-> rules alone (matching cBTC.tac §5.35.2 semantics exactly).
+> The bond is denominated in **TAC** (raw TAC; not LP shares —
+> worker bonds are smaller and more transient than cBTC.tac slot
+> positions, so the yield-while-bonded property cBTC.tac §5.47
+> optimizes for isn't worth the implementation complexity here).
+> No new cryptographic primitive. No new ceremony. No new trust
+> assumption. No change to `T_INTENT_ATTEST`'s wire format or
+> validator. The bond UTXO is a standard worker-controlled
+> P2TR; lifecycle transitions (open, cooperative close, slash)
+> all run through the lien recorded in `bond_state` and the
+> `commitmentForUtxo` enforcement point that cBTC.tac §5.47.3
+> already specifies.
 
 ---
 
@@ -81,27 +91,43 @@ channel layer "soft" and forces traders who care about safety to
 wait for Bitcoin confirmation anyway.
 
 This amendment closes that asymmetry. A worker that wants traders
-to honor its `T_INTENT_ATTEST` envelopes as soft-confirms locks
-a TAC bond in a **no-spending-key Taproot UTXO** — the exact
-construction cBTC.tac uses for its TAC collateral escrow
-(§5.35.2). No federation, no multisig, no co-signer; the bond
-UTXO is structurally unspendable on Bitcoin. All TAC movement
-into and out of the bond is implemented as indexer-state
-reattribution of TAC value across outpoints, gated by envelope
-validation. The bond is releasable cooperatively after a notice
-period via `T_WORKER_BOND_CLOSE` (the envelope declares the
-worker's destination outpoint; the indexer reattributes TAC value
-from the bond UTXO to that destination); it is **slashable by
-anyone** who submits two conflicting `T_INTENT_ATTEST` envelopes
-signed by the same `worker_pubkey` at the same height for the
-same scope (the envelope declares a reporter bounty destination;
-the indexer reattributes a fraction of the bond's TAC value to
-the bounty outpoint and removes the remainder from circulation
-by recording it as burned).
+to honor its `T_INTENT_ATTEST` envelopes as soft-confirms posts
+a TAC bond using the **cBTC.tac §5.47 lien pattern**: the bond
+UTXO is a standard tacit asset UTXO in the worker's own wallet
+(single-sig Schnorr key-path P2TR carrying a TAC asset commit
+under standard tacit asset binding); on receiving a valid
+`T_WORKER_BOND_OPEN` envelope, the indexer records a **lien**
+entry in `bond_state` keyed by `(worker_pubkey, bond_outpoint)`.
 
-Both lifecycle paths share one mechanism: the bond UTXO's TAC
-attribution is rewritten by indexer state, never by Bitcoin-layer
-UTXO consumption. The bond UTXO is dust sats on Bitcoin forever.
+The lien is enforced exactly as cBTC.tac §5.47.3 specifies:
+`commitmentForUtxo` (the worker's universal asset-UTXO resolver)
+refuses any outpoint in the `bond_state` table's `active` or
+`closing` state, throwing as if the UTXO doesn't exist. Every
+downstream consumer (`T_AXFER_VAR`, `T_SWAP_VAR`, `T_CXFER`,
+etc.) hits this helper and automatically refuses to recognize
+the liened UTXO as TAC-bearing. The only handlers that bypass
+the lien check are the worker-bond opcodes themselves
+(`T_WORKER_BOND_CLOSE` step 2 for cooperative release;
+`T_WORKER_SLASH` for forced reattribution under equivocation
+evidence). If a worker spends their liened UTXO on Bitcoin
+outside the protocol, the spend confirms at the Bitcoin layer
+but the indexer attributes zero TAC to the outputs (analogous
+to a cBTC.tac depositor "rugging" — except there's no separate
+backing asset to lose, just the bond itself).
+
+The bond is releasable cooperatively after a notice period via
+`T_WORKER_BOND_CLOSE` step 2 — the worker spends the
+bond_outpoint on Bitcoin to their declared destination, and the
+indexer authorizes the spend (TAC attribution follows the normal
+asset-flow rules) because the lien-release conditions are met.
+It is **slashable by anyone** who submits two conflicting
+`T_INTENT_ATTEST` envelopes signed by the same `worker_pubkey`
+at the same height for the same scope; the slash envelope
+declares a reporter bounty destination, the indexer reattributes
+the configured bounty fraction to that outpoint and burns the
+remainder by zeroing the bond's TAC value with no offsetting
+attribution.
+
 Honest monitoring becomes positive-expected-value for any third
 party who can construct the evidence pair from on-chain
 envelopes.

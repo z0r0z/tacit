@@ -270,9 +270,11 @@ Liquid CT hides amounts (and asset IDs too) but runs on a federated
 sidechain with ~15 KYC'd functionaries; that's not Bitcoin and it's
 not trustless. RGB and Taproot Assets keep the substrate clean but
 push validation off-chain — the recipient has to receive and store a
-proof chain from the sender, and losing it loses the asset. Tacit hides
-amounts on Bitcoin proper and recovers from privkey + chain alone, the
-way Bitcoin itself works. See "How tacit compares" above for the longer
+proof chain from the sender, and losing it loses the asset. Tacit layers
+privacy on Bitcoin L1 — shielded amounts by default, opt-in shielded
+addresses for per-tx unique recipient markers, opt-in mixer pool for
+full unlinkability — and recovers from privkey + chain alone, the way
+Bitcoin itself works. See "How tacit compares" above for the longer
 breakdown.
 
 **How do I see my tacit balances?** In the dApp here, or in any
@@ -284,14 +286,35 @@ wallets like Xverse / UniSat / Leather connect for *funding* the tacit
 wallet from your existing BTC; the tacit privkey itself stays in this
 browser, encrypted and separate from your external wallet's seed.
 
-**Is amount privacy actually enough?** For most fungible-token use cases
-(treasury operations, confidential payments, OTC settlement, payroll) —
-yes. Tacit hides what's load-bearing: how much is moving. Address-graph
-and asset-id privacy live at the Bitcoin-substrate layer — the same
-scope every Bitcoin-substrate protocol gives you. BIP-352 Silent Payments
-(receiver privacy) and Asset Surjection Proofs (asset-id privacy) are on
-the roadmap and compatible with tacit's wallet model — see "Future
-directions" below.
+**How much privacy do I get, and can I dial it?** Privacy is layered so
+each user picks the level that fits the use case rather than forcing one
+posture on everyone. Three orthogonal axes, composable:
+
+1. **Shielded amount** — default on every transfer. Pedersen + bulletproofs
+   hide the amount in every CETCH, T_MINT, CXFER, T_AXFER, and BURN-change
+   commitment. BabyJubJub Pedersen + Groth16 inside `T_SWAP_BATCH` hide
+   per-trader amounts during AMM settlement.
+2. **Shielded address** — opt-in per receipt, live in production for CXFER.
+   BIP-341-style blinded-pubkey commit `commit = recipient_pubkey +
+   blinding·G` with `blinding = HMAC(ECDH(sender_priv, recipient_pub) ||
+   domain || tx_anchor)`. On-chain recipient marker is a per-tx unique
+   P2WPKH address with no apparent link to the recipient's published
+   identity. Same crypto as BIP-340 / BIP-341 / BIP-352 silent payments;
+   no new ceremony. Same scheme as Liquid CT's confidential addresses but
+   on Bitcoin L1.
+3. **Mixer pool** — opt-in per UTXO, live in production. T_DEPOSIT locks
+   a fixed-denomination UTXO into a Poseidon Merkle tree; T_WITHDRAW
+   proves unspent-leaf membership via Groth16 + nullifier without
+   revealing which leaf. Breaks the on-chain link between deposit and
+   withdrawal entirely. The same circuit underpins cBTC.zk slot
+   semantics so trustless wrapped BTC inherits the primitive.
+
+Practical postures: a **merchant** keeps public transfers + shielded
+balances (default — clean accounting + amount privacy on every line item).
+A **privacy-conscious user** publishes a `tcs1…` shielded address for
+receipts and routes outbound payments through the mixer pool (full
+unlinkability at every endpoint). Asset-id privacy via asset surjection
+proofs is on the roadmap; until then asset_id is public on chain.
 
 **Am I locked into your platform?** No. The protocol spec is open (MIT,
 [SPEC.md](./SPEC.md) is authoritative); any indexer in any language

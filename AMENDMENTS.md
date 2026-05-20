@@ -55,6 +55,7 @@ All design docs live under [`spec/design/`](./spec/design/).
 |---|---|---|---|
 | cBTC reference issuer operational design | 📝 Round-1 fixes landed | One concrete application of the wrapper convention — TAC-operated federated 3-of-5 multisig cBTC variant | [`spec/design/CBTC-ISSUER-DESIGN.md`](./spec/design/CBTC-ISSUER-DESIGN.md) |
 | Channel UX design | 📝 Draft | UX design for the trader-side preconfirmation channel and dapp soft-confirm rendering | [`spec/design/CHANNEL-UX-DESIGN.md`](./spec/design/CHANNEL-UX-DESIGN.md) |
+| Meta-protocol consensus architecture | 📐 Architecture reference | Maps the four-layer channel stack (L1 settlement / L2 attest / L3 mesh / L4 bond) into a single composition story, frames `T_INTENT_ATTEST` + `T_WORKER_*` as a lightweight finality gadget for indexer state, and notes the generalization to other Bitcoin meta-protocols (runes, ordinals, BRC-20). Includes a recommended reading order, trust assumptions that still apply, and what's still soft. Not normative — points at the amendments. | [`spec/design/META-PROTOCOL-CONSENSUS.md`](./spec/design/META-PROTOCOL-CONSENSUS.md) |
 
 ---
 
