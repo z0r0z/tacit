@@ -60915,6 +60915,9 @@ function applyMarketFilters() {
   list.querySelectorAll('button[data-act="your-orders-improve-bid"]').forEach(btn => {
     btn.onclick = async () => _improveBidHandler(btn);
   });
+  list.querySelectorAll('button[data-act="your-orders-cancel-all"]').forEach(btn => {
+    btn.onclick = async () => _cancelAllOrdersHandler(btn);
+  });
   list.querySelectorAll('button[data-act="quick-buy-intent"]').forEach(btn => {
     btn.onclick = async () => marketClaimIntentHandler(btn);
   });
@@ -63700,9 +63703,9 @@ function renderMarketAssetStatsHTML(asset) {
            since the hero sparkline gives glanceable trend. Open the
            disclosure to surface the full chart with TF chips + cursor
            crosshair + outlier flags. -->
-      <details data-market-price-chart-wrap style="margin-top:10px;">
+      <details data-market-price-chart-wrap open style="margin-top:10px;">
         <summary style="cursor:pointer;color:var(--ink-mid);font-size:10px;text-transform:uppercase;letter-spacing:0.08em;padding:2px 0;list-style:none;">
-          <span style="display:inline-block;transition:transform 0.1s;font-size:9px;">▸</span> price history
+          <span style="display:inline-block;transition:transform 0.1s;font-size:9px;">▾</span> price history
         </summary>
         <div data-chart-tf-wrap style="margin-top:8px;${prePaintedChartHtml ? '' : 'display:none;'}">${_tfRowHtml}</div>
         <div data-market-price-chart style="${prePaintedChartStyle}">${prePaintedChartHtml}</div>
@@ -64007,7 +64010,12 @@ function renderMarketPriceChartSVG(trades, ticker, decimals, markUnit = null, op
   // doesn't feel cramped, symmetric L/R padding so y-labels (left)
   // and right-edge mark label (right) sit balanced.
   const W = 600, H = 220;
-  const PL = 44, PR = 16, PT = 14, PB = 22;
+  // PL = left gutter for y-axis labels. Originally 44px which was enough
+  // for 1-2 leading digits (e.g., "79.55" sats/TAC on cheaper markets) but
+  // cropped the leading digits of 3-digit prices (TAC at "239.7159"
+  // showed as "39.7159"). Bumped to 58 to cover up to 4 leading digits
+  // (~$8K BTC equivalent) without ever cropping.
+  const PL = 58, PR = 16, PT = 14, PB = 22;
   const VOL_H = 28;           // volume strip height
   const VOL_GAP = 4;          // gap between price and volume sections
   const plotW = W - PL - PR;
@@ -65660,11 +65668,53 @@ function renderYourOpenOrdersHTML(aid, asset, myPubHex) {
   const bidsPlaceholder = !myBidsKnown
     ? `<tr><td colspan="6" class="muted" style="font-size:10px;text-align:center;padding:8px;"><span class="live-dots">checking your bids</span></td></tr>`
     : '';
+  // Budget meter: shows committed sats vs wallet balance so the buyer can
+  // see at-a-glance how much of their wallet is already promised to
+  // active bids on this asset. Critical companion to the over-commit
+  // guard — answers "if I post one more bid for $X, am I still safe?"
+  // without making the user do mental math against the chain stats.
+  // Only renders when the user has at least one active bid (no signal
+  // value otherwise).
+  let _budgetMeter = '';
+  if (myBids.length > 0) {
+    const _committedSats = myBids.reduce((acc, b) => acc + Number(b?.price_sats || 0), 0);
+    const _walletSats = Number(_walletCardState?.balance || 0);
+    if (_walletSats > 0) {
+      const _pct = Math.min(100, Math.round(_committedSats * 100 / _walletSats));
+      const _overCommit = _committedSats > _walletSats;
+      const _color = _overCommit ? '#b8341d' : (_pct >= 80 ? '#c97a1a' : '#0a8f43');
+      const _remaining = _walletSats - _committedSats;
+      const _remainStr = _overCommit
+        ? `over by ${(_committedSats - _walletSats).toLocaleString()} sats`
+        : `${_remaining.toLocaleString()} sats free`;
+      _budgetMeter = `<div title="Sum of price_sats across your active bids on this asset. Bids aren't escrowed — sats stay in your wallet until a seller takes one — but at-most-one bid can actually settle once committed sats exceed wallet balance." style="margin-top:6px;font-size:10px;color:var(--ink-mid);"><span style="color:${_color};font-weight:600;">${_committedSats.toLocaleString()} sats committed</span> of ${_walletSats.toLocaleString()} wallet (${_pct}%${_overCommit ? ', ⚠ over' : ''}) · ${escapeHtml(_remainStr)}</div>`;
+    }
+  }
+  // Cancel-all chip: surfaces a one-click "drop every active order on
+  // this asset" affordance when the user has 2+ orders. Common case
+  // after the user has experimented with multiple bids (or accidentally
+  // over-committed) and wants a clean restart. Confirms once via
+  // tacitConfirm with the exact counts.
+  let _cancelAllChip = '';
+  if (totalCount >= 2 && (askGrouped.length + intentAsks.length + myBids.length) >= 2) {
+    const _askCount = askGrouped.reduce((acc, l) => acc + (l._isGroup ? l._groupSize : 1), 0) + intentAsks.length;
+    const _bidIds = myBids.map(b => b?.bid_id || '').filter(Boolean).join(',');
+    const _askSids = [];
+    for (const l of askGrouped) {
+      if (l._isGroup && Array.isArray(l._groupChunks)) {
+        for (const c of l._groupChunks) { if (c?.sale_id) _askSids.push(c.sale_id); }
+      } else if (l?.sale_id) { _askSids.push(l.sale_id); }
+    }
+    const _intentIds = intentAsks.map(l => l?.intent_id || '').filter(Boolean).join(',');
+    _cancelAllChip = `<button data-act="your-orders-cancel-all" data-aid="${escapeHtml(aid)}" data-bid-ids="${escapeHtml(_bidIds)}" data-ask-sids="${escapeHtml(_askSids.join(','))}" data-intent-ids="${escapeHtml(_intentIds)}" data-ask-count="${_askCount}" data-bid-count="${myBids.length}" data-ticker="${escapeHtml(ticker)}" title="Cancel every active order on this asset in one confirm. Bids cancel instantly (signed off-chain, no fee); preauth + intent listings same." style="font-size:10px;padding:3px 8px;background:transparent;color:var(--ink-mid);border:0.5px solid var(--ink-faint);cursor:pointer;">cancel all (${totalCount})</button>`;
+  }
   return `
     <div data-your-orders data-aid="${escapeHtml(aid)}" data-pub="${escapeHtml(myPubHex)}" style="margin-bottom:14px;border:1px solid var(--ink);background:var(--bg-warm);padding:10px 12px;">
       <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:6px;">
         <strong style="font-size:11px;text-transform:uppercase;letter-spacing:0.08em;">Your open orders <span class="muted" style="font-weight:normal;font-size:10px;text-transform:none;letter-spacing:0;">· ${totalCount} active${!myBidsKnown ? ' (checking bids…)' : ''}</span></strong>
+        ${_cancelAllChip}
       </div>
+      ${_budgetMeter}
       <table style="width:100%;border-collapse:collapse;font-size:11px;">
         <thead>
           <tr style="color:var(--ink-mid);text-align:left;text-transform:uppercase;letter-spacing:0.06em;font-size:9px;">
@@ -66766,6 +66816,9 @@ function refreshYourOpenOrdersPanel(scope, aid) {
   next.querySelectorAll('button[data-act="your-orders-improve-bid"]').forEach(btn => {
     btn.onclick = async () => _improveBidHandler(btn);
   });
+  next.querySelectorAll('button[data-act="your-orders-cancel-all"]').forEach(btn => {
+    btn.onclick = async () => _cancelAllOrdersHandler(btn);
+  });
 }
 
 // Pre-populate the asset-detail swap tile from an orderbook click. Flips
@@ -66908,6 +66961,82 @@ async function _improveBidHandler(btn) {
   } finally {
     btn.disabled = false; btn.textContent = _origLabel;
   }
+}
+
+// One-confirm bulk cancel: drops every active order (preauth asks +
+// atomic intents + bids) the user has on this asset. The Open Orders
+// header surfaces this when the user has 2+ orders; common after the
+// user has experimented with multiple bids OR wants to clean up before
+// reposting at a new price tier. Sequential cancels (not parallel)
+// since the worker rate-limits per-pubkey and a burst of 10 parallel
+// signed cancels could trip it; sequential keeps us comfortably under
+// the per-pubkey daily cap.
+async function _cancelAllOrdersHandler(btn) {
+  if (!btn || btn.disabled) return;
+  const aid = btn.dataset.aid;
+  const ticker = btn.dataset.ticker || 'this asset';
+  const bidIds = String(btn.dataset.bidIds || '').split(',').filter(Boolean);
+  const askSids = String(btn.dataset.askSids || '').split(',').filter(Boolean);
+  const intentIds = String(btn.dataset.intentIds || '').split(',').filter(Boolean);
+  const askCount = Number(btn.dataset.askCount || '0');
+  const bidCount = Number(btn.dataset.bidCount || '0');
+  const total = bidIds.length + askSids.length + intentIds.length;
+  if (!aid || total === 0) { toast('Cancel all: nothing to cancel.', ''); return; }
+  const _proceed = await tacitConfirm({
+    title: `Cancel ${total} active order${total === 1 ? '' : 's'} on ${ticker}?`,
+    body:
+      `This will cancel:\n` +
+      (bidCount ? `  • ${bidCount} bid${bidCount === 1 ? '' : 's'} (off-chain signed, no fee)\n` : '') +
+      (askCount ? `  • ${askCount} listing${askCount === 1 ? '' : 's'} (off-chain signed, no fee)\n` : '') +
+      `\nYour sats stay in your wallet. Any unfilled portion goes back into general availability. ` +
+      `You can re-post anytime via Advanced or the Swap tile.`,
+    confirmLabel: `Cancel ${total} order${total === 1 ? '' : 's'}`,
+  });
+  if (!_proceed) return;
+  btn.disabled = true; const _origLabel = btn.textContent; btn.textContent = 'cancelling…';
+  let _ok = 0, _failed = 0;
+  // Bids first — fastest path (off-chain signed message + KV delete).
+  for (const bidId of bidIds) {
+    try {
+      await cancelBidIntent({ assetIdHex: aid, bidIdHex: bidId });
+      _ok++;
+    } catch (e) {
+      if (isUnlockCancelled(e)) { _failed = total - _ok; break; }
+      _failed++;
+      console.warn('[cancel-all] bid', bidId.slice(0, 8), 'failed:', e?.message);
+    }
+  }
+  // Preauth listings — same off-chain cancel signature.
+  for (const sid of askSids) {
+    try {
+      await cancelPreauthSale({ assetIdHex: aid, saleIdHex: sid });
+      _ok++;
+    } catch (e) {
+      if (isUnlockCancelled(e)) { _failed = total - _ok; break; }
+      _failed++;
+      console.warn('[cancel-all] ask', sid.slice(0, 8), 'failed:', e?.message);
+    }
+  }
+  // Atomic intents — same path.
+  for (const iid of intentIds) {
+    try {
+      await cancelAxferIntent({ assetIdHex: aid, intentIdHex: iid });
+      _ok++;
+    } catch (e) {
+      if (isUnlockCancelled(e)) { _failed = total - _ok; break; }
+      _failed++;
+      console.warn('[cancel-all] intent', iid.slice(0, 8), 'failed:', e?.message);
+    }
+  }
+  btn.disabled = false; btn.textContent = _origLabel;
+  if (_failed === 0) {
+    toast(`✓ Cancelled all ${_ok} order${_ok === 1 ? '' : 's'} on ${ticker}.`, 'success', 6000);
+  } else {
+    toast(`Cancel-all: ${_ok}/${total} succeeded, ${_failed} failed. Refresh + retry the rest manually.`, _ok > 0 ? 'warn' : 'error', 9000);
+  }
+  invalidateMarketCache();
+  _invalidateBidsCache(aid);
+  setTimeout(() => { try { refreshYourOpenOrdersPanel(document, aid); } catch {} }, 200);
 }
 
 async function _bidTakeInsteadHandler(btn) {
