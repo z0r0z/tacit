@@ -7500,10 +7500,10 @@ async function handleChainProxy(req, env, network, cors) {
 async function handleBalance(env, cors) {
   let f;
   try { f = faucetKeys(env); }
-  catch (e) { return jsonResponse({ error: e.message }, 500, cors); }
+  catch { return jsonResponse({ error: 'faucet unavailable' }, 500, cors); }
   let utxos;
   try { utxos = await apiJson(env, `/address/${f.address}/utxo`); }
-  catch (e) { return jsonResponse({ error: e.message }, 502, cors); }
+  catch { return jsonResponse({ error: 'upstream unavailable' }, 502, cors); }
   const balance = utxos.reduce((s, u) => s + u.value, 0);
   return jsonResponse({ address: f.address, balance, utxos: utxos.length }, 200, cors);
 }
@@ -7516,7 +7516,7 @@ async function handleDrip(req, env, cors) {
 
   let recipientScript;
   try { recipientScript = addressToScript(recipient, HRP_BY_NETWORK.signet); }
-  catch (e) { return jsonResponse({ error: `invalid address: ${e.message}` }, 400, cors); }
+  catch { return jsonResponse({ error: 'invalid signet address' }, 400, cors); }
 
   const ip = req.headers.get('CF-Connecting-IP') || 'anon';
   const day = new Date().toISOString().slice(0, 10);
@@ -7545,11 +7545,11 @@ async function handleDrip(req, env, cors) {
 
   let f;
   try { f = faucetKeys(env); }
-  catch (e) { await rollbackCounters(); return jsonResponse({ error: e.message }, 500, cors); }
+  catch { await rollbackCounters(); return jsonResponse({ error: 'faucet unavailable' }, 500, cors); }
 
   let utxos;
   try { utxos = await apiJson(env, `/address/${f.address}/utxo`); }
-  catch (e) { await rollbackCounters(); return jsonResponse({ error: e.message }, 502, cors); }
+  catch { await rollbackCounters(); return jsonResponse({ error: 'upstream unavailable' }, 502, cors); }
   if (!utxos.length) {
     await rollbackCounters();
     return jsonResponse({ error: 'faucet has no UTXOs — send signet sats to ' + f.address }, 503, cors);

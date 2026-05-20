@@ -653,7 +653,12 @@ async function broadcastOnce(batchesRemaining) {
         f.pending_error_at = Math.floor(Date.now() / 1000);
       }
     }
-    try { saveState(); } catch {}
+    try { saveState(); }
+    catch (saveErr) {
+      log('warn', 'saveState failed inside broadcast-error path — pending annotations not persisted', {
+        err: String(saveErr?.message || saveErr).slice(0, 200),
+      });
+    }
     log('error', 'broadcast failed (pending entries kept for operator review)', {
       err: errMsg, leaves: verified.map(v => v.leafIndex),
     });
