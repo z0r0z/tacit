@@ -975,13 +975,14 @@ End-to-end signet rehearsal:
    the state-guard line; the second reporter's declared bounty
    vout receives zero indexer-attributed TAC (becomes dust).
 8. **Burn accounting.** Compute circulating TAC before and
-   after the test run as `Σ attr(TAC) across all unspent
-   outpoints` (excluding inert dust outpoints like slashed
-   bonds). Verify `Δcirculating_TAC == -Σ(burn_tac per slash)`.
-   Verify the reporter bounty UTXOs sum to `Σ(bounty_tac per
-   slash)` and each is indexer-attributed but unbacked by any
-   per-tx TAC input. Verify the bonded outpoints have
-   `attr(TAC) == 0` post-slash.
+   after the test run as `Σ commitmentForUtxo(o).tac across
+   all unspent outpoints` (the helper returns 0 for liens in
+   `slashed` state, so slashed bonds naturally drop out).
+   Verify `Δcirculating_TAC == -Σ(burn_tac per slash)`. Verify
+   the reporter bounty UTXOs sum to `Σ(bounty_tac per slash)`
+   and each is indexer-attributed but unbacked by any per-tx
+   TAC input. Verify slashed `bond_state` entries have
+   `bond_amount_tac == 0` and `state == "slashed"`.
 9. **Cross-worker mesh detection → slash.** Mesh phase 0 surfaces
    an inconsistency between worker A and worker B. The victim
    trader assembles slash evidence (the two A-signed envelopes
@@ -1010,14 +1011,22 @@ Adversarial:
 17. Slash referencing attestations with different `scope_id`
     (worker honestly attested to two different scopes at the
     same height). Rejected at scope-id match check.
-18. Bond open with a `vout[1]` whose internal-key does NOT
-    match the canonical no-spending-key derivation (e.g., plain
-    worker single-sig P2TR, or any output where some party
-    holds a usable key). Indexer rejects at the canonical-
-    derivation check; no `bond_state` entry created; the
-    worker's TAC stays at vout[1] as ordinary spendable TAC,
-    not bonded — this is the critical adversarial test (a
-    miscompiled wrapper here would let workers rug bonds).
+18. **Worker spends bond_outpoint without authorization (rug
+    attempt).** Worker opens a bond, attests honestly for a
+    while, then spends `bond_outpoint` to themselves via an
+    ordinary `T_AXFER` without going through
+    `T_WORKER_BOND_CLOSE` step 2. The Bitcoin spend confirms;
+    the indexer's lien refuses to attribute TAC to the outputs
+    of the unauthorized spend; the worker's resulting UTXO has
+    zero TAC value. `bond_state[bond].state` stays "active"
+    with the original `bond_amount_tac`. A subsequent slash
+    (if equivocation evidence exists) still successfully
+    transfers `bounty_tac` to the reporter and burns the rest,
+    even though no real TAC UTXO underlies the bond_state
+    record anymore. This is the critical adversarial test —
+    the lien must hold against unauthorized spends; a
+    miscompiled `commitmentForUtxo` here would let workers rug
+    bonds.
 19. Bond open that exceeds `MAX_BONDED_FRAC_OF_TAC_FDV`.
     Indexer rejects; worker's bond UTXO is created on Bitcoin
     but treated as unbonded TAC (indexer state has no
@@ -1140,10 +1149,10 @@ Adversarial:
 
 - [ ] Round-1 peer review of wire format + validator algorithm
 - [ ] Round-2 peer review (especially the cooperative-close /
-      slash determinism semantics, the canonical no-spending-key
-      Taproot derivation matching cBTC.tac §5.35.2, and the
-      conservation-exception accounting for both close-release
-      and slash-bounty TAC reattribution)
+      slash determinism semantics, the integration with cBTC.tac
+      §5.47.3 `commitmentForUtxo` lien enforcement, and the
+      conservation-exception accounting for slash-bounty
+      TAC reattribution)
 - [ ] Reference dapp implementation
 - [ ] Reference worker / indexer implementation
 - [ ] Signet e2e validation

@@ -184,9 +184,13 @@ V1 path; phase 0 is the meaningful deliverable.)
 the L2/L3 layers produce into an automated economic consequence:
 
 - A worker that wants traders to honor its attestations as
-  soft-confirms locks a TAC bond in a no-spending-key Taproot
-  UTXO (the same construction cBTC.tac uses for its collateral
-  escrow — §5.35.2; no federation, no multisig).
+  soft-confirms locks a TAC bond using the **cBTC.tac §5.47
+  lien pattern**: standard worker-controlled P2TR carrying a
+  TAC asset commit, with the indexer recording a lien in
+  `bond_state` that `commitmentForUtxo` refuses to honor
+  unauthorized spends of. No federation, no multisig, no
+  covenant; the lien is enforced by validator coordination,
+  not by Bitcoin script.
 - Cooperative bond release requires a notice period
   (`BOND_NOTICE_BLOCKS`) with no slash evidence in that window.
 - **Anyone** can submit `T_WORKER_SLASH` referencing two
@@ -404,7 +408,7 @@ amendment set.
 | `SPEC-TACIT-MESH-AMENDMENT.md` | 📝 Draft (round-1, phase 0 only) | L3 | passive multi-worker cross-validation |
 | `SPEC-WORKER-BOND-AMENDMENT.md` | 📝 Draft (round-1) | L4 | TAC bond + equivocation slash |
 | `SPEC-TRADE-BATCH-AMENDMENT.md` | 📝 Draft (round-1, ref impl deferred) | L1 | atomic cross-surface settlement |
-| `SPEC-CBTC-TAC-AMENDMENT.md` | (in-flight) | (adjacent) | precedent for TAC-bond + no-spending-key escrow + indexer-state slash |
+| `SPEC-CBTC-TAC-AMENDMENT.md` | (in-flight) | (adjacent) | precedent for TAC-bond, §5.47 lien-via-`commitmentForUtxo` mechanism, indexer-state slash (`SLASH_DETECTED` §5.39.2), and TAC-creation-without-input conservation exception (`T_SHARE_SLASH_CLAIM` §5.39.4) |
 | `SPEC-WRAPPER-AMENDMENT.md` | (in-flight) | (adjacent) | wrapper metadata convention |
 
 The "Status" column reflects each amendment's individual
@@ -442,8 +446,10 @@ coherent, read in this order:
    alone can't catch.
 5. **`SPEC-WORKER-BOND-AMENDMENT.md`** — how detection
    becomes consequence.
-6. **`SPEC-CBTC-TAC-AMENDMENT.md` §5.35.2 + §5.39** — the
-   precedent the bond + slash inherits.
+6. **`SPEC-CBTC-TAC-AMENDMENT.md` §5.47 + §5.39** — the
+   `commitmentForUtxo` lien precedent (§5.47.3) plus the
+   indexer-state slashing + conservation-exception precedents
+   (`SLASH_DETECTED` §5.39.2, `T_SHARE_SLASH_CLAIM` §5.39.4).
 7. **`SPEC-TRADE-BATCH-AMENDMENT.md`** — how all of the above
    composes with cross-surface atomic settlement.
 8. **`spec/design/CHANNEL-UX-DESIGN.md`** — what the user sees.
