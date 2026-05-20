@@ -59597,6 +59597,21 @@ function applyMarketFilters() {
     <div class="mkt-orderbook" data-orderbook-wrap data-orderbook-active="asks">
       ${_mobileTabsHtml}
       <div data-orderbook-side="asks">
+        ${(() => {
+          // Atomic-offers tile section — surfaces fresh whole-amount
+          // atomic intents as one-click claim cards. Returns '' when
+          // no qualifying offers exist, so the section vanishes
+          // cleanly rather than showing an empty-state filler.
+          try {
+            const _aid = _marketView?.assetId;
+            const _asset = _marketCache?.listings?.find(l => l._asset?.asset_id === _aid)?._asset
+              || _marketCache?.assets?.find(a => a.asset_id === _aid)
+              || null;
+            const _myPub = wallet?.pub ? bytesToHex(wallet.pub) : '';
+            if (_aid && _asset) return _renderAtomicOffersTilesHtml(_aid, _asset, _myPub);
+          } catch {}
+          return '';
+        })()}
         ${asksHeaderHtml}
         ${noAtomicHint}
         ${simpleEmptyHint}
@@ -65417,6 +65432,93 @@ function _matchableAsksForBid(b, aid, decimals, myPubHex) {
 //
 // Empty state: returns '' so the section vanishes entirely when there
 // are no orders — keeps the orderbook clean for buyers who never list.
+// Curated "Atomic offers — claim & take" tile section. Surfaces ONLY the
+// whole-amount atomic intents (kind='intent', no min_take_amount) on
+// this asset, filtered for freshness (≤12h old, same threshold as the
+// asks-ladder stale-intent hider). Atomic intents need a maker-online
+// claim → fulfil round-trip; the buyer's tap-cost is bounded by the
+// 30s soft-deadline shipped earlier, but matching one still beats a
+// preauth-only swap on price when the maker is responsive.
+//
+// Distinguishes from the asks ladder by:
+//   1. Tile layout instead of compact rows — each offer fits in one
+//      thumb-tappable card with the headline price front-and-center
+//   2. Whole-amount only — variable-fill intents stay in the ladder
+//      where partial fills via Swap make more sense
+//   3. One-click Claim button per tile (uses the existing
+//      marketClaimIntentHandler / data-act="quick-buy-intent" path)
+//
+// Returns '' when there are zero qualifying offers so the section
+// vanishes entirely — no "empty state" filler clutter when the
+// orderbook simply has no fresh atomic offers.
+function _renderAtomicOffersTilesHtml(aid, asset, myPubHex) {
+  if (!aid || !asset) return '';
+  const ticker = asset.ticker || '?';
+  const decimals = Number.isInteger(asset.decimals) && asset.decimals >= 0 && asset.decimals <= 8 ? asset.decimals : 0;
+  const nowSec = Math.floor(Date.now() / 1000);
+  const STALE_AGE_SECS = 12 * 3600;
+  const offers = [];
+  for (const l of (_marketCache?.listings || [])) {
+    if (l?._asset?.asset_id !== aid) continue;
+    if (l.kind !== 'intent') continue;
+    if (l.expired || Number(l.expiry || 0) <= nowSec) continue;
+    // Whole-amount only: variable-fill intents (min_take_amount set)
+    // belong in the asks ladder where Swap can chunk through them.
+    if (l.min_take_amount) continue;
+    // Skip stale (matches the asks-ladder filter so the tile section
+    // doesn't promise routes the ladder hides).
+    const ageSec = nowSec - Number(l.created_at || nowSec);
+    if (ageSec > STALE_AGE_SECS) continue;
+    // Skip own listings (you'd just be self-claiming).
+    if (myPubHex && l.maker_pubkey === myPubHex) continue;
+    // Skip those with an active claim by someone else (intent locked).
+    if (l.claim && Number(l.claim.expires_at || 0) > nowSec) continue;
+    const amt = BigInt(l.amount || '0');
+    const ps = Number(l.price_sats || 0);
+    if (amt <= 0n || ps <= 0) continue;
+    const u = unitPriceSats(ps, amt, decimals);
+    if (!Number.isFinite(u) || u <= 0) continue;
+    offers.push({ l, amt, ps, u, ageSec });
+  }
+  if (offers.length === 0) return '';
+  // Sort cheapest first — a buyer scanning the tiles wants the best
+  // deal at the top of the visual queue.
+  offers.sort((a, b) => a.u - b.u);
+  const _visible = offers.slice(0, 8);  // hard-cap at 8 tiles per render to avoid wall-of-cards on hot markets
+  const tilesHtml = _visible.map(o => {
+    const amtStr = fmtAssetAmount(o.amt, decimals);
+    const unitStr = fmtUnitPriceSats(o.u);
+    const ageStr = o.ageSec < 60 ? `${o.ageSec}s` : o.ageSec < 3600 ? `${Math.floor(o.ageSec/60)}m` : `${Math.floor(o.ageSec/3600)}h`;
+    const usdTotal = fmtMarketUsdFromSats(o.ps, '');
+    const usdTail = usdTotal ? `<small class="muted" style="font-size:9px;">· ${escapeHtml(usdTotal)}</small>` : '';
+    return `<div class="atomic-tile" style="background:var(--bg, #faf9f5);border:1px solid var(--ink-faint);padding:10px 12px;display:flex;flex-direction:column;gap:6px;min-width:0;">
+      <div style="display:flex;align-items:baseline;justify-content:space-between;gap:8px;font-size:10px;color:var(--ink-mid);text-transform:uppercase;letter-spacing:0.06em;">
+        <span>${escapeHtml(unitStr)} sats / ${escapeHtml(ticker)}</span>
+        <span title="Posted ${escapeHtml(ageStr)} ago. Fresher = maker more likely to be online + responsive to your claim within the 30s soft window.">${escapeHtml(ageStr)} ago</span>
+      </div>
+      <div style="font-size:14px;font-weight:600;font-family:var(--mono);overflow-wrap:anywhere;">${escapeHtml(amtStr)} ${escapeHtml(ticker)}</div>
+      <div style="font-size:11px;color:var(--ink-mid);display:flex;align-items:baseline;gap:6px;">
+        <strong style="color:var(--ink);">${o.ps.toLocaleString('en-US')}</strong> sats ${usdTail}
+      </div>
+      <button data-act="quick-buy-intent" data-aid="${escapeHtml(aid)}" data-iid="${escapeHtml(o.l.intent_id || '')}" data-price="${o.ps}" data-ticker="${escapeHtml(ticker)}" data-amount="${escapeHtml(String(o.amt))}" data-dec="${decimals}" data-expiry="${Number(o.l.expiry || 0)}" type="button" title="Claim this offer: dapp signs a claim, worker reserves the intent for ~30s while the maker fulfils. If the maker is offline the claim auto-cancels and your sats stay put — no Bitcoin tx broadcast unless settlement is signed by both sides." style="margin-top:2px;padding:8px 12px;background:var(--ink);color:var(--bg);border:0;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;cursor:pointer;width:100%;">⚡ Claim & take</button>
+    </div>`;
+  }).join('');
+  const _hiddenCount = offers.length - _visible.length;
+  const _hiddenHint = _hiddenCount > 0
+    ? `<div style="text-align:center;font-size:10px;color:var(--ink-mid);margin-top:8px;">+${_hiddenCount} more atomic offer${_hiddenCount === 1 ? '' : 's'} available — refine via the asks ladder filter</div>`
+    : '';
+  return `<details data-atomic-offers-section open style="margin:0 0 12px;border:1px solid var(--ink-faint);background:var(--bg-warm);padding:10px 12px;">
+    <summary style="cursor:pointer;display:flex;align-items:center;justify-content:space-between;gap:8px;list-style:none;">
+      <strong style="font-size:11px;text-transform:uppercase;letter-spacing:0.08em;">⚡ Atomic offers <span class="muted" style="font-weight:normal;text-transform:none;letter-spacing:0;font-size:10px;">· ${offers.length} live · whole-lot claim &amp; take</span></strong>
+      <span class="muted" style="font-size:9px;">▾</span>
+    </summary>
+    <div class="atomic-offers-grid" style="margin-top:10px;display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:8px;">
+      ${tilesHtml}
+    </div>
+    ${_hiddenHint}
+  </details>`;
+}
+
 function renderYourOpenOrdersHTML(aid, asset, myPubHex) {
   if (!myPubHex || !aid) return '';
   const ticker = asset?.ticker || '?';
