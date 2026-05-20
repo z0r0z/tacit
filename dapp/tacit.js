@@ -60583,6 +60583,9 @@ function applyMarketFilters() {
       }
     };
   });
+  list.querySelectorAll('button[data-act="your-orders-bid-take-instead"]').forEach(btn => {
+    btn.onclick = async () => _bidTakeInsteadHandler(btn);
+  });
   list.querySelectorAll('button[data-act="quick-buy-intent"]').forEach(btn => {
     btn.onclick = async () => marketClaimIntentHandler(btn);
   });
@@ -64982,6 +64985,53 @@ function renderMarketBidsLadderHTML(asset) {
     </div>`;
 }
 
+// Matchable-asks scan for one of the user's resting bids. Returns the
+// list of asks the user could TAKE right now using the same sats they've
+// committed to the bid — i.e., asks priced at-or-below the bid's unit
+// price AND whose whole-UTXO total fits inside the bid's sats budget.
+// Surfaces the "your bid is stranded but there's something cheaper you
+// can fill yourself" situation on dense markets like TAC where preauths
+// are whole-UTXO lots that can't partial-fill the bid's tiny budget but
+// CAN be taken outright by canceling + re-routing. Sorted cheapest first
+// so callers can show "cheapest @ X" in the badge and pass the cheapest
+// price as the cap when priming the Swap tile.
+function _matchableAsksForBid(b, aid, decimals, myPubHex) {
+  if (!b || !aid || !myPubHex) return [];
+  const amt = BigInt(b.amount || '0');
+  const budget = Number(b.price_sats || 0);
+  if (amt <= 0n || budget <= 0) return [];
+  const bidUnit = unitPriceSats(budget, amt, decimals);
+  if (!Number.isFinite(bidUnit) || bidUnit <= 0) return [];
+  const nowSec = Math.floor(Date.now() / 1000);
+  const matchable = [];
+  for (const l of (_marketCache?.listings || [])) {
+    if (l._asset?.asset_id !== aid) continue;
+    if (l.expired || Number(l.expiry || 0) <= nowSec) continue;
+    if (l._takenPending) continue;
+    let askAmt, askPs;
+    if (l.kind === 'preauth') {
+      if (l.seller_pubkey === myPubHex) continue;
+      askAmt = BigInt(l.asset_opening?.amount || 0);
+      askPs = Number(l.min_price_sats || 0);
+    } else if (l.kind === 'intent' && !l.claim && !l.fulfilment_pending && !l.min_take_amount) {
+      // Whole-UTXO atomic intents only — variable-amount intents are
+      // partial-fillable so they don't have the "lot too big" problem
+      // this affordance exists to solve.
+      if (l.maker_pubkey === myPubHex) continue;
+      askAmt = BigInt(l.amount || 0);
+      askPs = Number(l.price_sats || 0);
+    } else continue;
+    if (askAmt <= 0n || askPs <= 0) continue;
+    const askUnit = unitPriceSats(askPs, askAmt, decimals);
+    if (!Number.isFinite(askUnit) || askUnit <= 0) continue;
+    if (askUnit > bidUnit) continue;        // ask priced above bid — no match
+    if (askPs > budget) continue;           // ask total > bid budget — can't afford
+    matchable.push({ l, askAmt, askPs, askUnit });
+  }
+  matchable.sort((a, b) => a.askUnit - b.askUnit);
+  return matchable;
+}
+
 // "Your open orders" — consolidated panel showing every active order the
 // active wallet has for this asset (asks + bids), with one-click cancel.
 // Mirrors the CEX-style "Open Orders" tab that lives in the same view as
@@ -65143,13 +65193,33 @@ function renderYourOpenOrdersHTML(aid, asset, myPubHex) {
     const _rankTail = (_rank != null && _bidLadderTotal > 1)
       ? ` <span class="muted" style="font-size:9px;padding:1px 5px;border:1px solid var(--ink-faint);" title="Your bid's position in the ladder, sorted highest unit price first. #1 = next fill any seller's Swap-sell would hit. Higher ranks fill slower; cancel + re-bid higher to climb.">#${_rank} of ${_bidLadderTotal}</span>`
       : '';
+    // Stranded-bid escape hatch: scan the in-memory listings cache for
+    // asks priced at-or-below this bid's unit price AND whose total sats
+    // fits inside the bid's budget. On dense whole-UTXO markets (like
+    // TAC) the user's bid can sit unfilled for hours while small lots
+    // they could afford sit on the asks ladder — sellers won't drop down
+    // to take the bid because partial-fills don't exist for preauth.
+    // The badge + Take button gives the user the agency to cancel + re-
+    // route the same sats into a direct take at a BETTER unit price.
+    const _matchable = _matchableAsksForBid(b, aid, decimals, myPubHex);
+    const _matchBadge = _matchable.length > 0
+      ? (() => {
+          const _cheapest = _matchable[0];
+          const _cheapestPriceStr = fmtUnitPriceSats(_cheapest.askUnit);
+          const _tip = `${_matchable.length} ask${_matchable.length === 1 ? '' : 's'} priced at-or-below your bid AND small enough to take with your ${sats.toLocaleString()}-sat budget. Cheapest: ${_cheapestPriceStr} sats/${ticker} for ${_cheapest.askPs.toLocaleString()} sats. Click Take → to cancel this bid and re-route the same sats into a direct buy at a better price.`;
+          return ` <span title="${escapeHtml(_tip)}" style="background:#fff8eb;border:0.5px solid #c97a1a;color:#7a4d00;font-size:9px;padding:1px 5px;letter-spacing:0.04em;cursor:help;">★ matchable @ ${escapeHtml(_cheapestPriceStr)}</span>`;
+        })()
+      : '';
+    const _takeBtn = _matchable.length > 0
+      ? `<button data-act="your-orders-bid-take-instead" data-aid="${escapeHtml(aid)}" data-bid-id="${escapeHtml(b.bid_id || '')}" data-cap-unit="${_matchable[0].askUnit}" data-bid-sats="${sats}" data-bid-amt-base="${amt.toString()}" title="Cancel this bid and use its ${sats.toLocaleString()} sats to take ${_matchable.length} affordable ask${_matchable.length === 1 ? '' : 's'} priced at-or-below your bid. Primes the Swap tile at ≤${escapeHtml(fmtUnitPriceSats(_matchable[0].askUnit))} sats/${ticker} so the planner walks the cheap asks first." style="font-size:10px;padding:3px 8px;background:#fff8eb;color:#7a4d00;border:1px solid #c97a1a;cursor:pointer;margin-right:4px;">Take →</button>`
+      : '';
     return `<tr>
       <td><span class="market-bid-state market-bid-state--mine" style="background:#e8f5ec;border:1px solid #0a8f43;color:#0a8f43;font-size:9px;padding:1px 6px;font-weight:600;text-transform:uppercase;">Buy</span></td>
-      <td><strong>${escapeHtml(fmtAssetAmount(amt, decimals))}</strong> ${escapeHtml(ticker)}${_rankTail}</td>
+      <td><strong>${escapeHtml(fmtAssetAmount(amt, decimals))}</strong> ${escapeHtml(ticker)}${_rankTail}${_matchBadge}</td>
       <td>${unitStr}</td>
       <td><strong>${sats.toLocaleString('en-US')}</strong> sats${usdTail}</td>
       <td class="muted" style="font-size:10px;">${escapeHtml(ageStr)}</td>
-      <td><button data-act="your-orders-cancel-bid" data-aid="${escapeHtml(aid)}" data-bid-id="${escapeHtml(b.bid_id || '')}" title="Cancel this bid — removes from the marketplace" style="font-size:10px;padding:3px 8px;background:transparent;color:var(--ink-mid);border:1px solid var(--ink-faint);">Cancel</button></td>
+      <td>${_takeBtn}<button data-act="your-orders-cancel-bid" data-aid="${escapeHtml(aid)}" data-bid-id="${escapeHtml(b.bid_id || '')}" title="Cancel this bid — removes from the marketplace" style="font-size:10px;padding:3px 8px;background:transparent;color:var(--ink-mid);border:1px solid var(--ink-faint);">Cancel</button></td>
     </tr>`;
   }).join('');
 
@@ -66257,6 +66327,9 @@ function refreshYourOpenOrdersPanel(scope, aid) {
       }
     };
   });
+  next.querySelectorAll('button[data-act="your-orders-bid-take-instead"]').forEach(btn => {
+    btn.onclick = async () => _bidTakeInsteadHandler(btn);
+  });
 }
 
 // Pre-populate the asset-detail swap tile from an orderbook click. Flips
@@ -66266,6 +66339,90 @@ function refreshYourOpenOrdersPanel(scope, aid) {
 // view, and focuses the input. Bails silently if the swap tile is on a
 // different asset (only paints when the click was inside the active
 // asset's orderbook anyway, so the mismatch path is defensive).
+// "Take instead" shortcut for the Open Orders bid row: cancel the bid AND
+// prime the Swap tile in BUY mode at the bid's exact price/budget so the
+// freed sats route through planBuy against the matchable asks the
+// scanner flagged. Two-step (cancel first, then user reviews + submits
+// the Swap tile) so wallet-impacting writes stay explicit. If the user
+// dismisses the Swap submit, they end up with the budget back in their
+// wallet — no half-done state.
+async function _bidTakeInsteadHandler(btn) {
+  if (!btn || btn.disabled) return;
+  const aid = btn.dataset.aid;
+  const bidId = btn.dataset.bidId;
+  const capUnit = parseFloat(btn.dataset.capUnit || '');
+  const bidSats = Number(btn.dataset.bidSats || '0');
+  const bidAmtBase = btn.dataset.bidAmtBase || '0';
+  if (!aid || !bidId || !Number.isFinite(capUnit) || capUnit <= 0 || !bidSats) {
+    toast('Take-instead: missing inputs (refresh the page and retry).', 'error');
+    return;
+  }
+  const asset = (_marketCache?.assets || []).find(a => a.asset_id === aid)
+    || (_marketCache?.listings || []).find(l => l._asset?.asset_id === aid)?._asset
+    || null;
+  const decimals = Number.isInteger(asset?.decimals) ? asset.decimals : 0;
+  const ticker = asset?.ticker || '?';
+  const myPubHex = wallet?.pub ? bytesToHex(wallet.pub) : null;
+  // Re-scan matchable asks at click time (cache might have updated since
+  // the row was rendered) so the confirm dialog shows what's actually
+  // takeable RIGHT NOW. Stale "this looked matchable 30s ago" is the
+  // failure mode this re-check defends against.
+  const freshMatchable = myPubHex
+    ? _matchableAsksForBid({ amount: bidAmtBase, price_sats: bidSats }, aid, decimals, myPubHex)
+    : [];
+  if (freshMatchable.length === 0) {
+    toast('No affordable asks at or below your bid price right now — refresh + retry, or cancel manually.', '');
+    return;
+  }
+  const cheapestUnit = freshMatchable[0].askUnit;
+  const cheapestPs = freshMatchable[0].askPs;
+  const _cheapestPriceStr = fmtUnitPriceSats(cheapestUnit);
+  const ok = confirm(
+    `Cancel bid + take ${freshMatchable.length} affordable ask${freshMatchable.length === 1 ? '' : 's'}?\n\n` +
+    `• Bid: ${bidSats.toLocaleString()} sats budget at your set unit price.\n` +
+    `• Cheapest takeable: ${_cheapestPriceStr} sats/${ticker} for ${cheapestPs.toLocaleString()} sats.\n\n` +
+    `Step 1: this cancels your bid (one signed message, no on-chain fee).\n` +
+    `Step 2: Swap tile primes with the same budget — review the route, then submit to broadcast the buy.\n\n` +
+    `Proceed?`,
+  );
+  if (!ok) return;
+  btn.disabled = true; const orig = btn.textContent; btn.textContent = 'cancelling…';
+  try {
+    await cancelBidIntent(aid, bidId);
+    toast(`Bid cancelled. Swap tile primed — submit to take.`, 'success', 8000);
+    _invalidateBidsCache(aid);
+  } catch (e) {
+    btn.disabled = false; btn.textContent = orig;
+    if (isUnlockCancelled(e)) {
+      toast('Unlock cancelled — bid is still open, nothing changed.', '');
+      return;
+    }
+    toast('Cancel failed: ' + (e?.message || String(e)), 'error');
+    return;
+  }
+  // Prime the Swap tile in BUY mode. Pass the bid's asset target as
+  // amountBaseStr so the tile populates the "to" input (the receive
+  // target); targetUnit = bid's effective unit price drives slippage
+  // auto-bump so the planner walks all asks ≤ that cap. _updateLimit-
+  // Mode will fire on the dispatched input event and surface the route
+  // preview with "X fills now · cheaper ask captured" hints.
+  try {
+    const bidUnit = unitPriceSats(bidSats, BigInt(bidAmtBase), decimals);
+    primeSwapTileFromOrderbook({
+      aid,
+      direction: 'buy',
+      amountBaseStr: bidAmtBase,
+      decimals,
+      ticker,
+      targetUnit: Number.isFinite(bidUnit) ? bidUnit : capUnit,
+    });
+  } catch (e) {
+    console.warn('[take-instead] swap prime failed', e?.message);
+  }
+  // Re-render the Open Orders panel so the (now-cancelled) row drops out.
+  setTimeout(() => { try { renderMarket(); } catch {} }, 500);
+}
+
 function primeSwapTileFromOrderbook({ aid, direction, amountBaseStr, decimals, ticker, targetUnit = null }) {
   const widget = document.querySelector('[data-swap-tile]');
   // No-Swap-tile feedback. The tile is suppressed when the user holds
