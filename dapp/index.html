@@ -79,7 +79,7 @@
      script-src 'self' covers all three.
      `?cb=` is auto-set by build/build.mjs to a sha256 prefix of tacit.js
      so iOS Safari's stale-modulepreload cache flushes on every change. -->
-<link rel="modulepreload" href="./tacit.js?cb=d2f89d7f">
+<link rel="modulepreload" href="./tacit.js?cb=a0a22969">
 <link rel="modulepreload" href="./vendor/tacit-deps.min.js">
 <link rel="modulepreload" href="./prf-wallet.js">
 <style>
@@ -920,6 +920,12 @@ tr[data-recent-activity] .market-token-sub::after {
    low-signal proxy that the asset detail page already surfaces with
    richer context (holder distribution, top-N). Saves a column slot. */
 .market-token-table .col-wallets {
+  display: none;
+}
+/* 24h volume column trimmed from the browse table. Asset detail pages
+   surface the same figure in context with the trade history; the browse
+   column was redundant once a row click is one tap away. */
+.market-token-table .col-vol24 {
   display: none;
 }
 .market-token-table tr:last-child td { border-bottom: 0; }
@@ -2515,13 +2521,11 @@ tr[data-recent-activity] .market-token-sub::after {
   .market-token-table .col-voltotal { display: none; }
   .market-token-table .col-token { margin-bottom: 6px; }
   .market-token-table .col-price { margin-bottom: 2px; font-size: 13px; font-weight: 600; }
-  .market-token-table .col-vol24,
   .market-token-table .col-activity {
     display: inline-block;
     font-size: 11px;
     color: var(--ink-mid);
   }
-  .market-token-table .col-vol24::after { content: " · "; opacity: 0.5; }
   /* Page selector pill — desktop's 110px min-width swallowed half the
      pagination row width on phones. Tighter min + smaller font. */
   .market-pagination select { min-width: 64px; font-size: 11px; padding: 4px 6px; }
@@ -7656,8 +7660,8 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
           </div>
           <div class="market-chip-wrap">
             <select id="market-sort" class="market-chip" aria-label="Sort order">
-              <option value="volume-desc" selected>Most Volume</option>
-              <option value="marketcap-desc">Top Market Cap</option>
+              <option value="marketcap-desc" selected>Top Market Cap</option>
+              <option value="volume-desc">Most Volume</option>
               <option value="oldest-etch">Oldest Etch</option>
               <option value="unit-asc" title="Cheapest sats per whole token, normalized across listing sizes">Cheapest First</option>
               <option value="recency">Newest Listing</option>
@@ -9198,7 +9202,7 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
   </div>
 </div>
 
-<script type="module" src="./tacit.js?cb=d2f89d7f"></script>
+<script type="module" src="./tacit.js?cb=a0a22969"></script>
 
 <!-- Service worker registration moved into tacit.js (the dapp's CSP forbids
      inline scripts; only 'self' module scripts are allowed). See sw.js for

@@ -58224,7 +58224,7 @@ function applyMarketFilters() {
   const _sortSel = $('#market-sort');
   const sort = marketViewScope() === 'asset'
     ? 'unit-asc'
-    : (_sortSel?.value || 'volume-desc');
+    : (_sortSel?.value || 'marketcap-desc');
   let rows = _marketCache.listings.slice();
   if (filterText) {
     rows = rows.filter(l => {
@@ -61929,7 +61929,7 @@ function renderMarketBrowse(rows) {
     }
     return;
   }
-  const sort = $('#market-sort')?.value || 'volume-desc';
+  const sort = $('#market-sort')?.value || 'marketcap-desc';
   const tiles = sortMarketGroups(marketGroupRows(rows), sort);
 
   // Trust-mode breakdown is already in the section status line ("X listings
@@ -62089,7 +62089,7 @@ function renderMarketBrowse(rows) {
 function renderMarketBrowseTable(rows) {
   const list = $('#market-list');
   const status = $('#market-status');
-  const sort = $('#market-sort')?.value || 'volume-desc';
+  const sort = $('#market-sort')?.value || 'marketcap-desc';
   const filterText = ($('#market-filter-asset')?.value || '').trim().toLowerCase();
   const filterKind = $('#market-filter-kind')?.value || 'all';
   const minRaw = ($('#market-filter-min-price')?.value || '').trim();
@@ -62148,9 +62148,12 @@ function renderMarketBrowseTable(rows) {
       seg(`${groups.length} tokens`),
       seg(`${rows.length} live listing${rows.length === 1 ? '' : 's'}`),
     ];
-    if (_agg24hUsd) {
-      _segments.push(seg(`<strong title="Sum of every visible asset's strict rolling 24h trade volume. Ecosystem-wide trading activity across all markets in the last 24 hours.">${escapeHtml(_agg24hUsd)} 24h vol</strong>`));
-    }
+    // Aggregate 24h-volume chip omitted from the status strip — the figure
+    // duplicates per-row context that's already discoverable on each asset
+    // detail page, and pulling a single composite headline from a thin
+    // ecosystem isn't a useful trader signal here. Leaving `_agg24hUsd`
+    // computed (other surfaces still consume it) just not rendered in the
+    // strip.
     _segments.push(
       seg(`${instant} instant`),
       seg(`${atomic} atomic`),
@@ -65182,19 +65185,17 @@ function _matchableAsksForBid(b, aid, decimals, myPubHex) {
     if (l._asset?.asset_id !== aid) continue;
     if (l.expired || Number(l.expiry || 0) <= nowSec) continue;
     if (l._takenPending) continue;
-    let askAmt, askPs;
-    if (l.kind === 'preauth') {
-      if (l.seller_pubkey === myPubHex) continue;
-      askAmt = BigInt(l.asset_opening?.amount || 0);
-      askPs = Number(l.min_price_sats || 0);
-    } else if (l.kind === 'intent' && !l.claim && !l.fulfilment_pending && !l.min_take_amount) {
-      // Whole-UTXO atomic intents only — variable-amount intents are
-      // partial-fillable so they don't have the "lot too big" problem
-      // this affordance exists to solve.
-      if (l.maker_pubkey === myPubHex) continue;
-      askAmt = BigInt(l.amount || 0);
-      askPs = Number(l.price_sats || 0);
-    } else continue;
+    // Preauth-only: the Take→ broadcast path that this badge advertises
+    // routes through takePreauthSaleBatch (single-tx commit + reveal,
+    // settles atomically). Atomic intents need the maker online to sign
+    // a fulfilment within a 5min claim window — if the maker is offline,
+    // the take stalls or fails. Surfacing intents in the badge would
+    // promise a route the button can't actually broadcast end-to-end on
+    // its own. Keep this scanner aligned with what Take→ actually does.
+    if (l.kind !== 'preauth') continue;
+    if (l.seller_pubkey === myPubHex) continue;
+    const askAmt = BigInt(l.asset_opening?.amount || 0);
+    const askPs = Number(l.min_price_sats || 0);
     if (askAmt <= 0n || askPs <= 0) continue;
     const askUnit = unitPriceSats(askPs, askAmt, decimals);
     if (!Number.isFinite(askUnit) || askUnit <= 0) continue;
@@ -76057,7 +76058,7 @@ function _marketDefaultPrefs(scope) {
   // values back to 'all' so stale preferences self-heal on next page load.
   return scope === 'asset'
     ? { kind: 'all', min: '', max: '', sort: 'unit-asc' }
-    : { kind: 'all', min: '', max: '', sort: 'volume-desc' };
+    : { kind: 'all', min: '', max: '', sort: 'marketcap-desc' };
 }
 function _validSelectValue(sel, value) {
   const el = $(sel);
