@@ -56882,35 +56882,48 @@ function startMarketLivenessPrune() {
     const tile = grid.querySelector(`[data-listing-key="${CSS.escape(key)}"]`);
     if (!tile) return;
     tile.remove();
-    if (!grid.querySelector('[data-listing-key]')) {
-      // Liveness prune drained the asks grid. Don't wipe to a hard
-      // "No live listings" message — that collapses the visible
-      // structure and reads like the page broke. Render a subtle
-      // skeleton placeholder so the column keeps its shape; the
-      // next applyMarketFilters tick will re-populate from fresh
-      // worker data.
-      grid.innerHTML = `
-        <div class="market-skeleton-rows" aria-hidden="true" style="padding:10px 12px;font-size:11px;color:var(--ink-faint);line-height:1.4;">
-          <div style="opacity:0.55;display:grid;grid-template-columns:minmax(0,1fr) minmax(50px,max-content) minmax(40px,max-content);gap:8px;padding:3px 0;"><span class="skeleton-row" style="height:11px;"></span><span class="skeleton-row" style="height:11px;"></span><span class="skeleton-row" style="height:11px;"></span></div>
-          <div style="opacity:0.45;display:grid;grid-template-columns:minmax(0,1fr) minmax(50px,max-content) minmax(40px,max-content);gap:8px;padding:3px 0;"><span class="skeleton-row" style="height:11px;"></span><span class="skeleton-row" style="height:11px;"></span><span class="skeleton-row" style="height:11px;"></span></div>
-          <div style="opacity:0.35;display:grid;grid-template-columns:minmax(0,1fr) minmax(50px,max-content) minmax(40px,max-content);gap:8px;padding:3px 0;"><span class="skeleton-row" style="height:11px;"></span><span class="skeleton-row" style="height:11px;"></span><span class="skeleton-row" style="height:11px;"></span></div>
-          <div style="text-align:center;font-style:italic;margin-top:6px;font-size:10px;">refreshing…</div>
-        </div>`;
-    }
+    // Previously: if the prune drained every visible tile, we'd swap the
+    // grid for a "skeleton-rows · refreshing…" placeholder until the next
+    // applyMarketFilters tick. In practice that read as "the page just
+    // emptied" — exactly the empty-flash UX the user reported. The 30s
+    // auto-refresh tick already repopulates from fresh worker data;
+    // letting the grid sit briefly empty between prunes is the lesser
+    // evil than swapping the visual structure to a skeleton mid-view.
   };
   const onTakenPending = (l) => {
     if (l._takenPending) return;  // idempotent — only re-render on flip
     l._takenPending = true;
     l._takenPendingAt = Date.now();
     _invalidateLiveCaches();
-    _scheduleMarketPruneRender();
+    // In-place tile mutation only — flip data-taken-pending on the
+    // existing DOM node so CSS picks up the grey-out + "settling" badge
+    // without a full applyMarketFilters re-render. Cascading full
+    // re-renders were what made the asset page visibly empty + flicker
+    // when 5+ tiles flipped pending within a couple of seconds. Browse
+    // view still falls through to the debounced re-render because the
+    // floor/count aggregate cells need to recompute.
+    if (_marketView === 'browse') { _scheduleMarketPruneRender(); return; }
+    try {
+      const key = l.kind === 'opening' ? `opening:${l.txid}:${l.vout | 0}`
+                : l.kind === 'preauth' ? `preauth:${l.sale_id}`
+                : `intent:${l.intent_id}`;
+      const tile = grid.querySelector(`[data-listing-key="${CSS.escape(key)}"]`);
+      if (tile) tile.dataset.takenPending = '1';
+    } catch {}
   };
   const onUnspentRecover = (l) => {
     if (!l._takenPending) return;  // common case — already live, no-op
     l._takenPending = false;
     l._takenPendingAt = 0;
     _invalidateLiveCaches();
-    _scheduleMarketPruneRender();
+    if (_marketView === 'browse') { _scheduleMarketPruneRender(); return; }
+    try {
+      const key = l.kind === 'opening' ? `opening:${l.txid}:${l.vout | 0}`
+                : l.kind === 'preauth' ? `preauth:${l.sale_id}`
+                : `intent:${l.intent_id}`;
+      const tile = grid.querySelector(`[data-listing-key="${CSS.escape(key)}"]`);
+      if (tile) delete tile.dataset.takenPending;
+    } catch {}
   };
   const drain = () => {
     while (active < MARKET_PRUNE_CONCURRENCY && i < queue.length) {
