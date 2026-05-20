@@ -28298,14 +28298,80 @@ function _bidCancelMsg(assetIdBytes, bidIdBytes) {
   ));
 }
 
+// Sums the user's currently-active bid commitments on this asset and
+// compares against wallet sats balance. Returns a structured summary so
+// callers can decide whether to surface a confirm. Pure read — no side
+// effects, no UI. Skipped when wallet state isn't available.
+function _bidOverCommitCheck(assetIdHex, addedSats) {
+  if (typeof wallet === 'undefined' || !wallet?.pub) return { ok: true };
+  let myPubHex;
+  try { myPubHex = bytesToHex(wallet.pub); } catch { return { ok: true }; }
+  let existingSats = 0;
+  try {
+    const cached = (typeof _bidCachePeek === 'function') ? _bidCachePeek(assetIdHex) : null;
+    if (Array.isArray(cached)) {
+      const nowSec = Math.floor(Date.now() / 1000);
+      for (const b of cached) {
+        if (b?.buyer_pubkey !== myPubHex) continue;
+        if (b?._isReserved) continue;
+        if (Number(b?.expiry || 0) <= nowSec) continue;
+        existingSats += Number(b?.price_sats || 0);
+      }
+    }
+  } catch {}
+  const walletSats = Number(_walletCardState?.balance || 0);
+  if (walletSats <= 0 || existingSats <= 0) return { ok: true, existingSats, walletSats };
+  const totalCommitted = existingSats + Number(addedSats || 0);
+  if (totalCommitted <= walletSats) return { ok: true, existingSats, walletSats, totalCommitted };
+  return {
+    ok: false,
+    existingSats,
+    walletSats,
+    totalCommitted,
+    overBy: totalCommitted - walletSats,
+  };
+}
+
 // Publish a signed bid intent. assetIdHex is the asset to buy; amount is in
 // base units; priceSats is the total sats the bidder offers for `amount`
 // units; expiry is unix-seconds (≤ 30 days from now). Optional minFillAmount
 // opts the bid into variable-fill (§5.7.7): when present, sellers can
 // fulfil any chunk in [minFillAmount, remaining_amount]; absent or zero
 // keeps the whole-bid behavior. Returns the worker's stored bid record.
-async function publishBidIntent({ assetIdHex, amount, priceSats, expiry, minFillAmount = 0 }) {
+//
+// Default behavior is STRICT: if the new bid would push total active bid
+// commitments past the wallet's sats balance, surface a tacitConfirm
+// explaining that at most one can settle (since tacit bids aren't
+// escrowed). Power-user paths that have already shown their own warning
+// can pass { skipOverCommitCheck: true }.
+async function publishBidIntent({ assetIdHex, amount, priceSats, expiry, minFillAmount = 0, skipOverCommitCheck = false }) {
   await ensurePrivkey();
+  // Over-commitment guard. Universal chokepoint — every bid-post call site
+  // flows through here, so this single check covers the swap-tile bid-only
+  // path, the snipe-fallback path, the residual-as-bid path, and the
+  // Advanced bid form alike. Tacit bids are signed off-chain promises:
+  // sats stay in the wallet until a seller matches, so a buyer CAN post
+  // bids summing past wallet balance, but only the first match settles —
+  // the rest become dead-on-arrival when subsequent sellers find the
+  // wallet short. Warn (don't refuse — confirmed power-user choice).
+  if (!skipOverCommitCheck) {
+    const _oc = _bidOverCommitCheck(assetIdHex, priceSats);
+    if (!_oc.ok) {
+      const _ticker = (typeof _marketCache === 'object' && _marketCache?.listings)
+        ? (_marketCache.listings.find(l => l?._asset?.asset_id === assetIdHex)?._asset?.ticker || 'this asset')
+        : 'this asset';
+      const _proceed = await tacitConfirm({
+        title: `Over-committing wallet — at most one of your bids on ${_ticker} can settle`,
+        body:
+          `You already have bids on ${_ticker} promising ${_oc.existingSats.toLocaleString()} sats. ` +
+          `Adding this ${Number(priceSats).toLocaleString()}-sat bid brings your total to ${_oc.totalCommitted.toLocaleString()} sats — but your wallet only holds ${_oc.walletSats.toLocaleString()} sats.\n\n` +
+          `Tacit bids are signed promises, not escrowed. When a seller takes your bid, your wallet's sats UTXO funds it atomically. After the first match settles ~${_oc.walletSats.toLocaleString()} sats are gone — your remaining bids reference a wallet that's now ${_oc.overBy.toLocaleString()} sats short, and the next seller's tx will fail to broadcast.\n\n` +
+          `Either: cancel one of your existing bids before posting this one, OR proceed knowing only one of your bids on ${_ticker} can actually fill (the rest are dead-on-arrival once the first matches).`,
+        confirmLabel: 'Post anyway (only one will fill)',
+      });
+      if (!_proceed) throw _newUnlockCancelledError();
+    }
+  }
   if (!WORKER_BASE) throw new Error('worker disabled — bids require worker');
   if (!/^[0-9a-f]{64}$/.test(String(assetIdHex || ''))) throw new Error('invalid asset_id');
   const amt = BigInt(amount);
@@ -71269,47 +71335,6 @@ function _wireSwapTile(scope) {
         const _origLabel = actionBtn.textContent;
         actionBtn.textContent = 'opening…';
         try {
-          // Over-commitment guard. Bids in tacit are signed off-chain
-          // promises — sats stay in the buyer's wallet until a seller
-          // matches. A buyer can legally post bids whose SUM exceeds
-          // their wallet balance, but only the first matched bid will
-          // actually settle; subsequent matches fail at seller-broadcast
-          // when the buyer's UTXO doesn't have the promised sats. Warn
-          // (don't refuse — power users sometimes intentionally over-
-          // commit at different price tiers knowing only one will fill).
-          let _existingBidCommitments = 0;
-          try {
-            const _existing = (typeof _bidCachePeek === 'function') ? _bidCachePeek(aid) : null;
-            if (Array.isArray(_existing) && wallet?.pub) {
-              const _myPubHex = bytesToHex(wallet.pub);
-              const _nowSec = Math.floor(Date.now() / 1000);
-              for (const b of _existing) {
-                if (b?.buyer_pubkey !== _myPubHex) continue;
-                if (b?._isReserved) continue;
-                if (Number(b?.expiry || 0) <= _nowSec) continue;
-                _existingBidCommitments += Number(b?.price_sats || 0);
-              }
-            }
-          } catch {}
-          const _walletSats = Number(_walletCardState?.balance || 0);
-          const _totalCommitted = _existingBidCommitments + bidSats;
-          if (_walletSats > 0 && _totalCommitted > _walletSats && _existingBidCommitments > 0) {
-            const _overBy = _totalCommitted - _walletSats;
-            const _proceed = await tacitConfirm({
-              title: `Over-committing wallet — at most one of your bids on ${ticker} can settle`,
-              body:
-                `You already have bids on ${ticker} promising ${_existingBidCommitments.toLocaleString()} sats. ` +
-                `Adding this ${bidSats.toLocaleString()}-sat bid brings your total to ${_totalCommitted.toLocaleString()} sats — but your wallet only holds ${_walletSats.toLocaleString()} sats.\n\n` +
-                `Tacit bids are signed promises, not escrowed. When a seller takes your bid, your wallet's sats UTXO funds it atomically. After the first match settles ~${_walletSats.toLocaleString()} sats are gone — your remaining bids reference a wallet that's now ${_overBy.toLocaleString()} sats short, and the next seller's tx will fail to broadcast.\n\n` +
-                `Either: cancel one of your existing bids before posting this one, OR proceed knowing only one of your bids on this asset can actually fill (the rest are dead-on-arrival once the first matches).`,
-              confirmLabel: 'Post anyway (only one will fill)',
-            });
-            if (!_proceed) {
-              actionBtn.disabled = false; actionBtn.style.opacity = '1';
-              actionBtn.textContent = _origLabel;
-              return;
-            }
-          }
           // Variable-fill default (§5.7.7): make the no-route open swap
           // partial-fillable too. Same floor formula as the residual-bid
           // path so even a tiny budget gets a multi-seller-matchable order.
