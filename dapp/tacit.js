@@ -878,6 +878,21 @@ function _passphraseModal({ mode, title, reason, errorHint }) {
       reject(new Error('passphrase modal not in DOM'));
       return;
     }
+    // Modal-stack invariant: never stack a passphrase prompt on top of the
+    // welcome modal. The welcome modal is the user's wallet picker; any
+    // passphrase prompt that appears while it's still visible is a
+    // front-running bug — the user came to PICK a wallet path, not to be
+    // ambushed with a set-passphrase form before they've chosen. Cancel
+    // here so the caller (wallet.load) throws, then _runFirstLoadChoice's
+    // catch loops back to the welcome modal that's already on screen.
+    try {
+      const welcomeModal = document.getElementById('welcome-modal');
+      if (welcomeModal && welcomeModal.style.display && welcomeModal.style.display !== 'none') {
+        console.warn('[tacit] suppressed passphrase modal front-running welcome modal');
+        reject(_newUnlockCancelledError());
+        return;
+      }
+    } catch {}
     const isNew = mode === 'new';
     titleEl.textContent = title;
     reasonEl.textContent = reason;
