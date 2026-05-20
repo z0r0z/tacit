@@ -119,6 +119,22 @@ body {
      push the document scrollWidth past viewport width, causing children
      and fixed-positioned overlays to render at the wider scrollWidth. */
   overflow-x: hidden;
+  /* Safe-area padding for notched devices (iPhone X+, modern Androids
+     with system gesture areas). Without this, bottom-anchored toasts,
+     floating chips, and the last row of content can slip under the
+     system bar and become unreadable / untappable. Top inset less
+     critical because the page header is short and self-contained. */
+  padding-bottom: env(safe-area-inset-bottom, 0);
+  padding-left: env(safe-area-inset-left, 0);
+  padding-right: env(safe-area-inset-right, 0);
+}
+/* When linking to a section via #anchor, give the target some breathing
+   room above the top of the viewport so it doesn't sit flush against
+   the page chrome. Applies to all scroll targets via the universal
+   selector — cheap and behavior is conservative (just adds margin to
+   the scroll calc, no visual offset when not scrolled-to). */
+:target {
+  scroll-margin-top: 12px;
 }
 /* Allow grid/flex children with long content (tagline, header columns) to
    shrink below their min-content width and let text wrap on word boundaries
