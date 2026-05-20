@@ -56456,13 +56456,64 @@ function _startMarketAutoRefresh() {
           });
         };
         // Step 1: confirm or drop prior-tick bid-vanish candidates.
+        // Worker bid-intents endpoint occasionally returns inconsistent /
+        // empty results during cache writes — a temporary "vanish" that
+        // is not actually a fill. Without a chain-side cross-check the
+        // detector fires a false "bid filled" toast every time the
+        // worker briefly drops the bid from its list, misleading the
+        // user about settlement state. Confirm via a one-shot bid-
+        // intents probe + on-chain UTXO spend check before firing.
         for (const [bidId, cand] of _vanishCandidateBids) {
           if (afterMyBids.has(bidId)) { _vanishCandidateBids.delete(bidId); continue; }
           if (Date.now() - cand.firstAbsentTs < VANISH_CONFIRM_MIN_MS) continue;
           if (_recentLocalBidCancels.has(bidId)) { _vanishCandidateBids.delete(bidId); continue; }
           if (cand.snap.expiry > 0 && cand.snap.expiry <= _nowSecBid) { _vanishCandidateBids.delete(bidId); continue; }
-          fireBidFill(bidId, cand.snap);
-          _vanishCandidateBids.delete(bidId);
+          // Final guard: re-fetch bid intents (bypassing cache) and confirm
+          // absence. If the worker returns the bid in this fresh probe,
+          // the earlier vanish was a transient cache miss — drop the
+          // candidate without firing. Async, fire-and-forget; the
+          // candidate stays in the map until the probe resolves either
+          // way so a parallel tick doesn't double-fire.
+          (async (bidIdLocal, candLocal) => {
+            try {
+              if (typeof _fetchBidIntentsCached === 'function') {
+                const fresh = await _fetchBidIntentsCached(candLocal.snap.aid, { force: true });
+                if (Array.isArray(fresh) && fresh.some(b => b?.bid_id === bidIdLocal)) {
+                  _vanishCandidateBids.delete(bidIdLocal);
+                  return;
+                }
+              }
+            } catch { /* fall through to address-spend probe */ }
+            // Worker confirms vanish. Cross-check the chain: a real bid
+            // fill spends the BUYER's sats UTXO (the seller's settlement
+            // tx uses it as an input). If buyer's address shows zero
+            // spends + zero mempool txs since the bid was posted, no
+            // fill happened — silent worker hiccup. Suppress the toast.
+            try {
+              if (wallet?.pub) {
+                const addr = wallet.address();
+                const resp = await fetch(NET.api + '/address/' + addr);
+                if (resp.ok) {
+                  const stats = await resp.json();
+                  const spends = (stats?.chain_stats?.spent_txo_count || 0)
+                               + (stats?.mempool_stats?.spent_txo_count || 0);
+                  if (spends === 0) {
+                    // No buyer-side UTXO spend since funding — the bid
+                    // can't have settled. Drop the candidate; emit a
+                    // quiet console warn so the bug pattern is visible
+                    // in devtools without alarming the user.
+                    console.warn('[tacit] suppressed false bid-fill toast: worker dropped bid but chain shows no buyer-side spend');
+                    _vanishCandidateBids.delete(bidIdLocal);
+                    return;
+                  }
+                }
+              }
+            } catch { /* network error — let the legacy path fire */ }
+            // All cross-checks passed: worker says vanished, chain shows
+            // at least one buyer-side spend (consistent with a fill). Fire.
+            fireBidFill(bidIdLocal, candLocal.snap);
+            _vanishCandidateBids.delete(bidIdLocal);
+          })(bidId, cand);
         }
         // Step 2: add new candidates discovered this tick.
         for (const [bidId, snap] of _beforeMyBids) {
