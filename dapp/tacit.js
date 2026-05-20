@@ -66419,8 +66419,14 @@ async function _bidTakeInsteadHandler(btn) {
   } catch (e) {
     console.warn('[take-instead] swap prime failed', e?.message);
   }
-  // Re-render the Open Orders panel so the (now-cancelled) row drops out.
-  setTimeout(() => { try { renderMarket(); } catch {} }, 500);
+  // Targeted Open Orders refresh (drops the now-cancelled bid row) — NOT
+  // renderMarket(), which would tear down and re-render the entire
+  // detail view including the Swap tile we just primed, wiping the
+  // populated inputs. refreshYourOpenOrdersPanel replaces only the
+  // [data-your-orders] panel, leaving the swap tile + ladders intact.
+  setTimeout(() => {
+    try { refreshYourOpenOrdersPanel(document, aid); } catch {}
+  }, 500);
 }
 
 function primeSwapTileFromOrderbook({ aid, direction, amountBaseStr, decimals, ticker, targetUnit = null }) {
