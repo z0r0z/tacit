@@ -66590,37 +66590,154 @@ async function _bidTakeInsteadHandler(btn) {
     else toast('Cancel failed: ' + (e?.message || String(e)) + ' — bid still open, retry.', 'error');
     return;
   }
-  // Step 2: broadcast take (batched for ≥2 preauths, single-take for 1)
-  for (let i = 1; i < progressItems.length; i++) progressItems[i].status = 'broadcasting';
-  if (progressEl) _renderSwapProgress(progressEl, progressItems);
-  btn.textContent = 'broadcasting take…';
-  try {
-    const sales = route.plan.map(c => ({ saleIdHex: c.l.sale_id, sale: c.l }));
-    const batch = await takePreauthSaleBatch({ assetIdHex: aid, sales });
-    const settledTxid = batch?.reveal_txid || batch?.commit_txid || batch?.txid || null;
-    for (let i = 1; i < progressItems.length; i++) {
-      progressItems[i].status = 'done';
-      progressItems[i].txid = settledTxid;
-    }
+  // Step 2: broadcast take (batched for ≥2 preauths, single-take for 1).
+  // Wrap in a retry loop that handles stale-ask errors — between the
+  // route-preview snapshot and the takePreauthSaleBatch pre-flight check,
+  // another taker can have spent one of the same asks (the 10.716 ask
+  // is the classic case — small, cheap, attractive, gets sniped fast).
+  // Pre-flight throws BEFORE commit broadcast, so retrying is fund-safe.
+  // Refresh listings, re-plan against the freshly-pruned set, retry. Cap
+  // at 3 attempts to keep cancel→take from looping forever on a hostile
+  // book.
+  const _isStaleSaleErr = (msg) => {
+    const s = String(msg || '');
+    if (/Commit tx broadcast|locked at|recovery record/.test(s)) return false;
+    return /already spent|expired|stale|refresh listings|preauth sale not found/i.test(s);
+  };
+  let _currentRoute = route;
+  let _broadcastSuccess = false;
+  let _lastErr = null;
+  for (let attempt = 0; attempt < 3 && !_broadcastSuccess; attempt++) {
+    for (let i = 1; i < progressItems.length; i++) progressItems[i].status = 'broadcasting';
     if (progressEl) _renderSwapProgress(progressEl, progressItems);
-    invalidateHoldingsCache();
-    invalidateMarketCache();
-    toast(
-      `Take broadcast ✓ ${fmtAssetAmount(route.totalAmt, decimals)} ${ticker} for ${route.totalSats.toLocaleString()} sats. Settles in ~10 min on Bitcoin (1 confirmation).`,
-      'success', 12000,
-    );
-  } catch (e) {
+    btn.textContent = attempt === 0 ? 'broadcasting take…' : `retrying (attempt ${attempt + 1}/3)…`;
+    try {
+      const sales = _currentRoute.plan.map(c => ({ saleIdHex: c.l.sale_id, sale: c.l }));
+      const batch = await takePreauthSaleBatch({ assetIdHex: aid, sales });
+      const settledTxid = batch?.reveal_txid || batch?.commit_txid || batch?.txid || null;
+      for (let i = 1; i < progressItems.length; i++) {
+        progressItems[i].status = 'done';
+        progressItems[i].txid = settledTxid;
+      }
+      if (progressEl) _renderSwapProgress(progressEl, progressItems);
+      invalidateHoldingsCache();
+      invalidateMarketCache();
+      toast(
+        `Take broadcast ✓ ${fmtAssetAmount(_currentRoute.totalAmt, decimals)} ${ticker} for ${_currentRoute.totalSats.toLocaleString()} sats. Settles in ~10 min on Bitcoin (1 confirmation).`,
+        'success', 12000,
+      );
+      _broadcastSuccess = true;
+      break;
+    } catch (e) {
+      _lastErr = e;
+      // Unlock-cancel is terminal: user explicitly bailed, don't retry.
+      if (isUnlockCancelled(e)) break;
+      // Stale-ask retry path: refresh + re-plan + retry against the
+      // freshly-pruned book. Only when we still have a retry budget AND
+      // the error matches the stale-sale family.
+      if (attempt < 2 && _isStaleSaleErr(e?.message)) {
+        try { invalidateMarketCache(); await fetchMarketDataDeduped(); } catch {}
+        const fresh = _previewBidTakeRoute(aid, decimals, bidUnit, bidSats, myPubHex);
+        if (fresh && fresh.plan.length > 0) {
+          _currentRoute = fresh;
+          // Rebuild progressItems for the new route (cancel row stays
+          // 'done'; fills get fresh queued rows reflecting the new plan).
+          progressItems.length = 1;
+          for (let i = 0; i < fresh.plan.length; i++) {
+            const c = fresh.plan[i];
+            progressItems.push({
+              label: `${i + 2}. ${fmtAssetAmount(c.amt, decimals)} ${ticker} @ ${fmtUnitPriceSats(c.u)} sats/${ticker} — ${c.ps.toLocaleString()} sats (refreshed)`,
+              status: 'queued', txid: null,
+            });
+          }
+          continue;
+        }
+        // Fresh fetch produced no fillable route — fall through to terminal.
+        _lastErr = new Error('No matchable asks left after refresh — sniped before broadcast.');
+      }
+      break;
+    }
+  }
+  if (!_broadcastSuccess) {
     for (let i = 1; i < progressItems.length; i++) progressItems[i].status = 'failed';
     if (progressEl) _renderSwapProgress(progressEl, progressItems);
-    if (isUnlockCancelled(e)) {
-      toast('Unlock cancelled mid-take — your bid is cancelled but no take broadcast. Sats intact; re-bid via Advanced if you still want this fill.', '', 12000);
-    } else {
-      toast(`Take broadcast failed: ${e?.message || String(e)} — your sats are intact; re-bid via Advanced if needed.`, 'error', 12000);
+    // One-click re-bid: spin up a toast with an action button that re-
+    // posts the original bid params. The bid is gone from the book (step
+    // 1 succeeded), the take failed (step 2 fizzled). Without this, the
+    // user has to navigate to Advanced bid and re-type every field —
+    // exactly the friction that made this corner case painful enough to
+    // notice in the first place.
+    const _detail = isUnlockCancelled(_lastErr)
+      ? 'Unlock cancelled mid-take.'
+      : (_lastErr?.message || String(_lastErr || 'unknown error'));
+    // Confirm-action toast (lightweight inline button). Caller defines
+    // an `actionLabel` + `onAction`. Falls back to plain toast if the
+    // toast helper doesn't support actions on this build.
+    const _msg = `Take broadcast failed: ${_detail}\n\nYour ${bidSats.toLocaleString()} sats are intact in your wallet. Your previous bid is gone — click below to re-post the exact same bid.`;
+    let _toastedWithAction = false;
+    try {
+      if (typeof toastWithAction === 'function') {
+        toastWithAction(_msg, {
+          actionLabel: `Re-post bid (${fmtAssetAmount(BigInt(bidAmtBase), decimals)} ${ticker} @ ${fmtUnitPriceSats(bidUnit)} sats/${ticker})`,
+          onAction: async () => {
+            try {
+              await publishBidIntent({
+                assetIdHex: aid,
+                amount: BigInt(bidAmtBase),
+                priceSats: bidSats,
+                expiry: Math.floor(Date.now() / 1000) + 24 * 3600,
+                minFillAmount: 0,
+              });
+              toast('Bid re-posted ✓ Live in the orderbook.', 'success', 6000);
+              _invalidateBidsCache(aid);
+              setTimeout(() => { try { refreshYourOpenOrdersPanel(document, aid); } catch {} }, 500);
+            } catch (e2) {
+              if (isUnlockCancelled(e2)) toast('Unlock cancelled — bid not re-posted.', '');
+              else toast(`Re-post failed: ${e2?.message || String(e2)}`, 'error');
+            }
+          },
+        });
+        _toastedWithAction = true;
+      }
+    } catch {}
+    if (!_toastedWithAction) {
+      // Fallback: plain toast + ad-hoc re-bid button rendered into the
+      // open-orders panel header. Survives builds without toastWithAction.
+      toast(_msg, 'error', 15000);
+      try {
+        const panel = document.querySelector(`[data-your-orders][data-aid="${aid}"]`);
+        if (panel) {
+          const banner = document.createElement('div');
+          banner.style.cssText = 'margin:8px 0;padding:8px 10px;background:#fee;border:0.5px solid #b8341d;color:#b8341d;font-size:11px;display:flex;gap:8px;align-items:center;justify-content:space-between;';
+          banner.innerHTML = `<span>Take failed; your previous bid is gone. <strong>${bidSats.toLocaleString()} sats</strong> intact.</span><button type="button" style="font-size:10px;padding:4px 10px;background:#b8341d;color:#fff;border:0;cursor:pointer;">Re-post bid</button>`;
+          const rebidBtn = banner.querySelector('button');
+          rebidBtn.onclick = async () => {
+            rebidBtn.disabled = true; rebidBtn.textContent = 're-posting…';
+            try {
+              await publishBidIntent({
+                assetIdHex: aid,
+                amount: BigInt(bidAmtBase),
+                priceSats: bidSats,
+                expiry: Math.floor(Date.now() / 1000) + 24 * 3600,
+                minFillAmount: 0,
+              });
+              toast('Bid re-posted ✓ Live in the orderbook.', 'success', 6000);
+              _invalidateBidsCache(aid);
+              banner.remove();
+              setTimeout(() => { try { refreshYourOpenOrdersPanel(document, aid); } catch {} }, 500);
+            } catch (e2) {
+              rebidBtn.disabled = false; rebidBtn.textContent = 'Re-post bid';
+              if (isUnlockCancelled(e2)) toast('Unlock cancelled — bid not re-posted.', '');
+              else toast(`Re-post failed: ${e2?.message || String(e2)}`, 'error');
+            }
+          };
+          panel.insertBefore(banner, panel.firstChild);
+        }
+      } catch {}
     }
-  } finally {
-    btn.disabled = false; btn.textContent = orig;
-    setTimeout(() => { try { refreshYourOpenOrdersPanel(document, aid); } catch {} }, 500);
   }
+  btn.disabled = false; btn.textContent = orig;
+  setTimeout(() => { try { refreshYourOpenOrdersPanel(document, aid); } catch {} }, 500);
 }
 
 function primeSwapTileFromOrderbook({ aid, direction, amountBaseStr, decimals, ticker, targetUnit = null }) {
