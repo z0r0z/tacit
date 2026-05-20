@@ -28465,6 +28465,32 @@ async function publishBidIntent({ assetIdHex, amount, priceSats, expiry, minFill
   });
   const j = await resp.json().catch(() => ({}));
   if (!resp.ok) throw new Error(j.error || `worker returned ${resp.status}`);
+  // UI-side post-write refresh. Universal hook for every bid-post path
+  // (swap-tile bid-only, snipe-fallback residual, atomic-Take→ auto-
+  // rebid, Advanced bid form, sweep-buy residual). Without this, callers
+  // had to remember to invalidate the bids cache + refresh the panel
+  // themselves — and most didn't, so a fresh bid only showed up after
+  // the next 1.5s renderMarket tick or a manual page refresh.
+  // Fire-and-forget so a benign UI render glitch doesn't fail the
+  // protocol-level return value.
+  try {
+    if (typeof _invalidateBidsCache === 'function') _invalidateBidsCache(assetIdHex);
+    if (typeof _fetchBidIntentsCached === 'function') {
+      // Force-fetch in background; the panel refresh below reads from
+      // the now-warm cache. Promise-then with empty catch keeps this
+      // detached from the main return.
+      Promise.resolve(_fetchBidIntentsCached(assetIdHex, { force: true })).catch(() => {});
+    }
+    if (typeof refreshYourOpenOrdersPanel === 'function') {
+      // Run on a microtask so we yield once before mutating the DOM —
+      // some callers (snipe-fallback) are mid-progress-render when
+      // publishBidIntent returns and a synchronous DOM swap would
+      // race against their in-flight render.
+      queueMicrotask(() => {
+        try { refreshYourOpenOrdersPanel(document, assetIdHex); } catch {}
+      });
+    }
+  } catch {}
   return j.intent;
 }
 
