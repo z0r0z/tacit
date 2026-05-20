@@ -52496,12 +52496,39 @@ async function renderRecentEtches() {
       if (a.kind === 'petch' && safeAssetId) tile.dataset.petchAid = safeAssetId;
       tile.onclick = (e) => {
         e.preventDefault();
+        e.stopPropagation();
         // Public-mint (T_PETCH) tiles route to Discover where the live mint
         // form is wired; every other tile goes straight to the asset's
         // market page (price + orderbook + swap tile).
+        //
+        // Set hash AND directly drive the renderer — relying on the
+        // hashchange→_consumeTabUrlHash→btn.click()→_activateTab→render
+        // chain proved fragile in production (users reported landing
+        // on the bare #tab=market route despite the URL containing
+        // &aid=…). Direct call to goToMarketAsset side-steps the chain
+        // entirely; the URL update via location.hash stays so a
+        // back-button + browser nav still works.
         if (safeAssetId) {
           const target = (a.kind === 'petch') ? 'discover' : 'market';
-          location.hash = `#tab=${target}&aid=${safeAssetId}`;
+          try { location.hash = `#tab=${target}&aid=${safeAssetId}`; } catch {}
+          if (target === 'market' && typeof goToMarketAsset === 'function') {
+            // Ensure the Market tab panel is active before rendering — if
+            // we're transitioning from Wallet, the panel display still
+            // needs to flip. _activateTab handles the panel + chrome.
+            try {
+              const btn = document.querySelector('.tab[data-tab="market"]');
+              if (btn && !btn.classList.contains('active') && typeof _activateTab === 'function') {
+                pendingMarketFilter = safeAssetId;
+                _activateTab('market');
+              } else {
+                goToMarketAsset(safeAssetId);
+              }
+            } catch (err) {
+              console.warn('[recent-tile] direct route failed', err?.message || err);
+            }
+          }
+          // Petch path keeps the hashchange-driven flow since Discover's
+          // pendingDiscoverFocus is consumed inside renderDiscover.
         } else {
           $(`.tab[data-tab="${a.kind === 'petch' ? 'discover' : 'market'}"]`).click();
         }
