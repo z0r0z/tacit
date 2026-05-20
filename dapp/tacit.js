@@ -76217,10 +76217,13 @@ async function init() {
       if (pub) {
         wallet.pub = pub;
         setActiveWalletMode('ext');
-      } else {
-        // Legacy / no blob: run the existing load path. wallet.load() will
-        // prompt for passphrase if the blob is encrypted, or create a new
-        // burner (ext-bound) if missing. Re-saves with `pub`.
+      } else if (_storageShape(raw) === 'encrypted') {
+        // Legacy encrypted blob (pre-`pub` field): unlock now so the migration
+        // re-saves with `pub` for next reload. We gate on shape='encrypted'
+        // specifically — empty / plaintext / unknown shapes would route into
+        // wallet.load()'s _promptNewPassphrase branch and front-run the
+        // welcome modal with a "set passphrase" prompt the user never asked
+        // for. For those, fall through to _runFirstLoadChoice instead.
         try {
           await wallet.load(restored.address);
           setActiveWalletMode('ext');
@@ -76230,6 +76233,12 @@ async function init() {
           }
           if (await _runFirstLoadChoice() === 'reload') return;
         }
+      } else {
+        // No ext-bound blob (or junk shape): the user has an ext wallet
+        // connected but no tacit identity yet on this network. Surface the
+        // welcome modal so they explicitly choose to generate a burner
+        // (passphrase set deliberately) or switch to passkey.
+        if (await _runFirstLoadChoice() === 'reload') return;
       }
     } else if (_hasUnboundLocalWallet()) {
       // Pubkey-only local restore: same pattern as ext-bound — parse `pub`
@@ -76239,7 +76248,12 @@ async function init() {
       if (pub) {
         wallet.pub = pub;
         setActiveWalletMode('local');
-      } else {
+      } else if (_storageShape(raw) === 'encrypted') {
+        // Legacy encrypted blob (pre-`pub` field): same migration path as
+        // the ext branch above. Other shapes (empty / plaintext / unknown)
+        // would silently create a fresh wallet via _promptNewPassphrase,
+        // which is exactly the front-running-passphrase bug — route those
+        // through the welcome modal so the choice is explicit.
         try {
           await wallet.load();
           setActiveWalletMode('local');
@@ -76254,6 +76268,10 @@ async function init() {
           }
           if (await _runFirstLoadChoice() === 'reload') return;
         }
+      } else {
+        // Stale / unrecognized blob shape: don't silently mint a new wallet
+        // over it. Welcome modal first.
+        if (await _runFirstLoadChoice() === 'reload') return;
       }
     } else {
       if (await _runFirstLoadChoice() === 'reload') return;
