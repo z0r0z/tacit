@@ -24108,6 +24108,28 @@ export default {
     try {
       _resp = await _routeFetch(req, env, ctx);
       return _resp;
+    } catch (e) {
+      // Defensive CORS guarantee: any uncaught throw from _routeFetch
+      // (KV blip, CPU timeout mid-handler, an unanticipated null
+      // dereference) would otherwise bubble to Cloudflare's edge,
+      // which returns its OWN error page WITHOUT our Access-Control-
+      // Allow-Origin header. The browser then logs the failure as a
+      // CORS-policy block instead of the actual upstream error,
+      // making it look like the worker is misconfigured when it just
+      // hit a transient fault. Wrap the throw in a CORS-friendly 500
+      // so the dapp can read the real error message + fail gracefully.
+      try {
+        const cors = corsHeaders(env, req.headers.get('Origin') || '');
+        _resp = new Response(
+          JSON.stringify({ error: 'worker error', detail: e?.message || String(e) }),
+          { status: 500, headers: { ...cors, 'Content-Type': 'application/json' } },
+        );
+      } catch {
+        // corsHeaders itself threw (corrupt env binding) — bare 500.
+        _resp = new Response('worker error', { status: 500 });
+      }
+      try { console.error('[worker] uncaught', req.method, new URL(req.url).pathname, e?.stack || e?.message || e); } catch {}
+      return _resp;
     } finally {
       // Sampled analytics — see _logAnalytics. Never blocks the response.
       try {

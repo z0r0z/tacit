@@ -32075,23 +32075,35 @@ function _renderOtcClaimBanner() {
 // poller's tick + every applyMarketFilters render, both of which
 // already touch the cached state we need. Reads from in-memory caches
 // only (no extra worker round-trip) so it's free.
+//
+// Tracks which asset(s) hold the orders so a click jumps the user
+// directly to that asset's detail page (where the "Your Open Orders"
+// panel + the swap tile's settlement-progress banner live). Single-
+// asset case is the common one and gets a deep-link; multi-asset
+// falls back to Markets browse with a toast naming the count.
 function _updateNavOpenOrdersBadge() {
   const badge = document.getElementById('nav-open-orders-badge');
   if (!badge) return;
-  if (!wallet || !wallet.pub) { badge.style.display = 'none'; return; }
+  if (!wallet || !wallet.pub) {
+    badge.style.display = 'none';
+    badge.removeAttribute('data-order-aids');
+    return;
+  }
   let myPubHex;
   try { myPubHex = bytesToHex(wallet.pub); } catch { badge.style.display = 'none'; return; }
   const nowSec = Math.floor(Date.now() / 1000);
   let count = 0;
+  const aidsWithOrders = new Set();
   // Bids: walk every per-asset cache entry that's already resolved.
   if (typeof _bidsCache !== 'undefined' && _bidsCache?.forEach) {
-    _bidsCache.forEach(entry => {
+    _bidsCache.forEach((entry, aid) => {
       if (!entry || !Array.isArray(entry.value)) return;
       for (const b of entry.value) {
         if (b?._isReserved) continue;
         if (Number(b?.expiry || 0) <= nowSec) continue;
         if (b?.buyer_pubkey !== myPubHex) continue;
         count++;
+        if (aid) aidsWithOrders.add(aid);
       }
     });
   }
@@ -32100,16 +32112,56 @@ function _updateNavOpenOrdersBadge() {
   if (_marketCache?.listings) {
     for (const l of _marketCache.listings) {
       if (l?.expired || Number(l?.expiry || 0) <= nowSec) continue;
-      if (l?.kind === 'preauth' && l.seller_pubkey === myPubHex) count++;
-      else if (l?.kind === 'intent' && l.maker_pubkey === myPubHex) count++;
+      const mine = (l?.kind === 'preauth' && l.seller_pubkey === myPubHex)
+                || (l?.kind === 'intent' && l.maker_pubkey === myPubHex);
+      if (!mine) continue;
+      count++;
+      const aid = l?.asset_id || l?._asset?.asset_id;
+      if (aid) aidsWithOrders.add(aid);
     }
   }
   if (count > 0) {
     badge.textContent = String(count);
     badge.style.display = '';
+    badge.dataset.orderAids = [...aidsWithOrders].join(',');
+    badge.title = aidsWithOrders.size === 1
+      ? `${count} open order${count === 1 ? '' : 's'} · click to jump to the market detail (Your Open Orders + settlement progress)`
+      : `${count} open orders across ${aidsWithOrders.size} markets · click to open Markets`;
   } else {
     badge.style.display = 'none';
+    badge.removeAttribute('data-order-aids');
+    badge.removeAttribute('title');
   }
+}
+
+// One-time wiring for the nav-open-orders badge click. Drills into the
+// asset detail when there's a single asset with orders; falls back to
+// Markets browse for multi-asset cases. stopPropagation so the parent
+// Markets-tab button click doesn't fire its standard "go to Markets
+// browse" path — we route through the URL-hash deep-link consumer
+// directly instead.
+let _navOpenOrdersBadgeWired = false;
+function _wireNavOpenOrdersBadge() {
+  if (_navOpenOrdersBadgeWired) return;
+  const badge = document.getElementById('nav-open-orders-badge');
+  if (!badge) return;
+  _navOpenOrdersBadgeWired = true;
+  badge.style.cursor = 'pointer';
+  badge.addEventListener('click', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const aidsStr = badge.dataset.orderAids || '';
+    const aids = aidsStr.split(',').filter(Boolean);
+    if (aids.length === 1) {
+      const aid = aids[0];
+      try { location.hash = `#tab=market&aid=${aid}`; } catch {}
+    } else if (aids.length > 1) {
+      try {
+        toast(`${aids.length} markets have your open orders — pick one to track settlement progress.`, '', 6000);
+        location.hash = '#tab=market';
+      } catch {}
+    }
+  });
 }
 function _onMakerClaimArrival({ kind, aid, listing, claim, ticker }) {
   const price = Number(listing.price_sats) || 0;
@@ -38276,6 +38328,7 @@ function _activateTab(name) {
   else stopPoolAutoRefresh();
   try { _renderOtcClaimBanner(); } catch {}
   try { _updateNavOpenOrdersBadge(); } catch {}
+  try { _wireNavOpenOrdersBadge(); } catch {}
   try { _wireAmmCeremonyChipOnce(); renderAmmCeremonyChip(); } catch {}
 }
 
@@ -65184,7 +65237,7 @@ function renderYourOpenOrdersHTML(aid, asset, myPubHex) {
       <td>${unitStr}</td>
       <td><strong>${totalSats.toLocaleString('en-US')}</strong> sats${usdTail}</td>
       <td class="muted" style="font-size:10px;">${escapeHtml(ageStr)}</td>
-      <td>${cancelBtn}</td>
+      <td class="orders-actions-cell">${cancelBtn}</td>
     </tr>`;
   }).join('');
 
@@ -65208,7 +65261,7 @@ function renderYourOpenOrdersHTML(aid, asset, myPubHex) {
       <td>${unitStr}</td>
       <td><strong>${priceSats.toLocaleString('en-US')}</strong> sats${usdTail}</td>
       <td class="muted" style="font-size:10px;">${escapeHtml(ageStr)}</td>
-      <td><button data-act="your-orders-cancel-intent" data-aid="${escapeHtml(aid)}" data-iid="${escapeHtml(l.intent_id || '')}" title="Cancel this intent — removes from the marketplace${l.claim ? '; if a taker has claimed, you will be prompted to self-spend the asset UTXO to invalidate their pending tx' : ''}" class="orders-action">cancel</button></td>
+      <td class="orders-actions-cell"><button data-act="your-orders-cancel-intent" data-aid="${escapeHtml(aid)}" data-iid="${escapeHtml(l.intent_id || '')}" title="Cancel this intent — removes from the marketplace${l.claim ? '; if a taker has claimed, you will be prompted to self-spend the asset UTXO to invalidate their pending tx' : ''}" class="orders-action">cancel</button></td>
     </tr>`;
   }).join('');
 
@@ -65270,7 +65323,7 @@ function renderYourOpenOrdersHTML(aid, asset, myPubHex) {
         })()
       : '';
     const _takeBtn = _matchable.length > 0
-      ? `<button data-act="your-orders-bid-take-instead" data-aid="${escapeHtml(aid)}" data-bid-id="${escapeHtml(b.bid_id || '')}" data-cap-unit="${_matchable[0].askUnit}" data-bid-sats="${sats}" data-bid-amt-base="${amt.toString()}" title="Cancel this bid and use its ${sats.toLocaleString()} sats to take ${_matchable.length} affordable ask${_matchable.length === 1 ? '' : 's'} priced at-or-below your bid. Primes the Swap tile at ≤${escapeHtml(fmtUnitPriceSats(_matchable[0].askUnit))} sats/${ticker} so the planner walks the cheap asks first." class="orders-action orders-action--take">take →</button>`
+      ? `<button data-act="your-orders-bid-take-instead" data-aid="${escapeHtml(aid)}" data-bid-id="${escapeHtml(b.bid_id || '')}" data-cap-unit="${_matchable[0].askUnit}" data-bid-sats="${sats}" data-bid-amt-base="${amt.toString()}" title="Atomic: cancel this bid AND broadcast a take of ${_matchable.length} affordable ask${_matchable.length === 1 ? '' : 's'} priced at-or-below your bid, in one click. One confirm with full route preview, no second submit step." class="orders-action orders-action--take">take →</button>`
       : '';
     return `<tr>
       <td><span class="market-bid-state market-bid-state--mine" style="background:#e8f5ec;border:1px solid #0a8f43;color:#0a8f43;font-size:9px;padding:1px 6px;font-weight:600;text-transform:uppercase;">Buy</span></td>
@@ -65278,7 +65331,7 @@ function renderYourOpenOrdersHTML(aid, asset, myPubHex) {
       <td>${unitStr}</td>
       <td><strong>${sats.toLocaleString('en-US')}</strong> sats${usdTail}</td>
       <td class="muted" style="font-size:10px;">${escapeHtml(ageStr)}</td>
-      <td>${_takeBtn}<button data-act="your-orders-cancel-bid" data-aid="${escapeHtml(aid)}" data-bid-id="${escapeHtml(b.bid_id || '')}" title="Cancel this bid — removes from the marketplace" class="orders-action">cancel</button></td>
+      <td class="orders-actions-cell">${_takeBtn}<button data-act="your-orders-cancel-bid" data-aid="${escapeHtml(aid)}" data-bid-id="${escapeHtml(b.bid_id || '')}" title="Cancel this bid — removes from the marketplace" class="orders-action">cancel</button></td>
     </tr>`;
   }).join('');
 

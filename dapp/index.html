@@ -79,7 +79,7 @@
      script-src 'self' covers all three.
      `?cb=` is auto-set by build/build.mjs to a sha256 prefix of tacit.js
      so iOS Safari's stale-modulepreload cache flushes on every change. -->
-<link rel="modulepreload" href="./tacit.js?cb=27f82236">
+<link rel="modulepreload" href="./tacit.js?cb=980f65e6">
 <link rel="modulepreload" href="./vendor/tacit-deps.min.js">
 <link rel="modulepreload" href="./prf-wallet.js">
 <style>
@@ -4166,6 +4166,88 @@ body > #amm-contrib-section {
 [data-your-orders] .orders-action:hover { color: var(--ink); }
 [data-your-orders] .orders-action--take { color: #b06a00; }
 [data-your-orders] .orders-action--take:hover { color: #7a4d00; }
+[data-your-orders] .orders-actions-cell {
+  /* Stack take + cancel vertically by default; row layout reads cleaner
+     when the action column lives on the right and each affordance has
+     its own line. Mobile media query below pins this cell off to the
+     right edge of the row card so the buttons stay reachable. */
+  white-space: nowrap;
+  text-align: right;
+  vertical-align: middle;
+}
+[data-your-orders] .orders-actions-cell .orders-action {
+  display: inline-block;
+  margin-right: 0;
+  margin-left: 8px;
+}
+
+/* Mobile (≤640px): the 6-column orders table overflows even on phones
+   with a moderately wide viewport — table-row layout can't compress
+   below the sum of column min-widths, so AGE + ACTION get clipped. Flip
+   each row to a flex card: amount + meta stack on the left, take +
+   cancel pin to the right edge. Hides the table header since the
+   inline labels carry the schema. Matches the design.html "narrow-
+   first" treatment used elsewhere on the asset detail page. */
+@media (max-width: 640px) {
+  [data-your-orders] table { display: block; width: 100%; }
+  [data-your-orders] thead { display: none; }
+  [data-your-orders] tbody { display: block; }
+  [data-your-orders] tr {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 4px 12px;
+    padding: 8px 0;
+    border-bottom: 1px dashed rgba(26,26,26,0.15);
+    align-items: center;
+  }
+  [data-your-orders] tr:last-child { border-bottom: 0; }
+  [data-your-orders] td {
+    display: block;
+    padding: 0;
+    border: 0;
+    font-size: 11px;
+    line-height: 1.4;
+  }
+  /* Side pill + amount cell occupy the first grid row spanning both columns;
+     the per-cell flow is amount-with-side-prefix → price → total → age,
+     each a separate line under the amount. Action cell sits in the right
+     column spanning all rows via grid-row span. */
+  [data-your-orders] tr td:nth-child(1) {
+    grid-column: 1 / 2;
+    grid-row: 1;
+  }
+  [data-your-orders] tr td:nth-child(2) {
+    grid-column: 1 / 2;
+    grid-row: 2;
+  }
+  [data-your-orders] tr td:nth-child(3),
+  [data-your-orders] tr td:nth-child(4),
+  [data-your-orders] tr td:nth-child(5) {
+    grid-column: 1 / 2;
+    color: var(--ink-mid);
+    font-size: 10px;
+  }
+  [data-your-orders] tr td:nth-child(3) { grid-row: 3; }
+  [data-your-orders] tr td:nth-child(4) { grid-row: 4; }
+  [data-your-orders] tr td:nth-child(5) { grid-row: 5; }
+  /* Actions pinned to the right edge, spanning the full row vertically so
+     they sit centered next to the stacked meta. Stack take + cancel
+     vertically for finger-sized tap targets. */
+  [data-your-orders] tr td.orders-actions-cell {
+    grid-column: 2 / 3;
+    grid-row: 1 / -1;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    justify-content: center;
+    gap: 10px;
+  }
+  [data-your-orders] tr td.orders-actions-cell .orders-action {
+    margin-left: 0;
+    padding: 4px 0;
+    min-height: 24px;
+  }
+}
 
 /* Unified tile sections per design.html — depth and tape share the
    same 18px gutter and dashed top hairline. */
@@ -9116,7 +9198,7 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
   </div>
 </div>
 
-<script type="module" src="./tacit.js?cb=27f82236"></script>
+<script type="module" src="./tacit.js?cb=980f65e6"></script>
 
 <!-- Service worker registration moved into tacit.js (the dapp's CSP forbids
      inline scripts; only 'self' module scripts are allowed). See sw.js for
