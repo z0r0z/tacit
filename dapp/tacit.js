@@ -58315,6 +58315,26 @@ function applyMarketFilters() {
   // applying the same filter here keeps Market browse consistent with
   // Holdings and prevents takers from clicking Take on a doomed listing.
   rows = rows.filter(l => !l.expired);
+  // Stale-intent filter: atomic intents need the maker online to sign a
+  // fulfilment within the claim window, so an intent posted >12h ago
+  // whose maker hasn't moved is functionally dead — broadcasting a claim
+  // would just time out and waste the buyer's 5 minutes. planBuy already
+  // filters these from routing (line ~67902); hiding them from the
+  // visible ladder too keeps the orderbook honest. A user staring at a
+  // 50-hour-old "100 TAC for 1,111 sats!" tile that no Take→ can actually
+  // hit is worse than no tile at all. Power users can opt back in by
+  // toggling the asks header's stale-filter (future improvement) — for
+  // now the default hides them. Preauth listings don't have this maker-
+  // liveness dependency (single-tx atomic) so this filter only touches
+  // intent kinds; variable-amount intents (min_take_amount set) are also
+  // filtered since they share the same claim → fulfil round-trip.
+  const _STALE_INTENT_AGE_SECS = 12 * 3600;
+  const _nowSecForStale = Math.floor(Date.now() / 1000);
+  rows = rows.filter(l => {
+    if (l.kind !== 'intent') return true;
+    const _ageSec = _nowSecForStale - Number(l.created_at || _nowSecForStale);
+    return _ageSec <= _STALE_INTENT_AGE_SECS;
+  });
   // (Trust-mode note line removed — per-tile `⚠ trust required` badge on
   // each OTC listing already warns at the point of action, and the trade-
   // type chip itself reads "⚡ atomic only" so the top-level reminder was
