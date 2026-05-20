@@ -631,7 +631,12 @@ button.market-chip .chip-caret {
 }
 .market-asset-tile:hover,
 .market-listing-tile:hover {
-  box-shadow: 4px 4px 0 var(--ink);
+  /* Subtler hover lift — the 4px hard shadow was too loud for the
+     tight mono aesthetic of the rest of the page. 2px is enough to
+     read as a hover state without dominating the visual field.
+     Rows-mode tiles get a different inset-border treatment defined
+     further below. */
+  box-shadow: 2px 2px 0 var(--ink);
 }
 /* Live-reactivity flashes. Per designer feedback (site flashes too
    much, animations should stay inside their box):
@@ -2020,19 +2025,19 @@ tr[data-recent-activity] .market-token-sub::after {
 }
 .market-mode-badge {
   display: inline-flex;
-  padding: 2px 8px;
-  border: 1px solid var(--green);
+  padding: 1px 6px;
+  border: 0.5px solid var(--green);
   color: var(--green);
-  background: rgba(10,143,67,0.08);
-  font-size: 10px;
-  font-weight: 700;
-  text-transform: uppercase;
+  background: transparent;
+  font-size: 9px;
+  font-weight: 600;
   letter-spacing: 0.06em;
   white-space: nowrap;
+  font-family: var(--mono);
 }
-.market-mode-badge.intent { border-color: var(--purple); color: var(--purple); background: rgba(125,79,247,0.08); }
+.market-mode-badge.intent { border-color: var(--purple); color: var(--purple); }
 .market-mode-badge.opening,
-.market-mode-badge.range { border-color: #a04030; color: #a04030; background: #fff8eb; }
+.market-mode-badge.range { border-color: #a04030; color: #a04030; }
 /* Trust-required tiles get a stronger inline cue beyond the badge color:
    a left border tint on the whole tile so the row is visually segmented
    from trustless asks even when the badge wraps off-screen on narrow
@@ -2042,33 +2047,43 @@ tr[data-recent-activity] .market-token-sub::after {
   background-image: linear-gradient(to right, rgba(160,64,48,0.03), transparent 24%) !important;
 }
 .market-listing-amount {
-  margin-top: 18px;
+  margin-top: 14px;
   text-align: center;
-  font-size: 24px;
-  font-weight: 700;
-  line-height: 1.08;
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 1.1;
   overflow-wrap: anywhere;
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--ink);
 }
 .market-listing-unit {
-  margin-top: 16px;
+  margin-top: 10px;
   text-align: center;
-  color: var(--orange);
+  color: var(--ink);
+  font-family: var(--mono);
 }
 .market-listing-unit strong {
-  font-size: 20px;
-  line-height: 1.2;
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.3;
   overflow-wrap: anywhere;
+  font-variant-numeric: tabular-nums;
+  color: #b8341d; /* red ink — ask priced above mid, mirrors rows-mode color */
 }
+.market-listing-tile--best .market-listing-unit strong { color: #0a7d3a; }
+.market-listing-tile--level .market-listing-unit strong { color: #c76b26; }
 .market-listing-unit small {
   display: block;
-  margin-top: 6px;
+  margin-top: 4px;
   color: var(--ink-mid);
-  font-size: 11px;
+  font-size: 10px;
+  font-weight: 400;
 }
 .market-listing-unit small.market-usd-price {
-  color: var(--ink);
-  font-size: 12px;
-  font-weight: 900;
+  color: var(--ink-mid);
+  font-size: 11px;
+  font-weight: 500;
 }
 .market-listing-id {
   margin-top: 8px;
