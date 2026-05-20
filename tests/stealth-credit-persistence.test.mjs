@@ -222,5 +222,29 @@ test('integration: Activity feed renders SHIELDED badge', () => {
     'renderActivity does not surface SHIELDED badge');
 });
 
+test('integration: seen-tx cache skips already-checked txids', () => {
+  // Without a negative cache, every background auto-scan re-fetches and
+  // re-trial-derives the same txs the prior scan already ruled out. The
+  // cache short-circuits known-uninteresting txids per asset, bounded by
+  // STEALTH_SEEN_TXIDS_MAX.
+  assert(src.includes('function markStealthTxidSeen'),
+    'markStealthTxidSeen helper missing');
+  assert(src.includes('function isStealthTxidSeen'),
+    'isStealthTxidSeen helper missing');
+  assert(src.includes('useSeenCache && isStealthTxidSeen('),
+    'scanAssetForStealthReceipts does not short-circuit on seen-cache');
+  assert(src.includes('STEALTH_SEEN_TXIDS_MAX = 500'),
+    'seen-cache bound missing or drifted');
+});
+
+test('integration: background auto-scan surfaces a status pill', () => {
+  // Without visibility, the auto-scan is silent and users have no signal
+  // that the wallet is actively trying to find shielded receipts.
+  assert(src.includes("document.getElementById('stealth-scan-status')"),
+    'auto-scan does not drive #stealth-scan-status');
+  assert(src.includes('scanning shielded · '),
+    'auto-scan status text drifted');
+});
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed === 0 ? 0 : 1);

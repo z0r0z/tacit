@@ -300,8 +300,16 @@ Out of scope, left for future amendments or operational practice:
   scopes could aggregate them into one envelope to save chain
   space. Future bandwidth optimisation if attestation traffic
   becomes load-bearing.
-- **On-chain slashing.** Equivocation evidence sits in the
-  indexer's flag-set; what dapps DO with that evidence is policy.
+- **On-chain slashing.** This amendment defines the *attestation*
+  semantics; the *consequence* of detected equivocation is
+  specified in `SPEC-WORKER-BOND-AMENDMENT.md`. Together they
+  give the orderbook channel a bonded-worker accountability
+  layer: orderbook intents attested by a bonded worker carry
+  automated slash risk for the worker on cryptographic
+  equivocation evidence, payable to the slash submitter as a
+  bounty and burning the remainder. See
+  `spec/design/META-PROTOCOL-CONSENSUS.md` for the layered
+  architecture overview.
 
 ---
 

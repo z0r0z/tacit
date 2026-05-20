@@ -195,14 +195,35 @@ State transitions:
                   │                slashed (terminal)
                   ▼
               closed (terminal)
+                  ┊
+                  ┊ T_WORKER_SLASH (flag-only branch)
+                  ┊ — no state change; sets
+                  ┊   worker_flag.equivocator
+                  ▼
+              closed + equivocator-flagged
+              (state remains "closed";
+               flag is on the worker_pubkey,
+               not the bond)
 ```
 
-`T_WORKER_SLASH` is valid in **either** "active" or "closing"
-states — the notice period does not insulate a worker from
-slashing for equivocation that occurred during their active
-period. A bond in "slashed" or "closed" state is no longer
-slashable (slash state transitions are terminal at the indexer;
-cooperative close has already returned the TAC to the worker).
+`T_WORKER_SLASH` is valid in **any non-slashed** state:
+
+- `active` or `closing` → full economic slash (bond TAC zeroed,
+  bounty paid, remainder burned, equivocator flag set).
+- `closed` → public-good flag-set only. The bond TAC is already
+  gone (returned to worker via cooperative close); the reporter
+  receives no bounty; the only effect is
+  `worker_flag.equivocator = true`. A reporter pays Bitcoin
+  fees with no economic upside, but the worker still gets
+  globally flagged.
+- `slashed` → rejected (double-slash).
+
+This closes the gap where a worker who equivocates, then
+closes their bond before evidence surfaces, would otherwise
+escape both the slash AND the global flag. They still escape
+the slash itself (the TAC is gone), but the global flag —
+which is what dapps use to downgrade the worker's soft-confirm
+rating going forward — still applies.
 
 ---
 
@@ -528,7 +549,10 @@ permanently as unspendable dust regardless of bond state.
 ```
 on T_WORKER_SLASH at confirmation depth ≥ 1:
     bond := bond_state[(worker_pubkey, bond_outpoint)]
-    require bond.state ∈ {"active", "closing"}    # NOT "closed" or "slashed"
+    require bond.state != "slashed"   # double-slash rejected;
+                                       # active/closing/closed all
+                                       # proceed (closed → flag-only,
+                                       # no bounty paid, see below)
 
     # Look up the two attestations from the indexer's existing
     # T_INTENT_ATTEST index (per SPEC.md §5.17).
@@ -550,6 +574,26 @@ on T_WORKER_SLASH at confirmation depth ≥ 1:
     # index — no re-verification here.
 
     verify reporter_sig under reporter_pubkey
+
+    # Always set the equivocator flag — even if the bond is
+    # already closed and there is no economic slash to apply.
+    # This is the "public-good submission" branch: a reporter
+    # who finds equivocation evidence after the worker closed
+    # their bond still gets to tar the worker_pubkey globally,
+    # even though there is nothing left to slash.
+    worker_flag[worker_pubkey].equivocator = true
+
+    if bond.state == "closed":
+        # No bond TAC left to slash — flag-set only, no bounty,
+        # no burn. The reporter pays only their Bitcoin fees;
+        # their declared vout[1] receives zero indexer-attributed
+        # TAC (becomes dust). Slash envelope still finalizes the
+        # equivocator flag.
+        return  # done
+
+    # Otherwise bond.state ∈ {"active", "closing"} — proceed
+    # with full economic slash.
+
     verify bounty_xcurve_sigma binds C_bounty_secp ↔ C_bounty_BJJ
         to some cleartext amount under asset_id_TAC
 
@@ -581,7 +625,6 @@ on T_WORKER_SLASH at confirmation depth ≥ 1:
 
     bond_state[bond].bond_amount_tac → 0
     bond_state[bond].state → "slashed"
-    worker_flag[worker_pubkey].equivocator = true
 ```
 
 **Conservation note.** This is one of the few validator branches
@@ -607,16 +650,19 @@ slashes); circulating supply is queryable at any time by
 summing attributed TAC across all unspent outpoints minus the
 inert-dust outpoints like slashed bonds.
 
-This per-outpoint reattribution pattern is shared with cBTC.tac's
-slashing path (the `SLASH_DETECTED` precedent) and the
-`T_SLOT_BURN` outflow path — both rely on per-outpoint TAC
-reattribution under indexer-state semantics, with the per-tx
-asset-conservation rule of SPEC.md §5.4 carrying an explicit
-exception list that this amendment extends to include
-T_WORKER_SLASH. (Implementations should cross-check the precise
-exception list against the canonical cBTC.tac validator before
-ship — the precedent shape is reused, not the literal opcode
-plumbing.)
+This per-outpoint reattribution pattern is **directly precedented**
+by cBTC.tac's `SLASH_DETECTED` indexer-state event
+(§5.39.2 — moves bond TAC into `insurance_pool_TAC` with no
+Bitcoin-layer spend) and its `T_SHARE_SLASH_CLAIM` opcode
+(§5.39.4 — pays TAC to a `recipient_commit` declared in the
+envelope with no TAC input on the same tx, drawing from
+`insurance_pool_TAC` instead). The cBTC.tac amendment treats
+both as established branches of the §5.4 asset-conservation
+rule. This amendment adds T_WORKER_SLASH (and the cooperative
+release path of T_WORKER_BOND_CLOSE) as additional members of
+the same conservation-exception family — same shape, different
+source of the indexer-side TAC value (a slashed bond rather
+than a pooled insurance reserve).
 
 ### Race conditions (informative)
 
@@ -628,18 +674,20 @@ outpoint" pattern doesn't apply. The remaining races:
   spends `bond_outpoint` (the bond UTXO is unspendable; both
   operations are pure indexer-state reattribution). Per SPEC.md
   §11 within-block ordering (`tx_index` ascending), whichever tx
-  the indexer processes first wins:
+  the indexer processes first wins the economic effect:
   - If the slash is processed first, `bond.state → "slashed"`;
-    the close envelope hits `state != "closing"` and is
-    rejected; the close tx's vout[1] receives zero indexer-
-    attributed TAC (becomes dust).
-  - If the close is processed first, the slash hits
-    `bond.state ∉ {"active", "closing"}` (now `"closed"`) and
-    is rejected; the slash tx's vout[1] receives zero indexer-
-    attributed TAC.
-  Both txs may still confirm at the Bitcoin layer (they're
-  ordinary txs paying fees); only the indexer's state
-  transition is authoritative for TAC attribution.
+    bounty paid; remainder burned; equivocator flag set. The
+    close envelope hits `state != "closing"` and its vout[1]
+    receives zero indexer-attributed TAC.
+  - If the close is processed first, `bond.state → "closed"`;
+    TAC released to worker's destination. The slash envelope
+    then hits the `"closed"` branch — equivocator flag still
+    sets, but no bounty paid and bond stays in `"closed"`. The
+    worker has walked with the TAC but earned the global flag
+    anyway.
+  Both txs confirm at the Bitcoin layer (ordinary fee-paying
+  txs); only the indexer's state determines TAC attribution
+  and flag state.
 - **Multiple slash submissions for the same evidence.** Each
   reporter pays their own fee and publishes their own evidence
   envelope. The indexer processes them in `tx_index` order; the
@@ -830,12 +878,17 @@ End-to-end signet rehearsal:
    envelope is rejected by the indexer's `state != "closing"`
    guard and its declared vout[1] receives zero indexer-
    attributed TAC.
-4. **Slash after close completes.** Worker fully closes their
-   bond (notice elapses; step-2 close envelope reattributes TAC
-   to the worker's destination). Evidence from their active
-   period is then submitted. Verify slash is rejected:
-   `bond.state == "closed"`; slash tx's vout[1] receives zero
-   indexer-attributed TAC.
+4. **Slash after close completes (public-good flag-set).**
+   Worker fully closes their bond (notice elapses; step-2 close
+   envelope reattributes TAC to the worker's destination).
+   Evidence from their active period is then submitted. Verify
+   the slash envelope is **accepted** (not rejected):
+   `worker_flag.equivocator → true`; bond stays in "closed"
+   state (no transition to slashed — TAC already returned);
+   the reporter's declared vout[1] receives **zero** indexer-
+   attributed TAC (no bounty — nothing to pay from). Reporter
+   has paid Bitcoin fees with no economic return, but the
+   worker is now flagged for all future dapp queries.
 5. **Pre-bond evidence.** Two attestations with `observed_height
    < bond.opened_at_height`. Verify slash is rejected at the
    explicit guard.

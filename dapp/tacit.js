@@ -11467,6 +11467,66 @@ function getStealthCredit(txidHex, vout) {
     blockTime: e.blockTime || null,
   };
 }
+// Seen-tx negative cache for shielded scans (SPEC-BLINDED-PUBKEY §F.6).
+// scanAssetForStealthReceipts walks the worker's xferseen index and trial-
+// derives each tx against wallet.priv. Most txs return []. Without a
+// negative cache, every auto-scan re-fetches and re-derives the same txs
+// the previous scan already ruled out. This store records "already checked,
+// no credit for me" so subsequent scans only fetch new txs.
+//
+// Per-(network, wallet) map: { "<asset_id>": [txid1, txid2, ...] }
+// Bounded to STEALTH_SEEN_TXIDS_MAX per asset; oldest entries fall off when
+// the array grows past the cap. Credits live in the separate stealth-credits
+// store; this is purely the "scanned, not mine" set.
+const STEALTH_SEEN_TXIDS_MAX = 500;
+let _stealthSeenTxidsCache = null;
+function _stealthSeenTxidsKey() {
+  if (!wallet.pub) return null;
+  let pubHex; try { pubHex = bytesToHex(wallet.pub); } catch { return null; }
+  return `tacit-stealth-seen-txids-v1:${NET.name}:${pubHex}`;
+}
+function loadStealthSeenTxids() {
+  if (_stealthSeenTxidsCache) return _stealthSeenTxidsCache;
+  const k = _stealthSeenTxidsKey();
+  if (!k) return {};
+  try { _stealthSeenTxidsCache = JSON.parse(localStorage.getItem(k) || '{}') || {}; }
+  catch { _stealthSeenTxidsCache = {}; }
+  return _stealthSeenTxidsCache;
+}
+function _writeStealthSeenTxidsNow() {
+  const k = _stealthSeenTxidsKey();
+  if (!k || !_stealthSeenTxidsCache) return;
+  try { localStorage.setItem(k, JSON.stringify(_stealthSeenTxidsCache)); } catch {}
+}
+let _stealthSeenTxidsFlushTimer = null;
+function _scheduleStealthSeenTxidsFlush() {
+  if (_stealthSeenTxidsFlushTimer) clearTimeout(_stealthSeenTxidsFlushTimer);
+  _stealthSeenTxidsFlushTimer = setTimeout(() => {
+    _stealthSeenTxidsFlushTimer = null;
+    _writeStealthSeenTxidsNow();
+  }, 100);
+}
+function markStealthTxidSeen(assetIdHex, txidHex) {
+  const o = loadStealthSeenTxids();
+  let arr = o[assetIdHex];
+  if (!Array.isArray(arr)) arr = [];
+  // De-dupe + cap. Most-recent at the END so trimming from the head drops
+  // the oldest. Fast path: if txid is already last entry, no-op.
+  if (arr[arr.length - 1] === txidHex) return;
+  const idx = arr.indexOf(txidHex);
+  if (idx >= 0) arr.splice(idx, 1);
+  arr.push(txidHex);
+  if (arr.length > STEALTH_SEEN_TXIDS_MAX) arr.splice(0, arr.length - STEALTH_SEEN_TXIDS_MAX);
+  o[assetIdHex] = arr;
+  _stealthSeenTxidsCache = o;
+  _scheduleStealthSeenTxidsFlush();
+}
+function isStealthTxidSeen(assetIdHex, txidHex) {
+  const o = loadStealthSeenTxids();
+  const arr = o[assetIdHex];
+  return Array.isArray(arr) && arr.includes(txidHex);
+}
+
 function removeStealthCredit(txidHex, vout) {
   const o = loadStealthCredits();
   if (!o[`${txidHex}:${vout}`]) return;
@@ -14447,8 +14507,14 @@ function _triggerStealthAutoScanInBackground(holdings) {
   // first; the holdings render lands immediately, the background scan hums
   // after.
   (async () => {
+    const pill = document.getElementById('stealth-scan-status');
+    const showPill = (text) => { if (pill) { pill.style.display = ''; pill.textContent = text; } };
+    const hidePill = () => { if (pill) { pill.style.display = 'none'; pill.textContent = ''; } };
     let totalFound = 0;
+    let i = 0;
     for (const aid of candidates) {
+      i++;
+      showPill(`scanning shielded · ${i}/${candidates.length}`);
       try {
         const res = await scanAssetForStealthReceipts(aid, {
           maxPages: 1, pageLimit: 50,
@@ -14456,6 +14522,7 @@ function _triggerStealthAutoScanInBackground(holdings) {
         totalFound += res.discovered.length;
       } catch { /* silent — auto-scan never alarms the user */ }
     }
+    hidePill();
     if (totalFound > 0) {
       try {
         invalidateHoldingsCache();
@@ -24419,7 +24486,7 @@ async function discoverStealthFromTxid(txidHex, { merge = true } = {}) {
 // Bounded cost: maxPages × pageLimit tx fetches. Default 4 × 50 = up to
 // 200 txs/call — same order as a heavy wallet's classical-address scan.
 // onProgress({ pagesScanned, txsScanned, found }) streams a status pill.
-async function scanAssetForStealthReceipts(assetIdHex, { onProgress = null, maxPages = 4, pageLimit = 50 } = {}) {
+async function scanAssetForStealthReceipts(assetIdHex, { onProgress = null, maxPages = 4, pageLimit = 50, useSeenCache = true } = {}) {
   if (!WORKER_BASE) throw new Error('worker base URL not configured');
   if (!/^[0-9a-f]{64}$/.test(String(assetIdHex || ''))) throw new Error('invalid assetIdHex');
   await ensurePrivkey();
@@ -24427,6 +24494,7 @@ async function scanAssetForStealthReceipts(assetIdHex, { onProgress = null, maxP
   let cursor = null;
   let pagesScanned = 0;
   let txsScanned = 0;
+  let txsSkipped = 0;  // already in seen-cache; no network fetch needed
   let complete = false;
   for (let page = 0; page < maxPages; page++) {
     const url = `${WORKER_BASE}/assets/${assetIdHex}/recent-xfer-txids?network=${encodeURIComponent(NET.name)}&limit=${pageLimit}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`;
@@ -24439,18 +24507,28 @@ async function scanAssetForStealthReceipts(assetIdHex, { onProgress = null, maxP
     // Sequential walk — most stealth scans return empty for the bulk of
     // history, so parallelism trades little win for tx-fetch budget.
     for (const t of txids) {
+      // Negative-cache short-circuit: a prior scan already checked this
+      // txid and either credited us (in stealth-credits) or ruled it out
+      // (in seen-cache). Either way, no need to re-fetch + trial-derive.
+      // The manual Rescan button passes useSeenCache:false to force a
+      // fresh walk for explicit recovery.
+      if (useSeenCache && isStealthTxidSeen(assetIdHex, t)) { txsSkipped++; continue; }
       txsScanned++;
       try {
         const credits = await discoverStealthFromTxid(t, { merge: true });
         for (const c of credits) discovered.push(c);
+        // Record AFTER discoverStealthFromTxid so a transient indexer
+        // failure (caught below) doesn't poison the cache — the next
+        // scan will retry the same txid.
+        markStealthTxidSeen(assetIdHex, t);
       } catch { /* skip; an indexer hiccup on one tx shouldn't sink the walk */ }
-      if (onProgress) { try { onProgress({ pagesScanned, txsScanned, found: discovered.length }); } catch {} }
+      if (onProgress) { try { onProgress({ pagesScanned, txsScanned, txsSkipped, found: discovered.length }); } catch {} }
     }
     if (j.done) { complete = true; break; }
     if (!j.next_cursor) { complete = true; break; }
     cursor = j.next_cursor;
   }
-  return { discovered, pagesScanned, txsScanned, complete };
+  return { discovered, pagesScanned, txsScanned, txsSkipped, complete };
 }
 
 // forceUtxos (optional) lets callers pre-select the exact asset UTXO(s) to
