@@ -67946,13 +67946,6 @@ function _wireSwapTile(scope) {
       }
     };
   });
-  // Restore last-known swap-progress banner from sessionStorage. Tab-
-  // navigation (Holdings → Market) and full-page refresh both rebuild the
-  // swap tile from scratch — without this restore, an in-flight trade's
-  // progress UI vanishes the moment the user navigates away. Restored
-  // banner shows the last-saved fill states + a dismiss affordance so
-  // the trader can clear it once they've acknowledged the outcome.
-  try { _restoreSwapProgressState(widget); } catch {}
   // Guard against double-wiring. The swap tile is now preserved across
   // applyMarketFilters re-renders so its user-typed input + caret +
   // event listeners survive each auto-refresh tick. Re-running this
@@ -67963,6 +67956,15 @@ function _wireSwapTile(scope) {
   // widget instance.
   if (widget.dataset.swapWired === '1') return;
   widget.dataset.swapWired = '1';
+  // Restore last-known swap-progress banner from sessionStorage on FRESH
+  // mount only (post-guard). Tab-navigation (Holdings → Market) and
+  // full-page refresh both rebuild the swap tile from scratch — that's
+  // when restore is needed. Auto-refresh re-renders preserve the tile
+  // (swapWired stays '1'), and their existing banner is already in DOM
+  // — restoring there would overwrite an in-flight loop's progress with
+  // the last-persisted snapshot and flicker. Placing the restore after
+  // the guard scopes it correctly.
+  try { _restoreSwapProgressState(widget); } catch {}
   const aid = widget.dataset.aid;
   const ticker = widget.dataset.ticker || '?';
   const decimals = parseInt(widget.dataset.dec || '0', 10) || 0;
