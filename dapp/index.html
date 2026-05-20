@@ -4170,6 +4170,11 @@ body > #amm-contrib-section {
 [data-your-orders] .orders-action:hover { color: var(--ink); }
 [data-your-orders] .orders-action--take { color: #b06a00; }
 [data-your-orders] .orders-action--take:hover { color: #7a4d00; }
+/* Improve-bid action: green so it reads as "go up the ladder" — distinct
+   from cancel (default ink-mid) and take (orange). Pairs with the ▲
+   glyph in the button label for double-encoded direction cue. */
+[data-your-orders] .orders-action--improve { color: #0a7d3a; font-weight: 600; }
+[data-your-orders] .orders-action--improve:hover { color: #075c2a; }
 [data-your-orders] .orders-actions-cell {
   /* Stack take + cancel vertically by default; row layout reads cleaner
      when the action column lives on the right and each affordance has
@@ -4200,7 +4205,7 @@ body > #amm-contrib-section {
     display: grid;
     grid-template-columns: 1fr auto;
     gap: 4px 12px;
-    padding: 8px 0;
+    padding: 10px 0;
     border-bottom: 1px dashed rgba(26,26,26,0.15);
     align-items: center;
   }
@@ -4223,6 +4228,14 @@ body > #amm-contrib-section {
   [data-your-orders] tr td:nth-child(2) {
     grid-column: 1 / 2;
     grid-row: 2;
+    /* Amount cell now carries rank chip + ETA + matchable + undercut
+       badges. On narrow viewports these can wrap to multiple lines; allow
+       wrap explicitly so badges drop below the amount text instead of
+       overflowing horizontally. */
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 4px;
   }
   [data-your-orders] tr td:nth-child(3),
   [data-your-orders] tr td:nth-child(4),
@@ -4236,7 +4249,10 @@ body > #amm-contrib-section {
   [data-your-orders] tr td:nth-child(5) { grid-row: 5; }
   /* Actions pinned to the right edge, spanning the full row vertically so
      they sit centered next to the stacked meta. Stack take + cancel
-     vertically for finger-sized tap targets. */
+     vertically for finger-sized tap targets. min-height 36 (was 24)
+     brings each tap target closer to platform-recommended 44px while
+     keeping the row from ballooning when 3-4 actions stack
+     (take + improve + cancel). */
   [data-your-orders] tr td.orders-actions-cell {
     grid-column: 2 / 3;
     grid-row: 1 / -1;
@@ -4244,12 +4260,15 @@ body > #amm-contrib-section {
     flex-direction: column;
     align-items: flex-end;
     justify-content: center;
-    gap: 10px;
+    gap: 8px;
   }
   [data-your-orders] tr td.orders-actions-cell .orders-action {
     margin-left: 0;
-    padding: 4px 0;
-    min-height: 24px;
+    padding: 6px 0;
+    min-height: 36px;
+    display: flex;
+    align-items: center;
+    font-size: 11px;
   }
 }
 
