@@ -58493,8 +58493,8 @@ function applyMarketFilters() {
   const _askFormSlot = `<div data-market-ask-form data-aid="${escapeHtml(_marketView.assetId)}" style="display:none;margin-bottom:10px;"></div>`;
   const mineAsksChip = minedAsksCount > 0
     ? (_marketMineOnlyAsks
-        ? `<button data-act="market-mine-asks-toggle" type="button" title="Showing only your asks (${minedAsksCount}). Click to show all asks." style="font-size:10px;padding:3px 10px;background:var(--ink);border:1px solid var(--ink);color:#fff;cursor:pointer;">Mine - ${minedAsksCount}</button>`
-        : `<button data-act="market-mine-asks-toggle" type="button" title="Filter to your asks only (${minedAsksCount} active)." style="font-size:10px;padding:3px 10px;background:transparent;border:1px solid var(--ink-faint);color:var(--ink);cursor:pointer;">Mine</button>`)
+        ? `<button data-act="market-mine-asks-toggle" type="button" title="Showing only your asks (${minedAsksCount}). Click to show all asks." style="font-size:10px;padding:3px 10px;background:var(--ink);border:1px solid var(--ink);color:#fff;cursor:pointer;">mine · ${minedAsksCount}</button>`
+        : `<button data-act="market-mine-asks-toggle" type="button" title="Filter to your asks only (${minedAsksCount} active)." style="font-size:10px;padding:3px 10px;background:transparent;border:1px solid var(--ink-faint);color:var(--ink-mid);cursor:pointer;">mine</button>`)
     : '';
   // Sweep Buy lives in the asks header (where it semantically belongs —
   // it walks the asks ladder). Previously it was rendered inside the
@@ -67076,8 +67076,8 @@ async function populateMarketBidsLadder(scope, asset) {
     : '';
   const mineBidsChip = minedBidsCount > 0
     ? (_marketMineOnlyBids
-        ? `<button data-act="market-mine-bids-toggle" type="button" title="Showing only your bids (${minedBidsCount}). Click to show all bids.">Mine - ${minedBidsCount}</button>`
-        : `<button data-act="market-mine-bids-toggle" type="button" title="Filter to your bids only (${minedBidsCount} active).">Mine</button>`)
+        ? `<button data-act="market-mine-bids-toggle" type="button" title="Showing only your bids (${minedBidsCount}). Click to show all bids." style="background:var(--ink);border-color:var(--ink);color:#fff;">mine · ${minedBidsCount}</button>`
+        : `<button data-act="market-mine-bids-toggle" type="button" title="Filter to your bids only (${minedBidsCount} active).">mine</button>`)
     : '';
   // Outlier-bid toggle. Only meaningful when the filter actually hid
   // something OR when it's currently OFF (so the user can re-enable it).
@@ -75525,14 +75525,28 @@ function setupNetworkSelect() {
   if (banner) {
     banner.style.display = (NET.name === 'mainnet' && !mainnetAcked) ? 'block' : 'none';
   }
-  // Hints inside the mainnet banner: surface the two custody pitfalls (no
-  // external wallet connected; burner key not yet acknowledged-as-backed-up).
-  // Recomputed on every render so they stay in sync with state changes.
-  const extHint = $('#mainnet-extwallet-hint');
-  const backHint = $('#mainnet-burner-backup-hint');
-  if (NET.name === 'mainnet' && !mainnetAcked) {
-    if (extHint) extHint.style.display = wallet.ext || wallet.mode === 'passkey' ? 'none' : 'block';
-    if (backHint) backHint.style.display = wallet.mode === 'passkey' || isBurnerBackedUp() ? 'none' : 'block';
+  // Single-line detail inside the mainnet banner: collapses the two custody
+  // pitfalls (no external wallet; burner key not yet backed up) into one
+  // sentence appended to the primary warning. A new user on mainnet sees
+  // one tight line instead of three stacked paragraphs; ext-connected /
+  // passkey users see just the headline since those configurations don't
+  // have the burner-loss risk. Recomputed on every render so the text
+  // tracks state changes (connecting Xverse, marking backup, etc.).
+  const detailEl = $('#mainnet-banner-detail');
+  if (detailEl && NET.name === 'mainnet' && !mainnetAcked) {
+    const isPasskey = wallet.mode === 'passkey';
+    const hasExt = !!wallet.ext;
+    const backedUp = isBurnerBackedUp();
+    let detail = '';
+    if (!isPasskey && !hasExt && !backedUp) {
+      detail = 'Burner key isn\'t backed up — export it or connect Xverse / Leather / UniSat before sending.';
+    } else if (!isPasskey && !hasExt && backedUp) {
+      detail = 'Using an in-browser burner key — connect Xverse / Leather / UniSat for meaningful balances.';
+    } else if (!isPasskey && !backedUp) {
+      // Ext connected but the tacit signing burner isn't backed up.
+      detail = 'Tacit signing key isn\'t backed up — export it from the wallet tab before sending.';
+    }
+    detailEl.textContent = detail;
   }
   // Wire the close button. Sets the ack flag and hides immediately. Idempotent —
   // setupNetworkSelect runs on every state change, so re-binding is fine.

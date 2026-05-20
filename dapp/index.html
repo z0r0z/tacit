@@ -79,7 +79,7 @@
      script-src 'self' covers all three.
      `?cb=` is auto-set by build/build.mjs to a sha256 prefix of tacit.js
      so iOS Safari's stale-modulepreload cache flushes on every change. -->
-<link rel="modulepreload" href="./tacit.js?cb=331e204b">
+<link rel="modulepreload" href="./tacit.js?cb=e7cdd337">
 <link rel="modulepreload" href="./vendor/tacit-deps.min.js">
 <link rel="modulepreload" href="./prf-wallet.js">
 <style>
@@ -1189,17 +1189,22 @@ tr[data-recent-activity] .market-token-sub::after {
   gap: 6px;
   margin-bottom: 8px;
 }
+/* Mine-only filter chip — subtle by default (matches the asks-side
+   chip styling) so it doesn't compete with the bid ladder; flips to
+   the inverted treatment via inline style when actively filtering
+   (driven by JS via _marketMineOnlyBids). */
 .market-bids-filter-row button {
-  min-height: 28px;
-  padding: 4px 10px;
+  min-height: 22px;
+  padding: 3px 10px;
   font-size: 10px;
   background: transparent;
-  border: 1px solid var(--ink);
-  color: var(--ink);
+  border: 1px solid var(--ink-faint);
+  color: var(--ink-mid);
 }
 .market-bids-filter-row button:hover {
   background: var(--ink);
   color: var(--bg);
+  border-color: var(--ink);
 }
 .market-bids-table {
   /* Compact 3-column layout matching the asks ladder. Borderless +
@@ -6462,13 +6467,7 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
 
 <div id="mainnet-banner" class="tacit-warn-banner tacit-warn-banner--red" style="display:none;position:relative;">
   <button id="mainnet-banner-close" type="button" aria-label="Acknowledge and hide" title="Acknowledge and hide" class="tacit-warn-banner__close">×</button>
-  <strong>⚠ Mainnet — real BTC.</strong> Experimental, no warranty. Don't risk what you can't afford to lose.
-  <div id="mainnet-extwallet-hint" style="margin-top:6px;font-size:11px;font-weight:normal;display:none;">
-    <strong>No external wallet connected.</strong> Session uses an in-browser burner key. For meaningful balances, connect Xverse / Leather / UniSat.
-  </div>
-  <div id="mainnet-burner-backup-hint" style="margin-top:6px;font-size:11px;font-weight:normal;display:none;">
-    <strong>Wallet key not backed up.</strong> First asset operation will require an export-and-acknowledge step.
-  </div>
+  <strong>⚠ Mainnet — real BTC, no warranty.</strong> <span id="mainnet-banner-detail"></span>
 </div>
 
 <!--
@@ -9091,7 +9090,7 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
   </div>
 </div>
 
-<script type="module" src="./tacit.js?cb=331e204b"></script>
+<script type="module" src="./tacit.js?cb=e7cdd337"></script>
 
 <!-- Service worker registration moved into tacit.js (the dapp's CSP forbids
      inline scripts; only 'self' module scripts are allowed). See sw.js for
