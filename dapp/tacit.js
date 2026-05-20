@@ -66661,79 +66661,88 @@ async function _bidTakeInsteadHandler(btn) {
   if (!_broadcastSuccess) {
     for (let i = 1; i < progressItems.length; i++) progressItems[i].status = 'failed';
     if (progressEl) _renderSwapProgress(progressEl, progressItems);
-    // One-click re-bid: spin up a toast with an action button that re-
-    // posts the original bid params. The bid is gone from the book (step
-    // 1 succeeded), the take failed (step 2 fizzled). Without this, the
-    // user has to navigate to Advanced bid and re-type every field —
-    // exactly the friction that made this corner case painful enough to
-    // notice in the first place.
     const _detail = isUnlockCancelled(_lastErr)
       ? 'Unlock cancelled mid-take.'
       : (_lastErr?.message || String(_lastErr || 'unknown error'));
-    // Confirm-action toast (lightweight inline button). Caller defines
-    // an `actionLabel` + `onAction`. Falls back to plain toast if the
-    // toast helper doesn't support actions on this build.
-    const _msg = `Take broadcast failed: ${_detail}\n\nYour ${bidSats.toLocaleString()} sats are intact in your wallet. Your previous bid is gone — click below to re-post the exact same bid.`;
-    let _toastedWithAction = false;
-    try {
-      if (typeof toastWithAction === 'function') {
-        toastWithAction(_msg, {
-          actionLabel: `Re-post bid (${fmtAssetAmount(BigInt(bidAmtBase), decimals)} ${ticker} @ ${fmtUnitPriceSats(bidUnit)} sats/${ticker})`,
-          onAction: async () => {
-            try {
-              await publishBidIntent({
-                assetIdHex: aid,
-                amount: BigInt(bidAmtBase),
-                priceSats: bidSats,
-                expiry: Math.floor(Date.now() / 1000) + 24 * 3600,
-                minFillAmount: 0,
-              });
-              toast('Bid re-posted ✓ Live in the orderbook.', 'success', 6000);
-              _invalidateBidsCache(aid);
-              setTimeout(() => { try { refreshYourOpenOrdersPanel(document, aid); } catch {} }, 500);
-            } catch (e2) {
-              if (isUnlockCancelled(e2)) toast('Unlock cancelled — bid not re-posted.', '');
-              else toast(`Re-post failed: ${e2?.message || String(e2)}`, 'error');
-            }
-          },
-        });
-        _toastedWithAction = true;
-      }
-    } catch {}
-    if (!_toastedWithAction) {
-      // Fallback: plain toast + ad-hoc re-bid button rendered into the
-      // open-orders panel header. Survives builds without toastWithAction.
-      toast(_msg, 'error', 15000);
+    // Auto-rebid: the user's last positive action was creating that bid;
+    // Take→ was an "upgrade" attempt on top of it. If the upgrade fails,
+    // the safest fallback is the original state (bid resting in book), so
+    // any future seller can still match it. We auto-fire publishBidIntent
+    // with the exact same params (amount, priceSats, 24h expiry) instead
+    // of leaving the user manually re-posting from an error toast — which
+    // is the friction that left the user just now staring at an empty
+    // orderbook wondering whether they needed to act.
+    //
+    // Skipped only on unlock-cancellation: that's an explicit user-bail
+    // gesture (ESC on the passphrase modal), and re-prompting them for
+    // a signature to auto-rebid contradicts the gesture. For every
+    // other failure (stale ask snipe, transient network, etc.) the
+    // rebid is correct — user wanted a bid at price X for budget Y,
+    // step 1 wiped it, step 2 failed, so we put it back.
+    if (isUnlockCancelled(_lastErr)) {
+      toast(
+        `Take broadcast cancelled. Your ${bidSats.toLocaleString()} sats are intact; your bid is gone. Re-bid via +bid in the BIDS header if you still want this fill.`,
+        '', 12000,
+      );
+    } else {
+      // Try auto-rebid. Wallet priv should still be cached from the
+      // cancel signature, so this fires without another passphrase
+      // prompt in the happy case.
+      let _rebidOk = false;
       try {
-        const panel = document.querySelector(`[data-your-orders][data-aid="${aid}"]`);
-        if (panel) {
-          const banner = document.createElement('div');
-          banner.style.cssText = 'margin:8px 0;padding:8px 10px;background:#fee;border:0.5px solid #b8341d;color:#b8341d;font-size:11px;display:flex;gap:8px;align-items:center;justify-content:space-between;';
-          banner.innerHTML = `<span>Take failed; your previous bid is gone. <strong>${bidSats.toLocaleString()} sats</strong> intact.</span><button type="button" style="font-size:10px;padding:4px 10px;background:#b8341d;color:#fff;border:0;cursor:pointer;">Re-post bid</button>`;
-          const rebidBtn = banner.querySelector('button');
-          rebidBtn.onclick = async () => {
-            rebidBtn.disabled = true; rebidBtn.textContent = 're-posting…';
-            try {
-              await publishBidIntent({
-                assetIdHex: aid,
-                amount: BigInt(bidAmtBase),
-                priceSats: bidSats,
-                expiry: Math.floor(Date.now() / 1000) + 24 * 3600,
-                minFillAmount: 0,
-              });
-              toast('Bid re-posted ✓ Live in the orderbook.', 'success', 6000);
-              _invalidateBidsCache(aid);
-              banner.remove();
-              setTimeout(() => { try { refreshYourOpenOrdersPanel(document, aid); } catch {} }, 500);
-            } catch (e2) {
-              rebidBtn.disabled = false; rebidBtn.textContent = 'Re-post bid';
-              if (isUnlockCancelled(e2)) toast('Unlock cancelled — bid not re-posted.', '');
-              else toast(`Re-post failed: ${e2?.message || String(e2)}`, 'error');
-            }
-          };
-          panel.insertBefore(banner, panel.firstChild);
-        }
-      } catch {}
+        await publishBidIntent({
+          assetIdHex: aid,
+          amount: BigInt(bidAmtBase),
+          priceSats: bidSats,
+          expiry: Math.floor(Date.now() / 1000) + 24 * 3600,
+          minFillAmount: 0,
+        });
+        _rebidOk = true;
+        _invalidateBidsCache(aid);
+        toast(
+          `Take failed (${_detail}). Auto-restored your bid: ${fmtAssetAmount(BigInt(bidAmtBase), decimals)} ${ticker} @ ${fmtUnitPriceSats(bidUnit)} sats/${ticker} for ${bidSats.toLocaleString()} sats. Now live in the orderbook again.`,
+          'success', 15000,
+        );
+      } catch (e2) {
+        // Auto-rebid itself failed (worker rejected, wallet now locked,
+        // network blip). Surface the manual fallback: a red banner in
+        // the open-orders panel with a one-click Re-post button so the
+        // user is still one tap from restoring their position.
+        try {
+          const panel = document.querySelector(`[data-your-orders][data-aid="${aid}"]`);
+          if (panel) {
+            const banner = document.createElement('div');
+            banner.style.cssText = 'margin:8px 0;padding:8px 10px;background:#fee;border:0.5px solid #b8341d;color:#b8341d;font-size:11px;display:flex;gap:8px;align-items:center;justify-content:space-between;flex-wrap:wrap;';
+            banner.innerHTML = `<span>Take failed AND auto-rebid failed. <strong>${bidSats.toLocaleString()} sats</strong> still intact in your wallet.</span><button type="button" style="font-size:10px;padding:4px 10px;background:#b8341d;color:#fff;border:0;cursor:pointer;">Re-post bid manually</button>`;
+            const rebidBtn = banner.querySelector('button');
+            rebidBtn.onclick = async () => {
+              rebidBtn.disabled = true; rebidBtn.textContent = 're-posting…';
+              try {
+                await publishBidIntent({
+                  assetIdHex: aid,
+                  amount: BigInt(bidAmtBase),
+                  priceSats: bidSats,
+                  expiry: Math.floor(Date.now() / 1000) + 24 * 3600,
+                  minFillAmount: 0,
+                });
+                toast('Bid re-posted ✓ Live in the orderbook.', 'success', 6000);
+                _invalidateBidsCache(aid);
+                banner.remove();
+                setTimeout(() => { try { refreshYourOpenOrdersPanel(document, aid); } catch {} }, 500);
+              } catch (e3) {
+                rebidBtn.disabled = false; rebidBtn.textContent = 'Re-post bid manually';
+                if (isUnlockCancelled(e3)) toast('Unlock cancelled — bid not re-posted.', '');
+                else toast(`Re-post failed: ${e3?.message || String(e3)}`, 'error');
+              }
+            };
+            panel.insertBefore(banner, panel.firstChild);
+          }
+        } catch {}
+        toast(
+          `Take failed (${_detail}). Auto-rebid also failed (${e2?.message || String(e2)}). Your sats are intact; click "Re-post bid manually" below.`,
+          'error', 15000,
+        );
+      }
     }
   }
   btn.disabled = false; btn.textContent = orig;
