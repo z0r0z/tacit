@@ -58011,11 +58011,30 @@ function applyMarketFilters() {
       // the latest unit price (mark and last typically agree on a healthy
       // book). _effectiveReferenceUnit is the same helper the rest of the
       // page uses, so all crossed-aware surfaces stay locked together.
+      // Anchor on the same _effectiveReferenceUnit the hero uses so the
+      // swap tile and the page header always show the same primary
+      // number. Previously: crossed-book branch used mid (matches hero),
+      // healthy branch used `latest.u` from the price-summary ring
+      // (single most-recent unit print) — that disagreed with the hero
+      // whenever a single fat-finger trade landed in the ring without
+      // moving the median (TAC's 161.89 mark vs 224.309 latest, both
+      // labeled "7m ago"). Now: strip always shows the resolved
+      // reference (mark / blend / mid), with the raw latest print as
+      // muted context.
       const _stripRef = _effectiveReferenceUnit(safeAid, a);
-      const _stripCrossed = _stripRef?.crossed === true && Number.isFinite(_stripRef?.unit) && _stripRef.unit > 0;
-      const lastHtml = _stripCrossed
-        ? `<span class="strip-last" title="Book is crossed (best in-band bid > best in-band ask); midpoint of (best bid + best ask) / 2 is the realistic clearing reference. Last trade (${fmtUnitPriceSats(latest.u)} sats/${ticker}) is shown for context but is stale relative to live liquidity."><strong>${fmtUnitPriceSats(_stripRef.unit)} mid</strong> <span class="muted" style="font-size:9px;">· last ${fmtUnitPriceSats(latest.u)}</span></span>`
-        : `<span class="strip-last" title="Latest unit price from the recent-trades ring">${fmtUnitPriceSats(latest.u)} sats/${escapeHtml(ticker)}</span>`;
+      const _stripUnit = Number.isFinite(_stripRef?.unit) && _stripRef.unit > 0 ? _stripRef.unit : latest.u;
+      const _stripCrossed = _stripRef?.crossed === true;
+      const _stripSource = _stripRef?.source || 'mark';
+      const _stripLabel = _stripCrossed ? 'mid' : (_stripSource === 'blend' ? 'mark · blend' : (_stripSource === 'book' ? 'book mid' : 'mark'));
+      const _latestDiffers = Number.isFinite(latest?.u) && latest.u > 0 && Math.abs(latest.u - _stripUnit) / _stripUnit > 0.01;
+      const _stripTitle = _stripCrossed
+        ? 'Book is crossed (best bid > best ask). The clearing reference is the (best bid + best ask) / 2 midpoint until the next settled trade.'
+        : (_stripSource === 'blend'
+            ? 'Mark blended with the in-band (best bid + best ask) / 2 midpoint — the last on-chain print is over 1h old, so the live book gets weighted in. Snaps back to settled-trade-only on the next fill.'
+            : (_stripSource === 'book'
+                ? 'Last on-chain print is over 6h stale; the in-band book midpoint is the freshest economic signal. The depth chart still shows the prior settled price as a guide line.'
+                : 'Outlier-guarded mark — median of recent settled trades, with dust ignored.'));
+      const lastHtml = `<span class="strip-last" title="${escapeHtml(_stripTitle)}"><strong>${fmtUnitPriceSats(_stripUnit)} ${escapeHtml(_stripLabel)}</strong>${_latestDiffers ? ` <span class="muted" style="font-size:9px;">· last ${fmtUnitPriceSats(latest.u)}</span>` : ''}</span>`;
       // Recent-trade activity hint. Pulls the most recent trade timestamp
       // (worker last_trade.ts is authoritative; falls back to the latest
       // price_summary point) and counts trades in the past 24h. Gives a

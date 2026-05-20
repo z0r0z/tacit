@@ -202,7 +202,14 @@ kernel_sig         = 64 bytes (BIP-340 over kernel_msg, signed by seller with `e
 N_outputs          = 1 or 2   (∈ {1, 2} for v1 — 1 = exact-amount fill, 2 = seller has asset change)
 output[0]:                                          ← buyer's tacit recipient
   commitment       = pedersen(amount, blinding) — `amount` and `blinding` from the bid record
-  encryptedAmount  = 0x00..00 (8 bytes; amount is cleartext in the bid record per §5.7.8 convention)
+  encryptedAmount  = 8 bytes — amount_LE XOR HMAC-SHA256(buyer_priv,
+                                "tacit-preauth-bid-amount-v1"
+                                || bid_id(16) || funding_outpoint_txid_BE(32)
+                                || funding_outpoint_vout_LE(4)).first8
+                              (self-keystream — buyer recovers from privkey + chain alone;
+                               on-chain bytes are non-zero, matches the §5.7.6.1 maker-payload
+                               self-blinding pattern; avoids the "all-zero encrypted_amount"
+                               on-chain distinguishability sentinel)
 output[1]:                                          ← seller's asset change (OPTIONAL)
   commitment       = 33 bytes — pedersen(seller_change_amount, seller_change_blinding)
   encryptedAmount  = 8 bytes  — encrypted under seller's self-recovery keystream
@@ -233,8 +240,22 @@ wallet. The seller signs the kernel sig — they have both pieces.
 
 ## Settlement tx layout (single-seller fill)
 
+The seller is the assembler, so the seller broadcasts **two** Bitcoin
+txs (commit + reveal), mirroring the buyer's role in §5.7.8.1:
+
+**Commit tx** (seller broadcasts first):
+
 ```
-vin[0]       buyer's commit P2TR (envelope script-path)        — seller assembles
+vin[*]       seller's BTC funding (P2WPKH, SIGHASH_ALL)
+vout[0]      P2TR address whose script-path leaf carries the T_PREAUTH_BID envelope
+vout[*]      seller change (OPTIONAL)
+```
+
+**Reveal tx** (seller broadcasts after commit relays):
+
+```
+vin[0]       seller's commit P2TR                              — script-path spend
+                                                                  revealing the envelope
 vin[1]       seller's asset UTXO                               — kernel-sig consumed,
                                                                   seller SIGHASH_ALL sig
                                                                   on the P2WPKH spend
@@ -244,22 +265,19 @@ vin[2]       buyer's sats UTXO                                 — SIGHASH_SINGL
 vout[0]      buyer's tacit recipient (DUST P2WPKH to recipient_pubkey)
 vout[1]      seller's sats payout                              — value ≥ price_sats,
                                                                   P2WPKH(seller_chosen_script)
-vout[2]      OP_RETURN(bid_context_hash[:19])                   — bound by buyer's vin[2] sig
+vout[2]      OP_RETURN(bid_context_hash)                       — 34-byte scriptPubKey,
+                                                                  bound by buyer's vin[2] sig
 [vout[3]]    seller's asset change tacit dust (OPTIONAL)        — present iff N_outputs == 2;
                                                                   P2WPKH(seller_pubkey) DUST
 ```
-
-The seller is the assembler: they fetch the open bid from the
-worker, locate one of their own asset UTXOs of value ≥ bid.amount,
-build the envelope + kernel sig, append the buyer's pre-signed
-sats input at `vin[2]`, append the canonical OP_RETURN at
-`vout[2]`, set their own payout vout, and broadcast.
 
 The buyer's recipient sits at `vout[0]` — the standard `T_AXFER`
 slot, so the recovery scanner finds the output without a schema
 change. The OP_RETURN binding is **not** at `vout[0]` (which is
 the tacit-recipient slot); it lands at `vout[2]` matching the
-buyer's `vin[2]`.
+buyer's `vin[2]`. Position-independence (per §5.7.8.1) means the
+seller MAY shift the buyer-input/OP_RETURN pair to any matching
+`(vin[k], vout[k])` — both indices must move together.
 
 ---
 
