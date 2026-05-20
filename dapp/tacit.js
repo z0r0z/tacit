@@ -65191,7 +65191,7 @@ function renderYourOpenOrdersHTML(aid, asset, myPubHex) {
     // for higher bids to expire/cancel.
     const _rank = b.bid_id ? _bidRankByBidId.get(b.bid_id) : null;
     const _rankTail = (_rank != null && _bidLadderTotal > 1)
-      ? ` <span class="muted" style="font-size:9px;padding:1px 5px;border:1px solid var(--ink-faint);" title="Your bid's position in the ladder, sorted highest unit price first. #1 = next fill any seller's Swap-sell would hit. Higher ranks fill slower; cancel + re-bid higher to climb.">#${_rank} of ${_bidLadderTotal}</span>`
+      ? ` <span class="muted" style="display:inline-block;white-space:nowrap;font-size:9px;padding:1px 5px;border:1px solid var(--ink-faint);" title="Your bid's position in the ladder, sorted highest unit price first. #1 = next fill any seller's Swap-sell would hit. Higher ranks fill slower; cancel + re-bid higher to climb.">#${_rank} of ${_bidLadderTotal}</span>`
       : '';
     // Stranded-bid escape hatch: scan the in-memory listings cache for
     // asks priced at-or-below this bid's unit price AND whose total sats
@@ -65207,7 +65207,7 @@ function renderYourOpenOrdersHTML(aid, asset, myPubHex) {
           const _cheapest = _matchable[0];
           const _cheapestPriceStr = fmtUnitPriceSats(_cheapest.askUnit);
           const _tip = `${_matchable.length} ask${_matchable.length === 1 ? '' : 's'} priced at-or-below your bid AND small enough to take with your ${sats.toLocaleString()}-sat budget. Cheapest: ${_cheapestPriceStr} sats/${ticker} for ${_cheapest.askPs.toLocaleString()} sats. Click Take → to cancel this bid and re-route the same sats into a direct buy at a better price.`;
-          return ` <span title="${escapeHtml(_tip)}" style="background:#fff8eb;border:0.5px solid #c97a1a;color:#7a4d00;font-size:9px;padding:1px 5px;letter-spacing:0.04em;cursor:help;">★ matchable @ ${escapeHtml(_cheapestPriceStr)}</span>`;
+          return ` <span title="${escapeHtml(_tip)}" style="display:inline-block;white-space:nowrap;background:#fff8eb;border:0.5px solid #c97a1a;color:#7a4d00;font-size:9px;padding:1px 5px;letter-spacing:0.04em;cursor:help;">★ matchable @ ${escapeHtml(_cheapestPriceStr)}</span>`;
         })()
       : '';
     const _takeBtn = _matchable.length > 0
