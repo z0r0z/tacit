@@ -160,9 +160,11 @@ header {
      "this is cut off." */
   -webkit-mask-image: linear-gradient(to right, transparent 0, #000 28px, #000 calc(100% - 28px), transparent 100%);
           mask-image: linear-gradient(to right, transparent 0, #000 28px, #000 calc(100% - 28px), transparent 100%);
-  /* Auto-scroll: 60s for one full cycle. Duration is intentionally
-     slow so the user can read individual entries without rushing. */
-  animation: tape-scroll 60s linear infinite;
+  /* Auto-scroll: 45s for one full cycle. Slow enough that individual
+     entries stay readable, but with the TAC-led lead-in the strip
+     reads as activity rather than as a static list — a faster pass
+     reinforces "this is live." */
+  animation: tape-scroll 45s linear infinite;
   will-change: transform;
 }
 .global-tape:hover .global-tape-track,
@@ -242,6 +244,15 @@ header {
 @keyframes tape-scroll {
   from { transform: translateX(0); }
   to   { transform: translateX(-50%); }
+}
+/* Mirror variant — scrolls right-to-left (opposite of the top tape's
+   left-to-right travel). Pairs the contributors marquee at the page
+   foot with the trades marquee at the page top: the two strips run
+   in opposite directions, framing the page like ticker rails. The
+   inner track uses animation-direction:reverse rather than a separate
+   keyframe so the same masking + duplicated-items layout works. */
+.global-tape--reverse .global-tape-track {
+  animation-direction: reverse;
 }
 @media (prefers-reduced-motion: reduce) {
   .global-tape-track { animation: none; overflow-x: auto; }
@@ -6747,9 +6758,11 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
       <span><span style="color:var(--orange);">●</span> AMM ceremony <b id="amm-contrib-count" style="color:var(--ink);font-weight:600;">—</b> · <a href="#" data-act="amm-contrib-open" style="color:var(--ink-mid);text-decoration:none;border-bottom:0.5px dashed var(--ink-faint);">contribute →</a></span>
       <span style="color:var(--ink-mid);">BIP-341 · BIP-340 · CT</span>
     </div>
-    <!-- Legacy marquee container kept hidden so _renderAmmContribTape()
-         doesn't error querying for it; the count update still works. -->
-    <div id="amm-contrib-tape" data-amm-contrib-tape style="display:none;">
+    <!-- Recent contributors marquee. Reuses the .global-tape skeleton
+         (overflow + edge masks) and adds the --reverse variant so it
+         scrolls right-to-left as a mirror of the top trade tape. Populated
+         by _renderAmmContribTape(); hidden when no contributions yet. -->
+    <div id="amm-contrib-tape" class="global-tape global-tape--reverse" data-amm-contrib-tape style="display:none;border-bottom:0;padding-top:0;margin-bottom:0;">
       <div class="global-tape-track" data-amm-contrib-tape-track></div>
     </div>
   </div>

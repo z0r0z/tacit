@@ -14404,6 +14404,69 @@ let _holdingsInFlight = null;
 // this guard, the user clicks ↻ Retry → fresh scan finishes → orphan scan
 // from before the timeout completes a few seconds later → stale balances.
 let _holdingsLatestGen = 0;
+
+// Once-per-session background scan for shielded receipts (SPEC-BLINDED-PUBKEY
+// §A.2 class-2). scanHoldings walks getUtxos(wallet.address()) — classical
+// only. Stealth-received UTXOs sit at P2WPKH(commit) on per-tx-unique
+// addresses, never enumerated by that walk. The receive UI's per-asset
+// Rescan button covers explicit recovery, but most users expect "log in,
+// see balance" without clicking anything. This background walk closes that
+// gap for assets the user already holds — sender → wallet's published tcs1
+// flow surfaces automatically on next holdings refresh.
+//
+// Constraints:
+//   • One run per session (gated on _stealthAutoScanRanThisSession).
+//   • Skipped for heavy wallets — they already burned the tx-fetch budget
+//     on classical scan; fall back to the per-card manual Rescan button.
+//   • Capped at the first N (=5) held assets to keep total subrequest
+//     count bounded regardless of how many tokens the wallet holds.
+//   • Per-asset: 1 page × 50 txs (the recent xferseen window). Manual
+//     Rescan still walks 4 pages for explicit recovery.
+//   • Fire-and-forget; never blocks scanHoldings's response.
+//   • Silent unless a credit is found; on found, small toast + re-render.
+let _stealthAutoScanRanThisSession = false;
+function _triggerStealthAutoScanInBackground(holdings) {
+  if (_stealthAutoScanRanThisSession) return;
+  if (!WORKER_BASE) return;
+  if (!(holdings instanceof Map) || holdings.size === 0) return;
+  let walletAddr = null;
+  try { walletAddr = wallet.address(); } catch { return; }
+  if (!walletAddr) return;
+  if (_heavyAddresses.has(walletAddr)) return;
+  _stealthAutoScanRanThisSession = true;
+  // Sort assets by descending balance so the user's most-meaningful tokens
+  // get the auto-scan budget. Cap at 5 — power users with many tokens fall
+  // back to per-card Rescan for the long tail.
+  const candidates = [...holdings.entries()]
+    .filter(([, h]) => h && typeof h.balance === 'bigint' && h.balance > 0n)
+    .sort(([, a], [, b]) => (a.balance < b.balance ? 1 : a.balance > b.balance ? -1 : 0))
+    .slice(0, 5)
+    .map(([aid]) => aid);
+  if (candidates.length === 0) { _stealthAutoScanRanThisSession = false; return; }
+  // Microtask-defer the walk so the calling scanHoldings response settles
+  // first; the holdings render lands immediately, the background scan hums
+  // after.
+  (async () => {
+    let totalFound = 0;
+    for (const aid of candidates) {
+      try {
+        const res = await scanAssetForStealthReceipts(aid, {
+          maxPages: 1, pageLimit: 50,
+        });
+        totalFound += res.discovered.length;
+      } catch { /* silent — auto-scan never alarms the user */ }
+    }
+    if (totalFound > 0) {
+      try {
+        invalidateHoldingsCache();
+        await scanHoldings(true);
+        if (typeof renderHoldings === 'function') renderHoldings();
+        try { toast(`Found ${totalFound} shielded receipt${totalFound === 1 ? '' : 's'} on background scan.`, 'success', 6000); } catch {}
+      } catch { /* silent — user can still hit Refresh */ }
+    }
+  })();
+}
+
 async function scanHoldings(force = false) {
   // Test-only override (see _testSetScanHoldingsOverride). Bypasses every
   // chain walk + cache — the override IS the result. Returns a Map matching
@@ -14471,6 +14534,14 @@ async function scanHoldings(force = false) {
                 applyMarketFilters();
               }
             } catch {}
+            // Fire-and-forget background discovery of shielded receipts paid
+            // to this wallet's tcs1 address. Runs once per session, only for
+            // assets the user already holds (signal: they care about this
+            // asset), and only on non-heavy wallets (heavy wallets defer to
+            // the per-card manual Rescan button to avoid burning the tx-fetch
+            // budget). Doesn't await — completes whenever it completes; on
+            // discovery, invalidates the cache and re-renders.
+            try { _triggerStealthAutoScanInBackground(h); } catch {}
           }
           try { _pendingClearPostScan(); } catch {}
           return h;
@@ -55698,12 +55769,19 @@ function _renderGlobalTape() {
       txid: lt.txid || '',
     };
   };
-  // Pick the "home" TAC asset to lead the tape. Multiple TAC tickers can
-  // exist on a network (squatters / test mints); pick the one with the
-  // highest holder_count as a robust proxy for canonical, then prefer
-  // verified when counts tie. Falls through to null when no TAC is in
-  // the cache (e.g. signet network without a TAC etch).
+  // Pick the "home" TAC asset to lead the tape. Prefer the hard-coded
+  // canonical aid for the current network (mainnet has one — the
+  // verified project asset at tacit.finance); fall back to the best TAC
+  // by holder_count + verified tiebreak when no canonical is registered
+  // (signet today). The market-cache asset is just the registry stub
+  // here — we need its trades ring, which only the per-asset detail
+  // endpoint carries.
+  const _tacCanonicalAid = TACIT_HOME_ASSET_ID_BY_NET[NET.name] || null;
   const _tacAsset = (() => {
+    if (_tacCanonicalAid) {
+      const hit = assets.find(a => (a?.asset_id || '').toLowerCase() === _tacCanonicalAid);
+      if (hit) return hit;
+    }
     let best = null;
     for (const a of assets) {
       if ((a?.ticker || '').toUpperCase() !== 'TAC') continue;
@@ -55715,16 +55793,49 @@ function _renderGlobalTape() {
     }
     return best;
   })();
+  // The /market response strips the per-asset `trades` ring to keep the
+  // payload lean, so to get 8 distinct TAC fills we have to consult the
+  // single-asset detail cache (populated by fetchMarketAssetStats when a
+  // user has visited the TAC asset page, or warmed here). The cache
+  // entry's `data.trades` is the ring (up to 200 entries); fall through
+  // to the market-cache `last_trade` when the ring isn't warm yet.
+  const _tacDetail = (() => {
+    if (!_tacAsset) return null;
+    try {
+      const k = marketAssetStatsKey(_tacAsset.asset_id);
+      const cached = _marketAssetStatsCache.get(k);
+      return cached?.data || null;
+    } catch { return null; }
+  })();
+  const _tacTradesRing = (_tacDetail && Array.isArray(_tacDetail.trades) && _tacDetail.trades.length > 0)
+    ? _tacDetail.trades
+    : (_tacAsset && Array.isArray(_tacAsset.trades) ? _tacAsset.trades : []);
   // Lead: up to 8 most recent TAC fills from its trades ring. Each entry's
   // tick direction is computed against the next-older trade in the same
   // ring so a real ↑/↓ glyph rides each fill (not just the latest).
   const tacItems = [];
-  if (_tacAsset && Array.isArray(_tacAsset.trades)) {
-    const ring = _tacAsset.trades.slice().sort((x, y) => Number(y?.ts || 0) - Number(x?.ts || 0));
+  if (_tacAsset && _tacTradesRing.length > 0) {
+    const ring = _tacTradesRing.slice().sort((x, y) => Number(y?.ts || 0) - Number(x?.ts || 0));
     for (let i = 0; i < ring.length && tacItems.length < GLOBAL_TAPE_TAC_LIMIT; i++) {
       const item = _buildTapeItem(_tacAsset, ring[i], ring[i + 1] || null);
       if (item) tacItems.push(item);
     }
+  } else if (_tacAsset && _tacAsset.last_trade) {
+    // Cache cold — render the single last_trade as a placeholder so the
+    // tape isn't TAC-less while the detail fetch warms.
+    const item = _buildTapeItem(_tacAsset, _tacAsset.last_trade, null);
+    if (item) tacItems.push(item);
+  }
+  // Warm the detail cache asynchronously when the ring is cold AND there's
+  // a TAC asset to fetch. Re-renders once on completion. _globalTapeTacRefetchPending
+  // gates the schedule so concurrent tape ticks don't pile fetches.
+  if (_tacAsset && _tacTradesRing.length < GLOBAL_TAPE_TAC_LIMIT
+      && !_globalTapeTacRefetchPending && typeof fetchMarketAssetStats === 'function') {
+    _globalTapeTacRefetchPending = true;
+    fetchMarketAssetStats(_tacAsset.asset_id)
+      .then(() => { _globalTapeLastSig = ''; try { _renderGlobalTape(); } catch {} })
+      .catch(() => {})
+      .finally(() => { _globalTapeTacRefetchPending = false; });
   }
   // Tail: one most-recent fill per OTHER asset (skip the TAC we just
   // covered), sorted newest first and capped at GLOBAL_TAPE_OTHERS_LIMIT
@@ -55877,11 +55988,15 @@ function _renderAmmContribTape() {
     const itemsHtml = items.map(buildItem).join('');
     // Duplicate for seamless marquee loop (same trick as global tape).
     track.innerHTML = itemsHtml + itemsHtml;
+    // Reveal the marquee. The container ships hidden so it doesn't paint
+    // an empty strip during boot before the first ceremony fetch; once
+    // we have items it acts as the bottom-of-page mirror of the trades
+    // tape (scrolls right-to-left via .global-tape--reverse).
+    tape.style.display = '';
     // Update the count for the slim footer strip ("N contribs"). The
-    // full marquee was promoted out of the orderbook view into the
-    // ceremony drawer per the designer's spec; the hidden #amm-contrib-tape
-    // element stays in the DOM only because this populator's track
-    // selector still needs to resolve without throwing.
+    // count link stays in the static three-column footer above the
+    // marquee — the marquee lists *which* contributors are most recent,
+    // the footer still owns the count + contribute call-to-action.
     try {
       const countEl = document.getElementById('amm-contrib-count');
       if (countEl) {

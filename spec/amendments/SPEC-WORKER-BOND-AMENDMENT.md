@@ -2,19 +2,26 @@
 
 > Status: 📝 Draft (round-1)
 > Depends on: `T_INTENT_ATTEST` (`0x30`, SPEC.md §5.17) — the
-> scope-generic preconfirmation primitive. `SPEC-ORDERBOOK-CHANNEL-AMENDMENT.md`
-> and the AMM channel scope schemas (AMM.md §"Preconfirmation
-> layer") consume this primitive today.
-> `SPEC-CBTC-TAC-AMENDMENT.md` (§5.34) established the TAC-as-
-> slashable-bond pattern with indexer-state slashing (the
-> `SLASH_DETECTED` precedent — slash as state event, no Bitcoin-
-> layer spend of the bonded UTXO).
-> `SPEC-WRAPPER-AMENDMENT.md` supplies the `protocol_bonded`
-> Taproot construction the bond UTXO uses (cooperative key-path
-> spending requires worker + federation co-sig; no unilateral
-> worker withdrawal).
+> scope-generic preconfirmation primitive.
+> `SPEC-ORDERBOOK-CHANNEL-AMENDMENT.md` and the AMM channel scope
+> schemas (`spec/amm/dapp-checklist.md`, `spec/amm/wire-formats.md`)
+> consume this primitive today.
+> `SPEC-CBTC-TAC-AMENDMENT.md` established the protocol-controlled
+> TAC-bond UTXO pattern (§5.35.2: "Locked at a protocol-controlled
+> escrow … cannot be spent except via valid withdraw, force-close,
+> or slash envelopes … moves only via tacit envelope state
+> transitions") and the indexer-state slashing precedent
+> (`SLASH_DETECTED`, §5.39.2; insurance plumbing at
+> `T_SHARE_SLASH_CLAIM`, §5.39.4). **Critically — and contrary to
+> an earlier draft of this amendment — cBTC.tac is explicitly
+> federation-free** (§5.35.2: "there is no federation, no multisig,
+> no co-signer"). This amendment inherits the same trustless-escrow
+> shape: the bond UTXO is constructed as a no-spending-key Taproot
+> output and never spends on Bitcoin; all TAC movement is by
+> indexer-state reattribution per envelope.
 > `SPEC-GOVERNANCE-AMENDMENT.md` supplies the safety-band
-> parameter framework (`INITIAL_BOND_RATIO`, `MAX_BONDED_FRAC_OF_TAC_FDV`).
+> parameter framework (`INITIAL_BOND_RATIO`,
+> `MAX_BONDED_FRAC_OF_TAC_FDV`).
 >
 > Adds three opcodes (`T_WORKER_BOND_OPEN`, `T_WORKER_BOND_CLOSE`,
 > `T_WORKER_SLASH`; tentative bytes `0x5B`/`0x5C`/`0x5D` — final
@@ -29,13 +36,13 @@
 > the burn.
 >
 > The bond is denominated in **TAC**. No new cryptographic
-> primitive. No new ceremony. No change to `T_INTENT_ATTEST`'s wire
-> format or validator. The slash itself is an indexer-internal
-> state transition — the reporter's tx pays only Bitcoin fees and
-> publishes the evidence + their bounty-receipt vout; the bond
-> UTXO is never spent on the Bitcoin layer and becomes inert
-> dust after slash (federation refuses to co-sign any subsequent
-> cooperative close).
+> primitive. No new ceremony. No new trust assumption. No change
+> to `T_INTENT_ATTEST`'s wire format or validator. Every TAC
+> movement — open, cooperative close, slash — is implemented as
+> indexer-state reattribution of TAC value across outpoints; the
+> bond UTXO sits permanently on Bitcoin as unspendable dust and
+> all lifecycle transitions are gated by envelope validation
+> rules alone (matching cBTC.tac §5.35.2 semantics exactly).
 
 ---
 
@@ -74,27 +81,30 @@ channel layer "soft" and forces traders who care about safety to
 wait for Bitcoin confirmation anyway.
 
 This amendment closes that asymmetry. A worker that wants traders
-to honor its `T_INTENT_ATTEST` envelopes as soft-confirms locks a
-TAC bond in a `protocol_bonded` Taproot UTXO whose cooperative
-release requires a fixed protocol federation's co-signature (the
-same federation that gates cBTC.tac slot operations). The bond
-is releasable cooperatively after a notice period with no
-outstanding equivocation evidence; it is **slashable by anyone**
-who submits two conflicting `T_INTENT_ATTEST` envelopes signed
-by the same `worker_pubkey` at the same height for the same
-scope.
+to honor its `T_INTENT_ATTEST` envelopes as soft-confirms locks
+a TAC bond in a **no-spending-key Taproot UTXO** — the exact
+construction cBTC.tac uses for its TAC collateral escrow
+(§5.35.2). No federation, no multisig, no co-signer; the bond
+UTXO is structurally unspendable on Bitcoin. All TAC movement
+into and out of the bond is implemented as indexer-state
+reattribution of TAC value across outpoints, gated by envelope
+validation. The bond is releasable cooperatively after a notice
+period via `T_WORKER_BOND_CLOSE` (the envelope declares the
+worker's destination outpoint; the indexer reattributes TAC value
+from the bond UTXO to that destination); it is **slashable by
+anyone** who submits two conflicting `T_INTENT_ATTEST` envelopes
+signed by the same `worker_pubkey` at the same height for the
+same scope (the envelope declares a reporter bounty destination;
+the indexer reattributes a fraction of the bond's TAC value to
+the bounty outpoint and removes the remainder from circulation
+by recording it as burned).
 
-Slashing is an indexer-internal state transition, not a Bitcoin-
-layer UTXO spend: the indexer marks `bond.state = "slashed"`,
-reattributes a configurable fraction of the bonded TAC to a vout
-declared in the reporter's slash transaction (the bounty), and
-removes the remainder from circulation by recording it as
-burned. The bond UTXO itself sits on Bitcoin permanently — the
-federation refuses to co-sign cooperative close once the slash
-is indexer-recorded, so the worker cannot recover any of the
-locked sats either. Honest monitoring becomes positive-expected-
-value for any third party who can construct the evidence pair
-from on-chain envelopes.
+Both lifecycle paths share one mechanism: the bond UTXO's TAC
+attribution is rewritten by indexer state, never by Bitcoin-layer
+UTXO consumption. The bond UTXO is dust sats on Bitcoin forever.
+Honest monitoring becomes positive-expected-value for any third
+party who can construct the evidence pair from on-chain
+envelopes.
 
 **Why TAC, not BTC, for the bond.** The ecosystem alignment is
 the strong reason: TAC already underwrites cBTC.tac, has a
@@ -224,12 +234,15 @@ opener_sig(64)           BIP-340 over
 ```
 
 The TAC-asset UTXO created by this tx at `vout[1]` — a
-`protocol_bonded` Taproot output (cooperative MuSig2 key-path:
-`worker_pubkey + federation_keyset`) — **is** the bond. Its
-outpoint is the `bond_outpoint` recorded in `bond_state`. See
-`Bitcoin tx layout` below for the full output discipline and
-`Validator algorithm` for the rejection criteria when the wrapper
-construction is malformed.
+**no-spending-key Taproot output** following the cBTC.tac §5.35.2
+construction — **is** the bond. Its outpoint is the
+`bond_outpoint` recorded in `bond_state`. The UTXO is
+structurally unspendable on Bitcoin: no party (worker,
+indexer-operator, anyone) holds a secret that satisfies the
+output. All TAC movement attributable to the bond happens
+exclusively through indexer-state reattribution gated by valid
+envelope opcodes (`T_WORKER_BOND_CLOSE` step 2 or
+`T_WORKER_SLASH`).
 
 ### Bitcoin tx layout (normative)
 
@@ -238,18 +251,19 @@ vin[0]                  worker's TAC input(s) — standard tacit
                         asset input covering bond_tac_amount;
                         signed SIGHASH_ALL by worker_pubkey
 vout[0]                 OP_RETURN(envelope_hash) — 0 sat
-vout[1]                 Bond UTXO — protocol_bonded Taproot output
-                        per SPEC-WRAPPER-AMENDMENT.md. Key-path
-                        spending is a MuSig2 aggregate of
-                        worker_pubkey and the protocol federation
-                        key-set fixed at indexer genesis (same
-                        federation cBTC.tac slots use). No script-
-                        path spend. The worker cannot unilaterally
-                        spend; cooperative release requires
-                        federation co-signature per §5.X.2 step 2.
-                        Carries the TAC asset commit for
+vout[1]                 Bond UTXO — no-spending-key Taproot output
+                        (P2TR whose internal-key Q is provably
+                        nothing-up-my-sleeve and no script-path
+                        leaf is committed; the canonical construction
+                        is the cBTC.tac §5.35.2 pattern: Q derived
+                        from the position record by a deterministic
+                        derivation that includes a NUMS point such
+                        that no secret unlocks key-path or script-
+                        path). Carries the TAC asset commit for
                         bond_tac_amount; sats value at protocol
-                        dust minimum.
+                        dust minimum. Nobody can spend this UTXO
+                        on Bitcoin — its sats are permanently
+                        locked.
 vout[2..]               Optional change / fee outputs
 ```
 
@@ -266,13 +280,19 @@ on T_WORKER_BOND_OPEN at confirmation depth ≥ 1:
         bond_tac_amount under asset_id_TAC
     verify vin[0] supplies a valid TAC input ≥ bond_tac_amount
         (standard tacit asset input check)
-    verify vout[1] is a protocol_bonded Taproot output (per
-        SPEC-WRAPPER-AMENDMENT.md) whose internal-key MuSig2
-        aggregate commits to {worker_pubkey} ∪ federation_keyset.
-        Reject if any script-path leaf is present, or if the
-        aggregate omits the federation. Without this check the
-        worker could trivially supply a single-sig output and
-        rug the bond.
+    verify vout[1] is a no-spending-key Taproot output matching
+        the canonical cBTC.tac §5.35.2 escrow construction:
+        - internal-key Q derived deterministically from
+          (bond_open_envelope_hash, worker_pubkey) via the
+          standard NUMS-derivation function (per SPEC.md §5.4
+          asset-binding convention extended to escrow outpoints)
+        - no script-path leaf committed (output is pure key-path
+          to a key nobody holds)
+        Reject if Q does not match the canonical derivation or
+        if any taptweak is present beyond the asset binding.
+        Without this check the worker could supply a single-sig
+        output and rug the bond — the no-spending-key check is
+        the only thing preventing unilateral worker spending.
 
     require bond_tac_amount ≥ MIN_BOND_TAC               (governance band)
     require bond_tac_amount ≤ MAX_BOND_TAC_PER_TX         (governance band; anti-mistake)
@@ -350,15 +370,27 @@ release_sig(64)          BIP-340 over
 
 ### Bitcoin tx layout (normative, step 2)
 
+The bond UTXO is **not** spent — it cannot be (no spending key
+exists). The release tx is an ordinary Bitcoin tx that publishes
+the envelope and declares the destination outpoint at which the
+indexer attributes the released TAC value.
+
 ```
-vin[0]                  bond_outpoint (the bond UTXO being spent
-                        via cooperative key-path: MuSig2 aggregate
-                        of worker_pubkey + federation co-sig)
-vin[1..]                Worker fee inputs
-vout[0]                 OP_RETURN(envelope_hash)
-vout[1]                 Released TAC — paid to worker's
-                        declared destination script
-vout[2..]               Change / fee
+vin[0..]                Worker's fee inputs (sats); standard
+                        SIGHASH_ALL signed by worker_pubkey.
+                        Does NOT include bond_outpoint.
+vout[0]                 OP_RETURN(envelope_hash) — 0 sat
+vout[1]                 Released TAC destination — any standard
+                        tacit asset-bearing output the worker
+                        chooses (scriptPubKey under their key);
+                        the indexer attributes bond.bond_amount_tac
+                        TAC to this outpoint as a side effect of
+                        the envelope's state transition. No
+                        per-tx TAC input backs vout[1]; this is
+                        a conservation-exception branch (see
+                        §5.X.3 conservation note for the same
+                        pattern applied to slash).
+vout[2..]               Optional change / fee outputs
 ```
 
 ### Validator algorithm (step 2)
@@ -369,37 +401,36 @@ on T_WORKER_BOND_CLOSE step 2 at confirmation depth ≥ 1:
     require bond.state == "closing"
     require current_height - bond.notice_initiated_at >= BOND_NOTICE_BLOCKS
                                                           (governance band; default ~1008 blocks / ~1 week)
-    require bond.state != "slashed"   # federation refuses to co-sign in this case;
-                                       # belt-and-braces against any indexer race
 
-    verify release_sig
-    verify vin[0] is bond_outpoint and witness is a valid
-        MuSig2 cooperative key-path spend (worker + federation
-        share co-signed the SIGHASH); the federation participates
-        only if its indexer mirror confirms bond.state == "closing",
-        notice has elapsed, and no slash is recorded — federation
-        acts as a tx-broadcast assistant, not a custody decision-
-        maker
-    verify vout[1].amount and asset = bond.bond_amount_tac TAC
+    verify release_sig under worker_pubkey
+    verify vout[1] is a standard tacit asset-bearing output with
+        TAC asset commit binding to bond.bond_amount_tac (the
+        envelope's release_sig pre-image included vout[1]
+        script_pubkey and release_tac_amount_LE, so the worker
+        cannot reroute or change the amount after signing)
+
+    # Apply close — pure per-outpoint TAC reattribution:
+    bond_outpoint's attributed TAC value → 0
+        # bond UTXO becomes inert dust; it was already
+        # unspendable on Bitcoin, so the only change is the
+        # indexer-tracked asset value going to zero
+    (close_tx_id, vout[1])'s attributed TAC value → bond.bond_amount_tac
 
     transition bond.state → "closed"
 ```
 
-**Federation co-sign discipline (informative).** Federation
-members run an indexer mirror and refuse to participate in the
-MuSig2 cooperative spend whenever:
+There is no Bitcoin-layer spend race between close and slash —
+neither envelope spends `bond_outpoint` (it's unspendable). Both
+operate on indexer state alone; within-block ordering is
+resolved by `tx_index` ascending per SPEC.md §11. Whichever
+envelope the indexer processes first wins; the second hits the
+state guard for its operation (`state != "closing"` for close,
+`state ∉ {"active", "closing"}` for slash) and is rejected.
 
-- `bond.state != "closing"` (open or already closed/slashed)
-- notice not yet elapsed
-- any T_WORKER_SLASH for this bond has been observed at any
-  prior height
-
-Federation members do not exercise discretion beyond these
-checks. They are not graders of attestation quality, not jurors
-of disputes, not policy actors. A federation key-set with N
-members and threshold t (cBTC.tac's existing parameters) tolerates
-N − t members offline or byzantine without blocking honest
-cooperative close.
+No federation involvement at any step. No co-signing waiting on
+external parties. Same trust profile as cBTC.tac (§5.35.2):
+trustless escrow via no-spending-key Taproot, indexer-only
+TAC reattribution.
 
 ---
 
@@ -409,8 +440,8 @@ Anyone — not just the victim trader — can submit equivocation
 evidence. The slash is permissionless. **The slash is an
 indexer-state transition, not a Bitcoin-layer spend of the bond
 UTXO.** The reporter's transaction does not consume `bond_outpoint`
-(it can't — the reporter doesn't hold either the worker key or
-the federation share). It carries the evidence in its envelope
+(nobody can — there is no spending key for the bond UTXO; see
+§5.X.1). It carries the evidence in its envelope
 payload and declares a bounty-receipt vout; the indexer applies
 the slash by reattributing TAC value in its own state.
 
@@ -488,9 +519,9 @@ vout[1]                 Reporter bounty receipt —
 vout[2..]               Optional reporter change / fee outputs
 ```
 
-The bond UTXO at `bond_outpoint` is NOT in `vin[*]`. It remains
-on Bitcoin permanently in the slashed state — the federation
-will not co-sign any subsequent cooperative-close MuSig2 spend.
+The bond UTXO at `bond_outpoint` is NOT in `vin[*]` — it cannot
+be (no spending key, per §5.X.1). It remains on Bitcoin
+permanently as unspendable dust regardless of bond state.
 
 ### Validator algorithm
 
@@ -593,22 +624,22 @@ The slash is an indexer-state move that requires no Bitcoin-layer
 UTXO consumption, so the classic "two-spenders race over one
 outpoint" pattern doesn't apply. The remaining races:
 
-- **Slash and step-2 close in the same block.** Step-2 close
-  IS a Bitcoin-layer spend of `bond_outpoint`; slash is not.
-  Per SPEC.md §11 within-block ordering (`tx_index` ascending),
-  whichever tx the indexer processes first wins:
+- **Slash and step-2 close in the same block.** Neither envelope
+  spends `bond_outpoint` (the bond UTXO is unspendable; both
+  operations are pure indexer-state reattribution). Per SPEC.md
+  §11 within-block ordering (`tx_index` ascending), whichever tx
+  the indexer processes first wins:
   - If the slash is processed first, `bond.state → "slashed"`;
-    the close tx's federation co-sign would not have been
-    produced by an honest federation (their mirror sees the
-    slash), but if a malicious or stale federation did co-sign,
-    the indexer rejects the close at `state != "closing"`. The
-    bond UTXO may still spend on Bitcoin, but the indexer
-    attributes zero TAC to its outputs.
-  - If the close is processed first, the slash is rejected at
-    `bond.state ∈ {"active", "closing"}` (now `"closed"`).
-  The Bitcoin layer may still observe both txs confirming in
-  the same block; only the indexer's state transition is
-  authoritative.
+    the close envelope hits `state != "closing"` and is
+    rejected; the close tx's vout[1] receives zero indexer-
+    attributed TAC (becomes dust).
+  - If the close is processed first, the slash hits
+    `bond.state ∉ {"active", "closing"}` (now `"closed"`) and
+    is rejected; the slash tx's vout[1] receives zero indexer-
+    attributed TAC.
+  Both txs may still confirm at the Bitcoin layer (they're
+  ordinary txs paying fees); only the indexer's state
+  transition is authoritative for TAC attribution.
 - **Multiple slash submissions for the same evidence.** Each
   reporter pays their own fee and publishes their own evidence
   envelope. The indexer processes them in `tx_index` order; the
@@ -716,9 +747,13 @@ amendment to change):
   evidence is submitted before bond close; no parameter can
   disable it.
 - Slashed TAC distribution: reporter bounty is paid to the
-  reporter's declared vout, the remainder is burned (removed
-  from `total_TAC_supply`). The slash never flows into the
-  cBTC.tac insurance pool or any other pooled sink.
+  reporter's declared vout (`bounty_tac` attributed there); the
+  remainder is burned via per-outpoint reattribution
+  (`bond_outpoint`'s attributed TAC drops to zero with no
+  offsetting attribution to any other outpoint, contracting
+  circulating supply against the 21M cap). The slash never
+  flows into the cBTC.tac insurance pool or any other pooled
+  sink.
 - `MAX_BONDED_FRAC_OF_TAC_FDV` (system-wide cap on bonded TAC
   across all worker bonds plus all cBTC.tac positions) is shared
   with the cBTC.tac amendment and remains a hard limit at
@@ -746,8 +781,10 @@ This amendment does NOT modify:
 - The cBTC.tac insurance pool, its sink, or `T_SHARE_SLASH_CLAIM`
   semantics — worker-bond slashes do not touch any of these
 - `T_TRADE_BATCH` wire format or validator
-- The `protocol_bonded` Taproot construction itself (consumed
-  from SPEC-WRAPPER-AMENDMENT.md; no change to its definition)
+- The no-spending-key Taproot escrow construction itself
+  (inherited from cBTC.tac §5.35.2; no change to its
+  definition — this amendment is one more consumer of the same
+  pattern)
 
 It DOES add:
 
@@ -778,24 +815,27 @@ End-to-end signet rehearsal:
    conflicting `T_INTENT_ATTEST` envelopes for the same
    `(scope_id, observed_height)`. A third-party reporter submits
    `T_WORKER_SLASH`; verify reporter's declared vout receives
-   `bounty_tac = bond_amount × 10%` worth of indexer-attributed
-   TAC, the remaining 90% decrements `total_TAC_supply` (burn),
-   `bond.bond_amount_tac → 0`, `bond.state → "slashed"`,
-   `worker_flag.equivocator = true`. The bond UTXO at
-   `bond_outpoint` is still present on Bitcoin but the indexer
-   attributes zero TAC value to it.
+   `bounty_tac = bond_amount_tac × 10%` worth of indexer-
+   attributed TAC; the remaining 90% is burned (per-outpoint:
+   `bond_outpoint`'s attributed TAC drops to zero with no
+   offsetting attribution); `bond.bond_amount_tac → 0`,
+   `bond.state → "slashed"`, `worker_flag.equivocator = true`.
+   The bond UTXO at `bond_outpoint` is still present on Bitcoin
+   but the indexer attributes zero TAC value to it.
 3. **Slash during close-notice period.** Worker posts bond,
    attests honestly, then submits close-notice. Mid-notice,
    equivocation evidence from the worker's earlier active period
    is submitted. Slash lands during the notice window; verify
    `bond.state → "slashed"`; verify any subsequent step-2 close
-   tx is rejected by the indexer (federation refuses to co-sign,
-   and the validator's `state != "closing"` guard would catch any
-   stale co-signature).
+   envelope is rejected by the indexer's `state != "closing"`
+   guard and its declared vout[1] receives zero indexer-
+   attributed TAC.
 4. **Slash after close completes.** Worker fully closes their
-   bond (federation co-signs after notice; TAC released to
-   worker). Evidence from their active period is then submitted.
-   Verify slash is rejected: `bond.state == "closed"`.
+   bond (notice elapses; step-2 close envelope reattributes TAC
+   to the worker's destination). Evidence from their active
+   period is then submitted. Verify slash is rejected:
+   `bond.state == "closed"`; slash tx's vout[1] receives zero
+   indexer-attributed TAC.
 5. **Pre-bond evidence.** Two attestations with `observed_height
    < bond.opened_at_height`. Verify slash is rejected at the
    explicit guard.
@@ -811,12 +851,14 @@ End-to-end signet rehearsal:
    reporter's bounty vout; the second envelope is rejected at
    the state-guard line; the second reporter's declared bounty
    vout receives zero indexer-attributed TAC (becomes dust).
-8. **Burn accounting.** Track `total_TAC_supply` across several
-   slashes. After the test run, verify
-   `Δ(total_TAC_supply) == -Σ(burn_tac per slash)`. Verify the
-   reporter bounty UTXOs sum to `Σ(bounty_tac per slash)` and
-   each is indexer-attributed but unbacked by any per-tx TAC
-   input.
+8. **Burn accounting.** Compute circulating TAC before and
+   after the test run as `Σ attr(TAC) across all unspent
+   outpoints` (excluding inert dust outpoints like slashed
+   bonds). Verify `Δcirculating_TAC == -Σ(burn_tac per slash)`.
+   Verify the reporter bounty UTXOs sum to `Σ(bounty_tac per
+   slash)` and each is indexer-attributed but unbacked by any
+   per-tx TAC input. Verify the bonded outpoints have
+   `attr(TAC) == 0` post-slash.
 9. **Cross-worker mesh detection → slash.** Mesh phase 0 surfaces
    an inconsistency between worker A and worker B. The victim
    trader assembles slash evidence (the two A-signed envelopes
@@ -845,11 +887,14 @@ Adversarial:
 17. Slash referencing attestations with different `scope_id`
     (worker honestly attested to two different scopes at the
     same height). Rejected at scope-id match check.
-18. Bond open with a `vout[1]` that isn't a `protocol_bonded`
-    Taproot output (e.g., plain worker single-sig P2TR). Indexer
-    rejects at the protocol_bonded discipline check; no
-    `bond_state` entry created; the worker's TAC stays at vout[1]
-    as ordinary TAC, not bonded.
+18. Bond open with a `vout[1]` whose internal-key does NOT
+    match the canonical no-spending-key derivation (e.g., plain
+    worker single-sig P2TR, or any output where some party
+    holds a usable key). Indexer rejects at the canonical-
+    derivation check; no `bond_state` entry created; the
+    worker's TAC stays at vout[1] as ordinary spendable TAC,
+    not bonded — this is the critical adversarial test (a
+    miscompiled wrapper here would let workers rug bonds).
 19. Bond open that exceeds `MAX_BONDED_FRAC_OF_TAC_FDV`.
     Indexer rejects; worker's bond UTXO is created on Bitcoin
     but treated as unbonded TAC (indexer state has no
@@ -972,9 +1017,10 @@ Adversarial:
 
 - [ ] Round-1 peer review of wire format + validator algorithm
 - [ ] Round-2 peer review (especially the cooperative-close /
-      slash race semantics, the MuSig2 federation co-sign
-      discipline, and the conservation-exception accounting for
-      bounty attribution + burn)
+      slash determinism semantics, the canonical no-spending-key
+      Taproot derivation matching cBTC.tac §5.35.2, and the
+      conservation-exception accounting for both close-release
+      and slash-bounty TAC reattribution)
 - [ ] Reference dapp implementation
 - [ ] Reference worker / indexer implementation
 - [ ] Signet e2e validation
