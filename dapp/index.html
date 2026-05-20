@@ -79,7 +79,7 @@
      script-src 'self' covers all three.
      `?cb=` is auto-set by build/build.mjs to a sha256 prefix of tacit.js
      so iOS Safari's stale-modulepreload cache flushes on every change. -->
-<link rel="modulepreload" href="./tacit.js?cb=7d4a5a0a">
+<link rel="modulepreload" href="./tacit.js?cb=1274597a">
 <link rel="modulepreload" href="./vendor/tacit-deps.min.js">
 <link rel="modulepreload" href="./prf-wallet.js">
 <style>
@@ -4119,6 +4119,54 @@ body > #amm-contrib-section {
 [data-market-price-chart] svg {
   border: 0 !important;
   background: transparent !important;
+}
+/* Quiet text-based toggle for "show more asks/bids" — fits the rest
+   of the page's text-affordance aesthetic instead of reading as a
+   chunky bordered CTA. Mono font, muted ink, dashed underline that
+   brightens on hover. */
+.ladder-toggle-text {
+  background: none;
+  border: 0;
+  padding: 4px 6px;
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  color: var(--ink-mid);
+  cursor: pointer;
+  border-bottom: 1px dashed transparent;
+  transition: color 0.1s, border-color 0.1s;
+}
+.ladder-toggle-text:hover {
+  color: var(--ink);
+  border-bottom-color: rgba(26, 26, 26, 0.35);
+}
+/* Desktop-only scrollable ladders. Bounds each side's height so the
+   chart + swap tile + both ladders fit a single desktop viewport.
+   Mobile keeps the linear show-more pattern (nested touch-scroll
+   is worse UX on small screens). Scroll position preserved across
+   re-renders by the populator (captures scrollTop pre-replace,
+   restores after). */
+@media (min-width: 720px) {
+  .mkt-orderbook [data-orderbook-side="asks"] #market-grid,
+  .mkt-orderbook [data-orderbook-side="bids"] .market-bids-ladder {
+    max-height: 360px;
+    overflow-y: auto;
+    scroll-behavior: smooth;
+    scrollbar-width: thin;
+    scrollbar-color: rgba(26,26,26,0.3) transparent;
+  }
+  .mkt-orderbook [data-orderbook-side="asks"] #market-grid::-webkit-scrollbar,
+  .mkt-orderbook [data-orderbook-side="bids"] .market-bids-ladder::-webkit-scrollbar {
+    width: 6px;
+  }
+  .mkt-orderbook [data-orderbook-side="asks"] #market-grid::-webkit-scrollbar-thumb,
+  .mkt-orderbook [data-orderbook-side="bids"] .market-bids-ladder::-webkit-scrollbar-thumb {
+    background: rgba(26,26,26,0.25);
+  }
+  .mkt-orderbook [data-orderbook-side="asks"] #market-grid::-webkit-scrollbar-thumb:hover,
+  .mkt-orderbook [data-orderbook-side="bids"] .market-bids-ladder::-webkit-scrollbar-thumb:hover {
+    background: rgba(26,26,26,0.45);
+  }
 }
 /* Atomic-offers tiles — claim & take cards above the asks ladder.
    Hover lifts the border so the card reads as actionable; mobile
@@ -9318,7 +9366,7 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
   </div>
 </div>
 
-<script type="module" src="./tacit.js?cb=7d4a5a0a"></script>
+<script type="module" src="./tacit.js?cb=1274597a"></script>
 
 <!-- Service worker registration moved into tacit.js (the dapp's CSP forbids
      inline scripts; only 'self' module scripts are allowed). See sw.js for
