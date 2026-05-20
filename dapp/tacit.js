@@ -67695,6 +67695,68 @@ function _renderSwapProgressStep(item) {
     <span class="muted" style="font-size:10px;">queued</span>
   </div>`;
 }
+// Session-scoped persistence for the swap-progress banner. Tracks the last-
+// rendered progress state per asset id so refresh / tab navigation
+// (Holdings → back to Market) restore the banner in-place instead of
+// painting a fresh empty tile. The user explicitly wanted "this shouldn't
+// flash in and out — once a trade starts, the banner should stay visible
+// through settlement."
+//
+// Scope: sessionStorage (per tab, survives reload, dies with the tab) —
+// chosen over localStorage because in-flight trades belong to the tab
+// that owns the broadcast loop; another tab seeing a "stale ghost" banner
+// it can't act on would be more confusing than missing one.
+//
+// Schema (per aid): { items: [{label, status, txid}], savedAt, allDone }.
+// Strips BigInt / closure fields from the in-memory items so JSON.stringify
+// doesn't throw. allDone helps the restore path render the final
+// success/failure view without re-running the broadcast loop.
+const _SWAP_PROGRESS_STORAGE_PREFIX = 'tacit-swap-progress-v1:';
+const _SWAP_PROGRESS_TTL_MS = 60 * 60 * 1000;  // 1h
+function _saveSwapProgressState(host, items) {
+  try {
+    if (typeof sessionStorage === 'undefined') return;
+    const tile = host?.closest?.('[data-swap-tile]');
+    const aid = tile?.dataset?.aid;
+    if (!aid) return;
+    const key = _SWAP_PROGRESS_STORAGE_PREFIX + aid;
+    if (!Array.isArray(items) || items.length === 0) {
+      sessionStorage.removeItem(key);
+      return;
+    }
+    const summary = items.map(it => ({
+      label: String(it?.label || ''),
+      status: String(it?.status || ''),
+      txid: it?.txid || null,
+    }));
+    const allDone = summary.every(it => it.status === 'done' || it.status === 'failed');
+    sessionStorage.setItem(key, JSON.stringify({ items: summary, savedAt: Date.now(), allDone }));
+  } catch {}
+}
+function _restoreSwapProgressState(widget) {
+  try {
+    if (typeof sessionStorage === 'undefined') return;
+    const aid = widget?.dataset?.aid;
+    const host = widget?.querySelector?.('[data-swap-progress]');
+    if (!aid || !host) return;
+    const key = _SWAP_PROGRESS_STORAGE_PREFIX + aid;
+    const raw = sessionStorage.getItem(key);
+    if (!raw) return;
+    const saved = JSON.parse(raw);
+    if (!saved || !Array.isArray(saved.items)) { sessionStorage.removeItem(key); return; }
+    if (Date.now() - Number(saved.savedAt || 0) > _SWAP_PROGRESS_TTL_MS) {
+      sessionStorage.removeItem(key);
+      return;
+    }
+    // Restore the banner. Cancel control is intentionally not restored —
+    // the broadcast loop owning it is gone (refresh / tab switch). User
+    // sees the last-known state of each fill; if they want the live
+    // log they re-submit. allDone progresses include a manual dismiss
+    // affordance so the trader can clear after acknowledging.
+    _renderSwapProgress(host, saved.items, { _restored: true, _allDone: !!saved.allDone, _aid: aid });
+  } catch {}
+}
+
 function _renderSwapProgress(host, items, opts = {}) {
   if (!host) return;
   host.style.display = items.length ? 'block' : 'none';
@@ -67722,10 +67784,44 @@ function _renderSwapProgress(host, items, opts = {}) {
          </button>
        </div>`
     : '';
-  host.innerHTML = cancelHtml + items.map(_renderSwapProgressStep).join('');
+  // Dismiss affordance for restored / fully-done banners — no live broadcast
+  // loop is around to clean up state, so the user needs an explicit "X" to
+  // clear the persisted snapshot. Only shown for restored banners (refresh /
+  // tab-back path) AND when every fill has reached a terminal status so we
+  // don't let the user dismiss a still-in-flight trade.
+  const _showDismiss = !!opts._restored && !!opts._allDone;
+  const dismissHtml = _showDismiss
+    ? `<div style="display:flex;justify-content:flex-end;margin-bottom:4px;">
+         <button data-swap-dismiss-progress type="button" title="Clear this saved progress banner. Your filled trades are already on chain — this just removes the in-tile reminder."
+           style="background:none;border:0;color:var(--ink-mid);text-decoration:underline;text-decoration-style:dotted;cursor:pointer;font:inherit;font-size:10px;padding:0;">dismiss</button>
+       </div>`
+    : '';
+  host.innerHTML = cancelHtml + dismissHtml + items.map(_renderSwapProgressStep).join('');
   if (showCancel && !cancelled && typeof onCancel === 'function') {
     const btn = host.querySelector('[data-swap-cancel-remaining]');
     if (btn) btn.onclick = (e) => { e.preventDefault(); onCancel(); };
+  }
+  if (_showDismiss) {
+    const btn = host.querySelector('[data-swap-dismiss-progress]');
+    if (btn) btn.onclick = (e) => {
+      e.preventDefault();
+      try {
+        const aid = opts._aid || host.closest?.('[data-swap-tile]')?.dataset?.aid;
+        if (aid && typeof sessionStorage !== 'undefined') {
+          sessionStorage.removeItem(_SWAP_PROGRESS_STORAGE_PREFIX + aid);
+        }
+      } catch {}
+      host.style.display = 'none';
+      host.innerHTML = '';
+    };
+  }
+  // Persist the just-rendered state. Done LAST so restored renders persist
+  // the same items they pulled (idempotent) and live broadcast renders
+  // persist whatever the loop currently shows. Skipped only when the
+  // restore-time render itself is repainting — `opts._restored` flag avoids
+  // a redundant write-back of identical state.
+  if (!opts._restored) {
+    try { _saveSwapProgressState(host, items); } catch {}
   }
   // Promote the cancel affordance to the action button itself. During a
   // long multi-fill swap (5 fills × ~10s each) the original action button
@@ -67850,6 +67946,13 @@ function _wireSwapTile(scope) {
       }
     };
   });
+  // Restore last-known swap-progress banner from sessionStorage. Tab-
+  // navigation (Holdings → Market) and full-page refresh both rebuild the
+  // swap tile from scratch — without this restore, an in-flight trade's
+  // progress UI vanishes the moment the user navigates away. Restored
+  // banner shows the last-saved fill states + a dismiss affordance so
+  // the trader can clear it once they've acknowledged the outcome.
+  try { _restoreSwapProgressState(widget); } catch {}
   // Guard against double-wiring. The swap tile is now preserved across
   // applyMarketFilters re-renders so its user-typed input + caret +
   // event listeners survive each auto-refresh tick. Re-running this
