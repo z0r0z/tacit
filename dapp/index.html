@@ -3621,18 +3621,19 @@ a:hover { color: var(--orange); }
   position: absolute; top: 4px; right: 4px;
   width: 20px; height: 20px;
   padding: 0; line-height: 1;
-  border: 1px solid transparent;
-  background: transparent;
+  border: 0 !important;
+  background: transparent !important;
   font-family: inherit; font-size: 14px;
   color: var(--ink-faint);
   cursor: pointer;
   text-transform: none; letter-spacing: 0;
-  transition: color 0.08s, border-color 0.08s, background 0.08s;
+  transition: color 0.08s;
   z-index: 2;
+  box-shadow: none !important;
 }
 .hero-close:hover {
-  color: var(--ink); border-color: var(--ink);
-  background: var(--bg);
+  color: var(--ink);
+  background: transparent !important;
 }
 .hero-num {
   background: var(--orange);
@@ -4754,6 +4755,61 @@ body > #amm-contrib-section {
 .mkt-activity-disclose [data-market-asset-pane] {
   display: block !important;
   padding: 8px 0 12px !important;
+}
+/* Activity table inside the disclose: match the asks/bids minimal
+   aesthetic — borderless, no drop shadow, hairline row dividers.
+   Drops the chunky 4px box-shadow + 1px black border + dark inverted
+   <th> bar so the table reads as one continuous flow with the asks/
+   bids ladders above. */
+.mkt-activity-disclose .market-activity-table-wrap {
+  border: 0 !important;
+  box-shadow: none !important;
+  background: transparent !important;
+  overflow-x: auto;
+}
+.mkt-activity-disclose .market-activity-table {
+  min-width: 720px;
+  font-size: 11px;
+}
+.mkt-activity-disclose .market-activity-table th {
+  background: transparent !important;
+  color: var(--ink-mid) !important;
+  font-size: 10px !important;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 6px 10px !important;
+  border-bottom: 0.5px solid rgba(26,26,26,0.18) !important;
+}
+.mkt-activity-disclose .market-activity-table td {
+  padding: 8px 10px !important;
+  border-bottom: 0.5px solid rgba(26,26,26,0.06) !important;
+  vertical-align: top;
+  font-size: 11px;
+}
+/* Truncate the Tx column — it was the only one allowed to wrap, which
+   caused 64-char txids to break per character whenever the table got
+   squeezed. Wrap-cap + ellipsis keeps it on one row. */
+.mkt-activity-disclose .market-activity-table td:first-child,
+.mkt-activity-disclose .market-activity-table th:first-child {
+  white-space: nowrap !important;
+  max-width: 110px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.mkt-activity-disclose .market-activity-toolbar {
+  border: 0 !important;
+  background: transparent !important;
+  padding: 0 0 8px !important;
+  margin-bottom: 8px !important;
+  border-bottom: 0.5px solid rgba(26,26,26,0.12);
+}
+.mkt-activity-disclose .market-activity-toolbar select,
+.mkt-activity-disclose .market-activity-toolbar button {
+  border: 0.5px solid rgba(26,26,26,0.25) !important;
+  box-shadow: none !important;
+  background: var(--bg) !important;
+  font-size: 10px !important;
 }
 
 /* Asset-detail mode hides the tab-market chrome that surrounds

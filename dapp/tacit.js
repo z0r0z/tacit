@@ -11991,6 +11991,12 @@ function friendlyTradeErrorMsg(rawMsg, { postCommit = false } = {}) {
       ? `Another taker beat you to this listing — the asset UTXO was spent before your settlement landed${tail}.`
       : `This listing was just taken by another buyer (the asset UTXO is gone). No sats spent — refreshed Market, pick another tile and try again.`;
   }
+  // Our own pre-commit liveness probe (getOutspend → throws "asset
+  // outpoint already spent — preauth sale is stale (…)"). Same UX
+  // surface as the bitcoind race above — no sats moved, refresh + retry.
+  if (/asset outpoint already spent|preauth sale is stale/i.test(core)) {
+    return `That ask just got taken by another buyer. No sats spent — refreshing listings; retry with the Swap tile or pick another row.`;
+  }
   if (/txn-mempool-conflict/i.test(core)) {
     return postCommit || tail
       ? `Mempool conflict — another tx is spending one of your inputs first${tail}.`
@@ -55071,13 +55077,27 @@ function _installMarketInteractListener() {
 }
 let _marketTickFailStreak = 0;
 let _marketLastSuccessTs = 0;
+// Browse view refreshes at the worker's cache TTL cadence. Asset-detail
+// view is a focused trading surface — a 15s rebuild on a busy book like
+// TAC flashes the orderbook every tick when only a couple of rows
+// changed. Doubling the asset-detail interval to 30s gives the page time
+// to settle visually without losing freshness (a take + new listing on
+// the book is still visible within half a minute, plus the cell-level
+// _updateMarketCellsInPlace hook updates price/volume in between full
+// re-renders without flicker).
 const MARKET_AUTO_REFRESH_MS = 15_000;
-const MARKET_AUTO_REFRESH_MAX_MS = 90_000;
-const MARKET_STALE_THRESHOLD_MS = 45_000;
+const MARKET_AUTO_REFRESH_ASSET_MS = 30_000;
+const MARKET_AUTO_REFRESH_MAX_MS = 120_000;
+const MARKET_STALE_THRESHOLD_MS = 60_000;
 function _computeMarketTickDelay() {
-  if (_marketTickFailStreak === 0) return MARKET_AUTO_REFRESH_MS;
+  // Pick base interval by view scope. _marketView is the module-level
+  // 'browse' | { mode: 'asset', assetId } state, so the helper reads it
+  // synchronously without piping context through every caller.
+  const isAssetView = typeof _marketView === 'object' && _marketView && _marketView.mode === 'asset';
+  const base = isAssetView ? MARKET_AUTO_REFRESH_ASSET_MS : MARKET_AUTO_REFRESH_MS;
+  if (_marketTickFailStreak === 0) return base;
   const factor = Math.pow(2, Math.min(_marketTickFailStreak, 4));
-  return Math.min(MARKET_AUTO_REFRESH_MS * factor, MARKET_AUTO_REFRESH_MAX_MS);
+  return Math.min(base * factor, MARKET_AUTO_REFRESH_MAX_MS);
 }
 // Global trade tape. Single-line marquee at the top of the dapp showing
 // recent settled trades across ALL assets. Walks _marketCache.assets and
@@ -56181,6 +56201,27 @@ function _saveMarketSimple(on) {
   try { localStorage.setItem(_MARKET_SIMPLE_KEY, on ? '1' : '0'); } catch {}
 }
 let _marketSimpleMode = _loadMarketSimple();
+// Swap-router intent-inclusion toggle. Default OFF: the router fills
+// only against preauth listings (pre-signed by the maker, settled in
+// one Bitcoin tx, no maker-online dependency). Atomic intents require
+// the maker to come back online to sign a fulfilment within 5min — a
+// $10 buy that gets routed through a sleeping maker just times out and
+// fails. With this flag off, we trade fewer matching options for trades
+// that always settle deterministically. Power users can flip on via
+// the swap tile chip to widen the route across the full ladder.
+const _MARKET_SWAP_INCLUDE_INTENTS_KEY = 'tacit-market-swap-include-intents-v1';
+function _loadSwapIncludeIntents() {
+  try {
+    const v = localStorage.getItem(_MARKET_SWAP_INCLUDE_INTENTS_KEY);
+    if (v === '1') return true;
+    if (v === '0') return false;
+  } catch {}
+  return false;  // default: preauth-only
+}
+function _saveSwapIncludeIntents(on) {
+  try { localStorage.setItem(_MARKET_SWAP_INCLUDE_INTENTS_KEY, on ? '1' : '0'); } catch {}
+}
+let _marketSwapIncludeIntents = _loadSwapIncludeIntents();
 // Hide-outlier-bids toggle. Same 0.2×/5× mark band the chart, spread
 // row, and best-bid/best-ask selectors use. Hiding the long tail of
 // -90%+ bids and >5× ask-side noise by default cleans up the visual
@@ -61990,21 +62031,45 @@ function renderMarketAssetHeader(assetId, rows) {
   // shows for market cap, and matches what users see in the activity
   // feed. Falls back to referenceUnit (floor / last trade) when no
   // mark price is available yet.
-  const markUnit = Number(a.mark_price?.unit);
-  // Crossed-book override: when the book is crossed the worker's
-  // last-trade mark is stale relative to live liquidity. Promote the
-  // (best bid + best ask) / 2 midpoint to the header tile so the most
-  // prominent number on the page agrees with the spread divider and
-  // the asks/bids ladders (which already recolor "vs mark" → "vs mid").
-  // _effectiveReferenceUnit returns { unit, label, crossed } or null;
-  // fall back to mark / floor when no crossed-book mid is available.
+  // Mark price: prefer the asset record's own mark_price (freshest, set by
+  // the worker on /market enrichment), then fall back to whatever the
+  // per-asset /assets/<aid> stats cache last returned. Without the cached
+  // fallback, the first paint on a cold /market response uses
+  // priceGroup.referenceUnit (best-ask floor) and the async stats fetch
+  // then rewrites the cell to mark — that's the "flash to a different
+  // price before showing what I assume is mark" users reported.
+  //
+  // Trade-backing guard mirrors the browse table (renderMarketBrowseTable
+  // line 61158): if the asset has no last_trade and no transfer history,
+  // the worker's mark_price is descended from a stale source and we'd
+  // disagree with the browse-row price (which falls back to the
+  // OTC-implied floor in that case). Same predicate on both surfaces
+  // means the header sats label always matches the row the user just
+  // clicked.
+  let markUnit = Number(a.mark_price?.unit);
+  const _hasTradeBacking = marketGroupHasTradeBacking(priceGroup) || marketGroupHasTradeBacking(allGroup);
+  if (!(Number.isFinite(markUnit) && markUnit > 0 && _hasTradeBacking)) {
+    markUnit = NaN;
+    try {
+      const _cachedStats = _marketAssetStatsCache?.get?.(marketAssetStatsKey(safeAid))?.data;
+      const _cachedMark = Number(_cachedStats?.mark_price?.unit);
+      if (Number.isFinite(_cachedMark) && _cachedMark > 0 && _hasTradeBacking) markUnit = _cachedMark;
+    } catch { /* cache miss is fine */ }
+  }
+  // Hero anchor stays on the mark price (last-trade outlier-guarded
+  // median) regardless of whether the live book is crossed. Mark is
+  // the stable settled-trade reference; promoting the (best bid +
+  // best ask) / 2 midpoint when crossed caused the header to flash
+  // between mark and a midpoint that wanders with every new dust
+  // listing or fat-finger bid. Crossed state is still surfaced on
+  // the depth chart's CROSSED badge + the spread row beneath it.
   const _headerRef = _effectiveReferenceUnit(safeAid, a);
   const _headerCrossed = _headerRef?.crossed === true;
-  const headerUnit = _headerCrossed
-    ? _headerRef.unit
-    : (Number.isFinite(markUnit) && markUnit > 0)
-      ? markUnit
-      : priceGroup.referenceUnit;
+  const headerUnit = (Number.isFinite(markUnit) && markUnit > 0)
+    ? markUnit
+    : (_headerCrossed && _headerRef?.unit
+        ? _headerRef.unit
+        : priceGroup.referenceUnit);
   const headerMarketCapSats = marketCapSats(priceGroup.asset || a, headerUnit);
   scheduleMarketSupplyEnrichment([priceGroup]);
   const total = Number(allGroup.total || 0);
@@ -66525,8 +66590,8 @@ function _renderSwapProgress(host, items, opts = {}) {
   const cancelHtml = showCancel
     ? `<div style="display:flex;justify-content:flex-end;margin-bottom:4px;">
          <button data-swap-cancel-remaining class="swap-cancel-remaining" type="button"${cancelled ? ' disabled' : ''}
-           title="Stops the loop after the in-flight fill completes. Already-broadcast txs can't be recalled.">
-           ${cancelled ? 'will stop after this fill…' : 'Stop after this fill'}
+           title="Lets the in-flight fill complete (its tx is already in the Bitcoin mempool and can't be recalled), then aborts any queued fills so they don't broadcast.">
+           ${cancelled ? `cancelling ${remainingCount} queued fill${remainingCount === 1 ? '' : 's'}…` : `Cancel ${remainingCount} queued fill${remainingCount === 1 ? '' : 's'}`}
          </button>
        </div>`
     : '';
@@ -66550,13 +66615,13 @@ function _renderSwapProgress(host, items, opts = {}) {
       actionBtn.style.opacity = '1';
       actionBtn.style.background = '#b8341d';
       actionBtn.style.borderColor = '#9b2a16';
-      actionBtn.textContent = `Stop after this fill · ${remainingCount} remaining`;
-      actionBtn.title = 'Aborts the loop after the in-flight fill completes. Already-broadcast txs can\'t be recalled, but the queued fills (and their fees) are spared.';
+      actionBtn.textContent = `Cancel ${remainingCount} queued fill${remainingCount === 1 ? '' : 's'}`;
+      actionBtn.title = 'Lets the in-flight fill complete (its tx is already in the Bitcoin mempool and can\'t be recalled), then aborts any queued fills so they don\'t broadcast — saves their fees.';
       actionBtn.onclick = (e) => { e?.preventDefault?.(); try { onCancel(); } catch {} };
     } else if (cancelled) {
       actionBtn.disabled = true;
       actionBtn.style.opacity = '0.6';
-      actionBtn.textContent = `Stopping after this fill…`;
+      actionBtn.textContent = `Cancelling queued fills…`;
     }
   }
 }
@@ -66868,9 +66933,23 @@ function _wireSwapTile(scope) {
         if (!Number.isFinite(u) || u <= 0 || u > cap || u < dustFloorUnit || amt <= 0n || ps <= 0) continue;
         candidates.push({ kind: 'preauth', l, amt, ps, u });
       } else if (l.kind === 'intent') {
+        // Preauth-only default: atomic intents need the maker to come
+        // back online within 5min to sign a fulfilment; if they're
+        // offline the take just times out and the $10 buy fails. Skip
+        // intents unless the user has explicitly opted in via the
+        // swap-tile "Include atomic offers" chip.
+        if (!_marketSwapIncludeIntents) continue;
         if (l.maker_pubkey === myPubHex) continue;
         if (l.claim) continue;                       // someone else already has the 5-min lock
         if (l.fulfilment_pending) continue;          // mid-settle
+        // Stale-maker heuristic: intents posted more than 12h ago whose
+        // maker hasn't been seen are unlikely to fulfil within the 5min
+        // claim window. The worker doesn't ship explicit maker-liveness
+        // yet; intent created_at is the cheapest proxy we have. Future:
+        // exclude intents whose maker's last_fulfilment_at is > 12h ago
+        // once the worker exposes that field.
+        const _ageSec = Math.floor(Date.now() / 1000) - Number(l.created_at || 0);
+        if (Number.isFinite(_ageSec) && _ageSec > 12 * 3600) continue;
         const fullAmt = BigInt(l.amount || 0);
         const fullPs  = Number(l.price_sats || 0);
         const u       = unitPriceSats(fullPs, fullAmt, decimals);
@@ -67226,8 +67305,15 @@ function _wireSwapTile(scope) {
         if (!Number.isFinite(u) || u <= 0 || u > cap || u < dustFloorUnit || amt <= 0n || ps <= 0) continue;
         candidates.push({ kind: 'preauth', l, amt, ps, u });
       } else if (l.kind === 'intent') {
+        // See planBuy: preauth-only by default. Intents only enter the
+        // route when the user has explicitly opted in via the swap tile.
+        if (!_marketSwapIncludeIntents) continue;
         if (l.maker_pubkey === myPubHex) continue;
         if (l.claim || l.fulfilment_pending) continue;
+        // Stale-maker heuristic mirrors planBuy: skip intents > 12h old
+        // when the user has opted in to atomic offers.
+        const _ageSec = Math.floor(Date.now() / 1000) - Number(l.created_at || 0);
+        if (Number.isFinite(_ageSec) && _ageSec > 12 * 3600) continue;
         const fullAmt = BigInt(l.amount || 0);
         const fullPs  = Number(l.price_sats || 0);
         const u       = unitPriceSats(fullPs, fullAmt, decimals);
@@ -68723,16 +68809,25 @@ function _wireSwapTile(scope) {
     const _start = Date.now();
     const _deadline = _start + 300_000;
     try { cb.onClaimed?.({ deadlineAt: _deadline }); } catch {}
-    // Wait for maker fulfilment. Poll every 3s up to 5 min (claim TTL).
-    // Tick the callback on each iteration so the UI can show a countdown.
+    // Wait for maker fulfilment. Poll with exponential backoff up to
+    // 5 min (claim TTL). The previous 3s constant cadence generated
+    // ~100 polls per claim, each surfacing a 404 in the browser
+    // console while the maker hadn't yet posted a fulfilment — the
+    // 404s were correct protocol behavior ("not yet") but read as
+    // errors to anyone scanning the console. Backoff (3 → 6 → 10 →
+    // 15 → 20 → 25 → 30s, capped) cuts that to ~15 polls and keeps
+    // the first-fill detection responsive at the start when most
+    // online makers respond.
     let fulfilmentResp = null;
+    let _pollDelayMs = 3000;
     while (Date.now() < _deadline) {
-      await new Promise(r => setTimeout(r, 3000));
+      await new Promise(r => setTimeout(r, _pollDelayMs));
       try { cb.onPollTick?.({ elapsedMs: Date.now() - _start, deadlineAt: _deadline }); } catch {}
       try {
         const fr = await fetchAxferFulfilment({ assetIdHex: aid, intentIdHex: c.l.intent_id });
         if (fr?.fulfilment || fr?.partial_reveal) { fulfilmentResp = fr; break; }
       } catch { /* indexer blip, retry */ }
+      _pollDelayMs = Math.min(_pollDelayMs + 3000, 30000);
     }
     if (!fulfilmentResp) {
       throw new Error('maker did not fulfil within 5 min — claim expired (their auto-fulfil may be off or they\'re offline)');
@@ -75437,6 +75532,11 @@ function applyHeroVisibility() {
     strip.style.display = '';
     showBar.style.display = 'none';
   }
+  // Tear down the preboot flash-guard style block once authoritative
+  // inline styles are applied. Leaving it in place would fight a later
+  // "↺ show getting started" reveal (it carries !important).
+  const preStyle = document.getElementById('_tacit-hero-prehide-style');
+  if (preStyle && preStyle.parentNode) preStyle.parentNode.removeChild(preStyle);
 }
 function setupHero() {
   applyHeroVisibility();

@@ -124,7 +124,8 @@ and pick from the explicitly-listed free slots. The legend:
 | `0x56` | `T_CUSD_TAC_FORCE_CLOSE` | 📝 drafted | `SPEC-CUSD-TAC-AMENDMENT.md` §6.5 | Permissionless cUSD.tac liquidation. |
 | `0x57` | `T_CBTC_TAC_DEPOSIT_ATOMIC` | ✅ shipped | `SPEC-CBTC-TAC-AMENDMENT.md` §5.48 | Atomic LP_ADD + cBTC.tac DEPOSIT — single envelope; depositor provides raw cBTC.zk + TAC inputs, worker LPs them and attaches lien on new LP-share UTXO and mints cBTC.tac. |
 | `0x58` | `T_CBTC_TAC_WITHDRAW_ATOMIC` | ✅ shipped | `SPEC-CBTC-TAC-AMENDMENT.md` §5.49 | Atomic cBTC.tac WITHDRAW + LP_REMOVE — single envelope; burns cBTC.tac, spends slot K_btc, removes the freed LP shares, pays out BTC + cBTC.zk + TAC. |
-| `0x59` – `0xFF` | — | ⬜ free | — | Available. |
+| `0x59` | `T_PREAUTH_BID` | 📝 drafted | `SPEC-PREAUTH-BID-AMENDMENT.md` §5.7.11 | Buyer-offline preauth bid. Symmetric counterpart to §5.7.8 preauth-sale: buyer pre-signs sats input + canonical bid-context OP_RETURN under `SIGHASH_SINGLE_ACP` (`0x83`), any seller appends asset UTXO + payout output and broadcasts. Reuses `T_AXFER` kernel-sig + Pedersen + bulletproof stack; only new validator rule is the OP_RETURN binding tying buyer's pre-sig to `(asset_id, recipient, amount, blinding, price_sats)`. Closes the "sells just work" UX gap where every existing bid path requires the buyer to be online. |
+| `0x5A` – `0xFF` | — | ⬜ free | — | Available. |
 
 **Process for claiming a new opcode**:
 1. Scan the table above for free slots (⬜ rows).

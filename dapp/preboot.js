@@ -77,6 +77,26 @@ try {
   } catch (_) { /* never break boot */ }
 })();
 
+// Hero strip flash-of-content guard. The 1-2-3 getting-started hero
+// (`#hero-strip`) is on by default in the HTML and JS hides it on init
+// when the user has dismissed it (`localStorage.tacit-onboarded-v1`).
+// Without a head-parse-time guard the dismissed user sees the hero paint
+// for one frame on every load before tacit.js runs the dismiss logic.
+// Inject a CSS rule synchronously during head parse so the hero stays
+// hidden from the first frame; setupHero's applyHeroVisibility removes
+// this style block after it runs.
+(function preHideOnboardedHero() {
+  try {
+    if (localStorage.getItem('tacit-onboarded-v1') !== '1') return;
+    var styleEl = document.createElement('style');
+    styleEl.id = '_tacit-hero-prehide-style';
+    styleEl.textContent =
+      '#hero-strip{display:none!important}' +
+      '#hero-show{display:block!important}';
+    document.head.appendChild(styleEl);
+  } catch (_) { /* never break boot */ }
+})();
+
 (function preActivateTabFromHash() {
   try {
     var m = (window.location.hash || '').match(/[#&]tab=([a-z]+)/i);
