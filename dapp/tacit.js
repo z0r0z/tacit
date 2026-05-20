@@ -58824,6 +58824,19 @@ function applyMarketFilters() {
       // already make obvious.
       return `<div class="swap-tile-strip" data-swap-strip>${sparkSvg ? `<span class="strip-spark">${sparkSvg}</span>` : '<span class="strip-spark"></span>'}${lastHtml}${tradeHtml}</div>`;
     })();
+    // Holdings hint row — lazy, cache-driven. Pulls the cached scanHoldings
+    // entry for THIS asset and renders "you hold X TICKER" right above the
+    // swap inputs so the trader has wallet-side context without having to
+    // tab away to Holdings. Decoupled from the swap planner so a slow /
+    // cold scan never blocks the tile from painting; we just refresh the
+    // hint when scanHoldings resolves (see _renderSwapTileHoldingsHint
+    // callsite in the wireup + scanHoldings success path's market re-
+    // render hook, which is already wired). When the wallet is locked
+    // we expose an inline unlock affordance instead of forcing a
+    // passphrase/biometric prompt at page-load (lazy contract).
+    const _holdingsHintHtml = (typeof _renderSwapTileHoldingsHint === 'function')
+      ? _renderSwapTileHoldingsHint(safeAid, decimals, ticker)
+      : '';
     return `<div data-swap-tile data-aid="${escapeHtml(safeAid)}" data-ticker="${escapeHtml(ticker)}" data-dec="${decimals}" data-ref-unit="${refUnit != null ? refUnit : ''}" data-direction="buy" data-slippage="${slippagePct}" data-swap-mode="market" style="margin-bottom:14px;background:rgba(255,255,255,0.35);border-top:1px dashed rgba(26,26,26,0.25);border-bottom:1px dashed rgba(26,26,26,0.25);padding:14px 18px 12px;">
       <!-- Header: pair name with logos + Market/Limit mode toggle.
            "Market" = standard slippage-bounded sweep of the orderbook;
@@ -58841,6 +58854,7 @@ function applyMarketFilters() {
         </div>
       </div>
       ${_swapStripHtml}
+      ${_holdingsHintHtml}
       <!-- TOP side: editable input. data-side="from" tracks which
            token is on top regardless of direction (the wireup swaps
            the labels + logos in place on flip). -->
@@ -67767,9 +67781,75 @@ function _prefillSwapHandoffAmount(value) {
   setTimeout(tick, 200);
 }
 
+// Lazy holdings hint above the swap tile inputs: shows "you hold X TICKER"
+// when scanHoldings has a cached entry for THIS asset, a loading dots
+// state when wallet is unlocked but cache is cold (we kick the scan in
+// the wireup), and an inline "unlock to see your balance" affordance
+// when the wallet is locked. Never forces ensurePrivkey at page-load
+// itself — the unlock prompt only fires on the explicit click.
+// Re-renders organically via scanHoldings success → applyMarketFilters
+// (already wired in the cache-write success path), so the hint
+// upgrades from spinner → real number without bespoke event plumbing.
+function _renderSwapTileHoldingsHint(aid, decimals, ticker) {
+  if (!aid || typeof wallet === 'undefined' || !wallet || !wallet.pub) return '';
+  const _baseStyle = 'font-size:10px;color:var(--ink-mid);margin-bottom:8px;text-align:right;';
+  const cached = (_holdingsCache && _holdingsCache.holdings instanceof Map)
+    ? _holdingsCache.holdings.get(aid)
+    : null;
+  if (cached && typeof cached.balance === 'bigint') {
+    const balStr = fmtAssetAmount(cached.balance, decimals || 0);
+    const utxoCount = Array.isArray(cached.utxos) ? cached.utxos.length : 0;
+    const utxoTail = utxoCount > 0
+      ? ` <span class="muted" style="font-size:9px;">· ${utxoCount} UTXO${utxoCount === 1 ? '' : 's'}</span>`
+      : '';
+    return `<div data-swap-holdings-hint style="${_baseStyle}">you hold <strong style="color:var(--ink);">${escapeHtml(balStr)} ${escapeHtml(ticker)}</strong>${utxoTail}</div>`;
+  }
+  if (wallet.priv) {
+    return `<div data-swap-holdings-hint style="${_baseStyle}"><span class="live-dots">checking your ${escapeHtml(ticker)} balance</span></div>`;
+  }
+  return `<div data-swap-holdings-hint style="${_baseStyle}"><button data-act="swap-holdings-unlock" type="button" style="background:none;border:0;color:var(--ink-mid);text-decoration:underline;text-decoration-style:dotted;padding:0;font:inherit;cursor:pointer;">🔒 unlock to see your ${escapeHtml(ticker)} balance</button></div>`;
+}
+
 function _wireSwapTile(scope) {
   const widget = scope.querySelector('[data-swap-tile]');
   if (!widget) return;
+  // Kick a background scanHoldings when the swap tile mounts and the
+  // wallet is unlocked but the cache is cold for this asset — the
+  // hint above the inputs will upgrade from spinner → "you hold X TAC"
+  // once the scan resolves (applyMarketFilters is re-fired in the scan
+  // success path). Locked wallets skip this so we never surprise the
+  // user with a passphrase prompt just for visiting a market page;
+  // they get the explicit "unlock to see your balance" affordance
+  // instead. Fire-and-forget — failures don't block the tile.
+  try {
+    const _aidForScan = widget.dataset.aid;
+    if (_aidForScan && wallet && wallet.priv && (!_holdingsCache || !(_holdingsCache.holdings instanceof Map) || !_holdingsCache.holdings.has(_aidForScan))) {
+      if (typeof scanHoldings === 'function') {
+        scanHoldings().catch(() => {});
+      }
+    }
+  } catch {}
+  // Unlock affordance: click on the locked-state hint triggers
+  // ensurePrivkey (which surfaces the passphrase / biometric modal),
+  // then kicks scanHoldings. applyMarketFilters re-renders the tile
+  // on cache write so the hint upgrades to the real balance without
+  // bespoke event plumbing here.
+  scope.querySelectorAll('button[data-act="swap-holdings-unlock"]').forEach(btn => {
+    btn.onclick = async () => {
+      if (btn.disabled) return;
+      btn.disabled = true;
+      const orig = btn.innerHTML;
+      btn.innerHTML = '<span class="live-dots">unlocking</span>';
+      try {
+        await ensurePrivkey();
+        await scanHoldings();
+      } catch (e) {
+        btn.disabled = false;
+        btn.innerHTML = orig;
+        if (!isUnlockCancelled(e)) toast('Couldn\'t load balance: ' + (e?.message || String(e)), 'error');
+      }
+    };
+  });
   // Guard against double-wiring. The swap tile is now preserved across
   // applyMarketFilters re-renders so its user-typed input + caret +
   // event listeners survive each auto-refresh tick. Re-running this
