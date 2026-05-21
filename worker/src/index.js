@@ -4878,9 +4878,76 @@ async function _recordSettledTradeVolume(env, network, assetIdHex, lastTrade) {
       await env.REGISTRY_KV.put(tradeEventKey(network, assetIdHex, txidHex), JSON.stringify(ev));
     }
   } catch { /* journal write best-effort — reconcile recovers */ }
-  // last_trade pointer — last-write-wins. Cheap idempotent on replay.
+  // Outlier-gated `last_trade` pointer. Previously last-write-wins — but
+  // on a thin Bitcoin-cadence market the latest fill can be a 5.56-sats/
+  // TAC dust outlier (real on-chain settlement, just sharply off-mark)
+  // and that would clobber the hero's "last fill / now" status reading
+  // even though the worker's mark_price already outlier-guards against
+  // it on read. This brings `last_trade` to parity with mark_price's
+  // outlier semantics: gate the write on the same `[median × 0.2,
+  // median × 5]` band the chart filter + mark-price selector use, and
+  // route off-band fills to a separate `last_outlier_trade` key for
+  // forensic / audit purposes.
+  //
+  // The journal write above is unconditional — every settled fill stays
+  // recorded, including outliers. The ring update below also keeps
+  // everything (the dapp filters at render time). Only the `last_trade`
+  // pointer that powers the hero "last fill 3m ago" status indicator
+  // skips the outlier; the actual fill is still discoverable via the
+  // ring, trade-event journal, and `last_outlier_trade`.
+  let _isOutlierFill = false;
   try {
-    await env.REGISTRY_KV.put(lastTradeKey(network, assetIdHex), JSON.stringify(lastTrade));
+    const assetJson = await env.REGISTRY_KV.get(assetKey(network, assetIdHex));
+    let dec = null;
+    if (assetJson) {
+      try {
+        const _doc = JSON.parse(assetJson);
+        if (Number.isInteger(_doc?.decimals)) dec = _doc.decimals;
+      } catch { /* malformed asset doc — skip the gate */ }
+    }
+    if (dec != null && dec >= 0 && dec <= 8) {
+      const _u = (p, amtStr) => {
+        const pn = Number(p);
+        if (!Number.isFinite(pn) || pn <= 0) return null;
+        let a; try { a = BigInt(amtStr || '0'); } catch { return null; }
+        if (a <= 0n) return null;
+        const num = BigInt(Math.floor(pn)) * (10n ** BigInt(dec)) * 100000000n;
+        return Number(num / a) / 1e8;
+      };
+      const newUnit = _u(priceSats, lastTrade.amount);
+      if (Number.isFinite(newUnit) && newUnit > 0) {
+        // Read the existing ring to compute the in-band median. The ring
+        // already contains every prior settled fill (outliers + in-band).
+        // For the band reference we use the median of all units > 0; the
+        // single new fill's influence on that median is negligible
+        // (ring is ~200 entries deep on busy markets, far more than 1).
+        const ringJsonPrev = await env.REGISTRY_KV.get(tradesRingKey(network, assetIdHex));
+        let ringPrev = [];
+        try { ringPrev = ringJsonPrev ? (JSON.parse(ringJsonPrev) || []) : []; } catch { ringPrev = []; }
+        const units = [];
+        for (const r of ringPrev) {
+          const uu = _u(r?.price_sats, r?.amount);
+          if (Number.isFinite(uu) && uu > 0) units.push(uu);
+        }
+        if (units.length >= 5) {
+          units.sort((a, b) => a - b);
+          const median = units[Math.floor(units.length / 2)];
+          if (median > 0 && (newUnit < median * 0.2 || newUnit > median * 5)) {
+            _isOutlierFill = true;
+          }
+        }
+      }
+    }
+  } catch { /* asset doc / ring read failed — fall through to legacy
+             unconditional last_trade write so we never regress to
+             "no last_trade at all" on a transient KV blip */ }
+  // Route the write: in-band → last_trade (normal pointer); outlier →
+  // last_outlier_trade (forensic pointer, doesn't power UI).
+  try {
+    const targetKey = _isOutlierFill
+      ? `${lastTradeKey(network, assetIdHex)}:outlier`
+      : lastTradeKey(network, assetIdHex);
+    await env.REGISTRY_KV.put(targetKey, JSON.stringify(lastTrade));
   } catch { /* non-fatal */ }
   // Daily bucket sum (today, UTC) — keyed by yyyymmdd of the trade's
   // own ts so a backfilled historical reveal lands in the right slot.
