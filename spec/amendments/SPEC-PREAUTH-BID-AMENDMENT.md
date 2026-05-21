@@ -1,11 +1,11 @@
-# SPEC §5.7.11 — T_PREAUTH_BID (`0x59`) — Buyer-Offline Preauth Bid
+# SPEC §5.7.11 — T_PREAUTH_BID (`0x5B`) — Buyer-Offline Preauth Bid
 
 > **Status: 📝 Draft (round-1).** Closes the symmetric gap in the
 > §5.7 trading matrix: today the **seller** can go offline
 > (preauth-sale, §5.7.8) but the **buyer** cannot — every existing
 > bid path (§5.7.7 bid intents, §5.7.7 variable-fill bids) requires
 > the buyer to be online during the take window. This amendment
-> introduces `T_PREAUTH_BID` (`0x59`), the buyer-offline counterpart
+> introduces `T_PREAUTH_BID` (`0x5B`), the buyer-offline counterpart
 > to §5.7.8 preauth-sale, using `SIGHASH_SINGLE | ANYONECANPAY`
 > semantics that Bitcoin already supports natively.
 >
@@ -71,7 +71,7 @@ would break every existing settlement); it belongs in a dedicated
 opcode that signals "this envelope is a preauth-bid fulfilment and
 the buyer's protections apply."
 
-Hence `T_PREAUTH_BID` (`0x59`). Wire-format and crypto reuse
+Hence `T_PREAUTH_BID` (`0x5B`). Wire-format and crypto reuse
 `T_AXFER`'s kernel-sig + Pedersen + bulletproof stack verbatim;
 the only delta is the OP_RETURN binding rule.
 
@@ -158,7 +158,7 @@ Adding one here would be a one-off departure with no payoff:
 
 - **Dispatch is opcode-driven, not OP_RETURN-prefix-driven.** The
   validator already knows the tx is a preauth-bid because the
-  envelope at `vin[0].witness` decodes to opcode `0x59`. The
+  envelope at `vin[0].witness` decodes to opcode `0x5B`. The
   OP_RETURN at `vout[k]` is found by position (matching the
   buyer's pre-signed `vin[k]`), not by ASCII scanning.
 - **Greppability is at the envelope opcode layer.** Chain explorers
@@ -187,13 +187,21 @@ in the on-chain bytes.
 
 ---
 
-## `T_PREAUTH_BID` envelope (`0x59`)
+## `T_PREAUTH_BID` envelope (`0x5B`)
 
 The envelope is structurally a `T_AXFER` (single asset, N=1
-recipient) with the preauth-bid opcode byte:
+recipient) with the preauth-bid opcode byte **and an inline
+bid-context section** carrying the recipient's `(amount, blinding)`
+opening + `(recipient_pubkey, bid_id, price_sats)` in cleartext.
+Inlining lets the validator verify the OP_RETURN binding chain-only
+without ingesting the off-chain bid record (symmetric to §5.7.8
+preauth-sale, where the buyer's recipient blinding is recoverable
+via ECDH from chain alone). The lot-level opening was already public
+in the bid record — putting it on chain does not add any new
+disclosure.
 
 ```
-opcode             = 0x59 (T_PREAUTH_BID, 1 byte)
+opcode             = 0x5B (T_PREAUTH_BID, 1 byte)
 asset_id           = 32 bytes
 asset_input_count  = N ≥ 1     (single-seller fill: N=1; multi-seller fan is reserved
                                 for a future amendment, position-independent under
@@ -201,24 +209,34 @@ asset_input_count  = N ≥ 1     (single-seller fill: N=1; multi-seller fan is r
                                 Counts SELLER asset inputs only — the buyer's sats
                                 input is auxiliary BTC, NOT part of the tacit
                                 kernel_msg input_outpoints list)
+
+--- inline bid-context (97 bytes, validator-readable in cleartext) ---
+bid_id             = 16 bytes  (matches the off-chain bid record's bid_id)
+recipient_pubkey   = 33 bytes  (compressed secp256k1; where the asset is delivered)
+amount_LE          = 8 bytes   (recipient lot amount; opens output[0].commitment with blinding)
+blinding           = 32 bytes  (recipient lot blinding; opens output[0].commitment with amount)
+price_sats_LE      = 8 bytes   (buyer-committed sats payment; matches bid record)
+---
+
 kernel_sig         = 64 bytes (BIP-340 over kernel_msg, signed by seller with `excess`)
-N_outputs          = 1 or 2   (∈ {1, 2} for v1 — 1 = exact-amount fill, 2 = seller has asset change)
+N_outputs          = 1 or 2   (∈ {1, 2} — 1 = exact-amount fill, 2 = seller has asset change)
 output[0]:                                          ← buyer's tacit recipient
-  commitment       = pedersen(amount, blinding) — `amount` and `blinding` from the bid record
-  encryptedAmount  = 8 bytes — amount_LE XOR HMAC-SHA256(buyer_priv,
-                                "tacit-preauth-bid-amount-v1"
-                                || bid_id(16) || funding_outpoint_txid_BE(32)
-                                || funding_outpoint_vout_LE(4)).first8
-                              (self-keystream — buyer recovers from privkey + chain alone;
-                               on-chain bytes are non-zero, matches the §5.7.6.1 maker-payload
-                               self-blinding pattern; avoids the "all-zero encrypted_amount"
-                               on-chain distinguishability sentinel)
+  commitment       = 33 bytes — pedersen(amount, blinding); MUST verify against the
+                                inline (amount, blinding) above
+  (no encryptedAmount — amount is in the inline cleartext section above; saves 8 bytes
+   vs the early-draft self-keystream payload and removes the buyer-priv recovery dependency)
 output[1]:                                          ← seller's asset change (OPTIONAL)
   commitment       = 33 bytes — pedersen(seller_change_amount, seller_change_blinding)
-  encryptedAmount  = 8 bytes  — encrypted under seller's self-recovery keystream
+  encryptedAmount  = 8 bytes  — encrypted under seller's self-recovery keystream (§5.7.6
+                                pattern; recoverable by seller alone)
 rp_len             = 2 bytes (LE)
 rangeproof         = aggregated bulletproof for {output[0]} or {output[0], output[1]}
 ```
+
+Net on-chain cost vs the early draft: +89 bytes (inline section) − 8
+bytes (output[0] encryptedAmount removed) = **+81 bytes per
+settlement**. At 10 sat/vB mainnet this is ~$0.10 per fill — a
+trivial premium for chain-only validation and chain-only recovery.
 
 ### Kernel signature
 
@@ -349,7 +367,14 @@ preauth_bid {
   expiry                 unix-seconds (≤ 30 days from publish — short window
                                        because the funding UTXO is locked
                                        opportunity-cost-wise during the bid)
-  nonce                  16 random bytes
+  nonce                  16 bytes, deterministically derived:
+                           nonce = HMAC-SHA256(buyer_priv,
+                                     "tacit-preauth-bid-nonce-v1"
+                                     || funding_outpoint_txid_BE(32)
+                                     || funding_outpoint_vout_LE(4)).first16
+                           Reproducible from privkey + funding outpoint, so a wallet
+                           with no local bid cache can regenerate the bid record
+                           byte-for-byte for cancel/re-publish flows.
   buyer_sats_spend       { signature_hex: ECDSA(low-S) || 0x83 byte }
                                        — pre-signature over the SIGHASH_SINGLE|ACP
                                          preimage of the funding outpoint binding to
@@ -416,35 +441,52 @@ OP_RETURN matches.
 
 The `T_PREAUTH_BID` validator MUST enforce, in addition to the
 standard `T_AXFER` checks (Pedersen conservation, bulletproof
-range, kernel-sig verification, opcode-byte dispatch):
+range, kernel-sig verification, opcode-byte dispatch). All checks
+are chain-only — the inline bid-context section provides every
+field the validator needs without ingesting the off-chain bid
+record.
 
-1. **OP_RETURN presence.** Some `vout[k]` in the broadcast tx MUST
+1. **Inline opening consistency.** `output[0].commitment` MUST
+   equal `pedersen(amount, blinding)` where `(amount, blinding)`
+   are read from the envelope's inline bid-context section.
+2. **Recipient script match.** `vout[0].script` MUST equal
+   `P2WPKH(hash160(recipient_pubkey))` where `recipient_pubkey` is
+   the 33-byte compressed key from the inline section. This binds
+   the on-chain recipient to the cleartext pubkey the OP_RETURN
+   hashes.
+3. **OP_RETURN presence.** Some `vout[k]` in the broadcast tx MUST
    match the canonical pattern `OP_RETURN OP_PUSHBYTES_32 || hash32`
    (34-byte scriptPubKey, value = 0).
-2. **Buyer-input position match.** Some `vin[k]` MUST share the
+4. **Buyer-input position match.** Some `vin[k]` MUST share the
    same `k` as the OP_RETURN vout. Its witness MUST contain a
    valid ECDSA signature with trailing byte `0x83` (SIGHASH_SINGLE
    | ANYONECANPAY) over the BIP-143 preimage of that input pinning
    `vout[k]` to the canonical OP_RETURN.
-3. **Recipient binding.** The 32-byte hash embedded in the OP_RETURN
-   MUST equal `SHA256("tacit-preauth-bid-context-v1" || asset_id
-   || bid_id || recipient_pubkey || amount_LE || blinding(32) ||
-   price_sats_LE)` where:
-   - `asset_id` matches the envelope's asset_id field,
-   - `recipient_pubkey` is the buyer-published recipient,
-   - `amount`, `blinding` open the envelope's `output[0].commitment`,
-   - `bid_id` is recoverable via the worker's bid record (indexers
-     that don't ingest the off-chain bid record SHOULD accept any
-     `bid_id` that produces a matching hash — the cryptographic
-     binding is the load-bearing piece, the bid_id is a lookup key).
-4. **Sats-input payout floor.** The vin at position `k` MUST be a
+5. **Bid-context hash binding.** The 32-byte hash embedded in the
+   OP_RETURN MUST equal:
+   ```
+   SHA256(
+       "tacit-preauth-bid-context-v1"
+       || asset_id(32)              ← from envelope's asset_id field
+       || bid_id(16)                ← from inline section
+       || recipient_pubkey(33)      ← from inline section
+       || amount_LE(8)              ← from inline section
+       || blinding(32)              ← from inline section
+       || price_sats_LE(8)          ← from inline section
+   )
+   ```
+   Every input is now on-chain in cleartext (either in the envelope
+   payload or derived from `vout[0].script`), so the validator
+   recomputes this hash without any off-chain dependency.
+6. **Sats-input payout floor.** The vin at position `k` MUST be a
    P2WPKH spend of an outpoint with `value ≥ price_sats +
-   DUST_LIMIT`. The seller's payout (some other vout with `value ≥
-   price_sats` to any P2WPKH script the seller chooses) is **not**
-   protocol-enforced — the buyer's funding-UTXO sizing implicitly
-   bounds the seller's take.
+   DUST_LIMIT` (using `price_sats` from the inline section). The
+   seller's payout (some other vout with `value ≥ price_sats` to
+   any P2WPKH script the seller chooses) is **not** protocol-
+   enforced — the buyer's funding-UTXO sizing implicitly bounds the
+   seller's take.
 
-Indexers that don't know `T_PREAUTH_BID` (`0x59` not yet
+Indexers that don't know `T_PREAUTH_BID` (`0x5B` not yet
 deployed) treat it as an unknown opcode per §5.5 forward-compat
 and the envelope is a no-op at the asset and pool-state level —
 soft-fork-additive, same posture as every shipped post-launch
@@ -454,28 +496,40 @@ amendment.
 
 ## Recovery semantics
 
-The buyer's new asset UTXO at `vout[0]` recovers via §6 path 4
-(self-derived blinding) using the bid record as the recovery
-anchor. Wallet recovery logic:
+With inline bid-context, recovery is **chain-only** — no bid
+record needed at all. The buyer's wallet:
 
-1. Wallet recovers its pending bid records from local storage OR
-   re-fetches via `GET /preauth-bids?buyer=<pubkey>&status=taken`.
-2. For each bid in `status = 'taken'`, the wallet knows
-   `(asset_id, amount, blinding, recipient_pubkey)` from the bid
-   record.
-3. Scan recent blocks for a `T_PREAUTH_BID` envelope whose
-   `output[0].commitment == pedersen(amount, blinding)` and
-   `vout[0].script == P2WPKH(recipient_pubkey)`. Match → asset is
-   in the wallet.
+1. Scans recent blocks for `T_PREAUTH_BID` envelopes.
+2. For each envelope, reads the inline section's
+   `recipient_pubkey`. If `recipient_pubkey == buyer_pubkey` (or
+   matches any stealth address the wallet owns the spend key for),
+   the envelope is theirs.
+3. Reads `(amount, blinding)` from the inline section to derive
+   the recipient lot's opening. Verifies
+   `pedersen(amount, blinding) == output[0].commitment` as a sanity
+   check.
+4. Credits the new UTXO at `vout[0]` into the wallet's holdings.
 
-This is more robust than §5.7.6 atomic-intent recovery (which
-depends on a worker 24h-TTL re-fetch) — preauth-bid recovery
-needs only the bid record (locally cached or worker-fetched) and
-the chain. The bid record can also be reconstructed from the
-buyer's privkey + `nonce` + `funding_outpoint` since `blinding` is
-deterministically derivable from `(buyer_priv, funding_outpoint,
-nonce)` via the standard self-blinding HMAC keystream — wallets
-that don't cache the bid record can re-derive it from chain alone.
+No bid record cache, no worker round-trip, no
+`(buyer_priv, funding_outpoint, nonce)` re-derivation needed. This
+is the strongest recovery profile in the §5.7 trading family —
+even §5.7.8 preauth-sale needs an ECDH compute against the seller's
+pubkey from the witness; preauth-bid just reads the inline cleartext.
+
+The bid record's `nonce` (16 bytes) is still deterministically
+derived from the buyer's privkey + funding outpoint to keep
+bid-publish reproducible and so a wallet that's lost its local bid
+cache can regenerate the bid record byte-for-byte if it needs to
+re-publish or cancel:
+
+```
+nonce = HMAC-SHA256(
+    buyer_priv,
+    "tacit-preauth-bid-nonce-v1"
+    || funding_outpoint_txid_BE(32)
+    || funding_outpoint_vout_LE(4)
+).first16
+```
 
 The seller's asset-change UTXO (if `N_outputs == 2`) recovers via
 §6 path 4 same as any `T_AXFER` self-blinded change.
@@ -507,6 +561,25 @@ scanner queue. The bid record stays `live` (the worker dedupes by
 another seller may take. The buyer's pre-signature carries through
 unchanged — it's not bound to any specific `settlement_txid`.
 
+### Seller-side griefing risk (commit-tx fee loss)
+
+The seller's commit-reveal flow exposes them to the same griefing
+shape as §5.7.8 preauth-sale: between the seller's commit-tx
+broadcast and the reveal-tx confirmation, a malicious buyer can
+double-spend the funding outpoint via a SIGHASH_ALL self-spend.
+The seller's reveal tx then fails Bitcoin consensus (the buyer's
+pre-signed input no longer exists), and the seller loses the
+commit-tx fee (~150-300 sats at mainnet minfee on a typical P2TR
+commit). This is **not** a value-extraction griefing (the buyer
+gains nothing beyond the funding-outpoint's sats), so the threat
+profile is identical to §5.7.8 preauth-sale and identical to every
+Bitcoin OTC marketplace: a worker-side outspend pre-check
+immediately before the seller's commit broadcast minimizes the
+window, and sellers SHOULD treat unexpired bids with recent
+funding-outpoint activity as elevated risk. No protocol-level
+griefing mitigation in this round-1 amendment; a follow-up could
+add a buyer bond output the seller forfeits on cancel.
+
 ### Worker downtime
 
 The worker is a coordination cache; if the worker is offline,
@@ -514,8 +587,8 @@ sellers cannot discover open bids but cannot mis-settle either.
 A seller who already cached a bid record off-worker (via, e.g.,
 the bid's pubsub broadcast) can still assemble and broadcast
 without the worker being present — the on-chain validator path
-needs only the bid_context_hash (recomputable from the bid record)
-and Bitcoin consensus.
+needs only the inline bid-context section + Bitcoin consensus, no
+off-chain bid record required.
 
 ---
 
@@ -529,8 +602,8 @@ and Bitcoin consensus.
 | Assembles tx | buyer | seller |
 | Pre-fund step | none (uses existing asset UTXO) | one tx (sizes funding UTXO exactly) |
 | Lot-level disclosure | seller's listed UTXO opening | buyer's recipient lot opening |
-| Envelope opcode | `T_AXFER` (`0x26`) — no validator change | `T_PREAUTH_BID` (`0x59`) — OP_RETURN binding rule |
-| Recovery anchor | ECDH(buyer.priv, seller.pub, seller.outpoint, 0) | bid record's published `blinding` (or self-derive from buyer.priv + funding outpoint) |
+| Envelope opcode | `T_AXFER` (`0x26`) — no validator change | `T_PREAUTH_BID` (`0x5B`) — OP_RETURN binding rule |
+| Recovery anchor | ECDH(buyer.priv, seller.pub, seller.outpoint, 0) — chain only, decode `vin[1].witness[1]` to learn seller_pubkey | inline bid-context section in the envelope — chain only, read `recipient_pubkey, amount, blinding` from the cleartext payload (no ECDH, no bid record) |
 | Position-independence | yes (§5.7.8.1) | yes (BIP-143 SIGHASH_SINGLE_ACP preimage is k-invariant for matched input/output pairs — same invariant as §5.7.8.1) |
 
 Both flows can coexist on the same asset, alongside §5.7.6
@@ -549,16 +622,16 @@ a symmetric matrix:
 This amendment introduces **no breaking changes**:
 
 1. **No `T_AXFER` change.** `T_PREAUTH_BID` is a new opcode at
-   `0x59`. The §5.7.8 preauth-sale flow continues to use
+   `0x5B`. The §5.7.8 preauth-sale flow continues to use
    `T_AXFER` (`0x26`) unchanged.
 2. **No §5.7.7 change.** Existing off-chain bid-intent records
    continue to work. A dapp may surface preauth-bid as a new
    option alongside the existing online-buyer bid path.
-3. **Soft-fork-additive.** Indexers that don't know `0x59` see it
+3. **Soft-fork-additive.** Indexers that don't know `0x5B` see it
    as an unknown opcode per §5.5 and ignore it — the asset and
    pool state are unaffected. They DO miss the recipient credit,
    so the receiving wallet sees the asset only after upgrading to
-   a `0x59`-aware indexer (or by manually rescanning).
+   a `0x5B`-aware indexer (or by manually rescanning).
 4. **No wallet-scanner change for sellers.** Sellers' fulfilment
    settlement records as `T_PREAUTH_BID` events; existing seller
    wallets that recognize `T_AXFER` events generalize trivially
@@ -577,15 +650,23 @@ Add to §3 *BIP-340 Schnorr signature-message tags*:
   (the canonical hash the buyer's `SIGHASH_SINGLE_ACP` signature
   pins to vout).
 
+Add to §3 *HMAC keystream domains*:
+
+- `tacit-preauth-bid-nonce-v1` — deterministic `nonce` derivation
+  from `(buyer_priv, funding_outpoint)`, so the bid record is
+  reproducible from privkey + chain alone.
+
 No new on-chain ASCII tags. The OP_RETURN payload is the raw
 32-byte `bid_context_hash` — same shape as `T_SWAP_BATCH` (§5.16)
 and `T_WRAPPER_ATTEST` (§5.19) envelope-hash commits. Domain
 tagging lives in the hash-input prefix
 (`tacit-preauth-bid-context-v1`), not on chain.
 
-No new HMAC keystream domains — blinding derivation reuses the
-existing self-blinding HMAC keystream from §3.5 / §6 path 4 (with
-the buyer's funding outpoint as the anchor).
+The recipient blinding is **not** self-derived in this amendment —
+it is published in cleartext via the inline bid-context section
+(symmetric to §5.7.8 publishing the seller's listed-UTXO opening).
+The buyer chooses any random 32-byte blinding at bid-publish time;
+recovery does not require re-deriving it.
 
 No new BIP-340 cryptographic primitive — the buyer's
 `buyer_sats_spend` is a standard ECDSA(low-S) P2WPKH signature
@@ -638,7 +719,7 @@ recompute bid_context_hash and verify it matches the take request's
 
 1. **Wire-format encoder/decoder** — `dapp/tacit.js` + `worker/src/index.js`
    gain `encodePreauthBid` / `decodePreauthBid`; both reuse the
-   `T_AXFER` opcode-byte dispatch table extended with `0x59`.
+   `T_AXFER` opcode-byte dispatch table extended with `0x5B`.
 2. **Indexer validator** — new dispatch branch in §5.5 that runs
    the four OP_RETURN-binding checks above on top of the existing
    `T_AXFER` validator path.
@@ -664,7 +745,7 @@ recompute bid_context_hash and verify it matches the take request's
    exercised under all three failure modes (cancel pre-fill,
    funding-outpoint double-spend, settlement reorg).
 8. **Cross-impl parity** — `tests/cross-impl-vectors-gen.mjs`
-   gains fixtures pinning `OPCODE_T_PREAUTH_BID == 0x59` and the
+   gains fixtures pinning `OPCODE_T_PREAUTH_BID == 0x5B` and the
    four new domain tags.
 
 ---
@@ -694,7 +775,7 @@ recompute bid_context_hash and verify it matches the take request's
 - [ ] Recovery from funding_outpoint + buyer.priv + nonce alone
       (no cache; re-derive blinding via self-blinding HMAC)
 - [ ] Unknown-opcode forward-compat: pre-amendment indexer treats
-      `0x59` as no-op (no asset credit, no state error)
+      `0x5B` as no-op (no asset credit, no state error)
 - [ ] `encryptedAmount` self-keystream parity dapp ↔ worker
       (buyer recovers amount from privkey + chain alone, no bid-record
       dependency)
@@ -723,30 +804,35 @@ Ships independent of the AMM ceremony.
 
 ## Follow-up primitives
 
-Out of scope for v1, deliberately deferred:
+Out of scope for this amendment, deliberately deferred to
+follow-ups. SPEC.md reserves the contiguous block `0x5C`–`0x5E`
+adjacent to `T_PREAUTH_BID` (`0x5B`) for these three variants so
+the **preauth/offline-trading family** stays clustered as it
+grows:
 
-- **Variable-amount preauth-bid.** Buyer publishes `(min_fill,
-  max_fill)` and a per-unit price. Seller picks a fill chunk; the
-  buyer's pre-sig validates across fill ratios via an aggregated
-  commitment trick. Mirrors §5.7.6.1 on the buyer side. Substantial
-  crypto extension — the OP_RETURN binding has to commit to the
-  fill ratio without fixing the absolute amount.
-- **Batched-fill preauth-bid.** One seller fills N buyer
-  preauth-bids in one settlement tx. The position-independence
-  invariant from §5.7.8.1 carries through — each buyer's pre-sig
-  validates at the slot the seller chooses, provided the OP_RETURN
-  at matching index decodes to that buyer's bid. Pure flow-level
-  optimization once per-fill basics ship; ~70% fee reduction
-  symmetric to §5.7.8.1.
-- **Both-sides preauth (fully-offline market).** Seller posts a
-  preauth-sale + buyer posts a preauth-bid that matches the same
-  `(asset_id, amount, price_sats)` quadrant. A third-party
-  fulfiller (anyone) assembles the cross-spend in one tx and takes
-  a small bounty from the implicit fee budget. Mechanically the
-  most powerful primitive — both parties can be offline
-  indefinitely — but requires careful spec work on the bounty
-  output. Reserved for a follow-up after the basic preauth-bid
-  bakes.
+- **`T_PREAUTH_BID_VAR` (reserved `0x5C`) — variable-amount
+  preauth-bid.** Buyer publishes `(min_fill, max_fill)` and a
+  per-unit price. Seller picks a fill chunk; the buyer's pre-sig
+  validates across fill ratios via an aggregated commitment trick.
+  Mirrors §5.7.6.1 on the buyer side. Substantial crypto
+  extension — the OP_RETURN binding has to commit to the fill
+  ratio without fixing the absolute amount.
+- **`T_PREAUTH_BID_BATCH` (reserved `0x5D`) — batched-fill
+  preauth-bid.** One seller fills N buyer preauth-bids in one
+  settlement tx. The position-independence invariant from §5.7.8.1
+  carries through — each buyer's pre-sig validates at the slot the
+  seller chooses, provided the OP_RETURN at matching index decodes
+  to that buyer's bid. Pure flow-level optimization once per-fill
+  basics ship; ~70% fee reduction symmetric to §5.7.8.1.
+- **`T_PREAUTH_MATCH` (reserved `0x5E`) — both-sides preauth /
+  fully-offline market.** Seller posts a preauth-sale + buyer
+  posts a preauth-bid that matches the same `(asset_id, amount,
+  price_sats)` quadrant. A third-party fulfiller (anyone)
+  assembles the cross-spend in one tx and takes a small bounty
+  from the implicit fee budget. Mechanically the most powerful
+  primitive — both parties can be offline indefinitely — but
+  requires careful spec work on the bounty output. Reserved for a
+  follow-up after the basic preauth-bid bakes.
 
 ---
 

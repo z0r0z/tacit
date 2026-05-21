@@ -31,8 +31,11 @@
 > `MAX_BONDED_FRAC_OF_TAC_FDV`).
 >
 > Adds three opcodes (`T_WORKER_BOND_OPEN`, `T_WORKER_BOND_CLOSE`,
-> `T_WORKER_SLASH`; tentative bytes `0x5B`/`0x5C`/`0x5D` — final
-> assignment at merge) that turn the existing per-worker
+> `T_WORKER_SLASH`; tentative bytes `0x5F`/`0x60`/`0x61` — final
+> assignment at merge; shifted from prior `0x5B`/`0x5C`/`0x5D`
+> draft once the preauth/offline-trading family block at
+> `0x5B`–`0x5E` was reserved by `SPEC-PREAUTH-BID-AMENDMENT.md`)
+> that turn the existing per-worker
 > equivocation flag into a **cryptographically evident, economically
 > credible** consequence: a worker that signs two
 > `T_INTENT_ATTEST` envelopes at the same `(scope_id, worker_pubkey,
@@ -253,12 +256,12 @@ rating going forward — still applies.
 
 ---
 
-## §5.X.1 `T_WORKER_BOND_OPEN` (tentative `0x5B`) — open a bond
+## §5.X.1 `T_WORKER_BOND_OPEN` (tentative `0x5F`) — open a bond
 
 ### Wire format
 
 ```
-opcode(1)              = 0x5B
+opcode(1)              = 0x5F
 worker_pubkey(33)        compressed secp256k1; the attesting key
                          this bond underwrites
 bond_tac_amount_LE(8)    u64; cleartext TAC amount being locked
@@ -320,7 +323,7 @@ vout[2..]               Optional change / fee outputs
 
 ```
 on T_WORKER_BOND_OPEN at confirmation depth ≥ 1:
-    require opcode == 0x5B
+    require opcode == 0x5F
     decode payload; reject on structural error
     verify opener_sig under worker_pubkey
     verify xcurve_sigma binds C_bond_secp ↔ C_bond_BJJ to
@@ -367,7 +370,7 @@ not the UX heuristic.
 
 ---
 
-## §5.X.2 `T_WORKER_BOND_CLOSE` (tentative `0x5C`) — cooperative release
+## §5.X.2 `T_WORKER_BOND_CLOSE` (tentative `0x60`) — cooperative release
 
 Two-step close to give traders watching the worker time to
 observe and act if the worker withdraws while attestations are
@@ -376,7 +379,7 @@ still considered fresh.
 ### Step 1 — notice
 
 ```
-opcode(1)              = 0x5C
+opcode(1)              = 0x60
 subop(1)               = 0x01  (notice)
 worker_pubkey(33)
 bond_outpoint(36)        txid_BE(32) || vout_LE(4)
@@ -396,7 +399,7 @@ the bond UTXO; the TAC remains locked.
 ### Step 2 — release
 
 ```
-opcode(1)              = 0x5C
+opcode(1)              = 0x60
 subop(1)               = 0x02  (release)
 worker_pubkey(33)
 bond_outpoint(36)
@@ -490,7 +493,7 @@ covenant.
 
 ---
 
-## §5.X.3 `T_WORKER_SLASH` (tentative `0x5D`) — equivocation evidence + slash
+## §5.X.3 `T_WORKER_SLASH` (tentative `0x61`) — equivocation evidence + slash
 
 Anyone — not just the victim trader — can submit equivocation
 evidence. The slash is permissionless. **The slash is an
@@ -506,7 +509,7 @@ the remainder (per-outpoint zeroing of the bond's recorded TAC).
 ### Wire format
 
 ```
-opcode(1)              = 0x5D
+opcode(1)              = 0x61
 worker_pubkey(33)
 bond_outpoint(36)        which bond to slash
 scope_id(32)             from the conflicting attestations
@@ -906,7 +909,7 @@ This amendment does NOT modify:
 
 It DOES add:
 
-- Three new opcodes (`0x5B`, `0x5C`, `0x5D`; tentative)
+- Three new opcodes (`0x5F`, `0x60`, `0x61`; tentative)
 - Four new BIP-340 domain tags:
   - `tacit-worker-bond-open-v1`
   - `tacit-worker-bond-close-notice-v1`

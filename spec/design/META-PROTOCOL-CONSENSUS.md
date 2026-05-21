@@ -114,7 +114,7 @@ transactions; no worker is required to settle.
 | `T_SWAP_BATCH` | (per SPEC.md §5.16) | AMM batched settlement |
 | `T_TRADE_BATCH` | `0x39` | atomic cross-surface batch (AMM + orderbook in one tx) |
 | preauth-sale | (SPEC.md §5.7.8) | seller-offline pre-signed listing |
-| `T_PREAUTH_BID` | `0x59` | buyer-offline pre-signed bid |
+| `T_PREAUTH_BID` | `0x5B` | buyer-offline pre-signed bid |
 
 These are the canonical "trade done, state final" envelopes.
 Channel layer (L2+) is about what happens *before* one of
