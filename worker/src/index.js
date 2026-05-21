@@ -11178,9 +11178,10 @@ async function handleAssetHint(req, env, network, cors, ctx) {
   // and any block scanned before the cron started running is permanently
   // missed since mainnet has zero backfill window. The xferseen dedupe in
   // bumpTransferCount makes this idempotent against the cron.
-  if (decoded.opcode === T_CXFER || decoded.opcode === T_AXFER || decoded.opcode === T_AXFER_VAR || decoded.opcode === T_CXFER_BPP) {
+  if (decoded.opcode === T_CXFER || decoded.opcode === T_AXFER || decoded.opcode === T_AXFER_VAR || decoded.opcode === T_CXFER_BPP || decoded.opcode === T_PREAUTH_BID) {
     const decoder = decoded.opcode === T_AXFER ? decodeAxferPayload
                   : decoded.opcode === T_AXFER_VAR ? decodeAxferVarPayload
+                  : decoded.opcode === T_PREAUTH_BID ? decodePreauthBidPayload
                   : decoded.opcode === T_CXFER_BPP ? decodeCXferBppPayload
                   : decodeCXferPayload;
     const dx = decoder(decoded.payload);
@@ -11254,7 +11255,12 @@ async function handleAssetHint(req, env, network, cors, ctx) {
     await env.REGISTRY_KV.put(kvKey, String(prior + 1), { expirationTtl: 90000 });
     return jsonResponse({
       ok: true, source: counted ? 'hint' : 'already-counted',
-      asset_id: dx.asset_id, kind: decoded.opcode === T_AXFER ? 'axfer' : 'cxfer',
+      asset_id: dx.asset_id,
+      kind: decoded.opcode === T_AXFER ? 'axfer'
+          : decoded.opcode === T_AXFER_VAR ? 'axfer-var'
+          : decoded.opcode === T_PREAUTH_BID ? 'preauth-bid'
+          : decoded.opcode === T_CXFER_BPP ? 'cxfer'
+          : 'cxfer',
       ...(lastTrade ? { last_trade: lastTrade } : {}),
       network,
     }, 200, cors);
