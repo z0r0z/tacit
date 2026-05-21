@@ -220,7 +220,7 @@ const modN = x => ((x % SECP_N) + SECP_N) % SECP_N;
 // (e.g., post-incident reissue) this constant gets bumped alongside the
 // corresponding dapp constant so worker + frontend stay in lockstep.
 const CANONICAL_TAC_ASSET_ID_HEX = 'f0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b';
-const CER_ELIGIBILITY_MIN_TAC_BASE_UNITS = 10_000_000_000n;   // 100 TAC @ 8 decimals
+const CER_ELIGIBILITY_MIN_TAC_BASE_UNITS = 100_000_000n;      // 1 TAC @ 8 decimals
 const CER_ELIGIBILITY_MAX_OUTPOINTS = 8;                       // bounds subrequest fan-out (≤ 16 chain calls per /contribute)
 const CER_ELIGIBILITY_SCOPE_ID = sha256(new TextEncoder().encode('tacit-amm-ceremony-eligibility-v1'));
 const CER_ELIGIBILITY_SIG_DOMAIN = new TextEncoder().encode('tacit-amm-ceremony-eligibility-v1');
@@ -6163,7 +6163,7 @@ async function handleCeremonyContribute(req, env, circuitHash, cors, ctx) {
   }
 
   // Eligibility gate: every contribute must carry a bulletproof envelope
-  // proving the contributor wallet holds ≥ 100 TAC. Sybil resistance for
+  // proving the contributor wallet holds ≥ 1 TAC. Sybil resistance for
   // the airdrop layer that reads contributor_pubkey out of this chain —
   // without this, a single farmer can spin up unlimited pubkeys cheaply.
   // The proof reveals the contributor's UTXO outpoints to the worker but
@@ -6190,7 +6190,7 @@ async function handleCeremonyContribute(req, env, circuitHash, cors, ctx) {
   }
   if (!proofBytes || proofBytes.length === 0) {
     return jsonResponse({
-      error: 'eligibility_proof: missing (contributions now require a ≥ 100 TAC range-proof envelope; see dapp ceremonyContributeAmm for the wire format)',
+      error: 'eligibility_proof: missing (contributions now require a ≥ 1 TAC range-proof envelope; see dapp ceremonyContributeAmm for the wire format)',
     }, 403, cors);
   }
   // Cap envelope size: a legitimate envelope is ≤ ~1.5 KB. Generous ceiling
@@ -6205,9 +6205,9 @@ async function handleCeremonyContribute(req, env, circuitHash, cors, ctx) {
   }
 
   // One-slot-per-pubkey-per-circuit dedup. The eligibility proof gates
-  // pubkey ownership (≥ 100 TAC); this gate ensures a single TAC-holding
+  // pubkey ownership (≥ 1 TAC); this gate ensures a single TAC-holding
   // pubkey can't sweep N slots in the same circuit. The pair turns the
-  // sybil cost from "free" into "≥ 100 TAC × one slot per pubkey per
+  // sybil cost from "free" into "≥ 1 TAC × one slot per pubkey per
   // chain × Bitcoin tx fee to rotate TAC between pubkeys."
   //
   // Per-circuit: a pubkey CAN still contribute to all three circuits
