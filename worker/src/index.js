@@ -208,6 +208,28 @@ const PEDERSEN_H = deriveH();
 const PEDERSEN_G = secp.ProjectivePoint.BASE;
 const PEDERSEN_ZERO = secp.ProjectivePoint.ZERO;
 const modN = x => ((x % SECP_N) + SECP_N) % SECP_N;
+
+// AMM ceremony eligibility gate. Contributions to /ceremony/:hash/contribute
+// must carry a bulletproof envelope proving the contributor wallet holds
+// ≥ CER_ELIGIBILITY_MIN_TAC of TAC, without revealing the exact balance.
+// The proof binds to a fixed scope_id (no cross-consumer replay), the
+// canonical TAC asset_id (no cross-asset replay), an expiry height (bounded
+// freshness), and the contributor pubkey (no third-party reuse).
+//
+// Canonical mainnet TAC asset_id. Locked at deploy; if TAC ever re-etches
+// (e.g., post-incident reissue) this constant gets bumped alongside the
+// corresponding dapp constant so worker + frontend stay in lockstep.
+const CANONICAL_TAC_ASSET_ID_HEX = 'f0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b';
+const CER_ELIGIBILITY_MIN_TAC_BASE_UNITS = 10_000_000_000n;   // 100 TAC @ 8 decimals
+const CER_ELIGIBILITY_MAX_OUTPOINTS = 8;                       // bounds subrequest fan-out (≤ 16 chain calls per /contribute)
+const CER_ELIGIBILITY_SCOPE_ID = sha256(new TextEncoder().encode('tacit-amm-ceremony-eligibility-v1'));
+const CER_ELIGIBILITY_SIG_DOMAIN = new TextEncoder().encode('tacit-amm-ceremony-eligibility-v1');
+// Eligibility check resolves UTXOs against mainnet (TAC is a mainnet asset
+// per the airdrop README). Plumbing a network param through the ceremony
+// endpoints is out of scope; flip this when signet TAC support is needed.
+const CER_ELIGIBILITY_NETWORK = 'mainnet';
+const CER_ELIGIBILITY_PRED_GE = 0x00;  // matches PRED_GE in tests/range-proof.mjs
+
 function pedersenCommit(amount, blinding) {
   const a = modN(BigInt(amount));
   const r = modN(BigInt(blinding));
@@ -5852,6 +5874,158 @@ async function _invalidateCeremonyCache(ctx, circuitHash) {
   }
 }
 
+// Decode the ceremony-eligibility envelope (wire format pinned in
+// SPEC §X / dapp builder):
+//   scope_id(32) || asset_id(32) || expiry_height_LE(4) ||
+//   commitment_count(1) || [txid_BE(32) || vout_LE(4)] * count ||
+//   attestation_len_LE(2) || attestation_bytes(*) ||
+//   holder_pubkey(33) || holder_sig(64)
+//
+// holder_sig covers SHA256("tacit-amm-ceremony-eligibility-v1" || all
+// preceding bytes). Returns { ok, ...fields } or { ok: false, reason }.
+function decodeCeremonyEligibilityEnvelope(bytes) {
+  if (!(bytes instanceof Uint8Array)) return { ok: false, reason: 'envelope not bytes' };
+  const MIN_LEN = 32 + 32 + 4 + 1 + 36 + 2 + 33 + 64;  // 1-UTXO + zero-byte attestation lower bound
+  if (bytes.length < MIN_LEN) return { ok: false, reason: 'envelope truncated (too short)' };
+  let off = 0;
+  const scopeId = bytes.slice(off, off + 32); off += 32;
+  const assetId = bytes.slice(off, off + 32); off += 32;
+  const expiryHeight = bytes[off] | (bytes[off + 1] << 8) | (bytes[off + 2] << 16) | (bytes[off + 3] << 24);
+  off += 4;
+  const count = bytes[off]; off += 1;
+  if (count < 1 || count > CER_ELIGIBILITY_MAX_OUTPOINTS) {
+    return { ok: false, reason: `commitment_count out of range [1, ${CER_ELIGIBILITY_MAX_OUTPOINTS}] (got ${count})` };
+  }
+  if (bytes.length < off + 36 * count + 2 + 33 + 64) {
+    return { ok: false, reason: 'envelope truncated at outpoints' };
+  }
+  const outpoints = [];
+  for (let i = 0; i < count; i++) {
+    const txid = bytesToHex(bytes.slice(off, off + 32)); off += 32;
+    const vout = bytes[off] | (bytes[off + 1] << 8) | (bytes[off + 2] << 16) | (bytes[off + 3] << 24);
+    off += 4;
+    outpoints.push({ txid, vout });
+  }
+  if (bytes.length < off + 2) return { ok: false, reason: 'envelope truncated at attestation_len' };
+  const attLen = bytes[off] | (bytes[off + 1] << 8); off += 2;
+  if (bytes.length !== off + attLen + 33 + 64) {
+    return { ok: false, reason: 'envelope length mismatch (attestation_len inconsistent with envelope size)' };
+  }
+  const attestation = bytes.slice(off, off + attLen); off += attLen;
+  const holderPubkey = bytes.slice(off, off + 33); off += 33;
+  const holderSig = bytes.slice(off, off + 64); off += 64;
+  const preceding = bytes.slice(0, bytes.length - 64);  // everything the sig covers
+  return { ok: true, scopeId, assetId, expiryHeight, count, outpoints, attestation, holderPubkey, holderSig, preceding };
+}
+
+// Verify a ceremony-eligibility envelope against on-chain state. Returns
+// { ok: true } on success, or { ok: false, status, reason } on any check
+// miss (status is the HTTP code the contribute handler should return).
+// Worst-case subrequests: 2·N (commitmentForUtxo + outspend probe) + 1
+// (tip height) ≤ 17 for N=8 outpoints — comfortably under CF Workers'
+// 50-subrequest limit.
+async function verifyCeremonyEligibilityProof(env, envelopeBytes, expectedContributorPubkeyHex) {
+  const dec = decodeCeremonyEligibilityEnvelope(envelopeBytes);
+  if (!dec.ok) return { ok: false, status: 400, reason: `eligibility_proof: ${dec.reason}` };
+
+  // (1) holder_sig over SHA256(domain || preceding bytes)
+  const sigMsg = sha256(concatBytes(CER_ELIGIBILITY_SIG_DOMAIN, dec.preceding));
+  if (!verifySchnorr(dec.holderSig, sigMsg, dec.holderPubkey.slice(1))) {
+    return { ok: false, status: 403, reason: 'eligibility_proof: invalid holder_sig' };
+  }
+
+  // (2) holder_pubkey == contributor_pubkey
+  const holderHex = bytesToHex(dec.holderPubkey).toLowerCase();
+  if (!expectedContributorPubkeyHex || holderHex !== expectedContributorPubkeyHex.toLowerCase()) {
+    return { ok: false, status: 403, reason: 'eligibility_proof: holder_pubkey does not match contributor_pubkey' };
+  }
+
+  // (3) scope_id matches the ceremony eligibility scope (defeats cross-
+  //     consumer replay if T_RANGE_ATTEST gets wired in other surfaces).
+  if (bytesToHex(dec.scopeId) !== bytesToHex(CER_ELIGIBILITY_SCOPE_ID)) {
+    return { ok: false, status: 403, reason: 'eligibility_proof: scope_id mismatch' };
+  }
+
+  // (4) asset_id == canonical TAC (defeats cross-asset replay).
+  if (bytesToHex(dec.assetId).toLowerCase() !== CANONICAL_TAC_ASSET_ID_HEX) {
+    return { ok: false, status: 403, reason: 'eligibility_proof: asset_id is not canonical TAC' };
+  }
+
+  // (5) expiry not yet passed.
+  let tipHeight = null;
+  try { tipHeight = await fetchTipHeight(env, CER_ELIGIBILITY_NETWORK); } catch {}
+  if (tipHeight !== null && dec.expiryHeight < tipHeight) {
+    return { ok: false, status: 403, reason: `eligibility_proof: expired (expiry=${dec.expiryHeight}, tip=${tipHeight})` };
+  }
+
+  // (6) resolve each outpoint: TAC asset_id, owned by holder_pubkey, still
+  //     unspent. Accumulate Pedersen commitments for the range-proof check.
+  let sumCommitment = PEDERSEN_ZERO;
+  const holderHash160Hex = bytesToHex(hash160(dec.holderPubkey));
+  for (const op of dec.outpoints) {
+    let resolved;
+    try { resolved = await commitmentForUtxo(env, op.txid, op.vout, CER_ELIGIBILITY_NETWORK); }
+    catch (e) { return { ok: false, status: 403, reason: `eligibility_proof: ${op.txid}:${op.vout} commitment lookup failed: ${e.message || 'unknown'}` }; }
+    if (String(resolved.asset_id || '').toLowerCase() !== CANONICAL_TAC_ASSET_ID_HEX) {
+      return { ok: false, status: 403, reason: `eligibility_proof: ${op.txid}:${op.vout} asset_id is not TAC` };
+    }
+    // P2WPKH ownership: parent-tx vout's scriptpubkey is 0x0014 || hash160(holder_pubkey).
+    let tx;
+    try { tx = await apiJson(env, `/tx/${op.txid}`, {}, CER_ELIGIBILITY_NETWORK); }
+    catch (e) { return { ok: false, status: 502, reason: `eligibility_proof: failed to fetch tx ${op.txid}: ${e.message || 'unknown'}` }; }
+    const voutObj = tx?.vout?.[op.vout];
+    if (!voutObj?.scriptpubkey) return { ok: false, status: 403, reason: `eligibility_proof: ${op.txid}:${op.vout} has no scriptpubkey` };
+    const spk = hexToBytes(voutObj.scriptpubkey);
+    if (spk.length !== 22 || spk[0] !== 0x00 || spk[1] !== 0x14) {
+      return { ok: false, status: 403, reason: `eligibility_proof: ${op.txid}:${op.vout} is not P2WPKH` };
+    }
+    if (bytesToHex(spk.slice(2, 22)) !== holderHash160Hex) {
+      return { ok: false, status: 403, reason: `eligibility_proof: holder_pubkey does not own ${op.txid}:${op.vout}` };
+    }
+    // Still unspent (tipHeight may be null on indexer flake — accept the
+    // probe's spent/unspent regardless; depth only matters for our own
+    // reorg-safety margins which we don't apply here).
+    const probe = await chainOutspendProbe(env, CER_ELIGIBILITY_NETWORK, op.txid, op.vout, tipHeight);
+    if (!probe) return { ok: false, status: 502, reason: `eligibility_proof: outspend probe failed for ${op.txid}:${op.vout}` };
+    if (probe.spent) return { ok: false, status: 403, reason: `eligibility_proof: ${op.txid}:${op.vout} is spent` };
+    // Accumulate.
+    try {
+      const cPt = secp.ProjectivePoint.fromHex(String(resolved.commitment));
+      sumCommitment = sumCommitment.add(cPt);
+    } catch (e) {
+      return { ok: false, status: 500, reason: `eligibility_proof: commitment decode for ${op.txid}:${op.vout} failed: ${e.message || 'unknown'}` };
+    }
+  }
+
+  // (7) verify range proof: PRED_GE tag + X == required threshold +
+  //     bulletproof verifies against (C_sum − X·H).
+  if (dec.attestation.length < 1 + 8 + 2) {
+    return { ok: false, status: 400, reason: 'eligibility_proof: attestation truncated' };
+  }
+  if (dec.attestation[0] !== CER_ELIGIBILITY_PRED_GE) {
+    return { ok: false, status: 403, reason: `eligibility_proof: predicate is not PRED_GE (got ${dec.attestation[0]})` };
+  }
+  let X = 0n;
+  for (let i = 0; i < 8; i++) X |= BigInt(dec.attestation[1 + i]) << (8n * BigInt(i));
+  if (X !== CER_ELIGIBILITY_MIN_TAC_BASE_UNITS) {
+    return { ok: false, status: 403, reason: `eligibility_proof: threshold ${X} ≠ required ${CER_ELIGIBILITY_MIN_TAC_BASE_UNITS}` };
+  }
+  const proofLen = dec.attestation[9] | (dec.attestation[10] << 8);
+  if (dec.attestation.length !== 11 + proofLen) {
+    return { ok: false, status: 400, reason: 'eligibility_proof: attestation proof_len mismatch' };
+  }
+  const proof = dec.attestation.slice(11, 11 + proofLen);
+  // Shifted commitment for PRED_GE: bulletproof proves (C_sum − X·H)
+  // commits to a value in [0, 2^64), which is equivalent to sum ≥ X.
+  const shifted = X === 0n ? sumCommitment : sumCommitment.add(PEDERSEN_H.multiply(X).negate());
+  let verified;
+  try { verified = bpRangeAggVerify([shifted], proof); }
+  catch (e) { return { ok: false, status: 500, reason: `eligibility_proof: bulletproof verify threw: ${e.message || 'unknown'}` }; }
+  if (!verified) return { ok: false, status: 403, reason: 'eligibility_proof: bulletproof verify failed' };
+
+  return { ok: true };
+}
+
 async function handleCeremonyContribute(req, env, circuitHash, cors, ctx) {
   if (!env.PINATA_JWT) return jsonResponse({ error: 'PINATA_JWT missing' }, 500, cors);
   if (!/^[0-9a-f]{64}$/.test(circuitHash)) {
@@ -5935,6 +6109,48 @@ async function handleCeremonyContribute(req, env, circuitHash, cors, ctx) {
       head_cid: state.head_cid,
       contribution_count: state.contribution_count,
     }, 409, cors);
+  }
+
+  // Eligibility gate: every contribute must carry a bulletproof envelope
+  // proving the contributor wallet holds ≥ 100 TAC. Sybil resistance for
+  // the airdrop layer that reads contributor_pubkey out of this chain —
+  // without this, a single farmer can spin up unlimited pubkeys cheaply.
+  // The proof reveals the contributor's UTXO outpoints to the worker but
+  // not the underlying amounts. Anonymous contributions (no
+  // contributor_pubkey) are no longer accepted because the airdrop layer
+  // wouldn't have anything to credit anyway.
+  if (!contributorPubkey) {
+    return jsonResponse({
+      error: 'eligibility_proof: contributor_pubkey is required (the eligibility proof binds to it)',
+    }, 403, cors);
+  }
+  const proofField = fd.get('eligibility_proof');
+  let proofBytes = null;
+  if (proofField instanceof File) {
+    proofBytes = new Uint8Array(await proofField.arrayBuffer());
+  } else if (typeof proofField === 'string' && proofField.length) {
+    // Accept hex string for clients that prefer text fields; binary File
+    // form is the canonical / cheaper path.
+    const h = proofField.trim().toLowerCase();
+    if (!/^[0-9a-f]+$/.test(h) || h.length % 2 !== 0) {
+      return jsonResponse({ error: 'eligibility_proof: malformed hex' }, 400, cors);
+    }
+    proofBytes = hexToBytes(h);
+  }
+  if (!proofBytes || proofBytes.length === 0) {
+    return jsonResponse({
+      error: 'eligibility_proof: missing (contributions now require a ≥ 100 TAC range-proof envelope; see dapp ceremonyContributeAmm for the wire format)',
+    }, 403, cors);
+  }
+  // Cap envelope size: a legitimate envelope is ≤ ~1.5 KB. Generous ceiling
+  // here protects against ridiculous attestation_len values getting through
+  // the per-field decoder.
+  if (proofBytes.length > 8192) {
+    return jsonResponse({ error: 'eligibility_proof: oversize envelope (max 8 KB)' }, 413, cors);
+  }
+  const eligibility = await verifyCeremonyEligibilityProof(env, proofBytes, contributorPubkey);
+  if (!eligibility.ok) {
+    return jsonResponse({ error: eligibility.reason }, eligibility.status || 403, cors);
   }
 
   let newCid;
@@ -21806,6 +22022,18 @@ export {
   _farmCrystallize,
   ammFarmKey, ammFarmBondKey, ammFarmBondsByBonderKey,
   ammFarmsByPoolKey, ammFarmUnbondReceiptKey,
+  // AMM ceremony eligibility gate. Exported so tests pin (a) byte-for-byte
+  // envelope decode, (b) parity with dapp's _buildCeremonyEligibilityEnvelope
+  // — any drift between worker decoder + dapp encoder makes every /contribute
+  // fail silently, so the parity test is the only safety net.
+  decodeCeremonyEligibilityEnvelope,
+  verifyCeremonyEligibilityProof,
+  CANONICAL_TAC_ASSET_ID_HEX,
+  CER_ELIGIBILITY_MIN_TAC_BASE_UNITS,
+  CER_ELIGIBILITY_MAX_OUTPOINTS,
+  CER_ELIGIBILITY_SCOPE_ID,
+  CER_ELIGIBILITY_SIG_DOMAIN,
+  CER_ELIGIBILITY_PRED_GE,
 };
 
 // ============== ROUTER ==============
