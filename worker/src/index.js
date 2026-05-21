@@ -5274,6 +5274,57 @@ function ceremonyContribKey(hash, idx, cid) {
   return `ceremony:${hash}:contrib:${String(idx).padStart(8, '0')}:${cid}`;
 }
 function ceremonyContribPrefix(hash)    { return `ceremony:${hash}:contrib:`; }
+// Pubkey-dedup index: one slot per pubkey per circuit. Populated lazily by
+// the incremental backfill on first /contribute calls after deploy, then
+// kept fresh by every successful /contribute. Stored value is the
+// contribution index of the (first-seen-during-backfill / latest-on-write)
+// slot — used only for "does this entry exist" + diagnostic error messages.
+function ceremonyPubkeyKey(hash, pubkeyHex) {
+  return `ceremony:${hash}:pubkey:${String(pubkeyHex).toLowerCase()}`;
+}
+function ceremonyPubkeyBackfillCursorKey(hash) { return `ceremony:${hash}:pubkey_backfill_cursor`; }
+function ceremonyPubkeyBackfillDoneKey(hash)   { return `ceremony:${hash}:pubkey_backfill_done`; }
+
+// Incremental backfill of the pubkey-dedup index. Each /contribute call
+// processes up to 100 attestations from the existing chain, persisting a
+// cursor so the next call resumes. After ~5–10 calls (or one explicit
+// admin trigger) the `done` flag flips and subsequent /contribute calls
+// skip this path entirely. The work is bounded per invocation so we
+// don't blow CF Workers' subrequest budget (max ~200 subrequests added
+// per /contribute during the backfill window — well under the 1000 cap).
+// Idempotent: a record processed twice just overwrites the same KV
+// entry with the same value. Concurrent backfill calls race on the
+// cursor key but the worst outcome is some attestations being processed
+// twice — never missed entries.
+async function _ceremonyPubkeyIndexBackfillStep(env, circuitHash) {
+  const doneKey = ceremonyPubkeyBackfillDoneKey(circuitHash);
+  if (await env.REGISTRY_KV.get(doneKey)) return { skipped: true };
+  const cursorKey = ceremonyPubkeyBackfillCursorKey(circuitHash);
+  const cursor = (await env.REGISTRY_KV.get(cursorKey)) || undefined;
+  const page = await env.REGISTRY_KV.list({
+    prefix: ceremonyContribPrefix(circuitHash),
+    limit: 100,
+    cursor,
+  });
+  const records = await Promise.all(
+    page.keys.map(k => env.REGISTRY_KV.get(k.name, 'json').catch(() => null))
+  );
+  await Promise.all(records
+    .filter(r => r && typeof r.contributor_pubkey === 'string'
+                  && /^0[23][0-9a-f]{64}$/i.test(r.contributor_pubkey))
+    .map(r => env.REGISTRY_KV.put(
+      ceremonyPubkeyKey(circuitHash, r.contributor_pubkey),
+      String(r.index ?? 0),
+    ))
+  );
+  if (page.list_complete) {
+    await env.REGISTRY_KV.put(doneKey, '1');
+    try { await env.REGISTRY_KV.delete(cursorKey); } catch {}
+    return { done: true, processed: records.length };
+  }
+  await env.REGISTRY_KV.put(cursorKey, page.cursor);
+  return { done: false, processed: records.length };
+}
 
 // Magic-byte tags at offset 0 in snarkjs file formats. Validated server-side
 // before pinning so a malicious client can't waste contributors' bandwidth
@@ -6153,6 +6204,36 @@ async function handleCeremonyContribute(req, env, circuitHash, cors, ctx) {
     return jsonResponse({ error: eligibility.reason }, eligibility.status || 403, cors);
   }
 
+  // One-slot-per-pubkey-per-circuit dedup. The eligibility proof gates
+  // pubkey ownership (≥ 100 TAC); this gate ensures a single TAC-holding
+  // pubkey can't sweep N slots in the same circuit. The pair turns the
+  // sybil cost from "free" into "≥ 100 TAC × one slot per pubkey per
+  // chain × Bitcoin tx fee to rotate TAC between pubkeys."
+  //
+  // Per-circuit: a pubkey CAN still contribute to all three circuits
+  // (lp_add + lp_remove + swap_batch), but not twice to the same one.
+  // This matches the existing 3-chain UX where users are encouraged to
+  // contribute to all three (round-robin picker in the dapp drawer).
+  //
+  // Backfill: the index is populated from existing attestations on the
+  // first ~5–10 /contribute calls after deploy. Each step processes
+  // 100 records (~200 subrequests). Until backfill is complete a
+  // grandfathered duplicate pubkey could slip through one more time —
+  // worst-case window is the first few minutes after deploy.
+  try { await _ceremonyPubkeyIndexBackfillStep(env, circuitHash); } catch (e) {
+    // Soft-fail: if the backfill step throws (KV flake / list error),
+    // proceed with the contribute. The dedup check below still runs
+    // against whatever's in the index; a missed record just means a
+    // grandfathered duplicate gets one more slot than intended.
+  }
+  const existingSlot = await env.REGISTRY_KV.get(ceremonyPubkeyKey(circuitHash, contributorPubkey));
+  if (existingSlot) {
+    return jsonResponse({
+      error: `this pubkey already contributed to this circuit (slot #${existingSlot}). One slot per address per circuit — contribute to the other two circuits if you haven't yet.`,
+      existing_slot: Number(existingSlot) || existingSlot,
+    }, 409, cors);
+  }
+
   let newCid;
   if (haveZkeyFile) {
     // File path: magic-byte sniff before pinning + pin to Pinata
@@ -6261,6 +6342,11 @@ async function handleCeremonyContribute(req, env, circuitHash, cors, ctx) {
     prev_cid: prevCid,
   };
   await env.REGISTRY_KV.put(ceremonyContribKey(circuitHash, newCount, newCid), JSON.stringify(rec));
+  // Mark this pubkey as having claimed its slot in this circuit's chain.
+  // Future /contribute calls under the same pubkey + circuit return 409
+  // at the dedup check above. The value stored is the slot index for
+  // diagnostic error messages — the dedup check only needs presence.
+  await env.REGISTRY_KV.put(ceremonyPubkeyKey(circuitHash, contributorPubkey), String(newCount));
 
   await env.UPLOAD_KV.put(rlKey, String(prior + 1), { expirationTtl: 60 * 60 * 25 });
   // Invalidate the GET-endpoint edge caches BEFORE responding so the
@@ -22034,6 +22120,13 @@ export {
   CER_ELIGIBILITY_SCOPE_ID,
   CER_ELIGIBILITY_SIG_DOMAIN,
   CER_ELIGIBILITY_PRED_GE,
+  // Pubkey-dedup index helpers. Exported so tests can pin the key shape
+  // + walk + assert the incremental-backfill semantics (each step
+  // bounded to 100 records, idempotent on overlap).
+  ceremonyPubkeyKey,
+  ceremonyPubkeyBackfillCursorKey,
+  ceremonyPubkeyBackfillDoneKey,
+  _ceremonyPubkeyIndexBackfillStep,
 };
 
 // ============== ROUTER ==============
