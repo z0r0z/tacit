@@ -3367,6 +3367,13 @@ details.protocol-section > summary.protocol-h3:hover { color: var(--orange); }
 }
 .toast.error { border-left-color: var(--red); box-shadow: 4px 4px 0 var(--red); }
 .toast.success { border-left-color: var(--green); box-shadow: 4px 4px 0 var(--green); }
+/* `kind="warn"` adds the standalone `.warn` class which forces a cream
+   background — but the base .toast color is white, so without this
+   override the text is invisible on cream. Switching color back to
+   --ink gives dark text on the warm panel + orange accent, which
+   reads visually distinct from default toasts (white on dark) and
+   error/success (white on dark with red/green accent). */
+.toast.warn { background: var(--bg-warm); color: var(--ink); border-left-color: var(--orange); box-shadow: 4px 4px 0 var(--orange); padding: 14px 22px; margin: 0; }
 @keyframes slidein { from { transform: translateX(110%); } to { transform: translateX(0); } }
 @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.25; } }
 
