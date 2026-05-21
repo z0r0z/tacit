@@ -9141,8 +9141,12 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
     <div id="amm-cer-title" class="pass-title">AMM trusted setup · contribute</div>
     <div class="pass-reason" style="margin-bottom: 12px;">
       <p style="margin:0 0 8px 0;">Each click advances one of three AMM circuit chains by mixing your local entropy into the proving key. As long as <strong>one</strong> contributor across each chain is honest, the AMM is sound. The two <code>lp_*</code> circuits take ~30s and ~10 MB; the larger <code>swap_batch</code> circuit takes ~3–5 min and ~180 MB. Keep the tab open while it runs.</p>
-      <p style="margin:0 0 8px 0;font-size:11px;color:var(--ink-mid);">Your contribution is pseudonymous by default. Log your tacit wallet on the contribution to stay eligible for future airdrop snapshots — your wallet pubkey gets recorded alongside the contribution, nothing else.</p>
+      <p style="margin:0 0 8px 0;font-size:11px;color:var(--ink-mid);">Contributions now require holding <strong>≥ 1 TAC</strong>. Your wallet mints a one-time bulletproof attesting to the threshold — your actual balance stays private. The proof binds to your wallet pubkey, which is recorded alongside the contribution for airdrop eligibility. One slot per address.</p>
     </div>
+    <!-- Live eligibility status line. Populated by _renderAmmCerEligibilityBanner()
+         on drawer open + after holdings scans. Hidden when not relevant
+         (e.g., ceremony already finalized). -->
+    <div id="amm-cer-eligibility-banner" style="display:none; margin-bottom: 10px; padding: 8px 10px; border: 1px solid var(--ink-faint); background: var(--bg-warm); font-size: 11px; line-height: 1.45;"></div>
     <div id="amm-cer-chains" style="margin-bottom: 12px; font-family: var(--mono); font-size: 11px;"></div>
     <div id="amm-cer-my-contribs" style="display:none;margin-bottom:14px;padding:10px 12px;border:1px solid var(--ink-faint);background:var(--bg);font-family:var(--mono);font-size:11px;"></div>
     <div style="margin-bottom: 10px;">
@@ -9151,11 +9155,11 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
       </label>
     </div>
     <div style="margin-bottom: 14px;">
-      <label style="display:flex; align-items:flex-start; gap:10px; font-size:12px; line-height:1.45; cursor:pointer; padding:10px 12px; border:1px solid var(--ink-faint); background:var(--bg-warm);">
-        <input id="amm-cer-attribute-pubkey" type="checkbox" checked
-               style="width:16px; height:16px; margin:1px 0 0; flex-shrink:0; accent-color:var(--orange); cursor:pointer;">
+      <label style="display:flex; align-items:flex-start; gap:10px; font-size:12px; line-height:1.45; padding:10px 12px; border:1px solid var(--ink-faint); background:var(--bg-warm); opacity:0.75; cursor:default;">
+        <input id="amm-cer-attribute-pubkey" type="checkbox" checked disabled
+               style="width:16px; height:16px; margin:1px 0 0; flex-shrink:0; accent-color:var(--orange); cursor:default;">
         <span>
-          Log my tacit wallet <span style="color:var(--ink-mid);">(for airdrop eligibility)</span>
+          Wallet pubkey logged <span style="color:var(--ink-mid);">(required — anonymous contribution no longer accepted)</span>
           <span id="amm-cer-pubkey-hint" class="muted" style="display:block; font-size:11px; margin-top:2px; font-family:var(--mono);"></span>
         </span>
       </label>

@@ -212,6 +212,28 @@ const PEDERSEN_H = deriveH();
 const PEDERSEN_G = secp.ProjectivePoint.BASE;
 const PEDERSEN_ZERO = secp.ProjectivePoint.ZERO;
 const modN = x => ((x % SECP_N) + SECP_N) % SECP_N;
+
+// AMM ceremony eligibility gate. Contributions to /ceremony/:hash/contribute
+// must carry a bulletproof envelope proving the contributor wallet holds
+// ≥ CER_ELIGIBILITY_MIN_TAC of TAC, without revealing the exact balance.
+// The proof binds to a fixed scope_id (no cross-consumer replay), the
+// canonical TAC asset_id (no cross-asset replay), an expiry height (bounded
+// freshness), and the contributor pubkey (no third-party reuse).
+//
+// Canonical mainnet TAC asset_id. Locked at deploy; if TAC ever re-etches
+// (e.g., post-incident reissue) this constant gets bumped alongside the
+// corresponding dapp constant so worker + frontend stay in lockstep.
+const CANONICAL_TAC_ASSET_ID_HEX = 'f0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b';
+const CER_ELIGIBILITY_MIN_TAC_BASE_UNITS = 100_000_000n;      // 1 TAC @ 8 decimals
+const CER_ELIGIBILITY_MAX_OUTPOINTS = 8;                       // bounds subrequest fan-out (≤ 16 chain calls per /contribute)
+const CER_ELIGIBILITY_SCOPE_ID = sha256(new TextEncoder().encode('tacit-amm-ceremony-eligibility-v1'));
+const CER_ELIGIBILITY_SIG_DOMAIN = new TextEncoder().encode('tacit-amm-ceremony-eligibility-v1');
+// Eligibility check resolves UTXOs against mainnet (TAC is a mainnet asset
+// per the airdrop README). Plumbing a network param through the ceremony
+// endpoints is out of scope; flip this when signet TAC support is needed.
+const CER_ELIGIBILITY_NETWORK = 'mainnet';
+const CER_ELIGIBILITY_PRED_GE = 0x00;  // matches PRED_GE in tests/range-proof.mjs
+
 function pedersenCommit(amount, blinding) {
   const a = modN(BigInt(amount));
   const r = modN(BigInt(blinding));
@@ -5455,6 +5477,66 @@ function ceremonyContribKey(hash, idx, cid) {
   return `ceremony:${hash}:contrib:${String(idx).padStart(8, '0')}:${cid}`;
 }
 function ceremonyContribPrefix(hash)    { return `ceremony:${hash}:contrib:`; }
+// Pubkey-dedup index: one slot per pubkey per circuit. Populated lazily by
+// the incremental backfill on first /contribute calls after deploy, then
+// kept fresh by every successful /contribute. Stored value is the
+// contribution index of the (first-seen-during-backfill / latest-on-write)
+// slot — used only for "does this entry exist" + diagnostic error messages.
+function ceremonyPubkeyKey(hash, pubkeyHex) {
+  return `ceremony:${hash}:pubkey:${String(pubkeyHex).toLowerCase()}`;
+}
+function ceremonyPubkeyBackfillCursorKey(hash) { return `ceremony:${hash}:pubkey_backfill_cursor`; }
+function ceremonyPubkeyBackfillDoneKey(hash)   { return `ceremony:${hash}:pubkey_backfill_done`; }
+
+// Incremental backfill of the pubkey-dedup index. Each /contribute call
+// processes up to 100 attestations from the existing chain, persisting a
+// cursor so the next call resumes. After ~5–10 calls (or one explicit
+// admin trigger) the `done` flag flips and subsequent /contribute calls
+// skip this path entirely. The work is bounded per invocation so we
+// don't blow CF Workers' subrequest budget (max ~200 subrequests added
+// per /contribute during the backfill window — well under the 1000 cap).
+// Idempotent: a record processed twice just overwrites the same KV
+// entry with the same value. Concurrent backfill calls race on the
+// cursor key but the worst outcome is some attestations being processed
+// twice — never missed entries.
+async function _ceremonyPubkeyIndexBackfillStep(env, circuitHash) {
+  const doneKey = ceremonyPubkeyBackfillDoneKey(circuitHash);
+  if (await env.REGISTRY_KV.get(doneKey)) return { skipped: true };
+  const cursorKey = ceremonyPubkeyBackfillCursorKey(circuitHash);
+  const cursor = (await env.REGISTRY_KV.get(cursorKey)) || undefined;
+  const page = await env.REGISTRY_KV.list({
+    prefix: ceremonyContribPrefix(circuitHash),
+    limit: 100,
+    cursor,
+  });
+  const records = await Promise.all(
+    page.keys.map(k => env.REGISTRY_KV.get(k.name, 'json').catch(() => null))
+  );
+  await Promise.all(records
+    .filter(r => r && typeof r.contributor_pubkey === 'string'
+                  && /^0[23][0-9a-f]{64}$/i.test(r.contributor_pubkey))
+    .map(r => env.REGISTRY_KV.put(
+      ceremonyPubkeyKey(circuitHash, r.contributor_pubkey),
+      String(r.index ?? 0),
+    ))
+  );
+  if (page.list_complete) {
+    await env.REGISTRY_KV.put(doneKey, '1');
+    try { await env.REGISTRY_KV.delete(cursorKey); } catch {}
+    return { done: true, processed: records.length };
+  }
+  // Guard against an empty cursor on a non-complete page (KV.put throws
+  // on undefined value). Shouldn't happen — page.list_complete is the
+  // canonical "more pages" signal — but if cursor is missing we treat
+  // the backfill as complete rather than throwing and leaving the
+  // cursor key unset.
+  if (page.cursor) {
+    await env.REGISTRY_KV.put(cursorKey, page.cursor);
+  } else {
+    await env.REGISTRY_KV.put(doneKey, '1');
+  }
+  return { done: !page.cursor, processed: records.length };
+}
 
 // Magic-byte tags at offset 0 in snarkjs file formats. Validated server-side
 // before pinning so a malicious client can't waste contributors' bandwidth
@@ -6055,6 +6137,181 @@ async function _invalidateCeremonyCache(ctx, circuitHash) {
   }
 }
 
+// Decode the ceremony-eligibility envelope. Wire format is pinned by
+// the dapp builder `_buildCeremonyEligibilityEnvelope` in dapp/tacit.js
+// — any drift between encoder and decoder makes every /contribute fail
+// silently, so the parity test in
+// tests/ceremony-eligibility-envelope-parity.test.mjs is the canonical
+// source of truth for the layout.
+//   scope_id(32) || asset_id(32) || expiry_height_LE(4) ||
+//   commitment_count(1) || [txid_BE(32) || vout_LE(4)] * count ||
+//   attestation_len_LE(2) || attestation_bytes(*) ||
+//   holder_pubkey(33) || holder_sig(64)
+//
+// holder_sig covers SHA256("tacit-amm-ceremony-eligibility-v1" || all
+// preceding bytes). Returns { ok, ...fields } or { ok: false, reason }.
+function decodeCeremonyEligibilityEnvelope(bytes) {
+  if (!(bytes instanceof Uint8Array)) return { ok: false, reason: 'envelope not bytes' };
+  const MIN_LEN = 32 + 32 + 4 + 1 + 36 + 2 + 33 + 64;  // 1-UTXO + zero-byte attestation lower bound
+  if (bytes.length < MIN_LEN) return { ok: false, reason: 'envelope truncated (too short)' };
+  let off = 0;
+  const scopeId = bytes.slice(off, off + 32); off += 32;
+  const assetId = bytes.slice(off, off + 32); off += 32;
+  // Coerce to unsigned 32-bit. `<< 24` produces negative JS Numbers for
+  // values with the high bit set (heights ≥ 2^31). Latent today — tip is
+  // ~870k — but a signed expiryHeight would silently compare wrong
+  // against any positive tip and the `expired` branch would also handle
+  // it as a fail-closed. Still: match the dapp's unsigned encoder so
+  // round-trip is byte-exact.
+  const expiryHeight = (bytes[off] | (bytes[off + 1] << 8) | (bytes[off + 2] << 16) | (bytes[off + 3] << 24)) >>> 0;
+  off += 4;
+  const count = bytes[off]; off += 1;
+  if (count < 1 || count > CER_ELIGIBILITY_MAX_OUTPOINTS) {
+    return { ok: false, reason: `commitment_count out of range [1, ${CER_ELIGIBILITY_MAX_OUTPOINTS}] (got ${count})` };
+  }
+  if (bytes.length < off + 36 * count + 2 + 33 + 64) {
+    return { ok: false, reason: 'envelope truncated at outpoints' };
+  }
+  const outpoints = [];
+  for (let i = 0; i < count; i++) {
+    const txid = bytesToHex(bytes.slice(off, off + 32)); off += 32;
+    // Same unsigned coercion as expiryHeight — see the comment above.
+    const vout = (bytes[off] | (bytes[off + 1] << 8) | (bytes[off + 2] << 16) | (bytes[off + 3] << 24)) >>> 0;
+    off += 4;
+    outpoints.push({ txid, vout });
+  }
+  if (bytes.length < off + 2) return { ok: false, reason: 'envelope truncated at attestation_len' };
+  const attLen = bytes[off] | (bytes[off + 1] << 8); off += 2;
+  if (bytes.length !== off + attLen + 33 + 64) {
+    return { ok: false, reason: 'envelope length mismatch (attestation_len inconsistent with envelope size)' };
+  }
+  const attestation = bytes.slice(off, off + attLen); off += attLen;
+  const holderPubkey = bytes.slice(off, off + 33); off += 33;
+  const holderSig = bytes.slice(off, off + 64); off += 64;
+  const preceding = bytes.slice(0, bytes.length - 64);  // everything the sig covers
+  return { ok: true, scopeId, assetId, expiryHeight, count, outpoints, attestation, holderPubkey, holderSig, preceding };
+}
+
+// Verify a ceremony-eligibility envelope against on-chain state. Returns
+// { ok: true } on success, or { ok: false, status, reason } on any check
+// miss (status is the HTTP code the contribute handler should return).
+// Worst-case subrequests: 2·N (commitmentForUtxo + outspend probe) + 1
+// (tip height) ≤ 17 for N=8 outpoints — comfortably under CF Workers'
+// 50-subrequest limit.
+async function verifyCeremonyEligibilityProof(env, envelopeBytes, expectedContributorPubkeyHex) {
+  const dec = decodeCeremonyEligibilityEnvelope(envelopeBytes);
+  if (!dec.ok) return { ok: false, status: 400, reason: `eligibility_proof: ${dec.reason}` };
+
+  // (1) holder_sig over SHA256(domain || preceding bytes)
+  const sigMsg = sha256(concatBytes(CER_ELIGIBILITY_SIG_DOMAIN, dec.preceding));
+  if (!verifySchnorr(dec.holderSig, sigMsg, dec.holderPubkey.slice(1))) {
+    return { ok: false, status: 403, reason: 'eligibility_proof: invalid holder_sig' };
+  }
+
+  // (2) holder_pubkey == contributor_pubkey
+  const holderHex = bytesToHex(dec.holderPubkey).toLowerCase();
+  if (!expectedContributorPubkeyHex || holderHex !== expectedContributorPubkeyHex.toLowerCase()) {
+    return { ok: false, status: 403, reason: 'eligibility_proof: holder_pubkey does not match contributor_pubkey' };
+  }
+
+  // (3) scope_id matches the ceremony eligibility scope (defeats cross-
+  //     consumer replay if T_RANGE_ATTEST gets wired in other surfaces).
+  if (bytesToHex(dec.scopeId) !== bytesToHex(CER_ELIGIBILITY_SCOPE_ID)) {
+    return { ok: false, status: 403, reason: 'eligibility_proof: scope_id mismatch' };
+  }
+
+  // (4) asset_id == canonical TAC (defeats cross-asset replay).
+  if (bytesToHex(dec.assetId).toLowerCase() !== CANONICAL_TAC_ASSET_ID_HEX) {
+    return { ok: false, status: 403, reason: 'eligibility_proof: asset_id is not canonical TAC' };
+  }
+
+  // (5) expiry not yet passed. Fail-closed on tip-fetch failure: the
+  // freshness gate is load-bearing (without it a year-old envelope from
+  // when the holder had ≥1 TAC would be replayable as long as the UTXOs
+  // remain unspent). Two attempts to ride out a transient indexer flake;
+  // null after both → 502 so the dapp can surface the actual outage
+  // rather than letting a stale proof slip through. Tip cache layer above
+  // fetchTipHeight already absorbs hot-path repeats.
+  let tipHeight = null;
+  for (let attempt = 0; attempt < 2 && tipHeight === null; attempt++) {
+    try { tipHeight = await fetchTipHeight(env, CER_ELIGIBILITY_NETWORK); }
+    catch { tipHeight = null; }
+  }
+  if (tipHeight === null) {
+    return { ok: false, status: 502, reason: 'eligibility_proof: tip height unavailable — chain indexer is unreachable, retry shortly' };
+  }
+  if (dec.expiryHeight < tipHeight) {
+    return { ok: false, status: 403, reason: `eligibility_proof: expired (expiry=${dec.expiryHeight}, tip=${tipHeight})` };
+  }
+
+  // (6) resolve each outpoint: TAC asset_id, owned by holder_pubkey, still
+  //     unspent. Accumulate Pedersen commitments for the range-proof check.
+  let sumCommitment = PEDERSEN_ZERO;
+  const holderHash160Hex = bytesToHex(hash160(dec.holderPubkey));
+  for (const op of dec.outpoints) {
+    let resolved;
+    try { resolved = await commitmentForUtxo(env, op.txid, op.vout, CER_ELIGIBILITY_NETWORK); }
+    catch (e) { return { ok: false, status: 403, reason: `eligibility_proof: ${op.txid}:${op.vout} commitment lookup failed: ${e.message || 'unknown'}` }; }
+    if (String(resolved.asset_id || '').toLowerCase() !== CANONICAL_TAC_ASSET_ID_HEX) {
+      return { ok: false, status: 403, reason: `eligibility_proof: ${op.txid}:${op.vout} asset_id is not TAC` };
+    }
+    // P2WPKH ownership: parent-tx vout's scriptpubkey is 0x0014 || hash160(holder_pubkey).
+    let tx;
+    try { tx = await apiJson(env, `/tx/${op.txid}`, {}, CER_ELIGIBILITY_NETWORK); }
+    catch (e) { return { ok: false, status: 502, reason: `eligibility_proof: failed to fetch tx ${op.txid}: ${e.message || 'unknown'}` }; }
+    const voutObj = tx?.vout?.[op.vout];
+    if (!voutObj?.scriptpubkey) return { ok: false, status: 403, reason: `eligibility_proof: ${op.txid}:${op.vout} has no scriptpubkey` };
+    const spk = hexToBytes(voutObj.scriptpubkey);
+    if (spk.length !== 22 || spk[0] !== 0x00 || spk[1] !== 0x14) {
+      return { ok: false, status: 403, reason: `eligibility_proof: ${op.txid}:${op.vout} is not P2WPKH` };
+    }
+    if (bytesToHex(spk.slice(2, 22)) !== holderHash160Hex) {
+      return { ok: false, status: 403, reason: `eligibility_proof: holder_pubkey does not own ${op.txid}:${op.vout}` };
+    }
+    // Still unspent (tipHeight may be null on indexer flake — accept the
+    // probe's spent/unspent regardless; depth only matters for our own
+    // reorg-safety margins which we don't apply here).
+    const probe = await chainOutspendProbe(env, CER_ELIGIBILITY_NETWORK, op.txid, op.vout, tipHeight);
+    if (!probe) return { ok: false, status: 502, reason: `eligibility_proof: outspend probe failed for ${op.txid}:${op.vout}` };
+    if (probe.spent) return { ok: false, status: 403, reason: `eligibility_proof: ${op.txid}:${op.vout} is spent` };
+    // Accumulate.
+    try {
+      const cPt = secp.ProjectivePoint.fromHex(String(resolved.commitment));
+      sumCommitment = sumCommitment.add(cPt);
+    } catch (e) {
+      return { ok: false, status: 500, reason: `eligibility_proof: commitment decode for ${op.txid}:${op.vout} failed: ${e.message || 'unknown'}` };
+    }
+  }
+
+  // (7) verify range proof: PRED_GE tag + X == required threshold +
+  //     bulletproof verifies against (C_sum − X·H).
+  if (dec.attestation.length < 1 + 8 + 2) {
+    return { ok: false, status: 400, reason: 'eligibility_proof: attestation truncated' };
+  }
+  if (dec.attestation[0] !== CER_ELIGIBILITY_PRED_GE) {
+    return { ok: false, status: 403, reason: `eligibility_proof: predicate is not PRED_GE (got ${dec.attestation[0]})` };
+  }
+  let X = 0n;
+  for (let i = 0; i < 8; i++) X |= BigInt(dec.attestation[1 + i]) << (8n * BigInt(i));
+  if (X !== CER_ELIGIBILITY_MIN_TAC_BASE_UNITS) {
+    return { ok: false, status: 403, reason: `eligibility_proof: threshold ${X} ≠ required ${CER_ELIGIBILITY_MIN_TAC_BASE_UNITS}` };
+  }
+  const proofLen = dec.attestation[9] | (dec.attestation[10] << 8);
+  if (dec.attestation.length !== 11 + proofLen) {
+    return { ok: false, status: 400, reason: 'eligibility_proof: attestation proof_len mismatch' };
+  }
+  const proof = dec.attestation.slice(11, 11 + proofLen);
+  // Shifted commitment for PRED_GE: bulletproof proves (C_sum − X·H)
+  // commits to a value in [0, 2^64), which is equivalent to sum ≥ X.
+  const shifted = X === 0n ? sumCommitment : sumCommitment.add(PEDERSEN_H.multiply(X).negate());
+  let verified;
+  try { verified = bpRangeAggVerify([shifted], proof); }
+  catch (e) { return { ok: false, status: 500, reason: `eligibility_proof: bulletproof verify threw: ${e.message || 'unknown'}` }; }
+  if (!verified) return { ok: false, status: 403, reason: 'eligibility_proof: bulletproof verify failed' };
+
+  return { ok: true };
+}
+
 async function handleCeremonyContribute(req, env, circuitHash, cors, ctx) {
   if (!env.PINATA_JWT) return jsonResponse({ error: 'PINATA_JWT missing' }, 500, cors);
   if (!/^[0-9a-f]{64}$/.test(circuitHash)) {
@@ -6140,6 +6397,92 @@ async function handleCeremonyContribute(req, env, circuitHash, cors, ctx) {
     }, 409, cors);
   }
 
+  // Eligibility gate: every contribute must carry a bulletproof envelope
+  // proving the contributor wallet holds ≥ 1 TAC. Sybil resistance for
+  // the airdrop layer that reads contributor_pubkey out of this chain —
+  // without this, a single farmer can spin up unlimited pubkeys cheaply.
+  // The proof reveals the contributor's UTXO outpoints to the worker but
+  // not the underlying amounts. Anonymous contributions (no
+  // contributor_pubkey) are no longer accepted because the airdrop layer
+  // wouldn't have anything to credit anyway.
+  if (!contributorPubkey) {
+    return jsonResponse({
+      error: 'eligibility_proof: contributor_pubkey is required (the eligibility proof binds to it)',
+    }, 403, cors);
+  }
+  const proofField = fd.get('eligibility_proof');
+  let proofBytes = null;
+  if (proofField instanceof File) {
+    proofBytes = new Uint8Array(await proofField.arrayBuffer());
+  } else if (typeof proofField === 'string' && proofField.length) {
+    // Accept hex string for clients that prefer text fields; binary File
+    // form is the canonical / cheaper path.
+    const h = proofField.trim().toLowerCase();
+    if (!/^[0-9a-f]+$/.test(h) || h.length % 2 !== 0) {
+      return jsonResponse({ error: 'eligibility_proof: malformed hex' }, 400, cors);
+    }
+    proofBytes = hexToBytes(h);
+  }
+  if (!proofBytes || proofBytes.length === 0) {
+    return jsonResponse({
+      error: 'eligibility_proof: missing (contributions now require a ≥ 1 TAC range-proof envelope; see dapp ceremonyContributeAmm for the wire format)',
+    }, 403, cors);
+  }
+  // Cap envelope size: a legitimate envelope is ≤ ~1.5 KB. Generous ceiling
+  // here protects against ridiculous attestation_len values getting through
+  // the per-field decoder.
+  if (proofBytes.length > 8192) {
+    return jsonResponse({ error: 'eligibility_proof: oversize envelope (max 8 KB)' }, 413, cors);
+  }
+  const eligibility = await verifyCeremonyEligibilityProof(env, proofBytes, contributorPubkey);
+  if (!eligibility.ok) {
+    return jsonResponse({ error: eligibility.reason }, eligibility.status || 403, cors);
+  }
+
+  // One-slot-per-pubkey-per-circuit dedup. The eligibility proof gates
+  // pubkey ownership (≥ 1 TAC); this gate ensures a single TAC-holding
+  // pubkey can't sweep N slots in the same circuit. The pair turns the
+  // sybil cost from "free" into "≥ 1 TAC × one slot per pubkey per
+  // chain × Bitcoin tx fee to rotate TAC between pubkeys."
+  //
+  // Per-circuit: a pubkey CAN still contribute to all three circuits
+  // (lp_add + lp_remove + swap_batch), but not twice to the same one.
+  // This matches the existing 3-chain UX where users are encouraged to
+  // contribute to all three (round-robin picker in the dapp drawer).
+  //
+  // Backfill: the index is populated from existing attestations on the
+  // first ~5–10 /contribute calls after deploy. Each step processes
+  // 100 records (~200 subrequests). Until backfill is complete a
+  // grandfathered duplicate pubkey could slip through one more time —
+  // worst-case window is the first few minutes after deploy.
+  try { await _ceremonyPubkeyIndexBackfillStep(env, circuitHash); } catch (e) {
+    // Soft-fail: if the backfill step throws (KV flake / list error),
+    // proceed with the contribute. The dedup check below still runs
+    // against whatever's in the index; a missed record just means a
+    // grandfathered duplicate gets one more slot than intended.
+  }
+  const dupKey = ceremonyPubkeyKey(circuitHash, contributorPubkey);
+  const existingSlot = await env.REGISTRY_KV.get(dupKey);
+  if (existingSlot && existingSlot !== 'pending') {
+    return jsonResponse({
+      error: `this pubkey already contributed to this circuit (slot #${existingSlot}). One slot per address per circuit — contribute to the other two circuits if you haven't yet.`,
+      existing_slot: Number(existingSlot) || existingSlot,
+    }, 409, cors);
+  }
+  // Soft-claim — write a "pending" marker BEFORE the pin so two near-
+  // simultaneous /contribute calls from the same pubkey can't both pass
+  // the dedup check across PoPs (CF KV is eventually consistent; the
+  // earlier check-then-act could see stale "absent" at the second PoP
+  // even after the first put landed at the first). 60s TTL is the KV
+  // floor and serves as a backstop if any path between here and the
+  // final state.put forgets to release; legit users who failed transiently
+  // can retry after that. The success path overwrites this with the real
+  // slot index (no TTL), keeping the dedup entry permanent for landed
+  // contributions. _releaseClaim is called inline before each error
+  // return between here and the final state.put.
+  await env.REGISTRY_KV.put(dupKey, 'pending', { expirationTtl: 60 });
+  const _releaseClaim = async () => { try { await env.REGISTRY_KV.delete(dupKey); } catch {} };
+
   let newCid;
   if (haveZkeyFile) {
     // File path: magic-byte sniff before pinning + pin to Pinata
@@ -6147,11 +6490,13 @@ async function handleCeremonyContribute(req, env, circuitHash, cors, ctx) {
     // the CF→Pinata leg completes within wall-clock).
     const zkeyBytes = new Uint8Array(await zkey.arrayBuffer());
     if (!_hasCeremonyMagic(zkeyBytes, 'zkey')) {
+      await _releaseClaim();
       return jsonResponse({ error: 'zkey does not start with snarkjs "zkey" magic bytes' }, 400, cors);
     }
     try {
       newCid = await pinBinaryToIpfs(env, zkeyBytes, `circuit_${circuitHash.slice(0,8)}_${String(state.contribution_count + 1).padStart(4, '0')}.zkey`);
     } catch (e) {
+      await _releaseClaim();
       return jsonResponse({ error: 'pin failed: ' + (e.message || 'unknown') }, 502, cors);
     }
   } else {
@@ -6197,6 +6542,7 @@ async function handleCeremonyContribute(req, env, circuitHash, cors, ctx) {
       if (!pinFound && attempt < 7) await new Promise(r => setTimeout(r, 1000));
     }
     if (!pinFound) {
+      await _releaseClaim();
       return jsonResponse({ error: `zkey_cid not found in account after 8 attempts: ${lastErr}` }, 502, cors);
     }
     newCid = zkeyCidProvided;
@@ -6208,6 +6554,7 @@ async function handleCeremonyContribute(req, env, circuitHash, cors, ctx) {
   // the social cost of dropping the contributor's actual entropy).
   const fresh = await env.REGISTRY_KV.get(ceremonyKey(circuitHash), 'json');
   if (!fresh || fresh.head_cid !== prevCid) {
+    await _releaseClaim();
     return jsonResponse({
       error: 'lost CAS race — another contribution landed first; refresh and retry',
       head_cid: fresh ? fresh.head_cid : null,
@@ -6221,6 +6568,7 @@ async function handleCeremonyContribute(req, env, circuitHash, cors, ctx) {
   {
     const d = await _checkDrain();
     if (d.rejected) {
+      await _releaseClaim();
       return jsonResponse({
         error: `ceremony was put into drain during your contribute; pin pre-empted by finalize. Try again after drain expires.`,
         drain_until: d.drainUntil,
@@ -6248,6 +6596,12 @@ async function handleCeremonyContribute(req, env, circuitHash, cors, ctx) {
     prev_cid: prevCid,
   };
   await env.REGISTRY_KV.put(ceremonyContribKey(circuitHash, newCount, newCid), JSON.stringify(rec));
+  // Upgrade the soft-claim ('pending' with 60s TTL) to a permanent entry
+  // carrying the real slot index. Future /contribute calls under the same
+  // pubkey + circuit hit the dedup check above and return 409. The slot
+  // index is read back into the error message for diagnostics; the dedup
+  // check itself only needs presence.
+  await env.REGISTRY_KV.put(dupKey, String(newCount));
 
   await env.UPLOAD_KV.put(rlKey, String(prior + 1), { expirationTtl: 60 * 60 * 25 });
   // Invalidate the GET-endpoint edge caches BEFORE responding so the
@@ -23150,6 +23504,25 @@ export {
   _farmCrystallize,
   ammFarmKey, ammFarmBondKey, ammFarmBondsByBonderKey,
   ammFarmsByPoolKey, ammFarmUnbondReceiptKey,
+  // AMM ceremony eligibility gate. Exported so tests pin (a) byte-for-byte
+  // envelope decode, (b) parity with dapp's _buildCeremonyEligibilityEnvelope
+  // — any drift between worker decoder + dapp encoder makes every /contribute
+  // fail silently, so the parity test is the only safety net.
+  decodeCeremonyEligibilityEnvelope,
+  verifyCeremonyEligibilityProof,
+  CANONICAL_TAC_ASSET_ID_HEX,
+  CER_ELIGIBILITY_MIN_TAC_BASE_UNITS,
+  CER_ELIGIBILITY_MAX_OUTPOINTS,
+  CER_ELIGIBILITY_SCOPE_ID,
+  CER_ELIGIBILITY_SIG_DOMAIN,
+  CER_ELIGIBILITY_PRED_GE,
+  // Pubkey-dedup index helpers. Exported so tests can pin the key shape
+  // + walk + assert the incremental-backfill semantics (each step
+  // bounded to 100 records, idempotent on overlap).
+  ceremonyPubkeyKey,
+  ceremonyPubkeyBackfillCursorKey,
+  ceremonyPubkeyBackfillDoneKey,
+  _ceremonyPubkeyIndexBackfillStep,
 };
 
 // ============== ROUTER ==============
