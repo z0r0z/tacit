@@ -3706,6 +3706,26 @@ details.protocol-section > summary.protocol-h3:hover { color: var(--orange); }
   .live-dots::after { animation: none; opacity: 0.55; }
 }
 
+/* Pulsing dot used by pending status chips (atomic-claim waiting on maker
+   fulfilment, etc.). The dot pulses softly so a chip labeled "Claim" reads
+   as in-flight state rather than as an action button. Respects
+   prefers-reduced-motion. */
+@keyframes claim-pending-pulse {
+  0%, 100% { opacity: 0.30; transform: scale(0.80); }
+  50%      { opacity: 1.00; transform: scale(1.00); }
+}
+.claim-pending-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  animation: claim-pending-pulse 1.4s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .claim-pending-dot { animation: none; opacity: 0.55; }
+}
+
 /* Brief purple pulse fired on a petch tile (Discover + lander preview) when
    the worker's snapshot reports a new credited mint since the last poll.
    Purpose: ambient liveness signal so users see fair-launch activity happen
