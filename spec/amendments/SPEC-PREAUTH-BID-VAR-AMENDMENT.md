@@ -1,8 +1,12 @@
 # SPEC §5.7.12 — T_PREAUTH_BID_VAR (`0x5C`) — Buyer-Offline Partial-Fill Preauth Bid
 
-> **Status: 📝 Draft (round-1).** Variable-amount variant of
-> §5.7.11 `T_PREAUTH_BID`. Reserved opcode `0x5C` in the
-> preauth/offline-trading family block (`0x5B`–`0x5E`).
+> **Status: ✅ Shipped.** Variable-amount variant of §5.7.11
+> `T_PREAUTH_BID`. Opcode `0x5C` in the preauth/offline-trading
+> family block (`0x5B`–`0x5E`). Wire format, worker endpoints, buyer
+> + seller flows, indexer-enforced refund-vout rule, and chain-only
+> recovery all signet-validated end-to-end
+> (`tests/preauth-bid-var-onchain-e2e-signet.mjs` and
+> `tests/preauth-bid-var-8dec-onchain-e2e-signet.mjs`).
 >
 > The "holy grail" buyer UX: post one bid for *up to* a target
 > amount at a per-unit price, walk away, sellers fill in chunks
@@ -10,6 +14,13 @@
 > a limit order on a centralized exchange — but settled trustlessly
 > on Bitcoin with no maker bond, no orderbook operator trust, and
 > no buyer round-trip per fill.
+>
+> The inline section carries a `decimals_scale` byte so quantities
+> in `max_fill` / `fill_amount` / `fill_increment` are denominated in
+> **scaled units** of `10^decimals_scale` base units. This lets
+> typical-priced high-decimal tokens (e.g. an 8-decimal TAC at 200
+> sats/whole) fit the per-unit pricing model that would otherwise
+> floor to zero under u64 sats-per-base-unit arithmetic.
 
 ---
 
@@ -140,6 +151,34 @@ publish multiple bids, not one huge K.
 
 ---
 
+## Quantity denomination — scaled units
+
+All four fill-quantity fields (`max_fill`, `min_fill` off-chain,
+`fill_amount`, `fill_increment`) are denominated in **scaled units**,
+where one scaled unit equals `10^decimals_scale` base units of the
+asset. The on-chain `decimals_scale` byte (see envelope layout below)
+fixes this exponent.
+
+For a 0-decimal token, `decimals_scale = 0` and quantities are raw base
+units. For an 8-decimal token like
+TAC at a typical 200 sats/whole price, the dapp picks the smallest
+`decimals_scale` such that `price_per_unit ≥ 1` (i.e., the per-scaled-
+unit price fits in u64). For TAC at 200 sats/whole the natural choice
+is `decimals_scale = 8` (1 scaled unit = 1 whole TAC, 1 unit = 200
+sats), but any `0 ≤ decimals_scale ≤ asset.decimals` is valid and gives
+finer-grained tick sizes.
+
+**Pedersen consistency** (validator rule 1, below) opens output[0] to
+`fill_amount × 10^decimals_scale` base units paired with
+`recipient_blinding`. The Pedersen commitment itself is always over
+base units (the protocol-wide invariant for asset amounts); the
+scaling reconciles the inline `fill_amount` field with that
+invariant.
+
+**Refund-vout math** (validator rule 7) stays in sats: refund value =
+`(max_fill - fill_amount) × price_per_unit`. Both factors are u64;
+result is u64 sats. No additional scaling enters the refund check.
+
 ## Bid-context OP_RETURN binding (per-ratio)
 
 For each allowed fill amount `fill_amount_i`, the canonical hash:
@@ -155,8 +194,16 @@ bid_context_hash_i = SHA256(
     || fill_increment_LE(8)
     || fill_amount_i_LE(8)
     || refund_script_hash(20)   ← hash160(refund_pubkey), pinning the buyer's reclaim P2WPKH
+    || decimals_scale(1)        ← scaled-unit exponent (see "Quantity denomination" above)
 )
 ```
+
+The trailing `decimals_scale` byte is an input to the SHA256, so a
+settlement tx that uses a different scale than the buyer pre-signed
+produces a different `bid_context_hash` and fails Bitcoin's BIP-143
+signature verification at relay. The scale choice is therefore
+Bitcoin-consensus enforced via the K-sig preimage, not just
+indexer-enforced.
 
 `refund_script_hash` is `hash160(refund_pubkey)` matching the
 P2WPKH the buyer wants the refund paid to. Pinning this in the
@@ -178,27 +225,33 @@ asset_id           = 32 bytes
 asset_input_count  = N ≥ 1     (single-seller fill; multi-seller fan reserved
                                 for follow-up `T_PREAUTH_BID_BATCH` 0x5D)
 
---- inline bid-context for the chosen fill ratio (variable, ~115 bytes) ---
+--- inline bid-context for the chosen fill ratio (134 bytes, +1 vs v1) ---
 bid_id             = 16 bytes
 recipient_pubkey   = 33 bytes
-price_per_unit_LE  = 8 bytes
-max_fill_LE        = 8 bytes
-fill_increment_LE  = 8 bytes
+price_per_unit_LE  = 8 bytes   (sats per SCALED unit; integer ≥ 1)
+max_fill_LE        = 8 bytes   (in scaled units)
+fill_increment_LE  = 8 bytes   (in scaled units)
 fill_amount_LE     = 8 bytes   (seller's chosen ratio, ∈ allowed set;
                                  = min_fill + i × fill_increment for some
-                                 i ∈ [0, K-1])
+                                 i ∈ [0, K-1]; in scaled units)
 recipient_blinding = 32 bytes  (recipient lot blinding; cleartext, same
                                  disclosure tradeoff as §5.7.11)
 refund_script_hash = 20 bytes  (hash160(refund_pubkey); pins the buyer's
                                  reclaim P2WPKH)
+decimals_scale     = 1 byte    (log10 of base_units per scaled unit;
+                                 0 ≤ decimals_scale ≤ 32, typically =
+                                 asset.decimals so 1 scaled unit = 1 whole
+                                 token)
 ---
 
 kernel_sig         = 64 bytes (BIP-340 over kernel_msg, seller-signed)
 N_outputs          = 1 or 2   (1 = exact-amount fill chunk, no seller change;
                                 2 = seller has asset change)
 output[0]:                                          ← buyer's tacit recipient
-  commitment       = pedersen(fill_amount, recipient_blinding) — MUST verify
-                     against the inline (fill_amount, recipient_blinding)
+  commitment       = pedersen(fill_amount × 10^decimals_scale, recipient_blinding)
+                     — MUST verify against the inline (fill_amount,
+                     recipient_blinding) after scaling fill_amount to
+                     base units
 output[1]:                                          ← seller's asset change (OPTIONAL)
   commitment       = 33 bytes
   encryptedAmount  = 8 bytes  (seller self-keystream, per §5.7.6)
@@ -553,7 +606,7 @@ enforce expiry ≤ 30 days from now
 
 ---
 
-## Test-item checklist (round-1)
+## Test-item checklist
 
 - [ ] K-signature batch verify on bid POST (worker rejects bid
       if any of K signatures is malformed)
