@@ -79,7 +79,7 @@
      script-src 'self' covers all three.
      `?cb=` is auto-set by build/build.mjs to a sha256 prefix of tacit.js
      so iOS Safari's stale-modulepreload cache flushes on every change. -->
-<link rel="modulepreload" href="./tacit.js?cb=c94497f1">
+<link rel="modulepreload" href="./tacit.js?cb=fa81d265">
 <link rel="modulepreload" href="./vendor/tacit-deps.min.js">
 <link rel="modulepreload" href="./prf-wallet.js">
 <style>
@@ -6125,6 +6125,9 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
 .chart-tf-chip[data-active="1"] {
   background: var(--ink); color: var(--bg); border-color: var(--ink);
 }
+/* Spacer that pushes the chart-mode chips (line | candles) to the right
+   side of the chip row, separating them visually from the TF selector. */
+.chart-tf-sep { flex: 1 1 auto; }
 
 /* Mini-chart strip in the swap tile: compact sparkline + last price + 24h Δ.
    Sits just under the "sats / TICKER" header. Hidden when there's no
@@ -9570,7 +9573,7 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
   </div>
 </div>
 
-<script type="module" src="./tacit.js?cb=c94497f1"></script>
+<script type="module" src="./tacit.js?cb=fa81d265"></script>
 
 <!-- Service worker registration moved into tacit.js (the dapp's CSP forbids
      inline scripts; only 'self' module scripts are allowed). See sw.js for
