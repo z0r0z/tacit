@@ -3374,6 +3374,81 @@ details.protocol-section > summary.protocol-h3:hover { color: var(--orange); }
    reads visually distinct from default toasts (white on dark) and
    error/success (white on dark with red/green accent). */
 .toast.warn { background: var(--bg-warm); color: var(--ink); border-left-color: var(--orange); box-shadow: 4px 4px 0 var(--orange); padding: 14px 22px; margin: 0; }
+
+/* === Atomic offers — compact ladder rows ===
+   Renders the per-asset "⚡ Atomic offers" section as ladder-style rows
+   aligned with the asks-ladder 3-col grid (price · qty · age+action).
+   Replaces the previous card grid which felt visually disconnected
+   from the surrounding bid/ask ladders. Purple accent (#7d4ff7)
+   distinguishes atomic intents from preauth asks (red) without
+   breaking the orderbook's calm rhythm. */
+.atomic-offers-section { margin: 0 0 12px; }
+.atomic-offers-section[open] > .atomic-offers-header { border-bottom: 0.5px solid rgba(125,79,247,0.18); }
+.atomic-offers-header {
+  list-style: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 12px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  border-top: 0.5px solid rgba(125,79,247,0.18);
+  background: rgba(125,79,247,0.04);
+}
+.atomic-offers-header::-webkit-details-marker { display: none; }
+.atomic-offers-header strong { letter-spacing: 0.08em; }
+.atomic-offers-header .muted { font-weight: normal; text-transform: none; letter-spacing: 0; font-size: 10px; }
+.atomic-offers-chevron { transition: transform 0.12s ease; }
+.atomic-offers-section[open] > .atomic-offers-header .atomic-offers-chevron { transform: rotate(180deg); }
+.atomic-offers-rows { display: flex; flex-direction: column; }
+.atomic-offer-row {
+  display: grid;
+  grid-template-columns: minmax(140px, 1.4fr) minmax(80px, 1fr) minmax(60px, 0.6fr);
+  gap: 10px;
+  align-items: center;
+  padding: 6px 12px;
+  border: 0;
+  border-top: 0.5px solid rgba(26,26,26,0.08);
+  background: transparent;
+  font-size: 11px;
+  line-height: 1.3;
+  font-variant-numeric: tabular-nums;
+  width: 100%;
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+  transition: background 0.08s, box-shadow 0.08s;
+}
+.atomic-offer-row:hover {
+  background: rgba(125,79,247,0.06);
+  box-shadow: inset 2px 0 0 0 rgba(125,79,247,0.5);
+}
+.atomic-offer-row .atomic-offer-bolt { color: #7d4ff7; margin-right: 4px; }
+.atomic-offer-row strong { color: #7d4ff7; font-family: var(--mono); }
+.atomic-offer-row .atomic-offer-qty,
+.atomic-offer-row .atomic-offer-action { text-align: right; font-family: var(--mono); }
+.atomic-offer-row small.muted { font-size: 9.5px; }
+/* Insufficient-funds variant: keeps the row visible so the orderbook
+   stays honest (these offers ARE live) but signals non-actionable
+   state at a glance + replaces the "claim →" affordance with a
+   funding nudge that routes to the same Top-up modal the swap tile
+   uses. */
+.atomic-offer-row[data-atomic-needs-funds="1"] {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.atomic-offer-row[data-atomic-needs-funds="1"]:hover {
+  background: transparent;
+  box-shadow: none;
+}
+.atomic-offer-row[data-atomic-needs-funds="1"] .atomic-offer-action {
+  color: var(--orange);
+}
+.atomic-offers-more { text-align: center; font-size: 10px; color: var(--ink-mid); padding: 6px 12px; border-top: 0.5px solid rgba(26,26,26,0.08); }
 @keyframes slidein { from { transform: translateX(110%); } to { transform: translateX(0); } }
 @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.25; } }
 
