@@ -181,7 +181,8 @@ const T_CBTC_TAC_TOP_UP         = 0x59; // strengthen bond on open position (SPE
 const T_CBTC_TAC_BOND_RELEASE   = 0x5A; // partial bond release on open position (SPEC §5.51)
 // 0x5B–0x5E: preauth/offline-trading family (SPEC-PREAUTH-BID-AMENDMENT.md §5.7.11).
 // 0x5C–0x5E reserved for the named follow-ups (variable-amount, batched-fill, both-sides match).
-const T_PREAUTH_BID             = 0x5B; // buyer-offline preauth bid (SPEC §5.7.11)
+const T_PREAUTH_BID             = 0x5B; // buyer-offline preauth bid, exact-fill (SPEC §5.7.11)
+const T_PREAUTH_BID_VAR         = 0x5C; // buyer-offline preauth bid, partial-fill (SPEC §5.7.12)
 const N_BITS = 64; // amount range: [0, 2^64) — bulletproof rangeproof.
 const SECP_N = 0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141n;
 
@@ -4858,7 +4859,7 @@ async function _deriveAxferTradeFromChain(env, network, revealTx, opcode, assetI
 // look up each input against preauthBidFundingIndexKey to find the
 // matching bid. The bid record carries price_sats + amount
 // authoritatively; no fulfilment-record dance needed since
-// T_PREAUTH_BID is exact-fill in round-1.
+// T_PREAUTH_BID is exact-fill (variable amounts go through 0x5C).
 async function _derivePreauthBidTradeFromChain(env, network, revealTx, assetIdHex) {
   if (!revealTx?.vin?.length || revealTx.vin.length < 2) return null;
   let totalPriceSats = 0;
@@ -4890,6 +4891,94 @@ async function _derivePreauthBidTradeFromChain(env, network, revealTx, assetIdHe
   }
   if (totalPriceSats <= 0 || fills.length === 0) return null;
   return { price_sats: totalPriceSats, amount: totalAmount, fills };
+}
+
+// SPEC §5.7.12 validator rule 7 — refund-vout enforcement (chain-only).
+// Settlement is valid iff fill_amount == max_fill (no refund needed) OR
+// some vout pays exactly (max_fill - fill_amount) × price_per_unit to
+// P2WPKH(refund_script_hash). Decoded payload provides all three fields.
+// Position-independent: the refund vout can sit at any tx.vout index.
+function _validatePreauthBidVarRefundVout(decodedPayload, revealTx) {
+  if (!decodedPayload || !revealTx) return false;
+  let fillBig, maxBig, priceBig;
+  try {
+    fillBig = BigInt(decodedPayload.fill_amount);
+    maxBig = BigInt(decodedPayload.max_fill);
+    priceBig = BigInt(decodedPayload.price_per_unit);
+  } catch { return false; }
+  if (fillBig <= 0n || maxBig <= 0n || priceBig <= 0n || fillBig > maxBig) return false;
+  if (fillBig === maxBig) return true;  // full fill — rule skipped per spec §375
+  const expectedRefundBig = (maxBig - fillBig) * priceBig;
+  if (expectedRefundBig > BigInt(Number.MAX_SAFE_INTEGER)) return false;
+  const expectedRefund = Number(expectedRefundBig);
+  const refundScriptHashHex = String(decodedPayload.refund_script_hash || '').toLowerCase();
+  if (!/^[0-9a-f]{40}$/.test(refundScriptHashHex)) return false;
+  const expectedSpkHex = '0014' + refundScriptHashHex;
+  for (const ov of revealTx.vout || []) {
+    const spk = String(ov.scriptpubkey || '').toLowerCase();
+    if (spk !== expectedSpkHex) continue;
+    if (Number(ov.value) === expectedRefund) return true;
+  }
+  return false;
+}
+
+// SPEC §5.7.12 — chain-backfill volume derivation for T_PREAUTH_BID_VAR
+// settlements. Walks the reveal-tx vin like the §5.7.11 variant above,
+// but reads the fill_amount + price_per_unit from the envelope's inline
+// section (decoded payload) — those values are Bitcoin-bound via the
+// OP_RETURN preimage. The bid record is consulted only to (a) confirm
+// the funding outpoint corresponds to a known §5.7.12 bid (vs §5.7.11),
+// and (b) tag the settlement with the right bid_id for cleanup.
+async function _derivePreauthBidVarTradeFromChain(env, network, revealTx, assetIdHex, decodedPayload) {
+  if (!revealTx?.vin?.length || revealTx.vin.length < 2) return null;
+  // decodedPayload is the result of decodePreauthBidVarPayload(decoded.payload)
+  // — contains fill_amount, max_fill, fill_increment, price_per_unit as strings,
+  // and decimals_scale as a number. fill_amount is in SCALED units; to record
+  // the trade's effective asset volume in the journal (which is denominated in
+  // base units protocol-wide), we scale up by 10^decimals_scale.
+  if (!decodedPayload || !decodedPayload.fill_amount || !decodedPayload.price_per_unit) return null;
+  let fillAmountBig;
+  let priceBig;
+  let scaleBig;
+  try {
+    fillAmountBig = BigInt(decodedPayload.fill_amount);
+    priceBig = BigInt(decodedPayload.price_per_unit);
+    scaleBig = 10n ** BigInt(decodedPayload.decimals_scale | 0);
+  } catch { return null; }
+  if (fillAmountBig <= 0n || priceBig <= 0n) return null;
+  // sats math: fill_amount × price_per_unit is already in sats (both in
+  // scaled units / sats-per-scaled-unit — product is u64 sats).
+  const priceForThisFillBig = fillAmountBig * priceBig;
+  if (priceForThisFillBig > BigInt(Number.MAX_SAFE_INTEGER)) return null;
+  const priceForThisFill = Number(priceForThisFillBig);
+  // Volume amount: scale up to base units so /trade-event aggregation
+  // composes uniformly with §5.7.11 (which already reports base units).
+  const fillAmountBaseBig = fillAmountBig * scaleBig;
+  const fills = [];
+  for (let i = 1; i < revealTx.vin.length; i++) {
+    const vin = revealTx.vin[i];
+    const ctxid = String(vin?.txid || '').toLowerCase();
+    const cvout = vin?.vout;
+    if (!/^[0-9a-f]{64}$/.test(ctxid) || !Number.isInteger(cvout)) continue;
+    const bidIdHex = await env.REGISTRY_KV.get(preauthBidVarFundingIndexKey(network, ctxid, cvout));
+    if (!bidIdHex) continue;
+    const bid = await env.REGISTRY_KV.get(preauthBidVarKey(network, assetIdHex, bidIdHex), 'json');
+    if (!bid) continue;
+    if (bid.asset_id !== assetIdHex) continue;
+    fills.push({
+      kind: 'preauth-bid-var', bid_id: bidIdHex,
+      price_sats: priceForThisFill,
+      outpoint: { txid: ctxid, vout: cvout },
+    });
+    // Single matching funding outpoint per VAR settlement (one buyer per
+    // reveal); break early to avoid double-attributing if the seller
+    // somehow stuffed another VAR-bid funding UTXO into the vin set
+    // (would be a bug — the K-sig is unique per buyer-funding outpoint).
+    break;
+  }
+  if (fills.length === 0) return null;
+  // amount is reported in base units (matches §5.7.11 / T_AXFER reporting).
+  return { price_sats: priceForThisFill, amount: fillAmountBaseBig, fills };
 }
 
 // Single source of truth for "a trade settled — bump the three KV
@@ -8061,6 +8150,106 @@ async function computePreauthBidContextHash({
   return new Uint8Array(await crypto.subtle.digest('SHA-256', preimage));
 }
 
+// T_PREAUTH_BID_VAR structural decoder (SPEC §5.7.12). Extends §5.7.11
+// inline section with variable-fill parameters (price_per_unit, max_fill,
+// fill_increment, fill_amount) + refund_script_hash + decimals_scale.
+// Inline layout:
+//   bid_id(16) + recipient_pubkey(33) + price_per_unit_LE(8) +
+//   max_fill_LE(8) + fill_increment_LE(8) + fill_amount_LE(8) +
+//   recipient_blinding(32) + refund_script_hash(20) + decimals_scale(1)
+//   = 134 bytes.
+// decimals_scale ∈ [0, 32]: max_fill/fill_amount/fill_increment are in
+// scaled units where 1 unit = 10^decimals_scale base units. Pedersen at
+// output[0] opens to (fill_amount × 10^decimals_scale, blinding).
+const PREAUTH_BID_VAR_INLINE_BYTES = 16 + 33 + 8 + 8 + 8 + 8 + 32 + 20 + 1;  // 134
+const PREAUTH_BID_VAR_MAX_DECIMALS_SCALE = 32;
+function decodePreauthBidVarPayload(payload) {
+  if (!payload) return null;
+  const MIN = 1 + 32 + 1 + PREAUTH_BID_VAR_INLINE_BYTES + 64 + 1 + 33 + 2;
+  if (payload.length < MIN) return null;
+  if (payload[0] !== T_PREAUTH_BID_VAR) return null;
+  let p = 1;
+  const assetId = payload.slice(p, p + 32); p += 32;
+  const assetInputCount = payload[p]; p += 1;
+  if (assetInputCount < 1) return null;
+  const bidId = payload.slice(p, p + 16); p += 16;
+  const recipientPubkey = payload.slice(p, p + 33); p += 33;
+  const readU64 = () => {
+    const v = new DataView(payload.buffer, payload.byteOffset + p, 8).getBigUint64(0, true);
+    p += 8;
+    return v;
+  };
+  const pricePerUnit = readU64();
+  const maxFill = readU64();
+  const fillIncrement = readU64();
+  const fillAmount = readU64();
+  const recipientBlinding = payload.slice(p, p + 32); p += 32;
+  const refundScriptHash = payload.slice(p, p + 20); p += 20;
+  const decimalsScale = payload[p]; p += 1;
+  if (decimalsScale > PREAUTH_BID_VAR_MAX_DECIMALS_SCALE) return null;
+  p += 64; // kernel_sig
+  const N = payload[p]; p += 1;
+  if (N !== 1 && N !== 2) return null;
+  const outputs = [];
+  if (p + 33 > payload.length) return null;
+  outputs.push({ commitment: bytesToHex(payload.slice(p, p + 33)) }); p += 33;
+  if (N === 2) {
+    if (p + 33 + 8 > payload.length) return null;
+    const commitment = payload.slice(p, p + 33); p += 33;
+    p += 8; // change encrypted_amount (seller self-keystream)
+    outputs.push({ commitment: bytesToHex(commitment) });
+  }
+  if (p + 2 > payload.length) return null;
+  const rpLen = payload[p] | (payload[p + 1] << 8); p += 2;
+  if (p + rpLen !== payload.length) return null;
+  if (fillAmount === 0n || fillAmount > maxFill) return null;
+  return {
+    asset_id: bytesToHex(assetId),
+    asset_input_count: assetInputCount,
+    bid_id: bytesToHex(bidId),
+    recipient_pubkey: bytesToHex(recipientPubkey),
+    price_per_unit: pricePerUnit.toString(),
+    max_fill: maxFill.toString(),
+    fill_increment: fillIncrement.toString(),
+    fill_amount: fillAmount.toString(),
+    recipient_blinding: bytesToHex(recipientBlinding),
+    refund_script_hash: bytesToHex(refundScriptHash),
+    decimals_scale: decimalsScale,
+    n: N,
+    outputs,
+  };
+}
+
+// Per-ratio bid_context_hash binding for T_PREAUTH_BID_VAR. Domain tag is
+// distinct from §5.7.11 so the per-ratio binding doesn't collide with the
+// exact-fill version. recipient_blinding is intentionally NOT in this
+// hash — the inline-section blinding is bound chain-side via the Pedersen
+// consistency rule, not via the OP_RETURN. K pre-sigs each commit to a
+// different fill_amount; the seller's chosen ratio at settlement time
+// is forced to match one of them via Bitcoin's BIP-143 preimage check.
+async function computePreauthBidVarContextHash({
+  assetId, bidId, recipientPubkey,
+  pricePerUnit, maxFill, fillIncrement, fillAmount,
+  refundScriptHash,
+}) {
+  if (assetId.length !== 32) throw new Error('asset_id 32 bytes');
+  if (bidId.length !== 16) throw new Error('bid_id 16 bytes');
+  if (recipientPubkey.length !== 33) throw new Error('recipient_pubkey 33 bytes');
+  if (refundScriptHash.length !== 20) throw new Error('refund_script_hash 20 bytes');
+  const u64LE = (n) => {
+    const b = new Uint8Array(8);
+    new DataView(b.buffer).setBigUint64(0, BigInt(n), true);
+    return b;
+  };
+  const preimage = concatBytes(
+    new TextEncoder().encode('tacit-preauth-bid-var-context-v1'),
+    assetId, bidId, recipientPubkey,
+    u64LE(pricePerUnit), u64LE(maxFill), u64LE(fillIncrement), u64LE(fillAmount),
+    refundScriptHash,
+  );
+  return new Uint8Array(await crypto.subtle.digest('SHA-256', preimage));
+}
+
 // T_PETCH structural decoder (SPEC §5.8). Permissionless-mint deployment
 // record. No commitment, no rangeproof, no signature — anyone may broadcast.
 // Wire: opcode(1) || tlen(1) || ticker(tlen) || decimals(1) || cap(8 LE) ||
@@ -10545,19 +10734,51 @@ async function _bustAirdropClaimsCache(network, rootHex) {
   try { await caches.default.delete(airdropClaimsCacheKey(network, rootHex, null, null)); } catch {}
 }
 
+// ============== SWR background-recompute dedup ==============
+// Stops the herd from each kicking an independent background recompute
+// when N readers hit the STALE boundary within the same window. Keyed by
+// cache-key URL so each endpoint dedupes independently. Per-isolate (CF
+// can spin up multiple isolates per colo) but in practice popular workers
+// keep 1-2 isolates active per colo, so the dedup is highly effective at
+// collapsing the herd. Entry is deleted on settle so the next genuine
+// STALE → background-recompute fires normally.
+//
+// Errors are NOT swallowed here. Callers using `ctx.waitUntil` must add
+// their own `.catch(() => null)` to keep background failures from logging;
+// callers using `await` on the sync-MISS path let errors propagate to the
+// outer handler so a broken compute surfaces as a real 5xx rather than a
+// silent empty 502 — matches the pre-dedup behavior exactly.
+const _swrInFlight = new Map();
+function _swrDedupedKick(cacheKeyUrl, recomputeFn) {
+  if (_swrInFlight.has(cacheKeyUrl)) return _swrInFlight.get(cacheKeyUrl);
+  const p = Promise.resolve()
+    .then(() => recomputeFn())
+    .finally(() => { _swrInFlight.delete(cacheKeyUrl); });
+  _swrInFlight.set(cacheKeyUrl, p);
+  return p;
+}
+
 // ============== /assets/:id/bid-intents edge cache ==============
-// The dapp polls this endpoint every 5s while a user has an asset detail
+// The dapp polls this endpoint every ~30s while a user has an asset detail
 // open. Each uncached request does 1 KV.list + N KV.gets for active bids,
 // plus for variable-fill bids another list + M gets for partial claims —
 // worst case on an asset with 30 variable bids each carrying 10 partials:
 // ~330 KV reads per poll. SWR collapses concurrent polls within a colo to
 // one real fan-out per FRESH window.
 //
-// FRESH 5s matches the dapp's poll cadence so adjacent polls hit the cache.
-// STALE 60s gives ~12 chances for a background refresh to land before the
-// next reader falls into a synchronous MISS recompute.
-const BID_INTENTS_CACHE_FRESH_MS = 5_000;
-const BID_INTENTS_CACHE_STALE_MS = 60_000;
+// FRESH 120s — 4× the dapp's 30s poll cadence. The key cost driver isn't
+// per-tab STALE rate; it's that 200+ users in the same colo hit the same
+// STALE boundary together and each kick an independent background recompute
+// (~330 KV reads worst case for bid-intents) — no SWR dedup. A 120s window
+// makes the STALE boundary much rarer in absolute time, slashing the
+// aggregate fan-out frequency. Mutations (POST/claim/cancel) bust the cache
+// via _bustBidIntentsCache so fresh state surfaces to the next reader
+// without waiting on FRESH expiry. Cross-tab passive update visibility
+// (someone else's bid in another tab, no mutation by us) lags up to 120s —
+// acceptable for OTC velocity. STALE 600s gives generous headroom before
+// any reader falls into a synchronous MISS recompute.
+const BID_INTENTS_CACHE_FRESH_MS = 120_000;
+const BID_INTENTS_CACHE_STALE_MS = 600_000;
 function bidIntentsCacheKey(network, aid) {
   return new Request(`https://_bid-intents-cache_/bid-intents/${network}/${aid}`, { method: 'GET' });
 }
@@ -10581,13 +10802,11 @@ async function _bustBidIntentsCache(network, aid) {
 // POST endpoint; cache key is derived from the request body components
 // (owner_pubkey + sorted asset_ids hashed). Each uncached request fans
 // out 3 KV ops per asset × up to 200 assets = ~600 reads worst case.
-// The Holdings tab polls every ~30s while visible; a 15s FRESH window
-// catches two-adjacent polls per fan-out and STALE 60s keeps users on
-// cached data across transient blips. No targeted bust — the FRESH
-// window is short enough that settlement transitions surface in the
-// user's natural poll cadence without per-mutation bust complexity.
-const HOLDINGS_CACHE_FRESH_MS = 15_000;
-const HOLDINGS_CACHE_STALE_MS = 60_000;
+// The Holdings tab polls every ~30s while visible; FRESH 35s overshoots
+// the cadence so each poll hits cache. No targeted bust — settlement
+// transitions surface within ~35s of the poll cadence.
+const HOLDINGS_CACHE_FRESH_MS = 35_000;
+const HOLDINGS_CACHE_STALE_MS = 90_000;
 async function holdingsCacheKey(network, ownerPubHex, aidsSortedJoined) {
   // sha256 of normalised payload → first 32 hex chars for a compact
   // collision-resistant cache key. URL hostname is synthetic so the
@@ -10608,15 +10827,17 @@ async function holdingsCacheKey(network, ownerPubHex, aidsSortedJoined) {
 // _mutateAndBustWith below so fresh state surfaces to the next reader
 // without waiting on the FRESH window.
 //
-// FRESH windows are tuned per endpoint's churn rate:
-//   listings        : 10s — moderately polled; preauth + opening kinds
-//   listings-range  : 15s — least polled; per-maker single record
-//   atomic-intents  : 10s — claim TTL is 5min, so a 10s window is fine
-//   preauth-sales   : 10s — same shape as listings, similar churn
-//
-// STALE uniformly 60s — covers transient KV blips and burst dedupe.
-const LISTINGS_CACHE_FRESH_MS = 10_000;
-const LISTINGS_CACHE_STALE_MS = 60_000;
+// FRESH 120s — 4× the dapp's 30s poll cadence so adjacent polls share a
+// cache hit and the STALE boundary is hit much less often in aggregate.
+// At 200+ users in a colo, the savings compound: a single FRESH window
+// serves all 200 polls instead of each one kicking an independent
+// background fan-out. Mutation busts cover write paths so a publish /
+// claim / cancel surfaces to the next reader without FRESH expiry; only
+// cross-tab passive updates (someone else's listing in another wallet)
+// lag up to 120s — acceptable for OTC velocity. STALE 600s gives generous
+// headroom before any reader falls into a synchronous MISS.
+const LISTINGS_CACHE_FRESH_MS = 120_000;
+const LISTINGS_CACHE_STALE_MS = 600_000;
 function listingsCacheKey(network, aid) {
   return new Request(`https://_listings-cache_/listings/${network}/${aid}`, { method: 'GET' });
 }
@@ -10636,8 +10857,8 @@ async function _bustListingsCache(network, aid) {
   try { await caches.default.delete(listingsCacheKey(network, aid)); } catch {}
 }
 
-const LISTINGS_RANGE_CACHE_FRESH_MS = 15_000;
-const LISTINGS_RANGE_CACHE_STALE_MS = 60_000;
+const LISTINGS_RANGE_CACHE_FRESH_MS = 120_000;
+const LISTINGS_RANGE_CACHE_STALE_MS = 600_000;
 function listingsRangeCacheKey(network, aid) {
   return new Request(`https://_listings-range-cache_/listings-range/${network}/${aid}`, { method: 'GET' });
 }
@@ -10657,8 +10878,8 @@ async function _bustListingsRangeCache(network, aid) {
   try { await caches.default.delete(listingsRangeCacheKey(network, aid)); } catch {}
 }
 
-const ATOMIC_INTENTS_CACHE_FRESH_MS = 10_000;
-const ATOMIC_INTENTS_CACHE_STALE_MS = 60_000;
+const ATOMIC_INTENTS_CACHE_FRESH_MS = 120_000;
+const ATOMIC_INTENTS_CACHE_STALE_MS = 600_000;
 // Pagination-aware cache key. Each (limit, cursor) tuple caches separately
 // so different pages don't collide. The default page (no opts) caches at
 // the legacy key shape so existing readers — including the mutation
@@ -10693,8 +10914,8 @@ async function _bustAtomicIntentsCache(network, aid) {
   try { await caches.default.delete(atomicIntentsCacheKey(network, aid)); } catch {}
 }
 
-const PREAUTH_SALES_CACHE_FRESH_MS = 10_000;
-const PREAUTH_SALES_CACHE_STALE_MS = 60_000;
+const PREAUTH_SALES_CACHE_FRESH_MS = 120_000;
+const PREAUTH_SALES_CACHE_STALE_MS = 600_000;
 function preauthSalesCacheKey(network, aid) {
   return new Request(`https://_preauth-sales-cache_/preauth-sales/${network}/${aid}`, { method: 'GET' });
 }
@@ -11178,14 +11399,22 @@ async function handleAssetHint(req, env, network, cors, ctx) {
   // and any block scanned before the cron started running is permanently
   // missed since mainnet has zero backfill window. The xferseen dedupe in
   // bumpTransferCount makes this idempotent against the cron.
-  if (decoded.opcode === T_CXFER || decoded.opcode === T_AXFER || decoded.opcode === T_AXFER_VAR || decoded.opcode === T_CXFER_BPP || decoded.opcode === T_PREAUTH_BID) {
+  if (decoded.opcode === T_CXFER || decoded.opcode === T_AXFER || decoded.opcode === T_AXFER_VAR || decoded.opcode === T_CXFER_BPP || decoded.opcode === T_PREAUTH_BID || decoded.opcode === T_PREAUTH_BID_VAR) {
     const decoder = decoded.opcode === T_AXFER ? decodeAxferPayload
                   : decoded.opcode === T_AXFER_VAR ? decodeAxferVarPayload
                   : decoded.opcode === T_PREAUTH_BID ? decodePreauthBidPayload
+                  : decoded.opcode === T_PREAUTH_BID_VAR ? decodePreauthBidVarPayload
                   : decoded.opcode === T_CXFER_BPP ? decodeCXferBppPayload
                   : decodeCXferPayload;
     const dx = decoder(decoded.payload);
     if (!dx) return jsonResponse({ error: 'invalid transfer payload' }, 400, cors);
+    // SPEC §5.7.12 refund-vout enforcement (mirror of the chain-scanner
+    // gate): reject the hint if a 0x5C settlement omits or mis-prices
+    // the refund vout. Without this, a griefing seller could /hint an
+    // invalid settlement and the worker would still pop volume + last_trade.
+    if (decoded.opcode === T_PREAUTH_BID_VAR && !_validatePreauthBidVarRefundVout(dx, tx)) {
+      return jsonResponse({ error: 'T_PREAUTH_BID_VAR settlement missing or mis-priced refund vout' }, 400, cors);
+    }
     const counted = await bumpTransferCount(env, network, dx.asset_id, txidHex);
     // Optional last-traded record. AXFER (whole-UTXO atomic OTC, §5.7) and
     // AXFER_VAR (variable-amount, §5.7.6.1) both have a well-defined trade
@@ -11201,7 +11430,7 @@ async function handleAssetHint(req, env, network, cors, ctx) {
     // listing_kind:'preauth-bid' and the bid's price_sats + amount, so
     // the chart + mark price update on a preauth-bid fill exactly like
     // they do on a regular AXFER fill.
-    if ((decoded.opcode === T_AXFER || decoded.opcode === T_AXFER_VAR || decoded.opcode === T_PREAUTH_BID)
+    if ((decoded.opcode === T_AXFER || decoded.opcode === T_AXFER_VAR || decoded.opcode === T_PREAUTH_BID || decoded.opcode === T_PREAUTH_BID_VAR)
         && Number.isInteger(body.price_sats) && body.price_sats > 0
         && typeof body.amount === 'string' && /^[0-9]+$/.test(body.amount)) {
       try {
@@ -11259,6 +11488,7 @@ async function handleAssetHint(req, env, network, cors, ctx) {
       kind: decoded.opcode === T_AXFER ? 'axfer'
           : decoded.opcode === T_AXFER_VAR ? 'axfer-var'
           : decoded.opcode === T_PREAUTH_BID ? 'preauth-bid'
+          : decoded.opcode === T_PREAUTH_BID_VAR ? 'preauth-bid-var'
           : decoded.opcode === T_CXFER_BPP ? 'cxfer'
           : 'cxfer',
       ...(lastTrade ? { last_trade: lastTrade } : {}),
@@ -14750,6 +14980,115 @@ function preauthBidSighash({
 const PREAUTH_BID_MAX_FEE_BUDGET = 10_000;
 const PREAUTH_BID_MAX_EXPIRY_SECONDS = 30 * 86400;
 
+// ============== T_PREAUTH_BID_VAR (SPEC §5.7.12) — worker helpers ==============
+// Mirror of the §5.7.11 helper family above with three structural deltas:
+//   • per-ratio bid_context_hash (the seller picks one of K at fill time);
+//   • refund_pubkey in the auth_msg (separate from buyer_pubkey for cold-
+//     storage refunds);
+//   • concat-K-sigs in the auth_msg (worker batch-verifies all K pre-sigs
+//     are authorized as a single bundle).
+// Domain tags are distinct from §5.7.11 so a §5.7.11 pre-sig cannot be
+// replayed as a §5.7.12 ratio sig.
+
+function preauthBidVarKey(network, aid, bidIdHex) {
+  return network === 'signet'
+    ? `prebidv:${aid}:${bidIdHex}`
+    : `prebidv:${network}:${aid}:${bidIdHex}`;
+}
+function preauthBidVarPrefix(network, aid) {
+  return network === 'signet' ? `prebidv:${aid}:` : `prebidv:${network}:${aid}:`;
+}
+function preauthBidVarFundingIndexKey(network, txidHex, vout) {
+  // VAR uses a distinct index key prefix so the same funding outpoint
+  // can't simultaneously back a §5.7.11 bid AND a §5.7.12 bid. Both
+  // codepaths spend the same UTXO, so concurrent live entries would
+  // conflict at fill time regardless — the index just rejects faster.
+  return network === 'signet'
+    ? `prebidv-by-outpoint:${txidHex}:${vout}`
+    : `prebidv-by-outpoint:${network}:${txidHex}:${vout}`;
+}
+
+function preauthBidVarIdHex(assetIdHex, buyerPubHex, nonceHex) {
+  const h = sha256(concatBytes(
+    new TextEncoder().encode('tacit-preauth-bid-var-id-v1'),
+    hexToBytes(assetIdHex),
+    hexToBytes(buyerPubHex),
+    hexToBytes(nonceHex),
+  ));
+  return bytesToHex(h.slice(0, 16));
+}
+
+function preauthBidVarAuthMsg({
+  assetIdHex, bidIdHex, buyerPubHex, recipientPubHex, refundPubHex,
+  pricePerUnitStr, minFillStr, maxFillStr, fillIncrementStr,
+  recipientBlindingHex,
+  fundingOutpointTxidHex, fundingOutpointVout, fundingOutpointValue,
+  expiry, decimalsScale,
+  buyerSatsSpendSigsConcatHex,
+  nonceHex,
+}) {
+  const u32 = (n) => { const b = new Uint8Array(4); new DataView(b.buffer).setUint32(0, n >>> 0, true); return b; };
+  const u64 = (n) => { const b = new Uint8Array(8); new DataView(b.buffer).setBigUint64(0, BigInt(n), true); return b; };
+  return sha256(concatBytes(
+    new TextEncoder().encode('tacit-preauth-bid-var-v1'),
+    hexToBytes(assetIdHex),
+    hexToBytes(bidIdHex),
+    hexToBytes(buyerPubHex),
+    hexToBytes(recipientPubHex),
+    hexToBytes(refundPubHex),
+    u64(pricePerUnitStr),
+    u64(minFillStr),
+    u64(maxFillStr),
+    u64(fillIncrementStr),
+    hexToBytes(recipientBlindingHex),
+    reverseBytes(hexToBytes(fundingOutpointTxidHex)),
+    u32(fundingOutpointVout),
+    u64(fundingOutpointValue),
+    u64(expiry),
+    new Uint8Array([(decimalsScale | 0) & 0xff]),
+    _varslice(hexToBytes(buyerSatsSpendSigsConcatHex)),
+    hexToBytes(nonceHex),
+  ));
+}
+
+function preauthBidVarCancelMsg(assetIdHex, bidIdHex) {
+  return sha256(concatBytes(
+    new TextEncoder().encode('tacit-preauth-bid-var-cancel-v1'),
+    hexToBytes(assetIdHex),
+    hexToBytes(bidIdHex),
+  ));
+}
+
+// Sync per-ratio bid_context_hash used inside the K-sig verification loop.
+// Mirrors the async `computePreauthBidVarContextHash` above (which exists
+// alongside the wire-format decoder); the sync version is what the POST
+// handler calls so the loop doesn't pay K × subtle.digest round trips.
+// recipient_blinding is deliberately omitted (lives in the inline section
+// only; chain-side Pedersen consistency rule covers it).
+function preauthBidVarContextHash({
+  assetIdHex, bidIdHex, recipientPubHex,
+  pricePerUnit, maxFill, fillIncrement, fillAmount,
+  refundScriptHashHex, decimalsScale,
+}) {
+  const u64 = (n) => { const b = new Uint8Array(8); new DataView(b.buffer).setBigUint64(0, BigInt(n), true); return b; };
+  return sha256(concatBytes(
+    new TextEncoder().encode('tacit-preauth-bid-var-context-v1'),
+    hexToBytes(assetIdHex),
+    hexToBytes(bidIdHex),
+    hexToBytes(recipientPubHex),
+    u64(pricePerUnit),
+    u64(maxFill),
+    u64(fillIncrement),
+    u64(fillAmount),
+    hexToBytes(refundScriptHashHex),
+    new Uint8Array([(decimalsScale | 0) & 0xff]),
+  ));
+}
+
+const PREAUTH_BID_VAR_MAX_FEE_BUDGET = 10_000;
+const PREAUTH_BID_VAR_MAX_EXPIRY_SECONDS = 30 * 86400;
+const PREAUTH_BID_VAR_MAX_K = 256;
+
 // BIP-143 sighash reconstruction for the seller's pre-signed asset input.
 // SPEC §5.7.8: vin[1] = asset outpoint, vout[1] = seller payout, version 2,
 // locktime 0, nSequence 0xfffffffd, SIGHASH_SINGLE|ANYONECANPAY (0x83).
@@ -16289,16 +16628,23 @@ async function handlePreauthBidPost(assetIdHex, req, env, network, cors) {
   const _orderRl = await _orderbookWriteRateLimit(req, env, buyerPubHex, 'preauth-bid');
   if (!_orderRl.ok) return jsonResponse({ error: `bid rate limited: ${_orderRl.reason}` }, 429, cors);
 
-  // ---------- one-live-bid-per-funding-outpoint ----------
-  // The funding outpoint binds exactly one bid; cancel + re-publish on the
-  // same outpoint is fine because cancel deletes the index entry first.
-  const existingBidIdHex = await env.REGISTRY_KV.get(
+  // ---------- one-live-bid-per-funding-outpoint (cross §5.7.11 + §5.7.12) ----------
+  const existingExactBidIdHex = await env.REGISTRY_KV.get(
     preauthBidFundingIndexKey(network, fundingTxidHex, fundingVoutRaw),
   );
-  if (existingBidIdHex) {
+  if (existingExactBidIdHex) {
     return jsonResponse({
-      error: 'a live preauth-bid already exists for this funding_outpoint; cancel it first',
-      existing_bid_id: existingBidIdHex,
+      error: 'a live exact-fill preauth-bid (§5.7.11) already exists for this funding_outpoint; cancel it first',
+      existing_bid_id: existingExactBidIdHex,
+    }, 409, cors);
+  }
+  const existingVarBidIdHex = await env.REGISTRY_KV.get(
+    preauthBidVarFundingIndexKey(network, fundingTxidHex, fundingVoutRaw),
+  );
+  if (existingVarBidIdHex) {
+    return jsonResponse({
+      error: 'a live partial-fill preauth-bid (§5.7.12) already exists for this funding_outpoint; cancel it first',
+      existing_bid_id: existingVarBidIdHex,
     }, 409, cors);
   }
 
@@ -16376,6 +16722,292 @@ async function handlePreauthBidDelete(assetIdHex, bidIdHex, req, env, network, c
   }
   await env.REGISTRY_KV.delete(preauthBidKey(network, assetIdHex, bidIdHex));
   await env.REGISTRY_KV.delete(preauthBidFundingIndexKey(
+    network, stored.funding_outpoint.txid, stored.funding_outpoint.vout,
+  ));
+  return jsonResponse({ ok: true, status: 'cancelled' }, 200, cors);
+}
+
+// ============== Preauth-bid-var handlers (SPEC §5.7.12) ==============
+
+async function handlePreauthBidVarPost(assetIdHex, req, env, network, cors) {
+  if (!/^[0-9a-f]{64}$/.test(assetIdHex)) return jsonResponse({ error: 'invalid asset_id' }, 400, cors);
+  let body;
+  try { body = await req.json(); } catch { return jsonResponse({ error: 'invalid JSON body' }, 400, cors); }
+  const buyerPubHex = String(body.buyer_pubkey ?? '').toLowerCase();
+  const recipientPubHex = String(body.recipient_pubkey ?? '').toLowerCase();
+  const refundPubHex = String(body.refund_pubkey ?? '').toLowerCase();
+  const pricePerUnitStr = String(body.price_per_unit ?? '');
+  const minFillStr = String(body.min_fill ?? '');
+  const maxFillStr = String(body.max_fill ?? '');
+  const fillIncrementStr = String(body.fill_increment ?? '');
+  const recipientBlindingHex = String(body.recipient_blinding ?? '').toLowerCase();
+  const maxFeeBudgetRaw = Number(body.max_fee_budget);
+  const fundingOutpoint = body.funding_outpoint || {};
+  const fundingTxidHex = String(fundingOutpoint.txid ?? '').toLowerCase();
+  const fundingVoutRaw = Number(fundingOutpoint.vout);
+  const fundingValueRaw = Number(fundingOutpoint.value);
+  const expiryRaw = Number(body.expiry);
+  const nonceHex = String(body.nonce ?? '').toLowerCase();
+  const buyerSatsSpendSigsRaw = Array.isArray(body.buyer_sats_spend_sigs) ? body.buyer_sats_spend_sigs : null;
+  const authSigHex = String(body.auth_sig ?? '').toLowerCase();
+  const decimalsScaleRaw = Number(body.decimals_scale);
+  const now = Math.floor(Date.now() / 1000);
+
+  if (!/^0[23][0-9a-f]{64}$/.test(buyerPubHex)) return jsonResponse({ error: 'buyer_pubkey must be 33-byte compressed' }, 400, cors);
+  if (!/^0[23][0-9a-f]{64}$/.test(recipientPubHex)) return jsonResponse({ error: 'recipient_pubkey must be 33-byte compressed' }, 400, cors);
+  if (!/^0[23][0-9a-f]{64}$/.test(refundPubHex)) return jsonResponse({ error: 'refund_pubkey must be 33-byte compressed' }, 400, cors);
+  if (!/^\d+$/.test(pricePerUnitStr)) return jsonResponse({ error: 'price_per_unit must be a positive integer string' }, 400, cors);
+  if (!/^\d+$/.test(minFillStr)) return jsonResponse({ error: 'min_fill must be a positive integer string' }, 400, cors);
+  if (!/^\d+$/.test(maxFillStr)) return jsonResponse({ error: 'max_fill must be a positive integer string' }, 400, cors);
+  if (!/^\d+$/.test(fillIncrementStr)) return jsonResponse({ error: 'fill_increment must be a positive integer string' }, 400, cors);
+  if (!/^[0-9a-f]{64}$/.test(recipientBlindingHex)) return jsonResponse({ error: 'recipient_blinding must be 64 hex chars' }, 400, cors);
+  if (!Number.isInteger(maxFeeBudgetRaw) || maxFeeBudgetRaw < 0 || maxFeeBudgetRaw > PREAUTH_BID_VAR_MAX_FEE_BUDGET) {
+    return jsonResponse({ error: `max_fee_budget must be in [0, ${PREAUTH_BID_VAR_MAX_FEE_BUDGET}]` }, 400, cors);
+  }
+  if (!/^[0-9a-f]{64}$/.test(fundingTxidHex)) return jsonResponse({ error: 'funding_outpoint.txid must be 64 hex chars' }, 400, cors);
+  if (!Number.isInteger(fundingVoutRaw) || fundingVoutRaw < 0) return jsonResponse({ error: 'funding_outpoint.vout must be non-negative integer' }, 400, cors);
+  if (!Number.isInteger(fundingValueRaw) || fundingValueRaw < 0) return jsonResponse({ error: 'funding_outpoint.value must be non-negative integer' }, 400, cors);
+  if (!Number.isInteger(expiryRaw) || expiryRaw <= now) return jsonResponse({ error: 'expiry must be future unix-seconds' }, 400, cors);
+  if (expiryRaw - now > PREAUTH_BID_VAR_MAX_EXPIRY_SECONDS) {
+    return jsonResponse({ error: `expiry must be ≤ ${PREAUTH_BID_VAR_MAX_EXPIRY_SECONDS / 86400} days from now` }, 400, cors);
+  }
+  if (!/^[0-9a-f]{32}$/.test(nonceHex)) return jsonResponse({ error: 'nonce must be 32 hex chars (16 bytes)' }, 400, cors);
+  if (!/^[0-9a-f]{128}$/.test(authSigHex)) return jsonResponse({ error: 'auth_sig must be 128 hex chars' }, 400, cors);
+  if (!buyerSatsSpendSigsRaw) return jsonResponse({ error: 'buyer_sats_spend_sigs must be an array of hex strings' }, 400, cors);
+  if (!Number.isInteger(decimalsScaleRaw) || decimalsScaleRaw < 0 || decimalsScaleRaw > PREAUTH_BID_VAR_MAX_DECIMALS_SCALE) {
+    return jsonResponse({ error: `decimals_scale must be integer in [0, ${PREAUTH_BID_VAR_MAX_DECIMALS_SCALE}]` }, 400, cors);
+  }
+
+  // K computation + alignment check.
+  const priceBig = BigInt(pricePerUnitStr);
+  const minBig = BigInt(minFillStr);
+  const maxBig = BigInt(maxFillStr);
+  const incBig = BigInt(fillIncrementStr);
+  if (priceBig <= 0n) return jsonResponse({ error: 'price_per_unit must be positive' }, 400, cors);
+  if (minBig <= 0n) return jsonResponse({ error: 'min_fill must be positive' }, 400, cors);
+  if (incBig <= 0n) return jsonResponse({ error: 'fill_increment must be positive' }, 400, cors);
+  if (maxBig < minBig) return jsonResponse({ error: 'max_fill must be >= min_fill' }, 400, cors);
+  if (((maxBig - minBig) % incBig) !== 0n) {
+    return jsonResponse({ error: '(max_fill - min_fill) must be a whole multiple of fill_increment' }, 400, cors);
+  }
+  const KBig = (maxBig - minBig) / incBig + 1n;
+  if (KBig > BigInt(PREAUTH_BID_VAR_MAX_K)) {
+    return jsonResponse({ error: `K (${KBig}) exceeds PREAUTH_BID_VAR_MAX_K (${PREAUTH_BID_VAR_MAX_K})` }, 400, cors);
+  }
+  const K = Number(KBig);
+  if (buyerSatsSpendSigsRaw.length !== K) {
+    return jsonResponse({ error: `buyer_sats_spend_sigs length (${buyerSatsSpendSigsRaw.length}) must equal K (${K})` }, 400, cors);
+  }
+  for (let i = 0; i < K; i++) {
+    const s = String(buyerSatsSpendSigsRaw[i] ?? '').toLowerCase();
+    if (!/^[0-9a-f]+$/.test(s) || !s.endsWith('83')) {
+      return jsonResponse({ error: `buyer_sats_spend_sigs[${i}] must be hex ending in sighash byte 0x83` }, 400, cors);
+    }
+    buyerSatsSpendSigsRaw[i] = s;
+  }
+
+  // Funding value must cover max_fill × price_per_unit + DUST + max_fee_budget.
+  const DUST = 546;
+  const totalPriceBig = maxBig * priceBig;
+  if (totalPriceBig > BigInt(Number.MAX_SAFE_INTEGER)) {
+    return jsonResponse({ error: 'max_fill × price_per_unit exceeds safe integer range' }, 400, cors);
+  }
+  const requiredFundingValue = Number(totalPriceBig) + DUST + maxFeeBudgetRaw;
+  if (fundingValueRaw !== requiredFundingValue) {
+    return jsonResponse({
+      error: `funding_outpoint.value must equal max_fill × price_per_unit + DUST + max_fee_budget (= ${requiredFundingValue}, got ${fundingValueRaw})`,
+    }, 400, cors);
+  }
+
+  // bid_id derivation
+  const expectedBidIdHex = preauthBidVarIdHex(assetIdHex, buyerPubHex, nonceHex);
+  const bidIdHex = String(body.bid_id ?? '').toLowerCase();
+  if (bidIdHex !== expectedBidIdHex) {
+    return jsonResponse({ error: 'bid_id does not derive from (asset_id, buyer_pubkey, nonce)' }, 400, cors);
+  }
+
+  // ---------- chain-state checks ----------
+  let fundingTx;
+  try { fundingTx = await fetchFreshTxJson(env, fundingTxidHex, network); }
+  catch (e) { return jsonResponse({ error: 'funding tx not found after retries: ' + e.message }, 400, cors); }
+  const fundOut = fundingTx?.vout?.[fundingVoutRaw];
+  if (!fundOut?.scriptpubkey) return jsonResponse({ error: 'funding outpoint missing scriptpubkey' }, 400, cors);
+  const fundSpk = hexToBytes(fundOut.scriptpubkey);
+  if (fundSpk.length !== 22 || fundSpk[0] !== 0x00 || fundSpk[1] !== 0x14) {
+    return jsonResponse({ error: 'funding outpoint is not P2WPKH' }, 400, cors);
+  }
+  if (bytesToHex(fundSpk.slice(2, 22)) !== bytesToHex(hash160(hexToBytes(buyerPubHex)))) {
+    return jsonResponse({ error: 'buyer_pubkey does not control the funding outpoint' }, 403, cors);
+  }
+  if (fundOut.value !== fundingValueRaw) {
+    return jsonResponse({ error: `funding_outpoint.value mismatch (declared ${fundingValueRaw}, on-chain ${fundOut.value})` }, 400, cors);
+  }
+  let outspend;
+  try { outspend = await apiJson(env, `/tx/${fundingTxidHex}/outspend/${fundingVoutRaw}`, {}, network); }
+  catch { outspend = null; }
+  if (outspend && outspend.spent) {
+    return jsonResponse({ error: 'funding outpoint is already spent' }, 409, cors);
+  }
+
+  // ---------- signature checks ----------
+  const buyerXonly = hexToBytes(buyerPubHex).slice(1);
+  // Auth signature first — covers the bundle. Failing auth lets us skip
+  // the K-sig grind for any caller who hasn't authorized the post.
+  const buyerSatsSpendSigsConcatHex = buyerSatsSpendSigsRaw.join('');
+  const authMsg = preauthBidVarAuthMsg({
+    assetIdHex, bidIdHex, buyerPubHex, recipientPubHex, refundPubHex,
+    pricePerUnitStr, minFillStr, maxFillStr, fillIncrementStr,
+    recipientBlindingHex,
+    fundingOutpointTxidHex: fundingTxidHex,
+    fundingOutpointVout: fundingVoutRaw,
+    fundingOutpointValue: fundingValueRaw,
+    expiry: expiryRaw,
+    decimalsScale: decimalsScaleRaw,
+    buyerSatsSpendSigsConcatHex,
+    nonceHex,
+  });
+  if (!verifySchnorr(hexToBytes(authSigHex), authMsg, buyerXonly)) {
+    return jsonResponse({ error: 'invalid auth signature' }, 403, cors);
+  }
+
+  // K-sig batch verify: each pre-sig must verify against the BIP-143
+  // sighash for its corresponding fill_amount_i. Any failure rejects the
+  // whole bundle (the buyer's K-sig set must be complete for partial
+  // fills to be possible across the full range).
+  const refundScriptHashHex = bytesToHex(hash160(hexToBytes(refundPubHex)));
+  for (let i = 0; i < K; i++) {
+    const fillAmountI = minBig + BigInt(i) * incBig;
+    const bidContextHashI = preauthBidVarContextHash({
+      assetIdHex, bidIdHex, recipientPubHex,
+      pricePerUnit: priceBig, maxFill: maxBig,
+      fillIncrement: incBig, fillAmount: fillAmountI,
+      refundScriptHashHex,
+      decimalsScale: decimalsScaleRaw,
+    });
+    const sighashI = preauthBidSighash({
+      fundingOutpointTxidHex: fundingTxidHex,
+      fundingOutpointVout: fundingVoutRaw,
+      fundingOutpointValue: fundingValueRaw,
+      buyerPubHex,
+      bidContextHash: bidContextHashI,
+    });
+    const sigBytes = hexToBytes(buyerSatsSpendSigsRaw[i]);
+    const sigDer = sigBytes.slice(0, sigBytes.length - 1);
+    if (!verifyEcdsaDerSig(sigDer, sighashI, hexToBytes(buyerPubHex))) {
+      return jsonResponse({
+        error: `buyer_sats_spend_sigs[${i}] does not verify against the BIP-143 sighash for fill_amount=${fillAmountI}`,
+      }, 403, cors);
+    }
+  }
+
+  // ---------- rate limit ----------
+  const _orderRl = await _orderbookWriteRateLimit(req, env, buyerPubHex, 'preauth-bid-var');
+  if (!_orderRl.ok) return jsonResponse({ error: `bid rate limited: ${_orderRl.reason}` }, 429, cors);
+
+  // ---------- one-live-bid-per-funding-outpoint (cross §5.7.11 + §5.7.12) ----------
+  // Reject if the outpoint already backs a §5.7.11 bid OR a §5.7.12 bid.
+  // The settlement-tx flow can't differentiate at funding-outpoint level
+  // (it sees an unspent P2WPKH UTXO with two competing pre-sigs); the
+  // index conflict makes the rejection deterministic.
+  const existingExactBidIdHex = await env.REGISTRY_KV.get(
+    preauthBidFundingIndexKey(network, fundingTxidHex, fundingVoutRaw),
+  );
+  if (existingExactBidIdHex) {
+    return jsonResponse({
+      error: 'a live exact-fill preauth-bid (§5.7.11) already exists for this funding_outpoint; cancel it first',
+      existing_bid_id: existingExactBidIdHex,
+    }, 409, cors);
+  }
+  const existingVarBidIdHex = await env.REGISTRY_KV.get(
+    preauthBidVarFundingIndexKey(network, fundingTxidHex, fundingVoutRaw),
+  );
+  if (existingVarBidIdHex) {
+    return jsonResponse({
+      error: 'a live partial-fill preauth-bid (§5.7.12) already exists for this funding_outpoint; cancel it first',
+      existing_bid_id: existingVarBidIdHex,
+    }, 409, cors);
+  }
+
+  const bid = {
+    asset_id: assetIdHex,
+    bid_id: bidIdHex,
+    kind: 'preauth_bid_var',
+    buyer_pubkey: buyerPubHex,
+    recipient_pubkey: recipientPubHex,
+    refund_pubkey: refundPubHex,
+    price_per_unit: pricePerUnitStr,
+    min_fill: minFillStr,
+    max_fill: maxFillStr,
+    fill_increment: fillIncrementStr,
+    decimals_scale: decimalsScaleRaw,
+    K,
+    recipient_blinding: recipientBlindingHex,
+    max_fee_budget: maxFeeBudgetRaw,
+    funding_outpoint: { txid: fundingTxidHex, vout: fundingVoutRaw, value: fundingValueRaw },
+    expiry: expiryRaw,
+    buyer_sats_spend_sigs: buyerSatsSpendSigsRaw,
+    auth_sig: authSigHex,
+    nonce: nonceHex,
+    status: 'live',
+    created_at: now,
+    network,
+  };
+  const _bidTtl = _ttlFromExpiry(expiryRaw);
+  await env.REGISTRY_KV.put(
+    preauthBidVarKey(network, assetIdHex, bidIdHex),
+    JSON.stringify(bid),
+    { expirationTtl: _bidTtl },
+  );
+  await env.REGISTRY_KV.put(
+    preauthBidVarFundingIndexKey(network, fundingTxidHex, fundingVoutRaw),
+    bidIdHex,
+    { expirationTtl: _bidTtl },
+  );
+  return jsonResponse({ ok: true, bid }, 200, cors);
+}
+
+async function loadPreauthBidsVarForAsset(env, network, assetIdHex) {
+  const list = await env.REGISTRY_KV.list({ prefix: preauthBidVarPrefix(network, assetIdHex), limit: 1000 });
+  const now = Math.floor(Date.now() / 1000);
+  const fetched = await Promise.all(list.keys.map(k => env.REGISTRY_KV.get(k.name, 'json')));
+  const bids = [];
+  for (const v of fetched) {
+    if (!v) continue;
+    const expired = Number(v.expiry || 0) <= now;
+    bids.push({ ...v, _expired: expired });
+  }
+  return bids;
+}
+
+async function handlePreauthBidVarGet(assetIdHex, bidIdHex, env, network, cors) {
+  if (!/^[0-9a-f]{64}$/.test(assetIdHex)) return jsonResponse({ error: 'invalid asset_id' }, 400, cors);
+  if (!/^[0-9a-f]{32}$/.test(bidIdHex)) return jsonResponse({ error: 'invalid bid_id' }, 400, cors);
+  const stored = await env.REGISTRY_KV.get(preauthBidVarKey(network, assetIdHex, bidIdHex), 'json');
+  if (!stored) return jsonResponse({ error: 'no bid found' }, 404, cors);
+  return jsonResponse({ bid: stored }, 200, cors);
+}
+
+async function handlePreauthBidsVarList(assetIdHex, env, network, cors) {
+  if (!/^[0-9a-f]{64}$/.test(assetIdHex)) return jsonResponse({ error: 'invalid asset_id' }, 400, cors);
+  const bids = await loadPreauthBidsVarForAsset(env, network, assetIdHex);
+  return jsonResponse({ bids }, 200, cors);
+}
+
+async function handlePreauthBidVarDelete(assetIdHex, bidIdHex, req, env, network, cors) {
+  if (!/^[0-9a-f]{64}$/.test(assetIdHex)) return jsonResponse({ error: 'invalid asset_id' }, 400, cors);
+  if (!/^[0-9a-f]{32}$/.test(bidIdHex)) return jsonResponse({ error: 'invalid bid_id' }, 400, cors);
+  let body;
+  try { body = await req.json(); } catch { return jsonResponse({ error: 'invalid JSON body' }, 400, cors); }
+  const cancelSigHex = String(body.cancel_sig ?? '').toLowerCase();
+  if (!/^[0-9a-f]{128}$/.test(cancelSigHex)) return jsonResponse({ error: 'cancel_sig must be 128 hex chars' }, 400, cors);
+  const stored = await env.REGISTRY_KV.get(preauthBidVarKey(network, assetIdHex, bidIdHex), 'json');
+  if (!stored) return jsonResponse({ error: 'no bid found' }, 404, cors);
+  const msg = preauthBidVarCancelMsg(assetIdHex, bidIdHex);
+  if (!verifySchnorr(hexToBytes(cancelSigHex), msg, hexToBytes(stored.buyer_pubkey).slice(1))) {
+    return jsonResponse({ error: 'invalid cancel signature' }, 403, cors);
+  }
+  await env.REGISTRY_KV.delete(preauthBidVarKey(network, assetIdHex, bidIdHex));
+  await env.REGISTRY_KV.delete(preauthBidVarFundingIndexKey(
     network, stored.funding_outpoint.txid, stored.funding_outpoint.vout,
   ));
   return jsonResponse({ ok: true, status: 'cancelled' }, 200, cors);
@@ -17546,6 +18178,53 @@ async function sweepPreauthBidPhantoms(env, network) {
   return { probed, deleted, cursor_reset: !cursor };
 }
 
+// Same shape as sweepPreauthBidPhantoms above, but for §5.7.12 partial-
+// fill bids. Walks `prebidv:` keys, probes each funding outpoint, deletes
+// the record + funding reverse-index when the UTXO is spent. Catches all
+// three of the same cases: settlement confirmed but scanner lagged, buyer
+// reclaimed via SIGHASH_ALL, buyer's funding UTXO spent elsewhere.
+const PREAUTH_BID_VAR_PHANTOM_SWEEP_LIMIT = 60;
+const PREAUTH_BID_VAR_PHANTOM_CURSOR_KEY = (network) =>
+  network === 'signet' ? 'sweep-prebidv-phantoms:cursor' : `sweep-prebidv-phantoms:${network}:cursor`;
+async function sweepPreauthBidVarPhantoms(env, network) {
+  const prefix = network === 'signet' ? 'prebidv:' : `prebidv:${network}:`;
+  const cursorKey = PREAUTH_BID_VAR_PHANTOM_CURSOR_KEY(network);
+  const startCursor = await env.REGISTRY_KV.get(cursorKey);
+  let cursor = startCursor || null;
+  let probed = 0, deleted = 0;
+  while (probed < PREAUTH_BID_VAR_PHANTOM_SWEEP_LIMIT) {
+    const opts = { prefix, limit: 30 };
+    if (cursor) opts.cursor = cursor;
+    const list = await env.REGISTRY_KV.list(opts);
+    if (!list.keys.length) { cursor = null; break; }
+    for (const k of list.keys) {
+      if (probed >= PREAUTH_BID_VAR_PHANTOM_SWEEP_LIMIT) break;
+      probed++;
+      // Skip the funding-outpoint reverse-index keys.
+      if (k.name.startsWith('prebidv-by-outpoint:')) continue;
+      const bid = await env.REGISTRY_KV.get(k.name, 'json');
+      if (!bid) continue;
+      const op = bid.funding_outpoint;
+      if (!op || !/^[0-9a-f]{64}$/.test(String(op.txid || '')) || !Number.isInteger(op.vout)) continue;
+      const probe = await chainOutspendProbe(env, network, op.txid, op.vout).catch(() => null);
+      if (!probe || probe.spent !== true) continue;
+      try {
+        await env.REGISTRY_KV.delete(k.name);
+        await env.REGISTRY_KV.delete(preauthBidVarFundingIndexKey(network, op.txid, op.vout));
+        deleted++;
+      } catch { /* KV blip — next sweep retries */ }
+    }
+    if (list.list_complete || !list.cursor) { cursor = null; break; }
+    cursor = list.cursor;
+  }
+  if (cursor) {
+    await env.REGISTRY_KV.put(cursorKey, cursor, { expirationTtl: 90000 });
+  } else {
+    await env.REGISTRY_KV.delete(cursorKey);
+  }
+  return { probed, deleted, cursor_reset: !cursor };
+}
+
 // Same idea for atomic intents: a phantom intent (asset UTXO already
 // spent on chain via a successful take) blocks discoverability the same
 // way phantom preauths do. Same bound + cursor pattern.
@@ -18071,22 +18750,31 @@ async function scanForEtches(env, network) {
         };
         await env.REGISTRY_KV.put(burnKeyFor(network, cb.asset_id, tx.txid), JSON.stringify(burnMeta));
         found++;
-      } else if (decoded.opcode === T_CXFER || decoded.opcode === T_AXFER || decoded.opcode === T_AXFER_VAR || decoded.opcode === T_CXFER_BPP || decoded.opcode === T_PREAUTH_BID) {
+      } else if (decoded.opcode === T_CXFER || decoded.opcode === T_AXFER || decoded.opcode === T_AXFER_VAR || decoded.opcode === T_CXFER_BPP || decoded.opcode === T_PREAUTH_BID || decoded.opcode === T_PREAUTH_BID_VAR) {
         // Confidential transfer (T_CXFER / T_CXFER_BPP) or atomic
-        // settlement reveal (T_AXFER / T_AXFER_VAR / T_PREAUTH_BID).
-        // All move asset value between holders; bump a single per-asset
-        // counter so /assets can surface a "movement" stat without paying
-        // the cost of a full per-tx index. The xferseen dedupe key makes
-        // hint+cron idempotent: whichever path sees the tx first wins,
-        // the other no-ops. Mid-block-crash re-scans no longer
-        // double-count.
+        // settlement reveal (T_AXFER / T_AXFER_VAR / T_PREAUTH_BID /
+        // T_PREAUTH_BID_VAR). All move asset value between holders;
+        // bump a single per-asset counter so /assets can surface a
+        // "movement" stat without paying the cost of a full per-tx
+        // index. The xferseen dedupe key makes hint+cron idempotent:
+        // whichever path sees the tx first wins, the other no-ops.
+        // Mid-block-crash re-scans no longer double-count.
         const decoder = decoded.opcode === T_AXFER ? decodeAxferPayload
                       : decoded.opcode === T_AXFER_VAR ? decodeAxferVarPayload
                       : decoded.opcode === T_PREAUTH_BID ? decodePreauthBidPayload
+                      : decoded.opcode === T_PREAUTH_BID_VAR ? decodePreauthBidVarPayload
                       : decoded.opcode === T_CXFER_BPP ? decodeCXferBppPayload
                       : decodeCXferPayload;
         const dx = decoder(decoded.payload);
         if (!dx) continue;
+        // SPEC §5.7.12 refund-vout enforcement: a settlement that omits
+        // the indexer-enforced refund vout (or pays the wrong value) is
+        // a griefing attempt by the seller. Reject the whole settlement
+        // — don't bump transfer counts, holder counts, or volume — so
+        // the buyer's dapp doesn't surface the partial fill and the
+        // seller's asset is treated as burnt (the dapp's scanHoldings
+        // gates the recipient credit identically).
+        if (decoded.opcode === T_PREAUTH_BID_VAR && !_validatePreauthBidVarRefundVout(dx, tx)) continue;
         const counted = await _bumpTransferOnce(dx.asset_id, tx.txid);
         // Implicit-cancel detection for opening listings. Any tx that
         // spends the asset_id's UTXOs (CXFER consolidate, AXFER settle,
@@ -18137,6 +18825,21 @@ async function scanForEtches(env, network) {
           // Position-independence applies to the buyer-input/OP_RETURN pair only;
           // the tacit-asset outputs follow the canonical (0, 3) indices.
           ? (i) => (i === 0 ? 0 : 3)
+          : decoded.opcode === T_PREAUTH_BID_VAR
+          // T_PREAUTH_BID_VAR canonical settlement layout (§5.7.12):
+          //   vout[0] = buyer's tacit recipient
+          //   vout[1] = seller's BTC payout
+          //   vout[2] = OP_RETURN(bid_context_hash_i)
+          //   vout[3] = buyer's refund P2WPKH (OMITTED when fill_amount == max_fill)
+          //   vout[3 or 4] = seller's tacit asset change (output[1], optional)
+          // Seller-change position depends on whether the refund vout exists,
+          // which depends on whether fill_amount == max_fill (no refund) or not.
+          ? (i) => {
+              if (i === 0) return 0;
+              let hasRefund = false;
+              try { hasRefund = BigInt(dx.fill_amount) < BigInt(dx.max_fill); } catch {}
+              return hasRefund ? 4 : 3;
+            }
           : (i) => i;
         for (let i = 0; i < dx.outputs.length; i++) {
           const v = _voutForOutput(i);
@@ -18155,10 +18858,12 @@ async function scanForEtches(env, network) {
         // hint path is healthy this is dead code; when a tab close /
         // network blip / cron-arrives-first race leaves a settled trade
         // un-hinted, this catches it without manual intervention.
-        if (counted && (decoded.opcode === T_AXFER || decoded.opcode === T_AXFER_VAR || decoded.opcode === T_PREAUTH_BID)) {
+        if (counted && (decoded.opcode === T_AXFER || decoded.opcode === T_AXFER_VAR || decoded.opcode === T_PREAUTH_BID || decoded.opcode === T_PREAUTH_BID_VAR)) {
           try {
             const derived = decoded.opcode === T_PREAUTH_BID
               ? await _derivePreauthBidTradeFromChain(env, network, tx, dx.asset_id)
+              : decoded.opcode === T_PREAUTH_BID_VAR
+              ? await _derivePreauthBidVarTradeFromChain(env, network, tx, dx.asset_id, dx)
               : await _deriveAxferTradeFromChain(env, network, tx, decoded.opcode, dx.asset_id);
             if (derived && derived.price_sats > 0) {
               const lastTrade = {
@@ -18170,11 +18875,11 @@ async function scanForEtches(env, network) {
                 source: 'cron-chain-backfill',
               };
               await _recordSettledTradeVolume(env, network, dx.asset_id, lastTrade);
-              // Settlement cleanup: each fill consumed a live preauth-sale
-              // or atomic-intent record. Without this, the stale record
-              // sits in KV until its 30-day expiry, showing up in /listings
-              // GETs and blocking a fresh listing on the same outpoint.
-              // Idempotent on re-scan (KV.delete on missing key is a no-op).
+              // Settlement cleanup: each fill consumed a live preauth-sale,
+              // atomic-intent, or preauth-bid(-var) record. Without this,
+              // the stale record sits in KV until its 30-day expiry,
+              // showing up in /listings GETs and blocking a fresh listing
+              // on the same outpoint. Idempotent on re-scan.
               for (const f of derived.fills) {
                 const op = f.outpoint;
                 if (!op || !/^[0-9a-f]{64}$/.test(String(op.txid || '')) || !Number.isInteger(op.vout)) continue;
@@ -18187,12 +18892,18 @@ async function scanForEtches(env, network) {
                     await env.REGISTRY_KV.delete(atomicClaimKey(network, dx.asset_id, f.intent_id));
                     await env.REGISTRY_KV.delete(atomicFulfilmentKey(network, dx.asset_id, f.intent_id));
                     await env.REGISTRY_KV.delete(atomicIntentOutpointIndexKey(network, dx.asset_id, op.txid, op.vout));
+                  } else if (f.kind === 'preauth-bid' && f.bid_id) {
+                    await env.REGISTRY_KV.delete(preauthBidKey(network, dx.asset_id, f.bid_id));
+                    await env.REGISTRY_KV.delete(preauthBidFundingIndexKey(network, op.txid, op.vout));
+                  } else if (f.kind === 'preauth-bid-var' && f.bid_id) {
+                    await env.REGISTRY_KV.delete(preauthBidVarKey(network, dx.asset_id, f.bid_id));
+                    await env.REGISTRY_KV.delete(preauthBidVarFundingIndexKey(network, op.txid, op.vout));
                   }
                 } catch { /* KV blip — next scan retries via the disagree path's get fall-through */ }
               }
             }
           } catch { /* derivation is best-effort — the transfer count still landed */ }
-        } else if (!counted && (decoded.opcode === T_AXFER || decoded.opcode === T_AXFER_VAR || decoded.opcode === T_PREAUTH_BID)) {
+        } else if (!counted && (decoded.opcode === T_AXFER || decoded.opcode === T_AXFER_VAR || decoded.opcode === T_PREAUTH_BID || decoded.opcode === T_PREAUTH_BID_VAR)) {
           // Hint landed first; the journal entry already exists with the
           // dapp-supplied price. Run chain derivation anyway to detect
           // disagreement — a chain-derived price that diverges from the
@@ -18204,6 +18915,8 @@ async function scanForEtches(env, network) {
           try {
             const derived = decoded.opcode === T_PREAUTH_BID
               ? await _derivePreauthBidTradeFromChain(env, network, tx, dx.asset_id)
+              : decoded.opcode === T_PREAUTH_BID_VAR
+              ? await _derivePreauthBidVarTradeFromChain(env, network, tx, dx.asset_id, dx)
               : await _deriveAxferTradeFromChain(env, network, tx, decoded.opcode, dx.asset_id);
             if (derived && derived.price_sats > 0) {
               const journalKey = tradeEventKey(network, dx.asset_id, tx.txid);
@@ -18215,13 +18928,18 @@ async function scanForEtches(env, network) {
                   const disagreeKey = network === 'signet'
                     ? `volume-disagree:${dx.asset_id}:${tx.txid}`
                     : `volume-disagree:${network}:${dx.asset_id}:${tx.txid}`;
+                  const _opcodeTag = decoded.opcode === T_AXFER ? 'AXFER'
+                                   : decoded.opcode === T_AXFER_VAR ? 'AXFER_VAR'
+                                   : decoded.opcode === T_PREAUTH_BID ? 'PREAUTH_BID'
+                                   : decoded.opcode === T_PREAUTH_BID_VAR ? 'PREAUTH_BID_VAR'
+                                   : 'UNKNOWN';
                   await env.REGISTRY_KV.put(disagreeKey, JSON.stringify({
                     asset_id: dx.asset_id, txid: tx.txid,
                     hint_price_sats: hintedPx,
                     chain_price_sats: derived.price_sats,
                     diff_pct: Math.round(diffPct * 10000) / 100,
                     detected_at: Math.floor(Date.now() / 1000),
-                    opcode: decoded.opcode === T_AXFER ? 'AXFER' : 'AXFER_VAR',
+                    opcode: _opcodeTag,
                   }), { expirationTtl: 30 * 86400 });
                 }
               }
@@ -23310,15 +24028,16 @@ async function _routeFetch(req, env, ctx) {
           // background refresh swallows errors so a transient failure doesn't
           // poison the next read; the next read then sees the same stale
           // body again and re-tries the refresh, eventually catching up.
+          // Deduped so concurrent STALE readers share one fan-out.
           if (ctx && typeof ctx.waitUntil === 'function') {
-            ctx.waitUntil(_computeAndCache().catch(() => null));
+            ctx.waitUntil(_swrDedupedKick(cacheKey.url, _computeAndCache).catch(() => null));
           }
           return _withCors(await cached.text(), cached.status, 'STALE');
         }
         // Older than STALE: fall through to synchronous recomputation below.
       }
       // MISS path. Compute synchronously and cache before responding.
-      const result = await _computeAndCache();
+      const result = await _swrDedupedKick(cacheKey.url, _computeAndCache);
       return _withCors(result.body, result.status, cached ? 'EXPIRED-MISS' : 'MISS');
     }
     if (url.pathname === '/market' && req.method === 'GET') {
@@ -23348,13 +24067,15 @@ async function _routeFetch(req, env, ctx) {
           return _withCors(await cached.text(), cached.status, 'HIT');
         }
         if (ageMs < MARKET_CACHE_STALE_MS) {
+          // Dedup the background recompute so a thundering herd of STALE
+          // readers collapses to one fan-out, not N.
           if (ctx && typeof ctx.waitUntil === 'function') {
-            ctx.waitUntil(marketComputeAndCache(env, network, null, _mktOpts).catch(() => null));
+            ctx.waitUntil(_swrDedupedKick(cacheKey.url, () => marketComputeAndCache(env, network, null, _mktOpts)).catch(() => null));
           }
           return _withCors(await cached.text(), cached.status, 'STALE');
         }
       }
-      const result = await marketComputeAndCache(env, network, null, _mktOpts);
+      const result = await _swrDedupedKick(cacheKey.url, () => marketComputeAndCache(env, network, null, _mktOpts));
       return _withCors(result.body, result.status, cached ? 'EXPIRED-MISS' : 'MISS');
     }
     if (url.pathname === '/holdings' && req.method === 'POST') {
@@ -23403,11 +24124,13 @@ async function _routeFetch(req, env, ctx) {
         const ageMs = cachedAtStr ? Date.now() - parseInt(cachedAtStr, 10) : Infinity;
         if (ageMs < HOLDINGS_CACHE_FRESH_MS) return _hWithCors(await _hCached.text(), _hCached.status, 'HIT');
         if (ageMs < HOLDINGS_CACHE_STALE_MS) {
-          if (ctx && typeof ctx.waitUntil === 'function') ctx.waitUntil(_hRecompute().catch(() => null));
+          if (ctx && typeof ctx.waitUntil === 'function') {
+            ctx.waitUntil(_swrDedupedKick(_hCacheKey.url, _hRecompute).catch(() => null));
+          }
           return _hWithCors(await _hCached.text(), _hCached.status, 'STALE');
         }
       }
-      const result = await _hRecompute();
+      const result = await _swrDedupedKick(_hCacheKey.url, _hRecompute);
       return _hWithCors(result.body, result.status, _hCached ? 'EXPIRED-MISS' : 'MISS');
     }
     if (url.pathname === '/assets/hint' && req.method === 'POST') return handleAssetHint(req, env, network, cors, ctx);
@@ -23463,12 +24186,12 @@ async function _routeFetch(req, env, ctx) {
         }
         if (ageMs < PETCH_ASSETS_CACHE_STALE_MS) {
           if (ctx && typeof ctx.waitUntil === 'function') {
-            ctx.waitUntil(petchAssetsComputeAndCache(env, network).catch(() => null));
+            ctx.waitUntil(_swrDedupedKick(cacheKey.url, () => petchAssetsComputeAndCache(env, network)).catch(() => null));
           }
           return _withCors(await cached.text(), cached.status, 'STALE');
         }
       }
-      const result = await petchAssetsComputeAndCache(env, network);
+      const result = await _swrDedupedKick(cacheKey.url, () => petchAssetsComputeAndCache(env, network));
       return _withCors(result.body, result.status, cached ? 'EXPIRED-MISS' : 'MISS');
     }
     const mpa = url.pathname.match(/^\/petch-assets\/([0-9a-f]{64})$/);
@@ -23884,12 +24607,12 @@ async function _routeFetch(req, env, ctx) {
           }
           if (ageMs < PMINT_CREDITED_CACHE_STALE_MS) {
             if (ctx && typeof ctx.waitUntil === 'function') {
-              ctx.waitUntil(pmintCreditedComputeAndCache(env, network, aid).catch(() => null));
+              ctx.waitUntil(_swrDedupedKick(cacheKey.url, () => pmintCreditedComputeAndCache(env, network, aid)).catch(() => null));
             }
             return _withCors(await cached.text(), cached.status, 'STALE');
           }
         }
-        const result = await pmintCreditedComputeAndCache(env, network, aid);
+        const result = await _swrDedupedKick(cacheKey.url, () => pmintCreditedComputeAndCache(env, network, aid));
         return _withCors(result.body, result.status, cached ? 'EXPIRED-MISS' : 'MISS');
       }
       return handlePmintList(mpm[1], env, network, cors, { creditedOnly, includeTxids });
@@ -23934,12 +24657,12 @@ async function _routeFetch(req, env, ctx) {
         }
         if (ageMs < ASSET_DETAIL_CACHE_STALE_MS) {
           if (ctx && typeof ctx.waitUntil === 'function') {
-            ctx.waitUntil(assetDetailComputeAndCache(env, network, aid).catch(() => null));
+            ctx.waitUntil(_swrDedupedKick(cacheKey.url, () => assetDetailComputeAndCache(env, network, aid)).catch(() => null));
           }
           return _withCors(await cached.text(), cached.status, 'STALE');
         }
       }
-      const result = await assetDetailComputeAndCache(env, network, aid);
+      const result = await _swrDedupedKick(cacheKey.url, () => assetDetailComputeAndCache(env, network, aid));
       return _withCors(result.body, result.status, cached ? 'EXPIRED-MISS' : 'MISS');
     }
     const ma = url.pathname.match(/^\/assets\/([0-9a-f]{64})\/attest$/);
@@ -24039,11 +24762,18 @@ async function _routeFetch(req, env, ctx) {
         const ageMs = cachedAtStr ? Date.now() - parseInt(cachedAtStr, 10) : Infinity;
         if (ageMs < freshMs) return _withCors(await cached.text(), cached.status, 'HIT');
         if (ageMs < staleMs) {
-          if (ctx && typeof ctx.waitUntil === 'function') ctx.waitUntil(computeFn().catch(() => null));
+          // Dedup the background recompute so N concurrent readers hitting
+          // STALE in the same window collapse to one fan-out, not N.
+          if (ctx && typeof ctx.waitUntil === 'function') {
+            ctx.waitUntil(_swrDedupedKick(cacheKey.url, computeFn).catch(() => null));
+          }
           return _withCors(await cached.text(), cached.status, 'STALE');
         }
       }
-      const result = await computeFn();
+      // Synchronous MISS path — also dedup so a thundering-herd cold-start
+      // doesn't fan out N times. Subsequent callers within the same
+      // recompute window await the same promise instead of duplicating work.
+      const result = await _swrDedupedKick(cacheKey.url, computeFn);
       return _withCors(result.body, result.status, cached ? 'EXPIRED-MISS' : 'MISS');
     };
     const ml = url.pathname.match(/^\/assets\/([0-9a-f]{64})\/listings$/);
@@ -24112,6 +24842,17 @@ async function _routeFetch(req, env, ctx) {
     if (mpb2 && req.method === 'GET')                          return handlePreauthBidGet(mpb2[1], mpb2[2], env, network, cors);
     if (mpb2 && req.method === 'DELETE')                       return _mutateAndBust(mpb2[1], () => handlePreauthBidDelete(mpb2[1], mpb2[2], req, env, network, cors));
 
+    // Preauth-bid-var (partial-fill walk-away — SPEC §5.7.12). Same shape
+    // as /preauth-bids but with K SIGHASH_SINGLE_ACP pre-sigs (one per
+    // allowed fill ratio) and indexer-enforced refund vout. Same cache /
+    // mutation bust pattern.
+    const mpbv = url.pathname.match(/^\/assets\/([0-9a-f]{64})\/preauth-bids-var$/);
+    if (mpbv && req.method === 'POST')                         return _mutateAndBust(mpbv[1], () => handlePreauthBidVarPost(mpbv[1], req, env, network, cors));
+    if (mpbv && req.method === 'GET')                          return handlePreauthBidsVarList(mpbv[1], env, network, cors);
+    const mpbv2 = url.pathname.match(/^\/assets\/([0-9a-f]{64})\/preauth-bids-var\/([0-9a-f]{32})$/);
+    if (mpbv2 && req.method === 'GET')                         return handlePreauthBidVarGet(mpbv2[1], mpbv2[2], env, network, cors);
+    if (mpbv2 && req.method === 'DELETE')                      return _mutateAndBust(mpbv2[1], () => handlePreauthBidVarDelete(mpbv2[1], mpbv2[2], req, env, network, cors));
+
     // Bid intents (off-chain bid book — SPEC §5.7.7). Buyer-initiated mirror
     // of atomic intents; settlement is via the seller spinning up an
     // axintent targeted at the bidder, no new wire format.
@@ -24149,11 +24890,13 @@ async function _routeFetch(req, env, ctx) {
         const ageMs = cachedAtStr ? Date.now() - parseInt(cachedAtStr, 10) : Infinity;
         if (ageMs < BID_INTENTS_CACHE_FRESH_MS) return _withCors(await cached.text(), cached.status, 'HIT');
         if (ageMs < BID_INTENTS_CACHE_STALE_MS) {
-          if (ctx && typeof ctx.waitUntil === 'function') ctx.waitUntil(bidIntentsComputeAndCache(env, network, aid).catch(() => null));
+          if (ctx && typeof ctx.waitUntil === 'function') {
+            ctx.waitUntil(_swrDedupedKick(cacheKey.url, () => bidIntentsComputeAndCache(env, network, aid)).catch(() => null));
+          }
           return _withCors(await cached.text(), cached.status, 'STALE');
         }
       }
-      const result = await bidIntentsComputeAndCache(env, network, aid);
+      const result = await _swrDedupedKick(cacheKey.url, () => bidIntentsComputeAndCache(env, network, aid));
       return _withCors(result.body, result.status, cached ? 'EXPIRED-MISS' : 'MISS');
     }
     const mbi2 = url.pathname.match(/^\/assets\/([0-9a-f]{64})\/bid-intents\/([0-9a-f]{32})$/);
@@ -24421,6 +25164,7 @@ async function _routeFetch(req, env, ctx) {
         let preauthTotalProbed = 0, preauthTotalDeleted = 0;
         let atomicTotalProbed = 0, atomicTotalDeleted = 0;
         let prebidTotalProbed = 0, prebidTotalDeleted = 0;
+        let prebidVarTotalProbed = 0, prebidVarTotalDeleted = 0;
         // Run as many internal ticks as fit under `cap`.
         const maxTicks = Math.max(1, Math.ceil(cap / _origLimit));
         for (let t = 0; t < maxTicks; t++) {
@@ -24444,11 +25188,19 @@ async function _routeFetch(req, env, ctx) {
           prebidTotalDeleted += r3.deleted || 0;
           if (r3.cursor_reset) break;
         }
+        for (let t = 0; t < maxTicks; t++) {
+          const r4 = await sweepPreauthBidVarPhantoms(env, network).catch(e => ({ err: e.message }));
+          if (r4?.err) break;
+          prebidVarTotalProbed += r4.probed || 0;
+          prebidVarTotalDeleted += r4.deleted || 0;
+          if (r4.cursor_reset) break;
+        }
         return jsonResponse({
           network,
           preauth: { probed: preauthTotalProbed, deleted: preauthTotalDeleted },
           atomic_intent: { probed: atomicTotalProbed, deleted: atomicTotalDeleted },
           preauth_bid: { probed: prebidTotalProbed, deleted: prebidTotalDeleted },
+          preauth_bid_var: { probed: prebidVarTotalProbed, deleted: prebidVarTotalDeleted },
           requested_max: cap,
         }, 200, cors);
       } catch (e) { return jsonResponse({ error: e.message }, 500, cors); }
@@ -25134,6 +25886,9 @@ export default {
       );
       await Promise.allSettled(
         NETWORKS.map(net => sweepPreauthBidPhantoms(env, net).catch(e => _logCronError(env, 'sweepPreauthBidPhantoms', net, e))),
+      );
+      await Promise.allSettled(
+        NETWORKS.map(net => sweepPreauthBidVarPhantoms(env, net).catch(e => _logCronError(env, 'sweepPreauthBidVarPhantoms', net, e))),
       );
       // Heal a small batch of height-0 orphan T_PMINTs each tick. Bounded
       // to 15 ops/network/tick so the cron isolate stays under the 128 MiB
