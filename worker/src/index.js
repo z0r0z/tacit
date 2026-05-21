@@ -5322,8 +5322,17 @@ async function _ceremonyPubkeyIndexBackfillStep(env, circuitHash) {
     try { await env.REGISTRY_KV.delete(cursorKey); } catch {}
     return { done: true, processed: records.length };
   }
-  await env.REGISTRY_KV.put(cursorKey, page.cursor);
-  return { done: false, processed: records.length };
+  // Guard against an empty cursor on a non-complete page (KV.put throws
+  // on undefined value). Shouldn't happen — page.list_complete is the
+  // canonical "more pages" signal — but if cursor is missing we treat
+  // the backfill as complete rather than throwing and leaving the
+  // cursor key unset.
+  if (page.cursor) {
+    await env.REGISTRY_KV.put(cursorKey, page.cursor);
+  } else {
+    await env.REGISTRY_KV.put(doneKey, '1');
+  }
+  return { done: !page.cursor, processed: records.length };
 }
 
 // Magic-byte tags at offset 0 in snarkjs file formats. Validated server-side
@@ -5925,8 +5934,12 @@ async function _invalidateCeremonyCache(ctx, circuitHash) {
   }
 }
 
-// Decode the ceremony-eligibility envelope (wire format pinned in
-// SPEC §X / dapp builder):
+// Decode the ceremony-eligibility envelope. Wire format is pinned by
+// the dapp builder `_buildCeremonyEligibilityEnvelope` in dapp/tacit.js
+// — any drift between encoder and decoder makes every /contribute fail
+// silently, so the parity test in
+// tests/ceremony-eligibility-envelope-parity.test.mjs is the canonical
+// source of truth for the layout.
 //   scope_id(32) || asset_id(32) || expiry_height_LE(4) ||
 //   commitment_count(1) || [txid_BE(32) || vout_LE(4)] * count ||
 //   attestation_len_LE(2) || attestation_bytes(*) ||
@@ -5941,7 +5954,13 @@ function decodeCeremonyEligibilityEnvelope(bytes) {
   let off = 0;
   const scopeId = bytes.slice(off, off + 32); off += 32;
   const assetId = bytes.slice(off, off + 32); off += 32;
-  const expiryHeight = bytes[off] | (bytes[off + 1] << 8) | (bytes[off + 2] << 16) | (bytes[off + 3] << 24);
+  // Coerce to unsigned 32-bit. `<< 24` produces negative JS Numbers for
+  // values with the high bit set (heights ≥ 2^31). Latent today — tip is
+  // ~870k — but a signed expiryHeight would silently compare wrong
+  // against any positive tip and the `expired` branch would also handle
+  // it as a fail-closed. Still: match the dapp's unsigned encoder so
+  // round-trip is byte-exact.
+  const expiryHeight = (bytes[off] | (bytes[off + 1] << 8) | (bytes[off + 2] << 16) | (bytes[off + 3] << 24)) >>> 0;
   off += 4;
   const count = bytes[off]; off += 1;
   if (count < 1 || count > CER_ELIGIBILITY_MAX_OUTPOINTS) {
@@ -5953,7 +5972,8 @@ function decodeCeremonyEligibilityEnvelope(bytes) {
   const outpoints = [];
   for (let i = 0; i < count; i++) {
     const txid = bytesToHex(bytes.slice(off, off + 32)); off += 32;
-    const vout = bytes[off] | (bytes[off + 1] << 8) | (bytes[off + 2] << 16) | (bytes[off + 3] << 24);
+    // Same unsigned coercion as expiryHeight — see the comment above.
+    const vout = (bytes[off] | (bytes[off + 1] << 8) | (bytes[off + 2] << 16) | (bytes[off + 3] << 24)) >>> 0;
     off += 4;
     outpoints.push({ txid, vout });
   }
@@ -6002,10 +6022,22 @@ async function verifyCeremonyEligibilityProof(env, envelopeBytes, expectedContri
     return { ok: false, status: 403, reason: 'eligibility_proof: asset_id is not canonical TAC' };
   }
 
-  // (5) expiry not yet passed.
+  // (5) expiry not yet passed. Fail-closed on tip-fetch failure: the
+  // freshness gate is load-bearing (without it a year-old envelope from
+  // when the holder had ≥1 TAC would be replayable as long as the UTXOs
+  // remain unspent). Two attempts to ride out a transient indexer flake;
+  // null after both → 502 so the dapp can surface the actual outage
+  // rather than letting a stale proof slip through. Tip cache layer above
+  // fetchTipHeight already absorbs hot-path repeats.
   let tipHeight = null;
-  try { tipHeight = await fetchTipHeight(env, CER_ELIGIBILITY_NETWORK); } catch {}
-  if (tipHeight !== null && dec.expiryHeight < tipHeight) {
+  for (let attempt = 0; attempt < 2 && tipHeight === null; attempt++) {
+    try { tipHeight = await fetchTipHeight(env, CER_ELIGIBILITY_NETWORK); }
+    catch { tipHeight = null; }
+  }
+  if (tipHeight === null) {
+    return { ok: false, status: 502, reason: 'eligibility_proof: tip height unavailable — chain indexer is unreachable, retry shortly' };
+  }
+  if (dec.expiryHeight < tipHeight) {
     return { ok: false, status: 403, reason: `eligibility_proof: expired (expiry=${dec.expiryHeight}, tip=${tipHeight})` };
   }
 
@@ -6226,13 +6258,27 @@ async function handleCeremonyContribute(req, env, circuitHash, cors, ctx) {
     // against whatever's in the index; a missed record just means a
     // grandfathered duplicate gets one more slot than intended.
   }
-  const existingSlot = await env.REGISTRY_KV.get(ceremonyPubkeyKey(circuitHash, contributorPubkey));
-  if (existingSlot) {
+  const dupKey = ceremonyPubkeyKey(circuitHash, contributorPubkey);
+  const existingSlot = await env.REGISTRY_KV.get(dupKey);
+  if (existingSlot && existingSlot !== 'pending') {
     return jsonResponse({
       error: `this pubkey already contributed to this circuit (slot #${existingSlot}). One slot per address per circuit — contribute to the other two circuits if you haven't yet.`,
       existing_slot: Number(existingSlot) || existingSlot,
     }, 409, cors);
   }
+  // Soft-claim — write a "pending" marker BEFORE the pin so two near-
+  // simultaneous /contribute calls from the same pubkey can't both pass
+  // the dedup check across PoPs (CF KV is eventually consistent; the
+  // earlier check-then-act could see stale "absent" at the second PoP
+  // even after the first put landed at the first). 60s TTL is the KV
+  // floor and serves as a backstop if any path between here and the
+  // final state.put forgets to release; legit users who failed transiently
+  // can retry after that. The success path overwrites this with the real
+  // slot index (no TTL), keeping the dedup entry permanent for landed
+  // contributions. _releaseClaim is called inline before each error
+  // return between here and the final state.put.
+  await env.REGISTRY_KV.put(dupKey, 'pending', { expirationTtl: 60 });
+  const _releaseClaim = async () => { try { await env.REGISTRY_KV.delete(dupKey); } catch {} };
 
   let newCid;
   if (haveZkeyFile) {
@@ -6241,11 +6287,13 @@ async function handleCeremonyContribute(req, env, circuitHash, cors, ctx) {
     // the CF→Pinata leg completes within wall-clock).
     const zkeyBytes = new Uint8Array(await zkey.arrayBuffer());
     if (!_hasCeremonyMagic(zkeyBytes, 'zkey')) {
+      await _releaseClaim();
       return jsonResponse({ error: 'zkey does not start with snarkjs "zkey" magic bytes' }, 400, cors);
     }
     try {
       newCid = await pinBinaryToIpfs(env, zkeyBytes, `circuit_${circuitHash.slice(0,8)}_${String(state.contribution_count + 1).padStart(4, '0')}.zkey`);
     } catch (e) {
+      await _releaseClaim();
       return jsonResponse({ error: 'pin failed: ' + (e.message || 'unknown') }, 502, cors);
     }
   } else {
@@ -6291,6 +6339,7 @@ async function handleCeremonyContribute(req, env, circuitHash, cors, ctx) {
       if (!pinFound && attempt < 7) await new Promise(r => setTimeout(r, 1000));
     }
     if (!pinFound) {
+      await _releaseClaim();
       return jsonResponse({ error: `zkey_cid not found in account after 8 attempts: ${lastErr}` }, 502, cors);
     }
     newCid = zkeyCidProvided;
@@ -6302,6 +6351,7 @@ async function handleCeremonyContribute(req, env, circuitHash, cors, ctx) {
   // the social cost of dropping the contributor's actual entropy).
   const fresh = await env.REGISTRY_KV.get(ceremonyKey(circuitHash), 'json');
   if (!fresh || fresh.head_cid !== prevCid) {
+    await _releaseClaim();
     return jsonResponse({
       error: 'lost CAS race — another contribution landed first; refresh and retry',
       head_cid: fresh ? fresh.head_cid : null,
@@ -6315,6 +6365,7 @@ async function handleCeremonyContribute(req, env, circuitHash, cors, ctx) {
   {
     const d = await _checkDrain();
     if (d.rejected) {
+      await _releaseClaim();
       return jsonResponse({
         error: `ceremony was put into drain during your contribute; pin pre-empted by finalize. Try again after drain expires.`,
         drain_until: d.drainUntil,
@@ -6342,11 +6393,12 @@ async function handleCeremonyContribute(req, env, circuitHash, cors, ctx) {
     prev_cid: prevCid,
   };
   await env.REGISTRY_KV.put(ceremonyContribKey(circuitHash, newCount, newCid), JSON.stringify(rec));
-  // Mark this pubkey as having claimed its slot in this circuit's chain.
-  // Future /contribute calls under the same pubkey + circuit return 409
-  // at the dedup check above. The value stored is the slot index for
-  // diagnostic error messages — the dedup check only needs presence.
-  await env.REGISTRY_KV.put(ceremonyPubkeyKey(circuitHash, contributorPubkey), String(newCount));
+  // Upgrade the soft-claim ('pending' with 60s TTL) to a permanent entry
+  // carrying the real slot index. Future /contribute calls under the same
+  // pubkey + circuit hit the dedup check above and return 409. The slot
+  // index is read back into the error message for diagnostics; the dedup
+  // check itself only needs presence.
+  await env.REGISTRY_KV.put(dupKey, String(newCount));
 
   await env.UPLOAD_KV.put(rlKey, String(prior + 1), { expirationTtl: 60 * 60 * 25 });
   // Invalidate the GET-endpoint edge caches BEFORE responding so the
