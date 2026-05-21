@@ -3406,7 +3406,10 @@ details.protocol-section > summary.protocol-h3:hover { color: var(--orange); }
 .atomic-offers-rows { display: flex; flex-direction: column; }
 .atomic-offer-row {
   display: grid;
-  grid-template-columns: minmax(140px, 1.4fr) minmax(80px, 1fr) minmax(60px, 0.6fr);
+  /* Mirror the asks-ladder 3-col grid (price · qty · vs-mark) so the
+     two sections share a column rhythm. `minmax(0, …)` minimums let
+     each cell shrink without overflow on narrow desktop widths. */
+  grid-template-columns: minmax(0, 1.3fr) minmax(0, 1.1fr) minmax(0, 0.8fr);
   gap: 10px;
   align-items: center;
   padding: 6px 12px;
@@ -3427,11 +3430,27 @@ details.protocol-section > summary.protocol-h3:hover { color: var(--orange); }
   background: rgba(125,79,247,0.06);
   box-shadow: inset 2px 0 0 0 rgba(125,79,247,0.5);
 }
+/* All grid cells: prevent overflow, allow inner content to flow as a
+   small two-line stack (primary number + muted secondary line). */
+.atomic-offer-row > span {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  overflow: hidden;
+}
+.atomic-offer-row > span > small.muted {
+  display: block;
+  font-size: 9.5px;
+  font-family: var(--mono);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .atomic-offer-row .atomic-offer-bolt { color: #7d4ff7; margin-right: 4px; }
 .atomic-offer-row strong { color: #7d4ff7; font-family: var(--mono); }
 .atomic-offer-row .atomic-offer-qty,
 .atomic-offer-row .atomic-offer-action { text-align: right; font-family: var(--mono); }
-.atomic-offer-row small.muted { font-size: 9.5px; }
 /* Insufficient-funds variant: keeps the row visible so the orderbook
    stays honest (these offers ARE live) but signals non-actionable
    state at a glance + replaces the "claim →" affordance with a
