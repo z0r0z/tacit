@@ -12070,11 +12070,43 @@ async function handleAssetHint(req, env, network, cors, ctx) {
 }
 
 async function handleAssetGet(assetIdHex, env, network, cors) {
-  const v = await env.REGISTRY_KV.get(assetKey(network, assetIdHex), 'json');
+  let v = await env.REGISTRY_KV.get(assetKey(network, assetIdHex), 'json');
+  let isPetch = false;
+  if (!v) {
+    // Permissionless-mint (T_PETCH) deployments live in a separate KV
+    // namespace from classic T_CETCH etches. Fall back so /assets/:aid
+    // resolves either issuance model under one endpoint — external
+    // indexers shouldn't need to pre-classify FAIR-style pmint assets
+    // to look them up. Returns petch metadata + orderbook enrichments;
+    // /petch-assets/:aid remains the dedicated endpoint for the live
+    // snapshot-with-refresh-on-miss path.
+    v = await env.REGISTRY_KV.get(petchKey(network, assetIdHex), 'json');
+    isPetch = !!v;
+  }
   if (!v) return jsonResponse({ error: 'unknown asset_id' }, 404, cors);
-  const att = await env.REGISTRY_KV.get(attestKey(network, v.asset_id), 'json');
-  if (att) v.attestation = att;
-  v.mints = await loadMintsForAsset(env, network, assetIdHex);
+  if (isPetch) {
+    const snap = await readPetchProgress(env, network, assetIdHex).catch(() => null);
+    if (snap) {
+      v.cumulative_minted = snap.credited_amount;
+      v.credited_pmint_count = snap.credited_count;
+      v.cap_overflow_count = snap.cap_overflow_count || 0;
+      v.pmint_count = snap.canonical_count + (snap.orphan_count || 0);
+      v.pending_pmint_count = snap.pending_count;
+      v.snapshot_updated_at = snap.updated_at;
+      v.snapshot_tip = snap.tip_at_update;
+      v.truncated = !!snap.truncated;
+      v.bootstrapped = !!snap.bootstrapped;
+      if (v.cap_amount && v.mint_limit) {
+        const minted = BigInt(v.cumulative_minted || '0');
+        const remaining = BigInt(v.cap_amount) - minted;
+        v.mints_remaining = String(remaining < 0n ? 0n : remaining / BigInt(v.mint_limit));
+      }
+    }
+  } else {
+    const att = await env.REGISTRY_KV.get(attestKey(network, v.asset_id), 'json');
+    if (att) v.attestation = att;
+    v.mints = await loadMintsForAsset(env, network, assetIdHex);
+  }
   v.burns = await loadBurnsForAsset(env, network, assetIdHex);
   const op = await env.REGISTRY_KV.list({ prefix: openingPrefix(network, assetIdHex), limit: 1000 });
   v.opening_count = op.keys.length;
