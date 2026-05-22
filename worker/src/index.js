@@ -5650,6 +5650,76 @@ function _hasCeremonyMagic(bytes, kind) {
   return true;
 }
 
+// Pre-pin zkey structural validation. The 4-byte magic check above is
+// necessary but not sufficient: the magic itself is the ASCII string
+// "zkey", so any blob whose first four bytes happen to spell that word
+// slips through. Parse the snarkjs zkey container header (magic +
+// version + section_count) and the first section's (id, size) tuple so
+// the worker rejects structurally implausible uploads at /contribute
+// time instead of advancing state.head_cid to garbage and relying on
+// the next contributor's snarkjs.zKey.verifyFromR1cs to catch it.
+// headerOnly = true skips length-bound checks for the CID-path peek
+// which only has a small prefix sample, not the full file.
+const _ZKEY_FILE_MIN_SIZE = 64 * 1024;
+function _validateZkeyShape(bytes, opts = {}) {
+  const headerOnly = !!opts.headerOnly;
+  if (!bytes || bytes.length < 24) {
+    return `zkey shape: file too short for header (got ${bytes ? bytes.length : 0} bytes)`;
+  }
+  if (!headerOnly && bytes.length < _ZKEY_FILE_MIN_SIZE) {
+    return `zkey shape: file size ${bytes.length} below ${_ZKEY_FILE_MIN_SIZE}-byte floor`;
+  }
+  if (!_hasCeremonyMagic(bytes, 'zkey')) {
+    return 'zkey shape: missing snarkjs "zkey" magic bytes';
+  }
+  const dv = new DataView(bytes.buffer, bytes.byteOffset, 24);
+  const version = dv.getUint32(4, true);
+  const nSections = dv.getUint32(8, true);
+  if (version !== 1) return `zkey shape: unexpected container version ${version}`;
+  // Groth16 zkeys produced by snarkjs have 10 sections; accept a narrow
+  // range either side for future-proofing without admitting arbitrary
+  // counts (a malformed file is overwhelmingly likely to land outside).
+  if (nSections < 4 || nSections > 32) {
+    return `zkey shape: section count ${nSections} outside plausible range [4, 32]`;
+  }
+  const dv2 = new DataView(bytes.buffer, bytes.byteOffset + 12, 12);
+  const sectionId = dv2.getUint32(0, true);
+  const sectionSize = Number(dv2.getBigUint64(4, true));
+  if (sectionId < 1 || sectionId > 32) {
+    return `zkey shape: first section has invalid id ${sectionId}`;
+  }
+  if (sectionSize <= 0 || (!headerOnly && sectionSize > bytes.length)) {
+    return `zkey shape: first section has implausible size ${sectionSize}`;
+  }
+  return null;
+}
+
+// Range-fetch the first N bytes of a CID from public gateways so the
+// CID-path of /contribute can run header-level zkey shape validation
+// without pulling the full (up to 100 MB) blob through the worker.
+// Soft-fails to null if every gateway is unreachable — caller treats
+// that as "skip the peek" so a gateway outage doesn't break uploads.
+async function _peekCidPrefix(cid, n) {
+  const gateways = [
+    'https://content.wrappr.wtf/ipfs/',
+    'https://ipfs.io/ipfs/',
+    'https://w3s.link/ipfs/',
+  ];
+  for (const gw of gateways) {
+    try {
+      const r = await fetch(gw + cid, {
+        headers: { Range: `bytes=0-${n - 1}` },
+        signal: AbortSignal.timeout(5000),
+      });
+      if (r.ok || r.status === 206) {
+        const buf = await r.arrayBuffer();
+        if (buf.byteLength) return new Uint8Array(buf);
+      }
+    } catch { /* try next gateway */ }
+  }
+  return null;
+}
+
 // Module-level CID validator — accepted by /ceremony/init (pre-pinned
 // artifacts) AND /ceremony/<hash>/contribute (zkey_cid path bypasses
 // the CF→Pinata upload leg). 46-80 chars covers v0 + v1 base32/58.
@@ -6581,13 +6651,14 @@ async function handleCeremonyContribute(req, env, circuitHash, cors, ctx) {
 
   let newCid;
   if (haveZkeyFile) {
-    // File path: magic-byte sniff before pinning + pin to Pinata
+    // File path: structural sniff before pinning + pin to Pinata
     // (original flow; works for circuits <100MB and on networks where
     // the CF→Pinata leg completes within wall-clock).
     const zkeyBytes = new Uint8Array(await zkey.arrayBuffer());
-    if (!_hasCeremonyMagic(zkeyBytes, 'zkey')) {
+    const shapeErr = _validateZkeyShape(zkeyBytes);
+    if (shapeErr) {
       await _releaseClaim();
-      return jsonResponse({ error: 'zkey does not start with snarkjs "zkey" magic bytes' }, 400, cors);
+      return jsonResponse({ error: shapeErr }, 400, cors);
     }
     try {
       newCid = await pinBinaryToIpfs(env, zkeyBytes, `circuit_${circuitHash.slice(0,8)}_${String(state.contribution_count + 1).padStart(4, '0')}.zkey`);
@@ -6640,6 +6711,22 @@ async function handleCeremonyContribute(req, env, circuitHash, cors, ctx) {
     if (!pinFound) {
       await _releaseClaim();
       return jsonResponse({ error: `zkey_cid not found in account after 8 attempts: ${lastErr}` }, 502, cors);
+    }
+    // Header-only structural peek. The Pinata existence check above proves
+    // the CID came through our scoped upload flow but says nothing about
+    // the bytes themselves; without this peek a /upload-token holder could
+    // submit any CID of any blob in our account and the chain would advance
+    // to it. Pulling 1 KB via a gateway Range request is cheap and lets
+    // _validateZkeyShape parse the snarkjs container header + first
+    // section header. Soft-skip if every gateway is unreachable so a
+    // gateway outage doesn't block legit contributions.
+    const peek = await _peekCidPrefix(zkeyCidProvided, 1024);
+    if (peek) {
+      const shapeErr = _validateZkeyShape(peek, { headerOnly: true });
+      if (shapeErr) {
+        await _releaseClaim();
+        return jsonResponse({ error: shapeErr }, 400, cors);
+      }
     }
     newCid = zkeyCidProvided;
   }
