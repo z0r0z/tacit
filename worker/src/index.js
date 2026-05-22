@@ -5569,6 +5569,14 @@ function ceremonyQueueKey(hash, token)  { return `ceremony-q:${hash}:${token}`; 
 // KV entry. Auto-expires via expirationTtl so even a coordinator
 // crash post-drain doesn't permanently block contributions.
 function ceremonyDrainKey(hash)         { return `ceremony:${hash}:drain_until`; }
+// Verified-head marker, written by runCeremonyHeadVerifyPass only. Kept
+// in its own key (NOT inside the state object) so the cron's read-modify-
+// write never races a /contribute's state.put — the two paths touch
+// distinct keys. Value: JSON {cid, count, at}. On rollback (verify
+// rejects new head) the cron does have to mutate state.head_cid +
+// state.contribution_count, but the rollback path sets drain first so
+// /contribute is gated out during the window.
+function ceremonyVerifiedKey(hash)      { return `ceremony:${hash}:verified`; }
 function ceremonyContribKey(hash, idx, cid) {
   return `ceremony:${hash}:contrib:${String(idx).padStart(8, '0')}:${cid}`;
 }
@@ -7226,39 +7234,39 @@ async function runCeremonyHeadVerifyPass(env) {
   if (env.VERIFY_SERVICE_TOKEN) headers['Authorization'] = `Bearer ${env.VERIFY_SERVICE_TOKEN}`;
   const verifyUrl = String(env.VERIFY_SERVICE_URL).replace(/\/$/, '') + '/verify';
 
-  // Discover live ceremony state records — keys shaped exactly
-  // `ceremony:<64hex>` (the drain/reserve/contrib/pubkey sub-keys share
-  // the prefix but have further suffixes; the regex filters them out).
-  let cursor;
-  const stateHashes = [];
-  for (let page = 0; page < 10; page++) {
-    const list = await env.REGISTRY_KV.list({ prefix: 'ceremony:', limit: 1000, cursor });
-    for (const k of list.keys) {
-      const m = k.name.match(/^ceremony:([0-9a-f]{64})$/i);
-      if (m) stateHashes.push(m[1].toLowerCase());
-    }
-    if (list.list_complete !== false) break;
-    cursor = list.cursor;
-    if (!cursor) break;
-  }
+  // Hardcoded known live-ceremony circuit hashes. KV-list discovery is
+  // unworkable because the `ceremony:` prefix is shared by per-contribute
+  // attestation records (~100K across circuits today), so state keys are
+  // lexicographically buried far past any sane page cap. The active
+  // ceremony hashes are public (pinned in the dapp's AMM_CEREMONY_
+  // CIRCUIT_HASHES) and stable; extend this list when a new circuit
+  // goes live, drop entries that have been finalized.
+  const stateHashes = [
+    '5a67cdcc9e432d8474147a212dabf35e65425522bac111f8a1805d9386afb701',
+    '005a38bfe8acc4d644e600aa91d08e08dba87170f87279bfb5b087230a4399b1',
+    '2d9db81d741e59d65e1b52ac3d37c5da521ef8c3728e9cd715c9a8a45bd495f4',
+  ];
 
   for (const hash of stateHashes) {
     try {
       const state = await env.REGISTRY_KV.get(ceremonyKey(hash), 'json');
       if (!state || state.finalized) continue;
       const head = state.head_cid;
-      const verifiedCid = state.verified_head_cid;
-      const verifiedCount = state.verified_head_count;
-      if (!verifiedCid) {
+      const headCount = state.contribution_count || 0;
+      // Verified marker lives in its own KV key so cron's writes don't
+      // race /contribute's state.put. See ceremonyVerifiedKey comment.
+      const verified = await env.REGISTRY_KV.get(ceremonyVerifiedKey(hash), 'json');
+      if (!verified) {
         // Bootstrap. Trust the currently-live head as the genesis of
         // the verified-marker chain; subsequent ticks reach back to
         // this anchor on rollback.
-        state.verified_head_cid = head;
-        state.verified_head_count = state.contribution_count || 0;
-        await env.REGISTRY_KV.put(ceremonyKey(hash), JSON.stringify(state));
+        await env.REGISTRY_KV.put(
+          ceremonyVerifiedKey(hash),
+          JSON.stringify({ cid: head, count: headCount, at: Math.floor(Date.now() / 1000) }),
+        );
         continue;
       }
-      if (verifiedCid === head) continue;
+      if (verified.cid === head) continue;
 
       let resp;
       try {
@@ -7286,35 +7294,42 @@ async function runCeremonyHeadVerifyPass(env) {
       if (j.pending === true) continue;
 
       if (j.ok === true) {
-        // Re-read state for staleness: the chain may have moved past
-        // `head` during the verify wait. Only advance the marker if
-        // head still matches; otherwise next tick picks up the newer
-        // head and verifies that instead.
-        const fresh = await env.REGISTRY_KV.get(ceremonyKey(hash), 'json');
-        if (!fresh || fresh.head_cid !== head) continue;
-        fresh.verified_head_cid = head;
-        fresh.verified_head_count = state.contribution_count || 0;
-        await env.REGISTRY_KV.put(ceremonyKey(hash), JSON.stringify(fresh));
+        // Advance the marker. Re-fetch the current head only to record
+        // the matching count — if the chain moved past `head` during
+        // the verify wait, the next tick picks up the newer head and
+        // re-verifies. Worst case: marker briefly lags one contribution
+        // behind the live chain; chain integrity unaffected either way.
+        await env.REGISTRY_KV.put(
+          ceremonyVerifiedKey(hash),
+          JSON.stringify({ cid: head, count: headCount, at: Math.floor(Date.now() / 1000) }),
+        );
         continue;
       }
 
       if (j.ok === false) {
-        // Structural failure. Brief drain so any in-flight contribute
-        // hits 423 and the contributor's next poll picks up the rolled-
-        // back state. Then revert head_cid + contribution_count to the
-        // last verified marker. Drain auto-expires; no explicit lift.
+        // Structural failure on the live head. Set drain so any in-
+        // flight /contribute hits 423 and the contributor's next poll
+        // picks up the rolled-back state. Wait briefly for the drain
+        // key to propagate across KV regions (eventually-consistent),
+        // then revert state.head_cid + state.contribution_count to
+        // the verified marker. Drain auto-expires; no explicit lift
+        // — the next contributor's poll will see drain off and the
+        // chain pointing at the known-good head.
         _logCronError(env, 'ceremonyHeadVerifyReject', hash, new Error(j.error || 'verify rejected'));
-        const drainUntil = Math.floor(Date.now() / 1000) + 60;
+        const drainUntil = Math.floor(Date.now() / 1000) + 120;
         await env.REGISTRY_KV.put(
           ceremonyDrainKey(hash),
           String(drainUntil),
-          { expirationTtl: 120 },
+          { expirationTtl: 180 },
         );
-        await new Promise(r => setTimeout(r, 5000));
+        // 30 s wait for drain to propagate. Shorter and a contribute
+        // that started in a region where drain hadn't landed yet can
+        // still complete its state.put after this rollback runs.
+        await new Promise(r => setTimeout(r, 30000));
         const fresh = await env.REGISTRY_KV.get(ceremonyKey(hash), 'json');
         if (!fresh || fresh.head_cid !== head) continue;
-        fresh.head_cid = verifiedCid;
-        fresh.contribution_count = verifiedCount;
+        fresh.head_cid = verified.cid;
+        fresh.contribution_count = verified.count;
         fresh.rolled_back_count = (fresh.rolled_back_count || 0) + 1;
         fresh.last_rolled_back_at = Math.floor(Date.now() / 1000);
         fresh.last_rolled_back_cid = head;
