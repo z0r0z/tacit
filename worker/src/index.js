@@ -11340,6 +11340,26 @@ function marketCacheKey(network, opts = {}) {
 // associated KV.gets — roughly half the /market compute on dense
 // books like TAC. Default (no opts) returns the full payload —
 // existing consumers see no behaviour change.
+// Walk the petch namespace and hydrate each entry the same way
+// hydrateAssetSummary hydrates etch entries (orderbook counts + trades
+// + holder + volume + mark_price). Used by handleMarket to merge
+// pmint deployments into the bulk /market response so the endpoint is
+// issuance-agnostic. Attestation reads return null on petch (attestKey
+// is etch-only) and mints is intentionally skipped — pmint mint events
+// live under a different prefix (pmint:*) and surface via /assets/:aid
+// snapshot fields, not as a list of T_MINT records.
+async function fetchAndHydratePetchForMarket(env, network) {
+  const list = await env.REGISTRY_KV.list({ prefix: petchPrefix(network), limit: 1000 });
+  const wanted = list.keys.filter(k => !(network === 'signet' && k.name.startsWith('petch:mainnet:')));
+  const verifiedP = loadVerifiedSet(env, network).catch(() => new Set());
+  const fetched = await Promise.all(wanted.map(k => env.REGISTRY_KV.get(k.name, 'json')));
+  const assets = fetched.filter(v => v);
+  const verifiedSet = await verifiedP;
+  for (const a of assets) a.verified = verifiedSet.has(a.asset_id);
+  await Promise.all(assets.map(v => hydrateAssetSummary(env, network, v, false)));
+  return assets;
+}
+
 async function handleMarket(env, network, cors, prehydratedAssetsBody = null, opts = {}) {
   let assetsBody;
   if (prehydratedAssetsBody && Array.isArray(prehydratedAssetsBody.assets)) {
@@ -11358,7 +11378,13 @@ async function handleMarket(env, network, cors, prehydratedAssetsBody = null, op
     const assetsResp = await handleAssetsList(env, network, {}, { limit: null, includeMints: false });
     assetsBody = JSON.parse(await assetsResp.text());
   }
-  const allAssets = assetsBody.assets || [];
+  // Merge T_PETCH (pmint) deployments. The cron pre-warm and /assets only
+  // cover the etch namespace, so /market would otherwise miss FAIR-class
+  // assets entirely — they'd have on-chain listings + bids the endpoint
+  // never surfaces. Best-effort: a petch-fetch failure leaves /market
+  // serving the etch-only set rather than 500ing.
+  const petchAssets = await fetchAndHydratePetchForMarket(env, network).catch(() => []);
+  const allAssets = [...(assetsBody.assets || []), ...petchAssets];
   // Lite shortcut: skip the listings fan-out entirely. Saves all per-asset
   // KV reads for callers that just need asset summaries.
   if (opts && opts.lite) {
