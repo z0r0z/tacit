@@ -311,7 +311,7 @@ export function matchesCommit({ outputScript, commit33 }) {
 // =============================================================================
 
 // For unit testing the aggregation rule, we accept a list of input descriptors:
-//   [{ kind: 'p2wpkh' | 'p2tr-keypath' | 'tacit-envelope' | 'p2wsh' | 'p2tr-scriptpath',
+//   [{ kind: 'p2wpkh' | 'p2tr-keypath' | 'p2wsh' | 'p2tr-scriptpath' | 'mixer-derived',
 //      pub: 33-byte compressed,  // present for eligible kinds
 //   }, ...]
 export function aggregateEligibleInputPubkeys(inputs) {
@@ -332,13 +332,13 @@ export function aggregateEligibleInputPubkeys(inputs) {
 
 export function isEligibleKind(kind) {
   // Per §A.2.5 eligibility rules:
-  //   1. P2TR key-path                 ✓ eligible
-  //   2. P2WPKH                        ✓ eligible
-  //   3. tacit-envelope (commit-reveal P2TR script-path)  ✓ eligible
-  //   4. P2WSH                         ✗ excluded
-  //   5. P2TR script-path (non-keypath) ✗ excluded
-  //   6. mixer-pool consumed           ✗ excluded
-  return kind === 'p2wpkh' || kind === 'p2tr-keypath' || kind === 'tacit-envelope';
+  //   1. P2TR key-path                  ✓ eligible
+  //   2. P2WPKH                         ✓ eligible
+  //   3. P2WSH                          ✗ excluded (multisig-aggregate)
+  //   4. P2TR script-path (non-keypath) ✗ excluded (signing key unspecified)
+  //   5. mixer-pool consumed            ✗ excluded (per rule 5; check
+  //                                       precedes script-shape classification)
+  return kind === 'p2wpkh' || kind === 'p2tr-keypath';
 }
 
 // §A.2.5 rule 6 NORMATIVE classifier (audit 2.2): an input is

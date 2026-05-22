@@ -7601,11 +7601,11 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
       <!-- SATS mode -->
       <div id="send-mode-sats" style="display:none;">
         <div class="muted" style="margin-bottom:14px;">
-          Send plain bitcoin from your tacit wallet's address out to any P2WPKH address (<code>bc1q…</code> on mainnet, <code>tb1q…</code> on signet). Asset UTXOs holding your confidential tokens are <strong>automatically excluded</strong> — you can't accidentally destroy a tacit holding through this flow.
+          Send plain bitcoin from your tacit wallet's address to a P2WPKH address (<code>bc1q…</code> on mainnet, <code>tb1q…</code> on signet) or a BIP-352 silent-payment address (<code>sp1…</code> / <code>tsp1…</code>). Silent payments derive a fresh, unlinkable P2TR output per send — the recipient detects it via their scan key. Asset UTXOs holding your confidential tokens are <strong>automatically excluded</strong> — you can't accidentally destroy a tacit holding through this flow.
         </div>
 
         <label>Recipient bitcoin address</label>
-        <input id="s-recipient-addr" type="text" placeholder="bc1q… (mainnet) or tb1q… (signet)" autocomplete="off" spellcheck="false">
+        <input id="s-recipient-addr" type="text" placeholder="bc1q… / tb1q… (P2WPKH) or sp1… / tsp1… (silent payment)" autocomplete="off" spellcheck="false">
         <div id="s-recipient-hint" class="muted" style="margin-top:6px;font-size:11px;display:none;"></div>
 
         <label>Amount in sats <span id="s-amount-hint" class="muted" style="font-weight:normal;text-transform:none;letter-spacing:0;font-size:11px;"></span></label>

@@ -211,22 +211,35 @@ const networkTagByte = (net) => {
   throw new Error(`unknown network: ${net}`);
 };
 
-// ECDH-derived blinding per §A.2 (NORMATIVE x-only serialization).
-export function deriveStealthEcdhBlinding({
-  ourPriv, theirPub, networkTag, domain, txAnchor,
-}) {
+// ECDH shared secret per §A.2 (NORMATIVE x-only serialization). Split out
+// so recipientScanTxForStealth can amortize a single call across every
+// output of a tx (per §H.1: "ONE ECDH per tx").
+export function deriveStealthEcdhSharedSecret({ ourPriv, theirPub }) {
   if (ourPriv.length !== 32) throw new Error('ourPriv must be 32 bytes');
   if (theirPub.length !== 33) throw new Error('theirPub must be 33 bytes compressed');
   const ourPrivBig = BigInt('0x' + bytesToHex(ourPriv));
   const theirPt = secp.ProjectivePoint.fromHex(bytesToHex(theirPub));
   const sharedPt = theirPt.multiply(ourPrivBig);
   const sharedXonly = sharedPt.toRawBytes(true).slice(1);
-  const shared = sha256(sharedXonly);
+  return sha256(sharedXonly);
+}
+
+// Per-vout HMAC stage. Cheap (~20µs) once the caller has cached `shared`.
+export function deriveStealthBlindingFromShared({ shared, networkTag, domain, txAnchor }) {
   const tag = new Uint8Array([networkTagByte(networkTag) & 0xff]);
   const mac = hmac(sha256, shared, concatBytes(domain, tag, txAnchor));
   const b = BigInt('0x' + bytesToHex(mac)) % SECP_N;
   if (b === 0n) throw new Error('ECDH blinding derived zero (statistically impossible)');
   return b;
+}
+
+// Convenience wrapper: do both stages in one call. The sender uses this
+// because it computes a single commit per recipient pubkey.
+export function deriveStealthEcdhBlinding({
+  ourPriv, theirPub, networkTag, domain, txAnchor,
+}) {
+  const shared = deriveStealthEcdhSharedSecret({ ourPriv, theirPub });
+  return deriveStealthBlindingFromShared({ shared, networkTag, domain, txAnchor });
 }
 
 export function computeStealthCommit({ underlyingPub, blinding }) {
@@ -255,10 +268,26 @@ export function computeStealthTweakedSk({ underlyingPriv, blinding }) {
 // classifyInput(): per-input descriptor for §A.2.5 aggregation.
 // Wire it into dapp/tacit.js scanner where each tx's inputs are
 // already walked for ancestry. Returns { kind, pub } where kind is
-// one of 'p2wpkh', 'p2tr-keypath', 'tacit-envelope', 'p2wsh',
-// 'p2tr-scriptpath', 'mixer-derived', 'unknown'.
+// one of 'p2wpkh', 'p2tr-keypath', 'p2wsh', 'p2tr-scriptpath',
+// 'mixer-derived', 'unknown'.
+//
+// `prevoutOpReturn` (optional): opcode byte from vout[0] of the
+// prevout's parent tx when that vout is an OP_RETURN-shaped tacit
+// envelope. Checked FIRST per §A.2.5 precedence so a mixer-payout
+// prevout that happens to be P2WPKH-shaped is correctly excluded
+// before any script-shape branch fires. Reserved for future class-1
+// stealth-withdraw amendments where mixer-derived asset UTXOs could
+// flow into a class-2 reveal tx; no shipped opcode currently emits
+// such inputs, so existing callers leave it undefined.
 
 export function classifyInput({ witness, prevoutScript, prevoutOpReturn }) {
+  // Mixer-derived precedence: parent tx's vout[0] envelope opcode in
+  // MIXER_EMITTING_OPCODES. Must run before script-shape branches —
+  // a mixer-withdraw recipient marker is itself P2WPKH-shaped and
+  // would otherwise short-circuit into the wrong eligible bucket.
+  if (prevoutOpReturn != null && MIXER_EMITTING_OPCODES.has(prevoutOpReturn)) {
+    return { kind: 'mixer-derived', pub: null };
+  }
   // P2WPKH: witness = [sig, pubkey(33)]; prevoutScript starts with 0x00 0x14.
   if (witness && witness.length === 2 && witness[1].length === 33 &&
       prevoutScript && prevoutScript[0] === 0x00 && prevoutScript[1] === 0x14) {
@@ -284,15 +313,11 @@ export function classifyInput({ witness, prevoutScript, prevoutOpReturn }) {
       prevoutScript[0] === 0x51 && prevoutScript[1] === 0x20) {
     return { kind: 'p2tr-scriptpath', pub: null };
   }
-  // Mixer-derived: prevoutOpReturn opcode in MIXER_EMITTING_OPCODES.
-  if (prevoutOpReturn && MIXER_EMITTING_OPCODES.has(prevoutOpReturn)) {
-    return { kind: 'mixer-derived', pub: null };
-  }
   return { kind: 'unknown', pub: null };
 }
 
 export function isStealthEligibleKind(kind) {
-  return kind === 'p2wpkh' || kind === 'p2tr-keypath' || kind === 'tacit-envelope';
+  return kind === 'p2wpkh' || kind === 'p2tr-keypath';
 }
 
 export function aggregateStealthEligibleInputPubkeys(inputs) {
@@ -348,13 +373,19 @@ export function checkStealthEmissionSafety({ inputs, eachInputIsOurs }) {
 // PART 5 — Sender + recipient high-level helpers
 // =============================================================================
 
-// Compose tx_anchor head per §C: vin[0].outpoint = txid_LE(32) || vout_LE(4).
-export function stealthTxAnchorHead(vin0TxidHex, vin0Vout) {
-  const txidBE = hexToBytes(vin0TxidHex);
+// Compose tx_anchor head per §C: first-asset-input outpoint =
+// txid_LE(32) || vout_LE(4). For tacit envelope transfer opcodes
+// (CXFER/AXFER family), vin[0] is the commit-reveal P2TR script-path
+// input (ineligible per §A.2.5 rule 5); the canonical anchor uses
+// vin[1].outpoint — the first asset input. Matches the existing
+// amount-channel anchor convention so one outpoint binds both
+// privacy planes.
+export function stealthTxAnchorHead(firstAssetInTxidHex, firstAssetInVout) {
+  const txidBE = hexToBytes(firstAssetInTxidHex);
   const txidLE = new Uint8Array(32);
   for (let i = 0; i < 32; i++) txidLE[i] = txidBE[31 - i];
   const voutLE = new Uint8Array(4);
-  new DataView(voutLE.buffer).setUint32(0, vin0Vout >>> 0, true);
+  new DataView(voutLE.buffer).setUint32(0, firstAssetInVout >>> 0, true);
   return concatBytes(txidLE, voutLE);
 }
 
@@ -405,12 +436,14 @@ export function recipientScanTxForStealth({
 }) {
   const { aggregatePub } = aggregateStealthEligibleInputPubkeys(classifiedInputs);
   if (!aggregatePub) return [];
+  // §H.1: ONE ECDH per tx. shared depends only on (walletPriv, aggregatePub);
+  // every vout reuses it and pays only the HMAC + EC scalar mul stage.
+  const shared = deriveStealthEcdhSharedSecret({ ourPriv: walletPriv, theirPub: aggregatePub });
   const credits = [];
   for (let v = 0; v < outputs.length; v++) {
     const txAnchor = concatBytes(txAnchorHead, _u32le(v));
-    const b = deriveStealthEcdhBlinding({
-      ourPriv: walletPriv, theirPub: aggregatePub,
-      networkTag, domain, txAnchor,
+    const b = deriveStealthBlindingFromShared({
+      shared, networkTag, domain, txAnchor,
     });
     const commit = computeStealthCommit({ underlyingPub: walletPub, blinding: b });
     const wpkh = p2wpkhScript(commit);

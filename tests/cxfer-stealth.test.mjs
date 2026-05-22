@@ -27,7 +27,8 @@ import {
   STEALTH_HRP, DOMAIN_CXFER_STEALTH, STEALTH_DOMAIN_BY_OPCODE,
   MIXER_EMITTING_OPCODES,
   encodeStealthAddress, decodeStealthAddress,
-  deriveStealthEcdhBlinding, computeStealthCommit, computeStealthTweakedSk,
+  deriveStealthEcdhBlinding, deriveStealthEcdhSharedSecret, deriveStealthBlindingFromShared,
+  computeStealthCommit, computeStealthTweakedSk,
   classifyInput, isStealthEligibleKind,
   aggregateStealthEligibleInputPubkeys, isMixerDerivedInput,
   checkStealthEmissionSafety,
@@ -148,6 +149,131 @@ test('locked-vector: ECDH x-only serialization (audit 1.2)', () => {
     'deriveStealthEcdhBlinding MUST use x-only (§A.2 NORMATIVE)');
 });
 
+// Dapp ↔ spec end-to-end fixture. Hand-traces every step of §A.2 / §A.2.5 /
+// §C from low-level primitives (noble secp256k1 + sha256 + hmac) alongside
+// explicit spec-section refs, then asserts each dapp helper produces
+// byte-identical output. Stronger than the parity-against-ref-module tests
+// — if both the dapp and the ref module ever drift from spec in the same
+// way (parity passes but spec violated), this test still catches it because
+// the hand-trace is open-coded against spec text.
+test('end-to-end §A.2/§A.2.5/§C: dapp helpers match a hand-traced spec walkthrough', () => {
+  // ---- pinned inputs ----------------------------------------------------
+  const walletPriv = hexToBytes('42'.repeat(32));          // recipient
+  const walletPub  = secp.getPublicKey(walletPriv, true);
+  const senderPriv = hexToBytes('11'.repeat(32));          // single P2WPKH eligible input
+  const senderPub  = secp.getPublicKey(senderPriv, true);
+  const anchorTxidBE = '0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20';
+  const anchorVout = 7;
+  const voutIndex = 1;
+  const networkTag = 'signet';                              // → byte 0x01 per §A.2
+  const domain = DOMAIN_CXFER_STEALTH;
+
+  // §A.2.5 — P_sender = sum of eligible input pubkeys (here, one P2WPKH input).
+  const expectedPsender = senderPub;
+
+  // §A.2 (NORMATIVE) — shared = sha256(x_only(walletPriv · P_sender)).
+  const sharedPt = secp.ProjectivePoint.fromHex(bytesToHex(expectedPsender))
+    .multiply(BigInt('0x' + bytesToHex(walletPriv)));
+  const expectedShared = sha256(sharedPt.toRawBytes(true).slice(1));
+
+  // §C — tx_anchor_head = txid_LE(32) || vout_LE(4). Display-order txid
+  // bytes are reversed to wire-LE before serialization.
+  const expectedAnchorHead = new Uint8Array(36);
+  const txidBE = hexToBytes(anchorTxidBE);
+  for (let i = 0; i < 32; i++) expectedAnchorHead[i] = txidBE[31 - i];
+  new DataView(expectedAnchorHead.buffer).setUint32(32, anchorVout, true);
+
+  // §A.2 — full tx_anchor = anchor_head || vout_index_LE(4).
+  const expectedAnchor = new Uint8Array(40);
+  expectedAnchor.set(expectedAnchorHead, 0);
+  new DataView(expectedAnchor.buffer).setUint32(36, voutIndex, true);
+
+  // §A.2 — b = HMAC-SHA256(shared, domain || network_tag_byte || tx_anchor) mod n.
+  const tagByte = new Uint8Array([0x01]);                  // signet
+  const macBytes = hmac(sha256, expectedShared,
+    concatBytes(domain, tagByte, expectedAnchor));
+  const expectedB = BigInt('0x' + bytesToHex(macBytes)) % SECP_N;
+
+  // §A.2 — commit = recipientPub + b·G.
+  const expectedCommit = secp.ProjectivePoint.fromHex(bytesToHex(walletPub))
+    .add(G.multiply(expectedB))
+    .toRawBytes(true);
+
+  // §A.2 — tweaked_sk = (recipient_priv + b) mod n.
+  const tweakedBig = (BigInt('0x' + bytesToHex(walletPriv)) + expectedB) % SECP_N;
+  let h = tweakedBig.toString(16); while (h.length < 64) h = '0' + h;
+  const expectedTweakedSk = hexToBytes(h);
+
+  // ===== assert each dapp helper matches the hand-traced value ===========
+
+  const { aggregatePub, eligibleCount } = aggregateStealthEligibleInputPubkeys([
+    { kind: 'p2wpkh', pub: senderPub },
+  ]);
+  assertEq(eligibleCount, 1, '§A.2.5 eligibleCount');
+  assertEq(aggregatePub, expectedPsender, '§A.2.5 P_sender aggregate');
+
+  const shared = deriveStealthEcdhSharedSecret({
+    ourPriv: walletPriv, theirPub: aggregatePub,
+  });
+  assertEq(shared, expectedShared, '§A.2 shared secret (x-only ECDH)');
+
+  const anchorHead = stealthTxAnchorHead(anchorTxidBE, anchorVout);
+  assertEq(anchorHead, expectedAnchorHead, '§C tx_anchor_head LE composition');
+
+  const voutLE = new Uint8Array(4);
+  new DataView(voutLE.buffer).setUint32(0, voutIndex, true);
+  const txAnchor = concatBytes(anchorHead, voutLE);
+  assertEq(txAnchor, expectedAnchor, '§A.2 tx_anchor (head || vout_index_LE)');
+
+  const bWrapped = deriveStealthEcdhBlinding({
+    ourPriv: walletPriv, theirPub: aggregatePub,
+    networkTag, domain, txAnchor,
+  });
+  assertEq(
+    bWrapped.toString(16).padStart(64, '0'),
+    expectedB.toString(16).padStart(64, '0'),
+    '§A.2 b = HMAC(shared, domain||tag||anchor) mod n',
+  );
+
+  const { commit: senderCommit, blinding: senderBlinding } = senderComputeStealthCommit({
+    senderEligibleInputPrivs: [senderPriv],
+    recipientPub: walletPub,
+    networkTag, domain,
+    txAnchorHead: anchorHead, voutIndex,
+  });
+  assertEq(senderCommit, expectedCommit, '§A.2 commit = recipientPub + b·G');
+  assertEq(
+    senderBlinding.toString(16).padStart(64, '0'),
+    expectedB.toString(16).padStart(64, '0'),
+    'ECDH symmetry: sender-side b matches recipient-side b',
+  );
+
+  const tweakedSk = computeStealthTweakedSk({
+    underlyingPriv: walletPriv, blinding: expectedB,
+  });
+  assertEq(tweakedSk, expectedTweakedSk, '§A.2 tweaked_sk = (priv + b) mod n');
+
+  // End-to-end: feed a synthetic 3-output tx into the recipient scanner
+  // with the stealth credit at vout 1, verify it surfaces with matching
+  // commit + tweakedSk.
+  const recipientScript = p2wpkhScript(expectedCommit);
+  const credits = recipientScanTxForStealth({
+    classifiedInputs: [{ kind: 'p2wpkh', pub: senderPub }],
+    outputs: [
+      { script: hexToBytes('0014' + '00'.repeat(20)) },
+      { script: recipientScript },
+      { script: hexToBytes('0014' + 'ff'.repeat(20)) },
+    ],
+    walletPriv, walletPub,
+    networkTag, domain,
+    txAnchorHead: anchorHead,
+  });
+  assertEq(credits.length, 1, 'recipient finds exactly one stealth credit');
+  assertEq(credits[0].voutIndex, 1, 'credit located at expected vout');
+  assertEq(credits[0].commit, expectedCommit, 'recipient commit == hand-traced');
+  assertEq(credits[0].tweakedSk, expectedTweakedSk, 'recipient tweakedSk == hand-traced');
+});
+
 test('commit: commit = P + b·G', () => {
   const { pub } = newKp();
   const b = 12345n;
@@ -248,10 +374,38 @@ test('classifyInput: P2WSH excluded', () => {
 test('isStealthEligibleKind classification', () => {
   assert(isStealthEligibleKind('p2wpkh'));
   assert(isStealthEligibleKind('p2tr-keypath'));
-  assert(isStealthEligibleKind('tacit-envelope'));
   assert(!isStealthEligibleKind('p2wsh'));
   assert(!isStealthEligibleKind('p2tr-scriptpath'));
   assert(!isStealthEligibleKind('mixer-derived'));
+});
+
+test('classifyInput: mixer-derived precedes P2WPKH classification', () => {
+  // A mixer-payout recipient marker is itself P2WPKH-shaped (T_WITHDRAW
+  // pays to P2WPKH at a fresh recipient pubkey). When a caller passes
+  // prevoutOpReturn=0x2A (T_WITHDRAW) alongside a P2WPKH witness+script,
+  // the classifier MUST return 'mixer-derived' — short-circuiting the
+  // p2wpkh branch — so the input is correctly excluded from P_sender.
+  const pub = newKp().pub;
+  const sig = crypto.getRandomValues(new Uint8Array(71));
+  const r = classifyInput({
+    witness: [sig, pub],
+    prevoutScript: concatBytes(new Uint8Array([0x00, 0x14]), crypto.getRandomValues(new Uint8Array(20))),
+    prevoutOpReturn: 0x2A,  // T_WITHDRAW — mixer-emitting
+  });
+  assertEq(r.kind, 'mixer-derived');
+  assert(r.pub === null);
+});
+
+test('classifyInput: non-mixer prevoutOpReturn falls through to script-shape classification', () => {
+  const pub = newKp().pub;
+  const sig = crypto.getRandomValues(new Uint8Array(71));
+  const r = classifyInput({
+    witness: [sig, pub],
+    prevoutScript: concatBytes(new Uint8Array([0x00, 0x14]), crypto.getRandomValues(new Uint8Array(20))),
+    prevoutOpReturn: 0x23,  // T_CXFER — not mixer-emitting
+  });
+  assertEq(r.kind, 'p2wpkh');
+  assertEq(r.pub, pub);
 });
 
 // =============================================================================
@@ -405,6 +559,39 @@ test('tx_anchor head: vout LE encoding', () => {
   const txidHex = '00'.repeat(32);
   const anchor = stealthTxAnchorHead(txidHex, 0x01020304);
   assertEq(anchor.slice(32), new Uint8Array([0x04, 0x03, 0x02, 0x01]));
+});
+
+// =============================================================================
+// §H.1 ECDH amortization (one ECDH per tx, not per vout)
+// =============================================================================
+
+test('§H.1: split helpers — shared secret reusable across vouts', () => {
+  // Compute shared once, then drive multiple per-vout blinding derivations
+  // from it. Each must equal the corresponding one-shot deriveStealthEcdhBlinding.
+  const alice = newKp(), bob = newKp();
+  const networkTag = 'signet';
+  const domain = DOMAIN_CXFER_STEALTH;
+  const anchorHead = stealthTxAnchorHead(bytesToHex(crypto.getRandomValues(new Uint8Array(32))), 1);
+  const shared = deriveStealthEcdhSharedSecret({ ourPriv: alice.priv, theirPub: bob.pub });
+  for (let v = 0; v < 4; v++) {
+    const voutLE = new Uint8Array(4);
+    new DataView(voutLE.buffer).setUint32(0, v >>> 0, true);
+    const txAnchor = concatBytes(anchorHead, voutLE);
+    const bAmortized = deriveStealthBlindingFromShared({ shared, networkTag, domain, txAnchor });
+    const bOneShot = deriveStealthEcdhBlinding({
+      ourPriv: alice.priv, theirPub: bob.pub, networkTag, domain, txAnchor,
+    });
+    assertEq(bAmortized.toString(16), bOneShot.toString(16), `vout ${v} blinding parity`);
+  }
+});
+
+test('§H.1: ECDH symmetry holds for the split helpers', () => {
+  // Sender computes shared via (sender_priv, recipient_pub); recipient via
+  // (recipient_priv, sender_pub). Both MUST land on the same secret.
+  const alice = newKp(), bob = newKp();
+  const sShared = deriveStealthEcdhSharedSecret({ ourPriv: alice.priv, theirPub: bob.pub });
+  const rShared = deriveStealthEcdhSharedSecret({ ourPriv: bob.priv, theirPub: alice.pub });
+  assertEq(sShared, rShared, 'ECDH symmetric shared secret MUST agree');
 });
 
 // =============================================================================

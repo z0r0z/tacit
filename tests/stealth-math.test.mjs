@@ -309,21 +309,12 @@ test('aggregate: all ineligible → null', () => {
   assert(aggregatePub === null, 'no eligible inputs → null aggregate');
 });
 
-test('aggregate: tacit-envelope eligible', () => {
-  const a = newKeypair();
-  const { aggregatePub, eligibleCount } = aggregateEligibleInputPubkeys([
-    { kind: 'tacit-envelope', pub: a.pub },
-  ]);
-  assertEq(eligibleCount, 1);
-  assertEq(aggregatePub, a.pub);
-});
-
 test('isEligibleKind classification', () => {
   assert(isEligibleKind('p2wpkh'));
   assert(isEligibleKind('p2tr-keypath'));
-  assert(isEligibleKind('tacit-envelope'));
   assert(!isEligibleKind('p2wsh'));
   assert(!isEligibleKind('p2tr-scriptpath'));
+  assert(!isEligibleKind('mixer-derived'));
   assert(!isEligibleKind('unknown'));
 });
 

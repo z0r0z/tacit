@@ -1,6 +1,6 @@
 # SPEC Amendment — Blinded-Pubkey Commits (canonical primitive)
 
-> **STATUS: DRAFT** (2026-05-19). Promotes the blinded-pubkey commit
+> **STATUS: DRAFT** (last revised 2026-05-22). Promotes the blinded-pubkey commit
 > construction from inline definition in
 > `SPEC-CBTC-TAC-AMENDMENT.md §5.36.7` to a citeable standalone
 > primitive. Defines two derivation variants (self-derived for single-
@@ -175,19 +175,23 @@ the same `sharedPt` via symmetric ECDH, hash to `shared` per above,
 compute the same `b`, and recover
 `tweaked_sk = (recipient_priv + b) mod SECP_N`.
 
-`tx_anchor` is opcode-specific (typically `vin[0]` outpoint or a
-similar per-tx unique value) — ensures each transfer between the same
-sender / recipient pair produces a distinct commit. `domain` is from
-the registry in §C.
+`tx_anchor` is opcode-specific — ensures each transfer between the
+same sender / recipient pair produces a distinct commit. `domain` is
+from the registry in §C. For tacit envelope opcodes, `vin[0]` is
+always the commit-reveal P2TR script-path input (ineligible per
+§A.2.5 rule 5); the canonical class-2 transfer-opcode anchor uses
+**`vin[1].outpoint` — the first asset input** — which is also the
+existing amount-channel anchor, so a single outpoint binds both
+privacy planes.
 
 **txid byte-order in `tx_anchor` (NORMATIVE).** When an anchor
-includes `vin[0].outpoint` or any txid reference, the txid bytes are
-serialized in **little-endian Bitcoin wire order** (the natural raw
-bytes of the txid as it appears in the tx's serialization, before
-the "display-reverse" convention applied by block explorers).
-Specifically: `tx_anchor_head = txid_LE_bytes(32) || vout_LE(4)`.
-Sender and recipient MUST agree on this; the wire-order convention
-is deterministic from the tx alone (no display-string round-trip).
+includes any txid reference, the txid bytes are serialized in
+**little-endian Bitcoin wire order** (the natural raw bytes of the
+txid as it appears in the tx's serialization, before the "display-
+reverse" convention applied by block explorers). Specifically:
+`tx_anchor_head = txid_LE_bytes(32) || vout_LE(4)`. Sender and
+recipient MUST agree on this; the wire-order convention is
+deterministic from the tx alone (no display-string round-trip).
 
 Recovery from seed: given the recipient's wallet seed and on-chain tx
 data, the recipient re-derives every credit deterministically. No
@@ -214,28 +218,20 @@ where `P_i` is the input's signing pubkey, extracted per the
 following input-eligibility rules (adapted from BIP-352 §"Inputs For
 Shared Secret Derivation" with tacit-specific extensions):
 
-1. **P2TR key-path spends** — include the input's `output_key` (the
-   x-only key under which the Schnorr signature was generated),
-   converted to a full pubkey by re-deriving Y per BIP-340 even-Y
-   convention.
-2. **P2WPKH spends** — include the pubkey from `witness[1]` (the
-   33-byte compressed pubkey in the standard P2WPKH witness).
-3. **Tacit envelope inputs (commit-reveal P2TR script-path)** —
-   include the wallet's `xonly` pubkey carried in the envelope
-   script, converted to a full pubkey per BIP-340.
-4. **P2WSH or other script-path inputs** — **excluded.** The signing
-   key may be a multisig aggregate or unspecified; not usable as a
-   sender identity for ECDH.
-5. **P2TR script-path spends (non-key-path)** — **excluded** for the
-   same reason.
-6. **Mixer-derived inputs** — **excluded.** Defined mechanically:
+The rules are applied **in the listed order**; the first matching
+rule wins. Rule 1 (mixer-derived) MUST therefore be evaluated before
+the script-shape rules — a mixer-withdraw recipient marker is itself
+P2WPKH-shaped, and without precedence the wrong rule would fire.
+
+1. **Mixer-derived inputs** — **excluded.** Defined mechanically:
    an input is mixer-derived iff its `prevout` was emitted as the
-   recipient marker UTXO of a confirmed `T_WITHDRAW` envelope (per
-   `SPEC.md §5.11`). The classification is observable from chain
-   alone by walking the prevout's source tx, parsing the envelope
-   at vout[0], and checking the opcode byte equals `T_WITHDRAW`
-   (`0x2A`). No off-chain state required; sender and recipient
-   classifications are guaranteed identical.
+   recipient marker UTXO of a confirmed mixer-emitting envelope
+   (per `SPEC.md §5.11`). The classification is observable from
+   chain alone by walking the prevout's source tx, parsing the
+   envelope at vout[0], and checking the opcode byte is in the
+   mixer-emitting set `{ T_WITHDRAW (0x2A), T_SLOT_BURN (0x44), … }`.
+   No off-chain state required; sender and recipient classifications
+   are guaranteed identical.
 
    Rationale: the "sender" of a mixer-withdraw output is the
    anonymous-set holder who proved a leaf, not a Bitcoin-layer
@@ -246,14 +242,40 @@ Shared Secret Derivation" with tacit-specific extensions):
    field, per §C registry) handle their own commit construction
    independently — they don't pass through this aggregate.
 
-   The same classification rule extends symmetrically to other
-   mixer-pool-emitting opcodes (`T_SLOT_BURN` recipient markers,
-   etc.) once their class-1 follow-up amendments specify them. A
-   reference matcher (in code: `isMixerDerivedInput(prevoutTx)`)
+   A reference matcher (in code: `isMixerDerivedInput(prevoutTx)`)
    walks the prevout's parent tx and returns true iff the parent
-   tx's vout[0] envelope opcode is in the mixer-emitting set
-   `{ T_WITHDRAW (0x2A), T_SLOT_BURN (0x44), ... }`. Future class-1
-   additions extend this set via their amendment.
+   tx's vout[0] envelope opcode is in the mixer-emitting set.
+   Future class-1 additions extend this set via their amendment.
+
+   No shipped tacit opcode currently emits **confidential asset**
+   UTXOs from the mixer-emitting set (T_WITHDRAW / T_SLOT_BURN emit
+   sats), so today no class-2 reveal tx's asset inputs can be
+   mixer-derived. The rule is normative regardless — implementations
+   MUST enforce it ahead of script-shape classification so the
+   eligibility result remains correct the moment a class-1 stealth-
+   withdraw amendment ships and asset UTXOs start flowing out of
+   mixer-family opcodes.
+2. **P2TR key-path spends** — include the input's `output_key` (the
+   x-only key under which the Schnorr signature was generated),
+   converted to a full pubkey by re-deriving Y per BIP-340 even-Y
+   convention.
+3. **P2WPKH spends** — include the pubkey from `witness[1]` (the
+   33-byte compressed pubkey in the standard P2WPKH witness).
+4. **P2WSH or other script-path inputs** — **excluded.** The signing
+   key may be a multisig aggregate or unspecified; not usable as a
+   sender identity for ECDH.
+5. **P2TR script-path spends (non-key-path)** — **excluded** for the
+   same reason. Tacit envelope inputs (the commit-reveal P2TR
+   script-path that carries every tacit envelope opcode at vin[0])
+   fall under this rule and are excluded from `P_sender`. The
+   wallet's identity is already established by the asset inputs at
+   vin[1+]; including the envelope input's xonly would add a
+   redundant `wallet.pub` to the aggregate without changing any
+   security property. A future opcode that has only an envelope
+   input + sats funding (no asset inputs, so `P_sender = O` under
+   this rule) would need its own amendment to either re-enable
+   envelope-input eligibility for that opcode or supply an alternate
+   anchor; no such opcode exists today.
 
 The sum is taken in the secp256k1 group. If `P_sender = O` (the
 point at infinity — vanishingly improbable for uniformly random
@@ -436,16 +458,22 @@ The dapp + recipient wallet coordinate via the address-format
 capability signal in §D and the scanner rule in §D.2. No opcode
 reservation; no envelope change.
 
+For every row below, `first_asset_in.outpoint` is `vin[1].outpoint`
+in the reveal tx — `vin[0]` is reserved for the commit-reveal
+envelope input (ineligible per §A.2.5 rule 5). The anchor matches
+the existing amount-channel anchor convention so a single outpoint
+binds both privacy planes.
+
 | Surface | Variant | Anchor | Domain tag | Status |
 |---|---|---|---|---|
-| `T_CXFER` recipient marker | ECDH-derived | `vin[0].outpoint \|\| vout_index` | `tacit-cxfer-stealth-v1` | proposed; dapp + scanner only |
-| `T_CXFER_BPP` recipient marker | ECDH-derived | `vin[0].outpoint \|\| vout_index` | `tacit-cxfer-bpp-stealth-v1` | proposed; dapp + scanner only |
-| `T_AXFER` recipient marker | ECDH-derived | `vin[0].outpoint \|\| vout_index` | `tacit-axfer-stealth-v1` | proposed; dapp + scanner only |
-| `T_AXFER_BPP` recipient marker | ECDH-derived | `vin[0].outpoint \|\| vout_index` | `tacit-axfer-bpp-stealth-v1` | proposed; dapp + scanner only |
-| `T_AXFER_VAR` recipient marker | ECDH-derived | `vin[0].outpoint \|\| vout_index` | `tacit-axfer-var-stealth-v1` | proposed; dapp + scanner only |
-| `T_AXFER_VAR_BPP` recipient marker | ECDH-derived | `vin[0].outpoint \|\| vout_index` | `tacit-axfer-var-bpp-stealth-v1` | proposed; dapp + scanner only |
-| `T_LP_ADD` LP-share recipient marker | ECDH-derived | `pool_id \|\| vin[0].outpoint \|\| vout_index` | `tacit-lp-add-stealth-v1` | proposed; dapp + scanner only |
-| `T_LP_REMOVE` payout markers | ECDH-derived | `pool_id \|\| vin[0].outpoint \|\| vout_index` | `tacit-lp-remove-stealth-v1` | proposed; dapp + scanner only |
+| `T_CXFER` recipient marker | ECDH-derived | `first_asset_in.outpoint \|\| vout_index` | `tacit-cxfer-stealth-v1` | normative; **code shipped** in `dapp/tacit.js` |
+| `T_CXFER_BPP` recipient marker | ECDH-derived | `first_asset_in.outpoint \|\| vout_index` | `tacit-cxfer-bpp-stealth-v1` | normative; **code shipped** in `dapp/tacit.js` |
+| `T_AXFER` recipient marker | ECDH-derived | `first_asset_in.outpoint \|\| vout_index` | `tacit-axfer-stealth-v1` | proposed; dapp + scanner only |
+| `T_AXFER_BPP` recipient marker | ECDH-derived | `first_asset_in.outpoint \|\| vout_index` | `tacit-axfer-bpp-stealth-v1` | proposed; dapp + scanner only |
+| `T_AXFER_VAR` recipient marker | ECDH-derived | `first_asset_in.outpoint \|\| vout_index` | `tacit-axfer-var-stealth-v1` | proposed; dapp + scanner only |
+| `T_AXFER_VAR_BPP` recipient marker | ECDH-derived | `first_asset_in.outpoint \|\| vout_index` | `tacit-axfer-var-bpp-stealth-v1` | proposed; dapp + scanner only |
+| `T_LP_ADD` LP-share recipient marker | ECDH-derived | `pool_id \|\| first_asset_in.outpoint \|\| vout_index` | `tacit-lp-add-stealth-v1` | proposed; dapp + scanner only |
+| `T_LP_REMOVE` payout markers | ECDH-derived | `pool_id \|\| first_asset_in.outpoint \|\| vout_index` | `tacit-lp-remove-stealth-v1` | proposed; dapp + scanner only |
 
 The `vout_index` suffix in the class-2 anchors prevents collision when
 a single tx produces multiple outputs to the same recipient — without
@@ -616,11 +644,14 @@ for tx in chain since last_scan:
     if P_sender == O:                                 // point at infinity
         continue                                       // tx ineligible; skip
     shared = ECDH(wallet.priv, P_sender)               // ONE ECDH per tx
+    tx_anchor_head = tx.vin[1].outpoint                // first asset input —
+                                                       // vin[0] is the envelope
+                                                       // input (ineligible)
     for (vout_index, output) in enumerate(tx.outputs):
         b = HMAC(shared,
                  domain ||                            // per anchor registry §C
                  network_tag ||
-                 tx.vin[0].outpoint ||                // tx_anchor head
+                 tx_anchor_head ||                    // per §C registry
                  u32_LE(vout_index))                  // per-output disambiguator
         C = wallet.pub + b · G
         C_compressed = compress(C)
@@ -662,8 +693,10 @@ amortized.
 
 **Stored credit metadata.** When the scanner credits a stealth
 receipt, it persists `(txid, vout, sender_pub_aggregate, vout_index,
-domain_tag)` so the spend-path can re-derive `b` and `tweaked_sk` on
-demand. No persistent storage of `tweaked_sk` itself.
+domain_tag)` so the spend-path can re-derive `b` and `tweaked_sk`
+on demand. Implementations MAY also cache the derived `tweaked_sk`
+alongside this record as a spend-path performance optimization; see
+§H.2 for the security envelope.
 
 ### §D.3 Optional dual-pubkey for light clients
 
@@ -1038,7 +1071,7 @@ shared       = ECDH(sender_priv, P_recipient)
 ks_amount    = HMAC(shared, "tacit-axintent-onchain-amount-v1" || ...)
 ks_blinding  = HMAC(shared, "tacit-axintent-onchain-blinding-v1" || ...)
 b_pubkey     = HMAC(shared, "tacit-cxfer-stealth-v1" ||
-                            network || vin[0].outpoint)  mod SECP_N
+                            network || first_asset_in.outpoint)  mod SECP_N
 commit       = P_recipient + b_pubkey · G
 ```
 
@@ -1156,9 +1189,30 @@ format toggle.
 ### §H.2 Spend-path key derivation
 
 At spend time, the wallet looks up the per-UTXO derivation inputs
-from its receipts ledger and recomputes `b` and `tweaked_sk`
-on demand. No persistent storage of per-UTXO tweaked secrets — they
-are deterministic functions of `(wallet.priv, anchor)`.
+from its receipts ledger and recomputes `b` and `tweaked_sk`. The
+canonical persistence model stores the derivation inputs only
+(`txid`, `vout_index`, `sender_aggregate_pub`, `domain_tag`, plus
+the existing credit metadata `amount` + `blinding`) and re-derives
+`tweaked_sk = (wallet.priv + b) mod SECP_N` on demand. Recomputation
+cost is one ECDH + one HMAC + one scalar add per spent UTXO —
+negligible at spend time, but non-zero in batch operations.
+
+**Caching tweaked_sk is permitted (NORMATIVE).** Implementations
+MAY cache the derived `tweaked_sk` per credit alongside the rest of
+the credit record. The security envelope is identical: the credit
+record already persists `amount`, `blinding`, and
+`sender_aggregate_pub` for that UTXO, all of which leak together if
+the wallet's persistence layer is compromised. Storing the
+precomputed `tweaked_sk` adds no new exposure relative to the inputs
+needed to derive it — an attacker with read access to the credit
+record and without `wallet.priv` cannot spend either way (they
+already had every input but the wallet master key); an attacker
+with `wallet.priv` can spend regardless. Implementations that cache
+SHOULD treat `tweaked_sk` as part of the same trust boundary as
+`wallet.priv` itself — i.e., encrypt-at-rest if the master key is
+encrypted-at-rest. Implementations that do not cache and prefer
+on-demand recomputation are equally compliant; the choice is a
+performance/storage trade-off, not a security one.
 
 ### §H.3 UI: unified balance, optional power-user view
 
