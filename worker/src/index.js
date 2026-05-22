@@ -4282,45 +4282,55 @@ async function bumpTransferCount(env, network, aid, txidHex) {
   return true;
 }
 
-// Global recent-CXFER index. Reduces the dapp's pass-2 stealth auto-scan
-// from N per-asset round-trips (one per candidate asset) down to a single
-// round-trip that returns the most recent CXFER txids across all assets.
-// At N=25 candidates per scan today, this is a 25× reduction in worker
-// calls for the discovery pass.
+// Recent-CXFER indexes. Two parallel rolling lists, both populated on
+// every successful bumpTransferCount():
 //
-// Storage: a single KV value per network keyed `recent-cxfers:{network}`
-// holding a JSON array of { txid, aid, ts } objects, most-recent-first,
-// capped at RECENT_CXFER_LIST_CAP entries. Each bumpTransferCount() that
-// successfully recorded a fresh seen-marker also appends here.
+//   1. Global `recent-cxfers:{network}` — capped at RECENT_CXFER_LIST_CAP
+//      entries across ALL assets. Powers the dapp's pass-2 fast path
+//      (one round-trip returns recent CXFERs network-wide).
 //
-// Concurrency: KV writes are last-write-wins. Parallel bumps for the
-// same block can race and drop entries from THIS index, but per-asset
-// xferseen + xfercnt are NOT affected (they get their own per-key
-// idempotent write). The dapp's pass-2 falls back to per-asset walks
-// for any protocol-token entry in case a particular recent CXFER raced
-// off the list — so this is a hint index, not load-bearing.
+//   2. Per-asset `recent-cxfers:{network}:{aid}` — capped at the same
+//      depth, scoped to one asset. Powers /assets/{aid}/recent-xfer-
+//      txids when it falls back to the rolling list. Existed previously
+//      as a KV.list over xferseen:{aid}:* prefix, which returned keys
+//      in LEX order — naming the endpoint "recent" but returning the
+//      lex-smallest 20 first. For high-activity assets (e.g. TAC with
+//      ~2,000 transfers) a fresh recipient's stealth tx mid-range was
+//      invisible to a small-page walk. This per-asset rolling list is
+//      strictly recency-ordered.
+//
+// Concurrency: KV writes are last-write-wins; rare cron/hint races may
+// drop an entry. Per-asset xferseen + xfercnt are unaffected (each owns
+// its own idempotent key). The dapp falls back from the rolling list to
+// the lex-walk on miss, so this is hint-class state, not load-bearing.
 const RECENT_CXFER_LIST_CAP = 500;
 function recentCxfersKey(network) {
   return `recent-cxfers:${network}`;
 }
-async function appendRecentCxfer(env, network, aid, txidHex) {
-  const k = recentCxfersKey(network);
+function recentCxfersAssetKey(network, aid) {
+  return `recent-cxfers:${network}:${aid}`;
+}
+async function _appendRecentList(env, key, entry) {
   let cur = [];
   try {
-    const raw = await env.REGISTRY_KV.get(k);
+    const raw = await env.REGISTRY_KV.get(key);
     if (raw) {
       const parsed = JSON.parse(raw);
       if (Array.isArray(parsed)) cur = parsed;
     }
   } catch { /* malformed value — overwrite */ }
-  // Dedup against existing entries; idempotent against the rare cron-
-  // and-hint race where both call bumpTransferCount before the seenKey
-  // write lands at the edge.
-  const entry = { txid: txidHex.toLowerCase(), aid: aid.toLowerCase(), ts: Date.now() };
   const filtered = cur.filter(e => e && e.txid !== entry.txid);
   filtered.unshift(entry);
   if (filtered.length > RECENT_CXFER_LIST_CAP) filtered.length = RECENT_CXFER_LIST_CAP;
-  await env.REGISTRY_KV.put(k, JSON.stringify(filtered));
+  await env.REGISTRY_KV.put(key, JSON.stringify(filtered));
+}
+async function appendRecentCxfer(env, network, aid, txidHex) {
+  const entry = { txid: txidHex.toLowerCase(), aid: aid.toLowerCase(), ts: Date.now() };
+  // Write both lists in parallel — they're independent KV keys.
+  await Promise.all([
+    _appendRecentList(env, recentCxfersKey(network), entry),
+    _appendRecentList(env, recentCxfersAssetKey(network, aid.toLowerCase()), entry),
+  ]);
 }
 // Per-asset distinct-holder counter. We index recipient scriptpubkey
 // hashes (the P2WPKH hash160) as a proxy for distinct wallets that
@@ -25188,31 +25198,77 @@ async function _routeFetch(req, env, ctx) {
     if (mm && req.method === 'POST')                           return _mutateAndBust(mm[1], () => handleMintAttest(mm[1], mm[2], req, env, network, cors));
     const mo = url.pathname.match(/^\/assets\/([0-9a-f]{64})\/openings$/);
     if (mo && req.method === 'GET')                            return handleAssetOpenings(mo[1], env, network, cors);
-    // SPEC-BLINDED-PUBKEY §A.2 recipient discovery aid. Read-only enumeration
-    // of the xferseen index (30-day TTL window) for an asset, used by the
-    // dapp's scanAssetForStealthReceipts to walk recent reveal tx-ids and
-    // trial-derive shielded credits when the recipient lost localStorage and
-    // doesn't have the txid handy. Returns at most `limit` txids per call
-    // (default 50, max 200) with an opaque cursor for pagination.
+    // SPEC-BLINDED-PUBKEY §A.2 recipient discovery aid. Returns recent
+    // CXFER reveal txids for an asset, used by the dapp's
+    // scanAssetForStealthReceipts to walk and trial-derive shielded
+    // credits.
+    //
+    // Two storage layers:
+    //   - Rolling list `recent-cxfers:{network}:{aid}` — recency-sorted,
+    //     populated prospectively on every bumpTransferCount(). First
+    //     `limit` entries come from here.
+    //   - xferseen:* prefix KV.list — lex-sorted historical entries,
+    //     30-day TTL. Falls back to this for entries not in the rolling
+    //     list (older CXFERs, or transitional state right after the
+    //     rolling list was introduced). Pagination still works via the
+    //     opaque KV cursor on this layer.
+    //
+    // Response shape unchanged from before: { txids, next_cursor, done }.
+    // Older callers see the same fields; new callers benefit from
+    // recency ordering at the head of the result.
     const mxt = url.pathname.match(/^\/assets\/([0-9a-f]{64})\/recent-xfer-txids$/);
     if (mxt && req.method === 'GET') {
       const aidHex = mxt[1];
       const limit = Math.min(200, Math.max(1, parseInt(url.searchParams.get('limit') || '50', 10) || 50));
       const cursor = url.searchParams.get('cursor') || undefined;
-      const prefix = network === 'signet' ? `xferseen:${aidHex}:` : `xferseen:${network}:${aidHex}:`;
-      const listOpts = { prefix, limit };
-      if (cursor) listOpts.cursor = cursor;
-      const list = await env.REGISTRY_KV.list(listOpts);
-      const txids = list.keys
-        .map(k => (k.name.match(/([0-9a-f]{64})$/i) || [])[1])
-        .filter(Boolean)
-        .map(t => t.toLowerCase());
+      // Layer 1: rolling recency-sorted list. Only consulted on the first
+      // page (no cursor); subsequent pages drop through to the lex walk
+      // since pagination of an in-memory list would race against new
+      // writes.
+      let rollingTxids = [];
+      let rollingSet = new Set();
+      if (!cursor) {
+        try {
+          const raw = await env.REGISTRY_KV.get(recentCxfersAssetKey(network, aidHex));
+          if (raw) {
+            const parsed = JSON.parse(raw);
+            if (Array.isArray(parsed)) {
+              for (const e of parsed) {
+                if (rollingTxids.length >= limit) break;
+                const t = e && typeof e.txid === 'string' ? e.txid.toLowerCase() : null;
+                if (t && !rollingSet.has(t)) { rollingTxids.push(t); rollingSet.add(t); }
+              }
+            }
+          }
+        } catch { /* malformed value — fall through to lex layer */ }
+      }
+      // Layer 2: lex-sorted KV.list over xferseen prefix. Dedup against
+      // the rolling layer so the response doesn't repeat entries. Returns
+      // up to (limit - rollingTxids.length) extra entries.
+      const remaining = Math.max(0, limit - rollingTxids.length);
+      let nextCursor = null;
+      let done = true;
+      let lexTxids = [];
+      if (remaining > 0 || cursor) {
+        const prefix = network === 'signet' ? `xferseen:${aidHex}:` : `xferseen:${network}:${aidHex}:`;
+        const listOpts = { prefix, limit: remaining > 0 ? remaining + rollingTxids.length : limit };
+        if (cursor) listOpts.cursor = cursor;
+        const list = await env.REGISTRY_KV.list(listOpts);
+        lexTxids = list.keys
+          .map(k => (k.name.match(/([0-9a-f]{64})$/i) || [])[1])
+          .filter(Boolean)
+          .map(t => t.toLowerCase())
+          .filter(t => !rollingSet.has(t));
+        nextCursor = list.list_complete ? null : (list.cursor || null);
+        done = !!list.list_complete;
+      }
+      const txids = [...rollingTxids, ...lexTxids].slice(0, limit);
       return jsonResponse({
         asset_id: aidHex,
         network,
         txids,
-        next_cursor: list.list_complete ? null : (list.cursor || null),
-        done: !!list.list_complete,
+        next_cursor: nextCursor,
+        done,
       }, 200, cors);
     }
     // Cross-asset recent-CXFER index used by the dapp's stealth auto-scan
