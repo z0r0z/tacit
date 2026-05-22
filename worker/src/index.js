@@ -4271,7 +4271,56 @@ async function bumpTransferCount(env, network, aid, txidHex) {
   const cur = parseInt((await env.REGISTRY_KV.get(cntKey)) || '0', 10);
   await env.REGISTRY_KV.put(cntKey, String(cur + 1));
   await env.REGISTRY_KV.put(seenKey, '1', { expirationTtl: 30 * 24 * 3600 });
+  // Append to the global recent-CXFER index used by the dapp's stealth
+  // auto-scan pass-2. Best-effort: any write failure here doesn't
+  // invalidate the per-asset count + seen entry above (those are the
+  // authoritative state). Fire-and-forget — if it loses a race against
+  // a concurrent appender on the same network, we lose at most one
+  // entry from a hint index whose authoritative completeness lives in
+  // per-asset xferseen anyway.
+  try { await appendRecentCxfer(env, network, aid, txidHex); } catch {}
   return true;
+}
+
+// Global recent-CXFER index. Reduces the dapp's pass-2 stealth auto-scan
+// from N per-asset round-trips (one per candidate asset) down to a single
+// round-trip that returns the most recent CXFER txids across all assets.
+// At N=25 candidates per scan today, this is a 25× reduction in worker
+// calls for the discovery pass.
+//
+// Storage: a single KV value per network keyed `recent-cxfers:{network}`
+// holding a JSON array of { txid, aid, ts } objects, most-recent-first,
+// capped at RECENT_CXFER_LIST_CAP entries. Each bumpTransferCount() that
+// successfully recorded a fresh seen-marker also appends here.
+//
+// Concurrency: KV writes are last-write-wins. Parallel bumps for the
+// same block can race and drop entries from THIS index, but per-asset
+// xferseen + xfercnt are NOT affected (they get their own per-key
+// idempotent write). The dapp's pass-2 falls back to per-asset walks
+// for any protocol-token entry in case a particular recent CXFER raced
+// off the list — so this is a hint index, not load-bearing.
+const RECENT_CXFER_LIST_CAP = 500;
+function recentCxfersKey(network) {
+  return `recent-cxfers:${network}`;
+}
+async function appendRecentCxfer(env, network, aid, txidHex) {
+  const k = recentCxfersKey(network);
+  let cur = [];
+  try {
+    const raw = await env.REGISTRY_KV.get(k);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) cur = parsed;
+    }
+  } catch { /* malformed value — overwrite */ }
+  // Dedup against existing entries; idempotent against the rare cron-
+  // and-hint race where both call bumpTransferCount before the seenKey
+  // write lands at the edge.
+  const entry = { txid: txidHex.toLowerCase(), aid: aid.toLowerCase(), ts: Date.now() };
+  const filtered = cur.filter(e => e && e.txid !== entry.txid);
+  filtered.unshift(entry);
+  if (filtered.length > RECENT_CXFER_LIST_CAP) filtered.length = RECENT_CXFER_LIST_CAP;
+  await env.REGISTRY_KV.put(k, JSON.stringify(filtered));
 }
 // Per-asset distinct-holder counter. We index recipient scriptpubkey
 // hashes (the P2WPKH hash160) as a proxy for distinct wallets that
@@ -25165,6 +25214,58 @@ async function _routeFetch(req, env, ctx) {
         next_cursor: list.list_complete ? null : (list.cursor || null),
         done: !!list.list_complete,
       }, 200, cors);
+    }
+    // Cross-asset recent-CXFER index used by the dapp's stealth auto-scan
+    // pass-2. Returns the most recent CXFER txids across ALL assets in
+    // one call, eliminating the N per-asset round-trips the dapp would
+    // otherwise need. Entries are appended on every successful
+    // bumpTransferCount(); see appendRecentCxfer() for the storage model.
+    //
+    // Edge-cached 30s — most callers within a window read the same data,
+    // and the index updates only on actual CXFER landings.
+    if (url.pathname === '/recent-cxfer-txids' && req.method === 'GET') {
+      const limit = Math.min(500, Math.max(1, parseInt(url.searchParams.get('limit') || '200', 10) || 200));
+      const _cacheKey = new Request(`https://_recent-cxfers-cache_/recent-cxfer-txids?network=${network}&limit=${limit}`, { method: 'GET' });
+      const _cache = caches.default;
+      const cached = await _cache.match(_cacheKey);
+      if (cached) {
+        const cachedAtStr = cached.headers.get('X-Cached-At');
+        const ageMs = cachedAtStr ? Date.now() - parseInt(cachedAtStr, 10) : Infinity;
+        if (ageMs < 30_000) {
+          const h = new Headers();
+          for (const [k, v] of Object.entries(cors)) h.set(k, v);
+          h.set('Content-Type', 'application/json');
+          h.set('X-Cache', 'HIT');
+          return new Response(await cached.text(), { status: 200, headers: h });
+        }
+      }
+      let entries = [];
+      try {
+        const raw = await env.REGISTRY_KV.get(recentCxfersKey(network));
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (Array.isArray(parsed)) entries = parsed.slice(0, limit);
+        }
+      } catch { /* malformed value — return empty */ }
+      const body = JSON.stringify({
+        network,
+        count: entries.length,
+        entries,
+      });
+      const respHeaders = new Headers();
+      for (const [k, v] of Object.entries(cors)) respHeaders.set(k, v);
+      respHeaders.set('Content-Type', 'application/json');
+      respHeaders.set('X-Cache', 'MISS');
+      // Write back to edge cache for the next 30s window.
+      const cacheHeaders = new Headers(respHeaders);
+      cacheHeaders.set('X-Cached-At', String(Date.now()));
+      cacheHeaders.set('Cache-Control', 'public, max-age=30');
+      try {
+        if (ctx && typeof ctx.waitUntil === 'function') {
+          ctx.waitUntil(_cache.put(_cacheKey, new Response(body, { status: 200, headers: cacheHeaders })));
+        }
+      } catch {}
+      return new Response(body, { status: 200, headers: respHeaders });
     }
     const mu = url.pathname.match(/^\/utxos\/([0-9a-f]{64})\/(\d+)\/opening$/);
     // UTXO opening posts mutate /assets/:id (opening_count, disclosed_supply_min).
