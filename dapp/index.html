@@ -5157,7 +5157,7 @@ body > #amm-contrib-section {
    as the primary number, stats strip below). */
 #tab-wallet dl.kv {
   display: grid !important;
-  grid-template-columns: 80px 1fr !important;
+  grid-template-columns: 90px 1fr !important;
   gap: 6px 14px !important;
   margin: 0 0 14px 0 !important;
   padding: 0 !important;
@@ -5209,7 +5209,7 @@ body > #amm-contrib-section {
   font-size: 12px !important;
   color: var(--ink-mid) !important;
 }
-/* Phone widths: the 80px label column squeezes the pubkey / address
+/* Phone widths: the 90px label column squeezes the pubkey / address
    mono-box into a sliver of the row, forcing 4-5 cramped wrap lines.
    Stack each row instead — small uppercase label on top, full-width
    value below — so addresses breathe and the copy button still sits
@@ -5225,6 +5225,40 @@ body > #amm-contrib-section {
   }
   #tab-wallet dl.kv dd.balance-row {
     margin-top: 2px !important;
+  }
+  /* Address row tail: explorer ↗ / tacitscan ↗ are appended after the
+     copy button. On phones a real bc1q… address fills the row width;
+     the trailing links then jam against the right edge or push the
+     copy button off. Allow the inner flex to wrap so the mono-box +
+     copy button sit on row 1 (mono-box takes the full available
+     width) and the explorer links flow onto row 2. */
+  #tab-wallet dl.kv dd > div[style*="display:flex"] {
+    flex-wrap: wrap !important;
+    row-gap: 6px !important;
+  }
+  #tab-wallet dl.kv dd .mono-box {
+    flex: 1 1 100% !important;
+  }
+  /* Section-header badge strip (lock · mode · backup · tip · sync · …)
+     gets noisy on phones. Tighter gap + smaller font keeps the row to
+     1–2 lines instead of 3. */
+  #tab-wallet .section > .section-header > span {
+    gap: 6px !important;
+  }
+  #tab-wallet .section-header > span > span {
+    font-size: 9px !important;
+    letter-spacing: 0.04em !important;
+  }
+  /* Manage wallet danger-zone buttons: 4 inline buttons wrap unevenly
+     (3+1 or 2+2 depending on label width). Force a clean 2×2 grid so
+     the two destructive options sit aligned. */
+  #tab-wallet details .flex:has(> #btn-export) {
+    display: grid !important;
+    grid-template-columns: 1fr 1fr !important;
+    gap: 6px !important;
+  }
+  #tab-wallet details .flex:has(> #btn-export) > button {
+    width: 100% !important;
   }
 }
 /* Pubkey/address mono-box + copy button: single inline row, no
