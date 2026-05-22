@@ -5209,6 +5209,24 @@ body > #amm-contrib-section {
   font-size: 12px !important;
   color: var(--ink-mid) !important;
 }
+/* Phone widths: the 80px label column squeezes the pubkey / address
+   mono-box into a sliver of the row, forcing 4-5 cramped wrap lines.
+   Stack each row instead — small uppercase label on top, full-width
+   value below — so addresses breathe and the copy button still sits
+   inline at the right edge of the value. Balance row stays inline. */
+@media (max-width: 520px) {
+  #tab-wallet dl.kv {
+    grid-template-columns: 1fr !important;
+    gap: 12px 0 !important;
+  }
+  #tab-wallet dl.kv dt {
+    align-self: start !important;
+    margin-bottom: -4px !important;
+  }
+  #tab-wallet dl.kv dd.balance-row {
+    margin-top: 2px !important;
+  }
+}
 /* Pubkey/address mono-box + copy button: single inline row, no
    row break, compact. The 0.5px dashed border + subtle bg tint
    set higher above keeps the data readable as a chip without
