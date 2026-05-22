@@ -24,14 +24,16 @@ function assert(cond, msg) { if (!cond) throw new Error(msg || 'assert'); }
 function assertEq(a, b, msg) { if (a !== b) throw new Error(`${msg || 'assertEq'}: ${a} !== ${b}`); }
 
 // --- Shape mirror -----------------------------------------------------------
-// Mirrors the dapp's recordStealthCredit / getStealthCredit semantics.
-function makeShape({ amount, blinding, tweakedSkHex, commitmentHex, senderPubHex, assetIdHex, blockTime }) {
+// Mirrors the dapp's recordStealthCredit / getStealthCredit semantics. Per
+// SPEC §H.2 the on-disk record carries `b` (stealthBlindingHex) and never
+// caches tweaked_sk — the dapp re-derives tweaked_sk = (wallet.priv + b) mod n
+// at unlock time so an attacker with localStorage but no password cannot spend.
+function makeShape({ amount, amountBlinding, stealthBlinding, commitmentHex, senderPubHex, assetIdHex, blockTime }) {
   return {
     assetIdHex,
     amount: amount.toString(),
-    // bigintToBytes32 is bytes-be; tests use a fixed 32-byte hex
-    blinding: bytesToHex(_be32(blinding)),
-    tweakedSkHex,
+    amountBlinding: bytesToHex(_be32(amountBlinding)),
+    stealthBlindingHex: bytesToHex(_be32(stealthBlinding)),
     commitmentHex: commitmentHex || null,
     senderPubHex: senderPubHex || null,
     blockTime: blockTime || null,
@@ -41,8 +43,8 @@ function loadShape(s) {
   return {
     assetIdHex: s.assetIdHex,
     amount: BigInt(s.amount),
-    blinding: BigInt('0x' + s.blinding),
-    tweakedSkHex: s.tweakedSkHex,
+    amountBlinding: BigInt('0x' + s.amountBlinding),
+    stealthBlindingHex: s.stealthBlindingHex,
     commitmentHex: s.commitmentHex || null,
     senderPubHex: s.senderPubHex || null,
     blockTime: s.blockTime || null,
@@ -58,12 +60,12 @@ function _be32(n) {
 }
 
 // --- Tests ------------------------------------------------------------------
-test('shape: amount/blinding bigint round-trip via decimal+hex strings', () => {
+test('shape: amount/amountBlinding/stealthBlinding bigint round-trip via decimal+hex strings', () => {
   const amount = 1234567890n;
-  const blinding = 0x9a4b3c2d1e0f1a2b3c4d5e6f0a1b2c3d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5bn;
+  const amountBlinding = 0x9a4b3c2d1e0f1a2b3c4d5e6f0a1b2c3d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5bn;
+  const stealthBlinding = 0xa5b4c3d2e1f0091827364554637281909182736455463728190a1b2c3d4e5f60n;
   const s = makeShape({
-    amount, blinding,
-    tweakedSkHex: 'aa'.repeat(32),
+    amount, amountBlinding, stealthBlinding,
     commitmentHex: '02' + 'bb'.repeat(32),
     senderPubHex: '03' + 'cc'.repeat(32),
     assetIdHex: 'dd'.repeat(32),
@@ -71,18 +73,18 @@ test('shape: amount/blinding bigint round-trip via decimal+hex strings', () => {
   });
   const r = loadShape(s);
   assertEq(r.amount, amount, 'amount round-trip');
-  assertEq(r.blinding, blinding, 'blinding round-trip');
-  assertEq(r.tweakedSkHex, 'aa'.repeat(32), 'tweakedSk preserved');
+  assertEq(r.amountBlinding, amountBlinding, 'amountBlinding round-trip');
+  assertEq(BigInt('0x' + r.stealthBlindingHex), stealthBlinding, 'stealthBlinding round-trip');
   assertEq(r.commitmentHex, '02' + 'bb'.repeat(32), 'commitment preserved');
   assertEq(r.senderPubHex, '03' + 'cc'.repeat(32), 'senderPub preserved');
   assertEq(r.assetIdHex, 'dd'.repeat(32), 'assetId preserved');
   assertEq(r.blockTime, 1716000000, 'blockTime preserved');
+  assert(!('tweakedSkHex' in s), 'tweaked_sk MUST NOT be persisted (§H.2)');
 });
 
 test('shape: nullable fields tolerate undefined inputs', () => {
   const s = makeShape({
-    amount: 0n, blinding: 1n,
-    tweakedSkHex: 'aa'.repeat(32),
+    amount: 0n, amountBlinding: 1n, stealthBlinding: 2n,
     assetIdHex: 'ee'.repeat(32),
   });
   assertEq(s.commitmentHex, null);
@@ -94,24 +96,25 @@ test('shape: nullable fields tolerate undefined inputs', () => {
   assertEq(r.blockTime, null);
 });
 
-test('shape: blinding hex is exactly 64 chars (32 bytes BE)', () => {
+test('shape: blinding hex fields are exactly 64 chars (32 bytes BE)', () => {
   const s = makeShape({
     amount: 1n,
-    blinding: 0x01n,  // small bigint → must still be 32-byte BE
-    tweakedSkHex: 'aa'.repeat(32),
+    amountBlinding: 0x01n,
+    stealthBlinding: 0x02n,
     assetIdHex: 'ee'.repeat(32),
   });
-  assertEq(s.blinding.length, 64, 'blinding hex must be 64 chars');
-  assert(s.blinding.endsWith('01'), 'blinding hex BE-encodes correctly');
+  assertEq(s.amountBlinding.length, 64, 'amountBlinding hex must be 64 chars');
+  assertEq(s.stealthBlindingHex.length, 64, 'stealthBlindingHex must be 64 chars');
+  assert(s.amountBlinding.endsWith('01'), 'amountBlinding BE-encodes correctly');
+  assert(s.stealthBlindingHex.endsWith('02'), 'stealthBlindingHex BE-encodes correctly');
   const r = loadShape(s);
-  assertEq(r.blinding, 1n, 'blinding round-trip preserves small bigint');
+  assertEq(r.amountBlinding, 1n, 'amountBlinding round-trip preserves small bigint');
 });
 
 test('shape: large bigint amount survives JSON.stringify round-trip', () => {
   const amount = (1n << 60n) - 1n;  // beyond Number.MAX_SAFE_INTEGER (2^53-1)
   const s = makeShape({
-    amount, blinding: 1n,
-    tweakedSkHex: 'aa'.repeat(32),
+    amount, amountBlinding: 1n, stealthBlinding: 2n,
     assetIdHex: 'ee'.repeat(32),
   });
   const stored = JSON.stringify(s);

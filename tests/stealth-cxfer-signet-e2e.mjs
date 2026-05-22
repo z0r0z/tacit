@@ -396,6 +396,118 @@ asBob();
 }
 
 // ============================================================================
+// Phase 7 — MIXED INPUTS: heterogeneous (classical + stealth) asset inputs in
+//   one CXFER reveal. Closes the input-shape gap left by Phases 3–6:
+//
+//   Phase 5 exercised stealth-only input (single tweakedSk scalar).
+//   Phase 6b exercised stealth-only input (chain of tweakedSk).
+//   Neither exercised the per-input signer selector firing across BOTH
+//   wallet.priv AND tweakedSk in the same reveal — yet the code does
+//   exactly that (assetSigners[i] picks per-input; senderEligibleInputPrivs
+//   sums heterogeneous scalars; recipient's §A.2.5 aggregate is wallet.pub
+//   + commit_i). Math is sound by linearity, but the multi-branch path has
+//   never co-fired on a real signet tx.
+//
+//   Alice sends to Carol stealth using forceUtxos = [classical, stealth].
+//   • Per-input signer selection: vin[1] signs with wallet.priv, vin[2] with tweakedSk
+//   • senderEligibleInputPrivs sum across heterogeneous scalars
+//   • Recipient's §A.2.5 aggregate P_sender = wallet.pub + commit_i
+//   • Amount channel uses vin[1].witness[1] = wallet.pub (classical-first ordering)
+// ============================================================================
+
+// Step 7a — give Alice a stealth UTXO via a fresh Bob → Alice stealth CXFER.
+// After Phase 5 Alice has classical UTXOs but no stealth UTXOs (Phase 4's
+// stealth was consumed by Phase 5), so we need to top her stealth side up.
+if (!state.p7TopupRevealTxid) {
+  step(7, 'MIXED INPUTS: stealth topup to Alice (precondition)');
+  asBob();
+  await scanHoldingsRetry();
+  const r = await dapp.buildAndBroadcastCXferMulti({
+    assetIdHex,
+    recipients: [{ stealthAddress: ALICE.stealth_address, amount: 75_000n }],
+  });
+  ok(`p7 topup reveal ${r.revealTxid.slice(0, 16)}…`);
+  await waitConfirmed(r.revealTxid, 'p7 topup reveal');
+  state.p7TopupRevealTxid = r.revealTxid;
+  saveState(state);
+} else {
+  step(7, `MIXED INPUTS: topup already done — ${state.p7TopupRevealTxid.slice(0, 16)}…`);
+}
+
+// Alice discovers + persists the topup stealth credit.
+asAlice();
+{
+  const discovered = await dapp.discoverStealthFromTxid(state.p7TopupRevealTxid);
+  const credit = discovered.find(d => d.assetIdHex === assetIdHex && d.amount === 75_000n);
+  if (!credit) fail(`Alice missing p7 topup stealth credit`);
+  ok(`Alice discovered p7 topup stealth credit: ${credit.amount} units`);
+}
+
+// Step 7b — Alice spends a mixed (classical + stealth) input set, sends to Carol stealth.
+if (!state.p7MixedRevealTxid) {
+  info('MIXED INPUTS: Alice forceUtxos = [classical UTXO, stealth UTXO] → Carol stealth');
+  asAlice();
+  const h = await scanHoldingsRetry();
+  const ah = h.get(assetIdHex);
+  if (!ah) fail('Alice has no holdings for the asset');
+
+  // Pick one classical (no stealthTweakedSk) + one stealth (has stealthTweakedSk).
+  const classicalUtxo = ah.utxos.find(u => !u.stealthTweakedSk);
+  const stealthUtxo   = ah.utxos.find(u => !!u.stealthTweakedSk);
+  if (!classicalUtxo) fail('Alice has no classical UTXO available for mixed-input test');
+  if (!stealthUtxo)   fail('Alice has no stealth UTXO available for mixed-input test');
+  info(`  classical UTXO: ${classicalUtxo.utxo.txid.slice(0,16)}…:${classicalUtxo.utxo.vout} (${classicalUtxo.amount} units)`);
+  info(`  stealth UTXO:   ${stealthUtxo.utxo.txid.slice(0,16)}…:${stealthUtxo.utxo.vout}   (${stealthUtxo.amount} units)`);
+
+  // Spend less than the combined total so we have change (forces both UTXOs to be consumed
+  // since smaller alone wouldn't cover sendAmt).
+  const totalAvail = classicalUtxo.amount + stealthUtxo.amount;
+  const sendAmt = totalAvail - 25_000n;   // leaves 25k of change
+  if (sendAmt <= classicalUtxo.amount || sendAmt <= stealthUtxo.amount) {
+    fail(`sendAmt ${sendAmt} doesn't force both UTXOs (classical=${classicalUtxo.amount}, stealth=${stealthUtxo.amount})`);
+  }
+
+  // Force vin order: classical first → vin[1] = classical (witness[1] = wallet.pub),
+  // vin[2] = stealth (witness[1] = commit). Amount channel reads vin[1]'s scalar.
+  const forceUtxos = [classicalUtxo, stealthUtxo];
+
+  const r = await dapp.buildAndBroadcastCXferMulti({
+    assetIdHex,
+    recipients: [{ stealthAddress: CAROL.stealth_address, amount: sendAmt }],
+    forceUtxos,
+  });
+  ok(`p7 mixed-input reveal ${r.revealTxid.slice(0, 16)}…`);
+  await waitConfirmed(r.revealTxid, 'p7 mixed-input reveal');
+  state.p7MixedRevealTxid = r.revealTxid;
+  state.p7MixedSendAmt = sendAmt.toString();
+  saveState(state);
+} else {
+  info(`MIXED INPUTS: mixed-input reveal already done — ${state.p7MixedRevealTxid.slice(0, 16)}…`);
+}
+
+// Carol scans — must aggregate (wallet.pub + commit_i) into P_sender and decode the credit.
+asCarol();
+{
+  const discovered = await dapp.discoverStealthFromTxid(state.p7MixedRevealTxid);
+  const expectedAmt = BigInt(state.p7MixedSendAmt);
+  const credit = discovered.find(d => d.assetIdHex === assetIdHex && d.amount === expectedAmt);
+  if (!credit) fail(`Carol missing p7 mixed-input stealth credit (discovered: ${discovered.length})`);
+  ok(`Carol discovered p7 mixed-input stealth credit: ${credit.amount} units`);
+
+  // Sanity: verify the on-chain tx really had two heterogeneous eligible
+  // input pubkeys (vin[1] wallet.pub ≠ vin[2] commit). Without this assert,
+  // a future picker regression that silently merged inputs would still
+  // pass the credit-discovery check.
+  const txData = await fetch(`https://mempool.space/signet/api/tx/${state.p7MixedRevealTxid}`).then(r => r.json());
+  const vin1Pub = txData.vin[1]?.witness?.[1];
+  const vin2Pub = txData.vin[2]?.witness?.[1];
+  if (!vin1Pub || !vin2Pub) fail(`p7 reveal missing 2 asset inputs (vin1=${!!vin1Pub}, vin2=${!!vin2Pub})`);
+  if (vin1Pub === vin2Pub) fail('vin[1] and vin[2] witness pubkeys identical — heterogeneity not exercised');
+  ok(`heterogeneous input witness pubkeys confirmed: vin[1] ${vin1Pub.slice(0,16)}…, vin[2] ${vin2Pub.slice(0,16)}…`);
+  ok('aggregate P_sender = wallet.pub + commit_i succeeded on real chain ✓');
+}
+
+// ============================================================================
 // Summary
 // ============================================================================
 console.log('\n=== Tacit CXFER × stealth × signet — END-TO-END PASSED ===');
@@ -405,5 +517,6 @@ console.log('  ✓ Phase 3: classical CXFER baseline (regression check)');
 console.log('  ✓ Phase 4: stealth send — Alice scans and persists tweakedSk');
 console.log('  ✓ Phase 5: stealth → classical (THE FIX path, on real chain)');
 console.log('  ✓ Phase 6: stealth → stealth chain (double-stealth round-trip)');
+console.log('  ✓ Phase 7: mixed (classical + stealth) inputs in one reveal');
 console.log(`\n  asset_id: ${assetIdHex}`);
 console.log('  See .local/stealth-cxfer-signet-state.json for tx ids.\n');

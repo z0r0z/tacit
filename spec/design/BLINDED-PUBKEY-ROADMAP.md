@@ -110,8 +110,8 @@ The amendment splits stealth use into two classes (see SPEC-BLINDED-PUBKEY-AMEND
 
 | Opcode | Status | Migration approach |
 |---|---|---|
-| `T_CXFER` (`0x23`) | 📝 proposed (dapp + scanner only; no opcode reservation) | Sender's dapp emits dust marker at `P2WPKH(hash160(commit_compressed))` instead of `P2WPKH(hash160(P_recipient))` when paying a stealth-capable address. Recipient's scanner dual-scans per §D.2. **Zero envelope-level changes, zero worker changes.** |
-| `T_CXFER_BPP` (`0x22`) | 📝 proposed (dapp + scanner only) | Same |
+| `T_CXFER` (`0x23`) | ✅ shipped (dapp builder + scanner + signet e2e) | Sender's dapp emits dust marker at `P2WPKH(hash160(commit_compressed))` instead of `P2WPKH(hash160(P_recipient))` when paying a stealth-capable address. Recipient's scanner dual-scans per §D.2. **Zero envelope-level changes, zero worker changes.** |
+| `T_CXFER_BPP` (`0x22`) | ✅ shipped (dapp builder + scanner; signet-only until BPP mainnet activation) | Same |
 | `T_AXFER` (`0x26`) | 📝 proposed (dapp + scanner only) | Same |
 | `T_AXFER_BPP` (`0x3C`) | 📝 proposed (dapp + scanner only) | Same |
 | `T_AXFER_VAR` (`0x37`) | 📝 proposed (dapp + scanner only) | Same |
