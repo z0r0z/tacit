@@ -6885,60 +6885,12 @@ async function handleCeremonyContribute(req, env, circuitHash, cors, ctx) {
     }
   }
 
-  // Optional: full snarkjs.zKey.verifyFromR1cs via an external service.
-  // The header check above closes the gross "wrong (r1cs, ptau)" case, but
-  // a structurally valid contribution whose deeper sections fail the
-  // pairing checks (H, A, B, C delta-multiplications) still slips through
-  // because CF Workers can't fit the 288 MB ptau in memory. When
-  // VERIFY_SERVICE_URL is set on the worker, this step POSTs the
-  // contribution's CIDs to a small external service that runs the full
-  // verify and only advances state if it passes. Unset = skipped (no
-  // behavioural change). See verify-service/ in this repo.
-  if (env.VERIFY_SERVICE_URL) {
-    const failClosed = String(env.VERIFY_SERVICE_FAIL_CLOSED || '').toLowerCase() === '1';
-    let verifyOk = null;
-    let verifyErr = null;
-    try {
-      const headers = { 'Content-Type': 'application/json' };
-      if (env.VERIFY_SERVICE_TOKEN) headers['Authorization'] = `Bearer ${env.VERIFY_SERVICE_TOKEN}`;
-      const url = env.VERIFY_SERVICE_URL.replace(/\/$/, '') + '/verify';
-      const r = await fetch(url, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify({
-          r1cs_cid: fresh.r1cs_cid,
-          ptau_cid: fresh.ptau_cid,
-          new_cid: newCid,
-        }),
-        signal: AbortSignal.timeout(120000),
-      });
-      if (r.ok) {
-        const j = await r.json().catch(() => null);
-        if (j && j.ok === true) verifyOk = true;
-        else if (j && j.ok === false) { verifyOk = false; verifyErr = j.error || 'verify returned false'; }
-        else verifyErr = 'malformed verify response';
-      } else {
-        verifyErr = `verify HTTP ${r.status}`;
-      }
-    } catch (e) {
-      verifyErr = `verify transport: ${(e && e.message) || e}`;
-    }
-    if (verifyOk === false) {
-      await _releaseClaim();
-      return jsonResponse({
-        error: `snarkjs verify rejected contribution: ${verifyErr}`,
-      }, 400, cors);
-    }
-    if (verifyOk !== true) {
-      if (failClosed) {
-        await _releaseClaim();
-        return jsonResponse({
-          error: `verify service unreachable (${verifyErr}); retry shortly`,
-        }, 502, cors);
-      }
-      console.log(`[verify-service soft-skip] ${verifyErr}`);
-    }
-  }
+  // (Full snarkjs verifyFromR1cs runs out-of-band in the scheduled handler
+  // — see runCeremonyHeadVerifyPass. Inline blocking was too expensive for
+  // the heavy circuit: a 5+ min verify per /contribute pushed contributors
+  // past the worker wall-clock budget and stalled the chain. The cron
+  // approach decouples /contribute latency from verify cost and gives a
+  // bounded auto-rollback window instead.)
 
   const newCount = (fresh.contribution_count || 0) + 1;
   const newState = {
@@ -7247,6 +7199,131 @@ async function handleCeremonyDrain(req, env, circuitHash, cors, ctx) {
     duration_seconds: durationSecs,
     message: `contributions paused until ${new Date(drainUntil * 1000).toISOString()}`,
   }, 200, cors);
+}
+
+// Scheduled per-tick chain-soundness sweep. For each live ceremony state
+// record, if state.head_cid has advanced past state.verified_head_cid,
+// ask the external verify service whether the new head extends (r1cs,
+// ptau) cleanly. On ok: bump the verified marker so we never re-verify
+// the same head twice. On structural fail (ok:false): brief drain +
+// revert head_cid + contribution_count to the verified marker so the
+// next contributor extends from a known-good head; the just-rolled-back
+// CID becomes a CAS-orphan, same shape as any normal CAS-race orphan.
+//
+// The verify service caches results per (r1cs_cid, ptau_cid, new_cid)
+// and supports {async:true}, so the first tick for a given new head
+// kicks the verify off and returns {pending:true} fast; subsequent
+// ticks (every 5 min) return the cached result. Heavy circuits whose
+// verify exceeds the cron wall-clock budget are picked up by the next
+// tick without re-running. No-op when VERIFY_SERVICE_URL is unset.
+//
+// Bootstraps state.verified_head_cid + state.verified_head_count on the
+// first tick that sees a state lacking those fields by trusting the
+// current head as the genesis of the verified marker.
+async function runCeremonyHeadVerifyPass(env) {
+  if (!env.VERIFY_SERVICE_URL) return;
+  const headers = { 'Content-Type': 'application/json' };
+  if (env.VERIFY_SERVICE_TOKEN) headers['Authorization'] = `Bearer ${env.VERIFY_SERVICE_TOKEN}`;
+  const verifyUrl = String(env.VERIFY_SERVICE_URL).replace(/\/$/, '') + '/verify';
+
+  // Discover live ceremony state records — keys shaped exactly
+  // `ceremony:<64hex>` (the drain/reserve/contrib/pubkey sub-keys share
+  // the prefix but have further suffixes; the regex filters them out).
+  let cursor;
+  const stateHashes = [];
+  for (let page = 0; page < 10; page++) {
+    const list = await env.REGISTRY_KV.list({ prefix: 'ceremony:', limit: 1000, cursor });
+    for (const k of list.keys) {
+      const m = k.name.match(/^ceremony:([0-9a-f]{64})$/i);
+      if (m) stateHashes.push(m[1].toLowerCase());
+    }
+    if (list.list_complete !== false) break;
+    cursor = list.cursor;
+    if (!cursor) break;
+  }
+
+  for (const hash of stateHashes) {
+    try {
+      const state = await env.REGISTRY_KV.get(ceremonyKey(hash), 'json');
+      if (!state || state.finalized) continue;
+      const head = state.head_cid;
+      const verifiedCid = state.verified_head_cid;
+      const verifiedCount = state.verified_head_count;
+      if (!verifiedCid) {
+        // Bootstrap. Trust the currently-live head as the genesis of
+        // the verified-marker chain; subsequent ticks reach back to
+        // this anchor on rollback.
+        state.verified_head_cid = head;
+        state.verified_head_count = state.contribution_count || 0;
+        await env.REGISTRY_KV.put(ceremonyKey(hash), JSON.stringify(state));
+        continue;
+      }
+      if (verifiedCid === head) continue;
+
+      let resp;
+      try {
+        resp = await fetch(verifyUrl, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({
+            r1cs_cid: state.r1cs_cid,
+            ptau_cid: state.ptau_cid,
+            new_cid: head,
+            async: true,
+          }),
+          signal: AbortSignal.timeout(20000),
+        });
+      } catch (e) {
+        _logCronError(env, 'ceremonyHeadVerifyFetch', hash, e);
+        continue;
+      }
+      if (!resp.ok) {
+        _logCronError(env, 'ceremonyHeadVerifyHttp', hash, new Error(`HTTP ${resp.status}`));
+        continue;
+      }
+      const j = await resp.json().catch(() => null);
+      if (!j) continue;
+      if (j.pending === true) continue;
+
+      if (j.ok === true) {
+        // Re-read state for staleness: the chain may have moved past
+        // `head` during the verify wait. Only advance the marker if
+        // head still matches; otherwise next tick picks up the newer
+        // head and verifies that instead.
+        const fresh = await env.REGISTRY_KV.get(ceremonyKey(hash), 'json');
+        if (!fresh || fresh.head_cid !== head) continue;
+        fresh.verified_head_cid = head;
+        fresh.verified_head_count = state.contribution_count || 0;
+        await env.REGISTRY_KV.put(ceremonyKey(hash), JSON.stringify(fresh));
+        continue;
+      }
+
+      if (j.ok === false) {
+        // Structural failure. Brief drain so any in-flight contribute
+        // hits 423 and the contributor's next poll picks up the rolled-
+        // back state. Then revert head_cid + contribution_count to the
+        // last verified marker. Drain auto-expires; no explicit lift.
+        _logCronError(env, 'ceremonyHeadVerifyReject', hash, new Error(j.error || 'verify rejected'));
+        const drainUntil = Math.floor(Date.now() / 1000) + 60;
+        await env.REGISTRY_KV.put(
+          ceremonyDrainKey(hash),
+          String(drainUntil),
+          { expirationTtl: 120 },
+        );
+        await new Promise(r => setTimeout(r, 5000));
+        const fresh = await env.REGISTRY_KV.get(ceremonyKey(hash), 'json');
+        if (!fresh || fresh.head_cid !== head) continue;
+        fresh.head_cid = verifiedCid;
+        fresh.contribution_count = verifiedCount;
+        fresh.rolled_back_count = (fresh.rolled_back_count || 0) + 1;
+        fresh.last_rolled_back_at = Math.floor(Date.now() / 1000);
+        fresh.last_rolled_back_cid = head;
+        await env.REGISTRY_KV.put(ceremonyKey(hash), JSON.stringify(fresh));
+      }
+    } catch (e) {
+      _logCronError(env, 'ceremonyHeadVerifyPass', hash, e);
+    }
+  }
 }
 
 async function handleCeremonyFinalize(req, env, circuitHash, cors, ctx) {
@@ -26876,5 +26953,11 @@ export default {
     // does ensure backfill starts even if the main block is killed mid-way.
     // No-op after `cursor.completed_at` is set.
     ctx.waitUntil(runPmintBackfills(env).catch(() => {}));
+
+    // Ceremony head-soundness sweep. Out-of-band so /contribute latency
+    // stays decoupled from snarkjs.zKey.verifyFromR1cs (which can take
+    // 5+ minutes for the heaviest circuit). See runCeremonyHeadVerifyPass
+    // for the full design — no-op when VERIFY_SERVICE_URL is unset.
+    ctx.waitUntil(runCeremonyHeadVerifyPass(env).catch(() => {}));
   },
 };

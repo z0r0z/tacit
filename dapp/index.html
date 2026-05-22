@@ -690,6 +690,18 @@ button.market-chip .chip-caret {
 .swap-action-pulse {
   animation: swap-action-pulse-kf 1100ms ease-out 2;
 }
+/* Slippage selector ack — fires when primeSwapTileFromOrderbook auto-
+   widens the cap to cover a deep-wick row click. Without it the chip
+   silently jumps from 5% to 25% and the trader doesn't notice the app
+   adjusted protection for them. Brief amber outline draws the eye. */
+@keyframes swap-slip-bump-kf {
+  0%   { box-shadow: 0 0 0 0 rgba(247,147,26,0.6); }
+  40%  { box-shadow: 0 0 0 6px rgba(247,147,26,0); }
+  100% { box-shadow: 0 0 0 0 rgba(247,147,26,0); }
+}
+.swap-slip-bump {
+  animation: swap-slip-bump-kf 900ms ease-out 2;
+}
 /* Click-acknowledgement on orderbook rows. Fires the moment a row is
    clicked so the user gets immediate feedback before the page scrolls
    to the Swap tile and pulses its action. Without this local ack the

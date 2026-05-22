@@ -33,6 +33,23 @@ function serial(fn) {
   return next;
 }
 
+// Per-(r1cs,ptau,head) verify result cache, in-memory, 1 hour TTL. Lets
+// the worker's scheduled handler poll {async:true} every 5 min without
+// re-running the underlying verify — first poll kicks it off and returns
+// {pending:true}, subsequent polls hit the cache (running → pending,
+// done → result). Bounded eviction on each access keeps RAM in check.
+const CACHE_TTL_MS = 60 * 60 * 1000;
+const verifyCache = new Map();
+function _verifyCacheKey({ r1cs_cid, ptau_cid, new_cid }) {
+  return `${r1cs_cid}:${ptau_cid}:${new_cid}`;
+}
+function _verifyCacheEvictStale() {
+  const cutoff = Date.now() - CACHE_TTL_MS;
+  for (const [k, v] of verifyCache.entries()) {
+    if (v.startedAt < cutoff) verifyCache.delete(k);
+  }
+}
+
 async function fetchToFile(cid, dest) {
   if (!CID_RE.test(cid)) throw new Error(`bad cid: ${cid}`);
   const errs = [];
@@ -147,12 +164,33 @@ const server = http.createServer(async (req, res) => {
   } catch {
     return send(res, 400, { ok: false, error: 'expected JSON body' });
   }
-  const { r1cs_cid, ptau_cid, new_cid } = body || {};
+  const { r1cs_cid, ptau_cid, new_cid, async: isAsync } = body || {};
   if (!CID_RE.test(String(r1cs_cid || '')) || !CID_RE.test(String(ptau_cid || '')) || !CID_RE.test(String(new_cid || ''))) {
     return send(res, 400, { ok: false, error: 'r1cs_cid, ptau_cid, new_cid all required and must be CID-shaped' });
   }
+  _verifyCacheEvictStale();
+  const key = _verifyCacheKey({ r1cs_cid, ptau_cid, new_cid });
+  if (isAsync) {
+    // Poll mode: first call starts the verify and returns {pending:true};
+    // subsequent calls return {pending:true} while it's running, or the
+    // cached result once done.
+    const cached = verifyCache.get(key);
+    if (cached && cached.state === 'done') return send(res, 200, cached.result);
+    if (cached && cached.state === 'running') {
+      return send(res, 200, { pending: true, runningMs: Date.now() - cached.startedAt });
+    }
+    verifyCache.set(key, { state: 'running', startedAt: Date.now() });
+    serial(() => runVerify({ r1cs_cid, ptau_cid, new_cid })).then(
+      result => verifyCache.set(key, { state: 'done', result, startedAt: Date.now() }),
+      err   => verifyCache.set(key, { state: 'done', result: { ok: false, error: (err && err.message) || String(err) }, startedAt: Date.now() }),
+    );
+    return send(res, 200, { pending: true, runningMs: 0 });
+  }
+  // Sync path. Cache the result so a follow-up {async:true} poll returns
+  // instantly instead of re-running the same verify.
   try {
     const result = await serial(() => runVerify({ r1cs_cid, ptau_cid, new_cid }));
+    verifyCache.set(key, { state: 'done', result, startedAt: Date.now() });
     return send(res, 200, result);
   } catch (e) {
     return send(res, 502, { ok: false, error: (e && e.message) || String(e) });
