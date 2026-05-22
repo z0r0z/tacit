@@ -5779,19 +5779,42 @@ async function _peekCidPrefix(cid, n) {
     'https://content.wrappr.wtf/ipfs/',
     'https://ipfs.io/ipfs/',
     'https://w3s.link/ipfs/',
+    'https://dweb.link/ipfs/',
   ];
   for (const gw of gateways) {
     try {
       const r = await fetch(gw + cid, {
         headers: { Range: `bytes=0-${n - 1}` },
-        signal: AbortSignal.timeout(5000),
+        // 5s was too tight under contributor load — public gateways
+        // routinely TTFB > 5s for cold-cache CIDs; 12s gives headroom
+        // without blowing the per-request wall-clock budget.
+        signal: AbortSignal.timeout(12000),
+        // CF runtime aggressively caches GET responses by URL; without
+        // an explicit cache: 'no-store' the Range header gets stripped
+        // on the cached hot path and we get the full body back (or worse,
+        // an empty cached response from a prior failed peek). Bypassing
+        // the cache is correct here — these are small one-shot fetches.
+        cache: 'no-store',
       });
       if (r.ok || r.status === 206) {
         const buf = await r.arrayBuffer();
-        if (buf.byteLength) return new Uint8Array(buf);
+        if (buf.byteLength) {
+          console.log(`[peek ok] gw=${gw} cid=${cid.slice(0,12)}… status=${r.status} bytes=${buf.byteLength}`);
+          // Some gateways ignore Range and return the full body — slice
+          // the prefix we wanted so downstream code never sees an
+          // unexpectedly large buffer in memory.
+          const u8 = new Uint8Array(buf);
+          return u8.length > n ? u8.slice(0, n) : u8;
+        }
+        console.log(`[peek empty] gw=${gw} cid=${cid.slice(0,12)}… status=${r.status}`);
+      } else {
+        console.log(`[peek nonok] gw=${gw} cid=${cid.slice(0,12)}… status=${r.status}`);
       }
-    } catch { /* try next gateway */ }
+    } catch (e) {
+      console.log(`[peek throw] gw=${gw} cid=${cid.slice(0,12)}… err=${(e && e.message) || e}`);
+    }
   }
+  console.log(`[peek fail] cid=${cid.slice(0,12)}… all gateways exhausted`);
   return null;
 }
 
