@@ -4482,6 +4482,59 @@ body > #amm-contrib-section {
   margin-left: 8px;
 }
 
+/* Refinement pass over your-open-orders row chrome:
+   the prior inline styles (defined per-row in tacit.js) ship as solid
+   color-filled boxes for the side pill, rank chip, matchable badge and
+   walk-away marker — collectively they read as a noisy grid of pills
+   in a small space. The block below quiets those without touching the
+   per-row template: we re-style via attribute scope + !important so the
+   inline `background`/`border`/`color` lose to the cascade. Side pill
+   loses its box entirely (color-coded text label only); rank + match
+   chips lose their solid backgrounds and tighten to a single faint
+   underline-style border. Action cell gets a hair more breathing
+   room between Take / Improve / Cancel so they don't crowd. */
+[data-your-orders] .market-bid-state--mine {
+  background: transparent !important;
+  border: 0 !important;
+  padding: 0 !important;
+  min-height: 0 !important;
+  font-size: 9.5px !important;
+  font-weight: 700 !important;
+  letter-spacing: 0.08em !important;
+}
+[data-your-orders] td > span[title][style*="#fff3e0"],
+[data-your-orders] td > span[title][style*="#fff8eb"],
+[data-your-orders] td > span[title][style*="#e9f4ff"],
+[data-your-orders] td > span[style*="#fee"]:not(.market-bid-state),
+[data-your-orders] td > span.muted[style*="border:1px solid var(--ink-faint)"] {
+  background: transparent !important;
+  border: 0 !important;
+  padding: 0 !important;
+  margin-left: 6px !important;
+  letter-spacing: 0.04em !important;
+  opacity: 0.8 !important;
+}
+[data-your-orders] .orders-actions-cell {
+  padding-left: 12px !important;
+}
+[data-your-orders] .orders-actions-cell .orders-action {
+  margin-left: 12px !important;
+  font-weight: 500 !important;
+}
+[data-your-orders] .orders-action--improve { font-weight: 500 !important; }
+/* Drop the bordered card chrome on the wrapper itself so the panel
+   sits flush with the asset detail header — the existing rule already
+   does this for the top-level [data-your-orders] but the inline
+   styles at panel-construction time were leaking the warm bg back
+   in on some renders. !important here pins the cleaner look. */
+[data-your-orders] {
+  background: transparent !important;
+  border: 0 !important;
+  border-top: 1px dashed rgba(26,26,26,0.18) !important;
+  border-bottom: 1px dashed rgba(26,26,26,0.18) !important;
+  padding: 10px 18px !important;
+}
+
 /* Mobile (≤640px): the 6-column orders table overflows even on phones
    with a moderately wide viewport — table-row layout can't compress
    below the sum of column min-widths, so AGE + ACTION get clipped. Flip
@@ -5011,6 +5064,70 @@ body > #amm-contrib-section {
 #tab-wallet .section-body > .flex {
   gap: 6px !important;
   flex-wrap: wrap !important;
+}
+/* Wallet hero action row — render as understated text chips rather
+   than bordered buttons. The row sits directly under the balance
+   hero and reads better as "options" than as a bank of CTAs; a
+   subtle background tint on hover confirms the tap target without
+   shouting. Overrides the bordered #tab-wallet button rules above
+   via higher specificity (class on the parent + child selector). */
+#tab-wallet .wallet-actions {
+  gap: 2px !important;
+  row-gap: 4px !important;
+  align-items: center !important;
+}
+#tab-wallet .wallet-actions > button.primary,
+#tab-wallet .wallet-actions > button:not(.primary):not(.btn-copy):not(.tab):not(.mkt-chip):not([data-act]) {
+  background: transparent !important;
+  border: 1px solid transparent !important;
+  color: var(--ink-mid) !important;
+  font-weight: 500 !important;
+  letter-spacing: 0.08em !important;
+  padding: 5px 9px !important;
+  min-height: 0 !important;
+  font-size: 10.5px !important;
+  box-shadow: none !important;
+}
+#tab-wallet .wallet-actions > button.primary:hover:not(:disabled),
+#tab-wallet .wallet-actions > button:not(.primary):not(.btn-copy):not(.tab):not(.mkt-chip):not([data-act]):hover:not(:disabled) {
+  background: var(--bg-alt) !important;
+  color: var(--ink) !important;
+  border-color: var(--ink-faint) !important;
+}
+#tab-wallet .wallet-actions > button:disabled {
+  color: var(--ink-faint) !important;
+  background: transparent !important;
+  border-color: transparent !important;
+}
+/* Reusable "quiet action row" treatment for any tab that wants
+   a strip of text-button options alongside a single bordered
+   primary CTA. Currently applied to: Holdings top row (Markets
+   primary + Rescan / Import share-link / Take atomic offer
+   secondaries). Mirrors the wallet-actions look for cohesion.
+   Higher specificity ladder beats stray button:not(.primary)
+   rules that target the wallet tab specifically; for holdings
+   there is no equivalent override so a single-level class is
+   enough here. */
+.quiet-actions > button:not(.primary):not(.btn-copy):not(.tab):not(.mkt-chip):not([data-act]) {
+  background: transparent !important;
+  border: 1px solid transparent !important;
+  color: var(--ink-mid) !important;
+  font-weight: 500 !important;
+  letter-spacing: 0.08em !important;
+  padding: 5px 9px !important;
+  min-height: 0 !important;
+  font-size: 10.5px !important;
+  box-shadow: none !important;
+}
+.quiet-actions > button:not(.primary):not(.btn-copy):not(.tab):not(.mkt-chip):not([data-act]):hover:not(:disabled) {
+  background: var(--bg-alt) !important;
+  color: var(--ink) !important;
+  border-color: var(--ink-faint) !important;
+}
+.quiet-actions > button:disabled {
+  color: var(--ink-faint) !important;
+  background: transparent !important;
+  border-color: transparent !important;
 }
 /* Key/address rows: drop the bulky 1px dashed mono-box border in
    favor of a thin dotted underline so the address reads as inline
@@ -7117,7 +7234,7 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
       <!-- Primary actions row. Visibility is state-driven in renderWalletCard():
            connect-buttons surface only when no ext wallet is bound; top-up shows
            when an ext wallet is connected; faucet shows on signet only. -->
-      <div class="flex" style="margin-top:12px;gap:6px;flex-wrap:wrap;">
+      <div class="flex wallet-actions" style="margin-top:12px;gap:6px;flex-wrap:wrap;">
         <button id="btn-refresh">↻ Refresh</button>
         <button id="btn-lock" title="Lock the in-browser tacit signing key. You'll be prompted for the passphrase on the next action.">Lock</button>
         <button id="btn-drip" class="primary" style="display:none;">Demo drip</button>
@@ -7938,7 +8055,7 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
       <span id="holdings-status" class="muted"></span>
     </div>
     <div class="section-body">
-      <div class="flex" style="margin-bottom:14px;flex-wrap:wrap;">
+      <div class="flex quiet-actions" style="margin-bottom:14px;flex-wrap:wrap;align-items:center;">
         <button id="btn-holdings-markets" class="primary" title="Browse live listings, bids, and trades across every asset.">→ Markets</button>
         <button id="btn-rescan">↻ Rescan UTXOs</button>
         <button id="btn-import-share">Import share-link</button>
