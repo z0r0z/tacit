@@ -5193,21 +5193,58 @@ function _buildUpstreamInit(opts) {
   }
   return { init, cleanup };
 }
+// Retry-on-abort wrapper: mempool.space upstreams occasionally hang past
+// our 8s timeout. Without a retry the single AbortController firing
+// propagates as "The operation was aborted" to every caller — including
+// publishPreauthSale's commitmentForUtxo lookup, which surfaces to users
+// as "Instant listing failed: commitment lookup failed: The operation
+// was aborted" with no recovery path. One transparent retry with a
+// fresh AbortController turns most transient hangs into a 2-second
+// hiccup instead of a hard failure. Callers that explicitly don't want
+// the retry pass `abortRetry: false`.
+async function _fetchUpstreamWithAbortRetry(url, opts) {
+  const allowRetry = opts.abortRetry !== false;
+  const { init: init1, cleanup: cleanup1 } = _buildUpstreamInit(opts);
+  try {
+    return await fetch(url, init1);
+  } catch (e) {
+    if (cleanup1) cleanup1();
+    // AbortError surfaces as DOMException with name 'AbortError' (some
+    // runtimes use Error with the same name + message). Network errors
+    // (TypeError "Failed to fetch") get the same one-shot retry treatment
+    // since they're equally transient.
+    const isAbort = e && (e.name === 'AbortError' || /aborted/i.test(e.message || ''));
+    const isNetwork = e && (e.name === 'TypeError' || /failed to fetch|network/i.test(e.message || ''));
+    if (!allowRetry || (!isAbort && !isNetwork)) throw e;
+    // Tiny breather before the retry so a rate-limited upstream gets a
+    // moment to clear. Then bump the timeout 50% to give the slow path
+    // a second to land before giving up.
+    await new Promise(res => setTimeout(res, 300));
+    const retryOpts = {
+      ...opts,
+      timeoutMs: Number.isFinite(opts.timeoutMs) && opts.timeoutMs > 0
+        ? Math.round(opts.timeoutMs * 1.5)
+        : Math.round(UPSTREAM_DEFAULT_TIMEOUT_MS * 1.5),
+    };
+    const { init: init2, cleanup: cleanup2 } = _buildUpstreamInit(retryOpts);
+    try {
+      return await fetch(url, init2);
+    } finally {
+      if (cleanup2) cleanup2();
+    }
+  } finally {
+    if (cleanup1) cleanup1();
+  }
+}
 async function apiText(env, path, opts = {}, network = 'signet') {
   const base = networkApi(env, network);
-  const { init, cleanup } = _buildUpstreamInit(opts);
-  let r;
-  try { r = await fetch(`${base}${path}`, init); }
-  finally { if (cleanup) cleanup(); }
+  const r = await _fetchUpstreamWithAbortRetry(`${base}${path}`, opts || {});
   if (!r.ok) throw new Error(`${network} ${r.status}: ${(await r.text()).slice(0, 200)}`);
   return r.text();
 }
 async function apiJson(env, path, opts = {}, network = 'signet') {
   const base = networkApi(env, network);
-  const { init, cleanup } = _buildUpstreamInit(opts);
-  let r;
-  try { r = await fetch(`${base}${path}`, init); }
-  finally { if (cleanup) cleanup(); }
+  const r = await _fetchUpstreamWithAbortRetry(`${base}${path}`, opts || {});
   if (!r.ok) throw new Error(`${network} ${r.status}: ${(await r.text()).slice(0, 200)}`);
   return r.json();
 }
