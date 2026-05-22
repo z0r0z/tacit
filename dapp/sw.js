@@ -23,7 +23,7 @@
 //   activate → delete old cache versions
 //   fetch → route by URL pattern, fall back to network on any error
 
-const CACHE_VERSION = 'v1-stealth-protocol-token-deep-walk';
+const CACHE_VERSION = 'v1-stealth-per-wallet-scan-gate';
 const STATIC_CACHE  = `tacit-static-${CACHE_VERSION}`;
 const IMMUTABLE_CACHE = `tacit-immutable-${CACHE_VERSION}`;
 
