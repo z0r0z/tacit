@@ -402,12 +402,24 @@ button[data-act="petch-mint"]:not(:disabled):active {
   flex-shrink: 0; align-self: stretch;
 }
 
-input, textarea, select {
+input:not([type="checkbox"]):not([type="radio"]), textarea, select {
   font-family: inherit; font-size: 12px; padding: 9px 10px;
   border: 1px solid var(--ink); background: var(--bg);
   color: var(--ink); width: 100%;
 }
-input:focus, textarea:focus { outline: 2px solid var(--orange); outline-offset: -1px; }
+input:not([type="checkbox"]):not([type="radio"]):focus, textarea:focus {
+  outline: 2px solid var(--orange); outline-offset: -1px;
+}
+/* Checkboxes / radios use the platform-native control. The general input
+   rules above used to apply a 1px border + 9px padding + 100% width to
+   ALL inputs, including these — producing a fat dark rectangle around
+   the native control plus an orange focus-ring rectangle on click. Now
+   they render as expected: small native control, no surrounding box. */
+input[type="checkbox"], input[type="radio"] {
+  width: auto;
+  margin: 0;
+  cursor: pointer;
+}
 
 /* Form-style selects: replace the platform-native arrow (which renders
    off-center on Chrome/Safari with our padding) with a consistent
@@ -6126,8 +6138,11 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
 .export-ack {
   display: none; align-items: center; gap: 6px;
   font-size: 11px; color: var(--ink-mid);
+  white-space: nowrap;
+  flex-shrink: 0;
+  cursor: pointer;
 }
-.export-ack input { margin: 0; }
+.export-ack input { margin: 0; flex-shrink: 0; }
 
 /* Header help button — opens the FAQ modal. Sits next to the network
    selector via .net-row inside .net-control; subtle white-on-black
@@ -8088,12 +8103,26 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
       <span id="holdings-status" class="muted"></span>
     </div>
     <div class="section-body">
-      <div class="flex quiet-actions" style="margin-bottom:14px;flex-wrap:wrap;align-items:center;">
+      <div class="flex quiet-actions" style="margin-bottom:8px;flex-wrap:wrap;align-items:center;">
         <button id="btn-holdings-markets" class="primary" title="Browse live listings, bids, and trades across every asset.">→ Markets</button>
         <button id="btn-rescan">↻ Rescan UTXOs</button>
-        <button id="btn-import-share">Import share-link</button>
-        <button id="btn-take-atomic">Take atomic offer</button>
       </div>
+      <!-- Counterparty paste-in flows. Tucked behind a collapsible because
+           99% of users never need them — incoming transfers are auto-
+           discovered from chain. Surfaced only when a counterparty hands
+           you a share-link URL or an atomic-offer JSON. -->
+      <details style="margin-bottom:14px;">
+        <summary style="cursor:pointer;font-size:11px;font-weight:500;text-transform:uppercase;letter-spacing:0.12em;color:var(--ink-mid);padding:6px 0;"><span class="det-arrow" style="display:inline-block;transition:transform 0.1s;">▸</span> Got a share-link or atomic offer from someone?</summary>
+        <div style="padding-top:10px;border-top:1px dashed var(--ink-faint);margin-top:6px;">
+          <div class="muted" style="font-size:11px;line-height:1.6;margin-bottom:10px;">
+            Most incoming transfers are auto-discovered — you don't need either button. Use these only when a counterparty hands you a paste-in payload (share-link URL or an OTC atomic-offer JSON).
+          </div>
+          <div class="flex" style="flex-wrap:wrap;align-items:center;gap:8px;">
+            <button id="btn-import-share" title="Open a paste field for a share-link URL (https://…/#recv=…). The dapp validates the claim against on-chain data before recording the credit. Optional — receivers usually auto-discover transfers without one.">Import share-link</button>
+            <button id="btn-take-atomic" title="Open a paste field for an atomic-offer JSON shared by a maker (OTC settlement). The dapp validates the offer cryptographically and atomically settles in one Bitcoin tx.">Take atomic offer</button>
+          </div>
+        </div>
+      </details>
       <div data-pending-settlements-strip style="display:none;"></div>
       <!-- Soft-cancel risk surface. Lists locally-tracked listings the user
            soft-cancelled whose asset UTXO is still unspent — the pre-signed
