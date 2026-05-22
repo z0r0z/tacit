@@ -5533,6 +5533,34 @@ body[data-market-mode="asset"] [data-market-bids-section] {
   .filter-pill { font-size: 9px; padding: 5px 10px; }
 }
 
+/* Minimal text toggle. Transparent + ink-mid by default; underline + ink
+   on the active option. Matches the wallet-actions text-chip convention —
+   controls that read as inline options rather than a button bank. Used by
+   the wallet lander's Most active / Recent switch. */
+.text-toggle {
+  font-family: inherit;
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  background: transparent;
+  color: var(--ink-mid);
+  border: 0;
+  padding: 2px 0;
+  cursor: pointer;
+  text-decoration: none;
+  font-weight: 500;
+}
+.text-toggle:hover { color: var(--ink); }
+.text-toggle.active {
+  color: var(--ink);
+  text-decoration: underline;
+  text-underline-offset: 4px;
+  text-decoration-thickness: 1px;
+}
+@media (max-width: 480px) {
+  .text-toggle { font-size: 10px; }
+}
+
 /* Outstanding atomic-offer rows in the Holdings tab. Three stacked lines:
    status + asset + price · meta · actions. Status word is colored by state;
    monospace amount; small action buttons. */
@@ -7218,6 +7246,7 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
             <div class="mono-box" id="w-address" style="flex:1;min-width:0;">—</div>
             <button class="btn-copy" data-copy-target="w-address" title="Copy address" type="button">copy</button>
             <a class="muted" id="explorer-link" target="_blank" rel="noopener noreferrer" style="font-size:10px;align-self:center;white-space:nowrap;">explorer ↗</a>
+            <a class="muted" id="tacitscan-link" target="_blank" rel="noopener noreferrer" style="font-size:10px;align-self:center;white-space:nowrap;display:none;" title="View this address on tacitscan (independent block explorer)">tacitscan ↗</a>
           </div>
         </dd>
         <dt>Shielded <span tabindex="0" role="img" aria-label="What is a shielded address?" title="Opt-in privacy upgrade for tacit token transfers (CXFER). Senders who paste this instead of your pubkey produce a per-tx-unique recipient marker on chain (BIP-341-style blinded-pubkey commit) with no apparent link to your published identity. Same balance — you receive normally. Does not apply to plain BTC sends; those still need a bc1q…/tb1q… address." style="cursor:help;font-size:9px;color:var(--ink-mid);border:1px solid var(--ink-faint);border-radius:50%;width:11px;height:11px;display:inline-flex;align-items:center;justify-content:center;line-height:1;vertical-align:1px;margin-left:2px;text-transform:none;letter-spacing:0;font-family:Georgia,'Times New Roman',serif;font-style:italic;">i</span></dt>
@@ -7329,9 +7358,9 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
     </div>
     <div class="section-body">
       <div id="recent-etches-stats" style="margin-bottom:10px;font-size:11px;display:none;"></div>
-      <div id="recent-etches-toggle" style="margin-bottom:10px;display:none;gap:6px;">
-        <button class="filter-pill active" data-lander-sort="active" type="button" title="6 assets ranked by activity — 24h trade volume + cumulative trades dominate; mint counts weighted but trade activity always wins on ties">Most active</button>
-        <button class="filter-pill" data-lander-sort="recent" type="button" title="Newest 6 etches on this network">Recent</button>
+      <div id="recent-etches-toggle" style="margin-bottom:10px;display:none;gap:18px;align-items:center;">
+        <button class="text-toggle active" data-lander-sort="active" type="button" title="6 assets ranked by activity — 24h trade volume + cumulative trades dominate; mint counts weighted but trade activity always wins on ties">Most active</button>
+        <button class="text-toggle" data-lander-sort="recent" type="button" title="Newest 6 etches on this network">Recent</button>
       </div>
       <div id="recent-etches-list"><div class="recent-grid recent-grid-skeleton" aria-busy="true"><div class="recent-tile recent-tile-skeleton"><div class="skeleton-row medium"></div><div class="skeleton-row short"></div></div><div class="recent-tile recent-tile-skeleton"><div class="skeleton-row medium"></div><div class="skeleton-row short"></div></div><div class="recent-tile recent-tile-skeleton"><div class="skeleton-row medium"></div><div class="skeleton-row short"></div></div><div class="recent-tile recent-tile-skeleton"><div class="skeleton-row medium"></div><div class="skeleton-row short"></div></div><div class="recent-tile recent-tile-skeleton"><div class="skeleton-row medium"></div><div class="skeleton-row short"></div></div><div class="recent-tile recent-tile-skeleton"><div class="skeleton-row medium"></div><div class="skeleton-row short"></div></div></div></div>
     </div>
@@ -7916,6 +7945,7 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
         <div class="flex" style="gap:8px;align-items:center;margin-bottom:8px;">
           <button id="btn-claim-discover-refresh" type="button" style="font-size:11px;padding:2px 8px;background:transparent;color:var(--ink-mid);border:1px solid var(--ink-faint);" title="Re-fetch active drops from the worker">↻ Refresh</button>
           <span id="claim-discover-status" class="muted" style="font-size:11px;"></span>
+          <a id="claim-tacitscan-queue" href="https://www.tacitscan.io/airdrop/queue" target="_blank" rel="noopener noreferrer" class="muted" style="font-size:11px;margin-left:auto;display:none;" title="See the live chain-side airdrop fulfilment queue on tacitscan">queue on tacitscan ↗</a>
         </div>
         <div id="claim-submissions"></div>
         <div id="claim-discover-list"><div class="muted" style="padding:14px;text-align:center;font-style:italic;font-size:11px;">no drops loaded yet · click Refresh</div></div>
