@@ -2397,35 +2397,20 @@ tr[data-recent-activity] .market-token-sub::after {
   padding: 6px 14px;
   font-size: 11px;
 }
-/* Narrow screens: collapse the 6-column grid back to a tighter stacked
-   layout. The full grid would either clip or force horizontal scroll;
-   we drop the secondary columns (vs-mark, expires) entirely and
-   stack price + qty + total + action on a 2-col grid that fits
-   phone widths. The parent grid's min-width: 860px still triggers a
-   horizontal scroller for power users who want the full table. */
+/* Phone + small-tablet ladder mins. The desktop 140/80/60 column mins
+   don't fit when .mkt-orderbook is rendered as two side-by-side columns
+   at 520-720px (each side ~244-336px) or stacked at 360-519px (full-
+   width ~284px). Drop the mins on both ladders so the same 3-col
+   layout (price · qty · vs-mid) — established by commit 5efb3f2 —
+   fits at every viewport without horizontal scroll. Keep the header
+   row visible: 3-col labels are useful at every width. */
 @media (max-width: 720px) {
-  .market-listing-grid.market-listing-rows-mode {
-    min-width: 0;
-  }
+  .market-listing-grid.market-listing-rows-mode { min-width: 0; }
+  .market-bids-row,
   .market-listing-grid.market-listing-rows-mode .market-listing-tile {
-    grid-template-columns: 1fr 1fr;
-    gap: 8px;
-  }
-  .market-listing-grid.market-listing-rows-mode .market-listing-vsmark,
-  .market-listing-grid.market-listing-rows-mode .market-listing-expires {
-    display: none;
-  }
-  .market-listing-grid.market-listing-rows-mode .market-listing-total {
-    grid-column: 1 / -1;
-    justify-content: space-between;
-  }
-  .market-listing-grid.market-listing-rows-mode .market-listing-actions {
-    grid-column: 1 / -1;
-  }
-  /* The header row only makes sense when the full grid is visible. On
-     phones the per-tile labels carry their own context inline. */
-  .market-listing-grid.market-listing-rows-mode .market-listing-tile.market-listing-row-head {
-    display: none;
+    grid-template-columns: minmax(70px, 1.4fr) minmax(50px, 1fr) minmax(40px, 0.6fr);
+    gap: 6px;
+    padding: 5px 10px;
   }
 }
 /* On narrow tiles (≤220px), two side-by-side action buttons (e.g.
@@ -2678,36 +2663,18 @@ tr[data-recent-activity] .market-token-sub::after {
      drop the "per token" suffix tail which repeats across every row. */
   .market-table-value { font-size: 12px; }
   .market-table-sub { font-size: 10px; }
-}
 
-  /* Trading-page reflow for phones. The bids ladder and asks table
-     both declare `min-width: 860/960px` on desktop so the dense
-     multi-column grids stay legible. On a 375px viewport that forces
-     horizontal scroll — terrible on touch (easy to swipe the wrong
-     axis, easy to lose context off-screen). Below 600px we drop those
-     constraints AND restructure the bid row into a stacked card so
-     every cell is reachable without scrolling. The header row hides
-     since each cell self-labels in card mode. */
+  /* Bids ladder wrapper resets: drop desktop-only horizontal scroll
+     and min-width on the table + filter-row so they fit the narrower
+     orderbook column. The bid row's grid template itself is set by
+     the ≤720px rule above so both ladders stay visually parallel
+     (3-col flat: price · qty · vs-mid). */
   .market-bids-list { overflow-x: visible; }
   .market-bids-filter-row { min-width: 0; flex-wrap: wrap; }
   .market-bids-table { min-width: 0; }
-  .market-bids-row-head { display: none; }
-  .market-bids-row {
-    grid-template-columns: 1fr auto;
-    grid-template-rows: auto auto auto;
-    gap: 6px 12px;
-    padding: 12px;
-  }
-  .market-bids-row > *:nth-child(1) { grid-row: 1; grid-column: 1; }
-  .market-bids-row > *:nth-child(2) { grid-row: 2; grid-column: 1; }
-  .market-bids-row > *:nth-child(3) { grid-row: 2; grid-column: 2; text-align: right; }
-  .market-bids-row > *:nth-child(4) { grid-row: 3; grid-column: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-  .market-bids-row > *:nth-child(5) { grid-row: 3; grid-column: 2; text-align: right; font-size: 10px; }
-  .market-bids-row > *:nth-child(6) { grid-row: 1; grid-column: 2; justify-self: end; }
 
-  /* Asks table: same horizontal-scroll problem. Strip the
-     desktop-only min-widths so it fits inside its wrap; downsize
-     padding + font so 4 columns still fit comfortably. */
+  /* Browse table mobile reflow: strip the desktop-only min-widths +
+     downsize cell padding + font so 4 columns fit comfortably. */
   .market-token-table-wrap { overflow-x: visible; }
   .market-token-table { min-width: 0; }
   .market-token-cell { min-width: 0; gap: 8px; }
@@ -2967,9 +2934,12 @@ details.protocol-section > summary.protocol-h3:hover { color: var(--orange); }
 }
 /* Petch tiles whose cap is reached / window closed dim out so live mints
    visually dominate the list. Hover restores full opacity so users can
-   still read the cap copy + verify on-chain. Pure CSS — no JS cost. */
+   still read the cap copy + verify on-chain. Cursor + click handler
+   (wired in renderPetchDiscover) route the whole card to the asset's
+   Market view since the Mint button is hidden when capFull. */
 #petch-discover-list .asset-card[data-petch-status="sold-out"] {
   opacity: 0.55;
+  cursor: pointer;
 }
 @media (hover: hover) {
   #petch-discover-list .asset-card[data-petch-status="sold-out"]:hover {
@@ -7073,6 +7043,37 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
     padding: 6px 26px 6px 10px;
   }
 }
+
+/* Send tab mobile layout. Equal-width mode pills, stacked primary/secondary
+   action buttons, and a label-above-value preview so addresses and amounts
+   don't get squeezed under the 150px tx-preview label column. */
+#tab-transfer #send-mode-pills { flex-wrap: wrap; }
+@media (max-width: 480px) {
+  #tab-transfer .section-body { padding: 12px 12px; }
+  #tab-transfer #send-mode-pills > .filter-pill {
+    flex: 1 1 calc(50% - 3px);
+    text-align: center;
+    padding: 8px 6px;
+    font-size: 10px;
+  }
+  #tab-transfer .send-actions { flex-direction: column; align-items: stretch; }
+  #tab-transfer .send-actions > button { width: 100%; }
+  #tab-transfer .send-actions > #sats-status { text-align: center; }
+  #tab-transfer .tx-preview .row { display: block; padding: 5px 0; }
+  #tab-transfer .tx-preview .row .label {
+    display: block; min-width: 0; padding-right: 0;
+    font-size: 9px; text-transform: uppercase; letter-spacing: 0.08em;
+    margin-bottom: 2px;
+  }
+  #tab-transfer .tx-preview .row .idx { min-width: 22px; }
+  #tab-transfer #transfer-share .flex > .btn,
+  #tab-transfer #transfer-share .flex > button,
+  #tab-transfer #sats-success .flex > .btn,
+  #tab-transfer #sats-success .flex > button {
+    flex: 1 1 100%;
+    text-align: center;
+  }
+}
 </style>
 <!-- Pre-boot script: deep-link tab pre-activation. Runs synchronously
      during head parse so a fresh load with #tab=market doesn't paint
@@ -7679,7 +7680,7 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
 
         <div id="transfer-preview" style="display:none;"></div>
 
-        <div class="flex" style="margin-top:18px;">
+        <div class="flex send-actions" style="margin-top:18px;">
           <button id="btn-transfer-preview">1. Review transfer</button>
           <button id="btn-transfer-broadcast" class="primary" disabled title="Click 'Review transfer' first to see what you're about to send.">2. Confirm &amp; send</button>
         </div>
@@ -7716,7 +7717,7 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
 
         <div id="sats-preview" style="display:none;"></div>
 
-        <div class="flex" style="margin-top:18px;align-items:center;gap:10px;">
+        <div class="flex send-actions" style="margin-top:18px;align-items:center;gap:10px;">
           <button id="btn-sats-preview">1. Review send</button>
           <button id="btn-sats-broadcast" class="primary" disabled title="Click 'Review send' first to see exactly which UTXOs will be spent.">2. Confirm &amp; send</button>
           <span id="sats-status" class="muted" style="font-size:11px;"></span>
