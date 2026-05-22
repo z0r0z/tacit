@@ -5694,6 +5694,81 @@ function _validateZkeyShape(bytes, opts = {}) {
   return null;
 }
 
+// Phase 2 invariant: the leading portion of a Groth16 zkey — section 1
+// (protocol id) plus section 2 up to vk_delta_1 (curve params + circuit
+// dims + vk_alpha_1 + vk_beta_1 + vk_beta_2 + vk_gamma_2) — is derived
+// at newZKey time from (r1cs, ptau) and never mutates across Phase 2
+// contributions. vk_delta_1 and vk_delta_2 are the only header fields
+// that change. Extracting and comparing this constant prefix between
+// the chain's current head and a new contribution gives the worker a
+// cheap continuity check without running full snarkjs verifyFromR1cs.
+// Returns null on parse failure so callers can choose soft-skip vs
+// fail-closed.
+function _extractZkeyConstHeader(bytes) {
+  if (!bytes || bytes.length < 24) return null;
+  if (!_hasCeremonyMagic(bytes, 'zkey')) return null;
+  const dv = new DataView(bytes.buffer, bytes.byteOffset, 12);
+  const nSections = dv.getUint32(8, true);
+  if (nSections < 2 || nSections > 32) return null;
+  let off = 12;
+  let s1 = null, s2 = null;
+  for (let i = 0; i < nSections; i++) {
+    if (off + 12 > bytes.length) return null;
+    const dv2 = new DataView(bytes.buffer, bytes.byteOffset + off, 12);
+    const id = dv2.getUint32(0, true);
+    const sz = Number(dv2.getBigUint64(4, true));
+    if (sz < 0 || off + 12 + sz > bytes.length) return null;
+    if (id === 1) s1 = bytes.slice(off + 12, off + 12 + sz);
+    if (id === 2) s2 = bytes.slice(off + 12, off + 12 + sz);
+    off += 12 + sz;
+    if (s1 && s2) break;
+  }
+  if (!s1 || !s2 || s2.length < 12) return null;
+  const dv3 = new DataView(s2.buffer, s2.byteOffset, s2.length);
+  const n8q = dv3.getUint32(0, true);
+  if (n8q < 1 || n8q > 128) return null;
+  if (s2.length < 4 + n8q + 4) return null;
+  const n8r = dv3.getUint32(4 + n8q, true);
+  if (n8r < 1 || n8r > 128) return null;
+  // section 2 layout for Groth16:
+  //   n8q(4) q(n8q) n8r(4) r(n8r) nVars(4) nPub(4) domSize(4)
+  //   vk_alpha_1(2*n8q) vk_beta_1(2*n8q) vk_beta_2(4*n8q) vk_gamma_2(4*n8q)
+  //   vk_delta_1(2*n8q) vk_delta_2(4*n8q)   ← these two mutate per contribution
+  const constPrefixLen =
+    4 + n8q +
+    4 + n8r +
+    4 + 4 + 4 +
+    2 * n8q +
+    2 * n8q +
+    4 * n8q +
+    4 * n8q;
+  if (s2.length < constPrefixLen) return null;
+  const s2pfx = s2.slice(0, constPrefixLen);
+  const out = new Uint8Array(s1.length + s2pfx.length);
+  out.set(s1, 0);
+  out.set(s2pfx, s1.length);
+  return out;
+}
+
+function _bytesEq(a, b) {
+  if (!a || !b || a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+}
+
+function _u8ToBase64(u8) {
+  let s = '';
+  for (let i = 0; i < u8.length; i++) s += String.fromCharCode(u8[i]);
+  return btoa(s);
+}
+
+function _base64ToU8(b64) {
+  const s = atob(b64);
+  const out = new Uint8Array(s.length);
+  for (let i = 0; i < s.length; i++) out[i] = s.charCodeAt(i);
+  return out;
+}
+
 // Range-fetch the first N bytes of a CID from public gateways so the
 // CID-path of /contribute can run header-level zkey shape validation
 // without pulling the full (up to 100 MB) blob through the worker.
@@ -6650,6 +6725,7 @@ async function handleCeremonyContribute(req, env, circuitHash, cors, ctx) {
   const _releaseClaim = async () => { try { await env.REGISTRY_KV.delete(dupKey); } catch {} };
 
   let newCid;
+  let newConstHdr = null;  // extracted below; used for header-continuity check after CAS
   if (haveZkeyFile) {
     // File path: structural sniff before pinning + pin to Pinata
     // (original flow; works for circuits <100MB and on networks where
@@ -6660,6 +6736,11 @@ async function handleCeremonyContribute(req, env, circuitHash, cors, ctx) {
       await _releaseClaim();
       return jsonResponse({ error: shapeErr }, 400, cors);
     }
+    newConstHdr = _extractZkeyConstHeader(zkeyBytes);
+    if (!newConstHdr) {
+      await _releaseClaim();
+      return jsonResponse({ error: 'zkey shape: could not extract sections 1+2 header prefix' }, 400, cors);
+    }
     try {
       newCid = await pinBinaryToIpfs(env, zkeyBytes, `circuit_${circuitHash.slice(0,8)}_${String(state.contribution_count + 1).padStart(4, '0')}.zkey`);
     } catch (e) {
@@ -6667,25 +6748,17 @@ async function handleCeremonyContribute(req, env, circuitHash, cors, ctx) {
       return jsonResponse({ error: 'pin failed: ' + (e.message || 'unknown') }, 502, cors);
     }
   } else {
-    // CID path: client pinned directly to Pinata. Verify magic bytes
-    // by streaming just the first chunk from the IPFS gateway, then
-    // adopt the CID. Streaming + reader.cancel() avoids pulling the
-    // full 91MB through the worker — only the first ~16KB chunk
-    // crosses the wire. If the magic check fails, we reject without
-    // advancing state (the pinned blob stays on Pinata until its TTL
-    // expires; no chain corruption).
-    // Verify the CID by confirming it's pinned in our Pinata account.
-    // Magic-byte sniffing via gateway was unreliable for fresh pins
-    // (public gateway propagation can lag 30+ seconds for large files,
-    // and Pinata has no auth-content endpoint for raw bytes). The
-    // existence check via the API is immediate and provides equivalent
-    // assurance: only uploads through our scoped signed URL land in
-    // our account, so a CID present there came through our flow.
-    //
-    // Trade-off: we no longer enforce snarkjs "zkey" magic at /contribute
-    // time. The next contributor's chain-verify (snarkjs.zKey.verifyFromR1cs)
-    // is the real soundness check; a malformed CID would surface there
-    // and the coordinator can roll back the bad attestation.
+    // CID path: client pinned directly to Pinata. Two-stage validation:
+    //  (1) Confirm the CID is present in our Pinata account via the
+    //      authenticated Files API. Only uploads through our scoped
+    //      signed URL land in the account, so presence here == this
+    //      CID came through our flow.
+    //  (2) Range-fetch a small prefix from a public gateway so the
+    //      shape + Phase 2 header checks (further below) can run.
+    //      Pinata has no auth-content endpoint for raw bytes; public
+    //      gateway propagation can lag for fresh pins, so this peek
+    //      soft-skips on gateway timeout — the existence check above
+    //      remains the load-bearing assurance in that fallback path.
     const apiUrl = `https://api.pinata.cloud/v3/files/public?cid=${encodeURIComponent(zkeyCidProvided)}&limit=1`;
     let pinFound = false;
     let lastErr = '';
@@ -6716,17 +6789,20 @@ async function handleCeremonyContribute(req, env, circuitHash, cors, ctx) {
     // the CID came through our scoped upload flow but says nothing about
     // the bytes themselves; without this peek a /upload-token holder could
     // submit any CID of any blob in our account and the chain would advance
-    // to it. Pulling 1 KB via a gateway Range request is cheap and lets
-    // _validateZkeyShape parse the snarkjs container header + first
-    // section header. Soft-skip if every gateway is unreachable so a
-    // gateway outage doesn't block legit contributions.
-    const peek = await _peekCidPrefix(zkeyCidProvided, 1024);
+    // to it. Pulling 2 KB via a gateway Range request is cheap and lets
+    // _validateZkeyShape parse the container header + first section header
+    // AND lets _extractZkeyConstHeader read sections 1+2's constant prefix
+    // for the continuity check below. Soft-skip if every gateway is
+    // unreachable so a gateway outage doesn't block legit contributions
+    // (the continuity check tolerates a null newConstHdr the same way).
+    const peek = await _peekCidPrefix(zkeyCidProvided, 2048);
     if (peek) {
       const shapeErr = _validateZkeyShape(peek, { headerOnly: true });
       if (shapeErr) {
         await _releaseClaim();
         return jsonResponse({ error: shapeErr }, 400, cors);
       }
+      newConstHdr = _extractZkeyConstHeader(peek);
     }
     newCid = zkeyCidProvided;
   }
@@ -6759,6 +6835,33 @@ async function handleCeremonyContribute(req, env, circuitHash, cors, ctx) {
     }
   }
 
+  // Phase 2 header-continuity check (see _extractZkeyConstHeader). On the
+  // first /contribute per ceremony after this guard ships, state may not
+  // yet carry zkey_const_header_b64 — backfill it from the current head
+  // (which the dapp has already chain-verified via snarkjs.zKey.verifyFrom
+  // R1cs to be valid against r1cs+ptau, so it's a sound anchor). Once
+  // bootstrapped, every subsequent contribute byte-matches the new
+  // header against it for ~microseconds of cost. Soft-skip when peeks
+  // return null (gateway outage) or extraction fails — falls back to
+  // prior behavior, no regression.
+  let chainConstHdrB64 = fresh.zkey_const_header_b64 || null;
+  if (newConstHdr && !chainConstHdrB64) {
+    const prevPeek = await _peekCidPrefix(prevCid, 2048);
+    if (prevPeek) {
+      const prevConstHdr = _extractZkeyConstHeader(prevPeek);
+      if (prevConstHdr) chainConstHdrB64 = _u8ToBase64(prevConstHdr);
+    }
+  }
+  if (newConstHdr && chainConstHdrB64) {
+    const chainConstHdr = _base64ToU8(chainConstHdrB64);
+    if (!_bytesEq(newConstHdr, chainConstHdr)) {
+      await _releaseClaim();
+      return jsonResponse({
+        error: 'zkey header mismatch: contribution\'s curve/dims/setup header does not match the chain — likely built against a different (r1cs, ptau) pair',
+      }, 400, cors);
+    }
+  }
+
   const newCount = (fresh.contribution_count || 0) + 1;
   const newState = {
     ...fresh,
@@ -6767,6 +6870,9 @@ async function handleCeremonyContribute(req, env, circuitHash, cors, ctx) {
     last_contributor: contributorName,
     last_contributed_at: Math.floor(Date.now() / 1000),
   };
+  // Persist the bootstrapped/carried header so subsequent contributes
+  // skip the gateway round-trip and run the compare from KV state alone.
+  if (chainConstHdrB64) newState.zkey_const_header_b64 = chainConstHdrB64;
   await env.REGISTRY_KV.put(ceremonyKey(circuitHash), JSON.stringify(newState));
 
   const rec = {
