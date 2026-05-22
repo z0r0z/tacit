@@ -7258,6 +7258,8 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
         </dd>
         <dt>Balance</dt>
         <dd class="balance-row"><span class="amount" id="w-balance">—</span><span class="unit">sats</span><span class="unit" id="w-balance-usd"></span></dd>
+        <dt id="w-tacit-assets-dt" style="display:none;">Tacit assets</dt>
+        <dd id="w-tacit-assets-dd" style="display:none;font-size:12px;line-height:1.5;color:var(--ink);"></dd>
       </dl>
 
       <!-- Primary actions row. Visibility is state-driven in renderWalletCard():
@@ -8251,6 +8253,9 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
       <span>assets <span class="muted" style="font-size:11px;">· confidential supply</span></span>
       <span class="muted" style="font-size:11px;" id="discover-nav-cetch-count">—</span>
     </a>
+  </div>
+  <div id="discover-tacitscan-row" style="display:none;margin-bottom:10px;font-size:11px;text-align:right;">
+    <a href="https://www.tacitscan.io/activity" target="_blank" rel="noopener noreferrer" class="muted" style="text-decoration:underline;" title="Live chain-wide envelope feed on tacitscan (independent block explorer)">all Tacit activity on chain ↗</a>
   </div>
 
   <!-- Permissionless-mint registry (T_PETCH-rooted) is shown first so the
