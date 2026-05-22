@@ -6885,6 +6885,61 @@ async function handleCeremonyContribute(req, env, circuitHash, cors, ctx) {
     }
   }
 
+  // Optional: full snarkjs.zKey.verifyFromR1cs via an external service.
+  // The header check above closes the gross "wrong (r1cs, ptau)" case, but
+  // a structurally valid contribution whose deeper sections fail the
+  // pairing checks (H, A, B, C delta-multiplications) still slips through
+  // because CF Workers can't fit the 288 MB ptau in memory. When
+  // VERIFY_SERVICE_URL is set on the worker, this step POSTs the
+  // contribution's CIDs to a small external service that runs the full
+  // verify and only advances state if it passes. Unset = skipped (no
+  // behavioural change). See verify-service/ in this repo.
+  if (env.VERIFY_SERVICE_URL) {
+    const failClosed = String(env.VERIFY_SERVICE_FAIL_CLOSED || '').toLowerCase() === '1';
+    let verifyOk = null;
+    let verifyErr = null;
+    try {
+      const headers = { 'Content-Type': 'application/json' };
+      if (env.VERIFY_SERVICE_TOKEN) headers['Authorization'] = `Bearer ${env.VERIFY_SERVICE_TOKEN}`;
+      const url = env.VERIFY_SERVICE_URL.replace(/\/$/, '') + '/verify';
+      const r = await fetch(url, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          r1cs_cid: fresh.r1cs_cid,
+          ptau_cid: fresh.ptau_cid,
+          new_cid: newCid,
+        }),
+        signal: AbortSignal.timeout(120000),
+      });
+      if (r.ok) {
+        const j = await r.json().catch(() => null);
+        if (j && j.ok === true) verifyOk = true;
+        else if (j && j.ok === false) { verifyOk = false; verifyErr = j.error || 'verify returned false'; }
+        else verifyErr = 'malformed verify response';
+      } else {
+        verifyErr = `verify HTTP ${r.status}`;
+      }
+    } catch (e) {
+      verifyErr = `verify transport: ${(e && e.message) || e}`;
+    }
+    if (verifyOk === false) {
+      await _releaseClaim();
+      return jsonResponse({
+        error: `snarkjs verify rejected contribution: ${verifyErr}`,
+      }, 400, cors);
+    }
+    if (verifyOk !== true) {
+      if (failClosed) {
+        await _releaseClaim();
+        return jsonResponse({
+          error: `verify service unreachable (${verifyErr}); retry shortly`,
+        }, 502, cors);
+      }
+      console.log(`[verify-service soft-skip] ${verifyErr}`);
+    }
+  }
+
   const newCount = (fresh.contribution_count || 0) + 1;
   const newState = {
     ...fresh,

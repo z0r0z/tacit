@@ -1,0 +1,19 @@
+# Render Blueprint. One-click deploy via https://render.com/deploy?repo=https://github.com/z0r0z/tacit
+# or by importing this repo and selecting verify-service/ as the root directory.
+services:
+  - type: web
+    name: tacit-verify
+    runtime: docker
+    rootDir: verify-service
+    dockerfilePath: ./Dockerfile
+    plan: standard  # 2 GB RAM, 1 vCPU — fits 288 MB pot18 + snarkjs heap with margin
+    region: oregon
+    healthCheckPath: /healthz
+    autoDeploy: true
+    envVars:
+      - key: PORT
+        value: 8080
+      - key: VERIFY_SERVICE_TOKEN
+        generateValue: true   # random 32-byte token, copy into worker secret
+      - key: FETCH_TIMEOUT_MS
+        value: 180000

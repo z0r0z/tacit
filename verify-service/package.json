@@ -1,0 +1,14 @@
+{
+  "name": "tacit-verify-service",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Standalone HTTP service that runs snarkjs.zKey.verifyFromR1cs on ceremony contributions. Closes the gap that CF Workers can't fit (288 MB ptau exceeds Worker memory). Single endpoint, single dependency, hostable anywhere with > 512 MB RAM.",
+  "main": "server.mjs",
+  "type": "module",
+  "scripts": {
+    "start": "node --max-old-space-size=1024 server.mjs"
+  },
+  "dependencies": {
+    "snarkjs": "^0.7.5"
+  }
+}
