@@ -4473,10 +4473,11 @@ body > #amm-contrib-section {
    from cancel (default ink-mid) and take (orange). Pairs with the ▲
    glyph in the button label for double-encoded direction cue. */
 [data-your-orders] .orders-action--improve {
-  color: #fff !important;
-  background: var(--green) !important;
+  color: var(--ink) !important;
+  background: transparent !important;
   padding: 3px 10px !important;
-  border-radius: 3px !important;
+  border: 1px solid var(--ink) !important;
+  border-radius: 0 !important;
   text-decoration: none !important;
   font-weight: 600 !important;
   font-size: 10px !important;
@@ -4484,8 +4485,8 @@ body > #amm-contrib-section {
   transition: background 0.12s ease;
 }
 [data-your-orders] .orders-action--improve:hover {
-  color: #fff !important;
-  background: #1b6627 !important;
+  color: var(--ink) !important;
+  background: rgba(0,0,0,0.04) !important;
 }
 [data-your-orders] .orders-actions-cell {
   /* Stack take + cancel vertically by default; row layout reads cleaner
@@ -4521,6 +4522,7 @@ body > #amm-contrib-section {
   font-size: 9.5px !important;
   font-weight: 700 !important;
   letter-spacing: 0.08em !important;
+  color: var(--ink) !important;
 }
 [data-your-orders] td > span[title][style*="#fff3e0"],
 [data-your-orders] td > span[title][style*="#fff8eb"],
@@ -4593,9 +4595,9 @@ body > #amm-contrib-section {
   margin-left: 4px;
 }
 .orders-rank--back {
-  color: #c97a1a;
-  border-color: #e0a64a;
-  background: #fff8eb;
+  color: var(--ink-mid);
+  border-color: var(--ink-faint);
+  background: transparent;
 }
 
 /* Cancel-all chip hover */
