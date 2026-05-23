@@ -4622,62 +4622,54 @@ body > #amm-contrib-section {
   [data-your-orders] thead { display: none; }
   [data-your-orders] tbody { display: block; }
   [data-your-orders] tr {
-    display: grid;
-    grid-template-columns: 1fr auto;
-    gap: 1px 10px;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 0 8px;
     padding: 8px 0;
     border-bottom: 1px dashed rgba(26,26,26,0.15);
-    align-items: start;
   }
   [data-your-orders] tr:last-child { border-bottom: 0; }
   [data-your-orders] td {
-    display: block;
+    display: inline;
     padding: 0 !important;
     border: 0;
     font-size: 11px;
-    line-height: 1.5;
+    line-height: 1.6;
   }
-  /* Hide the side badge on mobile — redundant since the panel header
-     already says "Your open orders" and side is clear from context. */
+  /* Hide the side badge — panel header already says "Your open orders". */
   [data-your-orders] tr td:nth-child(1) { display: none; }
+  /* Amount: full width first line */
   [data-your-orders] tr td:nth-child(2) {
-    grid-column: 1 / 2;
-    grid-row: 1;
+    flex: 1 1 100%;
     display: flex;
     flex-wrap: wrap;
     align-items: baseline;
     gap: 4px;
+    margin-bottom: 2px;
   }
+  /* Price + Total + Age: inline on one line */
   [data-your-orders] tr td:nth-child(3),
   [data-your-orders] tr td:nth-child(4),
   [data-your-orders] tr td:nth-child(5) {
-    grid-column: 1 / 2;
     color: var(--ink-mid);
     font-size: 10px;
   }
-  [data-your-orders] tr td:nth-child(3) { grid-row: 2; }
-  [data-your-orders] tr td:nth-child(4) { grid-row: 3; }
-  [data-your-orders] tr td:nth-child(5) { grid-row: 4; }
-  /* Actions pinned right, vertically centered */
+  /* Actions: right-aligned on the meta line */
   [data-your-orders] tr td.orders-actions-cell {
-    grid-column: 2 / 3;
-    grid-row: 1 / -1;
-    display: flex;
-    flex-direction: column;
-    align-items: flex-end;
-    justify-content: center;
-    gap: 6px;
+    margin-left: auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
   }
   [data-your-orders] tr td.orders-actions-cell .orders-action {
     margin-left: 0;
-    padding: 4px 0;
-    min-height: 28px;
-    display: flex;
-    align-items: center;
+    padding: 2px 0;
+    display: inline;
     font-size: 10px;
   }
   [data-your-orders] tr td.orders-actions-cell .orders-action--improve {
-    padding: 5px 10px !important;
+    padding: 4px 8px !important;
     font-size: 10px !important;
   }
 }
