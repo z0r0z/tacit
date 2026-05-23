@@ -24407,6 +24407,18 @@ async function handleDiscordVerify(req, env, cors) {
     pubkey_hex: result.holderPubkeyHex,
     verified_at: Date.now(),
   }), { expirationTtl: 3600 });
+
+  const botToken = env.DISCORD_BOT_TOKEN;
+  const roleId = env.TAC_ROLE_ID;
+  if (botToken && roleId && record.discord_user_id && record.guild_id) {
+    try {
+      await fetch(
+        `https://discord.com/api/v10/guilds/${record.guild_id}/members/${record.discord_user_id}/roles/${roleId}`,
+        { method: 'PUT', headers: { Authorization: `Bot ${botToken}` } }
+      );
+    } catch {}
+  }
+
   return jsonResponse({ ok: true }, 200, cors);
 }
 
@@ -24423,6 +24435,70 @@ async function handleDiscordStatus(req, env, nonce, cors) {
     guild_id: record.guild_id,
     verified_at: record.verified_at || null,
   }, 200, cors);
+}
+
+// ============== DISCORD INTERACTIONS ENDPOINT ==============
+
+async function handleDiscordInteraction(req, env, cors, ctx) {
+  const publicKey = env.DISCORD_PUBLIC_KEY;
+  if (!publicKey) return jsonResponse({ error: 'DISCORD_PUBLIC_KEY not configured' }, 500, cors);
+
+  const signature = req.headers.get('X-Signature-Ed25519');
+  const timestamp = req.headers.get('X-Signature-Timestamp');
+  if (!signature || !timestamp) return new Response('missing signature headers', { status: 401 });
+
+  const body = await req.text();
+  const key = await crypto.subtle.importKey('raw', hexToBytes(publicKey), 'Ed25519', false, ['verify']);
+  const valid = await crypto.subtle.verify('Ed25519', key, hexToBytes(signature), new TextEncoder().encode(timestamp + body));
+  if (!valid) return new Response('invalid request signature', { status: 401 });
+
+  const interaction = JSON.parse(body);
+
+  if (interaction.type === 1) {
+    return new Response(JSON.stringify({ type: 1 }), { headers: { 'Content-Type': 'application/json' } });
+  }
+
+  if (interaction.type === 2 && interaction.data?.name === 'verify') {
+    const userId = interaction.member?.user?.id || interaction.user?.id;
+    const guildId = interaction.guild_id;
+    if (!userId || !guildId) {
+      return new Response(JSON.stringify({
+        type: 4,
+        data: { content: 'This command only works in a server.', flags: 64 },
+      }), { headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const appId = env.DISCORD_APPLICATION_ID;
+    const token = interaction.token;
+    ctx.waitUntil((async () => {
+      const buf = new Uint8Array(16);
+      crypto.getRandomValues(buf);
+      const nonce = bytesToHex(buf);
+      await env.REGISTRY_KV.put(`dgate:${nonce}`, JSON.stringify({
+        discord_user_id: userId,
+        guild_id: guildId,
+        status: 'pending',
+        ts: Date.now(),
+      }), { expirationTtl: DISCORD_GATE_NONCE_TTL });
+
+      const dappUrl = env.DAPP_URL || 'https://tacit.finance';
+      const link = `${dappUrl}/#gate=${nonce}`;
+      await fetch(`https://discord.com/api/v10/webhooks/${appId}/${token}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          content: `**Verify your TAC holdings**\n\nOpen this link and follow the prompts:\n${link}\n\nThis link expires in 10 minutes. Once verified your role is granted automatically.`,
+          flags: 64,
+        }),
+      });
+    })());
+
+    return new Response(JSON.stringify({ type: 5, data: { flags: 64 } }), {
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
+  return new Response(JSON.stringify({ type: 1 }), { headers: { 'Content-Type': 'application/json' } });
 }
 
 // ============== ROUTER ==============
@@ -24530,6 +24606,7 @@ async function _routeFetch(req, env, ctx) {
     }
     if (url.pathname === '/balance' && req.method === 'GET')   return handleBalance(env, cors);
     if (url.pathname === '/drip' && req.method === 'POST')     return handleDrip(req, env, cors);
+    if (url.pathname === '/discord/interaction' && req.method === 'POST') return handleDiscordInteraction(req, env, cors, ctx);
     if (url.pathname === '/discord/nonce' && req.method === 'POST')  return handleDiscordNonce(req, env, cors);
     if (url.pathname === '/discord/verify' && req.method === 'POST') return handleDiscordVerify(req, env, cors);
     {
