@@ -234,6 +234,10 @@ const CER_ELIGIBILITY_SIG_DOMAIN = new TextEncoder().encode('tacit-amm-ceremony-
 const CER_ELIGIBILITY_NETWORK = 'mainnet';
 const CER_ELIGIBILITY_PRED_GE = 0x00;  // matches PRED_GE in tests/range-proof.mjs
 
+const DISCORD_GATE_SIG_DOMAIN = new TextEncoder().encode('tacit-discord-gate-v1');
+const DISCORD_GATE_SCOPE_ID = sha256(new TextEncoder().encode('tacit-discord-gate-v1'));
+const DISCORD_GATE_NONCE_TTL = 600;
+
 function pedersenCommit(amount, blinding) {
   const a = modN(BigInt(amount));
   const r = modN(BigInt(blinding));
@@ -6607,6 +6611,92 @@ async function verifyCeremonyEligibilityProof(env, envelopeBytes, expectedContri
   return { ok: true };
 }
 
+async function verifyDiscordGateProof(env, envelopeBytes) {
+  const dec = decodeCeremonyEligibilityEnvelope(envelopeBytes);
+  if (!dec.ok) return { ok: false, status: 400, reason: `discord_gate: ${dec.reason}` };
+
+  const sigMsg = sha256(concatBytes(DISCORD_GATE_SIG_DOMAIN, dec.preceding));
+  if (!verifySchnorr(dec.holderSig, sigMsg, dec.holderPubkey.slice(1))) {
+    return { ok: false, status: 403, reason: 'discord_gate: invalid holder_sig' };
+  }
+
+  if (bytesToHex(dec.scopeId) !== bytesToHex(DISCORD_GATE_SCOPE_ID)) {
+    return { ok: false, status: 403, reason: 'discord_gate: scope_id mismatch' };
+  }
+
+  if (bytesToHex(dec.assetId).toLowerCase() !== CANONICAL_TAC_ASSET_ID_HEX) {
+    return { ok: false, status: 403, reason: 'discord_gate: asset_id is not canonical TAC' };
+  }
+
+  let tipHeight = null;
+  for (let attempt = 0; attempt < 2 && tipHeight === null; attempt++) {
+    try { tipHeight = await fetchTipHeight(env, CER_ELIGIBILITY_NETWORK); }
+    catch { tipHeight = null; }
+  }
+  if (tipHeight === null) {
+    return { ok: false, status: 502, reason: 'discord_gate: tip height unavailable' };
+  }
+  if (dec.expiryHeight < tipHeight) {
+    return { ok: false, status: 403, reason: `discord_gate: expired (expiry=${dec.expiryHeight}, tip=${tipHeight})` };
+  }
+
+  let sumCommitment = PEDERSEN_ZERO;
+  const holderHash160Hex = bytesToHex(hash160(dec.holderPubkey));
+  for (const op of dec.outpoints) {
+    let resolved;
+    try { resolved = await commitmentForUtxo(env, op.txid, op.vout, CER_ELIGIBILITY_NETWORK); }
+    catch (e) { return { ok: false, status: 403, reason: `discord_gate: ${op.txid}:${op.vout} lookup failed: ${e.message || 'unknown'}` }; }
+    if (String(resolved.asset_id || '').toLowerCase() !== CANONICAL_TAC_ASSET_ID_HEX) {
+      return { ok: false, status: 403, reason: `discord_gate: ${op.txid}:${op.vout} asset_id is not TAC` };
+    }
+    let tx;
+    try { tx = await apiJson(env, `/tx/${op.txid}`, {}, CER_ELIGIBILITY_NETWORK); }
+    catch (e) { return { ok: false, status: 502, reason: `discord_gate: failed to fetch tx ${op.txid}: ${e.message || 'unknown'}` }; }
+    const voutObj = tx?.vout?.[op.vout];
+    if (!voutObj?.scriptpubkey) return { ok: false, status: 403, reason: `discord_gate: ${op.txid}:${op.vout} has no scriptpubkey` };
+    const spk = hexToBytes(voutObj.scriptpubkey);
+    if (spk.length !== 22 || spk[0] !== 0x00 || spk[1] !== 0x14) {
+      return { ok: false, status: 403, reason: `discord_gate: ${op.txid}:${op.vout} is not P2WPKH` };
+    }
+    if (bytesToHex(spk.slice(2, 22)) !== holderHash160Hex) {
+      return { ok: false, status: 403, reason: `discord_gate: holder_pubkey does not own ${op.txid}:${op.vout}` };
+    }
+    const probe = await chainOutspendProbe(env, CER_ELIGIBILITY_NETWORK, op.txid, op.vout, tipHeight);
+    if (!probe) return { ok: false, status: 502, reason: `discord_gate: outspend probe failed for ${op.txid}:${op.vout}` };
+    if (probe.spent) return { ok: false, status: 403, reason: `discord_gate: ${op.txid}:${op.vout} is spent` };
+    try {
+      const cPt = secp.ProjectivePoint.fromHex(String(resolved.commitment));
+      sumCommitment = sumCommitment.add(cPt);
+    } catch (e) {
+      return { ok: false, status: 500, reason: `discord_gate: commitment decode for ${op.txid}:${op.vout} failed: ${e.message || 'unknown'}` };
+    }
+  }
+
+  if (dec.attestation.length < 1 + 8 + 2) {
+    return { ok: false, status: 400, reason: 'discord_gate: attestation truncated' };
+  }
+  if (dec.attestation[0] !== CER_ELIGIBILITY_PRED_GE) {
+    return { ok: false, status: 403, reason: 'discord_gate: predicate is not PRED_GE' };
+  }
+  let X = 0n;
+  for (let i = 0; i < 8; i++) X |= BigInt(dec.attestation[1 + i]) << (8n * BigInt(i));
+  if (X !== CER_ELIGIBILITY_MIN_TAC_BASE_UNITS) {
+    return { ok: false, status: 403, reason: `discord_gate: threshold ${X} != required ${CER_ELIGIBILITY_MIN_TAC_BASE_UNITS}` };
+  }
+  const proofLen = dec.attestation[9] | (dec.attestation[10] << 8);
+  if (dec.attestation.length !== 11 + proofLen) {
+    return { ok: false, status: 400, reason: 'discord_gate: attestation proof_len mismatch' };
+  }
+  const proof = dec.attestation.slice(11, 11 + proofLen);
+  const shifted = X === 0n ? sumCommitment : sumCommitment.add(PEDERSEN_H.multiply(X).negate());
+  let verified;
+  try { verified = bpRangeAggVerify([shifted], proof); }
+  catch (e) { return { ok: false, status: 500, reason: `discord_gate: bulletproof verify threw: ${e.message || 'unknown'}` }; }
+  if (!verified) return { ok: false, status: 403, reason: 'discord_gate: bulletproof verify failed' };
+
+  return { ok: true, holderPubkeyHex: bytesToHex(dec.holderPubkey) };
+}
+
 async function handleCeremonyContribute(req, env, circuitHash, cors, ctx) {
   if (!env.PINATA_JWT) return jsonResponse({ error: 'PINATA_JWT missing' }, 500, cors);
   if (!/^[0-9a-f]{64}$/.test(circuitHash)) {
@@ -12058,19 +12148,17 @@ async function handleHoldingsWithBody(body, env, network, cors) {
       return jsonResponse({ error: 'asset_ids must be 64-hex strings' }, 400, cors);
     }
   }
+  const claimsOnly = !!body?.claims_only;
   const now = Math.floor(Date.now() / 1000);
   const results = await Promise.all(aids.map(async aid => {
-    const [openings, allListings, rangeListing] = await Promise.all([
-      loadOpeningsForAssetCached(env, network, aid).catch(() => []),
+    const fetches = [
+      claimsOnly ? Promise.resolve([]) : loadOpeningsForAssetCached(env, network, aid).catch(() => []),
       loadListingsForAssetCached(env, network, aid).catch(() => []),
       env.REGISTRY_KV.get(rangeListingKey(network, aid, ownerPubHex), 'json').catch(() => null),
-    ]);
-    // Server-side filter listings to this owner so the response carries
-    // only what the holdings card actually renders.
+    ];
+    const [openings, allListings, rangeListing] = await Promise.all(fetches);
     const myListings = allListings.filter(l => l.owner_pubkey === ownerPubHex);
     const myRange = rangeListing ? [rangeListing] : [];
-    // Mirror loadRangeListingsForAsset's expired/claim normalisation for
-    // the single-key direct .get() path.
     for (const v of myRange) {
       v.expired = (v.expiry || 0) <= now;
       if (v.claim && v.claim.expires_at <= now) v.claim = null;
@@ -25139,12 +25227,11 @@ async function _routeFetch(req, env, ctx) {
       catch { return jsonResponse({ error: 'invalid JSON body' }, 400, cors); }
       const _hOwner = String(_hBody?.owner_pubkey ?? '').toLowerCase();
       const _hAids = Array.isArray(_hBody?.asset_ids) ? _hBody.asset_ids : [];
+      const _hClaimsOnly = !!_hBody?.claims_only;
       const _hValidForCache = /^0[23][0-9a-f]{64}$/.test(_hOwner)
         && _hAids.length > 0 && _hAids.length <= 200
         && _hAids.every(a => typeof a === 'string' && /^[0-9a-f]{64}$/.test(a));
-      if (!_hValidForCache) {
-        // Bad-shape body: hand off to the wrapped handler so it returns the
-        // canonical 400 error response with the precise field-level reason.
+      if (!_hValidForCache || _hClaimsOnly) {
         return handleHoldingsWithBody(_hBody, env, network, cors);
       }
       const _hAidsSorted = [..._hAids].sort();
@@ -27018,6 +27105,7 @@ export default {
     // (signet last_scanned stuck for hours because the catch swallowed the
     // throw) is alertable instead of invisible.
     ctx.waitUntil((async () => {
+      const _tickIdx = Math.floor(Date.now() / (5 * 60 * 1000));
       await Promise.allSettled(
         NETWORKS.map(net => scanForEtches(env, net).catch(e => _logCronError(env, 'scanForEtches', net, e))),
       );
@@ -27029,27 +27117,24 @@ export default {
       );
       // Phantom-listing reconciliation: walk preauth listings + atomic
       // intents and prune any whose asset_outpoint is already spent on
-      // chain. The existing opcode-driven cleanup misses many cases
-      // (preauth reveal envelopes don't always trip the T_AXFER branch
-      // of scanForEtches), so phantom listings accumulate over days /
-      // weeks. Without this catch-all sweep, the asks ladder shows
-      // 6-day-old "available" listings that 100% fail at take-time —
-      // a real UX nightmare for users trying to buy cheap inventory.
-      // Bounded per-network per-tick + cursor-paginated so a deep
-      // backlog drains over several ticks. See sweepPreauthPhantoms
-      // / sweepAtomicIntentPhantoms for full rationale.
-      await Promise.allSettled(
-        NETWORKS.map(net => sweepPreauthPhantoms(env, net).catch(e => _logCronError(env, 'sweepPreauthPhantoms', net, e))),
-      );
-      await Promise.allSettled(
-        NETWORKS.map(net => sweepAtomicIntentPhantoms(env, net).catch(e => _logCronError(env, 'sweepAtomicIntentPhantoms', net, e))),
-      );
-      await Promise.allSettled(
-        NETWORKS.map(net => sweepPreauthBidPhantoms(env, net).catch(e => _logCronError(env, 'sweepPreauthBidPhantoms', net, e))),
-      );
-      await Promise.allSettled(
-        NETWORKS.map(net => sweepPreauthBidVarPhantoms(env, net).catch(e => _logCronError(env, 'sweepPreauthBidVarPhantoms', net, e))),
-      );
+      // chain. Round-robin 2 of 4 sweep types per tick so each type runs
+      // every other tick (~10min). Each probe does a KV.get + external
+      // chain fetch; halving the per-tick sweep count halves external
+      // subrequests. Cursor pagination means a deep backlog still drains
+      // across ticks.
+      const _sweepFns = [
+        ['sweepPreauthPhantoms', sweepPreauthPhantoms],
+        ['sweepAtomicIntentPhantoms', sweepAtomicIntentPhantoms],
+        ['sweepPreauthBidPhantoms', sweepPreauthBidPhantoms],
+        ['sweepPreauthBidVarPhantoms', sweepPreauthBidVarPhantoms],
+      ];
+      const _sweepSlot = _tickIdx % 2;
+      const _sweepsThisTick = _sweepFns.filter((_, i) => (i % 2) === _sweepSlot);
+      for (const [name, fn] of _sweepsThisTick) {
+        await Promise.allSettled(
+          NETWORKS.map(net => fn(env, net).catch(e => _logCronError(env, name, net, e))),
+        );
+      }
       // Heal a small batch of height-0 orphan T_PMINTs each tick. Bounded
       // to 15 ops/network/tick so the cron isolate stays under the 128 MiB
       // memory ceiling even when /petch-assets pre-warm runs alongside it.
@@ -27087,11 +27172,13 @@ export default {
       // of pre-warm) but ~80% of signet pre-warm cost vanishes. Mainnet stays
       // every tick. Tick index is derived from wall-clock so it's
       // deterministic across worker instances.
-      // Counter reconciliation. Runs every tick BEFORE the pre-warm so
-      // the pre-computed blobs always reflect accurate counts. Cost is
-      // ~6 lists per asset per network per 5 min — negligible vs. the
-      // savings from eliminating per-user-request lists.
-      for (const net of NETWORKS) {
+      // Counter reconciliation. _bumpCount on writes keeps counts accurate
+      // in the common case; this is drift correction only. Throttled to
+      // every 6th tick (~30min) — counts drift by at most one bump-race per
+      // 30min, corrected on the next reconciliation. Saves ~5× KV.list
+      // ops vs. every-tick.
+      const _reconcileThisTick = (_tickIdx % 6) === 0;
+      if (_reconcileThisTick) for (const net of NETWORKS) {
         try {
           const _cntAssetList = await env.REGISTRY_KV.list({ prefix: net === 'signet' ? 'asset:' : `asset:${net}:`, limit: 1000 });
           const _cntAids = _cntAssetList.keys
@@ -27117,7 +27204,6 @@ export default {
           }));
         } catch { /* reconciliation is best-effort */ }
       }
-      const _tickIdx = Math.floor(Date.now() / (5 * 60 * 1000));
       const _shouldPrewarm = (net) => net === 'mainnet' || (_tickIdx % 5) === 0;
       const _prewarmNetworks = NETWORKS.filter(_shouldPrewarm);
       // Capture the per-network assets pre-warm results so the /market
