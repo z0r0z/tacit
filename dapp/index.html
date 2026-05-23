@@ -9917,6 +9917,20 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
   logic — it's just a fast keyboard surface over the same actions you'd
   reach by clicking around.
 -->
+<div id="discord-gate-modal" class="pass-modal" role="dialog" aria-modal="true" aria-labelledby="dgate-title" style="display:none;">
+  <div class="pass-card" style="max-width:420px;">
+    <div class="pass-title" id="dgate-title">discord verification</div>
+    <div class="pass-reason">
+      prove you hold ≥ 1 TAC to get access. your exact balance is never revealed — only a zero-knowledge proof that you meet the threshold.
+    </div>
+    <div id="dgate-status" style="margin:16px 0;font-family:var(--mono);font-size:13px;min-height:40px;"></div>
+    <div class="pass-actions">
+      <button type="button" id="dgate-close-btn">close</button>
+      <button type="button" id="dgate-verify-btn" class="primary" style="display:none;">verify</button>
+    </div>
+  </div>
+</div>
+
 <div id="cmd-palette" class="cmd-palette" role="dialog" aria-modal="true" aria-labelledby="cmd-input" style="display:none;">
   <div class="cmd-card">
     <input id="cmd-input" type="text" autocomplete="off" spellcheck="false" placeholder="type to search · ↑↓ navigate · ↵ run · esc close">

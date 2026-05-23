@@ -24257,6 +24257,72 @@ export {
   _ceremonyPubkeyIndexBackfillStep,
 };
 
+// ============== DISCORD TOKEN-GATE HANDLERS ==============
+
+async function handleDiscordNonce(req, env, cors) {
+  const secret = env.DISCORD_BOT_SECRET;
+  if (!secret || secret === 'CHANGEME') return jsonResponse({ error: 'DISCORD_BOT_SECRET not configured' }, 500, cors);
+  const auth = req.headers.get('Authorization') || '';
+  if (auth !== `Bearer ${secret}`) return jsonResponse({ error: 'unauthorized' }, 401, cors);
+  let body;
+  try { body = await req.json(); } catch { return jsonResponse({ error: 'expected JSON body' }, 400, cors); }
+  const discordUserId = String(body?.discord_user_id || '');
+  const guildId = String(body?.guild_id || '');
+  if (!/^\d{17,20}$/.test(discordUserId)) return jsonResponse({ error: 'invalid discord_user_id' }, 400, cors);
+  if (!/^\d{17,20}$/.test(guildId)) return jsonResponse({ error: 'invalid guild_id' }, 400, cors);
+  const buf = new Uint8Array(16);
+  crypto.getRandomValues(buf);
+  const nonce = bytesToHex(buf);
+  await env.REGISTRY_KV.put(`dgate:${nonce}`, JSON.stringify({
+    discord_user_id: discordUserId,
+    guild_id: guildId,
+    status: 'pending',
+    ts: Date.now(),
+  }), { expirationTtl: DISCORD_GATE_NONCE_TTL });
+  return jsonResponse({ ok: true, nonce }, 200, cors);
+}
+
+async function handleDiscordVerify(req, env, cors) {
+  let body;
+  try { body = await req.json(); } catch { return jsonResponse({ error: 'expected JSON body' }, 400, cors); }
+  const nonce = String(body?.nonce || '').toLowerCase();
+  if (!/^[0-9a-f]{32}$/.test(nonce)) return jsonResponse({ error: 'invalid nonce' }, 400, cors);
+  const envelopeHex = String(body?.envelope_hex || '');
+  if (!/^[0-9a-f]+$/i.test(envelopeHex) || envelopeHex.length < 100) {
+    return jsonResponse({ error: 'invalid envelope_hex' }, 400, cors);
+  }
+  const record = await env.REGISTRY_KV.get(`dgate:${nonce}`, 'json');
+  if (!record) return jsonResponse({ error: 'nonce not found or expired' }, 404, cors);
+  if (record.status !== 'pending') return jsonResponse({ error: 'nonce already used' }, 409, cors);
+
+  const envelopeBytes = hexToBytes(envelopeHex);
+  const result = await verifyDiscordGateProof(env, envelopeBytes);
+  if (!result.ok) return jsonResponse({ error: result.reason }, result.status, cors);
+
+  await env.REGISTRY_KV.put(`dgate:${nonce}`, JSON.stringify({
+    ...record,
+    status: 'verified',
+    pubkey_hex: result.holderPubkeyHex,
+    verified_at: Date.now(),
+  }), { expirationTtl: 3600 });
+  return jsonResponse({ ok: true }, 200, cors);
+}
+
+async function handleDiscordStatus(req, env, nonce, cors) {
+  const secret = env.DISCORD_BOT_SECRET;
+  if (!secret || secret === 'CHANGEME') return jsonResponse({ error: 'DISCORD_BOT_SECRET not configured' }, 500, cors);
+  const auth = req.headers.get('Authorization') || '';
+  if (auth !== `Bearer ${secret}`) return jsonResponse({ error: 'unauthorized' }, 401, cors);
+  const record = await env.REGISTRY_KV.get(`dgate:${nonce}`, 'json');
+  if (!record) return jsonResponse({ error: 'nonce not found or expired' }, 404, cors);
+  return jsonResponse({
+    status: record.status,
+    discord_user_id: record.discord_user_id,
+    guild_id: record.guild_id,
+    verified_at: record.verified_at || null,
+  }, 200, cors);
+}
+
 // ============== ROUTER ==============
 // Thin observability wrapper around the route dispatch body. Captures
 // the response + duration in a finally so every request — including
@@ -24362,6 +24428,12 @@ async function _routeFetch(req, env, ctx) {
     }
     if (url.pathname === '/balance' && req.method === 'GET')   return handleBalance(env, cors);
     if (url.pathname === '/drip' && req.method === 'POST')     return handleDrip(req, env, cors);
+    if (url.pathname === '/discord/nonce' && req.method === 'POST')  return handleDiscordNonce(req, env, cors);
+    if (url.pathname === '/discord/verify' && req.method === 'POST') return handleDiscordVerify(req, env, cors);
+    {
+      const m = url.pathname.match(/^\/discord\/status\/([0-9a-f]{32})$/i);
+      if (m && req.method === 'GET') return handleDiscordStatus(req, env, m[1].toLowerCase(), cors);
+    }
     // Network is selected via ?network=signet|mainnet. Default is signet so a
     // no-network call (legacy clients) doesn't accidentally hit mainnet KV.
     // The current dapp explicitly passes ?network=mainnet for mainnet ops.
