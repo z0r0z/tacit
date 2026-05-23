@@ -6653,6 +6653,29 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
     font-size: 12px !important;
     min-height: 32px;
   }
+  /* Price hint chips: scroll horizontally on narrow viewports so the
+     row doesn't wrap into 2-3 lines. Bigger tap targets match quickfill. */
+  [data-swap-tile] [data-swap-price-hints] {
+    flex-wrap: nowrap !important;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+    gap: 6px !important;
+    padding-bottom: 2px;
+  }
+  [data-swap-tile] [data-swap-price-hints]::-webkit-scrollbar { display: none; }
+  [data-swap-tile] [data-swap-price-hints] button {
+    padding: 6px 10px !important;
+    font-size: 11px !important;
+    min-height: 32px;
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+  /* Limit readout: full-width so it doesn't fight the picker. */
+  [data-swap-tile] [data-swap-limit-readout] {
+    font-size: 12px !important;
+    padding: 8px 12px !important;
+  }
 }
 
 /* "Set price alert" trigger button on the market asset stats strip. Subtle
