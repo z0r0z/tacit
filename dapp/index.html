@@ -640,7 +640,7 @@ button.market-chip .chip-caret {
 }
 .market-asset-tile,
 .market-listing-tile {
-  border: 1px solid var(--ink);
+  border: 0.5px solid rgba(26,26,26,0.15);
   background: var(--bg-warm);
   padding: 12px;
   cursor: pointer;
@@ -654,12 +654,7 @@ button.market-chip .chip-caret {
 }
 .market-asset-tile:hover,
 .market-listing-tile:hover {
-  /* Subtler hover lift — the 4px hard shadow was too loud for the
-     tight mono aesthetic of the rest of the page. 2px is enough to
-     read as a hover state without dominating the visual field.
-     Rows-mode tiles get a different inset-border treatment defined
-     further below. */
-  box-shadow: 2px 2px 0 var(--ink);
+  background: rgba(255,255,255,0.6);
 }
 /* Live-reactivity flashes. Per designer feedback (site flashes too
    much, animations should stay inside their box):
@@ -1715,7 +1710,7 @@ tr[data-recent-activity] .market-token-sub::after {
    separated by hairlines instead of by section padding. Reads as one
    information unit, not three stacked cards. */
 .mkt-hero {
-  border: 1px solid var(--ink);
+  border: 0.5px solid rgba(26,26,26,0.15);
   background: var(--bg-warm);
   margin-bottom: 14px;
   font-size: 12px;
@@ -1812,7 +1807,7 @@ tr[data-recent-activity] .market-token-sub::after {
   align-items: baseline;
   gap: 10px;
   padding: 10px 16px;
-  border-top: 1px dashed var(--ink-faint);
+  border-top: 0.5px solid rgba(26,26,26,0.12);
   flex-wrap: wrap;
 }
 .mkt-hero-price-label {
@@ -1874,7 +1869,7 @@ tr[data-recent-activity] .market-token-sub::after {
   display: flex;
   gap: 14px;
   padding: 8px 16px 10px;
-  border-top: 1px dashed var(--ink-faint);
+  border-top: 0.5px solid rgba(26,26,26,0.12);
   font-size: 10px;
   color: var(--ink-mid);
   flex-wrap: wrap;
