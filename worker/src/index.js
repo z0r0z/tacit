@@ -4063,6 +4063,29 @@ function attestKey(network, aid)       { return network === 'signet' ? `attest:$
 function attestMintKey(network, aid, txid) {
   return network === 'signet' ? `attest:mint:${aid}:${txid}` : `attest:${network}:mint:${aid}:${txid}`;
 }
+function openingCountKey(network, aid) {
+  return network === 'signet' ? `cnt:opening:${aid}` : `cnt:opening:${network}:${aid}`;
+}
+function disclosureCountKey(network, aid) {
+  return network === 'signet' ? `cnt:disclosure:${aid}` : `cnt:disclosure:${network}:${aid}`;
+}
+function listingCountKey(network, aid) {
+  return network === 'signet' ? `cnt:listing:${aid}` : `cnt:listing:${network}:${aid}`;
+}
+function rangeListingCountKey(network, aid) {
+  return network === 'signet' ? `cnt:listing-range:${aid}` : `cnt:listing-range:${network}:${aid}`;
+}
+function atomicIntentCountKey(network, aid) {
+  return network === 'signet' ? `cnt:axintent:${aid}` : `cnt:axintent:${network}:${aid}`;
+}
+function preauthSaleCountKey(network, aid) {
+  return network === 'signet' ? `cnt:presale:${aid}` : `cnt:presale:${network}:${aid}`;
+}
+async function _bumpCount(env, key, delta) {
+  const cur = parseInt(await env.REGISTRY_KV.get(key) || '0', 10);
+  const next = Math.max(0, cur + delta);
+  await env.REGISTRY_KV.put(key, String(next));
+}
 function openingKey(network, aid, txid, vout) {
   return network === 'signet'
     ? `opening:${aid}:${txid}:${vout}`
@@ -11196,49 +11219,33 @@ async function hydrateAssetSummary(env, network, v, includeMints) {
   const _yestKey  = tradeDayKey(network, v.asset_id, _utcYyyymmdd(_nowSec - 86400));
   const _holderKey = holderCountKey(network, v.asset_id);
   const _lifeKey = tradeLifetimeKey(network, v.asset_id);
-  const [att, mints, burns, op, dc, ls, lr, ai, ps, xfer, lastTrade, ring, todaySats, yestSats, holderCnt, lifeSats] = await Promise.all([
+  const [att, mints, burns, opCnt, dcCnt, lsCnt, lrCnt, aiCnt, psCnt, xfer, lastTrade, ring, todaySats, yestSats, holderCnt, lifeSats] = await Promise.all([
     env.REGISTRY_KV.get(attestKey(network, v.asset_id), 'json'),
     includeMints ? loadMintsForAsset(env, network, v.asset_id) : Promise.resolve(null),
     loadBurnsForAsset(env, network, v.asset_id),
-    env.REGISTRY_KV.list({ prefix: openingPrefix(network, v.asset_id), limit: 1000 }),
-    env.REGISTRY_KV.list({ prefix: disclosurePrefix(network, v.asset_id), limit: 1000 }),
-    env.REGISTRY_KV.list({ prefix: listingPrefix(network, v.asset_id), limit: 1000 }),
-    env.REGISTRY_KV.list({ prefix: rangeListingPrefix(network, v.asset_id), limit: 1000 }),
-    env.REGISTRY_KV.list({ prefix: atomicIntentPrefix(network, v.asset_id), limit: 1000 }),
-    env.REGISTRY_KV.list({ prefix: preauthSalePrefix(network, v.asset_id), limit: 1000 }),
-    // Single KV.get of the cron-maintained transfer counter — folded into
-    // the existing parallel fan-out so it adds zero round-trip latency.
+    env.REGISTRY_KV.get(openingCountKey(network, v.asset_id)),
+    env.REGISTRY_KV.get(disclosureCountKey(network, v.asset_id)),
+    env.REGISTRY_KV.get(listingCountKey(network, v.asset_id)),
+    env.REGISTRY_KV.get(rangeListingCountKey(network, v.asset_id)),
+    env.REGISTRY_KV.get(atomicIntentCountKey(network, v.asset_id)),
+    env.REGISTRY_KV.get(preauthSaleCountKey(network, v.asset_id)),
     env.REGISTRY_KV.get(transferCountKey(network, v.asset_id)),
     env.REGISTRY_KV.get(lastTradeKey(network, v.asset_id), 'json'),
-    // Recent-trades ring — used here to compute a compact price summary
-    // (24h Δ% + price_summary[10]) that the bulk /assets response surfaces
-    // for tile-side sparklines + delta. The full ring stays available
-    // through /assets/:id for the deep chart.
     env.REGISTRY_KV.get(tradesRingKey(network, v.asset_id), 'json'),
-    // Daily bucket sums for rolling 24h volume. Two extra KV.gets per
-    // asset; KV reads parallelize within Promise.all and don't count
-    // toward the subrequest budget, so the only cost is per-key billing.
     env.REGISTRY_KV.get(_todayKey),
     env.REGISTRY_KV.get(_yestKey),
-    // Per-asset holder counter — distinct recipient scriptpubkey hashes
-    // bumped by the cron's CETCH/T_MINT/T_PMINT/T_CXFER/T_AXFER paths.
-    // "All-time wallets that received this asset" — a popularity signal,
-    // not a current-holder head count.
     env.REGISTRY_KV.get(_holderKey),
-    // Lifetime cumulative volume — bumped on every trade settle (no TTL).
-    // Replaces the dapp's ring-buffer approximation with the authoritative
-    // since-first-trade number. Cheap: one extra KV.get parallelized.
     env.REGISTRY_KV.get(_lifeKey),
   ]);
   if (att) v.attestation = att;
   if (includeMints) v.mints = mints;
   v.burns = burns;
-  v.opening_count = op.keys.length;
-  v.disclosure_count = dc.keys.length;
-  v.listing_count = ls.keys.length;
-  v.range_listing_count = lr.keys.length;
-  v.atomic_intent_count = ai.keys.length;
-  v.preauth_sale_count = ps.keys.length;
+  v.opening_count = parseInt(opCnt || '0', 10) || 0;
+  v.disclosure_count = parseInt(dcCnt || '0', 10) || 0;
+  v.listing_count = parseInt(lsCnt || '0', 10) || 0;
+  v.range_listing_count = parseInt(lrCnt || '0', 10) || 0;
+  v.atomic_intent_count = parseInt(aiCnt || '0', 10) || 0;
+  v.preauth_sale_count = parseInt(psCnt || '0', 10) || 0;
   v.transfer_count = parseInt(xfer || '0', 10) || 0;
   if (lastTrade) v.last_trade = lastTrade;
   // Rolling 24h volume — true strict-24h sum from the ring (each entry
@@ -11433,7 +11440,7 @@ async function handleAssetsList(env, network, cors, opts = {}) {
 // Beyond STALE the cache is treated as missing and we recompute synchronously.
 // Tuned around the cron's 5-min tick: fresh data only changes that often,
 // so a 5-min serve-stale window doesn't lose meaningful accuracy.
-const ASSETS_CACHE_FRESH_MS = 60 * 1000;
+const ASSETS_CACHE_FRESH_MS = 5 * 60 * 1000;
 // STALE > cron interval (5min) by a comfortable margin so the SWR STALE-serve
 // path always has a cached entry to return immediately while a background
 // refresh runs. With STALE == cron, users who land in the 0–60s window after
@@ -11454,6 +11461,19 @@ function assetsCacheKey(network, limit, includeMints) {
   return new Request(`https://_assets-cache_/assets?${params.toString()}`, { method: 'GET' });
 }
 
+// Pre-computed KV blob keys. The cron writes the full /assets and /market
+// response bodies into REGISTRY_KV so any PoP's cache MISS reads 1 KV key
+// (~$0.50/M) instead of running the full fan-out (~800 KV reads per call).
+// 30-min TTL so blobs auto-expire if the cron stops; the fan-out remains
+// the fallback.
+const PRECOMPUTED_TTL_SEC = 30 * 60;
+function precomputedAssetsKey(network, includeMints) {
+  return `precomputed:assets:${network}:mints=${includeMints ? '1' : '0'}`;
+}
+function precomputedMarketKey(network, lite) {
+  return `precomputed:market:${network}${lite ? ':lite' : ''}`;
+}
+
 // Compute /assets and write it into the edge cache. Used by both the live
 // route handler (synchronous MISS path + ctx.waitUntil background refresh
 // during STALE) and the cron pre-warm (so the next user lands on a HIT
@@ -11471,6 +11491,14 @@ async function assetsComputeAndCache(env, network, opts) {
       assetsCacheKey(network, opts.limit, opts.includeMints),
       new Response(body, { status: 200, headers: ch }),
     );
+    // Also write to KV so other PoPs can read this pre-computed blob on
+    // their own cache MISS without running the full fan-out. Only for the
+    // default (no-limit) shape — specialized callers with ?limit= are rare.
+    if (!opts.limit) {
+      const kvKey = precomputedAssetsKey(network, opts.includeMints !== false);
+      const kvBlob = JSON.stringify({ body, ts: Date.now() });
+      env.REGISTRY_KV.put(kvKey, kvBlob, { expirationTtl: PRECOMPUTED_TTL_SEC }).catch(() => {});
+    }
   }
   return { body, status: fresh.status };
 }
@@ -11487,7 +11515,7 @@ async function assetsComputeAndCache(env, network, opts) {
 // noticeable for tile sparklines and well under the polling cadence.
 // STALE 5min: matches the bulk /assets pattern. After STALE, we recompute
 // synchronously so the data can't get arbitrarily stale on a quiet asset.
-const ASSET_DETAIL_CACHE_FRESH_MS = 30 * 1000;
+const ASSET_DETAIL_CACHE_FRESH_MS = 2 * 60 * 1000;
 const ASSET_DETAIL_CACHE_STALE_MS = 5 * 60 * 1000;
 function assetDetailCacheKey(network, aid) {
   return new Request(`https://_asset-detail-cache_/asset/${network}/${aid}`, { method: 'GET' });
@@ -11618,8 +11646,8 @@ async function _bustBidIntentsCache(network, aid) {
 // The Holdings tab polls every ~30s while visible; FRESH 35s overshoots
 // the cadence so each poll hits cache. No targeted bust — settlement
 // transitions surface within ~35s of the poll cadence.
-const HOLDINGS_CACHE_FRESH_MS = 35_000;
-const HOLDINGS_CACHE_STALE_MS = 90_000;
+const HOLDINGS_CACHE_FRESH_MS = 60_000;
+const HOLDINGS_CACHE_STALE_MS = 5 * 60 * 1000;
 async function holdingsCacheKey(network, ownerPubHex, aidsSortedJoined) {
   // sha256 of normalised payload → first 32 hex chars for a compact
   // collision-resistant cache key. URL hostname is synthetic so the
@@ -11760,7 +11788,7 @@ async function _bustPreauthSalesCache(network, aid) {
 // client built up itself: { assets, listings, meta } — listings is a flat
 // array of { kind, _asset, ...listing fields } the client can hand straight
 // to applyMarketFilters without further joining.
-const MARKET_CACHE_FRESH_MS = 60 * 1000;
+const MARKET_CACHE_FRESH_MS = 5 * 60 * 1000;
 // 15min STALE — see ASSETS_CACHE_STALE_MS rationale. Synchronous /market
 // recompute is the worst of the three (kicks N×3 sub-fetches), so widening
 // the STALE-serve window is highest priority here.
@@ -11913,7 +11941,7 @@ async function handleMarket(env, network, cors, prehydratedAssetsBody = null, op
 // Mirrors the /assets and /market patterns. /petch-assets is even costlier per
 // MISS than /assets (every petch asset triggers its own loadCanonicalPmints
 // fan-out for cap-progress hydration), so SWR + pre-warm matter more here.
-const PETCH_ASSETS_CACHE_FRESH_MS = 60 * 1000;
+const PETCH_ASSETS_CACHE_FRESH_MS = 5 * 60 * 1000;
 // 15min STALE — see ASSETS_CACHE_STALE_MS rationale. Cron pre-warms this
 // alongside /assets and /market every 5 min.
 const PETCH_ASSETS_CACHE_STALE_MS = 15 * 60 * 1000;
@@ -11934,6 +11962,9 @@ async function petchAssetsComputeAndCache(env, network) {
       petchAssetsCacheKey(network),
       new Response(body, { status: 200, headers: ch }),
     );
+    const kvKey = `precomputed:petch-assets:${network}`;
+    const kvBlob = JSON.stringify({ body, ts: Date.now() });
+    env.REGISTRY_KV.put(kvKey, kvBlob, { expirationTtl: PRECOMPUTED_TTL_SEC }).catch(() => {});
   }
   return { body, status: fresh.status };
 }
@@ -11987,6 +12018,9 @@ async function marketComputeAndCache(env, network, prehydratedAssetsBody = null,
       marketCacheKey(network, opts),
       new Response(body, { status: 200, headers: ch }),
     );
+    const kvKey = precomputedMarketKey(network, !!opts.lite);
+    const kvBlob = JSON.stringify({ body, ts: Date.now() });
+    env.REGISTRY_KV.put(kvKey, kvBlob, { expirationTtl: PRECOMPUTED_TTL_SEC }).catch(() => {});
   }
   return { body, status: fresh.status };
 }
@@ -12615,16 +12649,18 @@ async function handleAssetGet(assetIdHex, env, network, cors) {
     }
     if (sum > 0n) v.disclosed_supply_min = sum.toString();
   }
-  const dc = await env.REGISTRY_KV.list({ prefix: disclosurePrefix(network, assetIdHex), limit: 1000 });
-  v.disclosure_count = dc.keys.length;
-  const ls = await env.REGISTRY_KV.list({ prefix: listingPrefix(network, assetIdHex), limit: 1000 });
-  v.listing_count = ls.keys.length;
-  const lr = await env.REGISTRY_KV.list({ prefix: rangeListingPrefix(network, assetIdHex), limit: 1000 });
-  v.range_listing_count = lr.keys.length;
-  const ai = await env.REGISTRY_KV.list({ prefix: atomicIntentPrefix(network, assetIdHex), limit: 1000 });
-  v.atomic_intent_count = ai.keys.length;
-  const ps = await env.REGISTRY_KV.list({ prefix: preauthSalePrefix(network, assetIdHex), limit: 1000 });
-  v.preauth_sale_count = ps.keys.length;
+  const [dcCnt, lsCnt, lrCnt, aiCnt, psCnt] = await Promise.all([
+    env.REGISTRY_KV.get(disclosureCountKey(network, assetIdHex)),
+    env.REGISTRY_KV.get(listingCountKey(network, assetIdHex)),
+    env.REGISTRY_KV.get(rangeListingCountKey(network, assetIdHex)),
+    env.REGISTRY_KV.get(atomicIntentCountKey(network, assetIdHex)),
+    env.REGISTRY_KV.get(preauthSaleCountKey(network, assetIdHex)),
+  ]);
+  v.disclosure_count = parseInt(dcCnt || '0', 10) || 0;
+  v.listing_count = parseInt(lsCnt || '0', 10) || 0;
+  v.range_listing_count = parseInt(lrCnt || '0', 10) || 0;
+  v.atomic_intent_count = parseInt(aiCnt || '0', 10) || 0;
+  v.preauth_sale_count = parseInt(psCnt || '0', 10) || 0;
   // transfer_count + last_trade + volume_24h_sats are also in the
   // /assets list response via hydrateAssetSummary; mirror them here
   // so single-asset clients get the same discovery metrics. The
@@ -14513,7 +14549,10 @@ async function handleUtxoOpeningPost(txidHex, voutStr, req, env, network, cors) 
     attested_at: Math.floor(Date.now() / 1000),
     network,
   };
-  await env.REGISTRY_KV.put(openingKey(network, assetIdHex, txidHex, vout), JSON.stringify(opening));
+  const _opKey = openingKey(network, assetIdHex, txidHex, vout);
+  const _opExisted = await env.REGISTRY_KV.get(_opKey);
+  await env.REGISTRY_KV.put(_opKey, JSON.stringify(opening));
+  if (!_opExisted) _bumpCount(env, openingCountKey(network, assetIdHex), 1).catch(() => {});
   return jsonResponse({ ok: true, opening }, 200, cors);
 }
 
@@ -14722,7 +14761,10 @@ async function handleDisclosurePost(assetIdHex, req, env, network, cors) {
     attested_at: Math.floor(Date.now() / 1000),
     network,
   };
-  await env.REGISTRY_KV.put(disclosureKey(network, assetIdHex, ownerPubHex, thresholdHex), JSON.stringify(disclosure));
+  const _discKey = disclosureKey(network, assetIdHex, ownerPubHex, thresholdHex);
+  const _discExisted = await env.REGISTRY_KV.get(_discKey);
+  await env.REGISTRY_KV.put(_discKey, JSON.stringify(disclosure));
+  if (!_discExisted) _bumpCount(env, disclosureCountKey(network, assetIdHex), 1).catch(() => {});
   return jsonResponse({ ok: true, disclosure }, 200, cors);
 }
 
@@ -14918,7 +14960,10 @@ async function handleListingPost(assetIdHex, req, env, network, cors) {
     attested_at: now,
     network,
   };
-  await env.REGISTRY_KV.put(openingKey(network, assetIdHex, txidHex, vout), JSON.stringify(opening));
+  const _lopKey = openingKey(network, assetIdHex, txidHex, vout);
+  const _lopExisted = await env.REGISTRY_KV.get(_lopKey);
+  await env.REGISTRY_KV.put(_lopKey, JSON.stringify(opening));
+  if (!_lopExisted) _bumpCount(env, openingCountKey(network, assetIdHex), 1).catch(() => {});
 
   const listing = {
     asset_id: assetIdHex,
@@ -14932,11 +14977,14 @@ async function handleListingPost(assetIdHex, req, env, network, cors) {
     listed_at: now,
     network,
   };
+  const _llKey = listingKey(network, assetIdHex, txidHex, vout);
+  const _llExisted = await env.REGISTRY_KV.get(_llKey);
   await env.REGISTRY_KV.put(
-    listingKey(network, assetIdHex, txidHex, vout),
+    _llKey,
     JSON.stringify(listing),
     { expirationTtl: _ttlFromExpiry(expiryRaw) },
   );
+  if (!_llExisted) _bumpCount(env, listingCountKey(network, assetIdHex), 1).catch(() => {});
   return jsonResponse({ ok: true, listing }, 200, cors);
 }
 
@@ -15180,6 +15228,7 @@ async function handleListingDelete(assetIdHex, txidHex, voutStr, req, env, netwo
     return jsonResponse({ error: 'invalid cancel signature' }, 403, cors);
   }
   await env.REGISTRY_KV.delete(listingKey(network, assetIdHex, txidHex, vout));
+  _bumpCount(env, listingCountKey(network, assetIdHex), -1).catch(() => {});
   return jsonResponse({ ok: true }, 200, cors);
 }
 
@@ -15339,11 +15388,10 @@ async function handleRangeListingPost(assetIdHex, req, env, network, cors) {
     listed_at: now,
     network,
   };
-  await env.REGISTRY_KV.put(
-    rangeListingKey(network, assetIdHex, ownerPubHex),
-    JSON.stringify(listing),
-    { expirationTtl: _ttlFromExpiry(expiryRaw) },
-  );
+  const _rlKey = rangeListingKey(network, assetIdHex, ownerPubHex);
+  const _rlExisted = await env.REGISTRY_KV.get(_rlKey);
+  await env.REGISTRY_KV.put(_rlKey, JSON.stringify(listing), { expirationTtl: _ttlFromExpiry(expiryRaw) });
+  if (!_rlExisted) _bumpCount(env, rangeListingCountKey(network, assetIdHex), 1).catch(() => {});
   return jsonResponse({ ok: true, listing }, 200, cors);
 }
 
@@ -15382,6 +15430,7 @@ async function handleRangeListingDelete(assetIdHex, ownerPubHex, req, env, netwo
     return jsonResponse({ error: 'invalid cancel signature' }, 403, cors);
   }
   await env.REGISTRY_KV.delete(rangeListingKey(network, assetIdHex, ownerPubHex.toLowerCase()));
+  _bumpCount(env, rangeListingCountKey(network, assetIdHex), -1).catch(() => {});
   return jsonResponse({ ok: true }, 200, cors);
 }
 
@@ -16151,11 +16200,7 @@ async function _handleAtomicIntentPostVar(assetIdHex, body, env, network, cors) 
     JSON.stringify(intent),
     { expirationTtl: _intentTtl },
   );
-  // Outpoint reverse index — cron's chain backfill walks a reveal's
-  // commit-tx and resolves the spent asset_utxo back to its intent
-  // (and therefore its price_sats) via this entry. Idempotent under
-  // republish — the new value overwrites cleanly. Inherits the parent
-  // intent's TTL so it doesn't outlive the record it indexes.
+  _bumpCount(env, atomicIntentCountKey(network, assetIdHex), 1).catch(() => {});
   await env.REGISTRY_KV.put(
     atomicIntentOutpointIndexKey(network, assetIdHex, assetUtxoTxid, assetUtxoVout),
     intentIdHex,
@@ -16683,10 +16728,7 @@ async function handleAtomicIntentPost(assetIdHex, req, env, network, cors) {
     JSON.stringify(intent),
     { expirationTtl: _intentTtl },
   );
-  // Outpoint reverse index — same role as in the variable-amount publish:
-  // lets the cron's chain backfill resolve a reveal's commit-tx-vin back
-  // to this intent and pick up price_sats without a hint POST. Inherits
-  // the parent intent's TTL.
+  _bumpCount(env, atomicIntentCountKey(network, assetIdHex), 1).catch(() => {});
   await env.REGISTRY_KV.put(
     atomicIntentOutpointIndexKey(network, assetIdHex, assetUtxoTxid, assetUtxoVout),
     intentIdHex,
@@ -16805,12 +16847,9 @@ async function handleAtomicIntentDelete(assetIdHex, intentIdHex, req, env, netwo
     return jsonResponse({ error: 'invalid cancel signature' }, 403, cors);
   }
   await env.REGISTRY_KV.delete(atomicIntentKey(network, assetIdHex, intentIdHex));
+  _bumpCount(env, atomicIntentCountKey(network, assetIdHex), -1).catch(() => {});
   await env.REGISTRY_KV.delete(atomicClaimKey(network, assetIdHex, intentIdHex));
   await env.REGISTRY_KV.delete(atomicFulfilmentKey(network, assetIdHex, intentIdHex));
-  // Symmetric to the publish-side index write. Without this delete, the
-  // outpoint would keep pointing at the cancelled intent — harmless for
-  // the volume-backfill code path (the intent record itself is gone, so
-  // the lookup falls through), but cleaner KV state.
   if (stored.asset_utxo && /^[0-9a-f]{64}$/.test(stored.asset_utxo.txid || '')
       && Number.isInteger(stored.asset_utxo.vout)) {
     await env.REGISTRY_KV.delete(atomicIntentOutpointIndexKey(
@@ -17315,7 +17354,7 @@ async function handlePreauthSalePost(assetIdHex, req, env, network, cors) {
     JSON.stringify(sale),
     { expirationTtl: _saleTtl },
   );
-  // Outpoint reverse index inherits the parent sale's TTL.
+  _bumpCount(env, preauthSaleCountKey(network, assetIdHex), 1).catch(() => {});
   await env.REGISTRY_KV.put(
     preauthOutpointIndexKey(network, assetIdHex, assetOutpointTxidHex, assetOutpointVoutRaw),
     saleIdHex,
@@ -17368,6 +17407,7 @@ async function handlePreauthSaleDelete(assetIdHex, saleIdHex, req, env, network,
     return jsonResponse({ error: 'invalid cancel signature' }, 403, cors);
   }
   await env.REGISTRY_KV.delete(preauthSaleKey(network, assetIdHex, saleIdHex));
+  _bumpCount(env, preauthSaleCountKey(network, assetIdHex), -1).catch(() => {});
   await env.REGISTRY_KV.delete(preauthOutpointIndexKey(
     network, assetIdHex, stored.asset_outpoint.txid, stored.asset_outpoint.vout,
   ));
@@ -18975,6 +19015,7 @@ async function sweepPreauthPhantoms(env, network) {
       try {
         await env.REGISTRY_KV.delete(k.name);
         await env.REGISTRY_KV.delete(preauthOutpointIndexKey(network, sale.asset_id, op.txid, op.vout));
+        _bumpCount(env, preauthSaleCountKey(network, sale.asset_id), -1).catch(() => {});
         deleted++;
       } catch { /* KV blip — next sweep tick retries */ }
     }
@@ -19126,9 +19167,8 @@ async function sweepAtomicIntentPhantoms(env, network) {
       if (!probe || probe.spent !== true) continue;
       try {
         await env.REGISTRY_KV.delete(k.name);
+        _bumpCount(env, atomicIntentCountKey(network, intent.asset_id), -1).catch(() => {});
         await env.REGISTRY_KV.delete(atomicIntentOutpointIndexKey(network, intent.asset_id, op.txid, op.vout));
-        // Also drop any orphaned claim / fulfilment records — they're
-        // referenced by intent_id, so delete those too.
         if (intent.intent_id) {
           await env.REGISTRY_KV.delete(atomicClaimKey(network, intent.asset_id, intent.intent_id));
           await env.REGISTRY_KV.delete(atomicFulfilmentKey(network, intent.asset_id, intent.intent_id));
@@ -19671,7 +19711,10 @@ async function scanForEtches(env, network) {
             try {
               const lk = listingKey(network, dx.asset_id, itxid, ivout);
               const existing = await env.REGISTRY_KV.get(lk);
-              if (existing) await env.REGISTRY_KV.delete(lk);
+              if (existing) {
+                await env.REGISTRY_KV.delete(lk);
+                _bumpCount(env, listingCountKey(network, dx.asset_id), -1).catch(() => {});
+              }
             } catch { /* KV blip — next scan retries */ }
           }
         }
@@ -19757,9 +19800,11 @@ async function scanForEtches(env, network) {
                 try {
                   if (f.kind === 'preauth' && f.sale_id) {
                     await env.REGISTRY_KV.delete(preauthSaleKey(network, dx.asset_id, f.sale_id));
+                    _bumpCount(env, preauthSaleCountKey(network, dx.asset_id), -1).catch(() => {});
                     await env.REGISTRY_KV.delete(preauthOutpointIndexKey(network, dx.asset_id, op.txid, op.vout));
                   } else if ((f.kind === 'intent' || f.kind === 'intent-var') && f.intent_id) {
                     await env.REGISTRY_KV.delete(atomicIntentKey(network, dx.asset_id, f.intent_id));
+                    _bumpCount(env, atomicIntentCountKey(network, dx.asset_id), -1).catch(() => {});
                     await env.REGISTRY_KV.delete(atomicClaimKey(network, dx.asset_id, f.intent_id));
                     await env.REGISTRY_KV.delete(atomicFulfilmentKey(network, dx.asset_id, f.intent_id));
                     await env.REGISTRY_KV.delete(atomicIntentOutpointIndexKey(network, dx.asset_id, op.txid, op.vout));
@@ -24053,6 +24098,13 @@ async function _routeFetch(req, env, ctx) {
     const cors = corsHeaders(env, req.headers.get('Origin') || '');
     if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: cors });
 
+    if (url.pathname === '/health' && req.method === 'GET') {
+      return new Response(JSON.stringify({ ok: true, ts: Date.now() }), {
+        status: 200,
+        headers: { ...cors, 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
+      });
+    }
+
     if (url.pathname === '/pin' && req.method === 'POST')      return handlePin(req, env, cors);
     if (url.pathname === '/pin-json' && req.method === 'POST') return handlePinJson(req, env, cors);
     if (url.pathname === '/pin-mixer-vk' && req.method === 'POST') return handlePinMixerVk(req, env, cors);
@@ -24926,7 +24978,22 @@ async function _routeFetch(req, env, ctx) {
         }
         // Older than STALE: fall through to synchronous recomputation below.
       }
-      // MISS path. Compute synchronously and cache before responding.
+      // MISS path. Try the pre-computed KV blob first (1 read vs 800+).
+      // Only for default (no-limit) shape; specialized callers fall through.
+      if (!limit) {
+        try {
+          const kvBlob = await env.REGISTRY_KV.get(precomputedAssetsKey(network, includeMints), 'json');
+          if (kvBlob && kvBlob.body && (Date.now() - kvBlob.ts) < PRECOMPUTED_TTL_SEC * 1000) {
+            // Populate edge cache so subsequent requests in this PoP are HIT.
+            const ch = new Headers();
+            ch.set('Content-Type', 'application/json');
+            ch.set('X-Cached-At', String(kvBlob.ts));
+            ch.set('Cache-Control', `public, max-age=${Math.floor(ASSETS_CACHE_STALE_MS / 1000)}`);
+            cache.put(cacheKey, new Response(kvBlob.body, { status: 200, headers: ch })).catch(() => {});
+            return _withCors(kvBlob.body, 200, 'KV-PRECOMPUTED');
+          }
+        } catch { /* KV blip — fall through to full fan-out */ }
+      }
       const result = await _swrDedupedKick(cacheKey.url, _computeAndCache);
       return _withCors(result.body, result.status, cached ? 'EXPIRED-MISS' : 'MISS');
     }
@@ -24965,6 +25032,18 @@ async function _routeFetch(req, env, ctx) {
           return _withCors(await cached.text(), cached.status, 'STALE');
         }
       }
+      // Pre-computed KV blob fallback (1 read vs full fan-out).
+      try {
+        const kvBlob = await env.REGISTRY_KV.get(precomputedMarketKey(network, _mktLite), 'json');
+        if (kvBlob && kvBlob.body && (Date.now() - kvBlob.ts) < PRECOMPUTED_TTL_SEC * 1000) {
+          const ch = new Headers();
+          ch.set('Content-Type', 'application/json');
+          ch.set('X-Cached-At', String(kvBlob.ts));
+          ch.set('Cache-Control', `public, max-age=${Math.floor(MARKET_CACHE_STALE_MS / 1000)}`);
+          cache.put(cacheKey, new Response(kvBlob.body, { status: 200, headers: ch })).catch(() => {});
+          return _withCors(kvBlob.body, 200, 'KV-PRECOMPUTED');
+        }
+      } catch { /* fall through */ }
       const result = await _swrDedupedKick(cacheKey.url, () => marketComputeAndCache(env, network, null, _mktOpts));
       return _withCors(result.body, result.status, cached ? 'EXPIRED-MISS' : 'MISS');
     }
@@ -25081,6 +25160,17 @@ async function _routeFetch(req, env, ctx) {
           return _withCors(await cached.text(), cached.status, 'STALE');
         }
       }
+      try {
+        const kvBlob = await env.REGISTRY_KV.get(`precomputed:petch-assets:${network}`, 'json');
+        if (kvBlob && kvBlob.body && (Date.now() - kvBlob.ts) < PRECOMPUTED_TTL_SEC * 1000) {
+          const ch = new Headers();
+          ch.set('Content-Type', 'application/json');
+          ch.set('X-Cached-At', String(kvBlob.ts));
+          ch.set('Cache-Control', `public, max-age=${Math.floor(PETCH_ASSETS_CACHE_STALE_MS / 1000)}`);
+          cache.put(cacheKey, new Response(kvBlob.body, { status: 200, headers: ch })).catch(() => {});
+          return _withCors(kvBlob.body, 200, 'KV-PRECOMPUTED');
+        }
+      } catch { /* fall through */ }
       const result = await _swrDedupedKick(cacheKey.url, () => petchAssetsComputeAndCache(env, network));
       return _withCors(result.body, result.status, cached ? 'EXPIRED-MISS' : 'MISS');
     }
@@ -26915,6 +27005,36 @@ export default {
       // of pre-warm) but ~80% of signet pre-warm cost vanishes. Mainnet stays
       // every tick. Tick index is derived from wall-clock so it's
       // deterministic across worker instances.
+      // Counter reconciliation. Runs every tick BEFORE the pre-warm so
+      // the pre-computed blobs always reflect accurate counts. Cost is
+      // ~6 lists per asset per network per 5 min — negligible vs. the
+      // savings from eliminating per-user-request lists.
+      for (const net of NETWORKS) {
+        try {
+          const _cntAssetList = await env.REGISTRY_KV.list({ prefix: net === 'signet' ? 'asset:' : `asset:${net}:`, limit: 1000 });
+          const _cntAids = _cntAssetList.keys
+            .filter(k => !(net === 'signet' && k.name.startsWith('asset:mainnet:')))
+            .map(k => { const p = k.name.split(':'); return p[p.length - 1]; });
+          await Promise.allSettled(_cntAids.map(async aid => {
+            const [op, dc, ls, lr, ai, ps] = await Promise.all([
+              env.REGISTRY_KV.list({ prefix: openingPrefix(net, aid), limit: 1000 }),
+              env.REGISTRY_KV.list({ prefix: disclosurePrefix(net, aid), limit: 1000 }),
+              env.REGISTRY_KV.list({ prefix: listingPrefix(net, aid), limit: 1000 }),
+              env.REGISTRY_KV.list({ prefix: rangeListingPrefix(net, aid), limit: 1000 }),
+              env.REGISTRY_KV.list({ prefix: atomicIntentPrefix(net, aid), limit: 1000 }),
+              env.REGISTRY_KV.list({ prefix: preauthSalePrefix(net, aid), limit: 1000 }),
+            ]);
+            await Promise.allSettled([
+              env.REGISTRY_KV.put(openingCountKey(net, aid), String(op.keys.length)),
+              env.REGISTRY_KV.put(disclosureCountKey(net, aid), String(dc.keys.length)),
+              env.REGISTRY_KV.put(listingCountKey(net, aid), String(ls.keys.length)),
+              env.REGISTRY_KV.put(rangeListingCountKey(net, aid), String(lr.keys.length)),
+              env.REGISTRY_KV.put(atomicIntentCountKey(net, aid), String(ai.keys.length)),
+              env.REGISTRY_KV.put(preauthSaleCountKey(net, aid), String(ps.keys.length)),
+            ]);
+          }));
+        } catch { /* reconciliation is best-effort */ }
+      }
       const _tickIdx = Math.floor(Date.now() / (5 * 60 * 1000));
       const _shouldPrewarm = (net) => net === 'mainnet' || (_tickIdx % 5) === 0;
       const _prewarmNetworks = NETWORKS.filter(_shouldPrewarm);

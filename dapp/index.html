@@ -83,6 +83,17 @@
 <link rel="modulepreload" href="./vendor/tacit-deps.min.js">
 <link rel="modulepreload" href="./prf-wallet.js">
 <style>
+.sp-toggle-img {
+  width: 18px; height: 18px; object-fit: contain; display: block;
+  cursor: pointer; flex-shrink: 0;
+  border: 0; outline: 0; padding: 0; margin: 0;
+  mix-blend-mode: multiply;
+  transition: opacity 0.15s ease, transform 0.1s ease;
+}
+.sp-toggle-img:hover { transform: scale(1.12); }
+.sp-toggle-img:active { transform: scale(0.92); }
+.sp-toggle-img.off { opacity: 0.6; }
+.sp-toggle-img.on  { opacity: 1; }
 :root {
   --bg: #f4efe6;
   --bg-alt: #ebe3d4;
@@ -4424,15 +4435,13 @@ body > #amm-contrib-section {
    vs Buy chunks — only meaningful in Advanced; hide in default. */
 [data-orderbook-side="asks"] > div[style*="dashed var(--ink-faint)"][style*="margin-bottom:8px"] { display: none !important; }
 
-/* Tighten your-open-orders so it sits inline at the top of the tile
-   rather than as its own bordered card. Stays visible when the user
-   has orders for this asset (otherwise the function returns ''). */
+/* Your-open-orders panel — warm card with left accent border. */
 [data-your-orders] {
+  background: var(--bg-warm) !important;
   border: 0 !important;
-  background: transparent !important;
-  padding: 6px 18px !important;
-  margin-bottom: 0 !important;
-  border-bottom: 1px dashed rgba(26,26,26,0.25) !important;
+  border-left: 3px solid var(--green) !important;
+  padding: 12px 16px 14px 16px !important;
+  margin-bottom: 8px !important;
   font-size: 10px !important;
 }
 
@@ -4453,14 +4462,31 @@ body > #amm-contrib-section {
   text-underline-offset: 2px;
   cursor: pointer;
 }
-[data-your-orders] .orders-action:hover { color: var(--ink); }
-[data-your-orders] .orders-action--take { color: #b06a00; }
+[data-your-orders] .orders-action:hover { color: var(--red); }
+[data-your-orders] .orders-action--take {
+  color: #b06a00;
+  font-weight: 600;
+  text-decoration-thickness: 1.5px;
+}
 [data-your-orders] .orders-action--take:hover { color: #7a4d00; }
 /* Improve-bid action: green so it reads as "go up the ladder" — distinct
    from cancel (default ink-mid) and take (orange). Pairs with the ▲
    glyph in the button label for double-encoded direction cue. */
-[data-your-orders] .orders-action--improve { color: #0a7d3a; font-weight: 600; }
-[data-your-orders] .orders-action--improve:hover { color: #075c2a; }
+[data-your-orders] .orders-action--improve {
+  color: #fff !important;
+  background: var(--green) !important;
+  padding: 3px 10px !important;
+  border-radius: 3px !important;
+  text-decoration: none !important;
+  font-weight: 600 !important;
+  font-size: 10px !important;
+  letter-spacing: 0.03em;
+  transition: background 0.12s ease;
+}
+[data-your-orders] .orders-action--improve:hover {
+  color: #fff !important;
+  background: #1b6627 !important;
+}
 [data-your-orders] .orders-actions-cell {
   /* Stack take + cancel vertically by default; row layout reads cleaner
      when the action column lives on the right and each affordance has
@@ -4515,18 +4541,71 @@ body > #amm-contrib-section {
   margin-left: 12px !important;
   font-weight: 500 !important;
 }
-[data-your-orders] .orders-action--improve { font-weight: 500 !important; }
-/* Drop the bordered card chrome on the wrapper itself so the panel
-   sits flush with the asset detail header — the existing rule already
-   does this for the top-level [data-your-orders] but the inline
-   styles at panel-construction time were leaking the warm bg back
-   in on some renders. !important here pins the cleaner look. */
-[data-your-orders] {
-  background: transparent !important;
-  border: 0 !important;
-  border-top: 1px dashed rgba(26,26,26,0.18) !important;
-  border-bottom: 1px dashed rgba(26,26,26,0.18) !important;
-  padding: 10px 18px !important;
+[data-your-orders] .orders-action--improve { font-weight: 600 !important; text-decoration: none !important; }
+/* (consolidated into the main [data-your-orders] block above) */
+
+/* Budget meter visual bar */
+.orders-budget { margin-top: 8px; margin-bottom: 6px; }
+.orders-budget-text { font-size: 10px; color: var(--ink-mid); }
+.orders-budget-bar {
+  margin-top: 5px;
+  height: 3px;
+  background: rgba(0,0,0,0.06);
+  border-radius: 2px;
+  overflow: hidden;
+}
+.orders-budget-fill {
+  height: 100%;
+  border-radius: 2px;
+  transition: width 0.3s ease;
+}
+
+/* Table row refinements */
+[data-your-orders] table { margin-top: 10px; }
+[data-your-orders] thead th {
+  padding: 5px 8px !important;
+  border-bottom: 1px solid rgba(0,0,0,0.08) !important;
+}
+[data-your-orders] tbody td {
+  padding: 10px 8px !important;
+  vertical-align: middle !important;
+}
+[data-your-orders] tbody tr {
+  transition: background 0.12s ease;
+  border-bottom: 1px solid rgba(0,0,0,0.04);
+}
+[data-your-orders] tbody tr:last-child { border-bottom: 0; }
+[data-your-orders] tbody tr:hover {
+  background: rgba(0,0,0,0.025);
+}
+
+/* Rank badge */
+.orders-rank {
+  display: inline-block;
+  white-space: nowrap;
+  font-size: 9px;
+  padding: 1px 6px;
+  color: var(--ink-mid);
+  border: 1px solid var(--ink-faint);
+  border-radius: 3px;
+  cursor: help;
+  vertical-align: middle;
+  margin-left: 4px;
+}
+.orders-rank--back {
+  color: #c97a1a;
+  border-color: #e0a64a;
+  background: #fff8eb;
+}
+
+/* Cancel-all chip hover */
+[data-your-orders] [data-act="your-orders-cancel-all"] {
+  transition: background 0.12s ease, color 0.12s ease;
+  font-family: var(--mono);
+}
+[data-your-orders] [data-act="your-orders-cancel-all"]:hover {
+  background: rgba(0,0,0,0.04) !important;
+  color: var(--red) !important;
 }
 
 /* Mobile (≤640px): the 6-column orders table overflows even on phones
@@ -4609,6 +4688,21 @@ body > #amm-contrib-section {
     align-items: center;
     font-size: 11px;
   }
+  [data-your-orders] tr td.orders-actions-cell .orders-action--improve {
+    padding: 6px 12px !important;
+  }
+}
+
+/* Limit bids sub-section: soften the header to match the regular bids
+   aesthetic instead of the heavy blue bar. */
+.market-bids-row[data-walk-away-header] {
+  background: transparent !important;
+  border-top: 1px dashed var(--ink-faint) !important;
+  border-bottom: 0 !important;
+  color: var(--ink-mid) !important;
+  font-size: 10px !important;
+  font-weight: 600 !important;
+  padding: 8px 0 4px !important;
 }
 
 /* Unified tile sections per design.html — depth and tape share the
@@ -5332,13 +5426,14 @@ body > #amm-contrib-section {
   text-transform: uppercase;
   letter-spacing: 0.05em;
   padding: 2px 0;
+  transition: color 0.12s ease;
 }
+.mkt-your-orders-disclose > summary:hover { color: var(--ink); }
 .mkt-your-orders-disclose[open] > summary {
   color: var(--ink);
 }
 .mkt-your-orders-disclose [data-your-orders] {
-  border-bottom: 0 !important;
-  padding: 6px 0 !important;
+  margin-top: 8px;
 }
 
 /* Activity modal — fixed-position overlay, dim backdrop, centered
@@ -7283,17 +7378,17 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
     <div class="hero-step">
       <div class="hero-num">1</div>
       <div class="hero-title">Connect a wallet</div>
-      <div class="hero-text">Use Xverse / UniSat / Leather (one click), import a privkey, or — on signet — let the dApp generate one and faucet some sats.</div>
+      <div class="hero-text">Use Xverse, UniSat, or Leather — or import / generate a key (signet auto-funds from the faucet).</div>
     </div>
     <div class="hero-step">
       <div class="hero-num">2</div>
       <div class="hero-title">Etch a confidential asset</div>
-      <div class="hero-text">Pick a ticker, supply, and decimals. The supply is hidden on-chain — only you (and anyone you choose to tell) know the amount.</div>
+      <div class="hero-text">Pick a ticker, supply, and decimals. The supply is hidden on-chain — only you and whomever you tell know the amount.</div>
     </div>
     <div class="hero-step">
       <div class="hero-num">3</div>
       <div class="hero-title">Transfer privately</div>
-      <div class="hero-text">Privacy is layered — pick what fits the use case. <strong>Amounts hidden</strong> on every transfer (default). <strong>Shielded address</strong> (tcs1…) hides the recipient on chain via per-tx unique markers (opt-in, paste in place of pubkey). <strong>Mixer pool</strong> (T_DEPOSIT / T_WITHDRAW) breaks the on-chain link between deposit and withdrawal for full anonymity-set unlinkability (live in production). Merchants can keep public transfers + shielded balances; users wanting full privacy can layer the lot.</div>
+      <div class="hero-text">Three layers, mix and match. <strong>Amounts</strong> are hidden by default. A <strong>shielded address</strong> (tcs1…) hides the recipient via per-tx unique markers. The <strong>mixer pool</strong> breaks the on-chain link between deposit and withdrawal for full anonymity-set unlinkability.</div>
     </div>
   </div>
   <div id="hero-show" style="display:none;text-align:right;margin-top:-16px;margin-bottom:16px;padding-right:14px;">
@@ -7315,32 +7410,36 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
       <dl class="kv">
         <dt>Public key</dt>
         <dd>
-          <div style="display:flex;align-items:flex-start;gap:6px;">
-            <div class="mono-box" id="w-pubkey" style="flex:1;min-width:0;">—</div>
-            <button class="btn-copy" data-copy-target="w-pubkey" title="Copy public key" type="button">copy</button>
+          <div style="display:flex;align-items:center;gap:4px;flex-wrap:wrap;">
+            <img id="btn-stealth-toggle-pubkey" class="sp-toggle-img off" src="privacy-48.png" alt="" title="Toggle shielded address">
+            <div class="mono-box" id="w-pubkey-text" style="flex:1;min-width:0;word-break:break-all;">—</div>
+            <button class="btn-copy" data-copy-target="w-pubkey-text" title="Copy public key" type="button">copy</button>
           </div>
         </dd>
         <dt>Address</dt>
         <dd>
-          <div style="display:flex;align-items:flex-start;gap:6px;">
-            <div class="mono-box" id="w-address" style="flex:1;min-width:0;">—</div>
-            <button class="btn-copy" data-copy-target="w-address" title="Copy address" type="button">copy</button>
-            <a class="muted" id="explorer-link" target="_blank" rel="noopener noreferrer" style="font-size:10px;align-self:center;white-space:nowrap;">explorer ↗</a>
-            <a class="muted" id="tacitscan-link" target="_blank" rel="noopener noreferrer" style="font-size:10px;align-self:center;white-space:nowrap;display:none;" title="View this address on tacitscan (independent block explorer)">tacitscan ↗</a>
-          </div>
-        </dd>
-        <dt>Shielded <span tabindex="0" role="img" aria-label="What is a shielded address?" title="Opt-in privacy upgrade for tacit token transfers (CXFER). Senders who paste this instead of your pubkey produce a per-tx-unique recipient marker on chain (BIP-341-style blinded-pubkey commit) with no apparent link to your published identity. Same balance — you receive normally. Does not apply to plain BTC sends; those still need a bc1q…/tb1q… address." style="cursor:help;font-size:9px;color:var(--ink-mid);border:1px solid var(--ink-faint);border-radius:50%;width:11px;height:11px;display:inline-flex;align-items:center;justify-content:center;line-height:1;vertical-align:1px;margin-left:2px;text-transform:none;letter-spacing:0;font-family:Georgia,'Times New Roman',serif;font-style:italic;">i</span></dt>
-        <dd>
-          <div style="display:flex;align-items:flex-start;gap:6px;">
-            <div class="mono-box" id="w-stealth-address" style="flex:1;min-width:0;word-break:break-all;">—</div>
-            <button class="btn-copy" data-copy-target="w-stealth-address" title="Copy shielded address" type="button">copy</button>
+          <div style="display:flex;align-items:center;gap:4px;flex-wrap:wrap;">
+            <img id="btn-sp-toggle-address" class="sp-toggle-img off" src="privacy-48.png" alt="" title="Toggle silent-payment address">
+            <div class="mono-box" id="w-address-text" style="flex:1;min-width:0;word-break:break-all;">—</div>
+            <button class="btn-copy" data-copy-target="w-address-text" title="Copy address" type="button">copy</button>
+            <a class="muted" id="explorer-link" target="_blank" rel="noopener noreferrer" style="font-size:10px;white-space:nowrap;">explorer ↗</a>
+            <a class="muted" id="tacitscan-link" target="_blank" rel="noopener noreferrer" style="font-size:10px;white-space:nowrap;display:none;" title="View this address on tacitscan (independent block explorer)">tacitscan ↗</a>
           </div>
         </dd>
         <dt>Balance</dt>
-        <dd class="balance-row"><span class="amount" id="w-balance">—</span><span class="unit">sats</span><span class="unit" id="w-balance-usd"></span></dd>
+        <dd class="balance-row"><span class="amount" id="w-balance">—</span><span class="unit">sats</span><span class="unit" id="w-balance-usd"></span><span id="w-sp-balance" class="muted" style="font-size:10px;margin-left:6px;display:none;"></span></dd>
         <dt id="w-tacit-assets-dt" style="display:none;">Tacit assets</dt>
         <dd id="w-tacit-assets-dd" style="display:none;font-size:12px;line-height:1.5;color:var(--ink);"></dd>
       </dl>
+
+      <div id="sp-discover-row" style="display:none;margin-top:8px;padding:6px 8px;background:var(--bg-alt,#f7f7f8);border-radius:6px;font-size:11px;">
+        <div style="display:flex;align-items:center;gap:6px;">
+          <span style="white-space:nowrap;">Check silent payment:</span>
+          <input id="sp-discover-txid" type="text" placeholder="paste txid" style="flex:1;min-width:0;font-family:monospace;font-size:11px;padding:3px 6px;border:1px solid var(--ink-faint);border-radius:4px;background:var(--bg);">
+          <button id="btn-sp-discover" type="button" style="font-size:11px;padding:3px 8px;white-space:nowrap;">scan</button>
+        </div>
+        <div id="sp-discover-result" class="muted" style="margin-top:4px;display:none;"></div>
+      </div>
 
       <!-- Primary actions row. Visibility is state-driven in renderWalletCard():
            connect-buttons surface only when no ext wallet is bound; top-up shows
@@ -8701,7 +8800,7 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
     <div class="section-header"><span>claim LP shares from cBTC.tac claim pool</span></div>
     <div class="section-body">
       <div class="muted" style="margin-bottom:10px;">
-        Burn cBTC.tac to claim your pro-rata slice of the global claim pool — LP shares of the canonical (cBTC.zk, TAC) AMM pool released by force-closed or rugged positions. The claimed LP shares are minted to your recipient_commit; you can later T_LP_REMOVE them for cBTC.zk + TAC, or hold for AMM fee yield.
+        Burn cBTC.tac to claim your pro-rata slice of the global claim pool — LP shares of the canonical (cBTC.zk, TAC) AMM pool released by force-closed or rugged positions. The shares mint to your wallet; you can later remove the liquidity for cBTC.zk + TAC, or hold for AMM fee yield.
       </div>
       <div class="muted" style="font-size:11px;margin-bottom:10px;">
         <strong>Claim pool size:</strong> <span id="ctac-claim-pool-size">—</span> LP shares · <strong>Outstanding cBTC.tac:</strong> <span id="ctac-outstanding-supply">—</span> · <strong>Per-share rate:</strong> <span id="ctac-per-share-rate">—</span>
@@ -8899,7 +8998,7 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
   <div class="section" id="mixer-init-pool-section" data-mixer-pool-op="true">
     <div class="section-header"><span>initialize a new pool</span></div>
     <div class="section-body">
-      <div class="muted" style="margin-bottom:10px;">Anyone can open a pool for any asset and any deposit size. The first confirmed pool for a given asset + amount wins. The verifying key and ceremony transcript are pre-pinned and locked to the canonical Phase 2 setup — pick an asset, type a denomination, broadcast.</div>
+      <div class="muted" style="margin-bottom:10px;">Anyone can open a pool for any asset and any deposit size. The first confirmed pool for a given asset + amount wins. The verifying key and ceremony transcript are pre-pinned — pick an asset, type a denomination, broadcast.</div>
       <div class="flex" style="gap:8px;flex-wrap:wrap;align-items:flex-end;">
         <label style="flex:1;min-width:240px;">Asset
           <select id="mixer-init-asset"><option value="">— pick an asset —</option></select>
@@ -8946,7 +9045,7 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
     </div>
     <div class="section-body">
       <div class="muted" style="margin-bottom:14px;">
-        Constant-product AMM (x·y=k) over confidential tacit assets. Pool reserves are public so any indexer reconstructs state from chain alone; LP shares are amount-hidden via Pedersen + bulletproof. Two swap paths share these pools: <strong>T_SWAP_VAR</strong> for per-trade fills against the spot curve (cleartext amount, no Groth16, ships independent of the ceremony) and <strong>T_SWAP_BATCH</strong> for batched uniform-price settlement (hidden per-trader amounts via Groth16, MEV-resistant, ceremony-gated). Pool-side fee is a single bps knob (default 30 = 0.3%); LP shares mint by the Uniswap V2 formula. Every swap settles in one Bitcoin commit-reveal pair, no sequencer.
+        Constant-product AMM (x·y=k) over confidential tacit assets. Pool reserves are public; LP shares are amount-hidden. Default fee is 0.3% (single bps knob). Every swap settles in one Bitcoin commit-reveal pair — no sequencer, no off-chain matching. A batched uniform-price path with hidden per-trader amounts is ceremony-gated and unlocks per-pool.
       </div>
     </div>
   </div>
@@ -8954,7 +9053,7 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
   <div class="section" data-pool-ceremony-gated="true">
     <div class="section-header"><span>swap</span></div>
     <div class="section-body">
-      <div class="muted" style="margin-bottom:10px;">Trade against a pool's curve. The router compares the direct pool against multi-hop paths (up to 4 pools) and picks whichever yields more — a single-hop swap settles via T_SWAP_VAR, a multi-hop route settles via T_SWAP_ROUTE atomically across every pool it touches. Either way it's one Bitcoin commit-reveal pair with a slippage floor on the final delivery — if the route can't clear your floor before the reveal lands, the tx fails on chain and your input UTXO stays where it was.</div>
+      <div class="muted" style="margin-bottom:10px;">Trade against a pool's curve. The router compares the direct pool against multi-hop paths (up to 4 pools) and picks whichever yields more. One Bitcoin commit-reveal pair, slippage floor on the final delivery — if the route can't clear your floor before the reveal lands, the tx fails and your input UTXO stays put.</div>
       <div class="flex" style="gap:8px;flex-wrap:wrap;align-items:flex-end;">
         <label style="flex:1;min-width:160px;">From
           <select id="pool-swap-from"><option value="">— pick an asset —</option></select>
@@ -8988,7 +9087,7 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
   <div class="section" data-pool-ceremony-gated="true">
     <div class="section-header"><span>add liquidity</span></div>
     <div class="section-body">
-      <div class="muted" style="margin-bottom:10px;">Deposit a proportional pair of assets into a pool. The dapp computes your share of the LP supply using the Uniswap V2 mint formula (min(ΔA·S/Rₐ, ΔB·S/R_b)) and binds the share commitment to your wallet via an XCurve sigma proof.</div>
+      <div class="muted" style="margin-bottom:10px;">Deposit a proportional pair of assets into a pool. Your LP share is computed Uniswap-V2 style and bound to your wallet, so only you can later burn it.</div>
       <div class="flex" style="gap:8px;flex-wrap:wrap;align-items:flex-end;">
         <label style="flex:2;min-width:220px;">Pool
           <select id="pool-lpadd-pool"><option value="">— pick a pool —</option></select>

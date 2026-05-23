@@ -109,10 +109,10 @@ export function batchInv(xs) {
 }
 
 export function randomScalar() {
+  if (!globalThis.crypto?.getRandomValues) throw new Error('bpp: CSPRNG unavailable');
   for (let attempt = 0; attempt < 32; attempt++) {
     const b = new Uint8Array(32);
-    if (globalThis.crypto?.getRandomValues) globalThis.crypto.getRandomValues(b);
-    else for (let i = 0; i < 32; i++) b[i] = Math.floor(Math.random() * 256);
+    globalThis.crypto.getRandomValues(b);
     const s = bytes32ToBigint(b);
     if (s !== 0n && s < SECP_N) return s;
   }
@@ -351,23 +351,24 @@ function _hashToCurveSecp(domain, idx) {
 let _BPP_GVEC = null, _BPP_HVEC = null, _BPP_H = null;
 export function bppGens() {
   if (_BPP_GVEC) return { Gvec: _BPP_GVEC, Hvec: _BPP_HVEC, H: _BPP_H };
-  _BPP_GVEC = []; _BPP_HVEC = [];
+  const gv = [], hv = [];
   for (let i = 0; i < BPP_MAX_NM; i++) {
-    _BPP_GVEC.push(_hashToCurveSecp('tacit-bp-G-v1', i));
-    _BPP_HVEC.push(_hashToCurveSecp('tacit-bp-H-v1', i));
+    gv.push(_hashToCurveSecp('tacit-bp-G-v1', i));
+    hv.push(_hashToCurveSecp('tacit-bp-H-v1', i));
   }
-  // Value generator H: matches dapp/bulletproofs.js's _deriveH (and
-  // dapp/tacit.js's deriveH) byte-for-byte. The single-byte counter
-  // loop is the SPEC §3.1 try-and-increment construction.
+  let H = null;
   const hSeed = sha256(new TextEncoder().encode('tacit-generator-H-v1'));
   for (let counter = 0; counter < 256; counter++) {
     const x = sha256(concatBytes(hSeed, new Uint8Array([counter])));
     try {
       const p = secp.ProjectivePoint.fromHex(bytesToHex(concatBytes(new Uint8Array([0x02]), x)));
-      if (!p.equals(ZERO)) { _BPP_H = p; break; }
+      if (!p.equals(ZERO)) { H = p; break; }
     } catch {}
   }
-  if (!_BPP_H) throw new Error('bpp: failed to derive H');
+  if (!H) throw new Error('bpp: failed to derive H');
+  _BPP_GVEC = Object.freeze(gv);
+  _BPP_HVEC = Object.freeze(hv);
+  _BPP_H = H;
   return { Gvec: _BPP_GVEC, Hvec: _BPP_HVEC, H: _BPP_H };
 }
 
@@ -474,7 +475,8 @@ export function bppRangeProve(values, blindings) {
   // ---- Commitments V_j = v_j·H + γ_j·G (no INV_EIGHT — secp256k1) -------
   const V = new Array(m);
   for (let j = 0; j < m; j++) {
-    const v = BigInt(values[j]);
+    if (typeof values[j] !== 'bigint') throw new Error(`bpp: values[${j}] must be bigint`);
+    const v = values[j];
     if (v < 0n || v >= (1n << BigInt(N))) {
       throw new Error(`bpp: value[${j}]=${v} out of range [0, 2^${N})`);
     }
@@ -487,7 +489,7 @@ export function bppRangeProve(values, blindings) {
   const aL = new Array(MN);
   const aR = new Array(MN);
   for (let j = 0; j < m; j++) {
-    const v = j < values.length ? BigInt(values[j]) : 0n;
+    const v = j < values.length ? values[j] : 0n;
     for (let i = 0; i < N; i++) {
       const bit = (v >> BigInt(i)) & 1n;
       aL[j * N + i] = bit;
@@ -766,9 +768,8 @@ function _sumOfScalarPowers(x, n) {
   return res;
 }
 
-// Σ x^(2k) for k = 1..n, where n is a power of 2.
+// Even-power sum: x² + x⁴ + ... + x^n (n/2 terms, n must be a power of 2 ≥ 2).
 // Mirrors Monero's sum_of_even_powers (bulletproofs_plus.cc:240–257).
-// Output: x² + x⁴ + x⁶ + ... + x^(2n).
 function _sumOfEvenPowers(x, n) {
   if ((n & (n - 1)) !== 0) throw new Error('bpp: sum_of_even_powers needs n power of 2');
   if (n === 0) throw new Error('bpp: sum_of_even_powers needs n > 0');
@@ -776,15 +777,7 @@ function _sumOfEvenPowers(x, n) {
   let res = x1;
   let nn = n;
   while (nn > 2) {
-    res = modN(res + modN(x1 * res));  // res = res + x1·res = res·(1+x1)
-    // Wait — Monero does `sc_muladd(res, x1, res, res)` which is `res = x1*res + res = res*(1+x1)`.
-    // That builds the sum doubling each time. Let me re-derive.
-    // Actually: after iteration 1, x1 represents x^2.
-    //   res_init = x²
-    //   iter 1: res = x²·x² + x² = x² + x⁴; x1 = x⁴
-    //   iter 2: res = x⁴·(x² + x⁴) + (x² + x⁴) = x² + x⁴ + x⁶ + x⁸; x1 = x⁸
-    // So each iter doubles the number of terms by multiplying current sum by x1
-    // (current largest power) and adding to itself.
+    res = modN(res + modN(x1 * res));
     x1 = modN(x1 * x1);
     nn = nn / 2;
   }
@@ -831,7 +824,9 @@ export function bppRangeVerify(commitments, proofBytes) {
   const transcript = bppTranscript();
   transcript.append('domain', new TextEncoder().encode(BPP_DOMAIN));
   transcript.append('M', new Uint8Array([m & 0xff]));
-  for (const Vj of commitments) transcript.append('V', pointToBytes(Vj));
+  try {
+    for (const Vj of commitments) transcript.append('V', pointToBytes(Vj));
+  } catch { return false; }
   transcript.append('A', pointToBytes(A));
   const y = transcript.challenge('y');
   const z = transcript.challenge('z');

@@ -151,7 +151,6 @@ Chung et al. 2020 §3 (Weighted Inner Product Argument) + §4.4
 | Generator `G` | secp256k1 base point (same as T_CXFER) |
 | Generator `H` | NUMS point per §3.1 (same as T_CXFER) |
 | Vector generators `G_vec[i]`, `H_vec[i]`, i ∈ [0, 64·8) | **Reused unchanged from §3.1** under existing domain tags `"tacit-bp-G-v1"` / `"tacit-bp-H-v1"` |
-| Aux generator `Q` | **Reused unchanged from §3.1** under existing domain tag `"tacit-bp-Q-v1"` |
 | Hash | SHA-256 for Fiat-Shamir transcript (same as T_CXFER's bulletproof transcript) |
 
 Proof size at each aggregation level (measured against the reference port
@@ -192,7 +191,6 @@ domain tags**. T_CXFER_BPP rangeproofs MUST use:
 | `H` | §3.1 NUMS construction under `"tacit-generator-H-v1"` |
 | `G_vec[0..511]` | §3.1 try-and-increment under `"tacit-bp-G-v1"` |
 | `H_vec[0..511]` | §3.1 try-and-increment under `"tacit-bp-H-v1"` |
-| `Q` | §3.1 try-and-increment under `"tacit-bp-Q-v1"` |
 
 The pinned hex-encoded reference test vectors in §3.1
 (`G_vec[0..3]`, `H_vec[0..3]`, `H`, `Q`) remain the authoritative
@@ -327,7 +325,8 @@ signatures reuse `"tacit-kernel-v1"` unchanged)**.
 
 Add to §3 *NUMS-derivation domain tags*: **(none — Bulletproofs+
 reuses the existing `"tacit-generator-H-v1"`, `"tacit-bp-G-v1"`,
-`"tacit-bp-H-v1"`, and `"tacit-bp-Q-v1"` from §3.1 unchanged. See
+`"tacit-bp-H-v1"` from §3.1 unchanged (note: `Q` from §3.1 is
+NOT used by Bulletproofs+ — Monero's BP+ likewise omits it). See
 §5.47.4)**.
 
 Add to §1.1 *Opcode table*:

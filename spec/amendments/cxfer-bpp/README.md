@@ -51,7 +51,7 @@ The extended generator KAT in `tests/bulletproofs-plus-pinned-fixtures.test.mjs`
 
 The Bulletproofs+ paper specifies the verifier as a single multi-scalar-multiplication identity over `G`, `H`, the generator vectors, the input commitments, and the proof's group elements. `tests/bulletproofs-plus-symbolic-identity.test.mjs` independently derives the paper's per-term scalar formulas, then extracts the same scalars from the production JS verifier path, and asserts byte-equality at 200 random instantiations of the challenge variables `(y, z, u_k, e, r1, s1, d1)`.
 
-By the Schwartz-Zippel lemma over the secp256k1 scalar field, agreement at 200 random points implies the polynomials are equal as polynomials. The verifier's MSM check is mechanically confirmed to be the equation the paper specifies, not just empirically tested with positive examples.
+By the Schwartz-Zippel lemma over the secp256k1 scalar field, two distinct polynomials of degree at most ~512 can agree on at most 512 of ~2^256 field elements. Agreement at 200 independent random points gives a false-positive probability bounded by ~2^(-247) — overwhelming probabilistic evidence that the polynomials are identical. The verifier's MSM check is mechanically confirmed to be the equation the paper specifies, not just empirically tested with positive examples.
 
 ### 4. Blind cross-implementation parity
 
@@ -91,7 +91,7 @@ All 22 assertions reject. This is the actual attack surface, made concrete.
 
 ### 6. Witness-extractability sketch
 
-`tests/bulletproofs-plus-witness-extractor.test.mjs` runs the algebraic relations required by the BP+ soundness proof against our prover's outputs. Final scalars `(r1, s1, d1)` are confirmed to fall in `[1, SECP_N)`, the verifier's MSM identity evaluates to the identity point for every honest proof, and the same identity fails for proofs with tampered `r1`, `s1`, or `d1`. This is the soundness proof's witness step, made executable.
+`tests/bulletproofs-plus-witness-extractor.test.mjs` runs the algebraic relations required by the BP+ soundness proof against our prover's outputs. The verifier parses final scalars in `[0, SECP_N)` (honest provers produce nonzero scalars with overwhelming probability), the verifier's MSM identity evaluates to the identity point for every honest proof, and the same identity fails for proofs with tampered `r1`, `s1`, or `d1`. This is the soundness proof's witness step, made executable.
 
 ### 7. Property-based and exhaustive boundary coverage
 
