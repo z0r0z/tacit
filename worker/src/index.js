@@ -17546,10 +17546,19 @@ async function handlePreauthSalePost(assetIdHex, req, env, network, cors) {
     preauthOutpointIndexKey(network, assetIdHex, assetOutpointTxidHex, assetOutpointVoutRaw),
   );
   if (existingSaleIdHex) {
-    return jsonResponse({
-      error: 'a live preauth-sale already exists for this asset_outpoint; cancel it first',
-      existing_sale_id: existingSaleIdHex,
-    }, 409, cors);
+    const existingSale = await env.REGISTRY_KV.get(preauthSaleKey(network, assetIdHex, existingSaleIdHex), 'json');
+    const now = Math.floor(Date.now() / 1000);
+    if (existingSale && (existingSale.expiry || 0) > now) {
+      return jsonResponse({
+        error: 'a live preauth-sale already exists for this asset_outpoint; cancel it first',
+        existing_sale_id: existingSaleIdHex,
+      }, 409, cors);
+    }
+    await env.REGISTRY_KV.delete(preauthOutpointIndexKey(network, assetIdHex, assetOutpointTxidHex, assetOutpointVoutRaw));
+    if (existingSale) {
+      await env.REGISTRY_KV.delete(preauthSaleKey(network, assetIdHex, existingSaleIdHex));
+      _bumpCount(env, preauthSaleCountKey(network, assetIdHex), -1).catch(() => {});
+    }
   }
 
   const sale = {
@@ -17783,19 +17792,31 @@ async function handlePreauthBidPost(assetIdHex, req, env, network, cors) {
     preauthBidFundingIndexKey(network, fundingTxidHex, fundingVoutRaw),
   );
   if (existingExactBidIdHex) {
-    return jsonResponse({
-      error: 'a live exact-fill preauth-bid (§5.7.11) already exists for this funding_outpoint; cancel it first',
-      existing_bid_id: existingExactBidIdHex,
-    }, 409, cors);
+    const _eb = await env.REGISTRY_KV.get(preauthBidKey(network, assetIdHex, existingExactBidIdHex), 'json');
+    const _now = Math.floor(Date.now() / 1000);
+    if (_eb && (_eb.expiry || 0) > _now) {
+      return jsonResponse({
+        error: 'a live exact-fill preauth-bid (§5.7.11) already exists for this funding_outpoint; cancel it first',
+        existing_bid_id: existingExactBidIdHex,
+      }, 409, cors);
+    }
+    await env.REGISTRY_KV.delete(preauthBidFundingIndexKey(network, fundingTxidHex, fundingVoutRaw));
+    if (_eb) await env.REGISTRY_KV.delete(preauthBidKey(network, assetIdHex, existingExactBidIdHex));
   }
   const existingVarBidIdHex = await env.REGISTRY_KV.get(
     preauthBidVarFundingIndexKey(network, fundingTxidHex, fundingVoutRaw),
   );
   if (existingVarBidIdHex) {
-    return jsonResponse({
-      error: 'a live partial-fill preauth-bid (§5.7.12) already exists for this funding_outpoint; cancel it first',
-      existing_bid_id: existingVarBidIdHex,
-    }, 409, cors);
+    const _evb = await env.REGISTRY_KV.get(preauthBidVarKey(network, assetIdHex, existingVarBidIdHex), 'json');
+    const _now2 = Math.floor(Date.now() / 1000);
+    if (_evb && (_evb.expiry || 0) > _now2) {
+      return jsonResponse({
+        error: 'a live partial-fill preauth-bid (§5.7.12) already exists for this funding_outpoint; cancel it first',
+        existing_bid_id: existingVarBidIdHex,
+      }, 409, cors);
+    }
+    await env.REGISTRY_KV.delete(preauthBidVarFundingIndexKey(network, fundingTxidHex, fundingVoutRaw));
+    if (_evb) await env.REGISTRY_KV.delete(preauthBidVarKey(network, assetIdHex, existingVarBidIdHex));
   }
 
   const bid = {
@@ -18063,19 +18084,31 @@ async function handlePreauthBidVarPost(assetIdHex, req, env, network, cors) {
     preauthBidFundingIndexKey(network, fundingTxidHex, fundingVoutRaw),
   );
   if (existingExactBidIdHex) {
-    return jsonResponse({
-      error: 'a live exact-fill preauth-bid (§5.7.11) already exists for this funding_outpoint; cancel it first',
-      existing_bid_id: existingExactBidIdHex,
-    }, 409, cors);
+    const _eb2 = await env.REGISTRY_KV.get(preauthBidKey(network, assetIdHex, existingExactBidIdHex), 'json');
+    const _now3 = Math.floor(Date.now() / 1000);
+    if (_eb2 && (_eb2.expiry || 0) > _now3) {
+      return jsonResponse({
+        error: 'a live exact-fill preauth-bid (§5.7.11) already exists for this funding_outpoint; cancel it first',
+        existing_bid_id: existingExactBidIdHex,
+      }, 409, cors);
+    }
+    await env.REGISTRY_KV.delete(preauthBidFundingIndexKey(network, fundingTxidHex, fundingVoutRaw));
+    if (_eb2) await env.REGISTRY_KV.delete(preauthBidKey(network, assetIdHex, existingExactBidIdHex));
   }
   const existingVarBidIdHex = await env.REGISTRY_KV.get(
     preauthBidVarFundingIndexKey(network, fundingTxidHex, fundingVoutRaw),
   );
   if (existingVarBidIdHex) {
-    return jsonResponse({
-      error: 'a live partial-fill preauth-bid (§5.7.12) already exists for this funding_outpoint; cancel it first',
-      existing_bid_id: existingVarBidIdHex,
-    }, 409, cors);
+    const _evb2 = await env.REGISTRY_KV.get(preauthBidVarKey(network, assetIdHex, existingVarBidIdHex), 'json');
+    const _now4 = Math.floor(Date.now() / 1000);
+    if (_evb2 && (_evb2.expiry || 0) > _now4) {
+      return jsonResponse({
+        error: 'a live partial-fill preauth-bid (§5.7.12) already exists for this funding_outpoint; cancel it first',
+        existing_bid_id: existingVarBidIdHex,
+      }, 409, cors);
+    }
+    await env.REGISTRY_KV.delete(preauthBidVarFundingIndexKey(network, fundingTxidHex, fundingVoutRaw));
+    if (_evb2) await env.REGISTRY_KV.delete(preauthBidVarKey(network, assetIdHex, existingVarBidIdHex));
   }
 
   const bid = {
