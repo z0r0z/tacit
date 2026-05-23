@@ -6036,15 +6036,19 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
    so users aren't ambushed by a password dialog with no context. */
 .welcome-modal {
   position: fixed; inset: 0; z-index: 1000;
-  display: grid; place-items: center;
+  display: flex;
+  justify-content: center;
   background: rgba(10, 10, 10, 0.55);
   -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px);
   padding: 24px;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
 }
 .welcome-card {
   width: 100%; max-width: 520px;
   background: var(--bg); border: 1px solid var(--ink);
   padding: 28px 28px 22px;
+  margin: auto;
 }
 .welcome-title {
   font-family: 'Instrument Serif', serif;

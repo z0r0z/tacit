@@ -11897,21 +11897,16 @@ async function handleMarket(env, network, cors, prehydratedAssetsBody = null, op
     const aid = a.asset_id;
     const [openings, ranges, intents, preauths] = await Promise.all([
       Number(a.listing_count || 0) > 0
-        ? loadListingsForAsset(env, network, aid).catch(() => [])
+        ? loadListingsForAssetCached(env, network, aid).catch(() => [])
         : Promise.resolve([]),
       Number(a.range_listing_count || 0) > 0
-        ? loadRangeListingsForAsset(env, network, aid).catch(() => [])
+        ? loadRangeListingsForAssetCached(env, network, aid).catch(() => [])
         : Promise.resolve([]),
       Number(a.atomic_intent_count || 0) > 0
-        // loadAtomicIntentsForAsset returns { intents, next_cursor } since
-        // pagination support landed (audit recommendation #2). /market
-        // doesn't paginate — it wants the full set — so unwrap to the
-        // intents array. The default limit=1000 still covers any
-        // realistic asset; pagination is opt-in via the per-asset GET.
-        ? loadAtomicIntentsForAsset(env, network, aid).then(r => r?.intents || []).catch(() => [])
+        ? loadAtomicIntentsForAssetCached(env, network, aid).then(r => r?.intents || []).catch(() => [])
         : Promise.resolve([]),
       Number(a.preauth_sale_count || 0) > 0
-        ? loadPreauthSalesForAsset(env, network, aid).catch(() => [])
+        ? loadPreauthSalesForAssetCached(env, network, aid).catch(() => [])
         : Promise.resolve([]),
     ]);
     // Strip expired and attach kind + _asset reference so the client can sort
@@ -12066,8 +12061,8 @@ async function handleHoldingsWithBody(body, env, network, cors) {
   const now = Math.floor(Date.now() / 1000);
   const results = await Promise.all(aids.map(async aid => {
     const [openings, allListings, rangeListing] = await Promise.all([
-      loadOpeningsForAsset(env, network, aid).catch(() => []),
-      loadListingsForAsset(env, network, aid).catch(() => []),
+      loadOpeningsForAssetCached(env, network, aid).catch(() => []),
+      loadListingsForAssetCached(env, network, aid).catch(() => []),
       env.REGISTRY_KV.get(rangeListingKey(network, aid, ownerPubHex), 'json').catch(() => null),
     ]);
     // Server-side filter listings to this owner so the response carries
@@ -14553,6 +14548,7 @@ async function handleUtxoOpeningPost(txidHex, voutStr, req, env, network, cors) 
   const _opExisted = await env.REGISTRY_KV.get(_opKey);
   await env.REGISTRY_KV.put(_opKey, JSON.stringify(opening));
   if (!_opExisted) _bumpCount(env, openingCountKey(network, assetIdHex), 1).catch(() => {});
+  _bustOpeningsLoaderCache(network, assetIdHex);
   return jsonResponse({ ok: true, opening }, 200, cors);
 }
 
@@ -14630,10 +14626,43 @@ async function loadOpeningsForAsset(env, network, assetIdHex) {
   openings.sort((a, b) => (b.attested_at || 0) - (a.attested_at || 0));
   return openings;
 }
+const _LOADER_CACHE_FRESH_MS = 60_000;
+async function _bustOpeningsLoaderCache(network, aid) {
+  try { await caches.default.delete(new Request(`https://_openings-loader_/${network}/${aid}`, { method: 'GET' })); } catch {}
+}
+async function _bustListingsLoaderCache(network, aid) {
+  try { await caches.default.delete(new Request(`https://_listings-loader_/${network}/${aid}`, { method: 'GET' })); } catch {}
+}
+async function loadOpeningsForAssetCached(env, network, assetIdHex) {
+  const cache = caches.default;
+  const ck = new Request(`https://_openings-loader_/${network}/${assetIdHex}`, { method: 'GET' });
+  const hit = await cache.match(ck);
+  if (hit) {
+    const age = Date.now() - parseInt(hit.headers.get('X-Cached-At') || '0', 10);
+    if (age < _LOADER_CACHE_FRESH_MS) return JSON.parse(await hit.text());
+  }
+  const openings = await loadOpeningsForAsset(env, network, assetIdHex);
+  const ch = new Headers({ 'Content-Type': 'application/json', 'X-Cached-At': String(Date.now()), 'Cache-Control': 'public, max-age=300' });
+  cache.put(ck, new Response(JSON.stringify(openings), { status: 200, headers: ch })).catch(() => {});
+  return openings;
+}
+async function loadListingsForAssetCached(env, network, assetIdHex) {
+  const cache = caches.default;
+  const ck = new Request(`https://_listings-loader_/${network}/${assetIdHex}`, { method: 'GET' });
+  const hit = await cache.match(ck);
+  if (hit) {
+    const age = Date.now() - parseInt(hit.headers.get('X-Cached-At') || '0', 10);
+    if (age < _LOADER_CACHE_FRESH_MS) return JSON.parse(await hit.text());
+  }
+  const listings = await loadListingsForAsset(env, network, assetIdHex);
+  const ch = new Headers({ 'Content-Type': 'application/json', 'X-Cached-At': String(Date.now()), 'Cache-Control': 'public, max-age=300' });
+  cache.put(ck, new Response(JSON.stringify(listings), { status: 200, headers: ch })).catch(() => {});
+  return listings;
+}
 
 async function handleAssetOpenings(assetIdHex, env, network, cors) {
   if (!/^[0-9a-f]{64}$/.test(assetIdHex)) return jsonResponse({ error: 'invalid asset_id' }, 400, cors);
-  const openings = await loadOpeningsForAsset(env, network, assetIdHex);
+  const openings = await loadOpeningsForAssetCached(env, network, assetIdHex);
   return jsonResponse({ asset_id: assetIdHex, count: openings.length, openings }, 200, cors);
 }
 
@@ -15009,7 +15038,7 @@ async function loadListingsForAsset(env, network, assetIdHex) {
 
 async function handleListingList(assetIdHex, env, network, cors) {
   if (!/^[0-9a-f]{64}$/.test(assetIdHex)) return jsonResponse({ error: 'invalid asset_id' }, 400, cors);
-  const listings = await loadListingsForAsset(env, network, assetIdHex);
+  const listings = await loadListingsForAssetCached(env, network, assetIdHex);
   return jsonResponse({ asset_id: assetIdHex, count: listings.length, listings }, 200, cors);
 }
 
@@ -15408,9 +15437,26 @@ async function loadRangeListingsForAsset(env, network, assetIdHex) {
   return listings;
 }
 
+async function _bustRangeListingsLoaderCache(network, aid) {
+  try { await caches.default.delete(new Request(`https://_range-listings-loader_/${network}/${aid}`, { method: 'GET' })); } catch {}
+}
+async function loadRangeListingsForAssetCached(env, network, assetIdHex) {
+  const cache = caches.default;
+  const ck = new Request(`https://_range-listings-loader_/${network}/${assetIdHex}`, { method: 'GET' });
+  const hit = await cache.match(ck);
+  if (hit) {
+    const age = Date.now() - parseInt(hit.headers.get('X-Cached-At') || '0', 10);
+    if (age < _LOADER_CACHE_FRESH_MS) return JSON.parse(await hit.text());
+  }
+  const listings = await loadRangeListingsForAsset(env, network, assetIdHex);
+  const ch = new Headers({ 'Content-Type': 'application/json', 'X-Cached-At': String(Date.now()), 'Cache-Control': 'public, max-age=300' });
+  cache.put(ck, new Response(JSON.stringify(listings), { status: 200, headers: ch })).catch(() => {});
+  return listings;
+}
+
 async function handleRangeListingList(assetIdHex, env, network, cors) {
   if (!/^[0-9a-f]{64}$/.test(assetIdHex)) return jsonResponse({ error: 'invalid asset_id' }, 400, cors);
-  const listings = await loadRangeListingsForAsset(env, network, assetIdHex);
+  const listings = await loadRangeListingsForAssetCached(env, network, assetIdHex);
   return jsonResponse({ asset_id: assetIdHex, count: listings.length, listings }, 200, cors);
 }
 
@@ -16794,6 +16840,22 @@ async function loadAtomicIntentsForAsset(env, network, assetIdHex, opts = {}) {
   const nextCursor = (list.list_complete || !list.cursor) ? null : String(list.cursor);
   return { intents, next_cursor: nextCursor };
 }
+async function _bustAtomicIntentsLoaderCache(network, aid) {
+  try { await caches.default.delete(new Request(`https://_atomic-intents-loader_/${network}/${aid}`, { method: 'GET' })); } catch {}
+}
+async function loadAtomicIntentsForAssetCached(env, network, assetIdHex) {
+  const cache = caches.default;
+  const ck = new Request(`https://_atomic-intents-loader_/${network}/${assetIdHex}`, { method: 'GET' });
+  const hit = await cache.match(ck);
+  if (hit) {
+    const age = Date.now() - parseInt(hit.headers.get('X-Cached-At') || '0', 10);
+    if (age < _LOADER_CACHE_FRESH_MS) return JSON.parse(await hit.text());
+  }
+  const result = await loadAtomicIntentsForAsset(env, network, assetIdHex);
+  const ch = new Headers({ 'Content-Type': 'application/json', 'X-Cached-At': String(Date.now()), 'Cache-Control': 'public, max-age=300' });
+  cache.put(ck, new Response(JSON.stringify(result), { status: 200, headers: ch })).catch(() => {});
+  return result;
+}
 
 // `?limit` (1..1000, default 1000 — preserves pre-pagination shape) caps
 // the per-page intent count. `?cursor` (opaque string from a prior page's
@@ -16801,7 +16863,10 @@ async function loadAtomicIntentsForAsset(env, network, assetIdHex, opts = {}) {
 // shot response. `next_cursor` is null on the final page.
 async function handleAtomicIntentList(assetIdHex, env, network, cors, opts = {}) {
   if (!/^[0-9a-f]{64}$/.test(assetIdHex)) return jsonResponse({ error: 'invalid asset_id' }, 400, cors);
-  const { intents, next_cursor } = await loadAtomicIntentsForAsset(env, network, assetIdHex, opts);
+  const loader = (opts.limit || opts.cursor)
+    ? loadAtomicIntentsForAsset(env, network, assetIdHex, opts)
+    : loadAtomicIntentsForAssetCached(env, network, assetIdHex);
+  const { intents, next_cursor } = await loader;
   return jsonResponse({ asset_id: assetIdHex, count: intents.length, intents, next_cursor }, 200, cors);
 }
 
@@ -17377,9 +17442,26 @@ async function loadPreauthSalesForAsset(env, network, assetIdHex) {
   return sales;
 }
 
+async function _bustPreauthSalesLoaderCache(network, aid) {
+  try { await caches.default.delete(new Request(`https://_preauth-sales-loader_/${network}/${aid}`, { method: 'GET' })); } catch {}
+}
+async function loadPreauthSalesForAssetCached(env, network, assetIdHex) {
+  const cache = caches.default;
+  const ck = new Request(`https://_preauth-sales-loader_/${network}/${assetIdHex}`, { method: 'GET' });
+  const hit = await cache.match(ck);
+  if (hit) {
+    const age = Date.now() - parseInt(hit.headers.get('X-Cached-At') || '0', 10);
+    if (age < _LOADER_CACHE_FRESH_MS) return JSON.parse(await hit.text());
+  }
+  const sales = await loadPreauthSalesForAsset(env, network, assetIdHex);
+  const ch = new Headers({ 'Content-Type': 'application/json', 'X-Cached-At': String(Date.now()), 'Cache-Control': 'public, max-age=300' });
+  cache.put(ck, new Response(JSON.stringify(sales), { status: 200, headers: ch })).catch(() => {});
+  return sales;
+}
+
 async function handlePreauthSaleList(assetIdHex, env, network, cors) {
   if (!/^[0-9a-f]{64}$/.test(assetIdHex)) return jsonResponse({ error: 'invalid asset_id' }, 400, cors);
-  const sales = await loadPreauthSalesForAsset(env, network, assetIdHex);
+  const sales = await loadPreauthSalesForAssetCached(env, network, assetIdHex);
   return jsonResponse({ asset_id: assetIdHex, count: sales.length, sales }, 200, cors);
 }
 
@@ -25797,28 +25879,28 @@ async function _routeFetch(req, env, ctx) {
     const _mutateAndBustListings = async (aid, makeResp) => {
       const resp = await _mutateAndBust(aid, makeResp);
       if (resp.status >= 200 && resp.status < 400 && ctx && typeof ctx.waitUntil === 'function') {
-        ctx.waitUntil(_bustListingsCache(network, aid));
+        ctx.waitUntil(Promise.all([_bustListingsCache(network, aid), _bustListingsLoaderCache(network, aid)]));
       }
       return resp;
     };
     const _mutateAndBustListingsRange = async (aid, makeResp) => {
       const resp = await _mutateAndBust(aid, makeResp);
       if (resp.status >= 200 && resp.status < 400 && ctx && typeof ctx.waitUntil === 'function') {
-        ctx.waitUntil(_bustListingsRangeCache(network, aid));
+        ctx.waitUntil(Promise.all([_bustListingsRangeCache(network, aid), _bustRangeListingsLoaderCache(network, aid)]));
       }
       return resp;
     };
     const _mutateAndBustAtomicIntents = async (aid, makeResp) => {
       const resp = await _mutateAndBust(aid, makeResp);
       if (resp.status >= 200 && resp.status < 400 && ctx && typeof ctx.waitUntil === 'function') {
-        ctx.waitUntil(_bustAtomicIntentsCache(network, aid));
+        ctx.waitUntil(Promise.all([_bustAtomicIntentsCache(network, aid), _bustAtomicIntentsLoaderCache(network, aid)]));
       }
       return resp;
     };
     const _mutateAndBustPreauthSales = async (aid, makeResp) => {
       const resp = await _mutateAndBust(aid, makeResp);
       if (resp.status >= 200 && resp.status < 400 && ctx && typeof ctx.waitUntil === 'function') {
-        ctx.waitUntil(_bustPreauthSalesCache(network, aid));
+        ctx.waitUntil(Promise.all([_bustPreauthSalesCache(network, aid), _bustPreauthSalesLoaderCache(network, aid)]));
       }
       return resp;
     };
