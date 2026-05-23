@@ -26633,6 +26633,7 @@ async function _routeFetch(req, env, ctx) {
     // additive — doesn't touch the live cron's last_scanned, so new
     // blocks keep indexing in parallel.
     if (url.pathname === '/admin/backfill-holders' && req.method === 'POST') {
+      if (!checkDebugAuth(req, env)) return jsonResponse({ error: 'not found' }, 404, cors);
       try {
         const aid = url.searchParams.get('aid') || '';
         const cursor = url.searchParams.get('cursor') || '';
