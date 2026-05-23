@@ -12176,6 +12176,75 @@ async function handleHoldingsWithBody(body, env, network, cors) {
   return jsonResponse({ openings, listings, range_listings: rangeListings }, 200, cors);
 }
 
+// ============== /asset-book batch endpoint ==============
+// Collapses the asset-detail-page's 2-3 parallel fetches (/assets/:aid,
+// /assets/:aid/bid-intents, optionally /assets/:aid/listings etc.) into one
+// worker invocation. Each sub-query reads from its own SWR cache first so
+// the batch is as cheap as the individual calls — the saving is invocation
+// count, not compute.
+const _BOOK_VALID_SECTIONS = new Set(['stats', 'bids', 'listings', 'intents', 'preauth_sales', 'range_listings']);
+async function handleAssetBook(req, env, network, cors, ctx) {
+  let body;
+  try { body = await req.json(); } catch { return jsonResponse({ error: 'invalid JSON body' }, 400, cors); }
+  const aid = String(body?.asset_id ?? '').toLowerCase();
+  if (!/^[0-9a-f]{64}$/.test(aid)) return jsonResponse({ error: 'asset_id must be 64-hex' }, 400, cors);
+  const include = Array.isArray(body?.include) ? body.include.filter(s => _BOOK_VALID_SECTIONS.has(s)) : ['stats', 'bids'];
+  if (include.length === 0) return jsonResponse({ error: 'include must list at least one section' }, 400, cors);
+  const wantSet = new Set(include);
+
+  const _swr = async (cacheKey, freshMs, staleMs, computeFn) => {
+    const cache = caches.default;
+    const cached = await cache.match(cacheKey);
+    if (cached) {
+      const age = Date.now() - parseInt(cached.headers.get('X-Cached-At') || '0', 10);
+      if (age < freshMs) return JSON.parse(await cached.text());
+      if (age < staleMs) {
+        if (ctx && typeof ctx.waitUntil === 'function') {
+          ctx.waitUntil(_swrDedupedKick(cacheKey.url, computeFn).catch(() => null));
+        }
+        return JSON.parse(await cached.text());
+      }
+    }
+    const result = await _swrDedupedKick(cacheKey.url, computeFn);
+    return JSON.parse(result.body);
+  };
+
+  const out = {};
+  const jobs = [];
+  if (wantSet.has('stats')) jobs.push(
+    _swr(assetDetailCacheKey(network, aid), ASSET_DETAIL_CACHE_FRESH_MS, ASSET_DETAIL_CACHE_STALE_MS,
+      () => assetDetailComputeAndCache(env, network, aid))
+      .then(d => { out.stats = d; }).catch(() => { out.stats = null; }),
+  );
+  if (wantSet.has('bids')) jobs.push(
+    _swr(bidIntentsCacheKey(network, aid), BID_INTENTS_CACHE_FRESH_MS, BID_INTENTS_CACHE_STALE_MS,
+      () => bidIntentsComputeAndCache(env, network, aid))
+      .then(d => { out.bids = d; }).catch(() => { out.bids = null; }),
+  );
+  if (wantSet.has('listings')) jobs.push(
+    _swr(listingsCacheKey(network, aid), LISTINGS_CACHE_FRESH_MS, LISTINGS_CACHE_STALE_MS,
+      () => listingsComputeAndCache(env, network, aid))
+      .then(d => { out.listings = d; }).catch(() => { out.listings = null; }),
+  );
+  if (wantSet.has('intents')) jobs.push(
+    _swr(atomicIntentsCacheKey(network, aid), ATOMIC_INTENTS_CACHE_FRESH_MS, ATOMIC_INTENTS_CACHE_STALE_MS,
+      () => atomicIntentsComputeAndCache(env, network, aid))
+      .then(d => { out.intents = d; }).catch(() => { out.intents = null; }),
+  );
+  if (wantSet.has('preauth_sales')) jobs.push(
+    _swr(preauthSalesCacheKey(network, aid), PREAUTH_SALES_CACHE_FRESH_MS, PREAUTH_SALES_CACHE_STALE_MS,
+      () => preauthSalesComputeAndCache(env, network, aid))
+      .then(d => { out.preauth_sales = d; }).catch(() => { out.preauth_sales = null; }),
+  );
+  if (wantSet.has('range_listings')) jobs.push(
+    _swr(listingsRangeCacheKey(network, aid), LISTINGS_RANGE_CACHE_FRESH_MS, LISTINGS_RANGE_CACHE_STALE_MS,
+      () => listingsRangeComputeAndCache(env, network, aid))
+      .then(d => { out.range_listings = d; }).catch(() => { out.range_listings = null; }),
+  );
+  await Promise.all(jobs);
+  return jsonResponse(out, 200, cors);
+}
+
 async function commitmentFromRevealTx(env, revealTxid, vout, network) {
   // Fallback path for attestations submitted before the cron has indexed the asset.
   // Fetch the reveal tx from mempool.space, decode the CETCH envelope at vin[0].witness[1],
@@ -25343,6 +25412,7 @@ async function _routeFetch(req, env, ctx) {
       const result = await _swrDedupedKick(_hCacheKey.url, _hRecompute);
       return _hWithCors(result.body, result.status, _hCached ? 'EXPIRED-MISS' : 'MISS');
     }
+    if (url.pathname === '/asset-book' && req.method === 'POST') return handleAssetBook(req, env, network, cors, ctx);
     if (url.pathname === '/assets/hint' && req.method === 'POST') return handleAssetHint(req, env, network, cors, ctx);
     // Permissionless-mint registry (T_PETCH-rooted). Kept separate from
     // /assets so consumers can filter cleanly without one mode polluting the
