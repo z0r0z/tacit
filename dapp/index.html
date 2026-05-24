@@ -7454,6 +7454,7 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
         <button id="btn-drip" class="primary" style="display:none;">Demo drip</button>
         <button id="btn-ext-fund" class="primary" style="display:none;">Top up tacit</button>
         <button id="btn-buy-btc" class="primary" style="display:none;">Buy / receive BTC</button>
+        <button id="btn-eth-connect" class="primary" style="display:none;">Connect Ethereum wallet</button>
         <button id="btn-ext-connect-xverse" class="primary">Connect Xverse / Leather</button>
         <button id="btn-ext-connect-unisat" class="primary">Connect UniSat</button>
         <button id="btn-passkey-add" class="primary" style="display:none;">Use a passkey</button>
@@ -7473,6 +7474,17 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
               <dt>Wallet addr</dt><dd><div class="mono-box" id="ext-wallet-address">—</div></dd>
             </dl>
             <button id="btn-ext-disconnect" style="margin-top:10px;">Disconnect</button>
+          </div>
+
+          <div id="eth-wallet-info" style="display:none;margin-bottom:14px;padding:10px 12px;background:var(--bg-alt);border:1px dashed var(--orange);">
+            <div style="font-size:11px;text-transform:uppercase;letter-spacing:0.1em;color:var(--orange);margin-bottom:6px;">Ethereum-derived wallet</div>
+            <dl class="kv" style="grid-template-columns:90px 1fr;">
+              <dt>ETH address</dt><dd><div class="mono-box" id="eth-wallet-address">—</div></dd>
+            </dl>
+            <div class="muted" style="margin-top:8px;font-size:11px;line-height:1.5;">
+              Your tacit signing key is derived from your Ethereum wallet signature. Reconnecting the same ETH account and signing the derivation message recovers this identity on any device — no passphrase or backup needed.
+            </div>
+            <button id="btn-eth-disconnect" style="margin-top:10px;">Disconnect</button>
           </div>
 
           <div id="passkey-wallet-info" style="display:none;margin-bottom:14px;padding:10px 12px;background:var(--bg-alt);border:1px dashed var(--orange);">
@@ -9618,7 +9630,11 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
       <div style="font-size:11px;color:var(--ink-mid);margin:2px 4px 0;line-height:1.5;">
         already have a tacit private key? <a href="#" id="welcome-import" style="color:var(--ink);text-decoration:underline;">restore from key</a>
       </div>
-      <div class="welcome-divider">already have a bitcoin wallet?</div>
+      <div class="welcome-divider">already have a wallet?</div>
+      <button id="welcome-eth" class="welcome-option" type="button">
+        <span class="welcome-option-title">connect ethereum wallet</span>
+        <span class="welcome-option-meta">sign one message in MetaMask / Rainbow / Rabby to derive a tacit identity. no passphrase — your ETH wallet is the backup. same account = same tacit wallet on any device.</span>
+      </button>
       <button id="welcome-xverse" class="welcome-option" type="button">
         <span class="welcome-option-title">connect xverse / leather</span>
         <span class="welcome-option-meta">tacit creates its own signing key bound to your xverse / leather address. your existing wallet stays separate — it's used for one-click funding only.</span>
