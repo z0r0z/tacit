@@ -1,0 +1,13 @@
+# Foundry
+cache/
+out/
+/lib/
+
+# SP1 build artifacts
+sp1/program/target/
+sp1/program/Cargo.lock
+sp1/script/
+
+# Compiler artifacts
+*.abi
+*.bin

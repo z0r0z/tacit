@@ -183,6 +183,9 @@ const T_CBTC_TAC_BOND_RELEASE   = 0x5A; // partial bond release on open position
 // 0x5C–0x5E reserved for the named follow-ups (variable-amount, batched-fill, both-sides match).
 const T_PREAUTH_BID             = 0x5B; // buyer-offline preauth bid, exact-fill (SPEC §5.7.11)
 const T_PREAUTH_BID_VAR         = 0x5C; // buyer-offline preauth bid, partial-fill (SPEC §5.7.12)
+// 0x60–0x63: SPEC-TETH-BRIDGE-AMENDMENT (trustless ETH↔Tacit bridge).
+const T_BRIDGE_DEPOSIT          = 0x60; // cross-chain mint: prove ETH deposit → mint tETH (SPEC §5.60)
+const T_BRIDGE_BURN             = 0x61; // cross-chain redeem: burn tETH → commit to ETH withdrawal (SPEC §5.61)
 const N_BITS = 64; // amount range: [0, 2^64) — bulletproof rangeproof.
 const SECP_N = 0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141n;
 
@@ -9631,6 +9634,62 @@ function decodeTWithdrawPayload(payload) {
     bind_hash: bytesToHex(bindHashBytes),
     proof,
   };
+}
+
+// SPEC-TETH-BRIDGE-AMENDMENT §5.60 — T_BRIDGE_DEPOSIT decoder.
+const _BRIDGE_DEPOSIT_DOMAIN = new TextEncoder().encode('tacit-bridge-deposit-v1');
+const _BRIDGE_BURN_DOMAIN    = new TextEncoder().encode('tacit-bridge-burn-v1');
+
+function decodeTBridgeDepositPayload(payload) {
+  if (!payload || payload.length < 261 || payload[0] !== T_BRIDGE_DEPOSIT) return null;
+  let o = 1;
+  const networkTag = payload[o++];
+  const assetId = payload.slice(o, o + 32); o += 32;
+  const denomWei = payload.slice(o, o + 32); o += 32;
+  const ethRoot = payload.slice(o, o + 32); o += 32;
+  const nullifierHash = payload.slice(o, o + 32); o += 32;
+  const recipientCommit = payload.slice(o, o + 33); o += 33;
+  const leafHash = payload.slice(o, o + 32); o += 32;
+  const rLeaf = payload.slice(o, o + 32); o += 32;
+  const bindHash = payload.slice(o, o + 32); o += 32;
+  const proofLen = payload[o] | (payload[o + 1] << 8); o += 2;
+  if (proofLen === 0 || o + proofLen > payload.length) return null;
+  const proof = payload.slice(o, o + proofLen);
+  // Bind-hash verification (same defense-in-depth as T_WITHDRAW decoder).
+  const expectedBind = sha256(concatBytes(
+    _BRIDGE_DEPOSIT_DOMAIN,
+    new Uint8Array([networkTag]),
+    assetId, denomWei, ethRoot, nullifierHash, recipientCommit, leafHash, rLeaf,
+  ));
+  for (let i = 0; i < 32; i++) if (expectedBind[i] !== bindHash[i]) return null;
+  return { networkTag, assetId, denomWei, ethRoot, nullifierHash, recipientCommit, leafHash, rLeaf, bindHash, proof };
+}
+
+// SPEC-TETH-BRIDGE-AMENDMENT §5.61 — T_BRIDGE_BURN decoder.
+function decodeTBridgeBurnPayload(payload) {
+  if (!payload || payload.length < 281 || payload[0] !== T_BRIDGE_BURN) return null;
+  let o = 1;
+  const networkTag = payload[o++];
+  const assetId = payload.slice(o, o + 32); o += 32;
+  const denomWei = payload.slice(o, o + 32); o += 32;
+  const merkleRoot = payload.slice(o, o + 32); o += 32;
+  const nullifierHash = payload.slice(o, o + 32); o += 32;
+  const recipientCommit = payload.slice(o, o + 33); o += 33;
+  const rLeaf = payload.slice(o, o + 32); o += 32;
+  const ethRecipient = payload.slice(o, o + 20); o += 20;
+  const burnNonce = payload.slice(o, o + 32); o += 32;
+  const bindHash = payload.slice(o, o + 32); o += 32;
+  const proofLen = payload[o] | (payload[o + 1] << 8); o += 2;
+  if (proofLen === 0 || o + proofLen > payload.length) return null;
+  const proof = payload.slice(o, o + proofLen);
+  // Bind-hash verification.
+  const expectedBind = sha256(concatBytes(
+    _BRIDGE_BURN_DOMAIN,
+    new Uint8Array([networkTag]),
+    assetId, denomWei, merkleRoot, nullifierHash, recipientCommit, rLeaf, ethRecipient, burnNonce,
+  ));
+  for (let i = 0; i < 32; i++) if (expectedBind[i] !== bindHash[i]) return null;
+  return { networkTag, assetId, denomWei, merkleRoot, nullifierHash, recipientCommit, rLeaf, ethRecipient, burnNonce, bindHash, proof };
 }
 
 // SPEC-CBTC-ZK §5.21 T_SLOT_MINT — atomic mint into self-custody slot.
@@ -24093,6 +24152,72 @@ async function scanForEtches(env, network) {
           // Per SPEC §5.19: canonical entry remains the first-confirmed; the
           // equivocator's subsequent envelope is rejected at the state layer.
         }
+      } else if (decoded.opcode === T_BRIDGE_DEPOSIT) {
+        // SPEC-TETH-BRIDGE-AMENDMENT §5.60. Cross-chain mint: proof of ETH
+        // deposit in Ethereum mixer → append leaf to tETH pool on Tacit.
+        // Full Groth16 + Ethereum root freshness verified by dApp (same model
+        // as T_WITHDRAW: worker indexes structurally, dApp validates proofs).
+        const bd = decodeTBridgeDepositPayload(decoded.payload);
+        if (!bd) continue;
+        const expectedNetTag = networkTagFor(network);
+        if (expectedNetTag === null || bd.networkTag !== expectedNetTag) continue;
+        const aid = bytesToHex(bd.assetId);
+        const denomBig = bytesToHex(bd.denomWei);
+        const initRec = await env.REGISTRY_KV.get(poolInitKey(network, aid, denomBig), 'json');
+        if (!initRec) continue;
+        // Double-mint prevention: deposit nullifier must not be spent.
+        const nKey = `bridge_deposit_nullifier:${network}:${aid}:${denomBig}:${bytesToHex(bd.nullifierHash)}`;
+        const existingN = await env.REGISTRY_KV.get(nKey);
+        if (existingN) continue;
+        // Leaf cap check.
+        const cntKey = poolLeafCountKey(network, aid, denomBig);
+        const cnt = parseInt(await env.REGISTRY_KV.get(cntKey) || '0', 10);
+        if (cnt >= POOL_LEAF_CAP) continue;
+        // Record: append leaf + mark nullifier.
+        const leafKey = poolLeafKeyFor(network, aid, denomBig, h, txIndex, tx.txid);
+        await env.REGISTRY_KV.put(leafKey, JSON.stringify({
+          asset_id: aid, denomination: denomBig,
+          leaf_commitment: bytesToHex(bd.leafHash),
+          deposit_txid: tx.txid, tx_index: txIndex,
+          deposited_at_height: h,
+          deposited_at: tx.status?.block_time || Math.floor(Date.now() / 1000),
+          source: 'bridge_deposit', network,
+        }));
+        await env.REGISTRY_KV.put(cntKey, String(cnt + 1));
+        await env.REGISTRY_KV.put(nKey, JSON.stringify({
+          deposit_txid: tx.txid, claimed_at_height: h, network,
+        }));
+        found++;
+      } else if (decoded.opcode === T_BRIDGE_BURN) {
+        // SPEC-TETH-BRIDGE-AMENDMENT §5.61. Cross-chain redeem: burn tETH leaf
+        // and commit to ETH recipient. Records nullifier; the user later proves
+        // this burn on Ethereum to unlock their ETH.
+        const bb = decodeTBridgeBurnPayload(decoded.payload);
+        if (!bb) continue;
+        const expectedNetTag = networkTagFor(network);
+        if (expectedNetTag === null || bb.networkTag !== expectedNetTag) continue;
+        const aid = bytesToHex(bb.assetId);
+        const denomBig = bytesToHex(bb.denomWei);
+        const initRec = await env.REGISTRY_KV.get(poolInitKey(network, aid, denomBig), 'json');
+        if (!initRec) continue;
+        const nKey = poolNullifierKey(network, aid, denomBig, bytesToHex(bb.nullifierHash));
+        const existing = await env.REGISTRY_KV.get(nKey);
+        if (!existing) {
+          await env.REGISTRY_KV.put(nKey, JSON.stringify({
+            asset_id: aid, denomination: denomBig,
+            nullifier_hash: bytesToHex(bb.nullifierHash),
+            eth_recipient: bytesToHex(bb.ethRecipient),
+            burn_nonce: bytesToHex(bb.burnNonce),
+            withdraw_txid: tx.txid, withdrawn_at_height: h,
+            withdrawn_at: tx.status?.block_time || Math.floor(Date.now() / 1000),
+            source: 'bridge_burn', network,
+          }));
+          // Decrement supply counter (SPEC §5.61: supply(asset_id) -= 1).
+          const cntKey = poolLeafCountKey(network, aid, denomBig);
+          const cnt = parseInt(await env.REGISTRY_KV.get(cntKey) || '0', 10);
+          if (cnt > 0) await env.REGISTRY_KV.put(cntKey, String(cnt - 1));
+          found++;
+        }
       }
     }
     lastContiguous = h;
@@ -24281,6 +24406,7 @@ export {
   dropIdFromRevealTxid,
   T_CETCH, T_CXFER, T_CXFER_BPP, T_MINT, T_BURN, T_AXFER, T_AXFER_VAR, T_PETCH, T_PMINT, T_DEPOSIT, T_WITHDRAW, T_DROP, T_DCLAIM,
   T_SLOT_MINT, T_SLOT_BURN, T_SLOT_ROTATE,
+  T_BRIDGE_DEPOSIT, T_BRIDGE_BURN,
   // Mixer kernel-sig verifier — exported so tests/mixer-conservation can
   // drive it directly against a stubbed apiJson/fetch and confirm the
   // Conservation invariant (SPEC §5.11.4 #1) is enforced. Without dedicated
@@ -25524,6 +25650,52 @@ async function _routeFetch(req, env, ctx) {
     }
     if (url.pathname === '/asset-book' && req.method === 'POST') return handleAssetBook(req, env, network, cors, ctx);
     if (url.pathname === '/assets/hint' && req.method === 'POST') return handleAssetHint(req, env, network, cors, ctx);
+
+    // --- tETH bridge: Ethereum root attestation (SPEC-TETH-BRIDGE-AMENDMENT §5.60.4) ---
+    if (url.pathname === '/bridge/eth-roots' && req.method === 'GET') {
+      const aid = url.searchParams.get('asset_id');
+      if (!aid) return jsonResponse({ error: 'missing asset_id' }, 400, cors);
+      const prefix = `eth_root:${network}:${aid}:`;
+      const keys = await env.REGISTRY_KV.list({ prefix, limit: 32 });
+      const roots = [];
+      for (const k of keys.keys) {
+        const v = await env.REGISTRY_KV.get(k.name, 'json');
+        if (v) roots.push(v);
+      }
+      return jsonResponse({ roots }, 200, cors);
+    }
+    if (url.pathname === '/bridge/eth-roots' && req.method === 'POST') {
+      // Bonded attestor submits a recent Ethereum mixer root. The attestor's
+      // BIP-340 pubkey must be in the asset's wrapper metadata attestor set.
+      // Phase 1: trust a single attestor pubkey (configured per-asset).
+      // Phase 2: replace with ZK Ethereum state proof.
+      const body = await req.json().catch(() => null);
+      if (!body) return jsonResponse({ error: 'invalid json' }, 400, cors);
+      const { asset_id, eth_root, eth_block_number, attestor_pubkey, attestor_sig } = body;
+      if (!asset_id || !eth_root || !eth_block_number || !attestor_pubkey || !attestor_sig) {
+        return jsonResponse({ error: 'missing fields' }, 400, cors);
+      }
+      // Verify BIP-340 signature over the attestation message.
+      const msg = sha256(concatBytes(
+        new TextEncoder().encode('tacit-eth-root-attest-v1'),
+        hexToBytes(asset_id),
+        hexToBytes(eth_root),
+        new Uint8Array(new BigUint64Array([BigInt(eth_block_number)]).buffer),
+      ));
+      const pubXOnly = hexToBytes(attestor_pubkey).length === 33
+        ? hexToBytes(attestor_pubkey).slice(1)
+        : hexToBytes(attestor_pubkey);
+      if (!verifySchnorr(hexToBytes(attestor_sig), msg, pubXOnly)) {
+        return jsonResponse({ error: 'invalid attestor signature' }, 403, cors);
+      }
+      // Store the attested root in the recent-roots window (keep last 32).
+      const rootKey = `eth_root:${network}:${asset_id}:${eth_block_number}`;
+      await env.REGISTRY_KV.put(rootKey, JSON.stringify({
+        eth_root, eth_block_number, attestor_pubkey, attestor_sig,
+        attested_at: Math.floor(Date.now() / 1000),
+      }));
+      return jsonResponse({ ok: true, stored: rootKey }, 200, cors);
+    }
     // Permissionless-mint registry (T_PETCH-rooted). Kept separate from
     // /assets so consumers can filter cleanly without one mode polluting the
     // other; clients wanting "every asset" union /assets and /petch-assets.

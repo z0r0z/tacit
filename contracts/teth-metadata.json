@@ -1,0 +1,37 @@
+{
+  "name": "tETH",
+  "ticker": "tETH",
+  "decimals": 8,
+  "description": "Trustless wrapped ETH on Tacit. Deposited via Ethereum mixer, redeemable via ZK Bitcoin inclusion proof. No federation, no oracle, no co-signer.",
+  "image_uri": null,
+  "tacit_wrapper": {
+    "version": 1,
+    "underlying": {
+      "chain": "ethereum",
+      "asset": "native",
+      "unit": "wei"
+    },
+    "peg": {
+      "numerator": 1,
+      "denominator": 1,
+      "kind": "fixed"
+    },
+    "custody": {
+      "kind": "eth_bridge_slot",
+      "denom_wei": "1000000000000000000",
+      "eth_mixer_address": null,
+      "eth_chain_id": 1,
+      "reserve_address": null,
+      "btc_header_relay": "embedded",
+      "max_supply": null,
+      "threshold_k": null,
+      "threshold_n": null,
+      "escape": null
+    },
+    "redemption": {
+      "fee_bps": 0,
+      "min_request_units": 1
+    },
+    "attestation": null
+  }
+}
