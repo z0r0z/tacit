@@ -50,7 +50,7 @@
   static host instead; see ./_headers for the Cloudflare Pages / Netlify
   config that adds frame-ancestors 'self' (clickjacking defense).
 -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' http://localhost:* http://127.0.0.1:* https://mempool.space https://*.mempool.space https://mempool.bisq.services https://mempool.emzy.de https://mempool.bitaroo.net https://blockstream.info https://api.coinbase.com https://api.kraken.com https://api.coingecko.com https://cloudflare-eth.com https://tacit-pin.rosscampbell9.workers.dev https://www.tacitscan.io https://content.wrappr.wtf https://ipfs.io https://w3s.link https://*.ipfs.w3s.link https://dweb.link https://*.ipfs.dweb.link https://uploads.pinata.cloud https://gateway.pinata.cloud; img-src 'self' data: http://localhost:* http://127.0.0.1:* https://content.wrappr.wtf https://tacit-pin.rosscampbell9.workers.dev https://ipfs.io https://w3s.link https://*.ipfs.w3s.link https://dweb.link https://*.ipfs.dweb.link; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' http://localhost:* http://127.0.0.1:* https://mempool.space https://*.mempool.space https://mempool.bisq.services https://mempool.emzy.de https://mempool.bitaroo.net https://blockstream.info https://api.coinbase.com https://api.kraken.com https://api.coingecko.com https://cloudflare-eth.com https://tacit-pin.rosscampbell9.workers.dev https://www.tacitscan.io https://content.wrappr.wtf https://ipfs.io https://w3s.link https://*.ipfs.w3s.link https://dweb.link https://*.ipfs.dweb.link https://uploads.pinata.cloud https://gateway.pinata.cloud https://gateway.liquify.com; img-src 'self' data: http://localhost:* http://127.0.0.1:* https://content.wrappr.wtf https://tacit-pin.rosscampbell9.workers.dev https://ipfs.io https://w3s.link https://*.ipfs.w3s.link https://dweb.link https://*.ipfs.dweb.link; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; object-src 'none'; base-uri 'self'; form-action 'none'">
 <title>tacit</title>
 <link rel="icon" type="image/svg+xml" href='data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><style>.r{stroke:%230a0a0a}@media(prefers-color-scheme:dark){.r{stroke:%23f4efe6}}</style><circle class="r" cx="16" cy="16" r="13" fill="none" stroke-width="2.5"/><path d="M17.5 7L13 22.5Q13 25 18 24" fill="none" stroke="%23f7931a" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M10 11L21 11" stroke="%23f7931a" stroke-width="2.4" stroke-linecap="round"/></svg>'>
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -9881,15 +9881,33 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
         <span class="welcome-option-title">pay from any Bitcoin wallet</span>
         <span class="welcome-option-meta">tap to open in your default wallet (mobile), or copy the payment URI into Xverse / UniSat / Leather / Strike / Phoenix / Wallet of Satoshi / any CEX withdrawal.</span>
       </button>
-      <div class="welcome-divider">already hold ETH or other crypto?</div>
+      <div class="welcome-divider">already hold ETH?</div>
       <button id="topup-swap-eth" class="welcome-option" type="button">
-        <span class="welcome-option-title">swap ETH → BTC</span>
-        <span class="welcome-option-meta">swap ETH (or ERC-20 tokens) for BTC via SideShift — no KYC, no account. opens in a new tab with your tacit address prefilled as destination. BTC arrives in ~10 min.</span>
+        <span class="welcome-option-title">swap ETH → BTC via THORChain</span>
+        <span class="welcome-option-meta">non-custodial cross-chain swap — sign one ETH transaction in your Ethereum wallet, BTC arrives at your tacit address in ~10 min. no account, no KYC, no intermediary holds your funds.</span>
       </button>
-      <button id="topup-swap-thorchain" class="welcome-option" type="button">
-        <span class="welcome-option-title">swap via THORSwap (non-custodial)</span>
-        <span class="welcome-option-meta">cross-chain swap powered by THORChain liquidity pools. fully non-custodial — no intermediary holds your funds. opens THORSwap with your tacit address as destination.</span>
-      </button>
+      <div id="topup-swap-box" style="display:none;margin-top:10px;padding:12px;border:1px dashed var(--orange);background:var(--bg-warm);">
+        <div style="font-size:10px;text-transform:uppercase;letter-spacing:0.1em;color:var(--orange);margin-bottom:8px;">swap ETH → BTC</div>
+        <div style="display:flex;gap:6px;align-items:center;">
+          <input type="text" id="topup-swap-amount" inputmode="decimal" placeholder="ETH amount (e.g. 0.1)" style="flex:1;font-size:16px;padding:10px 12px;font-family:var(--mono);">
+          <button id="topup-swap-quote" class="primary" style="padding:10px 14px;font-size:11px;white-space:nowrap;">Get quote</button>
+        </div>
+        <div id="topup-swap-quote-result" style="display:none;margin-top:10px;padding:10px;border:1px solid var(--ink-faint);background:var(--bg);font-size:11px;line-height:1.6;">
+          <dl class="kv" style="grid-template-columns:100px 1fr;gap:4px 8px;">
+            <dt>You send</dt><dd class="mono" id="topup-swap-send">—</dd>
+            <dt>You receive</dt><dd class="mono" id="topup-swap-receive" style="color:var(--orange);font-weight:500;">—</dd>
+            <dt>Rate</dt><dd class="mono" id="topup-swap-rate">—</dd>
+            <dt>Fees</dt><dd class="mono" id="topup-swap-fees">—</dd>
+            <dt>Slippage</dt><dd class="mono" id="topup-swap-slippage">—</dd>
+            <dt>Expires</dt><dd class="mono" id="topup-swap-expiry">—</dd>
+          </dl>
+          <button id="topup-swap-send-btn" class="primary" style="margin-top:10px;width:100%;padding:12px;font-size:13px;">Swap — sign in Ethereum wallet</button>
+        </div>
+        <div id="topup-swap-status" class="muted" style="margin-top:8px;font-size:11px;line-height:1.5;"></div>
+        <div class="muted" style="margin-top:8px;font-size:10px;line-height:1.5;">
+          Powered by <a href="https://thorchain.org" target="_blank" rel="noopener noreferrer" style="color:var(--ink);">THORChain</a> decentralized liquidity. Your ETH goes to a THORChain vault; validators process the swap and send BTC to your tacit address. No registration, no custody.
+        </div>
+      </div>
       <div class="welcome-divider">or skip KYC — peer-to-peer</div>
       <button id="topup-p2p" class="welcome-option" type="button">
         <span class="welcome-option-title">buy peer-to-peer (no KYC)</span>
