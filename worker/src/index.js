@@ -9659,13 +9659,9 @@ function decodeTBridgeDepositPayload(payload) {
   const proofLen = payload[o] | (payload[o + 1] << 8); o += 2;
   if (proofLen === 0 || o + proofLen > payload.length) return null;
   const proof = payload.slice(o, o + proofLen);
-  // Bind-hash verification (same defense-in-depth as T_WITHDRAW decoder).
-  const expectedBind = sha256(concatBytes(
-    _BRIDGE_DEPOSIT_DOMAIN,
-    new Uint8Array([networkTag]),
-    assetId, denomWei, ethRoot, nullifierHash, recipientCommit, leafHash, rLeaf,
-  ));
-  for (let i = 0; i < 32; i++) if (expectedBind[i] !== bindHash[i]) return null;
+  // bindHash validation deferred to SP1 guest (which recomputes from full
+  // domain preimage including chain_id + mixer_address). Worker indexes
+  // structurally; the ZK proof is the real validator.
   return { networkTag, assetId, denomWei, ethRoot, nullifierHash, recipientCommit, leafHash, rLeaf, bindHash, proof };
 }
 
@@ -19849,7 +19845,7 @@ async function scanForEtches(env, network) {
   const endHeight = Math.min(tip, startHeight + blocksPerTick);
   if (startHeight > tip) return { up_to_date: true, tip, network };
 
-  let scanned = 0, found = 0;
+  let scanned = 0, found = 0, _bridgeDepositsFound = 0;
   // Per-scan petch lookup cache. Each T_PMINT in the block-tx loop used to
   // do its own KV.get(petchKey(...)), so a dense block on a popular fair
   // launch (FAIR's etch+200 blocks landed ~300 reveals/block) burned
@@ -19925,10 +19921,48 @@ async function scanForEtches(env, network) {
     for (const tx of txs) {
       txIndex++;
       scanned++;
-      if (!tx.vin || !tx.vin[0] || !tx.vin[0].witness || tx.vin[0].witness.length < 3) continue;
-      let envBytes;
-      try { envBytes = hexToBytes(tx.vin[0].witness[1]); } catch { continue; }
-      const decoded = decodeEnvelopeScript(envBytes);
+      let decoded = null;
+      // Primary path: Taproot commit-reveal envelopes (native Tacit ops).
+      if (tx.vin && tx.vin[0] && tx.vin[0].witness && tx.vin[0].witness.length >= 3) {
+        try {
+          const envBytes = hexToBytes(tx.vin[0].witness[1]);
+          decoded = decodeEnvelopeScript(envBytes);
+        } catch {}
+      }
+      // Fallback: OP_RETURN envelopes for bridge opcodes (T_BRIDGE_DEPOSIT, T_BRIDGE_BURN).
+      if (!decoded && tx.vout) {
+        for (const o of tx.vout) {
+          if (o.scriptpubkey_type !== 'op_return') continue;
+          const sp = o.scriptpubkey;
+          if (!sp || sp.length < 12) continue;
+          // OP_RETURN (6a) + PUSHDATA2 (4d) + len_lo + len_hi + payload
+          if (sp.slice(0, 2) !== '6a') continue;
+          let payloadHex;
+          const pushOp = sp.slice(2, 4);
+          if (pushOp === '4d') {
+            // OP_PUSHDATA2: 2-byte LE length
+            const dl = parseInt(sp.slice(6, 8) + sp.slice(4, 6), 16);
+            payloadHex = sp.slice(8, 8 + dl * 2);
+          } else if (pushOp === '4c') {
+            // OP_PUSHDATA1: 1-byte length
+            const dl = parseInt(sp.slice(4, 6), 16);
+            payloadHex = sp.slice(6, 6 + dl * 2);
+          } else {
+            // Direct push
+            const dl = parseInt(pushOp, 16);
+            payloadHex = sp.slice(4, 4 + dl * 2);
+          }
+          if (!payloadHex || payloadHex.length < 4) continue;
+          const opcode = parseInt(payloadHex.slice(0, 2), 16);
+          if (opcode === T_BRIDGE_DEPOSIT || opcode === T_BRIDGE_BURN) {
+            try {
+              const payload = hexToBytes(payloadHex);
+              decoded = { opcode, payload };
+            } catch {}
+            break;
+          }
+        }
+      }
       if (!decoded) continue;
       if (decoded.opcode === T_CETCH) {
         const ce = decodeCEtchPayload(decoded.payload);
@@ -24166,7 +24200,7 @@ async function scanForEtches(env, network) {
         const expectedNetTag = networkTagFor(network);
         if (expectedNetTag === null || bd.networkTag !== expectedNetTag) continue;
         const aid = bytesToHex(bd.assetId);
-        const denomBig = bytesToHex(bd.denomWei);
+        const denomBig = BigInt('0x' + bytesToHex(bd.denomWei)).toString();
         let initRec = await env.REGISTRY_KV.get(poolInitKey(network, aid, denomBig), 'json');
         if (!initRec) {
           // Auto-init pool for bridge deposits — the Ethereum mixer contract
@@ -24198,6 +24232,7 @@ async function scanForEtches(env, network) {
           deposit_txid: tx.txid, claimed_at_height: h, network,
         }));
         found++;
+        _bridgeDepositsFound++;
       } else if (decoded.opcode === T_BRIDGE_BURN) {
         // SPEC-TETH-BRIDGE-AMENDMENT §5.61. Cross-chain redeem: burn tETH leaf
         // and commit to ETH recipient. Records nullifier; the user later proves
@@ -24207,7 +24242,7 @@ async function scanForEtches(env, network) {
         const expectedNetTag = networkTagFor(network);
         if (expectedNetTag === null || bb.networkTag !== expectedNetTag) continue;
         const aid = bytesToHex(bb.assetId);
-        const denomBig = bytesToHex(bb.denomWei);
+        const denomBig = BigInt('0x' + bytesToHex(bb.denomWei)).toString();
         const initRec = await env.REGISTRY_KV.get(poolInitKey(network, aid, denomBig), 'json');
         if (!initRec) continue;
         const nKey = poolNullifierKey(network, aid, denomBig, bytesToHex(bb.nullifierHash));
@@ -24251,7 +24286,7 @@ async function scanForEtches(env, network) {
     await env.REGISTRY_KV.put(dropDirtyKey(network, dropId), '1', { expirationTtl: 86400 });
   }
   await env.REGISTRY_KV.put(lastScannedKey(network), String(lastContiguous));
-  return { scanned_txs: scanned, found_etches: found, from: startHeight, to: lastContiguous, tip, network };
+  return { scanned_txs: scanned, found_etches: found, bridge_deposits: _bridgeDepositsFound || 0, from: startHeight, to: lastContiguous, tip, network };
 }
 
 // Named exports for cross-impl parity tests in the test harness. Cloudflare
