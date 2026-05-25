@@ -19845,7 +19845,7 @@ async function scanForEtches(env, network) {
   const endHeight = Math.min(tip, startHeight + blocksPerTick);
   if (startHeight > tip) return { up_to_date: true, tip, network };
 
-  let scanned = 0, found = 0, _bridgeDepositsFound = 0;
+  let scanned = 0, found = 0;
   // Per-scan petch lookup cache. Each T_PMINT in the block-tx loop used to
   // do its own KV.get(petchKey(...)), so a dense block on a popular fair
   // launch (FAIR's etch+200 blocks landed ~300 reveals/block) burned
@@ -24198,6 +24198,7 @@ async function scanForEtches(env, network) {
         // deposit in Ethereum mixer → append leaf to tETH pool on Tacit.
         // Full Groth16 + Ethereum root freshness verified by dApp (same model
         // as T_WITHDRAW: worker indexes structurally, dApp validates proofs).
+        try {
         const bd = decodeTBridgeDepositPayload(decoded.payload);
         if (!bd) continue;
         const expectedNetTag = networkTagFor(network);
@@ -24236,6 +24237,7 @@ async function scanForEtches(env, network) {
         }));
         found++;
         _bridgeDepositsFound++;
+        } catch {}
       } else if (decoded.opcode === T_BRIDGE_BURN) {
         // SPEC-TETH-BRIDGE-AMENDMENT §5.61. Cross-chain redeem: burn tETH leaf
         // and commit to ETH recipient. Records nullifier; the user later proves
@@ -24289,7 +24291,7 @@ async function scanForEtches(env, network) {
     await env.REGISTRY_KV.put(dropDirtyKey(network, dropId), '1', { expirationTtl: 86400 });
   }
   await env.REGISTRY_KV.put(lastScannedKey(network), String(lastContiguous));
-  return { scanned_txs: scanned, found_etches: found, bridge_deposits: _bridgeDepositsFound || 0, from: startHeight, to: lastContiguous, tip, network };
+  return { scanned_txs: scanned, found_etches: found, from: startHeight, to: lastContiguous, tip, network };
 }
 
 // Named exports for cross-impl parity tests in the test harness. Cloudflare
