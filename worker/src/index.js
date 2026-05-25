@@ -24167,8 +24167,14 @@ async function scanForEtches(env, network) {
         if (expectedNetTag === null || bd.networkTag !== expectedNetTag) continue;
         const aid = bytesToHex(bd.assetId);
         const denomBig = bytesToHex(bd.denomWei);
-        const initRec = await env.REGISTRY_KV.get(poolInitKey(network, aid, denomBig), 'json');
-        if (!initRec) continue;
+        let initRec = await env.REGISTRY_KV.get(poolInitKey(network, aid, denomBig), 'json');
+        if (!initRec) {
+          // Auto-init pool for bridge deposits — the Ethereum mixer contract
+          // is the source of truth for pool existence and denomination validity.
+          const autoKey = poolInitKey(network, aid, denomBig);
+          initRec = { kind: 'pool_init', source: 'bridge_auto', network, asset_id: aid, pool_denom: denomBig, height: h };
+          await env.REGISTRY_KV.put(autoKey, JSON.stringify(initRec));
+        }
         // Double-mint prevention: deposit nullifier must not be spent.
         const nKey = `bridge_deposit_nullifier:${network}:${aid}:${denomBig}:${bytesToHex(bd.nullifierHash)}`;
         const existingN = await env.REGISTRY_KV.get(nKey);
