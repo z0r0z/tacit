@@ -24719,6 +24719,16 @@ async function _routeFetch(req, env, ctx) {
       }
     }
     {
+      const m = url.pathname.match(/^\/ceremony\/([0-9a-f]{64})\/pubkey-status\/([0-9a-f]{66})$/i);
+      if (m && req.method === 'GET') {
+        const hash = m[1].toLowerCase();
+        const pubkey = m[2].toLowerCase();
+        const slot = await env.REGISTRY_KV.get(ceremonyPubkeyKey(hash, pubkey));
+        const contributed = !!slot && slot !== 'pending';
+        return jsonResponse({ contributed, slot: contributed ? (Number(slot) || slot) : null }, 200, cors);
+      }
+    }
+    {
       const m = url.pathname.match(/^\/ceremony\/([0-9a-f]{64})\/reset$/i);
       if (m && req.method === 'POST') return handleCeremonyReset(req, env, m[1].toLowerCase(), cors);
     }

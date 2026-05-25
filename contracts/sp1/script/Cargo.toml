@@ -1,0 +1,14 @@
+[package]
+name = "teth-prover"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+sp1-sdk = { version = "6.2", features = ["blocking", "network"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+reqwest = { version = "0.12", features = ["blocking", "json"] }
+hex = "0.4"
+sha2 = "0.10"
+bincode = "1"
+tokio = { version = "1.52.3", features = ["rt"] }

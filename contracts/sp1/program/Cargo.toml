@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-sp1-zkvm = "4.1"
+sp1-zkvm = "6.2"
 sha2 = "0.10"
 light-poseidon = "0.3"
 ark-bn254 = "0.5"

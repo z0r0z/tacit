@@ -1,11 +1,9 @@
 use crate::poseidon;
+use sha2::{Sha256, Digest};
 
 const TREE_DEPTH: usize = 20;
 const MAX_LEAVES: usize = 1 << TREE_DEPTH;
 
-/// Incremental append-only Poseidon merkle tree with frontier.
-/// Mirrors the Ethereum contract's incremental tree exactly.
-/// The root is updated on every insert — no need to recompute from scratch.
 pub struct PoseidonTree {
     next_index: usize,
     filled_subtrees: [[u8; 32]; TREE_DEPTH],
@@ -13,12 +11,31 @@ pub struct PoseidonTree {
     zeros: [[u8; 32]; TREE_DEPTH + 1],
 }
 
-pub struct NullifierTree {
+/// Hash-committed nullifier set with cross-batch uniqueness.
+/// The prover supplies the full historical nullifier list as private witness.
+/// The guest verifies the list's hash matches the previous state commitment,
+/// checks non-membership for each new nullifier, then appends and recomputes.
+pub struct NullifierSet {
+    sorted: Vec<[u8; 32]>,
+    pending: Vec<[u8; 32]>,
+}
+
+fn verify_root_from_frontier(
+    frontier: &[[u8; 32]; TREE_DEPTH],
     next_index: usize,
-    filled_subtrees: [[u8; 32]; TREE_DEPTH],
-    current_root: [u8; 32],
-    zeros: [[u8; 32]; TREE_DEPTH + 1],
-    seen: Vec<[u8; 32]>,
+    zeros: &[[u8; 32]; TREE_DEPTH + 1],
+) -> [u8; 32] {
+    let mut hash = zeros[0];
+    let mut ni = next_index;
+    for i in 0..TREE_DEPTH {
+        if ni & 1 == 1 {
+            hash = poseidon::hash2(&frontier[i], &hash);
+        } else {
+            hash = poseidon::hash2(&hash, &zeros[i]);
+        }
+        ni >>= 1;
+    }
+    hash
 }
 
 fn compute_zeros() -> [[u8; 32]; TREE_DEPTH + 1] {
@@ -37,11 +54,20 @@ impl PoseidonTree {
 
     pub fn from_frontier(frontier: [[u8; 32]; TREE_DEPTH], next_index: usize, root: [u8; 32]) -> Self {
         let z = compute_zeros();
+        if next_index == 0 {
+            for i in 0..TREE_DEPTH {
+                assert!(frontier[i] == z[i], "empty frontier mismatch");
+            }
+            assert!(root == z[TREE_DEPTH], "empty root mismatch");
+        } else {
+            let verified_root = verify_root_from_frontier(&frontier, next_index, &z);
+            assert!(verified_root == root, "frontier does not match claimed root");
+        }
         PoseidonTree { next_index, filled_subtrees: frontier, current_root: root, zeros: z }
     }
 
-    pub fn insert(&mut self, leaf: [u8; 32]) {
-        assert!(self.next_index < MAX_LEAVES, "tree full");
+    pub fn insert(&mut self, leaf: [u8; 32]) -> bool {
+        if self.next_index >= MAX_LEAVES { return false; }
         let mut current = leaf;
         let mut idx = self.next_index;
         for i in 0..TREE_DEPTH {
@@ -55,46 +81,68 @@ impl PoseidonTree {
         }
         self.current_root = current;
         self.next_index += 1;
+        true
     }
 
+    pub fn can_insert(&self) -> bool { self.next_index < MAX_LEAVES }
     pub fn root(&self) -> [u8; 32] { self.current_root }
     pub fn next_index(&self) -> usize { self.next_index }
     pub fn frontier(&self) -> [[u8; 32]; TREE_DEPTH] { self.filled_subtrees }
 }
 
-impl NullifierTree {
+impl NullifierSet {
     pub fn new() -> Self {
-        let z = compute_zeros();
-        let mut fs = [[0u8; 32]; TREE_DEPTH];
-        for i in 0..TREE_DEPTH { fs[i] = z[i]; }
-        NullifierTree { next_index: 0, filled_subtrees: fs, current_root: z[TREE_DEPTH], zeros: z, seen: Vec::new() }
+        NullifierSet { sorted: Vec::new(), pending: Vec::new() }
     }
 
-    pub fn from_frontier(frontier: [[u8; 32]; TREE_DEPTH], next_index: usize, root: [u8; 32]) -> Self {
-        let z = compute_zeros();
-        NullifierTree { next_index, filled_subtrees: frontier, current_root: root, zeros: z, seen: Vec::new() }
-    }
-
-    pub fn insert(&mut self, nullifier: [u8; 32]) {
-        assert!(!self.seen.contains(&nullifier), "duplicate nullifier");
-        self.seen.push(nullifier);
-        assert!(self.next_index < MAX_LEAVES, "tree full");
-        let mut current = nullifier;
-        let mut idx = self.next_index;
-        for i in 0..TREE_DEPTH {
-            if idx & 1 == 0 {
-                self.filled_subtrees[i] = current;
-                current = poseidon::hash2(&current, &self.zeros[i]);
-            } else {
-                current = poseidon::hash2(&self.filled_subtrees[i], &current);
-            }
-            idx >>= 1;
+    pub fn from_sorted(nullifiers: Vec<[u8; 32]>) -> Self {
+        for i in 1..nullifiers.len() {
+            assert!(nullifiers[i] > nullifiers[i - 1], "historical nullifier list must be sorted and unique");
         }
-        self.current_root = current;
-        self.next_index += 1;
+        NullifierSet { sorted: nullifiers, pending: Vec::new() }
     }
 
-    pub fn root(&self) -> [u8; 32] { self.current_root }
-    pub fn next_index(&self) -> usize { self.next_index }
-    pub fn frontier(&self) -> [[u8; 32]; TREE_DEPTH] { self.filled_subtrees }
+    pub fn insert(&mut self, nullifier: [u8; 32]) -> bool {
+        if self.sorted.binary_search(&nullifier).is_ok() { return false; }
+        if self.pending.contains(&nullifier) { return false; }
+        self.pending.push(nullifier);
+        true
+    }
+
+    pub fn finalize(&mut self) {
+        if self.pending.is_empty() { return; }
+        self.pending.sort();
+        for i in 1..self.pending.len() {
+            assert!(self.pending[i] != self.pending[i - 1], "duplicate nullifier (in-batch)");
+        }
+        let mut merged = Vec::with_capacity(self.sorted.len() + self.pending.len());
+        let (mut i, mut j) = (0, 0);
+        while i < self.sorted.len() && j < self.pending.len() {
+            assert!(self.sorted[i] != self.pending[j], "duplicate nullifier in merge");
+            if self.sorted[i] < self.pending[j] {
+                merged.push(self.sorted[i]); i += 1;
+            } else {
+                merged.push(self.pending[j]); j += 1;
+            }
+        }
+        while i < self.sorted.len() { merged.push(self.sorted[i]); i += 1; }
+        while j < self.pending.len() { merged.push(self.pending[j]); j += 1; }
+        self.sorted = merged;
+        self.pending.clear();
+    }
+
+    pub fn hash(&self) -> [u8; 32] {
+        assert!(self.pending.is_empty(), "must finalize before hashing");
+        if self.sorted.is_empty() {
+            return [0u8; 32];
+        }
+        let mut h = Sha256::new();
+        for n in &self.sorted { h.update(n); }
+        h.finalize().into()
+    }
+
+    pub fn count(&self) -> u64 {
+        assert!(self.pending.is_empty(), "must finalize before counting");
+        self.sorted.len() as u64
+    }
 }

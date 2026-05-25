@@ -3,7 +3,7 @@ pragma solidity ^0.8.28;
 
 import "forge-std/Test.sol";
 import "../src/lib/BitcoinLightRelay.sol";
-import "../src/TacitETHMixer.sol";
+import "../src/TacitBridgeMixer.sol";
 import "./MockGroth16Verifier.sol";
 import "./TestLightRelay.sol";
 

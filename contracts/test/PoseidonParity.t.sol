@@ -6,17 +6,20 @@ import "../src/lib/PoseidonT3.sol";
 import "../src/lib/PoseidonT4.sol";
 
 contract PoseidonParityTest is TestHelper {
-    TacitETHMixer mixer;
+    TacitBridgeMixer mixer;
     bytes32 poolId;
 
     function setUp() public {
         BitcoinLightRelay relay = _deployRelay();
         MockGroth16Verifier v = new MockGroth16Verifier();
+        poolId = keccak256(abi.encode(bytes32(uint256(1)), uint256(1 ether)));
         uint256[] memory denoms = new uint256[](1);
         denoms[0] = 1 ether;
-        MockPoolRootVerifier prv = new MockPoolRootVerifier();
-        mixer = new TacitETHMixer(address(relay), address(v), address(prv), address(0), 6, denoms, 0x00, bytes32(uint256(1)));
-        poolId = keccak256(abi.encode(bytes32(uint256(1)), uint256(1 ether)));
+        address predictedMixer = vm.computeCreateAddress(address(this), vm.getNonce(address(this)) + 1);
+        MockPoolRootVerifier prv = new MockPoolRootVerifier(poolId, bytes32(uint256(1 ether)), bytes32(uint256(1)), predictedMixer);
+        address[] memory verifiers = new address[](1);
+        verifiers[0] = address(prv);
+        mixer = new TacitBridgeMixer(address(relay), address(v), address(0), 6, denoms, verifiers, 0x00, bytes32(uint256(1)));
     }
 
     function test_poseidonT3_zero_inputs() public pure {

@@ -91,6 +91,7 @@ contract BitcoinLightRelay {
         if (initialized) revert AlreadyInitialized();
         if (epochStart % EPOCH_LENGTH != 0) revert InvalidChainLength();
         if (target == 0 || target > MAX_TARGET) revert InvalidTarget();
+        require(tipWork_ > 0);
 
         uint256 epoch = epochStart / EPOCH_LENGTH;
         genesisEpoch = epoch;
@@ -121,6 +122,8 @@ contract BitcoinLightRelay {
         bytes32 prevHash;
         uint256 cumWork;
         uint256 height;
+        uint256 pendingEpochStart;
+        uint256 pendingEpochTs;
 
         for (uint256 i; i < n; ++i) {
             bytes memory h = bytes(headers[i * 80:(i + 1) * 80]);
@@ -154,9 +157,10 @@ contract BitcoinLightRelay {
             blockWork[bh] = cumWork;
             blockHeight[bh] = height;
 
-            // Record epoch start timestamp from the canonical chain.
-            if (height % EPOCH_LENGTH == 0 && epochStartTimestamp[height / EPOCH_LENGTH] == 0) {
-                epochStartTimestamp[height / EPOCH_LENGTH] = ts;
+            // Track epoch-boundary timestamp; only commit when chain becomes tip.
+            if (height % EPOCH_LENGTH == 0) {
+                pendingEpochStart = height / EPOCH_LENGTH;
+                pendingEpochTs = ts;
             }
         }
 
@@ -165,6 +169,9 @@ contract BitcoinLightRelay {
             tip = prevHash;
             tipHeight = height;
             tipWork = cumWork;
+            if (pendingEpochTs != 0 && epochStartTimestamp[pendingEpochStart] == 0) {
+                epochStartTimestamp[pendingEpochStart] = pendingEpochTs;
+            }
             emit TipAdvanced(prevHash, height, cumWork);
         }
     }

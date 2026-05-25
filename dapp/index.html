@@ -6562,6 +6562,9 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
   height: 12px;
   display: block;
 }
+[data-swap-advanced] > summary { list-style: none; }
+[data-swap-advanced] > summary::-webkit-details-marker { display: none; }
+[data-swap-advanced][open] > summary span:first-child { display: inline-block; transform: rotate(90deg); }
 @media (prefers-reduced-motion: reduce) {
   .swap-flip-btn,
   .swap-flip-btn:hover,
