@@ -304,7 +304,7 @@ contract BitcoinLightRelay {
         }
     }
 
-    function _bitsToTarget(uint32 bits) internal pure returns (uint256) {
+    function _bitsToTarget(uint32 bits) internal pure virtual returns (uint256) {
         if (bits & 0x00800000 != 0) revert InvalidTarget();
         uint256 exp = bits >> 24;
         uint256 mantissa = bits & 0x7fffff;
@@ -348,38 +348,38 @@ contract BitcoinLightRelay {
 
     function _reverseU256(uint256 v) internal pure returns (uint256 r) {
         assembly ("memory-safe") {
-            r := byte(31, v)
-            r := or(r, shl(8, byte(30, v)))
-            r := or(r, shl(16, byte(29, v)))
-            r := or(r, shl(24, byte(28, v)))
-            r := or(r, shl(32, byte(27, v)))
-            r := or(r, shl(40, byte(26, v)))
-            r := or(r, shl(48, byte(25, v)))
-            r := or(r, shl(56, byte(24, v)))
-            r := or(r, shl(64, byte(23, v)))
-            r := or(r, shl(72, byte(22, v)))
-            r := or(r, shl(80, byte(21, v)))
-            r := or(r, shl(88, byte(20, v)))
-            r := or(r, shl(96, byte(19, v)))
-            r := or(r, shl(104, byte(18, v)))
-            r := or(r, shl(112, byte(17, v)))
-            r := or(r, shl(120, byte(16, v)))
-            r := or(r, shl(128, byte(15, v)))
-            r := or(r, shl(136, byte(14, v)))
-            r := or(r, shl(144, byte(13, v)))
-            r := or(r, shl(152, byte(12, v)))
-            r := or(r, shl(160, byte(11, v)))
-            r := or(r, shl(168, byte(10, v)))
-            r := or(r, shl(176, byte(9, v)))
-            r := or(r, shl(184, byte(8, v)))
-            r := or(r, shl(192, byte(7, v)))
-            r := or(r, shl(200, byte(6, v)))
-            r := or(r, shl(208, byte(5, v)))
-            r := or(r, shl(216, byte(4, v)))
-            r := or(r, shl(224, byte(3, v)))
-            r := or(r, shl(232, byte(2, v)))
-            r := or(r, shl(240, byte(1, v)))
-            r := or(r, shl(248, byte(0, v)))
+            r := byte(0, v)
+            r := or(r, shl(8, byte(1, v)))
+            r := or(r, shl(16, byte(2, v)))
+            r := or(r, shl(24, byte(3, v)))
+            r := or(r, shl(32, byte(4, v)))
+            r := or(r, shl(40, byte(5, v)))
+            r := or(r, shl(48, byte(6, v)))
+            r := or(r, shl(56, byte(7, v)))
+            r := or(r, shl(64, byte(8, v)))
+            r := or(r, shl(72, byte(9, v)))
+            r := or(r, shl(80, byte(10, v)))
+            r := or(r, shl(88, byte(11, v)))
+            r := or(r, shl(96, byte(12, v)))
+            r := or(r, shl(104, byte(13, v)))
+            r := or(r, shl(112, byte(14, v)))
+            r := or(r, shl(120, byte(15, v)))
+            r := or(r, shl(128, byte(16, v)))
+            r := or(r, shl(136, byte(17, v)))
+            r := or(r, shl(144, byte(18, v)))
+            r := or(r, shl(152, byte(19, v)))
+            r := or(r, shl(160, byte(20, v)))
+            r := or(r, shl(168, byte(21, v)))
+            r := or(r, shl(176, byte(22, v)))
+            r := or(r, shl(184, byte(23, v)))
+            r := or(r, shl(192, byte(24, v)))
+            r := or(r, shl(200, byte(25, v)))
+            r := or(r, shl(208, byte(26, v)))
+            r := or(r, shl(216, byte(27, v)))
+            r := or(r, shl(224, byte(28, v)))
+            r := or(r, shl(232, byte(29, v)))
+            r := or(r, shl(240, byte(30, v)))
+            r := or(r, shl(248, byte(31, v)))
         }
     }
 

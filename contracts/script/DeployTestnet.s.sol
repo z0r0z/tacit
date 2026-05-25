@@ -18,6 +18,21 @@ contract MockBurnVerifier {
 }
 
 contract TestnetLightRelay is BitcoinLightRelay {
+    function _bitsToTarget(uint32 bits) internal pure override returns (uint256) {
+        if (bits & 0x00800000 != 0) revert InvalidTarget();
+        uint256 exp = bits >> 24;
+        uint256 mantissa = bits & 0x7fffff;
+        if (mantissa == 0) revert InvalidTarget();
+        uint256 target;
+        if (exp <= 3) {
+            target = mantissa >> (8 * (3 - exp));
+        } else {
+            if (exp > 32) revert InvalidPoW();
+            target = mantissa << (8 * (exp - 3));
+        }
+        if (target == 0) revert InvalidTarget();
+        return target;
+    }
     function testnetGenesis(
         uint256 epochStart, uint256 target, uint256 startTimestamp,
         bytes32 tipHash, uint256 tipHeight_, uint256 tipWork_
