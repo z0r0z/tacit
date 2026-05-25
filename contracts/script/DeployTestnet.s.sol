@@ -63,7 +63,8 @@ contract DeployTestnet is Script {
         console.log("BitcoinLightRelay:", address(relay));
 
         // Placeholder domain values for testnet
-        bytes32 assetId = vm.envBytes32("TETH_ASSET_ID");
+        // tETH signet asset_id from CETCH reveal txid afbc72e0...
+        bytes32 assetId = vm.envOr("TETH_ASSET_ID", bytes32(0xd903de2d2a7c1958f8ab3c4b9a91175ef3885027a24af306dead9e8f671a450b));
         bytes32 programVKey = bytes32(uint256(1));
         bytes32 groth16VkHash = bytes32(uint256(1));
 

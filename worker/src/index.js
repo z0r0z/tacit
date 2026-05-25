@@ -90,7 +90,7 @@ import { bech32, bech32m } from '@scure/base';
 secp.etc.hmacSha256Sync = (k, ...m) => hmac(sha256, k, secp.etc.concatBytes(...m));
 
 // ============== CONSTANTS ==============
-const ALLOWED_MIME = new Set(['image/png', 'image/jpeg', 'image/webp']);
+const ALLOWED_MIME = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/svg+xml']);
 const PNG_MAGIC  = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
 const JPEG_MAGIC = [0xff, 0xd8, 0xff];
 // Address human-readable-parts per network. P2WPKH on signet/testnet shares
@@ -5492,6 +5492,10 @@ function magicMatches(bytes, mime) {
   if (mime === 'image/png')  return startsWith(bytes, PNG_MAGIC);
   if (mime === 'image/jpeg') return startsWith(bytes, JPEG_MAGIC);
   if (mime === 'image/webp') return isWebP(bytes);
+  if (mime === 'image/svg+xml') {
+    const head = new TextDecoder().decode(bytes.slice(0, 256)).trim();
+    return head.startsWith('<svg') || head.startsWith('<?xml');
+  }
   return false;
 }
 
