@@ -19927,9 +19927,10 @@ async function scanForEtches(env, network) {
         try {
           const envBytes = hexToBytes(tx.vin[0].witness[1]);
           decoded = decodeEnvelopeScript(envBytes);
+          if (decoded) decoded._fromTaproot = true;
         } catch {}
       }
-      // Fallback: OP_RETURN envelopes for bridge opcodes (T_BRIDGE_DEPOSIT, T_BRIDGE_BURN).
+      // Bridge envelopes use bare OP_RETURN (not Taproot). Scan outputs for 0x60/0x61.
       if (!decoded && tx.vout) {
         for (const o of tx.vout) {
           if (o.scriptpubkey_type !== 'op_return') continue;
@@ -19964,6 +19965,8 @@ async function scanForEtches(env, network) {
         }
       }
       if (!decoded) continue;
+      // Bridge opcodes are OP_RETURN only — ignore if decoded from Taproot
+      if ((decoded.opcode === T_BRIDGE_DEPOSIT || decoded.opcode === T_BRIDGE_BURN) && decoded._fromTaproot) continue;
       if (decoded.opcode === T_CETCH) {
         const ce = decodeCEtchPayload(decoded.payload);
         if (!ce) continue;
