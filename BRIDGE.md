@@ -80,6 +80,51 @@ Each withdrawal must pass all of these independently:
 
 No single layer is sufficient alone. An attacker would need to break Bitcoin PoW, forge an SP1 proof, forge a Groth16 proof, AND have the pool contain funds.
 
+### Client-side verification
+
+Every dApp client independently verifies bridge deposit leaves before accepting them into the local pool tree:
+
+1. **Groth16 proof** — the proof in the OP_RETURN envelope is re-verified against the canonical VK (inlined, no IPFS dependency)
+2. **Ethereum deposit root** — the `ethRoot` in the envelope is checked against the mixer contract's `isKnownDepositRoot` via `eth_call` to public RPCs (publicnode, llamarpc, 1rpc, drpc — no API key required)
+
+Invalid proofs or fabricated roots are rejected before entering anyone's local state. The worker performs the same root check during indexing. Together, fake tETH cannot circulate in DeFi — it's caught at every layer.
+
+### Recovery
+
+All bridge state is deterministically recoverable from the wallet's private key:
+
+- **Deposit keys**: `HMAC(privkey, domain || index)` for each deposit index
+- **Pool notes**: re-derive (secret, nullifier) → compute commitment → match against Sepolia deposit events
+- **Shielded UTXOs**: re-derive stealth blinding → compute stealth address → scan chain for UTXOs
+
+No localStorage, no server state, no backup phrases beyond the wallet key. The dApp's "Recover Notes" function and "Rescan UTXOs" button both trigger this recovery automatically.
+
+## User flow
+
+Deposit ETH to spendable tETH in one click:
+
+1. User connects MetaMask, picks amount, signs one Ethereum tx
+2. dApp auto-detects Sepolia confirmation
+3. Auto-mints tETH on Bitcoin (Groth16 proof, ~1-2s)
+4. Polls for 3 Bitcoin confirmations
+5. Auto-withdraws to a shielded address (second Groth16 proof)
+6. tETH appears in Holdings as a regular spendable coin
+
+Burn tETH back to ETH:
+
+1. User enters Ethereum recipient address
+2. dApp builds merkle proof, generates Groth16 proof (~1-2s)
+3. Broadcasts T_BRIDGE_BURN on Bitcoin
+4. Waits for 6 confirmations
+5. Submits Bitcoin inclusion proof to Ethereum contract
+6. ETH released to recipient
+
+Quick burn from holdings (for users who received tETH via transfer):
+
+1. dApp auto-deposits tETH into the mixer pool
+2. Waits for pool indexing
+3. Burns the pool note in one flow
+
 ## Ethereum-only privacy
 
 Users can use the bridge purely for Ethereum privacy without interacting with Tacit:
@@ -122,6 +167,8 @@ The contract queries `decimals()` on-chain at deployment and computes `UNIT_SCAL
 | USDT  | 6        | 1          | any denomination works |
 
 Tokens with >8 decimals are automatically aligned so every denomination maps to a whole Tacit unit (8 decimals, Bitcoin standard). Tokens with <=8 decimals need no alignment. Denominations must also be less than the BN254 field size (required for Groth16 provability). A misaligned or out-of-range denomination reverts the deploy.
+
+The Poseidon commitment uses the 8-decimal Tacit denomination, not the native token denomination. For ETH: `commitment = poseidon3(secret, nu, denomination / UNIT_SCALE)`. The Solidity contract maps back to wei at withdrawal time via `weiDenom = denomTacit * UNIT_SCALE`. The circuit, ceremony, and VK are unchanged — only the denomination value changes. This keeps tETH an 8-decimal asset on Tacit, consistent with all other Tacit assets.
 
 ### Denomination pools
 
