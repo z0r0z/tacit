@@ -12454,14 +12454,33 @@ async function handleAssetHint(req, env, network, cors, ctx) {
   let tx;
   try { tx = await apiJson(env, `/tx/${txidHex}`, {}, network); }
   catch (e) { return jsonResponse({ error: `tx not found on ${network}: ${e.message}` }, 404, cors); }
-  if (!tx?.vin?.[0]?.witness || tx.vin[0].witness.length < 3) {
-    return jsonResponse({ error: 'tx has no taproot script-path witness' }, 400, cors);
+  let decoded = null;
+  // Primary: Taproot script-path envelope
+  if (tx?.vin?.[0]?.witness && tx.vin[0].witness.length >= 3) {
+    try {
+      const envBytes = hexToBytes(tx.vin[0].witness[1]);
+      decoded = decodeEnvelopeScript(envBytes);
+    } catch {}
   }
-
-  let envBytes;
-  try { envBytes = hexToBytes(tx.vin[0].witness[1]); }
-  catch { return jsonResponse({ error: 'invalid witness hex' }, 400, cors); }
-  const decoded = decodeEnvelopeScript(envBytes);
+  // Fallback: bare OP_RETURN (bridge envelopes)
+  if (!decoded && tx?.vout) {
+    for (const o of tx.vout) {
+      if (o.scriptpubkey_type !== 'op_return') continue;
+      const sp = o.scriptpubkey;
+      if (!sp || sp.length < 12) continue;
+      let payloadHex;
+      const push = sp.slice(2, 4);
+      if (push === '4d') { const dl = parseInt(sp.slice(6, 8) + sp.slice(4, 6), 16); payloadHex = sp.slice(8, 8 + dl * 2); }
+      else if (push === '4c') { const dl = parseInt(sp.slice(4, 6), 16); payloadHex = sp.slice(6, 6 + dl * 2); }
+      else { const dl = parseInt(push, 16); payloadHex = sp.slice(4, 4 + dl * 2); }
+      if (!payloadHex || payloadHex.length < 4) continue;
+      const opcode = parseInt(payloadHex.slice(0, 2), 16);
+      if (opcode === T_BRIDGE_DEPOSIT || opcode === T_BRIDGE_BURN) {
+        decoded = { opcode, payload: hexToBytes(payloadHex) };
+        break;
+      }
+    }
+  }
   if (!decoded) return jsonResponse({ error: 'not a tacit envelope' }, 400, cors);
 
   const confirmed = !!tx.status?.confirmed;
@@ -12838,6 +12857,44 @@ async function handleAssetHint(req, env, network, cors, ctx) {
       petchAssetsComputeAndCache(env, network).catch(() => {});
     }
     return jsonResponse({ ok: true, mint: mintMeta, source: 'hint', network }, 200, cors);
+  }
+
+  if (decoded.opcode === T_BRIDGE_DEPOSIT || decoded.opcode === T_BRIDGE_BURN) {
+    const decodeFn = decoded.opcode === T_BRIDGE_DEPOSIT ? decodeTBridgeDepositPayload : decodeTBridgeBurnPayload;
+    const bd = decodeFn(decoded.payload);
+    if (!bd) return jsonResponse({ error: 'invalid bridge envelope' }, 400, cors);
+    const expectedNetTag = networkTagFor(network);
+    if (expectedNetTag === null || bd.networkTag !== expectedNetTag) return jsonResponse({ error: 'wrong network tag' }, 400, cors);
+    const aid = bytesToHex(bd.assetId);
+    const denomBig = BigInt('0x' + bytesToHex(bd.denomWei)).toString();
+    const h = blockHeight || 0;
+    const txIndex = 0;
+    if (decoded.opcode === T_BRIDGE_DEPOSIT) {
+      let initRec = await env.REGISTRY_KV.get(poolInitKey(network, aid, denomBig), 'json');
+      if (!initRec) {
+        initRec = { kind: 'pool_init', source: 'bridge_auto', network, asset_id: aid, pool_denom: denomBig, height: h };
+        await env.REGISTRY_KV.put(poolInitKey(network, aid, denomBig), JSON.stringify(initRec));
+      }
+      const nKey = `bridge_deposit_nullifier:${network}:${aid}:${denomBig}:${bytesToHex(bd.nullifierHash)}`;
+      if (await env.REGISTRY_KV.get(nKey)) {
+        return jsonResponse({ ok: true, source: 'hint', status: 'already_indexed' }, 200, cors);
+      }
+      const leafKey = poolLeafKeyFor(network, aid, denomBig, h, txIndex, txidHex);
+      await env.REGISTRY_KV.put(leafKey, JSON.stringify({
+        asset_id: aid, denomination: denomBig,
+        leaf_commitment: bytesToHex(bd.leafHash),
+        deposit_txid: txidHex, tx_index: txIndex,
+        deposited_at_height: h,
+        deposited_at: blockTime || Math.floor(Date.now() / 1000),
+        source: 'bridge_deposit', network,
+      }));
+      const cntKey = poolLeafCountKey(network, aid, denomBig);
+      const cnt = parseInt(await env.REGISTRY_KV.get(cntKey) || '0', 10);
+      await env.REGISTRY_KV.put(cntKey, String(cnt + 1));
+      await env.REGISTRY_KV.put(nKey, JSON.stringify({ deposit_txid: txidHex, claimed_at_height: h, network }));
+    }
+    await env.REGISTRY_KV.put(kvKey, String(prior + 1), { expirationTtl: 90000 });
+    return jsonResponse({ ok: true, source: 'hint', opcode: decoded.opcode, network }, 200, cors);
   }
 
   return jsonResponse({ error: 'unsupported envelope opcode' }, 400, cors);
