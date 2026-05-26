@@ -27672,6 +27672,25 @@ async function _routeFetch(req, env, ctx) {
       return jsonResponse({ network, count: equivocators.length, equivocators }, 200, cors);
     }
 
+    if (url.pathname === '/debug/cleanup-bridge-pool' && req.method === 'POST') {
+      if (!checkDebugAuth(req, env)) return jsonResponse({ error: 'not found' }, 404, cors);
+      const aid = url.searchParams.get('aid');
+      const denom = url.searchParams.get('denom');
+      if (!aid || !denom) return jsonResponse({ error: 'missing aid or denom' }, 400, cors);
+      let deleted = 0;
+      for (const prefix of [
+        `poolleaf:${aid}:${denom}:`,
+        `bridge_deposit_nullifier:${network}:${aid}:${denom}:`,
+      ]) {
+        const list = await env.REGISTRY_KV.list({ prefix, limit: 1000 });
+        for (const k of list.keys) { await env.REGISTRY_KV.delete(k.name); deleted++; }
+      }
+      await env.REGISTRY_KV.delete(poolInitKey(network, aid, denom));
+      await env.REGISTRY_KV.delete(poolLeafCountKey(network, aid, denom));
+      deleted += 2;
+      return jsonResponse({ ok: true, deleted, network }, 200, cors);
+    }
+
     return jsonResponse({ error: 'not found' }, 404, cors);
 }
 
