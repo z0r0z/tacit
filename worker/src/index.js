@@ -24360,7 +24360,7 @@ async function scanForEtches(env, network) {
         }));
         found++;
         _bridgeDepositsFound++;
-        } catch {}
+        } catch (e) { if (typeof console !== 'undefined') console.warn('[bridge-deposit] indexing failed:', tx.txid?.slice(0, 12), e?.message || e); }
       } else if (decoded.opcode === T_BRIDGE_BURN) {
         // SPEC-TETH-BRIDGE-AMENDMENT §5.61. Cross-chain redeem: burn tETH leaf
         // and commit to ETH recipient. Records nullifier; the user later proves
