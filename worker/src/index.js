@@ -12868,7 +12868,15 @@ async function handleAssetHint(req, env, network, cors, ctx) {
     const aid = bytesToHex(bd.assetId);
     const denomBig = BigInt('0x' + bytesToHex(bd.denomWei)).toString();
     const h = blockHeight || 0;
-    const txIndex = 0;
+    let txIndex = 0;
+    if (h > 0) {
+      try {
+        const blockHash = await apiText(env, `/block-height/${h}`, {}, network);
+        const txids = await apiJson(env, `/block/${blockHash.trim()}/txids`, {}, network);
+        const idx = Array.isArray(txids) ? txids.indexOf(txidHex) : -1;
+        if (idx >= 0) txIndex = idx;
+      } catch {}
+    }
     if (decoded.opcode === T_BRIDGE_DEPOSIT) {
       let initRec = await env.REGISTRY_KV.get(poolInitKey(network, aid, denomBig), 'json');
       if (!initRec) {
