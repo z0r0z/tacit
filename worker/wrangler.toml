@@ -45,7 +45,7 @@ ETH_RPCS_SEPOLIA = "https://ethereum-sepolia-rpc.publicnode.com,https://1rpc.io/
 
 # tETH bridge mixer addresses (per Ethereum chain)
 TETH_MIXER_MAINNET = ""
-TETH_MIXER_SEPOLIA = "0x27bEc9faCA2725C717Cc56E91187D0B95E1c82c4"
+TETH_MIXER_SEPOLIA = "0x13124e519C9C11Ef200Fc4C36ed5a7010750f00e"
 
 # Bitcoin signet API base URL
 SIGNET_API = "https://mempool.space/signet/api"

@@ -10,7 +10,7 @@ set -euo pipefail
 
 SEPOLIA_RPC="https://ethereum-sepolia-rpc.publicnode.com"
 SEPOLIA_PK="${SEPOLIA_PK:-0x950b04c07979d8ff19eb45fd1c14d4834a9b0b912a9744cb2b37593380b7b81b}"
-RELAY="0x8d8AB50C1647C3931Ad9598774C9bD16965D15bC"
+RELAY="0x3337F06CddC27220D4A10dA41719869Fe9fF6690"
 MEMPOOL_API="https://mempool.space/signet/api"
 
 FROM_HEIGHT=""
