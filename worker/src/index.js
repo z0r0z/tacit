@@ -84,6 +84,7 @@ import * as secp from '@noble/secp256k1';
 import { sha256 } from '@noble/hashes/sha256';
 import { ripemd160 } from '@noble/hashes/ripemd160';
 import { hmac } from '@noble/hashes/hmac';
+import { keccak_256 } from '@noble/hashes/sha3';
 import { hexToBytes, bytesToHex, concatBytes } from '@noble/hashes/utils';
 import { bech32, bech32m } from '@scure/base';
 
@@ -9638,6 +9639,40 @@ function decodeTWithdrawPayload(payload) {
     bind_hash: bytesToHex(bindHashBytes),
     proof,
   };
+}
+
+// Ethereum deposit root verification for bridge leaves. Checks the mixer
+// contract's everKnownRoot mapping via eth_call. Tries multiple public RPCs.
+// Returns true if root is known, false if rejected, null on total RPC failure.
+async function _verifyEthDepositRoot(env, network, assetIdHex, denomBig, ethRootHex) {
+  const isSepolia = network === 'signet';
+  const rpcsStr = isSepolia ? (env.ETH_RPCS_SEPOLIA || '') : (env.ETH_RPCS_MAINNET || '');
+  const mixer = isSepolia ? (env.TETH_MIXER_SEPOLIA || '') : (env.TETH_MIXER_MAINNET || '');
+  if (!rpcsStr || !mixer) return null;
+  const rpcs = rpcsStr.split(',').map(s => s.trim()).filter(Boolean);
+  if (!rpcs.length) return null;
+
+  const aidPad = assetIdHex.padStart(64, '0');
+  const denomPad = BigInt(denomBig).toString(16).padStart(64, '0');
+  const poolId = bytesToHex(keccak_256(hexToBytes(aidPad + denomPad)));
+  const rootPad = ethRootHex.replace(/^0x/, '').padStart(64, '0');
+  const calldata = '0xe5f99a21' + poolId.padStart(64, '0') + rootPad;
+
+  for (const rpc of rpcs) {
+    try {
+      const resp = await fetch(rpc, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_call',
+          params: [{ to: mixer.toLowerCase(), data: calldata }, 'latest'] }),
+      });
+      const json = await resp.json();
+      if (json.error) continue;
+      const result = json.result || '';
+      return result !== '0x' + '0'.repeat(64);
+    } catch { continue; }
+  }
+  return null;
 }
 
 // SPEC-TETH-BRIDGE-AMENDMENT §5.60 — T_BRIDGE_DEPOSIT decoder.
@@ -24243,6 +24278,8 @@ async function scanForEtches(env, network) {
           initRec = { kind: 'pool_init', source: 'bridge_auto', network, asset_id: aid, pool_denom: denomBig, height: h };
           await _bridgeInitPut(aid, denomBig, initRec);
         }
+        const ethRootOk = await _verifyEthDepositRoot(env, network, aid, denomBig, bytesToHex(bd.ethRoot));
+        if (ethRootOk === false) continue;
         const nKey = `bridge_deposit_nullifier:${network}:${aid}:${denomBig}:${bytesToHex(bd.nullifierHash)}`;
         const existingN = await env.REGISTRY_KV.get(nKey);
         if (existingN) continue;
