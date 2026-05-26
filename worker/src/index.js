@@ -12883,23 +12883,9 @@ async function handleAssetHint(req, env, network, cors, ctx) {
         initRec = { kind: 'pool_init', source: 'bridge_auto', network, asset_id: aid, pool_denom: denomBig, height: h };
         await env.REGISTRY_KV.put(poolInitKey(network, aid, denomBig), JSON.stringify(initRec));
       }
-      const nKey = `bridge_deposit_nullifier:${network}:${aid}:${denomBig}:${bytesToHex(bd.nullifierHash)}`;
-      if (await env.REGISTRY_KV.get(nKey)) {
-        return jsonResponse({ ok: true, source: 'hint', status: 'already_indexed' }, 200, cors);
-      }
-      const leafKey = poolLeafKeyFor(network, aid, denomBig, h, txIndex, txidHex);
-      await env.REGISTRY_KV.put(leafKey, JSON.stringify({
-        asset_id: aid, denomination: denomBig,
-        leaf_commitment: bytesToHex(bd.leafHash),
-        deposit_txid: txidHex, tx_index: txIndex,
-        deposited_at_height: h,
-        deposited_at: blockTime || Math.floor(Date.now() / 1000),
-        source: 'bridge_deposit', network,
-      }));
-      const cntKey = poolLeafCountKey(network, aid, denomBig);
-      const cnt = parseInt(await env.REGISTRY_KV.get(cntKey) || '0', 10);
-      await env.REGISTRY_KV.put(cntKey, String(cnt + 1));
-      await env.REGISTRY_KV.put(nKey, JSON.stringify({ deposit_txid: txidHex, claimed_at_height: h, network }));
+      // Leaf indexing deferred to cron — hint only inits the pool.
+      // The cron has correct block height and tx_index from the block's
+      // canonical tx ordering; the hint doesn't (unconfirmed txs have h=0).
     }
     await env.REGISTRY_KV.put(kvKey, String(prior + 1), { expirationTtl: 90000 });
     return jsonResponse({ ok: true, source: 'hint', opcode: decoded.opcode, network }, 200, cors);
