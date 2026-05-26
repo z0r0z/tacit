@@ -93,15 +93,13 @@ const MONOTONIC_FLOORS = Object.freeze({
 // would create false-positive failures. Each entry below was verified
 // confirmed on mainnet via mempool.space at the time of pin.
 const PINNED_TRADES = Object.freeze([
-  // Re-pinned 2026-05-17 after the prior set aged out of the worker's
-  // TRADES_RING_CAP=200 ring (TAC sees ~50+ trades/day; the prior pins
-  // dated 2026-05-13 fell off ~3 days later). Verified live in
-  // worker's `/assets/{tac}` trades array + confirmed on mempool.space.
-  Object.freeze({ txid: '0cd724d5c0b9b25ee26983c28f94155ab7bf57ddfd8ea8e7e4033806b3fe5980', price_sats: 11400,  amount: '5784822629',   ts: 1779015651 }),
-  Object.freeze({ txid: '94bc8b68afdd1f2dbf4de5ed2e5cf0f6acb15d4568765d121b28510cefe3d41d', price_sats: 104000, amount: '53652660505',  ts: 1779014742 }),
-  Object.freeze({ txid: '38d36c455f73cfcf67a8e0867cced5f09929472931d8c4767e79142401092def', price_sats: 388000, amount: '200000000000', ts: 1779007062 }),
-  Object.freeze({ txid: 'c851b373d69390e2cc9a98e7c13e59bba0ee51c3a46d14d1cc382c6fb0984129', price_sats: 388000, amount: '200016418184', ts: 1779006996 }),
-  Object.freeze({ txid: '76bea0f77f0ee8447c6b0b22739ed9182e2b6ac5840561ab775916b84c58994b', price_sats: 210000, amount: '107305321011', ts: 1779005861 }),
+  // Re-pinned 2026-05-27. Verified live in worker's `/assets/{tac}` trades
+  // array + confirmed on mempool.space.
+  Object.freeze({ txid: 'b8cb32dc79dc31fce0cfc77879a79206bb038b3b0663d6b4e80b9876360c3b75', price_sats: 33872, amount: '12057512727', ts: 1779818068 }),
+  Object.freeze({ txid: '9f8bbcc44d287f710f5612d1f1d15dd8ce21438773d708188d612aa9d8087657', price_sats: 34072, amount: '12128710064', ts: 1779816536 }),
+  Object.freeze({ txid: '3340f16c5e7eb7961a1c3dbf2c6cade4b6f459ff5468ac0048f7c4698580069a', price_sats: 627, amount: '19', ts: 1779805415 }),
+  Object.freeze({ txid: '4bf0ce5c4921aeb1ee2380dd79c04aa481e13d7db1b7d1a3c8d6c2d6a6cbe44c', price_sats: 44000, amount: '15851814465', ts: 1779794916 }),
+  Object.freeze({ txid: '894210c1dac6333d61768ace677a7405c990cb59087fa32eae1767d96237f80e', price_sats: 113000, amount: '63503761062', ts: 1779793535 }),
 ]);
 
 const WORKER_BASE = 'https://tacit-pin.rosscampbell9.workers.dev';
