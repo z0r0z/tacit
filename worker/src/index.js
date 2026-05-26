@@ -9644,7 +9644,10 @@ function decodeTWithdrawPayload(payload) {
 // Ethereum deposit root verification for bridge leaves. Checks the mixer
 // contract's everKnownRoot mapping via eth_call. Tries multiple public RPCs.
 // Returns true if root is known, false if rejected, null on total RPC failure.
+const _ethRootCache = new Map();
 async function _verifyEthDepositRoot(env, network, assetIdHex, denomBig, ethRootHex) {
+  const ck = `${network}:${assetIdHex}:${denomBig}:${ethRootHex}`;
+  if (_ethRootCache.has(ck)) return _ethRootCache.get(ck);
   const isSepolia = network === 'signet';
   const rpcsStr = isSepolia ? (env.ETH_RPCS_SEPOLIA || '') : (env.ETH_RPCS_MAINNET || '');
   const mixer = isSepolia ? (env.TETH_MIXER_SEPOLIA || '') : (env.TETH_MIXER_MAINNET || '');
@@ -9669,7 +9672,9 @@ async function _verifyEthDepositRoot(env, network, assetIdHex, denomBig, ethRoot
       const json = await resp.json();
       if (json.error) continue;
       const result = json.result || '';
-      return result !== '0x' + '0'.repeat(64);
+      const ok = result !== '0x' + '0'.repeat(64);
+      _ethRootCache.set(ck, ok);
+      return ok;
     } catch { continue; }
   }
   return null;
