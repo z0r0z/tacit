@@ -1,0 +1,157 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 960" width="800" height="960" font-family="'Instrument Serif', 'Cormorant Garamond', Georgia, serif">
+  <defs>
+    <marker id="arrowR" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#aaa"/>
+    </marker>
+    <marker id="arrowD" viewBox="0 0 10 10" refX="5" refY="9" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#888"/>
+    </marker>
+
+    <!-- Ethereum diamond -->
+    <symbol id="eth" viewBox="0 0 32 32">
+      <path d="M16 4 L26 17 L16 23 L6 17 Z" fill="none" stroke="#627eea" stroke-width="1.8" stroke-linejoin="round"/>
+      <path d="M16 23 L26 17 L16 28 L6 17 Z" fill="none" stroke="#627eea" stroke-width="1.8" stroke-linejoin="round" opacity="0.5"/>
+    </symbol>
+
+    <!-- Bitcoin circle -->
+    <symbol id="btc" viewBox="0 0 32 32">
+      <circle cx="16" cy="16" r="13" fill="none" stroke="#f4efe6" stroke-width="2"/>
+      <path d="M17.5 7L13 22.5Q13 25 18 24" fill="none" stroke="#f7931a" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="M10 11L21 11" stroke="#f7931a" stroke-width="2.4" stroke-linecap="round"/>
+    </symbol>
+
+    <!-- Mixer / Poseidon tree -->
+    <symbol id="mixer" viewBox="0 0 64 48">
+      <line x1="32" y1="6"  x2="14" y2="22" stroke="#627eea" stroke-width="1.4"/>
+      <line x1="32" y1="6"  x2="50" y2="22" stroke="#627eea" stroke-width="1.4"/>
+      <line x1="14" y1="22" x2="6"  y2="38" stroke="#627eea" stroke-width="1.4"/>
+      <line x1="14" y1="22" x2="22" y2="38" stroke="#627eea" stroke-width="1.4"/>
+      <line x1="50" y1="22" x2="42" y2="38" stroke="#627eea" stroke-width="1.4"/>
+      <line x1="50" y1="22" x2="58" y2="38" stroke="#627eea" stroke-width="1.4"/>
+      <circle cx="32" cy="6"  r="3.2" fill="#000" stroke="#f4efe6" stroke-width="1.2"/>
+      <circle cx="14" cy="22" r="2.8" fill="#000" stroke="#f4efe6" stroke-width="1.1"/>
+      <circle cx="50" cy="22" r="2.8" fill="#000" stroke="#f4efe6" stroke-width="1.1"/>
+      <circle cx="6"  cy="38" r="2.4" fill="#000" stroke="#f4efe6" stroke-width="1"/>
+      <circle cx="22" cy="38" r="2.4" fill="#627eea" stroke="#627eea"/>
+      <circle cx="42" cy="38" r="2.4" fill="#000" stroke="#f4efe6" stroke-width="1"/>
+      <circle cx="58" cy="38" r="2.4" fill="#000" stroke="#f4efe6" stroke-width="1"/>
+    </symbol>
+
+    <!-- ZK proof shield -->
+    <symbol id="zk" viewBox="0 0 32 32">
+      <path d="M16 3 L28 10 L28 22 L16 29 L4 22 L4 10 Z" fill="none" stroke="#f4efe6" stroke-width="1.6" stroke-linejoin="round"/>
+      <text x="16" y="20" font-size="11" fill="#f4efe6" text-anchor="middle" font-family="'Instrument Serif', Georgia, serif" font-style="italic">zk</text>
+    </symbol>
+
+    <!-- tETH coin -->
+    <symbol id="teth" viewBox="0 0 32 32">
+      <circle cx="16" cy="16" r="13" fill="none" stroke="#f4efe6" stroke-width="2.5"/>
+      <path d="M17.5 7L13 22.5Q13 25 18 24" fill="none" stroke="#627eea" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="M10 11L21 11" stroke="#627eea" stroke-width="2.4" stroke-linecap="round"/>
+      <path d="M14.8 17L19 17" stroke="#627eea" stroke-width="2.2" stroke-linecap="round"/>
+    </symbol>
+  </defs>
+
+  <rect width="800" height="960" fill="#000"/>
+
+  <!-- wordmark -->
+  <text x="400" y="72" font-size="52" fill="#f4efe6" text-anchor="middle" font-style="italic">tETH bridge<tspan fill="#f7931a">.</tspan></text>
+  <text x="400" y="104" font-size="18" fill="#888" text-anchor="middle" font-style="italic">trustless ETH-Bitcoin bridge with mixer privacy</text>
+
+  <!-- ═══════ LEFT: Ethereum ═══════ -->
+  <g transform="translate(170,220)">
+    <use href="#eth" x="-36" y="-36" width="72" height="72"/>
+    <text x="0" y="60" font-size="26" fill="#627eea" text-anchor="middle" font-style="italic">Ethereum</text>
+    <text x="0" y="84" font-size="14" fill="#888" text-anchor="middle" font-style="italic">deposit ETH into mixer</text>
+  </g>
+
+  <!-- deposit arrow -->
+  <line x1="245" y1="210" x2="335" y2="210" stroke="#627eea" stroke-width="1.2" stroke-dasharray="4 3" marker-end="url(#arrowR)"/>
+  <text x="290" y="200" font-size="11" fill="#627eea" text-anchor="middle" font-style="italic">deposit</text>
+
+  <!-- ═══════ CENTER: Poseidon mixer ═══════ -->
+  <g transform="translate(400,205)">
+    <use href="#mixer" x="-40" y="-30" width="80" height="60"/>
+    <text x="0" y="52" font-size="20" fill="#f4efe6" text-anchor="middle" font-style="italic">Poseidon mixer</text>
+    <text x="0" y="72" font-size="13" fill="#888" text-anchor="middle" font-style="italic">shared anonymity set</text>
+  </g>
+
+  <!-- mint arrow -->
+  <line x1="465" y1="210" x2="555" y2="210" stroke="#f7931a" stroke-width="1.2" stroke-dasharray="4 3" marker-end="url(#arrowR)"/>
+  <text x="510" y="200" font-size="11" fill="#f7931a" text-anchor="middle" font-style="italic">mint</text>
+
+  <!-- ═══════ RIGHT: Bitcoin ═══════ -->
+  <g transform="translate(630,220)">
+    <use href="#btc" x="-36" y="-36" width="72" height="72"/>
+    <text x="0" y="60" font-size="26" fill="#f7931a" text-anchor="middle" font-style="italic">Bitcoin</text>
+    <text x="0" y="84" font-size="14" fill="#888" text-anchor="middle" font-style="italic">tETH on Tacit L1</text>
+  </g>
+
+  <!-- ═══════ SP1 prover ═══════ -->
+  <g transform="translate(400,370)">
+    <use href="#zk" x="-28" y="-28" width="56" height="56"/>
+    <text x="0" y="52" font-size="22" fill="#f4efe6" text-anchor="middle" font-style="italic">SP1 prover</text>
+    <text x="0" y="74" font-size="13" fill="#888" text-anchor="middle" font-style="italic">proves both directions inside zkVM</text>
+    <text x="0" y="92" font-size="13" fill="#888" text-anchor="middle" font-style="italic">no multisig. no oracle. no federation.</text>
+  </g>
+
+  <!-- SP1 connections -->
+  <path d="M340,370 C260,370 200,310 200,270" fill="none" stroke="#888" stroke-width="0.8" stroke-dasharray="2 3"/>
+  <path d="M460,370 C540,370 600,310 600,270" fill="none" stroke="#888" stroke-width="0.8" stroke-dasharray="2 3"/>
+
+  <!-- ═══════ tETH composability ═══════ -->
+  <line x1="160" y1="480" x2="640" y2="480" stroke="#222" stroke-width="0.6"/>
+
+  <!-- tETH coin, centered -->
+  <g transform="translate(400,548)">
+    <use href="#teth" x="-30" y="-30" width="60" height="60"/>
+  </g>
+  <text x="400" y="598" font-size="24" fill="#f4efe6" text-anchor="middle" font-style="italic">tETH</text>
+  <text x="400" y="620" font-size="13" fill="#888" text-anchor="middle" font-style="italic">composable on Bitcoin — send, swap, earn, or burn back to ETH anytime</text>
+
+  <!-- four actions as a clean horizontal row -->
+  <g transform="translate(0,660)">
+    <text x="130" y="0" font-size="15" fill="#f4efe6" text-anchor="middle" font-style="italic">private send</text>
+    <text x="130" y="18" font-size="11" fill="#666" text-anchor="middle" font-style="italic">stealth CXFER</text>
+
+    <text x="310" y="0" font-size="15" fill="#f4efe6" text-anchor="middle" font-style="italic">swap</text>
+    <text x="310" y="18" font-size="11" fill="#666" text-anchor="middle" font-style="italic">AMM pools</text>
+
+    <text x="490" y="0" font-size="15" fill="#f4efe6" text-anchor="middle" font-style="italic">earn yield</text>
+    <text x="490" y="18" font-size="11" fill="#666" text-anchor="middle" font-style="italic">LP + farming</text>
+
+    <text x="670" y="0" font-size="15" fill="#f4efe6" text-anchor="middle" font-style="italic">burn to ETH</text>
+    <text x="670" y="18" font-size="11" fill="#666" text-anchor="middle" font-style="italic">withdraw anytime</text>
+  </g>
+
+  <!-- ═══════ Trust comparison ═══════ -->
+  <line x1="160" y1="710" x2="640" y2="710" stroke="#222" stroke-width="0.6"/>
+
+  <g transform="translate(400,750)">
+    <text x="-220" y="0"  font-size="14" fill="#555" font-style="italic">multisig bridges</text>
+    <text x="220"  y="0"  font-size="12" fill="#555" text-anchor="end" font-style="italic">trust N signers</text>
+
+    <line x1="-240" y1="14" x2="240" y2="14" stroke="#181818" stroke-width="0.5"/>
+
+    <text x="-220" y="36" font-size="14" fill="#555" font-style="italic">bonded bridges</text>
+    <text x="220"  y="36" font-size="12" fill="#555" text-anchor="end" font-style="italic">trust bonds + beacon</text>
+
+    <line x1="-240" y1="50" x2="240" y2="50" stroke="#181818" stroke-width="0.5"/>
+
+    <text x="-220" y="72" font-size="14" fill="#555" font-style="italic">zk bridges</text>
+    <text x="220"  y="72" font-size="12" fill="#555" text-anchor="end" font-style="italic">trust math only</text>
+
+    <line x1="-240" y1="86" x2="240" y2="86" stroke="#181818" stroke-width="0.5"/>
+
+    <!-- tETH row -->
+    <rect x="-246" y="94" width="492" height="30" rx="3" fill="none" stroke="#627eea" stroke-width="0.8" opacity="0.5"/>
+    <text x="-220" y="115" font-size="15" fill="#f4efe6" font-style="italic">tETH</text>
+    <text x="-185" y="115" font-size="13" fill="#627eea" font-style="italic">zk light client + mixer privacy</text>
+    <text x="220"  y="115" font-size="12" fill="#627eea" text-anchor="end" font-style="italic">trust math / private</text>
+  </g>
+
+  <!-- sign-off -->
+  <text x="400" y="920" font-size="15" fill="#888" text-anchor="middle" font-style="italic">
+    your keys<tspan fill="#f7931a">  /  </tspan>your ETH<tspan fill="#f7931a">  /  </tspan>on bitcoin
+  </text>
+</svg>

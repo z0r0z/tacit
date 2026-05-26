@@ -19893,6 +19893,39 @@ async function scanForEtches(env, network) {
   // of the same value to the same key. Same scaling concern as the petch
   // lookup cache above. Batched once at end-of-scan.
   const _dirtyPetchAids = new Set();
+  // Per-scan cache for bridge pool init records + leaf counts. Bridge
+  // envelopes hammer the same poolInitKey and poolLeafCountKey for every
+  // envelope in the same pool — without caching, a block with 10 bridge
+  // deposits costs 20 redundant KV.gets. Leaf count deltas accumulate
+  // in-memory and flush once per pool at end-of-scan (see _bridgeLeafDeltas
+  // flush below the block loop).
+  const _bridgeInitCache = new Map();
+  const _bridgeInitLookup = async (aid, denomBig) => {
+    const k = `${aid}:${denomBig}`;
+    if (_bridgeInitCache.has(k)) return _bridgeInitCache.get(k);
+    const v = await env.REGISTRY_KV.get(poolInitKey(network, aid, denomBig), 'json');
+    _bridgeInitCache.set(k, v);
+    return v;
+  };
+  const _bridgeInitPut = async (aid, denomBig, rec) => {
+    const k = `${aid}:${denomBig}`;
+    _bridgeInitCache.set(k, rec);
+    await env.REGISTRY_KV.put(poolInitKey(network, aid, denomBig), JSON.stringify(rec));
+  };
+  const _bridgeLeafDeltas = new Map();
+  let _bridgeLeafCountBase = new Map();
+  const _bridgeGetLeafCount = async (aid, denomBig) => {
+    const k = `${aid}:${denomBig}`;
+    if (!_bridgeLeafCountBase.has(k)) {
+      const raw = await env.REGISTRY_KV.get(poolLeafCountKey(network, aid, denomBig));
+      _bridgeLeafCountBase.set(k, parseInt(raw || '0', 10));
+    }
+    return _bridgeLeafCountBase.get(k) + (_bridgeLeafDeltas.get(k) || 0);
+  };
+  const _bridgeAdjustLeafCount = (aid, denomBig, delta) => {
+    const k = `${aid}:${denomBig}`;
+    _bridgeLeafDeltas.set(k, (_bridgeLeafDeltas.get(k) || 0) + delta);
+  };
   // Same pattern for T_DCLAIM (SPEC §5.12 / §5.13). One drop_progress dirty
   // marker per drop_id that saw a confirmed T_DCLAIM this scan.
   const _dirtyDropIds = new Set();
@@ -24205,23 +24238,16 @@ async function scanForEtches(env, network) {
         if (expectedNetTag === null || bd.networkTag !== expectedNetTag) continue;
         const aid = bytesToHex(bd.assetId);
         const denomBig = BigInt('0x' + bytesToHex(bd.denomWei)).toString();
-        let initRec = await env.REGISTRY_KV.get(poolInitKey(network, aid, denomBig), 'json');
+        let initRec = await _bridgeInitLookup(aid, denomBig);
         if (!initRec) {
-          // Auto-init pool for bridge deposits — the Ethereum mixer contract
-          // is the source of truth for pool existence and denomination validity.
-          const autoKey = poolInitKey(network, aid, denomBig);
           initRec = { kind: 'pool_init', source: 'bridge_auto', network, asset_id: aid, pool_denom: denomBig, height: h };
-          await env.REGISTRY_KV.put(autoKey, JSON.stringify(initRec));
+          await _bridgeInitPut(aid, denomBig, initRec);
         }
-        // Double-mint prevention: deposit nullifier must not be spent.
         const nKey = `bridge_deposit_nullifier:${network}:${aid}:${denomBig}:${bytesToHex(bd.nullifierHash)}`;
         const existingN = await env.REGISTRY_KV.get(nKey);
         if (existingN) continue;
-        // Leaf cap check.
-        const cntKey = poolLeafCountKey(network, aid, denomBig);
-        const cnt = parseInt(await env.REGISTRY_KV.get(cntKey) || '0', 10);
+        const cnt = await _bridgeGetLeafCount(aid, denomBig);
         if (cnt >= POOL_LEAF_CAP) continue;
-        // Record: append leaf + mark nullifier.
         const leafKey = poolLeafKeyFor(network, aid, denomBig, h, txIndex, tx.txid);
         await env.REGISTRY_KV.put(leafKey, JSON.stringify({
           asset_id: aid, denomination: denomBig,
@@ -24231,7 +24257,7 @@ async function scanForEtches(env, network) {
           deposited_at: tx.status?.block_time || Math.floor(Date.now() / 1000),
           source: 'bridge_deposit', network,
         }));
-        await env.REGISTRY_KV.put(cntKey, String(cnt + 1));
+        _bridgeAdjustLeafCount(aid, denomBig, 1);
         await env.REGISTRY_KV.put(nKey, JSON.stringify({
           deposit_txid: tx.txid, claimed_at_height: h, network,
         }));
@@ -24242,13 +24268,14 @@ async function scanForEtches(env, network) {
         // SPEC-TETH-BRIDGE-AMENDMENT §5.61. Cross-chain redeem: burn tETH leaf
         // and commit to ETH recipient. Records nullifier; the user later proves
         // this burn on Ethereum to unlock their ETH.
+        try {
         const bb = decodeTBridgeBurnPayload(decoded.payload);
         if (!bb) continue;
         const expectedNetTag = networkTagFor(network);
         if (expectedNetTag === null || bb.networkTag !== expectedNetTag) continue;
         const aid = bytesToHex(bb.assetId);
         const denomBig = BigInt('0x' + bytesToHex(bb.denomWei)).toString();
-        const initRec = await env.REGISTRY_KV.get(poolInitKey(network, aid, denomBig), 'json');
+        const initRec = await _bridgeInitLookup(aid, denomBig);
         if (!initRec) continue;
         const nKey = poolNullifierKey(network, aid, denomBig, bytesToHex(bb.nullifierHash));
         const existing = await env.REGISTRY_KV.get(nKey);
@@ -24262,12 +24289,11 @@ async function scanForEtches(env, network) {
             withdrawn_at: tx.status?.block_time || Math.floor(Date.now() / 1000),
             source: 'bridge_burn', network,
           }));
-          // Decrement supply counter (SPEC §5.61: supply(asset_id) -= 1).
-          const cntKey = poolLeafCountKey(network, aid, denomBig);
-          const cnt = parseInt(await env.REGISTRY_KV.get(cntKey) || '0', 10);
-          if (cnt > 0) await env.REGISTRY_KV.put(cntKey, String(cnt - 1));
+          const cnt = await _bridgeGetLeafCount(aid, denomBig);
+          if (cnt > 0) _bridgeAdjustLeafCount(aid, denomBig, -1);
           found++;
         }
+        } catch {}
       }
     }
     lastContiguous = h;
@@ -24279,6 +24305,13 @@ async function scanForEtches(env, network) {
   // Writing lastScanned first would advance past those blocks, leaving
   // their assets' snapshots stale until another pmint or admin rebuild.
   // markPetchDirty is idempotent so re-scans cost no extra correctness.
+  for (const [k, delta] of _bridgeLeafDeltas) {
+    if (delta === 0) continue;
+    const [aid, denomBig] = k.split(':');
+    const base = _bridgeLeafCountBase.get(k) || 0;
+    const final = Math.max(0, base + delta);
+    await env.REGISTRY_KV.put(poolLeafCountKey(network, aid, denomBig), String(final));
+  }
   for (const aid of _dirtyPetchAids) {
     await markPetchDirty(env, network, aid);
   }

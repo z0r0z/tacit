@@ -55,6 +55,18 @@ tETH lets users deposit ETH (or any ERC-20) on Ethereum, mint composable tETH on
   +------------------+   +-------------------------+
 ```
 
+## Where it sits vs. existing bridges
+
+| Bridge | Trust model | Privacy |
+|--------|------------|---------|
+| Multichain / Ronin | Multisig (both hacked) | None |
+| Wormhole | Guardian set (hacked) | None |
+| tBTC v2 | Random beacon + bonds | None |
+| zkBridge / Succinct | ZK light client | None |
+| **tETH (Tacit)** | **ZK light client + mixer** | **Full: deposit ↔ withdrawal unlinkable** |
+
+tETH is in the ZK light-client category (same trust assumptions as zkBridge) but with a mixer privacy layer that none of the others have. The Groth16 anonymity set means there is no on-chain link between a deposit and its corresponding withdrawal — shared across all users of the same denomination pool.
+
 ## Security layers
 
 Each withdrawal must pass all of these independently:
