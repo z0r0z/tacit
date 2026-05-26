@@ -94,7 +94,7 @@ Invalid proofs or fabricated roots are rejected before entering anyone's local s
 All bridge state is deterministically recoverable from the wallet's private key:
 
 - **Deposit keys**: `HMAC(privkey, domain || index)` for each deposit index
-- **Pool notes**: re-derive (secret, nullifier) → compute commitment → match against Sepolia deposit events
+- **Pool notes**: re-derive (secret, nullifier) → compute commitment → match against Ethereum deposit events
 - **Shielded UTXOs**: re-derive stealth blinding → compute stealth address → scan chain for UTXOs
 
 No localStorage, no server state, no backup phrases beyond the wallet key. The dApp's "Recover Notes" function and "Rescan UTXOs" button both trigger this recovery automatically.
@@ -104,7 +104,7 @@ No localStorage, no server state, no backup phrases beyond the wallet key. The d
 Deposit ETH to spendable tETH in one click:
 
 1. User connects MetaMask, picks amount, signs one Ethereum tx
-2. dApp auto-detects Sepolia confirmation
+2. dApp auto-detects Ethereum confirmation
 3. Auto-mints tETH on Bitcoin (Groth16 proof, ~1-2s)
 4. Polls for 3 Bitcoin confirmations
 5. Auto-withdraws to a shielded address (second Groth16 proof)
@@ -262,7 +262,7 @@ The Ethereum contract's `burnNullifiers` mapping provides a second layer of doub
 
 ## Scaling
 
-### V1 capacity
+### Current capacity
 
 | Component | Cost | Notes |
 |-----------|------|-------|
@@ -271,7 +271,7 @@ The Ethereum contract's `burnNullifiers` mapping provides a second layer of doub
 | SP1 proof submission | O(1) | Accumulator comparison, constant SP1 verify |
 | SP1 proving (off-chain) | O(new blocks + n + k log n) | n = total nullifiers, k = new transitions |
 
-V1 comfortably handles tens of thousands of deposits per pool — comparable to Tornado Cash's largest pool (~30k lifetime deposits). The prover is nearly stateless: fetch blocks, pass sorted nullifier list, generate proof. No database, no persistent state.
+Comfortably handles tens of thousands of deposits per pool — comparable to Tornado Cash's largest pool (~30k lifetime deposits). The prover is nearly stateless: fetch blocks, pass sorted nullifier list, generate proof. No database, no persistent state.
 
 Each pool caps at 2^20 (~1M) leaves. Across 6 denominations that's ~6M total deposits per mixer deployment.
 
@@ -315,7 +315,7 @@ If a deposit occurs between proof generation and submission, the deposit root ac
 
 ### Relay reorg recovery
 
-The V1 verifier assumes the relay tip extends the last SP1-proven block. If the relay reorgs onto a branch that does not descend from the last SP1-proven block, SP1 state advancement is blocked — no valid proof can chain from the stored state to the new tip. This requires redeployment of the affected verifiers (users migrate via withdraw + re-deposit). On Bitcoin mainnet, reorgs deeper than a few blocks are essentially unprecedented. A future relay upgrade could add ancestor checking or finality-depth targeting to handle this automatically.
+The current verifier assumes the relay tip extends the last SP1-proven block. If the relay reorgs onto a branch that does not descend from the last SP1-proven block, SP1 state advancement is blocked — no valid proof can chain from the stored state to the new tip. This requires redeployment of the affected verifiers (users migrate via withdraw + re-deposit). On Bitcoin mainnet, reorgs deeper than a few blocks are essentially unprecedented. A future relay upgrade could add ancestor checking or finality-depth targeting to handle this automatically.
 
 ### Migration path
 
