@@ -9656,7 +9656,11 @@ async function _verifyEthDepositRoot(env, network, assetIdHex, denomBig, ethRoot
   if (!rpcs.length) return null;
 
   const aidPad = assetIdHex.padStart(64, '0');
-  const denomPad = BigInt(denomBig).toString(16).padStart(64, '0');
+  // Envelope carries Tacit 8-decimal denomination. Ethereum poolId uses wei.
+  // UNIT_SCALE = 10^10 for ETH (18-dec → 8-dec).
+  const UNIT_SCALE = 10000000000n;
+  const denomWei = BigInt(denomBig) * UNIT_SCALE;
+  const denomPad = denomWei.toString(16).padStart(64, '0');
   const poolId = bytesToHex(keccak_256(hexToBytes(aidPad + denomPad)));
   const rootPad = ethRootHex.replace(/^0x/, '').padStart(64, '0');
   const calldata = '0xe5f99a21' + poolId.padStart(64, '0') + rootPad;
