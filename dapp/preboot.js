@@ -1,29 +1,3 @@
-// Dev cache-bust: if any service worker has cached an old tacit.js,
-// the stale bundle wins forever (the SW is cache-first for /tacit.js).
-// During this redesign push we unregister all SWs + nuke caches on
-// every load so iterations land instantly. Runs once at the top of
-// preboot, before anything else. Safe in prod too — the SW just
-// re-registers fresh on the next call to navigator.serviceWorker.register.
-try {
-  if ('serviceWorker' in navigator) {
-    navigator.serviceWorker.getRegistrations().then(regs => {
-      let touched = false;
-      for (const r of regs) { try { r.unregister(); touched = true; } catch {} }
-      if (touched && 'caches' in window) {
-        caches.keys().then(keys => Promise.all(keys.map(k => caches.delete(k))))
-          .then(() => {
-            // Mark so we don't loop-reload on every entry.
-            if (!sessionStorage.getItem('__sw_dropped')) {
-              sessionStorage.setItem('__sw_dropped', '1');
-              location.reload();
-            }
-          })
-          .catch(() => {});
-      }
-    }).catch(() => {});
-  }
-} catch {}
-
 // Deep-link tab pre-activation. Runs synchronously during head parse
 // (the <script src="preboot.js"></script> tag in <head> has no async /
 // defer, so the parser blocks here until execution finishes). Goal:
