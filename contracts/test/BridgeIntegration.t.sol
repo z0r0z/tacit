@@ -310,7 +310,8 @@ contract BridgeIntegrationTest is TestHelper {
         env[0] = bytes1(opcode);
         env[1] = 0x00;
         for (uint256 i; i < 32; ++i) env[2 + i] = AID[i];
-        bytes32 d = bytes32(DENOM);
+        // Envelope denomination is in Tacit 8-decimal units, not wei.
+        bytes32 d = bytes32(DENOM / 1e10);
         for (uint256 i; i < 32; ++i) env[34 + i] = d[i];
         for (uint256 i; i < 32; ++i) env[66 + i] = root[i];
         for (uint256 i; i < 32; ++i) env[98 + i] = nullHash[i];

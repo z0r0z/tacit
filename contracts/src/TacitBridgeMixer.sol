@@ -283,20 +283,23 @@ contract TacitBridgeMixer is ReentrancyGuardTransient {
     }
 
     function _validateBurn(bytes memory env)
-        internal view returns (bytes32 nullifierHash, bytes32 denomWei, address payable recipient, bytes32 pid)
+        internal view returns (bytes32 nullifierHash, bytes32 denomTacit, address payable recipient, bytes32 pid)
     {
         if (env.length < _BURN_ENVELOPE_MIN) revert InvalidBurnProof();
         if (uint8(env[0]) != _BURN_OPCODE) revert InvalidBurnProof();
         if (uint8(env[1]) != NETWORK_TAG) revert InvalidNetworkTag();
         if (_b32(env, _OFF_ASSET_ID) != ASSET_ID) revert InvalidAssetId();
 
-        denomWei = _b32(env, _OFF_DENOM);
+        // Envelope denomination is in Tacit units (8-decimal). Map to wei for
+        // pool lookup and balance accounting via UNIT_SCALE.
+        denomTacit = _b32(env, _OFF_DENOM);
         nullifierHash = _b32(env, _OFF_NULLIFIER);
         recipient = _addr(env, _OFF_RECIPIENT);
 
-        pid = keccak256(abi.encode(ASSET_ID, uint256(denomWei)));
+        uint256 weiDenom = uint256(denomTacit) * UNIT_SCALE;
+        pid = keccak256(abi.encode(ASSET_ID, weiDenom));
         Pool storage p = _pools[pid];
-        if (p.denomination == 0 || p.denomination != uint256(denomWei)) revert InvalidDenomination();
+        if (p.denomination == 0 || p.denomination != weiDenom) revert InvalidDenomination();
 
         IPoolRootVerifier verifier = poolVerifiers[pid];
         if (address(verifier) == address(0)) revert ZeroAddress();
@@ -314,7 +317,7 @@ contract TacitBridgeMixer is ReentrancyGuardTransient {
 
             bindHash = bytes32(uint256(sha256(abi.encodePacked(
                 "tacit-bridge-burn-v1", block.chainid, address(this),
-                uint8(NETWORK_TAG), ASSET_ID, denomWei, poolRoot,
+                uint8(NETWORK_TAG), ASSET_ID, denomTacit, poolRoot,
                 nullifierHash, rc, rLeaf, er, bn
             ))) % _FIELD_SIZE);
         }
@@ -324,10 +327,10 @@ contract TacitBridgeMixer is ReentrancyGuardTransient {
         // No current-root equality check needed — the claim itself proves the burn was valid
         // against a specific pool state that SP1 accepted. This allows withdrawals to succeed
         // even after later state transitions advance the pool root.
-        bytes32 burnClaimId = sha256(abi.encodePacked(nullifierHash, denomWei, poolRoot, recipient, bindHash));
+        bytes32 burnClaimId = sha256(abi.encodePacked(nullifierHash, denomTacit, poolRoot, recipient, bindHash));
         if (!verifier.isAcceptedBurn(burnClaimId)) revert UnprovenRoot();
 
-        _verifyProof(env, poolRoot, nullifierHash, denomWei, rLeaf, bindHash);
+        _verifyProof(env, poolRoot, nullifierHash, denomTacit, rLeaf, bindHash);
     }
 
     function _isKnownRoot(bytes32 pid, bytes32 root) internal view returns (bool) {
