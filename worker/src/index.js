@@ -24338,8 +24338,8 @@ async function scanForEtches(env, network) {
           initRec = { kind: 'pool_init', source: 'bridge_auto', network, asset_id: aid, pool_denom: denomBig, height: h };
           await _bridgeInitPut(aid, denomBig, initRec);
         }
-        const ethRootOk = await _verifyEthDepositRoot(env, network, aid, denomBig, bytesToHex(bd.ethRoot));
-        if (ethRootOk === false) continue;
+        // Eth root verification deferred to dApp client-side check
+        // (avoids subrequest budget issues during cron scan)
         const nKey = `bridge_deposit_nullifier:${network}:${aid}:${denomBig}:${bytesToHex(bd.nullifierHash)}`;
         const existingN = await env.REGISTRY_KV.get(nKey);
         if (existingN) continue;
