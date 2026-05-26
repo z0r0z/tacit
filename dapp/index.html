@@ -8566,32 +8566,6 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
 
 <!-- ABOUT TAB -->
 <div class="tab-panel" id="tab-mixer">
-  <!--
-    Persistent post-finalize celebration banner. Hidden by default; revealed
-    by ceremonyRender() when state.finalized=true and within the
-    finalize-celebration window (24h post-finalize). Each browser gets one
-    "dismiss" via the X button which sets a localStorage flag so refreshing
-    doesn't bring the banner back. Expires automatically after 24h regardless
-    of dismiss state — past that the FINALIZED badge in the ceremony state
-    line is sufficient signaling.
-  -->
-  <div id="mixer-finalized-banner" style="display:none;border:1px solid #859900;background:#f0fdf4;color:#1a4314;padding:14px 16px;border-radius:8px;margin-bottom:16px;font-size:14px;">
-    <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;">
-      <div style="flex:1;">
-        <strong style="font-size:15px;">Ceremony finalized · mixer is live</strong>
-        <div id="mixer-finalized-banner-stats" style="margin-top:6px;font-size:12px;color:#586e75;"></div>
-      </div>
-      <button id="mixer-finalized-banner-dismiss" type="button" style="background:none;border:1px solid #859900;color:#1a4314;cursor:pointer;font-size:11px;padding:4px 10px;border-radius:4px;flex-shrink:0;" title="Hide this banner">Dismiss</button>
-    </div>
-  </div>
-  <!-- Consolidated lock banner. One copy at the top of the tab instead of
-       four inside each gated section. Visibility is driven by the same
-       `.mixer-ceremony-locked` class JS toggles on #tab-mixer; the dim +
-       pointer-events:none on each section's form elements still uses the
-       per-section [data-mixer-pool-op] hook. -->
-  <div id="mixer-lock-banner" style="display:none;margin-bottom:14px;border:1px dashed var(--ink-faint);background:var(--bg-warm);color:var(--ink-mid);padding:10px 12px;font-size:12px;border-radius:4px;">
-    Loading ceremony state… pool operations (list / deposit / withdraw / init) unlock once the dapp verifies the trusted setup is finalized. If this persists, refresh.
-  </div>
   <div class="section">
     <div class="section-header">
       <span>mixer · shielded pools</span>
@@ -8609,7 +8583,10 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
     <div class="section-body">
       <div class="muted" style="margin-bottom:10px;">Initialized pools are listed below. Each row shows total deposits, total withdrawals, current anonymity-set size, and the verifying-key CID. Empty list = no pools have been initialized on this network yet.</div>
       <div id="mixer-bridge-deposits" style="display:none;"></div>
-      <div id="mixer-pool-list"><div class="muted" style="font-size:12px;">No pools indexed yet.</div></div>
+      <div id="mixer-pool-list">
+        <div class="skeleton" style="border-radius:6px;margin-bottom:8px;" aria-busy="true"><div class="skeleton-row medium"></div><div class="skeleton-row short"></div></div>
+        <div class="skeleton" style="border-radius:6px;margin-bottom:8px;" aria-busy="true"><div class="skeleton-row medium"></div><div class="skeleton-row short"></div></div>
+      </div>
     </div>
   </div>
 
@@ -8871,155 +8848,16 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
     </div>
   </div>
 
-  <div class="section" id="mixer-ceremony-section">
-    <div class="section-header">
-      <span>ceremony · contribute to the trusted setup</span>
-      <span id="ceremony-status" class="muted"></span>
-    </div>
+  <div class="section" id="mixer-trusted-setup-section">
+    <div class="section-header"><span>trusted setup</span></div>
     <div class="section-body">
-      <div class="muted" style="margin-bottom:14px;">
-        The tacit mixer's privacy was bootstrapped by a multi-party trusted setup ceremony. Anyone could contribute — and as long as <strong>one</strong> participant across the chain was honest, the mixer is sound. The chain is now finalized; the canonical verifying key is pinned and used by every mixer envelope. The AMM has its own per-circuit ceremony, contributable from the chip on every tab.
+      <div class="muted" style="font-size:12px;line-height:1.6;">
+        The mixer's zero-knowledge circuit was bootstrapped by a public multi-party ceremony. As long as one participant across the chain was honest, the setup is sound. The ceremony is finalized; every pool binds to the canonical verifying key.
       </div>
-      <div id="ceremony-state" class="muted" style="font-size:12px;margin-bottom:12px;">Loading…</div>
-
-      <div class="flex" style="gap:8px;flex-wrap:wrap;align-items:flex-end;">
-        <label style="flex:1;min-width:240px;">Ceremony ID <span class="muted" style="font-size:11px;">(locked to this site, can't be overridden)</span>
-          <input id="ceremony-hash" type="text" autocomplete="off" spellcheck="false" readonly title="The official ceremony ID for this site. Locked so a phishing link with a different ceremony ID can't redirect your contribution to a poisoned chain.">
-        </label>
+      <div style="margin-top:8px;font-size:12px;display:flex;gap:16px;flex-wrap:wrap;">
+        <span>Verifying key: <a id="mixer-vk-cid-link" href="#" target="_blank" rel="noopener noreferrer" style="font-family:var(--mono,monospace);font-size:11px;color:inherit;text-decoration:underline;"></a></span>
+        <span>Ceremony transcript: <a id="mixer-ceremony-cid-link" href="#" target="_blank" rel="noopener noreferrer" style="font-family:var(--mono,monospace);font-size:11px;color:inherit;text-decoration:underline;"></a></span>
       </div>
-
-      <!-- Hardware pre-flight banner. Surfaced when navigator.deviceMemory
-           reports < 4 GB or the UA looks mobile — snarkjs.zKey.contribute
-           peaks at ~300-500MB heap on our circuit, and a mobile tab can
-           OOM-crash silently mid-compute (the JS context is killed before
-           the catch block runs, so no error banner). Telling contributors
-           up front prevents the wasted-60s-then-tab-died scenario. The
-           checks are heuristic (deviceMemory rounds down + isn't on Safari);
-           false positives are tolerable since contribute still works. -->
-      <div id="ceremony-hardware-warn" style="display:none;margin-top:10px;padding:10px 12px;border:1px solid #b58900;background:#fdf6e3;color:#7a5800;border-radius:4px;font-size:12px;">
-        <strong>⚠ Heads up:</strong> <span id="ceremony-hardware-warn-msg"></span>
-        Contributing here may OOM-crash your tab silently — switching to a desktop browser with ≥4GB RAM is recommended. You can still try; the failure banner will surface what happens.
-        <div style="margin-top:6px;"><button id="btn-ceremony-hardware-dismiss" style="background:transparent;border:1px solid #b58900;color:#7a5800;font-size:11px;">Dismiss for this session</button></div>
-      </div>
-
-      <div class="flex" style="gap:8px;flex-wrap:wrap;align-items:flex-end;margin-top:10px;">
-        <label style="flex:1;min-width:200px;">Your name (public)
-          <input id="ceremony-contributor-name" type="text" placeholder="alice@github / pseudonym / leave blank for anonymous" maxlength="64" autocomplete="off">
-        </label>
-        <button id="btn-ceremony-contribute" disabled>Add my contribution</button>
-      </div>
-
-      <!-- Live progress UI shown while a contribution is in flight. The
-           strip mirrors the mint/etch progress-strip pattern so the user
-           can see what stage they're at; the detail line below shows a
-           human stage message + an elapsed-time counter that ticks every
-           250ms so the page never looks frozen during the WASM compute.
-           The bytes bar is shown for download/upload steps (determinate)
-           and switches to an indeterminate marquee for verify/contribute
-           where snarkjs gives no progress signal. -->
-      <div id="ceremony-progress-wrap" style="display:none;margin-top:14px;">
-        <div id="ceremony-progress-strip" class="progress-strip" style="margin-top:0;" aria-live="polite">
-          <div class="progress-step" data-step="0"><span class="progress-num">1</span><span class="progress-text"><span class="progress-label">Download</span><span class="progress-tally"></span></span></div>
-          <div class="progress-step" data-step="1"><span class="progress-num">2</span><span class="progress-text"><span class="progress-label">Verify</span><span class="progress-tally"></span></span></div>
-          <div class="progress-step" data-step="2"><span class="progress-num">3</span><span class="progress-text"><span class="progress-label">Contribute</span><span class="progress-tally"></span></span></div>
-          <div class="progress-step" data-step="3"><span class="progress-num">4</span><span class="progress-text"><span class="progress-label">Upload</span><span class="progress-tally"></span></span></div>
-          <div class="progress-step" data-step="4"><span class="progress-num">5</span><span class="progress-text"><span class="progress-label">Confirm</span><span class="progress-tally"></span></span></div>
-        </div>
-        <div style="margin-top:8px;display:flex;justify-content:space-between;align-items:baseline;gap:10px;font-size:12px;">
-          <span id="ceremony-progress-msg" style="color:var(--ink-mid);">Preparing…</span>
-          <span id="ceremony-progress-elapsed" style="font-variant-numeric:tabular-nums;color:var(--ink-mid);"></span>
-        </div>
-        <div id="ceremony-progress-bar-wrap" style="margin-top:6px;height:6px;background:#e0e0e0;border-radius:3px;overflow:hidden;display:none;">
-          <div id="ceremony-progress-bar" style="height:100%;width:0%;background:var(--orange);transition:width 0.15s linear;"></div>
-        </div>
-      </div>
-
-      <details id="ceremony-progress-log-wrap" style="margin-top:10px;display:none;">
-        <summary style="cursor:pointer;font-size:11px;color:var(--ink-mid);">Show technical log</summary>
-        <pre id="ceremony-progress" class="muted" style="margin-top:6px;font-size:11px;max-height:200px;overflow:auto;"></pre>
-      </details>
-
-      <!-- Persistent failure banner. Survives page reload via localStorage so a
-           contributor whose attempt errored doesn't walk away thinking they
-           contributed. Replaces the prior alert()-based failure path which was
-           dismissed and forgotten. -->
-      <div id="ceremony-error-banner" style="display:none;margin-top:10px;padding:10px 12px;border:1px solid var(--red,#dc322f);background:#fee;color:#a4180a;border-radius:4px;">
-        <div style="font-weight:600;font-size:13px;">✗ Your last contribution attempt failed</div>
-        <div id="ceremony-error-message" style="font-size:12px;margin-top:4px;line-height:1.4;"></div>
-        <div id="ceremony-error-when" style="font-size:11px;margin-top:4px;opacity:0.75;"></div>
-        <div style="margin-top:8px;display:flex;gap:6px;">
-          <button id="btn-ceremony-error-retry">Retry contribution</button>
-          <button id="btn-ceremony-error-dismiss" style="background:transparent;border:1px solid var(--red,#dc322f);color:#a4180a;">Dismiss</button>
-        </div>
-      </div>
-
-      <!-- Persistent success banner. Surfaces the verified attestation so the
-           contributor can re-copy the tweet, share it later, or just confirm
-           "yes, I'm in" after a page refresh. Also shows whether the chain
-           was independently verified after upload (re-fetched attestations). -->
-      <div id="ceremony-success-banner" style="display:none;margin-top:10px;padding:10px 12px;border:1px solid #859900;background:#f0fdf4;color:#1a4314;border-radius:4px;">
-        <div style="font-weight:600;font-size:13px;">✓ You contributed to the tacit ceremony</div>
-        <div id="ceremony-success-details" style="font-size:12px;margin-top:4px;line-height:1.4;"></div>
-        <div id="ceremony-success-verify" style="font-size:11px;margin-top:6px;font-style:italic;"></div>
-        <!-- Celebration: hash forge + chain-of-trust rail + meaningful tagline.
-             Visible only on the success render. The hash-scramble + your-link
-             pulse animations run once per session (sessionStorage flag); the
-             static chain rail itself persists on reload as a permanent badge.
-             The chain visualizes every prior contributor — clicking through to
-             the attestations list below shows the full social register, but
-             the rail is the at-a-glance "you joined N others" proof. -->
-        <div id="ceremony-celebration" style="display:none;margin-top:12px;padding-top:10px;border-top:1px dashed #c8d4b8;">
-          <div class="forge-label" style="font-size:10px;text-transform:uppercase;letter-spacing:0.08em;color:#5a7a3e;">Your contribution hash</div>
-          <div id="ceremony-hash-display" class="forge-hash"></div>
-          <div class="chain-rail-wrap">
-            <div class="chain-rail" id="ceremony-chain-rail" aria-label="Chain of contributors"></div>
-            <div class="chain-rail-caption" id="ceremony-chain-caption"></div>
-          </div>
-          <div class="chain-tagline" id="ceremony-chain-tagline"></div>
-        </div>
-        <div style="margin-top:8px;font-size:12px;font-weight:600;">Your attestation post (sharing it on X strengthens the social proof of the ceremony):</div>
-        <textarea id="ceremony-success-attest" readonly style="width:100%;min-height:60px;margin-top:4px;font-size:11px;font-family:var(--mono,monospace);box-sizing:border-box;resize:vertical;"></textarea>
-        <div style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap;align-items:center;">
-          <a id="btn-ceremony-success-twitter" target="_blank" rel="noopener" style="display:inline-block;padding:6px 12px;background:#000;color:#fff;border-radius:4px;text-decoration:none;font-size:12px;font-weight:600;">Post on 𝕏</a>
-          <button id="btn-ceremony-success-copy">Copy text</button>
-          <button id="btn-ceremony-success-dismiss" style="background:transparent;border:1px solid #859900;color:#1a4314;">Dismiss</button>
-        </div>
-      </div>
-
-      <!-- Coordinator-only ceremony-init panel. Even when revealed (the
-           visibility toggle is JS-controlled by a coordinator-detect check),
-           the inner <details> defaults closed so a coordinator gets a quiet
-           landing — they opt in by expanding rather than being confronted
-           with the full file-upload form on every visit. -->
-      <details id="ceremony-init-coordinator-panel" style="margin-top:18px;display:none;border:1px solid var(--ink-faint);background:var(--bg-warm);padding:10px 12px;border-radius:6px;">
-        <summary style="cursor:pointer;font-weight:600;font-size:13px;color:var(--ink-mid);">Initialize a new ceremony (coordinator only)</summary>
-        <div class="muted" style="font-size:12px;margin:8px 0;">Requires the worker's <code>CEREMONY_INIT_TOKEN</code>. Anyone without the token will get a 401 from the worker. First-write-wins per circuit hash. Run <code>cd dapp/circuits &amp;&amp; bash build.sh</code> locally to produce <code>build/withdraw.r1cs</code>, <code>build/pot14_final.ptau</code>, and <code>withdraw_0000.zkey</code>. Upload all three.</div>
-        <div class="flex" style="gap:8px;flex-wrap:wrap;align-items:flex-end;">
-          <label style="flex:1;min-width:200px;">Coordinator token
-            <input id="ceremony-init-token" type="password" placeholder="paste CEREMONY_INIT_TOKEN" autocomplete="off" spellcheck="false">
-          </label>
-          <label style="flex:1;min-width:200px;">Initiator name
-            <input id="ceremony-init-name" type="text" placeholder="alice@github" maxlength="64">
-          </label>
-        </div>
-        <div class="flex" style="gap:8px;flex-wrap:wrap;align-items:flex-end;margin-top:8px;">
-          <label style="flex:1;min-width:200px;">withdraw_0000.zkey
-            <input id="ceremony-init-zkey" type="file" accept=".zkey">
-          </label>
-          <label style="flex:1;min-width:200px;">withdraw.r1cs
-            <input id="ceremony-init-r1cs" type="file" accept=".r1cs">
-          </label>
-          <label style="flex:1;min-width:200px;">pot14_final.ptau
-            <input id="ceremony-init-ptau" type="file" accept=".ptau">
-          </label>
-        </div>
-        <div class="flex" style="gap:8px;align-items:flex-end;margin-top:10px;">
-          <button id="btn-ceremony-init" disabled>Initialize ceremony &amp; broadcast</button>
-        </div>
-        <pre id="ceremony-init-out" class="muted" style="margin-top:10px;display:none;font-size:11px;"></pre>
-      </details>
-
-      <div id="ceremony-attestations" style="margin-top:18px;"></div>
     </div>
   </div>
 
