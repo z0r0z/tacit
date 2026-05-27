@@ -66,12 +66,7 @@ pub fn main() {
         }
         tree = merkle::PoseidonTree::new();
         null_set = merkle::NullifierSet::new();
-        let zero_utxo_hash = compute_utxo_set_hash(&utxo_set);
-        prev_state_commitment = compute_state_commitment(
-            &prev_root32, &prev_null_hash32, prev_state_height,
-            prev_pool_next_index, &prev_pool_frontier,
-            null_set.count(), &zero_utxo_hash,
-        );
+        prev_state_commitment = [0u8; 32];
     } else {
         let prev_utxo_set_hash = compute_utxo_set_hash(&utxo_set);
         tree = merkle::PoseidonTree::from_frontier(
@@ -163,7 +158,7 @@ pub fn main() {
 
             let op_returns = bitcoin::extract_all_op_returns(&tx_data);
             let mut seen_burn_in_tx = false;
-            for envelope in op_returns {
+            for envelope in &op_returns {
             if envelope.is_empty() { continue; }
             let opcode = envelope[0];
             // Match Solidity first-match: any 0x61 payload of sufficient length
