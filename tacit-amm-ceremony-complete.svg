@@ -1,0 +1,74 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 675" width="1200" height="675">
+  <defs>
+    <style>
+      @import url('https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&amp;family=IBM+Plex+Mono:wght@400;500&amp;display=swap');
+      .word   { font-family: 'Instrument Serif', Georgia, serif; fill: #f4efe6; font-style: italic; }
+      .mono   { font-family: 'IBM Plex Mono', monospace; }
+      .accent { fill: #f7931a; }
+    </style>
+    <pattern id="dots" x="0" y="0" width="24" height="24" patternUnits="userSpaceOnUse">
+      <circle cx="1" cy="1" r="1" fill="#f4efe6" fill-opacity="0.04"/>
+    </pattern>
+  </defs>
+
+  <rect width="1200" height="675" fill="#0a0a0a"/>
+  <rect width="1200" height="675" fill="url(#dots)"/>
+
+  <!-- wordmark -->
+  <text x="80" y="100" class="word" font-size="52">tacit<tspan class="accent">.</tspan></text>
+
+  <!-- headline -->
+  <text x="80" y="235" class="word" font-size="74">AMM ceremony</text>
+  <text x="80" y="312" class="word" font-size="74">sealed<tspan class="accent">.</tspan></text>
+
+  <!-- subhead -->
+  <text x="80" y="368" class="word" font-size="26" fill="#888">three Groth16 circuits, one Bitcoin block beacon.</text>
+
+  <!-- thin rule separating headline from data -->
+  <line x1="80" y1="396" x2="680" y2="396" stroke="#f4efe6" stroke-width="0.5" opacity="0.1"/>
+
+  <!-- stats row -->
+  <g transform="translate(80, 448)">
+    <text x="0" y="0" class="mono" font-size="11" letter-spacing="0.1em" fill="#555">CONTRIBUTIONS</text>
+    <text x="0" y="30" class="mono" font-size="28" font-weight="500" fill="#f4efe6">32,389</text>
+
+    <text x="280" y="0" class="mono" font-size="11" letter-spacing="0.1em" fill="#555">CIRCUITS</text>
+    <text x="280" y="30" class="mono" font-size="28" font-weight="500" fill="#f4efe6">3</text>
+
+    <text x="440" y="0" class="mono" font-size="11" letter-spacing="0.1em" fill="#555">BEACON BLOCK</text>
+    <text x="440" y="30" class="mono" font-size="28" font-weight="500" fill="#f4efe6">951,267</text>
+  </g>
+
+  <!-- circuit breakdown — inline row -->
+  <text x="80" y="530" class="mono" font-size="12" fill="#444">lp_add <tspan fill="#666">13,668</tspan>   <tspan dx="24" fill="#444">lp_remove</tspan> <tspan fill="#666">13,703</tspan>   <tspan dx="24" fill="#444">swap_batch</tspan> <tspan fill="#666">5,018</tspan></text>
+
+  <!-- orange accent line -->
+  <line x1="80" y1="560" x2="340" y2="560" stroke="#f7931a" stroke-width="1.2" opacity="0.25"/>
+
+  <!-- sign-off -->
+  <text x="80" y="610" class="word" font-size="24" fill="#666">private AMM on bitcoin<tspan class="accent">.</tspan></text>
+
+  <!-- right side: three-circuit orbital -->
+  <g transform="translate(980, 310)">
+    <!-- outer orbit -->
+    <circle cx="0" cy="0" r="120" fill="none" stroke="#f4efe6" stroke-width="1" opacity="0.05"/>
+    <!-- middle orbit -->
+    <circle cx="0" cy="0" r="75" fill="none" stroke="#f4efe6" stroke-width="1" opacity="0.07"/>
+    <!-- inner orbit -->
+    <circle cx="0" cy="0" r="32" fill="none" stroke="#f7931a" stroke-width="1" opacity="0.12"/>
+
+    <!-- three circuits as dots on orbits -->
+    <circle cx="0" cy="-120" r="5" fill="#f7931a" opacity="0.7"/>
+    <circle cx="65" cy="38" r="5" fill="#f7931a" opacity="0.5"/>
+    <circle cx="-65" cy="38" r="5" fill="#f7931a" opacity="0.6"/>
+
+    <!-- connecting lines to center (beacon) -->
+    <line x1="0" y1="-120" x2="0" y2="0" stroke="#f7931a" stroke-width="0.5" opacity="0.08"/>
+    <line x1="65" y1="38" x2="0" y2="0" stroke="#f7931a" stroke-width="0.5" opacity="0.08"/>
+    <line x1="-65" y1="38" x2="0" y2="0" stroke="#f7931a" stroke-width="0.5" opacity="0.08"/>
+
+    <!-- center beacon dot -->
+    <circle cx="0" cy="0" r="3" fill="#f7931a" opacity="0.35"/>
+  </g>
+</svg>
