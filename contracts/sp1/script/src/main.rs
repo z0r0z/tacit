@@ -226,9 +226,14 @@ fn main() {
     } else {
         // Check deposit root accumulator freshness before proving.
         let acc_before = fetch_accumulator(&http, &bases_eth, &mixer_addr);
-        println!("Generating SP1 proof (this may take a while)...");
+        let onchain = args.contains(&"--onchain".to_string());
+        println!("Generating SP1 proof ({})...", if onchain { "groth16 for on-chain" } else { "compressed" });
         let pk = client.setup(elf).expect("setup failed");
-        let proof = client.prove(&pk, stdin).compressed().run().expect("proof generation failed");
+        let proof = if onchain {
+            client.prove(&pk, stdin).groth16().run().expect("groth16 proof failed")
+        } else {
+            client.prove(&pk, stdin).compressed().run().expect("compressed proof failed")
+        };
         println!("Proof generated!");
         println!("  Public values: {} bytes", proof.public_values.as_slice().len());
         print_public_values(proof.public_values.as_slice());
@@ -247,6 +252,14 @@ fn main() {
         std::fs::write(proof_path, bincode::serialize(&proof).expect("serialize"))
             .expect("write proof");
         println!("Proof saved to {proof_path}");
+
+        let pv = proof.public_values.as_slice();
+        let proof_bytes = proof.bytes();
+        let out_dir = env::var("OUTPUT_DIR").unwrap_or_else(|_| ".".to_string());
+        std::fs::create_dir_all(&out_dir).ok();
+        std::fs::write(format!("{out_dir}/public_values.hex"), hex::encode(pv)).expect("write pv");
+        std::fs::write(format!("{out_dir}/proof_bytes.hex"), hex::encode(&proof_bytes)).expect("write proof hex");
+        println!("Submission files saved to {out_dir}/");
     }
 }
 

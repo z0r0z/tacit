@@ -166,12 +166,14 @@ run_proof_cycle() {
   POOL_ID="$POOL_ID" \
   DEPLOY_BLOCK="$DEPLOY_BLOCK" \
   STATE_DIR="$STATE_DIR" \
+  OUTPUT_DIR="$STATE_DIR" \
   ETH_RPC="$ETH_RPC" \
   SP1_PROVER="$SP1_PROVER" \
   ${DEPOSIT_ROOTS:+DEPOSIT_ROOTS="$deposit_roots"} \
   cargo run --release --bin teth-prover -- \
     --start-height "$start_height" \
-    --num-blocks "$num_blocks" 2>&1 | tee "${STATE_DIR}/last_proof.log"
+    --num-blocks "$num_blocks" \
+    --onchain 2>&1 | tee "${STATE_DIR}/last_proof.log"
 
   if [[ ! -f "proof.bin" ]]; then
     log "ERROR: proof.bin not generated"
@@ -195,24 +197,52 @@ submit_proof() {
   local proof_file="$1"
   local start_height="$2"
   local num_blocks="$3"
+  local pv_file="${STATE_DIR}/public_values.hex"
+  local proof_hex_file="${STATE_DIR}/proof_bytes.hex"
 
-  local pv_hex burn_claims_hex
-  pv_hex=$(python3 -c "
-import sys
-data = open('${proof_file}', 'rb').read()
-# SP1 compressed proof format: bincode-serialized SP1ProofWithPublicValues
-# Public values are at a known offset — extract from the last proof log
-import re
-log = open('${STATE_DIR}/last_proof.log').read()
-# The prover prints the hex public values
-# For now, extract from the proof binary using SP1 SDK tooling
-print('TODO')
-" 2>/dev/null || echo "TODO")
+  if [[ ! -f "$pv_file" ]] || [[ ! -f "$proof_hex_file" ]]; then
+    log "ERROR: submission files not found (public_values.hex / proof_bytes.hex)"
+    return 1
+  fi
 
-  if [[ "$pv_hex" == "TODO" ]]; then
-    log "NOTE: Auto-submission not yet wired — proof saved to ${STATE_DIR}/"
-    log "  Manual submission: use cast send with the proof.bin"
-    return 0
+  local pv_hex proof_hex
+  pv_hex=$(cat "$pv_file")
+  proof_hex=$(cat "$proof_hex_file")
+
+  # Extract burn claim IDs from the proof's public values.
+  # The SP1 guest commits burn_nullifiers as SHA256(concat(claim_ids)).
+  # The burn claim IDs themselves are not in the public values — they must
+  # be tracked separately by the prover. For now, pass empty array (no burns
+  # in this batch) or read from state file.
+  local burn_claims="[]"
+  local burn_claims_file="${STATE_DIR}/pending_burn_claims.json"
+  if [[ -f "$burn_claims_file" ]]; then
+    burn_claims=$(cat "$burn_claims_file")
+    log "  Burn claims: $(echo "$burn_claims" | python3 -c 'import sys,json; print(len(json.load(sys.stdin)))' 2>/dev/null || echo '?')"
+  fi
+
+  log "Submitting proof to verifier 0x${VERIFIER_ADDRESS}..."
+  log "  Public values: ${#pv_hex} hex chars"
+  log "  Proof bytes: ${#proof_hex} hex chars"
+
+  # proveStateTransition(bytes publicValues, bytes proofBytes, bytes32[] burnClaimIds)
+  local result
+  result=$(cast send "0x${VERIFIER_ADDRESS}" \
+    'proveStateTransition(bytes,bytes,bytes32[])' \
+    "0x${pv_hex}" \
+    "0x${proof_hex}" \
+    "${burn_claims}" \
+    --rpc-url "$ETH_RPC" \
+    --private-key "$ETH_PK" \
+    --gas-limit 1000000 2>&1) || true
+
+  if echo "$result" | grep -q "status.*1"; then
+    log "Proof accepted on-chain!"
+    # Clear pending burn claims
+    rm -f "$burn_claims_file"
+  else
+    log "Proof submission result:"
+    echo "$result" | grep -E "status|transactionHash|error|revert" | head -5
   fi
 }
 
