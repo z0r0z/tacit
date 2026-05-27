@@ -66,7 +66,12 @@ pub fn main() {
         }
         tree = merkle::PoseidonTree::new();
         null_set = merkle::NullifierSet::new();
-        prev_state_commitment = [0u8; 32];
+        let zero_utxo_hash = compute_utxo_set_hash(&utxo_set);
+        prev_state_commitment = compute_state_commitment(
+            &prev_root32, &prev_null_hash32, prev_state_height,
+            prev_pool_next_index, &prev_pool_frontier,
+            null_set.count(), &zero_utxo_hash,
+        );
     } else {
         let prev_utxo_set_hash = compute_utxo_set_hash(&utxo_set);
         tree = merkle::PoseidonTree::from_frontier(
