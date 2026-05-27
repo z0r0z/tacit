@@ -184,10 +184,12 @@ const T_CBTC_TAC_BOND_RELEASE   = 0x5A; // partial bond release on open position
 // 0x5C–0x5E reserved for the named follow-ups (variable-amount, batched-fill, both-sides match).
 const T_PREAUTH_BID             = 0x5B; // buyer-offline preauth bid, exact-fill (SPEC §5.7.11)
 const T_PREAUTH_BID_VAR         = 0x5C; // buyer-offline preauth bid, partial-fill (SPEC §5.7.12)
-// 0x60–0x63: SPEC-TETH-BRIDGE-AMENDMENT (trustless ETH↔Tacit bridge).
+// 0x60–0x64: SPEC-TETH-BRIDGE-AMENDMENT (trustless ETH↔Tacit bridge).
 const T_BRIDGE_DEPOSIT          = 0x60; // cross-chain mint: prove ETH deposit → mint tETH (SPEC §5.60)
 const T_BRIDGE_BURN             = 0x61; // cross-chain redeem: burn tETH → commit to ETH withdrawal (SPEC §5.61)
 const T_BRIDGE_ROTATE           = 0x62; // pool rotation: spend old note, create new note (SPEC §5.62)
+const T_BRIDGE_EXPORT           = 0x63; // pool note → tETH UTXO: export to standard asset (SPEC §5.63)
+const T_BRIDGE_IMPORT           = 0x64; // tETH UTXO → pool note: import for bridge burn (SPEC §5.64)
 const N_BITS = 64; // amount range: [0, 2^64) — bulletproof rangeproof.
 const SECP_N = 0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141n;
 
@@ -12494,7 +12496,7 @@ async function handleAssetHint(req, env, network, cors, ctx) {
       else { const dl = parseInt(push, 16); payloadHex = sp.slice(4, 4 + dl * 2); }
       if (!payloadHex || payloadHex.length < 4) continue;
       const opcode = parseInt(payloadHex.slice(0, 2), 16);
-      if (opcode === T_BRIDGE_DEPOSIT || opcode === T_BRIDGE_BURN) {
+      if (opcode === T_BRIDGE_DEPOSIT || opcode === T_BRIDGE_BURN || opcode === T_BRIDGE_ROTATE || opcode === T_BRIDGE_EXPORT || opcode === T_BRIDGE_IMPORT) {
         decoded = { opcode, payload: hexToBytes(payloadHex) };
         break;
       }
@@ -20148,7 +20150,7 @@ async function scanForEtches(env, network) {
           }
           if (!payloadHex || payloadHex.length < 4) continue;
           const opcode = parseInt(payloadHex.slice(0, 2), 16);
-          if (opcode === T_BRIDGE_DEPOSIT || opcode === T_BRIDGE_BURN || opcode === T_BRIDGE_ROTATE) {
+          if (opcode === T_BRIDGE_DEPOSIT || opcode === T_BRIDGE_BURN || opcode === T_BRIDGE_ROTATE || opcode === T_BRIDGE_EXPORT || opcode === T_BRIDGE_IMPORT) {
             try {
               const payload = hexToBytes(payloadHex);
               decoded = { opcode, payload };
@@ -20158,7 +20160,7 @@ async function scanForEtches(env, network) {
         }
       }
       if (!decoded) continue;
-      if ((decoded.opcode === T_BRIDGE_DEPOSIT || decoded.opcode === T_BRIDGE_BURN || decoded.opcode === T_BRIDGE_ROTATE) && decoded._fromTaproot) continue;
+      if ((decoded.opcode === T_BRIDGE_DEPOSIT || decoded.opcode === T_BRIDGE_BURN || decoded.opcode === T_BRIDGE_ROTATE || decoded.opcode === T_BRIDGE_EXPORT || decoded.opcode === T_BRIDGE_IMPORT) && decoded._fromTaproot) continue;
       if (decoded.opcode === T_CETCH) {
         const ce = decodeCEtchPayload(decoded.payload);
         if (!ce) continue;
@@ -24485,6 +24487,55 @@ async function scanForEtches(env, network) {
           deposited_at_height: h,
           deposited_at: tx.status?.block_time || Math.floor(Date.now() / 1000),
           source: 'bridge_rotate', network,
+        }));
+        found++;
+        } catch {}
+      } else if (decoded.opcode === T_BRIDGE_EXPORT) {
+        try {
+        if (!decoded.payload || decoded.payload.length < 229) continue;
+        const be = decoded.payload;
+        if (be[0] !== T_BRIDGE_EXPORT) continue;
+        const expectedNetTag = networkTagFor(network);
+        if (expectedNetTag === null || be[1] !== expectedNetTag) continue;
+        const aid = bytesToHex(be.slice(2, 34));
+        const denomBig = BigInt('0x' + bytesToHex(be.slice(34, 66))).toString();
+        const initRec = await _bridgeInitLookup(aid, denomBig);
+        if (!initRec) continue;
+        const nullHex = bytesToHex(be.slice(98, 130));
+        const nKey = poolNullifierKey(network, aid, denomBig, nullHex);
+        const existingNull = await env.REGISTRY_KV.get(nKey);
+        if (!existingNull) {
+          await env.REGISTRY_KV.put(nKey, JSON.stringify({
+            asset_id: aid, denomination: denomBig,
+            nullifier_hash: nullHex,
+            withdraw_txid: tx.txid, withdrawn_at_height: h,
+            source: 'bridge_export', network,
+          }));
+        }
+        found++;
+        } catch {}
+      } else if (decoded.opcode === T_BRIDGE_IMPORT) {
+        try {
+        if (!decoded.payload || decoded.payload.length < 165) continue;
+        const bi = decoded.payload;
+        if (bi[0] !== T_BRIDGE_IMPORT) continue;
+        const expectedNetTag = networkTagFor(network);
+        if (expectedNetTag === null || bi[1] !== expectedNetTag) continue;
+        const aid = bytesToHex(bi.slice(2, 34));
+        const denomBig = BigInt('0x' + bytesToHex(bi.slice(34, 66))).toString();
+        const initRec = await _bridgeInitLookup(aid, denomBig);
+        if (!initRec) continue;
+        const newCommitHex = bytesToHex(bi.slice(66, 98));
+        const cnt = await _bridgeGetLeafCount(aid, denomBig);
+        if (cnt >= POOL_LEAF_CAP) continue;
+        const leafKey = poolLeafKeyFor(network, aid, denomBig, h, txIndex, tx.txid);
+        await env.REGISTRY_KV.put(leafKey, JSON.stringify({
+          asset_id: aid, denomination: denomBig,
+          leaf_commitment: newCommitHex,
+          deposit_txid: tx.txid, tx_index: txIndex,
+          deposited_at_height: h,
+          deposited_at: tx.status?.block_time || Math.floor(Date.now() / 1000),
+          source: 'bridge_import', network,
         }));
         found++;
         } catch {}

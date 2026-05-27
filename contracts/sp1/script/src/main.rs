@@ -137,6 +137,9 @@ fn main() {
     // 5: nullifier set (genesis = empty)
     stdin.write(&0u64);           // prev_null_count
 
+    // 5b: tETH UTXO set (genesis = empty)
+    stdin.write(&0u64);           // prev_utxo_count
+
     // 6: deposit roots (empty)
     stdin.write(&0u32);
 
