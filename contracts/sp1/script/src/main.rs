@@ -28,6 +28,7 @@ fn api_bases() -> Vec<String> {
         "mainnet" => vec![
             "https://mempool.space/api".to_string(),
             "https://blockstream.info/api".to_string(),
+            "https://btcscan.org/api".to_string(),
         ],
         _ => vec![
             "https://mempool.space/signet/api".to_string(),
