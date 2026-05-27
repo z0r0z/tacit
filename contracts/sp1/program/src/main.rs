@@ -36,43 +36,7 @@ pub fn main() {
         prev_nullifiers.push(n.try_into().expect("nullifier 32"));
     }
 
-    // ──── Initialize state ────
-    let is_genesis = prev_root32 == [0u8; 32] && prev_null_hash32 == [0u8; 32];
-    let prev_state_commitment: [u8; 32];
-
-    let mut tree;
-    let mut null_set;
-    if is_genesis {
-        assert!(prev_state_height == 0, "genesis: height must be 0");
-        assert!(prev_pool_next_index == 0, "genesis: pool index must be 0");
-        assert!(prev_null_count == 0, "genesis: null count must be 0");
-        for i in 0..TREE_DEPTH {
-            assert!(prev_pool_frontier[i] == [0u8; 32], "genesis: pool frontier must be 0");
-        }
-        tree = merkle::PoseidonTree::new();
-        null_set = merkle::NullifierSet::new();
-        prev_state_commitment = [0u8; 32];
-    } else {
-        tree = merkle::PoseidonTree::from_frontier(
-            prev_pool_frontier, prev_pool_next_index as usize, prev_root32,
-        );
-        null_set = merkle::NullifierSet::from_sorted(prev_nullifiers);
-        assert!(null_set.hash() == prev_null_hash32, "nullifier set hash mismatch");
-        prev_state_commitment = compute_state_commitment(
-            &prev_root32, &prev_null_hash32, prev_state_height,
-            prev_pool_next_index, &prev_pool_frontier,
-            null_set.count(), &prev_utxo_set_hash,
-        );
-    }
-
-    // Track all pool roots produced by this state machine. Burns must
-    // reference a root the pool actually had — prevents an attacker from
-    // constructing a fake tree and proving membership in it.
-    let mut known_pool_roots: Vec<[u8; 32]> = vec![tree.root()];
-
     // ──── tETH UTXO set (private witness) ────
-    // Tracks live tETH UTXOs for export/import interop. Each entry is
-    // (txid, vout, commitment). SP1 validates imports against this set.
     let prev_utxo_count: u64 = io::read();
     let mut utxo_set: Vec<([u8; 32], u16, [u8; 33])> = Vec::new();
     for _ in 0..prev_utxo_count {
@@ -85,12 +49,39 @@ pub fn main() {
             commit.try_into().expect("utxo commit 33"),
         ));
     }
-    let prev_utxo_set_hash: [u8; 32] = if is_genesis {
+
+    // ──── Initialize state ────
+    let is_genesis = prev_root32 == [0u8; 32] && prev_null_hash32 == [0u8; 32];
+    let prev_state_commitment: [u8; 32];
+
+    let mut tree;
+    let mut null_set;
+    if is_genesis {
+        assert!(prev_state_height == 0, "genesis: height must be 0");
+        assert!(prev_pool_next_index == 0, "genesis: pool index must be 0");
+        assert!(prev_null_count == 0, "genesis: null count must be 0");
         assert!(prev_utxo_count == 0, "genesis: utxo count must be 0");
-        [0u8; 32]
+        for i in 0..TREE_DEPTH {
+            assert!(prev_pool_frontier[i] == [0u8; 32], "genesis: pool frontier must be 0");
+        }
+        tree = merkle::PoseidonTree::new();
+        null_set = merkle::NullifierSet::new();
+        prev_state_commitment = [0u8; 32];
     } else {
-        compute_utxo_set_hash(&utxo_set)
-    };
+        let prev_utxo_set_hash = compute_utxo_set_hash(&utxo_set);
+        tree = merkle::PoseidonTree::from_frontier(
+            prev_pool_frontier, prev_pool_next_index as usize, prev_root32,
+        );
+        null_set = merkle::NullifierSet::from_sorted(prev_nullifiers);
+        assert!(null_set.hash() == prev_null_hash32, "nullifier set hash mismatch");
+        prev_state_commitment = compute_state_commitment(
+            &prev_root32, &prev_null_hash32, prev_state_height,
+            prev_pool_next_index, &prev_pool_frontier,
+            null_set.count(), &prev_utxo_set_hash,
+        );
+    }
+
+    let mut known_pool_roots: Vec<[u8; 32]> = vec![tree.root()];
 
     // ──── Deposit roots ────
     let num_deposit_roots: u32 = io::read();
@@ -356,13 +347,13 @@ pub fn main() {
                     let inputs = extract_export_public_inputs(&envelope);
                     if !try_verify_groth16(&proof, &inputs, &prepared_vk) { continue; }
                     if !null_set.insert(env_nullifier) { continue; }
-                    utxo_set.push((txid, 0, env_recip_commit));
+                    utxo_set.push((txid, 1, env_recip_commit));
                     transition_count += 1;
                 }
                 0x64 => {
                     // T_BRIDGE_IMPORT: tETH UTXO → pool note.
                     // No Groth16 — validated by UTXO set membership.
-                    if envelope.len() < 165 { continue; }
+                    if envelope.len() < 164 { continue; }
                     let env_new_commit: [u8; 32] = envelope[66..98].try_into().unwrap();
                     if !is_canonical_field(&env_new_commit) { continue; }
                     let env_bind_hash: [u8; 32] = envelope[98..130].try_into().unwrap();
@@ -432,11 +423,12 @@ pub fn main() {
                 for out_idx in 0..n_outputs {
                     if off + 33 > envelope.len() { break; }
                     let commit: [u8; 33] = envelope[off..off+33].try_into().unwrap();
-                    // CXFER outputs map to transaction vouts. vout[0] is typically
-                    // the recipient (for single-output CXFERs). Multi-output CXFERs
-                    // have vout[0]..vout[N-1] as asset outputs.
-                    utxo_set.push((txid, out_idx as u16, commit));
-                    off += 33 + 8; // skip commitment + encrypted amount
+                    // Asset outputs start at vout[1] (vout[0] is OP_RETURN).
+                    // For taproot CXFERs where envelope is in witness, vout[0]
+                    // is the first asset output — but bridge tracking only
+                    // processes OP_RETURN envelopes (taproot filtered above).
+                    utxo_set.push((txid, (out_idx + 1) as u16, commit));
+                    off += 33 + 8;
                 }
             }
         }
