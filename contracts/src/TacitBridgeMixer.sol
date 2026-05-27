@@ -47,8 +47,8 @@ interface IPoolRootVerifier {
 ///    6. Pool balance — withdrawals cannot exceed deposited funds
 ///
 ///  Deposit roots are permanently stored in everKnownRoot and tracked via
-///  rootAccumulator (running SHA256 hash). The 100-entry ring buffer is
-///  recent-root UX only. The SP1 verifier checks the accumulator directly.
+///  rootAccumulator (running SHA256 hash). The SP1 verifier checks the
+///  accumulator directly.
 ///
 ///  Decimal alignment: the constructor queries token decimals on-chain.
 ///  Tokens with >8 decimals require denominations aligned to UNIT_SCALE
@@ -57,7 +57,6 @@ interface IPoolRootVerifier {
 contract TacitBridgeMixer is ReentrancyGuardTransient {
     // ──────────────────── Constants ────────────────────
 
-    uint256 public constant ROOT_HISTORY_SIZE = 100;
     uint256 public constant TREE_LEVELS = 20;
     uint256 public constant MAX_LEAVES = 1 << TREE_LEVELS;
     uint8 public constant TACIT_DECIMALS = 8;
@@ -97,8 +96,6 @@ contract TacitBridgeMixer is ReentrancyGuardTransient {
         uint256 nextLeafIndex;
         uint256 balance;
         bytes32 currentRoot;
-        uint256 currentRootIndex;
-        bytes32[100] roots;
         mapping(uint256 => bytes32) filledSubtrees;
         mapping(bytes32 => bool) burnNullifiers;
         mapping(bytes32 => bool) commitments;
@@ -178,7 +175,6 @@ contract TacitBridgeMixer is ReentrancyGuardTransient {
             p.denomination = denominations_[i];
             for (uint256 j; j < TREE_LEVELS; ++j) p.filledSubtrees[j] = zeros[j];
             p.currentRoot = z;
-            p.roots[0] = z;
             poolVerifiers[pid] = vrf;
             poolIds.push(pid);
         }
@@ -236,9 +232,6 @@ contract TacitBridgeMixer is ReentrancyGuardTransient {
         }
 
         p.currentRoot = h;
-        uint256 ri = (p.currentRootIndex + 1) % ROOT_HISTORY_SIZE;
-        p.currentRootIndex = ri;
-        p.roots[ri] = h;
         everKnownRoot[pid][h] = true;
         rootAccumulator[pid] = sha256(abi.encodePacked(rootAccumulator[pid], h));
         p.nextLeafIndex++;
@@ -333,23 +326,11 @@ contract TacitBridgeMixer is ReentrancyGuardTransient {
         _verifyProof(env, poolRoot, nullifierHash, denomTacit, rLeaf, bindHash);
     }
 
-    function _isKnownRoot(bytes32 pid, bytes32 root) internal view returns (bool) {
-        if (root == bytes32(0)) return false;
-        Pool storage p = _pools[pid];
-        uint256 idx = p.currentRootIndex;
-        for (uint256 i; i < ROOT_HISTORY_SIZE; ++i) {
-            if (p.roots[idx] == root) return true;
-            idx = idx == 0 ? ROOT_HISTORY_SIZE - 1 : idx - 1;
-        }
-        return false;
-    }
-
     // ──────────────────── Views ────────────────────
 
     function getPoolRoot(bytes32 pid) external view returns (bytes32) { return _pools[pid].currentRoot; }
     function getPoolBalance(bytes32 pid) external view returns (uint256) { return _pools[pid].balance; }
     function isKnownDepositRoot(bytes32 pid, bytes32 root) external view returns (bool) { return everKnownRoot[pid][root]; }
-    function isRecentRoot(bytes32 pid, bytes32 root) external view returns (bool) { return _isKnownRoot(pid, root); }
     function isBurnNullifierSpent(bytes32 pid, bytes32 n) external view returns (bool) { return _pools[pid].burnNullifiers[n]; }
     function getPoolDenomination(bytes32 pid) external view returns (uint256) { return _pools[pid].denomination; }
     function getNextLeafIndex(bytes32 pid) external view returns (uint256) { return _pools[pid].nextLeafIndex; }

@@ -54,7 +54,6 @@ contract SP1PoolRootVerifier {
 
     ProvenState public currentState;
     bytes32 public currentStateCommitment;
-    mapping(bytes32 => ProvenState) public provenStates;
     mapping(bytes32 => bool) public acceptedBurns;
 
     error DomainMismatch();
@@ -172,17 +171,12 @@ contract SP1PoolRootVerifier {
         });
         currentState = ns;
         currentStateCommitment = newStateCommitment;
-        provenStates[newPoolRoot] = ns;
 
         emit StateAdvanced(newPoolRoot, newNullRoot, newHeight);
     }
 
     function isAcceptedBurn(bytes32 claimId) external view returns (bool) {
         return acceptedBurns[claimId];
-    }
-
-    function getNullifierSetHash(bytes32 poolRoot) external view returns (bytes32) {
-        return provenStates[poolRoot].nullifierSetHash;
     }
 
     function rootAccumulator() external view returns (bytes32) {

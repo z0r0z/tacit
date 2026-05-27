@@ -125,16 +125,13 @@ contract BridgeIntegrationTest is TestHelper {
         mixer.withdrawFromBurn(rawTx, ph, 0, new bytes32[](0), 0);
     }
 
-    function test_root_history_window() public {
+    function test_root_history_permanent() public {
         vm.deal(address(this), 200 ether);
         bytes32 firstRoot;
         for (uint256 i = 1; i <= 101; ++i) {
             mixer.deposit{value: DENOM}(bytes32(i), DENOM);
             if (i == 1) firstRoot = mixer.getPoolRoot(poolId);
         }
-        // Ring buffer rotates out old roots...
-        assertFalse(mixer.isRecentRoot(poolId, firstRoot));
-        // ...but permanent registry keeps them forever (for SP1 replay).
         assertTrue(mixer.isKnownDepositRoot(poolId, firstRoot));
         assertTrue(mixer.isKnownDepositRoot(poolId, mixer.getPoolRoot(poolId)));
     }
