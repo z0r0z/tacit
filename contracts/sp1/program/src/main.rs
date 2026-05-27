@@ -408,25 +408,42 @@ pub fn main() {
                 }
             }
 
-            // Parse tETH CXFER outputs from Taproot witness envelopes.
-            // Standard CXFERs use Taproot (not OP_RETURN), so we extract the
-            // envelope from vin[0].witness[1] and check if it's a tETH CXFER.
+            // Parse tETH CXFER outputs from both OP_RETURN and Taproot envelopes.
+            let mut cxfer_sources: Vec<&[u8]> = Vec::new();
+            for env in &op_returns {
+                if env.len() >= 98 && (env[0] == 0x22 || env[0] == 0x23) {
+                    cxfer_sources.push(env);
+                }
+            }
             if let Some(tap_env) = bitcoin::extract_taproot_envelope(&tx_data) {
-                if tap_env.len() >= 98 {
-                    let opc = tap_env[0];
-                    if opc == 0x23 || opc == 0x22 {
-                        let env_asset: Result<[u8; 32], _> = tap_env[1..33].try_into();
-                        if let Ok(ea) = env_asset {
-                            if ea == asset_id32 {
-                                let n_outputs = tap_env[97] as usize;
-                                let mut off = 98;
-                                for out_idx in 0..n_outputs {
-                                    if off + 33 > tap_env.len() { break; }
-                                    let commit: [u8; 33] = tap_env[off..off+33].try_into().unwrap();
-                                    utxo_set.push((txid, out_idx as u16, commit));
-                                    off += 33 + 8;
-                                }
+                if tap_env.len() >= 98 && (tap_env[0] == 0x22 || tap_env[0] == 0x23) {
+                    // Taproot: vout[0] is asset output (no OP_RETURN in outputs)
+                    let env_asset: Result<[u8; 32], _> = tap_env[1..33].try_into();
+                    if let Ok(ea) = env_asset {
+                        if ea == asset_id32 {
+                            let n_outputs = tap_env[97] as usize;
+                            let mut off = 98;
+                            for out_idx in 0..n_outputs {
+                                if off + 33 > tap_env.len() { break; }
+                                let commit: [u8; 33] = tap_env[off..off+33].try_into().unwrap();
+                                utxo_set.push((txid, out_idx as u16, commit));
+                                off += 33 + 8;
                             }
+                        }
+                    }
+                }
+            }
+            for cxfer_env in &cxfer_sources {
+                let env_asset: Result<[u8; 32], _> = cxfer_env[1..33].try_into();
+                if let Ok(ea) = env_asset {
+                    if ea == asset_id32 {
+                        let n_outputs = cxfer_env[97] as usize;
+                        let mut off = 98;
+                        for out_idx in 0..n_outputs {
+                            if off + 33 > cxfer_env.len() { break; }
+                            let commit: [u8; 33] = cxfer_env[off..off+33].try_into().unwrap();
+                            utxo_set.push((txid, (out_idx + 1) as u16, commit));
+                            off += 33 + 8;
                         }
                     }
                 }
