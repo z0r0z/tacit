@@ -187,6 +187,7 @@ const T_PREAUTH_BID_VAR         = 0x5C; // buyer-offline preauth bid, partial-fi
 // 0x60–0x63: SPEC-TETH-BRIDGE-AMENDMENT (trustless ETH↔Tacit bridge).
 const T_BRIDGE_DEPOSIT          = 0x60; // cross-chain mint: prove ETH deposit → mint tETH (SPEC §5.60)
 const T_BRIDGE_BURN             = 0x61; // cross-chain redeem: burn tETH → commit to ETH withdrawal (SPEC §5.61)
+const T_BRIDGE_ROTATE           = 0x62; // pool rotation: spend old note, create new note (SPEC §5.62)
 const N_BITS = 64; // amount range: [0, 2^64) — bulletproof rangeproof.
 const SECP_N = 0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141n;
 
@@ -9734,6 +9735,24 @@ function decodeTBridgeBurnPayload(payload) {
   ));
   for (let i = 0; i < 32; i++) if (expectedBind[i] !== bindHash[i]) return null;
   return { networkTag, assetId, denomWei, merkleRoot, nullifierHash, recipientCommit, rLeaf, ethRecipient, burnNonce, bindHash, proof };
+}
+
+// SPEC-TETH-BRIDGE-AMENDMENT §5.62 — T_BRIDGE_ROTATE decoder.
+function decodeTBridgeRotatePayload(payload) {
+  if (!payload || payload.length < 228 || payload[0] !== T_BRIDGE_ROTATE) return null;
+  let o = 1;
+  const networkTag = payload[o++];
+  const assetId = payload.slice(o, o + 32); o += 32;
+  const denomWei = payload.slice(o, o + 32); o += 32;
+  const merkleRoot = payload.slice(o, o + 32); o += 32;
+  const nullifierHash = payload.slice(o, o + 32); o += 32;
+  const newCommitment = payload.slice(o, o + 32); o += 32;
+  const rLeaf = payload.slice(o, o + 32); o += 32;
+  const bindHash = payload.slice(o, o + 32); o += 32;
+  const proofLen = payload[o] | (payload[o + 1] << 8); o += 2;
+  if (proofLen === 0 || o + proofLen > payload.length) return null;
+  const proof = payload.slice(o, o + proofLen);
+  return { networkTag, assetId, denomWei, merkleRoot, nullifierHash, newCommitment, rLeaf, bindHash, proof };
 }
 
 // SPEC-CBTC-ZK §5.21 T_SLOT_MINT — atomic mint into self-custody slot.
@@ -20129,7 +20148,7 @@ async function scanForEtches(env, network) {
           }
           if (!payloadHex || payloadHex.length < 4) continue;
           const opcode = parseInt(payloadHex.slice(0, 2), 16);
-          if (opcode === T_BRIDGE_DEPOSIT || opcode === T_BRIDGE_BURN) {
+          if (opcode === T_BRIDGE_DEPOSIT || opcode === T_BRIDGE_BURN || opcode === T_BRIDGE_ROTATE) {
             try {
               const payload = hexToBytes(payloadHex);
               decoded = { opcode, payload };
@@ -20139,8 +20158,7 @@ async function scanForEtches(env, network) {
         }
       }
       if (!decoded) continue;
-      // Bridge opcodes are OP_RETURN only — ignore if decoded from Taproot
-      if ((decoded.opcode === T_BRIDGE_DEPOSIT || decoded.opcode === T_BRIDGE_BURN) && decoded._fromTaproot) continue;
+      if ((decoded.opcode === T_BRIDGE_DEPOSIT || decoded.opcode === T_BRIDGE_BURN || decoded.opcode === T_BRIDGE_ROTATE) && decoded._fromTaproot) continue;
       if (decoded.opcode === T_CETCH) {
         const ce = decodeCEtchPayload(decoded.payload);
         if (!ce) continue;
@@ -24436,6 +24454,39 @@ async function scanForEtches(env, network) {
           if (cnt > 0) _bridgeAdjustLeafCount(aid, denomBig, -1);
           found++;
         }
+        } catch {}
+      } else if (decoded.opcode === T_BRIDGE_ROTATE) {
+        try {
+        const br = decodeTBridgeRotatePayload(decoded.payload);
+        if (!br) continue;
+        const expectedNetTag = networkTagFor(network);
+        if (expectedNetTag === null || br.networkTag !== expectedNetTag) continue;
+        const aid = bytesToHex(br.assetId);
+        const denomBig = BigInt('0x' + bytesToHex(br.denomWei)).toString();
+        const initRec = await _bridgeInitLookup(aid, denomBig);
+        if (!initRec) continue;
+        const nKey = poolNullifierKey(network, aid, denomBig, bytesToHex(br.nullifierHash));
+        const existingNull = await env.REGISTRY_KV.get(nKey);
+        if (!existingNull) {
+          await env.REGISTRY_KV.put(nKey, JSON.stringify({
+            asset_id: aid, denomination: denomBig,
+            nullifier_hash: bytesToHex(br.nullifierHash),
+            withdraw_txid: tx.txid, withdrawn_at_height: h,
+            source: 'bridge_rotate', network,
+          }));
+        }
+        const cnt = await _bridgeGetLeafCount(aid, denomBig);
+        if (cnt >= POOL_LEAF_CAP) continue;
+        const leafKey = poolLeafKeyFor(network, aid, denomBig, h, txIndex, tx.txid);
+        await env.REGISTRY_KV.put(leafKey, JSON.stringify({
+          asset_id: aid, denomination: denomBig,
+          leaf_commitment: bytesToHex(br.newCommitment),
+          deposit_txid: tx.txid, tx_index: txIndex,
+          deposited_at_height: h,
+          deposited_at: tx.status?.block_time || Math.floor(Date.now() / 1000),
+          source: 'bridge_rotate', network,
+        }));
+        found++;
         } catch {}
       }
     }
