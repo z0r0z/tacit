@@ -317,7 +317,7 @@ fn fetch_deposit_roots(http: &Client, eth_rpcs: &[String], mixer_addr: &[u8]) ->
     // Fetch Deposit events to count deposits and extract per-deposit roots.
     // Each Deposit event stores the root in `everKnownRoot` and updates `rootAccumulator`.
     // We call `isKnownDepositRoot(poolId, root)` to verify each one.
-    let deposit_sig = "0x90890809c654f11d6e72a28fa60149770a0d11ec6c92319d6ceb2bb0a4ea1a15";
+    let deposit_sig = "0x35a268a90c41b0181a3b58b12063b25c3597e0d085532dfff38eaf88e946c30e";
 
     for rpc in eth_rpcs {
         let body = serde_json::json!({
@@ -350,8 +350,8 @@ fn fetch_deposit_roots(http: &Client, eth_rpcs: &[String], mixer_addr: &[u8]) ->
         }
 
         // Fallback: call getPoolRoot at current block (only works if no reorgs)
-        // keccak256("getPoolRoot(bytes32)") = 0xe5f99a21...
-        let sel = "e5f99a21";
+        // keccak256("getPoolRoot(bytes32)") = 0xee59a615
+        let sel = "ee59a615";
         let call_body = serde_json::json!({
             "jsonrpc": "2.0", "id": 1, "method": "eth_call",
             "params": [{"to": format!("0x{mixer_hex}"), "data": format!("0x{sel}{pool_id_clean}")}, "latest"]
@@ -378,7 +378,7 @@ fn fetch_accumulator(http: &Client, eth_rpcs: &[String], mixer_addr: &[u8]) -> V
         "0c5d21b00bbd6b38d324efe3cd640b5dc9fe6d4d210a2939963009148dd11eef".to_string()
     );
     let pool_id_clean = pool_id.trim_start_matches("0x");
-    let sel = "4b22d7d1";
+    let sel = "7b3be964";
     for rpc in eth_rpcs {
         let body = serde_json::json!({
             "jsonrpc": "2.0", "id": 1, "method": "eth_call",
@@ -403,7 +403,7 @@ fn load_groth16_vk() -> Vec<u8> {
         let json_str = std::fs::read_to_string(&path).expect(&format!("read VK JSON from {path}"));
         return convert_snarkjs_vk_to_arkworks(&json_str);
     }
-    let default_path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../vk.json");
+    let default_path = concat!(env!("CARGO_MANIFEST_DIR"), "/../vk.json");
     if std::path::Path::new(default_path).exists() {
         let json_str = std::fs::read_to_string(default_path).expect("read default vk.json");
         return convert_snarkjs_vk_to_arkworks(&json_str);
@@ -476,22 +476,6 @@ fn decimal_to_le_bytes(s: &str) -> [u8; 32] {
     out
 }
 
-#[derive(serde::Serialize, serde::Deserialize)]
-struct ProverState {
-    pool_root: Vec<u8>,
-    null_set_hash: Vec<u8>,
-    state_height: u64,
-    pool_next_index: u64,
-    pool_frontier: Vec<Vec<u8>>,
-    nullifiers: Vec<Vec<u8>>,
-    utxo_set: Vec<(Vec<u8>, u16, Vec<u8>)>,
-    last_block_hash: Vec<u8>,
-}
-
-fn load_prover_state(path: &str) -> Option<ProverState> {
-    let data = std::fs::read_to_string(path).ok()?;
-    serde_json::from_str(&data).ok()
-}
 
 #[allow(dead_code)]
 fn save_prover_state(path: &str, state: &ProverState) {
@@ -500,27 +484,4 @@ fn save_prover_state(path: &str, state: &ProverState) {
     }
     let json = serde_json::to_string_pretty(state).expect("serialize state");
     std::fs::write(path, json).expect("write state file");
-}
-
-fn fetch_accumulator(http: &Client, eth_rpcs: &[String], mixer_addr: &[u8]) -> Vec<u8> {
-    let mixer_hex = hex::encode(mixer_addr);
-    let pool_id = env::var("POOL_ID").unwrap_or_else(|_|
-        "0c5d21b00bbd6b38d324efe3cd640b5dc9fe6d4d210a2939963009148dd11eef".to_string()
-    );
-    let pool_id_clean = pool_id.trim_start_matches("0x");
-    let sel = "50e76297";
-    for rpc in eth_rpcs {
-        let body = serde_json::json!({
-            "jsonrpc": "2.0", "id": 1, "method": "eth_call",
-            "params": [{"to": format!("0x{mixer_hex}"), "data": format!("0x{sel}{pool_id_clean}")}, "latest"]
-        });
-        if let Ok(resp) = http.post(rpc).json(&body).timeout(Duration::from_secs(15)).send() {
-            if let Ok(json) = resp.json::<serde_json::Value>() {
-                if let Some(hex_str) = json["result"].as_str() {
-                    return hex::decode(hex_str.trim_start_matches("0x")).unwrap_or_default();
-                }
-            }
-        }
-    }
-    Vec::new()
 }
