@@ -408,27 +408,27 @@ pub fn main() {
                 }
             }
 
-            // Parse tETH CXFER outputs: if the OP_RETURN is a CXFER for the
-            // bridge asset, record output commitments as new UTXOs.
-            for envelope in &op_returns {
-                if envelope.len() < 67 { continue; }
-                let opc = envelope[0];
-                if opc != 0x23 && opc != 0x22 { continue; }
-                let env_asset: [u8; 32] = match envelope[1..33].try_into() { Ok(a) => a, Err(_) => continue };
-                if env_asset != asset_id32 { continue; }
-                // CXFER format: opcode(1) + asset_id(32) + kernel_sig(64) + N(1) + [commit(33) + amount_ct(8)] * N
-                if envelope.len() < 98 { continue; }
-                let n_outputs = envelope[97] as usize;
-                let mut off = 98;
-                for out_idx in 0..n_outputs {
-                    if off + 33 > envelope.len() { break; }
-                    let commit: [u8; 33] = envelope[off..off+33].try_into().unwrap();
-                    // Asset outputs start at vout[1] (vout[0] is OP_RETURN).
-                    // For taproot CXFERs where envelope is in witness, vout[0]
-                    // is the first asset output — but bridge tracking only
-                    // processes OP_RETURN envelopes (taproot filtered above).
-                    utxo_set.push((txid, (out_idx + 1) as u16, commit));
-                    off += 33 + 8;
+            // Parse tETH CXFER outputs from Taproot witness envelopes.
+            // Standard CXFERs use Taproot (not OP_RETURN), so we extract the
+            // envelope from vin[0].witness[1] and check if it's a tETH CXFER.
+            if let Some(tap_env) = bitcoin::extract_taproot_envelope(&tx_data) {
+                if tap_env.len() >= 98 {
+                    let opc = tap_env[0];
+                    if opc == 0x23 || opc == 0x22 {
+                        let env_asset: Result<[u8; 32], _> = tap_env[1..33].try_into();
+                        if let Ok(ea) = env_asset {
+                            if ea == asset_id32 {
+                                let n_outputs = tap_env[97] as usize;
+                                let mut off = 98;
+                                for out_idx in 0..n_outputs {
+                                    if off + 33 > tap_env.len() { break; }
+                                    let commit: [u8; 33] = tap_env[off..off+33].try_into().unwrap();
+                                    utxo_set.push((txid, out_idx as u16, commit));
+                                    off += 33 + 8;
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }

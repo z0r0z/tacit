@@ -117,6 +117,71 @@ pub fn compute_merkle_root(txids: &[[u8; 32]]) -> [u8; 32] {
     layer[0]
 }
 
+/// Extract Taproot witness envelope payload from vin[0].witness[1].
+/// Returns the concatenated payload bytes if the script matches the
+/// Tacit envelope format: PUSH(32) xonly OP_CHECKSIG OP_FALSE OP_IF [pushes] OP_ENDIF
+pub fn extract_taproot_envelope(tx_data: &[u8]) -> Option<Vec<u8>> {
+    if tx_data.len() < 6 || tx_data[4] != 0x00 || tx_data[5] != 0x01 { return None; }
+    let mut pos = 6;
+    let (input_count, vi_len) = read_varint(tx_data, pos);
+    if input_count == 0 { return None; }
+    pos += vi_len;
+    for _ in 0..input_count {
+        pos += 36;
+        let (script_len, vi_len) = read_varint(tx_data, pos);
+        pos += vi_len + script_len + 4;
+    }
+    let (output_count, vi_len) = read_varint(tx_data, pos);
+    pos += vi_len;
+    for _ in 0..output_count {
+        pos += 8;
+        let (script_len, vi_len) = read_varint(tx_data, pos);
+        pos += vi_len + script_len;
+    }
+    // Parse witness for first input only.
+    let (wit_count, vi_len) = read_varint(tx_data, pos);
+    pos += vi_len;
+    if wit_count < 2 { return None; }
+    // Skip witness item 0 (signature).
+    let (item0_len, vi_len) = read_varint(tx_data, pos);
+    pos += vi_len + item0_len;
+    // Witness item 1 = script.
+    let (script_len, vi_len) = read_varint(tx_data, pos);
+    pos += vi_len;
+    let script = &tx_data[pos..pos + script_len];
+    if script.len() < 36 { return None; }
+    let mut sp = 0;
+    if script[sp] != 32 { return None; } sp += 1; // PUSH(32)
+    sp += 32; // skip xonly pubkey
+    if sp >= script.len() || script[sp] != 0xac { return None; } sp += 1; // OP_CHECKSIG
+    if sp + 1 >= script.len() || script[sp] != 0x00 || script[sp + 1] != 0x63 { return None; } sp += 2; // OP_FALSE OP_IF
+    let mut payload = Vec::new();
+    while sp < script.len() {
+        if script[sp] == 0x68 { break; } // OP_ENDIF
+        let op = script[sp]; sp += 1;
+        if op >= 1 && op <= 75 {
+            if sp + (op as usize) > script.len() { return None; }
+            payload.extend_from_slice(&script[sp..sp + op as usize]);
+            sp += op as usize;
+        } else if op == 0x4c { // OP_PUSHDATA1
+            if sp >= script.len() { return None; }
+            let ln = script[sp] as usize; sp += 1;
+            if sp + ln > script.len() { return None; }
+            payload.extend_from_slice(&script[sp..sp + ln]);
+            sp += ln;
+        } else if op == 0x4d { // OP_PUSHDATA2
+            if sp + 1 >= script.len() { return None; }
+            let ln = u16::from_le_bytes([script[sp], script[sp + 1]]) as usize; sp += 2;
+            if sp + ln > script.len() { return None; }
+            payload.extend_from_slice(&script[sp..sp + ln]);
+            sp += ln;
+        } else {
+            return None;
+        }
+    }
+    if payload.is_empty() { None } else { Some(payload) }
+}
+
 /// Extract input outpoints (prev_txid, prev_vout) from a Bitcoin transaction.
 pub fn extract_input_outpoints(tx_data: &[u8]) -> Vec<([u8; 32], u16)> {
     let mut results = Vec::new();
