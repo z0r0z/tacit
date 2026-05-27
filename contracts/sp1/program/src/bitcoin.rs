@@ -117,6 +117,26 @@ pub fn compute_merkle_root(txids: &[[u8; 32]]) -> [u8; 32] {
     layer[0]
 }
 
+/// Extract input outpoints (prev_txid, prev_vout) from a Bitcoin transaction.
+pub fn extract_input_outpoints(tx_data: &[u8]) -> Vec<([u8; 32], u16)> {
+    let mut results = Vec::new();
+    let mut pos = 4;
+    if pos + 1 < tx_data.len() && tx_data[pos] == 0x00 && tx_data[pos + 1] == 0x01 { pos += 2; }
+    let (input_count, vi_len) = read_varint(tx_data, pos);
+    pos += vi_len;
+    for _ in 0..input_count {
+        if pos + 36 > tx_data.len() { break; }
+        let mut prev_txid = [0u8; 32];
+        prev_txid.copy_from_slice(&tx_data[pos..pos + 32]);
+        let prev_vout = u32::from_le_bytes([tx_data[pos+32], tx_data[pos+33], tx_data[pos+34], tx_data[pos+35]]) as u16;
+        results.push((prev_txid, prev_vout));
+        pos += 36;
+        let (script_len, vi_len) = read_varint(tx_data, pos);
+        pos += vi_len + script_len + 4;
+    }
+    results
+}
+
 /// Extract ALL OP_RETURN payloads from a Bitcoin transaction.
 pub fn extract_all_op_returns(tx_data: &[u8]) -> Vec<Vec<u8>> {
     let mut results = Vec::new();
