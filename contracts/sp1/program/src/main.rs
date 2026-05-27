@@ -3,6 +3,7 @@ sp1_zkvm::entrypoint!(main);
 
 use sp1_zkvm::io;
 use sha2::{Sha256, Digest};
+use std::collections::BTreeSet;
 
 mod poseidon;
 mod bitcoin;
@@ -38,10 +39,10 @@ pub fn main() {
 
     // ──── tETH UTXO set (private witness) ────
     let prev_utxo_count: u64 = io::read();
-    let mut utxo_set: Vec<([u8; 32], u16, [u8; 33])> = Vec::new();
+    let mut utxo_set: Vec<([u8; 32], u32, [u8; 33])> = Vec::new();
     for _ in 0..prev_utxo_count {
         let txid: Vec<u8> = io::read();
-        let vout: u16 = io::read();
+        let vout: u32 = io::read();
         let commit: Vec<u8> = io::read();
         utxo_set.push((
             txid.try_into().expect("utxo txid 32"),
@@ -81,7 +82,8 @@ pub fn main() {
         );
     }
 
-    let mut known_pool_roots: Vec<[u8; 32]> = vec![tree.root()];
+    let mut known_pool_roots: BTreeSet<[u8; 32]> = BTreeSet::new();
+    known_pool_roots.insert(tree.root());
 
     // ──── Deposit roots ────
     let num_deposit_roots: u32 = io::read();
@@ -106,6 +108,7 @@ pub fn main() {
     let vk_bytes: Vec<u8> = io::read();
     let vk_hash: [u8; 32] = Sha256::digest(&vk_bytes).into();
     let prepared_vk = groth16::prepare_vk(&vk_bytes);
+    let mut _dbg_vk_ok: u64 = if prepared_vk.is_some() { 1 } else { 0 };
 
     // ──── Domain binding ────
     let asset_id: Vec<u8> = io::read();
@@ -131,6 +134,10 @@ pub fn main() {
     let mut last_block_hash = [0u8; 32];
     let mut burn_nullifiers: Vec<[u8; 32]> = Vec::new();
     let mut transition_count: u64 = 0;
+    let mut _dbg_opcode_60: u64 = 0;
+    let mut _dbg_root_ok: u64 = 0;
+    let mut _dbg_bind_ok: u64 = 0;
+    let mut _dbg_proof_ok: u64 = 0;
 
     for _ in 0..num_blocks {
         let header: Vec<u8> = io::read();
@@ -180,9 +187,11 @@ pub fn main() {
 
             match opcode {
                 0x60 => {
+                    _dbg_opcode_60 += 1;
                     if envelope.len() < 517 { continue; }
                     let env_eth_root: [u8; 32] = envelope[66..98].try_into().unwrap();
                     if valid_deposit_roots.binary_search(&env_eth_root).is_err() { continue; }
+                    _dbg_root_ok += 1;
                     let env_nullifier: [u8; 32] = envelope[98..130].try_into().unwrap();
                     let env_recip_commit: &[u8] = &envelope[130..163];
                     let env_leaf: [u8; 32] = envelope[163..195].try_into().unwrap();
@@ -210,15 +219,17 @@ pub fn main() {
                         let computed = u256_to_be(&reduced);
                         if computed != env_bind_hash { continue; }
                     }
+                    _dbg_bind_ok += 1;
                     let proof = match extract_groth16_from_mint_envelope(&envelope) {
                         Some(p) => p, None => continue,
                     };
                     let inputs = extract_mint_public_inputs(&envelope);
                     if !try_verify_groth16(&proof, &inputs, &prepared_vk) { continue; }
+                    _dbg_proof_ok += 1;
                     if !tree.can_insert() { continue; }
                     if !null_set.insert(env_nullifier) { continue; }
                     tree.insert(env_leaf);
-                    known_pool_roots.push(tree.root());
+                    known_pool_roots.insert(tree.root());
                     transition_count += 1;
                 }
                 0x62 => {
@@ -255,10 +266,10 @@ pub fn main() {
                     };
                     let inputs = extract_rotate_public_inputs(&envelope);
                     if !try_verify_groth16(&proof, &inputs, &prepared_vk) { continue; }
-                    if !null_set.insert(env_nullifier) { continue; }
                     if !tree.can_insert() { continue; }
+                    if !null_set.insert(env_nullifier) { continue; }
                     tree.insert(env_new_commit);
-                    known_pool_roots.push(tree.root());
+                    known_pool_roots.insert(tree.root());
                     transition_count += 1;
                 }
                 0x61 => {
@@ -314,7 +325,7 @@ pub fn main() {
                     // T_BRIDGE_EXPORT: pool note → tETH UTXO.
                     // Same Groth16 validation as burn (proves pool note membership),
                     // but instead of recording a burn claim, records a UTXO in the set.
-                    if envelope.len() < 484 { continue; }
+                    if envelope.len() < 485 { continue; }
                     let env_pool_root: [u8; 32] = envelope[66..98].try_into().unwrap();
                     if !known_pool_roots.contains(&env_pool_root) { continue; }
                     let env_nullifier: [u8; 32] = envelope[98..130].try_into().unwrap();
@@ -347,7 +358,7 @@ pub fn main() {
                     let inputs = extract_export_public_inputs(&envelope);
                     if !try_verify_groth16(&proof, &inputs, &prepared_vk) { continue; }
                     if !null_set.insert(env_nullifier) { continue; }
-                    utxo_set.push((txid, 1, env_recip_commit));
+                    utxo_set.push((txid, 1u32, env_recip_commit));
                     transition_count += 1;
                 }
                 0x64 => {
@@ -358,7 +369,7 @@ pub fn main() {
                     if !is_canonical_field(&env_new_commit) { continue; }
                     let env_bind_hash: [u8; 32] = envelope[98..130].try_into().unwrap();
                     let env_prev_txid: [u8; 32] = envelope[130..162].try_into().unwrap();
-                    let env_prev_vout: u16 = u16::from_le_bytes([envelope[162], envelope[163]]);
+                    let env_prev_vout: u32 = u16::from_le_bytes([envelope[162], envelope[163]]) as u32;
                     {
                         let mut bh = Sha256::new();
                         bh.update(b"tacit-bridge-import-v1");
@@ -371,7 +382,7 @@ pub fn main() {
                         bh.update(&denom32);
                         bh.update(&env_new_commit);
                         bh.update(&env_prev_txid);
-                        bh.update(&env_prev_vout.to_le_bytes());
+                        bh.update(&envelope[162..164]);
                         let raw: [u8; 32] = bh.finalize().into();
                         let raw_u256 = u256_from_be(&raw);
                         let reduced = u256_mod_field(&raw_u256);
@@ -387,65 +398,26 @@ pub fn main() {
                         if *inp_txid == env_prev_txid && *inp_vout == env_prev_vout { found_input = true; break; }
                     }
                     if !found_input { continue; }
-                    utxo_set.remove(utxo_idx);
                     if !tree.can_insert() { continue; }
+                    utxo_set.remove(utxo_idx);
                     tree.insert(env_new_commit);
-                    known_pool_roots.push(tree.root());
+                    known_pool_roots.insert(tree.root());
                     transition_count += 1;
                 }
                 _ => {}
             }
             }
 
-            // After processing envelopes, scan for tETH UTXO consumption by
-            // non-bridge opcodes (CXFER, swap, etc.). If any input matches a
-            // tracked UTXO, remove it. If the envelope is a tETH CXFER/swap,
-            // add the new output commitments.
+            // Remove consumed tETH UTXOs. CXFER outputs are NOT tracked: the
+            // bridge guest cannot verify Pedersen conservation, so a fake CXFER
+            // could inflate the UTXO set. Only export-created UTXOs (which are
+            // denomination-correct by construction) can be imported back into
+            // the pool. A follow-up can add CXFER→import support once Pedersen
+            // conservation is verified inside the guest.
             let inp_outpoints = bitcoin::extract_input_outpoints(&tx_data);
             for (inp_txid, inp_vout) in &inp_outpoints {
                 if let Some(idx) = utxo_set.iter().position(|(t, v, _)| t == inp_txid && *v == *inp_vout) {
                     utxo_set.remove(idx);
-                }
-            }
-
-            // Parse tETH CXFER outputs from both OP_RETURN and Taproot envelopes.
-            let mut cxfer_sources: Vec<&[u8]> = Vec::new();
-            for env in &op_returns {
-                if env.len() >= 98 && (env[0] == 0x22 || env[0] == 0x23) {
-                    cxfer_sources.push(env);
-                }
-            }
-            if let Some(tap_env) = bitcoin::extract_taproot_envelope(&tx_data) {
-                if tap_env.len() >= 98 && (tap_env[0] == 0x22 || tap_env[0] == 0x23) {
-                    // Taproot: vout[0] is asset output (no OP_RETURN in outputs)
-                    let env_asset: Result<[u8; 32], _> = tap_env[1..33].try_into();
-                    if let Ok(ea) = env_asset {
-                        if ea == asset_id32 {
-                            let n_outputs = tap_env[97] as usize;
-                            let mut off = 98;
-                            for out_idx in 0..n_outputs {
-                                if off + 33 > tap_env.len() { break; }
-                                let commit: [u8; 33] = tap_env[off..off+33].try_into().unwrap();
-                                utxo_set.push((txid, out_idx as u16, commit));
-                                off += 33 + 8;
-                            }
-                        }
-                    }
-                }
-            }
-            for cxfer_env in &cxfer_sources {
-                let env_asset: Result<[u8; 32], _> = cxfer_env[1..33].try_into();
-                if let Ok(ea) = env_asset {
-                    if ea == asset_id32 {
-                        let n_outputs = cxfer_env[97] as usize;
-                        let mut off = 98;
-                        for out_idx in 0..n_outputs {
-                            if off + 33 > cxfer_env.len() { break; }
-                            let commit: [u8; 33] = cxfer_env[off..off+33].try_into().unwrap();
-                            utxo_set.push((txid, (out_idx + 1) as u16, commit));
-                            off += 33 + 8;
-                        }
-                    }
                 }
             }
         }
@@ -493,6 +465,11 @@ pub fn main() {
     io::commit_slice(&denom32);
     io::commit_slice(&prev_state_commitment);
     io::commit_slice(&new_state_commitment);
+    io::commit_slice(&_dbg_opcode_60.to_be_bytes());
+    io::commit_slice(&_dbg_root_ok.to_be_bytes());
+    io::commit_slice(&_dbg_bind_ok.to_be_bytes());
+    io::commit_slice(&_dbg_proof_ok.to_be_bytes());
+    io::commit_slice(&_dbg_vk_ok.to_be_bytes());
 }
 
 fn compute_state_commitment(
@@ -511,7 +488,7 @@ fn compute_state_commitment(
     h.finalize().into()
 }
 
-fn compute_utxo_set_hash(set: &[([u8; 32], u16, [u8; 33])]) -> [u8; 32] {
+fn compute_utxo_set_hash(set: &[([u8; 32], u32, [u8; 33])]) -> [u8; 32] {
     if set.is_empty() { return [0u8; 32]; }
     let mut h = Sha256::new();
     for (txid, vout, commit) in set {

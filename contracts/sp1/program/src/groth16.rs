@@ -55,14 +55,16 @@ fn parse_g1(bytes: &[u8]) -> Option<G1Affine> {
     let mut y_le = bytes[32..64].to_vec();
     x_le.reverse();
     y_le.reverse();
-    let mut buf = Vec::with_capacity(65);
+    let mut buf = Vec::with_capacity(64);
     buf.extend_from_slice(&x_le);
     buf.extend_from_slice(&y_le);
-    buf.push(0);
     G1Affine::deserialize_uncompressed(&buf[..]).ok()
 }
 
 fn parse_g2(bytes: &[u8]) -> Option<G2Affine> {
+    // Proof bytes from snarkJS fullProve are in native order:
+    // [x_c0, x_c1, y_c0, y_c1] — all 32-byte BE.
+    // Arkworks expects [c0_LE, c1_LE, c0_LE, c1_LE].
     let mut x_c0 = bytes[0..32].to_vec();
     let mut x_c1 = bytes[32..64].to_vec();
     let mut y_c0 = bytes[64..96].to_vec();
@@ -71,11 +73,10 @@ fn parse_g2(bytes: &[u8]) -> Option<G2Affine> {
     x_c1.reverse();
     y_c0.reverse();
     y_c1.reverse();
-    let mut buf = Vec::with_capacity(129);
+    let mut buf = Vec::with_capacity(128);
     buf.extend_from_slice(&x_c0);
     buf.extend_from_slice(&x_c1);
     buf.extend_from_slice(&y_c0);
     buf.extend_from_slice(&y_c1);
-    buf.push(0);
     G2Affine::deserialize_uncompressed(&buf[..]).ok()
 }

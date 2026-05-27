@@ -274,6 +274,15 @@ fn print_public_values(pv: &[u8]) {
         println!("  prev_state_cmt: 0x{}", hex::encode(&pv[397..429]));
         println!("  new_state_cmt:  0x{}", hex::encode(&pv[429..461]));
     }
+    if pv.len() >= 493 {
+        println!("  [dbg] 0x60 seen: {}", u64::from_be_bytes(pv[461..469].try_into().unwrap()));
+        println!("  [dbg] root ok:   {}", u64::from_be_bytes(pv[469..477].try_into().unwrap()));
+        println!("  [dbg] bind ok:   {}", u64::from_be_bytes(pv[477..485].try_into().unwrap()));
+        println!("  [dbg] proof ok:  {}", u64::from_be_bytes(pv[485..493].try_into().unwrap()));
+    }
+    if pv.len() >= 501 {
+        println!("  [dbg] vk ok:     {}", u64::from_be_bytes(pv[493..501].try_into().unwrap()));
+    }
 }
 
 fn parse_arg(args: &[String], flag: &str) -> Option<u64> {
@@ -432,10 +441,11 @@ fn write_g1_uncompressed(buf: &mut Vec<u8>, pt: &serde_json::Value) {
     let arr = pt.as_array().expect("G1 array");
     let x = arr[0].as_str().expect("G1 x");
     let y = arr[1].as_str().expect("G1 y");
-    let infinity = arr.get(2).and_then(|v| v.as_str()).unwrap_or("1") == "0";
+    let is_inf = arr.get(2).and_then(|v| v.as_str()).unwrap_or("1") == "0";
     buf.extend_from_slice(&decimal_to_le_bytes(x));
-    buf.extend_from_slice(&decimal_to_le_bytes(y));
-    buf.push(if infinity { 1 } else { 0 });
+    let mut y_bytes = decimal_to_le_bytes(y);
+    if is_inf { y_bytes[31] |= 1 << 6; }
+    buf.extend_from_slice(&y_bytes);
 }
 
 fn write_g2_uncompressed(buf: &mut Vec<u8>, pt: &serde_json::Value) {
@@ -445,13 +455,15 @@ fn write_g2_uncompressed(buf: &mut Vec<u8>, pt: &serde_json::Value) {
     let infinity = arr.get(2).and_then(|v| v.as_array())
         .map(|a| a[0].as_str().unwrap_or("1") == "0" && a[1].as_str().unwrap_or("0") == "0")
         .unwrap_or(false);
-    // Solidity/snarkJS stores G2 as [x_imag, x_real] = [c1, c0].
-    // Arkworks Fq2 expects c0 first, then c1.
-    buf.extend_from_slice(&decimal_to_le_bytes(x[1].as_str().expect("x.c0")));
-    buf.extend_from_slice(&decimal_to_le_bytes(x[0].as_str().expect("x.c1")));
-    buf.extend_from_slice(&decimal_to_le_bytes(y[1].as_str().expect("y.c0")));
-    buf.extend_from_slice(&decimal_to_le_bytes(y[0].as_str().expect("y.c1")));
-    buf.push(if infinity { 1 } else { 0 });
+    // snarkJS VK JSON: [[x_c0, x_c1], [y_c0, y_c1]].
+    // Arkworks Fq2 uncompressed: c0_le(32) + c1_le(32) for each coordinate.
+    // Flags in top bits of last y coordinate byte.
+    buf.extend_from_slice(&decimal_to_le_bytes(x[0].as_str().expect("x.c0")));
+    buf.extend_from_slice(&decimal_to_le_bytes(x[1].as_str().expect("x.c1")));
+    buf.extend_from_slice(&decimal_to_le_bytes(y[0].as_str().expect("y.c0")));
+    let mut y_c1 = decimal_to_le_bytes(y[1].as_str().expect("y.c1"));
+    if infinity { y_c1[31] |= 1 << 6; }
+    buf.extend_from_slice(&y_c1);
 }
 
 fn decimal_to_le_bytes(s: &str) -> [u8; 32] {
