@@ -19982,6 +19982,8 @@ async function scanForEtches(env, network) {
   if (startHeight > tip) return { up_to_date: true, tip, network };
 
   let scanned = 0, found = 0;
+  let _subreqEstimate = 0;
+  const _SUBREQ_BUDGET = 40;
   // Per-scan petch lookup cache. Each T_PMINT in the block-tx loop used to
   // do its own KV.get(petchKey(...)), so a dense block on a popular fair
   // launch (FAIR's etch+200 blocks landed ~300 reveals/block) burned
@@ -20077,11 +20079,14 @@ async function scanForEtches(env, network) {
     // cache benefit accrues across colos (different POPs handling the same
     // tick coalesce on the cached response) and across hint endpoints that
     // happen to fetch the same height shortly after.
+    if (_subreqEstimate >= _SUBREQ_BUDGET) break;
     try { blockHash = (await apiText(env, `/block-height/${h}`, { cacheTtl: UPSTREAM_IMMUTABLE_CACHE_TTL }, network)).trim(); }
     catch { break; }
+    _subreqEstimate += 1;
     let txs;
     try { txs = await fetchBlockTxs(env, blockHash, network); }
     catch { break; }
+    _subreqEstimate += Math.ceil((txs?.length || 0) / 25);
     // Track tx_index alongside the iteration so T_PMINT KV keys can record
     // the canonical block position (SPEC §5.9 ordering). mempool.space's
     // /block/<hash>/txs endpoint returns txs in block order, so the array
