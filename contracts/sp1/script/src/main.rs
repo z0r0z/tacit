@@ -21,7 +21,7 @@ struct ProverState {
     pool_next_index: u64,
     pool_frontier: Vec<Vec<u8>>,
     nullifiers: Vec<Vec<u8>>,
-    utxo_set: Vec<(Vec<u8>, u16, Vec<u8>)>,
+    utxo_set: Vec<(Vec<u8>, u32, Vec<u8>)>,
     last_block_hash: Vec<u8>,
     state_commitment: Vec<u8>,
 }
@@ -147,7 +147,7 @@ fn main() {
     let mixer_addr = env_hex_vec("MIXER_ADDRESS",
         "13124e519c9c11ef200fc4c36ed5a7010750f00e");
     let denomination = env_hex32("DENOMINATION",
-        "00000000000000000000000000000000000000000000000000038d7ea4c68000");
+        "00000000000000000000000000000000000000000000000000000000000186a0");
 
     // ──── Load previous state (genesis if no state file) ────
     let state_dir = env::var("STATE_DIR").unwrap_or_else(|_| ".sp1-state".to_string());
@@ -420,7 +420,7 @@ fn convert_snarkjs_vk_to_arkworks(json_str: &str) -> Vec<u8> {
     write_g2_uncompressed(&mut buf, &vk["vk_gamma_2"]);
     write_g2_uncompressed(&mut buf, &vk["vk_delta_2"]);
     let ic = vk["IC"].as_array().expect("IC array");
-    let num_ic = ic.len() as u32;
+    let num_ic = ic.len() as u64;
     buf.extend_from_slice(&num_ic.to_le_bytes());
     for pt in ic {
         write_g1_uncompressed(&mut buf, pt);
@@ -445,10 +445,12 @@ fn write_g2_uncompressed(buf: &mut Vec<u8>, pt: &serde_json::Value) {
     let infinity = arr.get(2).and_then(|v| v.as_array())
         .map(|a| a[0].as_str().unwrap_or("1") == "0" && a[1].as_str().unwrap_or("0") == "0")
         .unwrap_or(false);
-    buf.extend_from_slice(&decimal_to_le_bytes(x[0].as_str().expect("x.c0")));
-    buf.extend_from_slice(&decimal_to_le_bytes(x[1].as_str().expect("x.c1")));
-    buf.extend_from_slice(&decimal_to_le_bytes(y[0].as_str().expect("y.c0")));
-    buf.extend_from_slice(&decimal_to_le_bytes(y[1].as_str().expect("y.c1")));
+    // Solidity/snarkJS stores G2 as [x_imag, x_real] = [c1, c0].
+    // Arkworks Fq2 expects c0 first, then c1.
+    buf.extend_from_slice(&decimal_to_le_bytes(x[1].as_str().expect("x.c0")));
+    buf.extend_from_slice(&decimal_to_le_bytes(x[0].as_str().expect("x.c1")));
+    buf.extend_from_slice(&decimal_to_le_bytes(y[1].as_str().expect("y.c0")));
+    buf.extend_from_slice(&decimal_to_le_bytes(y[0].as_str().expect("y.c1")));
     buf.push(if infinity { 1 } else { 0 });
 }
 
