@@ -209,10 +209,44 @@ pub fn main() {
                     transition_count += 1;
                 }
                 0x62 => {
-                    // T_BRIDGE_ROTATE: not yet implemented. The rotation wire
-                    // format (§5.62) differs from burn — dual-proof with sender
-                    // signature. Skip until rotation support is shipped.
-                    continue;
+                    if envelope.len() < 484 { continue; }
+                    let env_pool_root: [u8; 32] = envelope[66..98].try_into().unwrap();
+                    if !known_pool_roots.contains(&env_pool_root) { continue; }
+                    let env_nullifier: [u8; 32] = envelope[98..130].try_into().unwrap();
+                    let env_new_commit: [u8; 32] = envelope[130..162].try_into().unwrap();
+                    if !is_canonical_field(&env_new_commit) { continue; }
+                    let env_r_leaf: [u8; 32] = envelope[162..194].try_into().unwrap();
+                    let env_bind_hash: [u8; 32] = envelope[194..226].try_into().unwrap();
+                    {
+                        let mut bh = Sha256::new();
+                        bh.update(b"tacit-bridge-rotate-v1");
+                        let mut chain_id_32 = [0u8; 32];
+                        chain_id_32[24..32].copy_from_slice(&chain_id.to_be_bytes());
+                        bh.update(&chain_id_32);
+                        bh.update(&mixer_address);
+                        bh.update(&[network_tag]);
+                        bh.update(&asset_id);
+                        bh.update(&denom32);
+                        bh.update(&env_pool_root);
+                        bh.update(&env_nullifier);
+                        bh.update(&env_new_commit);
+                        bh.update(&env_r_leaf);
+                        let raw: [u8; 32] = bh.finalize().into();
+                        let raw_u256 = u256_from_be(&raw);
+                        let reduced = u256_mod_field(&raw_u256);
+                        let computed = u256_to_be(&reduced);
+                        if computed != env_bind_hash { continue; }
+                    }
+                    let proof = match extract_groth16_from_rotate_envelope(&envelope) {
+                        Some(p) => p, None => continue,
+                    };
+                    let inputs = extract_rotate_public_inputs(&envelope);
+                    if !try_verify_groth16(&proof, &inputs, &prepared_vk) { continue; }
+                    if !null_set.insert(env_nullifier) { continue; }
+                    if !tree.can_insert() { continue; }
+                    tree.insert(env_new_commit);
+                    known_pool_roots.push(tree.root());
+                    transition_count += 1;
                 }
                 0x61 => {
                     if envelope.len() < 537 { continue; }
@@ -347,6 +381,23 @@ fn extract_mint_public_inputs(env: &[u8]) -> Vec<[u8; 32]> {
         env[34..66].try_into().unwrap(),
         env[195..227].try_into().unwrap(),
         env[227..259].try_into().unwrap(),
+    ]
+}
+
+fn extract_groth16_from_rotate_envelope(env: &[u8]) -> Option<Vec<u8>> {
+    if env.len() < 228 { return None; }
+    let proof_len = u16::from_le_bytes([env[226], env[227]]) as usize;
+    if env.len() < 228 + proof_len { return None; }
+    Some(env[228..228 + proof_len].to_vec())
+}
+
+fn extract_rotate_public_inputs(env: &[u8]) -> Vec<[u8; 32]> {
+    vec![
+        env[66..98].try_into().unwrap(),    // root
+        env[98..130].try_into().unwrap(),   // nullifier_hash
+        env[34..66].try_into().unwrap(),    // denomination
+        env[162..194].try_into().unwrap(),  // r_leaf
+        env[194..226].try_into().unwrap(),  // bind_hash
     ]
 }
 
