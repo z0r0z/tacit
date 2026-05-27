@@ -24734,7 +24734,7 @@ export {
   dropIdFromRevealTxid,
   T_CETCH, T_CXFER, T_CXFER_BPP, T_MINT, T_BURN, T_AXFER, T_AXFER_VAR, T_PETCH, T_PMINT, T_DEPOSIT, T_WITHDRAW, T_DROP, T_DCLAIM,
   T_SLOT_MINT, T_SLOT_BURN, T_SLOT_ROTATE,
-  T_BRIDGE_DEPOSIT, T_BRIDGE_BURN,
+  T_BRIDGE_DEPOSIT, T_BRIDGE_BURN, T_BRIDGE_ROTATE, T_BRIDGE_EXPORT, T_BRIDGE_IMPORT,
   // Mixer kernel-sig verifier — exported so tests/mixer-conservation can
   // drive it directly against a stubbed apiJson/fetch and confirm the
   // Conservation invariant (SPEC §5.11.4 #1) is enforced. Without dedicated
