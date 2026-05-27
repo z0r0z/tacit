@@ -12906,6 +12906,32 @@ async function handleAssetHint(req, env, network, cors, ctx) {
     return jsonResponse({ ok: true, source: 'hint', opcode: decoded.opcode, network }, 200, cors);
   }
 
+  if (decoded.opcode === T_DEPOSIT && h > 0 && txIndex > 0) {
+    const td = decodeTDepositPayload(decoded.payload);
+    if (td && td.kind === 'deposit') {
+      const initRec = await env.REGISTRY_KV.get(poolInitKey(network, td.asset_id, td.denomination), 'json');
+      if (initRec) {
+        const leafKey = poolLeafKeyFor(network, td.asset_id, td.denomination, h, txIndex, txidHex);
+        const existing = await env.REGISTRY_KV.get(leafKey);
+        if (!existing) {
+          await env.REGISTRY_KV.put(leafKey, JSON.stringify({
+            asset_id: td.asset_id, denomination: td.denomination,
+            leaf_commitment: td.leaf_commitment,
+            deposit_txid: txidHex, tx_index: txIndex,
+            deposited_at_height: h,
+            deposited_at: blockTime || Math.floor(Date.now() / 1000),
+            source: 'deposit', network,
+          }));
+          const cntKey = poolLeafCountKey(network, td.asset_id, td.denomination);
+          const cnt = parseInt(await env.REGISTRY_KV.get(cntKey) || '0', 10);
+          await env.REGISTRY_KV.put(cntKey, String(cnt + 1));
+        }
+        await env.REGISTRY_KV.put(kvKey, String(prior + 1), { expirationTtl: 90000 });
+        return jsonResponse({ ok: true, source: 'hint', opcode: decoded.opcode, network }, 200, cors);
+      }
+    }
+  }
+
   return jsonResponse({ error: 'unsupported envelope opcode' }, 400, cors);
 }
 
