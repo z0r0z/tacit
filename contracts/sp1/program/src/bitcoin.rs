@@ -183,7 +183,7 @@ pub fn extract_taproot_envelope(tx_data: &[u8]) -> Option<Vec<u8>> {
 }
 
 /// Extract input outpoints (prev_txid, prev_vout) from a Bitcoin transaction.
-pub fn extract_input_outpoints(tx_data: &[u8]) -> Vec<([u8; 32], u16)> {
+pub fn extract_input_outpoints(tx_data: &[u8]) -> Vec<([u8; 32], u32)> {
     let mut results = Vec::new();
     let mut pos = 4;
     if pos + 1 < tx_data.len() && tx_data[pos] == 0x00 && tx_data[pos + 1] == 0x01 { pos += 2; }
@@ -193,7 +193,7 @@ pub fn extract_input_outpoints(tx_data: &[u8]) -> Vec<([u8; 32], u16)> {
         if pos + 36 > tx_data.len() { break; }
         let mut prev_txid = [0u8; 32];
         prev_txid.copy_from_slice(&tx_data[pos..pos + 32]);
-        let prev_vout = u32::from_le_bytes([tx_data[pos+32], tx_data[pos+33], tx_data[pos+34], tx_data[pos+35]]) as u16;
+        let prev_vout = u32::from_le_bytes([tx_data[pos+32], tx_data[pos+33], tx_data[pos+34], tx_data[pos+35]]);
         results.push((prev_txid, prev_vout));
         pos += 36;
         let (script_len, vi_len) = read_varint(tx_data, pos);

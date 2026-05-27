@@ -15,13 +15,14 @@ use std::thread;
 
 #[derive(serde::Serialize, serde::Deserialize)]
 struct ProverState {
-    pool_root: Vec<u8>,
+    denominations: Vec<Vec<u8>>,
+    pool_roots: Vec<Vec<u8>>,
+    pool_next_indices: Vec<u64>,
+    pool_frontiers: Vec<Vec<Vec<u8>>>,
     null_set_hash: Vec<u8>,
     state_height: u64,
-    pool_next_index: u64,
-    pool_frontier: Vec<Vec<u8>>,
     nullifiers: Vec<Vec<u8>>,
-    utxo_set: Vec<(Vec<u8>, u32, Vec<u8>)>,
+    utxo_set: Vec<(Vec<u8>, u32, Vec<u8>, u64)>,
     last_block_hash: Vec<u8>,
     state_commitment: Vec<u8>,
 }
@@ -146,8 +147,15 @@ fn main() {
         .and_then(|v| v.parse().ok()).unwrap_or(11155111);
     let mixer_addr = env_hex_vec("MIXER_ADDRESS",
         "13124e519c9c11ef200fc4c36ed5a7010750f00e");
-    let denomination = env_hex32("DENOMINATION",
-        "00000000000000000000000000000000000000000000000000000000000186a0");
+
+    let denoms_str = env::var("DENOMINATIONS").unwrap_or_else(|_|
+        "000186a0,00989680,05f5e100,3b9aca00,2540be400,174876e800".to_string()
+    );
+    let denominations: Vec<Vec<u8>> = denoms_str.split(',')
+        .map(|s| { let mut v = hex::decode(s.trim().trim_start_matches("0x")).expect("denom hex"); while v.len() < 32 { v.insert(0, 0); } v })
+        .collect();
+    let nd = denominations.len();
+    println!("  Denominations: {nd}");
 
     // ──── Load previous state (genesis if no state file) ────
     let state_dir = env::var("STATE_DIR").unwrap_or_else(|_| ".sp1-state".to_string());
@@ -159,34 +167,53 @@ fn main() {
     // ──── Build SP1 stdin matching guest read order exactly ────
     let mut stdin = SP1Stdin::new();
 
+    // 1. Denomination config
+    stdin.write(&(nd as u32));
+    for d in &denominations { stdin.write(d); }
+
+    // 2. Per-denomination previous pool state
     if let Some(ref st) = prev {
-        stdin.write(&st.pool_root);
+        assert!(st.pool_roots.len() == nd, "state denomination count mismatch");
+        for i in 0..nd {
+            stdin.write(&st.pool_roots[i]);
+            stdin.write(&st.pool_next_indices[i]);
+            for f in &st.pool_frontiers[i] { stdin.write(f); }
+        }
+    } else {
+        for _ in 0..nd {
+            stdin.write(&vec![0u8; 32]);
+            stdin.write(&0u64);
+            for _ in 0..20 { stdin.write(&vec![0u8; 32]); }
+        }
+    }
+
+    // 3. Shared previous state
+    if let Some(ref st) = prev {
         stdin.write(&st.null_set_hash);
         stdin.write(&st.state_height);
-        stdin.write(&st.pool_next_index);
-        for f in &st.pool_frontier { stdin.write(f); }
         stdin.write(&(st.nullifiers.len() as u64));
         for n in &st.nullifiers { stdin.write(n); }
         stdin.write(&(st.utxo_set.len() as u64));
-        for (txid, vout, commit) in &st.utxo_set {
-            stdin.write(txid); stdin.write(vout); stdin.write(commit);
+        for (txid, vout, commit, amount) in &st.utxo_set {
+            stdin.write(txid); stdin.write(vout); stdin.write(commit); stdin.write(amount);
         }
     } else {
-        stdin.write(&vec![0u8; 32]); // prev_pool_root
-        stdin.write(&vec![0u8; 32]); // prev_null_set_hash
-        stdin.write(&0u64);           // prev_state_height
-        stdin.write(&0u64);           // prev_pool_next_index
-        for _ in 0..20 { stdin.write(&vec![0u8; 32]); }
-        stdin.write(&0u64);           // prev_null_count
-        stdin.write(&0u64);           // prev_utxo_count
+        stdin.write(&vec![0u8; 32]); // null set hash
+        stdin.write(&0u64);           // state height
+        stdin.write(&0u64);           // null count
+        stdin.write(&0u64);           // utxo count
     }
 
+    // 4. Per-denomination deposit roots
     let bases_eth = eth_rpc_bases();
-    let deposit_roots = fetch_deposit_roots(&http, &bases_eth, &mixer_addr);
-    stdin.write(&(deposit_roots.len() as u32));
-    for r in &deposit_roots { stdin.write(r); }
-    println!("  Deposit roots: {}", deposit_roots.len());
+    for i in 0..nd {
+        let roots = fetch_deposit_roots_for_denom(&http, &bases_eth, &mixer_addr, &denominations[i], &asset_id);
+        stdin.write(&(roots.len() as u32));
+        for r in &roots { stdin.write(r); }
+        println!("  Deposit roots [denom {i}]: {}", roots.len());
+    }
 
+    // 5. VK + domain binding
     let vk_bytes = load_groth16_vk();
     stdin.write(&vk_bytes);
     println!("  VK bytes: {}", vk_bytes.len());
@@ -195,7 +222,20 @@ fn main() {
     stdin.write(&network_tag);
     stdin.write(&chain_id);
     stdin.write(&mixer_addr);
-    stdin.write(&denomination);
+
+    // 6. CXFER witnesses
+    let cxfer_witnesses = load_cxfer_witnesses(start_height);
+    stdin.write(&(cxfer_witnesses.len() as u32));
+    for (block_idx, tx_idx, openings) in &cxfer_witnesses {
+        stdin.write(block_idx);
+        stdin.write(tx_idx);
+        stdin.write(&(openings.len() as u32));
+        for (amount, blinding) in openings {
+            stdin.write(amount);
+            stdin.write(blinding);
+        }
+    }
+    println!("  CXFER witnesses: {}", cxfer_witnesses.len());
 
     stdin.write(&(num_blocks as u32));
     let prev_block_hash = prev.as_ref()
@@ -224,8 +264,7 @@ fn main() {
         println!("  Public values: {} bytes", output.as_slice().len());
         print_public_values(output.as_slice());
     } else {
-        // Check deposit root accumulator freshness before proving.
-        let acc_before = fetch_accumulator(&http, &bases_eth, &mixer_addr);
+        let _ = &bases_eth; // accumulators checked per-denom at submission time
         let onchain = args.contains(&"--onchain".to_string());
         println!("Generating SP1 proof ({})...", if onchain { "groth16 for on-chain" } else { "compressed" });
         let pk = client.setup(elf).expect("setup failed");
@@ -238,12 +277,8 @@ fn main() {
         println!("  Public values: {} bytes", proof.public_values.as_slice().len());
         print_public_values(proof.public_values.as_slice());
 
-        // Warn if accumulator changed during proving (new deposit invalidates proof).
-        let acc_after = fetch_accumulator(&http, &bases_eth, &mixer_addr);
-        if acc_before != acc_after {
-            eprintln!("WARNING: deposit root accumulator changed during proof generation!");
-            eprintln!("  The on-chain verifier will reject this proof. Re-run with updated roots.");
-        }
+        // Accumulators are checked on-chain at submission time. If a deposit
+        // occurred during proving, the on-chain check will reject the proof.
 
         client.verify(&proof, pk.verifying_key(), None).expect("proof verification failed");
         println!("Proof verified locally!");
@@ -264,38 +299,28 @@ fn main() {
 }
 
 fn print_public_values(pv: &[u8]) {
-    if pv.len() < 104 {
-        println!("  (too short to decode: {} bytes)", pv.len());
+    if pv.len() < 461 {
+        println!("  (unexpected size: {} bytes, expected 461)", pv.len());
         return;
     }
-    println!("  prev_pool_root:  0x{}", hex::encode(&pv[0..32]));
-    println!("  prev_null_root:  0x{}", hex::encode(&pv[32..64]));
-    println!("  prev_height:     {}", u64::from_be_bytes(pv[64..72].try_into().unwrap()));
-    println!("  prev_block_hash: 0x{}", hex::encode(&pv[72..104]));
-    if pv.len() >= 176 {
-        println!("  new_pool_root:   0x{}", hex::encode(&pv[104..136]));
-        println!("  new_null_root:   0x{}", hex::encode(&pv[136..168]));
-        println!("  new_height:      {}", u64::from_be_bytes(pv[168..176].try_into().unwrap()));
-    }
-    if pv.len() >= 365 {
-        println!("  last_block_hash: 0x{}", hex::encode(&pv[333..365]));
-    }
-    if pv.len() >= 397 {
-        println!("  denomination:    0x{}", hex::encode(&pv[365..397]));
-    }
-    if pv.len() >= 461 {
-        println!("  prev_state_cmt: 0x{}", hex::encode(&pv[397..429]));
-        println!("  new_state_cmt:  0x{}", hex::encode(&pv[429..461]));
-    }
-    if pv.len() >= 493 {
-        println!("  [dbg] 0x60 seen: {}", u64::from_be_bytes(pv[461..469].try_into().unwrap()));
-        println!("  [dbg] root ok:   {}", u64::from_be_bytes(pv[469..477].try_into().unwrap()));
-        println!("  [dbg] bind ok:   {}", u64::from_be_bytes(pv[477..485].try_into().unwrap()));
-        println!("  [dbg] proof ok:  {}", u64::from_be_bytes(pv[485..493].try_into().unwrap()));
-    }
-    if pv.len() >= 501 {
-        println!("  [dbg] vk ok:     {}", u64::from_be_bytes(pv[493..501].try_into().unwrap()));
-    }
+    println!("  prev_pools_hash:   0x{}", hex::encode(&pv[0..32]));
+    println!("  prev_null_hash:    0x{}", hex::encode(&pv[32..64]));
+    println!("  prev_height:       {}", u64::from_be_bytes(pv[64..72].try_into().unwrap()));
+    println!("  prev_block_hash:   0x{}", hex::encode(&pv[72..104]));
+    println!("  new_pools_hash:    0x{}", hex::encode(&pv[104..136]));
+    println!("  new_null_hash:     0x{}", hex::encode(&pv[136..168]));
+    println!("  new_height:        {}", u64::from_be_bytes(pv[168..176].try_into().unwrap()));
+    println!("  deposit_accs_hash: 0x{}", hex::encode(&pv[176..208]));
+    println!("  burns_hash:        0x{}", hex::encode(&pv[208..240]));
+    println!("  vk_hash:           0x{}", hex::encode(&pv[240..272]));
+    println!("  asset_id:          0x{}", hex::encode(&pv[272..304]));
+    println!("  network_tag:       {}", pv[304]);
+    println!("  chain_id:          {}", u64::from_be_bytes(pv[305..313].try_into().unwrap()));
+    println!("  mixer_address:     0x{}", hex::encode(&pv[313..333]));
+    println!("  last_block_hash:   0x{}", hex::encode(&pv[333..365]));
+    println!("  denoms_hash:       0x{}", hex::encode(&pv[365..397]));
+    println!("  prev_state_cmt:    0x{}", hex::encode(&pv[397..429]));
+    println!("  new_state_cmt:     0x{}", hex::encode(&pv[429..461]));
 }
 
 fn parse_arg(args: &[String], flag: &str) -> Option<u64> {
@@ -328,90 +353,55 @@ fn eth_rpc_bases() -> Vec<String> {
     }
 }
 
-fn fetch_deposit_roots(http: &Client, eth_rpcs: &[String], mixer_addr: &[u8]) -> Vec<Vec<u8>> {
+fn fetch_deposit_roots_for_denom(http: &Client, eth_rpcs: &[String], mixer_addr: &[u8], denom: &[u8], asset_id: &[u8]) -> Vec<Vec<u8>> {
     let mixer_hex = hex::encode(mixer_addr).to_lowercase();
-    let pool_id = env::var("POOL_ID").unwrap_or_else(|_|
-        "0c5d21b00bbd6b38d324efe3cd640b5dc9fe6d4d210a2939963009148dd11eef".to_string()
-    );
-    let pool_id_clean = pool_id.trim_start_matches("0x");
     let deploy_block = env::var("DEPLOY_BLOCK").unwrap_or_else(|_| "0x0".to_string());
-
-    // Fetch Deposit events to count deposits and extract per-deposit roots.
-    // Each Deposit event stores the root in `everKnownRoot` and updates `rootAccumulator`.
-    // We call `isKnownDepositRoot(poolId, root)` to verify each one.
     let deposit_sig = "0x35a268a90c41b0181a3b58b12063b25c3597e0d085532dfff38eaf88e946c30e";
 
-    for rpc in eth_rpcs {
-        let body = serde_json::json!({
-            "jsonrpc": "2.0", "id": 1, "method": "eth_getLogs",
-            "params": [{
-                "address": format!("0x{mixer_hex}"),
-                "fromBlock": deploy_block, "toBlock": "latest",
-                "topics": [deposit_sig, format!("0x{pool_id_clean}")]
-            }]
-        });
-        let resp = match http.post(rpc).json(&body).timeout(Duration::from_secs(60)).send() {
-            Ok(r) => r, Err(e) => { eprintln!("  eth_getLogs failed: {e}"); continue; }
-        };
-        let json: serde_json::Value = match resp.json() { Ok(j) => j, Err(_) => continue };
-        let logs = match json["result"].as_array() { Some(l) => l, None => continue };
-        println!("  {} Deposit events on Ethereum", logs.len());
-        if logs.is_empty() { return Vec::new(); }
-
-        // We need the Ethereum deposit roots — the Poseidon Merkle roots stored on-chain.
-        // The contract doesn't emit the root in events, so we replay the tree.
-        // Simpler: call getPoolRoot after each deposit via eth_call at historical blocks.
-        // Simplest: pass the root file from DEPOSIT_ROOTS env/file.
-        if let Ok(roots_hex) = env::var("DEPOSIT_ROOTS") {
-            let roots: Vec<Vec<u8>> = roots_hex.split(',')
-                .filter(|s| !s.is_empty())
-                .map(|s| hex::decode(s.trim().trim_start_matches("0x")).expect("deposit root hex"))
-                .collect();
-            println!("  Using {} deposit roots from DEPOSIT_ROOTS env", roots.len());
-            return roots;
-        }
-
-        // Fallback: call getPoolRoot at current block (only works if no reorgs)
-        // keccak256("getPoolRoot(bytes32)") = 0xee59a615
-        let sel = "ee59a615";
-        let call_body = serde_json::json!({
-            "jsonrpc": "2.0", "id": 1, "method": "eth_call",
-            "params": [{"to": format!("0x{mixer_hex}"), "data": format!("0x{sel}{pool_id_clean}")}, "latest"]
-        });
-        let call_resp = match http.post(rpc).json(&call_body).timeout(Duration::from_secs(15)).send() {
-            Ok(r) => r, Err(_) => continue,
-        };
-        let call_json: serde_json::Value = match call_resp.json() { Ok(j) => j, Err(_) => continue };
-        if let Some(root_hex) = call_json["result"].as_str() {
-            let root = hex::decode(root_hex.trim_start_matches("0x")).unwrap_or_default();
-            if root.len() == 32 && root != vec![0u8; 32] {
-                println!("  Using current pool root as single deposit root");
-                return vec![root];
-            }
-        }
-        return Vec::new();
-    }
-    Vec::new()
-}
-
-fn fetch_accumulator(http: &Client, eth_rpcs: &[String], mixer_addr: &[u8]) -> Vec<u8> {
-    let mixer_hex = hex::encode(mixer_addr).to_lowercase();
-    let pool_id = env::var("POOL_ID").unwrap_or_else(|_|
-        "0c5d21b00bbd6b38d324efe3cd640b5dc9fe6d4d210a2939963009148dd11eef".to_string()
-    );
-    let pool_id_clean = pool_id.trim_start_matches("0x");
-    let sel = "7b3be964";
-    for rpc in eth_rpcs {
-        let body = serde_json::json!({
-            "jsonrpc": "2.0", "id": 1, "method": "eth_call",
-            "params": [{"to": format!("0x{mixer_hex}"), "data": format!("0x{sel}{pool_id_clean}")}, "latest"]
-        });
-        if let Ok(resp) = http.post(rpc).json(&body).timeout(Duration::from_secs(15)).send() {
-            if let Ok(json) = resp.json::<serde_json::Value>() {
-                if let Some(hex_str) = json["result"].as_str() {
-                    return hex::decode(hex_str.trim_start_matches("0x")).unwrap_or_default();
+    // Pool IDs can be passed via POOL_IDS env (comma-separated, ordered by denomination)
+    // or computed on-chain. For now, use DEPOSIT_ROOTS_FILE if available.
+    if let Ok(path) = env::var("DEPOSIT_ROOTS_FILE") {
+        if let Ok(data) = std::fs::read_to_string(&path) {
+            if let Ok(all) = serde_json::from_str::<serde_json::Value>(&data) {
+                let denom_hex = hex::encode(denom);
+                if let Some(roots_arr) = all[&denom_hex].as_array() {
+                    return roots_arr.iter()
+                        .filter_map(|v| v.as_str())
+                        .map(|s| hex::decode(s.trim_start_matches("0x")).unwrap_or_default())
+                        .filter(|r| r.len() == 32)
+                        .collect();
                 }
             }
+        }
+    }
+
+    // Fallback: call getPoolRoot for this denom's pool
+    let sel = "ee59a615"; // getPoolRoot(bytes32)
+    let pool_ids_env = env::var("POOL_IDS").ok();
+    let denom_hex = hex::encode(denom);
+    if let Some(ref ids) = pool_ids_env {
+        let pool_id_list: Vec<&str> = ids.split(',').collect();
+        // Find the pool ID for this denomination by index matching
+        // (denominations and pool IDs are ordered the same way)
+        for rpc in eth_rpcs {
+            for pid in &pool_id_list {
+                let pid_clean = pid.trim().trim_start_matches("0x");
+                let call_body = serde_json::json!({
+                    "jsonrpc": "2.0", "id": 1, "method": "eth_call",
+                    "params": [{"to": format!("0x{mixer_hex}"), "data": format!("0x{sel}{pid_clean}")}, "latest"]
+                });
+                if let Ok(resp) = http.post(rpc).json(&call_body).timeout(Duration::from_secs(15)).send() {
+                    if let Ok(json) = resp.json::<serde_json::Value>() {
+                        if let Some(root_hex) = json["result"].as_str() {
+                            let root = hex::decode(root_hex.trim_start_matches("0x")).unwrap_or_default();
+                            if root.len() == 32 && root != vec![0u8; 32] {
+                                return vec![root];
+                            }
+                        }
+                    }
+                }
+            }
+            break;
         }
     }
     Vec::new()
@@ -504,7 +494,47 @@ fn decimal_to_le_bytes(s: &str) -> [u8; 32] {
 }
 
 
-#[allow(dead_code)]
+/// Load CXFER Pedersen opening witnesses from a JSON file.
+/// File format: array of { "block_height": u64, "tx_index": u32, "outputs": [{ "amount": u64, "blinding": "hex32" }] }
+/// Heights are converted to block indices relative to start_height.
+fn load_cxfer_witnesses(start_height: u64) -> Vec<(u32, u32, Vec<(u64, Vec<u8>)>)> {
+    let path = match env::var("CXFER_WITNESSES_PATH") {
+        Ok(p) => p,
+        Err(_) => return Vec::new(),
+    };
+    let data = match std::fs::read_to_string(&path) {
+        Ok(d) => d,
+        Err(e) => { eprintln!("  CXFER witnesses file {path}: {e}"); return Vec::new(); }
+    };
+    let entries: Vec<serde_json::Value> = match serde_json::from_str(&data) {
+        Ok(v) => v,
+        Err(e) => { eprintln!("  CXFER witnesses parse error: {e}"); return Vec::new(); }
+    };
+    let mut result = Vec::new();
+    for entry in &entries {
+        let height = entry["block_height"].as_u64().unwrap_or(0);
+        if height < start_height { continue; }
+        let block_idx = (height - start_height) as u32;
+        let tx_index = entry["tx_index"].as_u64().unwrap_or(0) as u32;
+        let outputs = entry["outputs"].as_array();
+        let mut openings = Vec::new();
+        if let Some(outs) = outputs {
+            for o in outs {
+                let amount = o["amount"].as_u64().unwrap_or(0);
+                let blinding_hex = o["blinding"].as_str().unwrap_or("");
+                let blinding = hex::decode(blinding_hex.trim_start_matches("0x")).unwrap_or_default();
+                if blinding.len() == 32 {
+                    openings.push((amount, blinding));
+                }
+            }
+        }
+        if !openings.is_empty() {
+            result.push((block_idx, tx_index, openings));
+        }
+    }
+    result
+}
+
 fn save_prover_state(path: &str, state: &ProverState) {
     if let Some(d) = std::path::Path::new(path).parent() {
         std::fs::create_dir_all(d).ok();

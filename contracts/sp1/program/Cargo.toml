@@ -15,5 +15,7 @@ ark-serialize = "0.5"
 ark-relations = "0.5"
 ark-snark = "0.5"
 
+k256 = { version = "0.13", default-features = false, features = ["arithmetic"] }
+
 # SP1 patches for accelerated BN254 syscalls can be added when available.
 # Without patches, ark-bn254 runs in pure Rust (slower proofs, same correctness).

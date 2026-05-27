@@ -258,6 +258,11 @@ finalize_one_circuit() {
       echo "    Already finalized — using existing state for bundle."
     fi
     eval "CHAIN_FINALIZED_${c#amm_}=1"
+  elif [ "$BUNDLE_ONLY" = "1" ]; then
+    echo "    ERROR: BUNDLE_ONLY=1 but $c is NOT finalized (finalized=$FINALIZED)."
+    echo "    Bundle-only mode requires all three circuits to be finalized."
+    echo "    Either drop BUNDLE_ONLY=1 for a normal finalize, or finalize $c first."
+    exit 1
   fi
 
   # Skip 2–6 for already-finalized circuits or BUNDLE_ONLY mode.
@@ -288,7 +293,12 @@ finalize_one_circuit() {
     DRAIN_RESP=$(curl -sf --max-time 30 -X POST \
       --config "$CURL_CONFIG" \
       -F "duration_seconds=1800" \
-      "$WORKER/ceremony/$CIRCUIT_HASH/drain")
+      "$WORKER/ceremony/$CIRCUIT_HASH/drain" || echo "")
+    if [ -z "$DRAIN_RESP" ]; then
+      echo "    ERROR: drain request failed. The worker may not have the /drain"
+      echo "    endpoint deployed yet, or returned an HTTP error."
+      exit 1
+    fi
     DRAIN_UNTIL=$(echo "$DRAIN_RESP" | jq -r '.drain_until // empty')
     if [ -z "$DRAIN_UNTIL" ]; then
       echo "    ERROR: drain endpoint returned no drain_until field"
@@ -304,7 +314,9 @@ finalize_one_circuit() {
 
     echo
     echo "==> [3/7] Downloading head zkey from IPFS"
-    curl -sLf --max-time 120 "$GATEWAY/$HEAD_CID" -o "build-amm/${c}_pre_beacon.zkey"
+    # swap_batch is ~91 MB; 120s needs sustained 760 KB/s from the IPFS
+    # gateway which can be marginal on a slow start. 600s matches pot18.
+    curl -sLf --max-time 600 "$GATEWAY/$HEAD_CID" -o "build-amm/${c}_pre_beacon.zkey"
     if [ "$(head -c 4 "build-amm/${c}_pre_beacon.zkey" | xxd -p)" != "7a6b6579" ]; then
       echo "    ERROR: downloaded zkey missing zkey magic bytes"
       exit 1
@@ -361,19 +373,77 @@ finalize_one_circuit() {
     fi
     echo "    ✓ ZKey Ok — beacon-applied $c verified against chain artifacts"
 
+    # Pre-POST size sanity — catch corrupt-large downloads before
+    # wasting the multi-second upload. Worker hard-rejects > 100 MB.
+    local FINAL_BYTES
+    FINAL_BYTES=$(wc -c < "build-amm/${c}_final.zkey" | awk '{print $1}')
+    if (( FINAL_BYTES > 100 * 1024 * 1024 )); then
+      echo "    ERROR: final zkey is $FINAL_BYTES bytes; worker hard-limit is 100 MiB."
+      echo "    Beacon-applied zkey is unexpectedly large — likely corrupt input."
+      echo "    Inspect build-amm/${c}_final.zkey before retrying."
+      exit 1
+    fi
+
     echo
     echo "==> [6/7] POSTing to /finalize"
     local HTTP_CODE
-    HTTP_CODE=$(curl -s -o "build-amm/${c}_finalize_response.json" -w "%{http_code}" \
-      --max-time 600 \
-      --config "$CURL_CONFIG" \
-      -X POST \
-      -F "zkey=@build-amm/${c}_final.zkey" \
-      -F "beacon_block_hash=$BTC_BLOCK_HASH" \
-      -F "beacon_block_height=$BLOCK_HEIGHT" \
-      -F "beacon_iterations=10" \
-      -F "expected_head_cid=$HEAD_CID" \
-      "$WORKER/ceremony/$CIRCUIT_HASH/finalize")
+    # Large zkeys (swap_batch ~91 MB) exceed Cloudflare Workers' resource
+    # limits when piped through the worker to Pinata (CF error 1102). For
+    # files > 50 MB, pre-pin to Pinata directly via the upload-token
+    # presigned URL, then send zkey_cid to /finalize instead of the file.
+    local ZKEY_CID_ARG=""
+    if (( FINAL_BYTES > 50 * 1024 * 1024 )); then
+      echo "    zkey is ${FINAL_BYTES} bytes — pre-pinning to Pinata directly"
+      local TOK_RESP UPLOAD_URL PIN_RESP PRE_PIN_CID
+      TOK_RESP=$(curl -sf --max-time 30 -X POST \
+        -H "Content-Type: application/json" -d '{}' \
+        "$WORKER/ceremony/$CIRCUIT_HASH/upload-token" || echo "")
+      if [ -z "$TOK_RESP" ]; then
+        echo "    ERROR: upload-token request failed"; exit 1
+      fi
+      UPLOAD_URL=$(echo "$TOK_RESP" | jq -r '.upload_url // empty')
+      if [ -z "$UPLOAD_URL" ]; then
+        echo "    ERROR: upload-token returned no upload_url"
+        echo "    Response: $TOK_RESP"; exit 1
+      fi
+      PIN_RESP=$(curl -sf --max-time 600 -X POST \
+        "$UPLOAD_URL" \
+        -F "file=@build-amm/${c}_final.zkey" || echo "")
+      if [ -z "$PIN_RESP" ]; then
+        echo "    ERROR: direct Pinata upload failed"; exit 1
+      fi
+      PRE_PIN_CID=$(echo "$PIN_RESP" | jq -r '.data.cid // .cid // .IpfsHash // empty')
+      if [ -z "$PRE_PIN_CID" ]; then
+        echo "    ERROR: Pinata returned no CID"
+        echo "    Response: $PIN_RESP"; exit 1
+      fi
+      echo "    pre-pinned: $PRE_PIN_CID"
+      ZKEY_CID_ARG="-F zkey_cid=$PRE_PIN_CID"
+    fi
+
+    if [ -n "$ZKEY_CID_ARG" ]; then
+      HTTP_CODE=$(curl -s -o "build-amm/${c}_finalize_response.json" -w "%{http_code}" \
+        --max-time 600 \
+        --config "$CURL_CONFIG" \
+        -X POST \
+        $ZKEY_CID_ARG \
+        -F "beacon_block_hash=$BTC_BLOCK_HASH" \
+        -F "beacon_block_height=$BLOCK_HEIGHT" \
+        -F "beacon_iterations=10" \
+        -F "expected_head_cid=$HEAD_CID" \
+        "$WORKER/ceremony/$CIRCUIT_HASH/finalize")
+    else
+      HTTP_CODE=$(curl -s -o "build-amm/${c}_finalize_response.json" -w "%{http_code}" \
+        --max-time 600 \
+        --config "$CURL_CONFIG" \
+        -X POST \
+        -F "zkey=@build-amm/${c}_final.zkey" \
+        -F "beacon_block_hash=$BTC_BLOCK_HASH" \
+        -F "beacon_block_height=$BLOCK_HEIGHT" \
+        -F "beacon_iterations=10" \
+        -F "expected_head_cid=$HEAD_CID" \
+        "$WORKER/ceremony/$CIRCUIT_HASH/finalize")
+    fi
     if [ "$HTTP_CODE" = "409" ]; then
       echo "    ✗ Finalize race lost for $c. Re-run to pick up new head."
       exit 1
@@ -390,16 +460,69 @@ finalize_one_circuit() {
   echo
   echo "==> [7/7] Exporting verifying key for $c"
   # If we skipped the beacon path (already finalized or BUNDLE_ONLY), pull
-  # the finalized zkey from IPFS first.
+  # the finalized zkey + chain artifacts from IPFS, recover the pre-beacon
+  # zkey, and re-verify. Mirrors mixer finalize.sh's BUNDLE_ONLY recovery.
   if [ ! -f "build-amm/${c}_final.zkey" ]; then
     local FRESH_STATE FINAL_CID
     FRESH_STATE=$(curl -sf --max-time 30 "$WORKER/ceremony/$CIRCUIT_HASH")
     FINAL_CID=$(echo "$FRESH_STATE" | jq -r '.state.head_cid')
-    curl -sLf --max-time 120 "$GATEWAY/$FINAL_CID" -o "build-amm/${c}_final.zkey"
+    local DL_R1CS_CID DL_PTAU_CID
+    DL_R1CS_CID=$(echo "$FRESH_STATE" | jq -r '.state.r1cs_cid')
+    DL_PTAU_CID=$(echo "$FRESH_STATE" | jq -r '.state.ptau_cid')
+    # Recover beacon info for BUNDLE_ONLY README (only set from first circuit).
+    if [ -z "${BTC_BLOCK_HASH:-}" ]; then
+      BTC_BLOCK_HASH=$(echo "$FRESH_STATE" | jq -r '.state.beacon_block_hash // empty')
+      BLOCK_HEIGHT=$(echo "$FRESH_STATE" | jq -r '.state.beacon_block_height // empty')
+    fi
+    curl -sLf --max-time 600 "$GATEWAY/$FINAL_CID" -o "build-amm/${c}_final.zkey"
     if [ "$(head -c 4 "build-amm/${c}_final.zkey" | xxd -p)" != "7a6b6579" ]; then
       echo "    ERROR: downloaded final zkey missing magic"
       exit 1
     fi
+    # Download chain r1cs if not present (needed for bundle + re-verify).
+    if [ ! -f "build-amm/${c}_chain.r1cs" ]; then
+      curl -sLf --max-time 60 "$GATEWAY/$DL_R1CS_CID" -o "build-amm/${c}_chain.r1cs"
+      if [ "$(head -c 4 "build-amm/${c}_chain.r1cs" | xxd -p)" != "72316373" ]; then
+        echo "    ERROR: r1cs missing magic bytes"; exit 1
+      fi
+    fi
+    # Download pot18 if not present (needed for bundle + re-verify).
+    if [ ! -f "build-amm/$PTAU_NAME" ]; then
+      echo "    Downloading $PTAU_NAME ($DL_PTAU_CID)…"
+      curl -sLf --max-time 600 "$GATEWAY/$DL_PTAU_CID" -o "build-amm/$PTAU_NAME"
+      if [ "$(head -c 4 "build-amm/$PTAU_NAME" | xxd -p)" != "70746175" ]; then
+        echo "    ERROR: ptau missing magic bytes"; exit 1
+      fi
+    fi
+    # Recover pre-beacon zkey from the beacon attestation's prev_cid.
+    echo "    Recovering pre-beacon zkey via beacon attestation's prev_cid…"
+    local PRE_BEACON_CID
+    PRE_BEACON_CID=$(curl -sf --max-time 30 -A "tacit-amm-finalize/1.0" \
+      "${WORKER}/ceremony/${CIRCUIT_HASH}/attestations?limit=20" \
+      | jq -r '[.attestations[] | select(.is_beacon == true)][0].prev_cid // empty')
+    if [ -n "$PRE_BEACON_CID" ]; then
+      curl -sLf --max-time 600 "$GATEWAY/$PRE_BEACON_CID" -o "build-amm/${c}_pre_beacon.zkey"
+      if [ "$(head -c 4 "build-amm/${c}_pre_beacon.zkey" | xxd -p)" = "7a6b6579" ]; then
+        echo "    pre-beacon zkey recovered: ${PRE_BEACON_CID:0:16}… ($(wc -c < "build-amm/${c}_pre_beacon.zkey") bytes)"
+      else
+        echo "    WARN: pre-beacon zkey download failed magic check; bundle will omit it."
+        rm -f "build-amm/${c}_pre_beacon.zkey"
+      fi
+    else
+      echo "    WARN: couldn't find beacon record's prev_cid. Bundle will omit pre-beacon zkey."
+    fi
+    # Re-verify downloaded final zkey against chain artifacts.
+    echo "    Re-verifying downloaded final zkey vs chain r1cs+ptau…"
+    if ! ( CEREMONY_INIT_TOKEN= ${TIMEOUT_CMD:+$TIMEOUT_CMD 900} $SNARKJS zkey verify \
+        "build-amm/${c}_chain.r1cs" \
+        "build-amm/$PTAU_NAME" \
+        "build-amm/${c}_final.zkey" \
+        > "build-amm/${c}_verify.log" 2>&1 ); then
+      echo "    ✗ Downloaded final zkey does NOT verify. Bundle aborted for $c."
+      echo "      Try a different gateway: GATEWAY=https://ipfs.io/ipfs $0"
+      exit 1
+    fi
+    echo "    ✓ Final zkey re-verified against chain"
   fi
   if ! ( CEREMONY_INIT_TOKEN= $SNARKJS zkey export verificationkey \
       "build-amm/${c}_final.zkey" \
@@ -432,6 +555,7 @@ echo "================================================================"
 python3 <<'PY'
 import json
 wrapper = {
+    "schema":     "tacit-amm-vk-wrapper-v1",
     "lp_add":     json.load(open("artifacts-amm/amm_lp_add_vk.json")),
     "lp_remove":  json.load(open("artifacts-amm/amm_lp_remove_vk.json")),
     "swap_batch": json.load(open("artifacts-amm/amm_swap_batch_vk.json")),
@@ -522,14 +646,48 @@ for c in "${CIRCUITS[@]}"; do
     cursor=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1]))" "$next_cursor")
   done
 
+  # Fetch finalized state for beacon-record synthesis fallback.
+  # KV list() can lag behind get() (CF eventual consistency), so the
+  # beacon attestation record may be invisible to pagination even though
+  # the ceremony is finalized and the record exists. If the paginated
+  # records don't contain an is_beacon record, synthesize one from the
+  # finalized state and the last user contribution's CID.
+  CIRCUIT_STATE=$(curl -sf --max-time 30 "$WORKER/ceremony/$CIRCUIT_HASH")
+
   # Merge + chain-walk for this circuit.
   python3 <<PY
-import json
+import json, sys
 out = []
 with open("build-amm/${c}_attest_pages.jsonl") as f:
     for line in f:
         out.extend(json.loads(line).get("attestations", []))
 out.sort(key=lambda a: (a.get("index", 0), a.get("cid", "")))
+
+beacon = next((r for r in out if r.get("is_beacon")), None)
+if not beacon:
+    state_json = '''${CIRCUIT_STATE}'''
+    try:
+        st = json.loads(state_json).get("state", {})
+    except:
+        st = {}
+    if st.get("finalized") and st.get("head_cid") and st.get("beacon_block_hash"):
+        last_user = max((r for r in out if r.get("cid")), key=lambda r: r.get("index", 0), default=None)
+        prev_cid = last_user["cid"] if last_user else ""
+        beacon = {
+            "index": st.get("contribution_count", 0),
+            "cid": st["head_cid"],
+            "contributor_name": "beacon",
+            "contribution_hash": st["beacon_block_hash"],
+            "contributed_at": st.get("finalized_at", 0),
+            "prev_cid": prev_cid,
+            "is_beacon": True,
+            "beacon_block_height": st.get("beacon_block_height"),
+            "beacon_iterations": st.get("beacon_iterations", 10),
+        }
+        out.append(beacon)
+        out.sort(key=lambda a: (a.get("index", 0), a.get("cid", "")))
+        sys.stderr.write(f"    (synthesized beacon record from finalized state: idx={beacon['index']} cid={beacon['cid'][:16]}…)\n")
+
 by_cid = {r["cid"]: r for r in out if r.get("cid")}
 beacon = next((r for r in out if r.get("is_beacon")), None)
 chain, warns = [], []

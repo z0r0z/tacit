@@ -7494,6 +7494,11 @@ async function handleCeremonyFinalize(req, env, circuitHash, cors, ctx) {
   try { fd = await req.formData(); }
   catch { return jsonResponse({ error: 'expected multipart form-data' }, 400, cors); }
   const zkey = fd.get('zkey');
+  // zkey_cid alternative: coordinator pre-pinned to Pinata directly,
+  // bypassing the CF→Pinata round-trip that exceeds worker resource
+  // limits for 91 MB swap_batch zkeys (CF error 1102). Same pattern
+  // as the contribute handler's zkey_cid path.
+  const zkeyCidProvided = String(fd.get('zkey_cid') || '').trim();
   const beaconHash = String(fd.get('beacon_block_hash') || '').toLowerCase();
   // Tightened range: snarkjs's beacon() rejects values outside [10, 63]
   // (cli.cjs hard-coded bound). Looser bounds here would let a hand-
@@ -7528,28 +7533,35 @@ async function handleCeremonyFinalize(req, env, circuitHash, cors, ctx) {
   if (!expectedHeadCid) {
     return jsonResponse({ error: 'missing expected_head_cid — required for the CAS gate that prevents lost contributions during the IPFS pin window' }, 400, cors);
   }
-  if (!(zkey instanceof File)) return jsonResponse({ error: 'missing form field "zkey"' }, 400, cors);
-  // Same ceiling rationale as contribute path. Beacon-applied final zkey
-  // is the same size as a regular Phase 2 contribution; AMM swap_batch
-  // would have stayed blocked at 32 MB without this bump.
-  if (zkey.size > 100 * 1024 * 1024) return jsonResponse({ error: 'zkey too large (max 100 MB)' }, 413, cors);
+  const haveZkeyFile = (zkey instanceof File);
+  const haveZkeyCid = zkeyCidProvided && CID_RE.test(zkeyCidProvided);
+  if (!haveZkeyFile && !haveZkeyCid) {
+    return jsonResponse({ error: 'expected form field "zkey" (file) OR "zkey_cid" (string) — neither supplied' }, 400, cors);
+  }
+  if (haveZkeyFile && haveZkeyCid) {
+    return jsonResponse({ error: 'pass zkey OR zkey_cid, not both' }, 400, cors);
+  }
+  if (haveZkeyFile && zkey.size > 100 * 1024 * 1024) return jsonResponse({ error: 'zkey too large (max 100 MB). Pre-pin to Pinata and submit zkey_cid instead.' }, 413, cors);
   // 64 hex = sha256 / Bitcoin block hash — what snarkjs's beacon stage expects.
   // The previous regex accepted any-length hex which let through e.g. "ab".
   if (!/^[0-9a-f]{64}$/.test(beaconHash)) {
     return jsonResponse({ error: 'beacon_block_hash must be exactly 64 hex chars (Bitcoin block hash)' }, 400, cors);
   }
 
-  // Magic-byte sniff before pinning.
-  const zkeyBytes = new Uint8Array(await zkey.arrayBuffer());
-  if (!_hasCeremonyMagic(zkeyBytes, 'zkey')) {
-    return jsonResponse({ error: 'zkey does not start with snarkjs "zkey" magic bytes' }, 400, cors);
-  }
-
   let finalCid;
-  try {
-    finalCid = await pinBinaryToIpfs(env, zkeyBytes, `circuit_${circuitHash.slice(0,8)}_final.zkey`);
-  } catch (e) {
-    return jsonResponse({ error: 'pin failed: ' + (e.message || 'unknown') }, 502, cors);
+  if (haveZkeyCid) {
+    finalCid = zkeyCidProvided;
+  } else {
+    // Magic-byte sniff before pinning.
+    const zkeyBytes = new Uint8Array(await zkey.arrayBuffer());
+    if (!_hasCeremonyMagic(zkeyBytes, 'zkey')) {
+      return jsonResponse({ error: 'zkey does not start with snarkjs "zkey" magic bytes' }, 400, cors);
+    }
+    try {
+      finalCid = await pinBinaryToIpfs(env, zkeyBytes, `circuit_${circuitHash.slice(0,8)}_final.zkey`);
+    } catch (e) {
+      return jsonResponse({ error: 'pin failed: ' + (e.message || 'unknown') }, 502, cors);
+    }
   }
 
   // Re-read state for the CAS check — Pinata pins can take seconds and
@@ -7613,6 +7625,74 @@ async function handleCeremonyFinalize(req, env, circuitHash, cors, ctx) {
   // gating deposit/withdraw/init buttons that should already be live.
   await _invalidateCeremonyCache(ctx, circuitHash);
   return jsonResponse({ state: newState, contribution: rec }, 200, cors);
+}
+
+// POST /ceremony/:hash/repair-beacon — idempotently backfill a missing
+// beacon attestation record for an already-finalized ceremony. The file-
+// upload finalize path can hit CF's wall-clock limit during the Pinata
+// pin, killing the worker after the state KV put but before the contrib
+// KV put lands. The state shows finalized=true but the attestation list
+// has no is_beacon record — breaking the bundle's chain-walk. This
+// endpoint reconstructs the beacon record from the finalized state and
+// writes it if absent. Coordinator-auth only, idempotent.
+async function handleCeremonyRepairBeacon(req, env, circuitHash, cors, ctx) {
+  if (!ceremonyAuthOk(req, env)) return jsonResponse({ error: 'unauthorized' }, 401, cors);
+  if (!/^[0-9a-f]{64}$/.test(circuitHash)) return jsonResponse({ error: 'invalid circuit_hash' }, 400, cors);
+  const state = await env.REGISTRY_KV.get(ceremonyKey(circuitHash), 'json');
+  if (!state) return jsonResponse({ error: 'ceremony not found' }, 404, cors);
+  if (!state.finalized) return jsonResponse({ error: 'ceremony not finalized' }, 400, cors);
+  const count = state.contribution_count || 0;
+  const finalCid = state.head_cid;
+  const existingKey = ceremonyContribKey(circuitHash, count, finalCid);
+  const existing = await env.REGISTRY_KV.get(existingKey, 'json');
+  if (existing) return jsonResponse({ status: 'already_exists', record: existing }, 200, cors);
+  // Reconstruct the beacon record's prev_cid: the contribution at index
+  // (count - 1) whose CID is NOT finalCid. Walk backwards from the
+  // highest-indexed contrib key that isn't the beacon.
+  const listResult = await env.REGISTRY_KV.list({
+    prefix: ceremonyContribPrefix(circuitHash),
+    limit: 5,
+    cursor: undefined,
+  });
+  // List returns keys in ascending lex order. We want the last user
+  // contribution. Reverse-list isn't available, so we do a full reverse
+  // walk. But with 47K+ records this is expensive. Instead, we look at
+  // state: the pre-beacon head_cid was the CID the beacon's prev_cid
+  // should point to. For the file-upload finalize path, this was
+  // `fresh.head_cid` at line 7614. But fresh.head_cid was overwritten
+  // to finalCid. We can recover it from the last user contribution.
+  // Actually, we can just look at the contribute record at index
+  // (count - 1) — but we don't know its CID for the KV key lookup.
+  // Simplest: list the last few keys by walking to the end.
+  let prevCid = '';
+  let walkCursor;
+  for (let p = 0; p < 200; p++) {
+    const opts = { prefix: ceremonyContribPrefix(circuitHash), limit: 1000 };
+    if (walkCursor) opts.cursor = walkCursor;
+    const page = await env.REGISTRY_KV.list(opts);
+    if (page.keys.length > 0) {
+      const lastKey = page.keys[page.keys.length - 1].name;
+      const lastRec = await env.REGISTRY_KV.get(lastKey, 'json');
+      if (lastRec && lastRec.cid && lastRec.cid !== finalCid) prevCid = lastRec.cid;
+    }
+    if (page.list_complete !== false) break;
+    walkCursor = page.cursor;
+    if (!walkCursor) break;
+  }
+  const rec = {
+    index: count,
+    cid: finalCid,
+    contributor_name: 'beacon',
+    contribution_hash: state.beacon_block_hash || '',
+    contributed_at: state.finalized_at || Math.floor(Date.now() / 1000),
+    prev_cid: prevCid,
+    is_beacon: true,
+    beacon_block_height: state.beacon_block_height,
+    beacon_iterations: state.beacon_iterations || 10,
+  };
+  await env.REGISTRY_KV.put(existingKey, JSON.stringify(rec));
+  await _invalidateCeremonyCache(ctx, circuitHash);
+  return jsonResponse({ status: 'repaired', record: rec }, 200, cors);
 }
 
 // ============== /pin-mixer-vk — pin a Groth16 verifying-key JSON ==============
@@ -9642,49 +9722,6 @@ function decodeTWithdrawPayload(payload) {
     bind_hash: bytesToHex(bindHashBytes),
     proof,
   };
-}
-
-// Ethereum deposit root verification for bridge leaves. Checks the mixer
-// contract's everKnownRoot mapping via eth_call. Tries multiple public RPCs.
-// Returns true if root is known, false if rejected, null on total RPC failure.
-const _ethRootCache = new Map();
-async function _verifyEthDepositRoot(env, network, assetIdHex, denomBig, ethRootHex) {
-  const ck = `${network}:${assetIdHex}:${denomBig}:${ethRootHex}`;
-  if (_ethRootCache.has(ck)) return _ethRootCache.get(ck);
-  const isSepolia = network === 'signet';
-  const rpcsStr = isSepolia ? (env.ETH_RPCS_SEPOLIA || '') : (env.ETH_RPCS_MAINNET || '');
-  const mixer = isSepolia ? (env.TETH_MIXER_SEPOLIA || '') : (env.TETH_MIXER_MAINNET || '');
-  if (!rpcsStr || !mixer) return null;
-  const rpcs = rpcsStr.split(',').map(s => s.trim()).filter(Boolean);
-  if (!rpcs.length) return null;
-
-  const aidPad = assetIdHex.padStart(64, '0');
-  // Envelope carries Tacit 8-decimal denomination. Ethereum poolId uses wei.
-  // UNIT_SCALE = 10^(tokenDecimals - 8). ETH = 10^10, USDC = 1, WBTC = 1.
-  const UNIT_SCALE = BigInt(env.TETH_UNIT_SCALE || '10000000000');
-  const denomWei = BigInt(denomBig) * UNIT_SCALE;
-  const denomPad = denomWei.toString(16).padStart(64, '0');
-  const poolId = bytesToHex(keccak_256(hexToBytes(aidPad + denomPad)));
-  const rootPad = ethRootHex.replace(/^0x/, '').padStart(64, '0');
-  const calldata = '0xe5f99a21' + poolId.padStart(64, '0') + rootPad;
-
-  for (const rpc of rpcs) {
-    try {
-      const resp = await fetch(rpc, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_call',
-          params: [{ to: mixer.toLowerCase(), data: calldata }, 'latest'] }),
-      });
-      const json = await resp.json();
-      if (json.error) continue;
-      const result = json.result || '';
-      const ok = result !== '0x' + '0'.repeat(64);
-      _ethRootCache.set(ck, ok);
-      return ok;
-    } catch { continue; }
-  }
-  return null;
 }
 
 // SPEC-TETH-BRIDGE-AMENDMENT §5.60 — T_BRIDGE_DEPOSIT decoder.
@@ -24815,11 +24852,21 @@ export {
 
 // ============== DISCORD TOKEN-GATE HANDLERS ==============
 
+function checkBearerConstantTime(req, secret) {
+  const auth = req.headers.get('Authorization') || '';
+  const m = auth.match(/^Bearer (.+)$/);
+  if (!m) return false;
+  const a = m[1], b = secret;
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
+}
+
 async function handleDiscordNonce(req, env, cors) {
   const secret = env.DISCORD_BOT_SECRET;
   if (!secret || secret === 'CHANGEME') return jsonResponse({ error: 'DISCORD_BOT_SECRET not configured' }, 500, cors);
-  const auth = req.headers.get('Authorization') || '';
-  if (auth !== `Bearer ${secret}`) return jsonResponse({ error: 'unauthorized' }, 401, cors);
+  if (!checkBearerConstantTime(req, secret)) return jsonResponse({ error: 'unauthorized' }, 401, cors);
   let body;
   try { body = await req.json(); } catch { return jsonResponse({ error: 'expected JSON body' }, 400, cors); }
   const discordUserId = String(body?.discord_user_id || '');
@@ -24879,8 +24926,7 @@ async function handleDiscordVerify(req, env, cors) {
 async function handleDiscordStatus(req, env, nonce, cors) {
   const secret = env.DISCORD_BOT_SECRET;
   if (!secret || secret === 'CHANGEME') return jsonResponse({ error: 'DISCORD_BOT_SECRET not configured' }, 500, cors);
-  const auth = req.headers.get('Authorization') || '';
-  if (auth !== `Bearer ${secret}`) return jsonResponse({ error: 'unauthorized' }, 401, cors);
+  if (!checkBearerConstantTime(req, secret)) return jsonResponse({ error: 'unauthorized' }, 401, cors);
   const record = await env.REGISTRY_KV.get(`dgate:${nonce}`, 'json');
   if (!record) return jsonResponse({ error: 'nonce not found or expired' }, 404, cors);
   return jsonResponse({
@@ -25063,6 +25109,10 @@ async function _routeFetch(req, env, ctx) {
     {
       const m = url.pathname.match(/^\/ceremony\/([0-9a-f]{64})\/finalize$/i);
       if (m && req.method === 'POST') return handleCeremonyFinalize(req, env, m[1].toLowerCase(), cors, ctx);
+    }
+    {
+      const m = url.pathname.match(/^\/ceremony\/([0-9a-f]{64})\/repair-beacon$/i);
+      if (m && req.method === 'POST') return handleCeremonyRepairBeacon(req, env, m[1].toLowerCase(), cors, ctx);
     }
     {
       const m = url.pathname.match(/^\/ceremony\/([0-9a-f]{64})\/drain$/i);
@@ -25989,51 +26039,8 @@ async function _routeFetch(req, env, ctx) {
     if (url.pathname === '/asset-book' && req.method === 'POST') return handleAssetBook(req, env, network, cors, ctx);
     if (url.pathname === '/assets/hint' && req.method === 'POST') return handleAssetHint(req, env, network, cors, ctx);
 
-    // --- tETH bridge: Ethereum root attestation (SPEC-TETH-BRIDGE-AMENDMENT §5.60.4) ---
-    if (url.pathname === '/bridge/eth-roots' && req.method === 'GET') {
-      const aid = url.searchParams.get('asset_id');
-      if (!aid) return jsonResponse({ error: 'missing asset_id' }, 400, cors);
-      const prefix = `eth_root:${network}:${aid}:`;
-      const keys = await env.REGISTRY_KV.list({ prefix, limit: 32 });
-      const roots = [];
-      for (const k of keys.keys) {
-        const v = await env.REGISTRY_KV.get(k.name, 'json');
-        if (v) roots.push(v);
-      }
-      return jsonResponse({ roots }, 200, cors);
-    }
-    if (url.pathname === '/bridge/eth-roots' && req.method === 'POST') {
-      // Bonded attestor submits a recent Ethereum mixer root. The attestor's
-      // BIP-340 pubkey must be in the asset's wrapper metadata attestor set.
-      // Phase 1: trust a single attestor pubkey (configured per-asset).
-      // Phase 2: replace with ZK Ethereum state proof.
-      const body = await req.json().catch(() => null);
-      if (!body) return jsonResponse({ error: 'invalid json' }, 400, cors);
-      const { asset_id, eth_root, eth_block_number, attestor_pubkey, attestor_sig } = body;
-      if (!asset_id || !eth_root || !eth_block_number || !attestor_pubkey || !attestor_sig) {
-        return jsonResponse({ error: 'missing fields' }, 400, cors);
-      }
-      // Verify BIP-340 signature over the attestation message.
-      const msg = sha256(concatBytes(
-        new TextEncoder().encode('tacit-eth-root-attest-v1'),
-        hexToBytes(asset_id),
-        hexToBytes(eth_root),
-        new Uint8Array(new BigUint64Array([BigInt(eth_block_number)]).buffer),
-      ));
-      const pubXOnly = hexToBytes(attestor_pubkey).length === 33
-        ? hexToBytes(attestor_pubkey).slice(1)
-        : hexToBytes(attestor_pubkey);
-      if (!verifySchnorr(hexToBytes(attestor_sig), msg, pubXOnly)) {
-        return jsonResponse({ error: 'invalid attestor signature' }, 403, cors);
-      }
-      // Store the attested root in the recent-roots window (keep last 32).
-      const rootKey = `eth_root:${network}:${asset_id}:${eth_block_number}`;
-      await env.REGISTRY_KV.put(rootKey, JSON.stringify({
-        eth_root, eth_block_number, attestor_pubkey, attestor_sig,
-        attested_at: Math.floor(Date.now() / 1000),
-      }));
-      return jsonResponse({ ok: true, stored: rootKey }, 200, cors);
-    }
+    // /bridge/eth-roots removed: deposit root truth comes from the Ethereum
+    // mixer contract's rootAccumulator, verified by SP1PoolRootVerifier.
     // Permissionless-mint registry (T_PETCH-rooted). Kept separate from
     // /assets so consumers can filter cleanly without one mode polluting the
     // other; clients wanting "every asset" union /assets and /petch-assets.
@@ -27862,7 +27869,7 @@ export default {
       try {
         const cors = corsHeaders(env, req.headers.get('Origin') || '');
         _resp = new Response(
-          JSON.stringify({ error: 'worker error', detail: e?.message || String(e) }),
+          JSON.stringify({ error: 'internal error' }),
           { status: 500, headers: { ...cors, 'Content-Type': 'application/json' } },
         );
       } catch {

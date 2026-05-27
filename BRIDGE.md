@@ -51,7 +51,7 @@ tETH lets users deposit ETH (or any ERC-20) on Ethereum, mint composable tETH on
   +------------------+   +-------------------------+
   | BitcoinLightRelay|   | SP1PoolRootVerifier     |
   | (heaviest chain) |   | (anyone can prove)      |
-  | (permissionless) |   | (one per denomination)  |
+  | (permissionless) |   | (one per asset)         |
   +------------------+   +-------------------------+
 ```
 
@@ -87,7 +87,7 @@ Every dApp client independently verifies bridge deposit leaves before accepting 
 1. **Groth16 proof** — the proof in the OP_RETURN envelope is re-verified against the canonical VK (inlined, no IPFS dependency)
 2. **Ethereum deposit root** — the `ethRoot` in the envelope is checked against the mixer contract's `isKnownDepositRoot` via `eth_call` to public RPCs (publicnode, llamarpc, 1rpc, drpc — no API key required)
 
-Invalid proofs or fabricated roots are rejected before entering anyone's local state. The worker performs the same root check during indexing. Together, fake tETH cannot circulate in DeFi — it's caught at every layer.
+Invalid proofs or fabricated roots are rejected before entering anyone's local state. Fake tETH cannot circulate in DeFi — it's caught at every layer.
 
 ### Recovery
 
@@ -121,7 +121,7 @@ Burn tETH back to ETH:
 
 Quick burn from holdings (for users who received tETH via transfer):
 
-1. dApp auto-deposits tETH into the mixer pool
+1. dApp imports the tETH UTXO into a matching denomination pool
 2. Waits for pool indexing
 3. Burns the pool note in one flow
 
@@ -172,9 +172,19 @@ The Poseidon commitment uses the 8-decimal Tacit denomination, not the native to
 
 ### Denomination pools
 
-The mixer supports fixed denomination pools. For ETH: 0.001 / 0.01 / 0.1 / 1 / 10 / 100 ETH (6 pools). Each denomination has its own Poseidon tree, root history, and SP1 verifier. Denomination is inside the Groth16 public inputs — cross-denomination proofs fail at the circuit level.
+The mixer supports fixed denomination pools. For ETH: 0.001 / 0.01 / 0.1 / 1 / 10 / 100 ETH (6 pools). Each denomination has its own Poseidon Merkle tree on both Ethereum and Bitcoin. A single SP1 guest processes all denominations for the asset, maintaining one tree per denomination, one shared nullifier set, and one shared UTXO set. Denomination is inside the Groth16 public inputs — cross-denomination proofs fail at the circuit level.
 
 `batchDeposit()` splits a single transaction into multiple denomination commitments. The dApp decomposes arbitrary amounts into denomination chunks automatically — a 2.731 ETH deposit becomes `2x1 + 7x0.1 + 3x0.01 + 1x0.001` in one transaction. Dust below 0.001 ETH stays in the user's wallet.
+
+### UTXO fungibility
+
+tETH is fully fungible as a UTXO asset outside the pool. The pool is a denomination-specific "slot" for privacy and ETH withdrawal; the UTXO layer is free-form.
+
+- **Export** (T_BRIDGE_EXPORT, 0x63): Groth16-proven, consumes pool note nullifier, creates a denomination-tagged UTXO in the shared set
+- **CXFER**: transfer any amount to anyone, split/merge freely. The SP1 guest verifies Pedersen conservation: each output commitment is opened (amount + blinding verified against the NUMS generator H), and `sum(output amounts) == sum(input amounts)`. Amounts are u64, no negatives.
+- **Import** (T_BRIDGE_IMPORT, 0x64): consumes a UTXO whose verified amount matches the target pool denomination, creates a new pool leaf. Cross-denomination: export 0.1, CXFER 0.01 to someone, they import into the 0.01 pool.
+
+The CXFER conservation witness (Pedersen openings) is provided by the host prover via a JSON file. CXFERs without openings are not tracked — tETH still transfers on Bitcoin, but those outputs cannot re-enter the pool until a prover provides the openings in a subsequent proof batch.
 
 ### Groth16 circuit
 
@@ -201,31 +211,29 @@ This is the same circuit used for all Tacit privacy operations (transfers, burns
 |    10    ETH pool   |
 |    100   ETH pool   |     +-------------------------+
 |                     |     | SP1PoolRootVerifier     |
-|  per pool:          |     | (one per denomination)  |
+|  per pool:          |     | (one per ASSET)         |
 |    Poseidon tree    |     |                         |
-|    root accumulator |     | incremental state       |
+|    root accumulator |     | all denomination state  |
 |    burn nullifiers  |<----| accepted burn claims    |
 |    balance          |     | state commitment        |
-|    verifier link    |     | domain binding          |
+|    verifier link ---+---->| domain binding          |
 +---------------------+     +-------------------------+
 ```
 
 ### SP1 guest program
 
-The guest runs inside the zkVM and processes complete Bitcoin blocks:
+The guest runs inside the zkVM and processes complete Bitcoin blocks for ALL denominations of an asset in a single proof:
 
-- Reads previous state (pool frontier + nullifier set) as private witness
-- Verifies state commitment ties frontier/nullifiers to the previous proof's public values
+- Reads N denomination configs, per-denomination previous state (tree frontier + index), and shared state (nullifier set + UTXO set) as private witness
+- Verifies state commitment ties all trees/nullifiers/UTXOs to the previous proof's public values
 - For each block: verifies header PoW + chain linkage, reads ALL transactions, recomputes the block merkle root from all txids (Bitcoin's own completeness rule)
-- Scans every OP_RETURN for Tacit envelopes matching the target denomination
-- Verifies bindHash for every envelope (mint and burn) by recomputing from the full domain preimage — prevents envelope field substitution/front-running
+- Scans every OP_RETURN for Tacit envelopes, routes each to the correct denomination tree by matching `env_denom` against the denomination list
+- Verifies bindHash for every envelope by recomputing from the full domain preimage — prevents envelope field substitution/front-running
 - Verifies the Groth16 proof inside each envelope using a cached prepared verifying key (ark-groth16 BN254), rejecting non-canonical field elements (>= BN254 modulus) in both public inputs and inserted leaves
-- Burns must reference a pool root the guest has actually produced (tracked via `known_pool_roots`) — prevents fake-tree membership proofs
+- Burns/exports/rotates must reference a pool root the guest has actually produced for that denomination (tracked via per-denomination `known_pool_roots`) — prevents fake-tree membership proofs
+- CXFER conservation: when a CXFER consumes tracked tETH UTXOs, verifies Pedersen openings (amount + blinding against NUMS generator H) for each output, checks `sum(outputs) == sum(inputs)`, then tracks the new outputs with their verified amounts
 - Invalid or malformed envelopes (bad proofs, wrong bindHash, duplicate nullifiers, short payloads) are silently skipped, not panicked — the guest cannot be bricked by adversarial Bitcoin OP_RETURN data
-- Deposits: verifies deposit bindHash, inserts leaf into pool tree
-- Burns: validates pool root + burn bindHash, consumes nullifier, records exact burn claim ID = SHA256(nullifier + denom + poolRoot + recipient + bindHash)
-- Rotations: not yet implemented (§5.62 dual-proof format); tETH transfers use native Tacit operations instead
-- Commits 461 bytes of public values: prev/new roots, state commitment, deposit accumulator, VK hash, burn batch hash, domain binding (asset, network, chain, mixer, denomination)
+- Commits 461 bytes of compact public values: hashed per-denomination pool roots, shared nullifier set hash, hashed deposit accumulators, hashed burn batches, VK hash, domain binding (asset, network, chain, mixer, denomination set hash), state commitments
 
 ### Incremental proofs
 
@@ -239,10 +247,11 @@ state: root_A -> root_B         state: root_B -> root_C
 commitment_B stored              must match commitment_B to start
 ```
 
-- Pool tree restored from frontier (verified against root via `verify_root_from_frontier`)
+- Per-denomination pool trees restored from frontiers (each verified against its root via `verify_root_from_frontier`)
 - Nullifier set restored from pre-sorted list (hash verified against committed state)
-- State commitment = SHA256(pool root + null set hash + height + pool frontier + null count)
-- Verifier checks all 5 prev-state fields + state commitment before accepting
+- UTXO set restored from previous state (hash verified against committed state)
+- State commitment = SHA256(per-tree roots + frontiers + indices + null set hash + height + null count + utxo set hash)
+- Verifier checks prev pools hash, prev null hash, prev height, prev block hash, and state commitment before accepting
 - Only new Bitcoin blocks since the last proof are processed
 
 ### Nullifier set
@@ -292,12 +301,12 @@ Each bridge deployment consists of:
 
 - 1 `BitcoinLightRelay` (shared across all bridges on the same chain)
 - 1 `TacitBridgeMixer` per asset (ETH, USDC, etc.)
-- 1 `SP1PoolRootVerifier` per denomination per asset (6 for ETH)
+- 1 `SP1PoolRootVerifier` per asset (covers all denominations)
 - 1 Groth16 verifier (reuses existing Tacit withdraw.circom ceremony)
 
-The deploy script predicts the mixer address via nonce, deploys all verifiers with that address baked in, then deploys the mixer which validates the wiring at construction (pool ID, denomination, asset ID, mixer address). Any mismatch reverts the entire transaction.
+The deploy script predicts the mixer address via nonce, deploys the verifier with all pool IDs and denominations baked in, then deploys the mixer which validates the wiring at construction (`coversPool`, asset ID, mixer address). All denomination pools point to the same verifier instance. Any mismatch reverts the entire transaction.
 
-For an ETH bridge: 1 relay + 6 verifiers + 1 mixer = 8 contracts. For USDC: reuse the same relay, deploy 1 mixer + N verifiers.
+For an ETH bridge: 1 relay + 1 verifier + 1 mixer + 1 Groth16 verifier = 4 contracts. For USDC: reuse the same relay, deploy 1 mixer + 1 SP1 verifier.
 
 ## Proving
 

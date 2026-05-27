@@ -74,8 +74,7 @@ async function step2_fetchEthRoot() {
   log('ETH_ROOT', 'Use cast:');
   log('ETH_ROOT', `  cast call ${MIXER_ADDRESS} "getPoolRoot(bytes32)(bytes32)" $(cast keccak "$(cast abi-encode "f(uint256)" ${DENOMINATION}")") --rpc-url ${SEPOLIA_RPC}`);
   log('ETH_ROOT', '');
-  log('ETH_ROOT', 'Then post the root to the worker attestor:');
-  log('ETH_ROOT', `  curl -X POST ${WORKER_URL}/bridge/eth-roots -d '{"asset_id":"${TETH_ASSET_ID}","eth_root":"<root>","eth_block_number":<block>,"attestor_pubkey":"<pub>","attestor_sig":"<sig>"}'`);
+  log('ETH_ROOT', 'Deposit roots are read directly from the Ethereum contract by the SP1 prover.');
 }
 
 // --- Step 3: Mint tETH on signet ---

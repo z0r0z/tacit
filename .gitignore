@@ -56,6 +56,8 @@ dapp/circuits/amm/dev-zkey/public*.json
 # the canonical chain on IPFS — local copies are operational scratch.
 dapp/circuits/pot18_final.ptau
 dapp/circuits/ceremony-genesis-amm/
+dapp/circuits/build-amm/
+dapp/circuits/ceremony-bundle-amm/
 # Test-runner scratch — *.test.mjs harnesses write per-circuit
 # {input,proof,public}.json under `_rt_*` / `_wire_*` prefixes;
 # regenerated on every run.

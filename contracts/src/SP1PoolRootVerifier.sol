@@ -18,19 +18,13 @@ interface IMixer {
 }
 
 /// @title SP1PoolRootVerifier
-/// @notice Verifies SP1 proofs of Tacit pool state transitions. Permissionless.
-///         One instance per pool (denomination). The SP1 guest filters envelopes
-///         by denomination and commits it in public values; this contract checks it.
+/// @notice Verifies SP1 proofs of Tacit pool state transitions across all
+///         denominations for a single asset. One instance per asset.
 ///
-///         Supports incremental proofs: each proof chains from the previous proven
-///         state via matching prev values + state commitment. The state commitment
-///         is SHA256(pool root + nullifier set hash + height + pool frontier +
-///         null count) — it prevents a malicious prover from lying about private
-///         witness data (tree frontier, nullifier history).
-///
-///         Withdrawals use the latest SP1-proven state, not necessarily the current
-///         relay tip. This is an intentional liveness tradeoff: requiring tip match
-///         at withdrawal time would block all withdrawals whenever the relay advances.
+///         The SP1 guest commits compact hashes of per-denomination data
+///         (pool roots, deposit accumulators, burn batches). This contract
+///         receives the per-denomination arrays as calldata and verifies
+///         them against the committed hashes.
 contract SP1PoolRootVerifier {
     ISP1Verifier public immutable SP1_VERIFIER;
     IRelay public immutable RELAY;
@@ -40,14 +34,16 @@ contract SP1PoolRootVerifier {
     bytes32 public immutable ASSET_ID;
     uint8 public immutable NETWORK_TAG;
     bytes32 public immutable GROTH16_VK_HASH;
-    bytes32 public immutable POOL_ID;
-    bytes32 public immutable DENOMINATION;
     bytes32 public immutable GENESIS_ANCHOR_HASH;
+    bytes32 public immutable DENOMS_HASH;
+    uint8 public immutable NUM_DENOMS;
+
+    bytes32[] public poolIds;
+    bytes32[] public denominations;
 
     struct ProvenState {
-        bytes32 poolRoot;
+        bytes32 poolsHash;
         bytes32 nullifierSetHash;
-        bytes32 depositRootsAccumulator;
         uint64 stateHeight;
         bytes32 lastBlockHash;
     }
@@ -66,17 +62,20 @@ contract SP1PoolRootVerifier {
     error ZeroGenesis();
     error ZeroVKey();
 
-    event StateAdvanced(bytes32 indexed newPoolRoot, bytes32 indexed newNullSetHash, uint64 stateHeight);
+    event StateAdvanced(bytes32 indexed newPoolsHash, bytes32 indexed newNullSetHash, uint64 stateHeight);
+    event BurnClaimAccepted(bytes32 indexed claimId);
 
     constructor(
         address sp1Verifier_, address relay_, bytes32 programVKey_,
         address mixer_, bytes32 assetId_, uint8 networkTag_,
-        bytes32 groth16VkHash_, bytes32 poolId_, bytes32 denomination_,
+        bytes32 groth16VkHash_,
+        bytes32[] memory poolIds_, bytes32[] memory denominations_,
         bytes32 genesisAnchorHash_
     ) {
         if (sp1Verifier_ == address(0) || relay_ == address(0) || mixer_ == address(0)) revert ZeroAddress();
         if (programVKey_ == bytes32(0)) revert ZeroVKey();
         if (genesisAnchorHash_ == bytes32(0)) revert ZeroGenesis();
+        require(poolIds_.length == denominations_.length && poolIds_.length > 0);
         SP1_VERIFIER = ISP1Verifier(sp1Verifier_);
         RELAY = IRelay(relay_);
         MIXER_CONTRACT = IMixer(mixer_);
@@ -85,49 +84,60 @@ contract SP1PoolRootVerifier {
         ASSET_ID = assetId_;
         NETWORK_TAG = networkTag_;
         GROTH16_VK_HASH = groth16VkHash_;
-        POOL_ID = poolId_;
-        DENOMINATION = denomination_;
         GENESIS_ANCHOR_HASH = genesisAnchorHash_;
-        // Genesis: prev block hash = anchor, everything else zero.
+        NUM_DENOMS = uint8(poolIds_.length);
+        for (uint256 i; i < poolIds_.length; ++i) {
+            poolIds.push(poolIds_[i]);
+            denominations.push(denominations_[i]);
+        }
+        DENOMS_HASH = _hashArray(denominations_);
         currentState.lastBlockHash = genesisAnchorHash_;
     }
 
+    /// @param publicValues 393 bytes committed by the SP1 guest.
+    /// @param proofBytes   The SP1 proof.
+    /// @param poolRoots    Per-denomination new pool roots (length == NUM_DENOMS).
+    /// @param depositAccs  Per-denomination deposit root accumulators.
+    /// @param burnClaims   Flat array of all burn claim IDs across denominations.
+    /// @param burnCounts   Per-denomination count of claims in burnClaims.
     function proveStateTransition(
         bytes calldata publicValues,
         bytes calldata proofBytes,
-        bytes32[] calldata burnClaimIds
+        bytes32[] calldata poolRoots,
+        bytes32[] calldata depositAccs,
+        bytes32[] calldata burnClaims,
+        uint8[] calldata burnCounts
     ) external {
         SP1_VERIFIER.verifyProof(PROGRAM_VKEY, publicValues, proofBytes);
-
         if (publicValues.length != 461) revert InvalidProof();
 
-        bytes32 prevPoolRoot; bytes32 prevNullRoot; uint64 prevHeight; bytes32 prevBlockHash;
-        bytes32 newPoolRoot; bytes32 newNullRoot; uint64 newHeight;
-        bytes32 depositRootsAccumulator; bytes32 vkHash; bytes32 nullBatchHash;
+        bytes32 prevPoolsHash; bytes32 prevNullRoot; uint64 prevHeight; bytes32 prevBlockHash;
+        bytes32 newPoolsHash; bytes32 newNullRoot; uint64 newHeight;
+        bytes32 depositAccsHash; bytes32 burnsHash; bytes32 vkHash;
         bytes32 assetId; uint8 networkTag; uint64 chainId; address mixerAddr;
-        bytes32 lastBlockHash; bytes32 denomination;
-        bytes32 prevStateCommitment; bytes32 newStateCommitment;
+        bytes32 lastBlockHash; bytes32 denomsHash;
+        bytes32 prevStateCmt; bytes32 newStateCmt;
 
         assembly {
             let p := publicValues.offset
-            prevPoolRoot := calldataload(p)
-            prevNullRoot := calldataload(add(p, 32))
-            prevHeight := shr(192, calldataload(add(p, 64)))
-            prevBlockHash := calldataload(add(p, 72))
-            newPoolRoot := calldataload(add(p, 104))
-            newNullRoot := calldataload(add(p, 136))
-            newHeight := shr(192, calldataload(add(p, 168)))
-            depositRootsAccumulator := calldataload(add(p, 176))
-            vkHash := calldataload(add(p, 208))
-            nullBatchHash := calldataload(add(p, 240))
-            assetId := calldataload(add(p, 272))
-            networkTag := byte(0, calldataload(add(p, 304)))
-            chainId := shr(192, calldataload(add(p, 305)))
-            mixerAddr := shr(96, calldataload(add(p, 313)))
-            lastBlockHash := calldataload(add(p, 333))
-            denomination := calldataload(add(p, 365))
-            prevStateCommitment := calldataload(add(p, 397))
-            newStateCommitment := calldataload(add(p, 429))
+            prevPoolsHash   := calldataload(p)
+            prevNullRoot    := calldataload(add(p, 32))
+            prevHeight      := shr(192, calldataload(add(p, 64)))
+            prevBlockHash   := calldataload(add(p, 72))
+            newPoolsHash    := calldataload(add(p, 104))
+            newNullRoot     := calldataload(add(p, 136))
+            newHeight       := shr(192, calldataload(add(p, 168)))
+            depositAccsHash := calldataload(add(p, 176))
+            burnsHash       := calldataload(add(p, 208))
+            vkHash          := calldataload(add(p, 240))
+            assetId         := calldataload(add(p, 272))
+            networkTag      := byte(0, calldataload(add(p, 304)))
+            chainId         := shr(192, calldataload(add(p, 305)))
+            mixerAddr       := shr(96, calldataload(add(p, 313)))
+            lastBlockHash   := calldataload(add(p, 333))
+            denomsHash      := calldataload(add(p, 365))
+            prevStateCmt    := calldataload(add(p, 397))
+            newStateCmt     := calldataload(add(p, 429))
         }
 
         // Domain checks.
@@ -135,56 +145,84 @@ contract SP1PoolRootVerifier {
         if (uint256(chainId) != block.chainid) revert DomainMismatch();
         if (assetId != ASSET_ID) revert DomainMismatch();
         if (networkTag != NETWORK_TAG) revert DomainMismatch();
-        if (denomination != DENOMINATION) revert DomainMismatch();
+        if (denomsHash != DENOMS_HASH) revert DomainMismatch();
         if (vkHash != GROTH16_VK_HASH) revert InvalidVkHash();
 
-        // State continuity: proof must chain from stored state.
-        if (prevPoolRoot != currentState.poolRoot) revert StateMismatch();
+        // State continuity.
+        if (prevPoolsHash != currentState.poolsHash) revert StateMismatch();
         if (prevNullRoot != currentState.nullifierSetHash) revert StateMismatch();
         if (prevHeight != currentState.stateHeight) revert StateMismatch();
         if (prevBlockHash != currentState.lastBlockHash) revert StateMismatch();
-        if (prevStateCommitment != currentStateCommitment) revert StateMismatch();
+        if (prevStateCmt != currentStateCommitment) revert StateMismatch();
 
-        // Relay anchor: every proof must process at least one block and end at tip.
+        // Relay anchor.
         if (lastBlockHash == bytes32(0)) revert InvalidProof();
         if (lastBlockHash != RELAY.tip()) revert NotRelayTip();
 
-        // Deposit roots: the SP1 proof commits a running accumulator computed from the
-        // complete ordered root set. One comparison replaces the O(n) on-chain loop.
-        if (depositRootsAccumulator != MIXER_CONTRACT.getRootAccumulator(POOL_ID)) revert InvalidDepositRoot();
+        uint8 nd = NUM_DENOMS;
+        require(poolRoots.length == nd && depositAccs.length == nd && burnCounts.length == nd);
 
-        // Burn claims.
-        {
-            bytes32 computed = _hashBatch(burnClaimIds);
-            if (computed != nullBatchHash) revert InvalidProof();
-            for (uint256 i; i < burnClaimIds.length; ++i) {
-                acceptedBurns[burnClaimIds[i]] = true;
-            }
+        // Verify per-denomination calldata against committed hashes.
+        if (_hashArray(poolRoots) != newPoolsHash) revert InvalidProof();
+        if (_hashArray(depositAccs) != depositAccsHash) revert InvalidDepositRoot();
+
+        // Verify each deposit accumulator against the mixer contract.
+        for (uint256 i; i < nd; ++i) {
+            if (depositAccs[i] != MIXER_CONTRACT.getRootAccumulator(poolIds[i])) revert InvalidDepositRoot();
         }
 
-        ProvenState memory ns = ProvenState({
-            poolRoot: newPoolRoot,
+        // Verify burns hash and accept claims.
+        {
+            bytes32[] memory burnBatches = new bytes32[](nd);
+            uint256 offset;
+            for (uint256 i; i < nd; ++i) {
+                uint256 cnt = burnCounts[i];
+                if (cnt == 0) {
+                    burnBatches[i] = bytes32(0);
+                } else {
+                    burnBatches[i] = sha256(abi.encodePacked(burnClaims[offset:offset + cnt]));
+                    for (uint256 j; j < cnt; ++j) {
+                        acceptedBurns[burnClaims[offset + j]] = true;
+                        emit BurnClaimAccepted(burnClaims[offset + j]);
+                    }
+                    offset += cnt;
+                }
+            }
+            if (_hashArrayMem(burnBatches) != burnsHash) revert InvalidProof();
+            require(offset == burnClaims.length);
+        }
+
+        currentState = ProvenState({
+            poolsHash: newPoolsHash,
             nullifierSetHash: newNullRoot,
-            depositRootsAccumulator: depositRootsAccumulator,
             stateHeight: newHeight,
             lastBlockHash: lastBlockHash
         });
-        currentState = ns;
-        currentStateCommitment = newStateCommitment;
+        currentStateCommitment = newStateCmt;
 
-        emit StateAdvanced(newPoolRoot, newNullRoot, newHeight);
+        emit StateAdvanced(newPoolsHash, newNullRoot, newHeight);
     }
 
     function isAcceptedBurn(bytes32 claimId) external view returns (bool) {
         return acceptedBurns[claimId];
     }
 
-    function rootAccumulator() external view returns (bytes32) {
-        return MIXER_CONTRACT.getRootAccumulator(POOL_ID);
+    function coversPool(bytes32 poolId) external view returns (bool) {
+        for (uint256 i; i < poolIds.length; ++i) {
+            if (poolIds[i] == poolId) return true;
+        }
+        return false;
     }
 
-    function _hashBatch(bytes32[] calldata items) internal pure returns (bytes32) {
-        if (items.length == 0) return bytes32(0);
-        return sha256(abi.encodePacked(items));
+    function rootAccumulator(bytes32 poolId) external view returns (bytes32) {
+        return MIXER_CONTRACT.getRootAccumulator(poolId);
+    }
+
+    function _hashArray(bytes32[] calldata arr) internal pure returns (bytes32) {
+        return sha256(abi.encodePacked(arr));
+    }
+
+    function _hashArrayMem(bytes32[] memory arr) internal pure returns (bytes32) {
+        return sha256(abi.encodePacked(arr));
     }
 }

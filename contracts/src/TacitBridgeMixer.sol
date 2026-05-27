@@ -15,13 +15,7 @@ interface IGroth16Verifier {
 
 interface IPoolRootVerifier {
     function isAcceptedBurn(bytes32 claimId) external view returns (bool);
-    function currentState() external view returns (
-        bytes32 poolRoot, bytes32 nullifierSetHash, bytes32 depositRootsAccumulator,
-        uint64 stateHeight, bytes32 lastBlockHash
-    );
-    function rootAccumulator() external view returns (bytes32);
-    function POOL_ID() external view returns (bytes32);
-    function DENOMINATION() external view returns (bytes32);
+    function coversPool(bytes32 poolId) external view returns (bool);
     function ASSET_ID() external view returns (bytes32);
     function MIXER() external view returns (address);
 }
@@ -167,8 +161,7 @@ contract TacitBridgeMixer is ReentrancyGuardTransient {
             bytes32 pid = keccak256(abi.encode(assetId_, denominations_[i]));
             if (_pools[pid].denomination != 0) revert DuplicateDenomination();
             IPoolRootVerifier vrf = IPoolRootVerifier(poolRootVerifiers_[i]);
-            if (vrf.POOL_ID() != pid) revert VerifierMismatch();
-            if (vrf.DENOMINATION() != bytes32(denominations_[i] / UNIT_SCALE)) revert VerifierMismatch();
+            if (!vrf.coversPool(pid)) revert VerifierMismatch();
             if (vrf.ASSET_ID() != assetId_) revert VerifierMismatch();
             if (vrf.MIXER() != address(this)) revert VerifierMismatch();
             Pool storage p = _pools[pid];
