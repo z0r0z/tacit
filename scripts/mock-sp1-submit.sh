@@ -1,4 +1,6 @@
 #!/bin/bash
+# Testnet only — submits a mock SP1 proof to the MockSP1Verifier on Sepolia.
+# Mainnet uses real SP1 proofs via the Succinct prover network.
 set -euo pipefail
 
 SEPOLIA_RPC="https://ethereum-sepolia-rpc.publicnode.com"

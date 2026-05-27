@@ -16,7 +16,7 @@ contract PoseidonParityTest is TestHelper {
         uint256[] memory denoms = new uint256[](1);
         denoms[0] = 1 ether;
         address predictedMixer = vm.computeCreateAddress(address(this), vm.getNonce(address(this)) + 1);
-        MockPoolRootVerifier prv = new MockPoolRootVerifier(poolId, bytes32(uint256(1 ether)), bytes32(uint256(1)), predictedMixer);
+        MockPoolRootVerifier prv = new MockPoolRootVerifier(poolId, bytes32(uint256(1 ether) / 1e10), bytes32(uint256(1)), predictedMixer);
         address[] memory verifiers = new address[](1);
         verifiers[0] = address(prv);
         mixer = new TacitBridgeMixer(address(relay), address(v), address(0), 6, denoms, verifiers, 0x00, bytes32(uint256(1)));

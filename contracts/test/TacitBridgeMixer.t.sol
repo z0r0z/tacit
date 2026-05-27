@@ -30,8 +30,8 @@ contract TacitBridgeMixerTest is TestHelper {
         denoms[0] = DENOM_1ETH;
         denoms[1] = DENOM_01ETH;
         address predictedMixer = vm.computeCreateAddress(address(this), vm.getNonce(address(this)) + 2);
-        MockPoolRootVerifier prv1 = new MockPoolRootVerifier(poolId1ETH, bytes32(DENOM_1ETH), AID, predictedMixer);
-        MockPoolRootVerifier prv2 = new MockPoolRootVerifier(poolId01ETH, bytes32(DENOM_01ETH), AID, predictedMixer);
+        MockPoolRootVerifier prv1 = new MockPoolRootVerifier(poolId1ETH, bytes32(DENOM_1ETH / 1e10), AID, predictedMixer);
+        MockPoolRootVerifier prv2 = new MockPoolRootVerifier(poolId01ETH, bytes32(DENOM_01ETH / 1e10), AID, predictedMixer);
         address[] memory verifiers = new address[](2);
         verifiers[0] = address(prv1);
         verifiers[1] = address(prv2);
@@ -142,7 +142,7 @@ contract TacitBridgeMixerTest is TestHelper {
         MockGroth16Verifier v = new MockGroth16Verifier();
         bytes32 wrongPoolId = keccak256(abi.encode(AID, uint256(999 ether)));
         address predicted = vm.computeCreateAddress(address(this), vm.getNonce(address(this)) + 1);
-        MockPoolRootVerifier badPrv = new MockPoolRootVerifier(wrongPoolId, bytes32(DENOM_1ETH), AID, predicted);
+        MockPoolRootVerifier badPrv = new MockPoolRootVerifier(wrongPoolId, bytes32(DENOM_1ETH / 1e10), AID, predicted);
         uint256[] memory d = new uint256[](1);
         d[0] = DENOM_1ETH;
         address[] memory vf = new address[](1);

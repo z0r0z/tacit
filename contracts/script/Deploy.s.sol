@@ -44,7 +44,7 @@ contract DeployTacitBridge is Script {
             bytes32 poolId = keccak256(abi.encode(assetId, denoms[i]));
             SP1PoolRootVerifier v = new SP1PoolRootVerifier(
                 sp1Verifier, address(relay), programVKey, predictedMixer,
-                assetId, networkTag, groth16VkHash, poolId, bytes32(denoms[i]),
+                assetId, networkTag, groth16VkHash, poolId, bytes32(denoms[i] / 10_000_000_000),
                 genesisTipHash
             );
             verifiers[i] = address(v);

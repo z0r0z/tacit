@@ -171,7 +171,7 @@ contract TacitBridgeMixer is ReentrancyGuardTransient {
             if (_pools[pid].denomination != 0) revert DuplicateDenomination();
             IPoolRootVerifier vrf = IPoolRootVerifier(poolRootVerifiers_[i]);
             if (vrf.POOL_ID() != pid) revert VerifierMismatch();
-            if (vrf.DENOMINATION() != bytes32(denominations_[i])) revert VerifierMismatch();
+            if (vrf.DENOMINATION() != bytes32(denominations_[i] / UNIT_SCALE)) revert VerifierMismatch();
             if (vrf.ASSET_ID() != assetId_) revert VerifierMismatch();
             if (vrf.MIXER() != address(this)) revert VerifierMismatch();
             Pool storage p = _pools[pid];

@@ -1,0 +1,47 @@
+name: Advance Bitcoin relay
+on:
+  schedule:
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
+    inputs:
+      count:
+        description: 'Number of headers to submit'
+        default: '6'
+      network:
+        description: 'Network (mainnet or testnet)'
+        default: 'mainnet'
+        type: choice
+        options:
+          - mainnet
+          - testnet
+
+jobs:
+  advance-mainnet:
+    if: github.event_name == 'schedule' || github.event.inputs.network == 'mainnet'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: foundry-rs/foundry-toolchain@v1
+      - name: Advance relay
+        env:
+          ETH_RPC: ${{ secrets.ETH_RPC_MAINNET }}
+          RELAY_PK: ${{ secrets.RELAY_PK_MAINNET }}
+          RELAY_ADDRESS: ${{ secrets.RELAY_ADDRESS_MAINNET }}
+          MEMPOOL_API: https://mempool.space/api
+        run: bash scripts/advance-relay.sh --count ${{ github.event.inputs.count || '6' }}
+
+  advance-testnet:
+    if: github.event_name == 'schedule' || github.event.inputs.network == 'testnet'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: foundry-rs/foundry-toolchain@v1
+      - name: Advance relay
+        env:
+          ETH_RPC: https://ethereum-sepolia-rpc.publicnode.com
+          RELAY_PK: ${{ secrets.RELAY_PK_TESTNET }}
+          RELAY_ADDRESS: ${{ secrets.RELAY_ADDRESS_TESTNET }}
+          MEMPOOL_API: https://mempool.space/signet/api
+        run: bash scripts/advance-relay.sh --count ${{ github.event.inputs.count || '10' }}

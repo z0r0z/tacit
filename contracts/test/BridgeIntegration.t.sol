@@ -18,7 +18,7 @@ contract BridgeIntegrationTest is TestHelper {
         poolId = keccak256(abi.encode(AID, DENOM));
         // Predict mixer address: next deploy after prv is the mixer.
         address predictedMixer = vm.computeCreateAddress(address(this), vm.getNonce(address(this)) + 1);
-        prv = new MockPoolRootVerifier(poolId, bytes32(DENOM), AID, predictedMixer);
+        prv = new MockPoolRootVerifier(poolId, bytes32(DENOM / 1e10), AID, predictedMixer);
         uint256[] memory denoms = new uint256[](1);
         denoms[0] = DENOM;
         address[] memory verifiers = new address[](1);
@@ -81,7 +81,7 @@ contract BridgeIntegrationTest is TestHelper {
     function test_unaccepted_burn_reverts() public {
         MockGroth16Verifier v = new MockGroth16Verifier();
         address predictedStrict = vm.computeCreateAddress(address(this), vm.getNonce(address(this)) + 1);
-        RejectingPoolRootVerifier rprv = new RejectingPoolRootVerifier(poolId, bytes32(DENOM), AID, predictedStrict);
+        RejectingPoolRootVerifier rprv = new RejectingPoolRootVerifier(poolId, bytes32(DENOM / 1e10), AID, predictedStrict);
         uint256[] memory denoms = new uint256[](1);
         denoms[0] = DENOM;
         address[] memory verifiers = new address[](1);
@@ -99,7 +99,7 @@ contract BridgeIntegrationTest is TestHelper {
     function test_invalid_groth16_proof_reverts() public {
         RejectingGroth16Verifier badV = new RejectingGroth16Verifier();
         address predictedStrict = vm.computeCreateAddress(address(this), vm.getNonce(address(this)) + 1);
-        MockPoolRootVerifier prv2 = new MockPoolRootVerifier(poolId, bytes32(DENOM), AID, predictedStrict);
+        MockPoolRootVerifier prv2 = new MockPoolRootVerifier(poolId, bytes32(DENOM / 1e10), AID, predictedStrict);
         uint256[] memory denoms = new uint256[](1);
         denoms[0] = DENOM;
         address[] memory verifiers = new address[](1);

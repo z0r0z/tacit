@@ -18,7 +18,7 @@ contract FuzzTacitBridgeMixer is TestHelper {
         MockGroth16Verifier v = new MockGroth16Verifier();
         poolId = keccak256(abi.encode(AID, DENOM));
         address predictedMixer = vm.computeCreateAddress(address(this), vm.getNonce(address(this)) + 1);
-        prv = new MockPoolRootVerifier(poolId, bytes32(DENOM), AID, predictedMixer);
+        prv = new MockPoolRootVerifier(poolId, bytes32(DENOM / 1e10), AID, predictedMixer);
         uint256[] memory denoms = new uint256[](1);
         denoms[0] = DENOM;
         address[] memory verifiers = new address[](1);
@@ -147,7 +147,7 @@ contract FuzzSP1Verifier is TestHelper {
         SP1PoolRootVerifier verifier = new SP1PoolRootVerifier(
             address(sp1), address(relay), bytes32(uint256(1)),
             address(mixerMock), bytes32(uint256(0xAA)), 0x00,
-            bytes32(uint256(0xDD)), poolId, bytes32(uint256(1 ether)),
+            bytes32(uint256(0xDD)), poolId, bytes32(uint256(1 ether) / 1e10),
             bytes32(uint256(0xBB))
         );
 

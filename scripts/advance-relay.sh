@@ -1,17 +1,24 @@
 #!/bin/bash
 set -euo pipefail
 
-# Advance the Bitcoin light relay on Sepolia with new signet headers.
+# Advance the Bitcoin light relay with new headers.
 #
 # Usage:
 #   ./scripts/advance-relay.sh [--from <height>] [--count <n>]
 #
-# Fetches headers from mempool.space and submits to the relay contract.
+# Env vars: ETH_RPC, RELAY_PK, RELAY_ADDRESS, MEMPOOL_API
+# Defaults to Sepolia/signet. For mainnet:
+#   ETH_RPC=https://ethereum-rpc.publicnode.com \
+#   RELAY_ADDRESS=0x... RELAY_PK=0x... \
+#   MEMPOOL_API=https://mempool.space/api \
+#   ./scripts/advance-relay.sh
 
-SEPOLIA_RPC="https://ethereum-sepolia-rpc.publicnode.com"
-SEPOLIA_PK="${SEPOLIA_PK:-0x950b04c07979d8ff19eb45fd1c14d4834a9b0b912a9744cb2b37593380b7b81b}"
-RELAY="0x3337F06CddC27220D4A10dA41719869Fe9fF6690"
-MEMPOOL_API="https://mempool.space/signet/api"
+ETH_RPC="${ETH_RPC:-https://ethereum-sepolia-rpc.publicnode.com}"
+RELAY_PK="${RELAY_PK:-${SEPOLIA_PK:-}}"
+RELAY_ADDRESS="${RELAY_ADDRESS:-0x3337F06CddC27220D4A10dA41719869Fe9fF6690}"
+MEMPOOL_API="${MEMPOOL_API:-https://mempool.space/signet/api}"
+
+if [[ -z "$RELAY_PK" ]]; then echo "Set RELAY_PK (or SEPOLIA_PK for testnet)"; exit 1; fi
 
 FROM_HEIGHT=""
 COUNT=10
@@ -25,7 +32,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 # Get current relay tip
-RELAY_TIP_HEIGHT=$(cast call "$RELAY" "tipHeight()(uint256)" --rpc-url "$SEPOLIA_RPC")
+RELAY_TIP_HEIGHT=$(cast call "$RELAY_ADDRESS" "tipHeight()(uint256)" --rpc-url "$ETH_RPC")
 echo "Relay tip height: $RELAY_TIP_HEIGHT"
 
 if [[ -z "$FROM_HEIGHT" ]]; then
@@ -33,7 +40,7 @@ if [[ -z "$FROM_HEIGHT" ]]; then
 fi
 
 SIGNET_TIP=$(curl -s "$MEMPOOL_API/blocks/tip/height")
-echo "Signet tip: $SIGNET_TIP"
+echo "Bitcoin tip: $SIGNET_TIP"
 echo "Advancing from $FROM_HEIGHT (+$COUNT headers)"
 
 if [[ $FROM_HEIGHT -gt $SIGNET_TIP ]]; then
@@ -58,11 +65,11 @@ done
 
 echo ""
 echo "Submitting $COUNT headers to relay..."
-cast send "$RELAY" "advanceTip(bytes)" "0x${HEADERS}" \
-  --rpc-url "$SEPOLIA_RPC" \
-  --private-key "$SEPOLIA_PK" \
+cast send "$RELAY_ADDRESS" "advanceTip(bytes)" "0x${HEADERS}" \
+  --rpc-url "$ETH_RPC" \
+  --private-key "$RELAY_PK" \
   --gas-limit 2000000 2>&1 | grep "status\|transactionHash" | head -2
 
 echo ""
-NEW_TIP=$(cast call "$RELAY" "tipHeight()(uint256)" --rpc-url "$SEPOLIA_RPC")
+NEW_TIP=$(cast call "$RELAY_ADDRESS" "tipHeight()(uint256)" --rpc-url "$ETH_RPC")
 echo "New relay tip: $NEW_TIP"
