@@ -17,13 +17,16 @@ if ! command -v cargo &>/dev/null; then
 fi
 echo "Rust: $(cargo --version)"
 
-# SP1
+# SP1 — pinned to v6.2.2 (matches sp1-sdk/sp1-zkvm 6.2.2 in the lockfiles). With
+# the committed Cargo.lock files, this builds the identical guest ELF, so the
+# program verification key matches the on-chain verifier. Override with SP1_VERSION.
+SP1_VERSION="${SP1_VERSION:-v6.2.2}"
 if ! command -v cargo-prove &>/dev/null; then
-  echo "Installing SP1..."
+  echo "Installing SP1 ${SP1_VERSION}..."
   curl -L https://sp1up.succinct.xyz | bash
   source "$HOME/.bashrc" 2>/dev/null || true
   export PATH="$HOME/.sp1/bin:$PATH"
-  sp1up
+  sp1up --version "${SP1_VERSION}"
 fi
 echo "SP1: $(~/.sp1/bin/cargo-prove prove --version 2>/dev/null || echo 'installed')"
 

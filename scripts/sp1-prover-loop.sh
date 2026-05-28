@@ -9,7 +9,7 @@ set -euo pipefail
 # Setup (run once on the vast.ai instance):
 #   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 #   source ~/.cargo/env
-#   curl -L https://sp1up.succinct.xyz | bash && source ~/.bashrc && sp1up
+#   curl -L https://sp1up.succinct.xyz | bash && source ~/.bashrc && sp1up --version v6.2.2
 #   git clone https://github.com/z0r0z/tacit /workspace/tacit
 #   cd /workspace/tacit/contracts/sp1/program && ~/.sp1/bin/cargo-prove prove build
 #   cd /workspace/tacit/contracts/sp1/script && cargo build --release
