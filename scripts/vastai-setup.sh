@@ -10,23 +10,41 @@ set -euo pipefail
 # expects. SP1 guest builds embed absolute paths, so rebuilding per-machine drifts
 # the vkey and proofs get rejected. To regenerate/verify the guest reproducibly,
 # see contracts/sp1/build-guest.sh (requires Docker).
+#
+# The host builds the Groth16 prover NATIVELY (sp1-sdk native-gnark feature) so the
+# wrap runs without Docker — works on unprivileged hosts. That needs Go + clang at
+# build time (installed below). SP1_PROVER=cpu then proves end-to-end, no Docker.
 
 echo "=== vast.ai tETH Prover Setup ==="
 
-# Disk sanity — the host build + Groth16 proving artifacts need room; 32G default
-# instances run out mid-build. Resize the instance disk to ~100G.
+# Disk sanity — the host build + the ~8G Groth16 circuit artifacts + cargo target
+# need room; 32G default instances run out mid-build. Resize the disk to ~100G.
 avail=$(df -BG / | awk 'NR==2 {gsub(/G/,"",$4); print $4+0}' 2>/dev/null || echo 999)
-if [[ "${avail:-999}" -lt 50 ]]; then
+if [[ "${avail:-999}" -lt 60 ]]; then
   echo "WARNING: ~${avail}G free on / — resize the instance disk to ~100G before building."
 fi
 
-# Build prerequisites — sp1-sdk needs protoc; the rest covers minimal base images.
+# Build prerequisites — sp1-sdk needs protoc; native-gnark needs clang/libclang
+# (bindgen) + a C toolchain (CGO); the rest covers minimal base images.
 export DEBIAN_FRONTEND=noninteractive
-if ! command -v protoc &>/dev/null; then
+if ! command -v protoc &>/dev/null || ! command -v clang &>/dev/null; then
   echo "Installing build prerequisites..."
-  apt-get update -qq && apt-get install -y -qq protobuf-compiler pkg-config libssl-dev build-essential git curl
+  apt-get update -qq && apt-get install -y -qq protobuf-compiler pkg-config libssl-dev build-essential git curl clang libclang-dev
 fi
-echo "protoc: $(protoc --version 2>/dev/null || echo MISSING)"
+echo "protoc: $(protoc --version 2>/dev/null || echo MISSING)  clang: $(clang --version 2>/dev/null | head -1 || echo MISSING)"
+
+# Go — native-gnark's build.rs runs `go build` (CGO) to compile the gnark prover.
+GO_VERSION="${GO_VERSION:-1.23.4}"
+if ! /usr/local/go/bin/go version &>/dev/null; then
+  echo "Installing Go ${GO_VERSION}..."
+  curl -sfLo /tmp/go.tgz "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz"
+  rm -rf /usr/local/go && tar -C /usr/local -xzf /tmp/go.tgz
+fi
+export PATH="$PATH:/usr/local/go/bin"
+echo "Go: $(go version)"
+# bindgen needs libclang at build time.
+export LIBCLANG_PATH="$(llvm-config --libdir 2>/dev/null || ls -d /usr/lib/llvm-*/lib 2>/dev/null | head -1 || echo /usr/lib/x86_64-linux-gnu)"
+echo "LIBCLANG_PATH: $LIBCLANG_PATH"
 
 # Rust
 if ! command -v cargo &>/dev/null && [[ ! -x "$HOME/.cargo/bin/cargo" ]]; then
@@ -45,10 +63,12 @@ fi
 export PATH="$HOME/.foundry/bin:$PATH"
 echo "Cast: $(cast --version 2>/dev/null | head -1)"
 
-# Optional CUDA prover prerequisites (SETUP_CUDA=1) for SP1_PROVER=cuda. SP1's cuda
-# prover runs a GPU Docker container, so the box needs Docker + the NVIDIA Container
-# Toolkit and must permit nested Docker (rent with Docker enabled). Without it,
-# SP1_PROVER=cpu proves on this box with no Docker — slower, but zero setup.
+# Optional CUDA prover prerequisites (SETUP_CUDA=1) to accelerate STARK proving via
+# SP1_PROVER=cuda. SP1's cuda prover runs a GPU Docker container (moongate), so the
+# box needs Docker + the NVIDIA Container Toolkit and must permit nested Docker (rent
+# a PRIVILEGED instance). The Groth16 wrap is already native (no Docker) regardless.
+# Without cuda, SP1_PROVER=cpu proves end-to-end on CPU with zero Docker — slower
+# STARK proving, fine for low-volume signet. Only worth it at mainnet scale.
 if [[ "${SETUP_CUDA:-0}" == "1" ]]; then
   echo "Setting up CUDA prover prerequisites..."
   command -v docker &>/dev/null || curl -fsSL https://get.docker.com | sh
