@@ -1,59 +1,56 @@
 #!/bin/bash
 set -euo pipefail
 
-# One-time setup for vast.ai prover instance.
-# Run this via SSH after provisioning the instance.
+# One-time setup for a vast.ai tETH prover instance.
+# Run via SSH:  ssh -p <port> root@<host> 'bash -s' < scripts/vastai-setup.sh
 #
-# Usage:
-#   ssh -p <port> root@<host> 'bash -s' < scripts/vastai-setup.sh
+# The guest ELF is committed (contracts/sp1/program/elf/teth-pool-prover) and
+# embedded by the host at build time, so the prover does NOT rebuild the guest —
+# every prover gets the identical program verification key the on-chain verifier
+# expects. SP1 guest builds embed absolute paths, so rebuilding per-machine drifts
+# the vkey and proofs get rejected. To regenerate/verify the guest reproducibly,
+# see contracts/sp1/build-guest.sh (requires Docker).
 
-echo "=== vast.ai SP1 Prover Setup ==="
+echo "=== vast.ai tETH Prover Setup ==="
 
-# Disk sanity — SP1's host build + Groth16 artifacts (+ the moongate image for
-# cuda) need room; 32G default instances run out mid-build. Resize to ~100G.
+# Disk sanity — the host build + Groth16 proving artifacts need room; 32G default
+# instances run out mid-build. Resize the instance disk to ~100G.
 avail=$(df -BG / | awk 'NR==2 {gsub(/G/,"",$4); print $4+0}' 2>/dev/null || echo 999)
 if [[ "${avail:-999}" -lt 50 ]]; then
-  echo "WARNING: ~${avail}G free on / — likely too small. Resize the instance disk to ~100G before building."
+  echo "WARNING: ~${avail}G free on / — resize the instance disk to ~100G before building."
 fi
+
+# Build prerequisites — sp1-sdk needs protoc; the rest covers minimal base images.
+export DEBIAN_FRONTEND=noninteractive
+if ! command -v protoc &>/dev/null; then
+  echo "Installing build prerequisites..."
+  apt-get update -qq && apt-get install -y -qq protobuf-compiler pkg-config libssl-dev build-essential git curl
+fi
+echo "protoc: $(protoc --version 2>/dev/null || echo MISSING)"
 
 # Rust
-if ! command -v cargo &>/dev/null; then
+if ! command -v cargo &>/dev/null && [[ ! -x "$HOME/.cargo/bin/cargo" ]]; then
   echo "Installing Rust..."
   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-  source "$HOME/.cargo/env"
 fi
+source "$HOME/.cargo/env" 2>/dev/null || true
 echo "Rust: $(cargo --version)"
 
-# SP1 — pinned to v6.2.2 (matches sp1-sdk/sp1-zkvm 6.2.2 in the lockfiles). With
-# the committed Cargo.lock files, this builds the identical guest ELF, so the
-# program verification key matches the on-chain verifier. Override with SP1_VERSION.
-SP1_VERSION="${SP1_VERSION:-v6.2.2}"
-if ! command -v cargo-prove &>/dev/null; then
-  echo "Installing SP1 ${SP1_VERSION}..."
-  curl -L https://sp1up.succinct.xyz | bash
-  source "$HOME/.bashrc" 2>/dev/null || true
-  export PATH="$HOME/.sp1/bin:$PATH"
-  sp1up --version "${SP1_VERSION}"
-fi
-echo "SP1: $(~/.sp1/bin/cargo-prove prove --version 2>/dev/null || echo 'installed')"
-
-# Foundry (for cast/relay submission)
-if ! command -v cast &>/dev/null; then
+# Foundry (cast — for proof submission + relay advance)
+if ! command -v cast &>/dev/null && [[ ! -x "$HOME/.foundry/bin/cast" ]]; then
   echo "Installing Foundry..."
   curl -L https://foundry.paradigm.xyz | bash
-  source "$HOME/.bashrc" 2>/dev/null || true
-  export PATH="$HOME/.foundry/bin:$PATH"
-  foundryup
+  "$HOME/.foundry/bin/foundryup"
 fi
+export PATH="$HOME/.foundry/bin:$PATH"
 echo "Cast: $(cast --version 2>/dev/null | head -1)"
 
-# Optional CUDA prover prerequisites (SETUP_CUDA=1). SP1's cuda prover runs a GPU
-# Docker container, so the box needs Docker + the NVIDIA Container Toolkit and must
-# permit nested Docker (rent with Docker enabled). Without it, SP1_PROVER=cpu proves
-# on this box with no Docker at all — slower, but zero setup.
+# Optional CUDA prover prerequisites (SETUP_CUDA=1) for SP1_PROVER=cuda. SP1's cuda
+# prover runs a GPU Docker container, so the box needs Docker + the NVIDIA Container
+# Toolkit and must permit nested Docker (rent with Docker enabled). Without it,
+# SP1_PROVER=cpu proves on this box with no Docker — slower, but zero setup.
 if [[ "${SETUP_CUDA:-0}" == "1" ]]; then
   echo "Setting up CUDA prover prerequisites..."
-  export DEBIAN_FRONTEND=noninteractive
   command -v docker &>/dev/null || curl -fsSL https://get.docker.com | sh
   if ! command -v nvidia-ctk &>/dev/null; then
     curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey \
@@ -74,38 +71,24 @@ if [[ "${SETUP_CUDA:-0}" == "1" ]]; then
   fi
 fi
 
-# Clone repo
+# Clone / update repo (brings the committed guest ELF)
 if [[ ! -d /workspace/tacit ]]; then
-  echo "Cloning tacit..."
-  cd /workspace
-  git clone https://github.com/z0r0z/tacit
+  echo "Cloning tacit..."; mkdir -p /workspace; git clone https://github.com/z0r0z/tacit /workspace/tacit
 else
-  echo "Updating tacit..."
-  cd /workspace/tacit
-  git pull
+  echo "Updating tacit..."; git -C /workspace/tacit pull --ff-only
 fi
 
-# Build SP1 guest
-echo "Building SP1 guest program..."
-cd /workspace/tacit/contracts/sp1/program
-~/.sp1/bin/cargo-prove prove build
+# Build the prover host — embeds the committed guest ELF (no guest rebuild).
+echo "Building prover host..."
+cd /workspace/tacit/contracts/sp1/script && cargo build --release
 
-# Build host
-echo "Building SP1 host..."
-cd /workspace/tacit/contracts/sp1/script
-cargo build --release
-
-# Create state dir
 mkdir -p /workspace/prover-state
-
 echo ""
 echo "=== Setup complete ==="
 echo ""
-echo "To start the prover (SP1_PROVER=cuda needs the SETUP_CUDA=1 step above; else cpu):"
+echo "Start the prover (CPU; cuda needs SETUP_CUDA=1 above):"
 echo "  ETH_PK=0x.. SP1_PROVER=cpu <deployment env> /workspace/tacit/scripts/sp1-prover-loop.sh"
 echo ""
-echo "For background operation:"
+echo "Background + monitor:"
 echo "  ETH_PK=0x.. SP1_PROVER=cpu <deployment env> nohup /workspace/tacit/scripts/sp1-prover-loop.sh > /workspace/prover.log 2>&1 &"
-echo ""
-echo "To monitor:"
 echo "  tail -f /workspace/prover.log"

@@ -1,7 +1,7 @@
 use sp1_sdk::blocking::prelude::*;
 use sp1_sdk::blocking::ProverClient;
 
-const ELF: &[u8] = include_bytes!("../../program/target/elf-compilation/riscv64im-succinct-zkvm-elf/release/teth-pool-prover");
+const ELF: &[u8] = include_bytes!("../../program/elf/teth-pool-prover");
 
 fn main() {
     let client = ProverClient::builder().cpu().build();

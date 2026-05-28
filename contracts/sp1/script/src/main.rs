@@ -35,7 +35,11 @@ fn load_prover_state(path: &str) -> Option<ProverState> {
     serde_json::from_str(&data).ok()
 }
 
-const ELF: &[u8] = include_bytes!("../../program/target/elf-compilation/riscv64im-succinct-zkvm-elf/release/teth-pool-prover");
+// Canonical guest ELF, committed at contracts/sp1/program/elf/. Embedding the
+// committed bytes (rather than a per-machine `cargo prove build`) keeps the
+// program verification key identical for every prover — SP1 guest builds embed
+// absolute paths, so rebuilding elsewhere drifts the vkey and proofs get rejected.
+const ELF: &[u8] = include_bytes!("../../program/elf/teth-pool-prover");
 
 fn api_bases() -> Vec<String> {
     if let Ok(custom) = env::var("API_BASES") {

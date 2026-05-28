@@ -55,10 +55,11 @@ echo "Step 1: Proving on vast.ai..."
 ssh -p "$VASTAI_PORT" "${VASTAI_USER}@${VASTAI_HOST}" bash -s <<EOF
 set -e
 source ~/.cargo/env 2>/dev/null || true
-export PATH="\$HOME/.sp1/bin:\$HOME/.foundry/bin:\$PATH"
+export PATH="\$HOME/.foundry/bin:\$PATH"
 cd /workspace/tacit && git pull --ff-only
-cd contracts/sp1/program && cargo-prove prove build
 cd "$REMOTE_DIR"
+# host embeds the committed guest ELF — no guest rebuild
+cargo build --release --bin teth-prover
 NETWORK="$NETWORK" NETWORK_TAG="$NETWORK_TAG" CHAIN_ID="$CHAIN_ID" \
 ASSET_ID="$ASSET_ID" MIXER_ADDRESS="$MIXER_ADDRESS" ETH_RPC="$ETH_RPC" \
 SP1_PROVER="\${SP1_PROVER:-cpu}" \
