@@ -19,8 +19,8 @@
 > chain data alone. Wrapped Bitcoin is locked cryptographically at a
 > Taproot key derived from a mixer note's own secret: one leaf, two
 > locks. Amount-granular fungible BTC instead replaces the federation
-> with an LP-share lien on the canonical AMM pool, with TAC economic
-> over-collateralization as the bond. **Together these primitives compose
+> with an LP-share lien on a half-exogenous (TAC, tETH) AMM-pool bond,
+> over-collateralized and risk-priced by a governable ratio. **Together these primitives compose
 > into real Bitcoin DeFi as a self-custodial layer** — confidential
 > assets, native AMM, yield farms, atomic-OTC marketplace, wrapped BTC —
 > anchored to Bitcoin L1, recoverable from each user's private key,
@@ -201,18 +201,20 @@ primitive on which later economic constructions rest.
 
 cBTC.zk is unit-granular at fixed denominations and trustless. DeFi
 expects amount-granular fungible assets. **cBTC.tac** composes a cBTC.zk
-slot with an LP-share lien on the canonical $(\mathrm{cBTC.zk},\,
-\mathrm{TAC})$ AMM pool. Minting requires the depositor to LP both sides;
+slot with an LP-share lien on the canonical $(\mathrm{TAC},\,
+\mathrm{tETH})$ AMM pool. Minting requires the depositor to LP both sides;
 the indexer records a lien on the resulting LP-share UTXO and mints
-fungible cBTC.tac equal to the slot's BTC value. The lien is enforced by
+fungible cBTC.tac equal to the slot's BTC value. The slot is the BTC
+backing; the bond is a separate, half-exogenous insurance overlay. The lien is enforced by
 the wallet's universal $\mathrm{commitmentForUtxo}$ resolver: any
 unauthorized spend is treated as nonexistent, so AMM swaps, transfers,
 and farms refuse to consume liened collateral [^lien].
 
 If the depositor rugs the underlying slot ($\mathrm{SLASH\_DETECTED}$),
-their TAC contribution moves to a shared insurance pool that compensates
-all outstanding cBTC.tac holders pro rata. With initial bond ratio
-$\geq 2.0$ relative to slot BTC value and force-close defending at
+their bond LP moves to a shared insurance pool that compensates
+all outstanding cBTC.tac holders pro rata. With a governable,
+IL-aware-floored bond ratio (default $2.5\times$, floor $2.0\times$)
+relative to slot BTC value and force-close defending at
 $1.2\times$, the rug is negative expected value while the liquidator
 population operates as designed. **cBTC.tac is trustless on the BTC anchor side
 (cryptographic) and over-collateralized on the fungibility side
@@ -222,10 +224,15 @@ CXFER, swaps in any pool, deposits into the mixer, and stakes into yield
 farms. Bitcoin gets a fungible BTC-denominated asset inside a DeFi stack
 anchored to L1, without a custodian.
 
-**Stress behavior and reflexive collateral.** The construction is
-procyclical. TAC's market value derives in part from its role as the
-bond, so a stress event that strains cBTC.tac can also strain TAC —
-the collateral is partially **reflexive**, not merely correlated. The
+**Stress behavior — half-exogenous, ratio-priced.** The bond is a
+$(\mathrm{TAC},\,\mathrm{tETH})$ LP, so only ~half its value is the
+native token; the **tETH leg is exogenous** — a Tacit-specific stress
+event does not move ETH — which directly dilutes the reflexivity a
+TAC-only bond would carry. The residual (the TAC half, plus the LP's
+impermanent loss in a one-sided crash) is priced by a single
+governable, **IL-aware-floored** over-collateralization ratio. And the
+primary backing is the self-custodied cBTC.zk slot (real BTC); the bond
+is only rug-insurance on top, not the backing itself. The
 2.0× initial cushion, the permissionless force-close path triggered
 when LP-share BTC value falls below 1.2× the slot, and the shared
 insurance pool bound the damage. Non-bond TAC demand (AMM
@@ -345,9 +352,10 @@ from its published list while signing an attestation committing to the
 omitted set is caught by a SHA-256 comparison across $\geq 2$ subscribed
 workers. The mesh produces evidence; the bond turns it into a slash.
 
-**Bond-class accounting.** Worker bonds and cBTC.tac collateral share
-the same TAC float and are both recorded as indexer liens against the
-fixed cap. A system-wide governance parameter caps the bonded fraction
+**Bond-class accounting.** Worker bonds (raw TAC) and the **TAC leg**
+of cBTC.tac's (TAC, tETH) bond share the same TAC float, both recorded
+as indexer liens against the fixed cap (the bond's tETH leg is
+exogenous and sits outside the TAC cap). A system-wide governance parameter caps the bonded fraction
 of circulating TAC, and burns from either class contract supply for
 the other. The classes compete for float but compose cleanly: one TAC,
 one cap, one ledger of liens.

@@ -106,7 +106,7 @@ composes both of the protocol's circuit families:
   anonymous-unique-spend circuit** (`withdraw.circom`) — every
   slot is a mixer leaf, the slot key is the leaf's secret.
 - The TAC-collateral side, in the v1 lien model (§5.47), uses an
-  LP-share UTXO of the canonical `(cBTC.zk, TAC)` AMM pool minted
+  LP-share UTXO of the canonical `(TAC, tETH)` AMM pool minted
   via the **AMM's amount-confidentiality circuits**
   (`amm_lp_add`); the lien is enforced at the indexer layer.
 
@@ -893,6 +893,18 @@ the depositor; secondary holders trade through markets.
 > covenant-based design retained for the follow-up amendment when
 > trustless protocol-owned UTXOs become possible. The shipped v1
 > behaviour is summarised above.
+>
+> **Update — covenant-free conversion venue (`SPEC-LIQ-BID-AMENDMENT.md`).**
+> The "insurance denominated in the possibly-crashing bond asset"
+> weakness of v1 is addressed without covenants: force-close can match
+> the seized bond against standing `T_PREAUTH_BID_ASSET` (`0x5E`) bids
+> and convert it to **cBTC.tac** in the insurance pool — non-reflexive
+> (competitive standing bids, no AMM price-impact) and covenant-free
+> (proceeds rest as a tacit asset, not a protocol-owned BTC UTXO). It
+> layers strictly on top of the v1 early-slash floor above: when the
+> bid book is thin or clears nothing above the reserve price, behaviour
+> degrades to exactly the v1 path. See `SPEC-LIQ-BID-AMENDMENT.md`
+> §5.38.x.
 
 ### 5.38.1 Trigger condition
 
@@ -1124,15 +1136,21 @@ exactly proportional to the bond's over-collateralization.
 ```
 TWAP_TAC_per_BTC(window=180 blocks, sampled_at=H − REORG_SAFETY_DEPTH)
   = volume-weighted_avg([
-      observations from canonical TAC/cBTC.zk-CANONICAL AMM pool,
-      observations from canonical TAC/cBTC.zk-CANONICAL orderbook fills,
-      observations from canonical TAC/cBTC.tac AMM pool (post-activation)
+      observations from the canonical TAC/cBTC.tac AMM pool,
+      observations from the cBTC.zk-CANONICAL whole-slot orderbook fills
+        (price source only — cBTC.zk is whole-slot, not an AMM reserve)
     ] within window)
 ```
 
-Where `cBTC.zk-CANONICAL` is `cBTC.zk-L` (1 BTC denomination) for
-bootstrap; once the cBTC.tac/TAC AMM pool has sufficient depth, it
-contributes the dominant signal.
+cBTC.zk contributes price discovery via its **whole-slot orderbook**
+(`cBTC.zk-CANONICAL` = `cBTC.zk-L`, 1 BTC denomination) during
+bootstrap — it is not pooled in an AMM (it is fixed-denomination). The
+canonical **TAC/cBTC.tac AMM pool** is the dominant/steady-state source
+once it has sufficient depth. The **(TAC, tETH) bond** (§5.52) is valued
+in BTC via *dual TWAP*, where **tETH/BTC is triangulated** as this
+TAC/BTC feed × the (TAC, tETH) pool's TAC/tETH TWAP — no dedicated
+tETH/BTC venue is required. See `SPEC-CBTC-TAC-COLLATERAL-AMENDMENT.md`
+§5.52.3.
 
 ### 5.40.2 Manipulation resistance
 
@@ -1179,11 +1197,22 @@ MAX_SINGLE_POSITION_BTC    = 10 BTC    (single-position exposure cap in BTC)
 AMM_POOL_FEE_BPS           = 30        (cBTC.tac/TAC AMM swap fee)
 ```
 
+> **Bond = (TAC, tETH) LP, risk-priced by one ratio
+> (`SPEC-CBTC-TAC-COLLATERAL-AMENDMENT.md` §5.52).**
+> `INITIAL_BOND_RATIO` is superseded by a single governable,
+> **IL-aware-floored** `BOND_RATIO` (default 2.5×, band [2.0×, 5.0×])
+> on the (TAC, tETH) bond LP, valued in BTC via dual TWAP. Aggregate
+> exposure is capped at `MAX_POOL_FRAC` × (TAC, tETH) pool depth. Hard
+> rules: the floor is IL-aware; the ratio keys on risk/depth, never on
+> price level (no pro-cyclical loosening). TAC's risk is thereby
+> diluted (half-exogenous tETH leg) and bounded (the ratio), not relied
+> on as sole backing.
+
 ### 5.41.2 Formulaic limits
 
 ```
 MAX_POOL_FRAC                    = 0.10
-  Total bonded BTC ≤ 10% × current TAC/cBTC.zk pool TAC depth.
+  Total bonded BTC ≤ 10% × current (TAC, tETH) bond-pool depth.
   This formula caps aggregate exposure as a function of observable
   pool depth. No parameter to tune — system grows with the pool.
 
@@ -1289,8 +1318,8 @@ Holding cBTC.tac.lp instead of raw cBTC.tac gives users:
   AMM LP token (T_AXFER_VAR transfers, marketplace listings,
   derivative AMM pools).
 - **Same underlying trust profile as cBTC.tac**: the wrapper-layer
-  guarantees (bonded TAC over-collateralization, slashable rugs,
-  pooled insurance) are unchanged. Holding the LP token of the pool
+  guarantees (bonded (TAC, tETH) LP over-collateralization, slashable
+  rugs, pooled insurance) are unchanged. Holding the LP token of the pool
   is exposure to cBTC.tac's collateralization plus the TAC side.
 
 This is the same pattern as Curve's 3CRV (LP token of a USDC/USDT/DAI
@@ -1324,7 +1353,7 @@ preference:
 | Variant | Trust profile | Granularity | Yield |
 |---|---|---|---|
 | `cBTC.zk` | Trustless self-custody (no co-signer, no bond) | Whole-slot at fixed denominations | None inherent; can list on orderbook |
-| `cBTC.tac` | TAC-bonded (slashable, pooled insurance) | Amount-granular fungible | None inherent; can LP into pools |
+| `cBTC.tac` | (TAC, tETH)-LP-bonded (slashable, pooled insurance) | Amount-granular fungible | None inherent; can LP into pools |
 | `cBTC.tac.lp` | Inherits cBTC.tac + AMM-LP exposure | Amount-granular fungible | AMM swap fees, IL exposure |
 
 Users self-select based on what they value:
@@ -1376,9 +1405,16 @@ Add to §3 *opcodes table*:
 - `0x4A` `T_CBTC_TAC_WITHDRAW` — burn cBTC.tac, recover cBTC.zk + TAC (§5.37)
 - `0x4B` `T_CBTC_TAC_FORCE_CLOSE` — permissionless liquidation (§5.38)
 - `0x4C` `T_SHARE_SLASH_CLAIM` — claim against pooled insurance (§5.39.4)
+- `0x5E` `T_PREAUTH_BID_ASSET` — asset-settled liquidation bid; the
+  covenant-free force-close venue (`SPEC-LIQ-BID-AMENDMENT.md`; last
+  slot of the preauth/offline-trading family block `0x5B`–`0x5E`)
 
 (`0x48` reserved by `SPEC-CBTC-ZK-FUNGIBILITY-AMENDMENT.md` for
 `T_SLOT_NOTE`.)
+
+`SPEC-CBTC-TAC-COLLATERAL-AMENDMENT.md` (mixed tETH + TAC collateral)
+adds **no opcode** — it extends `T_CBTC_TAC_DEPOSIT` (`0x49`) with a
+`bond_asset_id` field.
 
 ---
 
@@ -1596,6 +1632,14 @@ Adjustable within safety bands; changes apply prospectively only
 Adjustments outside these bands require a formal SPEC amendment
 (i.e., a hard fork), not a governance vote.
 
+> **(TAC, tETH) bond (`SPEC-CBTC-TAC-COLLATERAL-AMENDMENT.md` §5.52).**
+> For the live (TAC, tETH) LP bond, `INITIAL_BOND_RATIO` and
+> `MAX_BONDED_FRAC_OF_TAC_FDV` above are superseded by a single
+> governable **`BOND_RATIO`** (default 2.5×, band [2.0×, 5.0×],
+> IL-aware floor) and `MAX_POOL_FRAC` keyed on (TAC, tETH) pool depth
+> (§5.52.4 / §5.52.10). The same Tier A timelock + prospective-only +
+> no-price-keyed-ratio rules apply.
+
 ### 5.46.3 Tier B — Fast governance (24-hour timelock)
 
 Emergency-tunable parameters for responding to acute conditions.
@@ -1662,8 +1706,9 @@ a governance vote:
   parameters until natural close.
 - **Opcode assignments**: 0x43–0x4E reservations are fixed by SPEC.
 - **The trust model itself**: governance can't change "cBTC.tac is
-  TAC-bonded" into something else. That would be a new wrapper
-  variant under a different suffix.
+  (TAC, tETH)-LP-bonded" into something else. That would be a new
+  wrapper variant under a different suffix. (Changing the bond's asset
+  composition is amendment-level, e.g. §5.52 — not a governance vote.)
 
 ### 5.46.6 Voting mechanism
 
@@ -1672,7 +1717,7 @@ Standard TAC-weighted on-chain governance:
 - **Vote weight**: TAC balance at proposal-snapshot block, INCLUDING
   TAC backing the holder's LP positions in canonical AMM pools.
   The LP-derived TAC is computed by summing across ALL confirmed
-  AMM pools for the (cBTC.tac, TAC) and (cBTC.zk, TAC) asset pairs
+  AMM pools for the (cBTC.tac, TAC) and (TAC, tETH) asset pairs
   (regardless of fee_bps tier or capability_flags). For each such
   pool, the holder's contribution is
   `(holder_lp_balance / pool_lp_supply) × pool_tac_reserve` at the
@@ -1799,8 +1844,26 @@ either reduces to a federated signer or lets a griefer steal the
 reserve.
 
 v1 ships a covenant-free alternative: **the bond is an LP-share UTXO
-of a (cBTC.zk-variant, TAC) AMM pool, held in the depositor's own
-wallet, locked by a tacit-protocol-level lien.** The lien is enforced
+of the canonical (TAC, tETH) AMM pool, held in the depositor's own
+wallet, locked by a tacit-protocol-level lien.**
+
+> **Bond composition — SUPERSEDED by `SPEC-CBTC-TAC-COLLATERAL-AMENDMENT.md` §5.52.**
+> The bond pool is **(TAC, tETH)** — *neither leg is a BTC asset.* Any
+> "(cBTC.zk, TAC)" / "(cBTC.tac, TAC)" / "cBTC.zk + TAC" bond-pool
+> reference in §5.47–§5.49 below, and the worker's `cbtc_zk_*` fields,
+> are superseded: the bond legs are **TAC + tETH**, valued in BTC via
+> **dual TWAP** (§5.52.3), with risk priced by a single governable,
+> **IL-aware-floored** `BOND_RATIO` (§5.52.4). The **lien mechanism is
+> unchanged** (this amendment changes only the bond's asset
+> composition). The cBTC.zk **slot** (`target_leaf_hash` / `K_btc`)
+> remains the self-custodied BTC *backing* — distinct from the bond.
+> Why (TAC, tETH): half-exogenous (tETH), non-circular (no cBTC.tac),
+> single fee-bearing instrument, and a simpler genesis (no cBTC.tac is
+> needed to mint the first cBTC.tac). Worker dual-TWAP valuation +
+> (TAC, tETH) pool acceptance is a tracked follow-up (§5.52.11);
+> deposit flow is foundation-only, so no live UX migrates.
+
+The lien is enforced
 by validator coordination (the same trust model that gives all tacit
 assets value) — workers refuse to recognise any spend of a liened
 UTXO, recipients refuse to accept tacit-invalid UTXOs, and the bond
@@ -1813,10 +1876,14 @@ is therefore economically immobile without the protocol's consent.
   Strict improvement over the original spec (where bond TAC sat
   inert at the depositor's recovery address) and over MakerDAO
   (where ETH in the vault earns nothing).
-- **Natural BTC anchoring** — half the LP's value is the cBTC.zk
-  side, which tracks BTC 1:1. Under a TAC death-spiral, the cBTC.zk
-  half of the LP retains BTC value even as the TAC side erodes;
-  cBTC.tac holders inherit this when they claim.
+- **Half-exogenous, non-circular** (per §5.52) — the non-TAC leg is
+  **tETH**: exogenous, deep, BTC-correlated, and unaffected by a
+  Tacit-specific crisis, so the bond no longer rests entirely on the
+  native token, and it contains no cBTC.tac (no self-reference). The
+  bond is **not** BTC-anchored — BTC-anchoring comes from the cBTC.zk
+  *slot* (the real backing), and the bond's BTC-volatility (incl. the
+  LP's impermanent loss) is covered by the governable IL-aware
+  `BOND_RATIO` (§5.52.4).
 - **No new asset type** — uses tacit's existing LP-share machinery
   (`ammDeriveLpAssetId`, `T_LP_REMOVE`, etc.) without new primitives.
 
@@ -1971,6 +2038,15 @@ name at `0x4C` is preserved for wire-format parity; the
 **Status:** ✅ shipped (worker + dapp + wire-parity tests). Follow-up addition
 to §5.47 lien model providing one-tx bootstrap UX for depositors who don't
 already hold canonical-pool LP shares.
+
+> **Bond pool SUPERSEDED → (TAC, tETH) (`SPEC-CBTC-TAC-COLLATERAL-AMENDMENT.md` §5.52).**
+> The `cbtc_zk_*` inputs and "cBTC.zk" mentions in this section are
+> superseded: the atomically-LP'd bond inputs are **TAC + tETH** (the
+> (TAC, tETH) bond pool), valued in BTC via dual TWAP. The cBTC.zk
+> *slot* (`target_leaf_hash`) is the separate self-custodied BTC
+> backing. Worker dual-TWAP valuation + (TAC, tETH) pool acceptance +
+> field rename is a tracked follow-up (§5.52.11); wire-format byte
+> layout is unchanged.
 
 **Motivation.** v1's `T_CBTC_TAC_DEPOSIT` (§5.47) requires the depositor
 to already hold an LP-share UTXO of a TAC-paired pool. Bootstrap UX:
@@ -2168,7 +2244,12 @@ Pedersen commitments.
 
 **Status:** ✅ shipped (worker + dapp + wire-parity tests). Symmetry-mirror
 of §5.48: one envelope that closes a cBTC.tac position, removes the freed
-LP shares from the pool, and pays out BTC + cBTC.zk + TAC to the depositor.
+LP shares from the pool, and pays out BTC (the backing slot) plus the LP's
+two legs to the depositor. (Per `SPEC-CBTC-TAC-COLLATERAL-AMENDMENT.md`
+§5.52 the bond-LP legs are **TAC + tETH**; "cBTC.zk" in this section's
+field names is superseded — worker dual-TWAP + (TAC, tETH) reconciliation
+is a tracked follow-up, §5.52.11. cBTC.zk remains the self-custodied
+backing slot.)
 
 ### 5.49.1 Motivation
 
@@ -2816,13 +2897,13 @@ becomes desirable post-launch (default == `INITIAL_BOND_RATIO`).
 ## Summary
 
 cBTC.tac is tacit's canonical fungible wrapped-Bitcoin asset.
-Minted via LP-shaped deposits (cBTC.zk slot + TAC over-collateral),
+Minted via LP-shaped deposits (cBTC.zk slot + a (TAC, tETH) LP bond),
 burned to recover both. Each cBTC.tac unit is approximately 1:1
-with BTC by value, market-priced, backed by aggregate active-slot
-BTC + pooled TAC insurance.
+with BTC by value, market-priced, backed by the self-custodied slot's
+BTC + a pooled (TAC, tETH)-bond insurance reserve.
 
-The TAC over-collateralization is the trust mechanism: rugs are
-slashed, slashed TAC flows to a pooled insurance reserve that
+The (TAC, tETH) LP over-collateralization is the trust mechanism: rugs
+are slashed, the slashed bond flows to a pooled insurance reserve that
 uniformly compensates all outstanding cBTC.tac holders. Force-close
 liquidates positions that fall below collateral threshold,
 maintaining aggregate solvency.

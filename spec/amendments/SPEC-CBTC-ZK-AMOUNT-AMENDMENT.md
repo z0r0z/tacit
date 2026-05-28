@@ -17,7 +17,7 @@
 > known fungibility weaknesses (slot operators can rug, breaking
 > per-share fungibility under privacy). The canonical activation
 > path is `SPEC-CBTC-TAC-AMENDMENT.md`, which wraps this machinery
-> in TAC over-collateralization to define `cBTC.tac`. The two-key
+> in (TAC, tETH) LP over-collateralization to define `cBTC.tac`. The two-key
 > construction (§5.24.0) and the wire formats / validator algorithms
 > defined here are reused by `SPEC-CBTC-TAC-AMENDMENT.md` under
 > bonded semantics.

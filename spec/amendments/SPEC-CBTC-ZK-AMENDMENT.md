@@ -75,22 +75,22 @@ at fixed denominations, which doesn't compose with standard AMM /
 lending / marketplace patterns expecting amount-granular fungible
 assets. The companion amendment `SPEC-CBTC-TAC-AMENDMENT.md` defines
 `cBTC.tac`, a fungible wrapped-BTC asset minted via LP-shaped deposit
-of cBTC.zk slot + TAC over-collateral. cBTC.tac is **not** trustless —
-it relies on TAC over-collateralization (MakerDAO-shape trust model) —
+of cBTC.zk slot + a (TAC, tETH) LP bond. cBTC.tac is **not** trustless —
+it relies on (TAC, tETH) LP over-collateralization (MakerDAO-shape trust model) —
 but it gives DeFi-native fungibility. The two variants coexist:
 cBTC.zk for trustless whole-slot UX, cBTC.tac for fungible AMM UX.
 Users self-select.
 
 **Comparison with adjacent designs:**
 
-| Property | cBTC.tac (TAC-bonded) | cBTC.zk (this amendment) |
+| Property | cBTC.tac ((TAC, tETH)-LP-bonded) | cBTC.zk (this amendment) |
 |---|---|---|
-| Custody | Per-user self-custody slot + TAC bond | Per-user self-custody slot, no co-signer |
+| Custody | Per-user self-custody slot + (TAC, tETH) LP bond | Per-user self-custody slot, no co-signer |
 | Redemption co-signer | None — depositor `r_btc` alone | None — note-holder alone |
 | Granularity | Amount-granular (fungible) | Unit-granular at fixed denominations |
 | Privacy on share-form ops | Tacit-asset mixer composition (real chain-graph unlinkability) | Protocol-tree layer only (which leaf is hidden); BTC layer per-slot UTXO is publicly trackable |
-| Lost-key consequence | Sats permanently locked + bond TAC eventually returns | Sats permanently locked |
-| Trust assumption at trade | TAC over-collateralization remains margined | secp256k1 + Groth16 + indexer rules |
+| Lost-key consequence | Sats permanently locked + bond LP eventually returns | Sats permanently locked |
+| Trust assumption at trade | (TAC, tETH) LP over-collateralization remains margined | secp256k1 + Groth16 + indexer rules |
 | AMM-poolable | Yes (standard tacit asset, fungible amounts) | Whole-slot only (orderbook / virtual-AMM) |
 
 cBTC.zk is the structurally-most-trustless point on this curve, at
@@ -967,7 +967,7 @@ and recipient detection. Unit-granular at fixed tier denominations.
 Maximally trustless given Bitcoin's current opcode set. Opcodes
 0x43–0x48.
 
-**Stage 2 — TAC-bonded fungible (cBTC.tac, SPEC-CBTC-TAC-AMENDMENT):**
+**Stage 2 — (TAC, tETH)-bonded fungible (cBTC.tac, SPEC-CBTC-TAC-AMENDMENT):**
 ships when the cBTC.zk orderbook produces enough organic price
 discovery to bootstrap a TAC/cBTC.zk pool. cBTC.tac is the fungible
 amount-granular wrapped BTC asset, minted via LP-shaped deposit

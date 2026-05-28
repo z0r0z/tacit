@@ -698,7 +698,7 @@ Out of scope, left for future amendments:
    surface (multisig key rotation under a chain-attested
    governance procedure). Out of scope for v1. (Note: the protocol-
    shipped wrappers `cBTC.zk` and `cBTC.tac` are non-federated —
-   self-custody slot and TAC-bonded fractional respectively — so
+   self-custody slot and (TAC, tETH)-LP-bonded fractional respectively — so
    this only matters for third-party ecosystem operators who choose
    to launch federated variants.)
 5. **Liquidity mining incentives** for cBTC-pool LPs. Pure dapp
@@ -720,7 +720,7 @@ Out of scope, left for future amendments:
    ticker their wrapper `cBTC` if no `.suffix` convention exists.
    Reference convention uses dotted suffixes — the protocol-shipped
    variants are `cBTC.zk` (self-custody slot, per
-   `SPEC-CBTC-ZK-AMENDMENT.md`) and `cBTC.tac` (TAC-bonded fractional,
+   `SPEC-CBTC-ZK-AMENDMENT.md`) and `cBTC.tac` (TAC/tETH-bonded fractional,
    per `SPEC-CBTC-TAC-AMENDMENT.md`). Ecosystem operators MAY launch
    their own variants under different suffixes (`cBTC.alice`,
    `cBTC.fed`, etc.) under their own trust models. The spec doesn't

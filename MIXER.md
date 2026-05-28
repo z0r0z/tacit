@@ -89,7 +89,7 @@ even though everything is on a public chain.
   reserved as Stage 3 of the cBTC.zk roadmap), or (b) a CoinSwap-style
   coordinator amendment built natively on tacit envelopes (separate
   follow-up). For amount-confidential BTC value that *does* compose with
-  the tacit-asset mixer, wrap to `cBTC.tac` (TAC-bonded fungible) and
+  the tacit-asset mixer, wrap to `cBTC.tac` ((TAC, tETH)-LP-bonded fungible) and
   deposit cBTC.tac into the regular mixer pool at the desired denomination.
 - **Not novel cryptography.** The circuit (Tornado-derived, Poseidon merkle
   tree + Groth16), the curve (BN254 / alt_bn128), the commitment scheme

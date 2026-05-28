@@ -1330,24 +1330,23 @@ function ctacVariantAssetId(denomSats) {
 // Per SPEC §5.40.2 manipulation resistance: filter dust (price band
 // 0.2×–5× of median) before averaging; CV > 0.30 → stale.
 // Per SPEC §5.40.3: if last observation age > STALE_PRICE_BLOCKS, refuse.
-async function ctacTwapSatsPerTac(env, network, sampleAtHeight, opts = {}) {
-  const TAC_ASSET_ID_HEX = opts.tacAssetIdHex || globalThis.TAC_ASSET_ID_HEX;
-  if (!TAC_ASSET_ID_HEX) {
-    // Caller is responsible for supplying TAC asset_id. Throwing here is the
-    // right fail-closed default: no oracle = no DEPOSIT / FORCE_CLOSE confirmation.
-    throw new Error('ctacTwapSatsPerTac: TAC_ASSET_ID_HEX not provided (set env or pass opts.tacAssetIdHex)');
-  }
+// Generalized TWAP: time-weighted average price (asset denominated in sats)
+// for ANY tradeable asset, read from its trade-event journal. The cBTC.tac
+// bond oracle uses it for the TAC leg today; once a tETH market exists it
+// also supplies the tETH/BTC leg of the (TAC, tETH) bond's dual-TWAP
+// valuation (SPEC-CBTC-TAC-COLLATERAL-AMENDMENT §5.52.3). Manipulation
+// resistance per SPEC §5.40.2/.3: dust band (0.2×–5× median) + CV>0.30 gate.
+async function twapSatsPerUnit(env, network, assetIdHex, sampleAtHeight, opts = {}) {
+  const aid = (assetIdHex || '').toLowerCase();
+  if (!/^[0-9a-f]{64}$/.test(aid)) throw new Error('twapSatsPerUnit: invalid asset_id');
+  const tag = `${aid.slice(0, 8)}…`;
   const windowBlocks = opts.windowBlocks || CTAC_TWAP_WINDOW_BLOCKS;
   // Trade events don't index by block height directly; they index by ts.
   // Approximate: 10-min blocks → window_seconds = windowBlocks × 600.
   const windowSecs = windowBlocks * 600;
-  // The sampling cutoff is the chain tip at sampleAtHeight − REORG_SAFETY_DEPTH.
-  // We approximate the tip-time by reading the journal's most-recent entry's ts.
-  const prefix = tradeEventPrefix(network, TAC_ASSET_ID_HEX);
+  const prefix = tradeEventPrefix(network, aid);
   const list = await env.REGISTRY_KV.list({ prefix, limit: 1000 });
-  if (!list.keys.length) {
-    throw new Error('ctacTwapSatsPerTac: no TAC trade events on record');
-  }
+  if (!list.keys.length) throw new Error(`twapSatsPerUnit(${tag}): no trade events on record`);
   // Parallelize the per-event KV.get. The prior sequential loop forced N
   // round-trip latencies in serial; this runs synchronously inside the
   // cBTC.tac deposit/withdraw pricing path (SPEC §5.40 TWAP oracle), so
@@ -1358,20 +1357,20 @@ async function ctacTwapSatsPerTac(env, network, sampleAtHeight, opts = {}) {
     if (!v || typeof v.ts !== 'number' || typeof v.price_sats !== 'number') continue;
     events.push({ ts: v.ts, price: v.price_sats });
   }
-  if (!events.length) throw new Error('ctacTwapSatsPerTac: no decodable TAC trade events');
+  if (!events.length) throw new Error(`twapSatsPerUnit(${tag}): no decodable trade events`);
   events.sort((a, b) => b.ts - a.ts); // newest first
   const newestTs = events[0].ts;
   // SPEC §5.40.3: refuse if newest is older than STALE_PRICE_BLOCKS * blocktime
   // The validator caller may use sampleAtHeight to derive its own threshold.
   const cutoffTs = newestTs - windowSecs;
   const inWindow = events.filter(e => e.ts >= cutoffTs);
-  if (!inWindow.length) throw new Error('ctacTwapSatsPerTac: window empty');
+  if (!inWindow.length) throw new Error(`twapSatsPerUnit(${tag}): window empty`);
   // Manipulation resistance: median + ±5× band filter (per SPEC §5.40.2 +
   // existing volume-track convention used by _chainDerivedTradePriceSats).
   const sorted = inWindow.map(e => e.price).sort((a, b) => a - b);
   const median = sorted[Math.floor(sorted.length / 2)];
   const filtered = inWindow.filter(e => e.price >= median * 0.2 && e.price <= median * 5);
-  if (!filtered.length) throw new Error('ctacTwapSatsPerTac: all observations outside median band');
+  if (!filtered.length) throw new Error(`twapSatsPerUnit(${tag}): all observations outside median band`);
   // Simple time-weighted average over filtered entries.
   // Weight = duration the price held until the next observation.
   filtered.sort((a, b) => a.ts - b.ts);
@@ -1389,8 +1388,21 @@ async function ctacTwapSatsPerTac(env, network, sampleAtHeight, opts = {}) {
   for (const e of filtered) varSum += (e.price - mean) ** 2;
   const variance = varSum / filtered.length;
   const cv = Math.sqrt(variance) / mean;
-  if (cv > 0.30) throw new Error(`ctacTwapSatsPerTac: CV ${cv.toFixed(3)} > 0.30 (oracle pause)`);
+  if (cv > 0.30) throw new Error(`twapSatsPerUnit(${tag}): CV ${cv.toFixed(3)} > 0.30 (oracle pause)`);
   return BigInt(Math.round(mean));
+}
+
+// TAC/BTC TWAP — the canonical cBTC.tac bond oracle (SPEC §5.40). Thin wrapper
+// over twapSatsPerUnit with the TAC asset_id; fail-closed if unset (no oracle =
+// no DEPOSIT / FORCE_CLOSE confirmation). Behavior unchanged from the prior
+// inline implementation — this is a pure extraction so the same machinery can
+// serve a future tETH/BTC TWAP (§5.52.11).
+async function ctacTwapSatsPerTac(env, network, sampleAtHeight, opts = {}) {
+  const TAC_ASSET_ID_HEX = opts.tacAssetIdHex || globalThis.TAC_ASSET_ID_HEX;
+  if (!TAC_ASSET_ID_HEX) {
+    throw new Error('ctacTwapSatsPerTac: TAC_ASSET_ID_HEX not provided (set env or pass opts.tacAssetIdHex)');
+  }
+  return twapSatsPerUnit(env, network, TAC_ASSET_ID_HEX, sampleAtHeight, opts);
 }
 
 // ============== cBTC.zk PER-SLOT COVERAGE CHECK (SPEC-CBTC-ZK §4.2.x.2) ==============

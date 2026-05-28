@@ -15,7 +15,7 @@
 > - **`cBTC.zk`** — self-custody slot wrapper (trustless whole-slot),
 >   defined in `SPEC-CBTC-ZK-AMENDMENT.md` and its companions
 >   (AMOUNT, FUNGIBILITY).
-> - **`cBTC.tac`** — TAC-bonded fractional wrapper (fungible
+> - **`cBTC.tac`** — (TAC, tETH)-LP-bonded fractional wrapper (fungible
 >   amount-granular), defined in `SPEC-CBTC-TAC-AMENDMENT.md`.
 >
 > Neither uses a multisig reserve or co-signer service. Both rely

@@ -32,8 +32,8 @@ Bitcoin meta-protocols:
   cryptographic primitives to lock and redeem BTC with no
   federation and no co-signer.
 - **Fungible wrapped BTC** — `cBTC.tac` composes a cBTC.zk anchor
-  with an LP-share lien on the canonical (cBTC.zk, TAC) AMM pool,
-  with TAC over-collateralization providing the bond. The
+  with an LP-share lien on the canonical (TAC, tETH) AMM pool,
+  with over-collateralization providing the bond. The
   collateral substrate is itself indexer-validated value (the same
   market-validated value any Rune carries), structurally aligned
   into the wrapping mechanism.
@@ -108,7 +108,7 @@ and pick from the explicitly-listed free slots. The legend:
 | `0x46` | `T_SLOT_SPLIT` | ✅ shipped | `SPEC-CBTC-ZK-FUNGIBILITY-AMENDMENT.md` §5.24 | Atomic 1→N slot split, ΣD_new = D_old. |
 | `0x47` | `T_SLOT_MERGE` | ✅ shipped | `SPEC-CBTC-ZK-FUNGIBILITY-AMENDMENT.md` §5.25 | Atomic N→1 slot merge, ΣD_old ≥ D_new. |
 | `0x48` | `T_SLOT_NOTE` | 🔒 reserved | `SPEC-CBTC-ZK-FUNGIBILITY-AMENDMENT.md` §5.26 | Encrypted slot note attachment. |
-| `0x49` | `T_CBTC_TAC_DEPOSIT` | ✅ shipped (v1 lien model) | `SPEC-CBTC-TAC-AMENDMENT.md` §5.47 | LP-share lien mint: cBTC.zk slot + LP-share lien on canonical (cBTC.zk, TAC) pool → cBTC.tac. |
+| `0x49` | `T_CBTC_TAC_DEPOSIT` | ✅ shipped (v1 lien model) | `SPEC-CBTC-TAC-AMENDMENT.md` §5.47 | LP-share lien mint: cBTC.zk slot (backing) + LP-share lien on canonical (TAC, tETH) pool → cBTC.tac. |
 | `0x4A` | `T_CBTC_TAC_WITHDRAW` | ✅ shipped (v1 lien model) | `SPEC-CBTC-TAC-AMENDMENT.md` §5.47 | Cooperative unwind: burn cBTC.tac → release LP-share lien + spend slot K_btc. |
 | `0x4B` | `T_CBTC_TAC_FORCE_CLOSE` | ✅ shipped (v1 lien model) | `SPEC-CBTC-TAC-AMENDMENT.md` §5.47 | Permissionless lien transfer to claim pool when LP-share BTC value < 1.2× slot. |
 | `0x4C` | `T_CTAC_LIEN_CLAIM` | ✅ shipped (v1 lien model) | `SPEC-CBTC-TAC-AMENDMENT.md` §5.47 | Burn cBTC.tac → mint pro-rata LP-share from claim pool. (Wire format preserved as `T_SHARE_SLASH_CLAIM`.) |
@@ -122,8 +122,8 @@ and pick from the explicitly-listed free slots. The legend:
 | `0x54` | `T_CUSD_TAC_DEPOSIT` | 📝 drafted | `SPEC-CUSD-TAC-AMENDMENT.md` §6.3 | Open cUSD.tac position. |
 | `0x55` | `T_CUSD_TAC_WITHDRAW` | 📝 drafted | `SPEC-CUSD-TAC-AMENDMENT.md` §6.4 | Close cUSD.tac position. |
 | `0x56` | `T_CUSD_TAC_FORCE_CLOSE` | 📝 drafted | `SPEC-CUSD-TAC-AMENDMENT.md` §6.5 | Permissionless cUSD.tac liquidation. |
-| `0x57` | `T_CBTC_TAC_DEPOSIT_ATOMIC` | ✅ shipped | `SPEC-CBTC-TAC-AMENDMENT.md` §5.48 | Atomic LP_ADD + cBTC.tac DEPOSIT — single envelope; depositor provides raw cBTC.zk + TAC inputs, worker LPs them and attaches lien on new LP-share UTXO and mints cBTC.tac. |
-| `0x58` | `T_CBTC_TAC_WITHDRAW_ATOMIC` | ✅ shipped | `SPEC-CBTC-TAC-AMENDMENT.md` §5.49 | Atomic cBTC.tac WITHDRAW + LP_REMOVE — single envelope; burns cBTC.tac, spends slot K_btc, removes the freed LP shares, pays out BTC + cBTC.zk + TAC. |
+| `0x57` | `T_CBTC_TAC_DEPOSIT_ATOMIC` | ✅ shipped | `SPEC-CBTC-TAC-AMENDMENT.md` §5.48 | Atomic LP_ADD + cBTC.tac DEPOSIT — single envelope; depositor provides the cBTC.zk backing slot + raw TAC + tETH bond-pool inputs, worker LPs the latter and attaches lien on the new LP-share UTXO and mints cBTC.tac. |
+| `0x58` | `T_CBTC_TAC_WITHDRAW_ATOMIC` | ✅ shipped | `SPEC-CBTC-TAC-AMENDMENT.md` §5.49 | Atomic cBTC.tac WITHDRAW + LP_REMOVE — single envelope; burns cBTC.tac, spends slot K_btc, removes the freed LP shares, pays out BTC + TAC + tETH. |
 | `0x59` | `T_CBTC_TAC_TOP_UP` | ✅ shipped | `SPEC-CBTC-TAC-AMENDMENT.md` §5.50 | Strengthen bond on an open cBTC.tac position (add LP-share collateral without touching the slot or the minted cBTC.tac). Lien-replacement under `commitmentForUtxo` enforcement. |
 | `0x5A` | `T_CBTC_TAC_BOND_RELEASE` | ✅ shipped | `SPEC-CBTC-TAC-AMENDMENT.md` §5.51 | Partial bond release on an open cBTC.tac position (release LP-share collateral while ratio stays above the maintenance floor). Symmetric inverse of §5.50. |
 | `0x5B` | `T_PREAUTH_BID` | ✅ shipped | `SPEC-PREAUTH-BID-AMENDMENT.md` §5.7.11 | Buyer-offline preauth bid. Symmetric counterpart to §5.7.8 preauth-sale: buyer pre-signs sats input + canonical bid-context OP_RETURN under `SIGHASH_SINGLE_ACP` (`0x83`), any seller appends asset UTXO + payout output and broadcasts. Reuses `T_AXFER` kernel-sig + Pedersen + bulletproof stack; only new validator rule is the OP_RETURN binding tying buyer's pre-sig to `(asset_id, recipient, amount, blinding, price_sats)`. Closes the "sells just work" UX gap where every existing bid path requires the buyer to be online. Family head for the **preauth/offline-trading block** (`0x5B`–`0x5E`). (Reassigned from initial `0x59` draft when the canonical opcode table was reconciled against shipped cBTC.tac extended ops.) |

@@ -3,7 +3,7 @@
 > **STATUS: DRAFT** (2026-05-17). Defines `cUSD.tac`, tacit's
 > canonical USD-pegged stablecoin. Mechanically parallel to
 > `cBTC.tac` (per `SPEC-CBTC-TAC-AMENDMENT.md`): users open a
-> position by locking a `cBTC.zk` slot + TAC over-collateral and
+> position by locking a `cBTC.zk` slot + a (TAC, tETH) LP bond and
 > minting cUSD.tac against the slot's BTC value at oracle-derived
 > USD price. The oracle is the on-chain `cBTC.tac/cUSD.tac` AMM pool
 > TWAP, externally anchored via arbitrage through the cBTC.zk → BTC
@@ -12,7 +12,7 @@
 > Companion to:
 > - `SPEC-CBTC-ZK-AMENDMENT.md` (whole-slot trustless wrapper —
 >   provides the slot primitive used as collateral)
-> - `SPEC-CBTC-TAC-AMENDMENT.md` (TAC-bonded fractional cBTC —
+> - `SPEC-CBTC-TAC-AMENDMENT.md` (TAC/tETH-bonded fractional cBTC —
 >   provides the other side of the canonical oracle AMM pool)
 > - `SPEC-GOVERNANCE-AMENDMENT.md` (governance framework — cUSD.tac
 >   parameters opt into bounded governance per §6.13)
@@ -30,7 +30,9 @@
 > cUSD.tac shares).
 >
 > **Trust profile.** cUSD.tac is over-collateralized in cBTC.zk slot
-> BTC + TAC bond. USD peg is maintained by external arbitrage
+> BTC + a bond that evolves to the same **(TAC, tETH) LP** bond as
+> cBTC.tac (`SPEC-CBTC-TAC-COLLATERAL-AMENDMENT.md` §5.52 — half-
+> exogenous, risk-priced by a governable IL-aware ratio). USD peg is maintained by external arbitrage
 > through the redemption chain (cUSD.tac → cBTC.tac → BTC → real
 > USD via off-tacit markets). Same MakerDAO-shape soundness as
 > cBTC.tac, with USD targeting instead of BTC targeting.
@@ -94,7 +96,7 @@ routes through cBTC.tac and the slot wrapper instead of through
 direct ETH custody. Peg robustness scales with the cBTC.tac/cUSD.tac
 pool's depth: deeper pool = tighter peg.
 
-The same TAC-bonded mechanics that power cBTC.tac power cUSD.tac.
+The same (TAC, tETH)-bonded mechanics that power cBTC.tac power cUSD.tac.
 Operators bond TAC, slashable on rug; force-close liquidates under-
 collateralized positions; pooled insurance compensates holders for
 any rug events. The structural symmetry with cBTC.tac means most
@@ -440,7 +442,12 @@ T_CUSD_TAC_FORCE_CLOSE
 ### 6.5.3 Cascade rate-limit + validator
 
 Same pattern as cBTC.tac force-close (`SPEC-CBTC-TAC-AMENDMENT.md`
-§5.37). The liquidator triggers, the indexer:
+§5.38). As with cBTC.tac, the bond → output-asset conversion SHOULD
+route through the covenant-free orderbook liquidation venue
+(`SPEC-LIQ-BID-AMENDMENT.md`, `T_PREAUTH_BID_ASSET` `0x5E`) settling in
+cUSD.tac — a competitive standing-bid auction rather than a reflexive
+AMM dump — degrading to early-slash when the bid book is thin. The
+liquidator triggers, the indexer:
 
 1. Verifies position state and current_ratio < LIQUIDATION_RATIO
 2. Applies cascade rate-limit (priority by lowest ratio, max
@@ -718,7 +725,7 @@ amendment_id = SHA256("SPEC-CUSD-TAC-AMENDMENT-v1")
   K_btc)
 - Retroactivity prohibition
 - Opcode assignments
-- The trust model itself (TAC-bonded, AMM-priced)
+- The trust model itself (TAC/tETH-bonded, AMM-priced)
 
 ---
 
@@ -810,7 +817,7 @@ architecture eliminates the need for them.
 
 cUSD.tac is tacit's canonical USD-pegged stablecoin, mechanically
 parallel to cBTC.tac. Users open a position by locking a cBTC.zk
-slot + TAC over-collateral and minting cUSD.tac. The peg is
+slot + a (TAC, tETH) LP bond and minting cUSD.tac. The peg is
 maintained by external arbitrage through the cBTC.tac/cUSD.tac AMM
 pool: arbitrageurs trading against external BTC/USD markets anchor
 the pool's price to USD reality, and the on-chain TWAP captures
@@ -824,7 +831,7 @@ recovery mode, governance scope) — they differ only in their output
 tokens and the specific AMM pool serving as their oracle.
 
 Trust profile:
-- TAC over-collateralization (slashable on rug)
+- (TAC, tETH) LP over-collateralization (slashable on rug)
 - AMM oracle (anchored by external arbitrage)
 - No federation, no attesters, no DLC, no oracle ceremony
 - Bounded TAC DAO governance with hard limits

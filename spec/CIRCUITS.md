@@ -121,7 +121,7 @@ anchored to one shared Bitcoin-block beacon at finalization; see
        │                                    for slot burn/rotate/
        │                                    split/merge)
        │
-       │  T_LP_ADD — mints LP-share of (cBTC.zk, TAC) pool
+       │  T_LP_ADD — mints LP-share of (TAC, tETH) pool
        ▼
    LP-share UTXO                       ◄── AMM-circuit family
        │                                   (amount confidentiality

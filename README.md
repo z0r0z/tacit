@@ -54,10 +54,10 @@ data alone. Tacit applies that pattern to a much wider surface:
   leaf's secret — one note, two locks, no federation and no
   co-signer.
 - **Fungible wrapped BTC.** `cBTC.tac` composes a cBTC.zk anchor
-  with an LP-share lien on the canonical (cBTC.zk, TAC) pool, so
+  with an LP-share lien on the canonical (TAC, tETH) pool, so
   amount-granular wrapped BTC is itself a standard tacit asset:
   CXFER it, swap it, LP it, mix it. Trustless on the anchor side,
-  over-collateralized in TAC on the fungibility side.
+  over-collateralized by a (TAC, tETH) LP on the fungibility side.
 - **Trustless wrapped ETH.** `tETH` deposits ETH on Ethereum into
   a Poseidon-Merkle mixer contract, mints composable tETH on
   Bitcoin via Groth16 proof, and withdraws back to Ethereum via
@@ -232,7 +232,7 @@ does the accounting; Bitcoin holds the data.
               │  cBTC.tac   │  composes both families:
               │             │  cBTC.zk slot (cryptographic anchor)
               │             │  + AMM LP-share lien (indexer-enforced
-              │             │  collateral, TAC over-collateralized)
+              │             │  collateral, (TAC,tETH)-LP over-collateralized)
               └─────────────┘
 
 (*) T_SWAP_VAR uses no Groth16 — Pedersen + bulletproof + kernel

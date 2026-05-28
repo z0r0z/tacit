@@ -24,8 +24,8 @@ under `spec/amendments/`.
   derived from a mixer leaf's secret. Unit-granular at fixed
   denominations; no federation, no co-signer.
 - **cBTC.tac** — fungible wrapped BTC. Standard tacit asset minted by
-  attaching an LP-share lien on the canonical (cBTC.zk, TAC) AMM
-  pool with TAC over-collateralization. Amount-granular; trustless
+  attaching an LP-share lien on the canonical (TAC, tETH) AMM
+  pool with over-collateralization. Amount-granular; trustless
   on the cBTC.zk anchor side, market-collateralized on the TAC
   fungibility side.
 - **TAC** — the protocol's native indexer-validated asset that backs
@@ -158,8 +158,8 @@ is a category error.
   (specifically, an LP-share UTXO backing a cBTC.tac position). The
   liened UTXO can be observed but tacit-aware wallets refuse to
   construct txs that spend it in lien-violating ways. Violations
-  are slashed (TAC bond moves to insurance pool, compensating
-  cBTC.tac holders). Distinct from a Bitcoin-consensus lock — same
+  are slashed (the (TAC, tETH) LP bond moves to the insurance pool,
+  compensating cBTC.tac holders). Distinct from a Bitcoin-consensus lock — same
   trust model that already makes Runes/Ordinals tradeable, applied
   to a restriction semantic.
 - **Bond** — separate concept from lien: an `T_LP_BOND` envelope
@@ -179,7 +179,7 @@ is a category error.
   Schnorr, sigma cross-curve binding (Fiat-Shamir under random
   oracle). What rules out inflation, double-spend, and recipient
   substitution.
-- **Economic** — TAC over-collateralization for cBTC.tac (MakerDAO-
+- **Economic** — (TAC, tETH) LP over-collateralization for cBTC.tac (MakerDAO-
   shape), slash-on-violation for liened LP-share UTXOs, tip
   competition for settlers, arbitrage realignment for AMM curation
   MEV. What aligns honest behavior when cryptography can't directly
