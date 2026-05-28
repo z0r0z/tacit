@@ -3,10 +3,9 @@ cache/
 out/
 /lib/
 
-# SP1 build artifacts
+# SP1 build artifacts (track source + lockfiles for reproducible clone builds)
 sp1/program/target/
-sp1/program/Cargo.lock
-sp1/script/
+sp1/script/target/
 
 # Compiler artifacts
 *.abi
