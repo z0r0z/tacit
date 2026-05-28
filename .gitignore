@@ -66,3 +66,6 @@ dapp/circuits/amm/dev-zkey/_wire_*.json
 
 # Signet e2e state (test/ephemeral wallet privs — regenerable, never commit).
 .local/
+
+# local testnet deployer key (never commit)
+contracts/.deployer.env

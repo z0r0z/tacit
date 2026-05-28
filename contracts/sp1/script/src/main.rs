@@ -9,6 +9,9 @@
 use sp1_sdk::blocking::prelude::*;
 use sp1_sdk::blocking::ProverClient;
 use reqwest::blocking::Client;
+use sha2::{Sha256, Digest};
+use sha3::Keccak256;
+use teth_tree::merkle;
 use std::env;
 use std::time::Duration;
 use std::thread;
@@ -92,6 +95,17 @@ fn fetch_bytes(http: &Client, bases: &[String], path: &str) -> Vec<u8> {
 
 fn main() {
     let args: Vec<String> = env::args().collect();
+
+    // `--keys`: print the two deploy inputs and exit. GROTH16_VK_HASH is the
+    // sha256 of the serialized groth16 VK exactly as fed to the guest; the SP1
+    // program vkey comes from `cargo prove vkey` on the same ELF.
+    if args.contains(&"--keys".to_string()) {
+        let vk_bytes = load_groth16_vk();
+        println!("GROTH16_VK_HASH=0x{}", hex::encode(Sha256::digest(&vk_bytes)));
+        println!("SP1_PROGRAM_VKEY: cargo prove vkey --elf ../program/target/elf-compilation/riscv64im-succinct-zkvm-elf/release/teth-pool-prover");
+        return;
+    }
+
     let start_height = parse_arg(&args, "--start-height").unwrap_or(0);
     let num_blocks = parse_arg(&args, "--num-blocks").unwrap_or(1);
     let execute_only = args.contains(&"--execute-only".to_string());
@@ -204,13 +218,17 @@ fn main() {
         stdin.write(&0u64);           // utxo count
     }
 
-    // 4. Per-denomination deposit roots
+    // 4. Per-denomination deposit roots — reconstructed from on-chain Deposit
+    //    events with the shared tree, self-checked against the mixer.
     let bases_eth = eth_rpc_bases();
+    let unit_scale = fetch_unit_scale(&http, &bases_eth, &mixer_addr);
+    let deploy_block = env::var("DEPLOY_BLOCK").unwrap_or_else(|_| "0x0".to_string());
     for i in 0..nd {
-        let roots = fetch_deposit_roots_for_denom(&http, &bases_eth, &mixer_addr, &denominations[i]);
+        let pool_id = compute_pool_id(&asset_id, &denominations[i], unit_scale);
+        let roots = fetch_deposit_roots_for_pool(&http, &bases_eth, &mixer_addr, &pool_id, &deploy_block);
         stdin.write(&(roots.len() as u32));
         for r in &roots { stdin.write(r); }
-        println!("  Deposit roots [denom {i}]: {}", roots.len());
+        println!("  Deposit roots [denom {i}]: {} (pool 0x{}…)", roots.len(), hex::encode(&pool_id[..6]));
     }
 
     // 5. VK + domain binding
@@ -353,55 +371,107 @@ fn eth_rpc_bases() -> Vec<String> {
     }
 }
 
-fn fetch_deposit_roots_for_denom(http: &Client, eth_rpcs: &[String], mixer_addr: &[u8], denom: &[u8]) -> Vec<Vec<u8>> {
-    let mixer_hex = hex::encode(mixer_addr).to_lowercase();
+fn keccak(data: &[u8]) -> [u8; 32] { Keccak256::digest(data).into() }
+fn selector(sig: &str) -> String { hex::encode(&keccak(sig.as_bytes())[..4]) }
 
-    // Per-denomination deposit roots: DEPOSIT_ROOTS_FILE keyed by denom hex,
-    // or POOL_IDS env to fetch getPoolRoot for each pool on-chain.
-    if let Ok(path) = env::var("DEPOSIT_ROOTS_FILE") {
-        if let Ok(data) = std::fs::read_to_string(&path) {
-            if let Ok(all) = serde_json::from_str::<serde_json::Value>(&data) {
-                let denom_hex = hex::encode(denom);
-                if let Some(roots_arr) = all[&denom_hex].as_array() {
-                    return roots_arr.iter()
-                        .filter_map(|v| v.as_str())
-                        .map(|s| hex::decode(s.trim_start_matches("0x")).unwrap_or_default())
-                        .filter(|r| r.len() == 32)
-                        .collect();
-                }
+/// Big-endian byte slice → u128 (low 16 bytes). Deposit denominations and the
+/// derived wei amounts fit comfortably in u128.
+fn u128_be(b: &[u8]) -> u128 {
+    let mut v = 0u128;
+    for &x in &b[b.len().saturating_sub(16)..] { v = (v << 8) | x as u128; }
+    v
+}
+
+fn rpc_post(http: &Client, rpcs: &[String], body: &serde_json::Value) -> Option<serde_json::Value> {
+    for rpc in rpcs {
+        if let Ok(resp) = http.post(rpc).json(body).timeout(Duration::from_secs(20)).send() {
+            if let Ok(j) = resp.json::<serde_json::Value>() {
+                if j.get("result").is_some() { return Some(j); }
             }
         }
     }
+    None
+}
 
-    // Fallback: call getPoolRoot for this denom's pool
-    let sel = "ee59a615"; // getPoolRoot(bytes32)
-    let pool_ids_env = env::var("POOL_IDS").ok();
-    if let Some(ref ids) = pool_ids_env {
-        let pool_id_list: Vec<&str> = ids.split(',').collect();
-        // Find the pool ID for this denomination by index matching
-        // (denominations and pool IDs are ordered the same way)
-        for rpc in eth_rpcs {
-            for pid in &pool_id_list {
-                let pid_clean = pid.trim().trim_start_matches("0x");
-                let call_body = serde_json::json!({
-                    "jsonrpc": "2.0", "id": 1, "method": "eth_call",
-                    "params": [{"to": format!("0x{mixer_hex}"), "data": format!("0x{sel}{pid_clean}")}, "latest"]
-                });
-                if let Ok(resp) = http.post(rpc).json(&call_body).timeout(Duration::from_secs(15)).send() {
-                    if let Ok(json) = resp.json::<serde_json::Value>() {
-                        if let Some(root_hex) = json["result"].as_str() {
-                            let root = hex::decode(root_hex.trim_start_matches("0x")).unwrap_or_default();
-                            if root.len() == 32 && root != vec![0u8; 32] {
-                                return vec![root];
-                            }
-                        }
-                    }
-                }
-            }
-            break;
-        }
+fn eth_call(http: &Client, rpcs: &[String], to_hex: &str, data_hex: &str) -> Option<Vec<u8>> {
+    let body = serde_json::json!({"jsonrpc":"2.0","id":1,"method":"eth_call",
+        "params":[{"to": to_hex, "data": data_hex}, "latest"]});
+    let j = rpc_post(http, rpcs, &body)?;
+    hex::decode(j["result"].as_str()?.trim_start_matches("0x")).ok()
+}
+
+fn fetch_unit_scale(http: &Client, rpcs: &[String], mixer: &[u8]) -> u128 {
+    let to = format!("0x{}", hex::encode(mixer));
+    match eth_call(http, rpcs, &to, &format!("0x{}", selector("UNIT_SCALE()"))) {
+        Some(r) if r.len() == 32 => { let v = u128_be(&r); if v == 0 { 1 } else { v } }
+        _ => 1,
     }
-    Vec::new()
+}
+
+/// poolId = keccak256(abi.encode(assetId, denominationWei)); the mixer keys pools
+/// by the wei denomination, so scale the 8-decimal tacit denom up by UNIT_SCALE.
+fn compute_pool_id(asset_id: &[u8], denom_tacit: &[u8], unit_scale: u128) -> [u8; 32] {
+    let wei = u128_be(denom_tacit).checked_mul(unit_scale).expect("denomWei overflow");
+    let mut buf = [0u8; 64];
+    buf[..32].copy_from_slice(&asset_id[..32]);
+    buf[48..64].copy_from_slice(&wei.to_be_bytes());
+    keccak(&buf)
+}
+
+/// Reconstruct a pool's deposit tree from its on-chain Deposit events (commitments
+/// in leaf order) using the shared tree, returning the root after each insertion —
+/// the full set of historically-valid roots a deposit envelope may reference. The
+/// result is self-checked against getPoolRoot / getRootAccumulator so missing logs
+/// or any divergence fail loudly rather than producing an unprovable batch.
+fn fetch_deposit_roots_for_pool(
+    http: &Client, rpcs: &[String], mixer: &[u8], pool_id: &[u8; 32], from_block: &str,
+) -> Vec<Vec<u8>> {
+    let to = format!("0x{}", hex::encode(mixer));
+    let body = serde_json::json!({"jsonrpc":"2.0","id":1,"method":"eth_getLogs","params":[{
+        "address": to,
+        "fromBlock": from_block,
+        "toBlock": "latest",
+        "topics": [
+            format!("0x{}", hex::encode(keccak(b"Deposit(bytes32,bytes32,uint256,uint256)"))),
+            format!("0x{}", hex::encode(pool_id)),
+        ]
+    }]});
+    let j = rpc_post(http, rpcs, &body).expect("eth_getLogs failed");
+    let logs = j["result"].as_array().cloned().unwrap_or_default();
+
+    // (leafIndex, commitment): leafIndex is the first data word, commitment is topic[2].
+    let mut entries: Vec<(u64, [u8; 32])> = Vec::new();
+    for log in &logs {
+        let topics = match log["topics"].as_array() { Some(t) if t.len() >= 3 => t, _ => continue };
+        let commit_hex = topics[2].as_str().unwrap_or("").trim_start_matches("0x");
+        let data = hex::decode(log["data"].as_str().unwrap_or("").trim_start_matches("0x")).unwrap_or_default();
+        if commit_hex.len() != 64 || data.len() < 32 { continue; }
+        let commit: [u8; 32] = hex::decode(commit_hex).unwrap().try_into().unwrap();
+        entries.push((u128_be(&data[..32]) as u64, commit));
+    }
+    entries.sort_by_key(|(idx, _)| *idx);
+
+    let mut tree = merkle::PoseidonTree::new();
+    let mut roots: Vec<Vec<u8>> = Vec::with_capacity(entries.len());
+    let mut acc = [0u8; 32];
+    for (_, commit) in &entries {
+        tree.insert(*commit);
+        let r = tree.root();
+        acc = Sha256::new().chain_update(acc).chain_update(r).finalize().into();
+        roots.push(r.to_vec());
+    }
+
+    // Self-check: reconstruction must match the mixer's authoritative state.
+    let pid = hex::encode(pool_id);
+    if !entries.is_empty() {
+        let on_root = eth_call(http, rpcs, &to, &format!("0x{}{}", selector("getPoolRoot(bytes32)"), pid)).unwrap_or_default();
+        assert!(on_root == tree.root(), "deposit-tree reconstruction != getPoolRoot (pool 0x{}…) — incomplete Deposit logs?", &pid[..8]);
+    }
+    let mut on_acc = eth_call(http, rpcs, &to, &format!("0x{}{}", selector("getRootAccumulator(bytes32)"), pid)).unwrap_or_default();
+    if on_acc.len() != 32 { on_acc = vec![0u8; 32]; }
+    assert!(on_acc == acc.to_vec(), "deposit accumulator != getRootAccumulator (pool 0x{}…)", &pid[..8]);
+
+    roots
 }
 
 fn load_groth16_vk() -> Vec<u8> {

@@ -5,8 +5,8 @@ edition = "2021"
 
 [dependencies]
 sp1-zkvm = "6.2"
+teth-tree = { path = "../tree" }
 sha2 = "0.10"
-light-poseidon = "0.3"
 ark-bn254 = "0.5"
 ark-ff = "0.5"
 ark-ec = "0.5"

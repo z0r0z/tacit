@@ -73,15 +73,17 @@ contract SP1PoolRootVerifierTest is Test {
         return new bytes32[](0);
     }
 
-    function _zeroBurnCounts() internal pure returns (uint8[] memory a) {
-        a = new uint8[](1);
-        a[0] = 0;
+    /// @dev Append the authenticated tail (NUM_DENOMS == 1): depositAcc | count | claims.
+    function _withTail(bytes memory head, bytes32 depositAcc, bytes32[] memory burns)
+        internal pure returns (bytes memory)
+    {
+        bytes memory pv = abi.encodePacked(head, depositAcc, uint32(burns.length));
+        for (uint256 i; i < burns.length; ++i) pv = abi.encodePacked(pv, burns[i]);
+        return pv;
     }
 
-    function _submitEmpty(bytes memory pv, bytes32 poolRoot, bytes32 depositAcc) internal {
-        verifier.proveStateTransition(
-            pv, "", _roots(poolRoot), _roots(depositAcc), _emptyBurns(), _zeroBurnCounts()
-        );
+    function _submitEmpty(bytes memory pv, bytes32 depositAcc) internal {
+        verifier.proveStateTransition(_withTail(pv, depositAcc, _emptyBurns()), "");
     }
 
     function _buildPV(
@@ -137,7 +139,7 @@ contract SP1PoolRootVerifierTest is Test {
             sha256(abi.encodePacked(_roots(bytes32(0))))
         );
         vm.expectRevert(SP1PoolRootVerifier.DomainMismatch.selector);
-        _submitEmpty(pv, bytes32(0), bytes32(0));
+        _submitEmpty(pv, bytes32(0));
     }
 
     function test_wrong_mixer_address_reverts() public {
@@ -148,7 +150,7 @@ contract SP1PoolRootVerifierTest is Test {
             emptyBurnsHash, denomsHash, sha256(abi.encodePacked(_roots(bytes32(0))))
         );
         vm.expectRevert(SP1PoolRootVerifier.DomainMismatch.selector);
-        _submitEmpty(pv, bytes32(0), bytes32(0));
+        _submitEmpty(pv, bytes32(0));
     }
 
     function test_wrong_chain_id_reverts() public {
@@ -159,7 +161,7 @@ contract SP1PoolRootVerifierTest is Test {
             emptyBurnsHash, denomsHash, sha256(abi.encodePacked(_roots(bytes32(0))))
         );
         vm.expectRevert(SP1PoolRootVerifier.DomainMismatch.selector);
-        _submitEmpty(pv, bytes32(0), bytes32(0));
+        _submitEmpty(pv, bytes32(0));
     }
 
     function test_wrong_asset_id_reverts() public {
@@ -170,7 +172,7 @@ contract SP1PoolRootVerifierTest is Test {
             emptyBurnsHash, denomsHash, sha256(abi.encodePacked(_roots(bytes32(0))))
         );
         vm.expectRevert(SP1PoolRootVerifier.DomainMismatch.selector);
-        _submitEmpty(pv, bytes32(0), bytes32(0));
+        _submitEmpty(pv, bytes32(0));
     }
 
     function test_wrong_vk_hash_reverts() public {
@@ -181,7 +183,7 @@ contract SP1PoolRootVerifierTest is Test {
             emptyBurnsHash, denomsHash, sha256(abi.encodePacked(_roots(bytes32(0))))
         );
         vm.expectRevert(SP1PoolRootVerifier.InvalidVkHash.selector);
-        _submitEmpty(pv, bytes32(0), bytes32(0));
+        _submitEmpty(pv, bytes32(0));
     }
 
     function test_wrong_genesis_reverts() public {
@@ -189,14 +191,14 @@ contract SP1PoolRootVerifierTest is Test {
         bytes memory pv = _validPV(bytes32(uint256(0xFF)), bytes32(0), bytes32(0));
         _set32(pv, 72, bytes32(uint256(0xBAD))); // wrong prev_block_hash
         vm.expectRevert(SP1PoolRootVerifier.StateMismatch.selector);
-        _submitEmpty(pv, bytes32(0), bytes32(0));
+        _submitEmpty(pv, bytes32(0));
     }
 
     function test_not_relay_tip_reverts() public {
         relay.setTip(bytes32(uint256(0xFF)));
         bytes memory pv = _validPV(bytes32(uint256(0xEE)), bytes32(0), bytes32(0)); // != tip
         vm.expectRevert(SP1PoolRootVerifier.NotRelayTip.selector);
-        _submitEmpty(pv, bytes32(0), bytes32(0));
+        _submitEmpty(pv, bytes32(0));
     }
 
     // ──── Root accumulator tests ────
@@ -211,7 +213,7 @@ contract SP1PoolRootVerifierTest is Test {
             emptyBurnsHash, denomsHash, sha256(abi.encodePacked(_roots(bytes32(0))))
         );
         vm.expectRevert(SP1PoolRootVerifier.InvalidDepositRoot.selector);
-        _submitEmpty(pv, bytes32(0), bytes32(uint256(0xBAD)));
+        _submitEmpty(pv, bytes32(uint256(0xBAD)));
     }
 
     function test_wrong_accumulator_vs_mixer_reverts() public {
@@ -227,7 +229,7 @@ contract SP1PoolRootVerifierTest is Test {
         );
         acc; // silence unused
         vm.expectRevert(SP1PoolRootVerifier.InvalidDepositRoot.selector);
-        _submitEmpty(pv, bytes32(0), wrongAcc);
+        _submitEmpty(pv, wrongAcc);
     }
 
     function test_valid_submission_succeeds() public {
@@ -238,7 +240,7 @@ contract SP1PoolRootVerifierTest is Test {
         // Compute the correct running accumulator matching the mixer.
         bytes32 acc = sha256(abi.encodePacked(bytes32(0), r1));
         bytes memory pv = _validPV(tipHash, bytes32(0), acc);
-        _submitEmpty(pv, bytes32(0), acc);
+        _submitEmpty(pv, acc);
         (bytes32 poolsHash,,,) = verifier.currentState();
         assertEq(poolsHash, sha256(abi.encodePacked(_roots(bytes32(0)))));
     }
@@ -248,15 +250,13 @@ contract SP1PoolRootVerifierTest is Test {
         relay.setTip(tipHash);
         bytes32[] memory burns = new bytes32[](1);
         burns[0] = bytes32(uint256(0xB04D));
-        uint8[] memory counts = new uint8[](1);
-        counts[0] = 1;
         bytes memory pv = _buildPV(
             tipHash, AID, NTAG, uint64(block.chainid),
             address(mixerMock), VK_HASH, sha256(abi.encodePacked(_roots(bytes32(0)))),
             bytes32(uint256(0xBAD)), denomsHash, sha256(abi.encodePacked(_roots(bytes32(0))))
         );
         vm.expectRevert(SP1PoolRootVerifier.InvalidProof.selector);
-        verifier.proveStateTransition(pv, "", _roots(bytes32(0)), _roots(bytes32(0)), burns, counts);
+        verifier.proveStateTransition(_withTail(pv, bytes32(0), burns), "");
     }
 
     function test_incremental_state_chaining() public {
@@ -271,7 +271,7 @@ contract SP1PoolRootVerifierTest is Test {
         _set32(pv1, 136, newNullHash);
         _setU64(pv1, 168, 5); // newHeight = 5
         _set32(pv1, 429, newCommitment); // newStateCommitment
-        _submitEmpty(pv1, newPoolRoot, bytes32(0));
+        _submitEmpty(pv1, bytes32(0));
         (bytes32 storedPools, bytes32 storedNull, uint64 storedHeight,) = verifier.currentState();
         assertEq(storedPools, newPoolsHash);
         assertEq(storedNull, newNullHash);
@@ -300,7 +300,7 @@ contract SP1PoolRootVerifierTest is Test {
         _set32(pv2, 333, tipHash2);       // lastBlockHash = new tip
         _set32(pv2, 365, denomsHash);
         _set32(pv2, 397, newCommitment);  // prevStateCommitment must match stored
-        _submitEmpty(pv2, nextPoolRoot, bytes32(0));
+        _submitEmpty(pv2, bytes32(0));
         (storedPools,, storedHeight,) = verifier.currentState();
         assertEq(storedPools, nextPoolsHash);
         assertEq(storedHeight, 8);
@@ -312,7 +312,7 @@ contract SP1PoolRootVerifierTest is Test {
         // First proof
         bytes memory pv1 = _validPV(tipHash, bytes32(uint256(0xAAA)), bytes32(0));
         _set32(pv1, 429, bytes32(uint256(0xCCC)));
-        _submitEmpty(pv1, bytes32(uint256(0xAAA)), bytes32(0));
+        _submitEmpty(pv1, bytes32(0));
         // Second proof with wrong prevPoolsHash — domain fields must be correct to reach state check
         bytes32 tipHash2 = bytes32(uint256(0xEE));
         relay.setTip(tipHash2);
@@ -326,7 +326,7 @@ contract SP1PoolRootVerifierTest is Test {
         _set32(pv2, 333, tipHash2);
         _set32(pv2, 365, denomsHash);
         vm.expectRevert(SP1PoolRootVerifier.StateMismatch.selector);
-        _submitEmpty(pv2, bytes32(0), bytes32(0));
+        _submitEmpty(pv2, bytes32(0));
     }
 
     function test_zero_genesis_constructor_reverts() public {

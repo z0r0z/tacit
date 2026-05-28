@@ -1,0 +1,14 @@
+[package]
+name = "teth-tree"
+version = "0.1.0"
+edition = "2021"
+
+# Poseidon hash + 20-level Merkle tree shared by the SP1 guest (proves pool state)
+# and the host (reconstructs the Ethereum deposit tree from on-chain events). One
+# implementation, so the host's reconstructed roots provably match the guest and
+# the on-chain mixer.
+[dependencies]
+sha2 = "0.10"
+light-poseidon = "0.3"
+ark-bn254 = "0.5"
+ark-ff = "0.5"

@@ -94,22 +94,18 @@ contract SP1PoolRootVerifier {
         currentState.lastBlockHash = genesisAnchorHash_;
     }
 
-    /// @param publicValues 461 bytes committed by the SP1 guest.
-    /// @param proofBytes   The SP1 proof.
-    /// @param poolRoots    Per-denomination new pool roots (length == NUM_DENOMS).
-    /// @param depositAccs  Per-denomination deposit root accumulators.
-    /// @param burnClaims   Flat array of all burn claim IDs across denominations.
-    /// @param burnCounts   Per-denomination count of claims in burnClaims.
+    /// @param publicValues SP1-committed public values: a fixed 461-byte head of
+    ///        state/domain hashes, then an authenticated tail this call consumes —
+    ///        deposit accumulators (checked against the mixer) and burn claim IDs
+    ///        (marked accepted). Tail layout, all SP1-authenticated:
+    ///        depositAccs[NUM_DENOMS*32] | counts[NUM_DENOMS*4 BE] | burnClaims[sum*32].
+    /// @param proofBytes   The SP1 proof over publicValues.
     function proveStateTransition(
         bytes calldata publicValues,
-        bytes calldata proofBytes,
-        bytes32[] calldata poolRoots,
-        bytes32[] calldata depositAccs,
-        bytes32[] calldata burnClaims,
-        uint8[] calldata burnCounts
+        bytes calldata proofBytes
     ) external {
         SP1_VERIFIER.verifyProof(PROGRAM_VKEY, publicValues, proofBytes);
-        if (publicValues.length != 461) revert InvalidProof();
+        if (publicValues.length < 461) revert InvalidProof();
 
         bytes32 prevPoolsHash; bytes32 prevNullRoot; uint64 prevHeight; bytes32 prevBlockHash;
         bytes32 newPoolsHash; bytes32 newNullRoot; uint64 newHeight;
@@ -159,37 +155,46 @@ contract SP1PoolRootVerifier {
         if (lastBlockHash == bytes32(0)) revert InvalidProof();
         if (lastBlockHash != RELAY.tip()) revert NotRelayTip();
 
-        uint8 nd = NUM_DENOMS;
-        require(poolRoots.length == nd && depositAccs.length == nd && burnCounts.length == nd);
+        uint256 nd = NUM_DENOMS;
 
-        // Verify per-denomination calldata against committed hashes.
-        if (_hashArray(poolRoots) != newPoolsHash) revert InvalidProof();
-        if (_hashArray(depositAccs) != depositAccsHash) revert InvalidDepositRoot();
+        // ── Authenticated tail: depositAccs[nd] | counts[nd] | burnClaims[sum] ──
+        // newPoolsHash is the proven new pool state and is stored directly; the pool
+        // roots themselves are never needed on-chain. depositAccs and the burn claims
+        // are read straight from the SP1-authenticated public values.
+        uint256 accsAt = 461;
+        uint256 countsAt = accsAt + nd * 32;
+        uint256 claimsAt = countsAt + nd * 4;
+        if (publicValues.length < claimsAt) revert InvalidProof();
 
-        // Verify each deposit accumulator against the mixer contract.
+        // Deposit accumulators: tie to the committed hash, then check each is fresh
+        // against the mixer (rejects a proof a later deposit has staled).
+        if (sha256(publicValues[accsAt:countsAt]) != depositAccsHash) revert InvalidDepositRoot();
         for (uint256 i; i < nd; ++i) {
-            if (depositAccs[i] != MIXER_CONTRACT.getRootAccumulator(poolIds[i])) revert InvalidDepositRoot();
+            if (_cd32(publicValues, accsAt + i * 32) != MIXER_CONTRACT.getRootAccumulator(poolIds[i])) {
+                revert InvalidDepositRoot();
+            }
         }
 
-        // Verify burns hash and accept claims.
+        // Burn claims: per-denom counts, then a flat run of claim IDs to accept.
         {
             bytes32[] memory burnBatches = new bytes32[](nd);
-            uint256 offset;
+            uint256 off = claimsAt;
             for (uint256 i; i < nd; ++i) {
-                uint256 cnt = burnCounts[i];
-                if (cnt == 0) {
-                    burnBatches[i] = bytes32(0);
-                } else {
-                    burnBatches[i] = sha256(abi.encodePacked(burnClaims[offset:offset + cnt]));
-                    for (uint256 j; j < cnt; ++j) {
-                        acceptedBurns[burnClaims[offset + j]] = true;
-                        emit BurnClaimAccepted(burnClaims[offset + j]);
-                    }
-                    offset += cnt;
+                uint256 cnt;
+                assembly { cnt := shr(224, calldataload(add(publicValues.offset, add(countsAt, mul(i, 4))))) }
+                if (cnt == 0) continue;
+                uint256 spanEnd = off + cnt * 32;
+                if (publicValues.length < spanEnd) revert InvalidProof();
+                burnBatches[i] = sha256(publicValues[off:spanEnd]);
+                for (uint256 j; j < cnt; ++j) {
+                    bytes32 claimId = _cd32(publicValues, off + j * 32);
+                    acceptedBurns[claimId] = true;
+                    emit BurnClaimAccepted(claimId);
                 }
+                off = spanEnd;
             }
             if (_hashArrayMem(burnBatches) != burnsHash) revert InvalidProof();
-            require(offset == burnClaims.length);
+            if (off != publicValues.length) revert InvalidProof();
         }
 
         currentState = ProvenState({
@@ -218,11 +223,11 @@ contract SP1PoolRootVerifier {
         return MIXER_CONTRACT.getRootAccumulator(poolId);
     }
 
-    function _hashArray(bytes32[] calldata arr) internal pure returns (bytes32) {
+    function _hashArrayMem(bytes32[] memory arr) internal pure returns (bytes32) {
         return sha256(abi.encodePacked(arr));
     }
 
-    function _hashArrayMem(bytes32[] memory arr) internal pure returns (bytes32) {
-        return sha256(abi.encodePacked(arr));
+    function _cd32(bytes calldata data, uint256 off) private pure returns (bytes32 v) {
+        assembly { v := calldataload(add(data.offset, off)) }
     }
 }

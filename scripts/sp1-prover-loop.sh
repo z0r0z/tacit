@@ -35,33 +35,31 @@ STATE_DIR="${STATE_DIR:-/workspace/prover-state}"
 BLOCKS_PER_PROOF="${BLOCKS_PER_PROOF:-10}"
 SLEEP_SECONDS="${SLEEP_SECONDS:-600}"
 
-# Network defaults
+# Network config
 NETWORK="${NETWORK:-signet}"
 if [[ "$NETWORK" == "mainnet" ]]; then
   BTC_API="${BTC_API:-https://mempool.space/api}"
   ETH_RPC="${ETH_RPC:-https://ethereum-rpc.publicnode.com}"
-  MIXER_ADDRESS="${MIXER_ADDRESS:?Set MIXER_ADDRESS for mainnet}"
-  VERIFIER_ADDRESS="${VERIFIER_ADDRESS:?Set VERIFIER_ADDRESS for mainnet}"
-  RELAY_ADDRESS="${RELAY_ADDRESS:?Set RELAY_ADDRESS for mainnet}"
-  ASSET_ID="${ASSET_ID:?Set ASSET_ID for mainnet}"
-  DENOMINATION="${DENOMINATION:?Set DENOMINATION for mainnet}"
-  POOL_ID="${POOL_ID:?Set POOL_ID for mainnet}"
-  DEPLOY_BLOCK="${DEPLOY_BLOCK:?Set DEPLOY_BLOCK for mainnet}"
   NETWORK_TAG=0
   CHAIN_ID=1
 else
   BTC_API="${BTC_API:-https://mempool.space/signet/api}"
   ETH_RPC="${ETH_RPC:-https://ethereum-sepolia-rpc.publicnode.com}"
-  MIXER_ADDRESS="${MIXER_ADDRESS:-13124e519c9c11ef200fc4c36ed5a7010750f00e}"
-  VERIFIER_ADDRESS="${VERIFIER_ADDRESS:-fe1670ea5173dbcfe2a9e936447854cc8e3a2d17}"
-  RELAY_ADDRESS="${RELAY_ADDRESS:-3337F06CddC27220D4A10dA41719869Fe9fF6690}"
   ASSET_ID="${ASSET_ID:-d903de2d2a7c1958f8ab3c4b9a91175ef3885027a24af306dead9e8f671a450b}"
-  DENOMINATION="${DENOMINATION:-00000000000000000000000000000000000000000000000000000000000186a0}"
-  POOL_ID="${POOL_ID:-0c5d21b00bbd6b38d324efe3cd640b5dc9fe6d4d210a2939963009148dd11eef}"
-  DEPLOY_BLOCK="${DEPLOY_BLOCK:-0xa6b8a5}"
   NETWORK_TAG=1
   CHAIN_ID=11155111
 fi
+
+# Deployment-specific — set to the current deployment (no stale defaults, no 0x).
+MIXER_ADDRESS="${MIXER_ADDRESS:?Set MIXER_ADDRESS (deployed mixer, no 0x)}"
+VERIFIER_ADDRESS="${VERIFIER_ADDRESS:?Set VERIFIER_ADDRESS (deployed SP1 verifier, no 0x)}"
+RELAY_ADDRESS="${RELAY_ADDRESS:?Set RELAY_ADDRESS (deployed relay, no 0x)}"
+ASSET_ID="${ASSET_ID:?Set ASSET_ID (asset id, no 0x)}"
+DEPLOY_BLOCK="${DEPLOY_BLOCK:?Set DEPLOY_BLOCK (ETH deploy block, hex)}"
+# Tacit-unit (8-dec) denominations the guest tracks, comma-separated.
+DENOMINATIONS="${DENOMINATIONS:-000186a0,00989680,05f5e100,3b9aca00,2540be400,174876e800}"
+# Optional: pool IDs for on-chain deposit-root fetch; else set DEPOSIT_ROOTS_FILE.
+POOL_IDS="${POOL_IDS:-}"
 
 ETH_PK="${ETH_PK:?Set ETH_PK (Ethereum private key for proof submission)}"
 SP1_PROVER="${SP1_PROVER:-cpu}"
@@ -89,15 +87,6 @@ get_last_proven_height() {
     cat "${STATE_DIR}/last_proven_block.txt"
   else
     echo "0"
-  fi
-}
-
-compute_deposit_roots() {
-  local roots_file="${STATE_DIR}/deposit_roots.txt"
-  if [[ -f "$roots_file" ]]; then
-    cat "$roots_file"
-  else
-    echo ""
   fi
 }
 
@@ -154,22 +143,20 @@ run_proof_cycle() {
 
   log "Proving blocks $start_height to $end_height ($num_blocks blocks)"
 
-  local deposit_roots
-  deposit_roots=$(compute_deposit_roots)
-
   cd "${REPO_DIR}/contracts/sp1/script"
   ASSET_ID="$ASSET_ID" \
   MIXER_ADDRESS="$MIXER_ADDRESS" \
-  DENOMINATION="$DENOMINATION" \
+  DENOMINATIONS="$DENOMINATIONS" \
+  NETWORK="$NETWORK" \
   NETWORK_TAG="$NETWORK_TAG" \
   CHAIN_ID="$CHAIN_ID" \
-  POOL_ID="$POOL_ID" \
   DEPLOY_BLOCK="$DEPLOY_BLOCK" \
   STATE_DIR="$STATE_DIR" \
   OUTPUT_DIR="$STATE_DIR" \
   ETH_RPC="$ETH_RPC" \
   SP1_PROVER="$SP1_PROVER" \
-  ${DEPOSIT_ROOTS:+DEPOSIT_ROOTS="$deposit_roots"} \
+  ${POOL_IDS:+POOL_IDS="$POOL_IDS"} \
+  ${DEPOSIT_ROOTS_FILE:+DEPOSIT_ROOTS_FILE="$DEPOSIT_ROOTS_FILE"} \
   cargo run --release --bin teth-prover -- \
     --start-height "$start_height" \
     --num-blocks "$num_blocks" \
@@ -185,7 +172,7 @@ run_proof_cycle() {
   log "Proof generated: ${proof_size} bytes"
 
   log "Submitting proof to Ethereum..."
-  submit_proof "proof.bin" "$start_height" "$num_blocks"
+  submit_proof
 
   echo "$end_height" > "${STATE_DIR}/last_proven_block.txt"
   mv proof.bin "${STATE_DIR}/proof_${start_height}_${end_height}.bin"
@@ -194,9 +181,6 @@ run_proof_cycle() {
 }
 
 submit_proof() {
-  local proof_file="$1"
-  local start_height="$2"
-  local num_blocks="$3"
   local pv_file="${STATE_DIR}/public_values.hex"
   local proof_hex_file="${STATE_DIR}/proof_bytes.hex"
 
@@ -209,37 +193,23 @@ submit_proof() {
   pv_hex=$(cat "$pv_file")
   proof_hex=$(cat "$proof_hex_file")
 
-  # Extract burn claim IDs from the proof's public values.
-  # The SP1 guest commits burn_nullifiers as SHA256(concat(claim_ids)).
-  # The burn claim IDs themselves are not in the public values — they must
-  # be tracked separately by the prover. For now, pass empty array (no burns
-  # in this batch) or read from state file.
-  local burn_claims="[]"
-  local burn_claims_file="${STATE_DIR}/pending_burn_claims.json"
-  if [[ -f "$burn_claims_file" ]]; then
-    burn_claims=$(cat "$burn_claims_file")
-    log "  Burn claims: $(echo "$burn_claims" | python3 -c 'import sys,json; print(len(json.load(sys.stdin)))' 2>/dev/null || echo '?')"
-  fi
-
+  # The deposit accumulators and burn claim IDs the verifier needs are committed
+  # in the authenticated tail of publicValues, so the call is just (pv, proof).
   log "Submitting proof to verifier 0x${VERIFIER_ADDRESS}..."
   log "  Public values: ${#pv_hex} hex chars"
   log "  Proof bytes: ${#proof_hex} hex chars"
 
-  # proveStateTransition(bytes publicValues, bytes proofBytes, bytes32[] burnClaimIds)
   local result
   result=$(cast send "0x${VERIFIER_ADDRESS}" \
-    'proveStateTransition(bytes,bytes,bytes32[])' \
+    'proveStateTransition(bytes,bytes)' \
     "0x${pv_hex}" \
     "0x${proof_hex}" \
-    "${burn_claims}" \
     --rpc-url "$ETH_RPC" \
     --private-key "$ETH_PK" \
-    --gas-limit 1000000 2>&1) || true
+    --gas-limit 1500000 2>&1) || true
 
   if echo "$result" | grep -q "status.*1"; then
     log "Proof accepted on-chain!"
-    # Clear pending burn claims
-    rm -f "$burn_claims_file"
   else
     log "Proof submission result:"
     echo "$result" | grep -E "status|transactionHash|error|revert" | head -5

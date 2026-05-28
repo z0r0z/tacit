@@ -5,9 +5,8 @@ use sp1_zkvm::io;
 use sha2::{Sha256, Digest};
 use std::collections::BTreeSet;
 
-mod poseidon;
+use teth_tree::merkle;
 mod bitcoin;
-mod merkle;
 mod groth16;
 mod secp;
 
@@ -456,6 +455,17 @@ pub fn main() {
     io::commit_slice(&denoms_hash);
     io::commit_slice(&prev_state_commitment);
     io::commit_slice(&new_state_commitment);
+
+    // ──── Commit submission tail (authenticated, read directly on-chain) ────
+    // The 461-byte head carries the compact state/domain hashes. proveStateTransition
+    // also needs the raw per-denomination deposit accumulators (to compare against the
+    // mixer) and burn claim IDs (to mark accepted burns). Commit them here so the
+    // verifier reads them straight from the authenticated public values — no calldata,
+    // no re-derivation. Verified against deposit_accs_hash / burns_hash in the head.
+    // Layout (after byte 461): deposit_accs[nd*32] | counts[nd*4 BE] | claims[sum*32]
+    for a in &deposit_root_accumulators { io::commit_slice(a); }
+    for bn in &burn_nullifiers { io::commit_slice(&(bn.len() as u32).to_be_bytes()); }
+    for bn in &burn_nullifiers { for c in bn { io::commit_slice(c); } }
 }
 
 // ──── Helpers ────

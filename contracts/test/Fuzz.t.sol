@@ -154,10 +154,7 @@ contract FuzzSP1Verifier is TestHelper {
             bytes32(uint256(0xBB))
         );
 
-        try verifier.proveStateTransition(
-            publicValues, "",
-            new bytes32[](1), new bytes32[](1), new bytes32[](0), new uint8[](1)
-        ) {
+        try verifier.proveStateTransition(publicValues, "") {
         } catch {
         }
     }

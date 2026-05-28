@@ -1,32 +1,40 @@
 #!/bin/bash
 set -euo pipefail
 
-# tETH Bridge: generate SP1 proof and submit to Sepolia
+# tETH Bridge: one-shot — generate an SP1 groth16 proof on a vast.ai instance for a
+# block range, download it, and submit to the on-chain verifier. For continuous
+# operation use sp1-prover-loop.sh (runs on the instance itself).
 #
-# Usage:
-#   ./scripts/prove-and-submit.sh --start <height> --blocks <n>
+# Prereqs: the instance is bootstrapped via scripts/vastai-setup.sh.
 #
-# Requirements:
-#   - VastAI instance running with SSH access
-#   - VASTAI_HOST, VASTAI_PORT env vars (or edit defaults below)
-#   - Sepolia deployer key for proof submission
+# Required env:
+#   VASTAI_HOST   ssh host of the prover instance
+#   VASTAI_PORT   ssh port
+#   ETH_PK        Ethereum key for proof submission (0x-prefixed)
+#   VERIFIER      deployed SP1PoolRootVerifier address
+#   MIXER_ADDRESS deployed TacitBridgeMixer address (no 0x)
+#   ASSET_ID      tETH asset id (0x-prefixed)
+# Optional env:
+#   ETH_RPC (default Sepolia public) | NETWORK (signet|mainnet) | NETWORK_TAG | CHAIN_ID
+#   VASTAI_USER (default root) | REMOTE_DIR
 
-# ──── Config ────
-VASTAI_HOST="${VASTAI_HOST:-ssh8.vast.ai}"
-VASTAI_PORT="${VASTAI_PORT:-22595}"
 VASTAI_USER="${VASTAI_USER:-root}"
+REMOTE_DIR="${REMOTE_DIR:-/workspace/tacit/contracts/sp1/script}"
+ETH_RPC="${ETH_RPC:-https://ethereum-sepolia-rpc.publicnode.com}"
+NETWORK="${NETWORK:-signet}"
+NETWORK_TAG="${NETWORK_TAG:-1}"
+CHAIN_ID="${CHAIN_ID:-11155111}"
 
-SEPOLIA_RPC="https://ethereum-sepolia-rpc.publicnode.com"
-SEPOLIA_PK="${SEPOLIA_PK:-0x950b04c07979d8ff19eb45fd1c14d4834a9b0b912a9744cb2b37593380b7b81b}"
-MIXER="0x4e3122970F321eD27840682af422d84Df48Fc7a7"
+: "${VASTAI_HOST:?Set VASTAI_HOST}"
+: "${VASTAI_PORT:?Set VASTAI_PORT}"
+: "${ETH_PK:?Set ETH_PK (Ethereum key for proof submission)}"
+: "${VERIFIER:?Set VERIFIER (deployed SP1PoolRootVerifier address)}"
+: "${MIXER_ADDRESS:?Set MIXER_ADDRESS (deployed mixer, no 0x)}"
+: "${ASSET_ID:?Set ASSET_ID (tETH asset id)}"
 
-ASSET_ID="0xd903de2d2a7c1958f8ab3c4b9a91175ef3885027a24af306dead9e8f671a450b"
-
-# ──── Parse args ────
 START_HEIGHT=""
 NUM_BLOCKS="1"
 EXECUTE_ONLY=""
-
 while [[ $# -gt 0 ]]; do
   case $1 in
     --start) START_HEIGHT="$2"; shift 2 ;;
@@ -35,63 +43,46 @@ while [[ $# -gt 0 ]]; do
     *) echo "Unknown: $1"; exit 1 ;;
   esac
 done
+[[ -n "$START_HEIGHT" ]] || { echo "Usage: $0 --start <height> --blocks <n> [--execute-only]"; exit 1; }
+MODE="${EXECUTE_ONLY:---onchain}"  # --execute-only if requested, else groth16 for on-chain
 
-if [[ -z "$START_HEIGHT" ]]; then
-  echo "Usage: $0 --start <height> --blocks <n> [--execute-only]"
-  exit 1
-fi
-
-echo "=== tETH SP1 Prover ==="
-echo "  Blocks: ${START_HEIGHT} to $((START_HEIGHT + NUM_BLOCKS - 1))"
-echo "  VastAI: ${VASTAI_USER}@${VASTAI_HOST}:${VASTAI_PORT}"
+echo "=== tETH SP1 Prover (vast.ai: ${VASTAI_USER}@${VASTAI_HOST}:${VASTAI_PORT}) ==="
+echo "  Blocks: ${START_HEIGHT}..$((START_HEIGHT + NUM_BLOCKS - 1))  Network: ${NETWORK}"
 echo ""
 
-# ──── Step 1: Run prover on VastAI ────
-echo "Step 1: Generating SP1 proof on VastAI..."
-
+# ──── Step 1: prove on the instance (pull latest guest first) ────
+echo "Step 1: Proving on vast.ai..."
 ssh -p "$VASTAI_PORT" "${VASTAI_USER}@${VASTAI_HOST}" bash -s <<EOF
 set -e
-cd /workspace/tacit/contracts/sp1/script 2>/dev/null || {
-  echo "Setting up environment..."
-  if ! command -v cargo &>/dev/null; then
-    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-    source ~/.cargo/env
-  fi
-  if ! command -v cargo-prove &>/dev/null; then
-    curl -L https://sp1up.succinct.xyz | bash
-    source ~/.bashrc
-    sp1up
-  fi
-  if [[ ! -d /workspace/tacit ]]; then
-    cd /workspace && git clone https://github.com/z0r0z/tacit
-  else
-    cd /workspace/tacit && git pull
-  fi
-  cd /workspace/tacit/contracts/sp1/program
-  ~/.sp1/bin/cargo-prove prove build
-  cd /workspace/tacit/contracts/sp1/script
-}
 source ~/.cargo/env 2>/dev/null || true
-SP1_PROVER=cpu cargo run --release -- --start-height ${START_HEIGHT} --num-blocks ${NUM_BLOCKS} ${EXECUTE_ONLY}
+export PATH="\$HOME/.sp1/bin:\$HOME/.foundry/bin:\$PATH"
+cd /workspace/tacit && git pull --ff-only
+cd contracts/sp1/program && cargo-prove prove build
+cd "$REMOTE_DIR"
+NETWORK="$NETWORK" NETWORK_TAG="$NETWORK_TAG" CHAIN_ID="$CHAIN_ID" \
+ASSET_ID="$ASSET_ID" MIXER_ADDRESS="$MIXER_ADDRESS" ETH_RPC="$ETH_RPC" \
+SP1_PROVER="\${SP1_PROVER:-cpu}" \
+cargo run --release --bin teth-prover -- --start-height ${START_HEIGHT} --num-blocks ${NUM_BLOCKS} ${MODE}
 EOF
 
 if [[ -n "$EXECUTE_ONLY" ]]; then
-  echo ""
-  echo "Execute-only mode — no proof to submit."
-  exit 0
+  echo ""; echo "Execute-only — no proof to submit."; exit 0
 fi
 
-# ──── Step 2: Download proof ────
-echo ""
-echo "Step 2: Downloading proof..."
-scp -P "$VASTAI_PORT" "${VASTAI_USER}@${VASTAI_HOST}:/workspace/tacit/contracts/sp1/script/proof.bin" ./proof.bin
-echo "  Downloaded: proof.bin ($(wc -c < proof.bin) bytes)"
+# ──── Step 2: download proof artifacts ────
+echo ""; echo "Step 2: Downloading proof artifacts..."
+scp -P "$VASTAI_PORT" \
+  "${VASTAI_USER}@${VASTAI_HOST}:${REMOTE_DIR}/public_values.hex" \
+  "${VASTAI_USER}@${VASTAI_HOST}:${REMOTE_DIR}/proof_bytes.hex" .
+echo "  public_values.hex: $(( $(wc -c < public_values.hex) / 2 )) bytes"
+echo "  proof_bytes.hex:   $(( $(wc -c < proof_bytes.hex) / 2 )) bytes"
 
-# ──── Step 3: Submit to Sepolia ────
-echo ""
-echo "Step 3: Submitting proof to Sepolia..."
-echo "  (TODO: encode public values + call proveStateTransition)"
-echo "  Proof file: ./proof.bin"
-echo "  Mixer: ${MIXER}"
-echo ""
-echo "=== Done ==="
+# ──── Step 3: submit (depositAccs + burn claims ride in the authenticated PV tail) ────
+echo ""; echo "Step 3: Submitting to verifier ${VERIFIER}..."
+cast send "$VERIFIER" 'proveStateTransition(bytes,bytes)' \
+  "0x$(cat public_values.hex)" \
+  "0x$(cat proof_bytes.hex)" \
+  --rpc-url "$ETH_RPC" --private-key "$ETH_PK" --gas-limit 1500000 \
+  | grep -E "status|transactionHash" | head -2
+
+echo ""; echo "=== Done ==="

@@ -5,6 +5,7 @@ import "forge-std/Script.sol";
 import "../src/TacitBridgeMixer.sol";
 import "../src/lib/BitcoinLightRelay.sol";
 import "../src/SP1PoolRootVerifier.sol";
+import "../src/Groth16Verifier.sol";
 
 contract MockSP1Verifier {
     function verifyProof(bytes32, bytes calldata, bytes calldata) external pure {}
@@ -61,10 +62,17 @@ contract DeployTestnet is Script {
 
         vm.startBroadcast(deployerKey);
 
-        MockSP1Verifier sp1Mock = new MockSP1Verifier();
-        MockBurnVerifier burnMock = new MockBurnVerifier();
-        console.log("MockSP1Verifier:", address(sp1Mock));
-        console.log("MockBurnVerifier:", address(burnMock));
+        // Real verifiers if provided (validates the mainnet proving path on signet),
+        // else mocks (dapp deposit-flow testing without running the SP1 prover).
+        address sp1Verifier = vm.envOr("SP1_VERIFIER", address(0));
+        bool realVerifier = sp1Verifier != address(0);
+        if (!realVerifier) sp1Verifier = address(new MockSP1Verifier());
+        address burnVerifier = vm.envOr("BURN_VERIFIER", address(0));
+        if (burnVerifier == address(0)) {
+            burnVerifier = realVerifier ? address(new Groth16Verifier()) : address(new MockBurnVerifier());
+        }
+        console.log("SP1 verifier:", sp1Verifier);
+        console.log("Burn verifier:", burnVerifier);
 
         TestnetLightRelay relay = new TestnetLightRelay();
         uint256 signetEpochStart = vm.envUint("BTC_GENESIS_EPOCH_START");
@@ -80,8 +88,8 @@ contract DeployTestnet is Script {
         // Placeholder domain values for testnet
         // tETH signet asset_id from CETCH reveal txid afbc72e0...
         bytes32 assetId = vm.envOr("TETH_ASSET_ID", bytes32(0xd903de2d2a7c1958f8ab3c4b9a91175ef3885027a24af306dead9e8f671a450b));
-        bytes32 programVKey = bytes32(uint256(1));
-        bytes32 groth16VkHash = bytes32(uint256(1));
+        bytes32 programVKey = vm.envOr("SP1_PROGRAM_VKEY", bytes32(uint256(1)));
+        bytes32 groth16VkHash = vm.envOr("GROTH16_VK_HASH", bytes32(uint256(1)));
 
         uint256[] memory denoms = new uint256[](6);
         denoms[0] = 0.001 ether;
@@ -103,7 +111,7 @@ contract DeployTestnet is Script {
         }
 
         SP1PoolRootVerifier verifier = new SP1PoolRootVerifier(
-            address(sp1Mock), address(relay), programVKey, predictedMixer,
+            sp1Verifier, address(relay), programVKey, predictedMixer,
             assetId, networkTag, groth16VkHash, poolIds, denomsTacit,
             signetTipHash
         );
@@ -113,7 +121,7 @@ contract DeployTestnet is Script {
         for (uint256 i; i < denoms.length; ++i) verifiers[i] = address(verifier);
 
         TacitBridgeMixer mixer = new TacitBridgeMixer(
-            address(relay), address(burnMock), address(0),
+            address(relay), burnVerifier, address(0),
             6, denoms, verifiers, networkTag, assetId
         );
         require(address(mixer) == predictedMixer, "nonce mismatch");
