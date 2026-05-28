@@ -36,6 +36,7 @@ globalThis.__TACIT_NO_INIT__ = true;
 
 import { randomBytes } from 'node:crypto';
 import { secp, sha256 } from '../dapp/vendor/tacit-deps.min.js';
+import { prfBytesToScalar as toValidScalar } from '../dapp/prf-wallet.js';
 const {
   btcWallet, extWallet, wallet,
   getActiveWalletMode,
@@ -63,7 +64,7 @@ const b64 = (bytes) => Buffer.from(bytes).toString('base64');
 const SIG_A = new Uint8Array(65).map((_, i) => (i * 7 + 11) & 0xff);
 const SIG_B = new Uint8Array(65).map((_, i) => (i * 13 + 3) & 0xff);
 
-const expectedPriv = (sig) => sha256(sig);
+const expectedPriv = (sig) => toValidScalar(sha256(sig));
 const expectedPubHex = (sig) => bytesToHex(secp.getPublicKey(expectedPriv(sig), true));
 
 let signerCalls = []; // [{ msg, kind }]

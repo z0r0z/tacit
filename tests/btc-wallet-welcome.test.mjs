@@ -37,6 +37,7 @@ globalThis.fetch = async () => ({ ok: false, status: 404, text: async () => 'den
 globalThis.__TACIT_NO_INIT__ = true; globalThis.__FLC_DEBUG__ = true;
 
 import { secp, sha256 } from '../dapp/vendor/tacit-deps.min.js';
+import { prfBytesToScalar as toValidScalar } from '../dapp/prf-wallet.js';
 const {
   btcWallet, extWallet, wallet,
   _runFirstLoadChoice, ensurePrivkey,
@@ -57,7 +58,7 @@ const tick = () => new Promise((r) => setTimeout(r, 0));
 // ---- deterministic signer (the only "live wallet" stand-in) ----
 const b64 = (bytes) => Buffer.from(bytes).toString('base64');
 const SIG_A = new Uint8Array(65).map((_, i) => (i * 7 + 11) & 0xff);
-const expectedPubHex = bytesToHex(secp.getPublicKey(sha256(SIG_A), true));
+const expectedPubHex = bytesToHex(secp.getPublicKey(toValidScalar(sha256(SIG_A)), true));
 let signerCalls = [];
 function installSigner() {
   signerCalls = [];
