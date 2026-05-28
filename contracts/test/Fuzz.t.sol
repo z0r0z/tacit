@@ -18,7 +18,9 @@ contract FuzzTacitBridgeMixer is TestHelper {
         MockGroth16Verifier v = new MockGroth16Verifier();
         poolId = keccak256(abi.encode(AID, DENOM));
         address predictedMixer = vm.computeCreateAddress(address(this), vm.getNonce(address(this)) + 1);
-        prv = new MockPoolRootVerifier(poolId, bytes32(DENOM / 1e10), AID, predictedMixer);
+        bytes32[] memory pids = new bytes32[](1);
+        pids[0] = poolId;
+        prv = new MockPoolRootVerifier(pids, AID, predictedMixer);
         uint256[] memory denoms = new uint256[](1);
         denoms[0] = DENOM;
         address[] memory verifiers = new address[](1);
@@ -32,7 +34,6 @@ contract FuzzTacitBridgeMixer is TestHelper {
     function testFuzz_withdrawFromBurn_arbitrary_tx(bytes calldata rawBtcTx) public {
         vm.deal(address(this), 10 ether);
         mixer.deposit{value: DENOM}(bytes32(uint256(42)), DENOM);
-        prv.setPoolRoot(bytes32(uint256(0xF00D)));
         bytes memory ph = _buildChain(bytes32(0), bytes32(uint256(1)), 4);
         try mixer.withdrawFromBurn(rawBtcTx, ph, 0, new bytes32[](0), 0) {
             // If it somehow succeeds, that's fine — mock verifiers accept everything
@@ -46,7 +47,6 @@ contract FuzzTacitBridgeMixer is TestHelper {
     function testFuzz_withdrawFromBurn_arbitrary_envelope(bytes calldata envelopeData) public {
         vm.deal(address(this), 10 ether);
         mixer.deposit{value: DENOM}(bytes32(uint256(42)), DENOM);
-        prv.setPoolRoot(bytes32(uint256(0xF00D)));
         if (envelopeData.length == 0) return;
         bytes memory env = envelopeData;
         bytes memory rawTx = _wrapInBtcTx(env);
@@ -86,7 +86,6 @@ contract FuzzTacitBridgeMixer is TestHelper {
     function testFuzz_burn_envelope_lengths(uint16 envLen) public {
         vm.deal(address(this), 10 ether);
         mixer.deposit{value: DENOM}(bytes32(uint256(42)), DENOM);
-        prv.setPoolRoot(bytes32(uint256(0xF00D)));
         uint256 len = uint256(envLen) % 600;
         if (len == 0) len = 1;
         bytes memory env = new bytes(len);
@@ -143,15 +142,22 @@ contract FuzzSP1Verifier is TestHelper {
         MockRelayForFuzz relay = new MockRelayForFuzz();
         MockMixerForFuzz mixerMock = new MockMixerForFuzz();
         bytes32 poolId = keccak256(abi.encode(bytes32(uint256(0xAA)), uint256(1 ether)));
+        bytes32[] memory pids = new bytes32[](1);
+        pids[0] = poolId;
+        bytes32[] memory denoms = new bytes32[](1);
+        denoms[0] = bytes32(uint256(1 ether) / 1e10);
 
         SP1PoolRootVerifier verifier = new SP1PoolRootVerifier(
             address(sp1), address(relay), bytes32(uint256(1)),
             address(mixerMock), bytes32(uint256(0xAA)), 0x00,
-            bytes32(uint256(0xDD)), poolId, bytes32(uint256(1 ether) / 1e10),
+            bytes32(uint256(0xDD)), pids, denoms,
             bytes32(uint256(0xBB))
         );
 
-        try verifier.proveStateTransition(publicValues, "", new bytes32[](0)) {
+        try verifier.proveStateTransition(
+            publicValues, "",
+            new bytes32[](1), new bytes32[](1), new bytes32[](0), new uint8[](1)
+        ) {
         } catch {
         }
     }

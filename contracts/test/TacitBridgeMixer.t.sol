@@ -30,8 +30,12 @@ contract TacitBridgeMixerTest is TestHelper {
         denoms[0] = DENOM_1ETH;
         denoms[1] = DENOM_01ETH;
         address predictedMixer = vm.computeCreateAddress(address(this), vm.getNonce(address(this)) + 2);
-        MockPoolRootVerifier prv1 = new MockPoolRootVerifier(poolId1ETH, bytes32(DENOM_1ETH / 1e10), AID, predictedMixer);
-        MockPoolRootVerifier prv2 = new MockPoolRootVerifier(poolId01ETH, bytes32(DENOM_01ETH / 1e10), AID, predictedMixer);
+        bytes32[] memory pids1 = new bytes32[](1);
+        pids1[0] = poolId1ETH;
+        bytes32[] memory pids2 = new bytes32[](1);
+        pids2[0] = poolId01ETH;
+        MockPoolRootVerifier prv1 = new MockPoolRootVerifier(pids1, AID, predictedMixer);
+        MockPoolRootVerifier prv2 = new MockPoolRootVerifier(pids2, AID, predictedMixer);
         address[] memory verifiers = new address[](2);
         verifiers[0] = address(prv1);
         verifiers[1] = address(prv2);
@@ -142,7 +146,9 @@ contract TacitBridgeMixerTest is TestHelper {
         MockGroth16Verifier v = new MockGroth16Verifier();
         bytes32 wrongPoolId = keccak256(abi.encode(AID, uint256(999 ether)));
         address predicted = vm.computeCreateAddress(address(this), vm.getNonce(address(this)) + 1);
-        MockPoolRootVerifier badPrv = new MockPoolRootVerifier(wrongPoolId, bytes32(DENOM_1ETH / 1e10), AID, predicted);
+        bytes32[] memory wrongPids = new bytes32[](1);
+        wrongPids[0] = wrongPoolId;
+        MockPoolRootVerifier badPrv = new MockPoolRootVerifier(wrongPids, AID, predicted);
         uint256[] memory d = new uint256[](1);
         d[0] = DENOM_1ETH;
         address[] memory vf = new address[](1);
@@ -208,7 +214,9 @@ contract TacitBridgeMixerERC20Test is TestHelper {
         uint256[] memory denoms = new uint256[](1);
         denoms[0] = DENOM;
         address predictedMixer = vm.computeCreateAddress(address(this), vm.getNonce(address(this)) + 1);
-        MockPoolRootVerifier prv = new MockPoolRootVerifier(poolId, bytes32(DENOM), AID, predictedMixer);
+        bytes32[] memory pids = new bytes32[](1);
+        pids[0] = poolId;
+        MockPoolRootVerifier prv = new MockPoolRootVerifier(pids, AID, predictedMixer);
         address[] memory verifiers = new address[](1);
         verifiers[0] = address(prv);
         mixer = new TacitBridgeMixer(address(relay), address(v), address(token), 6, denoms, verifiers, 0x00, AID);

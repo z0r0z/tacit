@@ -90,11 +90,11 @@ contract SP1PoolRootVerifier {
             poolIds.push(poolIds_[i]);
             denominations.push(denominations_[i]);
         }
-        DENOMS_HASH = _hashArray(denominations_);
+        DENOMS_HASH = _hashArrayMem(denominations_);
         currentState.lastBlockHash = genesisAnchorHash_;
     }
 
-    /// @param publicValues 393 bytes committed by the SP1 guest.
+    /// @param publicValues 461 bytes committed by the SP1 guest.
     /// @param proofBytes   The SP1 proof.
     /// @param poolRoots    Per-denomination new pool roots (length == NUM_DENOMS).
     /// @param depositAccs  Per-denomination deposit root accumulators.

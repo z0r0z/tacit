@@ -1,4 +1,5 @@
 use k256::elliptic_curve::sec1::FromEncodedPoint;
+use k256::elliptic_curve::PrimeField;
 use k256::{AffinePoint, EncodedPoint, ProjectivePoint, Scalar};
 use sha2::{Sha256, Digest};
 

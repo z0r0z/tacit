@@ -18,7 +18,9 @@ contract BridgeIntegrationTest is TestHelper {
         poolId = keccak256(abi.encode(AID, DENOM));
         // Predict mixer address: next deploy after prv is the mixer.
         address predictedMixer = vm.computeCreateAddress(address(this), vm.getNonce(address(this)) + 1);
-        prv = new MockPoolRootVerifier(poolId, bytes32(DENOM / 1e10), AID, predictedMixer);
+        bytes32[] memory pids = new bytes32[](1);
+        pids[0] = poolId;
+        prv = new MockPoolRootVerifier(pids, AID, predictedMixer);
         uint256[] memory denoms = new uint256[](1);
         denoms[0] = DENOM;
         address[] memory verifiers = new address[](1);
@@ -29,7 +31,6 @@ contract BridgeIntegrationTest is TestHelper {
     function test_full_deposit_and_withdrawal() public {
         vm.deal(address(this), 10 ether);
         mixer.deposit{value: DENOM}(bytes32(uint256(42)), DENOM);
-        prv.setPoolRoot(bytes32(uint256(0xF00D)));
         bytes memory rawTx = _makeBurnTx(bytes32(uint256(0xCAFE)), address(0xBEEF));
         bytes memory ph = _buildChain(bytes32(0), _dsha256(rawTx), 4);
         uint256 bal = address(0xBEEF).balance;
@@ -40,7 +41,6 @@ contract BridgeIntegrationTest is TestHelper {
     function test_double_withdrawal_reverts() public {
         vm.deal(address(this), 10 ether);
         mixer.deposit{value: DENOM}(bytes32(uint256(42)), DENOM);
-        prv.setPoolRoot(bytes32(uint256(0xF00D)));
         bytes memory rawTx = _makeBurnTx(bytes32(uint256(0xCAFE)), address(0xBEEF));
         bytes memory ph = _buildChain(bytes32(0), _dsha256(rawTx), 4);
         mixer.withdrawFromBurn(rawTx, ph, 0, new bytes32[](0), 0);
@@ -81,7 +81,9 @@ contract BridgeIntegrationTest is TestHelper {
     function test_unaccepted_burn_reverts() public {
         MockGroth16Verifier v = new MockGroth16Verifier();
         address predictedStrict = vm.computeCreateAddress(address(this), vm.getNonce(address(this)) + 1);
-        RejectingPoolRootVerifier rprv = new RejectingPoolRootVerifier(poolId, bytes32(DENOM / 1e10), AID, predictedStrict);
+        bytes32[] memory pids = new bytes32[](1);
+        pids[0] = poolId;
+        RejectingPoolRootVerifier rprv = new RejectingPoolRootVerifier(pids, AID, predictedStrict);
         uint256[] memory denoms = new uint256[](1);
         denoms[0] = DENOM;
         address[] memory verifiers = new address[](1);
@@ -99,13 +101,14 @@ contract BridgeIntegrationTest is TestHelper {
     function test_invalid_groth16_proof_reverts() public {
         RejectingGroth16Verifier badV = new RejectingGroth16Verifier();
         address predictedStrict = vm.computeCreateAddress(address(this), vm.getNonce(address(this)) + 1);
-        MockPoolRootVerifier prv2 = new MockPoolRootVerifier(poolId, bytes32(DENOM / 1e10), AID, predictedStrict);
+        bytes32[] memory pids = new bytes32[](1);
+        pids[0] = poolId;
+        MockPoolRootVerifier prv2 = new MockPoolRootVerifier(pids, AID, predictedStrict);
         uint256[] memory denoms = new uint256[](1);
         denoms[0] = DENOM;
         address[] memory verifiers = new address[](1);
         verifiers[0] = address(prv2);
         TacitBridgeMixer strict = new TacitBridgeMixer(address(relay), address(badV), address(0), 3, denoms, verifiers, 0x00, AID);
-        prv2.setPoolRoot(bytes32(uint256(0xF00D)));
         vm.deal(address(this), 10 ether);
         strict.deposit{value: DENOM}(bytes32(uint256(99)), DENOM);
         bytes memory env = _buildEnvelope(0x61, bytes32(uint256(0xCAFE)), address(0xBEEF), bytes32(uint256(0xF00D)), address(strict));
@@ -207,7 +210,6 @@ contract BridgeIntegrationTest is TestHelper {
     }
 
     function test_insufficient_balance_reverts() public {
-        prv.setPoolRoot(bytes32(uint256(0xF00D)));
         bytes memory rawTx = _makeBurnTx(bytes32(uint256(0xCAFE)), address(0xBEEF));
         bytes memory ph = _buildChain(bytes32(0), _dsha256(rawTx), 4);
         vm.expectRevert(TacitBridgeMixer.InsufficientPoolBalance.selector);
@@ -217,7 +219,6 @@ contract BridgeIntegrationTest is TestHelper {
     function test_zero_recipient_reverts() public {
         vm.deal(address(this), 10 ether);
         mixer.deposit{value: DENOM}(bytes32(uint256(42)), DENOM);
-        prv.setPoolRoot(bytes32(uint256(0xF00D)));
         bytes memory rawTx = _makeBurnTx(bytes32(uint256(0xCAFE)), address(0));
         bytes memory ph = _buildChain(bytes32(0), _dsha256(rawTx), 4);
         vm.expectRevert(TacitBridgeMixer.InvalidBurnProof.selector);
@@ -251,7 +252,6 @@ contract BridgeIntegrationTest is TestHelper {
     function test_tampered_bindhash_reverts() public {
         vm.deal(address(this), 10 ether);
         mixer.deposit{value: DENOM}(bytes32(uint256(42)), DENOM);
-        prv.setPoolRoot(bytes32(uint256(0xF00D)));
         bytes memory env = _buildEnvelope(0x61, bytes32(uint256(0xCAFE)), address(0xBEEF));
         env[247] ^= 0xff;
         bytes memory rawTx = _wrapInBtcTx(env);
@@ -263,7 +263,6 @@ contract BridgeIntegrationTest is TestHelper {
     function test_segwit_txid_computation() public {
         vm.deal(address(this), 10 ether);
         mixer.deposit{value: DENOM}(bytes32(uint256(42)), DENOM);
-        prv.setPoolRoot(bytes32(uint256(0xF00D)));
         bytes memory env = _buildEnvelope(0x61, bytes32(uint256(0xCAFE)), address(0xBEEF));
         bytes memory inner = _wrapInBtcTx(env);
         // Wrap as segwit: version + marker(00) + flag(01) + inputs + outputs + witness + locktime

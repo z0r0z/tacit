@@ -207,7 +207,7 @@ fn main() {
     // 4. Per-denomination deposit roots
     let bases_eth = eth_rpc_bases();
     for i in 0..nd {
-        let roots = fetch_deposit_roots_for_denom(&http, &bases_eth, &mixer_addr, &denominations[i], &asset_id);
+        let roots = fetch_deposit_roots_for_denom(&http, &bases_eth, &mixer_addr, &denominations[i]);
         stdin.write(&(roots.len() as u32));
         for r in &roots { stdin.write(r); }
         println!("  Deposit roots [denom {i}]: {}", roots.len());
@@ -353,13 +353,11 @@ fn eth_rpc_bases() -> Vec<String> {
     }
 }
 
-fn fetch_deposit_roots_for_denom(http: &Client, eth_rpcs: &[String], mixer_addr: &[u8], denom: &[u8], asset_id: &[u8]) -> Vec<Vec<u8>> {
+fn fetch_deposit_roots_for_denom(http: &Client, eth_rpcs: &[String], mixer_addr: &[u8], denom: &[u8]) -> Vec<Vec<u8>> {
     let mixer_hex = hex::encode(mixer_addr).to_lowercase();
-    let deploy_block = env::var("DEPLOY_BLOCK").unwrap_or_else(|_| "0x0".to_string());
-    let deposit_sig = "0x35a268a90c41b0181a3b58b12063b25c3597e0d085532dfff38eaf88e946c30e";
 
-    // Pool IDs can be passed via POOL_IDS env (comma-separated, ordered by denomination)
-    // or computed on-chain. For now, use DEPOSIT_ROOTS_FILE if available.
+    // Per-denomination deposit roots: DEPOSIT_ROOTS_FILE keyed by denom hex,
+    // or POOL_IDS env to fetch getPoolRoot for each pool on-chain.
     if let Ok(path) = env::var("DEPOSIT_ROOTS_FILE") {
         if let Ok(data) = std::fs::read_to_string(&path) {
             if let Ok(all) = serde_json::from_str::<serde_json::Value>(&data) {
@@ -378,7 +376,6 @@ fn fetch_deposit_roots_for_denom(http: &Client, eth_rpcs: &[String], mixer_addr:
     // Fallback: call getPoolRoot for this denom's pool
     let sel = "ee59a615"; // getPoolRoot(bytes32)
     let pool_ids_env = env::var("POOL_IDS").ok();
-    let denom_hex = hex::encode(denom);
     if let Some(ref ids) = pool_ids_env {
         let pool_id_list: Vec<&str> = ids.split(',').collect();
         // Find the pool ID for this denomination by index matching
@@ -535,6 +532,10 @@ fn load_cxfer_witnesses(start_height: u64) -> Vec<(u32, u32, Vec<(u64, Vec<u8>)>
     result
 }
 
+// Write counterpart to load_prover_state. Wiring this into the prove path
+// (reconstructing ProverState from the new committed state) enables incremental
+// proving across batches — currently each run re-derives from the state file.
+#[allow(dead_code)]
 fn save_prover_state(path: &str, state: &ProverState) {
     if let Some(d) = std::path::Path::new(path).parent() {
         std::fs::create_dir_all(d).ok();

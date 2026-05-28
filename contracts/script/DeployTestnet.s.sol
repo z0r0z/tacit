@@ -92,20 +92,25 @@ contract DeployTestnet is Script {
         denoms[5] = 100 ether;
 
         address deployer = vm.addr(deployerKey);
-        address predictedMixer = vm.computeCreateAddress(deployer, vm.getNonce(deployer) + denoms.length);
+        // One verifier covers all denominations, so the mixer is the next deploy after it.
+        address predictedMixer = vm.computeCreateAddress(deployer, vm.getNonce(deployer) + 1);
+
+        bytes32[] memory poolIds = new bytes32[](denoms.length);
+        bytes32[] memory denomsTacit = new bytes32[](denoms.length);
+        for (uint256 i; i < denoms.length; ++i) {
+            poolIds[i] = keccak256(abi.encode(assetId, denoms[i]));
+            denomsTacit[i] = bytes32(denoms[i] / 10_000_000_000);
+        }
+
+        SP1PoolRootVerifier verifier = new SP1PoolRootVerifier(
+            address(sp1Mock), address(relay), programVKey, predictedMixer,
+            assetId, networkTag, groth16VkHash, poolIds, denomsTacit,
+            signetTipHash
+        );
+        console.log("SP1PoolRootVerifier (all denoms):", address(verifier));
 
         address[] memory verifiers = new address[](denoms.length);
-        for (uint256 i; i < denoms.length; ++i) {
-            bytes32 poolId = keccak256(abi.encode(assetId, denoms[i]));
-            SP1PoolRootVerifier v = new SP1PoolRootVerifier(
-                address(sp1Mock), address(relay), programVKey, predictedMixer,
-                assetId, networkTag, groth16VkHash, poolId, bytes32(denoms[i] / 10_000_000_000),
-                signetTipHash
-            );
-            verifiers[i] = address(v);
-            console.log("Verifier [%s wei]:", denoms[i]);
-            console.log("  ", address(v));
-        }
+        for (uint256 i; i < denoms.length; ++i) verifiers[i] = address(verifier);
 
         TacitBridgeMixer mixer = new TacitBridgeMixer(
             address(relay), address(burnMock), address(0),

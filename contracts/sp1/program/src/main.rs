@@ -100,7 +100,7 @@ pub fn main() {
             s.insert(trees[i].root());
             known_pool_roots.push(s);
         }
-        let mut null_set_check = merkle::NullifierSet::from_sorted(prev_nullifiers.clone());
+        let null_set_check = merkle::NullifierSet::from_sorted(prev_nullifiers.clone());
         assert!(null_set_check.hash() == prev_null_hash32, "nullifier set hash mismatch");
         prev_state_commitment = compute_state_commitment_multi(
             &trees, &prev_null_hash32, prev_state_height,
