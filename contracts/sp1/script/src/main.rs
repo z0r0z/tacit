@@ -166,8 +166,10 @@ fn main() {
     let mixer_addr = env_hex_vec("MIXER_ADDRESS",
         "13124e519c9c11ef200fc4c36ed5a7010750f00e");
 
+    // 8-decimal tacit-unit denominations matching the deployed pools:
+    // 0.001 / 0.01 / 0.1 / 1 / 10 / 100 ETH = 1e5 / 1e6 / 1e7 / 1e8 / 1e9 / 1e10.
     let denoms_str = env::var("DENOMINATIONS").unwrap_or_else(|_|
-        "000186a0,00989680,05f5e100,3b9aca00,2540be400,174876e800".to_string()
+        "000186a0,000f4240,00989680,05f5e100,3b9aca00,02540be400".to_string()
     );
     let denominations: Vec<Vec<u8>> = denoms_str.split(',')
         .map(|s| { let mut v = hex::decode(s.trim().trim_start_matches("0x")).expect("denom hex"); while v.len() < 32 { v.insert(0, 0); } v })

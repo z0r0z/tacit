@@ -57,7 +57,7 @@ RELAY_ADDRESS="${RELAY_ADDRESS:?Set RELAY_ADDRESS (deployed relay, no 0x)}"
 ASSET_ID="${ASSET_ID:?Set ASSET_ID (asset id, no 0x)}"
 DEPLOY_BLOCK="${DEPLOY_BLOCK:?Set DEPLOY_BLOCK (ETH deploy block, hex)}"
 # Tacit-unit (8-dec) denominations the guest tracks, comma-separated.
-DENOMINATIONS="${DENOMINATIONS:-000186a0,00989680,05f5e100,3b9aca00,2540be400,174876e800}"
+DENOMINATIONS="${DENOMINATIONS:-000186a0,000f4240,00989680,05f5e100,3b9aca00,02540be400}"
 # Optional: pool IDs for on-chain deposit-root fetch; else set DEPOSIT_ROOTS_FILE.
 POOL_IDS="${POOL_IDS:-}"
 
