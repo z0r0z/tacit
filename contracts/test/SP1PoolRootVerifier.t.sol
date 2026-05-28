@@ -99,6 +99,9 @@ contract SP1PoolRootVerifierTest is Test {
         bytes32 newPoolsHash
     ) internal pure returns (bytes memory) {
         bytes memory pv = new bytes(461);
+        // genesis prevPoolsHash = hash of NUM_DENOMS (==1) zero-roots, matching the
+        // verifier's constructor init.
+        _set32(pv, 0, sha256(abi.encodePacked(new bytes32[](1))));
         _set32(pv, 72, GENESIS);
         _set32(pv, 104, newPoolsHash);
         _set32(pv, 176, depositAccsHash);

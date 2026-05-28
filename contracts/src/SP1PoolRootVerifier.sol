@@ -92,6 +92,10 @@ contract SP1PoolRootVerifier {
         }
         DENOMS_HASH = _hashArrayMem(denominations_);
         currentState.lastBlockHash = genesisAnchorHash_;
+        // Genesis pool state = NUM_DENOMS empty (zero) roots; the prover's first
+        // proof advances from this to the initialized empty-tree roots. Must equal
+        // the prover's genesis prev_pools_hash or the first proof reverts StateMismatch.
+        currentState.poolsHash = _hashArrayMem(new bytes32[](poolIds_.length));
     }
 
     /// @param publicValues SP1-committed public values: a fixed 461-byte head of
