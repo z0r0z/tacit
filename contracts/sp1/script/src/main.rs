@@ -262,9 +262,13 @@ fn main() {
     println!("  CXFER witnesses: {}", cxfer_witnesses.len());
 
     stdin.write(&(num_blocks as u32));
+    // Genesis: the first proof chains from the relay genesis block (the verifier's
+    // genesisAnchorHash). Feeding zeros would skip the chain check and mismatch the
+    // verifier's prev_block_hash. Override per-deployment with GENESIS_ANCHOR.
     let prev_block_hash = prev.as_ref()
         .map(|s| s.last_block_hash.clone())
-        .unwrap_or_else(|| vec![0u8; 32]);
+        .unwrap_or_else(|| env_hex32("GENESIS_ANCHOR",
+            "9adb35bb0996d74cf63498f0b60297ee85e44b18f0347e831f38710515000000"));
     stdin.write(&prev_block_hash);
 
     // 12+: block data

@@ -1,36 +1,29 @@
 #!/bin/bash
 set -euo pipefail
 
-# tETH Bridge: Continuous SP1 prover loop for vast.ai
+# tETH Bridge: continuous SP1 prover loop for vast.ai.
 #
-# Runs on the vast.ai instance itself. Continuously processes new Bitcoin
-# blocks, generates SP1 proofs, and submits them to the Ethereum verifier.
+# Runs on the instance. Each cycle advances the Bitcoin light relay to a bounded
+# target, generates an SP1 proof of the pool-state transition over exactly those
+# blocks (so lastBlockHash == RELAY.tip()), and submits it to the verifier.
 #
-# Setup (run once on the vast.ai instance):
-#   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-#   source ~/.cargo/env
-#   curl -L https://sp1up.succinct.xyz | bash && source ~/.bashrc && sp1up --version v6.2.2
-#   git clone https://github.com/z0r0z/tacit /workspace/tacit
-#   cd /workspace/tacit/contracts/sp1/program && ~/.sp1/bin/cargo-prove prove build
-#   cd /workspace/tacit/contracts/sp1/script && cargo build --release
-#   cp /workspace/tacit/scripts/sp1-prover-loop.sh /workspace/prover.sh
-#   chmod +x /workspace/prover.sh
+# Setup once: scripts/vastai-setup.sh (installs Rust + Foundry, builds the host
+# which embeds the committed canonical guest ELF — no SP1 toolchain / guest build).
 #
-# Usage:
-#   ETH_PK=0x... /workspace/prover.sh
-#
-# Env vars:
-#   ETH_PK              — Ethereum private key for submitting proofs (required)
-#   ETH_RPC             — Ethereum RPC (default: Sepolia public)
-#   NETWORK             — "signet" or "mainnet" (default: signet)
-#   BLOCKS_PER_PROOF    — blocks per proof batch (default: 10)
-#   SLEEP_SECONDS       — seconds between proof cycles (default: 600 = 10 min)
-#   STATE_DIR           — persistent state directory (default: /workspace/prover-state)
-#   SP1_PROVER          — "cpu" or "cuda" (default: cpu)
+# Required env:
+#   ETH_PK              Ethereum key for proof submission + relay advance
+#   MIXER_ADDRESS       deployed TacitBridgeMixer (no 0x)
+#   VERIFIER_ADDRESS    deployed SP1PoolRootVerifier (no 0x)
+#   RELAY_ADDRESS       deployed relay (no 0x)
+#   ASSET_ID            asset id (no 0x)
+#   DEPLOY_BLOCK        ETH deploy block (hex) — deposit-event scan start
+#   FIRST_DEPOSIT_BLOCK relay genesis height + 1 (first block the genesis proof covers)
+# Optional env:
+#   GENESIS_ANCHOR      relay genesis block hash (the guest's genesis prev_block)
+#   NETWORK (signet|mainnet) | ETH_RPC | BLOCKS_PER_PROOF (10) | CONFIRMATIONS (6)
+#   SLEEP_SECONDS (600) | STATE_DIR | SP1_PROVER (cpu|cuda) | POOL_IDS | DEPOSIT_ROOTS_FILE
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="${REPO_DIR:-/workspace/tacit}"
-PROVER_BIN="${REPO_DIR}/contracts/sp1/script/target/release/teth-prover"
 STATE_DIR="${STATE_DIR:-/workspace/prover-state}"
 BLOCKS_PER_PROOF="${BLOCKS_PER_PROOF:-10}"
 SLEEP_SECONDS="${SLEEP_SECONDS:-600}"
@@ -50,189 +43,108 @@ else
   CHAIN_ID=11155111
 fi
 
-# Deployment-specific — set to the current deployment (no stale defaults, no 0x).
+# Deployment-specific (no stale defaults, no 0x).
 MIXER_ADDRESS="${MIXER_ADDRESS:?Set MIXER_ADDRESS (deployed mixer, no 0x)}"
 VERIFIER_ADDRESS="${VERIFIER_ADDRESS:?Set VERIFIER_ADDRESS (deployed SP1 verifier, no 0x)}"
 RELAY_ADDRESS="${RELAY_ADDRESS:?Set RELAY_ADDRESS (deployed relay, no 0x)}"
 ASSET_ID="${ASSET_ID:?Set ASSET_ID (asset id, no 0x)}"
 DEPLOY_BLOCK="${DEPLOY_BLOCK:?Set DEPLOY_BLOCK (ETH deploy block, hex)}"
+FIRST_DEPOSIT_BLOCK="${FIRST_DEPOSIT_BLOCK:?Set FIRST_DEPOSIT_BLOCK (relay genesis height + 1)}"
+GENESIS_ANCHOR="${GENESIS_ANCHOR:-}"
+CONFIRMATIONS="${CONFIRMATIONS:-6}"
 # Tacit-unit (8-dec) denominations the guest tracks, comma-separated.
 DENOMINATIONS="${DENOMINATIONS:-000186a0,000f4240,00989680,05f5e100,3b9aca00,02540be400}"
-# Optional: pool IDs for on-chain deposit-root fetch; else set DEPOSIT_ROOTS_FILE.
 POOL_IDS="${POOL_IDS:-}"
 
-ETH_PK="${ETH_PK:?Set ETH_PK (Ethereum private key for proof submission)}"
+ETH_PK="${ETH_PK:?Set ETH_PK (Ethereum private key)}"
 SP1_PROVER="${SP1_PROVER:-cpu}"
 
 mkdir -p "$STATE_DIR"
-
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"; }
 
 get_relay_tip() {
-  local sel="0x37d0208c"  # tipHeight()
-  local result
-  result=$(curl -sf -X POST "$ETH_RPC" \
-    -H 'Content-Type: application/json' \
-    -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"eth_call\",\"params\":[{\"to\":\"0x${RELAY_ADDRESS}\",\"data\":\"${sel}\"},\"latest\"]}" \
-    | python3 -c "import sys,json; print(int(json.load(sys.stdin)['result'], 16))" 2>/dev/null)
-  echo "$result"
+  curl -sf -X POST "$ETH_RPC" -H 'Content-Type: application/json' \
+    -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"eth_call\",\"params\":[{\"to\":\"0x${RELAY_ADDRESS}\",\"data\":\"0x37d0208c\"},\"latest\"]}" \
+    | python3 -c "import sys,json; print(int(json.load(sys.stdin)['result'], 16))" 2>/dev/null
 }
-
-get_btc_tip() {
-  curl -sf "${BTC_API}/blocks/tip/height" 2>/dev/null
-}
-
+get_btc_tip() { curl -sf "${BTC_API}/blocks/tip/height" 2>/dev/null; }
 get_last_proven_height() {
-  if [[ -f "${STATE_DIR}/last_proven_block.txt" ]]; then
-    cat "${STATE_DIR}/last_proven_block.txt"
-  else
-    echo "0"
-  fi
-}
-
-advance_relay_if_needed() {
-  local relay_tip btc_tip
-  relay_tip=$(get_relay_tip)
-  btc_tip=$(get_btc_tip)
-  local target=$((relay_tip + BLOCKS_PER_PROOF + 7))
-
-  if [[ "$target" -gt "$btc_tip" ]]; then
-    log "Relay at $relay_tip, Bitcoin at $btc_tip — waiting for more blocks"
-    return 1
-  fi
-
-  local behind=$((btc_tip - relay_tip))
-  if [[ "$behind" -gt 6 ]]; then
-    log "Advancing relay from $relay_tip (behind by $behind blocks)..."
-    local headers=""
-    local count=$((behind > 20 ? 20 : behind))
-    for h in $(seq $((relay_tip + 1)) $((relay_tip + count))); do
-      local bh=$(curl -sf "${BTC_API}/block-height/$h")
-      local hdr=$(curl -sf "${BTC_API}/block/$bh/header")
-      headers+="$hdr"
-    done
-    cast send "0x${RELAY_ADDRESS}" 'advanceTip(bytes)' "0x${headers}" \
-      --rpc-url "$ETH_RPC" --private-key "$ETH_PK" --gas-limit 2000000 2>&1 | grep "status" || true
-    log "Relay advanced"
-  fi
-  return 0
-}
-
-run_proof_cycle() {
-  local last_proven start_height btc_tip num_blocks
-
-  last_proven=$(get_last_proven_height)
-  btc_tip=$(get_btc_tip)
-  local relay_tip=$(get_relay_tip)
-
-  if [[ "$last_proven" == "0" ]]; then
-    local first_deposit_block="${FIRST_DEPOSIT_BLOCK:-306106}"
-    start_height=$first_deposit_block
-  else
-    start_height=$((last_proven + 1))
-  fi
-
-  local available=$((relay_tip - start_height))
-  if [[ "$available" -lt 1 ]]; then
-    log "No new blocks to prove (start=$start_height, relay_tip=$relay_tip)"
-    return 1
-  fi
-
-  num_blocks=$((available > BLOCKS_PER_PROOF ? BLOCKS_PER_PROOF : available))
-  local end_height=$((start_height + num_blocks - 1))
-
-  log "Proving blocks $start_height to $end_height ($num_blocks blocks)"
-
-  cd "${REPO_DIR}/contracts/sp1/script"
-  ASSET_ID="$ASSET_ID" \
-  MIXER_ADDRESS="$MIXER_ADDRESS" \
-  DENOMINATIONS="$DENOMINATIONS" \
-  NETWORK="$NETWORK" \
-  NETWORK_TAG="$NETWORK_TAG" \
-  CHAIN_ID="$CHAIN_ID" \
-  DEPLOY_BLOCK="$DEPLOY_BLOCK" \
-  STATE_DIR="$STATE_DIR" \
-  OUTPUT_DIR="$STATE_DIR" \
-  ETH_RPC="$ETH_RPC" \
-  SP1_PROVER="$SP1_PROVER" \
-  ${POOL_IDS:+POOL_IDS="$POOL_IDS"} \
-  ${DEPOSIT_ROOTS_FILE:+DEPOSIT_ROOTS_FILE="$DEPOSIT_ROOTS_FILE"} \
-  cargo run --release --bin teth-prover -- \
-    --start-height "$start_height" \
-    --num-blocks "$num_blocks" \
-    --onchain 2>&1 | tee "${STATE_DIR}/last_proof.log"
-
-  if [[ ! -f "proof.bin" ]]; then
-    log "ERROR: proof.bin not generated"
-    return 1
-  fi
-
-  local proof_size
-  proof_size=$(wc -c < proof.bin)
-  log "Proof generated: ${proof_size} bytes"
-
-  log "Submitting proof to Ethereum..."
-  submit_proof
-
-  echo "$end_height" > "${STATE_DIR}/last_proven_block.txt"
-  mv proof.bin "${STATE_DIR}/proof_${start_height}_${end_height}.bin"
-
-  log "Cycle complete: blocks $start_height-$end_height proven and submitted"
+  [[ -f "${STATE_DIR}/last_proven_block.txt" ]] && cat "${STATE_DIR}/last_proven_block.txt" || echo "0"
 }
 
 submit_proof() {
-  local pv_file="${STATE_DIR}/public_values.hex"
-  local proof_hex_file="${STATE_DIR}/proof_bytes.hex"
-
-  if [[ ! -f "$pv_file" ]] || [[ ! -f "$proof_hex_file" ]]; then
-    log "ERROR: submission files not found (public_values.hex / proof_bytes.hex)"
-    return 1
-  fi
-
-  local pv_hex proof_hex
-  pv_hex=$(cat "$pv_file")
-  proof_hex=$(cat "$proof_hex_file")
-
-  # The deposit accumulators and burn claim IDs the verifier needs are committed
-  # in the authenticated tail of publicValues, so the call is just (pv, proof).
-  log "Submitting proof to verifier 0x${VERIFIER_ADDRESS}..."
-  log "  Public values: ${#pv_hex} hex chars"
-  log "  Proof bytes: ${#proof_hex} hex chars"
-
+  local pv proof
+  [[ -f "${STATE_DIR}/public_values.hex" && -f "${STATE_DIR}/proof_bytes.hex" ]] || { log "ERROR: submission files missing"; return 1; }
+  pv=$(cat "${STATE_DIR}/public_values.hex"); proof=$(cat "${STATE_DIR}/proof_bytes.hex")
+  # depositAccs + burn claims ride in the authenticated public-values tail → (pv, proof).
+  log "Submitting to verifier 0x${VERIFIER_ADDRESS} (pv ${#pv} hex, proof ${#proof} hex)..."
   local result
-  result=$(cast send "0x${VERIFIER_ADDRESS}" \
-    'proveStateTransition(bytes,bytes)' \
-    "0x${pv_hex}" \
-    "0x${proof_hex}" \
-    --rpc-url "$ETH_RPC" \
-    --private-key "$ETH_PK" \
-    --gas-limit 1500000 2>&1) || true
-
+  result=$(cast send "0x${VERIFIER_ADDRESS}" 'proveStateTransition(bytes,bytes)' \
+    "0x${pv}" "0x${proof}" --rpc-url "$ETH_RPC" --private-key "$ETH_PK" --gas-limit 1500000 2>&1) || true
   if echo "$result" | grep -q "status.*1"; then
     log "Proof accepted on-chain!"
   else
-    log "Proof submission result:"
-    echo "$result" | grep -E "status|transactionHash|error|revert" | head -5
+    log "Proof submission failed:"; echo "$result" | grep -E "status|transactionHash|error|revert|0x" | head -5
+    return 1
   fi
 }
 
-# ──── Main loop ────
+run_proof_cycle() {
+  local last_proven btc_tip start_height target max_confirmed relay_tip num_blocks
+  last_proven=$(get_last_proven_height)
+  btc_tip=$(get_btc_tip)
+  [[ -n "$btc_tip" ]] || { log "could not fetch Bitcoin tip"; return 1; }
 
-log "=== tETH SP1 Prover Loop ==="
-log "  Network: $NETWORK"
-log "  Prover: $SP1_PROVER"
-log "  Blocks/proof: $BLOCKS_PER_PROOF"
-log "  Sleep: ${SLEEP_SECONDS}s"
-log "  State: $STATE_DIR"
-log "  Mixer: 0x$MIXER_ADDRESS"
-log "  Verifier: 0x$VERIFIER_ADDRESS"
-log ""
+  if [[ "$last_proven" == "0" ]]; then start_height=$FIRST_DEPOSIT_BLOCK; else start_height=$((last_proven + 1)); fi
 
-while true; do
-  if advance_relay_if_needed; then
-    run_proof_cycle || log "Proof cycle skipped"
+  # Bounded batch ending exactly at the relay tip (verifier needs lastBlockHash == RELAY.tip()).
+  target=$((start_height + BLOCKS_PER_PROOF - 1))
+  max_confirmed=$((btc_tip - CONFIRMATIONS))
+  [[ "$target" -gt "$max_confirmed" ]] && target=$max_confirmed
+  if [[ "$target" -lt "$start_height" ]]; then
+    log "Waiting for confirmed Bitcoin blocks (start=$start_height, confirmed=$max_confirmed)"; return 1
   fi
 
+  # Advance the relay to exactly $target, in <=20-header chunks.
+  relay_tip=$(get_relay_tip)
+  while [[ "$relay_tip" -lt "$target" ]]; do
+    local chunk_end=$((relay_tip + 20)); [[ "$chunk_end" -gt "$target" ]] && chunk_end=$target
+    log "Advancing relay $relay_tip -> $chunk_end"
+    local headers=""
+    for h in $(seq $((relay_tip + 1)) "$chunk_end"); do
+      local bh; bh=$(curl -sf "${BTC_API}/block-height/$h")
+      headers+=$(curl -sf "${BTC_API}/block/$bh/header")
+    done
+    if ! cast send "0x${RELAY_ADDRESS}" 'advanceTip(bytes)' "0x${headers}" \
+        --rpc-url "$ETH_RPC" --private-key "$ETH_PK" --gas-limit 3000000 2>&1 | grep -q "status.*1"; then
+      log "Relay advance failed ($relay_tip -> $chunk_end)"; return 1
+    fi
+    relay_tip=$(get_relay_tip)
+  done
+
+  num_blocks=$((target - start_height + 1))
+  log "Proving blocks $start_height..$target ($num_blocks) up to relay tip"
+  cd "${REPO_DIR}/contracts/sp1/script"
+  ASSET_ID="$ASSET_ID" MIXER_ADDRESS="$MIXER_ADDRESS" DENOMINATIONS="$DENOMINATIONS" \
+  NETWORK="$NETWORK" NETWORK_TAG="$NETWORK_TAG" CHAIN_ID="$CHAIN_ID" DEPLOY_BLOCK="$DEPLOY_BLOCK" \
+  ${GENESIS_ANCHOR:+GENESIS_ANCHOR="$GENESIS_ANCHOR"} \
+  STATE_DIR="$STATE_DIR" OUTPUT_DIR="$STATE_DIR" ETH_RPC="$ETH_RPC" SP1_PROVER="$SP1_PROVER" \
+  ${POOL_IDS:+POOL_IDS="$POOL_IDS"} ${DEPOSIT_ROOTS_FILE:+DEPOSIT_ROOTS_FILE="$DEPOSIT_ROOTS_FILE"} \
+  cargo run --release --bin teth-prover -- \
+    --start-height "$start_height" --num-blocks "$num_blocks" --onchain 2>&1 | tee "${STATE_DIR}/last_proof.log"
+
+  [[ -f "${STATE_DIR}/public_values.hex" ]] || { log "ERROR: proof artifacts not generated"; return 1; }
+  submit_proof || return 1
+  echo "$target" > "${STATE_DIR}/last_proven_block.txt"
+  log "Cycle complete: blocks $start_height-$target proven and accepted"
+}
+
+log "=== tETH SP1 Prover Loop ==="
+log "  Network: $NETWORK | Prover: $SP1_PROVER | Blocks/proof: $BLOCKS_PER_PROOF"
+log "  Mixer 0x$MIXER_ADDRESS | Verifier 0x$VERIFIER_ADDRESS | Relay 0x$RELAY_ADDRESS"
+log ""
+while true; do
+  run_proof_cycle || log "Proof cycle skipped"
   log "Sleeping ${SLEEP_SECONDS}s..."
   sleep "$SLEEP_SECONDS"
 done
