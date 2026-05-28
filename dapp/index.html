@@ -7498,6 +7498,18 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
             <button id="btn-eth-disconnect" style="margin-top:10px;">Disconnect</button>
           </div>
 
+          <div id="btc-wallet-info" style="display:none;margin-bottom:14px;padding:10px 12px;background:var(--bg-alt);border:1px dashed var(--orange);">
+            <div style="font-size:11px;text-transform:uppercase;letter-spacing:0.1em;color:var(--orange);margin-bottom:6px;">Bitcoin-derived wallet</div>
+            <dl class="kv" style="grid-template-columns:90px 1fr;">
+              <dt>Provider</dt><dd><span id="btc-wallet-provider" class="mono-box inline">—</span></dd>
+              <dt>BTC address</dt><dd><div class="mono-box" id="btc-wallet-address">—</div></dd>
+            </dl>
+            <div class="muted" style="margin-top:8px;font-size:11px;line-height:1.5;">
+              Your tacit signing key is derived from your Bitcoin wallet signature. Reconnecting the same wallet and signing the derivation message recovers this identity on any device — no passphrase or backup needed.
+            </div>
+            <button id="btn-btc-id-disconnect" style="margin-top:10px;">Disconnect</button>
+          </div>
+
           <div id="passkey-wallet-info" style="display:none;margin-bottom:14px;padding:10px 12px;background:var(--bg-alt);border:1px dashed var(--orange);">
             <div style="font-size:11px;text-transform:uppercase;letter-spacing:0.1em;color:var(--orange);margin-bottom:6px;">Passkey wallet</div>
             <div id="passkey-wallet-list" style="margin-top:8px;"></div>
@@ -9440,6 +9452,10 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
       <button id="welcome-unisat" class="welcome-option" type="button">
         <span class="welcome-option-title">connect unisat</span>
         <span class="welcome-option-meta">same as above, bound to your unisat address.</span>
+      </button>
+      <button id="welcome-btc-id" class="welcome-option" type="button">
+        <span class="welcome-option-title">bitcoin wallet as identity</span>
+        <span class="welcome-option-meta">sign one message in Xverse / Leather / UniSat to derive a recoverable tacit identity — reconnect the same wallet on any device to restore it, no backup file or passphrase. If your wallet signs non-deterministically, this falls back to a funding wallet with a local key.</span>
       </button>
     </div>
     <div class="welcome-footer">
