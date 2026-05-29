@@ -197,3 +197,47 @@ limit, accepted like the reorg risk.
 - [ ] Reorg + exhaustion monitoring/runbook in place.
 
 Only with all boxes checked is the bridge ready for mainnet value.
+
+---
+
+## Handoff state (2026-05-29) — greenlight checklist
+
+**Where things stand:**
+- `main` @ `22086ad` (pushed): all bridge fixes + orderbook merged; 88 forge + 12 tree + 6 ceremony-pin green.
+- Guest **source is hardened**; T5 fractional send wired; deploy/CI guards in place.
+- The committed guest **ELF is still the OLD unhardened binary** (`dd37628d…`). The rebuilt hardened ELF exists on vast.ai but is **not yet committed** — Phase 0 below makes the hardening real.
+- Fund safety: **T1–T4 sound by design**. T5 fractional send: code-complete, **never validated live**.
+
+**Rebuilt-guest parameters (from vast.ai, to pin in Phase 0):**
+- `PROGRAM_VKEY` = `0x00cb226ed9b6e565f1230f47da2b0a31cf961ae96b5b1a8f09ce8fc459e21243`
+- ELF sha256 = `dfc84ff8…` (verify the full hash from the actual bytes on copy-in)
+- `GROTH16_VK_HASH` = `0x0eabe508c630aea06f0db1f05dbd456e9f82df739bcc84d644a7533db0691edb` (unchanged — burn vk is the ceremony Groth16 key, untouched by guest hardening)
+
+### Phase 0 — finish the ELF/pin commit (in flight)
+- [ ] Copy the rebuilt ELF from vast.ai into `contracts/sp1/program/elf/teth-pool-prover`.
+- [ ] Update `contracts/sp1/elf-vkey-pin.json`: `elf_sha256` = full `dfc84ff8…`, `program_vkey` = `0x00cb226e…21243`, `guest_state` → HARDENED.
+- [ ] `bash contracts/sp1/verify-vkey-pin.sh` passes (sha256 + vkey legs).
+- [ ] Commit the rebuilt ELF + pin **together**; push.
+
+### Phase 1 — testnet deploy (Sepolia + signet)
+- [ ] Deploy real verifiers, fail-closed (no `ALLOW_MOCK_VERIFIERS`): `SP1_VERIFIER`=Succinct gateway, `SP1_PROGRAM_VKEY`=`0x00cb226e…`, `GROTH16_VK_HASH`=`0x0eabe508…`, fresh ceremony `Groth16Verifier`. Mixer + verifier deploy atomically (address-bound).
+- [ ] Verify on-chain wiring by cast (BURN_VERIFIER, PROGRAM_VKEY, MIXER, SP1_VERIFIER == genuine gateway; deployed Groth16Verifier runtime VK == ceremony key).
+- [ ] Re-prove from genesis to the relay tip with the new ELF; `stateHeight` tracks tip.
+- [ ] Update dapp `TETH_DEPLOYMENTS` + e2e `MIXER_ADDRESS`.
+
+### Phase 2 — the two live validations (gate value; neither ever done live)
+- [ ] **3a** real `withdrawFromBurn` releases the exact denomination (revert `InvalidGroth16Proof` ⇒ G2/deploy wrong; `UnprovenRoot` ⇒ prover hasn't accepted).
+- [ ] **3b** Alice deposits 1 ETH → sends Bob 0.1 → Bob imports+burns → `withdrawFromBurn` releases 0.1 ETH; conservation checked.
+- [ ] `bridge-guards` CI green on the deployed artifacts.
+
+### Phase 3 — mainnet promotion (only after Phase 2)
+- [ ] Deploy the mainnet variant: **real `BitcoinLightRelay` with full PoW** (not `TestnetLightRelay`), mainnet Bitcoin genesis anchor, tETH asset etched on the target Bitcoin network, prover pointed at it. ⚠️ Confirm "mainnet" = Ethereum mainnet + Bitcoin **mainnet** settlement and stage the relay genesis + asset accordingly.
+- [ ] Re-run 3a + 3b with small real value on the mainnet stack.
+- [ ] Operational readiness: prover liveness monitoring; reorg-recovery runbook staged; tree-exhaustion monitor (~90% of 2²⁰ per denom); signet cron-freeze awareness.
+
+### Accepted risks (documented; sign off)
+- [ ] Deep reorg wedges state advancement (recovery = redeploy + re-prove). Accepted as rare.
+- [ ] Pool-tree exhaustion (depth-20, ~1M ops/denom — impractical to grief on mainnet; guest never burns a nullifier/UTXO on a full tree). Optional on-chain deposit-gate is a **post-launch** follow-up — NOT the timeout-reclaim, which can rug tETH (cross-chain mint-after-reclaim).
+- [ ] WD-1 worker leaf-omission mitigated by the integrity gate; multi-indexer resistance is a follow-up.
+
+**Greenlight = every box above checked.** The hard gates are Phase 0 (make the hardening real) and Phase 2 (the two live round-trips) — the things genuinely never exercised end to end.
