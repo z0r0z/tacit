@@ -9839,6 +9839,10 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
           <label style="font-size:11px;color:var(--ink-mid);">recipient tacit pubkey</label>
           <input type="text" id="bridge-send-recipient" placeholder="02..." style="width:100%;padding:10px;font-size:14px;font-family:var(--mono);margin-top:4px;">
         </div>
+        <div style="margin-bottom:8px;">
+          <label style="font-size:11px;color:var(--ink-mid);">amount (ETH) — blank sends the whole note; a smaller amount splits and sends a fraction</label>
+          <input type="text" id="bridge-send-amount" placeholder="0.1" style="width:100%;padding:10px;font-size:14px;font-family:var(--mono);margin-top:4px;">
+        </div>
         <button id="bridge-send-start" class="primary" style="width:100%;padding:12px;font-size:13px;background:#627eea;">Send tETH</button>
         <div id="bridge-send-status" class="muted" style="margin-top:8px;font-size:11px;line-height:1.5;"></div>
       </div>

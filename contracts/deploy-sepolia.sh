@@ -24,6 +24,20 @@ SIGNET_HEADER=$(curl -s "https://mempool.space/signet/api/block/${SIGNET_HASH}/h
 echo "  Signet tip: height=${SIGNET_TIP} hash=${SIGNET_HASH}"
 echo "  Header: ${SIGNET_HEADER:0:40}..."
 
+# Preflight: never deploy from a dirty bridge source tree, and verify the guest
+# ELF matches its pinned vkey. The committed source is the source of record CI
+# validates; a dirty tree could compile a different mixer than was reviewed.
+PREFLIGHT_DIR="$(cd "$(dirname "$0")" && pwd)"
+if [ -z "${ALLOW_DIRTY_DEPLOY:-}" ]; then
+  DIRTY=$(git -C "$PREFLIGHT_DIR" status --porcelain -- src/TacitBridgeMixer.sol src/SP1PoolRootVerifier.sol src/Groth16Verifier.sol sp1/program/src sp1/tree/src 2>/dev/null || true)
+  if [ -n "$DIRTY" ]; then
+    echo "REFUSING TO DEPLOY: bridge source tree is dirty:"; echo "$DIRTY"
+    echo "Commit the changes (let CI validate them), or set ALLOW_DIRTY_DEPLOY=1 to override."
+    exit 1
+  fi
+fi
+bash "$PREFLIGHT_DIR/sp1/verify-vkey-pin.sh"
+
 # Deploy contracts
 echo ""
 echo "Step 2: Deploying BitcoinHeaderRelay + TacitETHMixer to Sepolia..."

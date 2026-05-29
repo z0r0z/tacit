@@ -22,8 +22,20 @@ pub fn main() {
     for _ in 0..nd {
         let d: Vec<u8> = io::read();
         let d32: [u8; 32] = d.try_into().expect("denom 32");
+        // A denomination MUST fit in u64: export/import track UTXO amounts as u64
+        // (denom_u64s), so the low-64-bit value must faithfully represent the full
+        // 32-byte denom — otherwise two denoms colliding in their low 64 bits could
+        // let value cross between pools. Reject any high bits.
+        assert!(d32[0..24].iter().all(|&b| b == 0), "denomination exceeds u64");
         denom_u64s.push(u64::from_be_bytes(d32[24..32].try_into().unwrap()));
         denom_bytes.push(d32);
+    }
+    // Denominations must be pairwise distinct (both as full bytes and as the u64
+    // amount), so a UTXO of amount D imports into exactly one pool.
+    for i in 0..nd {
+        for j in (i + 1)..nd {
+            assert!(denom_u64s[i] != denom_u64s[j], "duplicate denomination");
+        }
     }
 
     // ──── Per-denomination previous pool state ────
@@ -332,6 +344,14 @@ pub fn main() {
                     let inputs = extract_export_public_inputs(envelope);
                     if !try_verify_groth16(&proof, &inputs, &prepared_vk) { continue; }
                     if !null_set.insert(env_nullifier) { continue; }
+                    // The UTXO's tracked amount is PINNED to the source pool's denom,
+                    // not to whatever env_recip_commit opens to. Conservation never
+                    // reads the commitment's value: CXFER conserves on tracked amounts
+                    // (this denom), and IMPORT only re-enters a pool whose denom equals
+                    // this amount. So an export commitment that doesn't open to denom
+                    // cannot create value — hence no Pedersen opening check here.
+                    // (The vout=1 slot assumes the dapp builds export as a single
+                    // operation per tx; it never co-emits a CXFER in the same tx.)
                     utxo_set.push((txid, 1u32, env_recip_commit, denom_u64s[di]));
                     transition_count += 1;
                 }
@@ -368,15 +388,24 @@ pub fn main() {
             }
             }
 
-            // CXFER conservation-verified tracking
+            // CXFER conservation-verified tracking.
+            // An untracked input at index 0 is tolerated (a plain Bitcoin fee
+            // input): it contributes 0 to tracked_input_sum, and conservation
+            // still requires out_sum == tracked_input_sum, so it cannot inject
+            // value. An untracked input at index > 0 disables tracking entirely.
             let inp_outpoints = bitcoin::extract_input_outpoints(&tx_data);
             let mut tracked_input_sum: u64 = 0;
             let mut has_tracked = false;
             let mut all_tracked = true;
             for (i, (it, iv)) in inp_outpoints.iter().enumerate() {
                 if let Some(idx) = utxo_set.iter().position(|(t, v, _, _)| t == it && *v == *iv) {
-                    tracked_input_sum += utxo_set[idx].3;
-                    has_tracked = true;
+                    // checked_add mirrors the output side; a wrap (unreachable with
+                    // real value, total tracked << 2^64) disables tracking rather
+                    // than silently aliasing a large sum to a small one.
+                    match tracked_input_sum.checked_add(utxo_set[idx].3) {
+                        Some(s) => { tracked_input_sum = s; has_tracked = true; }
+                        None => { all_tracked = false; }
+                    }
                 } else if i > 0 {
                     all_tracked = false;
                 }

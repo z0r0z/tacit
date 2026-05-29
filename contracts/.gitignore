@@ -6,6 +6,7 @@ out/
 # SP1 build artifacts (track source + lockfiles for reproducible clone builds)
 sp1/program/target/
 sp1/script/target/
+sp1/tree/target/
 
 # Compiler artifacts
 *.abi

@@ -1,0 +1,67 @@
+name: tETH bridge guards
+
+# Launch-gating guards for the tETH bridge. Fails the build if any of the
+# fund-safety regressions the audit fixed could reappear:
+#   - the real-ceremony-proof on-chain verifier path (the G2 coordinate order
+#     + the full withdrawFromBurn round-trip) — pins TacitBridgeMixer._verifyProof
+#   - the on-chain Groth16Verifier VK == the finalized ceremony key (no dev key)
+#   - the committed SP1 guest ELF == its pinned hash (vkey/ELF binding)
+#
+# These run on a clean checkout, so they validate the SOURCE OF RECORD — which
+# is exactly what a fresh clone / CI / mainnet deploy compiles. (The deploy
+# scripts additionally refuse a dirty working tree; see deploy-*.sh preflight.)
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'contracts/**'
+      - 'tests/ceremony-vk-pin.test.mjs'
+      - '.github/workflows/bridge-guards.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'contracts/**'
+      - 'tests/ceremony-vk-pin.test.mjs'
+      - '.github/workflows/bridge-guards.yml'
+  workflow_dispatch:
+
+jobs:
+  forge-real-proof:
+    name: Real-proof verifier + withdraw round-trip
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with: { submodules: recursive }
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+      - name: Real-ceremony-proof suites (G2 order + withdraw round-trip)
+        working-directory: contracts
+        run: |
+          forge test \
+            --match-contract "Groth16VerifierReal|BridgeWithdrawRealProof" \
+            -vvv
+      - name: Full contract suite (excludes long invariant runs)
+        working-directory: contracts
+        run: forge test --no-match-test invariant
+
+  vk-and-elf-pins:
+    name: Ceremony VK pin + ELF/vkey pin
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: tests/package-lock.json
+      - name: Install test deps
+        working-directory: tests
+        run: npm install --no-audit --no-fund --prefer-offline
+      - name: Ceremony VK pin (on-chain verifier == ceremony key, dev key absent)
+        run: node tests/ceremony-vk-pin.test.mjs
+      - name: SP1 guest ELF == pinned hash/vkey
+        run: bash contracts/sp1/verify-vkey-pin.sh

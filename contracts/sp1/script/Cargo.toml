@@ -22,3 +22,6 @@ path = "src/main.rs"
 [[bin]]
 name = "vkey"
 path = "src/vkey.rs"
+
+[profile.release]
+overflow-checks = true

@@ -143,6 +143,7 @@ contract TacitBridgeMixer is ReentrancyGuardTransient {
     ) {
         if (headerRelay_ == address(0) || burnVerifier_ == address(0)) revert ZeroAddress();
         require(confirmationDepth_ > 0);
+        require(denominations_.length > 0);
         require(denominations_.length == poolRootVerifiers_.length);
 
         HEADER_RELAY = BitcoinLightRelay(headerRelay_);
@@ -350,8 +351,13 @@ contract TacitBridgeMixer is ReentrancyGuardTransient {
         uint256 o = _OFF_PROOF;
         uint256[2] memory a; uint256[2][2] memory b; uint256[2] memory c;
         a[0]=_u(env,o); a[1]=_u(env,o+32);
-        b[0][0]=_u(env,o+64); b[0][1]=_u(env,o+96);
-        b[1][0]=_u(env,o+128); b[1][1]=_u(env,o+160);
+        // G2 b is packed in the envelope in snarkjs-native (c0,c1) order — the
+        // same order the SP1 guest reads. The bn254 pairing precompile (and this
+        // Groth16Verifier) expect each Fq2 coordinate in (c1,c0) order, so swap
+        // the halves here. Tests/Groth16VerifierReal.t.sol pins this: native
+        // order is rejected, swapped order is accepted by the real verifier.
+        b[0][0]=_u(env,o+96);  b[0][1]=_u(env,o+64);
+        b[1][0]=_u(env,o+160); b[1][1]=_u(env,o+128);
         c[0]=_u(env,o+192); c[1]=_u(env,o+224);
 
         uint256[5] memory pub;

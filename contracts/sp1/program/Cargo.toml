@@ -19,3 +19,8 @@ k256 = { version = "0.13", default-features = false, features = ["arithmetic"] }
 
 # SP1 patches for accelerated BN254 syscalls can be added when available.
 # Without patches, ark-bn254 runs in pure Rust (slower proofs, same correctness).
+
+# The guest is built in release mode (cargo prove build); enable overflow checks
+# so any non-checked arithmetic traps instead of wrapping silently in a proof.
+[profile.release]
+overflow-checks = true

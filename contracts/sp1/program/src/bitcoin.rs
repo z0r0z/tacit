@@ -61,6 +61,15 @@ pub fn extract_merkle_root(header: &[u8]) -> [u8; 32] {
 }
 
 pub fn bits_to_target(header: &[u8]) -> [u8; 32] {
+    // Decodes nBits to a 256-bit target and rejects negative/zero-mantissa and
+    // out-of-range exponents. Note: the per-network MAX_TARGET (difficulty floor)
+    // clamp is intentionally NOT applied here — it is enforced by the on-chain
+    // BitcoinLightRelay, which is the canonical chain/difficulty authority, and the
+    // guest's committed last_block_hash must equal RELAY.tip(). Replicating a
+    // network-specific MAX_TARGET in this generic guest would risk rejecting valid
+    // headers (signet's target floor is far easier than mainnet's). exp > 31 yields
+    // an all-zero target, which fails the PoW check below — consistent with the
+    // relay rejecting any target above MAX_TARGET.
     // bits at offset 72, little-endian u32.
     let bits = u32::from_le_bytes([header[72], header[73], header[74], header[75]]);
     let exp = (bits >> 24) as usize;

@@ -34,7 +34,10 @@ contract TestnetLightRelay is BitcoinLightRelay {
         if (target == 0) revert InvalidTarget();
         return target;
     }
-    function testnetGenesis(
+    // Not named with a `test` prefix: forge's fuzzer targets any external
+    // `test*` function, and a deploy-only initializer fuzzed with adversarial
+    // args is a spurious suite failure.
+    function initTestnetGenesis(
         uint256 epochStart, uint256 target, uint256 startTimestamp,
         bytes32 tipHash, uint256 tipHeight_, uint256 tipWork_
     ) external {
@@ -64,12 +67,25 @@ contract DeployTestnet is Script {
 
         // Real verifiers if provided (validates the mainnet proving path on signet),
         // else mocks (dapp deposit-flow testing without running the SP1 prover).
+        // Fail closed: mock verifiers accept any proof, so a value-bearing deploy
+        // that forgets SP1_VERIFIER/BURN_VERIFIER must NOT silently wire a mock.
+        // Mocks require an explicit ALLOW_MOCK_VERIFIERS=true opt-in (deposit-flow
+        // testing without the SP1 prover); never set that on a funded deployment.
+        bool allowMocks = vm.envOr("ALLOW_MOCK_VERIFIERS", false);
         address sp1Verifier = vm.envOr("SP1_VERIFIER", address(0));
         bool realVerifier = sp1Verifier != address(0);
-        if (!realVerifier) sp1Verifier = address(new MockSP1Verifier());
+        if (!realVerifier) {
+            require(allowMocks, "SP1_VERIFIER unset; set it or ALLOW_MOCK_VERIFIERS=true");
+            sp1Verifier = address(new MockSP1Verifier());
+        }
         address burnVerifier = vm.envOr("BURN_VERIFIER", address(0));
         if (burnVerifier == address(0)) {
-            burnVerifier = realVerifier ? address(new Groth16Verifier()) : address(new MockBurnVerifier());
+            if (realVerifier) {
+                burnVerifier = address(new Groth16Verifier());
+            } else {
+                require(allowMocks, "BURN_VERIFIER unset; set it or ALLOW_MOCK_VERIFIERS=true");
+                burnVerifier = address(new MockBurnVerifier());
+            }
         }
         console.log("SP1 verifier:", sp1Verifier);
         console.log("Burn verifier:", burnVerifier);
@@ -81,7 +97,7 @@ contract DeployTestnet is Script {
         bytes32 signetTipHash = vm.envBytes32("BTC_TIP_HASH");
         uint256 signetTipHeight = vm.envUint("BTC_TIP_HEIGHT");
         uint256 signetTipWork = vm.envUint("BTC_TIP_WORK");
-        relay.testnetGenesis(signetEpochStart, signetTarget, signetTimestamp,
+        relay.initTestnetGenesis(signetEpochStart, signetTarget, signetTimestamp,
                              signetTipHash, signetTipHeight, signetTipWork);
         console.log("BitcoinLightRelay:", address(relay));
 

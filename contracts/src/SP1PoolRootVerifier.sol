@@ -75,7 +75,7 @@ contract SP1PoolRootVerifier {
         if (sp1Verifier_ == address(0) || relay_ == address(0) || mixer_ == address(0)) revert ZeroAddress();
         if (programVKey_ == bytes32(0)) revert ZeroVKey();
         if (genesisAnchorHash_ == bytes32(0)) revert ZeroGenesis();
-        require(poolIds_.length == denominations_.length && poolIds_.length > 0);
+        require(poolIds_.length == denominations_.length && poolIds_.length > 0 && poolIds_.length <= 16);
         SP1_VERIFIER = ISP1Verifier(sp1Verifier_);
         RELAY = IRelay(relay_);
         MIXER_CONTRACT = IMixer(mixer_);

@@ -63,6 +63,20 @@ echo "  asset_id:   ${TETH_ASSET_ID}"
 echo "  relay tip:  ${BTC_TIP_HASH} @ ${BTC_TIP_HEIGHT}"
 echo ""
 
+# Preflight: never deploy from a dirty bridge source tree. The committed source
+# is the source of record CI validates; a dirty tree could compile a different
+# mixer than was reviewed (e.g. the withdrawal-bricking native G2 order). Also
+# verify the guest ELF still matches its pinned vkey.
+if [ -z "${ALLOW_DIRTY_DEPLOY:-}" ]; then
+  DIRTY=$(git status --porcelain -- src/TacitBridgeMixer.sol src/SP1PoolRootVerifier.sol src/Groth16Verifier.sol sp1/program/src sp1/tree/src 2>/dev/null || true)
+  if [ -n "$DIRTY" ]; then
+    echo "REFUSING TO DEPLOY: bridge source tree is dirty:"; echo "$DIRTY"
+    echo "Commit the changes (let CI validate them), or set ALLOW_DIRTY_DEPLOY=1 to override."
+    exit 1
+  fi
+fi
+bash sp1/verify-vkey-pin.sh
+
 forge script script/DeployTestnet.s.sol:DeployTestnet \
   --rpc-url "${SEPOLIA_RPC}" \
   --libraries "src/lib/PoseidonT3.sol:PoseidonT3:${POSEIDON_T3}" \
