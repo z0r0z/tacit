@@ -177,12 +177,41 @@ fn main() {
     let nd = denominations.len();
     println!("  Denominations: {nd}");
 
-    // ──── Load previous state (genesis if no state file) ────
-    let state_dir = env::var("STATE_DIR").unwrap_or_else(|_| ".sp1-state".to_string());
-    let state_path = format!("{state_dir}/prover_state.json");
-    let prev = load_prover_state(&state_path);
-    let is_genesis = prev.is_none();
-    println!("  State: {}", if is_genesis { "genesis" } else { "incremental" });
+    // ──── Determine previous state from the on-chain verifier ────
+    // No local state file: read the verifier's committed state and reconstruct
+    // the prev inputs. Supports genesis and the deposit-side regime (pool trees
+    // empty, null set empty — deposits are validated via the deposit-root set,
+    // not inserted into the pool tree). CXFER (pool tree grows) or withdrawals
+    // (null set grows) advance state this path can't yet rebuild — it asserts
+    // loudly there until the guest emits its state for persistence.
+    let verifier_addr = env_hex_vec("VERIFIER_ADDRESS",
+        "3d395b8310d241a1fbb6a544e36dfccdbbc51f5a");
+    let vstate = read_verifier_state(&http, &bases_eth, &verifier_addr);
+
+    let empty_tree = merkle::PoseidonTree::new();
+    let empty_root = empty_tree.root();
+    let empty_frontier = empty_tree.frontier();
+    let genesis_pools_hash: [u8; 32] = Sha256::digest(&vec![0u8; 32 * nd]).into();
+    let empty_pools_hash: [u8; 32] = {
+        let mut c = Vec::with_capacity(32 * nd);
+        for _ in 0..nd { c.extend_from_slice(&empty_root); }
+        Sha256::digest(&c).into()
+    };
+    let genesis_anchor = env_hex32("GENESIS_ANCHOR",
+        "9adb35bb0996d74cf63498f0b60297ee85e44b18f0347e831f38710515000000");
+
+    let (is_genesis, prev_block_hash, prev_height): (bool, Vec<u8>, u64) = match &vstate {
+        None => (true, genesis_anchor.clone(), 0),
+        Some((ph, _, _, _)) if *ph == genesis_pools_hash => (true, genesis_anchor.clone(), 0),
+        Some((ph, nh, h, lb)) => {
+            assert!(*ph == empty_pools_hash,
+                "verifier poolsHash advanced beyond empty trees (CXFER activity) — incremental pool-tree reconstruction not implemented (needs guest state emission)");
+            assert!(*nh == [0u8; 32],
+                "verifier nullifierSetHash != 0 (withdrawals occurred) — incremental nullifier-set reconstruction not implemented (needs guest state emission)");
+            (false, lb.to_vec(), *h)
+        }
+    };
+    println!("  State: {}", if is_genesis { "genesis" } else { "incremental (empty pools/null)" });
 
     // ──── Build SP1 stdin matching guest read order exactly ────
     let mut stdin = SP1Stdin::new();
@@ -192,41 +221,27 @@ fn main() {
     for d in &denominations { stdin.write(d); }
 
     // 2. Per-denomination previous pool state
-    if let Some(ref st) = prev {
-        assert!(st.pool_roots.len() == nd, "state denomination count mismatch");
-        for i in 0..nd {
-            stdin.write(&st.pool_roots[i]);
-            stdin.write(&st.pool_next_indices[i]);
-            for f in &st.pool_frontiers[i] { stdin.write(f); }
-        }
-    } else {
-        for _ in 0..nd {
+    for _ in 0..nd {
+        if is_genesis {
             stdin.write(&vec![0u8; 32]);
             stdin.write(&0u64);
-            for _ in 0..20 { stdin.write(&vec![0u8; 32]); }
+            for _ in 0..empty_frontier.len() { stdin.write(&vec![0u8; 32]); }
+        } else {
+            stdin.write(&empty_root.to_vec());
+            stdin.write(&0u64);
+            for f in &empty_frontier { stdin.write(&f.to_vec()); }
         }
     }
 
-    // 3. Shared previous state
-    if let Some(ref st) = prev {
-        stdin.write(&st.null_set_hash);
-        stdin.write(&st.state_height);
-        stdin.write(&(st.nullifiers.len() as u64));
-        for n in &st.nullifiers { stdin.write(n); }
-        stdin.write(&(st.utxo_set.len() as u64));
-        for (txid, vout, commit, amount) in &st.utxo_set {
-            stdin.write(txid); stdin.write(vout); stdin.write(commit); stdin.write(amount);
-        }
-    } else {
-        stdin.write(&vec![0u8; 32]); // null set hash
-        stdin.write(&0u64);           // state height
-        stdin.write(&0u64);           // null count
-        stdin.write(&0u64);           // utxo count
-    }
+    // 3. Shared previous state (null/utxo empty in both genesis and the
+    //    supported deposit-side incremental regime).
+    stdin.write(&vec![0u8; 32]); // null set hash
+    stdin.write(&prev_height);   // state height (read from the verifier)
+    stdin.write(&0u64);          // null count
+    stdin.write(&0u64);          // utxo count
 
     // 4. Per-denomination deposit roots — reconstructed from on-chain Deposit
     //    events with the shared tree, self-checked against the mixer.
-    let bases_eth = eth_rpc_bases();
     let unit_scale = fetch_unit_scale(&http, &bases_eth, &mixer_addr);
     let deploy_block = env::var("DEPLOY_BLOCK").unwrap_or_else(|_| "0x0".to_string());
     for i in 0..nd {
@@ -262,13 +277,8 @@ fn main() {
     println!("  CXFER witnesses: {}", cxfer_witnesses.len());
 
     stdin.write(&(num_blocks as u32));
-    // Genesis: the first proof chains from the relay genesis block (the verifier's
-    // genesisAnchorHash). Feeding zeros would skip the chain check and mismatch the
-    // verifier's prev_block_hash. Override per-deployment with GENESIS_ANCHOR.
-    let prev_block_hash = prev.as_ref()
-        .map(|s| s.last_block_hash.clone())
-        .unwrap_or_else(|| env_hex32("GENESIS_ANCHOR",
-            "9adb35bb0996d74cf63498f0b60297ee85e44b18f0347e831f38710515000000"));
+    // prev_block_hash: GENESIS_ANCHOR at true genesis, else the verifier's last
+    // proven block (read on-chain above) so the proof chains from it.
     stdin.write(&prev_block_hash);
 
     // 12+: block data
@@ -408,6 +418,21 @@ fn eth_call(http: &Client, rpcs: &[String], to_hex: &str, data_hex: &str) -> Opt
         "params":[{"to": to_hex, "data": data_hex}, "latest"]});
     let j = rpc_post(http, rpcs, &body)?;
     hex::decode(j["result"].as_str()?.trim_start_matches("0x")).ok()
+}
+
+// Read the verifier's committed ProvenState: (poolsHash, nullifierSetHash,
+// stateHeight, lastBlockHash). currentState() returns the four fields ABI-encoded
+// as 32-byte words (height in the low 8 bytes of its word).
+fn read_verifier_state(http: &Client, rpcs: &[String], verifier: &[u8]) -> Option<([u8; 32], [u8; 32], u64, [u8; 32])> {
+    let to = format!("0x{}", hex::encode(verifier));
+    let r = eth_call(http, rpcs, &to, &format!("0x{}", selector("currentState()")))?;
+    if r.len() < 128 { return None; }
+    Some((
+        r[0..32].try_into().ok()?,
+        r[32..64].try_into().ok()?,
+        u64::from_be_bytes(r[88..96].try_into().ok()?),
+        r[96..128].try_into().ok()?,
+    ))
 }
 
 fn fetch_unit_scale(http: &Client, rpcs: &[String], mixer: &[u8]) -> u128 {
