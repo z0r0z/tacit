@@ -15429,13 +15429,16 @@ async function handleListingPost(assetIdHex, req, env, network, cors) {
     network,
   };
   const _llKey = listingKey(network, assetIdHex, txidHex, vout);
-  const _llExisted = await env.REGISTRY_KV.get(_llKey);
+  const _llPrev = await env.REGISTRY_KV.get(_llKey, 'json');
+  // Carry a live taker reservation across re-publish (same rationale as the
+  // range path) so re-listing the same outpoint can't double-reserve it.
+  if (_llPrev && _llPrev.claim && _llPrev.claim.expires_at > now) listing.claim = _llPrev.claim;
   await env.REGISTRY_KV.put(
     _llKey,
     JSON.stringify(listing),
     { expirationTtl: _ttlFromExpiry(expiryRaw) },
   );
-  if (!_llExisted) _bumpCount(env, listingCountKey(network, assetIdHex), 1).catch(() => {});
+  if (!_llPrev) _bumpCount(env, listingCountKey(network, assetIdHex), 1).catch(() => {});
   return jsonResponse({ ok: true, listing }, 200, cors);
 }
 
@@ -15479,11 +15482,15 @@ async function handleListingGet(assetIdHex, txidHex, vout, env, network, cors) {
   if (!listing) return jsonResponse({ error: 'no such listing' }, 404, cors);
   const now = Math.floor(Date.now() / 1000);
   listing.expired = (listing.expiry || 0) <= now;
+  // Mirror loadListingsForAsset: a claim past its TTL is not a live reservation.
+  if (listing.claim && listing.claim.expires_at <= now) listing.claim = null;
   return jsonResponse({ asset_id: assetIdHex, listing }, 200, cors);
 }
 
-// Claim lock prevents the multi-taker race in OTC settlement: two takers each
-// paying the maker for the same listing. The maker can only deliver once.
+// Claim lock COORDINATES (does not prevent) the multi-taker race in OTC
+// settlement: two takers each paying the maker for the same listing. The maker
+// can only deliver once, and the lock is advisory — it reduces collisions but
+// a taker must still confirm the maker hasn't already delivered before paying.
 // This is a soft, time-bounded reservation — no on-chain commitment, just a
 // coordination signal. 5 min is enough for a maker to fulfil + taker to
 // broadcast in one sitting; longer TTLs let trolls free-claim and lock up
@@ -15491,6 +15498,12 @@ async function handleListingGet(assetIdHex, txidHex, vout, env, network, cors) {
 // A real fix is requiring the taker to commit to a sat UTXO ≥ price_sats;
 // until that lands, this short TTL caps the grief radius.
 const CLAIM_TTL_SECONDS = 5 * 60;
+// Hard ceiling on how long one taker can continuously hold a claim by
+// refreshing it before expiry. A sig-only claim carries no funds proof, so
+// without a cap a griefer polling /claim every <5 min locks a slot forever.
+// 15 min comfortably exceeds the honest fulfil+broadcast flow; on trip the
+// claim is released so the slot frees promptly rather than after +TTL.
+const MAX_CLAIM_HOLD_SECONDS = 15 * 60;
 // Atomic-intent fulfilment TTL. After 24h the maker can re-fulfil for a new
 // claimant — this protects the maker from a taker who claims, gets a signed
 // partial reveal, and then ghosts. The taker's BTC payment is still locked
@@ -15647,12 +15660,25 @@ async function handleListingClaim(assetIdHex, txidHex, voutStr, req, env, networ
       claim: { expires_at: stored.claim.expires_at },
     }, 409, cors);
   }
+  // Continuous-hold ceiling: preserve the original claimed_at across an
+  // active same-taker refresh so the cap actually trips; once exceeded, release
+  // the claim (write back) so the slot frees immediately. A lapsed-then-renewed
+  // claim gets a fresh window — only uninterrupted holding is capped.
+  const _activeRefresh = stored.claim && stored.claim.expires_at > now && stored.claim.taker_pubkey === takerPubHex;
+  const _firstClaimedAt = _activeRefresh ? (stored.claim.claimed_at || now) : now;
+  if (_activeRefresh && (now - _firstClaimedAt) > MAX_CLAIM_HOLD_SECONDS) {
+    stored.claim = null;
+    await env.REGISTRY_KV.put(key, JSON.stringify(stored), { expirationTtl: _ttlFromExpiry(stored.expiry) });
+    return jsonResponse({ error: 'claim hold limit reached — listing released for other takers' }, 409, cors);
+  }
   stored.claim = {
     taker_pubkey: takerPubHex,
-    claimed_at: now,
+    claimed_at: _firstClaimedAt,
     expires_at: now + CLAIM_TTL_SECONDS,
   };
-  await env.REGISTRY_KV.put(key, JSON.stringify(stored));
+  // Preserve the listing's own expiry TTL on the re-put — a bare put() drops it
+  // and the claimed record would otherwise linger in KV forever as a phantom.
+  await env.REGISTRY_KV.put(key, JSON.stringify(stored), { expirationTtl: _ttlFromExpiry(stored.expiry) });
   return jsonResponse({ ok: true, listing: stored }, 200, cors);
 }
 
@@ -15840,9 +15866,13 @@ async function handleRangeListingPost(assetIdHex, req, env, network, cors) {
     network,
   };
   const _rlKey = rangeListingKey(network, assetIdHex, ownerPubHex);
-  const _rlExisted = await env.REGISTRY_KV.get(_rlKey);
+  const _rlPrev = await env.REGISTRY_KV.get(_rlKey, 'json');
+  // Re-publish must not silently wipe a taker's live reservation, or a second
+  // taker could be handed the same balance. Carry an unexpired claim forward and
+  // surface it so the maker UI can warn the change applies after it lapses.
+  if (_rlPrev && _rlPrev.claim && _rlPrev.claim.expires_at > now) listing.claim = _rlPrev.claim;
   await env.REGISTRY_KV.put(_rlKey, JSON.stringify(listing), { expirationTtl: _ttlFromExpiry(expiryRaw) });
-  if (!_rlExisted) _bumpCount(env, rangeListingCountKey(network, assetIdHex), 1).catch(() => {});
+  if (!_rlPrev) _bumpCount(env, rangeListingCountKey(network, assetIdHex), 1).catch(() => {});
   return jsonResponse({ ok: true, listing }, 200, cors);
 }
 
@@ -15930,12 +15960,23 @@ async function handleRangeListingClaim(assetIdHex, makerPubHex, req, env, networ
       claim: { expires_at: stored.claim.expires_at },
     }, 409, cors);
   }
+  // Continuous-hold ceiling (mirror handleListingClaim): preserve the original
+  // claimed_at across an active refresh so the cap trips; release on trip.
+  const _activeRefresh = stored.claim && stored.claim.expires_at > now && stored.claim.taker_pubkey === takerPubHex;
+  const _firstClaimedAt = _activeRefresh ? (stored.claim.claimed_at || now) : now;
+  if (_activeRefresh && (now - _firstClaimedAt) > MAX_CLAIM_HOLD_SECONDS) {
+    stored.claim = null;
+    await env.REGISTRY_KV.put(key, JSON.stringify(stored), { expirationTtl: _ttlFromExpiry(stored.expiry) });
+    return jsonResponse({ error: 'claim hold limit reached — listing released for other takers' }, 409, cors);
+  }
   stored.claim = {
     taker_pubkey: takerPubHex,
-    claimed_at: now,
+    claimed_at: _firstClaimedAt,
     expires_at: now + CLAIM_TTL_SECONDS,
   };
-  await env.REGISTRY_KV.put(key, JSON.stringify(stored));
+  // Preserve the listing's expiry TTL on the re-put — a bare put() drops it and
+  // the claimed range-listing would otherwise linger in KV forever as a phantom.
+  await env.REGISTRY_KV.put(key, JSON.stringify(stored), { expirationTtl: _ttlFromExpiry(stored.expiry) });
   return jsonResponse({ ok: true, listing: stored }, 200, cors);
 }
 
@@ -16751,6 +16792,17 @@ async function _handleAtomicIntentClaimVar(assetIdHex, intentIdHex, intent, body
     return jsonResponse({ error: 'invalid taker signature (claim_msg_v3)' }, 403, cors);
   }
   const now = Math.floor(Date.now() / 1000);
+  // Re-check claim + UTXO pledge right before the write (TOCTOU shrink — same
+  // rationale as the legacy claim path; KV has no CAS so it narrows, not closes).
+  const _claimRe = await env.REGISTRY_KV.get(atomicClaimKey(network, assetIdHex, intentIdHex), 'json');
+  if (_claimRe && _claimRe.expires_at > now && _claimRe.taker_pubkey !== takerPubHex) {
+    return jsonResponse({ error: 'intent already claimed', claim: { expires_at: _claimRe.expires_at } }, 409, cors);
+  }
+  const _pledgeRe = await env.REGISTRY_KV.get(atomicClaimUtxoIndexKey(network, takerUtxoTxid, takerUtxoVout), 'json');
+  if (_pledgeRe && _pledgeRe.expires_at > now &&
+      !(_pledgeRe.asset_id === assetIdHex && _pledgeRe.intent_id === intentIdHex)) {
+    return jsonResponse({ error: 'taker_utxo already pledged to another active claim', pledged: { expires_at: _pledgeRe.expires_at } }, 409, cors);
+  }
   const claim = {
     intent_id: intentIdHex,
     taker_pubkey: takerPubHex,
@@ -17333,6 +17385,23 @@ async function handleAtomicIntentDelete(assetIdHex, intentIdHex, req, env, netwo
   if (!verifySchnorr(hexToBytes(cancelSigHex), msg, hexToBytes(stored.maker_pubkey).slice(1))) {
     return jsonResponse({ error: 'invalid cancel signature' }, 403, cors);
   }
+  // Don't wipe settlement state out from under a taker who is mid-fill, and
+  // preserve the §5.7.6 reclaim breadcrumb. A bare reservation (claim, no
+  // fulfilment) does NOT block — refusing on claim-liveness alone would let a
+  // taker grief the maker. We gate only on the fulfilment record.
+  const _ful = await env.REGISTRY_KV.get(atomicFulfilmentKey(network, assetIdHex, intentIdHex), 'json');
+  if (_ful) {
+    const _st = _ful.state || null;
+    if (_st === 'COMMIT_READY' || _st === 'REVEAL_READY' || _st === 'ABANDONED') {
+      return jsonResponse({ error: `cannot cancel: a taker fill is in flight (state ${_st}). Wait for it to settle or its recovery window to lapse.` }, 409, cors);
+    }
+    // Terminal (REVEAL_BROADCAST/SETTLED) or legacy whole-UTXO (no state field):
+    // keep the recovery window until the fulfilment ages past FULFILMENT_TTL.
+    const _fAge = Math.floor(Date.now() / 1000) - (Number(_ful.fulfilled_at) || 0);
+    if (_fAge < FULFILMENT_TTL_SECONDS) {
+      return jsonResponse({ error: 'cannot cancel yet: a recent fill is still within its recovery window; retry after it ages out.' }, 409, cors);
+    }
+  }
   await env.REGISTRY_KV.delete(atomicIntentKey(network, assetIdHex, intentIdHex));
   _bumpCount(env, atomicIntentCountKey(network, assetIdHex), -1).catch(() => {});
   await env.REGISTRY_KV.delete(atomicClaimKey(network, assetIdHex, intentIdHex));
@@ -17428,6 +17497,14 @@ async function handleAtomicIntentClaim(assetIdHex, intentIdHex, req, env, networ
   if (!Number.isInteger(takerUtxoVout) || takerUtxoVout < 0 || takerUtxoVout > 0xffff) {
     return jsonResponse({ error: 'taker_utxo.vout must be non-negative integer' }, 400, cors);
   }
+
+  // Anti-grief on the claim path (own 'axclaim' bucket, so retries don't burn
+  // the publish quota). Generous ceiling — claims are legitimately retried on
+  // 404 propagation lag / 503 outspend blips — so only an abusive flood trips
+  // it. Placed before the intent fetch + var-dispatch so the var claim path
+  // (its own chain fetches) is covered too.
+  const _claimRl = await _orderbookWriteRateLimit(req, env, takerPubHex, 'axclaim', { pkDefault: 400, ipDefault: 1200 });
+  if (!_claimRl.ok) return jsonResponse({ error: 'claim rate limited: ' + _claimRl.reason }, 429, cors);
 
   const intent = await env.REGISTRY_KV.get(atomicIntentKey(network, assetIdHex, intentIdHex), 'json');
   if (!intent) return jsonResponse({ error: 'no such intent' }, 404, cors);
@@ -17526,6 +17603,21 @@ async function handleAtomicIntentClaim(assetIdHex, intentIdHex, req, env, networ
   const msg = atomicIntentClaimMsg(assetIdHex, intentIdHex, takerPubHex, takerUtxoTxid, takerUtxoVout);
   if (!verifySchnorr(hexToBytes(sigHex), msg, hexToBytes(takerPubHex).slice(1))) {
     return jsonResponse({ error: 'invalid taker signature' }, 403, cors);
+  }
+  // Re-check the claim + UTXO pledge immediately before the write to shrink the
+  // multi-second TOCTOU window the chain RPCs above opened: two takers who both
+  // passed the earlier guard would otherwise last-write-wins. KV is eventually
+  // consistent with no CAS, so this narrows — does not fully close — the race
+  // (a per-intent Durable Object is the complete fix if volume warrants).
+  const _nowRe = Math.floor(Date.now() / 1000);
+  const _claimRe = await env.REGISTRY_KV.get(atomicClaimKey(network, assetIdHex, intentIdHex), 'json');
+  if (_claimRe && _claimRe.expires_at > _nowRe && _claimRe.taker_pubkey !== takerPubHex) {
+    return jsonResponse({ error: 'intent already claimed', claim: { expires_at: _claimRe.expires_at } }, 409, cors);
+  }
+  const _pledgeRe = await env.REGISTRY_KV.get(atomicClaimUtxoIndexKey(network, takerUtxoTxid, takerUtxoVout), 'json');
+  if (_pledgeRe && _pledgeRe.expires_at > _nowRe &&
+      !(_pledgeRe.asset_id === assetIdHex && _pledgeRe.intent_id === intentIdHex)) {
+    return jsonResponse({ error: 'taker_utxo already pledged to another active claim', pledged: { expires_at: _pledgeRe.expires_at } }, 409, cors);
   }
   const claim = {
     intent_id: intentIdHex,
@@ -17929,6 +18021,25 @@ async function handlePreauthSaleDelete(assetIdHex, saleIdHex, req, env, network,
 
 // ============== Preauth-bid handlers (SPEC §5.7.11) ==============
 
+// The funding-outpoint reverse index value used to be the bare bid_id, which
+// the reader then looked up under the CURRENT request's asset — so a live bid
+// on a DIFFERENT asset read back as null, skipping the conflict check and
+// leaking a second live bid pre-signing the same UTXO (the seller who settles
+// second loses their fee work). Store {asset_id, bid_id} and resolve the lookup
+// against the STORED asset. Bare-hex values written before this upgrade fall
+// back to the current asset for backward compatibility.
+function _parsePreauthFundingIdx(raw, fallbackAssetIdHex) {
+  if (!raw) return null;
+  const s = String(raw);
+  if (s[0] === '{') {
+    try { const o = JSON.parse(s); if (o && o.bid_id) return { assetId: String(o.asset_id || fallbackAssetIdHex), bidId: String(o.bid_id) }; } catch {}
+  }
+  return { assetId: fallbackAssetIdHex, bidId: s };
+}
+function _preauthFundingIdxVal(assetIdHex, bidIdHex) {
+  return JSON.stringify({ asset_id: assetIdHex, bid_id: bidIdHex });
+}
+
 async function handlePreauthBidPost(assetIdHex, req, env, network, cors) {
   if (!/^[0-9a-f]{64}$/.test(assetIdHex)) return jsonResponse({ error: 'invalid asset_id' }, 400, cors);
   let body;
@@ -17952,8 +18063,13 @@ async function handlePreauthBidPost(assetIdHex, req, env, network, cors) {
   if (!/^0[23][0-9a-f]{64}$/.test(buyerPubHex)) return jsonResponse({ error: 'buyer_pubkey must be 33-byte compressed' }, 400, cors);
   if (!/^0[23][0-9a-f]{64}$/.test(recipientPubHex)) return jsonResponse({ error: 'recipient_pubkey must be 33-byte compressed' }, 400, cors);
   if (!/^\d+$/.test(amountStr)) return jsonResponse({ error: 'amount must be a positive integer string' }, 400, cors);
+  // Bound the amount before any setBigUint64 downstream turns an oversized value
+  // into a 500 RangeError; reject cleanly as a 400 here instead.
+  { const _amt = BigInt(amountStr); if (_amt <= 0n || _amt >= (1n << BigInt(N_BITS))) return jsonResponse({ error: `amount must be in (0, 2^${N_BITS})` }, 400, cors); }
   if (!/^[0-9a-f]{64}$/.test(blindingHex)) return jsonResponse({ error: 'blinding must be 64 hex chars' }, 400, cors);
-  if (!Number.isInteger(priceSatsRaw) || priceSatsRaw < 0) return jsonResponse({ error: 'price_sats must be non-negative integer' }, 400, cors);
+  // Floor the total bid at dust to match every other order kind — a sub-dust
+  // total can't fund a spendable payout to the seller.
+  if (!Number.isInteger(priceSatsRaw) || priceSatsRaw < PRICE_MIN) return jsonResponse({ error: `price_sats must be integer >= ${PRICE_MIN}` }, 400, cors);
   if (!Number.isInteger(maxFeeBudgetRaw) || maxFeeBudgetRaw < 0 || maxFeeBudgetRaw > PREAUTH_BID_MAX_FEE_BUDGET) {
     return jsonResponse({ error: `max_fee_budget must be in [0, ${PREAUTH_BID_MAX_FEE_BUDGET}]` }, 400, cors);
   }
@@ -18053,35 +18169,37 @@ async function handlePreauthBidPost(assetIdHex, req, env, network, cors) {
   if (!_orderRl.ok) return jsonResponse({ error: `bid rate limited: ${_orderRl.reason}` }, 429, cors);
 
   // ---------- one-live-bid-per-funding-outpoint (cross §5.7.11 + §5.7.12) ----------
-  const existingExactBidIdHex = await env.REGISTRY_KV.get(
-    preauthBidFundingIndexKey(network, fundingTxidHex, fundingVoutRaw),
+  const _exactIdx = _parsePreauthFundingIdx(
+    await env.REGISTRY_KV.get(preauthBidFundingIndexKey(network, fundingTxidHex, fundingVoutRaw)),
+    assetIdHex,
   );
-  if (existingExactBidIdHex) {
-    const _eb = await env.REGISTRY_KV.get(preauthBidKey(network, assetIdHex, existingExactBidIdHex), 'json');
+  if (_exactIdx) {
+    const _eb = await env.REGISTRY_KV.get(preauthBidKey(network, _exactIdx.assetId, _exactIdx.bidId), 'json');
     const _now = Math.floor(Date.now() / 1000);
     if (_eb && (_eb.expiry || 0) > _now) {
       return jsonResponse({
         error: 'a live exact-fill preauth-bid (§5.7.11) already exists for this funding_outpoint; cancel it first',
-        existing_bid_id: existingExactBidIdHex,
+        existing_bid_id: _exactIdx.bidId,
       }, 409, cors);
     }
     await env.REGISTRY_KV.delete(preauthBidFundingIndexKey(network, fundingTxidHex, fundingVoutRaw));
-    if (_eb) await env.REGISTRY_KV.delete(preauthBidKey(network, assetIdHex, existingExactBidIdHex));
+    if (_eb) await env.REGISTRY_KV.delete(preauthBidKey(network, _exactIdx.assetId, _exactIdx.bidId));
   }
-  const existingVarBidIdHex = await env.REGISTRY_KV.get(
-    preauthBidVarFundingIndexKey(network, fundingTxidHex, fundingVoutRaw),
+  const _varIdx = _parsePreauthFundingIdx(
+    await env.REGISTRY_KV.get(preauthBidVarFundingIndexKey(network, fundingTxidHex, fundingVoutRaw)),
+    assetIdHex,
   );
-  if (existingVarBidIdHex) {
-    const _evb = await env.REGISTRY_KV.get(preauthBidVarKey(network, assetIdHex, existingVarBidIdHex), 'json');
+  if (_varIdx) {
+    const _evb = await env.REGISTRY_KV.get(preauthBidVarKey(network, _varIdx.assetId, _varIdx.bidId), 'json');
     const _now2 = Math.floor(Date.now() / 1000);
     if (_evb && (_evb.expiry || 0) > _now2) {
       return jsonResponse({
         error: 'a live partial-fill preauth-bid (§5.7.12) already exists for this funding_outpoint; cancel it first',
-        existing_bid_id: existingVarBidIdHex,
+        existing_bid_id: _varIdx.bidId,
       }, 409, cors);
     }
     await env.REGISTRY_KV.delete(preauthBidVarFundingIndexKey(network, fundingTxidHex, fundingVoutRaw));
-    if (_evb) await env.REGISTRY_KV.delete(preauthBidVarKey(network, assetIdHex, existingVarBidIdHex));
+    if (_evb) await env.REGISTRY_KV.delete(preauthBidVarKey(network, _varIdx.assetId, _varIdx.bidId));
   }
 
   const bid = {
@@ -18110,7 +18228,7 @@ async function handlePreauthBidPost(assetIdHex, req, env, network, cors) {
   );
   await env.REGISTRY_KV.put(
     preauthBidFundingIndexKey(network, fundingTxidHex, fundingVoutRaw),
-    bidIdHex,
+    _preauthFundingIdxVal(assetIdHex, bidIdHex),
     { expirationTtl: _bidTtl },
   );
   return jsonResponse({ ok: true, bid }, 200, cors);
@@ -18345,35 +18463,37 @@ async function handlePreauthBidVarPost(assetIdHex, req, env, network, cors) {
   // The settlement-tx flow can't differentiate at funding-outpoint level
   // (it sees an unspent P2WPKH UTXO with two competing pre-sigs); the
   // index conflict makes the rejection deterministic.
-  const existingExactBidIdHex = await env.REGISTRY_KV.get(
-    preauthBidFundingIndexKey(network, fundingTxidHex, fundingVoutRaw),
+  const _exactIdx2 = _parsePreauthFundingIdx(
+    await env.REGISTRY_KV.get(preauthBidFundingIndexKey(network, fundingTxidHex, fundingVoutRaw)),
+    assetIdHex,
   );
-  if (existingExactBidIdHex) {
-    const _eb2 = await env.REGISTRY_KV.get(preauthBidKey(network, assetIdHex, existingExactBidIdHex), 'json');
+  if (_exactIdx2) {
+    const _eb2 = await env.REGISTRY_KV.get(preauthBidKey(network, _exactIdx2.assetId, _exactIdx2.bidId), 'json');
     const _now3 = Math.floor(Date.now() / 1000);
     if (_eb2 && (_eb2.expiry || 0) > _now3) {
       return jsonResponse({
         error: 'a live exact-fill preauth-bid (§5.7.11) already exists for this funding_outpoint; cancel it first',
-        existing_bid_id: existingExactBidIdHex,
+        existing_bid_id: _exactIdx2.bidId,
       }, 409, cors);
     }
     await env.REGISTRY_KV.delete(preauthBidFundingIndexKey(network, fundingTxidHex, fundingVoutRaw));
-    if (_eb2) await env.REGISTRY_KV.delete(preauthBidKey(network, assetIdHex, existingExactBidIdHex));
+    if (_eb2) await env.REGISTRY_KV.delete(preauthBidKey(network, _exactIdx2.assetId, _exactIdx2.bidId));
   }
-  const existingVarBidIdHex = await env.REGISTRY_KV.get(
-    preauthBidVarFundingIndexKey(network, fundingTxidHex, fundingVoutRaw),
+  const _varIdx2 = _parsePreauthFundingIdx(
+    await env.REGISTRY_KV.get(preauthBidVarFundingIndexKey(network, fundingTxidHex, fundingVoutRaw)),
+    assetIdHex,
   );
-  if (existingVarBidIdHex) {
-    const _evb2 = await env.REGISTRY_KV.get(preauthBidVarKey(network, assetIdHex, existingVarBidIdHex), 'json');
+  if (_varIdx2) {
+    const _evb2 = await env.REGISTRY_KV.get(preauthBidVarKey(network, _varIdx2.assetId, _varIdx2.bidId), 'json');
     const _now4 = Math.floor(Date.now() / 1000);
     if (_evb2 && (_evb2.expiry || 0) > _now4) {
       return jsonResponse({
         error: 'a live partial-fill preauth-bid (§5.7.12) already exists for this funding_outpoint; cancel it first',
-        existing_bid_id: existingVarBidIdHex,
+        existing_bid_id: _varIdx2.bidId,
       }, 409, cors);
     }
     await env.REGISTRY_KV.delete(preauthBidVarFundingIndexKey(network, fundingTxidHex, fundingVoutRaw));
-    if (_evb2) await env.REGISTRY_KV.delete(preauthBidVarKey(network, assetIdHex, existingVarBidIdHex));
+    if (_evb2) await env.REGISTRY_KV.delete(preauthBidVarKey(network, _varIdx2.assetId, _varIdx2.bidId));
   }
 
   const bid = {
@@ -18408,7 +18528,7 @@ async function handlePreauthBidVarPost(assetIdHex, req, env, network, cors) {
   );
   await env.REGISTRY_KV.put(
     preauthBidVarFundingIndexKey(network, fundingTxidHex, fundingVoutRaw),
-    bidIdHex,
+    _preauthFundingIdxVal(assetIdHex, bidIdHex),
     { expirationTtl: _bidTtl },
   );
   return jsonResponse({ ok: true, bid }, 200, cors);
@@ -18528,18 +18648,22 @@ const AIRDROP_LIST_HARD_CAP = 900;  // total per response; bound size + subreque
 // `kind` ('preauth' | 'intent') segregates buckets so a flood in one
 // listing kind doesn't burn the other kind's quota — the buckets are
 // independent.
-async function _orderbookWriteRateLimit(req, env, pubHex, kind) {
+// `opts.ipDefault`/`opts.pkDefault` let a caller raise the ceiling for a kind
+// whose calls are legitimately retried (e.g. 'axclaim' — takers re-claim on
+// 404 propagation lag and 503 outspend blips), so the limiter only ever bites
+// an abusive flood, never a real trader. env vars still win when set.
+async function _orderbookWriteRateLimit(req, env, pubHex, kind, opts = {}) {
   const ip = req.headers.get('CF-Connecting-IP') || 'anon';
   const day = new Date().toISOString().slice(0, 10);
   const ipKey = `ob-write-rl:ip:${day}:${kind}:${ip}`;
-  const ipLimit = safeInt(env.ORDERBOOK_WRITE_IP_DAILY, 150, { min: 1 });
+  const ipLimit = safeInt(env.ORDERBOOK_WRITE_IP_DAILY, opts.ipDefault ?? 150, { min: 1 });
   const ipPrior = safeInt(await env.REGISTRY_KV.get(ipKey), 0, { min: 0 });
   if (ipPrior >= ipLimit) return { ok: false, reason: `${kind} IP daily limit (${ipLimit}/day)` };
   let pkKey = null;
   let pkPrior = 0;
   if (pubHex) {
     pkKey = `ob-write-rl:pk:${day}:${kind}:${pubHex}`;
-    const pkLimit = safeInt(env.ORDERBOOK_WRITE_PUBKEY_DAILY, 50, { min: 1 });
+    const pkLimit = safeInt(env.ORDERBOOK_WRITE_PUBKEY_DAILY, opts.pkDefault ?? 50, { min: 1 });
     pkPrior = safeInt(await env.REGISTRY_KV.get(pkKey), 0, { min: 0 });
     if (pkPrior >= pkLimit) return { ok: false, reason: `${kind} pubkey daily limit (${pkLimit}/day)` };
   }
@@ -19173,6 +19297,25 @@ function _resolveBidPartialOvershoot(records, intentAmtBI, nowSec) {
   return { kept, survivors, evicted };
 }
 
+// A variable-fill bid's open capacity is amount − settled_amount − Σ(active
+// unsettled partial-claims). `settled_amount` is a DURABLE accumulator bumped by
+// the on-chain scanner when a linked atomic-intent settles (the scanner then
+// deletes the bidpclaim, so this is idempotent on re-scan). Without it, a
+// settled chunk's reservation was held only by the bidpclaim's 30-min TTL — once
+// that lapsed the capacity "sprang back" and a single signed bid could be
+// over-filled past its signed amount. Reads + the claim projection both run
+// this so a stale stored value can't re-open consumed capacity.
+function _projectBidRemaining(amountBI, settledBI, activeClaims, nowSec) {
+  let kept = 0n;
+  for (const p of (activeClaims || [])) {
+    if (!p || (p.expires_at || 0) <= nowSec) continue;
+    try { kept += BigInt(p.fill_amount || '0'); } catch {}
+  }
+  let rem = amountBI - settledBI - kept;
+  if (rem < 0n) rem = 0n;
+  return rem;
+}
+
 // Canonical bid-intent + bid-claim messages. SPEC §5.7.7 (variable-amount
 // bid intents) extends the byte format to bind `min_fill_amount` (publish)
 // and `fill_amount` (claim) so a single signed bid can be partial-filled
@@ -19351,6 +19494,9 @@ async function handleBidIntentList(assetIdHex, env, network, cors) {
         const claims = await Promise.all(partials.keys.map(k => env.REGISTRY_KV.get(k.name, 'json')));
         v.partial_claims = claims.filter(c => c && c.expires_at > now);
       }
+      // Authoritative remaining: durable settled_amount + live claims, so a
+      // settled chunk whose bidpclaim has TTL'd out can't re-open capacity.
+      v.remaining_amount = _projectBidRemaining(BigInt(v.amount || '0'), BigInt(v.settled_amount || '0'), v.partial_claims || [], now).toString();
     } else {
       const claim = await env.REGISTRY_KV.get(bidClaimKey(network, assetIdHex, v.bid_id), 'json');
       if (claim && claim.expires_at > now) v.claim = claim;
@@ -19373,6 +19519,7 @@ async function handleBidIntentGet(assetIdHex, bidIdHex, env, network, cors) {
       const claims = await Promise.all(partials.keys.map(k => env.REGISTRY_KV.get(k.name, 'json')));
       intent.partial_claims = claims.filter(c => c && c.expires_at > now);
     }
+    intent.remaining_amount = _projectBidRemaining(BigInt(intent.amount || '0'), BigInt(intent.settled_amount || '0'), intent.partial_claims || [], now).toString();
   } else {
     const claim = await env.REGISTRY_KV.get(bidClaimKey(network, assetIdHex, bidIdHex), 'json');
     if (claim && claim.expires_at > now) intent.claim = claim;
@@ -19902,7 +20049,10 @@ async function handleBidIntentClaim(assetIdHex, bidIdHex, req, env, network, cor
     );
     const listed = await env.REGISTRY_KV.list({ prefix: bidPartialClaimPrefix(network, assetIdHex, bidIdHex), limit: 1000 });
     const recs = await Promise.all(listed.keys.map(k => env.REGISTRY_KV.get(k.name, 'json')));
-    const { kept, survivors, evicted } = _resolveBidPartialOvershoot(recs, intentAmtBI, now);
+    // Budget for live claims is amount MINUS already-settled capacity — a
+    // settled chunk is durably consumed and must not be re-offered to a new claim.
+    const _settledBI = BigInt(intent.settled_amount || '0');
+    const { kept, survivors, evicted } = _resolveBidPartialOvershoot(recs, intentAmtBI - _settledBI, now);
     if (evicted.length > 0) {
       await Promise.all(evicted.map(p =>
         env.REGISTRY_KV.delete(bidPartialClaimKey(network, assetIdHex, bidIdHex, p.axintent_id))
@@ -19915,7 +20065,7 @@ async function handleBidIntentClaim(assetIdHex, bidIdHex, req, env, network, cor
       ));
     }
     const ourEvicted = evicted.some(p => p.axintent_id === axintentIdHex);
-    intent.remaining_amount = (intentAmtBI - kept).toString();
+    intent.remaining_amount = (intentAmtBI - _settledBI - kept).toString();
     intent.linked_axintents = survivors.map(p => p.axintent_id);
     if (BigInt(intent.remaining_amount) < minFillBI) {
       intent.state = 'CLOSED';
@@ -20418,6 +20568,31 @@ async function scanForEtches(env, network) {
                     _bumpCount(env, preauthSaleCountKey(network, dx.asset_id), -1).catch(() => {});
                     await env.REGISTRY_KV.delete(preauthOutpointIndexKey(network, dx.asset_id, op.txid, op.vout));
                   } else if ((f.kind === 'intent' || f.kind === 'intent-var') && f.intent_id) {
+                    // If this settled atomic-intent was a chunk of a §5.7.7
+                    // variable-fill bid, durably record the consumed capacity on
+                    // the parent bid so it can't "spring back" when the bidpclaim
+                    // TTLs out (over-fill past the signed amount). Mark the
+                    // bidpclaim settled BEFORE incrementing so a failed follow-up
+                    // put can only miss the decrement (status-quo behavior),
+                    // never double-count it (which would wrongly shrink the bid).
+                    try {
+                      const _bx = await env.REGISTRY_KV.get(bidClaimAxintentIndexKey(network, f.intent_id), 'json');
+                      if (_bx && _bx.bid_id && _bx.asset_id) {
+                        const _bpcKey = bidPartialClaimKey(network, _bx.asset_id, _bx.bid_id, f.intent_id);
+                        const _bpc = await env.REGISTRY_KV.get(_bpcKey, 'json');
+                        if (_bpc && _bpc.fill_amount && !_bpc.settled_recorded) {
+                          _bpc.settled_recorded = true;
+                          await env.REGISTRY_KV.put(_bpcKey, JSON.stringify(_bpc), { expirationTtl: BID_CLAIM_TTL_SECONDS + 60 });
+                          const _pbid = await env.REGISTRY_KV.get(bidIntentKey(network, _bx.asset_id, _bx.bid_id), 'json');
+                          if (_pbid) {
+                            _pbid.settled_amount = (BigInt(_pbid.settled_amount || '0') + BigInt(_bpc.fill_amount)).toString();
+                            await env.REGISTRY_KV.put(bidIntentKey(network, _bx.asset_id, _bx.bid_id), JSON.stringify(_pbid), { expirationTtl: _ttlFromExpiry(_pbid.expiry) });
+                          }
+                        }
+                        await env.REGISTRY_KV.delete(_bpcKey);
+                        await env.REGISTRY_KV.delete(bidClaimAxintentIndexKey(network, f.intent_id));
+                      }
+                    } catch { /* best-effort; the bidpclaim TTL is the backstop */ }
                     await env.REGISTRY_KV.delete(atomicIntentKey(network, dx.asset_id, f.intent_id));
                     _bumpCount(env, atomicIntentCountKey(network, dx.asset_id), -1).catch(() => {});
                     await env.REGISTRY_KV.delete(atomicClaimKey(network, dx.asset_id, f.intent_id));
@@ -24648,6 +24823,7 @@ export {
   // without setting up the full handler's KV / signature path. The
   // signet e2e harness covers the integrated flow.
   _resolveBidPartialOvershoot,
+  _projectBidRemaining,
   // Volume-bucket primitives. Exported so tests/worker-batched-axfer-
   // index.test.mjs can pin (a) bumpTransferCount idempotency under hint
   // replays, (b) daily-bucket sum semantics for batched preauth-take
