@@ -182,8 +182,7 @@ contract TacitBridgeMixerTest is TestHelper {
         mixer.batchDeposit{value: 2.1 ether}(comms, denoms);
         assertEq(mixer.getNextLeafIndex(poolId1ETH), 2);
         assertEq(mixer.getNextLeafIndex(poolId01ETH), 1);
-        assertEq(mixer.getPoolBalance(poolId1ETH), 2 ether);
-        assertEq(mixer.getPoolBalance(poolId01ETH), 0.1 ether);
+        assertEq(mixer.totalBalance(), 2.1 ether);
     }
 
     function test_batch_deposit_wrong_value_reverts() public {
@@ -228,7 +227,7 @@ contract TacitBridgeMixerERC20Test is TestHelper {
         mixer.deposit(bytes32(uint256(42)), DENOM);
         assertEq(token.balanceOf(address(mixer)), DENOM);
         assertEq(mixer.getNextLeafIndex(poolId), 1);
-        assertEq(mixer.getPoolBalance(poolId), DENOM);
+        assertEq(mixer.totalBalance(), DENOM);
     }
 
     function test_erc20_deposit_with_eth_reverts() public {

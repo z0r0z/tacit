@@ -139,11 +139,11 @@ contract BridgeIntegrationTest is TestHelper {
         assertTrue(mixer.isKnownDepositRoot(poolId, mixer.getPoolRoot(poolId)));
     }
 
-    function test_pool_balance_tracks() public {
+    function test_balance_tracks() public {
         vm.deal(address(this), 10 ether);
         mixer.deposit{value: DENOM}(bytes32(uint256(1)), DENOM);
         mixer.deposit{value: DENOM}(bytes32(uint256(2)), DENOM);
-        assertEq(mixer.getPoolBalance(poolId), 2 ether);
+        assertEq(mixer.totalBalance(), 2 ether);
     }
 
     function test_duplicate_commitment_reverts() public {
@@ -212,7 +212,7 @@ contract BridgeIntegrationTest is TestHelper {
     function test_insufficient_balance_reverts() public {
         bytes memory rawTx = _makeBurnTx(bytes32(uint256(0xCAFE)), address(0xBEEF));
         bytes memory ph = _buildChain(bytes32(0), _dsha256(rawTx), 4);
-        vm.expectRevert(TacitBridgeMixer.InsufficientPoolBalance.selector);
+        vm.expectRevert(TacitBridgeMixer.InsufficientBalance.selector);
         mixer.withdrawFromBurn(rawTx, ph, 0, new bytes32[](0), 0);
     }
 

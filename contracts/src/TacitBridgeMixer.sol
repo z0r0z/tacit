@@ -38,7 +38,7 @@ interface IPoolRootVerifier {
 ///       withdrawals. Burns survive later state advancement.
 ///    4. Groth16 burn proof — proves the withdrawer knows a leaf's secrets
 ///    5. bindHash — domain-bound (chainid + address) to prevent replay
-///    6. Pool balance — withdrawals cannot exceed deposited funds
+///    6. Asset balance — withdrawals cannot exceed total deposited funds
 ///
 ///  Deposit roots are permanently stored in everKnownRoot and tracked via
 ///  rootAccumulator (running SHA256 hash). The SP1 verifier checks the
@@ -88,7 +88,6 @@ contract TacitBridgeMixer is ReentrancyGuardTransient {
     struct Pool {
         uint256 denomination;
         uint256 nextLeafIndex;
-        uint256 balance;
         bytes32 currentRoot;
         mapping(uint256 => bytes32) filledSubtrees;
         mapping(bytes32 => bool) burnNullifiers;
@@ -96,6 +95,11 @@ contract TacitBridgeMixer is ReentrancyGuardTransient {
     }
 
     mapping(bytes32 => Pool) internal _pools;
+    /// Total escrowed funds across all denominations of this asset. Withdrawals
+    /// gate on this aggregate, not per-pool, so any denomination remains
+    /// fungible once the asset holds enough backing (SP1 + Groth16 + nullifiers
+    /// already cap total redeemable value to total deposits).
+    uint256 public totalBalance;
     mapping(bytes32 => IPoolRootVerifier) public poolVerifiers;
     mapping(bytes32 => mapping(bytes32 => bool)) public everKnownRoot;
     mapping(bytes32 => bytes32) public rootAccumulator;
@@ -122,7 +126,7 @@ contract TacitBridgeMixer is ReentrancyGuardTransient {
     error InvalidGroth16Proof();
     error NullifierAlreadySpent();
     error DenominationNotAligned();
-    error InsufficientPoolBalance();
+    error InsufficientBalance();
     error VerifierMismatch();
 
     // ──────────────────── Constructor ────────────────────
@@ -228,7 +232,7 @@ contract TacitBridgeMixer is ReentrancyGuardTransient {
         everKnownRoot[pid][h] = true;
         rootAccumulator[pid] = sha256(abi.encodePacked(rootAccumulator[pid], h));
         p.nextLeafIndex++;
-        p.balance += denomination;
+        totalBalance += denomination;
 
         emit Deposit(pid, commitment, p.nextLeafIndex - 1, block.timestamp);
     }
@@ -256,10 +260,10 @@ contract TacitBridgeMixer is ReentrancyGuardTransient {
         Pool storage p = _pools[pid];
         if (p.burnNullifiers[nullifierHash]) revert NullifierAlreadySpent();
         if (recipient == address(0)) revert InvalidBurnProof();
-        if (p.balance < p.denomination) revert InsufficientPoolBalance();
+        if (totalBalance < p.denomination) revert InsufficientBalance();
 
         p.burnNullifiers[nullifierHash] = true;
-        p.balance -= p.denomination;
+        totalBalance -= p.denomination;
         emit Withdrawal(pid, nullifierHash, recipient, p.denomination);
         if (TOKEN == address(0)) {
             SafeTransferLib.forceSafeTransferETH(recipient, p.denomination);
@@ -322,7 +326,6 @@ contract TacitBridgeMixer is ReentrancyGuardTransient {
     // ──────────────────── Views ────────────────────
 
     function getPoolRoot(bytes32 pid) external view returns (bytes32) { return _pools[pid].currentRoot; }
-    function getPoolBalance(bytes32 pid) external view returns (uint256) { return _pools[pid].balance; }
     function isKnownDepositRoot(bytes32 pid, bytes32 root) external view returns (bool) { return everKnownRoot[pid][root]; }
     function isBurnNullifierSpent(bytes32 pid, bytes32 n) external view returns (bool) { return _pools[pid].burnNullifiers[n]; }
     function getPoolDenomination(bytes32 pid) external view returns (uint256) { return _pools[pid].denomination; }
