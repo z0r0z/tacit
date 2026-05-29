@@ -64,7 +64,7 @@ log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"; }
 
 get_relay_tip() {
   curl -sf -X POST "$ETH_RPC" -H 'Content-Type: application/json' \
-    -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"eth_call\",\"params\":[{\"to\":\"0x${RELAY_ADDRESS}\",\"data\":\"0x37d0208c\"},\"latest\"]}" \
+    -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"eth_call\",\"params\":[{\"to\":\"0x${RELAY_ADDRESS}\",\"data\":\"0x1fd4827a\"},\"latest\"]}" \
     | python3 -c "import sys,json; print(int(json.load(sys.stdin)['result'], 16))" 2>/dev/null
 }
 get_btc_tip() { curl -sf "${BTC_API}/blocks/tip/height" 2>/dev/null; }
