@@ -62,6 +62,35 @@ contract SP1PoolRootVerifierTest is Test {
         );
     }
 
+    // ──── Denomination-count bound (matches the guest's 1..16 assert) ────
+
+    function _denomArrays(uint256 n) internal pure returns (bytes32[] memory pids, bytes32[] memory denoms) {
+        pids = new bytes32[](n);
+        denoms = new bytes32[](n);
+        for (uint256 i; i < n; ++i) {
+            pids[i] = keccak256(abi.encode(AID, i + 1));
+            denoms[i] = bytes32(i + 1);
+        }
+    }
+
+    function test_constructor_rejects_more_than_16_denoms() public {
+        (bytes32[] memory pids, bytes32[] memory denoms) = _denomArrays(17);
+        vm.expectRevert();
+        new SP1PoolRootVerifier(
+            address(sp1), address(relay), VKEY, address(mixerMock),
+            AID, NTAG, VK_HASH, pids, denoms, GENESIS
+        );
+    }
+
+    function test_constructor_accepts_16_denoms() public {
+        (bytes32[] memory pids, bytes32[] memory denoms) = _denomArrays(16);
+        SP1PoolRootVerifier v = new SP1PoolRootVerifier(
+            address(sp1), address(relay), VKEY, address(mixerMock),
+            AID, NTAG, VK_HASH, pids, denoms, GENESIS
+        );
+        assertEq(v.NUM_DENOMS(), 16);
+    }
+
     // ──── Calldata builders (NUM_DENOMS == 1) ────
 
     function _roots(bytes32 r) internal pure returns (bytes32[] memory a) {

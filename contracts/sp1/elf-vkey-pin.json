@@ -1,0 +1,7 @@
+{
+  "_comment": "Binds the committed SP1 guest ELF to the verifying keys it must be deployed with. verify-vkey-pin.sh asserts sha256(program/elf/teth-pool-prover) == elf_sha256 (always) and, where the SP1 toolchain is present, that the vkey derived from the ELF == program_vkey. A guest rebuild that changes the ELF MUST regenerate the vkey and update this file IN THE SAME COMMIT, then redeploy SP1PoolRootVerifier with the new PROGRAM_VKEY — otherwise every proveStateTransition reverts and all withdrawals brick.",
+  "elf_sha256": "dd37628dfcdf2cae24a5cebc47077c3cca7f4c2e0e0c481dbd01a28218333351",
+  "program_vkey": "0x00ee623ea92ebc0bc21d62a173750b5cbdce8217a3d1bddd106c1900b64ef9df",
+  "groth16_vk_hash": "0x0eabe508c630aea06f0db1f05dbd456e9f82df739bcc84d644a7533db0691edb",
+  "guest_state": "UNHARDENED — corresponds to the committed ELF that predates the main.rs/bitcoin.rs hardening (u64-denom assert, pairwise-distinct denoms, checked_add). Rebuild the hardened guest on the prover host, then update elf_sha256 + program_vkey here and redeploy."
+}

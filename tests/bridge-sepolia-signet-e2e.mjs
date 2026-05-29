@@ -29,11 +29,11 @@ const WORKER_API     = process.env.WORKER_API || 'https://tacit-pin.rosscampbell
 const SEPOLIA_RPC    = process.env.SEPOLIA_RPC || 'https://ethereum-sepolia-rpc.publicnode.com';
 const NETWORK_TAG    = 0x01;
 
-const MIXER_ADDRESS  = '0xa384755234EFF281Eac22f3a4E8E38931d78dC29';
+const MIXER_ADDRESS  = '0x93c20B1c872Fe566257DF7D8b1b2960076a74c4E';
 const ASSET_ID_HEX   = 'd903de2d2a7c1958f8ab3c4b9a91175ef3885027a24af306dead9e8f671a450b';
 const DENOM_WEI      = 1000000000000000n; // 0.001 ETH
 const DENOM_WEI_HEX  = '00000000000000000000000000000000000000000000000000038d7ea4c68000';
-const DEPLOY_BLOCK   = '0xa6f13f';
+const DEPLOY_BLOCK   = '0xa70923';
 const DEPOSIT_TOPIC  = null; // computed lazily
 
 const T_BRIDGE_DEPOSIT = 0x60;

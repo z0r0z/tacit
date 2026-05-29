@@ -95,5 +95,49 @@ for (const [filename, expected] of Object.entries(EXPECTED)) {
   }
 }
 
+// On-chain burn verifier pin: the embedded Groth16Verifier.sol VK constants
+// MUST equal the finalized ceremony verification_key.json. A foreign/dev key
+// (the original CRITICAL audit finding) silently bricks every withdrawFromBurn,
+// since a ceremony-keyed proof fails the on-chain pairing. snarkjs emits G2
+// points (beta/gamma/delta) with the Fq2 halves swapped vs the JSON, so we
+// compare with that swap; alpha and IC (G1) compare directly.
+{
+  const VERIFIER_SOL = path.join(__dirname, '..', 'contracts', 'src', 'Groth16Verifier.sol');
+  const VK_JSON = path.join(BUNDLE_DIR, 'verification_key.json');
+  const src = await readFile(VERIFIER_SOL, 'utf8');
+  const vk = JSON.parse(await readFile(VK_JSON, 'utf8'));
+  const constOf = (name) => {
+    const m = src.match(new RegExp(`\\b${name}\\s*=\\s*(\\d+)`));
+    return m ? BigInt(m[1]) : null;
+  };
+  const checks = [];
+  const eq = (label, got, want) => checks.push([label, got === BigInt(want)]);
+  // G1 — direct order.
+  eq('alpha.x', constOf('alphax'), vk.vk_alpha_1[0]);
+  eq('alpha.y', constOf('alphay'), vk.vk_alpha_1[1]);
+  for (let i = 0; i < vk.IC.length; i++) {
+    eq(`IC${i}.x`, constOf(`IC${i}x`), vk.IC[i][0]);
+    eq(`IC${i}.y`, constOf(`IC${i}y`), vk.IC[i][1]);
+  }
+  // G2 — snarkjs solidity emits (c1,c0); JSON stores (c0,c1).
+  const g2 = (field, pt) => {
+    eq(`${field}.x1`, constOf(`${field}x1`), pt[0][1]);
+    eq(`${field}.x2`, constOf(`${field}x2`), pt[0][0]);
+    eq(`${field}.y1`, constOf(`${field}y1`), pt[1][1]);
+    eq(`${field}.y2`, constOf(`${field}y2`), pt[1][0]);
+  };
+  g2('beta', vk.vk_beta_2);
+  g2('gamma', vk.vk_gamma_2);
+  g2('delta', vk.vk_delta_2);
+  const bad = checks.filter(([, ok]) => !ok);
+  if (bad.length === 0) {
+    console.log(`  PASS  Groth16Verifier.sol VK == ceremony key (${checks.length} constants)`);
+    pass++;
+  } else {
+    console.log(`  FAIL  Groth16Verifier.sol VK diverges from ceremony key: ${bad.map(([l]) => l).join(', ')}`);
+    fail++;
+  }
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
