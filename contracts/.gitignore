@@ -2,6 +2,9 @@
 cache/
 out/
 /lib/
+# Per-deploy broadcast logs — regenerated every run; deployed addresses are
+# tracked in the dapp's TETH_DEPLOYMENTS, so these are redundant.
+broadcast/
 
 # SP1 build artifacts (track source + lockfiles for reproducible clone builds)
 sp1/program/target/
