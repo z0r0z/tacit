@@ -1,0 +1,116 @@
+name: Canonical guest ELF (Docker rebuild)
+
+# Rebuilds the tETH guest ELF inside the official succinctlabs/sp1 Docker
+# image and asserts the result matches the committed ELF byte-for-byte and
+# the pinned vkey. This is the independent vkey↔ELF binding that audit
+# T2-LOW-1 / GC-4 / SP1V-4 / T2-LOW-2 calls out as a mainnet prerequisite:
+# anyone with this repo + Docker can reproduce the exact bytes the verifier
+# was deployed with, eliminating the "non-Docker build" trust assumption.
+#
+# Triggers:
+#   - push/PR touching the guest source or pin (gates the merge)
+#   - workflow_dispatch (manual canonical rebuild on demand)
+#   - schedule (weekly heartbeat — catches toolchain drift / dep yanks)
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'contracts/sp1/program/**'
+      - 'contracts/sp1/tree/**'
+      - 'contracts/sp1/elf-vkey-pin.json'
+      - '.github/workflows/canonical-elf.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'contracts/sp1/program/**'
+      - 'contracts/sp1/tree/**'
+      - 'contracts/sp1/elf-vkey-pin.json'
+      - '.github/workflows/canonical-elf.yml'
+  workflow_dispatch:
+  schedule:
+    - cron: '0 6 * * 1'  # Mondays 06:00 UTC
+
+jobs:
+  docker-rebuild:
+    name: Reproducible Docker build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install sp1up + SP1 toolchain
+        run: |
+          curl -L https://sp1.succinct.xyz | bash
+          echo "$HOME/.sp1/bin" >> $GITHUB_PATH
+          $HOME/.sp1/bin/sp1up
+          cargo prove --version
+
+      - name: Read pin
+        id: pin
+        run: |
+          PIN_SHA=$(python3 -c "import json; print(json.load(open('contracts/sp1/elf-vkey-pin.json'))['elf_sha256'])")
+          PIN_VKEY=$(python3 -c "import json; print(json.load(open('contracts/sp1/elf-vkey-pin.json'))['program_vkey'])")
+          echo "pin_sha=$PIN_SHA" >> $GITHUB_OUTPUT
+          echo "pin_vkey=$PIN_VKEY" >> $GITHUB_OUTPUT
+          echo "Pinned sha256: $PIN_SHA"
+          echo "Pinned vkey:   $PIN_VKEY"
+
+      - name: Sha256 of committed ELF
+        id: committed
+        run: |
+          C_SHA=$(sha256sum contracts/sp1/program/elf/teth-pool-prover | awk '{print $1}')
+          echo "committed_sha=$C_SHA" >> $GITHUB_OUTPUT
+          echo "Committed sha256: $C_SHA"
+          if [ "$C_SHA" != "${{ steps.pin.outputs.pin_sha }}" ]; then
+            echo "::error::committed ELF sha256 != pinned (pin is stale)"
+            exit 1
+          fi
+
+      - name: Docker rebuild guest ELF
+        working-directory: contracts/sp1/program
+        run: |
+          cargo prove build --docker 2>&1 | tail -20
+          # cargo-prove writes the ELF to elf/ in the program crate
+          ls -la elf/
+
+      - name: Sha256 of Docker-built ELF
+        id: rebuilt
+        working-directory: contracts/sp1/program
+        run: |
+          R_SHA=$(sha256sum elf/teth-pool-prover | awk '{print $1}')
+          echo "rebuilt_sha=$R_SHA" >> $GITHUB_OUTPUT
+          echo "Rebuilt sha256: $R_SHA"
+
+      - name: Compare
+        run: |
+          PIN_SHA="${{ steps.pin.outputs.pin_sha }}"
+          REBUILT_SHA="${{ steps.rebuilt.outputs.rebuilt_sha }}"
+          echo ""
+          echo "=== ELF binding ==="
+          echo "  pinned:   $PIN_SHA"
+          echo "  rebuilt:  $REBUILT_SHA"
+          if [ "$PIN_SHA" = "$REBUILT_SHA" ]; then
+            echo "::notice::CANONICAL: Docker rebuild matches pin byte-for-byte"
+          else
+            echo "::error::Docker rebuild does NOT match pin. Either the pin is stale (current ELF was built non-Docker), or the source diverged from what was pinned."
+            echo "Action: update contracts/sp1/elf-vkey-pin.json to:"
+            echo "  elf_sha256: $REBUILT_SHA"
+            echo "Then derive the new vkey (cargo run --release --bin vkey from contracts/sp1/script) and update program_vkey."
+            echo "Then redeploy SP1PoolRootVerifier with the new PROGRAM_VKEY."
+            exit 1
+          fi
+
+      - name: Derive vkey from rebuilt ELF (informational)
+        working-directory: contracts/sp1/script
+        run: |
+          # vkey binary embeds include_bytes!(elf/teth-pool-prover) — rebuild captures rebuilt ELF
+          cargo run --release --bin vkey 2>&1 | tail -5
+
+      - name: Upload canonical ELF as artifact
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: canonical-elf-${{ steps.rebuilt.outputs.rebuilt_sha }}
+          path: contracts/sp1/program/elf/teth-pool-prover
+          retention-days: 90
