@@ -52,6 +52,13 @@ contract SP1PoolRootVerifier {
     ProvenState public currentState;
     bytes32 public currentStateCommitment;
     mapping(bytes32 => bool) public acceptedBurns;
+    /// @notice Per-pool last-proven root, populated from the host-only public
+    ///         values tail after every accepted proof. Lets the dapp do a
+    ///         per-pool sync check (its computed burn merkleRoot vs the root
+    ///         the SP1 prover has actually committed for THIS pool) instead
+    ///         of an aggregate poolsHash check that stalls every redemption
+    ///         whenever ANY other pool advances. Audit blocker #2 sync-gate.
+    mapping(uint8 => bytes32) public lastProvenPoolRoot;
 
     /// @notice Maximum ancestor distance accepted for both `prevBlockHash` (vs
     ///         stored `lastBlockHash`) and `lastBlockHash` (vs `RELAY.tip()`).
@@ -229,7 +236,20 @@ contract SP1PoolRootVerifier {
                 off = spanEnd;
             }
             if (_hashArrayMem(burnBatches) != burnsHash) revert InvalidProof();
-            if (off != publicValues.length) revert InvalidProof();
+            // The on-chain-consumed tail ends at `off`. The guest may also
+            // emit a host-only state tail past this point (Option B in
+            // ops/prover-incremental-state.md) so the prover host can persist
+            // post-cycle state. Read the per-pool current root (first 32 bytes
+            // of each per-pool block) for the audit-#2 per-pool sync check;
+            // skip the rest. Anything past `off` is SP1-authenticated but
+            // ignored by withdrawFromBurn's acceptance gate.
+            if (off > publicValues.length) revert InvalidProof();
+            uint256 perPoolBlockSize = 32 + 8 + 20 * 32; // root + next_idx + TREE_DEPTH * 32
+            if (publicValues.length >= off + nd * perPoolBlockSize) {
+                for (uint256 i; i < nd; ++i) {
+                    lastProvenPoolRoot[uint8(i)] = _cd32(publicValues, off + i * perPoolBlockSize);
+                }
+            }
         }
 
         currentState = ProvenState({
