@@ -51,6 +51,11 @@ contract BitcoinLightRelay {
     mapping(bytes32 => bytes32) public blockParent;
     mapping(bytes32 => uint256) public blockWork;
     mapping(bytes32 => uint256) public blockHeight;
+    /// @notice Header `timestamp` per block. RELAY-3: enables monotonic-timestamp
+    ///         validation in advanceTip (loose form of Bitcoin's MTP — strict MTP
+    ///         would require a sliding window of the last 11; this single-parent
+    ///         check catches the egregious cases at no additional storage cost).
+    mapping(bytes32 => uint32) public blockTimestamp;
 
     bool public initialized;
 
@@ -68,6 +73,7 @@ contract BitcoinLightRelay {
     error InvalidHeaderChain();
     error InvalidPoW();
     error InvalidTarget();
+    error InvalidTimestamp();
     error NotInitialized();
     error Unauthorized();
     error UnknownEpoch();
@@ -104,6 +110,11 @@ contract BitcoinLightRelay {
         tipWork = tipWork_;
         blockWork[tipHash] = tipWork_;
         blockHeight[tipHash] = tipHeight_;
+        // Seed the genesis tip's timestamp so advanceTip's monotonic check has
+        // a parent timestamp to compare against. Reuses startTimestamp under
+        // the assumption the deployer set startTimestamp to the anchor block's
+        // own timestamp (true for both production genesis and testnet anchor).
+        blockTimestamp[tipHash] = uint32(startTimestamp);
 
         initialized = true;
         emit Genesis(epoch, target, tipHash);
@@ -149,6 +160,19 @@ contract BitcoinLightRelay {
             if (target != expectedTarget) revert InvalidPoW();
             if (_reverseU256(uint256(bh)) > target) revert InvalidPoW();
 
+            // RELAY-3: timestamp validation. (a) Future-drift: header ts must
+            // not exceed block.timestamp + 2h (Bitcoin Core's MAX_FUTURE_BLOCK_TIME).
+            // (b) Monotonic (loose MTP): header ts must be strictly greater than
+            // the parent's stored timestamp. Strict MTP (median of last 11) would
+            // require a sliding window; this single-parent check catches the
+            // egregious cases and aligns with the rest of the relay's PoW-only
+            // canonical-chain enforcement.
+            if (ts > block.timestamp + 7200) revert InvalidTimestamp();
+            {
+                uint32 parentTs = blockTimestamp[prev];
+                if (parentTs > 0 && ts <= parentTs) revert InvalidTimestamp();
+            }
+
             cumWork += _workFromTarget(target);
             prevHash = bh;
 
@@ -156,6 +180,7 @@ contract BitcoinLightRelay {
             blockParent[bh] = prev;
             blockWork[bh] = cumWork;
             blockHeight[bh] = height;
+            blockTimestamp[bh] = ts;
 
             // Track epoch-boundary timestamp; only commit when chain becomes tip.
             if (height % EPOCH_LENGTH == 0) {

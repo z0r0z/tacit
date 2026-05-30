@@ -54,6 +54,8 @@ contract TestnetLightRelay is BitcoinLightRelay {
         tipWork = tipWork_;
         blockWork[tipHash] = tipWork_;
         blockHeight[tipHash] = tipHeight_;
+        // RELAY-3: seed genesis timestamp for advanceTip's monotonic check.
+        blockTimestamp[tipHash] = uint32(startTimestamp);
         initialized = true;
     }
 }
