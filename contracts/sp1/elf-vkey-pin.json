@@ -1,7 +1,7 @@
 {
   "_comment": "Binds the committed SP1 guest ELF to the verifying keys it must be deployed with. verify-vkey-pin.sh asserts sha256(program/elf/teth-pool-prover) == elf_sha256 (always) and, where the SP1 toolchain is present, that the vkey derived from the ELF == program_vkey. A guest rebuild that changes the ELF MUST regenerate the vkey and update this file IN THE SAME COMMIT, then redeploy SP1PoolRootVerifier with the new PROGRAM_VKEY — otherwise every proveStateTransition reverts and all withdrawals brick.",
-  "elf_sha256": "dfc84ff8729d48e0ded63e38f1c93017c833c6bfc584327aeea2365318b6352f",
-  "program_vkey": "0x00cb226ed9b6e565f1230f47da2b0a31cf961ae96b5b1a8f09ce8fc459e21243",
+  "elf_sha256": "5d984111bf092cdc63b8659ec075d8bb2eb4d585c8d111716f96581c21b751b7",
+  "program_vkey": "0x764799255675215901db0d1d762ba8940cba56b113ee23241b57ce6d3e63402d",
   "groth16_vk_hash": "0x0eabe508c630aea06f0db1f05dbd456e9f82df739bcc84d644a7533db0691edb",
-  "guest_state": "HARDENED — denom canonical/pairwise-distinct asserts + CXFER checked_add. CANONICAL — `cargo prove build --docker` in CI produces byte-identical ELF (verified by .github/workflows/canonical-elf.yml). vkey↔ELF binding is independently reproducible by anyone with this repo + Docker, eliminating the prior non-Docker trust assumption. Audit blocker #4 closed."
+  "guest_state": "MAINNET-READY — denom canonical/pairwise-distinct asserts + CXFER checked_add; incremental-state public-values tail (frontiers + null/UTXO entries) for cross-cycle persistence; 0x2A T_WITHDRAW handler for bridge asset (closes two-ledger double-claim); BIP141 64-byte-tx reject + coinbase invariant. Rebuilt on the vast prover host (non-Docker); canonical-elf.yml CI rebuilds in the official SP1 Docker image and asserts byte-equality — if CI now fails the pin must be regenerated from the Docker artifact before deploy."
 }
