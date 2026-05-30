@@ -47,6 +47,27 @@ echo "=== tETH Bridge — MAINNET Deployment ==="
 : "${GROTH16_VK_HASH:?Set GROTH16_VK_HASH (sha256 of ceremony VK bytes)}"
 : "${BTC_TIP_WORK:?Set BTC_TIP_WORK (decimal cumulative chainwork; bitcoin-cli getblockheader)}"
 
+# Canonical PoseidonT3 (poseidon-solidity deterministic deploy, also live on
+# mainnet). TacitBridgeMixer links it as an external library — the artifact
+# carries unresolved linkRefs (29 KB, exceeds the 24.5 KB EIP-170 cap so it
+# cannot be inlined). Without --libraries forge would auto-deploy a copy,
+# which (a) would itself exceed the contract size cap (broadcast reverts) and
+# (b) would silently produce a Poseidon that disagrees with the dapp + guest
+# hashing — fail-closed via the on-chain preflight below either way.
+: "${POSEIDON_T3:=0x3333333c0a88f9be4fd23ed0536f9b6c427e3b93}"
+echo "  PoseidonT3: ${POSEIDON_T3}"
+
+# Preflight: ensure the canonical PoseidonT3 is actually deployed on mainnet
+# at the expected address. A wrong/missing address makes mixer deposit() and
+# withdrawFromBurn() revert on every call (immutable mixer, no recovery).
+POSEIDON_CODE_LEN=$(cast code ${POSEIDON_T3} --rpc-url "${MAINNET_RPC}" 2>/dev/null | wc -c)
+if [ "${POSEIDON_CODE_LEN}" -lt 100 ]; then
+  echo "REFUSING TO DEPLOY: PoseidonT3 not deployed at ${POSEIDON_T3} on this RPC (got ${POSEIDON_CODE_LEN} hex chars)."
+  echo "Deploy the canonical poseidon-solidity PoseidonT3 first, then re-run."
+  exit 1
+fi
+echo "  PoseidonT3 has ${POSEIDON_CODE_LEN} bytes of code ✓"
+
 # Belt-and-suspenders: refuse to broadcast against a non-mainnet RPC even if
 # the user's MAINNET_RPC env points elsewhere.
 CHAIN_ID=$(curl -sf -X POST "$MAINNET_RPC" -H 'Content-Type: application/json' \
@@ -137,6 +158,7 @@ GROTH16_VK_HASH=$GROTH16_VK_HASH \
 DEPLOYER_PRIVATE_KEY=$DEPLOYER_PRIVATE_KEY \
 forge script script/Deploy.s.sol:DeployTacitBridge \
   --rpc-url "$MAINNET_RPC" \
+  --libraries "src/lib/PoseidonT3.sol:PoseidonT3:${POSEIDON_T3}" \
   --broadcast \
   -vvv
 
