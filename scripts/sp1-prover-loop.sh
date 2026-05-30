@@ -124,10 +124,41 @@ run_proof_cycle() {
 
   num_blocks=$((target - start_height + 1))
   log "Proving blocks $start_height..$target ($num_blocks) up to relay tip"
+
+  # Fetch published CXFER openings from the worker so the bridge guest can
+  # verify Pedersen conservation on tETH CXFER outputs (without them the
+  # guest removes spent inputs but creates no outputs → recipients can't
+  # import + redeem ETH). Helper iterates the block range, queries the
+  # worker per (txid, vout), writes the JSON file CXFER_WITNESSES_PATH points
+  # at. Non-fatal: empty file = no openings = guest treats every CXFER as
+  # untracked (same as before this wiring).
+  local witnesses_file="${STATE_DIR}/cxfer-witnesses.json"
+  local worker_base="${WORKER_BASE:-https://tacit-pin.rosscampbell9.workers.dev}"
+  if command -v python3 >/dev/null 2>&1; then
+    log "Fetching CXFER openings for blocks $start_height..$target from worker"
+    python3 "${REPO_DIR}/scripts/fetch-cxfer-openings.py" \
+      --start-height "$start_height" --num-blocks "$num_blocks" \
+      --network "$NETWORK" --worker-base "$worker_base" \
+      --output "$witnesses_file" 2>&1 | tee -a "${STATE_DIR}/last_proof.log" >/dev/null || {
+      log "  CXFER opening fetch failed (continuing with no witnesses)"
+      echo "[]" > "$witnesses_file"
+    }
+  else
+    log "  python3 not available — skipping CXFER opening fetch"
+    echo "[]" > "$witnesses_file"
+  fi
+
+  # STATE_FILE: incremental-proving persistence. Host loads at cycle start
+  # (if matches verifier), saves after a successful prove cycle (extracts
+  # the SP1-authenticated state tail from public values). See
+  # ops/prover-incremental-state.md.
+  local state_file="${STATE_DIR}/prover-state.json"
+
   cd "${REPO_DIR}/contracts/sp1/script"
   ASSET_ID="$ASSET_ID" MIXER_ADDRESS="$MIXER_ADDRESS" DENOMINATIONS="$DENOMINATIONS" \
   NETWORK="$NETWORK" NETWORK_TAG="$NETWORK_TAG" CHAIN_ID="$CHAIN_ID" DEPLOY_BLOCK="$DEPLOY_BLOCK" \
   STATE_DIR="$STATE_DIR" OUTPUT_DIR="$STATE_DIR" ETH_RPC="$ETH_RPC" SP1_PROVER="$SP1_PROVER" \
+  CXFER_WITNESSES_PATH="$witnesses_file" STATE_FILE="$state_file" \
   ${POOL_IDS:+POOL_IDS="$POOL_IDS"} ${DEPOSIT_ROOTS_FILE:+DEPOSIT_ROOTS_FILE="$DEPOSIT_ROOTS_FILE"} \
   cargo run --release --bin teth-prover -- \
     --start-height "$start_height" --num-blocks "$num_blocks" --onchain 2>&1 | tee "${STATE_DIR}/last_proof.log"
