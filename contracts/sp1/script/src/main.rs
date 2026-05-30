@@ -188,6 +188,52 @@ fn main() {
         "3d395b8310d241a1fbb6a544e36dfccdbbc51f5a");
     let vstate = read_verifier_state(&http, &bases_eth, &verifier_addr);
 
+    // Incremental state file: if STATE_FILE is set and the saved state matches
+    // the verifier's currently-committed state, the host feeds the full prev
+    // state (pool frontiers/next_indices, null set entries, UTXO set) instead
+    // of the empty-pools fallback. This is what makes cycle N+1 possible after
+    // any activity advanced the verifier past genesis/empty. See
+    // ops/prover-incremental-state.md for the full design — the SAVE half
+    // (deriving the new ProverState after a successful cycle) lives in either
+    // a guest state-emission tail (Option B) or a host-side replay (Option A),
+    // both planned in that doc; load is wired here.
+    let saved_state = env::var("STATE_FILE").ok().and_then(|p| {
+        if std::path::Path::new(&p).exists() {
+            println!("  state file: {p}");
+            load_prover_state(&p)
+        } else {
+            None
+        }
+    });
+    let saved_state = saved_state.and_then(|s| {
+        // Verify the saved state matches the verifier's committed state. If a
+        // reorg or someone-else's-proof advanced the chain since we last saved,
+        // the file is stale; fall back to verifier-only reconstruction.
+        match &vstate {
+            Some((vh, vn, vsh, vlb)) => {
+                let computed_pools: [u8; 32] = {
+                    let mut c = Vec::with_capacity(32 * nd);
+                    for r in &s.pool_roots { c.extend_from_slice(r); }
+                    Sha256::digest(&c).into()
+                };
+                let saved_null: [u8; 32] = s.null_set_hash.clone().try_into().ok()?;
+                let saved_lb: [u8; 32] = s.last_block_hash.clone().try_into().ok()?;
+                if computed_pools == *vh
+                    && saved_null == *vn
+                    && s.state_height == *vsh
+                    && saved_lb == *vlb
+                {
+                    println!("  state file matches verifier — using as prev_state");
+                    Some(s)
+                } else {
+                    println!("  state file stale (does not match verifier); ignoring");
+                    None
+                }
+            }
+            None => None,
+        }
+    });
+
     let empty_tree = merkle::PoseidonTree::new();
     let empty_root = empty_tree.root();
     let empty_frontier = empty_tree.frontier();
@@ -200,18 +246,28 @@ fn main() {
     let genesis_anchor = env_hex32("GENESIS_ANCHOR",
         "9adb35bb0996d74cf63498f0b60297ee85e44b18f0347e831f38710515000000");
 
-    let (is_genesis, prev_block_hash, prev_height): (bool, Vec<u8>, u64) = match &vstate {
-        None => (true, genesis_anchor.clone(), 0),
-        Some((ph, _, _, _)) if *ph == genesis_pools_hash => (true, genesis_anchor.clone(), 0),
-        Some((ph, nh, h, lb)) => {
+    let (is_genesis, prev_block_hash, prev_height): (bool, Vec<u8>, u64) = match (&saved_state, &vstate) {
+        // Saved state matches verifier — incremental from saved
+        (Some(s), Some(_)) => (false, s.last_block_hash.clone(), s.state_height),
+        // No saved state, no verifier state — fresh genesis
+        (None, None) => (true, genesis_anchor.clone(), 0),
+        // Verifier at genesis poolsHash — fresh genesis
+        (None, Some((ph, _, _, _))) if *ph == genesis_pools_hash => (true, genesis_anchor.clone(), 0),
+        // Verifier advanced past genesis but no saved state — the existing
+        // empty-pools-empty-null fallback (deposit-side regime only).
+        (None, Some((ph, nh, h, lb))) => {
             assert!(*ph == empty_pools_hash,
-                "verifier poolsHash advanced beyond empty trees (CXFER activity) — incremental pool-tree reconstruction not implemented (needs guest state emission)");
+                "verifier poolsHash advanced beyond empty trees and no STATE_FILE provided — set STATE_FILE to the persisted prover state (see ops/prover-incremental-state.md) or redeploy from genesis");
             assert!(*nh == [0u8; 32],
-                "verifier nullifierSetHash != 0 (withdrawals occurred) — incremental nullifier-set reconstruction not implemented (needs guest state emission)");
+                "verifier nullifierSetHash != 0 and no STATE_FILE provided — same recovery: set STATE_FILE or redeploy");
             (false, lb.to_vec(), *h)
         }
     };
-    println!("  State: {}", if is_genesis { "genesis" } else { "incremental (empty pools/null)" });
+    println!("  State: {}", match (&saved_state, is_genesis) {
+        (Some(_), _) => "incremental (from STATE_FILE)",
+        (None, true) => "genesis",
+        (None, false) => "incremental (empty pools/null)",
+    });
 
     // ──── Build SP1 stdin matching guest read order exactly ────
     let mut stdin = SP1Stdin::new();
@@ -221,8 +277,12 @@ fn main() {
     for d in &denominations { stdin.write(d); }
 
     // 2. Per-denomination previous pool state
-    for _ in 0..nd {
-        if is_genesis {
+    for i in 0..nd {
+        if let Some(s) = &saved_state {
+            stdin.write(&s.pool_roots[i]);
+            stdin.write(&s.pool_next_indices[i]);
+            for f in &s.pool_frontiers[i] { stdin.write(f); }
+        } else if is_genesis {
             stdin.write(&vec![0u8; 32]);
             stdin.write(&0u64);
             for _ in 0..empty_frontier.len() { stdin.write(&vec![0u8; 32]); }
@@ -233,12 +293,27 @@ fn main() {
         }
     }
 
-    // 3. Shared previous state (null/utxo empty in both genesis and the
-    //    supported deposit-side incremental regime).
-    stdin.write(&vec![0u8; 32]); // null set hash
-    stdin.write(&prev_height);   // state height (read from the verifier)
-    stdin.write(&0u64);          // null count
-    stdin.write(&0u64);          // utxo count
+    // 3. Shared previous state. With STATE_FILE: feed the persisted null
+    //    set hash + height + nullifier entries + UTXO entries. Without:
+    //    empty (deposit-side regime + genesis both work this path).
+    if let Some(s) = &saved_state {
+        stdin.write(&s.null_set_hash);
+        stdin.write(&s.state_height);
+        stdin.write(&(s.nullifiers.len() as u64));
+        for n in &s.nullifiers { stdin.write(n); }
+        stdin.write(&(s.utxo_set.len() as u64));
+        for (txid, vout, commit, amount) in &s.utxo_set {
+            stdin.write(txid);
+            stdin.write(vout);
+            stdin.write(commit);
+            stdin.write(amount);
+        }
+    } else {
+        stdin.write(&vec![0u8; 32]); // null set hash
+        stdin.write(&prev_height);   // state height (read from the verifier)
+        stdin.write(&0u64);          // null count
+        stdin.write(&0u64);          // utxo count
+    }
 
     // 4. Per-denomination deposit roots — reconstructed from on-chain Deposit
     //    events with the shared tree, self-checked against the mixer.
