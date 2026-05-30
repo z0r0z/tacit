@@ -1,7 +1,7 @@
 use crate::poseidon;
 use sha2::{Sha256, Digest};
 
-const TREE_DEPTH: usize = 20;
+pub const TREE_DEPTH: usize = 20;
 const MAX_LEAVES: usize = 1 << TREE_DEPTH;
 
 pub struct PoseidonTree {
@@ -144,5 +144,13 @@ impl NullifierSet {
     pub fn count(&self) -> u64 {
         assert!(self.pending.is_empty(), "must finalize before counting");
         self.sorted.len() as u64
+    }
+
+    /// Sorted nullifier entries — exposed so the SP1 host can persist the
+    /// post-cycle state (`ops/prover-incremental-state.md` Option B). Must
+    /// only be called after `finalize`; assertion mirrors `count`/`hash`.
+    pub fn entries(&self) -> &[[u8; 32]] {
+        assert!(self.pending.is_empty(), "must finalize before reading entries");
+        &self.sorted
     }
 }

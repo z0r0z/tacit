@@ -495,6 +495,38 @@ pub fn main() {
     for a in &deposit_root_accumulators { io::commit_slice(a); }
     for bn in &burn_nullifiers { io::commit_slice(&(bn.len() as u32).to_be_bytes()); }
     for bn in &burn_nullifiers { for c in bn { io::commit_slice(c); } }
+
+    // ──── Incremental-state emission (host-only tail) ────
+    // After the on-chain-consumed tail above, emit the full post-cycle state
+    // as additional SP1-authenticated public values. The on-chain verifier
+    // reads only up to the burn-claims tail; anything past that is ignored
+    // by proveStateTransition but still authenticated by the SP1 proof. The
+    // prover host parses this tail + saves to STATE_FILE; the next cycle
+    // loads it as prev_state. See ops/prover-incremental-state.md (Option B).
+    //
+    // Format (binary, no length-prefix on the per-pool block since nd is
+    // known from the head's denoms_hash + the constructor's NUM_DENOMS):
+    //   per pool (nd pools): 32 bytes (root) + 8 bytes BE u64 (next_index)
+    //                        + TREE_DEPTH * 32 bytes (frontier)
+    //   4 bytes BE u32: null_entries_count
+    //   null_entries_count * 32: nullifiers (sorted ascending)
+    //   4 bytes BE u32: utxo_entries_count
+    //   utxo_entries_count * (32 + 4 + 33 + 8): (txid, vout BE u32, commit 33B, amount BE u64)
+    for tree in &trees {
+        io::commit_slice(&tree.root());
+        io::commit_slice(&(tree.next_index() as u64).to_be_bytes());
+        for f in tree.frontier().iter() { io::commit_slice(f); }
+    }
+    let null_entries = null_set.entries();
+    io::commit_slice(&(null_entries.len() as u32).to_be_bytes());
+    for n in null_entries { io::commit_slice(n); }
+    io::commit_slice(&(utxo_set.len() as u32).to_be_bytes());
+    for (txid, vout, commit, amount) in &utxo_set {
+        io::commit_slice(txid);
+        io::commit_slice(&vout.to_be_bytes());
+        io::commit_slice(commit);
+        io::commit_slice(&amount.to_be_bytes());
+    }
 }
 
 // ──── Helpers ────

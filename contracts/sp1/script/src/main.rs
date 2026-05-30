@@ -12,6 +12,7 @@ use reqwest::blocking::Client;
 use sha2::{Sha256, Digest};
 use sha3::Keccak256;
 use teth_tree::merkle;
+use teth_tree::merkle::TREE_DEPTH;
 use std::env;
 use std::time::Duration;
 use std::thread;
@@ -408,7 +409,103 @@ fn main() {
         std::fs::write(format!("{out_dir}/public_values.hex"), hex::encode(pv)).expect("write pv");
         std::fs::write(format!("{out_dir}/proof_bytes.hex"), hex::encode(&proof_bytes)).expect("write proof hex");
         println!("Submission files saved to {out_dir}/");
+
+        // Incremental-state save: parse the host-only tail (after the burn
+        // claims) into a ProverState + write atomically to STATE_FILE so the
+        // next cycle's load path picks it up. The SP1 proof authenticates the
+        // entire public_values blob, so this tail is as trustworthy as the
+        // on-chain head + tail. See ops/prover-incremental-state.md.
+        if let Ok(state_file) = env::var("STATE_FILE") {
+            match parse_state_tail(pv, nd, &denominations) {
+                Ok((roots, indices, frontiers, null_hash, height, nulls, utxos, last_bh)) => {
+                    let state = ProverState {
+                        denominations: denominations.clone(),
+                        pool_roots: roots,
+                        pool_next_indices: indices,
+                        pool_frontiers: frontiers,
+                        null_set_hash: null_hash,
+                        state_height: height,
+                        nullifiers: nulls,
+                        utxo_set: utxos,
+                        last_block_hash: last_bh,
+                        state_commitment: pv[429..461].to_vec(), // new_state_commitment offset in head
+                    };
+                    match save_prover_state(&state_file, &state) {
+                        Ok(_) => println!("State persisted to {state_file} ({} null + {} utxo)", state.nullifiers.len(), state.utxo_set.len()),
+                        Err(e) => eprintln!("State save failed: {e}"),
+                    }
+                }
+                Err(e) => eprintln!("State tail parse failed: {e} (proof is valid; just no state file update)"),
+            }
+        }
     }
+}
+
+/// Parse the host-only incremental-state tail of the SP1 public values
+/// (everything past the burn-claims tail consumed on-chain). Format mirrors
+/// the guest emission in program/src/main.rs end-of-main.
+#[allow(clippy::type_complexity)]
+fn parse_state_tail(
+    pv: &[u8],
+    nd: usize,
+    denominations: &[Vec<u8>],
+) -> Result<(Vec<Vec<u8>>, Vec<u64>, Vec<Vec<Vec<u8>>>, Vec<u8>, u64, Vec<Vec<u8>>, Vec<(Vec<u8>, u32, Vec<u8>, u64)>, Vec<u8>), String> {
+    // Fixed-head layout (461 bytes).
+    if pv.len() < 461 { return Err(format!("pv {} < 461 head", pv.len())); }
+    let new_state_height = u64::from_be_bytes(pv[168..176].try_into().unwrap());
+    let last_block_hash = pv[333..365].to_vec();
+    let new_null_set_hash = pv[136..168].to_vec();
+
+    // Skip the on-chain tail: deposit_accs[nd*32] + counts[nd*4 BE] + claims[sum*32].
+    let mut p = 461;
+    p += nd * 32; // deposit accs
+    if pv.len() < p + nd * 4 { return Err(format!("pv {} < accs+counts {}", pv.len(), p + nd * 4)); }
+    let mut total_claims: usize = 0;
+    for i in 0..nd {
+        let c = u32::from_be_bytes(pv[p + i * 4..p + (i + 1) * 4].try_into().unwrap()) as usize;
+        total_claims += c;
+    }
+    p += nd * 4;
+    p += total_claims * 32;
+
+    // Per-pool: root(32) + next_index(8 BE) + TREE_DEPTH frontiers (32 each)
+    let per_pool = 32 + 8 + TREE_DEPTH * 32;
+    if pv.len() < p + nd * per_pool + 4 { return Err(format!("pv {} too short for pool state {}", pv.len(), p + nd * per_pool + 4)); }
+    let mut pool_roots = Vec::with_capacity(nd);
+    let mut pool_next_indices = Vec::with_capacity(nd);
+    let mut pool_frontiers = Vec::with_capacity(nd);
+    for _ in 0..nd {
+        pool_roots.push(pv[p..p + 32].to_vec()); p += 32;
+        let idx = u64::from_be_bytes(pv[p..p + 8].try_into().unwrap());
+        pool_next_indices.push(idx); p += 8;
+        let mut frontier = Vec::with_capacity(TREE_DEPTH);
+        for _ in 0..TREE_DEPTH { frontier.push(pv[p..p + 32].to_vec()); p += 32; }
+        pool_frontiers.push(frontier);
+    }
+
+    // null_count(4 BE) + entries
+    if p + 4 > pv.len() { return Err("pv truncated before null_count".into()); }
+    let null_count = u32::from_be_bytes(pv[p..p + 4].try_into().unwrap()) as usize;
+    p += 4;
+    if p + null_count * 32 > pv.len() { return Err("pv truncated in null entries".into()); }
+    let mut nullifiers = Vec::with_capacity(null_count);
+    for _ in 0..null_count { nullifiers.push(pv[p..p + 32].to_vec()); p += 32; }
+
+    // utxo_count(4 BE) + entries
+    if p + 4 > pv.len() { return Err("pv truncated before utxo_count".into()); }
+    let utxo_count = u32::from_be_bytes(pv[p..p + 4].try_into().unwrap()) as usize;
+    p += 4;
+    if p + utxo_count * 77 > pv.len() { return Err("pv truncated in utxo entries".into()); }
+    let mut utxo_set = Vec::with_capacity(utxo_count);
+    for _ in 0..utxo_count {
+        let txid = pv[p..p + 32].to_vec(); p += 32;
+        let vout = u32::from_be_bytes(pv[p..p + 4].try_into().unwrap()); p += 4;
+        let commit = pv[p..p + 33].to_vec(); p += 33;
+        let amount = u64::from_be_bytes(pv[p..p + 8].try_into().unwrap()); p += 8;
+        utxo_set.push((txid, vout, commit, amount));
+    }
+    let _ = denominations;
+    Ok((pool_roots, pool_next_indices, pool_frontiers, new_null_set_hash, new_state_height, nullifiers, utxo_set, last_block_hash))
 }
 
 fn print_public_values(pv: &[u8]) {
@@ -712,14 +809,15 @@ fn load_cxfer_witnesses(start_height: u64) -> Vec<(u32, u32, Vec<(u64, Vec<u8>)>
     result
 }
 
-// Write counterpart to load_prover_state. Wiring this into the prove path
-// (reconstructing ProverState from the new committed state) enables incremental
-// proving across batches — currently each run re-derives from the state file.
-#[allow(dead_code)]
-fn save_prover_state(path: &str, state: &ProverState) {
+/// Atomic write: serialize → tmp file → rename. A torn write at cycle N+1
+/// would make N+2's load see garbage; the rename is atomic on POSIX so we
+/// either see the full new state or the full old state.
+fn save_prover_state(path: &str, state: &ProverState) -> Result<(), String> {
     if let Some(d) = std::path::Path::new(path).parent() {
         std::fs::create_dir_all(d).ok();
     }
-    let json = serde_json::to_string_pretty(state).expect("serialize state");
-    std::fs::write(path, json).expect("write state file");
+    let tmp = format!("{path}.tmp");
+    let json = serde_json::to_string_pretty(state).map_err(|e| format!("serialize: {e}"))?;
+    std::fs::write(&tmp, json).map_err(|e| format!("write tmp: {e}"))?;
+    std::fs::rename(&tmp, path).map_err(|e| format!("rename: {e}"))
 }
