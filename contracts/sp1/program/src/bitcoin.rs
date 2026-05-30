@@ -15,6 +15,15 @@ pub fn double_sha256(data: &[u8]) -> [u8; 32] {
 }
 
 pub fn compute_txid(tx_data: &[u8]) -> [u8; 32] {
+    // BIP-141 anti-merkle-collision: a 64-byte serialization can be mistaken
+    // for a merkle internal node. Bitcoin Core consensus rejects such txs in
+    // blocks. We assert it explicitly here so the guest fails loudly with a
+    // clear message rather than silently computing a txid that could collide.
+    // Canonical mined blocks never contain a 64-byte non-witness tx; this
+    // gate catches the malformed-block case rather than masking it. Audit BTC-1.
+    assert!(tx_data.len() != 64 || (tx_data.len() > 5 && tx_data[4] == 0x00 && tx_data[5] == 0x01),
+        "BIP141: 64-byte non-witness tx (anti-merkle-collision)");
+
     let is_segwit = tx_data.len() > 5 && tx_data[4] == 0x00 && tx_data[5] == 0x01;
     if !is_segwit {
         return double_sha256(tx_data);

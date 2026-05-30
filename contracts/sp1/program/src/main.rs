@@ -218,6 +218,18 @@ pub fn main() {
             let txid = bitcoin::compute_txid(&tx_data);
             txids.push(txid);
 
+            // Coinbase invariant (BIP30 / consensus): first tx of every block
+            // must be coinbase — vin[0].txid == all-zeros, vout == 0xffffffff.
+            // Bitcoin Core consensus enforces this; we assert it so the guest
+            // fails loudly on a malformed block rather than silently accepting
+            // a header with no coinbase + funded "txs". Audit BTC-2.
+            if tx_idx == 0 {
+                let inps = bitcoin::extract_input_outpoints(&tx_data);
+                assert!(!inps.is_empty(), "tx 0 has no inputs (malformed coinbase)");
+                assert!(inps[0].0 == [0u8; 32] && inps[0].1 == 0xffffffff,
+                    "tx 0 is not a coinbase (vin[0] != zero/0xffffffff)");
+            }
+
             let op_returns = bitcoin::extract_all_op_returns(&tx_data);
             let mut seen_burn_in_tx = false;
             for envelope in &op_returns {
