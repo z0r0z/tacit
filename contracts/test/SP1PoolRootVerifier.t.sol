@@ -10,7 +10,10 @@ contract MockSP1Verifier is ISP1Verifier {
 
 contract MockRelay is IRelay {
     bytes32 public tip;
+    mapping(bytes32 => bytes32) public _parent;
     function setTip(bytes32 t) external { tip = t; }
+    function setParent(bytes32 child, bytes32 parent) external { _parent[child] = parent; }
+    function blockParent(bytes32 b) external view returns (bytes32) { return _parent[b]; }
 }
 
 contract MockMixerForVerifier is IMixer {
@@ -222,7 +225,9 @@ contract SP1PoolRootVerifierTest is Test {
         relay.setTip(bytes32(uint256(0xFF)));
         bytes memory pv = _validPV(bytes32(uint256(0xFF)), bytes32(0), bytes32(0));
         _set32(pv, 72, bytes32(uint256(0xBAD))); // wrong prev_block_hash
-        vm.expectRevert(SP1PoolRootVerifier.StateMismatch.selector);
+        // Reorg finality window: walks blockParent up to FINALITY_WINDOW.
+        // 0xBAD isn't a known ancestor of any tip in this mock → StalePrevBlock.
+        vm.expectRevert(SP1PoolRootVerifier.StalePrevBlock.selector);
         _submitEmpty(pv, bytes32(0));
     }
 
