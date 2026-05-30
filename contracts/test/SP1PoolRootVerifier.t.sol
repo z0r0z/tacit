@@ -238,6 +238,25 @@ contract SP1PoolRootVerifierTest is Test {
         _submitEmpty(pv, bytes32(0));
     }
 
+    function test_finalityWindow_acceptsAncestorTip() public {
+        // Reorg finality window: a proof whose lastBlockHash is the relay's
+        // current tip OR a confirmed ancestor within FINALITY_WINDOW=6 should
+        // be accepted. Simulates "prover started 4 blocks ago, relay advanced
+        // in the meantime; the older lastBlockHash is still in-window." Audit #2.
+        bytes32 oldTip = bytes32(uint256(0xAA));
+        bytes32 mid1   = bytes32(uint256(0xBB));
+        bytes32 mid2   = bytes32(uint256(0xCC));
+        bytes32 newTip = bytes32(uint256(0xDD));
+        relay.setParent(newTip, mid2);
+        relay.setParent(mid2, mid1);
+        relay.setParent(mid1, oldTip);
+        relay.setTip(newTip);
+        // PV: lastBlockHash = oldTip (3 ancestors deep, within window=6)
+        bytes memory pv = _validPV(oldTip, bytes32(0), bytes32(0));
+        // Should succeed (no revert)
+        _submitEmpty(pv, bytes32(0));
+    }
+
     // ──── Root accumulator tests ────
 
     function test_wrong_accumulator_reverts() public {

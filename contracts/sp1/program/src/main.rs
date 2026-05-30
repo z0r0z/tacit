@@ -235,6 +235,67 @@ pub fn main() {
             for envelope in &op_returns {
             if envelope.is_empty() { continue; }
             let opcode = envelope[0];
+
+            // T_WITHDRAW (0x2A) — mixer-generic withdraw. Different envelope
+            // layout from bridge ops (no networkTag, 8-LE denom). Handled here
+            // for the BRIDGE ASSET so the same pool note can't be circulated
+            // as a tETH UTXO via 0x2A (mixer ledger marks the nullifier) AND
+            // later burned via 0x61 (bridge ledger sees nullifier as unspent →
+            // double-claim → fractional reserve). Marks the nullifier in the
+            // BRIDGE null_set + registers the emitted stealth UTXO at vout 0
+            // identically to a bridge export (0x63). Audit two-ledger seam.
+            //
+            // T_WITHDRAW: opcode(1) | assetId(32) | denom_LE(8) | merkle_root(32)
+            //           | nullifier(32) | recip_commit(33) | r_leaf(32)
+            //           | bind_hash(32) | proof_len(2 LE) | proof(proof_len)
+            if opcode == 0x2A {
+                if envelope.len() < 204 { continue; }
+                let env_asset: [u8; 32] = match envelope[1..33].try_into() { Ok(a) => a, Err(_) => continue };
+                if env_asset != asset_id32 { continue; }
+                let env_denom_le: [u8; 8] = envelope[33..41].try_into().unwrap();
+                let env_denom_u64 = u64::from_le_bytes(env_denom_le);
+                let di = match denom_u64s.iter().position(|&d| d == env_denom_u64) {
+                    Some(i) => i, None => continue,
+                };
+                let env_pool_root: [u8; 32] = envelope[41..73].try_into().unwrap();
+                if !known_pool_roots[di].contains(&env_pool_root) { continue; }
+                let env_nullifier: [u8; 32] = envelope[73..105].try_into().unwrap();
+                let env_recip_commit: [u8; 33] = envelope[105..138].try_into().unwrap();
+                let env_r_leaf: [u8; 32] = envelope[138..170].try_into().unwrap();
+                let env_bind_hash: [u8; 32] = envelope[170..202].try_into().unwrap();
+                // T_WITHDRAW bind_hash: sha256(WITHDRAW_BIND_DOMAIN || assetId
+                //   || denom_LE(8) || nullifier || recip_commit || r_leaf).
+                // No chainid/mixer/networkTag (asset-scoped, not bridge-scoped).
+                {
+                    let mut h = Sha256::new();
+                    h.update(b"tacit-withdraw-bind-v1");
+                    h.update(&asset_id32);
+                    h.update(&env_denom_le);
+                    h.update(&env_nullifier);
+                    h.update(&env_recip_commit);
+                    h.update(&env_r_leaf);
+                    let computed: [u8; 32] = h.finalize().into();
+                    if computed != env_bind_hash { continue; }
+                }
+                // Groth16 verify: same withdraw circuit + ceremony key, public
+                // inputs (pool_root, nullifier, denom_BE32, r_leaf, bind_hash).
+                let proof_len = u16::from_le_bytes([envelope[202], envelope[203]]) as usize;
+                if envelope.len() < 204 + proof_len { continue; }
+                let proof_bytes = envelope[204..204 + proof_len].to_vec();
+                // denom as BE 32 bytes (high 24 zero, low 8 = denom_u64 BE)
+                let mut denom_be32 = [0u8; 32];
+                denom_be32[24..32].copy_from_slice(&env_denom_u64.to_be_bytes());
+                let inputs = vec![env_pool_root, env_nullifier, denom_be32, env_r_leaf, env_bind_hash];
+                if !try_verify_groth16(&proof_bytes, &inputs, &prepared_vk) { continue; }
+                if !null_set.insert(env_nullifier) { continue; }
+                // Register the stealth UTXO at vout 0 (T_WITHDRAW emits the
+                // spendable output there). Pinned to source pool's denom — see
+                // identical reasoning in the 0x63 handler comments below.
+                utxo_set.push((txid, 0u32, env_recip_commit, denom_u64s[di]));
+                transition_count += 1;
+                continue;
+            }
+
             if opcode == 0x61 && envelope.len() >= 281 {
                 if seen_burn_in_tx { continue; }
                 seen_burn_in_tx = true;
