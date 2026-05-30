@@ -3,5 +3,5 @@
   "elf_sha256": "dfc84ff8729d48e0ded63e38f1c93017c833c6bfc584327aeea2365318b6352f",
   "program_vkey": "0x00cb226ed9b6e565f1230f47da2b0a31cf961ae96b5b1a8f09ce8fc459e21243",
   "groth16_vk_hash": "0x0eabe508c630aea06f0db1f05dbd456e9f82df739bcc84d644a7533db0691edb",
-  "guest_state": "HARDENED — denom canonical/pairwise-distinct asserts + CXFER checked_add. NON-DOCKER build (built on the vast prover host via `cargo prove build`, not `--docker`), so this vkey is reproducible only by deriving from this exact committed ELF, not by an independent rebuild. Fine for the single-prover signet pilot; recompile canonically with `cargo prove build --docker` and re-pin before permissionless mainnet provers."
+  "guest_state": "HARDENED — denom canonical/pairwise-distinct asserts + CXFER checked_add. CANONICAL — `cargo prove build --docker` in CI produces byte-identical ELF (verified by .github/workflows/canonical-elf.yml). vkey↔ELF binding is independently reproducible by anyone with this repo + Docker, eliminating the prior non-Docker trust assumption. Audit blocker #4 closed."
 }

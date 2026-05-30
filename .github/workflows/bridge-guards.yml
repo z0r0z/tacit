@@ -65,3 +65,15 @@ jobs:
         run: node tests/ceremony-vk-pin.test.mjs
       - name: SP1 guest ELF == pinned hash/vkey
         run: bash contracts/sp1/verify-vkey-pin.sh
+
+  sp1-crate-tests:
+    name: SP1 crate unit tests (guest tree + parity)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+      - name: cargo test (SP1 tree crate — Poseidon parity, frontier soundness, nullifier soundness)
+        working-directory: contracts/sp1/tree
+        run: cargo test --release

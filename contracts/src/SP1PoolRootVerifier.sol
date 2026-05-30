@@ -11,6 +11,7 @@ interface ISP1Verifier {
 
 interface IRelay {
     function tip() external view returns (bytes32);
+    function blockParent(bytes32 blockHash) external view returns (bytes32);
 }
 
 interface IMixer {
@@ -52,12 +53,20 @@ contract SP1PoolRootVerifier {
     bytes32 public currentStateCommitment;
     mapping(bytes32 => bool) public acceptedBurns;
 
+    /// @notice Maximum ancestor distance accepted for both `prevBlockHash` (vs
+    ///         stored `lastBlockHash`) and `lastBlockHash` (vs `RELAY.tip()`).
+    ///         A sub-`FINALITY_WINDOW` reorg cannot permanently brick state
+    ///         advancement: the next prover cycle can land a proof whose
+    ///         anchor is the new tip (or an ancestor of it). Audit blocker #2.
+    uint256 public constant FINALITY_WINDOW = 6;
+
     error DomainMismatch();
     error InvalidDepositRoot();
     error InvalidProof();
     error InvalidVkHash();
     error NotRelayTip();
     error StateMismatch();
+    error StalePrevBlock();
     error ZeroAddress();
     error ZeroGenesis();
     error ZeroVKey();
@@ -152,12 +161,34 @@ contract SP1PoolRootVerifier {
         if (prevPoolsHash != currentState.poolsHash) revert StateMismatch();
         if (prevNullRoot != currentState.nullifierSetHash) revert StateMismatch();
         if (prevHeight != currentState.stateHeight) revert StateMismatch();
-        if (prevBlockHash != currentState.lastBlockHash) revert StateMismatch();
+        // prevBlockHash must equal stored lastBlockHash OR be a recent ancestor
+        // of it (sub-FINALITY_WINDOW reorg tolerance). Walks the relay's stored
+        // chain via blockParent.
+        if (prevBlockHash != currentState.lastBlockHash) {
+            bytes32 walk = currentState.lastBlockHash;
+            bool found = false;
+            for (uint256 i; i < FINALITY_WINDOW; ++i) {
+                walk = RELAY.blockParent(walk);
+                if (walk == bytes32(0)) break;
+                if (walk == prevBlockHash) { found = true; break; }
+            }
+            if (!found) revert StalePrevBlock();
+        }
         if (prevStateCmt != currentStateCommitment) revert StateMismatch();
 
-        // Relay anchor.
+        // Relay anchor: must equal current tip OR be a recent ancestor of it.
         if (lastBlockHash == bytes32(0)) revert InvalidProof();
-        if (lastBlockHash != RELAY.tip()) revert NotRelayTip();
+        bytes32 relayTip = RELAY.tip();
+        if (lastBlockHash != relayTip) {
+            bytes32 walk = relayTip;
+            bool found = false;
+            for (uint256 i; i < FINALITY_WINDOW; ++i) {
+                walk = RELAY.blockParent(walk);
+                if (walk == bytes32(0)) break;
+                if (walk == lastBlockHash) { found = true; break; }
+            }
+            if (!found) revert NotRelayTip();
+        }
 
         uint256 nd = NUM_DENOMS;
 
