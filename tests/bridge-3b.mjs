@@ -1014,8 +1014,12 @@ async function cmdBurnBob(ethRecipient) {
   if (!state.importTxid) throw new Error('no import');
   if (!ethRecipient || !/^0x[0-9a-fA-F]{40}$/.test(ethRecipient)) throw new Error('need 0xBobEthAddr');
 
-  // 0.001 ETH pool tree at the time of Bob's burn = [3a's poolLeaf at 0, Bob's leaf at 1]
-  const POOL_LEAF_3A = '2d6688b305bec3c828995eca04f69f6701f6a8115244077db2cdc20a64363ec3';
+  // 0.001 ETH pool tree at Bob's burn = [3a's mint leaf at 0, Bob's import leaf at 1].
+  // Read 3a's leaf from its live state rather than a stale hardcode — the guest's
+  // 0.001 pool contains whatever 3a minted in this session.
+  const _s3a = JSON.parse(fs.readFileSync('/tmp/3a-state.json', 'utf8'));
+  if (!_s3a.poolLeaf) throw new Error('3a poolLeaf missing — run bridge-3a deposit/mint first');
+  const POOL_LEAF_3A = _s3a.poolLeaf;
   const tree = buildEthTree([POOL_LEAF_3A, state.bobPoolLeaf0001]);
   const mp = tree.getProof(1);
   const merkleRoot = tree.root;
