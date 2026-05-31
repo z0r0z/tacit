@@ -60,6 +60,15 @@ contract SP1PoolRootVerifier {
     ///         whenever ANY other pool advances. Audit blocker #2 sync-gate.
     mapping(uint8 => bytes32) public lastProvenPoolRoot;
 
+    /// @notice Per-pool last-proven `next_index` (count of leaves currently
+    ///         in the Poseidon pool tree), populated from the same host-only
+    ///         tail. Lets the mixer's `deposit()` reject when the pool tree
+    ///         is near capacity instead of silently locking ETH in deposits
+    ///         whose mint the guest then skips because `!can_insert`. Audit
+    ///         blocker #3 (pool-tree exhaustion). The cap is enforced by the
+    ///         mixer; this contract just exposes the count.
+    mapping(uint8 => uint64) public lastProvenPoolIndex;
+
     /// @notice Maximum ancestor distance accepted for both `prevBlockHash` (vs
     ///         stored `lastBlockHash`) and `lastBlockHash` (vs `RELAY.tip()`).
     ///         A sub-`FINALITY_WINDOW` reorg cannot permanently brick state
@@ -247,7 +256,14 @@ contract SP1PoolRootVerifier {
             uint256 perPoolBlockSize = 32 + 8 + 20 * 32; // root + next_idx + TREE_DEPTH * 32
             if (publicValues.length >= off + nd * perPoolBlockSize) {
                 for (uint256 i; i < nd; ++i) {
-                    lastProvenPoolRoot[uint8(i)] = _cd32(publicValues, off + i * perPoolBlockSize);
+                    uint256 base = off + i * perPoolBlockSize;
+                    lastProvenPoolRoot[uint8(i)] = _cd32(publicValues, base);
+                    // next_index is 8 bytes BE u64 immediately after the root.
+                    // Read as BE u64 via a 32-byte calldataload and shift.
+                    bytes32 idxWord;
+                    uint256 idxOff = base + 32;
+                    assembly { idxWord := calldataload(add(publicValues.offset, idxOff)) }
+                    lastProvenPoolIndex[uint8(i)] = uint64(uint256(idxWord) >> 192);
                 }
             }
         }

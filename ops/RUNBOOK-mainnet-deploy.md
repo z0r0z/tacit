@@ -83,6 +83,14 @@ The wrapper does:
 
 Addresses land in `broadcast/Deploy.s.sol/1/run-latest.json`.
 
+The mixer constructor cross-checks (`TacitBridgeMixer:178-186`, audit
+blocker #3) that the bound verifier's `denominations(i)` matches the
+mixer's `denominations_[i] / UNIT_SCALE` at every index. A
+denomination-order divergence between the two constructors will fail
+loud at deploy — *not* a runtime surprise. Soft-skip when the verifier
+returns 0 (test mocks); a real `SP1PoolRootVerifier`'s denominations()
+is non-zero by construction.
+
 ## 4. Post-deploy validation (BEFORE admitting value)
 
 ### 4.1 Cross-check on-chain bytecode
@@ -133,7 +141,31 @@ If you can't wait 2 weeks: replay the genesis epoch's first block's
 timestamp on a fresh test deploy + watch the retarget transition on a
 disposable instance first.
 
-### 4.4 PoseidonT3 hashing parity
+### 4.4 Pool-tree capacity gate (audit blocker #3)
+
+`TacitBridgeMixer.deposit()` rejects when
+`verifier.lastProvenPoolIndex(denomIdx) + POOL_TREE_RESERVE >= MAX_LEAVES`
+(`POOL_TREE_RESERVE = 1024`, `MAX_LEAVES = 2²⁰`). This closes the
+rotate-DoS path where an adversary fills the SP1 pool tree off-chain
+via 0x62 rotates and leaves honest deposits to lock ETH on a mint the
+guest silently can't insert. `lastProvenPoolIndex` is populated from
+the SP1-authenticated public-values tail (see
+`SP1PoolRootVerifier:247-255`).
+
+Smoke-test at deploy:
+
+```bash
+# Right after the first prover cycle lands, all denoms should read 0.
+for i in 0 1 2 3 4 5 6 7; do
+  echo "denom $i: $(cast call $VERIFIER 'lastProvenPoolIndex(uint8)(uint64)' $i --rpc-url $MAINNET_RPC)"
+done
+```
+
+If any denom returns a value near `MAX_LEAVES - POOL_TREE_RESERVE` on a
+fresh deploy, the SP1 host's tail emission is corrupted and the gate
+will reject legit deposits — abort + investigate before admitting value.
+
+### 4.5 PoseidonT3 hashing parity
 
 Run a deposit + tree-build round-trip locally and cross-check the
 on-chain `getPoolRoot` matches the dapp's `computePoolRoot`. The bridge
@@ -202,11 +234,11 @@ Failure modes + recovery:
 |---|---|
 | #1 G2 swap | ✅ committed + CI gate |
 | #2 reorg finality window + sync-gate | ✅ FINALITY_WINDOW=6 + per-pool root |
-| #3 pool-tree exhaustion | ✅ accepted v1 risk (2²⁰ infeasible; bump needs new ceremony, off table) |
+| #3 pool-tree exhaustion | ✅ active gate: mixer.deposit() queries verifier.lastProvenPoolIndex; rejects within POOL_TREE_RESERVE (1024) of 2²⁰ |
 | #4 vkey↔ELF canonical | ✅ Docker reproducible + CI gate |
 | #5 omitted-leaf | ✅ per-pool + aggregate, on burn + export + rotate |
 | #6 dapp rotate/import dispatch | ✅ in tree |
-| #7 T5 export→CXFER→withdraw | ✅ wired end-to-end (dapp publish + prover-script fetch + STATE_FILE) |
+| #7 T5 export→CXFER→withdraw | ⚠ wired + all 5 bridge ops on Taproot reveal (mainnet-relayable); awaiting one live signet round-trip of the full Alice→Bob→withdraw flow before it's a mainnet capability |
 | #7 CI cargo test | ✅ |
 | #8 atomic fail-closed mainnet deploy | ✅ + chainid + vkey-pin + PoseidonT3 link + cast-code preflight |
 | WD-3 burn solvency pre-check | ✅ |

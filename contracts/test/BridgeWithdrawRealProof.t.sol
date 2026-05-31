@@ -26,6 +26,12 @@ contract MockPoolVerifier {
     function coversPool(bytes32) external pure returns (bool) { return true; }
     function ASSET_ID() external view returns (bytes32) { return _asset; }
     function MIXER() external view returns (address) { return _mixer; }
+    // Audit blocker #3 — mixer deposit() queries this for the pool-tree
+    // capacity gate. Returning 0 = empty pool, gate stays open for this test.
+    function lastProvenPoolIndex(uint8) external pure returns (uint64) { return 0; }
+    // Mock returns 0 so mixer's misorder cross-check soft-skips (real verifier
+    // is non-zero by construction). Audit blocker #3 constructor cross-check.
+    function denominations(uint256) external pure returns (bytes32) { return bytes32(0); }
 }
 
 contract BridgeWithdrawRealProofTest is Test {

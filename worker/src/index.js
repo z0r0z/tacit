@@ -20359,7 +20359,10 @@ async function scanForEtches(env, network) {
         }
       }
       if (!decoded) continue;
-      if ((decoded.opcode === T_BRIDGE_DEPOSIT || decoded.opcode === T_BRIDGE_BURN || decoded.opcode === T_BRIDGE_ROTATE || decoded.opcode === T_BRIDGE_EXPORT || decoded.opcode === T_BRIDGE_IMPORT) && decoded._fromTaproot) continue;
+      // Bridge ops (0x60-0x64) historically used bare OP_RETURN; mainnet relay
+      // caps OP_RETURN at ~80B, so they're migrating to Taproot reveal alongside
+      // the existing OP_RETURN path. Accept either source — guest decides what
+      // to dispatch. See ops/PLAN-bridge-op-return-standardness.md.
       if (decoded.opcode === T_CETCH) {
         const ce = decodeCEtchPayload(decoded.payload);
         if (!ce) continue;

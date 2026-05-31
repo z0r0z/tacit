@@ -198,6 +198,65 @@ contract TacitBridgeMixerTest is TestHelper {
     }
 }
 
+/// Audit blocker #3 — pool-tree exhaustion gate. The mixer must reject
+/// new deposits when the SP1 pool tree (which also grows from off-chain
+/// rotate/import) is within POOL_TREE_RESERVE of MAX_LEAVES. Without
+/// this, an adversary spamming rotates on signet can fill the pool tree
+/// while honest deposits still pass the deposit-tree gate, leaving their
+/// ETH locked because the guest then silently skips the mint.
+contract TacitBridgeMixerPoolCapacityTest is TestHelper {
+    TacitBridgeMixer mixer;
+    BitcoinLightRelay relay;
+    MockPoolRootVerifierWithIndex prv;
+    uint256 constant DENOM = 1 ether;
+    bytes32 constant AID = bytes32(uint256(1));
+    bytes32 pid;
+
+    function setUp() public {
+        relay = _deployRelay();
+        MockGroth16Verifier v = new MockGroth16Verifier();
+        pid = keccak256(abi.encode(AID, DENOM));
+        uint256[] memory denoms = new uint256[](1);
+        denoms[0] = DENOM;
+        address predictedMixer = vm.computeCreateAddress(address(this), vm.getNonce(address(this)) + 1);
+        bytes32[] memory pids = new bytes32[](1);
+        pids[0] = pid;
+        prv = new MockPoolRootVerifierWithIndex(pids, AID, predictedMixer);
+        address[] memory verifiers = new address[](1);
+        verifiers[0] = address(prv);
+        mixer = new TacitBridgeMixer(address(relay), address(v), address(0), 6, denoms, verifiers, 0x00, AID);
+    }
+
+    function test_deposit_succeeds_when_pool_below_reserve() public {
+        vm.deal(address(this), 10 ether);
+        uint64 reserve = mixer.POOL_TREE_RESERVE();
+        uint64 maxLeaves = uint64(mixer.MAX_LEAVES());
+        // Headroom: pool well below cap.
+        prv.setPoolIndex(0, maxLeaves - reserve - 100);
+        mixer.deposit{value: DENOM}(bytes32(uint256(42)), DENOM);
+        assertEq(mixer.getNextLeafIndex(pid), 1);
+    }
+
+    function test_deposit_reverts_when_pool_within_reserve() public {
+        vm.deal(address(this), 10 ether);
+        uint64 reserve = mixer.POOL_TREE_RESERVE();
+        uint64 maxLeaves = uint64(mixer.MAX_LEAVES());
+        // Inside the reserve window — gate must trip.
+        prv.setPoolIndex(0, maxLeaves - reserve);
+        vm.expectRevert(TacitBridgeMixer.MerkleTreeFull.selector);
+        mixer.deposit{value: DENOM}(bytes32(uint256(42)), DENOM);
+    }
+
+    function test_deposit_reverts_when_pool_at_capacity() public {
+        vm.deal(address(this), 10 ether);
+        uint64 maxLeaves = uint64(mixer.MAX_LEAVES());
+        // Pool tree completely full.
+        prv.setPoolIndex(0, maxLeaves);
+        vm.expectRevert(TacitBridgeMixer.MerkleTreeFull.selector);
+        mixer.deposit{value: DENOM}(bytes32(uint256(42)), DENOM);
+    }
+}
+
 contract TacitBridgeMixerERC20Test is TestHelper {
     TacitBridgeMixer mixer;
     MockERC20 token;

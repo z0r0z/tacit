@@ -79,3 +79,6 @@ jobs:
       - name: cargo test (SP1 tree crate — Poseidon parity, frontier soundness, nullifier soundness)
         working-directory: contracts/sp1/tree
         run: cargo test --release
+      - name: cargo test (SP1 guest crate — Taproot envelope extraction, dispatch placement, null_set sharing)
+        working-directory: contracts/sp1/program
+        run: cargo test --release

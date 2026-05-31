@@ -250,6 +250,9 @@ fn main() {
     let (is_genesis, prev_block_hash, prev_height): (bool, Vec<u8>, u64) = match (&saved_state, &vstate) {
         // Saved state matches verifier — incremental from saved
         (Some(s), Some(_)) => (false, s.last_block_hash.clone(), s.state_height),
+        // Unreachable: the load path only retains saved_state when vstate
+        // matches it, so saved_state=Some + vstate=None can't happen.
+        (Some(_), None) => unreachable!("saved_state retained without vstate match"),
         // No saved state, no verifier state — fresh genesis
         (None, None) => (true, genesis_anchor.clone(), 0),
         // Verifier at genesis poolsHash — fresh genesis
@@ -411,10 +414,15 @@ fn main() {
         println!("Submission files saved to {out_dir}/");
 
         // Incremental-state save: parse the host-only tail (after the burn
-        // claims) into a ProverState + write atomically to STATE_FILE so the
-        // next cycle's load path picks it up. The SP1 proof authenticates the
-        // entire public_values blob, so this tail is as trustworthy as the
-        // on-chain head + tail. See ops/prover-incremental-state.md.
+        // claims) into a ProverState + write to STATE_FILE.staging. The
+        // launcher script renames .staging → final ONLY after a successful
+        // on-chain submission — without that, a submit failure (e.g. revert
+        // from a deposit race, RPC error) would leave STATE_FILE ahead of
+        // the verifier and brick every subsequent cycle on stale-state
+        // panic. The SP1 proof authenticates the entire public_values blob,
+        // so this tail is trustworthy; the staging step exists purely so
+        // the on-chain accept gates the local commit. See
+        // ops/prover-incremental-state.md.
         if let Ok(state_file) = env::var("STATE_FILE") {
             match parse_state_tail(pv, nd, &denominations) {
                 Ok((roots, indices, frontiers, null_hash, height, nulls, utxos, last_bh)) => {
@@ -430,9 +438,10 @@ fn main() {
                         last_block_hash: last_bh,
                         state_commitment: pv[429..461].to_vec(), // new_state_commitment offset in head
                     };
-                    match save_prover_state(&state_file, &state) {
-                        Ok(_) => println!("State persisted to {state_file} ({} null + {} utxo)", state.nullifiers.len(), state.utxo_set.len()),
-                        Err(e) => eprintln!("State save failed: {e}"),
+                    let staging = format!("{state_file}.staging");
+                    match save_prover_state(&staging, &state) {
+                        Ok(_) => println!("State staged to {staging} ({} null + {} utxo) — pending on-chain submit success", state.nullifiers.len(), state.utxo_set.len()),
+                        Err(e) => eprintln!("State stage failed: {e}"),
                     }
                 }
                 Err(e) => eprintln!("State tail parse failed: {e} (proof is valid; just no state file update)"),

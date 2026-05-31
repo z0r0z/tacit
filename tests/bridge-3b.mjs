@@ -44,7 +44,7 @@ const SIGNET_PRIVKEY = process.env.SIGNET_PRIVKEY || '827aee3498ebbf5f4374387dc9
 const MEMPOOL_API    = 'https://mempool.space/signet/api';
 const WORKER_BASE    = 'https://tacit-pin.rosscampbell9.workers.dev';
 const SEPOLIA_RPC    = 'https://ethereum-sepolia-rpc.publicnode.com';
-const MIXER_ADDRESS  = '0xa253b4017c5c0b291d8c1a28c2259e316a7c3ad1';
+const MIXER_ADDRESS  = '0x4d0102867cd97ff2945fee858fcaa8c0485b68dd';
 const ASSET_ID_HEX   = 'd903de2d2a7c1958f8ab3c4b9a91175ef3885027a24af306dead9e8f671a450b';
 const DENOM_WEI      = 10000000000000000n;   // 0.01 ETH (Alice's deposit + 0.01 pool)
 const UNIT_SCALE     = 10000000000n;
@@ -298,7 +298,7 @@ async function fetchSepoliaDeposits() {
   const depositSig = keccak_256(new TextEncoder().encode('Deposit(bytes32,bytes32,uint256,uint256)'));
   const poolId = keccak_256(concatBytes(hexToBytes(ASSET_ID_HEX), bigintToBytes32(DENOM_WEI)));
   const logs = await ethCall('eth_getLogs', [{
-    address: MIXER_ADDRESS, fromBlock: '0xa71456', toBlock: 'latest',
+    address: MIXER_ADDRESS, fromBlock: '0xa73f3c', toBlock: 'latest',
     topics: ['0x' + bytesToHex(depositSig), '0x' + bytesToHex(poolId)],
   }]);
   return logs.map(l => ({
@@ -824,6 +824,98 @@ async function cmdCxfer() {
   state.bobCxferAmount = aBob.toString();
   saveState(state);
   console.log(`CXFER complete: Bob receives ${aBob} tacit-units (0.001 tETH) at ${revealTxid}:0`);
+
+  // Auto-publish openings — the SP1 prover needs (amount, blinding) for every
+  // CXFER output to verify Pedersen conservation; without them the guest skips
+  // the CXFER → recipients can't import + redeem ETH. Mirrors the dapp's
+  // auto-publish behavior (dapp/tacit.js buildAndBroadcastCXferMulti). Best-
+  // effort: failure here doesn't fail the broadcast (the user can retry via
+  // the explicit `publish-openings` subcommand below). Audit task #33.
+  try {
+    await cmdPublishCxferOpenings();
+  } catch (e) {
+    console.warn(`auto-publish failed (${e?.message || e}); run "publish-openings" manually before the prover cycle`);
+  }
+}
+
+// ─── publish-openings (worker needs (amount, blinding) for every CXFER output) ─
+// The SP1 bridge guest verifies Pedersen conservation on CXFER tx outputs by
+// fetching openings from the worker (see scripts/fetch-cxfer-openings.py). The
+// dapp auto-publishes after broadcasting CXFER (dapp/tacit.js
+// buildAndBroadcastCXferMulti); the test harness must do the same or the
+// guest treats every output as untracked → recipients (Bob) can't import +
+// redeem ETH. Run AFTER cxfer, BEFORE the prover cycle that covers the CXFER
+// block. Audit task #33.
+async function cmdPublishCxferOpenings() {
+  const state = loadState();
+  if (!state.cxferRevealTxid) throw new Error('no cxferRevealTxid — run "cxfer" first');
+  if (!state.exportTxid) throw new Error('no exportTxid — needed to re-derive anchor');
+  if (!state.bobBtcPub) throw new Error('no bobBtcPub in state');
+
+  const aliceSignetPriv = hexToBytes(SIGNET_PRIVKEY);
+  const aliceSignetPub = compressedPubkey(SIGNET_PRIVKEY);
+  const bobBtcPub = hexToBytes(state.bobBtcPub);
+  const stealthBlinding = BigInt(state.exportStealthBlinding);
+  // Stealth-tweaked spending key for the export UTXO that fed CXFER.
+  const stealthTweakedSk = (() => {
+    const d = BigInt('0x' + hex(aliceSignetPriv));
+    let h = ((d + stealthBlinding) % cx.SECP_N).toString(16);
+    while (h.length < 64) h = '0' + h;
+    return hexToBytes(h);
+  })();
+  // CXFER anchor = export's outpoint reversed-txid || vout LE (matches cxfer build).
+  const exportTxidBytes = hexToBytes(state.exportTxid);
+  const anchorBytes = concatBytes(cx.reverseBytes(exportTxidBytes), (() => {
+    const b = new Uint8Array(4); new DataView(b.buffer).setUint32(0, 1, true); return b;
+  })());
+
+  // Re-derive amounts + blindings + owners exactly as cxfer build did them.
+  const assetIdBytes = hexToBytes(ASSET_ID_HEX);
+  const outputs = [
+    { vout: 0, amount: 100000n,  blinding: cx.deriveBlinding(stealthTweakedSk, bobBtcPub, anchorBytes, 0), ownerPub: bobBtcPub,     ownerPriv: hexToBytes(state.bobBtcPriv) },
+    { vout: 1, amount: 900000n,  blinding: cx.deriveChangeBlinding(aliceSignetPriv, anchorBytes, 1),       ownerPub: aliceSignetPub, ownerPriv: aliceSignetPriv },
+    { vout: 2, amount: 0n,       blinding: cx.deriveChangeBlinding(aliceSignetPriv, anchorBytes, 2),       ownerPub: aliceSignetPub, ownerPriv: aliceSignetPriv },
+    { vout: 3, amount: 0n,       blinding: cx.deriveChangeBlinding(aliceSignetPriv, anchorBytes, 3),       ownerPub: aliceSignetPub, ownerPriv: aliceSignetPriv },
+  ];
+
+  // openingMsg: sha256("tacit-opening-v1" || asset_id || txid_be || vout_le ||
+  //   amount_le || blinding_be || owner_pub_compressed). Matches the worker
+  //   handleUtxoOpeningPost verifier exactly (worker/src/index.js:14953).
+  function openingMsg(asset, txidHex, vout, amount, blindingBytes, ownerPubBytes) {
+    const txidBE = cx.reverseBytes(hexToBytes(txidHex));
+    const voutLE = new Uint8Array(4); new DataView(voutLE.buffer).setUint32(0, vout, true);
+    const amountLE = new Uint8Array(8); new DataView(amountLE.buffer).setBigUint64(0, BigInt(amount), true);
+    return sha256(concatBytes(
+      new TextEncoder().encode('tacit-opening-v1'),
+      asset, txidBE, voutLE, amountLE, blindingBytes, ownerPubBytes,
+    ));
+  }
+
+  const url = `${WORKER_BASE}/utxos/${state.cxferRevealTxid}/`;
+  console.log(`publishing ${outputs.length} CXFER openings to worker for ${state.cxferRevealTxid}…`);
+  for (const o of outputs) {
+    const blindingBytes = bigintToBytes32(o.blinding);
+    const msg = openingMsg(assetIdBytes, state.cxferRevealTxid, o.vout, o.amount, blindingBytes, o.ownerPub);
+    const sig = cx.signSchnorr(msg, o.ownerPriv);
+    const body = {
+      amount: o.amount.toString(),
+      blinding: hex(blindingBytes),
+      owner_pubkey: hex(o.ownerPub),
+      sig: hex(sig),
+    };
+    const r = await fetch(`${url}${o.vout}/opening?network=signet`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      console.log(`  vout ${o.vout}: FAILED ${r.status} ${JSON.stringify(j)}`);
+    } else {
+      console.log(`  vout ${o.vout}: amount=${o.amount} blinding=${hex(blindingBytes).slice(0, 16)}… owner=${hex(o.ownerPub).slice(0, 16)}… ✓`);
+    }
+  }
+  console.log('done — re-run prover cycle covering this block to pick up openings.');
 }
 
 // ─── import (Bob brings his 0.001 tETH UTXO back into the 0.001 ETH pool) ─
@@ -1001,7 +1093,7 @@ async function cmdWithdrawBob() {
   console.log(`Bob burn at block ${burnBlock}`);
 
   // Relay current tip
-  const tipHex = await ethCall('eth_call', [{ to: '0x85700A18C432dea501B07B947F825CA8f43781C5', data: '0x1fd4827a' }, 'latest']);
+  const tipHex = await ethCall('eth_call', [{ to: '0x67685fa6b706d8374c174756d5583d93f6bb5670', data: '0x1fd4827a' }, 'latest']);
   const relayTip = parseInt(tipHex, 16);
   console.log(`relay tip: ${relayTip}`);
   if (relayTip < burnBlock + 6) {
@@ -1045,7 +1137,7 @@ async function cmdWithdrawBob() {
   const PK = process.env.DEPLOYER_PRIVATE_KEY;
   if (!PK) throw new Error('DEPLOYER_PRIVATE_KEY required');
   const args = [
-    `0xa253b4017c5c0b291d8c1a28c2259e316a7c3ad1`,
+    `0x4d0102867cd97ff2945fee858fcaa8c0485b68dd`,
     `'withdrawFromBurn(bytes,bytes,uint256,bytes32[],uint256)'`,
     `"0x${rawHex}"`, `"0x${headers}"`, `${burnBlock}`,
     `"[${merkleProofHex}]"`, `${txPos}`,
@@ -1226,6 +1318,7 @@ const arg = process.argv[3];
     else if (cmd === 'mint') await cmdMint();
     else if (cmd === 'export') await cmdExport();
     else if (cmd === 'cxfer') await cmdCxfer();
+    else if (cmd === 'publish-openings') await cmdPublishCxferOpenings();
     else if (cmd === 'import') await cmdImport();
     else if (cmd === 'rotate') await cmdRotate();
     else if (cmd === 'burnbob') await cmdBurnBob(arg);

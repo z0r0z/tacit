@@ -1,4 +1,5 @@
-#![no_main]
+#![cfg_attr(not(test), no_main)]
+#[cfg(not(test))]
 sp1_zkvm::entrypoint!(main);
 
 use sp1_zkvm::io;
@@ -231,234 +232,211 @@ pub fn main() {
             }
 
             let op_returns = bitcoin::extract_all_op_returns(&tx_data);
-            let mut seen_burn_in_tx = false;
-            for envelope in &op_returns {
-            if envelope.is_empty() { continue; }
-            let opcode = envelope[0];
-
-            // T_WITHDRAW (0x2A) — mixer-generic withdraw. Different envelope
-            // layout from bridge ops (no networkTag, 8-LE denom). Handled here
-            // for the BRIDGE ASSET so the same pool note can't be circulated
-            // as a tETH UTXO via 0x2A (mixer ledger marks the nullifier) AND
-            // later burned via 0x61 (bridge ledger sees nullifier as unspent →
-            // double-claim → fractional reserve). Marks the nullifier in the
-            // BRIDGE null_set + registers the emitted stealth UTXO at vout 0
-            // identically to a bridge export (0x63). Audit two-ledger seam.
+            // T_WITHDRAW (0x2A) ships in the Taproot reveal witness, not an
+            // OP_RETURN — dispatch here off extract_taproot_envelope. Closes
+            // the bridge-side seam where the same pool note could exit via
+            // 0x2A (mixer ledger marks the nullifier) AND later be burned
+            // via 0x61 (bridge ledger sees nullifier unspent → fractional
+            // reserve). Marks the nullifier in the BRIDGE null_set + registers
+            // the emitted stealth UTXO at vout 0 (T_WITHDRAW reveal pattern).
             //
             // T_WITHDRAW: opcode(1) | assetId(32) | denom_LE(8) | merkle_root(32)
             //           | nullifier(32) | recip_commit(33) | r_leaf(32)
             //           | bind_hash(32) | proof_len(2 LE) | proof(proof_len)
-            if opcode == 0x2A {
-                if envelope.len() < 204 { continue; }
-                let env_asset: [u8; 32] = match envelope[1..33].try_into() { Ok(a) => a, Err(_) => continue };
-                if env_asset != asset_id32 { continue; }
-                let env_denom_le: [u8; 8] = envelope[33..41].try_into().unwrap();
-                let env_denom_u64 = u64::from_le_bytes(env_denom_le);
-                let di = match denom_u64s.iter().position(|&d| d == env_denom_u64) {
-                    Some(i) => i, None => continue,
-                };
-                let env_pool_root: [u8; 32] = envelope[41..73].try_into().unwrap();
-                if !known_pool_roots[di].contains(&env_pool_root) { continue; }
-                let env_nullifier: [u8; 32] = envelope[73..105].try_into().unwrap();
-                let env_recip_commit: [u8; 33] = envelope[105..138].try_into().unwrap();
-                let env_r_leaf: [u8; 32] = envelope[138..170].try_into().unwrap();
-                let env_bind_hash: [u8; 32] = envelope[170..202].try_into().unwrap();
-                // T_WITHDRAW bind_hash: sha256(WITHDRAW_BIND_DOMAIN || assetId
-                //   || denom_LE(8) || nullifier || recip_commit || r_leaf).
-                // No chainid/mixer/networkTag (asset-scoped, not bridge-scoped).
+            //
+            // No chainid/mixer/networkTag (asset-scoped, not bridge-scoped) —
+            // so a tETH withdraw on signet looks identical to one on mainnet
+            // tacit; the bind_hash uses the WITHDRAW_BIND_DOMAIN constant.
+            if let Some(tap_env) = bitcoin::extract_taproot_envelope(&tx_data) {
+                if !tap_env.is_empty() && tap_env[0] == 0x2A && tap_env.len() >= 204 {
+                    let envelope = &tap_env[..];
+                    let env_asset: [u8; 32] = envelope[1..33].try_into().unwrap();
+                    if env_asset == asset_id32 {
+                        let env_denom_le: [u8; 8] = envelope[33..41].try_into().unwrap();
+                        let env_denom_u64 = u64::from_le_bytes(env_denom_le);
+                        if let Some(di) = denom_u64s.iter().position(|&d| d == env_denom_u64) {
+                            let env_pool_root: [u8; 32] = envelope[41..73].try_into().unwrap();
+                            if known_pool_roots[di].contains(&env_pool_root) {
+                                let env_nullifier: [u8; 32] = envelope[73..105].try_into().unwrap();
+                                let env_recip_commit: [u8; 33] = envelope[105..138].try_into().unwrap();
+                                let env_r_leaf: [u8; 32] = envelope[138..170].try_into().unwrap();
+                                let env_bind_hash: [u8; 32] = envelope[170..202].try_into().unwrap();
+                                let bind_ok = {
+                                    let mut h = Sha256::new();
+                                    h.update(b"tacit-withdraw-bind-v1");
+                                    h.update(&asset_id32);
+                                    h.update(&env_denom_le);
+                                    h.update(&env_nullifier);
+                                    h.update(&env_recip_commit);
+                                    h.update(&env_r_leaf);
+                                    let computed: [u8; 32] = h.finalize().into();
+                                    computed == env_bind_hash
+                                };
+                                if bind_ok {
+                                    let proof_len = u16::from_le_bytes([envelope[202], envelope[203]]) as usize;
+                                    if envelope.len() >= 204 + proof_len {
+                                        let proof_bytes = envelope[204..204 + proof_len].to_vec();
+                                        let mut denom_be32 = [0u8; 32];
+                                        denom_be32[24..32].copy_from_slice(&env_denom_u64.to_be_bytes());
+                                        let inputs = vec![env_pool_root, env_nullifier, denom_be32, env_r_leaf, env_bind_hash];
+                                        if try_verify_groth16(&proof_bytes, &inputs, &prepared_vk) && null_set.insert(env_nullifier) {
+                                            utxo_set.push((txid, 0u32, env_recip_commit, denom_u64s[di]));
+                                            transition_count += 1;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                // Bridge ops (0x60–0x64) ride in the Taproot reveal witness:
+                // mainnet Bitcoin Core caps OP_RETURN at 80B but bridge
+                // envelopes are 164–537B, so the witness is the only relayable
+                // carrier. EXPORT (0x63) registers its stealth UTXO at the
+                // reveal's spendable output, vout 0. Audit
+                // ops/PLAN-bridge-op-return-standardness.md.
+                if !tap_env.is_empty()
+                    && matches!(tap_env[0], 0x60 | 0x61 | 0x62 | 0x63 | 0x64)
+                    && tap_env.len() >= 66
+                    && tap_env[1] == network_tag
                 {
-                    let mut h = Sha256::new();
-                    h.update(b"tacit-withdraw-bind-v1");
-                    h.update(&asset_id32);
-                    h.update(&env_denom_le);
-                    h.update(&env_nullifier);
-                    h.update(&env_recip_commit);
-                    h.update(&env_r_leaf);
-                    let computed: [u8; 32] = h.finalize().into();
-                    if computed != env_bind_hash { continue; }
+                    let envelope = &tap_env[..];
+                    let env_asset: [u8; 32] = envelope[2..34].try_into().unwrap();
+                    if env_asset == asset_id32 {
+                        let env_denom: [u8; 32] = envelope[34..66].try_into().unwrap();
+                        if let Some(di) = denom_bytes.iter().position(|d| *d == env_denom) {
+                            match envelope[0] {
+                                0x60 => 'mint: {
+                                    if envelope.len() < 517 { break 'mint; }
+                                    let env_eth_root: [u8; 32] = envelope[66..98].try_into().unwrap();
+                                    if all_valid_deposit_roots[di].binary_search(&env_eth_root).is_err() { break 'mint; }
+                                    let env_nullifier: [u8; 32] = envelope[98..130].try_into().unwrap();
+                                    let env_recip_commit: &[u8] = &envelope[130..163];
+                                    let env_leaf: [u8; 32] = envelope[163..195].try_into().unwrap();
+                                    if !is_canonical_field(&env_leaf) { break 'mint; }
+                                    let env_r_leaf: [u8; 32] = envelope[195..227].try_into().unwrap();
+                                    let env_bind_hash: [u8; 32] = envelope[227..259].try_into().unwrap();
+                                    let computed = compute_bind_hash(
+                                        b"tacit-bridge-deposit-v1", chain_id, &mixer_address, network_tag,
+                                        &asset_id, &env_denom, &[&env_eth_root, &env_nullifier, env_recip_commit, &env_leaf, &env_r_leaf],
+                                    );
+                                    if computed != env_bind_hash { break 'mint; }
+                                    let proof = match extract_groth16_from_mint_envelope(envelope) { Some(p) => p, None => break 'mint };
+                                    let inputs = extract_mint_public_inputs(envelope);
+                                    if !try_verify_groth16(&proof, &inputs, &prepared_vk) { break 'mint; }
+                                    if !trees[di].can_insert() { break 'mint; }
+                                    if !null_set.insert(env_nullifier) { break 'mint; }
+                                    trees[di].insert(env_leaf);
+                                    known_pool_roots[di].insert(trees[di].root());
+                                    transition_count += 1;
+                                }
+                                0x62 => 'rotate: {
+                                    if envelope.len() < 484 { break 'rotate; }
+                                    let env_pool_root: [u8; 32] = envelope[66..98].try_into().unwrap();
+                                    if !known_pool_roots[di].contains(&env_pool_root) { break 'rotate; }
+                                    let env_nullifier: [u8; 32] = envelope[98..130].try_into().unwrap();
+                                    let env_new_commit: [u8; 32] = envelope[130..162].try_into().unwrap();
+                                    if !is_canonical_field(&env_new_commit) { break 'rotate; }
+                                    let env_r_leaf: [u8; 32] = envelope[162..194].try_into().unwrap();
+                                    let env_bind_hash: [u8; 32] = envelope[194..226].try_into().unwrap();
+                                    let computed = compute_bind_hash(
+                                        b"tacit-bridge-rotate-v1", chain_id, &mixer_address, network_tag,
+                                        &asset_id, &env_denom, &[&env_pool_root, &env_nullifier, &env_new_commit, &env_r_leaf],
+                                    );
+                                    if computed != env_bind_hash { break 'rotate; }
+                                    let proof = match extract_groth16_from_rotate_envelope(envelope) { Some(p) => p, None => break 'rotate };
+                                    let inputs = extract_rotate_public_inputs(envelope);
+                                    if !try_verify_groth16(&proof, &inputs, &prepared_vk) { break 'rotate; }
+                                    if !trees[di].can_insert() { break 'rotate; }
+                                    if !null_set.insert(env_nullifier) { break 'rotate; }
+                                    trees[di].insert(env_new_commit);
+                                    known_pool_roots[di].insert(trees[di].root());
+                                    transition_count += 1;
+                                }
+                                0x61 => 'burn: {
+                                    if envelope.len() < 537 { break 'burn; }
+                                    let env_pool_root: [u8; 32] = envelope[66..98].try_into().unwrap();
+                                    if !known_pool_roots[di].contains(&env_pool_root) { break 'burn; }
+                                    let env_nullifier: [u8; 32] = envelope[98..130].try_into().unwrap();
+                                    let env_recip_commit: &[u8] = &envelope[130..163];
+                                    let env_r_leaf: [u8; 32] = envelope[163..195].try_into().unwrap();
+                                    let env_recipient: [u8; 20] = envelope[195..215].try_into().unwrap();
+                                    let env_burn_nonce: [u8; 32] = envelope[215..247].try_into().unwrap();
+                                    let env_bind_hash: [u8; 32] = envelope[247..279].try_into().unwrap();
+                                    let computed = compute_bind_hash(
+                                        b"tacit-bridge-burn-v1", chain_id, &mixer_address, network_tag,
+                                        &asset_id, &env_denom,
+                                        &[&env_pool_root, &env_nullifier, env_recip_commit, &env_r_leaf, &env_recipient, &env_burn_nonce],
+                                    );
+                                    if computed != env_bind_hash { break 'burn; }
+                                    let proof = match extract_groth16_from_burn_envelope(envelope) { Some(p) => p, None => break 'burn };
+                                    let inputs = extract_burn_public_inputs(envelope);
+                                    if !try_verify_groth16(&proof, &inputs, &prepared_vk) { break 'burn; }
+                                    if !null_set.insert(env_nullifier) { break 'burn; }
+                                    let mut h = Sha256::new();
+                                    h.update(&env_nullifier);
+                                    h.update(&env_denom);
+                                    h.update(&env_pool_root);
+                                    h.update(&env_recipient);
+                                    h.update(&env_bind_hash);
+                                    burn_nullifiers[di].push(h.finalize().into());
+                                    transition_count += 1;
+                                }
+                                0x63 => 'export: {
+                                    if envelope.len() < 485 { break 'export; }
+                                    let env_pool_root: [u8; 32] = envelope[66..98].try_into().unwrap();
+                                    if !known_pool_roots[di].contains(&env_pool_root) { break 'export; }
+                                    let env_nullifier: [u8; 32] = envelope[98..130].try_into().unwrap();
+                                    let env_recip_commit: [u8; 33] = envelope[130..163].try_into().unwrap();
+                                    let env_r_leaf: [u8; 32] = envelope[163..195].try_into().unwrap();
+                                    let env_bind_hash: [u8; 32] = envelope[195..227].try_into().unwrap();
+                                    let computed = compute_bind_hash(
+                                        b"tacit-bridge-export-v1", chain_id, &mixer_address, network_tag,
+                                        &asset_id, &env_denom, &[&env_pool_root, &env_nullifier, &env_recip_commit, &env_r_leaf],
+                                    );
+                                    if computed != env_bind_hash { break 'export; }
+                                    let proof = match extract_groth16_from_export_envelope(envelope) { Some(p) => p, None => break 'export };
+                                    let inputs = extract_export_public_inputs(envelope);
+                                    if !try_verify_groth16(&proof, &inputs, &prepared_vk) { break 'export; }
+                                    if !null_set.insert(env_nullifier) { break 'export; }
+                                    // The reveal's spendable stealth output is vout 0;
+                                    // register the export UTXO there (matches T_WITHDRAW).
+                                    utxo_set.push((txid, 0u32, env_recip_commit, denom_u64s[di]));
+                                    transition_count += 1;
+                                }
+                                0x64 => 'import: {
+                                    if envelope.len() < 164 { break 'import; }
+                                    let env_new_commit: [u8; 32] = envelope[66..98].try_into().unwrap();
+                                    if !is_canonical_field(&env_new_commit) { break 'import; }
+                                    let env_bind_hash: [u8; 32] = envelope[98..130].try_into().unwrap();
+                                    let env_prev_txid: [u8; 32] = envelope[130..162].try_into().unwrap();
+                                    let env_prev_vout: u32 = u16::from_le_bytes([envelope[162], envelope[163]]) as u32;
+                                    let computed = compute_bind_hash(
+                                        b"tacit-bridge-import-v1", chain_id, &mixer_address, network_tag,
+                                        &asset_id, &env_denom, &[&env_new_commit, &env_prev_txid, &envelope[162..164]],
+                                    );
+                                    if computed != env_bind_hash { break 'import; }
+                                    let utxo_idx = match utxo_set.iter().position(|(t, v, _, _)| *t == env_prev_txid && *v == env_prev_vout) {
+                                        Some(i) => i, None => break 'import,
+                                    };
+                                    if utxo_set[utxo_idx].3 != denom_u64s[di] { break 'import; }
+                                    let mut found_input = false;
+                                    let inp_data = bitcoin::extract_input_outpoints(&tx_data);
+                                    for (inp_txid, inp_vout) in &inp_data {
+                                        if *inp_txid == env_prev_txid && *inp_vout == env_prev_vout { found_input = true; break; }
+                                    }
+                                    if !found_input { break 'import; }
+                                    if !trees[di].can_insert() { break 'import; }
+                                    utxo_set.remove(utxo_idx);
+                                    trees[di].insert(env_new_commit);
+                                    known_pool_roots[di].insert(trees[di].root());
+                                    transition_count += 1;
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
                 }
-                // Groth16 verify: same withdraw circuit + ceremony key, public
-                // inputs (pool_root, nullifier, denom_BE32, r_leaf, bind_hash).
-                let proof_len = u16::from_le_bytes([envelope[202], envelope[203]]) as usize;
-                if envelope.len() < 204 + proof_len { continue; }
-                let proof_bytes = envelope[204..204 + proof_len].to_vec();
-                // denom as BE 32 bytes (high 24 zero, low 8 = denom_u64 BE)
-                let mut denom_be32 = [0u8; 32];
-                denom_be32[24..32].copy_from_slice(&env_denom_u64.to_be_bytes());
-                let inputs = vec![env_pool_root, env_nullifier, denom_be32, env_r_leaf, env_bind_hash];
-                if !try_verify_groth16(&proof_bytes, &inputs, &prepared_vk) { continue; }
-                if !null_set.insert(env_nullifier) { continue; }
-                // Register the stealth UTXO at vout 0 (T_WITHDRAW emits the
-                // spendable output there). Pinned to source pool's denom — see
-                // identical reasoning in the 0x63 handler comments below.
-                utxo_set.push((txid, 0u32, env_recip_commit, denom_u64s[di]));
-                transition_count += 1;
-                continue;
-            }
-
-            if opcode == 0x61 && envelope.len() >= 281 {
-                if seen_burn_in_tx { continue; }
-                seen_burn_in_tx = true;
-            }
-            if envelope.len() < 66 { continue; }
-            if envelope[1] != network_tag { continue; }
-            let env_asset: [u8; 32] = match envelope[2..34].try_into() {
-                Ok(a) => a, Err(_) => continue,
-            };
-            if env_asset != asset_id32 { continue; }
-            let env_denom: [u8; 32] = match envelope[34..66].try_into() {
-                Ok(d) => d, Err(_) => continue,
-            };
-            let di = match denom_bytes.iter().position(|d| *d == env_denom) {
-                Some(i) => i, None => continue,
-            };
-
-            match opcode {
-                0x60 => {
-                    if envelope.len() < 517 { continue; }
-                    let env_eth_root: [u8; 32] = envelope[66..98].try_into().unwrap();
-                    if all_valid_deposit_roots[di].binary_search(&env_eth_root).is_err() { continue; }
-                    let env_nullifier: [u8; 32] = envelope[98..130].try_into().unwrap();
-                    let env_recip_commit: &[u8] = &envelope[130..163];
-                    let env_leaf: [u8; 32] = envelope[163..195].try_into().unwrap();
-                    if !is_canonical_field(&env_leaf) { continue; }
-                    let env_r_leaf: [u8; 32] = envelope[195..227].try_into().unwrap();
-                    let env_bind_hash: [u8; 32] = envelope[227..259].try_into().unwrap();
-                    {
-                        let computed = compute_bind_hash(
-                            b"tacit-bridge-deposit-v1", chain_id, &mixer_address, network_tag,
-                            &asset_id, &env_denom, &[&env_eth_root, &env_nullifier, env_recip_commit, &env_leaf, &env_r_leaf],
-                        );
-                        if computed != env_bind_hash { continue; }
-                    }
-                    let proof = match extract_groth16_from_mint_envelope(envelope) { Some(p) => p, None => continue };
-                    let inputs = extract_mint_public_inputs(envelope);
-                    if !try_verify_groth16(&proof, &inputs, &prepared_vk) { continue; }
-                    if !trees[di].can_insert() { continue; }
-                    if !null_set.insert(env_nullifier) { continue; }
-                    trees[di].insert(env_leaf);
-                    known_pool_roots[di].insert(trees[di].root());
-                    transition_count += 1;
-                }
-                0x62 => {
-                    if envelope.len() < 484 { continue; }
-                    let env_pool_root: [u8; 32] = envelope[66..98].try_into().unwrap();
-                    if !known_pool_roots[di].contains(&env_pool_root) { continue; }
-                    let env_nullifier: [u8; 32] = envelope[98..130].try_into().unwrap();
-                    let env_new_commit: [u8; 32] = envelope[130..162].try_into().unwrap();
-                    if !is_canonical_field(&env_new_commit) { continue; }
-                    let env_r_leaf: [u8; 32] = envelope[162..194].try_into().unwrap();
-                    let env_bind_hash: [u8; 32] = envelope[194..226].try_into().unwrap();
-                    {
-                        let computed = compute_bind_hash(
-                            b"tacit-bridge-rotate-v1", chain_id, &mixer_address, network_tag,
-                            &asset_id, &env_denom, &[&env_pool_root, &env_nullifier, &env_new_commit, &env_r_leaf],
-                        );
-                        if computed != env_bind_hash { continue; }
-                    }
-                    let proof = match extract_groth16_from_rotate_envelope(envelope) { Some(p) => p, None => continue };
-                    let inputs = extract_rotate_public_inputs(envelope);
-                    if !try_verify_groth16(&proof, &inputs, &prepared_vk) { continue; }
-                    if !trees[di].can_insert() { continue; }
-                    if !null_set.insert(env_nullifier) { continue; }
-                    trees[di].insert(env_new_commit);
-                    known_pool_roots[di].insert(trees[di].root());
-                    transition_count += 1;
-                }
-                0x61 => {
-                    if envelope.len() < 537 { continue; }
-                    let env_pool_root: [u8; 32] = envelope[66..98].try_into().unwrap();
-                    if !known_pool_roots[di].contains(&env_pool_root) { continue; }
-                    let env_nullifier: [u8; 32] = envelope[98..130].try_into().unwrap();
-                    let env_recip_commit: &[u8] = &envelope[130..163];
-                    let env_r_leaf: [u8; 32] = envelope[163..195].try_into().unwrap();
-                    let env_recipient: [u8; 20] = envelope[195..215].try_into().unwrap();
-                    let env_burn_nonce: [u8; 32] = envelope[215..247].try_into().unwrap();
-                    let env_bind_hash: [u8; 32] = envelope[247..279].try_into().unwrap();
-                    {
-                        let computed = compute_bind_hash(
-                            b"tacit-bridge-burn-v1", chain_id, &mixer_address, network_tag,
-                            &asset_id, &env_denom,
-                            &[&env_pool_root, &env_nullifier, env_recip_commit, &env_r_leaf, &env_recipient, &env_burn_nonce],
-                        );
-                        if computed != env_bind_hash { continue; }
-                    }
-                    let proof = match extract_groth16_from_burn_envelope(envelope) { Some(p) => p, None => continue };
-                    let inputs = extract_burn_public_inputs(envelope);
-                    if !try_verify_groth16(&proof, &inputs, &prepared_vk) { continue; }
-                    if !null_set.insert(env_nullifier) { continue; }
-                    {
-                        let mut h = Sha256::new();
-                        h.update(&env_nullifier);
-                        h.update(&env_denom);
-                        h.update(&env_pool_root);
-                        h.update(&env_recipient);
-                        h.update(&env_bind_hash);
-                        burn_nullifiers[di].push(h.finalize().into());
-                    }
-                    transition_count += 1;
-                }
-                0x63 => {
-                    if envelope.len() < 485 { continue; }
-                    let env_pool_root: [u8; 32] = envelope[66..98].try_into().unwrap();
-                    if !known_pool_roots[di].contains(&env_pool_root) { continue; }
-                    let env_nullifier: [u8; 32] = envelope[98..130].try_into().unwrap();
-                    let env_recip_commit: [u8; 33] = envelope[130..163].try_into().unwrap();
-                    let env_r_leaf: [u8; 32] = envelope[163..195].try_into().unwrap();
-                    let env_bind_hash: [u8; 32] = envelope[195..227].try_into().unwrap();
-                    {
-                        let computed = compute_bind_hash(
-                            b"tacit-bridge-export-v1", chain_id, &mixer_address, network_tag,
-                            &asset_id, &env_denom, &[&env_pool_root, &env_nullifier, &env_recip_commit, &env_r_leaf],
-                        );
-                        if computed != env_bind_hash { continue; }
-                    }
-                    let proof = match extract_groth16_from_export_envelope(envelope) { Some(p) => p, None => continue };
-                    let inputs = extract_export_public_inputs(envelope);
-                    if !try_verify_groth16(&proof, &inputs, &prepared_vk) { continue; }
-                    if !null_set.insert(env_nullifier) { continue; }
-                    // The UTXO's tracked amount is PINNED to the source pool's denom,
-                    // not to whatever env_recip_commit opens to. Conservation never
-                    // reads the commitment's value: CXFER conserves on tracked amounts
-                    // (this denom), and IMPORT only re-enters a pool whose denom equals
-                    // this amount. So an export commitment that doesn't open to denom
-                    // cannot create value — hence no Pedersen opening check here.
-                    // (The vout=1 slot assumes the dapp builds export as a single
-                    // operation per tx; it never co-emits a CXFER in the same tx.)
-                    utxo_set.push((txid, 1u32, env_recip_commit, denom_u64s[di]));
-                    transition_count += 1;
-                }
-                0x64 => {
-                    if envelope.len() < 164 { continue; }
-                    let env_new_commit: [u8; 32] = envelope[66..98].try_into().unwrap();
-                    if !is_canonical_field(&env_new_commit) { continue; }
-                    let env_bind_hash: [u8; 32] = envelope[98..130].try_into().unwrap();
-                    let env_prev_txid: [u8; 32] = envelope[130..162].try_into().unwrap();
-                    let env_prev_vout: u32 = u16::from_le_bytes([envelope[162], envelope[163]]) as u32;
-                    {
-                        let computed = compute_bind_hash(
-                            b"tacit-bridge-import-v1", chain_id, &mixer_address, network_tag,
-                            &asset_id, &env_denom, &[&env_new_commit, &env_prev_txid, &envelope[162..164]],
-                        );
-                        if computed != env_bind_hash { continue; }
-                    }
-                    let utxo_idx = utxo_set.iter().position(|(t, v, _, _)| *t == env_prev_txid && *v == env_prev_vout);
-                    let utxo_idx = match utxo_idx { Some(i) => i, None => continue };
-                    if utxo_set[utxo_idx].3 != denom_u64s[di] { continue; }
-                    let mut found_input = false;
-                    let inp_data = bitcoin::extract_input_outpoints(&tx_data);
-                    for (inp_txid, inp_vout) in &inp_data {
-                        if *inp_txid == env_prev_txid && *inp_vout == env_prev_vout { found_input = true; break; }
-                    }
-                    if !found_input { continue; }
-                    if !trees[di].can_insert() { continue; }
-                    utxo_set.remove(utxo_idx);
-                    trees[di].insert(env_new_commit);
-                    known_pool_roots[di].insert(trees[di].root());
-                    transition_count += 1;
-                }
-                _ => {}
-            }
             }
 
             // CXFER conservation-verified tracking.
@@ -791,4 +769,204 @@ fn u256_sub(a: &[u64; 4], b: &[u64; 4]) -> [u64; 4] {
         r[i] = d2; borrow = (b1 as u64) + (b2 as u64);
     }
     r
+}
+
+#[cfg(test)]
+mod dispatch_seam_tests {
+    // Pins the bridge double-claim seam (audit Gate A) against regressions.
+    //
+    // Gate A: a pool note must not be claimable in BOTH the mixer ledger (via
+    // 0x2A T_WITHDRAW) AND the bridge ledger (via 0x61 T_BRIDGE_BURN). The guest
+    // closes the seam by inserting nullifiers into a single shared null_set —
+    // either dispatcher hitting the set first wins; the second is silently
+    // skipped. A prior fix that put the 0x2A handler in the OP_RETURN dispatch
+    // loop was a silent no-op because dapp emits T_WITHDRAW via Taproot reveal;
+    // this test fixes the dispatch path for 0x2A in source code so the
+    // regression cannot recur.
+    //
+    // What's pinned here:
+    //   (1) Structural — 0x2A dispatch lives BEFORE the OP_RETURN loop, after
+    //       the extract_taproot_envelope call site. If a future refactor moves
+    //       0x2A back into the OP_RETURN loop (the prior regression), the
+    //       structural assertion fails.
+    //   (2) Behavioral — a shared merkle::NullifierSet rejects a duplicate
+    //       nullifier insertion. Models exactly what the guest does after a
+    //       successful proof+layout validation in either handler.
+    //   (3) Layout — synthetic 0x2A and 0x61 envelopes constructed at the
+    //       documented offsets each yield the same nullifier bytes, so the
+    //       seam can actually be hit by a real pair of envelopes.
+
+    use super::*;
+
+    const T_WITHDRAW: u8 = 0x2A;
+    const T_BRIDGE_BURN: u8 = 0x61;
+
+    // 0x2A T_WITHDRAW: opcode(1) | assetId(32) | denom_LE(8) | merkle_root(32)
+    //                | nullifier(32) | recip_commit(33) | r_leaf(32)
+    //                | bind_hash(32) | proof_len(2 LE) | proof(0)
+    // (No chainid/mixer/networkTag — asset-scoped, see main.rs:243-249.)
+    const T_WITHDRAW_NULLIFIER_OFF: usize = 1 + 32 + 8 + 32;
+
+    // 0x61 T_BRIDGE_BURN: opcode(1) | network_tag(1) | assetId(32) | denom(32)
+    //                   | pool_root(32) | nullifier(32) | recip_commit(33)
+    //                   | r_leaf(32) | recipient(20) | burn_nonce(32)
+    //                   | bind_hash(32) | proof_len(2 LE) | proof(0)
+    const T_BRIDGE_BURN_NULLIFIER_OFF: usize = 1 + 1 + 32 + 32 + 32;
+
+    fn build_t_withdraw_envelope(nullifier: [u8; 32]) -> Vec<u8> {
+        let asset_id = [0x11u8; 32];
+        let denom_le: [u8; 8] = 100_000u64.to_le_bytes();
+        let pool_root = [0x22u8; 32];
+        let recip_commit = [0x02u8; 33];
+        let r_leaf = [0x44u8; 32];
+        let bind_hash = [0x55u8; 32];
+        let proof_len_le: [u8; 2] = [0, 0];
+
+        let mut env = Vec::new();
+        env.push(T_WITHDRAW);
+        env.extend_from_slice(&asset_id);
+        env.extend_from_slice(&denom_le);
+        env.extend_from_slice(&pool_root);
+        env.extend_from_slice(&nullifier);
+        env.extend_from_slice(&recip_commit);
+        env.extend_from_slice(&r_leaf);
+        env.extend_from_slice(&bind_hash);
+        env.extend_from_slice(&proof_len_le);
+        env
+    }
+
+    fn build_bridge_burn_envelope(nullifier: [u8; 32]) -> Vec<u8> {
+        let network_tag: u8 = 0x01;
+        let asset_id = [0x11u8; 32];
+        let denom = [0u8; 32];
+        let pool_root = [0x22u8; 32];
+        let recip_commit = [0x02u8; 33];
+        let r_leaf = [0x44u8; 32];
+        let recipient = [0x77u8; 20];
+        let burn_nonce = [0x55u8; 32];
+        let bind_hash = [0x66u8; 32];
+        let proof_len_le: [u8; 2] = [0, 0];
+
+        let mut env = Vec::new();
+        env.push(T_BRIDGE_BURN);
+        env.push(network_tag);
+        env.extend_from_slice(&asset_id);
+        env.extend_from_slice(&denom);
+        env.extend_from_slice(&pool_root);
+        env.extend_from_slice(&nullifier);
+        env.extend_from_slice(&recip_commit);
+        env.extend_from_slice(&r_leaf);
+        env.extend_from_slice(&recipient);
+        env.extend_from_slice(&burn_nonce);
+        env.extend_from_slice(&bind_hash);
+        env.extend_from_slice(&proof_len_le);
+        env
+    }
+
+    #[test]
+    fn t_withdraw_and_bridge_burn_envelopes_carry_nullifier_at_documented_offsets() {
+        let nullifier: [u8; 32] = [0x33u8; 32];
+        let env_tw = build_t_withdraw_envelope(nullifier);
+        let env_bb = build_bridge_burn_envelope(nullifier);
+
+        let tw_n = &env_tw[T_WITHDRAW_NULLIFIER_OFF..T_WITHDRAW_NULLIFIER_OFF + 32];
+        let bb_n = &env_bb[T_BRIDGE_BURN_NULLIFIER_OFF..T_BRIDGE_BURN_NULLIFIER_OFF + 32];
+        assert_eq!(tw_n, &nullifier, "T_WITHDRAW nullifier at offset 73");
+        assert_eq!(bb_n, &nullifier, "T_BRIDGE_BURN nullifier at offset 98");
+        assert_eq!(tw_n, bb_n, "envelopes carry the same nullifier — seam can be hit");
+    }
+
+    #[test]
+    fn null_set_rejects_double_claim_t_withdraw_then_bridge_burn() {
+        // The shared null_set semantic: the guest inserts a nullifier after a
+        // successful proof + layout validation in EITHER handler. A duplicate
+        // insertion of the same nullifier from the OTHER handler returns false,
+        // which the dispatch code uses to short-circuit. This is the seam.
+        let nullifier: [u8; 32] = [0x33u8; 32];
+        let mut null_set = merkle::NullifierSet::new();
+
+        // Step 1: T_WITHDRAW path lands the nullifier (post-proof-verify).
+        assert!(null_set.insert(nullifier), "first claim consumes the nullifier");
+
+        // Step 2: T_BRIDGE_BURN path tries the same nullifier — same null_set,
+        // insert returns false; the guest's `if null_set.insert(...) { ... }`
+        // short-circuits and the burn is silently skipped (no eth payout claim
+        // queued, no UTXO emitted). Funds-safe.
+        assert!(
+            !null_set.insert(nullifier),
+            "second claim of same nullifier is rejected by the shared null_set",
+        );
+
+        // Reverse direction also holds — first-write-wins is symmetric.
+        let nullifier2: [u8; 32] = [0x44u8; 32];
+        let mut null_set2 = merkle::NullifierSet::new();
+        assert!(null_set2.insert(nullifier2), "burn-first lands nullifier");
+        assert!(
+            !null_set2.insert(nullifier2),
+            "withdraw-after-burn on same nullifier is rejected",
+        );
+    }
+
+    #[test]
+    fn t_withdraw_dispatch_lives_in_taproot_path() {
+        // Structural pin (audit Gate A): the 0x2A T_WITHDRAW handler must live
+        // in the Taproot reveal dispatch. T_WITHDRAW envelopes ship in the
+        // reveal witness, never an OP_RETURN, so a handler scoped anywhere else
+        // is a silent no-op and the bridge/mixer double-claim seam re-opens.
+        let src = include_str!("main.rs");
+        let taproot_extract = src
+            .find("bitcoin::extract_taproot_envelope(&tx_data)")
+            .expect("guest calls extract_taproot_envelope per-tx");
+        let t_withdraw_opcode_check = src
+            .find("tap_env[0] == 0x2A")
+            .expect("guest dispatches 0x2A off the Taproot envelope opcode");
+        assert!(
+            t_withdraw_opcode_check > taproot_extract,
+            "0x2A check appears AFTER the extract_taproot_envelope call (Taproot path)",
+        );
+    }
+
+    #[test]
+    fn bridge_ops_dispatched_from_taproot_path() {
+        // Structural pin: bridge ops 0x60-0x64 are dispatched in the Taproot
+        // reveal path. Mainnet Bitcoin Core caps OP_RETURN at 80B; bridge
+        // envelopes (164-537B) only relay as Taproot reveals through
+        // default-policy nodes. If a refactor drops the Taproot dispatch,
+        // mainnet bridge txs would never relay — this catches that.
+        let src = include_str!("main.rs");
+        let taproot_extract = src
+            .find("bitcoin::extract_taproot_envelope(&tx_data)")
+            .expect("guest calls extract_taproot_envelope per-tx");
+        let bridge_taproot_check = src
+            .find("matches!(tap_env[0], 0x60 | 0x61 | 0x62 | 0x63 | 0x64)")
+            .expect("guest dispatches 0x60-0x64 off the Taproot envelope opcode");
+        assert!(
+            bridge_taproot_check > taproot_extract,
+            "bridge ops Taproot check appears AFTER extract_taproot_envelope",
+        );
+    }
+
+    #[test]
+    fn bridge_taproot_dispatch_consumes_nullifiers() {
+        // The Taproot bridge dispatch must consume each spend's nullifier into
+        // the shared null_set (mint/rotate/burn/export — import re-enters a pool
+        // without minting a new nullifier). A handler that skips null_set.insert
+        // would let the same note be claimed twice. Bound the bridge section
+        // from the matches! arm to the CXFER tracking block that follows it.
+        let src = include_str!("main.rs");
+        let bridge_start = src
+            .find("matches!(tap_env[0], 0x60 | 0x61 | 0x62 | 0x63 | 0x64)")
+            .expect("guest has Taproot bridge dispatch");
+        let bridge_end = src[bridge_start..]
+            .find("// CXFER conservation-verified tracking")
+            .map(|o| bridge_start + o)
+            .expect("CXFER tracking follows the bridge dispatch");
+        let section = &src[bridge_start..bridge_end];
+        let inserts = section.matches("null_set.insert").count();
+        assert!(
+            inserts >= 4,
+            "Taproot bridge dispatch should insert nullifiers for mint/rotate/burn/export; found {}",
+            inserts,
+        );
+    }
 }

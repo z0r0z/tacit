@@ -30,7 +30,7 @@ const SIGNET_PRIVKEY = process.env.SIGNET_PRIVKEY || '827aee3498ebbf5f4374387dc9
 const MEMPOOL_API    = 'https://mempool.space/signet/api';
 const WORKER_BASE    = 'https://tacit-pin.rosscampbell9.workers.dev';
 const SEPOLIA_RPC    = 'https://ethereum-sepolia-rpc.publicnode.com';
-const MIXER_ADDRESS  = '0xa253b4017c5c0b291d8c1a28c2259e316a7c3ad1';
+const MIXER_ADDRESS  = '0x4d0102867cd97ff2945fee858fcaa8c0485b68dd';
 const ASSET_ID_HEX   = 'd903de2d2a7c1958f8ab3c4b9a91175ef3885027a24af306dead9e8f671a450b';
 const DENOM_WEI      = 1000000000000000n;             // 0.001 ETH wei
 const UNIT_SCALE     = 10000000000n;                  // 1e10 (wei → tacit 8-dec)
@@ -231,7 +231,7 @@ async function fetchSepoliaDeposits() {
   const depositSig = keccak_256(new TextEncoder().encode('Deposit(bytes32,bytes32,uint256,uint256)'));
   const poolId = keccak_256(concatBytes(hexToBytes(ASSET_ID_HEX), bigintToBytes32(DENOM_WEI)));
   const logs = await ethCall('eth_getLogs', [{
-    address: MIXER_ADDRESS, fromBlock: '0xa71456', toBlock: 'latest',
+    address: MIXER_ADDRESS, fromBlock: '0xa73f3c', toBlock: 'latest',
     topics: ['0x' + bytesToHex(depositSig), '0x' + bytesToHex(poolId)],
   }]);
   return logs.map(l => ({
@@ -308,10 +308,14 @@ async function broadcastWithOpReturn(privHex, envelope) {
 
   const utxoR = await fetch(`${MEMPOOL_API}/address/${addr}/utxo`);
   let utxos = await utxoR.json();
-  const confirmed = utxos.filter(u => u.status.confirmed);
-  if (confirmed.length) utxos = confirmed;
-  else console.log('(no confirmed UTXOs — using mempool chain)');
-  if (!utxos.length) throw new Error('no signet UTXO at all');
+  // Pick the largest spendable (pays fee + change ≥ dust). If no confirmed
+  // candidate qualifies, fall back to mempool-chained UTXOs.
+  const MIN_SPENDABLE = TX_FEE_SATS + DUST_LIMIT;
+  const spendable = utxos.filter(u => u.value >= MIN_SPENDABLE);
+  const confSpendable = spendable.filter(u => u.status.confirmed);
+  if (confSpendable.length) utxos = confSpendable;
+  else if (spendable.length) { utxos = spendable; console.log('(no confirmed spendable UTXOs — using mempool chain)'); }
+  else throw new Error(`no spendable signet UTXO ≥ ${MIN_SPENDABLE} sats`);
   const utxo = utxos.sort((a, b) => b.value - a.value)[0];
   console.log(`UTXO: ${utxo.txid.slice(0,16)}...:${utxo.vout} = ${utxo.value} sats`);
 
@@ -628,6 +632,78 @@ async function cmdStatus() {
   }
 }
 
+// ─── Subcommand: withdraw — Sepolia mixer.withdrawFromBurn ─────────
+async function cmdWithdraw() {
+  const state = loadState();
+  if (!state.burnTxid) throw new Error('no burnTxid — run "burn" first');
+  if (!state.burnEthRecipient) throw new Error('no burnEthRecipient saved');
+
+  const RELAY = '0x67685fa6b706d8374c174756d5583d93f6bb5670';
+
+  const statusR = await fetch(`${MEMPOOL_API}/tx/${state.burnTxid}/status`);
+  const status = await statusR.json();
+  if (!status.confirmed) throw new Error(`burn tx not confirmed yet (height=${status.block_height})`);
+  const burnBlock = status.block_height;
+  console.log(`burn at signet block ${burnBlock}`);
+
+  const tipHex = await ethCall('eth_call', [{ to: RELAY, data: '0x1fd4827a' }, 'latest']);
+  const relayTip = parseInt(tipHex, 16);
+  console.log(`relay tip: ${relayTip}`);
+  if (relayTip < burnBlock + 6) {
+    throw new Error(`relay tip ${relayTip} < burnBlock+6 (${burnBlock + 6}); prover must advance further`);
+  }
+
+  const burnBlockHash = await (await fetch(`${MEMPOOL_API}/block-height/${burnBlock}`)).text();
+  const txids = await (await fetch(`${MEMPOOL_API}/block/${burnBlockHash}/txids`)).json();
+  const txPos = txids.indexOf(state.burnTxid);
+  if (txPos < 0) throw new Error('burn tx not in block txids');
+
+  const rawHex = await (await fetch(`${MEMPOOL_API}/tx/${state.burnTxid}/hex`)).text();
+
+  function sha256d_buf(b) { return Buffer.from(sha256(sha256(b))); }
+  let hashes = txids.map(t => Buffer.from(t, 'hex').reverse());
+  const proof = [];
+  let idx = txPos;
+  while (hashes.length > 1) {
+    if (hashes.length % 2) hashes.push(hashes[hashes.length - 1]);
+    const sib = idx ^ 1;
+    proof.push(hashes[sib]);
+    const next = [];
+    for (let i = 0; i < hashes.length; i += 2) next.push(sha256d_buf(Buffer.concat([hashes[i], hashes[i + 1]])));
+    hashes = next;
+    idx = Math.floor(idx / 2);
+  }
+  const merkleProofHex = proof.map(p => '0x' + p.toString('hex')).join(',');
+
+  let headers = '';
+  for (let h = burnBlock; h <= relayTip; h++) {
+    const bh = await (await fetch(`${MEMPOOL_API}/block-height/${h}`)).text();
+    headers += await (await fetch(`${MEMPOOL_API}/block/${bh}/header`)).text();
+  }
+  console.log(`headers ${headers.length/160} blocks (${burnBlock}..${relayTip})`);
+
+  const PK = process.env.DEPLOYER_PRIVATE_KEY;
+  if (!PK) throw new Error('DEPLOYER_PRIVATE_KEY required');
+  const args = [
+    MIXER_ADDRESS,
+    `'withdrawFromBurn(bytes,bytes,uint256,bytes32[],uint256)'`,
+    `"0x${rawHex}"`, `"0x${headers}"`, `${burnBlock}`,
+    `"[${merkleProofHex}]"`, `${txPos}`,
+  ];
+  const cmd = `cast send ${args.join(' ')} --rpc-url ${SEPOLIA_RPC} --private-key ${PK} --gas-limit 1500000`;
+  console.log('calling withdrawFromBurn…');
+  const result = execSync(cmd + ' 2>&1', { encoding: 'utf8' });
+  const status_match = result.match(/status\s+(\d+)/);
+  const tx_match = result.match(/transactionHash\s+(0x[a-fA-F0-9]+)/);
+  console.log(`withdraw status: ${status_match?.[1]} tx: ${tx_match?.[1]}`);
+  if (!result.includes('status               1')) {
+    console.log('--- output ---');
+    console.log(result);
+  }
+  state.withdrawTxid = tx_match?.[1];
+  saveState(state);
+}
+
 // ─── Main ───────────────────────────────────────────────────────────
 const cmd = process.argv[2];
 const arg = process.argv[3];
@@ -636,8 +712,9 @@ const arg = process.argv[3];
     if (cmd === 'deposit') await cmdDeposit();
     else if (cmd === 'mint') await cmdMint();
     else if (cmd === 'burn') await cmdBurn(arg);
+    else if (cmd === 'withdraw') await cmdWithdraw();
     else if (cmd === 'status') await cmdStatus();
-    else { console.log('Usage: bridge-3a.mjs [deposit | mint | burn 0xEthAddr | status]'); process.exit(1); }
+    else { console.log('Usage: bridge-3a.mjs [deposit | mint | burn 0xEthAddr | withdraw | status]'); process.exit(1); }
   } catch (e) {
     console.error('ERROR:', e.message);
     if (e.stack) console.error(e.stack.split('\n').slice(1, 4).join('\n'));

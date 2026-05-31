@@ -266,6 +266,88 @@ pub fn extract_all_op_returns(tx_data: &[u8]) -> Vec<Vec<u8>> {
     results
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Build a minimal P2TR script-path reveal tx whose witness item 1
+    // (the script) embeds an envelope payload pushed via OP_PUSHDATA2.
+    // Mirrors what dapp/tacit.js produces for T_WITHDRAW / CXFER reveals,
+    // restricted to the structural fields extract_taproot_envelope reads.
+    fn build_reveal_tx(payload: &[u8]) -> Vec<u8> {
+        // script = PUSH32 xonly_pk(32) | OP_CHECKSIG | OP_FALSE | OP_IF
+        //        | OP_PUSHDATA2 len_LE(2) payload | OP_ENDIF
+        let mut script = Vec::new();
+        script.push(0x20); script.extend_from_slice(&[0u8; 32]);
+        script.push(0xac);
+        script.push(0x00); script.push(0x63);
+        script.push(0x4d);
+        script.push((payload.len() & 0xff) as u8);
+        script.push((payload.len() >> 8) as u8);
+        script.extend_from_slice(payload);
+        script.push(0x68);
+
+        let mut tx = Vec::new();
+        tx.extend_from_slice(&[0x02, 0x00, 0x00, 0x00]); // version 2
+        tx.extend_from_slice(&[0x00, 0x01]);             // segwit marker+flag
+        tx.push(0x01);                                   // 1 input
+        tx.extend_from_slice(&[0u8; 32]);                // prev txid
+        tx.extend_from_slice(&[0u8; 4]);                 // prev vout
+        tx.push(0x00);                                   // empty scriptSig
+        tx.extend_from_slice(&[0xfd, 0xff, 0xff, 0xff]); // sequence
+        tx.push(0x01);                                   // 1 output
+        tx.extend_from_slice(&[0u8; 8]);                 // 0 value
+        tx.push(0x00);                                   // empty scriptPubKey
+        tx.push(0x03);                                   // 3 witness items
+        tx.push(0x40); tx.extend_from_slice(&[0u8; 0x40]); // signature (64B)
+        // script item (varint-len + script)
+        let sl = script.len();
+        if sl < 0xfd { tx.push(sl as u8); }
+        else { tx.push(0xfd); tx.extend_from_slice(&(sl as u16).to_le_bytes()); }
+        tx.extend_from_slice(&script);
+        // control block (33B)
+        tx.push(0x21); tx.extend_from_slice(&[0xc0; 0x21]);
+        tx.extend_from_slice(&[0u8; 4]); // locktime
+        tx
+    }
+
+    #[test]
+    fn extracts_taproot_withdraw_envelope() {
+        // Synthetic T_WITHDRAW: 0x2A | assetId(32) | denom_LE(8) | merkle_root(32)
+        //   | nullifier(32) | recip_commit(33) | r_leaf(32) | bind_hash(32)
+        //   | proof_len(2 LE) | proof(0) = 204 bytes (no proof bytes).
+        let mut payload = vec![0x2A_u8];
+        payload.extend_from_slice(&[0x11u8; 32]); // assetId
+        payload.extend_from_slice(&100_000u64.to_le_bytes()); // denom
+        payload.extend_from_slice(&[0x22u8; 32]); // pool root
+        payload.extend_from_slice(&[0x33u8; 32]); // nullifier
+        payload.extend_from_slice(&[0x02u8; 33]); // recip_commit (compressed pk)
+        payload.extend_from_slice(&[0x44u8; 32]); // r_leaf
+        payload.extend_from_slice(&[0x55u8; 32]); // bind_hash
+        payload.extend_from_slice(&0u16.to_le_bytes()); // proof_len = 0
+
+        let tx = build_reveal_tx(&payload);
+        let got = extract_taproot_envelope(&tx).expect("extractor returns Some for valid reveal");
+        // Confirms the bridge guest's Taproot dispatch sees 0x2A envelopes
+        // (the audit gap that the prior OP_RETURN-scoped handler missed).
+        assert_eq!(got[0], 0x2A, "first byte = opcode 0x2A");
+        assert_eq!(got.len(), payload.len(), "full payload roundtrips");
+        assert_eq!(&got[73..105], &[0x33u8; 32], "nullifier bytes intact");
+    }
+
+    #[test]
+    fn extracts_taproot_cxfer_envelope() {
+        // Regression: existing CXFER (0x22) still extractable post-refactor.
+        let mut payload = vec![0x22_u8];
+        payload.extend_from_slice(&[0xaau8; 32]); // assetId
+        payload.extend_from_slice(&[0u8; 64]);    // padding to 97
+        payload.push(0x00);                       // count = 0
+        let tx = build_reveal_tx(&payload);
+        let got = extract_taproot_envelope(&tx).expect("extractor returns Some");
+        assert_eq!(got[0], 0x22);
+    }
+}
+
 fn read_varint(data: &[u8], pos: usize) -> (usize, usize) {
     assert!(pos < data.len(), "varint: pos out of bounds");
     let first = data[pos];

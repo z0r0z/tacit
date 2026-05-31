@@ -87,9 +87,12 @@ if (failed === 0) {
 const GUEST_MAIN = `${REPO}contracts/sp1/program/src/main.rs`;
 const guestSrc = fs.readFileSync(GUEST_MAIN, 'utf8');
 // The guest should declare exactly ONE null_set binding (mut or otherwise).
-const nullSetDecls = (guestSrc.match(/\blet\s+(?:mut\s+)?null_set\s*[:=]/g) || []).length;
+// Count production code only — strip the #[cfg(test)] module, whose unit
+// tests legitimately construct their own NullifierSet instances.
+const prodSrc = guestSrc.split(/\n\s*#\[cfg\(test\)\]/)[0];
+const nullSetDecls = (prodSrc.match(/\blet\s+(?:mut\s+)?null_set\s*[:=]/g) || []).length;
 // And should NEVER declare a per-denom nullifier set (e.g., Vec<NullifierSet>)
-const perDenomShape = /Vec\s*<\s*(?:merkle\s*::\s*)?NullifierSet\s*>|\[\s*(?:merkle\s*::\s*)?NullifierSet\s*;\s*[A-Z0-9_]+\s*\]/.test(guestSrc);
+const perDenomShape = /Vec\s*<\s*(?:merkle\s*::\s*)?NullifierSet\s*>|\[\s*(?:merkle\s*::\s*)?NullifierSet\s*;\s*[A-Z0-9_]+\s*\]/.test(prodSrc);
 
 let bFailed = false;
 if (nullSetDecls !== 1) {

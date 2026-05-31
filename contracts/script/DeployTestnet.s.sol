@@ -115,13 +115,16 @@ contract DeployTestnet is Script {
         bytes32 programVKey = vm.envOr("SP1_PROGRAM_VKEY", bytes32(uint256(1)));
         bytes32 groth16VkHash = vm.envOr("GROTH16_VK_HASH", bytes32(uint256(1)));
 
-        uint256[] memory denoms = new uint256[](6);
-        denoms[0] = 0.001 ether;
-        denoms[1] = 0.01 ether;
-        denoms[2] = 0.1 ether;
-        denoms[3] = 1 ether;
-        denoms[4] = 10 ether;
-        denoms[5] = 100 ether;
+        // Matches Deploy.s.sol: 8 denoms, smallest 0.00001 ether.
+        uint256[] memory denoms = new uint256[](8);
+        denoms[0] = 0.00001 ether;
+        denoms[1] = 0.0001 ether;
+        denoms[2] = 0.001 ether;
+        denoms[3] = 0.01 ether;
+        denoms[4] = 0.1 ether;
+        denoms[5] = 1 ether;
+        denoms[6] = 10 ether;
+        denoms[7] = 100 ether;
 
         address deployer = vm.addr(deployerKey);
         // One verifier covers all denominations, so the mixer is the next deploy after it.

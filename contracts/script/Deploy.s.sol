@@ -22,13 +22,19 @@ contract DeployTacitBridge is Script {
         uint256 genesisTipHeight = vm.envUint("BTC_TIP_HEIGHT");
         uint256 genesisTipWork = vm.envUint("BTC_TIP_WORK");
 
-        uint256[] memory denoms = new uint256[](6);
-        denoms[0] = 0.001 ether;
-        denoms[1] = 0.01 ether;
-        denoms[2] = 0.1 ether;
-        denoms[3] = 1 ether;
-        denoms[4] = 10 ether;
-        denoms[5] = 100 ether;
+        // Finer denoms = whole-note fractional sends without CXFER.
+        // Smallest = 0.00001 ETH (10^13 wei = 1000 tacit-units) — fits well
+        // above the 10^10-wei UNIT_SCALE floor. Max array bound is 16 per
+        // SP1PoolRootVerifier (we use 8).
+        uint256[] memory denoms = new uint256[](8);
+        denoms[0] = 0.00001 ether;
+        denoms[1] = 0.0001 ether;
+        denoms[2] = 0.001 ether;
+        denoms[3] = 0.01 ether;
+        denoms[4] = 0.1 ether;
+        denoms[5] = 1 ether;
+        denoms[6] = 10 ether;
+        denoms[7] = 100 ether;
 
         vm.startBroadcast(deployerKey);
 

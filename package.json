@@ -2,6 +2,8 @@
   "dependencies": {
     "@noble/hashes": "^2.2.0",
     "@noble/secp256k1": "^2.3.0",
-    "poseidon-solidity": "^0.0.5"
+    "poseidon-lite": "^0.3.0",
+    "poseidon-solidity": "^0.0.5",
+    "snarkjs": "^0.7.6"
   }
 }

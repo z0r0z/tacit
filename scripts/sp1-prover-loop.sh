@@ -63,11 +63,19 @@ mkdir -p "$STATE_DIR"
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"; }
 
 get_relay_tip() {
+  # tipHeight() selector 0x1fd4827a. Empty return on RPC failure would crash
+  # the `while [[ -lt ]]` in run_proof_cycle under `set -e`; caller must
+  # check for empty and skip the cycle rather than feed it to numeric ops.
   curl -sf -X POST "$ETH_RPC" -H 'Content-Type: application/json' \
     -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"eth_call\",\"params\":[{\"to\":\"0x${RELAY_ADDRESS}\",\"data\":\"0x1fd4827a\"},\"latest\"]}" \
     | python3 -c "import sys,json; print(int(json.load(sys.stdin)['result'], 16))" 2>/dev/null
 }
 get_btc_tip() { curl -sf "${BTC_API}/blocks/tip/height" 2>/dev/null; }
+
+# Sanity-check that the foundry `cast` is actually on PATH. Without it,
+# both submit_proof and the relay-advance pipeline silently get treated as
+# "tx reverted" — the loop spins forever without progress. Fail loud.
+command -v cast >/dev/null 2>&1 || { log "FATAL: cast not on PATH — add ~/.foundry/bin to PATH before launching"; exit 1; }
 get_last_proven_height() {
   [[ -f "${STATE_DIR}/last_proven_block.txt" ]] && cat "${STATE_DIR}/last_proven_block.txt" || echo "0"
 }
@@ -81,10 +89,15 @@ submit_proof() {
   local result
   result=$(cast send "0x${VERIFIER_ADDRESS}" 'proveStateTransition(bytes,bytes)' \
     "0x${pv}" "0x${proof}" --rpc-url "$ETH_RPC" --private-key "$ETH_PK" --gas-limit 1500000 2>&1) || true
-  if echo "$result" | grep -q "status.*1"; then
+  # Tightened pattern: cast send prints "status               1 (success)" on
+  # success, "status               0 (failed)" on revert. The loose `status.*1`
+  # was prone to false positives matching `transactionIndex 1*` etc. — anchor
+  # to whitespace + "1" + non-digit so 10, 11, etc. don't false-positive.
+  if echo "$result" | grep -qE "status[[:space:]]+1[[:space:]]+\("; then
     log "Proof accepted on-chain!"
   else
-    log "Proof submission failed:"; echo "$result" | grep -E "status|transactionHash|error|revert|0x" | head -5
+    log "Proof submission failed (full output below):"
+    echo "$result"
     return 1
   fi
 }
@@ -107,19 +120,35 @@ run_proof_cycle() {
 
   # Advance the relay to exactly $target, in <=20-header chunks.
   relay_tip=$(get_relay_tip)
+  [[ -n "$relay_tip" ]] || { log "could not fetch relay tip (RPC unreachable?); skipping cycle"; return 1; }
   while [[ "$relay_tip" -lt "$target" ]]; do
     local chunk_end=$((relay_tip + 20)); [[ "$chunk_end" -gt "$target" ]] && chunk_end=$target
     log "Advancing relay $relay_tip -> $chunk_end"
     local headers=""
     for h in $(seq $((relay_tip + 1)) "$chunk_end"); do
-      local bh; bh=$(curl -sf "${BTC_API}/block-height/$h")
-      headers+=$(curl -sf "${BTC_API}/block/$bh/header")
+      local bh hdr
+      bh=$(curl -sf "${BTC_API}/block-height/$h")
+      hdr=$(curl -sf "${BTC_API}/block/$bh/header")
+      # Each Bitcoin header is exactly 80 bytes = 160 hex chars. A short or
+      # empty fetch (mempool.space hiccup) silently corrupts the headers
+      # blob; cast send then reverts in the relay's parser and we waste a
+      # cycle. Bail out and let the next cycle retry.
+      if [[ ${#hdr} -ne 160 ]]; then
+        log "Header fetch for $h returned ${#hdr} hex chars (expected 160); skipping cycle"
+        return 1
+      fi
+      headers+="$hdr"
     done
-    if ! cast send "0x${RELAY_ADDRESS}" 'advanceTip(bytes)' "0x${headers}" \
-        --rpc-url "$ETH_RPC" --private-key "$ETH_PK" --gas-limit 3000000 2>&1 | grep -q "status.*1"; then
-      log "Relay advance failed ($relay_tip -> $chunk_end)"; return 1
+    local relay_out
+    relay_out=$(cast send "0x${RELAY_ADDRESS}" 'advanceTip(bytes)' "0x${headers}" \
+        --rpc-url "$ETH_RPC" --private-key "$ETH_PK" --gas-limit 3000000 2>&1) || true
+    if ! echo "$relay_out" | grep -qE "status[[:space:]]+1"; then
+      log "Relay advance failed ($relay_tip -> $chunk_end):"
+      echo "$relay_out" | tail -10
+      return 1
     fi
     relay_tip=$(get_relay_tip)
+    [[ -n "$relay_tip" ]] || { log "lost relay tip mid-advance; skipping rest of cycle"; return 1; }
   done
 
   num_blocks=$((target - start_height + 1))
@@ -155,6 +184,17 @@ run_proof_cycle() {
   local state_file="${STATE_DIR}/prover-state.json"
 
   cd "${REPO_DIR}/contracts/sp1/script"
+  # Clear stale artifacts from any prior cycle so `[[ -f public_values.hex ]]`
+  # below + submit_proof don't accidentally re-submit a leftover proof when
+  # `cargo run` crashes mid-cycle. Without this, a failed prove would let
+  # the loop re-submit the PRIOR cycle's proof → verifier reverts on stale
+  # prev_state → the loop spins indefinitely with no progress.
+  rm -f "${STATE_DIR}/public_values.hex" "${STATE_DIR}/proof_bytes.hex" "${STATE_DIR}/proof.bin"
+  # Also clear any leftover STATE_FILE.staging from a prior submit failure —
+  # the staging file represents an UNCOMMITTED post-cycle state that should
+  # not affect the next cycle's load (which uses the LAST KNOWN-GOOD
+  # STATE_FILE). Host re-writes staging during this cycle.
+  rm -f "${state_file}.staging"
   ASSET_ID="$ASSET_ID" MIXER_ADDRESS="$MIXER_ADDRESS" DENOMINATIONS="$DENOMINATIONS" \
   NETWORK="$NETWORK" NETWORK_TAG="$NETWORK_TAG" CHAIN_ID="$CHAIN_ID" DEPLOY_BLOCK="$DEPLOY_BLOCK" \
   STATE_DIR="$STATE_DIR" OUTPUT_DIR="$STATE_DIR" ETH_RPC="$ETH_RPC" SP1_PROVER="$SP1_PROVER" \
@@ -165,6 +205,15 @@ run_proof_cycle() {
 
   [[ -f "${STATE_DIR}/public_values.hex" ]] || { log "ERROR: proof artifacts not generated"; return 1; }
   submit_proof || return 1
+  # Commit staged STATE_FILE only after on-chain submit succeeded — closes
+  # the race where the host-side save would leave the file ahead of the
+  # verifier after a submit failure, bricking every subsequent cycle on
+  # stale-state panic. Atomic mv preserves the prior file until the new
+  # one's contents are fully written.
+  if [[ -f "${state_file}.staging" ]]; then
+    mv "${state_file}.staging" "${state_file}"
+    log "STATE_FILE committed (post-cycle state persisted)"
+  fi
   echo "$target" > "${STATE_DIR}/last_proven_block.txt"
   log "Cycle complete: blocks $start_height-$target proven and accepted"
 }
