@@ -414,4 +414,70 @@ export function bppProveAmounts(amounts, blindings) {
   return bppRangeProve(amounts, blindings);
 }
 
+// ─── Taproot envelope broadcaster (commit + reveal) ────────────────
+// Bridge ops (MINT/BURN/EXPORT/IMPORT/ROTATE) and mixer T_WITHDRAW exceed the
+// 80B OP_RETURN datacarrier cap, so they ride in a Taproot script-path reveal
+// whose witness item 1 carries the TACIT-framed envelope (encodeEnvelopeScript).
+// The guest's extract_taproot_envelope strips the frame and dispatches on the
+// opcode. Mirrors the dapp's buildAndBroadcastBridge* commit/reveal.
+//   extraRevealOutputs: outputs placed at vout 0.. BEFORE the change (e.g.
+//   EXPORT's stealth UTXO at vout 0). Default [] → reveal is change-only.
+// Returns { commitTxid, revealTxid } — revealTxid is what the worker/guest index.
+export async function broadcastTaprootEnvelope({
+  envelope, signerPriv, signerPub, address, mempoolApi,
+  extraRevealOutputs = [], revealFee = 2500, commitFee = 300,
+}) {
+  const xonly = signerPub.slice(1, 33);
+  const envelopeScript = encodeEnvelopeScript(xonly, envelope);
+  const leaf = tapLeafHash(envelopeScript);
+  const { Q_xonly, parity } = tweakedOutputKey(TAP_NUMS, leaf);
+  const p2trSpk = p2trScript(Q_xonly);
+  const cb = controlBlock(TAP_NUMS, parity);
+  const wpkh = p2wpkhScript(signerPub);
+
+  const utxos = await (await fetch(`${mempoolApi}/address/${address}/utxo`)).json();
+  const spendable = utxos.filter(u => u.value > DUST);
+  const conf = spendable.filter(u => u.status?.confirmed);
+  const pool = (conf.length ? conf : spendable).sort((a, b) => b.value - a.value);
+  if (!pool.length) throw new Error('no spendable signet UTXO for the Taproot commit');
+  const funding = pool[0];
+
+  const extraSum = extraRevealOutputs.reduce((s, o) => s + o.value, 0);
+  const commitValue = DUST + extraSum + revealFee;
+  const commitChange = funding.value - commitValue - commitFee;
+  if (commitChange < DUST) {
+    throw new Error(`commit change ${commitChange} < dust (funding ${funding.value}, need ${commitValue + commitFee})`);
+  }
+
+  const commitTx = {
+    version: 2, locktime: 0,
+    inputs: [{ txid: funding.txid, vout: funding.vout, sequence: 0xfffffffd, witness: [] }],
+    outputs: [{ value: commitValue, script: p2trSpk }, { value: commitChange, script: wpkh }],
+  };
+  commitTx.inputs[0].witness = signP2wpkhInputWithKey(commitTx, 0, funding.value, signerPriv, signerPub);
+  const commitHex = bytesToHex(serializeTx(commitTx));
+  const commitTxid = computeTxid(commitTx);
+
+  // Reveal: extraRevealOutputs at vout 0.., then change to self. Fee = revealFee.
+  const revealTx = {
+    version: 2, locktime: 0,
+    inputs: [{ txid: commitTxid, vout: 0, sequence: 0xfffffffd, witness: [] }],
+    outputs: [...extraRevealOutputs, { value: DUST, script: wpkh }],
+  };
+  const prevouts = [{ value: commitValue, script: p2trSpk }];
+  revealTx.inputs[0].witness = signTaprootScriptPathInputWithKey(revealTx, prevouts, envelopeScript, cb, signerPriv, 0);
+  const revealHex = bytesToHex(serializeTx(revealTx));
+  const revealTxid = computeTxid(revealTx);
+
+  const post = async (hex, label) => {
+    const r = await fetch(`${mempoolApi}/tx`, { method: 'POST', body: hex });
+    const b = await r.text();
+    if (!r.ok) throw new Error(`${label} broadcast ${r.status}: ${b}`);
+    return b.trim();
+  };
+  await post(commitHex, 'commit');
+  await post(revealHex, 'reveal');
+  return { commitTxid, revealTxid, revealHex, commitHex };
+}
+
 export { secp };

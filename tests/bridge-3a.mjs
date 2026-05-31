@@ -22,6 +22,7 @@ import { randomBytes } from 'crypto';
 import * as snarkjs from 'snarkjs';
 import fs from 'fs';
 import { execSync } from 'child_process';
+import * as cx from './cxfer-helpers.mjs';
 
 secp.etc.hmacSha256Sync = (k, ...m) => hmac(sha256, k, secp.etc.concatBytes(...m));
 
@@ -518,7 +519,16 @@ async function cmdMint() {
   });
   console.log(`mint envelope ${payload.length} bytes`);
 
-  const txid = await broadcastWithOpReturn(SIGNET_PRIVKEY, payload);
+  // MINT (0x60) is 517B — over the 80B OP_RETURN cap — so it rides in a Taproot
+  // script-path reveal (witness item 1), the mainnet-relayable carrier the dapp
+  // uses. The reveal txid is what the worker/guest index.
+  const { revealTxid: txid } = await cx.broadcastTaprootEnvelope({
+    envelope: payload,
+    signerPriv: cx.hexToBytes(SIGNET_PRIVKEY),
+    signerPub: compressedPubkey(SIGNET_PRIVKEY),
+    address: getSignetAddress(),
+    mempoolApi: MEMPOOL_API,
+  });
   state.mintTxid = txid;
   state.mintEthRoot = hex(ethRootBytes);
   state.mintEthLeafIndex = deposits[myIdx].leafIndex;
@@ -598,7 +608,16 @@ async function cmdBurn(ethRecipient) {
   state.burnProof = hex(proofBytes);
   saveState(state);
 
-  const txid = await broadcastWithOpReturn(SIGNET_PRIVKEY, payload);
+  // BURN (0x61) is 537B — Taproot reveal carries it (witness item 1), same as
+  // the dapp. The reveal txid is the burn the worker/guest index + the withdraw
+  // proves inclusion of.
+  const { revealTxid: txid } = await cx.broadcastTaprootEnvelope({
+    envelope: payload,
+    signerPriv: cx.hexToBytes(SIGNET_PRIVKEY),
+    signerPub: compressedPubkey(SIGNET_PRIVKEY),
+    address: getSignetAddress(),
+    mempoolApi: MEMPOOL_API,
+  });
   state.burnTxid = txid;
   saveState(state);
   console.log(`burn txid: ${txid}`);

@@ -197,7 +197,14 @@ pub fn extract_taproot_envelope(tx_data: &[u8]) -> Option<Vec<u8>> {
             return None;
         }
     }
-    if payload.is_empty() { None } else { Some(payload) }
+    // The dapp's encodeEnvelopeScript (and the worker's decodeEnvelopeScript)
+    // frame every reveal as PUSH("TACIT") PUSH(version) followed by the payload
+    // chunks, so the concatenated pushes are "TACIT" || 0x01 || envelope. Strip
+    // that 6-byte frame so the opcode lands at index 0 — the bridge / 0x2A
+    // dispatch reads tap_env[0] as the opcode and tap_env[1..] as the body.
+    const FRAME: [u8; 6] = [0x54, 0x41, 0x43, 0x49, 0x54, 0x01]; // "TACIT" || v1
+    if payload.len() <= FRAME.len() || payload[..FRAME.len()] != FRAME { return None; }
+    Some(payload[FRAME.len()..].to_vec())
 }
 
 /// Extract input outpoints (prev_txid, prev_vout) from a Bitcoin transaction.
@@ -276,11 +283,16 @@ mod tests {
     // restricted to the structural fields extract_taproot_envelope reads.
     fn build_reveal_tx(payload: &[u8]) -> Vec<u8> {
         // script = PUSH32 xonly_pk(32) | OP_CHECKSIG | OP_FALSE | OP_IF
+        //        | PUSH5 "TACIT" | PUSH1 version(0x01)   <- envelope frame
         //        | OP_PUSHDATA2 len_LE(2) payload | OP_ENDIF
+        // The frame mirrors the dapp's encodeEnvelopeScript; the extractor
+        // validates + strips it, so the returned envelope starts at the opcode.
         let mut script = Vec::new();
         script.push(0x20); script.extend_from_slice(&[0u8; 32]);
         script.push(0xac);
         script.push(0x00); script.push(0x63);
+        script.push(0x05); script.extend_from_slice(b"TACIT");
+        script.push(0x01); script.push(0x01);
         script.push(0x4d);
         script.push((payload.len() & 0xff) as u8);
         script.push((payload.len() >> 8) as u8);
