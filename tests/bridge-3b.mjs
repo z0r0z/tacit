@@ -39,12 +39,23 @@ import { execSync } from 'child_process';
 
 secp.etc.hmacSha256Sync = (k, ...m) => hmac(sha256, k, secp.etc.concatBytes(...m));
 
+// Retry undici "fetch failed" transient blips against public RPC + mempool.
+const _origFetch = globalThis.fetch;
+globalThis.fetch = async (url, opts) => {
+  let lastErr;
+  for (let i = 0; i < 6; i++) {
+    try { return await _origFetch(url, opts); }
+    catch (e) { lastErr = e; await new Promise(r => setTimeout(r, 600 * (i + 1))); }
+  }
+  throw lastErr;
+};
+
 // ─── Config ────────────────────────────────────────────────────────
 const SIGNET_PRIVKEY = process.env.SIGNET_PRIVKEY || '827aee3498ebbf5f4374387dc9937741ac87ec58a7a67c8091241d0797589222';
 const MEMPOOL_API    = 'https://mempool.space/signet/api';
 const WORKER_BASE    = 'https://tacit-pin.rosscampbell9.workers.dev';
 const SEPOLIA_RPC    = 'https://ethereum-sepolia-rpc.publicnode.com';
-const MIXER_ADDRESS  = '0x4d0102867cd97ff2945fee858fcaa8c0485b68dd';
+const MIXER_ADDRESS  = '0xba57f4a7Bc7AEcEda43Be5008bbAc94d39ee6179';
 const ASSET_ID_HEX   = 'd903de2d2a7c1958f8ab3c4b9a91175ef3885027a24af306dead9e8f671a450b';
 const DENOM_WEI      = 10000000000000000n;   // 0.01 ETH (Alice's deposit + 0.01 pool)
 const UNIT_SCALE     = 10000000000n;
@@ -298,7 +309,7 @@ async function fetchSepoliaDeposits() {
   const depositSig = keccak_256(new TextEncoder().encode('Deposit(bytes32,bytes32,uint256,uint256)'));
   const poolId = keccak_256(concatBytes(hexToBytes(ASSET_ID_HEX), bigintToBytes32(DENOM_WEI)));
   const logs = await ethCall('eth_getLogs', [{
-    address: MIXER_ADDRESS, fromBlock: '0xa73f3c', toBlock: 'latest',
+    address: MIXER_ADDRESS, fromBlock: '0xa7418a', toBlock: 'latest',
     topics: ['0x' + bytesToHex(depositSig), '0x' + bytesToHex(poolId)],
   }]);
   return logs.map(l => ({
@@ -310,6 +321,12 @@ async function fetchSepoliaDeposits() {
 
 // ─── IPFS zkey ─────────────────────────────────────────────────────
 async function fetchHeadZkeyBytes() {
+  if (process.env.ZKEY_PATH) {
+    const buf = new Uint8Array(fs.readFileSync(process.env.ZKEY_PATH));
+    if (buf.length < 256 || buf[0] !== 0x7a || buf[1] !== 0x6b) throw new Error(`ZKEY_PATH not a zkey: ${process.env.ZKEY_PATH}`);
+    console.log(`  using local zkey ${process.env.ZKEY_PATH} (${buf.length} bytes)`);
+    return buf;
+  }
   const r = await fetch(`${WORKER_BASE}/ceremony/${CEREMONY_HASH}`, { cache: 'no-store' });
   if (!r.ok) throw new Error(`ceremony state: HTTP ${r.status}`);
   const { state } = await r.json();
@@ -562,7 +579,11 @@ async function cmdMint() {
     leafHash: alicePoolLeaf, rLeaf, bindHash, proof: proofBytes,
   });
   console.log(`mint envelope ${payload.length} bytes`);
-  const txid = await broadcastWithOpReturn(SIGNET_PRIVKEY, payload);
+  const { revealTxid: txid } = await cx.broadcastTaprootEnvelope({
+    envelope: payload,
+    signerPriv: hexToBytes(SIGNET_PRIVKEY), signerPub: compressedPubkey(SIGNET_PRIVKEY),
+    address: getSignetAddress(), mempoolApi: MEMPOOL_API,
+  });
   state.mintTxid = txid;
   saveState(state);
   console.log(`mint txid: ${txid}`);
@@ -622,7 +643,14 @@ async function cmdExport() {
   const stealthBlinding = _deriveBridgeWithdrawStealthBlinding(hexToBytes(SIGNET_PRIVKEY), hexToBytes(state.aliceSecretPool));
   const stealthPub = computeStealthCommit({ underlyingPub: compressedPubkey(SIGNET_PRIVKEY), blinding: stealthBlinding });
 
-  const txid = await broadcastWithOpReturn(SIGNET_PRIVKEY, payload, stealthPub);
+  // EXPORT (0x63, ~485B) via Taproot reveal; the spendable stealth tETH UTXO is
+  // vout 0 (where the guest registers the export UTXO), envelope in the witness.
+  const { revealTxid: txid } = await cx.broadcastTaprootEnvelope({
+    envelope: payload,
+    signerPriv: hexToBytes(SIGNET_PRIVKEY), signerPub: compressedPubkey(SIGNET_PRIVKEY),
+    address: getSignetAddress(), mempoolApi: MEMPOOL_API,
+    extraRevealOutputs: [{ value: cx.DUST, script: cx.p2wpkhScript(stealthPub) }],
+  });
   state.exportTxid = txid;
   state.exportStealthBlinding = stealthBlinding.toString();
   state.exportStealthPub = hex(stealthPub);
@@ -632,7 +660,7 @@ async function cmdExport() {
   state.exportRecipientCommit = hex(recipientCommit);
   saveState(state);
   console.log(`export txid: ${txid}`);
-  console.log(`spendable tETH UTXO: ${txid}:1 (stealth pub ${hex(stealthPub).slice(0,16)}...)`);
+  console.log(`spendable tETH UTXO: ${txid}:0 (stealth pub ${hex(stealthPub).slice(0,16)}...)`);
   console.log(`amount = ${DENOM_TACIT} tacit-units (0.1 tETH)`);
 }
 
@@ -743,7 +771,7 @@ async function cmdCxfer() {
   if (!utxos.length) throw new Error('no signet UTXOs');
   // Pick the largest sats UTXO that isn't the export's stealth UTXO (vout 1 = DUST).
   // Consider confirmed AND mempool — needed when chaining off the just-broadcast export.
-  const fundingUtxo = utxos.filter(u => !(u.txid === state.exportTxid && u.vout === 1))
+  const fundingUtxo = utxos.filter(u => !(u.txid === state.exportTxid && u.vout === 0))
     .filter(u => u.value > cx.DUST)
     .sort((a, b) => b.value - a.value)[0];
   if (!fundingUtxo) throw new Error('no funding UTXO ≠ asset UTXO');
@@ -786,7 +814,7 @@ async function cmdCxfer() {
     version: 2, locktime: 0,
     inputs: [
       { txid: commitTxid, vout: 0, sequence: 0xfffffffd, witness: [] },
-      { txid: state.exportTxid, vout: 1, sequence: 0xfffffffd, witness: [] },
+      { txid: state.exportTxid, vout: 0, sequence: 0xfffffffd, witness: [] },
     ],
     outputs: revealOuts,
   };
@@ -931,7 +959,12 @@ async function cmdImport() {
 
   const assetIdBytes = hexToBytes(ASSET_ID_HEX);
   const denomTacitBytes = bigintToBytes32(DENOM_TACIT_BOB);
-  const prevTxidBytes = hexToBytes(state.cxferRevealTxid);   // display order, as dapp does
+  // Internal (raw-tx) byte order: the guest stores utxo_set txids from compute_txid
+  // (double-sha256, un-reversed) and reads input prev-txids straight from the tx
+  // bytes, both internal order — so env_prev_txid must be the reversed display txid,
+  // NOT hexToBytes(display). (The dapp's buildAndBroadcastBridgeImport needs the
+  // same reversal — validate here first, then mirror.)
+  const prevTxidBytes = cx.reverseBytes(hexToBytes(state.cxferRevealTxid));
   const prevVout = 0;
 
   // bind_hash for import
@@ -951,55 +984,21 @@ async function cmdImport() {
   );
   console.log(`import envelope ${payload.length} bytes`);
 
-  // Build BTC tx: vin[0]=Bob's CXFER output (DUST 546), vin[1]=Alice funding for fees
-  // outputs: [OP_RETURN(envelope), change P2WPKH(Alice)]
-  const addr = getSignetAddress();
-  const utxoR = await fetch(`${MEMPOOL_API}/address/${addr}/utxo`);
-  const utxos = await utxoR.json();
-  // Pick largest non-DUST UTXO (confirmed or mempool — chain off the just-broadcast cxfer change)
-  const fundingUtxo = utxos.filter(u => u.value > cx.DUST)
-    .sort((a, b) => b.value - a.value)[0];
-  if (!fundingUtxo) throw new Error('no funding UTXO');
-
-  const aliceSignetPriv = hexToBytes(SIGNET_PRIVKEY);
-  const aliceSignetPub = compressedPubkey(SIGNET_PRIVKEY);
+  // IMPORT (0x64) via Taproot reveal: vin0 = commit P2TR (Alice funds + signs the
+  // envelope script-path), vin1 = Bob's tETH UTXO at (cxferRevealTxid, 0) so the
+  // guest's extract_input_outpoints match fires. Alice receives the BTC change.
   const bobBtcPriv = hexToBytes(state.bobBtcPriv);
   const bobBtcPub = hexToBytes(state.bobBtcPub);
-
-  const opLen = payload.length;
-  const opRet = (opLen <= 75)
-    ? cx.concatBytes(new Uint8Array([0x6a, opLen]), payload)
-    : (opLen < 256)
-      ? cx.concatBytes(new Uint8Array([0x6a, 0x4c, opLen]), payload)
-      : cx.concatBytes(new Uint8Array([0x6a, 0x4d, opLen & 0xff, (opLen >> 8) & 0xff]), payload);
-
-  const FEE = 1500;
-  const change = fundingUtxo.value + cx.DUST - FEE; // input = funding sats + bob's DUST
-  if (change < cx.DUST) throw new Error(`change ${change} < dust`);
-
-  const importTx = {
-    version: 2, locktime: 0,
-    inputs: [
-      { txid: state.cxferRevealTxid, vout: 0, sequence: 0xfffffffd, witness: [] },  // Bob's tETH UTXO
-      { txid: fundingUtxo.txid, vout: fundingUtxo.vout, sequence: 0xfffffffd, witness: [] },  // Alice's sats
-    ],
-    outputs: [
-      { value: 0, script: opRet },
-      { value: change, script: cx.p2wpkhScript(aliceSignetPub) },
-    ],
-  };
-  // Sign inputs
-  importTx.inputs[0].witness = cx.signP2wpkhInputWithKey(importTx, 0, cx.DUST, bobBtcPriv, bobBtcPub);
-  importTx.inputs[1].witness = cx.signP2wpkhInputWithKey(importTx, 1, fundingUtxo.value, aliceSignetPriv, aliceSignetPub);
-
-  const rawTx = cx.bytesToHex(cx.serializeTx(importTx));
-  const txid = cx.computeTxid(importTx);
-  console.log(`import tx ${rawTx.length/2} bytes, txid ${txid}`);
-
-  const br = await fetch(`${MEMPOOL_API}/tx`, { method: 'POST', body: rawTx });
-  const body = await br.text();
-  if (!br.ok) throw new Error(`import broadcast: ${br.status} ${body}`);
-  console.log(`import broadcast: ${body.trim()}`);
+  const { revealTxid: txid } = await cx.broadcastTaprootEnvelope({
+    envelope: payload,
+    signerPriv: hexToBytes(SIGNET_PRIVKEY), signerPub: compressedPubkey(SIGNET_PRIVKEY),
+    address: getSignetAddress(), mempoolApi: MEMPOOL_API,
+    extraRevealInputs: [{
+      txid: state.cxferRevealTxid, vout: 0, value: cx.DUST,
+      script: cx.p2wpkhScript(bobBtcPub), priv: bobBtcPriv, pub: bobBtcPub,
+    }],
+  });
+  console.log(`import reveal txid ${txid}`);
 
   state.importTxid = txid;
   state.bobPoolSecret0001 = hex(bobSecret);
@@ -1073,7 +1072,13 @@ async function cmdBurnBob(ethRecipient) {
   state.bobBurnBindHash = hex(bindHash);
   saveState(state);
 
-  const txid = await broadcastWithOpReturn(SIGNET_PRIVKEY, payload);
+  // Bob's BURN (0x61) via Taproot reveal — Alice's wallet funds + signs the
+  // commit (the envelope content is Bob's note; the Taproot signer is unrelated).
+  const { revealTxid: txid } = await cx.broadcastTaprootEnvelope({
+    envelope: payload,
+    signerPriv: hexToBytes(SIGNET_PRIVKEY), signerPub: compressedPubkey(SIGNET_PRIVKEY),
+    address: getSignetAddress(), mempoolApi: MEMPOOL_API,
+  });
   state.bobBurnTxid = txid;
   saveState(state);
   console.log(`Bob burn txid: ${txid}`);

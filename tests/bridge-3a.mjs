@@ -26,12 +26,26 @@ import * as cx from './cxfer-helpers.mjs';
 
 secp.etc.hmacSha256Sync = (k, ...m) => hmac(sha256, k, secp.etc.concatBytes(...m));
 
+// node's undici fetch throws a bare "fetch failed" on transient DNS/socket
+// blips against public RPC + mempool endpoints. Retry with backoff so a single
+// hiccup doesn't abort a multi-step round-trip. Patches the global so the
+// shared cxfer-helpers broadcaster benefits too.
+const _origFetch = globalThis.fetch;
+globalThis.fetch = async (url, opts) => {
+  let lastErr;
+  for (let i = 0; i < 6; i++) {
+    try { return await _origFetch(url, opts); }
+    catch (e) { lastErr = e; await new Promise(r => setTimeout(r, 600 * (i + 1))); }
+  }
+  throw lastErr;
+};
+
 // ─── Config ────────────────────────────────────────────────────────
 const SIGNET_PRIVKEY = process.env.SIGNET_PRIVKEY || '827aee3498ebbf5f4374387dc9937741ac87ec58a7a67c8091241d0797589222';
 const MEMPOOL_API    = 'https://mempool.space/signet/api';
 const WORKER_BASE    = 'https://tacit-pin.rosscampbell9.workers.dev';
 const SEPOLIA_RPC    = 'https://ethereum-sepolia-rpc.publicnode.com';
-const MIXER_ADDRESS  = '0x4d0102867cd97ff2945fee858fcaa8c0485b68dd';
+const MIXER_ADDRESS  = '0xba57f4a7Bc7AEcEda43Be5008bbAc94d39ee6179';
 const ASSET_ID_HEX   = 'd903de2d2a7c1958f8ab3c4b9a91175ef3885027a24af306dead9e8f671a450b';
 const DENOM_WEI      = 1000000000000000n;             // 0.001 ETH wei
 const UNIT_SCALE     = 10000000000n;                  // 1e10 (wei → tacit 8-dec)
@@ -232,7 +246,7 @@ async function fetchSepoliaDeposits() {
   const depositSig = keccak_256(new TextEncoder().encode('Deposit(bytes32,bytes32,uint256,uint256)'));
   const poolId = keccak_256(concatBytes(hexToBytes(ASSET_ID_HEX), bigintToBytes32(DENOM_WEI)));
   const logs = await ethCall('eth_getLogs', [{
-    address: MIXER_ADDRESS, fromBlock: '0xa73f3c', toBlock: 'latest',
+    address: MIXER_ADDRESS, fromBlock: '0xa7418a', toBlock: 'latest',
     topics: ['0x' + bytesToHex(depositSig), '0x' + bytesToHex(poolId)],
   }]);
   return logs.map(l => ({
@@ -244,6 +258,14 @@ async function fetchSepoliaDeposits() {
 
 // ─── IPFS zkey ─────────────────────────────────────────────────────
 async function fetchHeadZkeyBytes() {
+  // Local override: the finalized ceremony zkey ships in the repo; use it when
+  // IPFS gateways are flaky. Must be the ceremony key (matches the guest VK).
+  if (process.env.ZKEY_PATH) {
+    const buf = new Uint8Array(fs.readFileSync(process.env.ZKEY_PATH));
+    if (buf.length < 256 || buf[0] !== 0x7a || buf[1] !== 0x6b) throw new Error(`ZKEY_PATH not a zkey: ${process.env.ZKEY_PATH}`);
+    console.log(`  using local zkey ${process.env.ZKEY_PATH} (${buf.length} bytes)`);
+    return buf;
+  }
   const r = await fetch(`${WORKER_BASE}/ceremony/${CEREMONY_HASH}`, { cache: 'no-store' });
   if (!r.ok) throw new Error(`ceremony state: HTTP ${r.status}`);
   const { state } = await r.json();
@@ -657,7 +679,7 @@ async function cmdWithdraw() {
   if (!state.burnTxid) throw new Error('no burnTxid — run "burn" first');
   if (!state.burnEthRecipient) throw new Error('no burnEthRecipient saved');
 
-  const RELAY = '0x67685fa6b706d8374c174756d5583d93f6bb5670';
+  const RELAY = '0xff929e91fE12854a23f16cb5f5235E46C0Ff4b32';
 
   const statusR = await fetch(`${MEMPOOL_API}/tx/${state.burnTxid}/status`);
   const status = await statusR.json();

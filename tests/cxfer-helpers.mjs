@@ -425,7 +425,7 @@ export function bppProveAmounts(amounts, blindings) {
 // Returns { commitTxid, revealTxid } — revealTxid is what the worker/guest index.
 export async function broadcastTaprootEnvelope({
   envelope, signerPriv, signerPub, address, mempoolApi,
-  extraRevealOutputs = [], revealFee = 2500, commitFee = 300,
+  extraRevealOutputs = [], extraRevealInputs = [], revealFee = 2500, commitFee = 300,
 }) {
   const xonly = signerPub.slice(1, 33);
   const envelopeScript = encodeEnvelopeScript(xonly, envelope);
@@ -443,6 +443,7 @@ export async function broadcastTaprootEnvelope({
   const funding = pool[0];
 
   const extraSum = extraRevealOutputs.reduce((s, o) => s + o.value, 0);
+  const extraInSum = extraRevealInputs.reduce((s, i) => s + i.value, 0);
   const commitValue = DUST + extraSum + revealFee;
   const commitChange = funding.value - commitValue - commitFee;
   if (commitChange < DUST) {
@@ -458,14 +459,27 @@ export async function broadcastTaprootEnvelope({
   const commitHex = bytesToHex(serializeTx(commitTx));
   const commitTxid = computeTxid(commitTx);
 
-  // Reveal: extraRevealOutputs at vout 0.., then change to self. Fee = revealFee.
+  // Reveal: vin0 = commit P2TR (script-path, signerPriv); vin1.. = extraRevealInputs
+  // each P2WPKH signed with its own key — IMPORT (0x64) spends the imported tETH
+  // UTXO here so the guest's extract_input_outpoints match fires. Outputs:
+  // extraRevealOutputs at vout 0.., then change. Fee = revealFee.
+  const revealChange = DUST + extraInSum;
   const revealTx = {
     version: 2, locktime: 0,
-    inputs: [{ txid: commitTxid, vout: 0, sequence: 0xfffffffd, witness: [] }],
-    outputs: [...extraRevealOutputs, { value: DUST, script: wpkh }],
+    inputs: [
+      { txid: commitTxid, vout: 0, sequence: 0xfffffffd, witness: [] },
+      ...extraRevealInputs.map(i => ({ txid: i.txid, vout: i.vout, sequence: 0xfffffffd, witness: [] })),
+    ],
+    outputs: [...extraRevealOutputs, { value: revealChange, script: wpkh }],
   };
-  const prevouts = [{ value: commitValue, script: p2trSpk }];
+  const prevouts = [
+    { value: commitValue, script: p2trSpk },
+    ...extraRevealInputs.map(i => ({ value: i.value, script: i.script })),
+  ];
   revealTx.inputs[0].witness = signTaprootScriptPathInputWithKey(revealTx, prevouts, envelopeScript, cb, signerPriv, 0);
+  extraRevealInputs.forEach((inp, k) => {
+    revealTx.inputs[k + 1].witness = signP2wpkhInputWithKey(revealTx, k + 1, inp.value, inp.priv, inp.pub);
+  });
   const revealHex = bytesToHex(serializeTx(revealTx));
   const revealTxid = computeTxid(revealTx);
 
