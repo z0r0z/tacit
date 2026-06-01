@@ -45,7 +45,7 @@ const SIGNET_PRIVKEY = process.env.SIGNET_PRIVKEY || '827aee3498ebbf5f4374387dc9
 const MEMPOOL_API    = 'https://mempool.space/signet/api';
 const WORKER_BASE    = 'https://tacit-pin.rosscampbell9.workers.dev';
 const SEPOLIA_RPC    = 'https://ethereum-sepolia-rpc.publicnode.com';
-const MIXER_ADDRESS  = '0xba57f4a7Bc7AEcEda43Be5008bbAc94d39ee6179';
+const MIXER_ADDRESS  = '0x5bAcd098E59e937A8FFaEA4D281B3097A01ad91C';
 const ASSET_ID_HEX   = 'd903de2d2a7c1958f8ab3c4b9a91175ef3885027a24af306dead9e8f671a450b';
 const DENOM_WEI      = 1000000000000000n;             // 0.001 ETH wei
 const UNIT_SCALE     = 10000000000n;                  // 1e10 (wei → tacit 8-dec)
@@ -246,7 +246,7 @@ async function fetchSepoliaDeposits() {
   const depositSig = keccak_256(new TextEncoder().encode('Deposit(bytes32,bytes32,uint256,uint256)'));
   const poolId = keccak_256(concatBytes(hexToBytes(ASSET_ID_HEX), bigintToBytes32(DENOM_WEI)));
   const logs = await ethCall('eth_getLogs', [{
-    address: MIXER_ADDRESS, fromBlock: '0xa7418a', toBlock: 'latest',
+    address: MIXER_ADDRESS, fromBlock: '0xa7586c', toBlock: 'latest',
     topics: ['0x' + bytesToHex(depositSig), '0x' + bytesToHex(poolId)],
   }]);
   return logs.map(l => ({
@@ -679,7 +679,7 @@ async function cmdWithdraw() {
   if (!state.burnTxid) throw new Error('no burnTxid — run "burn" first');
   if (!state.burnEthRecipient) throw new Error('no burnEthRecipient saved');
 
-  const RELAY = '0xff929e91fE12854a23f16cb5f5235E46C0Ff4b32';
+  const RELAY = '0xDBa6B6b68957275bdA76Dd89F6c1a62aB04a36d3';
 
   const statusR = await fetch(`${MEMPOOL_API}/tx/${state.burnTxid}/status`);
   const status = await statusR.json();

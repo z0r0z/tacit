@@ -1,27 +1,21 @@
 #!/usr/bin/env node
-// 3b (fractional, smaller scale): Alice deposits 0.1 ETH, mints 0.1 tETH,
-// EXPORTS the 0.1 tETH leaf, CXFER-splits to [Bob 0.001, Alice 0.099 change
-// stranded for test], Bob IMPORTS his 0.001 into the 0.001 ETH pool, burns,
-// withdraws 0.001 ETH on Sepolia.
+// 3b (fractional): Alice deposits 0.01 ETH, mints 0.01 tETH, EXPORTS the leaf,
+// CXFER-splits to [Bob 0.001, Alice 0.009 change stranded for test], Bob IMPORTS
+// his 0.001 into the 0.001 ETH pool, burns, withdraws 0.001 ETH on Sepolia.
 //
 // CXFER uses BP+ on signet (mainnet uses regular BP — same protocol, different
 // wire encoding).
 //
-// **STATUS: skeleton only. CXFER/import/Bob's burn/withdraw still being
-// engineered — multi-session port: tapscript leaf hash + tweaked output key
-// + control block, stealth blinding/keystream helpers, Schnorr kernel sig,
-// BPP+ integration, multi-input/multi-output BTC tx. Currently
-// deposit/mint/export are ready; CXFER is the wildcard.**
-//
 // Subcommands:
 //   status                    show state + tx status
-//   deposit                   gen Alice + Bob witnesses, deposit 0.1 ETH (Sepolia)
+//   deposit                   gen Alice + Bob witnesses, deposit 0.01 ETH (Sepolia)
 //   mint                      Groth16 mint on signet
 //   export                    Groth16 export, releases stealth tETH UTXO
-//   cxfer                     [TODO] split tETH UTXO into [Bob 0.001, Alice change]
-//   import                    [TODO] Bob imports his 0.001 into the 0.001 ETH pool
-//   burn 0xBobEthAddr         [TODO] Bob's burn at 0.001 ETH denom
-//   withdraw                  [TODO] Bob's withdrawFromBurn (0.001 ETH to Bob)
+//   cxfer                     split tETH UTXO into [Bob 0.001, Alice change]
+//   publish-openings          post CXFER (amount, blinding) openings to worker
+//   import                    Bob imports his 0.001 into the 0.001 ETH pool
+//   burnbob 0xBobEthAddr      Bob's burn at 0.001 ETH denom
+//   withdrawbob               Bob's withdrawFromBurn (0.001 ETH to Bob)
 //
 // State file: /tmp/3b-state.json
 
@@ -55,11 +49,11 @@ const SIGNET_PRIVKEY = process.env.SIGNET_PRIVKEY || '827aee3498ebbf5f4374387dc9
 const MEMPOOL_API    = 'https://mempool.space/signet/api';
 const WORKER_BASE    = 'https://tacit-pin.rosscampbell9.workers.dev';
 const SEPOLIA_RPC    = 'https://ethereum-sepolia-rpc.publicnode.com';
-const MIXER_ADDRESS  = '0xba57f4a7Bc7AEcEda43Be5008bbAc94d39ee6179';
+const MIXER_ADDRESS  = '0x5bAcd098E59e937A8FFaEA4D281B3097A01ad91C';
 const ASSET_ID_HEX   = 'd903de2d2a7c1958f8ab3c4b9a91175ef3885027a24af306dead9e8f671a450b';
 const DENOM_WEI      = 10000000000000000n;   // 0.01 ETH (Alice's deposit + 0.01 pool)
 const UNIT_SCALE     = 10000000000n;
-const DENOM_TACIT    = DENOM_WEI / UNIT_SCALE;  // 10000000
+const DENOM_TACIT    = DENOM_WEI / UNIT_SCALE;  // 1000000 (0.01 ETH)
 const DENOM_WEI_BOB  = 1000000000000000n;    // 0.001 ETH (Bob's import + burn + withdraw)
 const DENOM_TACIT_BOB = DENOM_WEI_BOB / UNIT_SCALE;  // 100000
 const NETWORK_TAG    = 0x01;
@@ -309,7 +303,7 @@ async function fetchSepoliaDeposits() {
   const depositSig = keccak_256(new TextEncoder().encode('Deposit(bytes32,bytes32,uint256,uint256)'));
   const poolId = keccak_256(concatBytes(hexToBytes(ASSET_ID_HEX), bigintToBytes32(DENOM_WEI)));
   const logs = await ethCall('eth_getLogs', [{
-    address: MIXER_ADDRESS, fromBlock: '0xa7418a', toBlock: 'latest',
+    address: MIXER_ADDRESS, fromBlock: '0xa7586c', toBlock: 'latest',
     topics: ['0x' + bytesToHex(depositSig), '0x' + bytesToHex(poolId)],
   }]);
   return logs.map(l => ({
@@ -639,7 +633,7 @@ async function cmdExport() {
   });
   console.log(`export envelope ${payload.length} bytes`);
 
-  // Stealth pubkey for the spendable tETH UTXO at vout 1
+  // Stealth pubkey for the spendable tETH UTXO at vout 0
   const stealthBlinding = _deriveBridgeWithdrawStealthBlinding(hexToBytes(SIGNET_PRIVKEY), hexToBytes(state.aliceSecretPool));
   const stealthPub = computeStealthCommit({ underlyingPub: compressedPubkey(SIGNET_PRIVKEY), blinding: stealthBlinding });
 
@@ -661,7 +655,7 @@ async function cmdExport() {
   saveState(state);
   console.log(`export txid: ${txid}`);
   console.log(`spendable tETH UTXO: ${txid}:0 (stealth pub ${hex(stealthPub).slice(0,16)}...)`);
-  console.log(`amount = ${DENOM_TACIT} tacit-units (0.1 tETH)`);
+  console.log(`amount = ${DENOM_TACIT} tacit-units (0.01 tETH)`);
 }
 
 // ─── cxfer (Alice splits 0.1 tETH UTXO into [Bob 0.001, Alice 0.099, padding, padding]) ─
@@ -1102,7 +1096,7 @@ async function cmdWithdrawBob() {
   console.log(`Bob burn at block ${burnBlock}`);
 
   // Relay current tip
-  const tipHex = await ethCall('eth_call', [{ to: '0x67685fa6b706d8374c174756d5583d93f6bb5670', data: '0x1fd4827a' }, 'latest']);
+  const tipHex = await ethCall('eth_call', [{ to: '0xDBa6B6b68957275bdA76Dd89F6c1a62aB04a36d3', data: '0x1fd4827a' }, 'latest']);
   const relayTip = parseInt(tipHex, 16);
   console.log(`relay tip: ${relayTip}`);
   if (relayTip < burnBlock + 6) {
@@ -1146,7 +1140,7 @@ async function cmdWithdrawBob() {
   const PK = process.env.DEPLOYER_PRIVATE_KEY;
   if (!PK) throw new Error('DEPLOYER_PRIVATE_KEY required');
   const args = [
-    `0x4d0102867cd97ff2945fee858fcaa8c0485b68dd`,
+    MIXER_ADDRESS,
     `'withdrawFromBurn(bytes,bytes,uint256,bytes32[],uint256)'`,
     `"0x${rawHex}"`, `"0x${headers}"`, `${burnBlock}`,
     `"[${merkleProofHex}]"`, `${txPos}`,
@@ -1319,6 +1313,52 @@ async function cmdStatus() {
 }
 
 // ─── Main ───────────────────────────────────────────────────────────
+// ─── witnesses (build the SP1 host's CXFER_WITNESSES_PATH file locally) ─
+// Re-derives the 4 CXFER openings with the same anchor + key as cxfer/publish
+// so verify_pedersen_opening matches the on-chain commitments, then writes the
+// host JSON ([{block_height, tx_index, outputs:[{amount, blinding}]}]). Use
+// instead of the worker round-trip when driving a one-shot prove.
+async function cmdWriteWitnesses() {
+  const state = loadState();
+  if (!state.cxferRevealTxid) throw new Error('no cxferRevealTxid — run "cxfer" first');
+  if (!state.exportTxid || !state.bobBtcPub) throw new Error('missing cxfer state');
+
+  const aliceSignetPriv = hexToBytes(SIGNET_PRIVKEY);
+  const bobBtcPub = hexToBytes(state.bobBtcPub);
+  const stealthBlinding = BigInt(state.exportStealthBlinding);
+  const stealthTweakedSk = (() => {
+    const d = BigInt('0x' + hex(aliceSignetPriv));
+    let h = ((d + stealthBlinding) % cx.SECP_N).toString(16);
+    while (h.length < 64) h = '0' + h;
+    return hexToBytes(h);
+  })();
+  const anchorBytes = concatBytes(cx.reverseBytes(hexToBytes(state.exportTxid)), (() => {
+    const b = new Uint8Array(4); new DataView(b.buffer).setUint32(0, 1, true); return b;
+  })());
+  const openings = [
+    { amount: 100000n, blinding: cx.deriveBlinding(stealthTweakedSk, bobBtcPub, anchorBytes, 0) },
+    { amount: 900000n, blinding: cx.deriveChangeBlinding(aliceSignetPriv, anchorBytes, 1) },
+    { amount: 0n,      blinding: cx.deriveChangeBlinding(aliceSignetPriv, anchorBytes, 2) },
+    { amount: 0n,      blinding: cx.deriveChangeBlinding(aliceSignetPriv, anchorBytes, 3) },
+  ];
+
+  const st = await (await fetch(`${MEMPOOL_API}/tx/${state.cxferRevealTxid}/status`)).json();
+  if (!st.confirmed) throw new Error('cxfer reveal not confirmed yet');
+  const txids = await (await fetch(`${MEMPOOL_API}/block/${st.block_hash}/txids`)).json();
+  const txIndex = txids.indexOf(state.cxferRevealTxid);
+  if (txIndex < 0) throw new Error('cxfer reveal not in block txids');
+
+  const entry = {
+    block_height: st.block_height,
+    tx_index: txIndex,
+    outputs: openings.map(o => ({ amount: Number(o.amount), blinding: hex(bigintToBytes32(o.blinding)) })),
+  };
+  const outPath = process.env.WITNESSES_OUT || '/tmp/cxfer-witnesses.json';
+  fs.writeFileSync(outPath, JSON.stringify([entry], null, 2));
+  console.log(`wrote ${outPath}: block ${st.block_height} tx_index ${txIndex}, ${openings.length} openings`);
+  for (const o of entry.outputs) console.log(`  amount=${o.amount} blinding=${o.blinding.slice(0, 16)}…`);
+}
+
 const cmd = process.argv[2];
 const arg = process.argv[3];
 (async () => {
@@ -1328,13 +1368,14 @@ const arg = process.argv[3];
     else if (cmd === 'export') await cmdExport();
     else if (cmd === 'cxfer') await cmdCxfer();
     else if (cmd === 'publish-openings') await cmdPublishCxferOpenings();
+    else if (cmd === 'witnesses') await cmdWriteWitnesses();
     else if (cmd === 'import') await cmdImport();
     else if (cmd === 'rotate') await cmdRotate();
     else if (cmd === 'burnbob') await cmdBurnBob(arg);
     else if (cmd === 'withdrawbob') await cmdWithdrawBob();
     else if (cmd === 'burn') await cmdBurn(arg);
     else if (cmd === 'status') await cmdStatus();
-    else { console.log('Usage: bridge-3b.mjs [deposit|mint|export|rotate|burn 0xAddr|status]'); process.exit(1); }
+    else { console.log('Usage: bridge-3b.mjs [deposit|mint|export|cxfer|publish-openings|witnesses|import|burnbob 0xAddr|withdrawbob|status]'); process.exit(1); }
   } catch (e) {
     console.error('ERROR:', e.message);
     if (e.stack) console.error(e.stack.split('\n').slice(1, 4).join('\n'));
