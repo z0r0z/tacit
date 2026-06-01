@@ -42,16 +42,19 @@ globalThis.fetch = async (url, opts) => {
 
 // ─── Config ────────────────────────────────────────────────────────
 const SIGNET_PRIVKEY = process.env.SIGNET_PRIVKEY || '827aee3498ebbf5f4374387dc9937741ac87ec58a7a67c8091241d0797589222';
-const MEMPOOL_API    = 'https://mempool.space/signet/api';
+const MEMPOOL_API    = process.env.MEMPOOL_API || 'https://mempool.space/signet/api';
 const WORKER_BASE    = 'https://tacit-pin.rosscampbell9.workers.dev';
-const SEPOLIA_RPC    = 'https://ethereum-sepolia-rpc.publicnode.com';
-const MIXER_ADDRESS  = '0x5bAcd098E59e937A8FFaEA4D281B3097A01ad91C';
-const ASSET_ID_HEX   = 'd903de2d2a7c1958f8ab3c4b9a91175ef3885027a24af306dead9e8f671a450b';
+const SEPOLIA_RPC    = process.env.ETH_RPC || 'https://ethereum-sepolia-rpc.publicnode.com';
+const MIXER_ADDRESS  = process.env.MIXER_ADDRESS || '0x5bAcd098E59e937A8FFaEA4D281B3097A01ad91C';
+const ASSET_ID_HEX   = process.env.ASSET_ID_HEX || 'd903de2d2a7c1958f8ab3c4b9a91175ef3885027a24af306dead9e8f671a450b';
+const BTC_HRP        = process.env.BTC_HRP || 'tb'; // 'bc' for mainnet
+const DEPOSIT_FROM_BLOCK = process.env.DEPOSIT_FROM_BLOCK || '0xa7586c';
+const RELAY_ADDRESS  = process.env.RELAY_ADDRESS || '0xDBa6B6b68957275bdA76Dd89F6c1a62aB04a36d3';
 const DENOM_WEI      = 1000000000000000n;             // 0.001 ETH wei
 const UNIT_SCALE     = 10000000000n;                  // 1e10 (wei → tacit 8-dec)
 const DENOM_TACIT    = DENOM_WEI / UNIT_SCALE;        // 100000 (tacit 8-dec)
-const NETWORK_TAG    = 0x01;
-const TETH_CHAIN_ID  = 11155111n;
+const NETWORK_TAG    = process.env.NETWORK_TAG ? parseInt(process.env.NETWORK_TAG, 10) : 0x01;
+const TETH_CHAIN_ID  = process.env.CHAIN_ID ? BigInt(process.env.CHAIN_ID) : 11155111n;
 const POOL_TREE_DEPTH= 20;
 const T_BRIDGE_DEPOSIT = 0x60;
 const T_BRIDGE_BURN    = 0x61;
@@ -246,7 +249,7 @@ async function fetchSepoliaDeposits() {
   const depositSig = keccak_256(new TextEncoder().encode('Deposit(bytes32,bytes32,uint256,uint256)'));
   const poolId = keccak_256(concatBytes(hexToBytes(ASSET_ID_HEX), bigintToBytes32(DENOM_WEI)));
   const logs = await ethCall('eth_getLogs', [{
-    address: MIXER_ADDRESS, fromBlock: '0xa7586c', toBlock: 'latest',
+    address: MIXER_ADDRESS, fromBlock: DEPOSIT_FROM_BLOCK, toBlock: 'latest',
     topics: ['0x' + bytesToHex(depositSig), '0x' + bytesToHex(poolId)],
   }]);
   return logs.map(l => ({
@@ -317,7 +320,7 @@ function bech32Encode(hrp, witver, prog) {
   return hrp + '1' + [...data5, ...checksum].map(i => CS[i]).join('');
 }
 function getSignetAddress() {
-  return bech32Encode('tb', 0, [...hash160(compressedPubkey(SIGNET_PRIVKEY))]);
+  return bech32Encode(BTC_HRP, 0, [...hash160(compressedPubkey(SIGNET_PRIVKEY))]);
 }
 function p2wpkhScript(pubkey) {
   return Buffer.concat([Buffer.from([0x00, 0x14]), Buffer.from(hash160(pubkey))]);
@@ -679,7 +682,7 @@ async function cmdWithdraw() {
   if (!state.burnTxid) throw new Error('no burnTxid — run "burn" first');
   if (!state.burnEthRecipient) throw new Error('no burnEthRecipient saved');
 
-  const RELAY = '0xDBa6B6b68957275bdA76Dd89F6c1a62aB04a36d3';
+  const RELAY = RELAY_ADDRESS;
 
   const statusR = await fetch(`${MEMPOOL_API}/tx/${state.burnTxid}/status`);
   const status = await statusR.json();

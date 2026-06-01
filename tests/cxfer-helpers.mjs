@@ -425,7 +425,8 @@ export function bppProveAmounts(amounts, blindings) {
 // Returns { commitTxid, revealTxid } — revealTxid is what the worker/guest index.
 export async function broadcastTaprootEnvelope({
   envelope, signerPriv, signerPub, address, mempoolApi,
-  extraRevealOutputs = [], extraRevealInputs = [], revealFee = 2500, commitFee = 300,
+  extraRevealOutputs = [], extraRevealInputs = [],
+  revealFee = Number(process.env.REVEAL_FEE) || 2500, commitFee = Number(process.env.COMMIT_FEE) || 300,
 }) {
   const xonly = signerPub.slice(1, 33);
   const envelopeScript = encodeEnvelopeScript(xonly, envelope);
@@ -490,7 +491,15 @@ export async function broadcastTaprootEnvelope({
     return b.trim();
   };
   await post(commitHex, 'commit');
-  await post(revealHex, 'reveal');
+  // On mainnet the reveal can outrun the commit's propagation across mempool.space
+  // nodes (bad-txns-inputs-missingorspent). Retry with backoff until the commit
+  // is visible to the node serving the reveal.
+  let revealErr = null;
+  for (let i = 0; i < 18; i++) {
+    try { await post(revealHex, 'reveal'); revealErr = null; break; }
+    catch (e) { revealErr = e; await new Promise(r => setTimeout(r, 5000)); }
+  }
+  if (revealErr) throw revealErr;
   return { commitTxid, revealTxid, revealHex, commitHex };
 }
 
