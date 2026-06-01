@@ -12,7 +12,7 @@ set -euo pipefail
 #     against the real Succinct SP1 gateway with a real on-chain Groth16 burn
 #     verifier — the full mainnet proving path, rehearsed on signet.
 #
-# (Deploy.s.sol + deploy-sepolia.sh is the mainnet variant: real BitcoinLightRelay
+# (Deploy.s.sol + deploy-mainnet.sh is the mainnet variant: real BitcoinLightRelay
 #  with full PoW validation instead of the relaxed testnet relay.)
 #
 # Required env:

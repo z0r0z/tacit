@@ -32,7 +32,7 @@ contract BridgeIntegrationTest is TestHelper {
         vm.deal(address(this), 10 ether);
         mixer.deposit{value: DENOM}(bytes32(uint256(42)), DENOM);
         bytes memory rawTx = _makeBurnTx(bytes32(uint256(0xCAFE)), address(0xBEEF));
-        bytes memory ph = _buildChain(bytes32(0), _dsha256(rawTx), 4);
+        bytes memory ph = _buildChain(bytes32(0), _btcTxid(rawTx), 4);
         uint256 bal = address(0xBEEF).balance;
         mixer.withdrawFromBurn(rawTx, ph, 0, new bytes32[](0), 0);
         assertEq(address(0xBEEF).balance, bal + DENOM);
@@ -42,7 +42,7 @@ contract BridgeIntegrationTest is TestHelper {
         vm.deal(address(this), 10 ether);
         mixer.deposit{value: DENOM}(bytes32(uint256(42)), DENOM);
         bytes memory rawTx = _makeBurnTx(bytes32(uint256(0xCAFE)), address(0xBEEF));
-        bytes memory ph = _buildChain(bytes32(0), _dsha256(rawTx), 4);
+        bytes memory ph = _buildChain(bytes32(0), _btcTxid(rawTx), 4);
         mixer.withdrawFromBurn(rawTx, ph, 0, new bytes32[](0), 0);
         vm.expectRevert(TacitBridgeMixer.NullifierAlreadySpent.selector);
         mixer.withdrawFromBurn(rawTx, ph, 0, new bytes32[](0), 0);
@@ -52,7 +52,7 @@ contract BridgeIntegrationTest is TestHelper {
         vm.deal(address(this), 10 ether);
         mixer.deposit{value: DENOM}(bytes32(uint256(42)), DENOM);
         bytes memory rawTx = _makeBurnTx(bytes32(uint256(0xCAFE)), address(0xBEEF));
-        bytes memory ph = _buildChain(bytes32(0), _dsha256(rawTx), 2);
+        bytes memory ph = _buildChain(bytes32(0), _btcTxid(rawTx), 2);
         vm.expectRevert(BitcoinLightRelay.InvalidChainLength.selector);
         mixer.withdrawFromBurn(rawTx, ph, 0, new bytes32[](0), 0);
     }
@@ -62,7 +62,7 @@ contract BridgeIntegrationTest is TestHelper {
         mixer.deposit{value: DENOM}(bytes32(uint256(42)), DENOM);
         bytes memory env = _buildEnvelope(0x60, bytes32(uint256(0xCAFE)), address(0xBEEF));
         bytes memory rawTx = _wrapInBtcTx(env);
-        bytes memory ph = _buildChain(bytes32(0), _dsha256(rawTx), 4);
+        bytes memory ph = _buildChain(bytes32(0), _btcTxid(rawTx), 4);
         vm.expectRevert(TacitBridgeMixer.InvalidBurnProof.selector);
         mixer.withdrawFromBurn(rawTx, ph, 0, new bytes32[](0), 0);
     }
@@ -73,7 +73,7 @@ contract BridgeIntegrationTest is TestHelper {
         bytes memory env = _buildEnvelope(0x61, bytes32(uint256(0xCAFE)), address(0xBEEF));
         env[1] = 0x01;
         bytes memory rawTx = _wrapInBtcTx(env);
-        bytes memory ph = _buildChain(bytes32(0), _dsha256(rawTx), 4);
+        bytes memory ph = _buildChain(bytes32(0), _btcTxid(rawTx), 4);
         vm.expectRevert(TacitBridgeMixer.InvalidNetworkTag.selector);
         mixer.withdrawFromBurn(rawTx, ph, 0, new bytes32[](0), 0);
     }
@@ -93,7 +93,7 @@ contract BridgeIntegrationTest is TestHelper {
         strict.deposit{value: DENOM}(bytes32(uint256(42)), DENOM);
         bytes memory env = _buildEnvelope(0x61, bytes32(uint256(0xCAFE)), address(0xBEEF), bytes32(uint256(0xF00D)), address(strict));
         bytes memory rawTx = _wrapInBtcTx(env);
-        bytes memory ph = _buildChain(bytes32(0), _dsha256(rawTx), 4);
+        bytes memory ph = _buildChain(bytes32(0), _btcTxid(rawTx), 4);
         vm.expectRevert(TacitBridgeMixer.UnprovenRoot.selector);
         strict.withdrawFromBurn(rawTx, ph, 0, new bytes32[](0), 0);
     }
@@ -113,7 +113,7 @@ contract BridgeIntegrationTest is TestHelper {
         strict.deposit{value: DENOM}(bytes32(uint256(99)), DENOM);
         bytes memory env = _buildEnvelope(0x61, bytes32(uint256(0xCAFE)), address(0xBEEF), bytes32(uint256(0xF00D)), address(strict));
         bytes memory rawTx = _wrapInBtcTx(env);
-        bytes memory ph = _buildChain(bytes32(0), _dsha256(rawTx), 4);
+        bytes memory ph = _buildChain(bytes32(0), _btcTxid(rawTx), 4);
         vm.expectRevert(TacitBridgeMixer.InvalidGroth16Proof.selector);
         strict.withdrawFromBurn(rawTx, ph, 0, new bytes32[](0), 0);
     }
@@ -122,8 +122,11 @@ contract BridgeIntegrationTest is TestHelper {
         vm.deal(address(this), 10 ether);
         mixer.deposit{value: DENOM}(bytes32(uint256(42)), DENOM);
         bytes memory rawTx = _makeBurnTx(bytes32(uint256(0xCAFE)), address(0xBEEF));
-        bytes memory ph = _buildChain(bytes32(0), _dsha256(rawTx), 4);
-        rawTx[rawTx.length - 100] ^= 0xff;
+        bytes memory ph = _buildChain(bytes32(0), _btcTxid(rawTx), 4);
+        // Tamper a non-witness body byte (input outpoint): the witness-stripped
+        // txid changes, so merkle inclusion against the pre-tamper root fails.
+        // (Envelope-field tampering is covered by test_tampered_bindhash_reverts.)
+        rawTx[10] ^= 0xff;
         vm.expectRevert(TacitBridgeMixer.InvalidBurnProof.selector);
         mixer.withdrawFromBurn(rawTx, ph, 0, new bytes32[](0), 0);
     }
@@ -211,7 +214,7 @@ contract BridgeIntegrationTest is TestHelper {
 
     function test_insufficient_balance_reverts() public {
         bytes memory rawTx = _makeBurnTx(bytes32(uint256(0xCAFE)), address(0xBEEF));
-        bytes memory ph = _buildChain(bytes32(0), _dsha256(rawTx), 4);
+        bytes memory ph = _buildChain(bytes32(0), _btcTxid(rawTx), 4);
         vm.expectRevert(TacitBridgeMixer.InsufficientBalance.selector);
         mixer.withdrawFromBurn(rawTx, ph, 0, new bytes32[](0), 0);
     }
@@ -220,7 +223,7 @@ contract BridgeIntegrationTest is TestHelper {
         vm.deal(address(this), 10 ether);
         mixer.deposit{value: DENOM}(bytes32(uint256(42)), DENOM);
         bytes memory rawTx = _makeBurnTx(bytes32(uint256(0xCAFE)), address(0));
-        bytes memory ph = _buildChain(bytes32(0), _dsha256(rawTx), 4);
+        bytes memory ph = _buildChain(bytes32(0), _btcTxid(rawTx), 4);
         vm.expectRevert(TacitBridgeMixer.InvalidBurnProof.selector);
         mixer.withdrawFromBurn(rawTx, ph, 0, new bytes32[](0), 0);
     }
@@ -231,7 +234,7 @@ contract BridgeIntegrationTest is TestHelper {
         bytes memory env = _buildEnvelope(0x61, bytes32(uint256(0xCAFE)), address(0xBEEF));
         env[2] = 0xFF;
         bytes memory rawTx = _wrapInBtcTx(env);
-        bytes memory ph = _buildChain(bytes32(0), _dsha256(rawTx), 4);
+        bytes memory ph = _buildChain(bytes32(0), _btcTxid(rawTx), 4);
         vm.expectRevert(TacitBridgeMixer.InvalidAssetId.selector);
         mixer.withdrawFromBurn(rawTx, ph, 0, new bytes32[](0), 0);
     }
@@ -244,7 +247,7 @@ contract BridgeIntegrationTest is TestHelper {
         bytes32 wrongDenom = bytes32(uint256(0.5 ether));
         for (uint256 i; i < 32; ++i) env[34 + i] = wrongDenom[i];
         bytes memory rawTx = _wrapInBtcTx(env);
-        bytes memory ph = _buildChain(bytes32(0), _dsha256(rawTx), 4);
+        bytes memory ph = _buildChain(bytes32(0), _btcTxid(rawTx), 4);
         vm.expectRevert(TacitBridgeMixer.InvalidDenomination.selector);
         mixer.withdrawFromBurn(rawTx, ph, 0, new bytes32[](0), 0);
     }
@@ -255,7 +258,7 @@ contract BridgeIntegrationTest is TestHelper {
         bytes memory env = _buildEnvelope(0x61, bytes32(uint256(0xCAFE)), address(0xBEEF));
         env[247] ^= 0xff;
         bytes memory rawTx = _wrapInBtcTx(env);
-        bytes memory ph = _buildChain(bytes32(0), _dsha256(rawTx), 4);
+        bytes memory ph = _buildChain(bytes32(0), _btcTxid(rawTx), 4);
         vm.expectRevert(TacitBridgeMixer.InvalidBurnProof.selector);
         mixer.withdrawFromBurn(rawTx, ph, 0, new bytes32[](0), 0);
     }

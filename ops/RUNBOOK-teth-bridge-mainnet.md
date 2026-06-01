@@ -143,7 +143,7 @@ With two wallets A (Alice) and B (Bob):
 
 Only after **both** 3a and 3b pass on signet should the same artifacts be
 promoted to a mainnet deploy (real `BitcoinLightRelay` with full PoW via
-`Deploy.s.sol` / `deploy-sepolia.sh`, which already fails closed on unset
+`Deploy.s.sol` / `deploy-mainnet.sh`, which already fails closed on unset
 verifiers).
 
 ---

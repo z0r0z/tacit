@@ -58,33 +58,54 @@ contract TestHelper is Test {
         }
     }
 
-    /// @dev Build a minimal Bitcoin tx wrapping a burn envelope in OP_RETURN.
+    /// @dev Wrap a burn envelope in a minimal segwit Taproot reveal tx. The
+    ///      TACIT-framed envelope rides in vin[0]'s witness item 1 (the
+    ///      tapscript), matching the mixer's _extractTaprootEnvelope:
+    ///      PUSH32 x-only | OP_CHECKSIG | OP_FALSE | OP_IF | push(frame||env) | OP_ENDIF.
     function _wrapInBtcTx(bytes memory envelope) internal pure returns (bytes memory) {
-        uint256 envLen = envelope.length;
-        bool usePD2 = envLen > 255;
-        uint256 scriptLen = 1 + (usePD2 ? 3 : 2) + envLen;
-        uint256 slVI = scriptLen < 0xfd ? 1 : 3;
-        uint256 txLen = 4 + 1 + 36 + 1 + 4 + 1 + 8 + slVI + scriptLen + 4;
+        bytes memory framed = abi.encodePacked(bytes6(0x544143495401), envelope); // "TACIT" || 0x01 || env
+        uint256 fl = framed.length;
+        bytes memory push;
+        if (fl <= 75) push = abi.encodePacked(bytes1(uint8(fl)), framed);
+        else if (fl <= 255) push = abi.encodePacked(bytes1(0x4c), bytes1(uint8(fl)), framed);
+        else push = abi.encodePacked(bytes1(0x4d), bytes1(uint8(fl & 0xff)), bytes1(uint8((fl >> 8) & 0xff)), framed);
 
-        bytes memory tx_ = new bytes(txLen);
-        uint256 p;
-        tx_[p++] = 0x01; tx_[p++] = 0x00; tx_[p++] = 0x00; tx_[p++] = 0x00;
-        tx_[p++] = 0x01;
-        for (uint256 i; i < 32; ++i) tx_[p++] = 0x00;
-        tx_[p++] = 0xff; tx_[p++] = 0xff; tx_[p++] = 0xff; tx_[p++] = 0xff;
-        tx_[p++] = 0x00;
-        tx_[p++] = 0xff; tx_[p++] = 0xff; tx_[p++] = 0xff; tx_[p++] = 0xff;
-        tx_[p++] = 0x01;
-        for (uint256 i; i < 8; ++i) tx_[p++] = 0x00;
+        bytes memory tapscript = abi.encodePacked(
+            bytes1(0x20), bytes32(0),    // PUSH32 x-only internal key (value unchecked by parser)
+            bytes1(0xac),                // OP_CHECKSIG
+            bytes1(0x00), bytes1(0x63),  // OP_FALSE OP_IF
+            push,
+            bytes1(0x68)                 // OP_ENDIF
+        );
+        return abi.encodePacked(
+            bytes4(0x02000000),                              // version
+            bytes1(0x00), bytes1(0x01),                      // segwit marker + flag
+            bytes1(0x01),                                    // 1 input
+            bytes32(0), bytes4(0xffffffff),                  // outpoint (txid || vout)
+            bytes1(0x00), bytes4(0xffffffff),                // empty scriptSig + sequence
+            bytes1(0x01),                                    // 1 output
+            bytes8(0), bytes1(0x00),                         // value 0 + empty scriptPubKey
+            bytes1(0x02), bytes1(0x00),                      // witness: 2 items; item 0 = empty sig
+            _varInt(tapscript.length), tapscript,            // item 1 = tapscript
+            bytes4(0x00000000)                               // locktime
+        );
+    }
 
-        if (scriptLen < 0xfd) { tx_[p++] = bytes1(uint8(scriptLen)); }
-        else { tx_[p++] = 0xfd; tx_[p++] = bytes1(uint8(scriptLen & 0xff)); tx_[p++] = bytes1(uint8((scriptLen >> 8) & 0xff)); }
+    /// @dev Witness-stripped txid, mirroring TacitBridgeMixer._computeTxid for the
+    ///      fixed shape _wrapInBtcTx emits (drops marker/flag + witness). Use this
+    ///      for the merkle-inclusion root, not _dsha256(rawTx).
+    function _btcTxid(bytes memory rawTx) internal pure returns (bytes32) {
+        // version(4) | 00 01 | in(1+36+1+4) | out(1+8+1) | witness | locktime(4)
+        uint256 inOutEnd = 6 + 1 + 36 + 1 + 4 + 1 + 8 + 1; // 58
+        bytes memory stripped = abi.encodePacked(rawTx[0], rawTx[1], rawTx[2], rawTx[3]);
+        for (uint256 i = 6; i < inOutEnd; ++i) stripped = abi.encodePacked(stripped, rawTx[i]);
+        uint256 L = rawTx.length;
+        return _dsha256(abi.encodePacked(stripped, rawTx[L - 4], rawTx[L - 3], rawTx[L - 2], rawTx[L - 1]));
+    }
 
-        tx_[p++] = 0x6a;
-        if (usePD2) { tx_[p++] = 0x4d; tx_[p++] = bytes1(uint8(envLen & 0xff)); tx_[p++] = bytes1(uint8((envLen >> 8) & 0xff)); }
-        else { tx_[p++] = 0x4c; tx_[p++] = bytes1(uint8(envLen)); }
-        for (uint256 i; i < envLen; ++i) tx_[p++] = envelope[i];
-        tx_[p++] = 0x00; tx_[p++] = 0x00; tx_[p++] = 0x00; tx_[p++] = 0x00;
-        return tx_;
+    /// @dev CompactSize varint (covers tapscript lengths < 2^16).
+    function _varInt(uint256 n) internal pure returns (bytes memory) {
+        if (n < 0xfd) return abi.encodePacked(bytes1(uint8(n)));
+        return abi.encodePacked(bytes1(0xfd), bytes1(uint8(n & 0xff)), bytes1(uint8((n >> 8) & 0xff)));
     }
 }

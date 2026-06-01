@@ -57,23 +57,23 @@ contract SP1PoolRootVerifier {
     ///         per-pool sync check (its computed burn merkleRoot vs the root
     ///         the SP1 prover has actually committed for THIS pool) instead
     ///         of an aggregate poolsHash check that stalls every redemption
-    ///         whenever ANY other pool advances. Audit blocker #2 sync-gate.
+    ///         whenever ANY other pool advances.
     mapping(uint8 => bytes32) public lastProvenPoolRoot;
 
     /// @notice Per-pool last-proven `next_index` (count of leaves currently
     ///         in the Poseidon pool tree), populated from the same host-only
     ///         tail. Lets the mixer's `deposit()` reject when the pool tree
     ///         is near capacity instead of silently locking ETH in deposits
-    ///         whose mint the guest then skips because `!can_insert`. Audit
-    ///         blocker #3 (pool-tree exhaustion). The cap is enforced by the
-    ///         mixer; this contract just exposes the count.
+    ///         whose mint the guest then skips because `!can_insert` (pool-tree
+    ///         exhaustion). The cap is enforced by the mixer; this contract
+    ///         just exposes the count.
     mapping(uint8 => uint64) public lastProvenPoolIndex;
 
     /// @notice Maximum ancestor distance accepted for both `prevBlockHash` (vs
     ///         stored `lastBlockHash`) and `lastBlockHash` (vs `RELAY.tip()`).
     ///         A sub-`FINALITY_WINDOW` reorg cannot permanently brick state
     ///         advancement: the next prover cycle can land a proof whose
-    ///         anchor is the new tip (or an ancestor of it). Audit blocker #2.
+    ///         anchor is the new tip (or an ancestor of it).
     uint256 public constant FINALITY_WINDOW = 6;
 
     error DomainMismatch();
@@ -246,12 +246,11 @@ contract SP1PoolRootVerifier {
             }
             if (_hashArrayMem(burnBatches) != burnsHash) revert InvalidProof();
             // The on-chain-consumed tail ends at `off`. The guest may also
-            // emit a host-only state tail past this point (Option B in
-            // ops/prover-incremental-state.md) so the prover host can persist
-            // post-cycle state. Read the per-pool current root (first 32 bytes
-            // of each per-pool block) for the audit-#2 per-pool sync check;
-            // skip the rest. Anything past `off` is SP1-authenticated but
-            // ignored by withdrawFromBurn's acceptance gate.
+            // emit a host-only state tail past this point so the prover host
+            // can persist post-cycle state. Read the per-pool current root
+            // (first 32 bytes of each per-pool block) for the per-pool sync
+            // check; skip the rest. Anything past `off` is SP1-authenticated
+            // but ignored by withdrawFromBurn's acceptance gate.
             if (off > publicValues.length) revert InvalidProof();
             uint256 perPoolBlockSize = 32 + 8 + 20 * 32; // root + next_idx + TREE_DEPTH * 32
             if (publicValues.length >= off + nd * perPoolBlockSize) {

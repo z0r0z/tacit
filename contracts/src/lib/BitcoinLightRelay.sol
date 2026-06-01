@@ -110,10 +110,13 @@ contract BitcoinLightRelay {
         tipWork = tipWork_;
         blockWork[tipHash] = tipWork_;
         blockHeight[tipHash] = tipHeight_;
-        // Seed the genesis tip's timestamp so advanceTip's monotonic check has
-        // a parent timestamp to compare against. Reuses startTimestamp under
-        // the assumption the deployer set startTimestamp to the anchor block's
-        // own timestamp (true for both production genesis and testnet anchor).
+        // startTimestamp MUST be the genesis epoch's first-block timestamp
+        // (height == epochStart): the first retarget() computes elapsed against
+        // epochStartTimestamp[epoch] above, so a wrong value there mis-targets
+        // the next epoch and bricks tip advancement at the boundary. The tip may
+        // be anchored mid-epoch (tipHeight_ >= epochStart); seeding the tip's
+        // stored timestamp with the epoch-start value (<= the tip's own ts) just
+        // gives advanceTip's monotonic check a safe, loose parent baseline.
         blockTimestamp[tipHash] = uint32(startTimestamp);
 
         initialized = true;

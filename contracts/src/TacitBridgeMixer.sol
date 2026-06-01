@@ -96,7 +96,7 @@ contract TacitBridgeMixer is ReentrancyGuardTransient {
         bytes32 currentRoot;
         // Index of this denom in the bound SP1PoolRootVerifier's denoms array;
         // used by deposit() to query lastProvenPoolIndex for the pool-tree
-        // capacity gate (audit blocker #3 — pool-tree exhaustion).
+        // capacity gate (guards pool-tree exhaustion).
         uint8 verifierDenomIdx;
         mapping(uint256 => bytes32) filledSubtrees;
         mapping(bytes32 => bool) burnNullifiers;
@@ -106,7 +106,7 @@ contract TacitBridgeMixer is ReentrancyGuardTransient {
     /// @notice Capacity reserve for the SP1 pool tree. Mixer's `deposit()`
     ///         refuses when `verifier.lastProvenPoolIndex(idx) + RESERVE >=
     ///         MAX_LEAVES`. Accounts for (a) in-flight mints that have been
-    ///         deposited on Sepolia but not yet seen by the SP1 prover, (b)
+    ///         deposited on Ethereum but not yet seen by the SP1 prover, (b)
     ///         off-chain rotate/import leaves added between proofs. Tuned
     ///         conservatively — the cap matters only when a pool is near
     ///         capacity (≈99.9% full at MAX_LEAVES=1<<20).
@@ -190,9 +190,9 @@ contract TacitBridgeMixer is ReentrancyGuardTransient {
             Pool storage p = _pools[pid];
             p.denomination = denominations_[i];
             // Constructor receives denominations_ in the same order the bound
-            // SP1PoolRootVerifier was constructed with (see DeployTestnet.s.sol
-            // / Deploy.s.sol). i == verifier's denomIdx for this pool. Pinning
-            // it here saves a runtime lookup in deposit().
+            // SP1PoolRootVerifier was constructed with, so i == verifier's
+            // denomIdx for this pool. Pinning it here saves a runtime lookup
+            // in deposit().
             require(i <= type(uint8).max, "too many denominations");
             // Cross-check: the verifier's denom at this index (8-dec tacit
             // units) must match the mixer's denom (wei) scaled by UNIT_SCALE.
@@ -258,11 +258,11 @@ contract TacitBridgeMixer is ReentrancyGuardTransient {
         // SP1 pool-tree capacity gate. The deposit-tree limit above only sees
         // deposits; the SP1 pool tree also grows from rotate (0x62) and import
         // (0x64) which never touch this contract. Without this check, an
-        // adversary spamming rotate on signet can fill the pool tree to MAX
-        // while honest deposits still pass the deposit-tree gate — their mint
-        // then silently can't insert, locking ETH forever. Audit blocker #3.
-        // POOL_TREE_RESERVE leaves headroom for in-flight (deposited but not
-        // yet proven) mints and rotate/import growth between proofs.
+        // adversary spamming rotate can fill the pool tree to MAX while honest
+        // deposits still pass the deposit-tree gate — their mint then silently
+        // can't insert, locking ETH forever. POOL_TREE_RESERVE leaves headroom
+        // for in-flight (deposited but not yet proven) mints and rotate/import
+        // growth between proofs.
         uint64 poolIdx = poolVerifiers[pid].lastProvenPoolIndex(p.verifierDenomIdx);
         if (poolIdx + POOL_TREE_RESERVE >= uint64(MAX_LEAVES)) revert MerkleTreeFull();
         if (uint256(commitment) >= _FIELD_SIZE) revert InvalidFieldElement();

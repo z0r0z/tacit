@@ -79,7 +79,7 @@ if [ "$CHAIN_ID" != "1" ]; then
 fi
 echo "  chainid: 1 ✓"
 
-# Preflight: dirty bridge source + ELF/vkey pin (same as deploy-sepolia.sh).
+# Preflight: dirty bridge source + ELF/vkey pin.
 PREFLIGHT_DIR="$(cd "$(dirname "$0")" && pwd)"
 if [ -z "${ALLOW_DIRTY_DEPLOY:-}" ]; then
   DIRTY=$(git -C "$PREFLIGHT_DIR" status --porcelain -- \
