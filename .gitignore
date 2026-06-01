@@ -69,3 +69,5 @@ dapp/circuits/amm/dev-zkey/_wire_*.json
 
 # local testnet deployer key (never commit)
 contracts/.deployer.env
+
+.env.mainnet

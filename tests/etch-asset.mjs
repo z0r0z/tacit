@@ -52,6 +52,27 @@ const address = () => bech32Encode(HRP, 0, [...cx.p2wpkhScript(pub).slice(2)]);
 const loadState = () => { try { return JSON.parse(fs.readFileSync(STATE_FILE, 'utf8')); } catch { return {}; } };
 const saveState = s => fs.writeFileSync(STATE_FILE, JSON.stringify(s, null, 2));
 
+// tETH metadata (mirrors dapp TETH_ASSET). The C-ETCH image_uri points at a
+// metadata JSON (pinned via worker /pin-json) that embeds the logo + a verifiable
+// tacit_attest of the supply opening — self-contained, no dapp/worker dependency.
+const LOGO_CID = process.env.ASSET_LOGO_CID || 'bafkreid55b3c2w6swyjl3lec66a23subiolwwsd6tof2wticoj6d7vnv4i';
+async function pinMetadata(supplyStr, blindingHex, commitmentHex) {
+  const meta = {
+    name: process.env.ASSET_NAME || TICKER,
+    description: process.env.ASSET_DESC || 'Trustless wrapped ETH on Tacit. Bridge-mixer with SP1 ZK proofs.',
+    image: `ipfs://${LOGO_CID}`,
+    external_url: process.env.ASSET_EXT_URL || 'https://github.com/z0r0z/tacit/blob/main/BRIDGE.md',
+    decimals: DECIMALS,
+    tacit_attest: { supply: supplyStr, blinding: blindingHex, commitment: commitmentHex },
+  };
+  const r = await fetch(`${WORKER_BASE}/pin-json?network=${NETWORK}`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(meta),
+  });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok || !j.cid) throw new Error(`pin-json failed: ${r.status} ${JSON.stringify(j)}`);
+  return { cid: j.cid, meta };
+}
+
 function cmdSelftest() {
   console.log(`selftest: aggregated range proof for SUPPLY=${SUPPLY} (single value, m=1)`);
   const blinding = deriveEtchBlinding(priv, new Uint8Array(36)); // arbitrary anchor for the test
@@ -81,9 +102,22 @@ async function cmdEtch() {
   const encryptedAmount = encryptAmount(SUPPLY, amountKs);
   const { proof, commitments } = bpRangeAggProve([SUPPLY], [blinding]);
   const commitment = pointToBytes(commitments[0]);
+  const blindingHex = blinding.toString(16).padStart(64, '0');
+  const commitmentHex = cx.bytesToHex(commitment);
   const mintAuthority = new Uint8Array(32); // all-zero = non-mintable
-  const payload = encodeCEtchPayload({ ticker: TICKER, decimals: DECIMALS, commitment, rangeproof: proof, encryptedAmount, mintAuthority, imageUri: null });
-  console.log(`C-ETCH payload ${payload.length} bytes (rangeproof ${proof.length})`);
+
+  // Pin metadata JSON (name/description/logo + verifiable supply opening) and
+  // point image_uri at it. NO_META=1 falls back to the raw logo CID.
+  let imageUri;
+  if (process.env.NO_META === '1') {
+    imageUri = `ipfs://${LOGO_CID}`;
+  } else {
+    const { cid, meta } = await pinMetadata(SUPPLY.toString(), blindingHex, commitmentHex);
+    imageUri = `ipfs://${cid}`;
+    console.log(`pinned metadata ${imageUri}: ${JSON.stringify(meta)}`);
+  }
+  const payload = encodeCEtchPayload({ ticker: TICKER, decimals: DECIMALS, commitment, rangeproof: proof, encryptedAmount, mintAuthority, imageUri });
+  console.log(`C-ETCH payload ${payload.length} bytes (rangeproof ${proof.length}, image_uri ${imageUri.length}B)`);
 
   const envelopeScript = cx.encodeEnvelopeScript(xonly, payload);
   const leaf = cx.tapLeafHash(envelopeScript);
@@ -131,7 +165,7 @@ async function cmdEtch() {
   const st = loadState();
   st[NETWORK] = { ticker: TICKER, decimals: DECIMALS, supply: SUPPLY.toString(),
     commitTxid, revealTxid, etchVout: 0, assetIdHex: aid,
-    blinding: blinding.toString(16).padStart(64, '0'), commitment: cx.bytesToHex(commitment) };
+    blinding: blindingHex, commitment: commitmentHex, imageUri };
   saveState(st);
   console.log(`\nasset_id: ${aid}`);
   console.log(`etch reveal txid: ${revealTxid} (vout 0)`);
