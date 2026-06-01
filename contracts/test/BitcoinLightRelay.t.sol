@@ -63,4 +63,40 @@ contract BitcoinLightRelayTest is TestHelper {
         uint256 target = uint256(0x04864c) << 192;
         assertLe(reversed, target);
     }
+
+    // Median-time-past must use the median of the last 11 ancestors, NOT the
+    // immediate parent's timestamp. Bitcoin block timestamps wobble (a valid
+    // block's ts can dip below its parent's), so the old strict-monotonic check
+    // wrongly rejected canonical headers and bricked the relay at mainnet 952005.
+    function test_mtp_uses_median_not_parent() public {
+        uint32[11] memory tss = [uint32(500), 520, 510, 530, 525, 540, 535, 550, 545, 560, 555];
+        bytes32 parent = bytes32(0);
+        bytes32 tip;
+        for (uint256 i; i < 11; ++i) {
+            bytes32 bh = keccak256(abi.encodePacked("blk", i));
+            relay.seedBlock(bh, parent, tss[i]);
+            parent = bh;
+            tip = bh;
+        }
+        // Sorted: [500,510,520,525,530,535,540,545,550,555,560] -> median = 535,
+        // not the tip's own ts (555) nor the max (560).
+        assertEq(relay.exposed_medianTimePast(tip), 535);
+        // ts=552 dips below its parent (555) yet exceeds the median (535): valid.
+        assertGt(uint256(552), uint256(relay.exposed_medianTimePast(tip)));
+    }
+
+    function test_mtp_partial_window_below_11() public {
+        uint32[3] memory tss = [uint32(100), 300, 200];
+        bytes32 parent = bytes32(0);
+        bytes32 tip;
+        for (uint256 i; i < 3; ++i) {
+            bytes32 bh = keccak256(abi.encodePacked("p", i));
+            relay.seedBlock(bh, parent, tss[i]);
+            parent = bh;
+            tip = bh;
+        }
+        // Fewer than 11 ancestors: median of [100,200,300] = 200 (Bitcoin's
+        // early-chain behaviour — use the median of what's available).
+        assertEq(relay.exposed_medianTimePast(tip), 200);
+    }
 }

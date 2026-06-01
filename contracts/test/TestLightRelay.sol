@@ -24,4 +24,16 @@ contract TestLightRelay is BitcoinLightRelay {
             prevHash = blockHash;
         }
     }
+
+    /// @dev Test hooks for the median-time-past check. advanceTip's real PoW
+    ///      validation makes synthetic headers impractical, so seed the maps
+    ///      directly and exercise the median logic in isolation.
+    function seedBlock(bytes32 bh, bytes32 parent, uint32 ts) external {
+        blockParent[bh] = parent;
+        blockTimestamp[bh] = ts;
+    }
+
+    function exposed_medianTimePast(bytes32 parent) external view returns (uint32) {
+        return _medianTimePast(parent);
+    }
 }

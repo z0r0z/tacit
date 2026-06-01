@@ -31,8 +31,8 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-# Get current relay tip
-RELAY_TIP_HEIGHT=$(cast call "$RELAY_ADDRESS" "tipHeight()(uint256)" --rpc-url "$ETH_RPC")
+# Get current relay tip (strip cast's "[1.23e4]" annotation)
+RELAY_TIP_HEIGHT=$(cast call "$RELAY_ADDRESS" "tipHeight()(uint256)" --rpc-url "$ETH_RPC" | awk '{print $1}')
 echo "Relay tip height: $RELAY_TIP_HEIGHT"
 
 if [[ -z "$FROM_HEIGHT" ]]; then
@@ -71,5 +71,5 @@ cast send "$RELAY_ADDRESS" "advanceTip(bytes)" "0x${HEADERS}" \
   --gas-limit 2000000 2>&1 | grep "status\|transactionHash" | head -2
 
 echo ""
-NEW_TIP=$(cast call "$RELAY_ADDRESS" "tipHeight()(uint256)" --rpc-url "$ETH_RPC")
+NEW_TIP=$(cast call "$RELAY_ADDRESS" "tipHeight()(uint256)" --rpc-url "$ETH_RPC" | awk '{print $1}')
 echo "New relay tip: $NEW_TIP"

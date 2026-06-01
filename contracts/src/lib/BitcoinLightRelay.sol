@@ -51,10 +51,9 @@ contract BitcoinLightRelay {
     mapping(bytes32 => bytes32) public blockParent;
     mapping(bytes32 => uint256) public blockWork;
     mapping(bytes32 => uint256) public blockHeight;
-    /// @notice Header `timestamp` per block. RELAY-3: enables monotonic-timestamp
-    ///         validation in advanceTip (loose form of Bitcoin's MTP — strict MTP
-    ///         would require a sliding window of the last 11; this single-parent
-    ///         check catches the egregious cases at no additional storage cost).
+    /// @notice Header `timestamp` per block. Feeds advanceTip's median-time-past
+    ///         check (Bitcoin's consensus rule: a header's ts must exceed the
+    ///         median of the last 11 ancestors' timestamps).
     mapping(bytes32 => uint32) public blockTimestamp;
 
     bool public initialized;
@@ -114,9 +113,10 @@ contract BitcoinLightRelay {
         // (height == epochStart): the first retarget() computes elapsed against
         // epochStartTimestamp[epoch] above, so a wrong value there mis-targets
         // the next epoch and bricks tip advancement at the boundary. The tip may
-        // be anchored mid-epoch (tipHeight_ >= epochStart); seeding the tip's
-        // stored timestamp with the epoch-start value (<= the tip's own ts) just
-        // gives advanceTip's monotonic check a safe, loose parent baseline.
+        // be anchored mid-epoch (tipHeight_ >= epochStart); seeding the anchor's
+        // stored timestamp with the epoch-start value (<= the anchor's own ts)
+        // gives advanceTip's median-time-past check a safe, loose baseline until
+        // the anchor ages out of the 11-block window.
         blockTimestamp[tipHash] = uint32(startTimestamp);
 
         initialized = true;
@@ -163,17 +163,19 @@ contract BitcoinLightRelay {
             if (target != expectedTarget) revert InvalidPoW();
             if (_reverseU256(uint256(bh)) > target) revert InvalidPoW();
 
-            // RELAY-3: timestamp validation. (a) Future-drift: header ts must
-            // not exceed block.timestamp + 2h (Bitcoin Core's MAX_FUTURE_BLOCK_TIME).
-            // (b) Monotonic (loose MTP): header ts must be strictly greater than
-            // the parent's stored timestamp. Strict MTP (median of last 11) would
-            // require a sliding window; this single-parent check catches the
-            // egregious cases and aligns with the rest of the relay's PoW-only
-            // canonical-chain enforcement.
+            // Timestamp validation. (a) Future-drift: header ts must not exceed
+            // block.timestamp + 2h (Bitcoin Core's MAX_FUTURE_BLOCK_TIME).
+            // (b) Median-time-past: header ts must exceed the median of up to the
+            // last 11 ancestors' timestamps — Bitcoin's actual consensus rule. A
+            // block's timestamp need NOT exceed its immediate parent's (miner
+            // clocks drift, so a valid block's ts can dip below its parent's), so a
+            // strict-monotonic check wrongly rejects canonical headers and would
+            // stall the tip permanently the first time Bitcoin mines a sub-parent
+            // timestamp — which happens every few blocks.
             if (ts > block.timestamp + 7200) revert InvalidTimestamp();
             {
-                uint32 parentTs = blockTimestamp[prev];
-                if (parentTs > 0 && ts <= parentTs) revert InvalidTimestamp();
+                uint32 mtp = _medianTimePast(prev);
+                if (mtp != 0 && ts <= mtp) revert InvalidTimestamp();
             }
 
             cumWork += _workFromTarget(target);
@@ -413,5 +415,33 @@ contract BitcoinLightRelay {
 
     function _dsha256(bytes memory d) internal pure returns (bytes32) {
         return sha256(abi.encodePacked(sha256(d)));
+    }
+
+    /// @dev Bitcoin median-time-past: the median of up to the last 11 ancestors'
+    ///      timestamps, walking blockParent from `parent`. Returns 0 only if no
+    ///      ancestor timestamp is stored (pre-genesis). Near genesis fewer than 11
+    ///      ancestors exist; the median of what is available is used, matching
+    ///      Bitcoin's own behaviour for the early chain. Ancestors added earlier in
+    ///      the same advanceTip batch are already in storage, so the window spans
+    ///      the batch and the stored chain seamlessly.
+    function _medianTimePast(bytes32 parent) internal view returns (uint32) {
+        uint32[11] memory window;
+        uint256 count;
+        bytes32 cur = parent;
+        while (count < 11 && cur != bytes32(0)) {
+            uint32 t = blockTimestamp[cur];
+            if (t == 0) break;
+            window[count++] = t;
+            cur = blockParent[cur];
+        }
+        if (count == 0) return 0;
+        // Insertion sort window[0..count); count <= 11.
+        for (uint256 i = 1; i < count; ++i) {
+            uint32 key = window[i];
+            uint256 j = i;
+            while (j > 0 && window[j - 1] > key) { window[j] = window[j - 1]; --j; }
+            window[j] = key;
+        }
+        return window[count / 2];
     }
 }
