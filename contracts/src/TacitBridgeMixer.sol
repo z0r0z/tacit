@@ -304,7 +304,7 @@ contract TacitBridgeMixer is ReentrancyGuardTransient {
             if (!_verifyTxInclusion(txid, blockMR, txMerkleProof, txIndex)) revert InvalidBurnProof();
         }
 
-        bytes memory env = _extractEnvByOpcode(rawBtcTx, _BURN_OPCODE, _BURN_ENVELOPE_MIN);
+        bytes memory env = _extractTaprootEnvelope(rawBtcTx);
         (bytes32 nullifierHash,, address payable recipient, bytes32 pid) = _validateBurn(env);
 
         Pool storage p = _pools[pid];
@@ -451,29 +451,58 @@ contract TacitBridgeMixer is ReentrancyGuardTransient {
         return _dsha(abi.encodePacked(tx_[:4], tx_[6:pos], tx_[tx_.length-4:]));
     }
 
-    function _extractEnvByOpcode(bytes calldata tx_, uint256 opcode, uint256 minLen) internal pure returns (bytes memory) {
-        if (tx_.length < 10) return new bytes(0);
-        uint256 pos = 4;
-        if (tx_[pos] == 0x00 && tx_[pos+1] == 0x01) pos += 2;
-        uint256 cnt = _vi(tx_,pos); pos += _viL(tx_,pos);
-        for (uint256 i; i < cnt; ++i) { pos += 36; uint256 s = _vi(tx_,pos); pos += _viL(tx_,pos)+s+4; }
-        cnt = _vi(tx_,pos); pos += _viL(tx_,pos);
-        for (uint256 i; i < cnt; ++i) {
-            pos += 8; uint256 sl = _vi(tx_,pos); pos += _viL(tx_,pos); uint256 ss = pos;
-            if (sl > 2 && uint8(tx_[ss]) == 0x6a) {
-                uint256 ds = ss+1; uint8 op = uint8(tx_[ds]); uint256 dl;
-                if (op == 0x4d) { dl = uint16(uint8(tx_[ds+1]))|(uint16(uint8(tx_[ds+2]))<<8); ds += 3; }
-                else if (op == 0x4c) { dl = uint8(tx_[ds+1]); ds += 2; }
-                else { dl = op; ds += 1; }
-                if (dl >= minLen && ds+dl <= ss+sl && uint8(tx_[ds]) == opcode) {
-                    bytes memory out = new bytes(dl);
-                    for (uint256 j; j < dl; ++j) out[j] = tx_[ds+j];
-                    return out;
-                }
-            }
-            pos = ss + sl;
+    // Burn ops (537B) exceed the 80B OP_RETURN datacarrier cap, so they ride in
+    // a Taproot script-path reveal: the envelope is in vin[0]'s witness item 1,
+    // TACIT-framed (PUSH "TACIT" | PUSH version | payload pushes). Extract it and
+    // strip the 6-byte "TACIT"||0x01 frame, mirroring the SP1 guest's
+    // extract_taproot_envelope so the on-chain withdraw sees the same envelope
+    // the guest proved. (The dapp/worker frame every reveal this way.)
+    function _extractTaprootEnvelope(bytes calldata tx_) internal pure returns (bytes memory) {
+        if (tx_.length < 6 || tx_[4] != 0x00 || tx_[5] != 0x01) return new bytes(0);
+        uint256 pos = 6;
+        uint256 inCnt = _vi(tx_,pos); if (inCnt == 0) return new bytes(0); pos += _viL(tx_,pos);
+        for (uint256 i; i < inCnt; ++i) { pos += 36; uint256 s = _vi(tx_,pos); pos += _viL(tx_,pos)+s+4; }
+        uint256 outCnt = _vi(tx_,pos); pos += _viL(tx_,pos);
+        for (uint256 i; i < outCnt; ++i) { pos += 8; uint256 s = _vi(tx_,pos); pos += _viL(tx_,pos)+s; }
+        // Witness for vin[0]: need >=2 items (sig, script[, control block]).
+        uint256 wc = _vi(tx_,pos); pos += _viL(tx_,pos);
+        if (wc < 2) return new bytes(0);
+        uint256 i0 = _vi(tx_,pos); pos += _viL(tx_,pos) + i0;            // skip item 0 (sig)
+        uint256 sl = _vi(tx_,pos); pos += _viL(tx_,pos);                 // item 1 = script
+        uint256 sEnd = pos + sl;
+        if (sl < 36 || sEnd > tx_.length) return new bytes(0);
+        uint256 sp = pos;
+        if (uint8(tx_[sp]) != 32) return new bytes(0); sp += 33;          // PUSH32 xonly
+        if (sp >= sEnd || uint8(tx_[sp]) != 0xac) return new bytes(0); sp += 1;          // OP_CHECKSIG
+        if (sp+1 >= sEnd || uint8(tx_[sp]) != 0x00 || uint8(tx_[sp+1]) != 0x63) return new bytes(0); sp += 2; // OP_FALSE OP_IF
+        // Pass 1: measure concatenated payload length.
+        uint256 plen; uint256 q = sp;
+        while (q < sEnd) {
+            uint8 op = uint8(tx_[q]); if (op == 0x68) break; q += 1; uint256 dl;
+            if (op >= 1 && op <= 75) dl = op;
+            else if (op == 0x4c) { if (q >= sEnd) return new bytes(0); dl = uint8(tx_[q]); q += 1; }
+            else if (op == 0x4d) { if (q+1 >= sEnd) return new bytes(0); dl = uint16(uint8(tx_[q]))|(uint16(uint8(tx_[q+1]))<<8); q += 2; }
+            else return new bytes(0);
+            if (q + dl > sEnd) return new bytes(0); plen += dl; q += dl;
         }
-        return new bytes(0);
+        // Strip the 6-byte "TACIT"||0x01 frame (0x54 41 43 49 54 01).
+        if (plen <= 6) return new bytes(0);
+        bytes memory env = new bytes(plen - 6);
+        uint256 w; q = sp; uint256 skip = 6;
+        while (q < sEnd) {
+            uint8 op = uint8(tx_[q]); if (op == 0x68) break; q += 1; uint256 dl;
+            if (op >= 1 && op <= 75) dl = op;
+            else if (op == 0x4c) { dl = uint8(tx_[q]); q += 1; }
+            else { dl = uint16(uint8(tx_[q]))|(uint16(uint8(tx_[q+1]))<<8); q += 2; }
+            for (uint256 j; j < dl; ++j) {
+                if (skip > 0) { skip -= 1; } else { env[w++] = tx_[q+j]; }
+            }
+            q += dl;
+        }
+        // The 6 skipped bytes are the "TACIT"||0x01 frame. A tx that isn't a
+        // valid framed reveal yields a shifted env whose opcode (env[0]) and
+        // bind-hash checks in _validateBurn fail closed → InvalidBurnProof.
+        return env;
     }
 
     function _verifyTxInclusion(bytes32 txid, bytes32 root, bytes32[] calldata proof, uint256 idx) internal pure returns (bool) {

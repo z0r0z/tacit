@@ -33,29 +33,37 @@ import sys
 import urllib.parse
 import urllib.request
 import urllib.error
+import time
 
 MEMPOOL_API = {
     "signet":  "https://mempool.space/signet/api",
     "mainnet": "https://mempool.space/api",
 }
 
+# mempool.space 403s the default Python-urllib UA and rate-limits bursts, so
+# send a browser-ish UA and retry transient 403/429/5xx with backoff.
+_UA = "Mozilla/5.0 (tacit-prover) urllib"
+
+def _http(url, timeout=15, want_json=True, retries=6):
+    for i in range(retries):
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": _UA})
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                data = r.read()
+                return json.loads(data) if want_json else data.decode().strip()
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                return None
+            time.sleep(0.6 * (i + 1) + 0.4)  # 403/429/5xx backoff
+        except Exception:
+            time.sleep(0.5 * (i + 1))
+    return None
+
 def http_get_json(url, timeout=15):
-    try:
-        with urllib.request.urlopen(url, timeout=timeout) as r:
-            return json.loads(r.read())
-    except urllib.error.HTTPError as e:
-        if e.code == 404:
-            return None
-        raise
-    except Exception:
-        return None
+    return _http(url, timeout, want_json=True)
 
 def http_get_text(url, timeout=15):
-    try:
-        with urllib.request.urlopen(url, timeout=timeout) as r:
-            return r.read().decode().strip()
-    except Exception:
-        return None
+    return _http(url, timeout, want_json=False)
 
 def fetch_block_txids(api_base, height):
     h = http_get_text(f"{api_base}/block-height/{height}")

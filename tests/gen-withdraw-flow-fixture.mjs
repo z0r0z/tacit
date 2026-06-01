@@ -145,24 +145,27 @@ async function main() {
     new Uint8Array([proofBytes.length & 0xff, (proofBytes.length >> 8) & 0xff]), proofBytes,
   );
 
-  // Minimal legacy Bitcoin tx: 1 input, 1 OP_RETURN output (PUSHDATA2), locktime 0.
-  const opret = concat(new Uint8Array([0x6a, 0x4d, envelope.length & 0xff, (envelope.length >> 8) & 0xff]), envelope);
-  const scriptLen = opret.length; // 4 + envelope.length
-  const viScriptLen = scriptLen < 0xfd ? new Uint8Array([scriptLen]) : new Uint8Array([0xfd, scriptLen & 0xff, (scriptLen >> 8) & 0xff]);
-  const rawTx = concat(
-    hexToBytes('02000000'),                 // version
-    new Uint8Array([0x01]),                  // vin count
-    new Uint8Array(32),                      // prev txid
-    hexToBytes('ffffffff'),                  // prev vout
-    new Uint8Array([0x00]),                  // scriptSig len
-    hexToBytes('ffffffff'),                  // sequence
-    new Uint8Array([0x01]),                  // vout count
-    new Uint8Array(8),                       // value 0
-    viScriptLen, opret,
-    new Uint8Array(4),                       // locktime
-  );
-  // txid = dsha256(rawTx) (legacy, no witness).
-  const txid = sha256(sha256(rawTx));
+  // Taproot reveal: the burn envelope (537B > 80B OP_RETURN cap) rides in vin[0]'s
+  // witness item 1, TACIT-framed (PUSH "TACIT" | PUSH version | payload pushes),
+  // matching the dapp/guest. Mixer extracts via _extractTaprootEnvelope.
+  const pushData = (b) =>
+    b.length < 0x4c ? concat(new Uint8Array([b.length]), b)
+    : b.length <= 0xff ? concat(new Uint8Array([0x4c, b.length]), b)
+    : concat(new Uint8Array([0x4d, b.length & 0xff, (b.length >> 8) & 0xff]), b);
+  const viLen = (n) => n < 0xfd ? new Uint8Array([n]) : new Uint8Array([0xfd, n & 0xff, (n >> 8) & 0xff]);
+  const MAGIC = new Uint8Array([0x54, 0x41, 0x43, 0x49, 0x54]); // "TACIT"
+  let script = concat(new Uint8Array([0x20]), new Uint8Array(32), new Uint8Array([0xac, 0x00, 0x63])); // PUSH32 xonly | OP_CHECKSIG | OP_FALSE | OP_IF
+  script = concat(script, pushData(MAGIC), pushData(new Uint8Array([0x01])));                          // frame: "TACIT" | version
+  for (let i = 0; i < envelope.length; i += 520) script = concat(script, pushData(envelope.slice(i, Math.min(i + 520, envelope.length))));
+  script = concat(script, new Uint8Array([0x68]));                                                     // OP_ENDIF
+  const witnessData = concat(new Uint8Array([0x03]), viLen(64), new Uint8Array(64), viLen(script.length), script, viLen(33), concat(new Uint8Array([0xc0]), new Uint8Array(32)));
+  const version = hexToBytes('02000000');
+  const inputs = concat(new Uint8Array([0x01]), new Uint8Array(32), hexToBytes('ffffffff'), new Uint8Array([0x00]), hexToBytes('ffffffff'));
+  const outputs = concat(new Uint8Array([0x01]), new Uint8Array(8), new Uint8Array([0x00]));
+  const locktime = new Uint8Array(4);
+  const rawTx = concat(version, new Uint8Array([0x00, 0x01]), inputs, outputs, witnessData, locktime);
+  // txid = dsha256 of the witness-stripped serialization (matches mixer _computeTxid).
+  const txid = sha256(sha256(concat(version, inputs, outputs, locktime)));
 
   const fixture = {
     note: 'Real burn->withdraw fixture bound to a deterministic mixer address. Regenerate with node tests/gen-withdraw-flow-fixture.mjs.',
