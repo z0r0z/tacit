@@ -17,6 +17,64 @@ use std::env;
 use std::time::Duration;
 use std::thread;
 
+// Reuse the guest's EXACT tx logic so host-computed txids match the guest's
+// byte-for-byte (bitcoin.rs is sha2-based, no SP1 intrinsics → compiles natively).
+#[path = "../../program/src/bitcoin.rs"]
+mod bitcoin;
+
+// ── Native (off-circuit) Bitcoin block parser ──
+// Splits a raw block into per-tx byte vectors so the host can compute the full
+// txid set (for the guest's merkle check) and pick out only the coinbase +
+// bridge txs to feed in full. Mainnet blocks carry ~4000 txs; the guest only
+// needs txids + the handful of bridge txs.
+fn read_varint(d: &[u8], p: &mut usize) -> u64 {
+    let first = d[*p]; *p += 1;
+    match first {
+        0xfd => { let v = u16::from_le_bytes([d[*p], d[*p + 1]]) as u64; *p += 2; v }
+        0xfe => { let v = u32::from_le_bytes([d[*p], d[*p + 1], d[*p + 2], d[*p + 3]]) as u64; *p += 4; v }
+        0xff => { let v = u64::from_le_bytes(d[*p..*p + 8].try_into().unwrap()); *p += 8; v }
+        n => n as u64,
+    }
+}
+
+fn tx_byte_len(d: &[u8], start: usize) -> usize {
+    let mut p = start + 4; // version
+    let segwit = d.len() > p + 1 && d[p] == 0x00 && d[p + 1] == 0x01;
+    if segwit { p += 2; }
+    let vin = read_varint(d, &mut p);
+    for _ in 0..vin { p += 36; let sl = read_varint(d, &mut p) as usize; p += sl + 4; }
+    let vout = read_varint(d, &mut p);
+    for _ in 0..vout { p += 8; let sl = read_varint(d, &mut p) as usize; p += sl; }
+    if segwit {
+        for _ in 0..vin {
+            let items = read_varint(d, &mut p);
+            for _ in 0..items { let il = read_varint(d, &mut p) as usize; p += il; }
+        }
+    }
+    p + 4 - start // locktime
+}
+
+fn split_block_txs(raw: &[u8]) -> Vec<Vec<u8>> {
+    let mut p = 80; // skip 80-byte header
+    let n = read_varint(raw, &mut p);
+    let mut txs = Vec::with_capacity(n as usize);
+    for _ in 0..n {
+        let len = tx_byte_len(raw, p);
+        txs.push(raw[p..p + len].to_vec());
+        p += len;
+    }
+    txs
+}
+
+// A tx the guest must see in full: the coinbase, a TACIT Taproot envelope (bridge
+// 0x2A/0x60-0x64/0x22/0x23 + any other Tacit op, which the guest no-ops), or a
+// CXFER (0x22/0x23) OP_RETURN. Everything else is merkle-only.
+fn is_bridge_tx(tx: &[u8], idx: usize) -> bool {
+    if idx == 0 { return true; }
+    if bitcoin::extract_taproot_envelope(tx).is_some() { return true; }
+    bitcoin::extract_all_op_returns(tx).iter().any(|e| !e.is_empty() && (e[0] == 0x22 || e[0] == 0x23))
+}
+
 #[derive(serde::Serialize, serde::Deserialize)]
 struct ProverState {
     denominations: Vec<Vec<u8>>,
@@ -129,7 +187,11 @@ fn main() {
         .build().expect("http client");
 
     // ──── Fetch all block data first ────
-    let mut blocks: Vec<(Vec<u8>, Vec<Vec<u8>>)> = Vec::new();
+    // Per block we keep: header, the FULL txid set (for the guest's merkle check),
+    // and only the coinbase + bridge txs in full (idx, bytes). One /block/raw
+    // fetch per block (vs one /tx/raw per tx) + native parse keeps mainnet's
+    // ~4000-tx blocks tractable.
+    let mut blocks: Vec<(Vec<u8>, Vec<[u8; 32]>, Vec<(u32, Vec<u8>)>)> = Vec::new();
 
     for h in start_height..start_height + num_blocks {
         println!("\nFetching block {h}...");
@@ -137,24 +199,21 @@ fn main() {
         let block_hash = fetch_text(&http, &bases, &format!("/block-height/{h}"));
         println!("  Hash: {block_hash}");
 
-        let header_hex = fetch_text(&http, &bases, &format!("/block/{block_hash}/header"));
-        let header = hex::decode(&header_hex).expect("decode header");
-        assert_eq!(header.len(), 80, "header must be 80 bytes");
+        let raw_block = fetch_bytes(&http, &bases, &format!("/block/{block_hash}/raw"));
+        assert!(raw_block.len() >= 81, "raw block too short");
+        let header = raw_block[0..80].to_vec();
 
-        let txids_json = fetch_text(&http, &bases, &format!("/block/{block_hash}/txids"));
-        let txids: Vec<String> = serde_json::from_str(&txids_json).expect("parse txids");
-        println!("  Transactions: {}", txids.len());
-
-        let mut raw_txs: Vec<Vec<u8>> = Vec::new();
-        for (i, txid) in txids.iter().enumerate() {
-            let raw_tx = fetch_bytes(&http, &bases, &format!("/tx/{txid}/raw"));
-            if i % 50 == 0 && i > 0 {
-                println!("  Fetched {i}/{} txs...", txids.len());
-            }
-            raw_txs.push(raw_tx);
+        let txs = split_block_txs(&raw_block);
+        let mut txids: Vec<[u8; 32]> = Vec::with_capacity(txs.len());
+        let mut provided: Vec<(u32, Vec<u8>)> = Vec::new();
+        for (i, tx) in txs.iter().enumerate() {
+            txids.push(bitcoin::compute_txid(tx));
+            if is_bridge_tx(tx, i) { provided.push((i as u32, tx.clone())); }
         }
+        println!("  Transactions: {} (feeding {} txids + {} coinbase/bridge txs)",
+            txs.len(), txids.len(), provided.len());
 
-        blocks.push((header, raw_txs));
+        blocks.push((header, txids, provided));
     }
 
     // ──── Domain binding ────
@@ -360,11 +419,14 @@ fn main() {
     // proven block (read on-chain above) so the proof chains from it.
     stdin.write(&prev_block_hash);
 
-    // 12+: block data
-    for (header, raw_txs) in &blocks {
+    // 12+: block data — header + full txid set (merkle) + only coinbase/bridge txs.
+    for (header, txids, provided) in &blocks {
         stdin.write(header);
-        stdin.write(&(raw_txs.len() as u32));
-        for tx in raw_txs {
+        stdin.write(&(txids.len() as u32));
+        for txid in txids { stdin.write(&txid.to_vec()); }
+        stdin.write(&(provided.len() as u32));
+        for (idx, tx) in provided {
+            stdin.write(idx);
             stdin.write(tx);
         }
     }
