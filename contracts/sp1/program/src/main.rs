@@ -211,13 +211,29 @@ pub fn main() {
         prev_header_hash = Some(block_hash);
         last_block_hash = block_hash;
 
+        // Slim input: the host feeds the FULL txid set (for the merkle root) but
+        // only the coinbase + bridge-carrying txs in full. The merkle root over
+        // all txids, checked against the verified header, authenticates the txid
+        // set as the block's real + complete tx list — so the host cannot hide,
+        // fabricate, or re-order any tx. Each provided full tx is then pinned to
+        // its position via compute_txid == txids[tx_idx]. Non-bridge txs are never
+        // parsed in-circuit (mainnet blocks carry ~4000 txs; this keeps cycles flat).
         let num_txs: u32 = io::read();
-        let mut txids: Vec<[u8; 32]> = Vec::new();
+        let mut txids: Vec<[u8; 32]> = Vec::with_capacity(num_txs as usize);
+        for _ in 0..num_txs {
+            let t: Vec<u8> = io::read();
+            txids.push(t[..].try_into().expect("txid must be 32 bytes"));
+        }
+        assert!(bitcoin::compute_merkle_root(&txids) == block_merkle_root, "tx merkle root mismatch");
 
-        for tx_idx in 0..num_txs {
+        let num_provided: u32 = io::read();
+        let mut saw_coinbase = false;
+        for _ in 0..num_provided {
+            let tx_idx: u32 = io::read();
             let tx_data: Vec<u8> = io::read();
+            assert!((tx_idx as usize) < txids.len(), "provided tx_idx out of range");
             let txid = bitcoin::compute_txid(&tx_data);
-            txids.push(txid);
+            assert!(txid == txids[tx_idx as usize], "provided tx not in block at its index");
 
             // Coinbase invariant (BIP30 / consensus): first tx of every block
             // must be coinbase — vin[0].txid == all-zeros, vout == 0xffffffff.
@@ -225,6 +241,7 @@ pub fn main() {
             // fails loudly on a malformed block rather than silently accepting
             // a header with no coinbase + funded "txs". Audit BTC-2.
             if tx_idx == 0 {
+                saw_coinbase = true;
                 let inps = bitcoin::extract_input_outpoints(&tx_data);
                 assert!(!inps.is_empty(), "tx 0 has no inputs (malformed coinbase)");
                 assert!(inps[0].0 == [0u8; 32] && inps[0].1 == 0xffffffff,
@@ -488,8 +505,7 @@ pub fn main() {
             }
         }
 
-        let computed_root = bitcoin::compute_merkle_root(&txids);
-        assert!(computed_root == block_merkle_root, "tx merkle root mismatch");
+        assert!(saw_coinbase, "coinbase (tx 0) must be among the provided txs");
     }
 
     // ──── Finalize ────
