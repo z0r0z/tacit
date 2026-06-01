@@ -45,7 +45,10 @@ echo "=== tETH Bridge — MAINNET Deployment ==="
 : "${SP1_VERIFIER:?Set SP1_VERIFIER (Succinct mainnet SP1 Groth16 gateway)}"
 : "${SP1_PROGRAM_VKEY:?Set SP1_PROGRAM_VKEY (bytes32 from canonical Docker ELF)}"
 : "${GROTH16_VK_HASH:?Set GROTH16_VK_HASH (sha256 of ceremony VK bytes)}"
-: "${BTC_TIP_WORK:?Set BTC_TIP_WORK (decimal cumulative chainwork; bitcoin-cli getblockheader)}"
+# BTC_TIP_WORK (decimal cumulative chainwork at the anchor) is derived below
+# from a keyless Bitcoin RPC for the exact anchor this script picks, unless
+# supplied explicitly — keeps it from drifting from the anchor block.
+BTC_TIP_WORK="${BTC_TIP_WORK:-}"
 
 # Canonical PoseidonT3 (poseidon-solidity deterministic deploy, also live on
 # mainnet). TacitBridgeMixer links it as an external library — the artifact
@@ -112,6 +115,17 @@ ANCHOR_HASH_LE=$(python3 -c "print(bytes.fromhex('$ANCHOR_HASH_BE')[::-1].hex())
 ANCHOR_BLOCK=$(curl -sf "https://mempool.space/api/block/$ANCHOR_HASH_BE")
 ANCHOR_BITS_LE=$(echo "$ANCHOR_BLOCK" | python3 -c "import sys,json; print(f'{json.load(sys.stdin)[\"bits\"]:08x}')")
 ANCHOR_TIMESTAMP=$(echo "$ANCHOR_BLOCK" | python3 -c "import sys,json; print(json.load(sys.stdin)['timestamp'])")
+# Cumulative chainwork at the anchor, from a keyless Bitcoin RPC, derived for
+# the SAME anchor block computed above (no drift). getblockheader.chainwork is
+# the canonical heaviest-chain accumulator; a too-low value would weaken the
+# relay's fork choice.
+if [ -z "$BTC_TIP_WORK" ]; then
+  CW_HEX=$(curl -sf -X POST "https://bitcoin-rpc.publicnode.com" -H 'content-type: application/json' \
+    -d "{\"jsonrpc\":\"1.0\",\"id\":1,\"method\":\"getblockheader\",\"params\":[\"$ANCHOR_HASH_BE\"]}" \
+    | python3 -c "import sys,json; print(json.load(sys.stdin)['result']['chainwork'])")
+  [ -n "$CW_HEX" ] || { echo "REFUSING TO DEPLOY: could not fetch chainwork for anchor $ANCHOR_HASH_BE"; exit 1; }
+  BTC_TIP_WORK=$(python3 -c "print(int('$CW_HEX', 16))")
+fi
 # Epoch start: floor(height / 2016) * 2016
 EPOCH_START=$(( ANCHOR_HEIGHT / 2016 * 2016 ))
 EPOCH_HASH=$(curl -sf "https://mempool.space/api/block-height/$EPOCH_START")
