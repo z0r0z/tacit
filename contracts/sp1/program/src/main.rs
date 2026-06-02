@@ -992,4 +992,41 @@ mod dispatch_seam_tests {
             inserts,
         );
     }
+
+    #[test]
+    fn pool_tree_reserve_is_mint_only() {
+        // F-2: within the Taproot bridge dispatch, rotate (0x62) + import (0x64)
+        // must gate inserts on the reserve-aware can_insert_with_reserve, while
+        // mint (0x60) keeps the full can_insert() — so the top POOL_TREE_RESERVE
+        // slots stay free for in-flight mints (the only insert backed by freshly
+        // locked ETH with no other exit). Swapping these back re-opens F-2.
+        let src = include_str!("main.rs");
+        let start = src
+            .find("matches!(tap_env[0], 0x60 | 0x61 | 0x62 | 0x63 | 0x64)")
+            .expect("guest has Taproot bridge dispatch");
+        let end = src[start..]
+            .find("// CXFER conservation-verified tracking")
+            .map(|o| start + o)
+            .expect("CXFER tracking follows the bridge dispatch");
+        let section = &src[start..end];
+        assert_eq!(
+            section.matches("can_insert_with_reserve(POOL_TREE_RESERVE)").count(),
+            2,
+            "exactly rotate + import must gate on the reserve-aware insert check",
+        );
+        assert_eq!(
+            section.matches("can_insert(").count(),
+            1,
+            "mint must keep the full can_insert(); rotate/import must not",
+        );
+        let mint = section.find("'mint: {").expect("mint handler");
+        let mint_end = section[mint..]
+            .find("'rotate: {")
+            .map(|o| mint + o)
+            .expect("rotate follows mint");
+        assert!(
+            section[mint..mint_end].contains("trees[di].can_insert()"),
+            "the unreserved can_insert() must be the mint handler",
+        );
+    }
 }
