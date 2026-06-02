@@ -78,10 +78,13 @@ def fetch_tx_vouts(api_base, txid):
         return None
     return len(tx["vout"])
 
-def fetch_opening(worker_base, network, txid, vout):
+def fetch_asset_openings(worker_base, network, asset_id):
     qs = urllib.parse.urlencode({"network": network})
-    url = f"{worker_base.rstrip('/')}/utxos/{txid}/{vout}/opening?{qs}"
-    return http_get_json(url)
+    url = f"{worker_base.rstrip('/')}/assets/{asset_id}/openings?{qs}"
+    resp = http_get_json(url)
+    if not resp or not isinstance(resp.get("openings"), list):
+        return []
+    return resp["openings"]
 
 def main():
     ap = argparse.ArgumentParser()
@@ -90,44 +93,54 @@ def main():
     ap.add_argument("--network",      default="signet")
     ap.add_argument("--worker-base",  required=True)
     ap.add_argument("--output",       required=True)
+    ap.add_argument("--asset-id",     required=True, help="bridge asset id (no 0x) to scope the opening list")
     args = ap.parse_args()
 
     api = MEMPOOL_API.get(args.network)
     if not api:
         print(f"unknown network: {args.network}", file=sys.stderr); sys.exit(1)
+    target = args.start_height + args.num_blocks - 1
+
+    # Scope to the few published CXFER openings for this asset (one worker call)
+    # rather than probing every (txid, vout) in the range — mainnet blocks carry
+    # thousands of txs, so per-output probing is O(100k) calls/cycle. The worker
+    # only stores openings for bridge-CXFER outputs, so the list IS the candidate
+    # set; map each to its block and keep the ones in range.
+    aid = args.asset_id.replace("0x", "")
+    openings = fetch_asset_openings(args.worker_base, args.network, aid)
+    by_txid = {}  # txid -> {vout: {amount, blinding}}
+    for op in openings:
+        txid = op.get("txid"); vout = op.get("vout")
+        if txid is None or vout is None or "amount" not in op or "blinding" not in op:
+            continue
+        try:
+            by_txid.setdefault(txid, {})[int(vout)] = {
+                "amount": int(op["amount"]),
+                "blinding": str(op["blinding"]).replace("0x", ""),
+            }
+        except (ValueError, TypeError):
+            continue
 
     entries = []
-    for h in range(args.start_height, args.start_height + args.num_blocks):
-        txids = fetch_block_txids(api, h)
-        if not txids:
-            print(f"  block {h}: no txids (skip)", file=sys.stderr); continue
-        for tx_idx, txid in enumerate(txids):
-            vout_count = fetch_tx_vouts(api, txid)
-            if not vout_count:
-                continue
-            outputs = []
-            any_found = False
-            for v in range(vout_count):
-                op = fetch_opening(args.worker_base, args.network, txid, v)
-                if op and "amount" in op and "blinding" in op:
-                    try:
-                        outputs.append({
-                            "amount":   int(op["amount"]),
-                            "blinding": op["blinding"].replace("0x", ""),
-                        })
-                        any_found = True
-                    except (ValueError, AttributeError):
-                        outputs.append({"amount": 0, "blinding": "00" * 32})
-                else:
-                    outputs.append({"amount": 0, "blinding": "00" * 32})
-            if any_found:
-                # Trim trailing all-zeros (no opening published past this point)
-                while outputs and outputs[-1]["amount"] == 0 and outputs[-1]["blinding"] == "00" * 32:
-                    outputs.pop()
-                if outputs:
-                    entries.append({"block_height": h, "tx_index": tx_idx, "outputs": outputs})
-                    print(f"  block {h} tx_idx {tx_idx} ({txid[:10]}…): {len(outputs)} openings", file=sys.stderr)
+    for txid, vouts in by_txid.items():
+        st = http_get_json(f"{api}/tx/{txid}/status")
+        if not st or not st.get("confirmed"):
+            continue
+        h = st.get("block_height")
+        if h is None or h < args.start_height or h > target:
+            continue
+        block_hash = st.get("block_hash") or http_get_text(f"{api}/block-height/{h}")
+        txids = http_get_json(f"{api}/block/{block_hash}/txids")
+        if not isinstance(txids, list) or txid not in txids:
+            print(f"  {txid[:10]}… in block {h} but not in its txids (skip)", file=sys.stderr); continue
+        tx_index = txids.index(txid)
+        # Contiguous outputs from vout 0 to the max published vout; gaps -> zero.
+        max_vout = max(vouts.keys())
+        outputs = [vouts.get(v, {"amount": 0, "blinding": "00" * 32}) for v in range(max_vout + 1)]
+        entries.append({"block_height": h, "tx_index": tx_index, "outputs": outputs})
+        print(f"  block {h} tx_idx {tx_index} ({txid[:10]}…): {len(outputs)} openings", file=sys.stderr)
 
+    entries.sort(key=lambda e: (e["block_height"], e["tx_index"]))
     with open(args.output, "w") as f:
         json.dump(entries, f, indent=2)
     print(f"wrote {len(entries)} CXFER witness entries to {args.output}", file=sys.stderr)

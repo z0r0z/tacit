@@ -199,7 +199,7 @@ run_proof_cycle() {
     log "Fetching CXFER openings for blocks $start_height..$target from worker"
     python3 "${REPO_DIR}/scripts/fetch-cxfer-openings.py" \
       --start-height "$start_height" --num-blocks "$num_blocks" \
-      --network "$NETWORK" --worker-base "$worker_base" \
+      --network "$NETWORK" --worker-base "$worker_base" --asset-id "$ASSET_ID" \
       --output "$witnesses_file" 2>&1 | tee -a "${STATE_DIR}/last_proof.log" >/dev/null || {
       log "  CXFER opening fetch failed (continuing with no witnesses)"
       echo "[]" > "$witnesses_file"
