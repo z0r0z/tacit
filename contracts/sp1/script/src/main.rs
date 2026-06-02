@@ -237,6 +237,38 @@ fn main() {
     let nd = denominations.len();
     println!("  Denominations: {nd}");
 
+    // ──── Scan-only activity probe (gas saver for the prover loop) ────
+    // Reports how many in-range transactions are tETH bridge ops, without
+    // generating or submitting a proof. The loop runs this before advancing
+    // the relay or proving so it can skip cycles where the bridge is idle.
+    // The relay chain is contiguous, so idle blocks still get proven as the
+    // lead-up to the next real op — but batched into far fewer proofs.
+    // tETH ops carry the asset_id raw in their envelope / OP_RETURN payload,
+    // so a 32-byte substring match is a cheap, conservative filter: a false
+    // positive only costs one unnecessary prove, and it never skips a real op.
+    if args.contains(&"--scan-only".to_string()) {
+        let aid = asset_id.as_slice();
+        let aid32 = aid.len() == 32;
+        let mut total_bridge = 0usize;
+        let mut teth_ops = 0usize;
+        for (_hdr, _txids, provided) in &blocks {
+            for (_idx, tx) in provided {
+                total_bridge += 1;
+                let hit = if aid32 {
+                    bitcoin::extract_taproot_envelope(tx)
+                        .map(|e| e.windows(32).any(|w| w == aid)).unwrap_or(false)
+                        || bitcoin::extract_all_op_returns(tx).iter()
+                            .any(|e| e.windows(32).any(|w| w == aid))
+                } else {
+                    true // can't filter without a 32-byte asset id — be conservative
+                };
+                if hit { teth_ops += 1; }
+            }
+        }
+        println!("SCAN_RESULT total_bridge={total_bridge} teth_ops={teth_ops}");
+        return;
+    }
+
     // ──── Determine previous state from the on-chain verifier ────
     // No local state file: read the verifier's committed state and reconstruct
     // the prev inputs. Supports genesis and the deposit-side regime (pool trees

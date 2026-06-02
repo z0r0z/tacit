@@ -150,6 +150,50 @@ run_proof_cycle() {
     log "Waiting for confirmed Bitcoin blocks (start=$start_height, confirmed=$max_confirmed)"; return 1
   fi
 
+  # ──── Prove-on-activity gate ────
+  # Skip cycles where the bridge is idle, to avoid burning gas advancing the
+  # relay + proving empty state transitions. Incrementally scan confirmed
+  # blocks for tETH bridge ops (cheap host --scan-only: block fetch + envelope
+  # check, no proof, no gas) and remember a pending op across cycles. Prove
+  # only when a tETH op is pending, or when the proven height lags too far
+  # behind (heartbeat — bounds the eventual catch-up and keeps the relay
+  # current). The relay chain is contiguous, so idle blocks still get proven as
+  # the lead-up to the next real op — but batched into far fewer proofs. On any
+  # scan failure we prove (fail toward liveness, never silently skip real ops).
+  if [[ "${PROVE_ON_ACTIVITY:-1}" == "1" ]]; then
+    local scanned scan_from scan_to scan_n scan_out teth_ops lag
+    scanned=$(cat "${STATE_DIR}/last_scanned.txt" 2>/dev/null || echo "")
+    [[ "$scanned" =~ ^[0-9]+$ ]] || scanned=$((start_height - 1))
+    [[ "$scanned" -lt $((start_height - 1)) ]] && scanned=$((start_height - 1))
+    scan_from=$((scanned + 1))
+    if [[ "$scan_from" -le "$max_confirmed" ]]; then
+      scan_to=$((scan_from + ${SCAN_CHUNK:-25} - 1)); [[ "$scan_to" -gt "$max_confirmed" ]] && scan_to=$max_confirmed
+      scan_n=$((scan_to - scan_from + 1))
+      log "Scanning blocks $scan_from..$scan_to ($scan_n) for tETH activity"
+      cd "${REPO_DIR}/contracts/sp1/script"
+      export CARGO_TARGET_DIR="${PROVER_TARGET:-${REPO_DIR}/contracts/sp1/script/target}"
+      scan_out=$(ASSET_ID="$ASSET_ID" MIXER_ADDRESS="$MIXER_ADDRESS" DENOMINATIONS="$DENOMINATIONS" \
+        NETWORK="$NETWORK" NETWORK_TAG="$NETWORK_TAG" CHAIN_ID="$CHAIN_ID" DEPLOY_BLOCK="$DEPLOY_BLOCK" \
+        STATE_DIR="$STATE_DIR" OUTPUT_DIR="$STATE_DIR" ETH_RPC="$ETH_RPC" SP1_PROVER="$SP1_PROVER" \
+        cargo run --release $PROVER_FEATURES --bin teth-prover -- \
+          --start-height "$scan_from" --num-blocks "$scan_n" --scan-only 2>&1)
+      teth_ops=$(echo "$scan_out" | grep -oE "teth_ops=[0-9]+" | tail -1 | cut -d= -f2)
+      if ! echo "$scan_out" | grep -q "SCAN_RESULT"; then
+        log "  scan produced no SCAN_RESULT — proving this cycle to be safe"; echo "$scan_out" | tail -3
+        touch "${STATE_DIR}/activity_pending"
+      elif [[ "${teth_ops:-0}" -gt 0 ]]; then
+        log "  found $teth_ops tETH op(s) in $scan_from..$scan_to"
+        touch "${STATE_DIR}/activity_pending"
+      fi
+      echo "$scan_to" > "${STATE_DIR}/last_scanned.txt"
+    fi
+    lag=$((max_confirmed - last_proven))
+    if [[ ! -f "${STATE_DIR}/activity_pending" && "$lag" -lt "${MAX_LAG:-12}" ]]; then
+      log "No pending tETH activity (lag=$lag < ${MAX_LAG:-12}) — skipping cycle (no gas)"
+      return 0
+    fi
+  fi
+
   # Advance the relay to exactly $target, in <=20-header chunks.
   relay_tip=$(get_relay_tip)
   [[ -n "$relay_tip" ]] || { log "could not fetch relay tip (RPC unreachable?); skipping cycle"; return 1; }
@@ -250,6 +294,12 @@ run_proof_cycle() {
     log "STATE_FILE committed (post-cycle state persisted)"
   fi
   echo "$target" > "${STATE_DIR}/last_proven_block.txt"
+  # Clear the activity flag once we've proven through everything scanned; if a
+  # chunked catch-up has more scanned blocks ahead, leave it set so the next
+  # cycle keeps proving toward the pending op.
+  if [[ "$target" -ge "$(cat "${STATE_DIR}/last_scanned.txt" 2>/dev/null || echo "$target")" ]]; then
+    rm -f "${STATE_DIR}/activity_pending"
+  fi
   log "Cycle complete: blocks $start_height-$target proven and accepted"
 }
 
