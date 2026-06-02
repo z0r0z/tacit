@@ -20865,6 +20865,12 @@ async function scanForEtches(env, network) {
           const cnt = parseInt(await env.REGISTRY_KV.get(cntKey) || '0', 10);
           if (cnt >= POOL_LEAF_CAP) continue;
           const leafKey = poolLeafKeyFor(network, td.asset_id, td.denomination, h, txIndex, tx.txid);
+          // leaf_count advances only on a leaf key's first write. This scan
+          // path is re-entrant (rescan / backfill / hint-then-cron all touch
+          // the same block), so an unconditional bump drifts the count above
+          // the real leaf set — overstating the anonymity set and hitting
+          // POOL_LEAF_CAP early. Mirrors the /assets/hint deposit guard.
+          const leafExisted = (await env.REGISTRY_KV.get(leafKey)) !== null;
           const leafMeta = {
             asset_id: td.asset_id,
             denomination: td.denomination,
@@ -20876,7 +20882,7 @@ async function scanForEtches(env, network) {
             network,
           };
           await env.REGISTRY_KV.put(leafKey, JSON.stringify(leafMeta));
-          await env.REGISTRY_KV.put(cntKey, String(cnt + 1));
+          if (!leafExisted) await env.REGISTRY_KV.put(cntKey, String(cnt + 1));
           found++;
         }
       } else if (decoded.opcode === T_WITHDRAW) {
@@ -20952,6 +20958,9 @@ async function scanForEtches(env, network) {
         if (cnt >= POOL_LEAF_CAP) continue;
         // Append the leaf and record the slot entry.
         const leafKey = poolLeafKeyFor(network, sm.asset_id, sm.denomination, h, txIndex, tx.txid);
+        // First-write guard so leaf_count stays exact across re-scans (see the
+        // T_DEPOSIT path above).
+        const smLeafExisted = (await env.REGISTRY_KV.get(leafKey)) !== null;
         const leafMeta = {
           asset_id: sm.asset_id,
           denomination: sm.denomination,
@@ -20990,7 +20999,7 @@ async function scanForEtches(env, network) {
             encrypted_note: sm.encrypted_note || null,
           }),
         );
-        await env.REGISTRY_KV.put(cntKey, String(cnt + 1));
+        if (!smLeafExisted) await env.REGISTRY_KV.put(cntKey, String(cnt + 1));
         const xonlyHex = sm.k_btc_xonly;
         const slotKey = slotRegistryKey(network, sm.asset_id, sm.denomination, xonlyHex);
         await env.REGISTRY_KV.put(slotKey, JSON.stringify({
@@ -21097,6 +21106,7 @@ async function scanForEtches(env, network) {
         const cnt = parseInt(await env.REGISTRY_KV.get(cntKey) || '0', 10);
         if (cnt >= POOL_LEAF_CAP) continue;
         const leafKey = poolLeafKeyFor(network, sr.asset_id, sr.denomination, h, txIndex, tx.txid);
+        const srLeafExisted = (await env.REGISTRY_KV.get(leafKey)) !== null;
         await env.REGISTRY_KV.put(leafKey, JSON.stringify({
           asset_id: sr.asset_id,
           denomination: sr.denomination,
@@ -21132,7 +21142,7 @@ async function scanForEtches(env, network) {
             encrypted_note: sr.encrypted_note || null,
           }),
         );
-        await env.REGISTRY_KV.put(cntKey, String(cnt + 1));
+        if (!srLeafExisted) await env.REGISTRY_KV.put(cntKey, String(cnt + 1));
         const newXonlyHex = sr.new_k_btc_xonly;
         await env.REGISTRY_KV.put(
           slotRegistryKey(network, sr.asset_id, sr.denomination, newXonlyHex),
@@ -21292,6 +21302,7 @@ async function scanForEtches(env, network) {
           const leafKey = poolLeafKeyFor(
             network, out.asset_id_new, dNew, h, txIndex, tx.txid + ':' + i,
           );
+          const splitLeafExisted = (await env.REGISTRY_KV.get(leafKey)) !== null;
           await env.REGISTRY_KV.put(leafKey, JSON.stringify({
             asset_id: out.asset_id_new,
             denomination: dNew.toString(),
@@ -21327,7 +21338,7 @@ async function scanForEtches(env, network) {
               encrypted_note: ss.encrypted_notes ? ss.encrypted_notes[i] : null,
             }),
           );
-          await env.REGISTRY_KV.put(cntKey, String(cnt + 1));
+          if (!splitLeafExisted) await env.REGISTRY_KV.put(cntKey, String(cnt + 1));
           await env.REGISTRY_KV.put(
             slotRegistryKey(network, out.asset_id_new, dNew, xonlyHex),
             JSON.stringify({
@@ -21461,6 +21472,7 @@ async function scanForEtches(env, network) {
 
         // Append new leaf + slot-registry + leaf-lookup.
         const leafKey = poolLeafKeyFor(network, sm.asset_id_new, dNew, h, txIndex, tx.txid);
+        const mergeLeafExisted = (await env.REGISTRY_KV.get(leafKey)) !== null;
         await env.REGISTRY_KV.put(leafKey, JSON.stringify({
           asset_id: sm.asset_id_new,
           denomination: dNew.toString(),
@@ -21493,7 +21505,7 @@ async function scanForEtches(env, network) {
             encrypted_note: sm.encrypted_note || null,
           }),
         );
-        await env.REGISTRY_KV.put(cntKey, String(cnt + 1));
+        if (!mergeLeafExisted) await env.REGISTRY_KV.put(cntKey, String(cnt + 1));
         await env.REGISTRY_KV.put(
           slotRegistryKey(network, sm.asset_id_new, dNew, newKBtcXOnlyHex),
           JSON.stringify({
@@ -27225,6 +27237,35 @@ async function _routeFetch(req, env, ctx) {
         const from = parseInt(fromStr, 10);
         return jsonResponse(await rewindLastScanned(env, from, network), 200, cors);
       } catch (e) { return jsonResponse({ error: e.message }, 400, cors); }
+    }
+    // /recount-pool?aid=<hex64>&denom=<dec> — recompute leaf_count from the
+    // pool's actual leaf records, repairing counter drift left by pre-fix
+    // re-entrant scans. Exact when the leaf listing completes (the live pools);
+    // refuses (409) on a truncated listing so a large pool's counter is never
+    // clobbered with an undercount.
+    if (url.pathname === '/recount-pool' && req.method === 'POST') {
+      if (!checkDebugAuth(req, env)) return jsonResponse({ error: 'not found' }, 404, cors);
+      const aid = (url.searchParams.get('aid') || '').toLowerCase();
+      const denom = url.searchParams.get('denom') || '';
+      if (!/^[0-9a-f]{64}$/.test(aid) || !/^\d+$/.test(denom)) {
+        return jsonResponse({ error: 'need ?aid=<hex64>&denom=<dec>' }, 400, cors);
+      }
+      const cntKey = poolLeafCountKey(network, aid, denom);
+      const before = parseInt(await env.REGISTRY_KV.get(cntKey) || '0', 10);
+      let actual = 0, cursor, complete = false;
+      for (let page = 0; page < 1100; page++) {
+        const opts = { prefix: poolLeafPrefix(network, aid, denom), limit: 1000 };
+        if (cursor) opts.cursor = cursor;
+        const list = await env.REGISTRY_KV.list(opts);
+        actual += list.keys.length;
+        if (list.list_complete !== false || !list.cursor) { complete = true; break; }
+        cursor = list.cursor;
+      }
+      if (!complete) {
+        return jsonResponse({ error: 'leaf listing did not complete; counter unchanged', before, network }, 409, cors);
+      }
+      await env.REGISTRY_KV.put(cntKey, String(actual));
+      return jsonResponse({ ok: true, aid, denom, network, before, after: actual, drift: before - actual }, 200, cors);
     }
     // /debug/route?txid=<reveal_txid> — one-shot synchronous T_SWAP_ROUTE
     // validator replay. Returns the gate where the route would fail (or
