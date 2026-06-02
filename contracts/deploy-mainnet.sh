@@ -176,7 +176,9 @@ DEPLOYER_PRIVATE_KEY=$DEPLOYER_PRIVATE_KEY \
 forge script script/Deploy.s.sol:DeployTacitBridge \
   --rpc-url "$MAINNET_RPC" \
   --libraries "src/lib/PoseidonT3.sol:PoseidonT3:${POSEIDON_T3}" \
-  --broadcast \
+  $([ "${DRY_RUN:-}" = 1 ] || echo --broadcast) \
+  ${DEPLOY_GAS_PRICE:+--with-gas-price "$DEPLOY_GAS_PRICE"} \
+  --gas-estimate-multiplier "${DEPLOY_GAS_MULT:-130}" \
   -vvv
 
 echo ""
