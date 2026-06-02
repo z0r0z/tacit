@@ -54,6 +54,21 @@ if [[ $COUNT -gt $AVAILABLE ]]; then
   COUNT=$AVAILABLE
 fi
 
+# Cap at the difficulty-epoch boundary. advanceTip reverts UnknownEpoch on the
+# first block of a new 2016-block epoch until retarget() sets that epoch's
+# target, so never include it: stop at the last block of the current epoch and
+# tell the operator to run retarget-relay.sh.
+EPOCH=$(cast call "$RELAY_ADDRESS" "currentEpoch()(uint256)" --rpc-url "$ETH_RPC" | awk '{print $1}')
+BOUNDARY=$(( (EPOCH + 1) * 2016 - 1 ))
+if [[ $((FROM_HEIGHT + COUNT - 1)) -gt $BOUNDARY ]]; then
+  COUNT=$(( BOUNDARY - FROM_HEIGHT + 1 ))
+  echo "Capping at epoch-$EPOCH boundary (block $BOUNDARY). After this, run retarget-relay.sh before advancing further."
+fi
+if [[ $COUNT -le 0 ]]; then
+  echo "Tip is at the epoch boundary ($BOUNDARY). Run retarget-relay.sh to cross into epoch $((EPOCH+1))."
+  exit 0
+fi
+
 # Fetch and concatenate headers
 HEADERS=""
 for ((h = FROM_HEIGHT; h < FROM_HEIGHT + COUNT; h++)); do
@@ -68,7 +83,7 @@ echo "Submitting $COUNT headers to relay..."
 cast send "$RELAY_ADDRESS" "advanceTip(bytes)" "0x${HEADERS}" \
   --rpc-url "$ETH_RPC" \
   --private-key "$RELAY_PK" \
-  --gas-limit 2000000 2>&1 | grep "status\|transactionHash" | head -2
+  --gas-limit 5000000 2>&1 | grep "status\|transactionHash" | head -2
 
 echo ""
 NEW_TIP=$(cast call "$RELAY_ADDRESS" "tipHeight()(uint256)" --rpc-url "$ETH_RPC" | awk '{print $1}')
