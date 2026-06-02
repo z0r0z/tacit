@@ -97,8 +97,11 @@ fi
 bash "$PREFLIGHT_DIR/sp1/verify-vkey-pin.sh"
 
 # Cross-check: SP1_PROGRAM_VKEY env equals the pinned canonical vkey.
+# (tr-lowercase, not ${var,,}, so this runs under macOS's bash 3.2.)
 PINNED_VKEY=$(python3 -c "import json; print(json.load(open('$PREFLIGHT_DIR/sp1/elf-vkey-pin.json'))['program_vkey'])")
-if [ "${SP1_PROGRAM_VKEY,,}" != "${PINNED_VKEY,,}" ]; then
+_VKEY_LC=$(printf '%s' "$SP1_PROGRAM_VKEY" | tr '[:upper:]' '[:lower:]')
+_PIN_LC=$(printf '%s' "$PINNED_VKEY" | tr '[:upper:]' '[:lower:]')
+if [ "$_VKEY_LC" != "$_PIN_LC" ]; then
   echo "REFUSING TO DEPLOY: SP1_PROGRAM_VKEY env ($SP1_PROGRAM_VKEY) != pinned ($PINNED_VKEY)."
   echo "The deployed verifier MUST use the vkey of the committed ELF or every proveStateTransition reverts."
   exit 1
