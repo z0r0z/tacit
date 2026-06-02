@@ -17,7 +17,7 @@ set -euo pipefail
 # Usage:  ./scripts/retarget-relay.sh
 # Env:    ETH_RPC, RELAY_PK, RELAY_ADDRESS, MEMPOOL_API
 #   mainnet: ETH_RPC=https://ethereum-rpc.publicnode.com \
-#            RELAY_ADDRESS=0x363582956488ff615ecF75783FEDc5ADB18Ca6D0 \
+#            RELAY_ADDRESS=0x45AA793952A710E61D456deAcA13E29d8E5c0951 \
 #            RELAY_PK=0x... MEMPOOL_API=https://mempool.space/api \
 #            ./scripts/retarget-relay.sh
 

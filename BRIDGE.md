@@ -314,20 +314,20 @@ The ETH ↔ tETH bridge is deployed and Etherscan-verified on Ethereum mainnet (
 
 | Contract | Address |
 | --- | --- |
-| `BitcoinLightRelay` | [`0x363582956488ff615ecF75783FEDc5ADB18Ca6D0`](https://etherscan.io/address/0x363582956488ff615ecF75783FEDc5ADB18Ca6D0) |
-| `TacitBridgeMixer` (native ETH) | [`0x82eb12463560E91A8B1D2312223E77c7C490cC37`](https://etherscan.io/address/0x82eb12463560E91A8B1D2312223E77c7C490cC37) |
-| `SP1PoolRootVerifier` | [`0x42Ab3d9dF0D5077ECfBD95Adf3f99b3bEa2a3CCb`](https://etherscan.io/address/0x42Ab3d9dF0D5077ECfBD95Adf3f99b3bEa2a3CCb) |
+| `BitcoinLightRelay` | [`0x45AA793952A710E61D456deAcA13E29d8E5c0951`](https://etherscan.io/address/0x45AA793952A710E61D456deAcA13E29d8E5c0951) |
+| `TacitBridgeMixer` (native ETH) | [`0x6929acf0a8dDe761Bf16A54B61473e89124FECbf`](https://etherscan.io/address/0x6929acf0a8dDe761Bf16A54B61473e89124FECbf) |
+| `SP1PoolRootVerifier` | [`0x19CC65a1B4e3C9516Cc648182bdeb1116A7cA701`](https://etherscan.io/address/0x19CC65a1B4e3C9516Cc648182bdeb1116A7cA701) |
 | Groth16 burn verifier | [`0x031b22ba49e38212fdeB92b31fe2f718567Ab2ca`](https://etherscan.io/address/0x031b22ba49e38212fdeB92b31fe2f718567Ab2ca) |
 
 - **tETH asset ID:** `0x3cba71e1114af183cdeacc6b8457a474d17529fd28704480ca799d0d03126f34` — `SHA256(etch_reveal_txid_BE ‖ vout 0)`. Etched supply is 0, so every tETH in existence is backed 1:1 by ETH locked in the mixer.
 - **Bitcoin etch reveal:** `8c31974d6060dcf400f4a13ac8344a46a7a71e561d15577915f6eef06880af8d` (block 951992), 8 decimals.
-- **SP1 program vkey:** `0x00896679209104e11547ca6ce1a2bfff249435b4c7fc3621cc57bf660543d007` (pinned in `contracts/sp1/elf-vkey-pin.json`).
-- **SP1 gateway (Succinct, mainnet):** `0x397A5f7f3dBd538f23DE225B51f532c34448dA9B`.
+- **SP1 proof verification:** the verifier calls the immutable SP1 Groth16 verifier (v6.1.0) at `0xb69f2584CBcFf99a58C4e7002E8b89Af54a6f4e2` directly, not Succinct's upgradeable gateway — so no party can pause or alter proof verification.
+- **SP1 program vkey:** `0x003e5d7431b415385b0184af2b0e6b0a4728270ca345c4259162ed505f4d7402` (pinned in `contracts/sp1/elf-vkey-pin.json`; the committed guest ELF is reproduced byte-for-byte in CI).
 - **PoseidonT3:** `0x3333333c0a88f9be4fd23ed0536f9b6c427e3b93` (canonical poseidon-solidity, byte-identical across chains).
-- **Relay genesis anchor:** Bitcoin block 952014 (epoch 472). **Confirmation depth:** 6. **Network tag:** 0 (mainnet).
-- **Mixer deploy block:** 25,225,855 (`0x180e67f`) — deposits are indexed from here.
+- **Relay genesis anchor:** Bitcoin block 952127. **Confirmation depth:** 6. **Finality window:** 6. **Network tag:** 0 (mainnet).
+- **Mixer deploy block:** 25,231,174 (`0x180ff46`) — deposits are indexed from here.
 
-Circulating tETH equals the mixer's `totalBalance()` (deposits − withdrawals) and is readable on-chain at any time. The dApp opens this as a capped pilot — 0.001 ETH per deposit, 10 ETH total backing — enforced dApp-side while the deposit base grows.
+Circulating tETH equals the mixer's `totalBalance()` (deposits − withdrawals) and is readable on-chain at any time. The bridge is not yet open in the dApp; when it opens it will run as a capped pilot — 0.001 ETH per deposit, 10 ETH total backing — enforced dApp-side while the deposit base grows.
 
 ## Proving
 

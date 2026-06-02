@@ -6,10 +6,10 @@ nothing user-facing turns on until its backend prerequisite is real.
 
 ## Current state (done)
 
-- Contracts live + Etherscan-verified (MTP-fix redeploy): mixer
-  `0x82eb12463560E91A8B1D2312223E77c7C490cC37`, verifier
-  `0x42Ab3d9dF0D5077ECfBD95Adf3f99b3bEa2a3CCb`, relay (MTP)
-  `0x363582956488ff615ecF75783FEDc5ADB18Ca6D0`, genesis anchor BTC block 952014.
+- Contracts live + Etherscan-verified (hardened redeploy): mixer
+  `0x6929acf0a8dDe761Bf16A54B61473e89124FECbf`, verifier
+  `0x19CC65a1B4e3C9516Cc648182bdeb1116A7cA701`, relay
+  `0x45AA793952A710E61D456deAcA13E29d8E5c0951`, genesis anchor BTC block 952127.
 - Both round-trips validated on-chain: happy-path (3a) + Alice→Bob fractional
   (3b: export/cxfer/import, different recipient, tree growth).
 - MTP fix proven on-chain (relay crossed non-monotonic block 952068).
@@ -68,7 +68,7 @@ consecutive cycles unattended on mainnet.
 ## Track B — dapp un-gate + mainnet UI flow
 
 Steps:
-- **B1.** Confirm `TETH_DEPLOYMENTS.mainnet` (done: mixer + deployBlock 0x180e67f
+- **B1.** Confirm `TETH_DEPLOYMENTS.mainnet` (done: mixer + deployBlock 0x180ff46
   + assetId). Relay/verifier are derived on-chain (`HEADER_RELAY()`), no hardcode.
 - **B2 (deposit).** Verify the UI deposit path (`bridgeDepositETH` →
   `deposit(bytes32,uint256)`, selector `1de26e16`) enforces the 0.001 cap on
@@ -114,7 +114,7 @@ Owner: ops/dapp. Mostly operational + a UI total-cap check.
 ## Dapp ↔ tETH API surface (the integration interface)
 
 What the dapp already touches / must touch:
-- **Mixer** (`0x82eb1246…`): `deposit(bytes32 commitment, uint256 denomWei)`
+- **Mixer** (`0x6929acf0…`): `deposit(bytes32 commitment, uint256 denomWei)`
   payable (user); `withdrawFromBurn(bytes,bytes,uint256,bytes32[],uint256)`
   (user, after the burn is SP1-accepted + 6-conf). `getRootAccumulator`,
   `getNextLeafIndex` for tree state. **User-facing.**
