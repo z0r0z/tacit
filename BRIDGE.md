@@ -308,6 +308,27 @@ The deploy script predicts the mixer address via nonce, deploys the verifier wit
 
 For an ETH bridge: 1 relay + 1 verifier + 1 mixer + 1 Groth16 verifier = 4 contracts. For USDC: reuse the same relay, deploy 1 mixer + 1 SP1 verifier.
 
+### Live on Ethereum mainnet
+
+The ETH ↔ tETH bridge is deployed and Etherscan-verified on Ethereum mainnet (chain ID 1), bridging mainnet Bitcoin. The contracts are immutable and permissionless — anyone can advance the relay or submit state proofs; funds are protected by the proofs, not by any privileged caller.
+
+| Contract | Address |
+| --- | --- |
+| `BitcoinLightRelay` | [`0x363582956488ff615ecF75783FEDc5ADB18Ca6D0`](https://etherscan.io/address/0x363582956488ff615ecF75783FEDc5ADB18Ca6D0) |
+| `TacitBridgeMixer` (native ETH) | [`0x82eb12463560E91A8B1D2312223E77c7C490cC37`](https://etherscan.io/address/0x82eb12463560E91A8B1D2312223E77c7C490cC37) |
+| `SP1PoolRootVerifier` | [`0x42Ab3d9dF0D5077ECfBD95Adf3f99b3bEa2a3CCb`](https://etherscan.io/address/0x42Ab3d9dF0D5077ECfBD95Adf3f99b3bEa2a3CCb) |
+| Groth16 burn verifier | [`0x031b22ba49e38212fdeB92b31fe2f718567Ab2ca`](https://etherscan.io/address/0x031b22ba49e38212fdeB92b31fe2f718567Ab2ca) |
+
+- **tETH asset ID:** `0x3cba71e1114af183cdeacc6b8457a474d17529fd28704480ca799d0d03126f34` — `SHA256(etch_reveal_txid_BE ‖ vout 0)`. Etched supply is 0, so every tETH in existence is backed 1:1 by ETH locked in the mixer.
+- **Bitcoin etch reveal:** `8c31974d6060dcf400f4a13ac8344a46a7a71e561d15577915f6eef06880af8d` (block 951992), 8 decimals.
+- **SP1 program vkey:** `0x00896679209104e11547ca6ce1a2bfff249435b4c7fc3621cc57bf660543d007` (pinned in `contracts/sp1/elf-vkey-pin.json`).
+- **SP1 gateway (Succinct, mainnet):** `0x397A5f7f3dBd538f23DE225B51f532c34448dA9B`.
+- **PoseidonT3:** `0x3333333c0a88f9be4fd23ed0536f9b6c427e3b93` (canonical poseidon-solidity, byte-identical across chains).
+- **Relay genesis anchor:** Bitcoin block 952014 (epoch 472). **Confirmation depth:** 6. **Network tag:** 0 (mainnet).
+- **Mixer deploy block:** 25,225,855 (`0x180e67f`) — deposits are indexed from here.
+
+Circulating tETH equals the mixer's `totalBalance()` (deposits − withdrawals) and is readable on-chain at any time. The dApp opens this as a capped pilot — 0.001 ETH per deposit, 10 ETH total backing — enforced dApp-side while the deposit base grows.
+
 ## Proving
 
 The SP1 host program fetches Bitcoin blocks from any block explorer API, feeds headers + all raw transactions to the guest, and generates proofs. Run it periodically to advance pool state:

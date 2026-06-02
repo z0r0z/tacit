@@ -65,7 +65,9 @@ data alone. Tacit applies that pattern to a much wider surface:
   Every mint is client-side verified: re-verify the Groth16 proof
   + check `ethRoot` against the Ethereum contract via `eth_call`.
   Notes and shielded UTXOs are deterministically derived from
-  privkey alone. See [`BRIDGE.md`](./BRIDGE.md).
+  privkey alone. Live and Etherscan-verified on Ethereum mainnet —
+  see [`BRIDGE.md` § Live on Ethereum mainnet](./BRIDGE.md#live-on-ethereum-mainnet)
+  for contract addresses.
 - **Native marketplace.** Atomic OTC settlement of a confidential
   token against a BTC payment in one Bitcoin tx (`T_AXFER`), plus
   variable-amount partial fills (`T_AXFER_VAR`) and buyer-offline
