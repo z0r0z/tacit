@@ -227,12 +227,14 @@ run_proof_cycle() {
   # not affect the next cycle's load (which uses the LAST KNOWN-GOOD
   # STATE_FILE). Host re-writes staging during this cycle.
   rm -f "${state_file}.staging"
+  # export (not inline-prefix) so the empty ${POOL_IDS:+…}/${DEPOSIT_ROOTS_FILE:+…}
+  # words below don't end the assignment-prefix and make this the command word.
+  export CARGO_TARGET_DIR="${PROVER_TARGET:-${REPO_DIR}/contracts/sp1/script/target}"
   ASSET_ID="$ASSET_ID" MIXER_ADDRESS="$MIXER_ADDRESS" DENOMINATIONS="$DENOMINATIONS" \
   NETWORK="$NETWORK" NETWORK_TAG="$NETWORK_TAG" CHAIN_ID="$CHAIN_ID" DEPLOY_BLOCK="$DEPLOY_BLOCK" \
   STATE_DIR="$STATE_DIR" OUTPUT_DIR="$STATE_DIR" ETH_RPC="$ETH_RPC" SP1_PROVER="$SP1_PROVER" \
   CXFER_WITNESSES_PATH="$witnesses_file" STATE_FILE="$state_file" \
   ${POOL_IDS:+POOL_IDS="$POOL_IDS"} ${DEPOSIT_ROOTS_FILE:+DEPOSIT_ROOTS_FILE="$DEPOSIT_ROOTS_FILE"} \
-  ${PROVER_TARGET:+CARGO_TARGET_DIR="$PROVER_TARGET"} \
   cargo run --release $PROVER_FEATURES --bin teth-prover -- \
     --start-height "$start_height" --num-blocks "$num_blocks" --onchain 2>&1 | tee "${STATE_DIR}/last_proof.log"
 
@@ -258,6 +260,9 @@ log ""
 while true; do
   run_proof_cycle || log "Proof cycle skipped"
   CYCLE_COUNT=$((CYCLE_COUNT + 1))
+  if [[ -n "${MAX_CYCLES:-}" && "$CYCLE_COUNT" -ge "$MAX_CYCLES" ]]; then
+    log "Reached MAX_CYCLES=$MAX_CYCLES — exiting."; break
+  fi
   log "Sleeping ${SLEEP_SECONDS}s..."
   sleep "$SLEEP_SECONDS"
 done
