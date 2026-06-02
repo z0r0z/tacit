@@ -36,4 +36,16 @@ contract TestLightRelay is BitcoinLightRelay {
     function exposed_medianTimePast(bytes32 parent) external view returns (uint32) {
         return _medianTimePast(parent);
     }
+
+    /// @dev Set tip/height directly so the finality-window anchor check can be
+    ///      exercised in isolation (advanceTip's real PoW makes synthetic tips
+    ///      impractical), mirroring the median-time-past test hooks above.
+    function seedTip(bytes32 t, uint256 th) external {
+        tip = t;
+        tipHeight = th;
+    }
+
+    function exposed_anchorChain(uint256 endHeight, bytes32 lastHash) external view {
+        _anchorChain(endHeight, lastHash);
+    }
 }

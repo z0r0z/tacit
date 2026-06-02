@@ -13,14 +13,14 @@ pragma solidity ^0.8.28;
 ///         - Tip advances are permissionless. Anyone can call advanceTip().
 ///         - Retargets occur every 2016 blocks. The relay must be at the exact
 ///           epoch boundary (tipHeight == epoch * 2016 - 1) before retarget().
-///         - The relay requires exact tip equality for SP1 proof acceptance.
-///           This means a relay tip advance between SP1 proof generation and
-///           submission will make the proof stale. The prover should retry with
-///           updated headers. For production, this can be relaxed to a finality
-///           window (tip or ancestor within N blocks) without changing security.
+///         - Withdrawal burn-inclusion proofs (verifyBlock) anchor to the tip
+///           or a recent ancestor within FINALITY_WINDOW, and SP1 state proofs
+///           tolerate the same window in the verifier — so a tip advance between
+///           proof construction and submission doesn't revert. Burial depth is
+///           preserved: the chain end sits at or below the tip.
 ///         - Genesis checkpoint is set by the deployer and is trusted. Values
 ///           should be independently verifiable from any Bitcoin block explorer.
-///         - Deep reorgs crossing retarget boundaries are out of scope for v1.
+///         - Deep reorgs crossing retarget boundaries are currently out of scope.
 ///           The relay uses global epoch targets, not branch-specific retargets.
 ///           This is acceptable because such reorgs have never occurred on
 ///           Bitcoin mainnet (deepest historical reorg: 4 blocks, 2013).
@@ -31,6 +31,12 @@ contract BitcoinLightRelay {
     uint256 public constant TARGET_TIMESPAN = 14 * 24 * 60 * 60;
     uint256 public constant MAX_TARGET = 0x00000000ffff0000000000000000000000000000000000000000000000000000;
     uint256 public constant PROOF_LENGTH = 4;
+    /// Burn-inclusion proofs (verifyBlock) may anchor to the tip or a recent
+    /// ancestor within this many blocks, so a tip advance between header fetch
+    /// and withdrawal submission doesn't revert. Burial depth is preserved —
+    /// the chain end is at or below the tip, so the burn stays >= confirmations
+    /// deep below the canonical tip.
+    uint256 public constant FINALITY_WINDOW = 6;
 
     // ──────────────────── Storage ────────────────────
 
@@ -278,7 +284,6 @@ contract BitcoinLightRelay {
         if (!initialized) revert NotInitialized();
         uint256 n = headers.length / 80;
         if (headers.length % 80 != 0 || n < 1 + confirmations) revert InvalidChainLength();
-        if (blockHeight_ + n - 1 != tipHeight) revert ChainNotAnchored();
 
         bytes32 prevHash;
         bytes32 lastHash;
@@ -303,7 +308,20 @@ contract BitcoinLightRelay {
             lastHash = bh;
         }
 
-        if (lastHash != tip) revert ChainNotAnchored();
+        _anchorChain(blockHeight_ + n - 1, lastHash);
+    }
+
+    /// @dev A burn-inclusion chain anchors if it ends at the tip or a canonical
+    ///      ancestor within FINALITY_WINDOW; lastHash must be the relay's block
+    ///      at endHeight (reached by walking blockParent back from the tip), so a
+    ///      forged side-chain at a valid height is rejected. Burial depth is
+    ///      preserved: endHeight <= tipHeight, so the burn stays >= confirmations
+    ///      deep below the canonical tip.
+    function _anchorChain(uint256 endHeight, bytes32 lastHash) internal view {
+        if (endHeight > tipHeight || endHeight + FINALITY_WINDOW < tipHeight) revert ChainNotAnchored();
+        bytes32 anchor = tip;
+        for (uint256 h = tipHeight; h > endHeight; --h) anchor = blockParent[anchor];
+        if (anchor != lastHash) revert ChainNotAnchored();
     }
 
     // ──────────────────── Internal ────────────────────

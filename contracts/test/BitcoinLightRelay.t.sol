@@ -127,4 +127,27 @@ contract BitcoinLightRelayTest is TestHelper {
         assertEq(r.currentEpoch(), 472);
         assertEq(r.epochTarget(472), uint256(0x02068f) << 160); // real new bits 0x1702068f
     }
+
+    // Burn-inclusion proofs anchor to the tip OR a canonical ancestor within
+    // FINALITY_WINDOW (6), so a tip advance mid-withdrawal doesn't revert — while
+    // still rejecting beyond-window, forged-side-chain, and ahead-of-tip claims.
+    function test_anchorChain_finality_window() public {
+        TestLightRelay r = new TestLightRelay();
+        // Canonical chain bh[0..6] at heights 100..106, tip at 106.
+        bytes32[] memory bh = new bytes32[](7);
+        for (uint256 i; i < 7; ++i) bh[i] = keccak256(abi.encodePacked("blk", i));
+        for (uint256 i = 1; i < 7; ++i) r.seedBlock(bh[i], bh[i - 1], 0);
+        r.seedTip(bh[6], 106);
+
+        r.exposed_anchorChain(106, bh[6]); // ends at tip
+        r.exposed_anchorChain(100, bh[0]); // exactly FINALITY_WINDOW behind
+        r.exposed_anchorChain(103, bh[3]); // mid-window ancestor
+
+        vm.expectRevert(); // beyond the window (7 behind)
+        r.exposed_anchorChain(99, bh[0]);
+        vm.expectRevert(); // forged side-chain block at a valid height
+        r.exposed_anchorChain(103, keccak256("fork"));
+        vm.expectRevert(); // claims to end ahead of the tip
+        r.exposed_anchorChain(107, bh[6]);
+    }
 }

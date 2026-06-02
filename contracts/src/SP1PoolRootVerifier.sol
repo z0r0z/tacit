@@ -289,10 +289,6 @@ contract SP1PoolRootVerifier {
         return false;
     }
 
-    function rootAccumulator(bytes32 poolId) external view returns (bytes32) {
-        return MIXER_CONTRACT.getRootAccumulator(poolId);
-    }
-
     function _hashArrayMem(bytes32[] memory arr) internal pure returns (bytes32) {
         return sha256(abi.encodePacked(arr));
     }

@@ -305,7 +305,7 @@ contract TacitBridgeMixer is ReentrancyGuardTransient {
         }
 
         bytes memory env = _extractTaprootEnvelope(rawBtcTx);
-        (bytes32 nullifierHash,, address payable recipient, bytes32 pid) = _validateBurn(env);
+        (bytes32 nullifierHash, address payable recipient, bytes32 pid) = _validateBurn(env);
 
         Pool storage p = _pools[pid];
         if (p.burnNullifiers[nullifierHash]) revert NullifierAlreadySpent();
@@ -323,7 +323,7 @@ contract TacitBridgeMixer is ReentrancyGuardTransient {
     }
 
     function _validateBurn(bytes memory env)
-        internal view returns (bytes32 nullifierHash, bytes32 denomTacit, address payable recipient, bytes32 pid)
+        internal view returns (bytes32 nullifierHash, address payable recipient, bytes32 pid)
     {
         if (env.length < _BURN_ENVELOPE_MIN) revert InvalidBurnProof();
         if (uint8(env[0]) != _BURN_OPCODE) revert InvalidBurnProof();
@@ -332,7 +332,7 @@ contract TacitBridgeMixer is ReentrancyGuardTransient {
 
         // Envelope denomination is in Tacit units (8-decimal). Map to wei for
         // pool lookup and balance accounting via UNIT_SCALE.
-        denomTacit = _b32(env, _OFF_DENOM);
+        bytes32 denomTacit = _b32(env, _OFF_DENOM);
         nullifierHash = _b32(env, _OFF_NULLIFIER);
         recipient = _addr(env, _OFF_RECIPIENT);
 
