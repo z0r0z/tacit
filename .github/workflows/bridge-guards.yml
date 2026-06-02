@@ -61,6 +61,27 @@ jobs:
       - name: Install test deps
         working-directory: tests
         run: npm install --no-audit --no-fund --prefer-offline
+      - name: Fetch ceremony artifacts by CID (verification_key.json is committed)
+        # The ptau/r1cs/zkey are too large for git; they are content-addressed
+        # and pinned. ceremony-vk-pin.test.mjs verifies each against its pinned
+        # sha256, so a wrong/poisoned byte from any gateway fails the build.
+        run: |
+          set -eu
+          dir=dapp/circuits/ceremony-bundle
+          mkdir -p "$dir"
+          fetch() {
+            out="$1"; cid="$2"
+            for gw in https://tacit-pin.rosscampbell9.workers.dev/ipfs \
+                      https://w3s.link/ipfs https://dweb.link/ipfs https://ipfs.io/ipfs; do
+              echo "  $out <- $gw/$cid"
+              if curl -fsSL --max-time 180 "$gw/$cid" -o "$out"; then return 0; fi
+            done
+            echo "FATAL: could not fetch $out ($cid) from any gateway"; return 1
+          }
+          fetch "$dir/withdraw.r1cs"       bafybeier3ov53hjv5hkb66uwrfoyklkwm25xlk3ylsps2iwal5d3d462su
+          fetch "$dir/pot14_final.ptau"    bafybeihauovdkzt5pni6chysvka6onkfpaixfny4ktuwb64pglemcoay4m
+          fetch "$dir/withdraw_final.zkey" bafybeigtc3nxqbyhq4bgkji2a2ts6pnvkxb3ve77lchfcs7t6lj2qbgyp4
+          ls -la "$dir"
       - name: Ceremony VK pin (on-chain verifier == ceremony key, dev key absent)
         run: node tests/ceremony-vk-pin.test.mjs
       - name: SP1 guest ELF == pinned hash/vkey
