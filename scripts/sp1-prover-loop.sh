@@ -59,6 +59,17 @@ POOL_IDS="${POOL_IDS:-}"
 ETH_PK="${ETH_PK:?Set ETH_PK (Ethereum private key)}"
 SP1_PROVER="${SP1_PROVER:-cpu}"
 
+# cuda needs the sp1-sdk/cuda feature compiled in (separate target dir so it
+# doesn't clobber the cpu build) and the native sp1-gpu-server running. Dense
+# mainnet blocks make cpu proving impractical, so mainnet runs SP1_PROVER=cuda.
+PROVER_FEATURES=""; PROVER_TARGET=""
+GPU_RESTART_EVERY="${GPU_RESTART_EVERY:-15}"
+CYCLE_COUNT=0
+if [[ "$SP1_PROVER" == "cuda" ]]; then
+  PROVER_FEATURES="--features sp1-sdk/cuda"
+  PROVER_TARGET="${CUDA_TARGET_DIR:-${REPO_DIR}/contracts/sp1/script/target-cuda}"
+fi
+
 mkdir -p "$STATE_DIR"
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"; }
 
@@ -102,8 +113,29 @@ submit_proof() {
   fi
 }
 
+# GPU-prover (sp1-gpu-server) lifecycle. SP1 6.2.2's cuda client connects to a
+# Unix socket; it does not reliably auto-spawn the server in an unprivileged
+# container, and the server leaks GPU memory across many proofs (-> AllocError).
+# So start it if absent, and force a fresh restart every GPU_RESTART_EVERY cycles.
+ensure_gpu_server() {
+  [[ "$SP1_PROVER" == "cuda" ]] || return 0
+  local force_restart=0
+  (( CYCLE_COUNT % GPU_RESTART_EVERY == 0 )) && force_restart=1
+  if [[ "$force_restart" == "1" ]] || ! pgrep -f sp1-gpu-server >/dev/null; then
+    pkill -f sp1-gpu-server 2>/dev/null || true; sleep 2; rm -f /tmp/sp1-cuda-0.sock
+    CUDA_VISIBLE_DEVICES=0 setsid nohup "$HOME/.sp1/bin/sp1-gpu-server" >"${STATE_DIR}/gpu-server.log" 2>&1 </dev/null &
+    sleep 14
+    if pgrep -f sp1-gpu-server >/dev/null && [[ -S /tmp/sp1-cuda-0.sock ]]; then
+      log "gpu-server (re)started"
+    else
+      log "WARNING: gpu-server not up after restart — proof will fail; check ${STATE_DIR}/gpu-server.log"
+    fi
+  fi
+}
+
 run_proof_cycle() {
   local last_proven btc_tip start_height target max_confirmed relay_tip num_blocks
+  ensure_gpu_server
   last_proven=$(get_last_proven_height)
   btc_tip=$(get_btc_tip)
   [[ -n "$btc_tip" ]] || { log "could not fetch Bitcoin tip"; return 1; }
@@ -200,7 +232,8 @@ run_proof_cycle() {
   STATE_DIR="$STATE_DIR" OUTPUT_DIR="$STATE_DIR" ETH_RPC="$ETH_RPC" SP1_PROVER="$SP1_PROVER" \
   CXFER_WITNESSES_PATH="$witnesses_file" STATE_FILE="$state_file" \
   ${POOL_IDS:+POOL_IDS="$POOL_IDS"} ${DEPOSIT_ROOTS_FILE:+DEPOSIT_ROOTS_FILE="$DEPOSIT_ROOTS_FILE"} \
-  cargo run --release --bin teth-prover -- \
+  ${PROVER_TARGET:+CARGO_TARGET_DIR="$PROVER_TARGET"} \
+  cargo run --release $PROVER_FEATURES --bin teth-prover -- \
     --start-height "$start_height" --num-blocks "$num_blocks" --onchain 2>&1 | tee "${STATE_DIR}/last_proof.log"
 
   [[ -f "${STATE_DIR}/public_values.hex" ]] || { log "ERROR: proof artifacts not generated"; return 1; }
@@ -224,6 +257,7 @@ log "  Mixer 0x$MIXER_ADDRESS | Verifier 0x$VERIFIER_ADDRESS | Relay 0x$RELAY_AD
 log ""
 while true; do
   run_proof_cycle || log "Proof cycle skipped"
+  CYCLE_COUNT=$((CYCLE_COUNT + 1))
   log "Sleeping ${SLEEP_SECONDS}s..."
   sleep "$SLEEP_SECONDS"
 done
