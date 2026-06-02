@@ -33,9 +33,13 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
-        with: { submodules: recursive }
       - name: Install Foundry
         uses: foundry-rs/foundry-toolchain@v1
+      - name: Install forge deps (lib/ is gitignored; pinned to the local versions)
+        working-directory: contracts
+        run: |
+          git clone --depth 1 --branch v1.16.1 https://github.com/foundry-rs/forge-std lib/forge-std
+          git clone --depth 1 --branch v0.1.26 https://github.com/Vectorized/solady lib/solady
       - name: Real-ceremony-proof suites (G2 order + withdraw round-trip)
         working-directory: contracts
         run: |
