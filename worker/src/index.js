@@ -21290,6 +21290,11 @@ async function scanForEtches(env, network) {
         }
         if (!allCapped) continue;
 
+        // Two outputs of one split can target the same (asset,denom) pool. KV
+        // has no read-your-writes guarantee mid-request, so accumulate each
+        // pool's running count in memory rather than re-reading the counter —
+        // otherwise both outputs write the same cnt+1 and the pool undercounts.
+        const cntNext = new Map();
         // Append each new leaf + write slot-registry + leaf-lookup entries.
         for (let i = 0; i < ss.outputs.length; i++) {
           const out = ss.outputs[i];
@@ -21338,7 +21343,11 @@ async function scanForEtches(env, network) {
               encrypted_note: ss.encrypted_notes ? ss.encrypted_notes[i] : null,
             }),
           );
-          if (!splitLeafExisted) await env.REGISTRY_KV.put(cntKey, String(cnt + 1));
+          if (!splitLeafExisted) {
+            const next = (cntNext.get(cntKey) ?? cnt) + 1;
+            await env.REGISTRY_KV.put(cntKey, String(next));
+            cntNext.set(cntKey, next);
+          }
           await env.REGISTRY_KV.put(
             slotRegistryKey(network, out.asset_id_new, dNew, xonlyHex),
             JSON.stringify({
