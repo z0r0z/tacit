@@ -47,6 +47,7 @@ globalThis.fetch = async (url, opts) => {
 // ─── Config ────────────────────────────────────────────────────────
 const SIGNET_PRIVKEY = process.env.SIGNET_PRIVKEY || '827aee3498ebbf5f4374387dc9937741ac87ec58a7a67c8091241d0797589222';
 const MEMPOOL_API    = process.env.MEMPOOL_API || 'https://mempool.space/signet/api';
+const NETWORK_NAME   = MEMPOOL_API.includes('/signet') ? 'signet' : 'mainnet';
 const WORKER_BASE    = 'https://tacit-pin.rosscampbell9.workers.dev';
 const SEPOLIA_RPC    = process.env.ETH_RPC || 'https://ethereum-sepolia-rpc.publicnode.com';
 const MIXER_ADDRESS  = process.env.MIXER_ADDRESS || '0x5bAcd098E59e937A8FFaEA4D281B3097A01ad91C';
@@ -898,8 +899,8 @@ async function cmdPublishCxferOpenings() {
   // Re-derive amounts + blindings + owners exactly as cxfer build did them.
   const assetIdBytes = hexToBytes(ASSET_ID_HEX);
   const outputs = [
-    { vout: 0, amount: 100000n,  blinding: cx.deriveBlinding(stealthTweakedSk, bobBtcPub, anchorBytes, 0), ownerPub: bobBtcPub,     ownerPriv: hexToBytes(state.bobBtcPriv) },
-    { vout: 1, amount: 900000n,  blinding: cx.deriveChangeBlinding(aliceSignetPriv, anchorBytes, 1),       ownerPub: aliceSignetPub, ownerPriv: aliceSignetPriv },
+    { vout: 0, amount: DENOM_TACIT_BOB,               blinding: cx.deriveBlinding(stealthTweakedSk, bobBtcPub, anchorBytes, 0), ownerPub: bobBtcPub,     ownerPriv: hexToBytes(state.bobBtcPriv) },
+    { vout: 1, amount: DENOM_TACIT - DENOM_TACIT_BOB, blinding: cx.deriveChangeBlinding(aliceSignetPriv, anchorBytes, 1),       ownerPub: aliceSignetPub, ownerPriv: aliceSignetPriv },
     { vout: 2, amount: 0n,       blinding: cx.deriveChangeBlinding(aliceSignetPriv, anchorBytes, 2),       ownerPub: aliceSignetPub, ownerPriv: aliceSignetPriv },
     { vout: 3, amount: 0n,       blinding: cx.deriveChangeBlinding(aliceSignetPriv, anchorBytes, 3),       ownerPub: aliceSignetPub, ownerPriv: aliceSignetPriv },
   ];
@@ -929,7 +930,7 @@ async function cmdPublishCxferOpenings() {
       owner_pubkey: hex(o.ownerPub),
       sig: hex(sig),
     };
-    const r = await fetch(`${url}${o.vout}/opening?network=signet`, {
+    const r = await fetch(`${url}${o.vout}/opening?network=${NETWORK_NAME}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
