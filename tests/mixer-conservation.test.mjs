@@ -189,7 +189,19 @@ const store = new TxStore();
 store.add(parent.txid, parent.tx);
 store.add(honest.txid, honest.tx);
 
-const FAKE_ENV = { SIGNET_API: 'https://stub.local/api', MAINNET_API: 'https://stub.local/api' };
+// In-memory KV stub. commitmentForUtxo's cBTC.tac lien guard reads
+// env.REGISTRY_KV before resolving the parent commitment; an honest mixer
+// deposit's parent is never liened, so every get() returns null here.
+const _kvStore = new Map();
+const FAKE_ENV = {
+  SIGNET_API: 'https://stub.local/api',
+  MAINNET_API: 'https://stub.local/api',
+  REGISTRY_KV: {
+    get: async (k) => { const v = _kvStore.get(k); return v === undefined ? null : v; },
+    put: async (k, v) => { _kvStore.set(k, v); },
+    delete: async (k) => { _kvStore.delete(k); },
+  },
+};
 
 await test('synth: parent CETCH txid and asset_id derive consistently', () => {
   return /^[0-9a-f]{64}$/.test(parent.txid) && /^[0-9a-f]{64}$/.test(parent.assetIdHex);
