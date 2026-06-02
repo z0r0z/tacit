@@ -71,3 +71,6 @@ dapp/circuits/amm/dev-zkey/_wire_*.json
 contracts/.deployer.env
 
 .env.mainnet
+
+# one-off SP1 proof outputs (proof_bytes/public_values hex)
+contracts/sp1/*.hex
