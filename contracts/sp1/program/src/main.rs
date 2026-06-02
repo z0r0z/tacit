@@ -12,6 +12,13 @@ mod groth16;
 mod secp;
 
 const TREE_DEPTH: usize = 20;
+/// Mint-only headroom: rotate/import (0x62/0x64) refuse the top POOL_TREE_RESERVE
+/// slots so they can't exhaust the capacity the Ethereum deposit gate
+/// (TacitBridgeMixer.POOL_TREE_RESERVE) holds for in-flight mints. Must match the
+/// mixer's constant. Closes audit F-2 (reserve-bypass griefing/strand). mint
+/// (0x60) keeps the full can_insert() since it's the only insert backed by
+/// newly-locked ETH with no other exit; burn/export insert no leaf.
+const POOL_TREE_RESERVE: usize = 1024;
 
 pub fn main() {
     // ──── Denomination config ────
@@ -364,7 +371,7 @@ pub fn main() {
                                     let proof = match extract_groth16_from_rotate_envelope(envelope) { Some(p) => p, None => break 'rotate };
                                     let inputs = extract_rotate_public_inputs(envelope);
                                     if !try_verify_groth16(&proof, &inputs, &prepared_vk) { break 'rotate; }
-                                    if !trees[di].can_insert() { break 'rotate; }
+                                    if !trees[di].can_insert_with_reserve(POOL_TREE_RESERVE) { break 'rotate; }
                                     if !null_set.insert(env_nullifier) { break 'rotate; }
                                     trees[di].insert(env_new_commit);
                                     known_pool_roots[di].insert(trees[di].root());
@@ -443,7 +450,7 @@ pub fn main() {
                                         if *inp_txid == env_prev_txid && *inp_vout == env_prev_vout { found_input = true; break; }
                                     }
                                     if !found_input { break 'import; }
-                                    if !trees[di].can_insert() { break 'import; }
+                                    if !trees[di].can_insert_with_reserve(POOL_TREE_RESERVE) { break 'import; }
                                     utxo_set.remove(utxo_idx);
                                     trees[di].insert(env_new_commit);
                                     known_pool_roots[di].insert(trees[di].root());

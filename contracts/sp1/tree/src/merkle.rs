@@ -85,6 +85,13 @@ impl PoseidonTree {
     }
 
     pub fn can_insert(&self) -> bool { self.next_index < MAX_LEAVES }
+    /// Insert allowed only when at least `reserve` slots remain above this one.
+    /// Keeps the top slots mint-only so rotate/import (0x62/0x64) can't exhaust
+    /// the headroom the Ethereum deposit gate reserves for in-flight mints —
+    /// closes the F-2 reserve-bypass. Mints keep the full can_insert().
+    pub fn can_insert_with_reserve(&self, reserve: usize) -> bool {
+        self.next_index + reserve < MAX_LEAVES
+    }
     pub fn root(&self) -> [u8; 32] { self.current_root }
     pub fn next_index(&self) -> usize { self.next_index }
     pub fn frontier(&self) -> [[u8; 32]; TREE_DEPTH] { self.filled_subtrees }
@@ -152,5 +159,29 @@ impl NullifierSet {
     pub fn entries(&self) -> &[[u8; 32]] {
         assert!(self.pending.is_empty(), "must finalize before reading entries");
         &self.sorted
+    }
+}
+
+#[cfg(test)]
+mod f2_reserve_tests {
+    use super::*;
+
+    // F-2: rotate/import must not consume the top POOL_TREE_RESERVE slots the
+    // deposit gate keeps for in-flight mints. Inserting 2^20 leaves isn't
+    // feasible in a unit test, so we drive the boundary via the `reserve` arg
+    // on an empty tree: a reserve spanning the whole tree blocks the
+    // reserve-aware insert (rotate/import) while plain can_insert (mint) stays
+    // open — i.e. the top slots are mint-only.
+    #[test]
+    fn reserve_keeps_top_slots_for_mint() {
+        let t = PoseidonTree::new();
+        assert!(t.can_insert(), "fresh tree: mint can insert");
+        assert!(t.can_insert_with_reserve(1024), "fresh tree: rotate/import ok far from full");
+        // reserve == capacity ⇒ no non-mint insert even when empty
+        assert!(!t.can_insert_with_reserve(1 << TREE_DEPTH));
+        // exactly one slot above the reserve ⇒ a single non-mint insert allowed
+        assert!(t.can_insert_with_reserve((1 << TREE_DEPTH) - 1));
+        // mint never gated by the reserve — only by absolute fullness
+        assert!(t.can_insert());
     }
 }
