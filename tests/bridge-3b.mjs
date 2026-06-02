@@ -46,18 +46,21 @@ globalThis.fetch = async (url, opts) => {
 
 // ─── Config ────────────────────────────────────────────────────────
 const SIGNET_PRIVKEY = process.env.SIGNET_PRIVKEY || '827aee3498ebbf5f4374387dc9937741ac87ec58a7a67c8091241d0797589222';
-const MEMPOOL_API    = 'https://mempool.space/signet/api';
+const MEMPOOL_API    = process.env.MEMPOOL_API || 'https://mempool.space/signet/api';
 const WORKER_BASE    = 'https://tacit-pin.rosscampbell9.workers.dev';
-const SEPOLIA_RPC    = 'https://ethereum-sepolia-rpc.publicnode.com';
-const MIXER_ADDRESS  = '0x5bAcd098E59e937A8FFaEA4D281B3097A01ad91C';
-const ASSET_ID_HEX   = 'd903de2d2a7c1958f8ab3c4b9a91175ef3885027a24af306dead9e8f671a450b';
-const DENOM_WEI      = 10000000000000000n;   // 0.01 ETH (Alice's deposit + 0.01 pool)
+const SEPOLIA_RPC    = process.env.ETH_RPC || 'https://ethereum-sepolia-rpc.publicnode.com';
+const MIXER_ADDRESS  = process.env.MIXER_ADDRESS || '0x5bAcd098E59e937A8FFaEA4D281B3097A01ad91C';
+const ASSET_ID_HEX   = process.env.ASSET_ID_HEX || 'd903de2d2a7c1958f8ab3c4b9a91175ef3885027a24af306dead9e8f671a450b';
+const BTC_HRP        = process.env.BTC_HRP || 'tb'; // 'bc' for mainnet
+const RELAY_ADDRESS  = process.env.RELAY_ADDRESS || '0xDBa6B6b68957275bdA76Dd89F6c1a62aB04a36d3';
+const DEPOSIT_FROM_BLOCK = process.env.DEPOSIT_FROM_BLOCK || '0xa7586c';
+const DENOM_WEI      = process.env.DENOM_WEI ? BigInt(process.env.DENOM_WEI) : 10000000000000000n;   // Alice's deposit + pool
 const UNIT_SCALE     = 10000000000n;
-const DENOM_TACIT    = DENOM_WEI / UNIT_SCALE;  // 1000000 (0.01 ETH)
-const DENOM_WEI_BOB  = 1000000000000000n;    // 0.001 ETH (Bob's import + burn + withdraw)
-const DENOM_TACIT_BOB = DENOM_WEI_BOB / UNIT_SCALE;  // 100000
-const NETWORK_TAG    = 0x01;
-const TETH_CHAIN_ID  = 11155111n;
+const DENOM_TACIT    = DENOM_WEI / UNIT_SCALE;
+const DENOM_WEI_BOB  = process.env.DENOM_WEI_BOB ? BigInt(process.env.DENOM_WEI_BOB) : 1000000000000000n;  // Bob's import + burn + withdraw
+const DENOM_TACIT_BOB = DENOM_WEI_BOB / UNIT_SCALE;
+const NETWORK_TAG    = process.env.NETWORK_TAG ? parseInt(process.env.NETWORK_TAG, 10) : 0x01;
+const TETH_CHAIN_ID  = process.env.CHAIN_ID ? BigInt(process.env.CHAIN_ID) : 11155111n;
 const POOL_TREE_DEPTH= 20;
 const T_BRIDGE_DEPOSIT = 0x60;
 const T_BRIDGE_BURN    = 0x61;
@@ -303,7 +306,7 @@ async function fetchSepoliaDeposits() {
   const depositSig = keccak_256(new TextEncoder().encode('Deposit(bytes32,bytes32,uint256,uint256)'));
   const poolId = keccak_256(concatBytes(hexToBytes(ASSET_ID_HEX), bigintToBytes32(DENOM_WEI)));
   const logs = await ethCall('eth_getLogs', [{
-    address: MIXER_ADDRESS, fromBlock: '0xa7586c', toBlock: 'latest',
+    address: MIXER_ADDRESS, fromBlock: DEPOSIT_FROM_BLOCK, toBlock: 'latest',
     topics: ['0x' + bytesToHex(depositSig), '0x' + bytesToHex(poolId)],
   }]);
   return logs.map(l => ({
@@ -369,7 +372,7 @@ function bech32Encode(hrp, witver, prog) {
   return hrp + '1' + [...data5, ...checksum].map(i => CS[i]).join('');
 }
 function getSignetAddress() {
-  return bech32Encode('tb', 0, [...hash160(compressedPubkey(SIGNET_PRIVKEY))]);
+  return bech32Encode(BTC_HRP, 0, [...hash160(compressedPubkey(SIGNET_PRIVKEY))]);
 }
 function p2wpkhScript(pubkey) {
   return Buffer.concat([Buffer.from([0x00, 0x14]), Buffer.from(hash160(pubkey))]);
@@ -694,11 +697,12 @@ async function cmdCxfer() {
     const b = new Uint8Array(4); new DataView(b.buffer).setUint32(0, 1 >>> 0, true); return b;
   })());
 
-  // Amounts (tacit-units, u64)
-  const aBob   = 100000n;    // 0.001 tETH (unchanged)
-  const aAlice = 900000n;   // 0.009 tETH (Alice change)
+  // Amounts (tacit-units, u64) — derived from the configured denoms so the
+  // CXFER conserves against the export's actual commit amount.
+  const aBob   = DENOM_TACIT_BOB;            // Bob's split
+  const aAlice = DENOM_TACIT - DENOM_TACIT_BOB; // Alice change
   const aPad   = 0n;
-  const inAmt  = 1000000n;   // 0.01 tETH (export's commit amount)
+  const inAmt  = DENOM_TACIT;                // export's commit amount
   const K = 1;               // 1 recipient (Bob)
   const m = 4;               // smallest m ∈ {2,4,8} for K=1 + 1 change = 2 outs; we use m=4 for safety
   console.log(`amounts: Bob ${aBob}, Alice change ${aAlice}, padding ${aPad}×${m-K-1}`);
@@ -1008,14 +1012,21 @@ async function cmdBurnBob(ethRecipient) {
   if (!state.importTxid) throw new Error('no import');
   if (!ethRecipient || !/^0x[0-9a-fA-F]{40}$/.test(ethRecipient)) throw new Error('need 0xBobEthAddr');
 
-  // 0.001 ETH pool tree at Bob's burn = [3a's mint leaf at 0, Bob's import leaf at 1].
-  // Read 3a's leaf from its live state rather than a stale hardcode — the guest's
-  // 0.001 pool contains whatever 3a minted in this session.
-  const _s3a = JSON.parse(fs.readFileSync('/tmp/3a-state.json', 'utf8'));
-  if (!_s3a.poolLeaf) throw new Error('3a poolLeaf missing — run bridge-3a deposit/mint first');
-  const POOL_LEAF_3A = _s3a.poolLeaf;
-  const tree = buildEthTree([POOL_LEAF_3A, state.bobPoolLeaf0001]);
-  const mp = tree.getProof(1);
+  // Bob's pool tree at burn. Default (signet 3b): Bob imports into the same pool
+  // 3a pre-populated → [3a-leaf@0, Bob-leaf@1], so the guest's pool tree matches.
+  // With BOB_FRESH_POOL=1 Bob imports into an otherwise-empty pool (a different
+  // denom), so his leaf is the only one → [Bob-leaf@0].
+  let tree, bobIdx;
+  if (process.env.BOB_FRESH_POOL) {
+    tree = buildEthTree([state.bobPoolLeaf0001]);
+    bobIdx = 0;
+  } else {
+    const _s3a = JSON.parse(fs.readFileSync('/tmp/3a-state.json', 'utf8'));
+    if (!_s3a.poolLeaf) throw new Error('3a poolLeaf missing — run bridge-3a deposit/mint first');
+    tree = buildEthTree([_s3a.poolLeaf, state.bobPoolLeaf0001]);
+    bobIdx = 1;
+  }
+  const mp = tree.getProof(bobIdx);
   const merkleRoot = tree.root;
 
   const secret = hexToBytes(state.bobPoolSecret0001);
@@ -1096,7 +1107,7 @@ async function cmdWithdrawBob() {
   console.log(`Bob burn at block ${burnBlock}`);
 
   // Relay current tip
-  const tipHex = await ethCall('eth_call', [{ to: '0xDBa6B6b68957275bdA76Dd89F6c1a62aB04a36d3', data: '0x1fd4827a' }, 'latest']);
+  const tipHex = await ethCall('eth_call', [{ to: RELAY_ADDRESS, data: '0x1fd4827a' }, 'latest']);
   const relayTip = parseInt(tipHex, 16);
   console.log(`relay tip: ${relayTip}`);
   if (relayTip < burnBlock + 6) {
@@ -1336,10 +1347,10 @@ async function cmdWriteWitnesses() {
     const b = new Uint8Array(4); new DataView(b.buffer).setUint32(0, 1, true); return b;
   })());
   const openings = [
-    { amount: 100000n, blinding: cx.deriveBlinding(stealthTweakedSk, bobBtcPub, anchorBytes, 0) },
-    { amount: 900000n, blinding: cx.deriveChangeBlinding(aliceSignetPriv, anchorBytes, 1) },
-    { amount: 0n,      blinding: cx.deriveChangeBlinding(aliceSignetPriv, anchorBytes, 2) },
-    { amount: 0n,      blinding: cx.deriveChangeBlinding(aliceSignetPriv, anchorBytes, 3) },
+    { amount: DENOM_TACIT_BOB,                blinding: cx.deriveBlinding(stealthTweakedSk, bobBtcPub, anchorBytes, 0) },
+    { amount: DENOM_TACIT - DENOM_TACIT_BOB,  blinding: cx.deriveChangeBlinding(aliceSignetPriv, anchorBytes, 1) },
+    { amount: 0n,                             blinding: cx.deriveChangeBlinding(aliceSignetPriv, anchorBytes, 2) },
+    { amount: 0n,                             blinding: cx.deriveChangeBlinding(aliceSignetPriv, anchorBytes, 3) },
   ];
 
   const st = await (await fetch(`${MEMPOOL_API}/tx/${state.cxferRevealTxid}/status`)).json();
