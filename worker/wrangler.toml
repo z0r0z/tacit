@@ -2,6 +2,18 @@ name = "tacit-pin"
 main = "src/index.js"
 compatibility_date = "2024-12-01"
 
+# Edge-compressed dapp bundle (handleDappBundle in src/index.js).
+# Uncomment to route /tacit.js through the worker, which serves the
+# brotli-q11 copy uploaded to REGISTRY_KV by the build (build/build.mjs
+# prints the matching `wrangler kv key put` command alongside the ?cb
+# token). Every non-matching request passes through to the static origin
+# unchanged, so the route is safe to enable before or after the KV
+# upload. Requires the tacit.finance zone on this Cloudflare account.
+# routes = [
+#   { pattern = "tacit.finance/tacit.js*", zone_name = "tacit.finance" },
+#   { pattern = "www.tacit.finance/tacit.js*", zone_name = "tacit.finance" },
+# ]
+
 # UPLOAD_KV — per-IP rate limits for /pin uploads
 [[kv_namespaces]]
 binding = "UPLOAD_KV"

@@ -11,6 +11,7 @@
 import { build } from 'esbuild';
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { createHash } from 'node:crypto';
+import { brotliCompressSync, brotliDecompressSync, constants as zlibConst } from 'node:zlib';
 import { resolve, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -22,6 +23,8 @@ const BUNDLE_OUT = join(VENDOR_DIR, 'tacit-deps.min.js');
 const MIXER_OUT  = join(VENDOR_DIR, 'tacit-mixer.min.js'); // separate bundle, lazy-loaded
 const HTML       = join(DAPP_DIR, 'index.html');
 const APP_JS     = join(DAPP_DIR, 'tacit.js');               // app code (extracted from inline)
+const OUT_DIR    = join(HERE, 'out');                        // build artifacts (gitignored)
+const BR_OUT     = join(OUT_DIR, 'tacit.js.br');             // brotli-q11 copy for the edge route
 
 const verifyOnly = process.argv.includes('--verify-only');
 
@@ -107,10 +110,36 @@ async function main() {
   let html = readFileSync(HTML);
   const appJs = readFileSync(APP_JS);
 
+  let cb = null;
+  let brBytes = null;
   if (!verifyOnly) {
-    const cb = updateCacheBust(html, appJs);
+    cb = updateCacheBust(html, appJs);
     console.log(`• Cache-bust token: ?cb=${cb.token}${cb.changed ? ' (updated)' : ' (unchanged)'}`);
     if (cb.changed) html = readFileSync(HTML);
+    // Brotli-q11 copy for the edge-delivery route (worker handleDappBundle).
+    // The static origin's on-the-fly brotli lands ~40% above q11 on these
+    // bytes; precompressing here and uploading to KV captures the gap.
+    // Emitted under build/out/ (gitignored) — a ~1MB binary that changes
+    // with every dapp edit doesn't belong in git history. Round-trip
+    // verified before writing so the artifact can never decode to bytes
+    // other than the exact tacit.js the ?cb token was derived from.
+    console.log('• Compressing tacit.js (brotli q11)...');
+    mkdirSync(OUT_DIR, { recursive: true });
+    brBytes = brotliCompressSync(appJs, { params: {
+      [zlibConst.BROTLI_PARAM_QUALITY]: 11,
+      // 16MB window (RFC 7932 max for standard streams — every browser's
+      // Content-Encoding: br decoder accepts it). Node defaults to 22
+      // (4MB), which leaves ratio on the table for a ~5MB input. This is
+      // NOT the non-standard LARGE_WINDOW extension.
+      [zlibConst.BROTLI_PARAM_LGWIN]: 24,
+      [zlibConst.BROTLI_PARAM_SIZE_HINT]: appJs.length,
+    } });
+    if (!brotliDecompressSync(brBytes).equals(appJs)) {
+      throw new Error('tacit.js.br round-trip mismatch — refusing to emit');
+    }
+    writeFileSync(BR_OUT, brBytes);
+    console.log(`  ${BR_OUT}`);
+    console.log(`  ${brBytes.length.toLocaleString()} bytes (${(100 * brBytes.length / appJs.length).toFixed(1)}% of raw) · ${sha384b64(brBytes)}`);
   }
 
   console.log(`  ${HTML}`);
@@ -125,6 +154,10 @@ async function main() {
   console.log(`  vendor/tacit-mixer.min.js  ${sha384b64(mixerBundle)}`);
   console.log(`  tacit.js                   ${sha384b64(appJs)}`);
   console.log(`  index.html                 ${sha384b64(html)}`);
+  if (brBytes && cb) {
+    console.log('\nEdge-compressed copy (serve via the worker /tacit.js route):');
+    console.log(`  cd ${join(ROOT, 'worker')} && npx wrangler kv key put "dapp:tacit.js.br" --path ${BR_OUT} --binding REGISTRY_KV --remote --metadata '{"cb":"${cb.token}"}'`);
+  }
 }
 
 main().catch(e => { console.error(e); process.exit(1); });

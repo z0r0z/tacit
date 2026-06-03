@@ -4923,6 +4923,26 @@ function _rolling24hVolumeSats(tradesArr, todaySats, yestSats, nowSec) {
   return today + Math.floor(yest * yesterdayRatio);
 }
 
+// Ring-sum fallback for the lifetime volume figure. Sums positive
+// price_sats over the recent-trades ring — exactly the computation the
+// dapp's marketVolumeSats performs client-side from the /assets/<aid>
+// trades array when sale_volume_sats is absent. Used by both
+// hydrateAssetSummary and handleAssetGet when the lifetime counter
+// hasn't been seeded yet (assets that traded before the counter
+// existed, pending backfill), so the bulk /market payload carries the
+// same number the per-asset endpoint would have produced. Ring is
+// capped (TRADES_RING_CAP) so this is "recent N trades", not true
+// lifetime — identical to the client fallback it mirrors.
+function _ringVolumeSumSats(tradesArr) {
+  if (!Array.isArray(tradesArr) || tradesArr.length === 0) return 0;
+  let sum = 0;
+  for (const t of tradesArr) {
+    const p = Number(t?.price_sats);
+    if (Number.isFinite(p) && p > 0) sum += p;
+  }
+  return sum;
+}
+
 // Chain-side trade-volume derivation. The dapp's /hint POST is the
 // primary path: it ships price_sats + amount alongside the reveal_txid
 // after broadcast, so the worker stamps the trade exactly. But a tab
@@ -11575,7 +11595,16 @@ async function hydrateAssetSummary(env, network, v, includeMints) {
   // change. Older assets that traded before the counter existed
   // backfill naturally as new trades land.
   const _lifeNum = Number(lifeSats);
-  if (Number.isFinite(_lifeNum) && _lifeNum > 0) v.sale_volume_sats = _lifeNum;
+  if (Number.isFinite(_lifeNum) && _lifeNum > 0) {
+    v.sale_volume_sats = _lifeNum;
+  } else {
+    // Counter not seeded yet — emit the ring-sum fallback so list views
+    // get the lifetime field without a per-asset round-trip (the dapp
+    // suppresses its /assets/<aid> enrichment when the bulk payload
+    // already carries the stats it would re-fetch).
+    const _ringSum = _ringVolumeSumSats(ring);
+    if (_ringSum > 0) v.sale_volume_sats = _ringSum;
+  }
   // Distinct-recipient counter (all-time, not current). Counts unique
   // scriptpubkey hashes that have ever received this asset via T_CETCH,
   // T_MINT, T_PMINT, T_CXFER, or T_AXFER. Older asset entries indexed
@@ -13232,7 +13261,14 @@ async function handleAssetGet(assetIdHex, env, network, cors) {
   // response (sale_volume_sats) so the dapp's marketVolumeSats helper
   // picks it up uniformly across both endpoints.
   const _lifeNumAsset = Number(lifeSats);
-  if (Number.isFinite(_lifeNumAsset) && _lifeNumAsset > 0) v.sale_volume_sats = _lifeNumAsset;
+  if (Number.isFinite(_lifeNumAsset) && _lifeNumAsset > 0) {
+    v.sale_volume_sats = _lifeNumAsset;
+  } else {
+    // Same ring-sum fallback as hydrateAssetSummary so single-asset and
+    // bulk responses agree on the lifetime figure for pre-counter assets.
+    const _ringSumAsset = _ringVolumeSumSats(trades);
+    if (_ringSumAsset > 0) v.sale_volume_sats = _ringSumAsset;
+  }
   // Distinct-recipient counter, same field as the bulk response. Mirror
   // here so single-asset clients get the same popularity signal.
   v.holder_count = parseInt(holderCntRaw || '0', 10) || 0;
@@ -25333,8 +25369,64 @@ async function handleDiscordInteraction(req, env, cors, ctx) {
 // error fallthroughs — gets a (sampled) datapoint written to Workers
 // Analytics Engine. Existing dispatch logic moved verbatim to
 // _routeFetch below; fetch is now a one-liner.
+// ============== /tacit.js edge-compressed delivery ==============
+// The dapp bundle is served by the static origin (Render behind
+// Cloudflare), whose on-the-fly brotli for the ~4.8MB file lands ~40%
+// above what brotli-q11 achieves on the same bytes (~1.34MB vs ~950KB
+// measured). A zone route (tacit.finance/tacit.js*) sends bundle
+// requests here instead: when the client accepts br AND the KV copy's
+// cache-bust token matches the request's ?cb=, serve the precompressed
+// q11 bytes; every other case falls through to the origin unchanged.
+//
+// The ?cb= equality check binds the KV bytes to the exact tacit.js the
+// live index.html references (build/build.mjs derives the token and the
+// .br from the same file bytes and prints the upload command), so a
+// forgotten KV upload — or a Render deploy mid-propagation — degrades to
+// today's origin-compressed behavior rather than ever serving stale code.
+//
+// encodeBody:'manual' tells the runtime the body is already encoded so
+// it passes the bytes through verbatim instead of re-compressing.
+// Cache-Control mirrors the origin's exactly (max-age=0, s-maxage=300)
+// so enabling this route changes one variable: compression quality.
+const DAPP_BUNDLE_HOSTS = new Set(['tacit.finance', 'www.tacit.finance']);
+const DAPP_BUNDLE_BR_KEY = 'dapp:tacit.js.br';
+async function handleDappBundle(req, env, url) {
+  try {
+    if (req.method !== 'GET') return fetch(req);
+    const accept = req.headers.get('Accept-Encoding') || '';
+    if (!/\bbr\b/.test(accept)) return fetch(req);
+    const cb = url.searchParams.get('cb') || '';
+    if (!/^[0-9a-f]{8}$/.test(cb)) return fetch(req);
+    const { value, metadata } = await env.REGISTRY_KV.getWithMetadata(DAPP_BUNDLE_BR_KEY, { type: 'arrayBuffer' });
+    if (!value || !value.byteLength || metadata?.cb !== cb) return fetch(req);
+    return new Response(value, {
+      encodeBody: 'manual',
+      headers: {
+        'Content-Type': 'application/javascript',
+        'Content-Encoding': 'br',
+        'Vary': 'Accept-Encoding',
+        'Cache-Control': 'public, max-age=0, s-maxage=300',
+        'X-Content-Type-Options': 'nosniff',
+        'ETag': `"br-${cb}"`,
+      },
+    });
+  } catch {
+    // KV blip / runtime quirk — origin passthrough keeps the dapp up.
+    return fetch(req);
+  }
+}
+
 async function _routeFetch(req, env, ctx) {
     const url = new URL(req.url);
+    // Dapp-bundle route (zone route tacit.finance/tacit.js*). Checked
+    // before CORS/API dispatch — these are same-origin script fetches,
+    // not API calls. Hostname-gated so workers.dev traffic can never
+    // trigger it (a fetch back to our own workers.dev host would trip
+    // the runtime's recursion guard; same-zone fetches go to origin).
+    if (DAPP_BUNDLE_HOSTS.has(url.hostname)) {
+      if (url.pathname === '/tacit.js') return handleDappBundle(req, env, url);
+      return fetch(req); // any other zone-routed path → origin passthrough
+    }
     const cors = corsHeaders(env, req.headers.get('Origin') || '');
     if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: cors });
 
