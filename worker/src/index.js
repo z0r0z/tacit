@@ -24700,8 +24700,9 @@ async function scanForEtches(env, network) {
             withdrawn_at: tx.status?.block_time || Math.floor(Date.now() / 1000),
             source: 'bridge_burn', network,
           }));
-          const cnt = await _bridgeGetLeafCount(aid, denomBig);
-          if (cnt > 0) _bridgeAdjustLeafCount(aid, denomBig, -1);
+          // A burn nullifies a note but never removes a leaf — the pool tree is
+          // append-only, so leaf_count must not decrement. Live-note count is
+          // leaf_count − nullifier_count when needed.
           found++;
         }
         } catch {}
