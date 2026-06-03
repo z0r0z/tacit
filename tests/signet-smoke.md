@@ -159,9 +159,11 @@ For the asset etched in Step 2 (still mintable, balance > 0):
 
 ## Step 9 — Listing publish + claim
 
-1. Holdings → "List for sale" on a UTXO. Set price (sats), expiry, maker
-   address (use the wallet's bc1 address derived from the ext wallet, or the
-   tacit P2WPKH address as fallback).
+1. Holdings → "More listing options ▾" → "Advanced listing (lot / chunks)" on
+   a UTXO. Set price (sats), expiry, maker address (use the wallet's bc1
+   address derived from the ext wallet, or the tacit P2WPKH address as
+   fallback). (The primary "Sell on market →" button routes to the market
+   Swap tile in sell + Limit mode instead.)
 2. **Expected on worker:** opening + listing stored, both sigs verified by the
    worker before persisting.
 3. From a second browser, fetch `/assets/:asset_id/listings`.
