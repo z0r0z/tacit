@@ -74,14 +74,28 @@
 <link rel="dns-prefetch" href="https://cloudflare-eth.com">
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@300;400;500;600;700&family=Instrument+Serif:ital@0;1&display=swap" rel="stylesheet">
 <!-- modulepreload: surface the ESM dependency graph to the browser at parse
-     time so vendor + prf-wallet fetch in parallel with tacit.js instead of
-     waiting one RTT for tacit.js's import statements to be discovered. CSP
-     script-src 'self' covers all three.
+     time so the leaves fetch in parallel with tacit.js instead of waiting one
+     RTT for tacit.js's import statements to be discovered. CSP script-src
+     'self' covers all of these (same-origin).
+     Order is leaves-first (vendor → prf-wallet → tacit.js) with the 865 KB
+     vendor bundle marked fetchpriority="high" so it lands first. The
+     bulletproofs+ and amm-*.js modules are tacit.js's other top-level static
+     imports; preloading them removes a one-RTT discovery stall behind the
+     4.8 MB tacit.js fetch+parse. Their import URLs carry no ?cb=, so these
+     preload URLs match exactly (a mismatch would make the preload unused).
      `?cb=` is auto-set by build/build.mjs to a sha256 prefix of tacit.js
      so iOS Safari's stale-modulepreload cache flushes on every change. -->
-<link rel="modulepreload" href="./tacit.js?cb=d0a112ec">
-<link rel="modulepreload" href="./vendor/tacit-deps.min.js">
+<link rel="modulepreload" href="./vendor/tacit-deps.min.js" fetchpriority="high">
 <link rel="modulepreload" href="./prf-wallet.js">
+<link rel="modulepreload" href="./tacit.js?cb=3f009de5">
+<link rel="modulepreload" href="./bulletproofs-plus.js">
+<link rel="modulepreload" href="./amm-bjj.js">
+<link rel="modulepreload" href="./amm-sigma.js">
+<link rel="modulepreload" href="./amm-asset.js">
+<link rel="modulepreload" href="./amm-receipt.js">
+<link rel="modulepreload" href="./amm-kernel.js">
+<link rel="modulepreload" href="./amm-min-liq.js">
+<link rel="modulepreload" href="./amm-envelope.js">
 <style>
 .sp-toggle-img {
   width: 18px; height: 18px; object-fit: contain; display: block;
@@ -9880,7 +9894,7 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
   </div>
 </div>
 
-<script type="module" src="./tacit.js?cb=d0a112ec"></script>
+<script type="module" src="./tacit.js?cb=3f009de5"></script>
 
 <!-- Service worker registration moved into tacit.js (the dapp's CSP forbids
      inline scripts; only 'self' module scripts are allowed). See sw.js for
