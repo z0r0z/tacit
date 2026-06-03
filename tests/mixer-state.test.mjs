@@ -5,6 +5,12 @@
 // What this validates that no other test does:
 //   - Recent-roots ring buffer behavior: capacity 32, FIFO eviction, exact
 //     byte-for-byte match required.
+//   - Historical-root window: a confirmed withdraw UTXO's bound root stays
+//     valid for holdings re-validation even after 32+ later deposits evict it
+//     from the recent window — the regression for withdrawal receipts silently
+//     dropping out of holdings (shown as "inflated") on reload / cold restore
+//     in active pools like mainnet TAC. History is a strict superset of the
+//     recent window, so the swap never rejects a fresh broadcast-valid proof.
 //   - Nullifier owner-tracking: scanPools-preloaded nullifiers don't
 //     spuriously reject the canonical owner's own UTXO. The naïve
 //     "set.has(nullifier)" gate would have caused legitimate self-
@@ -137,6 +143,64 @@ await test('mixerHasRecentRoot does not accept the empty-tree root', () => {
   // Compute the empty-tree root the same way computePoolRoot does at depth 20.
   const emptyRoot = dapp.computePoolRoot([]);
   return !dapp.mixerHasRecentRoot(aidHex, denom, emptyRoot);
+});
+
+console.log('\nHistorical-root window (confirmed-withdraw holdings re-validation):');
+
+await test('a bound root survives in history after the recent window evicts it', () => {
+  const aidHex = bytesToHex(nextAid());
+  const denom = 100n;
+  dapp.mixerRegisterPool(aidHex, denom, new Uint8Array(8), new Uint8Array(8), 0, 'f'.repeat(64));
+  // One deposit, then snapshot the root a withdraw proof would bind to.
+  dapp.mixerAppendLeaf(aidHex, denom, leafBytes(1));
+  const boundRoot = dapp.mixerGetPoolStats(aidHex, denom).latestRoot.slice();
+  // 40 more deposits land — well past the 32-deep recent window.
+  for (let i = 2; i <= 41; i++) dapp.mixerAppendLeaf(aidHex, denom, leafBytes(i));
+  // The recent window has long since evicted the bound root...
+  if (dapp.mixerHasRecentRoot(aidHex, denom, boundRoot)) return false;
+  // ...but the full history still recognizes it, so the confirmed withdraw
+  // UTXO re-validates in holdings instead of being dropped as "inflated".
+  return dapp.mixerHasHistoricalRoot(aidHex, denom, boundRoot) === true;
+});
+
+await test('mixerHasHistoricalRoot requires byte-exact match (no tamper tolerance)', () => {
+  const aidHex = bytesToHex(nextAid());
+  const denom = 100n;
+  dapp.mixerRegisterPool(aidHex, denom, new Uint8Array(8), new Uint8Array(8), 0, '9'.repeat(64));
+  dapp.mixerAppendLeaf(aidHex, denom, leafBytes(1));
+  const root = dapp.mixerGetPoolStats(aidHex, denom).latestRoot.slice();
+  const tampered = root.slice(); tampered[0] ^= 0x01;
+  return dapp.mixerHasHistoricalRoot(aidHex, denom, root) === true
+      && dapp.mixerHasHistoricalRoot(aidHex, denom, tampered) === false;
+});
+
+await test('mixerHasHistoricalRoot rejects empty-tree root and unregistered pools', () => {
+  const aidHex = bytesToHex(nextAid());
+  const denom = 100n;
+  // Unregistered pool → false (no tree, no history).
+  if (dapp.mixerHasHistoricalRoot(aidHex, denom, new Uint8Array(32))) return false;
+  dapp.mixerRegisterPool(aidHex, denom, new Uint8Array(8), new Uint8Array(8), 0, '8'.repeat(64));
+  // Registered but empty: the empty-tree root is never appended → false.
+  const emptyRoot = dapp.computePoolRoot([]);
+  return !dapp.mixerHasHistoricalRoot(aidHex, denom, emptyRoot);
+});
+
+await test('history is a strict superset of the recent window', () => {
+  // Everything broadcast-acceptable (recent) is also holdings-valid
+  // (historical), so swapping the validator's gate can never make a fresh,
+  // broadcast-valid withdraw fail; and at least one root is historical-only.
+  const aidHex = bytesToHex(nextAid());
+  const denom = 100n;
+  dapp.mixerRegisterPool(aidHex, denom, new Uint8Array(8), new Uint8Array(8), 0, '7'.repeat(64));
+  const roots = [];
+  for (let i = 0; i < 40; i++) {
+    dapp.mixerAppendLeaf(aidHex, denom, leafBytes(i));
+    roots.push(dapp.mixerGetPoolStats(aidHex, denom).latestRoot.slice());
+  }
+  for (const r of roots) {
+    if (dapp.mixerHasRecentRoot(aidHex, denom, r) && !dapp.mixerHasHistoricalRoot(aidHex, denom, r)) return false;
+  }
+  return roots.some(r => dapp.mixerHasHistoricalRoot(aidHex, denom, r) && !dapp.mixerHasRecentRoot(aidHex, denom, r));
 });
 
 console.log('\nNullifier owner-tracking (SPEC §5.11.4 invariant 3):');
