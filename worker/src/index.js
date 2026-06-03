@@ -11780,6 +11780,16 @@ function assetsCacheKey(network, limit, includeMints) {
 // 30-min TTL so blobs auto-expire if the cron stops; the fan-out remains
 // the fallback.
 const PRECOMPUTED_TTL_SEC = 30 * 60;
+// Storage window for the precomputed KV blobs — deliberately much longer than
+// the freshness window above. Within PRECOMPUTED_TTL_SEC a blob serves as
+// KV-PRECOMPUTED; past it the blob sticks around as a serve-stale candidate
+// for the hard-MISS path, so the first request after a long quiet period (or
+// a cron outage) returns the last-known body instantly and recomputes in the
+// background instead of blocking on the inline fan-out (observed 40s+ on
+// /market mainnet). Request-triggered recomputes rewrite the blob with a
+// fresh ts, so in practice staleness self-heals within one recompute; this
+// only bounds how far back the resurrect window reaches.
+const PRECOMPUTED_STORE_TTL_SEC = 24 * 3600;
 function precomputedAssetsKey(network, includeMints) {
   return `precomputed:assets:${network}:mints=${includeMints ? '1' : '0'}`;
 }
@@ -11810,7 +11820,7 @@ async function assetsComputeAndCache(env, network, opts) {
     if (!opts.limit) {
       const kvKey = precomputedAssetsKey(network, opts.includeMints !== false);
       const kvBlob = JSON.stringify({ body, ts: Date.now() });
-      env.REGISTRY_KV.put(kvKey, kvBlob, { expirationTtl: PRECOMPUTED_TTL_SEC }).catch(() => {});
+      env.REGISTRY_KV.put(kvKey, kvBlob, { expirationTtl: PRECOMPUTED_STORE_TTL_SEC }).catch(() => {});
     }
   }
   return { body, status: fresh.status };
@@ -12286,7 +12296,7 @@ async function petchAssetsComputeAndCache(env, network) {
     );
     const kvKey = `precomputed:petch-assets:${network}`;
     const kvBlob = JSON.stringify({ body, ts: Date.now() });
-    env.REGISTRY_KV.put(kvKey, kvBlob, { expirationTtl: PRECOMPUTED_TTL_SEC }).catch(() => {});
+    env.REGISTRY_KV.put(kvKey, kvBlob, { expirationTtl: PRECOMPUTED_STORE_TTL_SEC }).catch(() => {});
   }
   return { body, status: fresh.status };
 }
@@ -12342,7 +12352,7 @@ async function marketComputeAndCache(env, network, prehydratedAssetsBody = null,
     );
     const kvKey = precomputedMarketKey(network, !!opts.lite);
     const kvBlob = JSON.stringify({ body, ts: Date.now() });
-    env.REGISTRY_KV.put(kvKey, kvBlob, { expirationTtl: PRECOMPUTED_TTL_SEC }).catch(() => {});
+    env.REGISTRY_KV.put(kvKey, kvBlob, { expirationTtl: PRECOMPUTED_STORE_TTL_SEC }).catch(() => {});
   }
   return { body, status: fresh.status };
 }
@@ -26234,19 +26244,32 @@ async function _routeFetch(req, env, ctx) {
       }
       // MISS path. Try the pre-computed KV blob first (1 read vs 800+).
       // Only for default (no-limit) shape; specialized callers fall through.
+      let _assetsKvStale = null;
       if (!limit) {
         try {
           const kvBlob = await env.REGISTRY_KV.get(precomputedAssetsKey(network, includeMints), 'json');
-          if (kvBlob && kvBlob.body && (Date.now() - kvBlob.ts) < PRECOMPUTED_TTL_SEC * 1000) {
-            // Populate edge cache so subsequent requests in this PoP are HIT.
-            const ch = new Headers();
-            ch.set('Content-Type', 'application/json');
-            ch.set('X-Cached-At', String(kvBlob.ts));
-            ch.set('Cache-Control', `public, max-age=${Math.floor(ASSETS_CACHE_STALE_MS / 1000)}`);
-            cache.put(cacheKey, new Response(kvBlob.body, { status: 200, headers: ch })).catch(() => {});
-            return _withCors(kvBlob.body, 200, 'KV-PRECOMPUTED');
+          if (kvBlob && kvBlob.body) {
+            if ((Date.now() - kvBlob.ts) < PRECOMPUTED_TTL_SEC * 1000) {
+              // Populate edge cache so subsequent requests in this PoP are HIT.
+              const ch = new Headers();
+              ch.set('Content-Type', 'application/json');
+              ch.set('X-Cached-At', String(kvBlob.ts));
+              ch.set('Cache-Control', `public, max-age=${Math.floor(ASSETS_CACHE_STALE_MS / 1000)}`);
+              cache.put(cacheKey, new Response(kvBlob.body, { status: 200, headers: ch })).catch(() => {});
+              return _withCors(kvBlob.body, 200, 'KV-PRECOMPUTED');
+            }
+            _assetsKvStale = kvBlob.body;
           }
         } catch { /* KV blip — fall through to full fan-out */ }
+      }
+      // Serve-stale on hard MISS — same rationale as /market: any surviving
+      // stale copy (expired KV blob or edge entry past STALE) beats blocking
+      // the request on the full hydration fan-out. Background recompute
+      // rewrites both cache layers; inline only when truly cold.
+      const _assetsStaleBody = _assetsKvStale != null ? _assetsKvStale : (cached ? await cached.text() : null);
+      if (_assetsStaleBody != null && ctx && typeof ctx.waitUntil === 'function') {
+        ctx.waitUntil(_swrDedupedKick(cacheKey.url, _computeAndCache).catch(() => null));
+        return _withCors(_assetsStaleBody, 200, _assetsKvStale != null ? 'KV-STALE' : 'STALE-EXPIRED');
       }
       const result = await _swrDedupedKick(cacheKey.url, _computeAndCache);
       return _withCors(result.body, result.status, cached ? 'EXPIRED-MISS' : 'MISS');
@@ -26287,17 +26310,32 @@ async function _routeFetch(req, env, ctx) {
         }
       }
       // Pre-computed KV blob fallback (1 read vs full fan-out).
+      let _mktKvStale = null;
       try {
         const kvBlob = await env.REGISTRY_KV.get(precomputedMarketKey(network, _mktLite), 'json');
-        if (kvBlob && kvBlob.body && (Date.now() - kvBlob.ts) < PRECOMPUTED_TTL_SEC * 1000) {
-          const ch = new Headers();
-          ch.set('Content-Type', 'application/json');
-          ch.set('X-Cached-At', String(kvBlob.ts));
-          ch.set('Cache-Control', `public, max-age=${Math.floor(MARKET_CACHE_STALE_MS / 1000)}`);
-          cache.put(cacheKey, new Response(kvBlob.body, { status: 200, headers: ch })).catch(() => {});
-          return _withCors(kvBlob.body, 200, 'KV-PRECOMPUTED');
+        if (kvBlob && kvBlob.body) {
+          if ((Date.now() - kvBlob.ts) < PRECOMPUTED_TTL_SEC * 1000) {
+            const ch = new Headers();
+            ch.set('Content-Type', 'application/json');
+            ch.set('X-Cached-At', String(kvBlob.ts));
+            ch.set('Cache-Control', `public, max-age=${Math.floor(MARKET_CACHE_STALE_MS / 1000)}`);
+            cache.put(cacheKey, new Response(kvBlob.body, { status: 200, headers: ch })).catch(() => {});
+            return _withCors(kvBlob.body, 200, 'KV-PRECOMPUTED');
+          }
+          _mktKvStale = kvBlob.body;
         }
       } catch { /* fall through */ }
+      // Serve-stale on hard MISS. The inline fan-out below has been observed
+      // at 40s+ on mainnet — if ANY stale copy survives (KV blob past its
+      // freshness window, or an edge entry past STALE), serve it now and
+      // recompute in the background; the recompute rewrites both cache
+      // layers so the next reader lands fresh. Only a truly cold start
+      // (nothing cached anywhere) pays the inline fan-out.
+      const _mktStaleBody = _mktKvStale != null ? _mktKvStale : (cached ? await cached.text() : null);
+      if (_mktStaleBody != null && ctx && typeof ctx.waitUntil === 'function') {
+        ctx.waitUntil(_swrDedupedKick(cacheKey.url, () => marketComputeAndCache(env, network, null, _mktOpts)).catch(() => null));
+        return _withCors(_mktStaleBody, 200, _mktKvStale != null ? 'KV-STALE' : 'STALE-EXPIRED');
+      }
       const result = await _swrDedupedKick(cacheKey.url, () => marketComputeAndCache(env, network, null, _mktOpts));
       return _withCors(result.body, result.status, cached ? 'EXPIRED-MISS' : 'MISS');
     }
@@ -26417,17 +26455,30 @@ async function _routeFetch(req, env, ctx) {
           return _withCors(await cached.text(), cached.status, 'STALE');
         }
       }
+      let _petchKvStale = null;
       try {
         const kvBlob = await env.REGISTRY_KV.get(`precomputed:petch-assets:${network}`, 'json');
-        if (kvBlob && kvBlob.body && (Date.now() - kvBlob.ts) < PRECOMPUTED_TTL_SEC * 1000) {
-          const ch = new Headers();
-          ch.set('Content-Type', 'application/json');
-          ch.set('X-Cached-At', String(kvBlob.ts));
-          ch.set('Cache-Control', `public, max-age=${Math.floor(PETCH_ASSETS_CACHE_STALE_MS / 1000)}`);
-          cache.put(cacheKey, new Response(kvBlob.body, { status: 200, headers: ch })).catch(() => {});
-          return _withCors(kvBlob.body, 200, 'KV-PRECOMPUTED');
+        if (kvBlob && kvBlob.body) {
+          if ((Date.now() - kvBlob.ts) < PRECOMPUTED_TTL_SEC * 1000) {
+            const ch = new Headers();
+            ch.set('Content-Type', 'application/json');
+            ch.set('X-Cached-At', String(kvBlob.ts));
+            ch.set('Cache-Control', `public, max-age=${Math.floor(PETCH_ASSETS_CACHE_STALE_MS / 1000)}`);
+            cache.put(cacheKey, new Response(kvBlob.body, { status: 200, headers: ch })).catch(() => {});
+            return _withCors(kvBlob.body, 200, 'KV-PRECOMPUTED');
+          }
+          _petchKvStale = kvBlob.body;
         }
       } catch { /* fall through */ }
+      // Serve-stale on hard MISS — same rationale as /market: the dapp fetches
+      // /market and /petch-assets in parallel on Market-tab entry, so an
+      // inline recompute on EITHER leg blocks the tab. Stale copy + background
+      // recompute; inline only when truly cold.
+      const _petchStaleBody = _petchKvStale != null ? _petchKvStale : (cached ? await cached.text() : null);
+      if (_petchStaleBody != null && ctx && typeof ctx.waitUntil === 'function') {
+        ctx.waitUntil(_swrDedupedKick(cacheKey.url, () => petchAssetsComputeAndCache(env, network)).catch(() => null));
+        return _withCors(_petchStaleBody, 200, _petchKvStale != null ? 'KV-STALE' : 'STALE-EXPIRED');
+      }
       const result = await _swrDedupedKick(cacheKey.url, () => petchAssetsComputeAndCache(env, network));
       return _withCors(result.body, result.status, cached ? 'EXPIRED-MISS' : 'MISS');
     }
