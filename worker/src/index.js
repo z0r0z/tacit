@@ -12499,6 +12499,25 @@ async function handleAssetBook(req, env, network, cors, ctx) {
   _pruneExpired('range_listings', 'listings');
   _pruneExpired('intents', 'intents');
   _pruneExpired('preauth_sales', 'sales');
+  // Slim the take-only settlement blobs out of the heavy sections, mirroring
+  // the /market aggregate. No asset-book consumer in the dapp reads these off
+  // these arrays — the asset-detail sell-side renders from _marketCache
+  // (the /market data), the Discover floor scan reads only amount/price_sats,
+  // and every take re-fetches the full record from the per-order endpoint.
+  // Same response-copy-only mutation as the prune above; shared per-section
+  // caches (and the public /assets/:aid/* endpoints) keep the full set.
+  const _slim = (section, arrKey, drop) => {
+    const s = out[section];
+    if (!s || !Array.isArray(s[arrKey])) return;
+    s[arrKey] = s[arrKey].map(e => {
+      if (!e) return e;
+      const c = { ...e };
+      for (const f of drop) delete c[f];
+      return c;
+    });
+  };
+  _slim('intents', 'intents', ['envelope_script_hex', 'control_block_hex', 'intent_sig', 'p2tr_spk_hex']);
+  _slim('preauth_sales', 'sales', ['seller_asset_spend_sig', 'auth_sig', 'seller_payout_script']);
   return jsonResponse(out, 200, cors);
 }
 
