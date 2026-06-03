@@ -312,6 +312,8 @@ For an ETH bridge: 1 relay + 1 verifier + 1 mixer + 1 Groth16 verifier = 4 contr
 
 The ETH ↔ tETH bridge is deployed and Etherscan-verified on Ethereum mainnet (chain ID 1), bridging mainnet Bitcoin. The contracts are immutable and permissionless — anyone can advance the relay or submit state proofs; funds are protected by the proofs, not by any privileged caller.
 
+**Status:** the contracts are live and Etherscan-verified; the in-dApp bridge flow is **not yet open to the public**. When it opens it will run as a capped pilot — 0.001 ETH per deposit, 10 ETH total backing — enforced dApp-side while the deposit base grows.
+
 | Contract | Address |
 | --- | --- |
 | `BitcoinLightRelay` | [`0x45AA793952A710E61D456deAcA13E29d8E5c0951`](https://etherscan.io/address/0x45AA793952A710E61D456deAcA13E29d8E5c0951) |
@@ -327,7 +329,7 @@ The ETH ↔ tETH bridge is deployed and Etherscan-verified on Ethereum mainnet (
 - **Relay genesis anchor:** Bitcoin block 952127. **Confirmation depth:** 6. **Finality window:** 6. **Network tag:** 0 (mainnet).
 - **Mixer deploy block:** 25,231,174 (`0x180ff46`) — deposits are indexed from here.
 
-Circulating tETH equals the mixer's `totalBalance()` (deposits − withdrawals) and is readable on-chain at any time. The bridge is not yet open in the dApp; when it opens it will run as a capped pilot — 0.001 ETH per deposit, 10 ETH total backing — enforced dApp-side while the deposit base grows.
+Circulating tETH equals the mixer's `totalBalance()` (deposits − withdrawals) and is readable on-chain at any time.
 
 ## Proving
 

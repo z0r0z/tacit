@@ -459,7 +459,7 @@ system to defeat proof-substitution attacks (SPEC §5.11.4).
 - ✅ Phase 1 ptau swapped to verified Hermez ceremony
 - ✅ Phase 2 ceremony coordinator (init / contribute / finalize) + auth
 - ✅ Client-side `verifyFromInit` before contribute
-- ✅ 108 mixer tests across 7 test files
+- ✅ 150+ mixer tests across 10 test files
 - ✅ **Phase 2 ceremony finalized + beacon applied** — see Trusted setup
   for contribution count, beacon details, and the canonical bundle CID.
 - ⏸ Deterministic `(secret, ν)` derivation from privkey (UX improvement;

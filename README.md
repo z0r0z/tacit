@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="./tacit.svg" alt="tacit" width="120">
+  <img src="./assets/tacit.svg" alt="tacit" width="120">
 </p>
 
 # tacit
@@ -52,12 +52,15 @@ data alone. Tacit applies that pattern to a much wider surface:
 - **Trustless wrapped BTC.** `cBTC.zk` locks real BTC at a
   Taproot output whose spending key is derived from a mixer
   leaf's secret — one note, two locks, no federation and no
-  co-signer.
+  co-signer. (Amendment shipped; the in-dApp slot-wrap is gated
+  behind the AMM ceremony.)
 - **Fungible wrapped BTC.** `cBTC.tac` composes a cBTC.zk anchor
   with an LP-share lien on the canonical (TAC, tETH) pool, so
   amount-granular wrapped BTC is itself a standard tacit asset:
   CXFER it, swap it, LP it, mix it. Trustless on the anchor side,
   over-collateralized by a (TAC, tETH) LP on the fungibility side.
+  (Spec'd as an amendment; the fungibility layer ships with the AMM —
+  ceremony pending.)
 - **Trustless wrapped ETH.** `tETH` deposits ETH on Ethereum into
   a Poseidon-Merkle mixer contract, mints composable tETH on
   Bitcoin via Groth16 proof, and withdraws back to Ethereum via
@@ -65,9 +68,10 @@ data alone. Tacit applies that pattern to a much wider surface:
   Every mint is client-side verified: re-verify the Groth16 proof
   + check `ethRoot` against the Ethereum contract via `eth_call`.
   Notes and shielded UTXOs are deterministically derived from
-  privkey alone. Live and Etherscan-verified on Ethereum mainnet —
-  see [`BRIDGE.md` § Live on Ethereum mainnet](./BRIDGE.md#live-on-ethereum-mainnet)
-  for contract addresses.
+  privkey alone. The mainnet contracts are live and Etherscan-verified;
+  the in-dApp mainnet bridge is gated (not yet open to the public) while
+  signet is open — see [`BRIDGE.md` § Live on Ethereum mainnet](./BRIDGE.md#live-on-ethereum-mainnet)
+  for status + contract addresses.
 - **Native marketplace.** Atomic OTC settlement of a confidential
   token against a BTC payment in one Bitcoin tx (`T_AXFER`), plus
   variable-amount partial fills (`T_AXFER_VAR`) and buyer-offline
@@ -245,7 +249,7 @@ does the accounting; Bitcoin holds the data.
 
 The diagram and full primitive-by-primitive walkthrough live at
 [`spec/CIRCUITS.md`](./spec/CIRCUITS.md). The single-image version
-is [`tacit-circuits.svg`](./tacit-circuits.svg).
+is [`tacit-circuits.svg`](./assets/tacit-circuits.svg).
 
 **Why this stack matters.** Indexer-validated meta-protocols like
 Runes already prove at scale that consensus-of-indexers can
@@ -526,7 +530,6 @@ tacit/
 │   ├── prf-wallet.js      # WebAuthn PRF key derivation
 │   ├── preboot.js         # pre-initialization (localStorage, session setup)
 │   ├── sw.js              # service worker
-│   ├── tacit.svg          # logo / favicon
 │   ├── _headers           # CF Pages HTTP headers (frame-ancestors, XCTO, Referrer)
 │   └── vendor/
 │       └── tacit-deps.min.js   # bundled @noble/secp256k1 + @noble/hashes
@@ -544,14 +547,15 @@ tacit/
 ├── verify-service/        # remote Groth16 proof verification server
 │   ├── server.mjs
 │   └── Dockerfile
-├── tests/                 # offline test harness (100+ test files)
+├── tests/                 # offline test harness (160+ test files)
 ├── spec/                  # protocol specs + amendments
 │   ├── CIRCUITS.md        # how the ZK stack composes
 │   ├── GLOSSARY.md        # cross-surface term definitions
-│   ├── amendments/        # 25 amendments (shipped + drafted)
+│   ├── amendments/        # 28 amendments (shipped + drafted)
 │   ├── amm/               # AMM wire formats, ceremony, failure modes
 │   └── design/            # design docs (channel UX, consensus, stealth)
 ├── build/                 # esbuild bundler for vendor deps (dev-time only)
+├── assets/                # logos + architecture diagrams (README / docs imagery)
 ├── whitepaper/            # technical whitepaper (WHITEPAPER.md + .tex + .pdf)
 ├── discord/               # protocol monitoring bot
 ├── airdrop/               # CSV-based airdrop tooling
@@ -1149,8 +1153,8 @@ deposit corresponds to which withdrawal. Phase 2 trusted setup finalized
   gate), browser-side Groth16 prover + verifier (snarkjs vendored at
   `dapp/vendor/tacit-mixer.min.js`), Phase 2 ceremony coordinator (init
   / contribute / finalize), client-side `verifyFromInit` walk, and
-  indexer rejection-path determinism are all shipped (108 mixer tests
-  across 7 files). Phase 1 ptau is the verified Polygon Hermez ceremony
+  indexer rejection-path determinism are all shipped (150+ mixer tests
+  across 10 files). Phase 1 ptau is the verified Polygon Hermez ceremony
   output, dual-hash-checked at build. Phase 2 was run publicly via the
   coordinator: 2,227 community contributions + Bitcoin-block-948824
   beacon (10 MiMC iterations), finalized 2026-05-11. The canonical
@@ -1348,7 +1352,7 @@ and the configured CORS allowlist. It exposes:
 | `/bridge/eth-roots`               | GET / POST | Ethereum merkle roots for tETH bridge verification. |
 | `/scan`                           | POST   | Manual scan trigger (debug)                                        |
 | `/rescan`                         | POST   | Rewind `meta:last_scanned` to a given height (debug, `?from=<h>`)   |
-| _scheduled_                       |        | `*/5 * * * *` — scan recent signet AND mainnet blocks for CETCH, T_CXFER, T_MINT, T_BURN, T_AXFER, T_PETCH, T_PMINT, T_DEPOSIT, T_WITHDRAW, T_BRIDGE_DEPOSIT, T_BRIDGE_BURN envelopes |
+| _scheduled_                       |        | `*/5 * * * *` — scan recent signet AND mainnet blocks for CETCH, T_CXFER, T_MINT, T_BURN, T_AXFER, T_PETCH, T_PMINT, T_DEPOSIT, T_WITHDRAW, T_BRIDGE_DEPOSIT, T_BRIDGE_BURN, T_BRIDGE_ROTATE, T_BRIDGE_EXPORT, T_BRIDGE_IMPORT envelopes |
 
 Setup steps live in `worker/README.md`. Deploy your own (and update
 `WORKER_BASE` in `dapp/tacit.js`) if you want isolated keys / quota.
