@@ -611,6 +611,56 @@ function jsonResponse(obj, status, headers) {
   });
 }
 
+// Prover liveness: the box posts /prover-heartbeat every ~2m; anyone GETs /prover-health.
+const PROVER_HB_KEY = 'prover:heartbeat:mainnet';
+const PROVER_HB_STALE_MS = 10 * 60 * 1000;        // >10m with no heartbeat ⇒ box or loop down
+const PROVER_HB_MIN_GAS_WEI = 2000000000000000n;  // 0.002 ETH floor before the gas key needs a top-up
+
+async function handleProverHeartbeat(req, env, cors) {
+  let body;
+  try { body = await req.json(); } catch { return jsonResponse({ ok: false, error: 'bad json' }, 400, cors); }
+  const tok = env.PROVER_HEARTBEAT_TOKEN || '';
+  if (!tok || body.token !== tok) return jsonResponse({ ok: false, error: 'unauthorized' }, 401, cors);
+  const rec = {
+    ts: Date.now(),
+    network: String(body.network || 'mainnet'),
+    gas_wei: typeof body.gas_wei === 'string' ? body.gas_wei : String(body.gas_wei || '0'),
+    prover_alive: body.prover_alive === true || body.prover_alive === 'true',
+    note: typeof body.note === 'string' ? body.note.slice(0, 200) : '',
+  };
+  await env.REGISTRY_KV.put(PROVER_HB_KEY, JSON.stringify(rec));
+  return jsonResponse({ ok: true, stored: rec.ts }, 200, cors);
+}
+
+async function handleProverHealth(env, cors) {
+  const hdr = { ...cors, 'Cache-Control': 'no-store' };
+  const raw = await env.REGISTRY_KV.get(PROVER_HB_KEY);
+  if (!raw) return jsonResponse({ status: 'unknown', healthy: false, reasons: ['no heartbeat recorded yet'] }, 503, hdr);
+  let hb;
+  try { hb = JSON.parse(raw); } catch { return jsonResponse({ status: 'unknown', healthy: false, reasons: ['corrupt heartbeat record'] }, 503, hdr); }
+  const age_ms = Date.now() - (hb.ts || 0);
+  const stale = age_ms > PROVER_HB_STALE_MS;
+  let gas; try { gas = BigInt(hb.gas_wei || '0'); } catch { gas = 0n; }
+  const low_gas = gas < PROVER_HB_MIN_GAS_WEI;
+  const dead = hb.prover_alive === false;
+  const healthy = !stale && !low_gas && !dead;
+  const reasons = [];
+  if (stale) reasons.push(`no heartbeat for ${Math.round(age_ms / 60000)}m (threshold ${PROVER_HB_STALE_MS / 60000}m) — prover box likely down`);
+  if (dead) reasons.push('box up but prover-loop process not running');
+  if (low_gas) reasons.push(`gas key low: ${hb.gas_wei} wei < ${PROVER_HB_MIN_GAS_WEI.toString()} (0.002 ETH)`);
+  const status = stale ? 'down' : dead ? 'process_down' : low_gas ? 'low_gas' : 'ok';
+  return jsonResponse({
+    status, healthy,
+    age_seconds: Math.round(age_ms / 1000),
+    last_heartbeat_ts: hb.ts || null,
+    gas_wei: hb.gas_wei || '0',
+    prover_alive: hb.prover_alive !== false,
+    network: hb.network || 'mainnet',
+    note: hb.note || '',
+    reasons,
+  }, healthy ? 200 : 503, hdr);
+}
+
 // Bearer-token gate for the debug endpoints (/scan, /rescan). Either of those
 // can burn substantial mempool.space subrequest budget — /rescan?from=0 in
 // particular triggers a scan from genesis on the next cron tick. Default-deny:
@@ -25231,6 +25281,9 @@ async function _routeFetch(req, env, ctx) {
         headers: { ...cors, 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
       });
     }
+
+    if (url.pathname === '/prover-heartbeat' && req.method === 'POST') return handleProverHeartbeat(req, env, cors);
+    if (url.pathname === '/prover-health' && req.method === 'GET') return handleProverHealth(env, cors);
 
     if (url.pathname === '/pin' && req.method === 'POST')      return handlePin(req, env, cors);
     if (url.pathname === '/pin-json' && req.method === 'POST') return handlePinJson(req, env, cors);
