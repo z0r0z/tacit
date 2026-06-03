@@ -12465,6 +12465,26 @@ async function handleAssetBook(req, env, network, cors, ctx) {
       .then(d => { out.range_listings = d; }).catch(() => { out.range_listings = null; }),
   );
   await Promise.all(jobs);
+  // Prune expired entries from the heavy book sections. On an active asset the
+  // KV index is dominated by dead orders (live TAC: 249/259 intents and
+  // 182/227 preauth sales were expired), each carrying a full ~1-3 KB
+  // envelope/opening blob. Every asset-book consumer in the dapp discards
+  // expired entries client-side already, so filtering here cuts the payload
+  // ~10x without changing observable behaviour. `stats` and `bids` are left
+  // untouched; the shared per-section caches (also serving the public
+  // /assets/:aid/* endpoints) are not mutated — we only trim the response copy.
+  const _pruneExpired = (section, arrKey) => {
+    const s = out[section];
+    if (!s || !Array.isArray(s[arrKey])) return;
+    const live = s[arrKey].filter(e => e && !e.expired);
+    if (live.length === s[arrKey].length) return;
+    s[arrKey] = live;
+    if (typeof s.count === 'number') s.count = live.length;
+  };
+  _pruneExpired('listings', 'listings');
+  _pruneExpired('range_listings', 'listings');
+  _pruneExpired('intents', 'intents');
+  _pruneExpired('preauth_sales', 'sales');
   return jsonResponse(out, 200, cors);
 }
 
