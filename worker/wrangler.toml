@@ -13,6 +13,12 @@ compatibility_date = "2024-12-01"
 #   { pattern = "tacit.finance/tacit.js*", zone_name = "tacit.finance" },
 #   { pattern = "www.tacit.finance/tacit.js*", zone_name = "tacit.finance" },
 # ]
+# NOTE (2026-06-04): enabling these requires onboarding the tacit.finance
+# zone to this Cloudflare account first — DNS currently lives at the
+# registrar (registrar-servers.com) pointing directly at Render, so
+# `wrangler deploy` rejects the route with error 10083. The KV artifact
+# (dapp:tacit.js.br) and the handler are deployed and waiting; once the
+# zone exists here, uncommenting + `wrangler deploy` completes the flip.
 
 # UPLOAD_KV — per-IP rate limits for /pin uploads
 [[kv_namespaces]]
