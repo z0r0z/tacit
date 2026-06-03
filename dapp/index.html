@@ -50,7 +50,7 @@
   static host instead; see ./_headers for the Cloudflare Pages / Netlify
   config that adds frame-ancestors 'self' (clickjacking defense).
 -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' http://localhost:* http://127.0.0.1:* https://mempool.space https://*.mempool.space https://mempool.bisq.services https://mempool.emzy.de https://mempool.bitaroo.net https://blockstream.info https://api.coinbase.com https://api.kraken.com https://api.coingecko.com https://cloudflare-eth.com https://tacit-pin.rosscampbell9.workers.dev https://www.tacitscan.io https://content.wrappr.wtf https://ipfs.io https://w3s.link https://*.ipfs.w3s.link https://dweb.link https://*.ipfs.dweb.link https://uploads.pinata.cloud https://gateway.pinata.cloud https://gateway.liquify.com https://ethereum-sepolia-rpc.publicnode.com https://ethereum-rpc.publicnode.com https://1rpc.io https://eth.llamarpc.com https://eth.drpc.org https://sepolia.drpc.org https://sepolia.gateway.tenderly.co; img-src 'self' data: http://localhost:* http://127.0.0.1:* https://content.wrappr.wtf https://tacit-pin.rosscampbell9.workers.dev https://ipfs.io https://w3s.link https://*.ipfs.w3s.link https://dweb.link https://*.ipfs.dweb.link; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' http://localhost:* http://127.0.0.1:* https://mempool.space https://*.mempool.space https://mempool.bisq.services https://mempool.emzy.de https://mempool.bitaroo.net https://blockstream.info https://btcscan.org https://api.coinbase.com https://api.kraken.com https://api.coingecko.com https://cloudflare-eth.com https://tacit-pin.rosscampbell9.workers.dev https://www.tacitscan.io https://content.wrappr.wtf https://ipfs.io https://w3s.link https://*.ipfs.w3s.link https://dweb.link https://*.ipfs.dweb.link https://uploads.pinata.cloud https://gateway.pinata.cloud https://gateway.liquify.com https://ethereum-sepolia-rpc.publicnode.com https://ethereum-rpc.publicnode.com https://1rpc.io https://eth.llamarpc.com https://eth.drpc.org https://sepolia.drpc.org https://sepolia.gateway.tenderly.co; img-src 'self' data: http://localhost:* http://127.0.0.1:* https://content.wrappr.wtf https://tacit-pin.rosscampbell9.workers.dev https://ipfs.io https://w3s.link https://*.ipfs.w3s.link https://dweb.link https://*.ipfs.dweb.link; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; object-src 'none'; base-uri 'self'; form-action 'none'">
 <title>tacit</title>
 <link rel="icon" type="image/svg+xml" href='data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><style>.r{stroke:%230a0a0a}@media(prefers-color-scheme:dark){.r{stroke:%23f4efe6}}</style><circle class="r" cx="16" cy="16" r="13" fill="none" stroke-width="2.5"/><path d="M17.5 7L13 22.5Q13 25 18 24" fill="none" stroke="%23f7931a" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M10 11L21 11" stroke="%23f7931a" stroke-width="2.4" stroke-linecap="round"/></svg>'>
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -87,7 +87,7 @@
      so iOS Safari's stale-modulepreload cache flushes on every change. -->
 <link rel="modulepreload" href="./vendor/tacit-deps.min.js" fetchpriority="high">
 <link rel="modulepreload" href="./prf-wallet.js">
-<link rel="modulepreload" href="./tacit.js?cb=3f009de5">
+<link rel="modulepreload" href="./tacit.js?cb=e67fd430">
 <link rel="modulepreload" href="./bulletproofs-plus.js">
 <link rel="modulepreload" href="./amm-bjj.js">
 <link rel="modulepreload" href="./amm-sigma.js">
@@ -118,8 +118,12 @@
   --orange: #f7931a;
   --market-usd: var(--orange);
   --market-sats: var(--ink);
-  --green: #2e7d32;
-  --red: #c62828;
+  --green: #0a7d3a;
+  --green-positive: #1A7548;
+  --red: #b8341d;
+  --red-warn: #a04030;
+  --amber: #b8651d;
+  --level: #c76b26;
   --purple: #6a1b9a;
   --mono: 'IBM Plex Mono', ui-monospace, monospace;
   /* Editorial serif — pair with the IBM Plex Mono body to mirror the
@@ -239,8 +243,8 @@ header {
   font-style: normal;
   font-size: 11px;
 }
-.global-tape-item.up .gt-tick { color: #0a8f43; }
-.global-tape-item.down .gt-tick { color: #b8341d; }
+.global-tape-item.up .gt-tick { color: var(--green); }
+.global-tape-item.down .gt-tick { color: var(--red); }
 .global-tape-item .gt-age {
   font-family: var(--mono);
   font-style: normal;
@@ -303,7 +307,7 @@ header {
   .global-tape-track { gap: 20px; animation-duration: 45s; }
 }
 .logo {
-  font-family: 'Instrument Serif', serif;
+  font-family: var(--serif);
   font-size: 60px; font-style: italic;
   line-height: 0.85; letter-spacing: -0.03em;
 }
@@ -403,7 +407,7 @@ button.danger:hover { background: var(--red); color: #fff; border-color: var(--r
    subtle scale-down on press reads as tactile and helps the user confirm
    the tap registered before the cap-progress UI updates. */
 button[data-act="petch-mint"]:not(:disabled) {
-  background: #7d4ff7; color: #fff; border-color: #5a36c4;
+  background: var(--purple); color: #fff; border-color: var(--purple);
   transition: background 0.12s ease-out, transform 0.08s ease-out;
 }
 @media (hover: hover) {
@@ -734,7 +738,7 @@ button.market-chip .chip-caret {
   100% { background: var(--bg); box-shadow: inset 0 0 0 0 transparent; }
 }
 @keyframes click-ack-flash-sell {
-  0%   { background: rgba(10,143,67,0.32); box-shadow: inset 3px 0 0 0 #0a8f43; }
+  0%   { background: rgba(10,143,67,0.32); box-shadow: inset 3px 0 0 0 var(--green); }
   100% { background: var(--bg); box-shadow: inset 0 0 0 0 transparent; }
 }
 .market-listing-tile--click-ack {
@@ -806,7 +810,7 @@ button.market-chip .chip-caret {
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: #0a8f43;
+  background: var(--green);
   animation: market-taken-pulse 1.6s ease-in-out infinite;
 }
 @keyframes market-taken-pulse {
@@ -842,7 +846,7 @@ button.market-chip .chip-caret {
   z-index: 1;
 }
 .market-bids-row[data-fill-aid]:focus-visible {
-  outline: 2px solid #0a8f43;
+  outline: 2px solid var(--green);
   outline-offset: -2px;
   z-index: 1;
 }
@@ -854,7 +858,7 @@ button.market-chip .chip-caret {
   width: 7px;
   height: 7px;
   border-radius: 50%;
-  background: #0a8f43;
+  background: var(--green);
   vertical-align: middle;
   margin-right: 4px;
 }
@@ -875,7 +879,7 @@ tr[data-recent-activity] {
 .market-asset-tile[data-recent-activity] .market-asset-id::after,
 tr[data-recent-activity] .market-token-sub::after {
   content: " · ⚡ active";
-  color: var(--green, #0a8f43);
+  color: var(--green);
   font-weight: 700;
   letter-spacing: 0.04em;
 }
@@ -899,9 +903,9 @@ tr[data-recent-activity] .market-token-sub::after {
   justify-content: center;
   min-width: 16px;
   height: 16px;
-  background: #0a8f43;
+  background: var(--green);
   color: #fff;
-  border: 1px solid #0a7d3a;
+  border: 1px solid var(--green);
   font-family: Arial, sans-serif;
   font-size: 11px;
   line-height: 1;
@@ -911,8 +915,8 @@ tr[data-recent-activity] .market-token-sub::after {
   display: inline-flex;
   width: fit-content;
   padding: 2px 8px;
-  border: 1px solid #0a8f43;
-  color: #0a7d3a;
+  border: 1px solid var(--green);
+  color: var(--green);
   background: rgba(10,143,67,0.08);
   font-size: 10px;
   font-weight: 700;
@@ -1378,7 +1382,6 @@ tr[data-recent-activity] .market-token-sub::after {
    gives the eye an additional cue for long ladders where the pill is
    easy to miss. */
 .market-listing-tile--mine { background: rgba(247,147,26,0.08); }
-.market-bids-row--claimed { background: rgba(10,143,67,0.06); }
 .market-bids-row--expired { opacity: 0.62; }
 /* Hover hint on bid rows so the click-to-prime-Swap affordance reads
    visually in Simple mode. Subtle background brightening + slight
@@ -1746,7 +1749,7 @@ tr[data-recent-activity] .market-token-sub::after {
   display: flex;
   align-items: center;
   justify-content: center;
-  font-family: Georgia, 'Times New Roman', serif;
+  font-family: var(--serif);
   font-style: italic;
   font-size: 24px;
   line-height: 1;
@@ -1786,7 +1789,7 @@ tr[data-recent-activity] .market-token-sub::after {
   color: var(--ink-mid);
   white-space: nowrap;
 }
-.mkt-hero-live { color: #0a7d3a; }
+.mkt-hero-live { color: var(--green); }
 .mkt-hero-cold { color: var(--ink-mid); }
 .mkt-hero-meta-row {
   margin-top: 4px;
@@ -1903,8 +1906,8 @@ tr[data-recent-activity] .market-token-sub::after {
   color: var(--ink-mid);
   margin-right: 1px;
 }
-.mkt-hero-delta-up { color: #0a7d3a; }
-.mkt-hero-delta-down { color: #b8341d; }
+.mkt-hero-delta-up { color: var(--green); }
+.mkt-hero-delta-down { color: var(--red); }
 .portfolio-total-bar {
   border: 1px solid var(--ink);
   background: var(--bg-warm);
@@ -1930,10 +1933,11 @@ tr[data-recent-activity] .market-token-sub::after {
   text-align: right;
 }
 .portfolio-total-usd {
-  font-family: var(--mono);
-  font-size: 22px;
-  font-weight: 900;
-  color: var(--orange);
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: 28px;
+  font-weight: 500;
+  color: var(--ink);
   line-height: 1.2;
 }
 .portfolio-total-sats {
@@ -1974,7 +1978,7 @@ tr[data-recent-activity] .market-token-sub::after {
 .delta-chip.neu { color: var(--ink-mid); }
 .delta-chip .delta-win {
   color: var(--ink-faint);
-  font-size: 9.5px;
+  font-size: 10px;
   font-weight: 600;
   letter-spacing: 0.04em;
   text-transform: lowercase;
@@ -2082,13 +2086,13 @@ tr[data-recent-activity] .market-token-sub::after {
 }
 .market-mode-badge.intent { border-color: var(--ink-faint); color: var(--ink-mid); }
 .market-mode-badge.opening,
-.market-mode-badge.range { border-color: #a04030; color: #a04030; }
+.market-mode-badge.range { border-color: var(--red-warn); color: var(--red-warn); }
 /* Trust-required tiles get a stronger inline cue beyond the badge color:
    a left border tint on the whole tile so the row is visually segmented
    from trustless asks even when the badge wraps off-screen on narrow
    viewports. Subtle — not alarming — but unmistakable in a crossed book. */
 .market-listing-tile:has(.market-mode-badge.trust-required) {
-  border-left: 3px solid #a04030 !important;
+  border-left: 3px solid var(--red-warn) !important;
   background-image: linear-gradient(to right, rgba(160,64,48,0.03), transparent 24%) !important;
 }
 .market-listing-amount {
@@ -2114,10 +2118,10 @@ tr[data-recent-activity] .market-token-sub::after {
   line-height: 1.3;
   overflow-wrap: anywhere;
   font-variant-numeric: tabular-nums;
-  color: #b8341d; /* red ink — ask priced above mid, mirrors rows-mode color */
+  color: var(--red); /* red ink — ask priced above mid, mirrors rows-mode color */
 }
-.market-listing-tile--best .market-listing-unit strong { color: #0a7d3a; }
-.market-listing-tile--level .market-listing-unit strong { color: #c76b26; }
+.market-listing-tile--best .market-listing-unit strong { color: var(--green); }
+.market-listing-tile--level .market-listing-unit strong { color: var(--level); }
 .market-listing-unit small {
   display: block;
   margin-top: 4px;
@@ -2196,8 +2200,8 @@ tr[data-recent-activity] .market-token-sub::after {
   min-width: 0;
   white-space: nowrap;
   background: transparent;
-  color: #b8651d;
-  border: 1px solid #b8651d;
+  color: var(--amber);
+  border: 1px solid var(--amber);
   font-size: 11px;
   font-weight: 700;
   padding: 5px 10px;
@@ -2313,13 +2317,13 @@ tr[data-recent-activity] .market-token-sub::after {
    wins with orange when not also best. The "vs mid" cell uses its own
    inline color (set per-row in JS) so this only colors the price. */
 .market-listing-grid.market-listing-rows-mode .market-listing-tile .market-listing-unit strong {
-  color: #b8341d;  /* red: ask priced above mid */
+  color: var(--red);  /* red: ask priced above mid */
 }
 .market-listing-grid.market-listing-rows-mode .market-listing-tile--level .market-listing-unit strong {
-  color: #c76b26;  /* brand orange: aggregated level row */
+  color: var(--level);  /* aggregated level row */
 }
 .market-listing-grid.market-listing-rows-mode .market-listing-tile--best .market-listing-unit strong {
-  color: #0a7d3a;  /* green: best in class — wins over both above */
+  color: var(--green);  /* green: best in class — wins over both above */
 }
 /* Same color discipline for the bids side. Default bid prices are
    green (above mid in a healthy book) or red (below mid). The TOP
@@ -2327,10 +2331,10 @@ tr[data-recent-activity] .market-token-sub::after {
    but we override the price text color here so the row reads at a
    glance without scanning the badge. */
 .market-bids-row .market-bid-price strong {
-  color: #0a7d3a;  /* default: bid sits above mid (healthy book) */
+  color: var(--green);  /* default: bid sits above mid (healthy book) */
 }
 .market-bids-row.market-bids-row--below-mid .market-bid-price strong {
-  color: #b8341d;  /* red: bid below mid */
+  color: var(--red);  /* red: bid below mid */
 }
 /* Column-header row — light muted labels per designer spec, no heavy
    black bar. Reads as a subtle subtitle for the ladder, not a chrome
@@ -2749,7 +2753,7 @@ label {
 .checkbox-row:hover { border-color: var(--ink-faint); }
 .checkbox-row:has(input:checked) {
   background: var(--bg-warm);
-  border-color: var(--orange);
+  border-color: var(--ink);
 }
 .checkbox-row input[type="checkbox"] {
   flex-shrink: 0; margin-top: 2px;
@@ -2788,7 +2792,7 @@ label {
   border-color: var(--orange); font-weight: 600;
 }
 .preset-chip .num {
-  font-family: 'Instrument Serif', serif;
+  font-family: var(--serif);
   font-size: 16px; font-style: italic;
 }
 .preset-chip .hint {
@@ -2839,7 +2843,7 @@ label {
   transition: background 0.08s, color 0.08s;
 }
 .tab.active { color: var(--ink); border-bottom-color: var(--orange); font-weight: 700; }
-.tab:hover:not(.active) { background: var(--ink); color: var(--bg); }
+.tab:hover:not(.active) { background: transparent; color: var(--ink); }
 
 .tabs.subtabs {
   border-bottom: 1px dashed var(--ink-faint);
@@ -2855,9 +2859,8 @@ label {
 }
 
 /* Numeric badge appended to a tab when JS sets `data-count="N"` (Holdings,
-   Market, Drops). Filled orange chip on inactive tabs; flips to ink on the
-   active tab so it doesn't compete with the orange underline. Hidden when
-   count is 0 / missing so empty tabs stay clean. */
+   Market, Drops). Neutral ink chip on inactive tabs; flips to a cream chip on
+   the active tab. Hidden when count is 0 / missing so empty tabs stay clean. */
 .tab[data-count]::after {
   content: attr(data-count);
   display: inline-block;
@@ -2866,13 +2869,12 @@ label {
   font-size: 9px; font-weight: 700;
   letter-spacing: 0.04em;
   line-height: 14px;
-  background: var(--orange); color: var(--ink);
+  background: var(--ink); color: var(--bg);
   border: 1px solid var(--ink);
   vertical-align: 1px;
 }
 .tab[data-count="0"]::after, .tab:not([data-count])::after { content: none; }
-.tab.active[data-count]::after { background: var(--ink); color: var(--orange); border-color: var(--ink); }
-.tab:hover:not(.active)[data-count]::after { background: var(--bg); color: var(--ink); }
+.tab.active[data-count]::after { background: var(--bg); color: var(--ink); border-color: var(--ink); }
 /* On phones the tab row is overflow-x scrollable but every extra pixel
    pushes content offscreen. Trim the badge: smaller font, narrower padding,
    tighter left-margin. Still legible at 8px since the contents are 1-3
@@ -2898,7 +2900,7 @@ label {
   overflow-x: auto;
 }
 .script-decode .hex { color: var(--ink-mid); font-weight: 300; white-space: nowrap; }
-.script-decode .op { color: var(--orange); font-weight: 700; white-space: nowrap; }
+.script-decode .op { color: var(--ink); font-weight: 600; white-space: nowrap; }
 .script-decode .desc { color: var(--ink-mid); font-style: italic; }
 
 /* Protocol-page subsection heading. Used both as a regular <h3> (the always-
@@ -3010,7 +3012,7 @@ details.protocol-section > summary.protocol-h3:hover { color: var(--orange); }
   border-bottom: 1px solid var(--ink); padding-bottom: 10px;
 }
 .asset-card .ticker {
-  font-family: 'Instrument Serif', serif;
+  font-family: var(--serif);
   font-size: 36px; font-style: italic; line-height: 1;
   color: var(--ink);
 }
@@ -3026,14 +3028,14 @@ details.protocol-section > summary.protocol-h3:hover { color: var(--orange); }
 .asset-card .ticker .ticker-sub {
   font-family: 'IBM Plex Mono', monospace;
   font-size: 11px; font-style: normal; font-weight: 600;
-  color: var(--orange);
+  color: var(--ink-mid);
   letter-spacing: 0.06em;
   text-transform: uppercase;
   margin-left: 10px;
   vertical-align: middle;
 }
 .asset-card .balance {
-  font-family: 'Instrument Serif', serif;
+  font-family: var(--serif);
   font-size: 32px; font-style: italic; line-height: 1;
   text-align: right;
 }
@@ -3352,13 +3354,13 @@ details.protocol-section > summary.protocol-h3:hover { color: var(--orange); }
 .wiz-step-num {
   display: inline-flex; align-items: center; justify-content: center;
   width: 22px; height: 22px;
-  border: 1px solid var(--ink); border-radius: 50%;
+  border: 1px solid var(--ink);
   font-size: 11px; font-weight: 600;
   background: var(--bg); color: var(--ink);
   flex-shrink: 0;
 }
 .wiz-step.is-done .wiz-step-num {
-  background: var(--green); color: #fff; border-color: var(--green);
+  background: var(--orange); color: var(--ink); border-color: var(--orange);
 }
 .wiz-step-title { flex: 1; min-width: 0; }
 .wiz-step-hint {
@@ -3375,26 +3377,26 @@ details.protocol-section > summary.protocol-h3:hover { color: var(--orange); }
 .toast {
   position: fixed; bottom: 24px; right: 24px;
   padding: 14px 22px; background: var(--ink); color: var(--bg);
-  font-size: 12px; border-left: 4px solid var(--orange);
+  font-size: 12px; border-left: 4px solid var(--ink-faint);
   max-width: 420px; z-index: 100;
   animation: slidein 0.2s ease-out; word-break: break-word;
-  box-shadow: 4px 4px 0 var(--orange);
+  box-shadow: 4px 4px 0 var(--ink);
 }
 .toast.error { border-left-color: var(--red); box-shadow: 4px 4px 0 var(--red); }
 .toast.success { border-left-color: var(--green); box-shadow: 4px 4px 0 var(--green); }
 /* `kind="warn"` adds the standalone `.warn` class which forces a cream
    background — but the base .toast color is white, so without this
    override the text is invisible on cream. Switching color back to
-   --ink gives dark text on the warm panel + orange accent, which
+   --ink gives dark text on the warm panel + amber accent, which
    reads visually distinct from default toasts (white on dark) and
    error/success (white on dark with red/green accent). */
-.toast.warn { background: var(--bg-warm); color: var(--ink); border-left-color: var(--orange); box-shadow: 4px 4px 0 var(--orange); padding: 14px 22px; margin: 0; }
+.toast.warn { background: var(--bg-warm); color: var(--ink); border-left-color: var(--amber); box-shadow: 4px 4px 0 var(--amber); }
 
 /* === Atomic offers — compact ladder rows ===
    Renders the per-asset "⚡ Atomic offers" section as ladder-style rows
    aligned with the asks-ladder 3-col grid (price · qty · age+action).
    Replaces the previous card grid which felt visually disconnected
-   from the surrounding bid/ask ladders. Purple accent (#7d4ff7)
+   from the surrounding bid/ask ladders. Purple accent (var(--purple))
    distinguishes atomic intents from preauth asks (red) without
    breaking the orderbook's calm rhythm. */
 .atomic-offers-section { margin: 0 0 12px; }
@@ -3461,14 +3463,14 @@ details.protocol-section > summary.protocol-h3:hover { color: var(--orange); }
 }
 .atomic-offer-row > span > small.muted {
   display: block;
-  font-size: 9.5px;
+  font-size: 10px;
   font-family: var(--mono);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.atomic-offer-row .atomic-offer-bolt { color: #7d4ff7; margin-right: 4px; }
-.atomic-offer-row strong { color: #7d4ff7; font-family: var(--mono); }
+.atomic-offer-row .atomic-offer-bolt { color: var(--purple); margin-right: 4px; }
+.atomic-offer-row strong { color: var(--purple); font-family: var(--mono); }
 .atomic-offer-row .atomic-offer-qty,
 .atomic-offer-row .atomic-offer-action { text-align: right; font-family: var(--mono); }
 /* Insufficient-funds variant: keeps the row visible so the orderbook
@@ -3746,7 +3748,7 @@ details.protocol-section > summary.protocol-h3:hover { color: var(--orange); }
    Purpose: ambient liveness signal so users see fair-launch activity happen
    without scrolling or refreshing. Triggered by JS on poll-delta detection
    and self-clears via animationend so the next mint can re-fire. Color
-   matches the Mint button's purple (`#7d4ff7`). Respects reduced-motion. */
+   matches the Mint button's purple (var(--purple)). Respects reduced-motion. */
 @keyframes petch-mint-flash {
   0%   { background: rgba(125, 79, 247, 0.35); box-shadow: 0 0 0 0 rgba(125, 79, 247, 0.55); }
   60%  { background: rgba(125, 79, 247, 0.10); box-shadow: 0 0 0 6px rgba(125, 79, 247, 0); }
@@ -3776,7 +3778,7 @@ details.protocol-section > summary.protocol-h3:hover { color: var(--orange); }
 
 .empty {
   padding: 36px; text-align: center; color: var(--ink-mid);
-  font-style: italic; font-family: 'Instrument Serif', serif;
+  font-style: italic; font-family: var(--serif);
   font-size: 18px; border: 1px dashed var(--ink);
 }
 
@@ -3822,7 +3824,7 @@ details.protocol-section > summary.protocol-h3:hover { color: var(--orange); }
 }
 .recent-tile-body { min-width: 0; flex: 1; }
 .recent-tile-ticker {
-  font-family: 'Instrument Serif', serif;
+  font-family: var(--serif);
   font-size: 18px; font-style: italic; line-height: 1.1;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
@@ -3837,13 +3839,23 @@ details.protocol-section > summary.protocol-h3:hover { color: var(--orange); }
   background: var(--bg-warm); border-left: 4px solid var(--orange);
   padding: 10px 14px; font-size: 11px; margin: 12px 0;
 }
+.info-card {
+  background: var(--bg-warm); border: 1px solid var(--ink); border-left: 4px solid var(--green);
+  padding: 10px 12px; font-size: 11px; margin: 12px 0;
+}
+.info-card.fail { border-left-color: var(--red); }
+.btn-go {
+  background: var(--green); color: #fff; border: 1px solid var(--green);
+  font-weight: 700; letter-spacing: 0.04em; cursor: pointer;
+}
+.btn-go--shadow { box-shadow: 2px 2px 0 var(--ink); }
 .error { color: var(--red); font-size: 11px; margin: 6px 0; }
 
 a { color: var(--ink); text-decoration: underline; text-underline-offset: 2px; }
 a:hover { color: var(--orange); }
 
 .amount {
-  font-family: 'Instrument Serif', serif;
+  font-family: var(--serif);
   font-size: 36px; font-style: italic; line-height: 1;
 }
 .amount .unit {
@@ -3897,11 +3909,12 @@ a:hover { color: var(--orange); }
 .hero-close:focus-visible { outline: 1px solid var(--ink-faint) !important; outline-offset: 1px; }
 .hero-close:hover { color: var(--ink); background: transparent !important; }
 .hero-num {
-  background: var(--orange);
+  background: transparent;
   color: var(--ink);
+  border: 1px solid var(--ink);
   width: 22px; height: 22px;
   display: inline-flex; align-items: center; justify-content: center;
-  font-family: 'Instrument Serif', serif;
+  font-family: var(--serif);
   font-style: italic; font-size: 15px; font-weight: 700;
   margin-bottom: 6px;
 }
@@ -3915,10 +3928,10 @@ a:hover { color: var(--orange); }
 }
 
 footer {
-  margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--ink);
+  margin-top: 0; padding: 10px 18px; border-top: 1px dashed rgba(26,26,26,0.25);
   font-size: 10px; color: var(--ink-mid);
   display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px;
-  text-transform: uppercase; letter-spacing: 0.1em;
+  text-transform: none; letter-spacing: 0.04em;
 }
 /* Allow footer flex items to shrink below their min-content width so the
    text inside each span wraps naturally on narrow viewports instead of
@@ -3930,8 +3943,9 @@ footer > span { min-width: 0; }
   /* Two-column header at tablet widths: logo on the left, network selector
      on the right; tagline drops to a full-width row below. */
   header { grid-template-columns: 1fr auto; gap: 10px; align-items: center; }
+  body > header { grid-template-columns: 1fr auto !important; }
   .logo { font-size: 42px; }
-  .tagline { grid-column: 1 / -1; border-left: none; padding-left: 0; padding-top: 6px; border-top: 1px dashed var(--ink-faint); }
+  body > header .tagline { grid-column: 1 / -1 !important; border-left: none !important; padding-left: 0 !important; padding-top: 6px !important; border-top: 1px dashed rgba(26,26,26,0.25) !important; }
   .net-control { align-items: flex-end; }
   .form-row.two, .form-row.three { grid-template-columns: 1fr; }
   .kv { grid-template-columns: 1fr; gap: 4px 0; }
@@ -4116,7 +4130,8 @@ body > header .net-select {
   color: #F2EBD4 !important;
   font-weight: 500 !important;
   letter-spacing: 0.05em !important;
-  padding: 5px 13px !important;
+  padding: 5px 28px 5px 13px !important;
+  border: 1px solid #1A1A1A !important;
   text-transform: uppercase !important;
 }
 /* Hide the "▸ HOW IT WORKS" + "← All markets" + heavy "MARKET 634
@@ -4252,6 +4267,11 @@ body > #amm-contrib-section {
   margin-right: auto;
   background: #F2EBD4;
 }
+body > footer {
+  max-width: 720px;
+  margin-left: auto;
+  margin-right: auto;
+}
 body > header {
   border: 0.5px solid rgba(26,26,26,0.15);
   border-bottom: 0;
@@ -4367,23 +4387,23 @@ body > #amm-contrib-section {
    restores after). */
 @media (min-width: 720px) {
   .mkt-orderbook [data-orderbook-side="asks"] #market-grid,
-  .mkt-orderbook [data-orderbook-side="bids"] .market-bids-ladder {
+  .mkt-orderbook [data-orderbook-side="bids"] .market-bids-list {
     max-height: 360px;
-    overflow-y: auto;
+    overflow-y: auto !important;
     scroll-behavior: smooth;
     scrollbar-width: thin;
     scrollbar-color: rgba(26,26,26,0.3) transparent;
   }
   .mkt-orderbook [data-orderbook-side="asks"] #market-grid::-webkit-scrollbar,
-  .mkt-orderbook [data-orderbook-side="bids"] .market-bids-ladder::-webkit-scrollbar {
+  .mkt-orderbook [data-orderbook-side="bids"] .market-bids-list::-webkit-scrollbar {
     width: 6px;
   }
   .mkt-orderbook [data-orderbook-side="asks"] #market-grid::-webkit-scrollbar-thumb,
-  .mkt-orderbook [data-orderbook-side="bids"] .market-bids-ladder::-webkit-scrollbar-thumb {
+  .mkt-orderbook [data-orderbook-side="bids"] .market-bids-list::-webkit-scrollbar-thumb {
     background: rgba(26,26,26,0.25);
   }
   .mkt-orderbook [data-orderbook-side="asks"] #market-grid::-webkit-scrollbar-thumb:hover,
-  .mkt-orderbook [data-orderbook-side="bids"] .market-bids-ladder::-webkit-scrollbar-thumb:hover {
+  .mkt-orderbook [data-orderbook-side="bids"] .market-bids-list::-webkit-scrollbar-thumb:hover {
     background: rgba(26,26,26,0.45);
   }
 }
@@ -4529,7 +4549,7 @@ body > #amm-contrib-section {
   border: 0 !important;
   padding: 0 !important;
   min-height: 0 !important;
-  font-size: 9.5px !important;
+  font-size: 10px !important;
   font-weight: 700 !important;
   letter-spacing: 0.08em !important;
   color: var(--ink) !important;
@@ -4862,12 +4882,12 @@ body > #amm-contrib-section {
    Color is applied to the primary <strong> that carries the price
    text. Grouped levels override best/non-best (the bucket spans a
    range so "best-in-class" doesn't apply). */
-.market-listing-grid.market-listing-rows-mode .market-listing-tile .market-listing-unit strong { color: #b8341d; }
-.market-listing-grid.market-listing-rows-mode .market-listing-tile--best .market-listing-unit strong { color: #0a7d3a !important; }
-.market-listing-grid.market-listing-rows-mode .market-listing-tile--level .market-listing-unit strong { color: #c76b26 !important; }
-.market-bids-row .market-bid-price strong { color: #0a7d3a !important; }
-.market-bids-row.market-bids-row--below-mid .market-bid-price strong { color: #b8341d !important; }
-.market-bids-row.market-bids-row--level .market-bid-price strong { color: #0a7d3a !important; }
+.market-listing-grid.market-listing-rows-mode .market-listing-tile .market-listing-unit strong { color: var(--red); }
+.market-listing-grid.market-listing-rows-mode .market-listing-tile--best .market-listing-unit strong { color: var(--green) !important; }
+.market-listing-grid.market-listing-rows-mode .market-listing-tile--level .market-listing-unit strong { color: var(--level) !important; }
+.market-bids-row .market-bid-price strong { color: var(--green) !important; }
+.market-bids-row.market-bids-row--below-mid .market-bid-price strong { color: var(--red) !important; }
+.market-bids-row.market-bids-row--level .market-bid-price strong { color: var(--green) !important; }
 
 /* BEST / TOP chip styling per design.html — solid green pill, cream
    text, tight padding, low font weight on the chip itself (the pill
@@ -4875,7 +4895,7 @@ body > #amm-contrib-section {
    when _isBestAsk / _bidIdx === 0. */
 .market-listing-tile--best .market-mode-badge,
 .market-bids-row[data-bid-row]:first-child .market-mode-badge {
-  background: #0a7d3a;
+  background: var(--green);
   color: #f2ebd4;
   letter-spacing: 0.04em;
 }
@@ -4884,7 +4904,7 @@ body > #amm-contrib-section {
 
 /* Depth section wraps the chart + spread-row tightly. */
 .mkt-depth-wrap {
-  border-top: 1px dashed rgba(26,26,26,0.25);
+  border-top: 0;
   padding: 10px 18px 0;
 }
 .mkt-depth-wrap [data-market-depth-chart] {
@@ -5164,7 +5184,7 @@ body > #amm-contrib-section {
   letter-spacing: 0.08em !important;
   padding: 5px 9px !important;
   min-height: 0 !important;
-  font-size: 10.5px !important;
+  font-size: 11px !important;
   box-shadow: none !important;
 }
 #tab-wallet .wallet-actions > button.primary:hover:not(:disabled),
@@ -5195,7 +5215,7 @@ body > #amm-contrib-section {
   letter-spacing: 0.08em !important;
   padding: 5px 9px !important;
   min-height: 0 !important;
-  font-size: 10.5px !important;
+  font-size: 11px !important;
   box-shadow: none !important;
 }
 .quiet-actions > button:not(.primary):not(.btn-copy):not(.tab):not(.mkt-chip):not([data-act]):hover:not(:disabled) {
@@ -5254,7 +5274,7 @@ body > #amm-contrib-section {
   gap: 8px !important;
 }
 #tab-wallet #w-balance {
-  font-family: Georgia, 'Times New Roman', serif !important;
+  font-family: var(--serif) !important;
   font-style: italic !important;
   font-size: 28px !important;
   line-height: 1 !important;
@@ -5376,7 +5396,7 @@ body > #amm-contrib-section {
    — make uniformly muted so the row reads as a single status strip
    instead of competing badges. */
 #tab-wallet .section-header > span > span {
-  font-size: 9.5px !important;
+  font-size: 10px !important;
   letter-spacing: 0.06em !important;
 }
 /* Manage Wallet disclosure: tighter, design.html details style. */
@@ -5810,14 +5830,6 @@ body[data-market-mode="asset"] [data-market-bids-section] {
   #tab-mixer .flex > button { flex: 1 1 100%; }
 }
 
-/* Pool ops (deposit, withdraw, init, pool-list) are gated on the trusted-
-   setup ceremony being finalized. Until then we render them as preview-
-   only: dimmed + click/focus blocked. A single `#mixer-lock-banner` at the
-   top of the tab explains the gate (vs. one inline banner per section
-   previously). The ceremony section itself is never locked — it's the only
-   path out of the locked state. `_placeCeremonySection` independently keeps
-   the ceremony section at the top of the panel until finalized, so users
-   always see the unlock first. */
 /* AMM-ceremony gating: advanced mixer sections (slot wrap / rotate /
    burn / cBTC.tac deposit / withdraw) depend on the AMM ceremony
    being finalized before they're safe to surface. Hide them entirely
@@ -5827,22 +5839,6 @@ body[data-market-mode="asset"] [data-market-bids-section] {
    buttons. */
 [data-amm-gated] { display: none; }
 body.tacit-amm-ceremony-ready [data-amm-gated] { display: block; }
-
-#tab-mixer.mixer-ceremony-locked [data-mixer-pool-op] {
-  position: relative;
-  opacity: 0.5;
-  filter: saturate(0.6);
-}
-#tab-mixer.mixer-ceremony-locked [data-mixer-pool-op] .section-body button,
-#tab-mixer.mixer-ceremony-locked [data-mixer-pool-op] .section-body input,
-#tab-mixer.mixer-ceremony-locked [data-mixer-pool-op] .section-body select,
-#tab-mixer.mixer-ceremony-locked [data-mixer-pool-op] .section-body textarea,
-#tab-mixer.mixer-ceremony-locked [data-mixer-pool-op] .section-body label {
-  pointer-events: none;
-}
-#tab-mixer.mixer-ceremony-locked #mixer-lock-banner {
-  display: block;
-}
 
 /* Pool ceremony lock — same shape as mixer. CSS-gates LP_ADD / LP_REMOVE /
    pool-tab swap operations until the AMM Phase 2 ceremony finalizes and
@@ -5877,6 +5873,10 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
 body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .section-body select,
 body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .section-body textarea {
   pointer-events: none;
+}
+body:not(.tacit-amm-ceremony-ready) #tab-farms #farms-refresh-btn {
+  pointer-events: none;
+  opacity: 0.55;
 }
 
 /* AMM ceremony chip — subtle fixed-position growth-hack prompt that appears
@@ -6045,7 +6045,7 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
   margin: auto;
 }
 .welcome-title {
-  font-family: 'Instrument Serif', serif;
+  font-family: var(--serif);
   font-size: 40px; font-style: italic;
   line-height: 0.9; letter-spacing: -0.02em;
   margin-bottom: 14px;
@@ -6090,12 +6090,12 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
 }
 .welcome-option-title { font-size: 13px; font-weight: 500; }
 .welcome-option-title .welcome-option-rec {
-  font-size: 10px; font-style: italic; color: var(--orange);
+  font-size: 10px; font-style: italic; color: var(--ink-mid);
   font-weight: 400; margin-left: 4px; letter-spacing: 0.04em;
 }
 .welcome-option--primary {
   border-width: 2px;
-  border-color: var(--orange);
+  border-color: var(--ink);
 }
 .welcome-option-meta {
   font-size: 10px; color: var(--ink-mid);
@@ -6198,7 +6198,7 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
   .pass-modal, .pass-card, .faq-modal, .faq-card { animation: none; }
 }
 .pass-title {
-  font-family: 'Instrument Serif', serif;
+  font-family: var(--serif);
   font-size: 28px; font-style: italic;
   line-height: 1; letter-spacing: -0.02em;
   margin-bottom: 12px;
@@ -6231,7 +6231,7 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
 .pass-hint.ok { color: var(--green); }
 .pass-warn {
   background: var(--bg-warm);
-  border-left: 4px solid var(--orange);
+  border-left: 4px solid var(--amber);
   padding: 8px 12px; font-size: 10px;
   margin: 14px 0 6px;
   line-height: 1.5;
@@ -6242,6 +6242,8 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
   display: flex; gap: 8px; justify-content: flex-end;
   margin-top: 14px;
 }
+.tcm-extra-btn { font-size: 11px; margin-right: 6px; }
+#tcm-confirm.danger { background: var(--red); border-color: var(--red); color: #fff; }
 
 /* Export-key modal reuses .pass-modal/.pass-card. The hex sits in a readonly
    textarea so mobile long-press → Select All → Copy works on every browser
@@ -6312,9 +6314,9 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
   flex-shrink: 0;
   user-select: none;
 }
-.worker-health[data-state="ok"]      { color: #0a8f43; }
-.worker-health[data-state="stale"]   { color: #b8651d; }
-.worker-health[data-state="down"]    { color: #b8341d; }
+.worker-health[data-state="ok"]      { color: var(--green); }
+.worker-health[data-state="stale"]   { color: var(--amber); }
+.worker-health[data-state="down"]    { color: var(--red); }
 .worker-health[data-state="off"]     { color: var(--ink-faint); }
 .worker-health[data-state="loading"] { color: var(--ink-faint); animation: worker-pulse 1.4s ease-in-out infinite; }
 @keyframes worker-pulse { 0%, 100% { opacity: 0.4; } 50% { opacity: 1; } }
@@ -6338,9 +6340,9 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
   font-weight: 700;
   letter-spacing: 0.02em;
   text-transform: uppercase;
-  color: #0a8f43;
+  color: var(--green);
   background: rgba(10,143,67,0.08);
-  border: 1px solid #0a7d3a;
+  border: 1px solid var(--green);
   border-radius: 11px;
   cursor: pointer;
   user-select: none;
@@ -6349,9 +6351,9 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
 }
 .inflight-pill:hover { background: rgba(10,143,67,0.16); }
 .inflight-pill[data-has-stranded="1"] {
-  color: #b8651d;
+  color: var(--amber);
   background: rgba(184,101,29,0.08);
-  border-color: #b8651d;
+  border-color: var(--amber);
 }
 .inflight-pill[data-has-stranded="1"]:hover { background: rgba(184,101,29,0.16); }
 .inflight-pill .inflight-dot {
@@ -6422,24 +6424,24 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
 .swap-tile-strip {
   display: flex; align-items: center; gap: 10px;
   margin: -4px 0 10px;
-  padding: 6px 8px;
-  border: 1px dashed var(--ink-faint);
-  background: var(--bg-warm);
+  padding: 4px 2px;
+  border: 0;
+  background: transparent;
   font-size: 10px;
 }
 .swap-tile-strip .strip-spark { flex: 1 1 auto; min-width: 0; }
 .swap-tile-strip .strip-last  { font-family: var(--mono); font-weight: 700; color: var(--ink); white-space: nowrap; }
 .swap-tile-strip .strip-delta { font-family: var(--mono); font-weight: 600; white-space: nowrap; }
-.swap-tile-strip .strip-delta.up   { color: #0a8f43; }
-.swap-tile-strip .strip-delta.down { color: #b8341d; }
+.swap-tile-strip .strip-delta.up   { color: var(--green); }
+.swap-tile-strip .strip-delta.down { color: var(--red); }
 /* Recent-trade indicator. "last trade · 2m ago · 7 today" — live-ticked
    via data-age-ts. Tells a trader at a glance whether the orderbook is
    active or has been quiet for hours, without making them open the
    Activity tab. */
-.swap-tile-strip .strip-trade { font-family: var(--mono); color: var(--ink-mid); white-space: nowrap; font-size: 9.5px; }
+.swap-tile-strip .strip-trade { font-family: var(--mono); color: var(--ink-mid); white-space: nowrap; font-size: 10px; }
 .swap-tile-strip .strip-trade .strip-trade-dot {
   display: inline-block; width: 5px; height: 5px; border-radius: 50%;
-  background: #0a8f43; margin-right: 4px; vertical-align: middle;
+  background: var(--green); margin-right: 4px; vertical-align: middle;
 }
 .swap-tile-strip .strip-trade.cold .strip-trade-dot { background: var(--ink-faint); }
 
@@ -6736,12 +6738,12 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
   font-size: 11px;
 }
 .notif-row:last-child { border-bottom: none; }
-.notif-row.kind-success { border-left: 3px solid var(--green, #0a8f43); }
-.notif-row.kind-error   { border-left: 3px solid var(--red, #b8341d); }
-.notif-row.kind-warn    { border-left: 3px solid #b8651d; }
+.notif-row.kind-success { border-left: 3px solid var(--green); }
+.notif-row.kind-error   { border-left: 3px solid var(--red); }
+.notif-row.kind-warn    { border-left: 3px solid var(--amber); }
 .notif-row .notif-time  { font-family: var(--mono); font-size: 10px; color: var(--ink-mid); white-space: nowrap; }
 .notif-row .notif-msg   { color: var(--ink); line-height: 1.4; }
-.notif-empty { padding: 24px 12px; text-align: center; color: var(--ink-mid); font-size: 11px; }
+.notif-empty { padding: 24px 12px; text-align: center; color: var(--ink-mid); font-size: 11px; font-style: italic; font-family: var(--serif); border: 1px dashed var(--ink-faint); }
 
 /* FAQ modal — same backdrop pattern as welcome/pass modals, with a
    scrollable Q&A body. Higher z-index so it sits above the welcome
@@ -6769,7 +6771,7 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
   flex-shrink: 0;
 }
 .faq-title {
-  font-family: 'Instrument Serif', serif;
+  font-family: var(--serif);
   font-size: 32px; font-style: italic;
   line-height: 1; letter-spacing: -0.02em;
 }
@@ -6841,7 +6843,7 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
 .progress-num {
   display: inline-flex; align-items: center; justify-content: center;
   width: 22px; height: 22px;
-  font-family: 'Instrument Serif', serif;
+  font-family: var(--serif);
   font-size: 14px; font-style: italic; font-weight: 700;
   background: var(--bg); color: var(--ink);
   border: 1px solid var(--ink);
@@ -6904,7 +6906,7 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
    long hex strings. Color is the warm orange so it reads as the headline
    element of the success banner. */
 .forge-hash {
-  font-family: 'Instrument Serif', serif;
+  font-family: var(--serif);
   font-style: italic;
   font-size: 18px;
   letter-spacing: 0.04em;
@@ -6929,8 +6931,8 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
 }
 .chain-link {
   width: 14px; height: 14px;
-  background: #d8e4cc;
-  border: 1px solid #b8c8a8;
+  background: var(--bg-alt);
+  border: 1px solid var(--ink-faint);
   border-radius: 2px;
   position: relative;
   cursor: default;
@@ -6940,30 +6942,30 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
 .chain-link.done { background: var(--orange); border-color: #c87810; }
 .chain-link.you {
   background: var(--orange);
-  border: 1px solid #1a4314;
-  box-shadow: 0 0 0 2px #f0fdf4, 0 0 0 3px var(--orange);
+  border: 1px solid var(--ink);
+  box-shadow: 0 0 0 2px var(--bg), 0 0 0 3px var(--orange);
 }
 .chain-link.you.pulse {
   animation: chain-link-pulse 1.4s ease-out 4;
 }
 @keyframes chain-link-pulse {
-  0%   { box-shadow: 0 0 0 2px #f0fdf4, 0 0 0 3px var(--orange), 0 0 0 3px rgba(247,147,26,0.6); }
-  100% { box-shadow: 0 0 0 2px #f0fdf4, 0 0 0 3px var(--orange), 0 0 0 16px rgba(247,147,26,0); }
+  0%   { box-shadow: 0 0 0 2px var(--bg), 0 0 0 3px var(--orange), 0 0 0 3px rgba(247,147,26,0.6); }
+  100% { box-shadow: 0 0 0 2px var(--bg), 0 0 0 3px var(--orange), 0 0 0 16px rgba(247,147,26,0); }
 }
 .chain-rail-caption {
-  font-size: 11px; color: #5a7a3e;
+  font-size: 11px; color: var(--ink-mid);
   margin-top: 4px;
   font-variant-numeric: tabular-nums;
 }
 .chain-tagline {
-  font-family: 'Instrument Serif', serif;
+  font-family: var(--serif);
   font-style: italic;
   font-size: 13px;
   line-height: 1.5;
-  color: #1a4314;
+  color: var(--ink);
   margin-top: 12px;
   padding-top: 8px;
-  border-top: 1px dashed #c8d4b8;
+  border-top: 1px dashed var(--ink-faint);
 }
 .chain-tagline strong { font-style: normal; font-weight: 600; }
 @media (prefers-reduced-motion: reduce) {
@@ -7037,8 +7039,8 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
   border-left: 3px solid transparent;
 }
 .cmd-item:hover, .cmd-item.active {
-  background: var(--bg-warm);
-  border-left-color: var(--orange);
+  background: var(--bg-alt);
+  border-left-color: var(--ink);
 }
 .cmd-item-title { font-size: 13px; flex: 1; min-width: 0; }
 .cmd-item-title strong { font-weight: 600; }
@@ -7058,8 +7060,9 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
 .cmd-empty {
   padding: 20px; text-align: center;
   color: var(--ink-mid); font-style: italic;
-  font-family: 'Instrument Serif', serif;
+  font-family: var(--serif);
   font-size: 16px;
+  border: 1px dashed var(--ink-faint);
 }
 .cmd-foot {
   border-top: 1px dashed var(--ink-faint);
@@ -7107,6 +7110,11 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
   background: transparent !important;
   box-shadow: none !important;
 }
+.etch-tile > .section-header {
+  background: transparent;
+  color: var(--ink);
+  border-bottom: 1px dashed var(--ink-faint);
+}
 .etch-tile > .section-body {
   padding: 12px 14px !important;
 }
@@ -7138,7 +7146,7 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
    sizing keeps the signal readable without competing with the wallet
    tile below. */
 .tacit-warn-banner {
-  font-size: 10.5px;
+  font-size: 11px;
   line-height: 1.45;
   padding: 6px 30px 6px 12px;
   margin-bottom: 10px;
@@ -7154,6 +7162,11 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
   background: #eef9f0;
   border: 0.5px solid #2e7d3a;
   color: #1d4d27;
+}
+.tacit-warn-banner--warn {
+  background: var(--bg-warm);
+  border: 0.5px solid var(--amber);
+  color: #5b3a08;
 }
 .tacit-warn-banner__close {
   position: absolute;
@@ -7193,7 +7206,6 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
   }
   #tab-transfer .send-actions { flex-direction: column; align-items: stretch; }
   #tab-transfer .send-actions > button { width: 100%; }
-  #tab-transfer .send-actions > #sats-status { text-align: center; }
   #tab-transfer .tx-preview .row { display: block; padding: 5px 0; }
   #tab-transfer .tx-preview .row .label {
     display: block; min-width: 0; padding-right: 0;
@@ -7219,6 +7231,8 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
 <script src="./preboot.js?cb=swkill"></script>
 </head>
 <body>
+
+<noscript><div style="background:var(--bg);color:var(--ink);font-family:var(--serif);font-style:italic;font-size:18px;padding:24px;text-align:center;">tacit needs JavaScript — enable it, or check that an extension isn't blocking module scripts.</div></noscript>
 
 <!-- preboot.js (loaded in <head> above) now carries the deep-link
      pre-activation. Moved out of inline because the dapp's CSP is
@@ -7309,7 +7323,7 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
   acceptance of fabricated data. Surfaces mempool.space outages, stale
   tips, and infrastructure tampering at near-zero runtime cost.
 -->
-<div id="chain-divergence-banner" style="display:none;background:#fff8eb;border:2px solid #a04030;color:#a04030;padding:10px 16px;font-size:12px;text-align:center;margin-bottom:16px;"></div>
+<div id="chain-divergence-banner" class="tacit-warn-banner tacit-warn-banner--warn" style="display:none;"></div>
 
 <!--
   Chain-indexer throttle banner. Shown when two or more chain API bases
@@ -7320,7 +7334,7 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
   pill or Holdings list. Auto-dismisses when cooldowns clear; updates
   every second while visible to count down to recovery.
 -->
-<div id="chain-throttle-banner" style="display:none;background:#fff8eb;border:2px solid #b76a00;color:#7a4400;padding:10px 16px;font-size:12px;text-align:center;margin-bottom:16px;"></div>
+<div id="chain-throttle-banner" class="tacit-warn-banner tacit-warn-banner--warn" style="display:none;"></div>
 
 <!--
   Bulletproofs+ signet indicator. Visible only on signet, when bppEnabled()
@@ -7338,7 +7352,7 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
   Offers a one-click consolidate action. Snoozable; re-evaluates on
   next wallet refresh.
 -->
-<div id="sats-fragmentation-banner" style="display:none;background:#fdf6e3;border:2px solid #b58900;color:#5b3a08;padding:10px 16px;font-size:12px;text-align:center;margin-bottom:16px;"></div>
+<div id="sats-fragmentation-banner" class="tacit-warn-banner tacit-warn-banner--warn" style="display:none;"></div>
 
 <!--
   OTC claim arrival banner. Visible across every tab when the maker has
@@ -7349,10 +7363,10 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
   the relevant tab + scrolls to the asset card so the maker can verify
   payment and Deliver without searching.
 -->
-<div id="otc-claim-banner" style="display:none;background:#fff8e8;border:2px solid var(--orange);color:#a04030;padding:10px 16px;font-size:12px;margin-bottom:16px;line-height:1.5;">
+<div id="otc-claim-banner" class="tacit-warn-banner tacit-warn-banner--warn" style="display:none;">
   <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;justify-content:space-between;">
     <div><strong>🎯 <span id="otc-claim-banner-count">1</span> active OTC claim<span id="otc-claim-banner-plural"></span></strong> — a buyer reserved a listing and is paying you. Verify payment then Deliver via Send Privately.</div>
-    <button id="otc-claim-banner-go" type="button" style="font-size:11px;padding:5px 12px;background:#0a8f43;color:#fff;border:1px solid #0a7d3a;">Open Holdings →</button>
+    <button id="otc-claim-banner-go" type="button" class="btn-go" style="font-size:11px;padding:5px 12px;">Open Holdings →</button>
   </div>
 </div>
 
@@ -7365,13 +7379,13 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
 <a id="zfi-airdrop-banner"
    href="#claim=3c578c51bbf33f583eee9e571514616775b8d9ae4e1b282e1fb9c4b5b268c545&cid=bafybeihyyqncdp2q6kfdgecaccpdoy7uyzumjgbqxj6xbf472fzhn3drbi&net=mainnet"
    style="display:none;position:relative;background:var(--bg-warm);border:1px solid var(--orange);padding:8px 40px 8px 14px;font-size:11px;color:var(--ink);text-align:center;margin-bottom:10px;text-decoration:none;line-height:1.4;">
-  <button id="zfi-airdrop-banner-close" type="button" aria-label="Dismiss airdrop banner" title="Dismiss" style="position:absolute;top:6px;right:8px;background:transparent;border:1px solid transparent;color:var(--ink-mid);font-size:18px;line-height:1;width:24px;height:24px;padding:0;cursor:pointer;text-transform:none;letter-spacing:0;">×</button>
+  <button id="zfi-airdrop-banner-close" type="button" aria-label="Dismiss airdrop banner" title="Dismiss" class="tacit-warn-banner__close">×</button>
   <strong style="color:var(--orange);">TAC airdrop is live</strong> for the zFi community (ZAMM + ZORG holders) — <span style="text-decoration:underline;">claim your share →</span>
 </a>
 
 <div class="tabs tabs-primary">
   <button class="tab active" data-tab="wallet" data-group="wallet">Wallet</button>
-  <button class="tab" data-tab="market" data-group="markets">Markets<span id="nav-open-orders-badge" style="display:none;margin-left:6px;font-size:9px;font-weight:600;padding:1px 6px;background:var(--orange,#f7931a);color:#fff;border-radius:9px;letter-spacing:0.04em;vertical-align:middle;" title="You have open orders. Click to see them."></span></button>
+  <button class="tab" data-tab="market" data-group="markets">Markets<span id="nav-open-orders-badge" style="display:none;margin-left:6px;font-size:9px;font-weight:600;padding:1px 6px;background:var(--ink,#0a0a0a);color:var(--bg,#f4efe6);border-radius:9px;letter-spacing:0.04em;vertical-align:middle;" title="You have open orders. Click to see them."></span></button>
   <button class="tab" data-tab="transfer" data-group="send">Send</button>
   <button class="tab" data-tab="etch" data-group="create" title="Issuer flows — etch a new confidential asset and distribute it via Merkle-gated drops">Create</button>
   <button class="tab" data-tab="mixer" data-group="mixer">Mixer</button>
@@ -7416,7 +7430,7 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
     <div class="hero-step">
       <div class="hero-num">3</div>
       <div class="hero-title">Transfer privately</div>
-      <div class="hero-text">Three layers, mix and match. <strong>Amounts</strong> are hidden by default. A <strong>shielded address</strong> (tcs1…) hides the recipient via per-tx unique markers. The <strong>mixer pool</strong> breaks the on-chain link between deposit and withdrawal for full anonymity-set unlinkability.</div>
+      <div class="hero-text">Amounts are hidden by default. Add a <strong>shielded address</strong> or the <strong>mixer pool</strong> for recipient and link privacy.<details style="margin-top:4px;"><summary style="cursor:pointer;color:var(--ink-mid);">how each layer works</summary>A shielded address (tcs1…) hides the recipient via per-tx unique markers; the mixer pool breaks the on-chain link between deposit and withdrawal for full anonymity-set unlinkability.</details></div>
     </div>
   </div>
   <div id="hero-show" style="display:none;text-align:right;margin-top:-16px;margin-bottom:16px;padding-right:14px;">
@@ -7588,7 +7602,7 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
 
   <div class="section" id="recent-etches-section">
     <div class="section-header">
-      <a href="#" id="recent-etches-all" class="muted" style="text-transform:none;letter-spacing:0;font-size:10px;color:var(--bg);margin-left:auto;">browse all ↗</a>
+      <a href="#" id="recent-etches-all" class="muted" style="text-transform:none;letter-spacing:0;font-size:10px;color:var(--ink-mid);margin-left:auto;">browse all ↗</a>
     </div>
     <div class="section-body">
       <div id="recent-etches-stats" style="margin-bottom:10px;font-size:11px;display:none;"></div>
@@ -7619,7 +7633,7 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
   <div class="section" id="amm-contrib-section" style="display:none;border:0;box-shadow:none;background:transparent;margin-bottom:0;">
     <div id="amm-contrib-strip" style="font-family:var(--mono,monospace);font-size:10px;color:var(--ink-mid);display:flex;justify-content:space-between;align-items:center;letter-spacing:0.04em;padding:14px 18px;border-top:1px dashed var(--ink-faint);flex-wrap:wrap;gap:8px 18px;">
       <span><b style="color:var(--ink);font-weight:600;letter-spacing:0.06em;">TACIT</b> <span style="color:var(--ink-mid);">open-source · zero fees</span></span>
-      <span><span style="color:var(--green,#4a7);">●</span> AMM ceremony <b id="amm-contrib-count" style="color:var(--ink);font-weight:600;">—</b> · sealed</span>
+      <span><span style="color:var(--orange,#f7931a);">●</span> AMM ceremony <b id="amm-contrib-count" style="color:var(--ink);font-weight:600;">—</b> · sealed</span>
       <span style="color:var(--ink-mid);">BIP-341 · BIP-340 · CT</span>
     </div>
     <!-- Recent contributors marquee. Reuses the .global-tape skeleton
@@ -7652,7 +7666,7 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
           <input id="e-decimals" type="number" value="0" min="0" max="8" style="margin-top:6px;">
         </div>
       </div>
-      <label>Name (optional, ≤64 chars) — full human-readable name (e.g. "USD Coin")</label>
+      <label>Name <span class="muted" style="font-weight:normal;text-transform:none;letter-spacing:0;font-size:11px;">optional, ≤64 chars</span></label>
       <input id="e-name" type="text" maxlength="64" placeholder='e.g. "USD Coin"' autocomplete="off">
       <div class="muted" style="margin-top:4px;font-size:10px;">Off-chain in the metadata blob; ticker stays the on-chain identity. Renderers display "Name (TICKER)" when both are set.</div>
       <label style="margin-top:14px;">Supply</label>
@@ -7716,7 +7730,7 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
        CETCH commits a hidden supply at etch with optional mint authority;
        T_PETCH deploys a public-mint schedule and the deployer receives zero
        tokens. Different commitment story → different form. -->
-  <div class="section">
+  <div class="section etch-tile">
     <div class="section-header"><span>etch · public mint</span></div>
     <div class="section-body">
       <div class="muted" style="font-size:12px;line-height:1.6;margin-bottom:14px;">
@@ -7811,9 +7825,7 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
 
       <!-- TOKEN mode -->
       <div id="send-mode-token">
-        <div class="muted" style="margin-bottom:14px;">
-          Confidential transfer of one asset. Observers always see valid math but never the amount. Optionally hide the recipient too by pasting their <em>shielded address</em> (tcs1…) instead of their pubkey — on-chain recipient marker becomes a per-tx unique address. Recipients auto-discover their balance from chain data on their next scan; share-link is optional for pubkey sends and recommended for shielded sends.
-        </div>
+        <div class="muted" style="margin-bottom:14px;">Confidential transfer of one asset — observers always see valid math, never the amount. <details style="display:inline;"><summary style="display:inline;cursor:pointer;list-style:none;">more ▾</summary> Optionally hide the recipient too by pasting their <em>shielded address</em> (tcs1…) instead of a pubkey; the on-chain marker becomes a per-tx unique address. Recipients auto-discover their balance on their next scan.</details></div>
 
         <label>Asset</label>
         <select id="x-asset"><option value="">— select —</option></select>
@@ -7821,15 +7833,15 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
         <label>Recipient public key <span class="muted" style="font-weight:normal;text-transform:none;letter-spacing:0;font-size:11px;">or shielded address</span></label>
         <input id="x-recipient-pub" placeholder="02… / 03… (pubkey) — or tcs1…/tcsts1…/tcsrt1… (shielded)" autocomplete="off" spellcheck="false" list="x-recipient-recents">
         <datalist id="x-recipient-recents"></datalist>
-        <div class="muted">Paste the recipient's pubkey (from their Wallet tab) for a standard confidential send, or their shielded address for an opt-in privacy upgrade that hides the recipient on-chain. Shielded addresses only apply to tacit token transfers — plain BTC sends use a regular <code>bc1q…</code>/<code>tb1q…</code> address.</div>
+        <div class="muted">Shielded addresses apply to tacit token transfers only — plain BTC sends use a regular <code>bc1q…</code>/<code>tb1q…</code> address.</div>
         <div id="x-recipient-derived" class="muted" style="margin-top:6px;font-size:11px;display:none;"></div>
 
         <label>Amount to send <span id="x-amount-hint" class="muted" style="font-weight:normal;text-transform:none;letter-spacing:0;font-size:11px;"></span></label>
         <div class="flex" style="gap:6px;align-items:stretch;">
-          <input id="x-amount" type="text" placeholder="100" autocomplete="off" style="flex:1;min-width:0;">
+          <input id="x-amount" type="text" inputmode="decimal" placeholder="100" autocomplete="off" style="flex:1;min-width:0;">
           <button id="btn-x-max" type="button" title="Fill in the full balance for the selected asset" disabled>Max</button>
         </div>
-        <div id="x-amount-warn" class="muted" style="margin-top:4px;font-size:11px;color:var(--orange);display:none;"></div>
+        <div id="x-amount-warn" class="muted" style="margin-top:4px;font-size:11px;display:none;"></div>
 
         <details id="x-utxo-picker-details" style="margin-top:10px;">
           <summary class="muted" style="cursor:pointer;font-size:11px;">Choose a specific lot to spend (advanced)</summary>
@@ -7845,10 +7857,10 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
         <div id="transfer-preview" style="display:none;"></div>
 
         <div class="flex send-actions" style="margin-top:18px;">
-          <button id="btn-transfer-preview">1. Review transfer</button>
-          <button id="btn-transfer-broadcast" class="primary" disabled title="Click 'Review transfer' first to see what you're about to send.">2. Confirm &amp; send</button>
+          <button id="btn-transfer-preview">Review transfer</button>
+          <button id="btn-transfer-broadcast" class="primary" disabled title="Click 'Review transfer' first to see what you're about to send.">Confirm &amp; send</button>
         </div>
-        <div class="muted" style="margin-top:6px;font-size:11px;">Review your transfer details below before broadcasting — once sent, it can't be undone.</div>
+        <div class="muted" style="margin-top:6px;font-size:11px;">Irreversible once broadcast.</div>
         <!-- Same 4-step strip as #etch-progress, scoped to the transfer flow.
              Build → Commit → Reveal → Sent. -->
         <div id="transfer-progress" class="progress-strip" style="display:none;" aria-live="polite">
@@ -7863,9 +7875,7 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
 
       <!-- SATS mode -->
       <div id="send-mode-sats" style="display:none;">
-        <div class="muted" style="margin-bottom:14px;">
-          Send plain bitcoin from your tacit wallet's address to a P2WPKH address (<code>bc1q…</code> on mainnet, <code>tb1q…</code> on signet) or a BIP-352 silent-payment address (<code>sp1…</code> / <code>tsp1…</code>). Silent payments derive a fresh, unlinkable P2TR output per send — the recipient detects it via their scan key. Asset UTXOs holding your confidential tokens are <strong>automatically excluded</strong> — you can't accidentally destroy a tacit holding through this flow.
-        </div>
+        <div class="muted" style="margin-bottom:14px;">Send plain bitcoin to a P2WPKH (<code>bc1q…</code>/<code>tb1q…</code>) or silent-payment (<code>sp1…</code>/<code>tsp1…</code>) address. Asset UTXOs holding your tokens are <strong>excluded automatically</strong>. <details style="display:inline;"><summary style="display:inline;cursor:pointer;list-style:none;">more ▾</summary> Silent payments derive a fresh, unlinkable P2TR output per send; the recipient detects it via their scan key.</details></div>
 
         <label>Recipient bitcoin address</label>
         <input id="s-recipient-addr" type="text" placeholder="bc1q… / tb1q… (P2WPKH) or sp1… / tsp1… (silent payment)" autocomplete="off" spellcheck="false">
@@ -7876,17 +7886,17 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
           <input id="s-amount" type="text" inputmode="numeric" placeholder="5000" autocomplete="off" style="flex:1;min-width:0;">
           <button id="btn-s-max" type="button" title="Fill in the maximum sendable sats (after fees)" disabled>Max</button>
         </div>
-        <div id="s-amount-usd" class="muted" style="margin-top:2px;font-size:11px;color:#0a7d3a;display:none;"></div>
-        <div id="s-amount-warn" class="muted" style="margin-top:4px;font-size:11px;color:var(--orange);display:none;"></div>
+        <div id="s-amount-usd" class="muted" style="margin-top:2px;font-size:11px;display:none;"></div>
+        <div id="s-amount-warn" class="muted" style="margin-top:4px;font-size:11px;display:none;"></div>
 
         <div id="sats-preview" style="display:none;"></div>
 
-        <div class="flex send-actions" style="margin-top:18px;align-items:center;gap:10px;">
-          <button id="btn-sats-preview">1. Review send</button>
-          <button id="btn-sats-broadcast" class="primary" disabled title="Click 'Review send' first to see exactly which UTXOs will be spent.">2. Confirm &amp; send</button>
-          <span id="sats-status" class="muted" style="font-size:11px;"></span>
+        <div class="flex send-actions" style="margin-top:18px;">
+          <button id="btn-sats-preview">Review send</button>
+          <button id="btn-sats-broadcast" class="primary" disabled title="Click 'Review send' first to see exactly which UTXOs will be spent.">Confirm &amp; send</button>
         </div>
-        <div class="muted" style="margin-top:6px;font-size:11px;">Review the inputs below before broadcasting — once sent, it can't be undone.</div>
+        <span id="sats-status" class="muted" style="display:block;margin-top:6px;font-size:11px;"></span>
+        <div class="muted" style="margin-top:6px;font-size:11px;">Irreversible once broadcast.</div>
         <div id="sats-error" class="error"></div>
         <div id="sats-success" style="display:none;margin-top:18px;"></div>
       </div>
@@ -7900,9 +7910,7 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
   <div class="section">
     <div class="section-header"><span>drops · run an airdrop</span></div>
     <div class="section-body">
-      <div class="muted" style="margin-bottom:18px;line-height:1.5;">
-        Send a tacit token to holders of any Ethereum ERC-20. Drop in an Etherscan holder CSV, generate a treasury, launch — recipients tip ~3,500 sats each to claim, you don't pay per-batch fees.
-      </div>
+      <div class="muted" style="margin-bottom:14px;line-height:1.5;">Airdrop a tacit token to holders of any ERC-20 — recipients tip ~3,500 sats to claim. <details style="display:inline;"><summary class="muted" style="cursor:pointer;display:inline;font-size:inherit;">how it works</summary> Drop in an Etherscan holder CSV, generate a treasury, launch; you don't pay per-batch fees.</details></div>
 
       <div id="drop-active-wallet" class="mono-box" style="font-size:11px;margin-bottom:14px;display:none;"></div>
 
@@ -8024,13 +8032,13 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
             </label>
           </div>
           <div class="flex" style="gap:8px;flex-wrap:wrap;align-items:flex-end;margin-top:10px;">
-            <label style="flex:1;min-width:140px;">Per-claim amount (display units)
+            <label style="flex:1;min-width:140px;">Per-claim amount <span class="muted" style="text-transform:none;letter-spacing:0;font-size:11px;">display units</span>
               <input id="ondrop-per-claim" type="text" placeholder="e.g. 100" inputmode="decimal" autocomplete="off">
             </label>
-            <label style="flex:1;min-width:140px;">Cap amount (display units)
+            <label style="flex:1;min-width:140px;">Cap amount <span class="muted" style="text-transform:none;letter-spacing:0;font-size:11px;">display units</span>
               <input id="ondrop-cap" type="text" placeholder="e.g. 1000000" inputmode="decimal" autocomplete="off">
             </label>
-            <label style="flex:0 0 140px;">Expiry block (0 = none)
+            <label style="flex:0 0 140px;">Expiry block <span class="muted" style="text-transform:none;letter-spacing:0;font-size:11px;">0 = none</span>
               <input id="ondrop-expiry" type="number" min="0" placeholder="0" autocomplete="off">
             </label>
           </div>
@@ -8495,11 +8503,11 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
        populated by renderDiscover / renderPetchDiscover and double as
        glanceable totals. -->
   <div id="discover-nav" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px;position:sticky;top:0;z-index:10;padding:8px 0;background:var(--bg);">
-    <a href="#petch-discover-section" data-discover-nav="petch" style="flex:1;min-width:160px;border:1px solid var(--ink);padding:10px 12px;background:var(--bg-warm);text-decoration:none;color:var(--ink);display:flex;justify-content:space-between;align-items:center;gap:8px;">
+    <a href="#petch-discover-section" data-discover-nav="petch" style="flex:1;min-width:160px;border:1px solid var(--ink);padding:10px 12px;background:var(--bg);text-decoration:none;color:var(--ink);display:flex;justify-content:space-between;align-items:center;gap:8px;">
       <span>public mints <span class="muted" style="font-size:11px;">· fair launch</span></span>
       <span class="muted" style="font-size:11px;" id="discover-nav-petch-count">—</span>
     </a>
-    <a href="#cetch-discover-section" data-discover-nav="cetch" style="flex:1;min-width:160px;border:1px solid var(--ink);padding:10px 12px;background:var(--bg-warm);text-decoration:none;color:var(--ink);display:flex;justify-content:space-between;align-items:center;gap:8px;">
+    <a href="#cetch-discover-section" data-discover-nav="cetch" style="flex:1;min-width:160px;border:1px solid var(--ink);padding:10px 12px;background:var(--bg);text-decoration:none;color:var(--ink);display:flex;justify-content:space-between;align-items:center;gap:8px;">
       <span>assets <span class="muted" style="font-size:11px;">· confidential supply</span></span>
       <span class="muted" style="font-size:11px;" id="discover-nav-cetch-count">—</span>
     </a>
@@ -8644,6 +8652,34 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
           <span id="mixer-deposits-backup-status" class="muted" style="font-size:11px;"></span>
         </div>
       </div>
+    </div>
+  </div>
+
+  <div class="section" data-mixer-pool-op="true">
+    <div class="section-header"><span>withdraw</span></div>
+    <div class="section-body">
+      <div class="muted" style="margin-bottom:10px;">Withdraw a deposit to a fresh address. Pick a saved deposit, paste a deposit record JSON, or import a share-link. The privacy set size — how many other deposits yours hides among — is shown beneath each pool.</div>
+      <div class="flex" style="gap:8px;flex-wrap:wrap;align-items:flex-end;margin-bottom:8px;">
+        <label style="flex:1;min-width:240px;">Saved deposits on this browser
+          <select id="mixer-withdraw-saved-select"><option value="">— pick a saved deposit or paste below —</option></select>
+        </label>
+      </div>
+      <textarea id="mixer-withdraw-record" rows="4" placeholder="…or paste deposit record JSON / use share-link below" aria-label="Deposit record JSON" style="width:100%;font-family:monospace;font-size:12px;"></textarea>
+      <div class="flex" style="gap:8px;align-items:center;margin-top:8px;">
+        <input id="mixer-withdraw-sharelink" type="text" placeholder="#mix=…" style="flex:1;font-family:monospace;font-size:12px;">
+        <button id="btn-mixer-import-sharelink">Import</button>
+      </div>
+      <div class="flex" style="gap:8px;flex-wrap:wrap;align-items:flex-end;margin-top:10px;">
+        <label style="flex:1;min-width:240px;">Recipient pubkey <span class="muted" style="font-size:11px;">(optional — empty = this wallet)</span>
+          <input id="mixer-withdraw-recipient" type="text" placeholder="02… or 03… (66 hex chars; leave empty for self-mix)" style="width:100%;font-family:monospace;font-size:12px;">
+        </label>
+      </div>
+      <div id="mixer-withdraw-recipient-status" class="muted" style="font-size:11px;margin-top:4px;min-height:14px;"></div>
+      <div class="flex" style="gap:8px;flex-wrap:wrap;align-items:flex-end;margin-top:10px;">
+        <button id="btn-mixer-withdraw-preview" disabled>Preview</button>
+        <button id="btn-mixer-withdraw-broadcast" disabled>Withdraw &amp; broadcast</button>
+      </div>
+      <div id="mixer-withdraw-preview-out" class="muted" style="margin-top:10px;display:none;white-space:pre-wrap;font-family:monospace;font-size:12px;"></div>
     </div>
   </div>
 
@@ -8850,34 +8886,6 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
     </div>
   </div>
 
-  <div class="section" data-mixer-pool-op="true">
-    <div class="section-header"><span>withdraw</span></div>
-    <div class="section-body">
-      <div class="muted" style="margin-bottom:10px;">Withdraw a deposit to a fresh address. Pick a saved deposit, paste a deposit record JSON, or import a share-link. The privacy set size — how many other deposits yours hides among — is shown beneath each pool.</div>
-      <div class="flex" style="gap:8px;flex-wrap:wrap;align-items:flex-end;margin-bottom:8px;">
-        <label style="flex:1;min-width:240px;">Saved deposits on this browser
-          <select id="mixer-withdraw-saved-select"><option value="">— pick a saved deposit or paste below —</option></select>
-        </label>
-      </div>
-      <textarea id="mixer-withdraw-record" rows="4" placeholder="…or paste deposit record JSON / use share-link below" aria-label="Deposit record JSON" style="width:100%;font-family:monospace;font-size:12px;"></textarea>
-      <div class="flex" style="gap:8px;align-items:center;margin-top:8px;">
-        <input id="mixer-withdraw-sharelink" type="text" placeholder="#mix=…" style="flex:1;font-family:monospace;font-size:12px;">
-        <button id="btn-mixer-import-sharelink">Import</button>
-      </div>
-      <div class="flex" style="gap:8px;flex-wrap:wrap;align-items:flex-end;margin-top:10px;">
-        <label style="flex:1;min-width:240px;">Recipient pubkey <span class="muted" style="font-size:11px;">(optional — empty = this wallet)</span>
-          <input id="mixer-withdraw-recipient" type="text" placeholder="02… or 03… (66 hex chars; leave empty for self-mix)" style="width:100%;font-family:monospace;font-size:12px;">
-        </label>
-      </div>
-      <div id="mixer-withdraw-recipient-status" class="muted" style="font-size:11px;margin-top:4px;min-height:14px;"></div>
-      <div class="flex" style="gap:8px;flex-wrap:wrap;align-items:flex-end;margin-top:10px;">
-        <button id="btn-mixer-withdraw-preview" disabled>Preview</button>
-        <button id="btn-mixer-withdraw-broadcast" disabled>Withdraw &amp; broadcast</button>
-      </div>
-      <div id="mixer-withdraw-preview-out" class="muted" style="margin-top:10px;display:none;white-space:pre-wrap;font-family:monospace;font-size:12px;"></div>
-    </div>
-  </div>
-
   <div class="section" id="mixer-trusted-setup-section">
     <div class="section-header"><span>trusted setup</span></div>
     <div class="section-body">
@@ -8914,10 +8922,13 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
           <input id="mixer-init-ceremony-cid" type="text" placeholder="bafk…" autocomplete="off" spellcheck="false">
         </label>
       </div>
-      <div class="muted" style="font-size:11px;margin-top:6px;line-height:1.5;">
-        Both CIDs are locked to the canonical Phase 2 trusted setup — 2,227 community contributions, Bitcoin-block beacon, finalized chain. Every pool for this circuit shares the same verifying key.
-        <a id="mixer-canonical-ceremony-link" href="https://ipfs.io/ipfs/bafybeidq2ahzte4sfiqjsmhqta62ufenpppzpch5ppry55tzxzlvltxy2u/" target="_blank" rel="noopener noreferrer" style="color:inherit;text-decoration:underline;">Audit bundle on IPFS ↗</a>
-      </div>
+      <details style="margin-top:6px;">
+        <summary class="muted" style="font-size:11px;cursor:pointer;"><span class="det-arrow" style="display:inline-block;transition:transform 0.1s;">&#9656;</span> Canonical trusted setup &amp; CIDs</summary>
+        <div class="muted" style="font-size:11px;margin-top:6px;line-height:1.5;">
+          Both CIDs are locked to the canonical Phase 2 trusted setup — 2,227 community contributions, Bitcoin-block beacon, finalized chain. Every pool for this circuit shares the same verifying key.
+          <a id="mixer-canonical-ceremony-link" href="https://ipfs.io/ipfs/bafybeidq2ahzte4sfiqjsmhqta62ufenpppzpch5ppry55tzxzlvltxy2u/" target="_blank" rel="noopener noreferrer" style="color:inherit;text-decoration:underline;">Audit bundle on IPFS ↗</a>
+        </div>
+      </details>
       <div class="flex" style="gap:8px;align-items:flex-end;margin-top:10px;">
         <button id="btn-mixer-init-broadcast" disabled>Initialize pool &amp; broadcast</button>
       </div>
@@ -8931,7 +8942,7 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
      (pool list, your LP positions) are always available so users can
      monitor pre-launch state. -->
 <div class="tab-panel" id="tab-pool">
-  <div id="pool-lock-banner" style="margin-bottom:14px;border:1px dashed var(--ink-faint);background:var(--bg-warm);color:var(--ink-mid);padding:10px 12px;font-size:12px;border-radius:4px;">
+  <div id="pool-lock-banner" style="margin-bottom:14px;border:1px dashed var(--ink-faint);background:transparent;color:var(--ink-mid);padding:10px 12px;font-size:12px;border-radius:4px;">
     AMM trusted setup ceremony in progress. Swap + Add Liquidity + Remove Liquidity unlock once the canonical verifying key is published. Pools and your LP positions are visible now; the buttons below activate when the dapp verifies the ceremony attestation.
   </div>
   <div class="section">
@@ -8940,32 +8951,40 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
       <span id="pool-status" class="muted"></span>
     </div>
     <div class="section-body">
-      <div class="muted" style="margin-bottom:14px;">
-        Constant-product AMM (x·y=k) over confidential tacit assets. Pool reserves are public; LP shares are amount-hidden. Default fee is 0.3% (single bps knob). Every swap settles in one Bitcoin commit-reveal pair — no sequencer, no off-chain matching. A batched uniform-price path with hidden per-trader amounts is ceremony-gated and unlocks per-pool.
-      </div>
+      <div class="muted" style="margin-bottom:14px;">Constant-product AMM (x·y=k) over confidential tacit assets — reserves are public, LP shares are amount-hidden. <details style="display:inline;"><summary style="cursor:pointer;display:inline;">how it settles</summary> Default fee is 0.3% (single bps knob); every swap settles in one Bitcoin commit-reveal pair — no sequencer, no off-chain matching. A batched uniform-price path with hidden per-trader amounts is ceremony-gated and unlocks per-pool.</details></div>
     </div>
   </div>
 
   <div class="section" data-pool-ceremony-gated="true">
     <div class="section-header"><span>swap</span></div>
     <div class="section-body">
-      <div class="muted" style="margin-bottom:10px;">Trade against a pool's curve. The router compares the direct pool against multi-hop paths (up to 4 pools) and picks whichever yields more. One Bitcoin commit-reveal pair, slippage floor on the final delivery — if the route can't clear your floor before the reveal lands, the tx fails and your input UTXO stays put.</div>
-      <div class="flex" style="gap:8px;flex-wrap:wrap;align-items:flex-end;">
-        <label style="flex:1;min-width:160px;">From
-          <select id="pool-swap-from"><option value="">— pick an asset —</option></select>
-        </label>
-        <label style="flex:1;min-width:120px;">Amount
-          <input id="pool-swap-amount-in" type="text" placeholder="0" style="width:100%;font-family:monospace;font-size:12px;">
-        </label>
-        <label style="flex:1;min-width:160px;">To
+      <div class="muted" style="margin-bottom:10px;">Trade against a pool's curve; the router picks the best of the direct pool and multi-hop paths. <details style="display:inline;"><summary style="cursor:pointer;display:inline;">how routing &amp; slippage work</summary> One Bitcoin commit-reveal pair, slippage floor on the final delivery — if the route can't clear your floor before the reveal lands, the tx fails and your input UTXO stays put.</details></div>
+      <div style="background:var(--bg);border:1px solid var(--ink);padding:10px 12px;">
+        <div class="muted" style="font-size:10px;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:6px;">You pay</div>
+        <div class="flex" style="gap:8px;align-items:flex-end;flex-wrap:wrap;">
+          <label style="flex:1;min-width:120px;">Amount
+            <input id="pool-swap-amount-in" type="text" placeholder="0" style="width:100%;font-family:monospace;font-size:12px;">
+          </label>
+          <label style="flex:1;min-width:160px;">Asset
+            <select id="pool-swap-from"><option value="">— pick an asset —</option></select>
+          </label>
+        </div>
+      </div>
+      <div style="text-align:center;font-size:16px;color:var(--ink-mid);margin:6px 0;">↓</div>
+      <div style="background:var(--bg);border:1px solid var(--ink);padding:10px 12px;">
+        <div class="muted" style="font-size:10px;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:6px;">You receive · est.</div>
+        <label style="display:block;">Asset
           <select id="pool-swap-to"><option value="">— pick an asset —</option></select>
         </label>
-        <label style="flex:1;min-width:120px;">Slippage (bps)
+        <div id="pool-swap-preview-out" class="muted" style="margin-top:8px;display:none;white-space:pre-wrap;font-family:monospace;font-size:12px;"></div>
+      </div>
+      <details style="margin-top:8px;">
+        <summary class="muted" style="cursor:pointer;font-size:11px;">Slippage tolerance</summary>
+        <label style="display:block;margin-top:6px;">Slippage (bps)
           <input id="pool-swap-slippage-bps" type="number" min="0" max="10000" value="100" style="width:100%;font-family:monospace;font-size:12px;">
         </label>
-        <button id="btn-pool-swap-broadcast" type="button">Swap &amp; broadcast</button>
-      </div>
-      <div id="pool-swap-preview-out" class="muted" style="margin-top:10px;display:none;white-space:pre-wrap;font-family:monospace;font-size:12px;"></div>
+      </details>
+      <button id="btn-pool-swap-broadcast" type="button" style="width:100%;margin-top:10px;">Swap &amp; broadcast</button>
     </div>
   </div>
 
@@ -8983,7 +9002,7 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
   <div class="section" data-pool-ceremony-gated="true">
     <div class="section-header"><span>add liquidity</span></div>
     <div class="section-body">
-      <div class="muted" style="margin-bottom:10px;">Deposit a proportional pair of assets into a pool. Your LP share is computed Uniswap-V2 style and bound to your wallet, so only you can later burn it.</div>
+      <div class="muted" style="margin-bottom:10px;">Deposit a proportional pair of assets into a pool. <details style="display:inline;"><summary style="cursor:pointer;display:inline;">how LP shares work</summary> Your LP share is computed Uniswap-V2 style and bound to your wallet, so only you can later burn it.</details></div>
       <div class="flex" style="gap:8px;flex-wrap:wrap;align-items:flex-end;">
         <label style="flex:2;min-width:220px;">Pool
           <select id="pool-lpadd-pool"><option value="">— pick a pool —</option></select>
@@ -8994,8 +9013,8 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
         <label style="flex:1;min-width:120px;">Δ asset B
           <input id="pool-lpadd-delta-b" type="text" placeholder="0" style="width:100%;font-family:monospace;font-size:12px;">
         </label>
-        <button id="btn-pool-lpadd-broadcast" type="button">Add &amp; broadcast</button>
       </div>
+      <button id="btn-pool-lpadd-broadcast" type="button" class="primary" style="width:100%;margin-top:10px;">Add &amp; broadcast</button>
       <div id="pool-lpadd-preview-out" class="muted" style="margin-top:10px;display:none;white-space:pre-wrap;font-family:monospace;font-size:12px;"></div>
     </div>
   </div>
@@ -9003,7 +9022,7 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
   <div class="section">
     <div class="section-header"><span>your LP positions</span></div>
     <div class="section-body">
-      <div class="muted" style="margin-bottom:10px;">LP-share UTXOs in your wallet across pools on this network. Burn shares with Remove Liquidity to recover your proportional reserves.</div>
+      <div class="muted" style="margin-bottom:10px;">LP-share UTXOs in your wallet across pools on this network. <details style="display:inline;"><summary style="cursor:pointer;display:inline;">what they are</summary> Burn shares with Remove Liquidity to recover your proportional reserves.</details></div>
       <div id="pool-lp-positions"><div class="muted" style="font-size:12px;">No LP positions found in this wallet.</div></div>
     </div>
   </div>
@@ -9011,13 +9030,13 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
   <div class="section" data-pool-ceremony-gated="true">
     <div class="section-header"><span>remove liquidity</span></div>
     <div class="section-body">
-      <div class="muted" style="margin-bottom:10px;">Burn one of your LP-share UTXOs and receive a proportional withdrawal of both reserve assets. Rounding remainders donate to remaining LPs (Uniswap V2 convention).</div>
+      <div class="muted" style="margin-bottom:10px;">Burn one of your LP-share UTXOs and receive a proportional withdrawal of both reserve assets. <details style="display:inline;"><summary style="cursor:pointer;display:inline;">rounding</summary> Rounding remainders donate to remaining LPs (Uniswap V2 convention).</details></div>
       <div class="flex" style="gap:8px;flex-wrap:wrap;align-items:flex-end;">
         <label style="flex:2;min-width:280px;">Position
           <select id="pool-lpremove-position"><option value="">— pick an LP UTXO —</option></select>
         </label>
-        <button id="btn-pool-lpremove-broadcast" type="button">Remove &amp; broadcast</button>
       </div>
+      <button id="btn-pool-lpremove-broadcast" type="button" class="primary" style="width:100%;margin-top:10px;">Remove &amp; broadcast</button>
       <div id="pool-lpremove-preview-out" class="muted" style="margin-top:10px;display:none;white-space:pre-wrap;font-family:monospace;font-size:12px;"></div>
     </div>
   </div>
@@ -9025,11 +9044,11 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
 
 <!-- FARMS TAB — LP-bond yield farms (SPEC-AMM-FARM-AMENDMENT.md) -->
 <div class="tab-panel" id="tab-farms">
-  <div id="farms-lock-banner" style="margin-bottom:14px;border:1px dashed var(--ink-faint);background:var(--bg-warm);color:var(--ink-mid);padding:10px 12px;font-size:12px;border-radius:4px;">
+  <div id="farms-lock-banner" style="margin-bottom:14px;border:1px dashed var(--ink-faint);background:transparent;color:var(--ink-mid);padding:10px 12px;font-size:12px;border-radius:4px;">
     AMM trusted setup ceremony in progress. Farm bonding + harvest unlock once the canonical verifying key is published — farm metadata and your bonds are visible now, but stake/harvest/unbond actions activate when the ceremony attestation verifies.
   </div>
   <div class="section" data-farms-ceremony-gated="1">
-    <div class="section-header"><span>farms</span></div>
+    <div class="section-header"><span>farms</span><span><span id="farms-status" class="muted" style="font-size:11px;"></span> <button id="farms-refresh-btn" class="btn-secondary" style="font-size:10px;padding:3px 8px;">Refresh</button></span></div>
     <div class="section-body">
       <p class="muted" style="margin-bottom:12px;">
         Stake LP shares against a farm to earn streamed reward emissions.
@@ -9039,10 +9058,6 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
         your LP shares plus any final reward. Launchers can reclaim
         unspent treasury 7 days post-end.
       </p>
-      <div style="margin-bottom:10px;">
-        <button id="farms-refresh-btn" class="btn-secondary">Refresh</button>
-        <span id="farms-status" class="muted" style="margin-left:8px;font-size:11px;"></span>
-      </div>
       <div id="farms-list" style="display:flex;flex-direction:column;gap:12px;"></div>
       <div id="farms-empty" class="muted" style="display:none;text-align:center;padding:24px 0;font-size:12px;">
         No farms registered yet. Launchers can create one via
@@ -9064,18 +9079,7 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
 
   <div class="section" style="font-size:11px;">
     <div class="section-header"><span>actions (CLI for now)</span></div>
-    <div class="section-body muted" style="line-height:1.75;">
-      Bond / Harvest / Unbond / Refund actions are wired in
-      <code>dapp/amm-farm-actions.js</code>
-      (<code>buildAndBroadcastLpBond</code>, etc.) but not yet bound to
-      buttons here. Until the next dapp build, use the encoders from a
-      script context or the
-      <code>tests/amm-farm-e2e-signet.mjs</code> harness. The data view
-      above polls
-      <code>/farms</code> and
-      <code>/farm/&lt;id&gt;/bonds?bonder=&lt;your_pubkey&gt;</code> on the
-      worker for live state.
-    </div>
+    <div class="section-body muted" style="font-size:11px;">Bond / Harvest / Unbond / Refund land in a follow-up dapp build; launchers can drive them via the CLI encoders today. The farm and bond views above poll the worker for live state.</div>
   </div>
 </div>
 
@@ -9083,11 +9087,12 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
   <div class="section">
     <div class="section-header"><span>protocol</span></div>
     <div class="section-body" style="line-height:1.75;">
-      <p>An indexer-validated meta-protocol on Bitcoin that scales the Runes/Ordinals pattern past plain tokens. Privacy is layered so each user picks the level that fits their use case: a merchant might keep public transfers + shielded balances for auditability, while a privacy-conscious user can layer shielded amounts + shielded addresses + mixer-pool round-trips for full unlinkability at every endpoint. Tacit applies the same indexer-consensus trust model across the privacy stack and the wider surface: <strong>shielded amounts</strong> (Pedersen + bulletproofs + kernel signatures, default on every transfer) and an opt-in <strong>shielded address</strong> primitive (BIP-341-style blinded-pubkey commits for per-tx unique recipient markers); a <strong>shielded mixer pool</strong> (Poseidon Merkle tree + Groth16 + nullifiers) for anonymous spend that breaks the on-chain link between deposit and withdrawal; a <strong>native AMM</strong> (uniform-clearing-price block-batched market with confidential per-trader amounts, plus a per-trade variable-amount path that needs no Groth16); <strong>trustless wrapped BTC</strong> (cBTC.zk locks real BTC at a key derived from a mixer leaf's secret) and <strong>fungible wrapped BTC</strong> (cBTC.tac layers an LP-share lien with TAC over-collateralization); atomic single-tx OTC settlement; permissionless fair-launch mints; on-chain claim pools. Every surface settles in regular Bitcoin transactions.</p>
+      <p style="font-size:15px;"><strong>An indexer-validated meta-protocol on Bitcoin</strong> that scales the Runes/Ordinals pattern past plain tokens — confidential value, a native AMM, and trustless wrapped BTC, all settling in regular Bitcoin transactions.</p>
+      <p>Privacy is layered so each user picks the level that fits their use case: a merchant might keep public transfers + shielded balances for auditability, while a privacy-conscious user can layer shielded amounts + shielded addresses + mixer-pool round-trips for full unlinkability at every endpoint. Tacit applies the same indexer-consensus trust model across the privacy stack and the wider surface: <strong>shielded amounts</strong> (Pedersen + bulletproofs + kernel signatures, default on every transfer) and an opt-in <strong>shielded address</strong> primitive (BIP-341-style blinded-pubkey commits for per-tx unique recipient markers); a <strong>shielded mixer pool</strong> (Poseidon Merkle tree + Groth16 + nullifiers) for anonymous spend that breaks the on-chain link between deposit and withdrawal; a <strong>native AMM</strong> (uniform-clearing-price block-batched market with confidential per-trader amounts, plus a per-trade variable-amount path that needs no Groth16); <strong>trustless wrapped BTC</strong> (cBTC.zk locks real BTC at a key derived from a mixer leaf's secret) and <strong>fungible wrapped BTC</strong> (cBTC.tac layers an LP-share lien with TAC over-collateralization); atomic single-tx OTC settlement; permissionless fair-launch mints; on-chain claim pools. Every surface settles in regular Bitcoin transactions.</p>
 
       <h3 class="protocol-h3" id="proto-validation">Validation model</h3>
       <p style="margin-top:8px;">Like every Bitcoin token meta-protocol (Runes, BRC-20, Ordinals, Taproot Assets, RGB, Counterparty), tacit's token rules are <strong>not enforced by Bitcoin nodes</strong>. Bitcoin validates the underlying tx structure and Taproot signatures; an external indexer validates the token-level rules (commitments, rangeproofs, kernel signatures, asset_id consistency, AMM pool reserves, pool nullifier sets, slot key derivations, lien states).</p>
-      <p>Architecturally tacit is an <strong>indexer-validated meta-protocol</strong> — same family as Runes, BRC-20, and Ordinals. All data needed to validate any UTXO lives on Bitcoin's chain. An indexer with chain-only access can recursively walk every UTXO back to its origin (CETCH, T_PETCH, mixer withdraw, AMM pool, cBTC.zk slot mint) and reach the same verdict as any other indexer running the same rules. No consensus change, no federation, no out-of-band proof exchange.</p>
+      <p>All data needed to validate any UTXO lives on Bitcoin's chain. An indexer with chain-only access can recursively walk every UTXO back to its origin (CETCH, T_PETCH, mixer withdraw, AMM pool, cBTC.zk slot mint) and reach the same verdict as any other indexer running the same rules. No consensus change, no federation, no out-of-band proof exchange.</p>
       <p>This is distinct from <strong>proof-distribution protocols</strong> (RGB, Taproot Assets) where the recipient must receive validity proofs out-of-band, and from <strong>fully-validated chains</strong> (Liquid, Mimblewimble) where consensus enforces the rules natively. Tacit's contribution beyond plain tokens is leveraging the same consensus-of-indexers substrate into a richer surface: confidential value, AMM market-making, and a native collateral substrate that backs trustless wrapped BTC. The market-validated value of indexer-defined assets (the same kind of value a Rune carries) becomes the bond mechanism for cBTC.tac's fungibility leg — same trust model, structurally aligned. See the <a href="https://github.com/z0r0z/tacit/blob/main/spec/CIRCUITS.md" target="_blank" rel="noopener noreferrer">CIRCUITS.md</a> overview for how the two Groth16 circuit families (anonymous-spend + amount-confidentiality) compose across these surfaces.</p>
 
       <nav class="protocol-toc" aria-label="Protocol sections">
@@ -9182,29 +9187,29 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
       <p style="margin-top:8px;">Marketplace primitives live in §5.7 and route through <code>T_AXFER</code> / <code>T_AXFER_VAR</code> settlement — no separate opcodes needed: <strong>atomic intents</strong> (§5.7.6 — seller publishes one signed offer, any taker claims it within 5 min and settles atomically on Bitcoin); <strong>preauth sales</strong> (§5.7.8 — seller pre-signs everything, then goes offline; any buyer settles whenever); <strong>batched preauth-take</strong> (§5.7.8.1 — buyer sweeps N preauths in ONE reveal tx, ~70% Bitcoin-fee reduction vs N separate settlements; pure flow-level optimization leveraging position-independent <code>SIGHASH_SINGLE_ACP</code>); <strong>variable-amount intents</strong> (§5.7.6.1 — partial-fillable seller offers); and <strong>bid intents</strong> (§5.7.7 — partial-fillable buyer offers, off-chain coordination, on-chain settlement via <code>T_AXFER</code>/<code>T_AXFER_VAR</code>). All marketplace flows share the same kernel-sig + rangeproof crypto as base CXFER; the difference is the coordination layer, not the on-chain primitive.</p>
       </details>
 
-      <details class="protocol-section" id="proto-cryptography" open>
+      <details class="protocol-section" id="proto-cryptography">
         <summary class="protocol-h3">Cryptography</summary>
       <p style="margin-top:8px;">The full ZK + commitment toolkit composes across all surfaces. See <a href="https://github.com/z0r0z/tacit/blob/main/spec/CIRCUITS.md" target="_blank" rel="noopener noreferrer">CIRCUITS.md</a> for the canonical walkthrough.</p>
-      <h4 style="margin-top:14px;font-size:12px;color:var(--purple);">On-chain commitments — Pedersen on secp256k1</h4>
+      <h4 style="margin-top:14px;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:0.08em;">On-chain commitments — Pedersen on secp256k1</h4>
       <p style="margin-top:8px;">Commitments: <code>C = a·H + r·G</code>, additively homomorphic. <code>H</code> is a NUMS generator (no known discrete log w.r.t. <code>G</code>) derived deterministically by hash-to-curve from the seed <code>"tacit-generator-H-v1"</code>. The protocol carries <code>C</code> on chain; <code>(a, r)</code> stay private.</p>
-      <h4 style="margin-top:14px;font-size:12px;color:var(--purple);">Rangeproofs — aggregated Bulletproofs + Bulletproofs+</h4>
+      <h4 style="margin-top:14px;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:0.08em;">Rangeproofs — aggregated Bulletproofs + Bulletproofs+</h4>
       <p style="margin-top:8px;">Bünz et al. 2017, at n=64 bits — each committed value proven to lie in <code>[0, 2⁶⁴)</code>. A single proof covers m ∈ {1, 2, 4, 8} commitments simultaneously via the inner-product argument, witness size O(log(n·m)). On secp256k1: <strong>688 B at m=1, 754 B at m=2, 820 B at m=4, 886 B at m=8</strong>. ~250 ms prove, ~150 ms verify in-browser per proof; the indexer batches multiple proofs into a single multi-scalar multiplication for sub-linear amortized cost. 64-bit range bounds any single Pedersen commitment to ~184 billion display units at 8 decimals.</p>
       <p style="margin-top:8px;"><strong>Bulletproofs+</strong> (Chung et al. 2022) shipped for CXFER and T_AXFER via the <code>T_CXFER_BPP</code> / <code>T_AXFER_BPP</code> / <code>T_AXFER_VAR_BPP</code> opcodes. ~14% smaller rangeproof witnesses at the same security level. Same wire shape as their base opcodes — the validator accepts both interchangeably.</p>
-      <h4 style="margin-top:14px;font-size:12px;color:var(--purple);">ZK circuits — two families, one stack</h4>
+      <h4 style="margin-top:14px;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:0.08em;">ZK circuits — two families, one stack</h4>
       <p style="margin-top:8px;">All Groth16 circuits run over BN254 with Phase 1 inherited from the Polygon Hermez ceremony. Two families do all the in-circuit work:</p>
       <ul style="margin-left:20px;margin-top:8px;">
         <li><strong>Anonymous unique-spend</strong> — the mixer's <code>withdraw.circom</code> (Poseidon-Merkle leaf membership + nullifier reveal, ~3K constraints, <code>pot14</code> Phase 1). Reused without modification for cBTC.zk slot spending (T_SLOT_BURN / ROTATE / SPLIT / MERGE) — the slot's spending key <code>K_btc = r_leaf · G_secp256k1</code> is derived from the leaf's own Poseidon secret, so one secret proves mixer-set membership and signs the backing BTC UTXO.</li>
         <li><strong>Amount confidentiality</strong> — the AMM's three circuits (<code>amm_lp_add</code> 5K, <code>amm_lp_remove</code> 10K, <code>amm_swap_batch</code> 171K @ N≤16 traders; <code>pot18</code> Phase 1). BabyJubJub Pedersen openings + range proofs + in-circuit AMM arithmetic (clearing-price derivation from private aggregates in the batch case).</li>
       </ul>
       <p>Chain commitments live on secp256k1; in-circuit work lives on BabyJubJub (the embedded curve over BN254 Fr). A <strong>169-byte Camenisch–Stadler sigma proof</strong> binds the two, out-of-circuit, with no trusted setup. This avoids ~1M constraints per opening that an in-circuit secp256k1 gadget would cost.</p>
-      <h4 style="margin-top:14px;font-size:12px;color:var(--purple);">Shielded-address primitive — blinded-pubkey commits</h4>
+      <h4 style="margin-top:14px;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:0.08em;">Shielded-address primitive — blinded-pubkey commits</h4>
       <p style="margin-top:8px;">Opt-in BIP-341-style construction: <code>commit = recipient_pubkey + blinding · G</code> where <code>blinding = HMAC(wallet.priv, domain || op-specific anchor)</code>. The commit serves as both a Schnorr verification key (if the op signs under the recipient) AND a P2TR output key (so payouts go to <code>P2TR(x_only(commit))</code>). Hides the recipient pubkey itself — on-chain markers sit at per-transaction unique addresses with no apparent link to the recipient's published identity. Same crypto as BIP-340 / BIP-341 / BIP-352; no new ceremony. Composes orthogonally with shielded amounts; both schemes remain valid indefinitely, wallets pick at tx-build time based on the recipient's signaled capability.</p>
       </details>
 
       <details class="protocol-section" id="proto-wire">
         <summary class="protocol-h3">Wire format (Taproot envelope)</summary>
         <p style="margin-top:8px;">Rangeproofs and aggregated payloads don't fit in 80-byte OP_RETURN, so payload moves into a Taproot script-path leaf. Each operation is <strong>2 transactions</strong>: a <em>commit</em> tx that creates a P2TR output committed to the envelope's leaf hash (internal pubkey = BIP-341 NUMS, so script-path is the only spend), and a <em>reveal</em> tx that spends the P2TR via script-path, exposing the envelope script in the witness. Indexers scan <code>tx.vin[0].witness[1]</code> for envelopes.</p>
-      <h4 style="margin-top:14px;font-size:12px;color:var(--purple);">Envelope leaf script</h4>
+      <h4 style="margin-top:14px;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:0.08em;">Envelope leaf script</h4>
       <div class="script-decode" style="margin:10px 0;">
         <span class="hex">32B</span><span class="op">&lt;signing pubkey x-only&gt;</span><span class="desc">wallet pubkey allowed to sign reveal</span>
         <span class="hex">ac</span><span class="op">OP_CHECKSIG</span><span class="desc">verifies witness signature</span>
@@ -9214,7 +9219,7 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
         <span class="hex">..</span><span class="op">payload chunks (≤520B each)</span><span class="desc">opcode + body + rangeproof</span>
         <span class="hex">68</span><span class="op">OP_ENDIF</span><span class="desc">end</span>
       </div>
-      <h4 style="margin-top:14px;font-size:12px;color:var(--purple);">CETCH payload (opcode 0x21) — initial issuance</h4>
+      <h4 style="margin-top:14px;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:0.08em;">CETCH payload (opcode 0x21) — initial issuance</h4>
       <div class="script-decode" style="margin:10px 0;">
         <span class="hex">21</span><span class="op">T_CETCH</span><span class="desc">confidential etch</span>
         <span class="hex">L</span><span class="op">ticker length</span><span class="desc">1 byte (1–16)</span>
@@ -9230,7 +9235,7 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
       </div>
       <p style="margin-top:8px;">The wire format treats <code>image_uri</code> as opaque UTF-8 bytes. The decoder accepts any valid UTF-8 ≤256 bytes — it does not enforce a URI scheme. This leaves room for future schemes (<code>ar://</code>, <code>ipns://</code>, etc.) without a wire-format change. <strong>Renderers MUST validate before display</strong>: tacit's UI accepts only <code>ipfs://CID</code> and bare CIDs (Qm…/bafy…), and rejects <code>http:</code>, <code>https:</code>, <code>javascript:</code>, <code>data:</code>, and other schemes. Direct <code>https://</code> images are rejected on purpose — every wallet that views the asset would fetch from the issuer-controlled host, which is an IP-correlation beacon. Forcing IPFS routes traffic through the configured gateway, one fixed origin that the CSP locks down at <code>img-src</code>.</p>
       <p>Asset_id = <code>sha256(reveal_txid_BE ‖ 0_LE)</code> (32 bytes). Supply commitment lives at vout 0 of the reveal tx. If <code>mint_authority</code> is all-zero, the asset is fixed-supply (BTC-style); otherwise the named pubkey can issue more via <code>T_MINT</code>.</p>
-      <h4 style="margin-top:14px;font-size:12px;color:var(--purple);">CXFER payload (opcode 0x23) — confidential transfer</h4>
+      <h4 style="margin-top:14px;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:0.08em;">CXFER payload (opcode 0x23) — confidential transfer</h4>
       <div class="script-decode" style="margin:10px 0;">
         <span class="hex">23</span><span class="op">T_CXFER</span><span class="desc">confidential transfer</span>
         <span class="hex">32B</span><span class="op">asset_id</span><span class="desc">single asset</span>
@@ -9241,7 +9246,7 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
         <span class="hex">2B</span><span class="op">rp_len</span><span class="desc">u16 LE; aggregated rangeproof byte count</span>
         <span class="hex">..</span><span class="op">rangeproof</span><span class="desc">single bulletproof covering all N commitments</span>
       </div>
-      <h4 style="margin-top:14px;font-size:12px;color:var(--purple);">MINT payload (opcode 0x24) — issue more supply (mintable assets only)</h4>
+      <h4 style="margin-top:14px;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:0.08em;">MINT payload (opcode 0x24) — issue more supply (mintable assets only)</h4>
       <div class="script-decode" style="margin:10px 0;">
         <span class="hex">24</span><span class="op">T_MINT</span><span class="desc">signed by mint_authority</span>
         <span class="hex">32B</span><span class="op">asset_id</span><span class="desc">must equal sha256(etch_txid ‖ 0)</span>
@@ -9253,7 +9258,7 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
         <span class="hex">64B</span><span class="op">issuer_sig</span><span class="desc">BIP-340 over sha256("tacit-mint-v1" ‖ asset_id ‖ commit_anchor(36B) ‖ commitment ‖ amount_ct), under mint_authority</span>
       </div>
       <p style="margin-top:8px;font-size:12px;"><code>commit_anchor</code> = <code>commit_tx.vin[0].txid_BE ‖ commit_tx.vin[0].vout_LE</code> (the same anchor the issuer uses for the mint blinding/keystream). Binding it into <code>mint_msg</code> ties the issuer's signature to a specific commit/reveal pair so a witnessed mint envelope cannot be replayed into a different commit/reveal pair at an attacker's address.</p>
-      <h4 style="margin-top:14px;font-size:12px;color:var(--purple);">BURN payload (opcode 0x25) — destroy supply, public amount</h4>
+      <h4 style="margin-top:14px;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:0.08em;">BURN payload (opcode 0x25) — destroy supply, public amount</h4>
       <div class="script-decode" style="margin:10px 0;">
         <span class="hex">25</span><span class="op">T_BURN</span><span class="desc">any holder; emits a public burned_amount</span>
         <span class="hex">32B</span><span class="op">asset_id</span><span class="desc">single asset</span>
@@ -9267,7 +9272,7 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
       </div>
       </details>
 
-      <details class="protocol-section" id="proto-attacks" open>
+      <details class="protocol-section" id="proto-attacks">
         <summary class="protocol-h3">How attacks are blocked</summary>
         <p style="margin-top:8px;"><strong>Negative amounts (mod N).</strong> A "−1000" is just <code>N − 1000</code> as a scalar; bulletproofs reject any value outside <code>[0, 2⁶⁴)</code>. The proof's inner-product argument cannot be satisfied for a value that doesn't fit in 64 bits, so the verifier rejects.</p>
       <p style="margin-top:8px;"><strong>Unbalanced amounts (CXFER).</strong> Even with rangeproofs, a sender holding 100 USDV could try to construct outputs (30 to recipient, 200 to themselves) — both with valid rangeproofs — and mint 130 from nothing. Kernel signatures block this:</p>
@@ -9282,7 +9287,7 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
       <p style="margin-top:8px;"><strong>Cross-asset confusion.</strong> A sender could declare a CXFER as USDV but spend GOLDC inputs. The indexer fetches each input's parent envelope, reads its declared asset_id (across all four opcodes — CETCH, MINT, CXFER, BURN — via a unified parent-resolver), and rejects the CXFER if any input's asset_id differs from the current claim.</p>
       </details>
 
-      <details class="protocol-section" id="proto-blinding" open>
+      <details class="protocol-section" id="proto-blinding">
         <summary class="protocol-h3">Blinding delivery + amount recovery</summary>
         <p style="margin-top:8px;">Recipient blinding: <code>r_recip = HMAC-SHA256(ECDH(sender_priv, recipient_pub), "tacit-blind-v1" ‖ anchor ‖ vout_LE)</code>, where <code>anchor = first_asset_input_txid_BE ‖ first_asset_input_vout_LE</code>. The anchor's per-tx entropy prevents cross-tx commitment correlation: without it, two transfers between the same parties at the same vout would produce identical blindings, and an observer could compute <code>(C₁ − C₂) = (a₁ − a₂)·H</code> to learn the difference of amounts.</p>
       <p>Sender's change blinding: <code>r_change = HMAC-SHA256(sender_priv, "tacit-change-v1" ‖ anchor ‖ vout_LE)</code>, where <code>vout_LE</code> is the change output's index in the reveal tx (typically 1 for a 2-output CXFER, but parameterized so multi-output CXFERs with N=4 or N=8 can place change at higher vouts). Deterministic from the wallet privkey so it's recoverable from chain alone.</p>
@@ -9351,6 +9356,7 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
 
 <footer>
   <span><a href="https://github.com/z0r0z/tacit" target="_blank" rel="noopener noreferrer">tacit</a> · open-source · zero fees</span>
+  <span><span style="color:var(--orange,#f7931a)">●</span> AMM ceremony sealed · <a href="#tab=pool">contribute →</a></span>
   <span><a href="https://github.com/bitcoin/bips/blob/master/bip-0341.mediawiki" target="_blank" rel="noopener noreferrer">BIP-341</a> · <a href="https://github.com/bitcoin/bips/blob/master/bip-0340.mediawiki" target="_blank" rel="noopener noreferrer">BIP-340</a> · <a href="https://blockstream.com/bitcoin17-final41.pdf" target="_blank" rel="noopener noreferrer">CT (Maxwell)</a></span>
 </footer>
 
@@ -9817,7 +9823,7 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
   <div class="welcome-card">
     <div class="welcome-title" id="bridge-title" style="display:flex;align-items:center;gap:10px;"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="36" height="36" style="flex-shrink:0;"><style>.tr{stroke:#0a0a0a}@media(prefers-color-scheme:dark){.tr{stroke:#f4efe6}}</style><circle class="tr" cx="16" cy="16" r="13" fill="none" stroke-width="2.5"/><path d="M17.5 7L13 22.5Q13 25 18 24" fill="none" stroke="#627eea" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M10 11L21 11" stroke="#627eea" stroke-width="2.4" stroke-linecap="round"/><path d="M14.8 17L19 17" stroke="#627eea" stroke-width="2.2" stroke-linecap="round"/></svg><span>tETH <span class="accent">bridge</span></span></div>
     <div class="welcome-lede">
-      Bridge ETH from Ethereum to tETH on Tacit. Deposits go through a mixer for privacy. Burns unlock your ETH back on Ethereum trustlessly.
+      Bridge ETH from Ethereum to tETH on Tacit. Deposits go through a mixer for privacy. Burns unlock your ETH back on Ethereum trustlessly.<br><span style="font-size:11px;">Pilot phase — deposits are 0.001 ETH each. <a href="https://github.com/z0r0z/tacit/blob/main/BRIDGE.md" target="_blank" rel="noopener noreferrer">how it works</a></span>
     </div>
     <div id="bridge-supply-stats" style="margin:-4px 0 8px;"></div>
     <div class="welcome-options">
@@ -9847,7 +9853,7 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
         <span class="welcome-option-meta">rotate your bridge pool note to another tacit wallet. the recipient can burn to ETH from their own wallet. no tETH leaves the pool — just reassigned.</span>
       </button>
       <div id="bridge-send-box" style="display:none;margin-top:10px;padding:12px;border:1px dashed #627eea;background:var(--bg-warm);">
-        <div style="font-size:10px;text-transform:uppercase;letter-spacing:0.1em;color:#627eea;margin-bottom:8px;">send tETH via pool rotation</div>
+        <div style="font-size:10px;text-transform:uppercase;letter-spacing:0.1em;color:#627eea;margin-bottom:8px;display:flex;align-items:center;gap:5px;"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="14" height="14"><circle cx="16" cy="16" r="13" fill="none" stroke="#627eea" stroke-width="2.5"/><path d="M17.5 7L13 22.5Q13 25 18 24" fill="none" stroke="#627eea" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M10 11L21 11" stroke="#627eea" stroke-width="2.4" stroke-linecap="round"/><path d="M14.8 17L19 17" stroke="#627eea" stroke-width="2.2" stroke-linecap="round"/></svg> send tETH via pool rotation</div>
         <div id="bridge-send-notes" style="margin-bottom:10px;font-size:12px;"></div>
         <div style="margin-bottom:8px;">
           <label style="font-size:11px;color:var(--ink-mid);">recipient tacit pubkey</label>
@@ -9857,7 +9863,7 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
           <label style="font-size:11px;color:var(--ink-mid);">amount (ETH) — blank sends the whole note; a smaller amount splits and sends a fraction</label>
           <input type="text" id="bridge-send-amount" placeholder="0.1" style="width:100%;padding:10px;font-size:14px;font-family:var(--mono);margin-top:4px;">
         </div>
-        <button id="bridge-send-start" class="primary" style="width:100%;padding:12px;font-size:13px;background:#627eea;">Send tETH</button>
+        <button id="bridge-send-start" class="primary" style="width:100%;padding:12px;font-size:13px;">Send tETH</button>
         <div id="bridge-send-status" class="muted" style="margin-top:8px;font-size:11px;line-height:1.5;"></div>
       </div>
       <button id="bridge-burn-btn" class="welcome-option" type="button">
@@ -9871,7 +9877,7 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
           <div style="font-size:11px;font-weight:600;margin-bottom:6px;">Already burned? Resume withdrawal</div>
           <div style="display:flex;gap:6px;">
             <input type="text" id="bridge-resume-txid" placeholder="paste burn txid" style="flex:1;padding:8px;font-size:12px;font-family:var(--mono);">
-            <button id="bridge-resume-burn" class="primary" style="padding:8px 14px;font-size:11px;background:#627eea;white-space:nowrap;">Resume</button>
+            <button id="bridge-resume-burn" class="primary" style="padding:8px 14px;font-size:11px;white-space:nowrap;">Resume</button>
           </div>
           <div id="bridge-resume-status" class="muted" style="font-size:10px;margin-top:4px;"></div>
         </div>
@@ -9886,15 +9892,13 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms [data-farms-ceremony-gated] .sect
       </div>
     </div>
     <div style="display:flex;align-items:center;justify-content:space-between;margin-top:12px;">
-      <button id="bridge-cancel" class="welcome-option" type="button" style="text-align:center;">
-        <span class="welcome-option-title">close</span>
-      </button>
+      <button id="bridge-cancel" type="button" style="padding:6px 14px;font-size:11px;background:none;border:1px solid var(--ink-faint);color:var(--ink-mid);cursor:pointer;">close</button>
       <button id="bridge-recover-btn" type="button" style="padding:6px 14px;font-size:11px;background:none;border:1px solid var(--ink-faint);color:var(--ink-mid);cursor:pointer;">recover notes</button>
     </div>
   </div>
 </div>
 
-<script type="module" src="./tacit.js?cb=3f009de5"></script>
+<script type="module" src="./tacit.js?cb=e67fd430"></script>
 
 <!-- Service worker registration moved into tacit.js (the dapp's CSP forbids
      inline scripts; only 'self' module scripts are allowed). See sw.js for

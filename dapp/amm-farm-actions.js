@@ -462,19 +462,19 @@ function workerBase() {
 }
 
 export async function fetchFarm(farmIdHex) {
-  const r = await fetch(`${workerBase()}/farm/${farmIdHex}?network=${NET || 'signet'}`);
+  const r = await fetch(`${workerBase()}/farm/${farmIdHex}?network=${(NET && NET.name) || 'signet'}`);
   if (!r.ok) return null;
   return await r.json();
 }
 
 export async function fetchFarmsForPool(poolIdHex) {
-  const r = await fetch(`${workerBase()}/farms?pool=${poolIdHex}&network=${NET || 'signet'}`);
+  const r = await fetch(`${workerBase()}/farms?pool=${poolIdHex}&network=${(NET && NET.name) || 'signet'}`);
   if (!r.ok) return { farms: [] };
   return await r.json();
 }
 
 export async function fetchAllFarms({ cursor = null, limit = 50 } = {}) {
-  let url = `${workerBase()}/farms?network=${NET || 'signet'}&limit=${limit}`;
+  let url = `${workerBase()}/farms?network=${(NET && NET.name) || 'signet'}&limit=${limit}`;
   if (cursor) url += `&cursor=${encodeURIComponent(cursor)}`;
   const r = await fetch(url);
   if (!r.ok) return { farms: [], cursor: null };
@@ -483,7 +483,7 @@ export async function fetchAllFarms({ cursor = null, limit = 50 } = {}) {
 
 export async function fetchBondsForBonder(farmIdHex, bonderPubHex) {
   const r = await fetch(
-    `${workerBase()}/farm/${farmIdHex}/bonds?bonder=${bonderPubHex}&network=${NET || 'signet'}`,
+    `${workerBase()}/farm/${farmIdHex}/bonds?bonder=${bonderPubHex}&network=${(NET && NET.name) || 'signet'}`,
   );
   if (!r.ok) return { bonds: [] };
   return await r.json();

@@ -65,12 +65,8 @@ function renderFarmCard(farm) {
   }
 
   return el('div', {
-    style: 'border:1px solid #ddd;border-radius:6px;padding:12px;background:#fafafa;',
+    style: 'border:1px solid var(--ink);padding:12px;background:var(--bg);',
   }, [
-    el('div', { style: 'display:flex;justify-content:space-between;font-family:monospace;font-size:11px;margin-bottom:6px;' }, [
-      el('span', {}, [`farm_id: ${fmtHexShort(farm.farm_id, 16)}`]),
-      el('span', { style: 'color:#666;' }, [phaseLabel]),
-    ]),
     el('div', { style: 'font-size:11px;line-height:1.6;' }, [
       el('div', {}, [`pool: ${fmtHexShort(farm.pool_id, 12)}`]),
       el('div', {}, [`reward asset: ${fmtHexShort(farm.reward_asset_id, 12)}`]),
@@ -78,7 +74,11 @@ function renderFarmCard(farm) {
       el('div', {}, [`treasury remaining: ${fmtBigInt(treasury)} / ${fmtBigInt(rewardTotal)} (paid: ${fmtBigInt(paid)})`]),
       el('div', {}, [`total bonded: ${fmtBigInt(totalBonded)}`]),
       el('div', {}, [`start → end: ${farm.start_height || '—'} → ${farm.end_height || '—'}`]),
-      el('div', { style: 'color:#888;font-size:10px;margin-top:4px;' }, [`refund unlock at block ${refundUnlock}`]),
+      el('div', { style: 'color:var(--ink-faint);font-size:10px;margin-top:4px;' }, [`refund unlock at block ${refundUnlock}`]),
+    ]),
+    el('div', { style: 'display:flex;justify-content:space-between;font-family:monospace;color:var(--ink-faint);font-size:10px;margin-top:6px;' }, [
+      el('span', {}, [`farm_id: ${fmtHexShort(farm.farm_id, 16)}`]),
+      el('span', { style: 'color:var(--ink-mid);' }, [phaseLabel]),
     ]),
   ]);
 }
@@ -89,24 +89,24 @@ function renderBondCard(bond, farm) {
   const claimable = BigInt(bond.claimable_now || '0');
   const entryAcc = BigInt(bond.entry_acc_per_share || '0');
   return el('div', {
-    style: 'border:1px solid #ddd;border-radius:6px;padding:10px;background:#f5fff5;font-size:11px;line-height:1.6;',
+    style: 'border:1px solid var(--ink);padding:10px;background:var(--bg);font-size:11px;line-height:1.6;',
   }, [
-    el('div', { style: 'font-family:monospace;font-size:11px;color:#666;margin-bottom:4px;' }, [
-      `bond_id: ${fmtHexShort(bond.bond_id, 16)}`,
-    ]),
-    el('div', {}, [`farm: ${fmtHexShort(bond.farm_id, 12)}`]),
-    el('div', {}, [`staked: ${fmtBigInt(bondAmount)} LP shares (bonded at block ${bond.bond_height})`]),
-    el('div', { style: 'font-weight:600;color:#0a6;' }, [
+    el('div', { style: claimable > 0n ? 'font-weight:600;color:var(--green);' : 'font-weight:600;color:var(--ink-mid);' }, [
       `claimable now: ${fmtBigInt(claimable)} reward-asset units`,
       pending > claimable
         ? ` (pending ${fmtBigInt(pending)}; capped at treasury)`
         : '',
     ]),
+    el('div', {}, [`staked: ${fmtBigInt(bondAmount)} LP shares (bonded at block ${bond.bond_height})`]),
+    el('div', {}, [`farm: ${fmtHexShort(bond.farm_id, 12)}`]),
     bond.last_harvest_height
-      ? el('div', { style: 'color:#888;font-size:10px;' }, [
+      ? el('div', { style: 'color:var(--ink-faint);font-size:10px;' }, [
           `last harvested at block ${bond.last_harvest_height}`,
         ])
       : null,
+    el('div', { style: 'font-family:monospace;color:var(--ink-faint);font-size:10px;margin-top:6px;' }, [
+      `bond_id: ${fmtHexShort(bond.bond_id, 16)}`,
+    ]),
   ]);
 }
 
