@@ -13732,8 +13732,26 @@ async function fetchTipHeight(env, network, timeoutMs = 2500) {
     apiText(env, '/blocks/tip/height', { timeoutMs }, network).then(s => parseInt(s.trim(), 10)),
     new Promise(resolve => setTimeout(() => resolve(null), timeoutMs)),
   ]).catch(() => null);
-  if (Number.isInteger(h)) _tipMemo[network] = { ts: Date.now(), height: h };
-  return h;
+  if (Number.isInteger(h)) {
+    _tipMemo[network] = { ts: Date.now(), height: h };
+    // Persist across isolates. The in-memory memo is per-isolate and usually
+    // cold, so a transient upstream flake otherwise returns null and flips
+    // confirmed pool leaves to 'unknown_depth' (dropping them from the dapp's
+    // pool view mid-withdraw). KV survives the isolate.
+    try { await env.REGISTRY_KV.put(`meta:tip:${network}`, JSON.stringify({ height: h, ts: Date.now() })); } catch {}
+    return h;
+  }
+  // Live fetch failed — fall back to the last persisted tip if recent. A
+  // slightly-stale tip only UNDER-estimates depth (the chain advances), so it
+  // can never mark an unconfirmed leaf 'included' — safe for the depth gate.
+  try {
+    const cached = await env.REGISTRY_KV.get(`meta:tip:${network}`, 'json');
+    if (cached && Number.isInteger(cached.height) && Date.now() - (cached.ts || 0) < 60 * 60 * 1000) {
+      _tipMemo[network] = { ts: Date.now(), height: cached.height };
+      return cached.height;
+    }
+  } catch {}
+  return null;
 }
 
 // Promote height-0 orphan T_PMINTs left behind by an older worker version
@@ -26233,10 +26251,7 @@ async function _routeFetch(req, env, ctx) {
         // annotation can be applied without doubling latency. Tolerate tip
         // failure — when null, _annotateLeaves uses lex-max deposited
         // height as a fallback (L1).
-        const tipP = Promise.race([
-          apiText(env, '/blocks/tip/height', {}, network).then(s => parseInt(s.trim(), 10)),
-          new Promise(resolve => setTimeout(() => resolve(null), 2500)),
-        ]).catch(() => null);
+        const tipP = fetchTipHeight(env, network);  // KV-cached + fallback (no transient null)
         const [leafPage, nullPage] = await Promise.all([
           _fetchListPage(poolLeafPrefix(network, aid, denom), undefined, PAGE_DEFAULT),
           _fetchListPage(poolNullifierPrefix(network, aid, denom), undefined, PAGE_DEFAULT),
