@@ -1,6 +1,11 @@
 name = "tacit-pin"
 main = "src/index.js"
 compatibility_date = "2024-12-01"
+# Explicit because declaring `routes` flips wrangler's default to false —
+# a deploy with routes present (even one that then fails to attach them)
+# silently drops the workers.dev binding, which is the dapp's API origin.
+# Keep true unless the API itself moves behind a zone route.
+workers_dev = true
 
 # Edge-compressed dapp bundle (handleDappBundle in src/index.js).
 # Uncomment to route /tacit.js through the worker, which serves the
@@ -19,6 +24,7 @@ compatibility_date = "2024-12-01"
 # `wrangler deploy` rejects the route with error 10083. The KV artifact
 # (dapp:tacit.js.br) and the handler are deployed and waiting; once the
 # zone exists here, uncommenting + `wrangler deploy` completes the flip.
+# When uncommenting, KEEP workers_dev = true above — see its comment.
 
 # UPLOAD_KV — per-IP rate limits for /pin uploads
 [[kv_namespaces]]
