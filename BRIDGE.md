@@ -13,7 +13,7 @@ tETH lets users deposit ETH (or any ERC-20) on Ethereum, mint composable tETH on
       | ETH/ERC-20 locked
       | leaf added to Poseidon tree
       |
-      |              T_BRIDGE_DEPOSIT (OP_RETURN)
+      |              T_BRIDGE_DEPOSIT (Taproot reveal)
       |  - - - - - - - - - - - - - - - - - ->  SP1 verifies Groth16,
       |                                         inserts leaf into pool
       |
@@ -21,7 +21,7 @@ tETH lets users deposit ETH (or any ERC-20) on Ethereum, mint composable tETH on
       |                                           transfer, trade,
       |                                           LP, farm, swap
       |
-      |              T_BRIDGE_BURN (OP_RETURN)
+      |              T_BRIDGE_BURN (Taproot reveal)
       |  < - - - - - - - - - - - - - - - - -   burn tETH on Tacit
       |
       | SP1 proof submitted (permissionless)
@@ -84,7 +84,7 @@ No single layer is sufficient alone. An attacker would need to break Bitcoin PoW
 
 Every dApp client independently verifies bridge deposit leaves before accepting them into the local pool tree:
 
-1. **Groth16 proof** — the proof in the OP_RETURN envelope is re-verified against the canonical VK (inlined, no IPFS dependency)
+1. **Groth16 proof** — the proof in the reveal-witness envelope is re-verified against the canonical VK (inlined, no IPFS dependency)
 2. **Ethereum deposit root** — the `ethRoot` in the envelope is checked against the mixer contract's `isKnownDepositRoot` via `eth_call` to public RPCs (publicnode, llamarpc, 1rpc, drpc — no API key required)
 
 Invalid proofs or fabricated roots are rejected before entering anyone's local state. Fake tETH cannot circulate in DeFi — it's caught at every layer.
@@ -130,7 +130,7 @@ Quick burn from holdings (for users who received tETH via transfer):
 Users can use the bridge purely for Ethereum privacy without interacting with Tacit:
 
 1. Deposit ETH from address A
-2. Mint tETH on Bitcoin (OP_RETURN, can be automated)
+2. Mint tETH on Bitcoin (Taproot reveal, can be automated)
 3. Immediately burn tETH, naming a fresh Ethereum address B as recipient
 4. Wait for SP1 proof
 5. Withdraw ETH to address B
@@ -172,9 +172,9 @@ The Poseidon commitment uses the 8-decimal Tacit denomination, not the native to
 
 ### Denomination pools
 
-The mixer supports fixed denomination pools. For ETH: 0.001 / 0.01 / 0.1 / 1 / 10 / 100 ETH (6 pools). Each denomination has its own Poseidon Merkle tree on both Ethereum and Bitcoin. A single SP1 guest processes all denominations for the asset, maintaining one tree per denomination, one shared nullifier set, and one shared UTXO set. Denomination is inside the Groth16 public inputs — cross-denomination proofs fail at the circuit level.
+The mixer supports fixed denomination pools. For ETH: 0.00001 / 0.0001 / 0.001 / 0.01 / 0.1 / 1 / 10 / 100 ETH (8 pools). Each denomination has its own Poseidon Merkle tree on both Ethereum and Bitcoin. A single SP1 guest processes all denominations for the asset, maintaining one tree per denomination, one shared nullifier set, and one shared UTXO set. Denomination is inside the Groth16 public inputs — cross-denomination proofs fail at the circuit level.
 
-`batchDeposit()` splits a single transaction into multiple denomination commitments. The dApp decomposes arbitrary amounts into denomination chunks automatically — a 2.731 ETH deposit becomes `2x1 + 7x0.1 + 3x0.01 + 1x0.001` in one transaction. Dust below 0.001 ETH stays in the user's wallet.
+`batchDeposit()` splits a single transaction into multiple denomination commitments. The dApp decomposes arbitrary amounts into denomination chunks automatically — a 2.731 ETH deposit becomes `2x1 + 7x0.1 + 3x0.01 + 1x0.001` in one transaction. Dust below 0.00001 ETH stays in the user's wallet.
 
 ### UTXO fungibility
 
@@ -203,13 +203,13 @@ This is the same circuit used for all Tacit privacy operations (transfers, burns
 |  TacitBridgeMixer   |     | BitcoinLightRelay |
 |  (one per asset)    |     | (shared, one)     |
 |                     |     |                   |
-|  pools[]:           |     | epoch targets     |
-|    0.001 ETH pool   |---->| cumulative work   |
-|    0.01  ETH pool   |     | heaviest-chain    |
-|    0.1   ETH pool   |     | tip tracking      |
-|    1     ETH pool   |     +-------------------+
-|    10    ETH pool   |
-|    100   ETH pool   |     +-------------------------+
+|  pools[] (8 denoms):|     | epoch targets     |
+|    0.00001 ETH      |---->| cumulative work   |
+|    0.0001 ETH       |     | heaviest-chain    |
+|    0.001 / 0.01 ETH |     | tip tracking      |
+|    0.1 / 1 ETH      |     +-------------------+
+|    10 / 100 ETH     |
+|    one tree each    |     +-------------------------+
 |                     |     | SP1PoolRootVerifier     |
 |  per pool:          |     | (one per ASSET)         |
 |    Poseidon tree    |     |                         |
@@ -227,7 +227,7 @@ The guest runs inside the zkVM and processes complete Bitcoin blocks for ALL den
 - Reads N denomination configs, per-denomination previous state (tree frontier + index), and shared state (nullifier set + UTXO set) as private witness
 - Verifies state commitment ties all trees/nullifiers/UTXOs to the previous proof's public values
 - For each block: verifies header PoW + chain linkage, reads ALL transactions, recomputes the block merkle root from all txids (Bitcoin's own completeness rule)
-- Scans every OP_RETURN for Tacit envelopes, routes each to the correct denomination tree by matching `env_denom` against the denomination list
+- Extracts each Tacit envelope from its Taproot script-path reveal (`vin[0]` witness item 1), routes each to the correct denomination tree by matching `env_denom` against the denomination list
 - Verifies bindHash for every envelope by recomputing from the full domain preimage — prevents envelope field substitution/front-running
 - Verifies the Groth16 proof inside each envelope using a cached prepared verifying key (ark-groth16 BN254), rejecting non-canonical field elements (>= BN254 modulus) in both public inputs and inserted leaves
 - Burns/exports/rotates must reference a pool root the guest has actually produced for that denomination (tracked via per-denomination `known_pool_roots`) — prevents fake-tree membership proofs
@@ -282,7 +282,7 @@ The Ethereum contract's `burnNullifiers` mapping provides a second layer of doub
 
 Comfortably handles tens of thousands of deposits per pool — comparable to Tornado Cash's largest pool (~30k lifetime deposits). The prover is nearly stateless: fetch blocks, pass sorted nullifier list, generate proof. No database, no persistent state.
 
-Each pool caps at 2^20 (~1M) leaves. Across 6 denominations that's ~6M total deposits per mixer deployment.
+Each pool caps at 2^20 (~1M) leaves. Across 8 denominations that's ~8M total deposits per mixer deployment.
 
 ### Scaling roadmap
 
@@ -312,7 +312,7 @@ For an ETH bridge: 1 relay + 1 verifier + 1 mixer + 1 Groth16 verifier = 4 contr
 
 The ETH ↔ tETH bridge is deployed and Etherscan-verified on Ethereum mainnet (chain ID 1), bridging mainnet Bitcoin. The contracts are immutable and permissionless — anyone can advance the relay or submit state proofs; funds are protected by the proofs, not by any privileged caller.
 
-**Status:** the contracts are live and Etherscan-verified; the in-dApp bridge flow is **not yet open to the public**. When it opens it will run as a capped pilot — 0.001 ETH per deposit, 10 ETH total backing — enforced dApp-side while the deposit base grows.
+**Status:** live and Etherscan-verified, with the in-dApp bridge flow open as a capped pilot — 0.001 ETH per deposit, 10 ETH total backing — enforced dApp-side while the deposit base grows.
 
 | Contract | Address |
 | --- | --- |
@@ -357,9 +357,9 @@ The mixer is intentionally immutable with no admin keys. Upgrading the SP1 progr
 
 Both the Solidity mixer and the SP1 guest process at most one burn envelope per Bitcoin transaction. If a user constructs a transaction with two burn envelopes, only the first is processed. This is enforced for consistency between on-chain extraction and off-chain proving.
 
-### Bitcoin OP_RETURN envelope size
+### Taproot envelope encoding
 
-Bridge envelopes (281-537 bytes) exceed historical default OP_RETURN limits. Bitcoin Core 30.0+ sets `datacarriersize` to 100,000 bytes by default, which accommodates bridge envelopes. The canonical encoding is a single OP_RETURN output with OP_PUSHDATA2 (0x4D) followed by the envelope payload. Both Solidity and SP1 parsers handle OP_PUSHDATA1 (0x4C) and OP_PUSHDATA2 (0x4D); OP_PUSHDATA4 (0x4E) is not supported (non-standard, never seen in practice).
+Bridge envelopes (281-537 bytes) far exceed the 80-byte standard OP_RETURN datacarrier limit, so each bridge operation rides in a **Taproot script-path reveal** instead: a commit tx funds a P2TR output that commits to the envelope as a tapleaf, and a reveal tx spends it, exposing the envelope in `vin[0]`'s witness item 1. The SP1 guest (`extract_taproot_envelope`) and the Solidity mixer (`_extractTaprootEnvelope`) read the same witness payload, so on-chain extraction and off-chain proving see byte-identical bytes. Each operation is therefore two Bitcoin transactions (commit + reveal); indexers scan witness data, not OP_RETURN outputs. This keeps the bridge on entirely standard, relay-safe transactions regardless of envelope size.
 
 ### Relay consensus subset
 
