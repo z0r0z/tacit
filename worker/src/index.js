@@ -12231,10 +12231,24 @@ async function handleMarket(env, network, cors, prehydratedAssetsBody = null, op
     // duplication cost ~615 KB out of a ~1.9 MB /market response
     // (~32%); dropping it cuts egress + cache-entry size across every
     // /market HIT without changing observable behaviour.
+    // Strip take-only fields from the aggregate. The dapp renders the book
+    // from these objects but never reads the settlement blobs off them — every
+    // take path re-fetches the full record from the per-order endpoint
+    // (/preauth-sales/:sale_id, fetchAxferFulfilment) before building the tx,
+    // and the per-asset/per-order endpoints below still carry the full set.
+    // On TAC these blobs are ~58 KB of the ~172 KB listings array (intent
+    // envelope_script_hex alone is 57% of each intent). Slimming them here
+    // shrinks every /market HIT + the edge/KV cache entry.
     const opens = openings.filter(l => !l.expired).map(l => ({ ...l, kind: 'opening' }));
     const ranges_ = ranges.filter(l => !l.expired).map(l => ({ ...l, kind: 'range' }));
-    const intents_ = intents.filter(i => !i.expired).map(i => ({ ...i, kind: 'intent' }));
-    const preauths_ = preauths.filter(p => !p.expired).map(p => ({ ...p, kind: 'preauth' }));
+    const intents_ = intents.filter(i => !i.expired).map(i => {
+      const { envelope_script_hex, control_block_hex, intent_sig, p2tr_spk_hex, ...rest } = i;
+      return { ...rest, kind: 'intent' };
+    });
+    const preauths_ = preauths.filter(p => !p.expired).map(p => {
+      const { seller_asset_spend_sig, auth_sig, seller_payout_script, ...rest } = p;
+      return { ...rest, kind: 'preauth' };
+    });
     return [...opens, ...ranges_, ...intents_, ...preauths_];
   }));
   return jsonResponse({
