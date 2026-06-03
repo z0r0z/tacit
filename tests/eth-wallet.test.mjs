@@ -128,6 +128,21 @@ reset();
   );
 }
 
+// EIP-7702 delegated EOA (MetaMask "smart account"): eth_getCode returns the
+// 0xef0100 ++ impl-address designator, but the account is still an EOA whose
+// personal_sign is its own deterministic ECDSA. Must ACCEPT, not misread as a
+// contract wallet (regression: 7702 mainnet accounts couldn't onboard).
+console.log('\nethWallet.login — EIP-7702 delegated EOA:');
+reset();
+{
+  const designator = '0xef0100' + '1234567890abcdef1234567890abcdef12345678';
+  globalThis.window.ethereum = makeProvider({ signingPriv: SIGNER_PRIV, code: designator });
+  const st = await ethWallet.login({ address: ADDR });
+  ok('accepts a 7702-delegated EOA', wallet.mode === 'eth' && st.address === ADDR);
+}
+
+console.log('\nethWallet.login — rejections (cont.):');
+
 // Provider signs with a different account than claimed → recovery mismatch.
 reset();
 {
