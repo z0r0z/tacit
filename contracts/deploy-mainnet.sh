@@ -108,6 +108,17 @@ if [ "$_VKEY_LC" != "$_PIN_LC" ]; then
 fi
 echo "  vkey pin: $PINNED_VKEY ✓"
 
+# Cross-check: GROTH16_VK_HASH env equals the pinned ceremony VK hash.
+PINNED_GVK=$(python3 -c "import json; print(json.load(open('$PREFLIGHT_DIR/sp1/elf-vkey-pin.json'))['groth16_vk_hash'])")
+_GVK_LC=$(printf '%s' "$GROTH16_VK_HASH" | tr '[:upper:]' '[:lower:]')
+_PGVK_LC=$(printf '%s' "$PINNED_GVK" | tr '[:upper:]' '[:lower:]')
+if [ "$_GVK_LC" != "$_PGVK_LC" ]; then
+  echo "REFUSING TO DEPLOY: GROTH16_VK_HASH env ($GROTH16_VK_HASH) != pinned ($PINNED_GVK)."
+  echo "The deployed verifier MUST use the ceremony VK hash or every proveStateTransition reverts InvalidVkHash."
+  exit 1
+fi
+echo "  groth16 vk pin: $PINNED_GVK ✓"
+
 # Fetch BTC mainnet anchor (tip - 6 for confirmation depth).
 echo ""
 echo "Step 1: Fetching BTC mainnet anchor (tip - 6)..."

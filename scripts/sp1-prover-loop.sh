@@ -52,8 +52,10 @@ DEPLOY_BLOCK="${DEPLOY_BLOCK:?Set DEPLOY_BLOCK (ETH deploy block, hex)}"
 FIRST_DEPOSIT_BLOCK="${FIRST_DEPOSIT_BLOCK:?Set FIRST_DEPOSIT_BLOCK (relay genesis height + 1)}"
 GENESIS_ANCHOR="${GENESIS_ANCHOR:-}"
 CONFIRMATIONS="${CONFIRMATIONS:-6}"
-# Tacit-unit (8-dec) denominations the guest tracks, comma-separated.
-DENOMINATIONS="${DENOMINATIONS:-000186a0,000f4240,00989680,05f5e100,3b9aca00,02540be400}"
+# Tacit-unit (8-dec) denominations the guest tracks, comma-separated. Must match
+# the deployed verifier's DENOMS_HASH exactly or every proof reverts DomainMismatch.
+# Default is the canonical 8 mainnet denoms (0.00001 .. 100 ETH); override per deploy.
+DENOMINATIONS="${DENOMINATIONS:-000003e8,00002710,000186a0,000f4240,00989680,05f5e100,3b9aca00,02540be400}"
 POOL_IDS="${POOL_IDS:-}"
 
 ETH_PK="${ETH_PK:?Set ETH_PK (Ethereum private key)}"

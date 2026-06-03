@@ -22,6 +22,14 @@ contract DeployTacitBridge is Script {
         uint256 genesisTipHeight = vm.envUint("BTC_TIP_HEIGHT");
         uint256 genesisTipWork = vm.envUint("BTC_TIP_WORK");
 
+        // Fail closed even if the bash wrapper is bypassed: this is a mainnet
+        // deploy, and the VKs must equal the committed ELF/ceremony pin or every
+        // proveStateTransition reverts (InvalidVkHash / SP1 verify) and deposits brick.
+        require(block.chainid == 1, "Deploy: mainnet only (chainid != 1)");
+        string memory pin = vm.readFile("sp1/elf-vkey-pin.json");
+        require(programVKey == vm.parseJsonBytes32(pin, ".program_vkey"), "SP1_PROGRAM_VKEY != pin");
+        require(groth16VkHash == vm.parseJsonBytes32(pin, ".groth16_vk_hash"), "GROTH16_VK_HASH != pin");
+
         // Finer denoms = whole-note fractional sends without CXFER.
         // Smallest = 0.00001 ETH (10^13 wei = 1000 tacit-units) — fits well
         // above the 10^10-wei UNIT_SCALE floor. Max array bound is 16 per
