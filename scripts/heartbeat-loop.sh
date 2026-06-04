@@ -15,13 +15,19 @@ BTC_API="${BTC_API:-https://mempool.space/api}"
 : "${PROVER_GAS_ADDR:?set PROVER_GAS_ADDR}"
 : "${PROVER_HEARTBEAT_TOKEN:?set PROVER_HEARTBEAT_TOKEN}"
 
+# Resolve cast explicitly — the loop may be (re)launched from a non-login
+# context (setsid, run-loop respawn) where foundry's bin is not on PATH.
+CAST="${CAST:-$(command -v cast || true)}"
+[ -x "$CAST" ] || CAST="$HOME/.foundry/bin/cast"
+
 # Run a cast read against each RPC until one returns a plain integer; empty on
 # total failure. A single throttled RPC must degrade a field to "unknown",
 # never to a fake 0 — a 0 gas reading trips the low-gas alarm.
 _cast_int() {
   local rpc out
+  [ -x "$CAST" ] || return 1
   for rpc in $ETH_RPCS; do
-    out=$("$@" --rpc-url "$rpc" 2>/dev/null | awk '{print $1}')
+    out=$("$CAST" "$@" --rpc-url "$rpc" 2>/dev/null | awk '{print $1}')
     case "$out" in ''|*[!0-9]*) continue ;; esac
     echo "$out"; return 0
   done
@@ -29,7 +35,7 @@ _cast_int() {
 }
 
 while true; do
-  gas=$(_cast_int cast balance "$PROVER_GAS_ADDR" || echo "")
+  gas=$(_cast_int balance "$PROVER_GAS_ADDR" || echo "")
   alive=false
   pgrep -f sp1-prover-loop.sh >/dev/null 2>&1 && alive=true
   # Progress fields: how far proof coverage trails the chain, not just box
@@ -39,7 +45,7 @@ while true; do
   # field null rather than recording a bogus 0.
   proven=$(cat "$STATE_DIR/last_proven_block.txt" 2>/dev/null || echo "")
   case "$proven" in ''|*[!0-9]*) proven= ;; esac
-  relay=$(_cast_int cast call "0x$RELAY_ADDRESS" 'tipHeight()(uint256)' || echo "")
+  relay=$(_cast_int call "0x$RELAY_ADDRESS" 'tipHeight()(uint256)' || echo "")
   btctip=$(curl -sf -m 10 "$BTC_API/blocks/tip/height" 2>/dev/null)
   case "$btctip" in ''|*[!0-9]*) btctip= ;; esac
   extra=""
