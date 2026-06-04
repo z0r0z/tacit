@@ -6811,7 +6811,11 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms #farms-refresh-btn {
 .notif-row.kind-error   { border-left: 3px solid var(--red); }
 .notif-row.kind-warn    { border-left: 3px solid var(--amber); }
 .notif-row .notif-time  { font-family: var(--mono); font-size: 10px; color: var(--ink-mid); white-space: nowrap; }
-.notif-row .notif-msg   { color: var(--ink); line-height: 1.4; }
+/* min-width:0 lets the 1fr grid column shrink below its content; anywhere-
+   wrap breaks 64-char txids mid-token. Without both, one unbroken hash
+   widens the row past the modal and drags in a horizontal scrollbar that
+   clips the message tail. */
+.notif-row .notif-msg   { color: var(--ink); line-height: 1.4; min-width: 0; overflow-wrap: anywhere; }
 .notif-empty { padding: 24px 12px; text-align: center; color: var(--ink-mid); font-size: 11px; font-style: italic; font-family: var(--serif); border: 1px dashed var(--ink-faint); }
 
 /* FAQ modal — same backdrop pattern as welcome/pass modals, with a
