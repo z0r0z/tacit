@@ -21,6 +21,7 @@ const DAPP_DIR   = join(ROOT, 'dapp');                      // production output
 const VENDOR_DIR = join(DAPP_DIR, 'vendor');
 const BUNDLE_OUT = join(VENDOR_DIR, 'tacit-deps.min.js');
 const MIXER_OUT  = join(VENDOR_DIR, 'tacit-mixer.min.js'); // separate bundle, lazy-loaded
+const SATSCONNECT_OUT = join(VENDOR_DIR, 'tacit-satsconnect.min.js'); // separate bundle, lazy-loaded
 const HTML       = join(DAPP_DIR, 'index.html');
 const APP_JS     = join(DAPP_DIR, 'tacit.js');               // app code (extracted from inline)
 const OUT_DIR    = join(HERE, 'out');                        // build artifacts (gitignored)
@@ -74,6 +75,29 @@ async function bundleMixer() {
   return readFileSync(MIXER_OUT);
 }
 
+// Sats-Connect bundle (Xverse / Leather / OKX). Split like the mixer so
+// burner/passkey sessions — which never connect an external BTC wallet —
+// don't pay its cost on the eager critical path. tacit.js lazy-imports it
+// via ensureSatsConnect() on first external-wallet use.
+async function bundleSatsConnect() {
+  if (verifyOnly) {
+    if (!existsSync(SATSCONNECT_OUT)) throw new Error(`bundle missing: ${SATSCONNECT_OUT}`);
+    return readFileSync(SATSCONNECT_OUT);
+  }
+  await build({
+    entryPoints: [join(HERE, 'entry-satsconnect.mjs')],
+    bundle: true,
+    format: 'esm',
+    target: 'es2020',
+    minify: true,
+    legalComments: 'inline',
+    outfile: SATSCONNECT_OUT,
+    logLevel: 'info',
+    platform: 'browser',
+  });
+  return readFileSync(SATSCONNECT_OUT);
+}
+
 const sha384b64 = buf => 'sha384-' + createHash('sha384').update(buf).digest('base64');
 
 // Rewrite the `?cb=<token>` cache-bust handle on tacit.js URLs in
@@ -104,6 +128,11 @@ async function main() {
   const mixerBundle = await bundleMixer();
   console.log(`  ${MIXER_OUT}`);
   console.log(`  ${mixerBundle.length.toLocaleString()} bytes · ${sha384b64(mixerBundle)}`);
+
+  console.log(verifyOnly ? '• Reading existing sats-connect bundle...' : '• Bundling sats-connect...');
+  const satsConnectBundle = await bundleSatsConnect();
+  console.log(`  ${SATSCONNECT_OUT}`);
+  console.log(`  ${satsConnectBundle.length.toLocaleString()} bytes · ${sha384b64(satsConnectBundle)}`);
 
   if (!existsSync(HTML)) throw new Error(`source not found: ${HTML}`);
   if (!existsSync(APP_JS)) throw new Error(`source not found: ${APP_JS}`);
@@ -150,10 +179,11 @@ async function main() {
   console.log('\nDone. Pin /Users/z/tacit/dapp/ to IPFS:');
   console.log('  ipfs add -r /Users/z/tacit/dapp');
   console.log('\nIntegrity hashes (publish in release notes):');
-  console.log(`  vendor/tacit-deps.min.js   ${sha384b64(bundle)}`);
-  console.log(`  vendor/tacit-mixer.min.js  ${sha384b64(mixerBundle)}`);
-  console.log(`  tacit.js                   ${sha384b64(appJs)}`);
-  console.log(`  index.html                 ${sha384b64(html)}`);
+  console.log(`  vendor/tacit-deps.min.js        ${sha384b64(bundle)}`);
+  console.log(`  vendor/tacit-mixer.min.js       ${sha384b64(mixerBundle)}`);
+  console.log(`  vendor/tacit-satsconnect.min.js ${sha384b64(satsConnectBundle)}`);
+  console.log(`  tacit.js                        ${sha384b64(appJs)}`);
+  console.log(`  index.html                      ${sha384b64(html)}`);
   if (brBytes && cb) {
     console.log('\nEdge-compressed copy (serve via the worker /tacit.js route):');
     console.log(`  cd ${join(ROOT, 'worker')} && npx wrangler kv key put "dapp:tacit.js.br" --path ${BR_OUT} --binding REGISTRY_KV --remote --metadata '{"cb":"${cb.token}"}'`);

@@ -13,13 +13,10 @@ export { hmac } from '@noble/hashes/hmac';
 export { hexToBytes, bytesToHex, concatBytes } from '@noble/hashes/utils';
 export { bech32, base58, base32 } from '@scure/base';
 
-// Sats-Connect (Xverse / Leather / OKX provider abstraction). Vendored here so
-// that no JS in the wallet origin loads from a third-party CDN at runtime —
-// any imported module shares the JS realm with `wallet.priv`, so CDN fetches
-// would expand the wallet's TCB to whoever serves them. The dApp only uses
-// `default.request('getAccounts'|'sendTransfer', …)` so the rest of the
-// surface is unused; tree-shaking trims what it can.
-export { default as satsConnect } from 'sats-connect';
+// Sats-Connect moved to its own lazily-imported bundle — see
+// ./entry-satsconnect.mjs. Most sessions (burner/passkey wallets) never
+// connect an external BTC wallet, so it doesn't belong on the eager
+// critical path.
 
 // Poseidon hash over BN254 — used by mixer-pool leaf commitments (poseidon3),
 // nullifier hash (poseidon1), and merkle-tree node hash (poseidon2). MUST
