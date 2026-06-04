@@ -889,21 +889,35 @@ See `build/README.md` for details.
 
 ## Using the dApp
 
-1. **Sign in / set up a wallet.** Three paths, pick whichever fits:
-   - **Connect an external wallet** (Xverse / UniSat / Leather) — tacit derives
-     a per-wallet identity stored in this browser and binds it to that wallet's
-     address. Reconnecting from this browser restores it.
+1. **Sign in / set up a wallet.** Pick whichever fits:
+   - **Connect an Ethereum wallet** (MetaMask / Rabby / Rainbow / Coinbase) —
+     tacit derives its identity from one `personal_sign` signature over a
+     fixed message. RFC 6979 makes the signature deterministic, so the same
+     ETH account re-derives the same tacit wallet on any device: recovery is
+     just reconnecting and signing again — no seed, no passphrase, no stored
+     secret. See `ops/DESIGN-eth-wallet-identity.md` for the derivation
+     chain, security guards, and test coverage.
+   - **Use a passkey** — the WebAuthn PRF extension derives the key from your
+     platform authenticator (Face ID / fingerprint / security key); the same
+     passkey reproduces the same wallet on any device it syncs to.
+   - **Connect a Bitcoin wallet** (Xverse / UniSat / Leather) — wallets that
+     prove deterministic message signing at enrollment derive a recoverable
+     identity the same way; wallets that sign non-deterministically connect
+     as funding-only with a local tacit key.
    - **Import a privkey** — paste the 64-hex from any source.
    - **Auto-generated** — the dApp creates a key on first load (handy for
      signet demos with the faucet).
 
-   Whichever path you pick, the in-page privkey is **encrypted at rest in
-   localStorage** — AES-GCM with a passphrase-derived key (PBKDF2-SHA256,
-   600k iterations per OWASP 2023). On every load the dApp prompts for the
-   passphrase to unlock. Forgetting the passphrase = losing the wallet, so
-   **export the privkey separately** via Wallet → Export key — that's the
-   real recovery path. Mainnet operations gate every value-creating action
-   behind a "have you exported the key?" acknowledgement.
+   On the local-key paths (import / auto-generated / funding-only), the
+   in-page privkey is **encrypted at rest in localStorage** — AES-GCM with a
+   passphrase-derived key (PBKDF2-SHA256, 600k iterations per OWASP 2023),
+   prompted to unlock on each load. Forgetting the passphrase = losing the
+   wallet, so **export the privkey separately** via Wallet → Export key —
+   that's the real recovery path, and mainnet gates every value-creating
+   action behind a "have you exported the key?" acknowledgement. The
+   signature-derived paths (Ethereum wallet, passkey, deterministic Bitcoin
+   wallet) store no secret at all: the key is re-derived each session and
+   recovery is reconnecting the same signer.
 2. **Get sats.** On signet, click ⚡ Demo drip — single round trip, no
    captcha. (If the faucet is empty, the Manual faucet button opens public
    signet faucets.) On mainnet, click **Top up tacit** in the connect panel
@@ -1046,7 +1060,7 @@ reappear from chain data alone.
 | The dApp source (`dapp/index.html` + `dapp/tacit.js`) you loaded | Implementing the validation rules correctly                                            | Re-host, audit; pin by IPFS CID — the runtime KAT in `runStartupKAT()` is independent defense |
 | `dapp/vendor/tacit-deps.min.js` (vendored) | Crypto code matching what was published                                                | Bundle is pinned alongside `dapp/index.html` and `dapp/tacit.js` under one IPFS CID; rebuild and re-pin if upstream npm packages change |
 | The asset's etcher                        | *Confidential-supply assets only:* the supply they announced. *(Mintable assets:)* their use of the mint_authority key. | The dApp publishes `(supply, blinding)` to IPFS-embedded metadata by default; for attested assets supply is cryptographically verifiable from chain + IPFS alone. The "centralized-stablecoin" trust model only applies when the issuer explicitly opts out of attestation. Mintable assets retain mint-key trust regardless. |
-| The in-page tacit privkey                 | Signing every tacit op (P2WPKH spend, taproot script-path, kernel sig, mint authority) — whichever path put a key in the page (auto, imported, or locally bound to an external wallet address) | **AES-GCM encrypted at rest** with a passphrase-derived key (PBKDF2-SHA256, 600k iterations); unlocked per session. Defends against localStorage exfiltration (malicious extensions, stolen unlocked devices). Export the raw privkey separately via Wallet → Export key — that's the recovery path if the passphrase is lost. |
+| The in-page tacit privkey                 | Signing every tacit op (P2WPKH spend, taproot script-path, kernel sig, mint authority) — whichever path put a key in the page (auto, imported, or locally bound to an external wallet address) | **AES-GCM encrypted at rest** with a passphrase-derived key (PBKDF2-SHA256, 600k iterations); unlocked per session. Defends against localStorage exfiltration (malicious extensions, stolen unlocked devices). Export the raw privkey separately via Wallet → Export key — that's the recovery path if the passphrase is lost. Signature-derived modes (Ethereum wallet / passkey / deterministic Bitcoin wallet) persist no key at all — re-derived from the signer each session (`ops/DESIGN-eth-wallet-identity.md`). |
 
 The Worker is a **convenience cache**, not a trust target. Setting
 `WORKER_BASE = ''` disables it; the protocol still works (no auto-faucet,
@@ -1089,13 +1103,15 @@ deposit corresponds to which withdrawal. Phase 2 trusted setup finalized
 - **Recursive validation is O(chain depth) on cold cache.** Memoized within
   a session. A persistent validator cache is a production add for deep
   chains.
-- **localStorage is the wallet.** Whichever path placed the privkey in the
-  page (auto, imported, or locally bound to an external wallet address),
-  `localStorage` is what persists it. Mainnet UX gates every value-creating
-  op behind an explicit key-export acknowledgement; hardware-wallet
-  integration for the protocol's signing paths (kernel sig, taproot
-  script-path, HMAC-blinding) is the proper long-term mitigation but not
-  yet shipped.
+- **localStorage is the wallet — on local-key paths.** Where a path placed
+  the privkey in the page (auto, imported, or locally bound to an external
+  wallet address), `localStorage` is what persists it. Mainnet UX gates
+  every value-creating op behind an explicit key-export acknowledgement;
+  hardware-wallet integration for the protocol's signing paths (kernel sig,
+  taproot script-path, HMAC-blinding) is the proper long-term mitigation but
+  not yet shipped. The signature-derived modes (Ethereum wallet, passkey,
+  deterministic Bitcoin wallet) sidestep this: nothing secret is persisted,
+  and the signer re-derives the key each session.
 - **Per-network wallet identities.** Signet and mainnet use independent
   localStorage keys (`tacit-wallet-v1:signet`, `tacit-wallet-v1:mainnet`,
   plus `:by:<extAddr>` variants when bound to a connected wallet). A
