@@ -624,7 +624,9 @@ async function handleProverHeartbeat(req, env, cors) {
   const rec = {
     ts: Date.now(),
     network: String(body.network || 'mainnet'),
-    gas_wei: typeof body.gas_wei === 'string' ? body.gas_wei : String(body.gas_wei || '0'),
+    // null = the box couldn't read the balance this beat (RPC throttled) —
+    // distinct from a real "0", which trips the low-gas alarm.
+    gas_wei: (typeof body.gas_wei === 'string' && /^\d+$/.test(body.gas_wei)) ? body.gas_wei : null,
     prover_alive: body.prover_alive === true || body.prover_alive === 'true',
     note: typeof body.note === 'string' ? body.note.slice(0, 200) : '',
   };
@@ -648,8 +650,9 @@ async function handleProverHealth(env, cors) {
   try { hb = JSON.parse(raw); } catch { return jsonResponse({ status: 'unknown', healthy: false, reasons: ['corrupt heartbeat record'] }, 503, hdr); }
   const age_ms = Date.now() - (hb.ts || 0);
   const stale = age_ms > PROVER_HB_STALE_MS;
-  let gas; try { gas = BigInt(hb.gas_wei || '0'); } catch { gas = 0n; }
-  const low_gas = gas < PROVER_HB_MIN_GAS_WEI;
+  let gas = null;
+  if (typeof hb.gas_wei === 'string' && /^\d+$/.test(hb.gas_wei)) { try { gas = BigInt(hb.gas_wei); } catch { gas = null; } }
+  const low_gas = gas !== null && gas < PROVER_HB_MIN_GAS_WEI;
   const dead = hb.prover_alive === false;
   const healthy = !stale && !low_gas && !dead;
   const reasons = [];
@@ -661,7 +664,7 @@ async function handleProverHealth(env, cors) {
     status, healthy,
     age_seconds: Math.round(age_ms / 1000),
     last_heartbeat_ts: hb.ts || null,
-    gas_wei: hb.gas_wei || '0',
+    gas_wei: gas !== null ? hb.gas_wei : null,
     prover_alive: hb.prover_alive !== false,
     network: hb.network || 'mainnet',
     note: hb.note || '',
