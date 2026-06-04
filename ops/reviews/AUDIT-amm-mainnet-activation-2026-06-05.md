@@ -22,11 +22,12 @@ Everything else is medium-or-below, and the placeholder-proof launch trap (GATE-
 
 ## Resolution status (updated 2026-06-05)
 
-**Resolved in this pass (dapp, uncommitted at review time):**
+**Resolved in this pass (dapp + worker, uncommitted at review time):**
 - **GATE-1** — provers re-keyed from the per-network unlock to ceremony finality (`_isAmmCeremonyFinalized()`), so pre-activation broadcasts can no longer embed placeholder proofs that would permanently fail `validateOutpoint` after the network's gate opens. Gate itself restructured into `AMM_DEPLOYMENTS` (`pools` / `mixerPoolOps` per network) so mainnet pool activation no longer drags the cBTC.tac / slot-ops / farms surfaces along.
+- **SWAP-1** — the dapp holdings validator now gates T_SWAP_VAR / T_SWAP_ROUTE receipt + change credit on the worker's canonical accepted-swap set, mirroring the T_PMINT / T_DCLAIM posture. Worker records accepted swap txids (`ammSwapAcceptedPut`, written only after the full 13-gate pass advances pool reserves) and exposes `GET /amm/swap-accepted`; the dapp `_fetchSwapAccepted` gate refuses credit when the worker is online and the swap isn't in the set (tagged `fetch-failed` so a user's own not-yet-indexed swap shows as pending, not inflation), and falls back to optimistic credit offline. Reserve-freshness is irreducibly global, so a forged swap (valid bulletproof, fabricated R_pre) is caught by absence from the worker set rather than by local re-derivation. Both credit paths (incoming receipt via ancestry walk; the wallet's own recovered receipts at the scanHoldings `validateOutpoint` call) flow through the gate. **Note:** offline still credits optimistically — mainnet must run against a live worker; the residual offline window is the same one T_PMINT / T_DCLAIM accept.
 
 **Open — blockers before mainnet pool value:**
-- **SWAP-1** (dapp receipt validator), **POOL-1** (depth-3 gate), **POOL-2** (vk_cid pin).
+- **POOL-1** (depth-3 gate), **POOL-2** (vk_cid pin).
 
 **Open — should ship with or shortly after the blockers:**
 - **POOL-3 / SWAP-2** (scan-concurrency lost-updates), **UX-1** (pool-form decimals), **REC-1** (worker-independent canonical-pool recovery fallback), **SIG-1** (network byte in AMM signed messages), **VK-1** (VK↔r1cs CI assert).
