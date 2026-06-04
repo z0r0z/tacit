@@ -44,6 +44,9 @@ The mainnet pilot is live (capped: 0.001 ETH/deposit, 10 ETH total backing). Dis
 
 **Accepted + documented:** **LOCK-1** — a deep (>`FINALITY_WINDOW`=6) Bitcoin reorg is the accepted cost of light-client finality (never observed on mainnet; deepest ever was 4 blocks, 2013). Recovery is a full-suite redeploy.
 
+**Post-audit finding (2026-06-05):**
+- **LOCK-4 — Burn/deposit interleave across a proof-cycle boundary self-locks the burn.** The guest seeds `known_pool_roots` on each non-genesis cycle with only the resumed root (`main.rs`, non-genesis branch), growing it with intra-cycle appends. A burn binds the pool root the dapp observed at build time; if a third-party deposit to the same pool confirms in a block strictly before the burn's block, the prover's confirmation-gated scan proves the deposit's block in an earlier cycle than the burn's, after which the burn's bound root is no longer seeded and the claim is rejected (note spent on the Bitcoin side, no claim registered on Ethereum). Exposure is roughly one block of interleave per burn and requires concurrent activity in the same pool — not reachable at pilot cadence, material under load. Same mechanism applies to rotate (0x62) and export (0x63). **Mitigation shipped (dapp):** the pre-burn gate defers while the worker reports `pending_leaf_count > 0` for the pool, folding into the existing sync-wait retry ladder. **Fix (next ELF):** persist a K-deep per-pool root window across cycles in the committed state and seed `known_pool_roots` from it — this also makes the proven-root equality gate relaxable to prefix membership, so withdrawals of already-proven leaves stop waiting on unrelated pending deposits. Until then, binding burns to any root other than the one the processing cycle seeds (e.g. an older proven root) widens the lock window and must not be implemented client-side.
+
 ---
 
 ## 2. Trust model & what you'd have to break

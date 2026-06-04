@@ -12,6 +12,24 @@
 > non-blocking — they are refinement opportunities, not consensus
 > blockers.
 >
+> **Revised 2026-06-05 — outcome-taxonomy settlement semantics.**
+> The validator algorithm moves from limit-order-against-declared-state
+> (strict `R_A_pre`/`R_B_pre` equality + exact `delta_out` recompute,
+> any miss ⇒ envelope skipped ⇒ trader input consumed without credit)
+> to **market-order-within-floor + pass-through**: the curve is
+> evaluated at the pool's actual running reserves, `min_out` is the
+> trader's binding price consent, and any non-executable envelope
+> that still authenticates refunds the trader's input at the receipt
+> slot instead of burning it. `R_A_pre` / `R_B_pre` / `delta_out`
+> demote to advisory quote context; the wire format is unchanged.
+> Activation is height-gated per network (`SWAP_VAR_OUTCOME_ACTIVATION`);
+> envelopes confirmed below the activation height validate under the
+> superseded strict algorithm (preserved in git history at this file's
+> pre-revision state). Rationale: under strict semantics any two
+> concurrent same-pool swaps in one inter-block window burn the
+> later one — fatal for multi-trader pools; see "Concurrency and the
+> burn race" under Motivation.
+>
 > Round-1 self-review caught + fixed: cross-asset kernel-sig closure
 > bug, identity-point sentinel encoding, freshness gate against
 > running state vs. block-1 snapshot, MINIMUM_LIQUIDITY unit
@@ -82,7 +100,43 @@ the tacit-unique receipt-recovery mechanism. It coexists with
 `T_SWAP_BATCH` as an opt-in second path — see AMM.md §"Two AMM
 trader paths" for the design rationale.
 
----
+### Concurrency and the burn race (2026-06-05 revision rationale)
+
+The original validator bound each swap to the trader's declared
+pre-state: strict `R_A_pre == pool.reserve_A ∧ R_B_pre ==
+pool.reserve_B` equality plus an exact `delta_out` recompute at
+those declared reserves. Any miss caused the indexer to skip the
+envelope — but the Bitcoin tx had already confirmed and consumed
+`vin[1]`, so a skipped swap destroyed the trader's input. With one
+trader per pool per block this never fires; with two concurrent
+traders it fires every time: both build against the same confirmed
+reserves, both txs confirm, the earlier-in-block one applies, the
+later one's declared pre-state no longer matches and its input
+burns. The race window is the full build-to-confirmation latency
+(one block or more), so any organic multi-trader pool would burn
+funds at a rate proportional to its own traffic.
+
+Sequencing layers (advisory build-locks, parent-child tx ordering)
+can shrink the race but not close it against non-cooperating
+broadcasters, and they put liveness machinery in the settlement
+hot path. The revision closes it semantically instead:
+
+- **Execution is market-order-within-floor.** The curve is
+  evaluated at the pool's actual running reserves at the
+  envelope's canonical position `(block, tx_index)`. The trader's
+  signed `min_out` is the price consent; `expiry_height` bounds
+  how long the consent stands. This is the standard AMM contract
+  (execute at current state within slippage floor) — and it is a
+  strictly stronger anti-stale-quote defense than the equality
+  gate it replaces, because `delta_out` is now indexer-derived:
+  there is no declared value left for a stale or malicious quote
+  to smuggle in.
+- **Non-executable ⇒ pass-through, never burn.** An envelope that
+  authenticates (signatures, commitment bindings, range proof) but
+  cannot execute (floor miss, expiry, unknown pool, arithmetic
+  bounds) credits the trader's input back at the receipt slot.
+  Concurrency becomes price competition within each trader's
+  floor; the worst outcome of any interleaving is a refund.
 
 ## §5.16.3 `T_SWAP_VAR` (`0x32`) — per-trade variable-amount AMM swap
 
@@ -99,14 +153,22 @@ opcode                     1 B  = 0x32
 pool_id                   32 B  (= SHA256("tacit-amm-pool-v1" || asset_A || asset_B),
                                   see AMM.md §"Pool state")
 direction                  1 B  (0 = A→B, 1 = B→A)
-R_A_pre                    8 B  u64 LE — trader's view of asset-A reserve at intent time
+R_A_pre                    8 B  u64 LE — trader's view of asset-A reserve at intent time.
+                                          ADVISORY since the 2026-06-05 revision: quote
+                                          context for tooling/recovery, not validated.
 R_B_pre                    8 B  u64 LE — trader's view of asset-B reserve at intent time
+                                          (advisory, as above)
 delta_in                   8 B  u64 LE — chosen fill amount Δ (cleartext)
 delta_in_min               8 B  u64 LE — Y, lower bound of trader's range
 delta_in_max               8 B  u64 LE — X, upper bound of trader's range
-delta_out                  8 B  u64 LE — settler's computed Δ_out (cleartext;
-                                          indexer recomputes and verifies)
-min_out                    8 B  u64 LE — slippage floor; indexer verifies delta_out ≥ min_out
+delta_out                  8 B  u64 LE — trader's quoted Δ_out at intent time (cleartext).
+                                          ADVISORY since the 2026-06-05 revision: the
+                                          credited amount is the indexer's curve
+                                          evaluation at actual running reserves
+                                          (delta_out_actual), not this field.
+min_out                    8 B  u64 LE — slippage floor; the trader's binding price
+                                          consent. Indexer executes iff
+                                          delta_out_actual ≥ max(1, min_out).
 tip_amount                 8 B  u64 LE — settler tip (in tip_asset, paid from trader's input)
 tip_asset                  1 B  (0 = asset_A, 1 = asset_B — must equal direction's input asset)
 expiry_height              4 B  u32 LE — Bitcoin block height after which tx is invalid
@@ -123,23 +185,35 @@ C_change_secp             33 B  trader's change commitment, freshly blinded:
                                   (CXFER rerandomisation discipline), so it is NOT
                                   derivable by the indexer from C_in_secp alone —
                                   the trader publishes it explicitly.
-C_receipt_secp            33 B  trader's receipt commitment (asset-B):
+C_receipt_secp            33 B  trader's QUOTED receipt commitment:
                                   delta_out · H_secp + r_receipt · G_secp
+                                  (the quote the trader signed; bulletproof slot-1
+                                  subject). ADVISORY at credit time since the
+                                  2026-06-05 revision: the receipt UTXO's canonical
+                                  commitment is validator-DERIVED from the outcome —
+                                  delta_out_actual · H_secp + r_receipt · G_secp on
+                                  execution, (delta_in + tip_amount) · H_secp +
+                                  r_receipt · G_secp on pass-through. C_receipt_secp
+                                  equals the canonical commitment exactly when the
+                                  fill executes at the quoted reserves.
                                   r_receipt is HMAC-derived from trader_privkey
                                   for on-chain recovery (see "Receipt-address blinding").
 r_receipt                 32 B  scalar mod n_secp, big-endian. Published so the
-                                  indexer can verify C_receipt_secp opens to exactly
-                                  delta_out: indexer recomputes
-                                  delta_out · H_secp + r_receipt · G_secp and requires
-                                  equality with C_receipt_secp.
-                                  **Load-bearing: without this binding, an inflation
-                                  attack opens** — trader could put any value in
-                                  C_receipt_secp, spend it later as that value, while
-                                  the pool only paid out delta_out worth of asset-B.
+                                  indexer can DERIVE the canonical receipt commitment
+                                  from the validated outcome amount (see above).
+                                  **Load-bearing: this derivation is the inflation
+                                  defense** — the receipt's committed value is
+                                  computed by the validator from amounts it itself
+                                  established (curve output, or the kernel-bound
+                                  refund total); no trader-declared receipt value is
+                                  trusted anywhere. Strictly stronger than the
+                                  pre-revision equality check against a declared
+                                  delta_out.
                                   Publishing r_receipt does not compromise wallet
-                                  privacy: delta_out is already cleartext in this
-                                  envelope, so the commit's openability adds nothing
-                                  to chain observers; HMAC pseudo-randomness preserves
+                                  privacy: the outcome amount is already public
+                                  (cleartext delta_in + public pool replay), so the
+                                  commit's openability adds nothing to chain
+                                  observers; HMAC pseudo-randomness preserves
                                   the secrecy of other r_receipt values (different
                                   pool_id / asset_input_outpoint).
 range_proof              ~700 B  aggregated bulletproof, m=2, over
@@ -187,9 +261,12 @@ vout[0]   OP_RETURN(envelope_hash) — 0 sat, 32-byte data,
           envelope_hash = SHA256(payload).
 vout[1]   Trader receipt UTXO — dust (e.g. 546 sat) P2WPKH paying the
           trader's pre-declared receive_scriptPubKey (derived per
-          "Receipt-address blinding" below). Carries the receipt's
-          Pedersen commitment C_receipt_secp; asset is the OTHER asset
-          (asset_B if direction == 0, asset_A if direction == 1).
+          "Receipt-address blinding" below). Carries the CANONICAL
+          receipt commitment (validator-derived; see wire-format
+          notes). Asset + amount are outcome-dependent: on execution,
+          the OTHER asset (asset_B if direction == 0, asset_A if
+          direction == 1) at delta_out_actual; on pass-through, the
+          INPUT asset refunded at (delta_in + tip_amount).
 vout[2]   Trader change UTXO — dust P2WPKH paying the trader's change
           address. Carries C_change_secp. Present iff the trader's
           input commitment opens to a value strictly greater than
@@ -412,94 +489,40 @@ no off-chain state required, full UTXO restoration from seed.
 
 ### Indexer validation algorithm
 
+Every confirmed `T_SWAP_VAR` resolves to exactly one of three
+outcomes:
+
+| Outcome | Trigger | Pool state | vout[1] receipt credit |
+|---|---|---|---|
+| **INVALID** | any Stage-A (authentication) failure | unchanged | none — the input's value chain ends |
+| **EXECUTE** | Stage A passes, Stage B (executability) passes | advances | output asset, `delta_out_actual`, derived commitment |
+| **PASS-THROUGH** | Stage A passes, Stage B fails | unchanged | input asset refund, `delta_in + tip_amount`, derived commitment |
+
+Stage-A gates are all over data the builder controls at sign time
+(signatures, bindings, proof) — INVALID is unreachable for a
+correctly-implemented builder and exists only to reject forgeries
+and malleation. Every condition that depends on state the builder
+cannot control at sign time (pool reserves at confirmation, expiry
+vs. inclusion height, registration status) lives in Stage B, where
+failure refunds instead of burning.
+
 ```
 on T_SWAP_VAR envelope at confirmation depth ≥ FINALITY_DEPTH:
 
-    require envelope.opcode == 0x32
-    require pool_id is registered (confirmed POOL_INIT exists; AMM.md §"POOL_INIT")
-    require direction ∈ {0, 1}
-    require delta_in_min ≤ delta_in ≤ delta_in_max
-    require delta_in > 0                  // nonzero fill
-    require delta_in_max ≤ trader's input commitment's max-representable u64
+    // Activation gate (network constant; see "Backwards-compatibility").
+    // Envelopes confirmed below the activation height validate under the
+    // superseded strict algorithm preserved in this file's git history.
+    if settlement_block_height < SWAP_VAR_OUTCOME_ACTIVATION[network]:
+        run the pre-revision strict algorithm and stop
 
-    // Reserves freshness gate
-    pool = lookup_running_pool_state(pool_id, immediately_before = (settlement_block, tx_index))
-    require pool.R_A == R_A_pre AND pool.R_B == R_B_pre
-        // Trader-observed reserves must match the pool's RUNNING state
-        // immediately before this tx_index, INCLUDING the effects of any
-        // earlier-tx_index AMM operations in this same block (per the
-        // canonical-ordering rule at AMM.md §"Indexer determinism rules":
-        // AMM envelopes apply in (tx_index, vin[0] outpoint) order).
-        // Without this in-block accumulation, two T_SWAP_VARs targeting
-        // the same pool in the same block could both pass freshness
-        // against the pre-block snapshot and double-dip the same reserves
-        // — each curve-computing delta_out against a stale (R_A, R_B)
-        // that ignores the first swap's effect, with the trader getting
-        // more output than the curve would give at true post-first-swap
-        // depth.
-        //
-        // Practical effect: within one block, only the FIRST same-pool
-        // T_SWAP_VAR (lowest tx_index) typically passes freshness; later
-        // ones must use updated reserve views or be rejected. Settlers
-        // serialise multi-fill flow across blocks, or the dapp can post
-        // a single larger fill and accept the deeper slippage.
-        //
-        // Alternative considered: ±N tolerance window. Rejected because
-        // the curve's per-fill output is nonlinear in (R_A, R_B), so a
-        // tolerance window admits ambiguous outcomes. Strict equality is
-        // unambiguous; rejection is cheap (no new sig needed, just
-        // rebroadcast).
-        //
-        // Reorg interaction: pool state advances at depth ≥ 3 blocks
-        // (AMM.md §"Reorg safety"), so the running-state lookup is
-        // canonical only after that depth. Indexer at depth < 3 holds
-        // T_SWAP_VAR pending; finality applies the running-state check
-        // at depth-3 confirmation.
-
-    // Curve recompute (no proof, pure indexer arithmetic)
-    if direction == 0:                    // A → B
-        γ_num = 10000 − fee_bps           // u16, fee_bps from pool genesis
-        γ_den = 10000
-        num   = (u256) R_B_pre · γ_num · delta_in
-        den   = (u256) R_A_pre · γ_den + (u256) γ_num · delta_in
-        delta_out_expected = (u64) (num / den)
-        R_A_post = R_A_pre + delta_in
-        R_B_post = R_B_pre − delta_out_expected
-    else:                                  // B → A
-        // symmetric; swap (R_A, R_B) and (delta_in_total) roles
-        γ_num, γ_den as above
-        num   = (u256) R_A_pre · γ_num · delta_in
-        den   = (u256) R_B_pre · γ_den + (u256) γ_num · delta_in
-        delta_out_expected = (u64) (num / den)
-        R_A_post = R_A_pre − delta_out_expected
-        R_B_post = R_B_pre + delta_in
-
-    require delta_out == delta_out_expected
-    require delta_out >= min_out
-    // **Receipt-binding check** — cryptographically binds C_receipt_secp
-    // to delta_out via direct opening with the trader-published r_receipt.
-    // Without this, the asset-B receipt commit is unbound and a trader
-    // can construct it to commit to any value in [0, 2^64), creating
-    // asset-B out of thin air at spend time. The check makes T_SWAP_VAR
-    // conservation-preserving on the cross-asset side.
-    require C_receipt_secp == delta_out · H_secp + r_receipt · G_secp
-    require R_A_post > 0 AND R_B_post > 0
-        // Reserve-floor: constant-product curve cannot drain a side
-        // completely given any finite input — `delta_out_expected =
-        // ⌊R_B · γ · Δ / (R_A · γ_den + γ · Δ)⌋` is strictly less than
-        // R_B for finite Δ, so R_B_post = R_B − delta_out_expected
-        // remains positive by curve construction. The explicit
-        // `> 0` requirement is belt-and-suspenders against arithmetic
-        // bugs in the floor-division.
-        //
-        // Note: `MINIMUM_LIQUIDITY` (AMM.md §"POOL_INIT") is denominated
-        // in `lp_asset_id` LP-share base units (1000 shares locked at
-        // POOL_INIT), NOT in asset-A or asset-B reserve units. It cannot
-        // be used as a reserve floor here. The LP-share supply S floor
-        // is enforced separately at LP_REMOVE; T_SWAP_VAR doesn't
-        // change S.
-
-    // Sigs
+    // ── Stage A — AUTHENTICATION. Any failure ⇒ INVALID: no tacit
+    //    credit at any output; vin[1]'s tacit value chain ends.
+    require envelope decodes AND envelope.opcode == 0x32
+    require tx.vout[0] is a 0-sat OP_RETURN whose 32-byte data == SHA256(payload)
+    require r_receipt < n_secp
+    require C_in_secp byte-equals the commitment carried by vin[1]'s
+            parent output (input binding — the refund and conservation
+            arithmetic below is only sound against the real input value)
     require intent_sig verifies under trader_pubkey over intent_msg
     require kernel_sig verifies under
             (C_change_or_sentinel − C_in_secp + delta_in_total · H_secp).x_only
@@ -514,34 +537,138 @@ on T_SWAP_VAR envelope at confirmation depth ≥ FINALITY_DEPTH:
     require bulletproof verifies over
             (C_change_or_sentinel, C_receipt_secp) — m=2, same wire format as
             CXFER §3.3.4 and T_AXFER_VAR's range_proof.
-            (C_receipt_secp's binding to delta_out is enforced by the
-            published-r_receipt opening check above; the bulletproof's
-            range gate on it is technically redundant but kept for
-            wire-format parity with T_AXFER_VAR. C_change_or_sentinel's
-            range gate is load-bearing: it proves the change value
-            (amount_in − delta_in_total) is non-negative, which is what
-            prevents the trader from over-spending their input commit.)
+            (The slot-0 range gate on C_change_or_sentinel is load-bearing:
+            it proves the change value (amount_in − delta_in_total) is
+            non-negative, which is what prevents the trader from
+            over-spending their input commit. The slot-1 gate on the
+            QUOTED C_receipt_secp is wire-format parity with T_AXFER_VAR;
+            the credited receipt's range-safety is established by
+            derivation — see the conservation note below.)
 
-    // Tip mechanics (skip if tip_amount == 0)
-    if tip_amount > 0:
-        require vout[3] exists
-        require vout[3].asset == tip_asset
-        require vout[3].amount_commit opens to tip_amount under r_tip
-            (r_tip published per AMM.md §"Tip mechanics" for T_SWAP_BATCH;
-             T_SWAP_VAR uses the same opening convention with domain tag
-             "tacit-amm-swap-var-tip-v1")
+    // ── Stage B — EXECUTABILITY. Any failure ⇒ PASS-THROUGH (below);
+    //    never INVALID. Evaluated against the pool's RUNNING state at
+    //    this envelope's canonical position (settlement_block, tx_index),
+    //    INCLUDING the effects of earlier-position AMM envelopes in the
+    //    same block (per AMM.md §"Indexer determinism rules": AMM
+    //    envelopes apply in (tx_index, vin[0] outpoint) order). In-block
+    //    ordering now affects only the PRICE each fill receives — never
+    //    validity: two same-pool swaps in one block both settle, the
+    //    later one at post-earlier-fill reserves (or it passes through
+    //    if that price violates its min_out floor).
+    pool = lookup_running_pool_state(pool_id, immediately_before = (settlement_block, tx_index))
 
-    // Reorg & expiry
-    require settlement_block_height < expiry_height
+    executable :=
+            pool_id is registered (confirmed POOL_INIT; AMM.md §"POOL_INIT")
+            with a fully-verified validation status
+        AND direction ∈ {0, 1}
+        AND vin[1]'s parent asset == (direction == 0 ? pool.asset_A : pool.asset_B)
+        AND tip_asset == direction's input asset
+        AND delta_in > 0 AND delta_in_min ≤ delta_in ≤ delta_in_max
+        AND settlement_block_height < expiry_height
+        AND the curve evaluation below succeeds with in-range results
+        AND delta_out_actual ≥ max(1, min_out)
+            // max(1, ·): a zero-output fill is never executed even at
+            // min_out = 0 — crediting a zero-value receipt while the
+            // pool absorbs delta_in is a donation, and pass-through is
+            // strictly kinder. Wallets SHOULD set min_out > 0; the
+            // floor is the trader's only price consent under
+            // market-order semantics.
 
-    // Apply state transition
-    pool.R_A = R_A_post
-    pool.R_B = R_B_post
-    pool.fee_growth += accrued_fee   // see "LP fee accrual" below
-    mark_outpoint_consumed(vin[1].outpoint)
-    emit_receipt_utxo(vout[1], C_receipt_secp, asset_id_out)
-    if change_present: emit_change_utxo(vout[2], C_change_secp, asset_id_in)
+    // Curve evaluation at ACTUAL running reserves (no proof, pure
+    // indexer arithmetic). This replaces the pre-revision strict
+    // (R_A_pre, R_B_pre) equality + declared-delta_out recompute.
+    if direction == 0:                    // A → B
+        γ_num = 10000 − fee_bps           // u16, fee_bps from pool genesis
+        γ_den = 10000
+        num   = (u256) pool.R_B · γ_num · delta_in
+        den   = (u256) pool.R_A · γ_den + (u256) γ_num · delta_in
+        delta_out_actual = (u64) (num / den)
+        R_A_post = pool.R_A + delta_in    // must remain representable u64
+        R_B_post = pool.R_B − delta_out_actual
+    else:                                  // B → A
+        // symmetric; swap (R_A, R_B) roles
+        γ_num, γ_den as above
+        num   = (u256) pool.R_A · γ_num · delta_in
+        den   = (u256) pool.R_B · γ_den + (u256) γ_num · delta_in
+        delta_out_actual = (u64) (num / den)
+        R_A_post = pool.R_A − delta_out_actual
+        R_B_post = pool.R_B + delta_in
+
+    in-range := R_A_post and R_B_post representable u64
+                AND R_A_post > 0 AND R_B_post > 0
+        // Reserve-floor: constant-product curve cannot drain a side
+        // completely given any finite input — `delta_out_actual =
+        // ⌊R_B · γ · Δ / (R_A · γ_den + γ · Δ)⌋` is strictly less than
+        // R_B for finite Δ, so R_B_post = R_B − delta_out_actual
+        // remains positive by curve construction. The explicit
+        // `> 0` requirement is belt-and-suspenders against arithmetic
+        // bugs in the floor-division; an overflow or floor violation
+        // makes the envelope non-executable (pass-through), not invalid.
+        //
+        // Note: `MINIMUM_LIQUIDITY` (AMM.md §"POOL_INIT") is denominated
+        // in `lp_asset_id` LP-share base units (1000 shares locked at
+        // POOL_INIT), NOT in asset-A or asset-B reserve units. It cannot
+        // be used as a reserve floor here. The LP-share supply S floor
+        // is enforced separately at LP_REMOVE; T_SWAP_VAR doesn't
+        // change S.
+
+    if executable:
+        // ── EXECUTE — market-order fill at actual reserves
+        pool.R_A = R_A_post
+        pool.R_B = R_B_post
+        pool.fee_growth += accrued_fee   // see "LP fee accrual" below
+        C_receipt_canonical = delta_out_actual · H_secp + r_receipt · G_secp
+        emit_receipt_utxo(vout[1], C_receipt_canonical, asset_id_out,
+                          amount = delta_out_actual)
+        if change_present: emit_change_utxo(vout[2], C_change_secp, asset_id_in)
+        // Tip mechanics (skip if tip_amount == 0): vout[3] credits
+        // tip_amount of tip_asset to the settler iff its commitment
+        // opens to tip_amount under the settler's derived r_tip
+        // (r_tip published per AMM.md §"Tip mechanics" for T_SWAP_BATCH;
+        // T_SWAP_VAR uses the same opening convention with domain tag
+        // "tacit-amm-swap-var-tip-v1"). A missing or unopenable tip
+        // output is simply NOT credited — the settler forfeits the tip;
+        // the trader's fill and the pool are unaffected. A settler
+        // cannot convert its own malformed tip output into a trader
+        // refund (execution does not depend on the tip slot).
+        if tip_amount > 0 AND vout[3].amount_commit opens to tip_amount under r_tip:
+            emit_tip_utxo(vout[3], tip_commitment, asset_id_in, amount = tip_amount)
+    else:
+        // ── PASS-THROUGH — refund; pool state unchanged
+        refund_amount = delta_in + tip_amount
+            // = everything the kernel closure proves left the trader's
+            // input beyond the committed change. No tip on
+            // non-execution: the settler is paid for fills, not refunds.
+        C_receipt_canonical = refund_amount · H_secp + r_receipt · G_secp
+        emit_receipt_utxo(vout[1], C_receipt_canonical,
+                          asset = vin[1]'s parent asset,
+                          amount = refund_amount)
+        if change_present: emit_change_utxo(vout[2], C_change_secp, asset_id_in)
+        // vout[3] carries no tacit value in this outcome.
+
+    mark_outpoint_consumed(vin[1].outpoint)   // both outcomes
 ```
+
+**Conservation (both outcomes).** The kernel closure proves
+`amount_in = delta_in + tip_amount + change_amount` against the
+real input commitment (Stage-A input binding), with the slot-0
+bulletproof pinning `change_amount ≥ 0`. On EXECUTE the input
+asset splits into pool inflow (`delta_in`), settler tip
+(`tip_amount`, credited only if openable), and committed change;
+the output asset moves `delta_out_actual` from reserves to the
+receipt — per-asset conservation on both sides. On PASS-THROUGH
+the input asset splits into the refund receipt
+(`delta_in + tip_amount`) and committed change — an identity.
+Range-safety of the derived amounts needs no new proof:
+`delta_out_actual < R_B ≤ 2⁶⁴−1` by curve construction, and
+`delta_in + tip_amount ≤ amount_in < 2⁶⁴` transitively from the
+input's own ancestry range proof via the kernel closure.
+
+**Grief bound (relayed flow).** A settler holding a signed intent
+can at worst broadcast it into a pass-through (e.g. after expiry):
+the trader's funds cycle to a fresh self-owned outpoint at the
+receipt slot, the settler pays the Bitcoin fee and earns no tip.
+Funds are never stranded and never burned by settler timing.
 
 ### Change UTXO
 
@@ -629,18 +756,21 @@ V1 ships **two coordination modes** under the same on-chain wire
 format:
 
 - **Single-Δ mode** — trader signs exactly one candidate `delta_in`.
-  Simple, ~800B intent-pool footprint, but requires a re-sign
-  round-trip when the pool moves enough that the chosen Δ falls
-  outside `min_out` between intent-post and broadcast. Default for
-  self-broadcast and for small fills where pool drift is unlikely.
+  Simple, ~800B intent-pool footprint. Under the outcome-taxonomy
+  semantics this is the **default for all flows**: the fill
+  executes at actual reserves within the trader's floor, so pool
+  drift no longer invalidates the intent — a re-sign is only
+  needed when the trader wants a new floor.
 - **Tick-fan mode** — trader pre-signs **K candidate intents** at
   log-spaced ticks across `[delta_in_min, delta_in_max]`. Settler
-  picks the tick whose `delta_out` best matches current depth and
+  picks the tick whose fill size best matches current depth and
   broadcasts that one candidate; the other K−1 candidates are
-  discarded. ~K× intent-pool footprint, but eliminates the re-sign
-  loop in the common case (pool movement small enough that some
-  tick remains satisfiable). Default for relayed swaps in the
-  reference dapp.
+  discarded. ~K× intent-pool footprint. Since the 2026-06-05
+  revision this is an OPTIONAL depth-adaptive-sizing optimization,
+  no longer needed for liveness (its original purpose — keeping
+  some tick satisfiable under the strict freshness gate — is
+  obsolete; every tick now executes at actual reserves within the
+  shared `min_out`).
 
 **The on-chain wire format is identical in both modes.** Tick-fan
 is purely an off-chain coordination layer — the broadcaster
@@ -653,16 +783,23 @@ unselected ticks.
 #### Trader-signed Δ load-bearing invariant
 
 In both modes, every candidate intent the trader signs binds a
-**specific** `delta_in`. The trader's `C_receipt_secp` is
-constructed against a specific `delta_out`, which is the curve
-evaluation of a specific `delta_in` against specific
-`(R_A_pre, R_B_pre)`. If a settler substituted any other
-`delta_in`, the resulting on-chain `delta_out` would differ and
-the trader-pre-signed `C_receipt_secp` would no longer open to
-that amount — the receipt UTXO would be **unspendable** by the
-trader (the indexer-recorded `C_receipt_secp` opens to the
-trader-intended value, but the pool actually paid out a different
-`delta_out`, breaking the curve-recompute check at the validator).
+**specific** `delta_in` inside `intent_msg`. A settler who
+substituted any other `delta_in` (or tip terms, outpoint, receipt
+target, or commitments) would invalidate `intent_sig` — a Stage-A
+authentication failure. Independently, such a tx cannot reach the
+chain at all: the trader's `vin[1]` Bitcoin signature is
+`SIGHASH_ALL` over the exact assembled tx, whose `vin[0]` outpoint
+commits to the envelope payload via the tapleaf — no trader
+signature exists for any tx carrying terms they didn't sign.
+
+What the settler DOES control is broadcast timing within
+`[now, expiry_height)`. Under market-order semantics that timing
+freedom is price-bounded by the trader's signed `min_out` floor:
+the fill executes at whatever the actual reserves give, never
+below the floor, or it passes through. The receipt UTXO is always
+spendable at the credited amount — the canonical commitment is
+validator-derived from the outcome, so there is no
+quote-vs-actual mismatch that can strand it.
 
 The tick-fan mode lets the settler choose *which* of the trader's
 pre-signed Δs to broadcast; it does NOT let the settler
@@ -680,21 +817,26 @@ synthesise a Δ the trader didn't sign for.
    reference worker's intent-pool relay (or any P2P channel):
    `(intent_msg, intent_sig, C_in_secp, C_change_secp, C_receipt_secp,
    r_receipt, excess, bulletproof)`.
-3. Settler picks up the intent, verifies pool state at block H or
-   H+1 still matches the trader's signed `(R_A_pre, R_B_pre)` and
-   `delta_out ≥ min_out` against the curve at that state, assembles
-   the Bitcoin tx, builds the kernel sig from the `excess` scalar
-   (the trader transmits `excess`, NOT `r_in`), adds settler-side
-   BTC funding inputs and tip-opening, broadcasts.
-4. Indexer validates at confirmation depth.
+3. Settler picks up the intent, checks the curve at live reserves
+   still clears the trader's `min_out` (an economic check — the
+   validator no longer requires the signed `(R_A_pre, R_B_pre)`
+   view to match), assembles the Bitcoin tx, builds the kernel sig
+   from the `excess` scalar (the trader transmits `excess`, NOT
+   `r_in`), adds settler-side BTC funding inputs and tip-opening,
+   broadcasts.
+4. Indexer resolves the outcome at confirmation depth: EXECUTE at
+   the actual running reserves, or PASS-THROUGH.
 
-If the pool moves between intent-post and broadcast such that
-`delta_out_expected < min_out` under the new reserves, the settler
-**discards the intent and re-solicits** a fresh sig from the
-trader at the new pool state. One re-sign round trip per pool-
-movement event.
+If the pool moves past the trader's floor **before broadcast**,
+the settler SHOULD hold or discard the intent — broadcasting it
+would resolve as a pass-through, costing the settler the Bitcoin
+fee for no tip. If it moves **after broadcast**, the envelope
+executes at the actual reserves within the floor or passes
+through; the trader's funds are intact either way. A re-sign
+round trip is needed only when the trader wants to consent to a
+new floor, not for freshness.
 
-#### Tick-fan flow (relayed; V1 default for non-self-broadcast)
+#### Tick-fan flow (relayed; optional depth-adaptive sizing)
 
 1. Trader observes pool reserves at block H. Picks
    `delta_in_min = Y`, `delta_in_max = X`, and a tick count
@@ -742,22 +884,24 @@ movement event.
    index, keyed by `(asset_input_outpoint)` — settlers can fetch
    any tick.
 5. Settler observes pool state at broadcast time, scans the fan
-   for the tick whose `delta_out_k` satisfies `min_out` at the
-   live reserves AND maximises trader value (= largest
-   `delta_out_k` while still passing the freshness gate against
-   the trader's signed `R_A_pre`/`R_B_pre`). Settler picks tick
-   `k*` and broadcasts a T_SWAP_VAR envelope containing **only
-   tick k\*'s data**. The other K−1 ticks remain in the relay
-   (or are expired with the fan).
+   for the tick whose fill size best fits live depth (largest
+   `delta_in_k` whose curve output at the live reserves still
+   clears `min_out`). Settler picks tick `k*` and broadcasts a
+   T_SWAP_VAR envelope containing **only tick k\*'s data**. The
+   other K−1 ticks remain in the relay (or are expired with the
+   fan). Whichever tick is chosen executes at the actual running
+   reserves at confirmation, within the shared `min_out` floor —
+   or passes through.
 6. Indexer validates the on-chain T_SWAP_VAR exactly as for the
    single-Δ flow — it sees one Δ, one C_receipt, one bulletproof,
    one intent_sig. The fan structure is invisible on chain.
 
 If pool movement is severe enough that NO tick in the fan
-satisfies `min_out` against the live reserves, the settler
-discards the fan and re-solicits from the trader (re-sign round
-trip, same as single-Δ mode). For K = 8 with reasonable tick
-spacing, this is rare in practice.
+satisfies `min_out` against the live reserves, the settler holds
+the fan (the floor may clear again before `expiry_height`) or
+discards it and re-solicits a fresh floor from the trader. A
+broadcast in that condition would resolve as a pass-through —
+trader funds intact, settler fee wasted.
 
 #### Tick schedule
 
@@ -843,17 +987,23 @@ protocol surface.
 Trader observes pool, picks specific Δ, signs intent + builds
 kernel sig themselves, broadcasts. Effectively `K = 1`. No fan
 overhead for self-broadcasts since there's no settler to delegate
-to. Pool-movement handling is the same — if the pool moves
-between trader-sign and on-chain confirmation such that the
-freshness gate rejects, the trader rebroadcasts with fresh state.
+to. Pool movement between sign and confirmation resolves through
+the outcome taxonomy: the fill executes at the actual reserves
+within the trader's floor, or passes through. On pass-through the
+refund lands at the receipt slot — a **new outpoint** the wallet
+already knows how to recover (same HMAC keystream) — and a retry
+builds a fresh envelope from that outpoint at the trader's new
+floor.
 
 ### Reorg safety
 
-Standard Bitcoin finality. The "pool state must match `(R_A_pre,
-R_B_pre)` one block before settlement" rule (validator algorithm
-above) is the freshness gate. If a reorg invalidates the chain
+Standard Bitcoin finality. If a reorg invalidates the chain
 between intent-broadcast and confirmation, the `T_SWAP_VAR` tx may
-itself reorg out; standard Bitcoin reorg handling applies.
+itself reorg out; standard Bitcoin reorg handling applies. A
+reorg that re-orders same-pool envelopes re-resolves each one's
+outcome at its new canonical position — outcomes are a pure
+function of `(chain, position)`, so every indexer converges on
+the same EXECUTE/PASS-THROUGH resolution after replay.
 
 **Critical: pool state at depth ≥ 3.** AMM.md's reorg discipline
 (`T_SWAP_BATCH` advances pool state at depth ≥ 3 blocks) applies
@@ -1000,6 +1150,41 @@ It DOES require:
 - Dapp UX updates to render the two-paths choice (T_SWAP_VAR
   default, T_SWAP_BATCH opt-in).
 
+### Outcome-taxonomy revision compatibility (2026-06-05)
+
+The market-order + pass-through revision changes validator
+semantics, not wire format. Compatibility properties:
+
+- **Valid history replays identically.** Every envelope that
+  EXECUTED under the strict algorithm did so precisely because its
+  declared `(R_A_pre, R_B_pre)` equaled the actual running
+  reserves; the revised algorithm's curve-at-actual evaluation
+  therefore produces the same `delta_out`, the same post-reserves,
+  and a derived receipt commitment byte-equal to the declared
+  `C_receipt_secp`. Pool-state replay over previously-valid
+  history is unchanged.
+- **The only divergence class is previously-skipped envelopes**
+  (confirmed txs whose envelopes failed an economic gate and
+  consumed the input without credit). Under the revised rules
+  those would resolve as EXECUTE or PASS-THROUGH, shifting replay
+  from that point. The per-network activation constant
+  `SWAP_VAR_OUTCOME_ACTIVATION` removes the ambiguity: envelopes
+  confirmed below it validate under the strict algorithm
+  (preserved in git history), at/above it under this revision.
+  Networks with no `T_SWAP_VAR` history (mainnet) pin 0.
+- **Old builders keep working and get safer.** A pre-revision
+  client that builds with a stale reserve view produces an
+  envelope that now executes at the actual price within its own
+  `min_out`, or refunds — where it previously burned. No client
+  action is required for safety; clients SHOULD update display
+  logic to read the credited amount from the resolved outcome
+  rather than the envelope's `delta_out` field.
+- **Indexers must persist outcomes.** Because the credited receipt
+  amount is no longer a static envelope field, conforming indexers
+  record each swap's resolved outcome (EXECUTE amount or
+  PASS-THROUGH refund) — or re-derive it by replay — to answer
+  spend-time ancestry validation for receipt UTXOs.
+
 ---
 
 ## Test plan (informative — non-normative)
@@ -1025,13 +1210,36 @@ End-to-end signet rehearsal:
 6. Reorg safety: broadcast a `T_SWAP_VAR` and a competing
    `T_SWAP_BATCH` in the same block; cause a 1-block reorg.
    Verify indexer rolls back pool state cleanly.
-7. Stale reserves: broadcast a `T_SWAP_VAR` with `R_A_pre` /
-   `R_B_pre` matching block H − 2 instead of H − 1. Indexer
-   rejects.
-8. Slippage: broadcast a `T_SWAP_VAR` with `min_out` set above the
-   curve's actual output. Indexer rejects.
+7. Stale quote: broadcast a `T_SWAP_VAR` whose `R_A_pre` /
+   `R_B_pre` reflect block H − 2 instead of the live reserves.
+   Indexer EXECUTES at the actual reserves (credited amount =
+   curve at actual, not the quoted `delta_out`) provided the
+   floor clears.
+8. Slippage floor: broadcast a `T_SWAP_VAR` with `min_out` set
+   above the curve's actual output. Indexer resolves
+   PASS-THROUGH — pool state unchanged, receipt slot refunds
+   `delta_in + tip_amount` of the input asset under the derived
+   commitment, change credits as committed.
 9. Range bounds: broadcast with `delta_in > delta_in_max`.
-   Indexer rejects.
+   Indexer resolves PASS-THROUGH (funds refunded, nothing burned).
+9b. Same-block race: broadcast two self-fulfilled `T_SWAP_VAR`s
+   against the same pool into one block, both quoting the same
+   pre-block reserves with loose floors. Verify both EXECUTE —
+   the earlier canonical position at the quoted price, the later
+   at post-earlier-fill reserves — and pool replay matches the
+   two fills applied in `(tx_index, vin[0])` order.
+9c. Same-block race, tight floor: as 9b but the later swap's
+   `min_out` is set so the post-earlier-fill price violates it.
+   Verify the later swap resolves PASS-THROUGH and its trader
+   recovers the refund receipt from seed.
+9d. Expiry miss: broadcast with `expiry_height` ≤ inclusion
+   height. PASS-THROUGH.
+9e. Zero-output guard: dust `delta_in` against deep reserves such
+   that the curve floors to 0 with `min_out = 0`. PASS-THROUGH
+   (never a zero-value executed receipt).
+9f. Malformed tip on execute: `tip_amount > 0` but `vout[3]`
+   commitment does not open under the settler's derived `r_tip`.
+   Fill EXECUTES normally; the tip output is not credited.
 10. Receipt recovery: wipe the trader's local app state; restore
     from seed. Verify the trader's receipt UTXO is rediscoverable
     via the HMAC keystream alone.
@@ -1050,11 +1258,15 @@ Adversarial:
 15. Sandwich attempt: a malicious settler observes the trader's
     intent in the mempool, broadcasts a competing `T_SWAP_VAR`
     (or `T_SWAP_BATCH`) in the same block that moves the pool's
-    spot. Verify the original trader's `min_out` floor catches it
-    and the indexer rejects the original swap (post-sandwich
-    `delta_out_expected < min_out`).
-16. Curve fudge: settler broadcasts with `delta_out` higher than
-    the recomputed curve value. Indexer rejects.
+    spot. Verify the original trader's `min_out` floor catches it:
+    the original swap resolves PASS-THROUGH (funds refunded) —
+    the sandwicher cannot force an under-floor fill, and gains
+    nothing from the trader.
+16. Curve fudge: settler broadcasts with `delta_out` declared
+    higher than the curve value. Credited amount is the indexer's
+    own curve evaluation regardless of the declared field — verify
+    the receipt credits `delta_out_actual` and spends at exactly
+    that value.
 
 ---
 
@@ -1089,11 +1301,12 @@ Out of scope, left for future amendments:
   pools only. V2-AMM range-LP opcodes (`0x33`–`0x36`, reserved in
   AMM.md) would need a `T_SWAP_VAR_RANGE` variant that walks tick
   liquidity per-fill — separate amendment.
-- **Multi-hop routing.** `T_SWAP_VAR` is one pool per tx. A trader
-  wanting A → B → C must chain two `T_SWAP_VAR`s, or use the
-  dapp's router which composes them off-chain. A future
-  `T_SWAP_VAR_PATH` could atomically settle multi-hop routes in
-  one tx; not in V1 scope.
+- **Multi-hop routing.** `T_SWAP_VAR` is one pool per tx. Atomic
+  multi-hop settlement shipped separately as `T_SWAP_ROUTE`
+  (`0x33`, SPEC.md §5.22), which reuses this opcode's cryptography
+  and inherits the outcome-taxonomy semantics route-atomically
+  (the whole route executes at actual reserves hop-by-hop within
+  the final `min_out`, or the whole route passes through).
 - **Limit orders.** `T_SWAP_VAR` accepts `[Y, X]` range + `min_out`
   but is not a limit order in the orderbook sense (a maker order
   resting until taken). For limit-order semantics, use the
@@ -1142,11 +1355,20 @@ Out of scope, left for future amendments:
   ticks; settler picks one). On-chain wire format is identical to
   single-Δ. Eliminates re-sign loops in the common case without
   cryptographic novelty. True Schnorr-adaptor delegation (settler
-  picks any Δ in `[Y, X]` continuously) remains a v1.1 enhancement
-  for traders who want a single intent-record footprint at any
-  K-tick resolution; not blocking for V1.
-- Strict-reserves-match gate kept as normative.
-- Receipt-binding via trader-signed specific Δ locked for V1.
+  picks any Δ in `[Y, X]` continuously) remains a follow-up
+  enhancement for traders who want a single intent-record
+  footprint at any K-tick resolution; not blocking.
+- ~~Strict-reserves-match gate kept as normative.~~ Superseded
+  2026-06-05 by the outcome taxonomy (market-order-within-floor +
+  pass-through; see "Indexer validation algorithm"). The strict
+  gate's anti-stale-quote purpose is preserved — strengthened —
+  by indexer-derived `delta_out`; its burn-on-miss failure mode
+  is removed. Tick-fan demotes from liveness requirement to
+  optional sizing optimization in the same change.
+- Receipt-binding via trader-signed specific Δ locked for V1;
+  since the 2026-06-05 revision the credited commitment is
+  validator-derived from the resolved outcome (the signed quote
+  remains bound in `intent_msg`).
 - `MINIMUM_LIQUIDITY` post-state check dropped as a unit-mismatch —
   replaced with `R_A_post > 0 ∧ R_B_post > 0` which the curve
   already guarantees.)
@@ -1208,6 +1430,32 @@ streams):
 - [ ] Backwards-compat replay test: confirm V1 pre-amendment
       `T_SWAP_BATCH` envelopes are still processed correctly by
       the extended indexer.
+
+### Outcome-taxonomy revision integration (2026-06-05)
+
+- [x] This file — status note, motivation rationale, wire-format
+      annotations, validation algorithm, settlement-flow updates,
+      backwards-compatibility statement, test plan items 7–9f /
+      15–16.
+- [ ] **SPEC.md §5.20** — validator algorithm rewritten to the
+      outcome taxonomy; wire-format field comments updated;
+      activation constant referenced.
+- [ ] **SPEC.md §5.22 (`T_SWAP_ROUTE`)** — per-hop strict snapshot
+      equality replaced by route-atomic outcome semantics
+      (execute-all at actual reserves within final `min_out`, or
+      pass-through-all).
+- [ ] **AMM.md** — T_SWAP_VAR threat-model rows (staleness /
+      underpayment), pending-vs-canonical wallet guidance, and the
+      same-block-race caveat cross-reference.
+- [ ] **Reference validator** `tests/swap-var.mjs` + conformance
+      pins.
+- [ ] **Worker indexer** — outcome resolution + persisted per-swap
+      outcome records for receipt ancestry.
+- [ ] **Dapp** — credited-amount reconciliation (quote → actual),
+      pass-through receipt recovery, swap-tile copy + expiry
+      default.
+- [ ] **Signet race rehearsal** — test plan items 9b–9f green
+      on-chain.
 
 ---
 

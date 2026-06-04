@@ -477,17 +477,47 @@ export function computeSwapVarEnvelopeHash(payload) {
 }
 
 // =========================================================================
-// Validator — mirrors §"Indexer validation algorithm"
+// Validator — mirrors SPEC.md §5.20 "Validator algorithm (outcome taxonomy)"
 // =========================================================================
 //
+// Every confirmed T_SWAP_VAR resolves to exactly one outcome:
+//   INVALID      — Stage-A authentication failure (sigs, bindings, proof,
+//                  decode). No tacit credit anywhere; vin[1]'s value chain
+//                  ends. Unreachable for a correct builder — every Stage-A
+//                  gate is over data the builder controls at sign time.
+//   EXECUTE      — market-order fill at the pool's ACTUAL running reserves,
+//                  floor-bounded by the trader's signed min_out.
+//   PASS-THROUGH — authenticated but non-executable (floor miss, expiry,
+//                  unknown pool, range/arithmetic bounds…). Pool state is
+//                  unchanged; the trader's input refunds at the receipt
+//                  slot (input asset, delta_in + tip_amount).
+//
 // Result shape:
-//   { valid: true,  newPoolState, receipt }
-//   { valid: false, reason: string }
+//   { outcome: 'invalid',     valid: false, reason }
+//   { outcome: 'execute',     valid: true, executed: true,
+//     deltaOutActual, quotedDeltaOut, newPoolState,
+//     receipt: { asset_id, amount, commitment, r_receipt } }
+//   { outcome: 'passthrough', valid: true, executed: false, passReason,
+//     quotedDeltaOut, newPoolState /* == pool, unchanged */,
+//     receipt: { asset_id /* input asset */, amount /* delta_in + tip */,
+//                commitment, r_receipt } }
+//
+// `valid` means "authenticated — the envelope credits something". The
+// credited receipt commitment is DERIVED (amount · H + r_receipt · G);
+// env.cReceiptSecp is the trader's signed quote and is never the credit
+// source. The derivation is the inflation defense: no trader-declared
+// receipt value is trusted anywhere (SPEC §5.20 steps 8–10).
+//
+// Envelopes confirmed below the per-network SWAP_VAR_OUTCOME_ACTIVATION
+// height validate under the superseded strict-equality algorithm —
+// preserved at this file's pre-2026-06-05 git revision; indexers keep it
+// as a frozen legacy branch keyed on confirmation height.
 //
 // Inputs:
 //   payload             : envelope bytes
 //   pool                : current pool state { pool_id, asset_A, asset_B,
 //                                              reserve_A, reserve_B, fee_bps, ... }
+//                         (null/undefined ⇒ pass-through, not invalid)
 //   assetInputOutpointTxid / Vout : the outpoint of vin[1] (trader's tacit input)
 //   currentHeight       : block height at confirmation
 //   opReturnData        : vout[0] OP_RETURN payload (32 bytes; MUST equal envelope_hash)
@@ -515,28 +545,44 @@ export function validateSwapVar({
                                   // env.cChange, not to the actual on-chain UTXO
                                   // value — so a trader can claim a fake input
                                   // commit and inflate asset A via env.cChange.
+  inputAssetId,                   // REQUIRED: 32-byte asset id of vin[1]'s parent.
+                                  // Binds the kernel msg to the input's REAL asset,
+                                  // drives the pass-through refund's asset_id, and
+                                  // gates executability against the pool's
+                                  // direction side. Resolvable without the pool —
+                                  // pass-through works even for unknown pools.
 }) {
-  if (!pool) return { valid: false, reason: 'pool not registered' };
   if (typeof bulletproofVerify !== 'function') {
     throw new Error('validateSwapVar: bulletproofVerify is required');
   }
+  if (inputCommitment === undefined) {
+    throw new Error(
+      'validateSwapVar: inputCommitment is required — pass the on-chain ' +
+      'Pedersen commit at (assetInputOutpointTxid, assetInputOutpointVout) ' +
+      'so the validator can verify env.cInSecp matches.',
+    );
+  }
+  if (!(inputAssetId instanceof Uint8Array) || inputAssetId.length !== 32) {
+    throw new Error(
+      'validateSwapVar: inputAssetId is required — pass the 32-byte asset id ' +
+      "of vin[1]'s parent (drives kernel-msg reconstruction and the " +
+      'pass-through refund asset).',
+    );
+  }
+
+  // ════════ Stage A — AUTHENTICATION (any failure ⇒ INVALID) ════════
 
   let env;
   try { env = decodeSwapVar(payload); }
-  catch (e) { return { valid: false, reason: `decode error: ${e.message}` }; }
+  catch (e) { return { outcome: 'invalid', valid: false, reason: `decode error: ${e.message}` }; }
 
   // OP_RETURN binding.
   if (!(opReturnData instanceof Uint8Array) || opReturnData.length !== 32) {
-    return { valid: false, reason: 'missing or malformed vout[0] OP_RETURN data' };
+    return { outcome: 'invalid', valid: false, reason: 'missing or malformed vout[0] OP_RETURN data' };
   }
   const expectedHash = computeSwapVarEnvelopeHash(payload);
   if (!bytesEqual(opReturnData, expectedHash)) {
-    return { valid: false, reason: 'OP_RETURN data != SHA256(envelope_payload)' };
-  }
-
-  // pool_id consistency.
-  if (!bytesEqual(env.poolId, pool.pool_id)) {
-    return { valid: false, reason: 'pool_id mismatch' };
+    return { outcome: 'invalid', valid: false, reason: 'OP_RETURN data != SHA256(envelope_payload)' };
   }
 
   // Input-side inflation defense: verify env.cInSecp matches the on-chain
@@ -546,100 +592,40 @@ export function validateSwapVar({
   // a_in_claimed to the actual on-chain UTXO value. Without this check, a
   // trader can claim a_in_claimed > a_real, mint env.cChange to commit to
   // (a_real + Δ), and inflate asset A by Δ when they spend the change UTXO.
-  // Same pattern as the 2026-05-15 receipt-side fix (AMENDMENTS.md changelog).
-  if (inputCommitment === undefined) {
-    throw new Error(
-      'validateSwapVar: inputCommitment is required — pass the on-chain ' +
-      'Pedersen commit at (assetInputOutpointTxid, assetInputOutpointVout) ' +
-      'so the validator can verify env.cInSecp matches.',
-    );
-  }
+  // Load-bearing for BOTH outcomes — the pass-through refund arithmetic is
+  // only sound against the real input value.
   let inputCommitmentBytes;
   if (inputCommitment instanceof Uint8Array) {
     if (inputCommitment.length !== 33) {
-      return { valid: false, reason: 'inputCommitment must be 33-byte compressed point' };
+      return { outcome: 'invalid', valid: false, reason: 'inputCommitment must be 33-byte compressed point' };
     }
     inputCommitmentBytes = inputCommitment;
   } else if (typeof inputCommitment.toRawBytes === 'function') {
     inputCommitmentBytes = inputCommitment.toRawBytes(true);
   } else {
-    return { valid: false, reason: 'inputCommitment must be ProjectivePoint or Uint8Array(33)' };
+    return { outcome: 'invalid', valid: false, reason: 'inputCommitment must be ProjectivePoint or Uint8Array(33)' };
   }
   if (!bytesEqual(env.cInSecp, inputCommitmentBytes)) {
     return {
-      valid: false,
+      outcome: 'invalid', valid: false,
       reason: 'env.cInSecp does not match on-chain input UTXO commit at outpoint',
     };
   }
 
-  // Direction in {0,1} — already enforced by decoder; defensive.
-  if (env.direction !== 0 && env.direction !== 1) {
-    return { valid: false, reason: 'direction out of range' };
-  }
-
-  // Range checks on the [Δmin, Δ, Δmax] tuple.
-  if (env.deltaIn === 0n) return { valid: false, reason: 'delta_in must be > 0' };
-  if (env.deltaIn < env.deltaInMin) return { valid: false, reason: 'delta_in < delta_in_min' };
-  if (env.deltaIn > env.deltaInMax) return { valid: false, reason: 'delta_in > delta_in_max' };
-
-  // Reserves freshness gate — trader's observed reserves must match the
-  // pool's running state immediately before this tx_index (§"Indexer
-  // validation algorithm" P0-1 fix).
-  if (env.R_A_pre !== BigInt(pool.reserve_A)) {
-    return { valid: false, reason: `R_A_pre mismatch (got ${env.R_A_pre}, pool has ${pool.reserve_A})` };
-  }
-  if (env.R_B_pre !== BigInt(pool.reserve_B)) {
-    return { valid: false, reason: `R_B_pre mismatch (got ${env.R_B_pre}, pool has ${pool.reserve_B})` };
-  }
-
-  // Expiry.
-  if (currentHeight >= env.expiryHeight) {
-    return { valid: false, reason: `expired (height ${currentHeight} >= ${env.expiryHeight})` };
-  }
-
-  // Curve recompute. Strict equality on delta_out_expected — P0-2 fix
-  // (no MINIMUM_LIQUIDITY check; curve construction makes post>0 for
-  // finite Δ; we keep the defensive > 0 floor anyway).
-  let curve;
-  try {
-    curve = curveDeltaOut({
-      direction: env.direction,
-      R_A_pre: env.R_A_pre, R_B_pre: env.R_B_pre,
-      delta_in: env.deltaIn, fee_bps: pool.fee_bps,
-    });
-  } catch (e) { return { valid: false, reason: `curve recompute: ${e.message}` }; }
-  if (curve.deltaOut !== env.deltaOut) {
-    return { valid: false, reason: `delta_out mismatch (curve says ${curve.deltaOut}, envelope says ${env.deltaOut})` };
-  }
-  if (env.deltaOut < env.minOut) {
-    return { valid: false, reason: `slippage: delta_out=${env.deltaOut} < min_out=${env.minOut}` };
-  }
-  if (curve.raPost <= 0n || curve.rbPost <= 0n) {
-    return { valid: false, reason: 'post-reserve non-positive (defensive floor)' };
-  }
-
-  // ----- Receipt-binding check — the critical inflation defense -----
-  //
-  // Verify C_receipt_secp == delta_out · H_secp + r_receipt · G_secp.
-  // Without this, the asset-B receipt commit is unbound and a trader can
-  // construct it to commit to any value in [0, 2^64), creating asset-B
-  // out of thin air at spend time. The check is the cross-asset
-  // conservation gate (T_SWAP_VAR has no kernel sig over the receipt
-  // because the receipt and the input live in different asset spaces).
-  // See AMENDMENTS.md 2026-05-15 changelog: "T_SWAP_VAR CRITICAL crypto fix".
+  // r_receipt scalar range — needed for the derived-commitment credit in
+  // both non-invalid outcomes.
   const rReceiptScalar = bytesToBigintBE(env.rReceipt);
   if (rReceiptScalar >= SECP_N) {
-    return { valid: false, reason: 'r_receipt >= n_secp (invalid scalar)' };
+    return { outcome: 'invalid', valid: false, reason: 'r_receipt >= n_secp (invalid scalar)' };
   }
-  const cReceiptExpected = pedersenCommit(env.deltaOut, rReceiptScalar);
+
+  // Quoted-receipt point decode (bulletproof slot-1 subject; the credit
+  // path never reads its implied amount).
   let cReceiptOnChain;
   try {
     cReceiptOnChain = secp.ProjectivePoint.fromHex(bytesToHex(env.cReceiptSecp));
   } catch (e) {
-    return { valid: false, reason: `cReceiptSecp decode: ${e.message}` };
-  }
-  if (!cReceiptExpected.equals(cReceiptOnChain)) {
-    return { valid: false, reason: 'receipt-binding check failed: C_receipt_secp does not open to (delta_out, r_receipt)' };
+    return { outcome: 'invalid', valid: false, reason: `cReceiptSecp decode: ${e.message}` };
   }
 
   // ----- intent_sig verification -----
@@ -656,20 +642,25 @@ export function validateSwapVar({
   });
   const traderXOnly = env.traderPubkey.subarray(1); // strip parity byte for BIP-340
   if (!verifySchnorr(env.intentSig, intentMsg, traderXOnly)) {
-    return { valid: false, reason: 'intent_sig verification failed' };
+    return { outcome: 'invalid', valid: false, reason: 'intent_sig verification failed' };
   }
 
   // ----- kernel_sig verification -----
   //
   // Sentinel-aware closure: P = C_change_or_sentinel − C_in_secp + delta_in_total · H.
-  // The verifier key is P.x_only().
-  const assetIdIn = env.direction === 0 ? pool.asset_A : pool.asset_B;
+  // The verifier key is P.x_only(). The kernel msg binds the input's REAL
+  // asset id (inputAssetId), not the pool's direction side — identical
+  // bytes in the honest case, and well-defined even when the pool is
+  // unknown (pass-through path).
   const deltaInTotal = env.deltaIn + env.tipAmount;
   if (deltaInTotal >= 1n << 64n) {
-    return { valid: false, reason: 'delta_in + tip_amount overflows u64' };
+    // Defensive: a real input commitment can't hold ≥ 2^64 (its own
+    // ancestry bulletproof bounds it), so the slot-0 range gate below
+    // would fail anyway. Reject early with a precise reason.
+    return { outcome: 'invalid', valid: false, reason: 'delta_in + tip_amount overflows u64' };
   }
   const kernelMsg = buildSwapVarKernelMsg({
-    assetIdIn,
+    assetIdIn: inputAssetId,
     assetInputOutpointTxid, assetInputOutpointVout,
     cChangeOrSentinel: env.cChangeOrSentinel,
     deltaInTotal,
@@ -680,21 +671,21 @@ export function validateSwapVar({
     deltaInTotal,
   });
   if (P.equals(ZERO)) {
-    return { valid: false, reason: 'kernel verifier key is point at infinity (would accept any sig)' };
+    return { outcome: 'invalid', valid: false, reason: 'kernel verifier key is point at infinity (would accept any sig)' };
   }
   const PBytes = pointToBytes(P);
   const PxOnly = PBytes.subarray(1); // strip parity byte
   if (!verifySchnorr(env.kernelSig, kernelMsg, PxOnly)) {
-    return { valid: false, reason: 'kernel_sig verification failed' };
+    return { outcome: 'invalid', valid: false, reason: 'kernel_sig verification failed' };
   }
 
   // ----- Bulletproof m=2 over (C_change_or_sentinel, C_receipt_secp) -----
   //
   // The change side's range gate proves (amount_in − delta_in_total) ≥ 0,
-  // which prevents the trader over-spending their input commit. The
-  // receipt side's range gate is technically redundant with the
-  // r_receipt opening check above, but we keep it for wire-format parity
-  // with T_AXFER_VAR.
+  // which prevents the trader over-spending their input commit — load-
+  // bearing for both outcomes. The receipt side ranges the QUOTED commit
+  // (wire-format parity with T_AXFER_VAR); the credited amount's range-
+  // safety is established by derivation.
   //
   // No-change case: the prover supplies the additive identity in slot 0,
   // which trivially opens to (value=0, blinding=0).
@@ -703,13 +694,88 @@ export function validateSwapVar({
     cChangeForBP = ZERO;
   } else {
     try { cChangeForBP = secp.ProjectivePoint.fromHex(bytesToHex(env.cChangeOrSentinel)); }
-    catch (e) { return { valid: false, reason: `cChangeOrSentinel decode: ${e.message}` }; }
+    catch (e) { return { outcome: 'invalid', valid: false, reason: `cChangeOrSentinel decode: ${e.message}` }; }
   }
   if (!bulletproofVerify([cChangeForBP, cReceiptOnChain], env.rangeProof)) {
-    return { valid: false, reason: 'bulletproof verification failed' };
+    return { outcome: 'invalid', valid: false, reason: 'bulletproof verification failed' };
   }
 
-  // ----- All checks passed — emit state transition -----
+  // ════════ Stage B — EXECUTABILITY (any failure ⇒ PASS-THROUGH) ════════
+  //
+  // Evaluated against the pool's RUNNING state at this envelope's
+  // canonical position. In-block ordering affects only the PRICE a fill
+  // receives — never validity.
+
+  const passthrough = (passReason) => {
+    const refundAmount = deltaInTotal; // delta_in + tip_amount — everything
+                                       // the kernel closure proves left the
+                                       // input beyond the committed change.
+                                       // No tip on non-execution.
+    const refundCommitment = pointToBytes(pedersenCommit(refundAmount, rReceiptScalar));
+    return {
+      outcome: 'passthrough', valid: true, executed: false, passReason,
+      quotedDeltaOut: env.deltaOut,
+      newPoolState: pool ? { ...pool } : null,   // unchanged
+      receipt: {
+        asset_id: inputAssetId,
+        commitment: refundCommitment,
+        r_receipt: env.rReceipt,
+        amount: refundAmount,
+      },
+    };
+  };
+
+  if (!pool) return passthrough('pool not registered');
+  if (!bytesEqual(env.poolId, pool.pool_id)) return passthrough('pool_id mismatch');
+  if (env.direction !== 0 && env.direction !== 1) return passthrough('direction out of range');
+
+  // Input asset must be the pool's direction-side asset; tip_asset byte
+  // must name the same side (wire rule: tip is paid from the input).
+  const dirSideAsset = env.direction === 0 ? pool.asset_A : pool.asset_B;
+  if (!bytesEqual(inputAssetId, dirSideAsset)) {
+    return passthrough("input asset != pool's direction-side asset");
+  }
+  if (env.tipAsset !== env.direction) return passthrough('tip_asset != input side');
+
+  // Range gate on the [Δmin, Δ, Δmax] tuple.
+  if (env.deltaIn === 0n) return passthrough('delta_in must be > 0');
+  if (env.deltaIn < env.deltaInMin) return passthrough('delta_in < delta_in_min');
+  if (env.deltaIn > env.deltaInMax) return passthrough('delta_in > delta_in_max');
+
+  // Expiry.
+  if (currentHeight >= env.expiryHeight) {
+    return passthrough(`expired (height ${currentHeight} >= ${env.expiryHeight})`);
+  }
+
+  // Curve evaluation at ACTUAL running reserves — the declared
+  // (R_A_pre, R_B_pre) and delta_out are advisory quote context only.
+  let curve;
+  try {
+    curve = curveDeltaOut({
+      direction: env.direction,
+      R_A_pre: pool.reserve_A, R_B_pre: pool.reserve_B,
+      delta_in: env.deltaIn, fee_bps: pool.fee_bps,
+    });
+  } catch (e) { return passthrough(`curve at actual reserves: ${e.message}`); }
+  if (curve.raPost <= 0n || curve.rbPost <= 0n) {
+    return passthrough('post-reserve non-positive (defensive floor)');
+  }
+
+  // Slippage floor — the trader's binding price consent. max(1, ·): a
+  // zero-output fill never executes even at min_out = 0 (pass-through is
+  // strictly kinder than donating delta_in to the pool).
+  const floor = env.minOut > 1n ? env.minOut : 1n;
+  if (curve.deltaOut < floor) {
+    return passthrough(`slippage: delta_out_actual=${curve.deltaOut} < max(1, min_out=${env.minOut})`);
+  }
+
+  // ════════ EXECUTE — market-order fill at actual reserves ════════
+  //
+  // The credited receipt commitment is DERIVED from the actual fill and
+  // the published r_receipt. Tip mechanics stay caller-delegated: vout[3]
+  // credits tip_amount iff its commitment opens under the settler's
+  // derived r_tip ("tacit-amm-swap-var-tip-v1"); an unopenable tip output
+  // is simply not credited (settler forfeits; fill and pool unaffected).
   const newPoolState = {
     ...pool,
     reserve_A: curve.raPost,
@@ -719,14 +785,17 @@ export function validateSwapVar({
     // at the next LP_ADD / LP_REMOVE event — see AMM.md §"Protocol fee
     // mechanism" — not here.
   };
+  const receiptCommitment = pointToBytes(pedersenCommit(curve.deltaOut, rReceiptScalar));
   return {
-    valid: true,
+    outcome: 'execute', valid: true, executed: true,
+    deltaOutActual: curve.deltaOut,
+    quotedDeltaOut: env.deltaOut,
     newPoolState,
     receipt: {
       asset_id: env.direction === 0 ? pool.asset_B : pool.asset_A,
-      commitment: env.cReceiptSecp,
+      commitment: receiptCommitment,
       r_receipt: env.rReceipt,
-      amount: env.deltaOut,
+      amount: curve.deltaOut,
     },
   };
 }

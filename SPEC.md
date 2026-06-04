@@ -1068,20 +1068,32 @@ if envelope.opcode == T_SWAP_VAR (0x32):
     # (Pedersen + aggregated bulletproof + kernel sig). No Groth16; no ceremony
     # coupling — ships alongside V1 without depending on the T_SWAP_BATCH Phase 2
     # setup. Single-trader settlement against the spot curve at fee_bps.
+    # Outcome taxonomy (§5.20): INVALID / EXECUTE / PASS-THROUGH.
+    # Stage A — authentication; any failure ⇒ INVALID (no credits):
     require vout[0] == OP_RETURN(sha256(payload))
-    decode payload; verify pool_id matches; verify direction ∈ {0, 1}
-    verify range gate: delta_in ∈ [delta_in_min, delta_in_max], delta_in > 0
-    verify reserves freshness: R_A_pre == pool.reserve_A AND R_B_pre == pool.reserve_B
-    verify not expired: current_height < expiry_height
-    recompute delta_out from curve at (R_A_pre, R_B_pre, delta_in, fee_bps) — strict equality
-    verify delta_out >= min_out (slippage floor)
-    verify post-reserves are positive (R_A_post > 0 AND R_B_post > 0)
-    verify receipt-binding: C_receipt_secp == delta_out · H_secp + r_receipt · G_secp
+    decode payload; verify r_receipt < n_secp
+    verify C_in_secp byte-equals vin[1]'s parent commitment (input binding)
     verify intent_sig (BIP-340 over intent_msg under trader_pubkey)
     verify kernel_sig (BIP-340 under (C_change − C_in + delta_in_total·H).x_only();
                        NO_CHANGE_SENTINEL substitutes ZERO when input fully consumed)
     verify aggregated bulletproof over (C_change_or_sentinel, C_receipt_secp)
-    advance pool reserves; credit receipt UTXO at vout[1]; credit change UTXO at vout[2]
+    # Stage B — executability; any failure ⇒ PASS-THROUGH (refund):
+    executable := pool registered+verified AND direction ∈ {0, 1}
+                  AND vin[1] asset == direction's input asset == tip_asset
+                  AND delta_in ∈ [delta_in_min, delta_in_max], delta_in > 0
+                  AND confirm_height < expiry_height
+                  AND delta_out_actual = curve(pool.reserve_A, pool.reserve_B,
+                                               delta_in, fee_bps)   # ACTUAL running
+                      with post-reserves u64-representable and > 0  # reserves
+                  AND delta_out_actual >= max(1, min_out)           # binding floor
+    # EXECUTE: advance pool reserves; credit receipt at vout[1] (output asset,
+    #   delta_out_actual, derived commitment delta_out_actual·H + r_receipt·G);
+    #   credit change at vout[2] if non-sentinel; credit tip at vout[3] iff its
+    #   commitment opens under r_tip (unopenable tip ⇒ settler forfeits, fill stands).
+    # PASS-THROUGH: pool unchanged; credit receipt at vout[1] (input asset refund,
+    #   delta_in + tip_amount, derived commitment); credit change if non-sentinel.
+    # Both: vin[1] consumed. Below SWAP_VAR_OUTCOME_ACTIVATION[network], the
+    # superseded strict-equality algorithm applies.
 
 if envelope.opcode == T_AXFER_VAR (0x37):
     # See §5.7.9. Variable-amount atomic settlement; reuses CXFER N=2 cryptography.
@@ -3167,6 +3179,8 @@ The reveal tx's vouts MAY carry anything (BTC change, etc.); none of them are ta
 
 The second AMM trader path: per-trade-against-curve fills with continuous-amount `[Y, X]` range semantics, settled in a single Bitcoin tx with **no Groth16 proof and no batching**. Lives alongside `T_SWAP_BATCH` (`0x2F`) under the "two AMM trader paths" model. Reuses CXFER N=2 cryptography (Pedersen + aggregated bulletproof + kernel sig) from `T_AXFER_VAR` (`0x37`); ships independently of the AMM Phase 2 trusted setup.
 
+**Settlement semantics are market-order-within-floor + pass-through** (2026-06-05 revision; extended rationale in `spec/amendments/SPEC-SWAP-VAR-AMENDMENT.md` §"Concurrency and the burn race"): the validator evaluates the curve at the pool's **actual running reserves** at the envelope's canonical position, the trader's signed `min_out` is the binding price consent, and an envelope that authenticates but cannot execute **passes the trader's input back through** at the receipt slot instead of consuming it without credit. Concurrent same-pool swaps therefore all settle — each at its canonical-position price, or as a refund — and no interleaving can destroy a trader's input. Activation is height-gated per network (`SWAP_VAR_OUTCOME_ACTIVATION`; networks with no prior `T_SWAP_VAR` history pin 0); envelopes confirmed below the activation height validate under the superseded strict-equality algorithm preserved in the amendment file's git history.
+
 **Trade-offs vs `T_SWAP_BATCH`:**
 
 | Property | `T_SWAP_VAR` (this section) | `T_SWAP_BATCH` (§5.16) |
@@ -3187,23 +3201,28 @@ The dapp's swap tile SHOULD default to `T_SWAP_VAR` for typical flow and surface
 opcode(1)                  = 0x32
 pool_id(32)
 direction(1)               # 0 = A→B, 1 = B→A
-R_A_pre(8)                 # u64 LE — trader's view of asset-A reserve
-R_B_pre(8)                 # u64 LE — trader's view of asset-B reserve
+R_A_pre(8)                 # u64 LE — trader's reserve view at quote time (advisory)
+R_B_pre(8)                 # u64 LE — trader's reserve view at quote time (advisory)
 delta_in(8)                # u64 LE — chosen fill amount Δ
 delta_in_min(8)            # u64 LE — Y, lower bound of trader's range
 delta_in_max(8)            # u64 LE — X, upper bound of trader's range
-delta_out(8)               # u64 LE — settler's computed Δ_out; indexer recomputes + verifies
-min_out(8)                 # u64 LE — slippage floor
+delta_out(8)               # u64 LE — trader's quoted Δ_out (advisory; the credited
+                           #   amount is the validator's curve evaluation at actual reserves)
+min_out(8)                 # u64 LE — slippage floor — the trader's binding price consent
 tip_amount(8)              # u64 LE — settler tip in tip_asset
 tip_asset(1)               # 0 = asset_A, 1 = asset_B (MUST == input asset)
 expiry_height(4)           # u32 LE
 trader_pubkey(33)          # compressed secp256k1
 C_in_secp(33)              # trader's input UTXO commitment
 C_change_or_sentinel(33)   # fresh-blinded change commit, or 33×0x00 NO-CHANGE SENTINEL
-C_receipt_secp(33)         # receipt commitment: delta_out·H + r_receipt·G
-r_receipt(32)              # scalar mod n_secp BE; published so indexer can verify the
-                           #   receipt-binding identity (load-bearing — prevents inflation
-                           #   on later spend; see amendment §"Wire format" rationale)
+C_receipt_secp(33)         # QUOTED receipt commitment: delta_out·H + r_receipt·G
+                           #   (bulletproof slot-1 subject; advisory at credit time —
+                           #   the receipt UTXO's canonical commitment is validator-
+                           #   derived from the resolved outcome)
+r_receipt(32)              # scalar mod n_secp BE; published so the indexer can DERIVE
+                           #   the canonical receipt commitment from the outcome amount
+                           #   (load-bearing inflation defense — no trader-declared
+                           #   receipt value is trusted; see amendment §"Wire format")
 range_proof_len(2)         # u16 LE
 range_proof(...)           # aggregated bulletproof m=2 over (C_change_or_sentinel, C_receipt_secp)
 kernel_sig(64)             # BIP-340 over kernel_msg
@@ -3220,33 +3239,42 @@ Total payload ≈ 950–1000 bytes.
 | `vin[1]` | Trader's tacit asset UTXO of (direction == 0 ? asset_A : asset_B); signed SIGHASH_ALL |
 | `vin[2..]` | Optional settler BTC funding inputs |
 | `vout[0]` | `OP_RETURN(envelope_hash)` — 0 sat, 32-byte data; `envelope_hash = SHA256(payload)` |
-| `vout[1]` | Trader receipt UTXO — dust P2WPKH; asset is the **output** asset (the other side) |
+| `vout[1]` | Trader receipt UTXO — dust P2WPKH; outcome-dependent: on EXECUTE the **output** asset at `delta_out_actual`, on PASS-THROUGH the **input** asset refunded at `delta_in + tip_amount` (canonical commitment validator-derived in both cases) |
 | `vout[2]` | Trader change UTXO — dust P2WPKH; carries `C_change_or_sentinel`. Omitted iff `C_change_or_sentinel == NO_CHANGE_SENTINEL` (whole-input case) |
 | `vout[3]` | Optional settler tip UTXO — present iff `tip_amount > 0` |
 | `vout[4..]` | Optional settler BTC change |
 
 **Self-broadcast supported.** Unlike `T_SWAP_BATCH`, a trader can self-broadcast a `T_SWAP_VAR` envelope without a settler (the kernel sig closure is single-trader; no second-party signatures required). The trader funds their own BTC fee, sets `tip_amount = 0`, and pays no settler tip. Suitable for power users + privacy-conscious flow that wants to avoid leaking batch composition to a settler operator.
 
-**Validator algorithm:**
+**Validator algorithm (outcome taxonomy).** Every confirmed envelope resolves to exactly one of **INVALID** (authentication failure — no tacit credit anywhere, the input's value chain ends), **EXECUTE** (market-order fill at actual reserves), or **PASS-THROUGH** (refund — pool state unchanged, input credited back at the receipt slot). Authentication gates are all over data the builder controls at sign time, so INVALID is unreachable for a correct builder; every condition dependent on confirmation-time state lives in the executability stage, where failure refunds instead of burning. Envelopes confirmed below `SWAP_VAR_OUTCOME_ACTIVATION[network]` validate under the superseded strict-equality algorithm.
+
+*Stage A — authentication (any failure ⇒ INVALID):*
 
 1. Verify `vout[0]` is a 0-sat `OP_RETURN` whose 32-byte data equals `SHA256(payload)`.
-2. Decode payload; verify `opcode == 0x32`.
-3. Require existing pool by `pool_id`; verify `direction ∈ {0, 1}`.
-4. **Range gate:** verify `delta_in > 0` and `delta_in_min ≤ delta_in ≤ delta_in_max`.
-5. **Reserves freshness gate:** verify `R_A_pre == pool.reserve_A` AND `R_B_pre == pool.reserve_B` (strict equality at this tx's pre-state — same in-block walking discipline as the running-state model of AMM.md).
-6. **Expiry:** verify `current_height < expiry_height`.
-7. **Curve recompute (strict equality):** with `γ_num = 10000 − pool.fee_bps` and `γ_den = 10000`, recompute
-   - direction 0: `delta_out_expected = ⌊R_B_pre · γ_num · delta_in / (R_A_pre · γ_den + γ_num · delta_in)⌋`
-   - direction 1: `delta_out_expected = ⌊R_A_pre · γ_num · delta_in / (R_B_pre · γ_den + γ_num · delta_in)⌋`
+2. Decode payload; verify `opcode == 0x32`; verify `r_receipt < n_secp`.
+3. **Input binding:** verify `C_in_secp` byte-equals the commitment carried by `vin[1]`'s parent output (the conservation arithmetic below is only sound against the real input value).
+4. **Intent sig:** reconstruct `intent_msg` from envelope fields + `vin[1]` outpoint + `vout[1]` `receive_scriptPubKey`; verify `intent_sig` (BIP-340) under `trader_pubkey` x-only.
+5. **Kernel sig:** construct verifier key `P = C_change_or_sentinel − C_in_secp + delta_in_total · H_secp` with `delta_in_total = delta_in + tip_amount` (and `NO_CHANGE_SENTINEL` substituting the additive identity); verify `kernel_sig` under `P.x_only()` over `kernel_msg`. Closes the trader's input-asset side only.
+6. **Bulletproof:** verify aggregated m=2 range proof over `(C_change_or_sentinel, C_receipt_secp)`. Slot-0 proves `change_amount ≥ 0` (prevents over-spend; load-bearing); slot-1 ranges the quoted receipt for wire-parity with `T_AXFER_VAR` — the credited receipt's range-safety is established by derivation (step 9).
 
-   Reject if `delta_out ≠ delta_out_expected`. Reject if post-batch reserves would be `≤ 0`.
-8. **Slippage floor:** verify `delta_out ≥ min_out`.
-9. **Receipt-binding (load-bearing inflation defense):** verify `r_receipt < n_secp`, then verify `C_receipt_secp == delta_out · H_secp + r_receipt · G_secp` directly. Without this step, the trader could put any value in `C_receipt_secp` and inflate the receipt at spend time while the pool only paid out `delta_out` of asset-B.
-10. **Intent sig:** reconstruct `intent_msg` from envelope fields + `vin[1]` outpoint + `vout[1]` `receive_scriptPubKey`; verify `intent_sig` (BIP-340) under `trader_pubkey` x-only.
-11. **Kernel sig:** construct verifier key `P = C_change_or_sentinel − C_in_secp + delta_in_total · H_secp` (with `NO_CHANGE_SENTINEL` substituting the additive identity); verify `kernel_sig` under `P.x_only()` over `kernel_msg`. Closes the trader's asset-A side only.
-12. **Bulletproof:** verify aggregated m=2 range proof over `(C_change_or_sentinel, C_receipt_secp)`. Slot-0 proves `change_amount ≥ 0` (prevents over-spend); slot-1 is wire-parity with `T_AXFER_VAR` and complements the receipt-binding check.
-13. **Tip output (if `tip_amount > 0`):** caller MUST verify `vout[3]` exists, carries a tip commitment of the correct asset, and opens to `tip_amount` under the settler's derived `r_tip` (domain `"tacit-amm-swap-var-tip-v1"`). The reference validator delegates this check to the caller (`validateSwapVar()` returns the expected commitment for the caller to verify against `vout[3]`).
-14. On success: apply pool reserve updates (`R_A_post`, `R_B_post`); credit receipt UTXO at `vout[1]`; credit change UTXO at `vout[2]` if non-sentinel; mark `vin[1].outpoint` consumed. **Protocol fee is NOT crystallized here** (Uniswap-V2-lazy: only at LP events + `T_PROTOCOL_FEE_CLAIM`).
+*Stage B — executability (any failure ⇒ PASS-THROUGH):*
+
+7. With `pool` = the running pool state at this envelope's canonical position `(block, tx_index)` — including earlier-position same-block AMM envelopes per AMM.md §"Indexer determinism rules" — require ALL of:
+   - `pool_id` registered with fully-verified validation status; `direction ∈ {0, 1}`; `vin[1]`'s parent asset equals the direction's input asset; `tip_asset` equals the direction's input asset;
+   - `delta_in > 0` and `delta_in_min ≤ delta_in ≤ delta_in_max`;
+   - `confirm_height < expiry_height`;
+   - **curve at actual reserves:** with `γ_num = 10000 − pool.fee_bps`, `γ_den = 10000`:
+     - direction 0: `delta_out_actual = ⌊pool.reserve_B · γ_num · delta_in / (pool.reserve_A · γ_den + γ_num · delta_in)⌋`
+     - direction 1: `delta_out_actual = ⌊pool.reserve_A · γ_num · delta_in / (pool.reserve_B · γ_den + γ_num · delta_in)⌋`
+
+     with post-reserves representable u64 and `> 0`;
+   - **slippage floor:** `delta_out_actual ≥ max(1, min_out)` (a zero-output fill never executes — pass-through is strictly kinder than donating `delta_in` to the pool).
+
+*Outcome application:*
+
+8. **EXECUTE:** apply `(R_A_post, R_B_post)`; credit receipt UTXO at `vout[1]` with the **output** asset, amount `delta_out_actual`, canonical commitment `delta_out_actual · H_secp + r_receipt · G_secp`; credit change UTXO at `vout[2]` if non-sentinel; if `tip_amount > 0` AND `vout[3]`'s commitment opens to `tip_amount` under the settler's derived `r_tip` (domain `"tacit-amm-swap-var-tip-v1"`), credit the tip — an unopenable tip output is simply not credited (settler forfeits the tip; fill and pool unaffected). **Protocol fee is NOT crystallized here** (Uniswap-V2-lazy: only at LP events + `T_PROTOCOL_FEE_CLAIM`).
+9. **PASS-THROUGH:** pool state unchanged; credit receipt UTXO at `vout[1]` with the **input** asset, amount `delta_in + tip_amount` (everything the kernel closure proves left the input beyond the committed change — no tip on non-execution), canonical commitment `(delta_in + tip_amount) · H_secp + r_receipt · G_secp`; credit change UTXO at `vout[2]` if non-sentinel; `vout[3]` carries no tacit value.
+10. Both outcomes: mark `vin[1].outpoint` consumed. The derivation in steps 8–9 is the inflation defense: the receipt's committed value is computed by the validator from amounts it itself established (curve output, or the kernel-bound refund total); no trader-declared receipt value is trusted. Range-safety needs no new proof — `delta_out_actual < reserve` by curve construction, and `delta_in + tip_amount ≤ amount_in < 2⁶⁴` transitively from the input's own ancestry range proof via the kernel closure. Indexers persist each swap's resolved outcome (or re-derive it by replay) to answer spend-time ancestry validation for receipt UTXOs, since the credited amount is no longer a static envelope field.
 
 **Domain-tag additions (BIP-340 signature / HMAC domains):**
 
@@ -3357,6 +3385,8 @@ Reference impl: `dapp/bulletproofs-plus.js` (`bppRangeProve`, `bppRangeVerify`),
 
 `T_SWAP_ROUTE` settles a single trader's N-hop swap atomically across up to `N_HOPS_MAX = 4` AMM pools in one Bitcoin tx — Uniswap-V2-router parity for tacit. Hop *k*'s public output delta feeds hop *k+1*'s input; the trader's Pedersen-committed input UTXO and a fresh Pedersen-committed receipt UTXO close under a single kernel sig that binds the entire route. Pre-ceremony viable: reuses the bulletproof rangeproof + kernel-sig stack from `T_SWAP_VAR` (§5.20); introduces no new Groth16 circuit and no new ceremony coupling. Distinct from `T_TRADE_BATCH` (`0x39` — cross-surface AMM↔orderbook; ships independently).
 
+**Inherits §5.20's outcome-taxonomy settlement semantics route-atomically** (same activation constant): the validator re-derives every hop at the actual running reserves from `delta_in_0` forward, the terminal `min_out` is the trader's binding price consent, and a route that authenticates but cannot execute resolves as a single **PASS-THROUGH** — every pool untouched, the trader's input refunded at `vout[1]`. The declared per-hop `(R_A_pre, R_B_pre, delta_a_net_mag, delta_b_net_mag)` blocks demote to advisory quote context. There is no partial-route outcome: EXECUTE applies all hops, PASS-THROUGH applies none.
+
 **Trade-offs vs sequential `T_SWAP_VAR`:**
 
 | Property | `T_SWAP_ROUTE` (this section) | N × `T_SWAP_VAR` (§5.20) |
@@ -3387,16 +3417,24 @@ trader_pubkey(33)          # compressed secp256k1
     pool_id(32)
     direction(1)               # 0 = asset_A is input side, 1 = asset_B
     fee_bps(2)                 # u16 LE — pool's fee_bps at settle
-    R_A_pre(8)                 # u64 LE — pool reserve A pre-hop
-    R_B_pre(8)                 # u64 LE
-    delta_a_net_mag(8)         # u64 LE — magnitude of pool's net A change
-    delta_b_net_mag(8)         # u64 LE
+    R_A_pre(8)                 # u64 LE — quoted pool reserve A pre-hop (advisory;
+                               #   hops re-derive at actual reserves)
+    R_B_pre(8)                 # u64 LE (advisory)
+    delta_a_net_mag(8)         # u64 LE — quoted magnitude of pool's net A change
+                               #   (advisory, except hop-0's input-side delta =
+                               #   delta_in_0, which seeds the route and is
+                               #   kernel-pinned to the input amount)
+    delta_b_net_mag(8)         # u64 LE (advisory)
 
 # Trader chain bindings
 trader_input_outpoint:
     txid(32 BE) || vout(4 LE)
 C_in_secp(33)                  # Pedersen commit at the input outpoint
-C_receipt_secp(33)             # fresh receipt commit (trader's output)
+C_receipt_secp(33)             # QUOTED receipt commit (trader's output; its declared
+                               #   opening stays Stage-A-enforced — it pins
+                               #   amount_in == delta_in_0 via the kernel closure —
+                               #   but the CREDITED commitment is validator-derived
+                               #   from the resolved outcome)
 r_receipt(32)                  # receipt blinding (revealed; mirrors §5.20)
 
 # Closures
@@ -3457,36 +3495,35 @@ P = C_receipt_secp − C_in_secp − (delta_out_last − delta_in_0) · H_secp
 
 signed by `excess_route = r_receipt − r_in` (modular subtraction in the secp256k1 scalar field). When the route round-trips back to the input asset at exactly break-even (`delta_out_last == delta_in_0`), the `H_secp` term collapses to ZERO and the sig closes a pure `(r_receipt − r_in)·G` balance — the same structural pattern as `T_AXFER_VAR`'s break-even closure.
 
-**Validator algorithm:**
+**Validator algorithm (outcome taxonomy — see §5.20 for the INVALID / EXECUTE / PASS-THROUGH definitions).** Envelopes confirmed below `SWAP_VAR_OUTCOME_ACTIVATION[network]` validate under the superseded strict algorithm.
+
+*Stage A — authentication (any failure ⇒ INVALID):*
 
 1. Verify `vout[0]` is a 0-sat `OP_RETURN` whose 32-byte data equals `SHA256(payload)`.
 2. Decode payload; verify `opcode == 0x33` and `2 ≤ n_hops ≤ N_HOPS_MAX (4)`.
-3. Reject if `trader_input_asset_id == trader_output_asset_id` (degenerate route).
-4. **Expiry:** if `expiry_height != 0`, verify `currentHeight ≤ expiry_height`.
-5. **Intent sig:** reconstruct `route_msg`; verify `intent_sig` (BIP-340) under `trader_pubkey`.
-6. Snapshot each touched pool's reserves (so a route that re-visits the same pool advances state correctly hop-by-hop).
-7. **Per-hop iteration** (`k ∈ {0, …, n_hops−1}`):
-   - Require `snap = poolSnapshot[H.pool_id]` exists and `snap.tradable == true`.
-   - Verify `H.fee_bps == snap.fee_bps`, `H.R_A_pre == snap.reserve_A`, `H.R_B_pre == snap.reserve_B` (strict equality against the running snapshot — same in-block walking discipline as §5.20).
-   - Resolve `(asset_in, asset_out, R_in, R_out, delta_in, delta_out)` from `H.direction`.
-   - Require `delta_in > 0 AND delta_out > 0`; `R_in + delta_in ≤ U64_MAX`; `R_out ≥ delta_out`.
-   - **Asset continuity:** `asset_in == hop_input_asset` (initialized to `trader_input_asset_id`, advances to `asset_out` after each hop).
-   - **Amount continuity** (`k ≥ 1`): `delta_in == prev_delta_out`.
-   - **CFMM curve floor identity** (with-fee, integer upper bound; with `γ_num = 10000 − snap.fee_bps`, `γ_den = 10000`):
-     ```
-     delta_out · (R_in · γ_den + γ_num · delta_in)
-       ≤ R_out · γ_num · delta_in
-     ```
-     Per-trader floor dust can only push the actual `delta_out` *down* from the curve; a settler attempt to claim a higher `delta_out` breaks this identity and the indexer rejects.
-   - Advance snapshot reserves; track `delta_in_0`, `delta_out_last`, `prev_delta_out`, `hop_input_asset`.
-8. **Final asset closure:** `hop_input_asset == trader_output_asset_id`.
-9. **Min-out gate (terminal-only):** `delta_out_last ≥ min_out`.
-10. **Receipt opening:** `r_receipt != 0` AND `pedersenCommit(delta_out_last, r_receipt) == C_receipt_secp`.
-11. **Kernel sig:** construct `P = C_receipt_secp − C_in_secp − (delta_out_last − delta_in_0) · H_secp`; reject if `P == ZERO`; verify `kernel_sig` (BIP-340) over `kernel_msg` under `P.x_only`.
-12. **Bulletproof:** aggregated `m=2` over `(ZERO_SENTINEL, C_receipt_secp)` (slot 0 is the additive identity; slot 1 is the receipt). Wire-format parity with `T_AXFER_VAR` / `T_SWAP_VAR` keeps the verifier hot path identical across opcodes.
-13. On success: apply each pool's snapshot to canonical pool state; consume `vin[1]`; credit `vout[1]` receipt UTXO. **Protocol fees are NOT crystallized here** (Uniswap-V2-lazy, same as §5.20).
+3. **Input binding:** verify `C_in_secp` byte-equals the commitment carried by `vin[1]`'s parent output.
+4. **Intent sig:** reconstruct `route_msg`; verify `intent_sig` (BIP-340) under `trader_pubkey`.
+5. **Quoted-receipt opening:** `r_receipt != 0`, `r_receipt < n_secp`, AND `pedersenCommit(delta_out_last_declared, r_receipt) == C_receipt_secp` where `delta_out_last_declared` is the final hop's declared output delta. This opening stays load-bearing in Stage A even though the credited commitment is derived: the route has no change slot, so it is exactly what makes the kernel closure (step 6) pin `amount_in == delta_in_0` — without it the closure under-determines the input amount and the refund arithmetic is unsound.
+6. **Kernel sig:** construct `P = C_receipt_secp − C_in_secp − (delta_out_last_declared − delta_in_0) · H_secp`; reject if `P == ZERO`; verify `kernel_sig` (BIP-340) over `kernel_msg` under `P.x_only`. Together with step 5 this proves `amount_in == delta_in_0` (whole-input-exact).
+7. **Bulletproof:** aggregated `m=2` over `(ZERO_SENTINEL, C_receipt_secp)` (slot 0 is the additive identity; slot 1 ranges the quoted receipt). Wire-format parity with `T_AXFER_VAR` / `T_SWAP_VAR` keeps the verifier hot path identical across opcodes.
 
-If ANY hop fails the freshness check, fee_bps mismatch, asset/amount chain check, reserve-bound guard, CFMM curve floor, kernel sig, intent sig, receipt opening, or bulletproof verification, the entire envelope is rejected. The Bitcoin tx still confirms (Bitcoin doesn't care about indexer semantics) but the indexer doesn't update state — no pool advances, no UTXO credit. Atomic at the indexer-state-transition layer (mirrors `T_SWAP_BATCH` / `T_TRADE_BATCH` posture).
+*Stage B — executability (any failure ⇒ PASS-THROUGH):*
+
+8. Require `trader_input_asset_id != trader_output_asset_id` (degenerate route) and, if `expiry_height != 0`, `confirm_height ≤ expiry_height`.
+9. Snapshot each touched pool's running reserves at this envelope's canonical position (so a route that re-visits the same pool advances state correctly hop-by-hop). **Per-hop re-derivation** (`k ∈ {0, …, n_hops−1}`), seeded with `delta_in_actual_0 = delta_in_0`:
+   - Require `snap = poolSnapshot[H.pool_id]` exists with fully-verified validation status and `snap.tradable == true`; require `H.fee_bps == snap.fee_bps`; require `H.direction ∈ {0, 1}`.
+   - **Asset continuity:** the hop's input asset (from `H.direction` against the pool's pair) equals `hop_input_asset` (initialized to `trader_input_asset_id`, advances each hop).
+   - **Curve at actual reserves:** `delta_out_actual_k = ⌊R_out · γ_num · delta_in_actual_k / (R_in · γ_den + γ_num · delta_in_actual_k)⌋` with `γ_num = 10000 − snap.fee_bps`, `γ_den = 10000`; require `delta_in_actual_k > 0`, post-reserves representable u64 and `> 0`.
+   - Advance the snapshot; feed `delta_in_actual_{k+1} = delta_out_actual_k`. The declared `(R_A_pre, R_B_pre, delta_a_net_mag, delta_b_net_mag)` blocks are not consulted (advisory).
+10. **Final asset closure:** `hop_input_asset == trader_output_asset_id`.
+11. **Min-out gate (terminal-only):** `delta_out_actual_last ≥ max(1, min_out)`.
+
+*Outcome application:*
+
+12. **EXECUTE:** apply every pool's snapshot to canonical state; consume `vin[1]`; credit `vout[1]` with `trader_output_asset_id`, amount `delta_out_actual_last`, canonical commitment `delta_out_actual_last · H_secp + r_receipt · G_secp`. **Protocol fees are NOT crystallized here** (Uniswap-V2-lazy, same as §5.20).
+13. **PASS-THROUGH:** no pool advances; consume `vin[1]`; credit `vout[1]` with `trader_input_asset_id`, amount `delta_in_0` (= the full input, by the step-5/6 pin), canonical commitment `delta_in_0 · H_secp + r_receipt · G_secp`.
+
+Stage-A failure means the Bitcoin tx still confirms (Bitcoin doesn't care about indexer semantics) but no tacit state changes and no UTXO credits — reachable only by a malformed or forged builder, never by pool movement. Atomic at the indexer-state-transition layer in all outcomes (mirrors `T_SWAP_BATCH` / `T_TRADE_BATCH` posture).
 
 **Within-block ordering:** when multiple `T_SWAP_ROUTE` / `T_SWAP_VAR` / `T_SWAP_BATCH` envelopes touch the same pool in the same block, AMM.md §"Indexer determinism rules" applies: `(tx_index, vin[0] outpoint)` ascending. Earlier-in-block envelopes apply state first; later ones see the updated reserves. A route that re-visits the same pool walks the snapshot hop-by-hop within the same envelope.
 

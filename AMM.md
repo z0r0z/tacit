@@ -1749,7 +1749,7 @@ on every reorg-affected block:
 |---|---|---|---|
 | `pool_id`, `asset_A`, `asset_B`, `vk_cid`, `fee_bps`, `protocol_fee_address`, `protocol_fee_bps`, `capability_flags` | 3 (POOL_INIT) | `T_LP_ADD variant=1` | every subsequent envelope against this pool |
 | `init_height` | 3 (POOL_INIT) | `T_LP_ADD variant=1` | `T_LP_ADD variant=0` (lock-window gate, AMM_INITIAL_LP_LOCK_BLOCKS) |
-| `reserve_A`, `reserve_B` | 3 | every `T_LP_ADD`, `T_LP_REMOVE`, `T_SWAP_BATCH`, `T_SWAP_VAR` | every subsequent envelope (used as `R_A_pre` / `R_B_pre`) |
+| `reserve_A`, `reserve_B` | 3 | every `T_LP_ADD`, `T_LP_REMOVE`, `T_SWAP_BATCH`, `T_SWAP_VAR`, `T_SWAP_ROUTE` | every subsequent envelope — as the strict `R_A_pre` / `R_B_pre` match for `T_SWAP_BATCH`, and as the actual-reserve evaluation basis for `T_SWAP_VAR` / `T_SWAP_ROUTE` (whose declared `R_A_pre` / `R_B_pre` are advisory since the §5.20 outcome-taxonomy revision) |
 | `lp_total_shares` (`S`) | 3 | `T_LP_ADD`, `T_LP_REMOVE`, `T_PROTOCOL_FEE_CLAIM` | every subsequent LP envelope + protocol-fee crystallization |
 | `k_last` (protocol-fee baseline) | 3 | every LP event + `T_PROTOCOL_FEE_CLAIM` | next LP event's crystallization step |
 | `protocol_fee_accrued` | 3 | every LP event (lazy mintFee) | `T_PROTOCOL_FEE_CLAIM` |
@@ -1761,8 +1761,14 @@ divergence described in "Disjoint-batches-same-block burn-grief"
 canonical tip during a shallow reorg MUST converge once both have
 processed the same depth-3-confirmed chain. Wallets MUST treat
 pool-state reads from depth < 3 as `pending` and refuse to
-auto-sign envelopes whose declared `R_A_pre` / `R_B_pre` derive
-from tip-state rather than canonical state.
+auto-sign `T_SWAP_BATCH` envelopes (whose Groth16 public signals
+strict-bind `R_A_pre` / `R_B_pre`) or LP envelopes against
+tip-state baselines. For `T_SWAP_VAR` / `T_SWAP_ROUTE` the
+declared reserve view is advisory under the §5.20 outcome
+taxonomy — wallets MAY quote from tip-state or mempool-projected
+reserves, because the signed `min_out` floor (not the reserve
+view) is the trader's price consent and a floor miss resolves as
+a pass-through refund.
 
 **Initial-LP lock.** Pool state additionally tracks `init_height`
 (the confirmation height of `POOL_INIT`). Variant-0 `T_LP_ADD` is
@@ -2066,11 +2072,13 @@ to different hidden values — is:
 For `T_SWAP_VAR` the chain is shorter (no Groth16): `intent_sig`
 binds the trader to a specific `(pool, direction, Δ, receipt
 commitment, change-or-sentinel)`; a CXFER-style kernel signature
-closes the asset-input side; the indexer recomputes the curve
-output at the public pre-state reserves and requires strict
-equality. `T_INTENT_ATTEST` and `T_PROTOCOL_FEE_CLAIM` reduce to
-single BIP-340 signatures over canonical messages — no Groth16,
-no opening proofs.
+closes the asset-input side; the indexer evaluates the curve at
+the actual running reserves within the trader's signed `min_out`
+floor and derives the credited receipt commitment itself (SPEC.md
+§5.20 outcome taxonomy — a non-executable envelope refunds the
+input rather than consuming it). `T_INTENT_ATTEST` and
+`T_PROTOCOL_FEE_CLAIM` reduce to single BIP-340 signatures over
+canonical messages — no Groth16, no opening proofs.
 
 The "Where each attack vector is closed" table below names every
 adversarial path and the constraint that rejects it. Every row has
@@ -3036,7 +3044,7 @@ above; informative reference for evaluators.
 | **Settler claims wrong tip** | Per-intent `tip_amount_witness === tip_amount` (public, BIP-340-signed in `intent_msg`). Aggregate `tip_A` / `tip_B` checked in-circuit. |
 | **Settler swaps two traders' commitments** | Each intent's `cInSecp`/`cInBjj` is part of the signed `intent_msg`. Re-ordering breaks intent_sig verification. |
 | **Settler exploits padding slots (N<16)** | Padded slots use BJJ identity `(0, 1)` and zero amounts; non-identity in a padded slot is rejected by adversarial test 28. Indexer matches each non-padded slot to a signed intent. |
-| **Settler burn-griefs trader UTXO via envelope swap** (single-batch case) | Mandatory `vout[0] OP_RETURN(envelope_hash)` + trader's `SIGHASH_ALL` over their inputs commits the trader to a specific envelope. A different envelope breaks the sig. The narrower disjoint-batches-same-block case (two settlers race the same pool with disjoint subsets; later envelope's `R_A_pre` mismatches post-prior-batch reserves; indexer rejects but Bitcoin already consumed inputs) is documented at §"Caveats" as an operational race, not structurally closed. |
+| **Settler burn-griefs trader UTXO via envelope swap** (single-batch case) | Mandatory `vout[0] OP_RETURN(envelope_hash)` + trader's `SIGHASH_ALL` over their inputs commits the trader to a specific envelope. A different envelope breaks the sig. The narrower disjoint-batches-same-block case (two settlers race the same pool with disjoint subsets; later envelope's `R_A_pre` mismatches post-prior-batch reserves; indexer rejects but Bitcoin already consumed inputs) is documented at §"Caveats" as an operational race, not structurally closed — for `T_SWAP_BATCH`. The per-trade paths (`T_SWAP_VAR` / `T_SWAP_ROUTE`) closed their analog structurally via the §5.20 outcome taxonomy (stale envelopes execute at actual reserves within floor or pass through; never burn). |
 | **Settler double-init pool** | Indexer rejects `T_LP_ADD variant=1` against an existing `pool_id`. |
 | **Settler cross-pool replay** | `pool_id_fr` is a public-signal in every Groth16 proof; verifies against the pool's pinned `vk_cid`. A proof against pool A's vk cannot verify against pool B's. |
 | **Intra-batch sandwich / priority-fee MEV** | Uniform clearing — every intent in a batch settles at the same `P_clear`. Intent ordering is by `intent_id`, not tip. Frontrun gets the same price as the victim. |
@@ -3061,9 +3069,10 @@ than `T_SWAP_BATCH`. Rows below apply only to `T_SWAP_VAR`:
 | Attack | Defense |
 |---|---|
 | **Trader-amount confidentiality** | NOT preserved — `delta_in` and `delta_out` are cleartext in the envelope (this is by design, the trade-off for variable-amount range semantics + no Groth16 + no ceremony). Trader's pre/post wallet balances remain confidential via Pedersen on input + change UTXOs, but the per-fill amount is public. Dapp UX MUST surface this clearly. |
-| **Receipt-inflation attack** (trader puts any value in `C_receipt_secp`, spends as inflated amount later) | Validator step 9: verify `r_receipt < n_secp` and `C_receipt_secp == delta_out · H_secp + r_receipt · G_secp` directly. The opening scalar `r_receipt` is published in the envelope so any indexer can recompute and bind the commitment to the cleartext `delta_out`. **Load-bearing inflation defense.** |
-| **Settler underpaying trader** | Validator step 7: strict-equality curve recompute (`delta_out == delta_out_expected`) at current pool reserves; step 8: `delta_out ≥ min_out` slippage floor. Settler has zero pricing freedom — stronger than `T_SWAP_BATCH`'s curve-floor inequality, because `T_SWAP_VAR` is per-fill at a known pre-state. |
-| **Reserves-staleness attack** (settler builds envelope from old pool state) | Validator step 5: strict equality `R_A_pre == pool.reserve_A AND R_B_pre == pool.reserve_B` at this tx's pre-state. In-block walking: later same-pool swaps in the same block see updated reserves and reject if pre-state doesn't match the running canonical state. |
+| **Receipt-inflation attack** (trader puts any value in `C_receipt_secp`, spends as inflated amount later) | The credited receipt commitment is validator-DERIVED from the resolved outcome amount and the published `r_receipt` (`delta_out_actual · H + r_receipt · G` on execute, refund-total on pass-through) — no trader-declared receipt value is trusted anywhere (SPEC.md §5.20 steps 8–10). **Load-bearing inflation defense**, strictly stronger than the pre-revision declared-opening equality check. |
+| **Settler underpaying trader** | The validator computes `delta_out_actual` itself at the actual running reserves and credits exactly that; `delta_out_actual ≥ max(1, min_out)` or the envelope passes through. Settler has zero pricing freedom — the declared `delta_out` field is advisory. |
+| **Reserves-staleness attack** (settler builds envelope from old pool state) | Closed by re-derivation: a stale quote executes at the ACTUAL reserves within the trader's floor or passes through (SPEC.md §5.20 outcome taxonomy). There is no declared value a stale or malicious quote can smuggle into the credit path, and — unlike the superseded strict-equality gate — staleness can no longer destroy the trader's input. In-block walking: later same-pool swaps in the same block price against the running post-earlier-fill reserves. |
+| **Concurrent same-pool swaps (burn race)** | Closed structurally by pass-through: any interleaving of same-pool envelopes resolves every one of them as EXECUTE (at its canonical-position price, floor-bounded) or PASS-THROUGH (full refund at the receipt slot). No ordering, sequencing convention, or settler coordination is required for fund safety. |
 | **Whole-input consumption** | Supported via `NO_CHANGE_SENTINEL` (33 bytes of 0x00) substituting for `C_change_or_sentinel`. Kernel sig closure substitutes point-at-infinity for the sentinel. No CXFER pre-split required. |
 | **Cross-asset kernel-sig forgery** | Closed by `intent_sig` binding `C_receipt_secp` + `C_change_or_sentinel` out-of-kernel (the receipt is virtually paid by the pool and has no UTXO to balance against). Kernel sig closes only trader's input-asset side. |
 
@@ -3165,7 +3174,19 @@ failure) lives at
   a 32-byte pool-state-root hash) into `OP_RETURN`, surfacing
   staleness at indexer-level earlier in validation — this does not
   undo the Bitcoin consumption but improves the operational signal
-  for settler coordination tooling.
+  for settler coordination tooling. This caveat is now
+  `T_SWAP_BATCH`-only: the per-trade paths (`T_SWAP_VAR` `0x32`,
+  `T_SWAP_ROUTE` `0x33`) closed their analog structurally in the
+  SPEC.md §5.20 outcome-taxonomy revision (2026-06-05) — a stale
+  per-trade envelope executes at the actual reserves within the
+  trader's `min_out` floor or resolves as a pass-through refund;
+  Bitcoin consumption of the input always produces a corresponding
+  credited receipt (fill or refund). The batch path cannot adopt
+  the same fix as-is because its Groth16 public signals
+  strict-bind `R_A_pre` / `R_B_pre` in-circuit; a chain-side
+  refund-on-stale resolution (crediting each batch trader's
+  `C_in` back at a refund slot without opening it) is a plausible
+  follow-up but needs its own layout + spec work.
 - **Circuit cost is mixer-tier.** Cross-curve binding is a
   SNARK-free sigma protocol (~169 B wire, microseconds
   prove/verify). The Groth16 batch proof does native BabyJubJub

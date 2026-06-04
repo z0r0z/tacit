@@ -628,6 +628,14 @@ async function handleProverHeartbeat(req, env, cors) {
     prover_alive: body.prover_alive === true || body.prover_alive === 'true',
     note: typeof body.note === 'string' ? body.note.slice(0, 200) : '',
   };
+  // Progress fields (optional — older box heartbeats omit them). These let
+  // /prover-health answer "how far behind is proof coverage", not just "is
+  // the box up": prover_alive only says the loop process exists, not that
+  // state is advancing.
+  for (const k of ['last_proven_height', 'relay_tip', 'btc_tip']) {
+    const v = Number(body[k]);
+    if (Number.isInteger(v) && v >= 0 && v < 100000000) rec[k] = v;
+  }
   await env.REGISTRY_KV.put(PROVER_HB_KEY, JSON.stringify(rec));
   return jsonResponse({ ok: true, stored: rec.ts }, 200, cors);
 }
@@ -657,6 +665,11 @@ async function handleProverHealth(env, cors) {
     prover_alive: hb.prover_alive !== false,
     network: hb.network || 'mainnet',
     note: hb.note || '',
+    last_proven_height: Number.isInteger(hb.last_proven_height) ? hb.last_proven_height : null,
+    relay_tip: Number.isInteger(hb.relay_tip) ? hb.relay_tip : null,
+    btc_tip: Number.isInteger(hb.btc_tip) ? hb.btc_tip : null,
+    blocks_behind: (Number.isInteger(hb.btc_tip) && Number.isInteger(hb.last_proven_height))
+      ? Math.max(0, hb.btc_tip - hb.last_proven_height) : null,
     reasons,
   }, healthy ? 200 : 503, hdr);
 }
@@ -1964,6 +1977,25 @@ async function ammPoolGet(env, network, poolIdHex) {
 }
 async function ammPoolPut(env, network, poolIdHex, value) {
   await env.REGISTRY_KV.put(ammPoolKey(network, poolIdHex), JSON.stringify(value));
+}
+
+// Accepted-swap marker. A T_SWAP_VAR / T_SWAP_ROUTE receipt (and change) is a
+// virtual mint: its backing is the pool curve evaluated at the pool's real
+// pre-state reserves, which a light validator cannot reconstruct from local
+// UTXO ancestry. The worker enforces every gate (SPEC §5.20) and records the
+// accepted swap txid here; the dapp holdings validator gates receipt credit on
+// this set via /amm/swap-accepted. Written only after a swap passes all gates
+// and advances pool reserves.
+function ammSwapAcceptedKey(network, txidHex) {
+  return network === 'signet'
+    ? `ammswapok:${txidHex}`
+    : `ammswapok:${network}:${txidHex}`;
+}
+async function ammSwapAcceptedGet(env, network, txidHex) {
+  return env.REGISTRY_KV.get(ammSwapAcceptedKey(network, txidHex), 'json');
+}
+async function ammSwapAcceptedPut(env, network, txidHex, value) {
+  await env.REGISTRY_KV.put(ammSwapAcceptedKey(network, txidHex), JSON.stringify(value));
 }
 
 // Per-pair reverse index. Multiple pools can share an (assetA, assetB) pair
@@ -23780,6 +23812,7 @@ async function scanForEtches(env, network) {
           validation: 'verified',
         };
         await ammPoolPut(env, network, sv.pool_id, newPool);
+        await ammSwapAcceptedPut(env, network, tx.txid, { h, pool_id: sv.pool_id });
         found++;
       } else if (decoded.opcode === T_SWAP_ROUTE) {
         const _DR = (msg) => { try { console.log(`[DR-SR] tx=${tx.txid.slice(0,16)} h=${h} ${msg}`); } catch {} };
@@ -23984,6 +24017,7 @@ async function scanForEtches(env, network) {
           };
           await ammPoolPut(env, network, pid_hex, newPool);
         }
+        await ammSwapAcceptedPut(env, network, tx.txid, { h, route: true });
         found++;
       } else if (decoded.opcode === T_FARM_INIT) {
         // SPEC-AMM-FARM-AMENDMENT §5.40. Launcher creates a reward farm
@@ -25646,6 +25680,24 @@ async function _routeFetch(req, env, ctx) {
         return jsonResponse(response, 200, cors);
       } catch (e) {
         return jsonResponse({ error: 'amm pool lookup failed', detail: String(e?.message || e) }, 500, cors);
+      }
+    }
+
+    // AMM swap-acceptance check (see ammSwapAcceptedPut). The dapp holdings
+    // validator queries this before crediting a T_SWAP_VAR / T_SWAP_ROUTE
+    // receipt or change UTXO: the receipt is a virtual mint whose curve +
+    // reserve-freshness backing can't be verified from local ancestry, so a
+    // forged swap (valid bulletproof, fabricated reserves) is caught here.
+    if (url.pathname === '/amm/swap-accepted' && req.method === 'GET') {
+      const txid = (url.searchParams.get('txid') || '').toLowerCase();
+      if (!/^[0-9a-f]{64}$/.test(txid)) {
+        return jsonResponse({ error: 'txid must be 64 hex chars' }, 400, cors);
+      }
+      try {
+        const rec = await ammSwapAcceptedGet(env, network, txid);
+        return jsonResponse({ txid, network, accepted: !!rec, height: rec?.h ?? null }, 200, cors);
+      } catch (e) {
+        return jsonResponse({ error: 'amm swap-accepted lookup failed', detail: String(e?.message || e) }, 500, cors);
       }
     }
 
