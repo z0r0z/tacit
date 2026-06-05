@@ -231,26 +231,36 @@ parts are not verifiable without the SP1 build (Docker for the canonical ELF), s
 the guest/host/verifier change is built and tested as a unit in that environment,
 not committed piecemeal as unverified consensus code.
 
-### 4.2 Backlog-aware deposit gate (LOCK-2)
-Make the deposit-capacity gate aware of in-flight mint backlog rather than
-instantaneous occupancy, so the existing `POOL_TREE_RESERVE` headroom (already
-enforced for mint/rotate/import, `main.rs:374`) accounts for queued deposits
-before any higher-volume pool is un-gated.
+### 4.2 Backlog-aware deposit gate (LOCK-2) — accept + document, NOT a code fix
+On implementation review this cannot be cleanly closed in code: the surviving
+variant needs the deposit gate to know the *current* SP1 pool-tree size, which
+grows from rotate/import — off-chain Bitcoin ops the contract never sees (it has
+only the lagging `lastProvenPoolIndex`). Any deposit gate is therefore
+approximate and risks wrongly rejecting valid deposits without closing the
+variant. The mechanism needs a single denom pool within 1024 of `MAX_LEAVES`
+(2^20) — ~5 orders of magnitude past pilot — and value is stranded (self-grief),
+never stolen. Mitigation: the existing reserve gates + keep per-denom occupancy
+well below `MAX_LEAVES` (administrative). Same disposition bucket as LOCK-1.
 
-### 4.3 Denomination-bound nullifier (LOCK-3)
-Bind `denom` into the pool `nullifierHash` derivation so a preimage can't be
-reused across denominations. The shipped client already derives per-denom; this
-closes it for any third-party client.
+### 4.3 Denomination-bound nullifier (LOCK-3) — DONE (branch `teth-gen1`, 491632f)
+Implemented as denom-scoping in the guest spent set rather than a circuit change:
+each nullifier is keyed by its denomination (`scope_nullifier(denom, nullifier)`)
+before insert, matching the per-denom keying the client and worker already use.
+Verified every insert site (T_WITHDRAW + the 4 bridge ops) binds its denom in the
+proof + bind hash and is gated on that denom's pool/deposit state, so scoping
+cannot enable a cross-denom replay — it only removes the cross-denom collision.
+Guest compiles; 8 unit tests pass incl. same-denom double-claim rejection. §8
+must add a positive cross-denom test (same preimage, two denoms, both spendable).
 
-### 4.4 Inclusion-proof guards (QUAL-1)
-Add the 64-byte BIP141 reject and an explicit merkle-depth bound to the on-chain
-tx-inclusion path (parity hardening; the SP1-accepted-burn registry remains the
-authorization root).
+### 4.4 Inclusion-proof guards (QUAL-1) — deferred (cosmetic)
+"Parity only": the audit states the inclusion proof is not the authorization
+root (the SP1-accepted-burn registry is), and the guest's `compute_txid` already
+carries the 64-byte BIP141 reject. A contract-source change for no security gain;
+not worth growing the redeploy's audit surface. Backlog.
 
-### 4.5 Asset-global spent-nullifier set (TRUST-1, optional)
-Optionally move cross-denom nullifier uniqueness to an on-chain asset-global set,
-reducing committed guest state. Evaluate cost vs. benefit; not required for
-correctness.
+### 4.5 Asset-global spent-nullifier set (TRUST-1) — deferred (not a fix)
+Optional architecture (moving the nullifier set on-chain), not a bug; adds
+permanent on-chain state. Backlog, not gen-1.
 
 *(Out of scope: the import prevTxid byte-order issue was a client bug, already
 fixed — the guest is correct. F-2 mint-only reserve already ships in the
