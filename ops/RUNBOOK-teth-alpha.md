@@ -42,19 +42,34 @@ yet). Hand me the three addresses + the deploy BTC block + the vkey.
 ## Step 4 — multigen continuity (me, then you deploy) — BEFORE any alpha op
 
 This is the gen-0 safety gate: alpha reuses the asset_id, so the indexer must
-distinguish generations before alpha generates a single bridge op, or alpha's
-ops collide with gen-0's pool records and break gen-0 redeem-proof building.
+distinguish generations before alpha generates a single bridge op. Today the
+bridge pool key is `pool:${network}:${aid}:${denom}` (worker `index.js:913`) —
+no generation dimension — so alpha's first op would write to **gen-0's exact KV
+record** and break gen-0 redeem-proof building.
 
-- **(me)** land the worker generation dimension: a generation registry
-  (`{verifier, mixer, chain_id, genesis, label}` for pilot + alpha), per-op
-  attribution by recomputing the full bind hash (`chain_id + mixer_address +
-  …`, reduced mod field) against each candidate mixer, and the `gen` segment in
-  the pool/leaf/nullifier keys (gen-0/pilot → falsy `gen` → byte-identical
-  legacy keys). Plus the dapp `TETH_DEPLOYMENTS` registry + routing. Unit-tested
-  attribution against a known op.
+The change (all backward-compatible — gen-0/pilot maps to a falsy `gen`, so its
+keys stay byte-identical and it indexes unchanged):
+- a **generation registry** `{verifier, mixer, chain_id, genesis, label}` for
+  pilot + alpha;
+- a **`gen` segment** in the pool / leaf / nullifier keys, falsy for pilot;
+- **attribution by authoritative on-chain state, not hash replication**: a new
+  deposit is attributed to the generation whose mixer accumulator recognizes its
+  `eth_root` (one cached `eth_call` per candidate mixer — robust, and avoids
+  re-deriving the contract's exact bind-hash preimage). The pool it creates is
+  tagged with that generation; every later op on that pool inherits the
+  generation by matching its `poolRoot` to that pool's proven-root history.
+- the dapp `TETH_DEPLOYMENTS` registry + routing + merged tETH balance.
+
+Why this lands at step 4, not earlier: attribution must be **tested against the
+real alpha accumulator** (its `eth_root` membership), which doesn't exist until
+step 3 deploys the mixer. Building it blind against a not-yet-deployed contract
+is exactly the untestable-code risk we avoid — so the design is locked here, the
+implementation + its unit/integration test run once alpha's address is in hand.
+
+- **(me)** implement + test against the deployed alpha mixer.
 - **(you)** deploy that worker **before opening alpha deposits**.
-- Confirm gen-0 still indexes unchanged (its keys are byte-identical) and
-  `/pools` now carries a generation per pool.
+- Confirm gen-0 still indexes unchanged (byte-identical keys) and `/pools` now
+  carries a generation per pool.
 
 ## Step 5 — live tiny-cap round-trip (you + me)
 
