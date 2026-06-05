@@ -3634,6 +3634,8 @@ For non-mintable assets attested at etch, the result is **provably and permanent
 
 For mintable assets, additional trust is on the mint_authority key not being abused (the holder can mint arbitrary amounts at any time). Auto-attestation of every mint event by default closes the "K mints, N unattested" supply-bound gap; with all mints attested, total supply at any moment = etch + Σ attested mints − Σ on-chain burns.
 
+**Reproduce it yourself.** `scripts/verify-tac-supply.mjs` is a standalone verifier of the above for a non-mintable asset, from chain + IPFS alone (no indexer trusted): it recomputes `asset_id = SHA256(etch_txid_LE ‖ vout_LE)`, reads `mint_authority` + `commitment` from the etch tx's Taproot witness, content-verifies the attestation against its IPFS CID, derives the NUMS generator `H`, and checks `pedersenCommit(supply, blinding) == commitment`. Defaults to the live TAC etch; pass `<asset_id> <etch_txid>` for any other fixed-supply asset.
+
 ### 7.4 Mixer pool (§5.10–5.11)
 
 **Privacy.** The withdrawer's anonymity set within a pool is the count of currently-unspent leaves at the moment the proof is broadcast. Groth16 zero-knowledge ensures a chain analyst learns no information beyond pool size from a withdrawal. **Anonymity does not require trusted setup** — Groth16 zero-knowledge is unconditional. Trusted setup is only load-bearing for *soundness* (no false withdrawals).

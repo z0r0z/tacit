@@ -560,7 +560,8 @@ tacit/
 ├── discord/               # protocol monitoring bot
 ├── airdrop/               # CSV-based airdrop tooling
 ├── ops/                   # operational runbooks
-├── scripts/               # utility scripts (relay, SP1 proofs)
+├── scripts/               # utility scripts (relay, SP1 proofs,
+│                          #  verify-tac-supply.mjs: trustless fixed-supply check)
 ├── SPEC.md                # canonical protocol specification
 ├── AMM.md                 # confidential AMM architecture
 ├── MIXER.md               # shielded-pool architecture
