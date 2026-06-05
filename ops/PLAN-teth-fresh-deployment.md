@@ -104,6 +104,37 @@ asset change, no migration. Old generations remain redeemable forever; their
 prover is run on demand and is permissionless, so redemption never depends on us
 keeping a box up.
 
+### Generation legitimacy (the security boundary)
+Because every generation mints the *same* asset, the unified supply is only as
+sound as the weakest generation the client honours: a generation running a
+malicious guest could mint unbacked tETH and circulate it as the real asset. So
+the set of recognized generations is the security boundary — it cannot be a
+curated address list, it must be verifiable from chain. A generation is
+legitimate only when all of these hold:
+
+1. `ASSET_ID == 3cba71e1…` — the tETH etch, whose `mint_authority` is all-zero
+   (verified on chain: etch `8c31974d…`), so a canonical bridge pool is the only
+   path that can create tETH at all.
+2. The verifier is **immutable and ownerless** — no admin, pause, or pointer
+   that could swap the guest after deployment.
+3. The verifier's `PROGRAM_VKEY` is in the **blessed ELF-vkey set** — the
+   canonical, ceremony-committed ELFs, one entry per generation, published and
+   pinned the same way the single ELF is pinned today (`elf-vkey-pin.json`).
+4. The verifier's `BURN_VERIFIER` is the canonical Groth16 ceremony key.
+5. The verifier is bound to a real proof-of-work Bitcoin relay.
+
+This extends the existing canonical-pool gate up to the SP1 layer. Today
+`isPoolCanonical` already refuses any pool whose Groth16 `vk_cid` /
+`ceremony_cid` isn't the canonical trusted setup (a fake setup could otherwise
+forge withdrawals and inflate the asset); the client validator credits a
+generation's tETH only when its verifier additionally passes the five checks
+above, and ignores it otherwise — exactly as it ignores non-canonical pools
+today. The only thing the maintainer publishes is the blessed-vkey set;
+everything else is read from chain, so a generation outside the set is not
+honoured no matter who deployed it. Keeping the set as a pinned client constant
+(like the current `CANONICAL_VK_CID`) preserves Option A's no-governance
+property — there is no on-chain owner or registry to capture.
+
 ---
 
 ## 3. Worker changes (generation dimension)
@@ -229,8 +260,13 @@ No escrow move, no rollover, no asset re-etch.
 
 ## Open decisions
 
-- Confirm same `asset_id` reuse across generations (vs. a fresh supply-0 asset
-  per generation, which would need the family-aggregation variant of §2).
+- Confirmed: same `asset_id` reuse across generations is sound — tETH's etch
+  `mint_authority` is all-zero, so the bridge is the only supply path and there
+  is no rogue-mint route. (The family-aggregation variant of §2 is the fallback
+  only if a future generation ever needs a different etch.)
+- Where the blessed ELF-vkey set lives: pinned client constant (recommended —
+  no governance, mirrors `CANONICAL_VK_CID`) vs. an on-chain registry (adds a
+  curation surface that Option A is specifically avoiding).
 - Whether to include §4.5 (TRUST-1) now or defer.
 - Generation key in the worker: mixer address vs. verifier address (verifier is
   the proving-program identity; mixer is the escrow identity — likely verifier).
