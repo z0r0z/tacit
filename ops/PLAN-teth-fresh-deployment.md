@@ -184,33 +184,42 @@ root the client observed; if a deposit to the same pool is proven in an earlier
 cycle, the bound root is no longer seeded that cycle. Persist a K-deep per-pool
 root window (K ≈ 32) so a redeem against any of the last K roots is recognized.
 
-**Security anchor — the make-or-break constraint.** The window is consensus
-state: if the prover could supply an arbitrary window as private input, it could
-seed `known_pool_roots` with fabricated roots and accept burns against them —
-i.e. forge withdrawals (theft). So the window must be committed and carried
-forward exactly like `poolsHash` is today. Concretely:
+**Security anchor — the make-or-break constraint, and how it's met without a
+verifier change.** The window is consensus state: if the prover could supply an
+arbitrary window as private input it could seed `known_pool_roots` with
+fabricated roots and accept burns against them (theft). It must be tamper-proof.
+Verified against the current code, the clean anchor is the **existing opaque
+state commitment** — no new verifier field, no on-chain ABI change:
+
+- The guest already commits `new_state_commitment = compute_state_commitment_multi(...)`
+  and the verifier checks `prevStateCmt == currentStateCommitment`
+  (`SP1PoolRootVerifier.sol:193`) and advances it (`:276`) **without recomputing
+  it** — it's opaque. So folding the window hash into
+  `compute_state_commitment_multi` makes the window tamper-evident through the
+  chain that already exists. Genesis still matches (verifier
+  `currentStateCommitment` defaults to 0 = guest genesis `prev_state_commitment`).
+- The window's *values* (needed by the host next cycle) ride in the **proven
+  host-only tail** the prover already emits after the on-chain claims
+  (`main.rs:573–603`); `proveStateTransition` parses only up to that tail and
+  ignores the rest, so appending the window there is invisible on chain but
+  still SP1-authenticated.
+
+So **the verifier contract is unchanged** (a new verifier is still deployed, but
+only because the vkey changes). The work is guest + host Rust:
 
 - **Guest** (`contracts/sp1/program/src/main.rs`):
-  - Read the prior window per denom as input (alongside `prev_pool_roots` /
-    frontiers, ~49–63), and seed `known_pool_roots[i]` from it instead of from
-    only `trees[i].root()` (replace the seeding at ~107–120, both branches —
-    genesis seeds an empty/one-entry window).
-  - Push each new `trees[i].root()` into the window on every append
-    (deposit/import/rotate), evicting beyond K (mirror the existing in-cycle
-    ring discipline).
-  - Commit `prev_window_hash` and `new_window_hash` in the public values
-    (extend the `io::commit_slice` block at ~543–558), where
-    `window_hash = sha256(per-denom recent-roots)`.
-- **Verifier** (`SP1PoolRootVerifier.sol`): add a committed
-  `poolRecentRootsHash` to `currentState`; check the proof's `prev_window_hash`
-  equals the stored value (alongside the existing `prevPoolsHash`/null/height/
-  block checks, ~177–183) and advance it to `new_window_hash`. Genesis sets it
-  to the empty-window hash. This is the one verifier change and the reason §4.1
-  is a generation, not a hot edit.
+  - Read the prior window per denom right after the frontier read (~62).
+  - Seed `known_pool_roots[i]` from it instead of only `trees[i].root()`
+    (~107–120, both branches; genesis = empty window → seed `{empty_root}`).
+  - Push the new `trees[i].root()` into the window on every append, alongside the
+    existing `known_pool_roots[i].insert(...)` (`:354`, `:377`, `:456`), evicting
+    beyond K.
+  - Fold the window hash into `compute_state_commitment_multi`.
+  - Emit the new window in the host-only tail (after the utxo block, ~603).
 - **Host** (`contracts/sp1/script/src/main.rs`): `ProverState` gains
-  `pool_recent_roots: Vec<Vec<Vec<u8>>>`; serialize/load it, feed it as guest
-  input in the read order above, and extract the new window from the committed
-  tail after each cycle.
+  `pool_recent_roots: Vec<Vec<Vec<u8>>>`; feed it as guest input in the read
+  order (after frontiers, ~379), parse the new window from the public-values
+  tail (after utxo, ~609), and persist it (serde-derived).
 
 **Client knock-on:** the pre-burn equality check relaxes to window membership,
 so redeems of already-proven notes no longer wait on unrelated pending deposits.
