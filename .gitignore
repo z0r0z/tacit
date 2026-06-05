@@ -77,3 +77,6 @@ contracts/.deployer.env
 
 # one-off SP1 proof outputs (proof_bytes/public_values hex)
 contracts/sp1/*.hex
+
+# scratch files from parallel test iterations
+tests/_tmp_*
