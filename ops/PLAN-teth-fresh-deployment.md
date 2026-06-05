@@ -181,13 +181,47 @@ together in the generation-1 ELF.
 The guest seeds `known_pool_roots[i]` each non-genesis cycle with only the
 resumed root (`main.rs` non-genesis branch, ~115–120). A redeem binds the pool
 root the client observed; if a deposit to the same pool is proven in an earlier
-cycle, the bound root is no longer seeded that cycle.
-- Persist a K-deep per-pool root window in committed `ProverState` and seed
-  `known_pool_roots[i]` from it (K ≈ 32, mirroring the in-cycle ring).
-- The client's pre-burn check can then relax to window membership, so redeems of
-  already-proven notes no longer wait on unrelated pending deposits.
-- `ProverState` gains `pool_recent_roots`; the verifier's committed state head
-  carries the window hash.
+cycle, the bound root is no longer seeded that cycle. Persist a K-deep per-pool
+root window (K ≈ 32) so a redeem against any of the last K roots is recognized.
+
+**Security anchor — the make-or-break constraint.** The window is consensus
+state: if the prover could supply an arbitrary window as private input, it could
+seed `known_pool_roots` with fabricated roots and accept burns against them —
+i.e. forge withdrawals (theft). So the window must be committed and carried
+forward exactly like `poolsHash` is today. Concretely:
+
+- **Guest** (`contracts/sp1/program/src/main.rs`):
+  - Read the prior window per denom as input (alongside `prev_pool_roots` /
+    frontiers, ~49–63), and seed `known_pool_roots[i]` from it instead of from
+    only `trees[i].root()` (replace the seeding at ~107–120, both branches —
+    genesis seeds an empty/one-entry window).
+  - Push each new `trees[i].root()` into the window on every append
+    (deposit/import/rotate), evicting beyond K (mirror the existing in-cycle
+    ring discipline).
+  - Commit `prev_window_hash` and `new_window_hash` in the public values
+    (extend the `io::commit_slice` block at ~543–558), where
+    `window_hash = sha256(per-denom recent-roots)`.
+- **Verifier** (`SP1PoolRootVerifier.sol`): add a committed
+  `poolRecentRootsHash` to `currentState`; check the proof's `prev_window_hash`
+  equals the stored value (alongside the existing `prevPoolsHash`/null/height/
+  block checks, ~177–183) and advance it to `new_window_hash`. Genesis sets it
+  to the empty-window hash. This is the one verifier change and the reason §4.1
+  is a generation, not a hot edit.
+- **Host** (`contracts/sp1/script/src/main.rs`): `ProverState` gains
+  `pool_recent_roots: Vec<Vec<Vec<u8>>>`; serialize/load it, feed it as guest
+  input in the read order above, and extract the new window from the committed
+  tail after each cycle.
+
+**Client knock-on:** the pre-burn equality check relaxes to window membership,
+so redeems of already-proven notes no longer wait on unrelated pending deposits.
+
+**Test plan (gate before trusting):** real-proof suites green on a built ELF;
+a positive test that a deposit-then-redeem straddling a cycle boundary now
+succeeds; a **negative test that a fabricated window is rejected** (the
+`prev_window_hash` check fails) — this is the security-critical case. Full signet
+round-trip last. None of this is verifiable without the SP1 build (Docker for
+the canonical ELF) + a signet target, so it is built and tested as a unit in
+that environment, not committed piecemeal as unverified consensus code.
 
 ### 4.2 Backlog-aware deposit gate (LOCK-2)
 Make the deposit-capacity gate aware of in-flight mint backlog rather than
