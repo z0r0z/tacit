@@ -299,3 +299,4 @@ step('D', 'wait for founder tETH balance');
 }
 
 console.log(`\n=== restock complete — run tests/amm-teth-tac-pool-signet.mjs next ===\n`);
+process.exit(0); // dapp/undici keep-alive handles otherwise hang the process
