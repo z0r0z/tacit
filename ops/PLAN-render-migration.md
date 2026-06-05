@@ -32,9 +32,14 @@ not a fork.
 - Conformance tests: `tests/server-kv-shim.test.mjs` (run against both
   drivers; set `TEST_DATABASE_URL` for Postgres),
   `tests/server-harness.test.mjs` (boots the real worker over HTTP).
-- Snapshot tooling: `scripts/kv-export.mjs` (Cloudflare → NDJSON, resumable,
-  read-only) and `scripts/kv-import.mjs` (NDJSON → Postgres, upsert — rerun
-  with a fresh export as the delta sync).
+- Snapshot tooling: `scripts/kv-export-wrangler.mjs` (Cloudflare → NDJSON via
+  the local wrangler OAuth login, bulk-paced, resumable; `--refetch-prefixes`
+  is the delta-sync knob for mutable state) with `scripts/kv-export.mjs` as
+  the API-token variant, and `scripts/kv-import.mjs` (NDJSON → Postgres,
+  upsert — rerun with a fresh export as the delta sync).
+- Shadow comparator: `scripts/api-shadow-diff.mjs` replays the read
+  endpoints (incl. POST `/asset-book` across all sections) against two
+  origins and reports structural diffs, volatile fields normalized.
 
 ## Render setup (when ready — not yet in render.yaml)
 
@@ -97,29 +102,17 @@ untouched while everything is rehearsed.
 
 ## Legacy workers.dev fallback
 
-The classic endpoint stays up indefinitely as a ~30-line proxy. It needs no
-KV, no cron, and ~1ms CPU per request — comfortably inside the Workers free
-plan (100k requests/day); traffic on it only decays after step 6. Keep
-`workers_dev = true` in its config (routes deploys silently drop it
-otherwise — see the note in worker/wrangler.toml).
+The classic endpoint stays up indefinitely as a pass-through. The build
+lives at `worker/proxy/` (same worker name, so deploying it replaces
+tacit-pin in place — cutover step 5 only). It needs no KV, no cron, and ~1ms
+CPU per request — comfortably inside the Workers free plan (100k
+requests/day); traffic on it only decays after step 6. Its config keeps
+`workers_dev = true` (routes deploys silently drop it otherwise — see the
+note in worker/wrangler.toml) and `crons = []` to remove the trigger.
 
-```js
-export default {
-  async fetch(req, env) {
-    const url = new URL(req.url);
-    url.hostname = 'api.tacit.finance';
-    url.port = '';
-    const fwd = new Request(url, req);
-    fwd.headers.set('x-tacit-proxy-key', env.PROXY_TRUST_KEY);
-    fwd.headers.set('x-tacit-forwarded-ip', req.headers.get('CF-Connecting-IP') || '');
-    return fetch(fwd);
-  },
-};
-```
-
-The two `x-tacit-*` headers carry the real client IP through to the origin's
-rate-limit buckets; the harness honors them only when the key matches and
-strips them from every other caller.
+The proxy's two `x-tacit-*` headers carry the real client IP through to the
+origin's rate-limit buckets; the harness honors them only when the key
+matches `PROXY_TRUST_KEY` and strips them from every other caller.
 
 ## Running your own indexer
 
