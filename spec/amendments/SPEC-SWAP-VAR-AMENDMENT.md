@@ -21,11 +21,10 @@
 > trader's binding price consent, and any non-executable envelope
 > that still authenticates refunds the trader's input at the receipt
 > slot instead of burning it. `R_A_pre` / `R_B_pre` / `delta_out`
-> demote to advisory quote context; the wire format is unchanged.
-> Activation is height-gated per network (`SWAP_VAR_OUTCOME_ACTIVATION`);
-> envelopes confirmed below the activation height validate under the
-> superseded strict algorithm (preserved in git history at this file's
-> pre-revision state). Rationale: under strict semantics any two
+> demote to advisory quote context; the wire format is unchanged. The
+> strict draft predates launch and never shipped — the outcome taxonomy
+> applies from genesis on every network (the superseded text is
+> preserved in git history at this file's pre-revision state). Rationale: under strict semantics any two
 > concurrent same-pool swaps in one inter-block window burn the
 > later one — fatal for multi-trader pools; see "Concurrency and the
 > burn race" under Motivation.
@@ -508,12 +507,6 @@ failure refunds instead of burning.
 
 ```
 on T_SWAP_VAR envelope at confirmation depth ≥ FINALITY_DEPTH:
-
-    // Activation gate (network constant; see "Backwards-compatibility").
-    // Envelopes confirmed below the activation height validate under the
-    // superseded strict algorithm preserved in this file's git history.
-    if settlement_block_height < SWAP_VAR_OUTCOME_ACTIVATION[network]:
-        run the pre-revision strict algorithm and stop
 
     // ── Stage A — AUTHENTICATION. Any failure ⇒ INVALID: no tacit
     //    credit at any output; vin[1]'s tacit value chain ends.
@@ -1166,12 +1159,10 @@ semantics, not wire format. Compatibility properties:
 - **The only divergence class is previously-skipped envelopes**
   (confirmed txs whose envelopes failed an economic gate and
   consumed the input without credit). Under the revised rules
-  those would resolve as EXECUTE or PASS-THROUGH, shifting replay
-  from that point. The per-network activation constant
-  `SWAP_VAR_OUTCOME_ACTIVATION` removes the ambiguity: envelopes
-  confirmed below it validate under the strict algorithm
-  (preserved in git history), at/above it under this revision.
-  Networks with no `T_SWAP_VAR` history (mainnet) pin 0.
+  those resolve as EXECUTE or PASS-THROUGH instead. Pre-launch
+  this is a non-event: no live network ever ran the strict draft,
+  and the only chain history is disposable signet harness traffic
+  — the outcome taxonomy simply applies from genesis everywhere.
 - **Old builders keep working and get safer.** A pre-revision
   client that builds with a stale reserve view produces an
   envelope that now executes at the actual price within its own

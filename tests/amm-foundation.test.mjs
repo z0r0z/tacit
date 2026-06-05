@@ -217,16 +217,8 @@ group('ammPoolGet/ammPoolPut round-trip (in-memory KV stub)');
 }
 
 // ============== T_SWAP_VAR outcome records (SPEC §5.20 outcome taxonomy) ==============
-group('swapVarOutcomeActive + ammSwapAccepted outcome-record round-trip');
+group('ammSwapAccepted outcome-record round-trip');
 {
-  // Activation boundary: strictly below ⇒ legacy, at/above ⇒ outcome rules.
-  const sigAct = worker.SWAP_VAR_OUTCOME_ACTIVATION.signet;
-  ok('signet activation pinned above all pre-revision history', sigAct > 305000);
-  ok('mainnet activation = 0 (no T_SWAP_VAR history)', worker.SWAP_VAR_OUTCOME_ACTIVATION.mainnet === 0);
-  ok('below activation ⇒ legacy', worker.swapVarOutcomeActive('signet', sigAct - 1) === false);
-  ok('at activation ⇒ outcome rules', worker.swapVarOutcomeActive('signet', sigAct) === true);
-  ok('mainnet active from genesis', worker.swapVarOutcomeActive('mainnet', 0) === true);
-
   function makeKvStub() {
     const data = new Map();
     return {
@@ -270,8 +262,8 @@ group('swapVarOutcomeActive + ammSwapAccepted outcome-record round-trip');
     && gotPass?.change === null
     && gotPass?.receipt?.asset_id === 'aa'.repeat(32));
 
-  // Legacy records ({h, pool_id} only — pre-revision accepts) stay readable
-  // and distinguishable by the absent `outcome` field.
+  // Records without an `outcome` field (written before the scan resolved
+  // the swap, or by older worker builds) stay readable and distinguishable.
   const txid3 = 'ef'.repeat(32);
   await worker.ammSwapAcceptedPut(env, 'signet', txid3, { h: 305000, pool_id: '11'.repeat(32) });
   const gotLegacy = await worker.ammSwapAcceptedGet(env, 'signet', txid3);

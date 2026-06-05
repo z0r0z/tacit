@@ -1092,8 +1092,7 @@ if envelope.opcode == T_SWAP_VAR (0x32):
     #   commitment opens under r_tip (unopenable tip ⇒ settler forfeits, fill stands).
     # PASS-THROUGH: pool unchanged; credit receipt at vout[1] (input asset refund,
     #   delta_in + tip_amount, derived commitment); credit change if non-sentinel.
-    # Both: vin[1] consumed. Below SWAP_VAR_OUTCOME_ACTIVATION[network], the
-    # superseded strict-equality algorithm applies.
+    # Both: vin[1] consumed.
 
 if envelope.opcode == T_AXFER_VAR (0x37):
     # See §5.7.9. Variable-amount atomic settlement; reuses CXFER N=2 cryptography.
@@ -3179,7 +3178,7 @@ The reveal tx's vouts MAY carry anything (BTC change, etc.); none of them are ta
 
 The second AMM trader path: per-trade-against-curve fills with continuous-amount `[Y, X]` range semantics, settled in a single Bitcoin tx with **no Groth16 proof and no batching**. Lives alongside `T_SWAP_BATCH` (`0x2F`) under the "two AMM trader paths" model. Reuses CXFER N=2 cryptography (Pedersen + aggregated bulletproof + kernel sig) from `T_AXFER_VAR` (`0x37`); ships independently of the AMM Phase 2 trusted setup.
 
-**Settlement semantics are market-order-within-floor + pass-through** (2026-06-05 revision; extended rationale in `spec/amendments/SPEC-SWAP-VAR-AMENDMENT.md` §"Concurrency and the burn race"): the validator evaluates the curve at the pool's **actual running reserves** at the envelope's canonical position, the trader's signed `min_out` is the binding price consent, and an envelope that authenticates but cannot execute **passes the trader's input back through** at the receipt slot instead of consuming it without credit. Concurrent same-pool swaps therefore all settle — each at its canonical-position price, or as a refund — and no interleaving can destroy a trader's input. Activation is height-gated per network (`SWAP_VAR_OUTCOME_ACTIVATION`; networks with no prior `T_SWAP_VAR` history pin 0); envelopes confirmed below the activation height validate under the superseded strict-equality algorithm preserved in the amendment file's git history.
+**Settlement semantics are market-order-within-floor + pass-through** (2026-06-05 revision; extended rationale in `spec/amendments/SPEC-SWAP-VAR-AMENDMENT.md` §"Concurrency and the burn race"): the validator evaluates the curve at the pool's **actual running reserves** at the envelope's canonical position, the trader's signed `min_out` is the binding price consent, and an envelope that authenticates but cannot execute **passes the trader's input back through** at the receipt slot instead of consuming it without credit. Concurrent same-pool swaps therefore all settle — each at its canonical-position price, or as a refund — and no interleaving can destroy a trader's input. The superseded strict-equality draft predates launch and never shipped; the outcome taxonomy applies from genesis on every network.
 
 **Trade-offs vs `T_SWAP_BATCH`:**
 
@@ -3246,7 +3245,7 @@ Total payload ≈ 950–1000 bytes.
 
 **Self-broadcast supported.** Unlike `T_SWAP_BATCH`, a trader can self-broadcast a `T_SWAP_VAR` envelope without a settler (the kernel sig closure is single-trader; no second-party signatures required). The trader funds their own BTC fee, sets `tip_amount = 0`, and pays no settler tip. Suitable for power users + privacy-conscious flow that wants to avoid leaking batch composition to a settler operator.
 
-**Validator algorithm (outcome taxonomy).** Every confirmed envelope resolves to exactly one of **INVALID** (authentication failure — no tacit credit anywhere, the input's value chain ends), **EXECUTE** (market-order fill at actual reserves), or **PASS-THROUGH** (refund — pool state unchanged, input credited back at the receipt slot). Authentication gates are all over data the builder controls at sign time, so INVALID is unreachable for a correct builder; every condition dependent on confirmation-time state lives in the executability stage, where failure refunds instead of burning. Envelopes confirmed below `SWAP_VAR_OUTCOME_ACTIVATION[network]` validate under the superseded strict-equality algorithm.
+**Validator algorithm (outcome taxonomy).** Every confirmed envelope resolves to exactly one of **INVALID** (authentication failure — no tacit credit anywhere, the input's value chain ends), **EXECUTE** (market-order fill at actual reserves), or **PASS-THROUGH** (refund — pool state unchanged, input credited back at the receipt slot). Authentication gates are all over data the builder controls at sign time, so INVALID is unreachable for a correct builder; every condition dependent on confirmation-time state lives in the executability stage, where failure refunds instead of burning.
 
 *Stage A — authentication (any failure ⇒ INVALID):*
 
@@ -3385,7 +3384,7 @@ Reference impl: `dapp/bulletproofs-plus.js` (`bppRangeProve`, `bppRangeVerify`),
 
 `T_SWAP_ROUTE` settles a single trader's N-hop swap atomically across up to `N_HOPS_MAX = 4` AMM pools in one Bitcoin tx — Uniswap-V2-router parity for tacit. Hop *k*'s public output delta feeds hop *k+1*'s input; the trader's Pedersen-committed input UTXO and a fresh Pedersen-committed receipt UTXO close under a single kernel sig that binds the entire route. Pre-ceremony viable: reuses the bulletproof rangeproof + kernel-sig stack from `T_SWAP_VAR` (§5.20); introduces no new Groth16 circuit and no new ceremony coupling. Distinct from `T_TRADE_BATCH` (`0x39` — cross-surface AMM↔orderbook; ships independently).
 
-**Inherits §5.20's outcome-taxonomy settlement semantics route-atomically** (same activation constant): the validator re-derives every hop at the actual running reserves from `delta_in_0` forward, the terminal `min_out` is the trader's binding price consent, and a route that authenticates but cannot execute resolves as a single **PASS-THROUGH** — every pool untouched, the trader's input refunded at `vout[1]`. The declared per-hop `(R_A_pre, R_B_pre, delta_a_net_mag, delta_b_net_mag)` blocks demote to advisory quote context. There is no partial-route outcome: EXECUTE applies all hops, PASS-THROUGH applies none.
+**Inherits §5.20's outcome-taxonomy settlement semantics route-atomically**: the validator re-derives every hop at the actual running reserves from `delta_in_0` forward, the terminal `min_out` is the trader's binding price consent, and a route that authenticates but cannot execute resolves as a single **PASS-THROUGH** — every pool untouched, the trader's input refunded at `vout[1]`. The declared per-hop `(R_A_pre, R_B_pre, delta_a_net_mag, delta_b_net_mag)` blocks demote to advisory quote context. There is no partial-route outcome: EXECUTE applies all hops, PASS-THROUGH applies none.
 
 **Trade-offs vs sequential `T_SWAP_VAR`:**
 
@@ -3495,7 +3494,7 @@ P = C_receipt_secp − C_in_secp − (delta_out_last − delta_in_0) · H_secp
 
 signed by `excess_route = r_receipt − r_in` (modular subtraction in the secp256k1 scalar field). When the route round-trips back to the input asset at exactly break-even (`delta_out_last == delta_in_0`), the `H_secp` term collapses to ZERO and the sig closes a pure `(r_receipt − r_in)·G` balance — the same structural pattern as `T_AXFER_VAR`'s break-even closure.
 
-**Validator algorithm (outcome taxonomy — see §5.20 for the INVALID / EXECUTE / PASS-THROUGH definitions).** Envelopes confirmed below `SWAP_VAR_OUTCOME_ACTIVATION[network]` validate under the superseded strict algorithm.
+**Validator algorithm (outcome taxonomy — see §5.20 for the INVALID / EXECUTE / PASS-THROUGH definitions).**
 
 *Stage A — authentication (any failure ⇒ INVALID):*
 

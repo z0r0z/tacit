@@ -125,7 +125,13 @@ console.log(`  tETH:    ${TETH.slice(0, 16)}…  TAC8: ${TAC8.slice(0, 16)}…\n
 
 // ---- Phase 1: move tETH from the bridge wallet to the founder ----
 step(1, 'bridge wallet → founder tETH transfer');
-if (state.transfer?.reveal_txid) {
+useWallet(FOUNDER);
+const _founderTeth = (await dapp.scanHoldings()).get(TETH)?.balance ?? 0n;
+if (_founderTeth >= TETH_POOL_MIN) {
+  ok(`founder already holds ${_founderTeth} tETH units (restock harness) — skipping transfer`);
+  state.transfer = state.transfer || { skipped: true, amount: _founderTeth.toString() };
+  saveState(state);
+} else if (state.transfer?.reveal_txid) {
   ok(`reusing transfer: ${state.transfer.reveal_txid.slice(0, 16)}… (${state.transfer.amount} units)`);
 } else {
   useWallet(BRIDGE);

@@ -138,17 +138,6 @@ const T_PROTOCOL_FEE_CLAIM = 0x31; // founder-pinned recipient mints accrued LP-
 const T_SWAP_VAR   = 0x32; // per-trade variable-amount AMM swap (SPEC §5.16.3)
 const T_SWAP_ROUTE = 0x33; // atomic multi-hop AMM routing (SPEC-SWAP-ROUTE-AMENDMENT)
 const SWAP_ROUTE_N_HOPS_MAX = 4; // matches tests/swap-route.mjs N_HOPS_MAX
-// SPEC §5.20 outcome-taxonomy activation (2026-06-05 revision). Envelopes
-// confirmed below this height validate under the superseded strict-equality
-// algorithm (frozen legacy branch in the scan loop); at/above, the
-// market-order-within-floor + pass-through algorithm applies. Signet pin =
-// tip at revision time + margin (covers all prior signet swap history);
-// mainnet has no T_SWAP_VAR history, so the new rules apply from genesis.
-const SWAP_VAR_OUTCOME_ACTIVATION = { signet: 307450, mainnet: 0 };
-function swapVarOutcomeActive(network, height) {
-  const act = SWAP_VAR_OUTCOME_ACTIVATION[network === 'signet' ? 'signet' : 'mainnet'] ?? 0;
-  return height >= act;
-}
 const XCURVE_PROOF_LEN_AMM = 169; // tacit-amm sigma proof length
 // LP-bond yield farms (SPEC-AMM-FARM-AMENDMENT.md). Three opcodes:
 //   T_FARM_INIT  : launcher-funded reward farm creation; virtual treasury.
@@ -14887,10 +14876,10 @@ async function commitmentForUtxo(env, txidHex, vout, network, opts = {}) {
     //
     // The credited amounts are no longer static envelope fields, so
     // resolution reads the scan-time outcome record (same pattern as
-    // T_LP_UNBOND's receipt index). Records without an `outcome` field
-    // (legacy strict-algorithm accepts) and pre-activation history fall
-    // back to the declared-field resolution, which is exact for them —
-    // a legacy-accepted swap executed precisely at its declared values.
+    // T_LP_UNBOND's receipt index). When the record hasn't landed yet
+    // (scan lag), fall back to the declared-field resolution — exact for
+    // the common executed-at-quote case, corrected by the record once the
+    // scan processes the swap.
     const sv = decodeTSwapVarPayload(decoded.payload);
     if (!sv) throw new Error('invalid T_SWAP_VAR payload');
     const rec = await ammSwapAcceptedGet(env, network, txidHex);
@@ -14904,8 +14893,8 @@ async function commitmentForUtxo(env, txidHex, vout, network, opts = {}) {
       }
       throw new Error(`T_SWAP_VAR vout ${vout} out of range for asset UTXO resolution`);
     }
-    // Legacy fallback (declared fields). Look up the pool to know which
-    // asset is which.
+    // Declared-field fallback (record not yet indexed). Look up the pool
+    // to know which asset is which.
     const pool = await ammPoolGet(env, network, sv.pool_id);
     if (!pool) throw new Error(`T_SWAP_VAR pool not registered: ${sv.pool_id}`);
     if (vout === 1) {
@@ -23717,14 +23706,10 @@ async function scanForEtches(env, network) {
         // tips unsupported; the dapp self-fulfil path always sets tip = 0).
         // Spec posture: an uncredited tip output forfeits the tip only —
         // fill and pool are unaffected.
-        //
-        // Envelopes confirmed below SWAP_VAR_OUTCOME_ACTIVATION validate
-        // under the FROZEN LEGACY strict-equality algorithm (kept verbatim
-        // below) so historical replay is byte-stable.
         const sv = decodeTSwapVarPayload(decoded.payload);
         if (!sv) continue;
 
-        // OP_RETURN binding check (Stage A — common to both algorithms).
+        // OP_RETURN binding check (Stage A).
         const vout0 = tx.vout?.[0];
         if (!vout0 || typeof vout0.scriptpubkey !== 'string') continue;
         const opReturnSpk = vout0.scriptpubkey.toLowerCase();
@@ -23738,91 +23723,54 @@ async function scanForEtches(env, network) {
         }
         if (!opReturnOk) continue;
 
-        if (!swapVarOutcomeActive(network, h)) {
-        // ════════ FROZEN LEGACY — strict-equality algorithm ════════
-        // Pre-activation history only. Do not modify: replay stability of
-        // already-confirmed signet envelopes depends on this branch staying
-        // byte-identical to the pre-revision validator.
+        // ════════ OUTCOME-TAXONOMY ALGORITHM (SPEC §5.20, 2026-06-05) ════════
 
-        // Pool lookup.
-        const pool = await ammPoolGet(env, network, sv.pool_id);
-        if (!pool) continue;
-        if (pool.validation !== 'xcurve-verified'
-            && pool.validation !== 'verified') continue;
+        // ── Stage A — authentication (any failure ⇒ INVALID, `continue`) ──
 
-        // Reserves freshness: trader's view MUST match the pool's
-        // running state immediately before this tx. This is the
-        // critical anti-stale-quote gate — without it, a trader could
-        // submit an old (high reserve_A) quote against a current
-        // (low reserve_A) pool and drain the difference.
-        if (sv.R_A_pre !== pool.reserve_a) continue;
-        if (sv.R_B_pre !== pool.reserve_b) continue;
-
-        // Range checks.
-        const deltaInBig = BigInt(sv.delta_in);
-        const deltaInMinBig = BigInt(sv.delta_in_min);
-        const deltaInMaxBig = BigInt(sv.delta_in_max);
-        if (deltaInBig === 0n) continue;
-        if (deltaInBig < deltaInMinBig || deltaInBig > deltaInMaxBig) continue;
-
-        // Expiry.
-        if (h >= sv.expiry_height) continue;
-
-        // Curve recompute.
-        let curve;
-        try {
-          curve = ammCurveDeltaOut(
-            sv.direction, sv.R_A_pre, sv.R_B_pre, sv.delta_in, pool.fee_bps,
-          );
-        } catch { continue; }
-        if (curve.deltaOut !== BigInt(sv.delta_out)) continue;
-        if (curve.deltaOut < BigInt(sv.min_out)) continue;  // slippage
-
-        // Crypto gates: cInSecp matches on-chain UTXO + kernel sig +
-        // intent sig. The trader's asset input is at tx.vin[1] (vin[0]
-        // is the commit P2TR carrying the envelope).
+        // Input binding: resolve vin[1]'s parent asset UTXO. The refund
+        // and conservation arithmetic below is only sound against the
+        // real input value, so an unresolvable or mismatched input is an
+        // authentication failure, not a pass-through.
         const traderInp = tx.vin?.[1];
         if (!traderInp || typeof traderInp.txid !== 'string' || typeof traderInp.vout !== 'number') continue;
         let parent;
         try { parent = await commitmentForUtxo(env, traderInp.txid, traderInp.vout, network); }
         catch { continue; }
         if (!parent) continue;
-        // Asset-id consistency: trader's input UTXO must be asset_A
-        // (direction=0) or asset_B (direction=1).
-        const expectedAssetIdHex = sv.direction === 0 ? pool.asset_a : pool.asset_b;
-        if (parent.asset_id !== expectedAssetIdHex) continue;
-        // C_in_secp must match the on-chain Pedersen commit byte-for-byte.
-        // Closes the input-side inflation gap (analogous to receipt-side
-        // 2026-05-15 fix): without this, a trader can claim
-        // a_in_claimed > a_real, mint env.cChange to commit to (a_real + Δ),
-        // and inflate asset A by Δ when they spend the change UTXO.
         if (parent.commitment !== sv.c_in_secp) continue;
 
+        // r_receipt scalar range: [1, n). Drives the derived-commitment
+        // credit in both non-invalid outcomes; zero rejected for parity
+        // with T_SWAP_ROUTE (degenerate blinding).
+        const rReceiptBig = bytes32ToBigint(hexToBytes(sv.r_receipt));
+        if (rReceiptBig === 0n || rReceiptBig >= SECP_N) continue;
+
         // Kernel sig: P = C_change_or_sentinel − C_in_secp + delta_in_total·H.
-        // Verify under P's x-only form. delta_in_total = delta_in + tip_amount.
+        // The kernel msg binds the input's REAL asset id (parent.asset_id),
+        // not the pool's direction side — identical bytes in the honest
+        // case, and well-defined even when the pool is unknown.
+        const deltaInTotal = BigInt(sv.delta_in) + BigInt(sv.tip_amount);
+        if (deltaInTotal >= 1n << 64n) continue;
         let kernelPoint;
         try {
           kernelPoint = ammSwapVarKernelVerifyPoint(
             hexToBytes(sv.c_change_or_sentinel),
             hexToBytes(sv.c_in_secp),
-            BigInt(sv.delta_in) + BigInt(sv.tip_amount),
+            deltaInTotal,
           );
         } catch { continue; }
         if (kernelPoint.equals(PEDERSEN_ZERO)) continue;
         const kernelXOnly = kernelPoint.toRawBytes(true).slice(1);
-        const assetIdInBytes = hexToBytes(expectedAssetIdHex);
         const kernelMsg = ammKernelMsgV1(
-          assetIdInBytes,
+          hexToBytes(parent.asset_id),
           [{ txid: traderInp.txid, vout: traderInp.vout }],
           [hexToBytes(sv.c_change_or_sentinel)],
-          BigInt(sv.delta_in) + BigInt(sv.tip_amount),
+          deltaInTotal,
         );
         if (!verifySchnorr(hexToBytes(sv.kernel_sig), kernelMsg, kernelXOnly)) continue;
 
-        // Intent sig: trader's BIP-340 over intent_msg under trader_pubkey.
-        // Reconstructs the intent_msg from envelope fields + the on-chain
-        // receive_scriptPubKey (vout[1]'s scriptpubkey — the trader pre-
-        // committed to where their swap receipt lands).
+        // Intent sig over the reconstructed intent_msg (binds the on-chain
+        // receive_scriptPubKey at vout[1]).
         const receiptVout = tx.vout?.[1];
         if (!receiptVout || typeof receiptVout.scriptpubkey !== 'string') continue;
         const receiveScriptPubKey = hexToBytes(receiptVout.scriptpubkey);
@@ -23853,245 +23801,105 @@ async function scanForEtches(env, network) {
         } catch { continue; }
         if (!verifySchnorr(hexToBytes(sv.intent_sig), intentMsg, traderXOnly)) continue;
 
-        // r_receipt opening check: env.cReceiptSecp must equal
-        // delta_out · H + r_receipt · G. Closes the receipt-side
-        // inflation gap surfaced 2026-05-15.
+        // Bulletproof m=2 over (C_change_or_sentinel, C_receipt_secp).
+        // Slot 0 (change ≥ 0) is load-bearing for both outcomes; slot 1
+        // ranges the QUOTED receipt (wire parity with T_AXFER_VAR) — the
+        // credited amount's range-safety is established by derivation.
         let cReceiptPoint;
         try { cReceiptPoint = compressedPointFromHex(sv.c_receipt_secp); }
         catch { continue; }
-        const rReceiptBig = bytes32ToBigint(hexToBytes(sv.r_receipt)) % SECP_N;
-        // Parity with T_SWAP_ROUTE (see below): r_receipt == 0 collapses the
-        // Pedersen commitment to plaintext delta_out · H, leaking the receipt
-        // amount. Soundness is preserved (BP+ still binds) but the privacy
-        // guarantee dissolves. Reject outright.
-        if (rReceiptBig === 0n) continue;
-        const expectedReceipt = pedersenCommit(BigInt(sv.delta_out), rReceiptBig);
-        if (!cReceiptPoint.equals(expectedReceipt)) continue;
-
-        // Bulletproof m=2 range check on (C_change_or_sentinel, C_receipt_secp).
-        // This closes the change-side inflation: without it a trader can
-        // claim delta_in_total > a_in_real, mint C_change to commit to
-        // (a_real - delta_in_total) mod n (wraps under BigInt), and inflate
-        // asset A by Δ when spending the change UTXO. Mirrors the
-        // reference validator's `bulletproofVerify` call in tests/swap-var.mjs.
-        let cChangeForBP;
         const cChangeBytes = hexToBytes(sv.c_change_or_sentinel);
         let isSentinelBP = true;
         for (let i = 0; i < 33; i++) if (cChangeBytes[i] !== 0) { isSentinelBP = false; break; }
+        let cChangeForBP;
         if (isSentinelBP) {
           cChangeForBP = PEDERSEN_ZERO;
         } else {
           try { cChangeForBP = compressedPointFromHex(sv.c_change_or_sentinel); }
           catch { continue; }
         }
-        const rangeProofBytes = hexToBytes(sv.range_proof);
         let bpOk = false;
         try {
-          bpOk = bpRangeAggVerify([cChangeForBP, cReceiptPoint], rangeProofBytes);
+          bpOk = bpRangeAggVerify([cChangeForBP, cReceiptPoint], hexToBytes(sv.range_proof));
         } catch { bpOk = false; }
         if (!bpOk) continue;
 
-        // Update pool reserves. The trader's asset-A consumption + the
-        // receipt UTXO (asset-B mint) are handled by the standard asset-
-        // UTXO machinery when the validator processes the tx's input
-        // spends. The pool record only tracks aggregate reserves.
-        const newPool = {
-          ...pool,
-          reserve_a: curve.raPost.toString(),
-          reserve_b: curve.rbPost.toString(),
-          k_last: (curve.raPost * curve.rbPost).toString(),
-          last_swap_txid: tx.txid,
-          last_swap_height: h,
-          last_swap_at: tx.status?.block_time || Math.floor(Date.now() / 1000),
-          // Upgrade tag to 'verified' for pools whose first swap has
-          // passed all crypto + arithmetic gates. Downstream consumers
-          // (cross-pool router, integrators) can refuse pools tagged
-          // 'sigs-and-arithmetic-verified' for high-value flows.
-          validation: 'verified',
-        };
-        await ammPoolPut(env, network, sv.pool_id, newPool);
-        await ammSwapAcceptedPut(env, network, tx.txid, { h, pool_id: sv.pool_id });
-        found++;
-        // ════════ END FROZEN LEGACY ════════
-        } else {
-          // ════════ OUTCOME-TAXONOMY ALGORITHM (SPEC §5.20, 2026-06-05) ════════
-
-          // ── Stage A — authentication (any failure ⇒ INVALID, `continue`) ──
-
-          // Input binding: resolve vin[1]'s parent asset UTXO. The refund
-          // and conservation arithmetic below is only sound against the
-          // real input value, so an unresolvable or mismatched input is an
-          // authentication failure, not a pass-through.
-          const traderInp = tx.vin?.[1];
-          if (!traderInp || typeof traderInp.txid !== 'string' || typeof traderInp.vout !== 'number') continue;
-          let parent;
-          try { parent = await commitmentForUtxo(env, traderInp.txid, traderInp.vout, network); }
-          catch { continue; }
-          if (!parent) continue;
-          if (parent.commitment !== sv.c_in_secp) continue;
-
-          // r_receipt scalar range: [1, n). Drives the derived-commitment
-          // credit in both non-invalid outcomes; zero rejected for parity
-          // with T_SWAP_ROUTE (degenerate blinding).
-          const rReceiptBig = bytes32ToBigint(hexToBytes(sv.r_receipt));
-          if (rReceiptBig === 0n || rReceiptBig >= SECP_N) continue;
-
-          // Kernel sig: P = C_change_or_sentinel − C_in_secp + delta_in_total·H.
-          // The kernel msg binds the input's REAL asset id (parent.asset_id),
-          // not the pool's direction side — identical bytes in the honest
-          // case, and well-defined even when the pool is unknown.
-          const deltaInTotal = BigInt(sv.delta_in) + BigInt(sv.tip_amount);
-          if (deltaInTotal >= 1n << 64n) continue;
-          let kernelPoint;
+        // ── Stage B — executability (any failure ⇒ PASS-THROUGH) ──
+        //
+        // Evaluated against the pool's RUNNING state at this envelope's
+        // canonical position. In-block ordering affects only the PRICE a
+        // fill receives — never validity: a same-pool swap later in the
+        // block settles at post-earlier-fill reserves or passes through.
+        const pool = await ammPoolGet(env, network, sv.pool_id);
+        let passReason = null;
+        let curve = null;
+        if (!pool) passReason = 'pool not registered';
+        else if (pool.validation !== 'xcurve-verified' && pool.validation !== 'verified') passReason = 'pool validation tag not verified';
+        else if (sv.direction !== 0 && sv.direction !== 1) passReason = 'direction out of range';
+        else if (parent.asset_id !== (sv.direction === 0 ? pool.asset_a : pool.asset_b)) passReason = "input asset != pool's direction-side asset";
+        else if (sv.tip_asset !== sv.direction) passReason = 'tip_asset != input side';
+        else if (BigInt(sv.delta_in) === 0n) passReason = 'delta_in must be > 0';
+        else if (BigInt(sv.delta_in) < BigInt(sv.delta_in_min) || BigInt(sv.delta_in) > BigInt(sv.delta_in_max)) passReason = 'delta_in outside [delta_in_min, delta_in_max]';
+        else if (h >= sv.expiry_height) passReason = 'expired';
+        else {
+          // Curve at ACTUAL running reserves — the declared R_A_pre /
+          // R_B_pre / delta_out are advisory quote context only.
           try {
-            kernelPoint = ammSwapVarKernelVerifyPoint(
-              hexToBytes(sv.c_change_or_sentinel),
-              hexToBytes(sv.c_in_secp),
-              deltaInTotal,
-            );
-          } catch { continue; }
-          if (kernelPoint.equals(PEDERSEN_ZERO)) continue;
-          const kernelXOnly = kernelPoint.toRawBytes(true).slice(1);
-          const kernelMsg = ammKernelMsgV1(
-            hexToBytes(parent.asset_id),
-            [{ txid: traderInp.txid, vout: traderInp.vout }],
-            [hexToBytes(sv.c_change_or_sentinel)],
-            deltaInTotal,
-          );
-          if (!verifySchnorr(hexToBytes(sv.kernel_sig), kernelMsg, kernelXOnly)) continue;
-
-          // Intent sig over the reconstructed intent_msg (binds the on-chain
-          // receive_scriptPubKey at vout[1]).
-          const receiptVout = tx.vout?.[1];
-          if (!receiptVout || typeof receiptVout.scriptpubkey !== 'string') continue;
-          const receiveScriptPubKey = hexToBytes(receiptVout.scriptpubkey);
-          const assetInputOutpoint = concatBytes(
-            reverseBytes(hexToBytes(traderInp.txid)),
-            (() => { const b = new Uint8Array(4); new DataView(b.buffer).setUint32(0, traderInp.vout >>> 0, true); return b; })(),
-          );
-          const intentMsg = ammSwapVarIntentMsg({
-            poolId: hexToBytes(sv.pool_id), direction: sv.direction,
-            deltaIn: BigInt(sv.delta_in),
-            deltaInMin: BigInt(sv.delta_in_min),
-            deltaInMax: BigInt(sv.delta_in_max),
-            deltaOut: BigInt(sv.delta_out),
-            minOut: BigInt(sv.min_out),
-            tipAmount: BigInt(sv.tip_amount),
-            tipAsset: sv.tip_asset,
-            expiryHeight: sv.expiry_height,
-            traderPubkey: hexToBytes(sv.trader_pubkey),
-            assetInputOutpoint,
-            receiveScriptPubKey,
-            cReceiptSecp: hexToBytes(sv.c_receipt_secp),
-            cChangeOrSentinel: hexToBytes(sv.c_change_or_sentinel),
-          });
-          let traderXOnly;
-          try {
-            const traderPt = compressedPointFromHex(sv.trader_pubkey);
-            traderXOnly = traderPt.toRawBytes(true).slice(1);
-          } catch { continue; }
-          if (!verifySchnorr(hexToBytes(sv.intent_sig), intentMsg, traderXOnly)) continue;
-
-          // Bulletproof m=2 over (C_change_or_sentinel, C_receipt_secp).
-          // Slot 0 (change ≥ 0) is load-bearing for both outcomes; slot 1
-          // ranges the QUOTED receipt (wire parity with T_AXFER_VAR) — the
-          // credited amount's range-safety is established by derivation.
-          let cReceiptPoint;
-          try { cReceiptPoint = compressedPointFromHex(sv.c_receipt_secp); }
-          catch { continue; }
-          const cChangeBytes = hexToBytes(sv.c_change_or_sentinel);
-          let isSentinelBP = true;
-          for (let i = 0; i < 33; i++) if (cChangeBytes[i] !== 0) { isSentinelBP = false; break; }
-          let cChangeForBP;
-          if (isSentinelBP) {
-            cChangeForBP = PEDERSEN_ZERO;
-          } else {
-            try { cChangeForBP = compressedPointFromHex(sv.c_change_or_sentinel); }
-            catch { continue; }
-          }
-          let bpOk = false;
-          try {
-            bpOk = bpRangeAggVerify([cChangeForBP, cReceiptPoint], hexToBytes(sv.range_proof));
-          } catch { bpOk = false; }
-          if (!bpOk) continue;
-
-          // ── Stage B — executability (any failure ⇒ PASS-THROUGH) ──
-          //
-          // Evaluated against the pool's RUNNING state at this envelope's
-          // canonical position. In-block ordering affects only the PRICE a
-          // fill receives — never validity: a same-pool swap later in the
-          // block settles at post-earlier-fill reserves or passes through.
-          const pool = await ammPoolGet(env, network, sv.pool_id);
-          let passReason = null;
-          let curve = null;
-          if (!pool) passReason = 'pool not registered';
-          else if (pool.validation !== 'xcurve-verified' && pool.validation !== 'verified') passReason = 'pool validation tag not verified';
-          else if (sv.direction !== 0 && sv.direction !== 1) passReason = 'direction out of range';
-          else if (parent.asset_id !== (sv.direction === 0 ? pool.asset_a : pool.asset_b)) passReason = "input asset != pool's direction-side asset";
-          else if (sv.tip_asset !== sv.direction) passReason = 'tip_asset != input side';
-          else if (BigInt(sv.delta_in) === 0n) passReason = 'delta_in must be > 0';
-          else if (BigInt(sv.delta_in) < BigInt(sv.delta_in_min) || BigInt(sv.delta_in) > BigInt(sv.delta_in_max)) passReason = 'delta_in outside [delta_in_min, delta_in_max]';
-          else if (h >= sv.expiry_height) passReason = 'expired';
-          else {
-            // Curve at ACTUAL running reserves — the declared R_A_pre /
-            // R_B_pre / delta_out are advisory quote context only.
-            try {
-              curve = ammCurveDeltaOut(sv.direction, pool.reserve_a, pool.reserve_b, sv.delta_in, pool.fee_bps);
-            } catch (e) { passReason = `curve at actual reserves: ${String(e?.message || e)}`; }
-            if (!passReason) {
-              if (curve.raPost <= 0n || curve.rbPost <= 0n) passReason = 'post-reserve non-positive';
-              else {
-                const floor = BigInt(sv.min_out) > 1n ? BigInt(sv.min_out) : 1n;
-                if (curve.deltaOut < floor) passReason = 'slippage: delta_out_actual < max(1, min_out)';
-              }
+            curve = ammCurveDeltaOut(sv.direction, pool.reserve_a, pool.reserve_b, sv.delta_in, pool.fee_bps);
+          } catch (e) { passReason = `curve at actual reserves: ${String(e?.message || e)}`; }
+          if (!passReason) {
+            if (curve.raPost <= 0n || curve.rbPost <= 0n) passReason = 'post-reserve non-positive';
+            else {
+              const floor = BigInt(sv.min_out) > 1n ? BigInt(sv.min_out) : 1n;
+              if (curve.deltaOut < floor) passReason = 'slippage: delta_out_actual < max(1, min_out)';
             }
           }
+        }
 
-          const changeRecord = isSentinelBP
-            ? null
-            : { asset_id: parent.asset_id, commitment: sv.c_change_or_sentinel };
+        const changeRecord = isSentinelBP
+          ? null
+          : { asset_id: parent.asset_id, commitment: sv.c_change_or_sentinel };
 
-          if (passReason !== null) {
-            // ── PASS-THROUGH — refund; pool state unchanged ──
-            // refund = delta_in + tip_amount: everything the kernel closure
-            // proves left the input beyond the committed change. No tip on
-            // non-execution.
-            const refundCommitment = bytesToHex(pedersenCommit(deltaInTotal, rReceiptBig).toRawBytes(true));
-            await ammSwapAcceptedPut(env, network, tx.txid, {
-              h, pool_id: sv.pool_id,
-              outcome: 'passthrough',
-              pass_reason: passReason,
-              refund_amount: deltaInTotal.toString(),
-              receipt: { asset_id: parent.asset_id, commitment: refundCommitment },
-              change: changeRecord,
-            });
-            found++;
-          } else {
-            // ── EXECUTE — market-order fill at actual reserves ──
-            const deltaOutActual = curve.deltaOut;
-            const receiptAssetId = sv.direction === 0 ? pool.asset_b : pool.asset_a;
-            const receiptCommitment = bytesToHex(pedersenCommit(deltaOutActual, rReceiptBig).toRawBytes(true));
-            const newPool = {
-              ...pool,
-              reserve_a: curve.raPost.toString(),
-              reserve_b: curve.rbPost.toString(),
-              k_last: (curve.raPost * curve.rbPost).toString(),
-              last_swap_txid: tx.txid,
-              last_swap_height: h,
-              last_swap_at: tx.status?.block_time || Math.floor(Date.now() / 1000),
-              validation: 'verified',
-            };
-            await ammPoolPut(env, network, sv.pool_id, newPool);
-            await ammSwapAcceptedPut(env, network, tx.txid, {
-              h, pool_id: sv.pool_id,
-              outcome: 'execute',
-              delta_out_actual: deltaOutActual.toString(),
-              quoted_delta_out: String(sv.delta_out),
-              receipt: { asset_id: receiptAssetId, commitment: receiptCommitment },
-              change: changeRecord,
-            });
-            found++;
-          }
+        if (passReason !== null) {
+          // ── PASS-THROUGH — refund; pool state unchanged ──
+          // refund = delta_in + tip_amount: everything the kernel closure
+          // proves left the input beyond the committed change. No tip on
+          // non-execution.
+          const refundCommitment = bytesToHex(pedersenCommit(deltaInTotal, rReceiptBig).toRawBytes(true));
+          await ammSwapAcceptedPut(env, network, tx.txid, {
+            h, pool_id: sv.pool_id,
+            outcome: 'passthrough',
+            pass_reason: passReason,
+            refund_amount: deltaInTotal.toString(),
+            receipt: { asset_id: parent.asset_id, commitment: refundCommitment },
+            change: changeRecord,
+          });
+          found++;
+        } else {
+          // ── EXECUTE — market-order fill at actual reserves ──
+          const deltaOutActual = curve.deltaOut;
+          const receiptAssetId = sv.direction === 0 ? pool.asset_b : pool.asset_a;
+          const receiptCommitment = bytesToHex(pedersenCommit(deltaOutActual, rReceiptBig).toRawBytes(true));
+          const newPool = {
+            ...pool,
+            reserve_a: curve.raPost.toString(),
+            reserve_b: curve.rbPost.toString(),
+            k_last: (curve.raPost * curve.rbPost).toString(),
+            last_swap_txid: tx.txid,
+            last_swap_height: h,
+            last_swap_at: tx.status?.block_time || Math.floor(Date.now() / 1000),
+            validation: 'verified',
+          };
+          await ammPoolPut(env, network, sv.pool_id, newPool);
+          await ammSwapAcceptedPut(env, network, tx.txid, {
+            h, pool_id: sv.pool_id,
+            outcome: 'execute',
+            delta_out_actual: deltaOutActual.toString(),
+            quoted_delta_out: String(sv.delta_out),
+            receipt: { asset_id: receiptAssetId, commitment: receiptCommitment },
+            change: changeRecord,
+          });
+          found++;
         }
       } else if (decoded.opcode === T_SWAP_ROUTE) {
         const _DR = (msg) => { try { console.log(`[DR-SR] tx=${tx.txid.slice(0,16)} h=${h} ${msg}`); } catch {} };
@@ -25393,7 +25201,6 @@ export {
   POOL_CAP_SOLO_INTENT_ALLOWED, AMM_PROTOCOL_FEE_BPS_MAX,
   decodeTSwapVarPayload, ammCurveDeltaOut, ammSwapVarEnvelopeHash,
   ammKernelMsgV1, ammSwapVarIntentMsg, ammSwapVarKernelVerifyPoint,
-  SWAP_VAR_OUTCOME_ACTIVATION, swapVarOutcomeActive,
   ammSwapAcceptedGet, ammSwapAcceptedPut,
   // T_SWAP_ROUTE (atomic multi-hop AMM routing) — see SPEC-SWAP-ROUTE-AMENDMENT.
   T_SWAP_ROUTE, SWAP_ROUTE_N_HOPS_MAX,
@@ -26112,10 +25919,10 @@ async function _routeFetch(req, env, ctx) {
       }
       try {
         const rec = await ammSwapAcceptedGet(env, network, txid);
-        // `outcome` field present since the SPEC §5.20 outcome-taxonomy
-        // revision: 'execute' | 'passthrough'. Records without it are
-        // legacy strict-algorithm accepts (which executed exactly at
-        // their declared values) — report them as 'execute'.
+        // `outcome`: 'execute' | 'passthrough'. Records written before
+        // the scan resolved the swap (or by older worker builds) lack the
+        // field and executed exactly at their declared values — report
+        // them as 'execute'.
         return jsonResponse({
           txid, network,
           accepted: !!rec,

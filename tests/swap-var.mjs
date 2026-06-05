@@ -508,11 +508,6 @@ export function computeSwapVarEnvelopeHash(payload) {
 // source. The derivation is the inflation defense: no trader-declared
 // receipt value is trusted anywhere (SPEC §5.20 steps 8–10).
 //
-// Envelopes confirmed below the per-network SWAP_VAR_OUTCOME_ACTIVATION
-// height validate under the superseded strict-equality algorithm —
-// preserved at this file's pre-2026-06-05 git revision; indexers keep it
-// as a frozen legacy branch keyed on confirmation height.
-//
 // Inputs:
 //   payload             : envelope bytes
 //   pool                : current pool state { pool_id, asset_A, asset_B,
