@@ -6,7 +6,7 @@
 <!-- Self-contained verifier. Its own CSP: inline script is this page's whole
      point (auditable in one View-Source); connect-src is limited to public
      Bitcoin explorers + IPFS gateways. No third-party script, no analytics. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src 'self' data:; connect-src https://mempool.space https://blockstream.info https://ipfs.io https://w3s.link https://*.ipfs.w3s.link https://dweb.link https://*.ipfs.dweb.link https://gateway.pinata.cloud https://trustless-gateway.link https://*.ipfs.inbrowser.link; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src 'self' data:; connect-src https://mempool.space https://blockstream.info https://btcscan.org https://ipfs.io https://w3s.link https://*.ipfs.w3s.link https://dweb.link https://*.ipfs.dweb.link https://gateway.pinata.cloud https://trustless-gateway.link https://*.ipfs.inbrowser.link; base-uri 'none'; form-action 'none'">
 <link rel="icon" type="image/svg+xml" href='data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><style>.r{stroke:%230a0a0a}@media(prefers-color-scheme:dark){.r{stroke:%23f4efe6}}</style><circle class="r" cx="16" cy="16" r="13" fill="none" stroke-width="2.5"/><path d="M17.5 7L13 22.5Q13 25 18 24" fill="none" stroke="%23f7931a" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M10 11L21 11" stroke="%23f7931a" stroke-width="2.4" stroke-linecap="round"/></svg>'>
 <title>Verify TAC&rsquo;s fixed supply &middot; Tacit</title>
 <meta name="description" content="Verify TAC's fixed 21,000,000 supply from Bitcoin + IPFS, in your browser. TAC is non-mintable and its supply commitment opens to exactly 21M — nothing trusted.">
@@ -78,7 +78,7 @@ const q = new URLSearchParams(location.search);
 const TAC_ASSET_ID = (q.get('asset_id') || 'f0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b').toLowerCase();
 const ETCH_TXID    = (q.get('txid')     || 'e2d10be19c2b73b86e14be99dc237a3d999ba3dfbe6f3e3714590acee2ca481e').toLowerCase();
 const EXPECT_H = '02bd7bf40fb5db2f7e0a1e8660ca13df55bb0d9f904e36e6297361f00376865e56'; // SPEC §3.1 KAT
-const BTC_APIS = ['https://mempool.space/api', 'https://blockstream.info/api'];
+const BTC_APIS = ['https://mempool.space/api', 'https://blockstream.info/api', 'https://btcscan.org/api'];
 const IPFS_GATEWAYS = ['https://ipfs.io/ipfs/{cid}', 'https://{cid}.ipfs.inbrowser.link/', 'https://trustless-gateway.link/ipfs/{cid}?format=raw', 'https://dweb.link/ipfs/{cid}', 'https://w3s.link/ipfs/{cid}', 'https://gateway.pinata.cloud/ipfs/{cid}'];
 document.getElementById('aid').textContent = TAC_ASSET_ID;
 document.getElementById('txid').textContent = ETCH_TXID;
@@ -183,7 +183,7 @@ async function fetchVerifiedIpfs(cid) {
   throw new Error('all IPFS gateways unreachable — re-run (public gateways are flaky)');
 }
 async function fetchTx(txid) {
-  for (const api of BTC_APIS) { try { const r = await fetch(`${api}/tx/${txid}`); if (r.ok) return await r.json(); } catch {} }
+  for (const api of BTC_APIS) { try { const ctl = new AbortController(); const t = setTimeout(() => ctl.abort(), 10000); const r = await fetch(`${api}/tx/${txid}`, { signal: ctl.signal }); clearTimeout(t); if (r.ok) return await r.json(); } catch {} }
   throw new Error('all Bitcoin explorers unreachable (CORS or offline)');
 }
 
