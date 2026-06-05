@@ -24,7 +24,14 @@ const TAC_ASSET_ID = (process.argv[2] || 'f0bbe868af10c6c67652a99709bf32048d1aa7
 const ETCH_TXID    = (process.argv[3] || 'e2d10be19c2b73b86e14be99dc237a3d999ba3dfbe6f3e3714590acee2ca481e').toLowerCase();
 const EXPECT_H     = '02bd7bf40fb5db2f7e0a1e8660ca13df55bb0d9f904e36e6297361f00376865e56'; // KAT, SPEC §3.1
 const BTC_API      = process.env.TACIT_BTC_API || 'https://mempool.space/api';
-const IPFS_GATEWAYS = (process.env.TACIT_IPFS_GATEWAYS || 'https://ipfs.io/ipfs,https://dweb.link/ipfs,https://cloudflare-ipfs.com/ipfs').split(',');
+const IPFS_GATEWAYS = (process.env.TACIT_IPFS_GATEWAYS || [
+  'https://ipfs.io/ipfs/{cid}',
+  'https://{cid}.ipfs.inbrowser.link/',
+  'https://trustless-gateway.link/ipfs/{cid}?format=raw',
+  'https://dweb.link/ipfs/{cid}',
+  'https://w3s.link/ipfs/{cid}',
+  'https://gateway.pinata.cloud/ipfs/{cid}',
+].join(',')).split(',');
 
 // ── tiny helpers ──
 const enc = new TextEncoder();
@@ -103,18 +110,26 @@ function cidDigest(cid) { // bafkrei… → 32-byte sha2-256 digest of the conte
   return raw.slice(4, 36);
 }
 async function fetchVerifiedIpfs(cid) {
-  const want = cidDigest(cid);
-  for (const gw of IPFS_GATEWAYS) {
-    try {
-      const ctl = new AbortController(); const t = setTimeout(() => ctl.abort(), 12000);
-      const r = await fetch(`${gw}/${cid}`, { signal: ctl.signal }); clearTimeout(t);
-      if (!r.ok) continue;
-      const buf = new Uint8Array(await r.arrayBuffer());
-      if (toHex(sha256(buf)) !== toHex(want)) throw new Error(`${gw}: content does not match CID`);
-      return buf;
-    } catch (e) { if (String(e.message).includes('match CID')) throw e; /* else try next gateway */ }
+  const want = toHex(cidDigest(cid));
+  const tried = [];
+  for (const tmpl of IPFS_GATEWAYS) {
+    const url = tmpl.replace('{cid}', cid);
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      try {
+        const ctl = new AbortController(); const t = setTimeout(() => ctl.abort(), 15000);
+        const r = await fetch(url, { signal: ctl.signal }); clearTimeout(t);
+        if (!r.ok) { tried.push(`${url} → HTTP ${r.status}`); break; }
+        const buf = new Uint8Array(await r.arrayBuffer());
+        if (toHex(sha256(buf)) !== want) throw new Error('content does not match CID');
+        return buf;
+      } catch (e) {
+        if (String(e.message).includes('match CID')) throw new Error(`${url}: content does not match its CID (gateway served wrong bytes)`);
+        if (attempt === 2) tried.push(`${url} → ${e.name === 'AbortError' ? 'timeout' : e.message}`);
+      }
+    }
   }
-  throw new Error('all IPFS gateways failed');
+  throw new Error('could not fetch the attestation from any IPFS gateway:\n   - ' + tried.join('\n   - ') +
+    '\n  Public IPFS gateways are flaky — just re-run, or set TACIT_IPFS_GATEWAYS to gateways you trust (comma-separated, {cid} as placeholder).');
 }
 
 // ── run ──
