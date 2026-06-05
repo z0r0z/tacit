@@ -242,6 +242,10 @@ Two stages, mirroring the tETH plan.
 5. Confidential factory (§3): `Secp256k1.sol` primitives + `TacitConfidential{Factory,ERC20}`;
    launch surface (etch/petch/mint/burn, wrap/unwrap, attestation, Tier A
    transfer, stealth) per the amendment. Tier B (SP1-batched) follows.
+   _Status: `Secp256k1.sol` + `TacitConfidentialERC20.sol` (confidential
+   wrapper: wrap / unwrap / Tier-A transfer) landed and tested against real
+   noble proofs (7 tests; confidential transfer ~217k gas). `TacitConfidentialFactory`
+   (etch/petch/mint) is the remaining piece._
 6. Phase-3 plan doc (bridged assets), scheduled after the gen-1 alpha settles.
 
 ## Settled decisions

@@ -274,17 +274,27 @@ key material — the existing stealth stack, re-homed to EVM addresses.
 
 ---
 
-## 9. Reference-implementation map (to be built)
+## 9. Reference-implementation map
 
+Built (working tree):
+- `contracts/src/lib/Secp256k1.sol` — `ecrecover` equation-checker (`mulmuladd`),
+  bounded EC add, `verifyLinear` (the §2 primitives). Vectors verified against
+  `@noble/secp256k1`.
+- `contracts/src/TacitConfidentialERC20.sol` — confidential **wrapper** for an
+  ERC20: denominated note store, spent-set, escrow accounting; `wrap` /
+  `unwrap` (Schnorr PoK of blinding, §3/§5) and the Tier-A 2-in/2-out
+  `transfer` (per-output 1-of-8 OR-proof + conservation kernel, §4). Full
+  lifecycle tested against real noble proofs (`TacitConfidentialERC20.t.sol`,
+  7 tests). Measured: wrap ~100k, **confidential transfer ~217k**, unwrap ~37k.
+
+Follow-up:
 - `contracts/src/TacitConfidentialFactory.sol` — CREATE2 deployer; `etch` /
-  `petch`; asset-id derivation; attestation-anchor events.
-- `contracts/src/TacitConfidentialERC20.sol` — per-asset note store, spent-set,
-  supply accounting; `mint` / `burn` / `wrap` / `unwrap`; Tier A `transfer`.
-- `contracts/src/lib/Secp256k1.sol` — `ecrecover` equation-checker, bounded EC
-  add, PoK / Schnorr / CDS-OR verification (the §2 primitives).
-- `contracts/sp1/` (follow-up) — batch guest verifying BP+ + kernels for Tier B.
+  `petch`; asset-id derivation; attestation-anchor events. (Etched-token
+  variant + mintable supply on top of the same note core.)
+- Contract-bind the OR-proof challenge (currently the transfer is bound as a
+  whole via the kernel, which commits `address(this)` and every output); a
+  per-output domain tag is a cheap hardening.
+- `contracts/sp1/` — batch guest verifying BP+ + kernels for Tier B.
 - Dapp: reuse `dapp/bulletproofs.js`, `dapp/bulletproofs-plus.js`,
-  `dapp/amm-sigma.js`, the range-proof primitive, and the stealth stack;
-  add the EVM note model, OR-note prover, and factory UI.
-- Tests mirror the house pattern: accounting/parity in Foundry; a real-proof
-  gate for the OR-note and (later) BP+ paths.
+  `dapp/amm-sigma.js`, the range-proof primitive, and the stealth stack; add
+  the EVM note model, OR-note prover, and factory UI.
