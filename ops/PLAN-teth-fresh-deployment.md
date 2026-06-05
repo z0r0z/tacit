@@ -139,17 +139,36 @@ property — there is no on-chain owner or registry to capture.
 
 ## 3. Worker changes (generation dimension)
 
-The worker currently keys pool / leaf / nullifier records by
-`(network, asset_id, denom)`. With one `asset_id` across generations, two
-generations' pools for the same denom would collide (first-confirmed-wins).
+The worker keys pool / leaf / nullifier records by `(network, asset_id, denom)`.
+With one `asset_id` across generations, two generations' pools for the same
+denom collide (first-confirmed-wins). This is the one structural worker change.
 
-- Key pool records by `(network, verifier_or_mixer, asset_id, denom)`. `POOL_INIT`
-  carries the generation's verifier/mixer; the worker derives the key from it.
-- `/pools` returns the generation per pool; the client iterates all generations
-  in `scanPools` and merges.
-- Supply / attestation endpoints sum across generations for the asset.
+**Generation key = the mixer address.** Bridge op envelopes bind the mixer
+(bindHash domain = chain_id + mixer_address), so the worker can derive the
+generation while indexing; the mixer is 1:1 with its verifier, which the §2
+legitimacy checks cover. Not a pure no-op: the bridge-pool path currently has no
+per-pool mixer, so it must be threaded through (see map).
 
-This is the one structural worker change; everything else is registry plumbing.
+### Implementation map (touch points)
+- **Key functions** (`worker/src/index.js`) — add a trailing `gen` segment,
+  omitted when `gen` is falsy so generation-0 keys stay byte-identical (the
+  same shape `assetKey`/`ammSwapAcceptedKey` use for the signet/no-prefix case):
+  `poolInitKey` (923), `poolPrefix` (926), `poolLeafKeyFor` (929),
+  `poolLeafPrefix` (936), `poolNullifierKey` (939), `poolNullifierPrefix` (944),
+  `poolLeafCountKey` (4203).
+- **Bridge-pool registration** — the `bridge_auto` pool-init records (13168,
+  25122) and `_bridgeInitPut` (20530) must carry and key by the mixer; the
+  mixer comes from the bridge op being indexed (today's single-mixer config is
+  generation 0, `gen` falsy → unchanged keys).
+- **`/pools` endpoint** (26486) — return the generation (mixer) per pool; the
+  client iterates all generations in `scanPools` and merges.
+- **Supply / attestation** — sum across generations for the asset.
+
+### Sequencing note
+Build this together with gen-1 (when there is a deploy to index and test
+against), not as standalone scaffolding on the live worker — generation 0 stays
+on the legacy (falsy-`gen`) keys throughout, so the live path is untouched until
+a real second mixer exists.
 
 ---
 
@@ -250,13 +269,16 @@ No escrow move, no rollover, no asset re-etch.
 
 ## 9. Sequencing
 
-1. Worker: add the generation dimension (§3) behind the existing single-gen
-   behaviour; deploy; verify gen-0 still indexes unchanged.
-2. Client: generation registry + routing table + merged balance (§2); gen-0-only
-   while gen 1 doesn't exist yet, so a no-op until step 4.
-3. Author §4 guest + §5 contract changes on a branch; unit + real-proof tests
-   green; signet deploy + §8 round-trip.
-4. Mainnet deploy generation 1; append to the registry; flip deposits over.
+Built as one gen-1 effort on a branch (not piecemeal on the live worker — the
+generation dimension has no test target until a second mixer exists):
+
+1. Author §4 guest + §5 contract changes; unit + real-proof tests green.
+2. Worker generation dimension (§3) — generation 0 stays on legacy keys, so the
+   live path is untouched; the new keys exercise only when gen 1 is indexed.
+3. Client: generation registry + routing table + merged balance (§2); the §2
+   legitimacy checks gate which generations are honoured.
+4. Signet deploy gen 1; §8 round-trip incl. the cross-generation test.
+5. Mainnet deploy generation 1; append to the registry; flip deposits over.
 
 ## Open decisions
 
