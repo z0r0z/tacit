@@ -9,7 +9,110 @@ Rules for this doc:
 - Date anything that can change (on-chain state, frontends, roadmaps).
 - Keep claims defensible — note the rebuttals a knowledgeable critic would make.
 
-Last updated: 2026-05-28
+Last updated: 2026-06-05
+
+---
+
+## Zcash Orchard counterfeiting bug (June 2026) — "privacy coins" vs. fixed-supply + protocol-layer privacy
+
+**What it is:** On 2026-05-29 Taylor Hornby (audit for Shielded Labs) found a soundness
+bug in Zcash's Orchard shielded-pool circuit (`halo2_gadgets`): an under-constrained
+elliptic-curve multiplication let arbitrary false inputs pass verification, enabling
+**unlimited, undetectable counterfeit ZEC** inside Orchard. Live since Orchard's May 2022
+activation (~4 years). Emergency soft fork disabled Orchard 2026-06-02; NU6.2 hard fork
+shipped a corrected circuit 2026-06-03. Found with help from Anthropic's Opus 4.8.
+
+### Key finding — the supply rule lived *inside* the zk circuit, so a soundness bug = silent inflation
+
+- Shielded Labs' own words: *"there is no definitive way to determine using only
+  cryptography whether such exploitation occurred before the vulnerability was discovered
+  and fixed"* — and users *"should not rely on our assessment, or anyone else's."*
+- Their proposed remedy is a new shielded pool + **turnstile accounting so anyone can
+  verify the ZEC supply** — i.e. today, nobody can. (Monero is structurally worse on this
+  axis: everything is shielded by default, so there is no turnstile and supply integrity
+  rests on range-proof/key-image soundness forever.)
+- This is Zcash's **second** unlimited-counterfeiting bug (BCTV14, disclosed Feb 2019).
+
+### Tacit contrast — TAC's supply enforcement is *outside* any circuit
+
+Two independent, publicly checkable facts. Neither lives in a zk circuit, so there is no
+gadget to under-constrain:
+
+1. **Issuance is provably closed.** TAC's etch (a CETCH envelope on Bitcoin) carries a
+   32-byte `mint_authority`. For TAC it is all-zero (the protocol's non-mintable value);
+   a `T_MINT` requires a Schnorr sig under that key, and the zero key signs nothing.
+   `mint_authority` is permanent — no rotate/transfer short of a protocol hard fork
+   (SPEC.md §5.1, line ~750).
+2. **The one issuance is provably 21M.** The etch commits to supply as a Pedersen
+   commitment `C = supply·H + blinding·G`. The `(supply, blinding)` opening is published
+   to IPFS, content-addressed by the same `image_uri` the on-chain etch points to. Anyone
+   checks `pedersenCommit(supply, blinding) == on_chain_commitment` — one line, no worker,
+   no setup. Pedersen binding makes a forged "21M" opening infeasible.
+
+Net: total supply = 21M, **monotonically non-increasing** (the only supply-changing op is
+`T_BURN`, which reveals its amount in the clear). Transfers can't inflate either —
+conservation is a Mimblewimble kernel signature (`Σout (+burn·H) − Σin` must commit to
+zero), an algebraic identity, not a bespoke circuit (the same CT/Bulletproofs family
+Monero has run since 2018).
+
+### Verified facts (the receipts) — real live TAC, as of 2026-06-05
+
+Asset `f0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b` (ticker `TAC`,
+mainnet; `CANONICAL_TAC_ASSET_ID_HEX` in `worker/src/index.js`):
+
+- **asset_id binds to the etch tx (local, trustless):**
+  `SHA256(etch_txid_internalLE ‖ vout_LE4(0)) == f0bbe868…762b`, where etch_txid =
+  `e2d10be19c2b73b86e14be99dc237a3d999ba3dfbe6f3e3714590acee2ca481e`. Recomputed —
+  **matches**. So TAC is that one etch, by construction; no indexer can relabel it.
+- **on-chain etch fields** (worker `/assets/<id>?network=mainnet`, 2026-06-05): `mintable:
+  false`, `mint_authority: 0000…0000`, `commitment:
+  02f5a454ee1e79c29e746e945143d12a19607f4b7188e6d9c00573824bd12ffc64`, `image_uri:
+  ipfs://bafkreig7m5j66zlaewjvo6bipk723udgdhnyl7ve5k2suofuvhi2mmb3ai`, `decimals: 8`.
+- **IPFS attestation blob** (`bafkreig7m5j66…mmb3ai`): `tacit_attest.supply =
+  2100000000000000`, `blinding =
+  ce741e62560579ae264c942e1575df86fe2b52884f92303ae9666fe3138b7e48`.
+- **Pedersen opening verifies (local, using the dapp's own secp256k1 + NUMS-H):**
+  `pedersenCommit(2100000000000000, 0xce741e62…7e48)` reproduces
+  `02f5a454…ffc64` byte-for-byte. `2100000000000000 / 10^8 = 21,000,000 TAC`. ✓
+
+Reproduce: (1) recompute the asset_id hash; (2) read `mint_authority` + `commitment` from
+the etch reveal tx `e2d10be1…` (fully trustless: decode the Taproot-witness CETCH envelope
+yourself; or read the worker, which only relays public chain data); (3) fetch the IPFS
+opening; (4) check it opens the commitment.
+
+### Be fair / honesty guardrails
+
+- **Proves total issuance, not who-holds-what.** TAC amounts are confidential, so you do
+  NOT audit supply by summing balances — you prove issuance is closed (mint key = 0) and
+  the one issuance opens to 21M. That's the point: the cap is enforced at issuance, so a
+  *transfer*-layer bug can't inflate it.
+- **Shielding (sender/receiver unlinkability) is opt-in and relies on a one-time MPC
+  ceremony** (mixer ceremony finalized 2026-05-11). Amount-confidentiality is default and
+  ceremony-free (Pedersen + Bulletproofs, transparent setup); linkage-privacy needs the
+  shielded layer. Don't conflate the two.
+- **"Fairdropped" needs its own receipt.** A CETCH mints the full 21M to the etcher at
+  genesis (one supply UTXO), which is NOT itself a fairdrop. Any "fair distribution" claim
+  is about what happened *after* etch (a public `T_DROP`/claim, LP seeding, no-team-alloc,
+  etc.) and must be backed separately — it is orthogonal to the no-inflation proof above.
+
+### Defensible public claims
+
+- **Airtight (verified above):** "TAC's on-chain etch is non-mintable (`mint_authority =
+  0`) and its supply commitment provably opens to exactly 21,000,000 — checkable from
+  Bitcoin + IPFS, no circuit, no trusted setup, no indexer. Re-verified 2026-06-05."
+- **Strong contrast (Zcash's own admission):** "Zcash can't rule out prior inflation
+  because its supply rule lives inside the Orchard circuit; TAC's lives in a public
+  mint-authority byte + a one-line Pedersen check."
+- **Avoid (overreach):** "fully anonymous by default" (linkage-privacy is opt-in);
+  "audit the supply by summing balances" (amounts are hidden); unbacked "fairdrop"
+  framing.
+
+### Sources
+
+- The Orchard Counterfeiting Vulnerability (Zcash community forum): https://forum.zcashcommunity.com/t/the-orchard-counterfeiting-vulnerability-and-next-steps/56015
+- CoinDesk: https://www.coindesk.com/markets/2026/06/05/zcash-plummets-30-as-developer-reveals-a-major-bug-that-went-undetected-for-four-years
+- The Defiant (turnstile / prove-supply proposal): https://thedefiant.io/news/blockchains/shielded-labs-proposes-new-zcash-upgrade-to-prove-zec-supply-after-orchard-bug
+- TAC etch on-chain + attestation: asset `f0bbe868…762b`, etch tx `e2d10be1…ca481e`, IPFS `bafkreig7m5j66…mmb3ai` (verified 2026-06-05)
 
 ---
 
