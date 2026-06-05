@@ -120,6 +120,10 @@ async function main() {
   const RECIP = '0x00000000000000000000000000000000cafe0001';
   const unwrap = { denomIdx: 2, ...xyHex(Cout0), to: RECIP, ...schnorrPok(Cout0, 2, r_out0, RECIP) };
 
+  // ── etched burn: PoK on output note 0 (denom 100) with to = 0 (no recipient) ──
+  const ZERO = '0x0000000000000000000000000000000000000000';
+  const etchedBurn = { denomIdx: 2, ...xyHex(Cout0), ...schnorrPok(Cout0, 2, r_out0, ZERO) };
+
   const fixture = {
     note: 'TacitConfidentialERC20 lifecycle (real noble). Regenerate: node tests/gen-confidential-erc20-fixture.mjs.',
     deployer: '0x00000000000000000000000000000000DeaDBeef', contract: CONTRACT, chainId: Number(CHAIN_ID),
@@ -131,6 +135,7 @@ async function main() {
       or0, or1, ...k,
     },
     unwrap,
+    etchedBurn,
   };
   await fs.mkdir(path.dirname(OUT), { recursive: true });
   await fs.writeFile(OUT, JSON.stringify(fixture, null, 2));

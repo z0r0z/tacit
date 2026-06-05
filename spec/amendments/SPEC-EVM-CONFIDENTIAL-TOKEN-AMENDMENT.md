@@ -280,20 +280,26 @@ Built (working tree):
 - `contracts/src/lib/Secp256k1.sol` — `ecrecover` equation-checker (`mulmuladd`),
   bounded EC add, `verifyLinear` (the §2 primitives). Vectors verified against
   `@noble/secp256k1`.
+- `contracts/src/lib/ConfidentialNoteCore.sol` — abstract base: denominated note
+  store, spent-set, the Tier-A 2-in/2-out `transfer` (per-output 1-of-8 OR-proof
+  + conservation kernel, §4), and the `_verifyOpen` Schnorr PoK. Both token
+  variants extend it.
 - `contracts/src/TacitConfidentialERC20.sol` — confidential **wrapper** for an
-  ERC20: denominated note store, spent-set, escrow accounting; `wrap` /
-  `unwrap` (Schnorr PoK of blinding, §3/§5) and the Tier-A 2-in/2-out
-  `transfer` (per-output 1-of-8 OR-proof + conservation kernel, §4). Full
-  lifecycle tested against real noble proofs (`TacitConfidentialERC20.t.sol`,
-  7 tests). Measured: wrap ~100k, **confidential transfer ~217k**, unwrap ~37k.
+  ERC20: `wrap` / `unwrap` (§3/§5), escrow == Σ active notes. 7 tests vs real
+  noble proofs. Measured: wrap ~100k, **confidential transfer ~217k**, unwrap ~37k.
+- `contracts/src/TacitConfidentialEtched.sol` — **etched** token: supply issued
+  as notes, no backing. `mint` (authority or fair-launch / petch window+cap),
+  `renounceMint` (fixed supply), `burn`; supply == Σ active notes. 6 tests.
+- `contracts/src/TacitConfidentialFactory.sol` — CREATE2 deployer; `etch`
+  (authority or fair-launch); `tacit-evm-etch-v1` asset-id derivation;
+  `predictAddress`; `Etched` event. 5 tests.
 
 Follow-up:
-- `contracts/src/TacitConfidentialFactory.sol` — CREATE2 deployer; `etch` /
-  `petch`; asset-id derivation; attestation-anchor events. (Etched-token
-  variant + mintable supply on top of the same note core.)
-- Contract-bind the OR-proof challenge (currently the transfer is bound as a
-  whole via the kernel, which commits `address(this)` and every output); a
-  per-output domain tag is a cheap hardening.
+- Contract-bind the OR-proof challenge (the transfer is already bound as a whole
+  via the kernel, which commits `address(this)` and every output); a per-output
+  domain tag is a cheap hardening.
+- On-chain balance/range attestation anchor event; the off-chain attestation
+  already works via `SPEC-RANGE-PROOF-PRIMITIVE`.
 - `contracts/sp1/` — batch guest verifying BP+ + kernels for Tier B.
 - Dapp: reuse `dapp/bulletproofs.js`, `dapp/bulletproofs-plus.js`,
   `dapp/amm-sigma.js`, the range-proof primitive, and the stealth stack; add

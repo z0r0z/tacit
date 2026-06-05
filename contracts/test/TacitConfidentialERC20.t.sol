@@ -3,6 +3,7 @@ pragma solidity ^0.8.28;
 
 import {Test} from "forge-std/Test.sol";
 import {TacitConfidentialERC20} from "../src/TacitConfidentialERC20.sol";
+import {ConfidentialNoteCore} from "../src/lib/ConfidentialNoteCore.sol";
 import {ERC20} from "solady/tokens/ERC20.sol";
 
 contract MockERC20 is ERC20 {
@@ -80,7 +81,7 @@ contract TacitConfidentialERC20Test is Test {
         uint256 cy = vm.parseJsonUint(json, ".wrap[0].y");
         address rAddr = vm.parseJsonAddress(json, ".wrap[0].rAddr");
         uint256 z = vm.parseJsonUint(json, ".wrap[0].z");
-        vm.expectRevert(TacitConfidentialERC20.BadProof.selector);
+        vm.expectRevert(ConfidentialNoteCore.BadProof.selector);
         t20.wrap(d, cx, cy, rAddr, z + 1); // tampered response
     }
 
@@ -88,7 +89,7 @@ contract TacitConfidentialERC20Test is Test {
         _wrap(".wrap[0]"); _wrap(".wrap[1]");
         TacitConfidentialERC20.Transfer memory t = _loadTransfer();
         t.z0[2] = t.z0[2] ^ 1; // flip an OR-proof branch response
-        vm.expectRevert(TacitConfidentialERC20.BadProof.selector);
+        vm.expectRevert(ConfidentialNoteCore.BadProof.selector);
         t20.transfer(t);
     }
 
@@ -96,14 +97,14 @@ contract TacitConfidentialERC20Test is Test {
         _wrap(".wrap[0]"); _wrap(".wrap[1]");
         TacitConfidentialERC20.Transfer memory t = _loadTransfer();
         t.kernelZ = t.kernelZ ^ 1;
-        vm.expectRevert(TacitConfidentialERC20.BadConservation.selector);
+        vm.expectRevert(ConfidentialNoteCore.BadConservation.selector);
         t20.transfer(t);
     }
 
     function test_double_spend_input_reverts() public {
         _wrap(".wrap[0]"); _wrap(".wrap[1]");
         t20.transfer(_loadTransfer());
-        vm.expectRevert(TacitConfidentialERC20.NoteNotActive.selector);
+        vm.expectRevert(ConfidentialNoteCore.NoteNotActive.selector);
         t20.transfer(_loadTransfer()); // inputs already spent
     }
 
@@ -114,7 +115,7 @@ contract TacitConfidentialERC20Test is Test {
         address to = vm.parseJsonAddress(json, ".unwrap.to");
         address rAddr = vm.parseJsonAddress(json, ".unwrap.rAddr");
         uint256 z = vm.parseJsonUint(json, ".unwrap.z");
-        vm.expectRevert(TacitConfidentialERC20.NoteNotActive.selector); // never wrapped/transferred
+        vm.expectRevert(ConfidentialNoteCore.NoteNotActive.selector); // never wrapped/transferred
         t20.unwrap(d, cx, cy, to, rAddr, z);
     }
 
