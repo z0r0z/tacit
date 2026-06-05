@@ -1,0 +1,290 @@
+# SPEC Amendment — EVM Confidential Token (Tacit on Ethereum L1)
+
+> **STATUS: DRAFT** (2026-06-06). Defines a confidential-asset factory on
+> Ethereum L1 that reuses Tacit's existing secp256k1 cryptography unchanged —
+> the same Pedersen commitments, the same NUMS generator
+> (`tacit-generator-H-v1`), the same Bulletproofs / Bulletproofs+ range
+> tooling, the same range-attestation primitive, and the same blinded-pubkey
+> stealth construction. **No new trusted setup** for the launch surface.
+>
+> Companion to:
+> - `SPEC-RANGE-PROOF-PRIMITIVE.md` — predicate proofs over Pedersen-committed
+>   u64 amounts (`bpRangeAggProve` / `bpRangeAggVerify`); reused verbatim for
+>   off-chain attestation here.
+> - `SPEC-RANGE-ATTEST-AMENDMENT.md` (`T_RANGE_ATTEST` `0x3A`) — the
+>   attestation anchor; the EVM surface mirrors its predicate set.
+> - `SPEC-WRAPPER-AMENDMENT.md` (§4.2, merged) — the wrapping convention this
+>   extends from Bitcoin-layer underlyings to ERC20 underlyings.
+> - `SPEC-CXFER-BPP-AMENDMENT.md` (§5.21, `dapp/bulletproofs-plus.js`) — the
+>   confidential-transfer construction this ports to L1.
+> - `SPEC-BLINDED-PUBKEY-AMENDMENT.md` — the stealth-recipient construction,
+>   here in its ERC-5564 form so one wallet seed scans both chains.
+> - `ops/PLAN-eth-shielded-pool-factory.md` — the deployment plan; this
+>   amendment is the normative construction for that plan's factory phase, and
+>   composes with its native ETH `ShieldedPool` (unlinkability) as the
+>   amount-privacy half of the stack.
+
+---
+
+## Motivation
+
+Tacit's privacy stack already separates two capabilities: the mixer hides
+**who** (unlinkability between deposit and spend), and confidential transfers
+hide **how much** (Pedersen amounts + range proofs). The native ETH
+`ShieldedPool` (companion plan) brings the first to Ethereum. This amendment
+brings the second: a factory for ERC20 tokens whose **balances are blinded**,
+whose **supply is provably fixed, mintable, or burnable**, and which can
+**wrap any existing ERC20** into a confidential representation — with holders
+able to **attest and prove balances, including ranges**, to any counterparty.
+
+The design choice that makes this distinct from existing Ethereum confidential
+tokens is not a feature, it is a curve. Every comparable system builds notes on
+an Ethereum-native curve (BN254, Grumpkin), which permanently severs them from
+Bitcoin. Tacit's notes are secp256k1 — Bitcoin's curve — and the EVM can verify
+secp256k1 relations through the `ecrecover` precompile. So the **note is a
+single cross-chain object**: the same 33-byte commitment, the same range
+disclosure, the same stealth address, the same wallet seed are valid whether
+the value is escrowed in a Bitcoin UTXO or an Ethereum contract. Only the
+settlement rail differs.
+
+---
+
+## 1. Note model (secp256k1, shared with the Bitcoin layer)
+
+A confidential balance is a set of **notes**. A note is:
+
+```
+note = (owner, C, memo)
+  C     = a·H + r·G            secp256k1 Pedersen commitment
+  a     ∈ [0, 2⁶⁴)             hidden amount (token base units, ≤ 8-dec scaled)
+  r     ∈ [0, n_secp)          blinding scalar
+  H     = NUMS("tacit-generator-H-v1")   (identical to SPEC.md §3.3)
+  G     = secp256k1 base point
+  owner = Ethereum address, or a stealth pubkey commit (§6)
+  memo  = ECDH-keystream-encrypted (a, r) for the owner (SPEC.md §5.7.6 tag
+          "tacit-amount-v1"), so the owner recovers the opening from chain alone
+```
+
+`C`, `H`, `a`, `r`, and the `memo` derivation are **byte-identical** to a
+Bitcoin-layer Tacit UTXO commitment. A balance attestation produced on one
+chain verifies on the other with no translation.
+
+Notes are recorded on-chain as leaves in a per-asset append-only structure with
+a spent-marker set (the "nullifier" of a note is `keccak256(C ‖ "spent")`,
+unique because `C` is unique per note). The contract is the custody root: a
+note is spendable only against the asset contract that minted or shielded it.
+
+---
+
+## 2. On-chain verification primitives (what the EVM can and cannot do natively)
+
+The launch surface rests on two EVM capabilities and one bounded helper:
+
+1. **`ecrecover` as a secp256k1 equation-checker (~3k gas).** `ecrecover` can
+   be coerced to test an equation of the form `s·P + e·Q == T` by comparing the
+   recovered address to `address(T)`. This verifies a Schnorr signature, a
+   proof-of-knowledge of a blinding, or one branch of a CDS OR-proof — each at
+   roughly one precompile call. This is the cheap path and it carries every
+   per-note authorization and supply proof.
+
+2. **`sha256` / `keccak256` (native).** Fiat-Shamir challenges, memos, domain
+   binding.
+
+3. **Bounded secp256k1 point addition in Solidity (modexp-backed inversion).**
+   There is no secp point-add precompile, so summing commitment points for a
+   **conservation** check (`Σ C_in − Σ C_out = …`) is done with explicit EC
+   additions in Solidity, a handful per transfer. This is the one non-trivial
+   on-chain cost, and it applies **only to synchronous transfers (§4 Tier A)**;
+   the batched tier (§4 Tier B) moves all summation and range checking into the
+   prover and leaves the chain a single proof verification.
+
+Domain separation: every signed or hashed structure on this surface is tagged
+with `chainid` and the asset contract address, so a proof is valid only for the
+asset and chain it was produced for, and never collides with a Bitcoin-layer
+structure or with the `ShieldedPool` withdraw domain.
+
+---
+
+## 3. Factory and supply operations (public-amount — ship first, no range proof)
+
+The factory is a single CREATE2 deployer. None of the operations in this
+section requires a range proof, because the amount moved is public; only its
+**distribution across notes** is hidden. These are the launch surface.
+
+### Asset identity
+```
+etched token:   asset_id = sha256("tacit-evm-etch-v1"  ‖ chainid_be8 ‖ factory ‖ salt ‖ etcher)
+wrapped/native: asset_id = sha256("tacit-evm-token-v1" ‖ chainid_be8 ‖ underlying_token)
+```
+Domain-separated from the Bitcoin `sha256(reveal_txid ‖ vout)` namespace and
+from the `ShieldedPool` asset-id rule by tag.
+
+### `etch` — confidential token, fixed or mintable supply
+Deploys a `TacitConfidentialERC20` (CREATE2). Parameters: `name`, `symbol`,
+`decimals (≤ 8 effective via UNIT_SCALE)`, `supply S` (public), `mintAuthority`
+(EVM address; `address(0)` ⇒ **fixed supply, no further mint possible**),
+`metadataURI`, `salt`. Initial supply is issued as one or more notes whose
+commitments satisfy `Σ C_init − S·H = r·G`, proven by a PoK of `r` (one
+`ecrecover` check). Supply `S` is public and exact; the allocation across notes
+is blinded.
+
+### `petch` — fair-launch (T_PETCH analogue)
+Public `cap`, fixed `perMint`, `[startBlock, endBlock]` window. Anyone calls
+`mint()` for exactly `perMint`, up to `cap`. Gas is the natural rate limiter
+(the role Bitcoin fees play in T_PMINT); optional per-address caps are a
+factory parameter.
+
+### `mint` (mintable assets) / `burn`
+- `mint(m, notes, pok)` — `mintAuthority` signs; new notes satisfy
+  `Σ C_mint − m·H = r·G`; public supply `+= m`. Auditable: supply is always
+  exact and public, distribution hidden.
+- `burn(note, b, opening)` — prove the note opens to public `b` (reveal or
+  amount-only PoK); destroy it; public supply `−= b`.
+
+### Balance attestation & range proofs (reused verbatim, off-chain)
+A holder proves a predicate over their notes' hidden amounts —
+`≥ X`, `≤ X`, `∈ [X, Y]`, `> b`, `= X`, and homomorphic sums across notes —
+using `SPEC-RANGE-PROOF-PRIMITIVE.md` (`bpRangeAggProve` / `bpRangeAggVerify`)
+**unchanged**, because the commitments share the Bitcoin-layer generators. This
+is a counterparty-to-counterparty proof and needs no on-chain transaction. For
+an on-chain anchor (CDP gates, tiered-fee tiers, permissioned LP), the
+`T_RANGE_ATTEST` envelope shape is mirrored as a factory event so an EVM
+consumer contract can require a recorded attestation.
+
+---
+
+## 4. Confidential transfers (divisible hidden amounts — two tiers, same notes)
+
+A divisible transfer splits notes into payment + change with **hidden** output
+amounts, so it requires non-negativity (range) enforcement, and because the
+contract holds escrow the **contract** must enforce it. Both tiers operate on
+the §1 notes; an asset can support either or both. Conservation in both tiers
+is the Mimblewimble-style kernel: `Σ C_in − Σ C_out − fee·H = excess·G` with a
+Schnorr signature under `excess`.
+
+### Tier A — denominated OR-notes (no setup, synchronous, instant)
+Each note's amount is constrained to a fixed **denomination ladder**
+`{d₁ … d_k}` by a CDS OR-proof that `C` opens to one of `{d_i·H + r·G}`
+(witness-indistinguishable — *which* denomination is hidden). Given that every
+amount is provably one of `k` positive denominations, **no separate range proof
+is needed**: conservation plus DL-independence of `H, G` forces
+`Σ d_in = Σ d_out`, and no negative amount can exist in the ladder. On-chain:
+`k` `ecrecover` branch checks per note (§2.1) + the bounded EC-add conservation
+sum (§2.3) + the kernel Schnorr. Only **new outputs** need the membership proof
+— inputs were proven when they were created — so the per-transfer cost scales
+with outputs, not inputs+outputs. No trusted setup, no proving latency; amounts
+quantize to the ladder (cash-like notes). This is the recommended launch
+transfer mode.
+
+**Measured (probe, `contracts/test/Secp256k1Probe.t.sol`, vectors verified
+against `@noble/secp256k1`):** `ecAdd` ≈ 3.1k gas, a `mulmuladd`/ecrecover
+linear check ≈ 6k, a 1-of-8 OR-proof ≈ 65k per output, the 2-in-2-out
+conservation kernel ≈ 13k. A full 2-in-2-out transfer ≈ **143k gas** of
+compute (plus proof calldata; the `d_i·H` ladder points are contract constants,
+not calldata). Uniswap-swap territory — comfortably affordable on L1, and the
+OR-proof dominates, so a shorter ladder (k=4 ≈ 33k/output) trades amount
+granularity for gas.
+
+### Tier B — SP1-batched Bulletproofs+ (exact amounts, batched finality)
+Transfers post the **unchanged** secp256k1 Bulletproofs+ proof
+(`dapp/bulletproofs-plus.js`, §5.21) as calldata. A batch prover — the existing
+SP1 stack, the same canonical-ELF / vkey-pin discipline and SP1 verifier trust
+root used by the tETH bridge — verifies the BP+ proofs and the conservation
+kernels **inside the guest** and lands one batch proof. On-chain per batch: one
+SP1 proof verification + nullifier marking; no in-Solidity EC-add. Exact
+arbitrary amounts; a received note is spendable once its batch is proven
+(bridge-style cadence). This reuses more existing cryptography than any
+SNARK-circuit approach — the BP+ proofs are not re-proven, only verified and
+amortized — and adds no ceremony.
+
+### Why not a new Groth16 transfer circuit
+A Groth16 verifying key is bound to its exact statement, so the finalized mixer
+and AMM ceremony keys cannot verify a transfer statement — a transfer circuit
+would still need a fresh Phase 2. Tiers A and B reach divisible confidential
+transfers with **zero** new ceremony. A bespoke transfer circuit (forking the
+AMM `lp_remove` structure + `bjj_pedersen` + the `pot18` Phase 1) remains a
+documented future option if synchronous exact amounts are later wanted, but it
+is not on the launch path.
+
+---
+
+## 5. Wrapping existing ERC20s
+
+- `wrap(token, amount)` — `transferFrom(amount)` into escrow (amount public at
+  entry); mint a note satisfying `Σ C_out − amount·H = r·G`. The amount is
+  visible at the wrap boundary and blinded for every transfer thereafter.
+- `unwrap(note, amount, to)` — prove the note opens to public `amount`; release
+  the ERC20; destroy the note. Full unwrap is a public-amount op (cheap, no
+  range proof); partial unwrap is a split and uses a §4 transfer first.
+
+Escrow invariant per asset: `escrowed ERC20 ≥ Σ unspent note amounts`, held
+structurally — wrap is the only mint path and every transfer conserves. Issuer-
+administered stablecoins concentrate freezable balance at the asset contract;
+the dapp curates which underlyings it surfaces (see plan).
+
+---
+
+## 6. Stealth recipients and cross-chain wallet (free composition)
+
+Note `owner` may be a stealth pubkey derived by the blinded-pubkey commit
+`P + b·G` (`SPEC-BLINDED-PUBKEY-AMENDMENT.md`) in its ERC-5564 form
+(`stealth_address = address(P + b·G)`), with `b` from the same HMAC derivation
+the Bitcoin layer uses. One Tacit wallet seed therefore scans confidential
+receipts on **both** chains, and a sender pays a recipient's published meta-
+address without an on-chain link between payments. No new derivation, no new
+key material — the existing stealth stack, re-homed to EVM addresses.
+
+---
+
+## 7. Soundness (by construction)
+
+- **No inflation.** Tier A: every note amount is a positive ladder denomination
+  (OR-proof) and conservation balances the hidden sums, so outputs can neither
+  exceed inputs nor be negative. Tier B: the BP+ proofs bound every output to
+  `[0, 2⁶⁴)` and the kernel balances the sum, verified in-guest before the
+  batch proof is accepted on-chain. Supply ops (§3) move public amounts proven
+  to match their note commitments.
+- **No double-spend.** Each note's spent-marker is set on use; a second spend
+  finds it set.
+- **No cross-domain replay.** Every proof binds `chainid` + asset contract +
+  operation domain tag, distinct from Bitcoin-layer tags and from the
+  `ShieldedPool` withdraw domain.
+- **Custody is per-asset.** Escrow ≥ unspent note amounts holds per asset
+  contract; wrap/etch are the only issuance paths and each conserves.
+
+---
+
+## 8. What ships first vs. follows
+
+**Launch (no new trusted setup):**
+- Factory: `etch` / `petch` / `mint` / `burn` / fixed-supply, wrap / unwrap.
+- Blind balances; off-chain balance + range attestation via the existing
+  primitive; on-chain attestation anchor event.
+- Stealth recipients (§6).
+- Tier A denominated confidential transfers.
+
+**Follow-up:**
+- Tier B SP1-batched exact-amount transfers (its own news beat; reuses the
+  bridge prover discipline).
+- Phase-3 cross-chain asset bridging (moving escrow Bitcoin ↔ Ethereum for a
+  shared `asset_id`) — the §1 note identity makes it natural; trust surface and
+  reverse path get their own plan doc.
+- Optional bespoke Groth16 transfer circuit if synchronous exact amounts are
+  wanted.
+
+---
+
+## 9. Reference-implementation map (to be built)
+
+- `contracts/src/TacitConfidentialFactory.sol` — CREATE2 deployer; `etch` /
+  `petch`; asset-id derivation; attestation-anchor events.
+- `contracts/src/TacitConfidentialERC20.sol` — per-asset note store, spent-set,
+  supply accounting; `mint` / `burn` / `wrap` / `unwrap`; Tier A `transfer`.
+- `contracts/src/lib/Secp256k1.sol` — `ecrecover` equation-checker, bounded EC
+  add, PoK / Schnorr / CDS-OR verification (the §2 primitives).
+- `contracts/sp1/` (follow-up) — batch guest verifying BP+ + kernels for Tier B.
+- Dapp: reuse `dapp/bulletproofs.js`, `dapp/bulletproofs-plus.js`,
+  `dapp/amm-sigma.js`, the range-proof primitive, and the stealth stack;
+  add the EVM note model, OR-note prover, and factory UI.
+- Tests mirror the house pattern: accounting/parity in Foundry; a real-proof
+  gate for the OR-note and (later) BP+ paths.
