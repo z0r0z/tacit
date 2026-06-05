@@ -35,6 +35,8 @@ contract SP1PoolRootVerifier {
     bytes32 public immutable ASSET_ID;
     uint8 public immutable NETWORK_TAG;
     bytes32 public immutable GROTH16_VK_HASH;
+    /// Genesis BTC anchor, kept queryable for off-chain verification after
+    /// currentState.lastBlockHash advances past it on the first proof.
     bytes32 public immutable GENESIS_ANCHOR_HASH;
     bytes32 public immutable DENOMS_HASH;
     uint8 public immutable NUM_DENOMS;

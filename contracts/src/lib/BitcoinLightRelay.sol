@@ -148,7 +148,7 @@ contract BitcoinLightRelay {
         for (uint256 i; i < n; ++i) {
             bytes memory h = bytes(headers[i * 80:(i + 1) * 80]);
             bytes32 bh = _dsha256(h);
-            (bytes32 prev, , uint32 ts, uint32 bits, ) = _parseHeader(h);
+            (bytes32 prev, , uint32 ts, uint32 bits) = _parseHeader(h);
 
             if (i == 0) {
                 // First header must extend a known block.
@@ -236,7 +236,7 @@ contract BitcoinLightRelay {
         for (uint256 i; i < n; ++i) {
             bytes memory h = bytes(headers[i * 80:(i + 1) * 80]);
             bytes32 bh = _dsha256(h);
-            (bytes32 prev, , uint32 ts, uint32 bits, ) = _parseHeader(h);
+            (bytes32 prev, , uint32 ts, uint32 bits) = _parseHeader(h);
 
             if (i > 0 && prev != prevHash) revert InvalidHeaderChain();
 
@@ -290,7 +290,7 @@ contract BitcoinLightRelay {
         for (uint256 i; i < n; ++i) {
             bytes memory h = bytes(headers[i * 80:(i + 1) * 80]);
             bytes32 bh = _dsha256(h);
-            (bytes32 prev, bytes32 mr, , uint32 bits, ) = _parseHeader(h);
+            (bytes32 prev, bytes32 mr, , uint32 bits) = _parseHeader(h);
 
             if (i > 0 && prev != prevHash) revert InvalidHeaderChain();
 
@@ -328,7 +328,7 @@ contract BitcoinLightRelay {
 
     function _parseHeader(bytes memory raw)
         internal pure
-        returns (bytes32 prevBlock, bytes32 merkleRoot, uint32 ts, uint32 bits, uint32 nonce)
+        returns (bytes32 prevBlock, bytes32 merkleRoot, uint32 ts, uint32 bits)
     {
         assembly ("memory-safe") {
             let ptr := add(raw, 32)
@@ -344,11 +344,6 @@ contract BitcoinLightRelay {
             b := or(b, shl(16, byte(0, mload(add(ptr, 74)))))
             b := or(b, shl(24, byte(0, mload(add(ptr, 75)))))
             bits := b
-            let n := byte(0, mload(add(ptr, 76)))
-            n := or(n, shl(8, byte(0, mload(add(ptr, 77)))))
-            n := or(n, shl(16, byte(0, mload(add(ptr, 78)))))
-            n := or(n, shl(24, byte(0, mload(add(ptr, 79)))))
-            nonce := n
         }
     }
 

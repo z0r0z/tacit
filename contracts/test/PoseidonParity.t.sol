@@ -3,7 +3,7 @@ pragma solidity ^0.8.28;
 
 import "./TestHelper.sol";
 import "../src/lib/PoseidonT3.sol";
-import "../src/lib/PoseidonT4.sol";
+import "./PoseidonT4.sol";
 
 contract PoseidonParityTest is TestHelper {
     TacitBridgeMixer mixer;

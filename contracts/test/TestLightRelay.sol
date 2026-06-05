@@ -18,7 +18,7 @@ contract TestLightRelay is BitcoinLightRelay {
         for (uint256 i; i < n; ++i) {
             bytes memory h = bytes(headers[i * 80:(i + 1) * 80]);
             bytes32 blockHash = _dsha256(h);
-            (bytes32 prev, bytes32 mr, , , ) = _parseHeader(h);
+            (bytes32 prev, bytes32 mr, , ) = _parseHeader(h);
             if (i > 0 && prev != prevHash) revert InvalidHeaderChain();
             if (i == 0) merkleRoot = mr;
             prevHash = blockHash;
