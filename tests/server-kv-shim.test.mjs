@@ -103,6 +103,19 @@ async function runSuite(label, driver) {
   ok('no duplicates across interleaved insert', !rest.includes(p1.keys[0].name) && !rest.includes(p1.keys[1].name));
   ok('key inserted ahead of cursor is reached', rest.includes('pm:9999999999:ahead'));
 
+  // foreign cursors (Cloudflare's opaque blobs imported with a KV snapshot)
+  // restart the list instead of throwing or poisoning the query
+  const head = (await kv.list({ prefix: 'pm:', limit: 2 })).keys[0].name;
+  for (const foreign of [
+    'AAAAANuIf9XEF7sjk_q7Z2ho3eRRJzCi1oajZJXKuQyIvWDXX5gb7NQ', // CF-style opaque
+    Buffer.from([0, 1, 2, 254, 255]).toString('base64url'),     // binary w/ NUL
+    'not base64url!!',
+  ]) {
+    const fresh = await kv.list({ prefix: 'pm:', limit: 2, cursor: foreign });
+    ok(`foreign cursor restarts list (${foreign.slice(0, 12)}…)`,
+      fresh.keys.length === 2 && fresh.keys[0].name === head, fresh.keys.map((k) => k.name));
+  }
+
   // delete
   await kv.delete('t:plain');
   ok('deleted key is null', (await kv.get('t:plain')) === null);
