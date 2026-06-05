@@ -21103,6 +21103,26 @@ async function scanForEtches(env, network) {
         const nKey = poolNullifierKey(network, tw.asset_id, tw.denomination, tw.nullifier_hash);
         const existing = await env.REGISTRY_KV.get(nKey);
         if (!existing) {
+          // Pool-reserve gate (SPEC §5.11.4 invariant 1, Conservation). Each
+          // deposit appends exactly one leaf; each withdraw consumes exactly
+          // one note, so an honest pool can never record more distinct spent
+          // nullifiers than it has leaves — the reserve (# leaves − # spent)
+          // stays ≥ 0. A withdraw that would drive it negative is only
+          // producible by a forged proof (e.g. a retained ceremony trapdoor);
+          // refusing to index it bounds any such forgery to the pool's real
+          // deposits instead of letting it mint unbounded supply. Counting is
+          // fail-open by construction: leaf_count over-counts on reorg (never
+          // under) and the nullifier list is a lower bound past 1000, so this
+          // can only ever skip a provably-over-drained withdraw, never a live
+          // one. The dapp re-runs the same check authoritatively (it owns the
+          // Groth16 verify); this keeps the worker's /holdings + /pools views
+          // from surfacing phantom over-withdrawals.
+          const leafCnt = parseInt(await env.REGISTRY_KV.get(poolLeafCountKey(network, tw.asset_id, tw.denomination)) || '0', 10) || 0;
+          const priorNulls = await env.REGISTRY_KV.list({
+            prefix: poolNullifierPrefix(network, tw.asset_id, tw.denomination),
+            limit: 1000,
+          });
+          if (priorNulls.keys.length >= leafCnt) continue;
           const meta = {
             asset_id: tw.asset_id,
             denomination: tw.denomination,

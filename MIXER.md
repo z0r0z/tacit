@@ -180,7 +180,7 @@ how the two families compose across surfaces.
                                             ▼
    ┌─────────────────────────────────────────────────────────────────────────────────────┐
    │              CONFORMING VERIFIER  (dapp client — authoritative for spend)           │
-   │              Reference worker performs 1–4, 6; Groth16 (5) is dapp-side             │
+   │              Reference worker performs 1–4, 6–7; Groth16 (5) is dapp-side           │
    │              (three-verifier model — SPEC §5.11.4)                                  │
    │                                                                                     │
    │   T_DEPOSIT path:                                                                   │
@@ -188,7 +188,7 @@ how the two families compose across surfaces.
    │     • only at depth ≥ 3 (MIXER_DEPOSIT_CONFIRMATION_DEPTH — reorg-safety gate)     │
    │     • root recorded in 32-deep ring buffer (POOL_RECENT_ROOTS_WINDOW)               │
    │                                                                                     │
-   │   T_WITHDRAW path: REJECT unless ALL six hold —                                     │
+   │   T_WITHDRAW path: REJECT unless ALL seven hold —                                   │
    │     1. pool registered for (asset_id, denomination)                                 │
    │     2. claimed merkle_root ∈ recent-roots window                                    │
    │     3. nullifier_hash ∉ spent-set for this pool                                     │
@@ -196,6 +196,7 @@ how the two families compose across surfaces.
    │     5. snarkjs.groth16.verify(vk, [root, nullifier_hash, denom, r_leaf,             │
    │                                    bind_hash], proof)         ← dapp-authoritative  │
    │     6. denom·H + r_leaf·G == recipient_commit (Pedersen on secp256k1)               │
+   │     7. (# spent nullifiers) ≤ (# included leaves)  — pool reserve floor              │
    │                                                                                     │
    │   → on accept: credit Bob's UTXO at vout[0] as a spendable tacit asset opening      │
    │     to (denom, r_leaf). Insert nullifier_hash into the spent-set.                   │
