@@ -215,13 +215,12 @@ forward exactly like `poolsHash` is today. Concretely:
 **Client knock-on:** the pre-burn equality check relaxes to window membership,
 so redeems of already-proven notes no longer wait on unrelated pending deposits.
 
-**Test plan (gate before trusting):** real-proof suites green on a built ELF;
-a positive test that a deposit-then-redeem straddling a cycle boundary now
-succeeds; a **negative test that a fabricated window is rejected** (the
-`prev_window_hash` check fails) — this is the security-critical case. Full signet
-round-trip last. None of this is verifiable without the SP1 build (Docker for
-the canonical ELF) + a signet target, so it is built and tested as a unit in
-that environment, not committed piecemeal as unverified consensus code.
+**Test plan (gate before trusting):** see §8 — the off-chain real-proof suite is
+the security gate (positive cross-cycle redeem + the **fabricated-window-rejected
+negative test**), then a mainnet tiny-cap live round-trip. The proof-soundness
+parts are not verifiable without the SP1 build (Docker for the canonical ELF), so
+the guest/host/verifier change is built and tested as a unit in that environment,
+not committed piecemeal as unverified consensus code.
 
 ### 4.2 Backlog-aware deposit gate (LOCK-2)
 Make the deposit-capacity gate aware of in-flight mint backlog rather than
@@ -289,15 +288,42 @@ No escrow move, no rollover, no asset re-etch.
 
 ---
 
-## 8. Verification (gate before mainnet)
+## 8. Verification
 
-- Full signet round-trip on generation 1: deposit → mint → export → import →
-  redeem, exercising the §4.1 window behaviour.
-- Cross-generation signet test: a deposit on gen 1 and a redeem on gen 0 in the
-  same client, confirming the routing table and merged balance.
-- Re-run the real-proof suites + ceremony vkey pin + ELF pin
-  (`.github/workflows/bridge-guards.yml`); confirm the committed ELF sha256
-  matches `elf-vkey-pin.json` and the prover box runs the committed canonical ELF.
+Two distinct stages — the security gate is off-chain; the live test is on
+mainnet with tiny caps in place of signet.
+
+### Stage 1 — security gate (off-chain, non-negotiable)
+The properties that matter most for §4.1 — proof soundness and no
+forged-withdrawal path — don't need a chain. They are verified in the real-proof
+suite (`.github/workflows/bridge-guards.yml`), which generates real proofs,
+including tampered ones:
+- Correctness: a deposit-then-redeem straddling a proof-cycle boundary succeeds.
+- **Theft/inflation (must-have): a fabricated window is rejected** (the
+  `prev_window_hash` check fails); no proof with an out-of-window root is
+  accepted.
+- ELF + ceremony pins: committed ELF sha256 matches `elf-vkey-pin.json`; the
+  prover box runs the committed canonical ELF (host `include_bytes!`).
+
+This stage gates **blessing the generation's vkey** into the recognized set
+(§2 legitimacy). It is stricter than a one-off pilot would need, because under
+the unified asset a bad blessed guest can mint unbacked tETH that is fungible
+with the real supply — a correctness bug is a small write-off, an inflation bug
+is everyone's problem. Do not bless a vkey until this stage is green.
+
+### Stage 2 — live integration (mainnet, tiny caps; signet skipped)
+Signet's round-trip latency is no faster than mainnet (same confirmations +
+prove cycles) and it carries its own flakiness; its only advantage is zero
+stakes, which the tiny caps already bound. So the live test runs on mainnet:
+- Deploy generation 1; verify on chain + Etherscan; keep deposits **capped
+  small** (a few dollars total) while unproven.
+- Live round-trip: deposit → mint → export → import → redeem, exercising the
+  §4.1 window behaviour end to end through the real relay + prover + worker.
+- Cross-generation test: a deposit on gen 1 and a redeem on gen 0 in the same
+  client, confirming the routing table and merged balance.
+- Only after both stages pass: bless the vkey and raise the caps. A bug found
+  here is just the next generation (gen 2) — the accounting recognizes it and
+  the small balance is written off.
 
 ---
 
@@ -306,13 +332,16 @@ No escrow move, no rollover, no asset re-etch.
 Built as one gen-1 effort on a branch (not piecemeal on the live worker — the
 generation dimension has no test target until a second mixer exists):
 
-1. Author §4 guest + §5 contract changes; unit + real-proof tests green.
+1. Author §4 guest + §5 contract changes; **§8 Stage 1 green** (real-proof suite
+   incl. the fabricated-window-rejected test) — the off-chain security gate.
 2. Worker generation dimension (§3) — generation 0 stays on legacy keys, so the
    live path is untouched; the new keys exercise only when gen 1 is indexed.
 3. Client: generation registry + routing table + merged balance (§2); the §2
    legitimacy checks gate which generations are honoured.
-4. Signet deploy gen 1; §8 round-trip incl. the cross-generation test.
-5. Mainnet deploy generation 1; append to the registry; flip deposits over.
+4. Mainnet deploy generation 1 with **tiny caps**; §8 Stage 2 live round-trip
+   incl. the cross-generation test (signet skipped).
+5. Bless the gen-1 vkey, append to the registry, flip deposits over, raise caps.
+   A bug at step 4 is just gen 2 — supersede and write off the small balance.
 
 ## Open decisions
 
