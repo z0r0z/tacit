@@ -24969,7 +24969,10 @@ async function scanForEtches(env, network) {
         } catch {}
       } else if (decoded.opcode === T_BRIDGE_IMPORT) {
         try {
-        if (!decoded.payload || decoded.payload.length < 165) continue;
+        // Import payload is exactly 164 bytes (2 header + 32 asset + 32 denom
+        // + 32 newCommitment + 32 bindHash + 32 prevTxid + 2 prevVout). The
+        // prior >=165 floor rejected every valid import; the guest uses 164.
+        if (!decoded.payload || decoded.payload.length < 164) continue;
         const bi = decoded.payload;
         if (bi[0] !== T_BRIDGE_IMPORT) continue;
         const expectedNetTag = networkTagFor(network);
