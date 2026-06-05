@@ -128,15 +128,24 @@ dapp.wallet.priv = FOUNDER.priv;
 dapp.wallet.pub = FOUNDER.pub;
 
 const TETH = 'd903de2d2a7c1958f8ab3c4b9a91175ef3885027a24af306dead9e8f671a450b';
-// __TACIT_NO_INIT__ skips the dapp boot that wires the per-network bridge
-// deployment — configure the signet bridge explicitly (TETH_DEPLOYMENTS.signet).
-dapp.configureTethBridge({
-  address: '0x5bAcd098E59e937A8FFaEA4D281B3097A01ad91C',
-  chainId: 11155111,
-  assetIdHex: TETH,
-  deployBlock: '0xa7586c',
-});
 const DEPOSIT_WEI = 2_000_000_000_000_000n; // 2 × 0.001 ETH chunks
+// Configuring the bridge makes scanPools verify each bridge-deposit leaf
+// STRICTLY against the Sepolia root (RPC fetch); on flaky signet a transient
+// timeout truncates the local mixer tree before our leaves (the documented
+// leaf-omission break). Phases A/B need the bridge; Phase C (mixer withdraw)
+// does NOT — it only needs the pool tree, which the worker already backs. So
+// configure the bridge lazily, only when a deposit/mint actually has to run,
+// and leave scanPools on its lenient trust-the-worker path for Phase C.
+function configureBridge() {
+  // __TACIT_NO_INIT__ skips the dapp boot that wires the per-network bridge
+  // deployment — configure the signet bridge explicitly (TETH_DEPLOYMENTS.signet).
+  dapp.configureTethBridge({
+    address: '0x5bAcd098E59e937A8FFaEA4D281B3097A01ad91C',
+    chainId: 11155111,
+    assetIdHex: TETH,
+    deployBlock: '0xa7586c',
+  });
+}
 
 function loadState() { try { return JSON.parse(readFileSync(STATE_FILE, 'utf8')); } catch { return {}; } }
 function saveState(s) {
@@ -160,6 +169,7 @@ step('A', 'Sepolia batch deposit');
 if (state.deposit?.txHash) {
   ok(`reusing deposit ${state.deposit.txHash}`);
 } else {
+  configureBridge();
   const { txHash, records, dust } = await dapp.bridgeBatchDepositETH({
     provider, weiAmount: DEPOSIT_WEI,
     onProgress: (s) => info(`· ${s}`),
@@ -197,6 +207,7 @@ for (let i = 0; i < state.deposit.records.length; i++) {
     ok(`chunk ${i}: reusing mint ${String(state.mints[key].reveal_txid).slice(0, 16)}`);
     continue;
   }
+  configureBridge();
   info(`chunk ${i}: building T_BRIDGE_DEPOSIT (proof takes ~1-3 min)…`);
   const r = await dapp.buildAndBroadcastBridgeDeposit({
     ethDepositRecord: rec,
