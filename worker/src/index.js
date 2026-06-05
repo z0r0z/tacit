@@ -25025,6 +25025,7 @@ async function scanForEtches(env, network) {
           deposited_at: tx.status?.block_time || Math.floor(Date.now() / 1000),
           source: 'bridge_rotate', network,
         }));
+        _bridgeAdjustLeafCount(aid, denomBig, 1);
         found++;
         } catch {}
       } else if (decoded.opcode === T_BRIDGE_EXPORT) {
@@ -25066,6 +25067,10 @@ async function scanForEtches(env, network) {
         const initRec = await _bridgeInitLookup(aid, denomBig);
         if (!initRec) continue;
         const newCommitHex = bytesToHex(bi.slice(66, 98));
+        // prevTxid (internal order) + prevVout salt the importer's deterministic
+        // note derivation; expose them so a key-only recovery scan can re-derive.
+        const prevTxidHex = bytesToHex(bi.slice(130, 162));
+        const prevVout = bi[162] | (bi[163] << 8);
         const cnt = await _bridgeGetLeafCount(aid, denomBig);
         if (cnt >= POOL_LEAF_CAP) continue;
         const leafKey = poolLeafKeyFor(network, aid, denomBig, h, txIndex, tx.txid);
@@ -25075,8 +25080,10 @@ async function scanForEtches(env, network) {
           deposit_txid: tx.txid, tx_index: txIndex,
           deposited_at_height: h,
           deposited_at: tx.status?.block_time || Math.floor(Date.now() / 1000),
+          prev_txid: prevTxidHex, prev_vout: prevVout,
           source: 'bridge_import', network,
         }));
+        _bridgeAdjustLeafCount(aid, denomBig, 1);
         found++;
         } catch {}
       }
