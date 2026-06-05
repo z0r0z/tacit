@@ -215,48 +215,60 @@ for (let i = 0; i < state.deposit.records.length; i++) {
 // it to a real tETH UTXO (mixer-ceremony Groth16 per note).
 step('C', 'withdraw pool notes to spendable tETH UTXOs');
 state.withdraws = state.withdraws || {};
-{
-  info('syncing pools (leaf inclusion + nullifier set)…');
-  let synced = false;
-  for (let i = 1; i <= 40 && !synced; i++) {
-    await dapp.scanPools();
-    // Proceed once every deposit's pool leaf is present locally.
-    try {
-      const missing = state.deposit.records.filter((rec) => {
-        try {
-          return !dapp.buildMixerMerkleProof(TETH, BigInt(rec.denomination), hexToBytes(rec.poolLeafHex));
-        } catch { return true; }
-      });
-      if (missing.length === 0) { synced = true; break; }
-      info(`  sync ${i}/40: ${missing.length} leaf/leaves not yet included`);
-    } catch (e) { info(`  sync ${i}/40: ${e?.message || e}`); }
-    await sleep(45_000);
-  }
-  if (!synced) fail('pool leaves not all included yet — re-run to resume');
-  ok('all deposit leaves included in the local pool tree');
-}
+// scanPools' per-leaf kernel re-verify breaks the local tree on any
+// transient getTx timeout (the documented leaf-omission flakiness), so a
+// single clean sync isn't reliable on signet. Instead retry the withdraw
+// itself: buildAndBroadcastWithdraw rebuilds the merkle proof and throws
+// safely (pre-broadcast, no fee) when the local tree is incomplete — so we
+// loop scanPools + attempt until it lands.
 for (let i = 0; i < state.deposit.records.length; i++) {
   const rec = state.deposit.records[i];
   if (state.withdraws[rec.poolLeafHex]?.done) {
     ok(`note ${i}: already withdrawn`);
     continue;
   }
-  info(`note ${i}: withdrawing to a tETH UTXO (Groth16 ~1-3 min)…`);
-  const w = await dapp.buildAndBroadcastWithdraw({
-    depositRecord: {
-      assetIdHex: TETH,
-      denomination: rec.denomination,
-      secretHex: rec.secretPoolHex,
-      nullifierPreimageHex: rec.nullifierPreimagePoolHex,
-      leafCommitmentHex: rec.poolLeafHex,
-      nullifierHashHex: rec.nullifierHashHex,
-    },
-    onProgress: (s) => info(`· ${s}`),
-  });
-  state.withdraws[rec.poolLeafHex] = { done: true, txid: w?.revealTxid || w?.txid || true };
-  saveState(state);
-  ok(`note ${i} withdrawn`);
-  await sleep(20_000);
+  let done = false;
+  for (let attempt = 1; attempt <= 30 && !done; attempt++) {
+    await dapp.scanPools();
+    let included = false;
+    try { included = !!dapp.buildMixerMerkleProof(TETH, BigInt(rec.denomination), hexToBytes(rec.poolLeafHex)); } catch {}
+    if (!included) {
+      info(`note ${i}: attempt ${attempt}/30 — leaf not yet in a complete local tree`);
+      await sleep(45_000);
+      continue;
+    }
+    try {
+      info(`note ${i}: withdrawing to a tETH UTXO (Groth16 ~1-3 min)…`);
+      const w = await dapp.buildAndBroadcastWithdraw({
+        depositRecord: {
+          assetIdHex: TETH,
+          denomination: rec.denomination,
+          secretHex: rec.secretPoolHex,
+          nullifierPreimageHex: rec.nullifierPreimagePoolHex,
+          leafCommitmentHex: rec.poolLeafHex,
+          nullifierHashHex: rec.nullifierHashHex,
+        },
+        onProgress: (s) => info(`· ${s}`),
+      });
+      state.withdraws[rec.poolLeafHex] = { done: true, txid: w?.revealTxid || w?.txid || true };
+      saveState(state);
+      ok(`note ${i} withdrawn`);
+      done = true;
+      await sleep(20_000);
+    } catch (e) {
+      const msg = String(e?.message || e);
+      if (/already withdrawn|nullifier already/.test(msg)) {
+        ok(`note ${i}: already spent on chain — treating as done`);
+        state.withdraws[rec.poolLeafHex] = { done: true, txid: true };
+        saveState(state);
+        done = true;
+      } else {
+        info(`note ${i}: attempt ${attempt}/30 failed (${msg.slice(0, 80)}) — retrying`);
+        await sleep(45_000);
+      }
+    }
+  }
+  if (!done) fail(`note ${i} could not be withdrawn after 30 attempts — re-run to resume`);
 }
 
 // ── Phase D: wait for the UTXOs to land in holdings ──
