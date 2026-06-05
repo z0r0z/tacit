@@ -162,3 +162,45 @@ runtimes — a change that breaks either path fails the same test.
   path and KV artifact port as-is; no Cloudflare zone needed).
 - Real response headers for the dapp host (today's `dapp/_headers` is inert).
 - Self-hosted electrs to retire the mempool.space dependency.
+
+## Kubo pin node (rides along, independent of cutover)
+
+A first-party IPFS node holding everything `ops/mirror-pins.sh` tracks: a
+self-hosted replica next to Pinata (origin pins) and the Filebase bucket
+(CAR mirror), plus a gateway we control end to end.
+
+```yaml
+  - type: web
+    name: tacit-ipfs
+    runtime: image
+    image:
+      url: docker.io/ipfs/kubo:latest
+    plan: starter
+    healthCheckPath: /api/v0/version
+    disk:
+      name: ipfs-repo
+      mountPath: /data/ipfs
+      sizeGB: 10
+    envVars:
+      - key: IPFS_PROFILE
+        value: server        # disables local-network discovery on the host
+```
+
+Seed + maintenance, from any machine with the canonical manifest:
+
+```sh
+ipfs --api /dns4/<render-host>/tcp/5001 pin add <cid>   # per manifest line
+```
+
+or run `mirror-pins.sh` against the node's S3-free path by pointing
+`IPFS_API` at it (pin add + dag export happen node-side). Notes:
+
+- expose the gateway (8080) via the service URL; the API (5001) must NOT be
+  public — bind it to localhost and seed pins via `render ssh`, or front it
+  with an auth proxy. Kubo's API has no auth of its own.
+- 10 GB disk covers today's ~1 GB pinset with room for asset growth; the
+  repo persists across deploys on the mounted disk.
+- once live, add the gateway URL to the dapp/worker fallback lists (same
+  slot pattern as `ipfs.filebase.io`).
+- `Reprovider.Strategy=pinned` keeps DHT announce load proportional to the
+  pinset.
