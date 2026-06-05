@@ -5516,6 +5516,7 @@ const UPSTREAM_IMMUTABLE_CACHE_TTL = 3600;
 // fallbacks cover gateway outages without changing wrapper-discovery liveness.
 const WRAPPER_IPFS_GATEWAYS = [
   'https://gateway.pinata.cloud/ipfs',
+  'https://ipfs.filebase.io/ipfs',
   'https://ipfs.io/ipfs',
   'https://dweb.link/ipfs',
 ];
@@ -8488,6 +8489,7 @@ function faucetKeys(env) {
 // ~500ms-2s (fastest healthy gateway).
 const IPFS_GATEWAYS = [
   'https://content.wrappr.wtf/ipfs/',
+  'https://ipfs.filebase.io/ipfs/',
   'https://ipfs.io/ipfs/',
   'https://w3s.link/ipfs/',
   'https://dweb.link/ipfs/',
@@ -8606,6 +8608,7 @@ async function handleIpfsBatch(req, env, cors) {
 // the gateway hit so popular metadata gets served from CF edge on next call.
 const _IPFS_GATEWAYS_BATCH = [
   'https://content.wrappr.wtf/ipfs/',
+  'https://ipfs.filebase.io/ipfs/',
   'https://ipfs.io/ipfs/',
   'https://w3s.link/ipfs/',
   'https://dweb.link/ipfs/',
