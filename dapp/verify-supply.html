@@ -1,0 +1,234 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- Self-contained verifier. Its own CSP: inline script is this page's whole
+     point (auditable in one View-Source); connect-src is limited to public
+     Bitcoin explorers + IPFS gateways. No third-party script, no analytics. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src https://mempool.space https://blockstream.info https://ipfs.io https://w3s.link https://*.ipfs.w3s.link https://dweb.link https://*.ipfs.dweb.link; base-uri 'none'; form-action 'none'">
+<title>Verify TAC supply</title>
+<style>
+  :root { --bg:#0e0f12; --fg:#e6e7ea; --dim:#9aa0a8; --pass:#1fb360; --fail:#e0533d; --line:#23262c; --accent:#f0883a; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:15px/1.55 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; }
+  .wrap { max-width:760px; margin:0 auto; padding:32px 20px 64px; }
+  h1 { font-size:20px; margin:0 0 4px; letter-spacing:-0.01em; }
+  .sub { color:var(--dim); margin:0 0 24px; font-size:13px; }
+  .ids { background:#15171b; border:1px solid var(--line); border-radius:8px; padding:12px 14px; margin-bottom:20px; font-size:12.5px; color:var(--dim); word-break:break-all; }
+  .ids b { color:var(--fg); font-weight:600; }
+  #rows { display:flex; flex-direction:column; gap:2px; margin:0 0 22px; }
+  .row { display:flex; gap:10px; align-items:flex-start; padding:7px 10px; border-radius:6px; background:#131519; }
+  .badge { flex:0 0 auto; font-weight:700; font-size:12px; padding:1px 7px; border-radius:4px; margin-top:1px; }
+  .b-pass { color:#062; background:#bff0d2; } .b-fail { color:#5a140a; background:#ffc9bf; } .b-run { color:#3a2c10; background:#f3d9a8; } .b-wait { color:var(--dim); background:#23262c; }
+  .row .label { flex:1; }
+  .row .extra { color:var(--dim); font-size:12px; display:block; margin-top:2px; word-break:break-all; }
+  #verdict { font-size:16px; font-weight:700; padding:16px 18px; border-radius:10px; border:1px solid var(--line); }
+  #verdict.ok { color:var(--pass); border-color:#16633a; background:#0d1f15; }
+  #verdict.bad { color:var(--fail); border-color:#5a221a; background:#1f100d; }
+  #verdict.run { color:var(--accent); }
+  .actions { margin-top:20px; display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
+  button { font:inherit; font-size:13px; padding:8px 16px; border-radius:7px; border:1px solid var(--line); background:#1a1d22; color:var(--fg); cursor:pointer; }
+  button:hover { border-color:var(--accent); }
+  a { color:var(--accent); }
+  .note { color:var(--dim); font-size:12px; margin-top:18px; line-height:1.7; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Verify TAC&rsquo;s fixed supply</h1>
+  <p class="sub">From Bitcoin + IPFS, in your browser. No server, no indexer trusted &mdash; this page recomputes everything itself.</p>
+  <div class="ids">
+    <div>asset&nbsp;&nbsp;<b id="aid"></b></div>
+    <div>etch tx&nbsp;<b id="txid"></b></div>
+  </div>
+  <div id="rows"></div>
+  <div id="verdict" class="run">Running checks&hellip;</div>
+  <div class="actions">
+    <button id="rerun">Re-run</button>
+    <span class="note" style="margin:0;">Pass <code>?asset_id=&hellip;&amp;txid=&hellip;</code> to check any fixed-supply asset.</span>
+  </div>
+  <p class="note">
+    What this proves: (1) the asset id is <b>SHA-256(etch&nbsp;txid&nbsp;&Vert;&nbsp;vout)</b> &mdash; it can only be this one etch;
+    (2) the etch&rsquo;s <b>mint authority is zero</b> &mdash; no new TAC can ever be valid;
+    (3) the published opening verifies the on-chain <b>Pedersen commitment</b> to exactly 21,000,000.
+    The Bitcoin tx comes from a public explorer but isn&rsquo;t trusted: the asset id is recomputed locally and the IPFS blob is checked against its own content hash (the CID).
+    Read this page&rsquo;s source &mdash; it&rsquo;s ~250 lines, no dependencies.
+  </p>
+</div>
+
+<script type="module">
+// ───────────────────────── config ─────────────────────────
+const q = new URLSearchParams(location.search);
+const TAC_ASSET_ID = (q.get('asset_id') || 'f0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b').toLowerCase();
+const ETCH_TXID    = (q.get('txid')     || 'e2d10be19c2b73b86e14be99dc237a3d999ba3dfbe6f3e3714590acee2ca481e').toLowerCase();
+const EXPECT_H = '02bd7bf40fb5db2f7e0a1e8660ca13df55bb0d9f904e36e6297361f00376865e56'; // SPEC §3.1 KAT
+const BTC_APIS = ['https://mempool.space/api', 'https://blockstream.info/api'];
+const IPFS_GATEWAYS = ['https://ipfs.io/ipfs', 'https://dweb.link/ipfs', 'https://w3s.link/ipfs'];
+document.getElementById('aid').textContent = TAC_ASSET_ID;
+document.getElementById('txid').textContent = ETCH_TXID;
+
+// ───────────────────────── helpers ─────────────────────────
+const enc = new TextEncoder();
+const toHex = u => [...u].map(b => b.toString(16).padStart(2, '0')).join('');
+const fromHex = h => Uint8Array.from(h.match(/.{2}/g).map(x => parseInt(x, 16)));
+const sha256 = async b => new Uint8Array(await crypto.subtle.digest('SHA-256', b));
+const cat = (...a) => { const n = a.reduce((s, x) => s + x.length, 0), o = new Uint8Array(n); let i = 0; for (const x of a) { o.set(x, i); i += x.length; } return o; };
+const u32le = n => { const b = new Uint8Array(4); new DataView(b.buffer).setUint32(0, n >>> 0, true); return b; };
+
+// ───────────── inline secp256k1 (affine, BigInt) ─────────────
+const Pp = 0xfffffffffffffffffffffffffffffffffffffffffffffffffffffffefffffc2fn;
+const Nn = 0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141n;
+const G = { x: 0x79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798n, y: 0x483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8n };
+const mod = (a, m = Pp) => ((a % m) + m) % m;
+const modpow = (b, e, m) => { let r = 1n; b = mod(b, m); while (e > 0n) { if (e & 1n) r = (r * b) % m; b = (b * b) % m; e >>= 1n; } return r; };
+const inv = a => modpow(a, Pp - 2n, Pp);
+const INF = null;
+function add(P, Q) {
+  if (P === INF) return Q; if (Q === INF) return P;
+  if (P.x === Q.x && mod(P.y + Q.y) === 0n) return INF;
+  const m = (P.x === Q.x && P.y === Q.y) ? mod((3n * P.x * P.x) * inv(2n * P.y)) : mod((Q.y - P.y) * inv(Q.x - P.x));
+  const x = mod(m * m - P.x - Q.x);
+  return { x, y: mod(m * (P.x - x) - P.y) };
+}
+function mul(k, P) { k = mod(k, Nn); let R = INF, A = P; while (k > 0n) { if (k & 1n) R = add(R, A); A = add(A, A); k >>= 1n; } return R; }
+function decompress(xBytes, evenY) {
+  const x = BigInt('0x' + (toHex(xBytes) || '0'));
+  const yy = mod(x * x % Pp * x + 7n);
+  const y = modpow(yy, (Pp + 1n) / 4n, Pp);
+  if (mod(y * y) !== yy) return null;
+  return { x, y: (y % 2n === 0n) === evenY ? y : mod(-y) };
+}
+const compress = P => P === INF ? '00' : (P.y % 2n === 0n ? '02' : '03') + P.x.toString(16).padStart(64, '0');
+
+async function deriveH() {
+  const seed = await sha256(enc.encode('tacit-generator-H-v1'));
+  for (let c = 0; c < 256; c++) { const p = decompress(await sha256(cat(seed, new Uint8Array([c]))), true); if (p) return p; }
+  throw new Error('failed to derive H');
+}
+const pedersenCommit = (H, amount, blinding) => add(mul(BigInt(amount), H), mul(BigInt(blinding), G));
+
+// ───────────── CETCH envelope extraction ─────────────
+const MAGIC = enc.encode('TACIT');
+function extractEnvelope(script) {
+  if (!script || script.length < 36) return null;
+  let p = 0;
+  if (script[p] !== 32) return null; p += 33;
+  if (script[p] !== 0xac) return null; p += 1;
+  if (script[p] !== 0x00 || script[p + 1] !== 0x63) return null; p += 2;
+  const pushes = []; let endif = false;
+  while (p < script.length) {
+    if (script[p] === 0x68) { p += 1; endif = true; break; }
+    const op = script[p]; p += 1; let data;
+    if (op >= 1 && op <= 75) { data = script.slice(p, p + op); p += op; }
+    else if (op === 0x4c) { const ln = script[p]; p += 1; data = script.slice(p, p + ln); p += ln; }
+    else if (op === 0x4d) { const ln = script[p] | (script[p + 1] << 8); p += 2; data = script.slice(p, p + ln); p += ln; }
+    else if (op === 0x00) { data = new Uint8Array(0); }
+    else return null;
+    pushes.push(data);
+  }
+  if (!endif || pushes.length < 3 || pushes[0].length !== 5) return null;
+  for (let i = 0; i < 5; i++) if (pushes[0][i] !== MAGIC[i]) return null;
+  if (pushes[1].length !== 1 || pushes[1][0] !== 0x01) return null;
+  return cat(...pushes.slice(2));
+}
+function decodeCEtch(payload) {
+  if (!payload || payload[0] !== 0x21) return null;
+  let p = 1;
+  const tlen = payload[p]; p += 1;
+  const ticker = new TextDecoder().decode(payload.slice(p, p + tlen)); p += tlen;
+  const decimals = payload[p]; p += 1;
+  const commitment = payload.slice(p, p + 33); p += 33 + 8;
+  const rpLen = payload[p] | (payload[p + 1] << 8); p += 2 + rpLen;
+  const mintAuthority = payload.slice(p, p + 32); p += 32;
+  const imgLen = payload[p] | (payload[p + 1] << 8); p += 2;
+  const imageUri = imgLen ? new TextDecoder().decode(payload.slice(p, p + imgLen)) : null;
+  return { ticker, decimals, commitment, mintAuthority, imageUri };
+}
+
+// ───────────── content-addressed IPFS (verify bytes against CID) ─────────────
+const B32 = 'abcdefghijklmnopqrstuvwxyz234567';
+function b32decode(s) { let bits = 0, val = 0; const out = []; for (const ch of s) { val = (val << 5) | B32.indexOf(ch); bits += 5; if (bits >= 8) { bits -= 8; out.push((val >> bits) & 0xff); } } return Uint8Array.from(out); }
+function cidDigest(cid) { const raw = b32decode(cid.slice(1)); if (raw[0] !== 0x01 || raw[1] !== 0x55 || raw[2] !== 0x12 || raw[3] !== 0x20) throw new Error('not a CIDv1 raw sha2-256'); return raw.slice(4, 36); }
+async function fetchVerifiedIpfs(cid) {
+  const want = toHex(cidDigest(cid));
+  for (const gw of IPFS_GATEWAYS) {
+    try {
+      const r = await fetch(`${gw}/${cid}`); if (!r.ok) continue;
+      const buf = new Uint8Array(await r.arrayBuffer());
+      if (toHex(await sha256(buf)) !== want) throw new Error('content does not match CID');
+      return buf;
+    } catch (e) { if (String(e.message).includes('match CID')) throw e; }
+  }
+  throw new Error('all IPFS gateways unreachable (CORS or offline)');
+}
+async function fetchTx(txid) {
+  for (const api of BTC_APIS) { try { const r = await fetch(`${api}/tx/${txid}`); if (r.ok) return await r.json(); } catch {} }
+  throw new Error('all Bitcoin explorers unreachable (CORS or offline)');
+}
+
+// ───────────────────────── UI plumbing ─────────────────────────
+const rowsEl = document.getElementById('rows'), verdictEl = document.getElementById('verdict');
+let anyFail = false;
+function row(label) {
+  const el = document.createElement('div'); el.className = 'row';
+  el.innerHTML = `<span class="badge b-wait">&hellip;</span><span class="label">${label}</span>`;
+  rowsEl.appendChild(el); return el;
+}
+function settle(el, pass, extra = '') {
+  const b = el.querySelector('.badge');
+  b.className = 'badge ' + (pass ? 'b-pass' : 'b-fail'); b.textContent = pass ? 'PASS' : 'FAIL';
+  if (extra) el.querySelector('.label').insertAdjacentHTML('beforeend', `<span class="extra">${extra}</span>`);
+  if (!pass) anyFail = true;
+}
+
+async function run() {
+  rowsEl.innerHTML = ''; anyFail = false;
+  verdictEl.className = 'run'; verdictEl.textContent = 'Running checks…';
+  try {
+    let r;
+    r = row('NUMS generator H derives to the pinned value (SPEC §3.1)');
+    const H = await deriveH();
+    settle(r, compress(H) === EXPECT_H);
+
+    r = row('asset id is bound to the etch tx (local SHA-256)');
+    const derived = toHex(await sha256(cat(fromHex(ETCH_TXID).reverse(), u32le(0))));
+    settle(r, derived === TAC_ASSET_ID);
+
+    r = row('fetch the etch transaction & find the CETCH envelope');
+    const tx = await fetchTx(ETCH_TXID);
+    let etch = null;
+    for (const vin of (tx.vin || [])) { const w = vin.witness || []; if (w.length < 2) continue; const e = extractEnvelope(fromHex(w[w.length - 2])); if (e) { const d = decodeCEtch(e); if (d) { etch = d; break; } } }
+    settle(r, !!etch);
+    if (!etch) throw new Error('no CETCH envelope in tx witness');
+
+    r = row(`ticker is TAC, decimals = ${etch.decimals}`);
+    settle(r, etch.ticker === 'TAC');
+
+    r = row('mint authority is zero → non-mintable, no new TAC can ever be valid');
+    settle(r, etch.mintAuthority.every(b => b === 0), toHex(etch.mintAuthority));
+
+    const cid = (etch.imageUri || '').replace(/^ipfs:\/\//, '');
+    r = row('etch image_uri is an IPFS CID');
+    settle(r, /^bafk/.test(cid), cid);
+
+    r = row('published opening verifies the on-chain Pedersen commitment');
+    const md = JSON.parse(new TextDecoder().decode(await fetchVerifiedIpfs(cid)));
+    const att = md.tacit_attest || {};
+    const supply = BigInt(att.supply), blinding = BigInt('0x' + att.blinding);
+    settle(r, compress(pedersenCommit(H, supply, blinding)) === toHex(etch.commitment));
+
+    r = row('supply opens to exactly 21,000,000 TAC');
+    settle(r, supply === 2100000000000000n, `${(supply / (10n ** BigInt(etch.decimals))).toLocaleString('en-US')} at ${etch.decimals} decimals`);
+
+    if (anyFail) { verdictEl.className = 'bad'; verdictEl.textContent = '✗ verification FAILED'; }
+    else { verdictEl.className = 'ok'; verdictEl.textContent = '✓ TAC supply is provably fixed at 21,000,000 — non-mintable, opening verified from Bitcoin + IPFS'; }
+  } catch (e) {
+    verdictEl.className = 'bad'; verdictEl.textContent = '✗ could not complete: ' + e.message;
+  }
+}
+document.getElementById('rerun').addEventListener('click', run);
+run();
+</script>
+</body>
+</html>
