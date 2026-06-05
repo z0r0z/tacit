@@ -242,6 +242,16 @@ only because the vkey changes). The work is guest + host Rust:
 **Client knock-on:** the pre-burn equality check relaxes to window membership,
 so redeems of already-proven notes no longer wait on unrelated pending deposits.
 
+**Documented bound (review F-1, both passes clean otherwise):** K=32 is a
+redeem-staleness boundary — a redeem broadcast against a root then buried by ≥32
+proven inserts before its own block is processed is skipped (recoverable: the
+note's nullifier isn't consumed, so re-broadcast against the new root). This is
+*consistent with* the client's existing freshness window (`POOL_RECENT_ROOTS_WINDOW
+= 32`, which already warns the user to regenerate at growth > 32 − margin) and
+*tightens* the prior single-root carry-over, so it's a documented limit alongside
+LOCK-1, not a regression. Raise K if a pool's per-confirmation-window insert rate
+ever approaches 32.
+
 **Test plan (gate before trusting):** see §8 — the off-chain real-proof suite is
 the security gate (positive cross-cycle redeem + the **fabricated-window-rejected
 negative test**), then a mainnet tiny-cap live round-trip. The proof-soundness
