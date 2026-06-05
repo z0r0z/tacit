@@ -1867,6 +1867,12 @@ const _AMM_LAUNCHER_GATE_DOMAIN = new TextEncoder().encode('tacit-amm-launcher-g
 const AMM_FEE_BPS_MAX = 1000;
 const AMM_CAPABILITY_FLAGS_MAX = 255;
 const AMM_MINIMUM_LIQUIDITY = 1000n;       // Uniswap V2 convention; locked at POOL_INIT
+// Finalized AMM ceremony vk wrapper CID (the /pin-amm-vk output, also pinned
+// in the dapp as CANONICAL_AMM_VK_CID). spec/amm/ceremony.md: V1 POOL_INIT
+// pins this so the canonical (pair, fee, flags) slot can't be registered
+// against a foreign verifying key. Enforced on mainnet only — signet pools
+// carry per-harness placeholder vk_cids (a test environment, no real value).
+const CANONICAL_AMM_VK_CID = 'bafkreibjpe4xfqtq2ziki4uupydnkeiakqi76m674xtdhmxnfbrn4iomp4';
 // Initial-LP lock per AMM.md §"Initial-LP lock": variant-0 LP_ADD rejected
 // for the first 6 blocks (~1h) after POOL_INIT so arbitrageurs can correct
 // a mispriced seed before naive LPs are exposed. MUST match
@@ -22916,6 +22922,10 @@ async function scanForEtches(env, network) {
         const lp = decodeTLpAddPayload(decoded.payload);
         if (!lp) continue;
         if (lp.variant === 1) {
+          // Mainnet V1 POOL_INIT MUST pin the finalized ceremony vk_cid
+          // (spec/amm/ceremony.md). Signet is exempt — its pools carry
+          // per-harness placeholder cids.
+          if (network === 'mainnet' && lp.vk_cid !== CANONICAL_AMM_VK_CID) continue;
           // Canonical asset pair (rejects A == B).
           let canon;
           try { canon = ammCanonicalAssetPair(lp.asset_a, lp.asset_b); }
