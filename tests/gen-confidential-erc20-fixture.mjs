@@ -77,7 +77,9 @@ function orProof(C, jIndex, r) {
   const kj = rnd();
   A[jIndex] = G.multiply(kj);
   const aff = C.toAffine();
-  const tparts = [beBytes(aff.x), beBytes(aff.y)];
+  // Challenge binds the domain, chainid, and contract address (matches
+  // ConfidentialNoteCore._verifyOrProof) so a proof is contract-specific.
+  const tparts = [new TextEncoder().encode('tacit-evm-cnote-or-v1'), beBytes(CHAIN_ID), addrBytes(CONTRACT), beBytes(aff.x), beBytes(aff.y)];
   for (let i = 0; i < K; i++) { const a = A[i].toAffine(); tparts.push(beBytes(a.x), beBytes(a.y)); }
   const e = mod(BigInt('0x' + bytesToHex(keccak_256(concat(tparts)))), N);
   let sumOther = 0n;
@@ -124,6 +126,10 @@ async function main() {
   const ZERO = '0x0000000000000000000000000000000000000000';
   const etchedBurn = { denomIdx: 2, ...xyHex(Cout0), ...schnorrPok(Cout0, 2, r_out0, ZERO) };
 
+  // ── attest: caller ATTESTER discloses control of input note 0 (denom 100) ──
+  const ATTESTER = '0x00000000000000000000000000000000A77E5701';
+  const attest = { denomIdx: 2, ...xyHex(Cin0), attester: ATTESTER, ...schnorrPok(Cin0, 2, r_in0, ATTESTER) };
+
   const fixture = {
     note: 'TacitConfidentialERC20 lifecycle (real noble). Regenerate: node tests/gen-confidential-erc20-fixture.mjs.',
     deployer: '0x00000000000000000000000000000000DeaDBeef', contract: CONTRACT, chainId: Number(CHAIN_ID),
@@ -136,6 +142,7 @@ async function main() {
     },
     unwrap,
     etchedBurn,
+    attest,
   };
   await fs.mkdir(path.dirname(OUT), { recursive: true });
   await fs.writeFile(OUT, JSON.stringify(fixture, null, 2));

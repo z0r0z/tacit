@@ -119,6 +119,33 @@ contract TacitConfidentialERC20Test is Test {
         t20.unwrap(d, cx, cy, to, rAddr, z);
     }
 
+    function test_attest_discloses_denomination() public {
+        _wrap(".wrap[0]"); // Cin0 active (denom 100)
+        (uint8 d, uint256 cx, uint256 cy, address r, uint256 z) = _attestArgs();
+        address attester = vm.parseJsonAddress(json, ".attest.attester");
+        bytes32 id = keccak256(abi.encodePacked(cx, cy));
+        vm.expectEmit(true, true, false, true, address(t20));
+        emit ConfidentialNoteCore.Attested(attester, id, d);
+        vm.prank(attester);
+        t20.attest(d, cx, cy, r, z);
+    }
+
+    function test_attest_wrong_caller_reverts() public {
+        _wrap(".wrap[0]");
+        (uint8 d, uint256 cx, uint256 cy, address r, uint256 z) = _attestArgs();
+        vm.prank(address(0xBAD)); // PoK binds msg.sender → mismatched caller fails
+        vm.expectRevert(ConfidentialNoteCore.BadProof.selector);
+        t20.attest(d, cx, cy, r, z);
+    }
+
+    function _attestArgs() internal view returns (uint8 d, uint256 cx, uint256 cy, address r, uint256 z) {
+        d = uint8(vm.parseJsonUint(json, ".attest.denomIdx"));
+        cx = vm.parseJsonUint(json, ".attest.x");
+        cy = vm.parseJsonUint(json, ".attest.y");
+        r = vm.parseJsonAddress(json, ".attest.rAddr");
+        z = vm.parseJsonUint(json, ".attest.z");
+    }
+
     function test_gas_lifecycle() public {
         // Pre-parse every argument so the measured regions are pure contract calls
         // (vm.parseJson cheatcodes otherwise dominate the delta).

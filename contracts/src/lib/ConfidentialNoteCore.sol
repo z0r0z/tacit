@@ -38,6 +38,7 @@ abstract contract ConfidentialNoteCore is ReentrancyGuardTransient {
     }
 
     event Transferred(bytes32 indexed inId0, bytes32 indexed inId1, bytes32 outId0, bytes32 outId1);
+    event Attested(address indexed attester, bytes32 indexed noteId, uint8 denomIdx);
 
     error BadDenomIdx();
     error NoteExists();
@@ -73,6 +74,18 @@ abstract contract ConfidentialNoteCore is ReentrancyGuardTransient {
         emit Transferred(in0, in1, out0, out1);
     }
 
+    /// @notice Anchor a selective balance disclosure: prove the caller controls
+    ///         an active note opening to d_i (so holds at least `_ladder[i]`),
+    ///         emitting an event a consumer contract can gate on. The PoK binds
+    ///         msg.sender, so the attestation is caller-specific and not replayable.
+    function attest(uint8 denomIdx, uint256 cx, uint256 cy, address rAddr, uint256 z) external {
+        if (denomIdx >= K) revert BadDenomIdx();
+        bytes32 id = _noteId(cx, cy);
+        if (noteStatus[id] != 1) revert NoteNotActive();
+        if (!_verifyOpen(cx, cy, denomIdx, msg.sender, rAddr, z)) revert BadProof();
+        emit Attested(msg.sender, id, denomIdx);
+    }
+
     function ladder(uint256 i) external view returns (uint256) { return _ladder[i]; }
     function denomPoint(uint256 i) external view returns (uint256, uint256) { return (_Dx[i], _Dy[i]); }
 
@@ -98,7 +111,7 @@ abstract contract ConfidentialNoteCore is ReentrancyGuardTransient {
         uint256 cx, uint256 cy,
         uint256[K] calldata Ax, uint256[K] calldata Ay, uint256[K] calldata e, uint256[K] calldata z
     ) internal view returns (bool) {
-        bytes memory tr = abi.encodePacked(cx, cy);
+        bytes memory tr = abi.encodePacked("tacit-evm-cnote-or-v1", uint256(block.chainid), address(this), cx, cy);
         for (uint256 i; i < K; ++i) tr = abi.encodePacked(tr, Ax[i], Ay[i]);
         uint256 chal = uint256(keccak256(tr)) % N;
 

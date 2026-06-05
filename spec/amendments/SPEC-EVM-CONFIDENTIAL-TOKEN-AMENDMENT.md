@@ -294,12 +294,17 @@ Built (working tree):
   (authority or fair-launch); `tacit-evm-etch-v1` asset-id derivation;
   `predictAddress`; `Etched` event. 5 tests.
 
+Hardening (done):
+- OR-proof challenge binds `"tacit-evm-cnote-or-v1" ‖ chainid ‖ address(this)`,
+  so a proof is contract-specific (on top of the kernel already binding the
+  transfer as a whole).
+- `attest(denomIdx, …)` — on-chain selective balance disclosure: proves the
+  caller controls an active note opening to `d_i` (PoK bound to `msg.sender`)
+  and emits `Attested(attester, noteId, denomIdx)` for a consumer contract to
+  gate on. The off-chain hidden-amount range attestation still uses
+  `SPEC-RANGE-PROOF-PRIMITIVE` unchanged.
+
 Follow-up:
-- Contract-bind the OR-proof challenge (the transfer is already bound as a whole
-  via the kernel, which commits `address(this)` and every output); a per-output
-  domain tag is a cheap hardening.
-- On-chain balance/range attestation anchor event; the off-chain attestation
-  already works via `SPEC-RANGE-PROOF-PRIMITIVE`.
 - `contracts/sp1/` — batch guest verifying BP+ + kernels for Tier B.
 - Dapp: reuse `dapp/bulletproofs.js`, `dapp/bulletproofs-plus.js`,
   `dapp/amm-sigma.js`, the range-proof primitive, and the stealth stack; add
