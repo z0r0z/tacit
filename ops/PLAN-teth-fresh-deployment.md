@@ -12,6 +12,11 @@ at the **accounting layer** (§2): the dapp and worker recognize every immutable
 generation — prior, this one, and future — as a single tETH and route each
 escrow-touching operation to the generation that backs it.
 
+Naming: generation 0 (the current live deployment) is the **pilot**; the
+generation this plan builds is **alpha**. "Generation" / gen-N stays the
+technical routing term; "pilot" / "alpha" are the user-facing labels (the
+`TETH_DEPLOYMENTS` entry carries a `label`). Work branch: `teth-gen1`.
+
 ## Current live deployment (generation 0)
 
 | Component | Address / value |
@@ -157,27 +162,40 @@ per-pool mixer, so it must be threaded through (see map).
   `poolLeafPrefix` (936), `poolNullifierKey` (939), `poolNullifierPrefix` (944),
   `poolLeafCountKey` (4203).
 - **Bridge-pool registration** — the `bridge_auto` pool-init records (13168,
-  25122) and `_bridgeInitPut` (20530) must carry and key by the mixer; the
-  mixer comes from the bridge op being indexed (today's single-mixer config is
-  generation 0, `gen` falsy → unchanged keys).
+  25122) and `_bridgeInitPut` (20530) must carry and key by the mixer.
+- **Generation attribution (the real gap — verified 2026-06-05):** the worker
+  today **cannot** tell which mixer a bridge op belongs to. It has **no mixer
+  address configured** and **defers bridge bind-hash validation to the SP1
+  guest** (`worker/src/index.js:9907` — "bindHash validation deferred to SP1
+  guest … chain_id + mixer_address"). So multigen needs: (a) a worker-side
+  generation registry (per-gen `{mixer_address, chain_id, genesis}`), and (b)
+  bridge-op attribution — for each op, recompute the bind hash for each
+  candidate gen's mixer and assign the op to the one that matches (no match →
+  skip as out-of-protocol). Only then is `gen` known at `bridge_auto`
+  registration. Generation 0 (the sole mixer today) maps to falsy `gen` →
+  unchanged keys.
 - **`/pools` endpoint** (26486) — return the generation (mixer) per pool; the
   client iterates all generations in `scanPools` and merges.
 - **Supply / attestation** — sum across generations for the asset.
 
 ### Sequencing note
-Build this together with gen-1 (when there is a deploy to index and test
+Build this together with alpha (when there is a deploy to index and test
 against), not as standalone scaffolding on the live worker — generation 0 stays
 on the legacy (falsy-`gen`) keys throughout, so the live path is untouched until
-a real second mixer exists.
+alpha exists. The attribution step (recompute-bind-hash-per-mixer) is new worker
+code, so it gets its own focused pass + the worker test suite, not a tail-end of
+the consensus work.
 
 ---
 
 ## 4. Guest (ELF) changes
 
 All in `contracts/sp1/program/src/`. Each is a vkey-changing edit, so they ship
-together in the generation-1 ELF.
+together in the alpha ELF. Status: **LOCK-4 + LOCK-3 done** (branch `teth-gen1`,
+guest compiles, 8 unit tests pass); LOCK-2 accept+document (§4.2); QUAL-1 /
+TRUST-1 deferred (§4.4/4.5).
 
-### 4.1 Per-pool root window across cycles (LOCK-4)
+### 4.1 Per-pool root window across cycles (LOCK-4) — DONE (`teth-gen1`, 7dc3029 guest / 820a0ed host)
 The guest seeds `known_pool_roots[i]` each non-genesis cycle with only the
 resumed root (`main.rs` non-genesis branch, ~115–120). A redeem binds the pool
 root the client observed; if a deposit to the same pool is proven in an earlier
