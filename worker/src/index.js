@@ -5543,9 +5543,11 @@ async function fetchIpfsJson(cid, { timeoutMs = 5000 } = {}) {
         clearTimeout(timer);
       }
       if (!resp.ok) continue;
-      const body = await resp.text();
+      const buf = await resp.arrayBuffer();
       // Size sanity cap — wrapper metadata blobs are typically < 4 KB.
-      if (body.length > 32 * 1024) continue;
+      if (buf.byteLength > 32 * 1024) continue;
+      if (await _verifyRawCid(cid, buf) === false) continue;
+      const body = new TextDecoder().decode(buf);
       try {
         return { cid, gateway, body, json: JSON.parse(body) };
       } catch {
@@ -5709,6 +5711,9 @@ async function handlePin(req, env, cors) {
   }
   const j = await pinResp.json();
   if (!j.IpfsHash) return jsonResponse({ error: 'pinata returned no CID' }, 502, cors);
+  if (bytes.length <= _RAW_BLOCK_MAX && j.IpfsHash !== await _expectedRawCid(bytes)) {
+    return jsonResponse({ error: 'pin provider returned a CID that does not match the uploaded bytes' }, 502, cors);
+  }
 
   await env.UPLOAD_KV.put(kvKey, String(prior + 1), { expirationTtl: 90000 });
   return jsonResponse({ cid: j.IpfsHash, size: j.PinSize ?? bytes.length }, 200, cors);
@@ -6019,6 +6024,65 @@ async function _peekCidPrefix(cid, n) {
 // artifacts) AND /ceremony/<hash>/contribute (zkey_cid path bypasses
 // the CF→Pinata upload leg). 46-80 chars covers v0 + v1 base32/58.
 const CID_RE = /^[A-Za-z0-9]{46,80}$/;
+
+// CIDv1 raw sha2-256 helpers (`bafkrei…`). Everything the worker pins sits
+// under Pinata's 256 KiB chunk threshold, so it lands as a single raw block
+// whose CID is a direct sha-256 of the bytes — cheap to recompute on both
+// sides of the trust boundary: outbound (assert the pin provider returned
+// the CID our bytes hash to, before that CID lands in an on-chain envelope)
+// and inbound (assert a gateway's bytes hash to the CID we asked for,
+// before the response gets edge-cached for 24h).
+const _RAW_BLOCK_MAX = 262144;
+const _B32_ALPHABET = 'abcdefghijklmnopqrstuvwxyz234567';
+function _b32Decode(s) {
+  let bits = 0, value = 0;
+  const out = [];
+  for (const ch of s) {
+    const idx = _B32_ALPHABET.indexOf(ch);
+    if (idx === -1) return null;
+    value = (value << 5) | idx;
+    bits += 5;
+    if (bits >= 8) { out.push((value >>> (bits - 8)) & 0xff); bits -= 8; }
+  }
+  return new Uint8Array(out);
+}
+function _b32Encode(bytes) {
+  let bits = 0, value = 0, out = '';
+  for (const b of bytes) {
+    value = (value << 8) | b;
+    bits += 8;
+    while (bits >= 5) { out += _B32_ALPHABET[(value >>> (bits - 5)) & 31]; bits -= 5; }
+  }
+  if (bits > 0) out += _B32_ALPHABET[(value << (5 - bits)) & 31];
+  return out;
+}
+// `bafkrei…` → its 32-byte sha-256 digest, or null for any other CID shape
+// (CIDv0, dag-pb, non-sha256) — callers treat null as "not verifiable here".
+function _rawCidDigest(cid) {
+  if (!/^bafkrei[a-z2-7]{52}$/.test(cid)) return null;
+  const bytes = _b32Decode(cid.slice(1));
+  if (!bytes || bytes.length !== 36) return null;
+  if (bytes[0] !== 0x01 || bytes[1] !== 0x55 || bytes[2] !== 0x12 || bytes[3] !== 0x20) return null;
+  return bytes.slice(4);
+}
+// true = bytes hash to the CID; false = MISMATCH (drop the response);
+// null = CID isn't a raw sha-256 block, nothing to check.
+async function _verifyRawCid(cid, buf) {
+  const want = _rawCidDigest(cid);
+  if (!want) return null;
+  const got = new Uint8Array(await crypto.subtle.digest('SHA-256', buf));
+  let diff = got.length === want.length ? 0 : 1;
+  for (let i = 0; i < got.length && i < want.length; i++) diff |= got[i] ^ want[i];
+  return diff === 0;
+}
+async function _expectedRawCid(buf) {
+  const d = new Uint8Array(await crypto.subtle.digest('SHA-256', buf));
+  const cidBytes = new Uint8Array(36);
+  cidBytes.set([0x01, 0x55, 0x12, 0x20]);
+  cidBytes.set(d, 4);
+  return 'b' + _b32Encode(cidBytes);
+}
+
 // Pin an arbitrary binary blob to IPFS. Used for zkey files (~5 MB each).
 // MAX_BYTES env var caps total upload size; we want zkeys to fit so we
 // override locally to 16 MB minimum (the env default of 2 MB is for images).
@@ -6037,6 +6101,11 @@ async function pinBinaryToIpfs(env, bytes, filename, contentType = 'application/
   }
   const j = await pinResp.json();
   if (!j.IpfsHash) throw new Error('pinata returned no CID');
+  const len = bytes.byteLength ?? bytes.length;
+  if (len <= _RAW_BLOCK_MAX) {
+    const want = await _expectedRawCid(bytes);
+    if (j.IpfsHash !== want) throw new Error(`pin provider returned ${j.IpfsHash}; bytes hash to ${want}`);
+  }
   return j.IpfsHash;
 }
 
@@ -7911,6 +7980,12 @@ async function handlePinMixerVk(req, env, cors) {
   }
   const pj = await pinResp.json();
   if (!pj.IpfsHash) return jsonResponse({ error: 'pinata returned no CID' }, 502, cors);
+  {
+    const jsonBytes = new TextEncoder().encode(json);
+    if (jsonBytes.length <= _RAW_BLOCK_MAX && pj.IpfsHash !== await _expectedRawCid(jsonBytes)) {
+      return jsonResponse({ error: 'pin provider returned a CID that does not match the uploaded bytes' }, 502, cors);
+    }
+  }
 
   const newCount = prior + 1;
   await env.UPLOAD_KV.put(kvKey, String(newCount), { expirationTtl: 60 * 60 * 25 });
@@ -7999,6 +8074,12 @@ async function handlePinAmmVk(req, env, cors) {
   }
   const pj = await pinResp.json();
   if (!pj.IpfsHash) return jsonResponse({ error: 'pinata returned no CID' }, 502, cors);
+  {
+    const jsonBytes = new TextEncoder().encode(json);
+    if (jsonBytes.length <= _RAW_BLOCK_MAX && pj.IpfsHash !== await _expectedRawCid(jsonBytes)) {
+      return jsonResponse({ error: 'pin provider returned a CID that does not match the uploaded bytes' }, 502, cors);
+    }
+  }
 
   const newCount = prior + 1;
   await env.UPLOAD_KV.put(kvKey, String(newCount), { expirationTtl: 60 * 60 * 25 });
@@ -8356,6 +8437,12 @@ async function handlePinAirdropSnapshot(req, env, cors) {
   }
   const pj = await pinResp.json();
   if (!pj.IpfsHash) return jsonResponse({ error: 'pinata returned no CID' }, 502, cors);
+  {
+    const jsonBytes = new TextEncoder().encode(json);
+    if (jsonBytes.length <= _RAW_BLOCK_MAX && pj.IpfsHash !== await _expectedRawCid(jsonBytes)) {
+      return jsonResponse({ error: 'pin provider returned a CID that does not match the uploaded bytes' }, 502, cors);
+    }
+  }
 
   await env.UPLOAD_KV.put(kvKey, String(prior + 1), { expirationTtl: 90000 });
   return jsonResponse({ cid: pj.IpfsHash, IpfsHash: pj.IpfsHash }, 200, cors);
@@ -8516,6 +8603,13 @@ async function handleIpfsProxy(req, env, cors) {
   }
   // Race all gateways in parallel. AbortController per attempt; first one
   // to return a non-HTML, non-error response wins. The others get aborted.
+  // Single raw blocks (`bafkrei…`, no sub-path) are additionally verified
+  // inside the race: the attempt buffers the body and re-hashes it against
+  // the CID, so a gateway serving wrong bytes loses to an honest one
+  // instead of poisoning the 24h edge cache. Multi-block/dag-pb CIDs stream
+  // through unverified as before — their consumers (vk fetches, ceremony
+  // artifacts) re-check content hashes downstream.
+  const rawDigest = sub ? null : _rawCidDigest(cid);
   const controllers = IPFS_GATEWAYS.map(() => new AbortController());
   const PER_GATEWAY_TIMEOUT_MS = 12_000;
   const timers = controllers.map((c, i) => setTimeout(() => c.abort(), PER_GATEWAY_TIMEOUT_MS));
@@ -8534,6 +8628,13 @@ async function handleIpfsProxy(req, env, cors) {
     // HTML (rare for tacit usage; we treat all such cases as errors).
     if (/text\/html|application\/xhtml/i.test(ct)) {
       throw new Error(`${gw}: HTML response (likely 404 page)`);
+    }
+    if (rawDigest) {
+      const buf = await r.arrayBuffer();
+      if (await _verifyRawCid(cid, buf) === false) {
+        throw new Error(`${gw}: bytes do not hash to ${cid}`);
+      }
+      return { buf, ct, idx: i };
     }
     return { r, gw, idx: i };
   });
@@ -8554,8 +8655,12 @@ async function handleIpfsProxy(req, env, cors) {
   // Cache-Control allows browsers + intermediate caches to hold the
   // response for 24h (content-addressed so freshness is guaranteed).
   const respHeaders = new Headers(cors);
-  respHeaders.set('Content-Type', winner.r.headers.get('Content-Type') || 'application/octet-stream');
   respHeaders.set('Cache-Control', 'public, max-age=86400, immutable');
+  if (winner.buf !== undefined) {
+    respHeaders.set('Content-Type', winner.ct || 'application/octet-stream');
+    return new Response(winner.buf, { status: 200, headers: respHeaders });
+  }
+  respHeaders.set('Content-Type', winner.r.headers.get('Content-Type') || 'application/octet-stream');
   return new Response(winner.r.body, { status: winner.r.status, headers: respHeaders });
 }
 
@@ -8626,12 +8731,15 @@ async function _raceIpfsGatewaysForJson(cid) {
     if (!r.ok) throw new Error(`${gw}: HTTP ${r.status}`);
     const ct = r.headers.get('Content-Type') || '';
     if (/text\/html|application\/xhtml/i.test(ct)) throw new Error(`${gw}: HTML response`);
-    const text = await r.text();
+    const buf = await r.arrayBuffer();
     // Asset metadata is small (≤8KB typical). Anything larger is almost
     // certainly not metadata — bail rather than parsing megabytes.
-    if (text.length > 16 * 1024) throw new Error(`${gw}: body too large for metadata batch`);
+    if (buf.byteLength > 16 * 1024) throw new Error(`${gw}: body too large for metadata batch`);
+    // A gateway serving bytes that don't hash to the CID loses the race
+    // here, before its response can win and get cached for a day.
+    if (await _verifyRawCid(cid, buf) === false) throw new Error(`${gw}: bytes do not hash to ${cid}`);
     let parsed;
-    try { parsed = JSON.parse(text); }
+    try { parsed = JSON.parse(new TextDecoder().decode(buf)); }
     catch { throw new Error(`${gw}: not json`); }
     return parsed;
   });
