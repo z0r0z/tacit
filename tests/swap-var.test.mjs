@@ -311,7 +311,13 @@ test('kernel_verify_point: no-change-sentinel math closes for (−r_in · G)', (
 
 console.log('\nValidator end-to-end');
 
-function makeRealEnv({ deltaIn = 5000n, mutate = null, fee_bps = 30, R_A_pre = 50_000_000n, R_B_pre = 525_000n, tip = 0n } = {}) {
+function makeRealEnv({
+  deltaIn = 5000n, mutate = null, fee_bps = 30,
+  R_A_pre = 50_000_000n, R_B_pre = 525_000n, tip = 0n,
+  minOut = null,                 // default: exact quote (deltaOut)
+  deltaInMin = 1000n, deltaInMax = 10000n,
+  kernelAssetIdIn = ASSET_A,     // the input asset the trader binds in kernel_msg
+} = {}) {
   const dir = 0;
   const amountIn = 10_000n;
   const r_in = 7n;
@@ -321,6 +327,7 @@ function makeRealEnv({ deltaIn = 5000n, mutate = null, fee_bps = 30, R_A_pre = 5
   const C_in = pedersenCommit(amountIn, r_in);
   const curve = curveDeltaOut({ direction: dir, R_A_pre, R_B_pre, delta_in: deltaIn, fee_bps });
   const deltaOut = curve.deltaOut;
+  const effMinOut = minOut !== null ? minOut : deltaOut;
 
   const delta_in_total = deltaIn + tip;
   const amount_change = amountIn - delta_in_total;
@@ -356,8 +363,8 @@ function makeRealEnv({ deltaIn = 5000n, mutate = null, fee_bps = 30, R_A_pre = 5
   // intent_msg + intent_sig.
   const intentMsg = buildSwapVarIntentMsg({
     poolId: POOL_ID, direction: dir,
-    deltaIn, deltaInMin: 1000n, deltaInMax: 10000n, deltaOut,
-    minOut: deltaOut, tipAmount: tip, tipAsset: 0,
+    deltaIn, deltaInMin, deltaInMax, deltaOut,
+    minOut: effMinOut, tipAmount: tip, tipAsset: 0,
     expiryHeight: 1_000_000, traderPubkey: TRADER_PUBKEY,
     assetInputOutpoint: ASSET_INPUT_OUTPOINT,
     receiveScriptPubKey: RECEIVE_SCRIPT,
@@ -370,7 +377,7 @@ function makeRealEnv({ deltaIn = 5000n, mutate = null, fee_bps = 30, R_A_pre = 5
   // Signing key is `excess` for change case, `-r_in mod n` for no-change.
   const excess = amount_change === 0n ? modN(0n - r_in) : modN(r_change - r_in);
   const kernelMsg = buildSwapVarKernelMsg({
-    assetIdIn: ASSET_A,
+    assetIdIn: kernelAssetIdIn,
     assetInputOutpointTxid: INPUT_TXID,
     assetInputOutpointVout: INPUT_VOUT,
     cChangeOrSentinel: cChangeBytes,
@@ -387,8 +394,8 @@ function makeRealEnv({ deltaIn = 5000n, mutate = null, fee_bps = 30, R_A_pre = 5
 
   let envObj = {
     poolId: POOL_ID, direction: dir, R_A_pre, R_B_pre,
-    deltaIn, deltaInMin: 1000n, deltaInMax: 10000n, deltaOut,
-    minOut: deltaOut, tipAmount: tip, tipAsset: 0,
+    deltaIn, deltaInMin, deltaInMax, deltaOut,
+    minOut: effMinOut, tipAmount: tip, tipAsset: 0,
     expiryHeight: 1_000_000, traderPubkey: TRADER_PUBKEY,
     cInSecp: pointToBytes(C_in),
     cChangeOrSentinel: cChangeBytes,
@@ -401,8 +408,8 @@ function makeRealEnv({ deltaIn = 5000n, mutate = null, fee_bps = 30, R_A_pre = 5
   return envObj;
 }
 
-function runValidate(env, { currentHeight = 100, R_A_pre, R_B_pre, fee_bps = 30, inputCommitment } = {}) {
-  const pool = {
+function runValidate(env, { currentHeight = 100, R_A_pre, R_B_pre, fee_bps = 30, inputCommitment, inputAssetId, pool: poolOverride } = {}) {
+  const pool = poolOverride !== undefined ? poolOverride : {
     pool_id: POOL_ID, asset_A: ASSET_A, asset_B: ASSET_B,
     reserve_A: R_A_pre !== undefined ? R_A_pre : 50_000_000n,
     reserve_B: R_B_pre !== undefined ? R_B_pre : 525_000n,
@@ -421,15 +428,26 @@ function runValidate(env, { currentHeight = 100, R_A_pre, R_B_pre, fee_bps = 30,
     receiveScriptPubKey: RECEIVE_SCRIPT,
     bulletproofVerify: (V_pts, proofBytes) => bpRangeAggVerify(V_pts, proofBytes, 64),
     inputCommitment: inputCommitment !== undefined ? inputCommitment : env.cInSecp,
+    inputAssetId: inputAssetId !== undefined ? inputAssetId : ASSET_A,
   });
+}
+
+// Derived-commitment helper: what the validator must credit for (amount, trader's r_receipt).
+function expectedDerivedCommitment(amount) {
+  const r_receipt = deriveSwapVarReceiptScalar({ traderPrivkey: TRADER_PRIVKEY, poolId: POOL_ID, assetInputOutpoint: ASSET_INPUT_OUTPOINT });
+  return bytesToHex(pointToBytes(pedersenCommit(amount, r_receipt)));
 }
 
 test('happy path: validator accepts honest envelope', () => {
   const env = makeRealEnv();
   const r = runValidate(env);
   if (r.valid !== true) return `reject reason: ${r.reason}`;
+  if (r.outcome !== 'execute') return `outcome: ${r.outcome}`;
   if (r.newPoolState.reserve_A !== 50_005_000n) return `wrong post-A: ${r.newPoolState.reserve_A}`;
-  return true;
+  // Exact-quote fill: the derived commitment must byte-equal the trader's
+  // declared C_receipt (same amount, same r_receipt).
+  return bytesToHex(r.receipt.commitment) === bytesToHex(env.cReceiptSecp)
+      && r.deltaOutActual === env.deltaOut;
 });
 
 test('happy path: post-reserve advances correctly (A→B)', () => {
@@ -467,6 +485,7 @@ test('item 5: 3 successive A→B fills walk reserves + k monotonically increases
       receiveScriptPubKey: RECEIVE_SCRIPT,
       bulletproofVerify: (V, p) => bpRangeAggVerify(V, p, 64),
       inputCommitment: env.cInSecp,
+      inputAssetId: ASSET_A,
     });
     if (!r.valid) return `fill ${i} rejected: ${r.reason}`;
     pool.reserve_A = r.newPoolState.reserve_A;
@@ -479,20 +498,40 @@ test('item 5: 3 successive A→B fills walk reserves + k monotonically increases
   return true;
 });
 
-test('item 7: stale reserves rejected', () => {
-  const env = makeRealEnv();
-  const r = runValidate(env, { R_A_pre: 50_000_001n, R_B_pre: 525_000n });
-  return r.valid === false && r.reason.includes('R_A_pre mismatch');
+test('item 7: stale quote EXECUTES at actual reserves (market-order)', () => {
+  // Envelope quotes (50M, 525k); the pool has since moved to a deeper
+  // reserve_A. Under the outcome taxonomy the declared R_pre is advisory:
+  // the fill executes at the ACTUAL reserves provided the floor clears.
+  // Use a loose floor so the worse price is still within consent.
+  const env = makeRealEnv({ minOut: 1n });
+  const movedA = 60_000_000n;
+  const r = runValidate(env, { R_A_pre: movedA, R_B_pre: 525_000n });
+  if (r.outcome !== 'execute') return `outcome: ${r.outcome} (${r.reason || r.passReason})`;
+  const actual = curveDeltaOut({ direction: 0, R_A_pre: movedA, R_B_pre: 525_000n, delta_in: 5000n, fee_bps: 30 });
+  return r.deltaOutActual === actual.deltaOut
+      && r.receipt.amount === actual.deltaOut
+      && r.deltaOutActual < r.quotedDeltaOut   // worse price than quoted, within floor
+      && bytesToHex(r.receipt.commitment) === expectedDerivedCommitment(actual.deltaOut)
+      && r.newPoolState.reserve_A === movedA + 5000n;
 });
 
-test('item 8: slippage (min_out above curve) rejected', () => {
-  const env = makeRealEnv({ mutate: (e) => ({ ...e, minOut: e.deltaOut + 1n }) });
-  // Re-sign because intent_msg now differs.
-  const r = runValidate(env);
-  // The intent_sig was signed over the original minOut=deltaOut; mutating
-  // minOut without re-signing makes intent_sig fail first. But we want to
-  // test the slippage check specifically — rebuild with min_out > delta_out
-  // from scratch.
+test('item 7b: stale quote past the floor ⇒ PASS-THROUGH (never burns)', () => {
+  // Floor pinned at the original quote; pool moved enough that the actual
+  // fill would violate it. The envelope authenticates, so the input
+  // refunds at the receipt slot — pool untouched.
+  const env = makeRealEnv();            // minOut = quoted deltaOut
+  const movedA = 60_000_000n;           // worse price ⇒ actual < quote = floor
+  const r = runValidate(env, { R_A_pre: movedA, R_B_pre: 525_000n });
+  if (r.outcome !== 'passthrough') return `outcome: ${r.outcome} (${r.reason || r.passReason})`;
+  return r.valid === true && r.executed === false
+      && r.passReason.includes('slippage')
+      && r.newPoolState.reserve_A === movedA            // unchanged
+      && bytesToHex(r.receipt.asset_id) === bytesToHex(ASSET_A)  // input asset back
+      && r.receipt.amount === 5000n                      // delta_in (tip = 0)
+      && bytesToHex(r.receipt.commitment) === expectedDerivedCommitment(5000n);
+});
+
+test('item 8: slippage (min_out above curve) ⇒ PASS-THROUGH', () => {
   const env2 = (() => {
     const e = makeRealEnv();
     const newMinOut = e.deltaOut + 1n;
@@ -510,40 +549,39 @@ test('item 8: slippage (min_out above curve) rejected', () => {
     return { ...e, minOut: newMinOut, intentSig: signSchnorr(intentMsg, TRADER_PRIVKEY) };
   })();
   const r2 = runValidate(env2);
-  return r2.valid === false && r2.reason.includes('slippage');
+  return r2.outcome === 'passthrough' && r2.valid === true
+      && r2.passReason.includes('slippage')
+      && r2.receipt.amount === 5000n
+      && bytesToHex(r2.receipt.asset_id) === bytesToHex(ASSET_A);
 });
 
-test('item 9: delta_in > delta_in_max rejected', () => {
-  // The validator decodes deltaIn from envelope; we need an envelope whose
-  // deltaIn > deltaInMax. Build manually.
-  const e = makeRealEnv();
-  const bad = { ...e, deltaIn: e.deltaInMax + 1n };
-  // Re-sign intent (otherwise sig check fires first).
-  bad.intentSig = signSchnorr(buildSwapVarIntentMsg({
-    ...bad,
-    assetInputOutpoint: ASSET_INPUT_OUTPOINT,
-    receiveScriptPubKey: RECEIVE_SCRIPT,
-  }), TRADER_PRIVKEY);
-  // Curve check would also reject; range-bounds check fires first
-  // (lines come before curve in validator).
-  const r = runValidate(bad);
-  return r.valid === false && r.reason.includes('delta_in > delta_in_max');
+test('item 9: delta_in > delta_in_max ⇒ PASS-THROUGH (refund, nothing burned)', () => {
+  // A consistently-built envelope (commitments, kernel closure, sigs all
+  // balance) whose deltaIn exceeds its own declared range max. A mutated
+  // deltaIn can't authenticate — the kernel closure would need a negative
+  // change commitment — so the range violation must come from the builder,
+  // and Stage B resolves it as a refund.
+  const env = makeRealEnv({ deltaIn: 5000n, deltaInMax: 4000n });
+  const r = runValidate(env);
+  return r.outcome === 'passthrough' && r.passReason.includes('delta_in > delta_in_max')
+      && r.receipt.amount === 5000n
+      && bytesToHex(r.receipt.commitment) === expectedDerivedCommitment(5000n);
 });
 
-test('item 16: curve fudge (delta_out higher than curve) rejected', () => {
-  const e = makeRealEnv();
-  const bad = { ...e, deltaOut: e.deltaOut + 1n };
-  // Inflation defense fires FIRST because C_receipt opens to original deltaOut.
-  // We need to also adjust C_receipt to match the inflated deltaOut so we get
-  // past the inflation gate and into the curve-mismatch gate. But then the
-  // intent_sig (over the original deltaOut) would fail. To isolate the curve
-  // check, re-derive everything but the curve recompute itself.
+test('item 16: curve fudge (declared delta_out inflated) gains nothing — credit is derived', () => {
+  // The trader declares delta_out + 1 and even builds C_receipt to match.
+  // Under the outcome taxonomy the declared value is advisory: the
+  // envelope authenticates, EXECUTES, and credits the validator's own
+  // curve evaluation under the derived commitment. The fudge buys nothing.
+  const e = makeRealEnv({ minOut: 1n });
+  const bad = { ...e };
   const r_receipt = deriveSwapVarReceiptScalar({ traderPrivkey: TRADER_PRIVKEY, poolId: POOL_ID, assetInputOutpoint: ASSET_INPUT_OUTPOINT });
+  const honestDeltaOut = e.deltaOut;
   const newDeltaOut = e.deltaOut + 1n;
   const newCReceipt = pointToBytes(pedersenCommit(newDeltaOut, r_receipt));
   bad.deltaOut = newDeltaOut;
   bad.cReceiptSecp = newCReceipt;
-  // Re-sign the intent.
+  // Re-sign the intent; re-prove the bulletproof over the new quoted commit.
   bad.intentSig = signSchnorr(buildSwapVarIntentMsg({
     poolId: bad.poolId, direction: bad.direction,
     deltaIn: bad.deltaIn, deltaInMin: bad.deltaInMin, deltaInMax: bad.deltaInMax,
@@ -554,30 +592,43 @@ test('item 16: curve fudge (delta_out higher than curve) rejected', () => {
     cReceiptSecp: newCReceipt,
     cChangeOrSentinel: bad.cChangeOrSentinel,
   }), TRADER_PRIVKEY);
+  const r_change = deriveSwapVarChangeScalar({ traderPrivkey: TRADER_PRIVKEY, poolId: POOL_ID, assetInputOutpoint: ASSET_INPUT_OUTPOINT });
+  const { proof } = bpRangeAggProve([10_000n - 5000n, newDeltaOut], [r_change, r_receipt], 64);
+  bad.rangeProof = proof;
   const r = runValidate(bad);
-  return r.valid === false && r.reason.includes('delta_out mismatch');
+  if (r.outcome !== 'execute') return `outcome: ${r.outcome} (${r.reason || r.passReason})`;
+  return r.deltaOutActual === honestDeltaOut          // validator's own curve value
+      && r.receipt.amount === honestDeltaOut          // NOT the inflated declaration
+      && bytesToHex(r.receipt.commitment) === expectedDerivedCommitment(honestDeltaOut)
+      && bytesToHex(r.receipt.commitment) !== bytesToHex(newCReceipt);
 });
 
 // ============================================================
-// Section 5: The critical inflation defense (P0 crypto fix)
+// Section 5: The critical inflation defense (derived credit)
 // ============================================================
 //
 // Even with all sigs valid, a malicious prover MUST NOT be able to claim
-// an inflated delta_out by mis-constructing C_receipt_secp.
+// an inflated delta_out. Under the outcome taxonomy the defense is
+// DERIVATION: the credited receipt commitment is computed by the
+// validator from amounts it itself established — a forged C_receipt_secp
+// (any value, fully re-signed and re-proven) changes nothing about what
+// gets credited.
 
 console.log('\nCritical: inflation-attack defense');
 
-test('inflation: forged C_receipt with X ≠ delta_out rejected', () => {
-  const e = makeRealEnv();
-  // Construct a fake receipt commit to a HIGHER amount, but leave deltaOut and
-  // r_receipt as the trader's honest values. The check `C_receipt == delta_out
-  // · H + r_receipt · G` should fail because LHS commits to (deltaOut+1000)
-  // while RHS computes (deltaOut · H + r_receipt · G) → wrong point.
+test('inflation: fully-consistent forged C_receipt (X ≠ delta_out) credits the honest amount anyway', () => {
+  // The forger commits C_receipt to a HIGHER amount, re-signs the intent,
+  // and re-proves the bulletproof over the forged commit (they know its
+  // opening, so the proof verifies). The envelope authenticates — and the
+  // credit is still the validator's own curve evaluation under the
+  // derived commitment. The forgery is byte-visible but value-inert.
+  const e = makeRealEnv({ minOut: 1n });
   const r_receipt = deriveSwapVarReceiptScalar({ traderPrivkey: TRADER_PRIVKEY, poolId: POOL_ID, assetInputOutpoint: ASSET_INPUT_OUTPOINT });
+  const r_change = deriveSwapVarChangeScalar({ traderPrivkey: TRADER_PRIVKEY, poolId: POOL_ID, assetInputOutpoint: ASSET_INPUT_OUTPOINT });
+  const honestDeltaOut = e.deltaOut;
   const inflatedAmount = e.deltaOut + 1000n;
   const forgedCReceipt = pointToBytes(pedersenCommit(inflatedAmount, r_receipt));
   const bad = { ...e, cReceiptSecp: forgedCReceipt };
-  // Re-sign intent with the forged commit (otherwise intent_sig fails first).
   bad.intentSig = signSchnorr(buildSwapVarIntentMsg({
     poolId: bad.poolId, direction: bad.direction,
     deltaIn: bad.deltaIn, deltaInMin: bad.deltaInMin, deltaInMax: bad.deltaInMax,
@@ -588,19 +639,29 @@ test('inflation: forged C_receipt with X ≠ delta_out rejected', () => {
     cReceiptSecp: forgedCReceipt,
     cChangeOrSentinel: bad.cChangeOrSentinel,
   }), TRADER_PRIVKEY);
+  const { proof } = bpRangeAggProve([5000n, inflatedAmount], [r_change, r_receipt], 64);
+  bad.rangeProof = proof;
   const r = runValidate(bad);
-  return r.valid === false && r.reason.includes('receipt-binding check failed');
+  if (r.outcome !== 'execute') return `outcome: ${r.outcome} (${r.reason || r.passReason})`;
+  return r.receipt.amount === honestDeltaOut
+      && bytesToHex(r.receipt.commitment) === expectedDerivedCommitment(honestDeltaOut)
+      && bytesToHex(r.receipt.commitment) !== bytesToHex(forgedCReceipt);
 });
 
-test('inflation: trader publishing wrong r_receipt rejected', () => {
+test('inflation: published r_receipt drives the derived credit (declared C_receipt never consulted)', () => {
   const e = makeRealEnv();
-  const bad = { ...e, rReceipt: new Uint8Array(32) }; // r_receipt = 0
-  // Don't re-sign; the inflation check fires on the public r_receipt
-  // against C_receipt, NOT against the intent_sig. The check should fail
-  // because C_receipt commits to (delta_out, real_r_receipt) but rebuilds
-  // it from (delta_out, 0).
+  const bad = { ...e, rReceipt: new Uint8Array(32) }; // publish r_receipt = 0
+  // No re-sign needed: r_receipt is not in intent_msg (its integrity is
+  // anchored by the OP_RETURN envelope-hash + the trader's Bitcoin-level
+  // SIGHASH_ALL). The envelope authenticates; the credit derives under the
+  // PUBLISHED scalar — delta_out·H + 0·G — which remains spendable via the
+  // public on-chain opening. Tampering r_receipt is value-inert.
   const r = runValidate(bad);
-  return r.valid === false && r.reason.includes('receipt-binding check failed');
+  if (r.outcome !== 'execute') return `outcome: ${r.outcome} (${r.reason || r.passReason})`;
+  const derivedUnderZero = bytesToHex(pointToBytes(pedersenCommit(e.deltaOut, 0n)));
+  return r.receipt.amount === e.deltaOut
+      && bytesToHex(r.receipt.commitment) === derivedUnderZero
+      && bytesToHex(r.receipt.commitment) !== bytesToHex(e.cReceiptSecp);
 });
 
 test('inflation: validator rejects r_receipt >= n_secp', () => {
@@ -703,30 +764,25 @@ test('OP_RETURN data mismatch rejected', () => {
     receiveScriptPubKey: RECEIVE_SCRIPT,
     bulletproofVerify: (V, p) => bpRangeAggVerify(V, p, 64),
     inputCommitment: e.cInSecp,
+    inputAssetId: ASSET_A,
   });
   return r.valid === false && r.reason.includes('OP_RETURN');
 });
 
-test('expired envelope rejected', () => {
+test('expired envelope ⇒ PASS-THROUGH', () => {
   const e = makeRealEnv();
   const r = runValidate(e, { currentHeight: 1_000_000 });
-  return r.valid === false && r.reason.includes('expired');
+  return r.outcome === 'passthrough' && r.passReason.includes('expired')
+      && r.receipt.amount === 5000n;
 });
 
-test('pool_id mismatch rejected', () => {
+test('pool_id mismatch ⇒ PASS-THROUGH (refund in input asset)', () => {
   const e = makeRealEnv();
-  const payload = encodeSwapVar(e);
   const wrongPool = { pool_id: new Uint8Array(32).fill(0xff), asset_A: ASSET_A, asset_B: ASSET_B, reserve_A: 50_000_000n, reserve_B: 525_000n, fee_bps: 30 };
-  const r = validateSwapVar({
-    payload, pool: wrongPool, opReturnData: computeSwapVarEnvelopeHash(payload),
-    assetInputOutpointTxid: INPUT_TXID,
-    assetInputOutpointVout: INPUT_VOUT,
-    currentHeight: 100,
-    receiveScriptPubKey: RECEIVE_SCRIPT,
-    bulletproofVerify: (V, p) => bpRangeAggVerify(V, p, 64),
-    inputCommitment: e.cInSecp,
-  });
-  return r.valid === false && r.reason.includes('pool_id mismatch');
+  const r = runValidate(e, { pool: wrongPool });
+  return r.outcome === 'passthrough' && r.passReason.includes('pool_id mismatch')
+      && bytesToHex(r.receipt.asset_id) === bytesToHex(ASSET_A)
+      && r.receipt.amount === 5000n;
 });
 
 test('bulletproof tampered rejected', () => {
@@ -793,7 +849,130 @@ test('whole-input case: validator accepts NO_CHANGE_SENTINEL', () => {
     kernelSig, intentSig,
   };
   const r = runValidate(env);
-  return r.valid === true;
+  return r.valid === true && r.outcome === 'execute';
+});
+
+// ============================================================
+// Section 8: Outcome taxonomy — market-order + pass-through
+// ============================================================
+//
+// Test-plan items 9b–9f (SPEC-SWAP-VAR-AMENDMENT §"Test plan"): the
+// same-block race resolves without burns, refunds conserve, and the
+// zero-output guard holds.
+
+console.log('\nOutcome taxonomy — race + pass-through');
+
+test('item 9b: same-block race — both swaps settle, later one at moved reserves', () => {
+  // Two traders quote the same pre-state with loose floors. Apply #1,
+  // then validate #2 against #1's post-state: #2 EXECUTES at the worse
+  // (post-#1) price instead of burning.
+  const env1 = makeRealEnv({ minOut: 1n });
+  const env2 = makeRealEnv({ minOut: 1n });
+  const r1 = runValidate(env1);
+  if (r1.outcome !== 'execute') return `r1 outcome: ${r1.outcome}`;
+  const r2 = runValidate(env2, {
+    R_A_pre: r1.newPoolState.reserve_A,
+    R_B_pre: r1.newPoolState.reserve_B,
+  });
+  if (r2.outcome !== 'execute') return `r2 outcome: ${r2.outcome} (${r2.passReason})`;
+  const expected2 = curveDeltaOut({
+    direction: 0,
+    R_A_pre: r1.newPoolState.reserve_A, R_B_pre: r1.newPoolState.reserve_B,
+    delta_in: 5000n, fee_bps: 30,
+  });
+  return r2.deltaOutActual === expected2.deltaOut
+      && r2.deltaOutActual <= r1.deltaOutActual      // post-#1 price is worse or equal
+      && r2.newPoolState.reserve_A === r1.newPoolState.reserve_A + 5000n;
+});
+
+test('item 9c: same-block race, tight floor — later swap passes through, pool untouched', () => {
+  // Use a shallow pool so a 5k fill moves the price materially: at
+  // (1M, 525k) the quote is 2604; after #1 fills, #2's actual drops to
+  // ~2578 < its pinned floor of 2604 ⇒ refund.
+  const SHALLOW_A = 1_000_000n;
+  const env1 = makeRealEnv({ minOut: 1n, R_A_pre: SHALLOW_A });
+  const env2 = makeRealEnv({ R_A_pre: SHALLOW_A }); // minOut = quoted deltaOut
+  const r1 = runValidate(env1, { R_A_pre: SHALLOW_A });
+  if (r1.outcome !== 'execute') return `r1 outcome: ${r1.outcome}`;
+  const r2 = runValidate(env2, {
+    R_A_pre: r1.newPoolState.reserve_A,
+    R_B_pre: r1.newPoolState.reserve_B,
+  });
+  return r2.outcome === 'passthrough'
+      && r2.passReason.includes('slippage')
+      && r2.newPoolState.reserve_A === r1.newPoolState.reserve_A   // unchanged
+      && r2.receipt.amount === 5000n
+      && bytesToHex(r2.receipt.asset_id) === bytesToHex(ASSET_A);
+});
+
+test('pass-through refund includes the tip (delta_in + tip_amount; no tip on non-execution)', () => {
+  const env = makeRealEnv({ tip: 50n });            // minOut = quote
+  const r = runValidate(env, { R_A_pre: 60_000_000n });  // floor miss
+  return r.outcome === 'passthrough'
+      && r.receipt.amount === 5050n
+      && bytesToHex(r.receipt.commitment) === expectedDerivedCommitment(5050n);
+});
+
+test('item 9e: zero-output guard — curve floors to 0 with min_out = 0 ⇒ PASS-THROUGH', () => {
+  // Dust delta_in against deep reserves: floor(525000·9970·1 / (50e6·10000 + 9970)) = 0.
+  const env = makeRealEnv({ deltaIn: 1n, deltaInMin: 1n, deltaInMax: 10n, minOut: 0n });
+  const r = runValidate(env);
+  return r.outcome === 'passthrough'
+      && r.passReason.includes('slippage')           // max(1, 0) floor
+      && r.receipt.amount === 1n;
+});
+
+test('tip_asset != input side ⇒ PASS-THROUGH', () => {
+  const e = makeRealEnv();
+  const bad = { ...e, tipAsset: 1 };                // direction 0 ⇒ input side is 0
+  bad.intentSig = signSchnorr(buildSwapVarIntentMsg({
+    ...bad,
+    assetInputOutpoint: ASSET_INPUT_OUTPOINT,
+    receiveScriptPubKey: RECEIVE_SCRIPT,
+  }), TRADER_PRIVKEY);
+  const r = runValidate(bad);
+  return r.outcome === 'passthrough' && r.passReason.includes('tip_asset');
+});
+
+test("input asset != pool's direction side ⇒ PASS-THROUGH refunding the REAL input asset", () => {
+  // Trader's input is actually ASSET_B (kernel honestly binds it) but the
+  // envelope claims direction 0 (input side = ASSET_A). Authenticates;
+  // Stage B refunds in ASSET_B.
+  const env = makeRealEnv({ kernelAssetIdIn: ASSET_B });
+  const r = runValidate(env, { inputAssetId: ASSET_B });
+  return r.outcome === 'passthrough'
+      && r.passReason.includes('direction-side')
+      && bytesToHex(r.receipt.asset_id) === bytesToHex(ASSET_B)
+      && r.receipt.amount === 5000n;
+});
+
+test('unregistered pool (null) ⇒ PASS-THROUGH, not invalid', () => {
+  const env = makeRealEnv();
+  const r = runValidate(env, { pool: null });
+  return r.outcome === 'passthrough' && r.passReason.includes('pool not registered')
+      && r.receipt.amount === 5000n
+      && bytesToHex(r.receipt.asset_id) === bytesToHex(ASSET_A);
+});
+
+test('missing inputAssetId param ⇒ throws (footgun guard)', () => {
+  const e = makeRealEnv();
+  const payload = encodeSwapVar(e);
+  const pool = { pool_id: POOL_ID, asset_A: ASSET_A, asset_B: ASSET_B, reserve_A: 50_000_000n, reserve_B: 525_000n, fee_bps: 30 };
+  try {
+    validateSwapVar({
+      payload, pool, opReturnData: computeSwapVarEnvelopeHash(payload),
+      assetInputOutpointTxid: INPUT_TXID,
+      assetInputOutpointVout: INPUT_VOUT,
+      currentHeight: 100,
+      receiveScriptPubKey: RECEIVE_SCRIPT,
+      bulletproofVerify: (V, p) => bpRangeAggVerify(V, p, 64),
+      inputCommitment: e.cInSecp,
+      // inputAssetId omitted
+    });
+    return false;
+  } catch (err) {
+    return /inputAssetId is required/.test(err.message);
+  }
 });
 
 // ============================================================

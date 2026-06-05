@@ -216,6 +216,68 @@ group('ammPoolGet/ammPoolPut round-trip (in-memory KV stub)');
   ok('missing pool → null', (await worker.ammPoolGet(env, 'signet', '22'.repeat(32))) === null);
 }
 
+// ============== T_SWAP_VAR outcome records (SPEC §5.20 outcome taxonomy) ==============
+group('swapVarOutcomeActive + ammSwapAccepted outcome-record round-trip');
+{
+  // Activation boundary: strictly below ⇒ legacy, at/above ⇒ outcome rules.
+  const sigAct = worker.SWAP_VAR_OUTCOME_ACTIVATION.signet;
+  ok('signet activation pinned above all pre-revision history', sigAct > 305000);
+  ok('mainnet activation = 0 (no T_SWAP_VAR history)', worker.SWAP_VAR_OUTCOME_ACTIVATION.mainnet === 0);
+  ok('below activation ⇒ legacy', worker.swapVarOutcomeActive('signet', sigAct - 1) === false);
+  ok('at activation ⇒ outcome rules', worker.swapVarOutcomeActive('signet', sigAct) === true);
+  ok('mainnet active from genesis', worker.swapVarOutcomeActive('mainnet', 0) === true);
+
+  function makeKvStub() {
+    const data = new Map();
+    return {
+      async get(k, kind) {
+        const v = data.get(k);
+        if (v === undefined) return null;
+        if (kind === 'json') return JSON.parse(v);
+        return v;
+      },
+      async put(k, v) { data.set(k, typeof v === 'string' ? v : JSON.stringify(v)); },
+    };
+  }
+  const env = { REGISTRY_KV: makeKvStub() };
+  const txid = 'ab'.repeat(32);
+  const execRec = {
+    h: 307500, pool_id: '11'.repeat(32),
+    outcome: 'execute',
+    delta_out_actual: '52', quoted_delta_out: '52',
+    receipt: { asset_id: 'bb'.repeat(32), commitment: '02' + 'cd'.repeat(32) },
+    change: { asset_id: 'aa'.repeat(32), commitment: '03' + 'ef'.repeat(32) },
+  };
+  await worker.ammSwapAcceptedPut(env, 'signet', txid, execRec);
+  const gotExec = await worker.ammSwapAcceptedGet(env, 'signet', txid);
+  ok('execute record round-trips outcome + receipt', gotExec?.outcome === 'execute'
+    && gotExec?.receipt?.commitment === execRec.receipt.commitment
+    && gotExec?.delta_out_actual === '52');
+
+  const txid2 = 'cd'.repeat(32);
+  const passRec = {
+    h: 307501, pool_id: '11'.repeat(32),
+    outcome: 'passthrough',
+    pass_reason: 'slippage: delta_out_actual < max(1, min_out)',
+    refund_amount: '5050',
+    receipt: { asset_id: 'aa'.repeat(32), commitment: '02' + '99'.repeat(32) },
+    change: null,
+  };
+  await worker.ammSwapAcceptedPut(env, 'signet', txid2, passRec);
+  const gotPass = await worker.ammSwapAcceptedGet(env, 'signet', txid2);
+  ok('passthrough record round-trips refund + reason', gotPass?.outcome === 'passthrough'
+    && gotPass?.refund_amount === '5050'
+    && gotPass?.change === null
+    && gotPass?.receipt?.asset_id === 'aa'.repeat(32));
+
+  // Legacy records ({h, pool_id} only — pre-revision accepts) stay readable
+  // and distinguishable by the absent `outcome` field.
+  const txid3 = 'ef'.repeat(32);
+  await worker.ammSwapAcceptedPut(env, 'signet', txid3, { h: 305000, pool_id: '11'.repeat(32) });
+  const gotLegacy = await worker.ammSwapAcceptedGet(env, 'signet', txid3);
+  ok('legacy record readable, no outcome field', !!gotLegacy && gotLegacy.outcome === undefined);
+}
+
 // ============== Crypto helpers (POOL_INIT validator gates) ==============
 group('ammCanonicalAssetPair');
 {

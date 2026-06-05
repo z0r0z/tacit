@@ -221,6 +221,7 @@ assertRejects('empty payload + null pool', () => validateSwapVar({
   receiveScriptPubKey: new Uint8Array(22),
   bulletproofVerify: () => true,
   inputCommitment: ZERO_33,
+  inputAssetId: DUMMY_ASSET_A,
 }));
 
 assertRejects('truncated payload + dummy pool', () => validateSwapVar({
@@ -234,6 +235,7 @@ assertRejects('truncated payload + dummy pool', () => validateSwapVar({
   receiveScriptPubKey: new Uint8Array(22),
   bulletproofVerify: () => true,
   inputCommitment: ZERO_33,
+  inputAssetId: DUMMY_ASSET_A,
 }));
 
 assertRejects('wrong opcode in payload', () => {
@@ -252,6 +254,7 @@ assertRejects('wrong opcode in payload', () => {
     receiveScriptPubKey: new Uint8Array(22),
     bulletproofVerify: () => true,
     inputCommitment: ZERO_33,
+  inputAssetId: DUMMY_ASSET_A,
   });
 });
 
@@ -356,6 +359,7 @@ assertThrowsWith('validateSwapVar without bulletproofVerify', /bulletproofVerify
   receiveScriptPubKey: new Uint8Array(22),
   // bulletproofVerify omitted
   inputCommitment: ZERO_33,
+  inputAssetId: DUMMY_ASSET_A,
 }));
 
 // ============================================================
@@ -447,6 +451,7 @@ runFuzz('validateSwapVar', 1000, (p) => validateSwapVar({
   receiveScriptPubKey: new Uint8Array(22),
   bulletproofVerify: () => true,
   inputCommitment: ZERO_33,
+  inputAssetId: DUMMY_ASSET_A,
 }));
 
 runFuzz('validateProtocolFeeClaim', 1000, (p) => validateProtocolFeeClaim({

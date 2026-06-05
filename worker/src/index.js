@@ -138,6 +138,17 @@ const T_PROTOCOL_FEE_CLAIM = 0x31; // founder-pinned recipient mints accrued LP-
 const T_SWAP_VAR   = 0x32; // per-trade variable-amount AMM swap (SPEC §5.16.3)
 const T_SWAP_ROUTE = 0x33; // atomic multi-hop AMM routing (SPEC-SWAP-ROUTE-AMENDMENT)
 const SWAP_ROUTE_N_HOPS_MAX = 4; // matches tests/swap-route.mjs N_HOPS_MAX
+// SPEC §5.20 outcome-taxonomy activation (2026-06-05 revision). Envelopes
+// confirmed below this height validate under the superseded strict-equality
+// algorithm (frozen legacy branch in the scan loop); at/above, the
+// market-order-within-floor + pass-through algorithm applies. Signet pin =
+// tip at revision time + margin (covers all prior signet swap history);
+// mainnet has no T_SWAP_VAR history, so the new rules apply from genesis.
+const SWAP_VAR_OUTCOME_ACTIVATION = { signet: 307450, mainnet: 0 };
+function swapVarOutcomeActive(network, height) {
+  const act = SWAP_VAR_OUTCOME_ACTIVATION[network === 'signet' ? 'signet' : 'mainnet'] ?? 0;
+  return height >= act;
+}
 const XCURVE_PROOF_LEN_AMM = 169; // tacit-amm sigma proof length
 // LP-bond yield farms (SPEC-AMM-FARM-AMENDMENT.md). Three opcodes:
 //   T_FARM_INIT  : launcher-funded reward farm creation; virtual treasury.
@@ -1999,6 +2010,33 @@ async function ammSwapAcceptedGet(env, network, txidHex) {
 }
 async function ammSwapAcceptedPut(env, network, txidHex, value) {
   await env.REGISTRY_KV.put(ammSwapAcceptedKey(network, txidHex), JSON.stringify(value));
+}
+
+// Pending-swap line per pool — mempool-seen T_SWAP_VARs reported via
+// POST /amm/swap-hint, served back through GET /amm/pool/:id/head as a
+// projected-reserves view so wallets can quote against in-flight fills
+// (the §5.20 outcome taxonomy makes quoting from projected state safe:
+// the signed min_out floor is the price consent, and a projection miss
+// resolves as a pass-through refund, never a burn). One small array per
+// pool; entries prune on read once their accepted record lands or they
+// age out. Best-effort coordination data — never consulted by the
+// validator.
+const AMM_SWAP_PENDING_MAX = 32;          // per-pool line cap
+const AMM_SWAP_PENDING_MAX_AGE_S = 7200;  // prune unconfirmed entries after 2h
+function ammSwapPendingKey(network, poolIdHex) {
+  return network === 'signet'
+    ? `swapline:${poolIdHex}`
+    : `swapline:${network}:${poolIdHex}`;
+}
+async function ammSwapPendingGet(env, network, poolIdHex) {
+  return (await env.REGISTRY_KV.get(ammSwapPendingKey(network, poolIdHex), 'json')) || [];
+}
+async function ammSwapPendingPut(env, network, poolIdHex, list) {
+  await env.REGISTRY_KV.put(
+    ammSwapPendingKey(network, poolIdHex),
+    JSON.stringify(list),
+    { expirationTtl: 6 * 3600 },
+  );
 }
 
 // Per-pair reverse index. Multiple pools can share an (assetA, assetB) pair
@@ -14833,13 +14871,35 @@ async function commitmentForUtxo(env, txidHex, vout, network, opts = {}) {
   if (decoded.opcode === T_SWAP_VAR) {
     // T_SWAP_VAR emits:
     //   vout[0] = OP_RETURN(envelope_hash), not a tacit UTXO
-    //   vout[1] = trader's swap receipt (c_receipt_secp) on the
-    //             opposite asset of the trader's input
+    //   vout[1] = trader's swap receipt — outcome-dependent since the
+    //             SPEC §5.20 outcome-taxonomy revision: output asset at
+    //             delta_out_actual on EXECUTE, input asset refund at
+    //             delta_in + tip_amount on PASS-THROUGH, with the
+    //             commitment validator-DERIVED in both cases
     //   vout[2] = optional change UTXO (on input asset) when non-sentinel
     //   vout[3+] = optional settler outputs
-    // Look up the pool to know which asset is which.
+    //
+    // The credited amounts are no longer static envelope fields, so
+    // resolution reads the scan-time outcome record (same pattern as
+    // T_LP_UNBOND's receipt index). Records without an `outcome` field
+    // (legacy strict-algorithm accepts) and pre-activation history fall
+    // back to the declared-field resolution, which is exact for them —
+    // a legacy-accepted swap executed precisely at its declared values.
     const sv = decodeTSwapVarPayload(decoded.payload);
     if (!sv) throw new Error('invalid T_SWAP_VAR payload');
+    const rec = await ammSwapAcceptedGet(env, network, txidHex);
+    if (rec && rec.outcome) {
+      if (vout === 1) {
+        return { commitment: rec.receipt.commitment, asset_id: rec.receipt.asset_id };
+      }
+      if (vout === 2) {
+        if (!rec.change) throw new Error('T_SWAP_VAR vout 2 absent (no-change sentinel)');
+        return { commitment: rec.change.commitment, asset_id: rec.change.asset_id };
+      }
+      throw new Error(`T_SWAP_VAR vout ${vout} out of range for asset UTXO resolution`);
+    }
+    // Legacy fallback (declared fields). Look up the pool to know which
+    // asset is which.
     const pool = await ammPoolGet(env, network, sv.pool_id);
     if (!pool) throw new Error(`T_SWAP_VAR pool not registered: ${sv.pool_id}`);
     if (vout === 1) {
@@ -23621,41 +23681,40 @@ async function scanForEtches(env, network) {
         });
         found++;
       } else if (decoded.opcode === T_SWAP_VAR) {
-        // SPEC-SWAP-VAR-AMENDMENT §5.16.3 (a.k.a. SPEC §5.20). Per-trade
-        // variable-amount AMM swap. This branch is a full validator — every
-        // gate in SPEC §5.20 step 1..12 is enforced; the only remaining
-        // delegated step is step 13 (tip-output opening — see N-1 in the
-        // pre-ceremony audit). Gates run in order:
+        // SPEC §5.20 — per-trade variable-amount AMM swap, validated under
+        // the OUTCOME TAXONOMY (2026-06-05 revision; see SPEC.md §5.20 +
+        // SPEC-SWAP-VAR-AMENDMENT §"Indexer validation algorithm"):
         //
-        //   1.  OP_RETURN at tx.vout[0] = SHA256(envelope_payload).
-        //   2.  Pool exists at envelope.pool_id AND validation tag is
-        //       'xcurve-verified' or 'verified' (refuses partial-validation
-        //       pools — the T_LP_ADD validator only writes a fully verified
-        //       tag after the first successful swap upgrades it).
-        //   3.  Reserves freshness: R_A_pre / R_B_pre match pool state.
-        //   4.  Range: delta_in_min ≤ delta_in ≤ delta_in_max, delta_in > 0.
-        //   5.  Expiry: confirm_height < expiry_height.
-        //   6.  Curve recompute (strict equality, byte-identical to
-        //       tests/swap-var.mjs).
-        //   7.  Slippage floor: delta_out ≥ min_out.
-        //   8.  Post-reserve positivity inside ammCurveDeltaOut.
-        //   9.  C_in_secp byte-equals the on-chain Pedersen commit at
-        //       tx.vin[1] (asset-id consistency + input-side inflation
-        //       defense).
-        //  10.  Kernel sig under P = C_change_or_sentinel − C_in_secp +
-        //       (delta_in + tip_amount)·H_secp, x-only.
-        //  11.  Intent sig under trader_pubkey x-only over the
-        //       reconstructed intent_msg.
-        //  12.  r_receipt opening (C_receipt_secp = delta_out·H + r_receipt·G).
-        //  13.  Aggregated bulletproof m=2 over (C_change_or_sentinel,
-        //       C_receipt_secp).
+        //   INVALID      — Stage-A authentication failure (decode, OP_RETURN
+        //                  binding, input binding, sigs, r_receipt range,
+        //                  bulletproof). `continue` — no credits, no record.
+        //   EXECUTE      — market-order fill at the pool's ACTUAL running
+        //                  reserves within the trader's signed min_out floor.
+        //   PASS-THROUGH — authenticates but cannot execute (floor miss,
+        //                  expiry, unknown pool, range/arithmetic bounds).
+        //                  Pool state unchanged; the trader's input refunds
+        //                  at vout[1] (input asset, delta_in + tip_amount).
         //
-        // Pool state IS updated atomically after all gates pass; failure
-        // at any gate `continue`s without state change.
+        // Both non-invalid outcomes persist an outcome record under the
+        // ammSwapAccepted key (reveal txid) — resolveAssetUtxo reads it to
+        // credit the receipt, since the credited amount is no longer a
+        // static envelope field. The credited receipt commitment is DERIVED
+        // (amount · H + r_receipt · G) from the validator's own outcome
+        // amount; env.c_receipt_secp is the trader's signed quote and is
+        // never the credit source (inflation defense by derivation).
+        //
+        // Tip outputs (vout[3]) are not credited by this worker (settler
+        // tips unsupported; the dapp self-fulfil path always sets tip = 0).
+        // Spec posture: an uncredited tip output forfeits the tip only —
+        // fill and pool are unaffected.
+        //
+        // Envelopes confirmed below SWAP_VAR_OUTCOME_ACTIVATION validate
+        // under the FROZEN LEGACY strict-equality algorithm (kept verbatim
+        // below) so historical replay is byte-stable.
         const sv = decodeTSwapVarPayload(decoded.payload);
         if (!sv) continue;
 
-        // OP_RETURN binding check.
+        // OP_RETURN binding check (Stage A — common to both algorithms).
         const vout0 = tx.vout?.[0];
         if (!vout0 || typeof vout0.scriptpubkey !== 'string') continue;
         const opReturnSpk = vout0.scriptpubkey.toLowerCase();
@@ -23668,6 +23727,12 @@ async function scanForEtches(env, network) {
           if (opReturnHash[i] !== expectedHash[i]) { opReturnOk = false; break; }
         }
         if (!opReturnOk) continue;
+
+        if (!swapVarOutcomeActive(network, h)) {
+        // ════════ FROZEN LEGACY — strict-equality algorithm ════════
+        // Pre-activation history only. Do not modify: replay stability of
+        // already-confirmed signet envelopes depends on this branch staying
+        // byte-identical to the pre-revision validator.
 
         // Pool lookup.
         const pool = await ammPoolGet(env, network, sv.pool_id);
@@ -23837,6 +23902,187 @@ async function scanForEtches(env, network) {
         await ammPoolPut(env, network, sv.pool_id, newPool);
         await ammSwapAcceptedPut(env, network, tx.txid, { h, pool_id: sv.pool_id });
         found++;
+        // ════════ END FROZEN LEGACY ════════
+        } else {
+          // ════════ OUTCOME-TAXONOMY ALGORITHM (SPEC §5.20, 2026-06-05) ════════
+
+          // ── Stage A — authentication (any failure ⇒ INVALID, `continue`) ──
+
+          // Input binding: resolve vin[1]'s parent asset UTXO. The refund
+          // and conservation arithmetic below is only sound against the
+          // real input value, so an unresolvable or mismatched input is an
+          // authentication failure, not a pass-through.
+          const traderInp = tx.vin?.[1];
+          if (!traderInp || typeof traderInp.txid !== 'string' || typeof traderInp.vout !== 'number') continue;
+          let parent;
+          try { parent = await commitmentForUtxo(env, traderInp.txid, traderInp.vout, network); }
+          catch { continue; }
+          if (!parent) continue;
+          if (parent.commitment !== sv.c_in_secp) continue;
+
+          // r_receipt scalar range: [1, n). Drives the derived-commitment
+          // credit in both non-invalid outcomes; zero rejected for parity
+          // with T_SWAP_ROUTE (degenerate blinding).
+          const rReceiptBig = bytes32ToBigint(hexToBytes(sv.r_receipt));
+          if (rReceiptBig === 0n || rReceiptBig >= SECP_N) continue;
+
+          // Kernel sig: P = C_change_or_sentinel − C_in_secp + delta_in_total·H.
+          // The kernel msg binds the input's REAL asset id (parent.asset_id),
+          // not the pool's direction side — identical bytes in the honest
+          // case, and well-defined even when the pool is unknown.
+          const deltaInTotal = BigInt(sv.delta_in) + BigInt(sv.tip_amount);
+          if (deltaInTotal >= 1n << 64n) continue;
+          let kernelPoint;
+          try {
+            kernelPoint = ammSwapVarKernelVerifyPoint(
+              hexToBytes(sv.c_change_or_sentinel),
+              hexToBytes(sv.c_in_secp),
+              deltaInTotal,
+            );
+          } catch { continue; }
+          if (kernelPoint.equals(PEDERSEN_ZERO)) continue;
+          const kernelXOnly = kernelPoint.toRawBytes(true).slice(1);
+          const kernelMsg = ammKernelMsgV1(
+            hexToBytes(parent.asset_id),
+            [{ txid: traderInp.txid, vout: traderInp.vout }],
+            [hexToBytes(sv.c_change_or_sentinel)],
+            deltaInTotal,
+          );
+          if (!verifySchnorr(hexToBytes(sv.kernel_sig), kernelMsg, kernelXOnly)) continue;
+
+          // Intent sig over the reconstructed intent_msg (binds the on-chain
+          // receive_scriptPubKey at vout[1]).
+          const receiptVout = tx.vout?.[1];
+          if (!receiptVout || typeof receiptVout.scriptpubkey !== 'string') continue;
+          const receiveScriptPubKey = hexToBytes(receiptVout.scriptpubkey);
+          const assetInputOutpoint = concatBytes(
+            reverseBytes(hexToBytes(traderInp.txid)),
+            (() => { const b = new Uint8Array(4); new DataView(b.buffer).setUint32(0, traderInp.vout >>> 0, true); return b; })(),
+          );
+          const intentMsg = ammSwapVarIntentMsg({
+            poolId: hexToBytes(sv.pool_id), direction: sv.direction,
+            deltaIn: BigInt(sv.delta_in),
+            deltaInMin: BigInt(sv.delta_in_min),
+            deltaInMax: BigInt(sv.delta_in_max),
+            deltaOut: BigInt(sv.delta_out),
+            minOut: BigInt(sv.min_out),
+            tipAmount: BigInt(sv.tip_amount),
+            tipAsset: sv.tip_asset,
+            expiryHeight: sv.expiry_height,
+            traderPubkey: hexToBytes(sv.trader_pubkey),
+            assetInputOutpoint,
+            receiveScriptPubKey,
+            cReceiptSecp: hexToBytes(sv.c_receipt_secp),
+            cChangeOrSentinel: hexToBytes(sv.c_change_or_sentinel),
+          });
+          let traderXOnly;
+          try {
+            const traderPt = compressedPointFromHex(sv.trader_pubkey);
+            traderXOnly = traderPt.toRawBytes(true).slice(1);
+          } catch { continue; }
+          if (!verifySchnorr(hexToBytes(sv.intent_sig), intentMsg, traderXOnly)) continue;
+
+          // Bulletproof m=2 over (C_change_or_sentinel, C_receipt_secp).
+          // Slot 0 (change ≥ 0) is load-bearing for both outcomes; slot 1
+          // ranges the QUOTED receipt (wire parity with T_AXFER_VAR) — the
+          // credited amount's range-safety is established by derivation.
+          let cReceiptPoint;
+          try { cReceiptPoint = compressedPointFromHex(sv.c_receipt_secp); }
+          catch { continue; }
+          const cChangeBytes = hexToBytes(sv.c_change_or_sentinel);
+          let isSentinelBP = true;
+          for (let i = 0; i < 33; i++) if (cChangeBytes[i] !== 0) { isSentinelBP = false; break; }
+          let cChangeForBP;
+          if (isSentinelBP) {
+            cChangeForBP = PEDERSEN_ZERO;
+          } else {
+            try { cChangeForBP = compressedPointFromHex(sv.c_change_or_sentinel); }
+            catch { continue; }
+          }
+          let bpOk = false;
+          try {
+            bpOk = bpRangeAggVerify([cChangeForBP, cReceiptPoint], hexToBytes(sv.range_proof));
+          } catch { bpOk = false; }
+          if (!bpOk) continue;
+
+          // ── Stage B — executability (any failure ⇒ PASS-THROUGH) ──
+          //
+          // Evaluated against the pool's RUNNING state at this envelope's
+          // canonical position. In-block ordering affects only the PRICE a
+          // fill receives — never validity: a same-pool swap later in the
+          // block settles at post-earlier-fill reserves or passes through.
+          const pool = await ammPoolGet(env, network, sv.pool_id);
+          let passReason = null;
+          let curve = null;
+          if (!pool) passReason = 'pool not registered';
+          else if (pool.validation !== 'xcurve-verified' && pool.validation !== 'verified') passReason = 'pool validation tag not verified';
+          else if (sv.direction !== 0 && sv.direction !== 1) passReason = 'direction out of range';
+          else if (parent.asset_id !== (sv.direction === 0 ? pool.asset_a : pool.asset_b)) passReason = "input asset != pool's direction-side asset";
+          else if (sv.tip_asset !== sv.direction) passReason = 'tip_asset != input side';
+          else if (BigInt(sv.delta_in) === 0n) passReason = 'delta_in must be > 0';
+          else if (BigInt(sv.delta_in) < BigInt(sv.delta_in_min) || BigInt(sv.delta_in) > BigInt(sv.delta_in_max)) passReason = 'delta_in outside [delta_in_min, delta_in_max]';
+          else if (h >= sv.expiry_height) passReason = 'expired';
+          else {
+            // Curve at ACTUAL running reserves — the declared R_A_pre /
+            // R_B_pre / delta_out are advisory quote context only.
+            try {
+              curve = ammCurveDeltaOut(sv.direction, pool.reserve_a, pool.reserve_b, sv.delta_in, pool.fee_bps);
+            } catch (e) { passReason = `curve at actual reserves: ${String(e?.message || e)}`; }
+            if (!passReason) {
+              if (curve.raPost <= 0n || curve.rbPost <= 0n) passReason = 'post-reserve non-positive';
+              else {
+                const floor = BigInt(sv.min_out) > 1n ? BigInt(sv.min_out) : 1n;
+                if (curve.deltaOut < floor) passReason = 'slippage: delta_out_actual < max(1, min_out)';
+              }
+            }
+          }
+
+          const changeRecord = isSentinelBP
+            ? null
+            : { asset_id: parent.asset_id, commitment: sv.c_change_or_sentinel };
+
+          if (passReason !== null) {
+            // ── PASS-THROUGH — refund; pool state unchanged ──
+            // refund = delta_in + tip_amount: everything the kernel closure
+            // proves left the input beyond the committed change. No tip on
+            // non-execution.
+            const refundCommitment = bytesToHex(pedersenCommit(deltaInTotal, rReceiptBig).toRawBytes(true));
+            await ammSwapAcceptedPut(env, network, tx.txid, {
+              h, pool_id: sv.pool_id,
+              outcome: 'passthrough',
+              pass_reason: passReason,
+              refund_amount: deltaInTotal.toString(),
+              receipt: { asset_id: parent.asset_id, commitment: refundCommitment },
+              change: changeRecord,
+            });
+            found++;
+          } else {
+            // ── EXECUTE — market-order fill at actual reserves ──
+            const deltaOutActual = curve.deltaOut;
+            const receiptAssetId = sv.direction === 0 ? pool.asset_b : pool.asset_a;
+            const receiptCommitment = bytesToHex(pedersenCommit(deltaOutActual, rReceiptBig).toRawBytes(true));
+            const newPool = {
+              ...pool,
+              reserve_a: curve.raPost.toString(),
+              reserve_b: curve.rbPost.toString(),
+              k_last: (curve.raPost * curve.rbPost).toString(),
+              last_swap_txid: tx.txid,
+              last_swap_height: h,
+              last_swap_at: tx.status?.block_time || Math.floor(Date.now() / 1000),
+              validation: 'verified',
+            };
+            await ammPoolPut(env, network, sv.pool_id, newPool);
+            await ammSwapAcceptedPut(env, network, tx.txid, {
+              h, pool_id: sv.pool_id,
+              outcome: 'execute',
+              delta_out_actual: deltaOutActual.toString(),
+              quoted_delta_out: String(sv.delta_out),
+              receipt: { asset_id: receiptAssetId, commitment: receiptCommitment },
+              change: changeRecord,
+            });
+            found++;
+          }
+        }
       } else if (decoded.opcode === T_SWAP_ROUTE) {
         const _DR = (msg) => { try { console.log(`[DR-SR] tx=${tx.txid.slice(0,16)} h=${h} ${msg}`); } catch {} };
         _DR('enter T_SWAP_ROUTE');
@@ -25137,6 +25383,8 @@ export {
   POOL_CAP_SOLO_INTENT_ALLOWED, AMM_PROTOCOL_FEE_BPS_MAX,
   decodeTSwapVarPayload, ammCurveDeltaOut, ammSwapVarEnvelopeHash,
   ammKernelMsgV1, ammSwapVarIntentMsg, ammSwapVarKernelVerifyPoint,
+  SWAP_VAR_OUTCOME_ACTIVATION, swapVarOutcomeActive,
+  ammSwapAcceptedGet, ammSwapAcceptedPut,
   // T_SWAP_ROUTE (atomic multi-hop AMM routing) — see SPEC-SWAP-ROUTE-AMENDMENT.
   T_SWAP_ROUTE, SWAP_ROUTE_N_HOPS_MAX,
   decodeTSwapRoutePayload, ammSwapRouteEnvelopeHash,
@@ -25670,6 +25918,139 @@ async function _routeFetch(req, env, ctx) {
       }
     }
 
+    // AMM pool head — confirmed + mempool-projected reserves.
+    //
+    //   GET /amm/pool/:pool_id/head
+    //
+    // `pending` lists hint-reported in-flight T_SWAP_VARs (pruned of
+    // entries whose accepted record has landed or that aged out), in
+    // seen order. `projected` folds the curve over the executable
+    // pending fills from the confirmed reserves — entries whose fill
+    // would violate their own min_out floor are flagged
+    // `projects_passthrough` and skipped (a pass-through leaves the
+    // pool untouched, §5.20). Wallets SHOULD quote new swaps against
+    // `projected`; the outcome taxonomy makes a stale projection cost
+    // at most a refund, never a burn.
+    {
+      const mHead = url.pathname.match(/^\/amm\/pool\/([0-9a-f]{64})\/head$/i);
+      if (mHead && req.method === 'GET') {
+        const poolIdHex = mHead[1].toLowerCase();
+        try {
+          const pool = await ammPoolGet(env, network, poolIdHex);
+          if (!pool) {
+            return jsonResponse({ error: 'pool not found', pool_id: poolIdHex, network }, 404, cors);
+          }
+          const nowS = Math.floor(Date.now() / 1000);
+          const line = await ammSwapPendingGet(env, network, poolIdHex);
+          const kept = [];
+          for (const e of line) {
+            if (!e || typeof e.txid !== 'string') continue;
+            if (nowS - (e.seen_at || 0) > AMM_SWAP_PENDING_MAX_AGE_S) continue;
+            const acc = await ammSwapAcceptedGet(env, network, e.txid);
+            if (acc) continue;            // confirmed + resolved — reflected in pool state
+            kept.push(e);
+          }
+          if (kept.length !== line.length) {
+            ctx.waitUntil(ammSwapPendingPut(env, network, poolIdHex, kept));
+          }
+          let ra = BigInt(pool.reserve_a), rb = BigInt(pool.reserve_b);
+          const pending = [];
+          for (const e of kept) {
+            let projected = null;
+            try {
+              const c = ammCurveDeltaOut(e.direction, ra.toString(), rb.toString(), e.delta_in, pool.fee_bps);
+              const floor = BigInt(e.min_out || '0') > 1n ? BigInt(e.min_out) : 1n;
+              if (c.deltaOut >= floor && c.raPost > 0n && c.rbPost > 0n) {
+                projected = c.deltaOut.toString();
+                ra = c.raPost; rb = c.rbPost;
+              }
+            } catch {}
+            pending.push({
+              txid: e.txid, direction: e.direction,
+              delta_in: e.delta_in, min_out: e.min_out,
+              seen_at: e.seen_at,
+              projected_delta_out: projected,
+              projects_passthrough: projected === null,
+            });
+          }
+          return jsonResponse({
+            pool_id: poolIdHex, network,
+            confirmed: { reserve_a: pool.reserve_a, reserve_b: pool.reserve_b },
+            projected: { reserve_a: ra.toString(), reserve_b: rb.toString() },
+            pending_count: pending.length,
+            pending,
+            fee_bps: pool.fee_bps,
+            validation: pool.validation,
+          }, 200, cors);
+        } catch (e) {
+          return jsonResponse({ error: 'amm pool head failed', detail: String(e?.message || e) }, 500, cors);
+        }
+      }
+    }
+
+    // AMM swap hint — report a just-broadcast T_SWAP_VAR so other wallets'
+    // /head views project it before confirmation.
+    //
+    //   POST /amm/swap-hint   { txid }
+    //
+    // Structurally verified against the mempool tx (envelope decode +
+    // OP_RETURN binding + registered pool) before it enters the line;
+    // full validation still happens at scan time. Same per-IP posture as
+    // /assets/hint.
+    if (url.pathname === '/amm/swap-hint' && req.method === 'POST') {
+      let body;
+      try { body = await req.json(); } catch { return jsonResponse({ error: 'expected JSON body' }, 400, cors); }
+      const txidHex = String(body.txid ?? '').toLowerCase();
+      if (!/^[0-9a-f]{64}$/.test(txidHex)) {
+        return jsonResponse({ error: 'txid must be 64 hex chars' }, 400, cors);
+      }
+      const ip = req.headers.get('CF-Connecting-IP') || 'anon';
+      const day = new Date().toISOString().slice(0, 10);
+      const kvKey = `swaphint:${day}:${ip}`;
+      const limit = safeInt(env.HINT_LIMIT, 200, { min: 0 });
+      const prior = safeInt(await env.REGISTRY_KV.get(kvKey), 0, { min: 0 });
+      if (prior >= limit) return jsonResponse({ error: 'daily hint limit reached' }, 429, cors);
+      let tx;
+      try { tx = await apiJson(env, `/tx/${txidHex}`, {}, network); }
+      catch (e) { return jsonResponse({ error: `tx not found on ${network}: ${e.message}` }, 404, cors); }
+      let decoded = null;
+      if (tx?.vin?.[0]?.witness && tx.vin[0].witness.length >= 3) {
+        try { decoded = decodeEnvelopeScript(hexToBytes(tx.vin[0].witness[1])); } catch {}
+      }
+      if (!decoded || decoded.opcode !== T_SWAP_VAR) {
+        return jsonResponse({ error: 'not a T_SWAP_VAR envelope' }, 400, cors);
+      }
+      const sv = decodeTSwapVarPayload(decoded.payload);
+      if (!sv) return jsonResponse({ error: 'invalid T_SWAP_VAR payload' }, 400, cors);
+      const vout0 = tx.vout?.[0];
+      const opSpk = (vout0?.scriptpubkey || '').toLowerCase();
+      if (opSpk.length !== 68 || !opSpk.startsWith('6a20')) {
+        return jsonResponse({ error: 'missing OP_RETURN envelope binding' }, 400, cors);
+      }
+      const expHash = ammSwapVarEnvelopeHash(decoded.payload);
+      const gotHash = hexToBytes(opSpk.slice(4));
+      for (let i = 0; i < 32; i++) {
+        if (gotHash[i] !== expHash[i]) return jsonResponse({ error: 'OP_RETURN binding mismatch' }, 400, cors);
+      }
+      const pool = await ammPoolGet(env, network, sv.pool_id);
+      if (!pool) return jsonResponse({ error: 'pool not registered', pool_id: sv.pool_id }, 404, cors);
+      const line = await ammSwapPendingGet(env, network, sv.pool_id);
+      if (!line.some(e => e && e.txid === txidHex)) {
+        line.push({
+          txid: txidHex,
+          direction: sv.direction,
+          delta_in: String(sv.delta_in),
+          min_out: String(sv.min_out),
+          expiry_height: sv.expiry_height,
+          seen_at: Math.floor(Date.now() / 1000),
+        });
+        while (line.length > AMM_SWAP_PENDING_MAX) line.shift();
+        await ammSwapPendingPut(env, network, sv.pool_id, line);
+      }
+      ctx.waitUntil(env.REGISTRY_KV.put(kvKey, String(prior + 1), { expirationTtl: 90000 }));
+      return jsonResponse({ ok: true, pool_id: sv.pool_id, pending: line.length }, 200, cors);
+    }
+
     // AMM pool lookup. Returns the pool record (asset pair, reserves,
     // fee_bps, validation tag, etc.) at /amm/pool/<pool_id_hex>.
     //
@@ -25721,7 +26102,22 @@ async function _routeFetch(req, env, ctx) {
       }
       try {
         const rec = await ammSwapAcceptedGet(env, network, txid);
-        return jsonResponse({ txid, network, accepted: !!rec, height: rec?.h ?? null }, 200, cors);
+        // `outcome` field present since the SPEC §5.20 outcome-taxonomy
+        // revision: 'execute' | 'passthrough'. Records without it are
+        // legacy strict-algorithm accepts (which executed exactly at
+        // their declared values) — report them as 'execute'.
+        return jsonResponse({
+          txid, network,
+          accepted: !!rec,
+          height: rec?.h ?? null,
+          outcome: rec ? (rec.outcome || 'execute') : null,
+          pass_reason: rec?.pass_reason ?? null,
+          delta_out_actual: rec?.delta_out_actual ?? null,
+          quoted_delta_out: rec?.quoted_delta_out ?? null,
+          refund_amount: rec?.refund_amount ?? null,
+          receipt: rec?.receipt ?? null,
+          change: rec?.change ?? null,
+        }, 200, cors);
       } catch (e) {
         return jsonResponse({ error: 'amm swap-accepted lookup failed', detail: String(e?.message || e) }, 500, cors);
       }

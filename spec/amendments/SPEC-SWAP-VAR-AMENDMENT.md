@@ -1437,25 +1437,39 @@ streams):
       annotations, validation algorithm, settlement-flow updates,
       backwards-compatibility statement, test plan items 7–9f /
       15–16.
-- [ ] **SPEC.md §5.20** — validator algorithm rewritten to the
+- [x] **SPEC.md §5.20** — validator algorithm rewritten to the
       outcome taxonomy; wire-format field comments updated;
       activation constant referenced.
-- [ ] **SPEC.md §5.22 (`T_SWAP_ROUTE`)** — per-hop strict snapshot
+- [x] **SPEC.md §5.22 (`T_SWAP_ROUTE`)** — per-hop strict snapshot
       equality replaced by route-atomic outcome semantics
       (execute-all at actual reserves within final `min_out`, or
-      pass-through-all).
-- [ ] **AMM.md** — T_SWAP_VAR threat-model rows (staleness /
+      pass-through-all). Reference/worker/dapp code for the route
+      path still runs the strict algorithm — conversion is the
+      follow-up; the dapp's route dialog states this.
+- [x] **AMM.md** — T_SWAP_VAR threat-model rows (staleness /
       underpayment), pending-vs-canonical wallet guidance, and the
       same-block-race caveat cross-reference.
-- [ ] **Reference validator** `tests/swap-var.mjs` + conformance
-      pins.
-- [ ] **Worker indexer** — outcome resolution + persisted per-swap
-      outcome records for receipt ancestry.
-- [ ] **Dapp** — credited-amount reconciliation (quote → actual),
+- [x] **Reference validator** `tests/swap-var.mjs` + conformance
+      pins (52 unit + 119 conformance + 900 parity-fuzz green).
+- [x] **Worker indexer** — outcome resolution + persisted per-swap
+      outcome records for receipt ancestry; activation pinned
+      `{signet: 307450, mainnet: 0}`; `/amm/swap-accepted` returns
+      outcome fields; `/amm/pool/:id/head` serves confirmed +
+      in-flight-projected reserves fed by `POST /amm/swap-hint`.
+- [x] **Dapp** — credited-amount reconciliation (quote → actual),
       pass-through receipt recovery, swap-tile copy + expiry
-      default.
-- [ ] **Signet race rehearsal** — test plan items 9b–9f green
-      on-chain.
+      default, head-projected quoting + soft-finality outcome
+      follower.
+- [x] **Signet race rehearsal** — `tests/amm-swap-race-signet.mjs`,
+      all green on-chain 2026-06-05 against the deployed worker:
+      item 9b (two same-quote swaps in one window: first filled at
+      quote 4862, second at moved reserves 4815 — expected walk
+      exact); mixed-floor ordering variant (pinned-floor swap won
+      first position and filled at its exact quote — no burn);
+      deterministic stale-floor swap resolved PASS-THROUGH
+      (refund = delta_in = 5000, input asset, pool untouched) and
+      the refund recovered through holdings with conservation
+      exact. No envelope burned across the rehearsal.
 
 ---
 
