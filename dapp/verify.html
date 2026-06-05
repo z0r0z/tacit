@@ -6,9 +6,20 @@
 <!-- Self-contained verifier. Its own CSP: inline script is this page's whole
      point (auditable in one View-Source); connect-src is limited to public
      Bitcoin explorers + IPFS gateways. No third-party script, no analytics. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; connect-src https://mempool.space https://blockstream.info https://ipfs.io https://w3s.link https://*.ipfs.w3s.link https://dweb.link https://*.ipfs.dweb.link https://gateway.pinata.cloud https://trustless-gateway.link https://*.ipfs.inbrowser.link; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src 'self' data:; connect-src https://mempool.space https://blockstream.info https://ipfs.io https://w3s.link https://*.ipfs.w3s.link https://dweb.link https://*.ipfs.dweb.link https://gateway.pinata.cloud https://trustless-gateway.link https://*.ipfs.inbrowser.link; base-uri 'none'; form-action 'none'">
 <link rel="icon" type="image/svg+xml" href='data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><style>.r{stroke:%230a0a0a}@media(prefers-color-scheme:dark){.r{stroke:%23f4efe6}}</style><circle class="r" cx="16" cy="16" r="13" fill="none" stroke-width="2.5"/><path d="M17.5 7L13 22.5Q13 25 18 24" fill="none" stroke="%23f7931a" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M10 11L21 11" stroke="%23f7931a" stroke-width="2.4" stroke-linecap="round"/></svg>'>
-<title>Verify TAC supply</title>
+<title>Verify TAC&rsquo;s fixed supply &middot; Tacit</title>
+<meta name="description" content="Verify TAC's fixed 21,000,000 supply from Bitcoin + IPFS, in your browser. TAC is non-mintable and its supply commitment opens to exactly 21M — nothing trusted.">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Tacit">
+<meta property="og:url" content="https://tacit.finance/verify">
+<meta property="og:title" content="Verify TAC's fixed supply">
+<meta property="og:description" content="Check it yourself from Bitcoin + IPFS, in your browser: TAC is non-mintable and its supply commitment opens to exactly 21,000,000.">
+<meta property="og:image" content="https://tacit.finance/tac-logo.png">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="Verify TAC's fixed supply">
+<meta name="twitter:description" content="Check it yourself from Bitcoin + IPFS, in your browser: TAC is non-mintable and its supply opens to exactly 21,000,000.">
+<meta name="twitter:image" content="https://tacit.finance/tac-logo.png">
 <style>
   :root { --bg:#0e0f12; --fg:#e6e7ea; --dim:#9aa0a8; --pass:#1fb360; --fail:#e0533d; --line:#23262c; --accent:#f0883a; }
   * { box-sizing:border-box; }
@@ -37,7 +48,10 @@
 </head>
 <body>
 <div class="wrap">
-  <h1>Verify TAC&rsquo;s fixed supply</h1>
+  <div style="display:flex;align-items:center;gap:12px;margin-bottom:8px;">
+    <img src="/tac-logo.png" alt="TAC" width="40" height="40" style="border-radius:8px;flex:0 0 auto;">
+    <h1 style="margin:0;">Verify TAC&rsquo;s fixed supply</h1>
+  </div>
   <p class="sub">From Bitcoin + IPFS, in your browser. No server, no indexer trusted &mdash; this page recomputes everything itself.</p>
   <div class="ids">
     <div>asset&nbsp;&nbsp;<b id="aid"></b></div>
