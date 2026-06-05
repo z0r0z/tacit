@@ -66,6 +66,23 @@ A month before target launch date.
 - [ ] Track 5 (T_SWAP_BATCH + LP ops): signet soak ≥ 30 days
       complete; Groth16 proof generation + verification stable
       across browser hardware
+
+> **AMM gate — posture before flipping `AMM_DEPLOYMENTS.mainnet.pools`.**
+> The §5.20 per-trade settlement (T_SWAP_VAR: execute-at-actual /
+> pass-through-refund / never-burn) is sound by construction and
+> on-chain-validated (signet race rehearsal + TETH/TAC pilot). The
+> **AMM as a whole is pilot-grade**, not yet trustless-at-scale: the
+> worker is a single non-consensus state oracle, POOL_INIT/LP run
+> worker-side `trust-the-envelope` (Groth16 verified dapp-side, not
+> worker-side — the `FOUNDATION-ONLY` marker is still in
+> `worker/src/index.js`), and the deployed client trusts the worker's
+> outcome record rather than replaying pool state. Do NOT flip mainnet
+> pools until the load-bearing items in `ops/AMM-mainnet-activation.md`
+> are closed: reorg-safe AMM indexing, the KV-no-CAS single-writer
+> fix, client-side reserve-state replay (worker-independent recovery),
+> and a review of the ceremony run + LP circuit logic. Full
+> trust-model read: memory `project_amm_soundness_posture.md`.
+
 - [ ] Track 6 (channel UX): state machine handles all 9 states
       correctly; Service Worker reliable across Chrome / Firefox
       / Safari; cross-tab discipline tested
