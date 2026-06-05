@@ -113,9 +113,12 @@ fn api_bases() -> Vec<String> {
             "https://mempool.space/api".to_string(),
             "https://blockstream.info/api".to_string(),
             "https://btcscan.org/api".to_string(),
+            "https://mempool.emzy.de/api".to_string(),
+            "https://mempool.bitaroo.net/api".to_string(),
         ],
         _ => vec![
             "https://mempool.space/signet/api".to_string(),
+            "https://blockstream.info/signet/api".to_string(),
         ],
     }
 }
@@ -344,8 +347,13 @@ fn main() {
         // Unreachable: the load path only retains saved_state when vstate
         // matches it, so saved_state=Some + vstate=None can't happen.
         (Some(_), None) => unreachable!("saved_state retained without vstate match"),
-        // No saved state, no verifier state — fresh genesis
-        (None, None) => (true, genesis_anchor.clone(), 0),
+        // vstate=None means the verifier read FAILED — true genesis returns
+        // Some(genesis poolsHash) (handled below), so None can only be an
+        // unreachable RPC (or wrong verifier address). Fail closed instead of
+        // proving from genesis against unknown on-chain state and burning a
+        // cycle on a guaranteed revert; the prove loop retries next cycle.
+        (None, None) => panic!(
+            "could not read verifier currentState() from any ETH RPC — all endpoints unreachable or wrong verifier address (true genesis returns Some); retrying next cycle"),
         // Verifier at genesis poolsHash — fresh genesis
         (None, Some((ph, _, _, _))) if *ph == genesis_pools_hash => (true, genesis_anchor.clone(), 0),
         // Verifier advanced past genesis but no saved state — the existing
@@ -656,13 +664,30 @@ fn env_hex_vec(name: &str, default: &str) -> Vec<u8> {
 }
 
 fn eth_rpc_bases() -> Vec<String> {
+    // ETH_RPC may be a single URL or a comma-separated list; rpc_post tries them
+    // in order, so a transient blip on one endpoint falls through to the next
+    // instead of failing the read (and getting mistaken for genesis).
     if let Ok(custom) = env::var("ETH_RPC") {
-        return vec![custom];
+        let list: Vec<String> = custom.split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+        if !list.is_empty() { return list; }
     }
     let network = env::var("NETWORK").unwrap_or_else(|_| "signet".to_string());
     match network.as_str() {
-        "mainnet" => vec!["https://ethereum-rpc.publicnode.com".to_string()],
-        _ => vec!["https://ethereum-sepolia-rpc.publicnode.com".to_string()],
+        "mainnet" => vec![
+            "https://ethereum-rpc.publicnode.com".to_string(),
+            "https://eth.drpc.org".to_string(),
+            "https://eth.merkle.io".to_string(),
+            "https://eth-pokt.nodies.app".to_string(),
+            "https://eth-mainnet.public.blastapi.io".to_string(),
+        ],
+        _ => vec![
+            "https://ethereum-sepolia-rpc.publicnode.com".to_string(),
+            "https://sepolia.drpc.org".to_string(),
+            "https://sepolia.gateway.tenderly.co".to_string(),
+        ],
     }
 }
 
