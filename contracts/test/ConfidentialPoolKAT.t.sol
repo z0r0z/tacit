@@ -31,7 +31,7 @@ contract ConfidentialPoolKATTest is Test {
         pv.version = pool.PV_VERSION();
         pv.chainBinding = keccak256(abi.encodePacked(block.chainid, address(pool)));
         pv.leaves = leaves;
-        pool.settle(abi.encode(pv), "");
+        pool.settle(abi.encode(pv), "", new bytes[](leaves.length));
 
         bytes32 jsRoot = vm.parseJsonBytes32(json, ".treeRoot");
         assertEq(pool.currentRoot(), jsRoot, "on-chain Keccak tree root == JS root");
@@ -68,7 +68,7 @@ contract ConfidentialPoolKATTest is Test {
         pv.version = pool.PV_VERSION();
         pv.chainBinding = keccak256(abi.encodePacked(block.chainid, address(pool)));
         pv.leaves = leaves;
-        pool.settle(abi.encode(pv), "");
+        pool.settle(abi.encode(pv), "", new bytes[](leaves.length));
 
         uint256 idx = vm.parseJsonUint(json, ".memberIndex");
         bytes32[] memory path = vm.parseJsonBytes32Array(json, ".memberPath");

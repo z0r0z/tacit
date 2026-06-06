@@ -56,7 +56,8 @@ contract ConfidentialPoolTest is Test {
     }
 
     function _settle(ConfidentialPool.PublicValues memory pv) internal {
-        pool.settle(abi.encode(pv), "");
+        bytes[] memory memos = new bytes[](pv.leaves.length);
+        pool.settle(abi.encode(pv), "", memos);
     }
 
     function _wrap(uint256 amount, bytes32 cx, bytes32 cy, bytes32 owner) internal returns (bytes32 depositId) {
@@ -196,7 +197,7 @@ contract ConfidentialPoolTest is Test {
         pv.fees = new ConfidentialPool.FeePayment[](1);
         pv.fees[0] = ConfidentialPool.FeePayment(assetId, 5);
         vm.prank(SETTLER);
-        pool.settle(abi.encode(pv), "");
+        _settle(pv);
         assertEq(token.balanceOf(SETTLER), 5, "settler paid fee");
         assertEq(pool.escrow(assetId), 95, "escrow reduced by fee");
     }
@@ -258,7 +259,7 @@ contract ConfidentialPoolTest is Test {
         pv.fees[0] = ConfidentialPool.FeePayment(assetId, 5);
 
         vm.prank(SETTLER);
-        pool.settle(abi.encode(pv), "");
+        _settle(pv);
 
         assertEq(pool.depositStatus(id1), 2, "dep1 consumed");
         assertEq(pool.depositStatus(id2), 2, "dep2 consumed");
@@ -298,6 +299,57 @@ contract ConfidentialPoolTest is Test {
         assertEq(pool.escrow(assetB), 130, "asset B escrow");
         assertEq(token.balanceOf(RECIP), 40, "A paid");
         assertEq(tokenB.balanceOf(RECIP), 70, "B paid");
+    }
+
+    // ──────────────────── recovery data availability (memos) ────────────────────
+
+    event LeavesInserted(uint256 indexed firstLeafIndex, bytes32[] leaves, bytes[] memos);
+    event NullifiersSpent(bytes32[] nullifiers);
+
+    /// settle emits the leaves+memos+nullifiers an indexer needs to reconstruct a
+    /// wallet's notes from chain alone — firstLeafIndex anchors them to tree slots.
+    function test_settle_emits_recovery_data() public {
+        ConfidentialPool.PublicValues memory pv = _pv();
+        pv.leaves = new bytes32[](2);
+        pv.leaves[0] = keccak256("L0"); pv.leaves[1] = keccak256("L1");
+        pv.nullifiers = new bytes32[](1);
+        pv.nullifiers[0] = keccak256("nu");
+
+        bytes[] memory memos = new bytes[](2);
+        memos[0] = hex"deadbeef"; memos[1] = hex"cafe";
+
+        vm.expectEmit(true, false, false, true, address(pool));
+        emit NullifiersSpent(pv.nullifiers);
+        vm.expectEmit(true, false, false, true, address(pool));
+        emit LeavesInserted(0, pv.leaves, memos);
+        pool.settle(abi.encode(pv), "", memos);
+
+        assertEq(pool.nextLeafIndex(), 2, "two leaves landed");
+    }
+
+    /// A second settle's leaves are anchored at the running nextLeafIndex.
+    function test_settle_recovery_index_advances() public {
+        ConfidentialPool.PublicValues memory pv = _pv();
+        pv.leaves = new bytes32[](2);
+        pv.leaves[0] = keccak256("a"); pv.leaves[1] = keccak256("b");
+        pool.settle(abi.encode(pv), "", new bytes[](2));
+
+        ConfidentialPool.PublicValues memory pv2 = _pv();
+        pv2.leaves = new bytes32[](1);
+        pv2.leaves[0] = keccak256("c");
+        bytes[] memory memos2 = new bytes[](1);
+        memos2[0] = hex"01";
+        vm.expectEmit(true, false, false, true, address(pool));
+        emit LeavesInserted(2, pv2.leaves, memos2);
+        pool.settle(abi.encode(pv2), "", memos2);
+    }
+
+    function test_settle_memo_count_mismatch_reverts() public {
+        ConfidentialPool.PublicValues memory pv = _pv();
+        pv.leaves = new bytes32[](2);
+        pv.leaves[0] = keccak256("x"); pv.leaves[1] = keccak256("y");
+        vm.expectRevert(ConfidentialPool.MemoLeafMismatch.selector);
+        pool.settle(abi.encode(pv), "", new bytes[](1)); // one memo, two leaves
     }
 
     // ──────────────────── on-chain defense-in-depth (intra-batch) ────────────────────

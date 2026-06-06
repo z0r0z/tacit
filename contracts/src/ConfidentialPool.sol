@@ -98,6 +98,10 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     event Wrap(bytes32 indexed depositId, bytes32 indexed assetId, uint256 amount, bytes32 cx, bytes32 cy, bytes32 owner);
     event Settled(bytes32 indexed newRoot, uint256 leavesInserted, uint256 nullifiersSpent);
     event Withdraw(bytes32 indexed assetId, address indexed recipient, uint256 amount);
+    // Note data availability for recovery: each inserted leaf with its encrypted
+    // memo (owner-only; unverified passthrough), aligned, from firstLeafIndex.
+    event LeavesInserted(uint256 indexed firstLeafIndex, bytes32[] leaves, bytes[] memos);
+    event NullifiersSpent(bytes32[] nullifiers);
 
     // ──────────────────── Errors ────────────────────
 
@@ -114,6 +118,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     error NullifierAlreadySpent();
     error DepositNotPending();
     error InsufficientEscrow();
+    error MemoLeafMismatch();
 
     // ──────────────────── Constructor ────────────────────
 
@@ -184,19 +189,24 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     ///         leaves, consume deposits, pay withdrawals and settler fees. Fees go
     ///         to msg.sender (the settler); self-prove sets no fees and pays only
     ///         gas. All amount/conservation/range checking happened in the guest.
-    function settle(bytes calldata publicValues, bytes calldata proofBytes) external nonReentrant {
+    /// @param memos one encrypted note memo per inserted leaf (same order as
+    ///        `pv.leaves`), data-availability only — unverified, owner-decryptable
+    ///        for seed-only recovery. Emitted in `LeavesInserted`.
+    function settle(bytes calldata publicValues, bytes calldata proofBytes, bytes[] calldata memos) external nonReentrant {
         SP1_VERIFIER.verifyProof(PROGRAM_VKEY, publicValues, proofBytes);
         PublicValues memory pv = abi.decode(publicValues, (PublicValues));
 
         if (pv.version != PV_VERSION) revert BadVersion();
         if (pv.chainBinding != CHAIN_BINDING) revert ChainMismatch();
         if (pv.spendRoot != bytes32(0) && !everKnownRoot[pv.spendRoot]) revert UnknownRoot();
+        if (memos.length != pv.leaves.length) revert MemoLeafMismatch();
 
         for (uint256 i; i < pv.nullifiers.length; ++i) {
             bytes32 n = pv.nullifiers[i];
             if (nullifierSpent[n]) revert NullifierAlreadySpent();
             nullifierSpent[n] = true;
         }
+        if (pv.nullifiers.length != 0) emit NullifiersSpent(pv.nullifiers);
 
         for (uint256 i; i < pv.depositsConsumed.length; ++i) {
             bytes32 id = pv.depositsConsumed[i];
@@ -204,8 +214,12 @@ contract ConfidentialPool is ReentrancyGuardTransient {
             depositStatus[id] = 2;
         }
 
-        for (uint256 i; i < pv.leaves.length; ++i) _insertLeaf(pv.leaves[i]);
-        if (pv.leaves.length != 0) everKnownRoot[currentRoot] = true;
+        if (pv.leaves.length != 0) {
+            uint256 firstLeafIndex = nextLeafIndex;
+            for (uint256 i; i < pv.leaves.length; ++i) _insertLeaf(pv.leaves[i]);
+            everKnownRoot[currentRoot] = true;
+            emit LeavesInserted(firstLeafIndex, pv.leaves, memos);
+        }
 
         for (uint256 i; i < pv.withdrawals.length; ++i) {
             Withdrawal memory w = pv.withdrawals[i];
