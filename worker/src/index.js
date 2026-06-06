@@ -909,30 +909,159 @@ function petchRefreshDebounceKey(network, aid) {
 //   poolnull:<aid>:<denom>:<nullifier_hex>
 //                                      — single withdraw nullifier; existence == spent.
 // Network-prefix follows the pmint convention (signet legacy, mainnet prefixed).
-function poolInitKey(network, aid, denom) {
-  return network === 'signet' ? `pool:${aid}:${denom}` : `pool:${network}:${aid}:${denom}`;
+// `gen` is the tETH generation segment: '' (falsy) = the gen-0 pilot, whose keys
+// stay byte-identical to the pre-multigen layout; 'g1' (alpha) and later gens get
+// their own segment so the same asset_id can span immutable mixers without pool
+// records colliding. See TETH_GENERATIONS / _tethDepositGen.
+function _genSeg(gen) { return gen ? `${gen}:` : ''; }
+function poolInitKey(network, aid, denom, gen = '') {
+  const g = _genSeg(gen);
+  return network === 'signet' ? `pool:${g}${aid}:${denom}` : `pool:${network}:${g}${aid}:${denom}`;
 }
 function poolPrefix(network) {
   return network === 'signet' ? 'pool:' : `pool:${network}:`;
 }
-function poolLeafKeyFor(network, aid, denom, height, txIndex, txid) {
+function poolLeafKeyFor(network, aid, denom, height, txIndex, txid, gen = '') {
   const h = String(height || 0).padStart(10, '0');
   const idx = String(txIndex || 0).padStart(6, '0');
+  const g = _genSeg(gen);
   return network === 'signet'
-    ? `poolleaf:${aid}:${denom}:${h}:${idx}:${txid}`
-    : `poolleaf:${network}:${aid}:${denom}:${h}:${idx}:${txid}`;
+    ? `poolleaf:${g}${aid}:${denom}:${h}:${idx}:${txid}`
+    : `poolleaf:${network}:${g}${aid}:${denom}:${h}:${idx}:${txid}`;
 }
-function poolLeafPrefix(network, aid, denom) {
-  return network === 'signet' ? `poolleaf:${aid}:${denom}:` : `poolleaf:${network}:${aid}:${denom}:`;
+function poolLeafPrefix(network, aid, denom, gen = '') {
+  const g = _genSeg(gen);
+  return network === 'signet' ? `poolleaf:${g}${aid}:${denom}:` : `poolleaf:${network}:${g}${aid}:${denom}:`;
 }
-function poolNullifierKey(network, aid, denom, nullifierHex) {
+function poolNullifierKey(network, aid, denom, nullifierHex, gen = '') {
+  const g = _genSeg(gen);
   return network === 'signet'
-    ? `poolnull:${aid}:${denom}:${nullifierHex}`
-    : `poolnull:${network}:${aid}:${denom}:${nullifierHex}`;
+    ? `poolnull:${g}${aid}:${denom}:${nullifierHex}`
+    : `poolnull:${network}:${g}${aid}:${denom}:${nullifierHex}`;
 }
-function poolNullifierPrefix(network, aid, denom) {
-  return network === 'signet' ? `poolnull:${aid}:${denom}:` : `poolnull:${network}:${aid}:${denom}:`;
+function poolNullifierPrefix(network, aid, denom, gen = '') {
+  const g = _genSeg(gen);
+  return network === 'signet' ? `poolnull:${g}${aid}:${denom}:` : `poolnull:${network}:${g}${aid}:${denom}:`;
 }
+
+// ── tETH multi-generation attribution ──────────────────────────────────────
+// Same asset_id spans immutable mixer generations. Every bridge envelope's
+// bind_hash commits to (chain_id, mixer_address) — it is the guest's first
+// routing gate (compute_bind_hash in the SP1 program) — so each op attributes
+// to the one generation whose constants reproduce its bind_hash. Deposits are
+// additionally confirmed against the matched mixer's permanent deposit-root
+// storage via isKnownDepositRoot(pid, ethRoot); each mixer's storage is
+// per-contract, so exactly one recognizes a given root. gen '' = the original
+// pilot generation (byte-identical legacy keys); 'g1' = alpha. Assets not in
+// this registry keep the pre-multigen indexing path under gen ''.
+const TETH_GENERATIONS = {
+  mainnet: [
+    { gen: '',   label: 'pilot', asset: '3cba71e1114af183cdeacc6b8457a474d17529fd28704480ca799d0d03126f34', chainId: 1n,        mixer: '6929acf0a8dde761bf16a54b61473e89124fecbf' },
+    { gen: 'g1', label: 'alpha', asset: '3cba71e1114af183cdeacc6b8457a474d17529fd28704480ca799d0d03126f34', chainId: 1n,        mixer: '1e8baed52b336edf195e8185a0648d2c768be19f' },
+  ],
+  signet: [
+    { gen: '',   label: 'pilot', asset: 'd903de2d2a7c1958f8ab3c4b9a91175ef3885027a24af306dead9e8f671a450b', chainId: 11155111n, mixer: '5bacd098e59e937a8ffaea4d281b3097a01ad91c' },
+  ],
+};
+// Sentinel for bridge assets outside the registry: legacy single-generation
+// indexing, no bind-hash gate, no eth_call confirm.
+const TETH_LEGACY_GEN = { gen: '', legacy: true };
+function tethGensFor(network, assetIdHex) {
+  return (TETH_GENERATIONS[network] || []).filter(g => g.asset === assetIdHex);
+}
+const _TETH_UNIT_SCALE = 10000000000n;   // wei per tacit-unit (mixer keys pools by wei denom)
+const _TETH_ETH_RPCS = {
+  mainnet: [
+    'https://ethereum-rpc.publicnode.com',
+    'https://eth.drpc.org',
+    'https://eth.merkle.io',
+  ],
+  signet: [
+    'https://ethereum-sepolia-rpc.publicnode.com',
+    'https://sepolia.drpc.org',
+    'https://sepolia.gateway.tenderly.co',
+  ],
+};
+// BN254 scalar field — bind hashes are reduced into it (guest u256_mod_field).
+const _TETH_FIELD = 0x30644e72e131a029b85045b68181585d2833e84879b9709143e1f593f0000001n;
+const _TETH_BIND_DOMAINS = {
+  [T_BRIDGE_DEPOSIT]: 'tacit-bridge-deposit-v1',
+  [T_BRIDGE_BURN]:    'tacit-bridge-burn-v1',
+  [T_BRIDGE_ROTATE]:  'tacit-bridge-rotate-v1',
+  [T_BRIDGE_EXPORT]:  'tacit-bridge-export-v1',
+  [T_BRIDGE_IMPORT]:  'tacit-bridge-import-v1',
+};
+function _u256be(v) {
+  const out = new Uint8Array(32);
+  let x = BigInt(v);
+  for (let i = 31; i >= 0 && x > 0n; i--) { out[i] = Number(x & 0xffn); x >>= 8n; }
+  return out;
+}
+// Guest-exact bind hash: sha256(domain || chain_id_32be || mixer_20 ||
+// network_tag || asset_id_32 || denom_32 || fields…) reduced mod BN254-Fr.
+// Mirrors compute_bind_hash in contracts/sp1/program/src/main.rs.
+function _tethBindHash(opcode, g, netTag, assetId32, denom32, fields) {
+  const pre = concatBytes(
+    new TextEncoder().encode(_TETH_BIND_DOMAINS[opcode]),
+    _u256be(g.chainId),
+    hexToBytes(g.mixer),
+    new Uint8Array([netTag & 0xff]),
+    assetId32, denom32, ...fields,
+  );
+  const v = BigInt('0x' + bytesToHex(sha256(pre))) % _TETH_FIELD;
+  return bytesToHex(_u256be(v));
+}
+// Attribute a bridge envelope to its generation by bind hash. Returns the
+// registry entry, TETH_LEGACY_GEN for assets outside the registry, or null
+// when no generation's constants reproduce the hash (no guest accepts the
+// envelope — indexing it anywhere would diverge from every guest tree).
+function _tethGenForEnvelope(network, assetIdHex, opcode, netTag, assetId32, denom32, fields, bindHash32) {
+  const gens = tethGensFor(network, assetIdHex);
+  if (!gens.length) return TETH_LEGACY_GEN;
+  const bindHex = bytesToHex(bindHash32);
+  for (const g of gens) {
+    if (_tethBindHash(opcode, g, netTag, assetId32, denom32, fields) === bindHex) return g;
+  }
+  return null;
+}
+async function _ethCall(network, to, data) {
+  const body = JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_call', params: [{ to, data }, 'latest'] });
+  for (const rpc of (_TETH_ETH_RPCS[network] || [])) {
+    try {
+      const r = await fetch(rpc, { method: 'POST', headers: { 'content-type': 'application/json' }, body, signal: AbortSignal.timeout(8000) });
+      if (!r.ok) continue;
+      const j = await r.json();
+      if (j && typeof j.result === 'string') return j.result;
+    } catch {}
+  }
+  return null;
+}
+// pid = keccak256(abi.encode(bytes32 assetId, uint256 denomWei)); denomTacit is
+// scaled back up by UNIT_SCALE since the mixer keys pools by the wei denom.
+function _tethPoolId(assetIdHex, denomTacit) {
+  const a = hexToBytes(assetIdHex.replace(/^0x/, ''));
+  const w = _u256be(BigInt(denomTacit) * _TETH_UNIT_SCALE);
+  return bytesToHex(keccak_256(concatBytes(a, w)));
+}
+const _TETH_IKDR_SEL = bytesToHex(keccak_256(new TextEncoder().encode('isKnownDepositRoot(bytes32,bytes32)'))).slice(0, 8);
+// Confirm a deposit's ethRoot against the matched generation's mixer.
+// Returns true / false / null — null is a transient RPC failure and the
+// caller must retry (halt the scan before this block), never skip: a
+// skipped deposit leaf is a permanent worker-tree divergence from the guest.
+async function _tethDepositRootKnown(network, g, assetIdHex, denomTacit, ethRootHex) {
+  const pid = _tethPoolId(assetIdHex, denomTacit);
+  const root = ethRootHex.replace(/^0x/, '').padStart(64, '0');
+  const data = '0x' + _TETH_IKDR_SEL + pid + root;
+  const res = await _ethCall(network, '0x' + g.mixer, data);
+  if (res === null) return null;
+  try { return BigInt(res) === 1n; } catch { return null; }
+}
+// How deep a deposit envelope may sit while its ethRoot is still unknown to
+// the matched mixer before the scan stops waiting for it. The dapp flow mines
+// the ETH deposit before the Bitcoin mint exists, so a real envelope's root
+// is known long before the worker sees it; past this depth the prover has
+// long since passed the block and the guest has settled the same question.
+const TETH_DEPOSIT_ROOT_RETRY_DEPTH = 36;
 // SPEC-CBTC-ZK §5.21–§5.23: slot-registry keys. Each self-custody-slot wrapper
 // tracks (K_btc_xonly → leaf_index) so coverage checks can find the backing
 // Bitcoin UTXO from a leaf's recipient_commit. xonly is the 64-char hex string.
@@ -1575,13 +1704,18 @@ async function slotCoverageEnumerateVariants(env, network) {
   const prefix = poolPrefix(network);
   const list = await env.REGISTRY_KV.list({ prefix, limit: 1000 });
   const variants = [];
+  const seen = new Set();
   for (const k of list.keys) {
-    // Key format: "pool:<network?>:<aid>:<denom>"
+    // Key format: "pool:<network?>:[<gen>:]<aid>:<denom>" — aid/denom stay the
+    // last two segments; tETH generations of the same pool dedupe to one variant.
     const parts = k.name.split(':');
     const denom = parts[parts.length - 1];
     const aid = parts[parts.length - 2];
     if (!/^[0-9a-f]{64}$/i.test(aid)) continue;
     if (denom === '0') continue;          // skip POOL_INIT sentinel entries
+    const vk = `${aid}:${denom}`;
+    if (seen.has(vk)) continue;
+    seen.add(vk);
     variants.push({ asset_id: aid, denom_sats: denom });
   }
   return variants;
@@ -4195,8 +4329,9 @@ function ctacBondRatioThousandths(bondAmountTac, twapSatsPerTac, slotDenomSats) 
 // rejects them locally so no withdraw could ever credit, but third-
 // party indexers running the SPEC strictly would diverge from a worker
 // that over-indexes. Counter is per (network, asset_id, denom).
-function poolLeafCountKey(network, aid, denom) {
-  return network === 'signet' ? `poolcount:${aid}:${denom}` : `poolcount:${network}:${aid}:${denom}`;
+function poolLeafCountKey(network, aid, denom, gen = '') {
+  const g = _genSeg(gen);
+  return network === 'signet' ? `poolcount:${g}${aid}:${denom}` : `poolcount:${network}:${g}${aid}:${denom}`;
 }
 const POOL_TREE_DEPTH_WORKER = 20;
 const POOL_LEAF_CAP = 1 << POOL_TREE_DEPTH_WORKER;
@@ -9958,9 +10093,6 @@ function decodeTWithdrawPayload(payload) {
 }
 
 // SPEC-TETH-BRIDGE-AMENDMENT §5.60 — T_BRIDGE_DEPOSIT decoder.
-const _BRIDGE_DEPOSIT_DOMAIN = new TextEncoder().encode('tacit-bridge-deposit-v1');
-const _BRIDGE_BURN_DOMAIN    = new TextEncoder().encode('tacit-bridge-burn-v1');
-
 function decodeTBridgeDepositPayload(payload) {
   if (!payload || payload.length < 261 || payload[0] !== T_BRIDGE_DEPOSIT) return null;
   let o = 1;
@@ -9999,13 +10131,10 @@ function decodeTBridgeBurnPayload(payload) {
   const proofLen = payload[o] | (payload[o + 1] << 8); o += 2;
   if (proofLen === 0 || o + proofLen > payload.length) return null;
   const proof = payload.slice(o, o + proofLen);
-  // Bind-hash verification.
-  const expectedBind = sha256(concatBytes(
-    _BRIDGE_BURN_DOMAIN,
-    new Uint8Array([networkTag]),
-    assetId, denomWei, merkleRoot, nullifierHash, recipientCommit, rLeaf, ethRecipient, burnNonce,
-  ));
-  for (let i = 0; i < 32; i++) if (expectedBind[i] !== bindHash[i]) return null;
+  // Bind-hash validation happens at the indexing layer (_tethGenForEnvelope),
+  // which recomputes the guest's full domain preimage — chain_id and
+  // mixer_address included — per candidate generation. The decoder stays
+  // structural, like the other bridge-op decoders.
   return { networkTag, assetId, denomWei, merkleRoot, nullifierHash, recipientCommit, rLeaf, ethRecipient, burnNonce, bindHash, proof };
 }
 
@@ -13241,15 +13370,25 @@ async function handleAssetHint(req, env, network, cors, ctx) {
       } catch {}
     }
     if (decoded.opcode === T_BRIDGE_DEPOSIT) {
-      let initRec = await env.REGISTRY_KV.get(poolInitKey(network, aid, denomBig), 'json');
+      const g = _tethGenForEnvelope(network, aid, T_BRIDGE_DEPOSIT, expectedNetTag, bd.assetId, bd.denomWei,
+        [bd.ethRoot, bd.nullifierHash, bd.recipientCommit, bd.leafHash, bd.rLeaf], bd.bindHash);
+      if (!g) return jsonResponse({ error: 'bind hash matches no known generation' }, 400, cors);
+      if (!g.legacy) {
+        const known = await _tethDepositRootKnown(network, g, aid, denomBig, bytesToHex(bd.ethRoot));
+        if (known === null) return jsonResponse({ error: 'deposit-root confirm unavailable, retry' }, 503, cors);
+        if (known === false) return jsonResponse({ error: 'eth root not known to generation mixer yet, retry' }, 409, cors);
+      }
+      const gen = g.gen;
+      let initRec = await env.REGISTRY_KV.get(poolInitKey(network, aid, denomBig, gen), 'json');
       if (!initRec) {
         initRec = { kind: 'pool_init', source: 'bridge_auto', network, asset_id: aid, pool_denom: denomBig, height: h };
-        await env.REGISTRY_KV.put(poolInitKey(network, aid, denomBig), JSON.stringify(initRec));
+        if (gen) { initRec.gen = gen; initRec.generation = g.label; initRec.mixer = g.mixer; }
+        await env.REGISTRY_KV.put(poolInitKey(network, aid, denomBig, gen), JSON.stringify(initRec));
       }
       if (h > 0 && txIndex > 0) {
-        const nKey = `bridge_deposit_nullifier:${network}:${aid}:${denomBig}:${bytesToHex(bd.nullifierHash)}`;
+        const nKey = `bridge_deposit_nullifier:${network}:${_genSeg(gen)}${aid}:${denomBig}:${bytesToHex(bd.nullifierHash)}`;
         if (!(await env.REGISTRY_KV.get(nKey))) {
-          const leafKey = poolLeafKeyFor(network, aid, denomBig, h, txIndex, txidHex);
+          const leafKey = poolLeafKeyFor(network, aid, denomBig, h, txIndex, txidHex, gen);
           await env.REGISTRY_KV.put(leafKey, JSON.stringify({
             asset_id: aid, denomination: denomBig,
             leaf_commitment: bytesToHex(bd.leafHash),
@@ -13257,8 +13396,9 @@ async function handleAssetHint(req, env, network, cors, ctx) {
             deposited_at_height: h,
             deposited_at: blockTime || Math.floor(Date.now() / 1000),
             source: 'bridge_deposit', network,
+            ...(gen ? { gen } : {}),
           }));
-          const cntKey = poolLeafCountKey(network, aid, denomBig);
+          const cntKey = poolLeafCountKey(network, aid, denomBig, gen);
           const cnt = parseInt(await env.REGISTRY_KV.get(cntKey) || '0', 10);
           await env.REGISTRY_KV.put(cntKey, String(cnt + 1));
           await env.REGISTRY_KV.put(nKey, JSON.stringify({ deposit_txid: txidHex, claimed_at_height: h, network }));
@@ -20600,32 +20740,37 @@ async function scanForEtches(env, network) {
   // in-memory and flush once per pool at end-of-scan (see _bridgeLeafDeltas
   // flush below the block loop).
   const _bridgeInitCache = new Map();
-  const _bridgeInitLookup = async (aid, denomBig) => {
-    const k = `${aid}:${denomBig}`;
+  const _bridgeInitLookup = async (aid, denomBig, gen = '') => {
+    const k = `${gen}:${aid}:${denomBig}`;
     if (_bridgeInitCache.has(k)) return _bridgeInitCache.get(k);
-    const v = await env.REGISTRY_KV.get(poolInitKey(network, aid, denomBig), 'json');
+    const v = await env.REGISTRY_KV.get(poolInitKey(network, aid, denomBig, gen), 'json');
     _bridgeInitCache.set(k, v);
     return v;
   };
-  const _bridgeInitPut = async (aid, denomBig, rec) => {
-    const k = `${aid}:${denomBig}`;
+  const _bridgeInitPut = async (aid, denomBig, rec, gen = '') => {
+    const k = `${gen}:${aid}:${denomBig}`;
     _bridgeInitCache.set(k, rec);
-    await env.REGISTRY_KV.put(poolInitKey(network, aid, denomBig), JSON.stringify(rec));
+    await env.REGISTRY_KV.put(poolInitKey(network, aid, denomBig, gen), JSON.stringify(rec));
   };
   const _bridgeLeafDeltas = new Map();
   let _bridgeLeafCountBase = new Map();
-  const _bridgeGetLeafCount = async (aid, denomBig) => {
-    const k = `${aid}:${denomBig}`;
+  const _bridgeGetLeafCount = async (aid, denomBig, gen = '') => {
+    const k = `${gen}:${aid}:${denomBig}`;
     if (!_bridgeLeafCountBase.has(k)) {
-      const raw = await env.REGISTRY_KV.get(poolLeafCountKey(network, aid, denomBig));
+      const raw = await env.REGISTRY_KV.get(poolLeafCountKey(network, aid, denomBig, gen));
       _bridgeLeafCountBase.set(k, parseInt(raw || '0', 10));
     }
     return _bridgeLeafCountBase.get(k) + (_bridgeLeafDeltas.get(k) || 0);
   };
-  const _bridgeAdjustLeafCount = (aid, denomBig, delta) => {
-    const k = `${aid}:${denomBig}`;
+  const _bridgeAdjustLeafCount = (aid, denomBig, delta, gen = '') => {
+    const k = `${gen}:${aid}:${denomBig}`;
     _bridgeLeafDeltas.set(k, (_bridgeLeafDeltas.get(k) || 0) + delta);
   };
+  // Set when a bridge deposit needs an eth_call confirm the RPCs couldn't
+  // answer this tick (or its root isn't yet known). The scan stops BEFORE the
+  // affected block so lastScanned re-covers it next tick; skipping instead
+  // would permanently omit a leaf the guest accepts.
+  let _bridgeScanHalt = false;
   // Same pattern for T_DCLAIM (SPEC §5.12 / §5.13). One drop_progress dirty
   // marker per drop_id that saw a confirmed T_DCLAIM this scan.
   const _dirtyDropIds = new Set();
@@ -25020,19 +25165,34 @@ async function scanForEtches(env, network) {
         if (expectedNetTag === null || bd.networkTag !== expectedNetTag) continue;
         const aid = bytesToHex(bd.assetId);
         const denomBig = BigInt('0x' + bytesToHex(bd.denomWei)).toString();
-        let initRec = await _bridgeInitLookup(aid, denomBig);
-        if (!initRec) {
-          initRec = { kind: 'pool_init', source: 'bridge_auto', network, asset_id: aid, pool_denom: denomBig, height: h };
-          await _bridgeInitPut(aid, denomBig, initRec);
-        }
-        // Eth root verification deferred to dApp client-side check
-        // (avoids subrequest budget issues during cron scan)
-        const nKey = `bridge_deposit_nullifier:${network}:${aid}:${denomBig}:${bytesToHex(bd.nullifierHash)}`;
+        const g = _tethGenForEnvelope(network, aid, T_BRIDGE_DEPOSIT, expectedNetTag, bd.assetId, bd.denomWei,
+          [bd.ethRoot, bd.nullifierHash, bd.recipientCommit, bd.leafHash, bd.rLeaf], bd.bindHash);
+        if (!g) continue;
+        const gen = g.gen;
+        // Dedup before the eth_call so a halt-triggered re-scan of an already-
+        // indexed block doesn't re-pay an RPC per deposit.
+        const nKey = `bridge_deposit_nullifier:${network}:${_genSeg(gen)}${aid}:${denomBig}:${bytesToHex(bd.nullifierHash)}`;
         const existingN = await env.REGISTRY_KV.get(nKey);
         if (existingN) continue;
-        const cnt = await _bridgeGetLeafCount(aid, denomBig);
+        if (!g.legacy) {
+          const known = await _tethDepositRootKnown(network, g, aid, denomBig, bytesToHex(bd.ethRoot));
+          if (known !== true) {
+            // false past the retry horizon: the prover has settled the same
+            // question and rejected; indexing would diverge from the guest.
+            if (known === false && Number.isInteger(tip) && (tip - h) > TETH_DEPOSIT_ROOT_RETRY_DEPTH) continue;
+            _bridgeScanHalt = true;
+            break;
+          }
+        }
+        let initRec = await _bridgeInitLookup(aid, denomBig, gen);
+        if (!initRec) {
+          initRec = { kind: 'pool_init', source: 'bridge_auto', network, asset_id: aid, pool_denom: denomBig, height: h };
+          if (gen) { initRec.gen = gen; initRec.generation = g.label; initRec.mixer = g.mixer; }
+          await _bridgeInitPut(aid, denomBig, initRec, gen);
+        }
+        const cnt = await _bridgeGetLeafCount(aid, denomBig, gen);
         if (cnt >= POOL_LEAF_CAP) continue;
-        const leafKey = poolLeafKeyFor(network, aid, denomBig, h, txIndex, tx.txid);
+        const leafKey = poolLeafKeyFor(network, aid, denomBig, h, txIndex, tx.txid, gen);
         await env.REGISTRY_KV.put(leafKey, JSON.stringify({
           asset_id: aid, denomination: denomBig,
           leaf_commitment: bytesToHex(bd.leafHash),
@@ -25040,8 +25200,9 @@ async function scanForEtches(env, network) {
           deposited_at_height: h,
           deposited_at: tx.status?.block_time || Math.floor(Date.now() / 1000),
           source: 'bridge_deposit', network,
+          ...(gen ? { gen } : {}),
         }));
-        _bridgeAdjustLeafCount(aid, denomBig, 1);
+        _bridgeAdjustLeafCount(aid, denomBig, 1, gen);
         await env.REGISTRY_KV.put(nKey, JSON.stringify({
           deposit_txid: tx.txid, claimed_at_height: h, network,
         }));
@@ -25059,9 +25220,13 @@ async function scanForEtches(env, network) {
         if (expectedNetTag === null || bb.networkTag !== expectedNetTag) continue;
         const aid = bytesToHex(bb.assetId);
         const denomBig = BigInt('0x' + bytesToHex(bb.denomWei)).toString();
-        const initRec = await _bridgeInitLookup(aid, denomBig);
+        const g = _tethGenForEnvelope(network, aid, T_BRIDGE_BURN, expectedNetTag, bb.assetId, bb.denomWei,
+          [bb.merkleRoot, bb.nullifierHash, bb.recipientCommit, bb.rLeaf, bb.ethRecipient, bb.burnNonce], bb.bindHash);
+        if (!g) continue;
+        const gen = g.gen;
+        const initRec = await _bridgeInitLookup(aid, denomBig, gen);
         if (!initRec) continue;
-        const nKey = poolNullifierKey(network, aid, denomBig, bytesToHex(bb.nullifierHash));
+        const nKey = poolNullifierKey(network, aid, denomBig, bytesToHex(bb.nullifierHash), gen);
         const existing = await env.REGISTRY_KV.get(nKey);
         if (!existing) {
           await env.REGISTRY_KV.put(nKey, JSON.stringify({
@@ -25072,6 +25237,7 @@ async function scanForEtches(env, network) {
             withdraw_txid: tx.txid, withdrawn_at_height: h,
             withdrawn_at: tx.status?.block_time || Math.floor(Date.now() / 1000),
             source: 'bridge_burn', network,
+            ...(gen ? { gen } : {}),
           }));
           // A burn nullifies a note but never removes a leaf — the pool tree is
           // append-only, so leaf_count must not decrement. Live-note count is
@@ -25087,9 +25253,13 @@ async function scanForEtches(env, network) {
         if (expectedNetTag === null || br.networkTag !== expectedNetTag) continue;
         const aid = bytesToHex(br.assetId);
         const denomBig = BigInt('0x' + bytesToHex(br.denomWei)).toString();
-        const initRec = await _bridgeInitLookup(aid, denomBig);
+        const g = _tethGenForEnvelope(network, aid, T_BRIDGE_ROTATE, expectedNetTag, br.assetId, br.denomWei,
+          [br.merkleRoot, br.nullifierHash, br.newCommitment, br.rLeaf], br.bindHash);
+        if (!g) continue;
+        const gen = g.gen;
+        const initRec = await _bridgeInitLookup(aid, denomBig, gen);
         if (!initRec) continue;
-        const nKey = poolNullifierKey(network, aid, denomBig, bytesToHex(br.nullifierHash));
+        const nKey = poolNullifierKey(network, aid, denomBig, bytesToHex(br.nullifierHash), gen);
         const existingNull = await env.REGISTRY_KV.get(nKey);
         if (!existingNull) {
           await env.REGISTRY_KV.put(nKey, JSON.stringify({
@@ -25097,11 +25267,13 @@ async function scanForEtches(env, network) {
             nullifier_hash: bytesToHex(br.nullifierHash),
             withdraw_txid: tx.txid, withdrawn_at_height: h,
             source: 'bridge_rotate', network,
+            ...(gen ? { gen } : {}),
           }));
         }
-        const cnt = await _bridgeGetLeafCount(aid, denomBig);
+        const cnt = await _bridgeGetLeafCount(aid, denomBig, gen);
         if (cnt >= POOL_LEAF_CAP) continue;
-        const leafKey = poolLeafKeyFor(network, aid, denomBig, h, txIndex, tx.txid);
+        const leafKey = poolLeafKeyFor(network, aid, denomBig, h, txIndex, tx.txid, gen);
+        if (await env.REGISTRY_KV.get(leafKey)) continue;  // re-scan after a halt: leaf already counted
         await env.REGISTRY_KV.put(leafKey, JSON.stringify({
           asset_id: aid, denomination: denomBig,
           leaf_commitment: bytesToHex(br.newCommitment),
@@ -25109,8 +25281,9 @@ async function scanForEtches(env, network) {
           deposited_at_height: h,
           deposited_at: tx.status?.block_time || Math.floor(Date.now() / 1000),
           source: 'bridge_rotate', network,
+          ...(gen ? { gen } : {}),
         }));
-        _bridgeAdjustLeafCount(aid, denomBig, 1);
+        _bridgeAdjustLeafCount(aid, denomBig, 1, gen);
         found++;
         } catch {}
       } else if (decoded.opcode === T_BRIDGE_EXPORT) {
@@ -25122,10 +25295,16 @@ async function scanForEtches(env, network) {
         if (expectedNetTag === null || be[1] !== expectedNetTag) continue;
         const aid = bytesToHex(be.slice(2, 34));
         const denomBig = BigInt('0x' + bytesToHex(be.slice(34, 66))).toString();
-        const initRec = await _bridgeInitLookup(aid, denomBig);
+        // Envelope layout (guest 0x63): poolRoot[66..98] nullifier[98..130]
+        // recipientCommit[130..163] rLeaf[163..195] bindHash[195..227].
+        const g = _tethGenForEnvelope(network, aid, T_BRIDGE_EXPORT, expectedNetTag, be.slice(2, 34), be.slice(34, 66),
+          [be.slice(66, 98), be.slice(98, 130), be.slice(130, 163), be.slice(163, 195)], be.slice(195, 227));
+        if (!g) continue;
+        const gen = g.gen;
+        const initRec = await _bridgeInitLookup(aid, denomBig, gen);
         if (!initRec) continue;
         const nullHex = bytesToHex(be.slice(98, 130));
-        const nKey = poolNullifierKey(network, aid, denomBig, nullHex);
+        const nKey = poolNullifierKey(network, aid, denomBig, nullHex, gen);
         const existingNull = await env.REGISTRY_KV.get(nKey);
         if (!existingNull) {
           await env.REGISTRY_KV.put(nKey, JSON.stringify({
@@ -25133,6 +25312,7 @@ async function scanForEtches(env, network) {
             nullifier_hash: nullHex,
             withdraw_txid: tx.txid, withdrawn_at_height: h,
             source: 'bridge_export', network,
+            ...(gen ? { gen } : {}),
           }));
         }
         found++;
@@ -25149,16 +25329,23 @@ async function scanForEtches(env, network) {
         if (expectedNetTag === null || bi[1] !== expectedNetTag) continue;
         const aid = bytesToHex(bi.slice(2, 34));
         const denomBig = BigInt('0x' + bytesToHex(bi.slice(34, 66))).toString();
-        const initRec = await _bridgeInitLookup(aid, denomBig);
+        // Envelope layout (guest 0x64): newCommitment[66..98] bindHash[98..130]
+        // prevTxid[130..162] prevVoutLE[162..164].
+        const g = _tethGenForEnvelope(network, aid, T_BRIDGE_IMPORT, expectedNetTag, bi.slice(2, 34), bi.slice(34, 66),
+          [bi.slice(66, 98), bi.slice(130, 162), bi.slice(162, 164)], bi.slice(98, 130));
+        if (!g) continue;
+        const gen = g.gen;
+        const initRec = await _bridgeInitLookup(aid, denomBig, gen);
         if (!initRec) continue;
         const newCommitHex = bytesToHex(bi.slice(66, 98));
         // prevTxid (internal order) + prevVout salt the importer's deterministic
         // note derivation; expose them so a key-only recovery scan can re-derive.
         const prevTxidHex = bytesToHex(bi.slice(130, 162));
         const prevVout = bi[162] | (bi[163] << 8);
-        const cnt = await _bridgeGetLeafCount(aid, denomBig);
+        const cnt = await _bridgeGetLeafCount(aid, denomBig, gen);
         if (cnt >= POOL_LEAF_CAP) continue;
-        const leafKey = poolLeafKeyFor(network, aid, denomBig, h, txIndex, tx.txid);
+        const leafKey = poolLeafKeyFor(network, aid, denomBig, h, txIndex, tx.txid, gen);
+        if (await env.REGISTRY_KV.get(leafKey)) continue;  // re-scan after a halt: leaf already counted
         await env.REGISTRY_KV.put(leafKey, JSON.stringify({
           asset_id: aid, denomination: denomBig,
           leaf_commitment: newCommitHex,
@@ -25167,12 +25354,16 @@ async function scanForEtches(env, network) {
           deposited_at: tx.status?.block_time || Math.floor(Date.now() / 1000),
           prev_txid: prevTxidHex, prev_vout: prevVout,
           source: 'bridge_import', network,
+          ...(gen ? { gen } : {}),
         }));
-        _bridgeAdjustLeafCount(aid, denomBig, 1);
+        _bridgeAdjustLeafCount(aid, denomBig, 1, gen);
         found++;
         } catch {}
       }
     }
+    // A halted bridge confirm leaves this block unfinished — stop here so
+    // lastScanned re-covers it next tick (writes so far are idempotent).
+    if (_bridgeScanHalt) break;
     lastContiguous = h;
   }
   // Flush deferred petch_dirty markers BEFORE advancing lastScanned. One
@@ -25184,10 +25375,10 @@ async function scanForEtches(env, network) {
   // markPetchDirty is idempotent so re-scans cost no extra correctness.
   for (const [k, delta] of _bridgeLeafDeltas) {
     if (delta === 0) continue;
-    const [aid, denomBig] = k.split(':');
+    const [gen, aid, denomBig] = k.split(':');
     const base = _bridgeLeafCountBase.get(k) || 0;
     const final = Math.max(0, base + delta);
-    await env.REGISTRY_KV.put(poolLeafCountKey(network, aid, denomBig), String(final));
+    await env.REGISTRY_KV.put(poolLeafCountKey(network, aid, denomBig, gen), String(final));
   }
   for (const aid of _dirtyPetchAids) {
     await markPetchDirty(env, network, aid);
@@ -26425,10 +26616,11 @@ async function _routeFetch(req, env, ctx) {
       const perPool = await Promise.all(list.keys.map(async k => {
         const rec = await env.REGISTRY_KV.get(k.name, 'json');
         if (!rec) return null;
+        const recGen = rec.gen || '';
         const [leafCntStr, nullL] = await Promise.all([
-          env.REGISTRY_KV.get(poolLeafCountKey(network, rec.asset_id, rec.pool_denom)),
+          env.REGISTRY_KV.get(poolLeafCountKey(network, rec.asset_id, rec.pool_denom, recGen)),
           env.REGISTRY_KV.list({
-            prefix: poolNullifierPrefix(network, rec.asset_id, rec.pool_denom),
+            prefix: poolNullifierPrefix(network, rec.asset_id, rec.pool_denom, recGen),
             limit: 1000,
           }),
         ]);
@@ -26475,6 +26667,9 @@ async function _routeFetch(req, env, ctx) {
       if (m && req.method === 'GET') {
         const aid = m[1].toLowerCase();
         const denom = m[2];
+        // tETH generation segment ('' = pilot/legacy — byte-identical keys).
+        const gen = (url.searchParams.get('gen') || '').toLowerCase();
+        if (!/^[a-z0-9]{0,8}$/.test(gen)) return jsonResponse({ error: 'invalid gen' }, 400, cors);
         const leavesCursor = url.searchParams.get('leaves_cursor');
         const nullifiersCursor = url.searchParams.get('nullifiers_cursor');
         // Page-size budget: cursor pages fetch only one list, so they get
@@ -26543,7 +26738,7 @@ async function _routeFetch(req, env, ctx) {
             new Promise(resolve => setTimeout(() => resolve(null), 2500)),
           ]).catch(() => null);
           const page = await _fetchListPage(
-            poolLeafPrefix(network, aid, denom),
+            poolLeafPrefix(network, aid, denom, gen),
             leavesCursor || undefined,
             PAGE_CURSOR,
           );
@@ -26601,7 +26796,7 @@ async function _routeFetch(req, env, ctx) {
             new Promise(resolve => setTimeout(() => resolve(null), 2500)),
           ]).catch(() => null);
           const page = await _fetchListPage(
-            poolNullifierPrefix(network, aid, denom),
+            poolNullifierPrefix(network, aid, denom, gen),
             nullifiersCursor || undefined,
             PAGE_CURSOR,
           );
@@ -26628,7 +26823,7 @@ async function _routeFetch(req, env, ctx) {
         }
 
         // Default mode: pool metadata + first page of both lists.
-        const initRec = await env.REGISTRY_KV.get(poolInitKey(network, aid, denom), 'json');
+        const initRec = await env.REGISTRY_KV.get(poolInitKey(network, aid, denom, gen), 'json');
         if (!initRec) return jsonResponse({ error: 'pool not found' }, 404, cors);
         // Fetch chain tip in parallel with the KV walks so the depth-gate
         // annotation can be applied without doubling latency. Tolerate tip
@@ -26636,8 +26831,8 @@ async function _routeFetch(req, env, ctx) {
         // height as a fallback (L1).
         const tipP = fetchTipHeight(env, network);  // KV-cached + fallback (no transient null)
         const [leafPage, nullPage] = await Promise.all([
-          _fetchListPage(poolLeafPrefix(network, aid, denom), undefined, PAGE_DEFAULT),
-          _fetchListPage(poolNullifierPrefix(network, aid, denom), undefined, PAGE_DEFAULT),
+          _fetchListPage(poolLeafPrefix(network, aid, denom, gen), undefined, PAGE_DEFAULT),
+          _fetchListPage(poolNullifierPrefix(network, aid, denom, gen), undefined, PAGE_DEFAULT),
         ]);
         const tipHeight = await tipP;
         const fallback = leafPage.records.reduce((acc, r) =>
@@ -27904,14 +28099,15 @@ async function _routeFetch(req, env, ctx) {
       if (!checkDebugAuth(req, env)) return jsonResponse({ error: 'not found' }, 404, cors);
       const aid = (url.searchParams.get('aid') || '').toLowerCase();
       const denom = url.searchParams.get('denom') || '';
-      if (!/^[0-9a-f]{64}$/.test(aid) || !/^\d+$/.test(denom)) {
-        return jsonResponse({ error: 'need ?aid=<hex64>&denom=<dec>' }, 400, cors);
+      const gen = (url.searchParams.get('gen') || '').toLowerCase();
+      if (!/^[0-9a-f]{64}$/.test(aid) || !/^\d+$/.test(denom) || !/^[a-z0-9]{0,8}$/.test(gen)) {
+        return jsonResponse({ error: 'need ?aid=<hex64>&denom=<dec>[&gen=<seg>]' }, 400, cors);
       }
-      const cntKey = poolLeafCountKey(network, aid, denom);
+      const cntKey = poolLeafCountKey(network, aid, denom, gen);
       const before = parseInt(await env.REGISTRY_KV.get(cntKey) || '0', 10);
       let actual = 0, cursor, complete = false;
       for (let page = 0; page < 1100; page++) {
-        const opts = { prefix: poolLeafPrefix(network, aid, denom), limit: 1000 };
+        const opts = { prefix: poolLeafPrefix(network, aid, denom, gen), limit: 1000 };
         if (cursor) opts.cursor = cursor;
         const list = await env.REGISTRY_KV.list(opts);
         actual += list.keys.length;
@@ -28720,17 +28916,19 @@ async function _routeFetch(req, env, ctx) {
       if (!checkDebugAuth(req, env)) return jsonResponse({ error: 'not found' }, 404, cors);
       const aid = url.searchParams.get('aid');
       const denom = url.searchParams.get('denom');
+      const gen = (url.searchParams.get('gen') || '').toLowerCase();
       if (!aid || !denom) return jsonResponse({ error: 'missing aid or denom' }, 400, cors);
+      if (!/^[a-z0-9]{0,8}$/.test(gen)) return jsonResponse({ error: 'invalid gen' }, 400, cors);
       let deleted = 0;
       for (const prefix of [
-        `poolleaf:${aid}:${denom}:`,
-        `bridge_deposit_nullifier:${network}:${aid}:${denom}:`,
+        poolLeafPrefix(network, aid, denom, gen),
+        `bridge_deposit_nullifier:${network}:${_genSeg(gen)}${aid}:${denom}:`,
       ]) {
         const list = await env.REGISTRY_KV.list({ prefix, limit: 1000 });
         for (const k of list.keys) { await env.REGISTRY_KV.delete(k.name); deleted++; }
       }
-      await env.REGISTRY_KV.delete(poolInitKey(network, aid, denom));
-      await env.REGISTRY_KV.delete(poolLeafCountKey(network, aid, denom));
+      await env.REGISTRY_KV.delete(poolInitKey(network, aid, denom, gen));
+      await env.REGISTRY_KV.delete(poolLeafCountKey(network, aid, denom, gen));
       deleted += 2;
       return jsonResponse({ ok: true, deleted, network }, 200, cors);
     }
