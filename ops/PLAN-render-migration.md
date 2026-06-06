@@ -94,6 +94,18 @@ untouched while everything is rehearsed.
    Cloudflare worker (below) and disable its cron trigger. From this moment
    the Render service is the single writer; old clients are unaffected. The
    freeze window is the minutes between delta sync and proxy deploy.
+
+   Delta recipe: ~97% of REGISTRY_KV is append-only history (`pmint:` 229k,
+   `ceremony:` 200k — both ceremonies finalized; `xferseen:`,
+   `trade-event:`). A delta run is: fresh `kv key list --remote`, then
+   `kv-export-wrangler.mjs` with the previous NDJSON as resume base —
+   fetches new keys of any prefix automatically — plus
+   `--refetch-prefixes` covering the mutable tail (everything except the
+   four append-only families; ~10k keys, minutes). Upstream deletions
+   (fulfilled claims, spent listings) don't propagate through an upsert
+   import; the cron's existing phantom sweeps clear them after cutover. If
+   an orphan promotion rewrites a `pmint:` record inside the gap window,
+   the every-6th-tick counter reconciliation self-heals it.
 6. Dapp release: `WORKER_BASE` (dapp/tacit.js) → `https://api.tacit.finance`,
    CSP connect-src updated, `tacit-api` added to `ALLOWED_ORIGINS` if the
    origin list changes. New clients now bypass Cloudflare entirely.
