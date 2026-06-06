@@ -90,6 +90,19 @@ Post-deploy sequence:
    dedup-gated, existing records unaffected.
 3. Re-run `tests/bridge-multigen.test.mjs` against the deployed worker.
 
+**Dapp routing status: op layer DONE** (generation context threads through
+bind hashes, pool trees, scanPools, all five builders, ETH claim, recovery,
+supply stats; records stamped + stored per-mixer; active generation stays the
+pilot so behavior is unchanged today). **Before the step-6 flip** (pointing
+deposits at alpha), finish the remaining active-generation-bound surfaces:
+- bridge modal / Holdings / resume UI handlers that read+write
+  `_BRIDGE_*_KEY()` directly (display + status updates; ~25 sites in the
+  49xxx region) — move reads to the merged views and writes to the record's
+  home key;
+- rotate-recipient note discovery (received-note derivation stamps the
+  sender's generation);
+- `_cleanStaleBridgeRecords` (active key only — run per generation).
+
 ## Step 5 — live tiny-cap round-trip (you + me)
 
 Open alpha with **tiny caps** (a few dollars total). Run end-to-end:
