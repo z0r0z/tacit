@@ -5140,9 +5140,10 @@ async function _derivePreauthBidTradeFromChain(env, network, revealTx, assetIdHe
     const ctxid = String(vin?.txid || '').toLowerCase();
     const cvout = vin?.vout;
     if (!/^[0-9a-f]{64}$/.test(ctxid) || !Number.isInteger(cvout)) continue;
-    const bidIdHex = await env.REGISTRY_KV.get(preauthBidFundingIndexKey(network, ctxid, cvout));
-    if (!bidIdHex) continue;
-    const bid = await env.REGISTRY_KV.get(preauthBidKey(network, assetIdHex, bidIdHex), 'json');
+    const idxRaw = await env.REGISTRY_KV.get(preauthBidFundingIndexKey(network, ctxid, cvout));
+    const idx = _parsePreauthFundingIdx(idxRaw, assetIdHex);
+    if (!idx) continue;
+    const bid = await env.REGISTRY_KV.get(preauthBidKey(network, idx.assetId, idx.bidId), 'json');
     if (!bid) continue;
     if (bid.asset_id !== assetIdHex) continue;  // funding index is wallet-scoped, not asset-scoped; sanity check
     const px = Number(bid.price_sats);
@@ -5152,7 +5153,7 @@ async function _derivePreauthBidTradeFromChain(env, network, revealTx, assetIdHe
     if (amt <= 0n) continue;
     totalPriceSats += px;
     totalAmount += amt;
-    fills.push({ kind: 'preauth-bid', bid_id: bidIdHex, price_sats: px, outpoint: { txid: ctxid, vout: cvout } });
+    fills.push({ kind: 'preauth-bid', bid_id: idx.bidId, price_sats: px, outpoint: { txid: ctxid, vout: cvout } });
   }
   if (totalPriceSats <= 0 || fills.length === 0) return null;
   return { price_sats: totalPriceSats, amount: totalAmount, fills };
@@ -5225,13 +5226,14 @@ async function _derivePreauthBidVarTradeFromChain(env, network, revealTx, assetI
     const ctxid = String(vin?.txid || '').toLowerCase();
     const cvout = vin?.vout;
     if (!/^[0-9a-f]{64}$/.test(ctxid) || !Number.isInteger(cvout)) continue;
-    const bidIdHex = await env.REGISTRY_KV.get(preauthBidVarFundingIndexKey(network, ctxid, cvout));
-    if (!bidIdHex) continue;
-    const bid = await env.REGISTRY_KV.get(preauthBidVarKey(network, assetIdHex, bidIdHex), 'json');
+    const idxRaw = await env.REGISTRY_KV.get(preauthBidVarFundingIndexKey(network, ctxid, cvout));
+    const idx = _parsePreauthFundingIdx(idxRaw, assetIdHex);
+    if (!idx) continue;
+    const bid = await env.REGISTRY_KV.get(preauthBidVarKey(network, idx.assetId, idx.bidId), 'json');
     if (!bid) continue;
     if (bid.asset_id !== assetIdHex) continue;
     fills.push({
-      kind: 'preauth-bid-var', bid_id: bidIdHex,
+      kind: 'preauth-bid-var', bid_id: idx.bidId,
       price_sats: priceForThisFill,
       outpoint: { txid: ctxid, vout: cvout },
     });
@@ -9496,36 +9498,6 @@ function decodePreauthBidVarPayload(payload) {
     n: N,
     outputs,
   };
-}
-
-// Per-ratio bid_context_hash binding for T_PREAUTH_BID_VAR. Domain tag is
-// distinct from §5.7.11 so the per-ratio binding doesn't collide with the
-// exact-fill version. recipient_blinding is intentionally NOT in this
-// hash — the inline-section blinding is bound chain-side via the Pedersen
-// consistency rule, not via the OP_RETURN. K pre-sigs each commit to a
-// different fill_amount; the seller's chosen ratio at settlement time
-// is forced to match one of them via Bitcoin's BIP-143 preimage check.
-async function computePreauthBidVarContextHash({
-  assetId, bidId, recipientPubkey,
-  pricePerUnit, maxFill, fillIncrement, fillAmount,
-  refundScriptHash,
-}) {
-  if (assetId.length !== 32) throw new Error('asset_id 32 bytes');
-  if (bidId.length !== 16) throw new Error('bid_id 16 bytes');
-  if (recipientPubkey.length !== 33) throw new Error('recipient_pubkey 33 bytes');
-  if (refundScriptHash.length !== 20) throw new Error('refund_script_hash 20 bytes');
-  const u64LE = (n) => {
-    const b = new Uint8Array(8);
-    new DataView(b.buffer).setBigUint64(0, BigInt(n), true);
-    return b;
-  };
-  const preimage = concatBytes(
-    new TextEncoder().encode('tacit-preauth-bid-var-context-v1'),
-    assetId, bidId, recipientPubkey,
-    u64LE(pricePerUnit), u64LE(maxFill), u64LE(fillIncrement), u64LE(fillAmount),
-    refundScriptHash,
-  );
-  return new Uint8Array(await crypto.subtle.digest('SHA-256', preimage));
 }
 
 // T_PETCH structural decoder (SPEC §5.8). Permissionless-mint deployment
@@ -15862,9 +15834,10 @@ async function handleListingGet(assetIdHex, txidHex, vout, env, network, cors) {
 // This is a soft, time-bounded reservation — no on-chain commitment, just a
 // coordination signal. 5 min is enough for a maker to fulfil + taker to
 // broadcast in one sitting; longer TTLs let trolls free-claim and lock up
-// active intents (claims today require only a Schnorr sig, no funds proof).
-// A real fix is requiring the taker to commit to a sat UTXO ≥ price_sats;
-// until that lands, this short TTL caps the grief radius.
+// active books. Listing/range-listing claims require only a Schnorr sig (no
+// funds proof), so the short TTL caps their grief radius; atomic-intent
+// claims share this TTL but additionally pledge a live taker UTXO ≥ price
+// (ownership + unspent probe + cross-intent pledge gate).
 const CLAIM_TTL_SECONDS = 5 * 60;
 // Hard ceiling on how long one taker can continuously hold a claim by
 // refreshing it before expiry. A sig-only claim carries no funds proof, so
@@ -16856,12 +16829,13 @@ function preauthBidVarCancelMsg(assetIdHex, bidIdHex) {
   ));
 }
 
-// Sync per-ratio bid_context_hash used inside the K-sig verification loop.
-// Mirrors the async `computePreauthBidVarContextHash` above (which exists
-// alongside the wire-format decoder); the sync version is what the POST
-// handler calls so the loop doesn't pay K × subtle.digest round trips.
+// Per-ratio bid_context_hash binding for T_PREAUTH_BID_VAR, used inside the
+// K-sig verification loop. Domain tag is distinct from §5.7.11 so the
+// per-ratio binding doesn't collide with the exact-fill version.
 // recipient_blinding is deliberately omitted (lives in the inline section
-// only; chain-side Pedersen consistency rule covers it).
+// only; chain-side Pedersen consistency rule covers it). K pre-sigs each
+// commit to a different fill_amount; the seller's chosen ratio at settlement
+// time is forced to match one of them via Bitcoin's BIP-143 preimage check.
 function preauthBidVarContextHash({
   assetIdHex, bidIdHex, recipientPubHex,
   pricePerUnit, maxFill, fillIncrement, fillAmount,
