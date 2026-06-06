@@ -3,23 +3,21 @@ name = "confidential-pool-prover"
 version = "0.1.0"
 edition = "2021"
 
-# SP1 guest for the Phase-1 confidential pool (ConfidentialPool.sol). Validates a
-# batch of confidential ops — wrap openings, transfer membership + Bulletproofs+
-# ranges + per-asset conservation, unwrap openings — against the on-chain Keccak
-# commitment root, and commits the ABI-encoded PublicValues the contract decodes.
-#
-# Reuses the bridge guest's secp module (pedersen_h / verify_pedersen_opening) and
-# the same secp256k1 (k256) discipline. STATUS: scaffold — the aggregated
-# Bulletproofs+ verifier (secp) is the one piece still to port from the canonical
-# Bitcoin-side verifier; everything else (keccak Merkle membership, openings,
-# public-values encoding) is wired. Build needs the SP1 toolchain (cargo prove).
+# SP1 guest for the Phase-1 confidential pool. Thin assembler over cxfer-core
+# (the native-tested secp/keccak verification core); commits the ABI-encoded
+# PublicValues that ConfidentialPool.settle decodes. Build: cargo prove build.
+# The precompile patches accelerate the secp/sha256 inside cxfer-core in-zkVM
+# (~29x fewer cycles); they apply to the guest build only, not cxfer-core's
+# native tests.
 
 [dependencies]
 sp1-zkvm = "6.2"
-sha2 = "0.10"
-tiny-keccak = { version = "2.0", features = ["keccak"] }
-k256 = { version = "0.13", default-features = false, features = ["arithmetic"] }
+cxfer-core = { path = "cxfer-core" }
 alloy-sol-types = "0.8"
 
 [profile.release]
 overflow-checks = true
+
+[patch.crates-io]
+sha2 = { git = "https://github.com/sp1-patches/RustCrypto-hashes", package = "sha2", tag = "patch-sha2-0.10.8-sp1-6.2.0" }
+k256 = { git = "https://github.com/sp1-patches/elliptic-curves", package = "k256", tag = "patch-k256-13.4-sp1-6.2.0" }

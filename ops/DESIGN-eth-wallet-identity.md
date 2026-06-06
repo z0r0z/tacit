@@ -1,4 +1,4 @@
-# Ethereum Wallet → Tacit Identity — Derivation, Guards, Recovery
+# Ethereum ⇄ Tacit Wallet Identity — Derivation, Guards, Recovery
 
 How the dapp deterministically and securely associates an Ethereum EOA with a
 tacit bitcoin wallet, and why reconnecting the same ETH account on any device
@@ -6,6 +6,11 @@ recovers the full wallet with no seed phrase, no passphrase, and no stored
 secret. Documents `ethWallet` in `dapp/tacit.js` (the
 `ETHEREUM WALLET DERIVATION` section); verified by
 `tests/eth-wallet.test.mjs`.
+
+The forward direction below derives a tacit identity *from* an external Ethereum
+wallet. The reverse — deriving an Ethereum account *from* a Tacit wallet, so a
+Bitcoin-first user can act on Ethereum (the confidential pool's wrap / unwrap /
+settle) with no second wallet — is specced in **"Reverse direction"** below.
 
 The same construction (signature → hash → scalar) backs the deterministic
 Bitcoin-wallet path (`btcWallet`, directly below `ethWallet` in the source)
@@ -94,6 +99,77 @@ memory-only. The exported hex restores on any device via the standard
 the drift anchor refuses on) costs nothing if an export exists. The relation
 is one-way — ETH key → signature → sha256 → tacit key — so an exported (or
 leaked) tacit key reveals nothing about the Ethereum key.
+
+## Reverse direction — Tacit identity → Ethereum account (design)
+
+The sections above derive a tacit identity *from* an external Ethereum EOA. The
+reverse — deriving an Ethereum account *from* a Tacit wallet — lets a
+Bitcoin-first user (the `btcWallet` or passkey path, or the existing mainnet
+wallets) transact on Ethereum (wrap / unwrap / settle the confidential pool)
+without a second wallet. It is the *easier* direction, and is **not yet
+implemented**; this section specs it.
+
+Both chains are secp256k1, so an Ethereum address is a pure transform of a secp
+public key. Unlike the forward direction — which must derive from a *signature*
+because an external wallet never exposes its key — the Tacit wallet already holds
+`wallet.priv`, so the EVM account derives **directly**: no signature round-trip,
+no signer-determinism (RFC 6979) dependency, no contract-wallet gate.
+
+### Derivation chain
+
+```
+tacit priv ──sha256("tacit-evm-account-v1" ‖ network ‖ priv)──▶ toValidScalar ──▶ evm priv
+                                                                                   │
+                                                                  secp256k1 ──▶ evm pub
+                                                                                   │
+                                                              keccak256[12:] ──▶ 0x… address
+```
+
+1. **Dedicated, domain-separated key — not key reuse.** `evm_priv =
+   toValidScalar(sha256("tacit-evm-account-v1" ‖ network ‖ tacit_priv))`. A
+   *separate* key (not the same secp scalar on both chains), for two reasons:
+   - **Unlinkability.** This is a privacy product; the user's public Ethereum
+     address must not be trivially linkable to their Bitcoin address. One shared
+     key would make them the same pubkey on both chains.
+   - **One-wayness, mirroring the forward path.** sha256 sits between the two
+     keys, so a leaked EVM key reveals nothing about the tacit key (and vice
+     versa) — the same trust reduction the forward direction documents.
+2. **Network binding.** The preimage embeds the network, so signet and mainnet
+   derive distinct EVM accounts, matching the per-network identity model.
+3. **Address.** `keccak256(uncompressedPub(evm_priv))[12:]` — the standard EVM
+   address. `toValidScalar` reuses the forward path's `[1, N-1]` mapping.
+
+### What it enables
+
+- The Tacit wallet becomes a **self-custodial EVM signer**: it builds and signs
+  EIP-1559 wrap / unwrap / settle transactions from the in-browser key — no
+  MetaMask.
+- **One seed, both chains.** The confidential-pool *notes* are already
+  HMAC-derived from the wallet seed (chain-independent — see
+  `dapp/confidential-pool.js`), so the same tacit identity yields the EVM account
+  *and* the confidential notes; a Bitcoin-first user's Ethereum side "just
+  appears."
+- **Recovery is unchanged.** Re-derive the tacit key (via its own signature / PRF
+  / btc path), then re-derive the EVM account — no stored secret, consistent with
+  the rest of this doc.
+
+### Caveats and guards
+
+- **Gas funding.** The derived EVM account holds no ETH; the *public* boundary
+  ops (wrap / unwrap) need gas. Confidential transfers route through the relayer
+  (fee paid in-asset), but funding the account — or a sponsored / relayed deposit
+  — is a separate UX piece.
+- **Account-layer ≠ note-layer privacy.** The EVM address is unlinkable *by
+  derivation*, but transacting publicly from it (a wrap) exposes that address
+  on-chain. Amount/holder privacy lives in the notes, not the account; treat the
+  EVM account as a pseudonymous funding/boundary identity.
+- **Signer scope.** New capability to build in the Tacit wallet: EIP-1559 tx
+  construction + signing (and EIP-191 message signing if wanted) from the
+  in-browser secp key. The forward direction's signer guards (RFC 6979,
+  contract-wallet rejection, drift anchor) are moot here — the wallet controls
+  the key directly.
+
+---
 
 ## Verification
 

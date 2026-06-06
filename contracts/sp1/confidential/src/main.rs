@@ -1,33 +1,32 @@
 #![cfg_attr(not(test), no_main)]
+//! Confidential-pool guest (Phase 1). Validates a batch of confidential ops and
+//! commits the ABI-encoded `PublicValues` that `ConfidentialPool.settle` decodes.
+//! All secp/keccak verification is delegated to `cxfer-core` (native-tested
+//! against the JS prover); this guest is the thin assembler that reads the
+//! witness, calls the verified checks, and emits the public boundary effects.
+//!
+//! Op witness layout (host writes in this order; see dapp prover):
+//!   header:  chainBinding[32], spendRoot[32], numOps u32
+//!   per op:  opType u8, then op-specific fields below.
+
 #[cfg(not(test))]
 sp1_zkvm::entrypoint!(main);
 
-//! Confidential-pool guest (Phase 1). Validates a batch of confidential ops and
-//! commits the ABI-encoded `PublicValues` that `ConfidentialPool.settle` decodes.
-//!
-//! Division of labour (see ops/PLAN-confidential-token-rollup.md §5/§16): the
-//! guest does all secp work — membership against the on-chain Keccak root, the
-//! aggregated Bulletproofs+ ranges, the per-asset conservation kernel, and the
-//! wrap/unwrap openings — and emits only the public boundary effects. The
-//! contract maintains the tree, nullifier set, and escrow.
-//!
-//! Forward-compat (Phase 3): nullifiers are `keccak(note_secret)` —
-//! chain-independent — and the `PublicValues` tail is versioned, so the
-//! cross-chain accumulator roots + exposed mint-nullifiers append without a
-//! layout break.
-
 use alloy_sol_types::{sol, SolValue};
-use k256::ProjectivePoint;
+use alloy_sol_types::private::{Address, U256};
+use cxfer_core::{
+    decompress, deposit_id, from_affine_xy, keccak_merkle_verify, leaf, nullifier,
+    scalar_reduce_be, verify_kernel, verify_pedersen_opening, verify_range,
+    Point,
+};
 use sp1_zkvm::io;
-use tiny_keccak::{Hasher, Keccak};
 
-mod secp; // reused from the bridge guest: pedersen_h(), verify_pedersen_opening()
-
-const TREE_DEPTH: usize = 32;
 const PV_VERSION: u16 = 1;
+const OP_WRAP: u8 = 0;
+const OP_TRANSFER: u8 = 1;
+const OP_UNWRAP: u8 = 2;
 
-// Mirrors ConfidentialPool.PublicValues exactly; abi_encode() → commit_slice()
-// is what the on-chain abi.decode reads.
+// Mirrors ConfidentialPool.PublicValues exactly.
 sol! {
     struct Withdrawal { bytes32 assetId; address recipient; uint256 amount; }
     struct FeePayment { bytes32 assetId; uint256 amount; }
@@ -43,120 +42,108 @@ sol! {
     }
 }
 
-const OP_WRAP: u8 = 0;
-const OP_TRANSFER: u8 = 1;
-const OP_UNWRAP: u8 = 2;
+fn r_n<const N: usize>() -> [u8; N] {
+    let v: Vec<u8> = io::read();
+    v.try_into().expect("witness field length")
+}
+fn r32() -> [u8; 32] { r_n::<32>() }
+fn r33() -> [u8; 33] { r_n::<33>() }
+fn r20() -> [u8; 20] { r_n::<20>() }
+
+/// Read a commitment as affine (cx, cy) and rebuild the point. Returns the bytes
+/// (for leaf/deposit-id keccak preimages) and the point (for range/kernel/opening).
+fn r_commitment() -> ([u8; 32], [u8; 32], Point) {
+    let cx = r32();
+    let cy = r32();
+    let p = from_affine_xy(&cx, &cy).expect("commitment xy");
+    (cx, cy, p)
+}
+
+fn r_path() -> Vec<[u8; 32]> {
+    (0..32).map(|_| r32()).collect()
+}
 
 pub fn main() {
-    let chain_binding: [u8; 32] = io::read();
-    let spend_root: [u8; 32] = io::read();
-    let h = secp::pedersen_h();
+    let chain_binding = r32();
+    let spend_root = r32();
+    let num_ops: u32 = io::read();
 
     let mut nullifiers: Vec<[u8; 32]> = Vec::new();
     let mut leaves: Vec<[u8; 32]> = Vec::new();
-    let mut deposits_consumed: Vec<[u8; 32]> = Vec::new();
+    let mut deposits: Vec<[u8; 32]> = Vec::new();
     let mut withdrawals: Vec<Withdrawal> = Vec::new();
-    let mut fees: Vec<FeePayment> = Vec::new();
+    let fees: Vec<FeePayment> = Vec::new(); // fee path: follow-up (kernel −fee·H term)
 
-    let num_ops: u32 = io::read();
     for _ in 0..num_ops {
-        let op_type: u8 = io::read();
-        match op_type {
+        let op: u8 = io::read();
+        match op {
             OP_WRAP => {
-                // Public deposit: prove C opens to the publicly-escrowed amount
-                // (amount = value · unit_scale), then emit its leaf + deposit id.
-                let asset_id: [u8; 32] = io::read();
-                let amount: u64 = io::read();          // value in in-system units
-                let unit_scale_amount: [u8; 32] = io::read(); // escrowed underlying (for deposit id)
-                let commitment: [u8; 33] = io::read();
-                let blinding: [u8; 32] = io::read();
-                let owner: [u8; 32] = io::read();
-
-                assert!(secp::verify_pedersen_opening(&h, &commitment, amount, &blinding), "wrap opening");
-
-                let (cx, cy) = decompress_xy(&commitment);
-                leaves.push(leaf(&asset_id, &cx, &cy, &owner));
-                deposits_consumed.push(deposit_id(&asset_id, &unit_scale_amount, &cx, &cy, &owner));
+                // public deposit: prove C opens to value, emit leaf + deposit id.
+                let asset = r32();
+                let amount = r32(); // underlying (BE32) for the deposit id
+                let value: u64 = io::read(); // in-system value the note commits to
+                let (cx, cy, c) = r_commitment();
+                let owner = r32();
+                let r = scalar_reduce_be(&r32());
+                assert!(verify_pedersen_opening(&c, value, &r), "wrap opening");
+                leaves.push(leaf(&asset, &cx, &cy, &owner));
+                deposits.push(deposit_id(&asset, &amount, &cx, &cy, &owner));
             }
             OP_TRANSFER => {
-                // n-in / m-out, hidden amounts. Inputs proven in-tree against
-                // spend_root; outputs range-bounded by an aggregated BP+; sums
-                // conserved per asset by the kernel. Amounts never leave the guest.
-                let asset_id: [u8; 32] = io::read();
+                // n-in / m-out, hidden amounts: membership + range + conservation.
+                let asset = r32();
                 let n_in: u32 = io::read();
                 let m_out: u32 = io::read();
 
-                let mut in_points: Vec<ProjectivePoint> = Vec::with_capacity(n_in as usize);
+                let mut in_pts: Vec<Point> = Vec::with_capacity(n_in as usize);
                 for _ in 0..n_in {
-                    let commitment: [u8; 33] = io::read();
+                    let (cx, cy, p) = r_commitment();
+                    let owner = r32();
                     let leaf_index: u64 = io::read();
-                    let path: Vec<[u8; 32]> = read_path();
-                    let note_secret: [u8; 32] = io::read();
-
-                    let (cx, cy) = decompress_xy(&commitment);
-                    let owner: [u8; 32] = io::read();
-                    let lf = leaf(&asset_id, &cx, &cy, &owner);
+                    let path = r_path();
+                    let secret = r32();
+                    let lf = leaf(&asset, &cx, &cy, &owner);
                     assert!(keccak_merkle_verify(&lf, leaf_index, &path, &spend_root), "membership");
-
-                    nullifiers.push(nullifier(&note_secret)); // chain-independent
-                    in_points.push(point(&commitment));
+                    nullifiers.push(nullifier(&secret));
+                    in_pts.push(p);
                 }
 
-                let mut out_points: Vec<ProjectivePoint> = Vec::with_capacity(m_out as usize);
-                let mut out_commitments: Vec<[u8; 33]> = Vec::with_capacity(m_out as usize);
+                let mut out_pts: Vec<Point> = Vec::with_capacity(m_out as usize);
                 for _ in 0..m_out {
-                    let commitment: [u8; 33] = io::read();
-                    let owner: [u8; 32] = io::read();
-                    let (cx, cy) = decompress_xy(&commitment);
-                    leaves.push(leaf(&asset_id, &cx, &cy, &owner));
-                    out_points.push(point(&commitment));
-                    out_commitments.push(commitment);
+                    let (cx, cy, p) = r_commitment();
+                    let owner = r32();
+                    leaves.push(leaf(&asset, &cx, &cy, &owner));
+                    out_pts.push(p);
                 }
 
-                // Range: every output ∈ [0, 2^64) via one aggregated BP+ over the
-                // output commitments. PORT-IN: the canonical secp BP+ verifier.
                 let bp_proof: Vec<u8> = io::read();
-                assert!(secp::verify_bulletproofs_plus(&h, &out_commitments, &bp_proof), "range");
+                assert!(verify_range(&out_pts, &bp_proof), "range");
 
-                // Conservation: Σ Cin − Σ Cout − fee·H = excess·G, Schnorr under
-                // the excess. fee is public and paid to the settler in-asset.
-                let fee: u64 = io::read();
-                let kernel_r_addr: [u8; 20] = io::read();
-                let kernel_z: [u8; 32] = io::read();
-                assert!(
-                    secp::verify_kernel(&h, &in_points, &out_points, fee, &kernel_r_addr, &kernel_z),
-                    "conservation"
-                );
-                if fee != 0 {
-                    fees.push(FeePayment {
-                        assetId: asset_id.into(),
-                        amount: scale_to_underlying(fee),
-                    });
-                }
+                let kernel_r = decompress(&r33()).expect("kernel R");
+                let kernel_z = scalar_reduce_be(&r32());
+                assert!(verify_kernel(&in_pts, &out_pts, &kernel_r, &kernel_z), "conservation");
             }
             OP_UNWRAP => {
-                // Spend a note to a public recipient: prove it opens to `amount`,
-                // nullify it, emit the withdrawal (underlying units).
-                let asset_id: [u8; 32] = io::read();
-                let commitment: [u8; 33] = io::read();
+                // spend a note to a public recipient: membership + opening, pay out.
+                let asset = r32();
+                let (cx, cy, c) = r_commitment();
+                let owner = r32();
                 let leaf_index: u64 = io::read();
-                let path: Vec<[u8; 32]> = read_path();
-                let note_secret: [u8; 32] = io::read();
-                let owner: [u8; 32] = io::read();
-                let amount: u64 = io::read();
-                let blinding: [u8; 32] = io::read();
-                let recipient: [u8; 20] = io::read();
+                let path = r_path();
+                let secret = r32();
+                let value: u64 = io::read();
+                let r = scalar_reduce_be(&r32());
+                let amount = r32(); // underlying payout (BE32)
+                let recipient = r20();
 
-                let (cx, cy) = decompress_xy(&commitment);
-                let lf = leaf(&asset_id, &cx, &cy, &owner);
+                let lf = leaf(&asset, &cx, &cy, &owner);
                 assert!(keccak_merkle_verify(&lf, leaf_index, &path, &spend_root), "membership");
-                assert!(secp::verify_pedersen_opening(&h, &commitment, amount, &blinding), "unwrap opening");
-
-                nullifiers.push(nullifier(&note_secret));
+                assert!(verify_pedersen_opening(&c, value, &r), "unwrap opening");
+                nullifiers.push(nullifier(&secret));
                 withdrawals.push(Withdrawal {
-                    assetId: asset_id.into(),
-                    recipient: recipient.into(),
-                    amount: scale_to_underlying(amount),
+                    assetId: asset.into(),
+                    recipient: Address::from(recipient),
+                    amount: U256::from_be_slice(&amount),
                 });
             }
             _ => panic!("unknown op type"),
@@ -169,97 +156,9 @@ pub fn main() {
         spendRoot: spend_root.into(),
         nullifiers: nullifiers.into_iter().map(Into::into).collect(),
         leaves: leaves.into_iter().map(Into::into).collect(),
-        depositsConsumed: deposits_consumed.into_iter().map(Into::into).collect(),
+        depositsConsumed: deposits.into_iter().map(Into::into).collect(),
         withdrawals,
         fees,
     };
     io::commit_slice(&pv.abi_encode());
-}
-
-// ──────────────────── hashing helpers (match the contract) ────────────────────
-
-fn k2(l: &[u8; 32], r: &[u8; 32]) -> [u8; 32] {
-    let mut k = Keccak::v256();
-    k.update(l);
-    k.update(r);
-    let mut o = [0u8; 32];
-    k.finalize(&mut o);
-    o
-}
-
-/// leaf = keccak(asset_id, Cx, Cy, owner) — matches the Bitcoin note scheme so a
-/// unified tree is natural in the cross-chain generation.
-fn leaf(asset_id: &[u8; 32], cx: &[u8; 32], cy: &[u8; 32], owner: &[u8; 32]) -> [u8; 32] {
-    let mut k = Keccak::v256();
-    k.update(asset_id);
-    k.update(cx);
-    k.update(cy);
-    k.update(owner);
-    let mut o = [0u8; 32];
-    k.finalize(&mut o);
-    o
-}
-
-/// keccak(note_secret) — chain-independent nullifier (Phase-3 tee-up §11.1).
-fn nullifier(note_secret: &[u8; 32]) -> [u8; 32] {
-    let mut k = Keccak::v256();
-    k.update(note_secret);
-    let mut o = [0u8; 32];
-    k.finalize(&mut o);
-    o
-}
-
-/// deposit id = keccak(abi.encode(assetId, amount, cx, cy, owner)) — must equal
-/// ConfidentialPool.wrap()'s. abi.encode of static types is just concatenation of
-/// 32-byte words; amount here is the underlying (unit_scale) amount as bytes32.
-fn deposit_id(asset_id: &[u8; 32], amount32: &[u8; 32], cx: &[u8; 32], cy: &[u8; 32], owner: &[u8; 32]) -> [u8; 32] {
-    let mut k = Keccak::v256();
-    k.update(asset_id);
-    k.update(amount32);
-    k.update(cx);
-    k.update(cy);
-    k.update(owner);
-    let mut o = [0u8; 32];
-    k.finalize(&mut o);
-    o
-}
-
-/// Membership against the on-chain Keccak incremental Merkle root: fold the leaf
-/// up with its siblings using the index bits, matching _insertLeaf's ordering.
-fn keccak_merkle_verify(leaf: &[u8; 32], mut index: u64, path: &[[u8; 32]], root: &[u8; 32]) -> bool {
-    if path.len() != TREE_DEPTH {
-        return false;
-    }
-    let mut h = *leaf;
-    for sib in path.iter() {
-        h = if index & 1 == 0 { k2(&h, sib) } else { k2(sib, &h) };
-        index >>= 1;
-    }
-    &h == root
-}
-
-fn read_path() -> Vec<[u8; 32]> {
-    let mut path = Vec::with_capacity(TREE_DEPTH);
-    for _ in 0..TREE_DEPTH {
-        let s: [u8; 32] = io::read();
-        path.push(s);
-    }
-    path
-}
-
-// ──────────────────── secp helpers ────────────────────
-
-fn point(commitment: &[u8; 33]) -> ProjectivePoint {
-    secp::decompress(commitment).expect("commitment point")
-}
-
-fn decompress_xy(commitment: &[u8; 33]) -> ([u8; 32], [u8; 32]) {
-    secp::affine_xy(commitment).expect("commitment xy")
-}
-
-/// in-system value (u64) → underlying units. Phase-1 carries unit_scale per
-/// asset off-chain in the witness; the scaffold uses identity and is wired to the
-/// asset's unit_scale when the witness format is finalized (§17).
-fn scale_to_underlying(value: u64) -> alloy_sol_types::private::U256 {
-    alloy_sol_types::private::U256::from(value)
 }

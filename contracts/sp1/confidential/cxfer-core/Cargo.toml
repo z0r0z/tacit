@@ -1,0 +1,19 @@
+[package]
+name = "cxfer-core"
+version = "0.1.0"
+edition = "2021"
+
+# Pure-crypto verification core for the confidential transfer — no SP1 deps, so
+# it `cargo test`s natively against fixtures the JS prover produces
+# (dapp/confidential-transfer.js → tests/gen-cxfer-fixture.mjs). The SP1 guest
+# depends on this crate; getting the native tests green locks the port, then the
+# guest is just a thin zkVM wrapper.
+
+[dependencies]
+k256 = { version = "0.13", default-features = false, features = ["arithmetic"] }
+tiny-keccak = { version = "2.0", features = ["keccak"] }
+sha2 = "0.10"
+
+[dev-dependencies]
+serde_json = "1"
+hex = "0.4"
