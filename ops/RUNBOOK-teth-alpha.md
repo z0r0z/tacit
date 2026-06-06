@@ -71,6 +71,25 @@ implementation + its unit/integration test run once alpha's address is in hand.
 - Confirm gen-0 still indexes unchanged (byte-identical keys) and `/pools` now
   carries a generation per pool.
 
+**Status: worker side DONE.** Attribution landed differently than sketched
+above — every bridge envelope's `bind_hash` already commits to
+`(chain_id, mixer_address)` (it is the guest's own first routing gate), so the
+worker recomputes the guest's exact bind hash per registry generation and
+routes on the match; deposits are additionally confirmed against the matched
+mixer's `isKnownDepositRoot` (transient RPC failure stops the scan before the
+block and retries next tick rather than skipping a leaf). This replaced the
+burn decoder's older bind-hash variant, which used a narrower preimage — so
+burn records start indexing with this deploy. Validated against every live
+mainnet deposit/export envelope and both mixers:
+`node tests/bridge-multigen.test.mjs` (26 checks).
+
+Post-deploy sequence:
+1. `wrangler deploy`, then confirm `/pools` for the gen-0 pool is unchanged.
+2. `POST /rescan?from=952127` (debug auth) — re-covers the gen-0 range so
+   historical burn nullifiers index under the fixed gate; re-scan writes are
+   dedup-gated, existing records unaffected.
+3. Re-run `tests/bridge-multigen.test.mjs` against the deployed worker.
+
 ## Step 5 — live tiny-cap round-trip (you + me)
 
 Open alpha with **tiny caps** (a few dollars total). Run end-to-end:
