@@ -1,0 +1,25 @@
+[package]
+name = "confidential-pool-prover"
+version = "0.1.0"
+edition = "2021"
+
+# SP1 guest for the Phase-1 confidential pool (ConfidentialPool.sol). Validates a
+# batch of confidential ops — wrap openings, transfer membership + Bulletproofs+
+# ranges + per-asset conservation, unwrap openings — against the on-chain Keccak
+# commitment root, and commits the ABI-encoded PublicValues the contract decodes.
+#
+# Reuses the bridge guest's secp module (pedersen_h / verify_pedersen_opening) and
+# the same secp256k1 (k256) discipline. STATUS: scaffold — the aggregated
+# Bulletproofs+ verifier (secp) is the one piece still to port from the canonical
+# Bitcoin-side verifier; everything else (keccak Merkle membership, openings,
+# public-values encoding) is wired. Build needs the SP1 toolchain (cargo prove).
+
+[dependencies]
+sp1-zkvm = "6.2"
+sha2 = "0.10"
+tiny-keccak = { version = "2.0", features = ["keccak"] }
+k256 = { version = "0.13", default-features = false, features = ["arithmetic"] }
+alloy-sol-types = "0.8"
+
+[profile.release]
+overflow-checks = true

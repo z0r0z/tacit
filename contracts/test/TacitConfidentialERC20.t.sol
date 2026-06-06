@@ -35,11 +35,8 @@ contract TacitConfidentialERC20Test is Test {
         address predicted = vm.computeCreateAddress(DEPLOYER, 0);
         require(predicted == vm.parseJsonAddress(json, ".contract"), "deployer/nonce drift");
 
-        uint256[8] memory ladder = _u8(".ladder");
-        uint256[8] memory Dx = _u8(".Dx");
-        uint256[8] memory Dy = _u8(".Dy");
         vm.prank(DEPLOYER);
-        t20 = new TacitConfidentialERC20(address(token), ladder, Dx, Dy);
+        t20 = new TacitConfidentialERC20(address(token), 1, "Conf Mock", "cMCK", 18); // UNIT_SCALE = 1
         require(address(t20) == predicted, "wrapper address");
 
         token.approve(address(t20), type(uint256).max);

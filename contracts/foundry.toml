@@ -5,6 +5,6 @@ libs = ["lib"]
 via_ir = true
 optimizer = true
 optimizer_runs = 100
-fs_permissions = [{ access = "read", path = "./test/fixtures" }, { access = "read", path = "./sp1/elf-vkey-pin.json" }, { access = "read", path = "./script/confidential-ladder.json" }]
+fs_permissions = [{ access = "read", path = "./test/fixtures" }, { access = "read", path = "./sp1/elf-vkey-pin.json" }]
 
 # See more config options https://github.com/foundry-rs/foundry/blob/master/crates/config/README.md#all-options

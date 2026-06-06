@@ -23,14 +23,24 @@ contract TacitConfidentialEtchedTest is Test {
         address predicted = vm.computeCreateAddress(DEPLOYER, 0);
         require(predicted == vm.parseJsonAddress(json, ".contract"), "deployer/nonce drift");
 
-        uint256[8] memory ladder = _u8(".ladder");
-        uint256[8] memory Dx = _u8(".Dx");
-        uint256[8] memory Dy = _u8(".Dy");
-        uint256[4] memory noPetch;
+        TacitConfidentialEtched.Petch memory noPetch;
         vm.prank(DEPLOYER);
         // mintAuthority = this test contract, so it can mint.
-        tok = new TacitConfidentialEtched(bytes32(uint256(0xA55E7)), address(this), ladder, Dx, Dy, noPetch);
+        tok = new TacitConfidentialEtched(bytes32(uint256(0xA55E7)), address(this), noPetch, "Etched", "ETCH", 8);
         require(address(tok) == predicted, "token address");
+    }
+
+    function test_authority_nonzero_petch_reverts() public {
+        TacitConfidentialEtched.Petch memory bad;
+        bad.endBlock = 1; // any nonzero field in authority mode is rejected
+        vm.expectRevert(bytes("petch in authority mode"));
+        new TacitConfidentialEtched(bytes32(uint256(1)), address(this), bad, "X", "X", 8);
+    }
+
+    function test_onchain_metadata() public view {
+        assertEq(tok.name(), "Etched", "name");
+        assertEq(tok.symbol(), "ETCH", "symbol");
+        assertEq(tok.decimals(), 8, "decimals");
     }
 
     function test_lifecycle_mint_transfer_burn() public {

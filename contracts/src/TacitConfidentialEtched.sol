@@ -19,6 +19,15 @@ import {ConfidentialNoteCore} from "./lib/ConfidentialNoteCore.sol";
 ///  opens to its denomination and retires it. Invariant: `supply == Σ active
 ///  note denominations` (mint adds both, burn removes both, transfer conserves).
 contract TacitConfidentialEtched is ConfidentialNoteCore {
+    /// Fair-launch parameters (mintAuthority == 0): anyone mints exactly
+    /// `denomIdx` inside `[startBlock, endBlock]` up to `cap`.
+    struct Petch {
+        uint8 denomIdx;
+        uint256 cap;
+        uint256 startBlock;
+        uint256 endBlock;
+    }
+
     bytes32 public immutable ASSET_ID;
     address public immutable MINT_AUTHORITY; // 0 ⇒ fair-launch (petch)
     uint8 public immutable PETCH_DENOM;
@@ -39,22 +48,30 @@ contract TacitConfidentialEtched is ConfidentialNoteCore {
     error PetchDenom();
     error PetchCap();
 
-    /// @param petch [denomIdx, cap, startBlock, endBlock] — used only when
-    ///        mintAuthority == 0. Ignored (pass zeros) in authority mode.
+    /// @param petch used only when mintAuthority == 0 (fair-launch). In
+    ///        authority mode it must be zero — it is unused there, so a nonzero
+    ///        value would only perturb the CREATE2 address.
     constructor(
         bytes32 assetId_,
         address mintAuthority_,
-        uint256[K] memory ladder_, uint256[K] memory Dx_, uint256[K] memory Dy_,
-        uint256[4] memory petch
-    ) ConfidentialNoteCore(ladder_, Dx_, Dy_) {
+        Petch memory petch,
+        string memory name_,
+        string memory symbol_,
+        uint8 decimals_
+    ) ConfidentialNoteCore(name_, symbol_, decimals_) {
         ASSET_ID = assetId_;
         MINT_AUTHORITY = mintAuthority_;
         if (mintAuthority_ == address(0)) {
-            require(petch[0] < K && petch[1] != 0 && petch[3] >= petch[2], "bad petch");
-            PETCH_DENOM = uint8(petch[0]);
-            PETCH_CAP = petch[1];
-            PETCH_START = petch[2];
-            PETCH_END = petch[3];
+            require(petch.denomIdx < K && petch.cap != 0 && petch.endBlock >= petch.startBlock, "bad petch");
+            PETCH_DENOM = petch.denomIdx;
+            PETCH_CAP = petch.cap;
+            PETCH_START = petch.startBlock;
+            PETCH_END = petch.endBlock;
+        } else {
+            require(
+                petch.denomIdx == 0 && petch.cap == 0 && petch.startBlock == 0 && petch.endBlock == 0,
+                "petch in authority mode"
+            );
         }
     }
 
@@ -69,14 +86,14 @@ contract TacitConfidentialEtched is ConfidentialNoteCore {
         } else {
             if (denomIdx != PETCH_DENOM) revert PetchDenom();
             if (block.number < PETCH_START || block.number > PETCH_END) revert PetchWindow();
-            if (supply + _ladder[denomIdx] > PETCH_CAP) revert PetchCap();
+            if (supply + _denom(denomIdx) > PETCH_CAP) revert PetchCap();
         }
         bytes32 id = _noteId(cx, cy);
         if (noteStatus[id] != 0) revert NoteExists();
         if (!_verifyOpen(cx, cy, denomIdx, address(0), rAddr, z)) revert BadProof();
 
         noteStatus[id] = 1;
-        supply += _ladder[denomIdx];
+        supply += _denom(denomIdx);
         emit Mint(id, denomIdx);
     }
 
@@ -95,7 +112,7 @@ contract TacitConfidentialEtched is ConfidentialNoteCore {
         if (!_verifyOpen(cx, cy, denomIdx, address(0), rAddr, z)) revert BadProof();
 
         noteStatus[id] = 2;
-        supply -= _ladder[denomIdx];
+        supply -= _denom(denomIdx);
         emit Burn(id, denomIdx);
     }
 }
