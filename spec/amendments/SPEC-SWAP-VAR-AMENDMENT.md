@@ -1289,8 +1289,8 @@ Add to SPEC.md §3 *opcodes table*:
 Out of scope, left for future amendments:
 
 - **Range-LP support.** `T_SWAP_VAR` settles against full-range
-  pools only. V2-AMM range-LP opcodes (`0x33`–`0x36`, reserved in
-  AMM.md) would need a `T_SWAP_VAR_RANGE` variant that walks tick
+  pools only. Range-LP opcodes (`0x3F`–`0x42`, reserved in
+  SPEC.md) would need a `T_SWAP_VAR_RANGE` variant that walks tick
   liquidity per-fill — separate amendment.
 - **Multi-hop routing.** `T_SWAP_VAR` is one pool per tx. Atomic
   multi-hop settlement shipped separately as `T_SWAP_ROUTE`

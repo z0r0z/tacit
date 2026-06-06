@@ -367,6 +367,7 @@ bid_auth_msg = SHA256(
     || recipient_blinding(32)
     || funding_outpoint_txid_BE(32) || funding_outpoint_vout_LE(4) || funding_outpoint_value_LE(8)
     || expiry_LE(8)
+    || decimals_scale(1)
     || varslice(concat_all_K_signatures)
     || nonce(16)
 )
@@ -417,6 +418,7 @@ are chain-only:
        || fill_increment_LE(8)      ← inline section
        || fill_amount_LE(8)         ← inline section (seller's chosen ratio)
        || refund_script_hash(20)    ← inline section
+       || decimals_scale(1)         ← inline section
    )
    ```
 7. **Refund-vout enforcement.** Compute `refund_value = (max_fill -

@@ -56,7 +56,7 @@ state transitions.
 
 ---
 
-## §5.21 `T_SWAP_ROUTE` (`0x33`) — atomic multi-hop AMM swap
+## §5.22 `T_SWAP_ROUTE` (`0x33`) — atomic multi-hop AMM swap
 
 (SPEC.md section number tentative; lands after the most recent
 SPEC.md-merged §5.20 entry.)
@@ -536,8 +536,8 @@ Add to SPEC.md §3 *BIP-340 domain tags*:
 
 Add to SPEC.md §3 *opcodes table*:
 - `0x33` `T_SWAP_ROUTE` — atomic multi-hop AMM routing
-  (§5.21). Composes existing T_SWAP_VAR per-hop primitives
-  (kernel sig + BP+ rangeproof + sigma) under one envelope.
+  (§5.22). Composes existing T_SWAP_VAR per-hop primitives
+  (kernel sig + BP+ rangeproof) under one envelope.
   Indexer applies hops in declared order; atomic at the
   indexer-state-transition layer.
 
@@ -553,6 +553,6 @@ worker decoder + worker validator branch + signet harness)
 lands as a follow-up commit pair when routing demand justifies
 it. After ref impl + signet bake + cross-impl parity, the
 amendment graduates from `📝 Draft` to `✅ Shipped` and the wire
-format + validator algorithm sections merge into SPEC.md §5.21.
+format + validator algorithm sections merge into SPEC.md §5.22.
 The amendment file then becomes a historical record (kept for
 auditability; SPEC.md is authoritative).
