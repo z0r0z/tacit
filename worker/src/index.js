@@ -13405,6 +13405,31 @@ async function handleAssetHint(req, env, network, cors, ctx) {
         }
       }
     }
+    // Burn hints index the nullifier record the same way the cron scan does —
+    // attribution by guest bind hash, dedup on the gen-scoped nullifier key.
+    // Lets anyone surface a confirmed burn the scan window predates or missed.
+    if (decoded.opcode === T_BRIDGE_BURN && h > 0) {
+      const g = _tethGenForEnvelope(network, aid, T_BRIDGE_BURN, expectedNetTag, bd.assetId, bd.denomWei,
+        [bd.merkleRoot, bd.nullifierHash, bd.recipientCommit, bd.rLeaf, bd.ethRecipient, bd.burnNonce], bd.bindHash);
+      if (!g) return jsonResponse({ error: 'bind hash matches no known generation' }, 400, cors);
+      const gen = g.gen;
+      const initRec = await env.REGISTRY_KV.get(poolInitKey(network, aid, denomBig, gen), 'json');
+      if (initRec) {
+        const nKey = poolNullifierKey(network, aid, denomBig, bytesToHex(bd.nullifierHash), gen);
+        if (!(await env.REGISTRY_KV.get(nKey))) {
+          await env.REGISTRY_KV.put(nKey, JSON.stringify({
+            asset_id: aid, denomination: denomBig,
+            nullifier_hash: bytesToHex(bd.nullifierHash),
+            eth_recipient: bytesToHex(bd.ethRecipient),
+            burn_nonce: bytesToHex(bd.burnNonce),
+            withdraw_txid: txidHex, withdrawn_at_height: h,
+            withdrawn_at: blockTime || Math.floor(Date.now() / 1000),
+            source: 'bridge_burn', network,
+            ...(gen ? { gen } : {}),
+          }));
+        }
+      }
+    }
     await env.REGISTRY_KV.put(kvKey, String(prior + 1), { expirationTtl: 90000 });
     return jsonResponse({ ok: true, source: 'hint', opcode: decoded.opcode, network }, 200, cors);
   }
