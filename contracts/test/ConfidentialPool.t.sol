@@ -352,6 +352,96 @@ contract ConfidentialPoolTest is Test {
         pool.settle(abi.encode(pv), "", new bytes[](1)); // one memo, two leaves
     }
 
+    // ──────────────────── cross-chain (Phase 3 in gen-1) ────────────────────
+
+    event BridgeMinted(bytes32 indexed claimId);
+    event CrossOutRecorded(bytes32 indexed claimId, uint16 destChain, bytes32 destCommitment, bytes32 nullifier, bytes32 assetId);
+
+    function _claimId(uint16 destChain, bytes32 destCommitment, bytes32 nullifier, bytes32 asset) internal pure returns (bytes32) {
+        return keccak256(abi.encodePacked(destChain, destCommitment, nullifier, asset));
+    }
+
+    /// A Bitcoin burn mints an Ethereum note (leaf) gated one-mint-per-burn on its
+    /// claimId, and marks bridgeMinted — the tETH acceptedBitcoinBurns pattern.
+    function test_bridge_mint_marks_claim_and_inserts_leaf() public {
+        ConfidentialPool.PublicValues memory pv = _pv();
+        bytes32 claimId = keccak256("btc-burn-1");
+        pv.bitcoinBurnsConsumed = new bytes32[](1);
+        pv.bitcoinBurnsConsumed[0] = claimId;
+        pv.leaves = new bytes32[](1);
+        pv.leaves[0] = keccak256("minted-note");
+
+        vm.expectEmit(true, false, false, true, address(pool));
+        emit BridgeMinted(claimId);
+        pool.settle(abi.encode(pv), "", new bytes[](1));
+
+        assertTrue(pool.bridgeMinted(claimId), "claim marked minted");
+        assertEq(pool.nextLeafIndex(), 1, "minted leaf inserted");
+    }
+
+    /// The same Bitcoin burn cannot be minted twice (one note, not two).
+    function test_bridge_mint_double_claim_reverts() public {
+        ConfidentialPool.PublicValues memory pv = _pv();
+        bytes32 claimId = keccak256("btc-burn-2");
+        pv.bitcoinBurnsConsumed = new bytes32[](1);
+        pv.bitcoinBurnsConsumed[0] = claimId;
+        pv.leaves = new bytes32[](1);
+        pv.leaves[0] = keccak256("note");
+        pool.settle(abi.encode(pv), "", new bytes[](1));
+
+        ConfidentialPool.PublicValues memory pv2 = _pv();
+        pv2.bitcoinBurnsConsumed = new bytes32[](1);
+        pv2.bitcoinBurnsConsumed[0] = claimId; // replay
+        pv2.leaves = new bytes32[](1);
+        pv2.leaves[0] = keccak256("note2");
+        vm.expectRevert(ConfidentialPool.BurnAlreadyMinted.selector);
+        pool.settle(abi.encode(pv2), "", new bytes[](1));
+    }
+
+    /// An intra-batch duplicate Bitcoin-burn claim is rejected too.
+    function test_bridge_mint_intrabatch_duplicate_reverts() public {
+        ConfidentialPool.PublicValues memory pv = _pv();
+        bytes32 claimId = keccak256("btc-burn-3");
+        pv.bitcoinBurnsConsumed = new bytes32[](2);
+        pv.bitcoinBurnsConsumed[0] = claimId; pv.bitcoinBurnsConsumed[1] = claimId;
+        vm.expectRevert(ConfidentialPool.BurnAlreadyMinted.selector);
+        pool.settle(abi.encode(pv), "", new bytes[](0));
+    }
+
+    /// An Ethereum note burned for Bitcoin: the note is nullified and a
+    /// non-malleable CrossOut record is emitted for Bitcoin validators to honor.
+    function test_cross_out_emits_record_and_spends_note() public {
+        ConfidentialPool.PublicValues memory pv = _pv();
+        bytes32 nu = keccak256("eth-note-nu");
+        bytes32 destC = keccak256("btc-dest-commitment");
+        uint16 destChain = 1; // bitcoin
+        bytes32 claimId = _claimId(destChain, destC, nu, assetId);
+
+        pv.nullifiers = new bytes32[](1);
+        pv.nullifiers[0] = nu;
+        pv.crossOuts = new ConfidentialPool.CrossOut[](1);
+        pv.crossOuts[0] = ConfidentialPool.CrossOut(destChain, destC, nu, assetId, claimId);
+
+        vm.expectEmit(true, false, false, true, address(pool));
+        emit CrossOutRecorded(claimId, destChain, destC, nu, assetId);
+        pool.settle(abi.encode(pv), "", new bytes[](0));
+
+        assertTrue(pool.isNullifierSpent(nu), "burned note nullified");
+    }
+
+    /// A crossOut whose claimId doesn't bind its own fields is rejected — the
+    /// on-chain re-derivation blocks a malleable instruction to Bitcoin.
+    function test_cross_out_claim_mismatch_reverts() public {
+        ConfidentialPool.PublicValues memory pv = _pv();
+        bytes32 nu = keccak256("nu2");
+        pv.nullifiers = new bytes32[](1);
+        pv.nullifiers[0] = nu;
+        pv.crossOuts = new ConfidentialPool.CrossOut[](1);
+        pv.crossOuts[0] = ConfidentialPool.CrossOut(1, keccak256("dest"), nu, assetId, keccak256("wrong-claim"));
+        vm.expectRevert(ConfidentialPool.CrossOutClaimMismatch.selector);
+        pool.settle(abi.encode(pv), "", new bytes[](0));
+    }
+
     // ──────────────────── on-chain defense-in-depth (intra-batch) ────────────────────
 
     function test_settle_intrabatch_duplicate_nullifier_reverts() public {

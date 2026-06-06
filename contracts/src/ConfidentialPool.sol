@@ -76,20 +76,33 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     // depositId => 0 none, 1 pending, 2 consumed
     mapping(bytes32 => uint8) public depositStatus;
 
+    // ──────────────────── Cross-chain (one note, Bitcoin or Ethereum) ────────────────────
+
+    // A Bitcoin-side note burn, claimed once when its value is minted as an
+    // Ethereum note. claimId = keccak(destChain ‖ destCommitment ‖ ν ‖ assetId),
+    // computed identically on both chains. One mint per burn (the tETH pattern).
+    mapping(bytes32 => bool) public bridgeMinted;
+
     // ──────────────────── Public-values layout ────────────────────
 
     struct Withdrawal { bytes32 assetId; address recipient; uint256 amount; }
     struct FeePayment { bytes32 assetId; uint256 amount; }
+    // An Ethereum note burned for value on another chain. The guest proved the
+    // burned value equals destCommitment's and nullified the note (ν in
+    // `nullifiers`); Bitcoin validators mint the destination note once, off-chain.
+    struct CrossOut { uint16 destChain; bytes32 destCommitment; bytes32 nullifier; bytes32 assetId; bytes32 claimId; }
 
     struct PublicValues {
         uint16 version;
         bytes32 chainBinding;
         bytes32 spendRoot;              // root the guest proved input membership against
         bytes32[] nullifiers;          // spent-note nullifiers (chain-independent)
-        bytes32[] leaves;              // new leaves to append (consumed deposits + outputs)
+        bytes32[] leaves;              // new leaves to append (consumed deposits + outputs + cross-mints)
         bytes32[] depositsConsumed;    // deposit ids the guest validated + inserted
         Withdrawal[] withdrawals;      // unwrap payouts (underlying units)
         FeePayment[] fees;             // settler fees (underlying units), paid to msg.sender
+        bytes32[] bitcoinBurnsConsumed; // claimIds of Bitcoin burns minted here, gated once
+        CrossOut[] crossOuts;          // Ethereum burns destined for Bitcoin
     }
 
     // ──────────────────── Events ────────────────────
@@ -102,6 +115,10 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     // memo (owner-only; unverified passthrough), aligned, from firstLeafIndex.
     event LeavesInserted(uint256 indexed firstLeafIndex, bytes32[] leaves, bytes[] memos);
     event NullifiersSpent(bytes32[] nullifiers);
+    // A Bitcoin burn was minted as an Ethereum note (claimed once).
+    event BridgeMinted(bytes32 indexed claimId);
+    // An Ethereum note was burned for Bitcoin; validators honor it once past finality.
+    event CrossOutRecorded(bytes32 indexed claimId, uint16 destChain, bytes32 destCommitment, bytes32 nullifier, bytes32 assetId);
 
     // ──────────────────── Errors ────────────────────
 
@@ -119,6 +136,8 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     error DepositNotPending();
     error InsufficientEscrow();
     error MemoLeafMismatch();
+    error BurnAlreadyMinted();
+    error CrossOutClaimMismatch();
 
     // ──────────────────── Constructor ────────────────────
 
@@ -214,6 +233,15 @@ contract ConfidentialPool is ReentrancyGuardTransient {
             depositStatus[id] = 2;
         }
 
+        // Cross-mint: a Bitcoin burn becomes an Ethereum note (leaf in pv.leaves),
+        // gated one-mint-per-burn on its claimId — the tETH acceptedBitcoinBurns pattern.
+        for (uint256 i; i < pv.bitcoinBurnsConsumed.length; ++i) {
+            bytes32 claimId = pv.bitcoinBurnsConsumed[i];
+            if (bridgeMinted[claimId]) revert BurnAlreadyMinted();
+            bridgeMinted[claimId] = true;
+            emit BridgeMinted(claimId);
+        }
+
         if (pv.leaves.length != 0) {
             uint256 firstLeafIndex = nextLeafIndex;
             for (uint256 i; i < pv.leaves.length; ++i) _insertLeaf(pv.leaves[i]);
@@ -229,6 +257,15 @@ contract ConfidentialPool is ReentrancyGuardTransient {
 
         for (uint256 i; i < pv.fees.length; ++i) {
             _payout(pv.fees[i].assetId, msg.sender, pv.fees[i].amount);
+        }
+
+        // Cross-burn: record Ethereum notes burned for Bitcoin. Re-derive claimId
+        // on-chain so the emitted record is exactly what the claimId commits to —
+        // a non-malleable instruction Bitcoin validators honor once past finality.
+        for (uint256 i; i < pv.crossOuts.length; ++i) {
+            CrossOut memory c = pv.crossOuts[i];
+            if (keccak256(abi.encodePacked(c.destChain, c.destCommitment, c.nullifier, c.assetId)) != c.claimId) revert CrossOutClaimMismatch();
+            emit CrossOutRecorded(c.claimId, c.destChain, c.destCommitment, c.nullifier, c.assetId);
         }
 
         emit Settled(currentRoot, pv.leaves.length, pv.nullifiers.length);
