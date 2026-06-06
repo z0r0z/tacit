@@ -9,10 +9,16 @@ which is what Tacit's secp256k1 notes give.
 Foundation: [`PLAN-confidential-token-rollup.md`](./PLAN-confidential-token-rollup.md)
 (Phase 1/2). Cross-chain transport substrate: the live tETH bridge
 ([`PLAN-teth-fresh-deployment.md`](./PLAN-teth-fresh-deployment.md),
-[`PLAN-eth-native-privacy.md`](./PLAN-eth-native-privacy.md) Stage 2). This is a
-**new generation** of the confidential-token system; it touches nothing in the
-Phase-1/2 deployment beyond reusing it, and depends on Phase 1 being **live and
-real-proof-validated first** — a shared set needs both surfaces running.
+[`PLAN-eth-native-privacy.md`](./PLAN-eth-native-privacy.md) Stage 2).
+
+**Decision 2026-06-07: cross-chain folds into the first generation** (see §8).
+The cross-chain ops and contract fields ship in gen-1 so there is never a
+migration; the `ConfidentialPool` ABI is already cross-chain-final (`crossOuts`,
+`bitcoinBurnsConsumed`/`bridgeMinted`, chain-independent ν). The gold model (§4)
+is the live behaviour; platinum (§9) activates the same rails later. The heavier
+half — `bridge_mint`'s in-guest Bitcoin-burn verification — still requires Phase 1
+to be **live and real-proof-validated** before it is trusted on mainnet, and is
+mainnet-gated until its finality/reorg checklist closes.
 
 ---
 
@@ -59,7 +65,7 @@ nullifier accumulator whose root lives on Ethereum, fed by both chains, with a
 note natively a member on *both* surfaces — so it cannot be told at deposit which
 chain it will spend on (indistinguishable origin). The stronger privacy form and
 the truly uncopyable moat, but it couples Bitcoin's liveness to Ethereum
-reflection and is the higher-risk build. §8 sketches it; it is the destination,
+reflection and is the higher-risk build. §9 sketches it; it is the destination,
 not the first step.
 
 The rest of this doc specs **gold**.
@@ -150,16 +156,81 @@ sender's proof client-side) still gives instant assurance regardless of chain.
    immutable SP1 Groth16 verifier, the relay, and the deposit/reorg discipline.
    One prover deployment serves the bridge and the confidential system.
 
-## 7. Why this is a new generation, not a redeploy
+## 7. Ethereum execution, Bitcoin finalization (two-tier settlement)
 
-`bridge_mint` / `bridge_burn` are `vkey`-changing guest edits. The
-multi-generation mechanism (as used for tETH gen-1) absorbs this cleanly: Phase 3
-is generation-N, deployed alongside the Phase-1/2 generation, sharing the
-immutable verifier. The Phase-1/2 tee-ups mean nothing in the earlier generation
-needs changing — the chain-independent nullifier, the versioned public values,
-and the cross-chain asset link are already there.
+A high-value mode the gold rails unlock directly: run expressive, fast, cheap
+confidential operations — **swaps especially** — on Ethereum, and let **Bitcoin
+be the finalization/custody anchor**. Ethereum is the programmable execution
+venue; Bitcoin is the vault.
 
-## 8. Platinum (unified set) sketch + recovery
+This leans on the *cheap* side of the §2 asymmetry: "Bitcoin finalizes what
+Ethereum settled" is a Bitcoin **validator-software rule** (validators read
+Ethereum's `CrossOutRecorded`), not a Bitcoin consensus change — far easier than
+the reverse direction.
+
+**Three finality tiers fall out:**
+1. **Instant soft-final** — the counterparty verifies the BP+ proof client-side
+   the moment they receive the result note. No chain yet; the fastest "pre-final."
+2. **Ethereum settle = serialized** — the SP1 `settle` lands and Ethereum's
+   nullifier set *linearizes* the spend. This is the ordering point that prevents
+   double-spend: a note's ν is consumed on the first pre-execution, so it cannot
+   pre-execute in a second swap.
+3. **Bitcoin = final custody** — a `crossOut` instructs Bitcoin validators to
+   honor the result once Ethereum is final; value comes to rest on the sovereign
+   chain.
+
+**Atomic cross-chain swap in one proof.** Because `settle` is batched, a single
+proof can nullify the input notes, mint the swapped output as an Ethereum leaf for
+the leg that stays, **and** emit a `crossOut` for the leg finalizing on Bitcoin —
+a confidential swap whose two legs settle on different chains, atomically. A swap
+is a multi-asset `transfer` (per-asset conservation is already in the guest), so
+"swap-and-bridge" composes from ops that exist; the gen-1 public-values layout
+(`nullifiers` + `leaves` + `crossOuts` together) already expresses it.
+
+**Constraints that keep it sound:**
+- *Pre-final is reversible-until-Bitcoin.* An Ethereum reorg before the §5
+  finality gate clears can unwind the soft swap; a recipient needing *hard*
+  finality waits for Bitcoin. Standard L2→L1 latency.
+- *Single ordering point.* Ethereum is the authoritative serializer in this mode
+  (Bitcoin defers/finalizes). Letting Bitcoin *also* independently order the same
+  notes reopens cross-chain double-spend. ETH orders, BTC custodies — one
+  linearization point.
+- *Backing follows finalization.* The asset must be backed where it finalizes;
+  tETH is the clean case, an ETH-native asset finalizing on Bitcoin needs
+  Bitcoin-side backing (the two-sided-liquidity open decision, §10).
+
+This is **platinum-flavored** — gold already does it as explicit burn→mint phases;
+the *seamless* "swap on ETH, auto-finalize on BTC" UX is platinum polish. But the
+gen-1 ABI (chain-independent ν, `crossOuts`, `bridgeMinted`) is exactly what
+platinum activates against, so landing it is turning on rails, not migrating.
+
+## 8. Folded into gen-1, not a separate generation (decision 2026-06-07)
+
+Earlier framing treated cross-chain as a later generation-N deployed alongside
+gen-1. **Superseded:** the cross-chain ops and contract fields fold into the first
+generation, so there is never a migration. What this means concretely:
+
+- **Contract ABI is cross-chain-final now.** `ConfidentialPool.PublicValues` carries
+  `bitcoinBurnsConsumed` (Bitcoin burns minted here, gated one-per-`claimId` via
+  `bridgeMinted`) and `crossOuts` (Ethereum burns destined for Bitcoin). `settle`
+  marks each `claimId` once and re-derives the `crossOut` `claimId` on-chain so the
+  emitted record is non-malleable. `claimId = keccak(destChain ‖ destCommitment ‖
+  ν ‖ assetId)`. Shipped + tested (commit `98a8b20`).
+- **`bridge_burn` (Ethereum → Bitcoin) is pure-EVM** and built in gen-1: it is a
+  `transfer` whose outputs are off-chain destination commitments + an emitted
+  `CrossOut`, reusing the existing `verify_range` + `verify_kernel` + membership.
+- **`bridge_mint` (Bitcoin → Ethereum) is the heavier half**: it needs in-guest
+  Bitcoin-burn verification, shared from the live tETH bridge guest's crates
+  (header chain via the relay, the burn check). It is part of the gen-1 guest, so
+  the final vkey includes it; it is mainnet-gated until its finality/reorg
+  checklist closes (the standard pilot posture, as AMM and tETH).
+- **Why this is clean, not reckless.** The version field still guards the layout;
+  the chain-independent nullifier, versioned public values, and `crossChainLink`
+  asset field were the gen-1 tee-ups that made the fold-in a small delta rather
+  than a rebuild. One vkey, one contract, one anonymity set — and no future
+  migration to reconcile two generations of notes.
+
+## 9. Platinum (unified set) sketch + recovery
 
 **Platinum** replaces the bridge-claim with a single Ethereum-anchored nullifier
 accumulator that both chains feed and read, and a unified deposit tree so a note
@@ -175,7 +246,7 @@ Ethereum reflection) and a far larger audit surface — hence platinum follows g
 plus a scan of both chains; a note carries the same identity on both, so a wallet
 sees one balance.
 
-## 9. Open decisions
+## 10. Open decisions
 
 - **`claimId` binding** — what exactly the burn commits to (destChain ‖
   destCommitment ‖ ν ‖ asset), so a claim is uniquely mintable on exactly one
