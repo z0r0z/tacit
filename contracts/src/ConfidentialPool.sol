@@ -8,6 +8,13 @@ interface ISP1Verifier {
     function verifyProof(bytes32 programVKey, bytes calldata publicValues, bytes calldata proofBytes) external view;
 }
 
+/// Canonical ERC20 the pool mints/burns for a Tacit-recorded asset (the pool is its
+/// mint authority). `CanonicalBridgedERC20` implements this.
+interface IMintBurn {
+    function mint(address to, uint256 amount) external;
+    function burn(address from, uint256 amount) external;
+}
+
 /// @title ConfidentialPool
 /// @notice Phase-1 confidential token: a multi-asset shielded pool on Ethereum
 ///         with arbitrary hidden amounts on secp256k1 notes (C = v·H + r·G), the
@@ -63,9 +70,11 @@ contract ConfidentialPool is ReentrancyGuardTransient {
 
     struct Asset {
         bool registered;
-        address underlying;   // ERC-20 backing (0 for etched / no underlying)
+        address underlying;   // ERC-20 backing; for poolMinted assets, the canonical ERC20 this pool mints/burns
         uint256 unitScale;    // underlying base units per in-system value unit
         bytes32 crossChainLink; // Bitcoin-side asset id for shared-asset recognition (0 if none)
+        bool poolMinted;      // true ⇒ a Tacit-recorded asset whose canonical ERC20 the pool MINTS on exit
+                              // / BURNS on entry (no escrow); false ⇒ an external ERC20 the pool escrows
         string name;
         string symbol;
         uint8 decimals;
@@ -202,6 +211,8 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     ///         value stays within the Bulletproofs+ range; wrap amounts must be a
     ///         multiple of it. `crossChainLink` ties this asset to its Bitcoin-side
     ///         id for the cross-chain generation (0 if none).
+    /// @notice Register an EXTERNAL ERC20 (e.g. USDC) as a confidential asset. The
+    ///         pool escrows it on wrap and releases it on unwrap.
     function registerWrapped(
         address underlying,
         uint256 unitScale,
@@ -210,11 +221,40 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         string calldata symbol_,
         uint8 decimals_
     ) external returns (bytes32 assetId) {
+        return _register(underlying, unitScale, crossChainLink, false, name_, symbol_, decimals_);
+    }
+
+    /// @notice Register a TACIT-RECORDED asset (TAC, a cBTC equivalent, any Tacit
+    ///         asset) whose canonical ERC20 THIS POOL mints/burns. `canonicalErc20`
+    ///         must have its mint authority set to this pool. The asset's value
+    ///         enters Ethereum as a confidential note (bridge_mint, backed by the
+    ///         Tacit record); the public ERC20 is its exit form — minted on unwrap,
+    ///         burned on wrap. No escrow: the pool is the single supply authority.
+    function registerMinted(
+        address canonicalErc20,
+        uint256 unitScale,
+        bytes32 crossChainLink,
+        string calldata name_,
+        string calldata symbol_,
+        uint8 decimals_
+    ) external returns (bytes32 assetId) {
+        return _register(canonicalErc20, unitScale, crossChainLink, true, name_, symbol_, decimals_);
+    }
+
+    function _register(
+        address underlying,
+        uint256 unitScale,
+        bytes32 crossChainLink,
+        bool poolMinted,
+        string calldata name_,
+        string calldata symbol_,
+        uint8 decimals_
+    ) internal returns (bytes32 assetId) {
         if (underlying == address(0)) revert ZeroAddress();
         if (unitScale == 0) revert AmountNotAligned();
         assetId = sha256(abi.encodePacked("tacit-evm-token-v1", uint64(block.chainid), underlying));
         if (assets[assetId].registered) revert AlreadyRegistered();
-        assets[assetId] = Asset(true, underlying, unitScale, crossChainLink, name_, symbol_, decimals_);
+        assets[assetId] = Asset(true, underlying, unitScale, crossChainLink, poolMinted, name_, symbol_, decimals_);
         emit AssetRegistered(assetId, underlying, unitScale, name_, symbol_, decimals_);
     }
 
@@ -233,9 +273,15 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         bytes32 depositId = keccak256(abi.encode(assetId, amount, cx, cy, owner));
         if (depositStatus[depositId] != 0) revert DepositExists();
         depositStatus[depositId] = 1;
-        escrow[assetId] += amount;
 
-        SafeTransferLib.safeTransferFrom(a.underlying, msg.sender, address(this), amount);
+        if (a.poolMinted) {
+            // Tacit-recorded asset: burn the canonical ERC20 (re-entering confidential).
+            IMintBurn(a.underlying).burn(msg.sender, amount);
+        } else {
+            // External ERC20: escrow it.
+            escrow[assetId] += amount;
+            SafeTransferLib.safeTransferFrom(a.underlying, msg.sender, address(this), amount);
+        }
         emit Wrap(depositId, assetId, amount, cx, cy, owner);
     }
 
@@ -370,9 +416,15 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         Asset storage a = assets[assetId];
         if (!a.registered) revert NotRegistered();
         if (to == address(0)) revert ZeroAddress();
-        if (escrow[assetId] < amount) revert InsufficientEscrow();
-        escrow[assetId] -= amount;
-        SafeTransferLib.safeTransfer(a.underlying, to, amount);
+        if (a.poolMinted) {
+            // Tacit-recorded asset: mint the canonical ERC20 (exit to public). The
+            // note being unwrapped was the backed unit; this just changes its form.
+            IMintBurn(a.underlying).mint(to, amount);
+        } else {
+            if (escrow[assetId] < amount) revert InsufficientEscrow();
+            escrow[assetId] -= amount;
+            SafeTransferLib.safeTransfer(a.underlying, to, amount);
+        }
     }
 
     function _insertLeaf(bytes32 leaf) internal {

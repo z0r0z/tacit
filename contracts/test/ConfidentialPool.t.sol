@@ -3,6 +3,8 @@ pragma solidity ^0.8.28;
 
 import {Test} from "forge-std/Test.sol";
 import {ConfidentialPool, ISP1Verifier} from "../src/ConfidentialPool.sol";
+import {CanonicalAssetFactory} from "../src/CanonicalAssetFactory.sol";
+import {CanonicalBridgedERC20} from "../src/CanonicalBridgedERC20.sol";
 import {ERC20} from "solady/tokens/ERC20.sol";
 
 contract MockERC20 is ERC20 {
@@ -527,6 +529,37 @@ contract ConfidentialPoolTest is Test {
 
         assertTrue(pool.bridgeMinted(claimId), "burn claimed");
         assertEq(pool.nextLeafIndex(), 1, "ETH note minted");
+    }
+
+    // ──────────────────── Tacit-recorded asset: pool is the canonical ERC20 minter ────────────────────
+
+    /// A Tacit-recorded asset (TAC, a cBTC equivalent, …) whose canonical public
+    /// ERC20 the POOL mints on exit and burns on entry — no escrow, the pool is the
+    /// single supply authority. Round-trip: unwrap → mint ERC20 (public); wrap →
+    /// burn ERC20 (confidential).
+    function test_pool_minted_asset_exit_and_reenter() public {
+        CanonicalAssetFactory fac = new CanonicalAssetFactory();
+        bytes32 canonId = keccak256("TAC");
+        CanonicalBridgedERC20 tac = CanonicalBridgedERC20(
+            fac.deployCanonical(canonId, address(pool), "Tacit", "TAC", 18) // MINTER = the pool
+        );
+        bytes32 a = pool.registerMinted(address(tac), 1, canonId, "Conf TAC", "cTAC", 18);
+
+        // EXIT: an unwrap pays out by MINTING the canonical ERC20 to the recipient.
+        ConfidentialPool.PublicValues memory pv = _pv();
+        pv.withdrawals = new ConfidentialPool.Withdrawal[](1);
+        pv.withdrawals[0] = ConfidentialPool.Withdrawal(a, USER, 1000);
+        _settle(pv);
+        assertEq(tac.balanceOf(USER), 1000, "exit minted the public ERC20");
+        assertEq(tac.totalSupply(), 1000, "supply = exited amount");
+        assertEq(pool.escrow(a), 0, "no escrow for a pool-minted asset");
+
+        // RE-ENTER: a wrap BURNS the canonical ERC20 (back to confidential).
+        vm.prank(USER);
+        pool.wrap(a, 1000, bytes32(uint256(7)), bytes32(uint256(8)), bytes32(uint256(9)));
+        assertEq(tac.balanceOf(USER), 0, "re-entry burned the public ERC20");
+        assertEq(tac.totalSupply(), 0, "supply back to confidential");
+        assertEq(pool.escrow(a), 0, "still no escrow");
     }
 
     // ──────────────────── improved platinum: cross-lane gate ────────────────────
