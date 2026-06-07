@@ -25,6 +25,7 @@ contract ConfidentialTacWalkthroughTest is Test {
 
     address constant USER = address(0xA11CE);   // bridges TAC in, exits to public
     address constant BOB = address(0xB0B);       // a counterparty who receives public TAC
+    address constant ALICE = address(0xA71CE);   // receives TAC confidentially, then exits
     address constant ORACLE = address(0x0BAC1E); // the Bitcoin-root relay/oracle
 
     function setUp() public {
@@ -88,5 +89,53 @@ contract ConfidentialTacWalkthroughTest is Test {
         pool.wrap(tacAsset, 20e8, bytes32(uint256(1)), bytes32(uint256(2)), bytes32(uint256(3)));
         assertEq(tac.balanceOf(BOB), 0, "re-entry burned BOB's public TAC");
         assertEq(tac.totalSupply(), 30e8, "supply back to 30 (only USER's stays public)");
+    }
+
+    /// Bob sends TAC to Alice CONFIDENTIALLY, then Alice withdraws it on Ethereum as
+    /// the public TAC.erc20. Bob's entry + the Bob→Alice transfer are private (hidden
+    /// amounts, unlinkable); only Alice's exit reveals the amount + her address.
+    function test_bob_sends_alice_who_exits_to_public_erc20() public {
+        uint256 amount = 30e8;
+        bytes[] memory oneMemo = new bytes[](1); oneMemo[0] = hex"cd";
+
+        // 1. bridge_mint: Bob's confidential TAC note enters the pool.
+        bytes32 btcRoot = keccak256("btc-tac-root-2");
+        vm.prank(ORACLE);
+        pool.attestBitcoinRoot(btcRoot);
+        ConfidentialPool.PublicValues memory mintPv = _pv();
+        mintPv.bitcoinRootsUsed = new bytes32[](1); mintPv.bitcoinRootsUsed[0] = btcRoot;
+        mintPv.bitcoinBurnsConsumed = new bytes32[](1); mintPv.bitcoinBurnsConsumed[0] = keccak256("bob-tac-burn");
+        mintPv.leaves = new bytes32[](1); mintPv.leaves[0] = keccak256("bob-TAC-note");
+        _settle(mintPv, oneMemo);
+        bytes32 afterMint = pool.currentRoot();
+
+        // 2. Bob → Alice: a confidential transfer. Bob's note is nullified; Alice's
+        //    note (owned by her, memo sealed to her) is inserted. Amount hidden.
+        ConfidentialPool.PublicValues memory xferPv = _pv();
+        xferPv.spendRoot = afterMint; // Bob proves his note's membership against this root
+        xferPv.nullifiers = new bytes32[](1); xferPv.nullifiers[0] = keccak256("bob-note-nu");
+        xferPv.leaves = new bytes32[](1); xferPv.leaves[0] = keccak256("alice-TAC-note");
+        _settle(xferPv, oneMemo); // memo lets Alice recover the note from her seed
+        bytes32 afterXfer = pool.currentRoot();
+
+        // 3. Alice exits: unwrap her received note → the pool MINTS public TAC.erc20
+        //    to Alice's Ethereum address.
+        ConfidentialPool.PublicValues memory exitPv = _pv();
+        exitPv.spendRoot = afterXfer;
+        exitPv.nullifiers = new bytes32[](1); exitPv.nullifiers[0] = keccak256("alice-note-nu");
+        exitPv.withdrawals = new ConfidentialPool.Withdrawal[](1);
+        exitPv.withdrawals[0] = ConfidentialPool.Withdrawal(tacAsset, ALICE, amount);
+        _settle(exitPv, new bytes[](0));
+
+        assertEq(tac.balanceOf(ALICE), amount, "Alice withdrew TAC as public ERC20");
+        assertEq(tac.balanceOf(BOB), 0, "Bob never held public TAC; he sent it confidentially");
+        assertEq(tac.totalSupply(), amount, "single supply authority = the pool");
+        assertTrue(pool.isNullifierSpent(keccak256("bob-note-nu")), "Bob's note spent");
+        assertTrue(pool.isNullifierSpent(keccak256("alice-note-nu")), "Alice's note spent on exit");
+
+        // Alice's public TAC trades like any ERC20.
+        vm.prank(ALICE);
+        tac.transfer(BOB, 10e8);
+        assertEq(tac.balanceOf(BOB), 10e8, "public TAC moves freely (Uniswap, transfers)");
     }
 }
