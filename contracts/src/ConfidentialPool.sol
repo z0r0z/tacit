@@ -43,6 +43,9 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     /// keccak(chainid, address(this)) — the guest stamps this into the public
     /// values, so a proof is bound to this deployment and cannot be replayed.
     bytes32 public immutable CHAIN_BINDING;
+    /// Relay/oracle allowed to attest canonical, confirmed Bitcoin confidential-pool
+    /// roots (the tETH SP1PoolRootVerifier pattern). address(0) disables bridge_mint.
+    address public immutable BITCOIN_ROOT_ORACLE;
 
     // ──────────────────── Commitment tree (global, Keccak) ────────────────────
 
@@ -83,6 +86,11 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     // computed identically on both chains. One mint per burn (the tETH pattern).
     mapping(bytes32 => bool) public bridgeMinted;
 
+    // Bitcoin confidential-pool roots the oracle has attested as canonical +
+    // confirmed. A bridge_mint proves the burned note's membership against one of
+    // these, so a fake-tree note cannot be minted (the inflation-critical gate).
+    mapping(bytes32 => bool) public knownBitcoinRoot;
+
     // ──────────────────── Public-values layout ────────────────────
 
     struct Withdrawal { bytes32 assetId; address recipient; uint256 amount; }
@@ -103,6 +111,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         FeePayment[] fees;             // settler fees (underlying units), paid to msg.sender
         bytes32[] bitcoinBurnsConsumed; // claimIds of Bitcoin burns minted here, gated once
         CrossOut[] crossOuts;          // Ethereum burns destined for Bitcoin
+        bytes32[] bitcoinRootsUsed;    // Bitcoin pool roots a bridge_mint proved membership against
     }
 
     // ──────────────────── Events ────────────────────
@@ -117,6 +126,8 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     event NullifiersSpent(bytes32[] nullifiers);
     // A Bitcoin burn was minted as an Ethereum note (claimed once).
     event BridgeMinted(bytes32 indexed claimId);
+    // The oracle attested a canonical, confirmed Bitcoin confidential-pool root.
+    event BitcoinRootAttested(bytes32 indexed root);
     // An Ethereum note was burned for Bitcoin; validators honor it once past finality.
     event CrossOutRecorded(bytes32 indexed claimId, uint16 destChain, bytes32 destCommitment, bytes32 nullifier, bytes32 assetId);
 
@@ -138,15 +149,18 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     error MemoLeafMismatch();
     error BurnAlreadyMinted();
     error CrossOutClaimMismatch();
+    error NotOracle();
+    error UnknownBitcoinRoot();
 
     // ──────────────────── Constructor ────────────────────
 
-    constructor(address sp1Verifier_, bytes32 programVKey_) {
+    constructor(address sp1Verifier_, bytes32 programVKey_, address bitcoinRootOracle_) {
         if (sp1Verifier_ == address(0)) revert ZeroAddress();
         if (programVKey_ == bytes32(0)) revert ZeroVKey();
         SP1_VERIFIER = ISP1Verifier(sp1Verifier_);
         PROGRAM_VKEY = programVKey_;
         CHAIN_BINDING = keccak256(abi.encodePacked(block.chainid, address(this)));
+        BITCOIN_ROOT_ORACLE = bitcoinRootOracle_; // address(0) = bridge_mint disabled
 
         bytes32 z = bytes32(0);
         for (uint256 i; i < TREE_LEVELS; ++i) {
@@ -202,6 +216,18 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         emit Wrap(depositId, assetId, amount, cx, cy, owner);
     }
 
+    // ──────────────────── Bitcoin root attestation (bridge_mint trust root) ────────────────────
+
+    /// @notice The oracle attests a Bitcoin confidential-pool root as canonical and
+    ///         confirmed. A bridge_mint can only mint against an attested root, so a
+    ///         note proven in a fabricated tree cannot be minted. Mirrors the tETH
+    ///         SP1PoolRootVerifier relaying Bitcoin pool state onto Ethereum.
+    function attestBitcoinRoot(bytes32 root) external {
+        if (msg.sender != BITCOIN_ROOT_ORACLE) revert NotOracle();
+        knownBitcoinRoot[root] = true;
+        emit BitcoinRootAttested(root);
+    }
+
     // ──────────────────── Settle (the one proof entrypoint) ────────────────────
 
     /// @notice Verify one SP1 proof and apply its effects: mark nullifiers, append
@@ -240,6 +266,12 @@ contract ConfidentialPool is ReentrancyGuardTransient {
             if (bridgeMinted[claimId]) revert BurnAlreadyMinted();
             bridgeMinted[claimId] = true;
             emit BridgeMinted(claimId);
+        }
+
+        // Every Bitcoin pool root a bridge_mint proved membership against must be
+        // oracle-attested (canonical + confirmed) — the inflation-critical gate.
+        for (uint256 i; i < pv.bitcoinRootsUsed.length; ++i) {
+            if (!knownBitcoinRoot[pv.bitcoinRootsUsed[i]]) revert UnknownBitcoinRoot();
         }
 
         if (pv.leaves.length != 0) {

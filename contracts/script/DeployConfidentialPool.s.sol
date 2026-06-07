@@ -21,18 +21,21 @@ import {ConfidentialPool} from "../src/ConfidentialPool.sol";
 ///    SP1_VERIFIER=0x... forge script script/DeployConfidentialPool.s.sol \
 ///      --rpc-url $RPC --private-key $PK --broadcast --verify
 contract DeployConfidentialPool is Script {
-    // Confidential guest vkey: wrap/transfer/unwrap/bridge_burn (gen-1), 2026-06-07,
-    // CPU-proven + verified on-chain via the real SP1VerifierGroth16 (v6.1.0). Will
-    // change once OP_BRIDGE_MINT is added; override via PROGRAM_VKEY env when it does.
-    bytes32 constant DEFAULT_VKEY = 0x00c35e0992baa3413c2b2a3d65fa061bc9159f7e4c102713f1bada8b38b5ea6c;
+    // Confidential guest vkey: the complete gen-1 op set — wrap/transfer/unwrap/
+    // bridge_burn/bridge_mint — 2026-06-07. CPU-proven + verified on-chain via the
+    // real SP1VerifierGroth16 (v6.1.0). Override via PROGRAM_VKEY env if the guest changes.
+    bytes32 constant DEFAULT_VKEY = 0x000e8a8c79a18d62db10e02dd7302872cbf7126751fd35383b33f68164ce3e42;
 
     function run() external {
         address sp1Verifier = vm.envAddress("SP1_VERIFIER");
         require(sp1Verifier != address(0), "set SP1_VERIFIER (pinned immutable Groth16 leaf)");
         bytes32 vkey = vm.envOr("PROGRAM_VKEY", DEFAULT_VKEY);
+        // Bitcoin-root oracle for bridge_mint; address(0) deploys with cross-chain
+        // mint disabled (set it once the Bitcoin-pool-root relay is wired).
+        address bitcoinRootOracle = vm.envOr("BITCOIN_ROOT_ORACLE", address(0));
 
         vm.startBroadcast();
-        ConfidentialPool pool = new ConfidentialPool(sp1Verifier, vkey);
+        ConfidentialPool pool = new ConfidentialPool(sp1Verifier, vkey, bitcoinRootOracle);
 
         address sampleUnderlying = vm.envOr("SAMPLE_UNDERLYING", address(0));
         bytes32 sampleAsset;

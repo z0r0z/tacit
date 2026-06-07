@@ -15,8 +15,8 @@ sp1_zkvm::entrypoint!(main);
 use alloy_sol_types::{sol, SolValue};
 use alloy_sol_types::private::{Address, U256};
 use cxfer_core::{
-    claim_id, decompress, deposit_id, from_affine_xy, keccak_merkle_verify, leaf, nullifier,
-    scalar_reduce_be, verify_kernel, verify_pedersen_opening, verify_range,
+    bitcoin, claim_id, decompress, deposit_id, from_affine_xy, keccak_merkle_verify, leaf,
+    nullifier, scalar_reduce_be, verify_kernel, verify_pedersen_opening, verify_range,
     Point,
 };
 use sp1_zkvm::io;
@@ -26,8 +26,8 @@ const OP_WRAP: u8 = 0;
 const OP_TRANSFER: u8 = 1;
 const OP_UNWRAP: u8 = 2;
 const OP_BRIDGE_BURN: u8 = 3; // Ethereum note → Bitcoin (emit crossOut)
-// OP_BRIDGE_MINT (Bitcoin burn → Ethereum note) = 4, reserved; its in-guest
-// Bitcoin-burn verification (tETH crates) is the next milestone.
+const OP_BRIDGE_MINT: u8 = 4; // Bitcoin burn → Ethereum note (verify Bitcoin burn)
+const OP_ENV_CONF_BURN: u8 = 0x2B; // Bitcoin confidential bridge-burn envelope opcode
 
 // Mirrors ConfidentialPool.PublicValues exactly.
 sol! {
@@ -45,6 +45,7 @@ sol! {
         FeePayment[] fees;
         bytes32[] bitcoinBurnsConsumed;
         CrossOut[] crossOuts;
+        bytes32[] bitcoinRootsUsed;
     }
 }
 
@@ -79,7 +80,8 @@ pub fn main() {
     let mut deposits: Vec<[u8; 32]> = Vec::new();
     let mut withdrawals: Vec<Withdrawal> = Vec::new();
     let fees: Vec<FeePayment> = Vec::new(); // fee path: follow-up (kernel −fee·H term)
-    let bitcoin_burns: Vec<[u8; 32]> = Vec::new(); // OP_BRIDGE_MINT (next milestone)
+    let mut bitcoin_burns: Vec<[u8; 32]> = Vec::new(); // OP_BRIDGE_MINT claimIds
+    let mut bitcoin_roots: Vec<[u8; 32]> = Vec::new(); // Bitcoin pool roots minted against
     let mut cross_outs: Vec<CrossOut> = Vec::new();
 
     for _ in 0..num_ops {
@@ -184,6 +186,67 @@ pub fn main() {
                     });
                 }
             }
+            OP_BRIDGE_MINT => {
+                // Bitcoin → Ethereum: verify a confirmed Bitcoin confidential-burn
+                // and mint its destination note on Ethereum. The burned note's
+                // membership is proven against the Bitcoin pool root the envelope
+                // commits; the contract gates that root on the oracle (canonical +
+                // confirmed). Conservation carries value verbatim (v_mint == v_burn).
+                let asset = r32();
+
+                // Bitcoin-state: the burn block header (PoW) + the burn tx's merkle proof.
+                let header: Vec<u8> = io::read();
+                assert!(header.len() == 80, "bridge_mint: header 80");
+                let block_hash = bitcoin::double_sha256(&header);
+                let target = bitcoin::bits_to_target(&header);
+                assert!(bitcoin::be_bytes_lte(&bitcoin::reverse_u256(&block_hash), &target), "bridge_mint: PoW");
+                let tx_data: Vec<u8> = io::read();
+                let tx_index: u32 = io::read();
+                let num_txids: u32 = io::read();
+                let txids: Vec<[u8; 32]> = (0..num_txids).map(|_| r32()).collect();
+                assert!(bitcoin::compute_merkle_root(&txids) == bitcoin::extract_merkle_root(&header), "bridge_mint: merkle");
+                let txid = bitcoin::compute_txid(&tx_data);
+                assert!((tx_index as usize) < txids.len() && txids[tx_index as usize] == txid, "bridge_mint: tx in block");
+
+                // Envelope (0x2B): asset ‖ bitcoin_pool_root ‖ nullifier ‖ dest_commitment.
+                let env = bitcoin::extract_taproot_envelope(&tx_data).expect("bridge_mint: envelope");
+                assert!(env.len() >= 129 && env[0] == OP_ENV_CONF_BURN, "bridge_mint: bad envelope");
+                let env_asset: [u8; 32] = env[1..33].try_into().unwrap();
+                let env_pool_root: [u8; 32] = env[33..65].try_into().unwrap();
+                let env_nu: [u8; 32] = env[65..97].try_into().unwrap();
+                let env_dest: [u8; 32] = env[97..129].try_into().unwrap();
+                assert!(env_asset == asset, "bridge_mint: asset");
+
+                // Burned input note: membership against the Bitcoin pool root + nullifier.
+                let (in_cx, in_cy, in_pt) = r_commitment();
+                let in_owner = r32();
+                let in_leaf_index: u64 = io::read();
+                let in_path = r_path();
+                let in_secret = r32();
+                let in_leaf = leaf(&asset, &in_cx, &in_cy, &in_owner);
+                assert!(keccak_merkle_verify(&in_leaf, in_leaf_index, &in_path, &env_pool_root), "bridge_mint: btc membership");
+                let nu = nullifier(&in_secret);
+                assert!(nu == env_nu, "bridge_mint: nullifier");
+
+                // Destination note (minted on Ethereum) — its leaf must equal the envelope's.
+                let (out_cx, out_cy, out_pt) = r_commitment();
+                let out_owner = r32();
+                let dest_leaf = leaf(&asset, &out_cx, &out_cy, &out_owner);
+                assert!(dest_leaf == env_dest, "bridge_mint: dest");
+
+                // Conservation: v_in == v_out, v_out in range (no value created cross-chain).
+                let bp_proof: Vec<u8> = io::read();
+                assert!(verify_range(&[out_pt], &bp_proof), "bridge_mint: range");
+                let kernel_r = decompress(&r33()).expect("bridge_mint: R");
+                let kernel_z = scalar_reduce_be(&r32());
+                assert!(verify_kernel(&[in_pt], &[out_pt], &kernel_r, &kernel_z), "bridge_mint: conservation");
+
+                // Effects: mint the dest note on Ethereum, gate the burn once, record the root.
+                let cid = claim_id(2 /* ethereum */, &dest_leaf, &nu, &asset);
+                leaves.push(dest_leaf);
+                bitcoin_burns.push(cid);
+                bitcoin_roots.push(env_pool_root);
+            }
             OP_UNWRAP => {
                 // spend a note to a public recipient: membership + opening, pay out.
                 let asset = r32();
@@ -222,6 +285,7 @@ pub fn main() {
         fees,
         bitcoinBurnsConsumed: bitcoin_burns.into_iter().map(Into::into).collect(),
         crossOuts: cross_outs,
+        bitcoinRootsUsed: bitcoin_roots.into_iter().map(Into::into).collect(),
     };
     io::commit_slice(&pv.abi_encode());
 }

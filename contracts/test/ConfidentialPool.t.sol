@@ -33,12 +33,13 @@ contract ConfidentialPoolTest is Test {
     address constant USER = address(0xA11CE);
     address constant RECIP = address(0xB0B);
     address constant SETTLER = address(0x5E771E2);
+    address constant ORACLE = address(0x0BAC1E); // Bitcoin-root oracle (bridge_mint)
     bytes32 constant VKEY = bytes32(uint256(0xABCD)); // placeholder program vkey
 
     function setUp() public {
         vm.chainId(1);
         verifier = new MockSP1Verifier();
-        pool = new ConfidentialPool(address(verifier), VKEY);
+        pool = new ConfidentialPool(address(verifier), VKEY, ORACLE);
         token = new MockERC20();
         assetId = pool.registerWrapped(address(token), 1, bytes32(0), "Conf Mock", "cMCK", 18);
 
@@ -470,6 +471,62 @@ contract ConfidentialPoolTest is Test {
         assertTrue(pool.isNullifierSpent(nuAliceX), "Alice's X input spent");
         assertTrue(pool.isNullifierSpent(nuBobY), "Bob's Y input spent");
         assertEq(pool.nextLeafIndex(), 1, "Bob's X minted on Ethereum");
+    }
+
+    // ──────────────────── bridge_mint: Bitcoin pool-root attestation ────────────────────
+
+    event BitcoinRootAttested(bytes32 indexed root);
+
+    function test_attest_bitcoin_root_only_oracle() public {
+        bytes32 root = keccak256("btc-pool-root");
+        vm.expectRevert(ConfidentialPool.NotOracle.selector);
+        pool.attestBitcoinRoot(root); // default sender, not the oracle
+
+        vm.expectEmit(true, false, false, false, address(pool));
+        emit BitcoinRootAttested(root);
+        vm.prank(ORACLE);
+        pool.attestBitcoinRoot(root);
+        assertTrue(pool.knownBitcoinRoot(root), "root attested");
+    }
+
+    /// A bridge_mint against an un-attested Bitcoin root is rejected — the gate
+    /// that stops minting a note proven in a fabricated tree.
+    function test_bridge_mint_requires_attested_root() public {
+        ConfidentialPool.PublicValues memory pv = _pv();
+        bytes32 root = keccak256("unknown-btc-root");
+        bytes32 claimId = keccak256("mint-claim");
+        pv.bitcoinBurnsConsumed = new bytes32[](1);
+        pv.bitcoinBurnsConsumed[0] = claimId;
+        pv.bitcoinRootsUsed = new bytes32[](1);
+        pv.bitcoinRootsUsed[0] = root;
+        pv.leaves = new bytes32[](1);
+        pv.leaves[0] = keccak256("minted");
+        vm.expectRevert(ConfidentialPool.UnknownBitcoinRoot.selector);
+        pool.settle(abi.encode(pv), "", new bytes[](1));
+    }
+
+    /// A bridge_mint against an attested root mints the Ethereum note and marks
+    /// the claim — the full BTC→ETH effect on the contract side.
+    function test_bridge_mint_with_attested_root_succeeds() public {
+        bytes32 root = keccak256("good-btc-root");
+        vm.prank(ORACLE);
+        pool.attestBitcoinRoot(root);
+
+        ConfidentialPool.PublicValues memory pv = _pv();
+        bytes32 claimId = keccak256("mint-claim-2");
+        pv.bitcoinBurnsConsumed = new bytes32[](1);
+        pv.bitcoinBurnsConsumed[0] = claimId;
+        pv.bitcoinRootsUsed = new bytes32[](1);
+        pv.bitcoinRootsUsed[0] = root;
+        pv.leaves = new bytes32[](1);
+        pv.leaves[0] = keccak256("minted-note");
+
+        vm.expectEmit(true, false, false, true, address(pool));
+        emit BridgeMinted(claimId);
+        pool.settle(abi.encode(pv), "", new bytes[](1));
+
+        assertTrue(pool.bridgeMinted(claimId), "burn claimed");
+        assertEq(pool.nextLeafIndex(), 1, "ETH note minted");
     }
 
     // ──────────────────── on-chain defense-in-depth (intra-batch) ────────────────────
