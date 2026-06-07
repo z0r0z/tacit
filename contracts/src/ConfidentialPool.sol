@@ -26,6 +26,13 @@ interface ICanonicalAssetFactory {
         returns (address token);
 }
 
+/// Minimal ERC20 metadata read for deriving the Tacit-side scale of an external token.
+interface IERC20Metadata {
+    function name() external view returns (string memory);
+    function symbol() external view returns (string memory);
+    function decimals() external view returns (uint8);
+}
+
 /// @title ConfidentialPool
 /// @notice Phase-1 confidential token: a multi-asset shielded pool on Ethereum
 ///         with arbitrary hidden amounts on secp256k1 notes (C = v·H + r·G), the
@@ -240,6 +247,26 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         uint8 decimals_
     ) external returns (bytes32 assetId) {
         return _register(underlying, unitScale, crossChainLink, false, name_, symbol_, decimals_);
+    }
+
+    /// @notice Register an external Ethereum-native ERC20, reading its metadata on-chain
+    ///         and DERIVING the Tacit-side scale: the asset is represented at
+    ///         min(decimals, 8) on Bitcoin/Tacit (its native limit), so
+    ///         `unitScale = 10^(decimals − tacitDecimals)` (18-dec WETH → 8 on Tacit,
+    ///         scale 10^10; 6-dec USDC → 6, scale 1). Symmetric to `registerMintedAuto`;
+    ///         the pool escrows the ERC20 (no minting). `name`/`symbol` mirror the
+    ///         underlying — external assets keep their own identity, not the Tacit brand.
+    function registerWrappedAuto(address underlying, bytes32 crossChainLink)
+        external
+        returns (bytes32 assetId)
+    {
+        uint8 d = IERC20Metadata(underlying).decimals();
+        uint8 tacitDecimals = d > 8 ? 8 : d;
+        uint256 unitScale = 10 ** uint256(d - tacitDecimals);
+        return _register(
+            underlying, unitScale, crossChainLink, false,
+            IERC20Metadata(underlying).name(), IERC20Metadata(underlying).symbol(), d
+        );
     }
 
     /// @notice Register a TACIT-RECORDED asset (TAC, a cBTC equivalent, any Tacit

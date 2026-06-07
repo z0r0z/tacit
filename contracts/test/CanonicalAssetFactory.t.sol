@@ -210,4 +210,21 @@ contract CanonicalAssetFactoryTest is Test {
         vm.expectRevert(ConfidentialPool.PoolNotMinter.selector);
         pool.registerMintedAuto(address(factory), tacId, "NM", 8);
     }
+
+    // ── external ERC20 registration derives the Tacit-side scale (registerWrappedAuto) ──
+
+    function test_registerWrappedAuto_derives_scale_from_decimals() public {
+        ConfidentialPool pool = _pool();
+        // 18-decimal external ERC20 (WETH-like) -> 8 on Tacit, scale 10^10
+        address weth = factory.deployCanonical(keccak256("WETH-ext"), MINTER, "WE", 18);
+        bytes32 a18 = pool.registerWrappedAuto(weth, bytes32(0));
+        assertEq(pool.getAsset(a18).unitScale, 1e10, "18-dec -> scale 10^10");
+        assertEq(pool.getAsset(a18).decimals, 18);
+        assertFalse(pool.getAsset(a18).poolMinted, "external ERC20 = escrow");
+        // 6-decimal external ERC20 (USDC-like) -> 6 on Tacit, scale 1 (no loss)
+        address usdc = factory.deployCanonical(keccak256("USDC-ext"), MINTER, "US", 6);
+        bytes32 a6 = pool.registerWrappedAuto(usdc, bytes32(0));
+        assertEq(pool.getAsset(a6).unitScale, 1, "6-dec -> scale 1");
+        assertEq(pool.getAsset(a6).decimals, 6);
+    }
 }

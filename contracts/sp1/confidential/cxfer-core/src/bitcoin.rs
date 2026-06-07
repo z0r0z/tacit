@@ -126,6 +126,43 @@ pub fn compute_merkle_root(txids: &[[u8; 32]]) -> [u8; 32] {
     layer[0]
 }
 
+/// Single SHA-256 (the Tacit asset-id / domain hash — distinct from the double-SHA txid).
+fn sha256_once(data: &[u8]) -> [u8; 32] {
+    Sha256::digest(data).into()
+}
+
+/// Tacit `asset_id` for a CETCH / T_PETCH reveal tx: `SHA256(reveal_txid ‖ vout_LE)` with
+/// vout = 0. `compute_txid` returns the internal-order txid, which is exactly what the
+/// dapp (`deriveAssetIdFromReveal`) and worker (`assetIdFor`) feed after reversing the
+/// display txid — so this is byte-identical to both.
+pub fn asset_id_from_etch(tx_data: &[u8]) -> [u8; 32] {
+    let txid = compute_txid(tx_data);
+    let mut pre = [0u8; 36]; // txid(32) ‖ vout_LE(4) = 0
+    pre[..32].copy_from_slice(&txid);
+    sha256_once(&pre)
+}
+
+/// Parse the `(ticker, decimals)` an etch reveal envelope declares ON-CHAIN. `env` is the
+/// payload from `extract_taproot_envelope` (`env[0]` = opcode). Per SPEC §5.1/§5.8:
+/// `opcode(1) ‖ ticker_len(1, 1..16) ‖ ticker ‖ decimals(1, 0..8) ‖ …`. CETCH=0x21,
+/// T_PETCH=0x27. Returns `(ticker[..len], len, decimals)`; None if not a well-formed etch.
+pub fn parse_etch_meta(env: &[u8]) -> Option<([u8; 16], u8, u8)> {
+    if env.len() < 3 || (env[0] != 0x21 && env[0] != 0x27) {
+        return None;
+    }
+    let tlen = env[1] as usize;
+    if tlen < 1 || tlen > 16 || env.len() < 3 + tlen {
+        return None;
+    }
+    let decimals = env[2 + tlen];
+    if decimals > 8 {
+        return None;
+    }
+    let mut ticker = [0u8; 16];
+    ticker[..tlen].copy_from_slice(&env[2..2 + tlen]);
+    Some((ticker, tlen as u8, decimals))
+}
+
 /// Extract the Tacit Taproot envelope payload from vin[0].witness[1].
 /// Matches the format PUSH(32) xonly OP_CHECKSIG OP_FALSE OP_IF [pushes] OP_ENDIF,
 /// strips the "TACIT"||v1 frame, returns the payload starting at the opcode byte.
@@ -263,6 +300,33 @@ mod tests {
         assert_eq!(got[0], 0x2B, "opcode preserved at index 0");
         assert_eq!(got.len(), payload.len(), "payload round-trips");
         assert_eq!(&got[65..97], &[0x33u8; 32], "nullifier intact");
+    }
+
+    #[test]
+    fn etch_meta_and_asset_id() {
+        // synthetic CETCH (0x21): ticker "TAC", decimals 8, + filler for the rest.
+        let mut payload = vec![0x21u8, 0x03, b'T', b'A', b'C', 0x08];
+        payload.extend_from_slice(&[0u8; 33]);
+        let tx = build_reveal_tx(&payload);
+        let env = extract_taproot_envelope(&tx).expect("etch envelope");
+        let (ticker, tlen, decimals) = parse_etch_meta(&env).expect("etch meta");
+        assert_eq!(&ticker[..tlen as usize], b"TAC", "ticker");
+        assert_eq!(decimals, 8, "decimals");
+
+        // asset_id = sha256(compute_txid ‖ vout0), bound to the tx.
+        let id = asset_id_from_etch(&tx);
+        assert_ne!(id, [0u8; 32], "non-zero asset_id");
+        let txid = compute_txid(&tx);
+        let mut pre = [0u8; 36];
+        pre[..32].copy_from_slice(&txid);
+        let recomputed: [u8; 32] = Sha256::digest(&pre).into();
+        assert_eq!(id, recomputed, "asset_id = sha256(txid ‖ vout0)");
+
+        // opcode gating: T_PETCH parses; the burn opcode does not.
+        let mut petch = vec![0x27u8, 0x02, b'H', b'I', 0x00];
+        petch.extend_from_slice(&[0u8; 5]);
+        assert!(parse_etch_meta(&petch).is_some(), "T_PETCH parses");
+        assert!(parse_etch_meta(&[0x2Bu8, 3, 1, 2, 3]).is_none(), "burn opcode rejected");
     }
 
     #[test]
