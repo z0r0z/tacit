@@ -13,6 +13,7 @@ interface ISP1Verifier {
 interface IMintBurn {
     function mint(address to, uint256 amount) external;
     function burn(address from, uint256 amount) external;
+    function MINTER() external view returns (address);
 }
 
 /// @title ConfidentialPool
@@ -183,6 +184,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     error UnknownBitcoinRoot();
     error BitcoinSpent();
     error StaleBitcoinSpentRoot();
+    error PoolNotMinter();
 
     // ──────────────────── Constructor ────────────────────
 
@@ -238,6 +240,8 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         string calldata symbol_,
         uint8 decimals_
     ) external returns (bytes32 assetId) {
+        // The pool must be able to mint/burn this ERC20, else the asset can never exit.
+        if (IMintBurn(canonicalErc20).MINTER() != address(this)) revert PoolNotMinter();
         return _register(canonicalErc20, unitScale, crossChainLink, true, name_, symbol_, decimals_);
     }
 

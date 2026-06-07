@@ -63,6 +63,15 @@ contract CanonicalAssetFactoryTest is Test {
         assertEq(tok.totalSupply(), 3e8, "supply reduced");
     }
 
+    /// registerMinted is rejected unless the pool is the ERC20's minter — otherwise
+    /// the asset could never exit (mint would revert), a footgun.
+    function test_registerMinted_requires_pool_as_minter() public {
+        CanonicalBridgedERC20 tok = _deploy(); // minter = MINTER, not the pool
+        ConfidentialPool pool = new ConfidentialPool(address(0x5117), bytes32(uint256(1)), address(0));
+        vm.expectRevert(ConfidentialPool.PoolNotMinter.selector);
+        pool.registerMinted(address(tok), 1, ASSET, "x", "x", 8);
+    }
+
     /// The two faces: a canonical ERC20 (public) wraps into ConfidentialPool
     /// (confidential). The pool is asset-agnostic — it just escrows the ERC20.
     function test_canonical_erc20_wraps_into_pool() public {
