@@ -10,6 +10,8 @@ broadcast/
 sp1/program/target/
 sp1/script/target/
 sp1/tree/target/
+sp1/confidential/target/
+sp1/confidential/**/target/
 
 # Compiler artifacts
 *.abi
