@@ -113,11 +113,27 @@ section requires a range proof, because the amount moved is public; only its
 
 ### Asset identity
 ```
-etched token:   asset_id = sha256("tacit-evm-etch-v1"  ‖ chainid_be8 ‖ factory ‖ salt ‖ etcher)
+etched token:   asset_id = sha256("tacit-evm-etch-v1"  ‖ chainid_be8 ‖ factory ‖ salt ‖ etcher ‖ meta_hash)
 wrapped/native: asset_id = sha256("tacit-evm-token-v1" ‖ chainid_be8 ‖ underlying_token)
+meta_hash       = sha256( u8(len name) ‖ name ‖ u8(len symbol) ‖ symbol ‖ u8(decimals) )
 ```
 Domain-separated from the Bitcoin `sha256(reveal_txid ‖ vout)` namespace and
 from the `ShieldedPool` asset-id rule by tag.
+
+**Self-certifying metadata.** The etched id commits to `(name, symbol, decimals)`
+through `meta_hash`, so the metadata is canonical *by construction* rather than by
+registry or market curation. The deployer derives the id on-chain from the supplied
+metadata (`CanonicalAssetFactory.deriveAssetId` / `etchCanonical`), and anyone can
+recompute the binding (`verifyMetadata`) — there is exactly one official
+`(name, symbol, decimals)` per id. Deployment is therefore permissionless and the
+address deterministic (CREATE2 salt = `asset_id`): a different name/symbol/decimals
+hashes to a different id, so it can never occupy the canonical token's address. The
+wrapped/native id binds the underlying ERC20, whose `name`/`symbol`/`decimals` are
+read from that token directly — likewise self-certifying. (Bitcoin-etched assets carry
+their metadata in the etch envelope; binding it on Ethereum is a relay-proof step,
+done once at registration.) The `meta_hash` byte layout is length-prefixed so labels
+cannot be made to collide by re-segmenting `name`/`symbol`, and is language-neutral
+(reproducible in Solidity, JS, and Rust).
 
 ### `etch` — confidential token, two mode-split entrypoints
 Deploys a `TacitConfidentialEtched` (CREATE2) through one of two entrypoints (no
