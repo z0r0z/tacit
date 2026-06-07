@@ -395,15 +395,20 @@ Ethereum a fast provisional cache.** This sheds platinum's worst property (the
 - This also **dissolves the §10 confidentiality wrinkle**: with no relayer fronting
   value, no third party ever needs to learn your amount.
 
-Cost vs. the compromise: a **trustless reflection prover** (new vkey, but reuses
-`cxfer-core::bitcoin` like `bridge_mint` — no new ceremony) + the on-chain
-`knownBitcoinSpent` gate in `ConfidentialPool` (a fresh **multigen** deploy; the
-confidential `settle` guest/vkey/ceremony stay fixed). In exchange you drop the
-capital-relayer market entirely and get same-note-both-surfaces (closer to
-indistinguishable origin). **Spectrum:** *reflection-gated* (Ethereum gates on a
-fresh Bitcoin snapshot — safer, fast confirms only revertible by deep reorg) vs.
-*optimistic + reconcile-at-anchor* (no Ethereum gate, no contract change, but fast
-confirms revertible by any conflicting Bitcoin spend). Pick per risk appetite.
+Cost vs. the compromise: a **trustless reflection prover** (reuses
+`cxfer-core::bitcoin` like `bridge_mint`) + the cross-lane gate. The **best** gate is
+**in-guest**: reflect the Bitcoin spent set as one **accumulator root** and have the
+settle guest prove **non-membership** of each spent ν against it — O(1) on-chain,
+zk-enforced, scalable, matching the tETH `NullifierSet` pattern. That is a guest
+change (new vkey, re-prove) but **no new ceremony** (SP1 is universal). *Do not pick
+the placement to dodge re-proving:* the shipped on-chain `knownBitcoinSpent` mapping
+(gen-1) is the **pilot/interim + defense-in-depth** — it works but costs an SSTORE
+per Bitcoin spend and doesn't scale, so it bootstraps, it isn't the architecture. In
+exchange you drop the capital-relayer market entirely and get same-note-both-surfaces
+(closer to indistinguishable origin). **Spectrum:** *reflection-gated* (Ethereum
+gates on a fresh Bitcoin snapshot — safer, fast confirms only revertible by deep
+reorg) vs. *optimistic + reconcile-at-anchor* (more revertible). Pick per risk
+appetite.
 
 **Net:** if avoiding a capital/liquidity admin layer is the goal, improved
 (asymmetric) platinum is the cleaner endgame — it trades a multigen redeploy + a
@@ -589,8 +594,14 @@ unchanged guest/prover/ceremony (and unchanged contracts for the home-chain mode
   - *Per-asset / per-trade lane policy* — default lane, whether an asset may be
     fast-lane-only or sovereign-only, and how the UX signals the active tier
     (provisional vs Bitcoin-final) so consumers know the finality they're acting on.
-  - *V2 cross-lane gate placement* (only if pursuing one-note-both-surfaces beyond
-    the home-chain compromise): an **on-chain** `knownBitcoinSpent` mapping fed by the
-    relay + checked in `settle` (no guest/vkey/ceremony change; a fresh multigen pool
-    deploy) vs an **in-guest** Bitcoin spend-accumulator (vkey change, heavier). Prefer
-    on-chain — it keeps the circuit + ceremony fixed.
+  - *Cross-lane gate placement.* Design for correctness, not proving convenience.
+    The **best** mechanism is the **in-guest accumulator**: reflect the Bitcoin
+    spent-nullifier set as one **accumulator root** (O(1) on-chain) and have the
+    settle guest prove **non-membership** of each spent ν against it — zk-enforced,
+    scalable, and matching the tETH `NullifierSet` pattern. Yes, that is a guest
+    change → new vkey → re-prove, but the **ceremony is unaffected** (SP1 is
+    universal; the box re-proves mechanically). The **on-chain** `knownBitcoinSpent`
+    mapping (shipped, gen-1) is the *pilot/interim + defense-in-depth*: simple, but it
+    costs an SSTORE per Bitcoin spend and leans on the relay's posts, so it does not
+    scale. Direction: in-guest accumulator is the target; the on-chain map is the
+    bootstrap.
