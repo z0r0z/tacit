@@ -442,6 +442,36 @@ contract ConfidentialPoolTest is Test {
         pool.settle(abi.encode(pv), "", new bytes[](0));
     }
 
+    /// Atomic cross-chain swap: one settle carries both legs — Bob's X output
+    /// lands as an Ethereum leaf, Alice's Y output is recorded as a Bitcoin
+    /// crossOut, both input notes are nullified — all applied in one call.
+    function test_atomic_cross_chain_swap() public {
+        ConfidentialPool.PublicValues memory pv = _pv();
+        bytes32 nuAliceX = keccak256("alice-X-in");
+        bytes32 nuBobY = keccak256("bob-Y-in");
+        pv.nullifiers = new bytes32[](2);
+        pv.nullifiers[0] = nuAliceX; pv.nullifiers[1] = nuBobY;
+
+        // ETH leg: Bob's new X note as a leaf.
+        pv.leaves = new bytes32[](1);
+        pv.leaves[0] = keccak256("bob-X-out");
+
+        // BTC leg: Alice's new Y note as a crossOut.
+        bytes32 assetY = keccak256("asset-Y");
+        bytes32 destC = keccak256("alice-Y-on-bitcoin");
+        bytes32 cid = _claimId(1, destC, nuBobY, assetY);
+        pv.crossOuts = new ConfidentialPool.CrossOut[](1);
+        pv.crossOuts[0] = ConfidentialPool.CrossOut(1, destC, nuBobY, assetY, cid);
+
+        vm.expectEmit(true, false, false, true, address(pool));
+        emit CrossOutRecorded(cid, 1, destC, nuBobY, assetY);
+        pool.settle(abi.encode(pv), "", new bytes[](1));
+
+        assertTrue(pool.isNullifierSpent(nuAliceX), "Alice's X input spent");
+        assertTrue(pool.isNullifierSpent(nuBobY), "Bob's Y input spent");
+        assertEq(pool.nextLeafIndex(), 1, "Bob's X minted on Ethereum");
+    }
+
     // ──────────────────── on-chain defense-in-depth (intra-batch) ────────────────────
 
     function test_settle_intrabatch_duplicate_nullifier_reverts() public {
