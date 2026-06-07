@@ -41,7 +41,7 @@ contract ConfidentialPoolTest is Test {
     function setUp() public {
         vm.chainId(1);
         verifier = new MockSP1Verifier();
-        pool = new ConfidentialPool(address(verifier), VKEY, RELAY_VKEY);
+        pool = new ConfidentialPool(address(verifier), VKEY, RELAY_VKEY, address(0));
         token = new MockERC20();
         assetId = pool.registerWrapped(address(token), 1, bytes32(0), "Conf Mock", "cMCK", 18);
 
@@ -545,6 +545,41 @@ contract ConfidentialPoolTest is Test {
 
         assertTrue(pool.bridgeMinted(claimId), "burn claimed");
         assertEq(pool.nextLeafIndex(), 1, "ETH note minted");
+    }
+
+    // ──────────────────── trustless first-mint metadata (OP_ATTEST_META) ────────────────────
+
+    /// A settle carrying guest-proven asset metadata lazy-deploys + registers the canonical
+    /// ERC20 with exactly that (symbol, decimals) — no trusted metadata, no manual step.
+    function test_settle_auto_registers_from_attested_meta() public {
+        CanonicalAssetFactory factory = new CanonicalAssetFactory();
+        ConfidentialPool p = new ConfidentialPool(address(verifier), VKEY, RELAY_VKEY, address(factory));
+
+        bytes32 tacId = keccak256("attested-TAC");
+        ConfidentialPool.PublicValues memory pv;
+        pv.version = p.PV_VERSION();
+        pv.chainBinding = keccak256(abi.encodePacked(block.chainid, address(p)));
+        pv.assetMetas = new ConfidentialPool.AssetMeta[](1);
+        pv.assetMetas[0] = ConfidentialPool.AssetMeta(tacId, bytes16("TAC"), 3, 8); // ticker "TAC", 8 dec
+        p.settle(abi.encode(pv), "", new bytes[](0));
+
+        address token = factory.tokenOf(tacId);
+        assertTrue(token != address(0), "lazy-deployed");
+        assertEq(token, factory.predict(tacId), "at f(asset_id)");
+        assertEq(CanonicalBridgedERC20(token).symbol(), "TAC", "proven ticker");
+        assertEq(CanonicalBridgedERC20(token).decimals(), 18, "harmonized to 18");
+        assertEq(CanonicalBridgedERC20(token).name(), "Tacit Token", "brand");
+        assertEq(CanonicalBridgedERC20(token).MINTER(), address(p), "pool is minter");
+
+        bytes32 internalId = sha256(abi.encodePacked("tacit-evm-token-v1", uint64(block.chainid), token));
+        ConfidentialPool.Asset memory a = p.getAsset(internalId);
+        assertTrue(a.registered, "registered");
+        assertEq(a.unitScale, 1e10, "unitScale = 10^(18-8)");
+        assertEq(a.crossChainLink, tacId, "linked to the Bitcoin asset id");
+
+        // idempotent: a second attest of the same asset doesn't revert or re-register
+        p.settle(abi.encode(pv), "", new bytes[](0));
+        assertEq(factory.tokenOf(tacId), token, "still the same canonical token");
     }
 
     // ──────────────────── Tacit-recorded asset: pool is the canonical ERC20 minter ────────────────────

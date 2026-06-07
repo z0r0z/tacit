@@ -27,6 +27,7 @@ const OP_TRANSFER: u8 = 1;
 const OP_UNWRAP: u8 = 2;
 const OP_BRIDGE_BURN: u8 = 3; // Ethereum note → Bitcoin (emit crossOut)
 const OP_BRIDGE_MINT: u8 = 4; // Bitcoin burn → Ethereum note (verify Bitcoin burn)
+const OP_ATTEST_META: u8 = 5; // etch reveal → prove (asset_id, ticker, decimals) trustlessly
 const OP_ENV_CONF_BURN: u8 = 0x2B; // Bitcoin confidential bridge-burn envelope opcode
 
 // Mirrors ConfidentialPool.PublicValues exactly.
@@ -34,6 +35,7 @@ sol! {
     struct Withdrawal { bytes32 assetId; address recipient; uint256 amount; }
     struct FeePayment { bytes32 assetId; uint256 amount; }
     struct CrossOut { uint16 destChain; bytes32 destCommitment; bytes32 nullifier; bytes32 assetId; bytes32 claimId; }
+    struct AssetMeta { bytes32 assetId; bytes16 ticker; uint8 tickerLen; uint8 decimals; }
     struct PublicValues {
         uint16 version;
         bytes32 chainBinding;
@@ -47,6 +49,7 @@ sol! {
         CrossOut[] crossOuts;
         bytes32[] bitcoinRootsUsed;
         bytes32 bitcoinSpentRoot;
+        AssetMeta[] assetMetas;
     }
 }
 
@@ -98,6 +101,7 @@ pub fn main() {
     let mut bitcoin_burns: Vec<[u8; 32]> = Vec::new(); // OP_BRIDGE_MINT claimIds
     let mut bitcoin_roots: Vec<[u8; 32]> = Vec::new(); // Bitcoin pool roots minted against
     let mut cross_outs: Vec<CrossOut> = Vec::new();
+    let mut asset_metas: Vec<AssetMeta> = Vec::new();
 
     for _ in 0..num_ops {
         let op: u8 = io::read();
@@ -290,6 +294,22 @@ pub fn main() {
                     amount: U256::from_be_slice(&amount),
                 });
             }
+            OP_ATTEST_META => {
+                // Trustless metadata: prove (asset_id, ticker, decimals) from the etch
+                // reveal tx. asset_id = sha256(reveal_txid ‖ 0) binds the txid, which binds
+                // the on-chain envelope's ticker+decimals — so the contract can lazy-register
+                // the canonical ERC20 with exactly these, no trusted metadata source.
+                let etch_tx: Vec<u8> = io::read();
+                let asset = bitcoin::asset_id_from_etch(&etch_tx);
+                let env = bitcoin::extract_taproot_envelope(&etch_tx).expect("attest: envelope");
+                let (ticker, tlen, decimals) = bitcoin::parse_etch_meta(&env).expect("attest: etch meta");
+                asset_metas.push(AssetMeta {
+                    assetId: asset.into(),
+                    ticker: ticker.into(),
+                    tickerLen: tlen,
+                    decimals,
+                });
+            }
             _ => panic!("unknown op type"),
         }
     }
@@ -307,6 +327,7 @@ pub fn main() {
         crossOuts: cross_outs,
         bitcoinRootsUsed: bitcoin_roots.into_iter().map(Into::into).collect(),
         bitcoinSpentRoot: bitcoin_spent_root.into(),
+        assetMetas: asset_metas,
     };
     io::commit_slice(&pv.abi_encode());
 }

@@ -81,6 +81,9 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     /// Monotonic guard: the highest Bitcoin height a relay proof has attested. A proof
     /// must strictly advance it, so a stale proof cannot roll the spent root backward.
     uint64 public lastRelayHeight;
+    /// Factory used to lazily deploy a Tacit asset's canonical ERC20 on first bridge_mint,
+    /// with the guest-proven metadata (OP_ATTEST_META). 0 = auto-register disabled.
+    ICanonicalAssetFactory public immutable CANONICAL_FACTORY;
 
     // ──────────────────── Commitment tree (global, Keccak) ────────────────────
 
@@ -146,6 +149,9 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     // burned value equals destCommitment's and nullified the note (ν in
     // `nullifiers`); Bitcoin validators mint the destination note once, off-chain.
     struct CrossOut { uint16 destChain; bytes32 destCommitment; bytes32 nullifier; bytes32 assetId; bytes32 claimId; }
+    // Metadata the guest proved from a Bitcoin etch reveal (asset_id binds the txid, the
+    // txid binds the on-chain envelope's ticker+decimals) — trustless first-mint metadata.
+    struct AssetMeta { bytes32 assetId; bytes16 ticker; uint8 tickerLen; uint8 decimals; }
 
     struct PublicValues {
         uint16 version;
@@ -160,6 +166,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         CrossOut[] crossOuts;          // Ethereum burns destined for Bitcoin
         bytes32[] bitcoinRootsUsed;    // Bitcoin pool roots a bridge_mint proved membership against
         bytes32 bitcoinSpentRoot;     // Bitcoin spent-set IMT root the guest proved non-membership against (0 = none)
+        AssetMeta[] assetMetas;        // etch-proven (asset_id, ticker, decimals) → trustless lazy-register
     }
 
     // ──────────────────── Events ────────────────────
@@ -207,13 +214,14 @@ contract ConfidentialPool is ReentrancyGuardTransient {
 
     // ──────────────────── Constructor ────────────────────
 
-    constructor(address sp1Verifier_, bytes32 programVKey_, bytes32 bitcoinRelayVKey_) {
+    constructor(address sp1Verifier_, bytes32 programVKey_, bytes32 bitcoinRelayVKey_, address canonicalFactory_) {
         if (sp1Verifier_ == address(0)) revert ZeroAddress();
         if (programVKey_ == bytes32(0)) revert ZeroVKey();
         SP1_VERIFIER = ISP1Verifier(sp1Verifier_);
         PROGRAM_VKEY = programVKey_;
         CHAIN_BINDING = keccak256(abi.encodePacked(block.chainid, address(this)));
         BITCOIN_RELAY_VKEY = bitcoinRelayVKey_; // the sole Bitcoin-state authority (a proof)
+        CANONICAL_FACTORY = ICanonicalAssetFactory(canonicalFactory_);
 
         bytes32 z = bytes32(0);
         for (uint256 i; i < TREE_LEVELS; ++i) {
@@ -431,7 +439,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         }
 
         // Every Bitcoin pool root a bridge_mint proved membership against must be
-        // oracle-attested (canonical + confirmed) — the inflation-critical gate.
+        // relay-proven (canonical + confirmed) — the inflation-critical gate.
         for (uint256 i; i < pv.bitcoinRootsUsed.length; ++i) {
             if (!knownBitcoinRoot[pv.bitcoinRootsUsed[i]]) revert UnknownBitcoinRoot();
         }
@@ -442,6 +450,12 @@ contract ConfidentialPool is ReentrancyGuardTransient {
             everKnownRoot[currentRoot] = true;
             emit LeavesInserted(firstLeafIndex, pv.leaves, memos);
         }
+
+        // Trustless first-mint metadata: lazy-register any Tacit asset whose (ticker,
+        // decimals) the guest proved from its etch (OP_ATTEST_META) — deploy its canonical
+        // ERC20 at the factory's f(asset_id) address with the proven metadata + derived
+        // scale, so a later unwrap can mint it. One-time per asset; skipped once registered.
+        for (uint256 i; i < pv.assetMetas.length; ++i) _autoRegisterFromMeta(pv.assetMetas[i]);
 
         for (uint256 i; i < pv.withdrawals.length; ++i) {
             Withdrawal memory w = pv.withdrawals[i];
@@ -472,6 +486,30 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     function getAsset(bytes32 assetId) external view returns (Asset memory) { return assets[assetId]; }
 
     // ──────────────────── Internals ────────────────────
+
+    /// Lazy-register a Tacit asset from guest-proven metadata: deploy its canonical ERC20
+    /// (address = f(asset_id)) with the proven `(symbol, decimals)` and `unitScale` derived
+    /// to harmonize to `ETH_DECIMALS`. Idempotent + tolerant — a malformed or already-known
+    /// entry is skipped, never reverting the whole settle.
+    function _autoRegisterFromMeta(AssetMeta memory m) internal {
+        if (address(CANONICAL_FACTORY) == address(0)) return; // not wired
+        if (m.decimals > ETH_DECIMALS || m.tickerLen == 0 || m.tickerLen > 16) return;
+        string memory symbol_ = string(_sliceTicker(m.ticker, m.tickerLen));
+        address token = CANONICAL_FACTORY.tokenOf(m.assetId);
+        if (token == address(0)) {
+            token = CANONICAL_FACTORY.deployCanonical(m.assetId, address(this), symbol_, ETH_DECIMALS);
+        }
+        bytes32 internalId = sha256(abi.encodePacked("tacit-evm-token-v1", uint64(block.chainid), token));
+        if (assets[internalId].registered) return; // already registered
+        if (IMintBurn(token).MINTER() != address(this)) return; // not our token
+        uint256 unitScale = 10 ** uint256(ETH_DECIMALS - m.decimals);
+        _register(token, unitScale, m.assetId, true, "Tacit Token", symbol_, ETH_DECIMALS);
+    }
+
+    function _sliceTicker(bytes16 t, uint8 len) internal pure returns (bytes memory out) {
+        out = new bytes(len);
+        for (uint256 i; i < len; ++i) out[i] = t[i];
+    }
 
     function _payout(bytes32 assetId, address to, uint256 amount) internal {
         if (amount == 0) return;

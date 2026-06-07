@@ -35,9 +35,13 @@ contract DeployConfidentialPool is Script {
         // Bitcoin pool root / spent-set (no trusted oracle). bytes32(0) deploys with
         // cross-chain attestation disabled until the relay prover's vkey is known.
         bytes32 bitcoinRelayVKey = vm.envOr("BITCOIN_RELAY_VKEY", bytes32(0));
+        // Canonical-asset factory: lets the pool lazily deploy a Tacit asset's public ERC20
+        // on first bridge_mint with the guest-proven metadata. address(0) = explicit
+        // registerMintedAuto only (auto-register disabled).
+        address canonicalFactory = vm.envOr("CANONICAL_FACTORY", address(0));
 
         vm.startBroadcast();
-        ConfidentialPool pool = new ConfidentialPool(sp1Verifier, vkey, bitcoinRelayVKey);
+        ConfidentialPool pool = new ConfidentialPool(sp1Verifier, vkey, bitcoinRelayVKey, canonicalFactory);
 
         address sampleUnderlying = vm.envOr("SAMPLE_UNDERLYING", address(0));
         bytes32 sampleAsset;

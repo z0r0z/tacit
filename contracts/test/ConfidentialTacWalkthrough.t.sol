@@ -36,7 +36,7 @@ contract ConfidentialTacWalkthroughTest is Test {
     }
 
     function setUp() public {
-        pool = new ConfidentialPool(address(new AcceptVerifier()), bytes32(uint256(0xABCD)), bytes32(0));
+        pool = new ConfidentialPool(address(new AcceptVerifier()), bytes32(uint256(0xABCD)), bytes32(0), address(0));
         CanonicalAssetFactory factory = new CanonicalAssetFactory();
         // Deploy TAC's canonical ERC20 with the POOL as its sole minter.
         tac = CanonicalBridgedERC20(factory.deployCanonical(keccak256("TAC"), address(pool), "TAC", 8));
