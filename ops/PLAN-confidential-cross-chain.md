@@ -340,6 +340,56 @@ Ethereum reflection) and a far larger audit surface — hence platinum follows g
 plus a scan of both chains; a note carries the same identity on both, so a wallet
 sees one balance.
 
+### Improved platinum — no capital relayer, only trustless data reflection
+
+The §10 compromise reaches the dual-lane with a **capital/liquidity relayer** (it
+fronts value to mask bridge latency). Platinum reaches it *without* that admin layer,
+because there is **no bridge to relay**: a note is natively a member on both
+surfaces, so it is simply spent fast (Ethereum) or sovereign (Bitcoin) directly. The
+relayer existed only to hide bridge latency; platinum has no per-asset cross-lane
+bridge, so nothing to front.
+
+What platinum *does* require is **irreducible** for any unified set: Ethereum must
+learn Bitcoin's state (the hard §2 direction — Ethereum has no native Bitcoin light
+client). Make that a **trustless, permissionless data relay**, categorically unlike a
+capital relayer: an SP1 proof of the Bitcoin confidential-pool state (deposit tree +
+nullifier set), verified on-chain — the live tETH `SP1PoolRootVerifier` pattern,
+reusing `cxfer-core::bitcoin` (the same crates as `bridge_mint`). Anyone can run it;
+on-chain verification removes trust; it carries *data*, not *liquidity*. The reverse
+direction (Ethereum → Bitcoin) is the easy one: the anchor inscription + off-chain
+validation.
+
+**The improvement that makes it best: keep it asymmetric — Bitcoin canonical,
+Ethereum a fast provisional cache.** This sheds platinum's worst property (the
+"Bitcoin's global finality waits on Ethereum reflection" coupling):
+
+- **Bitcoin is the canonical nullifier set** and the sole arbiter. A Bitcoin-native
+  spend is final at Bitcoin finality with **zero Ethereum dependency** — the
+  sovereign lane is untouched.
+- **Ethereum is a fast cache** whose spends are provisional. It gates a fast spend on
+  a *fresh* reflected Bitcoin snapshot (so it won't fast-spend a note Bitcoin already
+  consumed), and its spends are ratified — Bitcoin winning ties — when the anchor
+  ingests them into the canonical set. Bitcoin **ingests-and-arbitrates at the
+  anchor; it never waits** on Ethereum.
+- This also **dissolves the §10 confidentiality wrinkle**: with no relayer fronting
+  value, no third party ever needs to learn your amount.
+
+Cost vs. the compromise: a **trustless reflection prover** (new vkey, but reuses
+`cxfer-core::bitcoin` like `bridge_mint` — no new ceremony) + the on-chain
+`knownBitcoinSpent` gate in `ConfidentialPool` (a fresh **multigen** deploy; the
+confidential `settle` guest/vkey/ceremony stay fixed). In exchange you drop the
+capital-relayer market entirely and get same-note-both-surfaces (closer to
+indistinguishable origin). **Spectrum:** *reflection-gated* (Ethereum gates on a
+fresh Bitcoin snapshot — safer, fast confirms only revertible by deep reorg) vs.
+*optimistic + reconcile-at-anchor* (no Ethereum gate, no contract change, but fast
+confirms revertible by any conflicting Bitcoin spend). Pick per risk appetite.
+
+**Net:** if avoiding a capital/liquidity admin layer is the goal, improved
+(asymmetric) platinum is the cleaner endgame — it trades a multigen redeploy + a
+trustless data-reflection prover for *no* capital market, *no* amount disclosure, and
+a note that lives on both chains at once. The §10 relayer route is the no-redeploy
+interim; this is the destination.
+
 ## 10. Fast lane + sovereign lane (dual-lane settlement)
 
 Rather than *choose* who orders (the §11 fork), Tacit offers **two lanes over one
@@ -492,6 +542,14 @@ unchanged guest/prover/ceremony (and unchanged contracts for the home-chain mode
   the foundation).
 - **Gold → platinum migration** — whether the unified set is a later generation
   on top of gold or a parallel mode.
+- **Dual-lane route — capital relayer vs. trustless reflection (the strategic fork).**
+  §10 reaches the dual lane with a capital/liquidity relayer on the deployed code (no
+  redeploy, but an admin/market layer + amount disclosure to the relayer). §9's
+  improved platinum reaches it with *no* capital relayer — a trustless SP1 data-
+  reflection prover + an on-chain `knownBitcoinSpent` gate (a multigen redeploy; the
+  confidential `settle` guest/ceremony stay fixed). Decide whether the relayer route
+  is the interim and improved platinum the destination, or to skip straight to
+  platinum. Either way the circuit + ceremony are frozen.
 - **Fast-lane ordering authority (the A/B fork, §10).** Resolved in principle by the
   dual-lane model (fast lane orders internally on Ethereum = A; Bitcoin is the global
   arbiter = B's guarantee). The remaining sub-decisions:
