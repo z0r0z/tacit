@@ -395,6 +395,36 @@ pub fn keccak_merkle_verify(leaf: &[u8; 32], mut index: u64, path: &[[u8; 32]], 
     &h == root
 }
 
+/// Big-endian strict less-than over 32-byte values.
+fn be_lt(a: &[u8; 32], b: &[u8; 32]) -> bool { bitcoin::be_bytes_lte(a, b) && a != b }
+
+/// Indexed-Merkle-tree leaf: a "low nullifier" linked record keccak(value ‖ next).
+/// The set is the sorted linked list of spent nullifiers; `next` is the successor
+/// (0 ⇒ this is the maximum element).
+pub fn imt_leaf(value: &[u8; 32], next: &[u8; 32]) -> [u8; 32] { kn(&[value, next]) }
+
+/// Indexed-Merkle NON-membership: prove `nu` is NOT in the set committed by `root`
+/// (a Keccak Merkle tree of `imt_leaf` records). Succinct — one low-leaf membership,
+/// no full-set load — so proving cost is O(log n), not O(n) like a sorted-list hash.
+/// Returns true iff the low leaf is in the tree and its (value, next) range straddles
+/// `nu`: value < nu < next, or value < nu with next == 0 (nu beyond the maximum).
+/// A member `nu` cannot be proven absent (no leaf's range strictly straddles it).
+pub fn imt_non_membership(
+    root: &[u8; 32],
+    nu: &[u8; 32],
+    low_value: &[u8; 32],
+    low_next: &[u8; 32],
+    low_index: u64,
+    low_path: &[[u8; 32]],
+) -> bool {
+    let leaf = imt_leaf(low_value, low_next);
+    if !keccak_merkle_verify(&leaf, low_index, low_path, root) { return false; }
+    if !be_lt(low_value, nu) { return false; }
+    let zero = [0u8; 32];
+    if low_next == &zero { return true; } // low is the max element; nu is beyond it
+    be_lt(nu, low_next)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -489,5 +519,33 @@ mod tests {
             assert_eq!(dest, arr32(c["destCommitment"].as_str().unwrap()), "destCommitment");
             assert_eq!(claim_id(dest_chain, &dest, &bind, &asset), arr32(c["claimId"].as_str().unwrap()), "claimId");
         }
+    }
+
+    // Cross-lane gate: indexed-Merkle non-membership against the JS-built IMT root —
+    // the scalable (O(log n)) accumulator for reflecting Bitcoin spends. Genuine
+    // non-members verify; a present nullifier + a wrong/tampered low-leaf reject.
+    #[test]
+    fn imt_non_membership_matches_js() {
+        let f: serde_json::Value = serde_json::from_str(include_str!("../../fixtures/imt.json")).unwrap();
+        let root = arr32(f["root"].as_str().unwrap());
+        let arrp = |w: &serde_json::Value| -> Vec<[u8; 32]> {
+            w["path"].as_array().unwrap().iter().map(|v| arr32(v.as_str().unwrap())).collect()
+        };
+        for w in f["witnesses"].as_array().unwrap() {
+            let nu = arr32(w["nu"].as_str().unwrap());
+            let lv = arr32(w["lowValue"].as_str().unwrap());
+            let ln = arr32(w["lowNext"].as_str().unwrap());
+            let li = w["lowIndex"].as_u64().unwrap();
+            let got = imt_non_membership(&root, &nu, &lv, &ln, li, &arrp(w));
+            assert_eq!(got, w["expect"].as_bool().unwrap(), "{}", w["note"].as_str().unwrap());
+        }
+        // a tampered path must reject a genuine non-member
+        let w = &f["witnesses"][1];
+        let nu = arr32(w["nu"].as_str().unwrap());
+        let lv = arr32(w["lowValue"].as_str().unwrap());
+        let ln = arr32(w["lowNext"].as_str().unwrap());
+        let mut path = arrp(w);
+        path[0][0] ^= 1;
+        assert!(!imt_non_membership(&root, &nu, &lv, &ln, w["lowIndex"].as_u64().unwrap(), &path), "tampered path");
     }
 }
