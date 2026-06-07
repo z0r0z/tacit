@@ -86,19 +86,35 @@ collateralized path needing no BTC bridge at all.
 - Reuses the live bridge stack (`BitcoinLightRelay`, SP1 verification, mint-only
   reserve) for mint gating — no new ceremony, no new trust root.
 
-## Build sketch
+## Correction (2026-06-07): the POOL is the canonical-ERC20 minter; collateral lives on Tacit
 
-1. **`CanonicalAssetFactory`** (CREATE2): `deployCanonical(assetId, meta) → erc20` at
-   `f(assetId)`; `predict(assetId)`; one canonical ERC20 per asset, dedup-guarded.
-2. **`CanonicalBridgedERC20`** (the template): a plain ERC20 whose `mint`/`burn` are
-   gated by a `minter` = the bridge/collateral module (SP1 lock-proof for TAC; the
-   cBTC collateral vault for cBTC.tac; the real-BTC bridge for cBTC.zk).
-3. **Pool integration:** `registerWrapped(canonicalErc20, unitScale, crossChainLink,
-   …)` (exists) → wrap/unwrap for the confidential face (exists).
-4. **Etch + binding** for Ethereum-origin assets (Direction 2): the deterministic
-   crossChainLink + the Bitcoin etch; indexer derives, doesn't vote.
+Assets are **recorded and collateralized on Tacit** — TAC, the cBTC equivalents,
+*any* Tacit asset. On Ethereum the pool is the **representation**, so for any
+Tacit-recorded asset the **`ConfidentialPool` is the universal minter** of its
+canonical ERC20: the asset's value enters confidential (`bridge_mint`, backed by the
+Tacit record), and the public ERC20 is just its **exit form** — minted on `unwrap`,
+burned on `wrap`. No Ethereum-side escrow or collateral vault — the pool is the
+single Ethereum supply authority; backing is the Tacit record. (An Ethereum-side cBTC
+collateral vault was a wrong turn — collateralization is a Tacit concern.) External
+ERC20s (USDC) keep the escrow path.
 
-Net: the `ConfidentialPool` + a canonical mint/burn factory = the asset hub. The
-pool (built) is the confidential face; the factory (to build) is the canonical public
-face; the bridge/reflection (built/in progress) span Bitcoin. The Tier-A factory is
-retired in favor of this split.
+## Build status
+
+1. **`CanonicalAssetFactory`** (CREATE2) — built (commit `b434cdf`): `deployCanonical`/
+   `predict`, one canonical ERC20 per asset, dedup.
+2. **`CanonicalBridgedERC20`** (the template) — built: a plain ERC20 whose `mint`/
+   `burn` are gated by an immutable `MINTER`. For a Tacit-recorded asset the MINTER is
+   the **pool** (`deployCanonical(assetId, address(pool), …)`); the pool mints on exit
+   / burns on entry.
+3. **Pool integration** — built (commit `ffe1e7f`): `registerMinted(canonicalErc20,…)`
+   (pool-minted: `wrap` burns, `unwrap` mints, no escrow) for Tacit-recorded assets;
+   `registerWrapped(…)` (escrow) for external ERC20s. `IMintBurn` interface; round-trip
+   tested (exit mints, re-enter burns).
+4. **Remaining:** `bridge_mint` issuance for these assets (the confidential entry — the
+   guest path is built; the relay feeds it); the **Tacit-side** collateral/etch (where
+   cBTC.tac is collateralized against TAC/tETH and assets are recorded) — *not* an
+   Ethereum contract.
+
+Net: `ConfidentialPool` (confidential face + the universal minter) + the
+`CanonicalAssetFactory`/`CanonicalBridgedERC20` (public face) + the bridge/reflection
+(Bitcoin span) = the asset hub. The Tier-A factory is retired in favor of this split.
