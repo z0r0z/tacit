@@ -19,6 +19,9 @@ pub type Point = ProjectivePoint;
 use sha2::{Digest, Sha256};
 use tiny_keccak::{Hasher, Keccak};
 
+/// Bitcoin block/tx primitives for bridge_mint (BTC→ETH burn verification).
+pub mod bitcoin;
+
 pub const KERNEL_DOMAIN: &[u8] = b"tacit-evm-cxfer-kernel-v1";
 const BPP_DOMAIN: &[u8] = b"tacit-bpp-v1";
 const N_BITS: usize = 64;
