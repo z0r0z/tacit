@@ -15,9 +15,9 @@ sp1_zkvm::entrypoint!(main);
 use alloy_sol_types::{sol, SolValue};
 use alloy_sol_types::private::{Address, U256};
 use cxfer_core::{
-    bitcoin, claim_id, decompress, deposit_id, from_affine_xy, keccak_merkle_verify, leaf,
-    nullifier, scalar_reduce_be, verify_kernel, verify_pedersen_opening, verify_range,
-    Point,
+    bitcoin, claim_id, decompress, deposit_id, from_affine_xy, imt_non_membership,
+    keccak_merkle_verify, leaf, nullifier, scalar_reduce_be, verify_kernel,
+    verify_pedersen_opening, verify_range, Point,
 };
 use sp1_zkvm::io;
 
@@ -46,6 +46,7 @@ sol! {
         bytes32[] bitcoinBurnsConsumed;
         CrossOut[] crossOuts;
         bytes32[] bitcoinRootsUsed;
+        bytes32 bitcoinSpentRoot;
     }
 }
 
@@ -70,9 +71,23 @@ fn r_path() -> Vec<[u8; 32]> {
     (0..32).map(|_| r32()).collect()
 }
 
+/// Cross-lane gate (improved platinum): assert `nu` is absent from the reflected
+/// Bitcoin spent set committed by `root`, reading the IMT non-membership witness
+/// (low leaf value/next/index/path). Called only when the root is non-zero.
+fn check_btc_nonmembership(nu: &[u8; 32], root: &[u8; 32]) {
+    let low_value = r32();
+    let low_next = r32();
+    let low_index: u64 = io::read();
+    let low_path = r_path();
+    assert!(imt_non_membership(root, nu, &low_value, &low_next, low_index, &low_path), "cross-lane: nu spent on Bitcoin");
+}
+
 pub fn main() {
     let chain_binding = r32();
     let spend_root = r32();
+    // Improved platinum: the reflected Bitcoin spent-set IMT root to prove each
+    // spent ν absent against (0 = gold/Phase-1, no cross-lane check).
+    let bitcoin_spent_root = r32();
     let num_ops: u32 = io::read();
 
     let mut nullifiers: Vec<[u8; 32]> = Vec::new();
@@ -114,7 +129,9 @@ pub fn main() {
                     let secret = r32();
                     let lf = leaf(&asset, &cx, &cy, &owner);
                     assert!(keccak_merkle_verify(&lf, leaf_index, &path, &spend_root), "membership");
-                    nullifiers.push(nullifier(&secret));
+                    let nu = nullifier(&secret);
+                    if bitcoin_spent_root != [0u8; 32] { check_btc_nonmembership(&nu, &bitcoin_spent_root); }
+                    nullifiers.push(nu);
                     in_pts.push(p);
                 }
 
@@ -154,6 +171,7 @@ pub fn main() {
                     let lf = leaf(&asset, &cx, &cy, &owner);
                     assert!(keccak_merkle_verify(&lf, leaf_index, &path, &spend_root), "membership");
                     let nu = nullifier(&secret);
+                    if bitcoin_spent_root != [0u8; 32] { check_btc_nonmembership(&nu, &bitcoin_spent_root); }
                     if bind.is_none() { bind = Some(nu); }
                     nullifiers.push(nu);
                     in_pts.push(p);
@@ -263,7 +281,9 @@ pub fn main() {
                 let lf = leaf(&asset, &cx, &cy, &owner);
                 assert!(keccak_merkle_verify(&lf, leaf_index, &path, &spend_root), "membership");
                 assert!(verify_pedersen_opening(&c, value, &r), "unwrap opening");
-                nullifiers.push(nullifier(&secret));
+                let nu = nullifier(&secret);
+                if bitcoin_spent_root != [0u8; 32] { check_btc_nonmembership(&nu, &bitcoin_spent_root); }
+                nullifiers.push(nu);
                 withdrawals.push(Withdrawal {
                     assetId: asset.into(),
                     recipient: Address::from(recipient),
@@ -286,6 +306,7 @@ pub fn main() {
         bitcoinBurnsConsumed: bitcoin_burns.into_iter().map(Into::into).collect(),
         crossOuts: cross_outs,
         bitcoinRootsUsed: bitcoin_roots.into_iter().map(Into::into).collect(),
+        bitcoinSpentRoot: bitcoin_spent_root.into(),
     };
     io::commit_slice(&pv.abi_encode());
 }

@@ -22,9 +22,10 @@ import {ConfidentialPool} from "../src/ConfidentialPool.sol";
 ///      --rpc-url $RPC --private-key $PK --broadcast --verify
 contract DeployConfidentialPool is Script {
     // Confidential guest vkey: the complete gen-1 op set — wrap/transfer/unwrap/
-    // bridge_burn/bridge_mint — 2026-06-07. CPU-proven + verified on-chain via the
+    // bridge_burn/bridge_mint — plus the improved-platinum cross-lane non-membership
+    // gate (IMT, bitcoinSpentRoot). 2026-06-07. CPU-proven + verified on-chain via the
     // real SP1VerifierGroth16 (v6.1.0). Override via PROGRAM_VKEY env if the guest changes.
-    bytes32 constant DEFAULT_VKEY = 0x000e8a8c79a18d62db10e02dd7302872cbf7126751fd35383b33f68164ce3e42;
+    bytes32 constant DEFAULT_VKEY = 0x0063293d610444fc9779777bbe3a6b5d7e50e0fabc5e603f8637f1ef7a126acf;
 
     function run() external {
         address sp1Verifier = vm.envAddress("SP1_VERIFIER");

@@ -10,6 +10,7 @@ fn main() {
     let mut stdin = SP1Stdin::new();
     stdin.write(&hexv(f["chainBinding"].as_str().unwrap())); // header: chainBinding
     stdin.write(&vec![0u8; 32]);                              // spendRoot (unused by bridge_mint)
+    stdin.write(&vec![0u8; 32]);                              // bitcoinSpentRoot = 0
     stdin.write(&1u32);                                       // numOps
     stdin.write(&4u8);                                        // OP_BRIDGE_MINT
     stdin.write(&hexv(f["asset"].as_str().unwrap()));

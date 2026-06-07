@@ -95,9 +95,17 @@ contract ConfidentialPool is ReentrancyGuardTransient {
 
     // Nullifiers spent on Bitcoin, reflected here so the Ethereum fast lane can
     // refuse to re-spend them (improved platinum, asymmetric: Bitcoin is the
-    // canonical arbiter). Empty until a reflection relay is attesting → no-op in
-    // gold/Phase-1. The settle guest is unchanged; this gate lives on-chain.
+    // canonical arbiter). The per-nullifier map is the bootstrap/defense path
+    // (no-op until reflection is on). The scalable path is the indexed-Merkle root
+    // below: the settle guest proves non-membership of each spent ν against it.
     mapping(bytes32 => bool) public knownBitcoinSpent;
+
+    // The reflected Bitcoin spent-nullifier indexed-Merkle root (set by the
+    // reflection relay). A settle that does cross-lane non-membership in-guest
+    // commits the root it checked against in `pv.bitcoinSpentRoot`; this must equal
+    // the current reflected root, so a stale root (omitting recent Bitcoin spends)
+    // can't be used. O(1) on-chain — the scalable cross-lane gate.
+    bytes32 public knownBitcoinSpentRoot;
 
     // ──────────────────── Public-values layout ────────────────────
 
@@ -120,6 +128,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         bytes32[] bitcoinBurnsConsumed; // claimIds of Bitcoin burns minted here, gated once
         CrossOut[] crossOuts;          // Ethereum burns destined for Bitcoin
         bytes32[] bitcoinRootsUsed;    // Bitcoin pool roots a bridge_mint proved membership against
+        bytes32 bitcoinSpentRoot;     // Bitcoin spent-set IMT root the guest proved non-membership against (0 = none)
     }
 
     // ──────────────────── Events ────────────────────
@@ -138,6 +147,8 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     event BitcoinRootAttested(bytes32 indexed root);
     // Nullifiers spent on Bitcoin, reflected onto Ethereum (improved-platinum gate).
     event BitcoinSpentReflected(bytes32[] nullifiers);
+    // The reflected Bitcoin spent-set indexed-Merkle root advanced.
+    event BitcoinSpentRootReflected(bytes32 indexed root);
     // An Ethereum note was burned for Bitcoin; validators honor it once past finality.
     event CrossOutRecorded(bytes32 indexed claimId, uint16 destChain, bytes32 destCommitment, bytes32 nullifier, bytes32 assetId);
 
@@ -162,6 +173,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     error NotOracle();
     error UnknownBitcoinRoot();
     error BitcoinSpent();
+    error StaleBitcoinSpentRoot();
 
     // ──────────────────── Constructor ────────────────────
 
@@ -249,6 +261,16 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         emit BitcoinSpentReflected(nullifiers);
     }
 
+    /// @notice Advance the reflected Bitcoin spent-nullifier indexed-Merkle root.
+    ///         The relay proves (SP1) the Bitcoin pool's spent set up to the relay
+    ///         tip and posts its root; a settle's in-guest non-membership must be
+    ///         against this exact root (freshness — no stale-root double-spend).
+    function reflectBitcoinSpentRoot(bytes32 root) external {
+        if (msg.sender != BITCOIN_ROOT_ORACLE) revert NotOracle();
+        knownBitcoinSpentRoot = root;
+        emit BitcoinSpentRootReflected(root);
+    }
+
     // ──────────────────── Settle (the one proof entrypoint) ────────────────────
 
     /// @notice Verify one SP1 proof and apply its effects: mark nullifiers, append
@@ -268,6 +290,10 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         // confidential-pool root (improved platinum: a Bitcoin-homed note spent on
         // the Ethereum fast lane). Both are oracle/relay-attested.
         if (pv.spendRoot != bytes32(0) && !everKnownRoot[pv.spendRoot] && !knownBitcoinRoot[pv.spendRoot]) revert UnknownRoot();
+        // Cross-lane non-membership (improved platinum): if the guest proved each
+        // spent ν absent from the Bitcoin spent set, it must be against the CURRENT
+        // reflected root — a stale root could omit a recent Bitcoin spend.
+        if (pv.bitcoinSpentRoot != bytes32(0) && pv.bitcoinSpentRoot != knownBitcoinSpentRoot) revert StaleBitcoinSpentRoot();
         if (memos.length != pv.leaves.length) revert MemoLeafMismatch();
 
         for (uint256 i; i < pv.nullifiers.length; ++i) {

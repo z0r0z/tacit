@@ -584,6 +584,44 @@ contract ConfidentialPoolTest is Test {
         _settle(pv);
     }
 
+    // ──────────────────── improved platinum: reflected spent-set root (IMT) ────────────────────
+
+    event BitcoinSpentRootReflected(bytes32 indexed root);
+
+    function test_reflect_bitcoin_spent_root_only_oracle() public {
+        bytes32 r = keccak256("imt-root");
+        vm.expectRevert(ConfidentialPool.NotOracle.selector);
+        pool.reflectBitcoinSpentRoot(r);
+        vm.expectEmit(true, false, false, false, address(pool));
+        emit BitcoinSpentRootReflected(r);
+        vm.prank(ORACLE);
+        pool.reflectBitcoinSpentRoot(r);
+        assertEq(pool.knownBitcoinSpentRoot(), r, "root reflected");
+    }
+
+    /// A settle whose in-guest non-membership used a stale Bitcoin spent-set root is
+    /// rejected — it could omit a recent Bitcoin spend.
+    function test_stale_bitcoin_spent_root_rejected() public {
+        vm.prank(ORACLE);
+        pool.reflectBitcoinSpentRoot(keccak256("current-root"));
+        ConfidentialPool.PublicValues memory pv = _pv();
+        pv.bitcoinSpentRoot = keccak256("stale-root");
+        vm.expectRevert(ConfidentialPool.StaleBitcoinSpentRoot.selector);
+        _settle(pv);
+    }
+
+    /// A settle against the current reflected root is accepted (the guest proved
+    /// non-membership of each spent ν against exactly this root).
+    function test_fresh_bitcoin_spent_root_accepted() public {
+        bytes32 r = keccak256("the-root");
+        vm.prank(ORACLE);
+        pool.reflectBitcoinSpentRoot(r);
+        ConfidentialPool.PublicValues memory pv = _pv();
+        pv.bitcoinSpentRoot = r;
+        _settle(pv); // matches → no revert
+        assertEq(pool.knownBitcoinSpentRoot(), r, "unchanged");
+    }
+
     // ──────────────────── on-chain defense-in-depth (intra-batch) ────────────────────
 
     function test_settle_intrabatch_duplicate_nullifier_reverts() public {

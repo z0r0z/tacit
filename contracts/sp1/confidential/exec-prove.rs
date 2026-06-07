@@ -12,6 +12,7 @@ fn main() {
     let mut stdin = SP1Stdin::new();
     stdin.write(&hexv(f["chainBinding"].as_str().unwrap()));
     stdin.write(&hexv(f["spendRoot"].as_str().unwrap()));
+    stdin.write(&vec![0u8; 32]); // bitcoinSpentRoot = 0 (gold mode, no cross-lane check)
     stdin.write(&1u32);
     stdin.write(&1u8); // OP_TRANSFER
     stdin.write(&hexv(f["asset"].as_str().unwrap()));
