@@ -230,6 +230,64 @@ generation, so there is never a migration. What this means concretely:
   than a rebuild. One vkey, one contract, one anonymity set — and no future
   migration to reconcile two generations of notes.
 
+### `destChain` selectors
+
+`crossOut.destChain` / the mint's destination are abstract `uint16` selectors,
+not EVM chain ids: **1 = bitcoin, 2 = ethereum**. They are inputs to `claimId`
+only; chain-binding to *this* deployment is the separate `chainBinding` field.
+
+### `bridge_mint` is the mirror of `bridge_burn`
+
+The key simplification: a Bitcoin confidential burn *destined for Ethereum* is a
+`bridge_burn` with `destChain = ethereum` — it produces a `crossOut` whose
+`destCommitment` **is the Ethereum leaf to mint** (`keccak(asset ‖ Cx ‖ Cy ‖
+owner_eth)`), with `claimId = keccak(2 ‖ destCommitment ‖ ν ‖ asset)`. So the
+claimId/commitment math is already built and locked three-way. `bridge_mint`'s
+guest:
+
+1. **Verify the Bitcoin burn is confirmed** — reuse `tETH`'s `bitcoin.rs`:
+   `extract_merkle_root`/`bits_to_target` (header), header-chain linkage to a
+   relayed anchor, `compute_merkle_root`(txids) == block root, `compute_txid`(tx)
+   in the block, `extract_taproot_envelope` to read the burn payload. (The one
+   box-gated piece; it is calling live, audited tETH code.)
+2. **Verify the burned note was real** — its membership against the relayed
+   Bitcoin confidential-pool root + its range/opening (the burn's in-envelope
+   proof), so no unbacked value is minted.
+3. **Carry the commitment verbatim** — insert `destCommitment` as the Ethereum
+   leaf (`pv.leaves`), so `v_mint == v_burn` by construction (no re-commit).
+4. **Gate one-mint-per-burn** — emit `claimId` in `pv.bitcoinBurnsConsumed`; the
+   contract's `bridgeMinted` rejects a replay.
+
+A memo sealed to the recipient's Ethereum scan key rides in the burn envelope and
+is emitted in `LeavesInserted`, so the recipient recovers the minted note from
+chain + seed with the *same* indexer used for native notes — the minted note is
+byte-identical to a native one. Validated end-to-end in Node
+(`tests/confidential-bridge-mint.mjs`): burn → mint → recover, conservation and
+claimId consistency, recovery with a folding membership path. Only step 1's
+in-guest wiring + the final `cargo prove` remain (box).
+
+### Custody / backing — resolved
+
+A two-sided (bridged) asset has its **canonical backing on one chain**; notes on
+the other chain are *claims*. For an ETH-origin asset (tETH), the backing is the
+ETH held on Ethereum; Bitcoin tETH notes are claims on it. Cross-chain moves
+convert between *directly-backed* and *claim* notes **without changing total
+backing**:
+
+- `bridge_mint` (BTC→ETH) turns a Bitcoin *claim* into a directly-backed Ethereum
+  note. No new backing is created — the ETH was already on Ethereum; the
+  Bitcoin-burn proof (step 2) + `claimId`-once is what prevents minting an
+  unbacked note.
+- `bridge_burn` (ETH→BTC) turns a directly-backed Ethereum note into a Bitcoin
+  claim; the backing stays on Ethereum.
+
+Invariants: (a) Σ Ethereum directly-backed notes ≤ Ethereum escrow (the pool's
+existing escrow checks); (b) Σ notes across both chains ≤ total backing (the
+tETH mint-only-reserve discipline, the F-2 lesson). A BTC-origin asset mirrors
+this with canonical backing on Bitcoin. So "send to a Bitcoin *or* Ethereum
+address" is sound per-asset, and full for bridged assets — no double-backing, no
+inflation, by construction.
+
 ## 9. Platinum (unified set) sketch + recovery
 
 **Platinum** replaces the bridge-claim with a single Ethereum-anchored nullifier
