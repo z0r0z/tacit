@@ -429,6 +429,53 @@ accepts provisional-until-anchored; a user wanting pure Bitcoin sovereignty stay
 the sovereign lane and waits for Bitcoin. Same notes, same assets, same AMM /
 orderbook / transfers — two settlement speeds, one source of truth.
 
+### What the fast lane reuses vs. adds
+
+The slow, costly, audit-heavy parts never move:
+
+| Layer | V1 (lane + bridge) | V2 (one note, both surfaces) |
+|---|---|---|
+| SP1 guest / vkey / ceremony / prover | **reuse unchanged** | **reuse unchanged** |
+| `ConfidentialPool` contract | **reuse as deployed** | + `knownBitcoinSpent` gate → fresh multigen deploy |
+| New work | off-chain anchor relay + Bitcoin validator rule | + the on-chain cross-lane gate |
+
+The fast lane adds **no op** — fast-lane trades are the existing `transfer`/`swap`/
+`bridge_*` ops settling on Ethereum, and `settle` *is already* a ~12s confirm. So
+the guest, vkey, ceremony, and prover are fixed forever; you iterate the off-chain
+layer (and, only for V2, one contract field via multigen — still no circuit change).
+
+### The best-compromise realization — home-chain notes + optimistic relayers
+
+The cheapest *sound* dual lane avoids V2's cross-lane gate entirely:
+
+1. **Notes are homed on one surface; moving between surfaces is the gold bridge**
+   (§4), which already serializes one-spend (`claimId`-once + the home nullifier
+   set). So there is **no cross-lane native double-spend → no platinum gate → no
+   contract change** — this is V1, on the deployed code.
+2. **Sovereign lane** = trade on the note's home (Bitcoin for BTC-homed assets),
+   wait for Bitcoin, indexer-of-record. **Zero Ethereum dependency.**
+3. **Fast lane** = trade on Ethereum (~12s) + anchor roots to Bitcoin for finality.
+4. **Seamless cross-lane movement via optimistic relayers** (intent / fast-bridge):
+   a relayer fronts the destination note *instantly* from its own pre-bridged
+   liquidity and reclaims via the existing `bridge_mint`/`crossOut` (`claimId`-once
+   makes the reclaim exactly-once); the trustless-but-slow path is the plain bridge.
+   This reuses Tacit's **existing settler/intent economics** (preauth-bid intents,
+   AMM settlers, the `T_TRADE_BATCH` `0x39` cross-surface atomic draft) — no protocol
+   change, just a liquidity layer. The relayer prices the finality-gate reorg risk.
+   - *Confidentiality wrinkle (honest):* a relayer must know the amount to provision
+     liquidity, so a confidential fast-relay needs the user to disclose the amount
+     **1:1, privately, to that relayer** (not public) — or use denominations
+     (k-anonymity), or, for **swaps**, the cross-surface atomic batch which needs no
+     fronting because it settles atomically.
+5. **Bitcoin stays the arbiter/sink** — the sovereign lane is pure Bitcoin; the fast
+   lane finalizes to Bitcoin via the anchor.
+
+The only thing this compromise gives up vs. full platinum is **indistinguishable
+origin** (a note's history can show it crossed). That is a *later* multigen upgrade
+(V2 + the unified deposit tree), not a prerequisite. So: **gold + Bitcoin-anchoring
++ optimistic relayers = the dual lane with seamless UX, Bitcoin-sovereign, on the
+unchanged guest/prover/ceremony (and unchanged contracts for the home-chain model).**
+
 ## 11. Open decisions
 
 - **`claimId` binding** — what exactly the burn commits to (destChain ‖
@@ -459,3 +506,8 @@ orderbook / transfers — two settlement speeds, one source of truth.
   - *Per-asset / per-trade lane policy* — default lane, whether an asset may be
     fast-lane-only or sovereign-only, and how the UX signals the active tier
     (provisional vs Bitcoin-final) so consumers know the finality they're acting on.
+  - *V2 cross-lane gate placement* (only if pursuing one-note-both-surfaces beyond
+    the home-chain compromise): an **on-chain** `knownBitcoinSpent` mapping fed by the
+    relay + checked in `settle` (no guest/vkey/ceremony change; a fresh multigen pool
+    deploy) vs an **in-guest** Bitcoin spend-accumulator (vkey change, heavier). Prefer
+    on-chain — it keeps the circuit + ceremony fixed.
