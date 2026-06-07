@@ -8,8 +8,9 @@ import {ConfidentialPool} from "../src/ConfidentialPool.sol";
 
 /// The canonical asset hub: a CREATE2 factory issues a deterministic public ERC20 per
 /// asset (the public face, Uniswap-tradeable), gated mint/burn by the bridge/collateral
-/// minter; ConfidentialPool then wraps it for the confidential face. This proves the
-/// split (factory issues, pool makes confidential) and the deterministic address.
+/// minter; ConfidentialPool then wraps it for the confidential face. Address = f(assetId);
+/// `name` is the constant brand "Tacit Token"; the only per-asset metadata is
+/// (symbol, decimals), deterministic to the real asset.
 contract CanonicalAssetFactoryTest is Test {
     CanonicalAssetFactory factory;
 
@@ -17,30 +18,33 @@ contract CanonicalAssetFactoryTest is Test {
     address constant USER = address(0xA11CE);
     bytes32 constant ASSET = keccak256("cBTC.tac");
 
+    address constant ETCHER = address(0xE7C);
+    bytes32 constant SALT = bytes32(uint256(7));
+
     function setUp() public {
         factory = new CanonicalAssetFactory();
     }
 
     function _deploy() internal returns (CanonicalBridgedERC20 tok) {
-        tok = CanonicalBridgedERC20(factory.deployCanonical(ASSET, MINTER, "Canonical cBTC", "cBTC", 8));
+        tok = CanonicalBridgedERC20(factory.deployCanonical(ASSET, MINTER, "cBTC", 8));
     }
 
     function test_deploy_is_canonical_and_deterministic() public {
-        address predicted = factory.predict(ASSET, MINTER, "Canonical cBTC", "cBTC", 8);
+        address predicted = factory.predict(ASSET);
         CanonicalBridgedERC20 tok = _deploy();
         assertEq(address(tok), predicted, "address == predicted (deterministic)");
         assertEq(factory.tokenOf(ASSET), address(tok), "registered by asset id");
         assertEq(tok.ASSET_ID(), ASSET, "asset id stored");
         assertEq(tok.MINTER(), MINTER, "minter stored");
-        assertEq(tok.name(), "Canonical cBTC");
-        assertEq(tok.symbol(), "cBTC");
-        assertEq(tok.decimals(), 8);
+        assertEq(tok.name(), "Tacit Token", "constant brand name");
+        assertEq(tok.symbol(), "cBTC", "per-asset ticker");
+        assertEq(tok.decimals(), 8, "per-asset decimals");
     }
 
     function test_one_canonical_per_asset() public {
         _deploy();
         vm.expectRevert(CanonicalAssetFactory.AlreadyDeployed.selector);
-        factory.deployCanonical(ASSET, MINTER, "Canonical cBTC", "cBTC", 8);
+        factory.deployCanonical(ASSET, MINTER, "cBTC", 8);
     }
 
     function test_only_minter_mints_and_burns() public {
@@ -93,56 +97,67 @@ contract CanonicalAssetFactoryTest is Test {
         assertEq(tok.balanceOf(USER), 0, "user moved value into the confidential pool");
     }
 
-    // ── self-certifying EVM-etch path: the asset id commits to the metadata ──
-
-    address constant ETCHER = address(0xE7C);
-    bytes32 constant SALT = bytes32(uint256(7));
+    // ── self-certifying EVM-etch path: the asset id commits to (symbol, decimals) ──
 
     function test_etch_derives_and_self_certifies() public {
-        (bytes32 id, address token) = factory.etchCanonical(ETCHER, SALT, MINTER, "Tacit", "TAC", 18);
+        (bytes32 id, address token) = factory.etchCanonical(ETCHER, SALT, MINTER, "TAC", 18);
 
-        assertEq(id, factory.deriveAssetId(ETCHER, SALT, "Tacit", "TAC", 18), "id is the metadata derivation");
+        assertEq(id, factory.deriveAssetId(ETCHER, SALT, "TAC", 18), "id is the metadata derivation");
         assertEq(factory.tokenOf(id), token, "registered by derived id");
 
         CanonicalBridgedERC20 t = CanonicalBridgedERC20(token);
         assertEq(t.ASSET_ID(), id);
-        assertEq(t.name(), "Tacit");
+        assertEq(t.name(), "Tacit Token", "constant brand name");
         assertEq(t.symbol(), "TAC");
         assertEq(t.decimals(), 18);
 
-        assertTrue(factory.verifyMetadata(id, ETCHER, SALT, "Tacit", "TAC", 18), "official metadata verifies on-chain");
+        assertTrue(factory.verifyMetadata(id, ETCHER, SALT, "TAC", 18), "official metadata verifies on-chain");
     }
 
     function test_wrong_metadata_cannot_claim_the_id() public {
-        (bytes32 id,) = factory.etchCanonical(ETCHER, SALT, MINTER, "Tacit", "TAC", 18);
-        assertFalse(factory.verifyMetadata(id, ETCHER, SALT, "Tacit", "TAK", 18), "wrong symbol rejected");
-        assertFalse(factory.verifyMetadata(id, ETCHER, SALT, "Tacit Token", "TAC", 18), "wrong name rejected");
-        assertFalse(factory.verifyMetadata(id, ETCHER, SALT, "Tacit", "TAC", 8), "wrong decimals rejected");
+        (bytes32 id,) = factory.etchCanonical(ETCHER, SALT, MINTER, "TAC", 18);
+        assertFalse(factory.verifyMetadata(id, ETCHER, SALT, "TAK", 18), "wrong symbol rejected");
+        assertFalse(factory.verifyMetadata(id, ETCHER, SALT, "TAC", 8), "wrong decimals rejected");
         // wrong metadata lands at a DIFFERENT id — it can never occupy the canonical one
-        (bytes32 id2,) = factory.etchCanonical(ETCHER, SALT, MINTER, "Tacit", "TAC", 8);
+        (bytes32 id2,) = factory.etchCanonical(ETCHER, SALT, MINTER, "TAC", 8);
         assertTrue(id != id2, "different metadata -> different id");
     }
 
     function test_etch_address_is_deterministic_in_id() public {
-        bytes32 id = factory.deriveAssetId(ETCHER, SALT, "Tacit", "TAC", 18);
-        address predicted = factory.predict(id, MINTER, "Tacit", "TAC", 18);
-        (bytes32 idDeployed, address token) = factory.etchCanonical(ETCHER, SALT, MINTER, "Tacit", "TAC", 18);
+        bytes32 id = factory.deriveAssetId(ETCHER, SALT, "TAC", 18);
+        address predicted = factory.predict(id);
+        (bytes32 idDeployed, address token) = factory.etchCanonical(ETCHER, SALT, MINTER, "TAC", 18);
         assertEq(idDeployed, id, "derive == etch id");
         assertEq(token, predicted, "address == predicted");
     }
 
-    function test_metaHash_is_label_length_prefixed() public view {
-        // labels that would collide under naive concatenation must not collide
-        assertTrue(factory.metaHash("AB", "C", 0) != factory.metaHash("A", "BC", 0), "length-prefix disambiguates");
+    /// The property the bridge relies on: the canonical address is a pure function of the
+    /// asset id — computable BEFORE deploy and independent of the metadata, so the bridge
+    /// can mint to it on first touch and forever after.
+    function test_address_is_pure_function_of_id() public {
+        bytes32 id = keccak256("some-bitcoin-asset");
+        address predicted = factory.predict(id); // knowable before the token exists
+        address token = factory.deployCanonical(id, MINTER, "WHATEVER", 3);
+        assertEq(token, predicted, "deployed address == predicted(id) regardless of metadata");
+        assertEq(CanonicalBridgedERC20(token).name(), "Tacit Token");
+        assertEq(CanonicalBridgedERC20(token).symbol(), "WHATEVER");
+        assertEq(CanonicalBridgedERC20(token).decimals(), 3);
+        assertEq(CanonicalBridgedERC20(token).MINTER(), MINTER);
+    }
+
+    function test_metaHash_distinguishes_symbol_and_decimals() public view {
+        bytes32 h = factory.metaHash("TAC", 18);
+        assertTrue(h != factory.metaHash("TAK", 18), "symbol bound");
+        assertTrue(h != factory.metaHash("TAC", 8), "decimals bound");
     }
 
     /// Cross-language KAT — must equal tests/confidential-canonical-asset-id.mjs so the
     /// derivation is identical in Solidity, JS, and Rust.
     function test_metaHash_kat() public view {
         assertEq(
-            factory.metaHash("Tacit", "TAC", 18),
-            0x2dec931ecd9e631fd629c1c04b2e2dd266eb4c6cad3e679dae839c6c05dbf036,
-            "metaHash KAT (Tacit/TAC/18)"
+            factory.metaHash("TAC", 18),
+            0xdf3026173e81ffe48ad033a90d78054b461ea8303f5d76989bd8d5e050311215,
+            "metaHash KAT (TAC/18)"
         );
     }
 }

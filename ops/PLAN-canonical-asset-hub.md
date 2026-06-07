@@ -100,20 +100,28 @@ ERC20s (USDC) keep the escrow path.
 
 ## Build status
 
-1. **`CanonicalAssetFactory`** (CREATE2) — built (commit `b434cdf`): `deployCanonical`/
-   `predict`, one canonical ERC20 per asset, dedup.
-2. **`CanonicalBridgedERC20`** (the template) — built: a plain ERC20 whose `mint`/
-   `burn` are gated by an immutable `MINTER`. For a Tacit-recorded asset the MINTER is
-   the **pool** (`deployCanonical(assetId, address(pool), …)`); the pool mints on exit
-   / burns on entry.
+1. **`CanonicalAssetFactory`** (CREATE2) — built: `deployCanonical`/`predict(assetId)`
+   (address is `f(assetId)` — constant ERC20 initcode via deploy-param callback), one
+   canonical ERC20 per asset, dedup. Self-certifying metadata: `etchCanonical` /
+   `deriveAssetId` / `verifyMetadata` / `metaHash` bind `(symbol, decimals)` into the id
+   for EVM-native etches; cross-language KAT (Solidity + JS).
+2. **`CanonicalBridgedERC20`** (the template) — built: a plain ERC20 whose `mint`/`burn`
+   are gated by an immutable `MINTER`. Arg-less constructor (reads `(assetId, minter,
+   symbol, decimals)` back from the factory) so the address is `f(assetId)`. `name` is
+   the constant brand `"Tacit Token"`; the only per-asset metadata is `(symbol,
+   decimals)`, deterministic to the real asset. For a Tacit-recorded asset the MINTER is
+   the **pool**; the pool mints on exit / burns on entry.
 3. **Pool integration** — built (commit `ffe1e7f`): `registerMinted(canonicalErc20,…)`
    (pool-minted: `wrap` burns, `unwrap` mints, no escrow) for Tacit-recorded assets;
    `registerWrapped(…)` (escrow) for external ERC20s. `IMintBurn` interface; round-trip
    tested (exit mints, re-enter burns).
-4. **Remaining:** `bridge_mint` issuance for these assets (the confidential entry — the
-   guest path is built; the relay feeds it); the **Tacit-side** collateral/etch (where
-   cBTC.tac is collateralized against TAC/tETH and assets are recorded) — *not* an
-   Ethereum contract.
+4. **Remaining:** `bridge_mint` lazy issuance — on first mint of an `assetId` the pool
+   CREATE2-deploys the canonical ERC20 at `predict(assetId)` with the proven `(symbol,
+   decimals)`, then mints; every mint after is just `mint` against that address. The
+   guest exposes `(ticker, decimals)` in the bridge_mint PublicValues (verified against
+   the etch) so the first-mint metadata is trustless (changes the vkey — a re-prove).
+   Plus the **Tacit-side** collateral/etch (where cBTC.tac is collateralized against
+   TAC/tETH and assets are recorded) — *not* an Ethereum contract.
 
 Net: `ConfidentialPool` (confidential face + the universal minter) + the
 `CanonicalAssetFactory`/`CanonicalBridgedERC20` (public face) + the bridge/reflection

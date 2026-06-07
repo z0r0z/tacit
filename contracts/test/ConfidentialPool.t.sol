@@ -541,7 +541,7 @@ contract ConfidentialPoolTest is Test {
         CanonicalAssetFactory fac = new CanonicalAssetFactory();
         bytes32 canonId = keccak256("TAC");
         CanonicalBridgedERC20 tac = CanonicalBridgedERC20(
-            fac.deployCanonical(canonId, address(pool), "Tacit", "TAC", 18) // MINTER = the pool
+            fac.deployCanonical(canonId, address(pool), "TAC", 18) // MINTER = the pool
         );
         bytes32 a = pool.registerMinted(address(tac), 1, canonId, "Conf TAC", "cTAC", 18);
 

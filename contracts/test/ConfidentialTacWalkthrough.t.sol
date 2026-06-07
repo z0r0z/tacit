@@ -32,7 +32,7 @@ contract ConfidentialTacWalkthroughTest is Test {
         pool = new ConfidentialPool(address(new AcceptVerifier()), bytes32(uint256(0xABCD)), ORACLE);
         CanonicalAssetFactory factory = new CanonicalAssetFactory();
         // Deploy TAC's canonical ERC20 with the POOL as its sole minter.
-        tac = CanonicalBridgedERC20(factory.deployCanonical(keccak256("TAC"), address(pool), "Tacit", "TAC", 8));
+        tac = CanonicalBridgedERC20(factory.deployCanonical(keccak256("TAC"), address(pool), "TAC", 8));
         // Register it as a Tacit-recorded (pool-minted) asset: wrap burns, unwrap mints.
         tacAsset = pool.registerMinted(address(tac), 1, keccak256("TAC"), "Conf TAC", "cTAC", 8);
     }
