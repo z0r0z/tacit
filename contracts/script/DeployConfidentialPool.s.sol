@@ -21,8 +21,10 @@ import {ConfidentialPool} from "../src/ConfidentialPool.sol";
 ///    SP1_VERIFIER=0x... forge script script/DeployConfidentialPool.s.sol \
 ///      --rpc-url $RPC --private-key $PK --broadcast --verify
 contract DeployConfidentialPool is Script {
-    // Full confidential guest vkey (wrap/transfer/unwrap), 2026-06-07.
-    bytes32 constant DEFAULT_VKEY = 0x00df83a48624d56792464fecb6c22d7d6280af7f4697df5b7be66e80c9d8873d;
+    // Confidential guest vkey: wrap/transfer/unwrap/bridge_burn (gen-1), 2026-06-07,
+    // CPU-proven + verified on-chain via the real SP1VerifierGroth16 (v6.1.0). Will
+    // change once OP_BRIDGE_MINT is added; override via PROGRAM_VKEY env when it does.
+    bytes32 constant DEFAULT_VKEY = 0x00c35e0992baa3413c2b2a3d65fa061bc9159f7e4c102713f1bada8b38b5ea6c;
 
     function run() external {
         address sp1Verifier = vm.envAddress("SP1_VERIFIER");
