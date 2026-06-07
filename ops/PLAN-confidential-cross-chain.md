@@ -197,7 +197,7 @@ is a multi-asset `transfer` (per-asset conservation is already in the guest), so
   linearization point.
 - *Backing follows finalization.* The asset must be backed where it finalizes;
   tETH is the clean case, an ETH-native asset finalizing on Bitcoin needs
-  Bitcoin-side backing (the two-sided-liquidity open decision, §10).
+  Bitcoin-side backing (the two-sided-liquidity open decision, §11).
 
 This is **platinum-flavored** — gold already does it as explicit burn→mint phases;
 the *seamless* "swap on ETH, auto-finalize on BTC" UX is platinum polish. But the
@@ -340,15 +340,23 @@ Ethereum reflection) and a far larger audit surface — hence platinum follows g
 plus a scan of both chains; a note carries the same identity on both, so a wallet
 sees one balance.
 
-### Fast-lane framing: Ethereum soft-confirm, Bitcoin-anchored finality
+## 10. Fast lane + sovereign lane (dual-lane settlement)
 
-The same destination, stated as a settlement architecture: **Ethereum is a fast
-Tacit settlement surface; Bitcoin is the finality anchor.** Trades and transfers
-settle on Ethereum in seconds (SP1-verified `settle`, ~12s blocks), and become
-*final* — Tacit-wide and cross-chain — once the Ethereum state is anchored on
-Bitcoin. This is platinum (§9) expressed as a *continuous* fast layer rather than
-discrete per-note bridge-claims (gold, §4); gold is the discrete burn+mint, the
-fast lane is "Ethereum always-fast, periodically finalized to Bitcoin."
+Rather than *choose* who orders (the §11 fork), Tacit offers **two lanes over one
+note set**, and the user picks per trade:
+
+- **Sovereign lane (Bitcoin-native, default).** Trades/transfers settle on Bitcoin
+  Tacit directly; the Tacit indexer is the record until Bitcoin finality (the
+  *existing* model). Bitcoin is the sole ordering + finality authority. Slower
+  (Bitcoin blocks) but fully sovereign — **zero Ethereum dependency**, the option a
+  user takes when willing to wait for Bitcoin blocks.
+- **Fast lane (Ethereum-fast, Bitcoin-final, opt-in).** Trades settle on Ethereum in
+  seconds (SP1-verified `settle`, ~12s blocks) and finalize when the Ethereum state
+  is anchored to Bitcoin. Within the lane Ethereum serializes; globally it is
+  *subordinate to Bitcoin* (see "Harmonizing the lanes" below).
+
+The fast lane is platinum (§9) as a *continuous* layer (vs gold's discrete per-note
+bridge-claims, §4): "Ethereum always-fast, periodically finalized to Bitcoin."
 
 **It is viable, and it leans on the favorable asymmetry (§2).** Three finality
 tiers fall out, the first two already real:
@@ -392,7 +400,36 @@ toward the fast lane (continuous, the endgame). The AMM batch-swap composition
 (§7) slots in directly: fast confidential trades execute on the Ethereum fast lane
 *or* route to the Bitcoin batch AMM, and finalize to Bitcoin either way.
 
-## 10. Open decisions
+### Harmonizing the lanes — Bitcoin arbitrates, the fast lane yields
+
+The two lanes share **one nullifier set** (the union over both surfaces; the
+chain-independent ν makes a note's spend the same identifier in either lane), so a
+note is spent once, period. They differ only in *speed* and *who serializes*, not
+in double-spend protection. The reconciliation rule that keeps them sound:
+
+- **Bitcoin is the global arbiter.** When a fast-lane spend (Ethereum-ordered) and a
+  sovereign-lane spend of the *same* note both reach Bitcoin, Bitcoin's anchored
+  order decides and the loser is rejected. The sovereign lane, being directly on
+  Bitcoin, **wins ties** — it can never be overridden by an un-anchored fast-lane
+  confirm.
+- **The fast lane is an accelerator that defers to Bitcoin.** A fast-lane confirm is
+  *provisional* until Bitcoin-anchored; it yields to any conflicting Bitcoin-native
+  spend (and to an Ethereum reorg before the anchor). The worst case is a fast-lane
+  soft-confirm being *reverted* — never a final double-spend.
+- **The sovereign lane stays sovereign.** It never waits on Ethereum; its liveness
+  and ordering are pure Bitcoin. It only needs to *see* fast-lane spends already
+  Bitcoin-anchored (so it doesn't re-spend a finalized note) — the easy direction
+  (§2). This removes platinum's coupling concern *for sovereign-lane users*: their
+  Bitcoin liveness never depends on Ethereum reflection.
+
+This resolves the §11 ordering fork by **not globally choosing one**: *within* the
+fast lane Ethereum orders (option A, for UX), while *overall* Bitcoin is sovereign
+(option B's guarantee). A user wanting Ethereum speed opts into the fast lane and
+accepts provisional-until-anchored; a user wanting pure Bitcoin sovereignty stays in
+the sovereign lane and waits for Bitcoin. Same notes, same assets, same AMM /
+orderbook / transfers — two settlement speeds, one source of truth.
+
+## 11. Open decisions
 
 - **`claimId` binding** — what exactly the burn commits to (destChain ‖
   destCommitment ‖ ν ‖ asset), so a claim is uniquely mintable on exactly one
@@ -408,3 +445,17 @@ toward the fast lane (continuous, the endgame). The AMM batch-swap composition
   the foundation).
 - **Gold → platinum migration** — whether the unified set is a later generation
   on top of gold or a parallel mode.
+- **Fast-lane ordering authority (the A/B fork, §10).** Resolved in principle by the
+  dual-lane model (fast lane orders internally on Ethereum = A; Bitcoin is the global
+  arbiter = B's guarantee). The remaining sub-decisions:
+  - *Lane reconciliation cadence* — how synchronously the fast lane learns of
+    sovereign (Bitcoin-native) spends to avoid surfacing a soft-confirm that will
+    lose: a synchronous indexer-gate on the Ethereum `settle` (adds an indexer
+    liveness dependency) vs optimistic-accept + reconcile-at-anchor (simpler, more
+    revertible soft-confirms).
+  - *Anchor cadence & who anchors* — the relay that inscribes the Ethereum root on
+    Bitcoin, its frequency, and its economics (a sibling of the bridge + Bitcoin-root
+    relays). Sets the fast-lane "time-to-final".
+  - *Per-asset / per-trade lane policy* — default lane, whether an asset may be
+    fast-lane-only or sovereign-only, and how the UX signals the active tier
+    (provisional vs Bitcoin-final) so consumers know the finality they're acting on.
