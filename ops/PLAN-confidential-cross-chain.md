@@ -204,6 +204,42 @@ the *seamless* "swap on ETH, auto-finalize on BTC" UX is platinum polish. But th
 gen-1 ABI (chain-independent ν, `crossOuts`, `bridgeMinted`) is exactly what
 platinum activates against, so landing it is turning on rails, not migrating.
 
+### Confidential cross-chain swap via the Bitcoin batch AMM (`T_SWAP_BATCH`)
+
+Pooled-liquidity swaps don't need a new Ethereum DEX — they reuse the **existing,
+ceremony-locked Bitcoin AMM**, confidentially. `T_SWAP_BATCH` (`0x2F`,
+`amm_swap_batch.circom`, SPEC §5.16) is a *privacy-mode* batch swap: N ≤ 16 traders'
+amounts are hidden (BabyJubJub Pedersen + in-circuit range proofs), a uniform
+clearing price `P_clear` is derived in-circuit from the *private* aggregates and the
+*public* net reserve delta, and each trader's fill is computed against `P_clear`. So
+individual amounts are hidden among the batch (anonymity = batch size); only the
+batch's net reserve movement is public, and everyone clears at one price.
+
+It composes with the bridge through the **shared secp256k1 commitment layer**. A
+confidential note is a secp Pedersen commitment; the AMM's **Sigma cross-curve
+binding** proves a secp Pedersen and a BabyJubJub Pedersen carry the *same hidden
+amount* (it already backs every AMM swap intent/receipt). So:
+
+> confidential asset → `bridge_burn` to its Bitcoin form → its secp commitment is
+> sigma-bound to a BJJ commitment → enters a `T_SWAP_BATCH` batch (hidden amount,
+> uniform price) → `bridge_mint` the result back
+
+That is pooled liquidity **and** a hidden swap amount on infrastructure that exists
+today — not "shield → public swap → re-shield". Properties / honest limits:
+- **Amount-private, batch-bounded.** You are hidden among ≤16 batch peers; the net
+  batch delta is public. This is the realistic limit of any uniform-clearing batch
+  AMM, not a defect.
+- **No new circuit / ceremony.** The primitive (secp Pedersen + sigma binding +
+  `amm_swap_batch`) is built; wiring a *bridged note's* UTXO/leaf format into an AMM
+  swap intent is connective work. `T_TRADE_BATCH` (`0x39`, draft) already
+  anticipates cross-surface atomic settlement reusing `amm_swap_batch`.
+- **Two swap modes, complementary.** `T_SWAP_BATCH` = pooled, always-on, amount-
+  private (needs a batch). The matched confidential swap (gen-1, §7 above) = OTC /
+  peer, amount-private, no pool, needs a counterparty. Public-amount single swaps
+  use `T_SWAP_VAR` (`0x32`, no Groth16). Offer all three; route by need.
+- **Pilot-grade.** The AMM's existing soundness posture (single non-consensus
+  worker, reorg/CAS deferred) carries over to cross-chain swaps routed through it.
+
 ## 8. Folded into gen-1, not a separate generation (decision 2026-06-07)
 
 Earlier framing treated cross-chain as a later generation-N deployed alongside
@@ -303,6 +339,58 @@ Ethereum reflection) and a far larger audit surface — hence platinum follows g
 **Recovery** is unchanged from the foundation in either model: seed-derived notes
 plus a scan of both chains; a note carries the same identity on both, so a wallet
 sees one balance.
+
+### Fast-lane framing: Ethereum soft-confirm, Bitcoin-anchored finality
+
+The same destination, stated as a settlement architecture: **Ethereum is a fast
+Tacit settlement surface; Bitcoin is the finality anchor.** Trades and transfers
+settle on Ethereum in seconds (SP1-verified `settle`, ~12s blocks), and become
+*final* — Tacit-wide and cross-chain — once the Ethereum state is anchored on
+Bitcoin. This is platinum (§9) expressed as a *continuous* fast layer rather than
+discrete per-note bridge-claims (gold, §4); gold is the discrete burn+mint, the
+fast lane is "Ethereum always-fast, periodically finalized to Bitcoin."
+
+**It is viable, and it leans on the favorable asymmetry (§2).** Three finality
+tiers fall out, the first two already real:
+1. **Instant (client-side).** The counterparty verifies the note's proof the moment
+   they receive it — no chain. Already true of the confidential foundation.
+2. **Fast (Ethereum `settle`).** The SP1 proof lands on Ethereum and its nullifier
+   set linearizes the spend — fast soft-finality, on-chain, ~12s. This is the
+   "fast-mode Tacit layer."
+3. **Final (Bitcoin-anchored).** A relay inscribes the Ethereum state root (commit
+   tree + nullifier accumulator) on Bitcoin via a Tacit envelope; once Ethereum-
+   final and Bitcoin-anchored, Tacit's off-chain validators treat it as canonical.
+
+**The one mental-model correction:** Bitcoin cannot *verify* the SP1 proof (no
+smart contracts / no SP1 verifier). So "proof recorded on Bitcoin" means the proof
+(or a commitment to it + the Ethereum root) is **inscribed/ordered on Bitcoin and
+validated off-chain by Tacit's indexer** — Bitcoin provides ordering, data
+availability, and finality, *not* on-chain verification. This is exactly Tacit's
+existing model (off-chain-validated, Bitcoin as the ordering/DA layer), so it fits
+— it is a **sovereign-rollup** shape (Bitcoin = DA/ordering, validity-proven on
+Ethereum + off-chain checked), not a smart-contract rollup.
+
+**Why this is the destination, not the first step** (the hard parts, all platinum's):
+- *Cross-chain nullifier consistency.* A note must not spend on Ethereum's fast lane
+  *and* natively on Bitcoin before the anchor reconciles them. Solvable via the
+  chain-independent ν: Ethereum serializes its fast-spends; Bitcoin validators
+  (off-chain, the easy direction) honor Ethereum spends once Ethereum-final. But it
+  couples Bitcoin's *global* view to Ethereum reflection.
+- *The finality gate is the whole risk surface.* Fast = provisional. An Ethereum
+  reorg before the Bitcoin anchor unwinds a "confirmed" trade; a consumer needing
+  hard finality waits for the anchor. The gate (§5) is what bounds it.
+- *The anchor relay* (who inscribes the Ethereum root on Bitcoin, on what cadence)
+  is new operational infra — a sibling of the bridge relay (§4 ops) and the
+  Bitcoin-root relay (`PLAN-confidential-btc-relay.md`).
+- *Audit surface* is far larger than gold's.
+
+**Relation to the bridge.** The fast lane *is* bridging generalized: the gen-1
+primitives — chain-independent ν, `crossOut`/`bridgeMinted`, the relays — are the
+building blocks; the fast lane composes them into a settlement layer instead of
+invoking them per cross. So building gold first (discrete, shipped) is also building
+toward the fast lane (continuous, the endgame). The AMM batch-swap composition
+(§7) slots in directly: fast confidential trades execute on the Ethereum fast lane
+*or* route to the Bitcoin batch AMM, and finalize to Bitcoin either way.
 
 ## 10. Open decisions
 
