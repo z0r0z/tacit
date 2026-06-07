@@ -80,6 +80,30 @@ contract ConfidentialPoolKATTest is Test {
         assertFalse(_verifyPath(leaf, idx, path, pool.currentRoot()), "tampered path rejected");
     }
 
+    /// Cross-chain: the JS prover's destCommitment (Bitcoin leaf) and claimId
+    /// must equal the contract's keccak(abi.encodePacked(...)) re-derivations —
+    /// otherwise a settle would reject the crossOut or mint the wrong note.
+    function test_crossout_claimid_matches_js() public view {
+        string memory bb = vm.readFile(string.concat(vm.projectRoot(), "/test/fixtures/bridge_burn.json"));
+        bytes32 assetId = vm.parseJsonBytes32(bb, ".assetId");
+        uint16 destChain = uint16(vm.parseJsonUint(bb, ".destChain"));
+        bytes32 bindNullifier = vm.parseJsonBytes32(bb, ".bindNullifier");
+        uint256 m = vm.parseJsonUint(bb, ".count");
+
+        for (uint256 i; i < m; ++i) {
+            string memory base = string.concat(".crossOuts[", vm.toString(i), "]");
+            bytes32 cx = vm.parseJsonBytes32(bb, string.concat(base, ".cx"));
+            bytes32 cy = vm.parseJsonBytes32(bb, string.concat(base, ".cy"));
+            bytes32 owner = vm.parseJsonBytes32(bb, string.concat(base, ".owner"));
+
+            bytes32 destCommitment = keccak256(abi.encodePacked(assetId, cx, cy, owner));
+            assertEq(destCommitment, vm.parseJsonBytes32(bb, string.concat(base, ".destCommitment")), "destCommitment layout");
+
+            bytes32 claimId = keccak256(abi.encodePacked(destChain, destCommitment, bindNullifier, assetId));
+            assertEq(claimId, vm.parseJsonBytes32(bb, string.concat(base, ".claimId")), "claimId layout");
+        }
+    }
+
     /// Mirror of the SP1 guest's keccak_merkle_verify (and contract _insertLeaf
     /// ordering): fold the leaf up with its siblings using the index bits.
     function _verifyPath(bytes32 leaf, uint256 index, bytes32[] memory path, bytes32 root)

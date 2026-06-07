@@ -374,6 +374,12 @@ pub fn nullifier(secret: &[u8; 32]) -> [u8; 32] { kn(&[secret]) }
 pub fn deposit_id(asset_id: &[u8; 32], amount_be32: &[u8; 32], cx: &[u8; 32], cy: &[u8; 32], owner: &[u8; 32]) -> [u8; 32] {
     kn(&[asset_id, amount_be32, cx, cy, owner])
 }
+/// claimId = keccak(abi.encodePacked(destChain:uint16, destCommitment, nullifier,
+/// asset_id)) — matches ConfidentialPool.settle's on-chain re-derivation and the
+/// dapp prover. Binds a cross-chain burn to exactly one mintable destination.
+pub fn claim_id(dest_chain: u16, dest_commitment: &[u8; 32], nullifier: &[u8; 32], asset_id: &[u8; 32]) -> [u8; 32] {
+    kn(&[&dest_chain.to_be_bytes(), dest_commitment, nullifier, asset_id])
+}
 
 /// Membership against the on-chain Keccak incremental Merkle root.
 pub fn keccak_merkle_verify(leaf: &[u8; 32], mut index: u64, path: &[[u8; 32]], root: &[u8; 32]) -> bool {
@@ -459,5 +465,26 @@ mod tests {
         let path: Vec<[u8; 32]> = f["memberPath"].as_array().unwrap().iter().map(|v| arr32(v.as_str().unwrap())).collect();
         let root = arr32(f["treeRoot"].as_str().unwrap());
         assert!(keccak_merkle_verify(&leaves[idx as usize], idx, &path, &root), "membership");
+    }
+
+    // Cross-chain: the guest's claim_id + destCommitment (Bitcoin leaf) must equal
+    // the JS prover's and the contract's — locked three-way against the fixture so
+    // a crossOut the guest emits is exactly what settle re-derives and Bitcoin honors.
+    #[test]
+    fn claim_id_and_dest_commitment_match_js_and_contract() {
+        let f: serde_json::Value =
+            serde_json::from_str(include_str!("../../fixtures/bridge_burn.json")).unwrap();
+        let asset = arr32(f["assetId"].as_str().unwrap());
+        let dest_chain = f["destChain"].as_u64().unwrap() as u16;
+        let bind = arr32(f["bindNullifier"].as_str().unwrap());
+
+        for c in f["crossOuts"].as_array().unwrap() {
+            let cx = arr32(c["cx"].as_str().unwrap());
+            let cy = arr32(c["cy"].as_str().unwrap());
+            let owner = arr32(c["owner"].as_str().unwrap());
+            let dest = leaf(&asset, &cx, &cy, &owner);
+            assert_eq!(dest, arr32(c["destCommitment"].as_str().unwrap()), "destCommitment");
+            assert_eq!(claim_id(dest_chain, &dest, &bind, &asset), arr32(c["claimId"].as_str().unwrap()), "claimId");
+        }
     }
 }

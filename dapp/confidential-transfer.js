@@ -28,11 +28,23 @@ export function makeConfidentialTransfer({ keccak256 }) {
   const H = bppGens().H;
 
   const bytesToHex = (b) => Buffer.from(b).toString('hex');
+  const hexToBytes = (h) => Uint8Array.from(Buffer.from(String(h).replace(/^0x/, ''), 'hex'));
   const concat = (arr) => { const t = arr.reduce((s, x) => s + x.length, 0); const o = new Uint8Array(t); let p = 0; for (const x of arr) { o.set(x, p); p += x.length; } return o; };
   const ptBytes = (P) => P.toRawBytes(true); // 33-byte compressed
+  const beHex = (n) => '0x' + n.toString(16).padStart(64, '0');
+  const b32 = (h) => { const b = hexToBytes(h); if (b.length > 32) throw new Error('over 32 bytes'); const o = new Uint8Array(32); o.set(b, 32 - b.length); return o; };
+  const u16be = (n) => Uint8Array.of((Number(n) >> 8) & 0xff, Number(n) & 0xff);
   const mul = (P, s) => (s === 0n || P.equals(ZERO)) ? ZERO : P.multiply(modN(s));
   const sum = (pts) => pts.reduce((a, p) => a.add(p), ZERO);
   const commit = (v, r) => H.multiply(v).add(mul(G, r));
+  const xy = (P) => { const a = P.toAffine(); return { cx: beHex(a.x), cy: beHex(a.y) }; };
+  // Bitcoin-side destination leaf = keccak(asset ‖ cx ‖ cy ‖ owner) — same layout
+  // as confidential-pool.leaf(), so the cross-minted note is byte-identical.
+  const destLeaf = (assetId, cx, cy, owner) => '0x' + bytesToHex(keccak256(concat([b32(assetId), b32(cx), b32(cy), b32(owner)])));
+  // claimId = keccak(abi.encodePacked(destChain:uint16, destCommitment:bytes32,
+  // nullifier:bytes32, assetId:bytes32)) — mirrors ConfidentialPool.settle's re-derivation.
+  const claimId = (destChain, destCommitment, nullifier, assetId) =>
+    '0x' + bytesToHex(keccak256(concat([u16be(destChain), b32(destCommitment), b32(nullifier), b32(assetId)])));
 
   function kernelChallenge(inC, outC, R) {
     const parts = [KERNEL_DOMAIN];
@@ -75,5 +87,65 @@ export function makeConfidentialTransfer({ keccak256 }) {
     return lhs.equals(rhs);
   }
 
-  return { H, commit, buildTransfer, verifyTransfer, _ptBytes: ptBytes };
+  // A bridge-burn (Ethereum → Bitcoin): the same conservation + range proof as a
+  // transfer, but the outputs are destination notes that will be MINTED ON BITCOIN
+  // rather than appended as Ethereum leaves. Each output yields a `crossOut`
+  // record {destChain, destCommitment, nullifier, assetId, claimId} that the
+  // contract emits (CrossOutRecorded) for Bitcoin validators to honor once-and-
+  // past-finality. Conservation across the chain boundary: Σ value_in (Ethereum,
+  // burned) = Σ value_out (Bitcoin, minted).
+  //
+  // inputs: [{value, blinding}] (Ethereum notes being burned, nullified).
+  // outputs: [{value, blinding, owner}] (Bitcoin destination notes; owner = the
+  //   recipient's Bitcoin owner field). Count m ∈ {1, 2, 4, 8}.
+  // bindNullifier: the burn's canonical nullifier (the first input's ν), binding
+  //   every claimId of this burn to a specific consumed note (anti-replay).
+  function buildBridgeBurn({ inputs, outputs, assetId, destChain, bindNullifier }) {
+    const sumIn = inputs.reduce((s, i) => s + i.value, 0n);
+    const sumOut = outputs.reduce((s, o) => s + o.value, 0n);
+    if (sumIn !== sumOut) throw new Error('bridge-burn not conserved: Σin ≠ Σout');
+
+    const { proof: rangeProof, commitments: outC } =
+      bppRangeProve(outputs.map((o) => o.value), outputs.map((o) => o.blinding));
+    const inC = inputs.map((i) => commit(i.value, i.blinding));
+
+    const excess = modN(
+      inputs.reduce((s, i) => s + i.blinding, 0n) - outputs.reduce((s, o) => s + o.blinding, 0n)
+    );
+    const k = randomScalar();
+    const R = mul(G, k);
+    const e = kernelChallenge(inC, outC, R);
+    const z = modN(k + e * excess);
+
+    const crossOuts = outC.map((C, j) => {
+      const { cx, cy } = xy(C);
+      const destCommitment = destLeaf(assetId, cx, cy, outputs[j].owner);
+      return {
+        destChain,
+        destCommitment,
+        nullifier: bindNullifier,
+        assetId,
+        claimId: claimId(destChain, destCommitment, bindNullifier, assetId),
+        cx, cy, owner: outputs[j].owner,
+      };
+    });
+
+    return { inC, outC, rangeProof, kernel: { R, z }, crossOuts };
+  }
+
+  // Verifies a bridge-burn: ranges + conservation (as a transfer) + that every
+  // crossOut's claimId binds its own (destChain, destCommitment, ν, assetId).
+  function verifyBridgeBurn({ inC, outC, rangeProof, kernel, crossOuts }) {
+    if (!verifyTransfer({ inC, outC, rangeProof, kernel })) return false;
+    for (let j = 0; j < crossOuts.length; j++) {
+      const c = crossOuts[j];
+      const expectLeaf = destLeaf(c.assetId, c.cx, c.cy, c.owner);
+      if (expectLeaf.toLowerCase() !== String(c.destCommitment).toLowerCase()) return false;
+      const expectClaim = claimId(c.destChain, c.destCommitment, c.nullifier, c.assetId);
+      if (expectClaim.toLowerCase() !== String(c.claimId).toLowerCase()) return false;
+    }
+    return true;
+  }
+
+  return { H, commit, buildTransfer, verifyTransfer, buildBridgeBurn, verifyBridgeBurn, claimId, destLeaf, _ptBytes: ptBytes };
 }

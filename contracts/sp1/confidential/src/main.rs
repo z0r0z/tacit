@@ -15,7 +15,7 @@ sp1_zkvm::entrypoint!(main);
 use alloy_sol_types::{sol, SolValue};
 use alloy_sol_types::private::{Address, U256};
 use cxfer_core::{
-    decompress, deposit_id, from_affine_xy, keccak_merkle_verify, leaf, nullifier,
+    claim_id, decompress, deposit_id, from_affine_xy, keccak_merkle_verify, leaf, nullifier,
     scalar_reduce_be, verify_kernel, verify_pedersen_opening, verify_range,
     Point,
 };
@@ -25,11 +25,15 @@ const PV_VERSION: u16 = 1;
 const OP_WRAP: u8 = 0;
 const OP_TRANSFER: u8 = 1;
 const OP_UNWRAP: u8 = 2;
+const OP_BRIDGE_BURN: u8 = 3; // Ethereum note → Bitcoin (emit crossOut)
+// OP_BRIDGE_MINT (Bitcoin burn → Ethereum note) = 4, reserved; its in-guest
+// Bitcoin-burn verification (tETH crates) is the next milestone.
 
 // Mirrors ConfidentialPool.PublicValues exactly.
 sol! {
     struct Withdrawal { bytes32 assetId; address recipient; uint256 amount; }
     struct FeePayment { bytes32 assetId; uint256 amount; }
+    struct CrossOut { uint16 destChain; bytes32 destCommitment; bytes32 nullifier; bytes32 assetId; bytes32 claimId; }
     struct PublicValues {
         uint16 version;
         bytes32 chainBinding;
@@ -39,6 +43,8 @@ sol! {
         bytes32[] depositsConsumed;
         Withdrawal[] withdrawals;
         FeePayment[] fees;
+        bytes32[] bitcoinBurnsConsumed;
+        CrossOut[] crossOuts;
     }
 }
 
@@ -73,6 +79,8 @@ pub fn main() {
     let mut deposits: Vec<[u8; 32]> = Vec::new();
     let mut withdrawals: Vec<Withdrawal> = Vec::new();
     let fees: Vec<FeePayment> = Vec::new(); // fee path: follow-up (kernel −fee·H term)
+    let bitcoin_burns: Vec<[u8; 32]> = Vec::new(); // OP_BRIDGE_MINT (next milestone)
+    let mut cross_outs: Vec<CrossOut> = Vec::new();
 
     for _ in 0..num_ops {
         let op: u8 = io::read();
@@ -123,6 +131,59 @@ pub fn main() {
                 let kernel_z = scalar_reduce_be(&r32());
                 assert!(verify_kernel(&in_pts, &out_pts, &kernel_r, &kernel_z), "conservation");
             }
+            OP_BRIDGE_BURN => {
+                // Ethereum → Bitcoin: like a transfer, but outputs are destination
+                // notes MINTED ON BITCOIN — emitted as crossOut records, not leaves.
+                // Conservation crosses the boundary: Σ value_in (burned) = Σ value_out
+                // (minted on Bitcoin). Every claimId binds to the first input's ν.
+                let asset = r32();
+                let dest_chain = io::read::<u32>() as u16;
+                let n_in: u32 = io::read();
+                let m_out: u32 = io::read();
+
+                let mut in_pts: Vec<Point> = Vec::with_capacity(n_in as usize);
+                let mut bind: Option<[u8; 32]> = None;
+                for _ in 0..n_in {
+                    let (cx, cy, p) = r_commitment();
+                    let owner = r32();
+                    let leaf_index: u64 = io::read();
+                    let path = r_path();
+                    let secret = r32();
+                    let lf = leaf(&asset, &cx, &cy, &owner);
+                    assert!(keccak_merkle_verify(&lf, leaf_index, &path, &spend_root), "membership");
+                    let nu = nullifier(&secret);
+                    if bind.is_none() { bind = Some(nu); }
+                    nullifiers.push(nu);
+                    in_pts.push(p);
+                }
+                let bind = bind.expect("bridge-burn needs >= 1 input");
+
+                let mut out_pts: Vec<Point> = Vec::with_capacity(m_out as usize);
+                let mut dest_commitments: Vec<[u8; 32]> = Vec::with_capacity(m_out as usize);
+                for _ in 0..m_out {
+                    let (cx, cy, p) = r_commitment();
+                    let owner = r32();
+                    dest_commitments.push(leaf(&asset, &cx, &cy, &owner)); // Bitcoin-side leaf
+                    out_pts.push(p);
+                }
+
+                let bp_proof: Vec<u8> = io::read();
+                assert!(verify_range(&out_pts, &bp_proof), "range");
+                let kernel_r = decompress(&r33()).expect("kernel R");
+                let kernel_z = scalar_reduce_be(&r32());
+                assert!(verify_kernel(&in_pts, &out_pts, &kernel_r, &kernel_z), "conservation");
+
+                for dest_commitment in dest_commitments {
+                    let cid = claim_id(dest_chain, &dest_commitment, &bind, &asset);
+                    cross_outs.push(CrossOut {
+                        destChain: dest_chain,
+                        destCommitment: dest_commitment.into(),
+                        nullifier: bind.into(),
+                        assetId: asset.into(),
+                        claimId: cid.into(),
+                    });
+                }
+            }
             OP_UNWRAP => {
                 // spend a note to a public recipient: membership + opening, pay out.
                 let asset = r32();
@@ -159,6 +220,8 @@ pub fn main() {
         depositsConsumed: deposits.into_iter().map(Into::into).collect(),
         withdrawals,
         fees,
+        bitcoinBurnsConsumed: bitcoin_burns.into_iter().map(Into::into).collect(),
+        crossOuts: cross_outs,
     };
     io::commit_slice(&pv.abi_encode());
 }
