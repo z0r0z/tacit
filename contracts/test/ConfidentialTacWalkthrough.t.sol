@@ -1,0 +1,92 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.28;
+
+import {Test} from "forge-std/Test.sol";
+import {ConfidentialPool} from "../src/ConfidentialPool.sol";
+import {CanonicalAssetFactory} from "../src/CanonicalAssetFactory.sol";
+import {CanonicalBridgedERC20} from "../src/CanonicalBridgedERC20.sol";
+
+/// Accepts any proof — the proof crypto is validated end-to-end elsewhere
+/// (cxfer-core native, the SP1 guest execute, ConfidentialProofReal on-chain). This
+/// walkthrough is the CONTRACT-level lifecycle of a Tacit-recorded asset on Ethereum.
+contract AcceptVerifier {
+    function verifyProof(bytes32, bytes calldata, bytes calldata) external pure {}
+}
+
+/// End-to-end TAC on Ethereum, the asset-hub lifecycle:
+///   Bitcoin TAC burn ─bridge_mint→ confidential note ─unwrap→ public TAC.erc20
+///   ─transfer→ tradeable (Uniswap) ─wrap→ back to a confidential note.
+/// The pool is TAC.erc20's sole minter (mint on exit, burn on entry) — single supply
+/// authority; the backing is the Tacit record (the bridge_mint), no Ethereum escrow.
+contract ConfidentialTacWalkthroughTest is Test {
+    ConfidentialPool pool;
+    CanonicalBridgedERC20 tac;
+    bytes32 tacAsset;
+
+    address constant USER = address(0xA11CE);   // bridges TAC in, exits to public
+    address constant BOB = address(0xB0B);       // a counterparty who receives public TAC
+    address constant ORACLE = address(0x0BAC1E); // the Bitcoin-root relay/oracle
+
+    function setUp() public {
+        pool = new ConfidentialPool(address(new AcceptVerifier()), bytes32(uint256(0xABCD)), ORACLE);
+        CanonicalAssetFactory factory = new CanonicalAssetFactory();
+        // Deploy TAC's canonical ERC20 with the POOL as its sole minter.
+        tac = CanonicalBridgedERC20(factory.deployCanonical(keccak256("TAC"), address(pool), "Tacit", "TAC", 8));
+        // Register it as a Tacit-recorded (pool-minted) asset: wrap burns, unwrap mints.
+        tacAsset = pool.registerMinted(address(tac), 1, keccak256("TAC"), "Conf TAC", "cTAC", 8);
+    }
+
+    function _settle(ConfidentialPool.PublicValues memory pv, bytes[] memory memos) internal {
+        pool.settle(abi.encode(pv), "", memos);
+    }
+    function _pv() internal view returns (ConfidentialPool.PublicValues memory pv) {
+        pv.version = pool.PV_VERSION();
+        pv.chainBinding = keccak256(abi.encodePacked(block.chainid, address(pool)));
+    }
+
+    function test_tac_end_to_end() public {
+        uint256 amount = 50e8; // 50 TAC (8 decimals), hidden in the note; public only at exit
+
+        // ── 1. bridge_mint: a confirmed Bitcoin TAC burn becomes a confidential note ──
+        bytes32 btcRoot = keccak256("bitcoin-tac-pool-root");
+        vm.prank(ORACLE);
+        pool.attestBitcoinRoot(btcRoot); // relay attests the canonical Bitcoin pool root
+
+        bytes32 noteLeaf = keccak256("user-TAC-note");           // the dest note the guest minted
+        bytes32 claimId = keccak256("btc-tac-burn-claim");        // one mint per Bitcoin burn
+        ConfidentialPool.PublicValues memory mintPv = _pv();
+        mintPv.bitcoinRootsUsed = new bytes32[](1); mintPv.bitcoinRootsUsed[0] = btcRoot;
+        mintPv.bitcoinBurnsConsumed = new bytes32[](1); mintPv.bitcoinBurnsConsumed[0] = claimId;
+        mintPv.leaves = new bytes32[](1); mintPv.leaves[0] = noteLeaf;
+        bytes[] memory memos = new bytes[](1); memos[0] = hex"ab"; // owner-encrypted memo (recovery)
+        _settle(mintPv, memos);
+
+        assertTrue(pool.bridgeMinted(claimId), "Bitcoin burn claimed once");
+        assertEq(pool.nextLeafIndex(), 1, "TAC note now lives confidentially in the pool");
+        assertEq(tac.totalSupply(), 0, "no public ERC20 yet - value is confidential");
+
+        // ── 2. unwrap (exit): spend the note; the pool MINTS public TAC.erc20 ──
+        ConfidentialPool.PublicValues memory exitPv = _pv();
+        exitPv.spendRoot = pool.currentRoot(); // membership proven against the post-mint root
+        exitPv.nullifiers = new bytes32[](1); exitPv.nullifiers[0] = keccak256("user-TAC-note-nu");
+        exitPv.withdrawals = new ConfidentialPool.Withdrawal[](1);
+        exitPv.withdrawals[0] = ConfidentialPool.Withdrawal(tacAsset, USER, amount);
+        _settle(exitPv, new bytes[](0));
+
+        assertEq(tac.balanceOf(USER), amount, "exit minted public TAC to the user");
+        assertEq(tac.totalSupply(), amount, "public supply = exited amount (single authority)");
+        assertEq(pool.escrow(tacAsset), 0, "no escrow - the pool minted, it didn't release");
+
+        // ── 3. tradeable: TAC.erc20 is a plain ERC20 (Uniswap, transfers, …) ──
+        vm.prank(USER);
+        tac.transfer(BOB, 20e8);
+        assertEq(tac.balanceOf(USER), 30e8, "user keeps 30");
+        assertEq(tac.balanceOf(BOB), 20e8, "counterparty holds public TAC");
+
+        // ── 4. wrap (re-enter): back to confidential — the pool BURNS the ERC20 ──
+        vm.prank(BOB);
+        pool.wrap(tacAsset, 20e8, bytes32(uint256(1)), bytes32(uint256(2)), bytes32(uint256(3)));
+        assertEq(tac.balanceOf(BOB), 0, "re-entry burned BOB's public TAC");
+        assertEq(tac.totalSupply(), 30e8, "supply back to 30 (only USER's stays public)");
+    }
+}
