@@ -14,11 +14,22 @@ Foundation: [`PLAN-confidential-token-rollup.md`](./PLAN-confidential-token-roll
 **Decision 2026-06-07: cross-chain folds into the first generation** (see §8).
 The cross-chain ops and contract fields ship in gen-1 so there is never a
 migration; the `ConfidentialPool` ABI is already cross-chain-final (`crossOuts`,
-`bitcoinBurnsConsumed`/`bridgeMinted`, chain-independent ν). The gold model (§4)
-is the live behaviour; platinum (§9) activates the same rails later. The heavier
-half — `bridge_mint`'s in-guest Bitcoin-burn verification — still requires Phase 1
-to be **live and real-proof-validated** before it is trusted on mainnet, and is
-mainnet-gated until its finality/reorg checklist closes.
+`bitcoinBurnsConsumed`/`bridgeMinted`, chain-independent ν). `bridge_mint`'s
+in-guest Bitcoin-burn verification still requires Phase 1 to be **live and
+real-proof-validated** before mainnet, and is gated until its finality/reorg
+checklist closes.
+
+**Primary direction (2026-06-07): improved (asymmetric) platinum** (§9) — one note
+native on both surfaces, no per-asset bridge, and **no capital/liquidity relayer**.
+Its only external need — Ethereum learning Bitcoin's spends — is **already live**:
+the `BitcoinLightRelay` SPV client + `SP1PoolRootVerifier` that run the tETH bridge
+on mainnet today (§2). So the unified set is not "build a Bitcoin light client on
+Ethereum" (done) — it is a confidential-pool *reflection* prover reusing
+`cxfer-core::bitcoin` + an on-chain `knownBitcoinSpent` gate, with the circuit +
+ceremony frozen. **Gold** (§4, the discrete bridge-claim) is the *built foundation
+and first increment* — strictly a subset of the platinum rails, so shipping it is
+building toward platinum. The §10 capital-relayer "compromise" is an *optional
+interim*, not the direction.
 
 ---
 
@@ -49,7 +60,7 @@ and the easy split falls in our favor:
   consensus, so "read the Ethereum contract" is a validator-software change, not a
   consensus change. Ethereum is trivially queryable.
 
-## 3. Two consistency models — and why we ship gold first
+## 3. Two consistency models — gold (built foundation) → improved platinum (primary target)
 
 **Gold (first): per-chain sets + a bridge-claim.** Each chain keeps its *own*
 nullifier set for native spends — Bitcoin's off-chain set, Ethereum's on-chain
@@ -60,15 +71,20 @@ mint an equivalent note on the destination. This is confidential bridging at the
 note level, and it reduces to the **tETH bridge's exact safety model** (live and
 audited) applied to a hidden-amount note. §4 specs it.
 
-**Platinum (later): one unified, Ethereum-anchored set.** A single global
-nullifier accumulator whose root lives on Ethereum, fed by both chains, with a
-note natively a member on *both* surfaces — so it cannot be told at deposit which
-chain it will spend on (indistinguishable origin). The stronger privacy form and
-the truly uncopyable moat, but it couples Bitcoin's liveness to Ethereum
-reflection and is the higher-risk build. §9 sketches it; it is the destination,
-not the first step.
+**Improved platinum (primary target): one unified set, Bitcoin-canonical.** A note
+natively a member on *both* surfaces — spent fast (Ethereum) or sovereign (Bitcoin)
+with **no per-asset bridge and no capital relayer**, and indistinguishable origin in
+the strongest form. The §9 *asymmetric* refinement makes Bitcoin the canonical set +
+sole arbiter (the sovereign lane keeps **zero Ethereum dependency**) and Ethereum a
+fast provisional cache, shedding vanilla platinum's "Bitcoin waits on Ethereum"
+coupling. Its one external dependency — Ethereum learning Bitcoin spends — is
+**already live** (the `BitcoinLightRelay` + `SP1PoolRootVerifier`, §2), so the
+remaining build is a confidential-pool reflection prover (reusing
+`cxfer-core::bitcoin`) + an on-chain `knownBitcoinSpent` gate via multigen, with the
+circuit + ceremony frozen. §9 specs it.
 
-The rest of this doc specs **gold**.
+The rest of this doc specs **gold** (the built foundation, §4–§8), then the primary
+target **improved platinum** (§9); §10 is the optional relayer interim.
 
 ## 4. The bridge-claim protocol (gold)
 
@@ -350,14 +366,19 @@ relayer existed only to hide bridge latency; platinum has no per-asset cross-lan
 bridge, so nothing to front.
 
 What platinum *does* require is **irreducible** for any unified set: Ethereum must
-learn Bitcoin's state (the hard §2 direction — Ethereum has no native Bitcoin light
-client). Make that a **trustless, permissionless data relay**, categorically unlike a
-capital relayer: an SP1 proof of the Bitcoin confidential-pool state (deposit tree +
-nullifier set), verified on-chain — the live tETH `SP1PoolRootVerifier` pattern,
-reusing `cxfer-core::bitcoin` (the same crates as `bridge_mint`). Anyone can run it;
-on-chain verification removes trust; it carries *data*, not *liquidity*. The reverse
-direction (Ethereum → Bitcoin) is the easy one: the anchor inscription + off-chain
-validation.
+learn Bitcoin's state (the hard §2 direction). But this is a **trustless,
+permissionless data relay** — categorically unlike a capital relayer — and **most of
+it already runs on mainnet**: the `BitcoinLightRelay` SPV client (header chain,
+per-epoch difficulty / `retarget`, PoW + median-time-past + future-drift checks,
+`tip()`/`blockParent()`, `FINALITY_WINDOW` reorg tolerance) and `SP1PoolRootVerifier`
+(SP1 proofs of Bitcoin pool state anchored to the relay tip) are the live tETH
+bridge's machinery. So platinum does **not** mean "build a Bitcoin light client on
+Ethereum" — that exists. It means adding a *confidential-pool* reflection prover (a
+sibling of the mixer's, anchored to the **same** `BitcoinLightRelay`, reusing
+`cxfer-core::bitcoin` like `bridge_mint`) that proves the confidential Bitcoin pool's
+deposit tree + nullifier set. Anyone can run it; on-chain verification removes trust;
+it carries *data*, not *liquidity*. The reverse direction (Ethereum → Bitcoin) is the
+easy one: the anchor inscription + off-chain validation.
 
 **The improvement that makes it best: keep it asymmetric — Bitcoin canonical,
 Ethereum a fast provisional cache.** This sheds platinum's worst property (the
@@ -494,9 +515,13 @@ The fast lane adds **no op** — fast-lane trades are the existing `transfer`/`s
 the guest, vkey, ceremony, and prover are fixed forever; you iterate the off-chain
 layer (and, only for V2, one contract field via multigen — still no circuit change).
 
-### The best-compromise realization — home-chain notes + optimistic relayers
+### Interim realization (no redeploy) — home-chain notes + optimistic relayers
 
-The cheapest *sound* dual lane avoids V2's cross-lane gate entirely:
+> Optional interim only — the primary direction is improved platinum (§9), which
+> reaches the same dual lane with **no capital relayer**. Use this route if you want
+> the dual-lane feel before redeploying for platinum.
+
+The cheapest *no-redeploy* dual lane avoids V2's cross-lane gate entirely:
 
 1. **Notes are homed on one surface; moving between surfaces is the gold bridge**
    (§4), which already serializes one-spend (`claimId`-once + the home nullifier
