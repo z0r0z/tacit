@@ -35,13 +35,13 @@ contract ConfidentialPoolTest is Test {
     address constant USER = address(0xA11CE);
     address constant RECIP = address(0xB0B);
     address constant SETTLER = address(0x5E771E2);
-    address constant ORACLE = address(0x0BAC1E); // Bitcoin-root oracle (bridge_mint)
     bytes32 constant VKEY = bytes32(uint256(0xABCD)); // placeholder program vkey
+    bytes32 constant RELAY_VKEY = bytes32(uint256(0xBEEF)); // placeholder Bitcoin-relay vkey
 
     function setUp() public {
         vm.chainId(1);
         verifier = new MockSP1Verifier();
-        pool = new ConfidentialPool(address(verifier), VKEY, ORACLE);
+        pool = new ConfidentialPool(address(verifier), VKEY, RELAY_VKEY);
         token = new MockERC20();
         assetId = pool.registerWrapped(address(token), 1, bytes32(0), "Conf Mock", "cMCK", 18);
 
@@ -71,6 +71,14 @@ contract ConfidentialPoolTest is Test {
 
     function _arr(bytes32 a) internal pure returns (bytes32[] memory out) {
         out = new bytes32[](1); out[0] = a;
+    }
+
+    /// Attest Bitcoin state via the relay-proven path (the only path — no oracle). The
+    /// MockSP1Verifier no-ops verifyProof, so this exercises the contract's decode + gates.
+    function _attestBtc(bytes32 poolRoot, bytes32 spentRoot, uint64 height) internal {
+        ConfidentialPool.BitcoinRelayPublicValues memory r =
+            ConfidentialPool.BitcoinRelayPublicValues(poolRoot, spentRoot, height);
+        pool.attestBitcoinStateProven(abi.encode(r), "");
     }
 
     // ──────────────────── wrap ────────────────────
@@ -479,16 +487,25 @@ contract ConfidentialPoolTest is Test {
 
     event BitcoinRootAttested(bytes32 indexed root);
 
-    function test_attest_bitcoin_root_only_oracle() public {
-        bytes32 root = keccak256("btc-pool-root");
-        vm.expectRevert(ConfidentialPool.NotOracle.selector);
-        pool.attestBitcoinRoot(root); // default sender, not the oracle
-
+    /// Bitcoin state is attested ONLY by an SP1 relay proof (no trusted oracle): the
+    /// proven pool root becomes canonical and the spent-set root advances.
+    function test_attest_bitcoin_state_proven() public {
+        bytes32 poolRoot = keccak256("btc-pool-root");
+        bytes32 spentRoot = keccak256("btc-spent-root");
         vm.expectEmit(true, false, false, false, address(pool));
-        emit BitcoinRootAttested(root);
-        vm.prank(ORACLE);
-        pool.attestBitcoinRoot(root);
-        assertTrue(pool.knownBitcoinRoot(root), "root attested");
+        emit BitcoinRootAttested(poolRoot);
+        _attestBtc(poolRoot, spentRoot, 100);
+        assertTrue(pool.knownBitcoinRoot(poolRoot), "pool root attested by proof");
+        assertEq(pool.knownBitcoinSpentRoot(), spentRoot, "spent root advanced");
+        assertEq(pool.lastRelayHeight(), 100, "height recorded");
+    }
+
+    /// A stale relay proof (height not strictly advancing) is rejected — it can't roll
+    /// the reflected spent set backward to omit a recent Bitcoin spend.
+    function test_stale_relay_proof_rejected() public {
+        _attestBtc(keccak256("r1"), keccak256("s1"), 200);
+        vm.expectRevert(ConfidentialPool.StaleRelayProof.selector);
+        _attestBtc(keccak256("r2"), keccak256("s2"), 200);
     }
 
     /// A bridge_mint against an un-attested Bitcoin root is rejected — the gate
@@ -511,8 +528,7 @@ contract ConfidentialPoolTest is Test {
     /// the claim — the full BTC→ETH effect on the contract side.
     function test_bridge_mint_with_attested_root_succeeds() public {
         bytes32 root = keccak256("good-btc-root");
-        vm.prank(ORACLE);
-        pool.attestBitcoinRoot(root);
+        _attestBtc(root, bytes32(0), 1);
 
         ConfidentialPool.PublicValues memory pv = _pv();
         bytes32 claimId = keccak256("mint-claim-2");
@@ -564,52 +580,21 @@ contract ConfidentialPoolTest is Test {
 
     // ──────────────────── improved platinum: cross-lane gate ────────────────────
 
-    event BitcoinSpentReflected(bytes32[] nullifiers);
-
-    function test_reflect_bitcoin_spent_only_oracle() public {
-        bytes32[] memory nus = new bytes32[](1);
-        nus[0] = keccak256("btc-spent-nu");
-        vm.expectRevert(ConfidentialPool.NotOracle.selector);
-        pool.reflectBitcoinSpent(nus);
-
-        vm.expectEmit(false, false, false, true, address(pool));
-        emit BitcoinSpentReflected(nus);
-        vm.prank(ORACLE);
-        pool.reflectBitcoinSpent(nus);
-        assertTrue(pool.knownBitcoinSpent(nus[0]), "reflected");
-    }
-
-    /// A note already spent on Bitcoin cannot be fast-spent on Ethereum — Bitcoin is
-    /// the canonical arbiter, the fast lane yields.
-    function test_fast_spend_of_bitcoin_spent_note_rejected() public {
-        bytes32 nu = keccak256("note-spent-on-bitcoin");
-        bytes32[] memory nus = new bytes32[](1); nus[0] = nu;
-        vm.prank(ORACLE);
-        pool.reflectBitcoinSpent(nus);
-
-        ConfidentialPool.PublicValues memory pv = _pv();
-        pv.nullifiers = new bytes32[](1);
-        pv.nullifiers[0] = nu;
-        vm.expectRevert(ConfidentialPool.BitcoinSpent.selector);
-        _settle(pv);
-    }
-
     /// A note homed on Bitcoin can be spent on the Ethereum fast lane by proving
-    /// membership against a reflected (attested) Bitcoin pool root.
+    /// membership against a relay-proven Bitcoin pool root.
     function test_spend_against_reflected_bitcoin_root() public {
         bytes32 btcRoot = keccak256("bitcoin-pool-root");
-        vm.prank(ORACLE);
-        pool.attestBitcoinRoot(btcRoot);
+        _attestBtc(btcRoot, bytes32(0), 1);
 
         ConfidentialPool.PublicValues memory pv = _pv();
-        pv.spendRoot = btcRoot; // membership proven against the Bitcoin root
+        pv.spendRoot = btcRoot; // membership proven against the proven Bitcoin root
         pv.nullifiers = new bytes32[](1);
         pv.nullifiers[0] = keccak256("btc-homed-note");
         _settle(pv); // no UnknownRoot revert — Bitcoin root accepted as a spend root
         assertTrue(pool.isNullifierSpent(keccak256("btc-homed-note")), "fast-spent on Ethereum");
     }
 
-    /// An unattested Bitcoin root is still rejected as a spend root.
+    /// An unattested Bitcoin root is rejected as a spend root.
     function test_spend_against_unattested_root_reverts() public {
         ConfidentialPool.PublicValues memory pv = _pv();
         pv.spendRoot = keccak256("not-attested");
@@ -619,36 +604,21 @@ contract ConfidentialPoolTest is Test {
 
     // ──────────────────── improved platinum: reflected spent-set root (IMT) ────────────────────
 
-    event BitcoinSpentRootReflected(bytes32 indexed root);
-
-    function test_reflect_bitcoin_spent_root_only_oracle() public {
-        bytes32 r = keccak256("imt-root");
-        vm.expectRevert(ConfidentialPool.NotOracle.selector);
-        pool.reflectBitcoinSpentRoot(r);
-        vm.expectEmit(true, false, false, false, address(pool));
-        emit BitcoinSpentRootReflected(r);
-        vm.prank(ORACLE);
-        pool.reflectBitcoinSpentRoot(r);
-        assertEq(pool.knownBitcoinSpentRoot(), r, "root reflected");
-    }
-
     /// A settle whose in-guest non-membership used a stale Bitcoin spent-set root is
-    /// rejected — it could omit a recent Bitcoin spend.
+    /// rejected — it could omit a recent Bitcoin spend. The fresh root is relay-proven.
     function test_stale_bitcoin_spent_root_rejected() public {
-        vm.prank(ORACLE);
-        pool.reflectBitcoinSpentRoot(keccak256("current-root"));
+        _attestBtc(keccak256("pool"), keccak256("current-root"), 1);
         ConfidentialPool.PublicValues memory pv = _pv();
         pv.bitcoinSpentRoot = keccak256("stale-root");
         vm.expectRevert(ConfidentialPool.StaleBitcoinSpentRoot.selector);
         _settle(pv);
     }
 
-    /// A settle against the current reflected root is accepted (the guest proved
+    /// A settle against the current relay-proven root is accepted (the guest proved
     /// non-membership of each spent ν against exactly this root).
     function test_fresh_bitcoin_spent_root_accepted() public {
         bytes32 r = keccak256("the-root");
-        vm.prank(ORACLE);
-        pool.reflectBitcoinSpentRoot(r);
+        _attestBtc(keccak256("pool"), r, 1);
         ConfidentialPool.PublicValues memory pv = _pv();
         pv.bitcoinSpentRoot = r;
         _settle(pv); // matches → no revert

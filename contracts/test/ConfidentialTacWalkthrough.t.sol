@@ -26,10 +26,17 @@ contract ConfidentialTacWalkthroughTest is Test {
     address constant USER = address(0xA11CE);   // bridges TAC in, exits to public
     address constant BOB = address(0xB0B);       // a counterparty who receives public TAC
     address constant ALICE = address(0xA71CE);   // receives TAC confidentially, then exits
-    address constant ORACLE = address(0x0BAC1E); // the Bitcoin-root relay/oracle
+
+    /// Attest the Bitcoin pool root via the relay-proven path (no oracle). AcceptVerifier
+    /// no-ops the proof; this exercises the contract gate.
+    function _attestBtc(bytes32 poolRoot) internal {
+        pool.attestBitcoinStateProven(
+            abi.encode(ConfidentialPool.BitcoinRelayPublicValues(poolRoot, bytes32(0), 1)), ""
+        );
+    }
 
     function setUp() public {
-        pool = new ConfidentialPool(address(new AcceptVerifier()), bytes32(uint256(0xABCD)), ORACLE);
+        pool = new ConfidentialPool(address(new AcceptVerifier()), bytes32(uint256(0xABCD)), bytes32(0));
         CanonicalAssetFactory factory = new CanonicalAssetFactory();
         // Deploy TAC's canonical ERC20 with the POOL as its sole minter.
         tac = CanonicalBridgedERC20(factory.deployCanonical(keccak256("TAC"), address(pool), "TAC", 8));
@@ -50,8 +57,7 @@ contract ConfidentialTacWalkthroughTest is Test {
 
         // ── 1. bridge_mint: a confirmed Bitcoin TAC burn becomes a confidential note ──
         bytes32 btcRoot = keccak256("bitcoin-tac-pool-root");
-        vm.prank(ORACLE);
-        pool.attestBitcoinRoot(btcRoot); // relay attests the canonical Bitcoin pool root
+        _attestBtc(btcRoot); // the relay proves the canonical Bitcoin pool root
 
         bytes32 noteLeaf = keccak256("user-TAC-note");           // the dest note the guest minted
         bytes32 claimId = keccak256("btc-tac-burn-claim");        // one mint per Bitcoin burn
@@ -100,8 +106,7 @@ contract ConfidentialTacWalkthroughTest is Test {
 
         // 1. bridge_mint: Bob's confidential TAC note enters the pool.
         bytes32 btcRoot = keccak256("btc-tac-root-2");
-        vm.prank(ORACLE);
-        pool.attestBitcoinRoot(btcRoot);
+        _attestBtc(btcRoot);
         ConfidentialPool.PublicValues memory mintPv = _pv();
         mintPv.bitcoinRootsUsed = new bytes32[](1); mintPv.bitcoinRootsUsed[0] = btcRoot;
         mintPv.bitcoinBurnsConsumed = new bytes32[](1); mintPv.bitcoinBurnsConsumed[0] = keccak256("bob-tac-burn");

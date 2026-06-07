@@ -71,7 +71,7 @@ contract CanonicalAssetFactoryTest is Test {
     /// the asset could never exit (mint would revert), a footgun.
     function test_registerMinted_requires_pool_as_minter() public {
         CanonicalBridgedERC20 tok = _deploy(); // minter = MINTER, not the pool
-        ConfidentialPool pool = new ConfidentialPool(address(0x5117), bytes32(uint256(1)), address(0));
+        ConfidentialPool pool = new ConfidentialPool(address(0x5117), bytes32(uint256(1)), bytes32(0));
         vm.expectRevert(ConfidentialPool.PoolNotMinter.selector);
         pool.registerMinted(address(tok), 1, ASSET, "x", "x", 8);
     }
@@ -84,7 +84,7 @@ contract CanonicalAssetFactoryTest is Test {
         tok.mint(USER, 100e8);
 
         // verifier address is a non-zero placeholder; wrap never calls it (only settle does).
-        ConfidentialPool pool = new ConfidentialPool(address(0x5117), bytes32(uint256(1)), address(0));
+        ConfidentialPool pool = new ConfidentialPool(address(0x5117), bytes32(uint256(1)), bytes32(0));
         bytes32 poolAsset = pool.registerWrapped(address(tok), 1, ASSET, "Conf cBTC", "ccBTC", 8);
 
         vm.prank(USER);
@@ -164,7 +164,7 @@ contract CanonicalAssetFactoryTest is Test {
     // ── pool lazy-deploys + harmonizes decimals deterministically (registerMintedAuto) ──
 
     function _pool() internal returns (ConfidentialPool) {
-        return new ConfidentialPool(address(0x5117), bytes32(uint256(1)), address(0));
+        return new ConfidentialPool(address(0x5117), bytes32(uint256(1)), bytes32(0));
     }
 
     function test_registerMintedAuto_lazy_deploys_and_harmonizes() public {

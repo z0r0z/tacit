@@ -78,6 +78,7 @@ one confidential, cross-chain system. Companion to the per-piece plans
 Live on Sepolia: pool `0xA0f42c5C…`, factory `0xe7BD6549…`, verifier `0x5657FD7b…`;
 canonical-asset-hub flow (lazy-deploy + decimals harmonization) verified on-chain.
 Remaining contract pieces: (A) trustless first-mint metadata (guest exposes
-`(ticker,decimals)` from the etch → new vkey), (B) SP1-relay-verified Bitcoin root in
-place of the trusted oracle, (C) confidential-swap settlement on Ethereum (a BabyJubJub
-verifier), (D) `registerWrappedAuto` symmetry.
+`(ticker,decimals)` from the etch → new vkey; cxfer-core primitive `asset_id_from_etch` /
+`parse_etch_meta` is built), (C) confidential-swap settlement on Ethereum (a BabyJubJub
+verifier). Done: (B) SP1-relay-verified Bitcoin state — `attestBitcoinStateProven` is the
+sole attestation path, no trusted oracle; (D) `registerWrappedAuto` symmetry.

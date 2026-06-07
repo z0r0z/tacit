@@ -31,12 +31,13 @@ contract DeployConfidentialPool is Script {
         address sp1Verifier = vm.envAddress("SP1_VERIFIER");
         require(sp1Verifier != address(0), "set SP1_VERIFIER (pinned immutable Groth16 leaf)");
         bytes32 vkey = vm.envOr("PROGRAM_VKEY", DEFAULT_VKEY);
-        // Bitcoin-root oracle for bridge_mint; address(0) deploys with cross-chain
-        // mint disabled (set it once the Bitcoin-pool-root relay is wired).
-        address bitcoinRootOracle = vm.envOr("BITCOIN_ROOT_ORACLE", address(0));
+        // Bitcoin-state relay vkey: an SP1 proof against it is the ONLY way to attest the
+        // Bitcoin pool root / spent-set (no trusted oracle). bytes32(0) deploys with
+        // cross-chain attestation disabled until the relay prover's vkey is known.
+        bytes32 bitcoinRelayVKey = vm.envOr("BITCOIN_RELAY_VKEY", bytes32(0));
 
         vm.startBroadcast();
-        ConfidentialPool pool = new ConfidentialPool(sp1Verifier, vkey, bitcoinRootOracle);
+        ConfidentialPool pool = new ConfidentialPool(sp1Verifier, vkey, bitcoinRelayVKey);
 
         address sampleUnderlying = vm.envOr("SAMPLE_UNDERLYING", address(0));
         bytes32 sampleAsset;

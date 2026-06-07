@@ -73,9 +73,14 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     /// keccak(chainid, address(this)) — the guest stamps this into the public
     /// values, so a proof is bound to this deployment and cannot be replayed.
     bytes32 public immutable CHAIN_BINDING;
-    /// Relay/oracle allowed to attest canonical, confirmed Bitcoin confidential-pool
-    /// roots (the tETH SP1PoolRootVerifier pattern). address(0) disables bridge_mint.
-    address public immutable BITCOIN_ROOT_ORACLE;
+    /// vkey of the Bitcoin-state relay prover. Bitcoin confidential-pool state (the note
+    /// tree root + the spent-nullifier root) is attested ONLY by an SP1 proof against this
+    /// vkey — re-derived from relayed Bitcoin headers (the SP1PoolRootVerifier pattern).
+    /// No trusted oracle: the proof is the sole authority.
+    bytes32 public immutable BITCOIN_RELAY_VKEY;
+    /// Monotonic guard: the highest Bitcoin height a relay proof has attested. A proof
+    /// must strictly advance it, so a stale proof cannot roll the spent root backward.
+    uint64 public lastRelayHeight;
 
     // ──────────────────── Commitment tree (global, Keccak) ────────────────────
 
@@ -125,15 +130,9 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     // Bitcoin-homed note spent on Ethereum).
     mapping(bytes32 => bool) public knownBitcoinRoot;
 
-    // Nullifiers spent on Bitcoin, reflected here so the Ethereum fast lane can
-    // refuse to re-spend them (improved platinum, asymmetric: Bitcoin is the
-    // canonical arbiter). The per-nullifier map is the bootstrap/defense path
-    // (no-op until reflection is on). The scalable path is the indexed-Merkle root
-    // below: the settle guest proves non-membership of each spent ν against it.
-    mapping(bytes32 => bool) public knownBitcoinSpent;
-
-    // The reflected Bitcoin spent-nullifier indexed-Merkle root (set by the
-    // reflection relay). A settle that does cross-lane non-membership in-guest
+    // The reflected Bitcoin spent-nullifier indexed-Merkle root (set ONLY by an SP1
+    // relay proof, attestBitcoinStateProven). A settle that does cross-lane non-membership
+    // in-guest
     // commits the root it checked against in `pv.bitcoinSpentRoot`; this must equal
     // the current reflected root, so a stale root (omitting recent Bitcoin spends)
     // can't be used. O(1) on-chain — the scalable cross-lane gate.
@@ -177,8 +176,6 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     event BridgeMinted(bytes32 indexed claimId);
     // The oracle attested a canonical, confirmed Bitcoin confidential-pool root.
     event BitcoinRootAttested(bytes32 indexed root);
-    // Nullifiers spent on Bitcoin, reflected onto Ethereum (improved-platinum gate).
-    event BitcoinSpentReflected(bytes32[] nullifiers);
     // The reflected Bitcoin spent-set indexed-Merkle root advanced.
     event BitcoinSpentRootReflected(bytes32 indexed root);
     // An Ethereum note was burned for Bitcoin; validators honor it once past finality.
@@ -202,22 +199,21 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     error MemoLeafMismatch();
     error BurnAlreadyMinted();
     error CrossOutClaimMismatch();
-    error NotOracle();
     error UnknownBitcoinRoot();
-    error BitcoinSpent();
     error StaleBitcoinSpentRoot();
     error PoolNotMinter();
     error BadDecimals();
+    error StaleRelayProof();
 
     // ──────────────────── Constructor ────────────────────
 
-    constructor(address sp1Verifier_, bytes32 programVKey_, address bitcoinRootOracle_) {
+    constructor(address sp1Verifier_, bytes32 programVKey_, bytes32 bitcoinRelayVKey_) {
         if (sp1Verifier_ == address(0)) revert ZeroAddress();
         if (programVKey_ == bytes32(0)) revert ZeroVKey();
         SP1_VERIFIER = ISP1Verifier(sp1Verifier_);
         PROGRAM_VKEY = programVKey_;
         CHAIN_BINDING = keccak256(abi.encodePacked(block.chainid, address(this)));
-        BITCOIN_ROOT_ORACLE = bitcoinRootOracle_; // address(0) = bridge_mint disabled
+        BITCOIN_RELAY_VKEY = bitcoinRelayVKey_; // the sole Bitcoin-state authority (a proof)
 
         bytes32 z = bytes32(0);
         for (uint256 i; i < TREE_LEVELS; ++i) {
@@ -356,36 +352,31 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         emit Wrap(depositId, assetId, amount, cx, cy, owner);
     }
 
-    // ──────────────────── Bitcoin root attestation (bridge_mint trust root) ────────────────────
+    // ──────────────────── Bitcoin state attestation (relay-proven, no oracle) ────────────────────
 
-    /// @notice The oracle attests a Bitcoin confidential-pool root as canonical and
-    ///         confirmed. A bridge_mint can only mint against an attested root, so a
-    ///         note proven in a fabricated tree cannot be minted. Mirrors the tETH
-    ///         SP1PoolRootVerifier relaying Bitcoin pool state onto Ethereum.
-    function attestBitcoinRoot(bytes32 root) external {
-        if (msg.sender != BITCOIN_ROOT_ORACLE) revert NotOracle();
-        knownBitcoinRoot[root] = true;
-        emit BitcoinRootAttested(root);
+    /// Bitcoin state proven by the relay (re-derived from relayed headers in SP1) — the
+    /// trustless input to the bridge_mint root gate and the cross-lane spent-set.
+    struct BitcoinRelayPublicValues {
+        bytes32 bitcoinPoolRoot;  // the Bitcoin confidential-pool note-tree root
+        bytes32 bitcoinSpentRoot; // the Bitcoin spent-nullifier IMT root at this height
+        uint64 bitcoinHeight;     // the confirmed Bitcoin height the relay proved up to
     }
 
-    /// @notice Reflect a batch of nullifiers spent on Bitcoin (the relay proves them
-    ///         against Bitcoin state via SP1, the SP1PoolRootVerifier pattern) so the
-    ///         Ethereum fast lane refuses to re-spend them. Improved platinum's
-    ///         cross-lane consistency, on-chain — the settle guest stays frozen.
-    function reflectBitcoinSpent(bytes32[] calldata nullifiers) external {
-        if (msg.sender != BITCOIN_ROOT_ORACLE) revert NotOracle();
-        for (uint256 i; i < nullifiers.length; ++i) knownBitcoinSpent[nullifiers[i]] = true;
-        emit BitcoinSpentReflected(nullifiers);
-    }
-
-    /// @notice Advance the reflected Bitcoin spent-nullifier indexed-Merkle root.
-    ///         The relay proves (SP1) the Bitcoin pool's spent set up to the relay
-    ///         tip and posts its root; a settle's in-guest non-membership must be
-    ///         against this exact root (freshness — no stale-root double-spend).
-    function reflectBitcoinSpentRoot(bytes32 root) external {
-        if (msg.sender != BITCOIN_ROOT_ORACLE) revert NotOracle();
-        knownBitcoinSpentRoot = root;
-        emit BitcoinSpentRootReflected(root);
+    /// @notice Attest Bitcoin confidential-pool state via an SP1 relay proof — the ONLY
+    ///         attestation path (no trusted oracle). Verifies the proof against
+    ///         `BITCOIN_RELAY_VKEY`, then marks the proven pool root canonical (so a
+    ///         bridge_mint can prove membership against it) and advances the reflected
+    ///         spent-set root (the cross-lane non-membership freshness root). The height
+    ///         must strictly increase, so a stale proof can't roll the spent set back.
+    function attestBitcoinStateProven(bytes calldata publicValues, bytes calldata proofBytes) external {
+        SP1_VERIFIER.verifyProof(BITCOIN_RELAY_VKEY, publicValues, proofBytes);
+        BitcoinRelayPublicValues memory r = abi.decode(publicValues, (BitcoinRelayPublicValues));
+        if (r.bitcoinHeight <= lastRelayHeight) revert StaleRelayProof();
+        lastRelayHeight = r.bitcoinHeight;
+        knownBitcoinRoot[r.bitcoinPoolRoot] = true;
+        knownBitcoinSpentRoot = r.bitcoinSpentRoot;
+        emit BitcoinRootAttested(r.bitcoinPoolRoot);
+        emit BitcoinSpentRootReflected(r.bitcoinSpentRoot);
     }
 
     // ──────────────────── Settle (the one proof entrypoint) ────────────────────
@@ -413,13 +404,13 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         if (pv.bitcoinSpentRoot != bytes32(0) && pv.bitcoinSpentRoot != knownBitcoinSpentRoot) revert StaleBitcoinSpentRoot();
         if (memos.length != pv.leaves.length) revert MemoLeafMismatch();
 
+        // Cross-lane gate (improved platinum): a note already spent on Bitcoin cannot be
+        // fast-spent on Ethereum. Enforced trustlessly in-guest — the guest proves each
+        // spent ν absent from the Bitcoin spent set against `pv.bitcoinSpentRoot`, which
+        // the check above pins to the current relay-proven root. Bitcoin is the arbiter.
         for (uint256 i; i < pv.nullifiers.length; ++i) {
             bytes32 n = pv.nullifiers[i];
             if (nullifierSpent[n]) revert NullifierAlreadySpent();
-            // Cross-lane gate (improved platinum): a note already spent on Bitcoin
-            // (reflected via the relay) cannot be fast-spent on Ethereum. Bitcoin is
-            // the canonical arbiter; the fast lane yields. No-op until reflection is on.
-            if (knownBitcoinSpent[n]) revert BitcoinSpent();
             nullifierSpent[n] = true;
         }
         if (pv.nullifiers.length != 0) emit NullifiersSpent(pv.nullifiers);
