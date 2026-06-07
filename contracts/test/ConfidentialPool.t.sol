@@ -529,6 +529,61 @@ contract ConfidentialPoolTest is Test {
         assertEq(pool.nextLeafIndex(), 1, "ETH note minted");
     }
 
+    // ──────────────────── improved platinum: cross-lane gate ────────────────────
+
+    event BitcoinSpentReflected(bytes32[] nullifiers);
+
+    function test_reflect_bitcoin_spent_only_oracle() public {
+        bytes32[] memory nus = new bytes32[](1);
+        nus[0] = keccak256("btc-spent-nu");
+        vm.expectRevert(ConfidentialPool.NotOracle.selector);
+        pool.reflectBitcoinSpent(nus);
+
+        vm.expectEmit(false, false, false, true, address(pool));
+        emit BitcoinSpentReflected(nus);
+        vm.prank(ORACLE);
+        pool.reflectBitcoinSpent(nus);
+        assertTrue(pool.knownBitcoinSpent(nus[0]), "reflected");
+    }
+
+    /// A note already spent on Bitcoin cannot be fast-spent on Ethereum — Bitcoin is
+    /// the canonical arbiter, the fast lane yields.
+    function test_fast_spend_of_bitcoin_spent_note_rejected() public {
+        bytes32 nu = keccak256("note-spent-on-bitcoin");
+        bytes32[] memory nus = new bytes32[](1); nus[0] = nu;
+        vm.prank(ORACLE);
+        pool.reflectBitcoinSpent(nus);
+
+        ConfidentialPool.PublicValues memory pv = _pv();
+        pv.nullifiers = new bytes32[](1);
+        pv.nullifiers[0] = nu;
+        vm.expectRevert(ConfidentialPool.BitcoinSpent.selector);
+        _settle(pv);
+    }
+
+    /// A note homed on Bitcoin can be spent on the Ethereum fast lane by proving
+    /// membership against a reflected (attested) Bitcoin pool root.
+    function test_spend_against_reflected_bitcoin_root() public {
+        bytes32 btcRoot = keccak256("bitcoin-pool-root");
+        vm.prank(ORACLE);
+        pool.attestBitcoinRoot(btcRoot);
+
+        ConfidentialPool.PublicValues memory pv = _pv();
+        pv.spendRoot = btcRoot; // membership proven against the Bitcoin root
+        pv.nullifiers = new bytes32[](1);
+        pv.nullifiers[0] = keccak256("btc-homed-note");
+        _settle(pv); // no UnknownRoot revert — Bitcoin root accepted as a spend root
+        assertTrue(pool.isNullifierSpent(keccak256("btc-homed-note")), "fast-spent on Ethereum");
+    }
+
+    /// An unattested Bitcoin root is still rejected as a spend root.
+    function test_spend_against_unattested_root_reverts() public {
+        ConfidentialPool.PublicValues memory pv = _pv();
+        pv.spendRoot = keccak256("not-attested");
+        vm.expectRevert(ConfidentialPool.UnknownRoot.selector);
+        _settle(pv);
+    }
+
     // ──────────────────── on-chain defense-in-depth (intra-batch) ────────────────────
 
     function test_settle_intrabatch_duplicate_nullifier_reverts() public {

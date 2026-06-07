@@ -89,7 +89,15 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     // Bitcoin confidential-pool roots the oracle has attested as canonical +
     // confirmed. A bridge_mint proves the burned note's membership against one of
     // these, so a fake-tree note cannot be minted (the inflation-critical gate).
+    // Also accepted as a `spendRoot` for the improved-platinum fast lane (a
+    // Bitcoin-homed note spent on Ethereum).
     mapping(bytes32 => bool) public knownBitcoinRoot;
+
+    // Nullifiers spent on Bitcoin, reflected here so the Ethereum fast lane can
+    // refuse to re-spend them (improved platinum, asymmetric: Bitcoin is the
+    // canonical arbiter). Empty until a reflection relay is attesting → no-op in
+    // gold/Phase-1. The settle guest is unchanged; this gate lives on-chain.
+    mapping(bytes32 => bool) public knownBitcoinSpent;
 
     // ──────────────────── Public-values layout ────────────────────
 
@@ -128,6 +136,8 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     event BridgeMinted(bytes32 indexed claimId);
     // The oracle attested a canonical, confirmed Bitcoin confidential-pool root.
     event BitcoinRootAttested(bytes32 indexed root);
+    // Nullifiers spent on Bitcoin, reflected onto Ethereum (improved-platinum gate).
+    event BitcoinSpentReflected(bytes32[] nullifiers);
     // An Ethereum note was burned for Bitcoin; validators honor it once past finality.
     event CrossOutRecorded(bytes32 indexed claimId, uint16 destChain, bytes32 destCommitment, bytes32 nullifier, bytes32 assetId);
 
@@ -151,6 +161,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     error CrossOutClaimMismatch();
     error NotOracle();
     error UnknownBitcoinRoot();
+    error BitcoinSpent();
 
     // ──────────────────── Constructor ────────────────────
 
@@ -228,6 +239,16 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         emit BitcoinRootAttested(root);
     }
 
+    /// @notice Reflect a batch of nullifiers spent on Bitcoin (the relay proves them
+    ///         against Bitcoin state via SP1, the SP1PoolRootVerifier pattern) so the
+    ///         Ethereum fast lane refuses to re-spend them. Improved platinum's
+    ///         cross-lane consistency, on-chain — the settle guest stays frozen.
+    function reflectBitcoinSpent(bytes32[] calldata nullifiers) external {
+        if (msg.sender != BITCOIN_ROOT_ORACLE) revert NotOracle();
+        for (uint256 i; i < nullifiers.length; ++i) knownBitcoinSpent[nullifiers[i]] = true;
+        emit BitcoinSpentReflected(nullifiers);
+    }
+
     // ──────────────────── Settle (the one proof entrypoint) ────────────────────
 
     /// @notice Verify one SP1 proof and apply its effects: mark nullifiers, append
@@ -243,12 +264,19 @@ contract ConfidentialPool is ReentrancyGuardTransient {
 
         if (pv.version != PV_VERSION) revert BadVersion();
         if (pv.chainBinding != CHAIN_BINDING) revert ChainMismatch();
-        if (pv.spendRoot != bytes32(0) && !everKnownRoot[pv.spendRoot]) revert UnknownRoot();
+        // Membership may be proven against an Ethereum root OR a reflected Bitcoin
+        // confidential-pool root (improved platinum: a Bitcoin-homed note spent on
+        // the Ethereum fast lane). Both are oracle/relay-attested.
+        if (pv.spendRoot != bytes32(0) && !everKnownRoot[pv.spendRoot] && !knownBitcoinRoot[pv.spendRoot]) revert UnknownRoot();
         if (memos.length != pv.leaves.length) revert MemoLeafMismatch();
 
         for (uint256 i; i < pv.nullifiers.length; ++i) {
             bytes32 n = pv.nullifiers[i];
             if (nullifierSpent[n]) revert NullifierAlreadySpent();
+            // Cross-lane gate (improved platinum): a note already spent on Bitcoin
+            // (reflected via the relay) cannot be fast-spent on Ethereum. Bitcoin is
+            // the canonical arbiter; the fast lane yields. No-op until reflection is on.
+            if (knownBitcoinSpent[n]) revert BitcoinSpent();
             nullifierSpent[n] = true;
         }
         if (pv.nullifiers.length != 0) emit NullifiersSpent(pv.nullifiers);
