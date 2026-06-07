@@ -16,6 +16,16 @@ interface IMintBurn {
     function MINTER() external view returns (address);
 }
 
+/// The canonical-ERC20 factory (CREATE2, address = f(assetId)). Lets the pool lazily
+/// deploy a Tacit asset's public ERC20 on first registration. `CanonicalAssetFactory`
+/// implements this.
+interface ICanonicalAssetFactory {
+    function tokenOf(bytes32 assetId) external view returns (address);
+    function deployCanonical(bytes32 assetId, address minter, string calldata symbol_, uint8 decimals_)
+        external
+        returns (address token);
+}
+
 /// @title ConfidentialPool
 /// @notice Phase-1 confidential token: a multi-asset shielded pool on Ethereum
 ///         with arbitrary hidden amounts on secp256k1 notes (C = v·H + r·G), the
@@ -42,6 +52,11 @@ contract ConfidentialPool is ReentrancyGuardTransient {
 
     uint256 public constant TREE_LEVELS = 32;
     uint256 public constant MAX_LEAVES = 1 << TREE_LEVELS;
+
+    /// Decimals every Tacit-native asset is presented at on Ethereum (the ERC20
+    /// convention). A Tacit asset's native precision (≤ 8, Bitcoin's limit) is harmonized
+    /// up to this; `unitScale = 10^(ETH_DECIMALS − tacitDecimals)` does the amount scaling.
+    uint8 public constant ETH_DECIMALS = 18;
     uint16 public constant PV_VERSION = 1;
 
     // ──────────────────── Immutables ────────────────────
@@ -185,6 +200,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     error BitcoinSpent();
     error StaleBitcoinSpentRoot();
     error PoolNotMinter();
+    error BadDecimals();
 
     // ──────────────────── Constructor ────────────────────
 
@@ -245,13 +261,37 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         return _register(canonicalErc20, unitScale, crossChainLink, true, name_, symbol_, decimals_);
     }
 
+    /// @notice Register a Tacit-native asset by its cross-chain `tacitAssetId`, lazily
+    ///         deploying its canonical ERC20 through `factory` (address = f(tacitAssetId))
+    ///         if it does not exist yet, with THIS POOL as minter. Decimals are harmonized
+    ///         to Ethereum (`ETH_DECIMALS`) and `unitScale` is DERIVED deterministically
+    ///         from the asset's native precision — `10^(ETH_DECIMALS − tacitDecimals)` —
+    ///         so an 8-decimal Tacit asset becomes an 18-decimal ERC20 with a 10^10 scale,
+    ///         no operator-chosen scale to get wrong. `name` is the constant brand; the
+    ///         only per-asset metadata is `(symbol, tacitDecimals)`, deterministic to the
+    ///         real asset (carried in its etch).
+    function registerMintedAuto(address factory, bytes32 tacitAssetId, string calldata symbol_, uint8 tacitDecimals)
+        external
+        returns (bytes32 assetId, address token)
+    {
+        if (tacitDecimals > ETH_DECIMALS) revert BadDecimals();
+        token = ICanonicalAssetFactory(factory).tokenOf(tacitAssetId);
+        if (token == address(0)) {
+            // first touch: deploy the public ERC20 at its canonical CREATE2 address.
+            token = ICanonicalAssetFactory(factory).deployCanonical(tacitAssetId, address(this), symbol_, ETH_DECIMALS);
+        }
+        if (IMintBurn(token).MINTER() != address(this)) revert PoolNotMinter();
+        uint256 unitScale = 10 ** uint256(ETH_DECIMALS - tacitDecimals);
+        assetId = _register(token, unitScale, tacitAssetId, true, "Tacit Token", symbol_, ETH_DECIMALS);
+    }
+
     function _register(
         address underlying,
         uint256 unitScale,
         bytes32 crossChainLink,
         bool poolMinted,
-        string calldata name_,
-        string calldata symbol_,
+        string memory name_,
+        string memory symbol_,
         uint8 decimals_
     ) internal returns (bytes32 assetId) {
         if (underlying == address(0)) revert ZeroAddress();

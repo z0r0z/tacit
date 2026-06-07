@@ -111,10 +111,13 @@ ERC20s (USDC) keep the escrow path.
    the constant brand `"Tacit Token"`; the only per-asset metadata is `(symbol,
    decimals)`, deterministic to the real asset. For a Tacit-recorded asset the MINTER is
    the **pool**; the pool mints on exit / burns on entry.
-3. **Pool integration** — built (commit `ffe1e7f`): `registerMinted(canonicalErc20,…)`
-   (pool-minted: `wrap` burns, `unwrap` mints, no escrow) for Tacit-recorded assets;
-   `registerWrapped(…)` (escrow) for external ERC20s. `IMintBurn` interface; round-trip
-   tested (exit mints, re-enter burns).
+3. **Pool integration** — built: `registerMinted(canonicalErc20,…)` (pool-minted: `wrap`
+   burns, `unwrap` mints, no escrow) for Tacit-recorded assets; `registerWrapped(…)`
+   (escrow) for external ERC20s; `IMintBurn` interface; round-trip tested. Plus
+   `registerMintedAuto(factory, tacitAssetId, symbol, tacitDecimals)` — lazily deploys the
+   canonical ERC20 (address = `f(tacitAssetId)`, decimals harmonized to 18) and DERIVES
+   `unitScale = 10^(18 − tacitDecimals)` on-chain (8→18 ⇒ 10^10), so the decimal scaling is
+   deterministic, not operator-chosen. `wrap` already enforces the alignment/dust rule.
 4. **Remaining:** `bridge_mint` lazy issuance — on first mint of an `assetId` the pool
    CREATE2-deploys the canonical ERC20 at `predict(assetId)` with the proven `(symbol,
    decimals)`, then mints; every mint after is just `mint` against that address. The

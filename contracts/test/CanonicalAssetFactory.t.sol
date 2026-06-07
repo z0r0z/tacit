@@ -160,4 +160,54 @@ contract CanonicalAssetFactoryTest is Test {
             "metaHash KAT (TAC/18)"
         );
     }
+
+    // ── pool lazy-deploys + harmonizes decimals deterministically (registerMintedAuto) ──
+
+    function _pool() internal returns (ConfidentialPool) {
+        return new ConfidentialPool(address(0x5117), bytes32(uint256(1)), address(0));
+    }
+
+    function test_registerMintedAuto_lazy_deploys_and_harmonizes() public {
+        ConfidentialPool pool = _pool();
+        bytes32 tacId = keccak256("TAC-bitcoin-asset");
+        (bytes32 assetId, address token) = pool.registerMintedAuto(address(factory), tacId, "TAC", 8);
+
+        assertEq(token, factory.predict(tacId), "lazy-deployed at f(tacitAssetId)");
+        assertEq(factory.tokenOf(tacId), token, "registered in factory");
+
+        CanonicalBridgedERC20 t = CanonicalBridgedERC20(token);
+        assertEq(t.decimals(), 18, "8-dec Tacit asset presented at 18 on Ethereum");
+        assertEq(t.name(), "Tacit Token", "constant brand");
+        assertEq(t.symbol(), "TAC", "ticker carried");
+        assertEq(t.MINTER(), address(pool), "pool is the minter");
+
+        ConfidentialPool.Asset memory a = pool.getAsset(assetId);
+        assertEq(a.unitScale, 1e10, "unitScale = 10^(18-8), derived on-chain");
+        assertEq(a.crossChainLink, tacId, "linked to the Bitcoin/Tacit asset id");
+        assertEq(a.decimals, 18);
+        assertTrue(a.poolMinted);
+    }
+
+    function test_registerMintedAuto_adopts_prior_factory_token() public {
+        ConfidentialPool pool = _pool();
+        bytes32 tacId = keccak256("PRE");
+        address pre = factory.deployCanonical(tacId, address(pool), "PRE", 18); // pre-deployed, pool = minter
+        (bytes32 assetId, address token) = pool.registerMintedAuto(address(factory), tacId, "PRE", 6);
+        assertEq(token, pre, "adopts the existing factory token, no redeploy");
+        assertEq(pool.getAsset(assetId).unitScale, 1e12, "unitScale = 10^(18-6)");
+    }
+
+    function test_registerMintedAuto_rejects_bad_decimals() public {
+        ConfidentialPool pool = _pool();
+        vm.expectRevert(ConfidentialPool.BadDecimals.selector);
+        pool.registerMintedAuto(address(factory), keccak256("X"), "X", 19);
+    }
+
+    function test_registerMintedAuto_rejects_if_pool_not_minter() public {
+        ConfidentialPool pool = _pool();
+        bytes32 tacId = keccak256("NOTMINE");
+        factory.deployCanonical(tacId, MINTER, "NM", 18); // minter = MINTER, not the pool
+        vm.expectRevert(ConfidentialPool.PoolNotMinter.selector);
+        pool.registerMintedAuto(address(factory), tacId, "NM", 8);
+    }
 }

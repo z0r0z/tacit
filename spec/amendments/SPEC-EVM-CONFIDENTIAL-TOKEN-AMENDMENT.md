@@ -144,6 +144,19 @@ code), so the bridge computes it before the token exists, deploys it on first mi
 mints against the same address forever after. `meta_hash` is length-prefixed and
 language-neutral (reproducible in Solidity, JS, and Rust).
 
+**Decimals harmonization.** Each chain presents an asset in its own convention: Bitcoin /
+Tacit ≤ 8 decimals (Bitcoin's native limit), Ethereum 18 (`ConfidentialPool.ETH_DECIMALS`).
+A Tacit-native asset's canonical ERC20 is presented at 18, and the per-asset
+`unitScale = 10^(ETH_DECIMALS − tacitDecimals)` (e.g. 8-decimal TAC → 18-decimal ERC20,
+scale `10^10`) is **derived on-chain** from the native precision —
+`registerMintedAuto(factory, tacitAssetId, symbol, tacitDecimals)` lazily deploys the
+ERC20 (address = `f(tacitAssetId)`) and records the scale, no operator-chosen value to get
+wrong. Amounts scale by `unitScale` across the boundary: the in-system note value times
+`unitScale` is the public ERC20 amount. Tacit→Ethereum is lossless (multiply);
+Ethereum→Tacit only crosses whole multiples of `unitScale` (`wrap` rejects unaligned
+amounts), so sub-precision dust stays as ERC20 on Ethereum — value-conserving, round-trip
+exact.
+
 ### `etch` — confidential token, two mode-split entrypoints
 Deploys a `TacitConfidentialEtched` (CREATE2) through one of two entrypoints (no
 overloaded sentinel), each taking `Meta{ name, symbol, decimals, uri }`:
