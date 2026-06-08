@@ -83,9 +83,10 @@ contract ConfidentialPoolTest is Test {
 
     /// Attest Bitcoin state via the relay-proven path (the only path — no oracle). The
     /// MockSP1Verifier no-ops verifyProof, so this exercises the contract's decode + gates.
-    function _attestBtc(bytes32 poolRoot, bytes32 spentRoot, uint64 height) internal {
+    function _attestBtc(bytes32 poolRoot, bytes32 spentRoot, uint64 height) internal returns (bytes32 burnRoot) {
+        burnRoot = keccak256(abi.encodePacked(spentRoot, "burn"));
         ConfidentialPool.BitcoinRelayPublicValues memory r =
-            ConfidentialPool.BitcoinRelayPublicValues(poolRoot, spentRoot, height);
+            ConfidentialPool.BitcoinRelayPublicValues(poolRoot, spentRoot, burnRoot, height);
         pool.attestBitcoinStateProven(abi.encode(r), "");
     }
 
@@ -448,10 +449,12 @@ contract ConfidentialPoolTest is Test {
     /// A Bitcoin burn mints an Ethereum note (leaf) gated one-mint-per-burn on its
     /// claimId, and marks bridgeMinted — the tETH acceptedBitcoinBurns pattern.
     function test_bridge_mint_marks_claim_and_inserts_leaf() public {
+        bytes32 burnRoot = _attestBtc(keccak256("bm-pool-1"), keccak256("bm-spent-1"), 1);
         ConfidentialPool.PublicValues memory pv = _pv();
         bytes32 claimId = keccak256("btc-burn-1");
         pv.bitcoinBurnsConsumed = new bytes32[](1);
         pv.bitcoinBurnsConsumed[0] = claimId;
+        pv.bitcoinBurnRoot = burnRoot;
         pv.leaves = new bytes32[](1);
         pv.leaves[0] = keccak256("minted-note");
 
@@ -465,10 +468,12 @@ contract ConfidentialPoolTest is Test {
 
     /// The same Bitcoin burn cannot be minted twice (one note, not two).
     function test_bridge_mint_double_claim_reverts() public {
+        bytes32 burnRoot = _attestBtc(keccak256("bm-pool-2"), keccak256("bm-spent-2"), 1);
         ConfidentialPool.PublicValues memory pv = _pv();
         bytes32 claimId = keccak256("btc-burn-2");
         pv.bitcoinBurnsConsumed = new bytes32[](1);
         pv.bitcoinBurnsConsumed[0] = claimId;
+        pv.bitcoinBurnRoot = burnRoot;
         pv.leaves = new bytes32[](1);
         pv.leaves[0] = keccak256("note");
         pool.settle(abi.encode(pv), "", new bytes[](1));
@@ -476,6 +481,7 @@ contract ConfidentialPoolTest is Test {
         ConfidentialPool.PublicValues memory pv2 = _pv();
         pv2.bitcoinBurnsConsumed = new bytes32[](1);
         pv2.bitcoinBurnsConsumed[0] = claimId; // replay
+        pv2.bitcoinBurnRoot = burnRoot;
         pv2.leaves = new bytes32[](1);
         pv2.leaves[0] = keccak256("note2");
         vm.expectRevert(ConfidentialPool.BurnAlreadyMinted.selector);
@@ -484,11 +490,39 @@ contract ConfidentialPoolTest is Test {
 
     /// An intra-batch duplicate Bitcoin-burn claim is rejected too.
     function test_bridge_mint_intrabatch_duplicate_reverts() public {
+        bytes32 burnRoot = _attestBtc(keccak256("bm-pool-3"), keccak256("bm-spent-3"), 1);
         ConfidentialPool.PublicValues memory pv = _pv();
         bytes32 claimId = keccak256("btc-burn-3");
         pv.bitcoinBurnsConsumed = new bytes32[](2);
         pv.bitcoinBurnsConsumed[0] = claimId; pv.bitcoinBurnsConsumed[1] = claimId;
+        pv.bitcoinBurnRoot = burnRoot;
         vm.expectRevert(ConfidentialPool.BurnAlreadyMinted.selector);
+        pool.settle(abi.encode(pv), "", new bytes[](0));
+    }
+
+    /// H-1 guard: a bridge_mint MUST pin a burn root. A mint that omits it (burnRoot == 0)
+    /// is rejected — otherwise a note spent on Bitcoin for ANY reason (an ordinary transfer,
+    /// not a bridge burn) could be minted on Ethereum, duplicating value across chains. This
+    /// is the contract backstop to the guest's bridge-burn-set membership.
+    function test_bridge_mint_without_burn_root_reverts() public {
+        ConfidentialPool.PublicValues memory pv = _pv();
+        pv.bitcoinBurnsConsumed = new bytes32[](1);
+        pv.bitcoinBurnsConsumed[0] = keccak256("btc-burn-no-root");
+        // pv.bitcoinBurnRoot left 0 — no burn authority pinned.
+        vm.expectRevert(ConfidentialPool.StaleBitcoinBurnRoot.selector);
+        pool.settle(abi.encode(pv), "", new bytes[](0));
+    }
+
+    /// H-1 guard: a bridge_mint against a STALE burn root (not the current reflected one) is
+    /// rejected — a mint must prove burn membership against the freshest Bitcoin burn set, so
+    /// it can't replay an old root that omits a since-reflected burn or predates it.
+    function test_bridge_mint_stale_burn_root_reverts() public {
+        _attestBtc(keccak256("bm-pool-stale"), keccak256("bm-spent-stale"), 1); // sets knownBitcoinBurnRoot
+        ConfidentialPool.PublicValues memory pv = _pv();
+        pv.bitcoinBurnsConsumed = new bytes32[](1);
+        pv.bitcoinBurnsConsumed[0] = keccak256("btc-burn-stale");
+        pv.bitcoinBurnRoot = keccak256("a-different-old-burn-root"); // != knownBitcoinBurnRoot
+        vm.expectRevert(ConfidentialPool.StaleBitcoinBurnRoot.selector);
         pool.settle(abi.encode(pv), "", new bytes[](0));
     }
 
@@ -584,11 +618,15 @@ contract ConfidentialPoolTest is Test {
     /// A bridge_mint against an un-attested Bitcoin root is rejected — the gate
     /// that stops minting a note proven in a fabricated tree.
     function test_bridge_mint_requires_attested_root() public {
+        // A current burn root is attested (so the burn-root pin passes); the bridge_mint
+        // still fails because its POOL root is not relay-attested — the membership gate.
+        bytes32 burnRoot = _attestBtc(keccak256("bm-pool-4"), keccak256("bm-spent-4"), 1);
         ConfidentialPool.PublicValues memory pv = _pv();
         bytes32 root = keccak256("unknown-btc-root");
         bytes32 claimId = keccak256("mint-claim");
         pv.bitcoinBurnsConsumed = new bytes32[](1);
         pv.bitcoinBurnsConsumed[0] = claimId;
+        pv.bitcoinBurnRoot = burnRoot;
         pv.bitcoinRootsUsed = new bytes32[](1);
         pv.bitcoinRootsUsed[0] = root;
         pv.leaves = new bytes32[](1);
@@ -601,12 +639,13 @@ contract ConfidentialPoolTest is Test {
     /// the claim — the full BTC→ETH effect on the contract side.
     function test_bridge_mint_with_attested_root_succeeds() public {
         bytes32 root = keccak256("good-btc-root");
-        _attestBtc(root, keccak256("imt-empty-sentinel"), 1); // non-zero spent root (empty-IMT sentinel)
+        bytes32 burnRoot = _attestBtc(root, keccak256("imt-empty-sentinel"), 1); // non-zero spent root (empty-IMT sentinel)
 
         ConfidentialPool.PublicValues memory pv = _pv();
         bytes32 claimId = keccak256("mint-claim-2");
         pv.bitcoinBurnsConsumed = new bytes32[](1);
         pv.bitcoinBurnsConsumed[0] = claimId;
+        pv.bitcoinBurnRoot = burnRoot;
         pv.bitcoinRootsUsed = new bytes32[](1);
         pv.bitcoinRootsUsed[0] = root;
         pv.leaves = new bytes32[](1);
@@ -633,7 +672,7 @@ contract ConfidentialPoolTest is Test {
         // in bitcoinRootsUsed (gated ∈ knownBitcoinRoot). Attest the root first.
         bytes32 attRoot = keccak256("attested-pool-root");
         ConfidentialPool.BitcoinRelayPublicValues memory rl =
-            ConfidentialPool.BitcoinRelayPublicValues(attRoot, keccak256("sentinel"), 1);
+            ConfidentialPool.BitcoinRelayPublicValues(attRoot, keccak256("sentinel"), keccak256("sentinel-burn"), 1);
         p.attestBitcoinStateProven(abi.encode(rl), "");
 
         bytes32 tacId = keccak256("attested-TAC");
@@ -829,12 +868,13 @@ contract ConfidentialPoolTest is Test {
         // 2) note later burned on Bitcoin (ν now in the reflected spent set); a bridge_mint
         //    of the SAME ν carries ν in `nullifiers` (post-fix guest) → must revert.
         bytes32 spentWithNu = keccak256("btc-spent-with-nu");
-        _attestBtc(btcRoot, spentWithNu, 2);
+        bytes32 burnRoot2 = _attestBtc(btcRoot, spentWithNu, 2);
         ConfidentialPool.PublicValues memory pv2 = _pv();
         pv2.bitcoinRootsUsed = _arr(btcRoot);
         pv2.bitcoinBurnsConsumed = _arr(nu);
         pv2.nullifiers = _arr(nu); // post-fix: burned ν consumed in the global nullifier set
         pv2.bitcoinSpentRoot = spentWithNu;
+        pv2.bitcoinBurnRoot = burnRoot2;
         pv2.leaves = _arr(keccak256("minted-from-burn"));
         vm.expectRevert(ConfidentialPool.NullifierAlreadySpent.selector);
         pool.settle(abi.encode(pv2), "", new bytes[](1));
@@ -874,5 +914,53 @@ contract ConfidentialPoolTest is Test {
         pv.withdrawals[0] = ConfidentialPool.Withdrawal(keccak256("ghost-asset"), RECIP, 10);
         vm.expectRevert(ConfidentialPool.NotRegistered.selector);
         _settle(pv);
+    }
+
+    // ──────────────────── H-2: cross-chain shared-id resolution ────────────────────
+
+    /// A bridged note carries the SHARED (Bitcoin-side) asset id. The pool registers the
+    /// asset under its local key but links the shared id to it, so an unwrap whose
+    /// withdrawal speaks the shared id resolves to the local entry and mints. Without the
+    /// link the shared id has no registry entry and the bridged value would be locked (H-2).
+    function test_bridged_note_unwraps_via_shared_id() public {
+        CanonicalAssetFactory factory = new CanonicalAssetFactory();
+        bytes32 shared = keccak256("shared-btc-asset");
+        address tok = factory.deployCanonical(shared, address(pool), "cBTC", 8);
+        bytes32 localId = pool.registerMinted(tok, 1, shared, "Conf cBTC", "ccBTC", 8);
+        assertEq(pool.localAssetOf(shared), localId, "shared id linked to local entry");
+
+        ConfidentialPool.PublicValues memory pv = _pv();
+        pv.withdrawals = new ConfidentialPool.Withdrawal[](1);
+        pv.withdrawals[0] = ConfidentialPool.Withdrawal(shared, RECIP, 7); // note speaks the shared id
+        _settle(pv);
+        assertEq(CanonicalBridgedERC20(tok).balanceOf(RECIP), 7, "bridged note unwrapped via shared id");
+    }
+
+    /// An external/escrow asset can never claim a shared id — escrow can't back bridged
+    /// supply, so a bridge_mint could not drain escrow it never funded.
+    function test_escrow_cannot_claim_shared_id() public {
+        MockERC20 ext = new MockERC20();
+        vm.expectRevert(ConfidentialPool.CrossChainEscrow.selector);
+        pool.registerWrapped(address(ext), 1, keccak256("some-shared-id"), "x", "x", 18);
+    }
+
+    /// A cross-chain link is accepted only if the token commits to it (ASSET_ID == link),
+    /// so an unrelated token cannot be linked to a victim's shared id.
+    function test_cross_chain_link_requires_matching_asset_id() public {
+        CanonicalAssetFactory factory = new CanonicalAssetFactory();
+        address tok = factory.deployCanonical(keccak256("token-id"), address(pool), "cBTC", 8);
+        vm.expectRevert(ConfidentialPool.CrossChainTokenMismatch.selector);
+        pool.registerMinted(tok, 1, keccak256("DIFFERENT-shared-id"), "x", "x", 8);
+    }
+
+    /// First-write-wins: once a shared id is linked it cannot be re-claimed (squat-resistant).
+    function test_cross_chain_link_first_write_wins() public {
+        CanonicalAssetFactory factory = new CanonicalAssetFactory();
+        bytes32 shared = keccak256("contested-id");
+        address tokA = factory.deployCanonical(shared, address(pool), "AAA", 8);
+        pool.registerMinted(tokA, 1, shared, "x", "AAA", 8);
+        address tokB = factory.deployCanonical(shared, address(pool), "BBB", 8);
+        vm.expectRevert(ConfidentialPool.CrossChainLinkTaken.selector);
+        pool.registerMinted(tokB, 1, shared, "x", "BBB", 8);
     }
 }
