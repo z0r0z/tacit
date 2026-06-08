@@ -343,6 +343,35 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     };
   }
 
+  // ── Phase 4.3: assemble the reflection prover's input (the guest's io::read order) ──
+  // Given a reflection state (the prior, resumed from a digest) and a batch — { anchorHeight,
+  // headers (80-byte hex), effects } — build the Δ-witnesses (advancing the state) and emit the
+  // ordered field record the exec harness writes to SP1Stdin. An effect carries its tx-binding
+  // (blockIndex into headers, txData, txIndex, txids) + the note data; transfer effects list
+  // outputs with their vout, bridge-outs carry the burn (destCommitment comes from the envelope,
+  // so it is NOT serialized). Returns { prior, anchorHeight, headers, effects, newDigest }.
+  function assembleReflectionInput(state, batch) {
+    const c = state.counts();
+    const prior = {
+      poolRoot: state.poolRoot(), noteCount: c.note,
+      spentRoot: state.spentRoot(), spentCount: c.spent,
+      utxoRoot: state.utxoRoot(), utxoCount: c.utxo,
+      burnRoot: state.burnRoot(), burnCount: c.burn,
+      height: c.height,
+    };
+    const effects = [];
+    for (const e of (batch.effects || [])) {
+      const base = { blockIndex: e.blockIndex, txData: e.txData, txIndex: e.txIndex, txids: e.txids };
+      if (e.type === 'bridge_out') {
+        effects.push({ op: 1, ...base, burn: state.witnessBridgeOut(e.burn, e.height) });
+      } else {
+        const w = state.witnessTransfer(e.spends || [], e.outputs || [], e.height);
+        effects.push({ op: 0, ...base, spends: w.spends, outputs: w.outputs.map((ow, i) => ({ ...ow, vout: e.outputs[i].vout })) });
+      }
+    }
+    return { prior, anchorHeight: batch.anchorHeight | 0, headers: batch.headers || [], effects, newDigest: state.digest() };
+  }
+
   // Mirror of the guest's keccak_merkle_verify — fold a leaf with its path.
   function verifyPath(leafHex, index, path, rootHex) {
     let h = b32(leafHex);
@@ -377,7 +406,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     prover, TREE_DEPTH, zeros: zeros.map(hx),
     commitXY, deriveNote, leaf, nullifier, depositId, Tree, verifyPath, merklePath, merkleRootFrom,
     imtLeaf, imtRoot, imtEmptyRoot, makeImtAccumulator,
-    utxoLeaf, makeUtxoAccumulator, commitmentHash, makeReflectionState,
+    utxoLeaf, makeUtxoAccumulator, commitmentHash, makeReflectionState, assembleReflectionInput,
     _internal: { keccak, concat, b32, beBytes, hx },
   };
 }

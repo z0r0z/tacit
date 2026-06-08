@@ -1,0 +1,20 @@
+{
+  "note": "reflection-prover input: resume from genesis, 0 effects, REAL header (PoW). Phase 4.3 assembler + header-binding fixture.",
+  "prior": {
+    "poolRoot": "0x27ae5ba08d7291c96c8cbddcc148bf48a6d68c7974b94356f53754ef6171d757",
+    "noteCount": 0,
+    "spentRoot": "0x5f3e94ca833807f1196d5ebe6d8f764b8dbc4edd0f473ff628fb4fd9abd17eb0",
+    "spentCount": 1,
+    "utxoRoot": "0xae277ba2588457dbaf81ba23ca8cf28373074420e4dccce0fde1eeeb901fc241",
+    "utxoCount": 1,
+    "burnRoot": "0xae277ba2588457dbaf81ba23ca8cf28373074420e4dccce0fde1eeeb901fc241",
+    "burnCount": 1,
+    "height": 0
+  },
+  "anchorHeight": 800000,
+  "headers": [
+    "000000200000000000000000000000000000000000000000000000000000000000000000042324764fcae204fe7bbd1e31e8cba9eb9a0f83dec0d9fced8c730fb2b6ac1000f15365ffff001f96200000"
+  ],
+  "effects": [],
+  "newDigest": "0x0ca539ff3a68ab1969e7df9234359872225fff86fc72192d9127f8d8b94a5b9f"
+}
