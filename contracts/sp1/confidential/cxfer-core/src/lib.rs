@@ -1396,4 +1396,21 @@ mod tests {
         assert_eq!(s.bridge_burns.get(&nu_brn), Some(dest), "burn mintable, bound to dest");
         assert_ne!(s.bridge_burn_root(), [0u8; 32], "burn root is the non-zero sentinel-seeded set");
     }
+
+    // JS↔Rust cross-impl KAT for the bridge-burn (UTXO) accumulator. The JS witness builder
+    // (dapp makeUtxoAccumulator) and this Rust prover MUST agree on the root, or a JS-built
+    // bridge_mint witness won't verify against the Rust-proven bitcoinBurnRoot. Expected root
+    // computed by dapp/confidential-pool.js for the same two (key → value) inserts.
+    #[test]
+    fn utxo_accumulator_root_matches_js() {
+        let k1 = arr32("0x0000000000000000000000000000000000000000000000000000000000000007");
+        let v1 = arr32("0x0000000000000000000000000000000000000000000000000000000000000099");
+        let k2 = arr32("0x1111111111111111111111111111111111111111111111111111111111111111");
+        let v2 = arr32("0x2222222222222222222222222222222222222222222222222222222222222222");
+        let mut u = UtxoAccumulator::new();
+        u.insert(&k1, &v1);
+        u.insert(&k2, &v2);
+        assert_eq!(u.root(), arr32("0xc0e284ae6547f611ffa26c9bf05875e87b6c9e8bb0793b9eaeda6daa1121efad"),
+            "Rust UtxoAccumulator root must equal the JS makeUtxoAccumulator root");
+    }
 }
