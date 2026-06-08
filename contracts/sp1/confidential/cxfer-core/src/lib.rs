@@ -22,6 +22,7 @@ use tiny_keccak::{Hasher, Keccak};
 /// Bitcoin block/tx primitives for bridge_mint (BTC→ETH burn verification).
 pub mod bitcoin;
 pub mod bjj;
+pub mod sigma;
 
 pub const KERNEL_DOMAIN: &[u8] = b"tacit-evm-cxfer-kernel-v1";
 const BPP_DOMAIN: &[u8] = b"tacit-bpp-v1";
@@ -128,7 +129,7 @@ fn hash_to_curve(domain: &[u8], idx: u32) -> ProjectivePoint {
     panic!("hash_to_curve failed");
 }
 
-fn gen_h() -> ProjectivePoint {
+pub(crate) fn gen_h() -> ProjectivePoint {
     let hseed: [u8; 32] = Sha256::digest(b"tacit-generator-H-v1").into();
     for counter in 0u8..=255 {
         let mut hasher = Sha256::new();

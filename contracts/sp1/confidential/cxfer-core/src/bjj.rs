@@ -154,6 +154,41 @@ pub fn pack(pt: &Point) -> [u8; 32] {
     out
 }
 
+/// The prime subgroup order n_BJJ (for sigma range checks).
+pub fn subgroup_order() -> BigUint { n_bjj().clone() }
+
+/// True iff P is in the prime-order subgroup (cofactor 8) — required for binding.
+pub fn in_subgroup(pt: &Point) -> bool { is_identity(pt) || is_identity(&mul(pt, n_bjj())) }
+
+/// circomlib unpackPoint: decode (v LE + sign bit) → (u, v), recovering u via the curve
+/// equation. Rejects off-curve, out-of-field, and non-prime-subgroup points. Matches JS.
+pub fn unpack(buf: &[u8; 32]) -> Option<Point> {
+    let mut work = *buf;
+    let sign = (work[31] & 0x80) != 0;
+    work[31] &= 0x7f;
+    let v = BigUint::from_bytes_le(&work);
+    if &v >= p() {
+        return None;
+    }
+    let v2 = fmul(&v, &v);
+    let num = fsub(&BigUint::one(), &v2);
+    let den = fsub(a_bjj(), &fmul(d_bjj(), &v2));
+    if den.is_zero() {
+        return None;
+    }
+    let u2 = fmul(&num, &finv(&den));
+    let mut u = fsqrt(&u2)?;
+    let half = (p() - 1u32) / 2u32;
+    if (u > half) != sign {
+        u = fsub(&BigUint::zero(), &u);
+    }
+    let pt = Point { u, v };
+    if !in_subgroup(&pt) {
+        return None;
+    }
+    Some(pt)
+}
+
 fn digest_to_scalar(d: &[u8; 32]) -> BigUint { BigUint::from_bytes_be(d) % p() }
 
 /// NUMS try-and-increment generator (AMM.md). digest big-endian → u; counter u32 LE.
