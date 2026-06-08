@@ -764,6 +764,16 @@ impl KeccakTreeAccumulator {
     pub fn next_index(&self) -> u64 {
         self.next_index
     }
+
+    /// The Merkle path for the NEXT append slot, derived from the frontier: at level i the
+    /// sibling is the filled left subtree (bit set) or the empty-subtree root (bit clear).
+    /// The indexer hands this to `keccak_tree_append_transition`; folding the zero leaf with
+    /// it reproduces the current root, and the new leaf with it the post-append root.
+    pub fn append_path(&self) -> Vec<[u8; 32]> {
+        (0..KECCAK_TREE_DEPTH)
+            .map(|i| if (self.next_index >> i) & 1 == 0 { self.zeros[i] } else { self.filled[i] })
+            .collect()
+    }
 }
 
 /// Outpoint accumulator leaf: keccak(key ‖ next ‖ value).
@@ -1059,6 +1069,169 @@ impl ReflectionState {
         let mut h = [0u8; 32];
         h[24..].copy_from_slice(&self.height.to_be_bytes());
         kn(&[&pool, &spent, &self.utxo.root(), &self.bridge_burns.root(), &h])
+    }
+}
+
+/// One spent input's witnesses: nullify ν in the spent set (IMT insert) and remove the
+/// outpoint from the UTXO set (tombstone). The indexer builds these from the canonical
+/// accumulators; the reflection prover folds them with no full-set state.
+#[derive(Clone)]
+pub struct SpendWitness {
+    pub nu: [u8; 32],
+    pub outpoint: [u8; 32],
+    // spent-set IMT insert
+    pub s_low_value: [u8; 32],
+    pub s_low_next: [u8; 32],
+    pub s_low_index: u64,
+    pub s_low_path: Vec<[u8; 32]>,
+    pub s_new_path: Vec<[u8; 32]>,
+    // UTXO remove
+    pub u_node_next: [u8; 32],
+    pub u_node_value: [u8; 32],
+    pub u_node_index: u64,
+    pub u_node_path: Vec<[u8; 32]>,
+    pub u_pred_key: [u8; 32],
+    pub u_pred_value: [u8; 32],
+    pub u_pred_index: u64,
+    pub u_pred_path: Vec<[u8; 32]>,
+}
+
+/// One output note's witnesses: append the note leaf (note tree) and add the outpoint →
+/// commitment to the UTXO set (insert).
+#[derive(Clone)]
+pub struct OutputWitness {
+    pub note_leaf: [u8; 32],
+    pub note_path: Vec<[u8; 32]>,
+    pub outpoint: [u8; 32],
+    pub commitment_hash: [u8; 32],
+    pub u_low_key: [u8; 32],
+    pub u_low_next: [u8; 32],
+    pub u_low_value: [u8; 32],
+    pub u_low_index: u64,
+    pub u_low_path: Vec<[u8; 32]>,
+    pub u_new_path: Vec<[u8; 32]>,
+}
+
+/// A cross-chain burn's witnesses: a spend PLUS an insert of ν → destCommitment into the
+/// bridge-burn set (so bridge_mint can only mint a note explicitly burned for the bridge).
+#[derive(Clone)]
+pub struct BurnWitness {
+    pub spend: SpendWitness,
+    pub dest_commitment: [u8; 32],
+    pub b_low_key: [u8; 32],
+    pub b_low_next: [u8; 32],
+    pub b_low_value: [u8; 32],
+    pub b_low_index: u64,
+    pub b_low_path: Vec<[u8; 32]>,
+    pub b_new_path: Vec<[u8; 32]>,
+}
+
+/// Headless reflection state: only the four roots + their leaf counts + height — the
+/// resumable anchor the reflection prover reads from its prior `digest()` and advances by
+/// folding Δ-effects through the witnessed accumulator transitions (Phase 1). No full
+/// accumulator state, so proving cost is O(Δ) per cycle, not O(n) replay. Counts pin each
+/// insert to the next free slot (a witness can't open a gap). `commit()` yields the
+/// BitcoinRelayPublicValues roots; `digest()` is the cross-cycle resumption anchor.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WitnessedReflection {
+    pub pool_root: [u8; 32],
+    pub note_count: u64,
+    pub spent_root: [u8; 32],
+    pub spent_count: u64,
+    pub utxo_root: [u8; 32],
+    pub utxo_count: u64,
+    pub burn_root: [u8; 32],
+    pub burn_count: u64,
+    pub height: u64,
+}
+
+impl WitnessedReflection {
+    /// Genesis: empty note tree + sentinel-seeded IMT/UTXO sets (each one leaf at index 0,
+    /// so the first real insert lands at index 1). Byte-identical to ReflectionState::genesis.
+    pub fn genesis() -> Self {
+        let utxo_empty = UtxoAccumulator::new().root();
+        Self {
+            pool_root: keccak_merkle_root(&[]),
+            note_count: 0,
+            spent_root: imt_empty_root(),
+            spent_count: 1,
+            utxo_root: utxo_empty,
+            utxo_count: 1,
+            burn_root: utxo_empty,
+            burn_count: 1,
+            height: 0,
+        }
+    }
+
+    /// (bitcoinPoolRoot, bitcoinSpentRoot, bitcoinHeight) — the relay public values; the
+    /// burn root is committed separately as bitcoinBurnRoot.
+    pub fn commit(&self) -> ([u8; 32], [u8; 32], u64) {
+        (self.pool_root, self.spent_root, self.height)
+    }
+
+    /// Resumption anchor — every root, every count, and the height. A resumed cycle proves
+    /// it continues THIS digest, so it can't silently restart or skip the count guards.
+    pub fn digest(&self) -> [u8; 32] {
+        let u64b = |n: u64| { let mut a = [0u8; 32]; a[24..].copy_from_slice(&n.to_be_bytes()); a };
+        kn(&[
+            &self.pool_root, &u64b(self.note_count),
+            &self.spent_root, &u64b(self.spent_count),
+            &self.utxo_root, &u64b(self.utxo_count),
+            &self.burn_root, &u64b(self.burn_count),
+            &u64b(self.height),
+        ])
+    }
+
+    /// Nullify ν (spent-set insert at the next free slot) and tombstone the outpoint
+    /// (UTXO remove). Shared by transfers and burns.
+    fn apply_spend(&mut self, s: &SpendWitness) -> Result<(), &'static str> {
+        self.spent_root = imt_insert_transition(
+            &self.spent_root, &s.nu, &s.s_low_value, &s.s_low_next, s.s_low_index, &s.s_low_path,
+            self.spent_count, &s.s_new_path,
+        ).ok_or("spent-set insert witness invalid")?;
+        self.spent_count += 1;
+        self.utxo_root = utxo_remove_transition(
+            &self.utxo_root, &s.outpoint, &s.u_node_next, &s.u_node_value, s.u_node_index, &s.u_node_path,
+            &s.u_pred_key, &s.u_pred_value, s.u_pred_index, &s.u_pred_path,
+        ).ok_or("utxo remove witness invalid")?;
+        Ok(())
+    }
+
+    /// Append the output note and insert its outpoint → commitment in the UTXO set.
+    fn apply_output(&mut self, o: &OutputWitness) -> Result<(), &'static str> {
+        self.pool_root = keccak_tree_append_transition(&self.pool_root, self.note_count, &o.note_path, &o.note_leaf)
+            .ok_or("note append witness invalid")?;
+        self.note_count += 1;
+        self.utxo_root = utxo_insert_transition(
+            &self.utxo_root, &o.outpoint, &o.commitment_hash, &o.u_low_key, &o.u_low_next, &o.u_low_value,
+            o.u_low_index, &o.u_low_path, self.utxo_count, &o.u_new_path,
+        ).ok_or("utxo insert witness invalid")?;
+        self.utxo_count += 1;
+        Ok(())
+    }
+
+    /// Fold one confirmed transfer: spends first (so it can't spend an output it creates),
+    /// then outputs. `height` must strictly increase. Mirrors ReflectionState::apply_transfer.
+    pub fn apply_transfer(&mut self, spends: &[SpendWitness], outputs: &[OutputWitness], height: u64) -> Result<(), &'static str> {
+        if height <= self.height { return Err("reflection height must strictly increase"); }
+        for s in spends { self.apply_spend(s)?; }
+        for o in outputs { self.apply_output(o)?; }
+        self.height = height;
+        Ok(())
+    }
+
+    /// Fold one confirmed cross-chain burn: a spend, plus an insert of ν → destCommitment
+    /// into the bridge-burn set. Mirrors ReflectionState::apply_bridge_out.
+    pub fn apply_bridge_out(&mut self, b: &BurnWitness, height: u64) -> Result<(), &'static str> {
+        if height <= self.height { return Err("reflection height must strictly increase"); }
+        self.apply_spend(&b.spend)?;
+        self.burn_root = utxo_insert_transition(
+            &self.burn_root, &b.spend.nu, &b.dest_commitment, &b.b_low_key, &b.b_low_next, &b.b_low_value,
+            b.b_low_index, &b.b_low_path, self.burn_count, &b.b_new_path,
+        ).ok_or("burn-set insert witness invalid")?;
+        self.burn_count += 1;
+        self.height = height;
+        Ok(())
     }
 }
 
@@ -1685,5 +1858,106 @@ mod tests {
         acc.remove(&key);
         assert_eq!(got, acc.root(), "witnessed utxo remove root == stateful");
         assert_eq!(acc.get(&key), None, "removed key is gone");
+    }
+
+    // ── Phase 2 witness builders (what the Phase-4 indexer runs) ──
+    fn build_spend_witness(spent: &ImtAccumulator, utxo: &UtxoAccumulator, nu: [u8; 32], outpoint: [u8; 32]) -> SpendWitness {
+        let spent_leaves: Vec<[u8; 32]> = spent.links().iter().map(|(v, n)| imt_leaf(v, n)).collect();
+        let (low_i, low_v, low_n) = spent.non_membership_low(&nu).expect("spent low");
+        let s_low_path = merkle_path(&spent_leaves, low_i as u64);
+        let mut s_interm = spent_leaves.clone();
+        s_interm[low_i] = imt_leaf(&low_v, &nu);
+        let s_new_path = merkle_path(&s_interm, spent_leaves.len() as u64);
+        let utxo_leaves = utxo.leaves();
+        let (node_i, node_n, node_v) = utxo.membership(&outpoint).expect("utxo member");
+        let (pred_i, pred_k, pred_v) = utxo.predecessor(&outpoint).expect("utxo pred");
+        let u_pred_path = merkle_path(&utxo_leaves, pred_i as u64);
+        let mut u_interm = utxo_leaves.clone();
+        u_interm[pred_i] = utxo_leaf(&pred_k, &node_n, &pred_v);
+        let u_node_path = merkle_path(&u_interm, node_i as u64);
+        SpendWitness {
+            nu, outpoint, s_low_value: low_v, s_low_next: low_n, s_low_index: low_i as u64, s_low_path, s_new_path,
+            u_node_next: node_n, u_node_value: node_v, u_node_index: node_i as u64, u_node_path,
+            u_pred_key: pred_k, u_pred_value: pred_v, u_pred_index: pred_i as u64, u_pred_path,
+        }
+    }
+    fn build_output_witness(notes: &KeccakTreeAccumulator, utxo: &UtxoAccumulator, note_leaf: [u8; 32], outpoint: [u8; 32], commit: [u8; 32]) -> OutputWitness {
+        let utxo_leaves = utxo.leaves();
+        let (low_i, low_k, low_n, low_v) = utxo.low(&outpoint).expect("utxo low");
+        let u_low_path = merkle_path(&utxo_leaves, low_i as u64);
+        let mut interm = utxo_leaves.clone();
+        interm[low_i] = utxo_leaf(&low_k, &outpoint, &low_v);
+        let u_new_path = merkle_path(&interm, utxo_leaves.len() as u64);
+        OutputWitness {
+            note_leaf, note_path: notes.append_path(), outpoint, commitment_hash: commit,
+            u_low_key: low_k, u_low_next: low_n, u_low_value: low_v, u_low_index: low_i as u64, u_low_path, u_new_path,
+        }
+    }
+    fn build_burn_witness(spent: &ImtAccumulator, utxo: &UtxoAccumulator, burns: &UtxoAccumulator, nu: [u8; 32], outpoint: [u8; 32], dest: [u8; 32]) -> BurnWitness {
+        let spend = build_spend_witness(spent, utxo, nu, outpoint);
+        let burn_leaves = burns.leaves();
+        let (low_i, low_k, low_n, low_v) = burns.low(&nu).expect("burn low");
+        let b_low_path = merkle_path(&burn_leaves, low_i as u64);
+        let mut interm = burn_leaves.clone();
+        interm[low_i] = utxo_leaf(&low_k, &nu, &low_v);
+        let b_new_path = merkle_path(&interm, burn_leaves.len() as u64);
+        BurnWitness {
+            spend, dest_commitment: dest,
+            b_low_key: low_k, b_low_next: low_n, b_low_value: low_v, b_low_index: low_i as u64, b_low_path, b_new_path,
+        }
+    }
+
+    // Phase 2: WitnessedReflection (headless, O(Δ)) produces byte-identical roots to the
+    // stateful ReflectionState (the indexer/contract reference) over a deposit → transfer →
+    // bridge-out sequence. This is the faithfulness proof of the resume-from-digest model.
+    #[test]
+    fn witnessed_reflection_matches_stateful() {
+        let v = |n: u32| arr32(&format!("0x{:064x}", n));
+        let mut st = ReflectionState::genesis();
+        let mut w = WitnessedReflection::genesis();
+        // genesis roots agree
+        assert_eq!(w.pool_root, st.notes.root());
+        assert_eq!(w.spent_root, st.spent.root());
+        assert_eq!(w.utxo_root, st.utxo.root());
+        assert_eq!(w.burn_root, st.bridge_burns.root());
+
+        let (op_a, leaf_a, com_a, nu_a) = (v(0xa0), v(0x1a), v(0xca), v(0x9a));
+        let (op_b, leaf_b, com_b, nu_b) = (v(0xb0), v(0x1b), v(0xcb), v(0x9b));
+        let (op_c, leaf_c, com_c) = (v(0xc0), v(0x1c), v(0xcc));
+        let dest_b = v(0xde);
+
+        // 1. two deposits (no spends, two outputs)
+        let ow_a = build_output_witness(&st.notes, &st.utxo, leaf_a, op_a, com_a);
+        st.notes.append(&leaf_a); st.utxo.insert(&op_a, &com_a);
+        let ow_b = build_output_witness(&st.notes, &st.utxo, leaf_b, op_b, com_b);
+        st.notes.append(&leaf_b); st.utxo.insert(&op_b, &com_b);
+        st.height = 100;
+        w.apply_transfer(&[], &[ow_a, ow_b], 100).expect("deposits");
+        assert_eq!((w.pool_root, w.utxo_root), (st.notes.root(), st.utxo.root()), "after deposits");
+
+        // 2. transfer: spend op_a, create op_c
+        let sw = build_spend_witness(&st.spent, &st.utxo, nu_a, op_a);
+        st.spent.insert(&nu_a); st.utxo.remove(&op_a);
+        let ow_c = build_output_witness(&st.notes, &st.utxo, leaf_c, op_c, com_c);
+        st.notes.append(&leaf_c); st.utxo.insert(&op_c, &com_c);
+        st.height = 101;
+        w.apply_transfer(&[sw], &[ow_c], 101).expect("transfer");
+        assert_eq!((w.pool_root, w.spent_root, w.utxo_root), (st.notes.root(), st.spent.root(), st.utxo.root()), "after transfer");
+
+        // 3. bridge-out: burn op_b → destCommitment
+        let bw = build_burn_witness(&st.spent, &st.utxo, &st.bridge_burns, nu_b, op_b, dest_b);
+        st.spent.insert(&nu_b); st.utxo.remove(&op_b); st.bridge_burns.insert(&nu_b, &dest_b);
+        st.height = 102;
+        w.apply_bridge_out(&bw, 102).expect("bridge-out");
+        assert_eq!(w.spent_root, st.spent.root(), "spent after burn");
+        assert_eq!(w.utxo_root, st.utxo.root(), "utxo after burn");
+        assert_eq!(w.burn_root, st.bridge_burns.root(), "burn root after burn");
+
+        // commit matches the stateful reference; digest is deterministic + non-zero
+        assert_eq!(w.commit(), (st.notes.root(), st.spent.root(), 102));
+        assert_eq!(w.burn_root, st.bridge_burns.root());
+        assert_ne!(w.digest(), [0u8; 32], "resumption digest is well-defined");
+        // height must strictly increase
+        assert!(w.apply_transfer(&[], &[], 102).is_err(), "non-increasing height rejected");
     }
 }
