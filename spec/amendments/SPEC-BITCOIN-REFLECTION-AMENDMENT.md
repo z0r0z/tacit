@@ -60,10 +60,11 @@ Scanning the Bitcoin chain from the previously-proven state, for each accepted
 `T_CXFER_BPP` (`0x22`) / `T_CXFER` (`0x23`) / `OP_ENV_CONF_BURN` (`0x2B`) envelope:
 
 - **Outputs → reflected note leaves.** Each output commitment `C_out = (Cx, Cy)` becomes
-  a note; append `leaf = keccak(asset ‖ Cx ‖ Cy ‖ owner)` to the note tree
-  (`KeccakTreeAccumulator`). *(Open: the Bitcoin output carries `commitment(33) ‖
-  amount_ct(8)` but no explicit `owner` word; §7.1 reconciles the leaf derivation so the
-  Bitcoin leaf and the EVM leaf of the same note are byte-identical.)*
+  a note; append the **owner-free** `leaf = keccak(asset ‖ Cx ‖ Cy)` to the note tree
+  (`KeccakTreeAccumulator`). The leaf omits `owner` because it must be computable by a
+  public prover from public commitment data — `owner` is private (recipient-encrypted
+  memo) and reflection has no recipient key. This is sound (B3 owner-independent
+  nullifier + opening-secrecy spend authorization); see §7.1.
 - **Inputs → cross-lane nullifiers.** Each consumed input `(input_txid, input_vout)`
   resolves (via the reflected UTXO set, §4) to its output commitment `C_in = (Cx, Cy)`;
   insert `ν = keccak(Cx ‖ Cy ‖ "spent")` into the spent IMT (`ImtAccumulator`). This is
@@ -130,18 +131,49 @@ The reflection prover **binds to existing envelopes**; it adds no new spend opco
 
 ## 7. Open decisions
 
-1. **Leaf derivation reconciliation.** The EVM leaf is `keccak(asset ‖ Cx ‖ Cy ‖ owner)`;
-   the Bitcoin output is `commitment(33) ‖ amount_ct(8)` with the recipient identified by
-   the blinded-pubkey dust marker, not an envelope `owner` word. Either (a) derive the
-   reflected leaf's `owner` from the dust-marker commitment (so a note's Bitcoin leaf ==
-   its EVM leaf), or (b) define a reflection-specific leaf that the `bridge_mint`/EVM
-   membership uses for Bitcoin-homed notes. (a) is required for true same-note-both-
-   surfaces; (b) is a simpler interim.
-2. **UTXO-set witness + its completeness.** Resolving an input `(txid, vout) → C_in`
-   needs the reflected UTXO set. Carry it as part of the resumed state (a committed
-   accumulator over unspent output commitments), updated each block (add outputs, remove
-   consumed inputs) — and prove that update complete, or the input→ν mapping can be
-   gamed. This is the heaviest remaining sub-design.
+1. **Leaf derivation reconciliation — RESOLVED (proposed): the cross-chain leaf is
+   owner-free `keccak(asset ‖ Cx ‖ Cy)`.** The resolution is *forced*, not a free choice:
+   the EVM leaf is `keccak(asset ‖ Cx ‖ Cy ‖ owner)`, but `owner` is **private** — it
+   rides in the recipient-encrypted memo (`dapp/confidential-memo.js`, `plain[104:136]`),
+   readable only by the recipient. The reflection prover is a **public** prover with no
+   recipient key, so an owner-bound leaf is *uncomputable* by reflection. Therefore a
+   Bitcoin-homed note's leaf must not depend on `owner`.
+
+   Dropping `owner` from the leaf is **sound**, by three existing properties:
+   - the nullifier is already **owner-independent** (B3: `keccak(Cx ‖ Cy ‖ "spent")`), so
+     spend serialization is unaffected;
+   - spend authorization is **opening secrecy** (`value`, `blinding`, in the memo), which
+     `owner` never gated — the guest reads `owner` only to reconstruct the leaf for the
+     membership check, never for the nullifier;
+   - Pedersen binding means no two distinct notes share `(Cx, Cy)`, so an owner-free leaf
+     creates no collisions and no weakened spend protection.
+
+   **Adoption.** Either (a) all notes move to the owner-free leaf (cleanest — one leaf
+   type, the EVM guest drops the `owner` read; a vkey change folded into the freeze), or
+   (b) only Bitcoin-homed / `bridge_mint` leaves are owner-free while EVM-native notes
+   keep `owner` (two leaf types; `bridge_mint` already carries `dest_commitment` verbatim,
+   so it mints whatever the reflection prover commits). (a) is recommended.
+
+   **For review:** confirm `owner`-in-leaf provides no property beyond the above today
+   (e.g. a recovery/scanning or anti-griefing role); this analysis finds it a redundant
+   extra secret given B3 + opening secrecy, but the leaf-format change is a guest/vkey
+   change and should be reviewed before the freeze.
+2. **UTXO-set witness + its completeness — direction: a committed outpoint→commitment
+   accumulator.** Resolving an input `(txid, vout) → C_in` (needed to derive its ν) is a
+   key→value lookup against the reflected UTXO set. Mechanism: a **sparse Merkle / IMT
+   keyed by the outpoint** `key = keccak(txid ‖ vout)` → value `commitment`, carried in
+   the resumed state and committed alongside the note/spent roots. Folding a transfer:
+   - **inputs:** prove **membership** of `key` (the referenced output is real + unspent),
+     read `C_in`, insert ν into the spent IMT, then **remove** `key` (mark spent);
+   - **outputs:** **insert** `(key_new → C_out)` and append the note leaf.
+
+   So it is a third accumulator alongside `KeccakTreeAccumulator` (note tree) and
+   `ImtAccumulator` (spent set), but one supporting **add *and* remove** (a sparse Merkle,
+   or an IMT with tombstones). Completeness is the **same full-block scan** as the spent
+   set: every tx is inspected, so no output is added unrecorded and no input resolves to a
+   stale/forged commitment. This is the heaviest remaining piece (the accumulator + its
+   membership/update witnesses); it mirrors the two accumulators already built + KAT'd, so
+   the construction pattern is established.
 3. **Confirmation depth `K`** per the finality gate, and the deep-reorg posture
    (accept-and-document, as tETH/AMM, vs an explicit unwind).
 4. **Deposit backing.** A Bitcoin deposit's value backing (BTC lock / etch) is enforced
