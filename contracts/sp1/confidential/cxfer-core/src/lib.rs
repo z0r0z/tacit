@@ -475,6 +475,22 @@ pub fn leaf(asset_id: &[u8; 32], cx: &[u8; 32], cy: &[u8; 32], owner: &[u8; 32])
 /// Derived from the membership-proven commitment, NOT a free witness secret, so a note
 /// has exactly one nullifier and cannot be re-spent under a fresh secret.
 pub fn nullifier(cx: &[u8; 32], cy: &[u8; 32]) -> [u8; 32] { kn(&[cx, cy, b"spent"]) }
+/// The UTXO-set value for a pool note: keccak(Cx ‖ Cy), binding the outpoint to its
+/// commitment. The reflection prover stores this when an output lands and, on spend,
+/// re-opens it to derive ν — so a spend's ν is forced to be the note actually at that outpoint.
+pub fn commitment_hash(cx: &[u8; 32], cy: &[u8; 32]) -> [u8; 32] { kn(&[cx, cy]) }
+/// The UTXO-set key for a Bitcoin outpoint: keccak(txid ‖ vout_le). The reflection prover
+/// derives this from a confirmed tx's vin (`extract_inputs`), so a spent outpoint is forced
+/// to be a real prior output and not a witnessed value.
+pub fn outpoint_key(txid: &[u8; 32], vout: u32) -> [u8; 32] { kn(&[txid, &vout.to_le_bytes()]) }
+/// Bind a spent pool note to its nullifier: given the outpoint's committed value (proven in
+/// the UTXO set via the remove witness) and the note's commitment coords, return ν iff
+/// (Cx,Cy) opens that value — so a spend can't claim a ν unbound from the real note. None
+/// if the commitment doesn't match the outpoint's stored value.
+pub fn bind_spent_note(committed_value: &[u8; 32], cx: &[u8; 32], cy: &[u8; 32]) -> Option<[u8; 32]> {
+    if commitment_hash(cx, cy) != *committed_value { return None; }
+    Some(nullifier(cx, cy))
+}
 /// deposit id = keccak(asset_id ‖ value_be32 ‖ Cx ‖ Cy ‖ owner) — binds the note's
 /// in-system value (the contract derives the same value = amount/unitScale at wrap, so
 /// value·unitScale == escrowed amount: the wrap-side no-inflation gate).
@@ -1077,7 +1093,10 @@ impl ReflectionState {
 /// accumulators; the reflection prover folds them with no full-set state.
 #[derive(Clone)]
 pub struct SpendWitness {
-    pub nu: [u8; 32],
+    // The spent note's commitment coords — ν is DERIVED (nullifier(cx,cy)) and bound to the
+    // outpoint's committed value (keccak(cx,cy) == u_node_value), never witnessed freely.
+    pub cx: [u8; 32],
+    pub cy: [u8; 32],
     pub outpoint: [u8; 32],
     // spent-set IMT insert
     pub s_low_value: [u8; 32],
@@ -1182,11 +1201,15 @@ impl WitnessedReflection {
         ])
     }
 
-    /// Nullify ν (spent-set insert at the next free slot) and tombstone the outpoint
-    /// (UTXO remove). Shared by transfers and burns.
-    fn apply_spend(&mut self, s: &SpendWitness) -> Result<(), &'static str> {
+    /// Nullify a spent note and tombstone its outpoint. ν is DERIVED from the note's
+    /// commitment and BOUND to the outpoint's committed value (keccak(Cx,Cy) == u_node_value,
+    /// the value the UTXO remove witness proves is stored at this outpoint) — so a spend
+    /// can't insert a ν unrelated to the note actually at that outpoint. Returns ν (the burn
+    /// set keys on it). Shared by transfers and burns.
+    fn apply_spend(&mut self, s: &SpendWitness) -> Result<[u8; 32], &'static str> {
+        let nu = bind_spent_note(&s.u_node_value, &s.cx, &s.cy).ok_or("ν not bound to the outpoint's note")?;
         self.spent_root = imt_insert_transition(
-            &self.spent_root, &s.nu, &s.s_low_value, &s.s_low_next, s.s_low_index, &s.s_low_path,
+            &self.spent_root, &nu, &s.s_low_value, &s.s_low_next, s.s_low_index, &s.s_low_path,
             self.spent_count, &s.s_new_path,
         ).ok_or("spent-set insert witness invalid")?;
         self.spent_count += 1;
@@ -1194,7 +1217,7 @@ impl WitnessedReflection {
             &self.utxo_root, &s.outpoint, &s.u_node_next, &s.u_node_value, s.u_node_index, &s.u_node_path,
             &s.u_pred_key, &s.u_pred_value, s.u_pred_index, &s.u_pred_path,
         ).ok_or("utxo remove witness invalid")?;
-        Ok(())
+        Ok(nu)
     }
 
     /// Append the output note and insert its outpoint → commitment in the UTXO set.
@@ -1221,12 +1244,13 @@ impl WitnessedReflection {
     }
 
     /// Fold one confirmed cross-chain burn: a spend, plus an insert of ν → destCommitment
-    /// into the bridge-burn set. Mirrors ReflectionState::apply_bridge_out.
+    /// into the bridge-burn set (ν is the derived nullifier of the spent note). Mirrors
+    /// ReflectionState::apply_bridge_out.
     pub fn apply_bridge_out(&mut self, b: &BurnWitness, height: u64) -> Result<(), &'static str> {
         if height <= self.height { return Err("reflection height must strictly increase"); }
-        self.apply_spend(&b.spend)?;
+        let nu = self.apply_spend(&b.spend)?;
         self.burn_root = utxo_insert_transition(
-            &self.burn_root, &b.spend.nu, &b.dest_commitment, &b.b_low_key, &b.b_low_next, &b.b_low_value,
+            &self.burn_root, &nu, &b.dest_commitment, &b.b_low_key, &b.b_low_next, &b.b_low_value,
             b.b_low_index, &b.b_low_path, self.burn_count, &b.b_new_path,
         ).ok_or("burn-set insert witness invalid")?;
         self.burn_count += 1;
@@ -1861,7 +1885,8 @@ mod tests {
     }
 
     // ── Phase 2 witness builders (what the Phase-4 indexer runs) ──
-    fn build_spend_witness(spent: &ImtAccumulator, utxo: &UtxoAccumulator, nu: [u8; 32], outpoint: [u8; 32]) -> SpendWitness {
+    fn build_spend_witness(spent: &ImtAccumulator, utxo: &UtxoAccumulator, cx: [u8; 32], cy: [u8; 32], outpoint: [u8; 32]) -> SpendWitness {
+        let nu = nullifier(&cx, &cy);
         let spent_leaves: Vec<[u8; 32]> = spent.links().iter().map(|(v, n)| imt_leaf(v, n)).collect();
         let (low_i, low_v, low_n) = spent.non_membership_low(&nu).expect("spent low");
         let s_low_path = merkle_path(&spent_leaves, low_i as u64);
@@ -1876,7 +1901,7 @@ mod tests {
         u_interm[pred_i] = utxo_leaf(&pred_k, &node_n, &pred_v);
         let u_node_path = merkle_path(&u_interm, node_i as u64);
         SpendWitness {
-            nu, outpoint, s_low_value: low_v, s_low_next: low_n, s_low_index: low_i as u64, s_low_path, s_new_path,
+            cx, cy, outpoint, s_low_value: low_v, s_low_next: low_n, s_low_index: low_i as u64, s_low_path, s_new_path,
             u_node_next: node_n, u_node_value: node_v, u_node_index: node_i as u64, u_node_path,
             u_pred_key: pred_k, u_pred_value: pred_v, u_pred_index: pred_i as u64, u_pred_path,
         }
@@ -1893,8 +1918,9 @@ mod tests {
             u_low_key: low_k, u_low_next: low_n, u_low_value: low_v, u_low_index: low_i as u64, u_low_path, u_new_path,
         }
     }
-    fn build_burn_witness(spent: &ImtAccumulator, utxo: &UtxoAccumulator, burns: &UtxoAccumulator, nu: [u8; 32], outpoint: [u8; 32], dest: [u8; 32]) -> BurnWitness {
-        let spend = build_spend_witness(spent, utxo, nu, outpoint);
+    fn build_burn_witness(spent: &ImtAccumulator, utxo: &UtxoAccumulator, burns: &UtxoAccumulator, cx: [u8; 32], cy: [u8; 32], outpoint: [u8; 32], dest: [u8; 32]) -> BurnWitness {
+        let nu = nullifier(&cx, &cy);
+        let spend = build_spend_witness(spent, utxo, cx, cy, outpoint);
         let burn_leaves = burns.leaves();
         let (low_i, low_k, low_n, low_v) = burns.low(&nu).expect("burn low");
         let b_low_path = merkle_path(&burn_leaves, low_i as u64);
@@ -1921,10 +1947,15 @@ mod tests {
         assert_eq!(w.utxo_root, st.utxo.root());
         assert_eq!(w.burn_root, st.bridge_burns.root());
 
-        let (op_a, leaf_a, com_a, nu_a) = (v(0xa0), v(0x1a), v(0xca), v(0x9a));
-        let (op_b, leaf_b, com_b, nu_b) = (v(0xb0), v(0x1b), v(0xcb), v(0x9b));
-        let (op_c, leaf_c, com_c) = (v(0xc0), v(0x1c), v(0xcc));
+        // Each note has commitment coords; the UTXO value stored is commitment_hash(cx,cy)
+        // and the spend's ν is DERIVED from it (3.2 binding), not witnessed.
+        let (cx_a, cy_a) = (v(0x0a), v(0x1a)); let com_a = commitment_hash(&cx_a, &cy_a); let nu_a = nullifier(&cx_a, &cy_a);
+        let (cx_b, cy_b) = (v(0x0b), v(0x1b)); let com_b = commitment_hash(&cx_b, &cy_b); let nu_b = nullifier(&cx_b, &cy_b);
+        let (cx_c, cy_c) = (v(0x0c), v(0x1c)); let com_c = commitment_hash(&cx_c, &cy_c);
+        let (op_a, op_b, op_c) = (v(0xa0), v(0xb0), v(0xc0));
+        let (leaf_a, leaf_b, leaf_c) = (v(0x1aa), v(0x1bb), v(0x1cc));
         let dest_b = v(0xde);
+        let _ = cy_c;
 
         // 1. two deposits (no spends, two outputs)
         let ow_a = build_output_witness(&st.notes, &st.utxo, leaf_a, op_a, com_a);
@@ -1935,8 +1966,8 @@ mod tests {
         w.apply_transfer(&[], &[ow_a, ow_b], 100).expect("deposits");
         assert_eq!((w.pool_root, w.utxo_root), (st.notes.root(), st.utxo.root()), "after deposits");
 
-        // 2. transfer: spend op_a, create op_c
-        let sw = build_spend_witness(&st.spent, &st.utxo, nu_a, op_a);
+        // 2. transfer: spend note A at op_a, create op_c (ν derived from cx_a,cy_a)
+        let sw = build_spend_witness(&st.spent, &st.utxo, cx_a, cy_a, op_a);
         st.spent.insert(&nu_a); st.utxo.remove(&op_a);
         let ow_c = build_output_witness(&st.notes, &st.utxo, leaf_c, op_c, com_c);
         st.notes.append(&leaf_c); st.utxo.insert(&op_c, &com_c);
@@ -1944,8 +1975,8 @@ mod tests {
         w.apply_transfer(&[sw], &[ow_c], 101).expect("transfer");
         assert_eq!((w.pool_root, w.spent_root, w.utxo_root), (st.notes.root(), st.spent.root(), st.utxo.root()), "after transfer");
 
-        // 3. bridge-out: burn op_b → destCommitment
-        let bw = build_burn_witness(&st.spent, &st.utxo, &st.bridge_burns, nu_b, op_b, dest_b);
+        // 3. bridge-out: burn note B at op_b → destCommitment
+        let bw = build_burn_witness(&st.spent, &st.utxo, &st.bridge_burns, cx_b, cy_b, op_b, dest_b);
         st.spent.insert(&nu_b); st.utxo.remove(&op_b); st.bridge_burns.insert(&nu_b, &dest_b);
         st.height = 102;
         w.apply_bridge_out(&bw, 102).expect("bridge-out");
@@ -1959,5 +1990,30 @@ mod tests {
         assert_ne!(w.digest(), [0u8; 32], "resumption digest is well-defined");
         // height must strictly increase
         assert!(w.apply_transfer(&[], &[], 102).is_err(), "non-increasing height rejected");
+    }
+
+    // Phase 3.2: ν is BOUND to the outpoint's committed note — a spend can't fabricate a ν
+    // unrelated to the note actually at the outpoint it removes.
+    #[test]
+    fn spend_nu_bound_to_outpoint_note() {
+        let v = |n: u32| arr32(&format!("0x{:064x}", n));
+        let (cx, cy) = (v(0x0a), v(0x1a));
+        let com = commitment_hash(&cx, &cy);
+        // correct coords open the committed value → the note's nullifier; wrong coords don't
+        assert_eq!(bind_spent_note(&com, &cx, &cy), Some(nullifier(&cx, &cy)));
+        assert_eq!(bind_spent_note(&com, &v(0x99), &cy), None);
+        assert_eq!(bind_spent_note(&com, &cx, &v(0x99)), None);
+
+        // end-to-end: a deposit, then a spend whose witness carries the WRONG commitment is
+        // rejected by apply_transfer (the stored UTXO value won't open to it).
+        let mut st = ReflectionState::genesis();
+        let mut w = WitnessedReflection::genesis();
+        let op = v(0xa0);
+        let ow = build_output_witness(&st.notes, &st.utxo, v(0x1aa), op, com);
+        st.notes.append(&v(0x1aa)); st.utxo.insert(&op, &com);
+        w.apply_transfer(&[], &[ow], 1).expect("deposit");
+        let mut bad = build_spend_witness(&st.spent, &st.utxo, cx, cy, op);
+        bad.cx = v(0xdead); // no longer opens com
+        assert!(w.apply_transfer(&[bad], &[], 2).is_err(), "spend with unbound ν is rejected");
     }
 }

@@ -58,7 +58,8 @@ fn read_prior_state() -> WitnessedReflection {
 
 fn read_spend() -> SpendWitness {
     SpendWitness {
-        nu: r32(),
+        cx: r32(),
+        cy: r32(),
         outpoint: r32(),
         s_low_value: r32(),
         s_low_next: r32(),
