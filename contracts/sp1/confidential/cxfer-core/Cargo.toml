@@ -13,6 +13,8 @@ edition = "2021"
 k256 = { version = "0.13", default-features = false, features = ["arithmetic"] }
 tiny-keccak = { version = "2.0", features = ["keccak"] }
 sha2 = "0.10"
+num-bigint = "0.4"
+num-traits = "0.2"
 
 [dev-dependencies]
 serde_json = "1"
