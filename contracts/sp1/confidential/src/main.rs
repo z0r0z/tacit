@@ -15,9 +15,9 @@ sp1_zkvm::entrypoint!(main);
 use alloy_sol_types::{sol, SolValue};
 use alloy_sol_types::private::{Address, U256};
 use cxfer_core::{
-    bitcoin, claim_id, decompress, deposit_id, from_affine_xy, imt_membership,
-    imt_non_membership, keccak_merkle_verify, leaf, nullifier, scalar_reduce_be,
-    verify_kernel, verify_pedersen_opening, verify_range, Point,
+    bitcoin, claim_id, decompress, deposit_id, from_affine_xy, imt_non_membership,
+    keccak_merkle_verify, leaf, nullifier, scalar_reduce_be, utxo_leaf, verify_kernel,
+    verify_pedersen_opening, verify_range, Point,
 };
 use sp1_zkvm::io;
 
@@ -48,6 +48,7 @@ sol! {
         CrossOut[] crossOuts;
         bytes32[] bitcoinRootsUsed;
         bytes32 bitcoinSpentRoot;
+        bytes32 bitcoinBurnRoot;
         AssetMeta[] assetMetas;
     }
 }
@@ -98,6 +99,11 @@ pub fn main() {
     // Improved platinum: the reflected Bitcoin spent-set IMT root to prove each
     // spent ν absent against (0 = gold/Phase-1, no cross-lane check).
     let bitcoin_spent_root = r32();
+    // Improved platinum: the reflected Bitcoin bridge-BURN IMT root (key = ν, value =
+    // destCommitment), populated only by cross-chain burns. bridge_mint authorizes against
+    // THIS set, not the all-spends set — so a note spent in an ordinary Bitcoin transfer is
+    // not mintable here (closes the cross-chain inflation path).
+    let bitcoin_burn_root = r32();
     let num_ops: u32 = io::read();
 
     let mut nullifiers: Vec<[u8; 32]> = Vec::new();
@@ -105,7 +111,7 @@ pub fn main() {
     let mut deposits: Vec<[u8; 32]> = Vec::new();
     let mut withdrawals: Vec<Withdrawal> = Vec::new();
     let fees: Vec<FeePayment> = Vec::new(); // fee path: follow-up (kernel −fee·H term)
-    let mut bitcoin_burns: Vec<[u8; 32]> = Vec::new(); // OP_BRIDGE_MINT claimIds
+    let mut bitcoin_burns: Vec<[u8; 32]> = Vec::new(); // OP_BRIDGE_MINT burned-note nullifiers
     let mut bitcoin_roots: Vec<[u8; 32]> = Vec::new(); // Bitcoin pool roots minted against
     let mut cross_outs: Vec<CrossOut> = Vec::new();
     let mut asset_metas: Vec<AssetMeta> = Vec::new();
@@ -221,12 +227,14 @@ pub fn main() {
                 }
             }
             OP_BRIDGE_MINT => {
-                // Bitcoin → Ethereum: mint an Ethereum note for a note that was BURNED on
-                // Bitcoin. The burn is proven by spent-set MEMBERSHIP of the note's
-                // nullifier against the relay-attested Bitcoin spent root (spec B5) — NOT
-                // by a self-supplied-PoW block (which is forgeable at min difficulty).
-                // Conservation carries value verbatim (v_mint == v_burn); one mint per
-                // burned ν (the contract gates each committed ν once via bridgeMinted).
+                // Bitcoin → Ethereum: mint an Ethereum note for a note that was BURNED FOR
+                // THE BRIDGE on Bitcoin. The burn is proven by membership of the note's ν in
+                // the relay-attested Bitcoin bridge-BURN set (key = ν, value = destCommitment)
+                // — NOT the all-spends set, so an ordinary Bitcoin transfer's spend cannot be
+                // re-minted here (no cross-chain inflation). The burn-set value pins the
+                // destination, so no third party can redirect the mint. Conservation carries
+                // value verbatim (v_mint == v_burn); one mint per burned ν (the contract gates
+                // each committed ν once via bridgeMinted).
                 let asset = r32();
                 // The Bitcoin confidential-pool root the burned note is a member of. The
                 // contract gates it ∈ knownBitcoinRoot (canonical + relay-confirmed), so
@@ -242,30 +250,40 @@ pub fn main() {
                 assert!(keccak_merkle_verify(&in_leaf, in_leaf_index, &in_path, &pool_root), "bridge_mint: btc pool membership");
                 let nu = nullifier(&in_cx, &in_cy);
 
-                // B5: prove the note was actually burned — its ν is a member of the
-                // relay-attested Bitcoin spent set. The batch's bitcoin_spent_root is
-                // pinned to the CURRENT reflected root on-chain, so a stale or fabricated
-                // spent set cannot be used.
-                assert!(bitcoin_spent_root != [0u8; 32], "bridge_mint: spent root required");
-                let sm_next = r32();
-                let sm_index: u64 = io::read();
-                let sm_path = r_path();
-                assert!(imt_membership(&bitcoin_spent_root, &nu, &sm_next, sm_index, &sm_path), "bridge_mint: nu not burned on Bitcoin");
-
                 // Destination note minted on Ethereum. Conservation binds v_out == v_in,
                 // which requires knowledge of the burned note's blinding — so only its
                 // owner can mint it (no third party can redirect the burn).
                 let (out_cx, out_cy, out_pt) = r_commitment();
                 let out_owner = r32();
                 let dest_leaf = leaf(&asset, &out_cx, &out_cy, &out_owner);
+
+                // Prove the note was burned FOR THE BRIDGE and bound to THIS destination: ν is
+                // a live key in the bridge-burn set with value == dest_leaf. The burn set was
+                // built only from cross-chain burns (OP_ENV_CONF_BURN), each pinning its
+                // declared Ethereum destination — so an ordinary spend's ν is absent (can't
+                // mint) and the destination cannot be redirected. The batch's bitcoin_burn_root
+                // is pinned to the CURRENT reflected root on-chain (a stale/fabricated set is
+                // rejected).
+                assert!(bitcoin_burn_root != [0u8; 32], "bridge_mint: burn root required");
+                let bm_next = r32();
+                let bm_index: u64 = io::read();
+                let bm_path = r_path();
+                let bm_leaf = utxo_leaf(&nu, &bm_next, &dest_leaf);
+                assert!(keccak_merkle_verify(&bm_leaf, bm_index, &bm_path, &bitcoin_burn_root), "bridge_mint: nu not in Bitcoin bridge-burn set, or wrong destination");
+
                 let bp_proof: Vec<u8> = io::read();
                 assert!(verify_range(&[out_pt], &bp_proof), "bridge_mint: range");
                 let kernel_r = decompress(&r33()).expect("bridge_mint: R");
                 let kernel_z = scalar_reduce_be(&r32());
                 assert!(verify_kernel(&[in_pt], &[out_pt], &kernel_r, &kernel_z), "bridge_mint: conservation");
 
-                // Effects: mint the dest note, gate one-mint-per-burned-ν, record the root.
+                // Effects: mint the dest note, record the root, gate one-mint-per-burned-ν,
+                // and consume ν in the GLOBAL Ethereum nullifier set. A Bitcoin-homed note
+                // fast-spent on the Ethereum lane already marks ν there, so emitting ν here
+                // makes the burn share that namespace — closing the fastlane→burn→mint
+                // cross-lane double-spend (the contract's nullifier loop reverts a reused ν).
                 leaves.push(dest_leaf);
+                nullifiers.push(nu);
                 bitcoin_burns.push(nu);
                 bitcoin_roots.push(pool_root);
             }
@@ -298,14 +316,31 @@ pub fn main() {
                 });
             }
             OP_ATTEST_META => {
-                // Trustless metadata: prove (asset_id, ticker, decimals) from the etch
-                // reveal tx. asset_id = sha256(reveal_txid ‖ 0) binds the txid, which binds
-                // the on-chain envelope's ticker+decimals — so the contract can lazy-register
-                // the canonical ERC20 with exactly these, no trusted metadata source.
+                // Trustless metadata, CONFIRMATION-GATED. Prove (asset_id, ticker, decimals)
+                // from the etch reveal tx AND that the asset is real + funded on the
+                // relay-attested Bitcoin pool: a member note keyed by THIS asset_id exists
+                // under a relay-confirmed pool root. asset_id = sha256(reveal_txid ‖ 0) binds
+                // the txid → the envelope's ticker+decimals; the note membership binds the
+                // asset_id to a confirmed Bitcoin deposit. A fabricated/unconfirmed etch has
+                // no real note, so it cannot register junk metadata. The pool_root is pushed
+                // to bitcoinRootsUsed → the contract already gates it ∈ knownBitcoinRoot.
                 let etch_tx: Vec<u8> = io::read();
                 let asset = bitcoin::asset_id_from_etch(&etch_tx);
                 let env = bitcoin::extract_taproot_envelope(&etch_tx).expect("attest: envelope");
                 let (ticker, tlen, decimals) = bitcoin::parse_etch_meta(&env).expect("attest: etch meta");
+
+                // Confirmation: a note for THIS asset_id is a member of a relay-attested
+                // Bitcoin pool root (proves the asset exists + is funded on Bitcoin).
+                let cx = r32();
+                let cy = r32();
+                let owner = r32();
+                let leaf_index: u64 = io::read();
+                let path = r_path();
+                let pool_root = r32();
+                let lf = leaf(&asset, &cx, &cy, &owner);
+                assert!(keccak_merkle_verify(&lf, leaf_index, &path, &pool_root), "attest: asset not in attested Bitcoin pool");
+                bitcoin_roots.push(pool_root);
+
                 asset_metas.push(AssetMeta {
                     assetId: asset.into(),
                     ticker: ticker.into(),
@@ -330,6 +365,7 @@ pub fn main() {
         crossOuts: cross_outs,
         bitcoinRootsUsed: bitcoin_roots.into_iter().map(Into::into).collect(),
         bitcoinSpentRoot: bitcoin_spent_root.into(),
+        bitcoinBurnRoot: bitcoin_burn_root.into(),
         assetMetas: asset_metas,
     };
     io::commit_slice(&pv.abi_encode());

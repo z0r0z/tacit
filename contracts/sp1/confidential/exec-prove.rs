@@ -13,6 +13,7 @@ fn main() {
     stdin.write(&hexv(f["chainBinding"].as_str().unwrap()));
     stdin.write(&hexv(f["spendRoot"].as_str().unwrap()));
     stdin.write(&vec![0u8; 32]); // bitcoinSpentRoot = 0 (gold mode, no cross-lane check)
+    stdin.write(&vec![0u8; 32]); // bitcoinBurnRoot = 0 (no bridge_mint in this batch)
     stdin.write(&1u32);
     stdin.write(&1u8); // OP_TRANSFER
     stdin.write(&hexv(f["asset"].as_str().unwrap()));
@@ -42,6 +43,7 @@ fn main() {
     let elf = Elf::Static(ELF);
     println!("setup...");
     let pk = client.setup(elf).expect("setup failed");
+    println!("VKEY={}", pk.verifying_key().bytes32());
     println!("proving {mode} (cpu)...");
     let proof = if mode == "groth16" {
         client.prove(&pk, stdin).groth16().run().expect("groth16 proof failed")

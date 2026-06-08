@@ -12,6 +12,7 @@ fn main() {
     stdin.write(&hexv(f["chainBinding"].as_str().unwrap()));
     stdin.write(&hexv(f["spendRoot"].as_str().unwrap()));
     stdin.write(&hexv(f["bitcoinSpentRoot"].as_str().unwrap())); // != 0 → cross-lane check on
+    stdin.write(&vec![0u8; 32]); // bitcoinBurnRoot = 0 (transfer-only, no bridge_mint)
     stdin.write(&1u32);
     stdin.write(&1u8); // OP_TRANSFER
     stdin.write(&hexv(f["asset"].as_str().unwrap()));
