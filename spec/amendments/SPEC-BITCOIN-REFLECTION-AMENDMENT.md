@@ -158,22 +158,26 @@ The reflection prover **binds to existing envelopes**; it adds no new spend opco
    (e.g. a recovery/scanning or anti-griefing role); this analysis finds it a redundant
    extra secret given B3 + opening secrecy, but the leaf-format change is a guest/vkey
    change and should be reviewed before the freeze.
-2. **UTXO-set witness + its completeness — direction: a committed outpoint→commitment
-   accumulator.** Resolving an input `(txid, vout) → C_in` (needed to derive its ν) is a
-   key→value lookup against the reflected UTXO set. Mechanism: a **sparse Merkle / IMT
-   keyed by the outpoint** `key = keccak(txid ‖ vout)` → value `commitment`, carried in
-   the resumed state and committed alongside the note/spent roots. Folding a transfer:
-   - **inputs:** prove **membership** of `key` (the referenced output is real + unspent),
-     read `C_in`, insert ν into the spent IMT, then **remove** `key` (mark spent);
-   - **outputs:** **insert** `(key_new → C_out)` and append the note leaf.
+2. **UTXO-set witness — BUILT (`UtxoAccumulator`, cxfer-core).** Resolving an input
+   `(txid, vout) → C_in` (to derive its ν) is a key→value lookup against the reflected
+   UTXO set, implemented as a **sorted linked-list IMT keyed by the outpoint**
+   `key = keccak(txid ‖ vout)`, each live node carrying the note's ν as value, with the
+   spent node **unlinked from the chain AND tombstoned** (its leaf hashes to 0). API:
+   `insert(key, value)` (a new output), `get(key) → ν` (resolve an input), `remove(key)`
+   (a spend, panics on double-spend), `root()`, and `membership(key)` witnesses. Folding a
+   transfer (`ReflectionState::apply_transfer`):
+   - **inputs:** `get` the outpoint's ν (proves it is a real, live UTXO), insert ν into
+     the spent IMT, `remove` the outpoint — resolved *before* outputs, so a tx can't spend
+     an outpoint it creates;
+   - **outputs:** append the note leaf to the note tree and `insert (outpoint → ν)`.
 
-   So it is a third accumulator alongside `KeccakTreeAccumulator` (note tree) and
-   `ImtAccumulator` (spent set), but one supporting **add *and* remove** (a sparse Merkle,
-   or an IMT with tombstones). Completeness is the **same full-block scan** as the spent
-   set: every tx is inspected, so no output is added unrecorded and no input resolves to a
-   stale/forged commitment. This is the heaviest remaining piece (the accumulator + its
-   membership/update witnesses); it mirrors the two accumulators already built + KAT'd, so
-   the construction pattern is established.
+   The UTXO root is internal (not in `BitcoinRelayPublicValues`); `state_digest =
+   keccak(poolRoot ‖ spentRoot ‖ utxoRoot ‖ height)` binds it so a resumed proof provably
+   extends the prior UTXO set. Completeness is the **same full-block scan** as the spent
+   set: every tx is inspected, so no output is unrecorded and no input resolves to a
+   stale/forged outpoint. KAT'd: add/resolve/spend, tombstone-on-spend, double-spend
+   panic, and the end-to-end transfer fold (output→UTXO, later transfer consumes it →
+   ν enters the spent set). The guest binary wiring + box prove remain.
 3. **Confirmation depth `K`** per the finality gate, and the deep-reorg posture
    (accept-and-document, as tETH/AMM, vs an explicit unwind).
 4. **Deposit backing.** A Bitcoin deposit's value backing (BTC lock / etch) is enforced

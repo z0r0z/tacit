@@ -608,15 +608,103 @@ impl KeccakTreeAccumulator {
     }
 }
 
-/// The reflection prover's state: the Bitcoin confidential-pool note tree + spent-set,
-/// advanced as confirmed deposits/spends land, plus the confirmed height. `commit`
+/// Outpoint accumulator leaf: keccak(key ‖ next ‖ value).
+pub fn utxo_leaf(key: &[u8; 32], next: &[u8; 32], value: &[u8; 32]) -> [u8; 32] {
+    kn(&[key, next, value])
+}
+
+/// Outpoint→note accumulator — the Bitcoin UTXO set the reflection prover resolves
+/// inputs against (SPEC-BITCOIN-REFLECTION-AMENDMENT §7.2). A sorted linked list keyed by
+/// the outpoint `key = keccak(txid ‖ vout)`, each live node carrying the note's nullifier
+/// `ν = keccak(Cx ‖ Cy ‖ "spent")` as its value, seeded with the {0→0} sentinel. Supports
+/// add (a new output), `get` (resolve an input → its ν), and remove (a spend). The
+/// committed root reflects every LIVE outpoint — a spent outpoint is unlinked from the
+/// chain AND tombstoned (its leaf hashes to 0) — so a resumed prover proves an input is a
+/// real, unspent output against it.
+pub struct UtxoAccumulator {
+    // (key, next, value, alive): a tombstoned node (alive = false) hashes to 0 and is
+    // skipped by every lookup — its outpoint has been spent.
+    nodes: Vec<([u8; 32], [u8; 32], [u8; 32], bool)>,
+}
+
+impl Default for UtxoAccumulator {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl UtxoAccumulator {
+    /// A fresh empty UTXO set: the {0→0} sentinel (key 0 is the max).
+    pub fn new() -> Self {
+        Self { nodes: vec![([0u8; 32], [0u8; 32], [0u8; 32], true)] }
+    }
+
+    fn leaf_at(&self, i: usize) -> [u8; 32] {
+        let (k, n, v, alive) = &self.nodes[i];
+        if *alive { utxo_leaf(k, n, v) } else { [0u8; 32] }
+    }
+
+    /// The live predecessor for `key` (node.key < key < node.next, or node.next == 0).
+    fn low_index(&self, key: &[u8; 32]) -> Option<usize> {
+        let zero = [0u8; 32];
+        self.nodes.iter().position(|(k, n, _, a)| *a && be_lt(k, key) && (*n == zero || be_lt(key, n)))
+    }
+    /// The live node whose key == `key` (membership).
+    fn find(&self, key: &[u8; 32]) -> Option<usize> {
+        self.nodes.iter().position(|(k, _, _, a)| *a && k == key)
+    }
+    /// The live node whose next == `key` (the predecessor of a present key).
+    fn pred_of(&self, key: &[u8; 32]) -> Option<usize> {
+        self.nodes.iter().position(|(_, n, _, a)| *a && n == key)
+    }
+
+    /// Add a new output `key → value`. Panics on key 0 or an already-present key.
+    pub fn insert(&mut self, key: &[u8; 32], value: &[u8; 32]) {
+        assert!(*key != [0u8; 32], "outpoint key 0 reserved for the sentinel");
+        let i = self.low_index(key).expect("no low link (outpoint present or out of range)");
+        let old_next = self.nodes[i].1;
+        self.nodes[i].1 = *key; // predecessor → key
+        self.nodes.push((*key, old_next, *value, true));
+    }
+
+    /// Resolve an outpoint to its note value (ν), if it is a live UTXO.
+    pub fn get(&self, key: &[u8; 32]) -> Option<[u8; 32]> {
+        self.find(key).map(|i| self.nodes[i].2)
+    }
+
+    /// Spend an outpoint: unlink it (predecessor skips it) and tombstone it. Panics if the
+    /// outpoint is not a live UTXO (a double-spend / unknown input).
+    pub fn remove(&mut self, key: &[u8; 32]) {
+        let i = self.find(key).expect("outpoint not in the UTXO set");
+        let p = self.pred_of(key).expect("predecessor missing");
+        self.nodes[p].1 = self.nodes[i].1; // predecessor → removed.next
+        self.nodes[i].3 = false; // tombstone (leaf → 0)
+    }
+
+    /// The committed UTXO-set root (live outpoints; tombstones hash to 0).
+    pub fn root(&self) -> [u8; 32] {
+        let leaves: Vec<[u8; 32]> = (0..self.nodes.len()).map(|i| self.leaf_at(i)).collect();
+        keccak_merkle_root(&leaves)
+    }
+
+    /// Membership witness `(leaf_index, next, value)` for proving `key` is a live UTXO
+    /// against `root()`; None if absent. The Merkle path is built by the caller.
+    pub fn membership(&self, key: &[u8; 32]) -> Option<(usize, [u8; 32], [u8; 32])> {
+        self.find(key).map(|i| (i, self.nodes[i].1, self.nodes[i].2))
+    }
+}
+
+/// The reflection prover's state: the Bitcoin confidential-pool note tree, spent-set, and
+/// UTXO set, advanced as confirmed effects land, plus the confirmed height. `commit`
 /// yields exactly the `(bitcoinPoolRoot, bitcoinSpentRoot, bitcoinHeight)` the relay
-/// proof carries (ConfidentialPool.BitcoinRelayPublicValues). The Bitcoin-confirmation
-/// of each deposit/spend (header chain + tx inclusion, via cxfer-core::bitcoin) is the
-/// guest's job before it folds them in; this is the fold + the committed roots.
+/// proof carries (ConfidentialPool.BitcoinRelayPublicValues); the UTXO root is internal
+/// state (`state_digest` binds it for resumption). The Bitcoin-confirmation of each
+/// effect (header chain + tx inclusion, via cxfer-core::bitcoin) is the guest's job
+/// before it folds them in; this is the fold + the committed roots.
 pub struct ReflectionState {
     pub notes: KeccakTreeAccumulator,
     pub spent: ImtAccumulator,
+    pub utxo: UtxoAccumulator,
     pub height: u64,
 }
 
@@ -627,15 +715,20 @@ impl Default for ReflectionState {
 }
 
 impl ReflectionState {
-    /// Genesis: an empty note tree + the non-zero empty-IMT spent set, height 0.
+    /// Genesis: an empty note tree + the non-zero empty-IMT spent set + an empty UTXO set,
+    /// height 0.
     pub fn genesis() -> Self {
-        Self { notes: KeccakTreeAccumulator::new(), spent: ImtAccumulator::new(), height: 0 }
+        Self {
+            notes: KeccakTreeAccumulator::new(),
+            spent: ImtAccumulator::new(),
+            utxo: UtxoAccumulator::new(),
+            height: 0,
+        }
     }
 
-    /// Fold one confirmed block's confidential-pool effects: append each new deposit
-    /// leaf, insert each new spent nullifier, advance to `height`. `height` must strictly
-    /// increase (the relay's monotonic guard). Deposits/spends must already be proven
-    /// confirmed at this height by the caller (the guest).
+    /// Fold pre-resolved confidential-pool effects (deposits already as note leaves,
+    /// spends already as nullifiers) and advance to `height`. The simple, UTXO-agnostic
+    /// path — the caller resolved inputs to ν itself. `height` must strictly increase.
     pub fn apply_block(&mut self, deposits: &[[u8; 32]], spends: &[[u8; 32]], height: u64) {
         assert!(height > self.height, "reflection height must strictly increase");
         for leaf in deposits {
@@ -647,11 +740,54 @@ impl ReflectionState {
         self.height = height;
     }
 
+    /// Fold one confirmed Bitcoin confidential transfer in the UTXO model (§3): each
+    /// input is an outpoint resolved against the UTXO set to its ν (then spent + removed);
+    /// each output `(outpoint, note_leaf, ν)` is appended to the note tree and added to
+    /// the UTXO set. Conservation/range/confirmation are the caller's (the guest) job;
+    /// this performs the validated state transition. `height` must strictly increase.
+    ///
+    /// Inputs are resolved BEFORE outputs are added, so a transfer cannot spend an
+    /// outpoint it creates in the same tx.
+    pub fn apply_transfer(
+        &mut self,
+        inputs: &[[u8; 32]],
+        outputs: &[([u8; 32], [u8; 32], [u8; 32])],
+        height: u64,
+    ) {
+        assert!(height > self.height, "reflection height must strictly increase");
+        for outpoint in inputs {
+            let nu = self.utxo.get(outpoint).expect("input outpoint not a live UTXO");
+            self.spent.insert(&nu);
+            self.utxo.remove(outpoint);
+        }
+        for (outpoint, note_leaf, nu) in outputs {
+            self.notes.append(note_leaf);
+            self.utxo.insert(outpoint, nu);
+        }
+        self.height = height;
+    }
+
     /// The committed reflection roots: (bitcoinPoolRoot, bitcoinSpentRoot, bitcoinHeight).
     /// The spent root is always non-zero (the empty-IMT sentinel), so the contract
     /// accepts it and the cross-lane gate never goes vacuous.
     pub fn commit(&self) -> ([u8; 32], [u8; 32], u64) {
         (self.notes.root(), self.spent.root(), self.height)
+    }
+
+    /// The internal UTXO-set root (not in BitcoinRelayPublicValues; bound into
+    /// `state_digest` for resumption).
+    pub fn utxo_root(&self) -> [u8; 32] {
+        self.utxo.root()
+    }
+
+    /// Full-state digest keccak(poolRoot ‖ spentRoot ‖ utxoRoot ‖ height) — the anchor a
+    /// resumed proof continues from, so the next cycle's UTXO set (and roots) provably
+    /// extend this one rather than starting fresh.
+    pub fn state_digest(&self) -> [u8; 32] {
+        let (pool, spent, _) = self.commit();
+        let mut h = [0u8; 32];
+        h[24..].copy_from_slice(&self.height.to_be_bytes());
+        kn(&[&pool, &spent, &self.utxo.root(), &h])
     }
 }
 
@@ -940,7 +1076,7 @@ mod tests {
     // deposit/spend before folding it.
     #[test]
     fn verify_tx_in_block_accepts_real_block_rejects_tamper() {
-        let f: serde_json::Value = serde_json::from_str(include_str!("../../fixtures/bridgemint_op.json")).unwrap();
+        let f: serde_json::Value = serde_json::from_str(include_str!("../../fixtures/btc_block.json")).unwrap();
         let header = hex::decode(strip(f["header"].as_str().unwrap())).unwrap();
         let tx = hex::decode(strip(f["tx"].as_str().unwrap())).unwrap();
         let tx_index = f["txIndex"].as_u64().unwrap() as u32;
@@ -963,5 +1099,90 @@ mod tests {
         bad_tx[n - 1] ^= 1;
         assert!(bitcoin::verify_tx_in_block(&header, &bad_tx, tx_index, &txids).is_none(), "tampered tx");
         assert!(bitcoin::verify_tx_in_block(&header[..79], &tx, tx_index, &txids).is_none(), "bad header length");
+    }
+
+    // The UTXO accumulator: add outpoints, resolve them (get), prove membership against
+    // the live root, then spend (remove) — a spent outpoint resolves to None and its
+    // membership leaf no longer folds to the root, while live siblings still do.
+    #[test]
+    fn utxo_accumulator_add_resolve_spend() {
+        let key = |b: u8| { let mut k = [0u8; 32]; k[31] = b; k };
+        let val = |b: u8| { let mut v = [0u8; 32]; v[0] = b; v };
+        let mut u = UtxoAccumulator::new();
+        let empty_root = u.root();
+
+        // add three outpoints (out of order), each carrying its note's ν as value
+        u.insert(&key(0x20), &val(0xb2));
+        u.insert(&key(0x10), &val(0xa1));
+        u.insert(&key(0x30), &val(0xc3));
+        assert_ne!(u.root(), empty_root, "root advanced on inserts");
+
+        // resolve: get returns the stored ν
+        assert_eq!(u.get(&key(0x10)), Some(val(0xa1)), "resolve 0x10");
+        assert_eq!(u.get(&key(0x99)), None, "unknown outpoint");
+
+        // membership of a live outpoint folds to the current root
+        let (idx, next, value) = u.membership(&key(0x10)).expect("0x10 live");
+        assert_eq!(value, val(0xa1));
+        // rebuild the same tree the accumulator commits, to get the path
+        let leaves: Vec<[u8; 32]> = (0..u.nodes.len()).map(|i| u.leaf_at(i)).collect();
+        let root = keccak_merkle_root(&leaves);
+        assert_eq!(root, u.root(), "rebuilt root == accumulator root");
+        assert_eq!(leaves[idx], utxo_leaf(&key(0x10), &next, &value), "membership leaf at index");
+
+        // spend it: resolve→None, and its leaf position is now a tombstone (0)
+        u.remove(&key(0x10));
+        assert_eq!(u.get(&key(0x10)), None, "spent outpoint no longer resolves");
+        assert!(u.membership(&key(0x10)).is_none(), "spent outpoint has no membership");
+        assert_eq!(u.leaf_at(idx), [0u8; 32], "spent leaf tombstoned to 0");
+        // siblings still resolve
+        assert_eq!(u.get(&key(0x20)), Some(val(0xb2)), "sibling 0x20 still live");
+        assert_eq!(u.get(&key(0x30)), Some(val(0xc3)), "sibling 0x30 still live");
+        // double-spend panics (tested via catch in a separate #[should_panic] below)
+    }
+
+    #[test]
+    #[should_panic(expected = "outpoint not in the UTXO set")]
+    fn utxo_double_spend_panics() {
+        let key = |b: u8| { let mut k = [0u8; 32]; k[31] = b; k };
+        let mut u = UtxoAccumulator::new();
+        u.insert(&key(0x10), &[7u8; 32]);
+        u.remove(&key(0x10));
+        u.remove(&key(0x10)); // already spent
+    }
+
+    // The UTXO-model transfer fold: an output creates an outpoint→ν UTXO + a note leaf;
+    // a later transfer consumes that outpoint, inserting its ν into the spent set and
+    // removing it from the UTXO set. The committed roots advance; state_digest binds the
+    // UTXO root for resumption.
+    #[test]
+    fn reflection_apply_transfer_utxo_model() {
+        let outpoint = arr32("0x00000000000000000000000000000000000000000000000000000000000000a1");
+        let note_leaf = arr32("0x1111111111111111111111111111111111111111111111111111111111111111");
+        let nu = arr32("0x0000000000000000000000000000000000000000000000000000000000000033");
+
+        let mut s = ReflectionState::genesis();
+        let d0 = s.state_digest();
+
+        // block 1: a transfer with one output (a new note/UTXO), no inputs
+        s.apply_transfer(&[], &[(outpoint, note_leaf, nu)], 800_000);
+        assert_eq!(s.utxo.get(&outpoint), Some(nu), "outpoint is a live UTXO");
+        assert!(s.spent.non_membership_low(&nu).is_some(), "ν not yet spent");
+        let (_, _, h1) = s.commit();
+        assert_eq!(h1, 800_000);
+        assert_ne!(s.state_digest(), d0, "state advanced");
+
+        // block 2: a transfer consuming that outpoint (it resolves to ν → spent set)
+        let out2 = arr32("0x00000000000000000000000000000000000000000000000000000000000000b2");
+        let leaf2 = arr32("0x2222222222222222222222222222222222222222222222222222222222222222");
+        let nu2 = arr32("0x0000000000000000000000000000000000000000000000000000000000000044");
+        s.apply_transfer(&[outpoint], &[(out2, leaf2, nu2)], 800_001);
+
+        assert_eq!(s.utxo.get(&outpoint), None, "spent outpoint removed from UTXO set");
+        assert!(s.spent.non_membership_low(&nu).is_none(), "ν is now in the spent set");
+        assert_eq!(s.utxo.get(&out2), Some(nu2), "new output is a live UTXO");
+        assert_eq!(s.notes.next_index(), 2, "two note leaves appended");
+        let (_, _, h2) = s.commit();
+        assert_eq!(h2, 800_001);
     }
 }
