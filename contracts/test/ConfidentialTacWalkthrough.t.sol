@@ -29,12 +29,16 @@ contract ConfidentialTacWalkthroughTest is Test {
 
     /// Attest the Bitcoin pool root via the relay-proven path (no oracle). AcceptVerifier
     /// no-ops the proof; this exercises the contract gate.
+    bytes32 constant BURN_SENTINEL = keccak256("imt-empty-burn-sentinel");
+
     function _attestBtc(bytes32 poolRoot) internal {
-        // spent root is the non-zero empty-IMT sentinel (a zero root is rejected — it
-        // would re-open the cross-lane bypass); this walkthrough only needs the pool
-        // root canonical for the bridge_mint, so the sentinel stands in for the set.
+        // spent / burn roots are the non-zero empty-IMT sentinels (a zero root is rejected —
+        // it would re-open the cross-lane / bridge-mint bypass); this walkthrough only needs
+        // the pool root canonical for the bridge_mint, so the sentinels stand in for the sets.
+        bytes32 prior = pool.knownReflectionDigest();
+        bytes32 next = keccak256(abi.encode(prior, poolRoot));
         pool.attestBitcoinStateProven(
-            abi.encode(ConfidentialPool.BitcoinRelayPublicValues(poolRoot, keccak256("imt-empty-sentinel"), 1)), ""
+            abi.encode(ConfidentialPool.BitcoinRelayPublicValues(prior, poolRoot, keccak256("imt-empty-sentinel"), BURN_SENTINEL, 1, next)), ""
         );
     }
 
@@ -67,6 +71,7 @@ contract ConfidentialTacWalkthroughTest is Test {
         ConfidentialPool.PublicValues memory mintPv = _pv();
         mintPv.bitcoinRootsUsed = new bytes32[](1); mintPv.bitcoinRootsUsed[0] = btcRoot;
         mintPv.bitcoinBurnsConsumed = new bytes32[](1); mintPv.bitcoinBurnsConsumed[0] = claimId;
+        mintPv.bitcoinBurnRoot = BURN_SENTINEL;
         mintPv.leaves = new bytes32[](1); mintPv.leaves[0] = noteLeaf;
         bytes[] memory memos = new bytes[](1); memos[0] = hex"ab"; // owner-encrypted memo (recovery)
         _settle(mintPv, memos);
@@ -113,6 +118,7 @@ contract ConfidentialTacWalkthroughTest is Test {
         ConfidentialPool.PublicValues memory mintPv = _pv();
         mintPv.bitcoinRootsUsed = new bytes32[](1); mintPv.bitcoinRootsUsed[0] = btcRoot;
         mintPv.bitcoinBurnsConsumed = new bytes32[](1); mintPv.bitcoinBurnsConsumed[0] = keccak256("bob-tac-burn");
+        mintPv.bitcoinBurnRoot = BURN_SENTINEL;
         mintPv.leaves = new bytes32[](1); mintPv.leaves[0] = keccak256("bob-TAC-note");
         _settle(mintPv, oneMemo);
         bytes32 afterMint = pool.currentRoot();

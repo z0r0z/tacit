@@ -85,8 +85,10 @@ contract ConfidentialPoolTest is Test {
     /// MockSP1Verifier no-ops verifyProof, so this exercises the contract's decode + gates.
     function _attestBtc(bytes32 poolRoot, bytes32 spentRoot, uint64 height) internal returns (bytes32 burnRoot) {
         burnRoot = keccak256(abi.encodePacked(spentRoot, "burn"));
+        bytes32 prior = pool.knownReflectionDigest(); // continue the current attested state
+        bytes32 next = keccak256(abi.encode(prior, poolRoot, spentRoot, burnRoot, height));
         ConfidentialPool.BitcoinRelayPublicValues memory r =
-            ConfidentialPool.BitcoinRelayPublicValues(poolRoot, spentRoot, burnRoot, height);
+            ConfidentialPool.BitcoinRelayPublicValues(prior, poolRoot, spentRoot, burnRoot, height, next);
         pool.attestBitcoinStateProven(abi.encode(r), "");
     }
 
@@ -611,8 +613,14 @@ contract ConfidentialPoolTest is Test {
     /// the reflected spent set backward to omit a recent Bitcoin spend.
     function test_stale_relay_proof_rejected() public {
         _attestBtc(keccak256("r1"), keccak256("s1"), 200);
+        // a height DECREASE (rollback) is rejected; equal heights are allowed (same-block
+        // effects), and the digest chain bars replay of an already-attested state.
+        bytes32 prior = pool.knownReflectionDigest();
+        ConfidentialPool.BitcoinRelayPublicValues memory r = ConfidentialPool.BitcoinRelayPublicValues(
+            prior, keccak256("r2"), keccak256("s2"), keccak256("b2"), 199, keccak256("next2")
+        );
         vm.expectRevert(ConfidentialPool.StaleRelayProof.selector);
-        _attestBtc(keccak256("r2"), keccak256("s2"), 200);
+        pool.attestBitcoinStateProven(abi.encode(r), "");
     }
 
     /// A bridge_mint against an un-attested Bitcoin root is rejected — the gate
@@ -671,8 +679,10 @@ contract ConfidentialPoolTest is Test {
         // for this asset_id is a member of a relay-attested pool root and commits that root
         // in bitcoinRootsUsed (gated ∈ knownBitcoinRoot). Attest the root first.
         bytes32 attRoot = keccak256("attested-pool-root");
-        ConfidentialPool.BitcoinRelayPublicValues memory rl =
-            ConfidentialPool.BitcoinRelayPublicValues(attRoot, keccak256("sentinel"), keccak256("sentinel-burn"), 1);
+        bytes32 prior = p.knownReflectionDigest();
+        ConfidentialPool.BitcoinRelayPublicValues memory rl = ConfidentialPool.BitcoinRelayPublicValues(
+            prior, attRoot, keccak256("sentinel"), keccak256("sentinel-burn"), 1, keccak256("next")
+        );
         p.attestBitcoinStateProven(abi.encode(rl), "");
 
         bytes32 tacId = keccak256("attested-TAC");
@@ -778,8 +788,35 @@ contract ConfidentialPoolTest is Test {
     /// a non-zero empty-IMT sentinel root, and a zero root would re-open the cross-lane
     /// bypass (the guest skips its non-membership check when bitcoin_spent_root == 0).
     function test_attest_zero_spent_root_rejected() public {
+        bytes32 prior = pool.knownReflectionDigest();
+        ConfidentialPool.BitcoinRelayPublicValues memory r = ConfidentialPool.BitcoinRelayPublicValues(
+            prior, keccak256("some-pool-root"), bytes32(0), keccak256("b"), 1, keccak256("n")
+        );
         vm.expectRevert(ConfidentialPool.StaleBitcoinSpentRoot.selector);
-        _attestBtc(keccak256("some-pool-root"), bytes32(0), 1);
+        pool.attestBitcoinStateProven(abi.encode(r), "");
+    }
+
+    // The reflection digest chains: a proof must continue knownReflectionDigest, and each
+    // accepted proof advances it — so the reflected roots are one append-only chain.
+    function test_reflection_digest_chains() public {
+        assertEq(pool.knownReflectionDigest(), pool.REFLECTION_GENESIS_DIGEST(), "seeded to genesis");
+        _attestBtc(keccak256("r1"), keccak256("s1"), 10);
+        bytes32 advanced = pool.knownReflectionDigest();
+        assertTrue(advanced != pool.REFLECTION_GENESIS_DIGEST(), "digest advanced");
+
+        // a proof that doesn't continue the current digest is rejected
+        ConfidentialPool.BitcoinRelayPublicValues memory bad = ConfidentialPool.BitcoinRelayPublicValues(
+            keccak256("wrong-prior"), keccak256("r2"), keccak256("s2"), keccak256("b2"), 11, keccak256("n2")
+        );
+        vm.expectRevert(ConfidentialPool.StaleReflectionDigest.selector);
+        pool.attestBitcoinStateProven(abi.encode(bad), "");
+
+        // a zero newDigest is never a valid reflected state
+        ConfidentialPool.BitcoinRelayPublicValues memory z = ConfidentialPool.BitcoinRelayPublicValues(
+            advanced, keccak256("r3"), keccak256("s3"), keccak256("b3"), 11, bytes32(0)
+        );
+        vm.expectRevert(ConfidentialPool.StaleReflectionDigest.selector);
+        pool.attestBitcoinStateProven(abi.encode(z), "");
     }
 
     /// An unattested Bitcoin root is rejected as a spend root.
