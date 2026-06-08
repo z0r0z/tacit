@@ -82,6 +82,104 @@ pub fn verify_kernel(
     ProjectivePoint::generator() * z == *r + x * e
 }
 
+// ──────────────────── Bitcoin T_CXFER kernel (BIP-340 Schnorr) ────────────────────
+
+const CXFER_KERNEL_DOMAIN: &[u8] = b"tacit-kernel-v1";
+
+/// BIP-340 tagged hash: sha256(sha256(tag) ‖ sha256(tag) ‖ msg).
+fn bip340_tagged(tag: &[u8], msg: &[u8]) -> [u8; 32] {
+    let t: [u8; 32] = Sha256::digest(tag).into();
+    let mut h = Sha256::new();
+    h.update(t);
+    h.update(t);
+    h.update(msg);
+    h.finalize().into()
+}
+
+/// BIP-340 Schnorr verification (x-only pubkey) — ported from dapp/bulletproofs.js
+/// `verifySchnorr`. Lifts `pubkey_x` to its even-y point P and checks `s·G − e·P == R`
+/// with R even-y and `R.x == sig[0..32]`.
+pub fn bip340_verify(sig: &[u8; 64], msg: &[u8; 32], pubkey_x: &[u8; 32]) -> bool {
+    let rx = &sig[0..32];
+    let s = match scalar_canonical_be(&sig[32..64]) {
+        Some(s) => s,
+        None => return false,
+    };
+    let mut comp = [0u8; 33];
+    comp[0] = 0x02;
+    comp[1..].copy_from_slice(pubkey_x);
+    let p = match decompress(&comp) {
+        Some(p) => p,
+        None => return false,
+    };
+    let mut chal = Vec::with_capacity(96);
+    chal.extend_from_slice(rx);
+    chal.extend_from_slice(pubkey_x);
+    chal.extend_from_slice(msg);
+    let e = scalar_reduce_be(&bip340_tagged(b"BIP0340/challenge", &chal));
+    let r = ProjectivePoint::generator() * s - p * e;
+    if r == ProjectivePoint::identity() {
+        return false;
+    }
+    let rb = compress(&r);
+    rb[0] == 0x02 && &rb[1..] == rx
+}
+
+/// Verify a Bitcoin T_CXFER / T_CXFER_BPP kernel: conservation proven as a BIP-340
+/// Schnorr signature over the kernel message
+///   sha256("tacit-kernel-v1" ‖ asset ‖ in_count ‖ (txid ‖ vout_LE)×in ‖ out_count ‖
+///          commitment(33)×out ‖ burned_LE8),
+/// with verify key `P = Σ C_in − Σ C_out − burned·H` (= excess·G, the blinding residue;
+/// the validator equation Σ C_in == burned·H + Σ C_out + excess·G). The reflection prover
+/// resolves `input_commitments` from the UTXO set and reads the output commitments
+/// (compressed) from the envelope; `input_outpoints` are the tx's vin (internal-order
+/// txid + vout) as `bitcoin::extract_inputs` returns them.
+pub fn cxfer_kernel_verify(
+    asset: &[u8; 32],
+    input_outpoints: &[([u8; 32], u32)],
+    input_commitments: &[Point],
+    output_commitments_compressed: &[[u8; 33]],
+    burned_amount: u64,
+    kernel_sig: &[u8; 64],
+) -> bool {
+    if input_outpoints.len() != input_commitments.len() {
+        return false;
+    }
+    if input_outpoints.len() > 255 || output_commitments_compressed.len() > 255 {
+        return false;
+    }
+    let mut h = Sha256::new();
+    h.update(CXFER_KERNEL_DOMAIN);
+    h.update(asset);
+    h.update([input_outpoints.len() as u8]);
+    for (txid, vout) in input_outpoints {
+        h.update(txid);
+        h.update(vout.to_le_bytes());
+    }
+    h.update([output_commitments_compressed.len() as u8]);
+    let mut out_points: Vec<Point> = Vec::with_capacity(output_commitments_compressed.len());
+    for c in output_commitments_compressed {
+        h.update(c);
+        match decompress(c) {
+            Some(p) => out_points.push(p),
+            None => return false,
+        }
+    }
+    h.update(burned_amount.to_le_bytes());
+    let msg: [u8; 32] = h.finalize().into();
+
+    let mut p = sum_points(input_commitments) - sum_points(&out_points);
+    if burned_amount != 0 {
+        p = p - gen_h() * Scalar::from(burned_amount);
+    }
+    if p == ProjectivePoint::identity() {
+        return false;
+    }
+    let pc = compress(&p);
+    let px: [u8; 32] = pc[1..].try_into().unwrap();
+    bip340_verify(kernel_sig, &msg, &px)
+}
+
 // ──────────────────── BP+ transcript (length-prefixed sha256) ────────────────────
 
 struct Transcript {
@@ -1114,6 +1212,37 @@ mod tests {
         let inputs = bitcoin::extract_inputs(&tx).expect("real tx inputs parse");
         assert!(!inputs.is_empty(), "tx has at least one input");
         assert!(bitcoin::extract_inputs(&tx[..5]).is_none(), "truncated tx rejected");
+    }
+
+    // The Bitcoin T_CXFER kernel: a real BIP-340 kernel signature (a pure transfer,
+    // Σv_in = Σv_out, burned = 0) verifies against the reconstructed excess key
+    // P = Σ C_in − Σ C_out, and tampering the sig / the message (reordered outputs) is
+    // rejected. (dapp/evm-confidential.js commitments → tests/gen-cxfer-kernel-fixture.mjs.)
+    #[test]
+    fn cxfer_kernel_verify_accepts_real_sig_rejects_tamper() {
+        let f: serde_json::Value = serde_json::from_str(include_str!("../../fixtures/cxfer_kernel.json")).unwrap();
+        let asset = arr32(f["asset"].as_str().unwrap());
+        let burned: u64 = f["burnedAmount"].as_str().unwrap().parse().unwrap();
+        let inputs: Vec<([u8; 32], u32)> = f["inputs"].as_array().unwrap().iter()
+            .map(|i| (arr32(i["txid"].as_str().unwrap()), i["vout"].as_u64().unwrap() as u32)).collect();
+        let in_commits: Vec<ProjectivePoint> = f["inputs"].as_array().unwrap().iter()
+            .map(|i| decompress(&arr33(i["commitment"].as_str().unwrap())).unwrap()).collect();
+        let out_compressed: Vec<[u8; 33]> = f["outputs"].as_array().unwrap().iter()
+            .map(|o| arr33(o["commitment"].as_str().unwrap())).collect();
+        let sig: [u8; 64] = hex::decode(strip(f["kernelSig"].as_str().unwrap())).unwrap().try_into().unwrap();
+
+        assert!(cxfer_kernel_verify(&asset, &inputs, &in_commits, &out_compressed, burned, &sig), "valid kernel sig");
+
+        let mut bad_sig = sig;
+        bad_sig[63] ^= 1;
+        assert!(!cxfer_kernel_verify(&asset, &inputs, &in_commits, &out_compressed, burned, &bad_sig), "tampered sig rejected");
+
+        let mut reordered = out_compressed.clone();
+        reordered.swap(0, 1); // changes the kernel message (output order) → e differs
+        assert!(!cxfer_kernel_verify(&asset, &inputs, &in_commits, &reordered, burned, &sig), "reordered outputs rejected");
+
+        // wrong asset → different message → reject
+        assert!(!cxfer_kernel_verify(&[0u8; 32], &inputs, &in_commits, &out_compressed, burned, &sig), "wrong asset rejected");
     }
 
     // The UTXO accumulator: add outpoints, resolve them (get), prove membership against

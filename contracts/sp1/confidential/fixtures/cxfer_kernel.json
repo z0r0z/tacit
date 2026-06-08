@@ -1,0 +1,27 @@
+{
+  "note": "Bitcoin T_CXFER_BPP kernel-sig fixture for cxfer-core::cxfer_kernel_verify (burned=0).",
+  "asset": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "burnedAmount": "0",
+  "inputs": [
+    {
+      "txid": "0x1111111111111111111111111111111111111111111111111111111111111111",
+      "vout": 0,
+      "commitment": "0x025e4c24f9b64a83a13c54141789ca83466dcc0a5e8cde69c17925406665aa1ee4"
+    },
+    {
+      "txid": "0x2222222222222222222222222222222222222222222222222222222222222222",
+      "vout": 1,
+      "commitment": "0x023f7dd855afb45b297255d14a97253b4d2311e291e27c48f3698396883efea386"
+    }
+  ],
+  "outputs": [
+    {
+      "commitment": "0x03fcb2e3c8152c78ceddb9b50f7ff3c01e13987b2b833303f3ecf4b50c8296f803"
+    },
+    {
+      "commitment": "0x0335928e6eb1b905dee86eb4ae4b9bc4c5acaa67dad25970f6a44303bae8d2aaa1"
+    }
+  ],
+  "kernelMsg": "0x1fc9b6cc40deae9f158c63423c728ab05958c61b20dbec107f542f0200a1ab74",
+  "kernelSig": "0xb6568f5553582d00a29787931cab454be0ccd3c6e3633606fd61463528afcda012f3486b07d5d533afecc135c052491a1fcb9d32be16290e2eb3c424b8fbf2c6"
+}
