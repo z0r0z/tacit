@@ -22,7 +22,7 @@ on entry). Cross-chain rides the live tETH stack (`BitcoinLightRelay` +
 | Layer | Evidence |
 |---|---|
 | `ConfidentialPool` (multi-asset, escrow + pool-minted modes, cross-lane gate) | 57 forge tests |
-| SP1 guest — all 5 ops + IMT cross-lane non-membership | compiles in-zkVM; vkey `0x0063293d…` |
+| SP1 guest — all 5 ops + IMT cross-lane non-membership | compiles in-zkVM; current vkey `0x00b3ebb4…` (value/unitScale + note-bound nullifier re-froze it; Sepolia still pins the pre-harmonization `0x0063293d…` until redeploy) |
 | Crypto core (`cxfer-core`: BP+ range, kernel, keccak primitives, bitcoin, IMT) | 8 native tests, JS↔Solidity↔Rust KATs |
 | Real Groth16 proof verified **on-chain** via the genuine SP1 verifier | `ConfidentialProofReal` 5/5 |
 | In-zkVM op execution (transfer FULLOP_OK, bridge_mint BRIDGEMINT_OK, platinum PLATINUM_OK) | box execute |
