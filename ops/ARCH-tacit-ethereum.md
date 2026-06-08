@@ -60,7 +60,7 @@ one confidential, cross-chain system. Companion to the per-piece plans
 - **One SP1 zkVM guest** (Rust) — 5 ops (wrap / transfer / unwrap / bridge_burn /
   bridge_mint) + the cross-lane non-membership gate — wrapped to **Groth16**, verified
   on-chain (~250k gas). SP1's verifier is universal → **no new trusted setup** when the
-  guest changes (only a re-prove). Current guest vkey `0x00b3ebb4…`; the live Sepolia
+  guest changes (only a re-prove). Current guest vkey `0x00f02859…`; the live Sepolia
   deployment pins `0x0063293d…` until the redeploy with the re-proven guest.
 - **AMM circuits** (Groth16, BabyJubJub) — `T_SWAP_BATCH` etc., Bitcoin-side today; an
   Ethereum-side verifier is the roadmap for confidential swaps on Ethereum.

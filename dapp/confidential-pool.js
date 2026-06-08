@@ -158,6 +158,44 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     return { insert, root, nonMembershipWitness, membershipWitness, links: () => links.map((l) => l.slice()) };
   }
 
+  // ── Bridge-burn accumulator — build side, mirrors cxfer-core UtxoAccumulator ──
+  // utxo_leaf(key, next, value) = keccak(key ‖ next ‖ value): a sorted linked list keyed
+  // by the burned note's ν, each live node carrying its destCommitment as the value, seeded
+  // with the {0→0→0} sentinel. The committed root is what the reflection prover submits as
+  // bitcoinBurnRoot; bridge_mint proves ν is a live key here with value == its dest_leaf, so
+  // only a note burned FOR THE BRIDGE (not an ordinary spend) is mintable, at its pinned dest.
+  const utxoLeaf = (key, next, value) => hx(keccak(key, next, value));
+  function makeUtxoAccumulator() {
+    const norm = (x) => hx(b32(x));
+    const big = (x) => BigInt(norm(x));
+    const nodes = [[norm(ZERO32), norm(ZERO32), norm(ZERO32)]]; // sentinel: key 0 is the max
+    const lowIndexOf = (key) => nodes.findIndex(([k, n]) => big(k) < big(key) && (big(n) === 0n || big(key) < big(n)));
+    function insert(keyIn, valueIn) {
+      const key = norm(keyIn), value = norm(valueIn);
+      if (big(key) === 0n) throw new Error('cannot insert key 0 (the sentinel anchor)');
+      const i = lowIndexOf(key);
+      if (i < 0) throw new Error('no low link (key present or out of range)');
+      if (big(nodes[i][0]) === big(key)) throw new Error('outpoint/ν already present');
+      const old = nodes[i][1];
+      nodes[i] = [nodes[i][0], key, nodes[i][2]]; // predecessor → key
+      nodes.push([key, old, value]);              // key takes the displaced successor + its value
+      return i;
+    }
+    const buildTree = () => { const t = new Tree(); for (const [k, n, v] of nodes) t.insert(utxoLeaf(k, n, v)); return t; };
+    const root = () => buildTree().root();
+    // Prove key (ν) is a live member bound to its value (destCommitment): the leaf
+    // utxo_leaf(key, next, value) sits at `index`. The guest rebuilds the leaf from ν +
+    // the minted dest_leaf, so a witness with the wrong value fails the membership check.
+    function membershipWitness(keyIn) {
+      const key = norm(keyIn);
+      const i = nodes.findIndex(([k]) => big(k) === big(key));
+      if (i < 0) throw new Error('key is not a member — no membership witness');
+      const { path } = buildTree().rootAndPath(i);
+      return { next: nodes[i][1], value: nodes[i][2], index: i, path };
+    }
+    return { insert, root, membershipWitness, nodes: () => nodes.map((n) => n.slice()) };
+  }
+
   // Mirror of the guest's keccak_merkle_verify — fold a leaf with its path.
   function verifyPath(leafHex, index, path, rootHex) {
     let h = b32(leafHex);
@@ -172,6 +210,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     prover, TREE_DEPTH, zeros: zeros.map(hx),
     commitXY, deriveNote, leaf, nullifier, depositId, Tree, verifyPath,
     imtLeaf, imtRoot, imtEmptyRoot, makeImtAccumulator,
+    utxoLeaf, makeUtxoAccumulator,
     _internal: { keccak, concat, b32, beBytes, hx },
   };
 }

@@ -24,9 +24,10 @@ contract DeployConfidentialPool is Script {
     // Confidential guest vkey: the complete gen-1 op set — wrap/transfer/unwrap/
     // bridge_burn/bridge_mint — plus the improved-platinum cross-lane non-membership
     // gate (IMT, bitcoinSpentRoot) and OP_ATTEST_META (trustless first-mint metadata from
-    // the etch). 2026-06-08; built + executed on the box (PLATINUM_OK). Override via
-    // PROGRAM_VKEY env if the guest changes. (Prior op set: 0x0063293d…)
-    bytes32 constant DEFAULT_VKEY = 0x00630a966a8f7aed7bdcea1d02318fee16456b6b3782bdd16765c0d8b1d1cbaa;
+    // the etch). 2026-06-08; the note-bound bridge_mint (authorizes against the reflected
+    // bridge-BURN set, key=ν→destCommitment) re-froze the guest, rebuilt + groth16-proven on
+    // the box. Override via PROGRAM_VKEY env if the guest changes. (Prior: 0x0063293d, 0x00b3ebb4.)
+    bytes32 constant DEFAULT_VKEY = 0x00f028596975bf41a574720c7844061a77f10592c653a3821e3072f574e506ee;
 
     function run() external {
         address sp1Verifier = vm.envAddress("SP1_VERIFIER");
