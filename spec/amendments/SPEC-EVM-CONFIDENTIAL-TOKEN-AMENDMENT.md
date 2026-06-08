@@ -315,6 +315,42 @@ key material — the existing stealth stack, re-homed to EVM addresses.
 - **Custody is per-asset.** Escrow ≥ unspent note amounts holds per asset
   contract; wrap/etch are the only issuance paths and each conserves.
 
+### 7.1 Guest validity bindings (NORMATIVE — the SP1 guest MUST enforce all)
+
+"By construction" above holds only if the guest enforces these bindings; they are
+the load-bearing checks (the contract sees only hashes/amounts and cannot backstop
+the value/nullifier ones). Each is required before any proof is accepted:
+
+- **B1 — wrap value↔escrow.** For every `wrap`, assert `value · unitScale == amount`
+  (`value` = the note's committed u64; `amount` = the escrowed underlying, u256).
+  `unitScale` is NOT a free witness: it is bound to the asset by including it in the
+  deposit-id preimage — `deposit_id = keccak(asset ‖ amount ‖ unitScale ‖ Cx ‖ Cy ‖
+  owner)` — which the contract re-derives with `assets[assetId].unitScale`. Compute
+  `value·unitScale` in ≥u128 (it can exceed u64).
+- **B2 — unwrap payout↔value.** For every `unwrap`/withdrawal, assert
+  `amount == value · unitScale`; the withdrawal carries `unitScale` and the contract
+  asserts it `== assets[assetId].unitScale`, then pays `amount`.
+- **B3 — note-bound nullifier.** `ν = keccak256(Cx ‖ Cy ‖ "spent")` where `(Cx,Cy)` is
+  the membership-proven commitment — unique per note, chain-independent (same secp `C`
+  on both chains, so the cross-lane gate matches), and private (`C` is known only to the
+  owner who decrypts the memo). The note secret is NOT the nullifier preimage.
+  Reconciles dapp + guest + worker, which all derive `ν` this way.
+- **B4 — mandatory cross-lane gate.** If ANY spent input's membership root is a
+  relay-attested Bitcoin root (`knownBitcoinRoot`), the guest MUST use a non-zero,
+  current `bitcoinSpentRoot` and prove non-membership of every input `ν` against it;
+  the contract MUST enforce `bitcoinSpentRoot == knownBitcoinSpentRoot` for that lane
+  (no skip-on-zero). A Bitcoin-homed note cannot be fast-spent on Ethereum without
+  proving it is unspent on Bitcoin as of the current relay root.
+- **B5 — relay-anchored bridge_mint.** A `bridge_mint` burn block MUST be part of the
+  relay-proven Bitcoin chain — its `block_hash` gated like `knownBitcoinRoot` (committed
+  + relay-attested) with ≥ K confirmations — not validated by PoW against its own,
+  self-supplied `nBits`. (This is the live tETH bridge's discipline; it must not be
+  dropped in the EVM port.) See `PLAN-confidential-cross-chain.md` §4/§5/§8.
+
+All guest-side bindings (B1–B5) batch into one guest version → one new vkey → one
+re-prove + redeploy. The on-chain pieces (deposit-id/withdrawal `unitScale`, the
+mandatory cross-lane enforcement) ship in the same `ConfidentialPool` redeploy.
+
 ---
 
 ## 8. What ships first vs. follows
