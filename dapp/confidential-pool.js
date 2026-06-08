@@ -268,8 +268,75 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
       height = h;
     }
 
+    // ── Phase 4.2: build the Δ-witnesses the reflection prover folds (mirrors the Rust
+    //    build_*_witness). Each is built against the CURRENT (pre-op) accumulator state. ──
+    // A spent note's witness: the spent-set IMT insert (straddling low + the new slot) and the
+    // UTXO remove (the node + its predecessor). ν is derived (the prover re-derives it).
+    function spendWitness(cx, cy, outpoint) {
+      const nu = nullifier(cx, cy);
+      const spentLeaves = spent.links().map(([vv, nn]) => imtLeaf(vv, nn));
+      const low = spent.nonMembershipWitness(nu); // { lowValue, lowNext, lowIndex, path }
+      const sInterm = spentLeaves.slice(); sInterm[low.lowIndex] = imtLeaf(low.lowValue, nu);
+      const utxoLeaves = utxo.leaves();
+      const node = utxo.membershipWitness(outpoint); // { next, value, index, path }
+      const pred = utxo.predecessor(outpoint);       // { index, key, value }
+      const uInterm = utxoLeaves.slice(); uInterm[pred.index] = utxoLeaf(pred.key, node.next, pred.value);
+      return {
+        cx, cy, outpoint,
+        sLowValue: low.lowValue, sLowNext: low.lowNext, sLowIndex: low.lowIndex, sLowPath: low.path,
+        sNewPath: merklePath(sInterm, spentLeaves.length),
+        uNodeNext: node.next, uNodeValue: node.value, uNodeIndex: node.index, uNodePath: merklePath(uInterm, node.index),
+        uPredKey: pred.key, uPredValue: pred.value, uPredIndex: pred.index, uPredPath: merklePath(utxoLeaves, pred.index),
+      };
+    }
+    // An output note's witness: the note-tree append-path (the empty next slot) + the UTXO insert.
+    function outputWitness(noteLeaf, outpoint, commitmentHash) {
+      const utxoLeaves = utxo.leaves();
+      const low = utxo.low(outpoint); // { index, key, next, value }
+      const interm = utxoLeaves.slice(); interm[low.index] = utxoLeaf(low.key, outpoint, low.value);
+      return {
+        noteLeaf, outpoint, commitmentHash,
+        notePath: notes.rootAndPath(noteCount).path,
+        uLowKey: low.key, uLowNext: low.next, uLowValue: low.value, uLowIndex: low.index, uLowPath: merklePath(utxoLeaves, low.index),
+        uNewPath: merklePath(interm, utxoLeaves.length),
+      };
+    }
+    // A burn's witness: a spend, plus the burn-set insert of ν → destCommitment.
+    function burnWitness(cx, cy, outpoint, destCommitment) {
+      const nu = nullifier(cx, cy);
+      const burnLeaves = burns.leaves();
+      const low = burns.low(nu);
+      const interm = burnLeaves.slice(); interm[low.index] = utxoLeaf(low.key, nu, low.value);
+      return {
+        spend: spendWitness(cx, cy, outpoint), destCommitment,
+        bLowKey: low.key, bLowNext: low.next, bLowValue: low.value, bLowIndex: low.index, bLowPath: merklePath(burnLeaves, low.index),
+        bNewPath: merklePath(interm, burnLeaves.length),
+      };
+    }
+
+    // Witness + advance, in lockstep (so later witnesses see the earlier sub-ops). spends:
+    // [{cx,cy,outpoint}], outputs: [{noteLeaf,outpoint,commitmentHash}]. Returns the witnesses.
+    function witnessTransfer(spends, outputs, h) {
+      if (h < height) throw new Error('reflection height must not decrease');
+      const sw = [];
+      for (const s of spends) { sw.push(spendWitness(s.cx, s.cy, s.outpoint)); spent.insert(nullifier(s.cx, s.cy)); utxo.remove(s.outpoint); }
+      const ow = [];
+      for (const o of outputs) { ow.push(outputWitness(o.noteLeaf, o.outpoint, o.commitmentHash)); notes.insert(o.noteLeaf); noteCount++; utxo.insert(o.outpoint, o.commitmentHash); }
+      height = h;
+      return { spends: sw, outputs: ow, height: h };
+    }
+    function witnessBridgeOut(burn, h) {
+      if (h < height) throw new Error('reflection height must not decrease');
+      const bw = burnWitness(burn.cx, burn.cy, burn.outpoint, burn.destCommitment);
+      const nu = nullifier(burn.cx, burn.cy);
+      spent.insert(nu); utxo.remove(burn.outpoint); burns.insert(nu, burn.destCommitment);
+      height = h;
+      return bw;
+    }
+
     return {
       commit, digest, applyTransfer, applyBridgeOut,
+      witnessTransfer, witnessBridgeOut,
       poolRoot, spentRoot: () => spent.root(), burnRoot: () => burns.root(), utxoRoot: () => utxo.root(),
       counts: () => ({ note: noteCount, spent: spentCount(), utxo: utxoCount(), burn: burnCount(), height }),
       _acc: { notes, spent, utxo, burns }, // for the witness builder (Phase 4.2)
@@ -286,9 +353,29 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     return hx(h) === rootHex;
   }
 
+  // The depth-32 Merkle path for `index` over `leaves` (zero-filling empty subtrees), via a
+  // fresh tree — the witness builder the reflection indexer runs (mirrors the Rust test helper
+  // merkle_path). Positions ≥ leaves.length resolve to the zero leaf.
+  function merklePath(leaves, index) {
+    const t = new Tree();
+    for (const l of leaves) t.insert(l);
+    return t.rootAndPath(index).path;
+  }
+
+  // Fold a leaf up its path to the root it implies — the compute-side of verifyPath (mirrors
+  // cxfer-core::merkle_root_from). The witnessed transitions derive the post-update root with it.
+  function merkleRootFrom(leafHex, index, path) {
+    let h = b32(leafHex);
+    for (let i = 0; i < TREE_DEPTH; i++) {
+      const sib = b32(path[i]);
+      h = ((index >>> i) & 1) ? keccak256(concat([sib, h])) : keccak256(concat([h, sib]));
+    }
+    return hx(h);
+  }
+
   return {
     prover, TREE_DEPTH, zeros: zeros.map(hx),
-    commitXY, deriveNote, leaf, nullifier, depositId, Tree, verifyPath,
+    commitXY, deriveNote, leaf, nullifier, depositId, Tree, verifyPath, merklePath, merkleRootFrom,
     imtLeaf, imtRoot, imtEmptyRoot, makeImtAccumulator,
     utxoLeaf, makeUtxoAccumulator, commitmentHash, makeReflectionState,
     _internal: { keccak, concat, b32, beBytes, hx },
