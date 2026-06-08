@@ -178,13 +178,14 @@ pub fn parse_burn_envelope(env: &[u8]) -> Option<([u8; 32], [u8; 32], [u8; 32])>
     Some((asset, nullifier, dest))
 }
 
-/// Parse a confidential-transfer envelope (opcode 0x23) → (assetId, the N output commitments
-/// as compressed secp256k1 points). Layout: opcode(1) ‖ assetId(32) ‖ kernel_sig(64) ‖
-/// N(1, ∈ {1,2,4,8}) ‖ N×(commitment(33) ‖ amount_ct(8)) ‖ rpLen(2 LE) ‖ rangeProof. The
-/// reflection prover binds each reflected output's stored commitment to one of these, so a
-/// note the confirmed tx never declared can't enter the pool. None if malformed.
+/// Parse a confidential-transfer envelope → (assetId, the N output commitments as compressed
+/// secp256k1 points). Accepts T_CXFER (0x23) AND its BP+ variant T_CXFER_BPP (0x22) — identical
+/// wire shape (SPEC §5.47); real confidential transfers use 0x22. Layout: opcode(1) ‖
+/// assetId(32) ‖ kernel_sig(64) ‖ N(1, ∈ {1,2,4,8}) ‖ N×(commitment(33) ‖ amount_ct(8)) ‖
+/// rpLen(2 LE) ‖ rangeProof. The reflection prover binds each reflected output's stored
+/// commitment to one of these, so a note the confirmed tx never declared can't enter the pool.
 pub fn parse_cxfer_envelope(env: &[u8]) -> Option<([u8; 32], Vec<[u8; 33]>)> {
-    if env.len() < 1 + 32 + 64 + 1 || env[0] != 0x23 {
+    if env.len() < 1 + 32 + 64 + 1 || (env[0] != 0x23 && env[0] != 0x22) {
         return None;
     }
     let asset: [u8; 32] = env[1..33].try_into().ok()?;
@@ -470,6 +471,36 @@ mod tests {
         assert!(parse_cxfer_envelope(&bad).is_none(), "non-cxfer opcode");
         let mut badn = env.clone(); badn[97] = 3;
         assert!(parse_cxfer_envelope(&badn).is_none(), "invalid output count");
+    }
+
+    // The reflection prover's confirmation + envelope binding on a REAL signet confidential
+    // transfer (T_CXFER_BPP 0x22, block 307547): the tx confirms in its block (PoW + merkle +
+    // tx-at-index), its vins are the spent pool outpoints, and its envelope parses to the output
+    // commitments. esplora returns txids in display order, so they reverse to internal.
+    #[test]
+    fn real_signet_cxfer_confirms_and_parses() {
+        let f: serde_json::Value = serde_json::from_str(include_str!("../../fixtures/signet_cxfer.json")).unwrap();
+        let hx = |s: &str| hex::decode(s.trim_start_matches("0x")).unwrap();
+        let header = hx(f["header"].as_str().unwrap());
+        let tx = hx(f["tx"].as_str().unwrap());
+        let tx_index = f["txIndex"].as_u64().unwrap() as u32;
+        let txids: Vec<[u8; 32]> = f["txids"].as_array().unwrap().iter()
+            .map(|v| { let mut b = hx(v.as_str().unwrap()); b.reverse(); b.try_into().unwrap() }).collect();
+
+        // 1. confirmed in its block — REAL PoW + merkle proof
+        let txid = verify_tx_in_block(&header, &tx, tx_index, &txids).expect("real CXFER confirms in block 307547");
+        assert_eq!(txid, compute_txid(&tx), "returns the confirmed txid");
+
+        // 2. its vins are the spent pool outpoints (this transfer spends 2 notes)
+        let vins = extract_inputs(&tx).expect("vins");
+        assert_eq!(vins.len(), 2, "2 spent pool notes");
+
+        // 3. the envelope parses as a confidential transfer, asset = the indexed aid
+        let env = extract_taproot_envelope(&tx).expect("envelope");
+        assert_eq!(env[0], 0x22, "T_CXFER_BPP opcode");
+        let (asset, commitments) = parse_cxfer_envelope(&env).expect("cxfer envelope parses");
+        assert_eq!(hex::encode(asset), "879cf8e6f26b733497ca1d154ed22c80b2266a5702ed55476a8cd4a3c5e9c4ea", "assetId == the recent-cxfers aid");
+        assert!(!commitments.is_empty() && [1usize, 2, 4, 8].contains(&commitments.len()), "valid output count");
     }
 
     #[test]
