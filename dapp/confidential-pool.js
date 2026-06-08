@@ -168,8 +168,11 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
   function makeUtxoAccumulator() {
     const norm = (x) => hx(b32(x));
     const big = (x) => BigInt(norm(x));
-    const nodes = [[norm(ZERO32), norm(ZERO32), norm(ZERO32)]]; // sentinel: key 0 is the max
-    const lowIndexOf = (key) => nodes.findIndex(([k, n]) => big(k) < big(key) && (big(n) === 0n || big(key) < big(n)));
+    // [key, next, value, alive]: a tombstoned node (alive=false) hashes to 0 (skipped).
+    const nodes = [[norm(ZERO32), norm(ZERO32), norm(ZERO32), true]]; // sentinel: key 0 is the max
+    const lowIndexOf = (key) => nodes.findIndex(([k, n, , a]) => a && big(k) < big(key) && (big(n) === 0n || big(key) < big(n)));
+    const find = (key) => nodes.findIndex(([k, , , a]) => a && big(k) === big(key));
+    const predOf = (key) => nodes.findIndex(([, n, , a]) => a && big(n) === big(key));
     function insert(keyIn, valueIn) {
       const key = norm(keyIn), value = norm(valueIn);
       if (big(key) === 0n) throw new Error('cannot insert key 0 (the sentinel anchor)');
@@ -177,23 +180,100 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
       if (i < 0) throw new Error('no low link (key present or out of range)');
       if (big(nodes[i][0]) === big(key)) throw new Error('outpoint/ν already present');
       const old = nodes[i][1];
-      nodes[i] = [nodes[i][0], key, nodes[i][2]]; // predecessor → key
-      nodes.push([key, old, value]);              // key takes the displaced successor + its value
+      nodes[i] = [nodes[i][0], key, nodes[i][2], true]; // predecessor → key
+      nodes.push([key, old, value, true]);              // key takes the displaced successor + its value
       return i;
     }
-    const buildTree = () => { const t = new Tree(); for (const [k, n, v] of nodes) t.insert(utxoLeaf(k, n, v)); return t; };
-    const root = () => buildTree().root();
-    // Prove key (ν) is a live member bound to its value (destCommitment): the leaf
-    // utxo_leaf(key, next, value) sits at `index`. The guest rebuilds the leaf from ν +
-    // the minted dest_leaf, so a witness with the wrong value fails the membership check.
-    function membershipWitness(keyIn) {
+    // Spend an outpoint: rewire its predecessor to skip it, then tombstone it (leaf → 0).
+    function remove(keyIn) {
       const key = norm(keyIn);
-      const i = nodes.findIndex(([k]) => big(k) === big(key));
+      const i = find(key); if (i < 0) throw new Error('outpoint not in the UTXO set');
+      const p = predOf(key); if (p < 0) throw new Error('predecessor missing');
+      nodes[p] = [nodes[p][0], nodes[i][1], nodes[p][2], true]; // pred.next = node.next
+      nodes[i] = [nodes[i][0], nodes[i][1], nodes[i][2], false]; // tombstone
+    }
+    const leafAt = ([k, n, v, a]) => (a ? utxoLeaf(k, n, v) : hx(ZERO32));
+    const buildTree = () => { const t = new Tree(); for (const nd of nodes) t.insert(leafAt(nd)); return t; };
+    const root = () => buildTree().root();
+    const leaves = () => nodes.map(leafAt);
+    function membershipWitness(keyIn) {
+      const i = find(norm(keyIn));
       if (i < 0) throw new Error('key is not a member — no membership witness');
       const { path } = buildTree().rootAndPath(i);
       return { next: nodes[i][1], value: nodes[i][2], index: i, path };
     }
-    return { insert, root, membershipWitness, nodes: () => nodes.map((n) => n.slice()) };
+    // The straddling low node (insert witness) and the predecessor (remove witness) — what the
+    // Phase-4.2 witness builder hands the prover's utxo_insert_transition / utxo_remove_transition.
+    function low(keyIn) {
+      const i = lowIndexOf(norm(keyIn)); if (i < 0) return null;
+      return { index: i, key: nodes[i][0], next: nodes[i][1], value: nodes[i][2] };
+    }
+    function predecessor(keyIn) {
+      const i = predOf(norm(keyIn)); if (i < 0) return null;
+      return { index: i, key: nodes[i][0], value: nodes[i][2] };
+    }
+    return { insert, remove, root, leaves, membershipWitness, low, predecessor, nodes: () => nodes.map((n) => n.slice()) };
+  }
+
+  // The UTXO-set value for a note: keccak(Cx ‖ Cy) — what the reflection prover stores at an
+  // outpoint and re-opens to derive ν. Mirrors cxfer-core::commitment_hash.
+  const commitmentHash = (cx, cy) => hx(keccak(cx, cy));
+  const u64be = (n) => beBytes(n, 32); // a u64 as a 32-byte big-endian word (digest encoding)
+
+  // ── Reflection state (the Bitcoin-indexer / reflection-prover side) ──
+  // The canonical Bitcoin confidential-pool state the reflection prover proves over: the note
+  // tree, spent-set, bridge-burn set, and UTXO set, advanced as confirmed effects land. Mirrors
+  // cxfer-core::WitnessedReflection BYTE-FOR-BYTE — `digest()` is the resumption anchor the
+  // contract chains (knownReflectionDigest), so the JS genesis digest MUST equal the Rust
+  // prover's and the contract's REFLECTION_GENESIS_DIGEST (the three-way agreement). Provides
+  // `witnessTransfer` / `witnessBridgeOut` (the Δ-witnesses the prover folds) by capturing each
+  // accumulator's pre-op state, then advancing.
+  function makeReflectionState() {
+    const notes = new Tree();            // append-only note tree (pool root)
+    const spent = makeImtAccumulator();  // spent-nullifier IMT
+    const utxo = makeUtxoAccumulator();  // outpoint → commitment_hash
+    const burns = makeUtxoAccumulator(); // ν → destCommitment (bridge-outs only)
+    let noteCount = 0;
+    let height = 0;
+
+    const poolRoot = () => notes.root();
+    const spentCount = () => spent.links().length;
+    const utxoCount = () => utxo.nodes().length;
+    const burnCount = () => burns.nodes().length;
+
+    function commit() { return { poolRoot: poolRoot(), spentRoot: spent.root(), burnRoot: burns.root(), height }; }
+    function digest() {
+      return hx(keccak(
+        poolRoot(), u64be(noteCount),
+        spent.root(), u64be(spentCount()),
+        utxo.root(), u64be(utxoCount()),
+        burns.root(), u64be(burnCount()),
+        u64be(height),
+      ));
+    }
+
+    // Fold a confirmed transfer: spends (nullify + remove outpoint) then outputs (append note +
+    // insert outpoint→commitment). `spends`: [{ nu, outpoint }]; `outputs`: [{ noteLeaf, outpoint,
+    // commitmentHash }]. Height must not decrease (same-block effects share a height).
+    function applyTransfer(spends, outputs, h) {
+      if (h < height) throw new Error('reflection height must not decrease');
+      for (const s of spends) { spent.insert(s.nu); utxo.remove(s.outpoint); }
+      for (const o of outputs) { notes.insert(o.noteLeaf); noteCount++; utxo.insert(o.outpoint, o.commitmentHash); }
+      height = h;
+    }
+    // Fold a confirmed cross-chain burn: a spend plus ν → destCommitment in the burn set.
+    function applyBridgeOut(burn, h) {
+      if (h < height) throw new Error('reflection height must not decrease');
+      spent.insert(burn.nu); utxo.remove(burn.outpoint); burns.insert(burn.nu, burn.destCommitment);
+      height = h;
+    }
+
+    return {
+      commit, digest, applyTransfer, applyBridgeOut,
+      poolRoot, spentRoot: () => spent.root(), burnRoot: () => burns.root(), utxoRoot: () => utxo.root(),
+      counts: () => ({ note: noteCount, spent: spentCount(), utxo: utxoCount(), burn: burnCount(), height }),
+      _acc: { notes, spent, utxo, burns }, // for the witness builder (Phase 4.2)
+    };
   }
 
   // Mirror of the guest's keccak_merkle_verify — fold a leaf with its path.
@@ -210,7 +290,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     prover, TREE_DEPTH, zeros: zeros.map(hx),
     commitXY, deriveNote, leaf, nullifier, depositId, Tree, verifyPath,
     imtLeaf, imtRoot, imtEmptyRoot, makeImtAccumulator,
-    utxoLeaf, makeUtxoAccumulator,
+    utxoLeaf, makeUtxoAccumulator, commitmentHash, makeReflectionState,
     _internal: { keccak, concat, b32, beBytes, hx },
   };
 }
