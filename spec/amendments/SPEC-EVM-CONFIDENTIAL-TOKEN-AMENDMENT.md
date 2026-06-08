@@ -341,11 +341,19 @@ the value/nullifier ones). Each is required before any proof is accepted:
   the contract MUST enforce `bitcoinSpentRoot == knownBitcoinSpentRoot` for that lane
   (no skip-on-zero). A Bitcoin-homed note cannot be fast-spent on Ethereum without
   proving it is unspent on Bitcoin as of the current relay root.
-- **B5 — relay-anchored bridge_mint.** A `bridge_mint` burn block MUST be part of the
-  relay-proven Bitcoin chain — its `block_hash` gated like `knownBitcoinRoot` (committed
-  + relay-attested) with ≥ K confirmations — not validated by PoW against its own,
-  self-supplied `nBits`. (This is the live tETH bridge's discipline; it must not be
-  dropped in the EVM port.) See `PLAN-confidential-cross-chain.md` §4/§5/§8.
+- **B5 — relay-anchored bridge_mint (spent-set membership).** A `bridge_mint` MUST prove
+  the burned note was actually spent on Bitcoin — `ν` is a MEMBER of the relay-attested
+  Bitcoin spent set (`imt_membership(ν, bitcoinSpentRoot)`), with the contract enforcing
+  `bitcoinSpentRoot == knownBitcoinSpentRoot` (current, non-zero) for that op. The burned
+  note's pool membership is proven against a `knownBitcoinRoot`. The block PoW is NOT
+  validated against a self-supplied `nBits` — a fabricated min-difficulty header is
+  forgeable, so block self-PoW is no gate. Conservation (`v_mint == v_burn`) requires
+  knowledge of the burned note's blinding, so only the owner can mint; the contract gates
+  one mint PER BURNED `ν` (`bridgeMinted[ν]`), so a burn mints to exactly one destination,
+  once. (This supersedes the earlier "gate the block_hash like knownBitcoinRoot" wording:
+  proving the burn via the already-attested spent set needs no per-block-hash attestation
+  and no relay-program change — the spent set is the cross-lane authority, consistent with
+  B4's non-membership gate.) See `PLAN-confidential-cross-chain.md` §4/§5/§8.
 
 All guest-side bindings (B1–B5) batch into one guest version → one new vkey → one
 re-prove + redeploy. The on-chain pieces (deposit-id/withdrawal `unitScale`, the

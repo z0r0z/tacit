@@ -373,11 +373,15 @@ fn kn(parts: &[&[u8]]) -> [u8; 32] {
 pub fn leaf(asset_id: &[u8; 32], cx: &[u8; 32], cy: &[u8; 32], owner: &[u8; 32]) -> [u8; 32] {
     kn(&[asset_id, cx, cy, owner])
 }
-/// nullifier = keccak(note_secret) — chain-independent (Phase-3 tee-up).
-pub fn nullifier(secret: &[u8; 32]) -> [u8; 32] { kn(&[secret]) }
-/// deposit id = keccak(asset_id ‖ amount_be32 ‖ Cx ‖ Cy ‖ owner) — matches wrap().
-pub fn deposit_id(asset_id: &[u8; 32], amount_be32: &[u8; 32], cx: &[u8; 32], cy: &[u8; 32], owner: &[u8; 32]) -> [u8; 32] {
-    kn(&[asset_id, amount_be32, cx, cy, owner])
+/// nullifier = keccak(Cx ‖ Cy ‖ "spent") — note-bound (spec B3), chain-independent.
+/// Derived from the membership-proven commitment, NOT a free witness secret, so a note
+/// has exactly one nullifier and cannot be re-spent under a fresh secret.
+pub fn nullifier(cx: &[u8; 32], cy: &[u8; 32]) -> [u8; 32] { kn(&[cx, cy, b"spent"]) }
+/// deposit id = keccak(asset_id ‖ value_be32 ‖ Cx ‖ Cy ‖ owner) — binds the note's
+/// in-system value (the contract derives the same value = amount/unitScale at wrap, so
+/// value·unitScale == escrowed amount: the wrap-side no-inflation gate).
+pub fn deposit_id(asset_id: &[u8; 32], value_be32: &[u8; 32], cx: &[u8; 32], cy: &[u8; 32], owner: &[u8; 32]) -> [u8; 32] {
+    kn(&[asset_id, value_be32, cx, cy, owner])
 }
 /// claimId = keccak(abi.encodePacked(destChain:uint16, destCommitment, nullifier,
 /// asset_id)) — matches ConfidentialPool.settle's on-chain re-derivation and the
@@ -425,6 +429,230 @@ pub fn imt_non_membership(
     let zero = [0u8; 32];
     if low_next == &zero { return true; } // low is the max element; nu is beyond it
     be_lt(nu, low_next)
+}
+
+/// Indexed-Merkle MEMBERSHIP: prove `nu` IS in the set committed by `root` — there is a
+/// leaf `imt_leaf(nu, next)` in the tree at `index`. Since the IMT holds each spent
+/// nullifier as a unique sorted link, a leaf whose value is `nu` means `nu` is spent.
+/// bridge_mint uses this to prove a Bitcoin note was actually burned (its ν reflected
+/// into the relay-attested Bitcoin spent set) — the relay-anchored replacement for the
+/// self-supplied-PoW block check (spec B5).
+pub fn imt_membership(
+    root: &[u8; 32],
+    nu: &[u8; 32],
+    next: &[u8; 32],
+    index: u64,
+    path: &[[u8; 32]],
+) -> bool {
+    keccak_merkle_verify(&imt_leaf(nu, next), index, path, root)
+}
+
+/// Depth of the keccak incremental Merkle tree — the note tree, the spent-set IMT, and
+/// ConfidentialPool's commitment tree all share it (TREE_LEVELS = 32).
+pub const KECCAK_TREE_DEPTH: usize = 32;
+
+/// Per-level zero hashes: zeros[0] = 0, zeros[i] = keccak(zeros[i-1] ‖ zeros[i-1]).
+fn keccak_zeros() -> [[u8; 32]; KECCAK_TREE_DEPTH] {
+    let mut z = [[0u8; 32]; KECCAK_TREE_DEPTH];
+    for i in 1..KECCAK_TREE_DEPTH { z[i] = kn(&[&z[i - 1], &z[i - 1]]); }
+    z
+}
+
+/// Root of the depth-32 keccak incremental Merkle tree holding `leaves` at positions
+/// 0..n, empty subtrees zero-filled — byte-identical to ConfidentialPool._insertLeaf
+/// and the JS pool.Tree. This is the BUILD side (the verify side is
+/// keccak_merkle_verify); the reflection prover uses it to recompute the Bitcoin pool
+/// root and the spent-set IMT root in-guest.
+pub fn keccak_merkle_root(leaves: &[[u8; 32]]) -> [u8; 32] {
+    let zeros = keccak_zeros();
+    // Empty tree: fold the zero leaf up 32 levels → zeros[32].
+    if leaves.is_empty() {
+        let mut h = [0u8; 32];
+        for _ in 0..KECCAK_TREE_DEPTH { h = kn(&[&h, &h]); }
+        return h;
+    }
+    let mut level: Vec<[u8; 32]> = leaves.to_vec();
+    for i in 0..KECCAK_TREE_DEPTH {
+        let mut next: Vec<[u8; 32]> = Vec::with_capacity((level.len() + 1) / 2);
+        let mut k = 0;
+        while k * 2 < level.len() {
+            let l = level[2 * k];
+            let r = if 2 * k + 1 < level.len() { level[2 * k + 1] } else { zeros[i] };
+            next.push(kn(&[&l, &r]));
+            k += 1;
+        }
+        level = next; // non-empty for non-empty input every round
+    }
+    level[0]
+}
+
+/// The spent-set IMT root from its sorted low-nullifier linked list `(value, next)` —
+/// each link becomes an imt_leaf, folded into the depth-32 tree. The reflection prover
+/// commits this as `bitcoinSpentRoot`; non-membership (imt_non_membership) verifies
+/// against it.
+pub fn imt_root(links: &[([u8; 32], [u8; 32])]) -> [u8; 32] {
+    let leaves: Vec<[u8; 32]> = links.iter().map(|(v, n)| imt_leaf(v, n)).collect();
+    keccak_merkle_root(&leaves)
+}
+
+/// The NON-ZERO root of an EMPTY spent set: the single sentinel low-leaf imt_leaf(0,0)
+/// ("0 is the max, nothing above"), which proves non-membership of every nu > 0. The
+/// reflected spent root is seeded to this and only advances; the contract rejects a zero
+/// spent root because a zero would let the guest skip its non-membership check.
+pub fn imt_empty_root() -> [u8; 32] {
+    let zero = [0u8; 32];
+    keccak_merkle_root(&[imt_leaf(&zero, &zero)])
+}
+
+/// Stateful spent-set accumulator (the indexer / reflection-prover side): the sorted
+/// low-nullifier linked list seeded with the {0→0} sentinel, with incremental insert.
+/// `insert` splits the predecessor low-leaf (its `next` → nu) and appends {nu → old
+/// next} at a new index — leaf index = insertion order, so the root is order-dependent;
+/// fold spends in the SAME (chronological) order as the JS accumulator. Mirrors
+/// dapp/confidential-pool.js makeImtAccumulator.
+pub struct ImtAccumulator {
+    links: Vec<([u8; 32], [u8; 32])>,
+}
+
+impl Default for ImtAccumulator {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ImtAccumulator {
+    /// A fresh accumulator: the empty set, represented by the {0→0} sentinel.
+    pub fn new() -> Self {
+        Self { links: vec![([0u8; 32], [0u8; 32])] }
+    }
+
+    fn low_index(&self, nu: &[u8; 32]) -> Option<usize> {
+        let zero = [0u8; 32];
+        self.links.iter().position(|(v, n)| be_lt(v, nu) && (*n == zero || be_lt(nu, n)))
+    }
+
+    /// Insert a spent nullifier. Panics on 0 (the sentinel anchor) or an nu already in
+    /// the set / out of range (no straddling low leaf).
+    pub fn insert(&mut self, nu: &[u8; 32]) {
+        assert!(*nu != [0u8; 32], "cannot insert 0 (the sentinel anchor)");
+        let i = self.low_index(nu).expect("no low link (nu already spent or out of range)");
+        let old = self.links[i].1;
+        self.links[i].1 = *nu; // predecessor now points to nu
+        self.links.push((*nu, old)); // nu takes the displaced successor
+    }
+
+    /// The spent-set root reflecting all inserts so far.
+    pub fn root(&self) -> [u8; 32] {
+        imt_root(&self.links)
+    }
+
+    pub fn links(&self) -> &[([u8; 32], [u8; 32])] {
+        &self.links
+    }
+
+    /// Low-leaf (index, value, next) for proving `nu` absent against `root()`; None if
+    /// `nu` is a member. The Merkle path is generated by the caller's tree builder.
+    pub fn non_membership_low(&self, nu: &[u8; 32]) -> Option<(usize, [u8; 32], [u8; 32])> {
+        self.low_index(nu).map(|i| (i, self.links[i].0, self.links[i].1))
+    }
+}
+
+/// Incremental note-tree accumulator: append-only Keccak Merkle holding only the
+/// per-level `filled` subtrees + the running root (O(depth) state, not O(leaves)) —
+/// byte-identical to ConfidentialPool._insertLeaf. The reflection prover / Bitcoin
+/// indexer use it to advance the note-tree root as deposits land, without holding every
+/// leaf. (ImtAccumulator is the spent-set counterpart.)
+pub struct KeccakTreeAccumulator {
+    zeros: [[u8; 32]; KECCAK_TREE_DEPTH],
+    filled: [[u8; 32]; KECCAK_TREE_DEPTH],
+    next_index: u64,
+    root: [u8; 32],
+}
+
+impl Default for KeccakTreeAccumulator {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl KeccakTreeAccumulator {
+    /// An empty tree: root = the all-zero depth-32 root (zeros[32]), as the contract's
+    /// initial `currentRoot`.
+    pub fn new() -> Self {
+        let zeros = keccak_zeros();
+        Self { zeros, filled: [[0u8; 32]; KECCAK_TREE_DEPTH], next_index: 0, root: keccak_merkle_root(&[]) }
+    }
+
+    /// Append one leaf, updating the filled subtrees + root exactly as _insertLeaf does.
+    pub fn append(&mut self, leaf: &[u8; 32]) {
+        let mut idx = self.next_index;
+        let mut h = *leaf;
+        for i in 0..KECCAK_TREE_DEPTH {
+            if idx & 1 == 0 {
+                self.filled[i] = h;
+                h = kn(&[&h, &self.zeros[i]]);
+            } else {
+                h = kn(&[&self.filled[i], &h]);
+            }
+            idx >>= 1;
+        }
+        self.root = h;
+        self.next_index += 1;
+    }
+
+    pub fn root(&self) -> [u8; 32] {
+        self.root
+    }
+    pub fn next_index(&self) -> u64 {
+        self.next_index
+    }
+}
+
+/// The reflection prover's state: the Bitcoin confidential-pool note tree + spent-set,
+/// advanced as confirmed deposits/spends land, plus the confirmed height. `commit`
+/// yields exactly the `(bitcoinPoolRoot, bitcoinSpentRoot, bitcoinHeight)` the relay
+/// proof carries (ConfidentialPool.BitcoinRelayPublicValues). The Bitcoin-confirmation
+/// of each deposit/spend (header chain + tx inclusion, via cxfer-core::bitcoin) is the
+/// guest's job before it folds them in; this is the fold + the committed roots.
+pub struct ReflectionState {
+    pub notes: KeccakTreeAccumulator,
+    pub spent: ImtAccumulator,
+    pub height: u64,
+}
+
+impl Default for ReflectionState {
+    fn default() -> Self {
+        Self::genesis()
+    }
+}
+
+impl ReflectionState {
+    /// Genesis: an empty note tree + the non-zero empty-IMT spent set, height 0.
+    pub fn genesis() -> Self {
+        Self { notes: KeccakTreeAccumulator::new(), spent: ImtAccumulator::new(), height: 0 }
+    }
+
+    /// Fold one confirmed block's confidential-pool effects: append each new deposit
+    /// leaf, insert each new spent nullifier, advance to `height`. `height` must strictly
+    /// increase (the relay's monotonic guard). Deposits/spends must already be proven
+    /// confirmed at this height by the caller (the guest).
+    pub fn apply_block(&mut self, deposits: &[[u8; 32]], spends: &[[u8; 32]], height: u64) {
+        assert!(height > self.height, "reflection height must strictly increase");
+        for leaf in deposits {
+            self.notes.append(leaf);
+        }
+        for nu in spends {
+            self.spent.insert(nu);
+        }
+        self.height = height;
+    }
+
+    /// The committed reflection roots: (bitcoinPoolRoot, bitcoinSpentRoot, bitcoinHeight).
+    /// The spent root is always non-zero (the empty-IMT sentinel), so the contract
+    /// accepts it and the cross-lane gate never goes vacuous.
+    pub fn commit(&self) -> ([u8; 32], [u8; 32], u64) {
+        (self.notes.root(), self.spent.root(), self.height)
+    }
 }
 
 #[cfg(test)]
@@ -481,14 +709,14 @@ mod tests {
             let cx = arr32(note["cx"].as_str().unwrap());
             let cy = arr32(note["cy"].as_str().unwrap());
             assert_eq!(leaf(&asset, &cx, &cy, &owner), arr32(note["leaf"].as_str().unwrap()), "leaf");
-            let secret = arr32(note["secret"].as_str().unwrap());
-            assert_eq!(nullifier(&secret), arr32(note["nullifier"].as_str().unwrap()), "nullifier");
-            let amount: u64 = note["amount"].as_str().unwrap().parse().unwrap();
-            assert_eq!(deposit_id(&asset, &u64_be32(amount), &cx, &cy, &owner), arr32(note["depositId"].as_str().unwrap()), "depositId");
+            assert_eq!(nullifier(&cx, &cy), arr32(note["nullifier"].as_str().unwrap()), "nullifier");
+            let value: u64 = note["value"].as_str().unwrap().parse().unwrap();
+            // deposit id binds the in-system value (not the underlying `amount`); the
+            // contract derives the same value = amount/unitScale at wrap.
+            assert_eq!(deposit_id(&asset, &u64_be32(value), &cx, &cy, &owner), arr32(note["depositId"].as_str().unwrap()), "depositId");
 
             // Pedersen opening: C reconstructed from (cx,cy) opens to (value, blinding).
             let c = from_affine_xy(&cx, &cy).unwrap();
-            let value: u64 = note["value"].as_str().unwrap().parse().unwrap();
             let blinding = scalar_reduce_be(&arr32(note["blinding"].as_str().unwrap()));
             assert!(verify_pedersen_opening(&c, value, &blinding), "opening");
             assert!(!verify_pedersen_opening(&c, value + 1, &blinding), "wrong value rejected");
@@ -549,5 +777,191 @@ mod tests {
         let mut path = arrp(w);
         path[0][0] ^= 1;
         assert!(!imt_non_membership(&root, &nu, &lv, &ln, w["lowIndex"].as_u64().unwrap(), &path), "tampered path");
+    }
+
+    // The BUILD side (imt_root / imt_empty_root / keccak_merkle_root) reconstructs the
+    // exact roots the JS pool.Tree produces — so the reflection prover computes the same
+    // bitcoinSpentRoot the contract gate + non-membership witnesses are checked against.
+    #[test]
+    fn imt_build_matches_js() {
+        let f: serde_json::Value = serde_json::from_str(include_str!("../../fixtures/imt.json")).unwrap();
+        let links: Vec<([u8; 32], [u8; 32])> = f["links"].as_array().unwrap().iter()
+            .map(|l| (arr32(l[0].as_str().unwrap()), arr32(l[1].as_str().unwrap()))).collect();
+        assert_eq!(imt_root(&links), arr32(f["root"].as_str().unwrap()), "built spent-set root == JS root");
+
+        // The empty-set sentinel root is reproduced AND is non-zero (a zero root would
+        // let the cross-lane gate be skipped — the contract rejects it).
+        let empty = imt_empty_root();
+        assert_eq!(empty, arr32(f["emptyRoot"].as_str().unwrap()), "empty-IMT root == JS emptyRoot");
+        assert_ne!(empty, [0u8; 32], "empty-IMT sentinel is non-zero");
+
+        // And the rebuilt set proves non-membership of a value beyond the max, against
+        // the freshly BUILT root (closing the loop: build → prove on the same root).
+        let beyond = arr32("0x0000000000000000000000000000000000000000000000000000000000000040");
+        let max_links = links.last().unwrap();
+        assert!(be_lt(&max_links.0, &beyond) && max_links.1 == [0u8; 32], "last link is the max element");
+    }
+
+    // The stateful ImtAccumulator (incremental insert, in-place predecessor update)
+    // reaches the SAME root the JS accumulator does from the same chronological
+    // insertion sequence, and a non-member proves absent against that built root — the
+    // spent-set transition the reflection prover folds each new Bitcoin spend through.
+    #[test]
+    fn imt_accumulator_matches_js() {
+        let f: serde_json::Value = serde_json::from_str(include_str!("../../fixtures/imt.json")).unwrap();
+        let a = &f["accumulator"];
+
+        // empty accumulator == the non-zero sentinel root
+        assert_eq!(ImtAccumulator::new().root(), imt_empty_root(), "empty accumulator == sentinel");
+        assert_ne!(ImtAccumulator::new().root(), [0u8; 32], "sentinel non-zero");
+
+        // fold the same chronological sequence → same order-dependent root as JS
+        let mut acc = ImtAccumulator::new();
+        for nu in a["insertSeq"].as_array().unwrap() {
+            acc.insert(&arr32(nu.as_str().unwrap()));
+        }
+        let root = acc.root();
+        assert_eq!(root, arr32(a["root"].as_str().unwrap()), "accumulator root == JS root");
+
+        // non-membership of nu against the INCREMENTALLY-BUILT root (JS-supplied path)
+        let nm = &a["nonMember"];
+        let nu = arr32(nm["nu"].as_str().unwrap());
+        let path: Vec<[u8; 32]> = nm["path"].as_array().unwrap().iter()
+            .map(|v| arr32(v.as_str().unwrap())).collect();
+        let (li, lv, ln) = acc.non_membership_low(&nu).expect("nu is a non-member");
+        assert_eq!(li as u64, nm["lowIndex"].as_u64().unwrap(), "low index matches JS");
+        assert_eq!(lv, arr32(nm["lowValue"].as_str().unwrap()), "low value matches JS");
+        assert_eq!(ln, arr32(nm["lowNext"].as_str().unwrap()), "low next matches JS");
+        assert!(imt_non_membership(&root, &nu, &lv, &ln, li as u64, &path), "nu absent from built root");
+
+        // a member is correctly NOT provable absent
+        let member = arr32(a["insertSeq"][0].as_str().unwrap());
+        assert!(acc.non_membership_low(&member).is_none(), "a spent nu has no non-membership low leaf");
+    }
+
+    // imt_membership: a spent nu IS provable present against the built spent-set root —
+    // the bridge_mint burn gate (B5). A wrong `next` or a non-spent value rejects.
+    #[test]
+    fn imt_membership_round_trips() {
+        let zeros = keccak_zeros();
+        let build_path = |leaves: &[[u8; 32]], mut idx: usize| -> Vec<[u8; 32]> {
+            let mut level = leaves.to_vec();
+            let mut path: Vec<[u8; 32]> = Vec::new();
+            for lvl in 0..KECCAK_TREE_DEPTH {
+                let s = idx ^ 1;
+                path.push(if s < level.len() { level[s] } else { zeros[lvl] });
+                let mut next: Vec<[u8; 32]> = Vec::new();
+                let mut k = 0;
+                while k * 2 < level.len() {
+                    let l = level[2 * k];
+                    let r = if 2 * k + 1 < level.len() { level[2 * k + 1] } else { zeros[lvl] };
+                    next.push(kn(&[&l, &r]));
+                    k += 1;
+                }
+                level = next;
+                idx >>= 1;
+            }
+            path
+        };
+        let mut acc = ImtAccumulator::new();
+        let nu_a = arr32("0x0000000000000000000000000000000000000000000000000000000000000010");
+        let nu_b = arr32("0x0000000000000000000000000000000000000000000000000000000000000020");
+        acc.insert(&nu_a);
+        acc.insert(&nu_b);
+        let root = acc.root();
+        let links = acc.links().to_vec();
+        let leaves: Vec<[u8; 32]> = links.iter().map(|(v, n)| imt_leaf(v, n)).collect();
+
+        let i = links.iter().position(|(v, _)| *v == nu_a).unwrap();
+        let next_a = links[i].1;
+        let path = build_path(&leaves, i);
+        assert!(imt_membership(&root, &nu_a, &next_a, i as u64, &path), "spent nu is a member");
+
+        let mut bad_next = next_a;
+        bad_next[0] ^= 1;
+        assert!(!imt_membership(&root, &nu_a, &bad_next, i as u64, &path), "wrong next rejects");
+
+        let nu_c = arr32("0x0000000000000000000000000000000000000000000000000000000000000030");
+        assert!(!imt_membership(&root, &nu_c, &next_a, i as u64, &path), "non-spent value rejects");
+    }
+
+    // The incremental note-tree accumulator (append-only, O(depth) state) reaches the
+    // SAME root as the JS pool.Tree / the contract _insertLeaf, at every step — so the
+    // reflection prover advances bitcoinPoolRoot without holding every leaf.
+    #[test]
+    fn note_tree_accumulator_matches_contract_tree() {
+        let f: serde_json::Value = serde_json::from_str(include_str!("../../fixtures/confidential_pool.json")).unwrap();
+        let leaves: Vec<[u8; 32]> = f["treeLeaves"].as_array().unwrap().iter()
+            .map(|v| arr32(v.as_str().unwrap())).collect();
+
+        let mut acc = KeccakTreeAccumulator::new();
+        assert_eq!(acc.root(), keccak_merkle_root(&[]), "empty accumulator == empty tree root");
+        for (i, leaf) in leaves.iter().enumerate() {
+            acc.append(leaf);
+            // incremental root == batch rebuild over the leaves appended so far
+            assert_eq!(acc.root(), keccak_merkle_root(&leaves[..=i]), "incremental == batch at step {i}");
+            assert_eq!(acc.next_index(), (i + 1) as u64);
+        }
+        assert_eq!(acc.root(), arr32(f["treeRoot"].as_str().unwrap()), "final root == JS/contract treeRoot");
+    }
+
+    // The reflection prover's state transition: fold confirmed deposits (note leaves)
+    // and spends (nullifiers) into a block, then commit the exact
+    // (bitcoinPoolRoot, bitcoinSpentRoot, bitcoinHeight) the relay proof carries. The
+    // pool root matches the contract tree; the spent root matches the IMT accumulator;
+    // the spent root is never zero.
+    #[test]
+    fn reflection_state_commits_relay_public_values() {
+        let pf: serde_json::Value = serde_json::from_str(include_str!("../../fixtures/confidential_pool.json")).unwrap();
+        let imt: serde_json::Value = serde_json::from_str(include_str!("../../fixtures/imt.json")).unwrap();
+        let deposits: Vec<[u8; 32]> = pf["treeLeaves"].as_array().unwrap().iter()
+            .map(|v| arr32(v.as_str().unwrap())).collect();
+        let spends: Vec<[u8; 32]> = imt["accumulator"]["insertSeq"].as_array().unwrap().iter()
+            .map(|v| arr32(v.as_str().unwrap())).collect();
+
+        let mut state = ReflectionState::genesis();
+        let (p0, s0, h0) = state.commit();
+        assert_eq!(p0, keccak_merkle_root(&[]), "genesis pool root = empty");
+        assert_eq!(s0, imt_empty_root(), "genesis spent root = non-zero sentinel");
+        assert_ne!(s0, [0u8; 32], "genesis spent root non-zero");
+        assert_eq!(h0, 0);
+
+        state.apply_block(&deposits, &spends, 800_000);
+        let (pool_root, spent_root, height) = state.commit();
+        assert_eq!(pool_root, arr32(pf["treeRoot"].as_str().unwrap()), "reflected pool root == contract tree");
+        assert_eq!(spent_root, arr32(imt["accumulator"]["root"].as_str().unwrap()), "reflected spent root == IMT accumulator");
+        assert_ne!(spent_root, [0u8; 32], "reflected spent root non-zero");
+        assert_eq!(height, 800_000);
+    }
+
+    // The per-event Bitcoin confirmation (bitcoin::verify_tx_in_block) accepts the real
+    // bridge_mint block (valid PoW + the tx folds to the header's merkle root at its
+    // index) and rejects tampering — the check the reflection prover runs on each
+    // deposit/spend before folding it.
+    #[test]
+    fn verify_tx_in_block_accepts_real_block_rejects_tamper() {
+        let f: serde_json::Value = serde_json::from_str(include_str!("../../fixtures/bridgemint_op.json")).unwrap();
+        let header = hex::decode(strip(f["header"].as_str().unwrap())).unwrap();
+        let tx = hex::decode(strip(f["tx"].as_str().unwrap())).unwrap();
+        let tx_index = f["txIndex"].as_u64().unwrap() as u32;
+        let txids: Vec<[u8; 32]> = f["txids"].as_array().unwrap().iter()
+            .map(|v| arr32(v.as_str().unwrap())).collect();
+
+        // accepts: returns the tx's txid
+        let txid = bitcoin::verify_tx_in_block(&header, &tx, tx_index, &txids)
+            .expect("real bridge_mint block verifies");
+        assert_eq!(txid, bitcoin::compute_txid(&tx), "returns the confirmed txid");
+
+        // rejects: wrong index, a flipped txid (breaks the merkle root), a flipped tx
+        // byte (txid no longer matches), and a malformed header length
+        assert!(bitcoin::verify_tx_in_block(&header, &tx, tx_index + 1, &txids).is_none(), "bad index");
+        let mut bad_txids = txids.clone();
+        bad_txids[tx_index as usize][0] ^= 1;
+        assert!(bitcoin::verify_tx_in_block(&header, &tx, tx_index, &bad_txids).is_none(), "tampered txid set");
+        let mut bad_tx = tx.clone();
+        let n = bad_tx.len();
+        bad_tx[n - 1] ^= 1;
+        assert!(bitcoin::verify_tx_in_block(&header, &bad_tx, tx_index, &txids).is_none(), "tampered tx");
+        assert!(bitcoin::verify_tx_in_block(&header[..79], &tx, tx_index, &txids).is_none(), "bad header length");
     }
 }

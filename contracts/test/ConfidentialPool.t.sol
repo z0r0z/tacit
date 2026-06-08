@@ -66,7 +66,9 @@ contract ConfidentialPoolTest is Test {
     function _wrap(uint256 amount, bytes32 cx, bytes32 cy, bytes32 owner) internal returns (bytes32 depositId) {
         vm.prank(USER);
         pool.wrap(assetId, amount, cx, cy, owner);
-        depositId = keccak256(abi.encode(assetId, amount, cx, cy, owner));
+        // the contract binds the deposit to the in-system value = amount/unitScale.
+        uint256 value = amount / pool.getAsset(assetId).unitScale;
+        depositId = keccak256(abi.encode(assetId, value, cx, cy, owner));
     }
 
     function _arr(bytes32 a) internal pure returns (bytes32[] memory out) {
@@ -108,6 +110,16 @@ contract ConfidentialPoolTest is Test {
         vm.prank(USER);
         vm.expectRevert(ConfidentialPool.AmountNotAligned.selector);
         pool.wrap(a2, 5, bytes32(uint256(1)), bytes32(uint256(2)), bytes32(uint256(3)));
+    }
+
+    function test_wrap_value_over_u64_reverts() public {
+        // unitScale == 1 for the setup asset, so value == amount. A value > u64 max would
+        // bind a deposit id the guest (u64 value) can't reproduce → unconsumable escrow.
+        uint256 huge = uint256(type(uint64).max) + 1;
+        token.mint(USER, huge);
+        vm.prank(USER);
+        vm.expectRevert(ConfidentialPool.ValueOutOfRange.selector);
+        pool.wrap(assetId, huge, bytes32(uint256(1)), bytes32(uint256(2)), bytes32(uint256(3)));
     }
 
     function test_register_duplicate_reverts() public {
@@ -220,6 +232,46 @@ contract ConfidentialPoolTest is Test {
         pv.withdrawals[0] = ConfidentialPool.Withdrawal(assetId, RECIP, 101);
         vm.expectRevert(ConfidentialPool.InsufficientEscrow.selector);
         _settle(pv);
+    }
+
+    /// Boundary effects speak the in-system note value `v`; the contract scales by the
+    /// asset's trusted unitScale. With unitScale != 1 (the dust-on-Eth case): a wrap of
+    /// `amount` binds the deposit to v = amount/unitScale (NOT the underlying amount), and
+    /// an unwrap of `v` releases exactly v·unitScale — the guest, blind to unitScale,
+    /// can never inflate the payout. (All other tests use unitScale = 1, where v == amount
+    /// and the scaling is invisible.)
+    function test_value_scaling_wrap_and_unwrap() public {
+        uint256 scale = 1e10;
+        MockERC20 t8 = new MockERC20();
+        bytes32 a8 = pool.registerWrapped(address(t8), scale, bytes32(0), "Conf8", "c8", 18);
+        t8.mint(USER, 3 * scale);
+        vm.prank(USER);
+        t8.approve(address(pool), type(uint256).max);
+
+        bytes32 cx = bytes32(uint256(0x8c1));
+        bytes32 cy = bytes32(uint256(0x8c2));
+        bytes32 owner = bytes32(uint256(0x8c3));
+
+        // wrap amount = 3·scale → in-system value 3; deposit is bound to the value.
+        vm.prank(USER);
+        pool.wrap(a8, 3 * scale, cx, cy, owner);
+        bytes32 id = keccak256(abi.encode(a8, uint256(3), cx, cy, owner));
+        assertEq(pool.depositStatus(id), 1, "deposit bound to value, not amount");
+        // the amount-bound id (the pre-harmonization layout) must NOT exist.
+        assertEq(pool.depositStatus(keccak256(abi.encode(a8, 3 * scale, cx, cy, owner))), 0, "not bound to amount");
+        assertEq(pool.escrow(a8), 3 * scale, "escrow holds the underlying");
+
+        // settle: consume the deposit (insert its leaf) and unwrap value 2 to RECIP.
+        ConfidentialPool.PublicValues memory pv = _pv();
+        pv.leaves = _arr(keccak256("leaf8"));
+        pv.depositsConsumed = _arr(id);
+        pv.withdrawals = new ConfidentialPool.Withdrawal[](1);
+        pv.withdrawals[0] = ConfidentialPool.Withdrawal(a8, RECIP, 2);
+        _settle(pv);
+
+        assertEq(t8.balanceOf(RECIP), 2 * scale, "payout scaled value*unitScale");
+        assertEq(pool.escrow(a8), 1 * scale, "escrow reduced by value*unitScale");
+        assertEq(pool.depositStatus(id), 2, "deposit consumed");
     }
 
     // ──────────────────── settle: domain / proof gating ────────────────────
@@ -528,7 +580,7 @@ contract ConfidentialPoolTest is Test {
     /// the claim — the full BTC→ETH effect on the contract side.
     function test_bridge_mint_with_attested_root_succeeds() public {
         bytes32 root = keccak256("good-btc-root");
-        _attestBtc(root, bytes32(0), 1);
+        _attestBtc(root, keccak256("imt-empty-sentinel"), 1); // non-zero spent root (empty-IMT sentinel)
 
         ConfidentialPool.PublicValues memory pv = _pv();
         bytes32 claimId = keccak256("mint-claim-2");
@@ -563,9 +615,9 @@ contract ConfidentialPoolTest is Test {
         pv.assetMetas[0] = ConfidentialPool.AssetMeta(tacId, bytes16("TAC"), 3, 8); // ticker "TAC", 8 dec
         p.settle(abi.encode(pv), "", new bytes[](0));
 
-        address token = factory.tokenOf(tacId);
+        address token = factory.tokenOf(tacId, address(p), "TAC", 18);
         assertTrue(token != address(0), "lazy-deployed");
-        assertEq(token, factory.predict(tacId), "at f(asset_id)");
+        assertEq(token, factory.predict(tacId, address(p), "TAC", 18), "at f(asset_id, pool, meta)");
         assertEq(CanonicalBridgedERC20(token).symbol(), "TAC", "proven ticker");
         assertEq(CanonicalBridgedERC20(token).decimals(), 18, "harmonized to 18");
         assertEq(CanonicalBridgedERC20(token).name(), "Tacit Token", "brand");
@@ -579,7 +631,7 @@ contract ConfidentialPoolTest is Test {
 
         // idempotent: a second attest of the same asset doesn't revert or re-register
         p.settle(abi.encode(pv), "", new bytes[](0));
-        assertEq(factory.tokenOf(tacId), token, "still the same canonical token");
+        assertEq(factory.tokenOf(tacId, address(p), "TAC", 18), token, "still the same canonical token");
     }
 
     // ──────────────────── Tacit-recorded asset: pool is the canonical ERC20 minter ────────────────────
@@ -616,17 +668,29 @@ contract ConfidentialPoolTest is Test {
     // ──────────────────── improved platinum: cross-lane gate ────────────────────
 
     /// A note homed on Bitcoin can be spent on the Ethereum fast lane by proving
-    /// membership against a relay-proven Bitcoin pool root.
+    /// membership against a relay-proven Bitcoin pool root — but ONLY while pinning the
+    /// current, non-zero reflected spent-set root (so the guest's non-membership check
+    /// is enforced; see test_btc_homed_spend_omitting_gate_reverts for the bypass).
     function test_spend_against_reflected_bitcoin_root() public {
         bytes32 btcRoot = keccak256("bitcoin-pool-root");
-        _attestBtc(btcRoot, bytes32(0), 1);
+        bytes32 spent = keccak256("bitcoin-spent-set"); // non-zero reflected spent set
+        _attestBtc(btcRoot, spent, 1);
 
         ConfidentialPool.PublicValues memory pv = _pv();
-        pv.spendRoot = btcRoot; // membership proven against the proven Bitcoin root
+        pv.spendRoot = btcRoot;       // membership proven against the proven Bitcoin root
+        pv.bitcoinSpentRoot = spent;  // pins the current spent set (guest proved non-membership)
         pv.nullifiers = new bytes32[](1);
         pv.nullifiers[0] = keccak256("btc-homed-note");
         _settle(pv); // no UnknownRoot revert — Bitcoin root accepted as a spend root
         assertTrue(pool.isNullifierSpent(keccak256("btc-homed-note")), "fast-spent on Ethereum");
+    }
+
+    /// The relay can never reflect a ZERO spent-set root: an empty Bitcoin spent set has
+    /// a non-zero empty-IMT sentinel root, and a zero root would re-open the cross-lane
+    /// bypass (the guest skips its non-membership check when bitcoin_spent_root == 0).
+    function test_attest_zero_spent_root_rejected() public {
+        vm.expectRevert(ConfidentialPool.StaleBitcoinSpentRoot.selector);
+        _attestBtc(keccak256("some-pool-root"), bytes32(0), 1);
     }
 
     /// An unattested Bitcoin root is rejected as a spend root.
@@ -658,6 +722,40 @@ contract ConfidentialPoolTest is Test {
         pv.bitcoinSpentRoot = r;
         _settle(pv); // matches → no revert
         assertEq(pool.knownBitcoinSpentRoot(), r, "unchanged");
+    }
+
+    /// The cross-lane non-membership gate is MANDATORY for a Bitcoin-homed spend
+    /// (membership against a relay-proven Bitcoin root). When a non-zero Bitcoin spent
+    /// set exists, a spend that omits the gate (bitcoinSpentRoot = 0) is rejected —
+    /// otherwise a note already spent on Bitcoin could be re-spent on the Ethereum fast
+    /// lane by simply not proving non-membership. (Contrast the spentRoot=0 case in
+    /// test_spend_against_reflected_bitcoin_root, which passes only because no Bitcoin
+    /// spend exists yet, so 0 IS the current spent-set root.)
+    function test_btc_homed_spend_omitting_gate_reverts() public {
+        bytes32 btcRoot = keccak256("btc-pool");
+        _attestBtc(btcRoot, keccak256("btc-spent-set"), 1); // a real spent set exists
+
+        ConfidentialPool.PublicValues memory pv = _pv();
+        pv.spendRoot = btcRoot;            // Bitcoin-homed: membership vs a Bitcoin root
+        pv.nullifiers = _arr(keccak256("nu-note"));
+        // pv.bitcoinSpentRoot left 0 → skips the cross-lane non-membership check
+        vm.expectRevert(ConfidentialPool.StaleBitcoinSpentRoot.selector);
+        _settle(pv);
+    }
+
+    /// The same Bitcoin-homed spend that DOES pin the current spent-set root settles —
+    /// the guest proved each ν absent from exactly this Bitcoin spent set.
+    function test_btc_homed_spend_with_current_gate_succeeds() public {
+        bytes32 btcRoot = keccak256("btc-pool");
+        bytes32 spent = keccak256("btc-spent-set");
+        _attestBtc(btcRoot, spent, 1);
+
+        ConfidentialPool.PublicValues memory pv = _pv();
+        pv.spendRoot = btcRoot;
+        pv.bitcoinSpentRoot = spent;       // pins the current root → gate satisfied
+        pv.nullifiers = _arr(keccak256("nu-note"));
+        _settle(pv);
+        assertTrue(pool.isNullifierSpent(keccak256("nu-note")), "fast-spent with cross-lane proof");
     }
 
     // ──────────────────── on-chain defense-in-depth (intra-batch) ────────────────────

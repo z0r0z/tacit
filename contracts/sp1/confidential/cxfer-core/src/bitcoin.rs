@@ -166,6 +166,68 @@ pub fn parse_etch_meta(env: &[u8]) -> Option<([u8; 16], u8, u8)> {
 /// Extract the Tacit Taproot envelope payload from vin[0].witness[1].
 /// Matches the format PUSH(32) xonly OP_CHECKSIG OP_FALSE OP_IF [pushes] OP_ENDIF,
 /// strips the "TACIT"||v1 frame, returns the payload starting at the opcode byte.
+/// Verify a transaction is included in a Bitcoin block that has valid proof-of-work:
+/// the 80-byte header's PoW holds (double-SHA256 ≤ target), the block's merkle root is
+/// rebuilt from the full `txids` set (so the tx set is complete + header-committed), and
+/// `tx_data`'s txid sits at `tx_index`. Returns the txid on success, None otherwise.
+///
+/// This is the per-event confirmation the bridge_mint guest does inline; the reflection
+/// prover reuses it for each deposit/spend before folding it into the pool/spent roots.
+/// Chain-linkage to the relay anchor (canonical chain) + confirmation depth are the
+/// caller's relay-anchor layer — this proves "in a PoW-valid block", not "buried in the
+/// canonical chain".
+pub fn verify_tx_in_block(header: &[u8], tx_data: &[u8], tx_index: u32, txids: &[[u8; 32]]) -> Option<[u8; 32]> {
+    if header.len() != 80 {
+        return None;
+    }
+    let block_hash = double_sha256(header);
+    let target = bits_to_target(header);
+    if !be_bytes_lte(&reverse_u256(&block_hash), &target) {
+        return None; // PoW
+    }
+    if compute_merkle_root(txids) != extract_merkle_root(header) {
+        return None; // complete, header-committed tx set
+    }
+    let txid = compute_txid(tx_data);
+    let i = tx_index as usize;
+    if i >= txids.len() || txids[i] != txid {
+        return None; // tx present at the claimed index
+    }
+    Some(txid)
+}
+
+/// Verify a chain of consecutive 80-byte headers: each header links to its predecessor
+/// (its prev-block-hash field == the predecessor's double-SHA256) and has valid PoW.
+/// Returns the chain tip's block hash (internal byte order) on success. The reflection
+/// prover links an event's block forward to the relay-anchored tip and counts the
+/// confirmations (chain length past the event), so a reflected spend is buried ≥ K.
+/// (The anchor's identity — that `headers[0]` is the relay tip — is checked by the
+/// caller against the on-chain BitcoinLightRelay.)
+pub fn verify_header_chain(headers: &[&[u8]]) -> Option<[u8; 32]> {
+    if headers.is_empty() {
+        return None;
+    }
+    let mut prev_hash: Option<[u8; 32]> = None;
+    for h in headers {
+        if h.len() != 80 {
+            return None;
+        }
+        let bh = double_sha256(h);
+        let target = bits_to_target(h);
+        if !be_bytes_lte(&reverse_u256(&bh), &target) {
+            return None; // PoW on every header
+        }
+        if let Some(ph) = prev_hash {
+            let prev_field: [u8; 32] = h[4..36].try_into().ok()?;
+            if prev_field != ph {
+                return None; // linkage: this header extends the previous one
+            }
+        }
+        prev_hash = Some(bh);
+    }
+    prev_hash
+}
+
 pub fn extract_taproot_envelope(tx_data: &[u8]) -> Option<Vec<u8>> {
     if tx_data.len() < 6 || tx_data[4] != 0x00 || tx_data[5] != 0x01 { return None; }
     let mut pos = 6;
@@ -338,6 +400,49 @@ mod tests {
         // Two identical txids fold deterministically (Bitcoin duplicates the odd leaf).
         let r = compute_merkle_root(&[txid, txid]);
         assert_ne!(r, txid, "paired root differs from leaf");
+    }
+
+    // Mine an 80-byte header at easy regtest difficulty (nBits 0x1f7fffff → target
+    // 0x007fffff00…0) linking to `prev`, grinding the nonce until PoW holds.
+    fn mine_header(prev: [u8; 32], merkle_seed: u8) -> [u8; 80] {
+        let mut h = [0u8; 80];
+        h[0..4].copy_from_slice(&1u32.to_le_bytes()); // version
+        h[4..36].copy_from_slice(&prev); // prev block hash
+        h[36] = merkle_seed; // a distinguishing "merkle root"
+        h[68..72].copy_from_slice(&1_700_000_000u32.to_le_bytes()); // time
+        h[72..76].copy_from_slice(&0x1f7fffffu32.to_le_bytes()); // easy bits
+        let target = bits_to_target(&h);
+        for nonce in 0u32..2_000_000 {
+            h[76..80].copy_from_slice(&nonce.to_le_bytes());
+            if be_bytes_lte(&reverse_u256(&double_sha256(&h)), &target) {
+                return h;
+            }
+        }
+        panic!("no PoW nonce found");
+    }
+
+    #[test]
+    fn header_chain_links_and_rejects_breaks() {
+        let h0 = mine_header([0u8; 32], 1);
+        let bh0 = double_sha256(&h0);
+        let h1 = mine_header(bh0, 2); // extends h0
+        let bh1 = double_sha256(&h1);
+        let h2 = mine_header(bh1, 3); // extends h1
+        let bh2 = double_sha256(&h2);
+
+        // a valid 3-header chain returns the tip hash
+        assert_eq!(verify_header_chain(&[&h0, &h1, &h2]), Some(bh2), "linked chain → tip");
+        // a single header is a 1-length chain (its own hash)
+        assert_eq!(verify_header_chain(&[&h0]), Some(bh0), "single header");
+
+        // a broken link is rejected: h2 does not extend h0
+        assert!(verify_header_chain(&[&h0, &h2]).is_none(), "non-consecutive link rejected");
+        // an out-of-order chain is rejected
+        assert!(verify_header_chain(&[&h1, &h0]).is_none(), "reversed order rejected");
+        // a header that fails PoW is rejected (zero the nonce/merkle so the hash is large)
+        let mut bad = h1;
+        bad[72..76].copy_from_slice(&0x03000001u32.to_le_bytes()); // tiny target → PoW fails
+        assert!(verify_header_chain(&[&bad]).is_none(), "PoW failure rejected");
     }
 
     #[test]

@@ -17,19 +17,34 @@ const sha256 = (b) => new Uint8Array(createHash('sha256').update(Buffer.from(b))
 const pool = makeConfidentialPool({ secp, keccak256: keccak_256, sha256 });
 
 const b32 = (n) => '0x' + BigInt(n).toString(16).padStart(64, '0');
-const bytes = (hex) => Uint8Array.from(Buffer.from(hex.replace(/^0x/, ''), 'hex'));
-const cat = (a) => { const t = a.reduce((s, x) => s + x.length, 0); const o = new Uint8Array(t); let p = 0; for (const x of a) { o.set(x, p); p += x.length; } return o; };
-const imtLeaf = (v, n) => '0x' + Buffer.from(keccak_256(cat([bytes(v), bytes(n)]))).toString('hex');
 
 // Sorted spent nullifiers a<b<c (spaced so values exist strictly between them).
 const ZERO = b32(0), a = b32(0x10), b = b32(0x20), c = b32(0x30);
 // Linked low-nullifier leaves: {0→a}, {a→b}, {b→c}, {c→0 (max)}.
 const links = [[ZERO, a], [a, b], [b, c], [c, ZERO]];
 
+// Build via the dapp's accumulator primitive (single source of truth, mirrored by
+// cxfer-core::imt_root / imt_empty_root and locked by both KATs).
 const tree = new pool.Tree();
-links.forEach(([v, n]) => tree.insert(imtLeaf(v, n)));
-const root = tree.root();
+links.forEach(([v, n]) => tree.insert(pool.imtLeaf(v, n)));
+const root = pool.imtRoot(links);
 const pathOf = (i) => tree.rootAndPath(i).path;
+const emptyRoot = pool.imtEmptyRoot();
+
+// Stateful accumulator scenario: insert spends in CHRONOLOGICAL (unsorted) order —
+// the index layout (and thus the root) is insertion-order-dependent. cxfer-core's
+// ImtAccumulator must reach the same root from the same sequence, and a non-member
+// must prove absent against that incrementally-built root.
+const acc = pool.makeImtAccumulator();
+const insertSeq = [b32(0x20), b32(0x10), b32(0x30)];
+insertSeq.forEach((nu) => acc.insert(nu));
+const nmNu = b32(0x18); // between 0x10 and 0x20
+const accumulator = {
+  insertSeq,
+  root: acc.root(),
+  links: acc.links(),
+  nonMember: { nu: nmNu, ...acc.nonMembershipWitness(nmNu) },
+};
 
 const witnesses = [
   { note: 'below min', nu: b32(0x08), lowValue: ZERO, lowNext: a, lowIndex: 0, path: pathOf(0), expect: true },
@@ -41,5 +56,5 @@ const witnesses = [
 
 process.stdout.write(JSON.stringify({
   note: 'IMT non-membership witnesses for cxfer-core::imt_non_membership',
-  root, links, witnesses,
+  root, emptyRoot, links, witnesses, accumulator,
 }, null, 2) + '\n');

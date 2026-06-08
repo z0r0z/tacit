@@ -51,6 +51,7 @@ abstract contract ConfidentialNoteCore is ReentrancyGuardTransient {
     error BadProof();
     error BadConservation();
     error FreshOutputRequired();
+    error DuplicateInput();
 
     constructor(string memory name_, string memory symbol_, uint8 decimals_) {
         name = name_;
@@ -67,6 +68,9 @@ abstract contract ConfidentialNoteCore is ReentrancyGuardTransient {
         bytes32 out0 = _noteId(t.coutx[0], t.couty[0]);
         bytes32 out1 = _noteId(t.coutx[1], t.couty[1]);
         if (noteStatus[in0] != 1 || noteStatus[in1] != 1) revert NoteNotActive();
+        // Inputs must be two distinct notes — a repeated input is summed on both sides,
+        // so the kernel's Σin = Σout would relate one note to two outputs.
+        if (in0 == in1) revert DuplicateInput();
         if (noteStatus[out0] != 0 || noteStatus[out1] != 0 || out0 == out1) revert FreshOutputRequired();
 
         if (!_verifyOrProof(t.coutx[0], t.couty[0], t.Ax0, t.Ay0, t.e0, t.z0)) revert BadProof();

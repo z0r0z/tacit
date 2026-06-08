@@ -20,7 +20,10 @@ interface IMintBurn {
 /// deploy a Tacit asset's public ERC20 on first registration. `CanonicalAssetFactory`
 /// implements this.
 interface ICanonicalAssetFactory {
-    function tokenOf(bytes32 assetId) external view returns (address);
+    function tokenOf(bytes32 assetId, address minter, string calldata symbol_, uint8 decimals_)
+        external
+        view
+        returns (address);
     function deployCanonical(bytes32 assetId, address minter, string calldata symbol_, uint8 decimals_)
         external
         returns (address token);
@@ -121,9 +124,9 @@ contract ConfidentialPool is ReentrancyGuardTransient {
 
     // ──────────────────── Cross-chain (one note, Bitcoin or Ethereum) ────────────────────
 
-    // A Bitcoin-side note burn, claimed once when its value is minted as an
-    // Ethereum note. claimId = keccak(destChain ‖ destCommitment ‖ ν ‖ assetId),
-    // computed identically on both chains. One mint per burn (the tETH pattern).
+    // A Bitcoin-side note burn, claimed once when its value is minted as an Ethereum
+    // note. Keyed by the burned note's nullifier ν (the guest proves ν is spent on
+    // Bitcoin via relay-attested spent-set membership). One mint per burned note.
     mapping(bytes32 => bool) public bridgeMinted;
 
     // Bitcoin confidential-pool roots the oracle has attested as canonical +
@@ -143,8 +146,11 @@ contract ConfidentialPool is ReentrancyGuardTransient {
 
     // ──────────────────── Public-values layout ────────────────────
 
-    struct Withdrawal { bytes32 assetId; address recipient; uint256 amount; }
-    struct FeePayment { bytes32 assetId; uint256 amount; }
+    // Boundary effects speak the in-system note value `v`; the contract scales it to
+    // underlying by the asset's trusted `unitScale` on payout, so the guest (which
+    // never sees unitScale) can never release more than a note is worth.
+    struct Withdrawal { bytes32 assetId; address recipient; uint256 value; }
+    struct FeePayment { bytes32 assetId; uint256 value; }
     // An Ethereum note burned for value on another chain. The guest proved the
     // burned value equals destCommitment's and nullified the note (ν in
     // `nullifiers`); Bitcoin validators mint the destination note once, off-chain.
@@ -160,9 +166,9 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         bytes32[] nullifiers;          // spent-note nullifiers (chain-independent)
         bytes32[] leaves;              // new leaves to append (consumed deposits + outputs + cross-mints)
         bytes32[] depositsConsumed;    // deposit ids the guest validated + inserted
-        Withdrawal[] withdrawals;      // unwrap payouts (underlying units)
-        FeePayment[] fees;             // settler fees (underlying units), paid to msg.sender
-        bytes32[] bitcoinBurnsConsumed; // claimIds of Bitcoin burns minted here, gated once
+        Withdrawal[] withdrawals;      // unwrap payouts (in-system value; scaled by unitScale)
+        FeePayment[] fees;             // settler fees (in-system value; scaled), paid to msg.sender
+        bytes32[] bitcoinBurnsConsumed; // burned-note nullifiers minted here, gated once each
         CrossOut[] crossOuts;          // Ethereum burns destined for Bitcoin
         bytes32[] bitcoinRootsUsed;    // Bitcoin pool roots a bridge_mint proved membership against
         bytes32 bitcoinSpentRoot;     // Bitcoin spent-set IMT root the guest proved non-membership against (0 = none)
@@ -211,6 +217,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     error PoolNotMinter();
     error BadDecimals();
     error StaleRelayProof();
+    error ValueOutOfRange();
 
     // ──────────────────── Constructor ────────────────────
 
@@ -306,7 +313,9 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         returns (bytes32 assetId, address token)
     {
         if (tacitDecimals > ETH_DECIMALS) revert BadDecimals();
-        token = ICanonicalAssetFactory(factory).tokenOf(tacitAssetId);
+        // Look up / deploy at this pool's slot — f(assetId, this-pool, symbol, ETH_DECIMALS).
+        // The canonical address is specific to (asset, minter, metadata).
+        token = ICanonicalAssetFactory(factory).tokenOf(tacitAssetId, address(this), symbol_, ETH_DECIMALS);
         if (token == address(0)) {
             // first touch: deploy the public ERC20 at its canonical CREATE2 address.
             token = ICanonicalAssetFactory(factory).deployCanonical(tacitAssetId, address(this), symbol_, ETH_DECIMALS);
@@ -345,7 +354,18 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         if (!a.registered) revert NotRegistered();
         if (amount == 0 || amount % a.unitScale != 0) revert AmountNotAligned();
 
-        bytes32 depositId = keccak256(abi.encode(assetId, amount, cx, cy, owner));
+        // The note commits to the in-system value v = amount / unitScale. Bind the
+        // deposit to v (not the underlying amount): the guest knows only v and proves
+        // C opens to it, so a matching deposit id forces v·unitScale == amount —
+        // the note can never claim more value than was escrowed (the wrap-side
+        // no-inflation gate, since the guest cannot see unitScale).
+        uint256 value = amount / a.unitScale;
+        // The guest carries `value` as a u64 (and the BP+ range is < 2^64). A wrap whose
+        // value exceeds u64 would bind a deposit id the guest can never reproduce (its
+        // value wraps), so the deposit — and the escrowed amount — would be unconsumable.
+        // Reject at the boundary instead of locking funds.
+        if (value > type(uint64).max) revert ValueOutOfRange();
+        bytes32 depositId = keccak256(abi.encode(assetId, value, cx, cy, owner));
         if (depositStatus[depositId] != 0) revert DepositExists();
         depositStatus[depositId] = 1;
 
@@ -380,6 +400,10 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         SP1_VERIFIER.verifyProof(BITCOIN_RELAY_VKEY, publicValues, proofBytes);
         BitcoinRelayPublicValues memory r = abi.decode(publicValues, (BitcoinRelayPublicValues));
         if (r.bitcoinHeight <= lastRelayHeight) revert StaleRelayProof();
+        // The reflected spent set is an IMT whose empty form has a NON-ZERO sentinel
+        // root; a zero spent root would re-open the cross-lane gate's bypass (the guest
+        // skips non-membership when the root is 0), so never accept it as canonical.
+        if (r.bitcoinSpentRoot == bytes32(0)) revert StaleBitcoinSpentRoot();
         lastRelayHeight = r.bitcoinHeight;
         knownBitcoinRoot[r.bitcoinPoolRoot] = true;
         knownBitcoinSpentRoot = r.bitcoinSpentRoot;
@@ -410,6 +434,19 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         // spent ν absent from the Bitcoin spent set, it must be against the CURRENT
         // reflected root — a stale root could omit a recent Bitcoin spend.
         if (pv.bitcoinSpentRoot != bytes32(0) && pv.bitcoinSpentRoot != knownBitcoinSpentRoot) revert StaleBitcoinSpentRoot();
+        // Cross-lane non-membership is MANDATORY for a Bitcoin-homed spend (membership
+        // proven against a relay-attested Bitcoin pool root, not an Ethereum root):
+        // it must pin the CURRENT Bitcoin spent-set root, so a proof can't skip the
+        // gate by committing a zero/omitted bitcoinSpentRoot and re-spend on Ethereum a
+        // note already spent on Bitcoin. Ethereum-homed spends carry no Bitcoin history.
+        bool btcHomed = pv.spendRoot != bytes32(0) && !everKnownRoot[pv.spendRoot] && knownBitcoinRoot[pv.spendRoot];
+        // Fail closed: a Bitcoin-homed spend MUST pin the CURRENT, NON-ZERO reflected
+        // spent-set root. A zero root means the cross-lane set is uninitialized (or a
+        // relay reflected an empty set as 0) — allowing it would let the guest skip its
+        // non-membership check (the guest keys it off `bitcoin_spent_root != 0`) and
+        // re-spend on Ethereum a note already spent on Bitcoin. The reflection prover
+        // seeds a non-zero empty-IMT sentinel, so a legitimate spent root is never 0.
+        if (btcHomed && (pv.bitcoinSpentRoot == bytes32(0) || pv.bitcoinSpentRoot != knownBitcoinSpentRoot)) revert StaleBitcoinSpentRoot();
         if (memos.length != pv.leaves.length) revert MemoLeafMismatch();
 
         // Cross-lane gate (improved platinum): a note already spent on Bitcoin cannot be
@@ -429,13 +466,16 @@ contract ConfidentialPool is ReentrancyGuardTransient {
             depositStatus[id] = 2;
         }
 
-        // Cross-mint: a Bitcoin burn becomes an Ethereum note (leaf in pv.leaves),
-        // gated one-mint-per-burn on its claimId — the tETH acceptedBitcoinBurns pattern.
+        // Cross-mint: a Bitcoin burn becomes an Ethereum note (leaf in pv.leaves), gated
+        // one-mint-per-burn on the burned note's nullifier ν (the guest proved ν is a
+        // member of the relay-attested Bitcoin spent set, so the note really was burned).
+        // Keying the gate on ν — not a dest-bound claimId — means a single burn can mint
+        // to exactly one destination, once.
         for (uint256 i; i < pv.bitcoinBurnsConsumed.length; ++i) {
-            bytes32 claimId = pv.bitcoinBurnsConsumed[i];
-            if (bridgeMinted[claimId]) revert BurnAlreadyMinted();
-            bridgeMinted[claimId] = true;
-            emit BridgeMinted(claimId);
+            bytes32 burnNullifier = pv.bitcoinBurnsConsumed[i];
+            if (bridgeMinted[burnNullifier]) revert BurnAlreadyMinted();
+            bridgeMinted[burnNullifier] = true;
+            emit BridgeMinted(burnNullifier);
         }
 
         // Every Bitcoin pool root a bridge_mint proved membership against must be
@@ -459,12 +499,12 @@ contract ConfidentialPool is ReentrancyGuardTransient {
 
         for (uint256 i; i < pv.withdrawals.length; ++i) {
             Withdrawal memory w = pv.withdrawals[i];
-            _payout(w.assetId, w.recipient, w.amount);
-            emit Withdraw(w.assetId, w.recipient, w.amount);
+            uint256 paid = _payout(w.assetId, w.recipient, w.value);
+            emit Withdraw(w.assetId, w.recipient, paid);
         }
 
         for (uint256 i; i < pv.fees.length; ++i) {
-            _payout(pv.fees[i].assetId, msg.sender, pv.fees[i].amount);
+            _payout(pv.fees[i].assetId, msg.sender, pv.fees[i].value);
         }
 
         // Cross-burn: record Ethereum notes burned for Bitcoin. Re-derive claimId
@@ -495,7 +535,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         if (address(CANONICAL_FACTORY) == address(0)) return; // not wired
         if (m.decimals > ETH_DECIMALS || m.tickerLen == 0 || m.tickerLen > 16) return;
         string memory symbol_ = string(_sliceTicker(m.ticker, m.tickerLen));
-        address token = CANONICAL_FACTORY.tokenOf(m.assetId);
+        address token = CANONICAL_FACTORY.tokenOf(m.assetId, address(this), symbol_, ETH_DECIMALS);
         if (token == address(0)) {
             token = CANONICAL_FACTORY.deployCanonical(m.assetId, address(this), symbol_, ETH_DECIMALS);
         }
@@ -511,11 +551,16 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         for (uint256 i; i < len; ++i) out[i] = t[i];
     }
 
-    function _payout(bytes32 assetId, address to, uint256 amount) internal {
-        if (amount == 0) return;
+    /// Pay `value` in-system note units of `assetId` to `to`, scaling to underlying by
+    /// the asset's trusted `unitScale` (so a note worth v releases exactly v·unitScale —
+    /// the guest, which never sees unitScale, cannot inflate the payout). Returns the
+    /// underlying amount paid.
+    function _payout(bytes32 assetId, address to, uint256 value) internal returns (uint256 amount) {
+        if (value == 0) return 0;
         Asset storage a = assets[assetId];
         if (!a.registered) revert NotRegistered();
         if (to == address(0)) revert ZeroAddress();
+        amount = value * a.unitScale;
         if (a.poolMinted) {
             // Tacit-recorded asset: mint the canonical ERC20 (exit to public). The
             // note being unwrapped was the backed unit; this just changes its form.

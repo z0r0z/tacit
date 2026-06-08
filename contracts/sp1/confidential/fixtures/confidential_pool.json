@@ -12,7 +12,7 @@
       "cy": "0xb7961242a487919563c6d517de4191d0078e96519c368bd4ccee37591629bf82",
       "amount": "100",
       "leaf": "0x68cacf88cef714ab1f2e1cd124451a2848abca2d76c995a6d8b8d4f149dd0f27",
-      "nullifier": "0xb569321de72d0af89c2fb48a484de3fc9343f31600ae1f3e13d633cb48cbf816",
+      "nullifier": "0x13c98c7914cd16f638031cefc684a5d9d813b5684bcea3b425924c023e42b682",
       "depositId": "0xd83919ba648591d417d7177340ff85dfb9d75bb7738533fea0cae3838b78cafc"
     },
     {
@@ -23,7 +23,7 @@
       "cy": "0x271c5b40976b0d5963feff643c896e95f72eab157e4f4bddd3c95273ebcc4404",
       "amount": "250",
       "leaf": "0x0f5ce5b31a91ae852b3377145f7eb99cc2f51af287d0b4c175044dda41676092",
-      "nullifier": "0xc4bd59e1394781d1c7bf20a2c0b30c2acc9fbdd52dc5e0d76917de4034ebdf59",
+      "nullifier": "0x8067883773ed44b2d24bd2e1ee6bf68f02fb4b391d5c6cf9275d0c1a3e5b62eb",
       "depositId": "0xe15a165e38385ff2030aeb99d65ff097479b5f5585f6f29d6e93f0a5c62c7421"
     },
     {
@@ -34,7 +34,7 @@
       "cy": "0x6a9a9d9741a1d09e832554f4b4a38189dd0050537691691a6552c244427a8f80",
       "amount": "7",
       "leaf": "0xa975827a268a799a4cff6d20446377f28173eed7a38c1bbde7e6e0cdd796272f",
-      "nullifier": "0x02cc96397d444c8ebdd3c75f2c53fc945bed8aab1e8da3f22ecca96cd45f8c57",
+      "nullifier": "0x7b154ae9755e087c84359418a4b675e1a5ffbbd8708c778065ff52fec03d217d",
       "depositId": "0xad2d1aadb8d7cc3040189f698dca06a91f2e95246ca2692fdd2c6e7e061fdfd7"
     }
   ],

@@ -15,9 +15,9 @@ sp1_zkvm::entrypoint!(main);
 use alloy_sol_types::{sol, SolValue};
 use alloy_sol_types::private::{Address, U256};
 use cxfer_core::{
-    bitcoin, claim_id, decompress, deposit_id, from_affine_xy, imt_non_membership,
-    keccak_merkle_verify, leaf, nullifier, scalar_reduce_be, verify_kernel,
-    verify_pedersen_opening, verify_range, Point,
+    bitcoin, claim_id, decompress, deposit_id, from_affine_xy, imt_membership,
+    imt_non_membership, keccak_merkle_verify, leaf, nullifier, scalar_reduce_be,
+    verify_kernel, verify_pedersen_opening, verify_range, Point,
 };
 use sp1_zkvm::io;
 
@@ -28,12 +28,11 @@ const OP_UNWRAP: u8 = 2;
 const OP_BRIDGE_BURN: u8 = 3; // Ethereum note → Bitcoin (emit crossOut)
 const OP_BRIDGE_MINT: u8 = 4; // Bitcoin burn → Ethereum note (verify Bitcoin burn)
 const OP_ATTEST_META: u8 = 5; // etch reveal → prove (asset_id, ticker, decimals) trustlessly
-const OP_ENV_CONF_BURN: u8 = 0x2B; // Bitcoin confidential bridge-burn envelope opcode
 
 // Mirrors ConfidentialPool.PublicValues exactly.
 sol! {
-    struct Withdrawal { bytes32 assetId; address recipient; uint256 amount; }
-    struct FeePayment { bytes32 assetId; uint256 amount; }
+    struct Withdrawal { bytes32 assetId; address recipient; uint256 value; }
+    struct FeePayment { bytes32 assetId; uint256 value; }
     struct CrossOut { uint16 destChain; bytes32 destCommitment; bytes32 nullifier; bytes32 assetId; bytes32 claimId; }
     struct AssetMeta { bytes32 assetId; bytes16 ticker; uint8 tickerLen; uint8 decimals; }
     struct PublicValues {
@@ -60,6 +59,14 @@ fn r_n<const N: usize>() -> [u8; N] {
 fn r32() -> [u8; 32] { r_n::<32>() }
 fn r33() -> [u8; 33] { r_n::<33>() }
 fn r20() -> [u8; 20] { r_n::<20>() }
+
+/// Big-endian 32-byte encoding of an in-system u64 value — the deposit-id /
+/// withdrawal value field the contract derives as `amount / unitScale`.
+fn u64_be32(v: u64) -> [u8; 32] {
+    let mut a = [0u8; 32];
+    a[24..].copy_from_slice(&v.to_be_bytes());
+    a
+}
 
 /// Read a commitment as affine (cx, cy) and rebuild the point. Returns the bytes
 /// (for leaf/deposit-id keccak preimages) and the point (for range/kernel/opening).
@@ -107,16 +114,19 @@ pub fn main() {
         let op: u8 = io::read();
         match op {
             OP_WRAP => {
-                // public deposit: prove C opens to value, emit leaf + deposit id.
+                // public deposit: prove C opens to the in-system value, emit leaf +
+                // deposit id. The deposit id binds `value` (NOT the underlying amount):
+                // the contract derives the same value = escrowed_amount / unitScale, so
+                // a matching id forces value·unitScale == amount and the note can never
+                // claim more than was escrowed. The guest never sees unitScale.
                 let asset = r32();
-                let amount = r32(); // underlying (BE32) for the deposit id
                 let value: u64 = io::read(); // in-system value the note commits to
                 let (cx, cy, c) = r_commitment();
                 let owner = r32();
                 let r = scalar_reduce_be(&r32());
                 assert!(verify_pedersen_opening(&c, value, &r), "wrap opening");
                 leaves.push(leaf(&asset, &cx, &cy, &owner));
-                deposits.push(deposit_id(&asset, &amount, &cx, &cy, &owner));
+                deposits.push(deposit_id(&asset, &u64_be32(value), &cx, &cy, &owner));
             }
             OP_TRANSFER => {
                 // n-in / m-out, hidden amounts: membership + range + conservation.
@@ -130,10 +140,11 @@ pub fn main() {
                     let owner = r32();
                     let leaf_index: u64 = io::read();
                     let path = r_path();
-                    let secret = r32();
+                    let _secret = r32(); // B3: vestigial — ν is note-bound, not secret-derived
                     let lf = leaf(&asset, &cx, &cy, &owner);
+                    assert!(spend_root != [0u8; 32], "membership requires a non-zero spend root");
                     assert!(keccak_merkle_verify(&lf, leaf_index, &path, &spend_root), "membership");
-                    let nu = nullifier(&secret);
+                    let nu = nullifier(&cx, &cy);
                     if bitcoin_spent_root != [0u8; 32] { check_btc_nonmembership(&nu, &bitcoin_spent_root); }
                     nullifiers.push(nu);
                     in_pts.push(p);
@@ -171,10 +182,11 @@ pub fn main() {
                     let owner = r32();
                     let leaf_index: u64 = io::read();
                     let path = r_path();
-                    let secret = r32();
+                    let _secret = r32(); // B3: vestigial — ν is note-bound, not secret-derived
                     let lf = leaf(&asset, &cx, &cy, &owner);
+                    assert!(spend_root != [0u8; 32], "membership requires a non-zero spend root");
                     assert!(keccak_merkle_verify(&lf, leaf_index, &path, &spend_root), "membership");
-                    let nu = nullifier(&secret);
+                    let nu = nullifier(&cx, &cy);
                     if bitcoin_spent_root != [0u8; 32] { check_btc_nonmembership(&nu, &bitcoin_spent_root); }
                     if bind.is_none() { bind = Some(nu); }
                     nullifiers.push(nu);
@@ -209,89 +221,80 @@ pub fn main() {
                 }
             }
             OP_BRIDGE_MINT => {
-                // Bitcoin → Ethereum: verify a confirmed Bitcoin confidential-burn
-                // and mint its destination note on Ethereum. The burned note's
-                // membership is proven against the Bitcoin pool root the envelope
-                // commits; the contract gates that root on the oracle (canonical +
-                // confirmed). Conservation carries value verbatim (v_mint == v_burn).
+                // Bitcoin → Ethereum: mint an Ethereum note for a note that was BURNED on
+                // Bitcoin. The burn is proven by spent-set MEMBERSHIP of the note's
+                // nullifier against the relay-attested Bitcoin spent root (spec B5) — NOT
+                // by a self-supplied-PoW block (which is forgeable at min difficulty).
+                // Conservation carries value verbatim (v_mint == v_burn); one mint per
+                // burned ν (the contract gates each committed ν once via bridgeMinted).
                 let asset = r32();
+                // The Bitcoin confidential-pool root the burned note is a member of. The
+                // contract gates it ∈ knownBitcoinRoot (canonical + relay-confirmed), so
+                // it is not forgeable.
+                let pool_root = r32();
 
-                // Bitcoin-state: the burn block header (PoW) + the burn tx's merkle proof.
-                let header: Vec<u8> = io::read();
-                assert!(header.len() == 80, "bridge_mint: header 80");
-                let block_hash = bitcoin::double_sha256(&header);
-                let target = bitcoin::bits_to_target(&header);
-                assert!(bitcoin::be_bytes_lte(&bitcoin::reverse_u256(&block_hash), &target), "bridge_mint: PoW");
-                let tx_data: Vec<u8> = io::read();
-                let tx_index: u32 = io::read();
-                let num_txids: u32 = io::read();
-                let txids: Vec<[u8; 32]> = (0..num_txids).map(|_| r32()).collect();
-                assert!(bitcoin::compute_merkle_root(&txids) == bitcoin::extract_merkle_root(&header), "bridge_mint: merkle");
-                let txid = bitcoin::compute_txid(&tx_data);
-                assert!((tx_index as usize) < txids.len() && txids[tx_index as usize] == txid, "bridge_mint: tx in block");
-
-                // Envelope (0x2B): asset ‖ bitcoin_pool_root ‖ nullifier ‖ dest_commitment.
-                let env = bitcoin::extract_taproot_envelope(&tx_data).expect("bridge_mint: envelope");
-                assert!(env.len() >= 129 && env[0] == OP_ENV_CONF_BURN, "bridge_mint: bad envelope");
-                let env_asset: [u8; 32] = env[1..33].try_into().unwrap();
-                let env_pool_root: [u8; 32] = env[33..65].try_into().unwrap();
-                let env_nu: [u8; 32] = env[65..97].try_into().unwrap();
-                let env_dest: [u8; 32] = env[97..129].try_into().unwrap();
-                assert!(env_asset == asset, "bridge_mint: asset");
-
-                // Burned input note: membership against the Bitcoin pool root + nullifier.
+                // Burned input note: membership in the Bitcoin pool.
                 let (in_cx, in_cy, in_pt) = r_commitment();
                 let in_owner = r32();
                 let in_leaf_index: u64 = io::read();
                 let in_path = r_path();
-                let in_secret = r32();
                 let in_leaf = leaf(&asset, &in_cx, &in_cy, &in_owner);
-                assert!(keccak_merkle_verify(&in_leaf, in_leaf_index, &in_path, &env_pool_root), "bridge_mint: btc membership");
-                let nu = nullifier(&in_secret);
-                assert!(nu == env_nu, "bridge_mint: nullifier");
+                assert!(keccak_merkle_verify(&in_leaf, in_leaf_index, &in_path, &pool_root), "bridge_mint: btc pool membership");
+                let nu = nullifier(&in_cx, &in_cy);
 
-                // Destination note (minted on Ethereum) — its leaf must equal the envelope's.
+                // B5: prove the note was actually burned — its ν is a member of the
+                // relay-attested Bitcoin spent set. The batch's bitcoin_spent_root is
+                // pinned to the CURRENT reflected root on-chain, so a stale or fabricated
+                // spent set cannot be used.
+                assert!(bitcoin_spent_root != [0u8; 32], "bridge_mint: spent root required");
+                let sm_next = r32();
+                let sm_index: u64 = io::read();
+                let sm_path = r_path();
+                assert!(imt_membership(&bitcoin_spent_root, &nu, &sm_next, sm_index, &sm_path), "bridge_mint: nu not burned on Bitcoin");
+
+                // Destination note minted on Ethereum. Conservation binds v_out == v_in,
+                // which requires knowledge of the burned note's blinding — so only its
+                // owner can mint it (no third party can redirect the burn).
                 let (out_cx, out_cy, out_pt) = r_commitment();
                 let out_owner = r32();
                 let dest_leaf = leaf(&asset, &out_cx, &out_cy, &out_owner);
-                assert!(dest_leaf == env_dest, "bridge_mint: dest");
-
-                // Conservation: v_in == v_out, v_out in range (no value created cross-chain).
                 let bp_proof: Vec<u8> = io::read();
                 assert!(verify_range(&[out_pt], &bp_proof), "bridge_mint: range");
                 let kernel_r = decompress(&r33()).expect("bridge_mint: R");
                 let kernel_z = scalar_reduce_be(&r32());
                 assert!(verify_kernel(&[in_pt], &[out_pt], &kernel_r, &kernel_z), "bridge_mint: conservation");
 
-                // Effects: mint the dest note on Ethereum, gate the burn once, record the root.
-                let cid = claim_id(2 /* ethereum */, &dest_leaf, &nu, &asset);
+                // Effects: mint the dest note, gate one-mint-per-burned-ν, record the root.
                 leaves.push(dest_leaf);
-                bitcoin_burns.push(cid);
-                bitcoin_roots.push(env_pool_root);
+                bitcoin_burns.push(nu);
+                bitcoin_roots.push(pool_root);
             }
             OP_UNWRAP => {
-                // spend a note to a public recipient: membership + opening, pay out.
+                // spend a note to a public recipient: membership + opening, pay out the
+                // PROVEN in-system value. The contract scales it to underlying by the
+                // asset's trusted unitScale, so the payout is bound to the note value
+                // (the guest emits `value`, never an independent underlying amount).
                 let asset = r32();
                 let (cx, cy, c) = r_commitment();
                 let owner = r32();
                 let leaf_index: u64 = io::read();
                 let path = r_path();
-                let secret = r32();
+                let _secret = r32(); // B3: vestigial — ν is note-bound, not secret-derived
                 let value: u64 = io::read();
                 let r = scalar_reduce_be(&r32());
-                let amount = r32(); // underlying payout (BE32)
                 let recipient = r20();
 
                 let lf = leaf(&asset, &cx, &cy, &owner);
+                assert!(spend_root != [0u8; 32], "membership requires a non-zero spend root");
                 assert!(keccak_merkle_verify(&lf, leaf_index, &path, &spend_root), "membership");
                 assert!(verify_pedersen_opening(&c, value, &r), "unwrap opening");
-                let nu = nullifier(&secret);
+                let nu = nullifier(&cx, &cy);
                 if bitcoin_spent_root != [0u8; 32] { check_btc_nonmembership(&nu, &bitcoin_spent_root); }
                 nullifiers.push(nu);
                 withdrawals.push(Withdrawal {
                     assetId: asset.into(),
                     recipient: Address::from(recipient),
-                    amount: U256::from_be_slice(&amount),
+                    value: U256::from(value),
                 });
             }
             OP_ATTEST_META => {

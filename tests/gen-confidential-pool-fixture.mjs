@@ -38,10 +38,12 @@ function main() {
       value: n.value.toString(),
       blinding: '0x' + n.blinding.toString(16).padStart(64, '0'),
       cx, cy,
-      amount: (n.value * UNIT_SCALE).toString(),
+      amount: (n.value * UNIT_SCALE).toString(), // underlying escrowed at wrap (= value·unitScale)
       leaf: pool.leaf(ASSET_ID, cx, cy, OWNER),
-      nullifier: pool.nullifier(n.secret),
-      depositId: pool.depositId(ASSET_ID, n.value * UNIT_SCALE, cx, cy, OWNER),
+      nullifier: pool.nullifier(cx, cy),
+      // deposit id binds the IN-SYSTEM value, not the underlying amount; the contract
+      // derives the same value = amount/unitScale at wrap (the no-inflation gate).
+      depositId: pool.depositId(ASSET_ID, n.value, cx, cy, OWNER),
     };
   });
 

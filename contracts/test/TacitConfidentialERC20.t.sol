@@ -105,6 +105,18 @@ contract TacitConfidentialERC20Test is Test {
         t20.transfer(_loadTransfer()); // inputs already spent
     }
 
+    /// The same active note supplied as BOTH inputs must revert: otherwise Σin = 2·C and
+    /// the kernel only forces 2·d_in = d_out0 + d_out1, minting two notes from one (value
+    /// doubling → escrow drain). Rejected before any proof check.
+    function test_same_input_twice_reverts() public {
+        _wrap(".wrap[0]"); _wrap(".wrap[1]");
+        TacitConfidentialERC20.Transfer memory t = _loadTransfer();
+        t.cinx[1] = t.cinx[0]; // duplicate the first (active) input as the second
+        t.ciny[1] = t.ciny[0];
+        vm.expectRevert(ConfidentialNoteCore.DuplicateInput.selector);
+        t20.transfer(t);
+    }
+
     function test_unwrap_unknown_note_reverts() public {
         uint8 d = uint8(vm.parseJsonUint(json, ".unwrap.denomIdx"));
         uint256 cx = vm.parseJsonUint(json, ".unwrap.x");

@@ -30,8 +30,11 @@ contract ConfidentialTacWalkthroughTest is Test {
     /// Attest the Bitcoin pool root via the relay-proven path (no oracle). AcceptVerifier
     /// no-ops the proof; this exercises the contract gate.
     function _attestBtc(bytes32 poolRoot) internal {
+        // spent root is the non-zero empty-IMT sentinel (a zero root is rejected — it
+        // would re-open the cross-lane bypass); this walkthrough only needs the pool
+        // root canonical for the bridge_mint, so the sentinel stands in for the set.
         pool.attestBitcoinStateProven(
-            abi.encode(ConfidentialPool.BitcoinRelayPublicValues(poolRoot, bytes32(0), 1)), ""
+            abi.encode(ConfidentialPool.BitcoinRelayPublicValues(poolRoot, keccak256("imt-empty-sentinel"), 1)), ""
         );
     }
 

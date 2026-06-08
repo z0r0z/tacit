@@ -30,10 +30,10 @@ contract CanonicalAssetFactoryTest is Test {
     }
 
     function test_deploy_is_canonical_and_deterministic() public {
-        address predicted = factory.predict(ASSET);
+        address predicted = factory.predict(ASSET, MINTER, "cBTC", 8);
         CanonicalBridgedERC20 tok = _deploy();
         assertEq(address(tok), predicted, "address == predicted (deterministic)");
-        assertEq(factory.tokenOf(ASSET), address(tok), "registered by asset id");
+        assertEq(factory.tokenOf(ASSET, MINTER, "cBTC", 8), address(tok), "registered by (asset id, minter, metadata)");
         assertEq(tok.ASSET_ID(), ASSET, "asset id stored");
         assertEq(tok.MINTER(), MINTER, "minter stored");
         assertEq(tok.name(), "Tacit Token", "constant brand name");
@@ -103,7 +103,7 @@ contract CanonicalAssetFactoryTest is Test {
         (bytes32 id, address token) = factory.etchCanonical(ETCHER, SALT, MINTER, "TAC", 18);
 
         assertEq(id, factory.deriveAssetId(ETCHER, SALT, "TAC", 18), "id is the metadata derivation");
-        assertEq(factory.tokenOf(id), token, "registered by derived id");
+        assertEq(factory.tokenOf(id, MINTER, "TAC", 18), token, "registered by (id, minter, metadata)");
 
         CanonicalBridgedERC20 t = CanonicalBridgedERC20(token);
         assertEq(t.ASSET_ID(), id);
@@ -125,20 +125,26 @@ contract CanonicalAssetFactoryTest is Test {
 
     function test_etch_address_is_deterministic_in_id() public {
         bytes32 id = factory.deriveAssetId(ETCHER, SALT, "TAC", 18);
-        address predicted = factory.predict(id);
+        address predicted = factory.predict(id, MINTER, "TAC", 18);
         (bytes32 idDeployed, address token) = factory.etchCanonical(ETCHER, SALT, MINTER, "TAC", 18);
         assertEq(idDeployed, id, "derive == etch id");
         assertEq(token, predicted, "address == predicted");
     }
 
-    /// The property the bridge relies on: the canonical address is a pure function of the
-    /// asset id — computable BEFORE deploy and independent of the metadata, so the bridge
-    /// can mint to it on first touch and forever after.
-    function test_address_is_pure_function_of_id() public {
+    /// The property the bridge relies on: the canonical address is a pure function of
+    /// (asset id, minter, symbol, decimals) — all deterministic-to-real for a canonical
+    /// asset — computable BEFORE deploy, so the bridge can mint to it on first touch and
+    /// forever after. Binding the minter + metadata (not the id alone) is what stops a
+    /// front-runner from occupying that address with a foreign minter or spoofed metadata.
+    function test_address_is_pure_function_of_id_minter_meta() public {
         bytes32 id = keccak256("some-bitcoin-asset");
-        address predicted = factory.predict(id); // knowable before the token exists
+        address predicted = factory.predict(id, MINTER, "WHATEVER", 3); // knowable before deploy
         address token = factory.deployCanonical(id, MINTER, "WHATEVER", 3);
-        assertEq(token, predicted, "deployed address == predicted(id) regardless of metadata");
+        assertEq(token, predicted, "deployed address == predicted(id, minter, symbol, decimals)");
+        // A different minter or metadata lands on a DIFFERENT address — can't occupy this one.
+        assertTrue(predicted != factory.predict(id, address(0xBEEF), "WHATEVER", 3), "minter bound");
+        assertTrue(predicted != factory.predict(id, MINTER, "SPOOF", 3), "symbol bound");
+        assertTrue(predicted != factory.predict(id, MINTER, "WHATEVER", 8), "decimals bound");
         assertEq(CanonicalBridgedERC20(token).name(), "Tacit Token");
         assertEq(CanonicalBridgedERC20(token).symbol(), "WHATEVER");
         assertEq(CanonicalBridgedERC20(token).decimals(), 3);
@@ -172,8 +178,8 @@ contract CanonicalAssetFactoryTest is Test {
         bytes32 tacId = keccak256("TAC-bitcoin-asset");
         (bytes32 assetId, address token) = pool.registerMintedAuto(address(factory), tacId, "TAC", 8);
 
-        assertEq(token, factory.predict(tacId), "lazy-deployed at f(tacitAssetId)");
-        assertEq(factory.tokenOf(tacId), token, "registered in factory");
+        assertEq(token, factory.predict(tacId, address(pool), "TAC", 18), "lazy-deployed at f(tacitAssetId, pool, meta)");
+        assertEq(factory.tokenOf(tacId, address(pool), "TAC", 18), token, "registered in factory");
 
         CanonicalBridgedERC20 t = CanonicalBridgedERC20(token);
         assertEq(t.decimals(), 18, "8-dec Tacit asset presented at 18 on Ethereum");
@@ -203,12 +209,17 @@ contract CanonicalAssetFactoryTest is Test {
         pool.registerMintedAuto(address(factory), keccak256("X"), "X", 19);
     }
 
-    function test_registerMintedAuto_rejects_if_pool_not_minter() public {
+    /// A front-run deploy of the same asset id with a FOREIGN minter lands on a different
+    /// slot — it neither blocks the pool's onboarding nor lets the front-runner control the
+    /// pool's canonical token. (Before the (assetId, minter, meta)-salt fix this DoS'd
+    /// onboarding: the pool found the foreign token, saw MINTER != pool, and reverted.)
+    function test_registerMintedAuto_unaffected_by_foreign_predeploy() public {
         ConfidentialPool pool = _pool();
         bytes32 tacId = keccak256("NOTMINE");
-        factory.deployCanonical(tacId, MINTER, "NM", 18); // minter = MINTER, not the pool
-        vm.expectRevert(ConfidentialPool.PoolNotMinter.selector);
-        pool.registerMintedAuto(address(factory), tacId, "NM", 8);
+        address foreign = factory.deployCanonical(tacId, MINTER, "NM", 18); // minter = MINTER, not the pool
+        (, address token) = pool.registerMintedAuto(address(factory), tacId, "NM", 8);
+        assertTrue(token != foreign, "pool deploys its own canonical, not the foreign one");
+        assertEq(CanonicalBridgedERC20(token).MINTER(), address(pool), "pool is the minter of its canonical");
     }
 
     // ── external ERC20 registration derives the Tacit-side scale (registerWrappedAuto) ──

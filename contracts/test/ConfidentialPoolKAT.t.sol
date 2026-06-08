@@ -47,17 +47,20 @@ contract ConfidentialPoolKATTest is Test {
             string memory base = string.concat(".notes[", vm.toString(i), "]");
             bytes32 cx = vm.parseJsonBytes32(json, string.concat(base, ".cx"));
             bytes32 cy = vm.parseJsonBytes32(json, string.concat(base, ".cy"));
-            bytes32 secret = vm.parseJsonBytes32(json, string.concat(base, ".secret"));
-            uint256 amount = vm.parseJsonUint(json, string.concat(base, ".amount"));
+            uint256 value = vm.parseJsonUint(json, string.concat(base, ".value"));
 
             bytes32 leaf = keccak256(abi.encodePacked(assetId, cx, cy, owner));
             assertEq(leaf, vm.parseJsonBytes32(json, string.concat(base, ".leaf")), "leaf layout");
 
-            bytes32 nullifier = keccak256(abi.encodePacked(secret));
+            // note-bound nullifier (spec B3): keccak(Cx ‖ Cy ‖ "spent"), derived from the
+            // commitment not a free secret, so a note has exactly one nullifier. Matches
+            // cxfer-core::nullifier, the guest, and dapp/confidential-pool.js.
+            bytes32 nullifier = keccak256(abi.encodePacked(cx, cy, "spent"));
             assertEq(nullifier, vm.parseJsonBytes32(json, string.concat(base, ".nullifier")), "nullifier layout");
 
-            // matches ConfidentialPool.wrap()'s keccak256(abi.encode(...))
-            bytes32 depositId = keccak256(abi.encode(assetId, amount, cx, cy, owner));
+            // matches ConfidentialPool.wrap()'s keccak256(abi.encode(assetId, value, ...)),
+            // where value = amount/unitScale is derived on-chain (binds note value to escrow).
+            bytes32 depositId = keccak256(abi.encode(assetId, value, cx, cy, owner));
             assertEq(depositId, vm.parseJsonBytes32(json, string.concat(base, ".depositId")), "depositId layout");
         }
     }
