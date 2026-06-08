@@ -2091,4 +2091,90 @@ mod tests {
         let n = bad.len(); bad[n - 1] ^= 1;
         assert!(confirm_pool_tx(&header, &bad, tx_index, &txids).is_none(), "tampered tx rejected");
     }
+
+    // Extract the real CXFER's fold data (vin outpoint keys, output commitment-hashes + outpoints,
+    // txid, asset) and write it for the JS full-fold assembler (tests/gen-reflection-cxfer-fold.mjs).
+    // The spent outpoints + the txid + the output commitments are all on-chain; the spent notes'
+    // (Cx,Cy) come from the attested prior state, which the assembler seeds.
+    #[test]
+    fn gen_real_cxfer_fold_data() {
+        let f: serde_json::Value = serde_json::from_str(include_str!("../../fixtures/signet_cxfer.json")).unwrap();
+        let hx = |s: &str| hex::decode(s.trim_start_matches("0x")).unwrap();
+        let tx = hx(f["tx"].as_str().unwrap());
+        let txid = bitcoin::compute_txid(&tx);
+        let vins = bitcoin::extract_inputs(&tx).expect("vins");
+        let env = bitcoin::extract_taproot_envelope(&tx).expect("envelope");
+        let (asset, comms) = bitcoin::parse_cxfer_envelope(&env).expect("cxfer parse");
+
+        let spends: Vec<String> = vins.iter().map(|(t, v)| format!("\"0x{}\"", hex::encode(outpoint_key(t, *v)))).collect();
+        let outputs: Vec<String> = comms.iter().enumerate().map(|(i, c)| {
+            let ch = commitment_hash_compressed(c).expect("decompress");
+            format!("{{ \"commitmentHash\": \"0x{}\", \"outpoint\": \"0x{}\", \"vout\": {} }}",
+                hex::encode(ch), hex::encode(outpoint_key(&txid, i as u32)), i)
+        }).collect();
+        let json = format!(
+            "{{\n  \"note\": \"real signet CXFER fold data (block 307547)\",\n  \"asset\": \"0x{}\",\n  \"txid\": \"0x{}\",\n  \"spendOutpoints\": [{}],\n  \"outputs\": [{}]\n}}\n",
+            hex::encode(asset), hex::encode(txid),
+            spends.iter().map(|s| format!("\n    {}", s)).collect::<Vec<_>>().join(","),
+            outputs.iter().map(|o| format!("\n    {}", o)).collect::<Vec<_>>().join(",")
+        );
+        std::fs::write("../fixtures/signet_cxfer_folddata.json", json).expect("write fold data");
+        assert_eq!(comms.len(), outputs.len());
+    }
+
+    // Reproduce the guest's OP_TRANSFER fold natively on the assembled real-CXFER fixture, to
+    // pinpoint any witnessed-transition failure (apply_transfer returns a per-transition message).
+    #[test]
+    fn reproduce_real_cxfer_fold() {
+        let path = std::path::Path::new("../fixtures/reflection_cxfer_fold.json");
+        if !path.exists() { eprintln!("(no reflection_cxfer_fold.json — skip)"); return; }
+        let f: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        let a = |v: &serde_json::Value| arr32(v.as_str().unwrap());
+        let p = |v: &serde_json::Value| -> Vec<[u8; 32]> { v.as_array().unwrap().iter().map(|x| arr32(x.as_str().unwrap())).collect() };
+        let pr = &f["prior"];
+        let mut w = WitnessedReflection {
+            pool_root: a(&pr["poolRoot"]), note_count: pr["noteCount"].as_u64().unwrap(),
+            spent_root: a(&pr["spentRoot"]), spent_count: pr["spentCount"].as_u64().unwrap(),
+            utxo_root: a(&pr["utxoRoot"]), utxo_count: pr["utxoCount"].as_u64().unwrap(),
+            burn_root: a(&pr["burnRoot"]), burn_count: pr["burnCount"].as_u64().unwrap(),
+            height: pr["height"].as_u64().unwrap(),
+        };
+        let mk_spend = |s: &serde_json::Value| SpendWitness {
+            cx: a(&s["cx"]), cy: a(&s["cy"]), outpoint: a(&s["outpoint"]),
+            s_low_value: a(&s["sLowValue"]), s_low_next: a(&s["sLowNext"]), s_low_index: s["sLowIndex"].as_u64().unwrap(),
+            s_low_path: p(&s["sLowPath"]), s_new_path: p(&s["sNewPath"]),
+            u_node_next: a(&s["uNodeNext"]), u_node_value: a(&s["uNodeValue"]), u_node_index: s["uNodeIndex"].as_u64().unwrap(), u_node_path: p(&s["uNodePath"]),
+            u_pred_key: a(&s["uPredKey"]), u_pred_value: a(&s["uPredValue"]), u_pred_index: s["uPredIndex"].as_u64().unwrap(), u_pred_path: p(&s["uPredPath"]),
+        };
+        let e = &f["effects"][0];
+        let spends: Vec<SpendWitness> = e["spends"].as_array().unwrap().iter().map(mk_spend).collect();
+        let outputs: Vec<OutputWitness> = e["outputs"].as_array().unwrap().iter().map(|o| OutputWitness {
+            note_leaf: a(&o["noteLeaf"]), note_path: p(&o["notePath"]), outpoint: a(&o["outpoint"]), commitment_hash: a(&o["commitmentHash"]),
+            u_low_key: a(&o["uLowKey"]), u_low_next: a(&o["uLowNext"]), u_low_value: a(&o["uLowValue"]), u_low_index: o["uLowIndex"].as_u64().unwrap(),
+            u_low_path: p(&o["uLowPath"]), u_new_path: p(&o["uNewPath"]),
+        }).collect();
+        // the guest's pre-fold tx-binding (confirm + envelope + outpoint/commitment), the part
+        // the digest check skips — this is what panics in-guest if a binding is off.
+        let dh = |s: &str| hex::decode(s).unwrap();
+        let hdr = dh(f["headers"][0].as_str().unwrap());
+        let tx = dh(e["txData"].as_str().unwrap());
+        let tx_index = e["txIndex"].as_u64().unwrap() as u32;
+        let txids: Vec<[u8; 32]> = e["txids"].as_array().unwrap().iter().map(|t| dh(t.as_str().unwrap()).try_into().unwrap()).collect();
+        let (txid, in_outpoints) = confirm_pool_tx(&hdr, &tx, tx_index, &txids).expect("confirm_pool_tx FAILED");
+        let env = bitcoin::extract_taproot_envelope(&tx).expect("envelope");
+        let (_a, comms) = bitcoin::parse_cxfer_envelope(&env).expect("parse cxfer");
+        assert_eq!(outputs.len(), comms.len(), "m_out != commitments");
+        for s in &spends { assert!(in_outpoints.contains(&s.outpoint), "spend outpoint not a vin"); }
+        for (j, o) in outputs.iter().enumerate() {
+            let vout = e["outputs"][j]["vout"].as_u64().unwrap() as u32;
+            assert_eq!(outpoint_key(&txid, vout), o.outpoint, "output outpoint != vout(j={})", j);
+            assert_eq!(commitment_hash_compressed(&comms[j]), Some(o.commitment_hash), "output commitment != envelope (j={})", j);
+        }
+
+        let height = f["anchorHeight"].as_u64().unwrap() + e["blockIndex"].as_u64().unwrap();
+        let res = w.apply_transfer(&spends, &outputs, height);
+        assert!(res.is_ok(), "apply_transfer FAILED: {:?}", res.err());
+        // and the resulting digest matches the fixture's newDigest
+        assert_eq!(format!("0x{}", hex::encode(w.digest())), f["newDigest"].as_str().unwrap(), "digest mismatch");
+    }
 }

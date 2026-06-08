@@ -1,0 +1,11 @@
+{
+  "note": "real signet CXFER fold data (block 307547)",
+  "asset": "0x879cf8e6f26b733497ca1d154ed22c80b2266a5702ed55476a8cd4a3c5e9c4ea",
+  "txid": "0xd176d61ef9d2b2dba5e41cd57f5bc43363d4de0851a619f93d851f415f977e0b",
+  "spendOutpoints": [
+    "0x7645264b520327fa3e3c2fdee8202213a3fc9bc43e44959e6695f40deb274420",
+    "0x4adedc62dfd145a84d8e1322ec768273d7cc236fb6ba20682c1ef36fff2dca2f"],
+  "outputs": [
+    { "commitmentHash": "0x0c723277369b52800b8426f4525c86224b03562a1de153974c0a733c08a789e9", "outpoint": "0x00dd926a738bb0c8f36b555c6fa1d0e1989d0aef9768bbfa29e13c0077710144", "vout": 0 },
+    { "commitmentHash": "0x8f7315c5a56725819497078753be6168224878c80ac47e86b43466534a187da6", "outpoint": "0x67ff43886bc80c0c9f8cf0bc0324dcc10ac0453944a28310fd56310899db52f5", "vout": 1 }]
+}
