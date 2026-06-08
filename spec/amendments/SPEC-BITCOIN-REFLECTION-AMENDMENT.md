@@ -187,14 +187,33 @@ The reflection prover **binds to existing envelopes**; it adds no new spend opco
 
 ## 8. Built vs. remaining
 
-**Built + tested** (`cxfer-core`, 21 native tests): the full in-zkVM verification
-toolkit — `ReflectionState` (note-tree + spent-set accumulators) committing
-`BitcoinRelayPublicValues`, per-event `verify_tx_in_block`, header-chain linkage
-`verify_header_chain`, plus the reused `verify_range` / `verify_kernel` /
-`extract_taproot_envelope`. The contract gate, the relay submission toolkit
+**Built + tested** (`cxfer-core`, 25 native tests): the in-zkVM verification toolkit —
+`ReflectionState` (note-tree + spent-set + **UTXO** accumulators) committing
+`BitcoinRelayPublicValues` (§7.2 built); `apply_transfer` (the UTXO-model fold) +
+`state_digest` (resumption anchor); per-event `verify_tx_in_block`; header-chain linkage
+`verify_header_chain`; **`extract_inputs`** (the vin → spent-outpoints parse); plus the
+reused `verify_range` / `verify_kernel` / `extract_taproot_envelope`. §7.1 (owner-free
+leaf) is resolved. The contract gate, the relay submission toolkit
 (`attestBitcoinStateProven`), and the non-zero spent-root invariant are live.
 
-**Remaining:** the §7.1 leaf reconciliation + §7.2 UTXO-set witness (the keystone
-sub-design), the guest binary wiring §4 over the built toolkit, full-block-scan envelope
-recognition, and the box `cargo prove` → `BITCOIN_RELAY_VKEY`. Cross-lane stays gated
-(`BITCOIN_RELAY_VKEY = 0`) until those close and the spent set is reflected from genesis.
+**Remaining for the guest binary** (precisely scoped):
+1. **Bitcoin `T_CXFER_BPP` kernel verification** — the Bitcoin confidential-transfer
+   conservation is a **Schnorr signature** (`kernel_sig`) over the kernel message
+   (asset ‖ inputs ‖ outputs ‖ burned_amount), distinct from `cxfer-core::verify_kernel`
+   (the EVM kernel). It must be **ported into `cxfer-core`** from the worker/dapp
+   `T_CXFER` validator + KAT'd, so the reflection prover can re-check conservation (the
+   no-unbacked-value invariant, §5).
+2. **Envelope byte-parse** — the exact `T_CXFER_BPP` payload (asset ‖ kernel_sig ‖ N ‖
+   (commitment ‖ amount_ct)×N ‖ rp_len ‖ rangeproof, SPEC-CXFER-BPP §5.47.1), to pull the
+   output commitments + rangeproof.
+3. **The guest binary** (`src/reflect.rs`) wiring §4 over the toolkit + full-block-scan
+   recognition, and **box `cargo prove`** → `BITCOIN_RELAY_VKEY`.
+4. **Relay-anchor contract binding** — `BitcoinRelayPublicValues` does not yet carry the
+   header-chain tip, so `attestBitcoinStateProven` cannot verify the proof is anchored to
+   the canonical chain via `BitcoinLightRelay`. Add the anchor to the proof + an on-chain
+   check against the relay tip (a contract + public-values change).
+5. **Resumption** — commit/verify `state_digest` continuity so a proof extends the prior
+   UTXO set rather than replaying from genesis.
+
+Cross-lane stays gated (`BITCOIN_RELAY_VKEY = 0`) until these close and the spent set is
+reflected from genesis.
