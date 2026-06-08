@@ -10,6 +10,16 @@ edition = "2021"
 # (~29x fewer cycles); they apply to the guest build only, not cxfer-core's
 # native tests.
 
+# The settle guest (src/main.rs) and the reflection prover (src/reflect.rs) are two SP1
+# programs sharing cxfer-core. Build a specific one with `cargo prove build --bin <name>`.
+[[bin]]
+name = "confidential-pool-prover"
+path = "src/main.rs"
+
+[[bin]]
+name = "reflection-prover"
+path = "src/reflect.rs"
+
 [dependencies]
 sp1-zkvm = "6.2"
 cxfer-core = { path = "cxfer-core" }

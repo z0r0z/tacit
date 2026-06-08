@@ -1,0 +1,146 @@
+//! Reflection prover — proves the Bitcoin confidential-pool roots that
+//! ConfidentialPool.attestBitcoinStateProven pins as the cross-lane / bridge_mint authority.
+//!
+//! Resume-from-digest (witnessed-incremental, O(Δ)/cycle): read the prior reflection state
+//! (roots + counts + height), verify it hashes to `priorDigest`, fold the batch's confirmed
+//! Δ-effects through the witnessed accumulator transitions, and commit the new roots + digest.
+//! The contract chains cycles by checking `priorDigest == knownReflectionDigest` then setting
+//! `knownReflectionDigest = newDigest`, so a proof can only EXTEND the attested state.
+//!
+//! Trustless inputs landing in layers:
+//!   - header-chain PoW (verify_header_chain) — DONE here: the batch's confirmed tip.
+//!   - per-effect tx-inclusion (verify_tx_in_block) + outpoint binding (extract_inputs) +
+//!     envelope parse (extract_taproot_envelope → note/dest) — the next increment; until it
+//!     lands this program is the fold+PoW+digest-chaining scaffold, NOT a live BITCOIN_RELAY_VKEY.
+#![no_main]
+sp1_zkvm::entrypoint!(main);
+
+use alloy_sol_types::sol;
+use alloy_sol_types::SolType;
+use cxfer_core::{bitcoin, BurnWitness, OutputWitness, SpendWitness, WitnessedReflection};
+use sp1_zkvm::io;
+
+const OP_TRANSFER: u8 = 0;
+const OP_BRIDGE_OUT: u8 = 1;
+
+sol! {
+    struct BitcoinReflectionPublicValues {
+        bytes32 priorDigest;       // the reflected state this cycle continues from
+        bytes32 bitcoinPoolRoot;   // note-tree root after the batch
+        bytes32 bitcoinSpentRoot;  // spent-set IMT root after the batch
+        bytes32 bitcoinBurnRoot;   // bridge-burn set root after the batch
+        uint64  bitcoinHeight;     // confirmed Bitcoin height the batch advanced to
+        bytes32 newDigest;         // the reflected state after the batch (next cycle's prior)
+    }
+}
+
+fn r_n<const N: usize>() -> [u8; N] {
+    let v: Vec<u8> = io::read();
+    v.try_into().expect("witness field length")
+}
+fn r32() -> [u8; 32] { r_n::<32>() }
+fn r_path() -> Vec<[u8; 32]> { (0..32).map(|_| r32()).collect() }
+
+/// Read the prior reflection state (roots + counts + height) — the resume anchor.
+fn read_prior_state() -> WitnessedReflection {
+    WitnessedReflection {
+        pool_root: r32(),
+        note_count: io::read(),
+        spent_root: r32(),
+        spent_count: io::read(),
+        utxo_root: r32(),
+        utxo_count: io::read(),
+        burn_root: r32(),
+        burn_count: io::read(),
+        height: io::read(),
+    }
+}
+
+fn read_spend() -> SpendWitness {
+    SpendWitness {
+        nu: r32(),
+        outpoint: r32(),
+        s_low_value: r32(),
+        s_low_next: r32(),
+        s_low_index: io::read(),
+        s_low_path: r_path(),
+        s_new_path: r_path(),
+        u_node_next: r32(),
+        u_node_value: r32(),
+        u_node_index: io::read(),
+        u_node_path: r_path(),
+        u_pred_key: r32(),
+        u_pred_value: r32(),
+        u_pred_index: io::read(),
+        u_pred_path: r_path(),
+    }
+}
+
+fn read_output() -> OutputWitness {
+    OutputWitness {
+        note_leaf: r32(),
+        note_path: r_path(),
+        outpoint: r32(),
+        commitment_hash: r32(),
+        u_low_key: r32(),
+        u_low_next: r32(),
+        u_low_value: r32(),
+        u_low_index: io::read(),
+        u_low_path: r_path(),
+        u_new_path: r_path(),
+    }
+}
+
+pub fn main() {
+    let mut state = read_prior_state();
+    let prior_digest = state.digest();
+
+    // Header-chain PoW: the batch's headers are a valid difficulty-respecting chain. The tip
+    // height is the confirmation frontier the folded effects must land at or below.
+    let num_headers: u32 = io::read();
+    let headers: Vec<Vec<u8>> = (0..num_headers).map(|_| io::read()).collect();
+    if num_headers > 0 {
+        let refs: Vec<&[u8]> = headers.iter().map(|h| h.as_slice()).collect();
+        assert!(bitcoin::verify_header_chain(&refs).is_some(), "invalid Bitcoin header chain");
+    }
+
+    // Fold the batch's confirmed Δ-effects through the witnessed transitions.
+    let num_effects: u32 = io::read();
+    for _ in 0..num_effects {
+        let op: u8 = io::read();
+        let height: u64 = io::read();
+        match op {
+            OP_TRANSFER => {
+                let n_in: u32 = io::read();
+                let m_out: u32 = io::read();
+                let spends: Vec<SpendWitness> = (0..n_in).map(|_| read_spend()).collect();
+                let outputs: Vec<OutputWitness> = (0..m_out).map(|_| read_output()).collect();
+                state.apply_transfer(&spends, &outputs, height).expect("transfer fold");
+            }
+            OP_BRIDGE_OUT => {
+                let burn = BurnWitness {
+                    spend: read_spend(),
+                    dest_commitment: r32(),
+                    b_low_key: r32(),
+                    b_low_next: r32(),
+                    b_low_value: r32(),
+                    b_low_index: io::read(),
+                    b_low_path: r_path(),
+                    b_new_path: r_path(),
+                };
+                state.apply_bridge_out(&burn, height).expect("bridge-out fold");
+            }
+            _ => panic!("unknown reflection effect"),
+        }
+    }
+
+    let pv = BitcoinReflectionPublicValues {
+        priorDigest: prior_digest.into(),
+        bitcoinPoolRoot: state.pool_root.into(),
+        bitcoinSpentRoot: state.spent_root.into(),
+        bitcoinBurnRoot: state.burn_root.into(),
+        bitcoinHeight: state.height,
+        newDigest: state.digest().into(),
+    };
+    io::commit_slice(&BitcoinReflectionPublicValues::abi_encode(&pv));
+}
