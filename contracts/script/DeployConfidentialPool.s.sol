@@ -35,7 +35,10 @@ contract DeployConfidentialPool is Script {
         bytes32 vkey = vm.envOr("PROGRAM_VKEY", DEFAULT_VKEY);
         // Bitcoin-state relay vkey: an SP1 proof against it is the ONLY way to attest the
         // Bitcoin pool root / spent-set (no trusted oracle). bytes32(0) deploys with
-        // cross-chain attestation disabled until the relay prover's vkey is known.
+        // cross-chain attestation disabled. The reflection guest is GPU-proven + on-chain
+        // verified (ConfidentialReflectionProofReal) at vkey
+        // 0x00116c0299a1093b9d25cc6e2728fae76ad03be1257b9dfbd00e6430d573303e — set
+        // BITCOIN_RELAY_VKEY to it once the worker produces reflection proofs continuously.
         bytes32 bitcoinRelayVKey = vm.envOr("BITCOIN_RELAY_VKEY", bytes32(0));
         // Canonical-asset factory: lets the pool lazily deploy a Tacit asset's public ERC20
         // on first bridge_mint with the guest-proven metadata. address(0) = explicit
