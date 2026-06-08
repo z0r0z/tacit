@@ -9,6 +9,7 @@
 //!         BJJ   z_a·H_BJJ + z_r_BJJ·G_BJJ == A_BJJ + e·C_BJJ
 
 use crate::{bjj, decompress, gen_h, scalar_reduce_be};
+use k256::elliptic_curve::group::Group;
 use k256::{ProjectivePoint, Scalar};
 use num_bigint::BigUint;
 use sha2::{Digest, Sha256};
@@ -80,7 +81,7 @@ pub fn verify_xcurve(proof: &[u8], c_secp: &[u8; 33], c_bjj: &[u8; 32]) -> bool 
     let e = BigUint::from_bytes_be(&digest[16..32]);
 
     // secp side
-    let g = ProjectivePoint::GENERATOR;
+    let g = ProjectivePoint::generator();
     let lhs_s = gen_h() * secp_scalar(&z_a) + g * secp_scalar(&z_r_secp);
     let rhs_s = a_secp_pt + c_secp_pt * secp_scalar(&e);
     if lhs_s != rhs_s {
