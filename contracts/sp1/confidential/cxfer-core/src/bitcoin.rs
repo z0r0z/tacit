@@ -228,6 +228,36 @@ pub fn verify_header_chain(headers: &[&[u8]]) -> Option<[u8; 32]> {
     prev_hash
 }
 
+/// Parse a segwit transaction's inputs — each spent outpoint `(prev_txid, prev_vout)`.
+/// The reflection prover reads these as the pool notes a confidential transfer consumes
+/// (the UTXO model: a tx's vin are the prior pool outputs it spends). Returns None on a
+/// malformed / non-segwit tx.
+pub fn extract_inputs(tx_data: &[u8]) -> Option<Vec<([u8; 32], u32)>> {
+    if tx_data.len() < 6 || tx_data[4] != 0x00 || tx_data[5] != 0x01 {
+        return None;
+    }
+    let mut pos = 6;
+    let (input_count, vi_len) = read_varint(tx_data, pos);
+    if input_count == 0 {
+        return None;
+    }
+    pos += vi_len;
+    let mut inputs = Vec::with_capacity(input_count);
+    for _ in 0..input_count {
+        if pos + 36 > tx_data.len() {
+            return None;
+        }
+        let mut txid = [0u8; 32];
+        txid.copy_from_slice(&tx_data[pos..pos + 32]);
+        let vout = u32::from_le_bytes([tx_data[pos + 32], tx_data[pos + 33], tx_data[pos + 34], tx_data[pos + 35]]);
+        inputs.push((txid, vout));
+        pos += 36;
+        let (script_len, vi_len2) = read_varint(tx_data, pos);
+        pos += vi_len2 + script_len + 4; // input script + sequence(4)
+    }
+    Some(inputs)
+}
+
 pub fn extract_taproot_envelope(tx_data: &[u8]) -> Option<Vec<u8>> {
     if tx_data.len() < 6 || tx_data[4] != 0x00 || tx_data[5] != 0x01 { return None; }
     let mut pos = 6;

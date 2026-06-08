@@ -740,29 +740,32 @@ impl ReflectionState {
         self.height = height;
     }
 
-    /// Fold one confirmed Bitcoin confidential transfer in the UTXO model (§3): each
-    /// input is an outpoint resolved against the UTXO set to its ν (then spent + removed);
-    /// each output `(outpoint, note_leaf, ν)` is appended to the note tree and added to
-    /// the UTXO set. Conservation/range/confirmation are the caller's (the guest) job;
-    /// this performs the validated state transition. `height` must strictly increase.
+    /// Fold one confirmed Bitcoin confidential transfer in the UTXO model (§3). The guest
+    /// has already verified conservation/range/confirmation and, for each input, witnessed
+    /// its commitment `C_in` (checking `keccak(C_in) == utxo.get(outpoint)`) to derive
+    /// `ν = keccak(Cx ‖ Cy ‖ "spent")`. This performs the validated state transition:
+    /// - `inputs` = `(outpoint, ν)`: assert the outpoint is a live UTXO, mark ν spent,
+    ///   remove the outpoint;
+    /// - `outputs` = `(outpoint, note_leaf, commitment_hash)`: append the note leaf and add
+    ///   the outpoint → `keccak(C_out)` to the UTXO set.
     ///
     /// Inputs are resolved BEFORE outputs are added, so a transfer cannot spend an
-    /// outpoint it creates in the same tx.
+    /// outpoint it creates in the same tx. `height` must strictly increase.
     pub fn apply_transfer(
         &mut self,
-        inputs: &[[u8; 32]],
+        inputs: &[([u8; 32], [u8; 32])],
         outputs: &[([u8; 32], [u8; 32], [u8; 32])],
         height: u64,
     ) {
         assert!(height > self.height, "reflection height must strictly increase");
-        for outpoint in inputs {
-            let nu = self.utxo.get(outpoint).expect("input outpoint not a live UTXO");
-            self.spent.insert(&nu);
+        for (outpoint, nu) in inputs {
+            assert!(self.utxo.get(outpoint).is_some(), "input outpoint not a live UTXO");
+            self.spent.insert(nu);
             self.utxo.remove(outpoint);
         }
-        for (outpoint, note_leaf, nu) in outputs {
+        for (outpoint, note_leaf, commitment_hash) in outputs {
             self.notes.append(note_leaf);
-            self.utxo.insert(outpoint, nu);
+            self.utxo.insert(outpoint, commitment_hash);
         }
         self.height = height;
     }
@@ -1101,6 +1104,18 @@ mod tests {
         assert!(bitcoin::verify_tx_in_block(&header[..79], &tx, tx_index, &txids).is_none(), "bad header length");
     }
 
+    // The reflection prover reads a confidential transfer's spent UTXOs from the tx's
+    // native inputs (vin). extract_inputs parses them from the real bridge_mint tx and
+    // rejects a malformed one.
+    #[test]
+    fn extract_inputs_parses_real_tx() {
+        let f: serde_json::Value = serde_json::from_str(include_str!("../../fixtures/btc_block.json")).unwrap();
+        let tx = hex::decode(strip(f["tx"].as_str().unwrap())).unwrap();
+        let inputs = bitcoin::extract_inputs(&tx).expect("real tx inputs parse");
+        assert!(!inputs.is_empty(), "tx has at least one input");
+        assert!(bitcoin::extract_inputs(&tx[..5]).is_none(), "truncated tx rejected");
+    }
+
     // The UTXO accumulator: add outpoints, resolve them (get), prove membership against
     // the live root, then spend (remove) — a spent outpoint resolves to None and its
     // membership leaf no longer folds to the root, while live siblings still do.
@@ -1159,28 +1174,30 @@ mod tests {
     fn reflection_apply_transfer_utxo_model() {
         let outpoint = arr32("0x00000000000000000000000000000000000000000000000000000000000000a1");
         let note_leaf = arr32("0x1111111111111111111111111111111111111111111111111111111111111111");
-        let nu = arr32("0x0000000000000000000000000000000000000000000000000000000000000033");
+        let ch1 = arr32("0x00000000000000000000000000000000000000000000000000000000000000c1"); // keccak(C_out)
+        let nu1 = arr32("0x0000000000000000000000000000000000000000000000000000000000000033"); // the note's ν
 
         let mut s = ReflectionState::genesis();
         let d0 = s.state_digest();
 
         // block 1: a transfer with one output (a new note/UTXO), no inputs
-        s.apply_transfer(&[], &[(outpoint, note_leaf, nu)], 800_000);
-        assert_eq!(s.utxo.get(&outpoint), Some(nu), "outpoint is a live UTXO");
-        assert!(s.spent.non_membership_low(&nu).is_some(), "ν not yet spent");
+        s.apply_transfer(&[], &[(outpoint, note_leaf, ch1)], 800_000);
+        assert_eq!(s.utxo.get(&outpoint), Some(ch1), "outpoint → commitment hash");
+        assert!(s.spent.non_membership_low(&nu1).is_some(), "ν not yet spent");
         let (_, _, h1) = s.commit();
         assert_eq!(h1, 800_000);
         assert_ne!(s.state_digest(), d0, "state advanced");
 
-        // block 2: a transfer consuming that outpoint (it resolves to ν → spent set)
+        // block 2: a transfer consuming that outpoint — the guest witnessed its commitment,
+        // verified keccak(C) == ch1, and derived ν = nu1, which it passes in with the input
         let out2 = arr32("0x00000000000000000000000000000000000000000000000000000000000000b2");
         let leaf2 = arr32("0x2222222222222222222222222222222222222222222222222222222222222222");
-        let nu2 = arr32("0x0000000000000000000000000000000000000000000000000000000000000044");
-        s.apply_transfer(&[outpoint], &[(out2, leaf2, nu2)], 800_001);
+        let ch2 = arr32("0x00000000000000000000000000000000000000000000000000000000000000c2");
+        s.apply_transfer(&[(outpoint, nu1)], &[(out2, leaf2, ch2)], 800_001);
 
         assert_eq!(s.utxo.get(&outpoint), None, "spent outpoint removed from UTXO set");
-        assert!(s.spent.non_membership_low(&nu).is_none(), "ν is now in the spent set");
-        assert_eq!(s.utxo.get(&out2), Some(nu2), "new output is a live UTXO");
+        assert!(s.spent.non_membership_low(&nu1).is_none(), "ν is now in the spent set");
+        assert_eq!(s.utxo.get(&out2), Some(ch2), "new output → commitment hash");
         assert_eq!(s.notes.next_index(), 2, "two note leaves appended");
         let (_, _, h2) = s.commit();
         assert_eq!(h2, 800_001);
