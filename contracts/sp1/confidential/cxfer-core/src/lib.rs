@@ -489,14 +489,41 @@ pub fn claim_id(dest_chain: u16, dest_commitment: &[u8; 32], nullifier: &[u8; 32
 }
 
 /// Membership against the on-chain Keccak incremental Merkle root.
-pub fn keccak_merkle_verify(leaf: &[u8; 32], mut index: u64, path: &[[u8; 32]], root: &[u8; 32]) -> bool {
-    if path.len() != 32 { return false; }
+pub fn keccak_merkle_verify(leaf: &[u8; 32], index: u64, path: &[[u8; 32]], root: &[u8; 32]) -> bool {
+    match merkle_root_from(leaf, index, path) {
+        Some(h) => &h == root,
+        None => false,
+    }
+}
+
+/// Fold a leaf up its Merkle path to the root it implies — the compute-side of
+/// `keccak_merkle_verify` (which compares the result to a claimed root). The witnessed
+/// accumulator transitions use it to derive the NEW root after replacing/appending a leaf:
+/// the same path that proved the old leaf re-folds the new leaf to the post-update root.
+/// Returns None on a malformed (non-depth-32) path.
+pub fn merkle_root_from(leaf: &[u8; 32], mut index: u64, path: &[[u8; 32]]) -> Option<[u8; 32]> {
+    if path.len() != KECCAK_TREE_DEPTH { return None; }
     let mut h = *leaf;
     for sib in path {
         h = if index & 1 == 0 { k2(&h, sib) } else { k2(sib, &h) };
         index >>= 1;
     }
-    &h == root
+    Some(h)
+}
+
+/// Witnessed append transition for the append-only note tree: append `leaf` at the next
+/// free slot and return the new root — with NO frontier state, only (prior_root, the empty
+/// slot's path). The slot at `next_index` must be the zero leaf in `prior_root` (so an
+/// append can't overwrite an existing note); the same path re-folds `leaf` to the new root.
+/// The reflection prover folds Δ-deposits through this; `next_index` is the prior leaf count.
+pub fn keccak_tree_append_transition(
+    prior_root: &[u8; 32],
+    next_index: u64,
+    path: &[[u8; 32]],
+    leaf: &[u8; 32],
+) -> Option<[u8; 32]> {
+    if !keccak_merkle_verify(&[0u8; 32], next_index, path, prior_root) { return None; }
+    merkle_root_from(leaf, next_index, path)
 }
 
 /// Big-endian strict less-than over 32-byte values.
@@ -543,6 +570,39 @@ pub fn imt_membership(
     path: &[[u8; 32]],
 ) -> bool {
     keccak_merkle_verify(&imt_leaf(nu, next), index, path, root)
+}
+
+/// Witnessed IMT insert transition: insert `nu` into the spent set committed by
+/// `prior_root` and return the new root — with NO full-set state (the resume-from-digest
+/// form the reflection prover folds Δ-spends through). Two Merkle updates, each verified
+/// against the evolving root so a forged witness can't fabricate a transition:
+///   1. the straddling low leaf (low_value < nu < low_next, or low_next == 0) is a member
+///      of `prior_root`; its successor is rewired to `nu` → the intermediate root.
+///   2. the target slot at `new_index` is empty (zero leaf) in the intermediate tree; it
+///      is filled with {nu → old_next} → the new root.
+/// `new_path` is the path in the INTERMEDIATE tree (after the low-leaf rewire) — the
+/// indexer builds it against the post-rewire state. Returns None if any check fails.
+#[allow(clippy::too_many_arguments)]
+pub fn imt_insert_transition(
+    prior_root: &[u8; 32],
+    nu: &[u8; 32],
+    low_value: &[u8; 32],
+    low_next: &[u8; 32],
+    low_index: u64,
+    low_path: &[[u8; 32]],
+    new_index: u64,
+    new_path: &[[u8; 32]],
+) -> Option<[u8; 32]> {
+    let zero = [0u8; 32];
+    // nu must be insertable: non-zero and strictly straddled by the low leaf.
+    if *nu == zero || !be_lt(low_value, nu) { return None; }
+    if *low_next != zero && !be_lt(nu, low_next) { return None; }
+    // (1) the low leaf is a member of prior_root; rewire its successor to nu.
+    if !keccak_merkle_verify(&imt_leaf(low_value, low_next), low_index, low_path, prior_root) { return None; }
+    let intermediate = merkle_root_from(&imt_leaf(low_value, nu), low_index, low_path)?;
+    // (2) the target slot is empty in the intermediate tree; fill it with {nu → old_next}.
+    if !keccak_merkle_verify(&zero, new_index, new_path, &intermediate) { return None; }
+    merkle_root_from(&imt_leaf(nu, low_next), new_index, new_path)
 }
 
 /// Depth of the keccak incremental Merkle tree — the note tree, the spent-set IMT, and
@@ -711,6 +771,61 @@ pub fn utxo_leaf(key: &[u8; 32], next: &[u8; 32], value: &[u8; 32]) -> [u8; 32] 
     kn(&[key, next, value])
 }
 
+/// Witnessed UTXO/bridge-burn insert transition: add `key → value` to the sorted set
+/// committed by `prior_root` and return the new root — no full-set state. The IMT pattern
+/// with 3-field leaves: the straddling low node (low_key < key < low_next, or low_next == 0)
+/// is rewired to `key`, then {key → old_next, value} fills the empty slot at `new_index`
+/// (its path against the intermediate, post-rewire tree). Returns None if any check fails.
+#[allow(clippy::too_many_arguments)]
+pub fn utxo_insert_transition(
+    prior_root: &[u8; 32],
+    key: &[u8; 32],
+    value: &[u8; 32],
+    low_key: &[u8; 32],
+    low_next: &[u8; 32],
+    low_value: &[u8; 32],
+    low_index: u64,
+    low_path: &[[u8; 32]],
+    new_index: u64,
+    new_path: &[[u8; 32]],
+) -> Option<[u8; 32]> {
+    let zero = [0u8; 32];
+    if *key == zero || !be_lt(low_key, key) { return None; }
+    if *low_next != zero && !be_lt(key, low_next) { return None; }
+    // (1) the low node is a member of prior_root; rewire its successor to key (value kept).
+    if !keccak_merkle_verify(&utxo_leaf(low_key, low_next, low_value), low_index, low_path, prior_root) { return None; }
+    let intermediate = merkle_root_from(&utxo_leaf(low_key, key, low_value), low_index, low_path)?;
+    // (2) fill the empty slot with the new node {key → old_next, value}.
+    if !keccak_merkle_verify(&zero, new_index, new_path, &intermediate) { return None; }
+    merkle_root_from(&utxo_leaf(key, low_next, value), new_index, new_path)
+}
+
+/// Witnessed UTXO remove (spend) transition: tombstone the live outpoint `key` and return
+/// the new root — no full-set state. Two updates: the predecessor (pred_next == key) is
+/// rewired to `key`'s successor, then `key`'s node is tombstoned (leaf → 0, matching the
+/// stateful accumulator's `leaf_at` for a dead node). `node_path` is against the
+/// intermediate (post-rewire) tree. Returns None if the witnesses don't link up.
+#[allow(clippy::too_many_arguments)]
+pub fn utxo_remove_transition(
+    prior_root: &[u8; 32],
+    key: &[u8; 32],
+    node_next: &[u8; 32],
+    node_value: &[u8; 32],
+    node_index: u64,
+    node_path: &[[u8; 32]],
+    pred_key: &[u8; 32],
+    pred_value: &[u8; 32],
+    pred_index: u64,
+    pred_path: &[[u8; 32]],
+) -> Option<[u8; 32]> {
+    // The predecessor points at `key` and is a member of prior_root; rewire it to skip `key`.
+    if !keccak_merkle_verify(&utxo_leaf(pred_key, key, pred_value), pred_index, pred_path, prior_root) { return None; }
+    let intermediate = merkle_root_from(&utxo_leaf(pred_key, node_next, pred_value), pred_index, pred_path)?;
+    // `key`'s node is a member of the intermediate tree; tombstone it (leaf → 0).
+    if !keccak_merkle_verify(&utxo_leaf(key, node_next, node_value), node_index, node_path, &intermediate) { return None; }
+    merkle_root_from(&[0u8; 32], node_index, node_path)
+}
+
 /// Outpoint→note accumulator — the Bitcoin UTXO set the reflection prover resolves
 /// inputs against (SPEC-BITCOIN-REFLECTION-AMENDMENT §7.2). A sorted linked list keyed by
 /// the outpoint `key = keccak(txid ‖ vout)`, each live node carrying the note's nullifier
@@ -790,6 +905,28 @@ impl UtxoAccumulator {
     pub fn membership(&self, key: &[u8; 32]) -> Option<(usize, [u8; 32], [u8; 32])> {
         self.find(key).map(|i| (i, self.nodes[i].1, self.nodes[i].2))
     }
+
+    /// The committed leaf vector (live → utxo_leaf, tombstoned → 0) — what the indexer folds
+    /// to build Merkle paths for the witnessed insert/remove transitions.
+    pub fn leaves(&self) -> Vec<[u8; 32]> {
+        (0..self.nodes.len()).map(|i| self.leaf_at(i)).collect()
+    }
+
+    /// Low-node witness `(index, key, next, value)` straddling `key` (key_low < key <
+    /// key_next, or next == 0) — the insert witness. None if `key` is present/out of range.
+    pub fn low(&self, key: &[u8; 32]) -> Option<(usize, [u8; 32], [u8; 32], [u8; 32])> {
+        self.low_index(key).map(|i| (i, self.nodes[i].0, self.nodes[i].1, self.nodes[i].2))
+    }
+
+    /// Predecessor witness `(index, key, value)` — the live node whose `next == key` — for
+    /// the remove transition (it is rewired to skip the removed node). None if absent.
+    pub fn predecessor(&self, key: &[u8; 32]) -> Option<(usize, [u8; 32], [u8; 32])> {
+        self.pred_of(key).map(|i| (i, self.nodes[i].0, self.nodes[i].2))
+    }
+
+    /// The next free leaf slot (insertion index for a new node).
+    pub fn len(&self) -> usize { self.nodes.len() }
+    pub fn is_empty(&self) -> bool { self.nodes.is_empty() }
 }
 
 /// The reflection prover's state: the Bitcoin confidential-pool note tree, spent-set, and
@@ -1412,5 +1549,141 @@ mod tests {
         u.insert(&k2, &v2);
         assert_eq!(u.root(), arr32("0xc0e284ae6547f611ffa26c9bf05875e87b6c9e8bb0793b9eaeda6daa1121efad"),
             "Rust UtxoAccumulator root must equal the JS makeUtxoAccumulator root");
+    }
+
+    // Depth-32 Merkle path for `index` over `leaves`, zero-filling empty subtrees — the
+    // witness builder the indexer runs (positions ≥ leaves.len() are the zero leaf). Mirrors
+    // the JS pool.Tree.rootAndPath; used here to feed the witnessed transitions.
+    fn merkle_path(leaves: &[[u8; 32]], mut index: u64) -> Vec<[u8; 32]> {
+        let zeros = keccak_zeros();
+        let mut path = Vec::with_capacity(KECCAK_TREE_DEPTH);
+        let mut level: Vec<[u8; 32]> = leaves.to_vec();
+        for i in 0..KECCAK_TREE_DEPTH {
+            let sib_idx = (index ^ 1) as usize;
+            path.push(if sib_idx < level.len() { level[sib_idx] } else { zeros[i] });
+            let mut next = Vec::with_capacity(level.len().div_ceil(2));
+            let mut k = 0;
+            while k * 2 < level.len() {
+                let l = level[2 * k];
+                let r = if 2 * k + 1 < level.len() { level[2 * k + 1] } else { zeros[i] };
+                next.push(kn(&[&l, &r]));
+                k += 1;
+            }
+            level = next;
+            index >>= 1;
+        }
+        path
+    }
+
+    // Phase 1: the witnessed IMT insert transition reproduces the stateful ImtAccumulator's
+    // root sequence with NO full-set state — only (prior_root, low-witness, append-witness).
+    // This is what lets the reflection prover resume from a digest and fold Δ-spends in-zkVM.
+    #[test]
+    fn imt_insert_transition_matches_stateful() {
+        let spends = [
+            arr32("0x0000000000000000000000000000000000000000000000000000000000000042"),
+            arr32("0x00000000000000000000000000000000000000000000000000000000000000a1"),
+            arr32("0x0000000000000000000000000000000000000000000000000000000000000007"),
+            arr32("0x00000000000000000000000000000000000000000000000000000000000000ff"),
+            arr32("0x0000000000000000000000000000000000000000000000000000000000000080"),
+        ];
+        let mut acc = ImtAccumulator::new();
+        for nu in &spends {
+            // Witnesses built from the CURRENT (pre-insert) accumulator state.
+            let prior_root = acc.root();
+            let prior_leaves: Vec<[u8; 32]> = acc.links().iter().map(|(v, n)| imt_leaf(v, n)).collect();
+            let (low_index, low_value, low_next) = acc.non_membership_low(nu).expect("low link");
+            let low_idx = low_index as u64;
+            let low_path = merkle_path(&prior_leaves, low_idx);
+            // The new leaf lands at the next free slot; its path is against the INTERMEDIATE
+            // tree (low leaf rewired to nu), exactly as the in-zkVM transition checks it.
+            let new_index = prior_leaves.len() as u64;
+            let mut interm_leaves = prior_leaves.clone();
+            interm_leaves[low_index] = imt_leaf(&low_value, nu);
+            let new_path = merkle_path(&interm_leaves, new_index);
+
+            let got = imt_insert_transition(
+                &prior_root, nu, &low_value, &low_next, low_idx, &low_path, new_index, &new_path,
+            ).expect("transition");
+
+            acc.insert(nu); // advance the stateful reference
+            assert_eq!(got, acc.root(), "witnessed insert root must equal the stateful root");
+        }
+
+        // A forged low witness (wrong low_next that doesn't straddle) is rejected.
+        let nu = arr32("0x0000000000000000000000000000000000000000000000000000000000000005");
+        let bad = imt_insert_transition(
+            &acc.root(), &nu, &[0u8; 32], &[0u8; 32], 0, &merkle_path(&[], 0), 99, &merkle_path(&[], 99),
+        );
+        assert!(bad.is_none(), "forged/non-straddling witness must not produce a transition");
+    }
+
+    // Phase 1: the witnessed note-tree append transition reproduces the stateful
+    // KeccakTreeAccumulator's root sequence from only (prior_root, the empty slot's path).
+    #[test]
+    fn keccak_tree_append_transition_matches_stateful() {
+        let mut acc = KeccakTreeAccumulator::new();
+        let mut hist: Vec<[u8; 32]> = Vec::new();
+        for i in 0u8..6 {
+            let leaf = arr32(&format!("0x{:064x}", 0x1000 + i as u32));
+            let prior_root = acc.root();
+            let next_index = acc.next_index();
+            let path = merkle_path(&hist, next_index);
+            let got = keccak_tree_append_transition(&prior_root, next_index, &path, &leaf).expect("append");
+            acc.append(&leaf);
+            hist.push(leaf);
+            assert_eq!(got, acc.root(), "witnessed append root == stateful");
+        }
+        // appending onto a non-empty slot (wrong path proving a filled slot) fails.
+        let bad = keccak_tree_append_transition(&acc.root(), 0, &merkle_path(&hist, 0), &arr32(&format!("0x{:064x}", 1)));
+        assert!(bad.is_none(), "cannot append over an occupied slot");
+    }
+
+    // Phase 1: the witnessed UTXO insert + remove transitions reproduce the stateful
+    // UtxoAccumulator (key → value sorted set with tombstoning) — the burn set and the
+    // outpoint set the reflection prover advances without holding the full set.
+    #[test]
+    fn utxo_insert_remove_transition_matches_stateful() {
+        let h = |n: u32| arr32(&format!("0x{:064x}", n));
+        let kv = [
+            (h(0x42), h(0xaa)),
+            (h(0xa1), h(0xbb)),
+            (h(0x07), h(0xcc)),
+            (h(0xff), h(0xdd)),
+        ];
+        let mut acc = UtxoAccumulator::new();
+        for (k, v) in &kv {
+            let prior_root = acc.root();
+            let prior_leaves = acc.leaves();
+            let (low_i, low_k, low_n, low_v) = acc.low(k).expect("low");
+            let low_path = merkle_path(&prior_leaves, low_i as u64);
+            let new_index = prior_leaves.len() as u64;
+            let mut interm = prior_leaves.clone();
+            interm[low_i] = utxo_leaf(&low_k, k, &low_v);
+            let new_path = merkle_path(&interm, new_index);
+            let got = utxo_insert_transition(
+                &prior_root, k, v, &low_k, &low_n, &low_v, low_i as u64, &low_path, new_index, &new_path,
+            ).expect("insert transition");
+            acc.insert(k, v);
+            assert_eq!(got, acc.root(), "witnessed utxo insert root == stateful");
+        }
+
+        // Remove a live key (0xa1) and check the transition matches the stateful remove.
+        let key = h(0xa1);
+        let prior_root = acc.root();
+        let prior_leaves = acc.leaves();
+        let (node_i, node_n, node_v) = acc.membership(&key).expect("member");
+        let (pred_i, pred_k, pred_v) = acc.predecessor(&key).expect("pred");
+        let pred_path = merkle_path(&prior_leaves, pred_i as u64);
+        let mut interm = prior_leaves.clone();
+        interm[pred_i] = utxo_leaf(&pred_k, &node_n, &pred_v); // pred rewired to skip key
+        let node_path = merkle_path(&interm, node_i as u64);
+        let got = utxo_remove_transition(
+            &prior_root, &key, &node_n, &node_v, node_i as u64, &node_path,
+            &pred_k, &pred_v, pred_i as u64, &pred_path,
+        ).expect("remove transition");
+        acc.remove(&key);
+        assert_eq!(got, acc.root(), "witnessed utxo remove root == stateful");
+        assert_eq!(acc.get(&key), None, "removed key is gone");
     }
 }
