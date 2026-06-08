@@ -200,6 +200,8 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     error ZeroVKey();
     error AlreadyRegistered();
     error NotRegistered();
+    error NotAContract();
+    error CanonicalAsset();
     error AmountNotAligned();
     error DepositExists();
     error MerkleTreeFull();
@@ -336,6 +338,16 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     ) internal returns (bytes32 assetId) {
         if (underlying == address(0)) revert ZeroAddress();
         if (unitScale == 0) revert AmountNotAligned();
+        // Escrow registrations (external ERC20s) must be a deployed, non-canonical token:
+        // a canonical token of this pool registers only via the guest-proven minted path
+        // (_autoRegisterFromMeta), and a not-yet-deployed canonical address must not be
+        // claimable as escrow (which would pre-empt its later auto-registration).
+        if (!poolMinted) {
+            if (underlying.code.length == 0) revert NotAContract();
+            try IMintBurn(underlying).MINTER() returns (address mtr) {
+                if (mtr == address(this)) revert CanonicalAsset();
+            } catch {}
+        }
         assetId = sha256(abi.encodePacked("tacit-evm-token-v1", uint64(block.chainid), underlying));
         if (assets[assetId].registered) revert AlreadyRegistered();
         assets[assetId] = Asset(true, underlying, unitScale, crossChainLink, poolMinted, name_, symbol_, decimals_);

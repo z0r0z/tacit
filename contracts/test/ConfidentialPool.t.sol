@@ -14,6 +14,12 @@ contract MockERC20 is ERC20 {
     function mint(address to, uint256 amount) external { _mint(to, amount); }
 }
 
+// A token exposing MINTER() — stands in for a canonical pool-minted ERC20 (M-4 guard).
+contract MockMinterToken {
+    address public MINTER;
+    constructor(address m) { MINTER = m; }
+}
+
 /// A stand-in SP1 verifier: accepts unless toggled. The crypto is exercised by
 /// the real-proof suite (next milestone); this suite pins the on-chain state
 /// machine — escrow, the Keccak commitment tree, nullifiers, deposits, payouts —
@@ -125,6 +131,21 @@ contract ConfidentialPoolTest is Test {
     function test_register_duplicate_reverts() public {
         vm.expectRevert(ConfidentialPool.AlreadyRegistered.selector);
         pool.registerWrapped(address(token), 1, bytes32(0), "Conf Mock", "cMCK", 18);
+    }
+
+    // Escrow registration of a not-yet-deployed address is rejected: a canonical token's
+    // address is deterministic, so it must not be claimable as escrow before it exists.
+    function test_register_wrapped_rejects_non_contract() public {
+        vm.expectRevert(ConfidentialPool.NotAContract.selector);
+        pool.registerWrapped(address(0xBEEF), 1, bytes32(0), "X", "X", 18);
+    }
+
+    // Escrow registration of a canonical token of this pool (MINTER() == pool) is rejected
+    // — canonical assets register only via the guest-proven minted path.
+    function test_register_wrapped_rejects_canonical_token() public {
+        MockMinterToken canon = new MockMinterToken(address(pool));
+        vm.expectRevert(ConfidentialPool.CanonicalAsset.selector);
+        pool.registerWrapped(address(canon), 1, bytes32(0), "X", "X", 18);
     }
 
     // ──────────────────── settle: deposit consumption ────────────────────
@@ -607,12 +628,22 @@ contract ConfidentialPoolTest is Test {
         CanonicalAssetFactory factory = new CanonicalAssetFactory();
         ConfidentialPool p = new ConfidentialPool(address(verifier), VKEY, RELAY_VKEY, address(factory));
 
+        // The guest now confirms the asset is real + funded on Bitcoin: it proves a note
+        // for this asset_id is a member of a relay-attested pool root and commits that root
+        // in bitcoinRootsUsed (gated ∈ knownBitcoinRoot). Attest the root first.
+        bytes32 attRoot = keccak256("attested-pool-root");
+        ConfidentialPool.BitcoinRelayPublicValues memory rl =
+            ConfidentialPool.BitcoinRelayPublicValues(attRoot, keccak256("sentinel"), 1);
+        p.attestBitcoinStateProven(abi.encode(rl), "");
+
         bytes32 tacId = keccak256("attested-TAC");
         ConfidentialPool.PublicValues memory pv;
         pv.version = p.PV_VERSION();
         pv.chainBinding = keccak256(abi.encodePacked(block.chainid, address(p)));
         pv.assetMetas = new ConfidentialPool.AssetMeta[](1);
         pv.assetMetas[0] = ConfidentialPool.AssetMeta(tacId, bytes16("TAC"), 3, 8); // ticker "TAC", 8 dec
+        pv.bitcoinRootsUsed = new bytes32[](1);
+        pv.bitcoinRootsUsed[0] = attRoot; // the confirmation root the guest proved membership against
         p.settle(abi.encode(pv), "", new bytes[](0));
 
         address token = factory.tokenOf(tacId, address(p), "TAC", 18);
@@ -632,6 +663,25 @@ contract ConfidentialPoolTest is Test {
         // idempotent: a second attest of the same asset doesn't revert or re-register
         p.settle(abi.encode(pv), "", new bytes[](0));
         assertEq(factory.tokenOf(tacId, address(p), "TAC", 18), token, "still the same canonical token");
+    }
+
+    /// Trustless metadata is CONFIRMATION-GATED: the guest proves the asset's note
+    /// membership against a Bitcoin pool root and commits it in bitcoinRootsUsed, so a
+    /// fabricated/unconfirmed etch (membership against a root the relay never attested)
+    /// is rejected — no junk canonical ERC20 can be lazy-deployed from it.
+    function test_settle_attest_meta_requires_attested_pool_root() public {
+        CanonicalAssetFactory factory = new CanonicalAssetFactory();
+        ConfidentialPool p = new ConfidentialPool(address(verifier), VKEY, RELAY_VKEY, address(factory));
+
+        ConfidentialPool.PublicValues memory pv;
+        pv.version = p.PV_VERSION();
+        pv.chainBinding = keccak256(abi.encodePacked(block.chainid, address(p)));
+        pv.assetMetas = new ConfidentialPool.AssetMeta[](1);
+        pv.assetMetas[0] = ConfidentialPool.AssetMeta(keccak256("junk"), bytes16("JNK"), 3, 8);
+        pv.bitcoinRootsUsed = new bytes32[](1);
+        pv.bitcoinRootsUsed[0] = keccak256("un-attested-root"); // never relay-attested
+        vm.expectRevert(ConfidentialPool.UnknownBitcoinRoot.selector);
+        p.settle(abi.encode(pv), "", new bytes[](0));
     }
 
     // ──────────────────── Tacit-recorded asset: pool is the canonical ERC20 minter ────────────────────
@@ -756,6 +806,38 @@ contract ConfidentialPoolTest is Test {
         pv.nullifiers = _arr(keccak256("nu-note"));
         _settle(pv);
         assertTrue(pool.isNullifierSpent(keccak256("nu-note")), "fast-spent with cross-lane proof");
+    }
+
+    /// Cross-lane single-spend: a Bitcoin-homed note fast-spent on Ethereum cannot then be
+    /// burned on Bitcoin and bridge-minted for the same value. The guest emits the burned ν
+    /// into `nullifiers` (not just `bitcoinBurnsConsumed`), so once the fast-lane spend has
+    /// consumed ν the later bridge_mint hits the nullifier set — closing fastlane→burn→mint.
+    function test_btc_homed_fastspend_then_bridge_mint_reverts() public {
+        bytes32 btcRoot = keccak256("btc-pool");
+        bytes32 spentEmpty = keccak256("imt-empty-sentinel"); // non-zero empty-IMT sentinel
+        bytes32 nu = keccak256("nu-crosslane");
+        _attestBtc(btcRoot, spentEmpty, 1);
+
+        // 1) fast-lane spend on Ethereum: ν absent from the Bitcoin spent set (not yet burned).
+        ConfidentialPool.PublicValues memory pv = _pv();
+        pv.spendRoot = btcRoot;
+        pv.bitcoinSpentRoot = spentEmpty;
+        pv.nullifiers = _arr(nu);
+        _settle(pv);
+        assertTrue(pool.isNullifierSpent(nu), "fast-spent");
+
+        // 2) note later burned on Bitcoin (ν now in the reflected spent set); a bridge_mint
+        //    of the SAME ν carries ν in `nullifiers` (post-fix guest) → must revert.
+        bytes32 spentWithNu = keccak256("btc-spent-with-nu");
+        _attestBtc(btcRoot, spentWithNu, 2);
+        ConfidentialPool.PublicValues memory pv2 = _pv();
+        pv2.bitcoinRootsUsed = _arr(btcRoot);
+        pv2.bitcoinBurnsConsumed = _arr(nu);
+        pv2.nullifiers = _arr(nu); // post-fix: burned ν consumed in the global nullifier set
+        pv2.bitcoinSpentRoot = spentWithNu;
+        pv2.leaves = _arr(keccak256("minted-from-burn"));
+        vm.expectRevert(ConfidentialPool.NullifierAlreadySpent.selector);
+        pool.settle(abi.encode(pv2), "", new bytes[](1));
     }
 
     // ──────────────────── on-chain defense-in-depth (intra-batch) ────────────────────
