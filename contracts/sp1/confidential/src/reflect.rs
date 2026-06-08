@@ -17,7 +17,7 @@ sp1_zkvm::entrypoint!(main);
 
 use alloy_sol_types::sol;
 use alloy_sol_types::SolType;
-use cxfer_core::{bitcoin, confirm_pool_tx, outpoint_key, BurnWitness, OutputWitness, SpendWitness, WitnessedReflection};
+use cxfer_core::{bitcoin, confirm_pool_tx, nullifier, outpoint_key, BurnWitness, OutputWitness, SpendWitness, WitnessedReflection};
 use sp1_zkvm::io;
 
 const OP_TRANSFER: u8 = 0;
@@ -145,9 +145,14 @@ pub fn main() {
             OP_BRIDGE_OUT => {
                 let spend = read_spend();
                 assert!(in_outpoints.contains(&spend.outpoint), "burned outpoint is not a vin of the confirmed tx");
+                // 3.3: the destCommitment (and ν) are bound to the burn ENVELOPE, not witnessed —
+                // so a burn's Ethereum mint can't be redirected to a different destination.
+                let env = bitcoin::extract_taproot_envelope(&tx_data).expect("burn envelope present");
+                let (_asset, env_nu, env_dest) = bitcoin::parse_burn_envelope(&env).expect("malformed burn envelope");
+                assert_eq!(nullifier(&spend.cx, &spend.cy), env_nu, "burned note ν != the envelope's nullifier");
                 let burn = BurnWitness {
                     spend,
-                    dest_commitment: r32(),
+                    dest_commitment: env_dest,
                     b_low_key: r32(),
                     b_low_next: r32(),
                     b_low_value: r32(),

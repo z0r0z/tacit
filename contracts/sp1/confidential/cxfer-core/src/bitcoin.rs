@@ -163,6 +163,21 @@ pub fn parse_etch_meta(env: &[u8]) -> Option<([u8; 16], u8, u8)> {
     Some((ticker, tlen as u8, decimals))
 }
 
+/// Parse a confidential bridge-burn envelope (opcode 0x2B) → (assetId, nullifier,
+/// destCommitment). `env` is the payload from `extract_taproot_envelope` (env[0] = opcode).
+/// Layout: opcode(1) ‖ assetId(32) ‖ bitcoinPoolRoot(32) ‖ nullifier(32) ‖ destCommitment(32).
+/// The reflection prover binds a reflected bridge-out's destCommitment (and ν) to this, so a
+/// burn's Ethereum mint cannot be redirected to a different destination. None if malformed.
+pub fn parse_burn_envelope(env: &[u8]) -> Option<([u8; 32], [u8; 32], [u8; 32])> {
+    if env.len() < 129 || env[0] != 0x2B {
+        return None;
+    }
+    let asset: [u8; 32] = env[1..33].try_into().ok()?;
+    let nullifier: [u8; 32] = env[65..97].try_into().ok()?;
+    let dest: [u8; 32] = env[97..129].try_into().ok()?;
+    Some((asset, nullifier, dest))
+}
+
 /// Extract the Tacit Taproot envelope payload from vin[0].witness[1].
 /// Matches the format PUSH(32) xonly OP_CHECKSIG OP_FALSE OP_IF [pushes] OP_ENDIF,
 /// strips the "TACIT"||v1 frame, returns the payload starting at the opcode byte.
@@ -392,6 +407,15 @@ mod tests {
         assert_eq!(got[0], 0x2B, "opcode preserved at index 0");
         assert_eq!(got.len(), payload.len(), "payload round-trips");
         assert_eq!(&got[65..97], &[0x33u8; 32], "nullifier intact");
+
+        // the reflection prover parses (assetId, ν, destCommitment) out of it
+        let (asset, nu, dest) = parse_burn_envelope(&got).expect("burn parse");
+        assert_eq!(asset, [0x11u8; 32], "assetId");
+        assert_eq!(nu, [0x33u8; 32], "nullifier");
+        assert_eq!(dest, [0x44u8; 32], "destCommitment");
+        // wrong opcode / short payload reject
+        assert!(parse_burn_envelope(&[0x23u8; 129]).is_none(), "non-burn opcode rejected");
+        assert!(parse_burn_envelope(&got[..128]).is_none(), "truncated payload rejected");
     }
 
     #[test]
