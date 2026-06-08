@@ -29,6 +29,10 @@ function prefixUpperBound(prefix) {
 export async function createPgDriver(databaseUrl, { max = 10 } = {}) {
   const { default: pg } = await import('pg');
   const pool = new pg.Pool({ connectionString: databaseUrl, max });
+  // Without this listener, an idle client dropping (Render recycling a
+  // connection, a network blip) re-emits as an unhandled error and crashes the
+  // process; log and swallow so the pool just reconnects on the next query.
+  pool.on('error', (err) => console.error('[pg-pool] idle client error (recovering):', err.code || err.message));
   await pool.query(SCHEMA);
 
   const rowOut = (r) => ({
@@ -55,6 +59,30 @@ export async function createPgDriver(databaseUrl, { max = 10 } = {}) {
         [ns, key, value, metadata == null ? null : JSON.stringify(metadata),
          expiresAt == null ? null : new Date(expiresAt)],
       );
+    },
+
+    // Batched upsert for snapshot import: one multi-row INSERT per call.
+    async putMany(rows) {
+      if (!rows.length) return 0;
+      const sep = String.fromCharCode(0);           // NUL joins (ns,key); appears in neither, so no collisions
+      const seen = new Map();                        // last write wins on a duplicate (ns,key) within the batch
+      for (const r of rows) seen.set(r.ns + sep + r.key, r);
+      const uniq = [...seen.values()];
+      const tuples = [];
+      const params = [];
+      let i = 1;
+      for (const r of uniq) {
+        tuples.push(`($${i++},$${i++},$${i++},$${i++},$${i++})`);
+        params.push(r.ns, r.key, r.value,
+          r.metadata == null ? null : JSON.stringify(r.metadata),
+          r.expiresAt == null ? null : new Date(r.expiresAt));
+      }
+      await pool.query(
+        `INSERT INTO kv (ns, k, v, metadata, expires_at) VALUES ${tuples.join(',')}
+         ON CONFLICT (ns, k) DO UPDATE SET v = EXCLUDED.v, metadata = EXCLUDED.metadata, expires_at = EXCLUDED.expires_at`,
+        params,
+      );
+      return uniq.length;
     },
 
     async delete(ns, key) {
