@@ -803,6 +803,12 @@ pub struct ReflectionState {
     pub notes: KeccakTreeAccumulator,
     pub spent: ImtAccumulator,
     pub utxo: UtxoAccumulator,
+    /// Bridge-OUT set: key = ν, value = destCommitment, populated ONLY for cross-chain
+    /// burns (OP_ENV_CONF_BURN). bridge_mint proves membership HERE (not in `spent`), so a
+    /// note merely spent on Bitcoin in an ordinary transfer cannot be minted on Ethereum —
+    /// only a note explicitly burned for the bridge can, and bound to its declared
+    /// destCommitment. Closes the spent-vs-burned inflation conflation.
+    pub bridge_burns: UtxoAccumulator,
     pub height: u64,
 }
 
@@ -820,6 +826,7 @@ impl ReflectionState {
             notes: KeccakTreeAccumulator::new(),
             spent: ImtAccumulator::new(),
             utxo: UtxoAccumulator::new(),
+            bridge_burns: UtxoAccumulator::new(),
             height: 0,
         }
     }
@@ -868,6 +875,32 @@ impl ReflectionState {
         self.height = height;
     }
 
+    /// Fold one confirmed cross-chain BURN (OP_ENV_CONF_BURN): the input note is consumed
+    /// (spent + UTXO removed, like any spend) AND recorded in the bridge-burn set as
+    /// `ν → destCommitment`. Only burns reach `bridge_burns`, so a `bridge_mint` proving
+    /// membership there cannot be satisfied by an ordinary transfer's ν, and is bound to
+    /// the destination the burn declared. `height` must strictly increase.
+    pub fn apply_bridge_out(
+        &mut self,
+        outpoint: &[u8; 32],
+        nu: &[u8; 32],
+        dest_commitment: &[u8; 32],
+        height: u64,
+    ) {
+        assert!(height > self.height, "reflection height must strictly increase");
+        assert!(self.utxo.get(outpoint).is_some(), "bridge-out outpoint not a live UTXO");
+        self.spent.insert(nu);
+        self.utxo.remove(outpoint);
+        self.bridge_burns.insert(nu, dest_commitment);
+        self.height = height;
+    }
+
+    /// The bridge-burn set root — the relay attests it as `bitcoinBurnRoot`, and the
+    /// guest's `bridge_mint` proves membership of `(ν → destCommitment)` against it.
+    pub fn bridge_burn_root(&self) -> [u8; 32] {
+        self.bridge_burns.root()
+    }
+
     /// The committed reflection roots: (bitcoinPoolRoot, bitcoinSpentRoot, bitcoinHeight).
     /// The spent root is always non-zero (the empty-IMT sentinel), so the contract
     /// accepts it and the cross-lane gate never goes vacuous.
@@ -888,7 +921,7 @@ impl ReflectionState {
         let (pool, spent, _) = self.commit();
         let mut h = [0u8; 32];
         h[24..].copy_from_slice(&self.height.to_be_bytes());
-        kn(&[&pool, &spent, &self.utxo.root(), &h])
+        kn(&[&pool, &spent, &self.utxo.root(), &self.bridge_burns.root(), &h])
     }
 }
 
@@ -1330,5 +1363,37 @@ mod tests {
         assert_eq!(s.notes.next_index(), 2, "two note leaves appended");
         let (_, _, h2) = s.commit();
         assert_eq!(h2, 800_001);
+    }
+
+    // H-1: bridge_mint must authorize only against the bridge-burn set, not the all-spends
+    // set. An ordinary Bitcoin spend's ν enters `spent` but NOT `bridge_burns`, so it has no
+    // bridge-burn membership (bridge_mint can't mint it). A cross-chain burn's ν enters BOTH,
+    // and `bridge_burns` binds it to the declared destCommitment.
+    #[test]
+    fn bridge_burn_set_excludes_ordinary_spends() {
+        let op_a = arr32("0x00000000000000000000000000000000000000000000000000000000000000a1");
+        let op_b = arr32("0x00000000000000000000000000000000000000000000000000000000000000b2");
+        let ch = arr32("0x00000000000000000000000000000000000000000000000000000000000000c0");
+        let leaf_x = arr32("0x1111111111111111111111111111111111111111111111111111111111111111");
+        let nu_ord = arr32("0x0000000000000000000000000000000000000000000000000000000000000041"); // ordinary spend ν
+        let nu_brn = arr32("0x0000000000000000000000000000000000000000000000000000000000000042"); // bridge-out ν
+        let dest = arr32("0x2222222222222222222222222222222222222222222222222222222222222222"); // destCommitment
+
+        let mut s = ReflectionState::genesis();
+        // two outputs → two live UTXOs
+        s.apply_transfer(&[], &[(op_a, leaf_x, ch), (op_b, leaf_x, ch)], 900_000);
+
+        // op_a spent in an ORDINARY transfer; op_b BURNED for the bridge
+        s.apply_transfer(&[(op_a, nu_ord)], &[], 900_001);
+        s.apply_bridge_out(&op_b, &nu_brn, &dest, 900_002);
+
+        // both ν are spent (cross-lane serialization holds for both)
+        assert!(s.spent.non_membership_low(&nu_ord).is_none(), "ordinary ν spent");
+        assert!(s.spent.non_membership_low(&nu_brn).is_none(), "burn ν spent");
+
+        // but ONLY the bridge-out's ν is in the bridge-burn set, bound to its destCommitment
+        assert_eq!(s.bridge_burns.get(&nu_ord), None, "ordinary spend NOT mintable (H-1)");
+        assert_eq!(s.bridge_burns.get(&nu_brn), Some(dest), "burn mintable, bound to dest");
+        assert_ne!(s.bridge_burn_root(), [0u8; 32], "burn root is the non-zero sentinel-seeded set");
     }
 }
