@@ -491,6 +491,27 @@ pub fn bind_spent_note(committed_value: &[u8; 32], cx: &[u8; 32], cy: &[u8; 32])
     if commitment_hash(cx, cy) != *committed_value { return None; }
     Some(nullifier(cx, cy))
 }
+
+/// Confirm one pool tx for the reflection prover and return `(txid, spent-outpoint keys)`.
+/// `verify_tx_in_block` ties the tx to a PoW block whose header the caller has checked is in
+/// the verified header chain; `extract_inputs` gives the tx's vins → `outpoint_key` each. A
+/// reflected spend's outpoint must be one of these (it's a real prior output the confirmed
+/// tx actually spends), and a reflected output's outpoint must be `outpoint_key(txid, vout)`
+/// (a real output of the confirmed tx). None if the tx isn't confirmed in the block or is
+/// malformed.
+pub fn confirm_pool_tx(
+    header: &[u8],
+    tx_data: &[u8],
+    tx_index: u32,
+    txids: &[[u8; 32]],
+) -> Option<([u8; 32], Vec<[u8; 32]>)> {
+    let txid = bitcoin::verify_tx_in_block(header, tx_data, tx_index, txids)?;
+    let outpoints = bitcoin::extract_inputs(tx_data)?
+        .iter()
+        .map(|(t, v)| outpoint_key(t, *v))
+        .collect();
+    Some((txid, outpoints))
+}
 /// deposit id = keccak(asset_id ‖ value_be32 ‖ Cx ‖ Cy ‖ owner) — binds the note's
 /// in-system value (the contract derives the same value = amount/unitScale at wrap, so
 /// value·unitScale == escrowed amount: the wrap-side no-inflation gate).
@@ -998,7 +1019,7 @@ impl ReflectionState {
     /// spends already as nullifiers) and advance to `height`. The simple, UTXO-agnostic
     /// path — the caller resolved inputs to ν itself. `height` must strictly increase.
     pub fn apply_block(&mut self, deposits: &[[u8; 32]], spends: &[[u8; 32]], height: u64) {
-        assert!(height > self.height, "reflection height must strictly increase");
+        assert!(height >= self.height, "reflection height must not decrease");
         for leaf in deposits {
             self.notes.append(leaf);
         }
@@ -1025,7 +1046,7 @@ impl ReflectionState {
         outputs: &[([u8; 32], [u8; 32], [u8; 32])],
         height: u64,
     ) {
-        assert!(height > self.height, "reflection height must strictly increase");
+        assert!(height >= self.height, "reflection height must not decrease");
         for (outpoint, nu) in inputs {
             assert!(self.utxo.get(outpoint).is_some(), "input outpoint not a live UTXO");
             self.spent.insert(nu);
@@ -1050,7 +1071,7 @@ impl ReflectionState {
         dest_commitment: &[u8; 32],
         height: u64,
     ) {
-        assert!(height > self.height, "reflection height must strictly increase");
+        assert!(height >= self.height, "reflection height must not decrease");
         assert!(self.utxo.get(outpoint).is_some(), "bridge-out outpoint not a live UTXO");
         self.spent.insert(nu);
         self.utxo.remove(outpoint);
@@ -1236,7 +1257,7 @@ impl WitnessedReflection {
     /// Fold one confirmed transfer: spends first (so it can't spend an output it creates),
     /// then outputs. `height` must strictly increase. Mirrors ReflectionState::apply_transfer.
     pub fn apply_transfer(&mut self, spends: &[SpendWitness], outputs: &[OutputWitness], height: u64) -> Result<(), &'static str> {
-        if height <= self.height { return Err("reflection height must strictly increase"); }
+        if height < self.height { return Err("reflection height must not decrease"); }
         for s in spends { self.apply_spend(s)?; }
         for o in outputs { self.apply_output(o)?; }
         self.height = height;
@@ -1247,7 +1268,7 @@ impl WitnessedReflection {
     /// into the bridge-burn set (ν is the derived nullifier of the spent note). Mirrors
     /// ReflectionState::apply_bridge_out.
     pub fn apply_bridge_out(&mut self, b: &BurnWitness, height: u64) -> Result<(), &'static str> {
-        if height <= self.height { return Err("reflection height must strictly increase"); }
+        if height < self.height { return Err("reflection height must not decrease"); }
         let nu = self.apply_spend(&b.spend)?;
         self.burn_root = utxo_insert_transition(
             &self.burn_root, &nu, &b.dest_commitment, &b.b_low_key, &b.b_low_next, &b.b_low_value,
@@ -1988,8 +2009,9 @@ mod tests {
         assert_eq!(w.commit(), (st.notes.root(), st.spent.root(), 102));
         assert_eq!(w.burn_root, st.bridge_burns.root());
         assert_ne!(w.digest(), [0u8; 32], "resumption digest is well-defined");
-        // height must strictly increase
-        assert!(w.apply_transfer(&[], &[], 102).is_err(), "non-increasing height rejected");
+        // height must not decrease (same-block effects share a height; a rollback is rejected)
+        w.apply_transfer(&[], &[], 102).expect("same height allowed (same-block effects)");
+        assert!(w.apply_transfer(&[], &[], 101).is_err(), "height decrease (rollback) rejected");
     }
 
     // Phase 3.2: ν is BOUND to the outpoint's committed note — a spend can't fabricate a ν
@@ -2015,5 +2037,29 @@ mod tests {
         let mut bad = build_spend_witness(&st.spent, &st.utxo, cx, cy, op);
         bad.cx = v(0xdead); // no longer opens com
         assert!(w.apply_transfer(&[bad], &[], 2).is_err(), "spend with unbound ν is rejected");
+    }
+
+    // Phase 3.2 #2/#3: confirm_pool_tx ties an effect to a real confirmed Bitcoin tx — the tx
+    // is in a PoW block (verify_tx_in_block) and its vins become the only outpoints a reflected
+    // spend may claim (outpoint_key over extract_inputs). Uses the real bridge_mint block.
+    #[test]
+    fn confirm_pool_tx_binds_real_block() {
+        let f: serde_json::Value = serde_json::from_str(include_str!("../../fixtures/btc_block.json")).unwrap();
+        let header = hex::decode(strip(f["header"].as_str().unwrap())).unwrap();
+        let tx = hex::decode(strip(f["tx"].as_str().unwrap())).unwrap();
+        let tx_index = f["txIndex"].as_u64().unwrap() as u32;
+        let txids: Vec<[u8; 32]> = f["txids"].as_array().unwrap().iter().map(|v| arr32(v.as_str().unwrap())).collect();
+
+        let (txid, in_outpoints) = confirm_pool_tx(&header, &tx, tx_index, &txids).expect("confirmed");
+        assert_eq!(txid, bitcoin::compute_txid(&tx), "returns the confirmed txid");
+        assert!(!in_outpoints.is_empty(), "tx has spent outpoints");
+        // each bound outpoint is outpoint_key of a real vin
+        let vins = bitcoin::extract_inputs(&tx).unwrap();
+        assert_eq!(in_outpoints.len(), vins.len(), "one bound outpoint per vin");
+        assert_eq!(in_outpoints[0], outpoint_key(&vins[0].0, vins[0].1), "outpoint = key(vin)");
+        // a tampered tx (txid no longer in the block) is not confirmable
+        let mut bad = tx.clone();
+        let n = bad.len(); bad[n - 1] ^= 1;
+        assert!(confirm_pool_tx(&header, &bad, tx_index, &txids).is_none(), "tampered tx rejected");
     }
 }

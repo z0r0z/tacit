@@ -17,7 +17,7 @@ sp1_zkvm::entrypoint!(main);
 
 use alloy_sol_types::sol;
 use alloy_sol_types::SolType;
-use cxfer_core::{bitcoin, BurnWitness, OutputWitness, SpendWitness, WitnessedReflection};
+use cxfer_core::{bitcoin, confirm_pool_tx, outpoint_key, BurnWitness, OutputWitness, SpendWitness, WitnessedReflection};
 use sp1_zkvm::io;
 
 const OP_TRANSFER: u8 = 0;
@@ -96,8 +96,10 @@ pub fn main() {
     let mut state = read_prior_state();
     let prior_digest = state.digest();
 
-    // Header-chain PoW: the batch's headers are a valid difficulty-respecting chain. The tip
-    // height is the confirmation frontier the folded effects must land at or below.
+    // Header-chain PoW: the batch's headers are a valid difficulty-respecting chain anchored
+    // at `anchor_height` (the contract checks headers[0] == the relay tip). Each effect cites
+    // a block by index; its confirmed height is anchor_height + block_index.
+    let anchor_height: u64 = io::read();
     let num_headers: u32 = io::read();
     let headers: Vec<Vec<u8>> = (0..num_headers).map(|_| io::read()).collect();
     if num_headers > 0 {
@@ -105,22 +107,46 @@ pub fn main() {
         assert!(bitcoin::verify_header_chain(&refs).is_some(), "invalid Bitcoin header chain");
     }
 
-    // Fold the batch's confirmed Δ-effects through the witnessed transitions.
+    // Fold the batch's confirmed Δ-effects through the witnessed transitions. Each effect is
+    // bound to a confirmed Bitcoin tx: confirm_pool_tx ties it to a PoW block in the chain
+    // (verify_tx_in_block), every spent outpoint must be a real vin of that tx (extract_inputs),
+    // and every output outpoint must be a real vout (outpoint_key(txid, vout)).
     let num_effects: u32 = io::read();
     for _ in 0..num_effects {
         let op: u8 = io::read();
-        let height: u64 = io::read();
+        let block_index: u32 = io::read();
+        let tx_data: Vec<u8> = io::read();
+        let tx_index: u32 = io::read();
+        let n_txids: u32 = io::read();
+        let txids: Vec<[u8; 32]> = (0..n_txids).map(|_| r32()).collect();
+        assert!((block_index as usize) < headers.len(), "block index outside the verified chain");
+        let (txid, in_outpoints) = confirm_pool_tx(&headers[block_index as usize], &tx_data, tx_index, &txids)
+            .expect("effect tx not confirmed in its block");
+        let height = anchor_height + block_index as u64;
+
         match op {
             OP_TRANSFER => {
                 let n_in: u32 = io::read();
                 let m_out: u32 = io::read();
                 let spends: Vec<SpendWitness> = (0..n_in).map(|_| read_spend()).collect();
-                let outputs: Vec<OutputWitness> = (0..m_out).map(|_| read_output()).collect();
+                for s in &spends {
+                    assert!(in_outpoints.contains(&s.outpoint), "spent outpoint is not a vin of the confirmed tx");
+                }
+                let outputs: Vec<OutputWitness> = (0..m_out)
+                    .map(|_| {
+                        let o = read_output();
+                        let vout: u32 = io::read();
+                        assert_eq!(outpoint_key(&txid, vout), o.outpoint, "output outpoint is not a vout of the confirmed tx");
+                        o
+                    })
+                    .collect();
                 state.apply_transfer(&spends, &outputs, height).expect("transfer fold");
             }
             OP_BRIDGE_OUT => {
+                let spend = read_spend();
+                assert!(in_outpoints.contains(&spend.outpoint), "burned outpoint is not a vin of the confirmed tx");
                 let burn = BurnWitness {
-                    spend: read_spend(),
+                    spend,
                     dest_commitment: r32(),
                     b_low_key: r32(),
                     b_low_next: r32(),
