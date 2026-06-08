@@ -479,6 +479,18 @@ pub fn nullifier(cx: &[u8; 32], cy: &[u8; 32]) -> [u8; 32] { kn(&[cx, cy, b"spen
 /// commitment. The reflection prover stores this when an output lands and, on spend,
 /// re-opens it to derive ν — so a spend's ν is forced to be the note actually at that outpoint.
 pub fn commitment_hash(cx: &[u8; 32], cy: &[u8; 32]) -> [u8; 32] { kn(&[cx, cy]) }
+/// The commitment_hash of a COMPRESSED secp256k1 commitment, as a CXFER envelope carries it:
+/// decompress → affine (Cx,Cy) → keccak(Cx,Cy). The reflection prover binds each output note's
+/// stored UTXO value to the envelope's declared commitment, so a fake/unbacked note (with a
+/// commitment the confirmed tx never declared) cannot enter the pool. None if not a curve point.
+pub fn commitment_hash_compressed(compressed: &[u8; 33]) -> Option<[u8; 32]> {
+    let enc = decompress(compressed)?.to_affine().to_encoded_point(false);
+    let b = enc.as_bytes();
+    if b.len() != 65 { return None; }
+    let cx: [u8; 32] = b[1..33].try_into().ok()?;
+    let cy: [u8; 32] = b[33..65].try_into().ok()?;
+    Some(commitment_hash(&cx, &cy))
+}
 /// The UTXO-set key for a Bitcoin outpoint: keccak(txid ‖ vout_le). The reflection prover
 /// derives this from a confirmed tx's vin (`extract_inputs`), so a spent outpoint is forced
 /// to be a real prior output and not a witnessed value.
@@ -2037,6 +2049,23 @@ mod tests {
         let mut bad = build_spend_witness(&st.spent, &st.utxo, cx, cy, op);
         bad.cx = v(0xdead); // no longer opens com
         assert!(w.apply_transfer(&[bad], &[], 2).is_err(), "spend with unbound ν is rejected");
+    }
+
+    // Phase 3.3b: a CXFER output's stored commitment_hash equals the envelope's compressed
+    // commitment decompressed — so a reflected output is the note the confirmed tx declared,
+    // not a fabricated (unbacked) one. Uses a real curve point from the bridge_burn fixture.
+    #[test]
+    fn commitment_hash_compressed_matches_coords() {
+        let f: serde_json::Value = serde_json::from_str(include_str!("../../fixtures/bridge_burn.json")).unwrap();
+        let c = &f["crossOuts"][0];
+        let cx = arr32(c["cx"].as_str().unwrap());
+        let cy = arr32(c["cy"].as_str().unwrap());
+        let compressed: [u8; 33] = from_affine_xy(&cx, &cy).expect("valid point")
+            .to_affine().to_encoded_point(true).as_bytes().try_into().unwrap();
+        assert_eq!(commitment_hash_compressed(&compressed), Some(commitment_hash(&cx, &cy)),
+            "compressed commitment → the same commitment_hash as its (Cx,Cy)");
+        // a non-point (bad prefix) is rejected
+        assert_eq!(commitment_hash_compressed(&[0x09u8; 33]), None, "not a curve point");
     }
 
     // Phase 3.2 #2/#3: confirm_pool_tx ties an effect to a real confirmed Bitcoin tx — the tx

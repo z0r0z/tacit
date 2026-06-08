@@ -17,7 +17,7 @@ sp1_zkvm::entrypoint!(main);
 
 use alloy_sol_types::sol;
 use alloy_sol_types::SolType;
-use cxfer_core::{bitcoin, confirm_pool_tx, nullifier, outpoint_key, BurnWitness, OutputWitness, SpendWitness, WitnessedReflection};
+use cxfer_core::{bitcoin, commitment_hash_compressed, confirm_pool_tx, nullifier, outpoint_key, BurnWitness, OutputWitness, SpendWitness, WitnessedReflection};
 use sp1_zkvm::io;
 
 const OP_TRANSFER: u8 = 0;
@@ -126,17 +126,23 @@ pub fn main() {
 
         match op {
             OP_TRANSFER => {
+                // 3.3b: the output note commitments are bound to the CXFER envelope — a note the
+                // confirmed tx never declared can't enter the pool (no fabricated/unbacked notes).
+                let env = bitcoin::extract_taproot_envelope(&tx_data).expect("cxfer envelope present");
+                let (_asset, commitments) = bitcoin::parse_cxfer_envelope(&env).expect("malformed cxfer envelope");
                 let n_in: u32 = io::read();
                 let m_out: u32 = io::read();
+                assert_eq!(m_out as usize, commitments.len(), "output count != envelope commitment count");
                 let spends: Vec<SpendWitness> = (0..n_in).map(|_| read_spend()).collect();
                 for s in &spends {
                     assert!(in_outpoints.contains(&s.outpoint), "spent outpoint is not a vin of the confirmed tx");
                 }
                 let outputs: Vec<OutputWitness> = (0..m_out)
-                    .map(|_| {
+                    .map(|j| {
                         let o = read_output();
                         let vout: u32 = io::read();
                         assert_eq!(outpoint_key(&txid, vout), o.outpoint, "output outpoint is not a vout of the confirmed tx");
+                        assert_eq!(commitment_hash_compressed(&commitments[j as usize]), Some(o.commitment_hash), "output commitment != the envelope's");
                         o
                     })
                     .collect();

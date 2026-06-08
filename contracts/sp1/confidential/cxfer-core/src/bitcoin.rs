@@ -178,6 +178,35 @@ pub fn parse_burn_envelope(env: &[u8]) -> Option<([u8; 32], [u8; 32], [u8; 32])>
     Some((asset, nullifier, dest))
 }
 
+/// Parse a confidential-transfer envelope (opcode 0x23) → (assetId, the N output commitments
+/// as compressed secp256k1 points). Layout: opcode(1) ‖ assetId(32) ‖ kernel_sig(64) ‖
+/// N(1, ∈ {1,2,4,8}) ‖ N×(commitment(33) ‖ amount_ct(8)) ‖ rpLen(2 LE) ‖ rangeProof. The
+/// reflection prover binds each reflected output's stored commitment to one of these, so a
+/// note the confirmed tx never declared can't enter the pool. None if malformed.
+pub fn parse_cxfer_envelope(env: &[u8]) -> Option<([u8; 32], Vec<[u8; 33]>)> {
+    if env.len() < 1 + 32 + 64 + 1 || env[0] != 0x23 {
+        return None;
+    }
+    let asset: [u8; 32] = env[1..33].try_into().ok()?;
+    let mut p = 1 + 32 + 64;
+    let n = env[p] as usize;
+    p += 1;
+    if ![1usize, 2, 4, 8].contains(&n) || p + n * (33 + 8) + 2 > env.len() {
+        return None;
+    }
+    let mut commitments = Vec::with_capacity(n);
+    for _ in 0..n {
+        commitments.push(env[p..p + 33].try_into().ok()?);
+        p += 33 + 8; // commitment + amount_ct
+    }
+    let rp_len = (env[p] as usize) | ((env[p + 1] as usize) << 8);
+    p += 2;
+    if p + rp_len != env.len() {
+        return None;
+    }
+    Some((asset, commitments))
+}
+
 /// Extract the Tacit Taproot envelope payload from vin[0].witness[1].
 /// Matches the format PUSH(32) xonly OP_CHECKSIG OP_FALSE OP_IF [pushes] OP_ENDIF,
 /// strips the "TACIT"||v1 frame, returns the payload starting at the opcode byte.
@@ -416,6 +445,31 @@ mod tests {
         // wrong opcode / short payload reject
         assert!(parse_burn_envelope(&[0x23u8; 129]).is_none(), "non-burn opcode rejected");
         assert!(parse_burn_envelope(&got[..128]).is_none(), "truncated payload rejected");
+    }
+
+    #[test]
+    fn parses_cxfer_envelope_outputs() {
+        // opcode ‖ assetId(32) ‖ kernel_sig(64) ‖ N ‖ N×(commitment33 ‖ amount8) ‖ rpLen ‖ rp
+        let mut env = vec![0x23u8];
+        env.extend_from_slice(&[0xAAu8; 32]);
+        env.extend_from_slice(&[0xBBu8; 64]);
+        env.push(2); // N = 2
+        let c0 = [0x02u8; 33];
+        let c1 = [0x03u8; 33];
+        env.extend_from_slice(&c0); env.extend_from_slice(&[0u8; 8]);
+        env.extend_from_slice(&c1); env.extend_from_slice(&[0u8; 8]);
+        let rp = [0x77u8; 5];
+        env.extend_from_slice(&(rp.len() as u16).to_le_bytes());
+        env.extend_from_slice(&rp);
+
+        let (asset, comms) = parse_cxfer_envelope(&env).expect("cxfer parse");
+        assert_eq!(asset, [0xAAu8; 32], "assetId");
+        assert_eq!(comms, vec![c0, c1], "the two output commitments");
+        // wrong opcode / invalid N / wrong length reject
+        let mut bad = env.clone(); bad[0] = 0x2B;
+        assert!(parse_cxfer_envelope(&bad).is_none(), "non-cxfer opcode");
+        let mut badn = env.clone(); badn[97] = 3;
+        assert!(parse_cxfer_envelope(&badn).is_none(), "invalid output count");
     }
 
     #[test]
