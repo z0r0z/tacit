@@ -218,6 +218,21 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
   // The UTXO-set value for a note: keccak(Cx ‖ Cy) — what the reflection prover stores at an
   // outpoint and re-opens to derive ν. Mirrors cxfer-core::commitment_hash.
   const commitmentHash = (cx, cy) => hx(keccak(cx, cy));
+  // Decompress a 33-byte secp commitment (as a CXFER envelope carries it) → its (Cx,Cy) — the
+  // reflection indexer resolves output notes' coords this way. Mirrors cxfer-core decompress→affine.
+  const decompressCommitment = (compressed) => {
+    const h = (typeof compressed === 'string') ? compressed.replace(/^0x/, '') : bytesToHex(compressed);
+    const a = secp.ProjectivePoint.fromHex(h).toAffine();
+    return { cx: hx(beBytes(a.x)), cy: hx(beBytes(a.y)) };
+  };
+  // Compress an affine (Cx,Cy) → its 33-byte form (inverse of decompressCommitment) — the wire
+  // form a CXFER envelope carries; used to build test fixtures + round-trip checks.
+  const compressXY = (cx, cy) => hx(secp.ProjectivePoint.fromAffine({ x: BigInt(cx), y: BigInt(cy) }).toRawBytes(true));
+  // The reflection prover's outpoint key: keccak(txid ‖ vout_le). Mirrors cxfer-core::outpoint_key.
+  const outpointKey = (txid, vout) => {
+    const v = new Uint8Array(4); new DataView(v.buffer).setUint32(0, vout, true);
+    return hx(keccak256(concat([b32(txid), v])));
+  };
   const u64be = (n) => beBytes(n, 32); // a u64 as a 32-byte big-endian word (digest encoding)
 
   // ── Reflection state (the Bitcoin-indexer / reflection-prover side) ──
@@ -406,7 +421,8 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     prover, TREE_DEPTH, zeros: zeros.map(hx),
     commitXY, deriveNote, leaf, nullifier, depositId, Tree, verifyPath, merklePath, merkleRootFrom,
     imtLeaf, imtRoot, imtEmptyRoot, makeImtAccumulator,
-    utxoLeaf, makeUtxoAccumulator, commitmentHash, makeReflectionState, assembleReflectionInput,
+    utxoLeaf, makeUtxoAccumulator, commitmentHash, decompressCommitment, compressXY, outpointKey,
+    makeReflectionState, assembleReflectionInput,
     _internal: { keccak, concat, b32, beBytes, hx },
   };
 }
