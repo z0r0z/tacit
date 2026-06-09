@@ -360,15 +360,32 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     ///         burned on wrap. No escrow: the pool is the single supply authority.
     function registerMinted(
         address canonicalErc20,
-        uint256 unitScale,
         bytes32 crossChainLink,
         string calldata name_,
         string calldata symbol_,
-        uint8 decimals_
+        uint8 tacitDecimals
     ) external returns (bytes32 assetId) {
         // The pool must be able to mint/burn this ERC20, else the asset can never exit.
         if (IMintBurn(canonicalErc20).MINTER() != address(this)) revert PoolNotMinter();
-        return _register(canonicalErc20, unitScale, crossChainLink, true, name_, symbol_, decimals_);
+        // unitScale is DERIVED, never operator-chosen: the canonical ERC20 is at ETH_DECIMALS and
+        // value·unitScale maps the note's native-precision value to base units. A free scale could
+        // only be wrong, and a too-large one would over-mint on a bridged unwrap (the contract
+        // mints value·storedScale); deriving it is the same rule registerMintedAuto uses.
+        if (tacitDecimals > ETH_DECIMALS) revert BadDecimals();
+        if (IERC20Metadata(canonicalErc20).decimals() != ETH_DECIMALS) revert BadDecimals();
+        uint256 unitScale = 10 ** uint256(ETH_DECIMALS - tacitDecimals);
+        // A cross-chain link governs which token every bridged unwrap of `crossChainLink` resolves
+        // to (localAssetOf, first-write-wins, no admin). Bind it to the factory-canonical token for
+        // (link, this pool, symbol, ETH_DECIMALS) — fail closed if the factory isn't wired — so the
+        // shared id can't be squatted to a foreign/attacker token. Unlinked assets (crossChainLink
+        // == 0) never enter localAssetOf, so they carry no bridged-resolution risk.
+        if (crossChainLink != bytes32(0)) {
+            if (address(CANONICAL_FACTORY) == address(0)) revert CrossChainTokenMismatch();
+            if (canonicalErc20 != CANONICAL_FACTORY.tokenOf(crossChainLink, address(this), symbol_, ETH_DECIMALS)) {
+                revert CrossChainTokenMismatch();
+            }
+        }
+        return _register(canonicalErc20, unitScale, crossChainLink, true, name_, symbol_, ETH_DECIMALS);
     }
 
     /// @notice Register a Tacit-native asset by its cross-chain `tacitAssetId`, lazily

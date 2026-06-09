@@ -37,6 +37,7 @@ contract ConfidentialPoolTest is Test {
     MockSP1Verifier verifier;
     MockERC20 token;
     bytes32 assetId;
+    CanonicalAssetFactory factory;
 
     address constant USER = address(0xA11CE);
     address constant RECIP = address(0xB0B);
@@ -47,7 +48,8 @@ contract ConfidentialPoolTest is Test {
     function setUp() public {
         vm.chainId(1);
         verifier = new MockSP1Verifier();
-        pool = new ConfidentialPool(address(verifier), VKEY, RELAY_VKEY, address(0));
+        factory = new CanonicalAssetFactory();
+        pool = new ConfidentialPool(address(verifier), VKEY, RELAY_VKEY, address(factory));
         token = new MockERC20();
         assetId = pool.registerWrapped(address(token), 1, bytes32(0), "Conf Mock", "cMCK", 18);
 
@@ -740,12 +742,13 @@ contract ConfidentialPoolTest is Test {
     /// single supply authority. Round-trip: unwrap → mint ERC20 (public); wrap →
     /// burn ERC20 (confidential).
     function test_pool_minted_asset_exit_and_reenter() public {
-        CanonicalAssetFactory fac = new CanonicalAssetFactory();
         bytes32 canonId = keccak256("TAC");
         CanonicalBridgedERC20 tac = CanonicalBridgedERC20(
-            fac.deployCanonical(canonId, address(pool), "TAC", 18) // MINTER = the pool
+            factory.deployCanonical(canonId, address(pool), "TAC", 18) // MINTER = the pool
         );
-        bytes32 a = pool.registerMinted(address(tac), 1, canonId, "Conf TAC", "cTAC", 18);
+        // unitScale is derived (tacitDecimals == ETH_DECIMALS ⇒ 1); the link binds to the
+        // factory-canonical token for (canonId, pool, "TAC", 18).
+        bytes32 a = pool.registerMinted(address(tac), canonId, "Conf TAC", "TAC", 18);
 
         // EXIT: an unwrap pays out by MINTING the canonical ERC20 to the recipient.
         ConfidentialPool.PublicValues memory pv = _pv();
@@ -960,10 +963,9 @@ contract ConfidentialPoolTest is Test {
     /// withdrawal speaks the shared id resolves to the local entry and mints. Without the
     /// link the shared id has no registry entry and the bridged value would be locked (H-2).
     function test_bridged_note_unwraps_via_shared_id() public {
-        CanonicalAssetFactory factory = new CanonicalAssetFactory();
         bytes32 shared = keccak256("shared-btc-asset");
-        address tok = factory.deployCanonical(shared, address(pool), "cBTC", 8);
-        bytes32 localId = pool.registerMinted(tok, 1, shared, "Conf cBTC", "ccBTC", 8);
+        address tok = factory.deployCanonical(shared, address(pool), "cBTC", 18);
+        bytes32 localId = pool.registerMinted(tok, shared, "Conf cBTC", "cBTC", 18);
         assertEq(pool.localAssetOf(shared), localId, "shared id linked to local entry");
 
         ConfidentialPool.PublicValues memory pv = _pv();
@@ -984,20 +986,46 @@ contract ConfidentialPoolTest is Test {
     /// A cross-chain link is accepted only if the token commits to it (ASSET_ID == link),
     /// so an unrelated token cannot be linked to a victim's shared id.
     function test_cross_chain_link_requires_matching_asset_id() public {
-        CanonicalAssetFactory factory = new CanonicalAssetFactory();
-        address tok = factory.deployCanonical(keccak256("token-id"), address(pool), "cBTC", 8);
+        address tok = factory.deployCanonical(keccak256("token-id"), address(pool), "cBTC", 18);
         vm.expectRevert(ConfidentialPool.CrossChainTokenMismatch.selector);
-        pool.registerMinted(tok, 1, keccak256("DIFFERENT-shared-id"), "x", "x", 8);
+        pool.registerMinted(tok, keccak256("DIFFERENT-shared-id"), "x", "cBTC", 18);
     }
 
-    /// First-write-wins: once a shared id is linked it cannot be re-claimed (squat-resistant).
+    /// First-write-wins: once a shared id is linked it cannot be re-claimed. Because the scale is
+    /// now derived and the link is bound to the factory-canonical token, a front-run lands a real
+    /// canonical token with the correct scale (at worst a different symbol) — never a poisoned
+    /// scale or a foreign/attacker token.
     function test_cross_chain_link_first_write_wins() public {
-        CanonicalAssetFactory factory = new CanonicalAssetFactory();
         bytes32 shared = keccak256("contested-id");
-        address tokA = factory.deployCanonical(shared, address(pool), "AAA", 8);
-        pool.registerMinted(tokA, 1, shared, "x", "AAA", 8);
-        address tokB = factory.deployCanonical(shared, address(pool), "BBB", 8);
+        address tokA = factory.deployCanonical(shared, address(pool), "AAA", 18);
+        pool.registerMinted(tokA, shared, "x", "AAA", 18);
+        address tokB = factory.deployCanonical(shared, address(pool), "BBB", 18);
         vm.expectRevert(ConfidentialPool.CrossChainLinkTaken.selector);
-        pool.registerMinted(tokB, 1, shared, "x", "BBB", 8);
+        pool.registerMinted(tokB, shared, "x", "BBB", 18);
+    }
+
+    /// F1 regression: registerMinted DERIVES the scale, so a registrant cannot pick an inflating
+    /// one. A bridged unwrap of `value` pays exactly `value · 10^(ETH_DECIMALS − tacitDecimals)`.
+    function test_registerMinted_derives_scale_no_inflation() public {
+        bytes32 shared = keccak256("derive-scale");
+        // 8-decimal native asset → 18-decimal canonical token → scale 10^10.
+        address tok = factory.deployCanonical(shared, address(pool), "cD", 18);
+        bytes32 a = pool.registerMinted(tok, shared, "Conf D", "cD", 8);
+        (, , uint256 unitScale, , , , , ) = pool.assets(a);
+        assertEq(unitScale, 10 ** 10, "scale derived 10^(18-8), not registrant-chosen");
+        ConfidentialPool.PublicValues memory pv = _pv();
+        pv.withdrawals = new ConfidentialPool.Withdrawal[](1);
+        pv.withdrawals[0] = ConfidentialPool.Withdrawal(shared, RECIP, 3); // value 3
+        _settle(pv);
+        assertEq(CanonicalBridgedERC20(tok).balanceOf(RECIP), 3 * 10 ** 10, "payout = value * derived scale");
+    }
+
+    /// F1 regression: a cross-chain link cannot be bound to a token that is not the factory-canonical
+    /// one for (link, pool, symbol, ETH_DECIMALS) — so a bridged id can't be squatted to attacker code.
+    function test_cross_chain_link_rejects_foreign_token() public {
+        bytes32 shared = keccak256("foreign-token-id");
+        MockMinterToken foreign = new MockMinterToken(address(pool)); // MINTER == pool, but not canonical
+        vm.expectRevert();
+        pool.registerMinted(address(foreign), shared, "x", "EVL", 18);
     }
 }

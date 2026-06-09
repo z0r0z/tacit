@@ -73,7 +73,7 @@ contract CanonicalAssetFactoryTest is Test {
         CanonicalBridgedERC20 tok = _deploy(); // minter = MINTER, not the pool
         ConfidentialPool pool = new ConfidentialPool(address(0x5117), bytes32(uint256(1)), bytes32(0), address(0));
         vm.expectRevert(ConfidentialPool.PoolNotMinter.selector);
-        pool.registerMinted(address(tok), 1, ASSET, "x", "x", 8);
+        pool.registerMinted(address(tok), ASSET, "x", "x", 8);
     }
 
     /// The two faces: a canonical ERC20 (public) wraps into ConfidentialPool
@@ -85,7 +85,11 @@ contract CanonicalAssetFactoryTest is Test {
 
         // verifier address is a non-zero placeholder; wrap never calls it (only settle does).
         ConfidentialPool pool = new ConfidentialPool(address(0x5117), bytes32(uint256(1)), bytes32(0), address(0));
-        bytes32 poolAsset = pool.registerWrapped(address(tok), 1, ASSET, "Conf cBTC", "ccBTC", 8);
+        // Pure escrow custody (no cross-chain link): an externally-minted canonical token
+        // escrowed for its confidential face. A cross-chain link is reserved for pool-minted
+        // assets (where the pool is the supply authority backing bridge_mint), so escrowing
+        // one with a link is rejected — escrow can't back bridged supply.
+        bytes32 poolAsset = pool.registerWrapped(address(tok), 1, bytes32(0), "Conf cBTC", "ccBTC", 8);
 
         vm.prank(USER);
         tok.approve(address(pool), 100e8);
