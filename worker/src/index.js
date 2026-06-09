@@ -701,10 +701,22 @@ function checkDebugAuth(req, env) {
 // namespaced per network. Signet keys keep their legacy unprefixed form
 // (asset:<aid>) for backward compat; mainnet uses asset:mainnet:<aid>.
 const NETWORKS = ['signet', 'mainnet'];
-function networkApi(env, network) {
-  if (network === 'mainnet') return env.MAINNET_API || 'https://mempool.space/api';
-  return env.SIGNET_API || 'https://mempool.space/signet/api';
+// BTC API sources per network. MAINNET_API / SIGNET_API may be a single base or
+// a comma-separated list, tried in order. The two public defaults (mempool.space
+// + blockstream.info, both network-matched) are always appended as fallbacks so
+// a single blocked or rate-limited source self-heals without a redeploy. Signet
+// uses blockstream.info/signet (verified real signet data, not mainnet).
+function networkApis(env, network) {
+  const mp = network === 'mainnet' ? 'https://mempool.space/api'  : 'https://mempool.space/signet/api';
+  const bs = network === 'mainnet' ? 'https://blockstream.info/api' : 'https://blockstream.info/signet/api';
+  const list = String((network === 'mainnet' ? env.MAINNET_API : env.SIGNET_API) || mp)
+    .split(',').map(s => s.trim().replace(/\/+$/, '')).filter(Boolean);
+  for (const fb of [mp, bs]) if (!list.includes(fb)) list.push(fb);
+  return list.length ? list : [mp, bs];
 }
+// Primary base — for the direct callers (fresh-tx polling, batch fetchers) that
+// don't route through apiText/apiJson's multi-source fallback.
+function networkApi(env, network) { return networkApis(env, network)[0]; }
 function parseNetwork(value) {
   const v = String(value || '').toLowerCase();
   return v === 'mainnet' ? 'mainnet' : 'signet';
@@ -5616,15 +5628,35 @@ async function _fetchUpstreamWithAbortRetry(url, opts) {
     if (cleanup1) cleanup1();
   }
 }
+// Per-process preferred-source index per network. Once a source fails we keep
+// starting from the one that worked, so a blocked/slow upstream isn't re-probed
+// on every subsequent fetch (a full block is ~150 page fetches — re-trying a
+// dead source each time would make a scan time out). Self-corrects: if the
+// sticky source later fails it advances again.
+const _apiPref = { mainnet: 0, signet: 0 };
+async function apiFetch(env, network, path, opts = {}) {
+  const bases = networkApis(env, network);
+  const start = Math.min(Math.max(_apiPref[network] | 0, 0), bases.length - 1);
+  let lastErr;
+  for (let n = 0; n < bases.length; n++) {
+    const i = (start + n) % bases.length;
+    try {
+      const r = await _fetchUpstreamWithAbortRetry(`${bases[i]}${path}`, opts || {});
+      if (r.ok || (r.status < 500 && r.status !== 429)) { _apiPref[network] = i; return r; }
+      lastErr = new Error(`${network} source ${i} -> ${r.status}`);
+    } catch (e) {
+      lastErr = e;
+    }
+  }
+  throw lastErr || new Error(`${network}: all ${bases.length} sources failed`);
+}
 async function apiText(env, path, opts = {}, network = 'signet') {
-  const base = networkApi(env, network);
-  const r = await _fetchUpstreamWithAbortRetry(`${base}${path}`, opts || {});
+  const r = await apiFetch(env, network, path, opts);
   if (!r.ok) throw new Error(`${network} ${r.status}: ${(await r.text()).slice(0, 200)}`);
   return r.text();
 }
 async function apiJson(env, path, opts = {}, network = 'signet') {
-  const base = networkApi(env, network);
-  const r = await _fetchUpstreamWithAbortRetry(`${base}${path}`, opts || {});
+  const r = await apiFetch(env, network, path, opts);
   if (!r.ok) throw new Error(`${network} ${r.status}: ${(await r.text()).slice(0, 200)}`);
   return r.json();
 }
