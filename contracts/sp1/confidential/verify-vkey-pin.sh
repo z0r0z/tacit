@@ -35,9 +35,23 @@ if [ "$pin_sha" != "$act_sha" ]; then
   echo "  then redeploy ConfidentialPool with the new PROGRAM_VKEY."
   exit 1
 fi
-echo "PASS: confidential ELF sha256 matches pin ($act_sha)"
+echo "PASS: settle-guest ELF sha256 matches pin ($act_sha)"
+
+# Reflection prover ELF (the Bitcoin-state relay; built by the same cargo prove build) → BITCOIN_RELAY_VKEY.
+RELF="elf/reflection-prover"
+[ -f "$RELF" ] || { echo "FAIL: missing $RELF"; exit 1; }
+if command -v shasum >/dev/null 2>&1; then ract=$(shasum -a 256 "$RELF" | cut -d' ' -f1); else ract=$(sha256sum "$RELF" | cut -d' ' -f1); fi
+rpin=$(grep -oE '"reflection_elf_sha256"[[:space:]]*:[[:space:]]*"[0-9a-f]{64}"' "$PIN" | grep -oE '[0-9a-f]{64}')
+if [ "$rpin" != "$ract" ]; then
+  echo "FAIL: reflection ELF sha256 mismatch"
+  echo "  pinned:   $rpin"
+  echo "  computed: $ract"
+  echo "  If you rebuilt the guest, regenerate BITCOIN_RELAY_VKEY + update $PIN in the SAME commit, then redeploy."
+  exit 1
+fi
+echo "PASS: reflection ELF sha256 matches pin ($ract)"
 
 pin_vkey=$(grep -oE '"program_vkey"[[:space:]]*:[[:space:]]*"0x[0-9a-f]{64}"' "$PIN" | grep -oE '0x[0-9a-f]{64}')
-echo "PINNED program_vkey: $pin_vkey"
-echo "  (to re-derive on the prover host: rebuild guest then exec-swap.rs MODE=execute prints VKEY=...,"
-echo "   and a real Groth16 of this ELF verifies on-chain at this vkey — test/ConfidentialSwapProofReal.t.sol)"
+relay_vkey=$(grep -oE '"bitcoin_relay_vkey"[[:space:]]*:[[:space:]]*"0x[0-9a-f]{64}"' "$PIN" | grep -oE '0x[0-9a-f]{64}')
+echo "PINNED program_vkey:      $pin_vkey  (settle; ConfidentialSwapProofReal / ConfidentialProofReal)"
+echo "PINNED bitcoin_relay_vkey: $relay_vkey  (reflection; ConfidentialReflectionProofReal)"

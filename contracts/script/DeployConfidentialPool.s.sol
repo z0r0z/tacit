@@ -38,8 +38,9 @@ contract DeployConfidentialPool is Script {
         // Bitcoin pool root / spent-set (no trusted oracle). bytes32(0) deploys with
         // cross-chain attestation disabled. The reflection guest is GPU-proven + on-chain
         // verified (ConfidentialReflectionProofReal) at vkey
-        // 0x00116c0299a1093b9d25cc6e2728fae76ad03be1257b9dfbd00e6430d573303e — set
-        // BITCOIN_RELAY_VKEY to it once the worker produces reflection proofs continuously.
+        // 0x00be458f63109d0ad222e97053571dca5f64154ce9638a8278d57c2842256fda (pinned in
+        // sp1/confidential/elf-vkey-pin.json) — set BITCOIN_RELAY_VKEY to it once the worker
+        // produces reflection proofs continuously.
         bytes32 bitcoinRelayVKey = vm.envOr("BITCOIN_RELAY_VKEY", bytes32(0));
         // Canonical-asset factory: lets the pool lazily deploy a Tacit asset's public ERC20 from
         // the guest-proven etch metadata (attest_meta) — the only path that establishes a
