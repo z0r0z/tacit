@@ -22,6 +22,16 @@ const U64_MAX = (1n << 64n) - 1n;
 const ZERO32 = '0x' + '00'.repeat(32);
 const bmod = (a, m) => ((a % m) + m) % m;
 
+// Normalize an AMM clearing-solve result (solveClearing, AMM.md §4) to the guest's price
+// orientation: priceNum/priceDen = units of B per A. solveClearing returns P_clear_num/P_clear_den
+// = X / (Y + Δb_net) for every case (A→B-dominant, the swapped B→A wrapper, and spot) — i.e. total
+// A-input over total B-output, which is A per B. So B per A is the reciprocal, uniformly. The
+// per-intent floor clearing only ever rounds toward the pool, so feeding this price keeps the
+// constant product non-decreasing (k_post ≥ k_pre).
+export function clearingPriceBperA(sol) {
+  return { priceNum: BigInt(sol.P_clear_den), priceDen: BigInt(sol.P_clear_num) };
+}
+
 export function makeConfidentialSwap({ keccak256, pool }) {
   const { leaf, nullifier, commitXY } = pool;
   const hexToBytes = (h) => { h = (h || '').replace(/^0x/, ''); const o = new Uint8Array(h.length / 2); for (let i = 0; i < o.length; i++) o[i] = parseInt(h.substr(i * 2, 2), 16); return o; };
@@ -120,5 +130,5 @@ export function makeConfidentialSwap({ keccak256, pool }) {
     };
   }
 
-  return { poolId, clearOut, buildIntent, buildBatch, verifyBatch };
+  return { poolId, clearOut, clearingPriceBperA, buildIntent, buildBatch, verifyBatch };
 }
