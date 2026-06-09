@@ -21,13 +21,14 @@ import {ConfidentialPool} from "../src/ConfidentialPool.sol";
 ///    SP1_VERIFIER=0x... forge script script/DeployConfidentialPool.s.sol \
 ///      --rpc-url $RPC --private-key $PK --broadcast --verify
 contract DeployConfidentialPool is Script {
-    // Confidential guest vkey: the complete gen-1 op set — wrap/transfer/unwrap/
-    // bridge_burn/bridge_mint — plus the improved-platinum cross-lane non-membership
-    // gate (IMT, bitcoinSpentRoot) and OP_ATTEST_META (trustless first-mint metadata from
-    // the etch). 2026-06-08; the note-bound bridge_mint (authorizes against the reflected
-    // bridge-BURN set, key=ν→destCommitment) re-froze the guest, rebuilt + groth16-proven on
-    // the box. Override via PROGRAM_VKEY env if the guest changes. (Prior: 0x0063293d, 0x00b3ebb4.)
-    bytes32 constant DEFAULT_VKEY = 0x00f028596975bf41a574720c7844061a77f10592c653a3821e3072f574e506ee;
+    // Confidential guest vkey: the complete gen-1 op set — wrap/transfer/unwrap/bridge_burn/
+    // bridge_mint — plus the improved-platinum cross-lane non-membership gate (IMT,
+    // bitcoinSpentRoot), OP_ATTEST_META (trustless first-mint metadata from the etch), and
+    // OP_SWAP (confidential AMM batch against public pool reserves). Pinned to the committed
+    // canonical ELF: sp1/confidential/elf/cxfer-guest, sha256 4ee12556… (verify-vkey-pin.sh).
+    // A real Groth16 of this ELF verifies on-chain at this vkey (test/ConfidentialSwapProofReal).
+    // Override via PROGRAM_VKEY env if the guest changes. (Prior: 0x0063293d, 0x00b3ebb4, 0x00f02859.)
+    bytes32 constant DEFAULT_VKEY = 0x00bc5661436d99a5beaed7d7c5d9c99ceb9f67c1c42d74c845d97fd83874c93d;
 
     function run() external {
         address sp1Verifier = vm.envAddress("SP1_VERIFIER");
