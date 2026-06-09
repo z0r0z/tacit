@@ -68,3 +68,54 @@ export function makeReflectionAttester({ deps, storage, prove, submit, getHeader
 
   return { ingest, runCycle, rebuild };
 }
+
+// Worker-facing factory: build an attester from env bindings, or null if reflection attestation
+// isn't configured (inert — no hot-path cost). Config (all required to enable):
+//   env.REFLECTION_ATTEST   = '1'                     — the enable flag
+//   env.REFLECTION_PROVE_URL                          — the GPU box prove endpoint (POST input → proof)
+//   env.REFLECTION_SUBMIT_URL                         — the attest relay (POST {publicValues, proofBytes})
+//   env.REGISTRY_KV                                   — state persistence
+// `api` is the worker's esplora text fetcher (for getHeaders); `deps` = { secp, keccak256, sha256 }.
+export function buildReflectionAttester(env, { deps, api, network }) {
+  if (!env || env.REFLECTION_ATTEST !== '1' || !env.REFLECTION_PROVE_URL || !env.REGISTRY_KV) return null;
+  const KEY = `reflection:state:${network}`;
+  const storage = {
+    load: async () => { const s = await env.REGISTRY_KV.get(KEY); return s ? JSON.parse(s) : null; },
+    save: async (s) => env.REGISTRY_KV.put(KEY, JSON.stringify(s)),
+  };
+  const prove = async (input) => {
+    const r = await fetch(env.REFLECTION_PROVE_URL, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(input) });
+    if (!r.ok) throw new Error('reflection prove failed: ' + r.status);
+    return r.json(); // { vkey, publicValues, proofBytes }
+  };
+  const submit = async (publicValues, proofBytes) => {
+    if (!env.REFLECTION_SUBMIT_URL) return null; // prove-only mode until the relay is wired
+    const r = await fetch(env.REFLECTION_SUBMIT_URL, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ publicValues, proofBytes }) });
+    return r.ok ? (await r.json()).txHash : null;
+  };
+  const getHeaders = async (heights) => Promise.all(heights.map(async (h) => {
+    const hash = (await api(env, `/block-height/${h}`, {}, network)).trim();
+    return '0x' + (await api(env, `/block/${hash}/header`, {}, network)).trim();
+  }));
+
+  const att = makeReflectionAttester({ deps, storage, prove, submit, getHeaders });
+  const reverseHex = (h) => h.replace(/^0x/, '').match(/../g).reverse().join(''); // display → internal
+
+  // Build + ingest a confirmed CXFER from the block scan. tx (esplora: .txid, .vin[]), dx (decoded
+  // outputs with .commitment compressed-hex), txs (the block's txs in order), h (height).
+  att.ingestConfirmedCxfer = async (tx, dx, txs, h, assetId) => {
+    const rawTx = await api(env, `/tx/${tx.txid}/hex`, {}, network);
+    const eff = {
+      kind: 'transfer', height: h,
+      raw: {
+        txid: '0x' + reverseHex(tx.txid), assetId, height: h, blockIndex: h,
+        txData: rawTx.trim(), txIndex: txs.findIndex((t) => t.txid === tx.txid),
+        txids: txs.map((t) => '0x' + reverseHex(t.txid)),
+        spentVins: (tx.vin || []).map((vi) => ({ prevTxid: '0x' + reverseHex(vi.txid), vout: vi.vout })),
+        outputCommitments: (dx.outputs || []).map((o) => o.commitment),
+      },
+    };
+    return att.ingest(eff);
+  };
+  return att;
+}

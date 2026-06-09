@@ -87,6 +87,7 @@ import { hmac } from '@noble/hashes/hmac';
 import { keccak_256 } from '@noble/hashes/sha3';
 import { hexToBytes, bytesToHex, concatBytes } from '@noble/hashes/utils';
 import { bech32, bech32m } from '@scure/base';
+import { buildReflectionAttester } from './reflection-attest.js';
 
 secp.etc.hmacSha256Sync = (k, ...m) => hmac(sha256, k, secp.etc.concatBytes(...m));
 
@@ -20967,6 +20968,15 @@ async function scanForEtches(env, network) {
         // gates the recipient credit identically).
         if (decoded.opcode === T_PREAUTH_BID_VAR && !_validatePreauthBidVarRefundVout(dx, tx)) continue;
         const counted = await _bumpTransferOnce(dx.asset_id, tx.txid);
+        // Reflection attestation ingest (Phase 4.4): record confirmed confidential transfers into
+        // the canonical reflection state (the source of truth the attest cron replays + proves).
+        // Config-gated (env.REFLECTION_ATTEST); best-effort, never blocks the scan.
+        if (decoded.opcode === T_CXFER || decoded.opcode === T_CXFER_BPP) {
+          try {
+            const _att = buildReflectionAttester(env, { deps: { secp, keccak256: keccak_256, sha256 }, api: apiText, network });
+            if (_att) await _att.ingestConfirmedCxfer(tx, dx, txs, h, dx.asset_id);
+          } catch (e) { try { _logCronError(env, 'reflectionIngest', network, e); } catch {} }
+        }
         // Implicit-cancel detection for opening listings. Any tx that
         // spends the asset_id's UTXOs (CXFER consolidate, AXFER settle,
         // or the maker shuffling funds around) terminates whichever
@@ -29009,6 +29019,15 @@ export default {
       const _tickIdx = Math.floor(Date.now() / (5 * 60 * 1000));
       await Promise.allSettled(
         NETWORKS.map(net => scanForEtches(env, net).catch(e => _logCronError(env, 'scanForEtches', net, e))),
+      );
+      // Reflection attestation (Phase 4.4): after the scan ingests confirmed CXFERs, assemble the
+      // un-attested batch → prove on the GPU box → submit attestBitcoinStateProven. Config-gated
+      // (env.REFLECTION_ATTEST); a null attester (unconfigured) is an inert no-op.
+      await Promise.allSettled(
+        NETWORKS.map(net => {
+          const _att = buildReflectionAttester(env, { deps: { secp, keccak256: keccak_256, sha256 }, api: apiText, network: net });
+          return _att ? _att.runCycle().catch(e => _logCronError(env, 'reflectionCycle', net, e)) : Promise.resolve();
+        }),
       );
       // Sweep abandoned variable-fill bid partial-claims and refund their
       // fill_amount back to the parent bid (§5.7.7 *Re-credit on
