@@ -5,7 +5,9 @@
 //   MODE=groth16           — GPU Groth16 prove + local verify, writing public_values.hex +
 //                            proof_bytes.hex for a Forge real-proof test (the C-3 re-prove uses
 //                            the new ELF's vkey via setup()).
-use sp1_sdk::{blocking::{ProverClient, Prover, ProveRequest}, SP1Stdin, Elf, HashableKey};
+use sp1_sdk::{blocking::{ProverClient, Prover, ProveRequest}, SP1Stdin, Elf, ProvingKey, HashableKey};
+// `verifying_key()` is the `ProvingKey` trait method (sp1_sdk::ProvingKey) on the EnvProvingKey
+// that setup() returns; `bytes32()` is `HashableKey`. Both must be in scope.
 use alloy_sol_types::{sol, SolValue};
 
 const ELF: &[u8] = include_bytes!("/root/work/cxfer/guest/target/elf-compilation/riscv64im-succinct-zkvm-elf/release/cxfer-guest");
@@ -66,11 +68,13 @@ fn main() {
     }
 
     let mode = std::env::var("MODE").unwrap_or_else(|_| "execute".into());
-    let client = ProverClient::builder().build();
-    let elf = Elf::Static(ELF);
 
     if mode == "execute" {
-        let (public_values, report) = client.execute(elf, &stdin).run().expect("execute failed");
+        let client = ProverClient::builder().cpu().build();
+        // The vkey is deterministic from the ELF — capture it here (the C-3 pin) without a proof.
+        let pk = client.setup(Elf::Static(ELF)).expect("setup failed");
+        println!("VKEY={}", pk.verifying_key().bytes32());
+        let (public_values, report) = client.execute(Elf::Static(ELF), stdin).run().expect("execute failed");
         let pv = PublicValues::abi_decode(public_values.as_slice(), true).expect("decode pv");
         let ex = &f["expected"];
         assert_eq!(pv.swaps.len(), 1, "one swap settlement");
@@ -80,11 +84,13 @@ fn main() {
         assert_eq!(s.reserveBPost, alloy_sol_types::private::U256::from(ex["reserveBPost"].as_u64().unwrap()), "reserveBPost");
         assert_eq!(pv.nullifiers.len(), 1, "one nullifier");
         assert_eq!(pv.leaves.len(), 1, "one output leaf");
-        println!("EXECUTE_OK cycles={} swaps=1 reserves {}→{}/{}", report.total_instruction_count(),
-            ex["reserveAPre"], s.reserveAPost, s.reserveBPost);
+        println!("EXECUTE_OK cycles={} swaps=1 reserves {}/{}→{}/{}", report.total_instruction_count(),
+            f["reserveAPre"], f["reserveBPre"], s.reserveAPost, s.reserveBPost);
         return;
     }
 
+    let client = ProverClient::builder().cuda().build();
+    let elf = Elf::Static(ELF);
     println!("setup...");
     let pk = client.setup(elf).expect("setup failed");
     println!("VKEY={}", pk.verifying_key().bytes32());
