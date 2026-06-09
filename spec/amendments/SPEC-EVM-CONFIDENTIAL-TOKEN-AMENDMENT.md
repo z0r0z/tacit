@@ -323,13 +323,15 @@ the value/nullifier ones). Each is required before any proof is accepted:
 
 - **B1 — wrap value↔escrow.** For every `wrap`, assert `value · unitScale == amount`
   (`value` = the note's committed u64; `amount` = the escrowed underlying, u256).
-  `unitScale` is NOT a free witness: it is bound to the asset by including it in the
-  deposit-id preimage — `deposit_id = keccak(asset ‖ amount ‖ unitScale ‖ Cx ‖ Cy ‖
-  owner)` — which the contract re-derives with `assets[assetId].unitScale`. Compute
-  `value·unitScale` in ≥u128 (it can exceed u64).
-- **B2 — unwrap payout↔value.** For every `unwrap`/withdrawal, assert
-  `amount == value · unitScale`; the withdrawal carries `unitScale` and the contract
-  asserts it `== assets[assetId].unitScale`, then pays `amount`.
+  `unitScale` is NOT a free witness: the deposit id binds the SCALED `value` —
+  `deposit_id = keccak(asset ‖ value ‖ Cx ‖ Cy ‖ owner)` (`value` as a 32-byte big-endian
+  word) — which the contract re-derives as `value = amount / assets[assetId].unitScale`
+  with the asset's trusted scale, so a matching id forces `value·unitScale == amount`
+  (the guest never sees `unitScale`). Compute `value·unitScale` in ≥u128 (can exceed u64).
+- **B2 — unwrap payout↔value.** For every `unwrap`/withdrawal the guest emits the proven
+  in-system `value`; the contract pays `amount = value · assets[assetId].unitScale` with the
+  asset's trusted stored scale (the withdrawal carries `value`, NOT `unitScale` — the guest
+  never sees it). An escrow asset's payout is additionally escrow-bounded.
 - **B3 — note-bound nullifier.** `ν = keccak256(Cx ‖ Cy ‖ "spent")` where `(Cx,Cy)` is
   the membership-proven commitment — unique per note, chain-independent (same secp `C`
   on both chains, so the cross-lane gate matches), and private (`C` is known only to the
@@ -341,21 +343,31 @@ the value/nullifier ones). Each is required before any proof is accepted:
   the contract MUST enforce `bitcoinSpentRoot == knownBitcoinSpentRoot` for that lane
   (no skip-on-zero). A Bitcoin-homed note cannot be fast-spent on Ethereum without
   proving it is unspent on Bitcoin as of the current relay root.
-- **B5 — relay-anchored bridge_mint (spent-set membership).** A `bridge_mint` MUST prove
-  the burned note was actually spent on Bitcoin — `ν` is a MEMBER of the relay-attested
-  Bitcoin spent set (`imt_membership(ν, bitcoinSpentRoot)`), with the contract enforcing
-  `bitcoinSpentRoot == knownBitcoinSpentRoot` (current, non-zero) for that op. The burned
-  note's pool membership is proven against a `knownBitcoinRoot`. The block PoW is NOT
-  validated against a self-supplied `nBits` — a fabricated min-difficulty header is
-  forgeable, so block self-PoW is no gate. Conservation (`v_mint == v_burn`) requires
-  knowledge of the burned note's blinding, so only the owner can mint; the contract gates
-  one mint PER BURNED `ν` (`bridgeMinted[ν]`), so a burn mints to exactly one destination,
-  once. (This supersedes the earlier "gate the block_hash like knownBitcoinRoot" wording:
-  proving the burn via the already-attested spent set needs no per-block-hash attestation
-  and no relay-program change — the spent set is the cross-lane authority, consistent with
-  B4's non-membership gate.) See `PLAN-confidential-cross-chain.md` §4/§5/§8.
+- **B5 — relay-anchored bridge_mint (bridge-burn-set membership).** A `bridge_mint` MUST prove
+  the burned note was BURNED FOR THE BRIDGE on Bitcoin — `ν` is a MEMBER of the relay-attested
+  Bitcoin bridge-BURN set, keyed `ν → destCommitment` (`imt_membership(ν, bitcoinBurnRoot)`, the
+  burn-leaf value pinning THIS Ethereum destination), with the contract enforcing
+  `bitcoinBurnRoot == knownBitcoinBurnRoot` (current, non-zero) for that op. The burn set is
+  built ONLY from cross-chain burns, so an ordinary Bitcoin spend's `ν` is ABSENT and cannot mint
+  — this is the H-1 fix; authorizing against the all-spends set instead would let any ordinary
+  spend be re-minted on Ethereum (value duplication). The burned note's pool membership is proven
+  against a `knownBitcoinRoot`. The block PoW is NOT validated against a self-supplied `nBits` — a
+  fabricated min-difficulty header is forgeable, so block self-PoW is no gate. Conservation
+  (`v_mint == v_burn`) requires knowledge of the burned note's blinding, so only the owner can
+  mint; the contract gates one mint PER BURNED `ν` (`bridgeMinted[ν]`), so a burn mints to exactly
+  one destination, once. The bridge-burn set is the cross-lane authority — DISTINCT from B4's
+  spent set (an ordinary spend marks the spent set but NOT the burn set), which is exactly what
+  keeps a non-bridge spend unmintable. See `PLAN-confidential-cross-chain.md` §4/§5/§8.
+- **B6 — confirmation-gated metadata.** An `attest_meta` MUST prove the asset is real on
+  the relay-attested Bitcoin pool, not just self-derive from a raw reveal tx: alongside
+  `asset_id = sha256(reveal_txid ‖ 0)` and the envelope's `(ticker, decimals)`, the guest
+  MUST verify a note keyed by THAT `asset_id` is a member of a Bitcoin pool root and commit
+  the root in `bitcoinRootsUsed` (which the contract already gates `∈ knownBitcoinRoot`).
+  A fabricated or unconfirmed etch has no member note, so it cannot lazy-register junk
+  metadata / deploy a junk canonical ERC20 — reusing the bridge_mint root gate, so no
+  contract change.
 
-All guest-side bindings (B1–B5) batch into one guest version → one new vkey → one
+All guest-side bindings (B1–B6) batch into one guest version → one new vkey → one
 re-prove + redeploy. The on-chain pieces (deposit-id/withdrawal `unitScale`, the
 mandatory cross-lane enforcement) ship in the same `ConfidentialPool` redeploy.
 
