@@ -678,6 +678,27 @@ async function handleProverHealth(env, cors) {
   }, healthy ? 200 : 503, hdr);
 }
 
+// Reflection relay: serve the next assembled Bitcoin-state batch for the box to prove. The box
+// (ops/scripts/reflection-relay-loop.sh) proves it, submits attestBitcoinStateProven on-chain, then
+// POSTs /reflection/ack. Returns {} when nothing is pending; 404 when reflection attest is off.
+async function handleReflectionJob(env, url, cors) {
+  const network = url.searchParams.get('network') === 'signet' ? 'signet' : 'mainnet';
+  const att = buildReflectionAttester(env, { deps: { secp, keccak256: keccak_256, sha256 }, api: apiText, network });
+  if (!att) return jsonResponse({ error: 'reflection attest not configured' }, 404, { ...cors, 'Cache-Control': 'no-store' });
+  const job = await att.assembleJob();
+  return jsonResponse(job || {}, 200, { ...cors, 'Cache-Control': 'no-store' });
+}
+
+async function handleReflectionAck(req, env, cors) {
+  let body;
+  try { body = await req.json(); } catch { return jsonResponse({ ok: false, error: 'bad json' }, 400, cors); }
+  const network = body.network === 'signet' ? 'signet' : 'mainnet';
+  const att = buildReflectionAttester(env, { deps: { secp, keccak256: keccak_256, sha256 }, api: apiText, network });
+  if (!att) return jsonResponse({ error: 'reflection attest not configured' }, 404, cors);
+  const r = await att.ackJob(Number(body.attestedTo) | 0);
+  return jsonResponse({ ok: true, ...r }, 200, cors);
+}
+
 // Bearer-token gate for the debug endpoints (/scan, /rescan). Either of those
 // can burn substantial mempool.space subrequest budget — /rescan?from=0 in
 // particular triggers a scan from genesis on the next cron tick. Default-deny:
@@ -25901,6 +25922,12 @@ async function _routeFetch(req, env, ctx) {
     if (url.pathname === '/prover-heartbeat' && req.method === 'POST') return handleProverHeartbeat(req, env, cors);
     if (url.pathname === '/prover-health' && req.method === 'GET') return handleProverHealth(env, cors);
 
+    // Reflection relay loop (the self-hosted prover box polls these — see ops/scripts/reflection-relay-loop.sh).
+    // /reflection/job serves the next assembled Bitcoin-state batch to prove; /reflection/ack advances
+    // the attested cursor after the box lands attestBitcoinStateProven on-chain. Config-gated (404 if off).
+    if (url.pathname === '/reflection/job' && req.method === 'GET') return handleReflectionJob(env, url, cors);
+    if (url.pathname === '/reflection/ack' && req.method === 'POST') return handleReflectionAck(req, env, cors);
+
     if (url.pathname === '/pin' && req.method === 'POST')      return handlePin(req, env, cors);
     if (url.pathname === '/pin-json' && req.method === 'POST') return handlePinJson(req, env, cors);
     if (url.pathname === '/pin-mixer-vk' && req.method === 'POST') return handlePinMixerVk(req, env, cors);
@@ -29020,15 +29047,19 @@ export default {
       await Promise.allSettled(
         NETWORKS.map(net => scanForEtches(env, net).catch(e => _logCronError(env, 'scanForEtches', net, e))),
       );
-      // Reflection attestation (Phase 4.4): after the scan ingests confirmed CXFERs, assemble the
-      // un-attested batch → prove on the GPU box → submit attestBitcoinStateProven. Config-gated
-      // (env.REFLECTION_ATTEST); a null attester (unconfigured) is an inert no-op.
-      await Promise.allSettled(
-        NETWORKS.map(net => {
-          const _att = buildReflectionAttester(env, { deps: { secp, keccak256: keccak_256, sha256 }, api: apiText, network: net });
-          return _att ? _att.runCycle().catch(e => _logCronError(env, 'reflectionCycle', net, e)) : Promise.resolve();
-        }),
-      );
+      // Reflection attestation: the scan ingests confirmed CXFERs into the effect log; the
+      // self-hosted box drives proving via the BOX-POLL model (/reflection/job → prove → submit →
+      // /reflection/ack, ops/scripts/reflection-relay-loop.sh), so the cron does NOT prove here.
+      // Only run the synchronous worker-side cycle when a box HTTP prover (REFLECTION_PROVE_URL) is
+      // configured. Config-gated (env.REFLECTION_ATTEST); a null attester is an inert no-op.
+      if (env.REFLECTION_PROVE_URL) {
+        await Promise.allSettled(
+          NETWORKS.map(net => {
+            const _att = buildReflectionAttester(env, { deps: { secp, keccak256: keccak_256, sha256 }, api: apiText, network: net });
+            return _att ? _att.runCycle().catch(e => _logCronError(env, 'reflectionCycle', net, e)) : Promise.resolve();
+          }),
+        );
+      }
       // Sweep abandoned variable-fill bid partial-claims and refund their
       // fill_amount back to the parent bid (§5.7.7 *Re-credit on
       // abandonment*). Bounded per network to keep cron CPU under budget.

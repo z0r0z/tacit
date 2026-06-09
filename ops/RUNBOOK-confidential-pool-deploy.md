@@ -110,3 +110,35 @@ deploy postures over the **same contract + guest**:
 Steps 2–3 are the substantive remaining engineering and step 1/4 are box + key
 operations; the contract, guest cross-lane check, gate, relay toolkit, and proof
 verification are in place and tested.
+
+## Reflection relay loop (BRIDGE go-live)
+
+The on-chain Bitcoin-state attestation is kept current by a self-hosted loop, the
+**box-poll** model (the box is outbound-only, behind vast NAT — it never accepts
+inbound; the relay key + RPC stay on the box, no third-party prover):
+
+```
+worker (scan)         box (GPU)                          chain
+  ingest CXFER  ──▶  GET /reflection/job  ──▶ prove ──▶ attestBitcoinStateProven
+  effect log          (exec-reflect-prove,   (cast send,    │
+                       groth16)               RELAY_KEY)     ▼
+  advance cursor ◀──  POST /reflection/ack ◀── tx mined ─────┘
+```
+
+- **Worker side (built):** the scan ingests confirmed CXFERs into the effect log
+  (`reflection-attest.js` `ingest`); `GET /reflection/job?network=` serves the next
+  assembled batch (`assembleJob`, no prove/advance); `POST /reflection/ack` advances
+  the attested cursor after the on-chain attestation lands (`ackJob`, idempotent).
+  Config: set `REFLECTION_ATTEST=1` + `REGISTRY_KV` on the worker. (No
+  `REFLECTION_PROVE_URL` in this model — that's only the synchronous worker-proves
+  variant.)
+- **Box side:** `ops/scripts/reflection-relay-loop.sh`. One-time setup: `cp
+  exec-reflect-prove.rs → exec/src/main.rs`, `cargo prove build` the guest, start
+  `sp1-gpu-server`. Then run the loop with `WORKER_BASE`, `NETWORK`, `POOL_ADDR`,
+  `RPC_URL`, `RELAY_KEY` (funded) in a tmux/run-loop. It polls, proves, submits
+  `attestBitcoinStateProven`, and acks. Idempotent: before proving it reads
+  `knownReflectionDigest` and re-acks (never re-submits) a batch that already landed —
+  the digest-chain makes a duplicate submit revert, so the cursor can never skip.
+- **Coherence:** the box must run the committed canonical reflection ELF
+  (`elf/reflection-prover`, vkey `BITCOIN_RELAY_VKEY = 0x00be458f…`), so the pool is
+  deployed with that exact `BITCOIN_RELAY_VKEY`. `verify-vkey-pin.sh` guards the bytes.

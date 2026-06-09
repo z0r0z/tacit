@@ -69,7 +69,20 @@ async function main() {
   const res2 = await attester.runCycle();
   eq(res2, null, 'idempotent: no pending → no-op');
 
-  console.log(failures ? `\n${failures} FAILURES` : '\nALL PASS — the worker attester cycle assembles, proves, submits, advances');
+  // ── box-poll model: assembleJob serves the batch WITHOUT proving/advancing; ackJob advances ──
+  const cur = await storage.load(); await storage.save({ ...cur, attestedCount: 0 }); // rewind cursor
+  const job = await attester.assembleJob();
+  ok(job && job.pending === 1, 'assembleJob returns the pending batch');
+  ok(job.input.effects.length === 1, 'job carries the assembled prover input');
+  ok(job.jobId === job.input.newDigest, 'jobId = the batch newDigest');
+  eq((await storage.load()).attestedCount, 0, 'assembleJob does NOT advance the cursor (box acks after on-chain)');
+  await attester.ackJob(job.attestedTo);
+  eq((await storage.load()).attestedCount, 1, 'ackJob advances the cursor to attestedTo');
+  eq(await attester.assembleJob(), null, 'no pending after ack → assembleJob null');
+  await attester.ackJob(0); // stale ack
+  eq((await storage.load()).attestedCount, 1, 'stale ack (attestedTo <= current) is a no-op');
+
+  console.log(failures ? `\n${failures} FAILURES` : '\nALL PASS — attester cycle + box-poll job/ack assemble, serve, advance');
   process.exit(failures ? 1 : 0);
 }
 main();

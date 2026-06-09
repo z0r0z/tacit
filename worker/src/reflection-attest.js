@@ -41,11 +41,14 @@ export function makeReflectionAttester({ deps, storage, prove, submit, getHeader
     await storage.save({ effectLog, attestedCount });
   }
 
-  // The cron calls this. Assemble the un-attested batch → prove → submit → advance the attested
-  // cursor. No-op if nothing is pending. Returns the attestation tx hash (or null).
-  async function runCycle() {
-    const { idx, effectLog, attestedCount, resolved } = await rebuild();
-    const pending = resolved.slice(attestedCount); // transfers/burns not yet attested
+  // Assemble the next un-attested batch into a prover INPUT, without proving/submitting/advancing.
+  // This is the box-poll relay model: the self-hosted box GETs this job, proves it on the GPU
+  // (exec-reflect-prove), submits attestBitcoinStateProven on-chain ITSELF (the relay key stays on
+  // the box), then calls ackJob to advance the cursor — so the cursor only moves after the on-chain
+  // attestation lands. Returns null if nothing is pending. `attestedTo` is the cursor to ack to.
+  async function assembleJob() {
+    const { idx, attestedCount, resolved } = await rebuild();
+    const pending = resolved.slice(attestedCount); // effects not yet attested on-chain
     if (pending.length === 0) return null;
 
     // advance the canonical state past the already-attested effects (so `prior` is the attested anchor)
@@ -55,29 +58,46 @@ export function makeReflectionAttester({ deps, storage, prove, submit, getHeader
     const blocks = [...new Set(pending.map((r) => r.spec.blockIndex))];
     const headers = await getHeaders(blocks);
     const anchorHeight = Math.min(...pending.map((r) => r.raw.height));
-    // re-key block indices to the batch's header array
     const specs = pending.map((r) => ({ ...r.spec, blockIndex: blocks.indexOf(r.spec.blockIndex) }));
 
     const input = idx.assembleBatch(specs, { headers, anchorHeight });
-    const { vkey, publicValues, proofBytes } = await prove(input);
-    const txHash = await submit(publicValues, proofBytes);
-
-    await storage.save({ effectLog, attestedCount: resolved.length });
-    return { txHash, vkey, newDigest: input.newDigest, attested: pending.length };
+    return { jobId: input.newDigest, input, attestedTo: resolved.length, pending: pending.length };
   }
 
-  return { ingest, runCycle, rebuild };
+  // Advance the attested cursor after the box confirms the on-chain attestation. Idempotent: a
+  // stale/duplicate ack (attestedTo <= current) is a no-op, so a retried submit can't skip effects.
+  async function ackJob(attestedTo) {
+    const s = (await storage.load()) || { effectLog: [], attestedCount: 0 };
+    if (attestedTo > (s.attestedCount || 0)) await storage.save({ ...s, attestedCount: attestedTo });
+    return { attestedCount: Math.max(attestedTo, s.attestedCount || 0) };
+  }
+
+  // All-in-worker synchronous model (prove + submit via injected URLs). No-op if nothing pending.
+  async function runCycle() {
+    const job = await assembleJob();
+    if (!job) return null;
+    const { vkey, publicValues, proofBytes } = await prove(job.input);
+    const txHash = await submit(publicValues, proofBytes);
+    await ackJob(job.attestedTo);
+    return { txHash, vkey, newDigest: job.input.newDigest, attested: job.pending };
+  }
+
+  return { ingest, runCycle, assembleJob, ackJob, rebuild };
 }
 
 // Worker-facing factory: build an attester from env bindings, or null if reflection attestation
-// isn't configured (inert — no hot-path cost). Config (all required to enable):
-//   env.REFLECTION_ATTEST   = '1'                     — the enable flag
-//   env.REFLECTION_PROVE_URL                          — the GPU box prove endpoint (POST input → proof)
-//   env.REFLECTION_SUBMIT_URL                         — the attest relay (POST {publicValues, proofBytes})
-//   env.REGISTRY_KV                                   — state persistence
+// isn't configured (inert — no hot-path cost). Config:
+//   env.REFLECTION_ATTEST   = '1'        — the enable flag (required)
+//   env.REGISTRY_KV                      — state persistence (required)
+//   env.REFLECTION_PROVE_URL             — OPTIONAL: only the synchronous runCycle model (worker
+//                                          POSTs the input to a box HTTP prover). The default
+//                                          deployment uses the BOX-POLL model instead — the box
+//                                          GETs /reflection/job, proves + submits on-chain itself,
+//                                          POSTs /reflection/ack (ops/scripts/reflection-relay-loop.sh)
+//                                          — which needs no prove/submit URL here.
 // `api` is the worker's esplora text fetcher (for getHeaders); `deps` = { secp, keccak256, sha256 }.
 export function buildReflectionAttester(env, { deps, api, network }) {
-  if (!env || env.REFLECTION_ATTEST !== '1' || !env.REFLECTION_PROVE_URL || !env.REGISTRY_KV) return null;
+  if (!env || env.REFLECTION_ATTEST !== '1' || !env.REGISTRY_KV) return null;
   const KEY = `reflection:state:${network}`;
   const storage = {
     load: async () => { const s = await env.REGISTRY_KV.get(KEY); return s ? JSON.parse(s) : null; },
