@@ -124,6 +124,15 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     mapping(bytes32 => Asset) public assets;     // asset_id => Asset
     mapping(bytes32 => uint256) public escrow;   // asset_id => escrowed underlying
 
+    // ──────────────────── Confidential AMM pools (OP_SWAP) ────────────────────
+
+    // A constant-product pool over two in-system assets. Reserves are PUBLIC on-chain state
+    // (the swap circuit reads them as input); only the per-trade amounts are hidden, cleared at
+    // one uniform price for the whole batch. Initialized by initPool (Ethereum-origin, LP-funded)
+    // — the funding asset is escrowed like a wrap, so a pool's reserves are always backed.
+    struct Pool { bool init; bytes32 assetA; bytes32 assetB; uint256 reserveA; uint256 reserveB; uint32 feeBps; }
+    mapping(bytes32 => Pool) public pools;       // poolId => Pool
+
     // ──────────────────── Pending deposits (wraps awaiting inclusion) ────────────────────
 
     // depositId => 0 none, 1 pending, 2 consumed
@@ -193,6 +202,13 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     // Metadata the guest proved from a Bitcoin etch reveal (asset_id binds the txid, the
     // txid binds the on-chain envelope's ticker+decimals) — trustless first-mint metadata.
     struct AssetMeta { bytes32 assetId; bytes16 ticker; uint8 tickerLen; uint8 decimals; }
+    // A confidential AMM batch settled against a pool (OP_SWAP). The guest proved, per intent,
+    // membership + nullifier + the secp↔BJJ sigma binding + the hidden-amount clearing at the
+    // pool's uniform price + ranges + reserve conservation; the trader notes flow through the
+    // existing nullifiers/leaves. The guest reads the pool's CURRENT public reserves as `*Pre`
+    // and computes `*Post` = pre + net deltas (conservation). The contract gates pre == the live
+    // reserves (so the guest cleared against the real pool) and sets the reserves to post.
+    struct SwapSettlement { bytes32 poolId; uint256 reserveAPre; uint256 reserveBPre; uint256 reserveAPost; uint256 reserveBPost; }
 
     struct PublicValues {
         uint16 version;
@@ -209,6 +225,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         bytes32 bitcoinSpentRoot;     // Bitcoin spent-set IMT root the guest proved non-membership against (0 = none)
         bytes32 bitcoinBurnRoot;      // Bitcoin bridge-burn IMT root a bridge_mint proved burn membership against (0 = none)
         AssetMeta[] assetMetas;        // etch-proven (asset_id, ticker, decimals) → trustless lazy-register
+        SwapSettlement[] swaps;        // confidential AMM batches (OP_SWAP): pre→post pool reserves
     }
 
     // ──────────────────── Events ────────────────────
@@ -233,6 +250,9 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     event BitcoinReflectionAdvanced(bytes32 indexed priorDigest, bytes32 indexed newDigest, uint64 height);
     // An Ethereum note was burned for Bitcoin; validators honor it once past finality.
     event CrossOutRecorded(bytes32 indexed claimId, uint16 destChain, bytes32 destCommitment, bytes32 nullifier, bytes32 assetId);
+    // A confidential AMM pool was initialized / a batch settled against it.
+    event PoolInitialized(bytes32 indexed poolId, bytes32 assetA, bytes32 assetB, uint256 reserveA, uint256 reserveB, uint32 feeBps);
+    event SwapSettled(bytes32 indexed poolId, uint256 reserveA, uint256 reserveB);
 
     // ──────────────────── Errors ────────────────────
 
@@ -265,6 +285,10 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     error CrossChainEscrow();
     error CrossChainTokenMismatch();
     error CrossChainLinkTaken();
+    error PoolExists();
+    error PoolNotInit();
+    error PoolReserveMismatch();
+    error SameAsset();
 
     // ──────────────────── Constructor ────────────────────
 
@@ -453,6 +477,40 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         emit Wrap(depositId, assetId, amount, cx, cy, owner);
     }
 
+    /// Initialize a confidential AMM pool over two registered in-system assets, LP-funded with the
+    /// initial reserves (in-system values; the LP provides reserveX·unitScale of each underlying —
+    /// burned for a pool-minted asset, escrowed for an external one — so the reserves are backed).
+    /// poolId = keccak256(assetA, assetB); the assets must be distinct + registered; one init per pair.
+    function initPool(bytes32 assetA, bytes32 assetB, uint256 reserveA, uint256 reserveB, uint32 feeBps)
+        external nonReentrant returns (bytes32 poolId)
+    {
+        if (assetA == assetB) revert SameAsset();
+        Asset storage a = assets[assetA];
+        Asset storage b = assets[assetB];
+        if (!a.registered || !b.registered) revert NotRegistered();
+        poolId = keccak256(abi.encode(assetA, assetB));
+        if (pools[poolId].init) revert PoolExists();
+        _fundReserve(assetA, a, reserveA);
+        _fundReserve(assetB, b, reserveB);
+        pools[poolId] = Pool(true, assetA, assetB, reserveA, reserveB, feeBps);
+        emit PoolInitialized(poolId, assetA, assetB, reserveA, reserveB, feeBps);
+    }
+
+    // Pull `reserve` (in-system value) of an asset into the pool, the wrap way: burn the canonical
+    // ERC20 (pool-minted) or escrow the external ERC20. Reserves are < 2^64 (the swap circuit's
+    // BP+ range), so a pool can never hold value the guest can't reproduce.
+    function _fundReserve(bytes32 assetId, Asset storage a, uint256 reserve) internal {
+        if (reserve == 0) return;
+        if (reserve > type(uint64).max) revert ValueOutOfRange();
+        uint256 amount = reserve * a.unitScale;
+        if (a.poolMinted) {
+            IMintBurn(a.underlying).burn(msg.sender, amount);
+        } else {
+            escrow[assetId] += amount;
+            SafeTransferLib.safeTransferFrom(a.underlying, msg.sender, address(this), amount);
+        }
+    }
+
     // ──────────────────── Bitcoin state attestation (relay-proven, no oracle) ────────────────────
 
     /// Bitcoin state proven by the reflection prover (re-derived from relayed headers + the
@@ -614,6 +672,22 @@ contract ConfidentialPool is ReentrancyGuardTransient {
             CrossOut memory c = pv.crossOuts[i];
             if (keccak256(abi.encodePacked(c.destChain, c.destCommitment, c.nullifier, c.assetId)) != c.claimId) revert CrossOutClaimMismatch();
             emit CrossOutRecorded(c.claimId, c.destChain, c.destCommitment, c.nullifier, c.assetId);
+        }
+
+        // Confidential AMM (OP_SWAP): the guest cleared each batch against the pool's CURRENT
+        // reserves (membership + nullifier + sigma + hidden-amount clearing + conservation are in
+        // the proof; the trader notes flowed through `nullifiers`/`leaves` above). Gate that the
+        // proven pre-reserves are the LIVE reserves — so a stale/forged pre can't be used — then
+        // move the pool to the proven post. No value escrows here: the post is conservation-bound
+        // to the pre, and the notes carry the trader side.
+        for (uint256 i; i < pv.swaps.length; ++i) {
+            SwapSettlement memory s = pv.swaps[i];
+            Pool storage p = pools[s.poolId];
+            if (!p.init) revert PoolNotInit();
+            if (p.reserveA != s.reserveAPre || p.reserveB != s.reserveBPre) revert PoolReserveMismatch();
+            p.reserveA = s.reserveAPost;
+            p.reserveB = s.reserveBPost;
+            emit SwapSettled(s.poolId, s.reserveAPost, s.reserveBPost);
         }
 
         emit Settled(currentRoot, pv.leaves.length, pv.nullifiers.length);
