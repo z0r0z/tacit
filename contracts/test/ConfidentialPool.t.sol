@@ -226,7 +226,7 @@ contract ConfidentialPoolTest is Test {
         uint256 ethWei = 100 * 1e10; // ethReserve 100 in-system → wei
         vm.deal(address(this), ethWei);
         bytes32 pid = pool.initPool{value: ethWei}(ethId, assetId, 100, 200, 30);
-        (, , , uint256 rA, uint256 rB, ) = pool.pools(pid);
+        (, , , uint256 rA, uint256 rB, , ) = pool.pools(pid);
         assertEq(rA, 100, "ETH reserve"); assertEq(rB, 200, "token reserve");
         assertEq(pool.escrow(ethId), ethWei, "ETH reserve escrowed from msg.value");
     }

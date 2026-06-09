@@ -130,7 +130,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     // (the swap circuit reads them as input); only the per-trade amounts are hidden, cleared at
     // one uniform price for the whole batch. Initialized by initPool (Ethereum-origin, LP-funded)
     // — the funding asset is escrowed like a wrap, so a pool's reserves are always backed.
-    struct Pool { bool init; bytes32 assetA; bytes32 assetB; uint256 reserveA; uint256 reserveB; uint32 feeBps; }
+    struct Pool { bool init; bytes32 assetA; bytes32 assetB; uint256 reserveA; uint256 reserveB; uint32 feeBps; uint256 totalShares; }
     mapping(bytes32 => Pool) public pools;       // poolId => Pool
 
     // ──────────────────── Pending deposits (wraps awaiting inclusion) ────────────────────
@@ -209,6 +209,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     // and computes `*Post` = pre + net deltas (conservation). The contract gates pre == the live
     // reserves (so the guest cleared against the real pool) and sets the reserves to post.
     struct SwapSettlement { bytes32 poolId; uint256 reserveAPre; uint256 reserveBPre; uint256 reserveAPost; uint256 reserveBPost; }
+    struct LpSettlement { bytes32 poolId; uint256 reserveAPre; uint256 reserveBPre; uint256 sharesPre; uint256 reserveAPost; uint256 reserveBPost; uint256 sharesPost; }
 
     struct PublicValues {
         uint16 version;
@@ -226,6 +227,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         bytes32 bitcoinBurnRoot;      // Bitcoin bridge-burn IMT root a bridge_mint proved burn membership against (0 = none)
         AssetMeta[] assetMetas;        // etch-proven (asset_id, ticker, decimals) → trustless lazy-register
         SwapSettlement[] swaps;        // confidential AMM batches (OP_SWAP): pre→post pool reserves
+        LpSettlement[] liquidity;      // confidential LP (OP_LP_ADD/REMOVE): pre→post reserves + totalShares
     }
 
     // ──────────────────── Events ────────────────────
@@ -253,6 +255,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     // A confidential AMM pool was initialized / a batch settled against it.
     event PoolInitialized(bytes32 indexed poolId, bytes32 assetA, bytes32 assetB, uint256 reserveA, uint256 reserveB, uint32 feeBps);
     event SwapSettled(bytes32 indexed poolId, uint256 reserveA, uint256 reserveB);
+    event LiquidityChanged(bytes32 indexed poolId, uint256 reserveA, uint256 reserveB, uint256 totalShares);
 
     // ──────────────────── Errors ────────────────────
 
@@ -494,7 +497,9 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         if (msg.value != _ethReserveAmount(a, reserveA) + _ethReserveAmount(b, reserveB)) revert EthValueMismatch();
         _fundReserve(assetA, a, reserveA);
         _fundReserve(assetB, b, reserveB);
-        pools[poolId] = Pool(true, assetA, assetB, reserveA, reserveB, feeBps);
+        // Seed share basis: the creating LP's position is reserveA shares (a public seed). Confidential
+        // LPs join/leave via OP_LP_ADD/REMOVE (LpSettlement), which move reserves + totalShares together.
+        pools[poolId] = Pool(true, assetA, assetB, reserveA, reserveB, feeBps, reserveA);
         emit PoolInitialized(poolId, assetA, assetB, reserveA, reserveB, feeBps);
     }
     // The msg.value a native-ETH escrow leg requires (0 for pool-minted / ERC20 legs).
@@ -696,6 +701,22 @@ contract ConfidentialPool is ReentrancyGuardTransient {
             p.reserveA = s.reserveAPost;
             p.reserveB = s.reserveBPost;
             emit SwapSettled(s.poolId, s.reserveAPost, s.reserveBPost);
+        }
+
+        // Confidential LP (OP_LP_ADD/REMOVE): move reserves AND totalShares. Like swaps, gate the
+        // proven pre-state == the live pool (a stale/forged pre reverts), then apply the post — the
+        // guest proved the in-ratio add / proportional remove + the LP-share + asset note flows.
+        for (uint256 i; i < pv.liquidity.length; ++i) {
+            LpSettlement memory l = pv.liquidity[i];
+            Pool storage p = pools[l.poolId];
+            if (!p.init) revert PoolNotInit();
+            if (p.reserveA != l.reserveAPre || p.reserveB != l.reserveBPre || p.totalShares != l.sharesPre) {
+                revert PoolReserveMismatch();
+            }
+            p.reserveA = l.reserveAPost;
+            p.reserveB = l.reserveBPost;
+            p.totalShares = l.sharesPost;
+            emit LiquidityChanged(l.poolId, l.reserveAPost, l.reserveBPost, l.sharesPost);
         }
 
         emit Settled(currentRoot, pv.leaves.length, pv.nullifiers.length);

@@ -51,13 +51,16 @@ contract ConfidentialPoolSwapTest is Test {
     function _swap(bytes32 id, uint256 ap, uint256 bp, uint256 apost, uint256 bpost)
         internal pure returns (ConfidentialPool.SwapSettlement memory)
     { return ConfidentialPool.SwapSettlement(id, ap, bp, apost, bpost); }
+    function _lp(bytes32 id, uint256 ap, uint256 bp, uint256 sp, uint256 apost, uint256 bpost, uint256 spost)
+        internal pure returns (ConfidentialPool.LpSettlement memory)
+    { return ConfidentialPool.LpSettlement(id, ap, bp, sp, apost, bpost, spost); }
 
     // ──────────────────── init ────────────────────
 
     function test_init_pool_funds_and_creates() public {
         bytes32 id = pool.initPool(assetA, assetB, 100, 200, 30);
         assertEq(id, poolId, "poolId = keccak(assetA, assetB)");
-        (bool init, bytes32 a, bytes32 b, uint256 rA, uint256 rB, uint32 fee) = pool.pools(id);
+        (bool init, bytes32 a, bytes32 b, uint256 rA, uint256 rB, uint32 fee, ) = pool.pools(id);
         assertTrue(init, "init");
         assertEq(a, assetA); assertEq(b, assetB);
         assertEq(rA, 100, "reserveA"); assertEq(rB, 200, "reserveB"); assertEq(fee, 30, "feeBps");
@@ -95,7 +98,7 @@ contract ConfidentialPoolSwapTest is Test {
         emit ConfidentialPool.SwapSettled(poolId, 150, 133);
         _settle(pv);
 
-        (, , , uint256 rA, uint256 rB, ) = pool.pools(poolId);
+        (, , , uint256 rA, uint256 rB, , ) = pool.pools(poolId);
         assertEq(rA, 150, "reserveA moved to post"); assertEq(rB, 133, "reserveB moved to post");
     }
 
@@ -129,7 +132,7 @@ contract ConfidentialPoolSwapTest is Test {
         pv2.swaps = new ConfidentialPool.SwapSettlement[](1);
         pv2.swaps[0] = _swap(poolId, 150, 133, 120, 167);
         _settle(pv2);
-        (, , , uint256 rA, uint256 rB, ) = pool.pools(poolId);
+        (, , , uint256 rA, uint256 rB, , ) = pool.pools(poolId);
         assertEq(rA, 120); assertEq(rB, 167);
 
         // a batch re-pinning the original (stale) reserves now fails
@@ -138,5 +141,71 @@ contract ConfidentialPoolSwapTest is Test {
         pv3.swaps[0] = _swap(poolId, 100, 200, 999, 999);
         vm.expectRevert(ConfidentialPool.PoolReserveMismatch.selector);
         _settle(pv3);
+    }
+
+    // ──────────────────── settle LP (OP_LP_ADD / OP_LP_REMOVE) ────────────────────
+    // C-1: the on-chain LP state machine — reserves AND totalShares move together, pre-gated.
+    // The in-ratio-add / proportional-remove + the shielded LP-share + asset notes are the guest's job.
+
+    function test_init_pool_seeds_total_shares() public {
+        pool.initPool(assetA, assetB, 100, 200, 30);
+        (, , , , , , uint256 shares) = pool.pools(poolId);
+        assertEq(shares, 100, "seed shares = reserveA");
+    }
+
+    function test_settle_lp_add_moves_reserves_and_shares() public {
+        pool.initPool(assetA, assetB, 1000, 2000, 30); // shares seed 1000
+        // an in-ratio add of 100 A + 200 B → +100 shares (proportional: 1000·100/1000)
+        ConfidentialPool.PublicValues memory pv = _pv();
+        pv.liquidity = new ConfidentialPool.LpSettlement[](1);
+        pv.liquidity[0] = _lp(poolId, 1000, 2000, 1000, 1100, 2200, 1100);
+        vm.expectEmit(true, false, false, true, address(pool));
+        emit ConfidentialPool.LiquidityChanged(poolId, 1100, 2200, 1100);
+        _settle(pv);
+        (, , , uint256 rA, uint256 rB, , uint256 shares) = pool.pools(poolId);
+        assertEq(rA, 1100); assertEq(rB, 2200); assertEq(shares, 1100, "reserves + shares moved");
+    }
+
+    function test_settle_lp_remove_moves_reserves_and_shares() public {
+        pool.initPool(assetA, assetB, 1000, 2000, 30);
+        // remove 200 shares (1/5) → −200 A, −400 B, −200 shares
+        ConfidentialPool.PublicValues memory pv = _pv();
+        pv.liquidity = new ConfidentialPool.LpSettlement[](1);
+        pv.liquidity[0] = _lp(poolId, 1000, 2000, 1000, 800, 1600, 800);
+        _settle(pv);
+        (, , , uint256 rA, uint256 rB, , uint256 shares) = pool.pools(poolId);
+        assertEq(rA, 800); assertEq(rB, 1600); assertEq(shares, 800, "remove moved reserves + shares");
+    }
+
+    function test_settle_lp_stale_pre_reverts() public {
+        pool.initPool(assetA, assetB, 1000, 2000, 30);
+        ConfidentialPool.PublicValues memory pv = _pv();
+        pv.liquidity = new ConfidentialPool.LpSettlement[](1);
+        pv.liquidity[0] = _lp(poolId, 1000, 2000, 999, 1100, 2200, 1099); // sharesPre != live
+        vm.expectRevert(ConfidentialPool.PoolReserveMismatch.selector);
+        _settle(pv);
+    }
+
+    function test_settle_lp_uninit_reverts() public {
+        ConfidentialPool.PublicValues memory pv = _pv();
+        pv.liquidity = new ConfidentialPool.LpSettlement[](1);
+        pv.liquidity[0] = _lp(keccak256("ghost"), 0, 0, 0, 0, 0, 0);
+        vm.expectRevert(ConfidentialPool.PoolNotInit.selector);
+        _settle(pv);
+    }
+
+    // Swap then LP chain in one settle: settle applies swaps first, then liquidity, so the LP
+    // settlement pins the reserves the swap left.
+    function test_settle_swap_then_lp_chains() public {
+        pool.initPool(assetA, assetB, 1000, 1000, 30); // shares 1000
+        ConfidentialPool.PublicValues memory pv = _pv();
+        pv.swaps = new ConfidentialPool.SwapSettlement[](1);
+        pv.swaps[0] = _swap(poolId, 1000, 1000, 1100, 910); // swap first: 1000/1000 → 1100/910
+        pv.liquidity = new ConfidentialPool.LpSettlement[](1);
+        // in-ratio add at the post-swap reserves: dA 110, dB 91 (110·910 == 91·1100) → +100 shares
+        pv.liquidity[0] = _lp(poolId, 1100, 910, 1000, 1210, 1001, 1100);
+        _settle(pv);
+        (, , , uint256 rA, uint256 rB, , uint256 shares) = pool.pools(poolId);
+        assertEq(rA, 1210); assertEq(rB, 1001); assertEq(shares, 1100, "LP chained after swap");
     }
 }
