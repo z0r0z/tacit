@@ -20,6 +20,10 @@ contract MockMinterToken {
     constructor(address m) { MINTER = m; }
 }
 
+// A contract that rejects plain ETH (no receive/fallback) — to prove forceSafeTransferETH on the
+// native-ETH unwrap path cannot be bricked by a hostile recipient in a batch settle.
+contract EthRejector {}
+
 /// A stand-in SP1 verifier: accepts unless toggled. The crypto is exercised by
 /// the real-proof suite (next milestone); this suite pins the on-chain state
 /// machine — escrow, the Keccak commitment tree, nullifiers, deposits, payouts —
@@ -151,6 +155,80 @@ contract ConfidentialPoolTest is Test {
         MockMinterToken canon = new MockMinterToken(address(pool));
         vm.expectRevert(ConfidentialPool.CanonicalAsset.selector);
         pool.registerWrapped(address(canon), 1, bytes32(0), "X", "X", 18);
+    }
+
+    // ──────────────────── native ETH (address(0)) ────────────────────
+
+    function test_register_native_eth() public {
+        bytes32 ethId = pool.registerWrapped(address(0), 1e10, bytes32(0), "Confidential ETH", "cETH", 18);
+        ConfidentialPool.Asset memory a = pool.getAsset(ethId);
+        assertTrue(a.registered && !a.poolMinted, "ETH is a registered escrow asset");
+        assertEq(a.underlying, address(0), "native ETH sentinel");
+        assertEq(a.unitScale, 1e10, "8-dec in-system granularity (10 gwei)");
+    }
+
+    function test_wrap_native_eth_escrows_msg_value() public {
+        bytes32 ethId = pool.registerWrapped(address(0), 1e10, bytes32(0), "cETH", "cETH", 18);
+        uint256 amt = 5e10; // 5 in-system units
+        vm.deal(USER, amt);
+        vm.prank(USER);
+        pool.wrap{value: amt}(ethId, amt, bytes32(uint256(1)), bytes32(uint256(2)), bytes32(uint256(3)));
+        assertEq(pool.escrow(ethId), amt, "ETH escrowed");
+        assertEq(address(pool).balance, amt, "pool holds the wei");
+    }
+
+    function test_wrap_native_eth_value_mismatch_reverts() public {
+        bytes32 ethId = pool.registerWrapped(address(0), 1e10, bytes32(0), "cETH", "cETH", 18);
+        vm.deal(USER, 1e10);
+        vm.prank(USER);
+        vm.expectRevert(ConfidentialPool.EthValueMismatch.selector);
+        pool.wrap{value: 1e10 - 1}(ethId, 1e10, bytes32(uint256(1)), bytes32(uint256(2)), bytes32(uint256(3)));
+    }
+
+    function test_unwrap_native_eth_pays_recipient() public {
+        bytes32 ethId = pool.registerWrapped(address(0), 1e10, bytes32(0), "cETH", "cETH", 18);
+        vm.deal(USER, 7e10);
+        vm.prank(USER);
+        pool.wrap{value: 7e10}(ethId, 7e10, bytes32(uint256(1)), bytes32(uint256(2)), bytes32(uint256(3)));
+        ConfidentialPool.PublicValues memory pv = _pv();
+        pv.withdrawals = new ConfidentialPool.Withdrawal[](1);
+        pv.withdrawals[0] = ConfidentialPool.Withdrawal(ethId, RECIP, 7); // value 7 → 7·1e10 wei
+        uint256 before = RECIP.balance;
+        _settle(pv);
+        assertEq(RECIP.balance - before, 7e10, "recipient received ETH");
+        assertEq(pool.escrow(ethId), 0, "escrow drained");
+    }
+
+    function test_unwrap_native_eth_to_non_payable_not_bricked() public {
+        bytes32 ethId = pool.registerWrapped(address(0), 1e10, bytes32(0), "cETH", "cETH", 18);
+        vm.deal(USER, 1e10);
+        vm.prank(USER);
+        pool.wrap{value: 1e10}(ethId, 1e10, bytes32(uint256(9)), bytes32(uint256(8)), bytes32(uint256(7)));
+        address rejector = address(new EthRejector());
+        ConfidentialPool.PublicValues memory pv = _pv();
+        pv.withdrawals = new ConfidentialPool.Withdrawal[](1);
+        pv.withdrawals[0] = ConfidentialPool.Withdrawal(ethId, rejector, 1);
+        _settle(pv); // must NOT revert — forceSafeTransferETH delivers despite no receiver
+        assertEq(rejector.balance, 1e10, "force-sent ETH to a non-payable recipient");
+    }
+
+    function test_stray_eth_rejected() public {
+        vm.deal(USER, 1 ether);
+        vm.prank(USER);
+        (bool ok, ) = address(pool).call{value: 1 ether}("");
+        assertFalse(ok, "bare ETH send is rejected (only wrap/initPool accept ETH)");
+    }
+
+    function test_initPool_native_eth_reserve() public {
+        bytes32 ethId = pool.registerWrapped(address(0), 1e10, bytes32(0), "cETH", "cETH", 18);
+        token.mint(address(this), 200);
+        token.approve(address(pool), type(uint256).max);
+        uint256 ethWei = 100 * 1e10; // ethReserve 100 in-system → wei
+        vm.deal(address(this), ethWei);
+        bytes32 pid = pool.initPool{value: ethWei}(ethId, assetId, 100, 200, 30);
+        (, , , uint256 rA, uint256 rB, ) = pool.pools(pid);
+        assertEq(rA, 100, "ETH reserve"); assertEq(rB, 200, "token reserve");
+        assertEq(pool.escrow(ethId), ethWei, "ETH reserve escrowed from msg.value");
     }
 
     // ──────────────────── settle: deposit consumption ────────────────────

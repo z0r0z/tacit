@@ -289,6 +289,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     error PoolNotInit();
     error PoolReserveMismatch();
     error SameAsset();
+    error EthValueMismatch();
 
     // ──────────────────── Constructor ────────────────────
 
@@ -310,6 +311,12 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         }
         currentRoot = z;
         everKnownRoot[z] = true;
+    }
+
+    /// Reject stray ETH: native ETH may only enter through the payable `wrap` / `initPool`, which
+    /// bind it to a deposit / pool reserve. A bare send would otherwise be unaccounted + stuck.
+    receive() external payable {
+        revert EthValueMismatch();
     }
 
     // ──────────────────── Asset registry ────────────────────
@@ -388,13 +395,17 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         string memory symbol_,
         uint8 decimals_
     ) internal returns (bytes32 assetId) {
-        if (underlying == address(0)) revert ZeroAddress();
+        // `underlying == address(0)` is the NATIVE ETH sentinel — valid only for an escrow asset
+        // (a pool-minted asset must have a real canonical ERC20). Native ETH escrows msg.value on
+        // wrap and pays out via forceSafeTransferETH on unwrap (same note machinery, ETH transport).
+        if (underlying == address(0) && poolMinted) revert ZeroAddress();
         if (unitScale == 0) revert AmountNotAligned();
         // Escrow registrations (external ERC20s) must be a deployed, non-canonical token:
         // a canonical token of this pool registers only via the guest-proven minted path
         // (_autoRegisterFromMeta), and a not-yet-deployed canonical address must not be
-        // claimable as escrow (which would pre-empt its later auto-registration).
-        if (!poolMinted) {
+        // claimable as escrow (which would pre-empt its later auto-registration). Native ETH
+        // (address(0)) is exempt — it is not a contract and is the protocol's own escrow.
+        if (!poolMinted && underlying != address(0)) {
             if (underlying.code.length == 0) revert NotAContract();
             try IMintBurn(underlying).MINTER() returns (address mtr) {
                 if (mtr == address(this)) revert CanonicalAsset();
@@ -428,7 +439,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     ///         note is inserted into the tree only when a proof consumes the
     ///         deposit (the guest verifies C opens to amount/unitScale). Amount is
     ///         public at this boundary; everything after is blinded.
-    function wrap(bytes32 assetId, uint256 amount, bytes32 cx, bytes32 cy, bytes32 owner) external nonReentrant {
+    function wrap(bytes32 assetId, uint256 amount, bytes32 cx, bytes32 cy, bytes32 owner) external payable nonReentrant {
         Asset storage a = assets[assetId];
         if (!a.registered) revert NotRegistered();
         if (amount == 0 || amount % a.unitScale != 0) revert AmountNotAligned();
@@ -450,9 +461,15 @@ contract ConfidentialPool is ReentrancyGuardTransient {
 
         if (a.poolMinted) {
             // Tacit-recorded asset: burn the canonical ERC20 (re-entering confidential).
+            if (msg.value != 0) revert EthValueMismatch();
             IMintBurn(a.underlying).burn(msg.sender, amount);
+        } else if (a.underlying == address(0)) {
+            // Native ETH: escrow exactly msg.value (no token transfer).
+            if (msg.value != amount) revert EthValueMismatch();
+            escrow[assetId] += amount;
         } else {
-            // External ERC20: escrow it.
+            // External ERC20: escrow it (no ETH).
+            if (msg.value != 0) revert EthValueMismatch();
             escrow[assetId] += amount;
             SafeTransferLib.safeTransferFrom(a.underlying, msg.sender, address(this), amount);
         }
@@ -464,7 +481,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     /// burned for a pool-minted asset, escrowed for an external one — so the reserves are backed).
     /// poolId = keccak256(assetA, assetB); the assets must be distinct + registered; one init per pair.
     function initPool(bytes32 assetA, bytes32 assetB, uint256 reserveA, uint256 reserveB, uint32 feeBps)
-        external nonReentrant returns (bytes32 poolId)
+        external payable nonReentrant returns (bytes32 poolId)
     {
         if (assetA == assetB) revert SameAsset();
         Asset storage a = assets[assetA];
@@ -472,10 +489,17 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         if (!a.registered || !b.registered) revert NotRegistered();
         poolId = keccak256(abi.encode(assetA, assetB));
         if (pools[poolId].init) revert PoolExists();
+        // Any native-ETH leg is funded from msg.value; require it to cover those legs EXACTLY (the
+        // two assets are distinct so at most one is ETH, but sum to be robust).
+        if (msg.value != _ethReserveAmount(a, reserveA) + _ethReserveAmount(b, reserveB)) revert EthValueMismatch();
         _fundReserve(assetA, a, reserveA);
         _fundReserve(assetB, b, reserveB);
         pools[poolId] = Pool(true, assetA, assetB, reserveA, reserveB, feeBps);
         emit PoolInitialized(poolId, assetA, assetB, reserveA, reserveB, feeBps);
+    }
+    // The msg.value a native-ETH escrow leg requires (0 for pool-minted / ERC20 legs).
+    function _ethReserveAmount(Asset storage a, uint256 reserve) internal view returns (uint256) {
+        return (!a.poolMinted && a.underlying == address(0)) ? reserve * a.unitScale : 0;
     }
 
     // Pull `reserve` (in-system value) of an asset into the pool, the wrap way: burn the canonical
@@ -487,6 +511,8 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         uint256 amount = reserve * a.unitScale;
         if (a.poolMinted) {
             IMintBurn(a.underlying).burn(msg.sender, amount);
+        } else if (a.underlying == address(0)) {
+            escrow[assetId] += amount; // native ETH: already received via msg.value (validated in initPool)
         } else {
             escrow[assetId] += amount;
             SafeTransferLib.safeTransferFrom(a.underlying, msg.sender, address(this), amount);
@@ -741,7 +767,15 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         } else {
             if (escrow[assetId] < amount) revert InsufficientEscrow();
             escrow[assetId] -= amount;
-            SafeTransferLib.safeTransfer(a.underlying, to, amount);
+            if (a.underlying == address(0)) {
+                // Native ETH — force-send so a non-payable recipient can't brick the batch settle.
+                // Safe under reentrancy: the escrow decrement is committed first (checks-effects-
+                // interactions) and settle holds the nonReentrant guard; the force path (selfdestruct
+                // push) runs no recipient code at all.
+                SafeTransferLib.forceSafeTransferETH(to, amount);
+            } else {
+                SafeTransferLib.safeTransfer(a.underlying, to, amount);
+            }
         }
     }
 
