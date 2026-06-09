@@ -34,7 +34,8 @@ const ASSET_Y = '0x' + '22'.repeat(32); // e.g. cBTC.tac
 const OWNER_BOB_ETH = '0x' + '00'.repeat(31) + 'b0';
 const OWNER_ALICE_BTC = '0x' + '00'.repeat(31) + 'a1';
 const BITCOIN = 1;
-const nullifierOf = (secret) => pool.nullifier(secret);
+// ν is note-bound (spec B3): keccak(Cx ‖ Cy ‖ "spent"), derived from the note's commitment.
+const nullifierOfNote = ({ value, blinding }) => { const { cx, cy } = pool.commitXY(value, blinding); return pool.nullifier(cx, cy); };
 
 // Alice holds 1000 X; Bob holds 5 Y. They agree to swap (price: 1000 X ↔ 5 Y).
 const aliceXin = { value: 1000n, blinding: randomScalar(), secret: '0x' + 'a1'.repeat(32) };
@@ -49,7 +50,7 @@ assert.ok(ct.verifyTransfer(legX), 'leg X conserves asset X (1000 in = 1000 out)
 ok('Ethereum leg: Alice 1000 X → Bob 1000 X (transfer, conserved, stays on Ethereum)');
 
 // ── Leg Y (asset Y): Bob's Y → Alice's Y, finalizes on Bitcoin (bridge-burn) ──
-const bobYnullifier = nullifierOf(bobYin.secret);
+const bobYnullifier = nullifierOfNote(bobYin);
 const legY = ct.buildBridgeBurn({
   inputs: [{ value: bobYin.value, blinding: bobYin.blinding }],
   outputs: [{ value: 5n, blinding: randomScalar(), owner: OWNER_ALICE_BTC }], // Alice's Y on Bitcoin
@@ -62,7 +63,7 @@ ok('Bitcoin leg: Bob 5 Y → Alice 5 Y (bridge-burn, conserved, finalizes on Bit
 const bobXout = legX.outC[0].toAffine();
 const beHex = (n2) => '0x' + n2.toString(16).padStart(64, '0');
 const pv = {
-  nullifiers: [nullifierOf(aliceXin.secret), bobYnullifier], // both inputs spent
+  nullifiers: [nullifierOfNote(aliceXin), bobYnullifier], // both inputs spent
   leaves: [pool.leaf(ASSET_X, beHex(bobXout.x), beHex(bobXout.y), OWNER_BOB_ETH)], // Bob's X on Ethereum
   crossOuts: legY.crossOuts, // Alice's Y bound for Bitcoin
 };

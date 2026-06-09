@@ -495,6 +495,10 @@ pub fn commitment_hash_compressed(compressed: &[u8; 33]) -> Option<[u8; 32]> {
 /// derives this from a confirmed tx's vin (`extract_inputs`), so a spent outpoint is forced
 /// to be a real prior output and not a witnessed value.
 pub fn outpoint_key(txid: &[u8; 32], vout: u32) -> [u8; 32] { kn(&[txid, &vout.to_le_bytes()]) }
+/// Confidential-AMM pool id, matching `ConfidentialPool`'s `keccak256(abi.encode(assetA, assetB))`
+/// (two bytes32 ABI-encode to their 64-byte concat). Binds an OP_SWAP batch's reserves to the
+/// exact asset pair, so a prover can't settle one pool's swap against another's reserves.
+pub fn pool_id(asset_a: &[u8; 32], asset_b: &[u8; 32]) -> [u8; 32] { kn(&[asset_a, asset_b]) }
 /// Bind a spent pool note to its nullifier: given the outpoint's committed value (proven in
 /// the UTXO set via the remove witness) and the note's commitment coords, return ν iff
 /// (Cx,Cy) opens that value — so a spend can't claim a ν unbound from the real note. None

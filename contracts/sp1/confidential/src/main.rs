@@ -15,9 +15,9 @@ sp1_zkvm::entrypoint!(main);
 use alloy_sol_types::{sol, SolValue};
 use alloy_sol_types::private::{Address, U256};
 use cxfer_core::{
-    bitcoin, claim_id, decompress, deposit_id, from_affine_xy, imt_non_membership,
-    keccak_merkle_verify, leaf, nullifier, scalar_reduce_be, utxo_leaf, verify_kernel,
-    verify_pedersen_opening, verify_range, Point,
+    bitcoin, bjj, claim_id, compress, decompress, deposit_id, from_affine_xy, imt_non_membership,
+    keccak_merkle_verify, leaf, nullifier, pool_id, scalar_reduce_be, sigma, utxo_leaf,
+    verify_kernel, verify_pedersen_opening, verify_range, Point,
 };
 use sp1_zkvm::io;
 
@@ -28,6 +28,10 @@ const OP_UNWRAP: u8 = 2;
 const OP_BRIDGE_BURN: u8 = 3; // Ethereum note → Bitcoin (emit crossOut)
 const OP_BRIDGE_MINT: u8 = 4; // Bitcoin burn → Ethereum note (verify Bitcoin burn)
 const OP_ATTEST_META: u8 = 5; // etch reveal → prove (asset_id, ticker, decimals) trustlessly
+const OP_SWAP: u8 = 6; // confidential AMM batch: hidden-amount swaps against public pool reserves
+
+const SWAP_DIR_A_TO_B: u8 = 0;
+const SWAP_DIR_B_TO_A: u8 = 1;
 
 // Mirrors ConfidentialPool.PublicValues exactly.
 sol! {
@@ -35,6 +39,7 @@ sol! {
     struct FeePayment { bytes32 assetId; uint256 value; }
     struct CrossOut { uint16 destChain; bytes32 destCommitment; bytes32 nullifier; bytes32 assetId; bytes32 claimId; }
     struct AssetMeta { bytes32 assetId; bytes16 ticker; uint8 tickerLen; uint8 decimals; }
+    struct SwapSettlement { bytes32 poolId; uint256 reserveAPre; uint256 reserveBPre; uint256 reserveAPost; uint256 reserveBPost; }
     struct PublicValues {
         uint16 version;
         bytes32 chainBinding;
@@ -50,6 +55,7 @@ sol! {
         bytes32 bitcoinSpentRoot;
         bytes32 bitcoinBurnRoot;
         AssetMeta[] assetMetas;
+        SwapSettlement[] swaps;
     }
 }
 
@@ -115,6 +121,7 @@ pub fn main() {
     let mut bitcoin_roots: Vec<[u8; 32]> = Vec::new(); // Bitcoin pool roots minted against
     let mut cross_outs: Vec<CrossOut> = Vec::new();
     let mut asset_metas: Vec<AssetMeta> = Vec::new();
+    let mut swaps: Vec<SwapSettlement> = Vec::new();
 
     for _ in 0..num_ops {
         let op: u8 = io::read();
@@ -348,6 +355,119 @@ pub fn main() {
                     decimals,
                 });
             }
+            OP_SWAP => {
+                // Confidential AMM batch: hidden-amount swaps against a pool with PUBLIC reserves.
+                // Each intent spends a secp pool note (membership + ν) whose hidden amount is sigma-
+                // bound to a BabyJubJub commitment C_in_BJJ; the uniform batch price clears it to
+                // amount_out (a fresh secp note, sigma-bound to C_out_BJJ). The guest sees the
+                // amounts (it is the prover) but commits only the NET reserve move + ν + leaves, so
+                // individual trade sizes stay private from everyone reading PublicValues. Safety:
+                // each trader is protected by min_out; the LPs by the constant-product non-decrease
+                // (k_post ≥ k_pre) — so no adversarial price can drain the pool or short a trader.
+                let asset_a = r32();
+                let asset_b = r32();
+                let pid = pool_id(&asset_a, &asset_b);
+                let reserve_a_pre: u64 = io::read();
+                let reserve_b_pre: u64 = io::read();
+                let price_num: u64 = io::read(); // uniform price: price_num B per price_den A
+                let price_den: u64 = io::read();
+                assert!(price_num > 0 && price_den > 0, "swap: zero price");
+                let n_intents: u32 = io::read();
+
+                // u128 flow accumulators (sums of u64 amounts across the batch can exceed u64).
+                let mut gross_a_in: u128 = 0;
+                let mut gross_a_out: u128 = 0;
+                let mut gross_b_in: u128 = 0;
+                let mut gross_b_out: u128 = 0;
+
+                for _ in 0..n_intents {
+                    let direction: u8 = io::read();
+                    assert!(direction == SWAP_DIR_A_TO_B || direction == SWAP_DIR_B_TO_A, "swap: bad direction");
+                    let (in_asset, out_asset) = if direction == SWAP_DIR_A_TO_B {
+                        (&asset_a, &asset_b)
+                    } else {
+                        (&asset_b, &asset_a)
+                    };
+
+                    // Input note: membership in the pool tree + nullifier (+ cross-lane gate).
+                    let (in_cx, in_cy, in_pt) = r_commitment();
+                    let in_owner = r32();
+                    let in_leaf_index: u64 = io::read();
+                    let in_path = r_path();
+                    let in_lf = leaf(in_asset, &in_cx, &in_cy, &in_owner);
+                    assert!(spend_root != [0u8; 32], "swap: membership requires a non-zero spend root");
+                    assert!(keccak_merkle_verify(&in_lf, in_leaf_index, &in_path, &spend_root), "swap: membership");
+                    let nu = nullifier(&in_cx, &in_cy);
+                    if bitcoin_spent_root != [0u8; 32] { check_btc_nonmembership(&nu, &bitcoin_spent_root); }
+
+                    let amount_in: u64 = io::read();
+                    let amount_out: u64 = io::read();
+                    let rem: u64 = io::read();
+                    let c_in_bjj = r32();
+                    let r_in_bjj = r32();
+                    let c_out_bjj = r32();
+                    let r_out_bjj = r32();
+                    let min_out: u64 = io::read();
+                    let sigma_in: Vec<u8> = io::read();
+                    let sigma_out: Vec<u8> = io::read();
+                    let (out_cx, out_cy, out_pt) = r_commitment();
+                    let out_owner = r32();
+
+                    // Sigma bind both notes' hidden values to their BJJ commitments (same H as the
+                    // pool note, so the secp commitment IS the bound object — no adapter).
+                    let c_in_secp = compress(&in_pt);
+                    assert!(sigma::verify_xcurve(&sigma_in, &c_in_secp, &c_in_bjj), "swap: input sigma");
+                    let c_out_secp = compress(&out_pt);
+                    assert!(sigma::verify_xcurve(&sigma_out, &c_out_secp, &c_out_bjj), "swap: output sigma");
+
+                    // The BJJ commitments open to amount_in / amount_out (typed u64 ⇒ the opening
+                    // is the range proof: a value outside [0, 2^64) cannot satisfy it).
+                    assert!(bjj::pedersen_commit(amount_in, &r_in_bjj) == c_in_bjj, "swap: input opening");
+                    assert!(bjj::pedersen_commit(amount_out, &r_out_bjj) == c_out_bjj, "swap: output opening");
+
+                    // Uniform-price clearing: amount_out = floor(amount_in · P), one price per batch.
+                    //   A→B: in·num == out·den + rem,  rem < den
+                    //   B→A: in·den == out·num + rem,  rem < num   (P inverted for the other side)
+                    let ain = amount_in as u128;
+                    let aout = amount_out as u128;
+                    let num = price_num as u128;
+                    let den = price_den as u128;
+                    let r = rem as u128;
+                    if direction == SWAP_DIR_A_TO_B {
+                        assert!(r < den, "swap: rem range A→B");
+                        assert!(ain * num == aout * den + r, "swap: clearing A→B");
+                        gross_a_in += ain;
+                        gross_b_out += aout;
+                    } else {
+                        assert!(r < num, "swap: rem range B→A");
+                        assert!(ain * den == aout * num + r, "swap: clearing B→A");
+                        gross_b_in += ain;
+                        gross_a_out += aout;
+                    }
+                    assert!(amount_out >= min_out, "swap: min_out");
+
+                    nullifiers.push(nu);
+                    leaves.push(leaf(out_asset, &out_cx, &out_cy, &out_owner));
+                }
+
+                // Net reserve move (no underflow), and the constant-product non-decrease.
+                let a_pre = reserve_a_pre as u128;
+                let b_pre = reserve_b_pre as u128;
+                assert!(a_pre + gross_a_in >= gross_a_out, "swap: reserve A underflow");
+                assert!(b_pre + gross_b_in >= gross_b_out, "swap: reserve B underflow");
+                let a_post = a_pre + gross_a_in - gross_a_out;
+                let b_post = b_pre + gross_b_in - gross_b_out;
+                assert!(a_post <= u64::MAX as u128 && b_post <= u64::MAX as u128, "swap: reserve overflow");
+                assert!(a_post * b_post >= a_pre * b_pre, "swap: constant-product decreased");
+
+                swaps.push(SwapSettlement {
+                    poolId: pid.into(),
+                    reserveAPre: U256::from(reserve_a_pre),
+                    reserveBPre: U256::from(reserve_b_pre),
+                    reserveAPost: U256::from(a_post as u64),
+                    reserveBPost: U256::from(b_post as u64),
+                });
+            }
             _ => panic!("unknown op type"),
         }
     }
@@ -367,6 +487,7 @@ pub fn main() {
         bitcoinSpentRoot: bitcoin_spent_root.into(),
         bitcoinBurnRoot: bitcoin_burn_root.into(),
         assetMetas: asset_metas,
+        swaps,
     };
     io::commit_slice(&pv.abi_encode());
 }
