@@ -1,29 +1,29 @@
 // Confidential AMM batch (OP_SWAP) witness assembler for the EVM confidential pool.
 //
-// A swap intent spends a secp pool note whose hidden amount is sigma-bound (secp↔BJJ) to a
-// BabyJubJub commitment; one uniform batch price clears it to amount_out — a fresh secp note
-// inserted as a leaf. The guest (contracts/sp1/confidential, OP_SWAP) re-verifies exactly these
-// objects, so a passing Node round-trip here locks the witness the guest will accept: the guest
-// port is a mechanical re-implementation of pedersenBJJ + verifyXCurve + the clearing/invariant.
+// A swap intent spends a secp pool note and clears it, at one uniform batch price, into a fresh
+// secp note in the other asset. The guest computes the clearing so it sees the amounts (it is the
+// prover); it binds each amount to its note with a DIRECT secp Pedersen opening (C = amount·H +
+// r·G — the same accelerated primitive wrap/unwrap use), not a cross-curve sigma. A passing Node
+// round-trip here locks the witness the guest re-verifies: the guest is a mechanical
+// re-implementation of verify_pedersen_opening + the clearing/invariant.
+//
+// (The secp↔BJJ sigma binding is only needed when the amounts must be hidden from the PROVER —
+// the homomorphic batch-aggregation follow-up — so it is intentionally absent from the base op.)
 //
 // Price is `priceNum/priceDen` = units of B per A (ONE uniform price for the whole batch):
 //   A→B: amount_out_B = floor(amount_in_A · priceNum/priceDen)
 //   B→A: amount_out_A = floor(amount_in_B · priceDen/priceNum)   (the same price, inverted)
 // LPs are protected by the constant-product non-decrease (k_post ≥ k_pre); each trader by min_out.
 //
-// secp/keccak injected for Node+browser parity; `pool` is a makeConfidentialPool instance whose
-// note/leaf/nullifier/merkle primitives the contract + guest already agree on.
-
-import { pedersenBJJ, packPoint, N_BJJ } from './amm-bjj.js';
-import { proveXCurveDeterministic, verifyXCurve } from './amm-sigma.js';
+// keccak injected for Node+browser parity; `pool` is a makeConfidentialPool instance whose
+// commitXY/leaf/nullifier/merkle primitives the contract + guest already agree on.
 
 const U64_MAX = (1n << 64n) - 1n;
 const ZERO32 = '0x' + '00'.repeat(32);
 const bmod = (a, m) => ((a % m) + m) % m;
 
-export function makeConfidentialSwap({ secp, keccak256, pool }) {
-  const { leaf, nullifier, compressXY } = pool;
-  const enc = new TextEncoder();
+export function makeConfidentialSwap({ keccak256, pool }) {
+  const { leaf, nullifier, commitXY } = pool;
   const hexToBytes = (h) => { h = (h || '').replace(/^0x/, ''); const o = new Uint8Array(h.length / 2); for (let i = 0; i < o.length; i++) o[i] = parseInt(h.substr(i * 2, 2), 16); return o; };
   const bytesToHex = (b) => '0x' + Buffer.from(b).toString('hex');
   const be32 = (n) => '0x' + bmod(BigInt(n), 1n << 256n).toString(16).padStart(64, '0');
@@ -31,12 +31,6 @@ export function makeConfidentialSwap({ secp, keccak256, pool }) {
 
   // poolId = keccak256(abi.encode(assetA, assetB)) — two bytes32 ⇒ their 64-byte concat.
   const poolId = (a, b) => bytesToHex(keccak256(concat([hexToBytes(a), hexToBytes(b)])));
-
-  // affine (cx,cy) 0x-hex from a 33-byte compressed secp commitment (the sigma-bound note).
-  function affineFromCompressed(c33) {
-    const a = secp.ProjectivePoint.fromHex(bytesToHex(c33).slice(2)).toAffine();
-    return { cx: be32(a.x), cy: be32(a.y) };
-  }
 
   // floor clearing for one intent under the uniform price (B per A), with the remainder.
   function clearOut(direction, amountIn, priceNum, priceDen) {
@@ -48,23 +42,18 @@ export function makeConfidentialSwap({ secp, keccak256, pool }) {
   }
 
   // Build one intent's full witness. inNote = { owner, leafIndex, path } (the spent pool note's
-  // membership); outOwner = the fresh output note's owner. Blindings are caller-supplied so the
-  // input note matches the one already in the tree; a deterministic seedKey makes the sigma proofs
-  // (and so the fixture) reproducible.
-  function buildIntent({ direction, amountIn, priceNum, priceDen, minOut, rInSecp, rInBjj, rOutSecp, rOutBjj, inNote, outOwner, seedKey }) {
+  // membership); outOwner = the fresh output note's owner. The note commitments are derived from
+  // the amounts + the supplied secp blindings, so the opening the guest checks holds by construction.
+  function buildIntent({ direction, amountIn, priceNum, priceDen, minOut, rInSecp, rOutSecp, inNote, outOwner }) {
     const { amountOut, rem } = clearOut(direction, amountIn, priceNum, priceDen);
-    const seed = (tag) => keccak256(concat([enc.encode('tacit-cswap-' + tag), hexToBytes(seedKey || ZERO32)]));
-    const sin = proveXCurveDeterministic({ a: BigInt(amountIn), r_secp: BigInt(rInSecp), r_BJJ: BigInt(rInBjj), seedKey: seed('in') });
-    const sout = proveXCurveDeterministic({ a: amountOut, r_secp: BigInt(rOutSecp), r_BJJ: BigInt(rOutBjj), seedKey: seed('out') });
+    const inC = commitXY(amountIn, rInSecp);     // C_in = amount_in·H + r_in·G
+    const outC = commitXY(amountOut, rOutSecp);  // C_out = amount_out·H + r_out·G
     return {
       direction, dirByte: direction === 'A->B' ? 0 : 1,
-      in: { ...affineFromCompressed(sin.C_secp_bytes), owner: inNote.owner, leafIndex: inNote.leafIndex, path: inNote.path },
-      amountIn: BigInt(amountIn), amountOut, rem,
-      cInBjj: bytesToHex(sin.C_BJJ_bytes), rInBjj: be32(bmod(BigInt(rInBjj), N_BJJ)),
-      cOutBjj: bytesToHex(sout.C_BJJ_bytes), rOutBjj: be32(bmod(BigInt(rOutBjj), N_BJJ)),
+      in: { cx: inC.cx, cy: inC.cy, owner: inNote.owner, leafIndex: inNote.leafIndex, path: inNote.path },
+      amountIn: BigInt(amountIn), amountOut, rem, rInSecp: be32(rInSecp),
       minOut: BigInt(minOut ?? 0),
-      sigmaIn: bytesToHex(sin.proof), sigmaOut: bytesToHex(sout.proof),
-      out: { ...affineFromCompressed(sout.C_secp_bytes), owner: outOwner },
+      out: { cx: outC.cx, cy: outC.cy, owner: outOwner }, rOutSecp: be32(rOutSecp),
     };
   }
 
@@ -101,13 +90,11 @@ export function makeConfidentialSwap({ secp, keccak256, pool }) {
       const lf = leaf(inAsset, it.in.cx, it.in.cy, it.in.owner);
       if (merkleRootFrom(lf, it.in.leafIndex, it.in.path) !== batch.spendRoot) fail('membership');
 
-      const cInSecp = hexToBytes(compressXY(it.in.cx, it.in.cy));
-      const cOutSecp = hexToBytes(compressXY(it.out.cx, it.out.cy));
-      if (!verifyXCurve(hexToBytes(it.sigmaIn), cInSecp, hexToBytes(it.cInBjj))) fail('input sigma');
-      if (!verifyXCurve(hexToBytes(it.sigmaOut), cOutSecp, hexToBytes(it.cOutBjj))) fail('output sigma');
-
-      if (bytesToHex(packPoint(pedersenBJJ(it.amountIn, BigInt(it.rInBjj)))) !== it.cInBjj) fail('input opening');
-      if (bytesToHex(packPoint(pedersenBJJ(it.amountOut, BigInt(it.rOutBjj)))) !== it.cOutBjj) fail('output opening');
+      // secp Pedersen opening: the note's commitment must equal amount·H + r·G.
+      const inC = commitXY(it.amountIn, BigInt(it.rInSecp));
+      if (inC.cx !== it.in.cx || inC.cy !== it.in.cy) fail('input opening');
+      const outC = commitXY(it.amountOut, BigInt(it.rOutSecp));
+      if (outC.cx !== it.out.cx || outC.cy !== it.out.cy) fail('output opening');
 
       const { amountOut, rem } = clearOut(it.direction, it.amountIn, batch.priceNum, batch.priceDen);
       if (amountOut !== it.amountOut || rem !== it.rem) fail('clearing');

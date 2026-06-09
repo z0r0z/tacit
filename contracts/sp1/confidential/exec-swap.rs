@@ -55,16 +55,12 @@ fn main() {
         stdin.write(&it["amountIn"].as_u64().unwrap());
         stdin.write(&it["amountOut"].as_u64().unwrap());
         stdin.write(&it["rem"].as_u64().unwrap());
-        stdin.write(&hexv(it["cInBjj"].as_str().unwrap()));
-        stdin.write(&hexv(it["rInBjj"].as_str().unwrap()));
-        stdin.write(&hexv(it["cOutBjj"].as_str().unwrap()));
-        stdin.write(&hexv(it["rOutBjj"].as_str().unwrap()));
+        stdin.write(&hexv(it["rInSecp"].as_str().unwrap()));
         stdin.write(&it["minOut"].as_u64().unwrap());
-        stdin.write(&hexv(it["sigmaIn"].as_str().unwrap()));
-        stdin.write(&hexv(it["sigmaOut"].as_str().unwrap()));
         stdin.write(&hexv(it["outCx"].as_str().unwrap()));
         stdin.write(&hexv(it["outCy"].as_str().unwrap()));
         stdin.write(&hexv(it["outOwner"].as_str().unwrap()));
+        stdin.write(&hexv(it["rOutSecp"].as_str().unwrap()));
     }
 
     let mode = std::env::var("MODE").unwrap_or_else(|_| "execute".into());

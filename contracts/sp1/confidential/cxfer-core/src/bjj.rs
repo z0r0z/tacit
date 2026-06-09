@@ -247,13 +247,6 @@ pub fn pedersen(amount: &BigUint, blinding: &BigUint) -> Point {
     add(&ah, &rg)
 }
 
-/// Packed `a·H_BJJ + r·G_BJJ` from a u64 amount and a 32-byte big-endian blinding. The guest's
-/// OP_SWAP opening check (compares against the witnessed packed commitment) without touching
-/// BigUint; matches the JS `packPoint(pedersenBJJ(a, r))`.
-pub fn pedersen_commit(amount: u64, blinding_be: &[u8; 32]) -> [u8; 32] {
-    pack(&pedersen(&BigUint::from(amount), &BigUint::from_bytes_be(blinding_be)))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

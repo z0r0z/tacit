@@ -15,8 +15,8 @@ sp1_zkvm::entrypoint!(main);
 use alloy_sol_types::{sol, SolValue};
 use alloy_sol_types::private::{Address, U256};
 use cxfer_core::{
-    bitcoin, bjj, claim_id, compress, decompress, deposit_id, from_affine_xy, imt_non_membership,
-    keccak_merkle_verify, leaf, nullifier, pool_id, scalar_reduce_be, sigma, utxo_leaf,
+    bitcoin, claim_id, decompress, deposit_id, from_affine_xy, imt_non_membership,
+    keccak_merkle_verify, leaf, nullifier, pool_id, scalar_reduce_be, utxo_leaf,
     verify_kernel, verify_pedersen_opening, verify_range, Point,
 };
 use sp1_zkvm::io;
@@ -357,13 +357,16 @@ pub fn main() {
             }
             OP_SWAP => {
                 // Confidential AMM batch: hidden-amount swaps against a pool with PUBLIC reserves.
-                // Each intent spends a secp pool note (membership + ν) whose hidden amount is sigma-
-                // bound to a BabyJubJub commitment C_in_BJJ; the uniform batch price clears it to
-                // amount_out (a fresh secp note, sigma-bound to C_out_BJJ). The guest sees the
-                // amounts (it is the prover) but commits only the NET reserve move + ν + leaves, so
-                // individual trade sizes stay private from everyone reading PublicValues. Safety:
-                // each trader is protected by min_out; the LPs by the constant-product non-decrease
-                // (k_post ≥ k_pre) — so no adversarial price can drain the pool or short a trader.
+                // The guest computes the clearing, so it sees each intent's amounts (it is the
+                // prover) — it binds them to the notes with a direct secp Pedersen opening (the same
+                // accelerated primitive wrap/unwrap use): C_in opens to amount_in, C_out to
+                // amount_out. (The cross-curve BJJ/sigma binding is only needed when amounts must be
+                // hidden from the PROVER — the homomorphic-aggregation follow-up — not here.) The
+                // typed u64 amount + the opening together ARE the range check. Only the NET reserve
+                // move + ν + leaves are committed, so individual trade sizes stay private from
+                // PublicValues readers. Safety: each trader is protected by min_out; the LPs by the
+                // constant-product non-decrease (k_post ≥ k_pre) — no adversarial price can drain
+                // the pool or short a trader.
                 let asset_a = r32();
                 let asset_b = r32();
                 let pid = pool_id(&asset_a, &asset_b);
@@ -403,27 +406,18 @@ pub fn main() {
                     let amount_in: u64 = io::read();
                     let amount_out: u64 = io::read();
                     let rem: u64 = io::read();
-                    let c_in_bjj = r32();
-                    let r_in_bjj = r32();
-                    let c_out_bjj = r32();
-                    let r_out_bjj = r32();
+                    let r_in = scalar_reduce_be(&r32());
                     let min_out: u64 = io::read();
-                    let sigma_in: Vec<u8> = io::read();
-                    let sigma_out: Vec<u8> = io::read();
                     let (out_cx, out_cy, out_pt) = r_commitment();
                     let out_owner = r32();
+                    let r_out = scalar_reduce_be(&r32());
 
-                    // Sigma bind both notes' hidden values to their BJJ commitments (same H as the
-                    // pool note, so the secp commitment IS the bound object — no adapter).
-                    let c_in_secp = compress(&in_pt);
-                    assert!(sigma::verify_xcurve(&sigma_in, &c_in_secp, &c_in_bjj), "swap: input sigma");
-                    let c_out_secp = compress(&out_pt);
-                    assert!(sigma::verify_xcurve(&sigma_out, &c_out_secp, &c_out_bjj), "swap: output sigma");
-
-                    // The BJJ commitments open to amount_in / amount_out (typed u64 ⇒ the opening
-                    // is the range proof: a value outside [0, 2^64) cannot satisfy it).
-                    assert!(bjj::pedersen_commit(amount_in, &r_in_bjj) == c_in_bjj, "swap: input opening");
-                    assert!(bjj::pedersen_commit(amount_out, &r_out_bjj) == c_out_bjj, "swap: output opening");
+                    // Bind each note to its amount by opening the secp Pedersen commitment directly
+                    // (C = amount·H + r·G). A lie about amount_in would need an r the prover can't
+                    // find for the fixed (membership-pinned) C_in ⇒ no over-claim, no inflation; the
+                    // output note commits to exactly amount_out so the recipient can later spend it.
+                    assert!(verify_pedersen_opening(&in_pt, amount_in, &r_in), "swap: input opening");
+                    assert!(verify_pedersen_opening(&out_pt, amount_out, &r_out), "swap: output opening");
 
                     // Uniform-price clearing: amount_out = floor(amount_in · P), one price per batch.
                     //   A→B: in·num == out·den + rem,  rem < den

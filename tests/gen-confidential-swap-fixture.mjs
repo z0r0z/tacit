@@ -16,7 +16,7 @@ import { makeConfidentialSwap } from '../dapp/confidential-swap.js';
 const sha256 = (b) => new Uint8Array(createHash('sha256').update(Buffer.from(b)).digest());
 const keccak256 = (b) => keccak_256(b);
 const pool = makeConfidentialPool({ secp, keccak256, sha256 });
-const swap = makeConfidentialSwap({ secp, keccak256, pool });
+const swap = makeConfidentialSwap({ keccak256, pool });
 
 const ASSET_A = '0x' + 'aa'.repeat(32);
 const ASSET_B = '0x' + 'bb'.repeat(32);
@@ -29,10 +29,8 @@ const det = (tag) => '0x' + keccak256(new TextEncoder().encode('cswap-fixture-' 
 
 const intent = swap.buildIntent({
   direction: 'A->B', amountIn: 100, priceNum: 90, priceDen: 100, minOut: 90,
-  rInSecp: BigInt(det('in-secp')), rInBjj: BigInt(det('in-bjj')),
-  rOutSecp: BigInt(det('out-secp')), rOutBjj: BigInt(det('out-bjj')),
+  rInSecp: BigInt(det('in-secp')), rOutSecp: BigInt(det('out-secp')),
   inNote: { owner: OWNER, leafIndex: 0, path: pool.zeros }, outOwner: OWNER_OUT,
-  seedKey: '0x' + '01'.repeat(32),
 });
 
 const tree = new pool.Tree();
@@ -53,10 +51,8 @@ const fixture = {
     inCx: intent.in.cx, inCy: intent.in.cy, inOwner: intent.in.owner,
     inLeafIndex: intent.in.leafIndex, inPath: intent.in.path,
     amountIn: Number(intent.amountIn), amountOut: Number(intent.amountOut), rem: Number(intent.rem),
-    cInBjj: intent.cInBjj, rInBjj: intent.rInBjj, cOutBjj: intent.cOutBjj, rOutBjj: intent.rOutBjj,
-    minOut: Number(intent.minOut),
-    sigmaIn: intent.sigmaIn, sigmaOut: intent.sigmaOut,
-    outCx: intent.out.cx, outCy: intent.out.cy, outOwner: intent.out.owner,
+    rInSecp: intent.rInSecp, minOut: Number(intent.minOut),
+    outCx: intent.out.cx, outCy: intent.out.cy, outOwner: intent.out.owner, rOutSecp: intent.rOutSecp,
   }],
   expected: {
     poolId: settlement.poolId,

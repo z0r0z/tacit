@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 // OP_SWAP (confidential AMM batch) — Node round-trip that locks the witness the SP1 guest
-// re-verifies. Builds real swap intents (secp pool notes, BJJ Pedersen commitments, secp↔BJJ
-// sigma bindings) and runs verifyBatch, which mirrors EVERY guest assertion in
-// contracts/sp1/confidential/src/main.rs (OP_SWAP): membership, both sigma bindings, the BJJ
-// openings, the floor clearing, min_out, conservation, reserve non-underflow, and the
-// constant-product non-decrease. Since cxfer-core's bjj/sigma are KAT-equal to amm-bjj/amm-sigma,
-// a batch that passes here is one the guest accepts; a tamper that fails here is one it rejects.
+// re-verifies. Builds real swap intents (secp pool notes, with the amounts bound by direct secp
+// Pedersen openings) and runs verifyBatch, which mirrors EVERY guest assertion in
+// contracts/sp1/confidential/src/main.rs (OP_SWAP): membership, both secp openings, the floor
+// clearing, min_out, conservation, reserve non-underflow, and the constant-product non-decrease.
+// The opening is verify_pedersen_opening's exact check (C == amount·H + r·G), so a batch that
+// passes here is one the guest accepts; a tamper that fails here is one it rejects.
 //
 // Run: node tests/confidential-swap-op.mjs
 
@@ -20,7 +20,7 @@ import assert from 'node:assert';
 const sha256 = (b) => new Uint8Array(createHash('sha256').update(Buffer.from(b)).digest());
 const keccak256 = (b) => keccak_256(b);
 const pool = makeConfidentialPool({ secp, keccak256, sha256 });
-const swap = makeConfidentialSwap({ secp, keccak256, pool });
+const swap = makeConfidentialSwap({ keccak256, pool });
 let n = 0; const ok = (s) => { console.log('  ok -', s); n++; };
 
 const ASSET_A = '0x' + 'aa'.repeat(32);
@@ -32,11 +32,10 @@ const ZEROS = pool.zeros; // 32 sibling-zeros for a placeholder path
 // Build a batch from intent specs: derive each input note, place every input leaf in one tree,
 // patch the membership paths, and return { batch, settlement } via the guest-mirroring verify.
 function assemble({ reserveAPre, reserveBPre, priceNum, priceDen, specs }) {
-  const intents = specs.map((s, i) => swap.buildIntent({
+  const intents = specs.map((s) => swap.buildIntent({
     direction: s.direction, amountIn: s.amountIn, priceNum, priceDen, minOut: s.minOut ?? 0,
-    rInSecp: s.rInSecp, rInBjj: s.rInBjj, rOutSecp: randomScalar(), rOutBjj: randomScalar(),
+    rInSecp: s.rInSecp, rOutSecp: randomScalar(),
     inNote: { owner: OWNER, leafIndex: 0, path: ZEROS }, outOwner: OWNER_OUT,
-    seedKey: '0x' + (i + 1).toString(16).padStart(64, '0'),
   }));
   // one pool tree holds every input note; patch each intent's (leafIndex, path)
   const tree = new pool.Tree();
@@ -56,7 +55,7 @@ function assemble({ reserveAPre, reserveBPre, priceNum, priceDen, specs }) {
   const rInSecp = randomScalar();
   const { batch, settlement, nullifiers, leaves } = assemble({
     reserveAPre: 1000, reserveBPre: 1000, priceNum: 90, priceDen: 100,
-    specs: [{ direction: 'A->B', amountIn: 100, minOut: 90, rInSecp, rInBjj: randomScalar() }],
+    specs: [{ direction: 'A->B', amountIn: 100, minOut: 90, rInSecp }],
   });
   assert.strictEqual(batch.intents[0].amountOut, 90n, 'floor(100·90/100) = 90');
   assert.strictEqual(settlement.reserveAPost, 1100n, 'A: 1000 → 1100');
@@ -75,8 +74,8 @@ function assemble({ reserveAPre, reserveBPre, priceNum, priceDen, specs }) {
   const { batch, settlement } = assemble({
     reserveAPre: 1000, reserveBPre: 1000, priceNum: 90, priceDen: 100,
     specs: [
-      { direction: 'A->B', amountIn: 100, minOut: 90, rInSecp: randomScalar(), rInBjj: randomScalar() },
-      { direction: 'B->A', amountIn: 90, minOut: 100, rInSecp: randomScalar(), rInBjj: randomScalar() },
+      { direction: 'A->B', amountIn: 100, minOut: 90, rInSecp: randomScalar() },
+      { direction: 'B->A', amountIn: 90, minOut: 100, rInSecp: randomScalar() },
     ],
   });
   assert.strictEqual(batch.intents[1].amountOut, 100n, 'B→A: floor(90·100/90) = 100');
@@ -94,8 +93,8 @@ function assemble({ reserveAPre, reserveBPre, priceNum, priceDen, specs }) {
     assemble({
       reserveAPre: 1000, reserveBPre: 1000, priceNum: 90, priceDen: 100,
       specs: [
-        { direction: 'A->B', amountIn: 100, rInSecp: randomScalar(), rInBjj: randomScalar() },
-        { direction: 'A->B', amountIn: 50, rInSecp: randomScalar(), rInBjj: randomScalar() },
+        { direction: 'A->B', amountIn: 100, rInSecp: randomScalar() },
+        { direction: 'A->B', amountIn: 50, rInSecp: randomScalar() },
       ],
     });
   } catch (e) { threw = e; }
@@ -109,7 +108,7 @@ function assemble({ reserveAPre, reserveBPre, priceNum, priceDen, specs }) {
   try {
     assemble({
       reserveAPre: 1000, reserveBPre: 1000, priceNum: 90, priceDen: 100,
-      specs: [{ direction: 'A->B', amountIn: 100, minOut: 91, rInSecp: randomScalar(), rInBjj: randomScalar() }],
+      specs: [{ direction: 'A->B', amountIn: 100, minOut: 91, rInSecp: randomScalar() }],
     });
   } catch (e) { threw = e; }
   assert.ok(threw && /min_out/.test(threw.message), 'min_out shortfall rejected');
@@ -121,7 +120,7 @@ function assemble({ reserveAPre, reserveBPre, priceNum, priceDen, specs }) {
   const rInSecp = randomScalar();
   const { batch } = assemble({
     reserveAPre: 1000, reserveBPre: 1000, priceNum: 90, priceDen: 100,
-    specs: [{ direction: 'A->B', amountIn: 100, minOut: 90, rInSecp, rInBjj: randomScalar() }],
+    specs: [{ direction: 'A->B', amountIn: 100, minOut: 90, rInSecp }],
   });
   // tamper the input note's owner so its leaf is not the one in the tree
   const bad = { ...batch, intents: [{ ...batch.intents[0], in: { ...batch.intents[0].in, owner: '0x' + '00'.repeat(31) + 'ff' } }] };
@@ -129,17 +128,17 @@ function assemble({ reserveAPre, reserveBPre, priceNum, priceDen, specs }) {
   ok('a note not in the pool tree (tampered owner) fails membership');
 }
 
-// ───────────────── 6. a tampered output amount breaks the BJJ opening ─────────────────
+// ───────────────── 6. a tampered output amount breaks the secp opening ─────────────────
 {
   const rInSecp = randomScalar();
   const { batch } = assemble({
     reserveAPre: 1000, reserveBPre: 1000, priceNum: 90, priceDen: 100,
-    specs: [{ direction: 'A->B', amountIn: 100, minOut: 90, rInSecp, rInBjj: randomScalar() }],
+    specs: [{ direction: 'A->B', amountIn: 100, minOut: 90, rInSecp }],
   });
-  // claim more output than the price clears, keeping the (now stale) C_out_BJJ
+  // claim more output than the price clears, keeping the (now stale) output note commitment
   const bad = { ...batch, intents: [{ ...batch.intents[0], amountOut: 95n, rem: 0n }] };
   assert.throws(() => swap.verifyBatch(bad, { merkleRootFrom: pool.merkleRootFrom }), /output opening|clearing/, 'inflated output rejected');
-  ok('inflating amount_out (95 vs cleared 90) fails the clearing/BJJ opening bind');
+  ok('inflating amount_out (95 vs cleared 90) fails the clearing/secp opening bind');
 }
 
 console.log(`\n${n} OP_SWAP checks passed.`);
