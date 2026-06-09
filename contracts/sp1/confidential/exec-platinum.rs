@@ -3,7 +3,7 @@
 // guest's witness read order for check_btc_nonmembership. Reads platinum_op.json
 // (tests/gen-cxfer-platinum-fixture.mjs): a 2-in/2-out transfer + per-input IMT
 // non-membership against the reflected Bitcoin spent-set root.
-use sp1_sdk::{blocking::{ProverClient, Prover}, SP1Stdin, Elf};
+use sp1_sdk::{blocking::{ProverClient, Prover, ProveRequest}, SP1Stdin, Elf, ProvingKey, HashableKey};
 const ELF: &[u8] = include_bytes!("/root/work/cxfer/guest/target/elf-compilation/riscv64im-succinct-zkvm-elf/release/cxfer-guest");
 fn hexv(s: &str) -> Vec<u8> { hex::decode(s.trim_start_matches("0x")).unwrap() }
 fn main() {
@@ -42,7 +42,23 @@ fn main() {
     stdin.write(&hexv(f["kernel"]["R"].as_str().unwrap()));
     stdin.write(&hexv(f["kernel"]["z"].as_str().unwrap()));
 
-    let client = ProverClient::builder().cpu().build();
-    let (output, report) = client.execute(Elf::Static(ELF), stdin).run().expect("execute failed");
-    println!("PLATINUM_OK cycles={} pv_bytes={}", report.total_instruction_count(), output.as_slice().len());
+    // MODE=execute (default) — cross-lane validation only; MODE=groth16 — GPU prove + write the
+    // on-chain artifacts (public_values.hex + proof_bytes.hex) for ConfidentialPlatinumProofReal.
+    if std::env::var("MODE").as_deref() != Ok("groth16") {
+        let client = ProverClient::builder().cpu().build();
+        let (output, report) = client.execute(Elf::Static(ELF), stdin).run().expect("execute failed");
+        println!("PLATINUM_OK cycles={} pv_bytes={}", report.total_instruction_count(), output.as_slice().len());
+        return;
+    }
+    let client = ProverClient::builder().cuda().build();
+    println!("setup...");
+    let pk = client.setup(Elf::Static(ELF)).expect("setup failed");
+    println!("VKEY={}", pk.verifying_key().bytes32());
+    println!("proving groth16 (cuda)...");
+    let proof = client.prove(&pk, stdin).groth16().run().expect("groth16 proof failed");
+    client.verify(&proof, pk.verifying_key(), None).expect("local verify failed");
+    println!("LOCAL_VERIFY_OK groth16 pv_bytes={}", proof.public_values.as_slice().len());
+    std::fs::write("/root/work/cxfer/exec/public_values.hex", hex::encode(proof.public_values.as_slice())).unwrap();
+    std::fs::write("/root/work/cxfer/exec/proof_bytes.hex", hex::encode(proof.bytes())).unwrap();
+    println!("WROTE public_values.hex + proof_bytes.hex");
 }
