@@ -73,7 +73,7 @@ contract CanonicalAssetFactoryTest is Test {
         CanonicalBridgedERC20 tok = _deploy(); // minter = MINTER, not the pool
         ConfidentialPool pool = new ConfidentialPool(address(0x5117), bytes32(uint256(1)), bytes32(0), address(0));
         vm.expectRevert(ConfidentialPool.PoolNotMinter.selector);
-        pool.registerMinted(address(tok), ASSET, "x", "x", 8);
+        pool.registerMinted(address(tok), "x", "x", 8);
     }
 
     /// The two faces: a canonical ERC20 (public) wraps into ConfidentialPool
@@ -171,59 +171,13 @@ contract CanonicalAssetFactoryTest is Test {
         );
     }
 
-    // ── pool lazy-deploys + harmonizes decimals deterministically (registerMintedAuto) ──
+    // ── pool lazy-deploys + harmonizes decimals from guest-proven metadata (attest_meta) ──
+    // registerMintedAuto was removed: a cross-chain link is established ONLY by the guest-proven
+    // attest_meta path (so a caller can't bind a link with an unauthenticated decimals/scale). Its
+    // lazy-deploy + harmonize behavior is covered by ConfidentialPool.t.sol's attest_meta tests.
 
     function _pool() internal returns (ConfidentialPool) {
         return new ConfidentialPool(address(0x5117), bytes32(uint256(1)), bytes32(0), address(0));
-    }
-
-    function test_registerMintedAuto_lazy_deploys_and_harmonizes() public {
-        ConfidentialPool pool = _pool();
-        bytes32 tacId = keccak256("TAC-bitcoin-asset");
-        (bytes32 assetId, address token) = pool.registerMintedAuto(address(factory), tacId, "TAC", 8);
-
-        assertEq(token, factory.predict(tacId, address(pool), "TAC", 18), "lazy-deployed at f(tacitAssetId, pool, meta)");
-        assertEq(factory.tokenOf(tacId, address(pool), "TAC", 18), token, "registered in factory");
-
-        CanonicalBridgedERC20 t = CanonicalBridgedERC20(token);
-        assertEq(t.decimals(), 18, "8-dec Tacit asset presented at 18 on Ethereum");
-        assertEq(t.name(), "Tacit Token", "constant brand");
-        assertEq(t.symbol(), "TAC", "ticker carried");
-        assertEq(t.MINTER(), address(pool), "pool is the minter");
-
-        ConfidentialPool.Asset memory a = pool.getAsset(assetId);
-        assertEq(a.unitScale, 1e10, "unitScale = 10^(18-8), derived on-chain");
-        assertEq(a.crossChainLink, tacId, "linked to the Bitcoin/Tacit asset id");
-        assertEq(a.decimals, 18);
-        assertTrue(a.poolMinted);
-    }
-
-    function test_registerMintedAuto_adopts_prior_factory_token() public {
-        ConfidentialPool pool = _pool();
-        bytes32 tacId = keccak256("PRE");
-        address pre = factory.deployCanonical(tacId, address(pool), "PRE", 18); // pre-deployed, pool = minter
-        (bytes32 assetId, address token) = pool.registerMintedAuto(address(factory), tacId, "PRE", 6);
-        assertEq(token, pre, "adopts the existing factory token, no redeploy");
-        assertEq(pool.getAsset(assetId).unitScale, 1e12, "unitScale = 10^(18-6)");
-    }
-
-    function test_registerMintedAuto_rejects_bad_decimals() public {
-        ConfidentialPool pool = _pool();
-        vm.expectRevert(ConfidentialPool.BadDecimals.selector);
-        pool.registerMintedAuto(address(factory), keccak256("X"), "X", 19);
-    }
-
-    /// A front-run deploy of the same asset id with a FOREIGN minter lands on a different
-    /// slot — it neither blocks the pool's onboarding nor lets the front-runner control the
-    /// pool's canonical token. (Before the (assetId, minter, meta)-salt fix this DoS'd
-    /// onboarding: the pool found the foreign token, saw MINTER != pool, and reverted.)
-    function test_registerMintedAuto_unaffected_by_foreign_predeploy() public {
-        ConfidentialPool pool = _pool();
-        bytes32 tacId = keccak256("NOTMINE");
-        address foreign = factory.deployCanonical(tacId, MINTER, "NM", 18); // minter = MINTER, not the pool
-        (, address token) = pool.registerMintedAuto(address(factory), tacId, "NM", 8);
-        assertTrue(token != foreign, "pool deploys its own canonical, not the foreign one");
-        assertEq(CanonicalBridgedERC20(token).MINTER(), address(pool), "pool is the minter of its canonical");
     }
 
     // ── external ERC20 registration derives the Tacit-side scale (registerWrappedAuto) ──

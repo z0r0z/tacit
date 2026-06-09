@@ -746,9 +746,9 @@ contract ConfidentialPoolTest is Test {
         CanonicalBridgedERC20 tac = CanonicalBridgedERC20(
             factory.deployCanonical(canonId, address(pool), "TAC", 18) // MINTER = the pool
         );
-        // unitScale is derived (tacitDecimals == ETH_DECIMALS ⇒ 1); the link binds to the
-        // factory-canonical token for (canonId, pool, "TAC", 18).
-        bytes32 a = pool.registerMinted(address(tac), canonId, "Conf TAC", "TAC", 18);
+        // A local pool-minted asset (unitScale derived = 1); no cross-chain link (that path is
+        // attest_meta-only). The exit/re-enter below uses the local asset id `a`.
+        bytes32 a = pool.registerMinted(address(tac), "Conf TAC", "TAC", 18);
 
         // EXIT: an unwrap pays out by MINTING the canonical ERC20 to the recipient.
         ConfidentialPool.PublicValues memory pv = _pv();
@@ -958,15 +958,33 @@ contract ConfidentialPoolTest is Test {
 
     // ──────────────────── H-2: cross-chain shared-id resolution ────────────────────
 
-    /// A bridged note carries the SHARED (Bitcoin-side) asset id. The pool registers the
-    /// asset under its local key but links the shared id to it, so an unwrap whose
-    /// withdrawal speaks the shared id resolves to the local entry and mints. Without the
-    /// link the shared id has no registry entry and the bridged value would be locked (H-2).
+    /// Establish a cross-chain link the ONLY sanctioned way: a guest-proven attest_meta. Attest a
+    /// Bitcoin pool root, then settle an AssetMeta carrying the proven (ticker, decimals) — which
+    /// lazy-deploys the canonical ERC20 and links `assetId` → it with the DERIVED scale. The mock
+    /// verifier stands in for the guest; the point is that decimals come from the proof path.
+    function _linkViaAttest(bytes32 assetId, string memory symbol_, uint8 decimals_) internal returns (address token) {
+        bytes32 attRoot = keccak256(abi.encode("att-root", assetId));
+        bytes32 prior = pool.knownReflectionDigest();
+        pool.attestBitcoinStateProven(
+            abi.encode(ConfidentialPool.BitcoinRelayPublicValues(prior, attRoot, keccak256("s"), keccak256("sb"), 1, keccak256("n"))),
+            ""
+        );
+        ConfidentialPool.PublicValues memory pv = _pv();
+        pv.assetMetas = new ConfidentialPool.AssetMeta[](1);
+        pv.assetMetas[0] = ConfidentialPool.AssetMeta(assetId, bytes16(bytes(symbol_)), uint8(bytes(symbol_).length), decimals_);
+        pv.bitcoinRootsUsed = new bytes32[](1);
+        pv.bitcoinRootsUsed[0] = attRoot;
+        _settle(pv);
+        token = factory.tokenOf(assetId, address(pool), symbol_, 18);
+    }
+
+    /// A bridged note carries the SHARED (Bitcoin-side) asset id. The attest_meta path links the
+    /// shared id to the lazy-deployed canonical token, so an unwrap whose withdrawal speaks the
+    /// shared id resolves to it and mints. Without the link the bridged value would be locked (H-2).
     function test_bridged_note_unwraps_via_shared_id() public {
         bytes32 shared = keccak256("shared-btc-asset");
-        address tok = factory.deployCanonical(shared, address(pool), "cBTC", 18);
-        bytes32 localId = pool.registerMinted(tok, shared, "Conf cBTC", "cBTC", 18);
-        assertEq(pool.localAssetOf(shared), localId, "shared id linked to local entry");
+        address tok = _linkViaAttest(shared, "cBTC", 18); // proven 18 decimals → scale 1
+        assertTrue(pool.localAssetOf(shared) != bytes32(0), "shared id linked via attest_meta");
 
         ConfidentialPool.PublicValues memory pv = _pv();
         pv.withdrawals = new ConfidentialPool.Withdrawal[](1);
@@ -983,49 +1001,31 @@ contract ConfidentialPoolTest is Test {
         pool.registerWrapped(address(ext), 1, keccak256("some-shared-id"), "x", "x", 18);
     }
 
-    /// A cross-chain link is accepted only if the token commits to it (ASSET_ID == link),
-    /// so an unrelated token cannot be linked to a victim's shared id.
-    function test_cross_chain_link_requires_matching_asset_id() public {
-        address tok = factory.deployCanonical(keccak256("token-id"), address(pool), "cBTC", 18);
-        vm.expectRevert(ConfidentialPool.CrossChainTokenMismatch.selector);
-        pool.registerMinted(tok, keccak256("DIFFERENT-shared-id"), "x", "cBTC", 18);
+    /// F1: registerMinted registers a LOCAL asset only — it establishes NO cross-chain link, so a
+    /// permissionless caller can never bind localAssetOf (and thus can't poison a bridged asset's
+    /// scale or token). The only link path is the guest-proven attest_meta above.
+    function test_registerMinted_is_local_only_no_link() public {
+        address tok = factory.deployCanonical(keccak256("local-asset"), address(pool), "LOC", 18);
+        bytes32 a = pool.registerMinted(tok, "Conf LOC", "LOC", 18);
+        (, , , bytes32 link, , , , ) = pool.assets(a);
+        assertEq(link, bytes32(0), "registerMinted establishes no cross-chain link");
+        assertEq(pool.localAssetOf(keccak256("local-asset")), bytes32(0), "no localAssetOf entry");
     }
 
-    /// First-write-wins: once a shared id is linked it cannot be re-claimed. Because the scale is
-    /// now derived and the link is bound to the factory-canonical token, a front-run lands a real
-    /// canonical token with the correct scale (at worst a different symbol) — never a poisoned
-    /// scale or a foreign/attacker token.
-    function test_cross_chain_link_first_write_wins() public {
-        bytes32 shared = keccak256("contested-id");
-        address tokA = factory.deployCanonical(shared, address(pool), "AAA", 18);
-        pool.registerMinted(tokA, shared, "x", "AAA", 18);
-        address tokB = factory.deployCanonical(shared, address(pool), "BBB", 18);
-        vm.expectRevert(ConfidentialPool.CrossChainLinkTaken.selector);
-        pool.registerMinted(tokB, shared, "x", "BBB", 18);
-    }
+    /// F1: a BRIDGED asset's scale is bound to the GUEST-PROVEN decimals (attest_meta), not a
+    /// caller's word — a bridged unwrap pays value · 10^(18 − provenDecimals), set by the proof, so
+    /// a front-runner cannot register a too-large scale and over-mint the real canonical ERC20.
+    function test_bridged_scale_bound_to_proven_decimals() public {
+        bytes32 shared = keccak256("proven-8dec");
+        address tok = _linkViaAttest(shared, "cBTC", 8); // proven 8 decimals → scale 10^10
+        bytes32 localId = pool.localAssetOf(shared);
+        (, , uint256 unitScale, , , , , ) = pool.assets(localId);
+        assertEq(unitScale, 10 ** 10, "scale derived from PROVEN decimals (8), not caller-chosen");
 
-    /// F1 regression: registerMinted DERIVES the scale, so a registrant cannot pick an inflating
-    /// one. A bridged unwrap of `value` pays exactly `value · 10^(ETH_DECIMALS − tacitDecimals)`.
-    function test_registerMinted_derives_scale_no_inflation() public {
-        bytes32 shared = keccak256("derive-scale");
-        // 8-decimal native asset → 18-decimal canonical token → scale 10^10.
-        address tok = factory.deployCanonical(shared, address(pool), "cD", 18);
-        bytes32 a = pool.registerMinted(tok, shared, "Conf D", "cD", 8);
-        (, , uint256 unitScale, , , , , ) = pool.assets(a);
-        assertEq(unitScale, 10 ** 10, "scale derived 10^(18-8), not registrant-chosen");
         ConfidentialPool.PublicValues memory pv = _pv();
         pv.withdrawals = new ConfidentialPool.Withdrawal[](1);
-        pv.withdrawals[0] = ConfidentialPool.Withdrawal(shared, RECIP, 3); // value 3
+        pv.withdrawals[0] = ConfidentialPool.Withdrawal(shared, RECIP, 3);
         _settle(pv);
-        assertEq(CanonicalBridgedERC20(tok).balanceOf(RECIP), 3 * 10 ** 10, "payout = value * derived scale");
-    }
-
-    /// F1 regression: a cross-chain link cannot be bound to a token that is not the factory-canonical
-    /// one for (link, pool, symbol, ETH_DECIMALS) — so a bridged id can't be squatted to attacker code.
-    function test_cross_chain_link_rejects_foreign_token() public {
-        bytes32 shared = keccak256("foreign-token-id");
-        MockMinterToken foreign = new MockMinterToken(address(pool)); // MINTER == pool, but not canonical
-        vm.expectRevert();
-        pool.registerMinted(address(foreign), shared, "x", "EVL", 18);
+        assertEq(CanonicalBridgedERC20(tok).balanceOf(RECIP), 3 * 10 ** 10, "payout = value * proven-derived scale");
     }
 }

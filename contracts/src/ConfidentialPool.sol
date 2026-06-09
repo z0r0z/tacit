@@ -352,66 +352,31 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         );
     }
 
-    /// @notice Register a TACIT-RECORDED asset (TAC, a cBTC equivalent, any Tacit
-    ///         asset) whose canonical ERC20 THIS POOL mints/burns. `canonicalErc20`
-    ///         must have its mint authority set to this pool. The asset's value
-    ///         enters Ethereum as a confidential note (bridge_mint, backed by the
-    ///         Tacit record); the public ERC20 is its exit form — minted on unwrap,
-    ///         burned on wrap. No escrow: the pool is the single supply authority.
+    /// @notice Register a LOCAL pool-minted asset whose canonical ERC20 THIS POOL mints/burns
+    ///         (`canonicalErc20` must have its mint authority set to this pool): the public ERC20
+    ///         is minted on unwrap, burned on wrap, no escrow. For a BRIDGED (cross-chain) asset,
+    ///         the registry link is established trustlessly by the guest-proven attest_meta path
+    ///         (not here), which binds the scale to the asset's real Bitcoin-etch decimals.
+    /// @dev Registers a LOCAL (non-bridged) pool-minted asset. unitScale is DERIVED
+    ///      (`10^(ETH_DECIMALS − tacitDecimals)`), never operator-chosen, and the canonical ERC20
+    ///      must be at ETH_DECIMALS. registerMinted does NOT establish a cross-chain link: a
+    ///      bridged-resolution link (`localAssetOf`, which every bridged unwrap resolves through) is
+    ///      set ONLY by the guest-proven attest_meta path (`_autoRegisterFromMeta`), which binds the
+    ///      scale to the asset's REAL decimals from its Bitcoin etch — so no permissionless caller
+    ///      can poison a bridged asset's scale or token. (A local asset carries no bridged value, so
+    ///      its scale only round-trips its own wrap/unwrap, never inflating.)
     function registerMinted(
         address canonicalErc20,
-        bytes32 crossChainLink,
         string calldata name_,
         string calldata symbol_,
         uint8 tacitDecimals
     ) external returns (bytes32 assetId) {
         // The pool must be able to mint/burn this ERC20, else the asset can never exit.
         if (IMintBurn(canonicalErc20).MINTER() != address(this)) revert PoolNotMinter();
-        // unitScale is DERIVED, never operator-chosen: the canonical ERC20 is at ETH_DECIMALS and
-        // value·unitScale maps the note's native-precision value to base units. A free scale could
-        // only be wrong, and a too-large one would over-mint on a bridged unwrap (the contract
-        // mints value·storedScale); deriving it is the same rule registerMintedAuto uses.
         if (tacitDecimals > ETH_DECIMALS) revert BadDecimals();
         if (IERC20Metadata(canonicalErc20).decimals() != ETH_DECIMALS) revert BadDecimals();
         uint256 unitScale = 10 ** uint256(ETH_DECIMALS - tacitDecimals);
-        // A cross-chain link governs which token every bridged unwrap of `crossChainLink` resolves
-        // to (localAssetOf, first-write-wins, no admin). Bind it to the factory-canonical token for
-        // (link, this pool, symbol, ETH_DECIMALS) — fail closed if the factory isn't wired — so the
-        // shared id can't be squatted to a foreign/attacker token. Unlinked assets (crossChainLink
-        // == 0) never enter localAssetOf, so they carry no bridged-resolution risk.
-        if (crossChainLink != bytes32(0)) {
-            if (address(CANONICAL_FACTORY) == address(0)) revert CrossChainTokenMismatch();
-            if (canonicalErc20 != CANONICAL_FACTORY.tokenOf(crossChainLink, address(this), symbol_, ETH_DECIMALS)) {
-                revert CrossChainTokenMismatch();
-            }
-        }
-        return _register(canonicalErc20, unitScale, crossChainLink, true, name_, symbol_, ETH_DECIMALS);
-    }
-
-    /// @notice Register a Tacit-native asset by its cross-chain `tacitAssetId`, lazily
-    ///         deploying its canonical ERC20 through `factory` (address = f(tacitAssetId))
-    ///         if it does not exist yet, with THIS POOL as minter. Decimals are harmonized
-    ///         to Ethereum (`ETH_DECIMALS`) and `unitScale` is DERIVED deterministically
-    ///         from the asset's native precision — `10^(ETH_DECIMALS − tacitDecimals)` —
-    ///         so an 8-decimal Tacit asset becomes an 18-decimal ERC20 with a 10^10 scale,
-    ///         no operator-chosen scale to get wrong. `name` is the constant brand; the
-    ///         only per-asset metadata is `(symbol, tacitDecimals)`, deterministic to the
-    ///         real asset (carried in its etch).
-    function registerMintedAuto(address factory, bytes32 tacitAssetId, string calldata symbol_, uint8 tacitDecimals)
-        external
-        returns (bytes32 assetId, address token)
-    {
-        if (tacitDecimals > ETH_DECIMALS) revert BadDecimals();
-        // Look up / deploy at this pool's slot — f(assetId, this-pool, symbol, ETH_DECIMALS).
-        // The canonical address is specific to (asset, minter, metadata).
-        token = ICanonicalAssetFactory(factory).tokenOf(tacitAssetId, address(this), symbol_, ETH_DECIMALS);
-        if (token == address(0)) {
-            // first touch: deploy the public ERC20 at its canonical CREATE2 address.
-            token = ICanonicalAssetFactory(factory).deployCanonical(tacitAssetId, address(this), symbol_, ETH_DECIMALS);
-        }
-        if (IMintBurn(token).MINTER() != address(this)) revert PoolNotMinter();
-        uint256 unitScale = 10 ** uint256(ETH_DECIMALS - tacitDecimals);
-        assetId = _register(token, unitScale, tacitAssetId, true, "Tacit Token", symbol_, ETH_DECIMALS);
+        return _register(canonicalErc20, unitScale, bytes32(0), true, name_, symbol_, ETH_DECIMALS);
     }
 
     function _register(

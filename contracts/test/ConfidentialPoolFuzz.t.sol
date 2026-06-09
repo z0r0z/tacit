@@ -147,7 +147,7 @@ contract ConfidentialPoolFuzzTest is Test {
         bytes32 canonId = keccak256("TAC");
         CanonicalBridgedERC20 tac =
             CanonicalBridgedERC20(fac.deployCanonical(canonId, address(pool), "TAC", 18));
-        bytes32 a = pool.registerMinted(address(tac), bytes32(0), "Conf TAC", "TAC", tacitDecimals);
+        bytes32 a = pool.registerMinted(address(tac), "Conf TAC", "TAC", tacitDecimals);
 
         // exit: unwrap mints the public ERC20
         ConfidentialPool.PublicValues memory pv = _pv();
