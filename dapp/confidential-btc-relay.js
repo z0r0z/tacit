@@ -2,7 +2,7 @@
 // Bitcoin confidential-pool STATE onto Ethereum: the note-tree root (so a
 // bridge_mint can prove membership against a root Ethereum trusts) AND the
 // spent-nullifier IMT root (the cross-lane non-membership freshness root that the
-// platinum gate pins). Mirrors the live tETH SP1PoolRootVerifier.
+// cross-lane gate pins). Mirrors the live tETH SP1PoolRootVerifier.
 //
 // Trust model: NO trusted oracle. The only attestation path is
 // ConfidentialPool.attestBitcoinStateProven(publicValues, proofBytes), which

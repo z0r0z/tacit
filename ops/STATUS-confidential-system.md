@@ -25,7 +25,7 @@ on entry). Cross-chain rides the live tETH stack (`BitcoinLightRelay` +
 | SP1 guest — all 5 ops + IMT cross-lane non-membership + bridge-burn-set mint | compiles in-zkVM; current vkey `0x00f02859…` (note-bound bridge_mint authorizes against the reflected bridge-burn set re-froze it; Sepolia still pins the pre-harmonization `0x0063293d…` until redeploy) |
 | Crypto core (`cxfer-core`: BP+ range, kernel, keccak primitives, bitcoin, IMT, bridge-burn UTXO accumulator) | 27 native tests, JS↔Solidity↔Rust KATs |
 | Real Groth16 proof verified **on-chain** via the genuine SP1 verifier | `ConfidentialProofReal` 5/5 |
-| In-zkVM op execution (transfer FULLOP_OK, bridge_mint BRIDGEMINT_OK, platinum PLATINUM_OK) | box execute |
+| In-zkVM op execution (transfer FULLOP_OK, bridge_mint BRIDGEMINT_OK, cross-lane CROSSLANE_OK) | box execute |
 | Dapp prover/recovery (transfer, memo, indexer, evm wallet, evm-log decoder, relay) | ~47 node checks |
 | Asset hub — canonical ERC20 factory + pool-minted mode | factory + TAC walkthroughs |
 | TAC end-to-end (Bitcoin burn → confidential → public ERC20 → tradeable → back; Bob→Alice→exit) | 2 walkthrough tests |

@@ -158,7 +158,7 @@ consume Bitcoin state. We make Phase 1/2 tee these up at near-zero cost:
    yields the same nullifier on both chains, so the global set is a union, no
    remapping. Replay protection lives in the chain-bound spend proof.
 2. **Bitcoin-compatible leaf hashing** (§3) — eases the unified deposit tree (the
-   "indistinguishable origin" platinum form).
+   "indistinguishable origin" cross-lane form).
 3. **Phase-2 nullifier accumulator = indexed-Merkle, designed as the global
    set.** In Phase 3 it is fed by both chains, with **Ethereum L1 as the ordering
    anchor** and Bitcoin deferring (Bitcoin Tacit is off-chain-validated).

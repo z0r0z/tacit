@@ -1,13 +1,13 @@
-// Execute a SETTLE in improved-platinum mode (bitcoinSpentRoot != 0) to validate the
-// in-guest cross-lane non-membership end-to-end — the gold-standard check of the
-// guest's witness read order for check_btc_nonmembership. Reads platinum_op.json
-// (tests/gen-cxfer-platinum-fixture.mjs): a 2-in/2-out transfer + per-input IMT
+// Execute a SETTLE in cross-lane mode (bitcoinSpentRoot != 0) to validate the
+// in-guest cross-lane non-membership end-to-end — the pool-standard check of the
+// guest's witness read order for check_btc_nonmembership. Reads crosslane_op.json
+// (tests/gen-cxfer-crosslane-fixture.mjs): a 2-in/2-out transfer + per-input IMT
 // non-membership against the reflected Bitcoin spent-set root.
 use sp1_sdk::{blocking::{ProverClient, Prover, ProveRequest}, SP1Stdin, Elf, ProvingKey, HashableKey};
 const ELF: &[u8] = include_bytes!("/root/work/cxfer/guest/target/elf-compilation/riscv64im-succinct-zkvm-elf/release/cxfer-guest");
 fn hexv(s: &str) -> Vec<u8> { hex::decode(s.trim_start_matches("0x")).unwrap() }
 fn main() {
-    let f: serde_json::Value = serde_json::from_str(&std::fs::read_to_string("/root/work/cxfer/fixtures/platinum_op.json").unwrap()).unwrap();
+    let f: serde_json::Value = serde_json::from_str(&std::fs::read_to_string("/root/work/cxfer/fixtures/crosslane_op.json").unwrap()).unwrap();
     let mut stdin = SP1Stdin::new();
     stdin.write(&hexv(f["chainBinding"].as_str().unwrap()));
     stdin.write(&hexv(f["spendRoot"].as_str().unwrap()));
@@ -43,11 +43,11 @@ fn main() {
     stdin.write(&hexv(f["kernel"]["z"].as_str().unwrap()));
 
     // MODE=execute (default) — cross-lane validation only; MODE=groth16 — GPU prove + write the
-    // on-chain artifacts (public_values.hex + proof_bytes.hex) for ConfidentialPlatinumProofReal.
+    // on-chain artifacts (public_values.hex + proof_bytes.hex) for ConfidentialCrossLaneProofReal.
     if std::env::var("MODE").as_deref() != Ok("groth16") {
         let client = ProverClient::builder().cpu().build();
         let (output, report) = client.execute(Elf::Static(ELF), stdin).run().expect("execute failed");
-        println!("PLATINUM_OK cycles={} pv_bytes={}", report.total_instruction_count(), output.as_slice().len());
+        println!("CROSSLANE_OK cycles={} pv_bytes={}", report.total_instruction_count(), output.as_slice().len());
         return;
     }
     let client = ProverClient::builder().cuda().build();

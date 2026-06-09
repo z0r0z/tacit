@@ -1,5 +1,5 @@
 {
-  "note": "platinum-mode settle witness (2-in/2-out transfer + per-input cross-lane non-membership)",
+  "note": "cross-lane-mode settle witness (2-in/2-out transfer + per-input cross-lane non-membership)",
   "chainBinding": "0x0000000000000000000000000000000000000000000000000000000000000000",
   "spendRoot": "0xd5cfe493f91ef5821e021a69f8b691b53ed43366731b82478cebf0d8020e9bbf",
   "bitcoinSpentRoot": "0xfde47175ff00f71878b27aeeadcf4b047ea32b77684fac693a1caf3503b7c5c9",

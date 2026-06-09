@@ -767,7 +767,7 @@ contract ConfidentialPoolTest is Test {
         assertEq(pool.escrow(a), 0, "still no escrow");
     }
 
-    // ──────────────────── improved platinum: cross-lane gate ────────────────────
+    // ──────────────────── cross-lane: cross-lane gate ────────────────────
 
     /// A note homed on Bitcoin can be spent on the Ethereum fast lane by proving
     /// membership against a relay-proven Bitcoin pool root — but ONLY while pinning the
@@ -830,7 +830,7 @@ contract ConfidentialPoolTest is Test {
         _settle(pv);
     }
 
-    // ──────────────────── improved platinum: reflected spent-set root (IMT) ────────────────────
+    // ──────────────────── cross-lane: reflected spent-set root (IMT) ────────────────────
 
     /// A settle whose in-guest non-membership used a stale Bitcoin spent-set root is
     /// rejected — it could omit a recent Bitcoin spend. The fresh root is relay-proven.

@@ -148,7 +148,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     // Bitcoin confidential-pool roots the oracle has attested as canonical +
     // confirmed. A bridge_mint proves the burned note's membership against one of
     // these, so a fake-tree note cannot be minted (the inflation-critical gate).
-    // Also accepted as a `spendRoot` for the improved-platinum fast lane (a
+    // Also accepted as a `spendRoot` for the cross-lane fast lane (a
     // Bitcoin-homed note spent on Ethereum).
     mapping(bytes32 => bool) public knownBitcoinRoot;
 
@@ -560,10 +560,10 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         if (pv.version != PV_VERSION) revert BadVersion();
         if (pv.chainBinding != CHAIN_BINDING) revert ChainMismatch();
         // Membership may be proven against an Ethereum root OR a reflected Bitcoin
-        // confidential-pool root (improved platinum: a Bitcoin-homed note spent on
+        // confidential-pool root (cross-lane: a Bitcoin-homed note spent on
         // the Ethereum fast lane). Both are oracle/relay-attested.
         if (pv.spendRoot != bytes32(0) && !everKnownRoot[pv.spendRoot] && !knownBitcoinRoot[pv.spendRoot]) revert UnknownRoot();
-        // Cross-lane non-membership (improved platinum): if the guest proved each
+        // Cross-lane non-membership (cross-lane): if the guest proved each
         // spent ν absent from the Bitcoin spent set, it must be against the CURRENT
         // reflected root — a stale root could omit a recent Bitcoin spend.
         if (pv.bitcoinSpentRoot != bytes32(0) && pv.bitcoinSpentRoot != knownBitcoinSpentRoot) revert StaleBitcoinSpentRoot();
@@ -589,7 +589,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         if (pv.bitcoinBurnsConsumed.length != 0 && (pv.bitcoinBurnRoot == bytes32(0) || pv.bitcoinBurnRoot != knownBitcoinBurnRoot)) revert StaleBitcoinBurnRoot();
         if (memos.length != pv.leaves.length) revert MemoLeafMismatch();
 
-        // Cross-lane gate (improved platinum): a note already spent on Bitcoin cannot be
+        // Cross-lane gate (cross-lane): a note already spent on Bitcoin cannot be
         // fast-spent on Ethereum. Enforced trustlessly in-guest — the guest proves each
         // spent ν absent from the Bitcoin spent set against `pv.bitcoinSpentRoot`, which
         // the check above pins to the current relay-proven root. Bitcoin is the arbiter.

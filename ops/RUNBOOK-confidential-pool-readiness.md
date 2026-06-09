@@ -3,20 +3,20 @@
 Operational companion to the runnable gate
 `contracts/sp1/confidential/readiness-gate.sh`. Defines what "ready" means for the
 ConfidentialPool + cross-chain stack, maps every soundness/liveness property to the
-layer and test that confirms it, and tracks the open items per tier.
+layer and test that confirms it, and tracks the open items per layer.
 
 This document is the *what to verify and where*. The gate is the *run it now*. Keep
 them in sync: when a new property gains (or needs) a test, add a row here and a check
 there.
 
-## Tiers
+## Layers
 
-| Tier | Surface | Relay config |
+| Layer | Surface | Relay config |
 |------|---------|--------------|
-| **GOLD** | Ethereum-only confidential pool: wrap / transfer / unwrap / fees, multi-asset escrow + pool-minted canonical ERC20s, seed-only recovery. | `BITCOIN_RELAY_VKEY = 0` (cross-chain attestation inert) |
-| **PLATINUM** | Adds the Bitcoin↔Ethereum cross-lane: relay-attested Bitcoin state, `bridge_mint` / `bridge_burn`, cross-lane non-membership, trustless first-mint metadata. | `BITCOIN_RELAY_VKEY` set to the reflection prover's vkey |
+| **POOL** | Ethereum-only confidential pool: wrap / transfer / unwrap / fees, multi-asset escrow + pool-minted canonical ERC20s, seed-only recovery. | `BITCOIN_RELAY_VKEY = 0` (cross-chain attestation inert) |
+| **BRIDGE** | Adds the Bitcoin↔Ethereum cross-lane: relay-attested Bitcoin state, `bridge_mint` / `bridge_burn`, cross-lane non-membership, trustless first-mint metadata. | `BITCOIN_RELAY_VKEY` set to the reflection prover's vkey |
 
-A tier is **ready** only when every gate at that tier (PLATINUM inherits all of GOLD)
+A layer is **ready** only when every gate at that layer (BRIDGE inherits all of POOL)
 is green. A `BLOCKED` gate is an expected-pending milestone, not a pass.
 
 ## Run
@@ -26,7 +26,7 @@ bash contracts/sp1/confidential/readiness-gate.sh        # full
 READINESS_FAST=1 bash contracts/sp1/confidential/readiness-gate.sh   # skip slow invariant fuzzing
 ```
 
-The gate runs every layer below, prints per-gate PASS/FAIL/BLOCKED, and a tiered
+The gate runs every layer below, prints per-gate PASS/FAIL/BLOCKED, and a layered
 verdict. It exits non-zero only on a FAIL (a regression); BLOCKED gates do not fail
 the exit (they are tracked milestones).
 
@@ -38,7 +38,7 @@ the exit (they are tracked milestones).
 | L2 Guest verification core | The secp/keccak primitives the guest delegates to: conservation kernel, BP+ range, Pedersen opening, IMT membership/non-membership, the reflection accumulators, Bitcoin header/tx/PoW. | `cargo test` — `cxfer-core` (native, against JS fixtures) |
 | L3 Cross-impl KAT | The byte layouts (leaf / nullifier / depositId / claimId / destCommitment / tree root) agree across JS prover ↔ Solidity contract ↔ Rust guest. | `forge` `ConfidentialPoolKAT.t.sol` + `cargo` KATs + the `tests/*.mjs` that emit the fixtures |
 | L4 Off-chain dapp/prover | Memo seal/open, seed-only recovery, indexer fold + gap detection, transfer/bridge prover round-trips, relay submission encoding. | `node tests/confidential-*.mjs` |
-| L5 Real proof on-chain | A real SP1 Groth16 proof of the guest verifies through the genuine SP1 verifier (no mock). | `forge` `ConfidentialProofReal.t.sol`, `ConfidentialPlatinumProofReal.t.sol` |
+| L5 Real proof on-chain | A real SP1 Groth16 proof of the guest verifies through the genuine SP1 verifier (no mock). | `forge` `ConfidentialProofReal.t.sol`, `ConfidentialCrossLaneProofReal.t.sol` |
 | L6 Deployment coherence | The deployed guest is the proven guest (vkey), the ELF is pinned, and the live config matches. | gate checks (vkey diff, ELF pin) |
 | L7 Live | Real round-trip on a public network (Sepolia → mainnet), capped pilot. | manual, per `RUNBOOK-confidential-pool-deploy.md` |
 
@@ -67,18 +67,18 @@ Soundness (the load-bearing invariants):
 | Trustless first-mint metadata is confirmation-gated (B6) | L1 | `test_settle_attest_meta_requires_attested_pool_root` |
 | Seed-only recovery; dropped-event fail-loud | L4 | `confidential-indexer.mjs`, `confidential-memo.mjs` |
 
-## Open items by tier
+## Open items by layer
 
-**GOLD**
+**POOL**
 - **vkey coherence** — the deploy default (`PROGRAM_VKEY`) must equal the vkey that has a real on-chain proof (`confidential_groth16.json`). When they differ, the deployed/intended guest has no L5 evidence. *Resolution: re-prove the current guest on the box, refresh the fixture, re-pin the default.*
 - **Guest ELF pin** — the confidential guest has no `elf-vkey-pin.json` (the discipline the tETH guest uses: committed canonical ELF + pinned vkey + CI sha check). Adopt it so the proven ELF can never drift from the committed source silently.
 - **Guest↔contract ABI parity** — the guest's emitted `PublicValues` layout must match the contract's `abi.decode` layout exactly. After any contract `PublicValues` change, the guest is re-frozen and re-proven in the same change.
 
-**PLATINUM** (all GOLD items, plus)
+**BRIDGE** (all POOL items, plus)
 - **Bridge-mint authority = dedicated burn set — DONE.** `bridge_mint` proves the burned note's membership in the bridge-burn root (`bitcoinBurnRoot`), not the general spent-nullifier root, so only an explicit burn — not a normal Bitcoin spend — can mint on Ethereum. Enforced on both sides: `settle` requires a current non-zero `bitcoinBurnRoot` whenever `bitcoinBurnsConsumed` is non-empty, and the guest proves burn-set membership + emits `bitcoinBurnRoot` (re-proven guest vkey `0x00f02859`).
 - **Reflection prover (`BITCOIN_RELAY_VKEY`) — DONE (on-chain proven).** The SP1 reflection guest (`src/reflect.rs`) re-derives `(poolRoot, spentRoot, burnRoot, height)` + a chained state digest from confirmed Bitcoin headers; a real GPU Groth16 proof of it folding a real signet T_CXFER_BPP verifies on-chain (`ConfidentialReflectionProofReal.t.sol`, fixture `reflection_groth16.json`), vkey `0x00be458f` (the canonical reflection ELF is committed + pinned in `elf-vkey-pin.json`; verify-vkey-pin.sh checks its sha256). Remaining: flip `BITCOIN_RELAY_VKEY` on at deploy once the worker attests continuously (deploy default is still `0`).
 - **Bitcoin-side confidential-pool indexer — DONE.** `dapp/confidential-reflection-indexer.js` + `worker/src/reflection-attest.js` resolve confirmed effects, assemble batches, and drive the attestation cycle (`tests/confidential-reflection-*.mjs`, `reflection-attest.mjs`).
-- **Platinum cross-lane settle proof (L5) — pending.** A real settle proof exercising the cross-lane non-membership gate must verify on-chain (`platinum_groth16.json`); the test is fixture-gated and lands automatically when the box drops the fixture.
+- **Bridge cross-lane settle proof (L5) — pending.** A real settle proof exercising the cross-lane non-membership gate must verify on-chain (`crosslane_groth16.json`); the test is fixture-gated and lands automatically when the box drops the fixture.
 
 ## Adding to the suite
 

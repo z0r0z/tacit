@@ -9,7 +9,7 @@
 // every nullifier (0 < ν < MAX) is a non-member via that leaf. That validates the
 // wiring; a populated set is the same primitive (cxfer-core imt_non_membership 8/8).
 //
-// Run: node tests/gen-cxfer-platinum-fixture.mjs > contracts/sp1/confidential/fixtures/platinum_op.json
+// Run: node tests/gen-cxfer-crosslane-fixture.mjs > contracts/sp1/confidential/fixtures/crosslane_op.json
 
 import { keccak_256 } from '../node_modules/@noble/hashes/sha3.js';
 import * as secp from '../node_modules/@noble/secp256k1/index.js';

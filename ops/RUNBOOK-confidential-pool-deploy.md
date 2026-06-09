@@ -15,9 +15,9 @@ crypto is done and proven; this is the turnkey deploy.
   no longer carry a separate `amount`), so the vkey shifts from the deploy script's
   current `DEFAULT_VKEY`. Freeze the guest, `cargo prove` it on the box, set
   `PROGRAM_VKEY` to the resulting vkey, and refresh the on-chain proof fixtures
-  (`confidential_groth16.json` for a transfer, `platinum_groth16.json` for a
-  cross-lane settle) so `ConfidentialProofReal` + `ConfidentialPlatinumProofReal`
-  verify the frozen vkey before you broadcast. See "Full platinum activation" below.
+  (`confidential_groth16.json` for a transfer, `crosslane_groth16.json` for a
+  cross-lane settle) so `ConfidentialProofReal` + `ConfidentialCrossLaneProofReal`
+  verify the frozen vkey before you broadcast. See "Full cross-lane activation" below.
 
 ## Deploy
 ```
@@ -28,8 +28,8 @@ SP1_VERIFIER=<sp1 groth16 verifier on this chain> \
 ```
 Optional: `BITCOIN_RELAY_VKEY=<vkey>` is the SP1 vkey of the **reflection prover**;
 it is the sole authority for Bitcoin pool/spent-set state (no trusted oracle). Leave
-it `0` for an Ethereum-only deploy (cross-lane inert — see the gold→platinum staging
-below); set it to the frozen reflection-prover vkey to enable full platinum.
+it `0` for an Ethereum-only deploy (cross-lane inert — see the pool→cross-lane staging
+below); set it to the frozen reflection-prover vkey to enable full cross-lane.
 Optional `SAMPLE_UNDERLYING=<erc20>` registers a first confidential asset inline.
 
 ## Post-deploy — register assets
@@ -53,22 +53,22 @@ pool.registerWrapped(underlying, unitScale, crossChainLink, name, symbol, decima
 - **Cheap at scale** = batching (the rollup): the guest already settles many ops per
   proof (`numOps`); an off-chain batcher collects users' ops into one proof →
   per-trade proving + gas amortized. (Phase 2.)
-- **Full platinum (cross-lane fast lane)** for Bitcoin-homed notes — the reflection
-  prover + `BITCOIN_RELAY_VKEY`. See "Full platinum activation" below.
+- **Full cross-lane (cross-lane fast lane)** for Bitcoin-homed notes — the reflection
+  prover + `BITCOIN_RELAY_VKEY`. See "Full cross-lane activation" below.
 - **Pooled confidential swaps** route to the live Bitcoin `T_SWAP_BATCH` via the
   bridge; Ethereum-side trades are transfers + matched swaps.
 
-## Full platinum activation (cross-lane fast lane)
+## Full cross-lane activation (cross-lane fast lane)
 
 The contract ships cross-lane-final: `settle` accepts a Bitcoin-homed spend root and
 enforces in-guest Bitcoin spent-set non-membership against the reflected root. Two
 deploy postures over the **same contract + guest**:
 
-- **Gold (Ethereum-only).** `BITCOIN_RELAY_VKEY = 0`. No Bitcoin root can be attested
+- **Pool (Ethereum-only).** `BITCOIN_RELAY_VKEY = 0`. No Bitcoin root can be attested
   → `knownBitcoinRoot` stays empty → no spend is ever Bitcoin-homed → cross-lane is
   fully inert. Confidential transfers/swaps settle on Ethereum; this is the safe
   capped pilot.
-- **Platinum (cross-lane on).** `BITCOIN_RELAY_VKEY = <reflection prover vkey>`. A
+- **Bridge (cross-lane on).** `BITCOIN_RELAY_VKEY = <reflection prover vkey>`. A
   Bitcoin-homed note can be fast-spent on Ethereum, gated by non-membership against
   the reflected Bitcoin spent set. Requires the pieces below.
 
@@ -90,11 +90,11 @@ deploy postures over the **same contract + guest**:
   contract scales by the asset's trusted `unitScale`. The deposit id binds `value`
   (forcing `value·unitScale == escrowed amount`); the guest never sees `unitScale`.
 
-### Remaining build to turn platinum on (box + infra)
+### Remaining build to turn cross-lane on (box + infra)
 1. **Freeze the guest, prove, pin the vkey** (box). `cargo prove` the gen-1 guest;
    set `PROGRAM_VKEY`; regenerate `confidential_groth16.json` +
-   `platinum_groth16.json`; confirm `ConfidentialProofReal` +
-   `ConfidentialPlatinumProofReal` verify on-chain against the frozen vkey.
+   `crosslane_groth16.json`; confirm `ConfidentialProofReal` +
+   `ConfidentialCrossLaneProofReal` verify on-chain against the frozen vkey.
 2. **Bitcoin-side confidential pool** — the indexer that maintains the canonical
    Bitcoin note tree + spent-nullifier IMT the reflection prover proves over. (New
    subsystem; today the worker indexes cxfer envelopes but not a canonical pool.)

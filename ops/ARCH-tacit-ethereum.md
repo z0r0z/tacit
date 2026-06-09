@@ -33,7 +33,7 @@ one confidential, cross-chain system. Companion to the per-piece plans
 └───────────────────────────────────────────────────────────────────────┘
 ```
 
-## Trust / finality model — "improved (asymmetric) platinum"
+## Trust / finality model — "improved (asymmetric) cross-lane"
 
 - **Bitcoin is the canonical arbiter and sole finality** (the sovereign lane). A spend is
   final when Bitcoin says so.

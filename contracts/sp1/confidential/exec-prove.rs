@@ -4,7 +4,7 @@
 // (public_values.hex + proof_bytes.hex) for a Forge verify against the real SP1
 // Groth16 verifier. ProverClient::builder().cpu() forces CPU — never the GPU the
 // live mainnet bridge prover uses.
-use sp1_sdk::{blocking::{ProverClient, Prover, ProveRequest}, SP1Stdin, Elf, ProvingKey};
+use sp1_sdk::{blocking::{ProverClient, Prover, ProveRequest}, SP1Stdin, Elf, ProvingKey, HashableKey};
 const ELF: &[u8] = include_bytes!("/root/work/cxfer/guest/target/elf-compilation/riscv64im-succinct-zkvm-elf/release/cxfer-guest");
 fn hexv(s: &str) -> Vec<u8> { hex::decode(s.trim_start_matches("0x")).unwrap() }
 fn main() {
@@ -12,7 +12,7 @@ fn main() {
     let mut stdin = SP1Stdin::new();
     stdin.write(&hexv(f["chainBinding"].as_str().unwrap()));
     stdin.write(&hexv(f["spendRoot"].as_str().unwrap()));
-    stdin.write(&vec![0u8; 32]); // bitcoinSpentRoot = 0 (gold mode, no cross-lane check)
+    stdin.write(&vec![0u8; 32]); // bitcoinSpentRoot = 0 (Ethereum-only mode, no cross-lane check)
     stdin.write(&vec![0u8; 32]); // bitcoinBurnRoot = 0 (no bridge_mint in this batch)
     stdin.write(&1u32);
     stdin.write(&1u8); // OP_TRANSFER

@@ -2,7 +2,7 @@
 
 > **STATUS: DRAFT** (2026-06-08). The canonical privacy primitive the whole protocol
 > hangs off of: a **confidential, multi-asset, cross-chain shielded pool**. One design
-> on both surfaces — Bitcoin and Ethereum — unified by the cross-lane gate (platinum).
+> on both surfaces — Bitcoin and Ethereum — unified by the cross-lane gate (cross-lane).
 >
 > This **supersedes and unifies** three earlier, separate constructions:
 > - the **Tornado-style mixer** (`T_DEPOSIT`/`T_WITHDRAW`, Poseidon-Merkle + Groth16) —
@@ -104,14 +104,14 @@ set is not denomination-partitioned) — strictly larger than a Tornado denomina
 A swap is a multi-asset `transfer` (per-asset conservation already holds), so OTC and
 pooled-AMM swaps compose from the same ops.
 
-## 6. Cross-chain — one note, Bitcoin *or* Ethereum (platinum)
+## 6. Cross-chain — one note, Bitcoin *or* Ethereum (cross-lane)
 
 A note is spendable on Bitcoin **or** Ethereum, exactly once ever, with the origin
 hidden in the strongest form. The chain-independent ν is the linchpin: both surfaces
 agree a note is spent iff its ν is consumed.
 
 - **Same-chain spends** settle on their own chain's nullifier set, fast and sovereign.
-- **Cross-lane** (improved platinum, asymmetric): Bitcoin is the canonical nullifier set
+- **Cross-lane** (cross-lane, asymmetric): Bitcoin is the canonical nullifier set
   and sole arbiter; Ethereum is a fast provisional cache. A Bitcoin-homed note fast-spent
   on Ethereum proves **non-membership** of its ν against the *reflected Bitcoin spent
   set* (a relay-attested IMT root), so a note already spent on Bitcoin cannot be

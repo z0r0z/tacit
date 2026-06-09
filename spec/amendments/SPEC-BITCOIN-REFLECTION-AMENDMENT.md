@@ -4,7 +4,7 @@
 > that proves the Bitcoin confidential pool's state — its note set and its spent
 > set — onto Ethereum as `ConfidentialPool.BitcoinRelayPublicValues`
 > `(bitcoinPoolRoot, bitcoinSpentRoot, bitcoinHeight)`, the sole authority behind
-> the improved-platinum cross-lane gate (`attestBitcoinStateProven`,
+> the cross-lane gate (`attestBitcoinStateProven`,
 > `BITCOIN_RELAY_VKEY`). No trusted oracle: the proof is the authority.
 >
 > Companion to:
@@ -12,7 +12,7 @@
 >   transfer envelope this reflects.
 > - `SPEC-EVM-CONFIDENTIAL-TOKEN-AMENDMENT.md` — the EVM pool whose cross-lane gate
 >   consumes the reflected roots.
-> - `ops/PLAN-confidential-cross-chain.md` §9 — improved (asymmetric) platinum: the
+> - `ops/PLAN-confidential-cross-chain.md` §9 — improved (asymmetric) cross-lane: the
 >   reflection prover is a trustless **data** relay, not a capital relayer.
 > - `cxfer-core` — the verification toolkit this guest composes (built + tested):
 >   `verify_tx_in_block`, `verify_header_chain`, `ReflectionState`

@@ -22,7 +22,7 @@ import {ConfidentialPool} from "../src/ConfidentialPool.sol";
 ///      --rpc-url $RPC --private-key $PK --broadcast --verify
 contract DeployConfidentialPool is Script {
     // Confidential guest vkey: the complete gen-1 op set — wrap/transfer/unwrap/bridge_burn/
-    // bridge_mint — plus the improved-platinum cross-lane non-membership gate (IMT,
+    // bridge_mint — plus the cross-lane non-membership gate (IMT,
     // bitcoinSpentRoot), OP_ATTEST_META (trustless first-mint metadata from the etch), and
     // OP_SWAP (confidential AMM batch against public pool reserves). Pinned to the committed
     // canonical ELF: sp1/confidential/elf/cxfer-guest, sha256 4ee12556… (verify-vkey-pin.sh).

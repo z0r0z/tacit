@@ -88,7 +88,7 @@ fn r_path() -> Vec<[u8; 32]> {
     (0..32).map(|_| r32()).collect()
 }
 
-/// Cross-lane gate (improved platinum): assert `nu` is absent from the reflected
+/// Cross-lane gate (cross-lane): assert `nu` is absent from the reflected
 /// Bitcoin spent set committed by `root`, reading the IMT non-membership witness
 /// (low leaf value/next/index/path). Called only when the root is non-zero.
 fn check_btc_nonmembership(nu: &[u8; 32], root: &[u8; 32]) {
@@ -102,10 +102,10 @@ fn check_btc_nonmembership(nu: &[u8; 32], root: &[u8; 32]) {
 pub fn main() {
     let chain_binding = r32();
     let spend_root = r32();
-    // Improved platinum: the reflected Bitcoin spent-set IMT root to prove each
-    // spent ν absent against (0 = gold/Phase-1, no cross-lane check).
+    // cross-lane: the reflected Bitcoin spent-set IMT root to prove each
+    // spent ν absent against (0 = Ethereum-only, no cross-lane check).
     let bitcoin_spent_root = r32();
-    // Improved platinum: the reflected Bitcoin bridge-BURN IMT root (key = ν, value =
+    // cross-lane: the reflected Bitcoin bridge-BURN IMT root (key = ν, value =
     // destCommitment), populated only by cross-chain burns. bridge_mint authorizes against
     // THIS set, not the all-spends set — so a note spent in an ordinary Bitcoin transfer is
     // not mintable here (closes the cross-chain inflation path).
