@@ -706,17 +706,30 @@ const NETWORKS = ['signet', 'mainnet'];
 // + blockstream.info, both network-matched) are always appended as fallbacks so
 // a single blocked or rate-limited source self-heals without a redeploy. Signet
 // uses blockstream.info/signet (verified real signet data, not mainnet).
+// Maestro's Blockstream-compatible esplora (mainnet only; a forked
+// mempool.space). Rate-limited per-API-key rather than per-IP, so the cron
+// scan stops getting throttled when the whole indexer runs behind a single
+// egress IP. Requires the `api-key` header, attached in apiFetch.
+const MAESTRO_BASE = 'https://xbt-mainnet.gomaestro-api.org/v0/esplora';
 function networkApis(env, network) {
   const mp = network === 'mainnet' ? 'https://mempool.space/api'  : 'https://mempool.space/signet/api';
   const bs = network === 'mainnet' ? 'https://blockstream.info/api' : 'https://blockstream.info/signet/api';
   const list = String((network === 'mainnet' ? env.MAINNET_API : env.SIGNET_API) || mp)
     .split(',').map(s => s.trim().replace(/\/+$/, '')).filter(Boolean);
   for (const fb of [mp, bs]) if (!list.includes(fb)) list.push(fb);
+  // Maestro first when configured (mainnet only — no signet endpoint). The
+  // keyless mempool/blockstream stay as fallbacks if Maestro ever errors, and
+  // apiFetch demotes a 401/402/403 from a bad key so the scan never stalls on it.
+  if (network === 'mainnet' && env.MAESTRO_API_KEY && !list.includes(MAESTRO_BASE)) list.unshift(MAESTRO_BASE);
   return list.length ? list : [mp, bs];
 }
-// Primary base — for the direct callers (fresh-tx polling, batch fetchers) that
-// don't route through apiText/apiJson's multi-source fallback.
-function networkApi(env, network) { return networkApis(env, network)[0]; }
+// Primary base — for the direct callers (fresh-tx polling, /chain + batch
+// proxies) that fetch raw, without apiFetch's per-source header injection. Hand
+// them the first keyless source so they never hit Maestro's `api-key` 402.
+function networkApi(env, network) {
+  const bases = networkApis(env, network);
+  return bases.find(b => !b.includes('gomaestro-api.org')) || bases[0];
+}
 function parseNetwork(value) {
   const v = String(value || '').toLowerCase();
   return v === 'mainnet' ? 'mainnet' : 'signet';
@@ -5640,9 +5653,18 @@ async function apiFetch(env, network, path, opts = {}) {
   let lastErr;
   for (let n = 0; n < bases.length; n++) {
     const i = (start + n) % bases.length;
+    const base = bases[i];
+    // Maestro needs the api-key header; the keyless sources must NOT carry it.
+    // Merge per-source so a fallback hop drops it again.
+    const useOpts = (env.MAESTRO_API_KEY && base.includes('gomaestro-api.org'))
+      ? { ...opts, headers: { ...(opts.headers || {}), 'api-key': env.MAESTRO_API_KEY } }
+      : (opts || {});
     try {
-      const r = await _fetchUpstreamWithAbortRetry(`${bases[i]}${path}`, opts || {});
-      if (r.ok || (r.status < 500 && r.status !== 429)) { _apiPref[network] = i; return r; }
+      const r = await _fetchUpstreamWithAbortRetry(`${base}${path}`, useOpts);
+      // 401/402/403 = this source's auth/quota, not a real answer — fail over to
+      // the next source (a misconfigured Maestro key must never poison the scan).
+      const authFail = r.status === 401 || r.status === 402 || r.status === 403;
+      if (!authFail && (r.ok || (r.status < 500 && r.status !== 429))) { _apiPref[network] = i; return r; }
       lastErr = new Error(`${network} source ${i} -> ${r.status}`);
     } catch (e) {
       lastErr = e;
