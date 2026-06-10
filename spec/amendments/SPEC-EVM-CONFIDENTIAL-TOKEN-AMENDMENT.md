@@ -115,27 +115,33 @@ section requires a range proof, because the amount moved is public; only its
 ```
 etched token:   asset_id = sha256("tacit-evm-etch-v1"  ‖ chainid_be8 ‖ factory ‖ salt ‖ etcher ‖ meta_hash)
 wrapped/native: asset_id = sha256("tacit-evm-token-v1" ‖ chainid_be8 ‖ underlying_token)
-meta_hash       = sha256( u8(len symbol) ‖ symbol ‖ u8(decimals) )
+meta_hash       = sha256( u8(len symbol) ‖ symbol ‖ u8(decimals) ‖ cid )
 ```
+`cid` is a 32-byte IPFS metadata content hash (the CIDv1 dag-pb sha2-256 digest of a
+logo/description JSON; `0` = none), bound into `meta_hash` so the id commits to it like
+`(symbol, decimals)`.
 Domain-separated from the Bitcoin `sha256(reveal_txid ‖ vout)` namespace and
 from the `ShieldedPool` asset-id rule by tag.
 
 **Canonical ERC20 metadata.** The public ERC20's `name` is the constant brand
-`"Tacit Token"` — a Tacit asset carries no trustless on-chain name (the etch envelope
-holds only `ticker` + `decimals`; the richer name is off-chain in IPFS), so name is a
-constant rather than a spoofable or off-chain-sourced field. The only per-asset metadata
-is `(symbol, decimals)`, which is **deterministic to the real asset**:
+`"Tacit Token"` — a Tacit asset carries no trustless on-chain name, so name is a constant
+rather than a spoofable or off-chain-sourced field. The per-asset metadata is
+`(symbol, decimals, cid)`, all **deterministic to the real asset** — the `cid` points to a
+logo/description JSON on IPFS, surfaced via the ERC20's `contractURI()` (EIP-7572) for
+wallets, marketplaces, and the dapp:
 
-- **EVM-native etch:** the etched id commits to `(symbol, decimals)` through `meta_hash`,
+- **EVM-native etch:** the etched id commits to `(symbol, decimals, cid)` through `meta_hash`,
   so the metadata is canonical *by construction* — the deployer derives the id on-chain
   from the supplied metadata (`CanonicalAssetFactory.deriveAssetId` / `etchCanonical`)
   and anyone can recompute the binding (`verifyMetadata`). Exactly one official
-  `(symbol, decimals)` per id.
-- **Bitcoin-native etch (e.g. TAC):** `(ticker, decimals)` live on-chain in the CETCH /
-  T_PETCH reveal envelope, transitively bound to the id via the txid
-  (`asset_id = sha256(reveal_txid ‖ 0)`, `reveal_txid = double_sha256(reveal_tx)`). The
-  bridge proves them once at first mint (in the SP1 proof's public values, or an
-  on-chain etch-envelope proof) and the canonical ERC20 carries them immutably.
+  `(symbol, decimals, cid)` per id.
+- **Bitcoin-native etch (e.g. TAC):** `(ticker, decimals, cid)` live on-chain in the CETCH /
+  T_PETCH reveal envelope — `opcode ‖ tlen ‖ ticker ‖ decimals ‖ [cid(32)]` — transitively
+  bound to the id via the txid (`asset_id = sha256(reveal_txid ‖ 0)`,
+  `reveal_txid = double_sha256(reveal_tx)`). The bridge proves them once at first mint (the
+  SP1 attest_meta proof's `AssetMeta` carries the `cid`) and the canonical ERC20 carries
+  them immutably; `contractURI()` reconstructs `ipfs://f01701220‖hex(cid)` from it. The CID
+  is optional — absent ⇒ `cid = 0` ⇒ empty `contractURI`.
 - **Wrapped ERC20:** the id binds the underlying, whose `symbol`/`decimals` are read from
   that token directly.
 

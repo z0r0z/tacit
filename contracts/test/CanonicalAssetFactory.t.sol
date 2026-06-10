@@ -155,19 +155,23 @@ contract CanonicalAssetFactoryTest is Test {
         assertEq(CanonicalBridgedERC20(token).MINTER(), MINTER);
     }
 
-    function test_metaHash_distinguishes_symbol_and_decimals() public view {
+    function test_metaHash_distinguishes_symbol_decimals_and_cid() public view {
         bytes32 h = factory.metaHash("TAC", 18);
         assertTrue(h != factory.metaHash("TAK", 18), "symbol bound");
         assertTrue(h != factory.metaHash("TAC", 8), "decimals bound");
+        assertTrue(h != factory.metaHash("TAC", 18, keccak256("cid")), "cid bound");
+        // no-metadata short form == the cid=0 form
+        assertEq(h, factory.metaHash("TAC", 18, bytes32(0)), "short form is cid=0");
     }
 
     /// Cross-language KAT — must equal tests/confidential-canonical-asset-id.mjs so the
-    /// derivation is identical in Solidity, JS, and Rust.
+    /// derivation is identical in Solidity, JS, and Rust. meta_hash now commits the metadata
+    /// CID (0 in this vector → the no-metadata form).
     function test_metaHash_kat() public view {
         assertEq(
             factory.metaHash("TAC", 18),
-            0xdf3026173e81ffe48ad033a90d78054b461ea8303f5d76989bd8d5e050311215,
-            "metaHash KAT (TAC/18)"
+            0xe4c8ab35e9869863d4b3a44796e370871abf8ccdae06b04d82fff892e89c06e6,
+            "metaHash KAT (TAC/18/cid=0)"
         );
     }
 

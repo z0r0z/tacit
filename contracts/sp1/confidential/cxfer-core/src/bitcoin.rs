@@ -142,11 +142,15 @@ pub fn asset_id_from_etch(tx_data: &[u8]) -> [u8; 32] {
     sha256_once(&pre)
 }
 
-/// Parse the `(ticker, decimals)` an etch reveal envelope declares ON-CHAIN. `env` is the
+/// Parse the `(ticker, decimals, cid)` an etch reveal envelope declares ON-CHAIN. `env` is the
 /// payload from `extract_taproot_envelope` (`env[0]` = opcode). Per SPEC §5.1/§5.8:
-/// `opcode(1) ‖ ticker_len(1, 1..16) ‖ ticker ‖ decimals(1, 0..8) ‖ …`. CETCH=0x21,
-/// T_PETCH=0x27. Returns `(ticker[..len], len, decimals)`; None if not a well-formed etch.
-pub fn parse_etch_meta(env: &[u8]) -> Option<([u8; 16], u8, u8)> {
+/// `opcode(1) ‖ ticker_len(1, 1..16) ‖ ticker ‖ decimals(1, 0..8) ‖ [cid(32)] ‖ …`. CETCH=0x21,
+/// T_PETCH=0x27. The optional 32-byte `cid` (immediately after decimals) is the asset's IPFS
+/// metadata content hash (the CIDv1 dag-pb sha256 digest → a logo/description JSON); absent ⇒
+/// [0;32] (no metadata). The reveal txid binds it exactly like ticker+decimals, so a bridged
+/// asset's contractURI is trustless. Returns `(ticker[..len], len, decimals, cid)`; None if not a
+/// well-formed etch.
+pub fn parse_etch_meta(env: &[u8]) -> Option<([u8; 16], u8, u8, [u8; 32])> {
     if env.len() < 3 || (env[0] != 0x21 && env[0] != 0x27) {
         return None;
     }
@@ -160,7 +164,12 @@ pub fn parse_etch_meta(env: &[u8]) -> Option<([u8; 16], u8, u8)> {
     }
     let mut ticker = [0u8; 16];
     ticker[..tlen].copy_from_slice(&env[2..2 + tlen]);
-    Some((ticker, tlen as u8, decimals))
+    let mut cid = [0u8; 32];
+    let cid_off = 3 + tlen;
+    if env.len() >= cid_off + 32 {
+        cid.copy_from_slice(&env[cid_off..cid_off + 32]);
+    }
+    Some((ticker, tlen as u8, decimals, cid))
 }
 
 /// Parse a confidential bridge-burn envelope (opcode 0x2B) → (assetId, nullifier,
@@ -535,14 +544,17 @@ mod tests {
 
     #[test]
     fn etch_meta_and_asset_id() {
-        // synthetic CETCH (0x21): ticker "TAC", decimals 8, + filler for the rest.
+        // synthetic CETCH (0x21): ticker "TAC", decimals 8, then a 32-byte metadata CID + filler.
         let mut payload = vec![0x21u8, 0x03, b'T', b'A', b'C', 0x08];
-        payload.extend_from_slice(&[0u8; 33]);
+        let want_cid = [0x42u8; 32];
+        payload.extend_from_slice(&want_cid);
+        payload.extend_from_slice(&[0u8; 1]);
         let tx = build_reveal_tx(&payload);
         let env = extract_taproot_envelope(&tx).expect("etch envelope");
-        let (ticker, tlen, decimals) = parse_etch_meta(&env).expect("etch meta");
+        let (ticker, tlen, decimals, cid) = parse_etch_meta(&env).expect("etch meta");
         assert_eq!(&ticker[..tlen as usize], b"TAC", "ticker");
         assert_eq!(decimals, 8, "decimals");
+        assert_eq!(cid, want_cid, "metadata cid");
 
         // asset_id = sha256(compute_txid ‖ vout0), bound to the tx.
         let id = asset_id_from_etch(&tx);

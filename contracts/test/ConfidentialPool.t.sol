@@ -784,7 +784,7 @@ contract ConfidentialPoolTest is Test {
         pv.version = p.PV_VERSION();
         pv.chainBinding = keccak256(abi.encodePacked(block.chainid, address(p)));
         pv.assetMetas = new ConfidentialPool.AssetMeta[](1);
-        pv.assetMetas[0] = ConfidentialPool.AssetMeta(tacId, bytes16("TAC"), 3, 8); // ticker "TAC", 8 dec
+        pv.assetMetas[0] = ConfidentialPool.AssetMeta(tacId, bytes16("TAC"), 3, 8, bytes32(0)); // ticker "TAC", 8 dec
         pv.bitcoinRootsUsed = new bytes32[](1);
         pv.bitcoinRootsUsed[0] = attRoot; // the confirmation root the guest proved membership against
         p.settle(abi.encode(pv), "", new bytes[](0));
@@ -820,7 +820,7 @@ contract ConfidentialPoolTest is Test {
         pv.version = p.PV_VERSION();
         pv.chainBinding = keccak256(abi.encodePacked(block.chainid, address(p)));
         pv.assetMetas = new ConfidentialPool.AssetMeta[](1);
-        pv.assetMetas[0] = ConfidentialPool.AssetMeta(keccak256("junk"), bytes16("JNK"), 3, 8);
+        pv.assetMetas[0] = ConfidentialPool.AssetMeta(keccak256("junk"), bytes16("JNK"), 3, 8, bytes32(0));
         pv.bitcoinRootsUsed = new bytes32[](1);
         pv.bitcoinRootsUsed[0] = keccak256("un-attested-root"); // never relay-attested
         vm.expectRevert(ConfidentialPool.UnknownBitcoinRoot.selector);
@@ -1112,11 +1112,29 @@ contract ConfidentialPoolTest is Test {
         );
         ConfidentialPool.PublicValues memory pv = _pv();
         pv.assetMetas = new ConfidentialPool.AssetMeta[](1);
-        pv.assetMetas[0] = ConfidentialPool.AssetMeta(assetId, bytes16(bytes(symbol_)), uint8(bytes(symbol_).length), decimals_);
+        pv.assetMetas[0] = ConfidentialPool.AssetMeta(
+            assetId, bytes16(bytes(symbol_)), uint8(bytes(symbol_).length), decimals_, _metaCid(assetId)
+        );
         pv.bitcoinRootsUsed = new bytes32[](1);
         pv.bitcoinRootsUsed[0] = attRoot;
         _settle(pv);
         token = factory.tokenOf(assetId, address(pool), symbol_, 18);
+    }
+
+    /// A deterministic stand-in for the etch's IPFS metadata content hash.
+    function _metaCid(bytes32 assetId) internal pure returns (bytes32) {
+        return keccak256(abi.encode("test-meta-cid", assetId));
+    }
+
+    /// The etch-proven metadata CID flows attest_meta → factory → token, and contractURI()
+    /// reconstructs a base16 CIDv1 from it — trustless (bound into asset_id), not operator-set.
+    function test_attest_meta_sets_trustless_contractURI() public {
+        bytes32 shared = keccak256("uri-asset");
+        address tok = _linkViaAttest(shared, "cBTC", 18);
+        assertEq(CanonicalBridgedERC20(tok).METADATA_CID(), _metaCid(shared), "etch CID stored on the token");
+        bytes memory uri = bytes(CanonicalBridgedERC20(tok).contractURI());
+        assertEq(uri.length, 80, "ipfs://f01701220 + 64 hex"); // 16 + 64
+        for (uint256 i; i < 16; ++i) assertEq(uri[i], bytes("ipfs://f01701220")[i], "CIDv1 base16 prefix");
     }
 
     /// A bridged note carries the SHARED (Bitcoin-side) asset id. The attest_meta path links the

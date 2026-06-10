@@ -42,7 +42,7 @@ sol! {
     struct Withdrawal { bytes32 assetId; address recipient; uint256 value; }
     struct FeePayment { bytes32 assetId; uint256 value; }
     struct CrossOut { uint16 destChain; bytes32 destCommitment; bytes32 nullifier; bytes32 assetId; bytes32 claimId; }
-    struct AssetMeta { bytes32 assetId; bytes16 ticker; uint8 tickerLen; uint8 decimals; }
+    struct AssetMeta { bytes32 assetId; bytes16 ticker; uint8 tickerLen; uint8 decimals; bytes32 cid; }
     struct SwapSettlement { bytes32 poolId; uint256 reserveAPre; uint256 reserveBPre; uint256 reserveAPost; uint256 reserveBPost; }
     struct LpSettlement { bytes32 poolId; uint256 reserveAPre; uint256 reserveBPre; uint256 sharesPre; uint256 reserveAPost; uint256 reserveBPost; uint256 sharesPost; }
     struct PublicValues {
@@ -341,7 +341,7 @@ pub fn main() {
                 let etch_tx: Vec<u8> = io::read();
                 let asset = bitcoin::asset_id_from_etch(&etch_tx);
                 let env = bitcoin::extract_taproot_envelope(&etch_tx).expect("attest: envelope");
-                let (ticker, tlen, decimals) = bitcoin::parse_etch_meta(&env).expect("attest: etch meta");
+                let (ticker, tlen, decimals, cid) = bitcoin::parse_etch_meta(&env).expect("attest: etch meta");
 
                 // Confirmation: a note for THIS asset_id is a member of a relay-attested
                 // Bitcoin pool root (proves the asset exists + is funded on Bitcoin).
@@ -360,6 +360,7 @@ pub fn main() {
                     ticker: ticker.into(),
                     tickerLen: tlen,
                     decimals,
+                    cid: cid.into(),
                 });
             }
             OP_SWAP => {

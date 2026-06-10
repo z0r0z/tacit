@@ -57,13 +57,14 @@ contract CanonicalAssetFactory {
         address minter;
         string symbol;
         uint8 decimals;
+        bytes32 cid; // IPFS metadata content hash (logo/description JSON), surfaced as contractURI
     }
 
     DeployParams private _params;
 
     /// @notice Callback used by `CanonicalBridgedERC20`'s constructor.
-    function deployParams() external view returns (bytes32, address, string memory, uint8) {
-        return (_params.assetId, _params.minter, _params.symbol, _params.decimals);
+    function deployParams() external view returns (bytes32, address, string memory, uint8, bytes32) {
+        return (_params.assetId, _params.minter, _params.symbol, _params.decimals, _params.cid);
     }
 
     event Deployed(bytes32 indexed assetId, address indexed token, address indexed minter, string symbol, uint8 decimals);
@@ -72,37 +73,39 @@ contract CanonicalAssetFactory {
     error LabelTooLong();
 
     /// @notice Canonical, language-neutral commitment to a token's per-asset metadata:
-    ///         sha256( u8(len symbol) ‖ symbol ‖ u8(decimals) ). (`name` is the constant
-    ///         brand, so it is not part of the commitment.)
-    function metaHash(string memory symbol_, uint8 decimals_) public pure returns (bytes32) {
+    ///         sha256( u8(len symbol) ‖ symbol ‖ u8(decimals) ‖ cid ). (`name` is the constant
+    ///         brand, so it is not part of the commitment.) `cid` is the IPFS metadata content
+    ///         hash (logo/description JSON; 0 = none) — bound here so the id commits to it, like
+    ///         (symbol, decimals).
+    function metaHash(string memory symbol_, uint8 decimals_, bytes32 cid) public pure returns (bytes32) {
         bytes memory s = bytes(symbol_);
         if (s.length > 255) revert LabelTooLong();
-        return sha256(abi.encodePacked(uint8(s.length), s, decimals_));
+        return sha256(abi.encodePacked(uint8(s.length), s, decimals_, cid));
     }
 
     /// @notice The canonical EVM-etch asset id, per the amendment:
     ///         sha256(ETCH_TAG ‖ chainid_be8 ‖ factory ‖ salt ‖ etcher ‖ meta_hash).
     ///         The metadata is bound INTO the id, so a given id has exactly one official
-    ///         (symbol, decimals).
-    function deriveAssetId(address etcher, bytes32 salt, string memory symbol_, uint8 decimals_)
+    ///         (symbol, decimals, cid).
+    function deriveAssetId(address etcher, bytes32 salt, string memory symbol_, uint8 decimals_, bytes32 cid)
         public
         view
         returns (bytes32)
     {
         return sha256(
-            abi.encodePacked(ETCH_TAG, bytes8(uint64(block.chainid)), address(this), salt, etcher, metaHash(symbol_, decimals_))
+            abi.encodePacked(ETCH_TAG, bytes8(uint64(block.chainid)), address(this), salt, etcher, metaHash(symbol_, decimals_, cid))
         );
     }
 
-    /// @notice True iff (symbol, decimals) are the official metadata for an EVM-etched
+    /// @notice True iff (symbol, decimals, cid) are the official metadata for an EVM-etched
     ///         `assetId` given (etcher, salt). Pure on-chain check — no registry, no
     ///         trust, no market resolution.
-    function verifyMetadata(bytes32 assetId, address etcher, bytes32 salt, string calldata symbol_, uint8 decimals_)
+    function verifyMetadata(bytes32 assetId, address etcher, bytes32 salt, string calldata symbol_, uint8 decimals_, bytes32 cid)
         external
         view
         returns (bool)
     {
-        return assetId == deriveAssetId(etcher, salt, symbol_, decimals_);
+        return assetId == deriveAssetId(etcher, salt, symbol_, decimals_, cid);
     }
 
     /// @notice The CREATE2 address for (assetId, minter, symbol, decimals) — a pure
@@ -123,31 +126,67 @@ contract CanonicalAssetFactory {
     /// @notice Etch an EVM-native canonical asset: the id is DERIVED from the metadata,
     ///         so it is self-certifying — re-deriving anywhere yields the same id, and
     ///         the metadata cannot be forged for it. Permissionless; address = f(id).
-    function etchCanonical(address etcher, bytes32 salt, address minter, string calldata symbol_, uint8 decimals_)
+    function etchCanonical(address etcher, bytes32 salt, address minter, string calldata symbol_, uint8 decimals_, bytes32 cid)
         external
         returns (bytes32 assetId, address token)
     {
-        assetId = deriveAssetId(etcher, salt, symbol_, decimals_);
-        token = _deploy(assetId, minter, symbol_, decimals_);
+        assetId = deriveAssetId(etcher, salt, symbol_, decimals_, cid);
+        token = _deploy(assetId, minter, symbol_, decimals_, cid);
     }
 
     /// @notice Deploy the canonical ERC20 for an externally-derived `assetId` (a Bitcoin
     ///         etch, a wrapped ERC20) with `minter` as sole mint/burn authority. Metadata
     ///         is certified on that asset's own terms (e.g. a Bitcoin etch-envelope proof).
+    function deployCanonical(bytes32 assetId, address minter, string calldata symbol_, uint8 decimals_, bytes32 cid)
+        external
+        returns (address token)
+    {
+        token = _deploy(assetId, minter, symbol_, decimals_, cid);
+    }
+
+    // ── No-metadata overloads (cid = 0): short forms for an asset without an IPFS metadata blob. ──
+    function metaHash(string memory symbol_, uint8 decimals_) public pure returns (bytes32) {
+        return metaHash(symbol_, decimals_, bytes32(0));
+    }
+
+    function deriveAssetId(address etcher, bytes32 salt, string memory symbol_, uint8 decimals_)
+        public
+        view
+        returns (bytes32)
+    {
+        return deriveAssetId(etcher, salt, symbol_, decimals_, bytes32(0));
+    }
+
+    function verifyMetadata(bytes32 assetId, address etcher, bytes32 salt, string calldata symbol_, uint8 decimals_)
+        external
+        view
+        returns (bool)
+    {
+        return assetId == deriveAssetId(etcher, salt, symbol_, decimals_, bytes32(0));
+    }
+
+    function etchCanonical(address etcher, bytes32 salt, address minter, string calldata symbol_, uint8 decimals_)
+        external
+        returns (bytes32 assetId, address token)
+    {
+        assetId = deriveAssetId(etcher, salt, symbol_, decimals_, bytes32(0));
+        token = _deploy(assetId, minter, symbol_, decimals_, bytes32(0));
+    }
+
     function deployCanonical(bytes32 assetId, address minter, string calldata symbol_, uint8 decimals_)
         external
         returns (address token)
     {
-        token = _deploy(assetId, minter, symbol_, decimals_);
+        token = _deploy(assetId, minter, symbol_, decimals_, bytes32(0));
     }
 
-    function _deploy(bytes32 assetId, address minter, string memory symbol_, uint8 decimals_)
+    function _deploy(bytes32 assetId, address minter, string memory symbol_, uint8 decimals_, bytes32 cid)
         internal
         returns (address token)
     {
         bytes32 slot = _slot(assetId, minter, symbol_, decimals_);
         if (_token[slot] != address(0)) revert AlreadyDeployed();
-        _params = DeployParams(assetId, minter, symbol_, decimals_);
+        _params = DeployParams(assetId, minter, symbol_, decimals_, cid);
         token = address(new CanonicalBridgedERC20{salt: slot}());
         delete _params;
         _token[slot] = token;

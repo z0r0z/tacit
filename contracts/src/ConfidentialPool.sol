@@ -24,7 +24,7 @@ interface ICanonicalAssetFactory {
         external
         view
         returns (address);
-    function deployCanonical(bytes32 assetId, address minter, string calldata symbol_, uint8 decimals_)
+    function deployCanonical(bytes32 assetId, address minter, string calldata symbol_, uint8 decimals_, bytes32 cid)
         external
         returns (address token);
 }
@@ -222,7 +222,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     struct CrossOut { uint16 destChain; bytes32 destCommitment; bytes32 nullifier; bytes32 assetId; bytes32 claimId; }
     // Metadata the guest proved from a Bitcoin etch reveal (asset_id binds the txid, the
     // txid binds the on-chain envelope's ticker+decimals) — trustless first-mint metadata.
-    struct AssetMeta { bytes32 assetId; bytes16 ticker; uint8 tickerLen; uint8 decimals; }
+    struct AssetMeta { bytes32 assetId; bytes16 ticker; uint8 tickerLen; uint8 decimals; bytes32 cid; }
     // A confidential AMM batch settled against a pool (OP_SWAP). The guest proved, per intent,
     // membership + nullifier + the secp opening-sigma binding (a Schnorr PoK of the note blinding
     // for the public amount — the settle prover never learns r) + the hidden-amount clearing at the
@@ -810,7 +810,9 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         string memory symbol_ = string(_sliceTicker(m.ticker, m.tickerLen));
         address token = CANONICAL_FACTORY.tokenOf(m.assetId, address(this), symbol_, ETH_DECIMALS);
         if (token == address(0)) {
-            token = CANONICAL_FACTORY.deployCanonical(m.assetId, address(this), symbol_, ETH_DECIMALS);
+            // m.cid = the etch's IPFS metadata content hash (logo/description JSON); the asset_id
+            // binds it (txid → envelope), so the token's contractURI is trustless. 0 ⇒ no metadata.
+            token = CANONICAL_FACTORY.deployCanonical(m.assetId, address(this), symbol_, ETH_DECIMALS, m.cid);
         }
         bytes32 internalId = sha256(abi.encodePacked("tacit-evm-token-v1", uint64(block.chainid), token));
         if (assets[internalId].registered) return; // already registered
