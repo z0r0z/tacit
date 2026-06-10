@@ -457,7 +457,10 @@ export function bppTranscript() {
 // bulletproofs_plus.cc:502–776 (function bulletproof_plus_PROVE).
 // ============================================================================
 
-export function bppRangeProve(values, blindings) {
+// `_allowOutOfRangeForTest` is a TEST-ONLY escape hatch: it skips the [0,2^64) input guard so a
+// soundness test can forge a proof that commits an out-of-range value (V = v·H, with the bit
+// decomposition of v mod 2^64) and assert the VERIFIER rejects it. Production callers never set it.
+export function bppRangeProve(values, blindings, _allowOutOfRangeForTest = false) {
   const m = values.length;
   if (m !== blindings.length) throw new Error('bpp: values/blindings length mismatch');
   if (![1, 2, 4, 8].includes(m)) throw new Error(`bpp: unsupported aggregation m=${m}`);
@@ -477,7 +480,7 @@ export function bppRangeProve(values, blindings) {
   for (let j = 0; j < m; j++) {
     if (typeof values[j] !== 'bigint') throw new Error(`bpp: values[${j}] must be bigint`);
     const v = values[j];
-    if (v < 0n || v >= (1n << BigInt(N))) {
+    if (!_allowOutOfRangeForTest && (v < 0n || v >= (1n << BigInt(N)))) {
       throw new Error(`bpp: value[${j}]=${v} out of range [0, 2^${N})`);
     }
     V[j] = pedersenCommit(v, blindings[j]);

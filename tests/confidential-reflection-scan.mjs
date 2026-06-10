@@ -10,9 +10,11 @@ import { keccak_256 } from '../node_modules/@noble/hashes/sha3.js';
 import * as secp from '../node_modules/@noble/secp256k1/index.js';
 import { createHash } from 'node:crypto';
 import { makeConfidentialPool } from '../dapp/confidential-pool.js';
+import { conservingZeroCxfer } from './_conserving-cxfer.mjs';
 
 const sha256 = (b) => new Uint8Array(createHash('sha256').update(Buffer.from(b)).digest());
 const pool = makeConfidentialPool({ secp, keccak256: keccak_256, sha256 });
+const ZERO_OWNER = '0x' + '00'.repeat(32);
 
 let failures = 0;
 const eq = (a, b, msg) => { if (a !== b) { console.error(`FAIL ${msg}\n  got ${a}\n  exp ${b}`); failures++; } else console.log(`ok   ${msg}`); };
@@ -45,15 +47,19 @@ eq(ls.len(), 1, 'one entry after remove');
 // 3. assembleReflectionScanInput over: block1 = a cxfer tx with 2 outputs; block2 = a plain spend
 //    of output 0 and a bridge-out burn of output 1. Checks the witness-stream shape + the digest.
 const txid1 = v(0x71);               // tx1 txid (internal order, 32 bytes)
-const mkNote = (i) => { const cx = v(0x0a + i), cy = v(0x1a + i); return { cx, cy, commitmentHash: pool.commitmentHash(cx, cy), noteLeaf: v(0x1aa + i), vout: i }; };
-const out0 = mkNote(0), out1 = mkNote(1);
+const assetId = v(0xa55e7);
+// a CONSERVING cxfer (Σout = 0, no inputs) so the conservation gate folds it; real commitments +
+// a valid kernel sig + BP+ range over the two zero-value outputs.
+const cxf = conservingZeroCxfer(assetId, [0x0a01n, 0x0a02n]);
+const mkOut = (comp, j) => { const { cx, cy } = pool.decompressCommitment(comp); return { cx, cy, compressed: comp, commitmentHash: pool.commitmentHash(cx, cy), noteLeaf: pool.leaf(assetId, cx, cy, ZERO_OWNER), vout: j }; };
+const [out0, out1] = cxf.commitments.map(mkOut);
 
 const coords = new Map();
 const batch = {
   anchorHeight: 100,
   headers: ['0x' + '00'.repeat(80), '0x' + '11'.repeat(80)], // opaque here (the guest checks PoW)
   blocks: [
-    { txs: [{ txData: '0xdeadbeef', txid: txid1, vins: [], env: { type: 'cxfer', outputs: [out0, out1] } }] },
+    { txs: [{ txData: '0xdeadbeef', txid: txid1, vins: [], env: { type: 'cxfer', assetId, kernelSig: cxf.kernelSig, rangeProof: cxf.rangeProof, outputs: [out0, out1] } }] },
     { txs: [
       { txData: '0xfeed01', txid: v(0x72), vins: [{ prevTxid: txid1, vout: 0 }], env: null },
       { txData: '0xfeed02', txid: v(0x73), vins: [{ prevTxid: txid1, vout: 1 }], env: { type: 'burn', dest: v(0xde) } },

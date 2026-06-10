@@ -10,6 +10,7 @@ import { keccak_256 } from '../node_modules/@noble/hashes/sha3.js';
 import * as secp from '../node_modules/@noble/secp256k1/index.js';
 import { createHash } from 'node:crypto';
 import { makeScanReflectionIndexer } from '../dapp/confidential-reflection-scan-indexer.js';
+import { conservingZeroCxfer } from './_conserving-cxfer.mjs';
 
 const sha256 = (b) => new Uint8Array(createHash('sha256').update(Buffer.from(b)).digest());
 const deps = { secp, keccak256: keccak_256, sha256 };
@@ -34,7 +35,7 @@ const block0 = { txs: [{
   txidDisplay: tx0disp,
   rawHex: 'aa'.repeat(60),
   vins: [{ prevTxidDisplay: dtx(0xee), vout: 3 }],     // a non-pool input — no spend detected
-  decode: { type: 'cxfer', assetId, commitments: [commit(11), commit(22)] },
+  decode: { type: 'cxfer', assetId, ...conservingZeroCxfer(assetId, [11n, 22n]) },
 }] };
 const in0 = idx.assembleBlocks([block0], { headers: ['0x' + '00'.repeat(80)], anchorHeight: 500 });
 eq(in0.prior.poolRoot, makeScanReflectionIndexer(deps).roots().poolRoot, 'block0 prior == genesis pool root');
@@ -74,7 +75,7 @@ eq(JSON.stringify(restored.roots()), JSON.stringify(idx.roots()), 'snapshot roun
 eq(restored.liveCount(), 0, 'restored live count matches');
 
 // And a restored indexer can keep folding: a third block with a new deposit advances coherently.
-const block2 = { txs: [{ txidDisplay: dtx(0x30), rawHex: 'dd'.repeat(50), vins: [], decode: { type: 'cxfer', assetId, commitments: [commit(33)] } }] };
+const block2 = { txs: [{ txidDisplay: dtx(0x30), rawHex: 'dd'.repeat(50), vins: [], decode: { type: 'cxfer', assetId, ...conservingZeroCxfer(assetId, [33n]) } }] };
 const in2live = makeScanReflectionIndexer(deps);
 in2live.load(JSON.parse(JSON.stringify(snap)));
 const r2 = in2live.assembleBlocks([block2], { headers: ['0x' + '22'.repeat(80)], anchorHeight: 502 });

@@ -50,20 +50,37 @@ seedVins.forEach((vi, i) => {
   coords.set(outpoint.toLowerCase(), { cx, cy });
 });
 
-// ── Assemble the whole block (every tx, in order) — only the CXFER tx is a pool effect. ──
+// REFLECT-1: the assembler now re-verifies cxfer value conservation before folding (it mirrors the
+// guest). For this fixture to fold the real CXFER, two things must hold: (1) the cxfer env carries
+// the envelope's real kernel_sig + range_proof; (2) the prior live set holds the CXFER's REAL input
+// commitments (so Σ C_in = Σ C_out for the real kernel). The seed above uses placeholder input notes
+// (commitXY(1000…)), so conservation will NOT pass — regenerating this fixture for the corrected
+// re-prove must fetch the prevout commitments and extract KERNEL_SIG / RANGE_PROOF from the CXFER
+// envelope (cxfer-core parse_cxfer_envelope_full), as ASSET/COMMITS were extracted above.
+const KERNEL_SIG = cxFix.kernelSig || null;     // 0x..64-byte BIP-340 kernel sig (extract from the envelope)
+const RANGE_PROOF = cxFix.rangeProof || null;   // 0x.. BP+ range proof over the outputs
+if (!KERNEL_SIG || !RANGE_PROOF) {
+  throw new Error('gen-reflection-scan-fixture: post-REFLECT-1 this fixture needs the real CXFER ' +
+    'kernel_sig + range_proof AND real prior input commitments so conservation passes. Wire them ' +
+    '(extract from signet_cxfer.json\'s tx envelope + fetch the prevout commitments) before regenerating.');
+}
 const txs = block.txs.map((t) => {
   const vins = t.vins.filter((vi) => !vi.isCoinbase).map((vi) => ({ prevTxid: internal(vi.prevTxid), vout: vi.vout }));
   let env = null;
   if (t.txid === CXFER_DISPLAY) {
-    env = { type: 'cxfer', outputs: COMMITS.map((comm, j) => {
+    env = { type: 'cxfer', assetId: ASSET, kernelSig: KERNEL_SIG, rangeProof: RANGE_PROOF, outputs: COMMITS.map((comm, j) => {
       const { cx, cy } = pool.decompressCommitment(comm);
-      return { cx, cy, commitmentHash: pool.commitmentHash(cx, cy), noteLeaf: pool.leaf(ASSET, cx, cy, ZERO_OWNER), vout: j };
+      return { cx, cy, compressed: comm, commitmentHash: pool.commitmentHash(cx, cy), noteLeaf: pool.leaf(ASSET, cx, cy, ZERO_OWNER), vout: j };
     }) };
   }
   return { txData: withHex(t.rawHex), txid: internal(t.txid), vins, env };
 });
 
 const input = pool.assembleReflectionScanInput(state, { anchorHeight: BLOCK_HEIGHT, headers: [HEADER], blocks: [{ txs }] }, coords);
+if (input.nonConserving && input.nonConserving.length) {
+  throw new Error('gen-reflection-scan-fixture: the CXFER did not conserve (the seed used placeholder ' +
+    'input commitments). Seed the REAL prevout commitments so Σ C_in = Σ C_out for the real kernel sig.');
+}
 
 // Sanity to stderr (stdout is the fixture JSON).
 const cxOut = input.blocks[0].txs.find((tx) => tx.outputs.length > 0);

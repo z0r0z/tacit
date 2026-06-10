@@ -11,6 +11,8 @@
 // dapp/evm-confidential.js for the secp note commitment (C = v·H + r·G).
 
 import { makeConfidentialProver } from './evm-confidential.js';
+import { verifySchnorr } from './bulletproofs.js';
+import { bppRangeVerify, bytesToPoint as bppPoint } from './bulletproofs-plus.js';
 
 export const TREE_DEPTH = 32;
 
@@ -50,6 +52,16 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     const secret = sha256(concat([base, new Uint8Array([0])]));
     const blinding = mod(bToBig(sha256(concat([base, new Uint8Array([1])]))), N) || 1n;
     return { secret: hx(secret), blinding };
+  }
+
+  // The per-bid secret driving an OP_BID buyer's received-note blindings — derived from the wallet
+  // seed + the bid's own funding commitment (Cx,Cy), so it is recoverable FROM THE SEED ALONE after a
+  // wipe: the buyer re-finds its funding leaf on-chain, recomputes this secret, and re-derives the
+  // filled notes (the seller can't seal a memo for them — it never learns these blindings). The guest
+  // is agnostic to how the buyer produced the blindings (it only re-checks commitments), so this is a
+  // client-only binding (no re-prove).
+  function deriveBidSecret(seed, fundCx, fundCy) {
+    return hx(sha256(concat([b32(seed), new TextEncoder().encode('tacit-evm-bid-secret-v1'), b32(fundCx), b32(fundCy)])));
   }
 
   // ── primitives the contract + guest agree on ──
@@ -484,10 +496,65 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     };
   }
 
+  // ── CXFER value-conservation gate (worker liveness mirror of the guest) ──
+  // Bitcoin does NOT check the Tacit kernel, so a confirmed tx can carry a CXFER envelope whose
+  // outputs don't conserve value (Σ C_in ≠ Σ C_out) or fall out of range. The reflection guest
+  // re-verifies conservation (cxfer-core verify_cxfer_conservation) before folding any output and
+  // SKIPS a non-conserving cxfer's outputs. The worker mirrors that here so its canonical pool root
+  // stays byte-identical to what the guest proves — otherwise the next batch's prior digest diverges
+  // and every later proof fails. Faithful port: same kernel message, same verify key
+  // P = Σ C_in − Σ C_out (x-only, burned = 0), same BP+ range over the output commitments.
+  const CXFER_KERNEL_DOMAIN = new TextEncoder().encode('tacit-kernel-v1');
+  const u32le = (n) => { const b = new Uint8Array(4); new DataView(b.buffer).setUint32(0, n >>> 0, true); return b; };
+  const u64leBytes = (n) => { const b = new Uint8Array(8); const v = new DataView(b.buffer); v.setUint32(0, Number(BigInt(n) & 0xffffffffn), true); v.setUint32(4, Number((BigInt(n) >> 32n) & 0xffffffffn), true); return b; };
+  // kernel_msg = sha256("tacit-kernel-v1" ‖ asset ‖ in_count ‖ (txid ‖ vout_LE)×in ‖ out_count ‖
+  //                     commitment(33)×out ‖ burned_LE8) — byte-identical to cxfer_kernel_verify.
+  function cxferKernelMsg(asset, inputOutpoints, outsCompressed) {
+    const parts = [CXFER_KERNEL_DOMAIN, b32(asset), Uint8Array.of(inputOutpoints.length & 0xff)];
+    for (const [txid, vout] of inputOutpoints) { parts.push(b32(txid)); parts.push(u32le(vout)); }
+    parts.push(Uint8Array.of(outsCompressed.length & 0xff));
+    for (const c of outsCompressed) parts.push(hexToBytes(c));
+    parts.push(u64leBytes(0));
+    return sha256(concat(parts));
+  }
+  const cxferOutPoints = (outsCompressed) => outsCompressed.map((c) => secp.ProjectivePoint.fromHex(c.replace(/^0x/, '')));
+  // Kernel-only: Σ C_in = Σ C_out, proven by a BIP-340 sig over the kernel message (burned = 0),
+  // with verify key P = Σ C_in − Σ C_out (x-only). A cxfer env MUST carry asset/kernelSig/
+  // commitments — a missing field is a wiring bug (throws), NOT a silent drop of a legitimate note.
+  function cxferKernelVerify({ asset, inputOutpoints, inputPoints, outsCompressed, kernelSig }) {
+    if (asset == null || kernelSig == null || !Array.isArray(outsCompressed) || outsCompressed.some((c) => c == null)) {
+      throw new Error('cxfer kernel: missing asset/kernelSig/commitments');
+    }
+    if (inputOutpoints.length !== inputPoints.length) return false;
+    if (inputOutpoints.length > 255 || outsCompressed.length < 1 || outsCompressed.length > 255) return false;
+    let outPoints; try { outPoints = cxferOutPoints(outsCompressed); } catch { return false; }
+    const Z = secp.ProjectivePoint.ZERO;
+    const P = inputPoints.reduce((a, p) => a.add(p), Z).add(outPoints.reduce((a, p) => a.add(p), Z).negate());
+    if (P.equals(Z)) return false;                    // identity verify key → reject (matches Rust)
+    const px = P.toRawBytes(true).slice(1);           // x-only verify key
+    let sig; try { sig = hexToBytes(kernelSig); } catch { return false; }
+    if (sig.length !== 64) return false;
+    return verifySchnorr(sig, cxferKernelMsg(asset, inputOutpoints, outsCompressed), px);
+  }
+  // Full conservation: kernel (no inflation) AND every output in BP+ range (no wraparound). The
+  // exact predicate the reflection guest re-runs before folding a cxfer's outputs (REFLECT-1).
+  function verifyCxferConservation({ asset, inputOutpoints, inputPoints, outsCompressed, rangeProof, kernelSig }) {
+    if (rangeProof == null) throw new Error('cxfer conservation: missing rangeProof');
+    if (!cxferKernelVerify({ asset, inputOutpoints, inputPoints, outsCompressed, kernelSig })) return false;
+    let rp; try { rp = hexToBytes(rangeProof); } catch { return false; }
+    // bppRangeVerify uses bulletproofs-plus.js's own secp instance — build its commitment points
+    // with that module's bytesToPoint so the range check is independent of the injected `secp`.
+    let rangePts; try { rangePts = outsCompressed.map((c) => bppPoint(hexToBytes(c))); } catch { return false; }
+    return bppRangeVerify(rangePts, rp);
+  }
+
   // ── Assemble the FULL-SCAN reflection input (the new guest's io::read order) ──
   // batch = { anchorHeight, headers (80-byte hex), blocks: [{ txs: [{ txData, txid, vins:
-  // [{prevTxid,vout}], env: null | {type:'burn', dest} | {type:'cxfer', outputs:[{cx,cy,
-  // commitmentHash, noteLeaf, vout}]} }] }] }. `coords` is a Map(outpointKey → {cx,cy}) of every
+  // [{prevTxid,vout}], env: null | {type:'burn', dest} | {type:'cxfer', assetId, kernelSig,
+  // rangeProof, outputs:[{cx,cy, compressed, commitmentHash, noteLeaf, vout}]} }] }] }. A cxfer
+  // env's outputs are folded ONLY if it conserves value (REFLECT-1); a non-conserving cxfer's
+  // detected spends are still nullified but it injects no notes (the guest skips it identically).
+  // `coords` is a Map(outpointKey → {cx,cy}) of every
   // live pool note (so a detected spend's opening is known); it is advanced as outputs land/spends
   // clear. The guest re-derives txids + the block merkle root, so completeness is enforced there;
   // here we SIMULATE the scan to emit the matching witnesses in stream order: per tx, the spend
@@ -503,12 +570,14 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
       height: c.height,
     };
     const blocksOut = [];
+    const nonConserving = [];
     let blockIndex = 0;
     for (const block of (batch.blocks || [])) {
       state.setHeight((batch.anchorHeight | 0) + blockIndex);
       const txsOut = [];
       for (const tx of block.txs) {
         const openings = [];
+        const inOutpoints = [];
         const spentInserts = [];
         for (const { prevTxid, vout } of (tx.vins || [])) {
           const key = outpointKey(prevTxid, vout);
@@ -516,6 +585,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
           const co = coords.get(norm(key));
           if (!co) throw new Error('live spend has no known coords: ' + norm(key));
           openings.push({ cx: norm(co.cx), cy: norm(co.cy) });
+          inOutpoints.push([prevTxid, vout]);
           spentInserts.push(state.foldSpent(nullifier(co.cx, co.cy)));
           state.live.remove(key);
           coords.delete(norm(key));
@@ -527,11 +597,27 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
         }
         const outputs = [];
         if (tx.env && tx.env.type === 'cxfer') {
-          for (const o of tx.env.outputs) {
-            const outpoint = outpointKey(tx.txid, o.vout);
-            const w = state.foldOutput(o.noteLeaf, outpoint, o.commitmentHash);
-            outputs.push({ noteLeaf: w.noteLeaf, notePath: w.notePath, vout: o.vout });
-            coords.set(norm(outpoint), { cx: o.cx, cy: o.cy });
+          // REFLECT-1: fold the output notes ONLY if the cxfer conserves value, mirroring the
+          // guest (which checks conservation BEFORE it reads output witnesses, then skips). A
+          // non-conserving cxfer injects nothing and carries no output witnesses in the stream;
+          // its detected spends are still nullified above.
+          const conserves = verifyCxferConservation({
+            asset: tx.env.assetId,
+            inputOutpoints: inOutpoints,
+            inputPoints: openings.map((o) => secp.ProjectivePoint.fromAffine({ x: BigInt(o.cx), y: BigInt(o.cy) })),
+            outsCompressed: tx.env.outputs.map((o) => o.compressed),
+            rangeProof: tx.env.rangeProof,
+            kernelSig: tx.env.kernelSig,
+          });
+          if (conserves) {
+            for (const o of tx.env.outputs) {
+              const outpoint = outpointKey(tx.txid, o.vout);
+              const w = state.foldOutput(o.noteLeaf, outpoint, o.commitmentHash);
+              outputs.push({ noteLeaf: w.noteLeaf, notePath: w.notePath, vout: o.vout });
+              coords.set(norm(outpoint), { cx: o.cx, cy: o.cy });
+            }
+          } else {
+            nonConserving.push({ txid: tx.txid, outputs: tx.env.outputs.length });
           }
         }
         txsOut.push({ txData: tx.txData, openings, spentInserts, burnInsert, outputs });
@@ -539,7 +625,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
       blocksOut.push({ txs: txsOut });
       blockIndex++;
     }
-    return { prior, anchorHeight: batch.anchorHeight | 0, headers: batch.headers || [], blocks: blocksOut, newDigest: state.digest() };
+    return { prior, anchorHeight: batch.anchorHeight | 0, headers: batch.headers || [], blocks: blocksOut, newDigest: state.digest(), nonConserving };
   }
 
   // Mirror of the guest's keccak_merkle_verify — fold a leaf with its path.
@@ -616,11 +702,12 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
 
   return {
     prover, TREE_DEPTH, zeros: zeros.map(hx),
-    commitXY, deriveNote, leaf, nullifier, depositId, Tree, verifyPath, merklePath, merkleRootFrom,
+    commitXY, deriveNote, deriveBidSecret, leaf, nullifier, depositId, Tree, verifyPath, merklePath, merkleRootFrom,
     imtLeaf, imtRoot, imtEmptyRoot, makeImtAccumulator,
     utxoLeaf, makeUtxoAccumulator, commitmentHash, decompressCommitment, compressXY, outpointKey,
     makeReflectionState, assembleReflectionInput, openingSigma, verifyOpeningSigma, intentContext,
     liveLeaf, makeLiveUtxoSet, makeScanReflectionState, assembleReflectionScanInput,
+    cxferKernelVerify, verifyCxferConservation,
     _internal: { keccak, concat, b32, beBytes, hx },
   };
 }

@@ -194,10 +194,23 @@ pub fn parse_burn_envelope(env: &[u8]) -> Option<([u8; 32], [u8; 32], [u8; 32])>
 /// rpLen(2 LE) ‖ rangeProof. The reflection prover binds each reflected output's stored
 /// commitment to one of these, so a note the confirmed tx never declared can't enter the pool.
 pub fn parse_cxfer_envelope(env: &[u8]) -> Option<([u8; 32], Vec<[u8; 33]>)> {
+    parse_cxfer_envelope_full(env).map(|(asset, _sig, commitments, _rp)| (asset, commitments))
+}
+
+/// Like `parse_cxfer_envelope`, but also surfaces the kernel SIGNATURE and the BP+ RANGE PROOF the
+/// envelope carries. The reflection prover needs both to re-verify a confirmed CXFER tx's value
+/// conservation (`cxfer_kernel_verify`: Σ C_in = Σ C_out) and output range (`verify_range`) BEFORE
+/// folding its outputs into `bitcoinPoolRoot`: Bitcoin consensus never checks the Tacit kernel (the
+/// envelope is just witness bytes), so a confirmed tx can declare an inflated output commitment, and
+/// the leaf-SHAPE binding (`reflected_note_leaf`) cannot catch it — an inflated commitment is still a
+/// valid curve point. Returns `(asset, kernel_sig, output_commitments, range_proof)`; None if not a
+/// well-formed CXFER envelope.
+pub fn parse_cxfer_envelope_full(env: &[u8]) -> Option<([u8; 32], [u8; 64], Vec<[u8; 33]>, Vec<u8>)> {
     if env.len() < 1 + 32 + 64 + 1 || (env[0] != 0x23 && env[0] != 0x22) {
         return None;
     }
     let asset: [u8; 32] = env[1..33].try_into().ok()?;
+    let kernel_sig: [u8; 64] = env[33..97].try_into().ok()?;
     let mut p = 1 + 32 + 64;
     let n = env[p] as usize;
     p += 1;
@@ -214,7 +227,8 @@ pub fn parse_cxfer_envelope(env: &[u8]) -> Option<([u8; 32], Vec<[u8; 33]>)> {
     if p + rp_len != env.len() {
         return None;
     }
-    Some((asset, commitments))
+    let range_proof = env[p..p + rp_len].to_vec();
+    Some((asset, kernel_sig, commitments, range_proof))
 }
 
 /// Extract the Tacit Taproot envelope payload from vin[0].witness[1].
@@ -581,6 +595,49 @@ mod tests {
         // Two identical txids fold deterministically (Bitcoin duplicates the odd leaf).
         let r = compute_merkle_root(&[txid, txid]);
         assert_ne!(r, txid, "paired root differs from leaf");
+    }
+
+    // BIP-141 anti-merkle-collision guard (BTC-1): compute_txid MUST reject a 64-byte
+    // non-witness tx — its double-SHA256 preimage is exactly 64 bytes, the size of a
+    // merkle internal node H(left)‖H(right), so without this a forged 64-byte tx could be
+    // passed off as an interior node and let the reflection scan accept a tx set that is
+    // not the real block (F4 completeness break). A 64-byte SEGWIT tx is fine (its txid is
+    // over the witness-stripped form, which is < 64 bytes) and must still parse.
+    #[test]
+    fn compute_txid_rejects_64byte_nonwitness() {
+        let legacy64 = vec![0x01u8; 64]; // tx_data[4]/[5] != marker/flag → non-segwit
+        let r = std::panic::catch_unwind(|| compute_txid(&legacy64));
+        assert!(r.is_err(), "64-byte non-witness tx must panic (anti-merkle-collision)");
+
+        // a 64-byte buffer that *looks* segwit (marker+flag at [4],[5]) is permitted —
+        // its txid preimage is the stripped form, not 64 bytes, so no node-collision.
+        let mut fake_segwit64 = vec![0x02u8, 0, 0, 0, 0x00, 0x01];
+        fake_segwit64.extend_from_slice(&[0u8; 58]);
+        assert_eq!(fake_segwit64.len(), 64);
+        let r2 = std::panic::catch_unwind(|| compute_txid(&fake_segwit64));
+        assert!(r2.is_ok(), "64-byte segwit-shaped tx is not the collision case");
+    }
+
+    // CVE-2012-2459 (odd-leaf duplication) does not let a relayer OMIT a tx from a
+    // relay-anchored block. The merkle root is pinned to the header; the only way to
+    // produce the same root with a *different* tx set is to ADD a duplicated trailing
+    // branch (a larger set), never to DROP a leaf. So a tx set that omits the last tx of
+    // the real block can never re-hash to the real root — the reflection scan's
+    // completeness assert (reflect.rs) rejects it. This pins that omission is detected.
+    #[test]
+    fn merkle_omission_changes_root() {
+        let leaf = |b: u8| compute_txid(&build_reveal_tx(&[0x2B, b]));
+        let t0 = leaf(0x00);
+        let t1 = leaf(0x01);
+        let t2 = leaf(0x02); // the "spend" tx — last, on an odd-length layer
+        let real = compute_merkle_root(&[t0, t1, t2]);
+        // dropping t2 (omission) yields a different root → caught by the header-pinned check
+        assert_ne!(compute_merkle_root(&[t0, t1]), real, "omitting the spend tx changes the root");
+        // the CVE-2012-2459 duplication (t2 self-paired) is the SAME real root — it adds no
+        // new leaf the scan could mistake for an omission; the duplicate is the canonical
+        // odd-leaf fold, not a second pre-image that drops a tx.
+        assert_eq!(compute_merkle_root(&[t0, t1, t2, t2]), real,
+            "explicit odd-leaf duplication equals the canonical root (forward malleability only)");
     }
 
     // Mine an 80-byte header at easy regtest difficulty (nBits 0x1f7fffff → target

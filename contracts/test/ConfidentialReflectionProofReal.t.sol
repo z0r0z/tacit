@@ -56,7 +56,7 @@ contract ConfidentialReflectionProofRealTest is Test {
             bytes32 tipHash
         ) = abi.decode(publicValues, (bytes32, bytes32, bytes32, bytes32, uint64, bytes32, bytes32, bytes32));
         assertEq(height, 307547, "the real signet block height");
-        assertEq(newDigest, 0x71d543f5b05e256260cf3c7a2a33723a2ae6bf49ab879400112f4038f5e796a1, "newDigest == indexer (full-scan)");
+        assertEq(newDigest, 0x240a843db6cb403e701515e5532ae6f5598dee088d214d84b6b25398441aebd1, "newDigest == indexer (full-scan, conserving CXFER)");
         assertTrue(priorDigest != bytes32(0) && poolRoot != bytes32(0) && spentRoot != bytes32(0), "non-zero roots");
         // The header anchor the contract pins to RELAY.tip()/the prior tip: tip non-zero, prev = the
         // batch's resume anchor (headers[0]'s prev field).

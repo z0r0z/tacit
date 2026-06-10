@@ -112,4 +112,45 @@ function assemble({ minFill, maxFill, price, increment, chosenF, sellerIn }) {
   ok('box-substituted seller pay note (its own blinding) breaks the opening sigma');
 }
 
+// ───────────────── 6. seller pockets surplus asset_a (omits the change leg) ─────────────────
+// Seller has a 150 A note, fills 100, but drops the 50 A change note to keep it off-tree (so the
+// surplus 50 A is never re-committed and effectively burned/retained off-protocol). The guest's
+// no-change branch forces s_in_amount == chosen_f, so omitting change with input > fill is rejected
+// (asset_a conservation cannot silently lose the surplus).
+{
+  const { filled } = assemble({ minFill: 10, maxFill: 100, price: 5, increment: 10, chosenF: 100, sellerIn: 150 });
+  const bad = { ...filled, sellerChange: null }; // drop the change leg while input (150) > fill (100)
+  assert.throws(() => bidMod.verifyBid(bad, { merkleRootFrom: pool.merkleRootFrom }),
+    /seller exact input required without change/, 'omitted change with surplus rejected');
+  ok('seller omitting the change leg while input(150) > fill(100) is rejected (asset_a conservation)');
+}
+
+// ───────────────── 7. spurious refund leaf on a FULL fill ─────────────────
+// Full fill (chosenF == maxFill) ⇒ refund == 0 ⇒ no refund note. A seller that injects a refund leaf
+// (e.g. to mint an unbacked asset_b note to itself, breaking asset_b conservation) is rejected: the
+// guest only reads a refund note when chosen_f < max_fill and asserts refund == 0 otherwise.
+{
+  const { filled } = assemble({ minFill: 10, maxFill: 100, price: 5, increment: 10, chosenF: 100, sellerIn: 100 });
+  const evil = pool.commitXY(50n, randomScalar());
+  const Z32 = '0x' + '00'.repeat(32);
+  const bad = { ...filled, refundNote: { cx: evil.cx, cy: evil.cy, amount: 50n, sig: { R: Z32, z: Z32 } } };
+  assert.throws(() => bidMod.verifyBid(bad, { merkleRootFrom: pool.merkleRootFrom }),
+    /full fill has no refund/, 'spurious refund on full fill rejected');
+  ok('injecting a refund leaf on a full fill is rejected (no unbacked asset_b mint)');
+}
+
+// ───────────────── 8. seller under-delivers the buyer's fill (shorts buyer-recv-A) ─────────────────
+// The buyer is owed chosenF (40) of asset_a, with the buyer-recv-A commitment bound into the buyer's
+// pre-signed context. A seller that substitutes a smaller buyer-recv-A note (to keep more asset_a)
+// shifts the buyer context, so the buyer's pre-signed openings no longer verify — the buyer's fill
+// cannot be shorted or redirected (the seller cannot re-sign the buyer's offline context).
+{
+  const { filled } = assemble({ minFill: 10, maxFill: 100, price: 5, increment: 10, chosenF: 40, sellerIn: 40 });
+  const evil = pool.commitXY(10n, randomScalar()); // 10 A instead of the owed 40
+  const bad = { ...filled, buyerRecvA: { ...filled.buyerRecvA, cx: evil.cx, cy: evil.cy } };
+  assert.throws(() => bidMod.verifyBid(bad, { merkleRootFrom: pool.merkleRootFrom }),
+    /opening/, 'shorted buyer fill rejected');
+  ok('shorting the buyer fill (10 vs owed 40 A) breaks a buyer opening — fill is enforced');
+}
+
 console.log(`\n${n} OP_BID checks passed.`);

@@ -24,9 +24,9 @@ export function makeConfidentialSettler({ storage, hash, now }) {
   // jobId = hash of the witness (type+op) → idempotent: resubmitting the same op returns the same job.
   function jobIdOf(type, op) { return hash(JSON.stringify({ type, op })); }
 
-  async function submitJob({ type, op, memos, expectedPv }) {
+  async function submitJob({ type, op, memos }) {
     if (!type || !op) throw new Error('submitJob: type + op required');
-    if (!['transfer', 'swap', 'lp'].includes(type)) throw new Error(`submitJob: unknown type ${type}`);
+    if (!['transfer', 'swap', 'lp', 'otc', 'bid'].includes(type)) throw new Error(`submitJob: unknown type ${type}`);
     const id = jobIdOf(type, op);
     const existing = await storage.getJob(id);
     if (existing && existing.status !== 'failed') {
@@ -38,7 +38,7 @@ export function makeConfidentialSettler({ storage, hash, now }) {
       throw new Error('submitJob: queue full, retry later');
     }
     const job = {
-      id, type, op, memos: memos || [], expectedPv: expectedPv || null,
+      id, type, op, memos: memos || [],
       status: 'pending', createdAt: clock(), claimedAt: 0, txHash: null, error: null,
     };
     await storage.putJob(id, job);

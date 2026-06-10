@@ -31,7 +31,7 @@ contract DeployConfidentialPool is Script {
     // 1ce85219… (elf-vkey-pin.json). A real Groth16 of this ELF verifies on-chain at this vkey
     // (test/Confidential{Swap,Lp,Otc,Bid}ProofReal). Override via PROGRAM_VKEY env if the guest changes.
     // (Prior: 0x0063293d, 0x00b3ebb4, 0x00f02859, 0x00bc5661, 0x00cc4e72, 0x00d0fb85 — superseded.)
-    bytes32 constant DEFAULT_VKEY = 0x00bb82ef494d18e91096f6501813ae52f953db226876649df2cd898072091f2e;
+    bytes32 constant DEFAULT_VKEY = 0x008e0e7f5a8fd8e070f45457305eb252e9427f16126f586c40d06dae7847efea;
 
     function run() external {
         address sp1Verifier = vm.envAddress("SP1_VERIFIER");

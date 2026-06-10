@@ -656,6 +656,58 @@ contract ConfidentialPoolTest is Test {
         pool.settle(abi.encode(pv), "", new bytes[](0));
     }
 
+    /// A bridge_burn whose spent input is BITCOIN-homed (membership proven against a
+    /// knownBitcoinRoot) is rejected: the crossOut would mint a fresh equal-value note on
+    /// Bitcoin while the original Bitcoin UTXO stays live + spendable there (the reflection
+    /// prover never reflects an Ethereum nullification back to Bitcoin) — value duplication.
+    /// A bridge_burn must originate from an Ethereum-homed note.
+    function test_bridge_burn_btc_homed_input_reverts() public {
+        bytes32 poolRoot = keccak256("btc-pool-for-burn");
+        bytes32 spentRoot = keccak256("btc-spent-for-burn");
+        _attestBtc(poolRoot, spentRoot, 1); // poolRoot becomes a knownBitcoinRoot
+
+        ConfidentialPool.PublicValues memory pv = _pv();
+        pv.spendRoot = poolRoot;               // Bitcoin-homed spend
+        pv.bitcoinSpentRoot = spentRoot;       // pin the current reflected spent root
+        bytes32 nu = keccak256("btc-homed-burn-nu");
+        bytes32 destC = keccak256("btc-dest-from-btc-homed");
+        uint16 destChain = 1;
+        bytes32 claimId = _claimId(destChain, destC, nu, assetId);
+        pv.nullifiers = new bytes32[](1);
+        pv.nullifiers[0] = nu;
+        pv.crossOuts = new ConfidentialPool.CrossOut[](1);
+        pv.crossOuts[0] = ConfidentialPool.CrossOut(destChain, destC, nu, assetId, claimId);
+
+        vm.expectRevert(ConfidentialPool.BridgeBurnNotEthHomed.selector);
+        pool.settle(abi.encode(pv), "", new bytes[](0));
+    }
+
+    /// Control: the SAME crossOut from an ETHEREUM-homed note (spendRoot = an everKnownRoot)
+    /// settles fine — the guard only bars the Bitcoin-homed lane.
+    function test_bridge_burn_eth_homed_input_ok() public {
+        // Seed an Ethereum root via a prior leaf insertion, then spend against it.
+        ConfidentialPool.PublicValues memory seed = _pv();
+        seed.leaves = new bytes32[](1);
+        seed.leaves[0] = keccak256("eth-note-leaf");
+        _settle(seed);
+        bytes32 ethRoot = pool.currentRoot();
+        assertTrue(pool.everKnownRoot(ethRoot), "eth root known");
+
+        ConfidentialPool.PublicValues memory pv = _pv();
+        pv.spendRoot = ethRoot;                // Ethereum-homed spend
+        bytes32 nu = keccak256("eth-homed-burn-nu");
+        bytes32 destC = keccak256("btc-dest-from-eth-homed");
+        uint16 destChain = 1;
+        bytes32 claimId = _claimId(destChain, destC, nu, assetId);
+        pv.nullifiers = new bytes32[](1);
+        pv.nullifiers[0] = nu;
+        pv.crossOuts = new ConfidentialPool.CrossOut[](1);
+        pv.crossOuts[0] = ConfidentialPool.CrossOut(destChain, destC, nu, assetId, claimId);
+
+        pool.settle(abi.encode(pv), "", new bytes[](0));
+        assertTrue(pool.isNullifierSpent(nu), "eth-homed burn note nullified");
+    }
+
     /// Atomic cross-chain swap: one settle carries both legs — Bob's X output
     /// lands as an Ethereum leaf, Alice's Y output is recorded as a Bitcoin
     /// crossOut, both input notes are nullified — all applied in one call.
@@ -1118,7 +1170,7 @@ contract ConfidentialPoolTest is Test {
         pv.bitcoinRootsUsed = new bytes32[](1);
         pv.bitcoinRootsUsed[0] = attRoot;
         _settle(pv);
-        token = factory.tokenOf(assetId, address(pool), symbol_, 18);
+        token = factory.tokenOf(assetId, address(pool), symbol_, 18, _metaCid(assetId));
     }
 
     /// A deterministic stand-in for the etch's IPFS metadata content hash.
@@ -1135,6 +1187,37 @@ contract ConfidentialPoolTest is Test {
         bytes memory uri = bytes(CanonicalBridgedERC20(tok).contractURI());
         assertEq(uri.length, 80, "ipfs://f01701220 + 64 hex"); // 16 + 64
         for (uint256 i; i < 16; ++i) assertEq(uri[i], bytes("ipfs://f01701220")[i], "CIDv1 base16 prefix");
+    }
+
+    /// A front-runner cannot poison the trustless contractURI: deploying the canonical token at
+    /// its f(asset_id) slot ahead of the pool's attest_meta with a DIFFERENT cid must not be
+    /// adopted by the pool. The etch binds exactly one cid into asset_id, so the registered token
+    /// must carry the etch-proven cid regardless of any pre-deploy.
+    function test_attest_meta_cid_not_poisonable_by_front_run() public {
+        bytes32 shared = keccak256("frontrun-asset");
+        bytes32 attackerCid = keccak256("attacker-metadata");
+        bytes32 provenCid = _metaCid(shared);
+        assertTrue(attackerCid != provenCid, "distinct cids");
+
+        // Attacker pre-deploys a canonical ERC20 for (asset_id, pool, symbol, 18) with their OWN
+        // cid. Because cid is bound into the CREATE2 salt, this lands at a different address than
+        // the etch-proven one — it can never shadow it.
+        address attackerTok =
+            factory.deployCanonical(shared, address(pool), "cBTC", 18, attackerCid);
+        assertEq(CanonicalBridgedERC20(attackerTok).METADATA_CID(), attackerCid, "attacker token has attacker cid");
+
+        // The pool now runs the guest-proven attest_meta carrying the etch's REAL cid.
+        address tok = _linkViaAttest(shared, "cBTC", 18);
+
+        // The pool deploys/uses the token at the cid-bound slot — a DIFFERENT address from the
+        // attacker's, carrying the etch-proven cid (trustless contractURI, un-poisonable).
+        assertTrue(tok != attackerTok, "pool's canonical token is NOT the wrong-cid pre-deploy");
+        assertEq(
+            CanonicalBridgedERC20(tok).METADATA_CID(), provenCid, "registered token carries the etch-proven cid"
+        );
+        // The pool's local registry resolves the shared id to the correct-cid token.
+        bytes32 localId = pool.localAssetOf(shared);
+        assertEq(pool.getAsset(localId).underlying, tok, "linked to the etch-proven token");
     }
 
     /// A bridged note carries the SHARED (Bitcoin-side) asset id. The attest_meta path links the
@@ -1186,5 +1269,39 @@ contract ConfidentialPoolTest is Test {
         pv.withdrawals[0] = ConfidentialPool.Withdrawal(shared, RECIP, 3);
         _settle(pv);
         assertEq(CanonicalBridgedERC20(tok).balanceOf(RECIP), 3 * 10 ** 10, "payout = value * proven-derived scale");
+    }
+
+    /// CID-1: a permissionless registerMinted SQUAT of the EXACT etch-proven canonical token (pre-
+    /// registering its internalId with a deliberately-WRONG scale) must NOT permanently lock the
+    /// bridged shared id. attest_meta heals the link AND adopts the GUEST-PROVEN scale (overwriting
+    /// the squat's), so the bridged value exits at the correct rate instead of reverting NotRegistered.
+    /// (Overwrite is drain-safe: the canonical ERC20 is pool-minted, so a squatter holds zero balance
+    /// and could not have wrapped any note at the wrong scale.)
+    function test_registerMinted_squat_does_not_lock_bridged_asset() public {
+        bytes32 shared = keccak256("squat-asset");
+        bytes32 provenCid = _metaCid(shared);
+
+        // Attacker pre-deploys the EXACT etch-proven canonical token (proven symbol + cid, 18 dec) and
+        // registerMinted's it with a WRONG scale: tacitDecimals 18 → scale 1 (proven is 8 dec → 10^10).
+        address tok = factory.deployCanonical(shared, address(pool), "cBTC", 18, provenCid);
+        bytes32 internalId = pool.registerMinted(tok, "squat", "cBTC", 18);
+        assertEq(pool.localAssetOf(shared), bytes32(0), "squat establishes no cross-chain link");
+        (, , uint256 scaleBefore, , , , , ) = pool.assets(internalId);
+        assertEq(scaleBefore, 1, "squatter registered the wrong scale");
+
+        // The pool runs the guest-proven attest_meta (proven 8 decimals → scale 10^10).
+        address proven = _linkViaAttest(shared, "cBTC", 8);
+        assertEq(proven, tok, "attest_meta resolves the same salt-bound token (not a fresh deploy)");
+        assertEq(pool.localAssetOf(shared), internalId, "link HEALED despite the prior squat");
+        (, , uint256 scaleAfter, bytes32 link, , , , ) = pool.assets(internalId);
+        assertEq(scaleAfter, 10 ** 10, "scale OVERWRITTEN to the proven scale (squat's wrong scale discarded)");
+        assertEq(link, shared, "crossChainLink healed to the shared id");
+
+        // A bridged withdrawal now exits at the proven scale instead of reverting NotRegistered.
+        ConfidentialPool.PublicValues memory pv = _pv();
+        pv.withdrawals = new ConfidentialPool.Withdrawal[](1);
+        pv.withdrawals[0] = ConfidentialPool.Withdrawal(shared, RECIP, 4);
+        _settle(pv);
+        assertEq(CanonicalBridgedERC20(tok).balanceOf(RECIP), 4 * 10 ** 10, "bridged exit at proven scale, not locked");
     }
 }

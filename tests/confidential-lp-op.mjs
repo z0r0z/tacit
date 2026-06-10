@@ -134,4 +134,40 @@ const LP_ASSET = lp.lpShareId(POOL_ID);
   ok('removing 1001 of 1000 shares is rejected (shares in range)');
 }
 
+// ───────────────── 6. withdrawing more underlying than the proportional share entitles is rejected ─────────────────
+{
+  // The direct "withdraw more than entitled" vector: keep a valid 100-share note, but claim dA = 150
+  // (the honest floor(1000·100/1000) is 100). A prover that re-commits the A note to 150 and re-signs
+  // under the (now-different) intent context must still satisfy dA = floor(R_A·dShares/total): the
+  // floor equation `R_A·dShares == dA·total + remA, remA<total` uniquely pins dA, so the inflated
+  // withdrawal fails the proportional bind (no over-extraction).
+  const reserveAPre = 1000n, reserveBPre = 2000n, sharesPre = 1000n, dShares = 100n;
+  const rShares = randomScalar(), rA = randomScalar(), rB = randomScalar();
+  const sC = pool.commitXY(dShares, rShares);
+  const bq = (reserveBPre * dShares) / sharesPre, bRem = reserveBPre * dShares - bq * sharesPre;
+  const dAClaim = 150n; // honest floor is 100
+  const aRem = reserveAPre * dShares - dAClaim * sharesPre; // negative → never a valid floor remainder
+  const aC = pool.commitXY(dAClaim, rA), bC = pool.commitXY(bq, rB);
+  const op = {
+    assetA: ASSET_A, assetB: ASSET_B, chainBinding: CHAIN_BINDING,
+    reserveAPre, reserveBPre, sharesPre,
+    share: { cx: sC.cx, cy: sC.cy, owner: OWNER, leafIndex: 0, path: ZEROS }, dShares,
+    dA: dAClaim, remA: aRem, dB: bq, remB: bRem,
+    a: { cx: aC.cx, cy: aC.cy, owner: OWNER }, b: { cx: bC.cx, cy: bC.cy, owner: OWNER },
+  };
+  const removeCtx = (o) => pool.intentContext('tacit-lp-remove-v1', o.chainBinding, o.assetA, o.assetB,
+    [[o.share.cx, o.share.cy, o.share.owner], [o.a.cx, o.a.cy, o.a.owner], [o.b.cx, o.b.cy, o.b.owner]],
+    [o.dShares, o.dA, o.dB]);
+  const ctx = removeCtx(op);
+  op.sSig = pool.openingSigma(op.dShares, rShares, ctx, randomScalar());
+  op.aSig = pool.openingSigma(op.dA, rA, ctx, randomScalar());
+  op.bSig = pool.openingSigma(op.dB, rB, ctx, randomScalar());
+  const tree = new pool.Tree();
+  const si = tree.insert(pool.leaf(LP_ASSET, sC.cx, sC.cy, OWNER));
+  op.share.leafIndex = si; op.share.path = tree.rootAndPath(si).path;
+  const spendRoot = tree.rootAndPath(0).root;
+  assert.throws(() => lp.verifyRemove(op, { merkleRootFrom: pool.merkleRootFrom, spendRoot }), /dA proportional/, 'over-withdraw rejected');
+  ok('withdrawing 150 A for a 100-proportional share (floor is 100) is rejected (dA proportional)');
+}
+
 console.log(`\n${n} OP_LP checks passed.`);

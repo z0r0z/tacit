@@ -214,9 +214,12 @@ export function buildReflectionAttester(env, { deps, api, network }) {
 //   env.REGISTRY_KV                                     — snapshot persistence
 //   env.REFLECTION_GENESIS_HEIGHT                       — the first block the reflection scans
 //                                                         (= GENESIS_REFLECTION_ANCHOR's height)
-// `classifyTx({ txid, vin, vout, rawHex }) => null | {type:'cxfer',assetId,commitments[]} |
-// {type:'burn',dest}` is the worker's existing protocol decode (T_CXFER/T_CXFER_BPP/T_BRIDGE_BURN),
-// injected so the attester stays decode-agnostic. `api` is the esplora text fetcher.
+// `classifyTx({ txid, vin, vout, rawHex }) => null | {type:'cxfer',assetId,commitments[],kernelSig,
+// rangeProof} | {type:'burn',dest}` is the worker's existing protocol decode (T_CXFER/T_CXFER_BPP/
+// T_BRIDGE_BURN), injected so the attester stays decode-agnostic. A cxfer MUST surface its
+// kernelSig (64-byte BIP-340 hex) + rangeProof (BP+ hex) — the assembler re-verifies value
+// conservation before folding the outputs (REFLECT-1); decodeCXferBppPayload already returns both.
+// `api` is the esplora text fetcher.
 export function buildScanReflectionAttester(env, { deps, api, network, classifyTx }) {
   if (!env || env.REFLECTION_ATTEST !== '1' || !env.REGISTRY_KV) return null;
   const genesisHeight = parseInt(env.REFLECTION_GENESIS_HEIGHT || '0', 10);

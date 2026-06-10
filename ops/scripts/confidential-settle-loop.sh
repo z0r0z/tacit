@@ -60,6 +60,8 @@ harness_for() { case "$1" in
   swap)     echo "exec-swap.rs swap_op.json" ;;
   lp)       echo "exec-lp.rs lp_op.json" ;;
   transfer) echo "exec-prove.rs transfer_op.json" ;;
+  otc)      echo "exec-otc.rs otc_op.json" ;;
+  bid)      echo "exec-bid.rs bid_op.json" ;;
   *) echo "" ;; esac; }
 
 fresh_gpu() {

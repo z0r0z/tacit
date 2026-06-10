@@ -27,6 +27,7 @@ const ASSET_A = '0x' + 'aa'.repeat(32);
 const ASSET_B = '0x' + 'bb'.repeat(32);
 const OWNER = '0x' + '00'.repeat(31) + '01';
 const OWNER_OUT = '0x' + '00'.repeat(31) + '02';
+const CHAIN_BINDING = '0x' + '11'.repeat(32); // keccak(chainid,pool) — binds the opening-sigma intent context
 const ZEROS = pool.zeros;
 
 // Derive the uniform price from the pool + intents via solveClearing, then build + verify the
@@ -40,6 +41,7 @@ function clearAndVerify({ reserveA, reserveB, feeBps, specs }) {
   const intents = specs.map((s) => swap.buildIntent({
     direction: s.direction, amountIn: s.amountIn, priceNum, priceDen, minOut: 0,
     rInSecp: randomScalar(), rOutSecp: randomScalar(),
+    nonceIn: randomScalar(), nonceOut: randomScalar(), // opening-sigma nonces (fresh per intent; reuse leaks the blinding)
     inNote: { owner: OWNER, leafIndex: 0, path: ZEROS }, outOwner: OWNER_OUT,
   }));
   const tree = new pool.Tree();
@@ -49,7 +51,7 @@ function clearAndVerify({ reserveA, reserveB, feeBps, specs }) {
   });
   intents.forEach((it, i) => { const { path } = tree.rootAndPath(idxs[i]); it.in.leafIndex = idxs[i]; it.in.path = path; });
   const spendRoot = tree.rootAndPath(0).root;
-  const batch = swap.buildBatch({ assetA: ASSET_A, assetB: ASSET_B, reserveAPre: reserveA, reserveBPre: reserveB, priceNum, priceDen, intents, spendRoot });
+  const batch = swap.buildBatch({ assetA: ASSET_A, assetB: ASSET_B, chainBinding: CHAIN_BINDING, reserveAPre: reserveA, reserveBPre: reserveB, priceNum, priceDen, intents, spendRoot });
   const res = swap.verifyBatch(batch, { merkleRootFrom: pool.merkleRootFrom });
   return { sol, priceNum, priceDen, batch, ...res };
 }

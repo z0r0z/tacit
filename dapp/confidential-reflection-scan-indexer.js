@@ -13,9 +13,11 @@
 //   rawHex,                                   // the canonical tx bytes (the guest recomputes txid + merkle)
 //   vins: [{ prevTxidDisplay, vout }],        // every input (display-order prev txid)
 //   decode: null                              // a plain tx (its pool spends are caught by the scan)
-//         | { type:'cxfer', assetId, commitments:[compressed-33 hex] }
+//         | { type:'cxfer', assetId, commitments:[compressed-33 hex], kernelSig, rangeProof }
 //         | { type:'burn', dest }             // destCommitment (bound by the guest from the envelope)
 // } ] }
+// A cxfer decode MUST surface kernelSig (64-byte BIP-340 hex) + rangeProof (BP+ hex): the assembler
+// re-verifies value conservation (REFLECT-1) before folding the outputs, mirroring the guest.
 
 import { makeConfidentialPool } from './confidential-pool.js';
 
@@ -40,9 +42,12 @@ export function makeScanReflectionIndexer({ secp, keccak256, sha256, ownerTag } 
     if (tx.decode && tx.decode.type === 'cxfer') {
       env = {
         type: 'cxfer',
+        assetId: tx.decode.assetId,
+        kernelSig: tx.decode.kernelSig,     // 64-byte BIP-340 kernel sig (conservation)
+        rangeProof: tx.decode.rangeProof,   // BP+ range proof over the output commitments
         outputs: tx.decode.commitments.map((comm, j) => {
           const { cx, cy } = pool.decompressCommitment(comm);
-          return { cx, cy, commitmentHash: pool.commitmentHash(cx, cy), noteLeaf: pool.leaf(tx.decode.assetId, cx, cy, OWNER), vout: j };
+          return { cx, cy, compressed: comm, commitmentHash: pool.commitmentHash(cx, cy), noteLeaf: pool.leaf(tx.decode.assetId, cx, cy, OWNER), vout: j };
         }),
       };
     } else if (tx.decode && tx.decode.type === 'burn') {
@@ -54,7 +59,8 @@ export function makeScanReflectionIndexer({ secp, keccak256, sha256, ownerTag } 
   // Advance the canonical state over a batch of confirmed blocks (each `{ txs: [...] }`, in block
   // order) and return the full-scan prover input. `headers` = the batch's 80-byte block headers;
   // `anchorHeight` = headers[0]'s confirmed height. ADVANCES state + coords (the assembler scans
-  // every tx's vins, folds the detected effects). Returns the input the box's exec harness writes.
+  // every tx's vins, folds the detected effects). Returns the input the box's exec harness writes
+  // (its `.nonConserving` lists any cxfer whose outputs were skipped for failing value conservation).
   function assembleBlocks(blocks, { headers, anchorHeight }) {
     const batch = { anchorHeight, headers, blocks: blocks.map((b) => ({ txs: (b.txs || []).map(txSpec) })) };
     return pool.assembleReflectionScanInput(state, batch, coords);

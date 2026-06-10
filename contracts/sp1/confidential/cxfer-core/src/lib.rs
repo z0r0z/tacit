@@ -1147,20 +1147,36 @@ impl LiveUtxoSet {
     }
 }
 
+/// One detected pool-UTXO spend from the full scan: the outpoint key + the note's derived ν, plus
+/// the raw prev-outpoint `(txid, vout)` and the spent note's commitment coords `(cx, cy)`. The
+/// raw outpoint + the commitment point are what the CXFER conservation gate needs (the BIP-340
+/// kernel signs over the input outpoints, and `Σ C_in` over the input commitments — see
+/// `verify_cxfer_conservation`), so the scan surfaces them rather than discarding them.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DetectedSpend {
+    pub outpoint: [u8; 32],
+    pub nu: [u8; 32],
+    pub prev_txid: [u8; 32],
+    pub prev_vout: u32,
+    pub cx: [u8; 32],
+    pub cy: [u8; 32],
+}
+
 /// Full-scan vin detection — the F4 completeness primitive. EVERY input of `tx_data` is resolved
 /// against the live UTXO set; each one that hits a live pool UTXO is a spend that MUST be
 /// reflected (the relayer cannot silently drop it, because the scan visits all vins). For each
 /// hit, `next_opening` yields the spent note's (Cx, Cy) in vin order; ν is derived and BOUND to
 /// the outpoint's stored commitment hash via `bind_spent_note` (so a forged opening is rejected),
-/// the outpoint is removed from `live`, and (outpoint key, ν) is recorded. A tx touching no pool
-/// UTXO returns an empty vec. Returns None on a malformed tx or an opening that doesn't bind —
-/// both are hard rejects (a confirmed tx the prover can't honestly fold). Output notes (new
-/// outpoints a CXFER envelope declares) are added by the caller, which holds the envelope parse.
+/// the outpoint is removed from `live`, and a `DetectedSpend` (outpoint key + ν + raw outpoint +
+/// commitment coords) is recorded. A tx touching no pool UTXO returns an empty vec. Returns None
+/// on a malformed tx or an opening that doesn't bind — both are hard rejects (a confirmed tx the
+/// prover can't honestly fold). Output notes (new outpoints a CXFER envelope declares) are added
+/// by the caller, which holds the envelope parse + the conservation check.
 pub fn scan_tx_spends(
     tx_data: &[u8],
     live: &mut LiveUtxoSet,
     mut next_opening: impl FnMut() -> ([u8; 32], [u8; 32]),
-) -> Option<Vec<([u8; 32], [u8; 32])>> {
+) -> Option<Vec<DetectedSpend>> {
     let inputs = bitcoin::extract_inputs(tx_data)?;
     let mut spends = Vec::new();
     for (txid, vout) in &inputs {
@@ -1169,10 +1185,39 @@ pub fn scan_tx_spends(
             let (cx, cy) = next_opening();
             let nu = bind_spent_note(&stored, &cx, &cy)?;
             live.remove(&key);
-            spends.push((key, nu));
+            spends.push(DetectedSpend { outpoint: key, nu, prev_txid: *txid, prev_vout: *vout, cx, cy });
         }
     }
     Some(spends)
+}
+
+/// Verify a confirmed CXFER tx CONSERVES value before its outputs are folded into the reflected
+/// Bitcoin pool: the BIP-340 kernel (`cxfer_kernel_verify`: Σ C_in = Σ C_out, `burned = 0` for a
+/// pure transfer) AND the BP+ range proof bounding every output to `[0, 2^64)`. Bitcoin consensus
+/// never checks the Tacit kernel (the envelope is witness bytes), so without this a confirmed tx
+/// declaring an inflated output commitment would inject UNBACKED value into `bitcoinPoolRoot` —
+/// spendable cross-lane on Ethereum (value from nothing). `input_outpoints` / `input_commitments`
+/// come from the live-set scan (`scan_tx_spends`, which binds each input point to the stored
+/// commitment); `kernel_sig` / `output_commitments_compressed` / `range_proof` from the envelope
+/// (`bitcoin::parse_cxfer_envelope_full`). A zero-pool-input tx therefore can only mint
+/// zero-value outputs (Σ C_in = 0 ⇒ the kernel forces Σ value_out = 0).
+pub fn verify_cxfer_conservation(
+    asset: &[u8; 32],
+    input_outpoints: &[([u8; 32], u32)],
+    input_commitments: &[Point],
+    output_commitments_compressed: &[[u8; 33]],
+    range_proof: &[u8],
+    kernel_sig: &[u8; 64],
+) -> bool {
+    let mut out_pts: Vec<Point> = Vec::with_capacity(output_commitments_compressed.len());
+    for c in output_commitments_compressed {
+        match decompress(c) {
+            Some(p) => out_pts.push(p),
+            None => return false,
+        }
+    }
+    cxfer_kernel_verify(asset, input_outpoints, input_commitments, output_commitments_compressed, 0, kernel_sig)
+        && verify_range(&out_pts, range_proof)
 }
 
 /// The reflection prover's state: the Bitcoin confidential-pool note tree, spent-set, and
@@ -1582,6 +1627,49 @@ impl ScanReflection {
         Ok(())
     }
 
+    /// Fold a confirmed CXFER tx's outputs into the pool — ONLY if the tx CONSERVES value. Verifies
+    /// the BIP-340 kernel + the BP+ range proof over the detected pool-note inputs and the envelope's
+    /// outputs (`verify_cxfer_conservation`) BEFORE appending any output note, so a confirmed-but-non-
+    /// conserving tx injects NOTHING (its spends are still nullified by the caller via `fold_spent`;
+    /// no phantom note enters `bitcoinPoolRoot`). Each accepted output: derive its leaf
+    /// (`reflected_note_leaf`, never a free witness) + UTXO value (`commitment_hash_compressed`),
+    /// append the note, insert the outpoint. Fails closed (folding nothing) on a bad kernel/range,
+    /// a non-curve-point commitment, or a mismatched output-witness length.
+    ///
+    /// REFLECT-1: without this gate the per-output `fold_output` loop appended an attacker's inflated
+    /// commitment (Σ_out ≫ Σ_in) into the pool root — Bitcoin never checks the Tacit kernel — making
+    /// unbacked notes mintable/withdrawable cross-lane on Ethereum (value from nothing). The leaf-
+    /// SHAPE binding cannot catch it (an inflated commitment is a valid curve point).
+    #[allow(clippy::too_many_arguments)]
+    pub fn fold_cxfer(
+        &mut self,
+        asset: &[u8; 32],
+        input_outpoints: &[([u8; 32], u32)],
+        input_commitments: &[Point],
+        txid: &[u8; 32],
+        output_commitments_compressed: &[[u8; 33]],
+        output_paths: &[Vec<[u8; 32]>],
+        output_vouts: &[u32],
+        range_proof: &[u8],
+        kernel_sig: &[u8; 64],
+    ) -> Result<(), &'static str> {
+        let n = output_commitments_compressed.len();
+        if output_paths.len() != n || output_vouts.len() != n {
+            return Err("cxfer fold: output witness length mismatch");
+        }
+        if !verify_cxfer_conservation(asset, input_outpoints, input_commitments, output_commitments_compressed, range_proof, kernel_sig) {
+            return Err("cxfer fold: tx does not conserve value (kernel/range)");
+        }
+        for i in 0..n {
+            let commitment = &output_commitments_compressed[i];
+            let note_leaf = reflected_note_leaf(asset, commitment).ok_or("cxfer fold: output commitment not a curve point")?;
+            let ch = commitment_hash_compressed(commitment).ok_or("cxfer fold: output commitment not a curve point")?;
+            let outpoint = outpoint_key(txid, output_vouts[i]);
+            self.fold_output(&note_leaf, &output_paths[i], &outpoint, &ch)?;
+        }
+        Ok(())
+    }
+
     /// Record a bridge-out in the burn set: ν → destCommitment (witnessed UTXO insert). The spend
     /// itself is folded via `fold_spent`; this adds the bound destination so bridge_mint can mint
     /// only an explicitly-burned note, to exactly the declared destination.
@@ -1718,6 +1806,24 @@ mod tests {
         let mut badc = out_c.clone();
         badc[0] = badc[0] + ProjectivePoint::generator() * Scalar::from(3u64);
         assert!(!verify_range(&badc, &proof), "wrong commitment must reject");
+    }
+
+    // BPP-1: the on-chain verify_range — the no-inflation ROOT primitive — must REJECT a FORGED proof
+    // that commits an OUT-OF-RANGE value (V opens to 2^64), and still ACCEPT the honest max in-range
+    // value (2^64 - 1). The forged proof is built by a malicious prover bypassing the [0,2^64) input
+    // guard (tests/gen-bpp-out-of-range-fixture.mjs). Without this, the suite never drove the VERIFIER
+    // with an out-of-range artifact — only the JS prover's input gate was tested — so a future port/
+    // dependency drift that broke the value bound would mint unbacked supply behind a green suite.
+    #[test]
+    fn range_rejects_out_of_range_commitment() {
+        let f: serde_json::Value = serde_json::from_str(include_str!("../../fixtures/bpp_out_of_range.json")).unwrap();
+        let honest_c = pt(f["honestMax"]["commitment"].as_str().unwrap());
+        let honest_p = hex::decode(strip(f["honestMax"]["proof"].as_str().unwrap())).unwrap();
+        assert!(verify_range(&[honest_c], &honest_p), "honest max in-range value 2^64-1 must verify (no false reject)");
+
+        let oor_c = pt(f["outOfRange"]["commitment"].as_str().unwrap());
+        let oor_p = hex::decode(strip(f["outOfRange"]["proof"].as_str().unwrap())).unwrap();
+        assert!(!verify_range(&[oor_c], &oor_p), "a proof committing an out-of-range value (2^64) MUST be rejected (no inflation)");
     }
 
     #[test]
@@ -2030,6 +2136,88 @@ mod tests {
         assert!(!cxfer_kernel_verify(&[0u8; 32], &inputs, &in_commits, &out_compressed, burned, &sig), "wrong asset rejected");
     }
 
+    // REFLECT-1 regression: the reflection prover must NOT fold a confirmed CXFER tx's outputs into
+    // bitcoinPoolRoot unless the tx CONSERVES value. Bitcoin consensus never checks the Tacit kernel
+    // (the envelope is witness bytes), so a confirmed tx can declare an inflated output commitment;
+    // before this gate (`fold_cxfer` → `verify_cxfer_conservation`) the per-output fold appended it
+    // into the pool root, making unbacked value spendable cross-lane on Ethereum (value from nothing).
+    #[test]
+    fn reflection_cxfer_fold_rejects_nonconserving_outputs() {
+        let f: serde_json::Value = serde_json::from_str(include_str!("../../fixtures/cxfer_kernel.json")).unwrap();
+        let asset = arr32(f["asset"].as_str().unwrap());
+        let inputs: Vec<([u8; 32], u32)> = f["inputs"].as_array().unwrap().iter()
+            .map(|i| (arr32(i["txid"].as_str().unwrap()), i["vout"].as_u64().unwrap() as u32)).collect();
+        let in_pts: Vec<ProjectivePoint> = f["inputs"].as_array().unwrap().iter()
+            .map(|i| decompress(&arr33(i["commitment"].as_str().unwrap())).unwrap()).collect();
+        let outs: Vec<[u8; 33]> = f["outputs"].as_array().unwrap().iter()
+            .map(|o| arr33(o["commitment"].as_str().unwrap())).collect();
+        let sig: [u8; 64] = hex::decode(strip(f["kernelSig"].as_str().unwrap())).unwrap().try_into().unwrap();
+
+        // The conserved tx's kernel verifies (Σ C_in = Σ C_out).
+        assert!(cxfer_kernel_verify(&asset, &inputs, &in_pts, &outs, 0, &sig), "conserved cxfer kernel verifies");
+
+        // Inflate output[0] by 1_000_000·H: still a valid curve point that yields a well-formed leaf
+        // (shape-binding CANNOT catch inflation), but the kernel now rejects it (Σ_out ≠ Σ_in).
+        let inflated_pt = decompress(&outs[0]).unwrap() + gen_h() * Scalar::from(1_000_000u64);
+        let mut inflated = outs.clone();
+        inflated[0] = compress(&inflated_pt);
+        assert!(reflected_note_leaf(&asset, &inflated[0]).is_some(),
+            "inflated commitment still yields a well-formed leaf — shape-binding misses value inflation");
+        assert!(!cxfer_kernel_verify(&asset, &inputs, &in_pts, &inflated, 0, &sig),
+            "inflated cxfer output rejected by the conservation kernel");
+
+        // The FOLD path fails closed: fold_cxfer rejects the non-conserving tx and folds NOTHING, so
+        // the pool root / note count are unchanged (no phantom note enters the pool; the spends are
+        // nullified separately by the caller). A real-PoW positive-fold round-trip is exercised by the
+        // reflection round-trip fixture; here we lock the inflation REJECT the missing gate let through.
+        let mut sc = ScanReflection::genesis();
+        let pool_before = sc.pool_root;
+        let notes_before = sc.note_count;
+        let paths: Vec<Vec<[u8; 32]>> = (0..inflated.len()).map(|_| vec![[0u8; 32]; KECCAK_TREE_DEPTH]).collect();
+        let vouts: Vec<u32> = (0..inflated.len() as u32).collect();
+        let txid = arr32("0x7777777777777777777777777777777777777777777777777777777777777777");
+        // No range proof in the kernel fixture → verify_range fails → fold rejects (fail-closed: a
+        // cxfer with a missing/short range proof also injects nothing).
+        let res = sc.fold_cxfer(&asset, &inputs, &in_pts, &txid, &inflated, &paths, &vouts, &[], &sig);
+        assert!(res.is_err(), "fold_cxfer rejects a non-conserving cxfer tx");
+        assert_eq!(sc.pool_root, pool_before, "rejected cxfer folds NO output (pool root unchanged)");
+        assert_eq!(sc.note_count, notes_before, "rejected cxfer appends no note");
+    }
+
+    // REFLECT-1 DIFFERENTIAL: the guest reads a cxfer's output witnesses ONLY when
+    // verify_cxfer_conservation accepts; the JS assembler (dapp verifyCxferConservation) emits them
+    // under the SAME condition. If the two predicates ever DISAGREE (one accepts, the other rejects)
+    // for some confirmed envelope, the witness stream desyncs → wrong roots / a panic. This pins the
+    // Rust verdict against the JS verdict, byte-for-byte, on a battery of adversarial envelopes
+    // (inflated, tampered sig/range, reordered, mismatched range, non-canonical point, zero point,
+    // zero-input mint-from-nothing). Vectors + the JS verdict are generated by
+    // tests/gen-cxfer-conservation-differential.mjs (run with the dapp's own secp/BP+).
+    #[test]
+    fn cxfer_conservation_matches_js_verdict() {
+        let f: serde_json::Value =
+            serde_json::from_str(include_str!("../../fixtures/cxfer_conservation_diff.json")).unwrap();
+        for v in f["vectors"].as_array().unwrap() {
+            let name = v["name"].as_str().unwrap();
+            let asset = arr32(v["asset"].as_str().unwrap());
+            let in_outpoints: Vec<([u8; 32], u32)> = v["inputs"].as_array().unwrap().iter()
+                .map(|i| (arr32(i["txid"].as_str().unwrap()), i["vout"].as_u64().unwrap() as u32)).collect();
+            let in_points: Vec<ProjectivePoint> = v["inputs"].as_array().unwrap().iter()
+                .map(|i| decompress(&arr33(i["commitment"].as_str().unwrap())).unwrap()).collect();
+            let outs: Vec<[u8; 33]> = v["outsCompressed"].as_array().unwrap().iter()
+                .map(|o| arr33(o.as_str().unwrap())).collect();
+            let sig: [u8; 64] = hex::decode(strip(v["kernelSig"].as_str().unwrap())).unwrap().try_into().unwrap();
+            let rp = hex::decode(strip(v["rangeProof"].as_str().unwrap())).unwrap();
+
+            let rust = verify_cxfer_conservation(&asset, &in_outpoints, &in_points, &outs, &rp, &sig);
+            // A JS "throw" (a wiring bug, missing field) has no Rust analog — only true/false vectors
+            // are differential. All generated vectors are well-formed (no missing field), so jsVerdict
+            // is a bool here.
+            let js = v["jsVerdict"].as_bool()
+                .unwrap_or_else(|| panic!("vector {name} jsVerdict not a bool: {:?}", v["jsVerdict"]));
+            assert_eq!(rust, js, "REFLECT-1 desync: vector '{name}' — Rust verify_cxfer_conservation={rust} but JS verifyCxferConservation={js}");
+        }
+    }
+
     // The UTXO accumulator: add outpoints, resolve them (get), prove membership against
     // the live root, then spend (remove) — a spent outpoint resolves to None and its
     // membership leaf no longer folds to the root, while live siblings still do.
@@ -2078,6 +2266,70 @@ mod tests {
         u.insert(&key(0x10), &[7u8; 32]);
         u.remove(&key(0x10));
         u.remove(&key(0x10)); // already spent
+    }
+
+    // NEG-1 / NEG-2: the bridge_mint authority binding (guest `main.rs`: bm_leaf = utxo_leaf(ν,
+    // bm_next, dest_leaf); keccak_merkle_verify(bm_leaf, …, bitcoin_burn_root)). Only a note
+    // explicitly BURNED FOR THE BRIDGE — ν a live key in the dedicated bridge-burn set — bound to the
+    // destination the burn declared (its stored value == the Ethereum-minted leaf) can be minted on
+    // Ethereum. (NEG-1) An ordinarily-spent ν is absent from the burn set, so it cannot prove
+    // membership (it lives in the spent set, never the burn set) → no cross-chain value duplication.
+    // (NEG-2) The mint cannot be redirected to a destination the burn did not declare. The contract
+    // sees only the burn-root, never this in-guest check, so no contract test reaches it; this locks
+    // the §6 inflation / mint-redirection rejects.
+    #[test]
+    fn bridge_mint_burn_membership_binds_nu_and_destination() {
+        let zeros = keccak_zeros();
+        let build_path = |leaves: &[[u8; 32]], mut idx: usize| -> Vec<[u8; 32]> {
+            let mut level = leaves.to_vec();
+            let mut path: Vec<[u8; 32]> = Vec::new();
+            for lvl in 0..KECCAK_TREE_DEPTH {
+                let s = idx ^ 1;
+                path.push(if s < level.len() { level[s] } else { zeros[lvl] });
+                let mut next: Vec<[u8; 32]> = Vec::new();
+                let mut k = 0;
+                while k * 2 < level.len() {
+                    let l = level[2 * k];
+                    let r = if 2 * k + 1 < level.len() { level[2 * k + 1] } else { zeros[lvl] };
+                    next.push(kn(&[&l, &r]));
+                    k += 1;
+                }
+                level = next;
+                idx >>= 1;
+            }
+            path
+        };
+
+        let nu = { let mut x = [0u8; 32]; x[31] = 0xaa; x };        // a burned note's ν
+        let dest_leaf = { let mut x = [0u8; 32]; x[0] = 0xd0; x };  // the ETH-minted leaf the burn declared
+        let other_nu = { let mut x = [0u8; 32]; x[31] = 0xbb; x };  // an ordinarily-spent (non-bridged) ν
+
+        // The bridge-burn set: only genuine bridge-outs land here (ν → declared dest_leaf).
+        let mut burns = UtxoAccumulator::new();
+        burns.insert(&nu, &dest_leaf);
+        let burn_root = burns.root();
+        let leaves = burns.leaves();
+        let (idx, next, value) = burns.membership(&nu).expect("ν is a member of the bridge-burn set");
+        assert_eq!(value, dest_leaf, "the burn set binds ν to the destination it declared");
+        let path = build_path(&leaves, idx);
+
+        // HONEST: ν bound to its declared destination proves membership → mintable.
+        assert!(keccak_merkle_verify(&utxo_leaf(&nu, &next, &dest_leaf), idx as u64, &path, &burn_root),
+            "a genuine bridge-burn (ν → dest_leaf) proves membership in bitcoinBurnRoot");
+
+        // NEG-2 (redirect): the SAME ν + witness but a DIFFERENT minted destination → the preimage
+        // (utxo_leaf binds dest_leaf as its value field) differs → membership fails.
+        let redirected = { let mut x = [0u8; 32]; x[0] = 0xd1; x };
+        assert_ne!(redirected, dest_leaf);
+        assert!(!keccak_merkle_verify(&utxo_leaf(&nu, &next, &redirected), idx as u64, &path, &burn_root),
+            "redirecting the mint to a destination the burn never declared is rejected (no mint redirection)");
+
+        // NEG-1 (ordinary spend): an ordinarily-spent ν is NOT in the bridge-burn set, so no honest
+        // witness exists; even reusing the genuine member's slot, the preimage differs from any real
+        // leaf, so membership fails.
+        assert!(burns.membership(&other_nu).is_none(), "an ordinarily-spent ν is absent from the bridge-burn set");
+        assert!(!keccak_merkle_verify(&utxo_leaf(&other_nu, &next, &dest_leaf), idx as u64, &path, &burn_root),
+            "an ordinarily-spent ν cannot prove bridge-burn membership → not mintable (no cross-chain inflation)");
     }
 
     // The UTXO-model transfer fold: an output creates an outpoint→ν UTXO + a note leaf;
@@ -2167,7 +2419,9 @@ mod tests {
         let before = live.root();
         let spends = scan_tx_spends(&tx, &mut live, || (cx, cy)).expect("scan honest tx");
         assert_eq!(spends.len(), 1, "the seeded pool outpoint is detected as a spend");
-        assert_eq!(spends[0], (outpoint, nullifier(&cx, &cy)), "ν derived + bound to the stored commitment");
+        assert_eq!((spends[0].outpoint, spends[0].nu), (outpoint, nullifier(&cx, &cy)), "ν derived + bound to the stored commitment");
+        assert_eq!((spends[0].prev_txid, spends[0].prev_vout), (in_txid, in_vout), "raw prev-outpoint surfaced for the conservation kernel");
+        assert_eq!((spends[0].cx, spends[0].cy), (cx, cy), "spent commitment coords surfaced (Σ C_in)");
         assert!(live.is_empty(), "the spent outpoint is removed from the live set");
         assert_ne!(live.root(), before, "live root advanced on the spend");
 

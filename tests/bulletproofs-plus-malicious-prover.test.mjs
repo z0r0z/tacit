@@ -85,6 +85,21 @@ group('Attack 2: out-of-range value rejected at prover');
   try { bpp.bppRangeProve([bpp.SECP_N - 1n], [bpp.randomScalar()]); }
   catch { threw3 = true; }
   ok('v ≈ -1 mod n rejected at prover', threw3);
+
+  // VERIFIER soundness (BPP-1): even when an adversary BYPASSES the prover's input guard and forges a
+  // structurally-valid proof that COMMITS an out-of-range value (V = v·H + γ·G with v ≥ 2^64, while the
+  // bit decomposition is of v mod 2^64), the VERIFIER must REJECT — this exercises the V-scalar /
+  // range-binding term, not merely the prover's gate (the no-inflation root property).
+  {
+    const oor = bpp.bppRangeProve([1n << 64n], [bpp.randomScalar()], true);
+    ok('forged out-of-range proof (v=2^64) REJECTED by the verifier', bpp.bppRangeVerify(oor.commitments, oor.proof) === false);
+    const oor2 = bpp.bppRangeProve([(1n << 64n) + 7n], [bpp.randomScalar()], true);
+    ok('forged out-of-range proof (v=2^64+7) REJECTED by the verifier', bpp.bppRangeVerify(oor2.commitments, oor2.proof) === false);
+    const mix = bpp.bppRangeProve([5n, 1n << 64n], [bpp.randomScalar(), bpp.randomScalar()], true);
+    ok('m=2 aggregate with one out-of-range slot REJECTED', bpp.bppRangeVerify(mix.commitments, mix.proof) === false);
+    const maxv = bpp.bppRangeProve([(1n << 64n) - 1n], [bpp.randomScalar()]);
+    ok('honest boundary value 2^64-1 still VERIFIES (no false reject)', bpp.bppRangeVerify(maxv.commitments, maxv.proof) === true);
+  }
 }
 
 // ============== Attack 3: aggregation cross-contamination ==============

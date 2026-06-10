@@ -26,7 +26,7 @@ sp1_zkvm::entrypoint!(main);
 
 use alloy_sol_types::sol;
 use alloy_sol_types::SolType;
-use cxfer_core::{bitcoin, commitment_hash_compressed, outpoint_key, reflected_note_leaf, scan_tx_spends, LiveUtxoSet, ScanReflection};
+use cxfer_core::{bitcoin, from_affine_xy, scan_tx_spends, verify_cxfer_conservation, LiveUtxoSet, Point, ScanReflection};
 use sp1_zkvm::io;
 
 sol! {
@@ -129,35 +129,51 @@ pub fn main() {
             // output notes.
             let env = bitcoin::extract_taproot_envelope(tx);
             let burn = env.as_ref().and_then(|e| bitcoin::parse_burn_envelope(e));
-            let cxfer = env.as_ref().and_then(|e| bitcoin::parse_cxfer_envelope(e));
+            // CXFER surfaces the kernel sig + range proof too, so the fold can RE-VERIFY value
+            // conservation (Σ C_in = Σ C_out) + output range before injecting any note (REFLECT-1).
+            let cxfer = env.as_ref().and_then(|e| bitcoin::parse_cxfer_envelope_full(e));
 
             // Fold the detected spends into the spent-set (witnessed IMT insert, in scan order).
-            for (_outpoint, nu) in &spends {
+            for s in &spends {
                 let (sv, sn, si, sp, snew) = read_spent_insert();
-                state.fold_spent(nu, &sv, &sn, si, &sp, &snew).expect("spent-set fold");
+                state.fold_spent(&s.nu, &sv, &sn, si, &sp, &snew).expect("spent-set fold");
             }
 
             // A bridge-out records ν → destCommitment in the burn set (the burned note is the
             // tx's single detected spend, bound to the envelope's nullifier).
             if let Some((_asset, env_nu, env_dest)) = &burn {
-                assert!(spends.len() == 1 && &spends[0].1 == env_nu, "burn envelope must match the single spent note");
+                assert!(spends.len() == 1 && &spends[0].nu == env_nu, "burn envelope must match the single spent note");
                 let (bk, bn, bv, bi, bp, bnew) = read_burn_insert();
                 state.fold_burn(env_nu, env_dest, &bk, &bn, &bv, bi, &bp, &bnew).expect("burn-set fold");
             }
 
-            // A cxfer tx's outputs are new pool notes: the note leaf (asset/owner/commitment) is
-            // witnessed, its commitment bound to the envelope's declared point, its outpoint to a
-            // real vout. Added to the live set so a later tx in the batch can spend it.
-            if let Some((asset, commitments)) = &cxfer {
-                for commitment in commitments {
-                    let note_path = r_path();
-                    let vout: u32 = io::read();
-                    let outpoint = outpoint_key(&txid, vout);
-                    // DERIVE the note leaf from the envelope's asset + commitment (not a free witness),
-                    // so a relayer can't append an arbitrary attacker-spendable leaf into bitcoinPoolRoot.
-                    let note_leaf = reflected_note_leaf(asset, commitment).expect("envelope commitment is a curve point");
-                    let ch = commitment_hash_compressed(commitment).expect("envelope commitment is a curve point");
-                    state.fold_output(&note_leaf, &note_path, &outpoint, &ch).expect("output fold");
+            // A cxfer tx's outputs are new pool notes — but ONLY if the tx CONSERVES value. fold_cxfer
+            // re-verifies the BIP-340 kernel + the BP+ range over the detected pool-note inputs (Σ C_in,
+            // from the scan) and the envelope's outputs BEFORE appending any note, so a confirmed-but-
+            // non-conserving tx (Bitcoin never checks the Tacit kernel) cannot inject unbacked, cross-
+            // lane-spendable pool value (REFLECT-1). Each output note leaf is DERIVED from the envelope
+            // (never a free witness), its outpoint added to the live set for later spends in the batch.
+            if let Some((asset, kernel_sig, commitments, range_proof)) = &cxfer {
+                let in_outpoints: Vec<([u8; 32], u32)> = spends.iter().map(|s| (s.prev_txid, s.prev_vout)).collect();
+                let in_points: Vec<Point> = spends.iter()
+                    .map(|s| from_affine_xy(&s.cx, &s.cy).expect("input commitment xy"))
+                    .collect();
+                // Check conservation BEFORE reading the output witnesses. A confirmed-but-non-
+                // conserving CXFER (Bitcoin never checks the Tacit kernel) is junk: it injects no
+                // notes and carries NO output witnesses in the stream, so we read none and skip it
+                // (its detected spends were already nullified above). A SKIP, not a panic — a
+                // griefed non-conserving envelope can't wedge the prover. Conserving cxfers read
+                // their witnesses and fold; a fold error there is a real witness bug (panics).
+                if verify_cxfer_conservation(asset, &in_outpoints, &in_points, commitments, range_proof, kernel_sig) {
+                    let mut paths: Vec<Vec<[u8; 32]>> = Vec::with_capacity(commitments.len());
+                    let mut vouts: Vec<u32> = Vec::with_capacity(commitments.len());
+                    for _ in commitments {
+                        paths.push(r_path());
+                        let vout: u32 = io::read();
+                        vouts.push(vout);
+                    }
+                    state.fold_cxfer(asset, &in_outpoints, &in_points, &txid, commitments, &paths, &vouts, range_proof, kernel_sig)
+                        .expect("cxfer fold");
                 }
             }
         }

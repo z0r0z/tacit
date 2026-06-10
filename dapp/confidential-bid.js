@@ -18,7 +18,27 @@ const BID_BUYER_TAG = 'tacit-bid-buyer-v1';
 const BID_SELLER_TAG = 'tacit-bid-seller-v1';
 
 export function makeConfidentialBid({ keccak256, pool }) {
-  const { leaf, nullifier, commitXY, openingSigma, verifyOpeningSigma, intentContext, deriveNote } = pool;
+  const { leaf, nullifier, commitXY, openingSigma, verifyOpeningSigma, intentContext, deriveNote, deriveBidSecret } = pool;
+  const { hx } = pool._internal;
+
+  // Per-grid buyer opening-sigma nonces, derived DISTINCTLY from (bidSecret, chosenF). The offline
+  // K-presig bid publisher signs the CONSTANT funding note once per grid point; reusing a sigma nonce
+  // across two grid fills exposes the funding blinding r (two z = k + e·r under different challenges
+  // give r = (z1−z2)/(e1−e2)), and under the bearer model that lets anyone spend the buyer's funding
+  // note. The publisher MUST use these (or equivalently distinct-per-(note,chosenF) nonces) — never a
+  // fixed nonce. Built on deriveNote's deterministic per-index blinding, so each grid point differs.
+  const nonceDomain = (label) => hx(keccak256(new TextEncoder().encode(label)));
+  const ND_FUND = nonceDomain('tacit-bid-fund-nonce-v1');
+  const ND_RECVA = nonceDomain('tacit-bid-recva-nonce-v1');
+  const ND_REFUND = nonceDomain('tacit-bid-refund-nonce-v1');
+  function deriveBidNonces(bidSecret, chosenF) {
+    const f = Number(chosenF);
+    return {
+      fund: deriveNote(bidSecret, ND_FUND, f).blinding,
+      recvA: deriveNote(bidSecret, ND_RECVA, f).blinding,
+      refund: deriveNote(bidSecret, ND_REFUND, f).blinding,
+    };
+  }
 
   // Buyer posts the bid: pre-fund V_fund = maxFill·price of assetB (an existing note). bidSecret is a
   // dedicated 32-byte secret (NOT the wallet seed) driving the per-fill received-note blindings.
@@ -76,6 +96,12 @@ export function makeConfidentialBid({ keccak256, pool }) {
     const bNotes = [[bid.fund.cx, bid.fund.cy, buyerOwner], [buyerRecvA.cx, buyerRecvA.cy, buyerOwner]];
     if (refundNote) bNotes.push([refundNote.cx, refundNote.cy, buyerOwner]);
     const buyerCtx = intentContext(BID_BUYER_TAG, bid.chainBinding, assetA, assetB, bNotes, [minFill, maxFill, price, increment, chosenF]);
+    // The buyer's opening-sigma nonces MUST be distinct + non-zero (a reused nonce leaks the note
+    // blinding — see deriveBidNonces); across grid points the publisher must likewise vary them.
+    const buyerNonces = [nonces.fund, nonces.recvA].concat(refundNote ? [nonces.refund] : []).map((x) => BigInt(x));
+    if (buyerNonces.some((x) => x === 0n) || new Set(buyerNonces.map(String)).size !== buyerNonces.length) {
+      throw new Error('bid: buyer sigma nonces must be distinct + non-zero (reuse leaks the blinding)');
+    }
     bid.fund.sig = openingSigma(vFund, bid.fund._r, buyerCtx, nonces.fund);
     buyerRecvA.sig = openingSigma(chosenF, buyerRecvA._r, buyerCtx, nonces.recvA);
     if (refundNote) refundNote.sig = openingSigma(refund, refundNote._r, buyerCtx, nonces.refund);
@@ -148,5 +174,47 @@ export function makeConfidentialBid({ keccak256, pool }) {
     return { nullifiers, leaves };
   }
 
-  return { buildBid, fillBid, verifyBid, BID_BUYER_TAG, BID_SELLER_TAG };
+  // Seed-only recovery of a buyer's filled-bid OUTPUT notes (received asset_a + the asset_b refund).
+  // These are the ONE note family the universal memo scan (confidential-indexer.recover) cannot reach:
+  // the seller settles the fill but never learns the buyer's deriveNote blindings, so it can seal no
+  // memo for them. The buyer instead re-derives the per-fill blindings from `bidSecret` (itself
+  // seed-bound via deriveBidSecret) and matches against the on-chain leaves — exactly the "recompute
+  // after scanning the fill" the bid relies on. A seller fills at most one grid point per bid, so the
+  // scan is O(grid) and terminates on the first match.
+  //
+  // `bid` carries { assetA, assetB, minFill, maxFill, price, increment, buyerOwner } and the funding
+  // commitment { fund:{cx,cy} } (all recoverable from the buyer's on-chain bid post). `leafSet` is a
+  // Map(leafHash → { leafIndex }) over the live note tree (from the indexer). Returns the recovered
+  // buyer notes [{ asset, value, blinding, cx, cy, owner, leaf, leafIndex }] ready to spend; empty if
+  // the bid is unfilled.
+  function recoverBidOutputs({ seed, bid, leafSet }) {
+    const { assetA, assetB, buyerOwner } = bid;
+    const minFill = BigInt(bid.minFill), maxFill = BigInt(bid.maxFill);
+    const price = BigInt(bid.price), increment = BigInt(bid.increment);
+    const bidSecret = deriveBidSecret(seed, bid.fund.cx, bid.fund.cy);
+    const get = (lf) => { const e = leafSet.get(String(lf).toLowerCase()); return e ? e.leafIndex : null; };
+    const out = [];
+    for (let f = minFill; f <= maxFill; f += increment) {
+      // Buyer received asset_a (chosenF), blinding deriveNote(bidSecret, assetA, f).
+      const raR = deriveNote(bidSecret, assetA, Number(f)).blinding;
+      const raC = commitXY(f, raR);
+      const raLeaf = leaf(assetA, raC.cx, raC.cy, buyerOwner);
+      const raIdx = get(raLeaf);
+      if (raIdx == null) continue; // this grid point wasn't the fill
+      out.push({ asset: assetA, value: f, blinding: raR, cx: raC.cx, cy: raC.cy, owner: buyerOwner, leaf: raLeaf, leafIndex: raIdx });
+      // On a partial fill the buyer also gets the asset_b refund (maxFill−f)·price.
+      if (f < maxFill) {
+        const refund = (maxFill - f) * price;
+        const rfR = deriveNote(bidSecret, assetB, Number(f)).blinding;
+        const rfC = commitXY(refund, rfR);
+        const rfLeaf = leaf(assetB, rfC.cx, rfC.cy, buyerOwner);
+        const rfIdx = get(rfLeaf);
+        if (rfIdx != null) out.push({ asset: assetB, value: refund, blinding: rfR, cx: rfC.cx, cy: rfC.cy, owner: buyerOwner, leaf: rfLeaf, leafIndex: rfIdx });
+      }
+      break; // a bid is filled at exactly one grid point
+    }
+    return out;
+  }
+
+  return { buildBid, fillBid, verifyBid, recoverBidOutputs, deriveBidNonces, BID_BUYER_TAG, BID_SELLER_TAG };
 }

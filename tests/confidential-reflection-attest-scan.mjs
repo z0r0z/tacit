@@ -10,6 +10,7 @@ import { keccak_256 } from '../node_modules/@noble/hashes/sha3.js';
 import * as secp from '../node_modules/@noble/secp256k1/index.js';
 import { createHash } from 'node:crypto';
 import { makeScanReflectionAttester } from '../worker/src/reflection-attest.js';
+import { conservingZeroCxfer } from './_conserving-cxfer.mjs';
 
 const sha256 = (b) => new Uint8Array(createHash('sha256').update(Buffer.from(b)).digest());
 const deps = { secp, keccak256: keccak_256, sha256 };
@@ -26,7 +27,7 @@ const assetId = v(0xa55e7);
 
 // Mock block data: height 500 = a 2-output CXFER; 501 = a plain spend of output 0; 502 = empty.
 const BLOCKS = {
-  500: { txs: [{ txidDisplay: dtx(0x10), rawHex: 'aa'.repeat(60), vins: [{ prevTxidDisplay: dtx(0xee), vout: 3 }], decode: { type: 'cxfer', assetId, commitments: [commit(11), commit(22)] } }] },
+  500: { txs: [{ txidDisplay: dtx(0x10), rawHex: 'aa'.repeat(60), vins: [{ prevTxidDisplay: dtx(0xee), vout: 3 }], decode: { type: 'cxfer', assetId, ...conservingZeroCxfer(assetId, [11n, 22n]) } }] },
   501: { txs: [{ txidDisplay: dtx(0x20), rawHex: 'bb'.repeat(40), vins: [{ prevTxidDisplay: dtx(0x10), vout: 0 }], decode: null }] },
   502: { txs: [] },
 };

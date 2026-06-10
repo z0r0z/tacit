@@ -706,7 +706,7 @@ async function handleReflectionAck(req, env, cors) {
 }
 
 // ===== Confidential settle relay (box-poll prove/settle queue for ConfidentialPool) =====
-// POST /confidential/submit {type, op, memos?, expectedPv?} → enqueue a confidential op (public,
+// POST /confidential/submit {type, op, memos?} → enqueue a confidential op (public,
 //      permissionless — a bad witness just fails to prove). GET /confidential/job → the box claims
 //      the next job; POST /confidential/ack {jobId, txHash?|error?} → the box reports the settle
 //      (both box routes gated by CONFIDENTIAL_BOX_TOKEN/DEBUG_TOKEN, default-deny 404). GET
@@ -736,7 +736,7 @@ async function handleConfidentialSubmit(req, env, cors) {
   let body;
   try { body = await req.json(); } catch { return jsonResponse({ ok: false, error: 'bad json' }, 400, cors); }
   try {
-    const r = await q.submitJob({ type: body.type, op: body.op, memos: body.memos, expectedPv: body.expectedPv });
+    const r = await q.submitJob({ type: body.type, op: body.op, memos: body.memos });
     return jsonResponse({ ok: true, ...r }, 200, { ...cors, 'Cache-Control': 'no-store' });
   } catch (e) { return jsonResponse({ ok: false, error: String(e && e.message || e) }, 400, cors); }
 }

@@ -21,12 +21,12 @@ export function makeConfidentialRelay({ base, fetchImpl } = {}) {
     return body;
   }
 
-  // Enqueue a confidential op. type ∈ {transfer, swap, lp}; op = the fixture-shaped witness;
+  // Enqueue a confidential op. type ∈ {transfer, swap, lp, otc, bid}; op = the fixture-shaped witness;
   // memos = per-leaf recovery ciphertexts (hex, one per committed leaf) or []. Returns {jobId,status}.
-  async function submitOp({ type, op, memos = [], expectedPv } = {}) {
+  async function submitOp({ type, op, memos = [] } = {}) {
     const res = await f(`${root}/confidential/submit`, {
       method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ type, op, memos, expectedPv }),
+      body: JSON.stringify({ type, op, memos }),
     });
     return asJson(res);
   }

@@ -1,10 +1,10 @@
 {
   "_comment": "Binds the committed confidential SP1 guest ELFs to the verifying keys they must be deployed with. Two ELFs from one `cargo prove build`: elf/cxfer-guest (the settle guest → program_vkey, immutable PROGRAM_VKEY) and elf/reflection-prover (the Bitcoin-state relay prover → bitcoin_relay_vkey, immutable BITCOIN_RELAY_VKEY). verify-vkey-pin.sh asserts both sha256s on every PR. A rebuild that changes either ELF MUST regenerate its vkey + update this file IN THE SAME COMMIT, then redeploy ConfidentialPool with the new immutable vkey — otherwise every settle (resp. every attestBitcoinStateProven) reverts. Each vkey is the key a REAL Groth16 proof of THAT ELF verifies against on-chain (test/ConfidentialSwapProofReal.t.sol, test/ConfidentialReflectionProofReal.t.sol). The two share cxfer-core, so a cxfer-core change rebuilds BOTH — committing the ELFs is what keeps the prover box running the pinned bytes rather than a drifting rebuild.",
-  "elf_sha256": "1ce8521961be767ac17e78803770f897e6f4591474624708bf6e1032077434b7",
-  "elf_bytes": 591728,
-  "program_vkey": "0x00bb82ef494d18e91096f6501813ae52f953db226876649df2cd898072091f2e",
-  "reflection_elf_sha256": "59b0403896c6d2f7ddb8005ca039f24ab9558e384f310a46998b037da667cfef",
-  "reflection_elf_bytes": 319064,
-  "bitcoin_relay_vkey": "0x0099e1c7809eb9ec4303f17a96ec5f6b4ee59a14898bf84df276ee2383588648",
+  "elf_sha256": "e34c5a2805c9a0aa21fd354e3e9b7fc8270f9a525e20c4bc1f07a10b730772c4",
+  "elf_bytes": 591720,
+  "program_vkey": "0x008e0e7f5a8fd8e070f45457305eb252e9427f16126f586c40d06dae7847efea",
+  "reflection_elf_sha256": "02faeacb709ecbf51c6492030443bd274c3890c3376e8599da3a7ce8c52af56c",
+  "reflection_elf_bytes": 390832,
+  "bitcoin_relay_vkey": "0x00e593b00786fe5d76bd2503f1a21a8d1b4c97779672dc51d3413bbbb4c86bd9",
   "guest_state": "Settle guest (cxfer-guest, 0x00bb82ef): gen-1 op set + OP_SWAP + OP_LP_ADD/REMOVE + OP_OTC (2-party direct swap) + OP_BID (buyer-offline partial-fill bid) + the metadata-CID AssetMeta field (attest_meta now binds an IPFS contractURI cid). Swap/LP/OTC/BID amounts bound by opening sigmas (the settle prover never learns r). Reflection prover (reflection-prover, 0x0099e1c7): FULL SCAN — walks every tx of every block (tx-set merkle-complete) and every vin against the handed live UTXO set, commits bitcoinPrevHash+bitcoinTipHash for the contract relay anchor. Reflection F1-F4 (header anchor / self-declared difficulty / confirmation depth / spent-set completeness) are CLOSED and PROVEN on-chain (full-scan genesis 0xec719b81 three-way pinned). Both rebuilt from the current source and GPU-re-proven on the box; all 7 real-proof fixtures (confidential/swap/lp/otc/bid/crosslane settle + reflection) re-proven against these ELFs in one cycle. Lineage: settle 0x00d0fb85->0x00bb82ef, reflection 0x0050d656->0x0099e1c7."
 }

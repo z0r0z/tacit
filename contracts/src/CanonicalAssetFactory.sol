@@ -28,26 +28,38 @@ contract CanonicalAssetFactory {
     bytes public constant ETCH_TAG = "tacit-evm-etch-v1";
 
     /// @dev deploy slot => canonical ERC20 (0 if unset). The slot binds the backing
-    ///      authority (`minter`) and the metadata (`symbol`, `decimals`) alongside the
-    ///      asset id, so the canonical address is specific to a given minter + metadata
-    ///      rather than the asset id alone.
+    ///      authority (`minter`) and the FULL metadata (`symbol`, `decimals`, `cid`)
+    ///      alongside the asset id, so the canonical address is specific to a given
+    ///      minter + metadata rather than the asset id alone. `cid` is in the slot so a
+    ///      token pre-deployed with a different metadata cid lands at a DIFFERENT address
+    ///      and can never shadow the etch-proven one (the cid is bound into asset_id, so
+    ///      the legitimate cid is determined by the id — the address stays predictable for
+    ///      it, while any wrong-cid pre-deploy is harmless).
     mapping(bytes32 => address) internal _token;
 
-    function _slot(bytes32 assetId, address minter, string memory symbol_, uint8 decimals_)
+    function _slot(bytes32 assetId, address minter, string memory symbol_, uint8 decimals_, bytes32 cid)
         internal
         pure
         returns (bytes32)
     {
-        return keccak256(abi.encode(assetId, minter, symbol_, decimals_));
+        return keccak256(abi.encode(assetId, minter, symbol_, decimals_, cid));
     }
 
-    /// @notice The canonical ERC20 for (assetId, minter, symbol, decimals), or 0 if unset.
+    /// @notice The canonical ERC20 for (assetId, minter, symbol, decimals, cid), or 0 if unset.
+    function tokenOf(bytes32 assetId, address minter, string calldata symbol_, uint8 decimals_, bytes32 cid)
+        external
+        view
+        returns (address)
+    {
+        return _token[_slot(assetId, minter, symbol_, decimals_, cid)];
+    }
+
     function tokenOf(bytes32 assetId, address minter, string calldata symbol_, uint8 decimals_)
         external
         view
         returns (address)
     {
-        return _token[_slot(assetId, minter, symbol_, decimals_)];
+        return _token[_slot(assetId, minter, symbol_, decimals_, bytes32(0))];
     }
 
     /// @dev Deploy-time parameters read back by the ERC20 constructor (so its init code
@@ -109,19 +121,28 @@ contract CanonicalAssetFactory {
         return assetId == deriveAssetId(etcher, salt, symbol_, decimals_, cid);
     }
 
-    /// @notice The CREATE2 address for (assetId, minter, symbol, decimals) — a pure
+    /// @notice The CREATE2 address for (assetId, minter, symbol, decimals, cid) — a pure
     ///         function of those (constant init code), so it is knowable before the token
     ///         is deployed. The metadata + backing authority are deterministic-to-real for
     ///         a canonical asset, so the address stays predictable and is specific to that
-    ///         (minter, metadata) pair.
-    function predict(bytes32 assetId, address minter, string calldata symbol_, uint8 decimals_)
+    ///         (minter, metadata) tuple — `cid` included, so no wrong-cid pre-deploy can
+    ///         shadow the canonical address.
+    function predict(bytes32 assetId, address minter, string calldata symbol_, uint8 decimals_, bytes32 cid)
         public
         view
         returns (address)
     {
         bytes32 initHash = keccak256(type(CanonicalBridgedERC20).creationCode);
-        bytes32 salt = _slot(assetId, minter, symbol_, decimals_);
+        bytes32 salt = _slot(assetId, minter, symbol_, decimals_, cid);
         return address(uint160(uint256(keccak256(abi.encodePacked(bytes1(0xff), address(this), salt, initHash)))));
+    }
+
+    function predict(bytes32 assetId, address minter, string calldata symbol_, uint8 decimals_)
+        public
+        view
+        returns (address)
+    {
+        return predict(assetId, minter, symbol_, decimals_, bytes32(0));
     }
 
     /// @notice Etch an EVM-native canonical asset: the id is DERIVED from the metadata,
@@ -185,7 +206,7 @@ contract CanonicalAssetFactory {
         internal
         returns (address token)
     {
-        bytes32 slot = _slot(assetId, minter, symbol_, decimals_);
+        bytes32 slot = _slot(assetId, minter, symbol_, decimals_, cid);
         if (_token[slot] != address(0)) revert AlreadyDeployed();
         _params = DeployParams(assetId, minter, symbol_, decimals_, cid);
         token = address(new CanonicalBridgedERC20{salt: slot}());

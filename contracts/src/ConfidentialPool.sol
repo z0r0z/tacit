@@ -20,7 +20,7 @@ interface IMintBurn {
 /// deploy a Tacit asset's public ERC20 on first registration. `CanonicalAssetFactory`
 /// implements this.
 interface ICanonicalAssetFactory {
-    function tokenOf(bytes32 assetId, address minter, string calldata symbol_, uint8 decimals_)
+    function tokenOf(bytes32 assetId, address minter, string calldata symbol_, uint8 decimals_, bytes32 cid)
         external
         view
         returns (address);
@@ -299,6 +299,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     error MemoLeafMismatch();
     error BurnAlreadyMinted();
     error CrossOutClaimMismatch();
+    error BridgeBurnNotEthHomed();
     error UnknownBitcoinRoot();
     error StaleBitcoinSpentRoot();
     error PoolNotMinter();
@@ -681,6 +682,15 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         // re-spend on Ethereum a note already spent on Bitcoin. The reflection prover
         // seeds a non-zero empty-IMT sentinel, so a legitimate spent root is never 0.
         if (btcHomed && (pv.bitcoinSpentRoot == bytes32(0) || pv.bitcoinSpentRoot != knownBitcoinSpentRoot)) revert StaleBitcoinSpentRoot();
+        // A bridge_burn (crossOut) emits an authoritative, one-per-claimId instruction to MINT a
+        // note on Bitcoin, while the spent input is nullified ONLY in the Ethereum set. The reflection
+        // prover reflects Bitcoin spends → Ethereum, never the reverse, so an Ethereum nullification is
+        // never seen on Bitcoin. If the burned note were Bitcoin-homed (membership proven against a
+        // knownBitcoinRoot), its original Bitcoin UTXO would stay live + spendable on Bitcoin while the
+        // crossOut mints a fresh equal-value Bitcoin note — value duplication, no race/reorg needed. A
+        // bridge_burn MUST therefore originate from an Ethereum-homed note; the contract sees the home
+        // lane (the guest sees only the root bytes), so reject btcHomed + crossOuts here.
+        if (btcHomed && pv.crossOuts.length != 0) revert BridgeBurnNotEthHomed();
         // bridge_mint authorizes a mint on the burned note's MEMBERSHIP in the dedicated
         // bridge-burn set, pinned to the CURRENT reflected root. A non-zero burn root must
         // be current; and whenever a bridge_mint is present (bitcoinBurnsConsumed non-empty)
@@ -808,17 +818,33 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         if (address(CANONICAL_FACTORY) == address(0)) return; // not wired
         if (m.decimals > ETH_DECIMALS || m.tickerLen == 0 || m.tickerLen > 16) return;
         string memory symbol_ = string(_sliceTicker(m.ticker, m.tickerLen));
-        address token = CANONICAL_FACTORY.tokenOf(m.assetId, address(this), symbol_, ETH_DECIMALS);
+        // The factory address binds `m.cid` into the salt, so a token pre-deployed with a
+        // different cid lands at a different address and is never resolved here — the
+        // adopted token always carries the etch-proven cid (trustless contractURI).
+        address token = CANONICAL_FACTORY.tokenOf(m.assetId, address(this), symbol_, ETH_DECIMALS, m.cid);
         if (token == address(0)) {
             // m.cid = the etch's IPFS metadata content hash (logo/description JSON); the asset_id
             // binds it (txid → envelope), so the token's contractURI is trustless. 0 ⇒ no metadata.
             token = CANONICAL_FACTORY.deployCanonical(m.assetId, address(this), symbol_, ETH_DECIMALS, m.cid);
         }
         bytes32 internalId = sha256(abi.encodePacked("tacit-evm-token-v1", uint64(block.chainid), token));
-        if (assets[internalId].registered) return; // already registered
         if (localAssetOf[m.assetId] != bytes32(0)) return; // shared id already linked
-        if (IMintBurn(token).MINTER() != address(this)) return; // not our token
         uint256 unitScale = 10 ** uint256(ETH_DECIMALS - m.decimals);
+        if (assets[internalId].registered) {
+            // The canonical token already has a LOCAL registry entry (e.g. a permissionless
+            // registerMinted squat of this exact token, which sets no cross-chain link). That must
+            // not strand the bridged shared id: adopt the GUEST-PROVEN scale (the authoritative one)
+            // and HEAL the link so a bridged unwrap resolves. The token is salt-bound to
+            // (m.assetId, pool, symbol, 18, m.cid), so it IS the canonical token. Overwriting the
+            // scale cannot enable a scale-poison drain: a pool-minted asset has NO escrow and the
+            // canonical ERC20 is pool-minted, so a squatter holds zero balance and could not have
+            // wrapped (or pool-funded) any note — there is no outstanding value at the old scale.
+            assets[internalId].unitScale = unitScale;
+            assets[internalId].crossChainLink = m.assetId;
+            localAssetOf[m.assetId] = internalId;
+            return;
+        }
+        if (IMintBurn(token).MINTER() != address(this)) return; // not our token
         _register(token, unitScale, m.assetId, true, "Tacit Token", symbol_, ETH_DECIMALS);
     }
 
