@@ -31,6 +31,7 @@ const OP_ATTEST_META: u8 = 5; // etch reveal → prove (asset_id, ticker, decima
 const OP_SWAP: u8 = 6; // confidential AMM batch: hidden-amount swaps against public pool reserves
 const OP_LP_ADD: u8 = 7; // confidential LP: add liquidity in-ratio, mint a shielded LP-share note
 const OP_LP_REMOVE: u8 = 8; // confidential LP: burn a shielded LP-share note, withdraw the underlying
+const OP_OTC: u8 = 9; // confidential OTC: 2-party direct swap of shielded notes (no pool)
 
 const SWAP_DIR_A_TO_B: u8 = 0;
 const SWAP_DIR_B_TO_A: u8 = 1;
@@ -625,6 +626,124 @@ pub fn main() {
                     reserveAPre: U256::from(r_a_pre), reserveBPre: U256::from(r_b_pre), sharesPre: U256::from(shares_pre),
                     reserveAPost: U256::from((ra - da) as u64), reserveBPost: U256::from((rb - db) as u64), sharesPost: U256::from((sp - ds) as u64),
                 });
+            }
+            OP_OTC => {
+                // Direct 2-party confidential swap (no pool / no price curve): the MAKER gives
+                // `v_a` of asset_a and receives `v_b` of asset_b; the TAKER gives `v_b` of asset_b
+                // and receives `v_a` of asset_a. Atomic — one op = one proof = all-or-nothing. Each
+                // note is bound by an opening sigma under a SHARED intent context (both assets, both
+                // amounts, every touched note + its owner), so the settle prover can neither redirect
+                // an output (the receiving owner is in the context) nor re-price the trade — the OTC
+                // analog of OP_SWAP's binding. Per-asset conservation ties each party's spent input to
+                // the counterparty's received note + that party's own change. Amounts are prover-
+                // visible (the matcher) but kept out of PublicValues; only ν + leaves are committed.
+                let asset_a = r32();
+                let asset_b = r32();
+                let v_a: u64 = io::read();
+                let v_b: u64 = io::read();
+                assert!(v_a > 0 && v_b > 0, "otc: zero amount");
+                assert!(asset_a != asset_b, "otc: same asset");
+                let maker_owner = r32();
+                let taker_owner = r32();
+
+                // ---- Maker input (asset_a): membership + ν + cross-lane gate ----
+                let (m_in_cx, m_in_cy, m_in_pt) = r_commitment();
+                let m_in_index: u64 = io::read();
+                let m_in_path = r_path();
+                let m_in_lf = leaf(&asset_a, &m_in_cx, &m_in_cy, &maker_owner);
+                assert!(spend_root != [0u8; 32], "otc: membership requires a non-zero spend root");
+                assert!(keccak_merkle_verify(&m_in_lf, m_in_index, &m_in_path, &spend_root), "otc: maker membership");
+                let m_nu = nullifier(&m_in_cx, &m_in_cy);
+                if bitcoin_spent_root != [0u8; 32] { check_btc_nonmembership(&m_nu, &bitcoin_spent_root); }
+                let m_in_amount: u64 = io::read();
+                let m_in_sig_r = decompress(&r33()).expect("otc: maker-in R");
+                let m_in_sig_z = scalar_reduce_be(&r32());
+                // Maker change (asset_a), optional (value = m_in_amount - v_a).
+                let m_has_change: u8 = io::read();
+                let m_change = if m_has_change == 1 {
+                    let (cx, cy, pt) = r_commitment();
+                    let sr = decompress(&r33()).expect("otc: maker-change R");
+                    let sz = scalar_reduce_be(&r32());
+                    Some((cx, cy, pt, sr, sz))
+                } else { None };
+                // Maker received (asset_b, value v_b).
+                let (m_rv_cx, m_rv_cy, m_rv_pt) = r_commitment();
+                let m_rv_sig_r = decompress(&r33()).expect("otc: maker-recv R");
+                let m_rv_sig_z = scalar_reduce_be(&r32());
+
+                // ---- Taker input (asset_b): membership + ν + cross-lane gate ----
+                let (t_in_cx, t_in_cy, t_in_pt) = r_commitment();
+                let t_in_index: u64 = io::read();
+                let t_in_path = r_path();
+                let t_in_lf = leaf(&asset_b, &t_in_cx, &t_in_cy, &taker_owner);
+                assert!(keccak_merkle_verify(&t_in_lf, t_in_index, &t_in_path, &spend_root), "otc: taker membership");
+                let t_nu = nullifier(&t_in_cx, &t_in_cy);
+                if bitcoin_spent_root != [0u8; 32] { check_btc_nonmembership(&t_nu, &bitcoin_spent_root); }
+                let t_in_amount: u64 = io::read();
+                let t_in_sig_r = decompress(&r33()).expect("otc: taker-in R");
+                let t_in_sig_z = scalar_reduce_be(&r32());
+                // Taker change (asset_b), optional (value = t_in_amount - v_b).
+                let t_has_change: u8 = io::read();
+                let t_change = if t_has_change == 1 {
+                    let (cx, cy, pt) = r_commitment();
+                    let sr = decompress(&r33()).expect("otc: taker-change R");
+                    let sz = scalar_reduce_be(&r32());
+                    Some((cx, cy, pt, sr, sz))
+                } else { None };
+                // Taker received (asset_a, value v_a).
+                let (t_rv_cx, t_rv_cy, t_rv_pt) = r_commitment();
+                let t_rv_sig_r = decompress(&r33()).expect("otc: taker-recv R");
+                let t_rv_sig_z = scalar_reduce_be(&r32());
+
+                // ---- Shared intent context: every touched note + owner + both amounts ----
+                let mut ctx_notes: Vec<([u8; 32], [u8; 32], [u8; 32])> =
+                    vec![(m_in_cx, m_in_cy, maker_owner)];
+                if let Some((cx, cy, _, _, _)) = m_change { ctx_notes.push((cx, cy, maker_owner)); }
+                ctx_notes.push((m_rv_cx, m_rv_cy, maker_owner));
+                ctx_notes.push((t_in_cx, t_in_cy, taker_owner));
+                if let Some((cx, cy, _, _, _)) = t_change { ctx_notes.push((cx, cy, taker_owner)); }
+                ctx_notes.push((t_rv_cx, t_rv_cy, taker_owner));
+                let ctx = intent_context(
+                    b"tacit-otc-intent-v1", &chain_binding, &asset_a, &asset_b,
+                    &ctx_notes, &[v_a, v_b],
+                );
+
+                // ---- Authorizations: each party's input opens (proving the spend is theirs) and
+                //      each output opens to its bound amount (no redirect / no re-price) ----
+                assert!(verify_opening_sigma(&m_in_pt, m_in_amount, &m_in_sig_r, &m_in_sig_z, &ctx), "otc: maker-in opening");
+                assert!(verify_opening_sigma(&t_in_pt, t_in_amount, &t_in_sig_r, &t_in_sig_z, &ctx), "otc: taker-in opening");
+                assert!(verify_opening_sigma(&m_rv_pt, v_b, &m_rv_sig_r, &m_rv_sig_z, &ctx), "otc: maker-recv opening");
+                assert!(verify_opening_sigma(&t_rv_pt, v_a, &t_rv_sig_r, &t_rv_sig_z, &ctx), "otc: taker-recv opening");
+
+                // ---- Per-asset conservation (u128 sums; canonical change form) ----
+                let change_a: u64 = match m_change {
+                    Some((_, _, pt, sr, sz)) => {
+                        assert!(m_in_amount > v_a, "otc: maker change requires input > give");
+                        let c = m_in_amount - v_a;
+                        assert!(verify_opening_sigma(&pt, c, &sr, &sz, &ctx), "otc: maker-change opening");
+                        c
+                    }
+                    None => { assert!(m_in_amount == v_a, "otc: maker exact input required without change"); 0 }
+                };
+                let change_b: u64 = match t_change {
+                    Some((_, _, pt, sr, sz)) => {
+                        assert!(t_in_amount > v_b, "otc: taker change requires input > give");
+                        let c = t_in_amount - v_b;
+                        assert!(verify_opening_sigma(&pt, c, &sr, &sz, &ctx), "otc: taker-change opening");
+                        c
+                    }
+                    None => { assert!(t_in_amount == v_b, "otc: taker exact input required without change"); 0 }
+                };
+                assert!(m_in_amount as u128 == v_a as u128 + change_a as u128, "otc: asset_a conservation");
+                assert!(t_in_amount as u128 == v_b as u128 + change_b as u128, "otc: asset_b conservation");
+
+                // ---- Emit ν + leaves (fixed order; client + memos mirror it) ----
+                nullifiers.push(m_nu);
+                nullifiers.push(t_nu);
+                leaves.push(leaf(&asset_a, &t_rv_cx, &t_rv_cy, &taker_owner)); // taker receives asset_a (v_a)
+                leaves.push(leaf(&asset_b, &m_rv_cx, &m_rv_cy, &maker_owner)); // maker receives asset_b (v_b)
+                if let Some((cx, cy, _, _, _)) = m_change { leaves.push(leaf(&asset_a, &cx, &cy, &maker_owner)); }
+                if let Some((cx, cy, _, _, _)) = t_change { leaves.push(leaf(&asset_b, &cx, &cy, &taker_owner)); }
             }
             _ => panic!("unknown op type"),
         }

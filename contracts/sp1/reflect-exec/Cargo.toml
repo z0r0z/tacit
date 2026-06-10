@@ -15,5 +15,13 @@ hex = "0.4"
 name = "reflect-execute"
 path = "src/main.rs"
 
+# Local execute-mode validator for the OP_OTC settle guest: serializes fixtures/otc_op.json in the
+# guest's io::read order (same as exec-otc.rs) and executes the locally-built cxfer-guest ELF — a
+# clean run (no panic) proves the guest ACCEPTS the witness (every membership/sigma/conservation
+# assert held in-zkVM), validating both the op logic and the byte serialization without a GPU proof.
+[[bin]]
+name = "otc-execute"
+path = "src/otc_execute.rs"
+
 [profile.release]
 overflow-checks = true
