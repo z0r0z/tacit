@@ -246,9 +246,14 @@ bounds.
   (`0x0099e1c7…`) is the full-scan model (F4 completeness closed) BUT folds CXFER outputs into
   `bitcoinPoolRoot` with **no value-conservation check** — a confirmed Bitcoin tx spending no pool
   UTXO can inject a phantom inflated note → drain on the Ethereum cross-lane. The fix
-  (`verify_cxfer_conservation` in `fold_cxfer`, + regression) is in source; **BRIDGE must not
-  activate until the corrected guest is GPU-re-proven + re-pinned** (gate layer 9 denylists this
-  vkey). Beyond that, the residual is operational: deep reorg + relay liveness + the
+  (`verify_cxfer_conservation` in `fold_cxfer`, + regression) is in source; BRIDGE must not activate
+  until the corrected guest is GPU-re-proven + re-pinned (gate layer 9 is a fail-closed allowlist).
+  **RESOLVED in the working tree (2026-06-10):** the corrected re-prove landed (reflection
+  `0x00e593b0`) and is **confirmed conservation-enforcing** by a reflect-exec negative test over the
+  pinned ELF — the guest SKIPS a non-conserving CXFER (0 inputs vs its kernel) and folds only the
+  conserving control (reproducing the on-chain digest); `0x00e593b0` is allowlisted. Worker liveness
+  mirror: `dapp verifyCxferConservation` (`tests/confidential-reflection-conservation.mjs`). Residual
+  is operational: commit the re-prove artifacts, deep reorg + relay liveness + the
   `ACK_REFLECTION_ANCHORED` deploy gate.
 - **Reflection + settle relays not yet running continuously** — cross-chain is interim-trusted until
   they are; the contract verification is independent of the relay's honesty (the relay only relays a

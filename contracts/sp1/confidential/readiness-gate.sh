@@ -184,7 +184,13 @@ fi
 # NEGATIVE test showing THIS pinned ELF rejects/skips a non-conserving CXFER (not just that a
 # conserving one verifies). Add a vkey below only with that evidence; the empty default fails closed.
 #   Known-UNSOUND (never confirm): 0x0050d656 (anchor/F4-open), 0x0099e1c7 (REFLECT-1 unconserved fold).
-CONFIRMED_SOUND_REFL_VKEYS=""   # e.g. "0x<vkey>"  — add ONLY with a negative-test proof of conservation
+#
+# CONFIRMED 0x00e593b0 (2026-06-10): the negative test (tests/gen-reflection-nonconserve.mjs →
+# contracts/sp1/reflect-exec over the PINNED ELF) EXECUTE_OK — the guest SKIPS a non-conserving CXFER
+# (Σ C_in = 0 vs a multi-input kernel) instead of reading its output witnesses; the conserving
+# control folds + reproduces the on-chain digest 0x240a843d. So this ELF defeats the REFLECT-1
+# attack (no-input inflated note). Re-confirm before re-adding after any reflection re-prove.
+CONFIRMED_SOUND_REFL_VKEYS="0x00e593b00786fe5d76bd2503f1a21a8d1b4c97779672dc51d3413bbbb4c86bd9"
 refl_confirmed=0
 for v in $CONFIRMED_SOUND_REFL_VKEYS; do [ "$RPIN_VKEY" = "$v" ] && refl_confirmed=1; done
 if [ "$refl_confirmed" = 1 ]; then

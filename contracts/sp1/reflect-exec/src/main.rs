@@ -7,7 +7,9 @@
 //   cargo run --release --bin reflect-execute -- <reflection_input.json> [expectedNewDigest]
 use sp1_sdk::{blocking::{ProverClient, Prover}, SP1Stdin, Elf};
 
-const ELF: &[u8] = include_bytes!("/Users/z/tacit/contracts/sp1/confidential/target/elf-compilation/riscv64im-succinct-zkvm-elf/release/reflection-prover");
+// The PINNED canonical reflection ELF (elf-vkey-pin.json bitcoin_relay_vkey), NOT a local rebuild —
+// so this validates the exact box-built guest a deploy runs, free of ELF drift.
+const ELF: &[u8] = include_bytes!("/Users/z/tacit/contracts/sp1/confidential/elf/reflection-prover");
 
 fn hexv(s: &str) -> Vec<u8> { hex::decode(s.trim_start_matches("0x")).unwrap() }
 fn r32(s: &mut SP1Stdin, v: &serde_json::Value) { s.write(&hexv(v.as_str().unwrap())); }
