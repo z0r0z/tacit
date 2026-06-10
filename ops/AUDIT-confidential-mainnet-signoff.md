@@ -109,8 +109,10 @@ and the deploy coherence guards enforce this. **Audit the source** (`main.rs` + 
 `reflect.rs`); the committed ELF is the canonical build of exactly that source. *The current op set
 (`OP_OTC`/`OP_BID`, the metadata-CID `AssetMeta` field, and the reflection full-scan) is GPU-re-proven:
 the pinned vkeys are settle `0x00bb82ef…` / reflection `0x0099e1c7…`, and all 7 `*ProofReal` fixtures
-verify a real Groth16 of these ELFs on-chain. The remaining step before production is the Sepolia/
-mainnet redeploy at the pinned vkey.*
+verify a real Groth16 of these ELFs on-chain. **The settle guest (`0x00bb82ef`) is sound. The pinned
+reflection guest (`0x0099e1c7`) carries REFLECT-1 (§7, fund-critical) — a corrected re-prove is
+required before BRIDGE can activate; the settle ELF re-pins mechanically when the shared cxfer-core
+fix lands.***
 
 ---
 
@@ -240,10 +242,14 @@ bounds.
   window. The genesis checkpoint is a deployer-set, independently-verifiable trusted seed.
 - **Deep reorg** beyond `REFLECTION_FINALITY_WINDOW` — accept-and-document (as on the tETH bridge /
   AMM); a sub-window reorg is tolerated by the ancestor walk.
-- **F4 full-scan — CLOSED + proven.** The pinned reflection vkey (`0x0099e1c7…`) is the full-scan
-  model (every tx of every block + every vin against the handed live set); its real Groth16 verifies
-  on-chain (`ConfidentialReflectionProofReal`). The cross-lane gate is sound, not caveated. The
-  deploy keeps the `ACK_REFLECTION_ANCHORED` gate for the operational (deep-reorg / liveness) posture.
+- **REFLECT-1 (FUND-CRITICAL, BRIDGE) — open in the pinned guest.** The pinned reflection vkey
+  (`0x0099e1c7…`) is the full-scan model (F4 completeness closed) BUT folds CXFER outputs into
+  `bitcoinPoolRoot` with **no value-conservation check** — a confirmed Bitcoin tx spending no pool
+  UTXO can inject a phantom inflated note → drain on the Ethereum cross-lane. The fix
+  (`verify_cxfer_conservation` in `fold_cxfer`, + regression) is in source; **BRIDGE must not
+  activate until the corrected guest is GPU-re-proven + re-pinned** (gate layer 9 denylists this
+  vkey). Beyond that, the residual is operational: deep reorg + relay liveness + the
+  `ACK_REFLECTION_ANCHORED` deploy gate.
 - **Reflection + settle relays not yet running continuously** — cross-chain is interim-trusted until
   they are; the contract verification is independent of the relay's honesty (the relay only relays a
   proof the contract checks).
@@ -275,8 +281,9 @@ cd contracts/sp1/reflect-exec && cargo run --release --bin otc-execute   # and b
 
 The readiness gate is the operational sign-off harness: a green `POOL` verdict + a coherent
 vkey/ELF pin + all `*ProofReal` suites passing is the on-chain-soundness bar; `BRIDGE` adds the
-cross-chain gates. Both currently report **READY** (9/9 PASS, 0 BLOCKED). Treat a `FAIL` as a
-regression; a `BLOCKED` gate is a tracked milestone, not a pass.
+cross-chain gates. **`POOL` currently reports READY; `BRIDGE` reports NOT READY** — gate layer 9
+blocks on REFLECT-1 (§7): the pinned reflection guest `0x0099e1c7` is unsound until the corrected
+re-prove repins. Treat a `FAIL` as a regression; a `BLOCKED` gate is a tracked milestone, not a pass.
 
 ---
 

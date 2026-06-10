@@ -167,20 +167,26 @@ else
     "full-scan reflection indexer not built (dapp/confidential-reflection-scan-indexer.js absent)"
 fi
 
-# ── BRIDGE layer 9: F4 spent-set completeness (full-scan re-prove landed) ────
-# The pinned reflection proof (vkey 0x0050d656…) is the relay-ANCHOR model (F1/F2/F3): it folds
-# witnessed effects, so a relayer could omit a Bitcoin spend → the cross-lane non-membership gate
-# carries the F4 caveat. The full-scan guest (every-tx/every-vin, no omission) is built in source +
-# JS indexer + the signet-307547 input fixture, but its GPU re-prove is the remaining box step —
-# it will REPLACE 0x0050d656 with a new vkey + refresh reflection_groth16.json. So this gate stays
-# BLOCKED while the pinned reflection vkey is still the anchor-model marker; it auto-clears when the
-# re-prove repins. (BLOCKED is an expected-pending milestone, not a regression — it does not fail.)
-F4_ANCHOR_VKEY="0x0050d656e9d421d5c75724e17dff0ba83e44813691101b75a96ff42d4aa41d49"
-if [ "$RPIN_VKEY" = "$F4_ANCHOR_VKEY" ]; then
-  block_gate "F4 spent-set completeness (full-scan re-prove)" BRIDGE \
-    "pinned reflection vkey is still the witnessed-anchor model ($F4_ANCHOR_VKEY) — cross-lane carries the F4 omission caveat until the full-scan guest is GPU-re-proven + re-pinned (box step; see elf-vkey-pin.json guest_state + RUNBOOK-confidential-pool-readiness.md)"
+# ── BRIDGE layer 9: reflection guest soundness (denylist of known-unsound vkeys) ────
+# The gate verifies coherence + that a real Groth16 verifies — it CANNOT see an in-guest logic bug
+# (the contract sees only hashes). Two known-unsound reflection guests must NOT be the pinned model:
+#   0x0050d656 — relay-ANCHOR / witnessed-effects (F4 OPEN: a relayer can omit a Bitcoin spend).
+#   0x0099e1c7 — full-scan BUT folds CXFER outputs into bitcoinPoolRoot with NO value-conservation
+#                check (REFLECT-1, FUND-CRITICAL: a confirmed Bitcoin tx spending no pool UTXO can
+#                inject a phantom inflated note → drain on the Ethereum cross-lane). The fix
+#                (cxfer-core verify_cxfer_conservation = cxfer_kernel_verify(burned=0) + verify_range,
+#                run by ScanReflection::fold_cxfer; regression reflection_cxfer_fold_rejects_
+#                nonconserving_outputs) is in source — the corrected GPU re-prove repins a NEW vkey.
+# BLOCK while the pinned reflection vkey is either; auto-clears on the corrected re-prove. (The
+# cxfer-core regression in gate layer 2 is the structural source-side catch.)
+UNSOUND_REFL_VKEYS="0x0050d656e9d421d5c75724e17dff0ba83e44813691101b75a96ff42d4aa41d49 0x0099e1c7809eb9ec4303f17a96ec5f6b4ee59a14898bf84df276ee2383588648"
+refl_unsound=0
+for v in $UNSOUND_REFL_VKEYS; do [ "$RPIN_VKEY" = "$v" ] && refl_unsound=1; done
+if [ "$refl_unsound" = 1 ]; then
+  block_gate "Reflection guest soundness (REFLECT-1 + F4)" BRIDGE \
+    "pinned reflection vkey ($RPIN_VKEY) is a KNOWN-UNSOUND build — 0x0099e1c7 carries REFLECT-1 (CXFER fold has no value-conservation check, a fund-critical inflation path); the fix is in source (verify_cxfer_conservation / fold_cxfer + regression), awaiting the corrected GPU re-prove + re-pin. BRIDGE must NOT activate until then. See RUNBOOK-confidential-pool-readiness.md + the cxfer-core regression."
 else
-  run_gate "F4 spent-set completeness (full-scan re-prove landed)" BRIDGE \
+  run_gate "Reflection guest soundness (REFLECT-1 + F4 closed)" BRIDGE \
     test -n "$RPIN_VKEY"
 fi
 
