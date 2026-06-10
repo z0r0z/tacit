@@ -61,7 +61,7 @@ one confidential, cross-chain system. Companion to the per-piece plans
   bridge_mint / attest_meta / swap / lp_add / lp_remove) + the cross-lane non-membership gate
   — wrapped to **Groth16**, verified on-chain (~250k gas). SP1's verifier is universal → **no
   new trusted setup** when the guest changes (only a re-prove). Canonical guest vkey is the
-  committed pin `0x00d0fb85…` (`contracts/sp1/confidential/elf-vkey-pin.json`; the five
+  committed pin `0x00bb82ef…` (`contracts/sp1/confidential/elf-vkey-pin.json`; the five
   `*ProofReal` fixtures verify a real Groth16 of this exact ELF on-chain). The live pool's
   `PROGRAM_VKEY` **must equal this pin** — a deployment carrying any superseded vkey
   (`0x0063293d` / `0x00b3ebb4` / `0x00f02859` / `0x00bc5661` / `0x00cc4e72`) cannot verify the box's

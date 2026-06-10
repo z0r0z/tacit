@@ -106,10 +106,11 @@ CREATE2'd by the factory on demand. Live pilot: Sepolia `ConfidentialPool`
 `elf-vkey-pin.json.program_vkey`, which MUST equal the vkey every settle `*ProofReal` fixture
 verifies against, which MUST be the vkey of the committed `elf/cxfer-guest`. `verify-vkey-pin.sh`
 and the deploy coherence guards enforce this. **Audit the source** (`main.rs` + `cxfer-core` +
-`reflect.rs`); the production deploy pins the canonical ELF built from exactly that source. *A
-re-prove for the current op set (which added `OP_OTC`/`OP_BID`, the metadata-CID `AssetMeta` field,
-and the reflection full-scan) is the last mechanical step before the production deploy — it produces
-the canonical ELF + refreshes the fixtures; your review is of the source it is built from.*
+`reflect.rs`); the committed ELF is the canonical build of exactly that source. *The current op set
+(`OP_OTC`/`OP_BID`, the metadata-CID `AssetMeta` field, and the reflection full-scan) is GPU-re-proven:
+the pinned vkeys are settle `0x00bb82ef…` / reflection `0x0099e1c7…`, and all 7 `*ProofReal` fixtures
+verify a real Groth16 of these ELFs on-chain. The remaining step before production is the Sepolia/
+mainnet redeploy at the pinned vkey.*
 
 ---
 
@@ -239,11 +240,10 @@ bounds.
   window. The genesis checkpoint is a deployer-set, independently-verifiable trusted seed.
 - **Deep reorg** beyond `REFLECTION_FINALITY_WINDOW` — accept-and-document (as on the tETH bridge /
   AMM); a sub-window reorg is tolerated by the ancestor walk.
-- **F4 full-scan re-prove pending** — the currently *pinned* reflection vkey is the relay-anchor
-  (witnessed-effects) model; the full-scan guest is implemented + the input fixture built, but its
-  GPU re-prove (which produces the pinned full-scan vkey) is the last step. Until it lands, the
-  cross-lane gate carries the F4 witnessed-omission caveat (bridge_mint is anchor-trustless
-  regardless). Review the full-scan source; the deploy keeps the `ACK_REFLECTION_ANCHORED` gate.
+- **F4 full-scan — CLOSED + proven.** The pinned reflection vkey (`0x0099e1c7…`) is the full-scan
+  model (every tx of every block + every vin against the handed live set); its real Groth16 verifies
+  on-chain (`ConfidentialReflectionProofReal`). The cross-lane gate is sound, not caveated. The
+  deploy keeps the `ACK_REFLECTION_ANCHORED` gate for the operational (deep-reorg / liveness) posture.
 - **Reflection + settle relays not yet running continuously** — cross-chain is interim-trusted until
   they are; the contract verification is independent of the relay's honesty (the relay only relays a
   proof the contract checks).
@@ -275,8 +275,8 @@ cd contracts/sp1/reflect-exec && cargo run --release --bin otc-execute   # and b
 
 The readiness gate is the operational sign-off harness: a green `POOL` verdict + a coherent
 vkey/ELF pin + all `*ProofReal` suites passing is the on-chain-soundness bar; `BRIDGE` adds the
-cross-chain gates. Treat a `FAIL` as a regression; a `BLOCKED` gate is a tracked milestone (e.g. the
-F4 re-prove), not a pass.
+cross-chain gates. Both currently report **READY** (9/9 PASS, 0 BLOCKED). Treat a `FAIL` as a
+regression; a `BLOCKED` gate is a tracked milestone, not a pass.
 
 ---
 

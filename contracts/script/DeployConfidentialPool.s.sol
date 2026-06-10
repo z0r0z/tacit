@@ -65,22 +65,20 @@ contract DeployConfidentialPool is Script {
         if (vkey != pinnedVkey) {
             require(vm.envOr("ALLOW_UNPINNED_VKEY", false), "PROGRAM_VKEY != elf-vkey-pin.json program_vkey (set ALLOW_UNPINNED_VKEY=1 only for an intentional guest change)");
         }
-        // Cross-chain activation gate. The reflection header chain IS anchored to canonical Bitcoin:
-        // the guest commits its prev/tip hashes and the pool pins them to HEADER_RELAY.tip() (within a
-        // finality window), forcing the whole proven chain to be canonical — closing the F1/F2/F3
-        // (anchor / self-declared-difficulty / confirmation) blockers. The PINNED reflection vkey
-        // (0x0050d656) is this anchor model, so the remaining caveat is F4 (spent-set completeness — a
-        // relayer could omit a witnessed spend); bridge_mint is unaffected (burns are tx-confirmed) but
-        // the cross-lane gate carries the F4 caveat until the full-scan re-prove lands (the full-scan
-        // guest + JS indexer + signet-307547 fixture are built; its GPU re-prove will REPLACE the pinned
-        // vkey + drop this ack). So require (a) BITCOIN_RELAY_VKEY == the pinned reflection vkey, (b) a
-        // wired HEADER_RELAY (also ctor-enforced), (c) the genesis anchor, and (d) an explicit ack that
-        // the F4 cross-lane caveat is understood.
+        // Cross-chain activation gate. Reflection F1-F4 are all CLOSED and PROVEN: the guest commits
+        // its prev/tip hashes and the pool pins them to HEADER_RELAY.tip() within a finality window
+        // (F1/F2/F3 — anchor / self-declared-difficulty / confirmation), and the pinned reflection vkey
+        // (0x0099e1c7) is the FULL-SCAN model — every tx of every block + every vin against the handed
+        // live set, so no pool-note spend can be omitted (F4 — spent-set completeness). The cross-lane
+        // gate is sound. The residual is operational only: a Bitcoin reorg deeper than the finality
+        // window (accept-and-document, as on the tETH bridge / AMM) and the relay running (liveness). So
+        // require (a) BITCOIN_RELAY_VKEY == the pinned reflection vkey, (b) a wired HEADER_RELAY (also
+        // ctor-enforced), (c) the genesis anchor, and (d) an explicit ack of that operational posture.
         if (bitcoinRelayVKey != bytes32(0)) {
             require(bitcoinRelayVKey == vm.parseJsonBytes32(pin, ".bitcoin_relay_vkey"), "BITCOIN_RELAY_VKEY != pinned bitcoin_relay_vkey");
             require(headerRelay != address(0), "set HEADER_RELAY (BitcoinLightRelay) to anchor reflection proofs");
             require(genesisReflectionAnchor != bytes32(0), "set GENESIS_REFLECTION_ANCHOR (the Bitcoin block hash the first reflection batch resumes from) - a zero seed bricks the first attest");
-            require(vm.envOr("ACK_REFLECTION_ANCHORED", false), "F1/F2/F3 closed (relay anchor); the pinned reflection vkey is the witnessed-anchor model - set ACK_REFLECTION_ANCHORED=1 to acknowledge the residual F4 cross-lane completeness caveat (closed by the pending full-scan re-prove)");
+            require(vm.envOr("ACK_REFLECTION_ANCHORED", false), "reflection F1-F4 closed + proven on-chain (relay anchor + full-scan completeness); set ACK_REFLECTION_ANCHORED=1 to acknowledge the residual deep-reorg-beyond-finality + relay-liveness posture");
         }
         // Optional chainid pin: set EXPECTED_CHAIN_ID to fail a wrong-network broadcast.
         uint256 expectedChainId = vm.envOr("EXPECTED_CHAIN_ID", uint256(0));
