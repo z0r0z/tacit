@@ -23,5 +23,10 @@ path = "src/main.rs"
 name = "otc-execute"
 path = "src/otc_execute.rs"
 
+# Same, for OP_BID (fixtures/bid_op.json) — validates the bid guest logic + serialization in-zkVM.
+[[bin]]
+name = "bid-execute"
+path = "src/bid_execute.rs"
+
 [profile.release]
 overflow-checks = true

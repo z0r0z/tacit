@@ -32,6 +32,7 @@ const OP_SWAP: u8 = 6; // confidential AMM batch: hidden-amount swaps against pu
 const OP_LP_ADD: u8 = 7; // confidential LP: add liquidity in-ratio, mint a shielded LP-share note
 const OP_LP_REMOVE: u8 = 8; // confidential LP: burn a shielded LP-share note, withdraw the underlying
 const OP_OTC: u8 = 9; // confidential OTC: 2-party direct swap of shielded notes (no pool)
+const OP_BID: u8 = 10; // confidential partial-fill bid: buyer-offline limit order, seller fills a grid amount
 
 const SWAP_DIR_A_TO_B: u8 = 0;
 const SWAP_DIR_B_TO_A: u8 = 1;
@@ -744,6 +745,135 @@ pub fn main() {
                 leaves.push(leaf(&asset_b, &m_rv_cx, &m_rv_cy, &maker_owner)); // maker receives asset_b (v_b)
                 if let Some((cx, cy, _, _, _)) = m_change { leaves.push(leaf(&asset_a, &cx, &cy, &maker_owner)); }
                 if let Some((cx, cy, _, _, _)) = t_change { leaves.push(leaf(&asset_b, &cx, &cy, &taker_owner)); }
+            }
+            OP_BID => {
+                // Buyer-offline partial-fill bid (confidential limit order; Bitcoin T_PREAUTH_BID_VAR
+                // parity). The buyer pre-funds V_fund = max_fill·price of asset_b and pre-signs, per
+                // grid fill, the openings of its received notes (the filled asset_a + the asset_b
+                // refund) with blindings only it can reproduce, then walks away. A seller picks a grid
+                // `chosen_f`, delivers it of asset_a, receives chosen_f·price of asset_b; the buyer
+                // gets chosen_f of asset_a + (max_fill−chosen_f)·price refunded. The K presig lives
+                // OFF-CHAIN (the published bid) — the witness carries only the chosen fill's openings,
+                // which only the buyer could have produced, so a seller can only fill at a pre-signed
+                // amount and can neither under-deliver nor redirect. No pool state; emits leaves +
+                // nullifiers the contract already applies (no PublicValues change).
+                let asset_a = r32();
+                let asset_b = r32();
+                let min_fill: u64 = io::read();
+                let max_fill: u64 = io::read();
+                let price: u64 = io::read();
+                let increment: u64 = io::read();
+                assert!(min_fill > 0 && price > 0 && increment > 0, "bid: zero term");
+                assert!(max_fill >= min_fill, "bid: max < min");
+                assert!((max_fill - min_fill) % increment == 0, "bid: grid not increment-aligned");
+                assert!(asset_a != asset_b, "bid: same asset");
+                let buyer_owner = r32();
+
+                // Buyer funding note (asset_b, value V_fund): membership + ν + cross-lane gate.
+                let (fund_cx, fund_cy, fund_pt) = r_commitment();
+                let fund_index: u64 = io::read();
+                let fund_path = r_path();
+                let fund_lf = leaf(&asset_b, &fund_cx, &fund_cy, &buyer_owner);
+                assert!(spend_root != [0u8; 32], "bid: membership requires a non-zero spend root");
+                assert!(keccak_merkle_verify(&fund_lf, fund_index, &fund_path, &spend_root), "bid: funding membership");
+                let fund_nu = nullifier(&fund_cx, &fund_cy);
+                if bitcoin_spent_root != [0u8; 32] { check_btc_nonmembership(&fund_nu, &bitcoin_spent_root); }
+                let fund_sig_r = decompress(&r33()).expect("bid: fund R");
+                let fund_sig_z = scalar_reduce_be(&r32());
+
+                // Chosen fill (on the grid) + the buyer's pre-signed received notes for it.
+                let chosen_f: u64 = io::read();
+                assert!(chosen_f >= min_fill && chosen_f <= max_fill, "bid: fill out of range");
+                assert!((chosen_f - min_fill) % increment == 0, "bid: fill off grid");
+                let (ra_cx, ra_cy, ra_pt) = r_commitment(); // buyer receives asset_a (chosen_f)
+                let ra_sig_r = decompress(&r33()).expect("bid: recv-a R");
+                let ra_sig_z = scalar_reduce_be(&r32());
+
+                // Amounts (u128 → u64 guards).
+                let v_fund_u = max_fill as u128 * price as u128;
+                assert!(v_fund_u <= u64::MAX as u128, "bid: V_fund over u64");
+                let v_fund = v_fund_u as u64;
+                let pay = (chosen_f as u128 * price as u128) as u64; // ≤ v_fund
+                let refund = v_fund - pay; // (max_fill − chosen_f)·price
+
+                // Buyer refund (asset_b), present ONLY on a partial fill (refund > 0; a 0-value note
+                // isn't constructible). Full fill (chosen_f == max_fill) ⇒ no refund note.
+                let refund_note = if chosen_f < max_fill {
+                    assert!(refund > 0, "bid: partial fill must refund");
+                    let (cx, cy, pt) = r_commitment();
+                    let sr = decompress(&r33()).expect("bid: refund R");
+                    let sz = scalar_reduce_be(&r32());
+                    Some((cx, cy, pt, sr, sz))
+                } else {
+                    assert!(refund == 0, "bid: full fill has no refund");
+                    None
+                };
+
+                // Seller input (asset_a): membership + ν + cross-lane gate.
+                let (s_in_cx, s_in_cy, s_in_pt) = r_commitment();
+                let s_owner = r32();
+                let s_in_index: u64 = io::read();
+                let s_in_path = r_path();
+                let s_in_lf = leaf(&asset_a, &s_in_cx, &s_in_cy, &s_owner);
+                assert!(keccak_merkle_verify(&s_in_lf, s_in_index, &s_in_path, &spend_root), "bid: seller membership");
+                let s_nu = nullifier(&s_in_cx, &s_in_cy);
+                if bitcoin_spent_root != [0u8; 32] { check_btc_nonmembership(&s_nu, &bitcoin_spent_root); }
+                let s_in_amount: u64 = io::read();
+                let s_in_sig_r = decompress(&r33()).expect("bid: seller-in R");
+                let s_in_sig_z = scalar_reduce_be(&r32());
+                let s_has_change: u8 = io::read();
+                let s_change = if s_has_change == 1 {
+                    let (cx, cy, pt) = r_commitment();
+                    let sr = decompress(&r33()).expect("bid: seller-change R");
+                    let sz = scalar_reduce_be(&r32());
+                    Some((cx, cy, pt, sr, sz))
+                } else { None };
+                // Seller received (asset_b, value pay = chosen_f·price).
+                let (s_rv_cx, s_rv_cy, s_rv_pt) = r_commitment();
+                let s_rv_sig_r = decompress(&r33()).expect("bid: seller-recv R");
+                let s_rv_sig_z = scalar_reduce_be(&r32());
+
+                let s_change_amt: u64 = match s_change {
+                    Some(_) => { assert!(s_in_amount > chosen_f, "bid: seller change requires input > fill"); s_in_amount - chosen_f }
+                    None => { assert!(s_in_amount == chosen_f, "bid: seller exact input required without change"); 0 }
+                };
+
+                // Buyer context: PRE-SIGNED OFFLINE, so it binds only buyer-knowable data (the bid
+                // terms + the buyer's funding/received notes + chosen_f) — never the seller's notes.
+                let mut b_notes: Vec<([u8; 32], [u8; 32], [u8; 32])> =
+                    vec![(fund_cx, fund_cy, buyer_owner), (ra_cx, ra_cy, buyer_owner)];
+                if let Some((cx, cy, _, _, _)) = refund_note { b_notes.push((cx, cy, buyer_owner)); }
+                let buyer_ctx = intent_context(
+                    b"tacit-bid-buyer-v1", &chain_binding, &asset_a, &asset_b,
+                    &b_notes, &[min_fill, max_fill, price, increment, chosen_f],
+                );
+                assert!(verify_opening_sigma(&fund_pt, v_fund, &fund_sig_r, &fund_sig_z, &buyer_ctx), "bid: funding opening");
+                assert!(verify_opening_sigma(&ra_pt, chosen_f, &ra_sig_r, &ra_sig_z, &buyer_ctx), "bid: buyer-recv-a opening");
+                if let Some((_, _, pt, sr, sz)) = refund_note { assert!(verify_opening_sigma(&pt, refund, &sr, &sz, &buyer_ctx), "bid: buyer-refund opening"); }
+
+                // Seller context: the seller is online, so it binds the seller's notes + chosen_f.
+                let mut s_notes: Vec<([u8; 32], [u8; 32], [u8; 32])> =
+                    vec![(s_in_cx, s_in_cy, s_owner), (s_rv_cx, s_rv_cy, s_owner)];
+                if let Some((cx, cy, _, _, _)) = s_change { s_notes.push((cx, cy, s_owner)); }
+                let seller_ctx = intent_context(
+                    b"tacit-bid-seller-v1", &chain_binding, &asset_a, &asset_b,
+                    &s_notes, &[chosen_f, price],
+                );
+                assert!(verify_opening_sigma(&s_in_pt, s_in_amount, &s_in_sig_r, &s_in_sig_z, &seller_ctx), "bid: seller-in opening");
+                assert!(verify_opening_sigma(&s_rv_pt, pay, &s_rv_sig_r, &s_rv_sig_z, &seller_ctx), "bid: seller-recv opening");
+                if let Some((_, _, pt, sr, sz)) = s_change { assert!(verify_opening_sigma(&pt, s_change_amt, &sr, &sz, &seller_ctx), "bid: seller-change opening"); }
+
+                // Per-asset conservation.
+                assert!(v_fund as u128 == pay as u128 + refund as u128, "bid: asset_b conservation");
+                assert!(s_in_amount as u128 == chosen_f as u128 + s_change_amt as u128, "bid: asset_a conservation");
+
+                // Emit ν + leaves (fixed order; client + memos mirror it).
+                nullifiers.push(fund_nu);
+                nullifiers.push(s_nu);
+                leaves.push(leaf(&asset_a, &ra_cx, &ra_cy, &buyer_owner)); // buyer receives asset_a (chosen_f)
+                leaves.push(leaf(&asset_b, &s_rv_cx, &s_rv_cy, &s_owner)); // seller receives asset_b (pay)
+                if let Some((cx, cy, _, _, _)) = refund_note { leaves.push(leaf(&asset_b, &cx, &cy, &buyer_owner)); } // buyer refund
+                if let Some((cx, cy, _, _, _)) = s_change { leaves.push(leaf(&asset_a, &cx, &cy, &s_owner)); } // seller change
             }
             _ => panic!("unknown op type"),
         }
