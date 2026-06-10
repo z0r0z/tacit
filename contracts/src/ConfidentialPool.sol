@@ -68,8 +68,9 @@ interface IRelay {
 ///  per proof; the contract surface here is the batch-size-1 form.
 ///
 ///  Forward-compat for the cross-chain generation (PLAN-confidential-cross-chain):
-///  nullifiers are chain-independent (the guest derives keccak(note_secret); the
-///  proof, not the nullifier, carries the chain binding), leaf hashing matches the
+///  nullifiers are chain-independent (note-bound: keccak(Cx‖Cy‖"spent") — a function of
+///  the commitment, not a free secret (spec B3); the proof, not the nullifier, carries the
+///  chain binding), leaf hashing matches the
 ///  Bitcoin note scheme, the asset registry carries a cross-chain link, and the
 ///  public-values layout is versioned so the cross-chain tail is an append.
 contract ConfidentialPool is ReentrancyGuardTransient {
@@ -223,8 +224,9 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     // txid binds the on-chain envelope's ticker+decimals) — trustless first-mint metadata.
     struct AssetMeta { bytes32 assetId; bytes16 ticker; uint8 tickerLen; uint8 decimals; }
     // A confidential AMM batch settled against a pool (OP_SWAP). The guest proved, per intent,
-    // membership + nullifier + the secp↔BJJ sigma binding + the hidden-amount clearing at the
-    // pool's uniform price + ranges + reserve conservation; the trader notes flow through the
+    // membership + nullifier + the secp opening-sigma binding (a Schnorr PoK of the note blinding
+    // for the public amount — the settle prover never learns r) + the hidden-amount clearing at the
+    // pool's uniform price + reserve conservation; the trader notes flow through the
     // existing nullifiers/leaves. The guest reads the pool's CURRENT public reserves as `*Pre`
     // and computes `*Post` = pre + net deltas (conservation). The contract gates pre == the live
     // reserves (so the guest cleared against the real pool) and sets the reserves to post.
@@ -361,13 +363,11 @@ contract ConfidentialPool is ReentrancyGuardTransient {
 
     // ──────────────────── Asset registry ────────────────────
 
-    /// @notice Register a wrapped ERC-20 as a confidential asset. `unitScale`
-    ///         maps underlying base units to the in-system value unit so a note's
-    ///         value stays within the Bulletproofs+ range; wrap amounts must be a
-    ///         multiple of it. `crossChainLink` ties this asset to its Bitcoin-side
-    ///         id for the cross-chain generation (0 if none).
-    /// @notice Register an EXTERNAL ERC20 (e.g. USDC) as a confidential asset. The
-    ///         pool escrows it on wrap and releases it on unwrap.
+    /// @notice Register an EXTERNAL ERC20 (e.g. USDC) as a confidential asset: the pool
+    ///         escrows it on wrap and releases it on unwrap. `unitScale` maps underlying
+    ///         base units to the in-system value unit (so a note's value stays within the
+    ///         Bulletproofs+ range; wrap amounts must be a multiple of it); `crossChainLink`
+    ///         ties this asset to its Bitcoin-side id for the cross-chain generation (0 if none).
     function registerWrapped(
         address underlying,
         uint256 unitScale,
