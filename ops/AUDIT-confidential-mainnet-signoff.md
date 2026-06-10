@@ -231,6 +231,12 @@ bounds.
 
 - **SP1 verifier trust root** — Succinct's verifier + ceremony; the pool pins the immutable Groth16
   leaf (verify it pins the leaf, not the upgradeable gateway).
+- **`BitcoinLightRelay` is mainnet-specific** — `MAX_TARGET` is mainnet's powLimit, so it validates
+  **mainnet** Bitcoin (signet uses signature-PoW, not difficulty). The BRIDGE-layer reflection must
+  therefore be mainnet; the repo's signet fixtures are prover test vectors, not the live source.
+  Confirm the cross-chain deploy wires a mainnet relay + mainnet reflection. Deep reorgs crossing a
+  retarget boundary are out of scope (global epoch targets), bounded for the pool by the finality
+  window. The genesis checkpoint is a deployer-set, independently-verifiable trusted seed.
 - **Deep reorg** beyond `REFLECTION_FINALITY_WINDOW` — accept-and-document (as on the tETH bridge /
   AMM); a sub-window reorg is tolerated by the ancestor walk.
 - **F4 full-scan re-prove pending** — the currently *pinned* reflection vkey is the relay-anchor
