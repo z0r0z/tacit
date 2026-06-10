@@ -13,10 +13,11 @@ import {CanonicalBridgedERC20} from "./CanonicalBridgedERC20.sol";
 ///         forever after. The factory issues; the `minter` (the pool / bridge / vault)
 ///         backs; the pool makes confidential — clean separation.
 ///
-///         Token `name` is the constant brand `"Tacit Token"`; the only per-asset
-///         metadata is `(symbol, decimals)`, which is deterministic to the real asset —
-///         carried on-chain in the etch envelope. For EVM-native etched assets the asset
-///         id additionally COMMITS to `(symbol, decimals)` via `meta_hash` (per
+///         Token `name` is the constant brand `"Tacit Token"`; the per-asset metadata is
+///         `(symbol, decimals, cid)` — `cid` the IPFS metadata content hash (logo/description
+///         JSON → `contractURI`, 0 = none) — all deterministic to the real asset, carried
+///         on-chain in the etch envelope. For EVM-native etched assets the asset id COMMITS to
+///         `(symbol, decimals, cid)` via `meta_hash` (per
 ///         SPEC-EVM-CONFIDENTIAL-TOKEN-AMENDMENT), so they are canonical by construction:
 ///         `etchCanonical` derives the id from the metadata and `verifyMetadata` lets
 ///         anyone recompute the binding on-chain. For assets whose id comes from elsewhere
