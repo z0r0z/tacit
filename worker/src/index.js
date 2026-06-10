@@ -88,6 +88,7 @@ import { keccak_256 } from '@noble/hashes/sha3';
 import { hexToBytes, bytesToHex, concatBytes } from '@noble/hashes/utils';
 import { bech32, bech32m } from '@scure/base';
 import { buildReflectionAttester } from './reflection-attest.js';
+import { buildConfidentialSettler } from './confidential-settle.js';
 
 secp.etc.hmacSha256Sync = (k, ...m) => hmac(sha256, k, secp.etc.concatBytes(...m));
 
@@ -681,7 +682,11 @@ async function handleProverHealth(env, cors) {
 // Reflection relay: serve the next assembled Bitcoin-state batch for the box to prove. The box
 // (ops/scripts/reflection-relay-loop.sh) proves it, submits attestBitcoinStateProven on-chain, then
 // POSTs /reflection/ack. Returns {} when nothing is pending; 404 when reflection attest is off.
-async function handleReflectionJob(env, url, cors) {
+async function handleReflectionJob(req, env, url, cors) {
+  // Box-only, like the confidential settle routes: /reflection/ack advances the attested
+  // Bitcoin cursor (monotonic, un-rewindable), so an unauthenticated POST could freeze it and
+  // stall every cross-lane / bridge_mint gate. /reflection/job is gated the same for symmetry.
+  if (!checkConfidentialAuth(req, env)) return jsonResponse({ error: 'not found' }, 404, { ...cors, 'Cache-Control': 'no-store' });
   const network = url.searchParams.get('network') === 'signet' ? 'signet' : 'mainnet';
   const att = buildReflectionAttester(env, { deps: { secp, keccak256: keccak_256, sha256 }, api: apiText, network });
   if (!att) return jsonResponse({ error: 'reflection attest not configured' }, 404, { ...cors, 'Cache-Control': 'no-store' });
@@ -690,6 +695,7 @@ async function handleReflectionJob(env, url, cors) {
 }
 
 async function handleReflectionAck(req, env, cors) {
+  if (!checkConfidentialAuth(req, env)) return jsonResponse({ error: 'not found' }, 404, cors);
   let body;
   try { body = await req.json(); } catch { return jsonResponse({ ok: false, error: 'bad json' }, 400, cors); }
   const network = body.network === 'signet' ? 'signet' : 'mainnet';
@@ -697,6 +703,67 @@ async function handleReflectionAck(req, env, cors) {
   if (!att) return jsonResponse({ error: 'reflection attest not configured' }, 404, cors);
   const r = await att.ackJob(Number(body.attestedTo) | 0);
   return jsonResponse({ ok: true, ...r }, 200, cors);
+}
+
+// ===== Confidential settle relay (box-poll prove/settle queue for ConfidentialPool) =====
+// POST /confidential/submit {type, op, memos?, expectedPv?} → enqueue a confidential op (public,
+//      permissionless — a bad witness just fails to prove). GET /confidential/job → the box claims
+//      the next job; POST /confidential/ack {jobId, txHash?|error?} → the box reports the settle
+//      (both box routes gated by CONFIDENTIAL_BOX_TOKEN/DEBUG_TOKEN, default-deny 404). GET
+//      /confidential/status?id= → the dapp polls. Config-gated on CONFIDENTIAL_SETTLE=1.
+function confSettler(env) {
+  if (env.CONFIDENTIAL_SETTLE !== '1') return null;
+  const kv = env.CONFIDENTIAL_KV || env.REGISTRY_KV;
+  if (!kv) return null;
+  const hash = (s) => '0x' + [...keccak_256(new TextEncoder().encode(s))].map((b) => b.toString(16).padStart(2, '0')).join('');
+  return buildConfidentialSettler(env, { hash });
+}
+// Default-deny Bearer gate for the box-only routes (mirrors checkDebugAuth; constant-time compare).
+function checkConfidentialAuth(req, env) {
+  const token = env.CONFIDENTIAL_BOX_TOKEN || env.DEBUG_TOKEN;
+  if (!token || typeof token !== 'string' || token.length < 16) return false;
+  const m = (req.headers.get('Authorization') || '').match(/^Bearer (.+)$/);
+  if (!m) return false;
+  const a = m[1], b = token;
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
+}
+async function handleConfidentialSubmit(req, env, cors) {
+  const q = confSettler(env);
+  if (!q) return jsonResponse({ error: 'confidential settle not configured' }, 404, { ...cors, 'Cache-Control': 'no-store' });
+  let body;
+  try { body = await req.json(); } catch { return jsonResponse({ ok: false, error: 'bad json' }, 400, cors); }
+  try {
+    const r = await q.submitJob({ type: body.type, op: body.op, memos: body.memos, expectedPv: body.expectedPv });
+    return jsonResponse({ ok: true, ...r }, 200, { ...cors, 'Cache-Control': 'no-store' });
+  } catch (e) { return jsonResponse({ ok: false, error: String(e && e.message || e) }, 400, cors); }
+}
+async function handleConfidentialJob(req, env, cors) {
+  const q = confSettler(env);
+  if (!q) return jsonResponse({ error: 'confidential settle not configured' }, 404, { ...cors, 'Cache-Control': 'no-store' });
+  if (!checkConfidentialAuth(req, env)) return jsonResponse({ error: 'not found' }, 404, cors);
+  const job = await q.nextJob();
+  return jsonResponse(job || {}, 200, { ...cors, 'Cache-Control': 'no-store' });
+}
+async function handleConfidentialAck(req, env, cors) {
+  const q = confSettler(env);
+  if (!q) return jsonResponse({ error: 'confidential settle not configured' }, 404, cors);
+  if (!checkConfidentialAuth(req, env)) return jsonResponse({ error: 'not found' }, 404, cors);
+  let body;
+  try { body = await req.json(); } catch { return jsonResponse({ ok: false, error: 'bad json' }, 400, cors); }
+  if (!body.jobId) return jsonResponse({ ok: false, error: 'jobId required' }, 400, cors);
+  const r = await q.ackJob(String(body.jobId), { txHash: body.txHash, error: body.error });
+  return jsonResponse(r, 200, cors);
+}
+async function handleConfidentialStatus(env, url, cors) {
+  const q = confSettler(env);
+  if (!q) return jsonResponse({ error: 'confidential settle not configured' }, 404, { ...cors, 'Cache-Control': 'no-store' });
+  const id = url.searchParams.get('id');
+  if (!id) return jsonResponse({ error: 'id required' }, 400, cors);
+  const st = await q.jobStatus(id);
+  return jsonResponse(st || { error: 'unknown job' }, st ? 200 : 404, { ...cors, 'Cache-Control': 'no-store' });
 }
 
 // Bearer-token gate for the debug endpoints (/scan, /rescan). Either of those
@@ -723,9 +790,34 @@ function checkDebugAuth(req, env) {
 // namespaced per network. Signet keys keep their legacy unprefixed form
 // (asset:<aid>) for backward compat; mainnet uses asset:mainnet:<aid>.
 const NETWORKS = ['signet', 'mainnet'];
+// BTC API sources per network. MAINNET_API / SIGNET_API may be a single base or
+// a comma-separated list, tried in order. The two public defaults (mempool.space
+// + blockstream.info, both network-matched) are always appended as fallbacks so
+// a single blocked or rate-limited source self-heals without a redeploy. Signet
+// uses blockstream.info/signet (verified real signet data, not mainnet).
+// Maestro's Blockstream-compatible esplora (mainnet only; a forked
+// mempool.space). Rate-limited per-API-key rather than per-IP, so the cron
+// scan stops getting throttled when the whole indexer runs behind a single
+// egress IP. Requires the `api-key` header, attached in apiFetch.
+const MAESTRO_BASE = 'https://xbt-mainnet.gomaestro-api.org/v0/esplora';
+function networkApis(env, network) {
+  const mp = network === 'mainnet' ? 'https://mempool.space/api'  : 'https://mempool.space/signet/api';
+  const bs = network === 'mainnet' ? 'https://blockstream.info/api' : 'https://blockstream.info/signet/api';
+  const list = String((network === 'mainnet' ? env.MAINNET_API : env.SIGNET_API) || mp)
+    .split(',').map(s => s.trim().replace(/\/+$/, '')).filter(Boolean);
+  for (const fb of [mp, bs]) if (!list.includes(fb)) list.push(fb);
+  // Maestro first when configured (mainnet only — no signet endpoint). The
+  // keyless mempool/blockstream stay as fallbacks if Maestro ever errors, and
+  // apiFetch demotes a 401/402/403 from a bad key so the scan never stalls on it.
+  if (network === 'mainnet' && env.MAESTRO_API_KEY && !list.includes(MAESTRO_BASE)) list.unshift(MAESTRO_BASE);
+  return list.length ? list : [mp, bs];
+}
+// Primary base — for the direct callers (fresh-tx polling, /chain + batch
+// proxies) that fetch raw, without apiFetch's per-source header injection. Hand
+// them the first keyless source so they never hit Maestro's `api-key` 402.
 function networkApi(env, network) {
-  if (network === 'mainnet') return env.MAINNET_API || 'https://mempool.space/api';
-  return env.SIGNET_API || 'https://mempool.space/signet/api';
+  const bases = networkApis(env, network);
+  return bases.find(b => !b.includes('gomaestro-api.org')) || bases[0];
 }
 function parseNetwork(value) {
   const v = String(value || '').toLowerCase();
@@ -5638,15 +5730,49 @@ async function _fetchUpstreamWithAbortRetry(url, opts) {
     if (cleanup1) cleanup1();
   }
 }
+// Try each configured BTC source in order, failing over to the next on a
+// transport error or a 5xx/429 from this source. A 2xx or a definitive 4xx
+// (e.g. 404 tx-not-yet-indexed) is a real answer and returns as-is — other
+// sources would give the same answer, and callers like fetchFreshTxJson rely
+// on the 404 to drive their own retry.
+// Per-process preferred-source index per network. Once a source fails we keep
+// starting from the one that worked, so a blocked/slow upstream isn't re-probed
+// on every subsequent fetch (a full block is ~150 page fetches — re-trying a
+// dead source each time would make a scan time out). Self-corrects: if the
+// sticky source later fails it advances again.
+const _apiPref = { mainnet: 0, signet: 0 };
+async function apiFetch(env, network, path, opts = {}) {
+  const bases = networkApis(env, network);
+  const start = Math.min(Math.max(_apiPref[network] | 0, 0), bases.length - 1);
+  let lastErr;
+  for (let n = 0; n < bases.length; n++) {
+    const i = (start + n) % bases.length;
+    const base = bases[i];
+    // Maestro needs the api-key header; the keyless sources must NOT carry it.
+    // Merge per-source so a fallback hop drops it again.
+    const useOpts = (env.MAESTRO_API_KEY && base.includes('gomaestro-api.org'))
+      ? { ...opts, headers: { ...(opts.headers || {}), 'api-key': env.MAESTRO_API_KEY } }
+      : (opts || {});
+    try {
+      const r = await _fetchUpstreamWithAbortRetry(`${base}${path}`, useOpts);
+      // 401/402/403 = this source's auth/quota, not a real answer — fail over to
+      // the next source (a misconfigured Maestro key must never poison the scan).
+      const authFail = r.status === 401 || r.status === 402 || r.status === 403;
+      if (!authFail && (r.ok || (r.status < 500 && r.status !== 429))) { _apiPref[network] = i; return r; }
+      lastErr = new Error(`${network} source ${i} -> ${r.status}`);
+    } catch (e) {
+      lastErr = e;
+    }
+  }
+  throw lastErr || new Error(`${network}: all ${bases.length} sources failed`);
+}
 async function apiText(env, path, opts = {}, network = 'signet') {
-  const base = networkApi(env, network);
-  const r = await _fetchUpstreamWithAbortRetry(`${base}${path}`, opts || {});
+  const r = await apiFetch(env, network, path, opts);
   if (!r.ok) throw new Error(`${network} ${r.status}: ${(await r.text()).slice(0, 200)}`);
   return r.text();
 }
 async function apiJson(env, path, opts = {}, network = 'signet') {
-  const base = networkApi(env, network);
-  const r = await _fetchUpstreamWithAbortRetry(`${base}${path}`, opts || {});
+  const r = await apiFetch(env, network, path, opts);
   if (!r.ok) throw new Error(`${network} ${r.status}: ${(await r.text()).slice(0, 200)}`);
   return r.json();
 }
@@ -25925,8 +26051,16 @@ async function _routeFetch(req, env, ctx) {
     // Reflection relay loop (the self-hosted prover box polls these — see ops/scripts/reflection-relay-loop.sh).
     // /reflection/job serves the next assembled Bitcoin-state batch to prove; /reflection/ack advances
     // the attested cursor after the box lands attestBitcoinStateProven on-chain. Config-gated (404 if off).
-    if (url.pathname === '/reflection/job' && req.method === 'GET') return handleReflectionJob(env, url, cors);
+    if (url.pathname === '/reflection/job' && req.method === 'GET') return handleReflectionJob(req, env, url, cors);
     if (url.pathname === '/reflection/ack' && req.method === 'POST') return handleReflectionAck(req, env, cors);
+
+    // Confidential settle relay (the same box polls these — see ops/scripts/confidential-settle-loop.sh).
+    // /confidential/submit enqueues a user's confidential op; /confidential/job lets the box claim +
+    // GPU-prove it; /confidential/ack records the on-chain settle; /confidential/status is the dapp poll.
+    if (url.pathname === '/confidential/submit' && req.method === 'POST') return handleConfidentialSubmit(req, env, cors);
+    if (url.pathname === '/confidential/job' && req.method === 'GET') return handleConfidentialJob(req, env, cors);
+    if (url.pathname === '/confidential/ack' && req.method === 'POST') return handleConfidentialAck(req, env, cors);
+    if (url.pathname === '/confidential/status' && req.method === 'GET') return handleConfidentialStatus(env, url, cors);
 
     if (url.pathname === '/pin' && req.method === 'POST')      return handlePin(req, env, cors);
     if (url.pathname === '/pin-json' && req.method === 'POST') return handlePinJson(req, env, cors);

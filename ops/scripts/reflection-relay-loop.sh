@@ -36,20 +36,24 @@ NETWORK="${NETWORK:-mainnet}"
 POOL_ADDR="${POOL_ADDR:?set POOL_ADDR}"
 RPC_URL="${RPC_URL:?set RPC_URL}"
 RELAY_KEY="${RELAY_KEY:?set RELAY_KEY}"
+# Bearer token = worker CONFIDENTIAL_BOX_TOKEN/DEBUG_TOKEN. The /reflection/* routes are
+# box-only (the ack advances the un-rewindable Bitcoin cursor — an unauthenticated POST could
+# freeze every cross-lane / bridge_mint gate), so the loop must authenticate like the settle loop.
+BOX_TOKEN="${BOX_TOKEN:?set BOX_TOKEN}"
 POLL_SECS="${POLL_SECS:-120}"
 CXFER="${CXFER_DIR:-/root/work/cxfer}"
 
 log() { echo "[reflection-relay $(date -u +%H:%M:%S)] $*"; }
 
 ack() { # attestedTo txHash
-  curl -fsS -X POST "$WORKER_BASE/reflection/ack" -H 'content-type: application/json' \
+  curl -fsS -X POST "$WORKER_BASE/reflection/ack" -H "authorization: Bearer $BOX_TOKEN" -H 'content-type: application/json' \
     -d "{\"network\":\"$NETWORK\",\"attestedTo\":$1,\"txHash\":\"${2:-}\"}" >/dev/null 2>&1 \
     || log "ack failed (worker will re-serve; on-chain idempotent via digest-chain)"
 }
 
 log "starting — worker=$WORKER_BASE network=$NETWORK pool=$POOL_ADDR poll=${POLL_SECS}s"
 while true; do
-  JOB=$(curl -fsS "$WORKER_BASE/reflection/job?network=$NETWORK" 2>/dev/null || echo '{}')
+  JOB=$(curl -fsS "$WORKER_BASE/reflection/job?network=$NETWORK" -H "authorization: Bearer $BOX_TOKEN" 2>/dev/null || echo '{}')
   if [ -z "$(echo "$JOB" | jq -r '.input // empty')" ]; then sleep "$POLL_SECS"; continue; fi
 
   ATTESTED_TO=$(echo "$JOB" | jq -r '.attestedTo')

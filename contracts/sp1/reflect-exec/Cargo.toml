@@ -1,0 +1,19 @@
+# Local execute-mode validator for the full-scan reflection guest. A SEPARATE crate from
+# teth-prover so it can depend on sp1-sdk WITHOUT native-gnark (execute = the RISC-V emulator,
+# no Groth16/Go FFI needed). Run: cargo run --release -- <reflection_input.json> [expectedDigest]
+[package]
+name = "reflect-exec"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+sp1-sdk = { version = "6.2", default-features = false, features = ["blocking"] }
+serde_json = "1"
+hex = "0.4"
+
+[[bin]]
+name = "reflect-execute"
+path = "src/main.rs"
+
+[profile.release]
+overflow-checks = true

@@ -82,6 +82,71 @@ pub fn verify_kernel(
     ProjectivePoint::generator() * z == *r + x * e
 }
 
+// ──────────────────── opening proof-of-knowledge (swap / LP) ────────────────────
+
+pub const OPENING_DOMAIN: &[u8] = b"tacit-open-sigma-v1";
+
+/// Schnorr proof of knowledge of the blinding `r` for a Pedersen commitment with a PUBLIC
+/// `amount`: proves the prover knows `r` such that `commitment = amount·H + r·G`, binding the
+/// trade `context` (out owner / min_out / amounts / pool / chain) into the challenge — WITHOUT
+/// revealing `r`. This is the swap/LP analog of the kernel signature hiding transfer blindings:
+/// a remote settle prover verifies a swap/LP opening without learning `r`, so it can neither
+/// spend the input note elsewhere nor redirect the output. Binding `amount` to the commitment
+/// (Pedersen binding) also fixes the cleared/contributed value. proof = (R, z); e = keccak(
+/// OPENING_DOMAIN ‖ amount_be ‖ context ‖ compress(commitment) ‖ compress(R)) mod n. Accept iff
+/// z·G == R + e·(commitment − amount·H). Mirrors dapp/confidential-pool.js `openingSigma`.
+pub fn verify_opening_sigma(
+    commitment: &ProjectivePoint,
+    amount: u64,
+    r: &ProjectivePoint,
+    z: &Scalar,
+    context: &[u8; 32],
+) -> bool {
+    let x = *commitment - gen_h() * Scalar::from(amount);
+    let mut k = Keccak::v256();
+    k.update(OPENING_DOMAIN);
+    k.update(&amount.to_be_bytes());
+    k.update(context);
+    k.update(&compress(commitment));
+    k.update(&compress(r));
+    let mut h = [0u8; 32];
+    k.finalize(&mut h);
+    let e = scalar_reduce_be(&h);
+    ProjectivePoint::generator() * z == *r + x * e
+}
+
+/// Domain-separated keccak context binding a swap/LP intent's trade terms, fed into every opening
+/// sigma for that intent. `notes` = each (cx, cy, owner) the intent touches (spent + minted, in a
+/// fixed order); `amounts` = the public quantities (direction/in/out/shares/min_out…). Any change
+/// to a bound field changes the context → the sigmas fail → the box can neither redirect the output
+/// nor re-price the trade. The guest builds it from the witness; dapp/confidential-pool.js
+/// `intentContext` mirrors it byte-for-byte (the exec harness locks the agreement).
+pub fn intent_context(
+    tag: &[u8],
+    chain_binding: &[u8; 32],
+    asset_a: &[u8; 32],
+    asset_b: &[u8; 32],
+    notes: &[([u8; 32], [u8; 32], [u8; 32])],
+    amounts: &[u64],
+) -> [u8; 32] {
+    let mut k = Keccak::v256();
+    k.update(tag);
+    k.update(chain_binding);
+    k.update(asset_a);
+    k.update(asset_b);
+    for (cx, cy, owner) in notes {
+        k.update(cx);
+        k.update(cy);
+        k.update(owner);
+    }
+    for a in amounts {
+        k.update(&a.to_be_bytes());
+    }
+    let mut h = [0u8; 32];
+    k.finalize(&mut h);
+    h
+}
+
 // ──────────────────── Bitcoin T_CXFER kernel (BIP-340 Schnorr) ────────────────────
 
 const CXFER_KERNEL_DOMAIN: &[u8] = b"tacit-kernel-v1";
@@ -491,6 +556,21 @@ pub fn commitment_hash_compressed(compressed: &[u8; 33]) -> Option<[u8; 32]> {
     let cy: [u8; 32] = b[33..65].try_into().ok()?;
     Some(commitment_hash(&cx, &cy))
 }
+/// The reflected pool-note leaf for a confirmed CXFER output: `leaf(asset, Cx, Cy, 0)`, where
+/// (Cx,Cy) is the DECOMPRESSED envelope commitment and the owner is the zero sentinel (a
+/// Bitcoin-homed note carries no owner — the dapp reflection indexer uses the same ZERO_OWNER).
+/// The reflection prover MUST derive the appended note leaf this way rather than read it as a free
+/// witness: the note tree's root is committed as `bitcoinPoolRoot` and a btcHomed settle spends
+/// against it by membership, so a witnessed leaf would let a relayer append an arbitrary
+/// attacker-spendable leaf (value minted from nothing). None if the commitment isn't a curve point.
+pub fn reflected_note_leaf(asset: &[u8; 32], compressed: &[u8; 33]) -> Option<[u8; 32]> {
+    let enc = decompress(compressed)?.to_affine().to_encoded_point(false);
+    let b = enc.as_bytes();
+    if b.len() != 65 { return None; }
+    let cx: [u8; 32] = b[1..33].try_into().ok()?;
+    let cy: [u8; 32] = b[33..65].try_into().ok()?;
+    Some(leaf(asset, &cx, &cy, &[0u8; 32]))
+}
 /// The UTXO-set key for a Bitcoin outpoint: keccak(txid ‖ vout_le). The reflection prover
 /// derives this from a confirmed tx's vin (`extract_inputs`), so a spent outpoint is forced
 /// to be a real prior output and not a witnessed value.
@@ -499,6 +579,9 @@ pub fn outpoint_key(txid: &[u8; 32], vout: u32) -> [u8; 32] { kn(&[txid, &vout.t
 /// (two bytes32 ABI-encode to their 64-byte concat). Binds an OP_SWAP batch's reserves to the
 /// exact asset pair, so a prover can't settle one pool's swap against another's reserves.
 pub fn pool_id(asset_a: &[u8; 32], asset_b: &[u8; 32]) -> [u8; 32] { kn(&[asset_a, asset_b]) }
+/// Pool-specific LP-share asset id: keccak(pool_id ‖ "lp"). An LP's position is a shielded note of
+/// this asset, so per-LP stakes stay hidden while the pool's totalShares is public.
+pub fn lp_share_id(pool_id: &[u8; 32]) -> [u8; 32] { kn(&[pool_id, b"lp"]) }
 /// Bind a spent pool note to its nullifier: given the outpoint's committed value (proven in
 /// the UTXO set via the remove witness) and the note's commitment coords, return ν iff
 /// (Cx,Cy) opens that value — so a spend can't claim a ν unbound from the real note. None
@@ -992,6 +1075,106 @@ impl UtxoAccumulator {
     pub fn is_empty(&self) -> bool { self.nodes.is_empty() }
 }
 
+/// Live UTXO set for the FULL-SCAN reflection model (closes the F4 spent-set completeness gap).
+/// Where `UtxoAccumulator` is insertion-order with tombstones — its committed root is O(history)
+/// to reconstruct, which is fine for the witnessed O(Δ) fold that never rebuilds — this commits
+/// ONLY the live outpoints, as a Keccak Merkle tree over (key, value) leaves sorted by key. So
+/// the prover rebuilds + root-checks the HANDED set in O(live) once per batch, then resolves
+/// every confirmed tx's vins against it in-memory. Because no vin can be skipped, a relayer can
+/// no longer OMIT a Bitcoin spend of a pool note (the gap F4 named) — a plain, non-TACIT spend of
+/// a pool UTXO is caught the same as an enveloped one. Its root lives only in the reflection
+/// `state_digest` (never read on-chain — the cross-lane gate reads spentRoot/poolRoot), so this
+/// live-only shape is free to differ from the witnessed UtxoAccumulator the bridge-burn set uses.
+#[derive(Clone, Default)]
+pub struct LiveUtxoSet {
+    // (outpoint key = keccak(txid‖vout), value = commitment_hash = keccak(Cx‖Cy)), kept sorted
+    // ascending by key (big-endian == array order) so root rebuild and lookups are one pass / log n.
+    entries: Vec<([u8; 32], [u8; 32])>,
+}
+
+impl LiveUtxoSet {
+    pub fn new() -> Self {
+        Self { entries: Vec::new() }
+    }
+
+    /// Adopt a handed live set: keys must be strictly ascending and non-zero. The caller then
+    /// root-checks `root()` against the resumed utxo root — that single O(live) hash is the
+    /// batch's whole trust step (verify the set once, then scan vins against it for free).
+    pub fn from_sorted(entries: Vec<([u8; 32], [u8; 32])>) -> Option<Self> {
+        for i in 0..entries.len() {
+            if entries[i].0 == [0u8; 32] {
+                return None;
+            }
+            if i > 0 && !be_lt(&entries[i - 1].0, &entries[i].0) {
+                return None;
+            }
+        }
+        Some(Self { entries })
+    }
+
+    /// Resolve an outpoint key to its stored commitment hash iff it is a live pool UTXO.
+    pub fn get(&self, key: &[u8; 32]) -> Option<[u8; 32]> {
+        self.entries.binary_search_by(|(k, _)| k.cmp(key)).ok().map(|i| self.entries[i].1)
+    }
+
+    /// Add a new output's outpoint → commitment hash. Panics on a duplicate key (outpoints are
+    /// unique — a duplicate is a malformed batch, never a valid Bitcoin state).
+    pub fn insert(&mut self, key: &[u8; 32], value: &[u8; 32]) {
+        match self.entries.binary_search_by(|(k, _)| k.cmp(key)) {
+            Ok(_) => panic!("duplicate outpoint in live set"),
+            Err(i) => self.entries.insert(i, (*key, *value)),
+        }
+    }
+
+    /// Spend a live outpoint, returning its stored commitment hash. Panics if absent (the caller
+    /// resolves it via `get` first — a remove of an unknown outpoint is a prover bug).
+    pub fn remove(&mut self, key: &[u8; 32]) -> [u8; 32] {
+        let i = self.entries.binary_search_by(|(k, _)| k.cmp(key)).expect("outpoint not live");
+        self.entries.remove(i).1
+    }
+
+    /// The committed live-set root: Keccak Merkle over the (key‖value) leaves in key order.
+    pub fn root(&self) -> [u8; 32] {
+        let leaves: Vec<[u8; 32]> = self.entries.iter().map(|(k, v)| kn(&[k, v])).collect();
+        keccak_merkle_root(&leaves)
+    }
+
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+}
+
+/// Full-scan vin detection — the F4 completeness primitive. EVERY input of `tx_data` is resolved
+/// against the live UTXO set; each one that hits a live pool UTXO is a spend that MUST be
+/// reflected (the relayer cannot silently drop it, because the scan visits all vins). For each
+/// hit, `next_opening` yields the spent note's (Cx, Cy) in vin order; ν is derived and BOUND to
+/// the outpoint's stored commitment hash via `bind_spent_note` (so a forged opening is rejected),
+/// the outpoint is removed from `live`, and (outpoint key, ν) is recorded. A tx touching no pool
+/// UTXO returns an empty vec. Returns None on a malformed tx or an opening that doesn't bind —
+/// both are hard rejects (a confirmed tx the prover can't honestly fold). Output notes (new
+/// outpoints a CXFER envelope declares) are added by the caller, which holds the envelope parse.
+pub fn scan_tx_spends(
+    tx_data: &[u8],
+    live: &mut LiveUtxoSet,
+    mut next_opening: impl FnMut() -> ([u8; 32], [u8; 32]),
+) -> Option<Vec<([u8; 32], [u8; 32])>> {
+    let inputs = bitcoin::extract_inputs(tx_data)?;
+    let mut spends = Vec::new();
+    for (txid, vout) in &inputs {
+        let key = outpoint_key(txid, *vout);
+        if let Some(stored) = live.get(&key) {
+            let (cx, cy) = next_opening();
+            let nu = bind_spent_note(&stored, &cx, &cy)?;
+            live.remove(&key);
+            spends.push((key, nu));
+        }
+    }
+    Some(spends)
+}
+
 /// The reflection prover's state: the Bitcoin confidential-pool note tree, spent-set, and
 /// UTXO set, advanced as confirmed effects land, plus the confirmed height. `commit`
 /// yields exactly the `(bitcoinPoolRoot, bitcoinSpentRoot, bitcoinHeight)` the relay
@@ -1296,6 +1479,133 @@ impl WitnessedReflection {
     }
 }
 
+/// Full-scan reflection state (closes F4 — spent-set completeness). Same headless O(Δ) engine as
+/// `WitnessedReflection` for the note tree, spent-set, and bridge-burn set (roots + counts +
+/// witnessed transitions, never reconstructed — the spent-set is monotone O(history)), but the
+/// UTXO set is the full in-memory `LiveUtxoSet`. The prover resumes `live` from handed contents
+/// and re-derives `digest()`; the contract chains `priorDigest == knownReflectionDigest`, so a
+/// wrong handoff fails the digest. With the real set in hand, every confirmed tx's vins are
+/// resolved against it (`scan_tx_spends`) — no spend can be omitted, which is what the witnessed
+/// model (relayer-chosen effects) could not guarantee. The detected spends fold into the spent-set
+/// here; the UTXO removal already happened in the scan.
+#[derive(Clone)]
+pub struct ScanReflection {
+    pub pool_root: [u8; 32],
+    pub note_count: u64,
+    pub spent_root: [u8; 32],
+    pub spent_count: u64,
+    pub live: LiveUtxoSet,
+    pub burn_root: [u8; 32],
+    pub burn_count: u64,
+    pub height: u64,
+}
+
+impl Default for ScanReflection {
+    fn default() -> Self {
+        Self::genesis()
+    }
+}
+
+impl ScanReflection {
+    /// Genesis: empty note tree, sentinel-seeded spent/burn sets, an empty live UTXO set. The
+    /// spent/burn counts start at 1 (the {0→0} sentinel occupies index 0).
+    pub fn genesis() -> Self {
+        Self {
+            pool_root: keccak_merkle_root(&[]),
+            note_count: 0,
+            spent_root: imt_empty_root(),
+            spent_count: 1,
+            live: LiveUtxoSet::new(),
+            burn_root: UtxoAccumulator::new().root(),
+            burn_count: 1,
+            height: 0,
+        }
+    }
+
+    /// (bitcoinPoolRoot, bitcoinSpentRoot, bitcoinHeight) — the relay public values.
+    pub fn commit(&self) -> ([u8; 32], [u8; 32], u64) {
+        (self.pool_root, self.spent_root, self.height)
+    }
+
+    /// Resumption anchor: every headless root + count, the LIVE-set root + size, and the height.
+    /// A resumed cycle proves it continues THIS digest, so the handed live set is pinned (its root
+    /// is in here) and the count guards can't be skipped.
+    pub fn digest(&self) -> [u8; 32] {
+        let u64b = |n: u64| {
+            let mut a = [0u8; 32];
+            a[24..].copy_from_slice(&n.to_be_bytes());
+            a
+        };
+        kn(&[
+            &self.pool_root, &u64b(self.note_count),
+            &self.spent_root, &u64b(self.spent_count),
+            &self.live.root(), &u64b(self.live.len() as u64),
+            &self.burn_root, &u64b(self.burn_count),
+            &u64b(self.height),
+        ])
+    }
+
+    /// Fold a detected spend's ν into the spent-set (witnessed IMT insert). The live-set removal
+    /// and the ν↔note binding already happened in `scan_tx_spends`; this is the monotone
+    /// spent-set transition only. `height` must not decrease.
+    #[allow(clippy::too_many_arguments)]
+    pub fn fold_spent(
+        &mut self,
+        nu: &[u8; 32],
+        s_low_value: &[u8; 32],
+        s_low_next: &[u8; 32],
+        s_low_index: u64,
+        s_low_path: &[[u8; 32]],
+        s_new_path: &[[u8; 32]],
+    ) -> Result<(), &'static str> {
+        self.spent_root = imt_insert_transition(
+            &self.spent_root, nu, s_low_value, s_low_next, s_low_index, s_low_path,
+            self.spent_count, s_new_path,
+        ).ok_or("spent-set insert witness invalid")?;
+        self.spent_count += 1;
+        Ok(())
+    }
+
+    /// Fold one output note: append the note leaf (witnessed note-tree transition) and add the
+    /// outpoint → commitment hash to the live UTXO set so a later tx in the batch can spend it.
+    pub fn fold_output(
+        &mut self,
+        note_leaf: &[u8; 32],
+        note_path: &[[u8; 32]],
+        outpoint: &[u8; 32],
+        commitment_hash: &[u8; 32],
+    ) -> Result<(), &'static str> {
+        self.pool_root = keccak_tree_append_transition(&self.pool_root, self.note_count, note_path, note_leaf)
+            .ok_or("note append witness invalid")?;
+        self.note_count += 1;
+        self.live.insert(outpoint, commitment_hash);
+        Ok(())
+    }
+
+    /// Record a bridge-out in the burn set: ν → destCommitment (witnessed UTXO insert). The spend
+    /// itself is folded via `fold_spent`; this adds the bound destination so bridge_mint can mint
+    /// only an explicitly-burned note, to exactly the declared destination.
+    #[allow(clippy::too_many_arguments)]
+    pub fn fold_burn(
+        &mut self,
+        nu: &[u8; 32],
+        dest_commitment: &[u8; 32],
+        b_low_key: &[u8; 32],
+        b_low_next: &[u8; 32],
+        b_low_value: &[u8; 32],
+        b_low_index: u64,
+        b_low_path: &[[u8; 32]],
+        b_new_path: &[[u8; 32]],
+    ) -> Result<(), &'static str> {
+        self.burn_root = utxo_insert_transition(
+            &self.burn_root, nu, dest_commitment, b_low_key, b_low_next, b_low_value,
+            b_low_index, b_low_path, self.burn_count, b_new_path,
+        ).ok_or("burn-set insert witness invalid")?;
+        self.burn_count += 1;
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1310,6 +1620,42 @@ mod tests {
         serde_json::from_str(include_str!("../../fixtures/cxfer.json")).unwrap()
     }
 
+    /// Pin ScanReflection::genesis().digest() (the SHIPPED full-scan reflection model) to the
+    /// constant the contract hardcodes (ConfidentialPool.REFLECTION_GENESIS_DIGEST).
+    /// knownReflectionDigest is seeded to this, so the FIRST attestBitcoinStateProven must continue
+    /// it — a Rust-side drift makes the bridge un-bootstrappable (first attest reverts
+    /// StaleReflectionDigest). (The legacy WitnessedReflection genesis 0x0ca539ff is no longer the
+    /// shipped model; the contract constant must equal the ScanReflection genesis below.)
+    #[test]
+    fn genesis_digest_matches_contract_constant() {
+        assert_eq!(
+            ScanReflection::genesis().digest(),
+            arr32("0xec719b81a396d28bad7625172767133724a094a5425269a71b258fe7e36fdc75"),
+            "ScanReflection::genesis().digest() drifted from ConfidentialPool.REFLECTION_GENESIS_DIGEST"
+        );
+    }
+
+    /// The reflected note leaf is DERIVED from the envelope (asset + commitment), never witnessed —
+    /// so a relayer cannot append an arbitrary spendable leaf into bitcoinPoolRoot (F-CRIT). It must
+    /// equal leaf(asset, Cx, Cy, 0) for the decompressed commitment (matches the dapp indexer).
+    #[test]
+    fn reflected_note_leaf_binds_envelope_commitment() {
+        let asset = arr32("0x1111111111111111111111111111111111111111111111111111111111111111");
+        // A real curve point: H (the value generator) compressed.
+        let c = compress(&gen_h());
+        let p = decompress(&c).unwrap().to_affine().to_encoded_point(false);
+        let b = p.as_bytes();
+        let cx: [u8; 32] = b[1..33].try_into().unwrap();
+        let cy: [u8; 32] = b[33..65].try_into().unwrap();
+        assert_eq!(
+            reflected_note_leaf(&asset, &c).unwrap(),
+            leaf(&asset, &cx, &cy, &[0u8; 32]),
+            "reflected leaf must be leaf(asset, Cx, Cy, 0)"
+        );
+        // A non-curve-point compressed blob is rejected (no panic, no junk leaf).
+        assert!(reflected_note_leaf(&asset, &[0u8; 33]).is_none());
+    }
+
     #[test]
     fn kernel_accepts_js_proof_and_rejects_tamper() {
         let f = fixture();
@@ -1321,6 +1667,41 @@ mod tests {
         let mut bad = out_c.clone();
         bad[0] = bad[0] + ProjectivePoint::generator() * Scalar::from(7u64);
         assert!(!verify_kernel(&in_c, &bad, &r, &z));
+    }
+
+    // Rust-side opening-sigma prover (mirror of dapp/confidential-pool.js openingSigma): C =
+    // amount·H + r·G, R = k·G, e = keccak(DOMAIN ‖ amount ‖ ctx ‖ C ‖ R), z = k + e·r.
+    fn prove_opening_sigma(amount: u64, r: &Scalar, k: &Scalar, ctx: &[u8; 32]) -> (ProjectivePoint, Scalar) {
+        let c = gen_h() * Scalar::from(amount) + ProjectivePoint::generator() * r;
+        let r_pt = ProjectivePoint::generator() * k;
+        let mut h = Keccak::v256();
+        h.update(OPENING_DOMAIN);
+        h.update(&amount.to_be_bytes());
+        h.update(ctx);
+        h.update(&compress(&c));
+        h.update(&compress(&r_pt));
+        let mut hb = [0u8; 32]; h.finalize(&mut hb);
+        let e = scalar_reduce_be(&hb);
+        (r_pt, *k + e * r)
+    }
+
+    #[test]
+    fn opening_sigma_roundtrip_and_tamper() {
+        let amount = 1234u64;
+        let r = scalar_reduce_be(&arr32("0x1111111111111111111111111111111111111111111111111111111111111111"));
+        let k = scalar_reduce_be(&arr32("0x2222222222222222222222222222222222222222222222222222222222222222"));
+        let ctx = arr32("0x3333333333333333333333333333333333333333333333333333333333333333");
+        let c = gen_h() * Scalar::from(amount) + ProjectivePoint::generator() * r;
+        let (r_pt, z) = prove_opening_sigma(amount, &r, &k, &ctx);
+        // a valid proof verifies — and reveals nothing about r (z, R are the only outputs).
+        assert!(verify_opening_sigma(&c, amount, &r_pt, &z, &ctx), "valid opening sigma verifies");
+        // binds the value: a different amount (same commitment) is rejected.
+        assert!(!verify_opening_sigma(&c, amount + 1, &r_pt, &z, &ctx), "amount tamper rejected");
+        // binds the trade terms: a different context is rejected (so the box can't redirect/relabel).
+        let ctx2 = arr32("0x4444444444444444444444444444444444444444444444444444444444444444");
+        assert!(!verify_opening_sigma(&c, amount, &r_pt, &z, &ctx2), "context tamper rejected");
+        // a forged response is rejected.
+        assert!(!verify_opening_sigma(&c, amount, &r_pt, &(z + Scalar::from(1u64)), &ctx), "z tamper rejected");
     }
 
     #[test]
@@ -1736,6 +2117,71 @@ mod tests {
         assert_eq!(h2, 800_001);
     }
 
+    // F4 full-scan: the live UTXO set rebuilds + root-checks from sorted contents (the O(live)
+    // verify-once step), resolves outpoints, and folds an output/spend with the committed root
+    // advancing — and rejects an out-of-order / zero-key handoff.
+    #[test]
+    fn live_utxo_set_rebuild_and_mutate() {
+        let key = |b: u8| { let mut k = [0u8; 32]; k[31] = b; k };
+        let val = |b: u8| { let mut v = [0u8; 32]; v[0] = b; v };
+
+        // a handed set must be strictly ascending, non-zero
+        assert!(LiveUtxoSet::from_sorted(vec![(key(0x10), val(1)), (key(0x20), val(2))]).is_some());
+        assert!(LiveUtxoSet::from_sorted(vec![(key(0x20), val(2)), (key(0x10), val(1))]).is_none(), "unsorted rejected");
+        assert!(LiveUtxoSet::from_sorted(vec![(key(0x10), val(1)), (key(0x10), val(2))]).is_none(), "duplicate rejected");
+        assert!(LiveUtxoSet::from_sorted(vec![([0u8; 32], val(1))]).is_none(), "zero key rejected");
+
+        let mut live = LiveUtxoSet::from_sorted(vec![(key(0x10), val(0xa1)), (key(0x30), val(0xc3))]).unwrap();
+        assert_eq!(live.root(), LiveUtxoSet::from_sorted(vec![(key(0x10), val(0xa1)), (key(0x30), val(0xc3))]).unwrap().root(), "root is contents-determined");
+        assert_eq!(live.get(&key(0x10)), Some(val(0xa1)));
+        assert_eq!(live.get(&key(0x99)), None);
+        let r0 = live.root();
+
+        // an output inserts in key order; a spend removes; the root tracks the live contents
+        live.insert(&key(0x20), &val(0xb2));
+        assert_eq!(live.get(&key(0x20)), Some(val(0xb2)));
+        assert_ne!(live.root(), r0, "root advanced on insert");
+        assert_eq!(live.remove(&key(0x20)), val(0xb2), "remove returns the stored commitment");
+        assert_eq!(live.root(), r0, "insert+remove of the same key restores the root");
+        assert_eq!(live.get(&key(0x20)), None, "spent outpoint no longer resolves");
+    }
+
+    // F4 full-scan: scan a REAL confirmed tx's vins against a live set seeded with its first
+    // input outpoint → the spend is detected, ν is derived + bound to the stored commitment, and
+    // the outpoint is removed. A set without that outpoint detects nothing; a forged opening that
+    // doesn't bind to the stored commitment is a hard reject.
+    #[test]
+    fn scan_tx_spends_detects_real_vin() {
+        let f: serde_json::Value = serde_json::from_str(include_str!("../../fixtures/btc_block.json")).unwrap();
+        let tx = hex::decode(strip(f["tx"].as_str().unwrap())).unwrap();
+        let inputs = bitcoin::extract_inputs(&tx).expect("real tx inputs");
+        let (in_txid, in_vout) = inputs[0];
+        let outpoint = outpoint_key(&in_txid, in_vout);
+
+        // a note (Cx,Cy) whose commitment_hash is what the live set stores at that outpoint
+        let cx = arr32("0x1111111111111111111111111111111111111111111111111111111111111111");
+        let cy = arr32("0x2222222222222222222222222222222222222222222222222222222222222222");
+        let stored = commitment_hash(&cx, &cy);
+
+        let mut live = LiveUtxoSet::from_sorted(vec![(outpoint, stored)]).unwrap();
+        let before = live.root();
+        let spends = scan_tx_spends(&tx, &mut live, || (cx, cy)).expect("scan honest tx");
+        assert_eq!(spends.len(), 1, "the seeded pool outpoint is detected as a spend");
+        assert_eq!(spends[0], (outpoint, nullifier(&cx, &cy)), "ν derived + bound to the stored commitment");
+        assert!(live.is_empty(), "the spent outpoint is removed from the live set");
+        assert_ne!(live.root(), before, "live root advanced on the spend");
+
+        // a live set that doesn't contain any of the tx's vins → no pool spend
+        let mut other = LiveUtxoSet::from_sorted(vec![(arr32("0x00000000000000000000000000000000000000000000000000000000000000ff"), stored)]).unwrap();
+        let none = scan_tx_spends(&tx, &mut other, || (cx, cy)).expect("scan unrelated tx");
+        assert!(none.is_empty(), "a tx spending no pool UTXO yields no spends");
+
+        // an opening that doesn't open the stored commitment is rejected (forged ν)
+        let mut live2 = LiveUtxoSet::from_sorted(vec![(outpoint, stored)]).unwrap();
+        let bad = scan_tx_spends(&tx, &mut live2, || (cy, cx)); // swapped → wrong commitment_hash
+        assert!(bad.is_none(), "an opening not binding to the stored commitment is a hard reject");
+    }
+
     // H-1: bridge_mint must authorize only against the bridge-burn set, not the all-spends
     // set. An ordinary Bitcoin spend's ν enters `spent` but NOT `bridge_burns`, so it has no
     // bridge-burn membership (bridge_mint can't mint it). A cross-chain burn's ν enters BOTH,
@@ -2028,6 +2474,82 @@ mod tests {
         // height must not decrease (same-block effects share a height; a rollback is rejected)
         w.apply_transfer(&[], &[], 102).expect("same height allowed (same-block effects)");
         assert!(w.apply_transfer(&[], &[], 101).is_err(), "height decrease (rollback) rejected");
+    }
+
+    // F4 full scan: ScanReflection genesis digest — the three-way anchor (Rust prover == JS
+    // indexer == contract REFLECTION_GENESIS_DIGEST for the full-scan model). Differs from the
+    // witnessed model: the UTXO slot is the EMPTY live set (keccak_merkle_root([]) + size 0), not
+    // the {0→0} UtxoAccumulator sentinel.
+    #[test]
+    fn scan_reflection_genesis_digest() {
+        let g = ScanReflection::genesis();
+        assert_eq!(hex::encode(g.digest()), "ec719b81a396d28bad7625172767133724a094a5425269a71b258fe7e36fdc75", "full-scan genesis digest (JS indexer + contract must match)");
+        // empty live set root == empty note-tree root (both keccak_merkle_root([])); spent + burn
+        // keep the {0→0} sentinel roots.
+        assert_eq!(g.live.root(), g.pool_root);
+        assert_eq!(hex::encode(g.spent_root), "5f3e94ca833807f1196d5ebe6d8f764b8dbc4edd0f473ff628fb4fd9abd17eb0");
+    }
+
+    // F4 full scan: ScanReflection's headless spent/note/burn folds produce byte-identical roots
+    // to the stateful ReflectionState (same witnessed transitions), while the live UTXO set tracks
+    // outpoints in-memory. This mirrors the guest's per-tx fold order over a deposit → transfer →
+    // bridge-out sequence — the faithfulness proof of the full-scan model's commitments.
+    #[test]
+    fn scan_reflection_folds_match_stateful() {
+        let v = |n: u32| arr32(&format!("0x{:064x}", n));
+        let mut st = ReflectionState::genesis();
+        let mut sc = ScanReflection::genesis();
+        // genesis headless roots agree (the UTXO sets differ in shape by design)
+        assert_eq!(sc.pool_root, st.notes.root());
+        assert_eq!(sc.spent_root, st.spent.root());
+        assert_eq!(sc.burn_root, st.bridge_burns.root());
+        let d0 = sc.digest();
+
+        let (cx_a, cy_a) = (v(0x0a), v(0x1a)); let com_a = commitment_hash(&cx_a, &cy_a); let nu_a = nullifier(&cx_a, &cy_a);
+        let (cx_b, cy_b) = (v(0x0b), v(0x1b)); let com_b = commitment_hash(&cx_b, &cy_b); let nu_b = nullifier(&cx_b, &cy_b);
+        let (cx_c, cy_c) = (v(0x0c), v(0x1c)); let com_c = commitment_hash(&cx_c, &cy_c);
+        let (op_a, op_b, op_c) = (v(0xa0), v(0xb0), v(0xc0));
+        let (leaf_a, leaf_b, leaf_c) = (v(0x1aa), v(0x1bb), v(0x1cc));
+        let dest_b = v(0xde);
+        let _ = cy_c;
+
+        // 1. two outputs (deposits): fold_output appends the note leaf + adds the outpoint live.
+        let ow_a = build_output_witness(&st.notes, &st.utxo, leaf_a, op_a, com_a);
+        st.notes.append(&leaf_a); st.utxo.insert(&op_a, &com_a);
+        sc.fold_output(&leaf_a, &ow_a.note_path, &op_a, &com_a).expect("output a");
+        let ow_b = build_output_witness(&st.notes, &st.utxo, leaf_b, op_b, com_b);
+        st.notes.append(&leaf_b); st.utxo.insert(&op_b, &com_b);
+        sc.fold_output(&leaf_b, &ow_b.note_path, &op_b, &com_b).expect("output b");
+        assert_eq!(sc.pool_root, st.notes.root(), "note tree after deposits");
+        assert_eq!(sc.live.get(&op_a), Some(com_a), "op_a live");
+        assert_eq!(sc.live.get(&op_b), Some(com_b), "op_b live");
+        assert_ne!(sc.digest(), d0, "state advanced");
+
+        // 2. transfer: spend note A (the scan derives nu_a + removes op_a), create op_c.
+        let sw = build_spend_witness(&st.spent, &st.utxo, cx_a, cy_a, op_a);
+        st.spent.insert(&nu_a); st.utxo.remove(&op_a);
+        sc.live.remove(&op_a); // scan_tx_spends does this in the guest
+        sc.fold_spent(&nu_a, &sw.s_low_value, &sw.s_low_next, sw.s_low_index, &sw.s_low_path, &sw.s_new_path).expect("spend a");
+        let ow_c = build_output_witness(&st.notes, &st.utxo, leaf_c, op_c, com_c);
+        st.notes.append(&leaf_c); st.utxo.insert(&op_c, &com_c);
+        sc.fold_output(&leaf_c, &ow_c.note_path, &op_c, &com_c).expect("output c");
+        assert_eq!(sc.spent_root, st.spent.root(), "spent after transfer");
+        assert_eq!(sc.pool_root, st.notes.root(), "notes after transfer");
+        assert_eq!(sc.live.get(&op_a), None, "op_a spent");
+
+        // 3. bridge-out: burn note B → destCommitment.
+        let bw = build_burn_witness(&st.spent, &st.utxo, &st.bridge_burns, cx_b, cy_b, op_b, dest_b);
+        st.spent.insert(&nu_b); st.utxo.remove(&op_b); st.bridge_burns.insert(&nu_b, &dest_b);
+        sc.live.remove(&op_b);
+        sc.fold_spent(&nu_b, &bw.spend.s_low_value, &bw.spend.s_low_next, bw.spend.s_low_index, &bw.spend.s_low_path, &bw.spend.s_new_path).expect("spend b");
+        sc.fold_burn(&nu_b, &dest_b, &bw.b_low_key, &bw.b_low_next, &bw.b_low_value, bw.b_low_index, &bw.b_low_path, &bw.b_new_path).expect("burn b");
+        assert_eq!(sc.spent_root, st.spent.root(), "spent after burn");
+        assert_eq!(sc.burn_root, st.bridge_burns.root(), "burn root after burn");
+
+        // commit matches the stateful reference; digest is deterministic + non-zero.
+        sc.height = 102;
+        assert_eq!(sc.commit(), (st.notes.root(), st.spent.root(), 102));
+        assert_ne!(sc.digest(), [0u8; 32], "resumption digest is well-defined");
     }
 
     // Phase 3.2: ν is BOUND to the outpoint's committed note — a spend can't fabricate a ν

@@ -19,12 +19,14 @@ sol! {
     struct CrossOut { uint16 destChain; bytes32 destCommitment; bytes32 nullifier; bytes32 assetId; bytes32 claimId; }
     struct AssetMeta { bytes32 assetId; bytes16 ticker; uint8 tickerLen; uint8 decimals; }
     struct SwapSettlement { bytes32 poolId; uint256 reserveAPre; uint256 reserveBPre; uint256 reserveAPost; uint256 reserveBPost; }
+    struct LpSettlement { bytes32 poolId; uint256 reserveAPre; uint256 reserveBPre; uint256 sharesPre; uint256 reserveAPost; uint256 reserveBPost; uint256 sharesPost; }
     struct PublicValues {
         uint16 version; bytes32 chainBinding; bytes32 spendRoot;
         bytes32[] nullifiers; bytes32[] leaves; bytes32[] depositsConsumed;
         Withdrawal[] withdrawals; FeePayment[] fees; bytes32[] bitcoinBurnsConsumed;
         CrossOut[] crossOuts; bytes32[] bitcoinRootsUsed; bytes32 bitcoinSpentRoot;
         bytes32 bitcoinBurnRoot; AssetMeta[] assetMetas; SwapSettlement[] swaps;
+        LpSettlement[] liquidity;
     }
 }
 
@@ -55,12 +57,14 @@ fn main() {
         stdin.write(&it["amountIn"].as_u64().unwrap());
         stdin.write(&it["amountOut"].as_u64().unwrap());
         stdin.write(&it["rem"].as_u64().unwrap());
-        stdin.write(&hexv(it["rInSecp"].as_str().unwrap()));
+        stdin.write(&hexv(it["inSigR"].as_str().unwrap()));  // opening-sigma R (33B compressed)
+        stdin.write(&hexv(it["inSigZ"].as_str().unwrap()));  // opening-sigma z (32B scalar)
         stdin.write(&it["minOut"].as_u64().unwrap());
         stdin.write(&hexv(it["outCx"].as_str().unwrap()));
         stdin.write(&hexv(it["outCy"].as_str().unwrap()));
         stdin.write(&hexv(it["outOwner"].as_str().unwrap()));
-        stdin.write(&hexv(it["rOutSecp"].as_str().unwrap()));
+        stdin.write(&hexv(it["outSigR"].as_str().unwrap()));
+        stdin.write(&hexv(it["outSigZ"].as_str().unwrap()));
     }
 
     let mode = std::env::var("MODE").unwrap_or_else(|_| "execute".into());

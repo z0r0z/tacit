@@ -43,6 +43,14 @@ interface IAssetId {
     function ASSET_ID() external view returns (bytes32);
 }
 
+/// Bitcoin light-relay surface used to anchor reflection proofs to canonical Bitcoin (the same
+/// BitcoinLightRelay the tETH bridge / SP1PoolRootVerifier use). `tip()` = the relay's canonical
+/// best block hash; `blockParent(h)` = h's stored parent (for the sub-finality-window reorg walk).
+interface IRelay {
+    function tip() external view returns (bytes32);
+    function blockParent(bytes32 blockHash) external view returns (bytes32);
+}
+
 /// @title ConfidentialPool
 /// @notice Phase-1 confidential token: a multi-asset shielded pool on Ethereum
 ///         with arbitrary hidden amounts on secp256k1 notes (C = v·H + r·G), the
@@ -88,6 +96,17 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     /// vkey — re-derived from relayed Bitcoin headers (the SP1PoolRootVerifier pattern).
     /// No trusted oracle: the proof is the sole authority.
     bytes32 public immutable BITCOIN_RELAY_VKEY;
+    /// Bitcoin light relay used to anchor each reflection proof's header chain to canonical
+    /// Bitcoin (mirrors SP1PoolRootVerifier). 0 ⇒ reflection inactive (the ctor bars a non-zero
+    /// BITCOIN_RELAY_VKEY without a relay). When set, attest pins the proof's tip to RELAY.tip()
+    /// and its prev to the prior attested tip (each within REFLECTION_FINALITY_WINDOW) — which
+    /// forces the whole proven chain to be canonical Bitcoin.
+    IRelay public immutable HEADER_RELAY;
+    /// Max ancestor distance accepted for the reflection prev/tip anchor (sub-window reorg tolerance).
+    uint256 public constant REFLECTION_FINALITY_WINDOW = 6;
+    /// The Bitcoin block hash at the tip of the last attested reflection batch (the next batch's
+    /// prev must equal this or a recent ancestor). Seeded to the genesis anchor in the ctor.
+    bytes32 public lastReflectionBlockHash;
     /// Monotonic guard: the highest Bitcoin height a relay proof has attested. A proof
     /// must strictly advance it, so a stale proof cannot roll the spent root backward.
     uint64 public lastRelayHeight;
@@ -175,11 +194,12 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     // bytes32(0) before the first attestation (the genesis digest seeds the first cycle).
     bytes32 public knownReflectionDigest;
 
-    // The reflection prover's genesis digest — WitnessedReflection::genesis().digest(): an
-    // empty note tree + sentinel-seeded spent/burn/UTXO sets. knownReflectionDigest is seeded
-    // to this so the first attestation continues genesis. Tied to BITCOIN_RELAY_VKEY (one prover).
+    // The reflection prover's genesis digest — ScanReflection::genesis().digest() (the shipped
+    // full-scan model): an empty note tree + sentinel-seeded spent/burn sets + empty live-UTXO set.
+    // knownReflectionDigest is seeded to this so the first attestation continues genesis. Pinned in
+    // cxfer-core (genesis_digest_matches_contract_constant). Tied to BITCOIN_RELAY_VKEY (one prover).
     bytes32 public constant REFLECTION_GENESIS_DIGEST =
-        0x0ca539ff3a68ab1969e7df9234359872225fff86fc72192d9127f8d8b94a5b9f;
+        0xec719b81a396d28bad7625172767133724a094a5425269a71b258fe7e36fdc75;
 
     // A shared (Bitcoin-side) asset id => this pool's local registry key. A bridge_mint note
     // carries the SHARED id as its `asset` (it must, to prove membership in the Bitcoin
@@ -285,6 +305,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     error ValueOutOfRange();
     error StaleBitcoinBurnRoot();
     error StaleReflectionDigest();
+    error UnanchoredReflection();
     error CrossChainEscrow();
     error CrossChainTokenMismatch();
     error CrossChainLinkTaken();
@@ -296,13 +317,29 @@ contract ConfidentialPool is ReentrancyGuardTransient {
 
     // ──────────────────── Constructor ────────────────────
 
-    constructor(address sp1Verifier_, bytes32 programVKey_, bytes32 bitcoinRelayVKey_, address canonicalFactory_) {
+    constructor(
+        address sp1Verifier_,
+        bytes32 programVKey_,
+        bytes32 bitcoinRelayVKey_,
+        address canonicalFactory_,
+        address headerRelay_,
+        bytes32 genesisReflectionAnchor_
+    ) {
         if (sp1Verifier_ == address(0)) revert ZeroAddress();
         if (programVKey_ == bytes32(0)) revert ZeroVKey();
+        // Reflection can't be trustless without a relay to anchor the header chain: a non-zero
+        // BITCOIN_RELAY_VKEY (cross-chain ON) requires a non-zero HEADER_RELAY. It also requires a
+        // non-zero genesis anchor — the first batch's prev anchors to it, and a zero seed makes the
+        // very first attest's _anchorReflection unsatisfiable forever (mirrors SP1PoolRootVerifier's
+        // ZeroGenesis guard).
+        if (bitcoinRelayVKey_ != bytes32(0) && headerRelay_ == address(0)) revert ZeroAddress();
+        if (bitcoinRelayVKey_ != bytes32(0) && genesisReflectionAnchor_ == bytes32(0)) revert ZeroAddress();
         SP1_VERIFIER = ISP1Verifier(sp1Verifier_);
         PROGRAM_VKEY = programVKey_;
         CHAIN_BINDING = keccak256(abi.encodePacked(block.chainid, address(this)));
         BITCOIN_RELAY_VKEY = bitcoinRelayVKey_; // the sole Bitcoin-state authority (a proof)
+        HEADER_RELAY = IRelay(headerRelay_);
+        lastReflectionBlockHash = genesisReflectionAnchor_; // the first batch's prev anchors here
         CANONICAL_FACTORY = ICanonicalAssetFactory(canonicalFactory_);
         knownReflectionDigest = REFLECTION_GENESIS_DIGEST; // the first cycle continues genesis
 
@@ -536,6 +573,8 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         bytes32 bitcoinBurnRoot;  // the Bitcoin bridge-burn IMT root at this height (bridge_mint authority)
         uint64 bitcoinHeight;     // the confirmed Bitcoin height the batch advanced to
         bytes32 newDigest;        // the reflected state AFTER this proof (the next cycle's prior)
+        bytes32 bitcoinPrevHash;  // headers[0]'s prev field — anchored to the prior attested tip
+        bytes32 bitcoinTipHash;   // the batch's tip block hash — anchored to RELAY.tip()
     }
 
     /// @notice Attest Bitcoin confidential-pool state via an SP1 relay proof — the ONLY
@@ -564,6 +603,15 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         // Same non-zero-sentinel rule for the bridge-burn set: a zero would let a
         // bridge_mint skip its membership check (the guest keys it off `burn_root != 0`).
         if (r.bitcoinBurnRoot == bytes32(0)) revert StaleBitcoinBurnRoot();
+        // Relay anchor (mirror SP1PoolRootVerifier): pin the batch's prev to the prior attested tip
+        // and its tip to the canonical relay tip (each within the finality window). With the guest's
+        // verify_header_chain linking the batch back via prev_hash + PoW, this forces the WHOLE proven
+        // chain to be canonical Bitcoin. Skipped only when no relay is wired (reflection inactive; the
+        // ctor bars a non-zero BITCOIN_RELAY_VKEY without a relay).
+        if (address(HEADER_RELAY) != address(0)) {
+            _anchorReflection(r.bitcoinPrevHash, r.bitcoinTipHash);
+            lastReflectionBlockHash = r.bitcoinTipHash;
+        }
         lastRelayHeight = r.bitcoinHeight;
         knownBitcoinRoot[r.bitcoinPoolRoot] = true;
         knownBitcoinSpentRoot = r.bitcoinSpentRoot;
@@ -573,6 +621,28 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         emit BitcoinSpentRootReflected(r.bitcoinSpentRoot);
         emit BitcoinBurnRootReflected(r.bitcoinBurnRoot);
         emit BitcoinReflectionAdvanced(r.priorDigest, r.newDigest, r.bitcoinHeight);
+    }
+
+    /// Anchor a reflection batch to canonical Bitcoin: `prev` must equal the prior attested tip or a
+    /// recent ancestor of it (a sub-window reorg), and `tip` must equal RELAY.tip() or a recent
+    /// ancestor (the relay's tip may have advanced past the proven batch). The ancestor walk follows
+    /// the relay's stored parents, ≤ REFLECTION_FINALITY_WINDOW hops. Mirrors SP1PoolRootVerifier.
+    function _anchorReflection(bytes32 prev, bytes32 tip) internal view {
+        if (!_isTipOrRecentAncestor(prev, lastReflectionBlockHash)) revert UnanchoredReflection();
+        if (!_isTipOrRecentAncestor(tip, HEADER_RELAY.tip())) revert UnanchoredReflection();
+    }
+
+    /// True iff `h == anchor` or `h` is within REFLECTION_FINALITY_WINDOW parents of `anchor`.
+    function _isTipOrRecentAncestor(bytes32 h, bytes32 anchor) internal view returns (bool) {
+        if (h == bytes32(0)) return false;
+        if (h == anchor) return true;
+        bytes32 walk = anchor;
+        for (uint256 i; i < REFLECTION_FINALITY_WINDOW; ++i) {
+            walk = HEADER_RELAY.blockParent(walk);
+            if (walk == bytes32(0)) return false;
+            if (walk == h) return true;
+        }
+        return false;
     }
 
     // ──────────────────── Settle (the one proof entrypoint) ────────────────────

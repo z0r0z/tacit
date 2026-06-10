@@ -10,20 +10,26 @@
 // Run: node tests/confidential-bridge-burn.mjs
 
 import { keccak_256 } from '../node_modules/@noble/hashes/sha3.js';
+import * as secp from '../node_modules/@noble/secp256k1/index.js';
+import { createHash } from 'node:crypto';
 import { writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { randomScalar } from '../dapp/bulletproofs-plus.js';
 import { makeConfidentialTransfer } from '../dapp/confidential-transfer.js';
+import { makeConfidentialPool } from '../dapp/confidential-pool.js';
+import { makeConfidentialMemo } from '../dapp/confidential-memo.js';
 import assert from 'node:assert';
 
+const sha256 = (b) => new Uint8Array(createHash('sha256').update(Buffer.from(b)).digest());
 const ct = makeConfidentialTransfer({ keccak256: keccak_256 });
+const pool = makeConfidentialPool({ secp, keccak256: keccak_256, sha256 });
+const memo = makeConfidentialMemo({ secp, sha256, keccak256: keccak_256 });
 let n = 0; const ok = (s) => { console.log('  ok -', s); n++; };
 
 const ASSET = '0x' + 'a5'.repeat(32);
 const OWNER_B = '0x' + '00'.repeat(31) + '0b'; // recipient's Bitcoin owner field
 const BITCOIN = 1; // destChain id
-const nullifierOf = (secret) => '0x' + Buffer.from(keccak_256(Uint8Array.from(Buffer.from(secret.replace(/^0x/, ''), 'hex')))).toString('hex');
 
 // Burn two Ethereum notes (1000 + 500) into two Bitcoin notes (900 + 600).
 const inputs = [
@@ -34,7 +40,10 @@ const outputs = [
   { value: 900n, blinding: randomScalar(), owner: OWNER_B },
   { value: 600n, blinding: randomScalar(), owner: OWNER_B },
 ];
-const bindNullifier = nullifierOf(inputs[0].secret);
+// Note-bound ν (spec B3): keccak(Cx ‖ Cy ‖ "spent") of the first burned input — what the
+// guest derives (main.rs OP_BRIDGE_BURN), so the fixture locks the guest's real claimId.
+const c0 = memo.commitXY(inputs[0].value, inputs[0].blinding);
+const bindNullifier = pool.nullifier(c0.cx, c0.cy);
 
 const burn = ct.buildBridgeBurn({ inputs, outputs, assetId: ASSET, destChain: BITCOIN, bindNullifier });
 
@@ -45,9 +54,12 @@ ok('arbitrary-amount bridge-burn conserves Σin=Σout across the chain boundary 
 // ── one crossOut per destination, each claimId distinct + correctly derived ──
 assert.strictEqual(burn.crossOuts.length, 2, 'one crossOut per Bitcoin output');
 assert.notStrictEqual(burn.crossOuts[0].claimId, burn.crossOuts[1].claimId, 'distinct claimIds');
+const legacyNu = '0x' + Buffer.from(keccak_256(Uint8Array.from(Buffer.from(inputs[0].secret.slice(2), 'hex')))).toString('hex');
+assert.notStrictEqual(bindNullifier, legacyNu, 'binding ν is note-bound (B3), not the legacy secret hash');
 for (const c of burn.crossOuts) {
   assert.strictEqual(c.claimId, ct.claimId(c.destChain, c.destCommitment, c.nullifier, c.assetId), 'claimId re-derives');
   assert.strictEqual(c.destCommitment, ct.destLeaf(c.assetId, c.cx, c.cy, c.owner), 'destCommitment = Bitcoin leaf');
+  assert.strictEqual(c.nullifier, bindNullifier, 'every crossOut binds the same note-bound burn ν (B3)');
 }
 ok('each Bitcoin output yields a distinct, self-deriving crossOut (claimId binds destChain‖dest‖ν‖asset)');
 

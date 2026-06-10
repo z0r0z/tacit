@@ -32,6 +32,14 @@ contract ConfidentialProofRealTest is Test {
         verifier.verifyProof(vkey, publicValues, proofBytes);
     }
 
+    /// Coherence: the fixture's vkey IS the committed pin (elf-vkey-pin.json program_vkey),
+    /// so "this proof verifies" means "the pinned/deployed guest has an on-chain proof" — not
+    /// some drifted fixture. Without this, the ProofReal suite could pass against a lagging vkey.
+    function test_fixture_vkey_matches_pin() public view {
+        string memory pin = vm.readFile(string.concat(vm.projectRoot(), "/sp1/confidential/elf-vkey-pin.json"));
+        assertEq(vkey, vm.parseJsonBytes32(pin, ".program_vkey"), "fixture vkey != pinned program_vkey");
+    }
+
     /// Ground-truth: the proof's selector is the one this verifier version expects.
     function test_proof_selector_matches_verifier() public view {
         bytes memory p = proofBytes;

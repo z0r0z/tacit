@@ -58,10 +58,14 @@ node_suite() {
   return $rc
 }
 
-# node helper: the Bitcoin reflection indexer + prover-input tests.
+# node helper: the Bitcoin reflection indexer + prover-input tests. The SHIPPED model is the
+# full SCAN (confidential-reflection-scan*: every tx of every block, F4-complete); the witnessed
+# (state/witness/indexer) tests stay as the superseded-model cross-check oracle. Both must be green.
 reflection_suite() {
   local t rc=0
-  for t in confidential-reflection-state confidential-reflection-witness \
+  for t in confidential-reflection-scan confidential-reflection-scan-indexer \
+           confidential-reflection-attest-scan \
+           confidential-reflection-state confidential-reflection-witness \
            confidential-reflection-indexer reflection-attest; do
     [ -f "tests/$t.mjs" ] || continue
     if ! node "tests/$t.mjs" >>"$TMP.refl" 2>&1; then echo "FAIL $t"; rc=1; fi
@@ -93,23 +97,42 @@ run_gate "cxfer-core: native crypto + cross-impl + reflection KATs" POOL \
 run_gate "Node: memo / indexer / transfer / bridge / relay / canonical" POOL node_suite
 
 # ── POOL layer 4: deployment coherence (the live guest must be the proven one) ─
-printf '──▶ %-58s [%s]\n' "vkey coherence: deployed guest == proven guest" "POOL"
+# The settle vkey must agree across all four faces: the pin (program_vkey), the deploy
+# DEFAULT_VKEY, and EVERY settle real-proof fixture (confidential/swap/lp/crosslane) — a
+# lagging fixture or pin typo otherwise passes green while the deployed guest has no proof.
+# The reflection leg checks its own pair (bitcoin_relay_vkey ↔ reflection fixture).
+printf '──▶ %-58s [%s]\n' "vkey coherence: pin == deploy == every fixture" "POOL"
+jget() { node -e 'try{process.stdout.write(String(require("./"+process.argv[1])[process.argv[2]]||""))}catch(e){}' "$1" "$2" 2>/dev/null; }
+PIN_VKEY="$(jget "$PIN" program_vkey)"
 DEP_VKEY="$(grep -oE 'DEFAULT_VKEY = 0x[0-9a-fA-F]{64}' "$DEPLOY" | grep -oE '0x[0-9a-fA-F]{64}' | head -1)"
-FX_VKEY="$(node -e 'try{process.stdout.write(require("./'"$GROTH16_FIXTURE"'").vkey)}catch(e){}' 2>/dev/null)"
+SETTLE_FIXTURES="$GROTH16_FIXTURE contracts/test/fixtures/swap_groth16.json contracts/test/fixtures/lp_groth16.json $CROSSLANE_FIXTURE"
+printf '    pin program_vkey   : %s\n' "${PIN_VKEY:-<none>}"
 printf '    deploy DEFAULT_VKEY : %s\n' "${DEP_VKEY:-<none>}"
-printf '    real-proof fixture  : %s\n' "${FX_VKEY:-<none>}"
-if [ -n "$DEP_VKEY" ] && [ "$DEP_VKEY" = "$FX_VKEY" ]; then
-  printf '    PASS  the deploy-default guest has an on-chain Groth16 proof\n'
+coh_ok=1
+[ -n "$PIN_VKEY" ] && [ "$PIN_VKEY" = "$DEP_VKEY" ] || coh_ok=0
+for fx in $SETTLE_FIXTURES; do
+  fxv="$(jget "$fx" vkey)"
+  printf '    %-30s : %s\n' "$(basename "$fx")" "${fxv:-<missing>}"
+  [ -n "$fxv" ] && [ "$fxv" = "$PIN_VKEY" ] || coh_ok=0
+done
+# Reflection pair (its own vkey lineage).
+RPIN_VKEY="$(jget "$PIN" bitcoin_relay_vkey)"; RFX_VKEY="$(jget "$REFLECT_FIXTURE" vkey)"
+printf '    reflection pin/fixture : %s / %s\n' "${RPIN_VKEY:-<none>}" "${RFX_VKEY:-<missing>}"
+[ -n "$RFX_VKEY" ] && [ "$RFX_VKEY" != "$RPIN_VKEY" ] && coh_ok=0
+if [ "$coh_ok" = 1 ]; then
+  printf '    PASS  the deploy-default + pinned guest has on-chain Groth16 proofs (all settle fixtures + reflection)\n'
   pass=$((pass+1)); RESULTS+=("PASS|POOL|vkey coherence")
 else
   block_gate "vkey coherence" POOL \
-    "deploy default != real-proof fixture: the current guest has no on-chain proof (box: re-prove, refresh $GROTH16_FIXTURE, repin DEFAULT_VKEY)"
+    "pin/deploy/fixture vkey mismatch: a settle face has no matching on-chain proof (box: re-prove, refresh fixtures, repin DEFAULT_VKEY + elf-vkey-pin.json in one commit)"
 fi
 
 # ── POOL layer 5: guest ELF pin discipline (no silent drift) ─────────────────
+# The real sha256(committed-ELF) == pin check lives in verify-vkey-pin.sh — run it here
+# (was a file-exists no-op that let a silently recommitted ELF pass the gate).
 if [ -f "$PIN" ]; then
   run_gate "Guest ELF/vkey pin matches committed ELF" POOL \
-    bash -c 'test -s "'"$PIN"'"'
+    bash contracts/sp1/confidential/verify-vkey-pin.sh
 else
   block_gate "Guest ELF/vkey pin" POOL \
     "no $PIN: confidential guest lacks the tETH ELF-pin discipline (commit canonical ELF + pinned vkey + CI sha check)"
@@ -134,11 +157,30 @@ else
 fi
 
 # ── BRIDGE layer 8: Bitcoin-side confidential-pool indexer ──────────────────
-if [ -f dapp/confidential-reflection-indexer.js ]; then
-  run_gate "Bitcoin reflection indexer (state / witness / indexer / attest)" BRIDGE reflection_suite
+# The shipped indexer is the full-scan one (dapp/confidential-reflection-scan-indexer.js); the
+# suite exercises it (scan / scan-indexer / attest-scan) plus the witnessed-model oracle tests.
+if [ -f dapp/confidential-reflection-scan-indexer.js ]; then
+  run_gate "Bitcoin reflection indexer (scan + witnessed oracle)" BRIDGE reflection_suite
 else
   block_gate "Bitcoin confidential-pool indexer" BRIDGE \
-    "reflection indexer not built (dapp/confidential-reflection-indexer.js absent)"
+    "full-scan reflection indexer not built (dapp/confidential-reflection-scan-indexer.js absent)"
+fi
+
+# ── BRIDGE layer 9: F4 spent-set completeness (full-scan re-prove landed) ────
+# The pinned reflection proof (vkey 0x0050d656…) is the relay-ANCHOR model (F1/F2/F3): it folds
+# witnessed effects, so a relayer could omit a Bitcoin spend → the cross-lane non-membership gate
+# carries the F4 caveat. The full-scan guest (every-tx/every-vin, no omission) is built in source +
+# JS indexer + the signet-307547 input fixture, but its GPU re-prove is the remaining box step —
+# it will REPLACE 0x0050d656 with a new vkey + refresh reflection_groth16.json. So this gate stays
+# BLOCKED while the pinned reflection vkey is still the anchor-model marker; it auto-clears when the
+# re-prove repins. (BLOCKED is an expected-pending milestone, not a regression — it does not fail.)
+F4_ANCHOR_VKEY="0x0050d656e9d421d5c75724e17dff0ba83e44813691101b75a96ff42d4aa41d49"
+if [ "$RPIN_VKEY" = "$F4_ANCHOR_VKEY" ]; then
+  block_gate "F4 spent-set completeness (full-scan re-prove)" BRIDGE \
+    "pinned reflection vkey is still the witnessed-anchor model ($F4_ANCHOR_VKEY) — cross-lane carries the F4 omission caveat until the full-scan guest is GPU-re-proven + re-pinned (box step; see elf-vkey-pin.json guest_state + RUNBOOK-confidential-pool-readiness.md)"
+else
+  run_gate "F4 spent-set completeness (full-scan re-prove landed)" BRIDGE \
+    test -n "$RPIN_VKEY"
 fi
 
 # ── verdicts ─────────────────────────────────────────────────────────────────

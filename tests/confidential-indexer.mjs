@@ -39,7 +39,7 @@ function emit(note, pub) {
   const { cx, cy } = memo.commitXY(note.value, note.blinding);
   const leaf = memo.leafHash(note.asset, cx, cy, note.owner);
   const enc = memo.encodeMemo(memo.sealMemo(pub, note, randomScalar));
-  return { leaf, memo: enc };
+  return { leaf, memo: enc, cx, cy };
 }
 
 const noteA = { value: 4242n, blinding: randomScalar(), secret: '0x' + 'a1'.repeat(32), asset: ASSET, owner: OWNER };
@@ -54,7 +54,7 @@ const b = emit(noteB, myPub);
 const events = [
   { type: 'LeavesInserted', firstLeafIndex: 0, leaves: [a.leaf, s.leaf], memos: [a.memo, s.memo] },
   { type: 'LeavesInserted', firstLeafIndex: 2, leaves: [b.leaf], memos: [b.memo] },
-  { type: 'NullifiersSpent', nullifiers: [pool.nullifier(noteB.secret)] },
+  { type: 'NullifiersSpent', nullifiers: [pool.nullifier(b.cx, b.cy)] }, // ν is note-bound (B3)
 ];
 
 // ── index folds the stream ──

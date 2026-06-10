@@ -278,10 +278,20 @@ pub fn verify_header_chain(headers: &[&[u8]]) -> Option<[u8; 32]> {
 /// (the UTXO model: a tx's vin are the prior pool outputs it spends). Returns None on a
 /// malformed / non-segwit tx.
 pub fn extract_inputs(tx_data: &[u8]) -> Option<Vec<([u8; 32], u32)>> {
-    if tx_data.len() < 6 || tx_data[4] != 0x00 || tx_data[5] != 0x01 {
+    if tx_data.len() < 5 {
         return None;
     }
-    let mut pos = 6;
+    // After the 4-byte version: a segwit tx carries the marker(0x00)+flag(0x01) before the input
+    // count; a legacy tx carries the input-count varint directly (its first byte can't be 0x00 —
+    // that would be zero inputs). Both serialize the inputs (outpoint + scriptSig + sequence)
+    // identically; the witness (segwit-only) trails the outputs and is irrelevant to the vin
+    // outpoints. Pool UTXOs are P2TR, so a CONFIRMED legacy tx can never spend one — but it must
+    // still be WALKED, not rejected: returning None here makes the reflection scan
+    // (`scan_tx_spends`) abort on the first legacy tx in a block (a cheap liveness DoS).
+    let mut pos = 4;
+    if tx_data[4] == 0x00 && tx_data.len() >= 6 && tx_data[5] == 0x01 {
+        pos = 6; // skip the segwit marker + flag
+    }
     let (input_count, vi_len) = read_varint(tx_data, pos);
     if input_count == 0 {
         return None;
@@ -446,6 +456,26 @@ mod tests {
         // wrong opcode / short payload reject
         assert!(parse_burn_envelope(&[0x23u8; 129]).is_none(), "non-burn opcode rejected");
         assert!(parse_burn_envelope(&got[..128]).is_none(), "truncated payload rejected");
+    }
+
+    #[test]
+    fn extract_inputs_handles_legacy_and_segwit() {
+        // Segwit tx (build_reveal_tx): marker+flag present, one input with the zero outpoint.
+        let segwit = build_reveal_tx(&[0xAAu8; 8]);
+        assert_eq!(extract_inputs(&segwit).expect("segwit inputs"), vec![([0u8; 32], 0u32)], "segwit vin");
+
+        // Legacy tx (no marker/flag): version, 1 input (txid 0xAB.., vout 7, empty scriptSig), sequence.
+        // A pure-legacy tx must PARSE (return its vins), not return None — else the reflection
+        // full-scan aborts on the first legacy tx in a block (F-LIVENESS DoS). It carries no pool
+        // spend (pool UTXOs are P2TR), so the scan simply finds no live-set hit.
+        let mut legacy = vec![0x02, 0x00, 0x00, 0x00, 0x01]; // version + 1 input
+        legacy.extend_from_slice(&[0xABu8; 32]);             // prev txid
+        legacy.extend_from_slice(&[0x07, 0x00, 0x00, 0x00]); // vout = 7 (LE)
+        legacy.push(0x00);                                   // empty scriptSig
+        legacy.extend_from_slice(&[0xff, 0xff, 0xff, 0xff]); // sequence
+        assert_eq!(extract_inputs(&legacy).expect("legacy tx must parse, not abort the scan"),
+            vec![([0xABu8; 32], 7u32)], "legacy vin");
+        assert!(extract_inputs(&legacy[..5]).is_none(), "truncated rejected");
     }
 
     #[test]

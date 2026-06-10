@@ -6,12 +6,10 @@ out/
 # tracked in the dapp's TETH_DEPLOYMENTS, so these are redundant.
 broadcast/
 
-# SP1 build artifacts (track source + lockfiles for reproducible clone builds)
-sp1/program/target/
-sp1/script/target/
-sp1/tree/target/
-sp1/confidential/target/
-sp1/confidential/**/target/
+# SP1 build artifacts (track source + lockfiles for reproducible clone builds).
+# Covers every crate under sp1/ (program, script, tree, confidential, reflect-exec, …)
+# and nested workspace members — target/ is regenerable and large (1GB+).
+sp1/**/target/
 
 # Compiler artifacts
 *.abi

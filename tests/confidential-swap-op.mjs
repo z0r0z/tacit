@@ -27,6 +27,7 @@ const ASSET_A = '0x' + 'aa'.repeat(32);
 const ASSET_B = '0x' + 'bb'.repeat(32);
 const OWNER = '0x' + '00'.repeat(31) + '01';
 const OWNER_OUT = '0x' + '00'.repeat(31) + '02';
+const CHAIN_BINDING = '0x' + '11'.repeat(32);
 const ZEROS = pool.zeros; // 32 sibling-zeros for a placeholder path
 
 // Build a batch from intent specs: derive each input note, place every input leaf in one tree,
@@ -34,7 +35,7 @@ const ZEROS = pool.zeros; // 32 sibling-zeros for a placeholder path
 function assemble({ reserveAPre, reserveBPre, priceNum, priceDen, specs }) {
   const intents = specs.map((s) => swap.buildIntent({
     direction: s.direction, amountIn: s.amountIn, priceNum, priceDen, minOut: s.minOut ?? 0,
-    rInSecp: s.rInSecp, rOutSecp: randomScalar(),
+    rInSecp: s.rInSecp, rOutSecp: randomScalar(), nonceIn: randomScalar(), nonceOut: randomScalar(),
     inNote: { owner: OWNER, leafIndex: 0, path: ZEROS }, outOwner: OWNER_OUT,
   }));
   // one pool tree holds every input note; patch each intent's (leafIndex, path)
@@ -45,7 +46,7 @@ function assemble({ reserveAPre, reserveBPre, priceNum, priceDen, specs }) {
   });
   intents.forEach((it, i) => { const { path } = tree.rootAndPath(idxs[i]); it.in.leafIndex = idxs[i]; it.in.path = path; });
   const spendRoot = tree.rootAndPath(0).root;
-  const batch = swap.buildBatch({ assetA: ASSET_A, assetB: ASSET_B, reserveAPre, reserveBPre, priceNum, priceDen, intents, spendRoot });
+  const batch = swap.buildBatch({ assetA: ASSET_A, assetB: ASSET_B, chainBinding: CHAIN_BINDING, reserveAPre, reserveBPre, priceNum, priceDen, intents, spendRoot });
   return { batch, ...swap.verifyBatch(batch, { merkleRootFrom: pool.merkleRootFrom }) };
 }
 
@@ -135,10 +136,12 @@ function assemble({ reserveAPre, reserveBPre, priceNum, priceDen, specs }) {
     reserveAPre: 1000, reserveBPre: 1000, priceNum: 90, priceDen: 100,
     specs: [{ direction: 'A->B', amountIn: 100, minOut: 90, rInSecp }],
   });
-  // claim more output than the price clears, keeping the (now stale) output note commitment
+  // claim more output than the price clears, keeping the (now stale) output note commitment. The
+  // intent context binds amount_out, so the inflated amount also breaks the opening sigmas (the box
+  // can't re-price), beyond the clearing check.
   const bad = { ...batch, intents: [{ ...batch.intents[0], amountOut: 95n, rem: 0n }] };
-  assert.throws(() => swap.verifyBatch(bad, { merkleRootFrom: pool.merkleRootFrom }), /output opening|clearing/, 'inflated output rejected');
-  ok('inflating amount_out (95 vs cleared 90) fails the clearing/secp opening bind');
+  assert.throws(() => swap.verifyBatch(bad, { merkleRootFrom: pool.merkleRootFrom }), /opening|clearing/, 'inflated output rejected');
+  ok('inflating amount_out (95 vs cleared 90) breaks the opening-sigma context bind + clearing');
 }
 
 console.log(`\n${n} OP_SWAP checks passed.`);

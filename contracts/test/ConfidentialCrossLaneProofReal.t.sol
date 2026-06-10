@@ -32,6 +32,9 @@ contract ConfidentialCrossLaneProofRealTest is Test {
         bytes32 vkey = vm.parseJsonBytes32(json, ".vkey");
         bytes memory publicValues = vm.parseJsonBytes(json, ".publicValues");
         bytes memory proofBytes = vm.parseJsonBytes(json, ".proofBytes");
+        // Coherence: the cross-lane fixture is a proof of the SAME pinned settle guest.
+        string memory pin = vm.readFile(string.concat(vm.projectRoot(), "/sp1/confidential/elf-vkey-pin.json"));
+        assertEq(vkey, vm.parseJsonBytes32(pin, ".program_vkey"), "fixture vkey != pinned program_vkey");
         SP1Verifier verifier = new SP1Verifier();
         verifier.verifyProof(vkey, publicValues, proofBytes); // reverts on failure
 

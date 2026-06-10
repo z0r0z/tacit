@@ -39,25 +39,27 @@ fn main() {
     stdin.write(&hexv(f["kernel"]["z"].as_str().unwrap()));
 
     let mode = std::env::var("MODE").unwrap_or_else(|_| "compressed".into());
-    let client = ProverClient::builder().cpu().build(); // CPU only — never the GPU
-    let elf = Elf::Static(ELF);
-    println!("setup...");
-    let pk = client.setup(elf).expect("setup failed");
-    println!("VKEY={}", pk.verifying_key().bytes32());
-    println!("proving {mode} (cpu)...");
-    let proof = if mode == "groth16" {
-        client.prove(&pk, stdin).groth16().run().expect("groth16 proof failed")
-    } else {
-        client.prove(&pk, stdin).compressed().run().expect("compressed proof failed")
-    };
-    println!("PROVED pv_bytes={}", proof.public_values.as_slice().len());
-    client.verify(&proof, pk.verifying_key(), None).expect("local verify failed");
-    println!("LOCAL_VERIFY_OK ({mode})");
-    std::fs::write("/root/work/cxfer/exec/public_values.hex", hex::encode(proof.public_values.as_slice())).unwrap();
-    if mode == "groth16" {
-        std::fs::write("/root/work/cxfer/exec/proof_bytes.hex", hex::encode(proof.bytes())).unwrap();
-        println!("WROTE public_values.hex + proof_bytes.hex");
-    } else {
-        println!("WROTE public_values.hex (compressed proof verified locally)");
+    // CudaProver and CpuProver are distinct types, so each path is self-contained (no shared binding).
+    // groth16 → GPU (a CPU groth16 wrap is intractable); compressed → CPU (demonstrates the CPU path).
+    if mode != "groth16" {
+        let client = ProverClient::builder().cpu().build();
+        let pk = client.setup(Elf::Static(ELF)).expect("setup failed");
+        println!("VKEY={}", pk.verifying_key().bytes32());
+        println!("proving compressed (cpu)...");
+        let proof = client.prove(&pk, stdin).compressed().run().expect("compressed proof failed");
+        client.verify(&proof, pk.verifying_key(), None).expect("local verify failed");
+        std::fs::write("/root/work/cxfer/exec/public_values.hex", hex::encode(proof.public_values.as_slice())).unwrap();
+        println!("LOCAL_VERIFY_OK (compressed)\nWROTE public_values.hex (compressed proof verified locally)");
+        return;
     }
+    let client = ProverClient::builder().cuda().build();
+    let pk = client.setup(Elf::Static(ELF)).expect("setup failed");
+    println!("VKEY={}", pk.verifying_key().bytes32());
+    println!("proving groth16 (cuda)...");
+    let proof = client.prove(&pk, stdin).groth16().run().expect("groth16 proof failed");
+    client.verify(&proof, pk.verifying_key(), None).expect("local verify failed");
+    println!("LOCAL_VERIFY_OK groth16 pv_bytes={}", proof.public_values.as_slice().len());
+    std::fs::write("/root/work/cxfer/exec/public_values.hex", hex::encode(proof.public_values.as_slice())).unwrap();
+    std::fs::write("/root/work/cxfer/exec/proof_bytes.hex", hex::encode(proof.bytes())).unwrap();
+    println!("WROTE public_values.hex + proof_bytes.hex");
 }

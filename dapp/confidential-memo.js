@@ -82,14 +82,15 @@ export function makeConfidentialMemo({ secp, sha256, keccak256 }) {
 
   // Scan on-chain leaf+memo events; return the notes recoverable to myPriv that
   // are still active (not in spentNullifiers). Each event is {leaf, leafIndex,
-  // memo} as emitted by LeavesInserted. nullifierOf maps a recovered secret → ν.
+  // memo} as emitted by LeavesInserted. nullifierOf maps a note's (Cx,Cy) → ν
+  // (note-bound, spec B3).
   function scan(myPriv, events, spentNullifiers, nullifierOf) {
     const spent = new Set((spentNullifiers || []).map((n) => n.toLowerCase()));
     const mine = [];
     for (const ev of events) {
       const note = openMemo(myPriv, ev.leaf, ev.memo);
       if (!note) continue;
-      const nullifier = nullifierOf(note.secret);
+      const nullifier = nullifierOf(note.cx, note.cy);
       if (spent.has(nullifier.toLowerCase())) continue;
       mine.push({ ...note, leaf: ev.leaf, leafIndex: ev.leafIndex, nullifier });
     }

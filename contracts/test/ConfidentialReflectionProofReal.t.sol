@@ -34,6 +34,14 @@ contract ConfidentialReflectionProofRealTest is Test {
         verifier.verifyProof(vkey, publicValues, proofBytes);
     }
 
+    /// Coherence: the reflection fixture's vkey IS the committed pin (elf-vkey-pin.json
+    /// bitcoin_relay_vkey) — so this proof is of the SAME reflection guest a deployer would
+    /// set BITCOIN_RELAY_VKEY to, not a drifted one.
+    function test_fixture_vkey_matches_pin() public view {
+        string memory pin = vm.readFile(string.concat(vm.projectRoot(), "/sp1/confidential/elf-vkey-pin.json"));
+        assertEq(vkey, vm.parseJsonBytes32(pin, ".bitcoin_relay_vkey"), "fixture vkey != pinned bitcoin_relay_vkey");
+    }
+
     /// The proof commits the BitcoinReflectionPublicValues attestBitcoinStateProven decodes:
     /// the real block height, and the newDigest the JS indexer + native reproduction computed.
     function test_reflection_public_values_decode() public view {
@@ -43,11 +51,17 @@ contract ConfidentialReflectionProofRealTest is Test {
             bytes32 spentRoot,
             bytes32 burnRoot,
             uint64 height,
-            bytes32 newDigest
-        ) = abi.decode(publicValues, (bytes32, bytes32, bytes32, bytes32, uint64, bytes32));
+            bytes32 newDigest,
+            bytes32 prevHash,
+            bytes32 tipHash
+        ) = abi.decode(publicValues, (bytes32, bytes32, bytes32, bytes32, uint64, bytes32, bytes32, bytes32));
         assertEq(height, 307547, "the real signet block height");
         assertEq(newDigest, 0x11985609c63b8145f57edf50c103eebb29a751028d71e60116ec76aba82d84ea, "newDigest == indexer");
         assertTrue(priorDigest != bytes32(0) && poolRoot != bytes32(0) && spentRoot != bytes32(0), "non-zero roots");
+        // The header anchor the contract pins to RELAY.tip()/the prior tip: tip non-zero, prev = the
+        // batch's resume anchor (headers[0]'s prev field).
+        assertTrue(tipHash != bytes32(0), "committed Bitcoin tip hash (relay anchor)");
+        prevHash; // bound in the proof; the contract checks it against the prior attested tip
         assertTrue(burnRoot != bytes32(0), "burn root is the non-zero sentinel (no burns in this transfer)");
     }
 

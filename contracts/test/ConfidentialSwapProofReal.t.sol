@@ -22,12 +22,14 @@ contract ConfidentialSwapProofRealTest is Test {
     struct CrossOut { uint16 destChain; bytes32 destCommitment; bytes32 nullifier; bytes32 assetId; bytes32 claimId; }
     struct AssetMeta { bytes32 assetId; bytes16 ticker; uint8 tickerLen; uint8 decimals; }
     struct SwapSettlement { bytes32 poolId; uint256 reserveAPre; uint256 reserveBPre; uint256 reserveAPost; uint256 reserveBPost; }
+    struct LpSettlement { bytes32 poolId; uint256 reserveAPre; uint256 reserveBPre; uint256 sharesPre; uint256 reserveAPost; uint256 reserveBPost; uint256 sharesPost; }
     struct PublicValues {
         uint16 version; bytes32 chainBinding; bytes32 spendRoot;
         bytes32[] nullifiers; bytes32[] leaves; bytes32[] depositsConsumed;
         Withdrawal[] withdrawals; FeePayment[] fees; bytes32[] bitcoinBurnsConsumed;
         CrossOut[] crossOuts; bytes32[] bitcoinRootsUsed; bytes32 bitcoinSpentRoot;
         bytes32 bitcoinBurnRoot; AssetMeta[] assetMetas; SwapSettlement[] swaps;
+        LpSettlement[] liquidity;
     }
 
     bytes32 constant ASSET_A = bytes32(uint256(0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa));
@@ -49,6 +51,13 @@ contract ConfidentialSwapProofRealTest is Test {
     /// The real swap proof verifies on-chain against the settle-guest vkey (reverts on failure).
     function test_real_proof_verifies_onchain() public view {
         verifier.verifyProof(vkey, publicValues, proofBytes);
+    }
+
+    /// Coherence: the fixture's vkey IS the committed pin (elf-vkey-pin.json program_vkey) —
+    /// so this real swap proof verifies against the SAME settle guest the pool is deployed with.
+    function test_fixture_vkey_matches_pin() public view {
+        string memory pin = vm.readFile(string.concat(vm.projectRoot(), "/sp1/confidential/elf-vkey-pin.json"));
+        assertEq(vkey, vm.parseJsonBytes32(pin, ".program_vkey"), "fixture vkey != pinned program_vkey");
     }
 
     /// Ground-truth: the proof's selector is the one this verifier version expects.

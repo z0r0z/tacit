@@ -1,27 +1,33 @@
 //! Reflection prover — proves the Bitcoin confidential-pool roots that
 //! ConfidentialPool.attestBitcoinStateProven pins as the cross-lane / bridge_mint authority.
 //!
-//! Resume-from-digest (witnessed-incremental, O(Δ)/cycle): read the prior reflection state
-//! (roots + counts + height), verify it hashes to `priorDigest`, fold the batch's confirmed
-//! Δ-effects through the witnessed accumulator transitions, and commit the new roots + digest.
-//! The contract chains cycles by checking `priorDigest == knownReflectionDigest` then setting
-//! `knownReflectionDigest = newDigest`, so a proof can only EXTEND the attested state.
+//! FULL SCAN (F4 closed): the prover is HANDED the live pool UTXO set, re-derives the resume
+//! digest from it (so the contract's `priorDigest == knownReflectionDigest` chain pins the handed
+//! set — a wrong handoff fails the digest), then walks EVERY tx of EVERY block in the batch and
+//! resolves each tx's vins against that set. Because no tx is skipped (the provided txs must
+//! re-hash to the header's merkle root) and no vin is skipped, a relayer can no longer OMIT a
+//! Bitcoin spend of a pool note — even a plain, non-protocol spend of a pool UTXO is nullified.
+//! That is the completeness the earlier witnessed-effects model (relayer-chosen txs) could not
+//! guarantee, so the cross-lane non-membership gate is now sound, not caveated.
 //!
-//! Trustless inputs landing in layers:
-//!   - header-chain PoW (verify_header_chain) — DONE here: the batch's confirmed tip.
-//!   - per-effect tx-inclusion (verify_tx_in_block) + outpoint binding (extract_inputs) +
-//!     envelope parse (extract_taproot_envelope → note/dest) — the next increment; until it
-//!     lands this program is the fold+PoW+digest-chaining scaffold, NOT a live BITCOIN_RELAY_VKEY.
+//! The note tree, spent-set, and bridge-burn set stay HEADLESS (roots + counts + witnessed
+//! transitions, O(Δ)/cycle); only the UTXO set is full in-memory (`LiveUtxoSet`, the vin-lookup
+//! source, O(live) to verify once per batch). Per batch: O(live) set-verify + O(block) vin-scan +
+//! O(Δ) witnessed spent/note/burn — see the reflection prover memo for the scale envelope.
+//!
+//! ANCHOR (F1/F2/F3 closed): the guest commits `bitcoinPrevHash` (headers[0]'s prev field) +
+//! `bitcoinTipHash` (the last header's hash); ConfidentialPool pins the tip to the canonical
+//! BitcoinLightRelay (`RELAY.tip()` within FINALITY_WINDOW) and the prev to the prior attested tip,
+//! forcing the whole proven chain to be canonical Bitcoin (self-declared difficulty moot; the
+//! finality window gives confirmation/reorg tolerance). The ctor binds them: a non-zero
+//! BITCOIN_RELAY_VKEY requires a non-zero HEADER_RELAY.
 #![no_main]
 sp1_zkvm::entrypoint!(main);
 
 use alloy_sol_types::sol;
 use alloy_sol_types::SolType;
-use cxfer_core::{bitcoin, commitment_hash_compressed, confirm_pool_tx, nullifier, outpoint_key, BurnWitness, OutputWitness, SpendWitness, WitnessedReflection};
+use cxfer_core::{bitcoin, commitment_hash_compressed, outpoint_key, reflected_note_leaf, scan_tx_spends, LiveUtxoSet, ScanReflection};
 use sp1_zkvm::io;
-
-const OP_TRANSFER: u8 = 0;
-const OP_BRIDGE_OUT: u8 = 1;
 
 sol! {
     struct BitcoinReflectionPublicValues {
@@ -31,6 +37,8 @@ sol! {
         bytes32 bitcoinBurnRoot;   // bridge-burn set root after the batch
         uint64  bitcoinHeight;     // confirmed Bitcoin height the batch advanced to
         bytes32 newDigest;         // the reflected state after the batch (next cycle's prior)
+        bytes32 bitcoinPrevHash;   // headers[0]'s prev-block field — the anchor this batch resumes from
+        bytes32 bitcoinTipHash;    // double-SHA256 of the last header — the batch's new tip
     }
 }
 
@@ -41,135 +49,119 @@ fn r_n<const N: usize>() -> [u8; N] {
 fn r32() -> [u8; 32] { r_n::<32>() }
 fn r_path() -> Vec<[u8; 32]> { (0..32).map(|_| r32()).collect() }
 
-/// Read the prior reflection state (roots + counts + height) — the resume anchor.
-fn read_prior_state() -> WitnessedReflection {
-    WitnessedReflection {
-        pool_root: r32(),
-        note_count: io::read(),
-        spent_root: r32(),
-        spent_count: io::read(),
-        utxo_root: r32(),
-        utxo_count: io::read(),
-        burn_root: r32(),
-        burn_count: io::read(),
-        height: io::read(),
-    }
+/// Resume anchor: the headless roots + counts, the HANDED live UTXO set (sorted (key,value)
+/// pairs), and the height. `from_sorted` rejects an unsorted/duplicate handoff; the digest
+/// re-derivation pins the set's root + size (the contract chains it), so this IS the O(live)
+/// verify-once step — no separate root check needed.
+fn read_scan_prior_state() -> ScanReflection {
+    let pool_root = r32();
+    let note_count: u64 = io::read();
+    let spent_root = r32();
+    let spent_count: u64 = io::read();
+    let n_live: u32 = io::read();
+    let live_pairs: Vec<([u8; 32], [u8; 32])> = (0..n_live).map(|_| (r32(), r32())).collect();
+    let live = LiveUtxoSet::from_sorted(live_pairs).expect("handed live UTXO set not sorted/unique");
+    let burn_root = r32();
+    let burn_count: u64 = io::read();
+    let height: u64 = io::read();
+    ScanReflection { pool_root, note_count, spent_root, spent_count, live, burn_root, burn_count, height }
 }
 
-fn read_spend() -> SpendWitness {
-    SpendWitness {
-        cx: r32(),
-        cy: r32(),
-        outpoint: r32(),
-        s_low_value: r32(),
-        s_low_next: r32(),
-        s_low_index: io::read(),
-        s_low_path: r_path(),
-        s_new_path: r_path(),
-        u_node_next: r32(),
-        u_node_value: r32(),
-        u_node_index: io::read(),
-        u_node_path: r_path(),
-        u_pred_key: r32(),
-        u_pred_value: r32(),
-        u_pred_index: io::read(),
-        u_pred_path: r_path(),
-    }
+/// One spent-set IMT insert witness (the low leaf + the two paths). ν comes from the scan.
+fn read_spent_insert() -> ([u8; 32], [u8; 32], u64, Vec<[u8; 32]>, Vec<[u8; 32]>) {
+    let low_value = r32();
+    let low_next = r32();
+    let low_index: u64 = io::read();
+    let low_path = r_path();
+    let new_path = r_path();
+    (low_value, low_next, low_index, low_path, new_path)
 }
 
-fn read_output() -> OutputWitness {
-    OutputWitness {
-        note_leaf: r32(),
-        note_path: r_path(),
-        outpoint: r32(),
-        commitment_hash: r32(),
-        u_low_key: r32(),
-        u_low_next: r32(),
-        u_low_value: r32(),
-        u_low_index: io::read(),
-        u_low_path: r_path(),
-        u_new_path: r_path(),
-    }
+/// One bridge-burn set insert witness (ν → destCommitment; the low node + the two paths).
+fn read_burn_insert() -> ([u8; 32], [u8; 32], [u8; 32], u64, Vec<[u8; 32]>, Vec<[u8; 32]>) {
+    let low_key = r32();
+    let low_next = r32();
+    let low_value = r32();
+    let low_index: u64 = io::read();
+    let low_path = r_path();
+    let new_path = r_path();
+    (low_key, low_next, low_value, low_index, low_path, new_path)
 }
 
 pub fn main() {
-    let mut state = read_prior_state();
+    let mut state = read_scan_prior_state();
     let prior_digest = state.digest();
 
-    // Header-chain PoW: the batch's headers are a valid difficulty-respecting chain anchored
-    // at `anchor_height` (the contract checks headers[0] == the relay tip). Each effect cites
-    // a block by index; its confirmed height is anchor_height + block_index.
+    // Header chain: non-empty, links (prev_hash) + carries valid PoW, and EXPOSES its anchor
+    // (headers[0]'s prev) + tip so the CONTRACT can pin them to the canonical relay — forcing the
+    // whole batch to be canonical Bitcoin (F1/F2/F3).
     let anchor_height: u64 = io::read();
     let num_headers: u32 = io::read();
     let headers: Vec<Vec<u8>> = (0..num_headers).map(|_| io::read()).collect();
-    if num_headers > 0 {
-        let refs: Vec<&[u8]> = headers.iter().map(|h| h.as_slice()).collect();
-        assert!(bitcoin::verify_header_chain(&refs).is_some(), "invalid Bitcoin header chain");
-    }
+    assert!(num_headers > 0, "reflection batch needs >=1 header to anchor");
+    let refs: Vec<&[u8]> = headers.iter().map(|h| h.as_slice()).collect();
+    let tip_hash = bitcoin::verify_header_chain(&refs).expect("invalid Bitcoin header chain");
+    let prev_hash: [u8; 32] = headers[0][4..36].try_into().expect("header prev field");
 
-    // Fold the batch's confirmed Δ-effects through the witnessed transitions. Each effect is
-    // bound to a confirmed Bitcoin tx: confirm_pool_tx ties it to a PoW block in the chain
-    // (verify_tx_in_block), every spent outpoint must be a real vin of that tx (extract_inputs),
-    // and every output outpoint must be a real vout (outpoint_key(txid, vout)).
-    let num_effects: u32 = io::read();
-    for _ in 0..num_effects {
-        let op: u8 = io::read();
-        let block_index: u32 = io::read();
-        let tx_data: Vec<u8> = io::read();
-        let tx_index: u32 = io::read();
-        let n_txids: u32 = io::read();
-        let txids: Vec<[u8; 32]> = (0..n_txids).map(|_| r32()).collect();
-        assert!((block_index as usize) < headers.len(), "block index outside the verified chain");
-        let (txid, in_outpoints) = confirm_pool_tx(&headers[block_index as usize], &tx_data, tx_index, &txids)
-            .expect("effect tx not confirmed in its block");
+    // FULL SCAN: every tx of every block, in order.
+    for block_index in 0..(num_headers as usize) {
+        let merkle_root = bitcoin::extract_merkle_root(&headers[block_index]);
+        let n_tx: u32 = io::read();
+        let txs: Vec<Vec<u8>> = (0..n_tx).map(|_| io::read()).collect();
+        // Completeness of the tx set: the provided txs ARE the whole block — their txid merkle
+        // root equals the header's. So no tx (hence no pool spend) can be silently omitted.
+        let txids: Vec<[u8; 32]> = txs.iter().map(|t| bitcoin::compute_txid(t)).collect();
+        assert_eq!(bitcoin::compute_merkle_root(&txids), merkle_root, "provided txs are not the complete block");
         let height = anchor_height + block_index as u64;
+        assert!(height >= state.height, "reflection height must not decrease");
 
-        match op {
-            OP_TRANSFER => {
-                // 3.3b: the output note commitments are bound to the CXFER envelope — a note the
-                // confirmed tx never declared can't enter the pool (no fabricated/unbacked notes).
-                let env = bitcoin::extract_taproot_envelope(&tx_data).expect("cxfer envelope present");
-                let (_asset, commitments) = bitcoin::parse_cxfer_envelope(&env).expect("malformed cxfer envelope");
-                let n_in: u32 = io::read();
-                let m_out: u32 = io::read();
-                assert_eq!(m_out as usize, commitments.len(), "output count != envelope commitment count");
-                let spends: Vec<SpendWitness> = (0..n_in).map(|_| read_spend()).collect();
-                for s in &spends {
-                    assert!(in_outpoints.contains(&s.outpoint), "spent outpoint is not a vin of the confirmed tx");
+        for (ti, tx) in txs.iter().enumerate() {
+            let txid = txids[ti];
+
+            // Vin-scan: every input that hits a live pool UTXO is a spend that MUST be folded. The
+            // opening (Cx,Cy) for each is read in vin order and bound to the outpoint's stored
+            // commitment inside scan_tx_spends (a forged opening is a hard reject).
+            let spends = scan_tx_spends(tx, &mut state.live, || (r32(), r32()))
+                .expect("vin scan / opening bind");
+
+            // Classify by envelope: most txs have none (their spends are plain pool-UTXO spends,
+            // still nullified). A burn envelope marks a bridge-out; a cxfer envelope declares
+            // output notes.
+            let env = bitcoin::extract_taproot_envelope(tx);
+            let burn = env.as_ref().and_then(|e| bitcoin::parse_burn_envelope(e));
+            let cxfer = env.as_ref().and_then(|e| bitcoin::parse_cxfer_envelope(e));
+
+            // Fold the detected spends into the spent-set (witnessed IMT insert, in scan order).
+            for (_outpoint, nu) in &spends {
+                let (sv, sn, si, sp, snew) = read_spent_insert();
+                state.fold_spent(nu, &sv, &sn, si, &sp, &snew).expect("spent-set fold");
+            }
+
+            // A bridge-out records ν → destCommitment in the burn set (the burned note is the
+            // tx's single detected spend, bound to the envelope's nullifier).
+            if let Some((_asset, env_nu, env_dest)) = &burn {
+                assert!(spends.len() == 1 && &spends[0].1 == env_nu, "burn envelope must match the single spent note");
+                let (bk, bn, bv, bi, bp, bnew) = read_burn_insert();
+                state.fold_burn(env_nu, env_dest, &bk, &bn, &bv, bi, &bp, &bnew).expect("burn-set fold");
+            }
+
+            // A cxfer tx's outputs are new pool notes: the note leaf (asset/owner/commitment) is
+            // witnessed, its commitment bound to the envelope's declared point, its outpoint to a
+            // real vout. Added to the live set so a later tx in the batch can spend it.
+            if let Some((asset, commitments)) = &cxfer {
+                for commitment in commitments {
+                    let note_path = r_path();
+                    let vout: u32 = io::read();
+                    let outpoint = outpoint_key(&txid, vout);
+                    // DERIVE the note leaf from the envelope's asset + commitment (not a free witness),
+                    // so a relayer can't append an arbitrary attacker-spendable leaf into bitcoinPoolRoot.
+                    let note_leaf = reflected_note_leaf(asset, commitment).expect("envelope commitment is a curve point");
+                    let ch = commitment_hash_compressed(commitment).expect("envelope commitment is a curve point");
+                    state.fold_output(&note_leaf, &note_path, &outpoint, &ch).expect("output fold");
                 }
-                let outputs: Vec<OutputWitness> = (0..m_out)
-                    .map(|j| {
-                        let o = read_output();
-                        let vout: u32 = io::read();
-                        assert_eq!(outpoint_key(&txid, vout), o.outpoint, "output outpoint is not a vout of the confirmed tx");
-                        assert_eq!(commitment_hash_compressed(&commitments[j as usize]), Some(o.commitment_hash), "output commitment != the envelope's");
-                        o
-                    })
-                    .collect();
-                state.apply_transfer(&spends, &outputs, height).expect("transfer fold");
             }
-            OP_BRIDGE_OUT => {
-                let spend = read_spend();
-                assert!(in_outpoints.contains(&spend.outpoint), "burned outpoint is not a vin of the confirmed tx");
-                // 3.3: the destCommitment (and ν) are bound to the burn ENVELOPE, not witnessed —
-                // so a burn's Ethereum mint can't be redirected to a different destination.
-                let env = bitcoin::extract_taproot_envelope(&tx_data).expect("burn envelope present");
-                let (_asset, env_nu, env_dest) = bitcoin::parse_burn_envelope(&env).expect("malformed burn envelope");
-                assert_eq!(nullifier(&spend.cx, &spend.cy), env_nu, "burned note ν != the envelope's nullifier");
-                let burn = BurnWitness {
-                    spend,
-                    dest_commitment: env_dest,
-                    b_low_key: r32(),
-                    b_low_next: r32(),
-                    b_low_value: r32(),
-                    b_low_index: io::read(),
-                    b_low_path: r_path(),
-                    b_new_path: r_path(),
-                };
-                state.apply_bridge_out(&burn, height).expect("bridge-out fold");
-            }
-            _ => panic!("unknown reflection effect"),
         }
+        state.height = height;
     }
 
     let pv = BitcoinReflectionPublicValues {
@@ -179,6 +171,8 @@ pub fn main() {
         bitcoinBurnRoot: state.burn_root.into(),
         bitcoinHeight: state.height,
         newDigest: state.digest().into(),
+        bitcoinPrevHash: prev_hash.into(),
+        bitcoinTipHash: tip_hash.into(),
     };
     io::commit_slice(&BitcoinReflectionPublicValues::abi_encode(&pv));
 }

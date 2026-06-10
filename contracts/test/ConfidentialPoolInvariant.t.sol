@@ -162,7 +162,7 @@ contract PoolHandler is Test {
         bytes32 next = keccak256(abi.encode(prior, poolRoot, spentRoot, burnRoot, newHeight));
         ConfidentialPool.BitcoinRelayPublicValues memory r = ConfidentialPool.BitcoinRelayPublicValues(
             prior, poolRoot, spentRoot, burnRoot, newHeight, next
-        );
+        , bytes32(0), bytes32(0));
         pool.attestBitcoinStateProven(abi.encode(r), "");
         ghostRelayHeight = newHeight;
     }
@@ -187,7 +187,7 @@ contract ConfidentialPoolInvariantTest is Test {
     function setUp() public {
         vm.chainId(1);
         verifier = new AcceptAllVerifier();
-        pool = new ConfidentialPool(address(verifier), bytes32(uint256(1)), bytes32(0), address(0));
+        pool = new ConfidentialPool(address(verifier), bytes32(uint256(1)), bytes32(0), address(0), address(0), bytes32(0));
         tokenA = new InvERC20("A", "A", 18);
         tokenB = new InvERC20("B", "B", 18);
         assetA = pool.registerWrapped(address(tokenA), SCALE_A, bytes32(0), "cA", "cA", 18);

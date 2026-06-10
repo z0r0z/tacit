@@ -36,6 +36,17 @@ contract MockSP1Verifier is ISP1Verifier {
     }
 }
 
+// A stand-in Bitcoin light relay for the reflection anchor: tip() = a settable canonical tip,
+// blockParent for the ancestor walk. The attest tests anchor trivially (prev == tip == the seeded
+// ANCHOR, which is also the relay tip), so the digest-chain mechanics are tested with the anchor ON.
+contract MockRelay {
+    bytes32 public tip;
+    mapping(bytes32 => bytes32) public blockParent;
+    constructor(bytes32 t) { tip = t; }
+    function setTip(bytes32 t) external { tip = t; }
+    function setParent(bytes32 child, bytes32 parent) external { blockParent[child] = parent; }
+}
+
 contract ConfidentialPoolTest is Test {
     ConfidentialPool pool;
     MockSP1Verifier verifier;
@@ -48,12 +59,15 @@ contract ConfidentialPoolTest is Test {
     address constant SETTLER = address(0x5E771E2);
     bytes32 constant VKEY = bytes32(uint256(0xABCD)); // placeholder program vkey
     bytes32 constant RELAY_VKEY = bytes32(uint256(0xBEEF)); // placeholder Bitcoin-relay vkey
+    bytes32 constant ANCHOR = bytes32(uint256(0xB17C0)); // seeded reflection anchor == mock relay tip
+    MockRelay relay;
 
     function setUp() public {
         vm.chainId(1);
         verifier = new MockSP1Verifier();
         factory = new CanonicalAssetFactory();
-        pool = new ConfidentialPool(address(verifier), VKEY, RELAY_VKEY, address(factory));
+        relay = new MockRelay(ANCHOR);
+        pool = new ConfidentialPool(address(verifier), VKEY, RELAY_VKEY, address(factory), address(relay), ANCHOR);
         token = new MockERC20();
         assetId = pool.registerWrapped(address(token), 1, bytes32(0), "Conf Mock", "cMCK", 18);
 
@@ -94,7 +108,7 @@ contract ConfidentialPoolTest is Test {
         bytes32 prior = pool.knownReflectionDigest(); // continue the current attested state
         bytes32 next = keccak256(abi.encode(prior, poolRoot, spentRoot, burnRoot, height));
         ConfidentialPool.BitcoinRelayPublicValues memory r =
-            ConfidentialPool.BitcoinRelayPublicValues(prior, poolRoot, spentRoot, burnRoot, height, next);
+            ConfidentialPool.BitcoinRelayPublicValues(prior, poolRoot, spentRoot, burnRoot, height, next, ANCHOR, ANCHOR);
         pool.attestBitcoinStateProven(abi.encode(r), "");
     }
 
@@ -698,7 +712,7 @@ contract ConfidentialPoolTest is Test {
         bytes32 prior = pool.knownReflectionDigest();
         ConfidentialPool.BitcoinRelayPublicValues memory r = ConfidentialPool.BitcoinRelayPublicValues(
             prior, keccak256("r2"), keccak256("s2"), keccak256("b2"), 199, keccak256("next2")
-        );
+        , ANCHOR, ANCHOR);
         vm.expectRevert(ConfidentialPool.StaleRelayProof.selector);
         pool.attestBitcoinStateProven(abi.encode(r), "");
     }
@@ -753,7 +767,7 @@ contract ConfidentialPoolTest is Test {
     /// ERC20 with exactly that (symbol, decimals) — no trusted metadata, no manual step.
     function test_settle_auto_registers_from_attested_meta() public {
         CanonicalAssetFactory factory = new CanonicalAssetFactory();
-        ConfidentialPool p = new ConfidentialPool(address(verifier), VKEY, RELAY_VKEY, address(factory));
+        ConfidentialPool p = new ConfidentialPool(address(verifier), VKEY, RELAY_VKEY, address(factory), address(relay), ANCHOR);
 
         // The guest now confirms the asset is real + funded on Bitcoin: it proves a note
         // for this asset_id is a member of a relay-attested pool root and commits that root
@@ -762,7 +776,7 @@ contract ConfidentialPoolTest is Test {
         bytes32 prior = p.knownReflectionDigest();
         ConfidentialPool.BitcoinRelayPublicValues memory rl = ConfidentialPool.BitcoinRelayPublicValues(
             prior, attRoot, keccak256("sentinel"), keccak256("sentinel-burn"), 1, keccak256("next")
-        );
+        , ANCHOR, ANCHOR);
         p.attestBitcoinStateProven(abi.encode(rl), "");
 
         bytes32 tacId = keccak256("attested-TAC");
@@ -800,7 +814,7 @@ contract ConfidentialPoolTest is Test {
     /// is rejected — no junk canonical ERC20 can be lazy-deployed from it.
     function test_settle_attest_meta_requires_attested_pool_root() public {
         CanonicalAssetFactory factory = new CanonicalAssetFactory();
-        ConfidentialPool p = new ConfidentialPool(address(verifier), VKEY, RELAY_VKEY, address(factory));
+        ConfidentialPool p = new ConfidentialPool(address(verifier), VKEY, RELAY_VKEY, address(factory), address(relay), ANCHOR);
 
         ConfidentialPool.PublicValues memory pv;
         pv.version = p.PV_VERSION();
@@ -872,8 +886,44 @@ contract ConfidentialPoolTest is Test {
         bytes32 prior = pool.knownReflectionDigest();
         ConfidentialPool.BitcoinRelayPublicValues memory r = ConfidentialPool.BitcoinRelayPublicValues(
             prior, keccak256("some-pool-root"), bytes32(0), keccak256("b"), 1, keccak256("n")
-        );
+        , ANCHOR, ANCHOR);
         vm.expectRevert(ConfidentialPool.StaleBitcoinSpentRoot.selector);
+        pool.attestBitcoinStateProven(abi.encode(r), "");
+    }
+
+    /// Symmetric to the zero-spent-root rejection: a zero bridge-BURN root must also be
+    /// rejected at attest. The guest keys bridge_mint's burn-set membership off
+    /// `bitcoin_burn_root != 0`, so a relay reflecting an empty burn set as 0 would let a
+    /// bridge_mint skip its membership check — the contract backstop (ConfidentialPool.sol
+    /// StaleBitcoinBurnRoot at attest) keeps that honest. The reflection prover seeds the
+    /// empty burn set to a non-zero sentinel, so a legitimate burn root is never 0.
+    function test_attest_zero_burn_root_rejected() public {
+        bytes32 prior = pool.knownReflectionDigest();
+        ConfidentialPool.BitcoinRelayPublicValues memory r = ConfidentialPool.BitcoinRelayPublicValues(
+            prior, keccak256("some-pool-root"), keccak256("s"), bytes32(0), 1, keccak256("n")
+        , ANCHOR, ANCHOR);
+        vm.expectRevert(ConfidentialPool.StaleBitcoinBurnRoot.selector);
+        pool.attestBitcoinStateProven(abi.encode(r), "");
+    }
+
+    // The relay anchor (F1): a batch whose tip doesn't match the relay tip (nor a recent ancestor)
+    // is rejected — so the proven header chain must be canonical Bitcoin, not a free witness.
+    function test_reflection_anchor_rejects_wrong_tip() public {
+        bytes32 prior = pool.knownReflectionDigest();
+        ConfidentialPool.BitcoinRelayPublicValues memory r = ConfidentialPool.BitcoinRelayPublicValues(
+            prior, keccak256("pr"), keccak256("s"), keccak256("sb"), 1, keccak256("n"), ANCHOR, keccak256("not-the-relay-tip")
+        );
+        vm.expectRevert(ConfidentialPool.UnanchoredReflection.selector);
+        pool.attestBitcoinStateProven(abi.encode(r), "");
+    }
+
+    // And a batch whose prev doesn't continue the prior attested tip (nor a recent ancestor) is rejected.
+    function test_reflection_anchor_rejects_wrong_prev() public {
+        bytes32 prior = pool.knownReflectionDigest();
+        ConfidentialPool.BitcoinRelayPublicValues memory r = ConfidentialPool.BitcoinRelayPublicValues(
+            prior, keccak256("pr"), keccak256("s"), keccak256("sb"), 1, keccak256("n"), keccak256("not-the-prior-tip"), ANCHOR
+        );
+        vm.expectRevert(ConfidentialPool.UnanchoredReflection.selector);
         pool.attestBitcoinStateProven(abi.encode(r), "");
     }
 
@@ -888,14 +938,14 @@ contract ConfidentialPoolTest is Test {
         // a proof that doesn't continue the current digest is rejected
         ConfidentialPool.BitcoinRelayPublicValues memory bad = ConfidentialPool.BitcoinRelayPublicValues(
             keccak256("wrong-prior"), keccak256("r2"), keccak256("s2"), keccak256("b2"), 11, keccak256("n2")
-        );
+        , ANCHOR, ANCHOR);
         vm.expectRevert(ConfidentialPool.StaleReflectionDigest.selector);
         pool.attestBitcoinStateProven(abi.encode(bad), "");
 
         // a zero newDigest is never a valid reflected state
         ConfidentialPool.BitcoinRelayPublicValues memory z = ConfidentialPool.BitcoinRelayPublicValues(
             advanced, keccak256("r3"), keccak256("s3"), keccak256("b3"), 11, bytes32(0)
-        );
+        , ANCHOR, ANCHOR);
         vm.expectRevert(ConfidentialPool.StaleReflectionDigest.selector);
         pool.attestBitcoinStateProven(abi.encode(z), "");
     }
@@ -1026,6 +1076,19 @@ contract ConfidentialPoolTest is Test {
         _settle(pv);
     }
 
+    /// A cross-chain deploy (non-zero relay vkey) must wire BOTH a header relay AND a non-zero
+    /// genesis anchor — otherwise _anchorReflection is unsatisfiable and the first attest bricks
+    /// (UnanchoredReflection) forever. Both are ctor-enforced.
+    function test_ctor_reflection_requires_relay_and_anchor() public {
+        vm.expectRevert(ConfidentialPool.ZeroAddress.selector); // missing header relay
+        new ConfidentialPool(address(verifier), VKEY, RELAY_VKEY, address(factory), address(0), ANCHOR);
+        vm.expectRevert(ConfidentialPool.ZeroAddress.selector); // missing genesis anchor
+        new ConfidentialPool(address(verifier), VKEY, RELAY_VKEY, address(factory), address(relay), bytes32(0));
+        // Both present → deploys, anchor seeded.
+        ConfidentialPool ok = new ConfidentialPool(address(verifier), VKEY, RELAY_VKEY, address(factory), address(relay), ANCHOR);
+        assertEq(ok.lastReflectionBlockHash(), ANCHOR, "genesis anchor seeded");
+    }
+
     function test_settle_withdraw_unregistered_asset_reverts() public {
         ConfidentialPool.PublicValues memory pv = _pv();
         pv.withdrawals = new ConfidentialPool.Withdrawal[](1);
@@ -1044,7 +1107,7 @@ contract ConfidentialPoolTest is Test {
         bytes32 attRoot = keccak256(abi.encode("att-root", assetId));
         bytes32 prior = pool.knownReflectionDigest();
         pool.attestBitcoinStateProven(
-            abi.encode(ConfidentialPool.BitcoinRelayPublicValues(prior, attRoot, keccak256("s"), keccak256("sb"), 1, keccak256("n"))),
+            abi.encode(ConfidentialPool.BitcoinRelayPublicValues(prior, attRoot, keccak256("s"), keccak256("sb"), 1, keccak256("n"), ANCHOR, ANCHOR)),
             ""
         );
         ConfidentialPool.PublicValues memory pv = _pv();

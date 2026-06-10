@@ -140,5 +140,45 @@ worker (scan)         box (GPU)                          chain
   `knownReflectionDigest` and re-acks (never re-submits) a batch that already landed —
   the digest-chain makes a duplicate submit revert, so the cursor can never skip.
 - **Coherence:** the box must run the committed canonical reflection ELF
-  (`elf/reflection-prover`, vkey `BITCOIN_RELAY_VKEY = 0x00be458f…`), so the pool is
-  deployed with that exact `BITCOIN_RELAY_VKEY`. `verify-vkey-pin.sh` guards the bytes.
+  (`elf/reflection-prover`, vkey `BITCOIN_RELAY_VKEY = 0x0050d656…`), so the pool is
+  deployed with that exact `BITCOIN_RELAY_VKEY`. The pin (`elf-vkey-pin.json`) guards the bytes.
+
+## Confidential settle relay (fast lane: deposit → swap / LP / transfer → withdraw)
+
+The same box also drives the **settle** prover — the user-initiated path that turns the
+live pool into a working loop. Architecture mirrors the reflection relay, but it's a
+multi-job QUEUE rather than a single cursor (each settle is a user op, not a background tick):
+
+```
+ dapp (confidential-relay.js)                worker                         GPU box
+   submitOp{type,op,memos} ──▶ POST /confidential/submit ─▶ enqueue
+                                GET /confidential/job  ◀── claim (Bearer) ◀── poll
+                                                          ─▶ op → harness → groth16
+                                                          ─▶ cast send settle(pv,proof,memos)
+   waitForSettle(jobId) ──▶ GET /confidential/status      POST /confidential/ack ◀── tx mined
+```
+
+- **Worker side (built):** `worker/src/confidential-settle.js` — a KV-backed queue
+  (`submitJob`/`nextJob`/`ackJob`/`jobStatus`, FIFO claim with a 10-min stale-claim
+  reclaim + submit-dedup). Routes in `index.js`: `POST /confidential/submit` (public,
+  permissionless — a bad witness just fails to prove), `GET /confidential/job` +
+  `POST /confidential/ack` (box-only, Bearer `CONFIDENTIAL_BOX_TOKEN`/`DEBUG_TOKEN`,
+  default-deny 404), `GET /confidential/status` (dapp poll). Config: set
+  `CONFIDENTIAL_SETTLE=1` + a KV (`CONFIDENTIAL_KV` or `REGISTRY_KV`) + a
+  `CONFIDENTIAL_BOX_TOKEN` on the worker.
+- **Box side:** `ops/scripts/confidential-settle-loop.sh`. One-time: stage the op
+  harnesses in `$CXFER/harnesses/` (`exec-swap.rs`, `exec-lp.rs`, `exec-prove.rs`),
+  build the guest ELF. Run with `WORKER_BASE`, `BOX_TOKEN`, `POOL_ADDR`, `RPC_URL`,
+  `SETTLE_KEY` (funded). It claims a job, writes the op JSON to that type's fixture,
+  fresh-gpu-server Groth16-proves the matching harness, submits
+  `settle(pv, proof, memos)`, and acks. A fresh `sp1-gpu-server` per job (a 2nd
+  groth16 on a warm server OOMs). One op per settle (batching = follow-up).
+- **Coherence:** the box runs the committed canonical settle ELF (`elf/cxfer-guest`,
+  `PROGRAM_VKEY = 0x00d0fb85…`), the same vkey the pool is deployed with — so the proof
+  the box produces is the one `settle` verifies. The op JSON the dapp submits must match
+  the harness's fixture shape (what `gen-confidential-*-fixture.mjs` emit); the on-chain
+  proof enforces that parity.
+- **Idempotency (follow-up):** on a lost ack the worker re-serves; the box's re-submit
+  reverts (nullifier already spent) and is acked failed. Submit-dedup keeps a resubmit
+  from storming. A per-op on-chain pre-check (nullifier-spent → re-ack settled) is the
+  clean upgrade.

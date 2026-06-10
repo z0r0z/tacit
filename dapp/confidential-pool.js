@@ -215,6 +215,38 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     return { insert, remove, root, leaves, membershipWitness, low, predecessor, nodes: () => nodes.map((n) => n.slice()) };
   }
 
+  // ── Live UTXO set — full-scan reflection (F4), mirrors cxfer-core LiveUtxoSet ──
+  // The live-ONLY outpoint → commitment_hash set the full-scan prover is HANDED + root-checks
+  // once, then resolves every confirmed tx's vins against. Committed as the depth-32 keccak tree
+  // over keccak(key ‖ value) leaves in ascending key order — so the root is O(live) to rebuild
+  // (unlike the insertion-order UtxoAccumulator, O(history)). Lives only in the reflection digest.
+  const liveLeaf = (key, value) => hx(keccak(key, value));
+  function makeLiveUtxoSet() {
+    const norm = (x) => hx(b32(x));
+    const big = (x) => BigInt(norm(x));
+    let entries = []; // [key, value], ascending by key
+    const idxOf = (key) => entries.findIndex(([k]) => big(k) === big(key));
+    const sort = () => entries.sort((a, b) => (big(a[0]) < big(b[0]) ? -1 : big(a[0]) > big(b[0]) ? 1 : 0));
+    function get(keyIn) { const i = idxOf(norm(keyIn)); return i < 0 ? null : entries[i][1]; }
+    function insert(keyIn, valueIn) {
+      const key = norm(keyIn), value = norm(valueIn);
+      if (big(key) === 0n) throw new Error('live set: key 0 reserved');
+      if (idxOf(key) >= 0) throw new Error('live set: duplicate outpoint');
+      entries.push([key, value]); sort();
+    }
+    function remove(keyIn) {
+      const key = norm(keyIn), i = idxOf(key);
+      if (i < 0) throw new Error('live set: outpoint not live');
+      const v = entries[i][1]; entries.splice(i, 1); return v;
+    }
+    function root() { const t = new Tree(); for (const [k, v] of entries) t.insert(liveLeaf(k, v)); return t.root(); }
+    // The sorted (key,value) pairs handed to the prover (its from_sorted re-checks the order).
+    const pairs = () => entries.map(([k, v]) => [k, v]);
+    // Adopt a handed set when resuming from a snapshot.
+    function load(ps) { entries = []; for (const [k, v] of ps) insert(k, v); }
+    return { get, insert, remove, root, pairs, load, len: () => entries.length };
+  }
+
   // The UTXO-set value for a note: keccak(Cx ‖ Cy) — what the reflection prover stores at an
   // outpoint and re-opens to derive ν. Mirrors cxfer-core::commitment_hash.
   const commitmentHash = (cx, cy) => hx(keccak(cx, cy));
@@ -387,6 +419,129 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     return { prior, anchorHeight: batch.anchorHeight | 0, headers: batch.headers || [], effects, newDigest: state.digest() };
   }
 
+  // ── Full-scan reflection state (F4) — mirrors cxfer-core ScanReflection ──
+  // Same headless note/spent/burn engine as makeReflectionState (roots + counts + witnessed
+  // transitions) but the UTXO set is the full in-memory live set. digest binds live.root() +
+  // size, so a resumed cycle that re-derives this digest has provably been HANDED the committed
+  // live set (the contract chains priorDigest). foldSpent/foldOutput/foldBurn build the witness a
+  // sub-op needs AND advance, in the guest's per-tx order.
+  function makeScanReflectionState() {
+    const notes = new Tree();
+    const spent = makeImtAccumulator();
+    const live = makeLiveUtxoSet();
+    const burns = makeUtxoAccumulator();
+    let height = 0;
+
+    // Counts derive from the accumulators (not a separate cursor), so a snapshot restore that
+    // replays the raw leaves/links/nodes reconstructs the exact digest without bookkeeping drift.
+    const noteCount = () => notes.leaves.length;
+    const spentCount = () => spent.links().length;
+    const burnCount = () => burns.nodes().length;
+    const commit = () => ({ poolRoot: notes.root(), spentRoot: spent.root(), burnRoot: burns.root(), height });
+    function digest() {
+      return hx(keccak(
+        notes.root(), u64be(noteCount()),
+        spent.root(), u64be(spentCount()),
+        live.root(), u64be(live.len()),
+        burns.root(), u64be(burnCount()),
+        u64be(height),
+      ));
+    }
+
+    // A detected spend's ν → the spent-set IMT insert witness (low + new slot), then advance. The
+    // live-set removal is the caller's (it mirrors scan_tx_spends).
+    function foldSpent(nu) {
+      const spentLeaves = spent.links().map(([vv, nn]) => imtLeaf(vv, nn));
+      const low = spent.nonMembershipWitness(nu);
+      const interm = spentLeaves.slice(); interm[low.lowIndex] = imtLeaf(low.lowValue, nu);
+      const w = { sLowValue: low.lowValue, sLowNext: low.lowNext, sLowIndex: low.lowIndex, sLowPath: low.path, sNewPath: merklePath(interm, spentLeaves.length) };
+      spent.insert(nu);
+      return w;
+    }
+    // An output note: the note-tree append-path witness, then append + add the outpoint live.
+    function foldOutput(noteLeaf, outpoint, commitmentHash) {
+      const w = { noteLeaf, notePath: notes.rootAndPath(noteCount()).path };
+      notes.insert(noteLeaf);
+      live.insert(outpoint, commitmentHash);
+      return w;
+    }
+    // A bridge-out: the burn-set insert witness ν → destCommitment, then advance.
+    function foldBurn(nu, destCommitment) {
+      const burnLeaves = burns.leaves();
+      const low = burns.low(nu);
+      const interm = burnLeaves.slice(); interm[low.index] = utxoLeaf(low.key, nu, low.value);
+      const w = { bLowKey: low.key, bLowNext: low.next, bLowValue: low.value, bLowIndex: low.index, bLowPath: merklePath(burnLeaves, low.index), bNewPath: merklePath(interm, burnLeaves.length) };
+      burns.insert(nu, destCommitment);
+      return w;
+    }
+    function setHeight(h) { if (h < height) throw new Error('reflection height must not decrease'); height = h; }
+
+    return {
+      commit, digest, foldSpent, foldOutput, foldBurn, setHeight,
+      poolRoot: () => notes.root(), spentRoot: () => spent.root(), burnRoot: () => burns.root(), liveRoot: () => live.root(),
+      counts: () => ({ note: noteCount(), spent: spentCount(), live: live.len(), burn: burnCount(), height }),
+      live, _acc: { notes, spent, live, burns },
+    };
+  }
+
+  // ── Assemble the FULL-SCAN reflection input (the new guest's io::read order) ──
+  // batch = { anchorHeight, headers (80-byte hex), blocks: [{ txs: [{ txData, txid, vins:
+  // [{prevTxid,vout}], env: null | {type:'burn', dest} | {type:'cxfer', outputs:[{cx,cy,
+  // commitmentHash, noteLeaf, vout}]} }] }] }. `coords` is a Map(outpointKey → {cx,cy}) of every
+  // live pool note (so a detected spend's opening is known); it is advanced as outputs land/spends
+  // clear. The guest re-derives txids + the block merkle root, so completeness is enforced there;
+  // here we SIMULATE the scan to emit the matching witnesses in stream order: per tx, the spend
+  // openings (vin order), the spent-set inserts, a burn insert, then the outputs.
+  function assembleReflectionScanInput(state, batch, coords) {
+    const norm = (x) => hx(b32(x));
+    const c = state.counts();
+    const prior = {
+      poolRoot: state.poolRoot(), noteCount: c.note,
+      spentRoot: state.spentRoot(), spentCount: c.spent,
+      live: state.live.pairs(), liveCount: c.live,
+      burnRoot: state.burnRoot(), burnCount: c.burn,
+      height: c.height,
+    };
+    const blocksOut = [];
+    let blockIndex = 0;
+    for (const block of (batch.blocks || [])) {
+      state.setHeight((batch.anchorHeight | 0) + blockIndex);
+      const txsOut = [];
+      for (const tx of block.txs) {
+        const openings = [];
+        const spentInserts = [];
+        for (const { prevTxid, vout } of (tx.vins || [])) {
+          const key = outpointKey(prevTxid, vout);
+          if (state.live.get(key) == null) continue;
+          const co = coords.get(norm(key));
+          if (!co) throw new Error('live spend has no known coords: ' + norm(key));
+          openings.push({ cx: norm(co.cx), cy: norm(co.cy) });
+          spentInserts.push(state.foldSpent(nullifier(co.cx, co.cy)));
+          state.live.remove(key);
+          coords.delete(norm(key));
+        }
+        let burnInsert = null;
+        if (tx.env && tx.env.type === 'burn') {
+          if (openings.length !== 1) throw new Error('burn tx must spend exactly one pool note');
+          burnInsert = state.foldBurn(nullifier(openings[0].cx, openings[0].cy), tx.env.dest);
+        }
+        const outputs = [];
+        if (tx.env && tx.env.type === 'cxfer') {
+          for (const o of tx.env.outputs) {
+            const outpoint = outpointKey(tx.txid, o.vout);
+            const w = state.foldOutput(o.noteLeaf, outpoint, o.commitmentHash);
+            outputs.push({ noteLeaf: w.noteLeaf, notePath: w.notePath, vout: o.vout });
+            coords.set(norm(outpoint), { cx: o.cx, cy: o.cy });
+          }
+        }
+        txsOut.push({ txData: tx.txData, openings, spentInserts, burnInsert, outputs });
+      }
+      blocksOut.push({ txs: txsOut });
+      blockIndex++;
+    }
+    return { prior, anchorHeight: batch.anchorHeight | 0, headers: batch.headers || [], blocks: blocksOut, newDigest: state.digest() };
+  }
+
   // Mirror of the guest's keccak_merkle_verify — fold a leaf with its path.
   function verifyPath(leafHex, index, path, rootHex) {
     let h = b32(leafHex);
@@ -417,12 +572,55 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     return hx(h);
   }
 
+  // ── opening proof-of-knowledge (swap / LP), mirror of cxfer_core::verify_opening_sigma ──
+  // Prove knowledge of the blinding `r` for a commitment of a PUBLIC `amount`, bound to a 32-byte
+  // `context` (the trade terms), WITHOUT revealing `r`. The settle box verifies this instead of
+  // taking raw `r`, so it never learns the blinding → cannot spend the input or redirect the
+  // output. `nonce` is a fresh random scalar (a reused nonce leaks `r`). e = keccak(DOMAIN ‖
+  // amount_be8 ‖ context ‖ compress(C) ‖ compress(R)) mod n; proof = (R, z=k+e·r).
+  const OPENING_DOMAIN = new TextEncoder().encode('tacit-open-sigma-v1');
+  const be8 = (n) => { const o = new Uint8Array(8); let v = BigInt(n); for (let i = 7; i >= 0; i--) { o[i] = Number(v & 0xffn); v >>= 8n; } return o; };
+  const compressPt = (P) => P.toRawBytes(true);
+  const ptFromXY = (cx, cy) => secp.ProjectivePoint.fromAffine({ x: BigInt(cx), y: BigInt(cy) });
+  const openChallenge = (amount, contextHex, C, R) =>
+    mod(bToBig(keccak256(concat([OPENING_DOMAIN, be8(amount), b32(contextHex), compressPt(C), compressPt(R)]))), N);
+
+  // Mirror of cxfer_core::intent_context — the 32-byte context the opening sigmas bind. `tag` is a
+  // string/bytes domain; `notes` = [[cx,cy,owner], …] (spent + minted, fixed order); `amounts` = the
+  // public u64 quantities. MUST match the guest's field order byte-for-byte.
+  function intentContext(tag, chainBinding, assetA, assetB, notes, amounts) {
+    const parts = [tag instanceof Uint8Array ? tag : new TextEncoder().encode(tag), b32(chainBinding), b32(assetA), b32(assetB)];
+    for (const [cx, cy, owner] of notes) { parts.push(b32(cx), b32(cy), b32(owner)); }
+    for (const a of amounts) { parts.push(be8(a)); }
+    return hx(keccak256(concat(parts)));
+  }
+
+  function openingSigma(amount, r, contextHex, nonce) {
+    const rS = mod(BigInt(r), N), kS = mod(BigInt(nonce), N);
+    const C = prover.commit(BigInt(amount), rS);
+    const R = secp.ProjectivePoint.BASE.multiply(kS);
+    const e = openChallenge(amount, contextHex, C, R);
+    return { R: hx(compressPt(R)), z: hx(beBytes(mod(kS + e * rS, N), 32)) };
+  }
+
+  function verifyOpeningSigma(cx, cy, amount, Rhex, zHex, contextHex) {
+    const C = ptFromXY(cx, cy);
+    const R = secp.ProjectivePoint.fromHex(Rhex.replace(/^0x/, ''));
+    const e = openChallenge(amount, contextHex, C, R);
+    const amtH = BigInt(amount) === 0n ? secp.ProjectivePoint.ZERO : prover.H.multiply(BigInt(amount));
+    const X = C.add(amtH.negate()); // C − amount·H = r·G
+    const lhs = secp.ProjectivePoint.BASE.multiply(mod(BigInt(zHex), N));
+    const rhs = R.add(X.multiply(e));
+    return hx(compressPt(lhs)) === hx(compressPt(rhs));
+  }
+
   return {
     prover, TREE_DEPTH, zeros: zeros.map(hx),
     commitXY, deriveNote, leaf, nullifier, depositId, Tree, verifyPath, merklePath, merkleRootFrom,
     imtLeaf, imtRoot, imtEmptyRoot, makeImtAccumulator,
     utxoLeaf, makeUtxoAccumulator, commitmentHash, decompressCommitment, compressXY, outpointKey,
-    makeReflectionState, assembleReflectionInput,
+    makeReflectionState, assembleReflectionInput, openingSigma, verifyOpeningSigma, intentContext,
+    liveLeaf, makeLiveUtxoSet, makeScanReflectionState, assembleReflectionScanInput,
     _internal: { keccak, concat, b32, beBytes, hx },
   };
 }

@@ -12,17 +12,20 @@ import * as secp from '../node_modules/@noble/secp256k1/index.js';
 import { createHash } from 'node:crypto';
 import { randomScalar, G } from '../dapp/bulletproofs-plus.js';
 import { makeConfidentialMemo } from '../dapp/confidential-memo.js';
+import { makeConfidentialPool } from '../dapp/confidential-pool.js';
 import assert from 'node:assert';
 
 const sha256 = (b) => new Uint8Array(createHash('sha256').update(Buffer.from(b)).digest());
 const keccak256 = (b) => keccak_256(b);
 const m = makeConfidentialMemo({ secp, sha256, keccak256 });
+const pool = makeConfidentialPool({ secp, sha256, keccak256 });
 let n = 0; const ok = (s) => { console.log('  ok -', s); n++; };
 
 const pubHex = (priv) => '0x' + Buffer.from(G.multiply(priv).toRawBytes(true)).toString('hex');
 const ASSET = '0x' + 'a5'.repeat(32);
 const OWNER = '0x' + '00'.repeat(31) + '07';
-const nullifierOf = (secret) => '0x' + Buffer.from(keccak_256(Uint8Array.from(Buffer.from(secret.replace(/^0x/, ''), 'hex')))).toString('hex');
+// ν is note-bound (spec B3): keccak(Cx ‖ Cy ‖ "spent") — matches the dapp, guest, and contract.
+const nullifierOf = (cx, cy) => pool.nullifier(cx, cy);
 
 // recipient + a stranger
 const rPriv = randomScalar(), rPub = pubHex(rPriv);
@@ -65,7 +68,8 @@ const others = [{ value: 99n, blinding: randomScalar(), secret: '0x' + '9'.repea
 const events = [];
 mine.forEach((nt, i) => events.push({ leaf: mkLeaf(nt), leafIndex: i, memo: m.sealMemo(rPub, nt, randomScalar) }));
 others.forEach((nt, i) => events.push({ leaf: mkLeaf(nt), leafIndex: 100 + i, memo: m.sealMemo(pubHex(sPriv), nt, randomScalar) }));
-const spent = [nullifierOf(mine[1].secret)]; // second note already spent
+const c1 = m.commitXY(mine[1].value, mine[1].blinding);
+const spent = [nullifierOf(c1.cx, c1.cy)]; // second note already spent (note-bound ν)
 const recovered = m.scan(rPriv, events, spent, nullifierOf);
 assert.strictEqual(recovered.length, 1, 'one active note recovered');
 assert.strictEqual(recovered[0].value, 4242n, 'recovered the unspent note');

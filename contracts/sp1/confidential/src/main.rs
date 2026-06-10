@@ -16,8 +16,8 @@ use alloy_sol_types::{sol, SolValue};
 use alloy_sol_types::private::{Address, U256};
 use cxfer_core::{
     bitcoin, claim_id, decompress, deposit_id, from_affine_xy, imt_non_membership,
-    keccak_merkle_verify, leaf, nullifier, pool_id, scalar_reduce_be, utxo_leaf,
-    verify_kernel, verify_pedersen_opening, verify_range, Point,
+    intent_context, keccak_merkle_verify, leaf, lp_share_id, nullifier, pool_id, scalar_reduce_be,
+    utxo_leaf, verify_kernel, verify_opening_sigma, verify_pedersen_opening, verify_range, Point,
 };
 use sp1_zkvm::io;
 
@@ -29,6 +29,8 @@ const OP_BRIDGE_BURN: u8 = 3; // Ethereum note → Bitcoin (emit crossOut)
 const OP_BRIDGE_MINT: u8 = 4; // Bitcoin burn → Ethereum note (verify Bitcoin burn)
 const OP_ATTEST_META: u8 = 5; // etch reveal → prove (asset_id, ticker, decimals) trustlessly
 const OP_SWAP: u8 = 6; // confidential AMM batch: hidden-amount swaps against public pool reserves
+const OP_LP_ADD: u8 = 7; // confidential LP: add liquidity in-ratio, mint a shielded LP-share note
+const OP_LP_REMOVE: u8 = 8; // confidential LP: burn a shielded LP-share note, withdraw the underlying
 
 const SWAP_DIR_A_TO_B: u8 = 0;
 const SWAP_DIR_B_TO_A: u8 = 1;
@@ -40,6 +42,7 @@ sol! {
     struct CrossOut { uint16 destChain; bytes32 destCommitment; bytes32 nullifier; bytes32 assetId; bytes32 claimId; }
     struct AssetMeta { bytes32 assetId; bytes16 ticker; uint8 tickerLen; uint8 decimals; }
     struct SwapSettlement { bytes32 poolId; uint256 reserveAPre; uint256 reserveBPre; uint256 reserveAPost; uint256 reserveBPost; }
+    struct LpSettlement { bytes32 poolId; uint256 reserveAPre; uint256 reserveBPre; uint256 sharesPre; uint256 reserveAPost; uint256 reserveBPost; uint256 sharesPost; }
     struct PublicValues {
         uint16 version;
         bytes32 chainBinding;
@@ -56,6 +59,7 @@ sol! {
         bytes32 bitcoinBurnRoot;
         AssetMeta[] assetMetas;
         SwapSettlement[] swaps;
+        LpSettlement[] liquidity;
     }
 }
 
@@ -122,6 +126,7 @@ pub fn main() {
     let mut cross_outs: Vec<CrossOut> = Vec::new();
     let mut asset_metas: Vec<AssetMeta> = Vec::new();
     let mut swaps: Vec<SwapSettlement> = Vec::new();
+    let mut liquidity: Vec<LpSettlement> = Vec::new();
 
     for _ in 0..num_ops {
         let op: u8 = io::read();
@@ -406,18 +411,29 @@ pub fn main() {
                     let amount_in: u64 = io::read();
                     let amount_out: u64 = io::read();
                     let rem: u64 = io::read();
-                    let r_in = scalar_reduce_be(&r32());
+                    let in_sig_r = decompress(&r33()).expect("swap: in sigma R");
+                    let in_sig_z = scalar_reduce_be(&r32());
                     let min_out: u64 = io::read();
                     let (out_cx, out_cy, out_pt) = r_commitment();
                     let out_owner = r32();
-                    let r_out = scalar_reduce_be(&r32());
+                    let out_sig_r = decompress(&r33()).expect("swap: out sigma R");
+                    let out_sig_z = scalar_reduce_be(&r32());
 
-                    // Bind each note to its amount by opening the secp Pedersen commitment directly
-                    // (C = amount·H + r·G). A lie about amount_in would need an r the prover can't
-                    // find for the fixed (membership-pinned) C_in ⇒ no over-claim, no inflation; the
-                    // output note commits to exactly amount_out so the recipient can later spend it.
-                    assert!(verify_pedersen_opening(&in_pt, amount_in, &r_in), "swap: input opening");
-                    assert!(verify_pedersen_opening(&out_pt, amount_out, &r_out), "swap: output opening");
+                    // Bind each note to its amount by a Schnorr proof of knowledge of the opening
+                    // blinding, NOT the raw blinding — so the settle prover (the box) verifies the
+                    // amount without learning r, and thus cannot spend the input note or redirect the
+                    // output. The challenge binds the whole intent context (both notes + owners +
+                    // direction/amounts/min_out), so the box can't relabel out_owner or re-price. A
+                    // lie about amount_in would need an r the prover can't find for the fixed
+                    // (membership-pinned) C_in ⇒ no over-claim, no inflation; C_out commits to exactly
+                    // amount_out so only the trader (who knows r_out, never sent) can later spend it.
+                    let ctx = intent_context(
+                        b"tacit-swap-intent-v1", &chain_binding, &asset_a, &asset_b,
+                        &[(in_cx, in_cy, in_owner), (out_cx, out_cy, out_owner)],
+                        &[direction as u64, amount_in, amount_out, min_out],
+                    );
+                    assert!(verify_opening_sigma(&in_pt, amount_in, &in_sig_r, &in_sig_z, &ctx), "swap: input opening");
+                    assert!(verify_opening_sigma(&out_pt, amount_out, &out_sig_r, &out_sig_z, &ctx), "swap: output opening");
 
                     // Uniform-price clearing: amount_out = floor(amount_in · P), one price per batch.
                     //   A→B: in·num == out·den + rem,  rem < den
@@ -462,6 +478,154 @@ pub fn main() {
                     reserveBPost: U256::from(b_post as u64),
                 });
             }
+            OP_LP_ADD => {
+                // Confidential add-liquidity: spend an A note + a B note (the LP's contribution, each
+                // bound to its amount by a secp opening), add them IN RATIO to the public reserves, and
+                // mint a shielded LP-share note for the proportional shares. The LP-share NOTE hides the
+                // provider's ownership + total position; reserves + totalShares stay public.
+                let asset_a = r32();
+                let asset_b = r32();
+                let pid = pool_id(&asset_a, &asset_b);
+                let lp_asset = lp_share_id(&pid);
+                let r_a_pre: u64 = io::read();
+                let r_b_pre: u64 = io::read();
+                let shares_pre: u64 = io::read();
+
+                let (a_cx, a_cy, a_pt) = r_commitment();
+                let a_owner = r32();
+                let a_idx: u64 = io::read();
+                let a_path = r_path();
+                let d_a: u64 = io::read();
+                let a_sig_r = decompress(&r33()).expect("lp_add: A sigma R");
+                let a_sig_z = scalar_reduce_be(&r32());
+                let (b_cx, b_cy, b_pt) = r_commitment();
+                let b_owner = r32();
+                let b_idx: u64 = io::read();
+                let b_path = r_path();
+                let d_b: u64 = io::read();
+                let b_sig_r = decompress(&r33()).expect("lp_add: B sigma R");
+                let b_sig_z = scalar_reduce_be(&r32());
+                let d_shares: u64 = io::read();
+                let rem: u64 = io::read();
+                let (s_cx, s_cy, s_pt) = r_commitment();
+                let s_owner = r32();
+                let s_sig_r = decompress(&r33()).expect("lp_add: share sigma R");
+                let s_sig_z = scalar_reduce_be(&r32());
+
+                // The intent context binds all three notes + the deltas: the box can't redirect the
+                // minted LP-share note or alter the contributed amounts (the sigmas commit to it), and
+                // never learns a blinding (so it can't spend the spent A/B contribution notes).
+                let ctx = intent_context(
+                    b"tacit-lp-add-v1", &chain_binding, &asset_a, &asset_b,
+                    &[(a_cx, a_cy, a_owner), (b_cx, b_cy, b_owner), (s_cx, s_cy, s_owner)],
+                    &[d_a, d_b, d_shares],
+                );
+
+                // Spend the two contribution notes: membership + ν + cross-lane + opening sigma (binds d_a/d_b).
+                let a_lf = leaf(&asset_a, &a_cx, &a_cy, &a_owner);
+                assert!(spend_root != [0u8; 32], "lp_add: membership requires a non-zero spend root");
+                assert!(keccak_merkle_verify(&a_lf, a_idx, &a_path, &spend_root), "lp_add: A membership");
+                let a_nu = nullifier(&a_cx, &a_cy);
+                if bitcoin_spent_root != [0u8; 32] { check_btc_nonmembership(&a_nu, &bitcoin_spent_root); }
+                assert!(verify_opening_sigma(&a_pt, d_a, &a_sig_r, &a_sig_z, &ctx), "lp_add: A opening");
+                let b_lf = leaf(&asset_b, &b_cx, &b_cy, &b_owner);
+                assert!(keccak_merkle_verify(&b_lf, b_idx, &b_path, &spend_root), "lp_add: B membership");
+                let b_nu = nullifier(&b_cx, &b_cy);
+                if bitcoin_spent_root != [0u8; 32] { check_btc_nonmembership(&b_nu, &bitcoin_spent_root); }
+                assert!(verify_opening_sigma(&b_pt, d_b, &b_sig_r, &b_sig_z, &ctx), "lp_add: B opening");
+
+                let da = d_a as u128; let db = d_b as u128;
+                let ra = r_a_pre as u128; let rb = r_b_pre as u128;
+                let sp = shares_pre as u128; let ds = d_shares as u128; let rm = rem as u128;
+                // The pool must already exist (initPool seeds it); add IN RATIO, proportional shares.
+                assert!(ra > 0 && rb > 0 && sp > 0, "lp_add: pool must be initialized");
+                assert!(da * rb == db * ra, "lp_add: not in pool ratio");
+                assert!(rm < ra, "lp_add: shares rem range");
+                assert!(sp * da == ds * ra + rm, "lp_add: proportional shares (floor totalShares·dA/R_A)");
+                // The minted LP-share note opens to d_shares (can't claim more than earned).
+                assert!(verify_opening_sigma(&s_pt, d_shares, &s_sig_r, &s_sig_z, &ctx), "lp_add: share opening");
+                assert!((ra + da) <= u64::MAX as u128 && (rb + db) <= u64::MAX as u128 && (sp + ds) <= u64::MAX as u128, "lp_add: overflow");
+
+                nullifiers.push(a_nu);
+                nullifiers.push(b_nu);
+                leaves.push(leaf(&lp_asset, &s_cx, &s_cy, &s_owner));
+                liquidity.push(LpSettlement {
+                    poolId: pid.into(),
+                    reserveAPre: U256::from(r_a_pre), reserveBPre: U256::from(r_b_pre), sharesPre: U256::from(shares_pre),
+                    reserveAPost: U256::from((ra + da) as u64), reserveBPost: U256::from((rb + db) as u64), sharesPost: U256::from((sp + ds) as u64),
+                });
+            }
+            OP_LP_REMOVE => {
+                // Confidential remove-liquidity: spend a shielded LP-share note, withdraw the proportional
+                // underlying as fresh A/B notes. The share note proves the LP's stake (opening); the
+                // withdrawal is floored toward the pool so the dust accrues to the remaining LPs.
+                let asset_a = r32();
+                let asset_b = r32();
+                let pid = pool_id(&asset_a, &asset_b);
+                let lp_asset = lp_share_id(&pid);
+                let r_a_pre: u64 = io::read();
+                let r_b_pre: u64 = io::read();
+                let shares_pre: u64 = io::read();
+
+                let (s_cx, s_cy, s_pt) = r_commitment();
+                let s_owner = r32();
+                let s_idx: u64 = io::read();
+                let s_path = r_path();
+                let d_shares: u64 = io::read();
+                let s_sig_r = decompress(&r33()).expect("lp_remove: share sigma R");
+                let s_sig_z = scalar_reduce_be(&r32());
+                let d_a: u64 = io::read();
+                let rem_a: u64 = io::read();
+                let d_b: u64 = io::read();
+                let rem_b: u64 = io::read();
+                let (a_cx, a_cy, a_pt) = r_commitment();
+                let a_owner = r32();
+                let a_sig_r = decompress(&r33()).expect("lp_remove: A sigma R");
+                let a_sig_z = scalar_reduce_be(&r32());
+                let (b_cx, b_cy, b_pt) = r_commitment();
+                let b_owner = r32();
+                let b_sig_r = decompress(&r33()).expect("lp_remove: B sigma R");
+                let b_sig_z = scalar_reduce_be(&r32());
+
+                // Intent context binds the spent LP-share note + the two minted A/B notes + the
+                // amounts: the box can't redirect the withdrawn A/B notes or alter d_shares/dA/dB, and
+                // never learns the share blinding (so it can't spend the LP-share note).
+                let ctx = intent_context(
+                    b"tacit-lp-remove-v1", &chain_binding, &asset_a, &asset_b,
+                    &[(s_cx, s_cy, s_owner), (a_cx, a_cy, a_owner), (b_cx, b_cy, b_owner)],
+                    &[d_shares, d_a, d_b],
+                );
+
+                // Spend the LP-share note: membership + ν + cross-lane + opening sigma (binds d_shares).
+                let s_lf = leaf(&lp_asset, &s_cx, &s_cy, &s_owner);
+                assert!(spend_root != [0u8; 32], "lp_remove: membership requires a non-zero spend root");
+                assert!(keccak_merkle_verify(&s_lf, s_idx, &s_path, &spend_root), "lp_remove: share membership");
+                let s_nu = nullifier(&s_cx, &s_cy);
+                if bitcoin_spent_root != [0u8; 32] { check_btc_nonmembership(&s_nu, &bitcoin_spent_root); }
+                assert!(verify_opening_sigma(&s_pt, d_shares, &s_sig_r, &s_sig_z, &ctx), "lp_remove: share opening");
+
+                let da = d_a as u128; let db = d_b as u128;
+                let ra = r_a_pre as u128; let rb = r_b_pre as u128;
+                let sp = shares_pre as u128; let ds = d_shares as u128;
+                assert!(sp > 0 && ds > 0 && ds <= sp, "lp_remove: shares in range");
+                // Proportional withdrawal, floor toward the pool (dust stays for remaining LPs).
+                assert!((rem_a as u128) < sp, "lp_remove: remA range");
+                assert!(ra * ds == da * sp + rem_a as u128, "lp_remove: dA = floor(R_A·shares/total)");
+                assert!((rem_b as u128) < sp, "lp_remove: remB range");
+                assert!(rb * ds == db * sp + rem_b as u128, "lp_remove: dB = floor(R_B·shares/total)");
+                // The withdrawn A/B notes open to dA/dB (sigma — the box never learns r_a/r_b).
+                assert!(verify_opening_sigma(&a_pt, d_a, &a_sig_r, &a_sig_z, &ctx), "lp_remove: A opening");
+                assert!(verify_opening_sigma(&b_pt, d_b, &b_sig_r, &b_sig_z, &ctx), "lp_remove: B opening");
+
+                nullifiers.push(s_nu);
+                leaves.push(leaf(&asset_a, &a_cx, &a_cy, &a_owner));
+                leaves.push(leaf(&asset_b, &b_cx, &b_cy, &b_owner));
+                liquidity.push(LpSettlement {
+                    poolId: pid.into(),
+                    reserveAPre: U256::from(r_a_pre), reserveBPre: U256::from(r_b_pre), sharesPre: U256::from(shares_pre),
+                    reserveAPost: U256::from((ra - da) as u64), reserveBPost: U256::from((rb - db) as u64), sharesPost: U256::from((sp - ds) as u64),
+                });
+            }
             _ => panic!("unknown op type"),
         }
     }
@@ -482,6 +646,7 @@ pub fn main() {
         bitcoinBurnRoot: bitcoin_burn_root.into(),
         assetMetas: asset_metas,
         swaps,
+        liquidity,
     };
     io::commit_slice(&pv.abi_encode());
 }

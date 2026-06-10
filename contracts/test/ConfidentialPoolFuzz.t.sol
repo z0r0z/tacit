@@ -22,7 +22,7 @@ contract ConfidentialPoolFuzzTest is Test {
     function setUp() public {
         vm.chainId(1);
         verifier = new AcceptAllVerifier();
-        pool = new ConfidentialPool(address(verifier), bytes32(uint256(1)), bytes32(0), address(0));
+        pool = new ConfidentialPool(address(verifier), bytes32(uint256(1)), bytes32(0), address(0), address(0), bytes32(0));
     }
 
     function _pv() internal view returns (ConfidentialPool.PublicValues memory pv) {

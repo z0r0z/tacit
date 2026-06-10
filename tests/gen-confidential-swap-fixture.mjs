@@ -30,6 +30,7 @@ const det = (tag) => '0x' + keccak256(new TextEncoder().encode('cswap-fixture-' 
 const intent = swap.buildIntent({
   direction: 'A->B', amountIn: 100, priceNum: 90, priceDen: 100, minOut: 90,
   rInSecp: BigInt(det('in-secp')), rOutSecp: BigInt(det('out-secp')),
+  nonceIn: BigInt(det('in-nonce')), nonceOut: BigInt(det('out-nonce')),
   inNote: { owner: OWNER, leafIndex: 0, path: pool.zeros }, outOwner: OWNER_OUT,
 });
 
@@ -38,7 +39,7 @@ const idx = tree.insert(pool.leaf(ASSET_A, intent.in.cx, intent.in.cy, intent.in
 const { root, path } = tree.rootAndPath(idx);
 intent.in.leafIndex = idx; intent.in.path = path;
 
-const batch = swap.buildBatch({ assetA: ASSET_A, assetB: ASSET_B, reserveAPre: 1000, reserveBPre: 1000, priceNum: 90, priceDen: 100, intents: [intent], spendRoot: root });
+const batch = swap.buildBatch({ assetA: ASSET_A, assetB: ASSET_B, chainBinding: CHAIN_BINDING, reserveAPre: 1000, reserveBPre: 1000, priceNum: 90, priceDen: 100, intents: [intent], spendRoot: root });
 const { settlement, nullifiers, leaves } = swap.verifyBatch(batch, { merkleRootFrom: pool.merkleRootFrom });
 
 const fixture = {
@@ -51,8 +52,9 @@ const fixture = {
     inCx: intent.in.cx, inCy: intent.in.cy, inOwner: intent.in.owner,
     inLeafIndex: intent.in.leafIndex, inPath: intent.in.path,
     amountIn: Number(intent.amountIn), amountOut: Number(intent.amountOut), rem: Number(intent.rem),
-    rInSecp: intent.rInSecp, minOut: Number(intent.minOut),
-    outCx: intent.out.cx, outCy: intent.out.cy, outOwner: intent.out.owner, rOutSecp: intent.rOutSecp,
+    inSigR: intent.inSig.R, inSigZ: intent.inSig.z, minOut: Number(intent.minOut),
+    outCx: intent.out.cx, outCy: intent.out.cy, outOwner: intent.out.owner,
+    outSigR: intent.outSig.R, outSigZ: intent.outSig.z,
   }],
   expected: {
     poolId: settlement.poolId,

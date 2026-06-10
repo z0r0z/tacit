@@ -37,7 +37,6 @@ let n = 0; const ok = (s) => { console.log('  ok -', s); n++; };
 const pubHex = (priv) => '0x' + Buffer.from(G.multiply(priv).toRawBytes(true)).toString('hex');
 const ASSET = '0x' + 'a5'.repeat(32);     // a two-sided (bridged) asset, e.g. tETH
 const ETHEREUM = 2;                        // destChain selector (1=bitcoin, 2=ethereum)
-const nullifierOf = (secret) => '0x' + Buffer.from(keccak_256(Uint8Array.from(Buffer.from(secret.replace(/^0x/, ''), 'hex')))).toString('hex');
 
 // The Ethereum recipient: a scan key + their owner field.
 const rPriv = randomScalar(), rPub = pubHex(rPriv);
@@ -51,7 +50,10 @@ const btcInputs = [
 const mintValue = 1500n;
 const mintBlinding = randomScalar();
 const mintSecret = '0x' + 'c5'.repeat(32);
-const bindNullifier = nullifierOf(btcInputs[0].secret); // burn's canonical ν (revealed on Bitcoin)
+// The burn's canonical ν is NOTE-BOUND (spec B3): keccak(Cx ‖ Cy ‖ "spent") of the first
+// burned input — exactly what the guest derives (main.rs OP_BRIDGE_BURN), not keccak(secret).
+const c0 = memo.commitXY(btcInputs[0].value, btcInputs[0].blinding);
+const bindNullifier = pool.nullifier(c0.cx, c0.cy);
 
 const burn = ct.buildBridgeBurn({
   inputs: btcInputs,
@@ -70,6 +72,7 @@ ok('the crossOut destCommitment is exactly the Ethereum leaf to mint (value comm
 // ── 2. claimId binds the mint to this burn; both sides derive it identically ──
 const claimId = ct.claimId(ETHEREUM, ethLeaf, bindNullifier, ASSET);
 assert.strictEqual(claimId, crossOut.claimId, 'claimId matches the burn-side derivation');
+assert.strictEqual(crossOut.nullifier, pool.nullifier(c0.cx, c0.cy), 'burn ν is note-bound (B3), guest-matching');
 ok('claimId binds (destChain=ETH, ethLeaf, burn ν, asset) — one mintable destination, non-malleable');
 
 // ── 3. Ethereum bridge_mint: insert the leaf + a memo sealed to the recipient ──
