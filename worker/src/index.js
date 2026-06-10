@@ -28132,32 +28132,6 @@ async function _routeFetch(req, env, ctx) {
     // can rescan-from-genesis and exhaust the worker's daily subrequest
     // budget. We return 404 (not 401) on missing/wrong auth so the surface
     // looks like it doesn't exist.
-    // Debug-gated pin-provider config + live Filebase reachability probe. No
-    // secret values are returned — only which providers are configured and the
-    // raw Filebase response so a misconfig (names/creds/egress) is diagnosable
-    // from inside the deployment. `?probe=1` performs one tiny CAR-import PUT.
-    if (url.pathname === '/pin-config' && req.method === 'GET') {
-      if (!checkDebugAuth(req, env)) return jsonResponse({ error: 'not found' }, 404, cors);
-      const out = {
-        marker: 'pinconfig-v1',
-        filebase_configured: _filebaseConfigured(env),
-        filebase_key_set: !!env.FILEBASE_KEY,
-        filebase_secret_set: !!env.FILEBASE_SECRET,
-        filebase_bucket: env.FILEBASE_BUCKET || null,
-        pinata_configured: !!env.PINATA_JWT,
-      };
-      if (url.searchParams.get('probe') === '1' && _filebaseConfigured(env)) {
-        try {
-          const bytes = new TextEncoder().encode('tacit-pin-config-probe-v1');
-          const cidBytes = await _rawCidBytes(bytes);
-          const cid = 'b' + _b32Encode(cidBytes);
-          const car = _buildRawCarV1(cidBytes, bytes);
-          const r = await _filebaseS3(env, 'PUT', cid, car, { 'x-amz-meta-import': 'car', 'content-type': 'application/vnd.ipld.car' });
-          out.probe = { http: r.status, expected_cid: cid, returned_cid: r.headers.get('x-amz-meta-cid'), body: r.ok ? null : (await r.text()).slice(0, 300) };
-        } catch (e) { out.probe = { error: String(e?.message || e).slice(0, 200) }; }
-      }
-      return jsonResponse(out, 200, cors);
-    }
     if (url.pathname === '/scan' && req.method === 'POST') {
       if (!checkDebugAuth(req, env)) return jsonResponse({ error: 'not found' }, 404, cors);
       try { return jsonResponse(await scanForEtches(env, network), 200, cors); }
