@@ -106,7 +106,7 @@ printf '──▶ %-58s [%s]\n' "vkey coherence: pin == deploy == every fixture"
 jget() { node -e 'try{process.stdout.write(String(require("./"+process.argv[1])[process.argv[2]]||""))}catch(e){}' "$1" "$2" 2>/dev/null; }
 PIN_VKEY="$(jget "$PIN" program_vkey)"
 DEP_VKEY="$(grep -oE 'DEFAULT_VKEY = 0x[0-9a-fA-F]{64}' "$DEPLOY" | grep -oE '0x[0-9a-fA-F]{64}' | head -1)"
-SETTLE_FIXTURES="$GROTH16_FIXTURE contracts/test/fixtures/swap_groth16.json contracts/test/fixtures/lp_groth16.json $CROSSLANE_FIXTURE"
+SETTLE_FIXTURES="$GROTH16_FIXTURE contracts/test/fixtures/swap_groth16.json contracts/test/fixtures/lp_groth16.json contracts/test/fixtures/otc_groth16.json contracts/test/fixtures/bid_groth16.json $CROSSLANE_FIXTURE"
 printf '    pin program_vkey   : %s\n' "${PIN_VKEY:-<none>}"
 printf '    deploy DEFAULT_VKEY : %s\n' "${DEP_VKEY:-<none>}"
 coh_ok=1

@@ -4,7 +4,7 @@
 //   MODE=groth16           — GPU Groth16 prove + local verify, writing public_values.hex +
 //                            proof_bytes.hex for a Forge real-proof test (ConfidentialBidProofReal).
 // OP_BID is in the same settle ELF; this re-prove refreshes the settle vkey for ALL settle fixtures.
-use sp1_sdk::{blocking::{ProverClient, Prover}, SP1Stdin, Elf, ProvingKey, HashableKey};
+use sp1_sdk::{blocking::{ProverClient, Prover, ProveRequest}, SP1Stdin, Elf, ProvingKey, HashableKey};
 use alloy_sol_types::{sol, SolValue};
 
 const ELF: &[u8] = include_bytes!("/root/work/cxfer/guest/target/elf-compilation/riscv64im-succinct-zkvm-elf/release/cxfer-guest");

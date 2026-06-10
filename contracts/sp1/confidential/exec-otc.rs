@@ -6,7 +6,7 @@
 //                            proof_bytes.hex for a Forge real-proof test (ConfidentialOtcProofReal).
 // The settle vkey is the cxfer-guest vkey — OP_OTC ships in the same ELF as the other ops, so this
 // re-prove refreshes the settle vkey for ALL settle fixtures (confidential/swap/lp/crosslane/otc).
-use sp1_sdk::{blocking::{ProverClient, Prover}, SP1Stdin, Elf, ProvingKey, HashableKey};
+use sp1_sdk::{blocking::{ProverClient, Prover, ProveRequest}, SP1Stdin, Elf, ProvingKey, HashableKey};
 use alloy_sol_types::{sol, SolValue};
 
 const ELF: &[u8] = include_bytes!("/root/work/cxfer/guest/target/elf-compilation/riscv64im-succinct-zkvm-elf/release/cxfer-guest");

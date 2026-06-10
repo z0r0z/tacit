@@ -23,15 +23,15 @@ import {ConfidentialPool} from "../src/ConfidentialPool.sol";
 contract DeployConfidentialPool is Script {
     // Confidential guest vkey: the complete gen-1 op set — wrap/transfer/unwrap/bridge_burn/
     // bridge_mint — plus the cross-lane non-membership gate (IMT, bitcoinSpentRoot), OP_ATTEST_META
-    // (trustless first-mint metadata from the etch), OP_SWAP (confidential AMM batch against public
-    // pool reserves), and OP_LP_ADD/OP_LP_REMOVE (confidential liquidity: in-ratio add minting a
-    // shielded LP-share note, proportional remove). Swap/LP amounts are bound by an opening sigma
-    // (proof of knowledge of the note blinding) so the settle prover never learns r. Pinned to the
-    // committed canonical ELF: sp1/confidential/elf/cxfer-guest, sha256 4a64dd59… (elf-vkey-pin.json).
-    // A real Groth16 of this ELF verifies on-chain at this vkey (test/ConfidentialSwapProofReal +
-    // ConfidentialLpProofReal). Override via PROGRAM_VKEY env if the guest changes.
-    // (Prior: 0x0063293d, 0x00b3ebb4, 0x00f02859, 0x00bc5661, 0x00cc4e72 — the pre-opening-sigma guest.)
-    bytes32 constant DEFAULT_VKEY = 0x00d0fb85d51de5b0743bce2161dcfca3d36f5ce67eb00b8dda0fe7a999939eeb;
+    // (trustless first-mint metadata from the etch, now binding the IPFS contractURI cid), OP_SWAP
+    // (confidential AMM batch), OP_LP_ADD/OP_LP_REMOVE (confidential liquidity), OP_OTC (2-party
+    // direct swap), and OP_BID (buyer-offline partial-fill bid). Swap/LP/OTC/BID amounts are bound
+    // by an opening sigma (proof of knowledge of the note blinding) so the settle prover never
+    // learns r. Pinned to the committed canonical ELF: sp1/confidential/elf/cxfer-guest, sha256
+    // 1ce85219… (elf-vkey-pin.json). A real Groth16 of this ELF verifies on-chain at this vkey
+    // (test/Confidential{Swap,Lp,Otc,Bid}ProofReal). Override via PROGRAM_VKEY env if the guest changes.
+    // (Prior: 0x0063293d, 0x00b3ebb4, 0x00f02859, 0x00bc5661, 0x00cc4e72, 0x00d0fb85 — superseded.)
+    bytes32 constant DEFAULT_VKEY = 0x00bb82ef494d18e91096f6501813ae52f953db226876649df2cd898072091f2e;
 
     function run() external {
         address sp1Verifier = vm.envAddress("SP1_VERIFIER");
