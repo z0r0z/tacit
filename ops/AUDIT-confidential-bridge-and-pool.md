@@ -77,7 +77,7 @@ must equal the committed ELF's vkey; the `*ProofReal` tests verify a real Groth1
 ### SP1 guest — `contracts/sp1/confidential/`
 | File | Role |
 |---|---|
-| `src/main.rs` | The settle guest: `OP_WRAP/TRANSFER/UNWRAP/BRIDGE_BURN/BRIDGE_MINT/ATTEST_META/SWAP/LP_ADD/LP_REMOVE`. The load-bearing in-guest validity checks live here. **Start here for proving logic.** |
+| `src/main.rs` | The settle guest: `OP_WRAP/TRANSFER/UNWRAP/BRIDGE_BURN/BRIDGE_MINT/ATTEST_META/SWAP/LP_ADD/LP_REMOVE/OTC/BID`. The load-bearing in-guest validity checks live here. **Start here for proving logic.** |
 | `src/reflect.rs` | The reflection prover (Bitcoin header PoW + tx inclusion + envelope binding → `BitcoinReflectionPublicValues`). |
 | `cxfer-core/src/lib.rs` | Shared crypto: `verify_pedersen_opening`, nullifier, keccak Merkle, IMT non-membership, `pool_id`/`lp_share_id`. |
 | `cxfer-core/src/{bitcoin,bjj,sigma}.rs` | Bitcoin header/tx verify; BabyJubJub; secp↔BJJ sigma binding. |
@@ -90,7 +90,7 @@ must equal the committed ELF's vkey; the `*ProofReal` tests verify a real Groth1
 | File | Role |
 |---|---|
 | `confidential-pool.js` | Note/leaf/nullifier/Merkle-tree/`commitXY` primitives (the JS mirror of the guest). |
-| `confidential-transfer.js` / `confidential-swap.js` / `confidential-lp.js` | Op assemblers — build the witness + a verify function mirroring every guest assert. |
+| `confidential-transfer.js` / `confidential-swap.js` / `confidential-lp.js` / `confidential-otc.js` / `confidential-bid.js` | Op assemblers — build the witness + a verify function mirroring every guest assert. |
 | `confidential-relay.js` | Settle-relay client (`submitOp` / `waitForSettle`). |
 | `confidential-indexer.js`, `confidential-reflection-scan-indexer.js` | Seed-only recovery from on-chain events; the scan indexer assembles the full-scan reflection batch (`confidential-reflection-indexer.js` is the superseded witnessed-model oracle). |
 | `bulletproofs-plus.js` | CXFER range proofs (the Bitcoin confidential pool). |
@@ -112,7 +112,7 @@ must equal the committed ELF's vkey; the `*ProofReal` tests verify a real Groth1
   (state machine), `Confidential{Proof,SwapProof,LpProof,CrossLaneProof,ReflectionProof}Real.t.sol`
   (real Groth16 verified on-chain through the genuine SP1 verifier), `ConfidentialTacWalkthrough`,
   `BridgeWithdrawRealProof` + `TacitBridgeMixer` (tETH).
-- **Node** `tests/`: `confidential-{transfer-roundtrip,swap-op,lp-op,settle,relay,…}.mjs` (op
+- **Node** `tests/`: `confidential-{transfer-roundtrip,swap-op,lp-op,otc-op,bid-op,settle,relay,…}.mjs` (op
   round-trips that mirror the guest), `bulletproofs-plus-*.test.mjs` (CXFER ranges).
 
 ### Specs + runbooks
@@ -145,6 +145,14 @@ confirm the property actually holds at the cited spot — don't assume from the 
   the net of the openings, and `min_out` holds.
 - **`OP_LP_ADD` / `OP_LP_REMOVE`** — in-ratio add (`dA·R_B == dB·R_A`), proportional
   shares/withdrawal floored *toward the pool*, openings bind `dA`/`dB`/`dShares`.
+- **`OP_OTC`** — 2-party direct swap (no pool): per-asset conservation `in == counterparty-recv +
+  change`, every output owner + both amounts in the shared opening-sigma context (no redirect/
+  re-price). Confirm the seller/box can't redirect either party's output or inflate change.
+- **`OP_BID`** — buyer-offline partial-fill bid: grid `chosen_f ∈ [min,max]`, `V_fund = max·price`
+  funded + opening-bound, `pay = chosen_f·price`, `refund = V_fund − pay` opening-bound (refund
+  enforced, not conventional). Buyer openings are pre-signed offline so their context binds NO seller
+  notes; confirm a seller can't fill at an un-pre-signed amount, under-deliver, short the refund, or
+  spend the buyer's received notes (buyer-only `deriveNote(bid_secret,·)` blindings).
 - **`OP_BRIDGE_MINT`** — minted value is bound to a proven Bitcoin burn and cannot exceed it.
 - **No-inflation invariant + escrow solvency** — `#spent ≤ #leaves` (the reserve floor), and
   `escrow[asset]` ≥ all outstanding redeemable value across notes + pool reserves. Trace
