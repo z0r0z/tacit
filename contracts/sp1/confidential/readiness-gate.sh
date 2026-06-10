@@ -65,7 +65,7 @@ node_suite() {
 reflection_suite() {
   local t rc=0
   for t in confidential-reflection-scan confidential-reflection-scan-indexer \
-           confidential-reflection-attest-scan \
+           confidential-reflection-attest-scan confidential-reflection-conservation \
            confidential-reflection-state confidential-reflection-witness \
            confidential-reflection-indexer reflection-attest; do
     [ -f "tests/$t.mjs" ] || continue
@@ -167,27 +167,32 @@ else
     "full-scan reflection indexer not built (dapp/confidential-reflection-scan-indexer.js absent)"
 fi
 
-# ── BRIDGE layer 9: reflection guest soundness (denylist of known-unsound vkeys) ────
+# ── BRIDGE layer 9: reflection guest soundness (FAIL-CLOSED allowlist) ────
 # The gate verifies coherence + that a real Groth16 verifies — it CANNOT see an in-guest logic bug
-# (the contract sees only hashes). Two known-unsound reflection guests must NOT be the pinned model:
-#   0x0050d656 — relay-ANCHOR / witnessed-effects (F4 OPEN: a relayer can omit a Bitcoin spend).
-#   0x0099e1c7 — full-scan BUT folds CXFER outputs into bitcoinPoolRoot with NO value-conservation
-#                check (REFLECT-1, FUND-CRITICAL: a confirmed Bitcoin tx spending no pool UTXO can
-#                inject a phantom inflated note → drain on the Ethereum cross-lane). The fix
-#                (cxfer-core verify_cxfer_conservation = cxfer_kernel_verify(burned=0) + verify_range,
-#                run by ScanReflection::fold_cxfer; regression reflection_cxfer_fold_rejects_
-#                nonconserving_outputs) is in source — the corrected GPU re-prove repins a NEW vkey.
-# BLOCK while the pinned reflection vkey is either; auto-clears on the corrected re-prove. (The
-# cxfer-core regression in gate layer 2 is the structural source-side catch.)
-UNSOUND_REFL_VKEYS="0x0050d656e9d421d5c75724e17dff0ba83e44813691101b75a96ff42d4aa41d49 0x0099e1c7809eb9ec4303f17a96ec5f6b4ee59a14898bf84df276ee2383588648"
-refl_unsound=0
-for v in $UNSOUND_REFL_VKEYS; do [ "$RPIN_VKEY" = "$v" ] && refl_unsound=1; done
-if [ "$refl_unsound" = 1 ]; then
-  block_gate "Reflection guest soundness (REFLECT-1 + F4)" BRIDGE \
-    "pinned reflection vkey ($RPIN_VKEY) is a KNOWN-UNSOUND build — 0x0099e1c7 carries REFLECT-1 (CXFER fold has no value-conservation check, a fund-critical inflation path); the fix is in source (verify_cxfer_conservation / fold_cxfer + regression), awaiting the corrected GPU re-prove + re-pin. BRIDGE must NOT activate until then. See RUNBOOK-confidential-pool-readiness.md + the cxfer-core regression."
-else
-  run_gate "Reflection guest soundness (REFLECT-1 + F4 closed)" BRIDGE \
+# (the contract sees only hashes), so a coherent, on-chain-verifying reflection vkey is NOT evidence
+# of soundness. REFLECT-1 (FUND-CRITICAL): a reflection guest that folds CXFER outputs into
+# bitcoinPoolRoot WITHOUT a value-conservation check lets a confirmed Bitcoin tx spending no pool
+# UTXO inject a phantom inflated note → drain on the Ethereum cross-lane. The source fix is
+# cxfer-core verify_cxfer_conservation (= cxfer_kernel_verify(burned=0) + verify_range), run by
+# ScanReflection::fold_cxfer, with reflect.rs checking conservation BEFORE folding; regression
+# reflection_cxfer_fold_rejects_nonconserving_outputs (gate layer 2) is the source-side catch, and
+# the worker mirror is dapp verifyCxferConservation (tests/confidential-reflection-conservation.mjs).
+#
+# A DENYLIST is unsafe here: it silently PASSES any new/unknown reflection vkey, including an
+# unverified re-prove. So this is an ALLOWLIST — BRIDGE is blocked unless the pinned reflection vkey
+# is one POSITIVELY CONFIRMED to enforce conservation. "Confirmed" = an execute- or on-chain-level
+# NEGATIVE test showing THIS pinned ELF rejects/skips a non-conserving CXFER (not just that a
+# conserving one verifies). Add a vkey below only with that evidence; the empty default fails closed.
+#   Known-UNSOUND (never confirm): 0x0050d656 (anchor/F4-open), 0x0099e1c7 (REFLECT-1 unconserved fold).
+CONFIRMED_SOUND_REFL_VKEYS=""   # e.g. "0x<vkey>"  — add ONLY with a negative-test proof of conservation
+refl_confirmed=0
+for v in $CONFIRMED_SOUND_REFL_VKEYS; do [ "$RPIN_VKEY" = "$v" ] && refl_confirmed=1; done
+if [ "$refl_confirmed" = 1 ]; then
+  run_gate "Reflection guest soundness (REFLECT-1 conservation confirmed)" BRIDGE \
     test -n "$RPIN_VKEY"
+else
+  block_gate "Reflection guest soundness (REFLECT-1 + F4)" BRIDGE \
+    "pinned reflection vkey ($RPIN_VKEY) is NOT in the confirmed-conservation allowlist — BRIDGE is fail-closed until a negative test proves THIS ELF skips a non-conserving CXFER (REFLECT-1). The source fix + worker mirror exist (verify_cxfer_conservation / fold_cxfer + reflect.rs check-before-fold + tests/confidential-reflection-conservation.mjs); confirm the pinned build enforces them, then allowlist the vkey. See RUNBOOK-confidential-pool-readiness.md."
 fi
 
 # ── verdicts ─────────────────────────────────────────────────────────────────
