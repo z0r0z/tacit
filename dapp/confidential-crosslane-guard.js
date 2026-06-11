@@ -31,8 +31,10 @@
 export function makeCrossLaneGuard({ keccak256 }) {
   const enc = new TextEncoder();
   const strip = (h) => String(h == null ? '' : h).replace(/^0x/, '');
-  // isNullifierSpent(bytes32) → bool — the contract's public spent-set view.
-  const SELECTOR = '0x' + Buffer.from(keccak256(enc.encode('isNullifierSpent(bytes32)'))).slice(0, 4).toString('hex');
+  const toHex = (u8) => Array.from(u8, (b) => b.toString(16).padStart(2, '0')).join('');
+  // isNullifierSpent(bytes32) → bool — the contract's public spent-set view. (Browser-safe hex,
+  // no Buffer, so this loads identically in the dapp bundle and in Node.)
+  const SELECTOR = '0x' + toHex(keccak256(enc.encode('isNullifierSpent(bytes32)')).slice(0, 4));
 
   // True iff ν is spent on the EVM ConfidentialPool at `blockTag`. Throws on RPC failure
   // or a malformed return (so the caller fails closed).

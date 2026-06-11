@@ -603,11 +603,18 @@ insert per nullifier on every live settle for a still-gated feature).
    It is **strictly more restrictive** (only ever blocks), so it can ship and bake on the live
    worker without any contract/guest/ceremony change — and it is what makes a btcHomed Ethereum
    spend actually consume the Bitcoin note. **Built (2026-06-12):** `dapp/confidential-crosslane-guard.js`
-   (`makeCrossLaneGuard().bitcoinSpendBlocked(ethCall, poolAddress, ν)`), a self-contained,
-   injected-`ethCall`, fail-closed module mirroring the `crossout-consumer` pattern — no-op when
-   `CONFIDENTIAL_POOL_DEPLOYMENTS[network].pool` is null (the current posture), so it wires into
-   the worker indexer-of-record + the dapp CXFER pre-broadcast check and activates with the
-   cross-lane layer. Tested in `tests/confidential-crosslane-guard.mjs`.
+   (`makeCrossLaneGuard().bitcoinSpendBlocked(ethCall, poolAddress, ν)`) — self-contained,
+   injected-`ethCall`, fail-closed, browser-safe, no-op when no pool is wired; tested in
+   `tests/confidential-crosslane-guard.mjs`. The **dapp pre-broadcast check is wired** into
+   `buildAndBroadcastCXferMulti` (tacit.js): before the commit broadcast, each input note's ν
+   (`commitXY`→`nullifier`) is checked against `CROSSLANE_DEPLOYMENTS[net].pool` and a spent note
+   aborts the send (inert while `pool` is null — the current posture). **Worker-side enforcement is
+   NOT a drop-in at the CXFER ingest:** that ingest *is* the reflection fold (`ingestConfirmedCxfer`),
+   and the SP1 reflection prover re-derives the `bitcoinSpentRoot` trustlessly from Bitcoin only, so
+   an EVM check folded there would diverge the operator's root from the proof. The worker reverse-
+   enforcement must be a SEPARATE acceptance layer (withhold honoring a Bitcoin spend whose ν is
+   EVM-spent, without touching the reflected root) — so it belongs to step 2's provisional-yield,
+   not a naive inline gate. (Correction to the earlier "ship it on the worker" framing.)
 2. **Provisional-yield reconciliation** (§5, §10): a fast-lane intra-pool confirm is
    *provisional* until Bitcoin-anchored; the indexer-of-record reverts a soft-confirm that
    loses to a conflicting Bitcoin-native spend ("Bitcoin arbitrates, the fast lane yields").
