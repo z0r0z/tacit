@@ -87,6 +87,49 @@ export function makeCrossoutConsumer({ ethGetLogs, kvGet, kvPut, evmLog, confirm
   return { scan, nextFromBlock, getRecorded, bindBitcoinOutput, recKey, cursorKey, DEST_BITCOIN, TOPIC0 };
 }
 
+// ── T_CROSSOUT_MINT envelope (the Bitcoin wire format the wallet broadcasts) ──
+// After a bridge_burn the wallet knows the destination note (Cx, Cy, owner) and the claimId (from the
+// CrossOutRecorded log), and broadcasts this 161-byte payload as a Taproot envelope (reuse the existing
+// encodeEnvelopeScript + commit/reveal + postHint). The worker decodes it, recomputes the leaf
+// keccak(asset‖Cx‖Cy‖owner), and binds it to the recorded crossOut (one-mint-per-claimId). No proof: the
+// value was kernel-proven on Ethereum and the destCommitment is carried verbatim. Opcode 0x65 is free
+// (the bridge family runs 0x60-0x64). Sits alongside T_BRIDGE_DEPOSIT in the worker opcode dispatch.
+export const T_CROSSOUT_MINT = 0x65;
+
+const _fromHex = (h) => {
+  h = String(h).replace(/^0x/, '');
+  if (h.length % 2) h = '0' + h;
+  const u = new Uint8Array(h.length / 2);
+  for (let i = 0; i < u.length; i++) u[i] = parseInt(h.substr(i * 2, 2), 16);
+  return u;
+};
+const _toHex = (u) => '0x' + Array.from(u, (b) => b.toString(16).padStart(2, '0')).join('');
+const _field32 = (h) => {
+  const raw = _fromHex(h);
+  if (raw.length > 32) throw new Error('crossout-mint: field over 32 bytes');
+  const out = new Uint8Array(32);
+  out.set(raw, 32 - raw.length); // right-align (left-pad), matching bytes32
+  return out;
+};
+
+export function encodeCrossoutMint({ assetId, claimId, cx, cy, owner }) {
+  const out = new Uint8Array(161);
+  out[0] = T_CROSSOUT_MINT;
+  out.set(_field32(assetId), 1);
+  out.set(_field32(claimId), 33);
+  out.set(_field32(cx), 65);
+  out.set(_field32(cy), 97);
+  out.set(_field32(owner == null ? '0x0' : owner), 129);
+  return out;
+}
+
+export function decodeCrossoutMint(payload) {
+  const u = payload instanceof Uint8Array ? payload : _fromHex(payload);
+  if (!u || u.length !== 161 || u[0] !== T_CROSSOUT_MINT) return null;
+  const at = (i) => _toHex(u.subarray(i, i + 32));
+  return { assetId: at(1), claimId: at(33), cx: at(65), cy: at(97), owner: at(129) };
+}
+
 // The eth_getLogs reader the worker wires — fetch + the per-network RPC fallback list (the worker passes
 // its _TETH_ETH_RPCS). Returns the decoded-ready raw logs, or null on total RPC failure (the caller must
 // then NOT advance the cursor). Mirror of the worker's _ethCall fallback loop.

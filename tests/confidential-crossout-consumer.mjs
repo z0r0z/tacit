@@ -9,12 +9,18 @@
 // Run: node tests/confidential-crossout-consumer.mjs
 
 import { keccak_256 } from '../node_modules/@noble/hashes/sha3.js';
+import * as secp from '../node_modules/@noble/secp256k1/index.js';
+import { createHash } from 'node:crypto';
 import { makeConfidentialEvmLog } from '../dapp/confidential-evm-log.js';
-import { makeCrossoutConsumer } from '../dapp/confidential-crossout-consumer.js';
+import { makeConfidentialPool } from '../dapp/confidential-pool.js';
+import { makeCrossoutConsumer, encodeCrossoutMint, decodeCrossoutMint, T_CROSSOUT_MINT } from '../dapp/confidential-crossout-consumer.js';
 import assert from 'node:assert';
 
 const keccak256 = (b) => keccak_256(b);
+const sha256 = (b) => new Uint8Array(createHash('sha256').update(Buffer.from(b)).digest());
 const evmLog = makeConfidentialEvmLog({ keccak256 });
+const cpool = makeConfidentialPool({ secp, keccak256, sha256 });
+const ZERO32 = '0x' + '00'.repeat(32);
 let n = 0; const ok = (s) => { console.log('  ok -', s); n++; };
 
 const NET = 'mainnet', POOL = '0xPoolAddr';
@@ -34,14 +40,14 @@ const LOGS = [
   mkLog(CLAIM_C, 1, b32('destC'), b32('nuC'), ASSET, 199), // Bitcoin-destined, in the unfinalized zone first
 ];
 
-function harness() {
+function harness(logs = LOGS) {
   const kv = new Map();
   let rpcFail = false;
   const kvGet = async (k) => (kv.has(k) ? kv.get(k) : null);
   const kvPut = async (k, v) => { kv.set(k, v); };
-  const ethGetLogs = async (net, pool, fromBlock, toBlock, topic0) => {
+  const ethGetLogs = async (net, poolAddr, fromBlock, toBlock, topic0) => {
     if (rpcFail) return null;
-    return LOGS.filter((l) => l.blockNumber >= fromBlock && l.blockNumber <= toBlock && l.topics[0] === topic0);
+    return logs.filter((l) => l.blockNumber >= fromBlock && l.blockNumber <= toBlock && l.topics[0] === topic0);
   };
   const consumer = makeCrossoutConsumer({ ethGetLogs, kvGet, kvPut, evmLog, confirmations: 36 });
   return { kv, consumer, setRpcFail: (v) => { rpcFail = v; } };
@@ -125,4 +131,25 @@ function harness() {
   ok('bind rejects a destCommitment mismatch and an unrecorded claimId (no unbacked mint)');
 }
 
-console.log(`\n${n}/6 cross-out consumer (read + bind) checks passed`);
+// ── 7. T_CROSSOUT_MINT wire format: encode → decode → recompute leaf → bind (the dapp↔worker handshake) ──
+{
+  const asset = b32('TAC'), cx = b32('cx'), cy = b32('cy'), owner = ZERO32;
+  const leaf = cpool.leaf(asset, cx, cy, owner);                       // the Bitcoin note leaf == destCommitment
+  const claimId = b32('claimZ');
+  const log = mkLog(claimId, 1, leaf, b32('nuZ'), asset, 50);
+  const { consumer } = harness([log]);
+  await consumer.scan({ network: NET, pool: POOL, tipHeight: 200, fromBlock: 0 }); // records the crossOut
+  const payload = encodeCrossoutMint({ assetId: asset, claimId, cx, cy, owner });   // the wallet builds it
+  assert.strictEqual(payload.length, 161, 'envelope is 161 bytes');
+  assert.strictEqual(payload[0], T_CROSSOUT_MINT, 'opcode 0x65');
+  const dec = decodeCrossoutMint(payload);                            // the worker decodes it
+  assert.strictEqual(dec.claimId.toLowerCase(), claimId.toLowerCase(), 'decoded claimId round-trips');
+  const outputLeaf = cpool.leaf(dec.assetId, dec.cx, dec.cy, dec.owner);
+  assert.strictEqual(outputLeaf, leaf, 'decoded fields recompute the destCommitment leaf');
+  const bound = await consumer.bindBitcoinOutput({ network: NET, claimId, outputLeaf });
+  assert.strictEqual(bound.bound, true, 'the decoded envelope binds the recorded crossOut (mint authorized)');
+  assert.strictEqual(decodeCrossoutMint(payload.subarray(0, 160)), null, 'a truncated envelope is rejected');
+  ok('T_CROSSOUT_MINT envelope: encode → decode → recompute leaf → bind (the dapp↔worker handshake)');
+}
+
+console.log(`\n${n}/7 cross-out consumer (read + bind + wire) checks passed`);

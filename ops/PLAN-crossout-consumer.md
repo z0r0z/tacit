@@ -103,10 +103,30 @@ trust-minimization follow-up that doesn't change the wallet/worker flow, only ho
 2. ✅ **Worker bind + gate** (DONE, `bindBitcoinOutput`) — binds a Bitcoin output to a recorded crossOut by
    `claimId` iff the `destCommitment` matches, then consumes the `claimId` (one-mint-per-claimId). Bind
    checks in the same test (mint-once, dest-mismatch reject, unrecorded reject).
-3. **Dapp broadcast** — `bridge_burn` → build/broadcast the Bitcoin `T_CXFER` carrying the `claimId` +
-   `destCommitment` output + status tracking.
+3. 🟡 **Wire format DONE; live broadcast remaining.** The `T_CROSSOUT_MINT` (opcode `0x65`) envelope —
+   `encodeCrossoutMint`/`decodeCrossoutMint` (161 bytes: `opcode ‖ assetId ‖ claimId ‖ Cx ‖ Cy ‖ owner`)
+   — is built + tested (decode → recompute `leaf(asset‖Cx‖Cy‖owner)` → `bindBitcoinOutput`). Remaining is
+   the **live integration**: the dapp `bridge_burn` → wrap the payload via the existing
+   `encodeEnvelopeScript` + Taproot commit/reveal + `postHint`; and the worker **opcode dispatch hook**
+   (after the `T_BRIDGE_BURN` handler, ~`worker/src/index.js:13585`) → `decodeCrossoutMint` → recompute
+   leaf → `bindBitcoinOutput` → index under `crossout-minted:{net}:{asset}:{claimId}`. (Live edits, with
+   the pool deploy.)
 4. **Worker cron hook** — import + a gated `scan()` call each tick (inert until `CONFIDENTIAL_POOL_
    DEPLOYMENTS[net].pool` is set); lands with the pool deploy.
+
+### Wire format — `T_CROSSOUT_MINT` (opcode `0x65`, free; bridge family is `0x60-0x64`)
+
+| off | size | field | from |
+|----|----|----|----|
+| 0 | 1 | opcode `0x65` | — |
+| 1 | 32 | assetId | `CrossOutRecorded.assetId` |
+| 33 | 32 | claimId | `CrossOutRecorded.claimId` |
+| 65 | 32 | Cx | the burn output commitment |
+| 97 | 32 | Cy | the burn output commitment |
+| 129 | 32 | owner | Bitcoin owner field (the leaf needs it; `T_CXFER` keeps owner off-wire, but here the worker must recompute the leaf to bind, so it's carried) |
+
+No proof: the value was kernel-proven on Ethereum and `destCommitment` is carried verbatim; the worker's
+only check is `leaf(assetId‖Cx‖Cy‖owner) == recorded destCommitment` + the claimId consume-lock.
 5. ✅ **Node round-trip test** (DONE) — `confidential-crosslane-roundtrip.mjs` now ties the witness
    bridge-out to the consumer: the `bridge_burn` crossOut is modeled as a `CrossOutRecorded` log, scanned
    (recorded past finality), bound to the Bitcoin output, and a replay is rejected. Proves the formats
