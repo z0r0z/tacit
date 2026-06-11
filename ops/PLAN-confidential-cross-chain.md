@@ -605,3 +605,81 @@ unchanged guest/prover/ceremony (and unchanged contracts for the home-chain mode
     costs an SSTORE per Bitcoin spend and leans on the relay's posts, so it does not
     scale. Direction: in-guest accumulator is the target; the on-chain map is the
     bootstrap.
+
+## 12. Rollout sequencing — TAC-first, gradual allowlist (decision 2026-06-11)
+
+The cross-lane goes live **one asset at a time**, and **TAC leads** — it is the live
+platform asset (1500+ wallets, the real `f0bbe868…` id), the most liquid and best-
+understood reserve, so proving the round-trip on TAC validates the whole lane before
+any long tail.
+
+- **Phase 1 — TAC two-way.** Stand up the reflection loop in *both* directions
+  (`bridge_mint` Bitcoin→ETH and the ETH→Bitcoin `crossOut` consumer) and prove TAC's
+  full round-trip on a capped pilot. This is the real lift — the operational wiring
+  (reflection prover honoring ETH→BTC, HEADER_RELAY, indexer) with REFLECT-1 kept
+  closed. Nothing in the contract or guest is gated on TAC specifically.
+- **Phase 2 — widen the allowlist.** Each added asset needs only its canonical ERC20
+  (deterministic `f(assetId)`, lazy-deployed) and indexer coverage (the Bitcoin-side
+  scan already walks *all* pool assets). So widening is a gated allowlist expansion —
+  **no contract redeploy, no new guest** — leading with the highest-liquidity assets.
+- **Phase 3 — open up** as the pilot caps lift.
+
+The gate is operational readiness, not Solidity: `bridgeMinted` (one-mint-per-`claimId`)
+and the EVM no-inflation floor bound every asset uniformly, so the allowlist is the only
+per-asset knob.
+
+### Entry is private-by-default — `bridge_mint` IS the direct shielded-pool entry
+
+A subtlety worth stating because it inverts the usual bridge mental model: a Tacit
+(Bitcoin-origin) asset enters Ethereum **as a confidential note**, not a public token.
+`OP_BRIDGE_MINT` ("Bitcoin burn → Ethereum note", `main.rs:29`) inserts the destination
+leaf directly (`pv.leaves`); the public canonical ERC20 is **only** minted downstream, on
+unwrap (`ConfidentialPool.sol:929`). So:
+
+- **Into the shielded pool, directly = `bridge_mint`.** There is no "public ERC20 first"
+  entry step for a Bitcoin-origin asset — the value crosses as a shielded note and is
+  immediately usable in confidential DeFi (swap / LP / OTC / BID), most-private by default.
+- **The public ERC20 is the opt-OUT (exit), not an entry** — unwrap a note to get the
+  transparent, Uniswap-tradeable face; wrap it back to re-shield. The "tacit asset →
+  public ERC20 → wrap" route is a detour (unwrap then re-wrap), not the path.
+- **ETH-native assets are the mirror**: they enter via `wrap` (escrow the real ERC20 →
+  note); they never `bridge_mint` because they are already on Ethereum.
+
+So `bridge_mint` is both the default and the only crossing for Bitcoin value, and it
+already delivers exactly "directly into the shielded pool" — the privacy-first entry —
+with the public ERC20 reserved for when transparency/legacy-tradeability is wanted.
+
+### Day-one assets: tETH (legacy-hardcoded) + TAC; the rest by turn
+
+The day-one cross-chain pair is **tETH and TAC**; everything else is added by turn (config-only,
+below). The two are handled differently by design:
+
+- **tETH = legacy, hardcoded (decision 2026-06-11).** tETH already runs as a live ETH↔Bitcoin bridge
+  on the standalone mixer, its asset id hardcoded per network (dapp `TETH_DEPLOYMENTS`,
+  `tacit.js:9843` — mainnet `3cba71e1…`, signet `d903de2d…`; worker `TETH_GENERATIONS`,
+  `index.js:1071`, asset+chainId+mixer per gen). **Keep it that way** — tETH stays a hardcoded legacy
+  ETH asset on the existing mixer; no re-mint, no canonical-ERC20-commits-to-id ceremony for it. The
+  cross-lane reuses its existing id as the shared identity if/when tETH liquidity migrates to the pool
+  (the convergence-by-attrition in the tETH migration note).
+- **TAC = the clean go-forward path.** TAC (`f0bbe868…`) is Bitcoin-only today (the id is hardcoded for
+  collateral/eligibility but never registered `kind:'bridge'`). Making it day-one cross-chain is the
+  near-term work: a TAC bridge entry + register it bridge-eligible + route the bridge UX by asset. TAC
+  is the asset that exercises the *clean* confidential-pool cross-lane.
+
+### dapp + indexer are already asset-agnostic — adding assets is config, not code
+
+Verified 2026-06-11 (parallel dapp + worker map). The app/scan layer can carry day-one assets with
+almost no new code:
+- **Indexer/worker is asset-agnostic.** Recovery is per-note (the asset id rides in the memo plaintext
+  and binds into the leaf `keccak(assetId‖Cx‖Cy‖owner)`); pools are discovered dynamically
+  (`pool:<network>:<aid>:<denom>`, no per-asset allowlist); the reflection scan walks all assets. A new
+  asset auto-indexes — **no indexer code**.
+- **Cross-chain resolution already exists.** `localAssetOf[sharedId] → localId` + `_resolveAsset`
+  (`ConfidentialPool.sol:485-493, 904-909`) map a bridged note's shared id to the local entry.
+- **The dapp has no per-asset chain field** — cross-chain eligibility is hardcoded in the bridge config
+  (`TETH_DEPLOYMENTS`). So day-one TAC = a config entry + `kind:'bridge'` + asset-aware bridge routing;
+  later assets = the same shape, no architectural change.
+
+So **dapp+indexer-first is the right sequencing**: the allowlist/UX recognizes tETH + TAC (and the
+turn-by-turn additions) before the full on-chain cross-lane is operational — the scan layer is already
+ready, the bridge UX is the visible surface, and the on-chain wiring lights up underneath.
