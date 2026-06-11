@@ -34,11 +34,14 @@ contract ConfidentialPoolSwapTest is Test {
         tokenB = new MockERC20();
         assetA = pool.registerWrapped(address(tokenA), 1, bytes32(0), "Conf A", "cA", 18);
         assetB = pool.registerWrapped(address(tokenB), 1, bytes32(0), "Conf B", "cB", 18);
+        // canonicalize so assetA < assetB (and tokenA tracks assetA): the pool keys by the sorted pair,
+        // and these tests present reserves in canonical low→high order to line up with that storage.
+        if (assetA > assetB) { (assetA, assetB) = (assetB, assetA); (tokenA, tokenB) = (tokenB, tokenA); }
         tokenA.mint(address(this), 1_000_000);
         tokenB.mint(address(this), 1_000_000);
         tokenA.approve(address(pool), type(uint256).max);
         tokenB.approve(address(pool), type(uint256).max);
-        poolId = keccak256(abi.encode(assetA, assetB));
+        poolId = keccak256(abi.encode(assetA, assetB, uint32(30)));
     }
 
     function _pv() internal view returns (ConfidentialPool.PublicValues memory pv) {
@@ -59,7 +62,7 @@ contract ConfidentialPoolSwapTest is Test {
 
     function test_init_pool_funds_and_creates() public {
         bytes32 id = pool.initPool(assetA, assetB, 100, 200, 30);
-        assertEq(id, poolId, "poolId = keccak(assetA, assetB)");
+        assertEq(id, poolId, "poolId = keccak(assetA, assetB, feeBps)");
         (bool init, bytes32 a, bytes32 b, uint256 rA, uint256 rB, uint32 fee, ) = pool.pools(id);
         assertTrue(init, "init");
         assertEq(a, assetA); assertEq(b, assetB);
@@ -83,6 +86,27 @@ contract ConfidentialPoolSwapTest is Test {
         pool.initPool(assetA, assetB, 100, 200, 30);
         vm.expectRevert(ConfidentialPool.PoolExists.selector);
         pool.initPool(assetA, assetB, 50, 50, 30);
+    }
+
+    // Multi-fee-tier: the SAME pair at a DIFFERENT fee is a DISTINCT pool (own poolId, own reserves),
+    // so a 0.3% and a 1% pool over (A,B) coexist — and the duplicate guard is per (pair, fee), not per pair.
+    function test_init_distinct_fee_tiers_coexist() public {
+        bytes32 id30 = pool.initPool(assetA, assetB, 100, 200, 30);
+        bytes32 id100 = pool.initPool(assetA, assetB, 300, 600, 100);
+        assertTrue(id30 != id100, "different fee tier = different poolId");
+        assertEq(id30, keccak256(abi.encode(assetA, assetB, uint32(30))));
+        assertEq(id100, keccak256(abi.encode(assetA, assetB, uint32(100))));
+        (bool i30, , , uint256 rA30, , uint32 f30, ) = pool.pools(id30);
+        (bool i100, , , uint256 rA100, , uint32 f100, ) = pool.pools(id100);
+        assertTrue(i30 && i100, "both tiers initialized");
+        assertEq(f30, 30); assertEq(f100, 100);
+        assertEq(rA30, 100, "0.3% tier reserves"); assertEq(rA100, 300, "1% tier reserves");
+    }
+
+    function test_init_fee_too_high_reverts() public {
+        uint32 tooHigh = pool.MAX_POOL_FEE_BPS() + 1;
+        vm.expectRevert(ConfidentialPool.FeeTooHigh.selector);
+        pool.initPool(assetA, assetB, 100, 200, tooHigh);
     }
 
     // ──────────────────── settle swap ────────────────────

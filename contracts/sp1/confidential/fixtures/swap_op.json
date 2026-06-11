@@ -3,6 +3,7 @@
   "spendRoot": "0x907296f9df7eaa9a6081ece9d35096e9b76843b7a5785edb6d435774dd35d7cd",
   "assetA": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
   "assetB": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "feeBps": 30,
   "reserveAPre": 1000,
   "reserveBPre": 1000,
   "priceNum": 90,
@@ -62,7 +63,7 @@
     }
   ],
   "expected": {
-    "poolId": "0x9f89faaf1495298300ca41edde79c5cc9cb9bf17e1c9ef97acfdc53194f901e1",
+    "poolId": "0xc692f0d395f09ceb4fbcf243334077c6f30e2b89550e5a245f76ffe22ff4c12f",
     "reserveAPost": 1100,
     "reserveBPost": 910,
     "nullifiers": [

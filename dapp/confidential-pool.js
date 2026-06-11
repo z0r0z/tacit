@@ -683,10 +683,25 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
 
   function openingSigma(amount, r, contextHex, nonce) {
     const rS = mod(BigInt(r), N), kS = mod(BigInt(nonce), N);
+    // A zero nonce makes R = identity and z = e·r, exposing r = z·e⁻¹ from ONE published intent — and
+    // under the bearer model recovering r is recovering spend authority. Fail closed.
+    if (kS === 0n) throw new Error('openingSigma: zero nonce would expose the blinding r');
     const C = prover.commit(BigInt(amount), rS);
     const R = secp.ProjectivePoint.BASE.multiply(kS);
     const e = openChallenge(amount, contextHex, C, R);
     return { R: hx(compressPt(R)), z: hx(beBytes(mod(kS + e * rS, N), 32)) };
+  }
+
+  // Derive an opening-sigma nonce deterministically + uniquely per (note blinding r, intent context,
+  // role). Binding the nonce to the CONTEXT means re-signing the SAME note under a DIFFERENT intent (a
+  // re-quote, LP re-add, OTC renegotiation, or a relay rebuild) automatically yields a NEW nonce — which
+  // eliminates the cross-op nonce-reuse class that otherwise leaks r = (z1−z2)/(e1−e2) (a bearer spend).
+  // RFC6979-style: deterministic in (r, context, role), never zero. swap/LP/OTC derive every sigma nonce
+  // through this rather than trusting a caller-supplied value.
+  function deriveOpeningNonce(r, contextHex, role) {
+    const roleB = role instanceof Uint8Array ? role : new TextEncoder().encode(role);
+    const k = mod(bToBig(keccak256(concat([new TextEncoder().encode('tacit-open-nonce-v1'), beBytes(mod(BigInt(r), N), 32), b32(contextHex), roleB]))), N);
+    return k === 0n ? 1n : k;
   }
 
   function verifyOpeningSigma(cx, cy, amount, Rhex, zHex, contextHex) {
@@ -705,7 +720,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     commitXY, deriveNote, deriveBidSecret, leaf, nullifier, depositId, Tree, verifyPath, merklePath, merkleRootFrom,
     imtLeaf, imtRoot, imtEmptyRoot, makeImtAccumulator,
     utxoLeaf, makeUtxoAccumulator, commitmentHash, decompressCommitment, compressXY, outpointKey,
-    makeReflectionState, assembleReflectionInput, openingSigma, verifyOpeningSigma, intentContext,
+    makeReflectionState, assembleReflectionInput, openingSigma, verifyOpeningSigma, deriveOpeningNonce, intentContext,
     liveLeaf, makeLiveUtxoSet, makeScanReflectionState, assembleReflectionScanInput,
     cxferKernelVerify, verifyCxferConservation,
     _internal: { keccak, concat, b32, beBytes, hx },

@@ -77,7 +77,7 @@ contract ConfidentialLpProofRealTest is Test {
         assertEq(pv.swaps.length, 0, "no swaps in this batch");
         assertEq(pv.liquidity.length, 1, "one LP settlement");
         LpSettlement memory l = pv.liquidity[0];
-        assertEq(l.poolId, keccak256(abi.encode(ASSET_A, ASSET_B)), "poolId = keccak(assetA, assetB)");
+        assertEq(l.poolId, keccak256(abi.encode(ASSET_A, ASSET_B, uint32(30))), "poolId = keccak(assetA, assetB, feeBps)");
         assertEq(l.reserveAPre, 1000, "reserveAPre");
         assertEq(l.reserveBPre, 2000, "reserveBPre");
         assertEq(l.sharesPre, 1000, "sharesPre");

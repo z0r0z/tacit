@@ -40,6 +40,7 @@ fn main() {
 
     stdin.write(&hexv(f["assetA"].as_str().unwrap()));
     stdin.write(&hexv(f["assetB"].as_str().unwrap()));
+    stdin.write(&(f["feeBps"].as_u64().unwrap() as u32)); // pool fee tier — binds the pool id
     stdin.write(&f["reserveAPre"].as_u64().unwrap());
     stdin.write(&f["reserveBPre"].as_u64().unwrap());
     stdin.write(&f["sharesPre"].as_u64().unwrap());

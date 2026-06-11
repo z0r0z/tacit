@@ -32,6 +32,13 @@ contract ConfidentialPoolFuzzTest is Test {
     function _settle(ConfidentialPool.PublicValues memory pv) internal {
         pool.settle(abi.encode(pv), "", new bytes[](pv.leaves.length));
     }
+    // Seed `n` leaves so the no-inflation floor (#evm-spends ≤ #leaves) has headroom for the spends.
+    function _seedLeaves(uint256 n) internal {
+        ConfidentialPool.PublicValues memory seed = _pv();
+        seed.leaves = new bytes32[](n);
+        for (uint256 i; i < n; ++i) seed.leaves[i] = keccak256(abi.encodePacked("seed", i));
+        _settle(seed);
+    }
     function _register(uint256 scale) internal returns (bytes32 id, InvERC20 t) {
         t = new InvERC20("X", "X", 18);
         id = pool.registerWrapped(address(t), scale, bytes32(0), "cX", "cX", 18);
@@ -115,6 +122,7 @@ contract ConfidentialPoolFuzzTest is Test {
         (bytes32 id,) = _register(1);
         bytes32 right = keccak256(abi.encodePacked(destChain, destC, nu, id));
         vm.assume(wrong != right);
+        _seedLeaves(1); // the burned note is a prior leaf
 
         // correct binding settles + nullifies
         ConfidentialPool.PublicValues memory ok = _pv();
@@ -167,6 +175,7 @@ contract ConfidentialPoolFuzzTest is Test {
 
     /// A nullifier is consumable exactly once across settles.
     function testFuzz_nullifier_spends_once(bytes32 nu) public {
+        _seedLeaves(1); // the spent note is a prior leaf
         ConfidentialPool.PublicValues memory pv = _pv();
         pv.nullifiers = new bytes32[](1);
         pv.nullifiers[0] = nu;

@@ -15,7 +15,7 @@ sp1_zkvm::entrypoint!(main);
 use alloy_sol_types::{sol, SolValue};
 use alloy_sol_types::private::{Address, U256};
 use cxfer_core::{
-    bitcoin, claim_id, decompress, deposit_id, from_affine_xy, imt_non_membership,
+    bitcoin, claim_id, clearing_price_matches, decompress, deposit_id, from_affine_xy, imt_non_membership,
     intent_context, keccak_merkle_verify, leaf, lp_share_id, nullifier, pool_id, scalar_reduce_be,
     utxo_leaf, verify_kernel, verify_opening_sigma, verify_pedersen_opening, verify_range, Point,
 };
@@ -377,7 +377,8 @@ pub fn main() {
                 // the pool or short a trader.
                 let asset_a = r32();
                 let asset_b = r32();
-                let pid = pool_id(&asset_a, &asset_b);
+                let fee_bps: u32 = io::read(); // pool fee tier — binds the pool id (multi-fee-tier)
+                let pid = pool_id(&asset_a, &asset_b, fee_bps);
                 let reserve_a_pre: u64 = io::read();
                 let reserve_b_pre: u64 = io::read();
                 let price_num: u64 = io::read(); // uniform price: price_num B per price_den A
@@ -473,6 +474,17 @@ pub fn main() {
                 assert!(a_post <= u64::MAX as u128 && b_post <= u64::MAX as u128, "swap: reserve overflow");
                 assert!(a_post * b_post >= a_pre * b_pre, "swap: constant-product decreased");
 
+                // Enforce the pool's FEE TIER: re-derive the deterministic clearing price (AMM.md §4)
+                // from the public reserves + gross flows + fee_bps and require the batch's declared
+                // uniform price to equal it EXACTLY. The constant-product non-decrease above is only the
+                // ZERO-fee floor; without this a self-solved batch could clear at the zero-fee price and
+                // starve LPs of the fee they're owed. This makes the fee tier economically real.
+                assert!(gross_a_in <= u64::MAX as u128 && gross_b_in <= u64::MAX as u128, "swap: gross flow over u64");
+                assert!(
+                    clearing_price_matches(gross_a_in as u64, gross_b_in as u64, reserve_a_pre, reserve_b_pre, fee_bps, price_num, price_den),
+                    "swap: declared price is not the fee-clearing price"
+                );
+
                 swaps.push(SwapSettlement {
                     poolId: pid.into(),
                     reserveAPre: U256::from(reserve_a_pre),
@@ -488,7 +500,8 @@ pub fn main() {
                 // provider's ownership + total position; reserves + totalShares stay public.
                 let asset_a = r32();
                 let asset_b = r32();
-                let pid = pool_id(&asset_a, &asset_b);
+                let fee_bps: u32 = io::read(); // pool fee tier — binds the pool id (multi-fee-tier)
+                let pid = pool_id(&asset_a, &asset_b, fee_bps);
                 let lp_asset = lp_share_id(&pid);
                 let r_a_pre: u64 = io::read();
                 let r_b_pre: u64 = io::read();
@@ -564,7 +577,8 @@ pub fn main() {
                 // withdrawal is floored toward the pool so the dust accrues to the remaining LPs.
                 let asset_a = r32();
                 let asset_b = r32();
-                let pid = pool_id(&asset_a, &asset_b);
+                let fee_bps: u32 = io::read(); // pool fee tier — binds the pool id (multi-fee-tier)
+                let pid = pool_id(&asset_a, &asset_b, fee_bps);
                 let lp_asset = lp_share_id(&pid);
                 let r_a_pre: u64 = io::read();
                 let r_b_pre: u64 = io::read();

@@ -575,13 +575,107 @@ pub fn reflected_note_leaf(asset: &[u8; 32], compressed: &[u8; 33]) -> Option<[u
 /// derives this from a confirmed tx's vin (`extract_inputs`), so a spent outpoint is forced
 /// to be a real prior output and not a witnessed value.
 pub fn outpoint_key(txid: &[u8; 32], vout: u32) -> [u8; 32] { kn(&[txid, &vout.to_le_bytes()]) }
-/// Confidential-AMM pool id, matching `ConfidentialPool`'s `keccak256(abi.encode(assetA, assetB))`
-/// (two bytes32 ABI-encode to their 64-byte concat). Binds an OP_SWAP batch's reserves to the
-/// exact asset pair, so a prover can't settle one pool's swap against another's reserves.
-pub fn pool_id(asset_a: &[u8; 32], asset_b: &[u8; 32]) -> [u8; 32] { kn(&[asset_a, asset_b]) }
+/// Confidential-AMM pool id, matching `ConfidentialPool`'s `keccak256(abi.encode(low, high, feeBps))`
+/// (three 32-byte ABI words). Binds an OP_SWAP/LP batch's reserves to the exact (canonical pair, fee
+/// tier) pool, so a prover can't settle one pool's op against another's reserves.
+pub fn pool_id(asset_a: &[u8; 32], asset_b: &[u8; 32], fee_bps: u32) -> [u8; 32] {
+    // Canonical asset pair + fee tier: keccak(low ‖ high ‖ fee_be32). (low,high) = the assets sorted
+    // by byte order; fee_be32 = fee_bps as a 32-byte BE word. Canonical so (A,B)≡(B,A) (one pool per
+    // pair); fee-bound so each fee tier is a DISTINCT pool — an LP just picks its tier, nothing to
+    // squat. (No capability-flags byte: on EVM a pool "capability" is a real hook contract, not a
+    // reserved flag, so it'd be added as a bound hooks address when that feature exists — not cargo-
+    // culted from the Bitcoin circuit's flagsByte.)
+    let (low, high) = if bitcoin::be_bytes_lte(asset_a, asset_b) { (asset_a, asset_b) } else { (asset_b, asset_a) };
+    let mut fee = [0u8; 32];
+    fee[28..].copy_from_slice(&fee_bps.to_be_bytes());
+    kn(&[low, high, &fee])
+}
 /// Pool-specific LP-share asset id: keccak(pool_id ‖ "lp"). An LP's position is a shielded note of
 /// this asset, so per-LP stakes stay hidden while the pool's totalShares is public.
 pub fn lp_share_id(pool_id: &[u8; 32]) -> [u8; 32] { kn(&[pool_id, b"lp"]) }
+
+/// Deterministic uniform-price clearing solve — a faithful, byte-for-byte port of
+/// tests/amm-clearing.mjs `solveClearing` (AMM.md §4, the normative indexer-determinism rule).
+/// OP_SWAP uses it to ENFORCE the pool's fee tier: the guest re-derives P_clear from the public
+/// reserves + gross flows + fee_bps and rejects any batch whose declared uniform price differs, so
+/// the fee is actually charged (the constant-product non-decrease alone is only the ZERO-fee floor).
+/// Returns (P_clear_num, P_clear_den). BigUint throughout (like the JS BigInt) so the intermediate
+/// products — R_B·γ_num·Δa reaches ~2^142 — never overflow.
+pub fn solve_clearing(x: u64, y: u64, r_a: u64, r_b: u64, fee_bps: u32) -> (num_bigint::BigUint, num_bigint::BigUint) {
+    use num_bigint::BigUint;
+    let xb = BigUint::from(x);
+    let rab = BigUint::from(r_a);
+    let rbb = BigUint::from(r_b);
+    // Empty batch: spot price = R_A / R_B (den guarded to 1 when R_B == 0).
+    if x == 0 && y == 0 {
+        return (rab, if r_b == 0 { BigUint::from(1u32) } else { rbb });
+    }
+    assert!(r_a != 0 && r_b != 0, "solve: pool reserves must be > 0 for a non-empty batch");
+    let g_num = BigUint::from(10000u32 - fee_bps); // fee_bps ≤ 1000 is enforced upstream
+    let g_den = BigUint::from(10000u32);
+    let lhs = &xb * &rbb;          // X·R_B
+    let rhs = BigUint::from(y) * &rab; // Y·R_A
+    if lhs > rhs {
+        let (pn, pd) = solve_a_to_b(x, y, r_a, r_b, &g_num, &g_den);
+        (pn, pd)
+    } else if lhs < rhs {
+        // Symmetric B→A: solve with (X,Y),(R_A,R_B) swapped, then reciprocate P_clear.
+        let (pn, pd) = solve_a_to_b(y, x, r_b, r_a, &g_num, &g_den);
+        (pd, pn)
+    } else {
+        // Exact-cancel batch → spot.
+        (rab, rbb)
+    }
+}
+
+// A→B-dominant solve: binary search on Δa_net ∈ [1, X] (≤ 64 iterations), returns (P_clear_num,
+// P_clear_den) = (X, Y + Δb_net) for the converged (or largest-too-small) Δa_net. Mirrors
+// solveAToB in tests/amm-clearing.mjs exactly.
+fn solve_a_to_b(x: u64, y: u64, r_a: u64, r_b: u64, g_num: &num_bigint::BigUint, g_den: &num_bigint::BigUint)
+    -> (num_bigint::BigUint, num_bigint::BigUint)
+{
+    use num_bigint::BigUint;
+    let xb = BigUint::from(x);
+    let yb = BigUint::from(y);
+    let rab = BigUint::from(r_a);
+    let rbb = BigUint::from(r_b);
+    let one = BigUint::from(1u32);
+    let mut lo = one.clone();
+    let mut hi = xb.clone();
+    let mut best = one.clone();
+    let mut iter = 0u32;
+    while iter < 64 && lo <= hi {
+        let mid = &lo + (&hi - &lo) / 2u32;
+        // Δb = floor(R_B·γ_num·mid / (R_A·γ_den + γ_num·mid))
+        let delta_b = (&rbb * g_num * &mid) / (&rab * g_den + g_num * &mid);
+        let denom = &yb + &delta_b;
+        // Δa_implied = X − floor(Y·X / (Y + Δb)); denom==0 only when Y==Δb==0 (pool-empty edge).
+        let delta_a_implied = if denom == BigUint::from(0u32) { xb.clone() } else { &xb - (&yb * &xb) / &denom };
+        if delta_a_implied == mid {
+            return (xb.clone(), &yb + &delta_b);
+        }
+        if delta_a_implied < mid {
+            hi = &mid - 1u32;
+        } else {
+            best = mid.clone();
+            lo = &mid + 1u32;
+        }
+        iter += 1;
+    }
+    // No exact fixed point: the largest 'best' that was too small (settler declares exactly this).
+    let final_delta_b = (&rbb * g_num * &best) / (&rab * g_den + g_num * &best);
+    (xb, &yb + &final_delta_b)
+}
+
+/// True iff (price_num, price_den) is EXACTLY the fee-clearing uniform price (B per A, un-reduced)
+/// that solve_clearing derives for these gross flows + reserves + fee — the OP_SWAP fee-enforcement
+/// check. The declared price is clearingPriceBperA(solve), i.e. price_num == P_clear_den and
+/// price_den == P_clear_num. Keeping the BigUint inside cxfer-core so the zkVM guest just calls a bool.
+pub fn clearing_price_matches(x: u64, y: u64, r_a: u64, r_b: u64, fee_bps: u32, price_num: u64, price_den: u64) -> bool {
+    use num_bigint::BigUint;
+    let (pc_num, pc_den) = solve_clearing(x, y, r_a, r_b, fee_bps);
+    pc_den == BigUint::from(price_num) && pc_num == BigUint::from(price_den)
+}
 /// Bind a spent pool note to its nullifier: given the outpoint's committed value (proven in
 /// the UTXO set via the remove witness) and the note's commitment coords, return ν iff
 /// (Cx,Cy) opens that value — so a spend can't claim a ν unbound from the real note. None
@@ -1806,6 +1900,31 @@ mod tests {
         let mut badc = out_c.clone();
         badc[0] = badc[0] + ProjectivePoint::generator() * Scalar::from(3u64);
         assert!(!verify_range(&badc, &proof), "wrong commitment must reject");
+    }
+
+    // AMM-FEE-1: solve_clearing (the guest's fee-enforcement primitive for OP_SWAP) must match the
+    // normative JS clearing-solve (tests/amm-clearing.mjs, AMM.md §4) byte-for-byte across the full
+    // battery — one/two-sided, exact-cancel, zero/max fee, large near-u64 reserves (intermediate
+    // products ~2^142), and a no-exact-fixed-point case. Vectors: tests/gen-clearing-vectors.mjs.
+    // If the port drifts, the swap fee is mis-enforced (the whole point of fee tiers).
+    #[test]
+    fn solve_clearing_matches_js() {
+        use num_bigint::BigUint;
+        use std::str::FromStr;
+        let f: serde_json::Value =
+            serde_json::from_str(include_str!("../../fixtures/clearing_vectors.json")).unwrap();
+        for v in f["vectors"].as_array().unwrap() {
+            let x: u64 = v["x"].as_str().unwrap().parse().unwrap();
+            let y: u64 = v["y"].as_str().unwrap().parse().unwrap();
+            let r_a: u64 = v["rA"].as_str().unwrap().parse().unwrap();
+            let r_b: u64 = v["rB"].as_str().unwrap().parse().unwrap();
+            let fee: u32 = v["fee"].as_u64().unwrap() as u32;
+            let (pn, pd) = solve_clearing(x, y, r_a, r_b, fee);
+            let exp_n = BigUint::from_str(v["pNum"].as_str().unwrap()).unwrap();
+            let exp_d = BigUint::from_str(v["pDen"].as_str().unwrap()).unwrap();
+            assert_eq!(pn, exp_n, "P_clear_num drift on X={x} Y={y} R={r_a}/{r_b} fee={fee}");
+            assert_eq!(pd, exp_d, "P_clear_den drift on X={x} Y={y} R={r_a}/{r_b} fee={fee}");
+        }
     }
 
     // BPP-1: the on-chain verify_range — the no-inflation ROOT primitive — must REJECT a FORGED proof

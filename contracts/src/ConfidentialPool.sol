@@ -84,6 +84,9 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     /// up to this; `unitScale = 10^(ETH_DECIMALS − tacitDecimals)` does the amount scaling.
     uint8 public constant ETH_DECIMALS = 18;
     uint16 public constant PV_VERSION = 1;
+    /// Cap on a confidential AMM pool's fee (basis points). initPool is permissionless + one-per-slot,
+    /// so bounding the fee stops a front-runner from seeding the only slot with an unusable 100% fee.
+    uint32 public constant MAX_POOL_FEE_BPS = 1000; // 10%
 
     // ──────────────────── Immutables ────────────────────
 
@@ -126,6 +129,12 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     // ──────────────────── Nullifiers (global) ────────────────────
 
     mapping(bytes32 => bool) public nullifierSpent;
+    // No-inflation floor (defense-in-depth): cumulative count of EVM-HOMED note-spends. Every spend
+    // references a note that was created as a leaf in THIS tree, so this can never exceed nextLeafIndex
+    // (the total leaves ever created — deposits, settle outputs, bridge-mints). Bitcoin-homed cross-lane
+    // spends are backed by the reflected Bitcoin tree, not this one, so they are excluded. Mirrors the
+    // Bitcoin mixer's #spent ≤ #leaves reserve floor; bounds a guest/vkey compromise to real deposits.
+    uint256 public evmNullifiersSpent;
 
     // ──────────────────── Assets ────────────────────
 
@@ -317,6 +326,9 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     error PoolReserveMismatch();
     error SameAsset();
     error EthValueMismatch();
+    error ZeroReserve();
+    error FeeTooHigh();
+    error ReserveFloorBreach();
 
     // ──────────────────── Constructor ────────────────────
 
@@ -451,7 +463,18 @@ contract ConfidentialPool is ReentrancyGuardTransient {
             try IMintBurn(underlying).MINTER() returns (address mtr) {
                 if (mtr == address(this)) revert CanonicalAsset();
             } catch {}
+            // Bound the escrow scale to the token's whole-unit scale (10^decimals). A larger scale makes
+            // value = amount/unitScale round to 0 for realistic amounts, so a permissionless front-run
+            // with a runaway scale (registration is first-write-wins, no de-register) would brick every
+            // wrap of the token's confidential lane. Capping at the real on-chain decimals keeps any
+            // front-registered scale usable (no permanent brick); a non-standard token (no decimals())
+            // keeps the supplied scale (narrow, unusual surface).
+            try IERC20Metadata(underlying).decimals() returns (uint8 d) {
+                if (d <= 36 && unitScale > 10 ** uint256(d)) revert BadDecimals();
+            } catch {}
         }
+        // Native ETH is 18-decimal; bound its escrow scale the same way (poolMinted+address(0) reverted above).
+        if (underlying == address(0) && unitScale > 10 ** uint256(ETH_DECIMALS)) revert BadDecimals();
         assetId = sha256(abi.encodePacked("tacit-evm-token-v1", uint64(block.chainid), underlying));
         if (assets[assetId].registered) revert AlreadyRegistered();
         // A cross-chain link makes the asset's SHARED id resolve to this local entry on
@@ -520,7 +543,8 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     /// Initialize a confidential AMM pool over two registered in-system assets, LP-funded with the
     /// initial reserves (in-system values; the LP provides reserveX·unitScale of each underlying —
     /// burned for a pool-minted asset, escrowed for an external one — so the reserves are backed).
-    /// poolId = keccak256(assetA, assetB); the assets must be distinct + registered; one init per pair.
+    /// poolId = keccak256(canonical(assetA, assetB), feeBps) — one pool per (canonical pair, fee tier),
+    /// stored in canonical (sorted) order; the assets must be distinct + registered.
     function initPool(bytes32 assetA, bytes32 assetB, uint256 reserveA, uint256 reserveB, uint32 feeBps)
         external payable nonReentrant returns (bytes32 poolId)
     {
@@ -528,17 +552,29 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         Asset storage a = assets[assetA];
         Asset storage b = assets[assetB];
         if (!a.registered || !b.registered) revert NotRegistered();
-        poolId = keccak256(abi.encode(assetA, assetB));
+        // A pool is one-init-per-slot, so bound what a (permissionless) initializer can seed: a zero
+        // reserve makes the slot un-joinable (no in-ratio add can rescue a 0 leg) and a runaway fee
+        // makes it unusable — both would let a front-runner permanently brick the pair for dust. With a
+        // positive-reserve + capped-fee floor, the worst a front-run can do is create a USABLE pool.
+        if (reserveA == 0 || reserveB == 0) revert ZeroReserve();
+        if (feeBps > MAX_POOL_FEE_BPS) revert FeeTooHigh();
+        // The poolId + the stored pool are CANONICAL (assets sorted) and FEE-BOUND, mirroring the guest's
+        // pool_id and the Bitcoin AMM: (A,B) ≡ (B,A) is one pool, and each fee tier is a DISTINCT pool —
+        // so an LP just picks its fee tier, and a front-run can occupy only the exact (pair, fee) tuple
+        // (with positive reserves + a capped fee), never lock the pair. Reserves are stored low→high.
+        (bytes32 lo, bytes32 hi, uint256 rLo, uint256 rHi) =
+            assetA < assetB ? (assetA, assetB, reserveA, reserveB) : (assetB, assetA, reserveB, reserveA);
+        poolId = keccak256(abi.encode(lo, hi, feeBps));
         if (pools[poolId].init) revert PoolExists();
         // Any native-ETH leg is funded from msg.value; require it to cover those legs EXACTLY (the
         // two assets are distinct so at most one is ETH, but sum to be robust).
         if (msg.value != _ethReserveAmount(a, reserveA) + _ethReserveAmount(b, reserveB)) revert EthValueMismatch();
         _fundReserve(assetA, a, reserveA);
         _fundReserve(assetB, b, reserveB);
-        // Seed share basis: the creating LP's position is reserveA shares (a public seed). Confidential
-        // LPs join/leave via OP_LP_ADD/REMOVE (LpSettlement), which move reserves + totalShares together.
-        pools[poolId] = Pool(true, assetA, assetB, reserveA, reserveB, feeBps, reserveA);
-        emit PoolInitialized(poolId, assetA, assetB, reserveA, reserveB, feeBps);
+        // Seed share basis: the creating LP's position is rLo shares (a public seed, in canonical units).
+        // Confidential LPs join/leave via OP_LP_ADD/REMOVE (LpSettlement), which move reserves + shares together.
+        pools[poolId] = Pool(true, lo, hi, rLo, rHi, feeBps, rLo);
+        emit PoolInitialized(poolId, lo, hi, rLo, rHi, feeBps);
     }
     // The msg.value a native-ETH escrow leg requires (0 for pool-minted / ERC20 legs).
     function _ethReserveAmount(Asset storage a, uint256 reserve) internal view returns (uint256) {
@@ -710,6 +746,10 @@ contract ConfidentialPool is ReentrancyGuardTransient {
             nullifierSpent[n] = true;
         }
         if (pv.nullifiers.length != 0) emit NullifiersSpent(pv.nullifiers);
+        // No-inflation floor: count EVM-homed spends (Bitcoin-homed cross-lane spends are backed by the
+        // reflected Bitcoin tree, not this one). The post-insert invariant below caps total EVM spends at
+        // total EVM leaves created — a guest/vkey compromise can't withdraw more notes than were deposited.
+        if (!btcHomed) evmNullifiersSpent += pv.nullifiers.length;
 
         for (uint256 i; i < pv.depositsConsumed.length; ++i) {
             bytes32 id = pv.depositsConsumed[i];
@@ -741,6 +781,10 @@ contract ConfidentialPool is ReentrancyGuardTransient {
             everKnownRoot[currentRoot] = true;
             emit LeavesInserted(firstLeafIndex, pv.leaves, memos);
         }
+        // No-inflation reserve floor (mixer #spent ≤ #leaves): total EVM-homed spends can never exceed
+        // total EVM leaves ever created. Holds for every legitimate settle (each spent note is a prior
+        // leaf); a compromised proof that fabricates spends beyond the real leaf set trips this.
+        if (evmNullifiersSpent > nextLeafIndex) revert ReserveFloorBreach();
 
         // Trustless first-mint metadata: lazy-register any Tacit asset whose (ticker,
         // decimals) the guest proved from its etch (OP_ATTEST_META) — deploy its canonical

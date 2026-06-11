@@ -75,7 +75,7 @@ contract ConfidentialSwapProofRealTest is Test {
         assertEq(pv.version, 1, "pv version");
         assertEq(pv.swaps.length, 1, "one swap settlement");
         SwapSettlement memory s = pv.swaps[0];
-        assertEq(s.poolId, keccak256(abi.encode(ASSET_A, ASSET_B)), "poolId = keccak(assetA, assetB)");
+        assertEq(s.poolId, keccak256(abi.encode(ASSET_A, ASSET_B, uint32(30))), "poolId = keccak(assetA, assetB, feeBps)");
         assertEq(s.reserveAPre, 1000, "reserveAPre");
         assertEq(s.reserveBPre, 1000, "reserveBPre");
         assertEq(s.reserveAPost, 1100, "reserveAPost (A in)");

@@ -18,7 +18,7 @@ const ZERO32 = '0x' + '00'.repeat(32);
 const OTC_TAG = 'tacit-otc-intent-v1';
 
 export function makeConfidentialOtc({ keccak256, pool }) {
-  const { leaf, nullifier, commitXY, openingSigma, verifyOpeningSigma, intentContext } = pool;
+  const { leaf, nullifier, commitXY, openingSigma, verifyOpeningSigma, deriveOpeningNonce, intentContext } = pool;
 
   // The shared intent context (mirror of the guest): every touched note (cx, cy, owner) in fixed
   // order + both amounts. `m`/`t` are the built maker/taker legs.
@@ -59,21 +59,22 @@ export function makeConfidentialOtc({ keccak256, pool }) {
     };
   }
 
-  // Build the full OTC + generate every opening sigma once the shared context is known. Blindings +
-  // nonces stay client-side (never enter the witness); only the commitments + sigmas (R, z) do.
-  // `nonces` per party: { in, recv, change } — fresh random scalars (reuse leaks the blinding).
-  function buildOtc({ assetA, assetB, vA, vB, chainBinding, spendRoot, maker, taker, nonces }) {
+  // Build the full OTC + generate every opening sigma once the shared context is known. Blindings stay
+  // client-side (never enter the witness); only the commitments + sigmas (R, z) do. Each sigma nonce is
+  // DERIVED per (note blinding, shared context) so a renegotiation (new vA/vB) of the same input note
+  // never reuses a nonce (reuse would leak the blinding → bearer spend).
+  function buildOtc({ assetA, assetB, vA, vB, chainBinding, spendRoot, maker, taker }) {
     vA = BigInt(vA); vB = BigInt(vB);
     const m = buildLeg({ ...maker, give: vA, recvValue: vB });
     const t = buildLeg({ ...taker, give: vB, recvValue: vA });
     const ctx = otcCtx(assetA, assetB, chainBinding, vA, vB, m, t);
 
-    m.in.sig = openingSigma(m.in.amount, m.in._r, ctx, nonces.maker.in);
-    m.recv.sig = openingSigma(m.recv.amount, m.recv._r, ctx, nonces.maker.recv);
-    if (m.change) m.change.sig = openingSigma(m.change.amount, m.change._r, ctx, nonces.maker.change);
-    t.in.sig = openingSigma(t.in.amount, t.in._r, ctx, nonces.taker.in);
-    t.recv.sig = openingSigma(t.recv.amount, t.recv._r, ctx, nonces.taker.recv);
-    if (t.change) t.change.sig = openingSigma(t.change.amount, t.change._r, ctx, nonces.taker.change);
+    m.in.sig = openingSigma(m.in.amount, m.in._r, ctx, deriveOpeningNonce(m.in._r, ctx, 'otc-maker-in'));
+    m.recv.sig = openingSigma(m.recv.amount, m.recv._r, ctx, deriveOpeningNonce(m.recv._r, ctx, 'otc-maker-recv'));
+    if (m.change) m.change.sig = openingSigma(m.change.amount, m.change._r, ctx, deriveOpeningNonce(m.change._r, ctx, 'otc-maker-change'));
+    t.in.sig = openingSigma(t.in.amount, t.in._r, ctx, deriveOpeningNonce(t.in._r, ctx, 'otc-taker-in'));
+    t.recv.sig = openingSigma(t.recv.amount, t.recv._r, ctx, deriveOpeningNonce(t.recv._r, ctx, 'otc-taker-recv'));
+    if (t.change) t.change.sig = openingSigma(t.change.amount, t.change._r, ctx, deriveOpeningNonce(t.change._r, ctx, 'otc-taker-change'));
 
     return { assetA, assetB, vA, vB, chainBinding, spendRoot, maker: m, taker: t };
   }

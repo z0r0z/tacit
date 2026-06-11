@@ -51,7 +51,7 @@ function clearAndVerify({ reserveA, reserveB, feeBps, specs }) {
   });
   intents.forEach((it, i) => { const { path } = tree.rootAndPath(idxs[i]); it.in.leafIndex = idxs[i]; it.in.path = path; });
   const spendRoot = tree.rootAndPath(0).root;
-  const batch = swap.buildBatch({ assetA: ASSET_A, assetB: ASSET_B, chainBinding: CHAIN_BINDING, reserveAPre: reserveA, reserveBPre: reserveB, priceNum, priceDen, intents, spendRoot });
+  const batch = swap.buildBatch({ assetA: ASSET_A, assetB: ASSET_B, chainBinding: CHAIN_BINDING, feeBps, reserveAPre: reserveA, reserveBPre: reserveB, priceNum, priceDen, intents, spendRoot });
   const res = swap.verifyBatch(batch, { merkleRootFrom: pool.merkleRootFrom });
   return { sol, priceNum, priceDen, batch, ...res };
 }

@@ -18,7 +18,7 @@ const BID_BUYER_TAG = 'tacit-bid-buyer-v1';
 const BID_SELLER_TAG = 'tacit-bid-seller-v1';
 
 export function makeConfidentialBid({ keccak256, pool }) {
-  const { leaf, nullifier, commitXY, openingSigma, verifyOpeningSigma, intentContext, deriveNote, deriveBidSecret } = pool;
+  const { leaf, nullifier, commitXY, openingSigma, verifyOpeningSigma, deriveOpeningNonce, intentContext, deriveNote, deriveBidSecret } = pool;
   const { hx } = pool._internal;
 
   // Per-grid buyer opening-sigma nonces, derived DISTINCTLY from (bidSecret, chosenF). The offline
@@ -110,9 +110,11 @@ export function makeConfidentialBid({ keccak256, pool }) {
     const sNotes = [[sellerIn.cx, sellerIn.cy, sellerOwner], [sellerRecvB.cx, sellerRecvB.cy, sellerOwner]];
     if (sellerChange) sNotes.push([sellerChange.cx, sellerChange.cy, sellerOwner]);
     const sellerCtx = intentContext(BID_SELLER_TAG, bid.chainBinding, assetA, assetB, sNotes, [chosenF, price]);
-    sellerIn.sig = openingSigma(sellerInAmount, sellerIn._r, sellerCtx, nonces.sellerIn);
-    sellerRecvB.sig = openingSigma(pay, sellerRecvB._r, sellerCtx, nonces.sellerRecv);
-    if (sellerChange) sellerChange.sig = openingSigma(changeAmt, sellerChange._r, sellerCtx, nonces.sellerChange);
+    // The seller is online and signs once, so its nonces are DERIVED per (note blinding, sellerCtx) —
+    // no caller-supplied seller nonce to reuse (a re-sign under a new fill auto-varies the nonce).
+    sellerIn.sig = openingSigma(sellerInAmount, sellerIn._r, sellerCtx, deriveOpeningNonce(sellerIn._r, sellerCtx, 'bid-seller-in'));
+    sellerRecvB.sig = openingSigma(pay, sellerRecvB._r, sellerCtx, deriveOpeningNonce(sellerRecvB._r, sellerCtx, 'bid-seller-recv'));
+    if (sellerChange) sellerChange.sig = openingSigma(changeAmt, sellerChange._r, sellerCtx, deriveOpeningNonce(sellerChange._r, sellerCtx, 'bid-seller-change'));
 
     return { ...bid, chosenF, pay, refund, buyerRecvA, refundNote, sellerOwner, sellerIn, sellerRecvB, sellerChange };
   }

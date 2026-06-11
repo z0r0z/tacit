@@ -27,14 +27,15 @@ const ASSET_B = '0x' + 'bb'.repeat(32);
 const OWNER = '0x' + '00'.repeat(31) + '01';
 const CHAIN_BINDING = '0x' + '11'.repeat(32);
 const ZEROS = pool.zeros;
-const POOL_ID = lp.poolId(ASSET_A, ASSET_B);
+const FEE_BPS = 30; // 0.3% fee tier (one pool per (canonical pair, fee))
+const POOL_ID = lp.poolId(ASSET_A, ASSET_B, FEE_BPS);
 const LP_ASSET = lp.lpShareId(POOL_ID);
 
 // ───────────────── 1. add liquidity in-ratio mints proportional LP shares ─────────────────
 {
   // pool 1000 A / 2000 B, 1000 shares; add 100 A + 200 B (in ratio) → +100 shares
   const op = lp.buildAdd({
-    assetA: ASSET_A, assetB: ASSET_B, chainBinding: CHAIN_BINDING, reserveAPre: 1000, reserveBPre: 2000, sharesPre: 1000,
+    assetA: ASSET_A, assetB: ASSET_B, chainBinding: CHAIN_BINDING, feeBps: FEE_BPS, reserveAPre: 1000, reserveBPre: 2000, sharesPre: 1000,
     aNote: { owner: OWNER, leafIndex: 0, path: ZEROS }, dA: 100, rA: randomScalar(),
     bNote: { owner: OWNER, leafIndex: 0, path: ZEROS }, dB: 200, rB: randomScalar(),
     shareOwner: OWNER, rShares: randomScalar(), nonceA: randomScalar(), nonceB: randomScalar(), nonceShares: randomScalar(),
@@ -61,7 +62,7 @@ const LP_ASSET = lp.lpShareId(POOL_ID);
 // ───────────────── 2. a non-ratio add is rejected ─────────────────
 {
   const op = lp.buildAdd({
-    assetA: ASSET_A, assetB: ASSET_B, chainBinding: CHAIN_BINDING, reserveAPre: 1000, reserveBPre: 2000, sharesPre: 1000,
+    assetA: ASSET_A, assetB: ASSET_B, chainBinding: CHAIN_BINDING, feeBps: FEE_BPS, reserveAPre: 1000, reserveBPre: 2000, sharesPre: 1000,
     aNote: { owner: OWNER, leafIndex: 0, path: ZEROS }, dA: 100, rA: randomScalar(),
     bNote: { owner: OWNER, leafIndex: 0, path: ZEROS }, dB: 199, rB: randomScalar(), // 100·2000 != 199·1000
     shareOwner: OWNER, rShares: randomScalar(), nonceA: randomScalar(), nonceB: randomScalar(), nonceShares: randomScalar(),
@@ -79,7 +80,7 @@ const LP_ASSET = lp.lpShareId(POOL_ID);
 // ───────────────── 3. inflating the LP-share note breaks the share opening/proportion ─────────────────
 {
   const op = lp.buildAdd({
-    assetA: ASSET_A, assetB: ASSET_B, chainBinding: CHAIN_BINDING, reserveAPre: 1000, reserveBPre: 2000, sharesPre: 1000,
+    assetA: ASSET_A, assetB: ASSET_B, chainBinding: CHAIN_BINDING, feeBps: FEE_BPS, reserveAPre: 1000, reserveBPre: 2000, sharesPre: 1000,
     aNote: { owner: OWNER, leafIndex: 0, path: ZEROS }, dA: 100, rA: randomScalar(),
     bNote: { owner: OWNER, leafIndex: 0, path: ZEROS }, dB: 200, rB: randomScalar(),
     shareOwner: OWNER, rShares: randomScalar(), nonceA: randomScalar(), nonceB: randomScalar(), nonceShares: randomScalar(),
@@ -99,7 +100,7 @@ const LP_ASSET = lp.lpShareId(POOL_ID);
 {
   // pool 1000 A / 2000 B, 1000 shares; remove a 100-share note → 100 A + 200 B back, 900 shares left
   const op = lp.buildRemove({
-    assetA: ASSET_A, assetB: ASSET_B, chainBinding: CHAIN_BINDING, reserveAPre: 1000, reserveBPre: 2000, sharesPre: 1000,
+    assetA: ASSET_A, assetB: ASSET_B, chainBinding: CHAIN_BINDING, feeBps: FEE_BPS, reserveAPre: 1000, reserveBPre: 2000, sharesPre: 1000,
     shareNote: { owner: OWNER, leafIndex: 0, path: ZEROS }, dShares: 100, rShares: randomScalar(),
     aOwner: OWNER, rA: randomScalar(), bOwner: OWNER, rB: randomScalar(), nonceShares: randomScalar(), nonceA: randomScalar(), nonceB: randomScalar(),
   });
@@ -122,7 +123,7 @@ const LP_ASSET = lp.lpShareId(POOL_ID);
 // ───────────────── 5. removing more shares than exist is rejected ─────────────────
 {
   const op = lp.buildRemove({
-    assetA: ASSET_A, assetB: ASSET_B, chainBinding: CHAIN_BINDING, reserveAPre: 1000, reserveBPre: 2000, sharesPre: 1000,
+    assetA: ASSET_A, assetB: ASSET_B, chainBinding: CHAIN_BINDING, feeBps: FEE_BPS, reserveAPre: 1000, reserveBPre: 2000, sharesPre: 1000,
     shareNote: { owner: OWNER, leafIndex: 0, path: ZEROS }, dShares: 1001, rShares: randomScalar(),
     aOwner: OWNER, rA: randomScalar(), bOwner: OWNER, rB: randomScalar(), nonceShares: randomScalar(), nonceA: randomScalar(), nonceB: randomScalar(),
   });
@@ -149,7 +150,7 @@ const LP_ASSET = lp.lpShareId(POOL_ID);
   const aRem = reserveAPre * dShares - dAClaim * sharesPre; // negative → never a valid floor remainder
   const aC = pool.commitXY(dAClaim, rA), bC = pool.commitXY(bq, rB);
   const op = {
-    assetA: ASSET_A, assetB: ASSET_B, chainBinding: CHAIN_BINDING,
+    assetA: ASSET_A, assetB: ASSET_B, chainBinding: CHAIN_BINDING, feeBps: FEE_BPS,
     reserveAPre, reserveBPre, sharesPre,
     share: { cx: sC.cx, cy: sC.cy, owner: OWNER, leafIndex: 0, path: ZEROS }, dShares,
     dA: dAClaim, remA: aRem, dB: bq, remB: bRem,

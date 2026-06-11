@@ -30,8 +30,8 @@ contract DeployConfidentialPool is Script {
     // learns r. Pinned to the committed canonical ELF: sp1/confidential/elf/cxfer-guest, sha256
     // 1ce85219… (elf-vkey-pin.json). A real Groth16 of this ELF verifies on-chain at this vkey
     // (test/Confidential{Swap,Lp,Otc,Bid}ProofReal). Override via PROGRAM_VKEY env if the guest changes.
-    // (Prior: 0x0063293d, 0x00b3ebb4, 0x00f02859, 0x00bc5661, 0x00cc4e72, 0x00d0fb85 — superseded.)
-    bytes32 constant DEFAULT_VKEY = 0x008e0e7f5a8fd8e070f45457305eb252e9427f16126f586c40d06dae7847efea;
+    // (Prior: 0x0063293d, 0x00b3ebb4, 0x00f02859, 0x00bc5661, 0x00cc4e72, 0x00d0fb85, 0x008e0e7f — superseded.)
+    bytes32 constant DEFAULT_VKEY = 0x00c11f488f829abaa2ec42e5fb879cb3e2062e96199d6d4dbdc55124367c6e54;
 
     function run() external {
         address sp1Verifier = vm.envAddress("SP1_VERIFIER");

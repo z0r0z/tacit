@@ -89,6 +89,15 @@ contract ConfidentialPoolTest is Test {
         pool.settle(abi.encode(pv), "", memos);
     }
 
+    // Seed `n` leaves via a settle so the no-inflation floor (#evm-spends ≤ #leaves) has headroom.
+    // In production every spent note is a real prior leaf; mock spend tests must seed them first.
+    function _seedLeaves(uint256 n) internal {
+        ConfidentialPool.PublicValues memory seed = _pv();
+        seed.leaves = new bytes32[](n);
+        for (uint256 i; i < n; ++i) seed.leaves[i] = keccak256(abi.encodePacked("seed-leaf", i));
+        _settle(seed);
+    }
+
     function _wrap(uint256 amount, bytes32 cx, bytes32 cy, bytes32 owner) internal returns (bytes32 depositId) {
         vm.prank(USER);
         pool.wrap(assetId, amount, cx, cy, owner);
@@ -241,7 +250,9 @@ contract ConfidentialPoolTest is Test {
         vm.deal(address(this), ethWei);
         bytes32 pid = pool.initPool{value: ethWei}(ethId, assetId, 100, 200, 30);
         (, , , uint256 rA, uint256 rB, , ) = pool.pools(pid);
-        assertEq(rA, 100, "ETH reserve"); assertEq(rB, 200, "token reserve");
+        // reserves are stored canonical low→high, so they follow the assetId sort, not the arg order
+        (uint256 expA, uint256 expB) = ethId < assetId ? (uint256(100), uint256(200)) : (uint256(200), uint256(100));
+        assertEq(rA, expA, "ETH reserve (canonical)"); assertEq(rB, expB, "token reserve (canonical)");
         assertEq(pool.escrow(ethId), ethWei, "ETH reserve escrowed from msg.value");
     }
 
@@ -625,6 +636,7 @@ contract ConfidentialPoolTest is Test {
     /// An Ethereum note burned for Bitcoin: the note is nullified and a
     /// non-malleable CrossOut record is emitted for Bitcoin validators to honor.
     function test_cross_out_emits_record_and_spends_note() public {
+        _seedLeaves(1); // the burned note is a prior leaf
         ConfidentialPool.PublicValues memory pv = _pv();
         bytes32 nu = keccak256("eth-note-nu");
         bytes32 destC = keccak256("btc-dest-commitment");
@@ -646,6 +658,7 @@ contract ConfidentialPoolTest is Test {
     /// A crossOut whose claimId doesn't bind its own fields is rejected — the
     /// on-chain re-derivation blocks a malleable instruction to Bitcoin.
     function test_cross_out_claim_mismatch_reverts() public {
+        _seedLeaves(1);
         ConfidentialPool.PublicValues memory pv = _pv();
         bytes32 nu = keccak256("nu2");
         pv.nullifiers = new bytes32[](1);
@@ -712,6 +725,7 @@ contract ConfidentialPoolTest is Test {
     /// lands as an Ethereum leaf, Alice's Y output is recorded as a Bitcoin
     /// crossOut, both input notes are nullified — all applied in one call.
     function test_atomic_cross_chain_swap() public {
+        _seedLeaves(2); // both input notes are prior leaves
         ConfidentialPool.PublicValues memory pv = _pv();
         bytes32 nuAliceX = keccak256("alice-X-in");
         bytes32 nuBobY = keccak256("bob-Y-in");
@@ -729,13 +743,14 @@ contract ConfidentialPoolTest is Test {
         pv.crossOuts = new ConfidentialPool.CrossOut[](1);
         pv.crossOuts[0] = ConfidentialPool.CrossOut(1, destC, nuBobY, assetY, cid);
 
+        uint256 preLeaves = pool.nextLeafIndex();
         vm.expectEmit(true, false, false, true, address(pool));
         emit CrossOutRecorded(cid, 1, destC, nuBobY, assetY);
         pool.settle(abi.encode(pv), "", new bytes[](1));
 
         assertTrue(pool.isNullifierSpent(nuAliceX), "Alice's X input spent");
         assertTrue(pool.isNullifierSpent(nuBobY), "Bob's Y input spent");
-        assertEq(pool.nextLeafIndex(), 1, "Bob's X minted on Ethereum");
+        assertEq(pool.nextLeafIndex(), preLeaves + 1, "Bob's X minted on Ethereum (one new leaf)");
     }
 
     // ──────────────────── bridge_mint: Bitcoin pool-root attestation ────────────────────

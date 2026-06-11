@@ -14,7 +14,7 @@ import * as secp from '../node_modules/@noble/secp256k1/index.js';
 import { createHash } from 'node:crypto';
 import { randomScalar } from '../dapp/bulletproofs-plus.js';
 import { makeConfidentialPool } from '../dapp/confidential-pool.js';
-import { makeConfidentialSwap } from '../dapp/confidential-swap.js';
+import { makeConfidentialSwap, solveClearing, clearingPriceBperA } from '../dapp/confidential-swap.js';
 import assert from 'node:assert';
 
 const sha256 = (b) => new Uint8Array(createHash('sha256').update(Buffer.from(b)).digest());
@@ -28,11 +28,17 @@ const ASSET_B = '0x' + 'bb'.repeat(32);
 const OWNER = '0x' + '00'.repeat(31) + '01';
 const OWNER_OUT = '0x' + '00'.repeat(31) + '02';
 const CHAIN_BINDING = '0x' + '11'.repeat(32);
+const FEE_BPS = 30; // 0.3% fee tier (one pool per (canonical pair, fee))
 const ZEROS = pool.zeros; // 32 sibling-zeros for a placeholder path
 
-// Build a batch from intent specs: derive each input note, place every input leaf in one tree,
-// patch the membership paths, and return { batch, settlement } via the guest-mirroring verify.
-function assemble({ reserveAPre, reserveBPre, priceNum, priceDen, specs }) {
+// Build a batch from intent specs at the DETERMINISTIC fee-clearing price (the guest now enforces it,
+// so an arbitrary price no longer settles): sum the gross flows, solve the price for FEE_BPS, derive
+// each input note, place every input leaf in one tree, patch the paths, and verify. An explicit
+// `feeBps` override builds at a DIFFERENT tier's price (to exercise the fee-enforcement rejection).
+function assemble({ reserveAPre, reserveBPre, specs, priceFeeBps }) {
+  let X = 0n, Y = 0n;
+  for (const s of specs) { if (s.direction === 'A->B') X += BigInt(s.amountIn); else Y += BigInt(s.amountIn); }
+  const { priceNum, priceDen } = clearingPriceBperA(solveClearing(X, Y, reserveAPre, reserveBPre, priceFeeBps ?? FEE_BPS));
   const intents = specs.map((s) => swap.buildIntent({
     direction: s.direction, amountIn: s.amountIn, priceNum, priceDen, minOut: s.minOut ?? 0,
     rInSecp: s.rInSecp, rOutSecp: randomScalar(), nonceIn: randomScalar(), nonceOut: randomScalar(),
@@ -46,22 +52,24 @@ function assemble({ reserveAPre, reserveBPre, priceNum, priceDen, specs }) {
   });
   intents.forEach((it, i) => { const { path } = tree.rootAndPath(idxs[i]); it.in.leafIndex = idxs[i]; it.in.path = path; });
   const spendRoot = tree.rootAndPath(0).root;
-  const batch = swap.buildBatch({ assetA: ASSET_A, assetB: ASSET_B, chainBinding: CHAIN_BINDING, reserveAPre, reserveBPre, priceNum, priceDen, intents, spendRoot });
-  return { batch, ...swap.verifyBatch(batch, { merkleRootFrom: pool.merkleRootFrom }) };
+  const batch = swap.buildBatch({ assetA: ASSET_A, assetB: ASSET_B, chainBinding: CHAIN_BINDING, feeBps: FEE_BPS, reserveAPre, reserveBPre, priceNum, priceDen, intents, spendRoot });
+  return { batch, priceNum, priceDen, ...swap.verifyBatch(batch, { merkleRootFrom: pool.merkleRootFrom }) };
 }
 
 // ───────────────── 1. single A→B swap moves the reserves ─────────────────
 // Pool 1000/1000; swap 100 A in. Constant product gives 90 B out (1000−⌊1e6/1100⌋); price 90/100.
 {
   const rInSecp = randomScalar();
-  const { batch, settlement, nullifiers, leaves } = assemble({
-    reserveAPre: 1000, reserveBPre: 1000, priceNum: 90, priceDen: 100,
+  const { batch, settlement, nullifiers, leaves, priceNum, priceDen } = assemble({
+    reserveAPre: 1000, reserveBPre: 1000,
     specs: [{ direction: 'A->B', amountIn: 100, minOut: 90, rInSecp }],
   });
+  assert.strictEqual(priceNum, 90n, 'fee-clearing price 90/100 (B per A) for 100 A into 1000/1000 @ 30bps');
+  assert.strictEqual(priceDen, 100n);
   assert.strictEqual(batch.intents[0].amountOut, 90n, 'floor(100·90/100) = 90');
   assert.strictEqual(settlement.reserveAPost, 1100n, 'A: 1000 → 1100');
   assert.strictEqual(settlement.reserveBPost, 910n, 'B: 1000 → 910');
-  assert.strictEqual(settlement.poolId, swap.poolId(ASSET_A, ASSET_B), 'poolId = keccak(A‖B)');
+  assert.strictEqual(settlement.poolId, swap.poolId(ASSET_A, ASSET_B, FEE_BPS), 'poolId = keccak(A‖B‖feeBps)');
   // k strictly increases (the floored unit stays in the pool)
   assert.ok(1100n * 910n >= 1000n * 1000n, 'k non-decrease');
   assert.strictEqual(nullifiers.length, 1, 'one input nullifier');
@@ -69,38 +77,45 @@ function assemble({ reserveAPre, reserveBPre, priceNum, priceDen, specs }) {
   ok('single A→B: 100 A → 90 B, reserves 1000/1000 → 1100/910, k↑, ν + leaf emitted');
 }
 
-// ───────────────── 2. two-sided batch that perfectly crosses (net-zero) ─────────────────
-// A→B 100→90 and B→A 90→100 at the same price 90/100 net to zero: reserves unchanged, k constant.
+// ───────────────── 2. two-sided batch clears at one uniform fee-correct price ─────────────────
+// A→B 100 + B→A 50 against 1000/1000 @ 30bps: the A side dominates, so the batch clears at the
+// solve's single price; the partial cross nets and k still holds (flooring favours the pool).
 {
-  const { batch, settlement } = assemble({
-    reserveAPre: 1000, reserveBPre: 1000, priceNum: 90, priceDen: 100,
+  const { batch, settlement, priceNum, priceDen } = assemble({
+    reserveAPre: 1000, reserveBPre: 1000,
     specs: [
-      { direction: 'A->B', amountIn: 100, minOut: 90, rInSecp: randomScalar() },
-      { direction: 'B->A', amountIn: 90, minOut: 100, rInSecp: randomScalar() },
+      { direction: 'A->B', amountIn: 100, minOut: 0, rInSecp: randomScalar() },
+      { direction: 'B->A', amountIn: 50, minOut: 0, rInSecp: randomScalar() },
     ],
   });
-  assert.strictEqual(batch.intents[1].amountOut, 100n, 'B→A: floor(90·100/90) = 100');
-  assert.strictEqual(settlement.reserveAPost, 1000n, 'A nets to 0 move');
-  assert.strictEqual(settlement.reserveBPost, 1000n, 'B nets to 0 move');
-  ok('two-sided cross: A→B + B→A net to zero, reserves unchanged, both directions priced uniformly');
+  const cp = clearingPriceBperA(solveClearing(100n, 50n, 1000n, 1000n, FEE_BPS));
+  assert.strictEqual(priceNum, cp.priceNum, 'batch price = the deterministic fee-clearing price');
+  assert.strictEqual(priceDen, cp.priceDen);
+  assert.ok(settlement.reserveAPost * settlement.reserveBPost >= 1000n * 1000n, 'k non-decrease');
+  ok('two-sided batch clears at one uniform fee-correct price (A-dominant cross), k holds');
 }
 
-// ───────────────── 3. a price that overpays liquidity is rejected (k decreases) ─────────────────
-// Two A→B intents totaling 150 A at the flat marginal price 90/100 pay out 135 B, but the curve
-// only allows ~130 for 150 A in — so k would fall. The guest's invariant must bite.
+// ───────────────── 3. clearing a fee pool at the ZERO-fee price is rejected ─────────────────
+// The fee-enforcement attack: in a 30bps pool, clear the batch at the (more generous) ZERO-fee price.
+// Per-intent clearing is self-consistent and k still holds (zero-fee is the floor), so the OLD guest
+// would accept it and starve LPs of the fee. The new guest re-derives the 30bps price and rejects.
+// Large reserves so the fee actually moves the floored price (at 1000/1000 the dust swallows it).
 {
+  const RA = 1_000_000n, RB = 1_000_000n, IN = 100_000n;
+  // build at the zero-fee tier's price inside a FEE_BPS(=30) pool
   let threw = null;
   try {
     assemble({
-      reserveAPre: 1000, reserveBPre: 1000, priceNum: 90, priceDen: 100,
-      specs: [
-        { direction: 'A->B', amountIn: 100, rInSecp: randomScalar() },
-        { direction: 'A->B', amountIn: 50, rInSecp: randomScalar() },
-      ],
+      reserveAPre: RA, reserveBPre: RB, priceFeeBps: 0,
+      specs: [{ direction: 'A->B', amountIn: IN, minOut: 0, rInSecp: randomScalar() }],
     });
   } catch (e) { threw = e; }
-  assert.ok(threw && /constant-product decreased/.test(threw.message), 'k-decrease rejected');
-  ok('over-priced batch (135 B out for 150 A in) rejected: constant-product would decrease');
+  // sanity: the two tiers really do price differently here (else the test proves nothing)
+  const p0 = clearingPriceBperA(solveClearing(IN, 0n, RA, RB, 0));
+  const p30 = clearingPriceBperA(solveClearing(IN, 0n, RA, RB, FEE_BPS));
+  assert.ok(p0.priceNum !== p30.priceNum || p0.priceDen !== p30.priceDen, 'zero-fee vs 30bps prices differ at this scale');
+  assert.ok(threw && /fee-clearing price/.test(threw.message), 'zero-fee clearing in a fee pool rejected');
+  ok('fee enforced: clearing a 30bps pool at the zero-fee price is rejected (LPs get their fee)');
 }
 
 // ───────────────── 4. min_out shortfall is rejected ─────────────────
@@ -108,7 +123,7 @@ function assemble({ reserveAPre, reserveBPre, priceNum, priceDen, specs }) {
   let threw = null;
   try {
     assemble({
-      reserveAPre: 1000, reserveBPre: 1000, priceNum: 90, priceDen: 100,
+      reserveAPre: 1000, reserveBPre: 1000,
       specs: [{ direction: 'A->B', amountIn: 100, minOut: 91, rInSecp: randomScalar() }],
     });
   } catch (e) { threw = e; }
@@ -120,7 +135,7 @@ function assemble({ reserveAPre, reserveBPre, priceNum, priceDen, specs }) {
 {
   const rInSecp = randomScalar();
   const { batch } = assemble({
-    reserveAPre: 1000, reserveBPre: 1000, priceNum: 90, priceDen: 100,
+    reserveAPre: 1000, reserveBPre: 1000,
     specs: [{ direction: 'A->B', amountIn: 100, minOut: 90, rInSecp }],
   });
   // tamper the input note's owner so its leaf is not the one in the tree
@@ -133,7 +148,7 @@ function assemble({ reserveAPre, reserveBPre, priceNum, priceDen, specs }) {
 {
   const rInSecp = randomScalar();
   const { batch } = assemble({
-    reserveAPre: 1000, reserveBPre: 1000, priceNum: 90, priceDen: 100,
+    reserveAPre: 1000, reserveBPre: 1000,
     specs: [{ direction: 'A->B', amountIn: 100, minOut: 90, rInSecp }],
   });
   // claim more output than the price clears, keeping the (now stale) output note commitment. The
