@@ -186,6 +186,11 @@ const T_CBTC_TAC_BOND_RELEASE   = 0x5A; // partial bond release on open position
 // 0x5C–0x5E reserved for the named follow-ups (variable-amount, batched-fill, both-sides match).
 const T_PREAUTH_BID             = 0x5B; // buyer-offline preauth bid, exact-fill (SPEC §5.7.11)
 const T_PREAUTH_BID_VAR         = 0x5C; // buyer-offline preauth bid, partial-fill (SPEC §5.7.12)
+// The online bid-intent flow is the active bid path. New buyer-offline
+// pre-signed bid POSTs are parked behind this flag as a follow-up; GET +
+// DELETE stay live so existing records still read and cancel. Flip to true to
+// re-accept POSTs (mirrors the dapp ENABLE_T_PREAUTH_BID* flag).
+const PREAUTH_BIDS_POST_ENABLED = false;
 // 0x60–0x64: SPEC-TETH-BRIDGE-AMENDMENT (trustless ETH↔Tacit bridge).
 const T_BRIDGE_DEPOSIT          = 0x60; // cross-chain mint: prove ETH deposit → mint tETH (SPEC §5.60)
 const T_BRIDGE_BURN             = 0x61; // cross-chain redeem: burn tETH → commit to ETH withdrawal (SPEC §5.61)
@@ -18696,6 +18701,7 @@ function _preauthFundingIdxVal(assetIdHex, bidIdHex) {
 }
 
 async function handlePreauthBidPost(assetIdHex, req, env, network, cors) {
+  if (!PREAUTH_BIDS_POST_ENABLED) return jsonResponse({ error: 'preauth bids are not currently accepted; post a bid-intent instead' }, 410, cors);
   if (!/^[0-9a-f]{64}$/.test(assetIdHex)) return jsonResponse({ error: 'invalid asset_id' }, 400, cors);
   let body;
   try { body = await req.json(); } catch { return jsonResponse({ error: 'invalid JSON body' }, 400, cors); }
@@ -18889,6 +18895,17 @@ async function handlePreauthBidPost(assetIdHex, req, env, network, cors) {
   return jsonResponse({ ok: true, bid }, 200, cors);
 }
 
+// Lean bid view for GET/list. The pre-signed spend blobs
+// (buyer_sats_spend_sig / buyer_sats_spend_sigs) are bulky build-time fields
+// the fill path consumes directly — a reader or cancel flow doesn't need them,
+// so drop them to keep the listing payload small (same shape as the take-only
+// blob strip on the atomic-intent listings).
+function _slimPreauthBid(bid) {
+  if (!bid || typeof bid !== 'object') return bid;
+  const { buyer_sats_spend_sig, buyer_sats_spend_sigs, ...rest } = bid;
+  return rest;
+}
+
 async function loadPreauthBidsForAsset(env, network, assetIdHex) {
   const list = await env.REGISTRY_KV.list({ prefix: preauthBidPrefix(network, assetIdHex), limit: 1000 });
   const now = Math.floor(Date.now() / 1000);
@@ -18897,7 +18914,7 @@ async function loadPreauthBidsForAsset(env, network, assetIdHex) {
   for (const v of fetched) {
     if (!v) continue;
     const expired = Number(v.expiry || 0) <= now;
-    bids.push({ ...v, _expired: expired });
+    bids.push(_slimPreauthBid({ ...v, _expired: expired }));
   }
   return bids;
 }
@@ -18907,7 +18924,7 @@ async function handlePreauthBidGet(assetIdHex, bidIdHex, env, network, cors) {
   if (!/^[0-9a-f]{32}$/.test(bidIdHex)) return jsonResponse({ error: 'invalid bid_id' }, 400, cors);
   const stored = await env.REGISTRY_KV.get(preauthBidKey(network, assetIdHex, bidIdHex), 'json');
   if (!stored) return jsonResponse({ error: 'no bid found' }, 404, cors);
-  return jsonResponse({ bid: stored }, 200, cors);
+  return jsonResponse({ bid: _slimPreauthBid(stored) }, 200, cors);
 }
 
 async function handlePreauthBidsList(assetIdHex, env, network, cors) {
@@ -18939,6 +18956,7 @@ async function handlePreauthBidDelete(assetIdHex, bidIdHex, req, env, network, c
 // ============== Preauth-bid-var handlers (SPEC §5.7.12) ==============
 
 async function handlePreauthBidVarPost(assetIdHex, req, env, network, cors) {
+  if (!PREAUTH_BIDS_POST_ENABLED) return jsonResponse({ error: 'preauth bids are not currently accepted; post a bid-intent instead' }, 410, cors);
   if (!/^[0-9a-f]{64}$/.test(assetIdHex)) return jsonResponse({ error: 'invalid asset_id' }, 400, cors);
   let body;
   try { body = await req.json(); } catch { return jsonResponse({ error: 'invalid JSON body' }, 400, cors); }
@@ -19197,7 +19215,7 @@ async function loadPreauthBidsVarForAsset(env, network, assetIdHex) {
   for (const v of fetched) {
     if (!v) continue;
     const expired = Number(v.expiry || 0) <= now;
-    bids.push({ ...v, _expired: expired });
+    bids.push(_slimPreauthBid({ ...v, _expired: expired }));
   }
   return bids;
 }
@@ -19207,7 +19225,7 @@ async function handlePreauthBidVarGet(assetIdHex, bidIdHex, env, network, cors) 
   if (!/^[0-9a-f]{32}$/.test(bidIdHex)) return jsonResponse({ error: 'invalid bid_id' }, 400, cors);
   const stored = await env.REGISTRY_KV.get(preauthBidVarKey(network, assetIdHex, bidIdHex), 'json');
   if (!stored) return jsonResponse({ error: 'no bid found' }, 404, cors);
-  return jsonResponse({ bid: stored }, 200, cors);
+  return jsonResponse({ bid: _slimPreauthBid(stored) }, 200, cors);
 }
 
 async function handlePreauthBidsVarList(assetIdHex, env, network, cors) {
