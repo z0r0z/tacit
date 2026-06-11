@@ -1927,6 +1927,21 @@ mod tests {
         }
     }
 
+    // AMM-FEE-2: pin the ORIENTATION of clearing_price_matches. The declared OP_SWAP price is
+    // clearingPriceBperA(solve) = B per A, i.e. the RECIPROCAL of solve_clearing's A-per-B P_clear, so
+    // the check is `pc_den == price_num && pc_num == price_den`. This test locks that: the correct
+    // (B-per-A) price is ACCEPTED and the reciprocal / an under-charged price is REJECTED — so a reader
+    // (or auditor) can't mistake the intentional flip for a num/den reversal.
+    #[test]
+    fn clearing_price_matches_orientation() {
+        // solve_clearing(100 A in, 0 B in, 1000/1000, 30bps) → P_clear 100/90 (A per B);
+        // declared price (B per A) = 90/100.
+        assert!(clearing_price_matches(100, 0, 1000, 1000, 30, 90, 100), "the fee-clearing B-per-A price must be accepted");
+        assert!(!clearing_price_matches(100, 0, 1000, 1000, 30, 100, 90), "the reciprocal (A-per-B) price must be rejected");
+        assert!(!clearing_price_matches(100, 0, 1000, 1000, 30, 91, 100), "an over-favourable (under-charged) price must be rejected");
+        assert!(!clearing_price_matches(100, 0, 1000, 1000, 30, 89, 100), "a mismatched price must be rejected");
+    }
+
     // BPP-1: the on-chain verify_range — the no-inflation ROOT primitive — must REJECT a FORGED proof
     // that commits an OUT-OF-RANGE value (V opens to 2^64), and still ACCEPT the honest max in-range
     // value (2^64 - 1). The forged proof is built by a malicious prover bypassing the [0,2^64) input
