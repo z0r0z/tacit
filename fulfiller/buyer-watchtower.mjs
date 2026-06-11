@@ -38,7 +38,7 @@ import * as secp from '@noble/secp256k1';
 import { ripemd160 } from '@noble/hashes/ripemd160';
 import { sha256 } from '@noble/hashes/sha256';
 import { hexToBytes, bytesToHex } from '@noble/hashes/utils';
-import { bech32 } from '@scure/base';
+import { bech32, bech32m } from '@scure/base';
 
 // ---- CLI ----
 const argv = process.argv.slice(2);
@@ -47,6 +47,11 @@ const arg = (n, d) => { const i = argv.indexOf(n); return i >= 0 && i + 1 < argv
 const CONFIG_PATH = arg('--config', './watchtower-config.json');
 const DRY_RUN = flag('--dry-run');
 const ONCE = flag('--once');
+// --reclaim <addr>: sweep the bid wallet's spendable sats back to <addr> and
+// exit. Self-reclaim path — the bid wallet is the buyer's own key, so this is
+// a normal send. Asset UTXOs are excluded (selectSatsUtxosSafe), so a partially
+// filled bid keeps its bought tokens.
+const RECLAIM_DEST = arg('--reclaim', null);
 
 if (!existsSync(CONFIG_PATH)) {
   console.error(`config not found: ${CONFIG_PATH}`);
@@ -251,8 +256,55 @@ async function tick() {
   return fills;
 }
 
+// ---- reclaim: sweep spendable sats back to a destination address ----
+function addressToScript(addr) {
+  const hrp = NETWORK === 'mainnet' ? 'bc' : 'tb';
+  let ver, prog;
+  try {
+    const d = bech32.decode(addr);
+    if (d.prefix !== hrp) throw new Error('hrp');
+    ver = d.words[0];
+    if (ver !== 0) throw new Error('v0-only via bech32'); // witness v1+ is bech32m
+    prog = bech32.fromWords(d.words.slice(1));
+  } catch {
+    const d = bech32m.decode(addr);
+    if (d.prefix !== hrp) throw new Error(`address is not a ${hrp} (${NETWORK}) address`);
+    ver = d.words[0];
+    prog = bech32m.fromWords(d.words.slice(1));
+  }
+  const p = Uint8Array.from(prog);
+  const op = ver === 0 ? 0x00 : (0x50 + ver); // OP_0 / OP_1..OP_16
+  return Uint8Array.from([op, p.length, ...p]);
+}
+
+async function reclaim(dest) {
+  if (dest === ADDR) throw new Error('refusing self-reclaim: dest equals the bid wallet address');
+  const destScript = addressToScript(dest);
+  const holdings = await m.scanHoldings(true);
+  const allUtxos = await m.getUtxos(ADDR);
+  const inputs = m.selectSatsUtxosSafe(allUtxos, holdings);
+  if (!inputs.length) { log('info', 'reclaim: no spendable sats UTXOs'); return; }
+  const totalIn = inputs.reduce((s, u) => s + u.value, 0);
+  const feeRate = await m.getFeeRate();
+  const fee = m.feeFor(m.estSatsSendVb(inputs.length, false), feeRate);
+  if (totalIn <= fee + 330) throw new Error(`balance ${totalIn} too small to reclaim at ${feeRate} sat/vB (fee ${fee})`);
+  const recipientValue = totalIn - fee;
+  log('info', 'reclaim plan', { inputs: inputs.length, total_in: totalIn, fee, send: recipientValue, dest });
+  if (DRY_RUN) { log('info', 'DRY RUN — not broadcasting'); return; }
+  const tx = m.buildSatsSendTx({ inputs, recipientScript: destScript, recipientValue, changeScript: destScript, changeValue: 0 });
+  for (let i = 0; i < tx.inputs.length; i++) tx.inputs[i].witness = m.signP2wpkhInput(tx, i, inputs[i].value);
+  const txHex = bytesToHex(m.serializeTx(tx));
+  const sentTxid = m.txid(tx);
+  await m.broadcastWithRetry(txHex);
+  log('info', 'reclaim broadcast', { txid: sentTxid, sats: recipientValue, dest });
+}
+
 // ---- main ----
 let shutdown = false;
+if (RECLAIM_DEST) {
+  await reclaim(RECLAIM_DEST);
+  process.exit(0);
+}
 process.on('SIGINT', () => { log('info', 'SIGINT — finishing'); shutdown = true; });
 process.on('SIGTERM', () => { log('info', 'SIGTERM — finishing'); shutdown = true; });
 
