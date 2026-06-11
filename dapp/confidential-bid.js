@@ -31,6 +31,16 @@ export function makeConfidentialBid({ keccak256, pool }) {
   const ND_FUND = nonceDomain('tacit-bid-fund-nonce-v1');
   const ND_RECVA = nonceDomain('tacit-bid-recva-nonce-v1');
   const ND_REFUND = nonceDomain('tacit-bid-refund-nonce-v1');
+  // Resting (multi-fill) bid domains. The chained funding/refund + per-lot received-note blindings are
+  // keyed by the cumulative-filled state C (monotonic → no two lots ever collide). The sigma nonces are
+  // DUAL-ROLE: a funding note is signed once as ITS lot's funding and once as the PREVIOUS lot's refund
+  // (two distinct contexts) — distinct domains here guarantee the two sigmas never share a nonce, which
+  // would leak the note blinding r (z1−z2 over e1−e2) and, under the bearer model, let anyone spend it.
+  const REST_FUND = nonceDomain('tacit-bid-rest-fund-note-v1');
+  const REST_RECV = nonceDomain('tacit-bid-rest-recv-note-v1');
+  const ND_REST_FUND_AS_FUND = nonceDomain('tacit-bid-rest-fund-as-funding-nonce-v1');
+  const ND_REST_FUND_AS_REF = nonceDomain('tacit-bid-rest-fund-as-refund-nonce-v1');
+  const ND_REST_RECV = nonceDomain('tacit-bid-rest-recv-nonce-v1');
   function deriveBidNonces(bidSecret, chosenF) {
     const f = Number(chosenF);
     return {
@@ -218,5 +228,122 @@ export function makeConfidentialBid({ keccak256, pool }) {
     return out;
   }
 
-  return { buildBid, fillBid, verifyBid, recoverBidOutputs, deriveBidNonces, BID_BUYER_TAG, BID_SELLER_TAG };
+  // ───────────────── Resting (multi-fill) bid ─────────────────
+  // Turns the single-shot OP_BID into a RESTING order that many sellers fill over time, with NO guest
+  // change. A resting order is a chain of standard OP_BID states: a fill of one `increment` lot spends
+  // the current funding note and emits the next (its refund) — each is a standard OP_BID with maxFill =
+  // remaining (= maxFill_total − cumulative), chosenF = increment, so the guest verifies it unchanged.
+  // The buyer pre-signs every state ONCE (offline); sellers fill the head lot-by-lot across sequential
+  // settles (a refund must land in the tree before the next lot can prove membership against it).
+  //
+  // Notes are keyed by the cumulative-filled state C (monotonic), so two equal-size lots never collide.
+  // A lot at state C is verified by `verifyBid` exactly (maxFill = remaining, chosenF = increment) — the
+  // resting layer only RESTRUCTURES the single-shot witness into a pre-signed grid + a deferred seller leg.
+
+  // Buyer posts a resting bid: pre-fund V_fund = maxFill·price of assetB (an existing note, blinding
+  // fundRSecp), then pre-sign every lot state C ∈ {0, inc, …, maxFill−inc}. Returns the published grid;
+  // the funding membership (leafIndex/path) + spendRoot are supplied per-lot at fill time (the opening
+  // sigmas are membership-independent). `min_fill = increment` for a resting order (each lot is one inc).
+  function buildRestingBid({ assetA, assetB, maxFill, price, increment, chainBinding, buyerOwner, fundRSecp, bidSecret }) {
+    maxFill = BigInt(maxFill); price = BigInt(price); increment = BigInt(increment);
+    if (!(price > 0n && increment > 0n)) throw new Error('bid: zero term');
+    if (maxFill <= 0n || maxFill % increment !== 0n) throw new Error('bid: maxFill must be a positive multiple of increment');
+    if (assetA === assetB) throw new Error('bid: same asset');
+    const vFund = maxFill * price;
+    if (vFund > U64_MAX) throw new Error('bid: V_fund over u64');
+    const minFill = increment;
+
+    // Funding note at cumulative C (value (maxFill−C)·price). C=0 is the buyer's existing note; C>0 is
+    // deriveNote(REST_FUND, C) — the SAME note the lot at C−increment emits as its refund.
+    const fundingR = (C) => (C === 0n ? BigInt(fundRSecp) : deriveNote(bidSecret, REST_FUND, Number(C)).blinding);
+    const states = [];
+    for (let C = 0n; C < maxFill; C += increment) {
+      const remaining = maxFill - C;
+      const vFundC = remaining * price;
+      const fR = fundingR(C);
+      const fC = commitXY(vFundC, fR);
+      const rR = deriveNote(bidSecret, REST_RECV, Number(C)).blinding;
+      const rC = commitXY(increment, rR);
+      const nextRemaining = remaining - increment;
+      let refund = null;
+      if (nextRemaining > 0n) {
+        const fR2 = fundingR(C + increment);
+        const c2 = commitXY(nextRemaining * price, fR2);
+        refund = { cx: c2.cx, cy: c2.cy, amount: nextRemaining * price, _r: fR2 };
+      }
+      // Per-state buyer context: a standard OP_BID with maxFill' = remaining, chosenF = increment.
+      const bNotes = [[fC.cx, fC.cy, buyerOwner], [rC.cx, rC.cy, buyerOwner]];
+      if (refund) bNotes.push([refund.cx, refund.cy, buyerOwner]);
+      const ctx = intentContext(BID_BUYER_TAG, chainBinding, assetA, assetB, bNotes, [minFill, remaining, price, increment, increment]);
+      const fundNonce = deriveNote(bidSecret, ND_REST_FUND_AS_FUND, Number(C)).blinding;
+      const recvNonce = deriveNote(bidSecret, ND_REST_RECV, Number(C)).blinding;
+      const fund = { cx: fC.cx, cy: fC.cy, amount: vFundC, _r: fR, sig: openingSigma(vFundC, fR, ctx, fundNonce) };
+      const recv = { cx: rC.cx, cy: rC.cy, amount: increment, _r: rR, sig: openingSigma(increment, rR, ctx, recvNonce) };
+      if (refund) {
+        // funding[C+inc] signed HERE as this lot's refund — a DISTINCT domain from its as-funding nonce
+        // at state C+inc, so the note's two sigmas never share a nonce.
+        const refNonce = deriveNote(bidSecret, ND_REST_FUND_AS_REF, Number(C + increment)).blinding;
+        refund.sig = openingSigma(refund.amount, refund._r, ctx, refNonce);
+      }
+      states.push({ C, remaining, fund, recv, refund });
+    }
+    return { assetA, assetB, minFill, maxFill, price, increment, chainBinding, buyerOwner, vFund, bidSecret, states };
+  }
+
+  // Seller fills the head lot (state C) of a resting bid: supply the current funding membership +
+  // spendRoot + seller legs. Returns a `filled` object that `verifyBid` checks exactly as a single-shot
+  // fill (maxFill = remaining, chosenF = increment). The buyer's funding/received/refund openings are
+  // already pre-signed in `restingBid.states[C]`.
+  function fillRestingLot(restingBid, C, { spendRoot, fundLeafIndex, fundPath, sellerOwner, sellerInAmount,
+                          sellerInRSecp, sellerInLeafIndex, sellerInPath, sellerRecvRSecp, sellerChangeRSecp }) {
+    C = BigInt(C);
+    const state = restingBid.states.find((s) => s.C === C);
+    if (!state) throw new Error('bid: no such resting state');
+    const { assetA, assetB, price, increment, chainBinding, buyerOwner, minFill, bidSecret } = restingBid;
+    const remaining = state.remaining;
+    const chosenF = increment;
+    sellerInAmount = BigInt(sellerInAmount);
+    if (sellerInAmount < chosenF) throw new Error('bid: seller input below lot');
+    const pay = chosenF * price;
+
+    const sInC = commitXY(sellerInAmount, sellerInRSecp);
+    const payC = commitXY(pay, sellerRecvRSecp);
+    const sellerIn = { cx: sInC.cx, cy: sInC.cy, amount: sellerInAmount, owner: sellerOwner,
+                       leafIndex: sellerInLeafIndex, path: sellerInPath, _r: BigInt(sellerInRSecp) };
+    const sellerRecvB = { cx: payC.cx, cy: payC.cy, amount: pay, _r: BigInt(sellerRecvRSecp) };
+    let sellerChange = null;
+    const changeAmt = sellerInAmount - chosenF;
+    if (changeAmt > 0n) {
+      if (sellerChangeRSecp == null) throw new Error('bid: sellerChangeRSecp required when input exceeds lot');
+      const scC = commitXY(changeAmt, sellerChangeRSecp);
+      sellerChange = { cx: scC.cx, cy: scC.cy, amount: changeAmt, _r: BigInt(sellerChangeRSecp) };
+    } else if (sellerChangeRSecp != null) throw new Error('bid: sellerChangeRSecp given but input equals lot');
+
+    const sNotes = [[sellerIn.cx, sellerIn.cy, sellerOwner], [sellerRecvB.cx, sellerRecvB.cy, sellerOwner]];
+    if (sellerChange) sNotes.push([sellerChange.cx, sellerChange.cy, sellerOwner]);
+    const sellerCtx = intentContext(BID_SELLER_TAG, chainBinding, assetA, assetB, sNotes, [chosenF, price]);
+    sellerIn.sig = openingSigma(sellerInAmount, sellerIn._r, sellerCtx, deriveOpeningNonce(sellerIn._r, sellerCtx, 'bid-seller-in'));
+    sellerRecvB.sig = openingSigma(pay, sellerRecvB._r, sellerCtx, deriveOpeningNonce(sellerRecvB._r, sellerCtx, 'bid-seller-recv'));
+    if (sellerChange) sellerChange.sig = openingSigma(changeAmt, sellerChange._r, sellerCtx, deriveOpeningNonce(sellerChange._r, sellerCtx, 'bid-seller-change'));
+
+    const fund = { ...state.fund, leafIndex: fundLeafIndex, path: fundPath };
+    return {
+      assetA, assetB, minFill, maxFill: remaining, price, increment, chainBinding, spendRoot, buyerOwner,
+      vFund: remaining * price, bidSecret, fund, chosenF, pay, refund: state.refund ? state.refund.amount : 0n,
+      buyerRecvA: state.recv, refundNote: state.refund,
+      sellerOwner, sellerIn, sellerRecvB, sellerChange,
+    };
+  }
+
+  // Cancellation / head recovery: the buyer reclaims the resting order by spending the current funding
+  // note (it knows the blinding). Returns the live funding note { cx, cy, amount, _r } at cumulative C
+  // for a plain transfer/withdraw; the in-flight lot at C then double-spends the same nullifier and reverts.
+  function restingFundingNote(restingBid, C) {
+    const state = restingBid.states.find((s) => s.C === BigInt(C));
+    if (!state) throw new Error('bid: no such resting state');
+    return { cx: state.fund.cx, cy: state.fund.cy, amount: state.fund.amount, _r: state.fund._r };
+  }
+
+  return { buildBid, fillBid, verifyBid, recoverBidOutputs, deriveBidNonces,
+           buildRestingBid, fillRestingLot, restingFundingNote, BID_BUYER_TAG, BID_SELLER_TAG };
 }
