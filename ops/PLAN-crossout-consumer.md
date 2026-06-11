@@ -107,9 +107,15 @@ trust-minimization follow-up that doesn't change the wallet/worker flow, only ho
    `destCommitment` output + status tracking.
 4. **Worker cron hook** — import + a gated `scan()` call each tick (inert until `CONFIDENTIAL_POOL_
    DEPLOYMENTS[net].pool` is set); lands with the pool deploy.
-5. **Node round-trip test** — extend `confidential-crosslane-roundtrip.mjs`: the ETH→Bitcoin leg records a
-   modeled `CrossOutRecorded`, broadcasts a `T_CXFER`, binds, and rejects a replay.
+5. ✅ **Node round-trip test** (DONE) — `confidential-crosslane-roundtrip.mjs` now ties the witness
+   bridge-out to the consumer: the `bridge_burn` crossOut is modeled as a `CrossOutRecorded` log, scanned
+   (recorded past finality), bound to the Bitcoin output, and a replay is rejected. Proves the formats
+   connect end-to-end.
 6. **(Follow-up) mode B** — the Ethereum-state proof, swapped in behind the same worker interface.
+
+**Remaining:** phase 3 (dapp `bridge_burn` → broadcast the Bitcoin `T_CXFER` carrying the claimId) and
+phase 4 (the gated worker cron hook, lands with the pool deploy) — plus mode B as the trust-minimization
+follow-up.
 
 Reuses, not rebuilds: the event decode, RPC, CXFER indexing, the note model, and the nullifier-lock all
 exist — the consumer is the glue + the dapp broadcast + the trust-mode choice.

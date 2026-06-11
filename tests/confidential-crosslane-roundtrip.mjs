@@ -18,6 +18,8 @@ import { makeConfidentialTransfer } from '../dapp/confidential-transfer.js';
 import { makeConfidentialMemo } from '../dapp/confidential-memo.js';
 import { makeConfidentialIndexer } from '../dapp/confidential-indexer.js';
 import { makeConfidentialPool } from '../dapp/confidential-pool.js';
+import { makeConfidentialEvmLog } from '../dapp/confidential-evm-log.js';
+import { makeCrossoutConsumer } from '../dapp/confidential-crossout-consumer.js';
 import assert from 'node:assert';
 
 const sha256 = (b) => new Uint8Array(createHash('sha256').update(Buffer.from(b)).digest());
@@ -93,4 +95,32 @@ assert.strictEqual(co.assetId.toLowerCase(), ASSET, 'bridge-in carries the asset
 assert.strictEqual(bridgeOut.crossOuts[0].assetId.toLowerCase(), ASSET, 'bridge-out carries the same asset id');
 ok('round-trip conserves: 1500 in on Bitcoin → ETH note → spent → 1500 out on Bitcoin (same asset, no value created)');
 
-console.log(`\n${n}/5 cross-lane round-trip checks passed`);
+// ── 6. Worker leg: the bridge-out crossOut is read + bound by the CrossOut consumer (the ETH→Bitcoin mint) ──
+// Proves the witness crossOut format actually feeds the worker consumer: model the on-chain
+// CrossOutRecorded log from `bridgeOut`, scan it (records past finality), then bind the Bitcoin output.
+{
+  const evmLog = makeConfidentialEvmLog({ keccak256 });
+  const u256 = (v) => BigInt(v).toString(16).padStart(64, '0');
+  const strip = (h) => String(h).replace(/^0x/, '').padStart(64, '0');
+  const co2 = bridgeOut.crossOuts[0];
+  const log = {
+    topics: [evmLog.TOPIC0.CrossOutRecorded, co2.claimId],
+    data: '0x' + u256(co2.destChain) + strip(co2.destCommitment) + strip(co2.nullifier) + strip(co2.assetId),
+    blockNumber: 500,
+  };
+  const kv = new Map();
+  const consumer = makeCrossoutConsumer({
+    ethGetLogs: async () => [log], kvGet: async (k) => (kv.has(k) ? kv.get(k) : null),
+    kvPut: async (k, v) => { kv.set(k, v); }, evmLog, confirmations: 36,
+  });
+  const scanned = await consumer.scan({ network: 'mainnet', pool: '0xpool', tipHeight: 600, fromBlock: 0 });
+  assert.strictEqual(scanned.recorded, 1, 'the consumer records the bridge-out crossOut');
+  const bound = await consumer.bindBitcoinOutput({ network: 'mainnet', claimId: co2.claimId, outputLeaf: co2.destCommitment });
+  assert.strictEqual(bound.bound, true, 'the consumer binds the Bitcoin output to the recorded crossOut (mint authorized)');
+  assert.strictEqual(bound.record.assetId.toLowerCase(), ASSET, 'the minted Bitcoin note carries the same asset id');
+  const replay = await consumer.bindBitcoinOutput({ network: 'mainnet', claimId: co2.claimId, outputLeaf: co2.destCommitment });
+  assert.strictEqual(replay.rejected, 'already-consumed', 'a second mint of the same crossOut is rejected (one-mint-per-claimId)');
+  ok('worker leg: the bridge-out crossOut is read + bound by the consumer (ETH→Bitcoin mint authorized once, claimId-gated)');
+}
+
+console.log(`\n${n}/6 cross-lane round-trip checks passed`);
