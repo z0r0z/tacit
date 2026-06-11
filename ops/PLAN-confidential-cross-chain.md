@@ -556,6 +556,81 @@ origin** (a note's history can show it crossed). That is a *later* multigen upgr
 + optimistic relayers = the dual lane with seamless UX, Bitcoin-sovereign, on the
 unchanged guest/prover/ceremony (and unchanged contracts for the home-chain model).**
 
+### Contract enforcement state (2026-06-11) — fast-lane value-exit is gated to the bridge
+
+The deployed `ConfidentialPool` carried the cross-lane forward gate (B4: a Bitcoin-homed
+spend proves non-membership against the current reflected `bitcoinSpentRoot`) but **not**
+the §10 harmonization that makes a fast-lane spend safe. The forward gate only proves a
+note is *not yet* spent on Bitcoin **at Ethereum-spend time**; it is one-directional.
+Reflection runs Bitcoin→Ethereum only (the reflection prover never reads the EVM nullifier
+set), so an Ethereum spend of a Bitcoin-homed note is never seen on Bitcoin and the Bitcoin
+UTXO stays live. A `settle` that let a Bitcoin-homed note **exit value** (an unwrap that
+mints/releases ERC20, a settler fee, a new spendable Ethereum leaf, a swap/LP credit)
+therefore released value irreversibly while the note remained spendable on Bitcoin —
+duplication, no race or reorg needed.
+
+The §10 model ("Bitcoin arbitrates, the fast lane yields") is sound, but it requires the
+fast-lane effect to be **provisional until Bitcoin-anchored** so it can be *reverted* on a
+conflicting Bitcoin-native spend. A **value-exit cannot be provisional** — once an ERC20 is
+minted to a user or escrow is paid out, there is nothing to unwind. So even the full fast
+lane only ever covers intra-pool effects that finalize to Bitcoin; **leaving** the pool
+(unwrap/withdraw, or minting a new leaf the holder can then unwrap) must source-consume.
+
+Interim fix (landed): the contract enforces §3's **Pool model** as the *only* path for
+Bitcoin→Ethereum value. A Bitcoin-homed batch may mark nullifiers but may **not** produce
+`withdrawals`/`fees`/`leaves`/`swaps`/`liquidity` — `revert BtcHomedValueExitMustBridge`.
+Bitcoin→Ethereum value moves through `bridge_burn` (on Bitcoin, into the reflected burn set)
+→ `bridge_mint` (here), which consumes the note on its home chain first and is **not**
+btcHomed (it proves membership against its own `pool_root`, `spendRoot ∈ EVM/0`). This is
+the tETH bridge's exact, audited safety model (§4) applied to a hidden-amount note. B4 is
+restated in `SPEC-EVM-CONFIDENTIAL-TOKEN-AMENDMENT` to make this normative.
+
+To lift the gate and enable the §10 fast lane for **intra-pool** spends, build, in order.
+The deciding facts: Bitcoin Tacit is off-chain-validated (the worker's `poolnull:*` KV set +
+the dapp indexer enforce one-spend, not Bitcoin consensus), so "Bitcoin learns EVM spends" is
+a **validator-software change**, not an SP1 proof — the worker can read the EVM contract
+directly. And the EVM contract **already exposes its spent set** (`isNullifierSpent`,
+`NullifiersSpent` events); no new `evmSpentRoot` IMT is needed (that would cost an SSTORE-heavy
+insert per nullifier on every live settle for a still-gated feature).
+
+1. **Ethereum→Bitcoin reverse check (the load-bearing enabler).** The worker's Bitcoin-spend
+   validator (and the dapp pre-spend check) reject spending a cross-lane note whose ν is in the
+   EVM spent set: `evmPool.isNullifierSpent(ν)`, blocking the moment an EVM spend is seen (the
+   `latest` tag, not after finality — so the window the query can see is closed; an EVM reorg
+   that un-spends ν only *un-blocks* a Bitcoin spend, never enables a double-spend, so the
+   check is fail-closed and recoverable; the sub-confirmation instant is covered by step 2's
+   provisional-yield). This is the unified spent set of §3/§10 realized as a query, not a proof.
+   It is **strictly more restrictive** (only ever blocks), so it can ship and bake on the live
+   worker without any contract/guest/ceremony change — and it is what makes a btcHomed Ethereum
+   spend actually consume the Bitcoin note. **Built (2026-06-12):** `dapp/confidential-crosslane-guard.js`
+   (`makeCrossLaneGuard().bitcoinSpendBlocked(ethCall, poolAddress, ν)`), a self-contained,
+   injected-`ethCall`, fail-closed module mirroring the `crossout-consumer` pattern — no-op when
+   `CONFIDENTIAL_POOL_DEPLOYMENTS[network].pool` is null (the current posture), so it wires into
+   the worker indexer-of-record + the dapp CXFER pre-broadcast check and activates with the
+   cross-lane layer. Tested in `tests/confidential-crosslane-guard.mjs`.
+2. **Provisional-yield reconciliation** (§5, §10): a fast-lane intra-pool confirm is
+   *provisional* until Bitcoin-anchored; the indexer-of-record reverts a soft-confirm that
+   loses to a conflicting Bitcoin-native spend ("Bitcoin arbitrates, the fast lane yields").
+   This is what lets the lift be safe across the simultaneous-submission instant that step 1's
+   query can't see. **Only revertible (intra-pool) effects can be provisional** — which is
+   exactly why value-exit stays bridge-only forever (next point). Symmetric reflection alone is
+   not enough: both gates read a lagging root, so without the provisional/anchor window a note
+   can be spent on both lanes inside the mutual lag.
+3. **EVM gate relaxation (last, and only after 1+2 are live and validated).** Narrow
+   `BtcHomedValueExitMustBridge` to bar only the *unrevertible* effects — `withdrawals` and
+   `fees` (and pool-minted credits) — while permitting a btcHomed batch to emit `leaves`
+   (shielded intra-pool transfer/swap/LP outputs) once the reverse check + provisional-yield
+   are enforcing one-spend. Value-EXIT (`withdrawals`/`fees`/ERC20 mint) stays barred **forever**
+   — it is unrevertible, so it can never be provisional, so it must always source-consume via
+   `bridge_burn`→`bridge_mint`. Flipping this before (1)+(2) re-opens the exact double-spend the
+   2026-06-11 fix closed, so it is gated on them, not a standalone change.
+
+Sequencing: (1) is the safe, self-contained first step — it only adds a restriction on the
+live worker (no contract/guest/ceremony change) and is what actually makes a btcHomed Ethereum
+spend consume the Bitcoin note. (2) and (3) follow, with the §11 sub-decisions (anchor cadence,
+lane reconciliation cadence, per-asset lane policy, provisional-vs-final UX) resolved. Until all
+three land, the contract gate stays closed and Bitcoin→Ethereum value flows through the bridge.
+
 ## 11. Open decisions
 
 - **`claimId` binding** — what exactly the burn commits to (destChain ‖
