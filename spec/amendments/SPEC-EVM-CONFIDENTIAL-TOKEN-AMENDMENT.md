@@ -113,33 +113,89 @@ section requires a range proof, because the amount moved is public; only its
 
 ### Asset identity
 ```
-etched token:   asset_id = sha256("tacit-evm-etch-v1"  ‖ chainid_be8 ‖ factory ‖ salt ‖ etcher)
+etched token:   asset_id = sha256("tacit-evm-etch-v1"  ‖ chainid_be8 ‖ factory ‖ salt ‖ etcher ‖ meta_hash)
 wrapped/native: asset_id = sha256("tacit-evm-token-v1" ‖ chainid_be8 ‖ underlying_token)
+meta_hash       = sha256( u8(len symbol) ‖ symbol ‖ u8(decimals) ‖ cid )
 ```
+`cid` is a 32-byte IPFS metadata content hash (the CIDv1 dag-pb sha2-256 digest of a
+logo/description JSON; `0` = none), bound into `meta_hash` so the id commits to it like
+`(symbol, decimals)`.
 Domain-separated from the Bitcoin `sha256(reveal_txid ‖ vout)` namespace and
 from the `ShieldedPool` asset-id rule by tag.
 
-### `etch` — confidential token, fixed or mintable supply
-Deploys a `TacitConfidentialERC20` (CREATE2). Parameters: `name`, `symbol`,
-`decimals (≤ 8 effective via UNIT_SCALE)`, `supply S` (public), `mintAuthority`
-(EVM address; `address(0)` ⇒ **fixed supply, no further mint possible**),
-`metadataURI`, `salt`. Initial supply is issued as one or more notes whose
-commitments satisfy `Σ C_init − S·H = r·G`, proven by a PoK of `r` (one
-`ecrecover` check). Supply `S` is public and exact; the allocation across notes
-is blinded.
+**Canonical ERC20 metadata.** The public ERC20's `name` is the constant brand
+`"Tacit Token"` — a Tacit asset carries no trustless on-chain name, so name is a constant
+rather than a spoofable or off-chain-sourced field. The per-asset metadata is
+`(symbol, decimals, cid)`, all **deterministic to the real asset** — the `cid` points to a
+logo/description JSON on IPFS, surfaced via the ERC20's `contractURI()` (EIP-7572) for
+wallets, marketplaces, and the dapp:
+
+- **EVM-native etch:** the etched id commits to `(symbol, decimals, cid)` through `meta_hash`,
+  so the metadata is canonical *by construction* — the deployer derives the id on-chain
+  from the supplied metadata (`CanonicalAssetFactory.deriveAssetId` / `etchCanonical`)
+  and anyone can recompute the binding (`verifyMetadata`). Exactly one official
+  `(symbol, decimals, cid)` per id.
+- **Bitcoin-native etch (e.g. TAC):** `(ticker, decimals, cid)` live on-chain in the CETCH /
+  T_PETCH reveal envelope — `opcode ‖ tlen ‖ ticker ‖ decimals ‖ [cid(32)]` — transitively
+  bound to the id via the txid (`asset_id = sha256(reveal_txid ‖ 0)`,
+  `reveal_txid = double_sha256(reveal_tx)`). The bridge proves them once at first mint (the
+  SP1 attest_meta proof's `AssetMeta` carries the `cid`) and the canonical ERC20 carries
+  them immutably; `contractURI()` reconstructs `ipfs://f01701220‖hex(cid)` from it. The CID
+  is optional — absent ⇒ `cid = 0` ⇒ empty `contractURI`.
+- **Wrapped ERC20:** the id binds the underlying, whose `symbol`/`decimals` are read from
+  that token directly.
+
+The address is a pure function of the id (CREATE2 salt = `asset_id`, constant ERC20 init
+code), so the bridge computes it before the token exists, deploys it on first mint, and
+mints against the same address forever after. `meta_hash` is length-prefixed and
+language-neutral (reproducible in Solidity, JS, and Rust).
+
+**Decimals harmonization.** Each chain presents an asset in its own convention: Bitcoin /
+Tacit ≤ 8 decimals (Bitcoin's native limit), Ethereum 18 (`ConfidentialPool.ETH_DECIMALS`).
+A Tacit-native asset's canonical ERC20 is presented at 18, and the per-asset
+`unitScale = 10^(ETH_DECIMALS − tacitDecimals)` (e.g. 8-decimal TAC → 18-decimal ERC20,
+scale `10^10`) is **derived on-chain** from the native precision —
+`registerMintedAuto(factory, tacitAssetId, symbol, tacitDecimals)` lazily deploys the
+ERC20 (address = `f(tacitAssetId)`) and records the scale, no operator-chosen value to get
+wrong. Amounts scale by `unitScale` across the boundary: the in-system note value times
+`unitScale` is the public ERC20 amount. Tacit→Ethereum is lossless (multiply);
+Ethereum→Tacit only crosses whole multiples of `unitScale` (`wrap` rejects unaligned
+amounts), so sub-precision dust stays as ERC20 on Ethereum — value-conserving, round-trip
+exact.
+
+### `etch` — confidential token, two mode-split entrypoints
+Deploys a `TacitConfidentialEtched` (CREATE2) through one of two entrypoints (no
+overloaded sentinel), each taking `Meta{ name, symbol, decimals, uri }`:
+- `etchAuthority(mintAuthority, meta, salt)` — `mintAuthority` (nonzero) may
+  `mint` any denomination, anytime, and may `renounceMint()` to fix supply.
+- `etchFairLaunch(petch, meta, salt)` — no issuer (fair launch); see `petch`
+  below.
+
+`name` / `symbol` / `decimals` are carried **on-chain** by the token — queryable
+in one `eth_call`, no indexer or off-chain fetch (the EVM gain a Bitcoin
+inscription can't offer); `meta.uri` carries richer off-chain metadata (icon,
+description) via the `Etched` event. The token is note-based, not an ERC20 (value
+is in notes; no `balanceOf` / `transfer(address,uint256)`) — only the metadata
+triple is exposed, so nothing misrepresents it as a standard fungible token.
+Supply starts at zero and is issued by `mint`; there is no initial-supply-at-
+deploy step. Supply is always public and exact; its allocation across notes is
+blinded.
 
 ### `petch` — fair-launch (T_PETCH analogue)
-Public `cap`, fixed `perMint`, `[startBlock, endBlock]` window. Anyone calls
-`mint()` for exactly `perMint`, up to `cap`. Gas is the natural rate limiter
-(the role Bitcoin fees play in T_PMINT); optional per-address caps are a
-factory parameter.
+`Petch{ denomIdx, cap, startBlock, endBlock }`: anyone calls `mint` for exactly
+denomination `d_denomIdx`, inside `[startBlock, endBlock]`, until `supply` would
+exceed `cap`. Gas is the natural rate limiter (the role Bitcoin fees play in
+T_PMINT).
 
-### `mint` (mintable assets) / `burn`
-- `mint(m, notes, pok)` — `mintAuthority` signs; new notes satisfy
-  `Σ C_mint − m·H = r·G`; public supply `+= m`. Auditable: supply is always
-  exact and public, distribution hidden.
-- `burn(note, b, opening)` — prove the note opens to public `b` (reveal or
-  amount-only PoK); destroy it; public supply `−= b`.
+### `mint` / `burn` (public denomination + PoK)
+Both move a single ladder denomination, public, with a PoK binding the note
+commitment:
+- `mint(denomIdx, C, pok)` — issue a note opening to `d_denomIdx` (PoK that
+  `C − D_denomIdx = r·G`); public supply `+= d_denomIdx`. In authority mode only
+  `mintAuthority` may call; in fair-launch mode anyone may, under the `petch`
+  gate. Auditable: supply is exact and public, distribution hidden.
+- `burn(denomIdx, C, pok)` — prove the note opens to `d_denomIdx`; destroy it;
+  public supply `−= d_denomIdx`.
 
 ### Balance attestation & range proofs (reused verbatim, off-chain)
 A holder proves a predicate over their notes' hidden amounts —
@@ -180,10 +236,10 @@ transfer mode.
 against `@noble/secp256k1`):** `ecAdd` ≈ 3.1k gas, a `mulmuladd`/ecrecover
 linear check ≈ 6k, a 1-of-8 OR-proof ≈ 65k per output, the 2-in-2-out
 conservation kernel ≈ 13k. A full 2-in-2-out transfer ≈ **143k gas** of
-compute (plus proof calldata; the `d_i·H` ladder points are contract constants,
-not calldata). Uniswap-swap territory — comfortably affordable on L1, and the
-OR-proof dominates, so a shorter ladder (k=4 ≈ 33k/output) trades amount
-granularity for gas.
+compute (plus proof calldata; the `d_i·H` ladder points are baked-in contract
+constants, not calldata). Uniswap-swap territory — comfortably affordable on L1.
+The ladder is fixed protocol-wide at `k = 8` (`d_i = 10**i`), so notes stay
+uniform across every confidential token.
 
 ### Tier B — SP1-batched Bulletproofs+ (exact amounts, batched finality)
 Transfers post the **unchanged** secp256k1 Bulletproofs+ proof
@@ -196,6 +252,12 @@ arbitrary amounts; a received note is spendable once its batch is proven
 (bridge-style cadence). This reuses more existing cryptography than any
 SNARK-circuit approach — the BP+ proofs are not re-proven, only verified and
 amortized — and adds no ceremony.
+
+Tier B generalizes to the full arbitrary-amount product — wrap / transfer /
+unwrap / mint / burn as SP1-validated state transitions over secp256k1 notes,
+with an on-chain ERC-20 boundary + one proof + a state root, permissionless
+proving, and blob DA. Architecture, phasing, and open decisions:
+[`PLAN-confidential-token-rollup.md`](../../ops/PLAN-confidential-token-rollup.md).
 
 ### Why not a new Groth16 transfer circuit
 A Groth16 verifying key is bound to its exact statement, so the finalized mixer
@@ -210,17 +272,24 @@ is not on the launch path.
 
 ## 5. Wrapping existing ERC20s
 
-- `wrap(token, amount)` — `transferFrom(amount)` into escrow (amount public at
-  entry); mint a note satisfying `Σ C_out − amount·H = r·G`. The amount is
-  visible at the wrap boundary and blinded for every transfer thereafter.
-- `unwrap(note, amount, to)` — prove the note opens to public `amount`; release
-  the ERC20; destroy the note. Full unwrap is a public-amount op (cheap, no
-  range proof); partial unwrap is a split and uses a §4 transfer first.
+A `TacitConfidentialERC20` is deployed per underlying with a `UNIT_SCALE` that
+aligns the fixed ladder (`d_i = 10**i`) to the underlying's decimals, so one
+ladder backs tokens of any precision. Its on-chain `decimals` mirrors the
+underlying so unwrapped amounts read correctly; `name` / `symbol` describe the
+confidential wrapper.
+- `wrap(denomIdx, C, pok)` — `transferFrom(d_denomIdx · UNIT_SCALE)` into escrow
+  (amount public at entry); create a note opening to `d_denomIdx` (PoK that
+  `C − D_denomIdx = r·G`). The amount is visible at the wrap boundary and blinded
+  for every transfer thereafter.
+- `unwrap(denomIdx, C, to, pok)` — prove the note opens to `d_denomIdx`; release
+  `d_denomIdx · UNIT_SCALE` of the ERC20 to `to`; destroy the note. Unwrap is a
+  public-denomination op (cheap, no range proof); to move a non-ladder amount,
+  split with a §4 transfer first.
 
-Escrow invariant per asset: `escrowed ERC20 ≥ Σ unspent note amounts`, held
-structurally — wrap is the only mint path and every transfer conserves. Issuer-
-administered stablecoins concentrate freezable balance at the asset contract;
-the dapp curates which underlyings it surfaces (see plan).
+Escrow invariant per asset: `escrowed ERC20 ≥ Σ unspent note denominations ·
+UNIT_SCALE`, held structurally — wrap is the only mint path and every transfer
+conserves. Issuer-administered stablecoins concentrate freezable balance at the
+asset contract; the dapp curates which underlyings it surfaces (see plan).
 
 ---
 
@@ -252,6 +321,69 @@ key material — the existing stealth stack, re-homed to EVM addresses.
 - **Custody is per-asset.** Escrow ≥ unspent note amounts holds per asset
   contract; wrap/etch are the only issuance paths and each conserves.
 
+### 7.1 Guest validity bindings (NORMATIVE — the SP1 guest MUST enforce all)
+
+"By construction" above holds only if the guest enforces these bindings; they are
+the load-bearing checks (the contract sees only hashes/amounts and cannot backstop
+the value/nullifier ones). Each is required before any proof is accepted:
+
+- **B1 — wrap value↔escrow.** For every `wrap`, assert `value · unitScale == amount`
+  (`value` = the note's committed u64; `amount` = the escrowed underlying, u256).
+  `unitScale` is NOT a free witness: the deposit id binds the SCALED `value` —
+  `deposit_id = keccak(asset ‖ value ‖ Cx ‖ Cy ‖ owner)` (`value` as a 32-byte big-endian
+  word) — which the contract re-derives as `value = amount / assets[assetId].unitScale`
+  with the asset's trusted scale, so a matching id forces `value·unitScale == amount`
+  (the guest never sees `unitScale`). Compute `value·unitScale` in ≥u128 (can exceed u64).
+- **B2 — unwrap payout↔value.** For every `unwrap`/withdrawal the guest emits the proven
+  in-system `value`; the contract pays `amount = value · assets[assetId].unitScale` with the
+  asset's trusted stored scale (the withdrawal carries `value`, NOT `unitScale` — the guest
+  never sees it). An escrow asset's payout is additionally escrow-bounded.
+- **B3 — note-bound nullifier.** `ν = keccak256(Cx ‖ Cy ‖ "spent")` where `(Cx,Cy)` is
+  the membership-proven commitment — unique per note, chain-independent (same secp `C`
+  on both chains, so the cross-lane gate matches), and private (`C` is known only to the
+  owner who decrypts the memo). The note secret is NOT the nullifier preimage.
+  Reconciles dapp + guest + worker, which all derive `ν` this way.
+- **B4 — mandatory cross-lane gate + source-consume invariant.** If ANY spent input's
+  membership root is a relay-attested Bitcoin root (`knownBitcoinRoot`), the guest MUST use a
+  non-zero, current `bitcoinSpentRoot` and prove non-membership of every input `ν` against it;
+  the contract MUST enforce `bitcoinSpentRoot == knownBitcoinSpentRoot` for that lane
+  (no skip-on-zero). Reflection is one-directional (Bitcoin→Ethereum), so this gate alone is not
+  sufficient for a value-exit: a Bitcoin-homed note's `ν` marked only in the Ethereum set is never
+  reflected back, leaving the Bitcoin UTXO live. Therefore a Bitcoin-homed batch MUST NOT move
+  value onto Ethereum — the contract rejects any `withdrawal`/`fee`/`leaf`/`swap`/`liquidity` from a
+  Bitcoin-homed spend (`BtcHomedValueExitMustBridge`); such a batch may only mark nullifiers.
+  Bitcoin→Ethereum value movement goes through the source-consuming path — `bridge_burn` on Bitcoin
+  (into the reflected burn set) → `bridge_mint` here (B5), which is not Bitcoin-homed. A direct
+  single-tx fast lane requires a finality-gated shared nullifier set (the reverse path of §8) — until
+  then, symmetric forward reflection would still permit a double-spend within the mutual reflection lag.
+- **B5 — relay-anchored bridge_mint (bridge-burn-set membership).** A `bridge_mint` MUST prove
+  the burned note was BURNED FOR THE BRIDGE on Bitcoin — `ν` is a MEMBER of the relay-attested
+  Bitcoin bridge-BURN set, keyed `ν → destCommitment` (`imt_membership(ν, bitcoinBurnRoot)`, the
+  burn-leaf value pinning THIS Ethereum destination), with the contract enforcing
+  `bitcoinBurnRoot == knownBitcoinBurnRoot` (current, non-zero) for that op. The burn set is
+  built ONLY from cross-chain burns, so an ordinary Bitcoin spend's `ν` is ABSENT and cannot mint
+  — this is the H-1 fix; authorizing against the all-spends set instead would let any ordinary
+  spend be re-minted on Ethereum (value duplication). The burned note's pool membership is proven
+  against a `knownBitcoinRoot`. The block PoW is NOT validated against a self-supplied `nBits` — a
+  fabricated min-difficulty header is forgeable, so block self-PoW is no gate. Conservation
+  (`v_mint == v_burn`) requires knowledge of the burned note's blinding, so only the owner can
+  mint; the contract gates one mint PER BURNED `ν` (`bridgeMinted[ν]`), so a burn mints to exactly
+  one destination, once. The bridge-burn set is the cross-lane authority — DISTINCT from B4's
+  spent set (an ordinary spend marks the spent set but NOT the burn set), which is exactly what
+  keeps a non-bridge spend unmintable. See `PLAN-confidential-cross-chain.md` §4/§5/§8.
+- **B6 — confirmation-gated metadata.** An `attest_meta` MUST prove the asset is real on
+  the relay-attested Bitcoin pool, not just self-derive from a raw reveal tx: alongside
+  `asset_id = sha256(reveal_txid ‖ 0)` and the envelope's `(ticker, decimals)`, the guest
+  MUST verify a note keyed by THAT `asset_id` is a member of a Bitcoin pool root and commit
+  the root in `bitcoinRootsUsed` (which the contract already gates `∈ knownBitcoinRoot`).
+  A fabricated or unconfirmed etch has no member note, so it cannot lazy-register junk
+  metadata / deploy a junk canonical ERC20 — reusing the bridge_mint root gate, so no
+  contract change.
+
+All guest-side bindings (B1–B6) batch into one guest version → one new vkey → one
+re-prove + redeploy. The on-chain pieces (deposit-id/withdrawal `unitScale`, the
+mandatory cross-lane enforcement) ship in the same `ConfidentialPool` redeploy.
+
 ---
 
 ## 8. What ships first vs. follows
@@ -282,17 +414,22 @@ Built (working tree):
   `@noble/secp256k1`.
 - `contracts/src/lib/ConfidentialNoteCore.sol` — abstract base: denominated note
   store, spent-set, the Tier-A 2-in/2-out `transfer` (per-output 1-of-8 OR-proof
-  + conservation kernel, §4), and the `_verifyOpen` Schnorr PoK. Both token
-  variants extend it.
+  + conservation kernel, §4), and the `_verifyOpen` Schnorr PoK. The denomination
+  ladder is protocol-wide and fixed (`d_i = 10**i`, points `D_i = d_i·H` baked in
+  as pure lookups — no per-token constants to supply or trust), and it carries
+  on-chain `name` / `symbol` / `decimals`. Both token variants extend it.
 - `contracts/src/TacitConfidentialERC20.sol` — confidential **wrapper** for an
-  ERC20: `wrap` / `unwrap` (§3/§5), escrow == Σ active notes. 7 tests vs real
-  noble proofs. Measured: wrap ~100k, **confidential transfer ~217k**, unwrap ~37k.
+  ERC20: `wrap` / `unwrap` (§3/§5), escrow == Σ active notes · `UNIT_SCALE`
+  (constructor arg aligning the fixed ladder to the underlying's decimals).
+  9 tests vs real noble proofs. Measured: wrap ~94k, **confidential transfer ~190k**, unwrap ~36k.
 - `contracts/src/TacitConfidentialEtched.sol` — **etched** token: supply issued
   as notes, no backing. `mint` (authority or fair-launch / petch window+cap),
-  `renounceMint` (fixed supply), `burn`; supply == Σ active notes. 6 tests.
-- `contracts/src/TacitConfidentialFactory.sol` — CREATE2 deployer; `etch`
-  (authority or fair-launch); `tacit-evm-etch-v1` asset-id derivation;
-  `predictAddress`; `Etched` event. 5 tests.
+  `renounceMint` (fixed supply), `burn`; supply == Σ active notes. 8 tests.
+- `contracts/src/TacitConfidentialFactory.sol` — CREATE2 deployer; mode-split
+  entrypoints `etchAuthority` / `etchFairLaunch` (no overloaded sentinel),
+  each carrying `Meta{ name, symbol, decimals, uri }`, with matching
+  `predictAuthority` / `predictFairLaunch`; `tacit-evm-etch-v1` asset-id
+  derivation; `Etched` event. 7 tests.
 
 Hardening (done):
 - OR-proof challenge binds `"tacit-evm-cnote-or-v1" ‖ chainid ‖ address(this)`,

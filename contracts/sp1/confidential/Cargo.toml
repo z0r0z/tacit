@@ -1,0 +1,33 @@
+[package]
+name = "confidential-pool-prover"
+version = "0.1.0"
+edition = "2021"
+
+# SP1 guest for the Phase-1 confidential pool. Thin assembler over cxfer-core
+# (the native-tested secp/keccak verification core); commits the ABI-encoded
+# PublicValues that ConfidentialPool.settle decodes. Build: cargo prove build.
+# The precompile patches accelerate the secp/sha256 inside cxfer-core in-zkVM
+# (~29x fewer cycles); they apply to the guest build only, not cxfer-core's
+# native tests.
+
+# The settle guest (src/main.rs) and the reflection prover (src/reflect.rs) are two SP1
+# programs sharing cxfer-core. Build a specific one with `cargo prove build --bin <name>`.
+[[bin]]
+name = "confidential-pool-prover"
+path = "src/main.rs"
+
+[[bin]]
+name = "reflection-prover"
+path = "src/reflect.rs"
+
+[dependencies]
+sp1-zkvm = "6.2"
+cxfer-core = { path = "cxfer-core" }
+alloy-sol-types = "0.8"
+
+[profile.release]
+overflow-checks = true
+
+[patch.crates-io]
+sha2 = { git = "https://github.com/sp1-patches/RustCrypto-hashes", package = "sha2", tag = "patch-sha2-0.10.8-sp1-6.2.0" }
+k256 = { git = "https://github.com/sp1-patches/elliptic-curves", package = "k256", tag = "patch-k256-13.4-sp1-6.2.0" }

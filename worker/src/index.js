@@ -87,6 +87,8 @@ import { hmac } from '@noble/hashes/hmac';
 import { keccak_256 } from '@noble/hashes/sha3';
 import { hexToBytes, bytesToHex, concatBytes } from '@noble/hashes/utils';
 import { bech32, bech32m } from '@scure/base';
+import { buildReflectionAttester } from './reflection-attest.js';
+import { buildConfidentialSettler } from './confidential-settle.js';
 
 secp.etc.hmacSha256Sync = (k, ...m) => hmac(sha256, k, secp.etc.concatBytes(...m));
 
@@ -189,6 +191,14 @@ const T_PREAUTH_BID_VAR         = 0x5C; // buyer-offline preauth bid, partial-fi
 // DELETE stay live so existing records still read and cancel. Flip to true to
 // re-accept POSTs (mirrors the dapp ENABLE_T_PREAUTH_BID* flag).
 const PREAUTH_BIDS_POST_ENABLED = false;
+// Hosted walk-away watchtower (ops/PLAN-hosted-watchtower-render.md). Buyers
+// register an online bid-intent for a managed instance to complete while they
+// are away. POST is gated (env WATCHTOWER_REGISTER_ENABLED=true) until the
+// orchestrator + pilot are live; GET/DELETE stay open so a registered bid can
+// always be read and cancelled.
+function watchtowerRegisterEnabled(env) {
+  return String(env?.WATCHTOWER_REGISTER_ENABLED ?? '') === 'true';
+}
 // 0x60–0x64: SPEC-TETH-BRIDGE-AMENDMENT (trustless ETH↔Tacit bridge).
 const T_BRIDGE_DEPOSIT          = 0x60; // cross-chain mint: prove ETH deposit → mint tETH (SPEC §5.60)
 const T_BRIDGE_BURN             = 0x61; // cross-chain redeem: burn tETH → commit to ETH withdrawal (SPEC §5.61)
@@ -680,6 +690,93 @@ async function handleProverHealth(env, cors) {
       ? Math.max(0, hb.btc_tip - hb.last_proven_height) : null,
     reasons,
   }, healthy ? 200 : 503, hdr);
+}
+
+// Reflection relay: serve the next assembled Bitcoin-state batch for the box to prove. The box
+// (ops/scripts/reflection-relay-loop.sh) proves it, submits attestBitcoinStateProven on-chain, then
+// POSTs /reflection/ack. Returns {} when nothing is pending; 404 when reflection attest is off.
+async function handleReflectionJob(req, env, url, cors) {
+  // Box-only, like the confidential settle routes: /reflection/ack advances the attested
+  // Bitcoin cursor (monotonic, un-rewindable), so an unauthenticated POST could freeze it and
+  // stall every cross-lane / bridge_mint gate. /reflection/job is gated the same for symmetry.
+  if (!checkConfidentialAuth(req, env)) return jsonResponse({ error: 'not found' }, 404, { ...cors, 'Cache-Control': 'no-store' });
+  const network = url.searchParams.get('network') === 'signet' ? 'signet' : 'mainnet';
+  const att = buildReflectionAttester(env, { deps: { secp, keccak256: keccak_256, sha256 }, api: apiText, network });
+  if (!att) return jsonResponse({ error: 'reflection attest not configured' }, 404, { ...cors, 'Cache-Control': 'no-store' });
+  const job = await att.assembleJob();
+  return jsonResponse(job || {}, 200, { ...cors, 'Cache-Control': 'no-store' });
+}
+
+async function handleReflectionAck(req, env, cors) {
+  if (!checkConfidentialAuth(req, env)) return jsonResponse({ error: 'not found' }, 404, cors);
+  let body;
+  try { body = await req.json(); } catch { return jsonResponse({ ok: false, error: 'bad json' }, 400, cors); }
+  const network = body.network === 'signet' ? 'signet' : 'mainnet';
+  const att = buildReflectionAttester(env, { deps: { secp, keccak256: keccak_256, sha256 }, api: apiText, network });
+  if (!att) return jsonResponse({ error: 'reflection attest not configured' }, 404, cors);
+  const r = await att.ackJob(Number(body.attestedTo) | 0);
+  return jsonResponse({ ok: true, ...r }, 200, cors);
+}
+
+// ===== Confidential settle relay (box-poll prove/settle queue for ConfidentialPool) =====
+// POST /confidential/submit {type, op, memos?} → enqueue a confidential op (public,
+//      permissionless — a bad witness just fails to prove). GET /confidential/job → the box claims
+//      the next job; POST /confidential/ack {jobId, txHash?|error?} → the box reports the settle
+//      (both box routes gated by CONFIDENTIAL_BOX_TOKEN/DEBUG_TOKEN, default-deny 404). GET
+//      /confidential/status?id= → the dapp polls. Config-gated on CONFIDENTIAL_SETTLE=1.
+function confSettler(env) {
+  if (env.CONFIDENTIAL_SETTLE !== '1') return null;
+  const kv = env.CONFIDENTIAL_KV || env.REGISTRY_KV;
+  if (!kv) return null;
+  const hash = (s) => '0x' + [...keccak_256(new TextEncoder().encode(s))].map((b) => b.toString(16).padStart(2, '0')).join('');
+  return buildConfidentialSettler(env, { hash });
+}
+// Default-deny Bearer gate for the box-only routes (mirrors checkDebugAuth; constant-time compare).
+function checkConfidentialAuth(req, env) {
+  const token = env.CONFIDENTIAL_BOX_TOKEN || env.DEBUG_TOKEN;
+  if (!token || typeof token !== 'string' || token.length < 16) return false;
+  const m = (req.headers.get('Authorization') || '').match(/^Bearer (.+)$/);
+  if (!m) return false;
+  const a = m[1], b = token;
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
+}
+async function handleConfidentialSubmit(req, env, cors) {
+  const q = confSettler(env);
+  if (!q) return jsonResponse({ error: 'confidential settle not configured' }, 404, { ...cors, 'Cache-Control': 'no-store' });
+  let body;
+  try { body = await req.json(); } catch { return jsonResponse({ ok: false, error: 'bad json' }, 400, cors); }
+  try {
+    const r = await q.submitJob({ type: body.type, op: body.op, memos: body.memos });
+    return jsonResponse({ ok: true, ...r }, 200, { ...cors, 'Cache-Control': 'no-store' });
+  } catch (e) { return jsonResponse({ ok: false, error: String(e && e.message || e) }, 400, cors); }
+}
+async function handleConfidentialJob(req, env, cors) {
+  const q = confSettler(env);
+  if (!q) return jsonResponse({ error: 'confidential settle not configured' }, 404, { ...cors, 'Cache-Control': 'no-store' });
+  if (!checkConfidentialAuth(req, env)) return jsonResponse({ error: 'not found' }, 404, cors);
+  const job = await q.nextJob();
+  return jsonResponse(job || {}, 200, { ...cors, 'Cache-Control': 'no-store' });
+}
+async function handleConfidentialAck(req, env, cors) {
+  const q = confSettler(env);
+  if (!q) return jsonResponse({ error: 'confidential settle not configured' }, 404, cors);
+  if (!checkConfidentialAuth(req, env)) return jsonResponse({ error: 'not found' }, 404, cors);
+  let body;
+  try { body = await req.json(); } catch { return jsonResponse({ ok: false, error: 'bad json' }, 400, cors); }
+  if (!body.jobId) return jsonResponse({ ok: false, error: 'jobId required' }, 400, cors);
+  const r = await q.ackJob(String(body.jobId), { txHash: body.txHash, error: body.error });
+  return jsonResponse(r, 200, cors);
+}
+async function handleConfidentialStatus(env, url, cors) {
+  const q = confSettler(env);
+  if (!q) return jsonResponse({ error: 'confidential settle not configured' }, 404, { ...cors, 'Cache-Control': 'no-store' });
+  const id = url.searchParams.get('id');
+  if (!id) return jsonResponse({ error: 'id required' }, 400, cors);
+  const st = await q.jobStatus(id);
+  return jsonResponse(st || { error: 'unknown job' }, st ? 200 : 404, { ...cors, 'Cache-Control': 'no-store' });
 }
 
 // Bearer-token gate for the debug endpoints (/scan, /rescan). Either of those
@@ -5646,6 +5743,11 @@ async function _fetchUpstreamWithAbortRetry(url, opts) {
     if (cleanup1) cleanup1();
   }
 }
+// Try each configured BTC source in order, failing over to the next on a
+// transport error or a 5xx/429 from this source. A 2xx or a definitive 4xx
+// (e.g. 404 tx-not-yet-indexed) is a real answer and returns as-is — other
+// sources would give the same answer, and callers like fetchFreshTxJson rely
+// on the 404 to drive their own retry.
 // Per-process preferred-source index per network. Once a source fails we keep
 // starting from the one that worked, so a blocked/slow upstream isn't re-probed
 // on every subsequent fetch (a full block is ~150 page fetches — re-trying a
@@ -13466,6 +13568,31 @@ async function handleAssetHint(req, env, network, cors, ctx) {
         }
       }
     }
+    // Burn hints index the nullifier record the same way the cron scan does —
+    // attribution by guest bind hash, dedup on the gen-scoped nullifier key.
+    // Lets anyone surface a confirmed burn the scan window predates or missed.
+    if (decoded.opcode === T_BRIDGE_BURN && h > 0) {
+      const g = _tethGenForEnvelope(network, aid, T_BRIDGE_BURN, expectedNetTag, bd.assetId, bd.denomWei,
+        [bd.merkleRoot, bd.nullifierHash, bd.recipientCommit, bd.rLeaf, bd.ethRecipient, bd.burnNonce], bd.bindHash);
+      if (!g) return jsonResponse({ error: 'bind hash matches no known generation' }, 400, cors);
+      const gen = g.gen;
+      const initRec = await env.REGISTRY_KV.get(poolInitKey(network, aid, denomBig, gen), 'json');
+      if (initRec) {
+        const nKey = poolNullifierKey(network, aid, denomBig, bytesToHex(bd.nullifierHash), gen);
+        if (!(await env.REGISTRY_KV.get(nKey))) {
+          await env.REGISTRY_KV.put(nKey, JSON.stringify({
+            asset_id: aid, denomination: denomBig,
+            nullifier_hash: bytesToHex(bd.nullifierHash),
+            eth_recipient: bytesToHex(bd.ethRecipient),
+            burn_nonce: bytesToHex(bd.burnNonce),
+            withdraw_txid: txidHex, withdrawn_at_height: h,
+            withdrawn_at: blockTime || Math.floor(Date.now() / 1000),
+            source: 'bridge_burn', network,
+            ...(gen ? { gen } : {}),
+          }));
+        }
+      }
+    }
     await env.REGISTRY_KV.put(kvKey, String(prior + 1), { expirationTtl: 90000 });
     return jsonResponse({ ok: true, source: 'hint', opcode: decoded.opcode, network }, 200, cors);
   }
@@ -18816,6 +18943,164 @@ async function handlePreauthBidsList(assetIdHex, env, network, cors) {
   return jsonResponse({ bids }, 200, cors);
 }
 
+// ===================== Hosted watchtower registration =====================
+// A buyer registers an online bid-intent for the managed watchtower to
+// complete while they are away. The dedicated bid key is derived client-side
+// from the buyer's main key and stored ONLY as ciphertext (ECDH-encrypted to
+// the watchtower service pubkey — see fulfiller/watchtower-crypto.mjs); the API
+// never sees cleartext. The whole record is authenticated by a BIP-340
+// signature from the buyer's main key. No consensus impact.
+
+function watchtowerBidKey(network, ownerH160, bidIdHex) {
+  return `wtbid:${network}:${ownerH160}:${bidIdHex}`;
+}
+function watchtowerBidPrefix(network, ownerH160) {
+  return ownerH160 ? `wtbid:${network}:${ownerH160}:` : `wtbid:${network}:`;
+}
+// Drop the ciphertext key from read responses — the buyer UI only needs status,
+// and there is no reason to echo the encrypted key back into logs/caches.
+function _slimWatchtowerBid(rec) {
+  if (!rec || typeof rec !== 'object') return rec;
+  const { enc_bid_privkey, ...rest } = rec;
+  return rest;
+}
+function watchtowerRegisterMsg({
+  network, assetIdHex, bidIdHex, bidPubHex, ownerPubHex, encBidPrivkeyHex,
+  bidPriceSats, bidAmountBaseStr, decimals, expiry, fundingTxidHex, fundingVout,
+}) {
+  const u64 = (n) => { const b = new Uint8Array(8); new DataView(b.buffer).setBigUint64(0, BigInt(n), true); return b; };
+  const u32 = (n) => { const b = new Uint8Array(4); new DataView(b.buffer).setUint32(0, n >>> 0, true); return b; };
+  return sha256(concatBytes(
+    new TextEncoder().encode('tacit-watchtower-register-v1'),
+    new TextEncoder().encode(network),
+    hexToBytes(assetIdHex),
+    hexToBytes(bidIdHex),
+    hexToBytes(bidPubHex),
+    hexToBytes(ownerPubHex),
+    hexToBytes(encBidPrivkeyHex),
+    u64(bidPriceSats),
+    u64(bidAmountBaseStr),
+    u32(decimals),
+    u64(expiry),
+    reverseBytes(hexToBytes(fundingTxidHex)),
+    u32(fundingVout),
+  ));
+}
+function watchtowerCancelMsg(network, ownerH160, bidIdHex) {
+  return sha256(concatBytes(
+    new TextEncoder().encode('tacit-watchtower-cancel-v1'),
+    new TextEncoder().encode(network),
+    hexToBytes(ownerH160),
+    hexToBytes(bidIdHex),
+  ));
+}
+
+async function handleWatchtowerBidPost(req, env, network, cors) {
+  if (!watchtowerRegisterEnabled(env)) {
+    return jsonResponse({ error: 'watchtower registration is not currently open' }, 410, cors);
+  }
+  let body;
+  try { body = await req.json(); } catch { return jsonResponse({ error: 'invalid JSON body' }, 400, cors); }
+  const assetIdHex = String(body.asset_id ?? '').toLowerCase();
+  const bidIdHex = String(body.bid_id ?? '').toLowerCase();
+  const ownerPubHex = String(body.owner_pubkey ?? '').toLowerCase();
+  const bidPubHex = String(body.bid_pubkey ?? '').toLowerCase();
+  const encBidPrivkeyHex = String(body.enc_bid_privkey ?? '').toLowerCase();
+  const bidPriceSats = Number(body.bid_price_sats);
+  const bidAmountBaseStr = String(body.bid_amount_base ?? '');
+  const decimals = Number(body.decimals);
+  const expiry = Number(body.expiry);
+  const funding = body.funding_outpoint || {};
+  const fundingTxidHex = String(funding.txid ?? '').toLowerCase();
+  const fundingVout = Number(funding.vout);
+  const authSigHex = String(body.auth_sig ?? '').toLowerCase();
+  const now = Math.floor(Date.now() / 1000);
+
+  if (!/^[0-9a-f]{64}$/.test(assetIdHex)) return jsonResponse({ error: 'invalid asset_id' }, 400, cors);
+  if (!/^[0-9a-f]{32}$/.test(bidIdHex)) return jsonResponse({ error: 'bid_id must be 32 hex chars' }, 400, cors);
+  if (!/^0[23][0-9a-f]{64}$/.test(ownerPubHex)) return jsonResponse({ error: 'owner_pubkey must be 33-byte compressed' }, 400, cors);
+  if (!/^0[23][0-9a-f]{64}$/.test(bidPubHex)) return jsonResponse({ error: 'bid_pubkey must be 33-byte compressed' }, 400, cors);
+  if (!/^[0-9a-f]{64}$/.test(encBidPrivkeyHex)) return jsonResponse({ error: 'enc_bid_privkey must be 64 hex chars' }, 400, cors);
+  if (!Number.isInteger(bidPriceSats) || bidPriceSats < PRICE_MIN) return jsonResponse({ error: `bid_price_sats must be integer >= ${PRICE_MIN}` }, 400, cors);
+  if (!/^\d+$/.test(bidAmountBaseStr) || BigInt(bidAmountBaseStr) <= 0n) return jsonResponse({ error: 'bid_amount_base must be a positive integer string' }, 400, cors);
+  if (!Number.isInteger(decimals) || decimals < 0 || decimals > 18) return jsonResponse({ error: 'decimals must be in [0, 18]' }, 400, cors);
+  if (!Number.isInteger(expiry) || expiry <= now) return jsonResponse({ error: 'expiry must be future unix-seconds' }, 400, cors);
+  if (!/^[0-9a-f]{64}$/.test(fundingTxidHex)) return jsonResponse({ error: 'funding_outpoint.txid must be 64 hex chars' }, 400, cors);
+  if (!Number.isInteger(fundingVout) || fundingVout < 0) return jsonResponse({ error: 'funding_outpoint.vout must be a non-negative integer' }, 400, cors);
+  if (!/^[0-9a-f]{128}$/.test(authSigHex)) return jsonResponse({ error: 'auth_sig must be 128 hex chars' }, 400, cors);
+
+  // The buyer's main key authenticates the whole registration.
+  const ownerXonly = hexToBytes(ownerPubHex).slice(1);
+  const msg = watchtowerRegisterMsg({
+    network, assetIdHex, bidIdHex, bidPubHex, ownerPubHex, encBidPrivkeyHex,
+    bidPriceSats, bidAmountBaseStr, decimals, expiry, fundingTxidHex, fundingVout,
+  });
+  if (!verifySchnorr(hexToBytes(authSigHex), msg, ownerXonly)) {
+    return jsonResponse({ error: 'invalid auth signature' }, 403, cors);
+  }
+
+  const _orderRl = await _orderbookWriteRateLimit(req, env, ownerPubHex, 'watchtower-register');
+  if (!_orderRl.ok) return jsonResponse({ error: `register rate limited: ${_orderRl.reason}` }, 429, cors);
+
+  const ownerH160 = bytesToHex(hash160(hexToBytes(ownerPubHex)));
+  const rec = {
+    network,
+    bid_id: bidIdHex,
+    asset_id: assetIdHex,
+    owner_pubkey: ownerPubHex,
+    bid_pubkey: bidPubHex,
+    enc_bid_privkey: encBidPrivkeyHex,
+    bid_price_sats: bidPriceSats,
+    bid_amount_base: bidAmountBaseStr,
+    decimals,
+    funding_outpoint: { txid: fundingTxidHex, vout: fundingVout },
+    expiry,
+    status: 'active',
+    filled_base: '0',
+    processed_intents: {},
+    created_at: now,
+  };
+  await env.REGISTRY_KV.put(
+    watchtowerBidKey(network, ownerH160, bidIdHex),
+    JSON.stringify(rec),
+    { expirationTtl: _ttlFromExpiry(expiry) },
+  );
+  return jsonResponse({ ok: true, bid: _slimWatchtowerBid(rec) }, 200, cors);
+}
+
+async function handleWatchtowerBidsList(url, env, network, cors) {
+  const ownerPubHex = String(url.searchParams.get('owner') ?? '').toLowerCase();
+  if (!/^0[23][0-9a-f]{64}$/.test(ownerPubHex)) {
+    return jsonResponse({ error: 'owner query param must be a 33-byte compressed pubkey' }, 400, cors);
+  }
+  const ownerH160 = bytesToHex(hash160(hexToBytes(ownerPubHex)));
+  const out = [];
+  const list = await env.REGISTRY_KV.list({ prefix: watchtowerBidPrefix(network, ownerH160), limit: 1000 });
+  const fetched = await Promise.all(list.keys.map((k) => env.REGISTRY_KV.get(k.name, 'json')));
+  for (const v of fetched) if (v) out.push(_slimWatchtowerBid(v));
+  return jsonResponse({ bids: out }, 200, cors);
+}
+
+async function handleWatchtowerBidDelete(bidIdHex, req, env, network, cors) {
+  if (!/^[0-9a-f]{32}$/.test(bidIdHex)) return jsonResponse({ error: 'bid_id must be 32 hex chars' }, 400, cors);
+  let body;
+  try { body = await req.json(); } catch { return jsonResponse({ error: 'invalid JSON body' }, 400, cors); }
+  const ownerPubHex = String(body.owner_pubkey ?? '').toLowerCase();
+  const cancelSigHex = String(body.cancel_sig ?? '').toLowerCase();
+  if (!/^0[23][0-9a-f]{64}$/.test(ownerPubHex)) return jsonResponse({ error: 'owner_pubkey must be 33-byte compressed' }, 400, cors);
+  if (!/^[0-9a-f]{128}$/.test(cancelSigHex)) return jsonResponse({ error: 'cancel_sig must be 128 hex chars' }, 400, cors);
+  const ownerH160 = bytesToHex(hash160(hexToBytes(ownerPubHex)));
+  const key = watchtowerBidKey(network, ownerH160, bidIdHex);
+  const stored = await env.REGISTRY_KV.get(key, 'json');
+  if (!stored) return jsonResponse({ error: 'no registered bid found' }, 404, cors);
+  const msg = watchtowerCancelMsg(network, ownerH160, bidIdHex);
+  if (!verifySchnorr(hexToBytes(cancelSigHex), msg, hexToBytes(ownerPubHex).slice(1))) {
+    return jsonResponse({ error: 'invalid cancel signature' }, 403, cors);
+  }
+  await env.REGISTRY_KV.delete(key);
+  return jsonResponse({ ok: true, bid_id: bidIdHex }, 200, cors);
+}
+
 async function handlePreauthBidDelete(assetIdHex, bidIdHex, req, env, network, cors) {
   if (!/^[0-9a-f]{64}$/.test(assetIdHex)) return jsonResponse({ error: 'invalid asset_id' }, 400, cors);
   if (!/^[0-9a-f]{32}$/.test(bidIdHex)) return jsonResponse({ error: 'invalid bid_id' }, 400, cors);
@@ -21016,6 +21301,15 @@ async function scanForEtches(env, network) {
         // gates the recipient credit identically).
         if (decoded.opcode === T_PREAUTH_BID_VAR && !_validatePreauthBidVarRefundVout(dx, tx)) continue;
         const counted = await _bumpTransferOnce(dx.asset_id, tx.txid);
+        // Reflection attestation ingest (Phase 4.4): record confirmed confidential transfers into
+        // the canonical reflection state (the source of truth the attest cron replays + proves).
+        // Config-gated (env.REFLECTION_ATTEST); best-effort, never blocks the scan.
+        if (decoded.opcode === T_CXFER || decoded.opcode === T_CXFER_BPP) {
+          try {
+            const _att = buildReflectionAttester(env, { deps: { secp, keccak256: keccak_256, sha256 }, api: apiText, network });
+            if (_att) await _att.ingestConfirmedCxfer(tx, dx, txs, h, dx.asset_id);
+          } catch (e) { try { _logCronError(env, 'reflectionIngest', network, e); } catch {} }
+        }
         // Implicit-cancel detection for opening listings. Any tx that
         // spends the asset_id's UTXOs (CXFER consolidate, AXFER settle,
         // or the maker shuffling funds around) terminates whichever
@@ -25940,6 +26234,20 @@ async function _routeFetch(req, env, ctx) {
     if (url.pathname === '/prover-heartbeat' && req.method === 'POST') return handleProverHeartbeat(req, env, cors);
     if (url.pathname === '/prover-health' && req.method === 'GET') return handleProverHealth(env, cors);
 
+    // Reflection relay loop (the self-hosted prover box polls these — see ops/scripts/reflection-relay-loop.sh).
+    // /reflection/job serves the next assembled Bitcoin-state batch to prove; /reflection/ack advances
+    // the attested cursor after the box lands attestBitcoinStateProven on-chain. Config-gated (404 if off).
+    if (url.pathname === '/reflection/job' && req.method === 'GET') return handleReflectionJob(req, env, url, cors);
+    if (url.pathname === '/reflection/ack' && req.method === 'POST') return handleReflectionAck(req, env, cors);
+
+    // Confidential settle relay (the same box polls these — see ops/scripts/confidential-settle-loop.sh).
+    // /confidential/submit enqueues a user's confidential op; /confidential/job lets the box claim +
+    // GPU-prove it; /confidential/ack records the on-chain settle; /confidential/status is the dapp poll.
+    if (url.pathname === '/confidential/submit' && req.method === 'POST') return handleConfidentialSubmit(req, env, cors);
+    if (url.pathname === '/confidential/job' && req.method === 'GET') return handleConfidentialJob(req, env, cors);
+    if (url.pathname === '/confidential/ack' && req.method === 'POST') return handleConfidentialAck(req, env, cors);
+    if (url.pathname === '/confidential/status' && req.method === 'GET') return handleConfidentialStatus(env, url, cors);
+
     if (url.pathname === '/pin' && req.method === 'POST')      return handlePin(req, env, cors);
     if (url.pathname === '/pin-json' && req.method === 'POST') return handlePinJson(req, env, cors);
     if (url.pathname === '/pin-mixer-vk' && req.method === 'POST') return handlePinMixerVk(req, env, cors);
@@ -27998,6 +28306,14 @@ async function _routeFetch(req, env, ctx) {
     if (mpbv2 && req.method === 'GET')                         return handlePreauthBidVarGet(mpbv2[1], mpbv2[2], env, network, cors);
     if (mpbv2 && req.method === 'DELETE')                      return _mutateAndBust(mpbv2[1], () => handlePreauthBidVarDelete(mpbv2[1], mpbv2[2], req, env, network, cors));
 
+    // Hosted watchtower registration (ops/PLAN-hosted-watchtower-render.md).
+    // Not asset-scoped: a buyer's registrations span assets and are keyed by
+    // owner. POST is flag-gated; GET (by ?owner=pubkey) + DELETE stay open.
+    if (url.pathname === '/watchtower/bids' && req.method === 'POST')   return handleWatchtowerBidPost(req, env, network, cors);
+    if (url.pathname === '/watchtower/bids' && req.method === 'GET')    return handleWatchtowerBidsList(url, env, network, cors);
+    const mwt = url.pathname.match(/^\/watchtower\/bids\/([0-9a-f]{32})$/);
+    if (mwt && req.method === 'DELETE')                        return handleWatchtowerBidDelete(mwt[1], req, env, network, cors);
+
     // Bid intents (off-chain bid book — SPEC §5.7.7). Buyer-initiated mirror
     // of atomic intents; settlement is via the seller spinning up an
     // axintent targeted at the bidder, no new wire format.
@@ -29059,6 +29375,19 @@ export default {
       await Promise.allSettled(
         NETWORKS.map(net => scanForEtches(env, net).catch(e => _logCronError(env, 'scanForEtches', net, e))),
       );
+      // Reflection attestation: the scan ingests confirmed CXFERs into the effect log; the
+      // self-hosted box drives proving via the BOX-POLL model (/reflection/job → prove → submit →
+      // /reflection/ack, ops/scripts/reflection-relay-loop.sh), so the cron does NOT prove here.
+      // Only run the synchronous worker-side cycle when a box HTTP prover (REFLECTION_PROVE_URL) is
+      // configured. Config-gated (env.REFLECTION_ATTEST); a null attester is an inert no-op.
+      if (env.REFLECTION_PROVE_URL) {
+        await Promise.allSettled(
+          NETWORKS.map(net => {
+            const _att = buildReflectionAttester(env, { deps: { secp, keccak256: keccak_256, sha256 }, api: apiText, network: net });
+            return _att ? _att.runCycle().catch(e => _logCronError(env, 'reflectionCycle', net, e)) : Promise.resolve();
+          }),
+        );
+      }
       // Sweep abandoned variable-fill bid partial-claims and refund their
       // fill_amount back to the parent bid (§5.7.7 *Re-credit on
       // abandonment*). Bounded per network to keep cron CPU under budget.

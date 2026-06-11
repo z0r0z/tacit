@@ -1,0 +1,32 @@
+# Local execute-mode validator for the full-scan reflection guest. A SEPARATE crate from
+# teth-prover so it can depend on sp1-sdk WITHOUT native-gnark (execute = the RISC-V emulator,
+# no Groth16/Go FFI needed). Run: cargo run --release -- <reflection_input.json> [expectedDigest]
+[package]
+name = "reflect-exec"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+sp1-sdk = { version = "6.2", default-features = false, features = ["blocking"] }
+serde_json = "1"
+hex = "0.4"
+
+[[bin]]
+name = "reflect-execute"
+path = "src/main.rs"
+
+# Local execute-mode validator for the OP_OTC settle guest: serializes fixtures/otc_op.json in the
+# guest's io::read order (same as exec-otc.rs) and executes the locally-built cxfer-guest ELF — a
+# clean run (no panic) proves the guest ACCEPTS the witness (every membership/sigma/conservation
+# assert held in-zkVM), validating both the op logic and the byte serialization without a GPU proof.
+[[bin]]
+name = "otc-execute"
+path = "src/otc_execute.rs"
+
+# Same, for OP_BID (fixtures/bid_op.json) — validates the bid guest logic + serialization in-zkVM.
+[[bin]]
+name = "bid-execute"
+path = "src/bid_execute.rs"
+
+[profile.release]
+overflow-checks = true

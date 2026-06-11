@@ -457,7 +457,10 @@ export function bppTranscript() {
 // bulletproofs_plus.cc:502–776 (function bulletproof_plus_PROVE).
 // ============================================================================
 
-export function bppRangeProve(values, blindings) {
+// `_allowOutOfRangeForTest` is a TEST-ONLY escape hatch: it skips the [0,2^64) input guard so a
+// soundness test can forge a proof that commits an out-of-range value (V = v·H, with the bit
+// decomposition of v mod 2^64) and assert the VERIFIER rejects it. Production callers never set it.
+export function bppRangeProve(values, blindings, _allowOutOfRangeForTest = false) {
   const m = values.length;
   if (m !== blindings.length) throw new Error('bpp: values/blindings length mismatch');
   if (![1, 2, 4, 8].includes(m)) throw new Error(`bpp: unsupported aggregation m=${m}`);
@@ -477,7 +480,7 @@ export function bppRangeProve(values, blindings) {
   for (let j = 0; j < m; j++) {
     if (typeof values[j] !== 'bigint') throw new Error(`bpp: values[${j}] must be bigint`);
     const v = values[j];
-    if (v < 0n || v >= (1n << BigInt(N))) {
+    if (!_allowOutOfRangeForTest && (v < 0n || v >= (1n << BigInt(N)))) {
       throw new Error(`bpp: value[${j}]=${v} out of range [0, 2^${N})`);
     }
     V[j] = pedersenCommit(v, blindings[j]);
@@ -900,11 +903,9 @@ export function bppRangeVerify(commitments, proofBytes) {
   // G scalar: +d1
   // H scalar: +(r1·y·s1 + e²·((z²-z)·sum(y_MN) + y^(MN+1)·z·sum(d)))
   const sum_y_MN = _sumOfScalarPowers(y, MN);
-  const sum_d = modN((1n << BigInt(N)) - 1n) * 1n;  // 2^N - 1 (will multiply below)
   const sum_d_val = modN(modN((1n << BigInt(N)) - 1n) * _sumOfEvenPowers(z, 2 * m));
 
   const H_term1 = modN(modN(r1 * y) * s1);
-  const z_minus_zSq = modN(z - zSq);   // -(z²-z) so flip sign
   const zSq_minus_z = modN(zSq - z);
   const H_inner1 = modN(zSq_minus_z * sum_y_MN);
   const H_inner2 = modN(modN(y_MN_1 * z) * sum_d_val);

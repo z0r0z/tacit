@@ -8,10 +8,13 @@
     "@noble/hashes": "^1.4.0",
     "@noble/secp256k1": "^2.1.0",
     "@scure/base": "^1.1.6",
-    "jsdom": "^24.0.0"
+    "jsdom": "^24.0.0",
+    "pg": "^8.13.1"
   },
   "scripts": {
     "start": "node auto-fulfil.mjs",
-    "dry-run": "node auto-fulfil.mjs --dry-run"
+    "dry-run": "node auto-fulfil.mjs --dry-run",
+    "watchtower": "node buyer-watchtower.mjs",
+    "hosted-watchtower": "node hosted-watchtower.mjs"
   }
 }
