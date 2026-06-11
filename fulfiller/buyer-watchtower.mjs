@@ -112,7 +112,7 @@ globalThis.window = dom.window;
 globalThis.document = dom.window.document;
 globalThis.localStorage = dom.window.localStorage;
 globalThis.location = dom.window.location;
-globalThis.navigator = dom.window.navigator;
+try { globalThis.navigator = dom.window.navigator; } catch { /* Node 21+ read-only built-in navigator — keep it */ }
 globalThis.prompt = () => null;
 globalThis.alert = () => {};
 globalThis.confirm = () => true;

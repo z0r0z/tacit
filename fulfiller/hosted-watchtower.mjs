@@ -63,7 +63,10 @@ globalThis.window = dom.window;
 globalThis.document = dom.window.document;
 globalThis.localStorage = dom.window.localStorage;
 globalThis.location = dom.window.location;
-globalThis.navigator = dom.window.navigator;
+// Node 21+ exposes a read-only built-in `navigator`; assigning throws there.
+// The built-in is fine for the headless dapp (SW registration is skipped), so
+// only set jsdom's when the slot is writable (older Node).
+try { globalThis.navigator = dom.window.navigator; } catch { /* read-only built-in navigator — keep it */ }
 globalThis.prompt = () => null;
 globalThis.alert = () => {};
 globalThis.confirm = () => true;
