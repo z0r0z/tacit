@@ -339,7 +339,7 @@ pub fn main() {
                 // no real note, so it cannot register junk metadata. The pool_root is pushed
                 // to bitcoinRootsUsed → the contract already gates it ∈ knownBitcoinRoot.
                 let etch_tx: Vec<u8> = io::read();
-                let asset = bitcoin::asset_id_from_etch(&etch_tx);
+                let asset = bitcoin::asset_id_from_etch(&etch_tx).expect("attest: malformed etch tx");
                 let env = bitcoin::extract_taproot_envelope(&etch_tx).expect("attest: envelope");
                 let (ticker, tlen, decimals, cid) = bitcoin::parse_etch_meta(&env).expect("attest: etch meta");
 

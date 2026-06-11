@@ -28,7 +28,7 @@ contract ConfidentialInitPoolGriefTest is Test {
 
     function setUp() public {
         vm.chainId(1);
-        pool = new ConfidentialPool(address(new MockSP1VerifierG()), bytes32(uint256(0xABCD)), bytes32(0), address(0), address(0), bytes32(0));
+        pool = new ConfidentialPool(address(new MockSP1VerifierG()), bytes32(uint256(0xABCD)), bytes32(0), address(0), address(0), bytes32(0), 6);
         tokenA = new MockERC20G();
         tokenB = new MockERC20G();
         assetA = pool.registerWrapped(address(tokenA), 1, bytes32(0), "Conf A", "cA", 18);
@@ -45,6 +45,12 @@ contract ConfidentialInitPoolGriefTest is Test {
         vm.stopPrank();
     }
 
+    // initPool with dummy founder-share-note commitments (these tests pin the front-run/canonicalization
+    // bounds, not the founder's share-note claim).
+    function _init(bytes32 a, bytes32 b, uint256 ra, uint256 rb, uint32 fee) internal returns (bytes32) {
+        return pool.initPool(a, b, ra, rb, fee, bytes32(uint256(0x5EED)), bytes32(uint256(0x5EE2)), bytes32(uint256(0x5EE3)));
+    }
+
     // GRIEF-1 (fixed): initPool bounds what a permissionless front-run can seed into the one-per-slot
     // pool. A zero reserve (un-joinable — no in-ratio add can rescue a 0 leg) and a runaway fee
     // (unusable) are rejected, so the worst a front-run can do is create a USABLE pool (real reserves,
@@ -53,17 +59,17 @@ contract ConfidentialInitPoolGriefTest is Test {
         // a 100% fee is rejected
         vm.prank(ATTACKER);
         vm.expectRevert(ConfidentialPool.FeeTooHigh.selector);
-        pool.initPool(assetA, assetB, 1, 1, 10000);
+        _init(assetA, assetB, 1, 1, 10000);
         // a zero reserve (un-joinable) is rejected
         vm.prank(ATTACKER);
         vm.expectRevert(ConfidentialPool.ZeroReserve.selector);
-        pool.initPool(assetA, assetB, 0, 1, 30);
+        _init(assetA, assetB, 0, 1, 30);
         // a front-run with SANE params just yields a usable pool (the pair is not lost; only the slot's
-        // params are first-come, and they must be sane).
+        // params are first-come, and they must be sane — and above the MINIMUM_LIQUIDITY seed floor).
         vm.prank(ATTACKER);
-        bytes32 pid = pool.initPool(assetA, assetB, 100, 200, 30);
+        bytes32 pid = _init(assetA, assetB, 10000, 20000, 30);
         (bool init, , , uint256 rA, uint256 rB, uint32 fee, ) = pool.pools(pid);
-        assertTrue(init && rA == 100 && rB == 200 && fee == 30, "front-run yields a usable pool, not a brick");
+        assertTrue(init && rA == 10000 && rB == 20000 && fee == 30, "front-run yields a usable pool, not a brick");
     }
 
     // GRIEF-1b (fixed): initPool CANONICALIZES the pair (sorts assetA/assetB), so the argument order is
@@ -72,11 +78,11 @@ contract ConfidentialInitPoolGriefTest is Test {
     // pre-lock "both orderings": the second init reverts PoolExists.
     function test_orderings_canonicalize_to_one_pool() public {
         vm.prank(ATTACKER);
-        bytes32 pidAB = pool.initPool(assetA, assetB, 1, 1, 0);
+        bytes32 pidAB = _init(assetA, assetB, 2000, 2000, 0);
         // same fee tier, reversed args → same slot → PoolExists
         vm.prank(ATTACKER);
         vm.expectRevert(ConfidentialPool.PoolExists.selector);
-        pool.initPool(assetB, assetA, 1, 1, 0);
+        _init(assetB, assetA, 2000, 2000, 0);
         // and the canonical derivation matches what initPool stored
         assertEq(pidAB, keccak256(abi.encode(assetA, assetB, uint32(0))), "poolId is canonical (sorted) + fee");
         (bool iAB,,,,,,) = pool.pools(pidAB);

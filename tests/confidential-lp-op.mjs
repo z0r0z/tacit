@@ -171,4 +171,45 @@ const LP_ASSET = lp.lpShareId(POOL_ID);
   ok('withdrawing 150 A for a 100-proportional share (floor is 100) is rejected (dA proportional)');
 }
 
+// ───────────────── 7. initPool founder seed: recoverable LP-share note (V2 MINIMUM_LIQUIDITY) ─────────────────
+{
+  // canonical order assetA < assetB (buildSeed requires it); reserveA is the rLo share basis.
+  const [lo, hi] = BigInt(ASSET_A) < BigInt(ASSET_B) ? [ASSET_A, ASSET_B] : [ASSET_B, ASSET_A];
+  const reserveA = 10_000n, reserveB = 20_000n;
+  const rShares = randomScalar();
+  const seed = lp.buildSeed({ assetA: lo, assetB: hi, reserveA, reserveB, feeBps: FEE_BPS, shareOwner: OWNER, rShares });
+
+  assert.strictEqual(seed.founderShares, reserveA - lp.MINIMUM_LIQUIDITY, 'founderShares = rLo − MINIMUM_LIQUIDITY');
+  assert.strictEqual(seed.lpAsset, lp.lpShareId(lp.poolId(lo, hi, FEE_BPS)), 'seed LP asset = lp_share_id(poolId)');
+  assert.ok(lp.verifySeed(seed), 'seed share commitment opens to founderShares');
+  assert.throws(() => lp.buildSeed({ assetA: lo, assetB: hi, reserveA: lp.MINIMUM_LIQUIDITY, reserveB, feeBps: FEE_BPS, shareOwner: OWNER, rShares }),
+    /must exceed MINIMUM_LIQUIDITY/, 'a seed at the lock floor is rejected (matches InsufficientSeed)');
+
+  // deposit id == ConfidentialPool's keccak256(abi.encode(lpAsset, founderShares, cx, cy, owner)) — the
+  // guest's OP_WRAP deposit_id. Replicate the contract's 32-byte-word abi.encode form independently.
+  const hb = (h) => { h = h.replace(/^0x/, ''); const o = new Uint8Array(h.length / 2); for (let i = 0; i < o.length; i++) o[i] = parseInt(h.substr(i * 2, 2), 16); return o; };
+  const be32v = (x) => { const o = new Uint8Array(32); let v = BigInt(x); for (let i = 31; i >= 0; i--) { o[i] = Number(v & 0xffn); v >>= 8n; } return o; };
+  const cat = (a) => { const t = a.reduce((s, x) => s + x.length, 0); const o = new Uint8Array(t); let p = 0; for (const x of a) { o.set(x, p); p += x.length; } return o; };
+  const sn = seed.seedShareNote;
+  const abiDepId = '0x' + Buffer.from(keccak256(cat([hb(seed.lpAsset), be32v(seed.founderShares), hb(sn.cx), hb(sn.cy), hb(OWNER)]))).toString('hex');
+  assert.strictEqual(sn.depositId, abiDepId, 'deposit id matches the contract keccak256(abi.encode(lpAsset, value, cx, cy, owner))');
+
+  // END-TO-END recovery: the founder's note enters the tree (as the OP_WRAP claim would), then REMOVE it
+  // via the ordinary LP path — the founder gets their seed back, leaving exactly MINIMUM_LIQUIDITY locked.
+  const tree = new pool.Tree();
+  const si = tree.insert(pool.leaf(seed.lpAsset, sn.cx, sn.cy, OWNER));
+  const spendRoot = tree.rootAndPath(0).root;
+  const rm = lp.buildRemove({
+    assetA: lo, assetB: hi, chainBinding: CHAIN_BINDING, feeBps: FEE_BPS,
+    reserveAPre: reserveA, reserveBPre: reserveB, sharesPre: reserveA, // totalShares = rLo
+    shareNote: { owner: OWNER, leafIndex: si, path: tree.rootAndPath(si).path }, dShares: seed.founderShares, rShares,
+    aOwner: OWNER, rA: randomScalar(), bOwner: OWNER, rB: randomScalar(),
+  });
+  const { settlement, leaves } = lp.verifyRemove(rm, { merkleRootFrom: pool.merkleRootFrom, spendRoot });
+  assert.strictEqual(settlement.sharesPost, lp.MINIMUM_LIQUIDITY, 'after a full founder exit, exactly MINIMUM_LIQUIDITY shares stay locked');
+  assert.strictEqual(settlement.reserveAPost, lp.MINIMUM_LIQUIDITY, 'the locked shares hold MINIMUM_LIQUIDITY of reserve A');
+  assert.strictEqual(leaves.length, 2, 'founder withdraws A + B notes for their recovered seed');
+  ok('founder seed → recoverable LP-share note; deposit id matches the contract; full exit leaves MINIMUM_LIQUIDITY locked');
+}
+
 console.log(`\n${n} OP_LP checks passed.`);

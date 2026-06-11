@@ -208,7 +208,7 @@ contract CanonicalAssetFactory {
     {
         bytes32 slot = _slot(assetId, minter, symbol_, decimals_, cid);
         if (_token[slot] != address(0)) revert AlreadyDeployed();
-        _params = DeployParams(assetId, minter, symbol_, decimals_, cid);
+        _params = DeployParams({assetId: assetId, minter: minter, symbol: symbol_, decimals: decimals_, cid: cid});
         token = address(new CanonicalBridgedERC20{salt: slot}());
         delete _params;
         _token[slot] = token;

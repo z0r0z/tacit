@@ -84,7 +84,12 @@ contract ConfidentialPoolTest is Test {
         verifier = new MockSP1Verifier();
         factory = new CanonicalAssetFactory();
         relay = new MockRelay(ANCHOR);
-        pool = new ConfidentialPool(address(verifier), VKEY, RELAY_VKEY, address(factory), address(relay), ANCHOR);
+        pool = new ConfidentialPool(address(verifier), VKEY, RELAY_VKEY, address(factory), address(relay), ANCHOR, 6);
+        // The pool now anchors a reflection batch's tip to the relay tip walked back
+        // REFLECTION_CONFIRMATIONS (the maturity guard), so seed a chain that buries ANCHOR exactly that
+        // deep: walking the relay's parents back REFLECTION_CONFIRMATIONS hops reaches ANCHOR. The attest
+        // tests then anchor a batch whose tip == ANCHOR (a matured, deep-enough tip).
+        _seedMaturedRelay(ANCHOR);
         token = new MockERC20();
         assetId = pool.registerWrapped(address(token), 1, bytes32(0), "Conf Mock", "cMCK", 18);
 
@@ -125,6 +130,19 @@ contract ConfidentialPoolTest is Test {
 
     function _arr(bytes32 a) internal pure returns (bytes32[] memory out) {
         out = new bytes32[](1); out[0] = a;
+    }
+
+    // Seed the mock relay with a chain that buries `reflTip` exactly REFLECTION_CONFIRMATIONS deep below
+    // the relay tip, so the pool's maturity anchor (relay tip walked back that many hops) resolves to
+    // `reflTip`. A batch whose committed tip == reflTip is then accepted as matured.
+    function _seedMaturedRelay(bytes32 reflTip) internal {
+        bytes32 t = reflTip;
+        for (uint256 i; i < pool.REFLECTION_CONFIRMATIONS(); ++i) {
+            bytes32 child = keccak256(abi.encodePacked("matured-relay", reflTip, i));
+            relay.setParent(child, t);
+            t = child;
+        }
+        relay.setTip(t);
     }
 
     /// Attest Bitcoin state via the relay-proven path (the only path — no oracle). The
@@ -261,14 +279,14 @@ contract ConfidentialPoolTest is Test {
 
     function test_initPool_native_eth_reserve() public {
         bytes32 ethId = pool.registerWrapped(address(0), 1e10, bytes32(0), "cETH", "cETH", 18);
-        token.mint(address(this), 200);
+        token.mint(address(this), 4000);
         token.approve(address(pool), type(uint256).max);
-        uint256 ethWei = 100 * 1e10; // ethReserve 100 in-system → wei
+        uint256 ethWei = 2000 * 1e10; // ethReserve 2000 in-system → wei (> MINIMUM_LIQUIDITY)
         vm.deal(address(this), ethWei);
-        bytes32 pid = pool.initPool{value: ethWei}(ethId, assetId, 100, 200, 30);
+        bytes32 pid = pool.initPool{value: ethWei}(ethId, assetId, 2000, 4000, 30, bytes32(uint256(0x5EED)), bytes32(uint256(0x5EE2)), bytes32(uint256(0x5EE3)));
         (, , , uint256 rA, uint256 rB, , ) = pool.pools(pid);
         // reserves are stored canonical low→high, so they follow the assetId sort, not the arg order
-        (uint256 expA, uint256 expB) = ethId < assetId ? (uint256(100), uint256(200)) : (uint256(200), uint256(100));
+        (uint256 expA, uint256 expB) = ethId < assetId ? (uint256(2000), uint256(4000)) : (uint256(4000), uint256(2000));
         assertEq(rA, expA, "ETH reserve (canonical)"); assertEq(rB, expB, "token reserve (canonical)");
         assertEq(pool.escrow(ethId), ethWei, "ETH reserve escrowed from msg.value");
     }
@@ -851,7 +869,7 @@ contract ConfidentialPoolTest is Test {
     /// ERC20 with exactly that (symbol, decimals) — no trusted metadata, no manual step.
     function test_settle_auto_registers_from_attested_meta() public {
         CanonicalAssetFactory factory = new CanonicalAssetFactory();
-        ConfidentialPool p = new ConfidentialPool(address(verifier), VKEY, RELAY_VKEY, address(factory), address(relay), ANCHOR);
+        ConfidentialPool p = new ConfidentialPool(address(verifier), VKEY, RELAY_VKEY, address(factory), address(relay), ANCHOR, 6);
 
         // The guest now confirms the asset is real + funded on Bitcoin: it proves a note
         // for this asset_id is a member of a relay-attested pool root and commits that root
@@ -898,7 +916,7 @@ contract ConfidentialPoolTest is Test {
     /// is rejected — no junk canonical ERC20 can be lazy-deployed from it.
     function test_settle_attest_meta_requires_attested_pool_root() public {
         CanonicalAssetFactory factory = new CanonicalAssetFactory();
-        ConfidentialPool p = new ConfidentialPool(address(verifier), VKEY, RELAY_VKEY, address(factory), address(relay), ANCHOR);
+        ConfidentialPool p = new ConfidentialPool(address(verifier), VKEY, RELAY_VKEY, address(factory), address(relay), ANCHOR, 6);
 
         ConfidentialPool.PublicValues memory pv;
         pv.version = p.PV_VERSION();
@@ -1006,6 +1024,20 @@ contract ConfidentialPoolTest is Test {
         bytes32 prior = pool.knownReflectionDigest();
         ConfidentialPool.BitcoinRelayPublicValues memory r = ConfidentialPool.BitcoinRelayPublicValues(
             prior, keccak256("pr"), keccak256("s"), keccak256("sb"), 1, keccak256("n"), keccak256("not-the-prior-tip"), ANCHOR
+        );
+        vm.expectRevert(ConfidentialPool.UnanchoredReflection.selector);
+        pool.attestBitcoinStateProven(abi.encode(r), "");
+    }
+
+    // Maturity (the bridge-burn reorg guard): a batch whose tip is NOT buried REFLECTION_CONFIRMATIONS
+    // below the relay tip — here the live relay tip itself (0 confirmations) — is rejected. So a
+    // bridge-burn can never authorize a mint at a shallow depth where a tip reorg would strand it
+    // (the burned note re-living on Bitcoin while the Ethereum mint stands).
+    function test_reflection_anchor_rejects_immature_tip() public {
+        bytes32 prior = pool.knownReflectionDigest();
+        bytes32 freshTip = relay.tip(); // 0 confirmations deep — above the matured anchor, not buried
+        ConfidentialPool.BitcoinRelayPublicValues memory r = ConfidentialPool.BitcoinRelayPublicValues(
+            prior, keccak256("pr"), keccak256("s"), keccak256("sb"), 1, keccak256("n"), ANCHOR, freshTip
         );
         vm.expectRevert(ConfidentialPool.UnanchoredReflection.selector);
         pool.attestBitcoinStateProven(abi.encode(r), "");
@@ -1165,12 +1197,30 @@ contract ConfidentialPoolTest is Test {
     /// (UnanchoredReflection) forever. Both are ctor-enforced.
     function test_ctor_reflection_requires_relay_and_anchor() public {
         vm.expectRevert(ConfidentialPool.ZeroAddress.selector); // missing header relay
-        new ConfidentialPool(address(verifier), VKEY, RELAY_VKEY, address(factory), address(0), ANCHOR);
+        new ConfidentialPool(address(verifier), VKEY, RELAY_VKEY, address(factory), address(0), ANCHOR, 6);
         vm.expectRevert(ConfidentialPool.ZeroAddress.selector); // missing genesis anchor
-        new ConfidentialPool(address(verifier), VKEY, RELAY_VKEY, address(factory), address(relay), bytes32(0));
+        new ConfidentialPool(address(verifier), VKEY, RELAY_VKEY, address(factory), address(relay), bytes32(0), 6);
         // Both present → deploys, anchor seeded.
-        ConfidentialPool ok = new ConfidentialPool(address(verifier), VKEY, RELAY_VKEY, address(factory), address(relay), ANCHOR);
+        ConfidentialPool ok = new ConfidentialPool(address(verifier), VKEY, RELAY_VKEY, address(factory), address(relay), ANCHOR, 6);
         assertEq(ok.lastReflectionBlockHash(), ANCHOR, "genesis anchor seeded");
+        assertEq(ok.REFLECTION_CONFIRMATIONS(), 6, "maturity depth set");
+    }
+
+    /// A cross-chain deploy must set a sane, non-zero, gas-bounded maturity depth: 0 would anchor a
+    /// batch to the live relay tip (~1 confirmation, re-opening the bridge-burn reorg window), and an
+    /// unbounded value would make attest exceed the block gas limit. Both revert; an Ethereum-only
+    /// deploy (relay vkey 0) doesn't read the value, so any value is accepted.
+    function test_ctor_reflection_confirmations_bounds() public {
+        vm.expectRevert(ConfidentialPool.BadReflectionConfirmations.selector); // zero maturity with reflection on
+        new ConfidentialPool(address(verifier), VKEY, RELAY_VKEY, address(factory), address(relay), ANCHOR, 0);
+        vm.expectRevert(ConfidentialPool.BadReflectionConfirmations.selector); // above MAX
+        new ConfidentialPool(address(verifier), VKEY, RELAY_VKEY, address(factory), address(relay), ANCHOR, 145);
+        // a deeper-but-bounded depth is fine
+        ConfidentialPool deep = new ConfidentialPool(address(verifier), VKEY, RELAY_VKEY, address(factory), address(relay), ANCHOR, 144);
+        assertEq(deep.REFLECTION_CONFIRMATIONS(), 144, "max maturity depth");
+        // reflection OFF: the maturity value is unused, so even 0 deploys
+        ConfidentialPool off = new ConfidentialPool(address(verifier), VKEY, bytes32(0), address(factory), address(0), bytes32(0), 0);
+        assertEq(off.REFLECTION_CONFIRMATIONS(), 0, "off: unvalidated, unused");
     }
 
     function test_settle_withdraw_unregistered_asset_reverts() public {
