@@ -14,28 +14,18 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
+import { parseEnvFile } from './env.mjs';
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 const OUT = path.join(ROOT, '.env.tacit-api-render');
 
-// crude but sufficient .env reader: KEY=VALUE, optional `export `, optional
-// surrounding quotes; # comment lines and blanks ignored.
-function parseEnv(rel) {
-  const p = path.join(ROOT, rel);
-  if (!fs.existsSync(p)) return null;
-  const out = {};
-  for (const line of fs.readFileSync(p, 'utf8').split('\n')) {
-    const m = line.match(/^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$/);
-    if (!m) continue;
-    let v = m[2];
-    if (!/^["']/.test(v)) v = v.replace(/\s+#.*$/, '').trim();
-    else if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'"))) {
-      v = v.slice(1, -1);
-    }
-    out[m[1]] = v;
-  }
-  return out;
-}
+const parseEnv = (rel) => parseEnvFile(path.join(ROOT, rel));
+
+// Re-runs preserve what an earlier run generated or the user hand-filled
+// (commented `# KEY=` stubs don't parse, so only real values carry over).
+// Regenerating PROXY_TRUST_KEY in particular would silently desync an
+// already-deployed proxy.
+const prev = parseEnvFile(OUT) ?? {};
 
 const SRC = {
   '.env': parseEnv('.env'),
@@ -62,7 +52,29 @@ const FILL = [
   ['VERIFY_SERVICE_URL',   'the tacit-verify Render service URL'],
   ['VERIFY_SERVICE_TOKEN', 'read off the tacit-verify service env (must MATCH it)'],
   ['CEREMONY_INIT_TOKEN',  'any value; both ceremonies finalized so effectively inert'],
+  ['MAESTRO_API_KEY',      'Maestro dashboard (mainnet project with the Esplora API enabled)'],
 ];
+
+// Coverage: every env key the worker reads must be accounted for — mapped,
+// fill-listed, a wrangler binding, or a [vars] default. Anything else comes
+// up undefined on Render with no error, so report it loudly instead.
+function workerEnvReads() {
+  const keys = new Set();
+  const srcDir = path.join(ROOT, 'worker', 'src');
+  for (const f of fs.readdirSync(srcDir).filter((n) => n.endsWith('.js'))) {
+    const src = fs.readFileSync(path.join(srcDir, f), 'utf8');
+    for (const m of src.matchAll(/\benv\.([A-Z][A-Z0-9_]+)\b/g)) keys.add(m[1]);
+  }
+  return keys;
+}
+function wranglerProvided() {
+  const toml = fs.readFileSync(path.join(ROOT, 'worker', 'wrangler.toml'), 'utf8');
+  const keys = new Set();
+  for (const m of toml.matchAll(/^\s*binding\s*=\s*"([A-Z0-9_]+)"/gm)) keys.add(m[1]);
+  const vars = toml.split(/^\[vars\]\s*$/m)[1]?.split(/^\[/m)[0] ?? '';
+  for (const m of vars.matchAll(/^\s*([A-Z][A-Z0-9_]*)\s*=/gm)) keys.add(m[1]);
+  return keys;
+}
 
 const lines = [];
 const filled = [];
@@ -76,11 +88,12 @@ lines.push('TRUST_PROXY=1');
 lines.push('');
 
 for (const [workerKey, file, localKey, note] of MAP) {
-  const v = SRC[file] ? SRC[file][localKey] : undefined;
+  const v = SRC[file]?.[localKey] ?? prev[workerKey];
   if (v) {
+    const fromPrev = !SRC[file]?.[localKey];
     if (note) lines.push(`# ${workerKey}: ${note} (mapped from ${file}:${localKey})`);
     lines.push(`${workerKey}=${v}`);
-    filled.push(`${workerKey}  <-  ${file}:${localKey}${note ? '   [VERIFY: ' + note + ']' : ''}`);
+    filled.push(`${workerKey}  <-  ${fromPrev ? 'previous bundle' : `${file}:${localKey}`}${note ? '   [VERIFY: ' + note + ']' : ''}`);
   } else {
     lines.push(`# ${workerKey} — source ${file}:${localKey} not found; fill manually`);
     lines.push(`# ${workerKey}=`);
@@ -88,7 +101,7 @@ for (const [workerKey, file, localKey, note] of MAP) {
   }
 }
 
-const proxyKey = crypto.randomBytes(32).toString('hex');
+const proxyKey = prev.PROXY_TRUST_KEY || crypto.randomBytes(32).toString('hex');
 lines.push('');
 lines.push('# PROXY_TRUST_KEY: generated here. Set the SAME value on worker/proxy at cutover');
 lines.push('# (cd worker/proxy && npx wrangler secret put PROXY_TRUST_KEY).');
@@ -96,9 +109,11 @@ lines.push(`PROXY_TRUST_KEY=${proxyKey}`);
 
 lines.push('');
 lines.push('# --- FILL THESE IN (not stored locally), then uncomment the KEY= line ---');
+const unfilled = [];
 for (const [k, hint] of FILL) {
   lines.push(`# ${k} — ${hint}`);
-  lines.push(`# ${k}=`);
+  if (prev[k]) lines.push(`${k}=${prev[k]}`);
+  else { lines.push(`# ${k}=`); unfilled.push([k, hint]); }
 }
 lines.push('');
 
@@ -112,9 +127,24 @@ if (missingSource.length) {
   console.log('\nEXPECTED locally but not found (fill manually):');
   for (const m of missingSource) console.log('  ' + m);
 }
-console.log('\ngenerated:');
+console.log(prev.PROXY_TRUST_KEY ? '\npreserved from previous bundle:' : '\ngenerated:');
 console.log('  PROXY_TRUST_KEY   (also set the same value on worker/proxy at cutover)');
-console.log('\nstill to fill by hand (commented in the file):');
-for (const [k, hint] of FILL) console.log(`  ${k}  — ${hint}`);
+if (unfilled.length) {
+  console.log('\nstill to fill by hand (commented in the file):');
+  for (const [k, hint] of unfilled) console.log(`  ${k}  — ${hint}`);
+}
+
+const accounted = new Set([
+  ...MAP.map(([k]) => k), ...FILL.map(([k]) => k),
+  'PROXY_TRUST_KEY', 'TRUST_PROXY', 'CRON_DISABLED',
+  ...wranglerProvided(),
+]);
+const unmapped = [...workerEnvReads()].filter((k) => !accounted.has(k)).sort();
+if (unmapped.length) {
+  console.log('\nWORKER READS THESE ENV KEYS but the bundle does not account for them');
+  console.log('(add to MAP or FILL, or confirm each is intentionally Render-dashboard-only):');
+  for (const k of unmapped) console.log('  ' + k);
+}
+
 console.log('\nnext: open the file, fill the commented keys, then Render -> tacit-api');
 console.log('      -> Environment -> "Add from .env" (do this at the flip, not now).');

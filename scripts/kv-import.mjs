@@ -19,23 +19,20 @@ if (!process.env.DATABASE_URL) {
   process.exit(1);
 }
 
-const BATCH = Number(process.env.IMPORT_BATCH) || 1000;
+// 5 bind params per row; Postgres caps a statement at 65,535 params.
+const BATCH = Math.min(Number(process.env.IMPORT_BATCH) || 1000, 13107);
 const RETRIES = 5;
-const TRANSIENT = new Set([
-  'EHOSTUNREACH', 'ENETUNREACH', 'ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', 'EPIPE',
-  '57P01', '08006', '08003', '08000', // pg: admin shutdown / connection failure
-]);
 
-const { createPgDriver } = await import('../server/driver-pg.mjs');
+const { createPgDriver, isTransientError } = await import('../server/driver-pg.mjs');
 const driver = await createPgDriver(process.env.DATABASE_URL, { max: 2 });
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-async function flush(batch) {
+async function flush(rows) {
   for (let attempt = 1; ; attempt++) {
-    try { return await driver.putMany(batch); }
+    try { return await driver.putMany(rows); }
     catch (e) {
-      if (attempt > RETRIES || !TRANSIENT.has(e?.code)) throw e;
+      if (attempt > RETRIES || !isTransientError(e)) throw e;
       const backoff = Math.min(500 * 2 ** (attempt - 1), 8000);
       console.error(`batch retry ${attempt}/${RETRIES} after ${e.code} (${backoff}ms)`);
       await sleep(backoff);

@@ -7,18 +7,19 @@
 //
 //   node scripts/maestro-check.mjs
 //
-import { readFileSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { parseEnvFile } from './env.mjs';
 
+const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 const MAESTRO = 'https://xbt-mainnet.gomaestro-api.org/v0/esplora';
 const BLOCKSTREAM = 'https://blockstream.info/api';
 
 function loadKey() {
   if (process.env.MAESTRO_API_KEY) return process.env.MAESTRO_API_KEY.trim();
   for (const f of ['.env.render', '.env.tacit-api-render', '.env.mainnet', '.env']) {
-    try {
-      const m = readFileSync(f, 'utf8').match(/^\s*MAESTRO_API_KEY\s*=\s*(.+)\s*$/m);
-      if (m) return m[1].replace(/^["']|["']$/g, '').trim();
-    } catch {}
+    const v = parseEnvFile(path.join(ROOT, f))?.MAESTRO_API_KEY;
+    if (v) return v.trim();
   }
   return null;
 }
@@ -38,10 +39,7 @@ async function jget(base, path, headers) {
   for (let i = 0; i < 4; i++) {
     if (i) await new Promise(r => setTimeout(r, 600 * i));
     try {
-      const ctrl = new AbortController();
-      const timer = setTimeout(() => ctrl.abort(), 15000);
-      const r = await fetch(`${base}${path}`, { headers, signal: ctrl.signal });
-      clearTimeout(timer);
+      const r = await fetch(`${base}${path}`, { headers, signal: AbortSignal.timeout(15000) });
       const text = await r.text();
       let json = null; try { json = JSON.parse(text); } catch {}
       return { status: r.status, text, json };
@@ -50,8 +48,12 @@ async function jget(base, path, headers) {
   return { status: 0, text: `fetch failed: ${lastErr?.message || 'unknown'}`, json: null };
 }
 
-// The fields scanForEtches reads off each tx. We assert they exist on Maestro
-// AND match blockstream for the same tx (structure + values).
+// Fetch the same path from both providers in parallel.
+const both = (path) => Promise.all([jget(MAESTRO, path, mh), jget(BLOCKSTREAM, path, {})]);
+
+// The fields scanForEtches reads off each tx (keep in sync with its tx-field
+// reads in worker/src/index.js). We assert they exist on Maestro AND match
+// blockstream for the same tx (structure + values).
 function txShape(tx) {
   return {
     txid: tx.txid,
@@ -80,15 +82,13 @@ function txShape(tx) {
   const H = tipH - 6;
 
   // 2. block-height -> hash, both providers agree
-  const mHash = await jget(MAESTRO, `/block-height/${H}`, mh);
-  const bHash = await jget(BLOCKSTREAM, `/block-height/${H}`, {});
+  const [mHash, bHash] = await both(`/block-height/${H}`);
   ok(`GET /block-height/${H} matches blockstream`, mHash.status === 200 && mHash.text.trim() === bHash.text.trim(), `maestro=${mHash.text.trim().slice(0, 16)}… blockstream=${bHash.text.trim().slice(0, 16)}…`);
   const hash = mHash.text.trim();
   if (!/^[0-9a-f]{64}$/.test(hash)) process.exit(1);
 
   // 3. /block/<hash>/txs/0 — same txid set + order as blockstream
-  const mTxs = await jget(MAESTRO, `/block/${hash}/txs/0`, mh);
-  const bTxs = await jget(BLOCKSTREAM, `/block/${hash}/txs/0`, {});
+  const [mTxs, bTxs] = await both(`/block/${hash}/txs/0`);
   const mIds = Array.isArray(mTxs.json) ? mTxs.json.map(t => t.txid) : [];
   const bIds = Array.isArray(bTxs.json) ? bTxs.json.map(t => t.txid) : [];
   const sameOrder = mIds.length === bIds.length && mIds.every((x, i) => x === bIds[i]);
@@ -96,7 +96,7 @@ function txShape(tx) {
 
   // 4. Per-tx field shapes match (the fields the scan parses)
   if (Array.isArray(mTxs.json) && Array.isArray(bTxs.json) && mTxs.json.length) {
-    const sample = [0, 1, mTxs.json.length - 1].filter((v, i, a) => v >= 0 && a.indexOf(v) === i);
+    const sample = [...new Set([0, 1, mTxs.json.length - 1])].filter((v) => v < mTxs.json.length);
     let shapeOk = true, detail = '';
     for (const idx of sample) {
       const mShape = JSON.stringify(txShape(mTxs.json[idx]));
@@ -109,8 +109,7 @@ function txShape(tx) {
 
   // 5. /tx/<txid> single fetch shape
   const someTxid = mIds[Math.min(1, mIds.length - 1)];
-  const mTx = await jget(MAESTRO, `/tx/${someTxid}`, mh);
-  const bTx = await jget(BLOCKSTREAM, `/tx/${someTxid}`, {});
+  const [mTx, bTx] = await both(`/tx/${someTxid}`);
   ok('GET /tx/<txid> shape matches', mTx.status === 200 && bTx.status === 200 && JSON.stringify(txShape(mTx.json)) === JSON.stringify(txShape(bTx.json)));
 
   console.log(`\n${fail === 0 ? '✅ ALL PASS' : '❌ ' + fail + ' FAILED'} — ${pass} passed, ${fail} failed.`);
