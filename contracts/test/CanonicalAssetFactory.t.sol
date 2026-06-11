@@ -101,6 +101,19 @@ contract CanonicalAssetFactoryTest is Test {
         assertEq(tok.balanceOf(USER), 0, "user moved value into the confidential pool");
     }
 
+    /// canonicalTokenFor is the one-call "is this the real one?" check: the pool returns only the token
+    /// it actually backs, so an impostor ERC20 (same asset id / symbol, a different minter — never
+    /// registered) resolves to address(0), not itself. The factory can't answer this — it deploys every
+    /// variant — so the backing authority (the pool) is the source of truth.
+    function test_canonicalTokenFor_rejects_impostors() public {
+        CanonicalBridgedERC20 real = _deploy();
+        ConfidentialPool pool =
+            new ConfidentialPool(address(0x5117), bytes32(uint256(1)), bytes32(0), address(0), address(0), bytes32(0));
+        bytes32 poolAsset = pool.registerWrapped(address(real), 1, bytes32(0), "Conf cBTC", "ccBTC", 8);
+        assertEq(pool.canonicalTokenFor(poolAsset), address(real), "the registered (real) token is returned");
+        assertEq(pool.canonicalTokenFor(keccak256("impostor")), address(0), "an unregistered asset resolves to address(0)");
+    }
+
     // ── self-certifying EVM-etch path: the asset id commits to (symbol, decimals) ──
 
     function test_etch_derives_and_self_certifies() public {

@@ -908,6 +908,18 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         return assetId;
     }
 
+    /// @notice The canonical ERC20 this pool recognizes for `assetId` — resolving a cross-chain shared
+    ///         id to its local entry — or `address(0)` if the pool backs no token for it. This is the
+    ///         source of truth for "is `token` the real one?": an impostor ERC20 (same asset id / symbol,
+    ///         a different minter) is never pool-registered, so `canonicalTokenFor(id) == token` rejects
+    ///         it. The factory cannot answer this — it deploys every variant, impostors included — but the
+    ///         backing authority can; first-write-wins on `localAssetOf` means a shared id stays bound to
+    ///         the first (real) token, so an impostor can't hijack the resolution.
+    function canonicalTokenFor(bytes32 assetId) external view returns (address) {
+        Asset storage a = assets[_resolveAsset(assetId)];
+        return a.registered ? a.underlying : address(0);
+    }
+
     /// Pay `value` in-system note units of `assetId` to `to`, scaling to underlying by
     /// the asset's trusted `unitScale` (so a note worth v releases exactly v·unitScale —
     /// the guest, which never sees unitScale, cannot inflate the payout). Returns the
