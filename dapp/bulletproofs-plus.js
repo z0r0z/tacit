@@ -903,11 +903,9 @@ export function bppRangeVerify(commitments, proofBytes) {
   // G scalar: +d1
   // H scalar: +(r1·y·s1 + e²·((z²-z)·sum(y_MN) + y^(MN+1)·z·sum(d)))
   const sum_y_MN = _sumOfScalarPowers(y, MN);
-  const sum_d = modN((1n << BigInt(N)) - 1n) * 1n;  // 2^N - 1 (will multiply below)
   const sum_d_val = modN(modN((1n << BigInt(N)) - 1n) * _sumOfEvenPowers(z, 2 * m));
 
   const H_term1 = modN(modN(r1 * y) * s1);
-  const z_minus_zSq = modN(z - zSq);   // -(z²-z) so flip sign
   const zSq_minus_z = modN(zSq - z);
   const H_inner1 = modN(zSq_minus_z * sum_y_MN);
   const H_inner2 = modN(modN(y_MN_1 * z) * sum_d_val);
