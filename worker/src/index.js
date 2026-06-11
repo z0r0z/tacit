@@ -191,6 +191,14 @@ const T_PREAUTH_BID_VAR         = 0x5C; // buyer-offline preauth bid, partial-fi
 // DELETE stay live so existing records still read and cancel. Flip to true to
 // re-accept POSTs (mirrors the dapp ENABLE_T_PREAUTH_BID* flag).
 const PREAUTH_BIDS_POST_ENABLED = false;
+// Hosted walk-away watchtower (ops/PLAN-hosted-watchtower-render.md). Buyers
+// register an online bid-intent for a managed instance to complete while they
+// are away. POST is gated (env WATCHTOWER_REGISTER_ENABLED=true) until the
+// orchestrator + pilot are live; GET/DELETE stay open so a registered bid can
+// always be read and cancelled.
+function watchtowerRegisterEnabled(env) {
+  return String(env?.WATCHTOWER_REGISTER_ENABLED ?? '') === 'true';
+}
 // 0x60–0x64: SPEC-TETH-BRIDGE-AMENDMENT (trustless ETH↔Tacit bridge).
 const T_BRIDGE_DEPOSIT          = 0x60; // cross-chain mint: prove ETH deposit → mint tETH (SPEC §5.60)
 const T_BRIDGE_BURN             = 0x61; // cross-chain redeem: burn tETH → commit to ETH withdrawal (SPEC §5.61)
@@ -18933,6 +18941,164 @@ async function handlePreauthBidsList(assetIdHex, env, network, cors) {
   return jsonResponse({ bids }, 200, cors);
 }
 
+// ===================== Hosted watchtower registration =====================
+// A buyer registers an online bid-intent for the managed watchtower to
+// complete while they are away. The dedicated bid key is derived client-side
+// from the buyer's main key and stored ONLY as ciphertext (ECDH-encrypted to
+// the watchtower service pubkey — see fulfiller/watchtower-crypto.mjs); the API
+// never sees cleartext. The whole record is authenticated by a BIP-340
+// signature from the buyer's main key. No consensus impact.
+
+function watchtowerBidKey(network, ownerH160, bidIdHex) {
+  return `wtbid:${network}:${ownerH160}:${bidIdHex}`;
+}
+function watchtowerBidPrefix(network, ownerH160) {
+  return ownerH160 ? `wtbid:${network}:${ownerH160}:` : `wtbid:${network}:`;
+}
+// Drop the ciphertext key from read responses — the buyer UI only needs status,
+// and there is no reason to echo the encrypted key back into logs/caches.
+function _slimWatchtowerBid(rec) {
+  if (!rec || typeof rec !== 'object') return rec;
+  const { enc_bid_privkey, ...rest } = rec;
+  return rest;
+}
+function watchtowerRegisterMsg({
+  network, assetIdHex, bidIdHex, bidPubHex, ownerPubHex, encBidPrivkeyHex,
+  bidPriceSats, bidAmountBaseStr, decimals, expiry, fundingTxidHex, fundingVout,
+}) {
+  const u64 = (n) => { const b = new Uint8Array(8); new DataView(b.buffer).setBigUint64(0, BigInt(n), true); return b; };
+  const u32 = (n) => { const b = new Uint8Array(4); new DataView(b.buffer).setUint32(0, n >>> 0, true); return b; };
+  return sha256(concatBytes(
+    new TextEncoder().encode('tacit-watchtower-register-v1'),
+    new TextEncoder().encode(network),
+    hexToBytes(assetIdHex),
+    hexToBytes(bidIdHex),
+    hexToBytes(bidPubHex),
+    hexToBytes(ownerPubHex),
+    hexToBytes(encBidPrivkeyHex),
+    u64(bidPriceSats),
+    u64(bidAmountBaseStr),
+    u32(decimals),
+    u64(expiry),
+    reverseBytes(hexToBytes(fundingTxidHex)),
+    u32(fundingVout),
+  ));
+}
+function watchtowerCancelMsg(network, ownerH160, bidIdHex) {
+  return sha256(concatBytes(
+    new TextEncoder().encode('tacit-watchtower-cancel-v1'),
+    new TextEncoder().encode(network),
+    hexToBytes(ownerH160),
+    hexToBytes(bidIdHex),
+  ));
+}
+
+async function handleWatchtowerBidPost(req, env, network, cors) {
+  if (!watchtowerRegisterEnabled(env)) {
+    return jsonResponse({ error: 'watchtower registration is not currently open' }, 410, cors);
+  }
+  let body;
+  try { body = await req.json(); } catch { return jsonResponse({ error: 'invalid JSON body' }, 400, cors); }
+  const assetIdHex = String(body.asset_id ?? '').toLowerCase();
+  const bidIdHex = String(body.bid_id ?? '').toLowerCase();
+  const ownerPubHex = String(body.owner_pubkey ?? '').toLowerCase();
+  const bidPubHex = String(body.bid_pubkey ?? '').toLowerCase();
+  const encBidPrivkeyHex = String(body.enc_bid_privkey ?? '').toLowerCase();
+  const bidPriceSats = Number(body.bid_price_sats);
+  const bidAmountBaseStr = String(body.bid_amount_base ?? '');
+  const decimals = Number(body.decimals);
+  const expiry = Number(body.expiry);
+  const funding = body.funding_outpoint || {};
+  const fundingTxidHex = String(funding.txid ?? '').toLowerCase();
+  const fundingVout = Number(funding.vout);
+  const authSigHex = String(body.auth_sig ?? '').toLowerCase();
+  const now = Math.floor(Date.now() / 1000);
+
+  if (!/^[0-9a-f]{64}$/.test(assetIdHex)) return jsonResponse({ error: 'invalid asset_id' }, 400, cors);
+  if (!/^[0-9a-f]{32}$/.test(bidIdHex)) return jsonResponse({ error: 'bid_id must be 32 hex chars' }, 400, cors);
+  if (!/^0[23][0-9a-f]{64}$/.test(ownerPubHex)) return jsonResponse({ error: 'owner_pubkey must be 33-byte compressed' }, 400, cors);
+  if (!/^0[23][0-9a-f]{64}$/.test(bidPubHex)) return jsonResponse({ error: 'bid_pubkey must be 33-byte compressed' }, 400, cors);
+  if (!/^[0-9a-f]{64}$/.test(encBidPrivkeyHex)) return jsonResponse({ error: 'enc_bid_privkey must be 64 hex chars' }, 400, cors);
+  if (!Number.isInteger(bidPriceSats) || bidPriceSats < PRICE_MIN) return jsonResponse({ error: `bid_price_sats must be integer >= ${PRICE_MIN}` }, 400, cors);
+  if (!/^\d+$/.test(bidAmountBaseStr) || BigInt(bidAmountBaseStr) <= 0n) return jsonResponse({ error: 'bid_amount_base must be a positive integer string' }, 400, cors);
+  if (!Number.isInteger(decimals) || decimals < 0 || decimals > 18) return jsonResponse({ error: 'decimals must be in [0, 18]' }, 400, cors);
+  if (!Number.isInteger(expiry) || expiry <= now) return jsonResponse({ error: 'expiry must be future unix-seconds' }, 400, cors);
+  if (!/^[0-9a-f]{64}$/.test(fundingTxidHex)) return jsonResponse({ error: 'funding_outpoint.txid must be 64 hex chars' }, 400, cors);
+  if (!Number.isInteger(fundingVout) || fundingVout < 0) return jsonResponse({ error: 'funding_outpoint.vout must be a non-negative integer' }, 400, cors);
+  if (!/^[0-9a-f]{128}$/.test(authSigHex)) return jsonResponse({ error: 'auth_sig must be 128 hex chars' }, 400, cors);
+
+  // The buyer's main key authenticates the whole registration.
+  const ownerXonly = hexToBytes(ownerPubHex).slice(1);
+  const msg = watchtowerRegisterMsg({
+    network, assetIdHex, bidIdHex, bidPubHex, ownerPubHex, encBidPrivkeyHex,
+    bidPriceSats, bidAmountBaseStr, decimals, expiry, fundingTxidHex, fundingVout,
+  });
+  if (!verifySchnorr(hexToBytes(authSigHex), msg, ownerXonly)) {
+    return jsonResponse({ error: 'invalid auth signature' }, 403, cors);
+  }
+
+  const _orderRl = await _orderbookWriteRateLimit(req, env, ownerPubHex, 'watchtower-register');
+  if (!_orderRl.ok) return jsonResponse({ error: `register rate limited: ${_orderRl.reason}` }, 429, cors);
+
+  const ownerH160 = bytesToHex(hash160(hexToBytes(ownerPubHex)));
+  const rec = {
+    network,
+    bid_id: bidIdHex,
+    asset_id: assetIdHex,
+    owner_pubkey: ownerPubHex,
+    bid_pubkey: bidPubHex,
+    enc_bid_privkey: encBidPrivkeyHex,
+    bid_price_sats: bidPriceSats,
+    bid_amount_base: bidAmountBaseStr,
+    decimals,
+    funding_outpoint: { txid: fundingTxidHex, vout: fundingVout },
+    expiry,
+    status: 'active',
+    filled_base: '0',
+    processed_intents: {},
+    created_at: now,
+  };
+  await env.REGISTRY_KV.put(
+    watchtowerBidKey(network, ownerH160, bidIdHex),
+    JSON.stringify(rec),
+    { expirationTtl: _ttlFromExpiry(expiry) },
+  );
+  return jsonResponse({ ok: true, bid: _slimWatchtowerBid(rec) }, 200, cors);
+}
+
+async function handleWatchtowerBidsList(url, env, network, cors) {
+  const ownerPubHex = String(url.searchParams.get('owner') ?? '').toLowerCase();
+  if (!/^0[23][0-9a-f]{64}$/.test(ownerPubHex)) {
+    return jsonResponse({ error: 'owner query param must be a 33-byte compressed pubkey' }, 400, cors);
+  }
+  const ownerH160 = bytesToHex(hash160(hexToBytes(ownerPubHex)));
+  const out = [];
+  const list = await env.REGISTRY_KV.list({ prefix: watchtowerBidPrefix(network, ownerH160), limit: 1000 });
+  const fetched = await Promise.all(list.keys.map((k) => env.REGISTRY_KV.get(k.name, 'json')));
+  for (const v of fetched) if (v) out.push(_slimWatchtowerBid(v));
+  return jsonResponse({ bids: out }, 200, cors);
+}
+
+async function handleWatchtowerBidDelete(bidIdHex, req, env, network, cors) {
+  if (!/^[0-9a-f]{32}$/.test(bidIdHex)) return jsonResponse({ error: 'bid_id must be 32 hex chars' }, 400, cors);
+  let body;
+  try { body = await req.json(); } catch { return jsonResponse({ error: 'invalid JSON body' }, 400, cors); }
+  const ownerPubHex = String(body.owner_pubkey ?? '').toLowerCase();
+  const cancelSigHex = String(body.cancel_sig ?? '').toLowerCase();
+  if (!/^0[23][0-9a-f]{64}$/.test(ownerPubHex)) return jsonResponse({ error: 'owner_pubkey must be 33-byte compressed' }, 400, cors);
+  if (!/^[0-9a-f]{128}$/.test(cancelSigHex)) return jsonResponse({ error: 'cancel_sig must be 128 hex chars' }, 400, cors);
+  const ownerH160 = bytesToHex(hash160(hexToBytes(ownerPubHex)));
+  const key = watchtowerBidKey(network, ownerH160, bidIdHex);
+  const stored = await env.REGISTRY_KV.get(key, 'json');
+  if (!stored) return jsonResponse({ error: 'no registered bid found' }, 404, cors);
+  const msg = watchtowerCancelMsg(network, ownerH160, bidIdHex);
+  if (!verifySchnorr(hexToBytes(cancelSigHex), msg, hexToBytes(ownerPubHex).slice(1))) {
+    return jsonResponse({ error: 'invalid cancel signature' }, 403, cors);
+  }
+  await env.REGISTRY_KV.delete(key);
+  return jsonResponse({ ok: true, bid_id: bidIdHex }, 200, cors);
+}
+
 async function handlePreauthBidDelete(assetIdHex, bidIdHex, req, env, network, cors) {
   if (!/^[0-9a-f]{64}$/.test(assetIdHex)) return jsonResponse({ error: 'invalid asset_id' }, 400, cors);
   if (!/^[0-9a-f]{32}$/.test(bidIdHex)) return jsonResponse({ error: 'invalid bid_id' }, 400, cors);
@@ -28137,6 +28303,14 @@ async function _routeFetch(req, env, ctx) {
     const mpbv2 = url.pathname.match(/^\/assets\/([0-9a-f]{64})\/preauth-bids-var\/([0-9a-f]{32})$/);
     if (mpbv2 && req.method === 'GET')                         return handlePreauthBidVarGet(mpbv2[1], mpbv2[2], env, network, cors);
     if (mpbv2 && req.method === 'DELETE')                      return _mutateAndBust(mpbv2[1], () => handlePreauthBidVarDelete(mpbv2[1], mpbv2[2], req, env, network, cors));
+
+    // Hosted watchtower registration (ops/PLAN-hosted-watchtower-render.md).
+    // Not asset-scoped: a buyer's registrations span assets and are keyed by
+    // owner. POST is flag-gated; GET (by ?owner=pubkey) + DELETE stay open.
+    if (url.pathname === '/watchtower/bids' && req.method === 'POST')   return handleWatchtowerBidPost(req, env, network, cors);
+    if (url.pathname === '/watchtower/bids' && req.method === 'GET')    return handleWatchtowerBidsList(url, env, network, cors);
+    const mwt = url.pathname.match(/^\/watchtower\/bids\/([0-9a-f]{32})$/);
+    if (mwt && req.method === 'DELETE')                        return handleWatchtowerBidDelete(mwt[1], req, env, network, cors);
 
     // Bid intents (off-chain bid book — SPEC §5.7.7). Buyer-initiated mirror
     // of atomic intents; settlement is via the seller spinning up an

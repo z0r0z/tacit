@@ -158,21 +158,85 @@ async function refetchBid() {
   if (!r.ok || !j.intent) fail(`bid fetch failed: ${j.error || r.status}`);
   return j.intent;
 }
+// A live atomic-intent on this asset made by the seller, targeting the buyer.
+async function findSellerAxintent() {
+  const list = await fetch(`${WORKER}/assets/${assetId}/atomic-intents?network=signet`).then((r) => r.json()).catch(() => ({}));
+  const now = Math.floor(Date.now() / 1000);
+  return (list.intents || []).find((i) =>
+    String(i.maker_pubkey || '').toLowerCase() === bytesToHex(SELLER_PUB)
+    && Number(i.expiry || 0) > now);
+}
+// fulfilBidIntent broadcasts the commit, THEN POSTs the intent. On signet the
+// worker's chain view can lag the broadcast (404 "tx not yet indexed") or rate-
+// limit (429) on that POST — a transient, not a real failure: the commit is
+// already on-chain and the intent body + secret are persisted to localStorage.
+// Recover by waiting for propagation and re-POSTing (resumePendingAxintents),
+// never re-broadcasting (which would orphan a commit and double-spend the carve).
+async function fulfilWithResume(bid) {
+  let lastErr;
+  // Pre-broadcast holdings/indexer lag (the carve UTXO isn't in the scanned
+  // holdings yet) fails BEFORE any commit is broadcast — safe to rescan + retry
+  // the whole fulfil.
+  for (let attempt = 1; attempt <= 4; attempt++) {
+    try {
+      const r = await dapp.fulfilBidIntent({ bid, fillAmount: CHUNK });
+      return { axintent_id: r.offer.intent_id, commit_txid: r.commit_txid };
+    } catch (e) {
+      lastErr = e;
+      const msg = String(e?.message || e);
+      if (/not found in holdings|indexer hasn'?t caught up|↻ Rescan|not safe to send/i.test(msg) && attempt < 4) {
+        info(`fulfil pre-broadcast holdings lag (${msg.slice(0, 80)}…); rescanning + retrying (attempt ${attempt})`);
+        try { dapp.invalidateHoldingsCache(); await dapp.scanHoldings(true); } catch {}
+        await sleep(20_000);
+        continue;
+      }
+      break;
+    }
+  }
+  {
+    const e = lastErr;
+    const msg = String(e?.message || e);
+    if (!/not yet indexed|not found on chain|tx not found|not yet|propagat|429|HTTP 5\d\d/i.test(msg)) throw e;
+    info(`fulfil POST hit a transient (${msg}); commit is broadcast — waiting for the worker's chain view, then resuming the POST`);
+    for (let attempt = 1; attempt <= 5; attempt++) {
+      await sleep(45_000);
+      let res; try { res = await dapp.resumePendingAxintents(); } catch (re) { res = { attempted: '?', failures: [{ reason: re.message }] }; }
+      const live = await findSellerAxintent();
+      info(`  resume ${attempt}: attempted=${res.attempted} failures=${res.failures?.length ?? '?'} live=${live ? live.intent_id.slice(0, 12) + '…' : 'no'}`);
+      if (live) return { axintent_id: live.intent_id, commit_txid: live.commit_txid || '' };
+    }
+    fail('could not resume the atomic-intent POST after retries (worker chain view never caught up)');
+  }
+}
 if (state.fill?.axintent_id) {
   info(`(resuming) atomic-intent ${state.fill.axintent_id.slice(0, 16)}…`);
   if (state.fill.secrets_blob) globalThis.localStorage.setItem(SECRETS_KEY, state.fill.secrets_blob);
   if (state.fill.pending_blob) globalThis.localStorage.setItem(PENDING_KEY, state.fill.pending_blob);
 } else {
   const bid = await refetchBid();
-  const r = await dapp.fulfilBidIntent({ bid, fillAmount: CHUNK });
+  const r = await fulfilWithResume(bid);
   state.fill = {
-    axintent_id: r.offer.intent_id,
+    axintent_id: r.axintent_id,
     commit_txid: r.commit_txid,
     secrets_blob: globalThis.localStorage.getItem(SECRETS_KEY) || '',
     pending_blob: globalThis.localStorage.getItem(PENDING_KEY) || '',
   };
   saveState(state);
-  ok(`atomic-intent: ${r.offer.intent_id.slice(0, 16)}…  commit=${r.commit_txid.slice(0, 16)}…`);
+  ok(`atomic-intent: ${r.axintent_id.slice(0, 16)}…  commit=${(r.commit_txid || '').slice(0, 16)}…`);
+}
+
+// Cancel stale seller intents from prior runs on this asset so the daemon (which
+// now takes any matching public ask) doesn't burn claim cycles on orphans whose
+// fulfilment secrets this run no longer holds.
+setWallet(SELLER_SK, SELLER_PUB);
+{
+  const allList = await fetch(`${WORKER}/assets/${assetId}/atomic-intents?network=signet`).then((r) => r.json()).catch(() => ({}));
+  for (const it of (allList.intents || [])) {
+    if (!it.intent_id || it.intent_id === state.fill.axintent_id) continue;
+    if (String(it.maker_pubkey || '').toLowerCase() !== bytesToHex(SELLER_PUB)) continue;
+    try { await dapp.cancelAxferIntent({ assetIdHex: assetId, intentIdHex: it.intent_id }); info(`cancelled stale intent ${it.intent_id.slice(0, 12)}…`); }
+    catch (e) { info(`(cancel ${it.intent_id.slice(0, 12)}… failed: ${e.message})`); }
+  }
 }
 
 // ---- Phase 5: watchtower does buyer side (claim + take), seller fulfils axintent ----

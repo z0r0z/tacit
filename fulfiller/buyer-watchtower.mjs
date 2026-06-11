@@ -39,6 +39,7 @@ import { ripemd160 } from '@noble/hashes/ripemd160';
 import { sha256 } from '@noble/hashes/sha256';
 import { hexToBytes, bytesToHex } from '@noble/hashes/utils';
 import { bech32, bech32m } from '@scure/base';
+import { runTick } from './watchtower-core.mjs';
 
 // ---- CLI ----
 const argv = process.argv.slice(2);
@@ -94,6 +95,17 @@ function log(level, msg, extra = {}) {
   console.log(JSON.stringify({ ts: new Date().toISOString(), level, msg, ...extra }));
 }
 
+// Safety net: the dapp fires UI renders (renderMarket, toasts, panel refreshes)
+// from setTimeout tails of the claim/take flows. Those are async and assume a
+// browser DOM; under jsdom a missing element rejects in a timer the caller's
+// sync try/catch can't see. Every critical step (claim/take) is awaited with
+// its own error handling below, so a stray fire-and-forget UI rejection is
+// never on the settlement path — log it and keep the daemon alive rather than
+// letting Node's default unhandled-rejection exit kill an in-flight fill.
+process.on('unhandledRejection', (err) => {
+  log('warn', 'swallowed unhandled rejection (headless UI side-effect)', { err: String(err?.message || err) });
+});
+
 // ---- jsdom + dapp import (network set before load so NET initializes) ----
 const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'http://localhost/', pretendToBeVisual: true });
 globalThis.window = dom.window;
@@ -121,139 +133,46 @@ const OUR_H160 = bytesToHex(ripemd160(sha256(m.wallet.pub)));
 const ADDR = bech32.encode(NETWORK === 'mainnet' ? 'bc' : 'tb', [0, ...bech32.toWords(ripemd160(sha256(m.wallet.pub)))]);
 log('info', 'bid wallet loaded', { pubkey: PUB_HEX, address: ADDR });
 
-// ---- state ----
-let state = { filled_base: '0', processed_intents: {} };
+// ---- state (watchtower-core shape: { filledBase: bigint, processed: {} }) ----
+const coreState = { filledBase: 0n, processed: {} };
 if (existsSync(STATE_PATH)) {
   try {
     const loaded = JSON.parse(readFileSync(STATE_PATH, 'utf8'));
-    state = { filled_base: loaded.filled_base || '0', processed_intents: loaded.processed_intents || {} };
+    coreState.filledBase = (() => { try { return BigInt(loaded.filled_base || '0'); } catch { return 0n; } })();
+    coreState.processed = loaded.processed_intents || {};
   } catch (e) { log('warn', 'state unreadable, starting fresh', { err: e.message }); }
 }
 function saveState() {
+  const json = { filled_base: coreState.filledBase.toString(), processed_intents: coreState.processed };
   const tmp = STATE_PATH + '.tmp';
-  writeFileSync(tmp, JSON.stringify(state, null, 2));
+  writeFileSync(tmp, JSON.stringify(json, null, 2));
   renameSync(tmp, STATE_PATH);
 }
-const filledBase = () => { try { return BigInt(state.filled_base || '0'); } catch { return 0n; } };
 
-// ---- bid wallet sats balance ----
-async function bidWalletSats() {
-  try {
-    const utxos = await m.getUtxos(ADDR);
-    return utxos.reduce((s, u) => s + (u.value || 0), 0);
-  } catch (e) { log('warn', 'getUtxos failed', { err: e.message }); return null; }
-}
+// ---- per-bid engine context (shared core; same logic as the orchestrator) ----
+const ctx = {
+  dapp: m,
+  workerBase: WORKER_BASE,
+  network: NETWORK,
+  assetId: ASSET_ID,
+  decimals: DECIMALS,
+  priv: privBytes,
+  pub: m.wallet.pub,
+  pubHex: PUB_HEX,
+  h160: OUR_H160,
+  address: ADDR,
+  maxUnitPriceSats: MAX_UNIT_PRICE_SATS,
+  maxTotalFillBase: MAX_TOTAL_FILL_BASE,
+  claimFulfilTimeoutSec: CLAIM_FULFIL_TIMEOUT_SEC,
+  minBidWalletSats: MIN_BID_WALLET_SATS,
+  dryRun: DRY_RUN,
+  log,
+};
 
-// ---- discovery: seller atomic-intents on the asset that target this bid wallet ----
-async function fetchTargetingIntents() {
-  const url = `${WORKER_BASE}/assets/${ASSET_ID}/atomic-intents?network=${encodeURIComponent(NETWORK)}`;
-  let j;
-  try { const r = await fetch(url); if (!r.ok) throw new Error(`HTTP ${r.status}`); j = await r.json(); }
-  catch (e) { log('warn', 'atomic-intents list failed', { err: e.message }); return []; }
-  const intents = Array.isArray(j.intents) ? j.intents : (Array.isArray(j) ? j : []);
-  const now = Math.floor(Date.now() / 1000);
-  return intents.filter((it) => {
-    if (!it || !it.intent_id) return false;
-    if (Number(it.expiry || 0) <= now) return false;
-    // Targets us: the worker stores intended_buyer_h160 for bid-flow intents.
-    const tgt = String(it.intended_buyer_h160 || '').toLowerCase();
-    const rcp = String(it.recipient_pubkey || '').toLowerCase();
-    if (tgt && tgt !== OUR_H160) return false;
-    if (!tgt && rcp && rcp !== PUB_HEX) return false;
-    if (!tgt && !rcp) return false; // untargeted listing — not a fill for our bid
-    return true;
-  });
-}
-
-// ---- policy gate: unit price <= limit, cumulative within max fill ----
-function policyOk(it) {
-  let amt, price;
-  try { amt = BigInt(it.amount); price = Number(it.price_sats); } catch { return { ok: false, reason: 'unparseable amount/price' }; }
-  if (amt <= 0n || !Number.isFinite(price) || price <= 0) return { ok: false, reason: 'non-positive amount/price' };
-  // unit price in sats per WHOLE token = price_sats / (amount / 10^decimals)
-  const whole = Number(amt) / Math.pow(10, DECIMALS);
-  const unit = whole > 0 ? price / whole : Infinity;
-  if (unit > MAX_UNIT_PRICE_SATS) return { ok: false, reason: `unit price ${unit.toFixed(2)} > cap ${MAX_UNIT_PRICE_SATS}` };
-  if (MAX_TOTAL_FILL_BASE > 0n && filledBase() + amt > MAX_TOTAL_FILL_BASE) {
-    return { ok: false, reason: `would exceed max_total_fill (${filledBase() + amt} > ${MAX_TOTAL_FILL_BASE})` };
-  }
-  return { ok: true, amt, price };
-}
-
-// ---- one full fill: claim -> wait for seller fulfilment -> verify+take ----
-async function attemptFill(it) {
-  const intentIdHex = String(it.intent_id).toLowerCase();
-  const priceSats = Number(it.price_sats);
-  log('info', 'claiming targeting intent', { intent_id: intentIdHex, price_sats: priceSats, amount: it.amount });
-  if (DRY_RUN) { log('info', 'DRY RUN — would claim + take', { intent_id: intentIdHex }); return { ok: false, dry: true }; }
-
-  try { await m.claimAxferIntent({ assetIdHex: ASSET_ID, intentIdHex, priceSats }); }
-  catch (e) { return { ok: false, reason: `claim failed: ${e.message}` }; }
-
-  // Poll for the seller's fulfilment (partial_reveal). Bounded wait.
-  const deadline = Date.now() + CLAIM_FULFIL_TIMEOUT_SEC * 1000;
-  let fulfilment = null;
-  while (Date.now() < deadline) {
-    try {
-      const f = await m.fetchAxferFulfilment({ assetIdHex: ASSET_ID, intentIdHex });
-      const rec = f?.fulfilment || f;
-      if (rec && rec.partial_reveal) { fulfilment = rec; break; }
-    } catch { /* not ready yet */ }
-    await new Promise((r) => setTimeout(r, 5000));
-  }
-  if (!fulfilment) return { ok: false, reason: 'seller did not fulfil within timeout' };
-
-  // takeAxferIntent runs verifyAxferOffer (delivers to us + Pedersen binding)
-  // then appends our sats input SIGHASH_ALL and broadcasts. We re-fetch the
-  // intent record so takeAxferIntent has the canonical fields.
-  let intentRec = it;
-  try {
-    const r = await fetch(`${WORKER_BASE}/assets/${ASSET_ID}/atomic-intents/${intentIdHex}?network=${encodeURIComponent(NETWORK)}`);
-    if (r.ok) { const jj = await r.json(); intentRec = jj.intent || jj || it; }
-  } catch { /* fall back to list record */ }
-
-  try {
-    const res = await m.takeAxferIntent({ intent: intentRec, fulfilment });
-    return { ok: true, txid: res?.revealTxid || res?.txid || null };
-  } catch (e) {
-    return { ok: false, reason: `take failed: ${e.message}` };
-  }
-}
-
-// ---- one tick ----
+// ---- one tick (delegates to the shared per-bid engine) ----
 async function tick() {
-  if (MAX_TOTAL_FILL_BASE > 0n && filledBase() >= MAX_TOTAL_FILL_BASE) {
-    log('info', 'max fill reached — nothing to do', { filled_base: state.filled_base });
-    return 0;
-  }
-  const sats = await bidWalletSats();
-  if (sats != null && sats < MIN_BID_WALLET_SATS) {
-    log('info', 'bid wallet below min — idling', { sats, min: MIN_BID_WALLET_SATS });
-    return 0;
-  }
-  const intents = await fetchTargetingIntents();
-  let fills = 0;
-  for (const it of intents) {
-    const id = String(it.intent_id).toLowerCase();
-    if (state.processed_intents[id]) continue;
-    const gate = policyOk(it);
-    if (!gate.ok) { log('info', 'intent skipped by policy', { intent_id: id, reason: gate.reason }); continue; }
-    const r = await attemptFill(it);
-    if (r.ok) {
-      state.processed_intents[id] = { txid: r.txid, at: Math.floor(Date.now() / 1000), amount: it.amount };
-      state.filled_base = (filledBase() + gate.amt).toString();
-      saveState();
-      fills++;
-      log('info', 'fill completed', { intent_id: id, txid: r.txid, filled_base: state.filled_base });
-      m.invalidateHoldingsCache();
-      if (MAX_TOTAL_FILL_BASE > 0n && filledBase() >= MAX_TOTAL_FILL_BASE) break;
-    } else if (!r.dry) {
-      // Mark transient failures processed only if the claim definitively can't
-      // proceed; otherwise leave unprocessed to retry next tick.
-      log('warn', 'fill attempt failed', { intent_id: id, reason: r.reason });
-    }
-  }
-  return fills;
+  const r = await runTick(ctx, coreState, { persist: saveState });
+  return r.fills || 0;
 }
 
 // ---- reclaim: sweep spendable sats back to a destination address ----
