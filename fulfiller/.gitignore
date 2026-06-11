@@ -1,0 +1,8 @@
+# Local operator config + state — may contain privkeys. Never commit.
+watchtower-config.json
+watchtower-state-*.json
+watchtower-state-*.json.tmp
+fulfil-config.json
+fulfiller-state-*.json
+*.privkey
+_wt-*.json
