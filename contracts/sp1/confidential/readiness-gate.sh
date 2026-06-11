@@ -191,14 +191,16 @@ fi
 # control folds + reproduces the on-chain digest 0x240a843d. So this ELF defeats the REFLECT-1
 # attack (no-input inflated note). Re-confirm before re-adding after any reflection re-prove.
 #
-# PENDING 0x00687472 (after the fee-enforcement / multi-fee-tier re-prove): the shared cxfer-core
-# rebuild (added OP_SWAP fee enforcement + canonical-pair pool_id) rotated the reflection vkey
-# 0x00e593b0 → 0x00687472, even though the reflection conservation logic (verify_cxfer_conservation /
-# fold_cxfer / the reflect.rs check-before-fold) is BYTE-IDENTICAL — the AMM changes are unused by the
-# reflection path, so soundness is preserved by construction. The gate stays FAIL-CLOSED until the
-# negative test is re-run against THIS ELF (cheap execute-mode), then allowlist 0x00687472. This only
-# gates BRIDGE; POOL (settle / AMM / fee enforcement) is unaffected.
-CONFIRMED_SOUND_REFL_VKEYS="0x00e593b00786fe5d76bd2503f1a21a8d1b4c97779672dc51d3413bbbb4c86bd9"
+# CONFIRMED 0x00687472 (2026-06-11): after the fee-enforcement / multi-fee-tier re-prove, the shared
+# cxfer-core rebuild (OP_SWAP fee enforcement + canonical-pair pool_id) rotated the reflection vkey
+# 0x00e593b0 → 0x00687472, but the conservation logic (verify_cxfer_conservation / fold_cxfer / the
+# reflect.rs check-before-fold) is BYTE-IDENTICAL (the AMM changes are unused by the reflection path).
+# The negative test was RE-RUN against THIS pinned ELF: the conserving control EXECUTE_OK + DIGEST_MATCH
+# 0x240a843d (folds), and the non-conserving input (emptied prior live set ⇒ Σ C_in = 0 vs a multi-input
+# kernel, outputs stripped) EXECUTE_OK — the guest SKIPS it instead of reading the absent output
+# witnesses (a non-enforcing guest would PANIC). So 0x00687472 defeats the REFLECT-1 attack. Prior
+# confirmed (now superseded as the pin): 0x00e593b0. (Known-UNSOUND, never confirm: 0x0050d656, 0x0099e1c7.)
+CONFIRMED_SOUND_REFL_VKEYS="0x0068747232900af2f75fde3a5fb1143ccac63c56128394e638683cdcd5f307a3"
 refl_confirmed=0
 for v in $CONFIRMED_SOUND_REFL_VKEYS; do [ "$RPIN_VKEY" = "$v" ] && refl_confirmed=1; done
 if [ "$refl_confirmed" = 1 ]; then
