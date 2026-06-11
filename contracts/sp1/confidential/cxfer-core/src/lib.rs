@@ -1902,6 +1902,62 @@ mod tests {
         assert!(!verify_range(&badc, &proof), "wrong commitment must reject");
     }
 
+    // BPP-AUDIT: adversarial edge cases on the range verifier (attacker-crafted proof bytes).
+    // Confirms the structural gates (m-set, length, parse) reject cleanly and that the proof's
+    // m is taken from commitments.len() (NOT attacker bytes) so a length/aggregation mismatch
+    // cannot be exploited. The valid baseline is the real m=2 JS fixture proof.
+    #[test]
+    fn range_adversarial_edge_cases() {
+        let f = fixture();
+        let out_c: Vec<_> = f["outC"].as_array().unwrap().iter().map(|v| pt(v.as_str().unwrap())).collect();
+        let proof = hex::decode(f["rangeProof"].as_str().unwrap()).unwrap();
+        assert_eq!(out_c.len(), 2);
+        assert!(verify_range(&out_c, &proof), "baseline m=2 must verify");
+
+        // m = 0 (no commitments): not in {1,2,4,8} → reject, no panic.
+        assert!(!verify_range(&[], &proof), "m=0 must reject");
+
+        // m = 3 (non power of two): reject.
+        let three = vec![out_c[0], out_c[1], out_c[0]];
+        assert!(!verify_range(&three, &proof), "m=3 must reject");
+
+        // m=1 with the m=2 proof: length is checked against commitments.len(), so the m=2
+        // proof (657 B) is the wrong length for m=1 (591 B) → reject (can't repurpose a proof
+        // for a different aggregation count).
+        assert!(!verify_range(&[out_c[0]], &proof), "m=1 with m=2 proof: length mismatch must reject");
+
+        // Truncated proof (one byte short): length gate rejects.
+        assert!(!verify_range(&out_c, &proof[..proof.len() - 1]), "truncated must reject");
+        // Extended proof (one trailing byte): length gate rejects.
+        let mut longer = proof.clone();
+        longer.push(0u8);
+        assert!(!verify_range(&out_c, &longer), "over-length must reject");
+
+        // All-zero proof of the correct length: the first 33 bytes are 0x00.. which is not a
+        // valid compressed point → decompress fails → reject (no identity-point spoof).
+        let zero = vec![0u8; proof.len()];
+        assert!(!verify_range(&out_c, &zero), "all-zero proof must reject");
+
+        // A commitment that is the identity point (point at infinity): in the guest this is
+        // UNREACHABLE because output commitments are built by from_affine_xy(cx,cy), which has no
+        // 65-byte 0x04-encoding for the identity and returns None (the guest then .expect()-panics
+        // before verify_range is ever called). Fed directly, compress(identity) panics inside the
+        // transcript (identity SEC1-compresses to a single 0x00 byte, not 33) — a FAIL-CLOSED panic,
+        // never a spoofed `true`. Assert the call cannot return true (catch the panic).
+        let id_result = std::panic::catch_unwind(|| {
+            let mut id_c = out_c.clone();
+            id_c[0] = ProjectivePoint::identity();
+            verify_range(&id_c, &proof)
+        });
+        assert!(matches!(id_result, Ok(false) | Err(_)), "identity commitment must NOT verify (reject or fail-closed panic)");
+
+        // Scalar field r1 set out of canonical range (>= n): scalar_canonical_be → None → reject.
+        // r1 lives at offset 99 (after A,A1,B = 3*33). Overwrite with 0xFF..FF (> n).
+        let mut bad_scalar = proof.clone();
+        for b in bad_scalar.iter_mut().skip(99).take(32) { *b = 0xff; }
+        assert!(!verify_range(&out_c, &bad_scalar), "non-canonical r1 scalar must reject");
+    }
+
     // AMM-FEE-1: solve_clearing (the guest's fee-enforcement primitive for OP_SWAP) must match the
     // normative JS clearing-solve (tests/amm-clearing.mjs, AMM.md §4) byte-for-byte across the full
     // battery — one/two-sided, exact-cancel, zero/max fee, large near-u64 reserves (intermediate
@@ -2212,7 +2268,7 @@ mod tests {
         // accepts: returns the tx's txid
         let txid = bitcoin::verify_tx_in_block(&header, &tx, tx_index, &txids)
             .expect("real bridge_mint block verifies");
-        assert_eq!(txid, bitcoin::compute_txid(&tx), "returns the confirmed txid");
+        assert_eq!(txid, bitcoin::compute_txid(&tx).unwrap(), "returns the confirmed txid");
 
         // rejects: wrong index, a flipped txid (breaks the merkle root), a flipped tx
         // byte (txid no longer matches), and a malformed header length
@@ -2994,7 +3050,7 @@ mod tests {
         let txids: Vec<[u8; 32]> = f["txids"].as_array().unwrap().iter().map(|v| arr32(v.as_str().unwrap())).collect();
 
         let (txid, in_outpoints) = confirm_pool_tx(&header, &tx, tx_index, &txids).expect("confirmed");
-        assert_eq!(txid, bitcoin::compute_txid(&tx), "returns the confirmed txid");
+        assert_eq!(txid, bitcoin::compute_txid(&tx).unwrap(), "returns the confirmed txid");
         assert!(!in_outpoints.is_empty(), "tx has spent outpoints");
         // each bound outpoint is outpoint_key of a real vin
         let vins = bitcoin::extract_inputs(&tx).unwrap();
@@ -3015,7 +3071,7 @@ mod tests {
         let f: serde_json::Value = serde_json::from_str(include_str!("../../fixtures/signet_cxfer.json")).unwrap();
         let hx = |s: &str| hex::decode(s.trim_start_matches("0x")).unwrap();
         let tx = hx(f["tx"].as_str().unwrap());
-        let txid = bitcoin::compute_txid(&tx);
+        let txid = bitcoin::compute_txid(&tx).unwrap();
         let vins = bitcoin::extract_inputs(&tx).expect("vins");
         let env = bitcoin::extract_taproot_envelope(&tx).expect("envelope");
         let (asset, comms) = bitcoin::parse_cxfer_envelope(&env).expect("cxfer parse");

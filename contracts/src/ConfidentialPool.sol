@@ -87,6 +87,12 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     /// Cap on a confidential AMM pool's fee (basis points). initPool is permissionless + one-per-slot,
     /// so bounding the fee stops a front-runner from seeding the only slot with an unusable 100% fee.
     uint32 public constant MAX_POOL_FEE_BPS = 1000; // 10%
+    /// V2-style minimum liquidity: this many of a pool's seed shares (the rLo basis) are permanently
+    /// locked at initPool — no note holds them — so a fully-exited pool keeps a live share/reserve floor
+    /// and the one-per-(pair,fee) slot can never be emptied to a bricked, un-rejoinable state. The
+    /// founder's own position is the REMAINDER (rLo − this), recorded as a claimable LP-share note — so a
+    /// founder recovers their seed rather than donating all of it (only this standard lock is donated).
+    uint256 public constant MINIMUM_LIQUIDITY = 1000;
 
     // ──────────────────── Immutables ────────────────────
 
@@ -102,12 +108,24 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     bytes32 public immutable BITCOIN_RELAY_VKEY;
     /// Bitcoin light relay used to anchor each reflection proof's header chain to canonical
     /// Bitcoin (mirrors SP1PoolRootVerifier). 0 ⇒ reflection inactive (the ctor bars a non-zero
-    /// BITCOIN_RELAY_VKEY without a relay). When set, attest pins the proof's tip to RELAY.tip()
-    /// and its prev to the prior attested tip (each within REFLECTION_FINALITY_WINDOW) — which
-    /// forces the whole proven chain to be canonical Bitcoin.
+    /// BITCOIN_RELAY_VKEY without a relay). When set, attest pins the proof's tip to a MATURED
+    /// ancestor of RELAY.tip() (RELAY.tip() walked back REFLECTION_CONFIRMATIONS, then within
+    /// REFLECTION_FINALITY_WINDOW) and its prev to the prior attested tip — which forces the whole
+    /// proven chain to be canonical Bitcoin AND buries every folded effect that many confirmations.
     IRelay public immutable HEADER_RELAY;
     /// Max ancestor distance accepted for the reflection prev/tip anchor (sub-window reorg tolerance).
     uint256 public constant REFLECTION_FINALITY_WINDOW = 6;
+    /// Maturity depth for a reflected batch: its tip must be buried at least this many blocks below the
+    /// canonical relay tip, so every effect it folds — above all a bridge-burn that authorizes a
+    /// bridge_mint — carries that many Bitcoin confirmations. Without it a burn at ~1 confirmation could
+    /// authorize a mint, and a shallow tip reorg would then strand it (the burned note re-lives on
+    /// Bitcoin while the Ethereum mint stands = value duplication). The on-chain analog of the mixer's
+    /// CONFIRMATION_DEPTH — set per deployment (a faster test chain may pick fewer than mainnet's 6).
+    uint256 public immutable REFLECTION_CONFIRMATIONS;
+    /// Upper bound on REFLECTION_CONFIRMATIONS: the anchor walks it (+ the window) in storage per attest,
+    /// so an unbounded value would make attest exceed the block gas limit and brick reflection. 144 ≈ a
+    /// day of Bitcoin blocks — far above any sane confirmation depth.
+    uint256 public constant MAX_REFLECTION_CONFIRMATIONS = 144;
     /// The Bitcoin block hash at the tip of the last attested reflection batch (the next batch's
     /// prev must equal this or a recent ancestor). Seeded to the genesis anchor in the ctor.
     bytes32 public lastReflectionBlockHash;
@@ -286,6 +304,10 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     event CrossOutRecorded(bytes32 indexed claimId, uint16 destChain, bytes32 destCommitment, bytes32 nullifier, bytes32 assetId);
     // A confidential AMM pool was initialized / a batch settled against it.
     event PoolInitialized(bytes32 indexed poolId, bytes32 assetA, bytes32 assetB, uint256 reserveA, uint256 reserveB, uint32 feeBps);
+    // The founder's seed LP-share position, recorded as a claimable deposit (asset = lp_share_id(poolId),
+    // value = rLo − MINIMUM_LIQUIDITY). The founder mints the note by proving the opening in a settle
+    // (the OP_WRAP path), exactly like a wrap — so the seed is recoverable, not donated.
+    event PoolSeeded(bytes32 indexed poolId, bytes32 indexed depositId, bytes32 lpAsset, uint256 shares, bytes32 cx, bytes32 cy, bytes32 owner);
     event SwapSettled(bytes32 indexed poolId, uint256 reserveA, uint256 reserveB);
     event LiquidityChanged(bytes32 indexed poolId, uint256 reserveA, uint256 reserveB, uint256 totalShares);
 
@@ -293,6 +315,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
 
     error ZeroAddress();
     error ZeroVKey();
+    error BadReflectionConfirmations();
     error AlreadyRegistered();
     error NotRegistered();
     error NotAContract();
@@ -329,6 +352,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     error EthValueMismatch();
     error ZeroReserve();
     error FeeTooHigh();
+    error InsufficientSeed();
     error ReserveFloorBreach();
     error BtcHomedValueExitMustBridge();
     error FeeOnTransferUnsupported();
@@ -341,7 +365,8 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         bytes32 bitcoinRelayVKey_,
         address canonicalFactory_,
         address headerRelay_,
-        bytes32 genesisReflectionAnchor_
+        bytes32 genesisReflectionAnchor_,
+        uint256 reflectionConfirmations_
     ) {
         if (sp1Verifier_ == address(0)) revert ZeroAddress();
         if (programVKey_ == bytes32(0)) revert ZeroVKey();
@@ -352,12 +377,19 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         // ZeroGenesis guard).
         if (bitcoinRelayVKey_ != bytes32(0) && headerRelay_ == address(0)) revert ZeroAddress();
         if (bitcoinRelayVKey_ != bytes32(0) && genesisReflectionAnchor_ == bytes32(0)) revert ZeroAddress();
+        // When reflection is ON, the maturity depth must be a sane, gas-bounded, NON-ZERO value: zero
+        // would anchor a batch's tip to the live relay tip (~1 confirmation), re-opening the bridge-burn
+        // shallow-reorg window the maturity gate closes. Unused when reflection is off (anchor never runs).
+        if (bitcoinRelayVKey_ != bytes32(0) && (reflectionConfirmations_ == 0 || reflectionConfirmations_ > MAX_REFLECTION_CONFIRMATIONS)) {
+            revert BadReflectionConfirmations();
+        }
         SP1_VERIFIER = ISP1Verifier(sp1Verifier_);
         PROGRAM_VKEY = programVKey_;
         CHAIN_BINDING = keccak256(abi.encodePacked(block.chainid, address(this)));
         BITCOIN_RELAY_VKEY = bitcoinRelayVKey_; // the sole Bitcoin-state authority (a proof)
         HEADER_RELAY = IRelay(headerRelay_);
         lastReflectionBlockHash = genesisReflectionAnchor_; // the first batch's prev anchors here
+        REFLECTION_CONFIRMATIONS = reflectionConfirmations_;
         CANONICAL_FACTORY = ICanonicalAssetFactory(canonicalFactory_);
         knownReflectionDigest = REFLECTION_GENESIS_DIGEST; // the first cycle continues genesis
 
@@ -495,7 +527,10 @@ contract ConfidentialPool is ReentrancyGuardTransient {
             if (localAssetOf[crossChainLink] != bytes32(0)) revert CrossChainLinkTaken();
             localAssetOf[crossChainLink] = assetId;
         }
-        assets[assetId] = Asset(true, underlying, unitScale, crossChainLink, poolMinted, name_, symbol_, decimals_);
+        assets[assetId] = Asset({
+            registered: true, underlying: underlying, unitScale: unitScale, crossChainLink: crossChainLink,
+            poolMinted: poolMinted, name: name_, symbol: symbol_, decimals: decimals_
+        });
         emit AssetRegistered(assetId, underlying, unitScale, name_, symbol_, decimals_);
     }
 
@@ -553,10 +588,15 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     /// initial reserves (in-system values; the LP provides reserveX·unitScale of each underlying —
     /// burned for a pool-minted asset, escrowed for an external one — so the reserves are backed).
     /// poolId = keccak256(canonical(assetA, assetB), feeBps) — one pool per (canonical pair, fee tier),
-    /// stored in canonical (sorted) order; the assets must be distinct + registered.
-    function initPool(bytes32 assetA, bytes32 assetB, uint256 reserveA, uint256 reserveB, uint32 feeBps)
-        external payable nonReentrant returns (bytes32 poolId)
-    {
+    /// stored in canonical (sorted) order; the assets must be distinct + registered. The founder keeps
+    /// their position as a shielded LP-share note: (shareCx, shareCy, shareOwner) is the commitment
+    /// C = founderShares·H + r·G and its owner (founderShares = rLo − MINIMUM_LIQUIDITY), recorded as a
+    /// deposit the founder claims via a settle opening proof — so the seed is recovered, minus the
+    /// standard MINIMUM_LIQUIDITY lock.
+    function initPool(
+        bytes32 assetA, bytes32 assetB, uint256 reserveA, uint256 reserveB, uint32 feeBps,
+        bytes32 shareCx, bytes32 shareCy, bytes32 shareOwner
+    ) external payable nonReentrant returns (bytes32 poolId) {
         if (assetA == assetB) revert SameAsset();
         Asset storage a = assets[assetA];
         Asset storage b = assets[assetB];
@@ -575,15 +615,31 @@ contract ConfidentialPool is ReentrancyGuardTransient {
             assetA < assetB ? (assetA, assetB, reserveA, reserveB) : (assetB, assetA, reserveB, reserveA);
         poolId = keccak256(abi.encode(lo, hi, feeBps));
         if (pools[poolId].init) revert PoolExists();
+        // V2-style seed: the share basis is rLo. MINIMUM_LIQUIDITY of it is the permanent lock (the
+        // founder's note is the remainder, below), so rLo must clear it for a positive founder position.
+        if (rLo <= MINIMUM_LIQUIDITY) revert InsufficientSeed();
         // Any native-ETH leg is funded from msg.value; require it to cover those legs EXACTLY (the
         // two assets are distinct so at most one is ETH, but sum to be robust).
         if (msg.value != _ethReserveAmount(a, reserveA) + _ethReserveAmount(b, reserveB)) revert EthValueMismatch();
         _fundReserve(assetA, a, reserveA);
         _fundReserve(assetB, b, reserveB);
-        // Seed share basis: the creating LP's position is rLo shares (a public seed, in canonical units).
-        // Confidential LPs join/leave via OP_LP_ADD/REMOVE (LpSettlement), which move reserves + shares together.
-        pools[poolId] = Pool(true, lo, hi, rLo, rHi, feeBps, rLo);
+        // Seed share basis: totalShares = rLo (canonical units), mirroring the guest's proportional
+        // LP math. Confidential LPs join/leave via OP_LP_ADD/REMOVE (LpSettlement), moving reserves +
+        // shares together.
+        pools[poolId] = Pool({init: true, assetA: lo, assetB: hi, reserveA: rLo, reserveB: rHi, feeBps: feeBps, totalShares: rLo});
         emit PoolInitialized(poolId, lo, hi, rLo, rHi, feeBps);
+        // The founder's LP position = rLo − MINIMUM_LIQUIDITY shares, materialized as a shielded LP-share
+        // note (asset = lp_share_id(poolId) = keccak(poolId‖"lp"), matching the guest). It is recorded as
+        // a pending deposit and claimed via a settle OP_WRAP opening proof — the SAME machinery as wrap,
+        // so the guest proves the note opens to exactly `founderShares` and it can never claim more than
+        // the seeded position. The leftover MINIMUM_LIQUIDITY shares hold no note → permanently locked,
+        // keeping totalShares ≥ MINIMUM_LIQUIDITY so the pool slot stays live after the founder exits.
+        bytes32 lpAsset = keccak256(abi.encodePacked(poolId, "lp"));
+        uint256 founderShares = rLo - MINIMUM_LIQUIDITY;
+        bytes32 depositId = keccak256(abi.encode(lpAsset, founderShares, shareCx, shareCy, shareOwner));
+        if (depositStatus[depositId] != 0) revert DepositExists();
+        depositStatus[depositId] = 1;
+        emit PoolSeeded(poolId, depositId, lpAsset, founderShares, shareCx, shareCy, shareOwner);
     }
     // The msg.value a native-ETH escrow leg requires (0 for pool-minted / ERC20 legs).
     function _ethReserveAmount(Asset storage a, uint256 reserve) internal view returns (uint256) {
@@ -624,7 +680,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         uint64 bitcoinHeight;     // the confirmed Bitcoin height the batch advanced to
         bytes32 newDigest;        // the reflected state AFTER this proof (the next cycle's prior)
         bytes32 bitcoinPrevHash;  // headers[0]'s prev field — anchored to the prior attested tip
-        bytes32 bitcoinTipHash;   // the batch's tip block hash — anchored to RELAY.tip()
+        bytes32 bitcoinTipHash;   // the batch's tip block hash — anchored to a matured ancestor of RELAY.tip()
     }
 
     /// @notice Attest Bitcoin confidential-pool state via an SP1 relay proof — the ONLY
@@ -654,10 +710,11 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         // bridge_mint skip its membership check (the guest keys it off `burn_root != 0`).
         if (r.bitcoinBurnRoot == bytes32(0)) revert StaleBitcoinBurnRoot();
         // Relay anchor (mirror SP1PoolRootVerifier): pin the batch's prev to the prior attested tip
-        // and its tip to the canonical relay tip (each within the finality window). With the guest's
-        // verify_header_chain linking the batch back via prev_hash + PoW, this forces the WHOLE proven
-        // chain to be canonical Bitcoin. Skipped only when no relay is wired (reflection inactive; the
-        // ctor bars a non-zero BITCOIN_RELAY_VKEY without a relay).
+        // and its tip to a MATURED ancestor of the canonical relay tip (≥ REFLECTION_CONFIRMATIONS deep,
+        // each within the finality window). With the guest's verify_header_chain linking the batch back
+        // via prev_hash + PoW, this forces the WHOLE proven chain to be canonical Bitcoin and buries
+        // every folded effect that many confirmations. Skipped only when no relay is wired (reflection
+        // inactive; the ctor bars a non-zero BITCOIN_RELAY_VKEY without a relay).
         if (address(HEADER_RELAY) != address(0)) {
             _anchorReflection(r.bitcoinPrevHash, r.bitcoinTipHash);
             lastReflectionBlockHash = r.bitcoinTipHash;
@@ -674,12 +731,27 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     }
 
     /// Anchor a reflection batch to canonical Bitcoin: `prev` must equal the prior attested tip or a
-    /// recent ancestor of it (a sub-window reorg), and `tip` must equal RELAY.tip() or a recent
-    /// ancestor (the relay's tip may have advanced past the proven batch). The ancestor walk follows
-    /// the relay's stored parents, ≤ REFLECTION_FINALITY_WINDOW hops. Mirrors SP1PoolRootVerifier.
+    /// recent ancestor of it (a sub-window reorg), and `tip` must equal the MATURED anchor — RELAY.tip()
+    /// walked back REFLECTION_CONFIRMATIONS — or a recent ancestor of it (the relay's tip may have advanced
+    /// past the proven batch). The ancestor walks follow the relay's stored parents,
+    /// ≤ REFLECTION_CONFIRMATIONS + REFLECTION_FINALITY_WINDOW hops. Mirrors SP1PoolRootVerifier.
     function _anchorReflection(bytes32 prev, bytes32 tip) internal view {
         if (!_isTipOrRecentAncestor(prev, lastReflectionBlockHash)) revert UnanchoredReflection();
-        if (!_isTipOrRecentAncestor(tip, HEADER_RELAY.tip())) revert UnanchoredReflection();
+        // Maturity: anchor the batch's tip to the relay tip walked back REFLECTION_CONFIRMATIONS — NOT
+        // the relay tip itself — so the tip (and every block this batch folded, all at or below it) is
+        // buried at least that many confirmations. A burn folded into the bridge-burn set is then ≥
+        // REFLECTION_CONFIRMATIONS deep before any bridge_mint can act on it, so a shallow tip reorg
+        // cannot strand a mint (the burned note re-living on Bitcoin while the Ethereum mint stands).
+        // `tip` must be that matured anchor or a recent ancestor (the relay may have advanced since the
+        // batch was proven — REFLECTION_FINALITY_WINDOW absorbs that). Near genesis the relay isn't yet
+        // that deep, so the walk hits 0 and the anchor reverts (reflection simply starts once the relay
+        // matures — fail-closed, the same shape as the zero-genesis ctor guard).
+        bytes32 matured = HEADER_RELAY.tip();
+        for (uint256 i; i < REFLECTION_CONFIRMATIONS; ++i) {
+            if (matured == bytes32(0)) revert UnanchoredReflection();
+            matured = HEADER_RELAY.blockParent(matured);
+        }
+        if (!_isTipOrRecentAncestor(tip, matured)) revert UnanchoredReflection();
     }
 
     /// True iff `h == anchor` or `h` is within REFLECTION_FINALITY_WINDOW parents of `anchor`.
@@ -751,13 +823,8 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         // btcHomed batch may mark nullifiers but must not move value onto Ethereum. (A race-free single-tx
         // fast lane is impossible without a finality-gated shared nullifier set — the deferred reverse path:
         // symmetric forward reflection still lets a note be spent on both lanes within the mutual lag.)
-        if (
-            btcHomed
-                && (
-                    pv.withdrawals.length != 0 || pv.fees.length != 0 || pv.leaves.length != 0
-                        || pv.swaps.length != 0 || pv.liquidity.length != 0
-                )
-        ) revert BtcHomedValueExitMustBridge();
+        if (btcHomed && (pv.withdrawals.length != 0 || pv.fees.length != 0 || pv.leaves.length != 0
+            || pv.swaps.length != 0 || pv.liquidity.length != 0)) revert BtcHomedValueExitMustBridge();
         // bridge_mint authorizes a mint on the burned note's MEMBERSHIP in the dedicated
         // bridge-burn set, pinned to the CURRENT reflected root. A non-zero burn root must
         // be current; and whenever a bridge_mint is present (bitcoinBurnsConsumed non-empty)
@@ -1007,7 +1074,15 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         nextLeafIndex++;
     }
 
-    function _hash(bytes32 l, bytes32 r) internal pure returns (bytes32) {
-        return keccak256(abi.encodePacked(l, r));
+    function _hash(bytes32 l, bytes32 r) internal pure returns (bytes32 h) {
+        // keccak(l ‖ r) over the two-word scratch space (0x00–0x40) — byte-identical to
+        // keccak256(abi.encodePacked(l, r)) but without the memory alloc, on the Merkle hot path
+        // (called TREE_LEVELS times per inserted leaf). The KAT test pins the resulting root to the
+        // JS/guest tree, so a divergence here fails closed.
+        assembly ("memory-safe") {
+            mstore(0x00, l)
+            mstore(0x20, r)
+            h := keccak256(0x00, 0x40)
+        }
     }
 }

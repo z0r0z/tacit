@@ -22,66 +22,74 @@ pub fn double_sha256(data: &[u8]) -> [u8; 32] {
     second.into()
 }
 
-pub fn compute_txid(tx_data: &[u8]) -> [u8; 32] {
-    // BIP-141 anti-merkle-collision (audit BTC-1): a 64-byte non-witness tx could
-    // be mistaken for a merkle internal node; consensus rejects it. Fail loudly.
-    assert!(tx_data.len() != 64 || (tx_data.len() > 5 && tx_data[4] == 0x00 && tx_data[5] == 0x01),
-        "BIP141: 64-byte non-witness tx (anti-merkle-collision)");
-
+// Total (never panics): returns None on a malformed/truncated tx instead of slice/varint panics, so
+// an attacker-supplied tx is a clean reject. Every well-formed tx hashes byte-identically to before
+// (the guards only short-circuit out-of-bounds reads; the stripped serialization is unchanged).
+pub fn compute_txid(tx_data: &[u8]) -> Option<[u8; 32]> {
+    // BIP-141 anti-merkle-collision (audit BTC-1): a 64-byte non-witness tx could be mistaken for a
+    // merkle internal node; consensus rejects it, so do we (clean reject, not a hashable txid).
+    if tx_data.len() == 64 && !(tx_data.len() > 5 && tx_data[4] == 0x00 && tx_data[5] == 0x01) {
+        return None;
+    }
     let is_segwit = tx_data.len() > 5 && tx_data[4] == 0x00 && tx_data[5] == 0x01;
     if !is_segwit {
-        return double_sha256(tx_data);
+        return Some(double_sha256(tx_data));
     }
-    let version = &tx_data[0..4];
+    let version = &tx_data[0..4]; // is_segwit ⇒ len > 5
     let mut pos = 6; // skip version(4) + marker(1) + flag(1)
-    let (input_count, vi_len) = read_varint(tx_data, pos);
+    let (input_count, vi_len) = read_varint(tx_data, pos)?;
     let inputs_start = pos;
     pos += vi_len;
     for _ in 0..input_count {
         pos += 36;
-        let (script_len, vi_len) = read_varint(tx_data, pos);
+        let (script_len, vi_len) = read_varint(tx_data, pos)?;
         pos += vi_len + script_len + 4;
     }
-    let (output_count, vi_len) = read_varint(tx_data, pos);
+    let (output_count, vi_len) = read_varint(tx_data, pos)?;
     pos += vi_len;
     for _ in 0..output_count {
         pos += 8;
-        let (script_len, vi_len) = read_varint(tx_data, pos);
+        let (script_len, vi_len) = read_varint(tx_data, pos)?;
         pos += vi_len + script_len;
     }
     let outputs_end = pos;
     for _ in 0..input_count {
-        let (wit_count, vi_len) = read_varint(tx_data, pos);
+        let (wit_count, vi_len) = read_varint(tx_data, pos)?;
         pos += vi_len;
         for _ in 0..wit_count {
-            let (item_len, vi_len) = read_varint(tx_data, pos);
+            let (item_len, vi_len) = read_varint(tx_data, pos)?;
             pos += vi_len + item_len;
         }
     }
+    if outputs_end > tx_data.len() || pos + 4 > tx_data.len() { return None; }
     let locktime = &tx_data[pos..pos + 4];
 
     let mut stripped = Vec::with_capacity(version.len() + (outputs_end - inputs_start) + 4);
     stripped.extend_from_slice(version);
     stripped.extend_from_slice(&tx_data[inputs_start..outputs_end]);
     stripped.extend_from_slice(locktime);
-    double_sha256(&stripped)
+    Some(double_sha256(&stripped))
 }
 
 pub fn extract_merkle_root(header: &[u8]) -> [u8; 32] {
     header[36..68].try_into().unwrap()
 }
 
-pub fn bits_to_target(header: &[u8]) -> [u8; 32] {
+// Total (never panics): a malformed difficulty field (negative / zero-mantissa / out-of-range
+// exponent) or a short header is a clean None rather than a panic, so an attacker-supplied header
+// is rejected, not a guest panic. A well-formed nBits decodes to the identical target as before.
+pub fn bits_to_target(header: &[u8]) -> Option<[u8; 32]> {
     // Decode nBits → 256-bit target; reject negative/zero-mantissa/out-of-range
     // exponent. Per-network MAX_TARGET clamp is the relay's job (the guest's
     // committed last_block_hash must equal the relay tip), not this generic decoder.
+    if header.len() < 76 { return None; }
     let bits = u32::from_le_bytes([header[72], header[73], header[74], header[75]]);
     let exp = (bits >> 24) as usize;
     let mantissa = bits & 0x7fffff;
 
-    assert!(bits & 0x00800000 == 0, "negative target");
-    assert!(mantissa != 0, "zero mantissa");
-    assert!(exp <= 32, "exponent out of range");
+    if bits & 0x00800000 != 0 { return None; } // negative target
+    if mantissa == 0 { return None; }          // zero mantissa
+    if exp > 32 { return None; }               // exponent out of range
 
     let mut target = [0u8; 32];
     if exp <= 3 {
@@ -96,7 +104,7 @@ pub fn bits_to_target(header: &[u8]) -> [u8; 32] {
             target[start..start + 4].copy_from_slice(&bytes);
         }
     }
-    target
+    Some(target)
 }
 
 pub fn reverse_u256(v: &[u8; 32]) -> [u8; 32] {
@@ -135,11 +143,11 @@ fn sha256_once(data: &[u8]) -> [u8; 32] {
 /// vout = 0. `compute_txid` returns the internal-order txid, which is exactly what the
 /// dapp (`deriveAssetIdFromReveal`) and worker (`assetIdFor`) feed after reversing the
 /// display txid — so this is byte-identical to both.
-pub fn asset_id_from_etch(tx_data: &[u8]) -> [u8; 32] {
-    let txid = compute_txid(tx_data);
+pub fn asset_id_from_etch(tx_data: &[u8]) -> Option<[u8; 32]> {
+    let txid = compute_txid(tx_data)?;
     let mut pre = [0u8; 36]; // txid(32) ‖ vout_LE(4) = 0
     pre[..32].copy_from_slice(&txid);
-    sha256_once(&pre)
+    Some(sha256_once(&pre))
 }
 
 /// Parse the `(ticker, decimals, cid)` an etch reveal envelope declares ON-CHAIN. `env` is the
@@ -249,14 +257,14 @@ pub fn verify_tx_in_block(header: &[u8], tx_data: &[u8], tx_index: u32, txids: &
         return None;
     }
     let block_hash = double_sha256(header);
-    let target = bits_to_target(header);
+    let target = bits_to_target(header)?;
     if !be_bytes_lte(&reverse_u256(&block_hash), &target) {
         return None; // PoW
     }
     if compute_merkle_root(txids) != extract_merkle_root(header) {
         return None; // complete, header-committed tx set
     }
-    let txid = compute_txid(tx_data);
+    let txid = compute_txid(tx_data)?;
     let i = tx_index as usize;
     if i >= txids.len() || txids[i] != txid {
         return None; // tx present at the claimed index
@@ -281,7 +289,7 @@ pub fn verify_header_chain(headers: &[&[u8]]) -> Option<[u8; 32]> {
             return None;
         }
         let bh = double_sha256(h);
-        let target = bits_to_target(h);
+        let target = bits_to_target(h)?;
         if !be_bytes_lte(&reverse_u256(&bh), &target) {
             return None; // PoW on every header
         }
@@ -315,7 +323,7 @@ pub fn extract_inputs(tx_data: &[u8]) -> Option<Vec<([u8; 32], u32)>> {
     if tx_data[4] == 0x00 && tx_data.len() >= 6 && tx_data[5] == 0x01 {
         pos = 6; // skip the segwit marker + flag
     }
-    let (input_count, vi_len) = read_varint(tx_data, pos);
+    let (input_count, vi_len) = read_varint(tx_data, pos)?;
     if input_count == 0 {
         return None;
     }
@@ -330,7 +338,7 @@ pub fn extract_inputs(tx_data: &[u8]) -> Option<Vec<([u8; 32], u32)>> {
         let vout = u32::from_le_bytes([tx_data[pos + 32], tx_data[pos + 33], tx_data[pos + 34], tx_data[pos + 35]]);
         inputs.push((txid, vout));
         pos += 36;
-        let (script_len, vi_len2) = read_varint(tx_data, pos);
+        let (script_len, vi_len2) = read_varint(tx_data, pos)?;
         pos += vi_len2 + script_len + 4; // input script + sequence(4)
     }
     Some(inputs)
@@ -339,28 +347,29 @@ pub fn extract_inputs(tx_data: &[u8]) -> Option<Vec<([u8; 32], u32)>> {
 pub fn extract_taproot_envelope(tx_data: &[u8]) -> Option<Vec<u8>> {
     if tx_data.len() < 6 || tx_data[4] != 0x00 || tx_data[5] != 0x01 { return None; }
     let mut pos = 6;
-    let (input_count, vi_len) = read_varint(tx_data, pos);
+    let (input_count, vi_len) = read_varint(tx_data, pos)?;
     if input_count == 0 { return None; }
     pos += vi_len;
     for _ in 0..input_count {
         pos += 36;
-        let (script_len, vi_len) = read_varint(tx_data, pos);
+        let (script_len, vi_len) = read_varint(tx_data, pos)?;
         pos += vi_len + script_len + 4;
     }
-    let (output_count, vi_len) = read_varint(tx_data, pos);
+    let (output_count, vi_len) = read_varint(tx_data, pos)?;
     pos += vi_len;
     for _ in 0..output_count {
         pos += 8;
-        let (script_len, vi_len) = read_varint(tx_data, pos);
+        let (script_len, vi_len) = read_varint(tx_data, pos)?;
         pos += vi_len + script_len;
     }
-    let (wit_count, vi_len) = read_varint(tx_data, pos);
+    let (wit_count, vi_len) = read_varint(tx_data, pos)?;
     pos += vi_len;
     if wit_count < 2 { return None; }
-    let (item0_len, vi_len) = read_varint(tx_data, pos);
+    let (item0_len, vi_len) = read_varint(tx_data, pos)?;
     pos += vi_len + item0_len;
-    let (script_len, vi_len) = read_varint(tx_data, pos);
+    let (script_len, vi_len) = read_varint(tx_data, pos)?;
     pos += vi_len;
+    if pos + script_len > tx_data.len() { return None; }
     let script = &tx_data[pos..pos + script_len];
     if script.len() < 36 { return None; }
     let mut sp = 0;
@@ -397,24 +406,27 @@ pub fn extract_taproot_envelope(tx_data: &[u8]) -> Option<Vec<u8>> {
     Some(payload[FRAME.len()..].to_vec())
 }
 
-fn read_varint(data: &[u8], pos: usize) -> (usize, usize) {
-    assert!(pos < data.len(), "varint: pos out of bounds");
+// Total (never panics): returns None on a truncated varint instead of asserting, so a malformed
+// (attacker-supplied) tx is a clean reject rather than a guest panic. Bounds are byte-for-byte the
+// old asserts, so every well-formed varint parses to the identical (value, len).
+fn read_varint(data: &[u8], pos: usize) -> Option<(usize, usize)> {
+    if pos >= data.len() { return None; }
     let first = data[pos];
     if first < 0xfd {
-        (first as usize, 1)
+        Some((first as usize, 1))
     } else if first == 0xfd {
-        assert!(pos + 2 < data.len(), "varint: short fd");
-        (u16::from_le_bytes([data[pos + 1], data[pos + 2]]) as usize, 3)
+        if pos + 2 >= data.len() { return None; }
+        Some((u16::from_le_bytes([data[pos + 1], data[pos + 2]]) as usize, 3))
     } else if first == 0xfe {
-        assert!(pos + 4 < data.len(), "varint: short fe");
-        (u32::from_le_bytes([data[pos + 1], data[pos + 2], data[pos + 3], data[pos + 4]]) as usize, 5)
+        if pos + 4 >= data.len() { return None; }
+        Some((u32::from_le_bytes([data[pos + 1], data[pos + 2], data[pos + 3], data[pos + 4]]) as usize, 5))
     } else {
-        assert!(pos + 8 < data.len(), "varint: short ff");
+        if pos + 8 >= data.len() { return None; }
         let val = u64::from_le_bytes([
             data[pos + 1], data[pos + 2], data[pos + 3], data[pos + 4],
             data[pos + 5], data[pos + 6], data[pos + 7], data[pos + 8],
         ]);
-        (val as usize, 9)
+        Some((val as usize, 9))
     }
 }
 
@@ -542,7 +554,7 @@ mod tests {
 
         // 1. confirmed in its block — REAL PoW + merkle proof
         let txid = verify_tx_in_block(&header, &tx, tx_index, &txids).expect("real CXFER confirms in block 307547");
-        assert_eq!(txid, compute_txid(&tx), "returns the confirmed txid");
+        assert_eq!(txid, compute_txid(&tx).unwrap(), "returns the confirmed txid");
 
         // 2. its vins are the spent pool outpoints (this transfer spends 2 notes)
         let vins = extract_inputs(&tx).expect("vins");
@@ -571,9 +583,9 @@ mod tests {
         assert_eq!(cid, want_cid, "metadata cid");
 
         // asset_id = sha256(compute_txid ‖ vout0), bound to the tx.
-        let id = asset_id_from_etch(&tx);
+        let id = asset_id_from_etch(&tx).unwrap();
         assert_ne!(id, [0u8; 32], "non-zero asset_id");
-        let txid = compute_txid(&tx);
+        let txid = compute_txid(&tx).unwrap();
         let mut pre = [0u8; 36];
         pre[..32].copy_from_slice(&txid);
         let recomputed: [u8; 32] = Sha256::digest(&pre).into();
@@ -590,7 +602,7 @@ mod tests {
     fn txid_and_merkle_root_single_tx() {
         // For a one-tx block, the merkle root equals that tx's txid.
         let tx = build_reveal_tx(&[0x2B, 0x00, 0x01, 0x02]);
-        let txid = compute_txid(&tx);
+        let txid = compute_txid(&tx).unwrap();
         assert_eq!(compute_merkle_root(&[txid]), txid, "single-tx merkle root = txid");
         // Two identical txids fold deterministically (Bitcoin duplicates the odd leaf).
         let r = compute_merkle_root(&[txid, txid]);
@@ -606,16 +618,37 @@ mod tests {
     #[test]
     fn compute_txid_rejects_64byte_nonwitness() {
         let legacy64 = vec![0x01u8; 64]; // tx_data[4]/[5] != marker/flag → non-segwit
-        let r = std::panic::catch_unwind(|| compute_txid(&legacy64));
-        assert!(r.is_err(), "64-byte non-witness tx must panic (anti-merkle-collision)");
+        assert!(compute_txid(&legacy64).is_none(), "64-byte non-witness tx is rejected (anti-merkle-collision)");
 
         // a 64-byte buffer that *looks* segwit (marker+flag at [4],[5]) is permitted —
         // its txid preimage is the stripped form, not 64 bytes, so no node-collision.
         let mut fake_segwit64 = vec![0x02u8, 0, 0, 0, 0x00, 0x01];
         fake_segwit64.extend_from_slice(&[0u8; 58]);
         assert_eq!(fake_segwit64.len(), 64);
-        let r2 = std::panic::catch_unwind(|| compute_txid(&fake_segwit64));
-        assert!(r2.is_ok(), "64-byte segwit-shaped tx is not the collision case");
+        assert!(compute_txid(&fake_segwit64).is_some(), "64-byte segwit-shaped tx is not the collision case");
+    }
+
+    // Hardening (total parsers): malformed / truncated tx bytes are a clean reject (None), never a
+    // guest panic. A well-formed tx still parses to the identical txid (covered by the real-signet
+    // tests above) — these pin that the failure path is graceful.
+    #[test]
+    fn malformed_tx_parsers_reject_cleanly_no_panic() {
+        // truncated segwit txs at every prefix length: never panic, always None (or a valid parse).
+        let real = build_reveal_tx(&[0x22, 0x00, 0x01, 0x02, 0x03]);
+        for n in 0..real.len() {
+            let _ = compute_txid(&real[..n]);          // must not panic
+            let _ = extract_taproot_envelope(&real[..n]);
+            let _ = extract_inputs(&real[..n]);
+            let _ = asset_id_from_etch(&real[..n]);
+        }
+        // a varint claiming a huge script_len past the buffer → None, not a slice panic.
+        let mut runaway = vec![0x02u8, 0, 0, 0, 0x00, 0x01, 0x01]; // ver, marker/flag, 1 input
+        runaway.extend_from_slice(&[0u8; 36]);                      // outpoint
+        runaway.push(0xfe);                                         // scriptSig len = u32 varint…
+        runaway.extend_from_slice(&0xffff_ffffu32.to_le_bytes());   // …4GB, well past the buffer
+        assert!(compute_txid(&runaway).is_none(), "runaway script length is a clean reject");
+        assert!(extract_taproot_envelope(&runaway).is_none(), "runaway script length is a clean reject");
+        let _ = extract_inputs(&runaway); // returns the (valid) outpoint; the runaway script is skipped — must not panic
     }
 
     // CVE-2012-2459 (odd-leaf duplication) does not let a relayer OMIT a tx from a
@@ -626,7 +659,7 @@ mod tests {
     // completeness assert (reflect.rs) rejects it. This pins that omission is detected.
     #[test]
     fn merkle_omission_changes_root() {
-        let leaf = |b: u8| compute_txid(&build_reveal_tx(&[0x2B, b]));
+        let leaf = |b: u8| compute_txid(&build_reveal_tx(&[0x2B, b])).unwrap();
         let t0 = leaf(0x00);
         let t1 = leaf(0x01);
         let t2 = leaf(0x02); // the "spend" tx — last, on an odd-length layer
@@ -649,7 +682,7 @@ mod tests {
         h[36] = merkle_seed; // a distinguishing "merkle root"
         h[68..72].copy_from_slice(&1_700_000_000u32.to_le_bytes()); // time
         h[72..76].copy_from_slice(&0x1f7fffffu32.to_le_bytes()); // easy bits
-        let target = bits_to_target(&h);
+        let target = bits_to_target(&h).unwrap();
         for nonce in 0u32..2_000_000 {
             h[76..80].copy_from_slice(&nonce.to_le_bytes());
             if be_bytes_lte(&reverse_u256(&double_sha256(&h)), &target) {
@@ -688,7 +721,7 @@ mod tests {
         // nBits 0x1d00ffff (Bitcoin genesis difficulty) → the canonical target.
         let mut header = [0u8; 80];
         header[72..76].copy_from_slice(&0x1d00ffffu32.to_le_bytes());
-        let t = bits_to_target(&header);
+        let t = bits_to_target(&header).unwrap();
         assert!(t != [0u8; 32], "target nonzero");
         // target = 0x00000000ffff0000...0 — the well-known genesis target.
         assert_eq!(&t[0..6], &[0x00, 0x00, 0x00, 0x00, 0xff, 0xff], "genesis target prefix");

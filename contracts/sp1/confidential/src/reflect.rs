@@ -110,7 +110,8 @@ pub fn main() {
         let txs: Vec<Vec<u8>> = (0..n_tx).map(|_| io::read()).collect();
         // Completeness of the tx set: the provided txs ARE the whole block — their txid merkle
         // root equals the header's. So no tx (hence no pool spend) can be silently omitted.
-        let txids: Vec<[u8; 32]> = txs.iter().map(|t| bitcoin::compute_txid(t)).collect();
+        let txids: Vec<[u8; 32]> =
+            txs.iter().map(|t| bitcoin::compute_txid(t)).collect::<Option<_>>().expect("malformed tx in block");
         assert_eq!(bitcoin::compute_merkle_root(&txids), merkle_root, "provided txs are not the complete block");
         let height = anchor_height + block_index as u64;
         assert!(height >= state.height, "reflection height must not decrease");

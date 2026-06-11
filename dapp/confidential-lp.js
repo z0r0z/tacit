@@ -127,5 +127,53 @@ export function makeConfidentialLp({ keccak256, pool }) {
     };
   }
 
-  return { poolId, lpShareId, buildAdd, verifyAdd, buildRemove, verifyRemove };
+  // ── initPool seed (V2-style founder LP recovery) ──
+  // The founder's claimable position is rLo − MINIMUM_LIQUIDITY; MINIMUM_LIQUIDITY (must match
+  // ConfidentialPool.MINIMUM_LIQUIDITY) is the permanently-locked floor that keeps the (pair,fee) slot
+  // live after the founder fully exits.
+  const MINIMUM_LIQUIDITY = 1000n;
+
+  // The pending-deposit id ConfidentialPool records for the founder LP-share note — identical to the
+  // guest's OP_WRAP deposit_id: keccak(lpAsset ‖ be32(value) ‖ cx ‖ cy ‖ owner) (the contract's
+  // keccak256(abi.encode(lpAsset, value, cx, cy, owner)), value ≤ u64). Lets the dapp match the
+  // PoolSeeded event and locate the claimable deposit.
+  function seedDepositId(lpAsset, value, cx, cy, owner) {
+    return bytesToHex(keccak256(concat([hexToBytes(lpAsset), be32(value), hexToBytes(cx), hexToBytes(cy), hexToBytes(owner)])));
+  }
+
+  // Build the EVM initPool args + the founder's RECOVERABLE LP-share note. ConfidentialPool.initPool
+  // locks MINIMUM_LIQUIDITY of the rLo share basis and records the remainder (rLo − MINIMUM_LIQUIDITY) as
+  // a pending LP-share deposit; the founder mints the note with an OP_WRAP opening proof (the SAME claim
+  // path as a wrap), then spends it via buildRemove like any LP-share note — so the founder keeps their
+  // seed as a shielded position instead of donating it. Caller presents assetA < assetB (canonical, like
+  // buildAdd/buildRemove), so reserveA == the rLo share basis. The blinding stays client-side until the
+  // claim proof. Returns the initPool args, the share note (with its deposit id), and the pool ids.
+  function buildSeed({ assetA, assetB, reserveA, reserveB, feeBps, shareOwner, rShares, minimumLiquidity = MINIMUM_LIQUIDITY }) {
+    if (bigOf(assetA) >= bigOf(assetB)) throw new Error('seed: present assetA < assetB (canonical order)');
+    const rLo = BigInt(reserveA), minLiq = BigInt(minimumLiquidity);
+    if (rLo <= minLiq) throw new Error('seed: reserveA (the share basis) must exceed MINIMUM_LIQUIDITY');
+    const founderShares = rLo - minLiq;
+    const pid = poolId(assetA, assetB, feeBps), lpAsset = lpShareId(pid);
+    const sC = commitXY(founderShares, rShares); // C = founderShares·H + rShares·G
+    const depositId = seedDepositId(lpAsset, founderShares, sC.cx, sC.cy, shareOwner);
+    return {
+      poolId: pid, lpAsset, founderShares,
+      // the 8 args for ConfidentialPool.initPool(assetA, assetB, reserveA, reserveB, feeBps, shareCx, shareCy, shareOwner)
+      initPoolArgs: {
+        assetA, assetB, reserveA: BigInt(reserveA), reserveB: BigInt(reserveB), feeBps: Number(feeBps),
+        shareCx: sC.cx, shareCy: sC.cy, shareOwner,
+      },
+      seedShareNote: { asset: lpAsset, value: founderShares, cx: sC.cx, cy: sC.cy, owner: shareOwner, blinding: BigInt(rShares), depositId },
+    };
+  }
+
+  // Round-trip: the seed share commitment opens to founderShares under its blinding (so the OP_WRAP claim
+  // will verify) — a cheap client-side sanity check before broadcasting initPool.
+  function verifySeed(seed) {
+    const { value, cx, cy, blinding } = seed.seedShareNote;
+    const c = commitXY(value, blinding);
+    return c.cx === cx && c.cy === cy;
+  }
+
+  return { poolId, lpShareId, buildAdd, verifyAdd, buildRemove, verifyRemove, buildSeed, seedDepositId, verifySeed, MINIMUM_LIQUIDITY };
 }
