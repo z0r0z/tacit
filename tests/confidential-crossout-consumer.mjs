@@ -1,8 +1,10 @@
 #!/usr/bin/env node
-// Bitcoin-side CrossOut consumer — PHASE 1 read-path test. Mocks eth_getLogs + KV, uses the REAL
-// CrossOutRecorded decoder, and locks: records a Bitcoin-destined crossOut past the finality gate; skips
-// Ethereum-destined ones; never records inside the unfinalized window; dedups on re-scan; and (critically)
-// does NOT advance the cursor on an RPC failure — a skipped range would strand a user's burned note.
+// Bitcoin-side CrossOut consumer — read (phase 1) + bind (phase 2) test. Mocks eth_getLogs + KV, uses the
+// REAL CrossOutRecorded decoder, and locks: records a Bitcoin-destined crossOut past the finality gate;
+// skips Ethereum-destined ones; never records inside the unfinalized window; dedups on re-scan; does NOT
+// advance the cursor on an RPC failure (a skipped range would strand a burned note); and binds a recorded
+// crossOut to a matching Bitcoin output exactly once (claimId consume-lock), rejecting dest-mismatch and
+// unrecorded claimIds.
 //
 // Run: node tests/confidential-crossout-consumer.mjs
 
@@ -100,4 +102,27 @@ function harness() {
   ok('an RPC failure is a no-op that retries the range — a skipped range can never strand a burned note');
 }
 
-console.log(`\n${n}/4 cross-out consumer (read-path) checks passed`);
+// ── 5. bind + gate: a T_CXFER carrying a recorded claimId mints once, dest must match ──
+{
+  const { consumer } = harness();
+  await consumer.scan({ network: NET, pool: POOL, tipHeight: 150, fromBlock: 0 }); // records CLAIM_A (destA)
+  const bound = await consumer.bindBitcoinOutput({ network: NET, claimId: CLAIM_A, outputLeaf: b32('destA') });
+  assert.strictEqual(bound.bound, true, 'a matching T_CXFER output binds the recorded crossOut');
+  const replay = await consumer.bindBitcoinOutput({ network: NET, claimId: CLAIM_A, outputLeaf: b32('destA') });
+  assert.strictEqual(replay.rejected, 'already-consumed', 'a second bind on the same claimId is rejected (one-mint-per-claimId)');
+  ok('bind + gate: a recorded crossOut mints exactly once (claimId consume-lock = the bridgeMinted mirror)');
+}
+
+// ── 6. bind rejects a destCommitment mismatch and an unrecorded claimId ──
+{
+  const { consumer } = harness();
+  await consumer.scan({ network: NET, pool: POOL, tipHeight: 150, fromBlock: 0 }); // records CLAIM_A (destA)
+  const mism = await consumer.bindBitcoinOutput({ network: NET, claimId: CLAIM_A, outputLeaf: b32('WRONG') });
+  assert.strictEqual(mism.rejected, 'dest-mismatch', 'a T_CXFER output not matching the recorded destCommitment is rejected');
+  const unknown = await consumer.bindBitcoinOutput({ network: NET, claimId: CLAIM_B, outputLeaf: b32('destB') });
+  assert.strictEqual(unknown.bound, false, 'unrecorded claimId does not bind');
+  assert.strictEqual(unknown.reason, 'no-recorded-crossout', 'binding an unrecorded claimId is refused (nothing to mint against)');
+  ok('bind rejects a destCommitment mismatch and an unrecorded claimId (no unbacked mint)');
+}
+
+console.log(`\n${n}/6 cross-out consumer (read + bind) checks passed`);

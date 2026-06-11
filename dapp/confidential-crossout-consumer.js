@@ -68,7 +68,23 @@ export function makeCrossoutConsumer({ ethGetLogs, kvGet, kvPut, evmLog, confirm
     return v ? JSON.parse(v) : null;
   }
 
-  return { scan, nextFromBlock, getRecorded, recKey, cursorKey, DEST_BITCOIN, TOPIC0 };
+  // Phase 2 — bind + gate. A Bitcoin T_CXFER output that carries a recorded crossOut's claimId is a
+  // cross-lane MINT: bind it iff the recorded destCommitment matches the broadcast output leaf, then
+  // CONSUME the claimId (one-mint-per-claimId — the bridgeMinted mirror; a replay sees 'consumed' and is
+  // rejected). Anyone may broadcast/trigger the mint, but only the rightful owner can spend the minted
+  // note (its blinding is the burn output's secret) and the value is fixed (destCommitment carried
+  // verbatim), so the open trigger is safe. The caller indexes the Bitcoin note only on { bound:true }.
+  async function bindBitcoinOutput({ network, claimId, outputLeaf }) {
+    const rec = await getRecorded(network, claimId);
+    if (!rec) return { bound: false, reason: 'no-recorded-crossout' };          // unknown or not yet final
+    if (lc(rec.destCommitment) !== lc(outputLeaf)) return { bound: false, rejected: 'dest-mismatch' };
+    if (rec.status === 'consumed') return { bound: false, rejected: 'already-consumed' };
+    rec.status = 'consumed';
+    await kvPut(recKey(network, claimId), JSON.stringify(rec));
+    return { bound: true, claimId: lc(claimId), record: rec };
+  }
+
+  return { scan, nextFromBlock, getRecorded, bindBitcoinOutput, recKey, cursorKey, DEST_BITCOIN, TOPIC0 };
 }
 
 // The eth_getLogs reader the worker wires — fetch + the per-network RPC fallback list (the worker passes

@@ -97,13 +97,19 @@ trust-minimization follow-up that doesn't change the wallet/worker flow, only ho
 
 ## Build plan (phased)
 
-1. **Worker read path** — `_ethGetLogs` + the ConfidentialPool address registry + the cron
-   `CrossOutRecorded` scan + the `crossout-recorded` KV + finality gate. (Trusted RPC, mode A.)
-2. **Worker bind + gate** — match `T_CXFER` output → recorded crossOut, the `claimId` lock, index the note.
-3. **Dapp broadcast** — `bridge_burn` → build/broadcast the Bitcoin `T_CXFER` + status tracking.
-4. **Node round-trip test** — extend `confidential-crosslane-roundtrip.mjs`: the ETH→Bitcoin leg binds to
-   a modeled `CrossOutRecorded` + a `T_CXFER`, with the `claimId` lock rejecting a replay.
-5. **(Follow-up) mode B** — the Ethereum-state proof, swapped in behind the same worker interface.
+1. ✅ **Worker read path** (DONE, `dapp/confidential-crossout-consumer.js` `makeCrossoutConsumer.scan` +
+   `makeEthGetLogs`) — reuses the `CrossOutRecorded` decoder + `TOPIC0`; finality gate + cursor that never
+   skips on RPC failure. `tests/confidential-crossout-consumer.mjs` (read checks).
+2. ✅ **Worker bind + gate** (DONE, `bindBitcoinOutput`) — binds a Bitcoin output to a recorded crossOut by
+   `claimId` iff the `destCommitment` matches, then consumes the `claimId` (one-mint-per-claimId). Bind
+   checks in the same test (mint-once, dest-mismatch reject, unrecorded reject).
+3. **Dapp broadcast** — `bridge_burn` → build/broadcast the Bitcoin `T_CXFER` carrying the `claimId` +
+   `destCommitment` output + status tracking.
+4. **Worker cron hook** — import + a gated `scan()` call each tick (inert until `CONFIDENTIAL_POOL_
+   DEPLOYMENTS[net].pool` is set); lands with the pool deploy.
+5. **Node round-trip test** — extend `confidential-crosslane-roundtrip.mjs`: the ETH→Bitcoin leg records a
+   modeled `CrossOutRecorded`, broadcasts a `T_CXFER`, binds, and rejects a replay.
+6. **(Follow-up) mode B** — the Ethereum-state proof, swapped in behind the same worker interface.
 
 Reuses, not rebuilds: the event decode, RPC, CXFER indexing, the note model, and the nullifier-lock all
 exist — the consumer is the glue + the dapp broadcast + the trust-mode choice.
