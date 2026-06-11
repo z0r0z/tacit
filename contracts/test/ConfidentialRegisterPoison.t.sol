@@ -24,7 +24,7 @@ contract ConfidentialRegisterPoisonTest is Test {
 
     function setUp() public {
         vm.chainId(1);
-        pool = new ConfidentialPool(address(new MockSP1VerifierP()), bytes32(uint256(0xABCD)), bytes32(0), address(0), address(0), bytes32(0));
+        pool = new ConfidentialPool(address(new MockSP1VerifierP()), bytes32(uint256(0xABCD)), bytes32(0), address(0), address(0), bytes32(0), 6);
         usdc = new RealToken();
         usdc.mint(USER, 1_000_000e6);
         vm.prank(USER);

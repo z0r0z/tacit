@@ -44,7 +44,7 @@ contract ConfidentialTacWalkthroughTest is Test {
 
     function setUp() public {
         CanonicalAssetFactory factory = new CanonicalAssetFactory();
-        pool = new ConfidentialPool(address(new AcceptVerifier()), bytes32(uint256(0xABCD)), bytes32(0), address(factory), address(0), bytes32(0));
+        pool = new ConfidentialPool(address(new AcceptVerifier()), bytes32(uint256(0xABCD)), bytes32(0), address(factory), address(0), bytes32(0), 6);
         // Deploy TAC's canonical ERC20 (ETH_DECIMALS) with the POOL as its sole minter.
         tac = CanonicalBridgedERC20(factory.deployCanonical(keccak256("TAC"), address(pool), "TAC", 18));
         // Register it as a LOCAL Tacit-recorded (pool-minted) asset: wrap burns, unwrap mints.
