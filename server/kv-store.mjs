@@ -8,10 +8,18 @@
 // Driver contract (driver-mem.mjs, driver-pg.mjs):
 //   get(ns, key)                    -> { value: Buffer, metadata, expiresAt } | null
 //   put(ns, key, buf, { metadata, expiresAt })
+//   putMany([{ ns, key, value, metadata, expiresAt }]) -> count after intra-batch
+//     dedup (last write wins per (ns, key))
 //   delete(ns, key)
 //   list(ns, { prefix, limit, after }) -> { entries: [{ name, metadata, expiresAt }], complete }
 //   sweepExpired(), close()
 // Drivers exclude expired entries from get/list; sweepExpired reclaims rows.
+
+// Intra-batch dedup for driver putMany — the one putMany behavior the
+// conformance suite pins, shared so the drivers can't drift. The NUL join
+// can't collide: neither namespaces nor worker keys contain NUL.
+export const dedupBatch = (rows) =>
+  [...new Map(rows.map((r) => [r.ns + String.fromCharCode(0) + r.key, r])).values()];
 
 const LIST_LIMIT_MAX = 1000;
 
