@@ -343,12 +343,19 @@ the value/nullifier ones). Each is required before any proof is accepted:
   on both chains, so the cross-lane gate matches), and private (`C` is known only to the
   owner who decrypts the memo). The note secret is NOT the nullifier preimage.
   Reconciles dapp + guest + worker, which all derive `ν` this way.
-- **B4 — mandatory cross-lane gate.** If ANY spent input's membership root is a
-  relay-attested Bitcoin root (`knownBitcoinRoot`), the guest MUST use a non-zero,
-  current `bitcoinSpentRoot` and prove non-membership of every input `ν` against it;
+- **B4 — mandatory cross-lane gate + source-consume invariant.** If ANY spent input's
+  membership root is a relay-attested Bitcoin root (`knownBitcoinRoot`), the guest MUST use a
+  non-zero, current `bitcoinSpentRoot` and prove non-membership of every input `ν` against it;
   the contract MUST enforce `bitcoinSpentRoot == knownBitcoinSpentRoot` for that lane
-  (no skip-on-zero). A Bitcoin-homed note cannot be fast-spent on Ethereum without
-  proving it is unspent on Bitcoin as of the current relay root.
+  (no skip-on-zero). Reflection is one-directional (Bitcoin→Ethereum), so this gate alone is not
+  sufficient for a value-exit: a Bitcoin-homed note's `ν` marked only in the Ethereum set is never
+  reflected back, leaving the Bitcoin UTXO live. Therefore a Bitcoin-homed batch MUST NOT move
+  value onto Ethereum — the contract rejects any `withdrawal`/`fee`/`leaf`/`swap`/`liquidity` from a
+  Bitcoin-homed spend (`BtcHomedValueExitMustBridge`); such a batch may only mark nullifiers.
+  Bitcoin→Ethereum value movement goes through the source-consuming path — `bridge_burn` on Bitcoin
+  (into the reflected burn set) → `bridge_mint` here (B5), which is not Bitcoin-homed. A direct
+  single-tx fast lane requires a finality-gated shared nullifier set (the reverse path of §8) — until
+  then, symmetric forward reflection would still permit a double-spend within the mutual reflection lag.
 - **B5 — relay-anchored bridge_mint (bridge-burn-set membership).** A `bridge_mint` MUST prove
   the burned note was BURNED FOR THE BRIDGE on Bitcoin — `ν` is a MEMBER of the relay-attested
   Bitcoin bridge-BURN set, keyed `ν → destCommitment` (`imt_membership(ν, bitcoinBurnRoot)`, the

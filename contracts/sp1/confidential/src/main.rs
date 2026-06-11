@@ -379,6 +379,13 @@ pub fn main() {
                 let asset_b = r32();
                 let fee_bps: u32 = io::read(); // pool fee tier — binds the pool id (multi-fee-tier)
                 let pid = pool_id(&asset_a, &asset_b, fee_bps);
+                // Canonical orientation: asset_a MUST be the low asset of the (sorted) pool pair, so it
+                // maps to the contract's p.reserveA. pool_id sorts internally, so a reversed (asset_a,
+                // asset_b) witness yields the SAME pid; without this a prover could pass the high asset as
+                // asset_a with the low asset's reserve and clear the batch on a swapped reserve→asset map,
+                // minting the high-value leg for the low-value one (settle gates p.reserveA == reserve_a_pre
+                // but never the asset identities — the guest is the only orientation pin).
+                assert!(bitcoin::be_bytes_lte(&asset_a, &asset_b) && asset_a != asset_b, "swap: non-canonical asset order");
                 let reserve_a_pre: u64 = io::read();
                 let reserve_b_pre: u64 = io::read();
                 let price_num: u64 = io::read(); // uniform price: price_num B per price_den A
@@ -502,6 +509,10 @@ pub fn main() {
                 let asset_b = r32();
                 let fee_bps: u32 = io::read(); // pool fee tier — binds the pool id (multi-fee-tier)
                 let pid = pool_id(&asset_a, &asset_b, fee_bps);
+                // Canonical orientation (see OP_SWAP): asset_a must be the low asset that maps to the
+                // contract's p.reserveA, else an in-ratio add could be cleared against a swapped
+                // reserve→asset map.
+                assert!(bitcoin::be_bytes_lte(&asset_a, &asset_b) && asset_a != asset_b, "lp_add: non-canonical asset order");
                 let lp_asset = lp_share_id(&pid);
                 let r_a_pre: u64 = io::read();
                 let r_b_pre: u64 = io::read();
@@ -579,6 +590,10 @@ pub fn main() {
                 let asset_b = r32();
                 let fee_bps: u32 = io::read(); // pool fee tier — binds the pool id (multi-fee-tier)
                 let pid = pool_id(&asset_a, &asset_b, fee_bps);
+                // Canonical orientation (see OP_SWAP): asset_a must be the low asset that maps to the
+                // contract's p.reserveA, else the proportional withdrawal da=floor(R_A·ds/sp) — computed
+                // from the low reserve — would be emitted as the HIGH-value asset_a note (LP over-withdraw).
+                assert!(bitcoin::be_bytes_lte(&asset_a, &asset_b) && asset_a != asset_b, "lp_remove: non-canonical asset order");
                 let lp_asset = lp_share_id(&pid);
                 let r_a_pre: u64 = io::read();
                 let r_b_pre: u64 = io::read();

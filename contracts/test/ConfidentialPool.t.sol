@@ -14,6 +14,23 @@ contract MockERC20 is ERC20 {
     function mint(address to, uint256 amount) external { _mint(to, amount); }
 }
 
+// A fee-on-transfer token: delivers less than requested (1% skim). The pool must reject it at
+// wrap/initPool (balance delta != amount) so escrow can never be over-credited.
+contract FeeOnTransferToken {
+    mapping(address => uint256) public balanceOf;
+    mapping(address => mapping(address => uint256)) public allowance;
+    function decimals() external pure returns (uint8) { return 18; }
+    function mint(address to, uint256 a) external { balanceOf[to] += a; }
+    function approve(address s, uint256 a) external returns (bool) { allowance[msg.sender][s] = a; return true; }
+    function transferFrom(address from, address to, uint256 a) external returns (bool) {
+        allowance[from][msg.sender] -= a;
+        uint256 fee = a / 100; // skim 1%
+        balanceOf[from] -= a;
+        balanceOf[to] += a - fee;
+        return true;
+    }
+}
+
 // A token exposing MINTER() — stands in for a canonical pool-minted ERC20 (M-4 guard).
 contract MockMinterToken {
     address public MINTER;
@@ -1318,5 +1335,109 @@ contract ConfidentialPoolTest is Test {
         pv.withdrawals[0] = ConfidentialPool.Withdrawal(shared, RECIP, 4);
         _settle(pv);
         assertEq(CanonicalBridgedERC20(tok).balanceOf(RECIP), 4 * 10 ** 10, "bridged exit at proven scale, not locked");
+    }
+
+    // ──────────────────── cross-lane: source-consume invariant ────────────────────
+
+    /// A Bitcoin-homed spend (membership against a knownBitcoinRoot) may mark nullifiers but must
+    /// NOT move value onto Ethereum: reflection is one-directional, so any value-exit duplicates value
+    /// (the Bitcoin UTXO stays live + spendable). Bitcoin→Ethereum value MUST flow through
+    /// bridge_burn→bridge_mint (which consumes the note on Bitcoin first; that path is not btcHomed).
+    function test_btc_homed_withdrawal_reverts() public {
+        bytes32 btcRoot = keccak256("btc-pool-ve");
+        bytes32 spent = keccak256("btc-spent-ve");
+        _attestBtc(btcRoot, spent, 1);
+        ConfidentialPool.PublicValues memory pv = _pv();
+        pv.spendRoot = btcRoot;          // Bitcoin-homed
+        pv.bitcoinSpentRoot = spent;     // current reflected spent set (passes the freshness gate)
+        pv.nullifiers = _arr(keccak256("ve-nu"));
+        pv.withdrawals = new ConfidentialPool.Withdrawal[](1);
+        pv.withdrawals[0] = ConfidentialPool.Withdrawal(assetId, RECIP, 1);
+        vm.expectRevert(ConfidentialPool.BtcHomedValueExitMustBridge.selector);
+        pool.settle(abi.encode(pv), "", new bytes[](0));
+    }
+
+    /// Same rule for a new Ethereum leaf (a transfer/change note) minted from a Bitcoin-homed spend.
+    function test_btc_homed_new_leaf_reverts() public {
+        bytes32 btcRoot = keccak256("btc-pool-leaf");
+        bytes32 spent = keccak256("btc-spent-leaf");
+        _attestBtc(btcRoot, spent, 1);
+        ConfidentialPool.PublicValues memory pv = _pv();
+        pv.spendRoot = btcRoot;
+        pv.bitcoinSpentRoot = spent;
+        pv.nullifiers = _arr(keccak256("leaf-nu"));
+        pv.leaves = _arr(keccak256("ethereum-leaf-from-btc-note"));
+        vm.expectRevert(ConfidentialPool.BtcHomedValueExitMustBridge.selector);
+        pool.settle(abi.encode(pv), "", new bytes[](1));
+    }
+
+    /// A nullifier-only Bitcoin-homed spend (no value-exit) is still accepted — it is harmless (no
+    /// Ethereum value created), so the bar is precisely on value movement, not on the lane itself.
+    function test_btc_homed_nullifier_only_ok() public {
+        bytes32 btcRoot = keccak256("btc-pool-noop");
+        bytes32 spent = keccak256("btc-spent-noop");
+        _attestBtc(btcRoot, spent, 1);
+        ConfidentialPool.PublicValues memory pv = _pv();
+        pv.spendRoot = btcRoot;
+        pv.bitcoinSpentRoot = spent;
+        pv.nullifiers = _arr(keccak256("noop-nu"));
+        pool.settle(abi.encode(pv), "", new bytes[](0));
+        assertTrue(pool.isNullifierSpent(keccak256("noop-nu")), "nullifier marked");
+    }
+
+    // ──────────────────── reserve floor: bridge_mint accounting ────────────────────
+
+    /// A bridge_mint pushes the BITCOIN burned-note ν into BOTH nullifiers and bitcoinBurnsConsumed.
+    /// That ν is Bitcoin-homed (never an EVM leaf), so it must NOT count toward the EVM spend floor.
+    function test_bridge_mint_excluded_from_reserve_floor() public {
+        bytes32 burnRoot = _attestBtc(keccak256("bm-floor-pool"), keccak256("bm-floor-spent"), 1);
+        ConfidentialPool.PublicValues memory pv = _pv();
+        bytes32 bridgeNu = keccak256("bridge-nu-floor");
+        pv.nullifiers = _arr(bridgeNu);            // real guest: ν in both arrays
+        pv.bitcoinBurnsConsumed = _arr(bridgeNu);
+        pv.bitcoinBurnRoot = burnRoot;
+        pv.leaves = _arr(keccak256("bridge-dest-floor"));
+        pool.settle(abi.encode(pv), "", new bytes[](1));
+        assertEq(pool.evmNullifiersSpent(), 0, "bridge nu excluded from the EVM spend count");
+        assertEq(pool.nextLeafIndex(), 1, "dest leaf inserted");
+    }
+
+    /// A bridge round-trip (mint then a true EVM spend of an equal-magnitude note) must NOT false-trip
+    /// the reserve floor. Under the old accounting the bridge ν was double-counted, so the second
+    /// settle saw evmNullifiersSpent (2) > nextLeafIndex (1) and reverted ReserveFloorBreach.
+    function test_bridge_round_trip_does_not_trip_floor() public {
+        _wrap(10, bytes32(uint256(0x100)), bytes32(uint256(0x101)), bytes32(uint256(0x102))); // seed escrow
+        bytes32 burnRoot = _attestBtc(keccak256("rt-pool"), keccak256("rt-spent"), 1);
+
+        ConfidentialPool.PublicValues memory mint = _pv();
+        bytes32 bridgeNu = keccak256("rt-bridge-nu");
+        mint.nullifiers = _arr(bridgeNu);
+        mint.bitcoinBurnsConsumed = _arr(bridgeNu);
+        mint.bitcoinBurnRoot = burnRoot;
+        mint.leaves = _arr(keccak256("rt-dest"));
+        pool.settle(abi.encode(mint), "", new bytes[](1));
+
+        ConfidentialPool.PublicValues memory wd = _pv();
+        wd.spendRoot = pool.currentRoot(); // an everKnownRoot (EVM-homed spend)
+        wd.nullifiers = _arr(keccak256("rt-evm-nu"));
+        wd.withdrawals = new ConfidentialPool.Withdrawal[](1);
+        wd.withdrawals[0] = ConfidentialPool.Withdrawal(assetId, RECIP, 5);
+        pool.settle(abi.encode(wd), "", new bytes[](0)); // must NOT revert ReserveFloorBreach
+        assertEq(pool.evmNullifiersSpent(), 1, "only the true EVM spend counts");
+    }
+
+    // ──────────────────── wrap: fee-on-transfer rejection ────────────────────
+
+    /// A fee-on-transfer token over-credits escrow if booked at the declared amount (last withdrawer
+    /// goes short). wrap must reject it: the realized balance delta != amount.
+    function test_wrap_fee_on_transfer_reverts() public {
+        FeeOnTransferToken fot = new FeeOnTransferToken();
+        bytes32 fotAsset = pool.registerWrapped(address(fot), 1, bytes32(0), "Fee", "FEE", 18);
+        fot.mint(USER, 1_000);
+        vm.startPrank(USER);
+        fot.approve(address(pool), type(uint256).max);
+        vm.expectRevert(ConfidentialPool.FeeOnTransferUnsupported.selector);
+        pool.wrap(fotAsset, 100, bytes32(uint256(1)), bytes32(uint256(2)), bytes32(uint256(3)));
+        vm.stopPrank();
     }
 }

@@ -36,6 +36,21 @@ contract DeployConfidentialPool is Script {
     function run() external {
         address sp1Verifier = vm.envAddress("SP1_VERIFIER");
         require(sp1Verifier != address(0), "set SP1_VERIFIER (pinned immutable Groth16 leaf)");
+        require(sp1Verifier.code.length != 0, "SP1_VERIFIER has no code");
+        // Verifier provenance is the single most consequential trust decision in this deploy: the pool
+        // hard-wires SP1_VERIFIER as immutable and every settle/attest trusts it forever. Pin the
+        // IMMUTABLE SP1VerifierGroth16 leaf, never the owner-upgradeable gateway (the tETH lesson). Make
+        // it a programmatic gate, not just operator discipline: assert the deployed code matches the
+        // published leaf's codehash. EXPECTED_VERIFIER_CODEHASH is REQUIRED on mainnet (chainid 1) and
+        // enforced whenever supplied elsewhere; obtain it from the verified leaf (`extcodehash`).
+        bytes32 expectedVerifierCodehash = vm.envOr("EXPECTED_VERIFIER_CODEHASH", bytes32(0));
+        require(
+            block.chainid != 1 || expectedVerifierCodehash != bytes32(0),
+            "mainnet: set EXPECTED_VERIFIER_CODEHASH to the published immutable SP1VerifierGroth16 leaf codehash"
+        );
+        if (expectedVerifierCodehash != bytes32(0)) {
+            require(sp1Verifier.codehash == expectedVerifierCodehash, "SP1_VERIFIER codehash != EXPECTED_VERIFIER_CODEHASH (wrong/upgradeable verifier?)");
+        }
         bytes32 vkey = vm.envOr("PROGRAM_VKEY", DEFAULT_VKEY);
         // Bitcoin-state relay vkey: an SP1 proof against it is the ONLY way to attest the
         // Bitcoin pool root / spent-set (no trusted oracle). bytes32(0) deploys with cross-chain
@@ -68,8 +83,9 @@ contract DeployConfidentialPool is Script {
         // Cross-chain activation gate. Reflection F1-F4 are all CLOSED and PROVEN: the guest commits
         // its prev/tip hashes and the pool pins them to HEADER_RELAY.tip() within a finality window
         // (F1/F2/F3 — anchor / self-declared-difficulty / confirmation), and the pinned reflection vkey
-        // (0x0099e1c7) is the FULL-SCAN model — every tx of every block + every vin against the handed
-        // live set, so no pool-note spend can be omitted (F4 — spent-set completeness). The cross-lane
+        // (elf-vkey-pin.json .bitcoin_relay_vkey, currently 0x00687472) is the FULL-SCAN model — every tx
+        // of every block + every vin against the handed live set, so no pool-note spend can be omitted
+        // (F4 — spent-set completeness). The require below reads it from the pin, so this literal is prose. The cross-lane
         // gate is sound. The residual is operational only: a Bitcoin reorg deeper than the finality
         // window (accept-and-document, as on the tETH bridge / AMM) and the relay running (liveness). So
         // require (a) BITCOIN_RELAY_VKEY == the pinned reflection vkey, (b) a wired HEADER_RELAY (also

@@ -205,7 +205,14 @@ contract BitcoinLightRelay {
             tip = prevHash;
             tipHeight = height;
             tipWork = cumWork;
-            if (pendingEpochTs != 0 && epochStartTimestamp[pendingEpochStart] == 0) {
+            // Commit the new epoch's first-block timestamp from the WINNING chain. Overwrite (not
+            // first-write-wins): a sub-finality-window reorg can replace the boundary block, and
+            // retarget() reads this value as the epoch-start anchor — caching the losing fork's
+            // timestamp would mis-target the next epoch (even a 1s difference flips the compact
+            // mantissa) and permanently revert retarget(). The winning chain is canonical by the
+            // work rule, so its boundary timestamp is the correct one. (Genesis-epoch start stays
+            // the deployer value: blocks below the anchor are never re-submitted here.)
+            if (pendingEpochTs != 0) {
                 epochStartTimestamp[pendingEpochStart] = pendingEpochTs;
             }
             emit TipAdvanced(prevHash, height, cumWork);

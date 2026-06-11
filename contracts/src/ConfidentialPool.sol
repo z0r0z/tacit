@@ -271,8 +271,9 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     // memo (owner-only; unverified passthrough), aligned, from firstLeafIndex.
     event LeavesInserted(uint256 indexed firstLeafIndex, bytes32[] leaves, bytes[] memos);
     event NullifiersSpent(bytes32[] nullifiers);
-    // A Bitcoin burn was minted as an Ethereum note (claimed once).
-    event BridgeMinted(bytes32 indexed claimId);
+    // A Bitcoin burn was minted as an Ethereum note (claimed once). The key is the burned
+    // note's nullifier ν (the one-mint-per-burn gate), not a destination-bound claimId.
+    event BridgeMinted(bytes32 indexed burnNullifier);
     // The oracle attested a canonical, confirmed Bitcoin confidential-pool root.
     event BitcoinRootAttested(bytes32 indexed root);
     // The reflected Bitcoin spent-set indexed-Merkle root advanced.
@@ -329,6 +330,8 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     error ZeroReserve();
     error FeeTooHigh();
     error ReserveFloorBreach();
+    error BtcHomedValueExitMustBridge();
+    error FeeOnTransferUnsupported();
 
     // ──────────────────── Constructor ────────────────────
 
@@ -532,10 +535,16 @@ contract ConfidentialPool is ReentrancyGuardTransient {
             if (msg.value != amount) revert EthValueMismatch();
             escrow[assetId] += amount;
         } else {
-            // External ERC20: escrow it (no ETH).
+            // External ERC20: escrow it (no ETH). Measure the realized balance delta and require it to
+            // equal `amount`. A fee-on-transfer / deflationary / negative-rebasing token delivers less
+            // than declared; crediting the full amount would over-state escrow and leave the LAST
+            // withdrawer of this asset short (their safeTransfer reverts while escrow still shows a
+            // balance). Reject such a token at the boundary instead of silently booking the shortfall.
             if (msg.value != 0) revert EthValueMismatch();
-            escrow[assetId] += amount;
+            uint256 balBefore = SafeTransferLib.balanceOf(a.underlying, address(this));
             SafeTransferLib.safeTransferFrom(a.underlying, msg.sender, address(this), amount);
+            if (SafeTransferLib.balanceOf(a.underlying, address(this)) - balBefore != amount) revert FeeOnTransferUnsupported();
+            escrow[assetId] += amount;
         }
         emit Wrap(depositId, assetId, amount, cx, cy, owner);
     }
@@ -593,8 +602,12 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         } else if (a.underlying == address(0)) {
             escrow[assetId] += amount; // native ETH: already received via msg.value (validated in initPool)
         } else {
-            escrow[assetId] += amount;
+            // External ERC20 reserve leg: reject a fee-on-transfer/rebasing token (balance delta must
+            // equal the declared amount), so a pool's reserves stay fully backed (mirrors wrap).
+            uint256 balBefore = SafeTransferLib.balanceOf(a.underlying, address(this));
             SafeTransferLib.safeTransferFrom(a.underlying, msg.sender, address(this), amount);
+            if (SafeTransferLib.balanceOf(a.underlying, address(this)) - balBefore != amount) revert FeeOnTransferUnsupported();
+            escrow[assetId] += amount;
         }
     }
 
@@ -727,6 +740,24 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         // bridge_burn MUST therefore originate from an Ethereum-homed note; the contract sees the home
         // lane (the guest sees only the root bytes), so reject btcHomed + crossOuts here.
         if (btcHomed && pv.crossOuts.length != 0) revert BridgeBurnNotEthHomed();
+        // Source-consume invariant (cross-lane): the crossOut bar above is one instance of a general
+        // rule. Reflection is one-directional (Bitcoin→Ethereum only — the reflection prover never
+        // imports the EVM nullifier set), so ANY value-exit of a Bitcoin-homed note (a withdrawal, a
+        // settler fee, a new Ethereum leaf, or a pool credit) lets the value leave to Ethereum while the
+        // original Bitcoin UTXO stays live + spendable on Bitcoin — duplication, no race/reorg needed.
+        // A Bitcoin-homed note's value may reach Ethereum ONLY by being CONSUMED on Bitcoin first:
+        // bridge_burn (on Bitcoin) → bridge_mint (here), which is gated on the reflected bridge-burn set
+        // and is NOT btcHomed (it proves membership against its own pool_root, spendRoot ∈ EVM/0). So a
+        // btcHomed batch may mark nullifiers but must not move value onto Ethereum. (A race-free single-tx
+        // fast lane is impossible without a finality-gated shared nullifier set — the deferred reverse path:
+        // symmetric forward reflection still lets a note be spent on both lanes within the mutual lag.)
+        if (
+            btcHomed
+                && (
+                    pv.withdrawals.length != 0 || pv.fees.length != 0 || pv.leaves.length != 0
+                        || pv.swaps.length != 0 || pv.liquidity.length != 0
+                )
+        ) revert BtcHomedValueExitMustBridge();
         // bridge_mint authorizes a mint on the burned note's MEMBERSHIP in the dedicated
         // bridge-burn set, pinned to the CURRENT reflected root. A non-zero burn root must
         // be current; and whenever a bridge_mint is present (bitcoinBurnsConsumed non-empty)
@@ -749,7 +780,16 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         // No-inflation floor: count EVM-homed spends (Bitcoin-homed cross-lane spends are backed by the
         // reflected Bitcoin tree, not this one). The post-insert invariant below caps total EVM spends at
         // total EVM leaves created — a guest/vkey compromise can't withdraw more notes than were deposited.
-        if (!btcHomed) evmNullifiersSpent += pv.nullifiers.length;
+        // A bridge_mint pushes the BITCOIN burned-note ν into BOTH `nullifiers` and `bitcoinBurnsConsumed`,
+        // and its batch is not btcHomed (it proves membership against its own pool_root, so spendRoot is an
+        // EVM root or 0). Those ν are Bitcoin-homed — never an EVM leaf — so subtract them here; otherwise
+        // each bridged note that later cashes out leaves a permanent +1 drift and the floor below eventually
+        // false-trips, locking ALL withdrawals. Clamp guards a guest that over-lists bitcoinBurnsConsumed.
+        if (!btcHomed) {
+            uint256 nspent = pv.nullifiers.length;
+            uint256 btcBurns = pv.bitcoinBurnsConsumed.length;
+            evmNullifiersSpent += btcBurns >= nspent ? 0 : nspent - btcBurns;
+        }
 
         for (uint256 i; i < pv.depositsConsumed.length; ++i) {
             bytes32 id = pv.depositsConsumed[i];
