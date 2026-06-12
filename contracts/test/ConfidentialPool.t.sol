@@ -1490,4 +1490,59 @@ contract ConfidentialPoolTest is Test {
         pool.wrap(fotAsset, 100, bytes32(uint256(1)), bytes32(uint256(2)), bytes32(uint256(3)));
         vm.stopPrank();
     }
+
+    // ──────────────────── reserve floor: trips on overspend + boundary bounds ────────────────────
+
+    /// The no-inflation floor (#EVM-spends ≤ #leaves) must REJECT a settle that nullifies more notes
+    /// than the tree ever created — the on-chain backstop against a guest/vkey compromise fabricating
+    /// spends. Seed 2 leaves, then a batch marking 3 distinct EVM nullifiers (no new leaves): 3 > 2.
+    function test_reserve_floor_trips_on_overspend() public {
+        _seedLeaves(2);
+        ConfidentialPool.PublicValues memory pv = _pv();
+        pv.spendRoot = pool.currentRoot(); // an everKnownRoot (EVM-homed spend)
+        pv.nullifiers = new bytes32[](3);
+        pv.nullifiers[0] = keccak256("ovr-a");
+        pv.nullifiers[1] = keccak256("ovr-b");
+        pv.nullifiers[2] = keccak256("ovr-c");
+        vm.expectRevert(ConfidentialPool.ReserveFloorBreach.selector);
+        pool.settle(abi.encode(pv), "", new bytes[](0));
+    }
+
+    /// The floor counts EVM spends BY IDENTITY, so disjoint arrays cannot suppress the count: a batch
+    /// pairing 2 fabricated EVM nullifiers with 2 UNRELATED consumed bridge-burns no longer cancels to
+    /// zero (a raw-length count would compute 2-2=0 and pass). With 1 seeded leaf, 2 EVM spends > 1.
+    function test_disjoint_bridge_burns_do_not_suppress_floor() public {
+        bytes32 burnRoot = _attestBtc(keccak256("dj-pool"), keccak256("dj-spent"), 1);
+        _seedLeaves(1);
+        ConfidentialPool.PublicValues memory pv = _pv();
+        pv.spendRoot = pool.currentRoot();
+        pv.nullifiers = new bytes32[](2);
+        pv.nullifiers[0] = keccak256("dj-evm-a");
+        pv.nullifiers[1] = keccak256("dj-evm-b");
+        pv.bitcoinBurnsConsumed = new bytes32[](2); // disjoint from nullifiers
+        pv.bitcoinBurnsConsumed[0] = keccak256("dj-burn-x");
+        pv.bitcoinBurnsConsumed[1] = keccak256("dj-burn-y");
+        pv.bitcoinBurnRoot = burnRoot;
+        vm.expectRevert(ConfidentialPool.ReserveFloorBreach.selector);
+        pool.settle(abi.encode(pv), "", new bytes[](0));
+    }
+
+    /// A withdrawal value is re-bounded to u64 at the public boundary (the note model carries u64),
+    /// mirroring wrap's gate — a value above 2^64 is rejected before any payout.
+    function test_withdrawal_value_over_u64_reverts() public {
+        ConfidentialPool.PublicValues memory pv = _pv();
+        pv.withdrawals = new ConfidentialPool.Withdrawal[](1);
+        pv.withdrawals[0] = ConfidentialPool.Withdrawal(assetId, RECIP, uint256(type(uint64).max) + 1);
+        vm.expectRevert(ConfidentialPool.ValueOutOfRange.selector);
+        pool.settle(abi.encode(pv), "", new bytes[](0));
+    }
+
+    /// Same u64 boundary bound on a settler fee.
+    function test_fee_value_over_u64_reverts() public {
+        ConfidentialPool.PublicValues memory pv = _pv();
+        pv.fees = new ConfidentialPool.FeePayment[](1);
+        pv.fees[0] = ConfidentialPool.FeePayment(assetId, uint256(type(uint64).max) + 1);
+        vm.expectRevert(ConfidentialPool.ValueOutOfRange.selector);
+        pool.settle(abi.encode(pv), "", new bytes[](0));
+    }
 }

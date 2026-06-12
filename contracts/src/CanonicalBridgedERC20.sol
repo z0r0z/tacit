@@ -21,7 +21,7 @@ interface ICanonicalDeployParams {
 ///         immutable `MINTER` (the pool / bridge / vault), the sole mint/burn authority.
 ///
 ///         The constructor takes no arguments — it reads `(assetId, minter, symbol,
-///         decimals)` back from its deployer (the factory). That keeps the init code
+///         decimals, cid)` back from its deployer (the factory). That keeps the init code
 ///         constant, so the CREATE2 address is `f(assetId)` alone: the bridge can compute
 ///         where to mint before the token exists, deploy it on first mint, and `mint`
 ///         against the same address forever after.
