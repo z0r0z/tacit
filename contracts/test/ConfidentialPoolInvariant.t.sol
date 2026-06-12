@@ -180,27 +180,44 @@ contract PoolHandler is Test {
         (, , , rA, rB, , ) = pool.pools(poolId);
     }
 
-    /// Initialize the single confidential AMM pool over (assetA, assetB), funded LP-side (escrows the
-    /// reserves, like a wrap). One-shot. Reserves are seeded above MINIMUM_LIQUIDITY on BOTH legs so
-    /// whichever sorts low clears the founder-position floor.
+    /// Create the single confidential AMM pool over (assetA, assetB) and seed it with a FIRST MINT —
+    /// createPair makes an empty slot, then the first LP funds the reserves FROM SHIELDED NOTES: wrap both
+    /// legs (escrow), then a first-mint OP_LP_ADD spends those notes INTO the reserves (so escrow backs the
+    /// reserves, never minted from thin air). One-shot. Reserves are above MINIMUM_LIQUIDITY on both legs.
     function initPoolOp(uint256 ra, uint256 rb) external {
         if (poolInit) return;
         ra = bound(ra, MIN_LIQ + 1, 1e9);
         rb = bound(rb, MIN_LIQ + 1, 1e9);
+        poolId = pool.createPair(assetA, assetB, POOL_FEE);
+        (poolLo, poolHi) = assetA < assetB ? (assetA, assetB) : (assetB, assetA);
+        scaleLo = poolLo == assetA ? scaleA : scaleB;
+        scaleHi = poolHi == assetA ? scaleA : scaleB;
+        // Wrap both legs → escrow (the reserves' backing comes from the LP's notes, like any wrap).
         uint256 amtA = ra * scaleA;
         uint256 amtB = rb * scaleB;
         tokenA.mint(address(this), amtA); tokenA.approve(address(pool), amtA);
         tokenB.mint(address(this), amtB); tokenB.approve(address(pool), amtB);
-        // Dummy founder-share-note commitments: this run pins the reserve/escrow state machine, not the
-        // founder's note claim (covered in ConfidentialPool.t.sol). The seed deposit inserts no leaf.
-        poolId = pool.initPool(assetA, assetB, ra, rb, POOL_FEE,
-            keccak256("seedcx"), keccak256("seedcy"), keccak256("seedow"));
+        pool.wrap(assetA, amtA, keccak256("seedcxA"), keccak256("seedcyA"), keccak256("seedowA"));
+        pool.wrap(assetB, amtB, keccak256("seedcxB"), keccak256("seedcyB"), keccak256("seedowB"));
         ghostEscrow[assetA] += amtA; ghostEscrow[assetB] += amtB;
+        // First-mint settle: consume both deposits (insert their leaves), spend them into the reserves
+        // (nullify), seed reserves + totalShares (rLo), mint the LP-share leaf.
+        (uint256 rLo, uint256 rHi) = poolLo == assetA ? (ra, rb) : (rb, ra);
+        ConfidentialPool.PublicValues memory pv = _pv();
+        pv.spendRoot = pool.currentRoot();
+        pv.depositsConsumed = new bytes32[](2);
+        pv.depositsConsumed[0] = keccak256(abi.encode(assetA, ra, keccak256("seedcxA"), keccak256("seedcyA"), keccak256("seedowA")));
+        pv.depositsConsumed[1] = keccak256(abi.encode(assetB, rb, keccak256("seedcxB"), keccak256("seedcyB"), keccak256("seedowB")));
+        pv.nullifiers = new bytes32[](2);
+        pv.nullifiers[0] = keccak256("seednuA"); pv.nullifiers[1] = keccak256("seednuB");
+        pv.leaves = new bytes32[](3); // 2 consumed-deposit leaves + 1 LP-share leaf
+        pv.leaves[0] = keccak256("seedlfA"); pv.leaves[1] = keccak256("seedlfB"); pv.leaves[2] = keccak256("seedshare");
+        pv.liquidity = new ConfidentialPool.LpSettlement[](1);
+        pv.liquidity[0] = ConfidentialPool.LpSettlement(poolId, 0, 0, 0, rLo, rHi, rLo);
+        _settle(pv);
         ghostReserve[assetA] += ra; ghostReserve[assetB] += rb;
-        (poolLo, poolHi) = assetA < assetB ? (assetA, assetB) : (assetB, assetA);
-        scaleLo = poolLo == assetA ? scaleA : scaleB;
-        scaleHi = poolHi == assetA ? scaleA : scaleB;
-        ghostShares = poolLo == assetA ? ra : rb; // totalShares = rLo (the low asset's reserve)
+        ghostShares = rLo;
+        ghostLeaves += 3;
         poolInit = true;
     }
 
@@ -283,7 +300,7 @@ contract PoolHandler is Test {
         bytes32 next = keccak256(abi.encode(prior, poolRoot, spentRoot, burnRoot, newHeight));
         ConfidentialPool.BitcoinRelayPublicValues memory r = ConfidentialPool.BitcoinRelayPublicValues(
             prior, poolRoot, spentRoot, burnRoot, newHeight, next
-        , bytes32(0), bytes32(0));
+        , bytes32(0), bytes32(0), bytes32(uint256(uint160(address(pool)))));
         pool.attestBitcoinStateProven(abi.encode(r), "");
         ghostRelayHeight = newHeight;
     }

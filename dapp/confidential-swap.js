@@ -89,14 +89,14 @@ export function makeConfidentialSwap({ keccak256, pool }) {
   const intentCtx = (assetA, assetB, chainBinding, it) => intentContext(
     SWAP_TAG, chainBinding, assetA, assetB,
     [[it.in.cx, it.in.cy, it.in.owner], [it.out.cx, it.out.cy, it.out.owner]],
-    [BigInt(it.dirByte), it.amountIn, it.amountOut, it.minOut],
+    [BigInt(it.dirByte), it.amountIn, it.amountOut, it.minOut, BigInt(it.deadline ?? 0)],
   );
 
   // Build one intent. The secp blindings rInSecp/rOutSecp stay CLIENT-SIDE — they never enter the
   // witness; only the opening sigmas (R, z) do (generated in buildBatch once the batch context is
   // known). The sigma nonces are DERIVED per (note blinding, intent context) at sign time, so a
   // re-quote of the same note under a new price/min_out automatically uses a fresh nonce (no reuse).
-  function buildIntent({ direction, amountIn, priceNum, priceDen, minOut, rInSecp, rOutSecp, inNote, outOwner }) {
+  function buildIntent({ direction, amountIn, priceNum, priceDen, minOut, rInSecp, rOutSecp, inNote, outOwner, deadline }) {
     const { amountOut, rem } = clearOut(direction, amountIn, priceNum, priceDen);
     const inC = commitXY(amountIn, rInSecp);     // C_in = amount_in·H + r_in·G
     const outC = commitXY(amountOut, rOutSecp);  // C_out = amount_out·H + r_out·G
@@ -104,7 +104,7 @@ export function makeConfidentialSwap({ keccak256, pool }) {
       direction, dirByte: direction === 'A->B' ? 0 : 1,
       in: { cx: inC.cx, cy: inC.cy, owner: inNote.owner, leafIndex: inNote.leafIndex, path: inNote.path },
       amountIn: BigInt(amountIn), amountOut, rem,
-      minOut: BigInt(minOut ?? 0),
+      minOut: BigInt(minOut ?? 0), deadline: BigInt(deadline ?? 0),
       out: { cx: outC.cx, cy: outC.cy, owner: outOwner },
       _r: { rIn: BigInt(rInSecp), rOut: BigInt(rOutSecp) },
     };

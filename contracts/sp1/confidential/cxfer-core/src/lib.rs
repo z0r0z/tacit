@@ -595,6 +595,47 @@ pub fn pool_id(asset_a: &[u8; 32], asset_b: &[u8; 32], fee_bps: u32) -> [u8; 32]
 /// this asset, so per-LP stakes stay hidden while the pool's totalShares is public.
 pub fn lp_share_id(pool_id: &[u8; 32]) -> [u8; 32] { kn(&[pool_id, b"lp"]) }
 
+/// Proportional LP shares for an add: min(floor(S·dA/R_A), floor(S·dB/R_B)). The limiting
+/// leg sets the shares, so an off-ratio add earns only the smaller leg's worth (the excess accrues to
+/// the pool, the constant-product `mint` rule) and the LP can never over-claim. This replaces the
+/// old exact-ratio gate (`dA·R_B == dB·R_A`), which forced dA to be a multiple of R_A/gcd(R_A,R_B) and
+/// so made incremental adds impossible once a traded pool's reserves went coprime. Faithful port of
+/// tests/amm-clearing.mjs `lpAddShares` (AMM.md §"Indexer determinism rules: Rounding"). u128 product
+/// so S·dA (each < 2^64) never overflows. Callers pass a live pool (reserve_a, reserve_b > 0).
+pub fn lp_add_shares(shares_pre: u64, d_a: u64, d_b: u64, reserve_a: u64, reserve_b: u64) -> u128 {
+    let sp = shares_pre as u128;
+    let a = sp * d_a as u128 / reserve_a as u128;
+    let b = sp * d_b as u128 / reserve_b as u128;
+    if a < b { a } else { b }
+}
+
+/// Proportional underlying for an LP remove: floor(reserve·shares/total), floored TOWARD the pool so
+/// the rounding dust stays for the remaining LPs (never over-withdrawn). Mirrors tests/amm-clearing.mjs
+/// `lpRemoveOutputs`. u128 product (reserve·shares each < 2^64).
+pub fn lp_remove_output(reserve: u64, shares: u64, total: u64) -> u128 {
+    reserve as u128 * shares as u128 / total as u128
+}
+
+/// Floor integer square root — matches tests/amm-clearing.mjs `isqrt` (and Solady's sqrt). OP_LP_ADD's
+/// FIRST mint (empty pool) sets initial totalShares = isqrt(dA·dB) — the constant-product first-mint
+/// basis, so shares are the price-invariant geometric mean and the MINIMUM_LIQUIDITY lock is symmetric.
+/// The input is dA·dB with dA,dB ≤ u64, so n < 2^128 and the result ≤ u64.
+pub fn isqrt(n: u128) -> u128 { n.isqrt() }
+
+/// Constant-product exact-in hop output (`getAmountOut`) — the single-trade output for one hop of a
+/// route: amount_out = floor(R_out · amount_in · (10000−fee) / (R_in · 10000 + amount_in · (10000−fee))).
+/// The (10000−fee) factor charges the pool's fee tier; the result is always < R_out (the denominator
+/// strictly exceeds the numerator's R_out coefficient), so a hop can never drain its output reserve.
+/// u128 throughout: amount_in, R_in, R_out each < 2^64, so R_out · ain_g < 2^64·2^64·10^4 < 2^128.
+/// OP_SWAP_ROUTE chains it hop-by-hop (out_i feeds in_{i+1}); fee_bps ≤ 1000 is enforced upstream.
+pub fn get_amount_out(amount_in: u64, reserve_in: u64, reserve_out: u64, fee_bps: u32) -> u128 {
+    let gamma = (10000 - fee_bps) as u128;        // 10000 − fee
+    let ain_g = amount_in as u128 * gamma;        // amount_in · γ
+    let num = reserve_out as u128 * ain_g;        // R_out · amount_in · γ
+    let den = reserve_in as u128 * 10000 + ain_g; // R_in · 10000 + amount_in · γ
+    num / den
+}
+
 /// Deterministic uniform-price clearing solve — a faithful, byte-for-byte port of
 /// tests/amm-clearing.mjs `solveClearing` (AMM.md §4, the normative indexer-determinism rule).
 /// OP_SWAP uses it to ENFORCE the pool's fee tier: the guest re-derives P_clear from the public
@@ -2094,6 +2135,53 @@ mod tests {
             assert_eq!(pn, exp_n, "P_clear_num drift on X={x} Y={y} R={r_a}/{r_b} fee={fee}");
             assert_eq!(pd, exp_d, "P_clear_den drift on X={x} Y={y} R={r_a}/{r_b} fee={fee}");
         }
+    }
+
+    // AMM-LP-1: lp_add_shares is the min rule (the EVM guest's OP_LP_ADD share computation) and must
+    // match tests/amm-clearing.mjs `lpAddShares` / dapp confidential-lp.js. The key property the old
+    // exact-ratio gate broke: an INCREMENTAL add on a coprime, traded pool must earn shares (be > 0),
+    // and an off-ratio add earns the LIMITING leg (the excess accrues to the pool — never an over-claim).
+    #[test]
+    fn lp_add_shares_min_rule() {
+        // in-ratio (1:2 pool) → both legs agree → proportional shares
+        assert_eq!(lp_add_shares(1000, 100, 200, 1000, 2000), 100);
+        // B-short of ratio → min picks the B leg (99); the extra A is donated to the pool
+        assert_eq!(lp_add_shares(1000, 100, 199, 1000, 2000), 99);
+        // B-long of ratio → min picks the A leg (100); the extra B is donated
+        assert_eq!(lp_add_shares(1000, 100, 400, 1000, 2000), 100);
+        // dust below one share rounds to 0 (the guest rejects a 0-share add)
+        assert_eq!(lp_add_shares(10000, 1, 2, 1_000_003, 2_000_006), 0);
+        // REGRESSION: an incremental add on a COPRIME pool (no integer dB makes dA·R_B == dB·R_A) now
+        // earns shares — the exact-ratio gate would have rejected every such add.
+        assert!(lp_add_shares(1_000_003, 500, 999, 1_000_003, 1_999_991) > 0,
+            "incremental add on a coprime/traded pool must earn shares");
+        assert_eq!(lp_add_shares(1_000_003, 500, 999, 1_000_003, 1_999_991), 499);
+        // remove: floor toward the pool
+        assert_eq!(lp_remove_output(1000, 100, 1000), 100);
+        assert_eq!(lp_remove_output(2000, 100, 1000), 200);
+        assert_eq!(lp_remove_output(1_000_003, 1, 3), 333_334);
+    }
+
+    // AMM-LP-INIT: isqrt (the constant-product first-mint basis) matches tests/amm-clearing.mjs `isqrt`
+    // reference vectors byte-for-byte, so the guest's first-mint totalShares == the JS/contract value.
+    #[test]
+    fn isqrt_matches_js_vectors() {
+        for (n, r) in [(0u128, 0u128), (1, 1), (2, 1), (3, 1), (4, 2), (8, 2), (2_000_000_000_000, 1_414_213),
+                       (1_000_000, 1000), (999_999, 999), (1_000_001, 1000), (u64::MAX as u128 * u64::MAX as u128, u64::MAX as u128)] {
+            assert_eq!(isqrt(n), r, "isqrt({n}) should be {r}");
+        }
+    }
+
+    // AMM-ROUTE-1: get_amount_out is the constant-product exact-in hop primitive OP_SWAP_ROUTE chains. It
+    // must charge the fee, never drain the output reserve, and keep k non-decreasing (the LP floor).
+    #[test]
+    fn get_amount_out_exact_in() {
+        assert_eq!(get_amount_out(1000, 1_000_000, 1_000_000, 0), 999);  // no-fee slippage
+        assert_eq!(get_amount_out(1000, 1_000_000, 1_000_000, 30), 996); // 0.3% fee → strictly less
+        assert!(get_amount_out(u64::MAX, 1000, 5000, 30) < 5000);        // can't drain the output reserve
+        let (rin, rout) = (1_000_000u128, 1_000_000u128);
+        let out = get_amount_out(1000, 1_000_000, 1_000_000, 30);
+        assert!((rin + 1000) * (rout - out) >= rin * rout, "constant-product must not decrease");
     }
 
     // AMM-FEE-2: pin the ORIENTATION of clearing_price_matches. The declared OP_SWAP price is

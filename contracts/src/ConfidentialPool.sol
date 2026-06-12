@@ -284,6 +284,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         AssetMeta[] assetMetas;        // etch-proven (asset_id, ticker, decimals) → trustless lazy-register
         SwapSettlement[] swaps;        // confidential AMM batches (OP_SWAP): pre→post pool reserves
         LpSettlement[] liquidity;      // confidential LP (OP_LP_ADD/REMOVE): pre→post reserves + totalShares
+        uint64 deadline;               // settle expiry (unix secs); 0 = none. The guest commits the earliest op deadline
     }
 
     // ──────────────────── Events ────────────────────
@@ -365,6 +366,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     error BadReflectionConfirmations();
     error BtcHomedValueExitMustBridge();
     error WrongEthPool();
+    error Expired();
 
     // ──────────────────── Constructor ────────────────────
 
@@ -598,87 +600,27 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         emit Wrap(depositId, assetId, amount, cx, cy, owner);
     }
 
-    /// Initialize a confidential AMM pool over two registered in-system assets, LP-funded with the
-    /// initial reserves (in-system values; the LP provides reserveX·unitScale of each underlying —
-    /// burned for a pool-minted asset, escrowed for an external one — so the reserves are backed).
-    /// poolId = keccak256(canonical(assetA, assetB), feeBps) — one pool per (canonical pair, fee tier),
-    /// stored in canonical (sorted) order; the assets must be distinct + registered. The founder keeps
-    /// their position as a shielded LP-share note: (shareCx, shareCy, shareOwner) is the commitment
-    /// C = founderShares·H + r·G and its owner (founderShares = rLo − MINIMUM_LIQUIDITY), recorded as a
-    /// deposit the founder claims via a settle opening proof — so the seed is recovered, minus the
-    /// standard MINIMUM_LIQUIDITY lock.
-    function initPool(
-        bytes32 assetA, bytes32 assetB, uint256 reserveA, uint256 reserveB, uint32 feeBps,
-        bytes32 shareCx, bytes32 shareCy, bytes32 shareOwner
-    ) external payable nonReentrant returns (bytes32 poolId) {
+    /// @notice Create an EMPTY confidential AMM pool SLOT for a (canonical pair, fee tier) — lazy,
+    ///         constant-product style. The pool holds NO reserves until the FIRST OP_LP_ADD funds it
+    ///         from the founder's shielded notes (a settle that spends an A note + a B note), which sets
+    ///         totalShares = isqrt(dA·dB) and mints the founder isqrt − MINIMUM_LIQUIDITY, permanently
+    ///         locking MINIMUM_LIQUIDITY as a NOTELESS floor (reserves can never fully drain → the
+    ///         (pair,fee) slot can't be bricked). poolId = keccak256(canonical(assetA, assetB), feeBps);
+    ///         one slot per (pair, fee). Permissionless + front-run-proof: a front-run only registers the
+    ///         empty slot — the first funder becomes the founder, so the pair is never lost. No funding
+    ///         here: the first add's reserves are backed by the spent notes' existing escrow (the same
+    ///         escrow that backs every circulating note), so escrow is touched only at the wrap boundary.
+    function createPair(bytes32 assetA, bytes32 assetB, uint32 feeBps) external returns (bytes32 poolId) {
         if (assetA == assetB) revert SameAsset();
-        Asset storage a = assets[assetA];
-        Asset storage b = assets[assetB];
-        if (!a.registered || !b.registered) revert NotRegistered();
-        // A pool is one-init-per-slot, so bound what a (permissionless) initializer can seed: a zero
-        // reserve makes the slot un-joinable (no in-ratio add can rescue a 0 leg) and a runaway fee
-        // makes it unusable — both would let a front-runner permanently brick the pair for dust. With a
-        // positive-reserve + capped-fee floor, the worst a front-run can do is create a USABLE pool.
-        if (reserveA == 0 || reserveB == 0) revert ZeroReserve();
+        if (!assets[assetA].registered || !assets[assetB].registered) revert NotRegistered();
         if (feeBps > MAX_POOL_FEE_BPS) revert FeeTooHigh();
         // The poolId + the stored pool are CANONICAL (assets sorted) and FEE-BOUND, mirroring the guest's
-        // pool_id and the Bitcoin AMM: (A,B) ≡ (B,A) is one pool, and each fee tier is a DISTINCT pool —
-        // so an LP just picks its fee tier, and a front-run can occupy only the exact (pair, fee) tuple
-        // (with positive reserves + a capped fee), never lock the pair. Reserves are stored low→high.
-        (bytes32 lo, bytes32 hi, uint256 rLo, uint256 rHi) =
-            assetA < assetB ? (assetA, assetB, reserveA, reserveB) : (assetB, assetA, reserveB, reserveA);
+        // pool_id and the Bitcoin AMM: (A,B) ≡ (B,A) is one pool, each fee tier is a DISTINCT pool.
+        (bytes32 lo, bytes32 hi) = assetA < assetB ? (assetA, assetB) : (assetB, assetA);
         poolId = keccak256(abi.encode(lo, hi, feeBps));
         if (pools[poolId].init) revert PoolExists();
-        // V2-style seed: the share basis is rLo. MINIMUM_LIQUIDITY of it is the permanent lock (the
-        // founder's note is the remainder, below), so rLo must clear it for a positive founder position.
-        if (rLo <= MINIMUM_LIQUIDITY) revert InsufficientSeed();
-        // Any native-ETH leg is funded from msg.value; require it to cover those legs EXACTLY (the
-        // two assets are distinct so at most one is ETH, but sum to be robust).
-        if (msg.value != _ethReserveAmount(a, reserveA) + _ethReserveAmount(b, reserveB)) revert EthValueMismatch();
-        _fundReserve(assetA, a, reserveA);
-        _fundReserve(assetB, b, reserveB);
-        // Seed share basis: totalShares = rLo (canonical units), mirroring the guest's proportional
-        // LP math. Confidential LPs join/leave via OP_LP_ADD/REMOVE (LpSettlement), moving reserves +
-        // shares together.
-        pools[poolId] = Pool({init: true, assetA: lo, assetB: hi, reserveA: rLo, reserveB: rHi, feeBps: feeBps, totalShares: rLo});
-        emit PoolInitialized(poolId, lo, hi, rLo, rHi, feeBps);
-        // The founder's LP position = rLo − MINIMUM_LIQUIDITY shares, materialized as a shielded LP-share
-        // note (asset = lp_share_id(poolId) = keccak(poolId‖"lp"), matching the guest). It is recorded as
-        // a pending deposit and claimed via a settle OP_WRAP opening proof — the SAME machinery as wrap,
-        // so the guest proves the note opens to exactly `founderShares` and it can never claim more than
-        // the seeded position. The leftover MINIMUM_LIQUIDITY shares hold no note → permanently locked,
-        // keeping totalShares ≥ MINIMUM_LIQUIDITY so the pool slot stays live after the founder exits.
-        bytes32 lpAsset = keccak256(abi.encodePacked(poolId, "lp"));
-        uint256 founderShares = rLo - MINIMUM_LIQUIDITY;
-        bytes32 depositId = keccak256(abi.encode(lpAsset, founderShares, shareCx, shareCy, shareOwner));
-        if (depositStatus[depositId] != 0) revert DepositExists();
-        depositStatus[depositId] = 1;
-        emit PoolSeeded(poolId, depositId, lpAsset, founderShares, shareCx, shareCy, shareOwner);
-    }
-    // The msg.value a native-ETH escrow leg requires (0 for pool-minted / ERC20 legs).
-    function _ethReserveAmount(Asset storage a, uint256 reserve) internal view returns (uint256) {
-        return (!a.poolMinted && a.underlying == address(0)) ? reserve * a.unitScale : 0;
-    }
-
-    // Pull `reserve` (in-system value) of an asset into the pool, the wrap way: burn the canonical
-    // ERC20 (pool-minted) or escrow the external ERC20. Reserves are < 2^64 (the swap circuit's
-    // BP+ range), so a pool can never hold value the guest can't reproduce.
-    function _fundReserve(bytes32 assetId, Asset storage a, uint256 reserve) internal {
-        if (reserve == 0) return;
-        if (reserve > type(uint64).max) revert ValueOutOfRange();
-        uint256 amount = reserve * a.unitScale;
-        if (a.poolMinted) {
-            IMintBurn(a.underlying).burn(msg.sender, amount);
-        } else if (a.underlying == address(0)) {
-            escrow[assetId] += amount; // native ETH: already received via msg.value (validated in initPool)
-        } else {
-            // External ERC20 reserve leg: reject a fee-on-transfer/rebasing token (balance delta must
-            // equal the declared amount), so a pool's reserves stay fully backed (mirrors wrap).
-            uint256 balBefore = SafeTransferLib.balanceOf(a.underlying, address(this));
-            SafeTransferLib.safeTransferFrom(a.underlying, msg.sender, address(this), amount);
-            if (SafeTransferLib.balanceOf(a.underlying, address(this)) - balBefore != amount) revert FeeOnTransferUnsupported();
-            escrow[assetId] += amount;
-        }
+        pools[poolId] = Pool({init: true, assetA: lo, assetB: hi, reserveA: 0, reserveB: 0, feeBps: feeBps, totalShares: 0});
+        emit PoolInitialized(poolId, lo, hi, 0, 0, feeBps); // empty; the first OP_LP_ADD seeds reserves + shares
     }
 
     // ──────────────────── Bitcoin state attestation (relay-proven, no oracle) ────────────────────
@@ -805,6 +747,9 @@ contract ConfidentialPool is ReentrancyGuardTransient {
 
         if (pv.version != PV_VERSION) revert BadVersion();
         if (pv.chainBinding != CHAIN_BINDING) revert ChainMismatch();
+        // Expired: a proof carrying a deadline can't be relayed past it (0 = no expiry). The guest commits
+        // the earliest op deadline + binds it in each trader's sigma, so the box can't alter or sit on it.
+        if (pv.deadline != 0 && block.timestamp > pv.deadline) revert Expired();
         // Membership may be proven against an Ethereum root OR a reflected Bitcoin
         // confidential-pool root (cross-lane: a Bitcoin-homed note spent on
         // the Ethereum fast lane). Both are oracle/relay-attested.

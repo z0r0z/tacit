@@ -38,7 +38,7 @@ contract ConfidentialTacWalkthroughTest is Test {
         bytes32 prior = pool.knownReflectionDigest();
         bytes32 next = keccak256(abi.encode(prior, poolRoot));
         pool.attestBitcoinStateProven(
-            abi.encode(ConfidentialPool.BitcoinRelayPublicValues(prior, poolRoot, keccak256("imt-empty-sentinel"), BURN_SENTINEL, 1, next, bytes32(0), bytes32(0))), ""
+            abi.encode(ConfidentialPool.BitcoinRelayPublicValues(prior, poolRoot, keccak256("imt-empty-sentinel"), BURN_SENTINEL, 1, next, bytes32(0), bytes32(0), bytes32(uint256(uint160(address(pool)))))), ""
         );
     }
 

@@ -152,7 +152,7 @@ contract ConfidentialPoolTest is Test {
         bytes32 prior = pool.knownReflectionDigest(); // continue the current attested state
         bytes32 next = keccak256(abi.encode(prior, poolRoot, spentRoot, burnRoot, height));
         ConfidentialPool.BitcoinRelayPublicValues memory r =
-            ConfidentialPool.BitcoinRelayPublicValues(prior, poolRoot, spentRoot, burnRoot, height, next, ANCHOR, ANCHOR);
+            ConfidentialPool.BitcoinRelayPublicValues(prior, poolRoot, spentRoot, burnRoot, height, next, ANCHOR, ANCHOR, bytes32(uint256(uint160(address(pool)))));
         pool.attestBitcoinStateProven(abi.encode(r), "");
     }
 
@@ -274,21 +274,7 @@ contract ConfidentialPoolTest is Test {
         vm.deal(USER, 1 ether);
         vm.prank(USER);
         (bool ok, ) = address(pool).call{value: 1 ether}("");
-        assertFalse(ok, "bare ETH send is rejected (only wrap/initPool accept ETH)");
-    }
-
-    function test_initPool_native_eth_reserve() public {
-        bytes32 ethId = pool.registerWrapped(address(0), 1e10, bytes32(0), "cETH", "cETH", 18);
-        token.mint(address(this), 4000);
-        token.approve(address(pool), type(uint256).max);
-        uint256 ethWei = 2000 * 1e10; // ethReserve 2000 in-system → wei (> MINIMUM_LIQUIDITY)
-        vm.deal(address(this), ethWei);
-        bytes32 pid = pool.initPool{value: ethWei}(ethId, assetId, 2000, 4000, 30, bytes32(uint256(0x5EED)), bytes32(uint256(0x5EE2)), bytes32(uint256(0x5EE3)));
-        (, , , uint256 rA, uint256 rB, , ) = pool.pools(pid);
-        // reserves are stored canonical low→high, so they follow the assetId sort, not the arg order
-        (uint256 expA, uint256 expB) = ethId < assetId ? (uint256(2000), uint256(4000)) : (uint256(4000), uint256(2000));
-        assertEq(rA, expA, "ETH reserve (canonical)"); assertEq(rB, expB, "token reserve (canonical)");
-        assertEq(pool.escrow(ethId), ethWei, "ETH reserve escrowed from msg.value");
+        assertFalse(ok, "bare ETH send is rejected (only wrap accepts ETH; createPair takes no funds)");
     }
 
     // ──────────────────── settle: deposit consumption ────────────────────
@@ -837,7 +823,7 @@ contract ConfidentialPoolTest is Test {
         bytes32 prior = pool.knownReflectionDigest();
         ConfidentialPool.BitcoinRelayPublicValues memory r = ConfidentialPool.BitcoinRelayPublicValues(
             prior, keccak256("r2"), keccak256("s2"), keccak256("b2"), 199, keccak256("next2")
-        , ANCHOR, ANCHOR);
+        , ANCHOR, ANCHOR, bytes32(uint256(uint160(address(pool)))));
         vm.expectRevert(ConfidentialPool.StaleRelayProof.selector);
         pool.attestBitcoinStateProven(abi.encode(r), "");
     }
@@ -901,7 +887,7 @@ contract ConfidentialPoolTest is Test {
         bytes32 prior = p.knownReflectionDigest();
         ConfidentialPool.BitcoinRelayPublicValues memory rl = ConfidentialPool.BitcoinRelayPublicValues(
             prior, attRoot, keccak256("sentinel"), keccak256("sentinel-burn"), 1, keccak256("next")
-        , ANCHOR, ANCHOR);
+        , ANCHOR, ANCHOR, bytes32(uint256(uint160(address(p)))));
         p.attestBitcoinStateProven(abi.encode(rl), "");
 
         bytes32 tacId = keccak256("attested-TAC");
@@ -1011,7 +997,7 @@ contract ConfidentialPoolTest is Test {
         bytes32 prior = pool.knownReflectionDigest();
         ConfidentialPool.BitcoinRelayPublicValues memory r = ConfidentialPool.BitcoinRelayPublicValues(
             prior, keccak256("some-pool-root"), bytes32(0), keccak256("b"), 1, keccak256("n")
-        , ANCHOR, ANCHOR);
+        , ANCHOR, ANCHOR, bytes32(uint256(uint160(address(pool)))));
         vm.expectRevert(ConfidentialPool.StaleBitcoinSpentRoot.selector);
         pool.attestBitcoinStateProven(abi.encode(r), "");
     }
@@ -1026,7 +1012,7 @@ contract ConfidentialPoolTest is Test {
         bytes32 prior = pool.knownReflectionDigest();
         ConfidentialPool.BitcoinRelayPublicValues memory r = ConfidentialPool.BitcoinRelayPublicValues(
             prior, keccak256("some-pool-root"), keccak256("s"), bytes32(0), 1, keccak256("n")
-        , ANCHOR, ANCHOR);
+        , ANCHOR, ANCHOR, bytes32(uint256(uint160(address(pool)))));
         vm.expectRevert(ConfidentialPool.StaleBitcoinBurnRoot.selector);
         pool.attestBitcoinStateProven(abi.encode(r), "");
     }
@@ -1037,7 +1023,7 @@ contract ConfidentialPoolTest is Test {
         bytes32 prior = pool.knownReflectionDigest();
         ConfidentialPool.BitcoinRelayPublicValues memory r = ConfidentialPool.BitcoinRelayPublicValues(
             prior, keccak256("pr"), keccak256("s"), keccak256("sb"), 1, keccak256("n"), ANCHOR, keccak256("not-the-relay-tip")
-        );
+        , bytes32(uint256(uint160(address(pool)))));
         vm.expectRevert(ConfidentialPool.UnanchoredReflection.selector);
         pool.attestBitcoinStateProven(abi.encode(r), "");
     }
@@ -1047,7 +1033,7 @@ contract ConfidentialPoolTest is Test {
         bytes32 prior = pool.knownReflectionDigest();
         ConfidentialPool.BitcoinRelayPublicValues memory r = ConfidentialPool.BitcoinRelayPublicValues(
             prior, keccak256("pr"), keccak256("s"), keccak256("sb"), 1, keccak256("n"), keccak256("not-the-prior-tip"), ANCHOR
-        );
+        , bytes32(uint256(uint160(address(pool)))));
         vm.expectRevert(ConfidentialPool.UnanchoredReflection.selector);
         pool.attestBitcoinStateProven(abi.encode(r), "");
     }
@@ -1061,7 +1047,7 @@ contract ConfidentialPoolTest is Test {
         bytes32 freshTip = relay.tip(); // 0 confirmations deep — above the matured anchor, not buried
         ConfidentialPool.BitcoinRelayPublicValues memory r = ConfidentialPool.BitcoinRelayPublicValues(
             prior, keccak256("pr"), keccak256("s"), keccak256("sb"), 1, keccak256("n"), ANCHOR, freshTip
-        );
+        , bytes32(uint256(uint160(address(pool)))));
         vm.expectRevert(ConfidentialPool.UnanchoredReflection.selector);
         pool.attestBitcoinStateProven(abi.encode(r), "");
     }
@@ -1077,14 +1063,14 @@ contract ConfidentialPoolTest is Test {
         // a proof that doesn't continue the current digest is rejected
         ConfidentialPool.BitcoinRelayPublicValues memory bad = ConfidentialPool.BitcoinRelayPublicValues(
             keccak256("wrong-prior"), keccak256("r2"), keccak256("s2"), keccak256("b2"), 11, keccak256("n2")
-        , ANCHOR, ANCHOR);
+        , ANCHOR, ANCHOR, bytes32(uint256(uint160(address(pool)))));
         vm.expectRevert(ConfidentialPool.StaleReflectionDigest.selector);
         pool.attestBitcoinStateProven(abi.encode(bad), "");
 
         // a zero newDigest is never a valid reflected state
         ConfidentialPool.BitcoinRelayPublicValues memory z = ConfidentialPool.BitcoinRelayPublicValues(
             advanced, keccak256("r3"), keccak256("s3"), keccak256("b3"), 11, bytes32(0)
-        , ANCHOR, ANCHOR);
+        , ANCHOR, ANCHOR, bytes32(uint256(uint160(address(pool)))));
         vm.expectRevert(ConfidentialPool.StaleReflectionDigest.selector);
         pool.attestBitcoinStateProven(abi.encode(z), "");
     }
@@ -1264,7 +1250,7 @@ contract ConfidentialPoolTest is Test {
         bytes32 attRoot = keccak256(abi.encode("att-root", assetId));
         bytes32 prior = pool.knownReflectionDigest();
         pool.attestBitcoinStateProven(
-            abi.encode(ConfidentialPool.BitcoinRelayPublicValues(prior, attRoot, keccak256("s"), keccak256("sb"), 1, keccak256("n"), ANCHOR, ANCHOR)),
+            abi.encode(ConfidentialPool.BitcoinRelayPublicValues(prior, attRoot, keccak256("s"), keccak256("sb"), 1, keccak256("n"), ANCHOR, ANCHOR, bytes32(uint256(uint160(address(pool)))))),
             ""
         );
         ConfidentialPool.PublicValues memory pv = _pv();

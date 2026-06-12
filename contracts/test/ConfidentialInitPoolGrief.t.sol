@@ -45,45 +45,33 @@ contract ConfidentialInitPoolGriefTest is Test {
         vm.stopPrank();
     }
 
-    // initPool with dummy founder-share-note commitments (these tests pin the front-run/canonicalization
-    // bounds, not the founder's share-note claim).
-    function _init(bytes32 a, bytes32 b, uint256 ra, uint256 rb, uint32 fee) internal returns (bytes32) {
-        return pool.initPool(a, b, ra, rb, fee, bytes32(uint256(0x5EED)), bytes32(uint256(0x5EE2)), bytes32(uint256(0x5EE3)));
-    }
-
-    // GRIEF-1 (fixed): initPool bounds what a permissionless front-run can seed into the one-per-slot
-    // pool. A zero reserve (un-joinable — no in-ratio add can rescue a 0 leg) and a runaway fee
-    // (unusable) are rejected, so the worst a front-run can do is create a USABLE pool (real reserves,
-    // capped fee) — never a permanent dust/100%-fee brick of the pair.
-    function test_frontrun_cannot_brick_pair_with_dust_or_bad_fee() public {
+    // GRIEF-1 (createPair model): createPair is a permissionless, EMPTY one-per-slot pool. A runaway fee
+    // is rejected (FeeTooHigh); there are NO reserves to grief (the first OP_LP_ADD seeds them from
+    // shielded notes), so a front-run can at worst occupy the empty slot at a sane fee — anyone then funds
+    // it, and the pair is never bricked.
+    function test_frontrun_cannot_brick_pair_with_bad_fee() public {
         // a 100% fee is rejected
         vm.prank(ATTACKER);
         vm.expectRevert(ConfidentialPool.FeeTooHigh.selector);
-        _init(assetA, assetB, 1, 1, 10000);
-        // a zero reserve (un-joinable) is rejected
+        pool.createPair(assetA, assetB, 10000);
+        // a front-run with a SANE fee just creates an EMPTY, joinable slot (the pair is not lost; the first
+        // liquidity provider — attacker or anyone — seeds it via a first-mint OP_LP_ADD).
         vm.prank(ATTACKER);
-        vm.expectRevert(ConfidentialPool.ZeroReserve.selector);
-        _init(assetA, assetB, 0, 1, 30);
-        // a front-run with SANE params just yields a usable pool (the pair is not lost; only the slot's
-        // params are first-come, and they must be sane — and above the MINIMUM_LIQUIDITY seed floor).
-        vm.prank(ATTACKER);
-        bytes32 pid = _init(assetA, assetB, 10000, 20000, 30);
-        (bool init, , , uint256 rA, uint256 rB, uint32 fee, ) = pool.pools(pid);
-        assertTrue(init && rA == 10000 && rB == 20000 && fee == 30, "front-run yields a usable pool, not a brick");
+        bytes32 pid = pool.createPair(assetA, assetB, 30);
+        (bool init, , , uint256 rA, uint256 rB, uint32 fee, uint256 sh) = pool.pools(pid);
+        assertTrue(init && rA == 0 && rB == 0 && sh == 0 && fee == 30, "front-run yields an empty joinable slot, not a brick");
     }
 
-    // GRIEF-1b (fixed): initPool CANONICALIZES the pair (sorts assetA/assetB), so the argument order is
-    // irrelevant — both orderings resolve to the SAME poolId. A client that derives poolId(assetB, assetA)
-    // and one that derives poolId(assetA, assetB) point at one and the same pool, and an attacker cannot
-    // pre-lock "both orderings": the second init reverts PoolExists.
+    // GRIEF-1b: createPair CANONICALIZES the pair (sorts assetA/assetB), so the argument order is
+    // irrelevant — both orderings resolve to the SAME poolId, and the second createPair reverts PoolExists
+    // (an attacker cannot pre-lock "both orderings").
     function test_orderings_canonicalize_to_one_pool() public {
         vm.prank(ATTACKER);
-        bytes32 pidAB = _init(assetA, assetB, 2000, 2000, 0);
-        // same fee tier, reversed args → same slot → PoolExists
+        bytes32 pidAB = pool.createPair(assetA, assetB, 0);
+        // reversed args, same fee → same slot → PoolExists
         vm.prank(ATTACKER);
         vm.expectRevert(ConfidentialPool.PoolExists.selector);
-        _init(assetB, assetA, 2000, 2000, 0);
-        // and the canonical derivation matches what initPool stored
+        pool.createPair(assetB, assetA, 0);
         assertEq(pidAB, keccak256(abi.encode(assetA, assetB, uint32(0))), "poolId is canonical (sorted) + fee");
         (bool iAB,,,,,,) = pool.pools(pidAB);
         assertTrue(iAB, "the one canonical pool is initialized");

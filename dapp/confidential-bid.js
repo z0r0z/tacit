@@ -105,7 +105,7 @@ export function makeConfidentialBid({ keccak256, pool }) {
     // Buyer context: PRE-SIGNED OFFLINE — only buyer-knowable data (no seller notes).
     const bNotes = [[bid.fund.cx, bid.fund.cy, buyerOwner], [buyerRecvA.cx, buyerRecvA.cy, buyerOwner]];
     if (refundNote) bNotes.push([refundNote.cx, refundNote.cy, buyerOwner]);
-    const buyerCtx = intentContext(BID_BUYER_TAG, bid.chainBinding, assetA, assetB, bNotes, [minFill, maxFill, price, increment, chosenF]);
+    const buyerCtx = intentContext(BID_BUYER_TAG, bid.chainBinding, assetA, assetB, bNotes, [minFill, maxFill, price, increment, chosenF, BigInt(bid.deadline ?? 0)]);
     // The buyer's opening-sigma nonces MUST be distinct + non-zero (a reused nonce leaks the note
     // blinding — see deriveBidNonces); across grid points the publisher must likewise vary them.
     const buyerNonces = [nonces.fund, nonces.recvA].concat(refundNote ? [nonces.refund] : []).map((x) => BigInt(x));
@@ -160,7 +160,7 @@ export function makeConfidentialBid({ keccak256, pool }) {
 
     const bNotes = [[fund.cx, fund.cy, buyerOwner], [buyerRecvA.cx, buyerRecvA.cy, buyerOwner]];
     if (refundNote) bNotes.push([refundNote.cx, refundNote.cy, buyerOwner]);
-    const buyerCtx = intentContext(BID_BUYER_TAG, chainBinding, assetA, assetB, bNotes, [minFill, maxFill, price, increment, chosenF]);
+    const buyerCtx = intentContext(BID_BUYER_TAG, chainBinding, assetA, assetB, bNotes, [minFill, maxFill, price, increment, chosenF, BigInt(filled.deadline ?? 0)]);
     if (!verifyOpeningSigma(fund.cx, fund.cy, vFund, fund.sig.R, fund.sig.z, buyerCtx)) fail('funding opening');
     if (!verifyOpeningSigma(buyerRecvA.cx, buyerRecvA.cy, chosenF, buyerRecvA.sig.R, buyerRecvA.sig.z, buyerCtx)) fail('buyer-recv-a opening');
     if (refundNote && !verifyOpeningSigma(refundNote.cx, refundNote.cy, refund, refundNote.sig.R, refundNote.sig.z, buyerCtx)) fail('buyer-refund opening');
@@ -244,7 +244,7 @@ export function makeConfidentialBid({ keccak256, pool }) {
   // fundRSecp), then pre-sign every lot state C ∈ {0, inc, …, maxFill−inc}. Returns the published grid;
   // the funding membership (leafIndex/path) + spendRoot are supplied per-lot at fill time (the opening
   // sigmas are membership-independent). `min_fill = increment` for a resting order (each lot is one inc).
-  function buildRestingBid({ assetA, assetB, maxFill, price, increment, chainBinding, buyerOwner, fundRSecp, bidSecret }) {
+  function buildRestingBid({ assetA, assetB, maxFill, price, increment, chainBinding, buyerOwner, fundRSecp, bidSecret, deadline }) {
     maxFill = BigInt(maxFill); price = BigInt(price); increment = BigInt(increment);
     if (!(price > 0n && increment > 0n)) throw new Error('bid: zero term');
     if (maxFill <= 0n || maxFill % increment !== 0n) throw new Error('bid: maxFill must be a positive multiple of increment');
@@ -252,6 +252,7 @@ export function makeConfidentialBid({ keccak256, pool }) {
     const vFund = maxFill * price;
     if (vFund > U64_MAX) throw new Error('bid: V_fund over u64');
     const minFill = increment;
+    const dl = BigInt(deadline ?? 0); // resting-order expiry, bound in EVERY per-state buyer presig (per-op Expired)
 
     // Funding note at cumulative C (value (maxFill−C)·price). C=0 is the buyer's existing note; C>0 is
     // deriveNote(REST_FUND, C) — the SAME note the lot at C−increment emits as its refund.
@@ -274,7 +275,7 @@ export function makeConfidentialBid({ keccak256, pool }) {
       // Per-state buyer context: a standard OP_BID with maxFill' = remaining, chosenF = increment.
       const bNotes = [[fC.cx, fC.cy, buyerOwner], [rC.cx, rC.cy, buyerOwner]];
       if (refund) bNotes.push([refund.cx, refund.cy, buyerOwner]);
-      const ctx = intentContext(BID_BUYER_TAG, chainBinding, assetA, assetB, bNotes, [minFill, remaining, price, increment, increment]);
+      const ctx = intentContext(BID_BUYER_TAG, chainBinding, assetA, assetB, bNotes, [minFill, remaining, price, increment, increment, dl]);
       const fundNonce = deriveNote(bidSecret, ND_REST_FUND_AS_FUND, Number(C)).blinding;
       const recvNonce = deriveNote(bidSecret, ND_REST_RECV, Number(C)).blinding;
       const fund = { cx: fC.cx, cy: fC.cy, amount: vFundC, _r: fR, sig: openingSigma(vFundC, fR, ctx, fundNonce) };
@@ -287,7 +288,7 @@ export function makeConfidentialBid({ keccak256, pool }) {
       }
       states.push({ C, remaining, fund, recv, refund });
     }
-    return { assetA, assetB, minFill, maxFill, price, increment, chainBinding, buyerOwner, vFund, bidSecret, states };
+    return { assetA, assetB, minFill, maxFill, price, increment, chainBinding, buyerOwner, vFund, bidSecret, deadline: dl, states };
   }
 
   // Seller fills the head lot (state C) of a resting bid: supply the current funding membership +
@@ -299,7 +300,7 @@ export function makeConfidentialBid({ keccak256, pool }) {
     C = BigInt(C);
     const state = restingBid.states.find((s) => s.C === C);
     if (!state) throw new Error('bid: no such resting state');
-    const { assetA, assetB, price, increment, chainBinding, buyerOwner, minFill, bidSecret } = restingBid;
+    const { assetA, assetB, price, increment, chainBinding, buyerOwner, minFill, bidSecret, deadline } = restingBid;
     const remaining = state.remaining;
     const chosenF = increment;
     sellerInAmount = BigInt(sellerInAmount);
@@ -330,7 +331,7 @@ export function makeConfidentialBid({ keccak256, pool }) {
     return {
       assetA, assetB, minFill, maxFill: remaining, price, increment, chainBinding, spendRoot, buyerOwner,
       vFund: remaining * price, bidSecret, fund, chosenF, pay, refund: state.refund ? state.refund.amount : 0n,
-      buyerRecvA: state.recv, refundNote: state.refund,
+      buyerRecvA: state.recv, refundNote: state.refund, deadline,
       sellerOwner, sellerIn, sellerRecvB, sellerChange,
     };
   }
