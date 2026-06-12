@@ -112,6 +112,11 @@ async fn main() -> anyhow::Result<()> {
         println!("  finalizedSlot          = {}", u64_of(word(5)));
         println!("  finalizedExecStateRoot = 0x{}", alloy_primitives::hex::encode(word(6)));
         println!("  syncCommitteeRoot      = 0x{}", alloy_primitives::hex::encode(word(7)));
+        if b.len() >= 288 {
+            println!("  prevSyncCommitteeRoot  = 0x{}", alloy_primitives::hex::encode(word(8)));
+            println!("  --> GENESIS pin (ETH_GENESIS_SYNC_COMMITTEE) = the prevSyncCommitteeRoot above");
+            println!("  --> genesis_slot (bootstrap from this at prove time) = the finalizedSlot above");
+        }
     } else {
         println!("  raw = 0x{}", alloy_primitives::hex::encode(b));
     }
