@@ -8,6 +8,23 @@ fn hexv(s: &str) -> Vec<u8> { hex::decode(s.trim_start_matches("0x")).unwrap() }
 fn r32(s: &mut SP1Stdin, v: &serde_json::Value) { s.write(&hexv(v.as_str().unwrap())); }
 fn path(s: &mut SP1Stdin, v: &serde_json::Value) { for p in v.as_array().unwrap() { s.write(&hexv(p.as_str().unwrap())); } }
 
+// Fail-closed vkey guard: the derived vkey MUST equal the pinned BITCOIN_RELAY_VKEY, else a drifting
+// box rebuild (different toolchain/deps than the committed elf/reflection-prover) produces a proof
+// that reverts in ConfidentialPool.attestBitcoinStateProven. Set EXPECT_VKEY=<pinned vkey> OR
+// ELF_VKEY_PIN=<path to elf-vkey-pin.json>; the prove aborts BEFORE the GPU spend on any mismatch.
+fn expected_vkey(field: &str) -> String {
+    if let Ok(v) = std::env::var("EXPECT_VKEY") { return v.trim().to_lowercase(); }
+    let path = std::env::var("ELF_VKEY_PIN")
+        .expect("set EXPECT_VKEY=<pinned vkey> or ELF_VKEY_PIN=<path to elf-vkey-pin.json> so a drifting rebuild can't produce on-chain-rejected proofs");
+    let j: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).expect("read ELF_VKEY_PIN")).expect("parse ELF_VKEY_PIN");
+    j[field].as_str().expect("pin field missing").trim().to_lowercase()
+}
+fn assert_vkey(actual: &str, field: &str) {
+    let exp = expected_vkey(field);
+    let act = actual.trim().to_lowercase();
+    assert_eq!(act, exp, "VKEY DRIFT: derived {act} != pinned {field} {exp} — this ELF won't verify against the deployed contract; rebuild from the committed source so the box runs the pinned bytes before proving");
+}
+
 // Write the assembled FULL-SCAN input (assembleReflectionScanInput) to SP1Stdin in the guest's
 // (reflect.rs) io::read order. Prior: roots + counts with the HANDED live set (key,value,asset triples).
 // Then anchorHeight + headers. Then per block: n_tx, ALL txData (the guest collects them, then
@@ -63,7 +80,9 @@ fn main() {
     let elf = Elf::Static(ELF);
     println!("setup...");
     let pk = client.setup(elf).expect("setup failed");
-    println!("BITCOIN_RELAY_VKEY={}", pk.verifying_key().bytes32());
+    let vk = pk.verifying_key().bytes32();
+    println!("BITCOIN_RELAY_VKEY={vk}");
+    assert_vkey(&vk, "bitcoin_relay_vkey");
     println!("proving groth16 (cuda)...");
     let proof = client.prove(&pk, s).groth16().run().expect("groth16 proof failed");
     println!("PROVED pv_bytes={}", proof.public_values.as_slice().len());

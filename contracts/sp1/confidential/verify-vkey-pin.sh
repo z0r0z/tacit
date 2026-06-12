@@ -53,5 +53,18 @@ echo "PASS: reflection ELF sha256 matches pin ($ract)"
 
 pin_vkey=$(grep -oE '"program_vkey"[[:space:]]*:[[:space:]]*"0x[0-9a-f]{64}"' "$PIN" | grep -oE '0x[0-9a-f]{64}')
 relay_vkey=$(grep -oE '"bitcoin_relay_vkey"[[:space:]]*:[[:space:]]*"0x[0-9a-f]{64}"' "$PIN" | grep -oE '0x[0-9a-f]{64}')
-echo "PINNED program_vkey:      $pin_vkey  (settle; ConfidentialSwapProofReal / ConfidentialProofReal)"
+# Fail closed on a missing/malformed vkey field: a blank program_vkey would deploy a zero PROGRAM_VKEY
+# (every settle reverts), and the guest_state prose has lagged these fields before — so assert the
+# machine-read fields are present + well-formed here, and treat the fields (not the prose) as canonical.
+[ -n "$pin_vkey" ]   || { echo "FAIL: program_vkey missing/malformed in $PIN"; exit 1; }
+[ -n "$relay_vkey" ] || { echo "FAIL: bitcoin_relay_vkey missing/malformed in $PIN"; exit 1; }
+echo "PINNED program_vkey:       $pin_vkey  (settle; ConfidentialSwapProofReal / ConfidentialProofReal)"
 echo "PINNED bitcoin_relay_vkey: $relay_vkey  (reflection; ConfidentialReflectionProofReal)"
+echo
+echo "The sha256 checks above prove the committed bytes; they do NOT prove the pinned vkey is the one"
+echo "this ELF derives. That binding is enforced mechanically at:"
+echo "  - prove time: exec-prove.rs / exec-reflect-prove.rs abort unless the derived vkey equals the"
+echo "                pin (set EXPECT_VKEY=<pinned> or ELF_VKEY_PIN=$PIN before proving)."
+echo "  - deploy time: DeployConfidentialPool require(PROGRAM_VKEY == .program_vkey)."
+echo "After ANY ELF rebuild, derive both vkeys on the prover host and reconcile every field in $PIN"
+echo "(program_vkey, bitcoin_relay_vkey, both sha256s, guest_state) in the SAME commit."
