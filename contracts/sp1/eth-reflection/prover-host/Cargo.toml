@@ -1,0 +1,21 @@
+[package]
+name = "prover-host"
+version = "0.1.0"
+edition = "2021"
+
+# Mode B recursive-prove host stack (runs on the vast.ai prover box, sp1-sdk 6.2.3 to match the Bitcoin
+# reflection guest's verify_sp1_proof). Build with `cargo +stable build` (the box default toolchain is
+# pinned to 1.86; deps need >=1.91, stable is 1.96). The eth ELF is include_bytes!'d from the sp1-helios
+# build tree on the box — re-point for a different box.
+#
+# eth_vkey: vk-coherence gate — proves sp1-sdk 6.2.3's setup(eth_elf).vk == the pinned ETH_REFLECTION_VKEY,
+# so the 6.1-built eth guest is provable under 6.2.3 and the in-guest recursion pin holds.
+
+[[bin]]
+name = "eth_vkey"
+path = "src/bin/eth_vkey.rs"
+
+[dependencies]
+sp1-sdk = { version = "=6.2.3", features = ["blocking"] }
+hex = "0.4"
+anyhow = "1"
