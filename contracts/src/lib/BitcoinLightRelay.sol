@@ -103,6 +103,14 @@ contract BitcoinLightRelay {
         if (epochStart % EPOCH_LENGTH != 0) revert InvalidChainLength();
         if (target == 0 || target > MAX_TARGET) revert InvalidTarget();
         require(tipWork_ > 0);
+        // The anchor must sit inside the seeded epoch: advanceTip resolves the
+        // target for (tipHeight_ + 1) / EPOCH_LENGTH, and only this epoch's
+        // target is stored below. An out-of-epoch anchor reverts UnknownEpoch on
+        // the first advance and bricks the relay, so reject it at genesis.
+        if (tipHeight_ < epochStart || tipHeight_ >= epochStart + EPOCH_LENGTH) revert InvalidChainLength();
+        // startTimestamp is cast to the anchor's uint32 header timestamp; a value
+        // past uint32 would truncate and corrupt the median-time-past baseline.
+        if (startTimestamp > type(uint32).max) revert InvalidTimestamp();
 
         uint256 epoch = epochStart / EPOCH_LENGTH;
         genesisEpoch = epoch;
@@ -293,7 +301,6 @@ contract BitcoinLightRelay {
         if (headers.length % 80 != 0 || n < 1 + confirmations) revert InvalidChainLength();
 
         bytes32 prevHash;
-        bytes32 lastHash;
         for (uint256 i; i < n; ++i) {
             bytes memory h = bytes(headers[i * 80:(i + 1) * 80]);
             bytes32 bh = _dsha256(h);
@@ -312,10 +319,9 @@ contract BitcoinLightRelay {
 
             if (i == 0) merkleRoot = mr;
             prevHash = bh;
-            lastHash = bh;
         }
 
-        _anchorChain(blockHeight_ + n - 1, lastHash);
+        _anchorChain(blockHeight_ + n - 1, prevHash);
     }
 
     /// @dev A burn-inclusion chain anchors if it ends at the tip or a canonical

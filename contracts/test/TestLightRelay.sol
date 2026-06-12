@@ -48,4 +48,13 @@ contract TestLightRelay is BitcoinLightRelay {
     function exposed_anchorChain(uint256 endHeight, bytes32 lastHash) external view {
         _anchorChain(endHeight, lastHash);
     }
+
+    /// @dev Expose the retarget compact-encoding helpers for round-trip tests.
+    function exposed_bitsToTarget(uint32 bits) external pure returns (uint256) {
+        return _bitsToTarget(bits);
+    }
+
+    function exposed_targetToCompact(uint256 target) external pure returns (uint32) {
+        return _targetToCompact(target);
+    }
 }
