@@ -101,15 +101,21 @@ pub fn main() {
     // `verify_sp1_proof` binds these bytes to THAT program (the inner Compressed proof is supplied to
     // the prover via SP1Stdin::write_proof), so a `fold_crossout` below trusts a cross-out finalized on
     // Ethereum — not the worker. See ops/PLAN-eth-reflection-modeB.md + ops/DESIGN-mode-b-recursion.md.
-    // The eth-reflection guest's vkey (chained-genesis variant). Rebuilding that ELF rotates this —
-    // keep it in lockstep (elf-vkey-pin.json).
+    // The eth-reflection guest's RECURSION vk_digest (vk.hash_u32(), the Poseidon digest verify_sp1_proof
+    // checks — NOT the on-chain bytes32 0x00726774…). Rebuilding that ELF rotates this; recompute via
+    // prover-host/eth_vkey and keep in lockstep.
     const ETH_REFLECTION_VKEY: [u32; 8] =
-        [0x00726774, 0x43772bb8, 0x9cdc3a50, 0x22f5f2b3, 0xcfb6e9b1, 0xd8497a80, 0x84f472c5, 0x63cfc303];
+        [959691297, 1573580327, 461851140, 794766140, 2109164942, 1629874690, 166258058, 1674560259];
     // Genesis sync-committee anchor (beacon weak-subjectivity bootstrap — NOT circular with the pool),
     // pinned at re-prove time to the chosen Sepolia finalized checkpoint. The pool address is NOT pinned
     // here: it's passed through as `ethPoolReflected` and gated on-chain == address(this), which breaks
     // the pool↔vkey circularity with the vkey still immutable in the constructor (D1).
-    const ETH_GENESIS_SYNC_COMMITTEE: [u8; 32] = [0u8; 32]; // TODO(re-prove): chosen Sepolia genesis sync-committee root
+    // Sepolia genesis sync-committee anchor, captured from the stage-i eth compressed proof
+    // (prevSyncCommitteeRoot @ finalizedSlot 10462624). Re-anchor for a production deploy.
+    const ETH_GENESIS_SYNC_COMMITTEE: [u8; 32] = [
+        0x8a, 0x83, 0x30, 0x01, 0x19, 0xac, 0x1e, 0x64, 0xa2, 0x31, 0x8d, 0x3d, 0xb3, 0x30, 0xed, 0x49,
+        0x6c, 0x51, 0x27, 0x6c, 0x63, 0x6a, 0x93, 0x63, 0x3b, 0x2d, 0x5c, 0xfd, 0x28, 0x3c, 0x2d, 0x44,
+    ];
 
     let eth_pv: Vec<u8> = io::read();
     assert!(eth_pv.len() >= 288, "eth-reflection public values too short");
