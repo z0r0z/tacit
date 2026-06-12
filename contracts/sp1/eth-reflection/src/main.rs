@@ -41,7 +41,9 @@ sol! {
         uint64  crossOutCount;          // leaves in the set (append-only, monotone)
         uint64  finalizedSlot;          // beacon slot of the finalized header proven against (monotone)
         bytes32 finalizedExecStateRoot; // execution stateRoot the storage proofs were verified against
-        bytes32 syncCommitteeRoot;      // the sync-committee anchor the proof chained from (weak-subjectivity)
+        bytes32 syncCommitteeRoot;      // CURRENT sync-committee after the batch (next cycle's prev)
+        bytes32 prevSyncCommitteeRoot;  // the sync-committee this batch chained FROM — the Bitcoin guest
+                                        // gates the FIRST proof's prev == genesis, then chains (weak-subjectivity)
     }
 }
 
@@ -98,6 +100,7 @@ pub fn main() {
     } = serde_cbor::from_slice(&sp1_zkvm::io::read_vec()).unwrap();
 
     let prev_head = store.finalized_header.beacon().slot;
+    let prev_sync_committee_hash: B256 = store.current_sync_committee.tree_hash_root(); // anchor chained FROM
     for update in updates.iter() {
         verify_update(update, expected_current_slot, &store, genesis_root, &forks).expect("update invalid");
         apply_update(&mut store, update);
@@ -163,6 +166,7 @@ pub fn main() {
         finalizedSlot: head,
         finalizedExecStateRoot: exec_state_root,
         syncCommitteeRoot: sync_committee_hash,
+        prevSyncCommitteeRoot: prev_sync_committee_hash,
     };
     sp1_zkvm::io::commit_slice(&pv.abi_encode());
 }
