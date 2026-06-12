@@ -313,49 +313,50 @@ contract ConfidentialPool is ReentrancyGuardTransient {
 
     // ──────────────────── Errors ────────────────────
 
-    error ZeroAddress();
     error ZeroVKey();
-    error BadReflectionConfirmations();
-    error AlreadyRegistered();
-    error NotRegistered();
-    error NotAContract();
-    error CanonicalAsset();
-    error AmountNotAligned();
-    error DepositExists();
-    error MerkleTreeFull();
+    error SameAsset();
     error BadVersion();
-    error ChainMismatch();
-    error UnknownRoot();
-    error NullifierAlreadySpent();
-    error DepositNotPending();
-    error InsufficientEscrow();
-    error MemoLeafMismatch();
-    error BurnAlreadyMinted();
-    error CrossOutClaimMismatch();
-    error BridgeBurnNotEthHomed();
-    error UnknownBitcoinRoot();
-    error StaleBitcoinSpentRoot();
-    error PoolNotMinter();
+    error FeeTooHigh();
+    error PoolExists();
     error BadDecimals();
+    error PoolNotInit();
+    error UnknownRoot();
+    error ZeroAddress();
+    error ZeroReserve();
+    error NotAContract();
+    error ChainMismatch();
+    error DepositExists();
+    error NotRegistered();
+    error PoolNotMinter();
+    error CanonicalAsset();
+    error MerkleTreeFull();
     error StaleRelayProof();
     error ValueOutOfRange();
-    error StaleBitcoinBurnRoot();
-    error StaleReflectionDigest();
-    error UnanchoredReflection();
+    error AmountNotAligned();
     error CrossChainEscrow();
-    error CrossChainTokenMismatch();
-    error CrossChainLinkTaken();
-    error PoolExists();
-    error PoolNotInit();
-    error PoolReserveMismatch();
-    error SameAsset();
     error EthValueMismatch();
-    error ZeroReserve();
-    error FeeTooHigh();
     error InsufficientSeed();
+    error MemoLeafMismatch();
+    error AlreadyRegistered();
+    error BurnAlreadyMinted();
+    error DepositNotPending();
+    error InsufficientEscrow();
     error ReserveFloorBreach();
-    error BtcHomedValueExitMustBridge();
+    error UnknownBitcoinRoot();
+    error CrossChainLinkTaken();
+    error PoolReserveMismatch();
+    error ZeroBitcoinPoolRoot();
+    error StaleBitcoinBurnRoot();
+    error UnanchoredReflection();
+    error BridgeBurnNotEthHomed();
+    error CrossOutClaimMismatch();
+    error NullifierAlreadySpent();
+    error StaleBitcoinSpentRoot();
+    error StaleReflectionDigest();
+    error CrossChainTokenMismatch();
     error FeeOnTransferUnsupported();
+    error BadReflectionConfirmations();
+    error BtcHomedValueExitMustBridge();
 
     // ──────────────────── Constructor ────────────────────
 
@@ -390,6 +391,10 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         HEADER_RELAY = IRelay(headerRelay_);
         lastReflectionBlockHash = genesisReflectionAnchor_; // the first batch's prev anchors here
         REFLECTION_CONFIRMATIONS = reflectionConfirmations_;
+        // A non-zero factory must be a deployed contract: a mistyped/EOA address would silently disable
+        // trustless first-mint metadata (_autoRegisterFromMeta skips on a zero factory; a non-contract
+        // would revert every attest_meta settle) with no recovery on an immutable pool. 0 = disabled.
+        if (canonicalFactory_ != address(0) && canonicalFactory_.code.length == 0) revert NotAContract();
         CANONICAL_FACTORY = ICanonicalAssetFactory(canonicalFactory_);
         knownReflectionDigest = REFLECTION_GENESIS_DIGEST; // the first cycle continues genesis
 
@@ -502,10 +507,11 @@ contract ConfidentialPool is ReentrancyGuardTransient {
             // value = amount/unitScale round to 0 for realistic amounts, so a permissionless front-run
             // with a runaway scale (registration is first-write-wins, no de-register) would brick every
             // wrap of the token's confidential lane. Capping at the real on-chain decimals keeps any
-            // front-registered scale usable (no permanent brick); a non-standard token (no decimals())
-            // keeps the supplied scale (narrow, unusual surface).
+            // front-registered scale usable (no permanent brick). The cap covers all decimals whose
+            // 10^d is representable (10^77 < 2^256 < 10^78); a token reporting d > 77 (or no/ reverting
+            // decimals(), the catch below) keeps the supplied scale — a narrow, unusual surface.
             try IERC20Metadata(underlying).decimals() returns (uint8 d) {
-                if (d <= 36 && unitScale > 10 ** uint256(d)) revert BadDecimals();
+                if (d <= 77 && unitScale > 10 ** uint256(d)) revert BadDecimals();
             } catch {}
         }
         // Native ETH is 18-decimal; bound its escrow scale the same way (poolMinted+address(0) reverted above).
@@ -709,6 +715,10 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         // Same non-zero-sentinel rule for the bridge-burn set: a zero would let a
         // bridge_mint skip its membership check (the guest keys it off `burn_root != 0`).
         if (r.bitcoinBurnRoot == bytes32(0)) revert StaleBitcoinBurnRoot();
+        // The pool root authorizes bridge_mint membership (settle's bitcoinRootsUsed gate keys off
+        // knownBitcoinRoot); a zero root would mark an empty tree canonical, so reject it too —
+        // matching the spent/burn-root sentinels above.
+        if (r.bitcoinPoolRoot == bytes32(0)) revert ZeroBitcoinPoolRoot();
         // Relay anchor (mirror SP1PoolRootVerifier): pin the batch's prev to the prior attested tip
         // and its tip to a MATURED ancestor of the canonical relay tip (≥ REFLECTION_CONFIRMATIONS deep,
         // each within the finality window). With the guest's verify_header_chain linking the batch back
@@ -846,16 +856,25 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         if (pv.nullifiers.length != 0) emit NullifiersSpent(pv.nullifiers);
         // No-inflation floor: count EVM-homed spends (Bitcoin-homed cross-lane spends are backed by the
         // reflected Bitcoin tree, not this one). The post-insert invariant below caps total EVM spends at
-        // total EVM leaves created — a guest/vkey compromise can't withdraw more notes than were deposited.
+        // total EVM leaves created — a guest/vkey compromise can't spend more notes than were created here.
         // A bridge_mint pushes the BITCOIN burned-note ν into BOTH `nullifiers` and `bitcoinBurnsConsumed`,
         // and its batch is not btcHomed (it proves membership against its own pool_root, so spendRoot is an
-        // EVM root or 0). Those ν are Bitcoin-homed — never an EVM leaf — so subtract them here; otherwise
-        // each bridged note that later cashes out leaves a permanent +1 drift and the floor below eventually
-        // false-trips, locking ALL withdrawals. Clamp guards a guest that over-lists bitcoinBurnsConsumed.
+        // EVM root or 0). Those ν are Bitcoin-homed — never an EVM leaf — so exclude exactly the nullifiers
+        // that are a consumed bridge-burn, matched BY IDENTITY (not by raw array-length difference): a
+        // disjoint `bitcoinBurnsConsumed` (a compromised guest pairing fabricated EVM spends with unrelated
+        // real burns) then cannot suppress the count, while an honest full-overlap batch is unchanged, and a
+        // bridge_mint's leaf still balances its later EVM re-spend (no false-trip drift).
         if (!btcHomed) {
-            uint256 nspent = pv.nullifiers.length;
-            uint256 btcBurns = pv.bitcoinBurnsConsumed.length;
-            evmNullifiersSpent += btcBurns >= nspent ? 0 : nspent - btcBurns;
+            uint256 added;
+            for (uint256 i; i < pv.nullifiers.length; ++i) {
+                bytes32 n = pv.nullifiers[i];
+                bool isBurn;
+                for (uint256 j; j < pv.bitcoinBurnsConsumed.length; ++j) {
+                    if (pv.bitcoinBurnsConsumed[j] == n) { isBurn = true; break; }
+                }
+                if (!isBurn) ++added;
+            }
+            evmNullifiersSpent += added;
         }
 
         for (uint256 i; i < pv.depositsConsumed.length; ++i) {
@@ -901,11 +920,16 @@ contract ConfidentialPool is ReentrancyGuardTransient {
 
         for (uint256 i; i < pv.withdrawals.length; ++i) {
             Withdrawal memory w = pv.withdrawals[i];
+            // A note value is a guest-carried u64 (the BP+ range is < 2^64); re-bound it at the public
+            // boundary, mirroring wrap's u64 gate, so a single effect can't carry a value the note model
+            // can't represent. The paid underlying (value·unitScale) is still u256.
+            if (w.value > type(uint64).max) revert ValueOutOfRange();
             uint256 paid = _payout(w.assetId, w.recipient, w.value);
             emit Withdraw(w.assetId, w.recipient, paid);
         }
 
         for (uint256 i; i < pv.fees.length; ++i) {
+            if (pv.fees[i].value > type(uint64).max) revert ValueOutOfRange();
             _payout(pv.fees[i].assetId, msg.sender, pv.fees[i].value);
         }
 
@@ -929,6 +953,14 @@ contract ConfidentialPool is ReentrancyGuardTransient {
             Pool storage p = pools[s.poolId];
             if (!p.init) revert PoolNotInit();
             if (p.reserveA != s.reserveAPre || p.reserveB != s.reserveBPre) revert PoolReserveMismatch();
+            // Defense-in-depth floor (mirrors the nullifier reserve floor): a live constant-product
+            // pool's reserves are never 0, so a guest-supplied post that zeroes a leg can only be a
+            // compromise — reject it rather than let the pool be drained/bricked.
+            if (s.reserveAPost == 0 || s.reserveBPost == 0) revert ReserveFloorBreach();
+            // Reserves stay < 2^64 — the same bound _fundReserve enforces at init, so a pool can never
+            // hold value the guest can't reproduce. The guest carries reserves as u64 (BP+ range), so an
+            // out-of-range post would wrap when read back as the next pre, desyncing or locking the pool.
+            if (s.reserveAPost > type(uint64).max || s.reserveBPost > type(uint64).max) revert ValueOutOfRange();
             p.reserveA = s.reserveAPost;
             p.reserveB = s.reserveBPost;
             emit SwapSettled(s.poolId, s.reserveAPost, s.reserveBPost);
@@ -937,6 +969,8 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         // Confidential LP (OP_LP_ADD/REMOVE): move reserves AND totalShares. Like swaps, gate the
         // proven pre-state == the live pool (a stale/forged pre reverts), then apply the post — the
         // guest proved the in-ratio add / proportional remove + the LP-share + asset note flows.
+        // Applied AFTER the swap loop, so for a same-pool batch the guest must order each LP
+        // pre-state against the post-swap reserves or this pre==live gate reverts.
         for (uint256 i; i < pv.liquidity.length; ++i) {
             LpSettlement memory l = pv.liquidity[i];
             Pool storage p = pools[l.poolId];
@@ -944,6 +978,16 @@ contract ConfidentialPool is ReentrancyGuardTransient {
             if (p.reserveA != l.reserveAPre || p.reserveB != l.reserveBPre || p.totalShares != l.sharesPre) {
                 revert PoolReserveMismatch();
             }
+            // Same defense-in-depth floor: reserves stay positive and totalShares can never drop below
+            // the permanently-locked MINIMUM_LIQUIDITY (no note holds those shares), so a post that
+            // breaks either is a compromise, not a legitimate proportional remove.
+            if (l.reserveAPost == 0 || l.reserveBPost == 0 || l.sharesPost < MINIMUM_LIQUIDITY) {
+                revert ReserveFloorBreach();
+            }
+            // Reserves AND totalShares stay < 2^64 (the BP+/u64 bound _fundReserve sets at init): a post
+            // beyond it would wrap when the guest reads it back as the next pre, locking the pool.
+            if (l.reserveAPost > type(uint64).max || l.reserveBPost > type(uint64).max
+                || l.sharesPost > type(uint64).max) revert ValueOutOfRange();
             p.reserveA = l.reserveAPost;
             p.reserveB = l.reserveBPost;
             p.totalShares = l.sharesPost;
@@ -958,6 +1002,17 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     function isKnownRoot(bytes32 root) external view returns (bool) { return everKnownRoot[root]; }
     function isNullifierSpent(bytes32 n) external view returns (bool) { return nullifierSpent[n]; }
     function getAsset(bytes32 assetId) external view returns (Asset memory) { return assets[assetId]; }
+
+    /// The reserves `shares` LP-share notes redeem at the pool's CURRENT state: a proportional
+    /// (assetA, assetB) claim, `reserve·shares/totalShares` per leg — the same floor the guest's
+    /// OP_LP_REMOVE proves. In-system value units (scale to underlying by each asset's unitScale for a
+    /// public figure). A read helper for a "your position = X A + Y B" display; settlement never reads it.
+    function lpPositionValue(bytes32 poolId, uint256 shares) external view returns (uint256 amountA, uint256 amountB) {
+        Pool storage p = pools[poolId];
+        if (!p.init) revert PoolNotInit();
+        amountA = p.reserveA * shares / p.totalShares;
+        amountB = p.reserveB * shares / p.totalShares;
+    }
 
     // ──────────────────── Internals ────────────────────
 
@@ -1052,8 +1107,9 @@ contract ConfidentialPool is ReentrancyGuardTransient {
             if (a.underlying == address(0)) {
                 // Native ETH — force-send so a non-payable recipient can't brick the batch settle.
                 // Safe under reentrancy: the escrow decrement is committed first (checks-effects-
-                // interactions) and settle holds the nonReentrant guard; the force path (selfdestruct
-                // push) runs no recipient code at all.
+                // interactions) and settle holds the nonReentrant guard, so even the gas-stipended
+                // call forceSafeTransferETH attempts first (before its selfdestruct-push fallback)
+                // cannot re-enter the pool.
                 SafeTransferLib.forceSafeTransferETH(to, amount);
             } else {
                 SafeTransferLib.safeTransfer(a.underlying, to, amount);
