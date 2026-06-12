@@ -33,6 +33,26 @@ contract CanonicalMintersTest is Test {
         tok.mint(ALICE, 1); // caller != MINTER
     }
 
+    function test_fixed_rejects_zero_recipient() public {
+        vm.expectRevert(FixedSupplyMinter.ZeroRecipient.selector);
+        new FixedSupplyMinter(factory, ETCHER, SALT, "FIX", 18, bytes32(0), 1_000e18, address(0));
+    }
+
+    function test_fixed_adopts_predeployed_token() public {
+        // Someone deploys the canonical token for our exact (id, minter, meta) slot first,
+        // naming the minter's predicted address. The minter must adopt it, not revert.
+        bytes32 assetId = factory.deriveAssetId(ETCHER, SALT, "FIX", 18);
+        address predictedMinter = vm.computeCreateAddress(address(this), vm.getNonce(address(this)));
+        address pre = factory.deployCanonical(assetId, predictedMinter, "FIX", 18);
+
+        FixedSupplyMinter m =
+            new FixedSupplyMinter(factory, ETCHER, SALT, "FIX", 18, bytes32(0), 1_000e18, ALICE);
+        assertEq(address(m), predictedMinter, "minter landed at the predicted address");
+        assertEq(address(m.TOKEN()), pre, "adopted the pre-deployed token");
+        assertEq(m.TOKEN().MINTER(), address(m), "adopted token is minter-bound");
+        assertEq(m.TOKEN().balanceOf(ALICE), 1_000e18, "minted into the adopted token");
+    }
+
     function test_fixed_id_self_certifies() public {
         FixedSupplyMinter m = new FixedSupplyMinter(factory, ETCHER, SALT, "FIX", 18, bytes32(0), 1, ALICE);
         assertEq(m.ASSET_ID(), factory.deriveAssetId(ETCHER, SALT, "FIX", 18), "etch id is self-certifying");
@@ -54,6 +74,13 @@ contract CanonicalMintersTest is Test {
         vm.prank(AUTH);
         vm.expectRevert(CappedMintMinter.CapExceeded.selector);
         m.mint(ALICE, 1);
+    }
+
+    function test_capped_rejects_zero_recipient() public {
+        CappedMintMinter m = new CappedMintMinter(factory, ETCHER, SALT, "CAP", 18, bytes32(0), AUTH, 0, 0);
+        vm.prank(AUTH);
+        vm.expectRevert(CappedMintMinter.ZeroRecipient.selector);
+        m.mint(address(0), 1e18);
     }
 
     function test_capped_only_authority_mints() public {

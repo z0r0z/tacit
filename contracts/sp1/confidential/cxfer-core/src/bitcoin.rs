@@ -154,7 +154,7 @@ pub fn asset_id_from_etch(tx_data: &[u8]) -> Option<[u8; 32]> {
 /// payload from `extract_taproot_envelope` (`env[0]` = opcode). Per SPEC §5.1/§5.8:
 /// `opcode(1) ‖ ticker_len(1, 1..16) ‖ ticker ‖ decimals(1, 0..8) ‖ [cid(32)] ‖ …`. CETCH=0x21,
 /// T_PETCH=0x27. The optional 32-byte `cid` (immediately after decimals) is the asset's IPFS
-/// metadata content hash (the CIDv1 dag-pb sha256 digest → a logo/description JSON); absent ⇒
+/// metadata content hash (the CIDv1 raw sha256 digest → a logo/description JSON); absent ⇒
 /// [0;32] (no metadata). The reveal txid binds it exactly like ticker+decimals, so a bridged
 /// asset's contractURI is trustless. Returns `(ticker[..len], len, decimals, cid)`; None if not a
 /// well-formed etch.

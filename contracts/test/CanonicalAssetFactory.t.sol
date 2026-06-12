@@ -188,6 +188,40 @@ contract CanonicalAssetFactoryTest is Test {
         );
     }
 
+    /// Cross-language KAT for the metadata-CID binding (nonzero cid) — locks that the full
+    /// 32-byte cid is appended into meta_hash. Mirrors tests/confidential-canonical-asset-id.mjs.
+    function test_metaHash_kat_with_cid() public view {
+        bytes32 cid = 0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f;
+        assertEq(
+            factory.metaHash("cBTC", 8, cid),
+            0x96dcb13599f507d7d84d8b1b44e25f7094fcd54115a74cfa1412d48a559a0c81,
+            "metaHash KAT (cBTC/8/cid=0x00..1f)"
+        );
+    }
+
+    // ── contractURI: the etch-proven metadata cid reconstructed as a CIDv1 base16 string ──
+
+    /// EIP-7572 contractURI: the 32-byte METADATA_CID is surfaced as `ipfs://` + a CIDv1 in
+    /// base16 (multibase `f`): 01(v1) ‖ 55(raw) ‖ 12(sha2-256) ‖ 20(len 32) ‖ hex(cid). With the
+    /// raw codec the cid is simply sha256(metadata JSON bytes), recomputable from the JSON alone.
+    /// KAT vector (bytes 0x00..0x1f) is mirrored in tests/confidential-canonical-asset-id.mjs.
+    function test_contractURI_reconstructs_cidv1_base16() public {
+        bytes32 cid = 0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f;
+        CanonicalBridgedERC20 tok = CanonicalBridgedERC20(factory.deployCanonical(ASSET, MINTER, "cBTC", 8, cid));
+        assertEq(tok.METADATA_CID(), cid, "cid bound into the token");
+        assertEq(
+            tok.contractURI(),
+            "ipfs://f01551220000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+            "CIDv1 base16: f 01 55 12 20 then hex(cid), zero-bytes preserved (left-padded)"
+        );
+    }
+
+    function test_contractURI_empty_when_no_metadata() public {
+        CanonicalBridgedERC20 tok = _deploy(); // cid = 0
+        assertEq(tok.METADATA_CID(), bytes32(0), "no metadata cid");
+        assertEq(tok.contractURI(), "", "absent metadata -> empty contractURI");
+    }
+
     // ── pool lazy-deploys + harmonizes decimals from guest-proven metadata (attest_meta) ──
     // registerMintedAuto was removed: a cross-chain link is established ONLY by the guest-proven
     // attest_meta path (so a caller can't bind a link with an unauthenticated decimals/scale). Its
