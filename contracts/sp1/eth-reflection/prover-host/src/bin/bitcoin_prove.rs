@@ -55,8 +55,8 @@ fn write_scan_rest(s: &mut SP1Stdin, f: &serde_json::Value) {
 
 fn main() {
     let mode = std::env::var("PROOF_MODE").unwrap_or_else(|_| "compressed".into());
-    let f: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string("/root/work/confidential/fixtures/reflection_input.json").unwrap()).unwrap();
+    let fx_path = std::env::var("REFLECT_FIXTURE").unwrap_or_else(|_| "/root/work/confidential/fixtures/reflection_input.json".to_string());
+    let f: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&fx_path).unwrap()).unwrap();
 
     let eth = SP1ProofWithPublicValues::load("/root/work/prover-host/out/eth_compressed.bin").expect("load eth proof");
     let eth_pv = eth.public_values.as_slice().to_vec();

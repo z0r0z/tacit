@@ -15,9 +15,11 @@ import {SP1Verifier} from "./vendor/sp1/v6.1.0/SP1VerifierGroth16.sol";
 /// BITCOIN_RELAY_VKEY (genesis-pinned + the recursion hash_u32 digest); its public values are the
 /// 9-field BitcoinReflectionPublicValues that ConfidentialPool.attestBitcoinStateProven verifies +
 /// chains (incl. ethPoolReflected, gated == address(this)). Fixture:
-/// contracts/test/fixtures/reflection_groth16.json. (This fixture's CXFER uses placeholder inputs that
-/// don't conserve, so its output-note fold is skipped — a conserving-fold fixture needs real prevout
-/// commitments; the recursion + scan + on-chain verification are exercised regardless.)
+/// contracts/test/fixtures/reflection_groth16.json. The CXFER is a synthetic but value-CONSERVING
+/// transfer (gen-reflection-cxfer-synth: 2-in/2-out Σv_in=Σv_out=1000, real BIP-340 kernel + BP+ range),
+/// so its two output notes ARE folded into bitcoinPoolRoot (REFLECT-1 conservation gate passes); the
+/// confirmed both-sided negative test (readiness-gate layer 9) shows the same ELF SKIPS a non-conserving
+/// CXFER instead.
 contract ConfidentialReflectionProofRealTest is Test {
     SP1Verifier verifier;
     bytes32 vkey;
@@ -60,7 +62,7 @@ contract ConfidentialReflectionProofRealTest is Test {
             bytes32 ethPoolReflected
         ) = abi.decode(publicValues, (bytes32, bytes32, bytes32, bytes32, uint64, bytes32, bytes32, bytes32, bytes32));
         assertEq(height, 307547, "the real signet block height");
-        assertEq(newDigest, 0x4d798e9a701cfbdfd1c3ae852bba2124c907a8f9a05fb9c94886d13732e76eb1, "newDigest (Mode-B recursion proof)");
+        assertEq(newDigest, 0x4d798e9a701cfbdfd1c3ae852bba2124c907a8f9a05fb9c94886d13732e76eb1, "newDigest (Mode-B recursion, conserving CXFER folded)");
         assertTrue(priorDigest != bytes32(0) && poolRoot != bytes32(0) && spentRoot != bytes32(0), "non-zero roots");
         // The header anchor the contract pins to RELAY.tip()/the prior tip: tip non-zero, prev = the
         // batch's resume anchor (headers[0]'s prev field).

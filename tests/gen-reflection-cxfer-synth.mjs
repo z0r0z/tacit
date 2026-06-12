@@ -119,7 +119,13 @@ const txSpec = {
   txData: '0x' + tx.toString('hex'),
   txid: '0x' + Buffer.from(txid).toString('hex'),
   vins: ins.map((i) => ({ prevTxid: '0x' + i.txid.toString('hex'), vout: i.vout })),
-  env: { type: 'cxfer', outputs: Cout.map((C, j) => { const { cx, cy } = xyHex(C); return { cx, cy, commitmentHash: pool.commitmentHash(cx, cy), noteLeaf: pool.leaf(ASSET_HEX, cx, cy, ZERO_OWNER), vout: j }; }) },
+  env: {
+    type: 'cxfer',
+    assetId: ASSET_HEX,
+    kernelSig: '0x' + Buffer.from(sig).toString('hex'),
+    rangeProof: '0x' + Buffer.from(rangeProof).toString('hex'),
+    outputs: Cout.map((C, j) => { const { cx, cy } = xyHex(C); return { cx, cy, compressed: '0x' + Buffer.from(compress(C)).toString('hex'), commitmentHash: pool.commitmentHash(cx, cy), noteLeaf: pool.leaf(ASSET_HEX, cx, cy, ZERO_OWNER), vout: j }; }),
+  },
 };
 const input = pool.assembleReflectionScanInput(state, {
   anchorHeight: BLOCK_HEIGHT, headers: ['0x' + Buffer.from(header).toString('hex')], blocks: [{ txs: [txSpec] }],
