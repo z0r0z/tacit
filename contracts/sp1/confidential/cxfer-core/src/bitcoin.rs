@@ -195,6 +195,25 @@ pub fn parse_burn_envelope(env: &[u8]) -> Option<([u8; 32], [u8; 32], [u8; 32])>
     Some((asset, nullifier, dest))
 }
 
+/// Parse a T_CROSSOUT_MINT envelope (opcode 0x65) → (assetId, claimId, Cx, Cy, owner). Layout:
+/// opcode(1) ‖ assetId(32) ‖ claimId(32) ‖ Cx(32) ‖ Cy(32) ‖ owner(32) = 161 bytes (the dapp's
+/// `encodeCrossoutMint`). The Ethereum→Bitcoin cross-out: a note burned for Bitcoin on the
+/// ConfidentialPool, re-minted here as a Bitcoin pool note. The reflection prover folds it ONLY if
+/// the cross-out is a member of the eth-reflection crossOutSet (Mode B), so a fabricated mint enters
+/// no value. `owner` is carried for completeness; a Bitcoin-destined cross-out's reflected leaf uses
+/// the zero owner sentinel (see `ScanReflection::fold_crossout`). None if malformed.
+pub fn parse_crossout_mint_envelope(env: &[u8]) -> Option<([u8; 32], [u8; 32], [u8; 32], [u8; 32], [u8; 32])> {
+    if env.len() < 161 || env[0] != 0x65 {
+        return None;
+    }
+    let asset: [u8; 32] = env[1..33].try_into().ok()?;
+    let claim_id: [u8; 32] = env[33..65].try_into().ok()?;
+    let cx: [u8; 32] = env[65..97].try_into().ok()?;
+    let cy: [u8; 32] = env[97..129].try_into().ok()?;
+    let owner: [u8; 32] = env[129..161].try_into().ok()?;
+    Some((asset, claim_id, cx, cy, owner))
+}
+
 /// Parse a confidential-transfer envelope → (assetId, the N output commitments as compressed
 /// secp256k1 points). Accepts T_CXFER (0x23) AND its BP+ variant T_CXFER_BPP (0x22) — identical
 /// wire shape (SPEC §5.47); real confidential transfers use 0x22. Layout: opcode(1) ‖

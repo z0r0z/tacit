@@ -1823,6 +1823,48 @@ impl ScanReflection {
         self.burn_count += 1;
         Ok(())
     }
+
+    /// Fold an Ethereum→Bitcoin cross-out mint (`T_CROSSOUT_MINT`, opcode 0x65) into the pool — ONLY if
+    /// the cross-out is a MEMBER of the eth-reflection crossOutSet (proven on finalized Ethereum; Mode B
+    /// reverse reflection). The minted note's Bitcoin-side leaf is `leaf(asset, Cx, Cy, 0)` — exactly the
+    /// `destCommitment` the ConfidentialPool records for a Bitcoin-destined burn (owner = the zero
+    /// sentinel) — and membership binds `(claimId, BITCOIN, destCommitment, asset)` to the eth set, so a
+    /// fabricated/unconfirmed mint is absent and folds NOTHING (no unbacked value, no worker trust).
+    /// Mirrors `fold_cxfer`'s output append via `fold_output`. `vout` is the mint tx's
+    /// confidential-output index (derived, not witnessed — a bogus outpoint would make the note's later
+    /// real Bitcoin spend miss the live set).
+    #[allow(clippy::too_many_arguments)]
+    pub fn fold_crossout(
+        &mut self,
+        asset: &[u8; 32],
+        claim_id: &[u8; 32],
+        cx: &[u8; 32],
+        cy: &[u8; 32],
+        set_index: u64,
+        set_path: &[[u8; 32]],
+        crossout_set_root: &[u8; 32],
+        crossout_txid: &[u8; 32],
+        vout: u32,
+        note_path: &[[u8; 32]],
+    ) -> Result<(), &'static str> {
+        // The minted commitment must be a real secp256k1 point (else an unspendable junk note).
+        from_affine_xy(cx, cy).ok_or("crossout fold: commitment not a curve point")?;
+        // Bitcoin-side reflected leaf (owner = zero sentinel) = the contract's destCommitment for a
+        // Bitcoin-destined cross-out; an owner!=0 eth record can't match the set below (fail-closed).
+        let dest_commitment = leaf(asset, cx, cy, &[0u8; 32]);
+        let co = eth_reflection::EthCrossOut {
+            claim_id: *claim_id,
+            dest_chain: eth_reflection::DEST_CHAIN_BITCOIN,
+            dest_commitment,
+            asset_id: *asset,
+        };
+        if !eth_reflection::eth_crossout_member(&co, set_index, set_path, crossout_set_root) {
+            return Err("crossout fold: not an eth crossOutSet member");
+        }
+        let outpoint = outpoint_key(crossout_txid, vout);
+        let ch = commitment_hash(cx, cy);
+        self.fold_output(&dest_commitment, note_path, &outpoint, &ch, asset)
+    }
 }
 
 #[cfg(test)]
@@ -1837,6 +1879,40 @@ mod tests {
 
     fn fixture() -> serde_json::Value {
         serde_json::from_str(include_str!("../../fixtures/cxfer.json")).unwrap()
+    }
+
+    // Mode B: fold_crossout admits a Bitcoin cross-out mint ONLY if it's a member of the eth-reflection
+    // crossOutSet; a fabricated mint (absent from the set) folds nothing.
+    #[test]
+    fn fold_crossout_gates_on_eth_set_membership() {
+        use crate::eth_reflection::{eth_crossout_leaf, EthCrossOut, DEST_CHAIN_BITCOIN};
+        // a real secp256k1 point for the minted note commitment
+        let enc = gen_h().to_affine().to_encoded_point(false);
+        let b = enc.as_bytes();
+        let cx: [u8; 32] = b[1..33].try_into().unwrap();
+        let cy: [u8; 32] = b[33..65].try_into().unwrap();
+        let asset = [0x11u8; 32];
+        let claim_id = [0x22u8; 32];
+        let txid = [0x33u8; 32];
+        // the eth-set leaf the eth-reflection guest commits for this Bitcoin-destined cross-out
+        let dest_commitment = leaf(&asset, &cx, &cy, &[0u8; 32]);
+        let co = EthCrossOut { claim_id, dest_chain: DEST_CHAIN_BITCOIN, dest_commitment, asset_id: asset };
+        let set_root = keccak_merkle_root(&[eth_crossout_leaf(&co)]);
+        let empty_path = KeccakTreeAccumulator::new().append_path(); // index-0 membership AND genesis note append
+
+        // member → folds (note appended)
+        let mut st = ScanReflection::genesis();
+        st.fold_crossout(&asset, &claim_id, &cx, &cy, 0, &empty_path, &set_root, &txid, 0, &empty_path)
+            .expect("member cross-out folds");
+        assert_eq!(st.note_count, 1, "minted note appended on member");
+
+        // non-member (wrong set root) → rejected, nothing folded
+        let mut st2 = ScanReflection::genesis();
+        assert!(
+            st2.fold_crossout(&asset, &claim_id, &cx, &cy, 0, &empty_path, &[0xdeu8; 32], &txid, 0, &empty_path).is_err(),
+            "non-member cross-out rejected"
+        );
+        assert_eq!(st2.note_count, 0, "nothing folded on reject");
     }
 
     /// Pin ScanReflection::genesis().digest() (the SHIPPED full-scan reflection model) to the
