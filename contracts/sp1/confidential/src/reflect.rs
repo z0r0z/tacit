@@ -39,6 +39,7 @@ sol! {
         bytes32 newDigest;         // the reflected state after the batch (next cycle's prior)
         bytes32 bitcoinPrevHash;   // headers[0]'s prev-block field — the anchor this batch resumes from
         bytes32 bitcoinTipHash;    // double-SHA256 of the last header — the batch's new tip
+        bytes32 ethPoolReflected;  // Mode B: the eth-reflection's ethPool — attest gates it == address(this)
     }
 }
 
@@ -100,23 +101,25 @@ pub fn main() {
     // `verify_sp1_proof` binds these bytes to THAT program (the inner Compressed proof is supplied to
     // the prover via SP1Stdin::write_proof), so a `fold_crossout` below trusts a cross-out finalized on
     // Ethereum — not the worker. See ops/PLAN-eth-reflection-modeB.md + ops/DESIGN-mode-b-recursion.md.
+    // The eth-reflection guest's vkey (chained-genesis variant). Rebuilding that ELF rotates this —
+    // keep it in lockstep (elf-vkey-pin.json).
     const ETH_REFLECTION_VKEY: [u32; 8] =
-        [0x0091c484, 0xa3daebe8, 0xb8a27b58, 0x41cb4166, 0x1a754a47, 0x59e6d926, 0xfa647e6d, 0x33e80226];
-    // Pinned eth context, set at the Mode-B pool redeploy: the ConfidentialPool whose crossOut storage
-    // the eth-reflection proved, and the genesis sync-committee anchor it chains from. Pinning in-guest
-    // is equivalent to an on-chain gate (it rides the single existing on-chain verification) at zero
-    // PublicValues cost.
-    const ETH_POOL: [u8; 20] = [0u8; 20]; // TODO(deploy): the Mode-B ConfidentialPool address
-    const ETH_SYNC_COMMITTEE_ANCHOR: [u8; 32] = [0u8; 32]; // TODO(deploy): eth-reflection genesis sync-committee root
+        [0x00726774, 0x43772bb8, 0x9cdc3a50, 0x22f5f2b3, 0xcfb6e9b1, 0xd8497a80, 0x84f472c5, 0x63cfc303];
+    // Genesis sync-committee anchor (beacon weak-subjectivity bootstrap — NOT circular with the pool),
+    // pinned at re-prove time to the chosen Sepolia finalized checkpoint. The pool address is NOT pinned
+    // here: it's passed through as `ethPoolReflected` and gated on-chain == address(this), which breaks
+    // the pool↔vkey circularity with the vkey still immutable in the constructor (D1).
+    const ETH_GENESIS_SYNC_COMMITTEE: [u8; 32] = [0u8; 32]; // TODO(re-prove): chosen Sepolia genesis sync-committee root
 
     let eth_pv: Vec<u8> = io::read();
-    assert!(eth_pv.len() >= 256, "eth-reflection public values too short");
+    assert!(eth_pv.len() >= 288, "eth-reflection public values too short");
     sp1_lib::verify::verify_sp1_proof(&ETH_REFLECTION_VKEY, &bitcoin::sha256_once(&eth_pv));
-    // EthReflectionPublicValues is 8 static ABI words; read by offset (avoids the alloy static-struct
-    // decode quirk). Order: priorDigest, newDigest, ethPool, crossOutSetRoot, crossOutCount,
-    // finalizedSlot, finalizedExecStateRoot, syncCommitteeRoot.
-    assert_eq!(&eth_pv[2 * 32 + 12..3 * 32], &ETH_POOL, "eth-reflection: wrong ConfidentialPool");
-    assert_eq!(&eth_pv[7 * 32..8 * 32], &ETH_SYNC_COMMITTEE_ANCHOR, "eth-reflection: wrong sync-committee anchor");
+    // EthReflectionPublicValues is 9 static ABI words; read by offset. Order: priorDigest, newDigest,
+    // ethPool, crossOutSetRoot, crossOutCount, finalizedSlot, finalizedExecStateRoot, syncCommitteeRoot,
+    // prevSyncCommitteeRoot. The batch chained FROM the genesis committee (gated once here; the
+    // prev==last-current chaining across sync-committee periods rides the resume-digest — follow-up).
+    assert_eq!(&eth_pv[8 * 32..9 * 32], &ETH_GENESIS_SYNC_COMMITTEE, "eth-reflection: wrong genesis sync-committee");
+    let eth_pool_word: [u8; 32] = eth_pv[2 * 32..3 * 32].try_into().expect("ethPool word"); // gated on-chain == address(this)
     let crossout_set_root: [u8; 32] = eth_pv[3 * 32..4 * 32].try_into().expect("crossOutSetRoot word");
 
     // Header chain: non-empty, links (prev_hash) + carries valid PoW, and EXPOSES its anchor
@@ -244,6 +247,7 @@ pub fn main() {
         newDigest: state.digest().into(),
         bitcoinPrevHash: prev_hash.into(),
         bitcoinTipHash: tip_hash.into(),
+        ethPoolReflected: eth_pool_word.into(),
     };
     io::commit_slice(&BitcoinReflectionPublicValues::abi_encode(&pv));
 }

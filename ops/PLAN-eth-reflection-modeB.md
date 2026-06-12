@@ -104,6 +104,42 @@ Why this is clean, not just feasible:
 - **Worker:** indexer only, never authoritative for cross-out validity. Cannot inflate, steal, or
   mislead — anyone re-derives.
 
+## Phase-4 deploy decisions (2026-06-12)
+
+**D1 (CORRECTED) — pool address ↔ vkey circularity: gate `ethPool == address(this)` ON-CHAIN; vkey stays
+an immutable constructor arg.** The only real circularity is the *guest* pinning the pool address. It
+doesn't need to — **the contract knows its own address**. So: the reflection guest does NOT pin
+`ETH_POOL`; it passes `eth_pv.ethPool` THROUGH into `BitcoinReflectionPublicValues`, and
+`attestBitcoinStateProven` gates `ethPoolReflected == address(this)` (blocks the fake-pool inflation:
+an attacker's pool's crossOuts have a different ethPool → rejected). No CREATE2 gymnastics, no setter,
+**`BITCOIN_RELAY_VKEY` stays immutable in the constructor**, plain CREATE deploy. (Superseded the
+set-once/CREATE2 over-engineering — the eth vkey + genesis anchor aren't circular, so only the pool
+address needed solving, and the on-chain gate is the clean break.) Cost: +1 `address ethPoolReflected`
+field in `BitcoinReflectionPublicValues` + the on-chain gate.
+
+**D2 — genesis / sync-committee anchor: CHAINED weak-subjectivity, not a fixed current committee.** A
+fixed `ETH_SYNC_COMMITTEE_ANCHOR == current` breaks at the first sync-committee rotation (~27 h), so it
+must be a **genesis** the proof chains forward from: pin a recent Sepolia finalized checkpoint (block
+root + its sync committee) as `ETH_GENESIS_SYNC_COMMITTEE`; the eth-reflection commits BOTH
+`prevSyncCommitteeHash` and `syncCommitteeHash` (sp1-helios already computes both — I only surfaced the
+current one), and the Bitcoin guest gates the genesis ONCE (first proof's `prev == genesis`) then chains
+(`prev == last current`) via the resume-digest. Mirrors `REFLECTION_GENESIS_DIGEST`.
+
+**These decisions reveal the re-prove is a chain, not a one-shot:**
+1. eth-reflection guest: add `prevSyncCommitteeHash` to `EthReflectionPublicValues` + pin the genesis
+   bootstrap → re-prove (`.compressed()`) → NEW eth vkey + the genesis anchor. (Supersedes the
+   handed-off vkey `0x0091c484`, which was the single-shot guest.)
+2. `ConfidentialPool.sol`: vkey `immutable`→set-once + a CREATE2 deploy script → compute the pool address.
+3. `reflect.rs`: set `ETH_REFLECTION_VKEY` (new eth vkey), `ETH_POOL` (CREATE2 addr),
+   `ETH_GENESIS_SYNC_COMMITTEE` (genesis) + the genesis-once-then-chain gate + the resume-digest extension.
+4. recursive re-prove the Bitcoin reflection (stage-i compressed eth → stage-ii `write_proof` → stage-iii
+   groth16 outer) → NEW `BITCOIN_RELAY_VKEY`.
+5. conservation negative test on the new reflection ELF + add the vkey to the gate allowlist → **BRIDGE clears**.
+6. Phase-4 redeploy (CREATE2) + `setBitcoinRelayVkey` + verify.
+
+This is a deliberate, fund-critical production phase (a guest rework + TWO recursive GPU proves + a
+contract change + a deploy), not a tail-of-session rush.
+
 ## Confirmed (toolchain + data plane, 2026-06-12)
 
 - **SP1 recursion supported.** Box (`ssh9.vast.ai:12876`, RTX 4090 24 GB, 130 GB free) runs

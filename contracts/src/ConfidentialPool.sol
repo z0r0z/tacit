@@ -364,6 +364,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     error FeeOnTransferUnsupported();
     error BadReflectionConfirmations();
     error BtcHomedValueExitMustBridge();
+    error WrongEthPool();
 
     // ──────────────────── Constructor ────────────────────
 
@@ -694,6 +695,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         bytes32 newDigest;        // the reflected state AFTER this proof (the next cycle's prior)
         bytes32 bitcoinPrevHash;  // headers[0]'s prev field — anchored to the prior attested tip
         bytes32 bitcoinTipHash;   // the batch's tip block hash — anchored to a matured ancestor of RELAY.tip()
+        bytes32 ethPoolReflected; // Mode B: the eth-reflection's ethPool (gated == address(this) below)
     }
 
     /// @notice Attest Bitcoin confidential-pool state via an SP1 relay proof — the ONLY
@@ -705,6 +707,10 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     function attestBitcoinStateProven(bytes calldata publicValues, bytes calldata proofBytes) external {
         SP1_VERIFIER.verifyProof(BITCOIN_RELAY_VKEY, publicValues, proofBytes);
         BitcoinRelayPublicValues memory r = abi.decode(publicValues, (BitcoinRelayPublicValues));
+        // Mode B: the eth-reflection proved crossOutCommitment storage for `ethPoolReflected`; it MUST be
+        // THIS pool, else another pool's crossOuts could fold here (cross-lane inflation). The contract
+        // knows its own address, so this gate breaks the pool↔vkey circularity with no in-guest pool pin.
+        if (address(uint160(uint256(r.ethPoolReflected))) != address(this)) revert WrongEthPool();
         // Chain: this cycle must CONTINUE the current attested reflection state (the prover
         // resumed from it), then it becomes the new state. So the reflected roots evolve as
         // one append-only chain — a proof can't fork off a stale state or restart from genesis
