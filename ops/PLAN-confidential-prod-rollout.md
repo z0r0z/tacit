@@ -8,15 +8,16 @@ Owner-driven roadmap to prod. Status as of 2026-06-12.
 
 ## Confidential pool → prod (in order)
 
-### GATE 1 — reflection re-prove (resolve the f0970c2 drift) — IMMEDIATE
-`f0970c2` changed the reflection guest (`cxfer-core/src/lib.rs` b98ae398, `src/reflect.rs` 39234917) without rebuilding the ELF/pin → the committed source is ahead of the committed `reflection-prover` ELF + pin (`bitcoin_relay_vkey` 0x00afe060). **The single-asset pilot is UNAFFECTED** (deployed pool runs `BITCOIN_RELAY_VKEY=0`). This gates the 2nd Bitcoin-pool asset / cross-lane. Steps:
-1. **Pre-flight**: confirm the box's working source vs the committed (`lib.rs` committed = b98ae398; box was `3d995ba7` = stale cruft). Re-prove must build the COMMITTED source, so sync it to a clean box build dir (don't trust the box working copy). Land the EXPECT_VKEY guard into the box harnesses (it lives in committed `exec-prove.rs`/`exec-reflect-prove.rs`).
-2. `cargo build` both ELFs from the committed source. Expect: settle vkey **stays `0x009cb098`** (f0970c2 is reflection-only — verify, don't assume); reflection vkey **rotates** from 0x00afe060.
-3. EXPECT_VKEY-guarded re-prove (catches drift before the GPU run / on-chain revert). gpu-server fresh per prove (shares the live tETH GPU — keep tETH up).
-4. `scripts/confidential-reprove-apply.sh` → bump `elf-vkey-pin.json` (reflection ELF sha + vkey; settle unchanged) + the reflection fixture → `verify-vkey-pin.sh` + the `*ProofReal` forge tests → commit (z0r0z).
+### GATE 1 — full re-prove + fresh deploy + multi-asset (greenlit 2026-06-12) — IMMEDIATE
+**VERIFIED FINDING:** rebuilding from the committed `f0970c2` source rotates BOTH vkeys — settle `0x009cb098 → 0x00b9cddb` AND reflection from `0x00afe060`. The settle rotation is **INCIDENTAL**: f0970c2's `lib.rs` change is `LiveUtxoSet`-only (the reflection live set; `from_sorted`/`get`/`insert`/`remove` went 2-tuple→3-tuple to carry the note asset), and the settle guest (`main.rs`) does **not** use `LiveUtxoSet` — so the settle behavior is byte-equivalent; the vkey moved only because that unused reflection code is compiled into `cxfer-guest` (DCE didn't strip it). **User greenlit the redeploy + wants multi-asset tested**, so we do the FULL re-prove + fresh deploy (no isolate-cleanup needed to preserve the old pilot). FOLLOW-UP cleanliness: feature-gate `LiveUtxoSet`/`ScanReflection`/reflection accumulators in `cxfer-core` behind a `reflection` feature so future reflection edits stop churning the settle vkey.
 
-### GATE 2 — 2nd-asset / cross-lane enablement (after Gate 1)
-Redeploy ConfidentialPool with `BITCOIN_RELAY_VKEY` = the new reflection vkey (it's immutable, so a fresh pool) + `HEADER_RELAY` + genesis anchor; re-index live-set snapshots `livePairs→liveTriples` (the f0970c2 asset-carrying change); allowlist the 2nd asset (TAC-first per [[project_crosslane_rollout]]). Re-register assets on the new pool.
+**Sequence (run as one clean unit; box already coherent — source synced, deployed ELFs restored, cps idle):**
+1. Pause cps. `cd guest && cargo prove build` from the synced source → cxfer-guest `916c892c` (vkey `0x00b9cddb`), reflection-prover `a5a9c829` (vkey TBD — extract).
+2. `drive-fee-reprove.sh` → re-prove all 7 settle ops (new vkey `0x00b9cddb`) + reflection (new vkey). ~15 min GPU; gpu-server fresh per prove (keep tETH up).
+3. `scripts/confidential-reprove-apply.sh` → bump `elf-vkey-pin.json` (BOTH vkeys + BOTH ELF shas) + all 7 fixtures → `verify-vkey-pin.sh` + `*ProofReal` forge → commit (z0r0z).
+4. **Redeploy ConfidentialPool**: `SP1_VERIFIER=0x6F9a1D26`, `PROGRAM_VKEY=0x00b9cddb`, `EXPECTED_CHAIN_ID=11155111`. For cross-lane multi-asset: `BITCOIN_RELAY_VKEY`=<new reflection vkey> + `HEADER_RELAY` + `GENESIS_REFLECTION_ANCHOR` + `ACK_REFLECTION_ANCHORED=1` (needs the reflection relay running); else `=0` for EVM-only first.
+5. Register **cETH + a 2nd asset**. Repoint the box cps loop (`run-cps.sh` `POOL=`) to the new pool + restart. Re-index live-set `livePairs→liveTriples`.
+6. **Test multi-asset**: (a) EVM-only — register 2 assets, confidential swap cETH↔asset2 + cross-asset transfers (works standalone, no relay); (b) full cross-lane Bitcoin-pool multi-asset (the asset-carrying reflection) — needs the reflection relay operational.
 
 ### GATE 3 — dapp UI (user-facing)
 Build the standalone confidential-pool UI per `ops/PLAN-confidential-pool-ui.md` (deposit/transfer/withdraw/swap + EVM-wallet + Sepolia note indexer). Backend is done.
