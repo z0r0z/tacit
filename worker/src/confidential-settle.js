@@ -26,7 +26,7 @@ export function makeConfidentialSettler({ storage, hash, now }) {
 
   async function submitJob({ type, op, memos }) {
     if (!type || !op) throw new Error('submitJob: type + op required');
-    if (!['transfer', 'swap', 'lp', 'otc', 'bid'].includes(type)) throw new Error(`submitJob: unknown type ${type}`);
+    if (!['wrap', 'transfer', 'swap', 'lp', 'otc', 'bid'].includes(type)) throw new Error(`submitJob: unknown type ${type}`);
     const id = jobIdOf(type, op);
     const existing = await storage.getJob(id);
     if (existing && existing.status !== 'failed') {
