@@ -21,7 +21,8 @@ name = "reflection-prover"
 path = "src/reflect.rs"
 
 [dependencies]
-sp1-zkvm = "6.2"
+sp1-zkvm = { version = "6.2", features = ["verify"] } # provides syscall_verify_sp1_proof (Mode B recursion)
+sp1-lib = { version = "6.2", features = ["verify"] } # verify_sp1_proof (Mode B recursion in reflect.rs)
 cxfer-core = { path = "cxfer-core" }
 alloy-sol-types = "0.8"
 

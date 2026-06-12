@@ -94,6 +94,31 @@ pub fn main() {
     let mut state = read_scan_prior_state();
     let prior_digest = state.digest();
 
+    // ── Mode B reverse reflection: recursively verify the eth-reflection proof, then admit its
+    // attested cross-out set. The eth-reflection guest (helios light-client + a crossOutCommitment
+    // storage proof against finalized Ethereum) commits `EthReflectionPublicValues`;
+    // `verify_sp1_proof` binds these bytes to THAT program (the inner Compressed proof is supplied to
+    // the prover via SP1Stdin::write_proof), so a `fold_crossout` below trusts a cross-out finalized on
+    // Ethereum — not the worker. See ops/PLAN-eth-reflection-modeB.md + ops/DESIGN-mode-b-recursion.md.
+    const ETH_REFLECTION_VKEY: [u32; 8] =
+        [0x0091c484, 0xa3daebe8, 0xb8a27b58, 0x41cb4166, 0x1a754a47, 0x59e6d926, 0xfa647e6d, 0x33e80226];
+    // Pinned eth context, set at the Mode-B pool redeploy: the ConfidentialPool whose crossOut storage
+    // the eth-reflection proved, and the genesis sync-committee anchor it chains from. Pinning in-guest
+    // is equivalent to an on-chain gate (it rides the single existing on-chain verification) at zero
+    // PublicValues cost.
+    const ETH_POOL: [u8; 20] = [0u8; 20]; // TODO(deploy): the Mode-B ConfidentialPool address
+    const ETH_SYNC_COMMITTEE_ANCHOR: [u8; 32] = [0u8; 32]; // TODO(deploy): eth-reflection genesis sync-committee root
+
+    let eth_pv: Vec<u8> = io::read();
+    assert!(eth_pv.len() >= 256, "eth-reflection public values too short");
+    sp1_lib::verify::verify_sp1_proof(&ETH_REFLECTION_VKEY, &bitcoin::sha256_once(&eth_pv));
+    // EthReflectionPublicValues is 8 static ABI words; read by offset (avoids the alloy static-struct
+    // decode quirk). Order: priorDigest, newDigest, ethPool, crossOutSetRoot, crossOutCount,
+    // finalizedSlot, finalizedExecStateRoot, syncCommitteeRoot.
+    assert_eq!(&eth_pv[2 * 32 + 12..3 * 32], &ETH_POOL, "eth-reflection: wrong ConfidentialPool");
+    assert_eq!(&eth_pv[7 * 32..8 * 32], &ETH_SYNC_COMMITTEE_ANCHOR, "eth-reflection: wrong sync-committee anchor");
+    let crossout_set_root: [u8; 32] = eth_pv[3 * 32..4 * 32].try_into().expect("crossOutSetRoot word");
+
     // Header chain: non-empty, links (prev_hash) + carries valid PoW, and EXPOSES its anchor
     // (headers[0]'s prev) + tip so the CONTRACT can pin them to the canonical relay — forcing the
     // whole batch to be canonical Bitcoin (F1/F2/F3).
@@ -174,16 +199,37 @@ pub fn main() {
                 // envelope can't wedge the prover). Conserving + asset-preserving cxfers read their
                 // witnesses and fold; a fold error there is a real witness bug (panics).
                 if asset_preserving && verify_cxfer_conservation(asset, &in_outpoints, &in_points, commitments, range_proof, kernel_sig) {
+                    // Derive each output's vout from its index: the i-th envelope commitment is the
+                    // tx's i-th confidential output (the convention commitmentForUtxo resolves by). A
+                    // witnessed vout let a prover key a note at a bogus outpoint, so its later real
+                    // Bitcoin spend would miss the live set (an undetected spend). Only the note-tree
+                    // append path stays witnessed.
                     let mut paths: Vec<Vec<[u8; 32]>> = Vec::with_capacity(commitments.len());
                     let mut vouts: Vec<u32> = Vec::with_capacity(commitments.len());
-                    for _ in commitments {
+                    for i in 0..commitments.len() {
                         paths.push(r_path());
-                        let vout: u32 = io::read();
-                        vouts.push(vout);
+                        vouts.push(i as u32);
                     }
                     state.fold_cxfer(asset, &in_outpoints, &in_points, &in_assets, &txid, commitments, &paths, &vouts, range_proof, kernel_sig)
                         .expect("cxfer fold");
                 }
+            }
+
+            // Mode B: an Ethereum→Bitcoin cross-out mint (T_CROSSOUT_MINT, 0x65). Fold the minted note
+            // ONLY if it's a member of the eth-reflection crossOutSet (verified at the top of main). A
+            // spend-less mint (no pool inputs to nullify). Witnesses are read for EVERY 0x65 tx (the
+            // assembler provides a set per 0x65, bogus for non-members) so the stream stays in sync; a
+            // non-member folds nothing (skip-not-panic, like a non-conserving cxfer).
+            if let Some((co_asset, claim_id, cx, cy, _owner)) =
+                env.as_ref().and_then(|e| bitcoin::parse_crossout_mint_envelope(e))
+            {
+                let set_index: u64 = io::read();
+                let set_path = r_path();
+                let note_path = r_path();
+                // vout 0 = the mint's single confidential output (the dapp's T_CROSSOUT_MINT layout).
+                let _ = state.fold_crossout(
+                    &co_asset, &claim_id, &cx, &cy, set_index, &set_path, &crossout_set_root, &txid, 0, &note_path,
+                );
             }
         }
         state.height = height;

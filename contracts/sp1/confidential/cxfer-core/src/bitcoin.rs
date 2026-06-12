@@ -134,8 +134,9 @@ pub fn compute_merkle_root(txids: &[[u8; 32]]) -> [u8; 32] {
     layer[0]
 }
 
-/// Single SHA-256 (the Tacit asset-id / domain hash — distinct from the double-SHA txid).
-fn sha256_once(data: &[u8]) -> [u8; 32] {
+/// Single SHA-256 (the Tacit asset-id / domain hash — distinct from the double-SHA txid). Also the
+/// SP1 public-values commit hash the reflection guest feeds `verify_sp1_proof` (Mode B recursion).
+pub fn sha256_once(data: &[u8]) -> [u8; 32] {
     Sha256::digest(data).into()
 }
 
