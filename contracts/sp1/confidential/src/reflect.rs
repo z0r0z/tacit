@@ -59,8 +59,10 @@ fn read_scan_prior_state() -> ScanReflection {
     let spent_root = r32();
     let spent_count: u64 = io::read();
     let n_live: u32 = io::read();
-    let live_pairs: Vec<([u8; 32], [u8; 32])> = (0..n_live).map(|_| (r32(), r32())).collect();
-    let live = LiveUtxoSet::from_sorted(live_pairs).expect("handed live UTXO set not sorted/unique");
+    // Each live entry is (outpoint key, commitment_hash, asset_id): the asset is carried so the
+    // CXFER fold can re-impose asset preservation on a spend (the digest commits all three).
+    let live_triples: Vec<([u8; 32], [u8; 32], [u8; 32])> = (0..n_live).map(|_| (r32(), r32(), r32())).collect();
+    let live = LiveUtxoSet::from_sorted(live_triples).expect("handed live UTXO set not sorted/unique");
     let burn_root = r32();
     let burn_count: u64 = io::read();
     let height: u64 = io::read();
@@ -159,13 +161,19 @@ pub fn main() {
                 let in_points: Vec<Point> = spends.iter()
                     .map(|s| from_affine_xy(&s.cx, &s.cy).expect("input commitment xy"))
                     .collect();
-                // Check conservation BEFORE reading the output witnesses. A confirmed-but-non-
-                // conserving CXFER (Bitcoin never checks the Tacit kernel) is junk: it injects no
-                // notes and carries NO output witnesses in the stream, so we read none and skip it
-                // (its detected spends were already nullified above). A SKIP, not a panic — a
-                // griefed non-conserving envelope can't wedge the prover. Conserving cxfers read
-                // their witnesses and fold; a fold error there is a real witness bug (panics).
-                if verify_cxfer_conservation(asset, &in_outpoints, &in_points, commitments, range_proof, kernel_sig) {
+                let in_assets: Vec<[u8; 32]> = spends.iter().map(|s| s.asset).collect();
+                // Asset preservation: every spent note must be of the envelope's declared asset. A
+                // value-only conserving CXFER that RELABELS a cheap-asset note as a dear one is junk
+                // here, exactly like a non-conserving one — it injects no notes and carries NO output
+                // witnesses in the stream, so we read none and skip it (its spends are still nullified
+                // above; the relabel just burns the attacker's input). The JS assembler gates on the
+                // SAME predicate, so the witness stream stays in sync.
+                let asset_preserving = in_assets.iter().all(|a| a == asset);
+                // Conservation gate (REFLECT-1): a confirmed-but-non-conserving CXFER injects no notes
+                // and carries no output witnesses — read none, skip (a SKIP, not a panic, so a griefed
+                // envelope can't wedge the prover). Conserving + asset-preserving cxfers read their
+                // witnesses and fold; a fold error there is a real witness bug (panics).
+                if asset_preserving && verify_cxfer_conservation(asset, &in_outpoints, &in_points, commitments, range_proof, kernel_sig) {
                     let mut paths: Vec<Vec<[u8; 32]>> = Vec::with_capacity(commitments.len());
                     let mut vouts: Vec<u32> = Vec::with_capacity(commitments.len());
                     for _ in commitments {
@@ -173,7 +181,7 @@ pub fn main() {
                         let vout: u32 = io::read();
                         vouts.push(vout);
                     }
-                    state.fold_cxfer(asset, &in_outpoints, &in_points, &txid, commitments, &paths, &vouts, range_proof, kernel_sig)
+                    state.fold_cxfer(asset, &in_outpoints, &in_points, &in_assets, &txid, commitments, &paths, &vouts, range_proof, kernel_sig)
                         .expect("cxfer fold");
                 }
             }

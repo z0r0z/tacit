@@ -181,6 +181,29 @@ contract ConfidentialPoolSwapTest is Test {
         _settle(pv3);
     }
 
+    // A post that zeroes a leg is a guest compromise (a live constant-product pool's reserves
+    // are never 0) — the defense-in-depth floor rejects it rather than let the pool be bricked.
+    function test_settle_swap_zero_post_reverts() public {
+        _init(assetA, assetB, 10000, 20000, 30);
+        ConfidentialPool.PublicValues memory pv = _pv();
+        pv.swaps = new ConfidentialPool.SwapSettlement[](1);
+        pv.swaps[0] = _swap(poolId, 10000, 20000, 15000, 0); // zeroes leg B
+        vm.expectRevert(ConfidentialPool.ReserveFloorBreach.selector);
+        _settle(pv);
+    }
+
+    // A post beyond u64 can't be a real reserve (the guest carries reserves as u64 / BP+ range);
+    // it would wrap when read back as the next pre, so the contract rejects it at the boundary —
+    // the same bound _fundReserve enforces at init.
+    function test_settle_swap_post_over_u64_reverts() public {
+        _init(assetA, assetB, 10000, 20000, 30);
+        ConfidentialPool.PublicValues memory pv = _pv();
+        pv.swaps = new ConfidentialPool.SwapSettlement[](1);
+        pv.swaps[0] = _swap(poolId, 10000, 20000, uint256(type(uint64).max) + 1, 13300);
+        vm.expectRevert(ConfidentialPool.ValueOutOfRange.selector);
+        _settle(pv);
+    }
+
     // ──────────────────── settle LP (OP_LP_ADD / OP_LP_REMOVE) ────────────────────
     // C-1: the on-chain LP state machine — reserves AND totalShares move together, pre-gated.
     // The in-ratio-add / proportional-remove + the shielded LP-share + asset notes are the guest's job.
@@ -249,5 +272,62 @@ contract ConfidentialPoolSwapTest is Test {
         _settle(pv);
         (, , , uint256 rA, uint256 rB, , uint256 shares) = pool.pools(poolId);
         assertEq(rA, 121000); assertEq(rB, 100100); assertEq(shares, 110000, "LP chained after swap");
+    }
+
+    // The LP floor mirrors the swap floor and adds the share floor: a post that zeroes a reserve
+    // leg, or drops totalShares below the permanently-locked MINIMUM_LIQUIDITY, can only be a
+    // compromise — not a legitimate proportional remove.
+    function test_settle_lp_zero_reserve_post_reverts() public {
+        _init(assetA, assetB, 100000, 200000, 30);
+        ConfidentialPool.PublicValues memory pv = _pv();
+        pv.liquidity = new ConfidentialPool.LpSettlement[](1);
+        pv.liquidity[0] = _lp(poolId, 100000, 200000, 100000, 0, 160000, 80000); // zeroes reserve A
+        vm.expectRevert(ConfidentialPool.ReserveFloorBreach.selector);
+        _settle(pv);
+    }
+
+    function test_settle_lp_shares_below_min_reverts() public {
+        _init(assetA, assetB, 100000, 200000, 30);
+        ConfidentialPool.PublicValues memory pv = _pv();
+        pv.liquidity = new ConfidentialPool.LpSettlement[](1);
+        // sharesPost below MINIMUM_LIQUIDITY (1000) — the locked floor can never be removed
+        pv.liquidity[0] = _lp(poolId, 100000, 200000, 100000, 80000, 160000, 999);
+        vm.expectRevert(ConfidentialPool.ReserveFloorBreach.selector);
+        _settle(pv);
+    }
+
+    // Reserves AND totalShares stay < 2^64 on the LP path too (same wrap-back hazard as swaps).
+    function test_settle_lp_post_over_u64_reverts() public {
+        _init(assetA, assetB, 100000, 200000, 30);
+        // reserve leg over u64
+        ConfidentialPool.PublicValues memory pv = _pv();
+        pv.liquidity = new ConfidentialPool.LpSettlement[](1);
+        pv.liquidity[0] = _lp(poolId, 100000, 200000, 100000, uint256(type(uint64).max) + 1, 220000, 110000);
+        vm.expectRevert(ConfidentialPool.ValueOutOfRange.selector);
+        _settle(pv);
+        // totalShares over u64
+        ConfidentialPool.PublicValues memory pv2 = _pv();
+        pv2.liquidity = new ConfidentialPool.LpSettlement[](1);
+        pv2.liquidity[0] = _lp(poolId, 100000, 200000, 100000, 110000, 220000, uint256(type(uint64).max) + 1);
+        vm.expectRevert(ConfidentialPool.ValueOutOfRange.selector);
+        _settle(pv2);
+    }
+
+    // lpPositionValue: the proportional (A, B) a share count redeems at the live reserves — a read
+    // helper for a position display, matching the guest's proportional-remove floor.
+    function test_lp_position_value_view() public {
+        _init(assetA, assetB, 100000, 200000, 30); // totalShares = 100000
+        (uint256 a, uint256 b) = pool.lpPositionValue(poolId, 100000);
+        assertEq(a, 100000); assertEq(b, 200000, "full shares = full reserves");
+        (a, b) = pool.lpPositionValue(poolId, 25000);
+        assertEq(a, 25000); assertEq(b, 50000, "quarter shares = quarter reserves");
+        // the founder's claimable position (rLo − MINIMUM_LIQUIDITY)
+        (a, b) = pool.lpPositionValue(poolId, 100000 - 1000);
+        assertEq(a, 99000); assertEq(b, 198000, "founder shares");
+    }
+
+    function test_lp_position_value_uninit_reverts() public {
+        vm.expectRevert(ConfidentialPool.PoolNotInit.selector);
+        pool.lpPositionValue(keccak256("ghost"), 1);
     }
 }

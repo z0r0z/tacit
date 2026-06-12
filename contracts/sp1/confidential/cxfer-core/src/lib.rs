@@ -1181,9 +1181,15 @@ impl UtxoAccumulator {
 /// live-only shape is free to differ from the witnessed UtxoAccumulator the bridge-burn set uses.
 #[derive(Clone, Default)]
 pub struct LiveUtxoSet {
-    // (outpoint key = keccak(txid‖vout), value = commitment_hash = keccak(Cx‖Cy)), kept sorted
-    // ascending by key (big-endian == array order) so root rebuild and lookups are one pass / log n.
-    entries: Vec<([u8; 32], [u8; 32])>,
+    // (outpoint key = keccak(txid‖vout), value = commitment_hash = keccak(Cx‖Cy), asset_id), kept
+    // sorted ascending by key (big-endian == array order) so root rebuild and lookups are one pass
+    // / log n. The asset is carried per-entry (set from the CXFER envelope when the output lands)
+    // and committed into the root so a spend can re-impose asset preservation: the reflection's
+    // CXFER fold requires every spent note's asset == the envelope's declared asset, the same
+    // invariant the EVM lane gets for free from `leaf(asset,…)` membership. Without it a confirmed
+    // (Bitcoin-side) CXFER could spend a cheap-asset note and mint a dear-asset note of equal
+    // commitment-value (cross-asset inflation), because conservation is value-only.
+    entries: Vec<([u8; 32], [u8; 32], [u8; 32])>,
 }
 
 impl LiveUtxoSet {
@@ -1194,7 +1200,7 @@ impl LiveUtxoSet {
     /// Adopt a handed live set: keys must be strictly ascending and non-zero. The caller then
     /// root-checks `root()` against the resumed utxo root — that single O(live) hash is the
     /// batch's whole trust step (verify the set once, then scan vins against it for free).
-    pub fn from_sorted(entries: Vec<([u8; 32], [u8; 32])>) -> Option<Self> {
+    pub fn from_sorted(entries: Vec<([u8; 32], [u8; 32], [u8; 32])>) -> Option<Self> {
         for i in 0..entries.len() {
             if entries[i].0 == [0u8; 32] {
                 return None;
@@ -1206,30 +1212,34 @@ impl LiveUtxoSet {
         Some(Self { entries })
     }
 
-    /// Resolve an outpoint key to its stored commitment hash iff it is a live pool UTXO.
-    pub fn get(&self, key: &[u8; 32]) -> Option<[u8; 32]> {
-        self.entries.binary_search_by(|(k, _)| k.cmp(key)).ok().map(|i| self.entries[i].1)
+    /// Resolve an outpoint key to its stored `(commitment_hash, asset_id)` iff it is a live pool
+    /// UTXO. The asset is what the reflection's CXFER fold checks against the envelope (preservation).
+    pub fn get(&self, key: &[u8; 32]) -> Option<([u8; 32], [u8; 32])> {
+        self.entries.binary_search_by(|(k, _, _)| k.cmp(key)).ok().map(|i| (self.entries[i].1, self.entries[i].2))
     }
 
-    /// Add a new output's outpoint → commitment hash. Panics on a duplicate key (outpoints are
-    /// unique — a duplicate is a malformed batch, never a valid Bitcoin state).
-    pub fn insert(&mut self, key: &[u8; 32], value: &[u8; 32]) {
-        match self.entries.binary_search_by(|(k, _)| k.cmp(key)) {
+    /// Add a new output's outpoint → `(commitment hash, asset_id)`. Panics on a duplicate key
+    /// (outpoints are unique — a duplicate is a malformed batch, never a valid Bitcoin state).
+    pub fn insert(&mut self, key: &[u8; 32], value: &[u8; 32], asset: &[u8; 32]) {
+        match self.entries.binary_search_by(|(k, _, _)| k.cmp(key)) {
             Ok(_) => panic!("duplicate outpoint in live set"),
-            Err(i) => self.entries.insert(i, (*key, *value)),
+            Err(i) => self.entries.insert(i, (*key, *value, *asset)),
         }
     }
 
-    /// Spend a live outpoint, returning its stored commitment hash. Panics if absent (the caller
-    /// resolves it via `get` first — a remove of an unknown outpoint is a prover bug).
-    pub fn remove(&mut self, key: &[u8; 32]) -> [u8; 32] {
-        let i = self.entries.binary_search_by(|(k, _)| k.cmp(key)).expect("outpoint not live");
-        self.entries.remove(i).1
+    /// Spend a live outpoint, returning its stored `(commitment hash, asset_id)`. Panics if absent
+    /// (the caller resolves it via `get` first — a remove of an unknown outpoint is a prover bug).
+    pub fn remove(&mut self, key: &[u8; 32]) -> ([u8; 32], [u8; 32]) {
+        let i = self.entries.binary_search_by(|(k, _, _)| k.cmp(key)).expect("outpoint not live");
+        let (_, v, a) = self.entries.remove(i);
+        (v, a)
     }
 
-    /// The committed live-set root: Keccak Merkle over the (key‖value) leaves in key order.
+    /// The committed live-set root: Keccak Merkle over the (key‖asset‖value) leaves in key order.
+    /// The asset is committed so the digest chain pins each note's asset (a wrong handoff fails the
+    /// digest), which is what makes the CXFER fold's asset-preservation check trustworthy on resume.
     pub fn root(&self) -> [u8; 32] {
-        let leaves: Vec<[u8; 32]> = self.entries.iter().map(|(k, v)| kn(&[k, v])).collect();
+        let leaves: Vec<[u8; 32]> = self.entries.iter().map(|(k, v, a)| kn(&[k, a, v])).collect();
         keccak_merkle_root(&leaves)
     }
 
@@ -1254,6 +1264,10 @@ pub struct DetectedSpend {
     pub prev_vout: u32,
     pub cx: [u8; 32],
     pub cy: [u8; 32],
+    // The asset_id the spent note was created under (carried by the live UTXO set, set from the
+    // CXFER envelope when the note landed). The CXFER fold asserts this equals the spending
+    // envelope's declared asset, so a confirmed tx can't relabel a cheap-asset note as a dear one.
+    pub asset: [u8; 32],
 }
 
 /// Full-scan vin detection — the F4 completeness primitive. EVERY input of `tx_data` is resolved
@@ -1275,11 +1289,11 @@ pub fn scan_tx_spends(
     let mut spends = Vec::new();
     for (txid, vout) in &inputs {
         let key = outpoint_key(txid, *vout);
-        if let Some(stored) = live.get(&key) {
+        if let Some((stored, asset)) = live.get(&key) {
             let (cx, cy) = next_opening();
             let nu = bind_spent_note(&stored, &cx, &cy)?;
             live.remove(&key);
-            spends.push(DetectedSpend { outpoint: key, nu, prev_txid: *txid, prev_vout: *vout, cx, cy });
+            spends.push(DetectedSpend { outpoint: key, nu, prev_txid: *txid, prev_vout: *vout, cx, cy, asset });
         }
     }
     Some(spends)
@@ -1706,18 +1720,21 @@ impl ScanReflection {
     }
 
     /// Fold one output note: append the note leaf (witnessed note-tree transition) and add the
-    /// outpoint → commitment hash to the live UTXO set so a later tx in the batch can spend it.
+    /// outpoint → `(commitment hash, asset)` to the live UTXO set so a later tx in the batch can
+    /// spend it. `asset` is the note's asset (the CXFER envelope's declared asset) — carried so a
+    /// later spend can re-impose asset preservation.
     pub fn fold_output(
         &mut self,
         note_leaf: &[u8; 32],
         note_path: &[[u8; 32]],
         outpoint: &[u8; 32],
         commitment_hash: &[u8; 32],
+        asset: &[u8; 32],
     ) -> Result<(), &'static str> {
         self.pool_root = keccak_tree_append_transition(&self.pool_root, self.note_count, note_path, note_leaf)
             .ok_or("note append witness invalid")?;
         self.note_count += 1;
-        self.live.insert(outpoint, commitment_hash);
+        self.live.insert(outpoint, commitment_hash, asset);
         Ok(())
     }
 
@@ -1730,16 +1747,27 @@ impl ScanReflection {
     /// append the note, insert the outpoint. Fails closed (folding nothing) on a bad kernel/range,
     /// a non-curve-point commitment, or a mismatched output-witness length.
     ///
-    /// REFLECT-1: without this gate the per-output `fold_output` loop appended an attacker's inflated
-    /// commitment (Σ_out ≫ Σ_in) into the pool root — Bitcoin never checks the Tacit kernel — making
-    /// unbacked notes mintable/withdrawable cross-lane on Ethereum (value from nothing). The leaf-
-    /// SHAPE binding cannot catch it (an inflated commitment is a valid curve point).
+    /// REFLECT-1: without the conservation gate the per-output `fold_output` loop appended an
+    /// attacker's inflated commitment (Σ_out ≫ Σ_in) into the pool root — Bitcoin never checks the
+    /// Tacit kernel — making unbacked notes mintable/withdrawable cross-lane on Ethereum (value from
+    /// nothing). The leaf-SHAPE binding cannot catch it (an inflated commitment is a valid curve
+    /// point).
+    ///
+    /// ASSET PRESERVATION: conservation is value-only (`Σ C_in = Σ C_out`, asset-blind — the kernel
+    /// only labels the message with `asset`). So a confirmed CXFER could spend a CHEAP-asset note and
+    /// declare DEAR-asset outputs of equal commitment-value: value conserves, asset flips, and the
+    /// dear note becomes bridge-mintable on Ethereum (cross-asset inflation). `input_assets` are the
+    /// spent notes' assets (carried by the live UTXO set, see `DetectedSpend.asset`); every one MUST
+    /// equal the envelope's declared `asset`, the same binding the EVM lane gets from `leaf(asset,…)`
+    /// membership. Fails closed (folds nothing) on mismatch, like a non-conserving tx — its spends
+    /// are still nullified by the caller, so a relabel just burns the attacker's input for nothing.
     #[allow(clippy::too_many_arguments)]
     pub fn fold_cxfer(
         &mut self,
         asset: &[u8; 32],
         input_outpoints: &[([u8; 32], u32)],
         input_commitments: &[Point],
+        input_assets: &[[u8; 32]],
         txid: &[u8; 32],
         output_commitments_compressed: &[[u8; 33]],
         output_paths: &[Vec<[u8; 32]>],
@@ -1751,6 +1779,14 @@ impl ScanReflection {
         if output_paths.len() != n || output_vouts.len() != n {
             return Err("cxfer fold: output witness length mismatch");
         }
+        if input_assets.len() != input_commitments.len() {
+            return Err("cxfer fold: input asset length mismatch");
+        }
+        // Asset preservation: every spent note must be of the envelope's declared asset (closes the
+        // cross-asset inflation path the value-only conservation can't see).
+        if input_assets.iter().any(|a| a != asset) {
+            return Err("cxfer fold: non-asset-preserving (input asset != envelope asset)");
+        }
         if !verify_cxfer_conservation(asset, input_outpoints, input_commitments, output_commitments_compressed, range_proof, kernel_sig) {
             return Err("cxfer fold: tx does not conserve value (kernel/range)");
         }
@@ -1759,7 +1795,7 @@ impl ScanReflection {
             let note_leaf = reflected_note_leaf(asset, commitment).ok_or("cxfer fold: output commitment not a curve point")?;
             let ch = commitment_hash_compressed(commitment).ok_or("cxfer fold: output commitment not a curve point")?;
             let outpoint = outpoint_key(txid, output_vouts[i]);
-            self.fold_output(&note_leaf, &output_paths[i], &outpoint, &ch)?;
+            self.fold_output(&note_leaf, &output_paths[i], &outpoint, &ch, asset)?;
         }
         Ok(())
     }
@@ -2368,10 +2404,82 @@ mod tests {
         let txid = arr32("0x7777777777777777777777777777777777777777777777777777777777777777");
         // No range proof in the kernel fixture → verify_range fails → fold rejects (fail-closed: a
         // cxfer with a missing/short range proof also injects nothing).
-        let res = sc.fold_cxfer(&asset, &inputs, &in_pts, &txid, &inflated, &paths, &vouts, &[], &sig);
+        // input_assets all == the envelope asset, so the rejection here is purely the conservation
+        // failure (asset preservation is exercised separately in scan_reflection_rejects_asset_relabel).
+        let in_assets = vec![asset; in_pts.len()];
+        let res = sc.fold_cxfer(&asset, &inputs, &in_pts, &in_assets, &txid, &inflated, &paths, &vouts, &[], &sig);
         assert!(res.is_err(), "fold_cxfer rejects a non-conserving cxfer tx");
         assert_eq!(sc.pool_root, pool_before, "rejected cxfer folds NO output (pool root unchanged)");
         assert_eq!(sc.note_count, notes_before, "rejected cxfer appends no note");
+    }
+
+    // ASSET-PRESERVATION (cross-asset inflation): the reflection's CXFER conservation is value-ONLY
+    // (Σ C_in = Σ C_out; the kernel only labels its message with `asset`). A confirmed Bitcoin CXFER
+    // can therefore spend a CHEAP-asset pool note and declare a DEAR-asset output of equal
+    // commitment-value: value conserves, asset flips, and the dear note becomes bridge-mintable on
+    // Ethereum (value from nothing). The EVM lane is immune — `leaf(asset,…)` membership binds the
+    // spend's asset — but the reflection resolved inputs through an (asset-blind) live UTXO set, so
+    // it could not. The fix carries each note's asset in the live set and makes `fold_cxfer` require
+    // every spent note's asset == the envelope's. This pins the property on a GENUINELY conserving
+    // fixture: conservation PASSES, so the asset-preservation check is the SOLE defense — pre-fix
+    // this exact fold minted the relabeled note.
+    #[test]
+    fn scan_reflection_cxfer_fold_rejects_asset_relabel() {
+        let f: serde_json::Value =
+            serde_json::from_str(include_str!("../../fixtures/cxfer_conservation_diff.json")).unwrap();
+        let v = f["vectors"].as_array().unwrap().iter()
+            .find(|x| x["name"].as_str() == Some("conserving_m1")).expect("conserving_m1 vector");
+
+        // The CXFER envelope's declared asset (the DEAR asset the attacker wants to mint), and a
+        // genuinely value-conserving 1-in/1-out kernel + range proof signed under it.
+        let envelope_asset = arr32(v["asset"].as_str().unwrap());
+        let in_txid = arr32(v["inputs"][0]["txid"].as_str().unwrap());
+        let in_vout = v["inputs"][0]["vout"].as_u64().unwrap() as u32;
+        let in_pt = decompress(&arr33(v["inputs"][0]["commitment"].as_str().unwrap())).unwrap();
+        let out_c = arr33(v["outsCompressed"][0].as_str().unwrap());
+        let sig: [u8; 64] = hex::decode(strip(v["kernelSig"].as_str().unwrap())).unwrap().try_into().unwrap();
+        let rp = hex::decode(strip(v["rangeProof"].as_str().unwrap())).unwrap();
+
+        let in_outpoints = vec![(in_txid, in_vout)];
+        let in_pts = vec![in_pt];
+        // Conservation genuinely PASSES for this (input, output, asset, sig, rp) — so the ONLY thing
+        // that can stop the relabel is the asset-preservation gate.
+        assert!(verify_cxfer_conservation(&envelope_asset, &in_outpoints, &in_pts, &[out_c], &rp, &sig),
+            "fixture cxfer conserves value (the asset check is the sole defense)");
+
+        // The single output appends at genesis index 0 → the append path is the empty-tree zeros path.
+        let txid = arr32("0x9999999999999999999999999999999999999999999999999999999999999999");
+        let note_path = KeccakTreeAccumulator::new().append_path();
+        let vouts = vec![0u32];
+
+        // ── The attack ── the spent note's REAL asset (recorded in the live set when it was created)
+        // is a DIFFERENT, cheaper asset than the envelope declares.
+        let cheap_asset = arr32("0x00000000000000000000000000000000000000000000000000000000c4eac4ea");
+        assert_ne!(cheap_asset, envelope_asset);
+        let mut attacked = ScanReflection::genesis();
+        let pool_before = attacked.pool_root;
+        let res = attacked.fold_cxfer(
+            &envelope_asset, &in_outpoints, &in_pts, &[cheap_asset], &txid,
+            &[out_c], &[note_path.clone()], &vouts, &rp, &sig,
+        );
+        assert_eq!(res, Err("cxfer fold: non-asset-preserving (input asset != envelope asset)"),
+            "a value-conserving CXFER that RELABELS a cheap-asset note as the dear envelope asset is rejected");
+        assert_eq!(attacked.pool_root, pool_before, "relabel folds NO output (pool root unchanged) — no dear note minted");
+        assert_eq!(attacked.note_count, 0, "relabel appends no note");
+        assert!(attacked.live.is_empty(), "relabel adds no live outpoint");
+
+        // ── The honest path ── input note's asset == the envelope asset → the conserving cxfer folds.
+        let mut honest = ScanReflection::genesis();
+        honest.fold_cxfer(
+            &envelope_asset, &in_outpoints, &in_pts, &[envelope_asset], &txid,
+            &[out_c], &[note_path], &vouts, &rp, &sig,
+        ).expect("an asset-preserving conserving cxfer folds");
+        assert_eq!(honest.note_count, 1, "honest fold appends the output note");
+        assert_ne!(honest.pool_root, pool_before, "honest fold advances the pool root");
+        let outpoint = outpoint_key(&txid, 0);
+        let ch = commitment_hash_compressed(&out_c).unwrap();
+        assert_eq!(honest.live.get(&outpoint), Some((ch, envelope_asset)),
+            "the new note is live under the envelope asset");
     }
 
     // REFLECT-1 DIFFERENTIAL: the guest reads a cxfer's output witnesses ONLY when
@@ -2566,26 +2674,46 @@ mod tests {
     fn live_utxo_set_rebuild_and_mutate() {
         let key = |b: u8| { let mut k = [0u8; 32]; k[31] = b; k };
         let val = |b: u8| { let mut v = [0u8; 32]; v[0] = b; v };
+        let ast = |b: u8| { let mut a = [0u8; 32]; a[1] = b; a }; // a distinct asset_id per entry
 
-        // a handed set must be strictly ascending, non-zero
-        assert!(LiveUtxoSet::from_sorted(vec![(key(0x10), val(1)), (key(0x20), val(2))]).is_some());
-        assert!(LiveUtxoSet::from_sorted(vec![(key(0x20), val(2)), (key(0x10), val(1))]).is_none(), "unsorted rejected");
-        assert!(LiveUtxoSet::from_sorted(vec![(key(0x10), val(1)), (key(0x10), val(2))]).is_none(), "duplicate rejected");
-        assert!(LiveUtxoSet::from_sorted(vec![([0u8; 32], val(1))]).is_none(), "zero key rejected");
+        // a handed set must be strictly ascending, non-zero (by key)
+        assert!(LiveUtxoSet::from_sorted(vec![(key(0x10), val(1), ast(1)), (key(0x20), val(2), ast(2))]).is_some());
+        assert!(LiveUtxoSet::from_sorted(vec![(key(0x20), val(2), ast(2)), (key(0x10), val(1), ast(1))]).is_none(), "unsorted rejected");
+        assert!(LiveUtxoSet::from_sorted(vec![(key(0x10), val(1), ast(1)), (key(0x10), val(2), ast(2))]).is_none(), "duplicate rejected");
+        assert!(LiveUtxoSet::from_sorted(vec![([0u8; 32], val(1), ast(1))]).is_none(), "zero key rejected");
 
-        let mut live = LiveUtxoSet::from_sorted(vec![(key(0x10), val(0xa1)), (key(0x30), val(0xc3))]).unwrap();
-        assert_eq!(live.root(), LiveUtxoSet::from_sorted(vec![(key(0x10), val(0xa1)), (key(0x30), val(0xc3))]).unwrap().root(), "root is contents-determined");
-        assert_eq!(live.get(&key(0x10)), Some(val(0xa1)));
+        let mut live = LiveUtxoSet::from_sorted(vec![(key(0x10), val(0xa1), ast(0xa)), (key(0x30), val(0xc3), ast(0xc))]).unwrap();
+        assert_eq!(live.root(), LiveUtxoSet::from_sorted(vec![(key(0x10), val(0xa1), ast(0xa)), (key(0x30), val(0xc3), ast(0xc))]).unwrap().root(), "root is contents-determined");
+        assert_eq!(live.get(&key(0x10)), Some((val(0xa1), ast(0xa))), "resolve → (commitment hash, asset)");
         assert_eq!(live.get(&key(0x99)), None);
+        // the asset is committed into the root: same key/value, different asset → different root
+        assert_ne!(live.root(), LiveUtxoSet::from_sorted(vec![(key(0x10), val(0xa1), ast(0xa)), (key(0x30), val(0xc3), ast(0xd))]).unwrap().root(), "asset bound into the root");
         let r0 = live.root();
 
         // an output inserts in key order; a spend removes; the root tracks the live contents
-        live.insert(&key(0x20), &val(0xb2));
-        assert_eq!(live.get(&key(0x20)), Some(val(0xb2)));
+        live.insert(&key(0x20), &val(0xb2), &ast(0xb));
+        assert_eq!(live.get(&key(0x20)), Some((val(0xb2), ast(0xb))));
         assert_ne!(live.root(), r0, "root advanced on insert");
-        assert_eq!(live.remove(&key(0x20)), val(0xb2), "remove returns the stored commitment");
+        assert_eq!(live.remove(&key(0x20)), (val(0xb2), ast(0xb)), "remove returns the stored (commitment, asset)");
         assert_eq!(live.root(), r0, "insert+remove of the same key restores the root");
         assert_eq!(live.get(&key(0x20)), None, "spent outpoint no longer resolves");
+    }
+
+    // Parity anchor for tests/confidential-reflection-scan.mjs (LIVE2_ROOT): the asset-committed
+    // live-set root for a known 2-entry set, so JS == Rust on the keccak(key‖asset‖value) leaf order.
+    #[test]
+    fn live_utxo_set_root_with_asset_pin() {
+        let last = |b: u8| { let mut k = [0u8; 32]; k[31] = b; k };
+        let first = |b: u8| { let mut x = [0u8; 32]; x[0] = b; x };
+        let live = LiveUtxoSet::from_sorted(vec![
+            (last(0x10), first(0xa1), first(0xaa)),
+            (last(0x30), first(0xc3), first(0xbb)),
+        ]).unwrap();
+        assert_eq!(
+            hex::encode(live.root()),
+            "0b4c5da8728e3216a451be798a8d9326513e018880e1755bffd582f084718faa",
+            "LIVE2_ROOT (asset-committed live-set root) — keep in sync with tests/confidential-reflection-scan.mjs"
+        );
     }
 
     // F4 full-scan: scan a REAL confirmed tx's vins against a live set seeded with its first
@@ -2604,24 +2732,26 @@ mod tests {
         let cx = arr32("0x1111111111111111111111111111111111111111111111111111111111111111");
         let cy = arr32("0x2222222222222222222222222222222222222222222222222222222222222222");
         let stored = commitment_hash(&cx, &cy);
+        let asset = arr32("0x00000000000000000000000000000000000000000000000000000000000000aa");
 
-        let mut live = LiveUtxoSet::from_sorted(vec![(outpoint, stored)]).unwrap();
+        let mut live = LiveUtxoSet::from_sorted(vec![(outpoint, stored, asset)]).unwrap();
         let before = live.root();
         let spends = scan_tx_spends(&tx, &mut live, || (cx, cy)).expect("scan honest tx");
         assert_eq!(spends.len(), 1, "the seeded pool outpoint is detected as a spend");
         assert_eq!((spends[0].outpoint, spends[0].nu), (outpoint, nullifier(&cx, &cy)), "ν derived + bound to the stored commitment");
         assert_eq!((spends[0].prev_txid, spends[0].prev_vout), (in_txid, in_vout), "raw prev-outpoint surfaced for the conservation kernel");
         assert_eq!((spends[0].cx, spends[0].cy), (cx, cy), "spent commitment coords surfaced (Σ C_in)");
+        assert_eq!(spends[0].asset, asset, "spent note's asset surfaced (CXFER fold asset-preservation)");
         assert!(live.is_empty(), "the spent outpoint is removed from the live set");
         assert_ne!(live.root(), before, "live root advanced on the spend");
 
         // a live set that doesn't contain any of the tx's vins → no pool spend
-        let mut other = LiveUtxoSet::from_sorted(vec![(arr32("0x00000000000000000000000000000000000000000000000000000000000000ff"), stored)]).unwrap();
+        let mut other = LiveUtxoSet::from_sorted(vec![(arr32("0x00000000000000000000000000000000000000000000000000000000000000ff"), stored, asset)]).unwrap();
         let none = scan_tx_spends(&tx, &mut other, || (cx, cy)).expect("scan unrelated tx");
         assert!(none.is_empty(), "a tx spending no pool UTXO yields no spends");
 
         // an opening that doesn't open the stored commitment is rejected (forged ν)
-        let mut live2 = LiveUtxoSet::from_sorted(vec![(outpoint, stored)]).unwrap();
+        let mut live2 = LiveUtxoSet::from_sorted(vec![(outpoint, stored, asset)]).unwrap();
         let bad = scan_tx_spends(&tx, &mut live2, || (cy, cx)); // swapped → wrong commitment_hash
         assert!(bad.is_none(), "an opening not binding to the stored commitment is a hard reject");
     }
@@ -2955,18 +3085,19 @@ mod tests {
         let (op_a, op_b, op_c) = (v(0xa0), v(0xb0), v(0xc0));
         let (leaf_a, leaf_b, leaf_c) = (v(0x1aa), v(0x1bb), v(0x1cc));
         let dest_b = v(0xde);
+        let asset = v(0x5e); // the live set carries the note's asset (unused by the legacy UtxoAccumulator)
         let _ = cy_c;
 
         // 1. two outputs (deposits): fold_output appends the note leaf + adds the outpoint live.
         let ow_a = build_output_witness(&st.notes, &st.utxo, leaf_a, op_a, com_a);
         st.notes.append(&leaf_a); st.utxo.insert(&op_a, &com_a);
-        sc.fold_output(&leaf_a, &ow_a.note_path, &op_a, &com_a).expect("output a");
+        sc.fold_output(&leaf_a, &ow_a.note_path, &op_a, &com_a, &asset).expect("output a");
         let ow_b = build_output_witness(&st.notes, &st.utxo, leaf_b, op_b, com_b);
         st.notes.append(&leaf_b); st.utxo.insert(&op_b, &com_b);
-        sc.fold_output(&leaf_b, &ow_b.note_path, &op_b, &com_b).expect("output b");
+        sc.fold_output(&leaf_b, &ow_b.note_path, &op_b, &com_b, &asset).expect("output b");
         assert_eq!(sc.pool_root, st.notes.root(), "note tree after deposits");
-        assert_eq!(sc.live.get(&op_a), Some(com_a), "op_a live");
-        assert_eq!(sc.live.get(&op_b), Some(com_b), "op_b live");
+        assert_eq!(sc.live.get(&op_a), Some((com_a, asset)), "op_a live");
+        assert_eq!(sc.live.get(&op_b), Some((com_b, asset)), "op_b live");
         assert_ne!(sc.digest(), d0, "state advanced");
 
         // 2. transfer: spend note A (the scan derives nu_a + removes op_a), create op_c.
@@ -2976,7 +3107,7 @@ mod tests {
         sc.fold_spent(&nu_a, &sw.s_low_value, &sw.s_low_next, sw.s_low_index, &sw.s_low_path, &sw.s_new_path).expect("spend a");
         let ow_c = build_output_witness(&st.notes, &st.utxo, leaf_c, op_c, com_c);
         st.notes.append(&leaf_c); st.utxo.insert(&op_c, &com_c);
-        sc.fold_output(&leaf_c, &ow_c.note_path, &op_c, &com_c).expect("output c");
+        sc.fold_output(&leaf_c, &ow_c.note_path, &op_c, &com_c, &asset).expect("output c");
         assert_eq!(sc.spent_root, st.spent.root(), "spent after transfer");
         assert_eq!(sc.pool_root, st.notes.root(), "notes after transfer");
         assert_eq!(sc.live.get(&op_a), None, "op_a spent");

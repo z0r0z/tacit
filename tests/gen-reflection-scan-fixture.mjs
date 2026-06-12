@@ -46,7 +46,7 @@ const seedVins = cxTx.vins.filter((vi) => !vi.isCoinbase);
 seedVins.forEach((vi, i) => {
   const outpoint = pool.outpointKey(internal(vi.prevTxid), vi.vout);
   const { cx, cy } = pool.commitXY(1000n + BigInt(i), 7n + BigInt(i) * 3n); // a valid prior note
-  state.foldOutput(pool.leaf(ASSET, cx, cy, ZERO_OWNER), outpoint, pool.commitmentHash(cx, cy));
+  state.foldOutput(pool.leaf(ASSET, cx, cy, ZERO_OWNER), outpoint, pool.commitmentHash(cx, cy), ASSET);
   coords.set(outpoint.toLowerCase(), { cx, cy });
 });
 

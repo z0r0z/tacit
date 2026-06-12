@@ -9,7 +9,7 @@ fn r32(s: &mut SP1Stdin, v: &serde_json::Value) { s.write(&hexv(v.as_str().unwra
 fn path(s: &mut SP1Stdin, v: &serde_json::Value) { for p in v.as_array().unwrap() { s.write(&hexv(p.as_str().unwrap())); } }
 
 // Write the assembled FULL-SCAN input (assembleReflectionScanInput) to SP1Stdin in the guest's
-// (reflect.rs) io::read order. Prior: roots + counts with the HANDED live set (key,value pairs).
+// (reflect.rs) io::read order. Prior: roots + counts with the HANDED live set (key,value,asset triples).
 // Then anchorHeight + headers. Then per block: n_tx, ALL txData (the guest collects them, then
 // recomputes the merkle root for completeness), then per tx the witnesses in scan order —
 // openings (read inside scan_tx_spends), spent-set inserts, a burn insert, then outputs.
@@ -20,7 +20,9 @@ fn write_stdin(f: &serde_json::Value) -> SP1Stdin {
     r32(&mut s, &p["spentRoot"]); s.write(&p["spentCount"].as_u64().unwrap());
     let live = p["live"].as_array().unwrap();
     s.write(&(live.len() as u32));
-    for kv in live { let pair = kv.as_array().unwrap(); r32(&mut s, &pair[0]); r32(&mut s, &pair[1]); }
+    // Each handed entry is (key, value=commitment_hash, asset_id) — the asset carried so the guest
+    // can re-impose CXFER asset preservation (see LiveUtxoSet / fold_cxfer).
+    for kv in live { let t = kv.as_array().unwrap(); r32(&mut s, &t[0]); r32(&mut s, &t[1]); r32(&mut s, &t[2]); }
     r32(&mut s, &p["burnRoot"]);  s.write(&p["burnCount"].as_u64().unwrap());
     s.write(&p["height"].as_u64().unwrap());
 

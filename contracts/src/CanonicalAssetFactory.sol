@@ -27,6 +27,10 @@ contract CanonicalAssetFactory {
     /// @dev Domain tag for the EVM etch id derivation.
     bytes public constant ETCH_TAG = "tacit-evm-etch-v1";
 
+    /// @dev keccak of the (constant, arg-less) ERC20 creation code — the CREATE2 init-code hash.
+    ///      Cached so `predict` doesn't re-hash the full creation code on every call.
+    bytes32 private immutable _INIT_CODE_HASH = keccak256(type(CanonicalBridgedERC20).creationCode);
+
     /// @dev deploy slot => canonical ERC20 (0 if unset). The slot binds the backing
     ///      authority (`minter`) and the FULL metadata (`symbol`, `decimals`, `cid`)
     ///      alongside the asset id, so the canonical address is specific to a given
@@ -80,7 +84,7 @@ contract CanonicalAssetFactory {
         return (_params.assetId, _params.minter, _params.symbol, _params.decimals, _params.cid);
     }
 
-    event Deployed(bytes32 indexed assetId, address indexed token, address indexed minter, string symbol, uint8 decimals);
+    event Deployed(bytes32 indexed assetId, address indexed token, address indexed minter, string symbol, uint8 decimals, bytes32 cid);
 
     error AlreadyDeployed();
     error LabelTooLong();
@@ -110,7 +114,7 @@ contract CanonicalAssetFactory {
         );
     }
 
-    /// @notice True iff (symbol, decimals, cid) are the official metadata for an EVM-etched
+    /// @notice True if (symbol, decimals, cid) are the official metadata for an EVM-etched
     ///         `assetId` given (etcher, salt). Pure on-chain check — no registry, no
     ///         trust, no market resolution.
     function verifyMetadata(bytes32 assetId, address etcher, bytes32 salt, string calldata symbol_, uint8 decimals_, bytes32 cid)
@@ -132,9 +136,8 @@ contract CanonicalAssetFactory {
         view
         returns (address)
     {
-        bytes32 initHash = keccak256(type(CanonicalBridgedERC20).creationCode);
         bytes32 salt = _slot(assetId, minter, symbol_, decimals_, cid);
-        return address(uint160(uint256(keccak256(abi.encodePacked(bytes1(0xff), address(this), salt, initHash)))));
+        return address(uint160(uint256(keccak256(abi.encodePacked(bytes1(0xff), address(this), salt, _INIT_CODE_HASH)))));
     }
 
     function predict(bytes32 assetId, address minter, string calldata symbol_, uint8 decimals_)
@@ -212,6 +215,6 @@ contract CanonicalAssetFactory {
         token = address(new CanonicalBridgedERC20{salt: slot}());
         delete _params;
         _token[slot] = token;
-        emit Deployed(assetId, token, minter, symbol_, decimals_);
+        emit Deployed(assetId, token, minter, symbol_, decimals_, cid);
     }
 }

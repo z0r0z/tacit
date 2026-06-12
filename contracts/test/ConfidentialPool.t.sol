@@ -1267,8 +1267,8 @@ contract ConfidentialPoolTest is Test {
         address tok = _linkViaAttest(shared, "cBTC", 18);
         assertEq(CanonicalBridgedERC20(tok).METADATA_CID(), _metaCid(shared), "etch CID stored on the token");
         bytes memory uri = bytes(CanonicalBridgedERC20(tok).contractURI());
-        assertEq(uri.length, 80, "ipfs://f01701220 + 64 hex"); // 16 + 64
-        for (uint256 i; i < 16; ++i) assertEq(uri[i], bytes("ipfs://f01701220")[i], "CIDv1 base16 prefix");
+        assertEq(uri.length, 80, "ipfs://f01551220 + 64 hex"); // 16 + 64
+        for (uint256 i; i < 16; ++i) assertEq(uri[i], bytes("ipfs://f01551220")[i], "CIDv1 base16 prefix");
     }
 
     /// A front-runner cannot poison the trustless contractURI: deploying the canonical token at

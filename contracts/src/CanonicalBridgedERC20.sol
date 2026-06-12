@@ -2,6 +2,7 @@
 pragma solidity ^0.8.28;
 
 import {ERC20} from "solady/tokens/ERC20.sol";
+import {LibString} from "solady/utils/LibString.sol";
 
 /// @dev The factory exposes the deploy-time parameters via a callback so the ERC20
 ///      constructor takes NO arguments — keeping its init code constant so the CREATE2
@@ -33,8 +34,9 @@ interface ICanonicalDeployParams {
 contract CanonicalBridgedERC20 is ERC20 {
     address public immutable MINTER;
     bytes32 public immutable ASSET_ID;
-    /// IPFS metadata content hash (the CIDv1 dag-pb sha2-256 digest of a logo/description JSON),
-    /// bound into ASSET_ID by the etch — so the contractURI is trustless. 0 ⇒ no metadata.
+    /// IPFS metadata content hash (the CIDv1 raw sha2-256 digest of a logo/description JSON —
+    /// i.e. sha256 of the JSON bytes), bound into ASSET_ID by the etch so the contractURI is
+    /// trustless and recomputable from the JSON alone. 0 ⇒ no metadata.
     bytes32 public immutable METADATA_CID;
 
     string private _symbol;
@@ -56,23 +58,20 @@ contract CanonicalBridgedERC20 is ERC20 {
     function symbol() public view override returns (string memory) { return _symbol; }
     function decimals() public view override returns (uint8) { return _decimals; }
 
-    /// @notice EIP-7572 contract-level metadata URI → the asset's logo/description JSON, pinned on
-    ///         IPFS. The CID is the etch-proven `METADATA_CID` (bound into ASSET_ID), reconstructed
-    ///         as a base16 CIDv1 (dag-pb, sha2-256), so the metadata is trustless, not operator-set.
-    ///         Empty when the etch carried no metadata.
-    function contractURI() external view returns (string memory) {
-        if (METADATA_CID == bytes32(0)) return "";
-        return string.concat("ipfs://f01701220", _toHex(METADATA_CID));
+    /// @dev `name` is a compile-time constant, so the EIP-2612 / EIP-712 name hash is too —
+    ///      return it directly so `permit` / `DOMAIN_SEPARATOR` skip hashing the string each call.
+    function _constantNameHash() internal pure override returns (bytes32) {
+        return keccak256("Tacit Token");
     }
 
-    function _toHex(bytes32 b) internal pure returns (string memory) {
-        bytes memory hexc = "0123456789abcdef";
-        bytes memory out = new bytes(64);
-        for (uint256 i; i < 32; ++i) {
-            out[i * 2] = hexc[uint8(b[i]) >> 4];
-            out[i * 2 + 1] = hexc[uint8(b[i]) & 0x0f];
-        }
-        return string(out);
+    /// @notice EIP-7572 contract-level metadata URI → the asset's logo/description JSON, pinned on
+    ///         IPFS. The CID is the etch-proven `METADATA_CID` (bound into ASSET_ID), reconstructed
+    ///         as a base16 CIDv1 (raw codec, sha2-256), so the metadata is trustless, not
+    ///         operator-set. Empty when the etch carried no metadata.
+    ///         Layout: `f`(base16) ‖ `01`(v1) ‖ `55`(raw) ‖ `12`(sha2-256) ‖ `20`(len 32) ‖ cid.
+    function contractURI() external view returns (string memory) {
+        if (METADATA_CID == bytes32(0)) return "";
+        return string.concat("ipfs://f01551220", LibString.toHexStringNoPrefix(uint256(METADATA_CID), 32));
     }
 
     /// @notice Mint backed supply. Only the minter, which enforces the backing (the SP1

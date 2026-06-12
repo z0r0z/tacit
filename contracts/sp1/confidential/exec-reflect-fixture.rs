@@ -10,7 +10,7 @@ fn r32(s: &mut SP1Stdin, v: &serde_json::Value) { s.write(&hexv(v.as_str().unwra
 fn path(s: &mut SP1Stdin, v: &serde_json::Value) { for p in v.as_array().unwrap() { s.write(&hexv(p.as_str().unwrap())); } }
 
 // The assembled FULL-SCAN input (assembleReflectionScanInput) in the guest's (reflect.rs)
-// io::read order: prior (roots + counts + the handed live (key,value) pairs), anchorHeight +
+// io::read order: prior (roots + counts + the handed live (key,value,asset) triples), anchorHeight +
 // headers, then per block n_tx + ALL txData, then per tx openings → spent inserts → burn insert →
 // outputs. Identical to exec-reflect-prove's writer (these box bins don't share a crate).
 fn write_stdin(f: &serde_json::Value) -> SP1Stdin {
@@ -20,7 +20,7 @@ fn write_stdin(f: &serde_json::Value) -> SP1Stdin {
     r32(&mut s, &p["spentRoot"]); s.write(&p["spentCount"].as_u64().unwrap());
     let live = p["live"].as_array().unwrap();
     s.write(&(live.len() as u32));
-    for kv in live { let pair = kv.as_array().unwrap(); r32(&mut s, &pair[0]); r32(&mut s, &pair[1]); }
+    for kv in live { let t = kv.as_array().unwrap(); r32(&mut s, &t[0]); r32(&mut s, &t[1]); r32(&mut s, &t[2]); }
     r32(&mut s, &p["burnRoot"]);  s.write(&p["burnCount"].as_u64().unwrap());
     s.write(&p["height"].as_u64().unwrap());
 

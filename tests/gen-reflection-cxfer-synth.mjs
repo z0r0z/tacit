@@ -109,7 +109,8 @@ state.setHeight(BLOCK_HEIGHT - 1);
 ins.forEach((i, j) => {
   const { cx, cy } = xyHex(Cin[j]);
   const outpoint = pool.outpointKey('0x' + i.txid.toString('hex'), i.vout);
-  state.foldOutput(pool.leaf('0x' + Buffer.from(ASSET).toString('hex'), cx, cy, ZERO_OWNER), outpoint, pool.commitmentHash(cx, cy));
+  const assetHex = '0x' + Buffer.from(ASSET).toString('hex');
+  state.foldOutput(pool.leaf(assetHex, cx, cy, ZERO_OWNER), outpoint, pool.commitmentHash(cx, cy), assetHex);
   coords.set(outpoint.toLowerCase(), { cx, cy });
 });
 

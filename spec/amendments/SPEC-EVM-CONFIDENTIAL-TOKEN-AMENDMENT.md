@@ -117,9 +117,10 @@ etched token:   asset_id = sha256("tacit-evm-etch-v1"  ‖ chainid_be8 ‖ facto
 wrapped/native: asset_id = sha256("tacit-evm-token-v1" ‖ chainid_be8 ‖ underlying_token)
 meta_hash       = sha256( u8(len symbol) ‖ symbol ‖ u8(decimals) ‖ cid )
 ```
-`cid` is a 32-byte IPFS metadata content hash (the CIDv1 dag-pb sha2-256 digest of a
-logo/description JSON; `0` = none), bound into `meta_hash` so the id commits to it like
-`(symbol, decimals)`.
+`cid` is a 32-byte IPFS metadata content hash (the CIDv1 **raw** sha2-256 digest of a
+logo/description JSON; `0` = none) — for the raw codec the digest is simply
+`sha256(metadata JSON bytes)`, so anyone can recompute the `cid` from the JSON with no IPFS
+encoder. Bound into `meta_hash` so the id commits to it like `(symbol, decimals)`.
 Domain-separated from the Bitcoin `sha256(reveal_txid ‖ vout)` namespace and
 from the `ShieldedPool` asset-id rule by tag.
 
@@ -140,8 +141,9 @@ wallets, marketplaces, and the dapp:
   bound to the id via the txid (`asset_id = sha256(reveal_txid ‖ 0)`,
   `reveal_txid = double_sha256(reveal_tx)`). The bridge proves them once at first mint (the
   SP1 attest_meta proof's `AssetMeta` carries the `cid`) and the canonical ERC20 carries
-  them immutably; `contractURI()` reconstructs `ipfs://f01701220‖hex(cid)` from it. The CID
-  is optional — absent ⇒ `cid = 0` ⇒ empty `contractURI`.
+  them immutably; `contractURI()` reconstructs `ipfs://f01551220‖hex(cid)` from it
+  (CIDv1 base16: `f` multibase ‖ `01` v1 ‖ `55` raw ‖ `12` sha2-256 ‖ `20` len-32 ‖ cid). The
+  CID is optional — absent ⇒ `cid = 0` ⇒ empty `contractURI`.
 - **Wrapped ERC20:** the id binds the underlying, whose `symbol`/`decimals` are read from
   that token directly.
 

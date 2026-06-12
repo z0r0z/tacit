@@ -21,6 +21,32 @@ contract BitcoinLightRelayTest is TestHelper {
         relay.genesis(0, TEST_TARGET, 1000, keccak256("x"), 0, 1);
     }
 
+    // The anchor must sit inside the seeded epoch — otherwise the first
+    // advanceTip reverts UnknownEpoch and the relay is bricked. Genesis rejects
+    // an anchor at or past the next epoch boundary (and below the epoch start).
+    function test_genesis_rejects_anchor_outside_epoch() public {
+        TestLightRelay r = new TestLightRelay();
+        vm.expectRevert(BitcoinLightRelay.InvalidChainLength.selector);
+        r.genesis(0, TEST_TARGET, 1000, keccak256("x"), 2016, 1); // tipHeight == next epoch start
+
+        TestLightRelay r2 = new TestLightRelay();
+        vm.expectRevert(BitcoinLightRelay.InvalidChainLength.selector);
+        r2.genesis(2016, TEST_TARGET, 1000, keccak256("x"), 2015, 1); // below epoch start
+    }
+
+    function test_genesis_accepts_anchor_at_epoch_end() public {
+        TestLightRelay r = new TestLightRelay();
+        r.genesis(0, TEST_TARGET, 1000, keccak256("x"), 2015, 1); // last block of the epoch
+        assertEq(relay.epochTarget(0), TEST_TARGET);
+        assertTrue(r.initialized());
+    }
+
+    function test_genesis_rejects_oversized_timestamp() public {
+        TestLightRelay r = new TestLightRelay();
+        vm.expectRevert(BitcoinLightRelay.InvalidTimestamp.selector);
+        r.genesis(0, TEST_TARGET, uint256(type(uint32).max) + 1, keccak256("x"), 0, 1);
+    }
+
     function test_verifyBlock_single_header() public view {
         bytes memory chain = _buildChain(bytes32(0), bytes32(uint256(0xBEEF)), 1);
         bytes32 mr = relay.verifyBlock(chain, 0, 0);
@@ -126,6 +152,35 @@ contract BitcoinLightRelayTest is TestHelper {
 
         assertEq(r.currentEpoch(), 472);
         assertEq(r.epochTarget(472), uint256(0x02068f) << 160); // real new bits 0x1702068f
+    }
+
+    // retarget() must be anchored: the tip has to sit at the last block of the
+    // current epoch. A premature call (tip mid-epoch) reverts ChainNotAnchored
+    // before any header is parsed, so the epoch can't be advanced early.
+    function test_retarget_reverts_when_not_anchored() public {
+        TestLightRelay r = new TestLightRelay();
+        r.genesis(0, TEST_TARGET, 1000, keccak256("anchor"), 100, 1); // tip mid-epoch (100 != 2015)
+        bytes memory hdrs = new bytes(80 * 8);
+        vm.expectRevert(BitcoinLightRelay.ChainNotAnchored.selector);
+        r.retarget(hdrs);
+    }
+
+    // The retarget arithmetic compact-encodes its result to header precision then
+    // re-expands it (Bitcoin's SetCompact/GetCompact). Round-trip the real
+    // mainnet boundary targets and the powLimit to guard that truncation.
+    function test_compact_roundtrip() public {
+        TestLightRelay r = new TestLightRelay();
+        // Real mainnet nBits across recent epochs.
+        uint32[3] memory bits = [uint32(0x17020f79), 0x1702068f, 0x1d00ffff];
+        for (uint256 i; i < 3; ++i) {
+            uint256 t = r.exposed_bitsToTarget(bits[i]);
+            assertEq(r.exposed_targetToCompact(t), bits[i]);
+            assertEq(r.exposed_bitsToTarget(r.exposed_targetToCompact(t)), t);
+        }
+        // powLimit (MAX_TARGET) compacts to 0x1d00ffff and back.
+        uint256 maxT = relay.MAX_TARGET();
+        assertEq(r.exposed_targetToCompact(maxT), 0x1d00ffff);
+        assertEq(r.exposed_bitsToTarget(r.exposed_targetToCompact(maxT)), maxT);
     }
 
     // Burn-inclusion proofs anchor to the tip OR a canonical ancestor within

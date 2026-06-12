@@ -41,6 +41,22 @@ contract PoolHandler is Test {
     uint256 public ghostLeaves;
     uint256 public ghostRelayHeight;
 
+    // AMM ghost state: a single confidential pool over (assetA, assetB), funded once by initPoolOp.
+    // ghostReserve tracks the in-system VALUE sitting in pool reserves per asset, so the invariants can
+    // assert (a) the on-chain pool mirrors it and (b) escrow always backs it (reserves are escrowed,
+    // never minted out of thin air). Note value lives in escrow MINUS reserves — withdraw/fee bound to
+    // that free headroom, since pool-locked value can't be spent as a note.
+    bool public poolInit;
+    bytes32 public poolId;
+    bytes32 public poolLo;
+    bytes32 public poolHi;
+    uint256 public scaleLo;
+    uint256 public scaleHi;
+    mapping(bytes32 => uint256) public ghostReserve;
+    uint256 public ghostShares;
+    uint32 constant POOL_FEE = 30;
+    uint256 constant MIN_LIQ = 1000; // == pool.MINIMUM_LIQUIDITY()
+
     bytes32[] public pending; // unconsumed deposit ids
     uint256 internal nonce;
 
@@ -109,12 +125,20 @@ contract PoolHandler is Test {
         pending.pop();
     }
 
-    /// Unwrap to a public recipient — bounded so the payout never exceeds escrow.
+    /// Free (note-backing) escrow value for an asset: total escrow minus what's locked in pool reserves.
+    /// A withdrawal/fee spends a NOTE, so it can only draw on this — pool-locked value isn't a note.
+    function _freeValue(bytes32 id, uint256 scale) internal view returns (uint256) {
+        uint256 esc = pool.escrow(id);
+        uint256 reserved = ghostReserve[id] * scale;
+        return esc <= reserved ? 0 : (esc - reserved) / scale;
+    }
+
+    /// Unwrap to a public recipient — bounded to the free (non-reserve) escrow so reserves stay backed.
     function withdraw(uint256 seed, uint256 value) external {
         (, bytes32 id, uint256 scale) = _pick(seed);
-        uint256 esc = pool.escrow(id);
-        if (esc < scale) return;
-        value = bound(value, 1, esc / scale);
+        uint256 free = _freeValue(id, scale);
+        if (free == 0) return;
+        value = bound(value, 1, free);
         ConfidentialPool.PublicValues memory pv = _pv();
         pv.withdrawals = new ConfidentialPool.Withdrawal[](1);
         pv.withdrawals[0] = ConfidentialPool.Withdrawal(id, address(0xBEEF), value);
@@ -122,12 +146,12 @@ contract PoolHandler is Test {
         ghostEscrow[id] -= value * scale;
     }
 
-    /// Settler fee — also bounded by escrow.
+    /// Settler fee — also bounded to the free (non-reserve) escrow.
     function feePay(uint256 seed, uint256 value) external {
         (, bytes32 id, uint256 scale) = _pick(seed);
-        uint256 esc = pool.escrow(id);
-        if (esc < scale) return;
-        value = bound(value, 1, esc / scale);
+        uint256 free = _freeValue(id, scale);
+        if (free == 0) return;
+        value = bound(value, 1, free);
         ConfidentialPool.PublicValues memory pv = _pv();
         pv.fees = new ConfidentialPool.FeePayment[](1);
         pv.fees[0] = ConfidentialPool.FeePayment(id, value);
@@ -150,6 +174,103 @@ contract PoolHandler is Test {
         nonce++;
         _settle(pv);
         ghostLeaves += k;
+    }
+
+    function _liveReserves() internal view returns (uint256 rA, uint256 rB) {
+        (, , , rA, rB, , ) = pool.pools(poolId);
+    }
+
+    /// Initialize the single confidential AMM pool over (assetA, assetB), funded LP-side (escrows the
+    /// reserves, like a wrap). One-shot. Reserves are seeded above MINIMUM_LIQUIDITY on BOTH legs so
+    /// whichever sorts low clears the founder-position floor.
+    function initPoolOp(uint256 ra, uint256 rb) external {
+        if (poolInit) return;
+        ra = bound(ra, MIN_LIQ + 1, 1e9);
+        rb = bound(rb, MIN_LIQ + 1, 1e9);
+        uint256 amtA = ra * scaleA;
+        uint256 amtB = rb * scaleB;
+        tokenA.mint(address(this), amtA); tokenA.approve(address(pool), amtA);
+        tokenB.mint(address(this), amtB); tokenB.approve(address(pool), amtB);
+        // Dummy founder-share-note commitments: this run pins the reserve/escrow state machine, not the
+        // founder's note claim (covered in ConfidentialPool.t.sol). The seed deposit inserts no leaf.
+        poolId = pool.initPool(assetA, assetB, ra, rb, POOL_FEE,
+            keccak256("seedcx"), keccak256("seedcy"), keccak256("seedow"));
+        ghostEscrow[assetA] += amtA; ghostEscrow[assetB] += amtB;
+        ghostReserve[assetA] += ra; ghostReserve[assetB] += rb;
+        (poolLo, poolHi) = assetA < assetB ? (assetA, assetB) : (assetB, assetA);
+        scaleLo = poolLo == assetA ? scaleA : scaleB;
+        scaleHi = poolHi == assetA ? scaleA : scaleB;
+        ghostShares = poolLo == assetA ? ra : rb; // totalShares = rLo (the low asset's reserve)
+        poolInit = true;
+    }
+
+    /// An honest swap: move value INTO one reserve (bounded by the in-asset's free escrow, so reserves
+    /// stay backed) and OUT of the other (kept positive). No escrow moves — the trader's note carries
+    /// the value, conservation-bound in-guest. Pre is pinned to the live reserves so the contract's
+    /// pre==live gate accepts it.
+    function swapOp(uint256 dir, uint256 inSeed, uint256 outSeed) external {
+        if (!poolInit) return;
+        (uint256 rA, uint256 rB) = _liveReserves();
+        bool inIsLo = dir & 1 == 0;
+        bytes32 inId = inIsLo ? poolLo : poolHi;
+        bytes32 outId = inIsLo ? poolHi : poolLo;
+        uint256 inScale = inIsLo ? scaleLo : scaleHi;
+        uint256 liveOut = inIsLo ? rB : rA;
+        // In-leg can only grow into escrowed-but-unreserved value (free note headroom), capped at u64.
+        uint256 head = pool.escrow(inId) / inScale - ghostReserve[inId];
+        uint256 cap = uint256(type(uint64).max) - ghostReserve[inId];
+        uint256 maxIn = head < cap ? head : cap;
+        if (maxIn == 0 || liveOut <= 1) return;
+        uint256 dIn = bound(inSeed, 1, maxIn);
+        uint256 dOut = bound(outSeed, 1, liveOut - 1);
+        uint256 newA = inIsLo ? rA + dIn : rA - dOut;
+        uint256 newB = inIsLo ? rB - dOut : rB + dIn;
+        ConfidentialPool.PublicValues memory pv = _pv();
+        pv.swaps = new ConfidentialPool.SwapSettlement[](1);
+        pv.swaps[0] = ConfidentialPool.SwapSettlement(poolId, rA, rB, newA, newB);
+        _settle(pv);
+        ghostReserve[inId] += dIn;
+        ghostReserve[outId] -= dOut;
+    }
+
+    /// An honest LP add or remove: reserves AND totalShares move together. Add grows both legs (bounded
+    /// by free escrow, capped at u64) and shares; remove shrinks them, keeping each reserve positive and
+    /// totalShares ≥ MINIMUM_LIQUIDITY. Escrow is untouched (the LP's notes carry the value).
+    function lpOp(uint256 mode, uint256 s1, uint256 s2, uint256 s3) external {
+        if (!poolInit) return;
+        (uint256 rA, uint256 rB) = _liveReserves();
+        uint256 shares = ghostShares;
+        uint256 newA; uint256 newB; uint256 newS;
+        if (mode & 1 == 0) {
+            uint256 dA = bound(s1, 0, _addable(poolLo, scaleLo));
+            uint256 dB = bound(s2, 0, _addable(poolHi, scaleHi));
+            uint256 dS = bound(s3, 0, uint256(type(uint64).max) - shares);
+            if (dA == 0 && dB == 0 && dS == 0) return;
+            newA = rA + dA; newB = rB + dB; newS = shares + dS;
+            _settleLp(rA, rB, shares, newA, newB, newS);
+            ghostReserve[poolLo] += dA; ghostReserve[poolHi] += dB;
+        } else {
+            if (rA <= 1 || rB <= 1 || shares <= MIN_LIQ) return;
+            uint256 dA = bound(s1, 0, rA - 1);
+            uint256 dB = bound(s2, 0, rB - 1);
+            uint256 dS = bound(s3, 0, shares - MIN_LIQ);
+            newA = rA - dA; newB = rB - dB; newS = shares - dS;
+            _settleLp(rA, rB, shares, newA, newB, newS);
+            ghostReserve[poolLo] -= dA; ghostReserve[poolHi] -= dB;
+        }
+        ghostShares = newS;
+    }
+    // Free (non-reserve) headroom an add can grow a leg into, capped so the reserve stays < 2^64.
+    function _addable(bytes32 id, uint256 scale) internal view returns (uint256) {
+        uint256 head = pool.escrow(id) / scale - ghostReserve[id];
+        uint256 cap = uint256(type(uint64).max) - ghostReserve[id];
+        return head < cap ? head : cap;
+    }
+    function _settleLp(uint256 rA, uint256 rB, uint256 sp, uint256 nA, uint256 nB, uint256 nS) internal {
+        ConfidentialPool.PublicValues memory pv = _pv();
+        pv.liquidity = new ConfidentialPool.LpSettlement[](1);
+        pv.liquidity[0] = ConfidentialPool.LpSettlement(poolId, rA, rB, sp, nA, nB, nS);
+        _settle(pv);
     }
 
     /// Advance the relay (strictly increasing height, non-zero spent root).
@@ -194,13 +315,16 @@ contract ConfidentialPoolInvariantTest is Test {
         assetB = pool.registerWrapped(address(tokenB), SCALE_B, bytes32(0), "cB", "cB", 18);
         handler = new PoolHandler(pool, tokenA, tokenB, assetA, assetB, SCALE_A, SCALE_B);
 
-        bytes4[] memory sel = new bytes4[](6);
+        bytes4[] memory sel = new bytes4[](9);
         sel[0] = PoolHandler.wrap.selector;
         sel[1] = PoolHandler.consumeDeposit.selector;
         sel[2] = PoolHandler.withdraw.selector;
         sel[3] = PoolHandler.feePay.selector;
         sel[4] = PoolHandler.transferOp.selector;
         sel[5] = PoolHandler.attest.selector;
+        sel[6] = PoolHandler.initPoolOp.selector;
+        sel[7] = PoolHandler.swapOp.selector;
+        sel[8] = PoolHandler.lpOp.selector;
         targetSelector(StdInvariant.FuzzSelector({addr: address(handler), selectors: sel}));
         targetContract(address(handler));
     }
@@ -217,6 +341,25 @@ contract ConfidentialPoolInvariantTest is Test {
     /// The tree only grows, by exactly the leaves settle inserted.
     function invariant_leafCount() public view {
         assertEq(pool.nextLeafIndex(), handler.ghostLeaves(), "leaf count drift");
+    }
+
+    /// The on-chain pool mirrors the ghost reserves/shares exactly — every swap/LP settlement moved
+    /// the pool to precisely the proven post, across any interleaving with wraps/withdraws/etc.
+    function invariant_poolMirrorsGhost() public view {
+        if (!handler.poolInit()) return;
+        (, , , uint256 rA, uint256 rB, , uint256 sh) = pool.pools(handler.poolId());
+        assertEq(rA, handler.ghostReserve(handler.poolLo()), "reserveA drift");
+        assertEq(rB, handler.ghostReserve(handler.poolHi()), "reserveB drift");
+        assertEq(sh, handler.ghostShares(), "totalShares drift");
+    }
+
+    /// Escrow always BACKS the value locked in pool reserves (the rest backs notes/pending): the AMM
+    /// path's analog of escrow solvency. A swap/LP that grew a reserve past its escrow — or a withdraw
+    /// that drained escrow out from under a reserve — would break this. Reserves are < 2^64, so the
+    /// scaled product never overflows.
+    function invariant_reservesBackedByEscrow() public view {
+        assertGe(pool.escrow(assetA), handler.ghostReserve(assetA) * SCALE_A, "A reserves unbacked");
+        assertGe(pool.escrow(assetB), handler.ghostReserve(assetB) * SCALE_B, "B reserves unbacked");
     }
 
     /// Every settle leaves the current root in the accepted-root history.

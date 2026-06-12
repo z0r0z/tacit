@@ -32,7 +32,15 @@ abstract contract CanonicalMinter {
         uint8 decimals_,
         bytes32 cid
     ) {
-        (bytes32 assetId, address token) = factory.etchCanonical(etcher, salt, address(this), symbol_, decimals_, cid);
+        bytes32 assetId = factory.deriveAssetId(etcher, salt, symbol_, decimals_, cid);
+        // Adopt an existing canonical token for this (id, minter, meta) slot instead of
+        // re-etching: the slot binds minter = address(this), so a token already deployed there
+        // is bit-identical and this minter's to drive. Same tokenOf-first path the pool registers
+        // through, so a permissionless pre-deploy can't brick the etch.
+        address token = factory.tokenOf(assetId, address(this), symbol_, decimals_, cid);
+        if (token == address(0)) {
+            (assetId, token) = factory.etchCanonical(etcher, salt, address(this), symbol_, decimals_, cid);
+        }
         ASSET_ID = assetId;
         TOKEN = CanonicalBridgedERC20(token);
     }
@@ -44,6 +52,8 @@ abstract contract CanonicalMinter {
 ///         only `MINTER` can provably never act again, so the supply is immutably fixed. Maximally
 ///         trustless — a deploy-and-die minter with no further surface.
 contract FixedSupplyMinter is CanonicalMinter {
+    error ZeroRecipient();
+
     constructor(
         CanonicalAssetFactory factory,
         address etcher,
@@ -54,6 +64,7 @@ contract FixedSupplyMinter is CanonicalMinter {
         uint256 totalSupply,
         address recipient
     ) CanonicalMinter(factory, etcher, salt, symbol_, decimals_, cid) {
+        if (recipient == address(0)) revert ZeroRecipient();
         TOKEN.mint(recipient, totalSupply);
     }
 }
@@ -72,6 +83,7 @@ contract CappedMintMinter is CanonicalMinter {
     error NotAuthority();
     error CapExceeded();
     error MintClosed();
+    error ZeroRecipient();
 
     event Minted(address indexed to, uint256 amount, uint256 minted);
     event Burned(address indexed from, uint256 amount);
@@ -95,6 +107,7 @@ contract CappedMintMinter is CanonicalMinter {
     /// @notice Mint up to the lifetime cap, before the deadline. Authority-only.
     function mint(address to, uint256 amount) external {
         if (msg.sender != MINT_AUTHORITY) revert NotAuthority();
+        if (to == address(0)) revert ZeroRecipient();
         if (MINT_DEADLINE != 0 && block.timestamp > MINT_DEADLINE) revert MintClosed();
         uint256 m = minted + amount;
         if (CAP != 0 && m > CAP) revert CapExceeded();

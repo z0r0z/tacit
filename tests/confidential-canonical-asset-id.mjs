@@ -17,6 +17,7 @@
 
 import { createHash } from 'node:crypto';
 import assert from 'node:assert';
+import { fileURLToPath } from 'node:url';
 
 const sha256 = (b) => createHash('sha256').update(b).digest();
 const u8 = (n) => Buffer.from([n]);
@@ -40,12 +41,37 @@ export function deriveAssetId({ chainId, factory, salt, etcher, symbol, decimals
   ]));
 }
 
+// The metadata cid is the CIDv1 *raw* (codec 0x55) sha2-256 hash of the metadata JSON, which
+// for the raw codec is exactly sha256(jsonBytes) — recomputable from the JSON with no IPFS
+// encoder. This is the cid that gets etched (EVM: into meta_hash → asset_id; Bitcoin: into the
+// reveal envelope's [cid(32)]).
+export function metadataCid(jsonBytes) {
+  return sha256(Buffer.isBuffer(jsonBytes) ? jsonBytes : Buffer.from(jsonBytes, 'utf8'));
+}
+
+// contractURI reconstruction — must equal CanonicalBridgedERC20.contractURI() (EIP-7572):
+// the metadata cid surfaced as a CIDv1 base16 string (multibase 'f'):
+//   01(v1) ‖ 55(raw) ‖ 12(sha2-256) ‖ 20(len 32) ‖ hex(cid).  cid=0 ⇒ empty.
+export function contractURI(cid) {
+  const c = asBytes32(cid);
+  if (c.equals(ZERO32)) return '';
+  return 'ipfs://f01551220' + Buffer.from(c).toString('hex');
+}
+
+// Run the KAT only when executed directly (`node tests/…mjs`); stay side-effect-free when
+// imported (e.g. by scripts/pin-asset-metadata.mjs, which reuses the exports above).
+if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
 let n = 0; const ok = (s) => { console.log('  ok -', s); n++; };
 
 // 1. metaHash KAT — must equal the Solidity test (test_metaHash_kat); cid=0 (no metadata)
 assert.strictEqual(hex(metaHash('TAC', 18)),
   '0xe4c8ab35e9869863d4b3a44796e370871abf8ccdae06b04d82fff892e89c06e6', 'metaHash KAT');
 ok('metaHash(TAC,18,cid=0) matches the Solidity KAT (cross-language)');
+
+// 1b. metaHash with a nonzero cid — must equal test_metaHash_kat_with_cid (the cid-binding path)
+assert.strictEqual(hex(metaHash('cBTC', 8, '0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f')),
+  '0x96dcb13599f507d7d84d8b1b44e25f7094fcd54115a74cfa1412d48a559a0c81', 'metaHash cid KAT');
+ok('metaHash(cBTC,8,cid=0x00..1f) matches the Solidity KAT (full 32-byte cid bound)');
 
 // 2. metadata is bound: any change to symbol/decimals/cid changes the id
 const base = { chainId: 11155111, factory: '0xC2CB3b29D6314936f48a26e6e719bc327d67962c',
@@ -61,5 +87,24 @@ ok('asset id changes if symbol, decimals, or the metadata cid changes (all bound
 assert.strictEqual(hex(deriveAssetId(base)), hex(id), 'deterministic');
 ok('deriveAssetId is deterministic — the canonical id is reproducible by anyone');
 
-console.log(`\n${n}/3 confidential-canonical-asset-id checks passed`);
+// 4. contractURI KAT — must equal the Solidity test (test_contractURI_reconstructs_cidv1_base16)
+const cidKat = '0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f';
+assert.strictEqual(contractURI(cidKat),
+  'ipfs://f01551220000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f', 'contractURI KAT');
+ok('contractURI(cid) matches the Solidity reconstruction (cross-language CIDv1 base16, raw codec)');
+
+// 5. no metadata -> empty contractURI (cid = 0)
+assert.strictEqual(contractURI(null), '', 'cid=0 -> empty');
+assert.strictEqual(contractURI(ZERO32), '', 'cid=0 -> empty');
+ok('absent metadata cid yields an empty contractURI');
+
+// 6. raw-codec cid == sha256(json bytes) == the digest in the pinned CIDv1 raw CID.
+// KAT bytes + digest verified against kubo: `ipfs add --cid-version=1` => bafkrei… (raw 0x55).
+const metaJson = '{"name":"Tacit Token","description":"cBTC on Tacit","image":"ipfs://bafkreihmbs7c6hg2q5zu3kl65f65irwmleuxdw6jfop44lwtzc4ijta53q"}';
+assert.strictEqual(hex(metadataCid(metaJson)),
+  '0x28acd844984260a912bbf07394159648dc2b278c487f2e7bd1aeb2ab9d6410fb', 'metadataCid = sha256(json) KAT');
+ok('metadataCid(json) = sha256(bytes) equals the kubo raw-CID digest (no IPFS encoder needed)');
+
+console.log(`\n${n}/7 confidential-canonical-asset-id checks passed`);
 console.log('  example asset_id =', hex(id));
+}

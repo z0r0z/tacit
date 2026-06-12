@@ -101,8 +101,9 @@ const prevTxid = '0x' + 'fe'.repeat(32);
 const inKey = pool.outpointKey(prevTxid, 0);
 const inCxHex = '0x' + Cin[0].toAffine().x.toString(16).padStart(64, '0');
 const inCyHex = '0x' + Cin[0].toAffine().y.toString(16).padStart(64, '0');
-// place the input note live + known coords (as a prior attested note would be)
-st._acc.live.insert(inKey, pool.commitmentHash(inCxHex, inCyHex));
+// place the input note live + known coords (as a prior attested note would be), under the
+// cxfer's own asset so the skip here is purely the non-conservation (not asset preservation).
+st._acc.live.insert(inKey, pool.commitmentHash(inCxHex, inCyHex), ASSET);
 coords.set(norm(inKey), { cx: inCxHex, cy: inCyHex });
 const noteRootBefore = st.poolRoot();
 const spentRootBefore = st.spentRoot();
@@ -127,6 +128,40 @@ ok(asm.nonConserving.length === 1 && asm.nonConserving[0].txid === cxferTx.txid,
 ok(asm.blocks[0].txs[0].outputs.length === 0, 'assembler folds NO output for the non-conserving cxfer');
 ok(st.poolRoot() === noteRootBefore, 'note root UNCHANGED (no phantom note injected)');
 ok(asm.blocks[0].txs[0].spentInserts.length === 1 && st.spentRoot() !== spentRootBefore, 'the cxfer input is still nullified (spent root advanced)');
+
+// ── 4. Assembler SKIPS an asset-RELABELING cxfer (cross-asset inflation) ─────────────────────────
+// The kernel only labels its message with `asset`, so a GENUINELY value-conserving cxfer can spend
+// CHEAP-asset notes and declare DEAR-asset (ASSET) outputs of equal commitment-value. The assembler
+// (mirroring the guest's fold_cxfer asset-preservation gate) must SKIP it — fold no dear note,
+// while still nullifying the spent cheap inputs. Pre-fix this minted the relabeled note.
+const CHEAP = '0x' + 'c4'.repeat(32);
+ok(CHEAP !== ASSET, 'the cheap (input) asset differs from the dear (envelope) asset');
+const st2 = pool.makeScanReflectionState();
+const coords2 = new Map();
+// seed BOTH conserving-fixture inputs live, but under the CHEAP asset (the notes' real asset)
+for (let i = 0; i < ins.length; i++) {
+  const k = pool.outpointKey(ins[i].txid, ins[i].vout);
+  const cx = '0x' + Cin[i].toAffine().x.toString(16).padStart(64, '0');
+  const cy = '0x' + Cin[i].toAffine().y.toString(16).padStart(64, '0');
+  st2._acc.live.insert(k, pool.commitmentHash(cx, cy), CHEAP);
+  coords2.set(norm(k), { cx, cy });
+}
+const noteRootBefore2 = st2.poolRoot();
+const spentRootBefore2 = st2.spentRoot();
+// the conserving cxfer (asset = ASSET = dear), reusing the §2 kernelSig/outs/range built above
+const relabelTx = {
+  txData: '0x00', txid: '0x' + 'ab'.repeat(32),
+  vins: ins.map((i) => ({ prevTxid: i.txid, vout: i.vout })),
+  env: {
+    type: 'cxfer', assetId: ASSET, kernelSig, rangeProof,
+    outputs: Cout.map((C, j) => { const c = compress(C); const { cx, cy } = pool.decompressCommitment(c); return { cx, cy, compressed: c, commitmentHash: pool.commitmentHash(cx, cy), noteLeaf: pool.leaf(ASSET, cx, cy, '0x' + '00'.repeat(32)), vout: j }; }),
+  },
+};
+const asm2 = pool.assembleReflectionScanInput(st2, { anchorHeight: 0, headers: [], blocks: [{ txs: [relabelTx] }] }, coords2);
+ok(asm2.nonConserving.length === 1 && asm2.nonConserving[0].reason === 'non-asset-preserving', 'assembler flags the relabel as non-asset-preserving');
+ok(asm2.blocks[0].txs[0].outputs.length === 0, 'assembler folds NO dear note for the relabeling cxfer');
+ok(st2.poolRoot() === noteRootBefore2, 'note root UNCHANGED (no relabeled dear note injected)');
+ok(asm2.blocks[0].txs[0].spentInserts.length === 2 && st2.spentRoot() !== spentRootBefore2, 'the cheap inputs are still nullified (the relabel burns them for nothing)');
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURE(S)`);
 process.exit(failures === 0 ? 0 : 1);
