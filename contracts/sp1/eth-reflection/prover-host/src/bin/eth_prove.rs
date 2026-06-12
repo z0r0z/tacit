@@ -26,13 +26,19 @@ fn main() -> anyhow::Result<()> {
     let pool: Address = std::env::var("POOL")
         .unwrap_or_else(|_| "0x0000000000000000000000000000000000000000".to_string())
         .parse()?;
+    // GENESIS_SLOT pins the bootstrap checkpoint so prevSyncCommitteeRoot (the genesis anchor the
+    // Bitcoin guest gates) is REPRODUCIBLE across re-proves — without it get_client(None) bootstraps to
+    // whatever is latest-finalized and the genesis drifts. Set it to the slot the pinned genesis was
+    // captured at (10462624 for 0x8a83…). POOL binds ethPool == the deployed ConfidentialPool, so the
+    // on-chain gate ethPoolReflected == address(this) passes for a live attest.
+    let genesis_slot: Option<u64> = std::env::var("GENESIS_SLOT").ok().and_then(|s| s.parse().ok());
 
     // Async helios fetch in a scoped runtime, dropped before the blocking prove.
     let (lc_bytes, ethr_bytes) = {
         let rt = tokio::runtime::Runtime::new()?;
         let out = rt.block_on(async {
-            eprintln!("bootstrapping helios on {rpc} (chain {chain_id})");
-            let client = get_client(None, &rpc, chain_id).await?;
+            eprintln!("bootstrapping helios on {rpc} (chain {chain_id}) genesis_slot={genesis_slot:?} pool={pool}");
+            let client = get_client(genesis_slot, &rpc, chain_id).await?;
             let updates = get_updates(&client).await;
             let finality_update = client.rpc.get_finality_update().await
                 .map_err(|e| anyhow::anyhow!("finality_update: {e:?}"))?;
@@ -74,5 +80,7 @@ fn main() -> anyhow::Result<()> {
     proof.save("/root/work/prover-host/out/eth_compressed.bin").expect("save proof");
     std::fs::write("/root/work/prover-host/out/eth_pv.hex", hex::encode(&pv))?;
     println!("WROTE out/eth_compressed.bin + out/eth_pv.hex");
-    Ok(())
+    use std::io::Write;
+    std::io::stdout().flush().ok();
+    std::process::exit(0); // skip the sp1-cuda client Drop (it spawns on a missing runtime and aborts)
 }
