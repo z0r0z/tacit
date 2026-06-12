@@ -20,12 +20,13 @@ let failures = 0;
 const eq = (a, b, msg) => { if (a !== b) { console.error(`FAIL ${msg}\n  got ${a}\n  exp ${b}`); failures++; } else console.log(`ok   ${msg}`); };
 const ne = (a, b, msg) => { if (a === b) { console.error(`FAIL ${msg} (should differ)`); failures++; } else console.log(`ok   ${msg}`); };
 
-// Anchors printed by the Rust prover (cxfer-core scan_reflection_genesis_digest + LiveUtxoSet).
+// Anchors printed by the Rust prover (cxfer-core scan_reflection_genesis_digest +
+// live_utxo_set_root_with_asset_pin). The live root commits the asset (keccak(key‖asset‖value)).
 const SCAN_GENESIS = '0xec719b81a396d28bad7625172767133724a094a5425269a71b258fe7e36fdc75';
-const LIVE2_ROOT = '0x455b68879b4ff1bfca802c20ee441b4581e90fc426bc77f0559e910f6f85d5e6';
+const LIVE2_ROOT = '0x0b4c5da8728e3216a451be798a8d9326513e018880e1755bffd582f084718faa';
 
 const last = (b) => '0x' + '00'.repeat(31) + b;     // 32-byte word, b in the last byte (key)
-const first = (b) => '0x' + b + '00'.repeat(31);     // 32-byte word, b in the first byte (value)
+const first = (b) => '0x' + b + '00'.repeat(31);     // 32-byte word, b in the first byte (value/asset)
 const v = (n) => '0x' + BigInt(n).toString(16).padStart(64, '0');
 
 // 1. genesis digest — the three-way anchor for the full-scan model.
@@ -35,13 +36,14 @@ eq(JSON.stringify(st.counts()), JSON.stringify({ note: 0, spent: 1, live: 0, bur
 eq(st.liveRoot(), st.poolRoot(), 'empty live root == empty note-tree root (both keccak_merkle_root([]))');
 
 // 2. live-set root matches Rust for a known 2-entry set (insertion order irrelevant — key-sorted).
+//    Each entry carries (key, value=commitment_hash, asset); the asset is committed in the root.
 const ls = pool.makeLiveUtxoSet();
-ls.insert(last('30'), first('c3'));
-ls.insert(last('10'), first('a1'));
-eq(ls.root(), LIVE2_ROOT, 'live-set root == Rust (key-sorted, O(live))');
-eq(ls.get(last('10')), first('a1'), 'get resolves a live outpoint');
+ls.insert(last('30'), first('c3'), first('bb'));
+ls.insert(last('10'), first('a1'), first('aa'));
+eq(ls.root(), LIVE2_ROOT, 'live-set root == Rust (key-sorted, O(live), asset-committed)');
+eq(JSON.stringify(ls.get(last('10'))), JSON.stringify([first('a1'), first('aa')]), 'get resolves → [value, asset]');
 eq(ls.get(last('99')), null, 'get of an absent outpoint is null');
-eq(ls.remove(last('10')), first('a1'), 'remove returns the stored commitment');
+eq(JSON.stringify(ls.remove(last('10'))), JSON.stringify([first('a1'), first('aa')]), 'remove returns the stored [value, asset]');
 eq(ls.len(), 1, 'one entry after remove');
 
 // 3. assembleReflectionScanInput over: block1 = a cxfer tx with 2 outputs; block2 = a plain spend
@@ -98,13 +100,27 @@ eq(st.counts().note, 2, 'two notes appended');
 eq(st.counts().spent, 3, 'two spends + sentinel');
 eq(st.counts().burn, 2, 'one bridge-out + sentinel');
 
+// 4. value-entry (T_MINT/cmint) is SURFACED-not-folded: the conservation-closed full-scan model has
+//    no free-output deposit path, so a mint's output must NOT enter bitcoinPoolRoot (it would be
+//    unbacked from the reflection's view), but it must be flagged LOUD (never silently dropped).
+const stM = pool.makeScanReflectionState();
+const noteBefore = stM.counts().note;
+const mintBatch = { anchorHeight: 200, headers: ['0x' + '00'.repeat(80)], blocks: [{ txs: [
+  { txData: '0xmint01', txid: v(0x91), vins: [{ prevTxid: v(0x90), vout: 0 }], env: { type: 'mint', assetId: v(0xa55e7) } },
+] }] };
+const mintInput = pool.assembleReflectionScanInput(stM, mintBatch, new Map());
+eq(mintInput.unreflectedValueEntry.length, 1, 'the mint is surfaced as an unreflected value-entry');
+eq(mintInput.unreflectedValueEntry[0].txid, v(0x91), 'the surfaced entry names the mint txid');
+eq(stM.counts().note, noteBefore, 'the mint folds NO note (value does not enter bitcoinPoolRoot)');
+eq(mintInput.blocks[0].txs[0].outputs.length, 0, 'the mint tx emits no output witnesses (guest skips it identically)');
+
 // The exec harness (exec-reflect-prove.rs / exec-reflect-fixture.rs write_stdin) reads EXACTLY
 // this JSON shape in the guest's io::read order. Lock it so an assembler field rename can't
 // silently desync the box stream from the guest.
-//   prior: poolRoot,noteCount, spentRoot,spentCount, live:[[key,value]…], burnRoot,burnCount, height
+//   prior: poolRoot,noteCount, spentRoot,spentCount, live:[[key,value,asset]…], burnRoot,burnCount, height
 const P = input.prior;
 const ok = (c, m) => { if (!c) { console.error(`FAIL ${m}`); failures++; } else console.log(`ok   ${m}`); };
-ok(Array.isArray(P.live) && P.live.every((kv) => Array.isArray(kv) && kv.length === 2), 'prior.live is [key,value] pairs (harness reads p["live"])');
+ok(Array.isArray(P.live) && P.live.every((t) => Array.isArray(t) && t.length === 3), 'prior.live is [key,value,asset] triples (harness reads p["live"])');
 ok(['poolRoot','noteCount','spentRoot','spentCount','live','burnRoot','burnCount','height'].every((k) => k in P), 'prior has every field the harness writes');
 const sI = burnTx.spentInserts[0];
 ok(['sLowValue','sLowNext','sLowIndex','sLowPath','sNewPath'].every((k) => k in sI), 'spentInsert has the harness fields');

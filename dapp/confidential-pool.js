@@ -232,31 +232,35 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
   // once, then resolves every confirmed tx's vins against. Committed as the depth-32 keccak tree
   // over keccak(key ‖ value) leaves in ascending key order — so the root is O(live) to rebuild
   // (unlike the insertion-order UtxoAccumulator, O(history)). Lives only in the reflection digest.
-  const liveLeaf = (key, value) => hx(keccak(key, value));
+  // Leaf = keccak(key ‖ asset ‖ value): the asset is committed so the reflection digest pins each
+  // note's asset (a wrong handoff fails the digest), which is what lets the CXFER fold re-impose
+  // asset preservation on resume. Mirrors cxfer-core LiveUtxoSet::root (kn(&[k, a, v])).
+  const liveLeaf = (key, value, asset) => hx(keccak(key, asset, value));
   function makeLiveUtxoSet() {
     const norm = (x) => hx(b32(x));
     const big = (x) => BigInt(norm(x));
-    let entries = []; // [key, value], ascending by key
+    let entries = []; // [key, value, asset], ascending by key
     const idxOf = (key) => entries.findIndex(([k]) => big(k) === big(key));
     const sort = () => entries.sort((a, b) => (big(a[0]) < big(b[0]) ? -1 : big(a[0]) > big(b[0]) ? 1 : 0));
-    function get(keyIn) { const i = idxOf(norm(keyIn)); return i < 0 ? null : entries[i][1]; }
-    function insert(keyIn, valueIn) {
-      const key = norm(keyIn), value = norm(valueIn);
+    // Resolve → [value=commitment_hash, asset]; the asset is what the CXFER fold checks vs the envelope.
+    function get(keyIn) { const i = idxOf(norm(keyIn)); return i < 0 ? null : [entries[i][1], entries[i][2]]; }
+    function insert(keyIn, valueIn, assetIn) {
+      const key = norm(keyIn), value = norm(valueIn), asset = norm(assetIn);
       if (big(key) === 0n) throw new Error('live set: key 0 reserved');
       if (idxOf(key) >= 0) throw new Error('live set: duplicate outpoint');
-      entries.push([key, value]); sort();
+      entries.push([key, value, asset]); sort();
     }
     function remove(keyIn) {
       const key = norm(keyIn), i = idxOf(key);
       if (i < 0) throw new Error('live set: outpoint not live');
-      const v = entries[i][1]; entries.splice(i, 1); return v;
+      const [, v, a] = entries[i]; entries.splice(i, 1); return [v, a];
     }
-    function root() { const t = new Tree(); for (const [k, v] of entries) t.insert(liveLeaf(k, v)); return t.root(); }
-    // The sorted (key,value) pairs handed to the prover (its from_sorted re-checks the order).
-    const pairs = () => entries.map(([k, v]) => [k, v]);
+    function root() { const t = new Tree(); for (const [k, v, a] of entries) t.insert(liveLeaf(k, v, a)); return t.root(); }
+    // The sorted (key,value,asset) triples handed to the prover (its from_sorted re-checks the order).
+    const triples = () => entries.map(([k, v, a]) => [k, v, a]);
     // Adopt a handed set when resuming from a snapshot.
-    function load(ps) { entries = []; for (const [k, v] of ps) insert(k, v); }
-    return { get, insert, remove, root, pairs, load, len: () => entries.length };
+    function load(ts) { entries = []; for (const [k, v, a] of ts) insert(k, v, a); }
+    return { get, insert, remove, root, triples, load, len: () => entries.length };
   }
 
   // The UTXO-set value for a note: keccak(Cx ‖ Cy) — what the reflection prover stores at an
@@ -470,11 +474,12 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
       spent.insert(nu);
       return w;
     }
-    // An output note: the note-tree append-path witness, then append + add the outpoint live.
-    function foldOutput(noteLeaf, outpoint, commitmentHash) {
+    // An output note: the note-tree append-path witness, then append + add the outpoint live
+    // (carrying the note's asset so a later spend's CXFER fold can enforce asset preservation).
+    function foldOutput(noteLeaf, outpoint, commitmentHash, asset) {
       const w = { noteLeaf, notePath: notes.rootAndPath(noteCount()).path };
       notes.insert(noteLeaf);
-      live.insert(outpoint, commitmentHash);
+      live.insert(outpoint, commitmentHash, asset);
       return w;
     }
     // A bridge-out: the burn-set insert witness ν → destCommitment, then advance.
@@ -565,12 +570,18 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     const prior = {
       poolRoot: state.poolRoot(), noteCount: c.note,
       spentRoot: state.spentRoot(), spentCount: c.spent,
-      live: state.live.pairs(), liveCount: c.live,
+      live: state.live.triples(), liveCount: c.live,
       burnRoot: state.burnRoot(), burnCount: c.burn,
       height: c.height,
     };
     const blocksOut = [];
     const nonConserving = [];
+    // Value-entry envelopes (T_MINT/cmint) the full-scan model does NOT yet reflect: the model is
+    // conservation-CLOSED (no free-output deposit path — that was the REFLECT-1 risk), so a mint's
+    // output does not enter bitcoinPoolRoot and is not bridge-mintable until the cmint-deposit effect
+    // ships (SPEC-BITCOIN-REFLECTION-AMENDMENT §6.1). Surface them LOUD so a value-entering envelope is
+    // never silently dropped (the guest skips it identically — an unrecognized envelope folds nothing).
+    const unreflectedValueEntry = [];
     let blockIndex = 0;
     for (const block of (batch.blocks || [])) {
       state.setHeight((batch.anchorHeight | 0) + blockIndex);
@@ -578,14 +589,17 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
       for (const tx of block.txs) {
         const openings = [];
         const inOutpoints = [];
+        const inAssets = []; // each detected spend's asset (from the live set) — for the cxfer gate
         const spentInserts = [];
         for (const { prevTxid, vout } of (tx.vins || [])) {
           const key = outpointKey(prevTxid, vout);
-          if (state.live.get(key) == null) continue;
+          const hit = state.live.get(key);
+          if (hit == null) continue;
           const co = coords.get(norm(key));
           if (!co) throw new Error('live spend has no known coords: ' + norm(key));
           openings.push({ cx: norm(co.cx), cy: norm(co.cy) });
           inOutpoints.push([prevTxid, vout]);
+          inAssets.push(norm(hit[1])); // the spent note's asset, carried by the live set
           spentInserts.push(state.foldSpent(nullifier(co.cx, co.cy)));
           state.live.remove(key);
           coords.delete(norm(key));
@@ -597,11 +611,15 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
         }
         const outputs = [];
         if (tx.env && tx.env.type === 'cxfer') {
-          // REFLECT-1: fold the output notes ONLY if the cxfer conserves value, mirroring the
-          // guest (which checks conservation BEFORE it reads output witnesses, then skips). A
-          // non-conserving cxfer injects nothing and carries no output witnesses in the stream;
-          // its detected spends are still nullified above.
-          const conserves = verifyCxferConservation({
+          // REFLECT-1 + asset preservation: fold the output notes ONLY if the cxfer conserves value
+          // AND every spent note is of the envelope's declared asset, mirroring the guest (which
+          // gates on the SAME predicate before it reads output witnesses, then skips). A
+          // non-conserving OR asset-relabeling cxfer injects nothing and carries no output witnesses
+          // in the stream; its detected spends are still nullified above (the relabel burns the
+          // attacker's input for nothing).
+          const envAsset = norm(tx.env.assetId);
+          const assetPreserving = inAssets.every((a) => a === envAsset);
+          const conserves = assetPreserving && verifyCxferConservation({
             asset: tx.env.assetId,
             inputOutpoints: inOutpoints,
             inputPoints: openings.map((o) => secp.ProjectivePoint.fromAffine({ x: BigInt(o.cx), y: BigInt(o.cy) })),
@@ -612,20 +630,24 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
           if (conserves) {
             for (const o of tx.env.outputs) {
               const outpoint = outpointKey(tx.txid, o.vout);
-              const w = state.foldOutput(o.noteLeaf, outpoint, o.commitmentHash);
+              const w = state.foldOutput(o.noteLeaf, outpoint, o.commitmentHash, envAsset);
               outputs.push({ noteLeaf: w.noteLeaf, notePath: w.notePath, vout: o.vout });
               coords.set(norm(outpoint), { cx: o.cx, cy: o.cy });
             }
           } else {
-            nonConserving.push({ txid: tx.txid, outputs: tx.env.outputs.length });
+            nonConserving.push({ txid: tx.txid, outputs: tx.env.outputs.length, reason: assetPreserving ? 'non-conserving' : 'non-asset-preserving' });
           }
+        } else if (tx.env && tx.env.type === 'mint') {
+          // A confidential-mint (T_MINT/cmint) value-entry: NOT reflected by the conservation-closed
+          // full-scan model — surfaced, not folded, so callers see un-onboarded Bitcoin value.
+          unreflectedValueEntry.push({ txid: tx.txid, assetId: tx.env.assetId || null });
         }
         txsOut.push({ txData: tx.txData, openings, spentInserts, burnInsert, outputs });
       }
       blocksOut.push({ txs: txsOut });
       blockIndex++;
     }
-    return { prior, anchorHeight: batch.anchorHeight | 0, headers: batch.headers || [], blocks: blocksOut, newDigest: state.digest(), nonConserving };
+    return { prior, anchorHeight: batch.anchorHeight | 0, headers: batch.headers || [], blocks: blocksOut, newDigest: state.digest(), nonConserving, unreflectedValueEntry };
   }
 
   // Mirror of the guest's keccak_merkle_verify — fold a leaf with its path.

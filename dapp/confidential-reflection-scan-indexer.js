@@ -15,6 +15,7 @@
 //   decode: null                              // a plain tx (its pool spends are caught by the scan)
 //         | { type:'cxfer', assetId, commitments:[compressed-33 hex], kernelSig, rangeProof }
 //         | { type:'burn', dest }             // destCommitment (bound by the guest from the envelope)
+//         | { type:'mint', assetId }          // T_MINT/cmint value-entry — surfaced, NOT yet reflected
 // } ] }
 // A cxfer decode MUST surface kernelSig (64-byte BIP-340 hex) + rangeProof (BP+ hex): the assembler
 // re-verifies value conservation (REFLECT-1) before folding the outputs, mirroring the guest.
@@ -52,6 +53,11 @@ export function makeScanReflectionIndexer({ secp, keccak256, sha256, ownerTag } 
       };
     } else if (tx.decode && tx.decode.type === 'burn') {
       env = { type: 'burn', dest: tx.decode.dest };
+    } else if (tx.decode && (tx.decode.type === 'mint' || tx.decode.type === 'cmint')) {
+      // A confidential-mint value-entry (T_MINT/cmint). The conservation-closed full-scan model does
+      // NOT yet reflect it (no free-output deposit path); surface it so the assembler can flag the
+      // un-onboarded value rather than silently treating the tx as plain.
+      env = { type: 'mint', assetId: tx.decode.assetId };
     }
     return { txData: withHex(tx.rawHex), txid, vins, env };
   }
@@ -74,7 +80,7 @@ export function makeScanReflectionIndexer({ secp, keccak256, sha256, ownerTag } 
     return {
       noteLeaves: state._acc.notes.leaves.map((l) => '0x' + Buffer.from(l).toString('hex')),
       spentLinks: state._acc.spent.links(),
-      livePairs: state._acc.live.pairs(),
+      liveTriples: state._acc.live.triples(),
       burnNodes: state._acc.burns.nodes(),
       height: state.counts().height,
       coords: [...coords.entries()],
@@ -87,7 +93,7 @@ export function makeScanReflectionIndexer({ secp, keccak256, sha256, ownerTag } 
     for (const leaf of (snap.noteLeaves || [])) state._acc.notes.insert(leaf);
     for (const [val] of (snap.spentLinks || []).slice(1)) state._acc.spent.insert(val); // skip the {0→0} sentinel
     for (const [key, , value] of (snap.burnNodes || []).slice(1)) state._acc.burns.insert(key, value);
-    state._acc.live.load(snap.livePairs || []);
+    state._acc.live.load(snap.liveTriples || []); // pre-asset `livePairs` snapshots must be re-indexed
     if (snap.height) state.setHeight(snap.height);
     for (const [k, v] of (snap.coords || [])) coords.set(k, v);
   }
