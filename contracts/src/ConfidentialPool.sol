@@ -192,6 +192,13 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     // Bitcoin via relay-attested spent-set membership). One mint per burned note.
     mapping(bytes32 => bool) public bridgeMinted;
 
+    // Cross-OUT (Ethereum→Bitcoin) record: claimId => destCommitment, written on `settle`
+    // when an Ethereum note is burned for Bitcoin (alongside the CrossOutRecorded event).
+    // Persisted in STORAGE, not just the event, so the reverse-reflection prover can prove a
+    // cross-out via a clean eth_getProof storage-slot proof (state trie) rather than parsing
+    // receipts/logs. claimId is unique per burned note, so the write is idempotent. 0 = none.
+    mapping(bytes32 => bytes32) public crossOutCommitment;
+
     // Bitcoin confidential-pool roots the oracle has attested as canonical +
     // confirmed. A bridge_mint proves the burned note's membership against one of
     // these, so a fake-tree note cannot be minted (the inflation-critical gate).
@@ -939,6 +946,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         for (uint256 i; i < pv.crossOuts.length; ++i) {
             CrossOut memory c = pv.crossOuts[i];
             if (keccak256(abi.encodePacked(c.destChain, c.destCommitment, c.nullifier, c.assetId)) != c.claimId) revert CrossOutClaimMismatch();
+            crossOutCommitment[c.claimId] = c.destCommitment; // storage anchor for reverse-reflection inclusion proofs
             emit CrossOutRecorded(c.claimId, c.destChain, c.destCommitment, c.nullifier, c.assetId);
         }
 

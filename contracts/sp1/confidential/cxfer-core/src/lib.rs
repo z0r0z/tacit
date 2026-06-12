@@ -22,6 +22,7 @@ use tiny_keccak::{Hasher, Keccak};
 /// Bitcoin block/tx primitives for bridge_mint (BTC→ETH burn verification).
 pub mod bitcoin;
 pub mod bjj;
+pub mod eth_reflection;
 pub mod sigma;
 
 pub const KERNEL_DOMAIN: &[u8] = b"tacit-evm-cxfer-kernel-v1";

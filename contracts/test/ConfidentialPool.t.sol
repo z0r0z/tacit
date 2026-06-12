@@ -688,6 +688,29 @@ contract ConfidentialPoolTest is Test {
         pool.settle(abi.encode(pv), "", new bytes[](0));
 
         assertTrue(pool.isNullifierSpent(nu), "burned note nullified");
+        // Storage anchor for the reverse-reflection (Mode B) inclusion proof: the cross-out is
+        // persisted in the state trie (claimId => destCommitment), not just the event.
+        assertEq(pool.crossOutCommitment(claimId), destC, "cross-out anchored in storage");
+    }
+
+    /// Mode-B invariant: the eth-reflection guest proves `crossOutCommitment[claimId]` via an
+    /// eth_getProof storage-slot proof at `keccak256(abi.encode(claimId, SLOT))` with SLOT=76 (the
+    /// guest's CROSSOUT_SLOT_INDEX). Lock SLOT + the mapping-slot derivation against the real layout so
+    /// the guest reads the right slot — a mismatch would only surface after a full prover build+execute.
+    function test_crossout_storage_slot_layout() public {
+        _seedLeaves(1);
+        ConfidentialPool.PublicValues memory pv = _pv();
+        bytes32 nu = keccak256("slot-nu");
+        bytes32 destC = keccak256("slot-destC");
+        bytes32 claimId = _claimId(1, destC, nu, assetId);
+        pv.nullifiers = new bytes32[](1);
+        pv.nullifiers[0] = nu;
+        pv.crossOuts = new ConfidentialPool.CrossOut[](1);
+        pv.crossOuts[0] = ConfidentialPool.CrossOut(1, destC, nu, assetId, claimId);
+        pool.settle(abi.encode(pv), "", new bytes[](0));
+
+        bytes32 slot = keccak256(abi.encode(claimId, uint256(76))); // guest's CROSSOUT_SLOT_INDEX
+        assertEq(vm.load(address(pool), slot), destC, "crossOutCommitment[claimId] is at keccak(claimId,76)");
     }
 
     /// A crossOut whose claimId doesn't bind its own fields is rejected — the
