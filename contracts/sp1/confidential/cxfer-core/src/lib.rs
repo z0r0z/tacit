@@ -89,9 +89,14 @@ pub const OPENING_DOMAIN: &[u8] = b"tacit-open-sigma-v1";
 
 // ──────────────────── cBTC.zk sats-lock value-entry (real-BTC backing) ────────────────────
 // The deploy-gated cBTC pieces (baked into BITCOIN_RELAY_VKEY). See ops/DESIGN-cbtc-sats-lock-reflection.md.
-/// The single canonical asset id real-BTC-locked notes mint under (domain-separated, allowlisted).
-/// TODO(cbtc): pin to the real cBTC.zk etch-derived id before the Mode-B re-prove (placeholder below).
-pub const CBTC_ZK_ASSET_ID: [u8; 32] = [0xcb; 32];
+/// The single canonical asset id real-BTC-locked cBTC notes mint under = keccak256("tacit-cbtc-zk-lock-v1").
+/// cBTC.zk is a lock position (not a real etch), so this is a FIXED domain constant; its fungible canonical
+/// ERC20 form is cBTC.tac. Final — baked into BITCOIN_RELAY_VKEY at the re-prove. (CBTC_VAULT_SPK below is
+/// still a placeholder pending the vault pubkey.) See ops/DESIGN-cbtc-tac.md.
+pub const CBTC_ZK_ASSET_ID: [u8; 32] = [
+    0x62, 0xa2, 0x0d, 0x98, 0xfc, 0x1c, 0xd2, 0x02, 0x89, 0x62, 0x1d, 0x13, 0x15, 0x29, 0x4c, 0xb8,
+    0x77, 0x2f, 0x93, 0x4d, 0x82, 0x2e, 0x40, 0x4b, 0x71, 0xe1, 0xf4, 0x71, 0xcf, 0x06, 0x79, 0xc8,
+];
 /// The canonical cBTC vault scriptPubKey the lock output MUST equal — the deploy-gated LOCK FORM.
 /// TODO(cbtc): set to the real vault output (the trust-model crux: protocol-key P2TR / covenant /
 /// pre-signed — ops/DESIGN-cbtc-sats-lock-reflection.md §4). Placeholder 34-byte P2TR below.
