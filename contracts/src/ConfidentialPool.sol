@@ -229,6 +229,12 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     // bytes32(0) before the first attestation (the genesis digest seeds the first cycle).
     bytes32 public knownReflectionDigest;
 
+    // cBTC: the reflection-attested Σ of live self-custody cBTC.zk lock sats (the real-BTC backing behind
+    // cBTC). Reflection-verified state, advanced each attestation — the off-pool CbtcBuffer reads it via
+    // the cbtcBackingSats() view to size the peg shortfall (circulating cBTC vs this). The peg itself is
+    // oracle-free; this is consumed only by the (standalone, governable) buffer, never by settle.
+    uint256 public knownCbtcBackingSats;
+
     // The reflection prover's genesis digest — ScanReflection::genesis().digest() (the shipped
     // full-scan model): an empty note tree + sentinel-seeded spent/burn sets + empty live-UTXO set.
     // knownReflectionDigest is seeded to this so the first attestation continues genesis. Pinned in
@@ -638,6 +644,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         bytes32 bitcoinPrevHash;  // headers[0]'s prev field — anchored to the prior attested tip
         bytes32 bitcoinTipHash;   // the batch's tip block hash — anchored to a matured ancestor of RELAY.tip()
         bytes32 ethPoolReflected; // Mode B: the eth-reflection's ethPool (gated == address(this) below)
+        uint256 cbtcBackingSats;  // cBTC: Σ live self-custody cBTC.zk lock sats (the off-pool buffer reads it)
     }
 
     /// @notice Attest Bitcoin confidential-pool state via an SP1 relay proof — the ONLY
@@ -689,10 +696,18 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         knownBitcoinSpentRoot = r.bitcoinSpentRoot;
         knownBitcoinBurnRoot = r.bitcoinBurnRoot;
         knownReflectionDigest = r.newDigest;
+        knownCbtcBackingSats = r.cbtcBackingSats; // cBTC backing advances with the reflected state
         emit BitcoinRootAttested(r.bitcoinPoolRoot);
         emit BitcoinSpentRootReflected(r.bitcoinSpentRoot);
         emit BitcoinBurnRootReflected(r.bitcoinBurnRoot);
         emit BitcoinReflectionAdvanced(r.priorDigest, r.newDigest, r.bitcoinHeight);
+    }
+
+    /// @notice The reflection-attested live cBTC.zk lock backing (Σ live self-custody lock sats). The
+    ///         standalone CbtcBuffer reads this vs the circulating cBTC supply to size the peg shortfall;
+    ///         settle never reads it (the cBTC peg is real-BTC, oracle-free, this is buffer-only).
+    function cbtcBackingSats() external view returns (uint256) {
+        return knownCbtcBackingSats;
     }
 
     /// Anchor a reflection batch to canonical Bitcoin: `prev` must equal the prior attested tip or a

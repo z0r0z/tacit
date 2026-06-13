@@ -300,7 +300,7 @@ contract PoolHandler is Test {
         bytes32 next = keccak256(abi.encode(prior, poolRoot, spentRoot, burnRoot, newHeight));
         ConfidentialPool.BitcoinRelayPublicValues memory r = ConfidentialPool.BitcoinRelayPublicValues(
             prior, poolRoot, spentRoot, burnRoot, newHeight, next
-        , bytes32(0), bytes32(0), bytes32(uint256(uint160(address(pool)))));
+        , bytes32(0), bytes32(0), bytes32(uint256(uint160(address(pool)))), 0);
         pool.attestBitcoinStateProven(abi.encode(r), "");
         ghostRelayHeight = newHeight;
     }
