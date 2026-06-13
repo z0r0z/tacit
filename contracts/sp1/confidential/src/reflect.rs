@@ -69,7 +69,17 @@ fn read_scan_prior_state() -> ScanReflection {
     let burn_root = r32();
     let burn_count: u64 = io::read();
     let height: u64 = io::read();
-    ScanReflection { pool_root, note_count, spent_root, spent_count, live, burn_root, burn_count, height }
+    // cBTC.zk resume state: the live self-custody lock set (key, sats-as-32B, asset) + the running
+    // Σ backing sats. Both ride digest() (cxfer-core), so a wrong handoff fails the priorDigest chain.
+    // Empty for a no-lock batch (n=0, sats=0); the assembler/indexer emit the prior set for live locks.
+    let n_cbtc_locks: u32 = io::read();
+    let cbtc_lock_triples: Vec<([u8; 32], [u8; 32], [u8; 32])> = (0..n_cbtc_locks).map(|_| (r32(), r32(), r32())).collect();
+    let cbtc_locks = LiveUtxoSet::from_sorted(cbtc_lock_triples).expect("handed cBTC lock set not sorted/unique");
+    let cbtc_backing_sats: u64 = io::read();
+    ScanReflection {
+        pool_root, note_count, spent_root, spent_count, live, burn_root, burn_count, height,
+        cbtc_locks, cbtc_backing_sats,
+    }
 }
 
 /// One spent-set IMT insert witness (the low leaf + the two paths). ν comes from the scan.

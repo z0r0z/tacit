@@ -219,7 +219,14 @@ fi
 # fixture); NON-CONSERVING (gen-reflection-nonconserve) SKIPS → poolRoot 0x7c79406a…, newDigest 0x2c7f6b26…,
 # LOCAL_VERIFY_OK with NO panic. Identical conservation behavior to 0x002d2536 (only the AMM-bloat changed
 # the bytes). Lineage (superseded pins): 0x002d2536, 0x00687472, 0x00e593b0.
-CONFIRMED_SOUND_REFL_VKEYS="0x004d8dbda0b8590cebe53a74140804389e5a3d2cefe8076c37cf5172e617790d 0x002d2536aa22213fb4e178432a8068e80b041308b4e626c761b74705f71af96c 0x0068747232900af2f75fde3a5fb1143ccac63c56128394e638683cdcd5f307a3"
+# CONFIRMED 0x005e6adc (2026-06-13): the cBTC.zk re-prove — adds the digest-bound cbtcBackingSats (10th PV
+# field) + fold_cbtc_lock self-custody to the shared cxfer-core, rotating the reflection vkey
+# 0x004d8dbd→0x005e6adc. Both-sided REFLECT-1 negative test RE-RUN on THIS pinned ELF via bitcoin_prove:
+# CONSERVING (gen-reflection-cxfer-synth) FOLDS → newDigest 0xcef6d5e5…, LOCAL_VERIFY_OK (== reflection_groth16
+# fixture); NON-CONSERVING (gen-reflection-nonconserve) SKIPS → newDigest 0xdd004958…, no panic. cbtcBackingSats
+# is digest-bound (cxfer-core ScanReflection.digest folds cbtc_locks.root()+cbtc_backing_sats), so it is not a
+# forgeable free witness. Lineage (superseded): 0x004d8dbd, 0x002d2536, 0x00687472, 0x00e593b0.
+CONFIRMED_SOUND_REFL_VKEYS="0x005e6adc6f6d208a7c1652b13626c5e5cdf802fb05418dd64ec5b67f4763d23d 0x004d8dbda0b8590cebe53a74140804389e5a3d2cefe8076c37cf5172e617790d 0x002d2536aa22213fb4e178432a8068e80b041308b4e626c761b74705f71af96c 0x0068747232900af2f75fde3a5fb1143ccac63c56128394e638683cdcd5f307a3"
 refl_confirmed=0
 for v in $CONFIRMED_SOUND_REFL_VKEYS; do [ "$RPIN_VKEY" = "$v" ] && refl_confirmed=1; done
 if [ "$refl_confirmed" = 1 ]; then

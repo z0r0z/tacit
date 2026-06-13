@@ -74,8 +74,8 @@ echo "PINNED bitcoin_relay_vkey: $relay_vkey  (reflection; ConfidentialReflectio
 # vkey 0x002d2536…→0x004d8dbd… even though it touched no reflection code. The reflection chain was redone
 # for the new vkey (fixture + both-sided conservation + allowlist). Any future cxfer-core change rotates
 # this again — bump it with a matching re-prove + re-confirm.
-FROZEN_REFLECTION_VKEY="0x004d8dbda0b8590cebe53a74140804389e5a3d2cefe8076c37cf5172e617790d"
-FROZEN_REFLECTION_ELF_SHA="93e21681f6c5078490333ea5da7d925c2c622a3a8daa18346e125eb8c6478e7b"
+FROZEN_REFLECTION_VKEY="0x005e6adc6f6d208a7c1652b13626c5e5cdf802fb05418dd64ec5b67f4763d23d"
+FROZEN_REFLECTION_ELF_SHA="a25f90032b4e664d1725453510ee39e7cb763324fbcc03ec9376a9fae4fcf4e1"
 if [ "$relay_vkey" != "$FROZEN_REFLECTION_VKEY" ] || [ "$rpin" != "$FROZEN_REFLECTION_ELF_SHA" ]; then
   echo "FAIL: reflection leg drifted from the frozen Mode-B values"
   echo "  bitcoin_relay_vkey:    got $relay_vkey  expected $FROZEN_REFLECTION_VKEY"

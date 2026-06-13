@@ -28,10 +28,10 @@ contract DeployConfidentialPool is Script {
     // direct swap), and OP_BID (buyer-offline partial-fill bid). Swap/LP/OTC/BID amounts are bound
     // by an opening sigma (proof of knowledge of the note blinding) so the settle prover never
     // learns r. Pinned to the committed canonical ELF: sp1/confidential/elf/cxfer-guest, sha256
-    // 9e3ff583… (elf-vkey-pin.json). A real Groth16 of this ELF verifies on-chain at this vkey
+    // c49ba0d3… (elf-vkey-pin.json). A real Groth16 of this ELF verifies on-chain at this vkey
     // (test/Confidential{Swap,Lp,Otc,Bid}ProofReal). Override via PROGRAM_VKEY env if the guest changes.
-    // (Prior: 0x0063293d, 0x00b3ebb4, 0x00f02859, 0x00bc5661, 0x00cc4e72, 0x00d0fb85, 0x008e0e7f, 0x00c11f48, 0x009cb098 — superseded by the AMM consolidation re-prove.)
-    bytes32 constant DEFAULT_VKEY = 0x0026dabb484edb911e372b18065b946c43e5aa15dc4eb38c43b04635a935caab;
+    // (Prior: …0x009cb098 (AMM), 0x0026dabb (AMM consolidation) — superseded by the cBTC.zk re-prove.)
+    bytes32 constant DEFAULT_VKEY = 0x00d5b572003254b7bb0e50b567d1d92a273b915f0117f5e3bc328236326a9df7;
 
     function run() external {
         address sp1Verifier = vm.envAddress("SP1_VERIFIER");

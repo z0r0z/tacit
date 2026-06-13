@@ -27,6 +27,11 @@ fn write_prior(s: &mut SP1Stdin, f: &serde_json::Value) {
     }
     r32(s, &p["burnRoot"]);  s.write(&p["burnCount"].as_u64().unwrap());
     s.write(&p["height"].as_u64().unwrap());
+    // cBTC.zk resume state (key, sats-as-32B, asset) + running backing sats — empty for a no-lock batch.
+    let cbtc_locks = p["cbtcLocks"].as_array().cloned().unwrap_or_default();
+    s.write(&(cbtc_locks.len() as u32));
+    for kv in &cbtc_locks { let t = kv.as_array().unwrap(); r32(s, &t[0]); r32(s, &t[1]); r32(s, &t[2]); }
+    s.write(&p["cbtcBackingSats"].as_u64().unwrap_or(0));
 }
 
 fn write_scan_rest(s: &mut SP1Stdin, f: &serde_json::Value) {

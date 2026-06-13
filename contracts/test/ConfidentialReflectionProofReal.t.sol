@@ -59,10 +59,11 @@ contract ConfidentialReflectionProofRealTest is Test {
             bytes32 newDigest,
             bytes32 prevHash,
             bytes32 tipHash,
-            bytes32 ethPoolReflected
-        ) = abi.decode(publicValues, (bytes32, bytes32, bytes32, bytes32, uint64, bytes32, bytes32, bytes32, bytes32));
+            bytes32 ethPoolReflected,
+            uint256 cbtcBackingSats
+        ) = abi.decode(publicValues, (bytes32, bytes32, bytes32, bytes32, uint64, bytes32, bytes32, bytes32, bytes32, uint256));
         assertEq(height, 307547, "the real signet block height");
-        assertEq(newDigest, 0x4d798e9a701cfbdfd1c3ae852bba2124c907a8f9a05fb9c94886d13732e76eb1, "newDigest (Mode-B recursion, conserving CXFER folded)");
+        assertEq(newDigest, 0xcef6d5e58f0c71f7def9eadbd8d56f092c19835641c17516630a6880ca4836c4, "newDigest (Mode-B recursion, conserving CXFER folded, cBTC-digest)");
         assertTrue(priorDigest != bytes32(0) && poolRoot != bytes32(0) && spentRoot != bytes32(0), "non-zero roots");
         // The header anchor the contract pins to RELAY.tip()/the prior tip: tip non-zero, prev = the
         // batch's resume anchor (headers[0]'s prev field).
@@ -72,6 +73,9 @@ contract ConfidentialReflectionProofRealTest is Test {
         // Mode B: the eth-reflection's ethPool, passed through; attestBitcoinStateProven gates it
         // == address(this). This fixture's eth proof used POOL=0 (a real attest binds the pool).
         assertEq(ethPoolReflected, bytes32(0), "ethPoolReflected passthrough (POOL=0 here; gated on-chain)");
+        // cBTC.zk: Σ live self-custody lock sats, digest-bound; 0 for this no-cBTC-lock fixture. The
+        // off-pool CbtcBuffer reads cbtcBackingSats() to size the peg shortfall.
+        assertEq(cbtcBackingSats, 0, "cbtcBackingSats (no cBTC lock in this fixture)");
     }
 
     /// Ground-truth: the proof's selector is the one this verifier version expects.
