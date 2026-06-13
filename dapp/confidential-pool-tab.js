@@ -20,6 +20,37 @@ function fmtUnits(v, decimals) {
   return f ? `${i}.${f}` : i;
 }
 
+// Exact ETH-string → wei (no float).
+function ethToWei(s) {
+  s = String(s == null ? '' : s).trim();
+  if (!s || !/^\d*\.?\d*$/.test(s)) return '0';
+  const [i, f = ''] = s.split('.');
+  const frac = (f + '0'.repeat(18)).slice(0, 18);
+  return (BigInt(i || '0') * (10n ** 18n) + BigInt(frac || '0')).toString();
+}
+
+// Wrap on-ramp: build + sign + broadcast the deposit from the user's (funded) Sepolia EVM account.
+function wireWrap(wallet, ux) {
+  const btn = el('cpool-wrap-btn');
+  if (!btn) return;
+  btn.onclick = async () => {
+    const st = el('cpool-wrap-status');
+    if (!wallet || !wallet.priv) { if (st) st.textContent = 'Unlock your wallet first.'; return; }
+    const wei = ethToWei(el('cpool-wrap-amount') ? el('cpool-wrap-amount').value : '');
+    if (!wei || wei === '0') { if (st) st.textContent = 'Enter an amount.'; return; }
+    btn.disabled = true;
+    if (st) st.textContent = 'Building + broadcasting the deposit…';
+    try {
+      const r = await ux.wrap({ walletPriv: wallet.priv, amountWei: wei });
+      if (st) st.innerHTML = `Deposit broadcast: <code style="font-size:10px;word-break:break-all;">${r.txHash}</code> — awaiting OP_WRAP settle; your cETH note appears once it settles.`;
+    } catch (e) {
+      if (st) st.textContent = 'Wrap failed: ' + (e && e.message || e);
+    } finally {
+      btn.disabled = false;
+    }
+  };
+}
+
 // Render the user's confidential account (derived Sepolia EVM address) + seed-only cETH balance into the
 // panel. Safe to call with a locked wallet (shows the unlock prompt). `wallet` is the tacit.js wallet object.
 export async function renderConfidentialPoolTab(wallet) {
@@ -38,6 +69,7 @@ export async function renderConfidentialPoolTab(wallet) {
 
   const acct = ux.account(wallet.priv);
   addrEl.textContent = acct.address;
+  wireWrap(wallet, ux);
   if (statusEl) statusEl.textContent = 'Scanning the pool for your notes…';
   if (balEl) balEl.innerHTML = '';
 

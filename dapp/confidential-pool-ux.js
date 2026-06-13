@@ -10,6 +10,7 @@ import { makeEvmAccount } from './evm-account.js';
 import { makeConfidentialIndexer } from './confidential-indexer.js';
 import { makeConfidentialEvmLog } from './confidential-evm-log.js';
 import { makeConfidentialRelay } from './confidential-relay.js';
+import { makeEvmTx } from './evm-tx.js';
 
 // Live deployments — keyed by the dapp's EVM-chain label. Sepolia pilot v1 mirrors the on-chain core
 // (the pool from the 2026-06-14 deploy) + cETH (assetId is deterministic, identical across pool versions).
@@ -91,7 +92,11 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   // asset. No off-chain note storage — a wiped wallet recovers its whole confidential balance from here.
   async function balance(scanPriv, opts) {
     const events = await fetchEvents(opts);
-    const notes = indexer.recover(events, scanPriv);
+    // memo.scan needs the scan key as a 0x-hex scalar (BigInt-able); the wallet hands it as bytes.
+    const sk = scanPriv instanceof Uint8Array
+      ? '0x' + Array.from(scanPriv, (x) => x.toString(16).padStart(2, '0')).join('')
+      : (String(scanPriv).startsWith('0x') ? String(scanPriv) : '0x' + String(scanPriv));
+    const notes = indexer.recover(events, sk);
     const byAsset = {};
     for (const n of notes) {
       const id = String(n.asset || '').toLowerCase();
@@ -108,5 +113,77 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     return a ? a.ticker : null;
   }
 
-  return { cfg, assetByTicker, account, rpc, ethCall, fetchEvents, balance, tickerOf, relay, indexer, evmLog };
+  // ── wrap on-ramp ──
+  const evmTx = makeEvmTx({ secp, keccak256 });
+  const pool = indexer._pool;   // commitXY / deriveNote / leaf / depositId
+  const memo = indexer._memo;   // sealMemo / encodeMemo
+
+  const _hex = (b) => Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('');
+  const _word = (v) => (typeof v === 'bigint' ? v.toString(16) : String(v).replace(/^0x/, '')).padStart(64, '0');
+  const _selector = (sig) => _hex(keccak256(new TextEncoder().encode(sig)).subarray(0, 4));
+
+  // The user's confidential identity for the pool: the scan key (recovers notes), the owner pubkey
+  // (memos are sealed to it), and the 32-byte owner field bound into each leaf — all from the wallet scalar.
+  function identity(walletPriv) {
+    const priv = walletPriv instanceof Uint8Array
+      ? walletPriv
+      : Uint8Array.from((String(walletPriv).replace(/^0x/, '').match(/../g) || []).map((h) => parseInt(h, 16)));
+    const pub = secp.getPublicKey(priv, true);          // compressed 33B: prefix ‖ x
+    return { priv, pubHex: '0x' + _hex(pub), owner: '0x' + _hex(pub.subarray(1, 33)) };
+  }
+
+  // Build the wrap deposit: the note + the on-chain pool.wrap() calldata + the recovery memo + the
+  // OP_WRAP witness. Synchronous + deterministic (eph derived from the note secret). No broadcast.
+  function buildWrap({ walletPriv, amountWei, ticker = 'cETH', index = 0 }) {
+    const meta = assetByTicker[ticker];
+    if (!meta) throw new Error(`unknown asset ${ticker}`);
+    const amount = BigInt(amountWei);
+    const unitScale = BigInt(meta.unitScale);
+    if (amount <= 0n || amount % unitScale !== 0n) throw new Error('amount not aligned to unitScale');
+    const value = amount / unitScale;
+    if (value > (2n ** 64n - 1n)) throw new Error('value exceeds u64');
+
+    const id = identity(walletPriv);
+    const { secret, blinding } = pool.deriveNote(id.priv, meta.assetId, index);
+    const { cx, cy } = pool.commitXY(value, blinding);
+    const leaf = pool.leaf(meta.assetId, cx, cy, id.owner);
+    const depositId = pool.depositId(meta.assetId, value, cx, cy, id.owner);
+    const note = { value: value.toString(), blinding, secret, asset: meta.assetId, owner: id.owner, cx, cy };
+
+    // self-recovery memo, sealed to the user's own pubkey; eph deterministic from the secret (the memo
+    // carries the full opening, so a fixed eph is fine and makes the build reproducible).
+    const ephRand = () => (BigInt(secret) % secp.CURVE.n) || 1n;
+    const memoHex = memo.encodeMemo(memo.sealMemo(id.pubHex, note, ephRand));
+
+    // pool.wrap(bytes32 assetId, uint256 amount, bytes32 cx, bytes32 cy, bytes32 owner)
+    const calldata = '0x' + _selector('wrap(bytes32,uint256,bytes32,bytes32,bytes32)')
+      + _word(meta.assetId) + _word(amount) + _word(cx) + _word(cy) + _word(id.owner);
+
+    return {
+      note, leaf, depositId, memo: memoHex,
+      // the OP_WRAP witness the box proves (chainBinding stamped at submit); OP_WRAP is box-driven, not a queue type
+      wrapOp: { asset: meta.assetId, value: value.toString(), cx, cy, owner: id.owner, blinding },
+      to: cfg.pool, amount: amount.toString(), calldata,
+      wrapArgs: { assetId: meta.assetId, amount: amount.toString(), cx, cy, owner: id.owner },
+    };
+  }
+
+  // Sign + broadcast the wrap deposit from the user's (funded) Sepolia EVM account. Returns the txHash +
+  // the note record to track until the box settles OP_WRAP and the note appears in the balance scan.
+  async function wrap({ walletPriv, amountWei, ticker = 'cETH', index = 0, gasLimit = 220000n, broadcast = true } = {}) {
+    const w = buildWrap({ walletPriv, amountWei, ticker, index });
+    const acct = account(walletPriv);
+    const nonce = BigInt(await rpc('eth_getTransactionCount', [acct.address, 'pending']));
+    const tip = 1500000000n; // 1.5 gwei priority
+    const base = BigInt(await rpc('eth_gasPrice', []) || '0x3b9aca00');
+    const tx = {
+      chainId: BigInt(cfg.chainId), nonce, maxPriorityFeePerGas: tip, maxFeePerGas: base * 2n + tip,
+      gasLimit: BigInt(gasLimit), to: cfg.pool, value: BigInt(w.amount), data: w.calldata,
+    };
+    const signed = evmTx.signEip1559(tx, acct.priv);
+    const txHash = broadcast ? await rpc('eth_sendRawTransaction', [signed.raw]) : null;
+    return { ...w, from: acct.address, nonce: nonce.toString(), signedRaw: signed.raw, txHash };
+  }
+
+  return { cfg, assetByTicker, account, identity, rpc, ethCall, fetchEvents, balance, tickerOf, buildWrap, wrap, relay, indexer, evmLog, evmTx, pool, memo };
 }

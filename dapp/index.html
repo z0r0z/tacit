@@ -9037,7 +9037,16 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms #farms-refresh-btn {
       <div style="margin-bottom:8px;">Your confidential account: <code id="cpool-address" style="font-size:11px;word-break:break-all;">—</code></div>
       <div id="cpool-status" class="muted" style="margin-bottom:8px;">—</div>
       <div id="cpool-balance"></div>
-      <div class="muted" style="font-size:11px;margin-top:12px;">Wrap / transfer / unwrap coming next. Balances recover from chain + seed alone — no off-chain storage.</div>
+      <div style="margin-top:16px;border-top:1px solid var(--hairline,#eee);padding-top:12px;">
+        <div style="font-weight:600;margin-bottom:6px;">Wrap ETH → cETH</div>
+        <div style="display:flex;gap:8px;align-items:center;">
+          <input id="cpool-wrap-amount" type="number" step="0.0001" min="0" placeholder="0.001" style="flex:1;padding:6px;font-size:13px;border:1px solid var(--ink,#ccc);border-radius:4px;">
+          <span class="muted" style="font-size:12px;">ETH</span>
+          <button id="cpool-wrap-btn" style="padding:6px 14px;font-size:13px;cursor:pointer;">Wrap</button>
+        </div>
+        <div id="cpool-wrap-status" class="muted" style="font-size:11px;margin-top:6px;"></div>
+        <div class="muted" style="font-size:11px;margin-top:6px;">Fund your confidential account (above) with Sepolia ETH first. The deposit escrows ETH; your cETH note appears after the settle. Transfer / unwrap next.</div>
+      </div>
     </div>
   </div>
 </div>
