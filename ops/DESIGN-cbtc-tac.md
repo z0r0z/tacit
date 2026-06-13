@@ -52,14 +52,20 @@ moving the sats while cBTC.tac circulates. Three handlers, best → interim:
    spend-only-into-redemption → the sats **cannot** be moved → no insurance, no oracle, fully trustless.
    cBTC.zk's structural edge over a wBTC/tBTC: the lock is native + reflection-provable, so this is a
    clean upgrade, not a re-architecture.
-2. **Protocol-key / MPC vault + insurance (interim, pre-covenant).** `CBTC_VAULT_SPK` is a protocol P2TR
-   (`0x5120‖vaultPubkey`), redemption-enforced by the validator. The key *could* move the sats, so the
-   (TAC, tETH) **insurance backstop** (§4) covers it. Optionally MPC the key + slash the custodians.
-3. **Accept-and-document** the launch posture (#2), covenant as the upgrade — the same discipline as the
-   reorg / reflection-finality cruxes.
+2. **Protocol-key / MPC vault + Ethereum contracts (THE LAUNCH PATH).** `CBTC_VAULT_SPK` is a protocol P2TR
+   (`0x5120‖vaultPubkey`), redemption-enforced by the validator; MPC the key + slash the custodians. The
+   key *could* move the sats, so the mature **Ethereum contracts** carry the risk — the (TAC, tETH)
+   `InsuranceVault` backstop (§4) + the DAO + `cbtcBackingSats`. **Rationale:** this leans on *battle-tested
+   Ethereum-contract trust + a simple, slashable Bitcoin key*, rather than a *novel Bitcoin construction* —
+   the lower-risk trade for now. (The trustless-Bitcoin alternative — an adaptor-locked redemption vault —
+   exists but carries its own novel-crypto risk; deferred to `DESIGN-cbtc-vault-custody.md`, the
+   post-covenant / risk-warranted option.)
+3. **Accept-and-document** the launch posture (#2), covenant (#1) as the endgame that retires the Ethereum
+   scaffolding — the same discipline as the reorg / reflection-finality cruxes.
 
-This is the **same custody-trust shape as tETH** (which trusts its bridge), with cBTC.zk *better* placed
-because the custody is covenant-upgradeable.
+Same custody-trust *shape* as tETH (which trusts its bridge), with cBTC.zk *better* placed because the
+custody is covenant-upgradeable — and, in the meantime, hedged by transparent Ethereum contracts rather
+than a custodian's word.
 
 ## 4. The insurance backstop — a simple Ethereum `InsuranceVault` (Solady `Ownable`), NOT guest ops
 
