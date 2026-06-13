@@ -2,7 +2,7 @@
 pragma solidity ^0.8.28;
 
 import {Test} from "forge-std/Test.sol";
-import {InsuranceVault, IInsuranceRouter} from "../src/InsuranceVault.sol";
+import {InsuranceVault, IBtcValuer} from "../src/InsuranceVault.sol";
 
 contract MockERC20 {
     string public name;
@@ -29,25 +29,23 @@ contract MockPool {
     function setBacking(uint256 v) external { cbtcBackingSats = v; }
 }
 
-/// Models "buy cBTC.tac off the AMM": pulls `spent` capital from the caller (the vault) and delivers
-/// existing cBTC.tac from its inventory — so totalSupply is UNCHANGED and the vault sequestering it
-/// reduces circulating supply (= totalSupply - vaultHeld). rate = capital units per cBTC.tac.
-contract MockRouter is IInsuranceRouter {
-    MockERC20 public immutable CBTC;
-    uint256 public rateNum = 1;
-    uint256 public rateDen = 1;
+/// Injected BTC valuer: BTC sats per token unit, fail-closed (reverts) on an unpriceable token.
+contract MockBtcValuer is IBtcValuer {
+    mapping(address => uint256) public rateNum;
+    mapping(address => uint256) public rateDen;
+    mapping(address => bool) public priceable;
 
-    constructor(MockERC20 cbtc) { CBTC = cbtc; }
-    function setRate(uint256 n, uint256 d) external { rateNum = n; rateDen = d; }
+    function setRate(address token, uint256 n, uint256 d) external {
+        rateNum[token] = n;
+        rateDen[token] = d;
+        priceable[token] = true;
+    }
 
-    function buyExactCbtc(address capital, address cbtcTac, uint256 amountOut, uint256 maxIn, address to, bytes calldata)
-        external
-        returns (uint256 spent)
-    {
-        spent = (amountOut * rateNum) / rateDen;
-        require(spent <= maxIn, "maxIn");
-        MockERC20(capital).transferFrom(msg.sender, address(this), spent); // capital in
-        MockERC20(cbtcTac).transfer(to, amountOut); // cBTC.tac out (from inventory; supply unchanged)
+    function unset(address token) external { priceable[token] = false; }
+
+    function btcValueSats(address token, uint256 amount) external view returns (uint256) {
+        require(priceable[token], "unpriceable");
+        return amount * rateNum[token] / rateDen[token];
     }
 }
 
@@ -57,27 +55,30 @@ contract InsuranceVaultTest is Test {
     MockERC20 cbtc;
     MockERC20 tac;
     MockERC20 teth;
-    MockRouter router;
+    MockBtcValuer valuer;
 
     address constant ADMIN = address(0xA11CE);
     address constant DAO = address(0xDA0);
     address constant ANYONE = address(0xBEEF);
+    address constant HOLDER = address(0xC0FFEE);
 
     function setUp() public {
         pool = new MockPool();
         cbtc = new MockERC20("cBTC.tac");
         tac = new MockERC20("TAC");
         teth = new MockERC20("tETH");
-        router = new MockRouter(cbtc);
+        valuer = new MockBtcValuer();
         vault = new InsuranceVault(address(pool), address(cbtc), address(tac), address(teth), ADMIN);
 
-        vm.startPrank(ADMIN);
-        vault.setRouter(address(router));
-        vault.setParams(1_000_000, 1_000_000); // generous ceilings by default
-        vm.stopPrank();
+        valuer.setRate(address(tac), 1, 1); // 1 sat / TAC unit
+        valuer.setRate(address(teth), 2, 1); // 2 sats / tETH unit
 
-        // backstop capital (the cBTC.tac the router can sell = the circulating supply, minted per-test)
-        tac.mint(address(vault), 1_000_000);
+        vm.prank(ADMIN);
+        vault.setValuer(address(valuer));
+
+        // backstop reserve: 1000 TAC (=1000 sats) + 2000 tETH (=4000 sats) -> 5000 sats BTC-equivalent
+        tac.mint(address(vault), 1000);
+        teth.mint(address(vault), 2000);
     }
 
     function test_owner_is_admin_then_transfers_to_dao() public {
@@ -93,6 +94,7 @@ contract InsuranceVaultTest is Test {
         tac.approve(address(vault), 500);
         vault.addCapital(address(tac), 500); // anyone funds
         vm.stopPrank();
+        assertEq(tac.balanceOf(address(vault)), 1500);
 
         vm.expectRevert(); // not owner
         vm.prank(ANYONE);
@@ -103,60 +105,50 @@ contract InsuranceVaultTest is Test {
         assertEq(tac.balanceOf(ADMIN), 100);
     }
 
-    function test_no_shortfall_when_backed() public {
+    function test_pegShortfall() public {
         pool.setBacking(120);
-        cbtc.mint(address(router), 100); // circulating 100 <= backing 120
+        cbtc.mint(HOLDER, 100); // circulating 100 <= backing 120
         assertEq(vault.pegShortfall(), 0);
-        vm.expectRevert(InsuranceVault.NoShortfall.selector);
-        vault.coverShortfall(address(tac), "");
+        pool.setBacking(80);
+        assertEq(vault.pegShortfall(), 20, "circulating - backing");
     }
 
-    function test_coverShortfall_buys_and_sequesters_until_backed() public {
-        // backing 100, but 120 cBTC.tac circulate (a custody failure removed 20 sats of backing)
+    function test_backstopBtcValue() public view {
+        // 1000 TAC * 1 + 2000 tETH * 2 = 5000 sats
+        assertEq(vault.backstopBtcValueSats(), 5000);
+    }
+
+    function test_uncoveredShortfall_backstop_absorbs() public {
         pool.setBacking(100);
-        cbtc.mint(address(router), 120);
-        assertEq(vault.pegShortfall(), 20, "shortfall = circulating - backing");
-
-        uint256 tacBefore = tac.balanceOf(address(vault));
-        (uint256 bought, uint256 spent) = vault.coverShortfall(address(tac), ""); // permissionless
-
-        assertEq(bought, 20, "bought the exact shortfall");
-        assertEq(spent, 20, "rate 1:1");
-        assertEq(cbtc.balanceOf(address(vault)), 20, "sequestered the bought cBTC.tac");
-        assertEq(tac.balanceOf(address(vault)), tacBefore - 20, "spent capital");
-        assertEq(vault.pegShortfall(), 0, "circulating restored to <= backing");
+        cbtc.mint(HOLDER, 120); // 20-sat real shortfall
+        assertEq(vault.pegShortfall(), 20);
+        // 5000-sat backstop fully absorbs it
+        assertEq(vault.uncoveredShortfall(), 0);
     }
 
-    function test_per_claim_buyback_cap_bounds_the_buy() public {
-        pool.setBacking(100);
-        cbtc.mint(address(router), 200); // shortfall 100
-        vm.prank(ADMIN);
-        vault.setParams(30, 1_000_000); // cap the buy at 30 per claim
-
-        (uint256 bought,) = vault.coverShortfall(address(tac), "");
-        assertEq(bought, 30, "capped at maxBuybackPerClaim");
-        assertEq(vault.pegShortfall(), 70, "shortfall partially covered, rest remains");
+    function test_uncoveredShortfall_exceeds_backstop() public {
+        pool.setBacking(0);
+        cbtc.mint(HOLDER, 8000); // 8000-sat shortfall, backstop only 5000
+        assertEq(vault.pegShortfall(), 8000);
+        assertEq(vault.uncoveredShortfall(), 3000, "uncovered after the 5000 backstop");
     }
 
-    function test_capital_ceiling_reverts_on_overspend() public {
-        pool.setBacking(100);
-        cbtc.mint(address(router), 120); // shortfall 20
-        router.setRate(10, 1); // 10 capital per cBTC.tac -> 20*10 = 200 needed
-        vm.prank(ADMIN);
-        vault.setParams(1_000_000, 50); // but only 50 capital allowed per claim
-
-        vm.expectRevert(bytes("maxIn")); // router refuses to exceed maxIn
-        vault.coverShortfall(address(tac), "");
+    function test_fail_closed_no_valuer() public {
+        InsuranceVault bare = new InsuranceVault(address(pool), address(cbtc), address(tac), address(teth), ADMIN);
+        vm.expectRevert(InsuranceVault.NoValuer.selector);
+        bare.backstopBtcValueSats();
     }
 
-    function test_setRouter_and_setParams_owner_only() public {
+    function test_fail_closed_valuer_cannot_price_a_leg() public {
+        valuer.unset(address(teth)); // feed for the tETH leg goes bad
+        vm.expectRevert(bytes("unpriceable"));
+        vault.backstopBtcValueSats();
+    }
+
+    function test_setValuer_owner_only() public {
         vm.expectRevert();
         vm.prank(ANYONE);
-        vault.setParams(1, 1);
-
-        vm.expectRevert();
-        vm.prank(ANYONE);
-        vault.setRouter(address(0xDEAD));
+        vault.setValuer(address(0xDEAD));
     }
 
     function test_bad_leg_rejected() public {

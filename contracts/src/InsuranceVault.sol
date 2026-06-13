@@ -15,49 +15,46 @@ interface IERC20Min {
     function balanceOf(address) external view returns (uint256);
 }
 
-/// @notice Owner-set venue that swaps insurance capital -> cBTC.tac, delivered to `to`.
-///         Concrete impl (a public-AMM adapter or a confidential-pool adapter) is wired at deploy.
-interface IInsuranceRouter {
-    /// @dev Acquire exactly `amountOut` cBTC.tac for `to`, spending at most `maxIn` of `capital`.
-    function buyExactCbtc(address capital, address cbtcTac, uint256 amountOut, uint256 maxIn, address to, bytes calldata route)
-        external
-        returns (uint256 spent);
+/// @notice Injected BTC valuer: the BTC-equivalent (in cBTC.tac base units / sats) of `amount` of `token`.
+///         A concrete adapter prices tETH via a Chainlink ETH/BTC quorum and TAC via a shielded-pool
+///         AMM-TWAP — never a hot key. MUST be fail-closed: revert on an unpriceable token or a stale/bad
+///         feed, so a broken oracle only blanks the backstop's BTC valuation, never the cBTC.tac peg.
+interface IBtcValuer {
+    function btcValueSats(address token, uint256 amount) external view returns (uint256);
 }
 
 /// @title InsuranceVault
-/// @notice Custody-insurance backstop for cBTC.tac. cBTC.tac's peg is trustless by construction — each
-///         unit is a claim on real BTC locked in a cBTC.zk lock (conservation in the reflection's
-///         `fold_cbtc_lock`). This vault covers only the residual §3 CUSTODY risk: if the vault key moves
-///         locked sats without a matching cBTC.tac redemption, the reflection-attested backing drops below
-///         the circulating supply, and anyone can call `coverShortfall` to buy the excess cBTC.tac off the
-///         AMM with (TAC, tETH) capital and SEQUESTER it here — dropping circulating supply back to <=
-///         backing. The shortfall is read from proven state, never asserted by the caller.
+/// @notice Custody-insurance backstop for cBTC.tac. cBTC.tac's peg is trustless by construction — each unit
+///         is a claim on real BTC locked in a cBTC.zk lock (conservation in the reflection's
+///         `fold_cbtc_lock`). This vault covers only the residual custody risk: if the lock is spent without
+///         a matching cBTC.tac redemption, the reflection-attested backing drops below the circulating
+///         supply. It is a PASSIVE (TAC, tETH) reserve: TAC and cBTC.tac are Tacit-native and trade only in
+///         the confidential (async, proof-settled) AMM, so there is no synchronous on-chain DEX to buy back
+///         into. Instead the reserve's BTC-equivalent value (via an injected, fail-closed `IBtcValuer`)
+///         counts toward backing — `uncoveredShortfall` is the true peg-solvency signal — and the actual
+///         conversion to cover a redemption runs through the existing ASYNC redemption path, never an
+///         on-chain buyback here. Capital is released to honor a redemption by the owner/DAO (or, later, an
+///         authorized redemption module).
 /// @dev Deliberately minimal (Solady `Ownable`): owner = deployer to start, `transferOwnership(dao)` later.
-///      BOUNDED by construction — the owner sizes the buyback (caps + router) and manages backstop
-///      *capital*, but can NEVER mint cBTC.tac, move the BTC backing, or break the peg. Worst case is an
-///      under-funded or owner-drained *backstop*, never broken money. The core ConfidentialPool is
-///      untouched (only its read-only `cbtcBackingSats()` view is consumed).
+///      BOUNDED by construction — the owner sizes the valuer + manages backstop *capital*, but can NEVER
+///      mint cBTC.tac, move the BTC backing, or break the peg. Worst case is an under-funded or owner-drained
+///      *backstop*, never broken money. The core ConfidentialPool is untouched (only its read-only
+///      `cbtcBackingSats()` view is consumed).
 contract InsuranceVault is Ownable {
     IPoolBacking public immutable POOL;
     address public immutable CBTC_TAC; // the cBTC.tac canonical ERC20 (same unit as backing sats)
     address public immutable TAC; // insurance capital legs
     address public immutable TETH;
 
-    // --- owner-governed knobs (owner = you -> DAO) ---
-    IInsuranceRouter public router; // buyback venue
-    uint256 public maxBuybackPerClaim; // ceiling on cBTC.tac bought per call (bounds repeated/spurious triggers)
-    uint256 public maxCapitalPerClaim; // ceiling on capital spent per call (the per-claim slippage/grief bound)
+    // --- owner-governed (owner = you -> DAO) ---
+    IBtcValuer public valuer; // prices the (TAC, tETH) reserve in BTC sats; fail-closed
 
-    event RouterSet(address indexed router);
-    event ParamsSet(uint256 maxBuybackPerClaim, uint256 maxCapitalPerClaim);
+    event ValuerSet(address indexed valuer);
     event CapitalAdded(address indexed leg, uint256 amount, address indexed from);
     event CapitalWithdrawn(address indexed leg, uint256 amount, address indexed to);
-    event ShortfallCovered(uint256 shortfall, uint256 bought, address indexed capital, uint256 spent);
 
     error BadLeg();
-    error NoShortfall();
-    error NoRouter();
-    error Overspend();
+    error NoValuer();
 
     constructor(address pool, address cbtcTac, address tac, address teth, address admin) {
         POOL = IPoolBacking(pool);
@@ -75,6 +72,9 @@ contract InsuranceVault is Ownable {
         emit CapitalAdded(leg, amount, msg.sender);
     }
 
+    /// @notice Release capital from the reserve — owner/DAO only. This is how the backstop funds a
+    ///         redemption shortfall (the conversion runs through the async redemption path, not here), and
+    ///         how surplus is recovered. Never mints cBTC.tac or touches the BTC backing.
     function withdrawCapital(address leg, uint256 amount, address to) external onlyOwner {
         if (leg != TAC && leg != TETH) revert BadLeg();
         SafeTransferLib.safeTransfer(leg, to, amount);
@@ -83,21 +83,15 @@ contract InsuranceVault is Ownable {
 
     // ---------- owner-governed sizing ----------
 
-    function setRouter(address r) external onlyOwner {
-        router = IInsuranceRouter(r);
-        emit RouterSet(r);
-    }
-
-    function setParams(uint256 _maxBuybackPerClaim, uint256 _maxCapitalPerClaim) external onlyOwner {
-        maxBuybackPerClaim = _maxBuybackPerClaim;
-        maxCapitalPerClaim = _maxCapitalPerClaim;
-        emit ParamsSet(_maxBuybackPerClaim, _maxCapitalPerClaim);
+    function setValuer(address v) external onlyOwner {
+        valuer = IBtcValuer(v);
+        emit ValuerSet(v);
     }
 
     // ---------- the peg shortfall (proven, not asserted) ----------
 
-    /// @notice Circulating cBTC.tac (totalSupply minus what this vault has sequestered) over the
-    ///         reflection-attested live backing. > 0 only after a custody failure removed locked sats.
+    /// @notice Circulating cBTC.tac (totalSupply minus what this vault holds) over the reflection-attested
+    ///         live backing. > 0 only after a custody failure removed locked sats.
     function pegShortfall() public view returns (uint256) {
         uint256 backing = POOL.cbtcBackingSats();
         uint256 held = IERC20Min(CBTC_TAC).balanceOf(address(this));
@@ -106,26 +100,26 @@ contract InsuranceVault is Ownable {
         return circulating > backing ? circulating - backing : 0;
     }
 
-    // ---------- claim: permissionless, bounded buy-and-sequester ----------
+    // ---------- passive solvency view (the reserve's contribution to backing) ----------
 
-    /// @notice Cover the proven shortfall: buy cBTC.tac off the AMM (via the owner-set router) with
-    ///         insurance `capital` and SEQUESTER it here, restoring circulating supply <= backing.
-    ///         Permissionless — the shortfall is reflection-attested, and the owner ceilings bound the
-    ///         per-call buy + spend so a caller can't drain the backstop.
-    function coverShortfall(address capital, bytes calldata route) external returns (uint256 bought, uint256 spent) {
-        if (capital != TAC && capital != TETH) revert BadLeg();
-        if (address(router) == address(0)) revert NoRouter();
+    /// @notice The (TAC, tETH) reserve expressed as BTC-equivalent sats via the injected valuer. This is
+    ///         what the backstop adds to cBTC.tac's backing. Reverts (fail-closed) with no valuer set or if
+    ///         the valuer cannot price a leg.
+    function backstopBtcValueSats() public view returns (uint256) {
+        if (address(valuer) == address(0)) revert NoValuer();
+        uint256 tacVal = valuer.btcValueSats(TAC, IERC20Min(TAC).balanceOf(address(this)));
+        uint256 tethVal = valuer.btcValueSats(TETH, IERC20Min(TETH).balanceOf(address(this)));
+        return tacVal + tethVal;
+    }
+
+    /// @notice The residual under-collateralization after the backstop: real-BTC shortfall minus the
+    ///         reserve's BTC value. 0 means circulating cBTC.tac is fully covered by real locks + the
+    ///         reserve. A non-zero value is the true peg-solvency signal (a custody loss the backstop can't
+    ///         fully absorb).
+    function uncoveredShortfall() external view returns (uint256) {
         uint256 shortfall = pegShortfall();
-        if (shortfall == 0) revert NoShortfall();
-
-        bought = shortfall < maxBuybackPerClaim ? shortfall : maxBuybackPerClaim;
-        uint256 maxIn = maxCapitalPerClaim;
-
-        SafeTransferLib.safeApprove(capital, address(router), maxIn);
-        spent = router.buyExactCbtc(capital, CBTC_TAC, bought, maxIn, address(this), route);
-        SafeTransferLib.safeApprove(capital, address(router), 0);
-        if (spent > maxIn) revert Overspend(); // defense-in-depth (router should honor maxIn)
-
-        emit ShortfallCovered(shortfall, bought, capital, spent);
+        if (shortfall == 0) return 0;
+        uint256 cover = backstopBtcValueSats();
+        return shortfall > cover ? shortfall - cover : 0;
     }
 }
