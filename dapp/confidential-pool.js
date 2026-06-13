@@ -447,6 +447,11 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     const live = makeLiveUtxoSet();
     const burns = makeUtxoAccumulator();
     let height = 0;
+    // cBTC: the live self-custody cBTC.zk locks (outpoint → sats) + a running backing total. Mirrors
+    // cxfer-core ScanReflection.cbtc_locks / cbtc_backing_sats — both ride digest() so the off-pool
+    // CbtcBuffer reads a backing the prover cannot forge.
+    const cbtcLocks = makeLiveUtxoSet();
+    let cbtcBackingSats = 0n;
 
     // Counts derive from the accumulators (not a separate cursor), so a snapshot restore that
     // replays the raw leaves/links/nodes reconstructs the exact digest without bookkeeping drift.
@@ -461,6 +466,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
         live.root(), u64be(live.len()),
         burns.root(), u64be(burnCount()),
         u64be(height),
+        cbtcLocks.root(), u64be(cbtcBackingSats),
       ));
     }
 

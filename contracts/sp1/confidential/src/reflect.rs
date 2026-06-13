@@ -25,6 +25,7 @@
 sp1_zkvm::entrypoint!(main);
 
 use alloy_sol_types::sol;
+use alloy_sol_types::private::U256;
 use alloy_sol_types::SolType;
 use cxfer_core::{bitcoin, from_affine_xy, scan_tx_spends, verify_cxfer_conservation, LiveUtxoSet, Point, ScanReflection};
 use sp1_zkvm::io;
@@ -40,6 +41,7 @@ sol! {
         bytes32 bitcoinPrevHash;   // headers[0]'s prev-block field — the anchor this batch resumes from
         bytes32 bitcoinTipHash;    // double-SHA256 of the last header — the batch's new tip
         bytes32 ethPoolReflected;  // Mode B: the eth-reflection's ethPool — attest gates it == address(this)
+        uint256 cbtcBackingSats;   // cBTC: Σ live self-custody cBTC.zk lock sats (the off-pool buffer reads it)
     }
 }
 
@@ -161,6 +163,12 @@ pub fn main() {
             let spends = scan_tx_spends(tx, &mut state.live, || (r32(), r32()))
                 .expect("vin scan / opening bind");
 
+            // cBTC: a SELF-CUSTODY rug — any input that spends a tracked cBTC.zk lock outpoint drops its
+            // sats from the backing total (the lock is gone; the off-pool buffer covers the shortfall). A
+            // plain Bitcoin spend (no Tacit ν), independent of the pool-UTXO scan above, and BEFORE the
+            // 0x66 mint below so an in-block create-then-spend nets correctly.
+            state.fold_cbtc_lock_spends(tx);
+
             // Classify by envelope: most txs have none (their spends are plain pool-UTXO spends,
             // still nullified). A burn envelope marks a bridge-out; a cxfer envelope declares
             // output notes.
@@ -240,6 +248,25 @@ pub fn main() {
                     &co_asset, &claim_id, &cx, &cy, set_index, &set_path, &crossout_set_root, &txid, 0, &note_path,
                 );
             }
+
+            // cBTC.zk: a real-BTC sats-lock mint (T_CBTC_LOCK, 0x66). Fold the minted cBTC note ONLY if
+            // the envelope tx has, at lock_vout, a CBTC_VAULT_SPK output of value v_btc AND the note
+            // commits to exactly v_btc (opening sigma). Spend-less mint (the lock is the backing);
+            // redemption is the Bitcoin vault validator's job. Witnesses are read for EVERY 0x66 tx (the
+            // assembler MUST emit note_path + the opening sigma per 0x66) so the stream stays in sync; a
+            // non-vault / over-mint / wrong-asset lock folds nothing (skip-not-panic). See
+            // ops/DESIGN-cbtc-sats-lock-reflection.md. cf. cxfer-core::ScanReflection::fold_cbtc_lock.
+            if let Some((cb_asset, lock_vout, cx, cy)) =
+                env.as_ref().and_then(|e| bitcoin::parse_cbtc_lock_envelope(e))
+            {
+                let note_path = r_path();
+                let sig_rx = r32();
+                let sig_ry = r32();
+                let sig_z = r32();
+                let _ = state.fold_cbtc_lock(
+                    &cb_asset, &cx, &cy, tx, lock_vout, &txid, &note_path, &sig_rx, &sig_ry, &sig_z,
+                );
+            }
         }
         state.height = height;
     }
@@ -254,6 +281,7 @@ pub fn main() {
         bitcoinPrevHash: prev_hash.into(),
         bitcoinTipHash: tip_hash.into(),
         ethPoolReflected: eth_pool_word.into(),
+        cbtcBackingSats: U256::from(state.cbtc_backing_sats), // reflection-attested cBTC backing
     };
     io::commit_slice(&BitcoinReflectionPublicValues::abi_encode(&pv));
 }
