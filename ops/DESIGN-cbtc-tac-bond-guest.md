@@ -1,6 +1,16 @@
 # DESIGN — cBTC.tac confidential bond (Tacit-native, guest-enforced) — guest hand-off
 
-> **STATUS: DECISION TAKEN — private Tacit-native confidential bond.** The (TAC, tETH) bond is a
+> **⚠️ SUPERSEDED for the PEG by [`DESIGN-cbtc-tac.md`](./DESIGN-cbtc-tac.md) (2026-06-13).** cBTC.tac is
+> no longer a CDP minted against this bond — it is a **real-BTC lock-claim** (trustless peg, no oracle).
+> The §5 price gate below was in the critical mint path; it is **removed** from the peg. This doc's
+> machinery (`bond_position_leaf`, the lien, redeem/slash, the §5 verifiers) is **repurposed as the
+> custody-INSURANCE backstop** in `DESIGN-cbtc-tac.md §4`: open/withdraw are oracle-free (just lock/unlock
+> capital), the claim trigger is **reflection-proven** (not an oracle health-call), and the only residual
+> price use — sizing the payout — becomes a **periodic TAC-governance on-chain parameter, not a relay key**
+> (`BOND_ORACLE_PUBKEY_X` eliminated). Read the sections below as the *insurance-vault* mechanics, not the
+> peg. The cxfer-core primitives (71 green) stand; their *role* moved.
+>
+> **STATUS (original): DECISION TAKEN — private Tacit-native confidential bond.** The (TAC, tETH) bond is a
 > *confidential* Tacit LP note, and the lien + mint/redeem/slash are enforced in the **proof system**
 > (there is no contract to hold a confidential note), so they are **settle-guest ops → deploy-gated →
 > must ride this re-prove** (the `PROGRAM_VKEY` is rotating anyway). Companion to the collateral
