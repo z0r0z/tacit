@@ -1853,6 +1853,13 @@ pub struct ScanReflection {
     pub burn_root: [u8; 32],
     pub burn_count: u64,
     pub height: u64,
+    // cBTC: the live SELF-CUSTODY cBTC.zk locks (lock outpoint → sats) and their running total. A lock is
+    // the locker's OWN output committed to a cBTC note; its sats back the minted cBTC (peg, oracle-free).
+    // A locker spending their lock without redeeming (a "rug") is detected here, dropping the backing — the
+    // off-pool CbtcBuffer reads `cbtc_backing_sats` (surfaced as cbtcBackingSats) to cover the shortfall.
+    // Both are committed in `digest()` so the resumed total can't be forged.
+    pub cbtc_locks: LiveUtxoSet,
+    pub cbtc_backing_sats: u64,
 }
 
 impl Default for ScanReflection {
@@ -1874,6 +1881,8 @@ impl ScanReflection {
             burn_root: UtxoAccumulator::new().root(),
             burn_count: 1,
             height: 0,
+            cbtc_locks: LiveUtxoSet::new(),
+            cbtc_backing_sats: 0,
         }
     }
 
@@ -1897,6 +1906,8 @@ impl ScanReflection {
             &self.live.root(), &u64b(self.live.len() as u64),
             &self.burn_root, &u64b(self.burn_count),
             &u64b(self.height),
+            // cBTC backing — pinned so a resumed cycle can't forge the live cBTC.zk lock total.
+            &self.cbtc_locks.root(), &u64b(self.cbtc_backing_sats),
         ])
     }
 
@@ -2099,10 +2110,15 @@ impl ScanReflection {
         // The minted commitment must be a real secp256k1 point.
         let c = from_affine_xy(cx, cy).ok_or("cbtc lock: commitment not a curve point")?;
         // The confirmed lock output: the canonical vault scriptPubKey + its public value v_btc.
-        let (v_btc, spk) =
+        let (v_btc, _spk) =
             bitcoin::parse_tx_output(tx_data, lock_vout).ok_or("cbtc lock: no such output")?;
-        if spk.as_slice() != CBTC_VAULT_SPK {
-            return Err("cbtc lock: output is not the cBTC vault");
+        // SELF-CUSTODY: the lock is the LOCKER'S OWN output (vout `lock_vout` of THIS committing tx — an
+        // output the committer creates, so they control it; NO protocol vault, NO custodial key). Its sats
+        // back the cBTC note; a later spend of it (a rug) is detected by `fold_cbtc_lock_spends`, dropping
+        // the backing (the off-pool tETH buffer then covers the shortfall). The lock vout must differ from
+        // the note's vout 0 so their outpoints can't collide.
+        if lock_vout == 0 {
+            return Err("cbtc lock: lock vout must not be 0 (the note outpoint)");
         }
         // Conservation: the note commits to EXACTLY v_btc — opening sigma, blinding NOT revealed, bound
         // to THIS lock (asset ‖ lock_txid ‖ lock_vout) so it cannot be replayed against another lock.
@@ -2112,12 +2128,42 @@ impl ScanReflection {
         if !verify_opening_sigma(&c, v_btc, &r, &z, &context) {
             return Err("cbtc lock: value-binding failed (note != locked sats)");
         }
-        // Fold the owner-free note (the mint's vout 0). Single-use is structural — the lock + the note
+        // Track the self-custody lock (its outpoint → v_btc) and add its sats to the backing total. Both
+        // ride `digest()`, so a resumed cycle can't forge the backing. A duplicate lock outpoint can't
+        // re-add (LiveUtxoSet::insert panics on a duplicate key — one lock backs one note).
+        let lock_outpoint = outpoint_key(lock_txid, lock_vout);
+        let mut v32 = [0u8; 32];
+        v32[24..].copy_from_slice(&v_btc.to_be_bytes());
+        self.cbtc_locks.insert(&lock_outpoint, &v32, asset);
+        self.cbtc_backing_sats = self.cbtc_backing_sats.saturating_add(v_btc);
+        // Fold the owner-free cBTC note (the mint's vout 0). Single-use is structural — the lock + the note
         // are outputs of one tx, deduped by the note outpoint.
         let note_leaf = leaf(asset, cx, cy, &[0u8; 32]);
         let note_outpoint = outpoint_key(lock_txid, 0);
         let ch = commitment_hash(cx, cy);
         self.fold_output(&note_leaf, note_path, &note_outpoint, &ch, asset)
+    }
+
+    /// Detect a SELF-CUSTODY rug: scan a confirmed tx's inputs for any spending a tracked cBTC.zk lock
+    /// outpoint, and drop its sats from the backing (the lock is gone, so the cBTC it backed is now
+    /// under-backed — the off-pool buffer covers it). Returns the sats removed (0 if none). A lock spend is
+    /// a plain Bitcoin spend — NO Tacit ν / opening (unlike a pool-note spend in `scan_tx_spends`).
+    pub fn fold_cbtc_lock_spends(&mut self, tx_data: &[u8]) -> u64 {
+        let inputs = match bitcoin::extract_inputs(tx_data) {
+            Some(i) => i,
+            None => return 0,
+        };
+        let mut removed = 0u64;
+        for (txid, vout) in &inputs {
+            let key = outpoint_key(txid, *vout);
+            if let Some((vbytes, _asset)) = self.cbtc_locks.get(&key) {
+                let v = u64::from_be_bytes(vbytes[24..].try_into().unwrap());
+                self.cbtc_backing_sats = self.cbtc_backing_sats.saturating_sub(v);
+                self.cbtc_locks.remove(&key);
+                removed = removed.saturating_add(v);
+            }
+        }
+        removed
     }
 }
 
@@ -2217,12 +2263,22 @@ mod tests {
         sig_z.copy_from_slice(&z.to_bytes());
         let note_path = KeccakTreeAccumulator::new().append_path();
 
-        // a backed mint folds
+        // a backed mint folds AND accrues the backing (the lock's sats)
         let tx = tx_with_lock(v_btc, CBTC_VAULT_SPK, lock_vout);
         let mut st = ScanReflection::genesis();
         st.fold_cbtc_lock(&asset, &cx, &cy, &tx, lock_vout, &lock_txid, &note_path, &sig_rx, &sig_ry, &sig_z)
             .expect("a backed cBTC lock folds");
         assert_eq!(st.note_count, 1, "cBTC note appended on a backed lock");
+        assert_eq!(st.cbtc_backing_sats, v_btc, "backing accrued the locked sats");
+
+        // RUG: a later tx spends the self-custody lock outpoint → the backing drops (the off-pool buffer covers it)
+        let mut spend_tx: Vec<u8> = vec![0x02, 0, 0, 0, 0x01]; // version + 1 input
+        spend_tx.extend_from_slice(&lock_txid);
+        spend_tx.extend_from_slice(&lock_vout.to_le_bytes());
+        spend_tx.extend_from_slice(&[0x00, 0xff, 0xff, 0xff, 0xff]); // empty scriptSig + sequence
+        spend_tx.extend_from_slice(&[0x01, 0, 0, 0, 0, 0, 0, 0, 0, 0x00, 0, 0, 0, 0]); // 1 dummy output + locktime
+        assert_eq!(st.fold_cbtc_lock_spends(&spend_tx), v_btc, "the rug removed the lock's sats");
+        assert_eq!(st.cbtc_backing_sats, 0, "backing dropped to 0 after the rug");
 
         // wrong asset → reject
         let mut st2 = ScanReflection::genesis();
@@ -2235,11 +2291,19 @@ mod tests {
         assert!(st3.fold_cbtc_lock(&asset, &cx, &cy, &tx_low, lock_vout, &lock_txid, &note_path, &sig_rx, &sig_ry, &sig_z).is_err(), "over-mint (note > locked sats) rejected");
         assert_eq!(st3.note_count, 0);
 
-        // non-vault output → reject
-        let tx_bad = tx_with_lock(v_btc, &[0x6a, 0x00], lock_vout);
+        // SELF-CUSTODY: the lock output's scriptPubKey is the LOCKER's OWN — ANY SPK folds (no vault check)
+        let tx_any = tx_with_lock(v_btc, &[0x51, 0x20, 0xaa, 0xbb], lock_vout);
         let mut st4 = ScanReflection::genesis();
-        assert!(st4.fold_cbtc_lock(&asset, &cx, &cy, &tx_bad, lock_vout, &lock_txid, &note_path, &sig_rx, &sig_ry, &sig_z).is_err(), "non-vault output rejected");
-        assert_eq!(st4.note_count, 0);
+        st4.fold_cbtc_lock(&asset, &cx, &cy, &tx_any, lock_vout, &lock_txid, &note_path, &sig_rx, &sig_ry, &sig_z)
+            .expect("self-custody: any lock-output SPK folds");
+        assert_eq!(st4.note_count, 1, "folded under self-custody (no vault check)");
+        assert_eq!(st4.cbtc_backing_sats, v_btc, "backing tracked");
+
+        // lock vout 0 collides with the note outpoint → reject
+        let tx0 = tx_with_lock(v_btc, CBTC_VAULT_SPK, 0);
+        let mut st5 = ScanReflection::genesis();
+        assert!(st5.fold_cbtc_lock(&asset, &cx, &cy, &tx0, 0, &lock_txid, &note_path, &sig_rx, &sig_ry, &sig_z).is_err(), "lock vout 0 rejected");
+        assert_eq!(st5.note_count, 0);
     }
 
     /// Adaptor-swap lock-set leaf (ops/DESIGN-adaptor-swap-guest.md): deterministic, binds EVERY field
@@ -2383,7 +2447,7 @@ mod tests {
     fn genesis_digest_matches_contract_constant() {
         assert_eq!(
             ScanReflection::genesis().digest(),
-            arr32("0xec719b81a396d28bad7625172767133724a094a5425269a71b258fe7e36fdc75"),
+            arr32("0x164ac1b2bd8537ee7d8b6ae9af72b90958649ceed368e55056de8417bcd30044"),
             "ScanReflection::genesis().digest() drifted from ConfidentialPool.REFLECTION_GENESIS_DIGEST"
         );
     }
@@ -3639,7 +3703,7 @@ mod tests {
     #[test]
     fn scan_reflection_genesis_digest() {
         let g = ScanReflection::genesis();
-        assert_eq!(hex::encode(g.digest()), "ec719b81a396d28bad7625172767133724a094a5425269a71b258fe7e36fdc75", "full-scan genesis digest (JS indexer + contract must match)");
+        assert_eq!(hex::encode(g.digest()), "164ac1b2bd8537ee7d8b6ae9af72b90958649ceed368e55056de8417bcd30044", "full-scan genesis digest (JS indexer + contract must match)");
         // empty live set root == empty note-tree root (both keccak_merkle_root([])); spent + burn
         // keep the {0→0} sentinel roots.
         assert_eq!(g.live.root(), g.pool_root);
