@@ -91,18 +91,10 @@ pub const OPENING_DOMAIN: &[u8] = b"tacit-open-sigma-v1";
 // The deploy-gated cBTC pieces (baked into BITCOIN_RELAY_VKEY). See ops/DESIGN-cbtc-sats-lock-reflection.md.
 /// The single canonical asset id real-BTC-locked cBTC notes mint under = keccak256("tacit-cbtc-zk-lock-v1").
 /// cBTC.zk is a lock position (not a real etch), so this is a FIXED domain constant; its fungible canonical
-/// ERC20 form is cBTC.tac. Final — baked into BITCOIN_RELAY_VKEY at the re-prove. (CBTC_VAULT_SPK below is
-/// still a placeholder pending the vault pubkey.) See ops/DESIGN-cbtc-tac.md.
+/// ERC20 form is cBTC.tac. Final — baked into BITCOIN_RELAY_VKEY at the re-prove. See ops/DESIGN-cbtc-tac.md.
 pub const CBTC_ZK_ASSET_ID: [u8; 32] = [
     0x62, 0xa2, 0x0d, 0x98, 0xfc, 0x1c, 0xd2, 0x02, 0x89, 0x62, 0x1d, 0x13, 0x15, 0x29, 0x4c, 0xb8,
     0x77, 0x2f, 0x93, 0x4d, 0x82, 0x2e, 0x40, 0x4b, 0x71, 0xe1, 0xf4, 0x71, 0xcf, 0x06, 0x79, 0xc8,
-];
-/// The canonical cBTC vault scriptPubKey the lock output MUST equal — the deploy-gated LOCK FORM.
-/// TODO(cbtc): set to the real vault output (the trust-model crux: protocol-key P2TR / covenant /
-/// pre-signed — ops/DESIGN-cbtc-sats-lock-reflection.md §4). Placeholder 34-byte P2TR below.
-pub const CBTC_VAULT_SPK: &[u8] = &[
-    0x51, 0x20, 0xcb, 0xcb, 0xcb, 0xcb, 0xcb, 0xcb, 0xcb, 0xcb, 0xcb, 0xcb, 0xcb, 0xcb, 0xcb, 0xcb, 0xcb, 0xcb,
-    0xcb, 0xcb, 0xcb, 0xcb, 0xcb, 0xcb, 0xcb, 0xcb, 0xcb, 0xcb, 0xcb, 0xcb, 0xcb, 0xcb, 0xcb, 0xcb,
 ];
 /// Opening-sigma context domain for a sats-lock (binds asset ‖ lock_txid ‖ lock_vout — anti-replay).
 pub const CBTC_LOCK_DOMAIN: &[u8] = b"tacit-cbtc-lock-v1";
@@ -2079,8 +2071,9 @@ impl ScanReflection {
     }
 
     /// cBTC.zk sats-lock value-entry (`T_CBTC_LOCK`, opcode 0x66) — admit a real-BTC-backed cBTC note
-    /// ONLY if the envelope tx contains, at `lock_vout`, a confirmed `CBTC_VAULT_SPK` output of value
-    /// `v_btc`, AND the minted note commitment opens to EXACTLY `v_btc` (opening sigma — the blinding
+    /// ONLY if the envelope tx contains, at `lock_vout`, a confirmed self-custody lock output (the
+    /// locker's OWN output, any scriptPubKey) of value `v_btc`, AND the minted note commitment opens to
+    /// EXACTLY `v_btc` (opening sigma — the blinding
     /// is never revealed). The note (vout 0) and the sats-lock are outputs of the SAME tx, so single-use
     /// is structural (the note outpoint is deduped by `fold_output`; a per-block scan never re-folds).
     /// Fails closed (folds nothing) on any miss — same skip-not-panic discipline as `fold_cxfer` /
@@ -2215,9 +2208,9 @@ mod tests {
         assert_eq!(st2.note_count, 0, "nothing folded on reject");
     }
 
-    /// cBTC.zk sats-lock value-entry: a real-BTC-backed mint folds ONLY with a confirmed CBTC_VAULT_SPK
-    /// output of value v_btc AND a note opening to exactly v_btc; a wrong asset, an over-mint, and a
-    /// non-vault output each fold nothing.
+    /// cBTC.zk sats-lock value-entry: a real-BTC-backed mint folds ONLY with a confirmed self-custody lock
+    /// output of value v_btc AND a note opening to exactly v_btc; a wrong asset and an over-mint each fold
+    /// nothing, while ANY scriptPubKey is accepted (self-custody — no vault check).
     #[test]
     fn fold_cbtc_lock_admits_backed_mint_rejects_tampering() {
         // a minimal non-segwit tx whose output[lock_vout] = (value, spk)
@@ -2262,9 +2255,15 @@ mod tests {
         let mut sig_z = [0u8; 32];
         sig_z.copy_from_slice(&z.to_bytes());
         let note_path = KeccakTreeAccumulator::new().append_path();
+        // self-custody: the lock pays the locker's OWN output — any P2TR-shaped SPK works (no vault check).
+        let lock_spk: &[u8] = &[
+            0x51, 0x20, 0xcb, 0xcb, 0xcb, 0xcb, 0xcb, 0xcb, 0xcb, 0xcb, 0xcb, 0xcb, 0xcb, 0xcb, 0xcb, 0xcb,
+            0xcb, 0xcb, 0xcb, 0xcb, 0xcb, 0xcb, 0xcb, 0xcb, 0xcb, 0xcb, 0xcb, 0xcb, 0xcb, 0xcb, 0xcb, 0xcb,
+            0xcb, 0xcb,
+        ];
 
         // a backed mint folds AND accrues the backing (the lock's sats)
-        let tx = tx_with_lock(v_btc, CBTC_VAULT_SPK, lock_vout);
+        let tx = tx_with_lock(v_btc, lock_spk, lock_vout);
         let mut st = ScanReflection::genesis();
         st.fold_cbtc_lock(&asset, &cx, &cy, &tx, lock_vout, &lock_txid, &note_path, &sig_rx, &sig_ry, &sig_z)
             .expect("a backed cBTC lock folds");
@@ -2286,7 +2285,7 @@ mod tests {
         assert_eq!(st2.note_count, 0);
 
         // over-mint: a lock output worth LESS than the note claims → opening sigma fails
-        let tx_low = tx_with_lock(v_btc - 1, CBTC_VAULT_SPK, lock_vout);
+        let tx_low = tx_with_lock(v_btc - 1, lock_spk, lock_vout);
         let mut st3 = ScanReflection::genesis();
         assert!(st3.fold_cbtc_lock(&asset, &cx, &cy, &tx_low, lock_vout, &lock_txid, &note_path, &sig_rx, &sig_ry, &sig_z).is_err(), "over-mint (note > locked sats) rejected");
         assert_eq!(st3.note_count, 0);
@@ -2300,7 +2299,7 @@ mod tests {
         assert_eq!(st4.cbtc_backing_sats, v_btc, "backing tracked");
 
         // lock vout 0 collides with the note outpoint → reject
-        let tx0 = tx_with_lock(v_btc, CBTC_VAULT_SPK, 0);
+        let tx0 = tx_with_lock(v_btc, lock_spk, 0);
         let mut st5 = ScanReflection::genesis();
         assert!(st5.fold_cbtc_lock(&asset, &cx, &cy, &tx0, 0, &lock_txid, &note_path, &sig_rx, &sig_ry, &sig_z).is_err(), "lock vout 0 rejected");
         assert_eq!(st5.note_count, 0);

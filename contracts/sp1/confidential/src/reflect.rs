@@ -250,11 +250,12 @@ pub fn main() {
             }
 
             // cBTC.zk: a real-BTC sats-lock mint (T_CBTC_LOCK, 0x66). Fold the minted cBTC note ONLY if
-            // the envelope tx has, at lock_vout, a CBTC_VAULT_SPK output of value v_btc AND the note
-            // commits to exactly v_btc (opening sigma). Spend-less mint (the lock is the backing);
-            // redemption is the Bitcoin vault validator's job. Witnesses are read for EVERY 0x66 tx (the
-            // assembler MUST emit note_path + the opening sigma per 0x66) so the stream stays in sync; a
-            // non-vault / over-mint / wrong-asset lock folds nothing (skip-not-panic). See
+            // the envelope tx has, at lock_vout, a confirmed self-custody lock output (the locker's OWN
+            // output, any scriptPubKey) of value v_btc AND the note commits to exactly v_btc (opening
+            // sigma). Spend-less mint (the lock is the backing); a later spend of the lock is a rug caught
+            // by fold_cbtc_lock_spends. Witnesses are read for EVERY 0x66 tx (the assembler MUST emit
+            // note_path + the opening sigma per 0x66) so the stream stays in sync; an over-mint /
+            // wrong-asset lock folds nothing (skip-not-panic). See
             // ops/DESIGN-cbtc-sats-lock-reflection.md. cf. cxfer-core::ScanReflection::fold_cbtc_lock.
             if let Some((cb_asset, lock_vout, cx, cy)) =
                 env.as_ref().and_then(|e| bitcoin::parse_cbtc_lock_envelope(e))
