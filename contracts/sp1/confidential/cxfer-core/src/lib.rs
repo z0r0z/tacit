@@ -111,6 +111,21 @@ pub const ADAPTOR_LOCK_DOMAIN: &[u8] = b"tacit-adaptor-lock-v1";
 /// is NEVER spendable by a normal transfer / LP-remove — only by OP_BOND_REDEEM / OP_BOND_SLASH.
 pub const BOND_POSITION_DOMAIN: &[u8] = b"tacit-cbtc-tac-bond-v1";
 
+// ──── cBTC.tac bond price/ratio/health gate (§5): freeze the STRUCTURE, not the ORACLE ────
+// The guest verifies a RELAY-signed CAPACITY (mint) / HEALTH (slash) over the position + a recent
+// anchor, then enforces the conservation. The dual-TWAP / BOND_RATIO / IL-floor / LIQ_THRESHOLD all
+// live in the relay's `max_mint` / `unhealthy` computation — tunable post-deploy with NO guest change.
+// Only this attestation INTERFACE is frozen into PROGRAM_VKEY (the minimal immutable surface; it's
+// upgradeable to a price-only attestation with in-guest ratio math in a later re-prove if desired).
+/// Mint-capacity attestation domain — the relay signs (bond ‖ asset ‖ max_mint ‖ anchor).
+pub const BOND_ATTEST_MINT_DOMAIN: &[u8] = b"tacit-cbtc-tac-bond-mint-v1";
+/// Slash-health attestation domain — the relay signs (position_leaf ‖ anchor).
+pub const BOND_ATTEST_SLASH_DOMAIN: &[u8] = b"tacit-cbtc-tac-bond-slash-v1";
+/// The pinned bond-oracle / relay x-only pubkey that signs capacity + health attestations.
+/// TODO(cbtc-tac): set to the production relay key before the re-prove (baked into PROGRAM_VKEY);
+/// reuse the existing relay-anchor key if it serves, else a dedicated bond-oracle key. Placeholder.
+pub const BOND_ORACLE_PUBKEY_X: [u8; 32] = [0xba; 32];
+
 /// Schnorr proof of knowledge of the blinding `r` for a Pedersen commitment with a PUBLIC
 /// `amount`: proves the prover knows `r` such that `commitment = amount·H + r·G`, binding the
 /// trade `context` (out owner / min_out / amounts / pool / chain) into the challenge — WITHOUT
@@ -632,6 +647,86 @@ pub fn bond_position_leaf(
     issuer: &[u8; 32], position_nonce: &[u8; 32],
 ) -> [u8; 32] {
     kn(&[BOND_POSITION_DOMAIN, bond_cx, bond_cy, cbtc_asset, &minted_amount.to_be_bytes(), issuer, position_nonce])
+}
+/// A relay CAPACITY attestation for OP_BOND_MINT (§5, the hybrid). The relay signs these fields; the
+/// guest then RE-DERIVES the spot capacity ceiling from the LIVE pool reserves using the SAME
+/// (price, ratio) the relay attests, and rejects a `max_mint` above it (within `band_bps`). So the
+/// relay's only un-bounded input is the single exogenous TAC/BTC price — the (TAC,tETH) reserves that
+/// dominate the valuation are guest-enforced from on-chain state, not trusted to the relay.
+#[derive(Clone)]
+pub struct BondMintAttest {
+    pub bond_cx: [u8; 32],
+    pub bond_cy: [u8; 32],
+    pub cbtc_asset: [u8; 32],
+    pub max_mint: u64,          // the relay's TWAP'd capacity (caps the mint)
+    pub sats_per_tac_num: u64,  // the attested TAC/BTC price as a rational (sats per TAC)
+    pub sats_per_tac_den: u64,
+    pub ratio_bps: u32,         // BOND_RATIO in bps (25000 = 2.5x)
+    pub anchor: [u8; 32],       // freshness anchor (recency enforced against the batch's relay state)
+}
+impl BondMintAttest {
+    /// The 32-byte message the relay signs — binds EVERY field, so none can be swapped post-signing.
+    pub fn msg(&self) -> [u8; 32] {
+        kn(&[
+            BOND_ATTEST_MINT_DOMAIN, &self.bond_cx, &self.bond_cy, &self.cbtc_asset,
+            &self.max_mint.to_be_bytes(), &self.sats_per_tac_num.to_be_bytes(),
+            &self.sats_per_tac_den.to_be_bytes(), &self.ratio_bps.to_be_bytes(), &self.anchor,
+        ])
+    }
+}
+/// The trustless SPOT capacity ceiling (§5 hybrid): the fair-LP value of the bonded share in TAC,
+/// `2·(share/total)·reserve_tac`, priced to sats at the attested rate and divided by the ratio, widened
+/// by `band_bps` to allow legitimate TWAP-vs-spot drift:
+///   ceiling_sats = 2·share·reserve_tac·num·(10000+band_bps) / (total·den·ratio_bps).
+/// The guest caps the relay's `max_mint` at this, so a relay cannot authorize a mint inconsistent with
+/// the LIVE reserves (stale/phantom reserves, or a capacity inflated past what those reserves justify,
+/// are rejected). u128-checked — `None` (→ reject) on overflow or a zero denominator: fail-closed.
+pub fn bond_spot_capacity_ceiling(
+    share: u64, total_shares: u64, reserve_tac: u64,
+    sats_per_tac_num: u64, sats_per_tac_den: u64, ratio_bps: u32, band_bps: u32,
+) -> Option<u128> {
+    if total_shares == 0 || sats_per_tac_den == 0 || ratio_bps == 0 { return None; }
+    let numer = 2u128
+        .checked_mul(share as u128)?
+        .checked_mul(reserve_tac as u128)?
+        .checked_mul(sats_per_tac_num as u128)?
+        .checked_mul(10_000u128.checked_add(band_bps as u128)?)?;
+    let denom = (total_shares as u128)
+        .checked_mul(sats_per_tac_den as u128)?
+        .checked_mul(ratio_bps as u128)?;
+    Some(numer / denom)
+}
+/// The full OP_BOND_MINT gate (§5 hybrid): accept a mint of `minted_amount` against the bonded share IFF
+/// (a) the pinned relay (`oracle_x`) signed the attestation, (b) `minted_amount <= att.max_mint`, and
+/// (c) `att.max_mint` is within `bond_spot_capacity_ceiling` of the LIVE reserves at the attested
+/// price/ratio. (a) is the relay's price/TWAP trust; (c) binds it to on-chain AMM state, so the relay
+/// can't over-authorize beyond what live reserves justify without also moving the visible pool.
+#[allow(clippy::too_many_arguments)]
+pub fn verify_bond_mint(
+    att: &BondMintAttest, minted_amount: u64,
+    share: u64, total_shares: u64, reserve_tac: u64, band_bps: u32,
+    sig: &[u8; 64], oracle_x: &[u8; 32],
+) -> bool {
+    if minted_amount > att.max_mint { return false; }
+    let ceiling = match bond_spot_capacity_ceiling(
+        share, total_shares, reserve_tac, att.sats_per_tac_num, att.sats_per_tac_den, att.ratio_bps, band_bps,
+    ) {
+        Some(c) => c,
+        None => return false,
+    };
+    if att.max_mint as u128 > ceiling { return false; }
+    bip340_verify(sig, &att.msg(), oracle_x)
+}
+/// The 32-byte message a relay signs to attest a position is SLASHABLE (§5): binds the exact
+/// `position_leaf` (so it can't be replayed onto a healthy position) and a freshness `anchor`.
+pub fn bond_slash_health_msg(position_leaf: &[u8; 32], anchor: &[u8; 32]) -> [u8; 32] {
+    kn(&[BOND_ATTEST_SLASH_DOMAIN, position_leaf, anchor])
+}
+/// The OP_BOND_SLASH gate: accept a slash of `position_leaf` IFF the pinned relay (`oracle_x`) signed
+/// that it is under-collateralized at `anchor`. The health call (the dual-TWAP comparison) is the
+/// relay's; the guest binds it to the exact position so a slash can't be redirected.
+pub fn verify_bond_slash_health(position_leaf: &[u8; 32], anchor: &[u8; 32], sig: &[u8; 64], oracle_x: &[u8; 32]) -> bool {
+    bip340_verify(sig, &bond_slash_health_msg(position_leaf, anchor), oracle_x)
 }
 /// Confidential-AMM pool id, matching `ConfidentialPool`'s `keccak256(abi.encode(low, high, feeBps))`
 /// (three 32-byte ABI words). Binds an OP_SWAP/LP batch's reserves to the exact (canonical pair, fee
@@ -2186,6 +2281,87 @@ mod tests {
         // disjoint from a normal note leaf AND from an adaptor lock leaf over the same bytes
         assert_ne!(base, leaf(&bcx, &bcy, &cbtc, &issuer), "bonded leaf disjoint from a note leaf");
         assert_ne!(base, adaptor_lock_leaf(&bcx, &bcy, &cbtc, &issuer, amount, &issuer, &nonce), "bonded leaf disjoint from an adaptor lock leaf");
+    }
+
+    /// Produce a valid BIP-340 signature for the bond-attestation KATs: even-y P (negate d if odd),
+    /// even-y R (negate k), e = H_tag(rx‖px‖msg), s = k + e·d. Mirrors what the relay/dapp signs.
+    fn bip340_sign(d_seed: &[u8; 32], k_seed: &[u8; 32], msg: &[u8; 32]) -> ([u8; 32], [u8; 64]) {
+        let mut d = scalar_reduce_be(d_seed);
+        if compress(&(ProjectivePoint::generator() * d))[0] == 0x03 { d = -d; }
+        let pc = compress(&(ProjectivePoint::generator() * d));
+        let mut px = [0u8; 32]; px.copy_from_slice(&pc[1..]);
+        let mut k = scalar_reduce_be(k_seed);
+        if compress(&(ProjectivePoint::generator() * k))[0] == 0x03 { k = -k; }
+        let rc = compress(&(ProjectivePoint::generator() * k));
+        let mut rx = [0u8; 32]; rx.copy_from_slice(&rc[1..]);
+        let mut chal = Vec::with_capacity(96);
+        chal.extend_from_slice(&rx); chal.extend_from_slice(&px); chal.extend_from_slice(msg);
+        let e = scalar_reduce_be(&bip340_tagged(b"BIP0340/challenge", &chal));
+        let s = k + e * d;
+        let mut sig = [0u8; 64];
+        sig[0..32].copy_from_slice(&rx);
+        sig[32..64].copy_from_slice(s.to_bytes().as_slice());
+        (px, sig)
+    }
+
+    /// §5 spot ceiling arithmetic: fair-LP value 2·(share/total)·reserve_tac, priced + ratio'd + banded;
+    /// fails closed (None) on a zero denominator or u128 overflow.
+    #[test]
+    fn bond_spot_capacity_ceiling_math_and_fail_closed() {
+        // share=total (100%), reserve_tac=1000 → value 2000 TAC; 50 sats/TAC → 100000 sats; /2.5x → 40000.
+        assert_eq!(bond_spot_capacity_ceiling(100, 100, 1000, 50, 1, 25000, 0), Some(40_000));
+        assert_eq!(bond_spot_capacity_ceiling(50, 100, 1000, 50, 1, 25000, 0), Some(20_000), "half share");
+        assert_eq!(bond_spot_capacity_ceiling(100, 100, 1000, 50, 1, 25000, 1000), Some(44_000), "+10% band");
+        assert_eq!(bond_spot_capacity_ceiling(100, 100, 500, 50, 1, 25000, 0), Some(20_000), "half reserve");
+        // fail-closed
+        assert_eq!(bond_spot_capacity_ceiling(100, 0, 1000, 50, 1, 25000, 0), None, "zero total shares");
+        assert_eq!(bond_spot_capacity_ceiling(100, 100, 1000, 50, 0, 25000, 0), None, "zero price denom");
+        assert_eq!(bond_spot_capacity_ceiling(100, 100, 1000, 50, 1, 0, 0), None, "zero ratio");
+        assert_eq!(bond_spot_capacity_ceiling(u64::MAX, 1, u64::MAX, u64::MAX, 1, 25000, 0), None, "overflow → fail closed");
+    }
+
+    /// §5 mint gate (hybrid): a relay capacity within the LIVE-reserve ceiling verifies and bounds the
+    /// mint; over-cap, a max_mint ABOVE the spot ceiling (rogue/stale relay), shrunken live reserves, a
+    /// tampered field, and a wrong oracle key each reject — no unbacked over-mint, relay bounded by AMM.
+    #[test]
+    fn bond_mint_gate_verifies_and_rejects_tamper() {
+        let share = 100u64; let total = 100u64; let reserve_tac = 1000u64; let band = 0u32;
+        let att = BondMintAttest {
+            bond_cx: [0x51u8; 32], bond_cy: [0x52u8; 32], cbtc_asset: [0x61u8; 32],
+            max_mint: 40_000, sats_per_tac_num: 50, sats_per_tac_den: 1, ratio_bps: 25_000, anchor: [0x91u8; 32],
+        };
+        let (oracle_x, sig) = bip340_sign(&[0x01u8; 32], &[0x02u8; 32], &att.msg());
+        // at/under the (ceiling-consistent) cap with the relay sig → accept
+        assert!(verify_bond_mint(&att, 40_000, share, total, reserve_tac, band, &sig, &oracle_x), "at-cap mint");
+        assert!(verify_bond_mint(&att, 39_999, share, total, reserve_tac, band, &sig, &oracle_x), "under mint");
+        // minted over the attested cap → reject
+        assert!(!verify_bond_mint(&att, 40_001, share, total, reserve_tac, band, &sig, &oracle_x), "over-cap mint rejected");
+        // THE TRUSTLESS GUARD: a relay max_mint ABOVE the live-reserve ceiling rejects even with a valid sig
+        let att_hi = BondMintAttest { max_mint: 50_000, ..att.clone() };
+        let (ox_hi, sig_hi) = bip340_sign(&[0x01u8; 32], &[0x02u8; 32], &att_hi.msg());
+        assert!(!verify_bond_mint(&att_hi, 50_000, share, total, reserve_tac, band, &sig_hi, &ox_hi), "max_mint above spot ceiling rejected");
+        // stale/phantom reserves: same attestation but LIVE reserves halved → ceiling 20000 < 40000 → reject
+        assert!(!verify_bond_mint(&att, 40_000, share, total, 500, band, &sig, &oracle_x), "max_mint above live-reserve ceiling rejected");
+        // a tampered field (signed over the original) → sig mismatch → reject
+        let mut att_t = att.clone(); att_t.cbtc_asset = [0u8; 32];
+        assert!(!verify_bond_mint(&att_t, 40_000, share, total, reserve_tac, band, &sig, &oracle_x), "asset tamper rejected");
+        // wrong oracle key → reject
+        let (other_x, _) = bip340_sign(&[0x09u8; 32], &[0x0au8; 32], &[0u8; 32]);
+        assert!(!verify_bond_mint(&att, 40_000, share, total, reserve_tac, band, &sig, &other_x), "wrong oracle key rejected");
+    }
+
+    /// §5 slash gate: a relay-signed health verifies for the exact position; a different position,
+    /// a different anchor, and a wrong oracle key each reject (no slash redirection / replay).
+    #[test]
+    fn bond_slash_health_attestation_verifies_and_rejects_tamper() {
+        let pos = bond_position_leaf(&[0x51u8; 32], &[0x52u8; 32], &[0x61u8; 32], 250_000, &[0x71u8; 32], &[0x81u8; 32]);
+        let anchor = [0x92u8; 32];
+        let (oracle_x, sig) = bip340_sign(&[0x03u8; 32], &[0x04u8; 32], &bond_slash_health_msg(&pos, &anchor));
+        assert!(verify_bond_slash_health(&pos, &anchor, &sig, &oracle_x), "valid slash attestation");
+        assert!(!verify_bond_slash_health(&[0u8; 32], &anchor, &sig, &oracle_x), "wrong position rejected");
+        assert!(!verify_bond_slash_health(&pos, &[0u8; 32], &sig, &oracle_x), "wrong anchor rejected");
+        let (other_x, _) = bip340_sign(&[0x0bu8; 32], &[0x0cu8; 32], &[0u8; 32]);
+        assert!(!verify_bond_slash_health(&pos, &anchor, &sig, &other_x), "wrong oracle key rejected");
     }
 
     /// Pin ScanReflection::genesis().digest() (the SHIPPED full-scan reflection model) to the
