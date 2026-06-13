@@ -51,9 +51,10 @@ Witness: the bond LP note (membership in `spendRoot` + `ν_bond` + opening), the
 - bond membership + `ν_bond` (the normal spend checks, reused);
 - the **ratio gate** (§5): `minted_amount` ≤ the attested capacity for this bond;
 - the cBTC.tac note opens to `minted_amount` (an opening sigma — value stays hidden, OP_OTC pattern).
-Effect: `ν_bond` → spent set; append `bond_position_leaf(bond_Cx, bond_Cy, cbtc_asset, minted_amount,
-issuer, position_nonce)` to the **bonded set**; append the cBTC.tac note to the note tree; insert the
-position nullifier (spend-once).
+Effect: `ν_bond` → spent set; append `bond_position_leaf(bond_asset, bond_Cx, bond_Cy, cbtc_asset,
+minted_amount, issuer, position_nonce)` to the **bonded set** — binding `bond_asset` (the LP-share id) so
+redeem can't relabel the released note to a dearer asset; append the cBTC.tac note to the note tree;
+insert the position nullifier (spend-once).
 
 ### OP_BOND_REDEEM (16)
 Witness: the bonded position (membership in the bond-set root + `ν_position` + the position fields), the
@@ -97,10 +98,11 @@ set is what makes the lien structural: a bonded note simply isn't in the tree an
 These four hold **without any price** — they're conservation + binding, the cxfer-core core below.
 
 ## 4. cxfer-core testable core — DONE this pass (cxfer-core 71 green)
-- **`bond_position_leaf(bond_Cx, bond_Cy, cbtc_asset, minted_amount, issuer, position_nonce) -> [u8;32]`.**
-  The bonded-set leaf; `BOND_POSITION_DOMAIN`-tagged so it's disjoint from the note tree (a bonded note is
-  never normal-spendable) and from the adaptor lock set. KAT: determinism + every-field binding (no
-  substitution/redirect/amount-tamper) + both disjointness checks.
+- **`bond_position_leaf(bond_asset, bond_Cx, bond_Cy, cbtc_asset, minted_amount, issuer, position_nonce)`.**
+  The bonded-set leaf; binds `bond_asset` (the LP-share id — so redeem can't relabel the released note to a
+  dearer asset, a relabel-inflation the dispatch draft caught); `BOND_POSITION_DOMAIN`-tagged so it's
+  disjoint from the note tree (a bonded note is never normal-spendable) and from the adaptor lock set. KAT:
+  determinism + every-field binding (incl. the anti-relabel `bond_asset`) + both disjointness checks.
 - **`BondMintAttest` + `verify_bond_mint` + `bond_spot_capacity_ceiling` + `verify_bond_slash_health`**
   (+ the `BOND_ATTEST_*` domains + `BOND_ORACLE_PUBKEY_X` placeholder) — the §5 hybrid price gate over
   `bip340_verify`. KATs: the ceiling fair-LP arithmetic (+ overflow/zero fail-closed); a real BIP-340
@@ -197,3 +199,114 @@ prove is §5's freeze line — confirm the attestation interface is the right im
   finalize before the prove:** `BOND_ORACLE_PUBKEY_X` (the pinned relay key), the `anchor` recency rule,
   and `band_bps` (frozen-conservative vs attested). Fully-trustless pricing (bound the TAC/BTC scalar via
   a cBTC.zk-anchored pool + TWAP-in-proof) remains the documented later upgrade.
+
+## Appendix A — `main.rs` op-dispatch draft (ops 15–17)
+
+> **DRAFT, not yet in the live guest.** This composes the tested cxfer-core primitives in the OP_LP /
+> OP_OTC idiom; it is **untestable locally** (SP1 `io::read` plumbing → validated by box-execute
+> fixtures) and is **coupled to a matching `ConfidentialPool.sol` ABI** (the new PublicValues fields +
+> gates below), which is the guest+contract owner's coordinated step. Kept here (not dropped into the
+> fund-critical guest) so it's reviewable without leaving `main.rs` in a contract-incoherent state.
+> Writing it surfaced the `bond_asset` relabel gap (now fixed in `bond_position_leaf`).
+
+**New pinned constants (bake into `PROGRAM_VKEY`, finalize before the prove):** `TAC_ASSET_ID`,
+`TETH_ASSET_ID` (the bond pool pair — the §5 ceiling is TAC-denominated, so the valuation is only sound
+for this pair), plus `BOND_ORACLE_PUBKEY_X` (§5). `band_bps` = a frozen-conservative const or attested.
+
+**New PublicValues fields (the coordinated contract ABI):**
+`bytes32[] bondedPositions` (append to the contract's bonded-set), `bytes32[] positionsSpent` (mark in the
+position-spent set), `BondSettlement[] bonds` = `{poolId, reserveTac, totalShares}` the mint's ceiling
+used — **the contract gates these == the live (TAC,tETH) pool reserves** (else a prover supplies
+fake-high reserves → inflated ceiling → over-mint). The guest reads a `bonded_set_root` input alongside
+`spend_root` for redeem/slash membership. The contract also counts a bond-mint as **authorized cBTC.tac
+supply** in the reserve floor (like `bridge_mint`).
+
+### OP_BOND_MINT (15)
+```rust
+// pair + pool, pinned to (TAC,tETH); reserves are gated by the contract via BondSettlement
+let asset_a = r32(); let asset_b = r32(); let fee_bps: u32 = io::read();
+assert!(bitcoin::be_bytes_lte(&asset_a, &asset_b) && asset_a != asset_b, "bond_mint: non-canonical pair");
+assert!((asset_a==TAC_ASSET_ID && asset_b==TETH_ASSET_ID)||(asset_a==TETH_ASSET_ID && asset_b==TAC_ASSET_ID),
+        "bond_mint: not the (TAC,tETH) bond pool");
+let pid = pool_id(&asset_a, &asset_b, fee_bps); let lp_asset = lp_share_id(&pid);
+let r_a_pre: u64 = io::read(); let r_b_pre: u64 = io::read(); let shares_pre: u64 = io::read();
+let reserve_tac = if asset_a==TAC_ASSET_ID { r_a_pre } else { r_b_pre };
+// the bonded LP-share note (membership + ν + opening binds `share`)
+let (s_cx,s_cy,s_pt)=r_commitment(); let issuer=r32(); let s_idx:u64=io::read(); let s_path=r_path();
+let share:u64=io::read(); let s_r=decompress(&r33()).unwrap(); let s_z=scalar_reduce_be(&r32());
+// the minted cBTC.tac note (opens to minted_amount) + the position nonce
+let cbtc_asset=r32(); let (m_cx,m_cy,m_pt)=r_commitment(); let minted:u64=io::read();
+let m_r=decompress(&r33()).unwrap(); let m_z=scalar_reduce_be(&r32()); let nonce=r32();
+// §5 capacity attestation + band + relay sig
+let att=BondMintAttest{ bond_cx:s_cx,bond_cy:s_cy,cbtc_asset, max_mint:io::read(),
+  sats_per_tac_num:io::read(), sats_per_tac_den:io::read(), ratio_bps:io::read(), anchor:r32() };
+let band_bps:u32=io::read(); let att_sig=r_n::<64>();
+let ctx=intent_context(b"tacit-bond-mint-v1",&chain_binding,&lp_asset,&cbtc_asset,
+  &[(s_cx,s_cy,issuer),(m_cx,m_cy,issuer)],&[share,minted,att.max_mint]);
+// spend the LP-share note
+let s_lf=leaf(&lp_asset,&s_cx,&s_cy,&issuer);
+assert!(spend_root!=[0u8;32] && keccak_merkle_verify(&s_lf,s_idx,&s_path,&spend_root), "bond_mint: share membership");
+let s_nu=nullifier(&s_cx,&s_cy);
+if bitcoin_spent_root!=[0u8;32]{ check_btc_nonmembership(&s_nu,&bitcoin_spent_root); }
+assert!(verify_opening_sigma(&s_pt,share,&s_r,&s_z,&ctx), "bond_mint: share opening");
+assert!(minted>0 && verify_opening_sigma(&m_pt,minted,&m_r,&m_z,&ctx), "bond_mint: mint opening");
+// §5 HYBRID gate: relay capacity bounded by the LIVE reserves (contract gates reserve_tac/shares_pre)
+assert!(verify_bond_mint(&att,minted,share,shares_pre,reserve_tac,band_bps,&att_sig,&BOND_ORACLE_PUBKEY_X),
+        "bond_mint: §5 capacity gate");
+// effects
+nullifiers.push(s_nu);
+bonded_positions.push(bond_position_leaf(&lp_asset,&s_cx,&s_cy,&cbtc_asset,minted,&issuer,&nonce));
+leaves.push(leaf(&cbtc_asset,&m_cx,&m_cy,&issuer));
+bonds.push(BondSettlement{ poolId:pid.into(), reserveTac:U256::from(reserve_tac), totalShares:U256::from(shares_pre) });
+```
+
+### OP_BOND_REDEEM (16) — pure conservation, no price
+```rust
+// reproduce the EXACT bonded position (binds bond_asset, so the released note can't be relabeled)
+let bond_asset=r32(); let bond_cx=r32(); let bond_cy=r32(); let cbtc_asset=r32();
+let minted:u64=io::read(); let issuer=r32(); let nonce=r32();
+let pos=bond_position_leaf(&bond_asset,&bond_cx,&bond_cy,&cbtc_asset,minted,&issuer,&nonce);
+let p_idx:u64=io::read(); let p_path=r_path();
+assert!(bonded_set_root!=[0u8;32] && keccak_merkle_verify(&pos,p_idx,&p_path,&bonded_set_root), "bond_redeem: position membership");
+let pos_nu=nullifier(&bond_cx,&bond_cy); // position spent-once marker (bonded set), distinct domain
+// burn cBTC.tac notes summing to EXACTLY `minted`
+let ctx=intent_context(b"tacit-bond-redeem-v1",&chain_binding,&cbtc_asset,&bond_asset,&[],&[minted]);
+let n_burn:u32=io::read(); let mut burned:u128=0;
+for _ in 0..n_burn {
+  let (cx,cy,pt)=r_commitment(); let o=r32(); let idx:u64=io::read(); let path=r_path();
+  let amt:u64=io::read(); let r=decompress(&r33()).unwrap(); let z=scalar_reduce_be(&r32());
+  let lf=leaf(&cbtc_asset,&cx,&cy,&o);
+  assert!(keccak_merkle_verify(&lf,idx,&path,&spend_root), "bond_redeem: burn membership");
+  let nu=nullifier(&cx,&cy);
+  if bitcoin_spent_root!=[0u8;32]{ check_btc_nonmembership(&nu,&bitcoin_spent_root); }
+  assert!(verify_opening_sigma(&pt,amt,&r,&z,&ctx), "bond_redeem: burn opening");
+  nullifiers.push(nu); burned += amt as u128;
+}
+assert!(burned == minted as u128, "bond_redeem: must burn exactly the minted amount");
+positions_spent.push(pos_nu);
+leaves.push(leaf(&bond_asset,&bond_cx,&bond_cy,&issuer)); // release the bond LP to the issuer
+```
+
+### OP_BOND_SLASH (17) — relay health + liquidation routing (sketch; flags the LP-remove integration)
+```rust
+// reproduce the position; gate the slash on a relay HEALTH attestation (§5); route the LP to liquidation
+let bond_asset=r32(); let bond_cx=r32(); let bond_cy=r32(); let cbtc_asset=r32();
+let minted:u64=io::read(); let issuer=r32(); let nonce=r32();
+let pos=bond_position_leaf(&bond_asset,&bond_cx,&bond_cy,&cbtc_asset,minted,&issuer,&nonce);
+let p_idx:u64=io::read(); let p_path=r_path();
+assert!(keccak_merkle_verify(&pos,p_idx,&p_path,&bonded_set_root), "bond_slash: position membership");
+let anchor=r32(); let h_sig=r_n::<64>();
+assert!(verify_bond_slash_health(&pos,&anchor,&h_sig,&BOND_ORACLE_PUBKEY_X), "bond_slash: health gate");
+positions_spent.push(nullifier(&bond_cx,&bond_cy));
+// LIQUIDATION (flag — reuse the OP_LP_REMOVE machinery): the bonded LP note is removed from the pool
+// (reserves decrease, the legs become fresh A/B notes owned by the LIQUIDATION sink, not the issuer),
+// then routed to an asset-settled bid / auction whose proceeds cover the position's cBTC.tac; the
+// insurance floor covers a residual shortfall. The issuer does NOT get the bond back (the slash penalty).
+// This is the heaviest integration — it composes OP_LP_REMOVE's reserve-decrease + the liquidation
+// venue; specify the coverage-binding + the sink owner with the guest+contract owner.
+```
+
+**Adversarial box fixtures to add with the dispatch:** under-burn-frees-bond rejects; a relabel of the
+released note (different `bond_asset`) rejects (now leaf-bound); `ν_position` double-spend (redeem then
+slash, or twice) rejects; a fake-high reserve (gated by `BondSettlement` vs the live pool) rejects;
+a normal `OP_TRANSFER`/`OP_LP_REMOVE` of a bonded note rejects (it isn't in the note tree).

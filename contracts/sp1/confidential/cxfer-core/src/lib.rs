@@ -632,21 +632,24 @@ pub fn adaptor_lock_leaf(
 ) -> [u8; 32] {
     kn(&[ADAPTOR_LOCK_DOMAIN, cx, cy, tx, ty, &deadline.to_be_bytes(), recipient, locker])
 }
-/// The cBTC.tac BONDED-POSITION leaf (ops/DESIGN-cbtc-tac-bond-guest.md): binds the bonded (TAC,tETH) LP
-/// note (Cx,Cy), the synthetic asset minted against it (`cbtc_asset`), the exact `minted_amount`, the
-/// `issuer` repaid on redeem, and a `position_nonce` for uniqueness. OP_BOND_REDEEM / OP_BOND_SLASH must
-/// reproduce this EXACT leaf to prove bonded-set membership, so the relayer can neither free a different
-/// bond, burn a different amount, nor redirect the released LP. Domain-separated from the note-tree `leaf`
-/// (a bonded LP is never spendable by a normal transfer/LP-remove) and from the adaptor lock set. The
-/// amount rides as a witness (hidden from public values, OP_OTC pattern); the leaf merely commits it.
+/// The cBTC.tac BONDED-POSITION leaf (ops/DESIGN-cbtc-tac-bond-guest.md): binds the bonded note's OWN
+/// asset (`bond_asset`, the LP-share id) AND commitment (Cx,Cy), the synthetic asset minted against it
+/// (`cbtc_asset`), the exact `minted_amount`, the `issuer` repaid on redeem, and a `position_nonce` for
+/// uniqueness. OP_BOND_REDEEM / OP_BOND_SLASH must reproduce this EXACT leaf to prove bonded-set
+/// membership, so the relayer can neither free a different bond, RELABEL the released note to a dearer
+/// asset (binding `bond_asset` blocks the relabel-inflation), burn a different amount, nor redirect the
+/// LP. Domain-separated from the note-tree `leaf` (a bonded LP is never spendable by a normal
+/// transfer/LP-remove) and from the adaptor lock set. The amount rides as a witness (hidden from public
+/// values, OP_OTC pattern); the leaf merely commits it.
 #[allow(clippy::too_many_arguments)]
 pub fn bond_position_leaf(
+    bond_asset: &[u8; 32],
     bond_cx: &[u8; 32], bond_cy: &[u8; 32],
     cbtc_asset: &[u8; 32],
     minted_amount: u64,
     issuer: &[u8; 32], position_nonce: &[u8; 32],
 ) -> [u8; 32] {
-    kn(&[BOND_POSITION_DOMAIN, bond_cx, bond_cy, cbtc_asset, &minted_amount.to_be_bytes(), issuer, position_nonce])
+    kn(&[BOND_POSITION_DOMAIN, bond_asset, bond_cx, bond_cy, cbtc_asset, &minted_amount.to_be_bytes(), issuer, position_nonce])
 }
 /// A relay CAPACITY attestation for OP_BOND_MINT (§5, the hybrid). The relay signs these fields; the
 /// guest then RE-DERIVES the spot capacity ceiling from the LIVE pool reserves using the SAME
@@ -2265,21 +2268,22 @@ mod tests {
     /// normal-spendable, and the two locked-note families never collide).
     #[test]
     fn bond_position_leaf_is_deterministic_and_binds_every_field() {
-        let bcx = [0x51u8; 32]; let bcy = [0x52u8; 32];
+        let basset = [0x41u8; 32]; let bcx = [0x51u8; 32]; let bcy = [0x52u8; 32];
         let cbtc = [0x61u8; 32];
         let amount = 250_000u64;
         let issuer = [0x71u8; 32]; let nonce = [0x81u8; 32];
-        let base = bond_position_leaf(&bcx, &bcy, &cbtc, amount, &issuer, &nonce);
-        assert_eq!(base, bond_position_leaf(&bcx, &bcy, &cbtc, amount, &issuer, &nonce));
+        let base = bond_position_leaf(&basset, &bcx, &bcy, &cbtc, amount, &issuer, &nonce);
+        assert_eq!(base, bond_position_leaf(&basset, &bcx, &bcy, &cbtc, amount, &issuer, &nonce));
         let bump = |b: &[u8; 32]| { let mut x = *b; x[0] ^= 1; x };
-        assert_ne!(base, bond_position_leaf(&bump(&bcx), &bcy, &cbtc, amount, &issuer, &nonce), "bond Cx bound");
-        assert_ne!(base, bond_position_leaf(&bcx, &bump(&bcy), &cbtc, amount, &issuer, &nonce), "bond Cy bound");
-        assert_ne!(base, bond_position_leaf(&bcx, &bcy, &bump(&cbtc), amount, &issuer, &nonce), "cbtc asset bound");
-        assert_ne!(base, bond_position_leaf(&bcx, &bcy, &cbtc, amount + 1, &issuer, &nonce), "minted amount bound");
-        assert_ne!(base, bond_position_leaf(&bcx, &bcy, &cbtc, amount, &bump(&issuer), &nonce), "issuer bound");
-        assert_ne!(base, bond_position_leaf(&bcx, &bcy, &cbtc, amount, &issuer, &bump(&nonce)), "nonce bound");
+        assert_ne!(base, bond_position_leaf(&bump(&basset), &bcx, &bcy, &cbtc, amount, &issuer, &nonce), "bond asset bound (anti-relabel)");
+        assert_ne!(base, bond_position_leaf(&basset, &bump(&bcx), &bcy, &cbtc, amount, &issuer, &nonce), "bond Cx bound");
+        assert_ne!(base, bond_position_leaf(&basset, &bcx, &bump(&bcy), &cbtc, amount, &issuer, &nonce), "bond Cy bound");
+        assert_ne!(base, bond_position_leaf(&basset, &bcx, &bcy, &bump(&cbtc), amount, &issuer, &nonce), "cbtc asset bound");
+        assert_ne!(base, bond_position_leaf(&basset, &bcx, &bcy, &cbtc, amount + 1, &issuer, &nonce), "minted amount bound");
+        assert_ne!(base, bond_position_leaf(&basset, &bcx, &bcy, &cbtc, amount, &bump(&issuer), &nonce), "issuer bound");
+        assert_ne!(base, bond_position_leaf(&basset, &bcx, &bcy, &cbtc, amount, &issuer, &bump(&nonce)), "nonce bound");
         // disjoint from a normal note leaf AND from an adaptor lock leaf over the same bytes
-        assert_ne!(base, leaf(&bcx, &bcy, &cbtc, &issuer), "bonded leaf disjoint from a note leaf");
+        assert_ne!(base, leaf(&basset, &bcx, &bcy, &cbtc), "bonded leaf disjoint from a note leaf");
         assert_ne!(base, adaptor_lock_leaf(&bcx, &bcy, &cbtc, &issuer, amount, &issuer, &nonce), "bonded leaf disjoint from an adaptor lock leaf");
     }
 
@@ -2354,7 +2358,7 @@ mod tests {
     /// a different anchor, and a wrong oracle key each reject (no slash redirection / replay).
     #[test]
     fn bond_slash_health_attestation_verifies_and_rejects_tamper() {
-        let pos = bond_position_leaf(&[0x51u8; 32], &[0x52u8; 32], &[0x61u8; 32], 250_000, &[0x71u8; 32], &[0x81u8; 32]);
+        let pos = bond_position_leaf(&[0x41u8; 32], &[0x51u8; 32], &[0x52u8; 32], &[0x61u8; 32], 250_000, &[0x71u8; 32], &[0x81u8; 32]);
         let anchor = [0x92u8; 32];
         let (oracle_x, sig) = bip340_sign(&[0x03u8; 32], &[0x04u8; 32], &bond_slash_health_msg(&pos, &anchor));
         assert!(verify_bond_slash_health(&pos, &anchor, &sig, &oracle_x), "valid slash attestation");
