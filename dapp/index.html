@@ -7491,6 +7491,7 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms #farms-refresh-btn {
   <button class="tab" data-tab="pool" title="AMM swap + LP pool — unlocks after the AMM trusted setup ceremony">AMM</button>
   <button class="tab" data-tab="farms" title="LP-bond yield farms — stake LP shares to earn reward emissions">Farms</button>
   <button class="tab" data-tab="discover" title="Browse newly-etched assets and assets with recent activity">Discover</button>
+  <button class="tab" data-tab="confidential-pool" title="Confidential ETH pool on Sepolia — wrap/transfer shielded cETH notes (pilot)">Shielded Pool</button>
 </div>
 
 <!-- Create subtabs: Etch + Drops consolidated under a single "Create"
@@ -9029,6 +9030,18 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms #farms-refresh-btn {
      canonical VK + ceremony attestation is published. Read-only views
      (pool list, your LP positions) are always available so users can
      monitor pre-launch state. -->
+<div class="tab-panel" id="tab-confidential-pool">
+  <div class="section" style="max-width:560px;margin:0 auto;">
+    <div class="section-header">Shielded Pool <span class="muted" style="font-size:11px;font-weight:400;">Sepolia pilot · cETH</span></div>
+    <div class="section-body" style="font-size:13px;">
+      <div style="margin-bottom:8px;">Your confidential account: <code id="cpool-address" style="font-size:11px;word-break:break-all;">—</code></div>
+      <div id="cpool-status" class="muted" style="margin-bottom:8px;">—</div>
+      <div id="cpool-balance"></div>
+      <div class="muted" style="font-size:11px;margin-top:12px;">Wrap / transfer / unwrap coming next. Balances recover from chain + seed alone — no off-chain storage.</div>
+    </div>
+  </div>
+</div>
+
 <div class="tab-panel" id="tab-pool">
   <div id="pool-lock-banner" style="margin-bottom:14px;border:1px dashed var(--ink-faint);background:transparent;color:var(--ink-mid);padding:10px 12px;font-size:12px;border-radius:4px;">
     AMM trusted setup ceremony in progress. Swap + Add Liquidity + Remove Liquidity unlock once the canonical verifying key is published. Pools and your LP positions are visible now; the buttons below activate when the dapp verifies the ceremony attestation.
