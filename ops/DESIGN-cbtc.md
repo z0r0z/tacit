@@ -30,11 +30,23 @@ locker self-custodies BTC  ──lock + 0x66 commit (their own tx)──▶  ref
         liquidated (Chainlink-priced) to buy+cover the cBTC                 ▼   export as canonical ERC20
 ```
 
-## 2. The peg — oracle-free, real BTC
+## 2. The peg + fungibility — oracle-free real BTC, made fungible by the aggregate backing
 
-1 cBTC = the real BTC locked behind it. The reflection's `fold_cbtc_lock` proves a confirmed lock of value
-`v_btc` and that the cBTC note opens to exactly `v_cbtc == v_btc` (conservation, BP+ range). Redemption
-burns the cBTC and unlocks the sats 1:1. **No price, no oracle** touches the peg — it *is* BTC.
+1 cBTC = real BTC, **in aggregate**. `fold_cbtc_lock` proves each confirmed lock of value `v_btc` and that
+the cBTC note opens to exactly `v_cbtc == v_btc` (conservation, BP+ range). **No price, no oracle** touches
+the peg — it *is* BTC.
+
+**Fungibility is produced by the collateralization, not free.** A raw self-custody lock is non-fungible
+(tied to one locker's UTXO, ruggable by them, redeemable only by them). cBTC is fungible because the notes
+are the same asset *and* every unit is backed by the **aggregate** pool of all live locks
+(`cbtcBackingSats` = Σ live outpoints) **insured by the buffer (§4)** — so no holder is exposed to which
+specific, ruggable lock backs their unit. `cbtcBackingSats` + the buffer are therefore **core machinery**,
+not a free side-effect of "it's an asset."
+
+**Redemption is an atomic cBTC↔BTC swap**, not a holder unlocking a stranger's lock: a redeeming holder is
+matched with an *exiting locker* and the cBTC burn ⇄ BTC unlock are bound by the adaptor primitive — a hard,
+trustless, 1:1 peg with no custodian or mediator. See `DESIGN-cbtc-redemption.md` (it reuses the built
+adaptor-swap + cross-chain-orderbook stack).
 
 ## 3. Self-custody (no custodian, no vault key)
 
