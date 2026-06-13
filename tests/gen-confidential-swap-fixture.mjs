@@ -39,13 +39,14 @@ const idx = tree.insert(pool.leaf(ASSET_A, intent.in.cx, intent.in.cy, intent.in
 const { root, path } = tree.rootAndPath(idx);
 intent.in.leafIndex = idx; intent.in.path = path;
 
-const batch = swap.buildBatch({ assetA: ASSET_A, assetB: ASSET_B, chainBinding: CHAIN_BINDING, reserveAPre: 1000, reserveBPre: 1000, priceNum: 90, priceDen: 100, intents: [intent], spendRoot: root });
+const batch = swap.buildBatch({ assetA: ASSET_A, assetB: ASSET_B, chainBinding: CHAIN_BINDING, feeBps: 30, reserveAPre: 1000, reserveBPre: 1000, priceNum: 90, priceDen: 100, intents: [intent], spendRoot: root });
 const { settlement, nullifiers, leaves } = swap.verifyBatch(batch, { merkleRootFrom: pool.merkleRootFrom });
 
 const fixture = {
   chainBinding: CHAIN_BINDING,
   spendRoot: root,
   assetA: ASSET_A, assetB: ASSET_B,
+  feeBps: 30,
   reserveAPre: 1000, reserveBPre: 1000, priceNum: 90, priceDen: 100,
   intents: [{
     direction: intent.dirByte,
@@ -53,6 +54,7 @@ const fixture = {
     inLeafIndex: intent.in.leafIndex, inPath: intent.in.path,
     amountIn: Number(intent.amountIn), amountOut: Number(intent.amountOut), rem: Number(intent.rem),
     inSigR: intent.inSig.R, inSigZ: intent.inSig.z, minOut: Number(intent.minOut),
+    deadline: Number(intent.deadline ?? 0), // per-op Expired; bound in the sigma (buildIntent), read after minOut
     outCx: intent.out.cx, outCy: intent.out.cy, outOwner: intent.out.owner,
     outSigR: intent.outSig.R, outSigZ: intent.outSig.z,
   }],

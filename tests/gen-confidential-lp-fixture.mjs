@@ -26,8 +26,10 @@ const CHAIN_BINDING = '0x' + '11'.repeat(32);
 
 const det = (tag) => BigInt('0x' + keccak256(new TextEncoder().encode('clp-fixture-' + tag)).reduce((s, b) => s + b.toString(16).padStart(2, '0'), ''));
 
+const FEE_BPS = 30; // 0.3% fee tier — binds the pool id (one pool per (canonical pair, fee))
+
 const op = lp.buildAdd({
-  assetA: ASSET_A, assetB: ASSET_B, chainBinding: CHAIN_BINDING, reserveAPre: 1000, reserveBPre: 2000, sharesPre: 1000,
+  assetA: ASSET_A, assetB: ASSET_B, chainBinding: CHAIN_BINDING, feeBps: FEE_BPS, reserveAPre: 1000, reserveBPre: 2000, sharesPre: 1000,
   aNote: { owner: OWNER, leafIndex: 0, path: pool.zeros }, dA: 100, rA: det('a-secp'),
   bNote: { owner: OWNER, leafIndex: 0, path: pool.zeros }, dB: 200, rB: det('b-secp'),
   shareOwner: SHARE_OWNER, rShares: det('share-secp'),
@@ -48,12 +50,13 @@ const fixture = {
   chainBinding: CHAIN_BINDING,
   spendRoot,
   op: 7, // OP_LP_ADD
-  assetA: ASSET_A, assetB: ASSET_B,
+  assetA: ASSET_A, assetB: ASSET_B, feeBps: FEE_BPS,
   reserveAPre: 1000, reserveBPre: 2000, sharesPre: 1000,
   a: { cx: op.a.cx, cy: op.a.cy, owner: op.a.owner, leafIndex: op.a.leafIndex, path: op.a.path, d: Number(op.dA), sigR: op.aSig.R, sigZ: op.aSig.z },
   b: { cx: op.b.cx, cy: op.b.cy, owner: op.b.owner, leafIndex: op.b.leafIndex, path: op.b.path, d: Number(op.dB), sigR: op.bSig.R, sigZ: op.bSig.z },
-  dShares: Number(op.dShares), rem: Number(op.rem),
+  // d_shares is DERIVED in-guest (the V2 min rule) — not streamed in the witness.
   share: { cx: op.share.cx, cy: op.share.cy, owner: op.share.owner, sigR: op.sSig.R, sigZ: op.sSig.z },
+  deadline: Number(op.deadline ?? 0), // per-op Expired; bound in the LP's sigma (buildAdd), read after the share sigma (guest 554)
   expected: {
     poolId: settlement.poolId,
     reserveAPost: Number(settlement.reserveAPost), reserveBPost: Number(settlement.reserveBPost), sharesPost: Number(settlement.sharesPost),
@@ -63,4 +66,4 @@ const fixture = {
 
 const out = 'contracts/sp1/confidential/fixtures/lp_op.json';
 writeFileSync(out, JSON.stringify(fixture, null, 2) + '\n');
-console.log('wrote', out, '— add 100A/200B, reserves 1000/2000 →', fixture.expected.reserveAPost + '/' + fixture.expected.reserveBPost, '+', fixture.dShares, 'shares');
+console.log('wrote', out, '— add 100A/200B, reserves 1000/2000 →', fixture.expected.reserveAPost + '/' + fixture.expected.reserveBPost, '+', fixture.expected.sharesPost - fixture.sharesPre, 'shares (V2 min rule, derived in-guest)');

@@ -27,6 +27,7 @@ path = "src/bin/bitcoin_prove.rs"
 [dependencies]
 sp1-sdk = { version = "=6.2.3", features = ["blocking", "cuda"] }
 hex = "0.4"
+alloy-sol-types = "0.8"
 serde_json = "1"
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }
@@ -38,3 +39,27 @@ helios-consensus-core = { git = "https://github.com/a16z/helios", tag = "0.11.1"
 helios-ethereum = { git = "https://github.com/a16z/helios", tag = "0.11.1" }
 sp1-helios-primitives = { path = "/root/sp1-helios/primitives" }
 cxfer-core = { path = "/root/work/confidential/cxfer-core" }
+
+[[bin]]
+name = "exec_swap"
+path = "src/bin/exec_swap.rs"
+
+[[bin]]
+name = "exec_lp"
+path = "src/bin/exec_lp.rs"
+
+[[bin]]
+name = "exec_otc"
+path = "src/bin/exec_otc.rs"
+
+[[bin]]
+name = "exec_bid"
+path = "src/bin/exec_bid.rs"
+
+[[bin]]
+name = "exec_crosslane"
+path = "src/bin/exec_crosslane.rs"
+
+[[bin]]
+name = "exec_confidential"
+path = "src/bin/exec_confidential.rs"
