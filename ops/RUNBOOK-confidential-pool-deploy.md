@@ -4,20 +4,75 @@ Deploying `ConfidentialPool` is the moment **Ethereum fast settlement of
 confidential trades goes live** — `settle` *is* the fast layer (~12s on-chain). The
 crypto is done and proven; this is the turnkey deploy.
 
+## Sepolia pilot v1 — the current deploy
+
+The v1 launch is the **shielded pool + bidirectional bridge on Sepolia** (TAC + tETH both ways), deployed
+on the **re-proven, cBTC-aware vkeys** so cUSD/cBTC iterate additively later with **no core redeploy** (the
+launch seam — `DESIGN-cbtc.md §9`; the `CUsdController` minter-seam — `DESIGN-cusd-cdp.md`).
+
+**Gating dependency:** the reflection guest's **Mode B (reverse bridge)** must be final before you freeze +
+deploy the bridge posture — that's what fixes `BITCOIN_RELAY_VKEY`. Everything else below is ready.
+
+### Inputs (the immutable core)
+| arg | value | note |
+|---|---|---|
+| `PROGRAM_VKEY` | `0x00d5b572…` (the script `DEFAULT_VKEY`) | settle guest; pinned in `elf-vkey-pin.json` — the script cross-checks + reverts on mismatch |
+| `BITCOIN_RELAY_VKEY` | the FINAL reflection vkey (currently `0x005e6adc…`, **Mode-B-gated** — confirm final with the guest session before freeze) | sole Bitcoin-state authority; must == `elf-vkey-pin.json` `bitcoin_relay_vkey` |
+| `SP1_VERIFIER` | Succinct's Sepolia Groth16 v6.1.0 leaf | selector `0x4388a21c`; the same family tETH pins |
+| `CANONICAL_FACTORY` | deploy `CanonicalAssetFactory` first; pass its address | the cUSD/cBTC.tac mint seam |
+| `HEADER_RELAY` | the `BitcoinLightRelay` on Sepolia (deploy if absent) | required when reflection on; anchors every reflection proof |
+| `GENESIS_REFLECTION_ANCHOR` | the Bitcoin block hash the first reflection batch resumes from | a zero seed bricks the first attest |
+| `REFLECTION_CONFIRMATIONS` | `6` (default) | reorg/finality window |
+
+### Deploy
+```
+cd contracts
+SP1_VERIFIER=<sepolia groth16 leaf> \
+BITCOIN_RELAY_VKEY=<final reflection vkey> \
+CANONICAL_FACTORY=<factory addr> \
+HEADER_RELAY=<BitcoinLightRelay addr> \
+GENESIS_REFLECTION_ANCHOR=<btc block hash> \
+ACK_REFLECTION_ANCHORED=1 \
+  forge script script/DeployConfidentialPool.s.sol \
+  --rpc-url $SEPOLIA_RPC --private-key $PK --broadcast --verify
+```
+`PROGRAM_VKEY` defaults to the pinned `0x00d5b572`; the script reverts if it ≠ `elf-vkey-pin.json`
+(`ALLOW_UNPINNED_VKEY=1` only for an intentional guest change). For a forward-only / Ethereum pilot before
+Mode B lands, omit `BITCOIN_RELAY_VKEY` (defaults to `0` → cross-lane inert; see Full cross-lane below).
+
+### Post-deploy
+1. **Register the launch assets** (permissionless): tETH (the Ethereum bridge asset) + TAC (Bitcoin-homed;
+   `crossChainLink` = its Bitcoin id) as confidential assets.
+2. **Un-gate the worker reverse-bridge glue:** set
+   `CONFIDENTIAL_POOL_DEPLOYMENTS.sepolia = { pool: <deployed pool>, deployBlock: <block> }` in
+   `dapp/confidential-crossout-consumer.js` — this turns on the cron `scanOnce` + the `0x65` dispatch (both
+   inert until set, zero hot-path cost). Deploy worker + dapp together.
+3. **Verify the seams** (read-only): `cbtcBackingSats()` == 0 (cBTC dormant), `REFLECTION_GENESIS_DIGEST()`
+   == `0x164ac1b2…`, `PROGRAM_VKEY()` / `BITCOIN_RELAY_VKEY()` == the pinned values, `CANONICAL_FACTORY()`
+   set, and a test crossOut writes `crossOutCommitment`.
+4. **Both-ways round-trip** (Sepolia + signet): ETH→tETH→pool→withdraw; Bitcoin TAC→reflect→pool→crossOut→
+   back-to-Bitcoin (the return leg needs Mode B live).
+
+### Dormant-but-present (no redeploy to turn on)
+- **cBTC** — the reflection lock-fold + `cbtcBackingSats` are in the core; turn on via the cBTC canonical
+  asset + the passive `CbtcBuffer` + the live lock-fold indexer (`DESIGN-cbtc.md §9`).
+- **cUSD / cBTC.tac** — additive Ethereum contracts behind the `CUsdController` minter-seam.
+- **Confidential CDP positions** — the ONE thing needing a future settle re-prove (the `P_liq` engine);
+  deliberately deferred.
+
 ## Prerequisites
 - **SP1 Groth16 verifier address** for the target chain — the immutable v6.1.0 leaf
   (the same family the tETH bridge pins). Sepolia + mainnet addresses from Succinct's
   published deployments. The proof selector is `0x4388a21c`; the verifier's
   `VERIFIER_HASH()` must match.
 - **Deployer key + RPC** (`--private-key`, `--rpc-url`).
-- **Program vkey must match the deployed guest ELF.** The guest changed with the
-  in-system `value`/`unitScale` harmonization (deposit id binds `value`; wrap/unwrap
-  no longer carry a separate `amount`), so the vkey shifts from the deploy script's
-  current `DEFAULT_VKEY`. Freeze the guest, `cargo prove` it on the box, set
-  `PROGRAM_VKEY` to the resulting vkey, and refresh the on-chain proof fixtures
-  (`confidential_groth16.json` for a transfer, `crosslane_groth16.json` for a
-  cross-lane settle) so `ConfidentialProofReal` + `ConfidentialCrossLaneProofReal`
-  verify the frozen vkey before you broadcast. See "Full cross-lane activation" below.
+- **Program vkey is frozen + pinned.** The settle guest is re-proven (commit `ef0c514`);
+  `DEFAULT_VKEY = 0x00d5b572…` matches `elf-vkey-pin.json` and the deploy script
+  cross-checks it (reverts on mismatch). The *reflection* vkey (`BITCOIN_RELAY_VKEY`,
+  currently `0x005e6adc…`) is the **Mode-B-gated** one — confirm it's final with the guest
+  session before you freeze the bridge posture (see "Sepolia pilot v1" above). The
+  `*ProofReal` fixtures already certify these vkeys; refresh them only on a further guest
+  change. See "Full cross-lane activation" below.
 
 ## Deploy
 ```
