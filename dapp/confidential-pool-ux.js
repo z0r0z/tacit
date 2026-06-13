@@ -145,10 +145,11 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
 
     const id = identity(walletPriv);
     const { secret, blinding } = pool.deriveNote(id.priv, meta.assetId, index);
-    const { cx, cy } = pool.commitXY(value, blinding);
+    const blindingHex = '0x' + BigInt(blinding).toString(16).padStart(64, '0'); // deriveNote gives a bigint; the wrapOp/memo/harness need hex
+    const { cx, cy } = pool.commitXY(value, blindingHex);
     const leaf = pool.leaf(meta.assetId, cx, cy, id.owner);
     const depositId = pool.depositId(meta.assetId, value, cx, cy, id.owner);
-    const note = { value: value.toString(), blinding, secret, asset: meta.assetId, owner: id.owner, cx, cy };
+    const note = { value: value.toString(), blinding: blindingHex, secret, asset: meta.assetId, owner: id.owner, cx, cy };
 
     // self-recovery memo, sealed to the user's own pubkey; eph deterministic from the secret (the memo
     // carries the full opening, so a fixed eph is fine and makes the build reproducible).
@@ -162,7 +163,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     return {
       note, leaf, depositId, memo: memoHex,
       // the OP_WRAP witness the box proves (chainBinding stamped at submit); OP_WRAP is box-driven, not a queue type
-      wrapOp: { asset: meta.assetId, value: value.toString(), cx, cy, owner: id.owner, blinding },
+      wrapOp: { asset: meta.assetId, value: value.toString(), cx, cy, owner: id.owner, blinding: blindingHex },
       to: cfg.pool, amount: amount.toString(), calldata,
       wrapArgs: { assetId: meta.assetId, amount: amount.toString(), cx, cy, owner: id.owner },
     };
