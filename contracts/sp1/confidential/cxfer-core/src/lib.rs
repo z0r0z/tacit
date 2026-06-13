@@ -87,6 +87,25 @@ pub fn verify_kernel(
 
 pub const OPENING_DOMAIN: &[u8] = b"tacit-open-sigma-v1";
 
+// ──────────────────── cBTC.zk sats-lock value-entry (real-BTC backing) ────────────────────
+// The deploy-gated cBTC pieces (baked into BITCOIN_RELAY_VKEY). See ops/DESIGN-cbtc-sats-lock-reflection.md.
+/// The single canonical asset id real-BTC-locked notes mint under (domain-separated, allowlisted).
+/// TODO(cbtc): pin to the real cBTC.zk etch-derived id before the Mode-B re-prove (placeholder below).
+pub const CBTC_ZK_ASSET_ID: [u8; 32] = [0xcb; 32];
+/// The canonical cBTC vault scriptPubKey the lock output MUST equal — the deploy-gated LOCK FORM.
+/// TODO(cbtc): set to the real vault output (the trust-model crux: protocol-key P2TR / covenant /
+/// pre-signed — ops/DESIGN-cbtc-sats-lock-reflection.md §4). Placeholder 34-byte P2TR below.
+pub const CBTC_VAULT_SPK: &[u8] = &[
+    0x51, 0x20, 0xcb, 0xcb, 0xcb, 0xcb, 0xcb, 0xcb, 0xcb, 0xcb, 0xcb, 0xcb, 0xcb, 0xcb, 0xcb, 0xcb, 0xcb, 0xcb,
+    0xcb, 0xcb, 0xcb, 0xcb, 0xcb, 0xcb, 0xcb, 0xcb, 0xcb, 0xcb, 0xcb, 0xcb, 0xcb, 0xcb, 0xcb, 0xcb,
+];
+/// Opening-sigma context domain for a sats-lock (binds asset ‖ lock_txid ‖ lock_vout — anti-replay).
+pub const CBTC_LOCK_DOMAIN: &[u8] = b"tacit-cbtc-lock-v1";
+
+/// Adaptor-swap LOCK-SET leaf domain — see ops/DESIGN-adaptor-swap-guest.md. Domain-separated from
+/// the note-tree `leaf` so a locked note is NEVER spendable by a normal OP_TRANSFER (and vice-versa).
+pub const ADAPTOR_LOCK_DOMAIN: &[u8] = b"tacit-adaptor-lock-v1";
+
 /// Schnorr proof of knowledge of the blinding `r` for a Pedersen commitment with a PUBLIC
 /// `amount`: proves the prover knows `r` such that `commitment = amount·H + r·G`, binding the
 /// trade `context` (out owner / min_out / amounts / pool / chain) into the challenge — WITHOUT
@@ -576,6 +595,23 @@ pub fn reflected_note_leaf(asset: &[u8; 32], compressed: &[u8; 33]) -> Option<[u
 /// derives this from a confirmed tx's vin (`extract_inputs`), so a spent outpoint is forced
 /// to be a real prior output and not a witnessed value.
 pub fn outpoint_key(txid: &[u8; 32], vout: u32) -> [u8; 32] { kn(&[txid, &vout.to_le_bytes()]) }
+/// The adaptor-swap LOCK-SET leaf for a confidentially-locked note (ops/DESIGN-adaptor-swap-guest.md):
+/// binds the locked note's commitment (Cx,Cy), the adaptor point T (the PTLC secret hole, Tx,Ty), the
+/// `deadline`, and BOTH parties (`recipient` paid on claim / `locker` repaid on refund). A CLAIM/REFUND
+/// must reproduce this EXACT leaf to prove lock-set membership, so neither the relayer nor the
+/// counterparty can redirect the output (the paid party is in the leaf), re-time the swap (the deadline
+/// is in the leaf), or substitute a different adaptor point (T is in the leaf). Domain-separated from the
+/// note-tree `leaf` so a lock leaf is never spendable by a normal OP_TRANSFER. Value stays hidden — it
+/// rides the note commitment, bound by an opening sigma at lock/claim/refund like OP_OTC.
+#[allow(clippy::too_many_arguments)]
+pub fn adaptor_lock_leaf(
+    cx: &[u8; 32], cy: &[u8; 32],
+    tx: &[u8; 32], ty: &[u8; 32],
+    deadline: u64,
+    recipient: &[u8; 32], locker: &[u8; 32],
+) -> [u8; 32] {
+    kn(&[ADAPTOR_LOCK_DOMAIN, cx, cy, tx, ty, &deadline.to_be_bytes(), recipient, locker])
+}
 /// Confidential-AMM pool id, matching `ConfidentialPool`'s `keccak256(abi.encode(low, high, feeBps))`
 /// (three 32-byte ABI words). Binds an OP_SWAP/LP batch's reserves to the exact (canonical pair, fee
 /// tier) pool, so a prover can't settle one pool's op against another's reserves.
@@ -1906,6 +1942,59 @@ impl ScanReflection {
         let ch = commitment_hash(cx, cy);
         self.fold_output(&dest_commitment, note_path, &outpoint, &ch, asset)
     }
+
+    /// cBTC.zk sats-lock value-entry (`T_CBTC_LOCK`, opcode 0x66) — admit a real-BTC-backed cBTC note
+    /// ONLY if the envelope tx contains, at `lock_vout`, a confirmed `CBTC_VAULT_SPK` output of value
+    /// `v_btc`, AND the minted note commitment opens to EXACTLY `v_btc` (opening sigma — the blinding
+    /// is never revealed). The note (vout 0) and the sats-lock are outputs of the SAME tx, so single-use
+    /// is structural (the note outpoint is deduped by `fold_output`; a per-block scan never re-folds).
+    /// Fails closed (folds nothing) on any miss — same skip-not-panic discipline as `fold_cxfer` /
+    /// `fold_crossout`. Redemption (releasing the sats on a cBTC burn) is the Bitcoin vault validator's
+    /// job, NOT the reflection — this proves only that the MINT is backed. `tx_data` is the confirmed
+    /// envelope tx (the caller verified inclusion + PoW via the full-scan). See
+    /// ops/DESIGN-cbtc-sats-lock-reflection.md.
+    #[allow(clippy::too_many_arguments)]
+    pub fn fold_cbtc_lock(
+        &mut self,
+        asset: &[u8; 32],
+        cx: &[u8; 32],
+        cy: &[u8; 32],
+        tx_data: &[u8],
+        lock_vout: u32,
+        lock_txid: &[u8; 32],
+        note_path: &[[u8; 32]],
+        sig_rx: &[u8; 32],
+        sig_ry: &[u8; 32],
+        sig_z: &[u8; 32],
+    ) -> Result<(), &'static str> {
+        // Asset binding — only the one canonical cBTC.zk id (a fabricated etch can only mint a
+        // worthless made-up id, never the real allowlisted one).
+        if asset != &CBTC_ZK_ASSET_ID {
+            return Err("cbtc lock: not the cBTC.zk asset");
+        }
+        // The minted commitment must be a real secp256k1 point.
+        let c = from_affine_xy(cx, cy).ok_or("cbtc lock: commitment not a curve point")?;
+        // The confirmed lock output: the canonical vault scriptPubKey + its public value v_btc.
+        let (v_btc, spk) =
+            bitcoin::parse_tx_output(tx_data, lock_vout).ok_or("cbtc lock: no such output")?;
+        if spk.as_slice() != CBTC_VAULT_SPK {
+            return Err("cbtc lock: output is not the cBTC vault");
+        }
+        // Conservation: the note commits to EXACTLY v_btc — opening sigma, blinding NOT revealed, bound
+        // to THIS lock (asset ‖ lock_txid ‖ lock_vout) so it cannot be replayed against another lock.
+        let r = from_affine_xy(sig_rx, sig_ry).ok_or("cbtc lock: sigma R not a curve point")?;
+        let z = scalar_reduce_be(sig_z);
+        let context = kn(&[CBTC_LOCK_DOMAIN, asset, lock_txid, &lock_vout.to_le_bytes()]);
+        if !verify_opening_sigma(&c, v_btc, &r, &z, &context) {
+            return Err("cbtc lock: value-binding failed (note != locked sats)");
+        }
+        // Fold the owner-free note (the mint's vout 0). Single-use is structural — the lock + the note
+        // are outputs of one tx, deduped by the note outpoint.
+        let note_leaf = leaf(asset, cx, cy, &[0u8; 32]);
+        let note_outpoint = outpoint_key(lock_txid, 0);
+        let ch = commitment_hash(cx, cy);
+        self.fold_output(&note_leaf, note_path, &note_outpoint, &ch, asset)
+    }
 }
 
 #[cfg(test)]
@@ -1954,6 +2043,104 @@ mod tests {
             "non-member cross-out rejected"
         );
         assert_eq!(st2.note_count, 0, "nothing folded on reject");
+    }
+
+    /// cBTC.zk sats-lock value-entry: a real-BTC-backed mint folds ONLY with a confirmed CBTC_VAULT_SPK
+    /// output of value v_btc AND a note opening to exactly v_btc; a wrong asset, an over-mint, and a
+    /// non-vault output each fold nothing.
+    #[test]
+    fn fold_cbtc_lock_admits_backed_mint_rejects_tampering() {
+        // a minimal non-segwit tx whose output[lock_vout] = (value, spk)
+        fn tx_with_lock(value: u64, spk: &[u8], lock_vout: u32) -> Vec<u8> {
+            let mut t = vec![0x02u8, 0, 0, 0]; // version
+            t.push(0x01); // 1 input
+            t.extend_from_slice(&[0u8; 32]); // prev txid
+            t.extend_from_slice(&[0xff, 0xff, 0xff, 0xff]); // prev vout
+            t.push(0x00); // empty scriptSig
+            t.extend_from_slice(&[0xff, 0xff, 0xff, 0xff]); // sequence
+            t.push((lock_vout + 1) as u8); // output count
+            for i in 0..=lock_vout {
+                if i == lock_vout {
+                    t.extend_from_slice(&value.to_le_bytes());
+                    t.push(spk.len() as u8);
+                    t.extend_from_slice(spk);
+                } else {
+                    t.extend_from_slice(&0u64.to_le_bytes());
+                    t.push(0x00);
+                }
+            }
+            t.extend_from_slice(&[0, 0, 0, 0]); // locktime
+            t
+        }
+
+        let v_btc: u64 = 100_000;
+        let asset = CBTC_ZK_ASSET_ID;
+        let lock_txid = [0x33u8; 32];
+        let lock_vout: u32 = 1;
+        let gamma = scalar_reduce_be(&[0x44u8; 32]);
+        let k = scalar_reduce_be(&[0x55u8; 32]);
+        let context = kn(&[CBTC_LOCK_DOMAIN, &asset, &lock_txid, &lock_vout.to_le_bytes()]);
+
+        let c = gen_h() * Scalar::from(v_btc) + ProjectivePoint::generator() * gamma;
+        let cb = c.to_affine().to_encoded_point(false);
+        let cx: [u8; 32] = cb.as_bytes()[1..33].try_into().unwrap();
+        let cy: [u8; 32] = cb.as_bytes()[33..65].try_into().unwrap();
+        let (r_pt, z) = prove_opening_sigma(v_btc, &gamma, &k, &context);
+        let rb = r_pt.to_affine().to_encoded_point(false);
+        let sig_rx: [u8; 32] = rb.as_bytes()[1..33].try_into().unwrap();
+        let sig_ry: [u8; 32] = rb.as_bytes()[33..65].try_into().unwrap();
+        let mut sig_z = [0u8; 32];
+        sig_z.copy_from_slice(&z.to_bytes());
+        let note_path = KeccakTreeAccumulator::new().append_path();
+
+        // a backed mint folds
+        let tx = tx_with_lock(v_btc, CBTC_VAULT_SPK, lock_vout);
+        let mut st = ScanReflection::genesis();
+        st.fold_cbtc_lock(&asset, &cx, &cy, &tx, lock_vout, &lock_txid, &note_path, &sig_rx, &sig_ry, &sig_z)
+            .expect("a backed cBTC lock folds");
+        assert_eq!(st.note_count, 1, "cBTC note appended on a backed lock");
+
+        // wrong asset → reject
+        let mut st2 = ScanReflection::genesis();
+        assert!(st2.fold_cbtc_lock(&[0x99u8; 32], &cx, &cy, &tx, lock_vout, &lock_txid, &note_path, &sig_rx, &sig_ry, &sig_z).is_err(), "wrong asset rejected");
+        assert_eq!(st2.note_count, 0);
+
+        // over-mint: a lock output worth LESS than the note claims → opening sigma fails
+        let tx_low = tx_with_lock(v_btc - 1, CBTC_VAULT_SPK, lock_vout);
+        let mut st3 = ScanReflection::genesis();
+        assert!(st3.fold_cbtc_lock(&asset, &cx, &cy, &tx_low, lock_vout, &lock_txid, &note_path, &sig_rx, &sig_ry, &sig_z).is_err(), "over-mint (note > locked sats) rejected");
+        assert_eq!(st3.note_count, 0);
+
+        // non-vault output → reject
+        let tx_bad = tx_with_lock(v_btc, &[0x6a, 0x00], lock_vout);
+        let mut st4 = ScanReflection::genesis();
+        assert!(st4.fold_cbtc_lock(&asset, &cx, &cy, &tx_bad, lock_vout, &lock_txid, &note_path, &sig_rx, &sig_ry, &sig_z).is_err(), "non-vault output rejected");
+        assert_eq!(st4.note_count, 0);
+    }
+
+    /// Adaptor-swap lock-set leaf (ops/DESIGN-adaptor-swap-guest.md): deterministic, binds EVERY field
+    /// (so a claim/refund can't redirect the payee, re-time the deadline, or swap the adaptor point),
+    /// and is domain-separated from the note-tree `leaf` (a locked note is never a normal-spendable note).
+    #[test]
+    fn adaptor_lock_leaf_is_deterministic_and_binds_every_field() {
+        let cx = [0x11u8; 32]; let cy = [0x12u8; 32];
+        let tx = [0x21u8; 32]; let ty = [0x22u8; 32];
+        let deadline = 1_700_000_000u64;
+        let recipient = [0x31u8; 32]; let locker = [0x41u8; 32];
+        let base = adaptor_lock_leaf(&cx, &cy, &tx, &ty, deadline, &recipient, &locker);
+        // deterministic
+        assert_eq!(base, adaptor_lock_leaf(&cx, &cy, &tx, &ty, deadline, &recipient, &locker));
+        // every field is bound — flipping any one changes the leaf
+        let bump = |b: &[u8; 32]| { let mut x = *b; x[0] ^= 1; x };
+        assert_ne!(base, adaptor_lock_leaf(&bump(&cx), &cy, &tx, &ty, deadline, &recipient, &locker), "Cx bound");
+        assert_ne!(base, adaptor_lock_leaf(&cx, &bump(&cy), &tx, &ty, deadline, &recipient, &locker), "Cy bound");
+        assert_ne!(base, adaptor_lock_leaf(&cx, &cy, &bump(&tx), &ty, deadline, &recipient, &locker), "Tx bound");
+        assert_ne!(base, adaptor_lock_leaf(&cx, &cy, &tx, &bump(&ty), deadline, &recipient, &locker), "Ty bound");
+        assert_ne!(base, adaptor_lock_leaf(&cx, &cy, &tx, &ty, deadline + 1, &recipient, &locker), "deadline bound");
+        assert_ne!(base, adaptor_lock_leaf(&cx, &cy, &tx, &ty, deadline, &bump(&recipient), &locker), "recipient bound");
+        assert_ne!(base, adaptor_lock_leaf(&cx, &cy, &tx, &ty, deadline, &recipient, &bump(&locker)), "locker bound");
+        // domain-separated from the note-tree leaf (same bytes, different domain → different leaf)
+        assert_ne!(base, leaf(&cx, &cy, &tx, &ty), "lock leaf disjoint from a normal note leaf");
     }
 
     /// Pin ScanReflection::genesis().digest() (the SHIPPED full-scan reflection model) to the
