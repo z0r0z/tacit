@@ -106,6 +106,11 @@ pub const CBTC_LOCK_DOMAIN: &[u8] = b"tacit-cbtc-lock-v1";
 /// the note-tree `leaf` so a locked note is NEVER spendable by a normal OP_TRANSFER (and vice-versa).
 pub const ADAPTOR_LOCK_DOMAIN: &[u8] = b"tacit-adaptor-lock-v1";
 
+/// cBTC.tac confidential-bond BONDED-POSITION leaf domain — see ops/DESIGN-cbtc-tac-bond-guest.md.
+/// Domain-separated from the note-tree `leaf` and the adaptor lock set, so a bonded (TAC,tETH) LP note
+/// is NEVER spendable by a normal transfer / LP-remove — only by OP_BOND_REDEEM / OP_BOND_SLASH.
+pub const BOND_POSITION_DOMAIN: &[u8] = b"tacit-cbtc-tac-bond-v1";
+
 /// Schnorr proof of knowledge of the blinding `r` for a Pedersen commitment with a PUBLIC
 /// `amount`: proves the prover knows `r` such that `commitment = amount·H + r·G`, binding the
 /// trade `context` (out owner / min_out / amounts / pool / chain) into the challenge — WITHOUT
@@ -611,6 +616,22 @@ pub fn adaptor_lock_leaf(
     recipient: &[u8; 32], locker: &[u8; 32],
 ) -> [u8; 32] {
     kn(&[ADAPTOR_LOCK_DOMAIN, cx, cy, tx, ty, &deadline.to_be_bytes(), recipient, locker])
+}
+/// The cBTC.tac BONDED-POSITION leaf (ops/DESIGN-cbtc-tac-bond-guest.md): binds the bonded (TAC,tETH) LP
+/// note (Cx,Cy), the synthetic asset minted against it (`cbtc_asset`), the exact `minted_amount`, the
+/// `issuer` repaid on redeem, and a `position_nonce` for uniqueness. OP_BOND_REDEEM / OP_BOND_SLASH must
+/// reproduce this EXACT leaf to prove bonded-set membership, so the relayer can neither free a different
+/// bond, burn a different amount, nor redirect the released LP. Domain-separated from the note-tree `leaf`
+/// (a bonded LP is never spendable by a normal transfer/LP-remove) and from the adaptor lock set. The
+/// amount rides as a witness (hidden from public values, OP_OTC pattern); the leaf merely commits it.
+#[allow(clippy::too_many_arguments)]
+pub fn bond_position_leaf(
+    bond_cx: &[u8; 32], bond_cy: &[u8; 32],
+    cbtc_asset: &[u8; 32],
+    minted_amount: u64,
+    issuer: &[u8; 32], position_nonce: &[u8; 32],
+) -> [u8; 32] {
+    kn(&[BOND_POSITION_DOMAIN, bond_cx, bond_cy, cbtc_asset, &minted_amount.to_be_bytes(), issuer, position_nonce])
 }
 /// Confidential-AMM pool id, matching `ConfidentialPool`'s `keccak256(abi.encode(low, high, feeBps))`
 /// (three 32-byte ABI words). Binds an OP_SWAP/LP batch's reserves to the exact (canonical pair, fee
@@ -2141,6 +2162,30 @@ mod tests {
         assert_ne!(base, adaptor_lock_leaf(&cx, &cy, &tx, &ty, deadline, &recipient, &bump(&locker)), "locker bound");
         // domain-separated from the note-tree leaf (same bytes, different domain → different leaf)
         assert_ne!(base, leaf(&cx, &cy, &tx, &ty), "lock leaf disjoint from a normal note leaf");
+    }
+
+    /// cBTC.tac bonded-position leaf (ops/DESIGN-cbtc-tac-bond-guest.md): deterministic, binds EVERY
+    /// field (so redeem/slash can't free a different bond, burn a different amount, or redirect the
+    /// LP), and is disjoint from the note-tree `leaf` AND the adaptor lock set (a bonded LP is never
+    /// normal-spendable, and the two locked-note families never collide).
+    #[test]
+    fn bond_position_leaf_is_deterministic_and_binds_every_field() {
+        let bcx = [0x51u8; 32]; let bcy = [0x52u8; 32];
+        let cbtc = [0x61u8; 32];
+        let amount = 250_000u64;
+        let issuer = [0x71u8; 32]; let nonce = [0x81u8; 32];
+        let base = bond_position_leaf(&bcx, &bcy, &cbtc, amount, &issuer, &nonce);
+        assert_eq!(base, bond_position_leaf(&bcx, &bcy, &cbtc, amount, &issuer, &nonce));
+        let bump = |b: &[u8; 32]| { let mut x = *b; x[0] ^= 1; x };
+        assert_ne!(base, bond_position_leaf(&bump(&bcx), &bcy, &cbtc, amount, &issuer, &nonce), "bond Cx bound");
+        assert_ne!(base, bond_position_leaf(&bcx, &bump(&bcy), &cbtc, amount, &issuer, &nonce), "bond Cy bound");
+        assert_ne!(base, bond_position_leaf(&bcx, &bcy, &bump(&cbtc), amount, &issuer, &nonce), "cbtc asset bound");
+        assert_ne!(base, bond_position_leaf(&bcx, &bcy, &cbtc, amount + 1, &issuer, &nonce), "minted amount bound");
+        assert_ne!(base, bond_position_leaf(&bcx, &bcy, &cbtc, amount, &bump(&issuer), &nonce), "issuer bound");
+        assert_ne!(base, bond_position_leaf(&bcx, &bcy, &cbtc, amount, &issuer, &bump(&nonce)), "nonce bound");
+        // disjoint from a normal note leaf AND from an adaptor lock leaf over the same bytes
+        assert_ne!(base, leaf(&bcx, &bcy, &cbtc, &issuer), "bonded leaf disjoint from a note leaf");
+        assert_ne!(base, adaptor_lock_leaf(&bcx, &bcy, &cbtc, &issuer, amount, &issuer, &nonce), "bonded leaf disjoint from an adaptor lock leaf");
     }
 
     /// Pin ScanReflection::genesis().digest() (the SHIPPED full-scan reflection model) to the
