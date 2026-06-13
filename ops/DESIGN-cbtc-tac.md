@@ -77,11 +77,14 @@ capital, **bounded by construction**: it can only size the buyback + hold/withdr
 it **cannot mint cBTC.tac, move the BTC backing, or break the peg** (conservation forbids that). So the
 owner's worst case is an under-funded or drained *backstop*, never broken money (the peg is still real BTC).
 - **Hold:** escrow (TAC, tETH) capital (canonical ERC20s). Anyone can fund it; owner withdraws (launch).
-- **Claim → buyback-burn (permissionless to trigger):** the pool exposes a **reflection-attested**
+- **Claim → buy-and-sequester (permissionless to trigger):** the pool exposes a **reflection-attested**
   `cbtcBackingSats()` (the live locked sats behind cBTC.tac — the reflection tracks the cBTC.zk vault
-  outpoints). When `cBTC.tac totalSupply > backing` (a lock was moved without redemption), the vault
-  **buys cBTC.tac off the AMM and burns it**, dropping supply back to ≤ backing. The shortfall is read
-  from `BITCOIN_RELAY_VKEY`-verified state, **not asserted by the caller**; burning auto-closes it (no core
+  outpoints). When *circulating* cBTC.tac (`totalSupply − vaultHeld`) exceeds backing (a lock was moved
+  without redemption), the vault **buys cBTC.tac off the AMM and SEQUESTERS it** — holding it, dropping
+  circulating back to ≤ backing. (Buy-and-sequester, *not* burn: the canonical ERC20's `burn` is
+  minter-gated to the pool, so the vault holds the bought cBTC.tac instead — the loss is socialized to the
+  insurance capital. Optional cleanup-burn later if a self-burn is added.) The shortfall is read from
+  `BITCOIN_RELAY_VKEY`-verified state, **not asserted by the caller**, and the buy auto-closes it (no core
   mutation, just a view). Public, market-wide (no holder identification), no confidentiality touched — the
   trigger is a **proof**, not an oracle call.
 - **Size:** `onlyOwner` params — a coverage ratio + a slow TAC/BTC reference (`satsPerTacRef`) for sizing
@@ -128,8 +131,15 @@ cBTC.tac is a **real-BTC-backed, oracle-free, trustlessly-pegged** wrapped BTC: 
 the payout. The oracle leaves every path that mints or secures value — exactly the trust-minimization the
 design was reaching for, with the covenant vault as the trustless endgame.
 
-## Appendix — `InsuranceVault` sketch (Solady `Ownable`)
+## Appendix — `InsuranceVault` (Solady `Ownable`)
 
+> **IMPLEMENTED: `contracts/src/InsuranceVault.sol` + `contracts/test/InsuranceVault.t.sol` (8 forge tests
+> green).** The shipped contract refines the sketch below: the claim is **`coverShortfall`** (buy + the
+> shortfall calc above) and uses **buy-and-sequester** rather than burn (the canonical ERC20 `burn` is
+> minter-gated), with owner ceilings `maxBuybackPerClaim` + `maxCapitalPerClaim` bounding the
+> permissionless trigger, and an injected `IInsuranceRouter` (venue-agnostic — a public-AMM or
+> confidential-pool adapter wired at deploy). The sketch below is the design intent.
+>
 > Minimal by design: owner = you to start, `transferOwnership(dao)` later. The owner sizes the buyback +
 > manages capital; it **cannot** mint cBTC.tac, move the BTC backing, or break the peg. The claim trigger
 > is the reflection-attested shortfall (`POOL.cbtcBackingSats()` vs `cBTC.tac` supply), not a caller claim
