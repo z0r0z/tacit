@@ -69,8 +69,13 @@ echo "PINNED bitcoin_relay_vkey: $relay_vkey  (reflection; ConfidentialReflectio
 # reflection path actually moved, which silently invalidates the on-chain fixture + the allowlist with
 # no other gate catching it. To re-prove the reflection guest DELIBERATELY, bump both FROZEN_* below in
 # the SAME commit that regenerates reflection_groth16.json + re-runs the layer-9 confirmation + re-allowlists.
-FROZEN_REFLECTION_VKEY="0x002d2536aa22213fb4e178432a8068e80b041308b4e626c761b74705f71af96c"
-FROZEN_REFLECTION_ELF_SHA="661b3a55d564d2adf3ceba82ea6f99a6f35f37c6ac538d7cf78915ef5b958c95"
+# Bumped 2026-06-13 in the coordinated re-prove: the AMM consolidation (da8cd9c) added fns to the SHARED
+# cxfer-core, which compiles wholesale into BOTH guest ELFs (no per-bin DCE), so it rotated the reflection
+# vkey 0x002d2536…→0x004d8dbd… even though it touched no reflection code. The reflection chain was redone
+# for the new vkey (fixture + both-sided conservation + allowlist). Any future cxfer-core change rotates
+# this again — bump it with a matching re-prove + re-confirm.
+FROZEN_REFLECTION_VKEY="0x004d8dbda0b8590cebe53a74140804389e5a3d2cefe8076c37cf5172e617790d"
+FROZEN_REFLECTION_ELF_SHA="93e21681f6c5078490333ea5da7d925c2c622a3a8daa18346e125eb8c6478e7b"
 if [ "$relay_vkey" != "$FROZEN_REFLECTION_VKEY" ] || [ "$rpin" != "$FROZEN_REFLECTION_ELF_SHA" ]; then
   echo "FAIL: reflection leg drifted from the frozen Mode-B values"
   echo "  bitcoin_relay_vkey:    got $relay_vkey  expected $FROZEN_REFLECTION_VKEY"

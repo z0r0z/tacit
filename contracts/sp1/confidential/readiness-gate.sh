@@ -211,7 +211,15 @@ fi
 # LOCAL_VERIFY_OK with NO panic (a non-enforcing guest would fold the phantom outputs or panic on the
 # absent output witnesses). So 0x002d2536 defeats the REFLECT-1 attack AND preserves asset.
 # Lineage (superseded pins): 0x00687472, 0x00e593b0. (Known-UNSOUND, never confirm: 0x0050d656, 0x0099e1c7.)
-CONFIRMED_SOUND_REFL_VKEYS="0x002d2536aa22213fb4e178432a8068e80b041308b4e626c761b74705f71af96c 0x0068747232900af2f75fde3a5fb1143ccac63c56128394e638683cdcd5f307a3"
+# CONFIRMED 0x004d8dbd (2026-06-13): the coordinated re-prove — the AMM consolidation (da8cd9c) added fns
+# to the shared cxfer-core, which compiles into the reflection ELF wholesale, rotating its vkey
+# 0x002d2536…→0x004d8dbd… (it touched no reflection logic). The REFLECT-1 both-sided negative test was
+# RE-RUN against THIS pinned ELF via prover-host/bitcoin_prove: CONSERVING (gen-reflection-cxfer-synth)
+# FOLDS → poolRoot 0x1658bfbe…, newDigest 0x4d798e9a…, LOCAL_VERIFY_OK (== the on-chain reflection_groth16
+# fixture); NON-CONSERVING (gen-reflection-nonconserve) SKIPS → poolRoot 0x7c79406a…, newDigest 0x2c7f6b26…,
+# LOCAL_VERIFY_OK with NO panic. Identical conservation behavior to 0x002d2536 (only the AMM-bloat changed
+# the bytes). Lineage (superseded pins): 0x002d2536, 0x00687472, 0x00e593b0.
+CONFIRMED_SOUND_REFL_VKEYS="0x004d8dbda0b8590cebe53a74140804389e5a3d2cefe8076c37cf5172e617790d 0x002d2536aa22213fb4e178432a8068e80b041308b4e626c761b74705f71af96c 0x0068747232900af2f75fde3a5fb1143ccac63c56128394e638683cdcd5f307a3"
 refl_confirmed=0
 for v in $CONFIRMED_SOUND_REFL_VKEYS; do [ "$RPIN_VKEY" = "$v" ] && refl_confirmed=1; done
 if [ "$refl_confirmed" = 1 ]; then
