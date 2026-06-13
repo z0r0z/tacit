@@ -215,6 +215,62 @@ pub fn parse_crossout_mint_envelope(env: &[u8]) -> Option<([u8; 32], [u8; 32], [
     Some((asset, claim_id, cx, cy, owner))
 }
 
+/// Read output `vout` of a (segwit or legacy) Bitcoin tx → `(value_sats, scriptPubKey)`. Mirrors
+/// `compute_txid`'s walk; fully bounds-checked. `None` on a malformed tx or an out-of-range vout.
+/// Used by the cBTC.zk sats-lock value-entry to read the locked output's value + vault script.
+pub fn parse_tx_output(tx_data: &[u8], vout: u32) -> Option<(u64, Vec<u8>)> {
+    if tx_data.len() < 4 {
+        return None;
+    }
+    let is_segwit = tx_data.len() > 5 && tx_data[4] == 0x00 && tx_data[5] == 0x01;
+    let mut pos = if is_segwit { 6 } else { 4 };
+    let (input_count, vi_len) = read_varint(tx_data, pos)?;
+    pos = pos.checked_add(vi_len)?;
+    for _ in 0..input_count {
+        pos = pos.checked_add(36)?; // prev outpoint (txid 32 + vout 4)
+        let (script_len, vi_len) = read_varint(tx_data, pos)?;
+        pos = pos.checked_add(vi_len)?.checked_add(script_len)?.checked_add(4)?; // scriptSig + sequence
+    }
+    let (output_count, vi_len) = read_varint(tx_data, pos)?;
+    pos = pos.checked_add(vi_len)?;
+    if (vout as usize) >= output_count {
+        return None;
+    }
+    for i in 0..output_count {
+        let val_end = pos.checked_add(8)?;
+        if val_end > tx_data.len() {
+            return None;
+        }
+        let value = u64::from_le_bytes(tx_data[pos..val_end].try_into().ok()?);
+        pos = val_end;
+        let (script_len, vi_len) = read_varint(tx_data, pos)?;
+        pos = pos.checked_add(vi_len)?;
+        let script_end = pos.checked_add(script_len)?;
+        if script_end > tx_data.len() {
+            return None;
+        }
+        if i == vout as usize {
+            return Some((value, tx_data[pos..script_end].to_vec()));
+        }
+        pos = script_end;
+    }
+    None
+}
+
+/// cBTC.zk sats-lock envelope (`T_CBTC_LOCK`, opcode 0x66): `asset(32) ‖ lock_vout(4 LE) ‖ Cx(32) ‖
+/// Cy(32)` — the asset, which output of THIS tx is the sats-lock, and the minted cBTC note commitment.
+/// The opening sigma (proving the note opens to the lock's value) rides the witness, not the envelope.
+pub fn parse_cbtc_lock_envelope(env: &[u8]) -> Option<([u8; 32], u32, [u8; 32], [u8; 32])> {
+    if env.len() < 101 || env[0] != 0x66 {
+        return None;
+    }
+    let asset: [u8; 32] = env[1..33].try_into().ok()?;
+    let lock_vout = u32::from_le_bytes(env[33..37].try_into().ok()?);
+    let cx: [u8; 32] = env[37..69].try_into().ok()?;
+    let cy: [u8; 32] = env[69..101].try_into().ok()?;
+    Some((asset, lock_vout, cx, cy))
+}
+
 /// Parse a confidential-transfer envelope → (assetId, the N output commitments as compressed
 /// secp256k1 points). Accepts T_CXFER (0x23) AND its BP+ variant T_CXFER_BPP (0x22) — identical
 /// wire shape (SPEC §5.47); real confidential transfers use 0x22. Layout: opcode(1) ‖
