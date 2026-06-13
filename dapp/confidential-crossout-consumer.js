@@ -13,7 +13,9 @@
 // ConfidentialPool deployment registry — GATED (pool:null until deployed; the worker skips the scan while
 // null). Mirrors the dapp CROSSLANE_DEPLOYMENTS / the worker TETH_GENERATIONS.
 export const CONFIDENTIAL_POOL_DEPLOYMENTS = {
-  signet:  { pool: null, deployBlock: 0 },
+  // Sepolia pilot v1 (2026-06-14): the bidirectional-bridge ConfidentialPool. Keyed by the BITCOIN network
+  // it bridges to (signet); the address is the Sepolia pool the consumer scans for CrossOutRecorded.
+  signet:  { pool: '0x32e46B097830D93d50b0CBC89c018bCFD79b7B5a', deployBlock: 11052948 },
   mainnet: { pool: null, deployBlock: 0 },
 };
 
