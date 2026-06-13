@@ -30,25 +30,22 @@ interface IAmmTwap {
     function ethBtcTwap() external view returns (uint256 price, uint8 decimals);
 }
 
-/// @notice Owner-set venue that swaps tETH -> cBTC, delivered to `to`. Concrete adapter wired at deploy.
-interface IBufferRouter {
-    function buyExactCbtc(address teth, address cbtc, uint256 amountOut, uint256 maxIn, address to, bytes calldata route)
-        external
-        returns (uint256 spent);
-}
-
 /// @title CbtcBuffer
-/// @notice The tETH over-collateralization buffer that insures cBTC's only residual risk — a self-custody
+/// @notice A PASSIVE tETH over-collateralization reserve insuring cBTC's only residual risk — a self-custody
 ///         locker reclaiming their own BTC ("rug"). cBTC's PEG is oracle-free (1 cBTC = real locked BTC,
-///         proven by the reflection). When a lock is spent without a matching cBTC burn, the
-///         reflection-attested `cbtcBackingSats` drops below the circulating supply, and anyone can call
-///         `coverShortfall` to spend the tETH buffer (Chainlink ETH/BTC-bounded) to buy + sequester cBTC,
-///         restoring circulating <= backing.
-/// @dev Chainlink prices ONLY the buffer's liquidation, NEVER the peg — an oracle failure mis-sizes the
-///      insurance (and only matters if a rug also happens), it cannot de-peg the asset. The feed is a
+///         proven by the reflection). The buffer does NOT trade: tETH and cBTC are Tacit-native and only
+///         trade in the confidential (async, proof-settled) AMM, so there is no synchronous on-chain DEX to
+///         buy back into. Instead the buffer is held tETH whose BTC-equivalent value (Chainlink ETH/BTC,
+///         fail-closed) counts toward backing. When a rug drops `cbtcBackingSats` below the circulating
+///         supply, the buffer's BTC value absorbs the shortfall (so `uncoveredShortfall` stays 0); the
+///         actual tETH->BTC conversion only happens when a holder REDEEMS, which is the existing ASYNC
+///         atomic cBTC<->BTC swap (orderbook/adaptor) — never an on-chain buyback here. tETH is released to
+///         honor a redemption by the owner/DAO (or, later, an authorized redemption module).
+/// @dev Chainlink prices ONLY the buffer's BTC-equivalent value, NEVER the peg — an oracle failure mis-sizes
+///      the insurance (and only matters if a rug also happens), it cannot de-peg the asset. The feed is a
 ///      decentralized quorum, freshness-checked, and bounded against an on-chain AMM-TWAP. Solady `Ownable`:
-///      owner = deployer -> DAO; the owner sizes the buffer/feeds and manages tETH, but can never mint cBTC,
-///      move the BTC backing, or break the peg. Evolves `InsuranceVault` (tETH + Chainlink, not (TAC,tETH)).
+///      owner = deployer -> DAO; the owner sizes the feeds and manages tETH, but can never mint cBTC, move
+///      the BTC backing, or break the peg. Evolves `InsuranceVault` (tETH + Chainlink, not (TAC,tETH)).
 contract CbtcBuffer is Ownable {
     IPoolBacking public immutable POOL;
     address public immutable CBTC; // BTC-denominated, CBTC_DEC decimals
@@ -59,25 +56,17 @@ contract CbtcBuffer is Ownable {
     // --- owner-governed (owner -> DAO) ---
     IChainlinkFeed public ethBtcFeed; // ETH/BTC, answer = BTC per ETH
     IAmmTwap public ammTwap; // optional deviation reference
-    IBufferRouter public router;
-    uint256 public maxBuybackPerClaim; // cBTC cap per claim
     uint256 public maxStaleness; // Chainlink updatedAt freshness (seconds)
     uint256 public maxDeviationBps; // Chainlink vs AMM-TWAP bound (0 = skip)
-    uint256 public slippageBps; // allowed buyback slippage over the Chainlink-fair tETH
 
     event FeedsSet(address ethBtcFeed, address ammTwap);
-    event RouterSet(address router);
-    event ParamsSet(uint256 maxBuybackPerClaim, uint256 maxStaleness, uint256 maxDeviationBps, uint256 slippageBps);
+    event ParamsSet(uint256 maxStaleness, uint256 maxDeviationBps);
     event BufferAdded(uint256 amount, address indexed from);
     event BufferWithdrawn(uint256 amount, address indexed to);
-    event ShortfallCovered(uint256 shortfall, uint256 bought, uint256 tethSpent);
 
-    error NoRouter();
-    error NoShortfall();
     error BadFeed();
     error StaleFeed();
     error FeedDeviation();
-    error Overspend();
 
     constructor(
         address pool,
@@ -102,6 +91,9 @@ contract CbtcBuffer is Ownable {
         emit BufferAdded(amount, msg.sender);
     }
 
+    /// @notice Release tETH from the reserve — owner/DAO only. This is how the buffer funds a redemption
+    ///         shortfall (the tETH->BTC conversion runs through the async redemption path, not here), and
+    ///         how surplus reserve is recovered. Never mints cBTC or touches the BTC backing.
     function withdrawBuffer(uint256 amount, address to) external onlyOwner {
         SafeTransferLib.safeTransfer(TETH, to, amount);
         emit BufferWithdrawn(amount, to);
@@ -115,25 +107,15 @@ contract CbtcBuffer is Ownable {
         emit FeedsSet(feed, twap);
     }
 
-    function setRouter(address r) external onlyOwner {
-        router = IBufferRouter(r);
-        emit RouterSet(r);
-    }
-
-    function setParams(uint256 _maxBuyback, uint256 _maxStaleness, uint256 _maxDeviationBps, uint256 _slippageBps)
-        external
-        onlyOwner
-    {
-        maxBuybackPerClaim = _maxBuyback;
+    function setParams(uint256 _maxStaleness, uint256 _maxDeviationBps) external onlyOwner {
         maxStaleness = _maxStaleness;
         maxDeviationBps = _maxDeviationBps;
-        slippageBps = _slippageBps;
-        emit ParamsSet(_maxBuyback, _maxStaleness, _maxDeviationBps, _slippageBps);
+        emit ParamsSet(_maxStaleness, _maxDeviationBps);
     }
 
     // ---------- the peg shortfall (proven, oracle-free) ----------
 
-    /// @notice Circulating cBTC (totalSupply minus what this buffer has sequestered) over the
+    /// @notice Circulating cBTC (totalSupply minus any cBTC sent to this reserve) over the
     ///         reflection-attested live backing. > 0 only after a self-custody rug removed locked sats.
     function pegShortfall() public view returns (uint256) {
         uint256 backing = POOL.cbtcBackingSats();
@@ -146,7 +128,8 @@ contract CbtcBuffer is Ownable {
     // ---------- the validated ETH/BTC price (buffer-only; never the peg) ----------
 
     /// @notice Chainlink ETH/BTC (BTC per ETH), freshness-checked + AMM-TWAP-bounded. Reverts on a bad,
-    ///         stale, or deviating feed — fail-closed, so a broken feed pauses *liquidation*, never the peg.
+    ///         stale, or deviating feed — fail-closed, so a broken feed only blanks the buffer's BTC
+    ///         valuation, never the peg (which is oracle-free).
     function ethBtcPrice() public view returns (uint256 price, uint8 dec) {
         (, int256 ans,, uint256 updatedAt,) = ethBtcFeed.latestRoundData();
         if (ans <= 0) revert BadFeed();
@@ -163,33 +146,35 @@ contract CbtcBuffer is Ownable {
         }
     }
 
-    /// @notice tETH required to acquire `cbtcAmt` cBTC at the validated ETH/BTC price (no slippage).
+    /// @notice tETH required to equal `cbtcAmt` cBTC at the validated ETH/BTC price (no slippage).
     function cbtcToTeth(uint256 cbtcAmt) public view returns (uint256) {
         (uint256 price, uint8 dec) = ethBtcPrice();
         // teth = cbtcAmt * 10^(TETH_DEC + dec) / (price * 10^CBTC_DEC)
         return cbtcAmt * (10 ** (uint256(TETH_DEC) + uint256(dec))) / (price * (10 ** uint256(CBTC_DEC)));
     }
 
-    // ---------- claim: permissionless, Chainlink-bounded buy-and-sequester ----------
+    /// @notice BTC-equivalent (in cBTC base units / sats) of `tethAmt` tETH at the validated ETH/BTC price.
+    function tethToCbtc(uint256 tethAmt) public view returns (uint256) {
+        (uint256 price, uint8 dec) = ethBtcPrice();
+        // cbtc = tethAmt * price * 10^CBTC_DEC / 10^(TETH_DEC + dec)
+        return tethAmt * price * (10 ** uint256(CBTC_DEC)) / (10 ** (uint256(TETH_DEC) + uint256(dec)));
+    }
 
-    /// @notice Cover the proven shortfall by spending tETH buffer to buy cBTC off the AMM (owner-set router)
-    ///         and sequestering it. The tETH spent is bounded by the Chainlink-fair amount + `slippageBps`,
-    ///         so a manipulated AMM can't drain the buffer. Permissionless — the shortfall is proven, the
-    ///         owner ceilings + the Chainlink bound contain the spend.
-    function coverShortfall(bytes calldata route) external returns (uint256 bought, uint256 tethSpent) {
-        if (address(router) == address(0)) revert NoRouter();
+    // ---------- passive solvency view (the buffer's contribution to backing) ----------
+
+    /// @notice The reserve's tETH balance expressed as BTC-equivalent sats at the validated Chainlink mark.
+    ///         This is what the buffer adds to cBTC's backing. Reverts (fail-closed) if the feed is unusable.
+    function bufferBtcValueSats() public view returns (uint256) {
+        return tethToCbtc(IERC20Min(TETH).balanceOf(address(this)));
+    }
+
+    /// @notice The residual under-collateralization after the buffer: real-BTC shortfall minus the buffer's
+    ///         BTC value. 0 means circulating cBTC is fully covered by real locks + the tETH reserve. A
+    ///         non-zero value is the true peg-solvency signal (a rug the buffer cannot fully absorb).
+    function uncoveredShortfall() external view returns (uint256) {
         uint256 shortfall = pegShortfall();
-        if (shortfall == 0) revert NoShortfall();
-
-        bought = shortfall < maxBuybackPerClaim ? shortfall : maxBuybackPerClaim;
-        uint256 fairTeth = cbtcToTeth(bought);
-        uint256 maxIn = fairTeth * (10_000 + slippageBps) / 10_000;
-
-        SafeTransferLib.safeApprove(TETH, address(router), maxIn);
-        tethSpent = router.buyExactCbtc(TETH, CBTC, bought, maxIn, address(this), route);
-        SafeTransferLib.safeApprove(TETH, address(router), 0);
-        if (tethSpent > maxIn) revert Overspend();
-
-        emit ShortfallCovered(shortfall, bought, tethSpent);
+        if (shortfall == 0) return 0;
+        uint256 cover = bufferBtcValueSats();
+        return shortfall > cover ? shortfall - cover : 0;
     }
 }
