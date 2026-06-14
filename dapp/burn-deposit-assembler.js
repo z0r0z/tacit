@@ -56,7 +56,7 @@ export function makeBurnDepositAssembler({ dsha256, cat, bytesToHex }) {
   //   burned:     { cx:"0x…", cy:"0x…" }
   //   nu, dest:   "0x…" (the burned note's nullifier + the bridge-out destination commitment)
   //   scanState:  pool.makeScanReflectionState() positioned at the batch's prior (advances on fold*)
-  function assembleBurnDeposit({ etch, provHeaders, cxfers, burned, nu, dest, scanState }) {
+  function assembleBurnDeposit({ etch, provHeaders, cxfers, cmints = [], burned, nu, dest, scanState }) {
     return {
       etchTx: etch.tx,
       etchIndex: etch.index,
@@ -71,6 +71,14 @@ export function makeBurnDepositAssembler({ dsha256, cat, bytesToHex }) {
         merkleSiblings: merkleSiblings(c.blockTxids, c.index),
         merkleIndex: c.index,
         confirmedBlockRoot: merkleRoot(c.blockTxids),
+      })),
+      // mintable: issuer-authorized cmints in the lineage (revealTx + commitTx + reveal merkle inclusion).
+      // Empty for fixed-supply. cm: { revealTx, commitTx, blockTxids, index }.
+      cmints: cmints.map((cm) => ({
+        revealTx: cm.revealTx,
+        commitTx: cm.commitTx,
+        merkleSiblings: merkleSiblings(cm.blockTxids, cm.index),
+        merkleIndex: cm.index,
       })),
       burnedCx: burned.cx,
       burnedCy: burned.cy,

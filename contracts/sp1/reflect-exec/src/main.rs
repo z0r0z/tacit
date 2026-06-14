@@ -42,6 +42,17 @@ fn write_burn_deposit(s: &mut SP1Stdin, bd: &serde_json::Value) {
         u32w(s, c, "merkleIndex");
         h(s, c, "confirmedBlockRoot");
     }
+    // mintable: issuer-authorized cmints (reveal tx + commit tx + reveal merkle inclusion). Empty for fixed.
+    let cmints = bd.get("cmints").and_then(|v| v.as_array()).map(|a| a.as_slice()).unwrap_or(&[]);
+    s.write(&(cmints.len() as u32));
+    for cm in cmints {
+        h(s, cm, "revealTx");
+        h(s, cm, "commitTx");
+        let msib = cm["merkleSiblings"].as_array().unwrap();
+        s.write(&(msib.len() as u32));
+        for x in msib { s.write(&hexv(x.as_str().unwrap())); }
+        u32w(s, cm, "merkleIndex");
+    }
     h(s, bd, "burnedCx");
     h(s, bd, "burnedCy");
     let si = &bd["spentInsert"];

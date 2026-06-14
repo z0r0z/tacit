@@ -251,6 +251,18 @@ pub fn main() {
                             range_proof, kernel_sig, merkle_siblings, merkle_index, confirmed_block_root,
                         });
                     }
+                    // mintable: issuer-authorized cmint witnesses (each: the T_MINT reveal tx + the commit tx
+                    // + the reveal's merkle inclusion). Empty (n=0) for a fixed-supply asset.
+                    let n_cmints: u32 = io::read();
+                    let mut cmints: Vec<(Vec<u8>, Vec<u8>, Vec<[u8; 32]>, u32)> = Vec::with_capacity(n_cmints as usize);
+                    for _ in 0..n_cmints {
+                        let reveal_tx: Vec<u8> = io::read();
+                        let commit_tx: Vec<u8> = io::read();
+                        let n_msib: u32 = io::read();
+                        let msib: Vec<[u8; 32]> = (0..n_msib).map(|_| r32()).collect();
+                        let midx: u32 = io::read();
+                        cmints.push((reveal_tx, commit_tx, msib, midx));
+                    }
                     let burned_cx = r32();
                     let burned_cy = r32();
                     let (sv, sn, si, sp, snew) = read_spent_insert();
@@ -263,12 +275,10 @@ pub fn main() {
                         if refs.is_empty() || bitcoin::verify_header_chain(&refs)? != prev_hash {
                             return None;
                         }
-                        // (2) the etch is a fixed-supply CETCH in a canonical block, asset-bound; C_0 is its supply note.
+                        // (2) the etch is a valid CETCH in a canonical block, asset-bound (fixed OR mintable;
+                        //     the mint_authority gates the cmints below). C_0 is its supply note.
                         let etch_txid = bitcoin::compute_txid(&etch_tx)?;
                         let (c0_compressed, mint_authority, _dec) = bitcoin::verify_etch_anchor(&etch_tx, b_asset)?;
-                        if !bitcoin::is_fixed_supply(&mint_authority) {
-                            return None;
-                        }
                         let etch_root = bitcoin::verify_merkle_path(&etch_txid, &etch_siblings, etch_index);
                         if !prov_headers.iter().any(|h| bitcoin::extract_merkle_root(h) == etch_root) {
                             return None;
@@ -276,6 +286,21 @@ pub fn main() {
                         // (3) every provenance CXFER's confirmed block root is one of the canonical chain's roots.
                         if !prov.iter().all(|c| prov_headers.iter().any(|h| bitcoin::extract_merkle_root(h) == c.confirmed_block_root)) {
                             return None;
+                        }
+                        // (3b) valid supply leaves = C_0 + each issuer-authorized cmint output, the cmint reveal
+                        //      confirmed in the canonical chain. A fixed-supply asset has mint_authority = 0, so
+                        //      verify_cmint_authorized rejects every cmint → leaves = [C_0] (criterion self-enforces).
+                        let c0_outpoint = outpoint_key(&etch_txid, 0);
+                        let c0_ch = commitment_hash_compressed(&c0_compressed)?;
+                        let mut valid_leaves: Vec<([u8; 32], [u8; 32])> = Vec::with_capacity(1 + cmints.len());
+                        valid_leaves.push((c0_outpoint, c0_ch));
+                        for (reveal_tx, commit_tx, msib, midx) in &cmints {
+                            let reveal_txid = bitcoin::compute_txid(reveal_tx)?;
+                            let root = bitcoin::verify_merkle_path(&reveal_txid, msib, *midx);
+                            if !prov_headers.iter().any(|h| bitcoin::extract_merkle_root(h) == root) {
+                                return None;
+                            }
+                            valid_leaves.push(burn_deposit::verify_cmint_authorized(b_asset, &mint_authority, reveal_tx, commit_tx)?);
                         }
                         // (4) burned note: outpoint = the burn tx's spent input; env ν is the note's REAL ν.
                         let inputs = bitcoin::extract_inputs(tx)?;
@@ -285,10 +310,8 @@ pub fn main() {
                             return None;
                         }
                         let burned_ch = commitment_hash(&burned_cx, &burned_cy);
-                        let c0_outpoint = outpoint_key(&etch_txid, 0);
-                        let c0_ch = commitment_hash_compressed(&c0_compressed)?;
-                        // (5) the burned note descends from C_0 through the confirmed, conserving DAG.
-                        burn_deposit::verify_provenance(b_asset, &c0_outpoint, &c0_ch, &burned_outpoint, &burned_ch, &prov).ok()
+                        // (5) the burned note descends from a valid supply leaf (C_0 ∪ authorized cmints).
+                        burn_deposit::verify_provenance_leaves(b_asset, &valid_leaves, &burned_outpoint, &burned_ch, &prov).ok()
                     })();
                     if verified.is_some() {
                         // nullify the burned note in the shared set (no double-use) + authorize bridge_mint → dest.
