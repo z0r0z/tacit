@@ -109,14 +109,16 @@ adversarially tested + committed (additive, no vkey change yet):
   + conservation (value & asset, bound to the one asset) → linkage. Success path unit-tested with REAL
   conserving crypto (the `conserving_m1` fixture as a depth-1 distribution from `C_0`); failures cover
   unconfirmed inclusion, non-conserving kernel, fabricated `C_0` (afa9582). 87/87 cxfer-core green.
+- `dapp/burn-deposit-provenance.js` — the JS liveness mirror (`verifyMerklePath`/`verifyProvenanceDag`/
+  `verifyProvenance`); 11 tests mirror the Rust verdicts one-for-one (0dddc6a)
 
-So the security-critical realness is DONE and isolated. REMAINING (integration — coordinate with the
+So the security-critical realness — Rust authority + JS liveness — is DONE and isolated. REMAINING (integration — coordinate with the
 reflect.rs owner, then re-prove): (a) the RECORDING — record ν via `fold_spent`/`fold_burn` + the `S`-cap
 field on `ScanReflection` (needs the IMT witnesses the scan loop builds); (b) the on-chain burn-deposit op
 handling (likely reuse the 0x2B burn envelope — a 0x2B spend of a note NOT in the live set dispatches to
 `verify_provenance` instead of the reflected-note path); (c) the reflect.rs scan dispatch + binding
-`confirmed_block_root` to the reflection's header sync; (d) the JS worker mirror; (e) re-prove → new
-`BITCOIN_RELAY_VKEY` (into #11).
+`confirmed_block_root` to the reflection's header sync; (d) the worker WIRING (call the JS mirror in the
+reflection assembler/indexer); (e) re-prove → new `BITCOIN_RELAY_VKEY` (into #11).
 
 ## Findings / preconditions (impl phase 1)
 - **CETCH layout discrepancy (resolve first):** cxfer-core `parse_etch_meta` reads `cid(32)` right after
