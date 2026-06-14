@@ -269,6 +269,27 @@ pub fn verify_etch_anchor(etch_tx: &[u8], asset_id: &[u8; 32]) -> Option<([u8; 3
     parse_cetch(&env)
 }
 
+/// Parse a T_MINT (0x24) issuer-authorized mint reveal envelope → `(assetId[32], etchTxid[32],
+/// commitment[33], range_proof, issuer_sig[64])`. Byte-canonical with the worker `decodeCMintPayload`:
+///   `0x24 ‖ assetId(32) ‖ etchTxid(32) ‖ commitment(33) ‖ amount_ct(8) ‖ rp_len(2 LE) ‖ rangeproof ‖ issuer_sig(64)`.
+/// `commitment` is the newly-minted note (additional supply); the issuer signature (verified against the
+/// etch's `mint_authority`) authorizes it. None if malformed.
+pub fn parse_cmint(env: &[u8]) -> Option<([u8; 32], [u8; 32], [u8; 33], &[u8], [u8; 64])> {
+    if env.is_empty() || env[0] != 0x24 {
+        return None;
+    }
+    let asset_id: [u8; 32] = env.get(1..33)?.try_into().ok()?;
+    let etch_txid: [u8; 32] = env.get(33..65)?.try_into().ok()?;
+    let commitment: [u8; 33] = env.get(65..98)?.try_into().ok()?;
+    // env[98..106] = amount_ct (skip)
+    let rp_len = (*env.get(106)? as usize) | ((*env.get(107)? as usize) << 8);
+    let rp_start = 108usize;
+    let rp_end = rp_start.checked_add(rp_len)?;
+    let range_proof = env.get(rp_start..rp_end)?;
+    let issuer_sig: [u8; 64] = env.get(rp_end..rp_end + 64)?.try_into().ok()?;
+    Some((asset_id, etch_txid, commitment, range_proof, issuer_sig))
+}
+
 /// Parse a confidential bridge-burn envelope (opcode 0x2B) → (assetId, nullifier,
 /// destCommitment). `env` is the payload from `extract_taproot_envelope` (env[0] = opcode).
 /// Layout: opcode(1) ‖ assetId(32) ‖ bitcoinPoolRoot(32) ‖ nullifier(32) ‖ destCommitment(32).
@@ -668,6 +689,30 @@ mod tests {
 
         // a different asset_id cannot bind to this etch (no etch substitution)
         assert!(verify_etch_anchor(&tx, &[0x99u8; 32]).is_none(), "wrong asset_id rejected");
+    }
+
+    #[test]
+    fn parse_cmint_extracts_fields() {
+        // T_MINT: 0x24 ‖ assetId(32) ‖ etchTxid(32) ‖ commitment(33) ‖ amount_ct(8) ‖ rp_len(2) ‖ rp ‖ sig(64)
+        let mut env = vec![0x24u8];
+        env.extend_from_slice(&[0xAA; 32]); // assetId
+        env.extend_from_slice(&[0xEE; 32]); // etchTxid
+        let comm = [0xC1u8; 33];
+        env.extend_from_slice(&comm); // commitment
+        env.extend_from_slice(&[0u8; 8]); // amount_ct
+        env.extend_from_slice(&[0x02, 0x00]); // rp_len = 2 (LE)
+        env.extend_from_slice(&[0xab, 0xcd]); // rangeproof
+        let sig = [0x77u8; 64];
+        env.extend_from_slice(&sig); // issuer_sig
+
+        let (asset, etch, commitment, rp, isig) = parse_cmint(&env).expect("cmint");
+        assert_eq!(asset, [0xAA; 32]);
+        assert_eq!(etch, [0xEE; 32]);
+        assert_eq!(commitment, comm);
+        assert_eq!(rp, &[0xab, 0xcd]);
+        assert_eq!(isig, sig);
+        assert!(parse_cmint(&[0x21u8, 0, 0]).is_none(), "wrong opcode rejected");
+        assert!(parse_cmint(&env[..env.len() - 1]).is_none(), "truncated sig rejected");
     }
 
     fn build_reveal_tx(payload: &[u8]) -> Vec<u8> {

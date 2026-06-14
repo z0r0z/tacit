@@ -12,8 +12,11 @@
 //!     otherwise slip past the per-CXFER crypto. It is crypto-free so it can be tested adversarially in
 //!     isolation; the fold composes it OVER the verified CXFERs.
 
-use crate::bitcoin::verify_merkle_path;
-use crate::{commitment_hash_compressed, decompress, outpoint_key, verify_cxfer_conservation, Point};
+use crate::bitcoin::{self, verify_merkle_path};
+use crate::{
+    bip340_verify, commitment_hash_compressed, decompress, outpoint_key, verify_cxfer_conservation,
+    verify_range, Point,
+};
 
 /// One provenance CXFER whose crypto the caller has ALREADY verified (inclusion + conservation, see module
 /// doc). Carries only the post-verification SHAPE the linkage needs: the spent inputs (their outpoint + the
@@ -225,6 +228,62 @@ fn verify_cxfers(asset: &[u8; 32], cxfers: &[ProvenanceWitness]) -> Result<Vec<V
     Ok(verified)
 }
 
+/// Domain for the issuer-authorized-mint signature message (mintable assets, §6.1).
+pub const CMINT_DOMAIN: &[u8] = b"tacit-cmint-v1";
+
+/// Verify a `T_MINT` (0x24) is an AUTHORIZED supply leaf for a MINTABLE asset → `(leaf_outpoint,
+/// leaf_commitment_hash)` for `valid_leaves`, or None. Checks:
+///  - mintable: `mint_authority != 0` (the x-only issuer key from the etch; a fixed-supply asset has none);
+///  - asset-bound: the reveal's `T_MINT` envelope declares THIS `asset`;
+///  - commit/reveal pair: the reveal spends the `commit_tx`;
+///  - **authorized + non-re-wrappable:** BIP-340 verify of the issuer signature under `mint_authority` over
+///    `sha256(CMINT_DOMAIN ‖ asset ‖ commitment ‖ commit_anchor)`, where `commit_anchor` is the COMMIT tx's
+///    first input outpoint — so one signature can't be re-wrapped into another commit/reveal pair (which
+///    would mint the same authorization twice);
+///  - range: the minted commitment is BP+ range-bounded to [0, 2⁶⁴).
+/// The leaf note is the reveal's vout-0 commitment. The CALLER confirms the reveal + commit txs are real
+/// on-chain (header+merkle), exactly as for the provenance cxfers. Returns None (admit nothing) on any miss.
+pub fn verify_cmint_authorized(
+    asset: &[u8; 32],
+    mint_authority: &[u8; 32],
+    reveal_tx: &[u8],
+    commit_tx: &[u8],
+) -> Option<([u8; 32], [u8; 32])> {
+    if mint_authority.iter().all(|&b| b == 0) {
+        return None; // not mintable — no authorized mints exist
+    }
+    let env = bitcoin::extract_taproot_envelope(reveal_tx)?;
+    let (mint_asset, _etch_txid, commitment, range_proof, issuer_sig) = bitcoin::parse_cmint(&env)?;
+    if &mint_asset != asset {
+        return None;
+    }
+    // commit/reveal pair: the reveal's first input spends the commit tx.
+    let commit_txid = bitcoin::compute_txid(commit_tx)?;
+    if bitcoin::extract_inputs(reveal_tx)?.first()?.0 != commit_txid {
+        return None;
+    }
+    // commit_anchor = the commit tx's first input outpoint (binds the signature to THIS pair → no re-wrap).
+    let (anchor_txid, anchor_vout) = *bitcoin::extract_inputs(commit_tx)?.first()?;
+    let mut pre = Vec::with_capacity(CMINT_DOMAIN.len() + 32 + 33 + 32 + 4);
+    pre.extend_from_slice(CMINT_DOMAIN);
+    pre.extend_from_slice(asset);
+    pre.extend_from_slice(&commitment);
+    pre.extend_from_slice(&anchor_txid);
+    pre.extend_from_slice(&anchor_vout.to_le_bytes());
+    let mint_msg = bitcoin::sha256_once(&pre);
+    if !bip340_verify(&issuer_sig, &mint_msg, mint_authority) {
+        return None;
+    }
+    // the minted note is range-bounded.
+    let c = decompress(&commitment)?;
+    if !verify_range(&[c], range_proof) {
+        return None;
+    }
+    // the supply leaf: the minted note at the reveal's vout 0.
+    let reveal_txid = bitcoin::compute_txid(reveal_tx)?;
+    Some((outpoint_key(&reveal_txid, 0), commitment_hash_compressed(&commitment)?))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -332,6 +391,12 @@ mod tests {
         assert!(!verify_provenance_dag(&c0_op(), &c0_ch(), &op(0x0A, 0), &[0xAA; 32], &[VerifiedCxfer {
             txid: [0x0A; 32], inputs: vec![([0xCC; 32], 0, cmint_ch)], outputs: vec![(0, [0xAA; 32])],
         }]));
+    }
+
+    #[test]
+    fn cmint_rejects_non_mintable_authority() {
+        // mint_authority all-zero (a fixed-supply asset) ⇒ no authorized mints — None before any tx parse.
+        assert!(verify_cmint_authorized(&[0xAA; 32], &[0u8; 32], &[], &[]).is_none());
     }
 
     // ---- verify_provenance (composition over real conserving crypto) ----
