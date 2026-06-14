@@ -120,6 +120,51 @@ handling (likely reuse the 0x2B burn envelope — a 0x2B spend of a note NOT in 
 `confirmed_block_root` to the reflection's header sync; (d) the worker WIRING (call the JS mirror in the
 reflection assembler/indexer); (e) re-prove → new `BITCOIN_RELAY_VKEY` (into #11).
 
+## Phase 3 dispatch SPEC — the reflect.rs integration (a re-prove item, box-validated not unit-tested)
+The reflection guest is validated by box fixtures + on-chain `*ProofReal`, NOT `cargo test`; this dispatch is
+implemented and validated IN the mainnet re-prove (extend the reflection round-trip fixture with a
+burn-deposit case first). It rides the same `BITCOIN_RELAY_VKEY` rotation as the mainnet re-anchor (#11).
+
+**Trigger.** A tx carries a bridge-burn envelope (0x2B) AND `scan_tx_spends` found NO live-set spend
+(`spends.is_empty()`) — a pre-existing, never-reflected note (the near-tip reflection's live set is empty at
+launch, so ALL existing TAC bridges hit this path). The reflected-note bridge-out (`spends.len()==1 &&
+spends[0].nu==env_nu`) stays the existing path.
+
+**Witness-sync discipline (footgun #1).** Read ALL burn-deposit witnesses UNCONDITIONALLY in this branch (so
+the io stream stays in sync with the assembler), then `fold_spent`/`fold_burn` ONLY if every check passes —
+skip-not-panic, exactly like the cxfer/crossout/cbtc folds. A griefed/invalid burn-deposit folds nothing.
+
+**Witness (fixed read order):** `etch_tx` (CETCH) + (etch merkle path, index); `prov_headers` (the pre-anchor
+header chain from the etch block to THIS batch's anchor); `num_cxfers` × `ProvenanceWitness` fields
+(outpoints, compressed in/out commitments, vouts, range proof, kernel sig, merkle path/index,
+`confirmed_block_root`); `burned_commitment` (compressed); the spent-set + burn-set IMT insert witnesses.
+
+**Checks (all required; skip on any miss):**
+1. **Canonical pre-anchor chain (footgun #2):** `verify_header_chain(prov_headers)` succeeds AND its tip ==
+   `prev_hash` (this batch's relay-pinned anchor). Binds the witnessed history to canonical Bitcoin — a
+   fabricated chain can't reach the relay anchor. (Cost: ~one header per block since the etch, holder-borne;
+   a committed canonical-hash accumulator to amortize it is a follow-up.)
+2. **Etch + criterion:** `verify_etch_anchor(etch_tx, asset)` → `(C_0, mint_authority, _)`;
+   `is_fixed_supply(mint_authority)`; the etch's merkle path resolves to a `prov_headers` block root.
+   `c0_outpoint = outpoint_key(etch_txid, 0)`, `c0_ch = commitment_hash_compressed(C_0)`.
+3. **Cxfer blocks canonical:** every `ProvenanceWitness.confirmed_block_root` ∈ `{extract_merkle_root(h)}`
+   over `prov_headers`.
+4. **Burned-note ↔ ν binding (footgun #3):** `burned_outpoint` = the burn tx's spent input (`extract_inputs`);
+   `burned_ch = commitment_hash_compressed(burned_commitment)`; `env_nu == nullifier(decompress(burned_commitment))`
+   (the envelope ν is the note's REAL ν → no second bridge under a different ν).
+5. `burn_deposit::verify_provenance(asset, c0_outpoint, c0_ch, burned_outpoint, burned_ch, &prov)` == Ok.
+
+**Record (only if all pass):** `fold_spent(env_nu, …)` (nullify in the shared set → no double-use) +
+`fold_burn(env_nu → env_dest, …)` (authorize the EVM `bridge_mint` to exactly `env_dest`). The JS assembler
+mirror (`dapp/burn-deposit-provenance.js`) gates on the SAME predicate so the witness stream stays in sync.
+
+**Imports to add to reflect.rs:** `burn_deposit`, `commitment_hash_compressed`, `decompress`, `nullifier`,
+`outpoint_key`, and `bitcoin::{verify_etch_anchor, verify_merkle_path, is_fixed_supply, extract_inputs}`.
+
+**S-cap (deferred, defence-in-depth):** a per-asset cumulative-bridged accumulator on `ScanReflection`
+(digest-bound) capping total ≤ `S`; needs the burned value via an opening sigma. Realness + shared-ν are the
+primary guards; the cap is a backstop — follow-up.
+
 ## Findings / preconditions (impl phase 1)
 - **CETCH layout discrepancy (resolve first):** cxfer-core `parse_etch_meta` reads `cid(32)` right after
   `decimals`, but the live worker `decodeCEtchPayload` reads `commitment(33) ‖ amount_ct(8) ‖ rp_len ‖
