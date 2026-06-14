@@ -175,7 +175,13 @@ pub fn parse_etch_meta(env: &[u8]) -> Option<([u8; 16], u8, u8, [u8; 32])> {
     ticker[..tlen].copy_from_slice(&env[2..2 + tlen]);
     let mut cid = [0u8; 32];
     let cid_off = 3 + tlen;
-    if env.len() >= cid_off + 32 {
+    // ONLY T_PETCH (0x27) carries a 32-byte content cid immediately after decimals. CETCH (0x21) carries
+    // the supply commitment(33) there (its metadata is `image_uri`, not a content cid) — so for a CETCH,
+    // leave cid = 0 and NEVER misread the commitment as a cid. (Fixes the cross-impl discrepancy where the
+    // worker's canonical CETCH layout `…decimals‖commitment(33)‖…‖mint_authority(32)‖img_len‖image_uri`
+    // disagreed with a cid-after-decimals read — OP_ATTEST_META would otherwise register a garbage cid for
+    // a CETCH-etched asset like TAC. Capturing the CETCH image_uri as a contractURI is a follow-up.)
+    if env[0] == 0x27 && env.len() >= cid_off + 32 {
         cid.copy_from_slice(&env[cid_off..cid_off + 32]);
     }
     Some((ticker, tlen as u8, decimals, cid))
@@ -221,6 +227,22 @@ pub fn parse_cetch(env: &[u8]) -> Option<([u8; 33], [u8; 32], u8)> {
 /// (the `cmint`-deposit path instead). cBTC.zk's real-BTC peg is its own concept (`fold_cbtc_lock`).
 pub fn is_fixed_supply(mint_authority: &[u8; 32]) -> bool {
     mint_authority.iter().all(|&b| b == 0)
+}
+
+/// Bind an `asset_id` to its CETCH reveal tx and extract the supply anchor → `(C_0[33],
+/// mint_authority[32], decimals)`. Succeeds iff `asset_id == asset_id_from_etch(etch_tx)` (so a different
+/// etch can't be substituted) and the tx carries a well-formed CETCH. The CALLER must separately confirm
+/// `etch_tx` is a real, CONFIRMED Bitcoin tx (full-scan its block, or a header+merkle inclusion proof to
+/// the relay anchor) — without confirmation, `asset_id` is attacker-chosen via a fabricated etch (they'd be
+/// their own authority over a made-up id, never a real one whose `asset_id` is pinned to the real etch's
+/// txid). This is the trustless supply anchor for the burn-and-mint onboarding: `C_0` is read ONCE from the
+/// etch, no full-history scan.
+pub fn verify_etch_anchor(etch_tx: &[u8], asset_id: &[u8; 32]) -> Option<([u8; 33], [u8; 32], u8)> {
+    if &asset_id_from_etch(etch_tx)? != asset_id {
+        return None;
+    }
+    let env = extract_taproot_envelope(etch_tx)?;
+    parse_cetch(&env)
 }
 
 /// Parse a confidential bridge-burn envelope (opcode 0x2B) → (assetId, nullifier,
@@ -583,6 +605,27 @@ mod tests {
         assert!(parse_cetch(&env[..auth_off + 10]).is_none(), "truncated within mint_authority → None");
     }
 
+    #[test]
+    fn verify_etch_anchor_binds_asset_and_extracts_c0() {
+        let mut payload = vec![0x21u8, 0x03, b'T', b'A', b'C', 0x08];
+        let c0 = [0xc0u8; 33];
+        payload.extend_from_slice(&c0); // C_0
+        payload.extend_from_slice(&[0u8; 8]); // amount_ct
+        payload.extend_from_slice(&[0x00, 0x00]); // rp_len = 0
+        payload.extend_from_slice(&[0u8; 32]); // mint_authority NONE
+        payload.extend_from_slice(&[0x00, 0x00]); // img_len = 0
+        let tx = build_reveal_tx(&payload);
+        let asset_id = asset_id_from_etch(&tx).unwrap();
+
+        let (commitment, ma, decimals) = verify_etch_anchor(&tx, &asset_id).expect("anchor");
+        assert_eq!(commitment, c0, "C_0 anchored from the etch");
+        assert_eq!(decimals, 8);
+        assert!(is_fixed_supply(&ma), "fixed-supply TAC");
+
+        // a different asset_id cannot bind to this etch (no etch substitution)
+        assert!(verify_etch_anchor(&tx, &[0x99u8; 32]).is_none(), "wrong asset_id rejected");
+    }
+
     fn build_reveal_tx(payload: &[u8]) -> Vec<u8> {
         let mut script = Vec::new();
         script.push(0x20); script.extend_from_slice(&[0u8; 32]);
@@ -719,8 +762,10 @@ mod tests {
 
     #[test]
     fn etch_meta_and_asset_id() {
-        // synthetic CETCH (0x21): ticker "TAC", decimals 8, then a 32-byte metadata CID + filler.
-        let mut payload = vec![0x21u8, 0x03, b'T', b'A', b'C', 0x08];
+        // synthetic T_PETCH (0x27): ticker "TAC", decimals 8, then a 32-byte content cid + filler.
+        // (T_PETCH carries the cid right after decimals; CETCH 0x21 carries the supply commitment there —
+        // covered by parse_cetch's test + the CETCH-cid=0 regression assert below.)
+        let mut payload = vec![0x27u8, 0x03, b'T', b'A', b'C', 0x08];
         let want_cid = [0x42u8; 32];
         payload.extend_from_slice(&want_cid);
         payload.extend_from_slice(&[0u8; 1]);
@@ -745,6 +790,14 @@ mod tests {
         petch.extend_from_slice(&[0u8; 5]);
         assert!(parse_etch_meta(&petch).is_some(), "T_PETCH parses");
         assert!(parse_etch_meta(&[0x2Bu8, 3, 1, 2, 3]).is_none(), "burn opcode rejected");
+
+        // CETCH (0x21) carries the supply commitment after decimals, NOT a cid — parse_etch_meta must
+        // return cid = 0 there, never the commitment bytes (the OP_ATTEST_META garbage-cid fix).
+        let mut cetch = vec![0x21u8, 0x03, b'T', b'A', b'C', 0x08];
+        cetch.extend_from_slice(&[0x99u8; 33]); // supply commitment (must NOT be read as a cid)
+        let cenv = extract_taproot_envelope(&build_reveal_tx(&cetch)).expect("cetch envelope");
+        let (_, _, _, ccid) = parse_etch_meta(&cenv).expect("CETCH parses via parse_etch_meta");
+        assert_eq!(ccid, [0u8; 32], "CETCH cid = 0 (commitment never misread as cid)");
     }
 
     #[test]
