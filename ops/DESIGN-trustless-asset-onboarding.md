@@ -56,6 +56,48 @@ general (non-fixed-supply, untraceable) case ever needs it does the recursive-ch
 - **Rug-proof:** burn, not a retained lock (so no buffer / no rug-detection / no lock lifecycle).
 - **Conservation:** burn on Bitcoin (−v) = mint on ETH (+v); reverse symmetric. Global supply constant.
 
+## Phase 3 detail — per-bridge realness (the inflation surface, sound WITHOUT a full scan)
+The fold (`fold_asset_burn_deposit`, a NEW sibling of `fold_cbtc_lock`/`fold_crossout` — touches neither)
+admits a burned TAC note → a `bridge_mint` authorization ONLY under ALL of:
+
+1. **Realness — confirmed provenance to `C_0`.** Witness = the note's provenance DAG: the conserving CXFERs
+   from the burned commitment back to etch-initial notes (members of the etch `C_0` output set). For EACH
+   CXFER the fold checks: (a) it is a CONFIRMED Bitcoin tx (header+merkle to the relay anchor — the scan's
+   inclusion path); (b) it conserves per-asset, asset preserved (`verify_cxfer_conservation` + the asset
+   gate — the REFLECT-1 / asset-preservation lines); (c) it is linked (each non-leaf input = an output of
+   another DAG CXFER; each leaf input ∈ `C_0` via `verify_etch_anchor`); (d) the burned commitment is an
+   output of the sink CXFER. Any failure folds NOTHING (skip-not-panic).
+2. **No double-bridge / no double-use — shared nullifier set.** The burned note's ν goes into the
+   reflection's nullifier set (the SAME set as in-pool spends → cross-lane consistency). A ν already present
+   (re-bridge, or an in-pool spend of the same note) folds nothing.
+3. **Bound by `S`** (defence-in-depth): a cumulative-bridged accumulator caps total bridged ≤ the etch
+   supply `S` from `verify_etch_anchor`; over-cap folds nothing. Even a provenance bug can't exceed real supply.
+
+Plus the per-note **opening + BP+ range** (the `bridge_mint` value = the opened `v`), exactly as the existing folds.
+
+**Why no full history scan is needed (your efficiency insight, completed):** the fold only checks that each
+provided CXFER is *confirmed on-chain* — it does NOT need to have scanned all of the asset's history.
+**Bitcoin's own consensus already prevents a leaf note from being spent twice**, so two conflicting DAGs
+(e.g. `A→B+C` vs `A→D`) cannot both be confirmed; only the real one passes (a)+(c). Legitimate sibling
+bridges (B and C from the same real `A→B+C`) are each fine (distinct ν, conservation holds). Double-bridging
+the same descendant is caught by (2). So per-bridge confirmed-provenance + shared-ν + conservation is sound
+with the supply read ONCE from the etch — no etch-to-tip scan, no operator seed.
+
+**Mixed notes** (mixer deliberately severs provenance): realness = the mixer's existing deposit-backed
+withdrawal proof, under the same (2)+(3) guards (and it grows the anon set).
+
+**Witness** (`dapp/`/`worker`, holder-built): `{ burned {C,v,r}, provenance:[{cxfer_tx, inclusion, input_links[],
+out_index}], leaves:[etch_anchor_witness], }` — or `{ mixer_withdrawal_proof }` for the mixed path.
+
+**Adversarial KATs (each MUST fold nothing):** fabricated commitment (no DAG); non-descendant leaf (∉ `C_0`);
+non-conserving CXFER mid-DAG (REFLECT-1); asset-relabel in the DAG; double-bridge (ν reused); burn-then-pool-
+spend (shared-ν); over-`S`; out-of-range `v`; unconfirmed/forged-inclusion CXFER.
+
+**Integration + re-prove (coordination, NOT a blind edit):** the fold fn lands additively in cxfer-core; the
+scan DISPATCH is in `reflect.rs` (parallel Mode B session's active file → coordinate / let its owner wire it);
+the JS mirror lands in `dapp/`/`worker` (re-check mtime). Reflection-guest change → new `BITCOIN_RELAY_VKEY`
+→ fold into the #11 mainnet re-anchor re-prove (one coordinated re-prove; settle vkey unchanged).
+
 ## Findings / preconditions (impl phase 1)
 - **CETCH layout discrepancy (resolve first):** cxfer-core `parse_etch_meta` reads `cid(32)` right after
   `decimals`, but the live worker `decodeCEtchPayload` reads `commitment(33) ‖ amount_ct(8) ‖ rp_len ‖
