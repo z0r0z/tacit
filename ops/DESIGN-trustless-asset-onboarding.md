@@ -192,6 +192,43 @@ Validate: native execute → the PV's `bitcoinBurnRoot` reflects the folded burn
 (fabricated cxfer / wrong `C_0` / unconfirmed block) → folds NOTHING (skip-not-panic). Then the GPU re-prove
 (`exec-reflect-prove.rs`) + on-chain `*ProofReal`, folded into the #11 mainnet re-prove.
 
+## Mintable assets — cmint-deposit (§6.1), so the bridge covers ALL Tacit-native assets
+Fixed-supply assets bridge via the burn-deposit (provenance to `C_0`). **Mintable** assets (etch
+`mint_authority != 0`) bridge via **cmint-deposit**: their supply is `C_0` PLUS the issuer-authorized mints,
+so a real note descends from `C_0` **or** an authorized cmint. The criterion (the etch's `mint_authority`)
+routes between them; both are trustless (no list).
+
+**Realness leaf set.** `verify_provenance_leaves` admits `valid_leaves = {C_0} ∪ {authorized cmint outputs}`
+— `C_0` via `verify_etch_anchor`, each cmint via `verify_cmint_authorized`. (Foundation DONE, b409f27.)
+
+**`verify_cmint_authorized` (the crux — the mintable inflation surface).** A `T_MINT` (0x24) is a valid supply
+leaf iff: (1) CONFIRMED (header+merkle, like a provenance cxfer); (2) asset-bound — `parse_cmint` → its
+`assetId == the bridged asset`, and `verify_etch_anchor(etch)` shows `mint_authority` (x-only) `!= 0`
+(mintable); (3) issuer-signed — BIP-340 `verify(mint_authority, mint_msg, issuer_sig)`; (4) range — BP+ over
+the minted commitment ∈ [0, 2⁶⁴); (5) **anti-re-wrap (ESSENTIAL)** — `mint_msg` binds the COMMIT ANCHOR (the
+commit-tx's first input outpoint), read from the witnessed commit tx (`reveal.vin[0] == commit_txid`,
+`commit.vin[0] == commit_anchor`). The minted note (cmint output, vout 0) is then the leaf.
+
+**Why anti-re-wrap is required (soundness):** without binding the commit anchor, an observer re-broadcasts the
+issuer's mint envelope in a fresh commit/reveal → a new confirmed tx → a new minted-note outpoint → admitted
+AGAIN → the issuer's single authorization inflates supply N times. The commit-anchor ties the signature to
+exactly one tx. (This is the one place mintable is genuinely harder than fixed-supply.)
+
+**Dispatch (reflect.rs).** For a 0x2B burn of a non-live note: build `valid_leaves` = `C_0`
+(`verify_etch_anchor`) + `[verify_cmint_authorized(cmint) for each cmint in the witness]` — fixed-supply
+yields `[C_0]` (no cmints), mintable yields `C_0 ∪ cmints` — then `verify_provenance_leaves`. So the current
+`is_fixed_supply` gate becomes a branch: both kinds bridge, with the right leaf set.
+
+**Assembler/tracer.** The tracer's backward walk stops at `C_0` OR an authorized cmint (a leaf); the assembler
+includes the cmints (the `T_MINT` tx + the commit tx + inclusion) in the witness. The dapp also needs a
+`T_MINT` signer so a mintable asset can actually mint (then bridge).
+
+**Build status.** Foundation DONE (b409f27): the `valid_leaves` provenance generalization, 88/88.
+REMAINING (multi-turn, like the burn-deposit): `parse_cmint` + `verify_cmint_authorized` (BIP-340 + range +
+commit-anchor) + KATs; the reflect.rs dispatch building `valid_leaves`; the assembler/tracer cmint path; the
+JS mirror `verifyProvenanceLeaves`; the dapp `T_MINT` signer; the re-prove (rotates `BITCOIN_RELAY_VKEY`,
+folds into #11).
+
 ## Findings / preconditions (impl phase 1)
 - **CETCH layout discrepancy (resolve first):** cxfer-core `parse_etch_meta` reads `cid(32)` right after
   `decimals`, but the live worker `decodeCEtchPayload` reads `commitment(33) ‖ amount_ct(8) ‖ rp_len ‖
