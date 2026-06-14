@@ -48,6 +48,27 @@ pub fn verify_provenance_dag(
     burned_commitment_hash: &[u8; 32],
     cxfers: &[VerifiedCxfer],
 ) -> bool {
+    verify_provenance_dag_leaves(
+        &[(*c0_outpoint, *c0_commitment_hash)],
+        burned_outpoint,
+        burned_commitment_hash,
+        cxfers,
+    )
+}
+
+/// Generalized DAG check admitting MULTIPLE valid supply leaves `(outpoint, commitment_hash)`. For a
+/// MINTABLE asset the leaves are the etch supply note `C_0` PLUS each issuer-authorized cmint output — every
+/// leaf verified by the caller (`C_0` via `verify_etch_anchor`; each cmint via `verify_cmint_authorized`,
+/// whose issuer signature binds the commit anchor so a re-wrapped mint envelope can't double-issue). A
+/// fixed-supply asset passes the single leaf `[(C_0, …)]`. Every CXFER input must resolve to a produced
+/// output (value-matched) or one of `valid_leaves`; same dedup / value-seam / sink invariants as the
+/// single-leaf form.
+pub fn verify_provenance_dag_leaves(
+    valid_leaves: &[([u8; 32], [u8; 32])],
+    burned_outpoint: &[u8; 32],
+    burned_commitment_hash: &[u8; 32],
+    cxfers: &[VerifiedCxfer],
+) -> bool {
     if cxfers.is_empty() {
         return false;
     }
@@ -66,7 +87,7 @@ pub fn verify_provenance_dag(
             produced.push((op, *ch));
         }
     }
-    // 2. Resolve every input to a produced output (value-matched) or the C_0 leaf; reject an outpoint
+    // 2. Resolve every input to a produced output (value-matched) or a valid supply leaf; reject an outpoint
     //    consumed twice (an in-DAG double-spend), a dangling input, or a value-swapping seam.
     let mut consumed: Vec<[u8; 32]> = Vec::new();
     for cx in cxfers {
@@ -80,8 +101,8 @@ pub fn verify_provenance_dag(
             }
             consumed.push(op);
             let linked = produced.iter().any(|(o, ch)| o == &op && ch == in_ch);
-            let is_c0 = &op == c0_outpoint && in_ch == c0_commitment_hash;
-            if !linked && !is_c0 {
+            let is_leaf = valid_leaves.iter().any(|(o, ch)| &op == o && in_ch == ch);
+            if !linked && !is_leaf {
                 return false;
             }
         }
@@ -126,9 +147,39 @@ pub fn verify_provenance(
     burned_commitment_hash: &[u8; 32],
     cxfers: &[ProvenanceWitness],
 ) -> Result<(), &'static str> {
+    verify_provenance_leaves(
+        asset,
+        &[(*c0_outpoint, *c0_commitment_hash)],
+        burned_outpoint,
+        burned_commitment_hash,
+        cxfers,
+    )
+}
+
+/// MINTABLE form: the burned note may descend from ANY of `valid_leaves` — the etch supply note `C_0` PLUS
+/// each issuer-authorized cmint output. The caller verifies each leaf (`C_0` via `verify_etch_anchor`; each
+/// cmint via `verify_cmint_authorized`, whose issuer signature is bound to the mint's commit anchor so a
+/// re-wrapped mint envelope cannot double-issue). Per-CXFER crypto is identical to the fixed-supply form.
+pub fn verify_provenance_leaves(
+    asset: &[u8; 32],
+    valid_leaves: &[([u8; 32], [u8; 32])],
+    burned_outpoint: &[u8; 32],
+    burned_commitment_hash: &[u8; 32],
+    cxfers: &[ProvenanceWitness],
+) -> Result<(), &'static str> {
     if cxfers.is_empty() {
         return Err("burn-deposit: empty provenance");
     }
+    let verified = verify_cxfers(asset, cxfers)?;
+    if !verify_provenance_dag_leaves(valid_leaves, burned_outpoint, burned_commitment_hash, &verified) {
+        return Err("burn-deposit: burned note does not descend from a valid supply leaf");
+    }
+    Ok(())
+}
+
+/// Per-CXFER crypto (inclusion + conservation) → the linkage-shape `VerifiedCxfer`s. Shared by the
+/// fixed-supply (`verify_provenance`) and mintable (`verify_provenance_leaves`) forms.
+fn verify_cxfers(asset: &[u8; 32], cxfers: &[ProvenanceWitness]) -> Result<Vec<VerifiedCxfer>, &'static str> {
     let mut verified: Vec<VerifiedCxfer> = Vec::with_capacity(cxfers.len());
     for cx in cxfers {
         if cx.input_commitments.len() != cx.input_outpoints.len() {
@@ -171,10 +222,7 @@ pub fn verify_provenance(
         }
         verified.push(VerifiedCxfer { txid: cx.txid, inputs, outputs });
     }
-    if !verify_provenance_dag(c0_outpoint, c0_commitment_hash, burned_outpoint, burned_commitment_hash, &verified) {
-        return Err("burn-deposit: burned note does not descend from C_0");
-    }
-    Ok(())
+    Ok(verified)
 }
 
 #[cfg(test)]
@@ -257,6 +305,33 @@ mod tests {
     #[test]
     fn empty_dag_rejected() {
         assert!(!verify_provenance_dag(&c0_op(), &c0_ch(), &op(0x0A, 0), &[0xAA; 32], &[]));
+    }
+
+    #[test]
+    fn provenance_dag_leaves_admits_a_cmint_leaf() {
+        // MINTABLE: valid leaves = C_0 AND an issuer-authorized cmint output. A note descending from the
+        // cmint leaf (not C_0) is real supply.
+        let cmint_op = op(0xCC, 0);
+        let cmint_ch = [0xCD; 32];
+        let leaves = [(c0_op(), c0_ch()), (cmint_op, cmint_ch)];
+        let a = VerifiedCxfer {
+            txid: [0x0A; 32],
+            inputs: vec![([0xCC; 32], 0, cmint_ch)], // spends the cmint leaf
+            outputs: vec![(0, [0xAA; 32])],
+        };
+        assert!(verify_provenance_dag_leaves(&leaves, &op(0x0A, 0), &[0xAA; 32], &[a]));
+        // a note rooting at the cmint OUTPOINT but a non-authorized commitment hash → rejected (the leaf set
+        // is value-matched, so a fabricated mint commitment can't pose as the authorized one).
+        let b = VerifiedCxfer {
+            txid: [0x0B; 32],
+            inputs: vec![([0xCC; 32], 0, [0xFF; 32])],
+            outputs: vec![(0, [0xBB; 32])],
+        };
+        assert!(!verify_provenance_dag_leaves(&leaves, &op(0x0B, 0), &[0xBB; 32], &[b]));
+        // and the fixed-supply single-leaf wrapper still rejects a cmint-rooted note (C_0 only)
+        assert!(!verify_provenance_dag(&c0_op(), &c0_ch(), &op(0x0A, 0), &[0xAA; 32], &[VerifiedCxfer {
+            txid: [0x0A; 32], inputs: vec![([0xCC; 32], 0, cmint_ch)], outputs: vec![(0, [0xAA; 32])],
+        }]));
     }
 
     // ---- verify_provenance (composition over real conserving crypto) ----
