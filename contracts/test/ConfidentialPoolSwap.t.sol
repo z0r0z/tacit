@@ -53,10 +53,18 @@ contract ConfidentialPoolSwapTest is Test {
     function _settle(ConfidentialPool.PublicValues memory pv) internal {
         pool.settle(abi.encode(pv), "", new bytes[](pv.leaves.length));
     }
-    // initPool with dummy founder-share-note commitments (these tests pin the pool state machine, not
-    // the founder's note claim; the share-note recovery itself is covered in ConfidentialPool.t.sol).
-    function _init(bytes32 a, bytes32 b, uint256 ra, uint256 rb, uint32 fee) internal returns (bytes32) {
-        return pool.initPool(a, b, ra, rb, fee, bytes32(uint256(0x5EED)), bytes32(uint256(0x5EE2)), bytes32(uint256(0x5EE3)));
+    // createPair (empty slot) + a first-mint OP_LP_ADD that seeds the reserves. The mock verifier doesn't
+    // run the guest, so the seed's share basis here is just the contract-accepted LpSettlement (sharesPost
+    // = ra) — these tests pin the on-chain state machine (pre-gate + post-move + floors), NOT the guest's
+    // isqrt first-mint, which the real-proof suite covers. createPair sorts internally; callers pass the
+    // canonical (a < b) pair so ra maps to reserveA. A revert in createPair (SameAsset/NotRegistered/
+    // FeeTooHigh/PoolExists) surfaces from this first external call, so the guard tests still use `_init`.
+    function _init(bytes32 a, bytes32 b, uint256 ra, uint256 rb, uint32 fee) internal returns (bytes32 id) {
+        id = pool.createPair(a, b, fee);
+        ConfidentialPool.PublicValues memory pv = _pv();
+        pv.liquidity = new ConfidentialPool.LpSettlement[](1);
+        pv.liquidity[0] = _lp(id, 0, 0, 0, ra, rb, ra); // first mint: empty (0,0,0) → (ra, rb, ra)
+        _settle(pv);
     }
     function _swap(bytes32 id, uint256 ap, uint256 bp, uint256 apost, uint256 bpost)
         internal pure returns (ConfidentialPool.SwapSettlement memory)
@@ -67,39 +75,50 @@ contract ConfidentialPoolSwapTest is Test {
 
     // ──────────────────── init ────────────────────
 
-    function test_init_pool_funds_and_creates() public {
-        bytes32 id = _init(assetA, assetB, 10000, 20000, 30);
+    // createPair makes an EMPTY slot (no funding, no escrow); the first OP_LP_ADD seeds the reserves from
+    // the LP's shielded notes (so escrow is touched only at the wrap boundary, never at pool creation).
+    function test_createPair_empty_then_first_mint_seeds() public {
+        bytes32 id = pool.createPair(assetA, assetB, 30);
         assertEq(id, poolId, "poolId = keccak(assetA, assetB, feeBps)");
-        (bool init, bytes32 a, bytes32 b, uint256 rA, uint256 rB, uint32 fee, ) = pool.pools(id);
-        assertTrue(init, "init");
-        assertEq(a, assetA); assertEq(b, assetB);
-        assertEq(rA, 10000, "reserveA"); assertEq(rB, 20000, "reserveB"); assertEq(fee, 30, "feeBps");
-        // reserves are escrowed (unitScale 1)
-        assertEq(pool.escrow(assetA), 10000, "escrow A"); assertEq(pool.escrow(assetB), 20000, "escrow B");
-        assertEq(tokenA.balanceOf(address(pool)), 10000, "held A");
+        (bool init0, , , uint256 rA0, uint256 rB0, , uint256 sh0) = pool.pools(id);
+        assertTrue(init0, "slot live"); assertEq(rA0, 0, "empty reserveA"); assertEq(rB0, 0, "empty reserveB");
+        assertEq(sh0, 0, "no shares yet");
+        assertEq(pool.escrow(assetA), 0, "createPair escrows nothing");
+        // first mint seeds reserves + shares via settle (the mock LpSettlement)
+        ConfidentialPool.PublicValues memory pv = _pv();
+        pv.liquidity = new ConfidentialPool.LpSettlement[](1);
+        pv.liquidity[0] = _lp(id, 0, 0, 0, 10000, 20000, 10000);
+        _settle(pv);
+        (, bytes32 a, bytes32 b, uint256 rA, uint256 rB, uint32 fee, uint256 sh) = pool.pools(id);
+        assertEq(a, assetA); assertEq(b, assetB); assertEq(fee, 30, "feeBps");
+        assertEq(rA, 10000, "reserveA seeded"); assertEq(rB, 20000, "reserveB seeded"); assertEq(sh, 10000, "shares seeded");
     }
 
     function test_init_same_asset_reverts() public {
         vm.expectRevert(ConfidentialPool.SameAsset.selector);
-        _init(assetA, assetA, 10000, 10000, 30);
+        pool.createPair(assetA, assetA, 30); // the guard is on createPair (call it directly)
     }
 
     function test_init_unregistered_reverts() public {
         vm.expectRevert(ConfidentialPool.NotRegistered.selector);
-        _init(assetA, keccak256("nope"), 10000, 10000, 30);
+        pool.createPair(assetA, keccak256("nope"), 30);
     }
 
-    // A seed at or below MINIMUM_LIQUIDITY can't create a positive founder position — rejected, so no
-    // dust pool (and no founder who donates their entire seed).
-    function test_init_below_min_liquidity_reverts() public {
-        vm.expectRevert(ConfidentialPool.InsufficientSeed.selector);
-        _init(assetA, assetB, 1000, 20000, 30); // rLo == MINIMUM_LIQUIDITY
+    // A first mint whose seed shares fall below MINIMUM_LIQUIDITY is rejected by the LP floor — the locked
+    // 1000 must remain, so a dust pool can't be created (the createPair-model analog of the old seed guard).
+    function test_first_mint_below_min_liquidity_reverts() public {
+        pool.createPair(assetA, assetB, 30);
+        ConfidentialPool.PublicValues memory pv = _pv();
+        pv.liquidity = new ConfidentialPool.LpSettlement[](1);
+        pv.liquidity[0] = _lp(poolId, 0, 0, 0, 999, 1998, 999); // sharesPost 999 < MINIMUM_LIQUIDITY
+        vm.expectRevert(ConfidentialPool.ReserveFloorBreach.selector);
+        _settle(pv);
     }
 
     function test_init_duplicate_reverts() public {
         _init(assetA, assetB, 10000, 20000, 30);
         vm.expectRevert(ConfidentialPool.PoolExists.selector);
-        _init(assetA, assetB, 5000, 5000, 30);
+        pool.createPair(assetA, assetB, 30); // same (pair, fee) slot already exists
     }
 
     // Multi-fee-tier: the SAME pair at a DIFFERENT fee is a DISTINCT pool (own poolId, own reserves),
@@ -120,7 +139,7 @@ contract ConfidentialPoolSwapTest is Test {
     function test_init_fee_too_high_reverts() public {
         uint32 tooHigh = pool.MAX_POOL_FEE_BPS() + 1;
         vm.expectRevert(ConfidentialPool.FeeTooHigh.selector);
-        _init(assetA, assetB, 10000, 20000, tooHigh);
+        pool.createPair(assetA, assetB, tooHigh);
     }
 
     // ──────────────────── settle swap ────────────────────
@@ -208,14 +227,10 @@ contract ConfidentialPoolSwapTest is Test {
     // C-1: the on-chain LP state machine — reserves AND totalShares move together, pre-gated.
     // The in-ratio-add / proportional-remove + the shielded LP-share + asset notes are the guest's job.
 
-    function test_init_pool_seeds_total_shares() public {
+    function test_first_mint_seeds_total_shares() public {
         _init(assetA, assetB, 10000, 20000, 30);
         (, , , , , , uint256 shares) = pool.pools(poolId);
-        assertEq(shares, 10000, "seed shares = reserveA basis");
-        // and the founder's claimable position (rLo − MINIMUM_LIQUIDITY) is recorded as a pending deposit
-        bytes32 lpAsset = keccak256(abi.encodePacked(poolId, "lp"));
-        bytes32 depId = keccak256(abi.encode(lpAsset, uint256(10000 - 1000), bytes32(uint256(0x5EED)), bytes32(uint256(0x5EE2)), bytes32(uint256(0x5EE3))));
-        assertEq(pool.depositStatus(depId), 1, "founder LP-share deposit recorded (rLo - MINIMUM_LIQUIDITY)");
+        assertEq(shares, 10000, "first-mint seed shares (the founder's LP-share note carries them, guest-side)");
     }
 
     function test_settle_lp_add_moves_reserves_and_shares() public {

@@ -22,7 +22,7 @@ const ne = (a, b, msg) => { if (a === b) { console.error(`FAIL ${msg} (should di
 
 // Anchors printed by the Rust prover (cxfer-core scan_reflection_genesis_digest +
 // live_utxo_set_root_with_asset_pin). The live root commits the asset (keccak(key‖asset‖value)).
-const SCAN_GENESIS = '0xec719b81a396d28bad7625172767133724a094a5425269a71b258fe7e36fdc75';
+const SCAN_GENESIS = '0x164ac1b2bd8537ee7d8b6ae9af72b90958649ceed368e55056de8417bcd30044';
 const LIVE2_ROOT = '0x0b4c5da8728e3216a451be798a8d9326513e018880e1755bffd582f084718faa';
 
 const last = (b) => '0x' + '00'.repeat(31) + b;     // 32-byte word, b in the last byte (key)

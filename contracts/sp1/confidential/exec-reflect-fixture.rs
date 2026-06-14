@@ -44,9 +44,9 @@ fn write_stdin(f: &serde_json::Value) -> SP1Stdin {
                 path(&mut s, &bi["bLowPath"]); path(&mut s, &bi["bNewPath"]);
             }
             for o in tx["outputs"].as_array().unwrap() {
-                // the note leaf is DERIVED in-guest (reflected_note_leaf); only the append path +
-                // vout are witnessed.
-                path(&mut s, &o["notePath"]); s.write(&(o["vout"].as_u64().unwrap() as u32));
+                // the note leaf AND its outpoint vout are DERIVED in-guest (reflected_note_leaf; vout =
+                // the output's commitment index); only the append path is witnessed.
+                path(&mut s, &o["notePath"]);
             }
         }
     }

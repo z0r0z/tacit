@@ -1,8 +1,9 @@
 // Confidential LP (OP_LP_ADD / OP_LP_REMOVE) witness assembler for the EVM confidential AMM.
 //
 // An LP position is a shielded note of a pool-specific LP asset (lpShareId = keccak(poolId ‖ "lp")).
-// Add: spend an A note + a B note, add them IN RATIO to the public reserves, mint an LP-share note
-// for the proportional shares. Remove: spend the LP-share note, withdraw the proportional underlying
+// Add: spend an A note + a B note, add them to the public reserves, mint an LP-share note for the
+// shares (first mint = isqrt(dA·dB)−MIN_LIQ; later = the min rule, off-ratio safe). Remove: spend
+// the LP-share note, withdraw the proportional underlying
 // as fresh A/B notes (floored toward the pool). Each note's amount is bound by an OPENING SIGMA — a
 // Schnorr proof of knowledge of the note's blinding for the stated amount, NOT the raw blinding — so
 // the settle prover (the box) verifies the openings without learning any `r`: it cannot spend the
@@ -31,26 +32,47 @@ export function makeConfidentialLp({ keccak256, pool }) {
   };
   const lpShareId = (pid) => bytesToHex(keccak256(concat([hexToBytes(pid), enc.encode('lp')])));
   const floorDiv = (num, den) => { num = BigInt(num); den = BigInt(den); const q = num / den; return { q, rem: num - q * den }; };
+  // Constant-product first-mint basis: total = isqrt(dA·dB), MINIMUM_LIQUIDITY locked (noteless floor).
+  const MINIMUM_LIQUIDITY = 1000n;
+  const isqrt = (n) => { n = BigInt(n); if (n < 2n) return n; let x = n, y = (x + 1n) >> 1n; while (y < x) { x = y; y = (x + n / x) >> 1n; } return x; };
+  // min rule for a SUBSEQUENT add: min(floor(S·dA/R_A), floor(S·dB/R_B)). The limiting leg sets the
+  // shares (off-ratio earns the smaller leg, excess accrues to the pool — never over-claim); no exact-ratio
+  // gate. Mirrors cxfer-core lp_add_shares + tests/amm-clearing.mjs lpAddShares.
+  const lpAddShares = (S, dA, dB, rA, rB) => {
+    const a = (BigInt(S) * BigInt(dA)) / BigInt(rA);
+    const b = (BigInt(S) * BigInt(dB)) / BigInt(rB);
+    return a < b ? a : b;
+  };
 
   const addCtx = (op) => intentContext('tacit-lp-add-v1', op.chainBinding, op.assetA, op.assetB,
     [[op.a.cx, op.a.cy, op.a.owner], [op.b.cx, op.b.cy, op.b.owner], [op.share.cx, op.share.cy, op.share.owner]],
-    [op.dA, op.dB, op.dShares]);
+    [op.dA, op.dB, op.dShares, op.deadline ?? 0n]);
   const removeCtx = (op) => intentContext('tacit-lp-remove-v1', op.chainBinding, op.assetA, op.assetB,
     [[op.share.cx, op.share.cy, op.share.owner], [op.a.cx, op.a.cy, op.a.owner], [op.b.cx, op.b.cy, op.b.owner]],
-    [op.dShares, op.dA, op.dB]);
+    [op.dShares, op.dA, op.dB, op.deadline ?? 0n]);
 
-  // ── OP_LP_ADD ──  dB must be in-ratio (dA·R_B == dB·R_A); shares = floor(sharesPre·dA/R_A).
+  // ── OP_LP_ADD ──  first mint: shares = isqrt(dA·dB) − MIN_LIQ; subsequent: min rule (off-ratio safe).
   // The blindings rA/rB/rShares stay CLIENT-SIDE; only the opening sigmas reach the witness. Each sigma
   // nonce is DERIVED per (note blinding, intent context) so a re-add of the same note never reuses one.
-  function buildAdd({ assetA, assetB, chainBinding, feeBps, reserveAPre, reserveBPre, sharesPre, aNote, bNote, dA, dB, rA, rB, shareOwner, rShares }) {
-    const { q: dShares, rem } = floorDiv(BigInt(sharesPre) * BigInt(dA), reserveAPre);
+  function buildAdd({ assetA, assetB, chainBinding, feeBps, reserveAPre, reserveBPre, sharesPre, aNote, bNote, dA, dB, rA, rB, shareOwner, rShares, deadline }) {
+    // First mint (empty pool): ZAMM total = isqrt(dA·dB), founder note = total − MINIMUM_LIQUIDITY (locked,
+    // noteless). Subsequent: the min rule min(floor(S·dA/R_A), floor(S·dB/R_B)) — off-ratio safe.
+    let dShares;
+    if (BigInt(sharesPre) === 0n) {
+      const total = isqrt(BigInt(dA) * BigInt(dB));
+      if (total <= MINIMUM_LIQUIDITY) throw new Error('lp_add: initial liquidity below MINIMUM_LIQUIDITY');
+      dShares = total - MINIMUM_LIQUIDITY;
+    } else {
+      dShares = lpAddShares(sharesPre, dA, dB, reserveAPre, reserveBPre);
+      if (dShares <= 0n) throw new Error('lp_add: contribution below one share');
+    }
     const aC = commitXY(dA, rA), bC = commitXY(dB, rB), sC = commitXY(dShares, rShares);
     const op = {
-      assetA, assetB, chainBinding, feeBps: Number(feeBps),
+      assetA, assetB, chainBinding, feeBps: Number(feeBps), deadline: BigInt(deadline ?? 0),
       reserveAPre: BigInt(reserveAPre), reserveBPre: BigInt(reserveBPre), sharesPre: BigInt(sharesPre),
       a: { cx: aC.cx, cy: aC.cy, owner: aNote.owner, leafIndex: aNote.leafIndex, path: aNote.path }, dA: BigInt(dA),
       b: { cx: bC.cx, cy: bC.cy, owner: bNote.owner, leafIndex: bNote.leafIndex, path: bNote.path }, dB: BigInt(dB),
-      dShares, rem, share: { cx: sC.cx, cy: sC.cy, owner: shareOwner },
+      dShares, share: { cx: sC.cx, cy: sC.cy, owner: shareOwner },
     };
     const ctx = addCtx(op);
     op.aSig = openingSigma(op.dA, rA, ctx, deriveOpeningNonce(rA, ctx, 'lp-add-a'));
@@ -68,15 +90,29 @@ export function makeConfidentialLp({ keccak256, pool }) {
     const ctx = addCtx(op);
     if (!verifyOpeningSigma(op.a.cx, op.a.cy, op.dA, op.aSig.R, op.aSig.z, ctx)) fail('A opening');
     if (!verifyOpeningSigma(op.b.cx, op.b.cy, op.dB, op.bSig.R, op.bSig.z, ctx)) fail('B opening');
-    if (!(op.reserveAPre > 0n && op.reserveBPre > 0n && op.sharesPre > 0n)) fail('pool must be initialized');
-    if (op.dA * op.reserveBPre !== op.dB * op.reserveAPre) fail('not in pool ratio');
-    const { q, rem } = floorDiv(op.sharesPre * op.dA, op.reserveAPre);
-    if (q !== op.dShares || rem !== op.rem) fail('proportional shares');
+    let reserveAPost, reserveBPost, sharesPost;
+    if (op.sharesPre === 0n) {
+      // ZAMM first mint: total = isqrt(dA·dB), founder note = total − MIN_LIQUIDITY (locked, noteless). The
+      // founder sets the price (no in-ratio); reserves are SET, not added.
+      if (!(op.dA > 0n && op.dB > 0n)) fail('first mint needs both sides');
+      const total = isqrt(op.dA * op.dB);
+      if (total <= MINIMUM_LIQUIDITY) fail('initial liquidity below MINIMUM_LIQUIDITY');
+      if (op.dShares !== total - MINIMUM_LIQUIDITY) fail('first-mint shares = isqrt(dA·dB) - MIN_LIQUIDITY');
+      reserveAPost = op.dA; reserveBPost = op.dB; sharesPost = total;
+    } else {
+      if (!(op.reserveAPre > 0n && op.reserveBPre > 0n)) fail('pool must be initialized');
+      // min rule (no exact-ratio gate): off-ratio add earns the limiting leg, the excess accrues to
+      // the pool. The share note must open to exactly the derived min, so the LP can never over-claim.
+      const dShares = lpAddShares(op.sharesPre, op.dA, op.dB, op.reserveAPre, op.reserveBPre);
+      if (!(dShares > 0n)) fail('zero shares minted (dust add would donate)'); // ZAMM require(liquidity != 0)
+      if (op.dShares !== dShares) fail('proportional shares');
+      reserveAPost = op.reserveAPre + op.dA; reserveBPost = op.reserveBPre + op.dB; sharesPost = op.sharesPre + op.dShares;
+    }
     if (!verifyOpeningSigma(op.share.cx, op.share.cy, op.dShares, op.sSig.R, op.sSig.z, ctx)) fail('share opening');
     return {
       settlement: {
         poolId: pid, reserveAPre: op.reserveAPre, reserveBPre: op.reserveBPre, sharesPre: op.sharesPre,
-        reserveAPost: op.reserveAPre + op.dA, reserveBPost: op.reserveBPre + op.dB, sharesPost: op.sharesPre + op.dShares,
+        reserveAPost, reserveBPost, sharesPost,
       },
       nullifiers: [nullifier(op.a.cx, op.a.cy), nullifier(op.b.cx, op.b.cy)],
       leaves: [leaf(lpAsset, op.share.cx, op.share.cy, op.share.owner)],
@@ -84,12 +120,12 @@ export function makeConfidentialLp({ keccak256, pool }) {
   }
 
   // ── OP_LP_REMOVE ──  dA = floor(R_A·dShares/sharesPre), dB = floor(R_B·dShares/sharesPre).
-  function buildRemove({ assetA, assetB, chainBinding, feeBps, reserveAPre, reserveBPre, sharesPre, shareNote, dShares, rShares, aOwner, rA, bOwner, rB }) {
+  function buildRemove({ assetA, assetB, chainBinding, feeBps, reserveAPre, reserveBPre, sharesPre, shareNote, dShares, rShares, aOwner, rA, bOwner, rB, deadline }) {
     const a = floorDiv(BigInt(reserveAPre) * BigInt(dShares), sharesPre);
     const b = floorDiv(BigInt(reserveBPre) * BigInt(dShares), sharesPre);
     const sC = commitXY(dShares, rShares), aC = commitXY(a.q, rA), bC = commitXY(b.q, rB);
     const op = {
-      assetA, assetB, chainBinding, feeBps: Number(feeBps),
+      assetA, assetB, chainBinding, feeBps: Number(feeBps), deadline: BigInt(deadline ?? 0),
       reserveAPre: BigInt(reserveAPre), reserveBPre: BigInt(reserveBPre), sharesPre: BigInt(sharesPre),
       share: { cx: sC.cx, cy: sC.cy, owner: shareNote.owner, leafIndex: shareNote.leafIndex, path: shareNote.path }, dShares: BigInt(dShares),
       dA: a.q, remA: a.rem, dB: b.q, remB: b.rem,
@@ -111,6 +147,9 @@ export function makeConfidentialLp({ keccak256, pool }) {
     const ctx = removeCtx(op);
     if (!verifyOpeningSigma(op.share.cx, op.share.cy, op.dShares, op.sSig.R, op.sSig.z, ctx)) fail('share opening');
     if (!(op.sharesPre > 0n && op.dShares > 0n && op.dShares <= op.sharesPre)) fail('shares in range');
+    // The locked MINIMUM_LIQUIDITY can never be removed — totalShares stays ≥ it (guest + contract
+    // enforce the same gate). A remove that would breach it is rejected.
+    if (op.sharesPre - op.dShares < MINIMUM_LIQUIDITY) fail('would breach MINIMUM_LIQUIDITY floor');
     const a = floorDiv(op.reserveAPre * op.dShares, op.sharesPre);
     const b = floorDiv(op.reserveBPre * op.dShares, op.sharesPre);
     if (a.q !== op.dA || a.rem !== op.remA) fail('dA proportional');
@@ -127,53 +166,5 @@ export function makeConfidentialLp({ keccak256, pool }) {
     };
   }
 
-  // ── initPool seed (V2-style founder LP recovery) ──
-  // The founder's claimable position is rLo − MINIMUM_LIQUIDITY; MINIMUM_LIQUIDITY (must match
-  // ConfidentialPool.MINIMUM_LIQUIDITY) is the permanently-locked floor that keeps the (pair,fee) slot
-  // live after the founder fully exits.
-  const MINIMUM_LIQUIDITY = 1000n;
-
-  // The pending-deposit id ConfidentialPool records for the founder LP-share note — identical to the
-  // guest's OP_WRAP deposit_id: keccak(lpAsset ‖ be32(value) ‖ cx ‖ cy ‖ owner) (the contract's
-  // keccak256(abi.encode(lpAsset, value, cx, cy, owner)), value ≤ u64). Lets the dapp match the
-  // PoolSeeded event and locate the claimable deposit.
-  function seedDepositId(lpAsset, value, cx, cy, owner) {
-    return bytesToHex(keccak256(concat([hexToBytes(lpAsset), be32(value), hexToBytes(cx), hexToBytes(cy), hexToBytes(owner)])));
-  }
-
-  // Build the EVM initPool args + the founder's RECOVERABLE LP-share note. ConfidentialPool.initPool
-  // locks MINIMUM_LIQUIDITY of the rLo share basis and records the remainder (rLo − MINIMUM_LIQUIDITY) as
-  // a pending LP-share deposit; the founder mints the note with an OP_WRAP opening proof (the SAME claim
-  // path as a wrap), then spends it via buildRemove like any LP-share note — so the founder keeps their
-  // seed as a shielded position instead of donating it. Caller presents assetA < assetB (canonical, like
-  // buildAdd/buildRemove), so reserveA == the rLo share basis. The blinding stays client-side until the
-  // claim proof. Returns the initPool args, the share note (with its deposit id), and the pool ids.
-  function buildSeed({ assetA, assetB, reserveA, reserveB, feeBps, shareOwner, rShares, minimumLiquidity = MINIMUM_LIQUIDITY }) {
-    if (bigOf(assetA) >= bigOf(assetB)) throw new Error('seed: present assetA < assetB (canonical order)');
-    const rLo = BigInt(reserveA), minLiq = BigInt(minimumLiquidity);
-    if (rLo <= minLiq) throw new Error('seed: reserveA (the share basis) must exceed MINIMUM_LIQUIDITY');
-    const founderShares = rLo - minLiq;
-    const pid = poolId(assetA, assetB, feeBps), lpAsset = lpShareId(pid);
-    const sC = commitXY(founderShares, rShares); // C = founderShares·H + rShares·G
-    const depositId = seedDepositId(lpAsset, founderShares, sC.cx, sC.cy, shareOwner);
-    return {
-      poolId: pid, lpAsset, founderShares,
-      // the 8 args for ConfidentialPool.initPool(assetA, assetB, reserveA, reserveB, feeBps, shareCx, shareCy, shareOwner)
-      initPoolArgs: {
-        assetA, assetB, reserveA: BigInt(reserveA), reserveB: BigInt(reserveB), feeBps: Number(feeBps),
-        shareCx: sC.cx, shareCy: sC.cy, shareOwner,
-      },
-      seedShareNote: { asset: lpAsset, value: founderShares, cx: sC.cx, cy: sC.cy, owner: shareOwner, blinding: BigInt(rShares), depositId },
-    };
-  }
-
-  // Round-trip: the seed share commitment opens to founderShares under its blinding (so the OP_WRAP claim
-  // will verify) — a cheap client-side sanity check before broadcasting initPool.
-  function verifySeed(seed) {
-    const { value, cx, cy, blinding } = seed.seedShareNote;
-    const c = commitXY(value, blinding);
-    return c.cx === cx && c.cy === cy;
-  }
-
-  return { poolId, lpShareId, buildAdd, verifyAdd, buildRemove, verifyRemove, buildSeed, seedDepositId, verifySeed, MINIMUM_LIQUIDITY };
+  return { poolId, lpShareId, buildAdd, verifyAdd, buildRemove, verifyRemove };
 }

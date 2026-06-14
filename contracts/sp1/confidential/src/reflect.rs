@@ -25,6 +25,7 @@
 sp1_zkvm::entrypoint!(main);
 
 use alloy_sol_types::sol;
+use alloy_sol_types::private::U256;
 use alloy_sol_types::SolType;
 use cxfer_core::{bitcoin, from_affine_xy, scan_tx_spends, verify_cxfer_conservation, LiveUtxoSet, Point, ScanReflection};
 use sp1_zkvm::io;
@@ -39,6 +40,8 @@ sol! {
         bytes32 newDigest;         // the reflected state after the batch (next cycle's prior)
         bytes32 bitcoinPrevHash;   // headers[0]'s prev-block field — the anchor this batch resumes from
         bytes32 bitcoinTipHash;    // double-SHA256 of the last header — the batch's new tip
+        bytes32 ethPoolReflected;  // Mode B: the eth-reflection's ethPool — attest gates it == address(this)
+        uint256 cbtcBackingSats;   // cBTC: Σ live self-custody cBTC.zk lock sats (the off-pool buffer reads it)
     }
 }
 
@@ -66,7 +69,17 @@ fn read_scan_prior_state() -> ScanReflection {
     let burn_root = r32();
     let burn_count: u64 = io::read();
     let height: u64 = io::read();
-    ScanReflection { pool_root, note_count, spent_root, spent_count, live, burn_root, burn_count, height }
+    // cBTC.zk resume state: the live self-custody lock set (key, sats-as-32B, asset) + the running
+    // Σ backing sats. Both ride digest() (cxfer-core), so a wrong handoff fails the priorDigest chain.
+    // Empty for a no-lock batch (n=0, sats=0); the assembler/indexer emit the prior set for live locks.
+    let n_cbtc_locks: u32 = io::read();
+    let cbtc_lock_triples: Vec<([u8; 32], [u8; 32], [u8; 32])> = (0..n_cbtc_locks).map(|_| (r32(), r32(), r32())).collect();
+    let cbtc_locks = LiveUtxoSet::from_sorted(cbtc_lock_triples).expect("handed cBTC lock set not sorted/unique");
+    let cbtc_backing_sats: u64 = io::read();
+    ScanReflection {
+        pool_root, note_count, spent_root, spent_count, live, burn_root, burn_count, height,
+        cbtc_locks, cbtc_backing_sats,
+    }
 }
 
 /// One spent-set IMT insert witness (the low leaf + the two paths). ν comes from the scan.
@@ -93,6 +106,39 @@ fn read_burn_insert() -> ([u8; 32], [u8; 32], [u8; 32], u64, Vec<[u8; 32]>, Vec<
 pub fn main() {
     let mut state = read_scan_prior_state();
     let prior_digest = state.digest();
+
+    // ── Mode B reverse reflection: recursively verify the eth-reflection proof, then admit its
+    // attested cross-out set. The eth-reflection guest (helios light-client + a crossOutCommitment
+    // storage proof against finalized Ethereum) commits `EthReflectionPublicValues`;
+    // `verify_sp1_proof` binds these bytes to THAT program (the inner Compressed proof is supplied to
+    // the prover via SP1Stdin::write_proof), so a `fold_crossout` below trusts a cross-out finalized on
+    // Ethereum — not the worker. See ops/PLAN-eth-reflection-modeB.md + ops/DESIGN-mode-b-recursion.md.
+    // The eth-reflection guest's RECURSION vk_digest (vk.hash_u32(), the Poseidon digest verify_sp1_proof
+    // checks — NOT the on-chain bytes32 0x00726774…). Rebuilding that ELF rotates this; recompute via
+    // prover-host/eth_vkey and keep in lockstep.
+    const ETH_REFLECTION_VKEY: [u32; 8] =
+        [959691297, 1573580327, 461851140, 794766140, 2109164942, 1629874690, 166258058, 1674560259];
+    // Genesis sync-committee anchor (beacon weak-subjectivity bootstrap — NOT circular with the pool),
+    // pinned at re-prove time to the chosen Sepolia finalized checkpoint. The pool address is NOT pinned
+    // here: it's passed through as `ethPoolReflected` and gated on-chain == address(this), which breaks
+    // the pool↔vkey circularity with the vkey still immutable in the constructor (D1).
+    // Sepolia genesis sync-committee anchor, captured from the stage-i eth compressed proof
+    // (prevSyncCommitteeRoot @ finalizedSlot 10462624). Re-anchor for a production deploy.
+    const ETH_GENESIS_SYNC_COMMITTEE: [u8; 32] = [
+        0x8a, 0x83, 0x30, 0x01, 0x19, 0xac, 0x1e, 0x64, 0xa2, 0x31, 0x8d, 0x3d, 0xb3, 0x30, 0xed, 0x49,
+        0x6c, 0x51, 0x27, 0x6c, 0x63, 0x6a, 0x93, 0x63, 0x3b, 0x2d, 0x5c, 0xfd, 0x28, 0x3c, 0x2d, 0x44,
+    ];
+
+    let eth_pv: Vec<u8> = io::read();
+    assert!(eth_pv.len() >= 288, "eth-reflection public values too short");
+    sp1_lib::verify::verify_sp1_proof(&ETH_REFLECTION_VKEY, &bitcoin::sha256_once(&eth_pv));
+    // EthReflectionPublicValues is 9 static ABI words; read by offset. Order: priorDigest, newDigest,
+    // ethPool, crossOutSetRoot, crossOutCount, finalizedSlot, finalizedExecStateRoot, syncCommitteeRoot,
+    // prevSyncCommitteeRoot. The batch chained FROM the genesis committee (gated once here; the
+    // prev==last-current chaining across sync-committee periods rides the resume-digest — follow-up).
+    assert_eq!(&eth_pv[8 * 32..9 * 32], &ETH_GENESIS_SYNC_COMMITTEE, "eth-reflection: wrong genesis sync-committee");
+    let eth_pool_word: [u8; 32] = eth_pv[2 * 32..3 * 32].try_into().expect("ethPool word"); // gated on-chain == address(this)
+    let crossout_set_root: [u8; 32] = eth_pv[3 * 32..4 * 32].try_into().expect("crossOutSetRoot word");
 
     // Header chain: non-empty, links (prev_hash) + carries valid PoW, and EXPOSES its anchor
     // (headers[0]'s prev) + tip so the CONTRACT can pin them to the canonical relay — forcing the
@@ -126,6 +172,12 @@ pub fn main() {
             // commitment inside scan_tx_spends (a forged opening is a hard reject).
             let spends = scan_tx_spends(tx, &mut state.live, || (r32(), r32()))
                 .expect("vin scan / opening bind");
+
+            // cBTC: a SELF-CUSTODY rug — any input that spends a tracked cBTC.zk lock outpoint drops its
+            // sats from the backing total (the lock is gone; the off-pool buffer covers the shortfall). A
+            // plain Bitcoin spend (no Tacit ν), independent of the pool-UTXO scan above, and BEFORE the
+            // 0x66 mint below so an in-block create-then-spend nets correctly.
+            state.fold_cbtc_lock_spends(tx);
 
             // Classify by envelope: most txs have none (their spends are plain pool-UTXO spends,
             // still nullified). A burn envelope marks a bridge-out; a cxfer envelope declares
@@ -174,16 +226,57 @@ pub fn main() {
                 // envelope can't wedge the prover). Conserving + asset-preserving cxfers read their
                 // witnesses and fold; a fold error there is a real witness bug (panics).
                 if asset_preserving && verify_cxfer_conservation(asset, &in_outpoints, &in_points, commitments, range_proof, kernel_sig) {
+                    // Derive each output's vout from its index: the i-th envelope commitment is the
+                    // tx's i-th confidential output (the convention commitmentForUtxo resolves by). A
+                    // witnessed vout let a prover key a note at a bogus outpoint, so its later real
+                    // Bitcoin spend would miss the live set (an undetected spend). Only the note-tree
+                    // append path stays witnessed.
                     let mut paths: Vec<Vec<[u8; 32]>> = Vec::with_capacity(commitments.len());
                     let mut vouts: Vec<u32> = Vec::with_capacity(commitments.len());
-                    for _ in commitments {
+                    for i in 0..commitments.len() {
                         paths.push(r_path());
-                        let vout: u32 = io::read();
-                        vouts.push(vout);
+                        vouts.push(i as u32);
                     }
                     state.fold_cxfer(asset, &in_outpoints, &in_points, &in_assets, &txid, commitments, &paths, &vouts, range_proof, kernel_sig)
                         .expect("cxfer fold");
                 }
+            }
+
+            // Mode B: an Ethereum→Bitcoin cross-out mint (T_CROSSOUT_MINT, 0x65). Fold the minted note
+            // ONLY if it's a member of the eth-reflection crossOutSet (verified at the top of main). A
+            // spend-less mint (no pool inputs to nullify). Witnesses are read for EVERY 0x65 tx (the
+            // assembler provides a set per 0x65, bogus for non-members) so the stream stays in sync; a
+            // non-member folds nothing (skip-not-panic, like a non-conserving cxfer).
+            if let Some((co_asset, claim_id, cx, cy, _owner)) =
+                env.as_ref().and_then(|e| bitcoin::parse_crossout_mint_envelope(e))
+            {
+                let set_index: u64 = io::read();
+                let set_path = r_path();
+                let note_path = r_path();
+                // vout 0 = the mint's single confidential output (the dapp's T_CROSSOUT_MINT layout).
+                let _ = state.fold_crossout(
+                    &co_asset, &claim_id, &cx, &cy, set_index, &set_path, &crossout_set_root, &txid, 0, &note_path,
+                );
+            }
+
+            // cBTC.zk: a real-BTC sats-lock mint (T_CBTC_LOCK, 0x66). Fold the minted cBTC note ONLY if
+            // the envelope tx has, at lock_vout, a confirmed self-custody lock output (the locker's OWN
+            // output, any scriptPubKey) of value v_btc AND the note commits to exactly v_btc (opening
+            // sigma). Spend-less mint (the lock is the backing); a later spend of the lock is a rug caught
+            // by fold_cbtc_lock_spends. Witnesses are read for EVERY 0x66 tx (the assembler MUST emit
+            // note_path + the opening sigma per 0x66) so the stream stays in sync; an over-mint /
+            // wrong-asset lock folds nothing (skip-not-panic). See
+            // ops/DESIGN-cbtc-sats-lock-reflection.md. cf. cxfer-core::ScanReflection::fold_cbtc_lock.
+            if let Some((cb_asset, lock_vout, cx, cy)) =
+                env.as_ref().and_then(|e| bitcoin::parse_cbtc_lock_envelope(e))
+            {
+                let note_path = r_path();
+                let sig_rx = r32();
+                let sig_ry = r32();
+                let sig_z = r32();
+                let _ = state.fold_cbtc_lock(
+                    &cb_asset, &cx, &cy, tx, lock_vout, &txid, &note_path, &sig_rx, &sig_ry, &sig_z,
+                );
             }
         }
         state.height = height;
@@ -198,6 +291,8 @@ pub fn main() {
         newDigest: state.digest().into(),
         bitcoinPrevHash: prev_hash.into(),
         bitcoinTipHash: tip_hash.into(),
+        ethPoolReflected: eth_pool_word.into(),
+        cbtcBackingSats: U256::from(state.cbtc_backing_sats), // reflection-attested cBTC backing
     };
     io::commit_slice(&BitcoinReflectionPublicValues::abi_encode(&pv));
 }

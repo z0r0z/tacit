@@ -1,0 +1,65 @@
+[package]
+name = "prover-host"
+version = "0.1.0"
+edition = "2021"
+
+# Self-contained workspace (own [workspace] so it does not join sp1-helios/confidential). sp1-sdk 6.2.3
+# to match the Bitcoin reflection guest recursion. helios builds vanilla on the host (the sp1 precompile
+# patch is a guest-only optimization). cargo +stable build.
+[workspace]
+
+[lib]
+name = "prover_host"
+path = "src/lib.rs"
+
+[[bin]]
+name = "eth_vkey"
+path = "src/bin/eth_vkey.rs"
+
+[[bin]]
+name = "eth_prove"
+path = "src/bin/eth_prove.rs"
+
+[[bin]]
+name = "bitcoin_prove"
+path = "src/bin/bitcoin_prove.rs"
+
+[dependencies]
+sp1-sdk = { version = "=6.2.3", features = ["blocking", "cuda"] }
+hex = "0.4"
+alloy-sol-types = "0.8"
+serde_json = "1"
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_cbor = "0.11.2"
+tokio = { version = "1.38.0", features = ["full"] }
+tree_hash = "0.10.0"
+alloy-primitives = "1.3.0"
+helios-consensus-core = { git = "https://github.com/a16z/helios", tag = "0.11.1" }
+helios-ethereum = { git = "https://github.com/a16z/helios", tag = "0.11.1" }
+sp1-helios-primitives = { path = "/root/sp1-helios/primitives" }
+cxfer-core = { path = "/root/work/confidential/cxfer-core" }
+
+[[bin]]
+name = "exec_swap"
+path = "src/bin/exec_swap.rs"
+
+[[bin]]
+name = "exec_lp"
+path = "src/bin/exec_lp.rs"
+
+[[bin]]
+name = "exec_otc"
+path = "src/bin/exec_otc.rs"
+
+[[bin]]
+name = "exec_bid"
+path = "src/bin/exec_bid.rs"
+
+[[bin]]
+name = "exec_crosslane"
+path = "src/bin/exec_crosslane.rs"
+
+[[bin]]
+name = "exec_confidential"
+path = "src/bin/exec_confidential.rs"

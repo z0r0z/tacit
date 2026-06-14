@@ -60,6 +60,7 @@ const fixture = {
   sellerHasChange: filled.sellerChange ? 1 : 0,
   sellerChange: filled.sellerChange ? { cx: filled.sellerChange.cx, cy: filled.sellerChange.cy, sigR: filled.sellerChange.sig.R, sigZ: filled.sellerChange.sig.z } : null,
   sellerRecvB: { cx: filled.sellerRecvB.cx, cy: filled.sellerRecvB.cy, sigR: filled.sellerRecvB.sig.R, sigZ: filled.sellerRecvB.sig.z },
+  deadline: Number(bid.deadline ?? 0), // buyer's bid expiry; bound in the offline presig (buildBid), read last (guest 917)
   expected: { nullifiers, leaves },
 };
 

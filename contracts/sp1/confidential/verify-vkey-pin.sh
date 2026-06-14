@@ -53,5 +53,54 @@ echo "PASS: reflection ELF sha256 matches pin ($ract)"
 
 pin_vkey=$(grep -oE '"program_vkey"[[:space:]]*:[[:space:]]*"0x[0-9a-f]{64}"' "$PIN" | grep -oE '0x[0-9a-f]{64}')
 relay_vkey=$(grep -oE '"bitcoin_relay_vkey"[[:space:]]*:[[:space:]]*"0x[0-9a-f]{64}"' "$PIN" | grep -oE '0x[0-9a-f]{64}')
-echo "PINNED program_vkey:      $pin_vkey  (settle; ConfidentialSwapProofReal / ConfidentialProofReal)"
+# Fail closed on a missing/malformed vkey field: a blank program_vkey would deploy a zero PROGRAM_VKEY
+# (every settle reverts), and the guest_state prose has lagged these fields before — so assert the
+# machine-read fields are present + well-formed here, and treat the fields (not the prose) as canonical.
+[ -n "$pin_vkey" ]   || { echo "FAIL: program_vkey missing/malformed in $PIN"; exit 1; }
+[ -n "$relay_vkey" ] || { echo "FAIL: bitcoin_relay_vkey missing/malformed in $PIN"; exit 1; }
+echo "PINNED program_vkey:       $pin_vkey  (settle; ConfidentialSwapProofReal / ConfidentialProofReal)"
 echo "PINNED bitcoin_relay_vkey: $relay_vkey  (reflection; ConfidentialReflectionProofReal)"
+
+# ── Reflection leg FROZEN (Mode B, 2026-06-13) ────────────────────────────────────────────────
+# The reflection vkey is FINAL: its groth16 proof verifies on-chain (ConfidentialReflectionProofReal)
+# and the REFLECT-1 both-sided conservation test is confirmed + allowlisted (readiness-gate layer 9).
+# The settle-side re-prove (deadline/AMM PublicValues) is settle-ONLY and dead-code for the reflection
+# guest, so it MUST REPRODUCE these exact bytes — never rotate them. A drift here means cxfer-core's
+# reflection path actually moved, which silently invalidates the on-chain fixture + the allowlist with
+# no other gate catching it. To re-prove the reflection guest DELIBERATELY, bump both FROZEN_* below in
+# the SAME commit that regenerates reflection_groth16.json + re-runs the layer-9 confirmation + re-allowlists.
+# Bumped 2026-06-13 in the coordinated re-prove: the AMM consolidation (da8cd9c) added fns to the SHARED
+# cxfer-core, which compiles wholesale into BOTH guest ELFs (no per-bin DCE), so it rotated the reflection
+# vkey 0x002d2536…→0x004d8dbd… even though it touched no reflection code. The reflection chain was redone
+# for the new vkey (fixture + both-sided conservation + allowlist). Any future cxfer-core change rotates
+# this again — bump it with a matching re-prove + re-confirm.
+FROZEN_REFLECTION_VKEY="0x005e6adc6f6d208a7c1652b13626c5e5cdf802fb05418dd64ec5b67f4763d23d"
+FROZEN_REFLECTION_ELF_SHA="a25f90032b4e664d1725453510ee39e7cb763324fbcc03ec9376a9fae4fcf4e1"
+if [ "$relay_vkey" != "$FROZEN_REFLECTION_VKEY" ] || [ "$rpin" != "$FROZEN_REFLECTION_ELF_SHA" ]; then
+  echo "FAIL: reflection leg drifted from the frozen Mode-B values"
+  echo "  bitcoin_relay_vkey:    got $relay_vkey  expected $FROZEN_REFLECTION_VKEY"
+  echo "  reflection_elf_sha256: got $rpin  expected $FROZEN_REFLECTION_ELF_SHA"
+  echo "  The reflection vkey is FINAL (on-chain-verified + allowlisted). A settle re-prove is settle-ONLY and"
+  echo "  must reproduce it. If you DELIBERATELY re-proved the reflection guest, also regenerate"
+  echo "  test/fixtures/reflection_groth16.json, re-run the readiness-gate layer-9 both-sided conservation"
+  echo "  confirmation, re-allowlist the new vkey, AND bump the FROZEN_* constants here — all in the same commit."
+  exit 1
+fi
+echo "PASS: reflection leg matches the frozen Mode-B vkey/sha (on-chain-verified + allowlisted)"
+
+# Cross-artifact coherence: the on-chain reflection fixture's vkey IS the pin, so the proof a deployer
+# sets BITCOIN_RELAY_VKEY to is the same one that verifies on-chain (mirror of test_fixture_vkey_matches_pin).
+RFX="../../test/fixtures/reflection_groth16.json"
+if [ -f "$RFX" ]; then
+  fx_vkey=$(grep -oE '"vkey"[[:space:]]*:[[:space:]]*"0x[0-9a-f]{64}"' "$RFX" | grep -oE '0x[0-9a-f]{64}')
+  [ "$fx_vkey" = "$relay_vkey" ] || { echo "FAIL: reflection_groth16.json vkey ($fx_vkey) != pinned bitcoin_relay_vkey ($relay_vkey)"; exit 1; }
+  echo "PASS: reflection_groth16 fixture vkey matches the pin"
+fi
+echo
+echo "The sha256 checks above prove the committed bytes; they do NOT prove the pinned vkey is the one"
+echo "this ELF derives. That binding is enforced mechanically at:"
+echo "  - prove time: exec-prove.rs / exec-reflect-prove.rs abort unless the derived vkey equals the"
+echo "                pin (set EXPECT_VKEY=<pinned> or ELF_VKEY_PIN=$PIN before proving)."
+echo "  - deploy time: DeployConfidentialPool require(PROGRAM_VKEY == .program_vkey)."
+echo "After ANY ELF rebuild, derive both vkeys on the prover host and reconcile every field in $PIN"
+echo "(program_vkey, bitcoin_relay_vkey, both sha256s, guest_state) in the SAME commit."

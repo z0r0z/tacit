@@ -7,6 +7,18 @@
 > tooling, the same range-attestation primitive, and the same blinded-pubkey
 > stealth construction. **No new trusted setup** for the launch surface.
 >
+> **As-built reconciliation (2026-06-12).** The launch surface that actually
+> shipped is the **public canonical ERC20 hub** (`CanonicalAssetFactory` +
+> `CanonicalBridgedERC20` + `CanonicalMinters`, §3) plus the **SP1-batched
+> confidential lane** in `ConfidentialPool` (the Tier-B / rollup direction, §4).
+> The in-Solidity, note-based Tier-A construction this draft originally
+> specified (`TacitConfidentialFactory` / `TacitConfidentialEtched` /
+> `ConfidentialNoteCore` / `Secp256k1.sol`, OR-note transfers) was an experiment
+> and was **removed** (commit `5505615`, superseded by
+> [`PLAN-confidential-token-rollup.md`](../../ops/PLAN-confidential-token-rollup.md)).
+> §3, §4, §8 and §9 are updated to match the tree; the original Tier-A text is
+> kept only where marked **SUPERSEDED**, for provenance.
+>
 > Companion to:
 > - `SPEC-RANGE-PROOF-PRIMITIVE.md` — predicate proofs over Pedersen-committed
 >   u64 amounts (`bpRangeAggProve` / `bpRangeAggVerify`); reused verbatim for
@@ -105,11 +117,29 @@ structure or with the `ShieldedPool` withdraw domain.
 
 ---
 
-## 3. Factory and supply operations (public-amount — ship first, no range proof)
+## 3. Canonical public ERC20 hub (the shipped launch surface)
 
-The factory is a single CREATE2 deployer. None of the operations in this
-section requires a range proof, because the amount moved is public; only its
-**distribution across notes** is hidden. These are the launch surface.
+The factory is a single CREATE2 deployer for **standard public ERC20s** — the
+canonical, tradeable face of a Tacit-native, Bitcoin-bridged, or EVM-etched
+asset. Balances are public here (this is the hub Uniswap and wallets see); the
+*confidential* face is obtained by wrapping a canonical token into
+`ConfidentialPool` (§4). The contracts, all in `contracts/src/`:
+
+- **`CanonicalBridgedERC20`** — a deliberately dumb ERC20. Its constructor takes
+  no arguments: it reads `(assetId, minter, symbol, decimals, cid)` back from its
+  deployer (the factory's `deployParams()` callback — the Uniswap-V2-pair
+  pattern), so the init code is **constant** and the CREATE2 address is a pure
+  function of the salt. A single immutable `MINTER` is the sole mint/burn
+  authority; `name()` is the constant brand `"Tacit Token"`; `contractURI()`
+  reconstructs the metadata CID (below).
+- **`CanonicalAssetFactory`** — the CREATE2 deployer. `etchCanonical` (EVM-native
+  id, derived from metadata) and `deployCanonical` (externally-derived id — a
+  Bitcoin etch or wrapped ERC20) both land a token at
+  `predict(assetId, minter, symbol, decimals, cid)`. `deriveAssetId` /
+  `verifyMetadata` let anyone recompute the id↔metadata binding on-chain.
+- **`CanonicalMinter`** (base) + **`FixedSupplyMinter`** / **`CappedMintMinter`**
+  — the supply-policy layer for EVM-native etches (§ "Supply operations" below).
+  The policy lives in the minter; the token stays dumb.
 
 ### Asset identity
 ```
@@ -165,62 +195,77 @@ Ethereum→Tacit only crosses whole multiples of `unitScale` (`wrap` rejects una
 amounts), so sub-precision dust stays as ERC20 on Ethereum — value-conserving, round-trip
 exact.
 
-### `etch` — confidential token, two mode-split entrypoints
-Deploys a `TacitConfidentialEtched` (CREATE2) through one of two entrypoints (no
-overloaded sentinel), each taking `Meta{ name, symbol, decimals, uri }`:
-- `etchAuthority(mintAuthority, meta, salt)` — `mintAuthority` (nonzero) may
-  `mint` any denomination, anytime, and may `renounceMint()` to fix supply.
-- `etchFairLaunch(petch, meta, salt)` — no issuer (fair launch); see `petch`
-  below.
+### Supply operations — EVM-native etch
+An EVM-native asset is etched by deploying a minter (`CanonicalMinter` subclass),
+which in one transaction derives a fresh `tacit-evm-etch-v1` id from the supplied
+metadata, deploys (or adopts) its canonical ERC20 at `f(id)`, and becomes that
+token's sole `MINTER`:
+- **`FixedSupplyMinter`** (the `T_CETCH` analog) — mints the entire supply to a
+  recipient in its constructor, then exposes no mint/burn/admin and is inert
+  forever, so supply is immutably fixed. A deploy-and-die issuer with no further
+  surface.
+- **`CappedMintMinter`** (the `T_PETCH` analog) — `MINT_AUTHORITY` may `mint` up
+  to a lifetime `CAP` (0 = uncapped) until `MINT_DEADLINE` (0 = open forever);
+  any holder may `burn` its own balance (deflationary; `CAP` is a lifetime
+  ceiling, burns never reopen room). No owner, no pause, no authority transfer —
+  every term is immutable.
 
-`name` / `symbol` / `decimals` are carried **on-chain** by the token — queryable
-in one `eth_call`, no indexer or off-chain fetch (the EVM gain a Bitcoin
-inscription can't offer); `meta.uri` carries richer off-chain metadata (icon,
-description) via the `Etched` event. The token is note-based, not an ERC20 (value
-is in notes; no `balanceOf` / `transfer(address,uint256)`) — only the metadata
-triple is exposed, so nothing misrepresents it as a standard fungible token.
-Supply starts at zero and is issued by `mint`; there is no initial-supply-at-
-deploy step. Supply is always public and exact; its allocation across notes is
-blinded.
+These helpers can only ever etch a **fresh EVM-native** id (namespaced by the EVM
+etch tag + chainid + factory, disjoint from any Bitcoin asset id) and they set
+themselves as `MINTER`, so they can never target — or become the authority for —
+a bridged Bitcoin-native asset (whose ERC20 must have the pool/bridge as
+`MINTER`). `CanonicalMinter`'s constructor adopts an already-deployed token at its
+exact `(id, minter, meta)` slot instead of re-etching, so a permissionless
+pre-deploy can't brick the etch.
 
-### `petch` — fair-launch (T_PETCH analogue)
-`Petch{ denomIdx, cap, startBlock, endBlock }`: anyone calls `mint` for exactly
-denomination `d_denomIdx`, inside `[startBlock, endBlock]`, until `supply` would
-exceed `cap`. Gas is the natural rate limiter (the role Bitcoin fees play in
-T_PMINT).
+### Supply operations — bridged & wrapped assets (via `ConfidentialPool`)
+A Bitcoin-native or wrapped asset's canonical ERC20 is minted by the pool/bridge,
+not a standalone minter — the pool is the backing authority:
+- **`registerMintedAuto(factory, tacitAssetId, symbol, tacitDecimals)`** — lazily
+  `deployCanonical`s a Tacit-native asset's ERC20 (address = `f(id)`, decimals
+  18, pool as `MINTER`) and records the derived `unitScale`. First touch deploys
+  + assigns; thereafter it is a remote `mint` against the same CREATE2 address.
+- **`registerWrappedAuto(underlying, crossChainLink)`** — symmetric path for
+  wrapping an existing ERC20 (reads the underlying's `decimals`, derives
+  `unitScale = 10^(decimals − tacitDecimals)`).
+- **`_autoRegisterFromMeta`** — the trustless first-mint path: the SP1 guest's
+  `OP_ATTEST_META` proves an asset's `(symbol, decimals, cid)` from a confirmed
+  Bitcoin etch (B6, §7.1), and on `settle` the pool lazy-deploys + registers the
+  canonical ERC20 with the **proven** metadata — no oracle, no manual step. The
+  pool's `localAssetOf` first-write-wins keeps a shared id bound to the first
+  (real) token, and `canonicalTokenFor(id)` is the authority's source of truth
+  for "which ERC20 is canonical" (the factory deploys every variant, impostors
+  included, so it deliberately is **not** that oracle).
 
-### `mint` / `burn` (public denomination + PoK)
-Both move a single ladder denomination, public, with a PoK binding the note
-commitment:
-- `mint(denomIdx, C, pok)` — issue a note opening to `d_denomIdx` (PoK that
-  `C − D_denomIdx = r·G`); public supply `+= d_denomIdx`. In authority mode only
-  `mintAuthority` may call; in fair-launch mode anyone may, under the `petch`
-  gate. Auditable: supply is exact and public, distribution hidden.
-- `burn(denomIdx, C, pok)` — prove the note opens to `d_denomIdx`; destroy it;
-  public supply `−= d_denomIdx`.
-
-### Balance attestation & range proofs (reused verbatim, off-chain)
-A holder proves a predicate over their notes' hidden amounts —
+### Balance attestation & range proofs (confidential lane only, off-chain)
+A holder of a *confidential* balance (a note in `ConfidentialPool`, §4 — not a
+public canonical-ERC20 balance) proves a predicate over hidden amounts —
 `≥ X`, `≤ X`, `∈ [X, Y]`, `> b`, `= X`, and homomorphic sums across notes —
 using `SPEC-RANGE-PROOF-PRIMITIVE.md` (`bpRangeAggProve` / `bpRangeAggVerify`)
 **unchanged**, because the commitments share the Bitcoin-layer generators. This
-is a counterparty-to-counterparty proof and needs no on-chain transaction. For
-an on-chain anchor (CDP gates, tiered-fee tiers, permissioned LP), the
-`T_RANGE_ATTEST` envelope shape is mirrored as a factory event so an EVM
-consumer contract can require a recorded attestation.
+is a counterparty-to-counterparty proof and needs no on-chain transaction.
 
 ---
 
-## 4. Confidential transfers (divisible hidden amounts — two tiers, same notes)
+## 4. Confidential transfers (the shipped SP1 lane + the superseded in-Solidity tiers)
+
+**As-built:** the confidential face of a canonical asset is obtained by wrapping
+it into **`ConfidentialPool`**, whose SP1 guest validates wrap / transfer /
+unwrap / swap / LP / mint / burn as batched state transitions over secp256k1
+notes (the Tier-B / rollup direction below). That is the lane that shipped and is
+on-chain; its normative guest bindings are §7.1 (B1–B6) and its rollup design is
+[`PLAN-confidential-token-rollup.md`](../../ops/PLAN-confidential-token-rollup.md).
+The **in-Solidity Tier-A OR-note transfer** described next was an experiment and
+was **removed** (commit `5505615`); the text is retained, marked **SUPERSEDED**,
+for provenance only.
 
 A divisible transfer splits notes into payment + change with **hidden** output
 amounts, so it requires non-negativity (range) enforcement, and because the
-contract holds escrow the **contract** must enforce it. Both tiers operate on
-the §1 notes; an asset can support either or both. Conservation in both tiers
-is the Mimblewimble-style kernel: `Σ C_in − Σ C_out − fee·H = excess·G` with a
-Schnorr signature under `excess`.
+contract holds escrow the **contract** must enforce it. Conservation is the
+Mimblewimble-style kernel: `Σ C_in − Σ C_out − fee·H = excess·G` with a Schnorr
+signature under `excess`.
 
-### Tier A — denominated OR-notes (no setup, synchronous, instant)
+### Tier A — denominated OR-notes (SUPERSEDED — removed in commit `5505615`)
 Each note's amount is constrained to a fixed **denomination ladder**
 `{d₁ … d_k}` by a CDS OR-proof that `C` opens to one of `{d_i·H + r·G}`
 (witness-indistinguishable — *which* denomination is hidden). Given that every
@@ -243,7 +288,7 @@ constants, not calldata). Uniswap-swap territory — comfortably affordable on L
 The ladder is fixed protocol-wide at `k = 8` (`d_i = 10**i`), so notes stay
 uniform across every confidential token.
 
-### Tier B — SP1-batched Bulletproofs+ (exact amounts, batched finality)
+### Tier B — SP1-batched secp256k1 notes (the shipped lane: `ConfidentialPool`)
 Transfers post the **unchanged** secp256k1 Bulletproofs+ proof
 (`dapp/bulletproofs-plus.js`, §5.21) as calldata. A batch prover — the existing
 SP1 stack, the same canonical-ELF / vkey-pin discipline and SP1 verifier trust
@@ -273,6 +318,15 @@ is not on the launch path.
 ---
 
 ## 5. Wrapping existing ERC20s
+
+**As-built:** wrapping is a path of the shipped SP1 lane, not a standalone
+contract. `ConfidentialPool.registerWrappedAuto(underlying, crossChainLink)`
+registers an existing ERC20 with a derived `unitScale` (it escrows on `wrap` and
+releases on `unwrap`); the amount is public at the wrap boundary and blinded
+thereafter, with non-negativity enforced in the guest (§4 / §7.1), not by an
+in-Solidity OR-note ladder. The per-underlying `TacitConfidentialERC20` + fixed
+`UNIT_SCALE` ladder described below is **SUPERSEDED** (removed in commit
+`5505615`); retained for provenance.
 
 A `TacitConfidentialERC20` is deployed per underlying with a `UNIT_SCALE` that
 aligns the fixed ladder (`d_i = 10**i`) to the underlying's decimals, so one
@@ -308,6 +362,10 @@ key material — the existing stealth stack, re-homed to EVM addresses.
 ---
 
 ## 7. Soundness (by construction)
+
+> The Tier-A clauses below pertain to the superseded in-Solidity OR-note design
+> (§4); the **live** soundness invariants for the shipped lane are §7.1 (B1–B6),
+> enforced by the `ConfidentialPool` SP1 guest.
 
 - **No inflation.** Tier A: every note amount is a positive ladder denomination
   (OR-proof) and conservation balances the hidden sums, so outputs can neither
@@ -388,63 +446,70 @@ mandatory cross-lane enforcement) ship in the same `ConfidentialPool` redeploy.
 
 ---
 
-## 8. What ships first vs. follows
+## 8. What shipped vs. follows
 
-**Launch (no new trusted setup):**
-- Factory: `etch` / `petch` / `mint` / `burn` / fixed-supply, wrap / unwrap.
-- Blind balances; off-chain balance + range attestation via the existing
-  primitive; on-chain attestation anchor event.
+**Shipped:**
+- Canonical public ERC20 hub: `CanonicalAssetFactory` (`etchCanonical` /
+  `deployCanonical` / `deriveAssetId` / `verifyMetadata` / `predict`),
+  `CanonicalBridgedERC20` (constant `name`, `contractURI`), and the
+  `CanonicalMinter` family (`FixedSupplyMinter` / `CappedMintMinter`). §3.
+- Trustless metadata: id↔`(symbol, decimals, cid)` binding (EVM-etch by
+  construction; Bitcoin-etch SP1-proven at first mint, B6), `contractURI`
+  (EIP-7572, raw-codec CIDv1), decimals harmonization (`unitScale`).
+- Confidential lane in `ConfidentialPool`: SP1-validated wrap / transfer /
+  unwrap / swap / LP / mint / burn over secp256k1 notes, with the §7.1 (B1–B6)
+  guest bindings and the cross-lane / bridge-mint gates.
 - Stealth recipients (§6).
-- Tier A denominated confidential transfers.
 
 **Follow-up:**
-- Tier B SP1-batched exact-amount transfers (its own news beat; reuses the
-  bridge prover discipline).
 - Phase-3 cross-chain asset bridging (moving escrow Bitcoin ↔ Ethereum for a
   shared `asset_id`) — the §1 note identity makes it natural; trust surface and
   reverse path get their own plan doc.
 - Optional bespoke Groth16 transfer circuit if synchronous exact amounts are
-  wanted.
+  later wanted.
+
+**Superseded / removed (commit `5505615`):**
+- The in-Solidity Tier-A OR-note token (`TacitConfidentialFactory` /
+  `TacitConfidentialEtched` / `ConfidentialNoteCore` / `Secp256k1.sol`), in
+  favor of the SP1 lane above.
 
 ---
 
-## 9. Reference-implementation map
+## 9. Reference-implementation map (as-built)
 
-Built (working tree):
-- `contracts/src/lib/Secp256k1.sol` — `ecrecover` equation-checker (`mulmuladd`),
-  bounded EC add, `verifyLinear` (the §2 primitives). Vectors verified against
-  `@noble/secp256k1`.
-- `contracts/src/lib/ConfidentialNoteCore.sol` — abstract base: denominated note
-  store, spent-set, the Tier-A 2-in/2-out `transfer` (per-output 1-of-8 OR-proof
-  + conservation kernel, §4), and the `_verifyOpen` Schnorr PoK. The denomination
-  ladder is protocol-wide and fixed (`d_i = 10**i`, points `D_i = d_i·H` baked in
-  as pure lookups — no per-token constants to supply or trust), and it carries
-  on-chain `name` / `symbol` / `decimals`. Both token variants extend it.
-- `contracts/src/TacitConfidentialERC20.sol` — confidential **wrapper** for an
-  ERC20: `wrap` / `unwrap` (§3/§5), escrow == Σ active notes · `UNIT_SCALE`
-  (constructor arg aligning the fixed ladder to the underlying's decimals).
-  9 tests vs real noble proofs. Measured: wrap ~94k, **confidential transfer ~190k**, unwrap ~36k.
-- `contracts/src/TacitConfidentialEtched.sol` — **etched** token: supply issued
-  as notes, no backing. `mint` (authority or fair-launch / petch window+cap),
-  `renounceMint` (fixed supply), `burn`; supply == Σ active notes. 8 tests.
-- `contracts/src/TacitConfidentialFactory.sol` — CREATE2 deployer; mode-split
-  entrypoints `etchAuthority` / `etchFairLaunch` (no overloaded sentinel),
-  each carrying `Meta{ name, symbol, decimals, uri }`, with matching
-  `predictAuthority` / `predictFairLaunch`; `tacit-evm-etch-v1` asset-id
-  derivation; `Etched` event. 7 tests.
+Public canonical ERC20 hub (`contracts/src/`):
+- `CanonicalBridgedERC20.sol` — the dumb ERC20: arg-less constructor reads
+  `(assetId, minter, symbol, decimals, cid)` from the factory callback (constant
+  init code ⇒ CREATE2 address = `f(salt)`); single immutable `MINTER`; constant
+  `name() = "Tacit Token"`; `contractURI()` reconstructs
+  `ipfs://f01551220‖hex(cid)` (EIP-7572, CIDv1 **raw** codec; empty when cid = 0).
+- `CanonicalAssetFactory.sol` — CREATE2 deployer. `etchCanonical` (EVM-native id
+  derived from metadata) / `deployCanonical` (externally-derived id);
+  `metaHash = sha256(u8(len symbol)‖symbol‖u8(decimals)‖cid)`;
+  `deriveAssetId = sha256("tacit-evm-etch-v1"‖chainid_be8‖factory‖salt‖etcher‖meta_hash)`;
+  `verifyMetadata` / `predict` / `tokenOf` (the salt binds the full metadata
+  incl. `cid`; no-metadata overloads for cid = 0).
+- `CanonicalMinters.sol` — `CanonicalMinter` base (etch-or-adopt, sets itself as
+  `MINTER`) + `FixedSupplyMinter` (T_CETCH analog) + `CappedMintMinter` (T_PETCH
+  analog).
 
-Hardening (done):
-- OR-proof challenge binds `"tacit-evm-cnote-or-v1" ‖ chainid ‖ address(this)`,
-  so a proof is contract-specific (on top of the kernel already binding the
-  transfer as a whole).
-- `attest(denomIdx, …)` — on-chain selective balance disclosure: proves the
-  caller controls an active note opening to `d_i` (PoK bound to `msg.sender`)
-  and emits `Attested(attester, noteId, denomIdx)` for a consumer contract to
-  gate on. The off-chain hidden-amount range attestation still uses
-  `SPEC-RANGE-PROOF-PRIMITIVE` unchanged.
+Confidential lane:
+- `contracts/src/ConfidentialPool.sol` — wraps a canonical token into a
+  note-based confidential balance; SP1-validated `settle`; `registerMintedAuto` /
+  `registerWrappedAuto` / `_autoRegisterFromMeta` (trustless first-mint via the
+  guest's `OP_ATTEST_META`); `unitScale` decimals harmonization;
+  `canonicalTokenFor` resolution. Guest in `contracts/sp1/confidential/`
+  (`cxfer-core`); normative bindings §7.1 (B1–B6).
 
-Follow-up:
-- `contracts/sp1/` — batch guest verifying BP+ + kernels for Tier B.
-- Dapp: reuse `dapp/bulletproofs.js`, `dapp/bulletproofs-plus.js`,
-  `dapp/amm-sigma.js`, the range-proof primitive, and the stealth stack; add
-  the EVM note model, OR-note prover, and factory UI.
+Cross-language metadata KATs:
+- `tests/confidential-canonical-asset-id.mjs` — `metaHash` / `deriveAssetId` /
+  `contractURI` / `metadataCid` mirror of the Solidity, with pinned KATs
+  (contractURI raw-codec CIDv1; `metadataCid = sha256(json)` verified against
+  kubo `ipfs add --cid-version=1`).
+- `scripts/pin-asset-metadata.mjs` — canonical metadata JSON → raw-codec `cid`
+  pipeline (rejects a non-raw pin).
+
+Removed (commit `5505615`, superseded by the SP1 lane — see
+[`PLAN-confidential-token-rollup.md`](../../ops/PLAN-confidential-token-rollup.md)):
+`Secp256k1.sol`, `ConfidentialNoteCore.sol`, `TacitConfidentialERC20.sol`,
+`TacitConfidentialEtched.sol`, `TacitConfidentialFactory.sol`.

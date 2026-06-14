@@ -11,10 +11,13 @@
 # which serializes prove requests. Config via env (confidential-settle.env), all required:
 #   WORKER_BASE  - e.g. https://api.tacit.finance (no trailing slash)
 #   BOX_TOKEN    - Bearer for /confidential/job + /confidential/ack (= worker CONFIDENTIAL_BOX_TOKEN)
-#   POOL         - ConfidentialPool address (Sepolia 0xdd08be04…)
+#   POOL         - ConfidentialPool address (Sepolia 0x991726A5… for the v1 pilot)
 #   RPC          - Sepolia RPC
 #   ETH_PK       - settle gas key (the box .ethpk)
-# Optional: CXFER_DIR (/root/work/cxfer), SLEEP_SECONDS (15).
+# Optional: CXFER_DIR (/root/work/cxfer), SLEEP_SECONDS (15),
+#   EXPECT_VKEY  - the pool's PROGRAM_VKEY (e.g. 0x00d5b572…). When set, it's passed to the prove
+#                  harness's fail-closed vkey guard, so a box guest that doesn't match the deployed
+#                  pool aborts at prove time instead of wasting a GPU prove on an on-chain revert.
 set -uo pipefail
 CXFER_DIR="${CXFER_DIR:-/root/work/cxfer}"
 EXEC_DIR="$CXFER_DIR/exec"
@@ -75,7 +78,7 @@ while true; do
   for attempt in 1 2; do
     ensure_fresh_gpu_server
     rm -f "$EXEC_DIR/public_values.hex" "$EXEC_DIR/proof_bytes.hex"
-    ( cd "$EXEC_DIR" && OP_FILE="$OP_FILE" MODE=groth16 CUDA_VISIBLE_DEVICES=0 cargo run --release ) >"$CXFER_DIR/loop-prove.log" 2>&1
+    ( cd "$EXEC_DIR" && OP_FILE="$OP_FILE" MODE=groth16 CUDA_VISIBLE_DEVICES=0 ${EXPECT_VKEY:+EXPECT_VKEY="$EXPECT_VKEY"} cargo run --release ) >"$CXFER_DIR/loop-prove.log" 2>&1
     rc=$?
     # The CUDA groth16 prover SIGABRTs (rc=134) on a destructor panic during teardown — AFTER it has
     # written + locally verified the proof ("WROTE …" in loop-prove.log). Judge by the artifacts, not rc.

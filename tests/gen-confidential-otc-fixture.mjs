@@ -61,6 +61,7 @@ const fixture = {
   assetA: ASSET_A, assetB: ASSET_B, vA, vB,
   makerOwner: MAKER, takerOwner: TAKER,
   maker: leg(otc.maker), taker: leg(otc.taker),
+  deadline: Number(otc.deadline ?? 0), // per-op Expired; bound in BOTH parties' sigmas (buildOtc), read after both legs (guest 776)
   expected: { nullifiers, leaves },
 };
 

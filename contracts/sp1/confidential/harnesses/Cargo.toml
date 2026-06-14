@@ -1,0 +1,30 @@
+# Prover-host crate for the confidential settle box (the piece that was box-only and is now committed).
+#
+# main.rs = the chosen exec-*.rs harness from this dir (confidential-settle-loop.sh copies harness_for(type)
+# to src/main.rs per job). Each harness include_bytes! the committed canonical guest ELF — place
+# elf/cxfer-guest at /root/work/cxfer/guest/target/elf-compilation/riscv64im-succinct-zkvm-elf/release/cxfer-guest
+# so the box proves the pinned bytes (vkey 0x00d5b572) the deployed pool verifies — never a guest rebuild.
+#
+# groth16 wrap feature:
+#   native-gnark — CPU groth16 via a compiled gnark prover (needs Go + clang at build time, CGO). No Docker,
+#                  no GPU-server. The path that rebuilt a fresh box 2026-06-14 (proved OP_WRAP, ~STARK on 6
+#                  cores + a ~42s gnark Groth16 over 15.97M bn254 constraints; settled on Sepolia).
+#   cuda         — GPU groth16 via sp1-gpu-server (the original box). Faster, but the standalone cuda server
+#                  binary isn't shipped by sp1up and the SDK's auto-path wants Docker.
+[package]
+name = "exec"
+version = "0.1.0"
+edition = "2021"
+[workspace]
+
+[[bin]]
+name = "exec"
+path = "src/main.rs"
+
+[dependencies]
+sp1-sdk = { version = "=6.2.3", features = ["blocking", "native-gnark"] }
+hex = "0.4"
+serde_json = "1"
+
+[profile.release]
+opt-level = 3

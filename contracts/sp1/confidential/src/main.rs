@@ -15,9 +15,10 @@ sp1_zkvm::entrypoint!(main);
 use alloy_sol_types::{sol, SolValue};
 use alloy_sol_types::private::{Address, U256};
 use cxfer_core::{
-    bitcoin, claim_id, clearing_price_matches, decompress, deposit_id, from_affine_xy, imt_non_membership,
-    intent_context, keccak_merkle_verify, leaf, lp_share_id, nullifier, pool_id, scalar_reduce_be,
-    utxo_leaf, verify_kernel, verify_opening_sigma, verify_pedersen_opening, verify_range, Point,
+    bitcoin, claim_id, clearing_price_matches, decompress, deposit_id, from_affine_xy, get_amount_out,
+    imt_non_membership, intent_context, isqrt, keccak_merkle_verify, leaf, lp_add_shares, lp_share_id,
+    nullifier, pool_id, scalar_reduce_be, utxo_leaf, verify_kernel, verify_opening_sigma,
+    verify_pedersen_opening, verify_range, Point,
 };
 use sp1_zkvm::io;
 
@@ -33,9 +34,16 @@ const OP_LP_ADD: u8 = 7; // confidential LP: add liquidity in-ratio, mint a shie
 const OP_LP_REMOVE: u8 = 8; // confidential LP: burn a shielded LP-share note, withdraw the underlying
 const OP_OTC: u8 = 9; // confidential OTC: 2-party direct swap of shielded notes (no pool)
 const OP_BID: u8 = 10; // confidential partial-fill bid: buyer-offline limit order, seller fills a grid amount
+const OP_SWAP_ROUTE: u8 = 11; // confidential multihop: route one input note through ≤ MAX_ROUTE_HOPS pools
+const MAX_ROUTE_HOPS: u32 = 4; // bound the per-route hop count (mirrors the Bitcoin route op)
 
 const SWAP_DIR_A_TO_B: u8 = 0;
 const SWAP_DIR_B_TO_A: u8 = 1;
+
+/// Permanently-locked LP-share floor — MUST equal ConfidentialPool.MINIMUM_LIQUIDITY. A pool's
+/// totalShares can never drop below this (no note holds the locked shares), so an OP_LP_REMOVE that
+/// would breach it is rejected in-guest (fail-fast, defense-in-depth with the same on-chain gate).
+const MINIMUM_LIQUIDITY: u128 = 1000;
 
 // Mirrors ConfidentialPool.PublicValues exactly.
 sol! {
@@ -62,6 +70,7 @@ sol! {
         AssetMeta[] assetMetas;
         SwapSettlement[] swaps;
         LpSettlement[] liquidity;
+        uint64 deadline; // settle expiry (unix secs); 0 = none. The box can't relay a stale proof past it (Expired)
     }
 }
 
@@ -129,6 +138,9 @@ pub fn main() {
     let mut asset_metas: Vec<AssetMeta> = Vec::new();
     let mut swaps: Vec<SwapSettlement> = Vec::new();
     let mut liquidity: Vec<LpSettlement> = Vec::new();
+    // Per-op deadline (Expired), bound in each trading op's sigma context so the box can't forge or
+    // stretch it. The guest commits the EARLIEST non-zero deadline; the contract enforces it vs block.time.
+    let mut min_deadline: u64 = 0;
 
     for _ in 0..num_ops {
         let op: u8 = io::read();
@@ -425,6 +437,8 @@ pub fn main() {
                     let in_sig_r = decompress(&r33()).expect("swap: in sigma R");
                     let in_sig_z = scalar_reduce_be(&r32());
                     let min_out: u64 = io::read();
+                    let intent_deadline: u64 = io::read(); // bound in this trader's sigma (per-op Expired)
+                    if intent_deadline != 0 { min_deadline = if min_deadline == 0 { intent_deadline } else { min_deadline.min(intent_deadline) }; }
                     let (out_cx, out_cy, out_pt) = r_commitment();
                     let out_owner = r32();
                     let out_sig_r = decompress(&r33()).expect("swap: out sigma R");
@@ -441,7 +455,7 @@ pub fn main() {
                     let ctx = intent_context(
                         b"tacit-swap-intent-v1", &chain_binding, &asset_a, &asset_b,
                         &[(in_cx, in_cy, in_owner), (out_cx, out_cy, out_owner)],
-                        &[direction as u64, amount_in, amount_out, min_out],
+                        &[direction as u64, amount_in, amount_out, min_out, intent_deadline],
                     );
                     assert!(verify_opening_sigma(&in_pt, amount_in, &in_sig_r, &in_sig_z, &ctx), "swap: input opening");
                     assert!(verify_opening_sigma(&out_pt, amount_out, &out_sig_r, &out_sig_z, &ctx), "swap: output opening");
@@ -502,9 +516,10 @@ pub fn main() {
             }
             OP_LP_ADD => {
                 // Confidential add-liquidity: spend an A note + a B note (the LP's contribution, each
-                // bound to its amount by a secp opening), add them IN RATIO to the public reserves, and
-                // mint a shielded LP-share note for the proportional shares. The LP-share NOTE hides the
-                // provider's ownership + total position; reserves + totalShares stay public.
+                // bound to its amount by a secp opening), add them to the public reserves, and mint a
+                // shielded LP-share note for the proportional shares (the min rule below — an
+                // off-ratio add earns the limiting leg). The LP-share NOTE hides the provider's ownership
+                // + total position; reserves + totalShares stay public.
                 let asset_a = r32();
                 let asset_b = r32();
                 let fee_bps: u32 = io::read(); // pool fee tier — binds the pool id (multi-fee-tier)
@@ -532,20 +547,47 @@ pub fn main() {
                 let d_b: u64 = io::read();
                 let b_sig_r = decompress(&r33()).expect("lp_add: B sigma R");
                 let b_sig_z = scalar_reduce_be(&r32());
-                let d_shares: u64 = io::read();
-                let rem: u64 = io::read();
                 let (s_cx, s_cy, s_pt) = r_commitment();
                 let s_owner = r32();
                 let s_sig_r = decompress(&r33()).expect("lp_add: share sigma R");
                 let s_sig_z = scalar_reduce_be(&r32());
+                let op_deadline: u64 = io::read(); // bound in the LP's sigma (per-op Expired)
+                if op_deadline != 0 { min_deadline = if min_deadline == 0 { op_deadline } else { min_deadline.min(op_deadline) }; }
 
-                // The intent context binds all three notes + the deltas: the box can't redirect the
-                // minted LP-share note or alter the contributed amounts (the sigmas commit to it), and
-                // never learns a blinding (so it can't spend the spent A/B contribution notes).
+                // Constant-product mint: the FIRST provider (empty pool, shares_pre==0) sets totalShares =
+                // isqrt(dA·dB) and gets isqrt − MINIMUM_LIQUIDITY as their note (MINIMUM_LIQUIDITY = the
+                // permanent NOTELESS floor, so reserves can never fully drain → the (pair,fee) slot can't be
+                // bricked); they set the price, reserves are SET not added. Every SUBSEQUENT provider earns
+                // the MIN rule min(floor(S·dA/R_A), floor(S·dB/R_B)) — off-ratio safe (the excess accrues to
+                // the pool), no exact-ratio gate (the old `dA·R_B == dB·R_A` forced dA to be a multiple of
+                // R_A/gcd and broke incremental adds once a traded pool went coprime). d_shares is DERIVED
+                // in-guest (not witnessed), so it can't be over-claimed; the share note must open to it.
+                let da = d_a as u128; let db = d_b as u128;
+                let ra = r_a_pre as u128; let rb = r_b_pre as u128; let sp = shares_pre as u128;
+                let (d_shares_u128, r_a_post, r_b_post, s_post): (u128, u128, u128, u128) = if shares_pre == 0 {
+                    assert!(r_a_pre == 0 && r_b_pre == 0, "lp_add: first mint requires an empty pool");
+                    assert!(da > 0 && db > 0, "lp_add: first mint needs both sides");
+                    assert!(da <= u64::MAX as u128 && db <= u64::MAX as u128, "lp_add: first-mint reserve overflow");
+                    let total = isqrt(da * db);
+                    assert!(total > MINIMUM_LIQUIDITY, "lp_add: initial liquidity below MINIMUM_LIQUIDITY");
+                    (total - MINIMUM_LIQUIDITY, da, db, total)
+                } else {
+                    assert!(ra > 0 && rb > 0, "lp_add: pool must be initialized");
+                    let ds = lp_add_shares(shares_pre, d_a, d_b, r_a_pre, r_b_pre);
+                    assert!(ds > 0, "lp_add: zero shares minted (dust add)"); // reject a dust add that mints nothing
+                    assert!((ra + da) <= u64::MAX as u128 && (rb + db) <= u64::MAX as u128 && (sp + ds) <= u64::MAX as u128, "lp_add: overflow");
+                    (ds, ra + da, rb + db, sp + ds)
+                };
+                assert!(d_shares_u128 <= u64::MAX as u128, "lp_add: shares overflow");
+                let d_shares = d_shares_u128 as u64;
+
+                // The intent context binds all three notes + the deltas (incl. the DERIVED d_shares): the
+                // box can't redirect the minted LP-share note or alter the amounts (the sigmas commit to
+                // it), and never learns a blinding (so it can't spend the A/B contribution notes).
                 let ctx = intent_context(
                     b"tacit-lp-add-v1", &chain_binding, &asset_a, &asset_b,
                     &[(a_cx, a_cy, a_owner), (b_cx, b_cy, b_owner), (s_cx, s_cy, s_owner)],
-                    &[d_a, d_b, d_shares],
+                    &[d_a, d_b, d_shares, op_deadline],
                 );
 
                 // Spend the two contribution notes: membership + ν + cross-lane + opening sigma (binds d_a/d_b).
@@ -561,17 +603,8 @@ pub fn main() {
                 if bitcoin_spent_root != [0u8; 32] { check_btc_nonmembership(&b_nu, &bitcoin_spent_root); }
                 assert!(verify_opening_sigma(&b_pt, d_b, &b_sig_r, &b_sig_z, &ctx), "lp_add: B opening");
 
-                let da = d_a as u128; let db = d_b as u128;
-                let ra = r_a_pre as u128; let rb = r_b_pre as u128;
-                let sp = shares_pre as u128; let ds = d_shares as u128; let rm = rem as u128;
-                // The pool must already exist (initPool seeds it); add IN RATIO, proportional shares.
-                assert!(ra > 0 && rb > 0 && sp > 0, "lp_add: pool must be initialized");
-                assert!(da * rb == db * ra, "lp_add: not in pool ratio");
-                assert!(rm < ra, "lp_add: shares rem range");
-                assert!(sp * da == ds * ra + rm, "lp_add: proportional shares (floor totalShares·dA/R_A)");
-                // The minted LP-share note opens to d_shares (can't claim more than earned).
+                // The minted LP-share note opens to the DERIVED d_shares (can't claim more than earned).
                 assert!(verify_opening_sigma(&s_pt, d_shares, &s_sig_r, &s_sig_z, &ctx), "lp_add: share opening");
-                assert!((ra + da) <= u64::MAX as u128 && (rb + db) <= u64::MAX as u128 && (sp + ds) <= u64::MAX as u128, "lp_add: overflow");
 
                 nullifiers.push(a_nu);
                 nullifiers.push(b_nu);
@@ -579,7 +612,7 @@ pub fn main() {
                 liquidity.push(LpSettlement {
                     poolId: pid.into(),
                     reserveAPre: U256::from(r_a_pre), reserveBPre: U256::from(r_b_pre), sharesPre: U256::from(shares_pre),
-                    reserveAPost: U256::from((ra + da) as u64), reserveBPost: U256::from((rb + db) as u64), sharesPost: U256::from((sp + ds) as u64),
+                    reserveAPost: U256::from(r_a_post as u64), reserveBPost: U256::from(r_b_post as u64), sharesPost: U256::from(s_post as u64),
                 });
             }
             OP_LP_REMOVE => {
@@ -618,6 +651,8 @@ pub fn main() {
                 let b_owner = r32();
                 let b_sig_r = decompress(&r33()).expect("lp_remove: B sigma R");
                 let b_sig_z = scalar_reduce_be(&r32());
+                let op_deadline: u64 = io::read(); // bound in the LP's sigma (per-op Expired)
+                if op_deadline != 0 { min_deadline = if min_deadline == 0 { op_deadline } else { min_deadline.min(op_deadline) }; }
 
                 // Intent context binds the spent LP-share note + the two minted A/B notes + the
                 // amounts: the box can't redirect the withdrawn A/B notes or alter d_shares/dA/dB, and
@@ -625,7 +660,7 @@ pub fn main() {
                 let ctx = intent_context(
                     b"tacit-lp-remove-v1", &chain_binding, &asset_a, &asset_b,
                     &[(s_cx, s_cy, s_owner), (a_cx, a_cy, a_owner), (b_cx, b_cy, b_owner)],
-                    &[d_shares, d_a, d_b],
+                    &[d_shares, d_a, d_b, op_deadline],
                 );
 
                 // Spend the LP-share note: membership + ν + cross-lane + opening sigma (binds d_shares).
@@ -640,6 +675,10 @@ pub fn main() {
                 let ra = r_a_pre as u128; let rb = r_b_pre as u128;
                 let sp = shares_pre as u128; let ds = d_shares as u128;
                 assert!(sp > 0 && ds > 0 && ds <= sp, "lp_remove: shares in range");
+                // The locked MINIMUM_LIQUIDITY can never be removed (no note holds it), so totalShares
+                // stays ≥ MINIMUM_LIQUIDITY — keeping the (pair,fee) slot live after a full exit. Reject
+                // a remove that would breach it in-guest (fail-fast; the contract enforces the same gate).
+                assert!(sp - ds >= MINIMUM_LIQUIDITY, "lp_remove: would breach MINIMUM_LIQUIDITY floor");
                 // Proportional withdrawal, floor toward the pool (dust stays for remaining LPs).
                 assert!((rem_a as u128) < sp, "lp_remove: remA range");
                 assert!(ra * ds == da * sp + rem_a as u128, "lp_remove: dA = floor(R_A·shares/total)");
@@ -734,9 +773,11 @@ pub fn main() {
                 ctx_notes.push((t_in_cx, t_in_cy, taker_owner));
                 if let Some((cx, cy, _, _, _)) = t_change { ctx_notes.push((cx, cy, taker_owner)); }
                 ctx_notes.push((t_rv_cx, t_rv_cy, taker_owner));
+                let op_deadline: u64 = io::read(); // bound in BOTH parties' sigmas (per-op Expired)
+                if op_deadline != 0 { min_deadline = if min_deadline == 0 { op_deadline } else { min_deadline.min(op_deadline) }; }
                 let ctx = intent_context(
                     b"tacit-otc-intent-v1", &chain_binding, &asset_a, &asset_b,
-                    &ctx_notes, &[v_a, v_b],
+                    &ctx_notes, &[v_a, v_b, op_deadline],
                 );
 
                 // ---- Authorizations: each party's input opens (proving the spend is theirs) and
@@ -873,9 +914,11 @@ pub fn main() {
                 let mut b_notes: Vec<([u8; 32], [u8; 32], [u8; 32])> =
                     vec![(fund_cx, fund_cy, buyer_owner), (ra_cx, ra_cy, buyer_owner)];
                 if let Some((cx, cy, _, _, _)) = refund_note { b_notes.push((cx, cy, buyer_owner)); }
+                let op_deadline: u64 = io::read(); // buyer's bid expiry, bound in their pre-signed sigma (per-op Expired)
+                if op_deadline != 0 { min_deadline = if min_deadline == 0 { op_deadline } else { min_deadline.min(op_deadline) }; }
                 let buyer_ctx = intent_context(
                     b"tacit-bid-buyer-v1", &chain_binding, &asset_a, &asset_b,
-                    &b_notes, &[min_fill, max_fill, price, increment, chosen_f],
+                    &b_notes, &[min_fill, max_fill, price, increment, chosen_f, op_deadline],
                 );
                 assert!(verify_opening_sigma(&fund_pt, v_fund, &fund_sig_r, &fund_sig_z, &buyer_ctx), "bid: funding opening");
                 assert!(verify_opening_sigma(&ra_pt, chosen_f, &ra_sig_r, &ra_sig_z, &buyer_ctx), "bid: buyer-recv-a opening");
@@ -905,6 +948,96 @@ pub fn main() {
                 if let Some((cx, cy, _, _, _)) = refund_note { leaves.push(leaf(&asset_b, &cx, &cy, &buyer_owner)); } // buyer refund
                 if let Some((cx, cy, _, _, _)) = s_change { leaves.push(leaf(&asset_a, &cx, &cy, &s_owner)); } // seller change
             }
+            OP_SWAP_ROUTE => {
+                // Confidential MULTIHOP: route one input note through up to MAX_ROUTE_HOPS pools to one
+                // output note. Intermediate amounts flow as VALUES (only the route's start input + final
+                // output are notes), so the path stays private and atomic in one proof. Each hop is a
+                // constant-product exact-in swap (get_amount_out, fee-charged); each touched pool stages a
+                // SwapSettlement the existing settle swap-loop applies (gate pre==live → set post), so the
+                // route needs NO new contract surface. The trader is protected by the final min_out, the
+                // LPs by each hop's constant-product non-decrease.
+                let asset_0 = r32(); // the input asset (start of the route)
+                let (in_cx, in_cy, in_pt) = r_commitment();
+                let in_owner = r32();
+                let in_leaf_index: u64 = io::read();
+                let in_path = r_path();
+                let amount_in: u64 = io::read();
+                let in_sig_r = decompress(&r33()).expect("route: in sigma R");
+                let in_sig_z = scalar_reduce_be(&r32());
+                let n_hops: u32 = io::read();
+                assert!(n_hops >= 1 && n_hops <= MAX_ROUTE_HOPS, "route: hop count out of range");
+                let min_out: u64 = io::read();
+                let (out_cx, out_cy, out_pt) = r_commitment();
+                let out_owner = r32();
+                let out_sig_r = decompress(&r33()).expect("route: out sigma R");
+                let out_sig_z = scalar_reduce_be(&r32());
+                let op_deadline: u64 = io::read(); // bound in the trader's sigma (per-op Expired)
+                if op_deadline != 0 { min_deadline = if min_deadline == 0 { op_deadline } else { min_deadline.min(op_deadline) }; }
+
+                // Walk the hops: compute each pool's exact-in output, thread it into the next hop, and stage
+                // a SwapSettlement per hop. Per-hop reserves are witnessed (the prover supplies the live
+                // pre); the contract's pre==live gate + sequential application force them to be the real,
+                // chained reserves — so the route can't settle against stale or fabricated pool state.
+                let mut cur_asset = asset_0;
+                let mut cur_amount: u64 = amount_in;
+                let mut hop_swaps: Vec<SwapSettlement> = Vec::with_capacity(n_hops as usize);
+                for _ in 0..n_hops {
+                    let asset_next = r32();
+                    let fee_bps: u32 = io::read();
+                    let reserve_a_pre: u64 = io::read(); // CANONICAL reserves (low asset = reserveA)
+                    let reserve_b_pre: u64 = io::read();
+                    assert!(cur_asset != asset_next, "route: hop maps an asset to itself");
+                    let pid = pool_id(&cur_asset, &asset_next, fee_bps);
+                    // Orientation: the pool stores reserveA for the canonical-low asset. cur_is_lo ⇒ the
+                    // flow is low→high (input is reserveA, output reserveB); else high→low. pool_id sorts
+                    // internally, so the pid is identical either way — only the in/out mapping flips.
+                    let cur_is_lo = bitcoin::be_bytes_lte(&cur_asset, &asset_next);
+                    let (r_in, r_out) = if cur_is_lo { (reserve_a_pre, reserve_b_pre) } else { (reserve_b_pre, reserve_a_pre) };
+                    assert!(r_in > 0 && r_out > 0, "route: hop pool not initialized");
+                    let out = get_amount_out(cur_amount, r_in, r_out, fee_bps);
+                    assert!(out > 0, "route: hop output rounds to zero");
+                    let r_out_post = r_out as u128 - out; // out < r_out by the formula → no underflow, reserve stays > 0
+                    let r_in_post = r_in as u128 + cur_amount as u128;
+                    assert!(r_in_post <= u64::MAX as u128, "route: hop reserve overflow");
+                    // Constant-product non-decrease (LP protection): (R_in+in)·(R_out−out) ≥ R_in·R_out.
+                    assert!(r_in_post * r_out_post >= r_in as u128 * r_out as u128, "route: constant-product decreased");
+                    let (reserve_a_post, reserve_b_post) = if cur_is_lo { (r_in_post, r_out_post) } else { (r_out_post, r_in_post) };
+                    hop_swaps.push(SwapSettlement {
+                        poolId: pid.into(),
+                        reserveAPre: U256::from(reserve_a_pre), reserveBPre: U256::from(reserve_b_pre),
+                        reserveAPost: U256::from(reserve_a_post as u64), reserveBPost: U256::from(reserve_b_post as u64),
+                    });
+                    cur_asset = asset_next;
+                    cur_amount = out as u64;
+                }
+                let amount_out = cur_amount;
+                let asset_final = cur_asset;
+                assert!(amount_out >= min_out, "route: min_out");
+
+                // Bind the route ENDPOINTS + amounts to BOTH notes: the box can't redirect the output
+                // (out_owner is in the context) or re-price (amount_in / amount_out are). The path's only
+                // effect is amount_out — pinned here — so a re-route that changed the result would fail the
+                // output opening or min_out; the trader gets exactly what they signed for, or the tx reverts.
+                let ctx = intent_context(
+                    b"tacit-route-intent-v1", &chain_binding, &asset_0, &asset_final,
+                    &[(in_cx, in_cy, in_owner), (out_cx, out_cy, out_owner)],
+                    &[amount_in, amount_out, min_out, n_hops as u64, op_deadline],
+                );
+
+                // Spend the input note (membership + ν + cross-lane + opening binds amount_in).
+                let in_lf = leaf(&asset_0, &in_cx, &in_cy, &in_owner);
+                assert!(spend_root != [0u8; 32], "route: membership requires a non-zero spend root");
+                assert!(keccak_merkle_verify(&in_lf, in_leaf_index, &in_path, &spend_root), "route: membership");
+                let nu = nullifier(&in_cx, &in_cy);
+                if bitcoin_spent_root != [0u8; 32] { check_btc_nonmembership(&nu, &bitcoin_spent_root); }
+                assert!(verify_opening_sigma(&in_pt, amount_in, &in_sig_r, &in_sig_z, &ctx), "route: input opening");
+                // The output note opens to the final amount_out (only the trader, who knows r_out, can spend it).
+                assert!(verify_opening_sigma(&out_pt, amount_out, &out_sig_r, &out_sig_z, &ctx), "route: output opening");
+
+                nullifiers.push(nu);
+                leaves.push(leaf(&asset_final, &out_cx, &out_cy, &out_owner));
+                for s in hop_swaps { swaps.push(s); }
+            }
             _ => panic!("unknown op type"),
         }
     }
@@ -926,6 +1059,7 @@ pub fn main() {
         assetMetas: asset_metas,
         swaps,
         liquidity,
+        deadline: min_deadline,
     };
     io::commit_slice(&pv.abi_encode());
 }

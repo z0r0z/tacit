@@ -1,9 +1,9 @@
 # SPEC §5.60–§5.63 Amendment — Trustless ETH Bridge (tETH)
 
-> **STATUS: DRAFT.** Adds a trustless Ethereum↔Tacit bridge using a
-> Tornado-shape mixer on Ethereum for deposit privacy plus a ZK Bitcoin
-> inclusion proof for trustless withdrawal. Introduces four new opcodes:
-> `T_BRIDGE_DEPOSIT` (`0x60`), `T_BRIDGE_BURN` (`0x61`),
+> **STATUS: LIVE on mainnet (hardened).** Adds a trustless Ethereum↔Tacit
+> bridge using a Tornado-shape mixer on Ethereum for deposit privacy plus a
+> ZK Bitcoin inclusion proof for trustless withdrawal. Introduces four new
+> opcodes: `T_BRIDGE_DEPOSIT` (`0x60`), `T_BRIDGE_BURN` (`0x61`),
 > `T_BRIDGE_ROTATE` (`0x62`), `T_BRIDGE_NOTE` (`0x63`).
 >
 > The reference instance is **tETH** — ETH wrapped 1:1 (wei-denominated
@@ -12,10 +12,22 @@
 > Tacit-side burn to the Ethereum contract via a ZK Bitcoin inclusion
 > proof.
 >
-> **Trust profile:** Groth16 soundness, Poseidon collision resistance,
-> secp256k1 discrete-log hardness, Ethereum contract correctness, Bitcoin
-> PoW header chain validity. No federation, no oracle, no co-signer, no
-> bonded operator.
+> **The live hardened bridge wraps this Groth16 deposit/burn design inside
+> an SP1 state-proof layer** (see "Live implementation" below): an SP1
+> `SP1PoolRootVerifier` proves the Tacit pool root from *complete* Bitcoin
+> blocks — Groth16-verifying every envelope so no leaf can be omitted or
+> faked — and an accepted-burn registry binds each withdrawal to an
+> SP1-proven burn. The §5.60–§5.63 cryptographic design below (Poseidon
+> deposit tree + `withdraw.circom` deposit/burn proofs) is unchanged and
+> accurate; the SP1 layer sits above it as the anti-omission backstop.
+>
+> **Trust profile:** SP1 zkVM soundness (the pool-root state proof) +
+> Groth16 soundness (deposit/burn proofs, and the per-envelope proofs the
+> SP1 guest verifies) + Poseidon collision resistance + secp256k1
+> discrete-log hardness + Ethereum contract correctness + Bitcoin PoW
+> header chain validity. No federation, no oracle, no co-signer, no bonded
+> operator. The SP1 verifier is pinned to the immutable Groth16 leaf, not
+> the upgradeable gateway.
 >
 > **Scope of unchanged behavior.** No existing opcode, asset, AMM pool,
 > or intent semantics change. This amendment ADDS a fifth custody-kind
@@ -92,6 +104,39 @@ features.
 │                                                                     │
 └─────────────────────────────────────────────────────────────────────┘
 ```
+
+---
+
+## Live implementation (what shipped vs. this draft)
+
+The hardened mainnet bridge implements the design below with two reconciliations a
+reviewer should know up front:
+
+- **Contract name.** The Ethereum contract is `contracts/src/TacitBridgeMixer.sol`
+  (the diagram's `TacitETHMixer.sol` is the original name). It keeps the Poseidon
+  deposit tree (`deposit()`), the burn-nullifier set, and the Bitcoin header relay
+  exactly as specified.
+- **SP1 state-proof layer (added, anti-omission).** Beyond the per-deposit/per-burn
+  Groth16 proofs this draft specifies, the live bridge gates withdrawals on an SP1
+  proof of the Tacit **pool root computed from complete Bitcoin blocks**:
+  - `SP1PoolRootVerifier` (SP1 guest at `contracts/sp1/{program,tree,script}`,
+    Groth16-verifies *every* envelope in each block — `program/src/groth16.rs` — so a
+    relayer cannot omit or fake a leaf) advances a running pool root; `deposit()`
+    queries `lastProvenPoolIndex` and a **mint-only capacity reserve** bounds Ethereum
+    deposits not yet seen by the prover.
+  - An **accepted-burn registry** records only SP1-proven burns (claim ID bound to
+    `nullifier ‖ denom ‖ poolRoot ‖ recipient ‖ bindHash`); `withdrawFromBurn()` pays
+    out only against a registered burn, and burns survive later state advancement.
+  - The contract verifies the SP1 proof through `ISP1Verifier` pinned to the immutable
+    Groth16 leaf (not the upgradeable gateway); the committed canonical ELF + its vkey
+    are pinned (`contracts/sp1/elf-vkey-pin.json`, `verify-vkey-pin.sh`). The prover box
+    must run the committed ELF bytes (drift → `ProofInvalid`).
+
+Live mainnet addresses (2026-06-03 hardened redeploy): mixer `0x6929acf0`, SP1 verifier
+`0x19CC65a1` (→ Groth16 leaf `0xb69f2584`), relay `0x45AA7939`, burn-verifier
+`0x031b22ba`, state-proof vkey `0x003e5d74`, asset id `0x3cba71e1`, genesis BTC height
+952127. Dapp is open at a capped pilot. Everything in §5.60–§5.63 below remains the
+normative deposit/burn cryptography; this section is the deployment-shape delta.
 
 ---
 

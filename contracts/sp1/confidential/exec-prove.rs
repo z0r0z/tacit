@@ -7,6 +7,23 @@
 use sp1_sdk::{blocking::{ProverClient, Prover, ProveRequest}, SP1Stdin, Elf, ProvingKey, HashableKey};
 const ELF: &[u8] = include_bytes!("/root/work/cxfer/guest/target/elf-compilation/riscv64im-succinct-zkvm-elf/release/cxfer-guest");
 fn hexv(s: &str) -> Vec<u8> { hex::decode(s.trim_start_matches("0x")).unwrap() }
+
+// Fail-closed vkey guard: the derived vkey MUST equal the pinned PROGRAM_VKEY, else a drifting box
+// rebuild (different toolchain/deps than the committed elf/cxfer-guest) produces a proof that reverts
+// in ConfidentialPool.settle. Set EXPECT_VKEY=<pinned vkey> OR ELF_VKEY_PIN=<path to
+// elf-vkey-pin.json>; the prove aborts BEFORE the GPU spend on any mismatch.
+fn expected_vkey(field: &str) -> String {
+    if let Ok(v) = std::env::var("EXPECT_VKEY") { return v.trim().to_lowercase(); }
+    let path = std::env::var("ELF_VKEY_PIN")
+        .expect("set EXPECT_VKEY=<pinned vkey> or ELF_VKEY_PIN=<path to elf-vkey-pin.json> so a drifting rebuild can't produce on-chain-rejected proofs");
+    let j: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).expect("read ELF_VKEY_PIN")).expect("parse ELF_VKEY_PIN");
+    j[field].as_str().expect("pin field missing").trim().to_lowercase()
+}
+fn assert_vkey(actual: &str, field: &str) {
+    let exp = expected_vkey(field);
+    let act = actual.trim().to_lowercase();
+    assert_eq!(act, exp, "VKEY DRIFT: derived {act} != pinned {field} {exp} — this ELF won't verify against the deployed contract; rebuild from the committed source so the box runs the pinned bytes before proving");
+}
 fn main() {
     let f: serde_json::Value = serde_json::from_str(&std::fs::read_to_string("/root/work/cxfer/fixtures/transfer_op.json").unwrap()).unwrap();
     let mut stdin = SP1Stdin::new();
@@ -44,7 +61,9 @@ fn main() {
     if mode != "groth16" {
         let client = ProverClient::builder().cpu().build();
         let pk = client.setup(Elf::Static(ELF)).expect("setup failed");
-        println!("VKEY={}", pk.verifying_key().bytes32());
+        let vk = pk.verifying_key().bytes32();
+        println!("VKEY={vk}");
+        assert_vkey(&vk, "program_vkey");
         println!("proving compressed (cpu)...");
         let proof = client.prove(&pk, stdin).compressed().run().expect("compressed proof failed");
         client.verify(&proof, pk.verifying_key(), None).expect("local verify failed");
@@ -54,7 +73,9 @@ fn main() {
     }
     let client = ProverClient::builder().cuda().build();
     let pk = client.setup(Elf::Static(ELF)).expect("setup failed");
-    println!("VKEY={}", pk.verifying_key().bytes32());
+    let vk = pk.verifying_key().bytes32();
+    println!("VKEY={vk}");
+    assert_vkey(&vk, "program_vkey");
     println!("proving groth16 (cuda)...");
     let proof = client.prove(&pk, stdin).groth16().run().expect("groth16 proof failed");
     client.verify(&proof, pk.verifying_key(), None).expect("local verify failed");

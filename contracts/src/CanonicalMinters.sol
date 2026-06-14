@@ -80,9 +80,9 @@ contract CappedMintMinter is CanonicalMinter {
     uint64 public immutable MINT_DEADLINE; // 0 = open forever
     uint256 public minted;                 // lifetime minted; monotone (burns do not decrease it)
 
-    error NotAuthority();
-    error CapExceeded();
     error MintClosed();
+    error CapExceeded();
+    error NotAuthority();
     error ZeroRecipient();
 
     event Minted(address indexed to, uint256 amount, uint256 minted);

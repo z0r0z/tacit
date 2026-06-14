@@ -134,8 +134,9 @@ pub fn compute_merkle_root(txids: &[[u8; 32]]) -> [u8; 32] {
     layer[0]
 }
 
-/// Single SHA-256 (the Tacit asset-id / domain hash — distinct from the double-SHA txid).
-fn sha256_once(data: &[u8]) -> [u8; 32] {
+/// Single SHA-256 (the Tacit asset-id / domain hash — distinct from the double-SHA txid). Also the
+/// SP1 public-values commit hash the reflection guest feeds `verify_sp1_proof` (Mode B recursion).
+pub fn sha256_once(data: &[u8]) -> [u8; 32] {
     Sha256::digest(data).into()
 }
 
@@ -193,6 +194,81 @@ pub fn parse_burn_envelope(env: &[u8]) -> Option<([u8; 32], [u8; 32], [u8; 32])>
     let nullifier: [u8; 32] = env[65..97].try_into().ok()?;
     let dest: [u8; 32] = env[97..129].try_into().ok()?;
     Some((asset, nullifier, dest))
+}
+
+/// Parse a T_CROSSOUT_MINT envelope (opcode 0x65) → (assetId, claimId, Cx, Cy, owner). Layout:
+/// opcode(1) ‖ assetId(32) ‖ claimId(32) ‖ Cx(32) ‖ Cy(32) ‖ owner(32) = 161 bytes (the dapp's
+/// `encodeCrossoutMint`). The Ethereum→Bitcoin cross-out: a note burned for Bitcoin on the
+/// ConfidentialPool, re-minted here as a Bitcoin pool note. The reflection prover folds it ONLY if
+/// the cross-out is a member of the eth-reflection crossOutSet (Mode B), so a fabricated mint enters
+/// no value. `owner` is carried for completeness; a Bitcoin-destined cross-out's reflected leaf uses
+/// the zero owner sentinel (see `ScanReflection::fold_crossout`). None if malformed.
+pub fn parse_crossout_mint_envelope(env: &[u8]) -> Option<([u8; 32], [u8; 32], [u8; 32], [u8; 32], [u8; 32])> {
+    if env.len() < 161 || env[0] != 0x65 {
+        return None;
+    }
+    let asset: [u8; 32] = env[1..33].try_into().ok()?;
+    let claim_id: [u8; 32] = env[33..65].try_into().ok()?;
+    let cx: [u8; 32] = env[65..97].try_into().ok()?;
+    let cy: [u8; 32] = env[97..129].try_into().ok()?;
+    let owner: [u8; 32] = env[129..161].try_into().ok()?;
+    Some((asset, claim_id, cx, cy, owner))
+}
+
+/// Read output `vout` of a (segwit or legacy) Bitcoin tx → `(value_sats, scriptPubKey)`. Mirrors
+/// `compute_txid`'s walk; fully bounds-checked. `None` on a malformed tx or an out-of-range vout.
+/// Used by the cBTC.zk sats-lock value-entry to read the locked output's value + vault script.
+pub fn parse_tx_output(tx_data: &[u8], vout: u32) -> Option<(u64, Vec<u8>)> {
+    if tx_data.len() < 4 {
+        return None;
+    }
+    let is_segwit = tx_data.len() > 5 && tx_data[4] == 0x00 && tx_data[5] == 0x01;
+    let mut pos = if is_segwit { 6 } else { 4 };
+    let (input_count, vi_len) = read_varint(tx_data, pos)?;
+    pos = pos.checked_add(vi_len)?;
+    for _ in 0..input_count {
+        pos = pos.checked_add(36)?; // prev outpoint (txid 32 + vout 4)
+        let (script_len, vi_len) = read_varint(tx_data, pos)?;
+        pos = pos.checked_add(vi_len)?.checked_add(script_len)?.checked_add(4)?; // scriptSig + sequence
+    }
+    let (output_count, vi_len) = read_varint(tx_data, pos)?;
+    pos = pos.checked_add(vi_len)?;
+    if (vout as usize) >= output_count {
+        return None;
+    }
+    for i in 0..output_count {
+        let val_end = pos.checked_add(8)?;
+        if val_end > tx_data.len() {
+            return None;
+        }
+        let value = u64::from_le_bytes(tx_data[pos..val_end].try_into().ok()?);
+        pos = val_end;
+        let (script_len, vi_len) = read_varint(tx_data, pos)?;
+        pos = pos.checked_add(vi_len)?;
+        let script_end = pos.checked_add(script_len)?;
+        if script_end > tx_data.len() {
+            return None;
+        }
+        if i == vout as usize {
+            return Some((value, tx_data[pos..script_end].to_vec()));
+        }
+        pos = script_end;
+    }
+    None
+}
+
+/// cBTC.zk sats-lock envelope (`T_CBTC_LOCK`, opcode 0x66): `asset(32) ‖ lock_vout(4 LE) ‖ Cx(32) ‖
+/// Cy(32)` — the asset, which output of THIS tx is the sats-lock, and the minted cBTC note commitment.
+/// The opening sigma (proving the note opens to the lock's value) rides the witness, not the envelope.
+pub fn parse_cbtc_lock_envelope(env: &[u8]) -> Option<([u8; 32], u32, [u8; 32], [u8; 32])> {
+    if env.len() < 101 || env[0] != 0x66 {
+        return None;
+    }
+    let asset: [u8; 32] = env[1..33].try_into().ok()?;
+    let lock_vout = u32::from_le_bytes(env[33..37].try_into().ok()?);
+    let cx: [u8; 32] = env[37..69].try_into().ok()?;
+    let cy: [u8; 32] = env[69..101].try_into().ok()?;
+    Some((asset, lock_vout, cx, cy))
 }
 
 /// Parse a confidential-transfer envelope → (assetId, the N output commitments as compressed

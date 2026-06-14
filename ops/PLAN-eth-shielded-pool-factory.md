@@ -6,6 +6,20 @@ and withdraw entirely on Ethereum, no Bitcoin round-trip; (2) an ERC20 factory
 with Tacit asset semantics and per-token shielded pools; (3) bridged Tacit
 assets as ERC20s (follow-up design pass). Target chain: Ethereum L1.
 
+> **AS-BUILT (2026-06-12).** The contracts this plan originally specified —
+> `ShieldedPool.sol` (the native ETH mixer, §2) and the Tier-A in-Solidity
+> confidential factory (`TacitConfidential*`, `ConfidentialNoteCore`,
+> `Secp256k1`, §3) — were an experiment and were **removed in `5505615`** (1912
+> deletions). The shipped confidential surface is the SP1-batched
+> **`ConfidentialPool`** (Tier B; live on Sepolia) plus the public
+> **`CanonicalAssetFactory`** hub. `ShieldedPool` (the *hides-who* half) is
+> therefore currently **unbuilt**; the only live mixer primitive is
+> `TacitBridgeMixer.sol` (tETH). The native-ETH shielded pool remains a valid
+> follow-up (see `PLAN-eth-native-privacy.md`). §2/§3 below are retained for the
+> construction record; **§7 is the live composition interface** for a
+> re-introduced `ShieldedPool` against the now-live `ConfidentialPool` — additive,
+> needs no `ConfidentialPool` change.
+
 **No new trusted setup.** Every pool verifies withdrawals against the finalized
 mixer ceremony. The withdraw circuit is domain-generic by construction:
 `denomination` is a public input (one ceremony covers every pool size) and
@@ -267,3 +281,79 @@ Two stages, mirroring the tETH plan.
 - No new trusted setup on the launch path: pool reuses the mixer ceremony VK;
   factory reuses the secp Bulletproofs tooling + range primitive; Tier B reuses
   the bridge SP1 trust root.
+
+---
+
+## 7. `ShieldedPool` ↔ `ConfidentialPool` composition (forward interface)
+
+> `ShieldedPool` is currently **unbuilt** (removed in `5505615`); `ConfidentialPool`
+> is **live on Sepolia**. This section specifies how a re-introduced `ShieldedPool`
+> composes with it so the *hides-who* mixer and the *hides-how-much* confidential
+> lane stack at the transparent boundary. The composition is **additive**:
+> `ConfidentialPool` does not change; only `ShieldedPool` (when rebuilt) and one new
+> router are involved.
+
+**The seam is a sequence, not a shared note.** `ShieldedPool` notes are
+Poseidon/BN254, denominated, key-bound nullifier; `ConfidentialPool` notes are
+secp256k1, exact-amount, commitment nullifier (`keccak(Cx‖Cy‖"spent")`). They do
+not merge — value flows *across* the wrap boundary. **Entry:** mixer-withdraw →
+`wrap`. **Exit:** `unwrap` → mixer-deposit → mixer-withdraw. The mixer breaks
+depositor↔note; the pool blinds everything after.
+
+### Interface invariants
+1. **Asset identity.** The composed `ShieldedPool`'s underlying == the asset
+   `ConfidentialPool` escrows. Native ETH composes directly: `ConfidentialPool.wrap`
+   (`ConfidentialPool.sol:557`) already takes `payable` and escrows `msg.value` for
+   the `address(0)` asset — no WETH hop.
+2. **Denomination ↔ value alignment.** `wrap` requires `amount % unitScale == 0`
+   and `value = amount/unitScale ≤ u64`. So each `ShieldedPool` denom must be a
+   multiple of the asset's `unitScale` and fit u64. For ETH this already holds —
+   both sides use `unitScale = 1e10` and the `1e13…1e20` wei ladder is aligned — so
+   a `ShieldedPool` denom `D` wei maps to confidential value `D/1e10`, and the `wrap`
+   amount on the privacy path is always a ladder value (it joins the denom set
+   rather than standing out).
+3. **Destination binding (atomic-safe entry).** `ShieldedPool`'s withdraw
+   `bindHash` preimage (§2 step 3) gains one field, `downstreamCommit` (32 B; `0` =
+   plain withdraw). On the composed path it equals `ConfidentialPool`'s deposit id
+   `keccak256(abi.encode(assetId, value, cx, cy, owner))`, so the withdrawn value
+   reaches only the intended note. Because `withdraw.circom` constrains only
+   `bind_hash²`, the preimage layout is the verifier's choice (§ intro) — this is a
+   **contract-side field, no new circuit and no new ceremony**. It only has to be
+   designed into `ShieldedPool` before it deploys.
+4. **Recovery.** Derive the confidential note blinding `r` deterministically
+   (`HMAC(seed, "tacit-eth-cnote-v1" ‖ …)`), matching §2.4's deterministic
+   `ShieldedPool` notes, so `wrap`-created notes are seed-recoverable without a
+   stored memo.
+
+### `MixWrapRouter` (the only new contract)
+Entry — atomic, one transaction:
+```solidity
+function mixToConfidential(WithdrawProof p, uint256 denomWei,
+                           bytes32 assetId, bytes32 cx, bytes32 cy, bytes32 owner) external {
+    uint256 value = denomWei / UNIT_SCALE;
+    bytes32 depositId = keccak256(abi.encode(assetId, value, cx, cy, owner));
+    require(p.downstreamCommit == depositId, "destination");                 // invariant 3
+    shieldedPool.withdraw(p, /*recipient*/ address(this), /*relayer*/ 0, /*fee*/ 0); // mixer → router
+    confidentialPool.wrap{value: denomWei}(assetId, denomWei, cx, cy, owner);        // → fresh note
+}
+```
+Net: depositor ↔ confidential note unlinked (mixer set), the `wrap` amount is a
+ladder value, and the value never rests at a transparent user address.
+
+Exit — v1 two-step (no `ConfidentialPool` change): `unwrap` (a `settle`
+withdrawal) pays a ladder denom to a fresh address (recipient bound in-guest) →
+the user deposits it into `ShieldedPool` → later withdraws to the final address.
+Exit privacy is the round-trip, not atomicity.
+
+### What changes where
+| Component | Change |
+|---|---|
+| `ConfidentialPool` | **none** — router calls existing `wrap` / `settle` |
+| `ShieldedPool` (when rebuilt) | `bindHash` preimage gains `downstreamCommit` — contract-side only, no circuit/ceremony |
+| `MixWrapRouter` | new, external |
+| Atomic *exit* (bind the downstream mixer commitment into the `Withdrawal` record) | deferred — needs a settle-guest/vkey change; not v1 |
+
+### Default policy
+Default-on at entry/exit; opt-in in-pool (swap/LP/OTC want exact amounts +
+immediacy). The dapp offers only ladder amounts on the privacy path, with a
+deposit→wrap delay for timing decorrelation.
