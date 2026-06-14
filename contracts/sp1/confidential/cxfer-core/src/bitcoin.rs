@@ -134,6 +134,30 @@ pub fn compute_merkle_root(txids: &[[u8; 32]]) -> [u8; 32] {
     layer[0]
 }
 
+/// Verify a Bitcoin merkle inclusion PATH: fold `txid` (internal order) with its `siblings` bottom-up,
+/// choosing left/right by each level's index bit, returning the resulting merkle root. Byte-identical to
+/// `compute_merkle_root` (double-SHA256 of `left ‖ right`, internal order). The caller asserts the returned
+/// root == a block's merkle root whose header chains to the relay anchor (`verify_header_chain`) — that is a
+/// CONFIRMED-tx proof WITHOUT a full block scan, which the per-bridge provenance needs (a tx is real iff it
+/// sits in a PoW-buried block). `index` is the tx's 0-based position in the block; odd-node duplication is
+/// implicit in the witnessed siblings (a last odd node's sibling is itself).
+pub fn verify_merkle_path(txid: &[u8; 32], siblings: &[[u8; 32]], mut index: u32) -> [u8; 32] {
+    let mut acc = *txid;
+    for sib in siblings {
+        let mut combined = Vec::with_capacity(64);
+        if index & 1 == 0 {
+            combined.extend_from_slice(&acc);
+            combined.extend_from_slice(sib);
+        } else {
+            combined.extend_from_slice(sib);
+            combined.extend_from_slice(&acc);
+        }
+        acc = double_sha256(&combined);
+        index >>= 1;
+    }
+    acc
+}
+
 /// Single SHA-256 (the Tacit asset-id / domain hash — distinct from the double-SHA txid). Also the
 /// SP1 public-values commit hash the reflection guest feeds `verify_sp1_proof` (Mode B recursion).
 pub fn sha256_once(data: &[u8]) -> [u8; 32] {
@@ -573,6 +597,26 @@ fn read_varint(data: &[u8], pos: usize) -> Option<(usize, usize)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn merkle_path_verifies_inclusion() {
+        let t: Vec<[u8; 32]> = (0u8..4).map(|i| [i; 32]).collect();
+        let root = compute_merkle_root(&t);
+        let h = |a: &[u8; 32], b: &[u8; 32]| {
+            let mut c = Vec::with_capacity(64);
+            c.extend_from_slice(a);
+            c.extend_from_slice(b);
+            double_sha256(&c)
+        };
+        let h23 = h(&t[2], &t[3]);
+        // each leaf's path reproduces the root
+        assert_eq!(verify_merkle_path(&t[0], &[t[1], h23], 0), root, "index-0 path → root");
+        assert_eq!(verify_merkle_path(&t[1], &[t[0], h23], 1), root, "index-1 path → root");
+        // a wrong sibling does NOT reproduce the root (forged inclusion rejected)
+        assert_ne!(verify_merkle_path(&t[1], &[t[2], h23], 1), root, "wrong sibling rejected");
+        // single-tx block: empty path → the txid itself
+        assert_eq!(verify_merkle_path(&t[0], &[], 0), t[0], "single-tx path = txid");
+    }
 
     #[test]
     fn parse_cetch_extracts_supply_commitment_and_authority() {
