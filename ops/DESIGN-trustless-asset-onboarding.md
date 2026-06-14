@@ -10,14 +10,15 @@ For a `bridge_mint` to be backed (not inflation), the reflection must verify the
 Opening proves `C → v`; it does **not** prove `C` is real. So the reflection must **track the asset's supply**.
 
 ## Bridgeability is a CRITERION, not an allowlist  (← resolves the allowlist)
-Drop the hardcoded `fold_cbtc_lock` `CBTC_ZK_ASSET_ID` check. No vkey-pinned asset list, no admin key, no
-per-deploy param. An asset is bridgeable **iff its backing is verifiable in-reflection by its declared
-model**, derived from its own etch (trustless — the "allow" is proven state, not a key):
-- **Mintable** (etch `mint_authority != NONE`): `cmint`-deposit — issuer-signed new issuance (§6.1).
-- **Fixed-supply confidential** (`mint_authority == NONE`, e.g. **TAC**): burn + **reflected-supply
-  membership** — the burned note must prove membership in the asset's reflected supply.
-- **Real-BTC** (cBTC.zk): the public sats lock (`cbtc_lock`, unchanged).
-Adding an asset = **bootstrapping its supply** (a one-time compute), never a config change. Fully trustless.
+**cBTC.zk and TAC are DISTINCT concepts — keep them separate.** cBTC.zk's `cbtc_lock` is the real-BTC
+self-custody peg (rug-tolerant, buffer-backed, oracle-free); its hardcoded asset pin is **correct for that
+one peg, not a hack — leave it untouched.** TAC onboarding is a **separate new fold** whose admission is a
+**criterion, not a list**: any asset whose own etch declares **fixed-supply** (`mint_authority == NONE`) and
+whose burn proves realness is bridgeable — derived per-asset from its etch, trustless, no list / admin /
+per-deploy. (Mintable assets, `mint_authority != NONE`, use `cmint`-deposit, §6.1 — also separate.)
+So "allowlist" was an artifact of trying to *generalize* `cbtc_lock`; once the concepts are separate,
+cBTC.zk keeps its correct pin and TAC's fold is criterion-based. Bridging a new fixed-supply asset = its
+etch + burn verify, never a config change.
 
 ## Supply tracking: etch-anchored (the supply is FIXED at the etch — no full-history scan)
 **Key efficiency (fixed-supply only):** the entire supply is minted ONCE at the **etch** — a single block.
@@ -55,9 +56,20 @@ general (non-fixed-supply, untraceable) case ever needs it does the recursive-ch
 - **Rug-proof:** burn, not a retained lock (so no buffer / no rug-detection / no lock lifecycle).
 - **Conservation:** burn on Bitcoin (−v) = mint on ETH (+v); reverse symmetric. Global supply constant.
 
+## Findings / preconditions (impl phase 1)
+- **CETCH layout discrepancy (resolve first):** cxfer-core `parse_etch_meta` reads `cid(32)` right after
+  `decimals`, but the live worker `decodeCEtchPayload` reads `commitment(33) ‖ amount_ct(8) ‖ rp_len ‖
+  rangeproof ‖ mint_authority(32) ‖ img_len ‖ image_uri` there (no cid). The **worker is the live truth**;
+  `parse_cetch` follows it. Flag whether `parse_etch_meta` is T_PETCH(0x27)-only or has a latent CETCH(0x21)
+  gap (it would misread the supply commitment as a cid).
+- **Trustless supply source = on-chain `C_0`** (the CETCH `commitment(33)`), confirmed via header+merkle —
+  NOT an IPFS JSON (CETCH carries `image_uri`, a URI, not a content-addressed cid). Better: fully on-chain.
+
 ## Phases (implementation)
-1. **Criterion** — drop the `cbtc_lock` asset hardcode → etch-declared-model dispatch. (Bounded; resolves the allowlist.)
-2. **Etch supply anchor** — read the etch block (`C_0` + `S`), confirmed via header + merkle to the relay anchor; cross-check the cid-committed IPFS metadata (witnessed JSON hash == on-chain cid). One block. (Replaces the ~days full-scan bootstrap.)
+1. **`parse_cetch` + criterion** — extract `C_0` + `mint_authority` + decimals per the canonical (worker)
+   CETCH layout; the fixed-supply criterion is `mint_authority == NONE`. **`cbtc_lock` untouched.** Resolves the allowlist via the criterion.
+2. **Etch supply anchor** — anchor the supply at the etch block via the on-chain `C_0`, confirmed by header
+   + merkle to the relay anchor. One block. (Replaces the ~days full-scan bootstrap.)
 3. **burn-deposit fold** — cxfer-core + reflect.rs: burn + per-bridge realness (provenance-to-`C_0` for unmixed / mixer-deposit-backed for mixed) + opening + range + nullifier; JS worker mirror; adversarial KATs (fabricated commitment, non-descendant note, wrong value, replay, out-of-range, double-burn, over-cap → each folds nothing).
 4. **Witness assembly** — holder/worker builds the note's provenance DAG to `C_0` (or the mixer proof) + the etch-anchor witness.
 5. **Re-prove → new `BITCOIN_RELAY_VKEY`** (fold into the mainnet re-anchor, task #11) + redeploy.
