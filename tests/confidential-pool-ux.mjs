@@ -13,13 +13,13 @@ secp.etc.hmacSha256Sync = (key, ...m) => hmac(nobleSha256, key, _cat(m));
 
 const sha256 = (b) => new Uint8Array(createHash('sha256').update(Buffer.from(b)).digest());
 const deps = { secp, keccak256: keccak_256, sha256 };
-const POOL = '0x32e46B097830D93d50b0CBC89c018bCFD79b7B5a';
+const POOL = '0x991726A547DCdB57ba660E395D9c7D7C3FcAdF79';
 
 test('config: Sepolia pilot pool + cETH', () => {
   const c = CONFIDENTIAL_POOL_UX.sepolia;
   assert.equal(c.pool, POOL);
   assert.equal(c.chainId, 11155111);
-  assert.equal(c.deployBlock, 11052948);
+  assert.equal(c.deployBlock, 11057316);
   const ceth = c.assets.find((a) => a.ticker === 'cETH');
   assert.ok(ceth, 'cETH registered');
   assert.equal(ceth.assetId, '0x2a0f3cb492f4add38bada8b7ef18de79445846ce7c5b7dc1c4b0d768467a04c2');
@@ -46,7 +46,7 @@ test('fetchEvents: pool-scoped LeavesInserted/NullifiersSpent filter from the de
   assert.deepEqual(evs, []);
   assert.equal(captured.method, 'eth_getLogs');
   assert.equal(captured.params[0].address, POOL);
-  assert.equal(captured.params[0].fromBlock, '0x' + (11052948).toString(16));
+  assert.equal(captured.params[0].fromBlock, '0x' + (11057316).toString(16));
   assert.equal(captured.params[0].topics[0].length, 2, 'topic0 OR-filter = [LeavesInserted, NullifiersSpent]');
 });
 
@@ -85,7 +85,7 @@ test('buildWrap: coherent note + pool.wrap calldata', () => {
   assert.equal(cy, w.note.cy);
   assert.equal(BigInt(w.note.value), BigInt(amountWei));
   assert.equal(w.leaf, ux.pool.leaf(w.note.asset, cx, cy, w.note.owner));
-  assert.equal(w.to, '0x32e46B097830D93d50b0CBC89c018bCFD79b7B5a');
+  assert.equal(w.to, '0x991726A547DCdB57ba660E395D9c7D7C3FcAdF79');
   assert.equal(w.amount, amountWei);
   // calldata = 4-byte selector + 5 × 32-byte words
   assert.equal(w.calldata.length, 2 + 2 * (4 + 5 * 32));

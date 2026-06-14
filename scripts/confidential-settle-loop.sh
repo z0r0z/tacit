@@ -11,7 +11,7 @@
 # which serializes prove requests. Config via env (confidential-settle.env), all required:
 #   WORKER_BASE  - e.g. https://api.tacit.finance (no trailing slash)
 #   BOX_TOKEN    - Bearer for /confidential/job + /confidential/ack (= worker CONFIDENTIAL_BOX_TOKEN)
-#   POOL         - ConfidentialPool address (Sepolia 0x32e46B09… for the v1 pilot)
+#   POOL         - ConfidentialPool address (Sepolia 0x991726A5… for the v1 pilot)
 #   RPC          - Sepolia RPC
 #   ETH_PK       - settle gas key (the box .ethpk)
 # Optional: CXFER_DIR (/root/work/cxfer), SLEEP_SECONDS (15),

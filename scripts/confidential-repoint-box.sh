@@ -1,5 +1,5 @@
 #!/bin/bash
-# Repoint the GPU-box confidential-settle loop at a new ConfidentialPool (Sepolia v1 pilot 0x32e46B09…).
+# Repoint the GPU-box confidential-settle loop at a new ConfidentialPool (Sepolia v1 pilot 0x991726A5…).
 #
 # WHAT IT DOES (on the box, over SSH): sets POOL (+ EXPECT_VKEY) in confidential-settle.env, prints the
 # relay key's Sepolia balance (settle gas), and restarts the `cps` tmux loop. Once running, a dapp wrap
@@ -19,7 +19,7 @@
 # Optional: SSH_KEY (~/.ssh/vast_prover), POOL, EXPECT_VKEY, ENV_FILE, CXFER_DIR.
 set -euo pipefail
 
-POOL="${POOL:-0x32e46B097830D93d50b0CBC89c018bCFD79b7B5a}"
+POOL="${POOL:-0x991726A547DCdB57ba660E395D9c7D7C3FcAdF79}"
 EXPECT_VKEY="${EXPECT_VKEY:-0x00d5b572003254b7bb0e50b567d1d92a273b915f0117f5e3bc328236326a9df7}"
 SSH_KEY="${SSH_KEY:-$HOME/.ssh/vast_prover}"
 CXFER_DIR="${CXFER_DIR:-/root/work/cxfer}"

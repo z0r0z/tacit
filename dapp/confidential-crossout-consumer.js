@@ -15,7 +15,7 @@
 export const CONFIDENTIAL_POOL_DEPLOYMENTS = {
   // Sepolia pilot v1 (2026-06-14): the bidirectional-bridge ConfidentialPool. Keyed by the BITCOIN network
   // it bridges to (signet); the address is the Sepolia pool the consumer scans for CrossOutRecorded.
-  signet:  { pool: '0x32e46B097830D93d50b0CBC89c018bCFD79b7B5a', deployBlock: 11052948 },
+  signet:  { pool: '0x991726A547DCdB57ba660E395D9c7D7C3FcAdF79', deployBlock: 11057316 },
   mainnet: { pool: null, deployBlock: 0 },
 };
 

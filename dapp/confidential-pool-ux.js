@@ -17,8 +17,8 @@ import { makeEvmTx } from './evm-tx.js';
 export const CONFIDENTIAL_POOL_UX = {
   sepolia: {
     chainId: 11155111,
-    pool: '0x32e46B097830D93d50b0CBC89c018bCFD79b7B5a',
-    deployBlock: 11052948,
+    pool: '0x991726A547DCdB57ba660E395D9c7D7C3FcAdF79',
+    deployBlock: 11057316,
     rpcs: [
       'https://ethereum-sepolia-rpc.publicnode.com',
       'https://1rpc.io/sepolia',
