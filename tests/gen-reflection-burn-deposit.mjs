@@ -21,6 +21,7 @@ import { createHash } from 'node:crypto';
 import { makeConfidentialProver } from '../dapp/evm-confidential.js';
 import { bppRangeProve } from '../dapp/bulletproofs-plus.js';
 import { makeConfidentialPool } from '../dapp/confidential-pool.js';
+import { makeBurnDepositAssembler } from '../dapp/burn-deposit-assembler.js';
 import { computeTxid, computeMerkleRoot, bitsToTarget, dsha256, varint, cat } from './btc-mini.mjs';
 
 const _cat = (a) => { const t = a.reduce((s, x) => s + x.length, 0); const o = new Uint8Array(t); let p = 0; for (const x of a) { o.set(x, p); p += x.length; } return o; };
@@ -159,14 +160,10 @@ const prior = {
   height: c0.height,
   cbtcLocks: [], cbtcBackingSats: 0, // the gap the committed assembler/harness omit (guest reads them)
 };
-const spentInsert = state.foldSpent(envNu);
-const burnInsert = state.foldBurn(envNu, envDest);
-
-// ── 7. Fixture (the burnDeposit witness on the scan tx). Single-tx blocks → merkle root == txid. ──
-const burnDeposit = {
-  etchTx: hexp(etchTx),
-  etchIndex: 0,
-  etchSiblings: [],
+// ── 7. Fixture (the burnDeposit witness) — built via the shared dapp/burn-deposit-assembler.js the worker
+// uses (it computes the merkle paths + the spent/burn IMT inserts). Single-tx blocks → merkle root == txid.
+const burnDeposit = makeBurnDepositAssembler({ dsha256, cat, bytesToHex: hexp }).assembleBurnDeposit({
+  etch: { tx: hexp(etchTx), blockTxids: [etchTxid], index: 0 },
   provHeaders: [hexp(etchHdr), hexp(cxHdr)],
   cxfers: [{
     txid: cxTxidHex,
@@ -176,13 +173,11 @@ const burnDeposit = {
     // TAMPER=1 → a corrupt kernel sig: verify_cxfer_conservation fails → verify_provenance Err → the
     // dispatch SKIPS (folds nothing), proving fail-closed (the burn-set must stay UNCHANGED).
     kernelSig: process.env.TAMPER ? ('0x' + 'ff'.repeat(64)) : hexp(cxSig),
-    merkleSiblings: [],
-    merkleIndex: 0,
-    confirmedBlockRoot: hexp(computeMerkleRoot([cxTxid])),
+    blockTxids: [cxTxid], index: 0,
   }],
-  burnedCx, burnedCy,
-  spentInsert, burnInsert,
-};
+  burned: { cx: burnedCx, cy: burnedCy },
+  nu: envNu, dest: envDest, scanState: state,
+});
 const fixture = {
   note: 'TAC burn-deposit: C_0 → conserving cxfer → burned note → 0x2B burn; native-exec the reflect guest to fold it.',
   prior,
