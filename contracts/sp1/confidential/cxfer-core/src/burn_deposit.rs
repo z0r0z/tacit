@@ -12,7 +12,8 @@
 //!     otherwise slip past the per-CXFER crypto. It is crypto-free so it can be tested adversarially in
 //!     isolation; the fold composes it OVER the verified CXFERs.
 
-use crate::outpoint_key;
+use crate::bitcoin::verify_merkle_path;
+use crate::{commitment_hash_compressed, decompress, outpoint_key, verify_cxfer_conservation, Point};
 
 /// One provenance CXFER whose crypto the caller has ALREADY verified (inclusion + conservation, see module
 /// doc). Carries only the post-verification SHAPE the linkage needs: the spent inputs (their outpoint + the
@@ -91,6 +92,89 @@ pub fn verify_provenance_dag(
         .any(|(o, ch)| o == burned_outpoint && ch == burned_commitment_hash);
     let consumed_burned = consumed.iter().any(|o| o == burned_outpoint);
     produced_burned && !consumed_burned
+}
+
+/// One provenance CXFER plus the witnesses to verify its crypto: compressed input/output commitments, the
+/// conservation kernel + range proof, and a merkle inclusion path to a CONFIRMED block merkle root. The
+/// caller (the fold, in reflect.rs) supplies `confirmed_block_root` from the reflection's own relay-anchored
+/// header sync — `verify_provenance` only checks the tx folds into THAT root, it does not itself validate PoW.
+pub struct ProvenanceWitness {
+    pub txid: [u8; 32],
+    pub input_outpoints: Vec<([u8; 32], u32)>,
+    pub input_commitments: Vec<[u8; 33]>,  // compressed; decompressed for conservation
+    pub output_commitments: Vec<[u8; 33]>, // compressed
+    pub output_vouts: Vec<u32>,
+    pub range_proof: Vec<u8>,
+    pub kernel_sig: [u8; 64],
+    pub merkle_siblings: Vec<[u8; 32]>,
+    pub merkle_index: u32,
+    pub confirmed_block_root: [u8; 32],
+}
+
+/// Verify a burned note descends from the etch supply note `C_0` through `cxfers` — the full per-bridge
+/// realness, scan-free. For each CXFER: (1) inclusion — `verify_merkle_path == confirmed_block_root`; (2)
+/// conservation — `verify_cxfer_conservation(asset, ..)` (value AND asset, bound to the ONE `asset`, so a
+/// relabel CXFER signed under a different asset fails here). The verified CXFERs are then reduced to their
+/// linkage shape (commitment hashes from the SAME commitments fed to conservation, so a value-swapping seam
+/// can't open) and checked by `verify_provenance_dag`. Returns `Err` (fold nothing — skip-not-panic) on the
+/// first failure. The caller then records ν (`fold_spent` + `fold_burn`) and applies the `S`-cap.
+pub fn verify_provenance(
+    asset: &[u8; 32],
+    c0_outpoint: &[u8; 32],
+    c0_commitment_hash: &[u8; 32],
+    burned_outpoint: &[u8; 32],
+    burned_commitment_hash: &[u8; 32],
+    cxfers: &[ProvenanceWitness],
+) -> Result<(), &'static str> {
+    if cxfers.is_empty() {
+        return Err("burn-deposit: empty provenance");
+    }
+    let mut verified: Vec<VerifiedCxfer> = Vec::with_capacity(cxfers.len());
+    for cx in cxfers {
+        if cx.input_commitments.len() != cx.input_outpoints.len() {
+            return Err("burn-deposit: input outpoint/commitment length mismatch");
+        }
+        if cx.output_commitments.len() != cx.output_vouts.len() {
+            return Err("burn-deposit: output commitment/vout length mismatch");
+        }
+        // 1. Inclusion: the tx folds into the caller-confirmed (relay-anchored) block merkle root.
+        if verify_merkle_path(&cx.txid, &cx.merkle_siblings, cx.merkle_index) != cx.confirmed_block_root {
+            return Err("burn-deposit: provenance cxfer not in the confirmed block");
+        }
+        // 2. Conservation: value + asset, bound to the ONE asset.
+        let mut input_points: Vec<Point> = Vec::with_capacity(cx.input_commitments.len());
+        for c in &cx.input_commitments {
+            input_points.push(decompress(c).ok_or("burn-deposit: input commitment not a curve point")?);
+        }
+        if !verify_cxfer_conservation(
+            asset,
+            &cx.input_outpoints,
+            &input_points,
+            &cx.output_commitments,
+            &cx.range_proof,
+            &cx.kernel_sig,
+        ) {
+            return Err("burn-deposit: provenance cxfer does not conserve value/asset");
+        }
+        // 3. Reduce to the linkage shape — commitment hashes derived from the SAME commitments conservation
+        //    just verified, so a link can't swap a low-value producing output for a high-value claimed input.
+        let mut inputs = Vec::with_capacity(cx.input_outpoints.len());
+        for (i, (txid, vout)) in cx.input_outpoints.iter().enumerate() {
+            let ch = commitment_hash_compressed(&cx.input_commitments[i])
+                .ok_or("burn-deposit: input commitment not a curve point")?;
+            inputs.push((*txid, *vout, ch));
+        }
+        let mut outputs = Vec::with_capacity(cx.output_commitments.len());
+        for (i, c) in cx.output_commitments.iter().enumerate() {
+            let ch = commitment_hash_compressed(c).ok_or("burn-deposit: output commitment not a curve point")?;
+            outputs.push((cx.output_vouts[i], ch));
+        }
+        verified.push(VerifiedCxfer { txid: cx.txid, inputs, outputs });
+    }
+    if !verify_provenance_dag(c0_outpoint, c0_commitment_hash, burned_outpoint, burned_commitment_hash, &verified) {
+        return Err("burn-deposit: burned note does not descend from C_0");
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -173,5 +257,85 @@ mod tests {
     #[test]
     fn empty_dag_rejected() {
         assert!(!verify_provenance_dag(&c0_op(), &c0_ch(), &op(0x0A, 0), &[0xAA; 32], &[]));
+    }
+
+    // ---- verify_provenance (composition over real conserving crypto) ----
+
+    fn strip(s: &str) -> &str {
+        s.strip_prefix("0x").unwrap_or(s)
+    }
+    fn arr32(s: &str) -> [u8; 32] {
+        hex::decode(strip(s)).unwrap().try_into().unwrap()
+    }
+    fn arr33(s: &str) -> [u8; 33] {
+        hex::decode(strip(s)).unwrap().try_into().unwrap()
+    }
+
+    /// A real conserving 1-in/1-out CXFER (the `conserving_m1` fixture) framed as a depth-1 distribution:
+    /// the fixture's input note IS the etch supply note C_0, its output IS the burned note. Returns the
+    /// anchor params + a valid `ProvenanceWitness` (single-tx block, so the confirmed root is the txid).
+    fn build_valid() -> ([u8; 32], [u8; 32], [u8; 32], [u8; 32], [u8; 32], ProvenanceWitness) {
+        let f: serde_json::Value =
+            serde_json::from_str(include_str!("../../fixtures/cxfer_conservation_diff.json")).unwrap();
+        let v = f["vectors"].as_array().unwrap().iter()
+            .find(|x| x["name"].as_str() == Some("conserving_m1")).expect("conserving_m1 vector");
+        let asset = arr32(v["asset"].as_str().unwrap());
+        let in_txid = arr32(v["inputs"][0]["txid"].as_str().unwrap());
+        let in_vout = v["inputs"][0]["vout"].as_u64().unwrap() as u32;
+        let in_c = arr33(v["inputs"][0]["commitment"].as_str().unwrap());
+        let out_c = arr33(v["outsCompressed"][0].as_str().unwrap());
+        let sig: [u8; 64] = hex::decode(strip(v["kernelSig"].as_str().unwrap())).unwrap().try_into().unwrap();
+        let rp = hex::decode(strip(v["rangeProof"].as_str().unwrap())).unwrap();
+
+        let c0_outpoint = outpoint_key(&in_txid, in_vout);
+        let c0_ch = commitment_hash_compressed(&in_c).unwrap();
+        let prov_txid = [0x99u8; 32];
+        let confirmed_root = verify_merkle_path(&prov_txid, &[], 0); // single-tx block: root == txid
+        let burned_outpoint = outpoint_key(&prov_txid, 0);
+        let burned_ch = commitment_hash_compressed(&out_c).unwrap();
+        let w = ProvenanceWitness {
+            txid: prov_txid,
+            input_outpoints: vec![(in_txid, in_vout)],
+            input_commitments: vec![in_c],
+            output_commitments: vec![out_c],
+            output_vouts: vec![0],
+            range_proof: rp,
+            kernel_sig: sig,
+            merkle_siblings: vec![],
+            merkle_index: 0,
+            confirmed_block_root: confirmed_root,
+        };
+        (asset, c0_outpoint, c0_ch, burned_outpoint, burned_ch, w)
+    }
+
+    #[test]
+    fn verify_provenance_accepts_real_depth1_from_c0() {
+        let (asset, c0_op, c0_ch, b_op, b_ch, w) = build_valid();
+        assert!(
+            verify_provenance(&asset, &c0_op, &c0_ch, &b_op, &b_ch, &[w]).is_ok(),
+            "a real conserving depth-1 distribution from C_0 verifies"
+        );
+    }
+
+    #[test]
+    fn verify_provenance_rejects_unconfirmed_cxfer() {
+        let (asset, c0_op, c0_ch, b_op, b_ch, mut w) = build_valid();
+        w.confirmed_block_root = [0xEE; 32]; // != verify_merkle_path → inclusion fails
+        assert!(verify_provenance(&asset, &c0_op, &c0_ch, &b_op, &b_ch, &[w]).is_err());
+    }
+
+    #[test]
+    fn verify_provenance_rejects_nonconserving_cxfer() {
+        let (asset, c0_op, c0_ch, b_op, b_ch, mut w) = build_valid();
+        w.kernel_sig = [0u8; 64]; // garbage kernel → conservation fails (inclusion still passes)
+        assert!(verify_provenance(&asset, &c0_op, &c0_ch, &b_op, &b_ch, &[w]).is_err());
+    }
+
+    #[test]
+    fn verify_provenance_rejects_wrong_c0_anchor() {
+        let (asset, c0_op, _c0_ch, b_op, b_ch, w) = build_valid();
+        // a real conserving cxfer, but its input does not match the declared C_0 commitment → not a
+        // C_0 descendant → the linkage rejects (no fabricating the supply anchor).
+        assert!(verify_provenance(&asset, &c0_op, &[0x00; 32], &b_op, &b_ch, &[w]).is_err());
     }
 }
