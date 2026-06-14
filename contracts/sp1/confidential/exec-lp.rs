@@ -65,9 +65,7 @@ fn main() {
     stdin.write(&hexv(b["sigR"].as_str().unwrap()));
     stdin.write(&hexv(b["sigZ"].as_str().unwrap()));
 
-    stdin.write(&f["dShares"].as_u64().unwrap());
-    stdin.write(&f["rem"].as_u64().unwrap());
-
+    // d_shares is now DERIVED in-guest (the V2 min rule) — no longer streamed; the share note follows B.
     let s = &f["share"];
     stdin.write(&hexv(s["cx"].as_str().unwrap()));
     stdin.write(&hexv(s["cy"].as_str().unwrap()));

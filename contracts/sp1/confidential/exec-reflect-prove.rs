@@ -64,8 +64,9 @@ fn write_stdin(f: &serde_json::Value) -> SP1Stdin {
             }
             for o in tx["outputs"].as_array().unwrap() {
                 // the note leaf is DERIVED in-guest (reflected_note_leaf) from the envelope's
-                // asset+commitment — not streamed; only the append path + vout are witnessed.
-                path(&mut s, &o["notePath"]); s.write(&(o["vout"].as_u64().unwrap() as u32));
+                // asset+commitment, and the outpoint vout = the output's commitment index — neither is
+                // streamed; only the append path is witnessed.
+                path(&mut s, &o["notePath"]);
             }
         }
     }

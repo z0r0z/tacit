@@ -5,7 +5,7 @@ import {CanonicalBridgedERC20} from "./CanonicalBridgedERC20.sol";
 
 /// @title CanonicalAssetFactory
 /// @notice CREATE2 deployer for canonical bridged ERC20s, at an address that is a pure
-///         function of `(assetId, minter, symbol, decimals)` (the salt; init code is
+///         function of `(assetId, minter, symbol, decimals, cid)` (the salt; init code is
 ///         constant). The backing authority and metadata are bound into the salt — not the
 ///         id alone — so the canonical address is specific to a given minter + metadata,
 ///         each deterministic-to-real for a canonical asset. The bridge computes that
@@ -49,7 +49,13 @@ contract CanonicalAssetFactory {
         return keccak256(abi.encode(assetId, minter, symbol_, decimals_, cid));
     }
 
-    /// @notice The canonical ERC20 for (assetId, minter, symbol, decimals, cid), or 0 if unset.
+    /// @notice The ERC20 for (assetId, minter, symbol, decimals, cid), or 0 if unset. This is a
+    ///         minter+metadata-specific lookup, NOT the canonicity oracle for an asset: only an
+    ///         EVM-native etch's id self-certifies its metadata (`verifyMetadata`). For an
+    ///         externally-derived id (a Bitcoin etch, a wrapped ERC20) the id does not commit to its
+    ///         metadata, so several variants can deploy at different addresses; the canonical token for
+    ///         a bridged asset is `ConfidentialPool.canonicalTokenFor(assetId)` (first-write-wins on
+    ///         the backing authority), not this lookup.
     function tokenOf(bytes32 assetId, address minter, string calldata symbol_, uint8 decimals_, bytes32 cid)
         external
         view
@@ -86,8 +92,8 @@ contract CanonicalAssetFactory {
 
     event Deployed(bytes32 indexed assetId, address indexed token, address indexed minter, string symbol, uint8 decimals, bytes32 cid);
 
-    error AlreadyDeployed();
     error LabelTooLong();
+    error AlreadyDeployed();
 
     /// @notice Canonical, language-neutral commitment to a token's per-asset metadata:
     ///         sha256( u8(len symbol) ‖ symbol ‖ u8(decimals) ‖ cid ). (`name` is the constant
@@ -130,7 +136,9 @@ contract CanonicalAssetFactory {
     ///         is deployed. The metadata + backing authority are deterministic-to-real for
     ///         a canonical asset, so the address stays predictable and is specific to that
     ///         (minter, metadata) tuple — `cid` included, so no wrong-cid pre-deploy can
-    ///         shadow the canonical address.
+    ///         shadow the canonical address. Like `tokenOf`, this is a (minter, metadata)-specific
+    ///         address, not the canonicity oracle for an externally-derived id — for a bridged asset
+    ///         resolve through `ConfidentialPool.canonicalTokenFor`.
     function predict(bytes32 assetId, address minter, string calldata symbol_, uint8 decimals_, bytes32 cid)
         public
         view
