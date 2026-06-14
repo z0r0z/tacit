@@ -66,6 +66,12 @@ fn write_stdin(f: &serde_json::Value) -> SP1Stdin {
     for kv in live { let t = kv.as_array().unwrap(); r32(&mut s, &t[0]); r32(&mut s, &t[1]); r32(&mut s, &t[2]); }
     r32(&mut s, &p["burnRoot"]);  s.write(&p["burnCount"].as_u64().unwrap());
     s.write(&p["height"].as_u64().unwrap());
+    // cBTC.zk resume state (guest reads it after height): the live self-custody locks (key,sats,asset)
+    // triples + the running backing sats. Tolerant of priors that omit it (empty set, 0 sats).
+    let cbtc = p.get("cbtcLocks").and_then(|v| v.as_array()).map(|a| a.as_slice()).unwrap_or(&[]);
+    s.write(&(cbtc.len() as u32));
+    for kv in cbtc { let t = kv.as_array().unwrap(); r32(&mut s, &t[0]); r32(&mut s, &t[1]); r32(&mut s, &t[2]); }
+    s.write(&p.get("cbtcBackingSats").and_then(|v| v.as_u64()).unwrap_or(0));
 
     s.write(&f["anchorHeight"].as_u64().unwrap());
     let headers = f["headers"].as_array().unwrap();
