@@ -63,7 +63,7 @@ not a fork.
 
 databases:
   - name: tacit-kv
-    plan: basic-256mb
+    plan: basic-1gb          # full prod snapshot imports to a ~456 MB table; 256mb is too small
 ```
 
 Secrets to set on the service (same names as the Cloudflare secrets):

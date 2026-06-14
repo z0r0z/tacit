@@ -21,6 +21,19 @@ The unit checks in the guest pin the logic; this proves it end-to-end. **Do not
 proceed past this step until it's green** — it's the gate before blessing the
 vkey.
 
+**Status (2026-06-06, run on `teth-gen1` @ 48c6720):**
+- ✅ real-proof suites (`Groth16VerifierReal` + `BridgeWithdrawRealProof`): 6/6
+- ✅ full contract suite (`forge test --no-match-test invariant`): 96/96
+- ✅ guest §8 unit checks (LOCK-3 cross-denom spendability, LOCK-4 window
+  anchoring/push + genesis-window, mint-only reserve, dispatch seams): 11/11
+- ✅ ELF sha pin (`0733309b…`); ELF→vkey binding confirmed transitively (the
+  box-derived vkey `0x000d5dfb…` is the deployed verifier's constructor arg
+  in the broadcast record)
+- The fabricated-window rejection is pinned at the guest layer (unit checks)
+  plus the verifier's state-commitment chain in the contract suite; a literal
+  adversarial SP1 proof against the live verifier is not automated — the
+  tiny-cap live stage (step 5) is the remaining end-to-end exercise.
+
 ## Step 2 — canonical ELF + vkey (you, Docker)
 
 `cd contracts/sp1 && ./build-guest.sh` (needs Docker, per the script header).
@@ -83,25 +96,28 @@ burn records start indexing with this deploy. Validated against every live
 mainnet deposit/export envelope and both mixers:
 `node tests/bridge-multigen.test.mjs` (26 checks).
 
-Post-deploy sequence:
-1. `wrangler deploy`, then confirm `/pools` for the gen-0 pool is unchanged.
-2. `POST /rescan?from=952127` (debug auth) — re-covers the gen-0 range so
-   historical burn nullifiers index under the fixed gate; re-scan writes are
-   dedup-gated, existing records unaffected.
-3. Re-run `tests/bridge-multigen.test.mjs` against the deployed worker.
+Post-deploy sequence — **DONE 2026-06-06** (versions f0e89757 + f91f2810):
+1. ✅ `wrangler deploy`; gen-0 `/pools` confirmed unchanged (4 leaves / 3
+   nullifiers).
+2. ✅ Historical burn backfill — done via the hint path instead of a rescan
+   (mainnet scans 1 block/tick, so a 430-block rewind would have paused new-op
+   indexing for ~36h). The hint endpoint now indexes burn nullifiers with the
+   same attribution + dedup as the cron scan; the one mainnet burn
+   (`a22fbe52…`, height 952190, recovered from the claim calldata on the
+   gen-0 mixer) is indexed. Future missed ops can be hinted the same way.
+3. ✅ `tests/bridge-multigen.test.mjs` re-run green against the deployed
+   worker (26/26).
 
-**Dapp routing status: op layer DONE** (generation context threads through
-bind hashes, pool trees, scanPools, all five builders, ETH claim, recovery,
-supply stats; records stamped + stored per-mixer; active generation stays the
-pilot so behavior is unchanged today). **Before the step-6 flip** (pointing
-deposits at alpha), finish the remaining active-generation-bound surfaces:
-- bridge modal / Holdings / resume UI handlers that read+write
-  `_BRIDGE_*_KEY()` directly (display + status updates; ~25 sites in the
-  49xxx region) — move reads to the merged views and writes to the record's
-  home key;
-- rotate-recipient note discovery (received-note derivation stamps the
-  sender's generation);
-- `_cleanStaleBridgeRecords` (active key only — run per generation).
+**Dapp routing status: DONE** (op layer + UI surfaces). Generation context
+threads through bind hashes, pool trees, scanPools, all five builders, the
+ETH claim, recovery, and supply stats; records are stamped and stored under
+per-mixer keys; the bridge modal / note lists / resume / repair surfaces read
+the merged generation views and write records at their home generation;
+rotate/import note recovery is per-generation; a manually-resumed burn
+recovers its generation from the envelope bind hash. Active generation stays
+the pilot, so behavior is unchanged until the step-6 flip — which is now a
+registry edit (alpha `live: true`, top-level fields → alpha) plus the
+blessed-vkey set.
 
 ## Step 5 — live tiny-cap round-trip (you + me)
 
