@@ -181,6 +181,48 @@ pub fn parse_etch_meta(env: &[u8]) -> Option<([u8; 16], u8, u8, [u8; 32])> {
     Some((ticker, tlen as u8, decimals, cid))
 }
 
+/// Parse a CETCH (0x21) confidential-etch reveal → (supply_commitment `C_0`[33], `mint_authority`[32],
+/// decimals). Byte-canonical with the live worker `decodeCEtchPayload`:
+///   `0x21 ‖ tlen(1,1..16) ‖ ticker(tlen) ‖ decimals(1,0..8) ‖ commitment(33) ‖ amount_ct(8) ‖`
+///   `rp_len(2 LE) ‖ rangeproof(rp_len) ‖ mint_authority(32) ‖ img_len(2 LE) ‖ image_uri`.
+/// `commitment` is the FIXED initial-supply Pedersen commitment (`C_0`) — the trustless supply anchor for
+/// the burn-and-mint onboarding (read once from the etch block; no full-history scan). NOTE: distinct from
+/// `parse_etch_meta`, whose cid-after-decimals shape is the T_PETCH(0x27) form; CETCH carries the supply
+/// commitment there, not a cid. None if malformed.
+pub fn parse_cetch(env: &[u8]) -> Option<([u8; 33], [u8; 32], u8)> {
+    if env.is_empty() || env[0] != 0x21 {
+        return None;
+    }
+    let mut p = 1usize;
+    let tlen = *env.get(p)? as usize;
+    p += 1;
+    if tlen < 1 || tlen > 16 {
+        return None;
+    }
+    p += tlen; // ticker
+    let decimals = *env.get(p)?;
+    p += 1;
+    if decimals > 8 {
+        return None;
+    }
+    let commitment: [u8; 33] = env.get(p..p + 33)?.try_into().ok()?;
+    p += 33;
+    p += 8; // amount_ct
+    let rp_len = (*env.get(p)? as usize) | ((*env.get(p + 1)? as usize) << 8);
+    p += 2;
+    p = p.checked_add(rp_len)?; // skip rangeproof
+    let mint_authority: [u8; 32] = env.get(p..p + 32)?.try_into().ok()?;
+    Some((commitment, mint_authority, decimals))
+}
+
+/// `MINT_AUTH_NONE` (all-zero) ⇒ a FIXED-SUPPLY asset (no issuer minting). The criterion — not an
+/// allowlist — gating the burn-and-mint onboarding path: a fixed-supply asset is eligible (its burn must
+/// then prove realness against the etch-anchored supply `C_0`); a non-zero authority is a mintable asset
+/// (the `cmint`-deposit path instead). cBTC.zk's real-BTC peg is its own concept (`fold_cbtc_lock`).
+pub fn is_fixed_supply(mint_authority: &[u8; 32]) -> bool {
+    mint_authority.iter().all(|&b| b == 0)
+}
+
 /// Parse a confidential bridge-burn envelope (opcode 0x2B) → (assetId, nullifier,
 /// destCommitment). `env` is the payload from `extract_taproot_envelope` (env[0] = opcode).
 /// Layout: opcode(1) ‖ assetId(32) ‖ bitcoinPoolRoot(32) ‖ nullifier(32) ‖ destCommitment(32).
@@ -509,6 +551,37 @@ fn read_varint(data: &[u8], pos: usize) -> Option<(usize, usize)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_cetch_extracts_supply_commitment_and_authority() {
+        // synthetic CETCH per the CANONICAL (worker decodeCEtchPayload) layout:
+        // 0x21 ‖ tlen ‖ ticker ‖ decimals ‖ commitment(33) ‖ amount_ct(8) ‖ rp_len(2 LE) ‖
+        // rangeproof(rp_len) ‖ mint_authority(32) ‖ img_len(2 LE) ‖ image_uri
+        let mut env = vec![0x21u8, 0x03, b'T', b'A', b'C', 0x08]; // opcode, tlen=3, "TAC", decimals=8
+        let c0 = [0xc0u8; 33];
+        env.extend_from_slice(&c0); // supply commitment C_0
+        env.extend_from_slice(&[0u8; 8]); // amount_ct
+        env.extend_from_slice(&[0x03, 0x00]); // rp_len = 3 (LE)
+        env.extend_from_slice(&[0xaa, 0xbb, 0xcc]); // rangeproof (3 bytes)
+        env.extend_from_slice(&[0u8; 32]); // mint_authority = NONE (fixed-supply)
+        env.extend_from_slice(&[0x00, 0x00]); // img_len = 0
+        let auth_off = 6 + 33 + 8 + 2 + 3; // opcode..decimals(6) + C_0(33) + amount_ct(8) + rp_len(2) + rp(3)
+
+        let (commitment, mint_authority, decimals) = parse_cetch(&env).expect("cetch");
+        assert_eq!(commitment, c0, "supply commitment C_0");
+        assert_eq!(decimals, 8, "decimals");
+        assert!(is_fixed_supply(&mint_authority), "all-zero authority ⇒ fixed-supply (TAC)");
+
+        // a non-zero mint_authority ⇒ mintable (the cmint-deposit path, not the burn path)
+        let mut env_mint = env.clone();
+        env_mint[auth_off] = 0x07;
+        let (_, ma, _) = parse_cetch(&env_mint).expect("cetch mintable");
+        assert!(!is_fixed_supply(&ma), "non-zero authority ⇒ mintable");
+
+        // gating: wrong opcode (T_PETCH) rejected; truncation within mint_authority rejected
+        assert!(parse_cetch(&[0x27u8, 0x02, b'H', b'I', 0x00]).is_none(), "T_PETCH opcode rejected");
+        assert!(parse_cetch(&env[..auth_off + 10]).is_none(), "truncated within mint_authority → None");
+    }
 
     fn build_reveal_tx(payload: &[u8]) -> Vec<u8> {
         let mut script = Vec::new();
