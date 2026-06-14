@@ -5958,8 +5958,8 @@ function magicMatches(bytes, mime) {
 }
 
 async function handlePin(req, env, cors) {
-  if (!env.PINATA_JWT) {
-    return jsonResponse({ error: 'server not configured (PINATA_JWT missing)' }, 500, cors);
+  if (!env.PINATA_JWT && !_filebaseConfigured(env)) {
+    return jsonResponse({ error: 'server not configured (no pin provider)' }, 500, cors);
   }
   const ip = req.headers.get('CF-Connecting-IP') || 'anon';
   const day = new Date().toISOString().slice(0, 10);
@@ -5989,35 +5989,12 @@ async function handlePin(req, env, cors) {
     return jsonResponse({ error: 'file content does not match declared mime' }, 415, cors);
   }
 
-  const ext = file.type.split('/')[1];
-  const pinFd = new FormData();
-  pinFd.append('file', new Blob([bytes], { type: file.type }), `tacit-${Date.now()}.${ext}`);
-  pinFd.append('pinataOptions', JSON.stringify({ cidVersion: 1 }));
-
-  let pinResp;
-  try {
-    pinResp = await fetch('https://api.pinata.cloud/pinning/pinFileToIPFS', {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${env.PINATA_JWT}` },
-      body: pinFd,
-    });
-  } catch { return jsonResponse({ error: 'pinata unreachable' }, 502, cors); }
-  if (!pinResp.ok) {
-    // Don't echo Pinata's response body to the client — some upstreams include
-    // request-context (auth headers, internal IDs) in error bodies, and the
-    // bearer JWT is long enough to fit in 240 chars. Log server-side; return
-    // only the status code to the caller.
-    try { console.error(`pinata ${pinResp.status}: ${(await pinResp.text()).slice(0, 240)}`); } catch {}
-    return jsonResponse({ error: `pinata error (status ${pinResp.status})` }, 502, cors);
-  }
-  const j = await pinResp.json();
-  if (!j.IpfsHash) return jsonResponse({ error: 'pinata returned no CID' }, 502, cors);
-  if (bytes.length <= _RAW_BLOCK_MAX && j.IpfsHash !== await _expectedRawCid(bytes)) {
-    return jsonResponse({ error: 'pin provider returned a CID that does not match the uploaded bytes' }, 502, cors);
-  }
+  let pinned;
+  try { pinned = await _pinFileToIpfs(env, bytes, file.type, 'tacit'); }
+  catch (e) { return jsonResponse({ error: e.msg || 'pin failed' }, e.status || 502, cors); }
 
   await env.UPLOAD_KV.put(kvKey, String(prior + 1), { expirationTtl: 90000 });
-  return jsonResponse({ cid: j.IpfsHash, size: j.PinSize ?? bytes.length }, 200, cors);
+  return jsonResponse({ cid: pinned.cid, size: pinned.size }, 200, cors);
 }
 
 // ============== Ceremony coordination (Groth16 Phase 2 MPC) ==============
@@ -6384,6 +6361,132 @@ async function _expectedRawCid(buf) {
   return 'b' + _b32Encode(cidBytes);
 }
 
+// ============== Filebase (S3 CAR-import) pinning — primary, Pinata fallback ==============
+// Filebase's plain S3 upload returns a different (CIDv0 dag-pb) CID, so for a
+// single raw block (<=256 KiB) we wrap the bytes in a one-block CARv1 and PUT
+// it with `x-amz-meta-import: car`: Filebase pins the exact DAG and echoes the
+// root in `x-amz-meta-cid`, which we assert equals the byte-derived CIDv1.
+// Multi-block payloads (>256 KiB) and any Filebase failure fall through to
+// Pinata, so on-chain CIDs stay byte-stable regardless of which provider wins.
+function _filebaseConfigured(env) {
+  return !!(env.FILEBASE_KEY && env.FILEBASE_SECRET && env.FILEBASE_BUCKET);
+}
+async function _rawCidBytes(buf) {
+  const d = new Uint8Array(await crypto.subtle.digest('SHA-256', buf));
+  const cidBytes = new Uint8Array(36);
+  cidBytes.set([0x01, 0x55, 0x12, 0x20]);
+  cidBytes.set(d, 4);
+  return cidBytes;
+}
+function _uvarint(n) {
+  const out = [];
+  while (n >= 0x80) { out.push((n & 0x7f) | 0x80); n = Math.floor(n / 128); }
+  out.push(n);
+  return Uint8Array.from(out);
+}
+function _concatU8(...arrs) {
+  let len = 0; for (const a of arrs) len += a.length;
+  const o = new Uint8Array(len); let p = 0;
+  for (const a of arrs) { o.set(a, p); p += a.length; }
+  return o;
+}
+// One raw block as CARv1. Header = dag-cbor {roots:[cid], version:1}; the CID
+// in the roots array is tag-42 with the 0x00 identity-multibase prefix.
+function _buildRawCarV1(cidBytes, data) {
+  const te = new TextEncoder();
+  const header = _concatU8(
+    Uint8Array.from([0xa2, 0x65]), te.encode('roots'),
+    Uint8Array.from([0x81, 0xd8, 0x2a, 0x58, 0x25, 0x00]), cidBytes,
+    Uint8Array.from([0x67]), te.encode('version'), Uint8Array.from([0x01]),
+  );
+  const block = _concatU8(_uvarint(cidBytes.length + data.length), cidBytes, data);
+  return _concatU8(_uvarint(header.length), header, block);
+}
+async function _hmacSha256(key, data) {
+  const te = new TextEncoder();
+  const k = await crypto.subtle.importKey('raw', typeof key === 'string' ? te.encode(key) : key, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+  return new Uint8Array(await crypto.subtle.sign('HMAC', k, typeof data === 'string' ? te.encode(data) : data));
+}
+function _hexLower(bytes) { let s = ''; for (const b of bytes) s += b.toString(16).padStart(2, '0'); return s; }
+// AWS SigV4-signed S3 request to Filebase (region us-east-1, service s3).
+async function _filebaseS3(env, method, key, body, extraHeaders = {}) {
+  const host = 's3.filebase.com', region = 'us-east-1', service = 's3';
+  const amzdate = new Date().toISOString().replace(/[:-]/g, '').replace(/\.\d{3}/, '');
+  const datestamp = amzdate.slice(0, 8);
+  const path = `/${env.FILEBASE_BUCKET}/${key}`;
+  const payloadHash = _hexLower(new Uint8Array(await crypto.subtle.digest('SHA-256', body)));
+  const headers = { 'x-amz-content-sha256': payloadHash, 'x-amz-date': amzdate, ...extraHeaders };
+  const allH = { host, ...Object.fromEntries(Object.entries(headers).map(([k, v]) => [k.toLowerCase(), v])) };
+  const signedKeys = Object.keys(allH).sort();
+  const canonHeaders = signedKeys.map((h) => `${h}:${String(allH[h]).trim()}\n`).join('');
+  const signedHeaders = signedKeys.join(';');
+  const canonReq = `${method}\n${path}\n\n${canonHeaders}\n${signedHeaders}\n${payloadHash}`;
+  const scope = `${datestamp}/${region}/${service}/aws4_request`;
+  const sts = `AWS4-HMAC-SHA256\n${amzdate}\n${scope}\n${_hexLower(new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(canonReq))))}`;
+  let k = await _hmacSha256('AWS4' + env.FILEBASE_SECRET, datestamp);
+  k = await _hmacSha256(k, region); k = await _hmacSha256(k, service); k = await _hmacSha256(k, 'aws4_request');
+  const sig = _hexLower(await _hmacSha256(k, sts));
+  const auth = `AWS4-HMAC-SHA256 Credential=${env.FILEBASE_KEY}/${scope}, SignedHeaders=${signedHeaders}, Signature=${sig}`;
+  return fetch(`https://${host}${path}`, { method, headers: { ...headers, Authorization: auth }, body: method === 'DELETE' ? undefined : body });
+}
+// Pin a single raw block (<=256 KiB) to Filebase via CAR import. Returns the
+// asserted CID on success, or null to fall back to Pinata. The object key is
+// the CID itself — content-addressed, so re-pinning the same bytes is
+// idempotent and never collides (the ticker-keyed-overwrite trap, neutralized).
+async function _tryPinFilebase(env, bytes) {
+  if (!_filebaseConfigured(env)) return null;
+  const len = bytes.byteLength ?? bytes.length;
+  if (len > _RAW_BLOCK_MAX) return null;
+  try {
+    const cidBytes = await _rawCidBytes(bytes);
+    const cid = 'b' + _b32Encode(cidBytes);
+    const car = _buildRawCarV1(cidBytes, bytes);
+    const r = await _filebaseS3(env, 'PUT', cid, car, { 'x-amz-meta-import': 'car', 'content-type': 'application/vnd.ipld.car' });
+    if (!r.ok) { try { console.error(`filebase ${r.status}: ${(await r.text()).slice(0, 200)}`); } catch {} return null; }
+    const got = r.headers.get('x-amz-meta-cid');
+    if (got !== cid) { console.error(`filebase returned ${got}; expected ${cid}`); return null; }
+    return cid;
+  } catch (e) { try { console.error('filebase pin failed:', e?.message); } catch {} return null; }
+}
+// Pin bytes to IPFS, CID-stable. Filebase primary (single raw block), Pinata
+// fallback + the multi-block path, with transient-error retry. Returns
+// { cid, size } or throws { status, msg }. For <=256 KiB the returned CID is
+// asserted byte-for-byte against the input.
+async function _pinFileToIpfs(env, bytes, contentType, filenameStem) {
+  const len = bytes.byteLength ?? bytes.length;
+  const fb = await _tryPinFilebase(env, bytes);
+  if (fb) return { cid: fb, size: len };
+  if (!env.PINATA_JWT) throw { status: 500, msg: 'no pin provider configured' };
+  const ext = (contentType || '').split('/')[1] || 'bin';
+  const pinFd = new FormData();
+  pinFd.append('file', new Blob([bytes], { type: contentType || 'application/octet-stream' }), `${filenameStem || 'tacit'}-${Date.now()}.${ext}`);
+  pinFd.append('pinataOptions', JSON.stringify({ cidVersion: 1 }));
+  // Retry transient Pinata failures (network blip / 5xx / 429); 4xx is
+  // deterministic (auth / payload) and surfaces immediately.
+  const delays = [0, 500, 1500, 3500];
+  let resp = null, lastErr = '';
+  for (let attempt = 0; attempt < delays.length; attempt++) {
+    if (delays[attempt]) await new Promise((r) => setTimeout(r, delays[attempt]));
+    try {
+      resp = await fetch('https://api.pinata.cloud/pinning/pinFileToIPFS', { method: 'POST', headers: { Authorization: `Bearer ${env.PINATA_JWT}` }, body: pinFd });
+    } catch (e) { lastErr = `pinata unreachable: ${e?.message || ''}`; resp = null; continue; }
+    if (resp.ok) break;
+    if (resp.status >= 400 && resp.status < 500 && resp.status !== 429) {
+      try { console.error(`pinata ${resp.status}: ${(await resp.text()).slice(0, 240)}`); } catch {}
+      throw { status: 502, msg: `pinata error (status ${resp.status})` };
+    }
+    try { lastErr = `pinata ${resp.status}: ${(await resp.text()).slice(0, 240)}`; } catch { lastErr = `pinata ${resp.status}`; }
+    resp = null;
+  }
+  if (!resp || !resp.ok) { if (lastErr) try { console.error(lastErr); } catch {} throw { status: 502, msg: lastErr || 'pinata unreachable after retries' }; }
+  const j = await resp.json();
+  if (!j.IpfsHash) throw { status: 502, msg: 'pinata returned no CID' };
+  if (len <= _RAW_BLOCK_MAX && j.IpfsHash !== await _expectedRawCid(bytes)) {
+    throw { status: 502, msg: 'pin provider returned a CID that does not match the uploaded bytes' };
+  }
+  return { cid: j.IpfsHash, size: j.PinSize ?? len };
+}
+
 // Pin an arbitrary binary blob to IPFS. Used for zkey files (~5 MB each).
 // MAX_BYTES env var caps total upload size; we want zkeys to fit so we
 // override locally to 16 MB minimum (the env default of 2 MB is for images).
@@ -6414,7 +6517,7 @@ async function pinBinaryToIpfs(env, bytes, filename, contentType = 'application/
 // files (zkey0, r1cs, ptau) + form field circuit_hash (sha256 of r1cs in hex).
 // First-write-wins per circuit_hash.
 async function handleCeremonyInit(req, env, cors) {
-  if (!env.PINATA_JWT) return jsonResponse({ error: 'PINATA_JWT missing' }, 500, cors);
+  if (!env.PINATA_JWT && !_filebaseConfigured(env)) return jsonResponse({ error: 'no pin provider configured' }, 500, cors);
   // SECURITY: coordinator-only. Without auth, an attacker could squat the
   // canonical (asset_id, denomination) pair by racing /ceremony/init with a
   // bad ptau the moment the r1cs file is published.
@@ -7230,7 +7333,7 @@ async function verifyDiscordGateProof(env, envelopeBytes) {
 }
 
 async function handleCeremonyContribute(req, env, circuitHash, cors, ctx) {
-  if (!env.PINATA_JWT) return jsonResponse({ error: 'PINATA_JWT missing' }, 500, cors);
+  if (!env.PINATA_JWT && !_filebaseConfigured(env)) return jsonResponse({ error: 'no pin provider configured' }, 500, cors);
   if (!/^[0-9a-f]{64}$/.test(circuitHash)) {
     return jsonResponse({ error: 'invalid circuit_hash' }, 400, cors);
   }
@@ -8227,7 +8330,7 @@ async function handleCeremonyRepairBeacon(req, env, circuitHash, cors, ctx) {
 // Same daily-limit + size-cap as /pin-json — there's no privileged path here,
 // just a different field schema.
 async function handlePinMixerVk(req, env, cors) {
-  if (!env.PINATA_JWT) return jsonResponse({ error: 'PINATA_JWT missing' }, 500, cors);
+  if (!env.PINATA_JWT && !_filebaseConfigured(env)) return jsonResponse({ error: 'no pin provider configured' }, 500, cors);
 
   const ip = req.headers.get('CF-Connecting-IP') || 'anon';
   const day = new Date().toISOString().slice(0, 10);
@@ -8263,35 +8366,15 @@ async function handlePinMixerVk(req, env, cors) {
     return jsonResponse({ error: 'vk exceeds 32 KB' }, 413, cors);
   }
 
-  const pinFd = new FormData();
-  pinFd.append('file', new Blob([json], { type: 'application/json' }), `tacit-mixer-vk-${Date.now()}.json`);
-  pinFd.append('pinataOptions', JSON.stringify({ cidVersion: 1 }));
-
-  let pinResp;
-  try {
-    pinResp = await fetch('https://api.pinata.cloud/pinning/pinFileToIPFS', {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${env.PINATA_JWT}` },
-      body: pinFd,
-    });
-  } catch { return jsonResponse({ error: 'pinata unreachable' }, 502, cors); }
-  if (!pinResp.ok) {
-    try { console.error(`pinata ${pinResp.status}: ${(await pinResp.text()).slice(0, 240)}`); } catch {}
-    return jsonResponse({ error: `pinata error (status ${pinResp.status})` }, 502, cors);
-  }
-  const pj = await pinResp.json();
-  if (!pj.IpfsHash) return jsonResponse({ error: 'pinata returned no CID' }, 502, cors);
-  {
-    const jsonBytes = new TextEncoder().encode(json);
-    if (jsonBytes.length <= _RAW_BLOCK_MAX && pj.IpfsHash !== await _expectedRawCid(jsonBytes)) {
-      return jsonResponse({ error: 'pin provider returned a CID that does not match the uploaded bytes' }, 502, cors);
-    }
-  }
+  const jsonBytes = new TextEncoder().encode(json);
+  let pinned;
+  try { pinned = await _pinFileToIpfs(env, jsonBytes, 'application/json', 'tacit-mixer-vk'); }
+  catch (e) { return jsonResponse({ error: e.msg || 'pin failed' }, e.status || 502, cors); }
 
   const newCount = prior + 1;
   await env.UPLOAD_KV.put(kvKey, String(newCount), { expirationTtl: 60 * 60 * 25 });
 
-  return jsonResponse({ cid: pj.IpfsHash }, 200, cors);
+  return jsonResponse({ cid: pinned.cid }, 200, cors);
 }
 
 // ============== /pin-amm-vk — pin the AMM ceremony's vk wrapper JSON ==============
@@ -8314,7 +8397,7 @@ async function handlePinMixerVk(req, env, cors) {
 // Each sub-vk validated by the same shape-check as /pin-mixer-vk so a
 // malformed bundle can't get pinned and shipped as canonical.
 async function handlePinAmmVk(req, env, cors) {
-  if (!env.PINATA_JWT) return jsonResponse({ error: 'PINATA_JWT missing' }, 500, cors);
+  if (!env.PINATA_JWT && !_filebaseConfigured(env)) return jsonResponse({ error: 'no pin provider configured' }, 500, cors);
 
   const ip = req.headers.get('CF-Connecting-IP') || 'anon';
   const day = new Date().toISOString().slice(0, 10);
@@ -8357,35 +8440,15 @@ async function handlePinAmmVk(req, env, cors) {
     return jsonResponse({ error: 'wrapper exceeds 256 KB' }, 413, cors);
   }
 
-  const pinFd = new FormData();
-  pinFd.append('file', new Blob([json], { type: 'application/json' }), `tacit-amm-vk-${Date.now()}.json`);
-  pinFd.append('pinataOptions', JSON.stringify({ cidVersion: 1 }));
-
-  let pinResp;
-  try {
-    pinResp = await fetch('https://api.pinata.cloud/pinning/pinFileToIPFS', {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${env.PINATA_JWT}` },
-      body: pinFd,
-    });
-  } catch { return jsonResponse({ error: 'pinata unreachable' }, 502, cors); }
-  if (!pinResp.ok) {
-    try { console.error(`pinata ${pinResp.status}: ${(await pinResp.text()).slice(0, 240)}`); } catch {}
-    return jsonResponse({ error: `pinata error (status ${pinResp.status})` }, 502, cors);
-  }
-  const pj = await pinResp.json();
-  if (!pj.IpfsHash) return jsonResponse({ error: 'pinata returned no CID' }, 502, cors);
-  {
-    const jsonBytes = new TextEncoder().encode(json);
-    if (jsonBytes.length <= _RAW_BLOCK_MAX && pj.IpfsHash !== await _expectedRawCid(jsonBytes)) {
-      return jsonResponse({ error: 'pin provider returned a CID that does not match the uploaded bytes' }, 502, cors);
-    }
-  }
+  const jsonBytes = new TextEncoder().encode(json);
+  let pinned;
+  try { pinned = await _pinFileToIpfs(env, jsonBytes, 'application/json', 'tacit-amm-vk'); }
+  catch (e) { return jsonResponse({ error: e.msg || 'pin failed' }, e.status || 502, cors); }
 
   const newCount = prior + 1;
   await env.UPLOAD_KV.put(kvKey, String(newCount), { expirationTtl: 60 * 60 * 25 });
 
-  return jsonResponse({ cid: pj.IpfsHash }, 200, cors);
+  return jsonResponse({ cid: pinned.cid }, 200, cors);
 }
 
 // ============== /pin-json — pin a small metadata JSON blob ==============
@@ -8393,7 +8456,7 @@ async function handlePinAmmVk(req, env, cors) {
 // resulting CID goes into the CETCH envelope's image_uri field; renderers
 // dereference it to find { name, description, image, external_url }.
 async function handlePinJson(req, env, cors) {
-  if (!env.PINATA_JWT) return jsonResponse({ error: 'PINATA_JWT missing' }, 500, cors);
+  if (!env.PINATA_JWT && !_filebaseConfigured(env)) return jsonResponse({ error: 'no pin provider configured' }, 500, cors);
 
   const ip = req.headers.get('CF-Connecting-IP') || 'anon';
   const day = new Date().toISOString().slice(0, 10);
@@ -8435,28 +8498,13 @@ async function handlePinJson(req, env, cors) {
     return jsonResponse({ error: 'metadata exceeds 4 KB' }, 413, cors);
   }
 
-  const pinFd = new FormData();
-  pinFd.append('file', new Blob([json], { type: 'application/json' }), `tacit-meta-${Date.now()}.json`);
-  pinFd.append('pinataOptions', JSON.stringify({ cidVersion: 1 }));
-
-  let pinResp;
-  try {
-    pinResp = await fetch('https://api.pinata.cloud/pinning/pinFileToIPFS', {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${env.PINATA_JWT}` },
-      body: pinFd,
-    });
-  } catch { return jsonResponse({ error: 'pinata unreachable' }, 502, cors); }
-  if (!pinResp.ok) {
-    // See note in handlePin — never echo Pinata's body to the client.
-    try { console.error(`pinata ${pinResp.status}: ${(await pinResp.text()).slice(0, 240)}`); } catch {}
-    return jsonResponse({ error: `pinata error (status ${pinResp.status})` }, 502, cors);
-  }
-  const j = await pinResp.json();
-  if (!j.IpfsHash) return jsonResponse({ error: 'pinata returned no CID' }, 502, cors);
+  const jsonBytes = new TextEncoder().encode(json);
+  let pinned;
+  try { pinned = await _pinFileToIpfs(env, jsonBytes, 'application/json', 'tacit-meta'); }
+  catch (e) { return jsonResponse({ error: e.msg || 'pin failed' }, e.status || 502, cors); }
 
   await env.UPLOAD_KV.put(kvKey, String(prior + 1), { expirationTtl: 90000 });
-  return jsonResponse({ cid: j.IpfsHash }, 200, cors);
+  return jsonResponse({ cid: pinned.cid }, 200, cors);
 }
 
 // ============== airdrop merkle helpers (SPEC §5.13 + §8) ==============
@@ -8508,7 +8556,7 @@ function _buildAirdropMerkleRoot(leaves) {
 // pattern as /pin-mixer-vk: dedicated endpoint with a shape validator + a
 // schema-appropriate size cap. Same daily-limit semantics.
 async function handlePinAirdropSnapshot(req, env, cors) {
-  if (!env.PINATA_JWT) return jsonResponse({ error: 'PINATA_JWT missing' }, 500, cors);
+  if (!env.PINATA_JWT && !_filebaseConfigured(env)) return jsonResponse({ error: 'no pin provider configured' }, 500, cors);
 
   const ip = req.headers.get('CF-Connecting-IP') || 'anon';
   const day = new Date().toISOString().slice(0, 10);
@@ -8694,59 +8742,13 @@ async function handlePinAirdropSnapshot(req, env, cors) {
     return jsonResponse({ error: 'snapshot exceeds 16 MB' }, 413, cors);
   }
 
-  const pinFd = new FormData();
-  pinFd.append('file', new Blob([json], { type: 'application/json' }), `tacit-airdrop-${body.merkle_root.slice(0, 12)}.json`);
-  pinFd.append('pinataOptions', JSON.stringify({ cidVersion: 1 }));
-
-  // Retry on transient failures. A single Pinata blip (network glitch, edge
-  // cold-start, or 5xx) shouldn't fail the whole drop publish flow — the
-  // issuer is mid-ceremony and there's no graceful manual retry path. Three
-  // attempts with exponential backoff covers ~7s of total wait while a
-  // recipient-blocking outage rarely lasts that long. 4xx is NOT retried —
-  // those are deterministic (auth, payload) and re-sending won't help.
-  let pinResp = null;
-  let lastErr = '';
-  const PIN_RETRY_DELAYS_MS = [500, 1500, 3500];
-  for (let attempt = 0; attempt < PIN_RETRY_DELAYS_MS.length; attempt++) {
-    if (attempt > 0) {
-      await new Promise(r => setTimeout(r, PIN_RETRY_DELAYS_MS[attempt - 1]));
-    }
-    try {
-      pinResp = await fetch('https://api.pinata.cloud/pinning/pinFileToIPFS', {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${env.PINATA_JWT}` },
-        body: pinFd,
-      });
-    } catch (e) {
-      lastErr = `network error: ${e?.message || 'unknown'}`;
-      pinResp = null;
-      continue;
-    }
-    if (pinResp.ok) break;
-    // 4xx is the caller's fault (bad JWT, malformed payload). 5xx and 429
-    // are Pinata's transient signals — retry on those only.
-    if (pinResp.status >= 400 && pinResp.status < 500 && pinResp.status !== 429) {
-      try { console.error(`pinata ${pinResp.status}: ${(await pinResp.text()).slice(0, 240)}`); } catch {}
-      return jsonResponse({ error: `pinata error (status ${pinResp.status})` }, 502, cors);
-    }
-    try { lastErr = `pinata ${pinResp.status}: ${(await pinResp.text()).slice(0, 240)}`; } catch { lastErr = `pinata ${pinResp.status}`; }
-    pinResp = null;
-  }
-  if (!pinResp || !pinResp.ok) {
-    if (lastErr) try { console.error(lastErr); } catch {}
-    return jsonResponse({ error: lastErr || 'pinata unreachable after retries' }, 502, cors);
-  }
-  const pj = await pinResp.json();
-  if (!pj.IpfsHash) return jsonResponse({ error: 'pinata returned no CID' }, 502, cors);
-  {
-    const jsonBytes = new TextEncoder().encode(json);
-    if (jsonBytes.length <= _RAW_BLOCK_MAX && pj.IpfsHash !== await _expectedRawCid(jsonBytes)) {
-      return jsonResponse({ error: 'pin provider returned a CID that does not match the uploaded bytes' }, 502, cors);
-    }
-  }
+  const jsonBytes = new TextEncoder().encode(json);
+  let pinned;
+  try { pinned = await _pinFileToIpfs(env, jsonBytes, 'application/json', `tacit-airdrop-${body.merkle_root.slice(0, 12)}`); }
+  catch (e) { return jsonResponse({ error: e.msg || 'pin failed' }, e.status || 502, cors); }
 
   await env.UPLOAD_KV.put(kvKey, String(prior + 1), { expirationTtl: 90000 });
-  return jsonResponse({ cid: pj.IpfsHash, IpfsHash: pj.IpfsHash }, 200, cors);
+  return jsonResponse({ cid: pinned.cid, IpfsHash: pinned.cid }, 200, cors);
 }
 
 // ============== Bitcoin tx primitives (P2WPKH only — what the faucet needs) ==============

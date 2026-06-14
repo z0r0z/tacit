@@ -50,7 +50,7 @@
   static host instead; see ./_headers for the Cloudflare Pages / Netlify
   config that adds frame-ancestors 'self' (clickjacking defense).
 -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' http://localhost:* http://127.0.0.1:* https://mempool.space https://*.mempool.space https://mempool.bisq.services https://mempool.emzy.de https://mempool.bitaroo.net https://blockstream.info https://btcscan.org https://api.coinbase.com https://api.kraken.com https://api.coingecko.com https://cloudflare-eth.com https://tacit-pin.rosscampbell9.workers.dev https://www.tacitscan.io https://content.wrappr.wtf https://ipfs.io https://w3s.link https://*.ipfs.w3s.link https://dweb.link https://*.ipfs.dweb.link https://uploads.pinata.cloud https://gateway.pinata.cloud https://gateway.liquify.com https://ethereum-sepolia-rpc.publicnode.com https://ethereum-rpc.publicnode.com https://1rpc.io https://eth.llamarpc.com https://eth.drpc.org https://sepolia.drpc.org https://sepolia.gateway.tenderly.co; img-src 'self' data: http://localhost:* http://127.0.0.1:* https://content.wrappr.wtf https://tacit-pin.rosscampbell9.workers.dev https://ipfs.io https://w3s.link https://*.ipfs.w3s.link https://dweb.link https://*.ipfs.dweb.link; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' http://localhost:* http://127.0.0.1:* https://mempool.space https://*.mempool.space https://mempool.bisq.services https://mempool.emzy.de https://mempool.bitaroo.net https://blockstream.info https://btcscan.org https://api.coinbase.com https://api.kraken.com https://api.coingecko.com https://cloudflare-eth.com https://api.tacit.finance https://tacit-api.onrender.com https://tacit-pin.rosscampbell9.workers.dev https://www.tacitscan.io https://content.wrappr.wtf https://ipfs.io https://w3s.link https://*.ipfs.w3s.link https://dweb.link https://*.ipfs.dweb.link https://uploads.pinata.cloud https://gateway.pinata.cloud https://gateway.liquify.com https://ethereum-sepolia-rpc.publicnode.com https://ethereum-rpc.publicnode.com https://1rpc.io https://eth.llamarpc.com https://eth.drpc.org https://sepolia.drpc.org https://sepolia.gateway.tenderly.co; img-src 'self' data: http://localhost:* http://127.0.0.1:* https://content.wrappr.wtf https://tacit-api.onrender.com https://tacit-pin.rosscampbell9.workers.dev https://ipfs.io https://w3s.link https://*.ipfs.w3s.link https://dweb.link https://*.ipfs.dweb.link; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; object-src 'none'; base-uri 'self'; form-action 'none'">
 <title>tacit</title>
 <meta name="description" content="Confidential-amount tokens, a native AMM, and a shielded pool — indexer-validated on Bitcoin L1. Trade bitcoin assets, privately.">
 <meta name="theme-color" content="#f7931a">
@@ -79,6 +79,7 @@
      - content.wrappr.wtf: IPFS gateway for asset metadata
      dns-prefetch for the BTC/USD oracles since they're best-effort and
      don't gate paint — DNS resolution alone is enough warming for them. -->
+<link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://tacit-pin.rosscampbell9.workers.dev" crossorigin>
 <link rel="preconnect" href="https://mempool.space" crossorigin>
 <link rel="preconnect" href="https://blockstream.info" crossorigin>
@@ -102,7 +103,7 @@
      so iOS Safari's stale-modulepreload cache flushes on every change. -->
 <link rel="modulepreload" href="./vendor/tacit-deps.min.js" fetchpriority="high">
 <link rel="modulepreload" href="./prf-wallet.js">
-<link rel="modulepreload" href="./tacit.js?cb=46aacc53">
+<link rel="modulepreload" href="./tacit.js?cb=5ecf0361">
 <link rel="modulepreload" href="./bulletproofs-plus.js">
 <link rel="modulepreload" href="./amm-bjj.js">
 <link rel="modulepreload" href="./amm-sigma.js">
@@ -10043,7 +10044,7 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms #farms-refresh-btn {
   </div>
 </div>
 
-<script type="module" src="./tacit.js?cb=46aacc53"></script>
+<script type="module" src="./tacit.js?cb=5ecf0361"></script>
 
 <!-- Service worker registration moved into tacit.js (the dapp's CSP forbids
      inline scripts; only 'self' module scripts are allowed). See sw.js for
