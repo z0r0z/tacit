@@ -22,6 +22,9 @@ use tiny_keccak::{Hasher, Keccak};
 /// Bitcoin block/tx primitives for bridge_mint (BTC→ETH burn verification).
 pub mod bitcoin;
 pub mod bjj;
+/// Burn-and-mint onboarding of pre-existing fixed-supply Bitcoin assets (TAC): scan-free per-bridge
+/// provenance to the etch supply note. See ops/DESIGN-trustless-asset-onboarding.md.
+pub mod burn_deposit;
 pub mod eth_reflection;
 pub mod sigma;
 
