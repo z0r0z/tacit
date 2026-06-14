@@ -173,7 +173,9 @@ const burnDeposit = {
     inputs: [{ prevTxid: etchTxidHex, prevVout: 0, commitment: hexp(C0c) }],
     outputs: [{ commitment: hexp(burnedC), vout: 0 }],
     rangeProof: hexp(cxRange),
-    kernelSig: hexp(cxSig),
+    // TAMPER=1 → a corrupt kernel sig: verify_cxfer_conservation fails → verify_provenance Err → the
+    // dispatch SKIPS (folds nothing), proving fail-closed (the burn-set must stay UNCHANGED).
+    kernelSig: process.env.TAMPER ? ('0x' + 'ff'.repeat(64)) : hexp(cxSig),
     merkleSiblings: [],
     merkleIndex: 0,
     confirmedBlockRoot: hexp(computeMerkleRoot([cxTxid])),
