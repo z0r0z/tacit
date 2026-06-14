@@ -16,8 +16,10 @@ on:
           - testnet
 
 jobs:
+  # Old tETH mainnet mixer is being deprecated — its relay is no longer advanced on the schedule.
+  # Manual dispatch (network=mainnet) still works if a one-off advance is ever needed.
   advance-mainnet:
-    if: github.event_name == 'schedule' || github.event.inputs.network == 'mainnet'
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.network == 'mainnet'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
