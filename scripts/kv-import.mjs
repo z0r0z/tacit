@@ -1,6 +1,8 @@
-// Load a kv-export.mjs NDJSON snapshot into the Node KV store. Upserts, so
-// re-running with a newer snapshot is the delta-sync step of cutover.
-// Already-expired keys are dropped; future expirations are preserved.
+// Load a kv-export.mjs NDJSON snapshot into the Node KV store. Batched upserts,
+// so re-running with a newer snapshot is the delta-sync step of cutover.
+// Already-expired keys are dropped; future expirations are preserved. Each
+// batch retries on transient network errors so a blip mid-import doesn't lose
+// the whole run.
 //
 //   DATABASE_URL=postgres://… node scripts/kv-import.mjs kv-export.ndjson
 
@@ -17,12 +19,29 @@ if (!process.env.DATABASE_URL) {
   process.exit(1);
 }
 
-const { createPgDriver } = await import('../server/driver-pg.mjs');
-const driver = await createPgDriver(process.env.DATABASE_URL);
+// 5 bind params per row; Postgres caps a statement at 65,535 params.
+const BATCH = Math.min(Number(process.env.IMPORT_BATCH) || 1000, 13107);
+const RETRIES = 5;
 
-const CONCURRENCY = 16;
-const inflight = new Set();
-let imported = 0, expired = 0, malformed = 0;
+const { createPgDriver, isTransientError } = await import('../server/driver-pg.mjs');
+const driver = await createPgDriver(process.env.DATABASE_URL, { max: 2 });
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+async function flush(rows) {
+  for (let attempt = 1; ; attempt++) {
+    try { return await driver.putMany(rows); }
+    catch (e) {
+      if (attempt > RETRIES || !isTransientError(e)) throw e;
+      const backoff = Math.min(500 * 2 ** (attempt - 1), 8000);
+      console.error(`batch retry ${attempt}/${RETRIES} after ${e.code} (${backoff}ms)`);
+      await sleep(backoff);
+    }
+  }
+}
+
+let imported = 0, expired = 0, malformed = 0, nextLog = 20000;
+let batch = [];
 
 const rl = readline.createInterface({ input: fs.createReadStream(file), crlfDelay: Infinity });
 for await (const line of rl) {
@@ -34,13 +53,13 @@ for await (const line of rl) {
   const expiresAt = expiration != null ? expiration * 1000 : null;
   if (expiresAt != null && expiresAt <= Date.now()) { expired++; continue; }
 
-  const p = driver
-    .put(ns, key, Buffer.from(value_b64, 'base64'), { metadata: metadata ?? null, expiresAt })
-    .then(() => { if (++imported % 1000 === 0) console.log(`…${imported} imported`); })
-    .finally(() => inflight.delete(p));
-  inflight.add(p);
-  if (inflight.size >= CONCURRENCY) await Promise.race(inflight);
+  batch.push({ ns, key, value: Buffer.from(value_b64, 'base64'), metadata: metadata ?? null, expiresAt });
+  if (batch.length >= BATCH) {
+    imported += await flush(batch);
+    batch = [];
+    if (imported >= nextLog) { console.log(`…${imported} imported`); nextLog += 20000; }
+  }
 }
-await Promise.all(inflight);
+if (batch.length) imported += await flush(batch);
 await driver.close();
 console.log(`done: ${imported} imported, ${expired} skipped (already expired), ${malformed} malformed lines`);

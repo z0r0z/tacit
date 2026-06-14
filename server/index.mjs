@@ -16,6 +16,9 @@ import { buildEnv, createCtxFactory, createTacitServer, startCron } from './harn
 const driver = process.env.DATABASE_URL
   ? await (await import('./driver-pg.mjs')).createPgDriver(process.env.DATABASE_URL)
   : createMemDriver();
+if (!process.env.DATABASE_URL && process.env.RENDER) {
+  console.warn('[tacit-api] DATABASE_URL is unset on a Render instance — running on IN-MEMORY storage; all data is lost on restart');
+}
 
 // caches.default must exist before the worker module evaluates.
 globalThis.caches = createCacheStorage({
@@ -41,9 +44,14 @@ server.listen(port, () => {
 async function shutdown(signal) {
   console.log(`[tacit-api] ${signal}, shutting down`);
   cron?.stop();
-  server.close();
+  server.closeIdleConnections?.();
+  const closed = new Promise((resolve) => server.close(resolve));
   const left = await ctxFactory.drainAll(Number(process.env.SHUTDOWN_GRACE_MS) || 10_000);
   if (left > 0) console.warn(`[tacit-api] exiting with ${left} background tasks unsettled`);
+  // Give in-flight responses a moment to finish, then cut any stragglers so
+  // close() can't hold the process past the deploy window.
+  await Promise.race([closed, new Promise((r) => setTimeout(r, 2_000))]);
+  server.closeAllConnections?.();
   await driver.close();
   process.exit(0);
 }

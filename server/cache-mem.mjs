@@ -17,15 +17,22 @@ function ttlFrom(headers) {
   return m ? Number(m[1]) * 1000 : DEFAULT_TTL_MS;
 }
 
-export function createCacheStorage({ maxBytes = 256 * 1024 * 1024 } = {}) {
-  const entries = new Map(); // url -> { status, headers: [[k,v]], body: Buffer, expiresAt }
+// Charged size of an entry: body bytes plus the key string and per-entry
+// Map/object/header overhead. Without the constant, zero/tiny-body entries
+// (cache keys are request-derived, so their count is unbounded) would never
+// count against the cap and could grow the map past memory long before
+// eviction ran.
+const ENTRY_OVERHEAD = 512;
+
+export function createCacheStorage({ maxBytes = 256 * 1024 * 1024, maxEntries = 100_000 } = {}) {
+  const entries = new Map(); // url -> { status, headers: [[k,v]], body: Buffer, size, expiresAt }
   let totalBytes = 0;
 
   function evictUntilFits() {
     for (const [url, e] of entries) {
-      if (totalBytes <= maxBytes) break;
+      if (totalBytes <= maxBytes && entries.size <= maxEntries) break;
       entries.delete(url);
-      totalBytes -= e.body.byteLength;
+      totalBytes -= e.size;
     }
   }
 
@@ -33,7 +40,7 @@ export function createCacheStorage({ maxBytes = 256 * 1024 * 1024 } = {}) {
     const e = entries.get(url);
     if (!e) return false;
     entries.delete(url);
-    totalBytes -= e.body.byteLength;
+    totalBytes -= e.size;
     return true;
   }
 
@@ -42,15 +49,17 @@ export function createCacheStorage({ maxBytes = 256 * 1024 * 1024 } = {}) {
       const url = keyOf(reqOrUrl);
       const ttl = ttlFrom(response.headers);
       const body = Buffer.from(await response.arrayBuffer());
-      if (ttl === 0) { drop(url); return; }
       drop(url);
+      if (ttl === 0) return;
+      const size = body.byteLength + url.length * 2 + ENTRY_OVERHEAD;
       entries.set(url, {
         status: response.status,
         headers: [...response.headers],
         body,
+        size,
         expiresAt: Date.now() + ttl,
       });
-      totalBytes += body.byteLength;
+      totalBytes += size;
       evictUntilFits();
     },
 
@@ -61,7 +70,14 @@ export function createCacheStorage({ maxBytes = 256 * 1024 * 1024 } = {}) {
       if (e.expiresAt <= Date.now()) { drop(url); return undefined; }
       entries.delete(url); // re-insert: Map order doubles as LRU recency
       entries.set(url, e);
-      return new Response(e.body, { status: e.status, headers: e.headers });
+      // Stream the stored bytes instead of handing the Buffer to Response,
+      // which would copy the whole body on every hit. The view is read-only
+      // by contract; each match gets its own one-shot stream.
+      const view = new Uint8Array(e.body.buffer, e.body.byteOffset, e.body.byteLength);
+      const body = new ReadableStream({
+        start(c) { c.enqueue(view); c.close(); },
+      });
+      return new Response(body, { status: e.status, headers: e.headers });
     },
 
     async delete(reqOrUrl) {
@@ -69,9 +85,5 @@ export function createCacheStorage({ maxBytes = 256 * 1024 * 1024 } = {}) {
     },
   };
 
-  return {
-    default: cache,
-    async open() { return cache; },
-    _stats: () => ({ count: entries.size, totalBytes }),
-  };
+  return { default: cache };
 }

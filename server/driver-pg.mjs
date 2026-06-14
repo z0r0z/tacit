@@ -3,6 +3,8 @@
 // contract regardless of the database's default collation. `pg` is imported
 // lazily so test/local runs on the mem driver don't need it installed.
 
+import { dedupBatch } from './kv-store.mjs';
+
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS kv (
   ns text NOT NULL,
@@ -14,6 +16,16 @@ CREATE TABLE IF NOT EXISTS kv (
 );
 CREATE INDEX IF NOT EXISTS kv_list_idx ON kv (ns, k COLLATE "C");
 `;
+
+// Errors that mean the connection died mid-query and an idempotent retry is
+// safe — the socket-level codes plus the pg SQLSTATEs for admin shutdown /
+// connection failure. Callers own the retry policy (attempts, backoff); the
+// driver owns knowing which errors are worth retrying.
+const TRANSIENT_CODES = new Set([
+  'EHOSTUNREACH', 'ENETUNREACH', 'ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', 'EPIPE',
+  '57P01', '08006', '08003', '08000',
+]);
+export const isTransientError = (e) => TRANSIENT_CODES.has(e?.code);
 
 // Smallest string strictly greater than every key with this prefix, under
 // byte order. Worker key prefixes are ASCII (hex, colons, dashes), so
@@ -28,34 +40,65 @@ function prefixUpperBound(prefix) {
 
 export async function createPgDriver(databaseUrl, { max = 10 } = {}) {
   const { default: pg } = await import('pg');
-  const pool = new pg.Pool({ connectionString: databaseUrl, max });
+  // Long idle timeout + TCP keepalive: with the default 10s reap, a traffic
+  // lull empties the pool and the next request pays a fresh TLS+auth
+  // handshake (~50-150ms) before its first query.
+  const pool = new pg.Pool({ connectionString: databaseUrl, max, idleTimeoutMillis: 60_000, keepAlive: true });
+  // Without this listener, an idle client dropping (Render recycling a
+  // connection, a network blip) re-emits as an unhandled error and crashes the
+  // process; log and swallow so the pool just reconnects on the next query.
+  pool.on('error', (err) => console.error('[pg-pool] idle client error (recovering):', err.code || err.message));
   await pool.query(SCHEMA);
 
+  const msOf = (ts) => (ts ? new Date(ts).getTime() : null);
   const rowOut = (r) => ({
     value: r.v,
     metadata: r.metadata ?? null,
-    expiresAt: r.expires_at ? new Date(r.expires_at).getTime() : null,
+    expiresAt: msOf(r.expires_at),
   });
+
+  // Batched upsert: one multi-row INSERT per call. `put` delegates here so
+  // the upsert SQL and row marshalling live in exactly one place.
+  async function putMany(rows) {
+    if (!rows.length) return 0;
+    // Dedup first — a multi-row ON CONFLICT errors if the same key appears
+    // twice in one statement.
+    const uniq = dedupBatch(rows);
+    const tuples = [];
+    const params = [];
+    let i = 1;
+    for (const r of uniq) {
+      tuples.push(`($${i++},$${i++},$${i++},$${i++},$${i++})`);
+      params.push(r.ns, r.key, r.value,
+        r.metadata == null ? null : JSON.stringify(r.metadata),
+        r.expiresAt == null ? null : new Date(r.expiresAt));
+    }
+    await pool.query(
+      `INSERT INTO kv (ns, k, v, metadata, expires_at) VALUES ${tuples.join(',')}
+       ON CONFLICT (ns, k) DO UPDATE SET v = EXCLUDED.v, metadata = EXCLUDED.metadata, expires_at = EXCLUDED.expires_at`,
+      params,
+    );
+    return uniq.length;
+  }
 
   return {
     async get(ns, key) {
-      const { rows } = await pool.query(
-        `SELECT v, metadata, expires_at FROM kv
+      // Named statement: get() runs several times per uncached request and
+      // its text never varies, so let each connection parse/plan it once.
+      const { rows } = await pool.query({
+        name: 'kv-get',
+        text: `SELECT v, metadata, expires_at FROM kv
          WHERE ns = $1 AND k = $2 AND (expires_at IS NULL OR expires_at > now())`,
-        [ns, key],
-      );
+        values: [ns, key],
+      });
       return rows.length ? rowOut(rows[0]) : null;
     },
 
     async put(ns, key, value, { metadata = null, expiresAt = null } = {}) {
-      await pool.query(
-        `INSERT INTO kv (ns, k, v, metadata, expires_at)
-         VALUES ($1, $2, $3, $4, $5)
-         ON CONFLICT (ns, k) DO UPDATE SET v = $3, metadata = $4, expires_at = $5`,
-        [ns, key, value, metadata == null ? null : JSON.stringify(metadata),
-         expiresAt == null ? null : new Date(expiresAt)],
-      );
+      await putMany([{ ns, key, value, metadata, expiresAt }]);
     },
+
+    putMany,
 
     async delete(ns, key) {
       const { rowCount } = await pool.query('DELETE FROM kv WHERE ns = $1 AND k = $2', [ns, key]);
@@ -92,7 +135,7 @@ export async function createPgDriver(databaseUrl, { max = 10 } = {}) {
         entries: slice.map((r) => ({
           name: r.k,
           metadata: r.metadata ?? null,
-          expiresAt: r.expires_at ? new Date(r.expires_at).getTime() : null,
+          expiresAt: msOf(r.expires_at),
         })),
         complete,
       };

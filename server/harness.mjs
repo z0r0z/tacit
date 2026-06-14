@@ -10,6 +10,7 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import { Readable } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
 import { fileURLToPath } from 'node:url';
 import { createKVNamespace } from './kv-store.mjs';
 
@@ -62,13 +63,15 @@ export function buildEnv(driver, { tomlPath = WRANGLER_TOML, extra = {} } = {}) 
 //      old clients keep per-user rate-limit identity.
 //   2. First hop of X-Forwarded-For when TRUST_PROXY=1 (Render).
 //   3. Socket peer address (direct/local).
+const trustProxy = (env) => (env.TRUST_PROXY ?? process.env.TRUST_PROXY) === '1';
+
 export function clientIpFrom(nodeReq, env) {
   const h = nodeReq.headers;
   const trustKey = env.PROXY_TRUST_KEY || process.env.PROXY_TRUST_KEY;
   if (trustKey && h['x-tacit-proxy-key'] === trustKey && h['x-tacit-forwarded-ip']) {
     return String(h['x-tacit-forwarded-ip']).trim();
   }
-  if ((env.TRUST_PROXY ?? process.env.TRUST_PROXY) === '1' && h['x-forwarded-for']) {
+  if (trustProxy(env) && h['x-forwarded-for']) {
     return String(h['x-forwarded-for']).split(',')[0].trim();
   }
   return nodeReq.socket?.remoteAddress || 'anon';
@@ -77,7 +80,7 @@ export function clientIpFrom(nodeReq, env) {
 const STRIPPED_HEADERS = new Set(['cf-connecting-ip', 'x-tacit-proxy-key', 'x-tacit-forwarded-ip']);
 
 export function toWebRequest(nodeReq, env) {
-  const proto = (env.TRUST_PROXY ?? process.env.TRUST_PROXY) === '1'
+  const proto = trustProxy(env)
     ? (nodeReq.headers['x-forwarded-proto'] || 'https')
     : 'http';
   const host = nodeReq.headers.host || 'localhost';
@@ -103,13 +106,13 @@ export async function writeWebResponse(resp, nodeRes) {
   for (const [k, v] of resp.headers) headers[k] = v;
   nodeRes.writeHead(resp.status, headers);
   if (!resp.body) { nodeRes.end(); return; }
-  await new Promise((resolve, reject) => {
-    const body = Readable.fromWeb(resp.body);
-    body.on('error', reject);
-    nodeRes.on('error', reject);
-    nodeRes.on('finish', resolve);
-    body.pipe(nodeRes);
-  });
+  // pipeline destroys both ends on either side's failure — a client abort
+  // cancels the source web stream instead of pinning its socket and buffers.
+  try {
+    await pipeline(Readable.fromWeb(resp.body), nodeRes);
+  } catch (e) {
+    if (e?.code !== 'ERR_STREAM_PREMATURE_CLOSE') throw e; // client went away — routine for polling clients
+  }
 }
 
 // --- waitUntil tracking -----------------------------------------------------
@@ -186,13 +189,27 @@ export function startCron({ workerModule, env, driver, ctxFactory, intervalMs = 
   let running = false;
   let stopped = false;
 
+  // A tick's waitUntil drain gets a deadline: one hung promise (a stalled
+  // upstream fetch) must not leave `running` latched and silently kill every
+  // future tick until restart. Stragglers stay tracked in ctxFactory.pending
+  // for shutdown draining; the next tick proceeds without them.
+  const drainLimitMs = Math.max(intervalMs - 30_000, 60_000);
+
   async function tick() {
     if (running) { console.warn('[cron] previous tick still running, skipping'); return; }
     running = true;
     const ctx = ctxFactory.makeCtx();
     try {
       await workerModule.scheduled({ scheduledTime: Date.now(), cron: '*/5 * * * *' }, env, ctx);
-      await ctx._drain();
+      let drainTimer;
+      const timedOut = await Promise.race([
+        ctx._drain().then(() => false),
+        new Promise((r) => { drainTimer = setTimeout(() => r(true), drainLimitMs); }),
+      ]);
+      clearTimeout(drainTimer);
+      if (timedOut) {
+        console.warn(`[cron] waitUntil drain exceeded ${drainLimitMs}ms; abandoning stragglers (${ctxFactory.pending.size} tracked)`);
+      }
       const swept = await driver.sweepExpired();
       if (swept > 0) console.log(`[cron] swept ${swept} expired kv rows`);
     } catch (e) {
@@ -210,7 +227,6 @@ export function startCron({ workerModule, env, driver, ctxFactory, intervalMs = 
 
   return {
     stop() { stopped = true; if (timer) clearTimeout(timer); },
-    isRunning: () => running,
-    tick, // exposed for a manual kick (`/scan`-style unstick, tests)
+    tick, // exposed for a manual kick (`/scan`-style unstick)
   };
 }

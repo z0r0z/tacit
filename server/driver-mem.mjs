@@ -2,6 +2,8 @@
 // process-lifetime only. Mirrors driver-pg.mjs semantics exactly — the shim
 // conformance suite (tests/server-kv-shim.test.mjs) runs against both.
 
+import { dedupBatch } from './kv-store.mjs';
+
 export function createMemDriver() {
   const spaces = new Map(); // ns -> Map(key -> { value: Buffer, metadata, expiresAt })
 
@@ -22,7 +24,17 @@ export function createMemDriver() {
     },
 
     async put(ns, key, value, { metadata = null, expiresAt = null } = {}) {
-      space(ns).set(key, { value, metadata, expiresAt });
+      await this.putMany([{ ns, key, value, metadata, expiresAt }]);
+    },
+
+    // Batched upsert; last write wins on a duplicate (ns,key) within the
+    // batch, and the returned count is post-dedup — same as driver-pg.
+    async putMany(rows) {
+      const uniq = dedupBatch(rows);
+      for (const r of uniq) {
+        space(r.ns).set(r.key, { value: r.value, metadata: r.metadata ?? null, expiresAt: r.expiresAt ?? null });
+      }
+      return uniq.length;
     },
 
     async delete(ns, key) {

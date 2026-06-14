@@ -48,6 +48,18 @@ async function runSuite(label, driver) {
   ok('namespaces isolated', (await kv.get('t:plain')) === 'hello'
     && (await other.get('t:plain')) === 'other-ns');
 
+  // putMany (driver-level): batched upsert, intra-batch duplicate (ns,key)
+  // resolves last-write-wins, returned count is post-dedup
+  const pmN = await driver.putMany([
+    { ns: 'REGISTRY_KV', key: 't:pm-batch-a', value: Buffer.from('one'), metadata: null, expiresAt: null },
+    { ns: 'REGISTRY_KV', key: 't:pm-batch-b', value: Buffer.from('two'), metadata: { m: 1 }, expiresAt: null },
+    { ns: 'REGISTRY_KV', key: 't:pm-batch-a', value: Buffer.from('three'), metadata: null, expiresAt: null },
+  ]);
+  ok('putMany returns deduped count', pmN === 2, pmN);
+  ok('putMany intra-batch last write wins', (await kv.get('t:pm-batch-a')) === 'three');
+  ok('putMany upserts all rows', (await kv.get('t:pm-batch-b')) === 'two'
+    && (await kv.getWithMetadata('t:pm-batch-b')).metadata?.m === 1);
+
   // expirationTtl: present before, null after, excluded from list
   await kv.put('ttl:short', 'ephemeral', { expirationTtl: 1 });
   ok('ttl key live before expiry', (await kv.get('ttl:short')) === 'ephemeral');
