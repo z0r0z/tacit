@@ -165,6 +165,33 @@ mirror (`dapp/burn-deposit-provenance.js`) gates on the SAME predicate so the wi
 (digest-bound) capping total ≤ `S`; needs the burned value via an opening sigma. Realness + shared-ν are the
 primary guards; the cap is a backstop — follow-up.
 
+## Fixture generator — the remaining build before the GPU re-prove
+The dispatch is integrated + compile-verified; both reflect harnesses serialize the burn-deposit witness
+(16f0e53). What's left is a generator producing a `reflection_input.json` with a burn-deposit tx, then a
+native execute (`exec-reflect-fixture.rs`, CPU — no GPU) to validate the dispatch folds it. Reuses
+`gen-reflection-input.mjs` (headers/IMT) + the dapp confidential crypto (conserving cxfers + `C_0`).
+
+1. **Synthetic PoW (one continuous chain).** Low-difficulty (regtest `bits` 0x207fffff) 80-byte headers,
+   each linking (prev == predecessor's double-SHA) with the correct merkle root, nonce mined so
+   `double_sha256(header) <= target`. The PROV portion (etch block .. block H-1) is `provHeaders`; the SCAN
+   portion (block H .. tip) is the batch `headers`. `prov_tip == scan headers[0].prev == prev_hash` (the
+   dispatch's canonical-chain check) — they're contiguous.
+2. **TAC etch (CETCH) in the first prov block.** A 0x21 tx committing `C_0` at the canonical layout; the
+   supply note = vout 0. `asset_id = sha256(etch_txid ‖ vout0)`. Witness `etchSiblings`/`etchIndex` to its
+   block's merkle root.
+3. **Conserving cxfer DAG (in prov blocks).** `C_0 → … → burned note`, each a real conserving cxfer
+   (BIP-340 kernel + BP+ range, like the `conserving_m1` fixture) via the dapp prover; per-cxfer merkle path
+   + `confirmedBlockRoot` (its prov block's root).
+4. **Burn tx (0x2B) in a SCAN block.** Spends the burned note's outpoint; envelope declares
+   `env_nu == nullifier(burned coords)` + `env_dest`. (Inclusion is the scan's full-scan, not a path.)
+5. **Witnesses.** `burnedCx`/`burnedCy`; the spent insert (ν into the spent IMT) + burn insert (ν → dest)
+   via the dapp IMT machinery.
+6. **Prior = empty live set** (near-tip anchor) → the burn's note is not in live → the burn-deposit branch.
+
+Validate: native execute → the PV's `bitcoinBurnRoot` reflects the folded burn. Negative variants
+(fabricated cxfer / wrong `C_0` / unconfirmed block) → folds NOTHING (skip-not-panic). Then the GPU re-prove
+(`exec-reflect-prove.rs`) + on-chain `*ProofReal`, folded into the #11 mainnet re-prove.
+
 ## Findings / preconditions (impl phase 1)
 - **CETCH layout discrepancy (resolve first):** cxfer-core `parse_etch_meta` reads `cid(32)` right after
   `decimals`, but the live worker `decodeCEtchPayload` reads `commitment(33) ‖ amount_ct(8) ‖ rp_len ‖
