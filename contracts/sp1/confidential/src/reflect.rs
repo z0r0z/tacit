@@ -27,7 +27,10 @@ sp1_zkvm::entrypoint!(main);
 use alloy_sol_types::sol;
 use alloy_sol_types::private::U256;
 use alloy_sol_types::SolType;
-use cxfer_core::{bitcoin, from_affine_xy, scan_tx_spends, verify_cxfer_conservation, LiveUtxoSet, Point, ScanReflection};
+use cxfer_core::{
+    bitcoin, burn_deposit, commitment_hash, commitment_hash_compressed, from_affine_xy, nullifier,
+    outpoint_key, scan_tx_spends, verify_cxfer_conservation, LiveUtxoSet, Point, ScanReflection,
+};
 use sp1_zkvm::io;
 
 sol! {
@@ -196,10 +199,103 @@ pub fn main() {
 
             // A bridge-out records ν → destCommitment in the burn set (the burned note is the
             // tx's single detected spend, bound to the envelope's nullifier).
-            if let Some((_asset, env_nu, env_dest)) = &burn {
-                assert!(spends.len() == 1 && &spends[0].nu == env_nu, "burn envelope must match the single spent note");
-                let (bk, bn, bv, bi, bp, bnew) = read_burn_insert();
-                state.fold_burn(env_nu, env_dest, &bk, &bn, &bv, bi, &bp, &bnew).expect("burn-set fold");
+            if let Some((b_asset, env_nu, env_dest)) = &burn {
+                if spends.len() == 1 && &spends[0].nu == env_nu {
+                    // Reflected-note bridge-out: the burned note is in the live set (this near-tip
+                    // reflection saw it created), already nullified above by `fold_spent`. Record ν → dest.
+                    let (bk, bn, bv, bi, bp, bnew) = read_burn_insert();
+                    state.fold_burn(env_nu, env_dest, &bk, &bn, &bv, bi, &bp, &bnew).expect("burn-set fold");
+                } else {
+                    // BURN-DEPOSIT (scan-free onboarding): the burned note is a PRE-existing, never-reflected
+                    // note (no live-set spend). Admit it ONLY if the witness proves it descends from the
+                    // asset's etch supply note C_0 through confirmed, conserving CXFERs. The provenance
+                    // blocks are pre-anchor, so their canonicity is a header chain whose tip == this batch's
+                    // relay-pinned anchor (prev_hash). See ops/DESIGN-trustless-asset-onboarding.md.
+                    assert!(spends.is_empty(), "burn envelope: neither a reflected-note spend nor a burn-deposit");
+                    // ── witnesses (read UNCONDITIONALLY so the io stream stays in sync; fold only if valid) ──
+                    let etch_tx: Vec<u8> = io::read();
+                    let etch_index: u32 = io::read();
+                    let n_etch_sib: u32 = io::read();
+                    let etch_siblings: Vec<[u8; 32]> = (0..n_etch_sib).map(|_| r32()).collect();
+                    let n_prov_headers: u32 = io::read();
+                    let prov_headers: Vec<Vec<u8>> = (0..n_prov_headers).map(|_| io::read()).collect();
+                    let n_cxfers: u32 = io::read();
+                    let mut prov: Vec<burn_deposit::ProvenanceWitness> = Vec::with_capacity(n_cxfers as usize);
+                    for _ in 0..n_cxfers {
+                        let txid = r32();
+                        let n_in: u32 = io::read();
+                        let mut input_outpoints = Vec::with_capacity(n_in as usize);
+                        let mut input_commitments = Vec::with_capacity(n_in as usize);
+                        for _ in 0..n_in {
+                            let pt = r32();
+                            let pv: u32 = io::read();
+                            input_outpoints.push((pt, pv));
+                            input_commitments.push(r_n::<33>());
+                        }
+                        let n_out: u32 = io::read();
+                        let mut output_commitments = Vec::with_capacity(n_out as usize);
+                        let mut output_vouts = Vec::with_capacity(n_out as usize);
+                        for _ in 0..n_out {
+                            output_commitments.push(r_n::<33>());
+                            let v: u32 = io::read();
+                            output_vouts.push(v);
+                        }
+                        let range_proof: Vec<u8> = io::read();
+                        let kernel_sig = r_n::<64>();
+                        let n_sib: u32 = io::read();
+                        let merkle_siblings: Vec<[u8; 32]> = (0..n_sib).map(|_| r32()).collect();
+                        let merkle_index: u32 = io::read();
+                        let confirmed_block_root = r32();
+                        prov.push(burn_deposit::ProvenanceWitness {
+                            txid, input_outpoints, input_commitments, output_commitments, output_vouts,
+                            range_proof, kernel_sig, merkle_siblings, merkle_index, confirmed_block_root,
+                        });
+                    }
+                    let burned_cx = r32();
+                    let burned_cy = r32();
+                    let (sv, sn, si, sp, snew) = read_spent_insert();
+                    let (bk, bn, bv, bi, bp, bnew) = read_burn_insert();
+
+                    // ── verify (all required; any miss → skip, fold nothing) ──
+                    let verified = (|| -> Option<()> {
+                        // (1) the pre-anchor chain is canonical Bitcoin: valid PoW + tip == this batch's anchor.
+                        let refs: Vec<&[u8]> = prov_headers.iter().map(|h| h.as_slice()).collect();
+                        if refs.is_empty() || bitcoin::verify_header_chain(&refs)? != prev_hash {
+                            return None;
+                        }
+                        // (2) the etch is a fixed-supply CETCH in a canonical block, asset-bound; C_0 is its supply note.
+                        let etch_txid = bitcoin::compute_txid(&etch_tx)?;
+                        let (c0_compressed, mint_authority, _dec) = bitcoin::verify_etch_anchor(&etch_tx, b_asset)?;
+                        if !bitcoin::is_fixed_supply(&mint_authority) {
+                            return None;
+                        }
+                        let etch_root = bitcoin::verify_merkle_path(&etch_txid, &etch_siblings, etch_index);
+                        if !prov_headers.iter().any(|h| bitcoin::extract_merkle_root(h) == etch_root) {
+                            return None;
+                        }
+                        // (3) every provenance CXFER's confirmed block root is one of the canonical chain's roots.
+                        if !prov.iter().all(|c| prov_headers.iter().any(|h| bitcoin::extract_merkle_root(h) == c.confirmed_block_root)) {
+                            return None;
+                        }
+                        // (4) burned note: outpoint = the burn tx's spent input; env ν is the note's REAL ν.
+                        let inputs = bitcoin::extract_inputs(tx)?;
+                        let (bt, bvo) = inputs.first()?;
+                        let burned_outpoint = outpoint_key(bt, *bvo);
+                        if &nullifier(&burned_cx, &burned_cy) != env_nu {
+                            return None;
+                        }
+                        let burned_ch = commitment_hash(&burned_cx, &burned_cy);
+                        let c0_outpoint = outpoint_key(&etch_txid, 0);
+                        let c0_ch = commitment_hash_compressed(&c0_compressed)?;
+                        // (5) the burned note descends from C_0 through the confirmed, conserving DAG.
+                        burn_deposit::verify_provenance(b_asset, &c0_outpoint, &c0_ch, &burned_outpoint, &burned_ch, &prov).ok()
+                    })();
+                    if verified.is_some() {
+                        // nullify the burned note in the shared set (no double-use) + authorize bridge_mint → dest.
+                        state.fold_spent(env_nu, &sv, &sn, si, &sp, &snew).expect("burn-deposit spent fold");
+                        state.fold_burn(env_nu, env_dest, &bk, &bn, &bv, bi, &bp, &bnew).expect("burn-deposit burn fold");
+                    }
+                }
             }
 
             // A cxfer tx's outputs are new pool notes — but ONLY if the tx CONSERVES value. fold_cxfer
