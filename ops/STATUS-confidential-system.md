@@ -3,7 +3,27 @@
 One picture of what's built, what's proven, and what's left to go live. Companion
 plans: `PLAN-confidential-token-rollup.md` (Phase 1/2), `PLAN-confidential-cross-chain.md`
 (cross-chain + dual lane), `PLAN-canonical-asset-hub.md` (the ERC20 hub),
-`PLAN-confidential-btc-relay.md` (the relay), `RUNBOOK-confidential-pool-deploy.md`.
+`PLAN-confidential-btc-relay.md` (the relay), `RUNBOOK-confidential-pool-deploy.md`,
+`RUNBOOK-confidential-mainnet-deploy.md`, `PLAN-teth-confidential-onboarding.md`.
+
+## CURRENT STATE — 2026-06-14 (live pilot + path to mainnet)
+
+**Live on Sepolia + signet, on `main`:** the confidential shielded pool + bidirectional bridge pilot.
+- Pool **`0x991726A547DCdB57ba660E395D9c7D7C3FcAdF79`**, `PROGRAM_VKEY` **`0x00d5b572`** (settle) /
+  `BITCOIN_RELAY_VKEY` **`0x005e6adc`** (reflection) — both FROZEN (`elf-vkey-pin.json`). cETH registered.
+- **First on-chain reflection attest landed** (Bitcoin→ETH proven, tx `0xf6940dd4…`); the signet relay
+  advances on the GH Actions cron. Settle stack proven (cETH wrap→settle→seed-only-recover). Shielded
+  Pool tab live at tacit.finance (the dapp serves this pool).
+- Merged to production `main` (PR #48); CI green (TAC canary + tETH bridge guards).
+
+**In progress — task #10 (the go/no-go gate before mainnet):** durable prover loop + a real bridge_mint
+round-trip (signet note → non-empty reflect → mint) + cBTC-lock + live swap/LP/OTC/BID on the pilot.
+
+**Mainnet path — tasks #11/#12 (`RUNBOOK-confidential-mainnet-deploy.md`):** gated on a reflection
+re-anchor + re-prove (the eth weak-subjectivity anchor is Sepolia-specific → new `BITCOIN_RELAY_VKEY`;
+settle vkey unchanged), then a near-tip deploy. tETH onboards under its existing id `3cba71e1…`.
+
+> The sections below are build history; vkey/address references in them predate the current frozen pin.
 
 ## What it is
 
