@@ -98,6 +98,17 @@ scan DISPATCH is in `reflect.rs` (parallel Mode B session's active file → coor
 the JS mirror lands in `dapp/`/`worker` (re-check mtime). Reflection-guest change → new `BITCOIN_RELAY_VKEY`
 → fold into the #11 mainnet re-anchor re-prove (one coordinated re-prove; settle vkey unchanged).
 
+**Build status (2026-06-14) — realness CORE done, integration remaining.** Implemented + adversarially
+tested + committed (additive, no vkey change yet): the etch anchor `bitcoin::verify_etch_anchor` (73f269e),
+the per-tx inclusion primitive `bitcoin::verify_merkle_path` (500b42d), and the pure DAG-linkage verifier
+`burn_deposit::verify_provenance_dag` + 9 KATs (c2dc6c7) — the inflation surface (value-swap seam, dangling
+non-`C_0` leaf, in-DAG double-spend, unproduced/consumed burned note, wrong-`C_0`) is covered. REMAINING
+(integration — coordinate with the reflect.rs owner, then re-prove): (a) `fold_asset_burn_deposit` composing
+those over `verify_cxfer_conservation` + recording ν via `fold_spent`/`fold_burn`, plus the `S`-cap field on
+`ScanReflection`; (b) the burn-deposit envelope + provenance witness types (parse each CXFER tx → the
+`VerifiedCxfer` shape); (c) the reflect.rs scan dispatch + the confirmed-block-root binding to the reflection's
+header sync; (d) the JS worker mirror; (e) re-prove → new `BITCOIN_RELAY_VKEY` (into #11).
+
 ## Findings / preconditions (impl phase 1)
 - **CETCH layout discrepancy (resolve first):** cxfer-core `parse_etch_meta` reads `cid(32)` right after
   `decimals`, but the live worker `decodeCEtchPayload` reads `commitment(33) ‖ amount_ct(8) ‖ rp_len ‖
