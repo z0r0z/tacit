@@ -80,3 +80,6 @@ contracts/sp1/*.hex
 
 # scratch files from parallel test iterations
 tests/_tmp_*
+
+# forge fuzz corpus cache (local artifact)
+cache/
