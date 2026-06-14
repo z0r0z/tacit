@@ -129,6 +129,56 @@ The reflection prover **binds to existing envelopes**; it adds no new spend opco
 - **Deposits** (new notes with public backing) enter via the existing Bitcoin wrap /
   etch path; their output commitments are reflected as note leaves like any output.
 
+## 6.1 Value entry under the FULL-SCAN model (`T_MINT` / cmint)
+
+The original §6 bullet ("deposits … reflected as note leaves like any output") describes the
+**witnessed** model, where `applyDeposits` appended a deposit's output as a **free note** (no
+conservation). The **full-scan** model (which closed REFLECT-1, §5) deliberately **removed** that
+path: a free output is exactly the unbacked-value injection REFLECT-1 forbids — `fold_cxfer` now
+appends a note **only** when value conserves (`Σ C_in = Σ C_out`) **and** asset is preserved (every
+spent input's asset equals the envelope's). A zero-input transfer is therefore forced to zero value.
+
+**Consequence (intended, fail-safe).** The full-scan reflection is a **conservation-closed** system:
+starting from the empty `ScanReflection::genesis()` it can only *move* existing notes, never create
+value. Every non-transfer/non-burn envelope is **skipped** (folds nothing): a `T_MINT`/cmint output
+does not enter `bitcoinPoolRoot` and is not bridge-mintable; a `burned > 0` cxfer (Bitcoin-side
+unwrap) skips its change output (the spent note's ν is still nullified — cross-lane correct — only the
+change is un-reflected; the pool **under-counts**, never over-counts). Skips are always the safe
+direction: the reflection **cannot enter unbacked value**, but until the deposit effect below ships,
+**the bridge has no value-entry path** (resume-seeded only). The assembler surfaces every skipped
+value-entry envelope in `unreflectedValueEntry` (and non-conserving/relabeling cxfers in
+`nonConserving`) so the gap is **loud**, never silent.
+
+**The cmint-deposit reflection effect (to build before multi-asset bridge value).** A confidential
+mint `T_MINT` (`0x24`, `asset_id ‖ etch_txid ‖ commitment(33) ‖ amount_ct(8) ‖ rp_len ‖ rangeproof ‖
+issuer_sig(64)`) creates value backed by **issuer authority**, not pool conservation — so the
+reflected effect verifies that authority instead of a kernel. Soundness chain (all checked
+in-reflection; an attacker who supplies any fabricated piece fails):
+
+1. **Asset binding.** `asset_id == SHA256(etch_txid ‖ vout0_LE)` (the same `asset_id_from_etch`
+   derivation `OP_ATTEST_META` uses). Binds the mint to one specific etch.
+2. **Authority root.** The etch (`CETCH 0x21`) at `etch_txid` declares `mint_authority` (x-only, 32 B,
+   `MINT_AUTH_NONE` ⇒ not mintable). The reflection is **handed the etch tx** and extracts it (like
+   `OP_ATTEST_META` parses its etch), and **must confirm the etch is a real Bitcoin tx** (`compute_txid
+   == etch_txid` **and** a finality-anchored inclusion proof — header + merkle, the header chaining to
+   the relay anchor). Without the confirmation, `asset_id` is attacker-chosen via a fabricated etch and
+   they are their own authority — so an unconfirmed-etch mint can only mint a worthless made-up
+   `asset_id` (never a real, allowlisted one, whose `asset_id` is pinned to the real etch's `txid`), but
+   the confirmation makes the invariant exact: *only the real issuer can mint a real asset.*
+3. **Signature.** `issuer_sig` is BIP-340 over `SHA256("tacit-mint-v1" ‖ asset_id ‖ commit_anchor(36)
+   ‖ commitment(33) ‖ amount_ct(8))`, where `commit_anchor` = the reveal (cmint) tx's `vin[0]` outpoint
+   (`txid ‖ vout_LE`, 36 B) — the anti-replay binding (`computeMintMsg`). Verified against the etch's
+   `mint_authority`.
+4. **Range.** the BP+ `rangeproof` bounds `commitment` to `[0, 2^64)` (single-output `m = 1`).
+5. **Fold.** on success append `leaf(asset_id, Cx, Cy)` (owner-free, §7.1) and add the outpoint
+   `(cmint_txid, 0)` → the live set under `asset_id` (the mint output is `vout = 0`). On any failure:
+   skip (fold nothing), exactly like a non-conserving cxfer.
+
+This is the **one** value-entry surface, so it gets the same adversarial verification + PoC tests the
+relabel/REFLECT-1 paths got (a fabricated authority, a replayed envelope, an out-of-range amount, a
+wrong-asset binding, an unconfirmed etch must each fold nothing). `cBTC.zk` wrap entry is **out of
+scope** for now (deferred).
+
 ## 7. Open decisions
 
 1. **Leaf derivation reconciliation — RESOLVED (proposed): the cross-chain leaf is

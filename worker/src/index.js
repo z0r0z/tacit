@@ -89,6 +89,8 @@ import { hexToBytes, bytesToHex, concatBytes } from '@noble/hashes/utils';
 import { bech32, bech32m } from '@scure/base';
 import { buildReflectionAttester } from './reflection-attest.js';
 import { buildConfidentialSettler } from './confidential-settle.js';
+import { buildCrossoutConsumer, crossoutMintLeaf } from './crossout-consumer.js';
+import { decodeCrossoutMint } from '../../dapp/confidential-crossout-consumer.js';
 
 secp.etc.hmacSha256Sync = (k, ...m) => hmac(sha256, k, secp.etc.concatBytes(...m));
 
@@ -205,6 +207,7 @@ const T_BRIDGE_BURN             = 0x61; // cross-chain redeem: burn tETH → com
 const T_BRIDGE_ROTATE           = 0x62; // pool rotation: spend old note, create new note (SPEC §5.62)
 const T_BRIDGE_EXPORT           = 0x63; // pool note → tETH UTXO: export to standard asset (SPEC §5.63)
 const T_BRIDGE_IMPORT           = 0x64; // tETH UTXO → pool note: import for bridge burn (SPEC §5.64)
+const T_CROSSOUT_MINT           = 0x65; // ETH→BTC cross-out mint: reflect a confidential-pool bridge_burn to Bitcoin (ops/PLAN-eth-reflection-modeB.md)
 const N_BITS = 64; // amount range: [0, 2^64) — bulletproof rangeproof.
 const SECP_N = 0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141n;
 
@@ -13128,7 +13131,7 @@ async function handleAssetHint(req, env, network, cors, ctx) {
       else { const dl = parseInt(push, 16); payloadHex = sp.slice(4, 4 + dl * 2); }
       if (!payloadHex || payloadHex.length < 4) continue;
       const opcode = parseInt(payloadHex.slice(0, 2), 16);
-      if (opcode === T_BRIDGE_DEPOSIT || opcode === T_BRIDGE_BURN || opcode === T_BRIDGE_ROTATE || opcode === T_BRIDGE_EXPORT || opcode === T_BRIDGE_IMPORT) {
+      if (opcode === T_BRIDGE_DEPOSIT || opcode === T_BRIDGE_BURN || opcode === T_BRIDGE_ROTATE || opcode === T_BRIDGE_EXPORT || opcode === T_BRIDGE_IMPORT || opcode === T_CROSSOUT_MINT) {
         decoded = { opcode, payload: hexToBytes(payloadHex) };
         break;
       }
@@ -13619,6 +13622,28 @@ async function handleAssetHint(req, env, network, cors, ctx) {
         return jsonResponse({ ok: true, source: 'hint', opcode: decoded.opcode, network }, 200, cors);
       }
     }
+  }
+
+  if (decoded.opcode === T_CROSSOUT_MINT) {
+    // ETH→BTC cross-out mint (Mode B reverse reflection, app glue). The wallet broadcasts this after a
+    // confidential-pool bridge_burn; the TRUSTLESS authority is the reflection cross-out fold (the
+    // eth-reflection guest). The worker only binds it to the recorded CrossOutRecorded (UX/liveness)
+    // and indexes the minted note for holdings — it is never authoritative. Inert until a pool is
+    // deployed (buildCrossoutConsumer returns null while CONFIDENTIAL_POOL_DEPLOYMENTS pool=null).
+    const cm = decodeCrossoutMint(decoded.payload);
+    if (!cm) return jsonResponse({ error: 'invalid crossout-mint payload' }, 400, cors);
+    const cc = buildCrossoutConsumer(env, { network, keccak256: keccak_256, rpcsForNetwork: (n) => _TETH_ETH_RPCS[n] });
+    if (!cc) return jsonResponse({ error: 'crossout bridge not active', network }, 400, cors);
+    // The minted Bitcoin pool leaf = keccak(asset ‖ Cx ‖ Cy ‖ owner) — must equal the recorded destCommitment.
+    const leaf = crossoutMintLeaf(keccak_256, cm);
+    const bind = await cc.consumer.bindBitcoinOutput({ network, claimId: cm.claimId, outputLeaf: leaf });
+    const status = bind.bound ? 'minted' : (bind.rejected ? 'rejected' : 'pending-reflection');
+    await env.REGISTRY_KV.put(`crossout-minted:${network}:${cm.assetId.toLowerCase()}:${cm.claimId.toLowerCase()}`, JSON.stringify({
+      claimId: cm.claimId, assetId: cm.assetId, cx: cm.cx, cy: cm.cy, owner: cm.owner, leaf,
+      txid: txidHex, vout, height: blockHeight, status, bound: !!bind.bound, network,
+    }));
+    await env.REGISTRY_KV.put(kvKey, String(prior + 1), { expirationTtl: 90000 });
+    return jsonResponse({ ok: true, source: 'hint', opcode: T_CROSSOUT_MINT, crossoutMint: { claimId: cm.claimId, leaf, status, bound: !!bind.bound }, network }, 200, cors);
   }
 
   return jsonResponse({ error: 'unsupported envelope opcode' }, 400, cors);
@@ -29386,6 +29411,17 @@ export default {
           }),
         );
       }
+      // CrossOut consumer (Mode B reverse reflection, app glue): record Ethereum CrossOutRecorded
+      // logs (a confidential-pool bridge_burn) past finality, so a hinted T_CROSSOUT_MINT can bind to
+      // its burn. INERT until a ConfidentialPool is deployed (CONFIDENTIAL_POOL_DEPLOYMENTS pool=null
+      // → buildCrossoutConsumer returns null). The worker is indexer-only; the trustless authority is
+      // the reflection cross-out fold, not this scan.
+      await Promise.allSettled(
+        NETWORKS.map(net => {
+          const _cc = buildCrossoutConsumer(env, { network: net, keccak256: keccak_256, rpcsForNetwork: (n) => _TETH_ETH_RPCS[n] });
+          return _cc ? _cc.scanOnce().catch(e => _logCronError(env, 'crossoutScan', net, e)) : Promise.resolve();
+        }),
+      );
       // Sweep abandoned variable-fill bid partial-claims and refund their
       // fill_amount back to the parent bid (§5.7.7 *Re-credit on
       // abandonment*). Bounded per network to keep cron CPU under budget.
