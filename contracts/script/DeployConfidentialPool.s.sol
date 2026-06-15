@@ -89,9 +89,8 @@ contract DeployConfidentialPool is Script {
         // its prev/tip hashes and the pool pins them to a MATURED ancestor of HEADER_RELAY.tip()
         // (≥ REFLECTION_CONFIRMATIONS deep, within a finality window — F1/F2/F3: anchor /
         // self-declared-difficulty / confirmation), and the pinned reflection vkey (elf-vkey-pin.json
-        // .bitcoin_relay_vkey, currently 0x00687472) is the FULL-SCAN model — every tx of every block +
-        // every vin against the handed live set, so no pool-note spend can be omitted (F4 — spent-set
-        // completeness). The require below reads it from the pin, so this literal is prose. The cross-lane
+        // .bitcoin_relay_vkey) is the FULL-SCAN model — every tx of every block + every vin against the
+        // handed live set, so no pool-note spend can be omitted (F4 — spent-set completeness). The cross-lane
         // gate is sound. The residual is operational only: a Bitcoin reorg deeper than REFLECTION_CONFIRMATIONS
         // (accept-and-document, as on the tETH bridge / AMM) and the relay running (liveness). So require
         // (a) BITCOIN_RELAY_VKEY == the pinned reflection vkey, (b) a wired HEADER_RELAY (also

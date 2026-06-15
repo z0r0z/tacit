@@ -733,6 +733,21 @@ contract ConfidentialPoolTest is Test {
         pool.settle(abi.encode(pv), "", new bytes[](0));
     }
 
+    /// A crossOut whose nullifier is NOT spent in the same batch is rejected: the burn must consume
+    /// its Ethereum source note (ν in pv.nullifiers), else it would mint a Bitcoin note for free.
+    function test_cross_out_nullifier_not_spent_reverts() public {
+        _seedLeaves(1);
+        ConfidentialPool.PublicValues memory pv = _pv();
+        bytes32 nu = keccak256("unspent-nu");
+        bytes32 destC = keccak256("dest-c");
+        bytes32 claimId = _claimId(1, destC, nu, assetId);
+        // No pv.nullifiers — the crossOut references nu but the batch never spends it.
+        pv.crossOuts = new ConfidentialPool.CrossOut[](1);
+        pv.crossOuts[0] = ConfidentialPool.CrossOut(1, destC, nu, assetId, claimId);
+        vm.expectRevert(ConfidentialPool.CrossOutNullifierNotSpent.selector);
+        pool.settle(abi.encode(pv), "", new bytes[](0));
+    }
+
     /// A bridge_burn whose spent input is BITCOIN-homed (membership proven against a
     /// knownBitcoinRoot) is rejected: the crossOut would mint a fresh equal-value note on
     /// Bitcoin while the original Bitcoin UTXO stays live + spendable there (the reflection
@@ -1462,6 +1477,21 @@ contract ConfidentialPoolTest is Test {
         pv.nullifiers = _arr(keccak256("noop-nu"));
         pool.settle(abi.encode(pv), "", new bytes[](0));
         assertTrue(pool.isNullifierSpent(keccak256("noop-nu")), "nullifier marked");
+    }
+
+    // A btcHomed batch may not consume an EVM deposit: a consumed deposit must materialize as a leaf
+    // (barred for btcHomed), so consuming one could only strand the depositor's escrow.
+    function test_btc_homed_deposit_consume_reverts() public {
+        bytes32 btcRoot = keccak256("btc-pool-dep");
+        bytes32 spent = keccak256("btc-spent-dep");
+        _attestBtc(btcRoot, spent, 1);
+        ConfidentialPool.PublicValues memory pv = _pv();
+        pv.spendRoot = btcRoot;
+        pv.bitcoinSpentRoot = spent;
+        pv.nullifiers = _arr(keccak256("dep-nu"));
+        pv.depositsConsumed = _arr(keccak256("some-deposit"));
+        vm.expectRevert(ConfidentialPool.BtcHomedValueExitMustBridge.selector);
+        pool.settle(abi.encode(pv), "", new bytes[](0));
     }
 
     // ──────────────────── reserve floor: bridge_mint accounting ────────────────────

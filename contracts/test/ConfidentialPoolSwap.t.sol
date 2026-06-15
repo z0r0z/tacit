@@ -345,4 +345,12 @@ contract ConfidentialPoolSwapTest is Test {
         vm.expectRevert(ConfidentialPool.PoolNotInit.selector);
         pool.lpPositionValue(keccak256("ghost"), 1);
     }
+
+    // A created-but-unfunded slot (totalShares == 0) returns (0, 0) rather than reverting on the
+    // proportional divide — a clean read before the first OP_LP_ADD seeds the pool.
+    function test_lp_position_value_unfunded_returns_zero() public {
+        bytes32 id = pool.createPair(assetA, assetB, 30);
+        (uint256 a, uint256 b) = pool.lpPositionValue(id, 100);
+        assertEq(a, 0); assertEq(b, 0, "unfunded slot = zero position");
+    }
 }
