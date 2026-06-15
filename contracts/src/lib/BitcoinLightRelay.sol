@@ -74,6 +74,7 @@ contract BitcoinLightRelay {
 
     error AlreadyInitialized();
     error ChainNotAnchored();
+    error InvalidAnchor();
     error InvalidChainLength();
     error InvalidHeaderChain();
     error InvalidPoW();
@@ -102,7 +103,10 @@ contract BitcoinLightRelay {
         if (initialized) revert AlreadyInitialized();
         if (epochStart % EPOCH_LENGTH != 0) revert InvalidChainLength();
         if (target == 0 || target > MAX_TARGET) revert InvalidTarget();
-        require(tipWork_ > 0);
+        // The anchor checkpoint must be a real block with non-zero cumulative work: a zero tipHash
+        // terminates the blockParent / median-time-past walks early (bytes32(0) is the walk sentinel)
+        // and a zero tipWork lets any single-block chain tie the bare anchor, so reject both.
+        if (tipHash == bytes32(0) || tipWork_ == 0) revert InvalidAnchor();
         // The anchor must sit inside the seeded epoch: advanceTip resolves the
         // target for (tipHeight_ + 1) / EPOCH_LENGTH, and only this epoch's
         // target is stored below. An out-of-epoch anchor reverts UnknownEpoch on
@@ -260,14 +264,7 @@ contract BitcoinLightRelay {
             if (i < PROOF_LENGTH) {
                 if (target != oldTarget) revert InvalidPoW();
             } else if (i == PROOF_LENGTH) {
-                uint256 epochStartTs = epochStartTimestamp[oldEpoch];
-                uint256 elapsed = lastOldTimestamp - epochStartTs;
-                if (elapsed < TARGET_TIMESPAN / 4) elapsed = TARGET_TIMESPAN / 4;
-                if (elapsed > TARGET_TIMESPAN * 4) elapsed = TARGET_TIMESPAN * 4;
-                uint256 rawTarget = (oldTarget * elapsed) / TARGET_TIMESPAN;
-                if (rawTarget > MAX_TARGET) rawTarget = MAX_TARGET;
-                // Compact-encode then re-expand to match Bitcoin's precision truncation.
-                uint256 newTarget = _bitsToTarget(_targetToCompact(rawTarget));
+                uint256 newTarget = _retargetTarget(oldTarget, epochStartTimestamp[oldEpoch], lastOldTimestamp);
                 epochTarget[oldEpoch + 1] = newTarget;
                 // Epoch start timestamp set by advanceTip when it processes
                 // the first canonical block of the new epoch — not here.
@@ -374,6 +371,22 @@ contract BitcoinLightRelay {
         }
         if (target == 0 || target > MAX_TARGET) revert InvalidTarget();
         return target;
+    }
+
+    /// @dev The next epoch's difficulty target from Bitcoin's retarget formula:
+    ///      newTarget = clamp(oldTarget * actualTimespan / TARGET_TIMESPAN), compact-truncated.
+    ///      `lastTs - firstTs` is Bitcoin's SIGNED nActualTimespan; a last-block timestamp earlier than
+    ///      the first-block timestamp (a negative span) floors to 0 here, which the [TARGET_TIMESPAN/4,
+    ///      TARGET_TIMESPAN*4] clamp lifts to TARGET_TIMESPAN/4 — the exact value Bitcoin Core computes —
+    ///      rather than reverting on the uint underflow (which would brick the relay at that boundary).
+    function _retargetTarget(uint256 oldTarget, uint256 firstTs, uint256 lastTs) internal pure returns (uint256) {
+        uint256 elapsed = lastTs > firstTs ? lastTs - firstTs : 0;
+        if (elapsed < TARGET_TIMESPAN / 4) elapsed = TARGET_TIMESPAN / 4;
+        if (elapsed > TARGET_TIMESPAN * 4) elapsed = TARGET_TIMESPAN * 4;
+        uint256 rawTarget = (oldTarget * elapsed) / TARGET_TIMESPAN;
+        if (rawTarget > MAX_TARGET) rawTarget = MAX_TARGET;
+        // Compact-encode then re-expand to match Bitcoin's precision truncation.
+        return _bitsToTarget(_targetToCompact(rawTarget));
     }
 
     /// @dev Compact-encode a 256-bit target to nBits, matching Bitcoin's SetCompact.
