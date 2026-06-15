@@ -247,6 +247,53 @@ the other ops, which are already sound. Scope: ops/DESIGN-in-guest-groth16-verif
 snarkjs-Groth16 verifier is buildable now; only the circuit-specific public-input layout + the baked vk wait
 on the ceremony.
 
+## Complete coverage map + future-proofing (2026-06-16)
+
+Every way a holding can arrive, and its bridge treatment. The principle: **bridge-onboarding is a
+CONSERVATION property** — `asset_scoped_kernel_verify` (or the public-reserve arithmetic) gates realness;
+the opcode only selects the wire layout. So the question per op is just "which layout + is it conserving."
+
+| Source | opcodes | treatment | status |
+|--------|---------|-----------|--------|
+| Transfer / atomic settlement / OTC | CXFER 0x22/0x23, AXFER 0x26/0x37, **BP+ 0x3C/0x3D** | Track A — cxfer fold | ✅ |
+| Orderbook bid (walk-away, exact + partial) | 0x5B / 0x5C | Track A — bid branch | ✅ |
+| AMM swap | T_SWAP_VAR 0x32 | Track B — swap fold | ✅ |
+| AMM LP add / remove | 0x2D / 0x2E | Track B — lp folds | ✅ |
+| AMM multihop route | T_SWAP_ROUTE 0x33 | Track B — per-hop receipts (final hop's output) | ⛳ gap |
+| **Farm rewards** | T_LP_HARVEST 0x3B | **Track B — farm treasury is a reserve** | ⛳ gap |
+| Farm bond / unbond | 0x35 / 0x36 | conserving LP-share lock/return (Track A-ish) | ⛳ gap |
+| Confidential batch swap | T_SWAP_BATCH 0x2F | Track C — BN254 Groth16 | 🔨 in progress |
+| Issuance (mint / drop claim) | T_MINT/PMINT/DCLAIM | cmint-deposit path (issuer-authorized) | ✅ |
+| cBTC.zk lock / slots | 0x66, T_SLOT_* | cBTC-specific folds | partial |
+
+**Farm rewards (the §"received from LP farm rewards" case).** `T_LP_HARVEST` mints a reward note at vout[1]
+with a PUBLIC `reward_amount` + cleartext `reward_r`, drawn from `farm.treasury_remaining` — a treasury
+funded at `T_FARM_INIT` by the launcher's real reward-asset inputs. This is the SAME shape as the AMM pool
+reserve: support it with a farm-treasury registry (`farm_id → (reward_asset, treasury_remaining, c0_backed)`,
+digest-pinned) + `fold_farm_init` (launcher's live inputs ⇒ c0_backed treasury) + `fold_harvest` (reward note
+opens to the public `reward_amount` ≤ treasury, onboard it, draw down the treasury) — a near-clone of
+`fold_swap_var`/`fold_lp_remove`. Bond/unbond move the LP-share (conserving lock/return; the unbonded share
+is the same one staked, so it onboards like a conserving transfer). Multihop `T_SWAP_ROUTE` is N chained
+swaps — the user's output is the final hop's receipt, onboardable as a swap from the last pool's reserve.
+
+**Should we support the BP+ variants even if not dapp-ready?** Already done for the cxfer-LAYOUT family
+(`T_CXFER_BPP` 0x22, `T_AXFER_BPP` 0x3C, `T_AXFER_VAR_BPP` 0x3D) — they share one parser, and the
+conservation gate fails-closed on anything that doesn't actually conserve. The swap/LP ops embed BP+ already
+(no separate opcode). So yes, the BP+ surface is future-proofed.
+
+**Is there an even more general abstraction?** Yes, two layers:
+1. **Already realized — conservation as the gate.** The reflection never trusts an op's *semantics*; it
+   trusts that, for the bridged asset, value conserves against real inputs (the kernel) or a C₀-backed
+   reserve (the registry). A mint/multi-asset/non-conserving op can't masquerade — it fails the gate
+   (fail-closed). So adding any future single-asset conserving variant is a one-line opcode-allowlist + a
+   mechanical re-prove, NOT a new soundness design. The bridge is a *property*, not a per-op integration.
+2. **The ideal (a SPEC direction) — a self-describing conservation envelope.** If conserving ops carried a
+   uniform TLV header `(asset, kernel_sig, outputs, range_proof)` regardless of op, ONE reflection parser +
+   the conservation gate would bridge ANY conserving op the day it ships, with NO per-op parser and NO
+   re-prove. Today's ops have bespoke layouts, so we curate a per-layout allowlist; a future "tacit-conserve-
+   v1" envelope wrapper would collapse that to a single self-describing path. Worth proposing for the next
+   amendment; not required for launch (the curated allowlist + conservation gate already covers every live op).
+
 ### Orderbook (`T_PREAUTH_BID`/`_VAR`) + OTC (`T_AXFER`) — Track A, the EASIEST class (2026-06-16)
 
 These are **2-party conserving swaps with no pool** — and the generalization covers them most directly of
