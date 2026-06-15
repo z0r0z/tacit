@@ -338,6 +338,68 @@ pub fn swap_var_kernel_verify(
     bip340_verify(kernel_sig, &msg, &px)
 }
 
+/// The per-asset `T_LP_ADD` / POOL_INIT conservation kernel domain (dapp/amm-kernel.js `DOMAIN_LP_ADD`).
+pub const LP_ADD_KERNEL_DOMAIN: &[u8] = b"tacit-amm-lp-add-v1";
+
+/// Verify a `T_LP_ADD` / POOL_INIT per-asset conservation kernel — proving the LP's inputs on asset X net
+/// to EXACTLY `delta_x` of value (the reserve contribution). Mirrors dapp/amm-kernel.js `lpAddKernelMsg` +
+/// `lpAddKernelKey` byte-for-byte: the verify key is `(Σ C_in_X − delta_x·H).x_only` (so the residue is the
+/// LP's blinding excess and the inputs' VALUE sums to exactly `delta_x`), and the message binds
+/// `(variant, pool_id, asset_x, delta_x, share_amount, share_csecp, input outpoints)`. A valid sig ⇒
+/// `Σ value(C_in_X) = delta_x`, so a reserve credit is backed by the LP's REAL input notes.
+///
+/// The worker DEFERS this kernel (POOL_INIT pools are tagged `structural-only` until upgraded), so the
+/// reflection is the authoritative conservation check for bridge purposes: a pool whose reserves the
+/// reflection can't tie to real inputs never becomes `c0_backed`, so no swap against it onboards value.
+/// See ops/DESIGN-bridge-multiasset-provenance.md (B).
+#[allow(clippy::too_many_arguments)]
+pub fn lp_add_kernel_verify(
+    variant: u8,
+    pool_id: &[u8; 32],
+    asset_x: &[u8; 32],
+    delta_x: u64,
+    share_amount: u64,
+    share_csecp: &[u8; 33],
+    input_outpoints: &[([u8; 32], u32)],
+    input_commitments: &[Point],
+    sig: &[u8; 64],
+) -> bool {
+    if input_outpoints.is_empty() || input_outpoints.len() > 255 {
+        return false;
+    }
+    if input_outpoints.len() != input_commitments.len() {
+        return false;
+    }
+    // msg = tacit-amm-lp-add-v1 ‖ variant ‖ pool_id ‖ asset_x ‖ delta_x_LE ‖ share_amount_LE ‖
+    //       share_csecp ‖ n_inputs ‖ (txid ‖ vout_LE)*
+    let mut h = Sha256::new();
+    h.update(LP_ADD_KERNEL_DOMAIN);
+    h.update([variant]);
+    h.update(pool_id);
+    h.update(asset_x);
+    h.update(delta_x.to_le_bytes());
+    h.update(share_amount.to_le_bytes());
+    h.update(share_csecp);
+    h.update([input_outpoints.len() as u8]);
+    for (txid, vout) in input_outpoints {
+        h.update(txid);
+        h.update(vout.to_le_bytes());
+    }
+    let msg: [u8; 32] = h.finalize().into();
+
+    // key E = Σ C_in_X − delta_x·H
+    let mut e = sum_points(input_commitments);
+    if delta_x != 0 {
+        e = e - gen_h() * Scalar::from(delta_x);
+    }
+    if e == ProjectivePoint::identity() {
+        return false;
+    }
+    let ec = compress(&e);
+    let ex: [u8; 32] = ec[1..].try_into().unwrap();
+    bip340_verify(sig, &msg, &ex)
+}
+
 // ──────────────────── BP+ transcript (length-prefixed sha256) ────────────────────
 
 struct Transcript {
@@ -2285,6 +2347,82 @@ impl ScanReflection {
         Ok(())
     }
 
+    /// Fold a confirmed `T_LP_ADD` / POOL_INIT (Track B): establish or grow a pool's reserves in the
+    /// registry, marked `c0_backed` only when BOTH per-asset conservation kernels verify AND the LP's input
+    /// notes are real (C0-backed). Both sides prove `Σ value(inputs) = delta_*` (`lp_add_kernel_verify`), so
+    /// the reserve credits are backed; `inputs_c0_backed` (the dispatch's verdict that every LP input was a
+    /// live-reflected note) carries the descend-to-`C_0` property into the pool. A POOL_INIT (`variant == 1`)
+    /// inserts a fresh pool; an LP-add (`variant == 0`) grows an existing one (its `c0_backed` stays true
+    /// only while every contribution is backed). The minted LP-share is NOT onboarded here (it's pool
+    /// ownership, not a `C_0`-rooted asset note — its own follow-up); this fold only advances the reserve
+    /// provenance that `fold_swap_var` consumes. Fails closed (changes nothing) on a bad kernel, an asset
+    /// mismatch, a duplicate POOL_INIT, or an unknown LP-add pool.
+    #[allow(clippy::too_many_arguments)]
+    pub fn fold_lp_add(
+        &mut self,
+        variant: u8,
+        pool_id: &[u8; 32],
+        asset_a: &[u8; 32],
+        asset_b: &[u8; 32],
+        delta_a: u64,
+        delta_b: u64,
+        share_amount: u64,
+        share_csecp: &[u8; 33],
+        a_input_outpoints: &[([u8; 32], u32)],
+        a_input_commitments: &[Point],
+        a_kernel_sig: &[u8; 64],
+        b_input_outpoints: &[([u8; 32], u32)],
+        b_input_commitments: &[Point],
+        b_kernel_sig: &[u8; 64],
+        inputs_c0_backed: bool,
+    ) -> Result<(), &'static str> {
+        if asset_a == asset_b {
+            return Err("lp_add fold: assets must differ");
+        }
+        // Both per-asset kernels must prove the inputs net to exactly delta_a / delta_b (pool_id + assets +
+        // deltas are bound in the kernel message, so a forged pool_id or relabeled side fails here).
+        if !lp_add_kernel_verify(
+            variant, pool_id, asset_a, delta_a, share_amount, share_csecp, a_input_outpoints, a_input_commitments, a_kernel_sig,
+        ) {
+            return Err("lp_add fold: asset_a kernel verify");
+        }
+        if !lp_add_kernel_verify(
+            variant, pool_id, asset_b, delta_b, share_amount, share_csecp, b_input_outpoints, b_input_commitments, b_kernel_sig,
+        ) {
+            return Err("lp_add fold: asset_b kernel verify");
+        }
+        match variant {
+            1 => {
+                // POOL_INIT: a fresh pool. Reserves = the seeded deltas; backed iff the seed inputs are real.
+                if self.pools.get(pool_id).is_some() {
+                    return Err("lp_add fold: POOL_INIT for an already-registered pool");
+                }
+                if delta_a == 0 || delta_b == 0 {
+                    return Err("lp_add fold: POOL_INIT requires non-zero reserves");
+                }
+                self.pools.insert(pool_id, PoolReserveState {
+                    asset_a: *asset_a, asset_b: *asset_b, reserve_a: delta_a, reserve_b: delta_b,
+                    c0_backed: inputs_c0_backed,
+                });
+                Ok(())
+            }
+            0 => {
+                // LP-add: grow an existing pool. Assets must match; reserves += the (kernel-bound) deltas.
+                let mut pool = self.pools.get(pool_id).ok_or("lp_add fold: LP-add to an unknown pool")?;
+                if &pool.asset_a != asset_a || &pool.asset_b != asset_b {
+                    return Err("lp_add fold: LP-add asset mismatch");
+                }
+                pool.reserve_a = pool.reserve_a.checked_add(delta_a).ok_or("lp_add fold: reserve_a overflow")?;
+                pool.reserve_b = pool.reserve_b.checked_add(delta_b).ok_or("lp_add fold: reserve_b overflow")?;
+                // Backing is monotone: it stays true only while every contribution is itself backed.
+                pool.c0_backed = pool.c0_backed && inputs_c0_backed;
+                self.pools.update(pool_id, pool);
+                Ok(())
+            }
+            _ => Err("lp_add fold: bad variant"),
+        }
+    }
+
     /// Record a bridge-out in the burn set: ν → destCommitment (witnessed UTXO insert). The spend
     /// itself is folded via `fold_spent`; this adds the bound destination so bridge_mint can mint
     /// only an explicitly-burned note, to exactly the declared destination.
@@ -3430,6 +3568,88 @@ mod tests {
         // from_sorted rejects an out-of-order / zero-key handoff (a forged resume can't sneak in).
         assert!(PoolReserveSet::from_sorted(vec![(pid2, st(1, 1, true)), (pid1, st(1, 1, true))]).is_none(), "unsorted rejected");
         assert!(PoolReserveSet::from_sorted(vec![([0u8; 32], st(1, 1, true))]).is_none(), "zero pool_id rejected");
+    }
+
+    fn lp_add_msg(variant: u8, pool_id: &[u8; 32], asset_x: &[u8; 32], delta_x: u64, share_amount: u64, share_csecp: &[u8; 33], inputs: &[([u8; 32], u32)]) -> [u8; 32] {
+        let mut h = Sha256::new();
+        h.update(LP_ADD_KERNEL_DOMAIN);
+        h.update([variant]);
+        h.update(pool_id);
+        h.update(asset_x);
+        h.update(delta_x.to_le_bytes());
+        h.update(share_amount.to_le_bytes());
+        h.update(share_csecp);
+        h.update([inputs.len() as u8]);
+        for (txid, vout) in inputs {
+            h.update(txid);
+            h.update(vout.to_le_bytes());
+        }
+        h.finalize().into()
+    }
+
+    #[test]
+    fn lp_add_kernel_verify_and_fold_pool_init() {
+        let pid = [0x10u8; 32];
+        let asset_a = [0xAAu8; 32];
+        let asset_b = [0xBBu8; 32];
+        let (da, db) = (1000u64, 4000u64);
+        let share = 2000u64;
+        let csc = [0x02u8; 33];
+        // single input per side: C_in = delta·H + excess·G ⇒ key = excess·G; sign with `excess`.
+        let op_a = [([0x71u8; 32], 0u32)];
+        let xa = scalar_reduce_be(&[0x41u8; 32]);
+        let cia = gen_h() * Scalar::from(da) + ProjectivePoint::generator() * xa;
+        let (_pa, sa) = bip340_sign(&[0x41u8; 32], &[0x51u8; 32], &lp_add_msg(1, &pid, &asset_a, da, share, &csc, &op_a));
+        let op_b = [([0x72u8; 32], 1u32)];
+        let xb = scalar_reduce_be(&[0x42u8; 32]);
+        let cib = gen_h() * Scalar::from(db) + ProjectivePoint::generator() * xb;
+        let (_pb, sb) = bip340_sign(&[0x42u8; 32], &[0x52u8; 32], &lp_add_msg(1, &pid, &asset_b, db, share, &csc, &op_b));
+
+        // kernel primitive: accept + reject tamper / wrong delta.
+        assert!(lp_add_kernel_verify(1, &pid, &asset_a, da, share, &csc, &op_a, &[cia], &sa), "valid A kernel");
+        let mut bad = sa; bad[63] ^= 1;
+        assert!(!lp_add_kernel_verify(1, &pid, &asset_a, da, share, &csc, &op_a, &[cia], &bad), "tampered A sig rejected");
+        assert!(!lp_add_kernel_verify(1, &pid, &asset_a, da + 1, share, &csc, &op_a, &[cia], &sa), "wrong delta_a rejected");
+
+        // POOL_INIT (backed): pool registered with the seeded reserves + c0_backed.
+        let mut sc = ScanReflection::genesis();
+        assert!(sc.fold_lp_add(1, &pid, &asset_a, &asset_b, da, db, share, &csc, &op_a, &[cia], &sa, &op_b, &[cib], &sb, true).is_ok(), "POOL_INIT folds");
+        let p = sc.pools.get(&pid).expect("pool registered");
+        assert_eq!((p.reserve_a, p.reserve_b, p.c0_backed), (da, db, true));
+        // duplicate POOL_INIT → reject.
+        assert!(sc.fold_lp_add(1, &pid, &asset_a, &asset_b, da, db, share, &csc, &op_a, &[cia], &sa, &op_b, &[cib], &sb, true).is_err(), "duplicate POOL_INIT rejected");
+
+        // bad B kernel → fold nothing (fresh pool id).
+        let pid2 = [0x11u8; 32];
+        let (_x, sa2) = bip340_sign(&[0x41u8; 32], &[0x51u8; 32], &lp_add_msg(1, &pid2, &asset_a, da, share, &csc, &op_a));
+        let mut sc2 = ScanReflection::genesis();
+        assert!(sc2.fold_lp_add(1, &pid2, &asset_a, &asset_b, da, db, share, &csc, &op_a, &[cia], &sa2, &op_b, &[cib], &[0u8; 64], true).is_err(), "bad B kernel rejected");
+        assert!(sc2.pools.get(&pid2).is_none(), "rejected POOL_INIT registered nothing");
+
+        // POOL_INIT whose inputs aren't C0-backed ⇒ pool registered but NOT c0_backed (no swap can onboard).
+        let pid3 = [0x12u8; 32];
+        let (_y, sa3) = bip340_sign(&[0x41u8; 32], &[0x51u8; 32], &lp_add_msg(1, &pid3, &asset_a, da, share, &csc, &op_a));
+        let (_z, sb3) = bip340_sign(&[0x42u8; 32], &[0x52u8; 32], &lp_add_msg(1, &pid3, &asset_b, db, share, &csc, &op_b));
+        let mut sc3 = ScanReflection::genesis();
+        assert!(sc3.fold_lp_add(1, &pid3, &asset_a, &asset_b, da, db, share, &csc, &op_a, &[cia], &sa3, &op_b, &[cib], &sb3, false).is_ok());
+        assert!(!sc3.pools.get(&pid3).unwrap().c0_backed, "unbacked pool is not c0_backed");
+
+        // LP-add (variant 0) grows the first pool's reserves.
+        let cia0 = gen_h() * Scalar::from(500u64) + ProjectivePoint::generator() * xa;
+        let (_w, sa0) = bip340_sign(&[0x41u8; 32], &[0x51u8; 32], &lp_add_msg(0, &pid, &asset_a, 500, share, &csc, &op_a));
+        let cib0 = gen_h() * Scalar::from(2000u64) + ProjectivePoint::generator() * xb;
+        let (_v, sb0) = bip340_sign(&[0x42u8; 32], &[0x52u8; 32], &lp_add_msg(0, &pid, &asset_b, 2000, share, &csc, &op_b));
+        assert!(sc.fold_lp_add(0, &pid, &asset_a, &asset_b, 500, 2000, share, &csc, &op_a, &[cia0], &sa0, &op_b, &[cib0], &sb0, true).is_ok(), "LP-add grows reserves");
+        let p2 = sc.pools.get(&pid).unwrap();
+        assert_eq!((p2.reserve_a, p2.reserve_b), (da + 500, db + 2000), "reserves grew");
+
+        // LP-add to an unregistered pool → reject (valid kernels, but no such pool).
+        let pidu = [0x88u8; 32];
+        let (_, sau) = bip340_sign(&[0x41u8; 32], &[0x51u8; 32], &lp_add_msg(0, &pidu, &asset_a, 100, share, &csc, &op_a));
+        let ciau = gen_h() * Scalar::from(100u64) + ProjectivePoint::generator() * xa;
+        let (_, sbu) = bip340_sign(&[0x42u8; 32], &[0x52u8; 32], &lp_add_msg(0, &pidu, &asset_b, 100, share, &csc, &op_b));
+        let cibu = gen_h() * Scalar::from(100u64) + ProjectivePoint::generator() * xb;
+        assert!(sc.fold_lp_add(0, &pidu, &asset_a, &asset_b, 100, 100, share, &csc, &op_a, &[ciau], &sau, &op_b, &[cibu], &sbu, true).is_err(), "LP-add to unknown pool rejected");
     }
 
     // REFLECT-1 regression: the reflection prover must NOT fold a confirmed CXFER tx's outputs into
