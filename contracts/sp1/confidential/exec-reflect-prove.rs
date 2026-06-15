@@ -103,6 +103,18 @@ fn write_stdin(f: &serde_json::Value) -> SP1Stdin {
     for kv in cbtc { let t = kv.as_array().unwrap(); r32(&mut s, &t[0]); r32(&mut s, &t[1]); r32(&mut s, &t[2]); }
     s.write(&p.get("cbtcBackingSats").and_then(|v| v.as_u64()).unwrap_or(0));
 
+    // Mode B: the eth-reflection public values the guest reads before anchorHeight (reflect.rs ~L135) +
+    // verify_sp1_proof's. For a non-crossout fixture the only field the guest reads is word 8
+    // (prevSyncCommitteeRoot), which must == the pinned ETH_GENESIS_SYNC_COMMITTEE; the rest is unused
+    // (no 0x65 crossout txs). 9 abi words = 288 bytes. MUST match reflect-exec/src/main.rs write_stdin —
+    // omitting it desyncs every read after it (the guest then commits nothing → pv_bytes=0).
+    let eth_pv = f.get("ethPv").and_then(|v| v.as_str()).map(hexv).unwrap_or_else(|| {
+        let mut b = vec![0u8; 9 * 32];
+        b[8 * 32..9 * 32].copy_from_slice(&hexv("0x8a83300119ac1e64a2318d3db330ed496c51276c636a93633b2d5cfd283c2d44"));
+        b
+    });
+    s.write(&eth_pv);
+
     s.write(&f["anchorHeight"].as_u64().unwrap());
     let headers = f["headers"].as_array().unwrap();
     s.write(&(headers.len() as u32));
