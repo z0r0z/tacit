@@ -141,8 +141,9 @@ export function makeBurnDepositProvenance({
     for (const cx of cxfers) {
       if (cx.inputCommitments.length !== cx.inputOutpoints.length) return false;
       if (cx.outputCommitments.length !== cx.outputVouts.length) return false;
-      // 1. inclusion
-      if (verifyMerklePath(cx.txid, cx.merkleSiblings, cx.merkleIndex) !== cx.confirmedBlockRoot) return false;
+      // 1. inclusion — compare 0x-agnostically (verifyMerklePath returns bare hex; confirmedBlockRoot may
+      // arrive 0x-prefixed from the assembler/worker), so the worker's real kit and the bare-hex KATs agree.
+      if (stripHex(verifyMerklePath(cx.txid, cx.merkleSiblings, cx.merkleIndex)) !== stripHex(cx.confirmedBlockRoot)) return false;
       // 2. conservation (value + asset, bound to the one asset)
       const inputPoints = [];
       for (const c of cx.inputCommitments) {

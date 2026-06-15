@@ -133,5 +133,28 @@ const burnBlock = (txidDisplay) => ({ txs: [{ txidDisplay, rawHex: 'bb'.repeat(4
   eq(restored.digest(), digest, 'snapshot round-trip reconstructs the post-burn-deposit digest');
 }
 
+// ── 5. A 0x2B burn of a non-live note with NO bundle: no throw, an empty-provenance skip witness is
+//      emitted (the guest reads + folds nothing), state advances only height. Closes the liveness hazard
+//      where a bundle-less burn would otherwise wedge the attestation cycle. ──
+{
+  const { kit } = makeKit(true);
+  const idx = makeScanReflectionIndexer({ ...deps, burnDepositKit: kit });
+  const before = idx.state().counts();
+  const rootsBefore = idx.roots();
+  const tx0 = dtx(0x60);
+  let input, threw = false;
+  try { input = idx.assembleBlocks([burnBlock(tx0)], { headers: ['0x' + '00'.repeat(80)], anchorHeight: 704 /* no burnDeposits */ }); }
+  catch { threw = true; }
+  ok(!threw, 'no-bundle: assembleBlocks does not throw on a bundle-less burn-deposit');
+  const bd = input && input.blocks[0].txs[0].burnDeposit;
+  ok(bd != null, 'no-bundle: an empty-provenance skip witness is emitted');
+  eq((bd && bd.provHeaders.length) ?? -1, 0, 'no-bundle: skip witness carries empty provenance');
+  const after = idx.state().counts();
+  eq(after.note, before.note, 'no-bundle: no note appended');
+  eq(after.spent, before.spent, 'no-bundle: no ν nullified');
+  eq(after.burn, before.burn, 'no-bundle: no burn recorded');
+  eq(idx.roots().poolRoot, rootsBefore.poolRoot, 'no-bundle: poolRoot unchanged (folds nothing)');
+}
+
 console.log(failures ? `\n${failures} FAILURES` : '\nall burn-deposit wiring checks passed');
 process.exit(failures ? 1 : 0);

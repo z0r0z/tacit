@@ -136,7 +136,17 @@ fn write_stdin(f: &serde_json::Value) -> SP1Stdin {
 }
 
 fn main() {
-    let f: serde_json::Value = serde_json::from_str(&std::fs::read_to_string("/root/work/cxfer/fixtures/reflection_input.json").unwrap()).unwrap();
+    // REFLECT_INPUT lets the box prove a DIFFERENT assembled fixture without a code edit — the standard
+    // real-CXFER reflection_input.json (default) OR the TAC burn-deposit fixture
+    // (contracts/sp1/confidential/fixtures/reflection_burn_deposit.json) for the
+    // ConfidentialReflectionBurnDepositProofReal turnkey fixture. write_burn_deposit/write_stdin already
+    // handle both shapes (a burnDeposit tx folds, a plain CXFER tx folds), so only the path changes.
+    // REFLECT_OUT_TAG names the output hex files (default "reflect") so the two fixtures don't collide.
+    let input_path = std::env::var("REFLECT_INPUT")
+        .unwrap_or_else(|_| "/root/work/cxfer/fixtures/reflection_input.json".to_string());
+    let out_tag = std::env::var("REFLECT_OUT_TAG").unwrap_or_else(|_| "reflect".to_string());
+    println!("input {input_path}  out_tag {out_tag}");
+    let f: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&input_path).unwrap()).unwrap();
     let s = write_stdin(&f);
 
     let client = ProverClient::builder().cuda().build();
@@ -151,7 +161,9 @@ fn main() {
     println!("PROVED pv_bytes={}", proof.public_values.as_slice().len());
     client.verify(&proof, pk.verifying_key(), None).expect("local verify failed");
     println!("LOCAL_VERIFY_OK");
-    std::fs::write("/root/work/cxfer/exec/reflect_public_values.hex", hex::encode(proof.public_values.as_slice())).unwrap();
-    std::fs::write("/root/work/cxfer/exec/reflect_proof_bytes.hex", hex::encode(proof.bytes())).unwrap();
-    println!("WROTE reflect_public_values.hex + reflect_proof_bytes.hex");
+    let pv_path = format!("/root/work/cxfer/exec/{out_tag}_public_values.hex");
+    let proof_path = format!("/root/work/cxfer/exec/{out_tag}_proof_bytes.hex");
+    std::fs::write(&pv_path, hex::encode(proof.public_values.as_slice())).unwrap();
+    std::fs::write(&proof_path, hex::encode(proof.bytes())).unwrap();
+    println!("WROTE {pv_path} + {proof_path}");
 }

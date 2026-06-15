@@ -1052,6 +1052,33 @@ contract ConfidentialPoolTest is Test {
         pool.attestBitcoinStateProven(abi.encode(r), "");
     }
 
+    /// Symmetric to the zero spent/burn-root rejections: a zero Bitcoin POOL root must also be
+    /// rejected. bridge_mint proves the burned note's membership against a knownBitcoinRoot, so
+    /// marking an empty tree (root 0) canonical would let a mint prove membership against nothing.
+    /// The reflection prover seeds a non-zero empty-tree root, so a legitimate pool root is never 0.
+    function test_attest_zero_pool_root_rejected() public {
+        bytes32 prior = pool.knownReflectionDigest();
+        ConfidentialPool.BitcoinRelayPublicValues memory r = ConfidentialPool.BitcoinRelayPublicValues(
+            prior, bytes32(0), keccak256("s"), keccak256("b"), 1, keccak256("n")
+        , ANCHOR, ANCHOR, bytes32(uint256(uint160(address(pool)))), 0);
+        vm.expectRevert(ConfidentialPool.ZeroBitcoinPoolRoot.selector);
+        pool.attestBitcoinStateProven(abi.encode(r), "");
+    }
+
+    /// Mode B cross-lane inflation guard: a reflection proof must declare THIS pool as the reflected
+    /// eth pool (ethPoolReflected == address(this)). The contract knows its own address, so a proof
+    /// carrying a DIFFERENT pool's address — whose crossOuts would otherwise fold into this pool's
+    /// reflected state (cross-lane inflation) — is rejected, breaking the pool<->vkey circularity
+    /// with no in-guest pool pin.
+    function test_attest_wrong_eth_pool_rejected() public {
+        bytes32 prior = pool.knownReflectionDigest();
+        ConfidentialPool.BitcoinRelayPublicValues memory r = ConfidentialPool.BitcoinRelayPublicValues(
+            prior, keccak256("pr"), keccak256("s"), keccak256("b"), 1, keccak256("n")
+        , ANCHOR, ANCHOR, bytes32(uint256(uint160(address(0xBADBAD)))), 0);
+        vm.expectRevert(ConfidentialPool.WrongEthPool.selector);
+        pool.attestBitcoinStateProven(abi.encode(r), "");
+    }
+
     // The relay anchor (F1): a batch whose tip doesn't match the relay tip (nor a recent ancestor)
     // is rejected — so the proven header chain must be canonical Bitcoin, not a free witness.
     function test_reflection_anchor_rejects_wrong_tip() public {

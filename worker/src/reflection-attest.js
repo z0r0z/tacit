@@ -15,6 +15,7 @@
 
 import { makeReflectionIndexer } from '../../dapp/confidential-reflection-indexer.js';
 import { makeScanReflectionIndexer } from '../../dapp/confidential-reflection-scan-indexer.js';
+import { makeBurnDepositKit } from '../../dapp/burn-deposit-bitcoin.js';
 
 export function makeReflectionAttester({ deps, storage, prove, submit, getHeaders }) {
   // Replay the persisted effect log into a fresh indexer → the current canonical state.
@@ -93,12 +94,20 @@ export function makeReflectionAttester({ deps, storage, prove, submit, getHeader
 // can be omitted), advancing a copy of the snapshot, and proving; the persisted snapshot only
 // advances on ack (after the on-chain attestation), so a failed prove/submit is a safe retry.
 //
-//   deps       : { secp, keccak256, sha256 }
-//   storage    : { load(): {snapshot, attestedHeight, tipHeight} | null, save(state) }
-//   getBlockTxs: (height) => Promise<{ txs: [...] }>  — every tx of the block (the worker block-tx shape)
-//   getHeaders : (heights[]) => Promise<hex[]>        — the 80-byte headers, in height order
+//   deps          : { secp, keccak256, sha256 }
+//   storage       : { load(): {snapshot, attestedHeight, tipHeight} | null, save(state) }
+//   getBlockTxs   : (height) => Promise<{ txs: [...] }>  — every tx of the block (the worker block-tx shape)
+//   getHeaders    : (heights[]) => Promise<hex[]>        — the 80-byte headers, in height order
+//   burnDepositKit: (optional) the TAC burn-deposit / cmint-deposit onboarding tooling the scan indexer
+//                   needs to assemble a 0x2B burn of a PRE-existing (never-reflected) note — see
+//                   makeScanReflectionIndexer's burnDepositKit contract. Absent ⇒ onboarding is inert
+//                   (and getBurnDeposits is never consulted, so the indexer can never see a bundle
+//                   without its verifier — which would throw).
+//   getBurnDeposits: (optional) (txidsDisplay[]) => Promise<Map(txidDisplay → holder-traced bundle)> for
+//                   any burn-deposit in the batch. Looked up by the burn's display txid (a bundle is bound
+//                   to the burn tx, not a block height). Only consulted when burnDepositKit is wired.
 //   prove/submit as above. batchSize caps blocks per cycle (a huge backlog proves in chunks).
-export function makeScanReflectionAttester({ deps, storage, prove, submit, getBlockTxs, getHeaders, genesisHeight, batchSize = 16 }) {
+export function makeScanReflectionAttester({ deps, storage, prove, submit, getBlockTxs, getHeaders, genesisHeight, batchSize = 16, burnDepositKit, getBurnDeposits }) {
   const range = (from, to) => { const a = []; for (let h = from; h <= to; h++) a.push(h); return a; };
   // attestedHeight = the last block folded into the persisted snapshot; the next batch starts at
   // attestedHeight+1. Genesis: nothing attested, so attestedHeight = genesisHeight-1 (the first
@@ -124,11 +133,19 @@ export function makeScanReflectionAttester({ deps, storage, prove, submit, getBl
     const from = s.attestedHeight + 1;
     const to = Math.min(s.tipHeight, from + batchSize - 1);
     const heights = range(from, to);
-    const idx = makeScanReflectionIndexer(deps);
+    const idx = makeScanReflectionIndexer({ ...deps, burnDepositKit });
     idx.load(s.snapshot);
     const blocks = await Promise.all(heights.map((h) => getBlockTxs(h)));
     const headers = await getHeaders(heights);
-    const input = idx.assembleBlocks(blocks, { headers, anchorHeight: from });
+    // Holder-submitted TAC burn-deposit / cmint-deposit provenance bundles for any 0x2B burn of a
+    // pre-existing note in this range, keyed by the burn's display txid. Only consulted when a kit is
+    // wired (the indexer throws if handed a bundle without one), so this stays a no-op pre-onboarding.
+    let burnDeposits;
+    if (burnDepositKit && getBurnDeposits) {
+      const txids = blocks.flatMap((b) => (b.txs || []).map((t) => t.txidDisplay));
+      burnDeposits = await getBurnDeposits(txids);
+    }
+    const input = idx.assembleBlocks(blocks, { headers, anchorHeight: from, burnDeposits });
     return { jobId: input.newDigest, input, newSnapshot: idx.snapshot(), attestedTo: to, blocks: heights.length };
   }
 
@@ -220,14 +237,36 @@ export function buildReflectionAttester(env, { deps, api, network }) {
 // kernelSig (64-byte BIP-340 hex) + rangeProof (BP+ hex) — the assembler re-verifies value
 // conservation before folding the outputs (REFLECT-1); decodeCXferBppPayload already returns both.
 // `api` is the esplora text fetcher.
-export function buildScanReflectionAttester(env, { deps, api, network, classifyTx }) {
+//
+// `burnDepositKit` (optional) enables the scan-free TAC burn-deposit / cmint-deposit onboarding (a 0x2B
+// burn of a PRE-existing, never-reflected note). It is the raw-tx Bitcoin tooling the scan indexer needs
+// — { mirror: makeBurnDepositProvenance(...), assembler: makeBurnDepositAssembler(...),
+// parseEtchAnchor(etchTxHex, assetHex), computeTxidInternal(txHex) } (see makeScanReflectionIndexer).
+// Absent ⇒ onboarding stays inert (holder bundles are never read, the indexer never throws). When wired,
+// holders submit their traced provenance bundle under reflection:burndep:{net}:{burnTxidDisplay}.
+export function buildScanReflectionAttester(env, { deps, api, network, classifyTx, burnDepositKit }) {
   if (!env || env.REFLECTION_ATTEST !== '1' || !env.REGISTRY_KV) return null;
   const genesisHeight = parseInt(env.REFLECTION_GENESIS_HEIGHT || '0', 10);
   if (!genesisHeight) return null;
+  // Build the real TAC burn-deposit / cmint-deposit onboarding kit from the same crypto deps (so the worker
+  // can assemble a holder-traced provenance bundle into the prover input). Overridable for tests; default is
+  // the production kit. Onboarding stays inert until a holder actually submits a bundle (getBurnDeposits).
+  const kit = burnDepositKit || makeBurnDepositKit(deps);
   const KEY = `reflection:scan:${network}`;
   const storage = {
     load: async () => { const s = await env.REGISTRY_KV.get(KEY); return s ? JSON.parse(s) : null; },
     save: async (s) => env.REGISTRY_KV.put(KEY, JSON.stringify(s)),
+  };
+  // Holder-traced burn-deposit bundles, keyed by the burn tx's display txid. Returns the subset present
+  // for this batch's txids. Only invoked by the attester when burnDepositKit is wired.
+  const burnDepKey = (txidDisplay) => `reflection:burndep:${network}:${txidDisplay.replace(/^0x/, '')}`;
+  const getBurnDeposits = async (txidsDisplay) => {
+    const map = new Map();
+    for (const txid of txidsDisplay) {
+      const raw = await env.REGISTRY_KV.get(burnDepKey(txid));
+      if (raw) map.set(txid, JSON.parse(raw));
+    }
+    return map;
   };
   const prove = async (input) => {
     const r = await fetch(env.REFLECTION_PROVE_URL, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(input) });
@@ -258,5 +297,5 @@ export function buildScanReflectionAttester(env, { deps, api, network, classifyT
     }));
     return { txs };
   };
-  return makeScanReflectionAttester({ deps, storage, prove, submit, getBlockTxs, getHeaders, genesisHeight });
+  return makeScanReflectionAttester({ deps, storage, prove, submit, getBlockTxs, getHeaders, genesisHeight, burnDepositKit: kit, getBurnDeposits });
 }

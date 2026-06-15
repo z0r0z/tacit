@@ -592,6 +592,13 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
   const BD_ZERO_PATH = Array(TREE_DEPTH).fill(BD_ZERO_HEX);
   const BD_ZERO_SPENT = { sLowValue: BD_ZERO_HEX, sLowNext: BD_ZERO_HEX, sLowIndex: 0, sLowPath: BD_ZERO_PATH, sNewPath: BD_ZERO_PATH };
   const BD_ZERO_BURN = { bLowKey: BD_ZERO_HEX, bLowNext: BD_ZERO_HEX, bLowValue: BD_ZERO_HEX, bLowIndex: 0, bLowPath: BD_ZERO_PATH, bNewPath: BD_ZERO_PATH };
+  // A burn-deposit context with EMPTY provenance, for a 0x2B burn of a non-live note that carries no
+  // holder bundle. The guest reads a full burn-deposit witness stream for every such burn and its
+  // verified() returns None at the first check (prov_headers empty) → folds nothing. Emitting this skip
+  // witness (vs throwing) keeps the stream in sync AND means a bundle-less burn can't wedge the cycle.
+  // The box harness write_burn_deposit loops over each array length, so empty arrays serialize as n=0.
+  const BD_ZERO_WITNESS = { etchTx: '0x', etchIndex: 0, etchSiblings: [], provHeaders: [], cxfers: [], cmints: [] };
+  const BD_SKIP_CTX = { valid: false, nu: BD_ZERO_HEX, dest: BD_ZERO_HEX, burnedCx: BD_ZERO_HEX, burnedCy: BD_ZERO_HEX, burnedNoteLeaf: BD_ZERO_HEX, witness: BD_ZERO_WITNESS };
 
   // Fold (or, on invalid provenance, no-op) a burn-deposit, mirroring the reflect.rs dispatch EXACTLY.
   // ctx = { valid, nu, dest, burnedCx, burnedCy, burnedNoteLeaf, witness:{ etchTx, etchIndex, etchSiblings,
@@ -664,10 +671,17 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
             // provenance witness + ran the JS mirror (ctx.valid). The guest reads the witness UNCONDITIONALLY
             // (stream sync) and folds ONLY if the provenance verifies — mirror that exactly here.
             burnDeposit = foldBurnDepositTx(state, tx.env.burnDeposit);
+          } else if (openings.length === 0) {
+            // BURN-DEPOSIT with NO holder bundle: the guest still reads a burn-deposit witness stream for
+            // every 0x2B burn of a non-live note and SKIPS if the provenance doesn't verify (skip-not-panic).
+            // Emit the empty-provenance skip witness so the stream stays in sync and a bundle-less burn can't
+            // wedge the attestation cycle (a griefer could otherwise broadcast one to halt reflection).
+            burnDeposit = foldBurnDepositTx(state, BD_SKIP_CTX);
           } else {
-            // Matches the guest's assert spends.is_empty(): a burn that is neither a single live-note spend
-            // nor a witnessed burn-deposit is a desync (the worker must supply a burn-deposit context).
-            throw new Error('burn tx: neither a reflected pool-note spend nor a burn-deposit with provenance');
+            // openings.length >= 2 under a burn envelope: the guest's `assert!(spends.is_empty())` fails (it
+            // panics), so this IS a genuine desync. (Making the guest skip-not-panic for a multi-spend burn
+            // is a separate hardening that needs a re-prove.)
+            throw new Error('burn tx: multiple live-note spends under a burn envelope (guest asserts spends.is_empty())');
           }
         }
         const outputs = [];
