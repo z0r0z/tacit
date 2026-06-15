@@ -581,6 +581,8 @@ for (const plan of lpAddPlans) {
     shareAmount: expectedShares,
     feeBps: pool.fee_bps,
     poolCapabilityFlags: 0,
+    protocolFeeAddress: poolRec?.protocol_fee_address || null,
+    protocolFeeBps: Number(pool.protocol_fee_bps || 0),
   });
   state.lpAdds[plan.label] = {
     commit_txid: r.commitTxid,
@@ -847,6 +849,8 @@ if (!SKIP_LP_REMOVE) {
       }],
       feeBps: pool.fee_bps,
       poolCapabilityFlags: 0,
+      protocolFeeAddress: poolRec?.protocol_fee_address || null,
+      protocolFeeBps: Number(pool.protocol_fee_bps || 0),
     });
     state.lpRemove = {
       pool_label: 'A_TAC_30',
