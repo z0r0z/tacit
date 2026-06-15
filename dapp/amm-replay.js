@@ -34,11 +34,12 @@ export function isqrtBig(n) {
 }
 
 // ops: [{ kind, ... }] in canonical order. Op shapes (fields are the on-chain /
-// envelope-declared values the caller decoded):
-//   pool_init : { deltaA, deltaB, shareAmount? }   shareAmount = founder shares
+// envelope-declared values the caller decoded — see replayOpFromDecoded):
+//   pool_init : { deltaA, deltaB, shareAmount?, feeBps }  shareAmount = founder shares
 //   lp_add    : { deltaA, deltaB, shareAmount? }
-//   swap_var  : { direction, deltaIn, feeBps, expectDeltaOut? }
+//   swap_var  : { direction, deltaIn, minOut }            re-priced at actual reserves
 //   lp_remove : { sharesBurned, outA?, outB? }
+//   fee_claim : { claimAmount }                           not yet wired (throws)
 //   swap_batch: requires Groth16 verification — not yet wired (throws).
 export function replayAmmPoolState(ops, deps) {
   const { curveDeltaOut, lpAddShares, removeOutputs, MINIMUM_LIQUIDITY } = deps || {};
@@ -129,6 +130,15 @@ export function replayAmmPoolState(ops, deps) {
       continue;
     }
 
+    if (op.kind === 'fee_claim') {
+      // T_PROTOCOL_FEE_CLAIM mints protocol-fee shares crystallized from k growth
+      // since the last claim (a function of k_last + the pool's protocol_fee_bps,
+      // via ammComputeProtocolShares). Trustless replay of it needs k + fee-bps
+      // tracking through every prior op; not yet wired — fail closed rather than
+      // trust the declared claim amount.
+      throw new Error(`replay[${i}]: fee_claim replay not yet wired (protocol-fee crystallization)`);
+    }
+
     if (op.kind === 'swap_batch') {
       // SPEC §5.16 (drafted / not yet emitted). The batch hides per-trader
       // amounts and carries ONE Groth16. Trustless replay verifies that proof
@@ -143,4 +153,37 @@ export function replayAmmPoolState(ops, deps) {
   }
 
   return { reserveA, reserveB, totalShares };
+}
+
+// Phase 2 — envelope → replay-op adapter. Maps a DECODED AMM envelope (from
+// decodeLpAdd / decodeTSwapVarPayload / decodeLpRemove / decodeProtocolFeeClaim)
+// into the op shape replayAmmPoolState consumes. Pure: the caller decodes (and,
+// in Phase 3, on-chain-verifies + canonically orders) the envelopes; this just
+// renames fields. Opcode constants are passed in so this module stays free of
+// the dapp's giant constant table. Returns null for a non-pool-op opcode.
+export function replayOpFromDecoded(opcode, dec, opcodes) {
+  if (!dec || !opcodes) return null;
+  const { T_LP_ADD, T_SWAP_VAR, T_LP_REMOVE, T_PROTOCOL_FEE_CLAIM } = opcodes;
+
+  if (opcode === T_LP_ADD) {
+    // variant 1 = POOL_INIT (carries the pool fee tier), variant 0 = standard add.
+    if (dec.variant === 1) {
+      return { kind: 'pool_init', deltaA: dec.deltaA, deltaB: dec.deltaB, shareAmount: dec.shareAmount, feeBps: dec.feeBps || 0 };
+    }
+    if (dec.variant === 0) {
+      return { kind: 'lp_add', deltaA: dec.deltaA, deltaB: dec.deltaB, shareAmount: dec.shareAmount };
+    }
+    return null;
+  }
+  if (opcode === T_SWAP_VAR) {
+    return { kind: 'swap_var', direction: dec.direction, deltaIn: dec.deltaIn, minOut: dec.minOut };
+  }
+  if (opcode === T_LP_REMOVE) {
+    // decodeLpRemove returns shareAmount (burned) + deltaA/deltaB (the payouts).
+    return { kind: 'lp_remove', sharesBurned: dec.shareAmount, outA: dec.deltaA, outB: dec.deltaB };
+  }
+  if (opcode === T_PROTOCOL_FEE_CLAIM) {
+    return { kind: 'fee_claim', claimAmount: dec.claimAmount };
+  }
+  return null;
 }

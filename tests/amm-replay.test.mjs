@@ -15,7 +15,10 @@
 import {
   ammCurveDeltaOut, ammLpAddShares, ammLpRemoveOutputs, AMM_MINIMUM_LIQUIDITY,
 } from '../worker/src/index.js';
-import { replayAmmPoolState, isqrtBig } from '../dapp/amm-replay.js';
+import { replayAmmPoolState, replayOpFromDecoded, isqrtBig } from '../dapp/amm-replay.js';
+
+// Opcode constants (dapp/tacit.js).
+const OPCODES = { T_LP_ADD: 0x2D, T_LP_REMOVE: 0x2E, T_PROTOCOL_FEE_CLAIM: 0x31, T_SWAP_VAR: 0x32 };
 
 const DEPS = {
   curveDeltaOut: ammCurveDeltaOut,
@@ -123,6 +126,45 @@ throws('second pool_init → reject', () =>
   replayAmmPoolState([SEQ[0], { kind: 'pool_init', deltaA: 1n, deltaB: 1n }], DEPS), /already initialized/);
 throws('sub-floor pool_init (total <= MINIMUM_LIQUIDITY) → reject', () =>
   replayAmmPoolState([{ kind: 'pool_init', deltaA: 10n, deltaB: 10n }], DEPS), /MINIMUM_LIQUIDITY/);
+
+console.log('\nPhase 2 — envelope → op adapter (decoded → replay op):');
+{
+  // Synthetic decoded envelopes mirroring decodeLpAdd / decodeTSwapVarPayload /
+  // decodeLpRemove / decodeProtocolFeeClaim field names.
+  const initDec = { variant: 1, deltaA: initA, deltaB: initB, shareAmount: initFounder, feeBps: swapFee };
+  const addDec = { variant: 0, deltaA: addA, deltaB: addB, shareAmount: addShares };
+  const swapDec = { direction: 0, deltaIn: swapIn, minOut: 0n, R_A_pre: 999n, deltaOut: 777n }; // advisory fields present + ignored
+  const remDec = { shareAmount: burn, deltaA: remA, deltaB: remB };
+  const feeDec = { claimAmount: 123n };
+
+  const op0 = replayOpFromDecoded(OPCODES.T_LP_ADD, initDec, OPCODES);
+  ok('LP_ADD variant 1 → pool_init (carries fee)', op0.kind === 'pool_init' && op0.feeBps === swapFee && op0.deltaA === initA);
+  const op1 = replayOpFromDecoded(OPCODES.T_LP_ADD, addDec, OPCODES);
+  ok('LP_ADD variant 0 → lp_add', op1.kind === 'lp_add' && op1.shareAmount === addShares);
+  const op2 = replayOpFromDecoded(OPCODES.T_SWAP_VAR, swapDec, OPCODES);
+  ok('SWAP_VAR → swap_var (direction/deltaIn/minOut, advisory dropped)', op2.kind === 'swap_var' && op2.direction === 0 && op2.deltaIn === swapIn && op2.minOut === 0n && op2.R_A_pre === undefined);
+  const op3 = replayOpFromDecoded(OPCODES.T_LP_REMOVE, remDec, OPCODES);
+  ok('LP_REMOVE → lp_remove (shareAmount→sharesBurned, deltaA/B→outA/B)', op3.kind === 'lp_remove' && op3.sharesBurned === burn && op3.outA === remA && op3.outB === remB);
+  const op4 = replayOpFromDecoded(OPCODES.T_PROTOCOL_FEE_CLAIM, feeDec, OPCODES);
+  ok('PROTOCOL_FEE_CLAIM → fee_claim', op4.kind === 'fee_claim' && op4.claimAmount === 123n);
+  ok('non-pool opcode → null', replayOpFromDecoded(0x21, {}, OPCODES) === null);
+
+  // End-to-end: decoded → adapter → replay reproduces the same state as feeding
+  // the op shapes directly (SEQ). This is the Phase-2 → Phase-1 seam.
+  const adapted = [
+    replayOpFromDecoded(OPCODES.T_LP_ADD, initDec, OPCODES),
+    replayOpFromDecoded(OPCODES.T_LP_ADD, addDec, OPCODES),
+    replayOpFromDecoded(OPCODES.T_SWAP_VAR, swapDec, OPCODES),
+    replayOpFromDecoded(OPCODES.T_LP_REMOVE, remDec, OPCODES),
+  ];
+  const viaAdapter = replayAmmPoolState(adapted, DEPS);
+  const viaDirect = replayAmmPoolState(SEQ, DEPS);
+  ok('adapter→replay reproduces direct-op replay', viaAdapter.reserveA === viaDirect.reserveA && viaAdapter.reserveB === viaDirect.reserveB && viaAdapter.totalShares === viaDirect.totalShares);
+
+  // fee_claim through the replay fails closed (crystallization not yet wired).
+  throws('fee_claim op → reject (fail closed)', () =>
+    replayAmmPoolState([SEQ[0], op4], DEPS), /fee_claim replay not yet wired/);
+}
 
 console.log(`\n${pass}/${pass + fail} passed`);
 if (fail > 0) process.exit(1);
