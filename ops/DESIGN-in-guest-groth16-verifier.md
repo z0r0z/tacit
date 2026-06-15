@@ -73,6 +73,30 @@ Plan to close it:
 The first artifact to pull is the ceremony `verification_key.json` (from the CID) — its `nPublic` +
 `IC` length fix the public-signal count, and its `vk_alpha_1/beta_2/gamma_2/delta_2` are the baked const.
 
+## Progress (2026-06-16) — vk pinned + parser landed
+
+- **vk artifact pinned + CID-verified.** `contracts/sp1/confidential/fixtures/amm_ceremony_vk.json` (the full
+  bundle) + `swap_batch_vk.json` (extracted). Its sha256 == the `CANONICAL_AMM_VK_CID` multihash digest
+  (verified, not a gateway substitution). The bundle has `lp_add` (nPublic 5), `lp_remove` (8), and
+  **`swap_batch` (nPublic 123, IC 124)** — all BN254 groth16. (lp_add/lp_remove also have circuits, but the
+  reflection bridges those via the secp Schnorr kernels already; only swap_batch's per-receipt split needs
+  the Groth16.)
+- **Parser + types landed (cxfer-core, locally tested).** `dec_to_be32` (snarkjs decimal → BE-32 field bytes,
+  overflow-checked), `G1Aff`/`G2Aff`/`G16Vk`/`G16Proof`. KAT `parse_swap_batch_ceremony_vk` parses the REAL
+  ceremony vk → the 124-IC G16Vk (every element a valid field byte) — the foundation for baking `BATCH_VK`.
+
+**Remaining to close it:**
+1. **The BN254 pairing** — `groth16_bn254_verify` (the skeleton below) over a BN254 crate (SP1
+   precompile-accelerated `bn`, or `ark-bn254`/`ark-groth16`), in the reflection bin. Parse the field bytes
+   into the crate's G1/G2 (handle the snarkjs Fp2 limb order), run the multi-pairing == 1 check. Unit-test
+   against a real swap_batch proof vector before trusting it.
+2. **Bake `BATCH_VK`** — convert the parsed G16Vk to a guest const (or `include_bytes!` the field-byte blob).
+3. **The 123 public-signal layout** — pin what the circuit exposes from the worker's `T_SWAP_BATCH` validation
+   (index.js ~24259: aggregate Pedersen identity per asset, net deltas, reserves, per-intent commitments) so
+   the reflection re-derives the public inputs from the on-chain envelope + checks them against the proof.
+4. **`fold_swap_batch`** — aggregate `asset_scoped_kernel_verify` (have it) + `groth16_bn254_verify` +
+   per-receipt witnessed openings + net-delta reserve update.
+
 ## Skeleton
 
 ```rust

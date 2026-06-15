@@ -2073,6 +2073,58 @@ pub fn amm_derive_pool_id_v1(asset_a: &[u8; 32], asset_b: &[u8; 32], fee_bps: u1
     Some(h.finalize().into())
 }
 
+// ──────────────────── Groth16 (BN254) — T_SWAP_BATCH verifier foundation ────────────────────
+// ops/DESIGN-in-guest-groth16-verifier.md. The reflection verifies the batch's snarkjs/circom Groth16 (the
+// per-receipt clearing) to onboard confidential batch receipts. snarkjs encodes field elements as DECIMAL
+// strings; the vk/proof parse into the big-endian field-byte types below (curve-crate-agnostic). The
+// PAIRING itself (e(A,B)==e(α,β)·e(vk_x,γ)·e(C,δ)) is done with a BN254 crate (SP1 precompile-accelerated)
+// in the reflection bin — see the scope doc; here we land the locally-testable parsing + types.
+
+/// A snarkjs G1 point as big-endian field bytes `(x, y)` (the `"z"=1` projective coord is dropped).
+pub type G1Aff = ([u8; 32], [u8; 32]);
+/// A snarkjs G2 point as big-endian Fp2 field bytes `(x_c0, x_c1, y_c0, y_c1)`, in snarkjs limb order
+/// (the verifier adapts to the BN254 crate's limb convention at the pairing step — see the scope doc).
+pub type G2Aff = ([u8; 32], [u8; 32], [u8; 32], [u8; 32]);
+
+/// A parsed Groth16 verifying key (snarkjs `verification_key.json` shape). `ic.len() == nPublic + 1`.
+#[derive(Clone)]
+pub struct G16Vk {
+    pub alpha1: G1Aff,
+    pub beta2: G2Aff,
+    pub gamma2: G2Aff,
+    pub delta2: G2Aff,
+    pub ic: Vec<G1Aff>,
+}
+
+/// A parsed Groth16 proof (snarkjs `proof.json` shape): `A ∈ G1`, `B ∈ G2`, `C ∈ G1`.
+#[derive(Clone)]
+pub struct G16Proof {
+    pub a: G1Aff,
+    pub b: G2Aff,
+    pub c: G1Aff,
+}
+
+/// Parse a snarkjs decimal field-element string into 32-byte big-endian. BN254 Fq/Fr are < 2^254, so they
+/// fit in 32 bytes. Returns None on a non-digit or on overflow past 2^256 (a malformed vk/proof element).
+pub fn dec_to_be32(s: &str) -> Option<[u8; 32]> {
+    let mut acc = [0u8; 32];
+    for ch in s.bytes() {
+        if !ch.is_ascii_digit() {
+            return None;
+        }
+        let mut carry = (ch - b'0') as u16;
+        for byte in acc.iter_mut().rev() {
+            let v = *byte as u16 * 10 + carry;
+            *byte = (v & 0xff) as u8;
+            carry = v >> 8;
+        }
+        if carry != 0 {
+            return None; // overflowed 2^256 — not a valid BN254 field element
+        }
+    }
+    Some(acc)
+}
+
 /// Track-B per-pool reserve provenance (ops/DESIGN-bridge-multiasset-provenance.md). A Bitcoin AMM
 /// pool's `(asset_a, asset_b)` and current public reserves, plus whether those reserves are known to
 /// descend from the assets' supply note `C_0` (`c0_backed`). The reflection advances this as it folds
@@ -3927,6 +3979,53 @@ mod tests {
         s.insert(&id, PoolReserveState { asset_a: a, asset_b: b, reserve_a: 1, reserve_b: 1, total_shares: 1, c0_backed: true });
         assert_eq!(s.pool_ids_for_assets(&a, &b), vec![id]);
         assert!(s.pool_ids_for_assets(&b, &a).is_empty(), "stored in canonical order only");
+    }
+
+    #[test]
+    fn dec_to_be32_parses_and_rejects() {
+        assert_eq!(dec_to_be32("0").unwrap(), [0u8; 32]);
+        assert_eq!(dec_to_be32("1").unwrap()[31], 1);
+        assert_eq!(&dec_to_be32("256").unwrap()[30..], &[1u8, 0u8]);
+        // 2^248 - ish round-trip via a known value
+        assert_eq!(dec_to_be32("255").unwrap()[31], 255);
+        assert!(dec_to_be32("12a3").is_none(), "non-digit rejected");
+        assert!(dec_to_be32("").map(|x| x == [0u8; 32]).unwrap_or(false), "empty = zero");
+        // 2^256 overflows (1 followed by 77 digits > 2^256); 2^256 = 115792089237316195423570985008687907853269984665640564039457584007913129639936
+        assert!(dec_to_be32("115792089237316195423570985008687907853269984665640564039457584007913129639936").is_none(), "2^256 overflows 32 bytes");
+    }
+
+    #[test]
+    fn parse_swap_batch_ceremony_vk() {
+        // Parse the REAL concluded-ceremony swap_batch vk (CANONICAL_AMM_VK_CID, CID-verified) into the
+        // field-byte G16Vk — the foundation for baking BATCH_VK into the reflection guest.
+        let v: serde_json::Value = serde_json::from_str(include_str!("../../fixtures/swap_batch_vk.json")).unwrap();
+        assert_eq!(v["nPublic"].as_u64().unwrap(), 123, "swap_batch has 123 public signals");
+        assert_eq!(v["protocol"].as_str().unwrap(), "groth16");
+        assert_eq!(v["curve"].as_str().unwrap(), "bn128");
+        let g1 = |a: &serde_json::Value| -> G1Aff {
+            (dec_to_be32(a[0].as_str().unwrap()).unwrap(), dec_to_be32(a[1].as_str().unwrap()).unwrap())
+        };
+        let g2 = |a: &serde_json::Value| -> G2Aff {
+            (
+                dec_to_be32(a[0][0].as_str().unwrap()).unwrap(), dec_to_be32(a[0][1].as_str().unwrap()).unwrap(),
+                dec_to_be32(a[1][0].as_str().unwrap()).unwrap(), dec_to_be32(a[1][1].as_str().unwrap()).unwrap(),
+            )
+        };
+        let ic: Vec<G1Aff> = v["IC"].as_array().unwrap().iter().map(&g1).collect();
+        let vk = G16Vk {
+            alpha1: g1(&v["vk_alpha_1"]),
+            beta2: g2(&v["vk_beta_2"]),
+            gamma2: g2(&v["vk_gamma_2"]),
+            delta2: g2(&v["vk_delta_2"]),
+            ic,
+        };
+        // IC = nPublic + 1; every G1/G2 element parsed to non-zero 32-byte field bytes (no overflow/garbage).
+        assert_eq!(vk.ic.len(), 124, "IC length = nPublic + 1");
+        assert_ne!(vk.alpha1.0, [0u8; 32]);
+        assert_ne!(vk.beta2.0, [0u8; 32]);
+        assert_ne!(vk.gamma2.0, [0u8; 32]);
+        assert_ne!(vk.delta2.0, [0u8; 32]);
+        assert!(vk.ic.iter().all(|(x, y)| *x != [0u8; 32] || *y != [0u8; 32]), "no all-zero IC point");
     }
 
     // REFLECT-1 regression: the reflection prover must NOT fold a confirmed CXFER tx's outputs into
