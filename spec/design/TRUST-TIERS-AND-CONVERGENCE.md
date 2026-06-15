@@ -82,26 +82,64 @@ two circuits/verifiers, and two recovery paths.
    halves of one peg story with their tiers stated, since cBTC.zk's
    trustlessness is conditional on the cBTC.tac buffer's adequacy.
 
+## tETH → confidential-pool migration readiness
+
+The migration target is **already built and sound** — no new protocol code is
+required to move the tETH concept from the dedicated mixer into the pool:
+
+- **Raw-ETH support exists and is audited.** `underlying == address(0)` is the
+  native-ETH sentinel; `wrap` is `payable` and escrows `msg.value`, binding the
+  note to `value = amount / unitScale` (so a note can never claim more than was
+  escrowed); `_payout` releases ETH via `forceSafeTransferETH` under an escrow
+  floor + checks-effects-interactions + the settle reentrancy guard. Fee-on-
+  transfer ERC20s are rejected at the boundary.
+- **Bidirectional bridging exists.** ETH in via `wrap`, out via unwrap/`_payout`,
+  Ethereum↔Bitcoin via the reflection bridge + `crossChainLink`/`localAssetOf`
+  resolution (all proven paths).
+- **Registration is permissionless** (the pool has no owner). Migration is an
+  operational flow: register native ETH (and/or the tETH ERC20) once, then users
+  `wrap` (or redeem tETH → ETH → `wrap`). The Tornado fixed-denomination
+  anonymity set is the one privacy property to preserve in the move (optionally
+  run ETH over a denomination ladder).
+
+Operational note (one-time, low severity): the wrapped-asset id is
+`sha256("tacit-evm-token-v1" ‖ chainid ‖ underlying)` — a function of
+`underlying` only — and registration is **first-write-wins on `unitScale`**. A
+front-run can lock a suboptimal-but-bounded granularity for native ETH (not
+fund-losing: `unitScale ∈ (0, 10^18]`). Register native ETH at the intended
+scale early; a future redeploy should fix `unitScale` to a constant for
+`address(0)` to remove the front-run entirely.
+
 ## Correctness items to close before promotion
 
 These are tracked items, not live exploits. Each should be closed before the
-relevant feature moves from a gated/draft state toward mainnet.
+relevant feature moves from a gated/draft state toward mainnet. The slot/cBTC
+items are NOT drop-in fixes — each has a design dependency, noted inline.
 
 - **AMM (Bitcoin path) → Tier 0:** bring pool reserves/shares under a proof (or
   a consensus indexer), and move the share-commitment value-binding + the
   `[0, 2^64)` range check from the client Groth16 into the consensus path.
-- **cBTC.zk fungibility — enforce §5.24.6 on the validation side.** The
-  `T_SLOT_SPLIT` / `T_SLOT_MERGE` cross-asset rule (an output wrapper may differ
-  from the input only if both declare the same `underlying` + `peg`, with
-  `denom_new == metadata.custody.denom_sats`) is currently emitted by the
-  encoder but deferred to validation, where no consensus check enforces it.
-  Value is Bitcoin-conserved, so this is neutral while every registered
-  `self_custody_slot` wrapper shares the BTC underlying. It must be enforced (a
-  wrapper-registry `underlying`/`peg`/`denom_sats` check) before any wrapper
-  with a different underlying is registered, and before cBTC.zk mainnet.
-- **cBTC.zk peg — backing floor.** There is no hard `supply ≤ backing` consensus
-  rule (it is a detection-time invariant). Promotion past the pilot should
-  pair the detect-and-cover model with a clear, sized buffer policy.
+- **cBTC.zk fungibility — enforce §5.24.6.** The `T_SLOT_SPLIT` / `T_SLOT_MERGE`
+  cross-asset rule (an output wrapper may differ from the input only if both
+  declare the same `underlying` + `peg`, with `denom_new ==
+  metadata.custody.denom_sats`) is emitted by the encoder but enforced by no
+  validator. Value is Bitcoin-conserved, so it is neutral while every
+  `self_custody_slot` wrapper shares the BTC underlying. **Dependency:** a slot's
+  `asset_id` is caller-supplied at mint (not derived from `denom`), so the rule
+  needs a general `self_custody_slot` wrapper registry ({underlying, peg,
+  denom_sats}) to validate against — only a hardcoded cBTC.tac tier list
+  (`ctacVariantAssetId`) exists today. **Safe interim:** restrict SPLIT/MERGE to
+  same-`asset_id` outputs (rejects every cross-wrapper relabel; re-open cross-
+  tier splits once the registry lands). Must be enforced before any non-BTC
+  wrapper is registered and before cBTC.zk mainnet.
+- **cBTC.zk peg — backing coverage.** There is no hard `supply ≤ backing` rule
+  (it is detection-time only). **Design reality:** cBTC.zk is self-custody — the
+  backing is the locker's own key-path UTXO, so a reclaim happens on Bitcoin and
+  **cannot be prevented on the EVM side**; a settle-side floor cannot stop it.
+  The meaningful guarantee is a **buffer-coverage invariant** (`supply ≤ backing
+  + buffer_capacity`) enforced in the cBTC.tac buffer layer, with a sized,
+  governable policy. Promotion past the pilot should make that coverage explicit
+  rather than detection-only.
 
 ## Reading guide
 
