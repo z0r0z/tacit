@@ -26,6 +26,35 @@ References: `ARCH-tacit-chain-abstraction.md` (design + gaps), `CHECKLIST-mainne
 
 ---
 
+## Near-term chain-abstraction wins (no A0 dependency)
+
+Low-effort, shippable against today's state. The merge layer (`unified-holdings.js` /
+`cross-chain-asset-resolver.js` / `evm-lane-reader.js`) is built + tested — incl. the degrade-clean
+invariant (`tests/unified-holdings.mjs`: an EVM-read failure / inert lane → EXACTLY Bitcoin-only, the BTC
+holdings never thrown away) — so A2/A3 is a confident flip. The remaining work is UI wiring that needs the
+dapp running to eyeball.
+
+**Derivation caveat (applies to W1/W2/W5):** the EVM account is `deriveEvmAccount(priv, network)` where
+`network` is hashed into the key, so the address differs per tag. Surface/derive it with the SAME tag the
+live Shielded Pool tab uses (`dapp/confidential-pool-ux.js`) so it matches the account A0 will read — a
+mismatched tag yields a wrong (and, until A0, silently inert) address.
+
+- **W1 — Surface the shared two-chain identity (UX).** Show the derived EVM address beside the BTC address
+  in the wallet/recovery view (today it appears only in the Shielded Pool tab). Pure display; makes "one
+  seed → both chains" visible. Touches `tacit.js` (concurrent) — eyeball in the running dapp.
+- **W2 — EVM-lane seed-only recovery (safety).** The EVM account is deterministic from the seed and the
+  pool emits owner-decryptable memos (`LeavesInserted`); ensure the recovery flow scans the EVM lane too,
+  matching the Bitcoin-side recovery. Nothing to scan until the pool is live, so wire the hook now and it
+  lights up at A0.
+- **W3 — "Same asset, two faces" labels (UX).** Use the already-wired resolver (`tacit.js:77`) to badge an
+  asset as available on Bitcoin / Ethereum. Pure display; teaches the one-`asset_id` model.
+- **W5 — Holdings wiring (this is A3; do NOT pre-fill evmAddress).** `scanHoldingsCrossChain()` is built +
+  zero-caller; wiring it into `renderHoldings()` is A3. Its `evmAddress: null` is NOT a clean pre-A0
+  front-load — the correct address depends on the A0 derivation tag — so leave the explicit TODO and fill
+  it AT A0 with the deployed tag.
+
+---
+
 ## Phase A — unified experience (bridge-gated value movement)
 
 ### A0 — Re-prove + deploy the production ConfidentialPool  ⟵ FOUNDATION, gates everything below
