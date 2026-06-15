@@ -540,6 +540,97 @@ pub fn parse_preauth_bid_var_envelope(env: &[u8]) -> Option<([u8; 32], [u8; 64],
     Some((asset, kernel_sig, commitments, env[p..p + rp_len].to_vec()))
 }
 
+/// The tacit-amm cross-curve (secp↔BabyJubJub) sigma length in the LP envelopes. The reflection skips
+/// past it (it doesn't verify the BJJ side — the secp kernel + public deltas are the Track-B conservation).
+const XCURVE_SIGMA_LEN: usize = 169;
+
+/// Parsed `T_LP_ADD` / POOL_INIT envelope (0x2D). Surfaces the fields the reflection's `fold_lp_add` needs
+/// (the per-asset secp kernel sides + the public deltas); the BJJ commitment + cross-curve sigma are
+/// skipped. `fee_bps` is meaningful only for `variant == 1` (POOL_INIT, which carries it for pool_id
+/// derivation); a `variant == 0` LP-add doesn't carry it (the pool is found by canonical-asset enumeration).
+pub struct LpAddEnvelope {
+    pub variant: u8,
+    pub asset_a: [u8; 32],
+    pub asset_b: [u8; 32],
+    pub delta_a: u64,
+    pub delta_b: u64,
+    pub share_amount: u64,
+    pub share_csecp: [u8; 33],
+    pub kernel_sig_a: [u8; 64],
+    pub kernel_sig_b: [u8; 64],
+    pub fee_bps: u16,
+}
+
+/// Parse a `T_LP_ADD` (0x2D) envelope. Layout (worker `decodeTLpAddPayload`): opcode(1) ‖ variant(1) ‖
+/// asset_a(32) ‖ asset_b(32) ‖ delta_a(8 LE) ‖ delta_b(8) ‖ share_amount(8) ‖ share_c_secp(33) ‖
+/// share_c_bjj(32) ‖ share_xcurve_sigma(169) ‖ kernel_sig_a(64) ‖ kernel_sig_b(64) ‖ [variant 1: fee_bps(2) ‖ …].
+pub fn parse_lp_add_envelope(env: &[u8]) -> Option<LpAddEnvelope> {
+    const HEADER: usize = 1 + 1 + 32 + 32 + 8 + 8 + 8 + 33 + 32 + XCURVE_SIGMA_LEN + 64 + 64; // 452
+    if env.len() < HEADER || env[0] != 0x2D {
+        return None;
+    }
+    let variant = env[1];
+    if variant != 0 && variant != 1 {
+        return None;
+    }
+    let fee_bps = if variant == 1 {
+        if env.len() < HEADER + 2 {
+            return None;
+        }
+        u16::from_le_bytes(env[HEADER..HEADER + 2].try_into().ok()?)
+    } else {
+        0
+    };
+    Some(LpAddEnvelope {
+        variant,
+        asset_a: env[2..34].try_into().ok()?,
+        asset_b: env[34..66].try_into().ok()?,
+        delta_a: u64::from_le_bytes(env[66..74].try_into().ok()?),
+        delta_b: u64::from_le_bytes(env[74..82].try_into().ok()?),
+        share_amount: u64::from_le_bytes(env[82..90].try_into().ok()?),
+        share_csecp: env[90..123].try_into().ok()?,
+        kernel_sig_a: env[324..388].try_into().ok()?,
+        kernel_sig_b: env[388..452].try_into().ok()?,
+        fee_bps,
+    })
+}
+
+/// Parsed `T_LP_REMOVE` envelope (0x2E). Surfaces the secp side `fold_lp_remove` needs; the BJJ commitments
+/// + cross-curve sigmas are skipped (the reflection binds each `recv_X_secp` to the public `delta_X` by a
+/// witnessed opening, not the BJJ machinery — see ops/DESIGN-bridge-multiasset-provenance.md).
+pub struct LpRemoveEnvelope {
+    pub asset_a: [u8; 32],
+    pub asset_b: [u8; 32],
+    pub share_amount: u64,
+    pub delta_a: u64,
+    pub delta_b: u64,
+    pub recv_a_secp: [u8; 33],
+    pub recv_b_secp: [u8; 33],
+    pub kernel_sig: [u8; 64],
+}
+
+/// Parse a `T_LP_REMOVE` (0x2E) envelope. Layout (worker `decodeTLpRemovePayload`): opcode(1) ‖ asset_a(32) ‖
+/// asset_b(32) ‖ share_amount(8 LE) ‖ delta_a(8) ‖ delta_b(8) ‖ recv_a_secp(33) ‖ recv_a_bjj(32) ‖
+/// recv_a_xcurve_sigma(169) ‖ recv_b_secp(33) ‖ recv_b_bjj(32) ‖ recv_b_xcurve_sigma(169) ‖ kernel_sig(64) ‖
+/// proof_len(2) ‖ proof.
+pub fn parse_lp_remove_envelope(env: &[u8]) -> Option<LpRemoveEnvelope> {
+    const RECV_B_SECP_OFF: usize = 1 + 32 + 32 + 8 + 8 + 8 + 33 + 32 + XCURVE_SIGMA_LEN; // 323
+    const KS_OFF: usize = RECV_B_SECP_OFF + 33 + 32 + XCURVE_SIGMA_LEN; // 557
+    if env.len() < KS_OFF + 64 + 2 || env[0] != 0x2E {
+        return None;
+    }
+    Some(LpRemoveEnvelope {
+        asset_a: env[1..33].try_into().ok()?,
+        asset_b: env[33..65].try_into().ok()?,
+        share_amount: u64::from_le_bytes(env[65..73].try_into().ok()?),
+        delta_a: u64::from_le_bytes(env[73..81].try_into().ok()?),
+        delta_b: u64::from_le_bytes(env[81..89].try_into().ok()?),
+        recv_a_secp: env[89..122].try_into().ok()?,
+        recv_b_secp: env[RECV_B_SECP_OFF..RECV_B_SECP_OFF + 33].try_into().ok()?,
+        kernel_sig: env[KS_OFF..KS_OFF + 64].try_into().ok()?,
+    })
+}
+
 /// Extract the Tacit Taproot envelope payload from vin[0].witness[1].
 /// Matches the format PUSH(32) xonly OP_CHECKSIG OP_FALSE OP_IF [pushes] OP_ENDIF,
 /// strips the "TACIT"||v1 frame, returns the payload starting at the opcode byte.
@@ -873,6 +964,74 @@ mod tests {
         let mut bad = env.clone(); bad[0] = 0x22;
         assert!(parse_preauth_bid_var_envelope(&bad).is_none(), "non-0x5C rejected");
         assert!(parse_preauth_bid_var_envelope(&env[..env.len() - 1]).is_none(), "truncated rejected");
+    }
+
+    #[test]
+    fn parse_lp_add_round_trips() {
+        let asset_a = [0xA1u8; 32];
+        let asset_b = [0xB2u8; 32];
+        let csc = [0x02u8; 33];
+        let (ka, kb) = ([0x0au8; 64], [0x0bu8; 64]);
+        let mut env = vec![0x2Du8, 1u8]; // opcode, variant = 1 (POOL_INIT)
+        env.extend_from_slice(&asset_a);
+        env.extend_from_slice(&asset_b);
+        env.extend_from_slice(&1000u64.to_le_bytes()); // delta_a
+        env.extend_from_slice(&4000u64.to_le_bytes()); // delta_b
+        env.extend_from_slice(&2000u64.to_le_bytes()); // share_amount
+        env.extend_from_slice(&csc); // share_c_secp
+        env.extend_from_slice(&[0x03u8; 32]); // share_c_bjj
+        env.extend_from_slice(&[0xccu8; 169]); // share_xcurve_sigma
+        env.extend_from_slice(&ka); // kernel_sig_a
+        env.extend_from_slice(&kb); // kernel_sig_b
+        env.extend_from_slice(&30u16.to_le_bytes()); // fee_bps (variant 1)
+        let p = parse_lp_add_envelope(&env).expect("lp_add parses");
+        assert_eq!(p.variant, 1);
+        assert_eq!(p.asset_a, asset_a);
+        assert_eq!(p.asset_b, asset_b);
+        assert_eq!((p.delta_a, p.delta_b, p.share_amount), (1000, 4000, 2000));
+        assert_eq!(p.share_csecp, csc);
+        assert_eq!(p.kernel_sig_a, ka);
+        assert_eq!(p.kernel_sig_b, kb);
+        assert_eq!(p.fee_bps, 30);
+        // variant 0 (no fee_bps tail).
+        let mut env0 = env[..452].to_vec();
+        env0[1] = 0;
+        let p0 = parse_lp_add_envelope(&env0).expect("variant-0 lp_add parses");
+        assert_eq!((p0.variant, p0.fee_bps), (0, 0));
+        let mut bad = env.clone(); bad[0] = 0x22;
+        assert!(parse_lp_add_envelope(&bad).is_none(), "non-0x2D rejected");
+    }
+
+    #[test]
+    fn parse_lp_remove_round_trips() {
+        let asset_a = [0xA1u8; 32];
+        let asset_b = [0xB2u8; 32];
+        let (recv_a, recv_b) = ([0x02u8; 33], [0x03u8; 33]);
+        let ks = [0x0cu8; 64];
+        let mut env = vec![0x2Eu8];
+        env.extend_from_slice(&asset_a);
+        env.extend_from_slice(&asset_b);
+        env.extend_from_slice(&1000u64.to_le_bytes()); // share_amount
+        env.extend_from_slice(&500u64.to_le_bytes()); // delta_a
+        env.extend_from_slice(&2000u64.to_le_bytes()); // delta_b
+        env.extend_from_slice(&recv_a); // recv_a_secp
+        env.extend_from_slice(&[0x04u8; 32]); // recv_a_bjj
+        env.extend_from_slice(&[0xc1u8; 169]); // recv_a_xcurve_sigma
+        env.extend_from_slice(&recv_b); // recv_b_secp
+        env.extend_from_slice(&[0x05u8; 32]); // recv_b_bjj
+        env.extend_from_slice(&[0xc2u8; 169]); // recv_b_xcurve_sigma
+        env.extend_from_slice(&ks); // kernel_sig
+        env.extend_from_slice(&4u16.to_le_bytes()); // proof_len
+        env.extend_from_slice(&[0xddu8; 4]); // proof
+        let p = parse_lp_remove_envelope(&env).expect("lp_remove parses");
+        assert_eq!(p.asset_a, asset_a);
+        assert_eq!(p.asset_b, asset_b);
+        assert_eq!((p.share_amount, p.delta_a, p.delta_b), (1000, 500, 2000));
+        assert_eq!(p.recv_a_secp, recv_a);
+        assert_eq!(p.recv_b_secp, recv_b);
+        assert_eq!(p.kernel_sig, ks);
+        let mut bad = env.clone(); bad[0] = 0x22;
+        assert!(parse_lp_remove_envelope(&bad).is_none(), "non-0x2E rejected");
     }
 
     #[test]

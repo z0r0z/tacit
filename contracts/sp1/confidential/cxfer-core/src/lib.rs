@@ -2042,6 +2042,37 @@ impl WitnessedReflection {
 /// resolved against it (`scan_tx_spends`) — no spend can be omitted, which is what the witnessed
 /// model (relayer-chosen effects) could not guarantee. The detected spends fold into the spent-set
 /// here; the UTXO removal already happened in the scan.
+/// AMM pool_id derivation domain (worker `_AMM_POOL_ID_DOMAIN`).
+pub const AMM_POOL_ID_DOMAIN: &[u8] = b"tacit-amm-pool-v1";
+
+/// Canonical (lexicographically-ordered) asset pair — `(low, high)`; None if the two ids are equal.
+/// Mirrors the worker's `ammCanonicalAssetPair`, the ordering the pool_id is derived over.
+pub fn amm_canonical_pair(a: &[u8; 32], b: &[u8; 32]) -> Option<([u8; 32], [u8; 32])> {
+    if a == b {
+        return None;
+    }
+    if *a < *b {
+        Some((*a, *b))
+    } else {
+        Some((*b, *a))
+    }
+}
+
+/// Derive a V1 (no-protocol-fee, `capability_flags = 0`) AMM pool_id, mirroring the worker's
+/// `ammDerivePoolId`: `sha256(domain ‖ low ‖ high ‖ fee_bps_LE(2) ‖ 0x00)`. POOL_INIT carries `fee_bps`,
+/// so the reflection reconstructs the exact pool_id the LP kernel signed over; a variant-0 LP-add /
+/// LP-remove (no `fee_bps` on the wire) is matched by canonical-asset enumeration over the registry.
+pub fn amm_derive_pool_id_v1(asset_a: &[u8; 32], asset_b: &[u8; 32], fee_bps: u16) -> Option<[u8; 32]> {
+    let (low, high) = amm_canonical_pair(asset_a, asset_b)?;
+    let mut h = Sha256::new();
+    h.update(AMM_POOL_ID_DOMAIN);
+    h.update(low);
+    h.update(high);
+    h.update(fee_bps.to_le_bytes());
+    h.update([0u8]); // capability_flags = 0 (V1 canonical no-skim variant — no protocol-fee terms appended)
+    Some(h.finalize().into())
+}
+
 /// Track-B per-pool reserve provenance (ops/DESIGN-bridge-multiasset-provenance.md). A Bitcoin AMM
 /// pool's `(asset_a, asset_b)` and current public reserves, plus whether those reserves are known to
 /// descend from the assets' supply note `C_0` (`c0_backed`). The reflection advances this as it folds
@@ -2140,6 +2171,16 @@ impl PoolReserveSet {
     }
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
+    }
+
+    /// Candidate pool_ids whose stored canonical `(asset_a, asset_b)` match the given pair — for a
+    /// variant-0 LP-add / LP-remove that doesn't carry `fee_bps`; the caller disambiguates by which
+    /// candidate's pool_id makes the op's kernel verify (the kernel binds pool_id).
+    pub fn pool_ids_for_assets(&self, asset_a: &[u8; 32], asset_b: &[u8; 32]) -> Vec<[u8; 32]> {
+        self.entries.iter()
+            .filter(|(_, s)| &s.asset_a == asset_a && &s.asset_b == asset_b)
+            .map(|(k, _)| *k)
+            .collect()
     }
 }
 
@@ -3867,6 +3908,25 @@ mod tests {
         // gate: unknown pool.
         let mut s6 = base.clone();
         assert!(s6.fold_lp_remove(&[0x99u8; 32], share, da, db, &recv_a, &ra, &recv_b, &rb, &op, &[ci], &sig, &path, &oa, &path, &ob).is_err(), "unknown pool rejected");
+    }
+
+    #[test]
+    fn amm_pool_id_canonical_derivation_and_enumeration() {
+        let a = [0x01u8; 32];
+        let b = [0x02u8; 32];
+        // canonical pair: (low, high) regardless of input order; identical rejected.
+        assert_eq!(amm_canonical_pair(&a, &b), Some((a, b)));
+        assert_eq!(amm_canonical_pair(&b, &a), Some((a, b)));
+        assert!(amm_canonical_pair(&a, &a).is_none());
+        // pool_id is order-independent + fee-sensitive (mirrors the worker).
+        let id = amm_derive_pool_id_v1(&a, &b, 30).unwrap();
+        assert_eq!(id, amm_derive_pool_id_v1(&b, &a, 30).unwrap(), "order-independent");
+        assert_ne!(id, amm_derive_pool_id_v1(&a, &b, 100).unwrap(), "fee-sensitive");
+        // enumeration finds the pool by its canonical assets (stored canonical only).
+        let mut s = PoolReserveSet::new();
+        s.insert(&id, PoolReserveState { asset_a: a, asset_b: b, reserve_a: 1, reserve_b: 1, total_shares: 1, c0_backed: true });
+        assert_eq!(s.pool_ids_for_assets(&a, &b), vec![id]);
+        assert!(s.pool_ids_for_assets(&b, &a).is_empty(), "stored in canonical order only");
     }
 
     // REFLECT-1 regression: the reflection prover must NOT fold a confirmed CXFER tx's outputs into

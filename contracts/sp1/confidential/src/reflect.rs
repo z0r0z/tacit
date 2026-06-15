@@ -28,9 +28,10 @@ use alloy_sol_types::sol;
 use alloy_sol_types::private::U256;
 use alloy_sol_types::SolType;
 use cxfer_core::{
-    bitcoin, burn_deposit, commitment_hash, commitment_hash_compressed, decompress, from_affine_xy, leaf,
-    nullifier, outpoint_key, reflected_note_leaf, scan_tx_spends, verify_cxfer_conservation, LiveUtxoSet,
-    Point, PoolReserveSet, PoolReserveState, ScanReflection,
+    amm_canonical_pair, amm_derive_pool_id_v1, bitcoin, burn_deposit, commitment_hash,
+    commitment_hash_compressed, decompress, from_affine_xy, leaf, nullifier, outpoint_key,
+    reflected_note_leaf, scan_tx_spends, verify_cxfer_conservation, LiveUtxoSet, Point, PoolReserveSet,
+    PoolReserveState, ScanReflection,
 };
 use sp1_zkvm::io;
 
@@ -480,6 +481,116 @@ pub fn main() {
                     }
                     state.fold_cxfer(&bid_asset, &in_outpoints, &in_points, &in_assets, &txid, &bid_commitments, &paths, &vouts, &bid_range_proof, &bid_kernel_sig)
                         .expect("bid fold");
+                }
+            }
+
+            // Track B: a T_SWAP_VAR (0x32) onboards the taker's RECEIPT (+ change) as real, bridgeable notes
+            // against a c0_backed pool whose tracked reserves match the swap's declared R_pre. fold_swap_var
+            // re-verifies the input-side kernel + the receipt opening + the out-reserve floor BEFORE onboarding
+            // (skip-not-panic). The pool reserve is registry state (not a live UTXO), so the taker's c_in is
+            // the only detected pool-UTXO spend.
+            if let Some(sv) = env.as_ref().and_then(|e| bitcoin::parse_swap_var_envelope(e)) {
+                let is_sentinel = sv.c_change_or_sentinel.iter().all(|&b| b == 0);
+                // Witnesses read UNCONDITIONALLY per 0x32 (stream sync): the receipt's append path (vout 1) +
+                // the change's (vout 2), the latter only when non-sentinel — both deterministic from the envelope.
+                let receipt_path = r_path();
+                let change_path = if !is_sentinel { Some(r_path()) } else { None };
+                if spends.len() == 1 {
+                    let s = &spends[0];
+                    // c_in must be the REAL spent note (so delta_in is backed by the real input value).
+                    let c_in_real = matches!(
+                        (from_affine_xy(&s.cx, &s.cy), decompress(&sv.c_in)),
+                        (Some(x), Some(y)) if x == y
+                    );
+                    if c_in_real {
+                        if let Some(mut pool) = state.pools.get(&sv.pool_id) {
+                            let asset_in = if sv.direction == 0 { pool.asset_a } else { pool.asset_b };
+                            if state.fold_swap_var(&mut pool, &sv, (s.prev_txid, s.prev_vout), &s.asset, &outpoint_key(&txid, 1), &receipt_path).is_ok() {
+                                state.pools.update(&sv.pool_id, pool);
+                                // Onboard the taker's change (leftover of c_in, kernel-bound) so it isn't stranded.
+                                if let Some(cp) = change_path.as_ref() {
+                                    if let (Some(lf), Some(ch)) = (
+                                        reflected_note_leaf(&asset_in, &sv.c_change_or_sentinel),
+                                        commitment_hash_compressed(&sv.c_change_or_sentinel),
+                                    ) {
+                                        let _ = state.fold_output(&lf, cp, &outpoint_key(&txid, 2), &ch, &asset_in);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Track B: a T_LP_ADD / POOL_INIT (0x2D) establishes or grows a pool's c0_backed reserves. The
+            // LP's per-asset inputs are detected live spends; fold_lp_add verifies both per-asset kernels +
+            // (for POOL_INIT) inserts the pool / (for LP-add) grows its reserves + shares. Everything is mapped
+            // to CANONICAL asset order — pools + pool_id derivation are canonical (worker convention). NB the
+            // per-asset kernel must be the one the dapp signed in canonical order; confirm on the box.
+            if let Some(la) = env.as_ref().and_then(|e| bitcoin::parse_lp_add_envelope(e)) {
+                if let Some((ca, cb)) = amm_canonical_pair(&la.asset_a, &la.asset_b) {
+                    let swapped = la.asset_a != ca;
+                    let (da_c, db_c) = if swapped { (la.delta_b, la.delta_a) } else { (la.delta_a, la.delta_b) };
+                    let (ka_c, kb_c) = if swapped { (la.kernel_sig_b, la.kernel_sig_a) } else { (la.kernel_sig_a, la.kernel_sig_b) };
+                    let pool_id = if la.variant == 1 {
+                        amm_derive_pool_id_v1(&ca, &cb, la.fee_bps)
+                    } else {
+                        state.pools.pool_ids_for_assets(&ca, &cb).first().copied()
+                    };
+                    if let Some(pid) = pool_id {
+                        // Group the detected live spends by canonical asset side.
+                        let coll = |asset: &[u8; 32]| -> (Vec<([u8; 32], u32)>, Vec<Point>) {
+                            let mut ops = Vec::new();
+                            let mut pts = Vec::new();
+                            for s in spends.iter().filter(|s| &s.asset == asset) {
+                                ops.push((s.prev_txid, s.prev_vout));
+                                pts.push(from_affine_xy(&s.cx, &s.cy).expect("lp_add input xy"));
+                            }
+                            (ops, pts)
+                        };
+                        let (a_ops, a_pts) = coll(&ca);
+                        let (b_ops, b_pts) = coll(&cb);
+                        // inputs_c0_backed: every contribution is a detected live (real) spend → C0-backed.
+                        let _ = state.fold_lp_add(
+                            la.variant, &pid, &ca, &cb, da_c, db_c, la.share_amount, &la.share_csecp,
+                            &a_ops, &a_pts, &ka_c, &b_ops, &b_pts, &kb_c, true,
+                        );
+                    }
+                }
+            }
+
+            // Track B: a T_LP_REMOVE (0x2E) — the LP burns LP-shares (the detected lp_asset spends) and
+            // withdraws the proportional (delta_a, delta_b); fold_lp_remove onboards the withdrawn notes
+            // (each bound to its PUBLIC delta_X by a witnessed blinding) + draws down reserves/shares. The
+            // envelope carries no fee_bps, so the pool is found by canonical-asset enumeration + disambiguated
+            // by which candidate's pool_id makes the share-burn kernel verify.
+            if let Some(lr) = env.as_ref().and_then(|e| bitcoin::parse_lp_remove_envelope(e)) {
+                // Witnesses read UNCONDITIONALLY per 0x2E (stream sync): the two recv blindings + append paths.
+                let r_recv_a = r32();
+                let r_recv_b = r32();
+                let recv_a_path = r_path();
+                let recv_b_path = r_path();
+                if let Some((ca, cb)) = amm_canonical_pair(&lr.asset_a, &lr.asset_b) {
+                    let swapped = lr.asset_a != ca;
+                    let (da_c, db_c) = if swapped { (lr.delta_b, lr.delta_a) } else { (lr.delta_a, lr.delta_b) };
+                    let (recv_ca, recv_cb) = if swapped { (lr.recv_b_secp, lr.recv_a_secp) } else { (lr.recv_a_secp, lr.recv_b_secp) };
+                    let (rca, rcb) = if swapped { (r_recv_b, r_recv_a) } else { (r_recv_a, r_recv_b) };
+                    let mut lp_ops = Vec::new();
+                    let mut lp_pts = Vec::new();
+                    for s in &spends {
+                        lp_ops.push((s.prev_txid, s.prev_vout));
+                        lp_pts.push(from_affine_xy(&s.cx, &s.cy).expect("lp_remove input xy"));
+                    }
+                    // Find the pool whose pool_id makes the share-burn kernel verify (one V1 candidate per pair).
+                    for pid in state.pools.pool_ids_for_assets(&ca, &cb) {
+                        if cxfer_core::lp_remove_kernel_verify(&pid, lr.share_amount, da_c, db_c, &recv_ca, &recv_cb, &lp_ops, &lp_pts, &lr.kernel_sig) {
+                            let _ = state.fold_lp_remove(
+                                &pid, lr.share_amount, da_c, db_c, &recv_ca, &rca, &recv_cb, &rcb,
+                                &lp_ops, &lp_pts, &lr.kernel_sig, &recv_a_path, &outpoint_key(&txid, 1), &recv_b_path, &outpoint_key(&txid, 2),
+                            );
+                            break;
+                        }
+                    }
                 }
             }
         }
