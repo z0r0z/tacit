@@ -192,6 +192,24 @@ const ALLOWLIST = {
   T_SLOT_ROTATE:  'SPEC-CBTC-ZK-AMENDMENT §5.23. Recovered by scanSlotsFromPrivkey descendant walk: child (secret, ν) HMAC-derived from priv + parent K_btc outpoint, outputIndex=0.',
   T_SLOT_SPLIT:   'SPEC-CBTC-ZK-FUNGIBILITY-AMENDMENT §5.24. Recovered by scanSlotsFromPrivkey descendant walk: each output i has (secret_i, ν_i) HMAC-derived from priv + parent K_btc outpoint, outputIndex=i.',
   T_SLOT_MERGE:   'SPEC-CBTC-ZK-FUNGIBILITY-AMENDMENT §5.25. Recovered by scanSlotsFromPrivkey descendant walk: child (secret, ν) HMAC-derived from priv + lex-smallest input K_btc outpoint (canonical sort), outputIndex=0.',
+
+  // Bridge / cross-out opcodes (SPEC-TETH-BRIDGE-AMENDMENT + the confidential
+  // cross-out path). These do NOT produce a tacit-asset UTXO at wallet.address:
+  // the deposit/import/rotate ops move value into the bridge mixer as a NOTE
+  // whose (secret, ν) are HMAC-derived from priv + a chain anchor (deposit
+  // index for DEPOSIT, prev-outpoint for IMPORT — see _deriveBridgeDepositKeys /
+  // _deriveBridgeImportKeys in dapp/tacit.js), recovered from priv + chain via
+  // the bridge's own key-derived note scan rather than the getUtxos(address)
+  // sweep scanHoldings runs. Burn/export pay out / consume notes and likewise
+  // surface no address-scanned tacit UTXO. Allowlisted on the same basis as the
+  // slot opcodes above: a value-bearing opcode with a recovery path that is a
+  // separate mechanism from scanHoldings.
+  T_BRIDGE_DEPOSIT: 'tETH bridge deposit (0x60). Locks value into the bridge mixer as a note; (secret, ν) key-derived from priv + deposit index (_deriveBridgeDepositKeys). No tacit UTXO at wallet.address — recovered via the bridge note scan, not scanHoldings.',
+  T_BRIDGE_BURN:    'tETH bridge burn / withdraw (0x61). Consumes a bridge note to release value; produces no address-scanned tacit UTXO. The bridge note lifecycle is tracked via the key-derived note scan, not scanHoldings.',
+  T_BRIDGE_ROTATE:  'tETH bridge note rotation (0x62). Re-keys a bridge note; the child note (secret, ν) is key-derived (priv + anchor), recovered via the bridge note scan, not scanHoldings. No tacit UTXO at wallet.address.',
+  T_BRIDGE_EXPORT:  'tETH bridge note export (0x63). Moves a note out of the in-browser set toward a bearer/import note; produces no address-scanned tacit UTXO. Recovery is via the bridge note scan, not scanHoldings.',
+  T_BRIDGE_IMPORT:  'tETH bridge note import (0x64). Re-derives a note from priv + prev-outpoint (_deriveBridgeImportKeys — key-derived, no localStorage dependency); recovered via the bridge note scan, not scanHoldings. No tacit UTXO at wallet.address.',
+  T_CROSSOUT_MINT:  'Confidential cross-out mint (0x65, dapp/confidential-crossout-consumer.js). Broadcast after an EVM CrossOutRecorded event; the reflection prover folds it to mint a confidential-pool NOTE (bearer secret) in the Bitcoin pool tree. Recovered via the confidential-pool note scan, not the scanHoldings address sweep.',
 };
 
 // ---- Tests --------------------------------------------------------------
