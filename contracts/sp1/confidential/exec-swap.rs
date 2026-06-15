@@ -26,7 +26,7 @@ sol! {
         Withdrawal[] withdrawals; FeePayment[] fees; bytes32[] bitcoinBurnsConsumed;
         CrossOut[] crossOuts; bytes32[] bitcoinRootsUsed; bytes32 bitcoinSpentRoot;
         bytes32 bitcoinBurnRoot; AssetMeta[] assetMetas; SwapSettlement[] swaps;
-        LpSettlement[] liquidity;
+        LpSettlement[] liquidity; uint64 deadline;
     }
 }
 
@@ -61,6 +61,7 @@ fn main() {
         stdin.write(&hexv(it["inSigR"].as_str().unwrap()));  // opening-sigma R (33B compressed)
         stdin.write(&hexv(it["inSigZ"].as_str().unwrap()));  // opening-sigma z (32B scalar)
         stdin.write(&it["minOut"].as_u64().unwrap());
+        stdin.write(&it["deadline"].as_u64().unwrap_or(0)); // intent_deadline (guest main.rs:440), after minOut
         stdin.write(&hexv(it["outCx"].as_str().unwrap()));
         stdin.write(&hexv(it["outCy"].as_str().unwrap()));
         stdin.write(&hexv(it["outOwner"].as_str().unwrap()));

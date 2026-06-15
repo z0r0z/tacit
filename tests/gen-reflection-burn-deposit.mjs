@@ -149,19 +149,25 @@ const inCpt = MINTABLE ? cmint.cmintC : C0;
 const inVal = MINTABLE ? cmint.vMint : S;
 const inBlind = MINTABLE ? cmint.rMint : r0;
 
-// ── 3. Provenance CXFER: input leaf → burned note (1-in/1-out conserving, value preserved). ──
+// ── 3. Provenance step: input leaf → burned note. A pure CXFER transfer (value preserved), OR — with
+// CBURN=1 — a CBURN that DESTROYS `cburn` of supply, the burned note being its change output. The kernel
+// proves Σ C_in = cburn·H + Σ C_out, so the burned note descends from real supply minus the public burn —
+// exercising the provenance walk THROUGH a supply-burn (a note that only ever transferred has cburn = 0).
+const cburn = process.env.CBURN ? 200n : 0n;
 const r1 = 0x6262n;
-const burned = prover.commit(inVal, r1);
+const changeVal = inVal - cburn; // the burned note's value = inputs minus the public burn
+const burned = prover.commit(changeVal, r1);
 const burnedC = compress(burned);
-const { proof: cxRange } = bppRangeProve([inVal], [r1]);
-const excess = ((inBlind - r1) % N + N) % N;
+const { proof: cxRange } = bppRangeProve([changeVal], [r1]);
+const excess = ((inBlind - r1) % N + N) % N; // P = C_in − C_change − cburn·H = excess·G
 const kmsg = sha256(_cat([
   new TextEncoder().encode('tacit-kernel-v1'), assetId, new Uint8Array([1]),
-  inTxid, u32le(0), new Uint8Array([1]), burnedC, u64le(0),
+  inTxid, u32le(0), new Uint8Array([1]), burnedC, u64le(cburn),
 ].map((x) => Uint8Array.from(x))));
 const { sig: cxSig, px } = bip340Sign(kmsg, excess);
-const Pchk = inCpt.add(burned.negate());
-if (Buffer.compare(Buffer.from(compress(Pchk).slice(1)), Buffer.from(px)) !== 0) throw new Error('cxfer not conserving');
+const burnTerm = cburn > 0n ? prover.H.multiply(cburn).negate() : secp.ProjectivePoint.ZERO; // − cburn·H
+const Pchk = inCpt.add(burned.negate()).add(burnTerm);
+if (Buffer.compare(Buffer.from(compress(Pchk).slice(1)), Buffer.from(px)) !== 0) throw new Error('step not conserving');
 const cxEnv = cat([
   [0x22], assetId, cxSig, [0x01],
   burnedC, Buffer.alloc(8),
@@ -220,6 +226,9 @@ const burnDeposit = makeBurnDepositAssembler({ dsha256, cat, bytesToHex: hexp })
     txid: cxTxidHex,
     inputs: [{ prevTxid: hexp(inTxid), prevVout: 0, commitment: hexp(inC) }],
     outputs: [{ commitment: hexp(burnedC), vout: 0 }],
+    // 0 for a transfer; > 0 for a CBURN step. CBURN_LIE=1 witnesses a DIFFERENT burn than was signed
+    // (0 instead of `cburn`) → the kernel verify key shifts → rejected (you can't understate the burn).
+    burnedAmount: Number(process.env.CBURN_LIE ? 0n : cburn),
     rangeProof: hexp(cxRange),
     // TAMPER=1 → a corrupt kernel sig: verify_cxfer_conservation fails → verify_provenance Err → the
     // dispatch SKIPS (folds nothing), proving fail-closed (the burn-set must stay UNCHANGED).

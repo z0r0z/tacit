@@ -1514,6 +1514,27 @@ pub fn verify_cxfer_conservation(
     range_proof: &[u8],
     kernel_sig: &[u8; 64],
 ) -> bool {
+    verify_cxfer_conservation_burned(
+        asset, input_outpoints, input_commitments, output_commitments_compressed, 0, range_proof, kernel_sig,
+    )
+}
+
+/// CBURN-aware conservation: identical to `verify_cxfer_conservation` but for a step that DESTROYS
+/// `burned_amount` of supply (a Bitcoin `CBURN`). The kernel proves `Σ C_in = burned·H + Σ C_out`, so the
+/// change outputs carry the inputs' value MINUS the public burn, range-bounded. A pure transfer is
+/// `burned_amount == 0` (the wrapper above). Used by the burn-deposit provenance walk: a note descending
+/// from a CBURN's change output is still provably real supply — the inputs were real, the burn is public
+/// (bound into the kernel message so it can't be understated), and the change conserves. The burned value
+/// has no output commitment, so it cannot be linked further (it is destroyed).
+pub fn verify_cxfer_conservation_burned(
+    asset: &[u8; 32],
+    input_outpoints: &[([u8; 32], u32)],
+    input_commitments: &[Point],
+    output_commitments_compressed: &[[u8; 33]],
+    burned_amount: u64,
+    range_proof: &[u8],
+    kernel_sig: &[u8; 64],
+) -> bool {
     let mut out_pts: Vec<Point> = Vec::with_capacity(output_commitments_compressed.len());
     for c in output_commitments_compressed {
         match decompress(c) {
@@ -1521,7 +1542,7 @@ pub fn verify_cxfer_conservation(
             None => return false,
         }
     }
-    cxfer_kernel_verify(asset, input_outpoints, input_commitments, output_commitments_compressed, 0, kernel_sig)
+    cxfer_kernel_verify(asset, input_outpoints, input_commitments, output_commitments_compressed, burned_amount, kernel_sig)
         && verify_range(&out_pts, range_proof)
 }
 

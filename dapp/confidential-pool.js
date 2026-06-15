@@ -532,19 +532,22 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
   const u64leBytes = (n) => { const b = new Uint8Array(8); const v = new DataView(b.buffer); v.setUint32(0, Number(BigInt(n) & 0xffffffffn), true); v.setUint32(4, Number((BigInt(n) >> 32n) & 0xffffffffn), true); return b; };
   // kernel_msg = sha256("tacit-kernel-v1" ‖ asset ‖ in_count ‖ (txid ‖ vout_LE)×in ‖ out_count ‖
   //                     commitment(33)×out ‖ burned_LE8) — byte-identical to cxfer_kernel_verify.
-  function cxferKernelMsg(asset, inputOutpoints, outsCompressed) {
+  function cxferKernelMsg(asset, inputOutpoints, outsCompressed, burned = 0) {
     const parts = [CXFER_KERNEL_DOMAIN, b32(asset), Uint8Array.of(inputOutpoints.length & 0xff)];
     for (const [txid, vout] of inputOutpoints) { parts.push(b32(txid)); parts.push(u32le(vout)); }
     parts.push(Uint8Array.of(outsCompressed.length & 0xff));
     for (const c of outsCompressed) parts.push(hexToBytes(c));
-    parts.push(u64leBytes(0));
+    parts.push(u64leBytes(burned));
     return sha256(concat(parts));
   }
   const cxferOutPoints = (outsCompressed) => outsCompressed.map((c) => secp.ProjectivePoint.fromHex(c.replace(/^0x/, '')));
   // Kernel-only: Σ C_in = Σ C_out, proven by a BIP-340 sig over the kernel message (burned = 0),
   // with verify key P = Σ C_in − Σ C_out (x-only). A cxfer env MUST carry asset/kernelSig/
   // commitments — a missing field is a wiring bug (throws), NOT a silent drop of a legitimate note.
-  function cxferKernelVerify({ asset, inputOutpoints, inputPoints, outsCompressed, kernelSig }) {
+  // `burned` (default 0) is the public supply a CBURN step destroys: the verify key becomes
+  // P = Σ C_in − Σ C_out − burned·H, matching cxfer_kernel_verify, so the burn-deposit provenance walk can
+  // verify a CBURN step (a note descending from its change outputs). A pure transfer is burned = 0.
+  function cxferKernelVerify({ asset, inputOutpoints, inputPoints, outsCompressed, kernelSig, burned = 0 }) {
     if (asset == null || kernelSig == null || !Array.isArray(outsCompressed) || outsCompressed.some((c) => c == null)) {
       throw new Error('cxfer kernel: missing asset/kernelSig/commitments');
     }
@@ -552,18 +555,19 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     if (inputOutpoints.length > 255 || outsCompressed.length < 1 || outsCompressed.length > 255) return false;
     let outPoints; try { outPoints = cxferOutPoints(outsCompressed); } catch { return false; }
     const Z = secp.ProjectivePoint.ZERO;
-    const P = inputPoints.reduce((a, p) => a.add(p), Z).add(outPoints.reduce((a, p) => a.add(p), Z).negate());
+    let P = inputPoints.reduce((a, p) => a.add(p), Z).add(outPoints.reduce((a, p) => a.add(p), Z).negate());
+    if (BigInt(burned) !== 0n) P = P.add(prover.H.multiply(BigInt(burned)).negate()); // − burned·H
     if (P.equals(Z)) return false;                    // identity verify key → reject (matches Rust)
     const px = P.toRawBytes(true).slice(1);           // x-only verify key
     let sig; try { sig = hexToBytes(kernelSig); } catch { return false; }
     if (sig.length !== 64) return false;
-    return verifySchnorr(sig, cxferKernelMsg(asset, inputOutpoints, outsCompressed), px);
+    return verifySchnorr(sig, cxferKernelMsg(asset, inputOutpoints, outsCompressed, burned), px);
   }
   // Full conservation: kernel (no inflation) AND every output in BP+ range (no wraparound). The
   // exact predicate the reflection guest re-runs before folding a cxfer's outputs (REFLECT-1).
-  function verifyCxferConservation({ asset, inputOutpoints, inputPoints, outsCompressed, rangeProof, kernelSig }) {
+  function verifyCxferConservation({ asset, inputOutpoints, inputPoints, outsCompressed, rangeProof, kernelSig, burned = 0 }) {
     if (rangeProof == null) throw new Error('cxfer conservation: missing rangeProof');
-    if (!cxferKernelVerify({ asset, inputOutpoints, inputPoints, outsCompressed, kernelSig })) return false;
+    if (!cxferKernelVerify({ asset, inputOutpoints, inputPoints, outsCompressed, kernelSig, burned })) return false;
     let rp; try { rp = hexToBytes(rangeProof); } catch { return false; }
     // bppRangeVerify uses bulletproofs-plus.js's own secp instance — build its commitment points
     // with that module's bytesToPoint so the range check is independent of the injected `secp`.

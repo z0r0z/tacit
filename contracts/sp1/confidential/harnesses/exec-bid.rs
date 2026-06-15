@@ -31,7 +31,7 @@ sol! {
         Withdrawal[] withdrawals; FeePayment[] fees; bytes32[] bitcoinBurnsConsumed;
         CrossOut[] crossOuts; bytes32[] bitcoinRootsUsed; bytes32 bitcoinSpentRoot;
         bytes32 bitcoinBurnRoot; AssetMeta[] assetMetas; SwapSettlement[] swaps;
-        LpSettlement[] liquidity;
+        LpSettlement[] liquidity; uint64 deadline;
     }
 }
 
@@ -76,6 +76,7 @@ fn build_stdin(f: &serde_json::Value) -> SP1Stdin {
     if has_change == 1 { note(&mut s, &f["sellerChange"]); sig(&mut s, &f["sellerChange"]); }
     note(&mut s, &f["sellerRecvB"]);
     sig(&mut s, &f["sellerRecvB"]);
+    s.write(&f["deadline"].as_u64().unwrap_or(0)); // op_deadline (guest main.rs:917), last read in OP_BID
     s
 }
 

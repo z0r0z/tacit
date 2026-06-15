@@ -384,9 +384,12 @@ pub fn main() {
                 // hidden from the PROVER — the homomorphic-aggregation follow-up — not here.) The
                 // typed u64 amount + the opening together ARE the range check. Only the NET reserve
                 // move + ν + leaves are committed, so individual trade sizes stay private from
-                // PublicValues readers. Safety: each trader is protected by min_out; the LPs by the
-                // constant-product non-decrease (k_post ≥ k_pre) — no adversarial price can drain
-                // the pool or short a trader.
+                // PublicValues readers. Safety: a trader gets EXACTLY the output their opening sigma
+                // binds (the box can't re-price or short them) and the settle reverts if the pool
+                // moved (the contract gates reserve_*_pre == the live reserves); min_out is the
+                // trader's own floor on that signed output (it can only reject their own intent, not
+                // an adversary). LPs are protected by the constant-product non-decrease (k_post ≥
+                // k_pre) — no adversarial price can drain the pool.
                 let asset_a = r32();
                 let asset_b = r32();
                 let fee_bps: u32 = io::read(); // pool fee tier — binds the pool id (multi-fee-tier)

@@ -25,7 +25,7 @@ sol! {
         Withdrawal[] withdrawals; FeePayment[] fees; bytes32[] bitcoinBurnsConsumed;
         CrossOut[] crossOuts; bytes32[] bitcoinRootsUsed; bytes32 bitcoinSpentRoot;
         bytes32 bitcoinBurnRoot; AssetMeta[] assetMetas; SwapSettlement[] swaps;
-        LpSettlement[] liquidity;
+        LpSettlement[] liquidity; uint64 deadline;
     }
 }
 
@@ -70,6 +70,7 @@ fn main() {
     stdin.write(&hexv(f["takerOwner"].as_str().unwrap()));
     write_leg(&mut stdin, &f["maker"]);
     write_leg(&mut stdin, &f["taker"]);
+    stdin.write(&f["deadline"].as_u64().unwrap_or(0)); // op_deadline (guest main.rs:776), after both legs
 
     let mode = std::env::var("MODE").unwrap_or_else(|_| "execute".into());
 

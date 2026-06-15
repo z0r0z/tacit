@@ -52,6 +52,7 @@ fn main() {
     stdin.write(&hexv(f["takerOwner"].as_str().unwrap()));
     write_leg(&mut stdin, &f["maker"]);
     write_leg(&mut stdin, &f["taker"]);
+    stdin.write(&f["deadline"].as_u64().unwrap_or(0)); // op_deadline (guest main.rs:776), after both legs
 
     let client = ProverClient::builder().cpu().build();
     let (public_values, report) = client.execute(Elf::Static(ELF), stdin).run().expect("execute failed (guest rejected the OTC witness)");

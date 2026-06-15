@@ -240,6 +240,9 @@ pub fn main() {
                             let v: u32 = io::read();
                             output_vouts.push(v);
                         }
+                        // 0 for a pure CXFER transfer; > 0 for a CBURN step (its change outputs descend
+                        // from the inputs minus this public burn). Bound into the kernel message.
+                        let burned_amount: u64 = io::read();
                         let range_proof: Vec<u8> = io::read();
                         let kernel_sig = r_n::<64>();
                         let n_sib: u32 = io::read();
@@ -248,7 +251,7 @@ pub fn main() {
                         let confirmed_block_root = r32();
                         prov.push(burn_deposit::ProvenanceWitness {
                             txid, input_outpoints, input_commitments, output_commitments, output_vouts,
-                            range_proof, kernel_sig, merkle_siblings, merkle_index, confirmed_block_root,
+                            burned_amount, range_proof, kernel_sig, merkle_siblings, merkle_index, confirmed_block_root,
                         });
                     }
                     // mintable: issuer-authorized cmint witnesses (each: the T_MINT reveal tx + the commit tx

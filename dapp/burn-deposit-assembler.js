@@ -71,6 +71,7 @@ export function makeBurnDepositAssembler({ dsha256, cat, bytesToHex }) {
         txid: c.txid,
         inputs: c.inputs,
         outputs: c.outputs,
+        burnedAmount: c.burnedAmount || 0, // 0 for a transfer; > 0 for a CBURN step (Σ C_in = burned·H + Σ C_out)
         rangeProof: c.rangeProof,
         kernelSig: c.kernelSig,
         merkleSiblings: merkleSiblings(c.blockTxids, c.index),

@@ -31,6 +31,7 @@ fn write_burn_deposit(s: &mut SP1Stdin, bd: &serde_json::Value) {
         let outs = c["outputs"].as_array().unwrap();
         s.write(&(outs.len() as u32));
         for o in outs { h(s, o, "commitment"); u32w(s, o, "vout"); }
+        s.write(&c["burnedAmount"].as_u64().unwrap_or(0)); // 0 for a transfer, > 0 for a CBURN step
         h(s, c, "rangeProof");
         h(s, c, "kernelSig");
         let msib = c["merkleSiblings"].as_array().unwrap();

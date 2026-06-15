@@ -69,6 +69,7 @@ export function makeScanReflectionIndexer({ secp, keccak256, sha256, ownerTag, b
         inputCommitments: c.inputs.map((i) => i.commitment),
         outputCommitments: c.outputs.map((o) => o.commitment),
         outputVouts: c.outputs.map((o) => o.vout),
+        burnedAmount: c.burnedAmount || 0, // 0 for a transfer; > 0 for a CBURN step
         rangeProof: c.rangeProof,
         kernelSig: c.kernelSig,
         merkleSiblings: assembler.merkleSiblings(c.blockTxids, c.index),

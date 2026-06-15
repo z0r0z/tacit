@@ -8,7 +8,8 @@
 // Deps (injected, same crypto the pool uses so verdicts are byte-identical):
 //   outpointKey(txidHex, vout) -> hex     (keccak(txid ‖ vout_le), pool.outpointKey)
 //   sha256(Uint8Array) -> Uint8Array      (for the Bitcoin double-SHA merkle path; also the single-SHA cmint msg)
-//   verifyCxferConservation(asset, inputOutpoints, inputPoints, outputCompressed, rangeProof, kernelSig) -> bool
+//   verifyCxferConservation(asset, inputOutpoints, inputPoints, outputCompressed, rangeProof, kernelSig, burned) -> bool
+//     (burned: public supply a CBURN step destroys, 0 for a pure transfer; verify key P = ΣC_in − ΣC_out − burned·H)
 //   commitmentHashCompressed(compressedHex) -> hex   (pool.commitmentHash of the decoded point)
 //   decompress(compressedHex) -> point | null
 // Mintable (cmint-deposit, §6.1) additionally needs the Bitcoin envelope/tx helpers the worker already has:
@@ -149,7 +150,7 @@ export function makeBurnDepositProvenance({
         if (!p) return false;
         inputPoints.push(p);
       }
-      if (!verifyCxferConservation(asset, cx.inputOutpoints, inputPoints, cx.outputCommitments, cx.rangeProof, cx.kernelSig)) {
+      if (!verifyCxferConservation(asset, cx.inputOutpoints, inputPoints, cx.outputCommitments, cx.rangeProof, cx.kernelSig, cx.burnedAmount || 0)) {
         return false;
       }
       // 3. linkage shape — commitment hashes from the SAME commitments conservation verified

@@ -336,6 +336,45 @@ export function makeConfidentialBid({ keccak256, pool }) {
     };
   }
 
+  // Seed-only recovery for a RESTING bid (localStorage-wipe safe). The single-shot
+  // recoverBidOutputs derives blindings under the (assetA, f)/(assetB, f) domains, which
+  // are NOT the domains a resting order uses — its received lots and chained funding notes
+  // are keyed by cumulative state C under REST_RECV / REST_FUND. Walk every state and match
+  // against the live leaf set, returning each found buyer note (received assetA lots of size
+  // `increment` + the remaining assetB funding note) ready to spend. The C=0 funding note is
+  // the buyer's pre-existing note (its blinding isn't bid-derived) so it's recovered by the
+  // normal holdings scan, not here.
+  //
+  // `bid` carries { assetA, assetB, maxFill, price, increment, buyerOwner } and the funding
+  // commitment { fund:{cx,cy} } — all recoverable from the buyer's on-chain resting-bid post.
+  // Spent-vs-live filtering is the caller's job (via nullifiers), same as recoverBidOutputs.
+  function recoverRestingBidOutputs({ seed, bid, leafSet }) {
+    const { assetA, assetB, buyerOwner } = bid;
+    const maxFill = BigInt(bid.maxFill), price = BigInt(bid.price), increment = BigInt(bid.increment);
+    if (!(increment > 0n) || maxFill <= 0n || maxFill % increment !== 0n) throw new Error('bid: bad resting params');
+    const bidSecret = deriveBidSecret(seed, bid.fund.cx, bid.fund.cy);
+    const get = (lf) => { const e = leafSet.get(String(lf).toLowerCase()); return e ? e.leafIndex : null; };
+    const out = [];
+    for (let C = 0n; C < maxFill; C += increment) {
+      // Received asset_a lot at this cumulative state (each filled lot is exactly `increment`).
+      const rR = deriveNote(bidSecret, REST_RECV, Number(C)).blinding;
+      const rC = commitXY(increment, rR);
+      const rLeaf = leaf(assetA, rC.cx, rC.cy, buyerOwner);
+      const rIdx = get(rLeaf);
+      if (rIdx != null) out.push({ asset: assetA, value: increment, blinding: rR, cx: rC.cx, cy: rC.cy, owner: buyerOwner, leaf: rLeaf, leafIndex: rIdx, restingState: C });
+      // Chained asset_b funding note (value (maxFill−C)·price); C>0 only, C=0 is the original note.
+      if (C > 0n) {
+        const fR = deriveNote(bidSecret, REST_FUND, Number(C)).blinding;
+        const vFundC = (maxFill - C) * price;
+        const fC = commitXY(vFundC, fR);
+        const fLeaf = leaf(assetB, fC.cx, fC.cy, buyerOwner);
+        const fIdx = get(fLeaf);
+        if (fIdx != null) out.push({ asset: assetB, value: vFundC, blinding: fR, cx: fC.cx, cy: fC.cy, owner: buyerOwner, leaf: fLeaf, leafIndex: fIdx, restingState: C });
+      }
+    }
+    return out;
+  }
+
   // Cancellation / head recovery: the buyer reclaims the resting order by spending the current funding
   // note (it knows the blinding). Returns the live funding note { cx, cy, amount, _r } at cumulative C
   // for a plain transfer/withdraw; the in-flight lot at C then double-spends the same nullifier and reverts.
@@ -345,6 +384,6 @@ export function makeConfidentialBid({ keccak256, pool }) {
     return { cx: state.fund.cx, cy: state.fund.cy, amount: state.fund.amount, _r: state.fund._r };
   }
 
-  return { buildBid, fillBid, verifyBid, recoverBidOutputs, deriveBidNonces,
+  return { buildBid, fillBid, verifyBid, recoverBidOutputs, recoverRestingBidOutputs, deriveBidNonces,
            buildRestingBid, fillRestingLot, restingFundingNote, BID_BUYER_TAG, BID_SELLER_TAG };
 }

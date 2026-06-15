@@ -16759,6 +16759,31 @@ function atomicIntentCancelMsg(assetIdHex, intentIdHex) {
   ));
 }
 
+// Maker-authenticated claim read. The public list/get expose only a slimmed
+// claim (expires_at + claimed flag); the maker needs the taker_pubkey +
+// requested_amount to build a fulfilment, and proves it's the intent's maker
+// by signing this (verified under intent.maker_pubkey). Pre-settlement the
+// taker's pubkey / requested amount / pledged outpoint are private to the
+// two counterparties.
+function atomicIntentClaimReadMsg(assetIdHex, intentIdHex) {
+  return sha256(concatBytes(
+    new TextEncoder().encode('tacit-axintent-claim-read-v1'),
+    hexToBytes(assetIdHex),
+    hexToBytes(intentIdHex),
+  ));
+}
+
+// Public-facing slim of a taker claim. Strips the genuinely-sensitive fields:
+// taker_utxo (outpoint + value → directly wallet-linking), requested_amount
+// (pre-settlement trade size), and the taker's reusable signature. Keeps
+// taker_pubkey + expires_at, which the maker-tile status, buyer claim-vanish
+// detection, and open-orders panel render; the maker reads the full claim
+// (incl. requested_amount) via the authenticated claim-detail endpoint.
+function _slimAtomicClaim(claim) {
+  if (!claim || typeof claim !== 'object') return claim;
+  return { expires_at: claim.expires_at, taker_pubkey: claim.taker_pubkey, claimed: true };
+}
+
 // Buyer-side claim abort. Signed by the claimant (taker_pubkey) so only
 // the original claim holder can drop their reservation early. Frees the
 // intent for other takers AND releases the UTXO pledge before the
@@ -18000,7 +18025,7 @@ async function loadAtomicIntentsForAsset(env, network, assetIdHex, opts = {}) {
     if (!t) continue;
     const v = t.intent;
     v.expired = (v.expiry || 0) <= now;
-    if (t.claim && t.claim.expires_at > now) v.claim = t.claim;
+    if (t.claim && t.claim.expires_at > now) v.claim = _slimAtomicClaim(t.claim);
     if (t.fulfil) {
       const fulfilledAt = Number(t.fulfil.fulfilled_at) || 0;
       if (fulfilledAt && (now - fulfilledAt) > FULFILMENT_TTL_SECONDS) {
@@ -18069,7 +18094,7 @@ async function handleAtomicIntentGet(assetIdHex, intentIdHex, env, network, cors
   if (!intent) return jsonResponse({ error: 'no such intent' }, 404, cors);
   const now = Math.floor(Date.now() / 1000);
   intent.expired = (intent.expiry || 0) <= now;
-  if (claim && claim.expires_at > now) intent.claim = claim;
+  if (claim && claim.expires_at > now) intent.claim = _slimAtomicClaim(claim);
   if (fulfil) {
     const fulfilledAt = Number(fulfil.fulfilled_at) || 0;
     if (fulfilledAt && (now - fulfilledAt) <= FULFILMENT_TTL_SECONDS) {
@@ -18078,6 +18103,29 @@ async function handleAtomicIntentGet(assetIdHex, intentIdHex, env, network, cors
     }
   }
   return jsonResponse({ asset_id: assetIdHex, intent }, 200, cors);
+}
+
+// Maker-authenticated full-claim read. Returns the taker_pubkey +
+// requested_amount + taker_utxo the maker needs to build a fulfilment, gated
+// on a signature under the intent's maker_pubkey so the sensitive claim
+// fields stay private to the two counterparties pre-settlement.
+async function handleAtomicIntentClaimDetail(assetIdHex, intentIdHex, req, env, network, cors) {
+  if (!/^[0-9a-f]{64}$/.test(assetIdHex)) return jsonResponse({ error: 'invalid asset_id' }, 400, cors);
+  if (!/^[0-9a-f]{32}$/.test(intentIdHex)) return jsonResponse({ error: 'invalid intent_id' }, 400, cors);
+  let body;
+  try { body = await req.json(); } catch { return jsonResponse({ error: 'invalid JSON body' }, 400, cors); }
+  const makerSigHex = String(body.maker_sig ?? '').toLowerCase();
+  if (!/^[0-9a-f]{128}$/.test(makerSigHex)) return jsonResponse({ error: 'maker_sig must be 128 hex chars' }, 400, cors);
+  const intent = await env.REGISTRY_KV.get(atomicIntentKey(network, assetIdHex, intentIdHex), 'json');
+  if (!intent) return jsonResponse({ error: 'no such intent' }, 404, cors);
+  const msg = atomicIntentClaimReadMsg(assetIdHex, intentIdHex);
+  if (!verifySchnorr(hexToBytes(makerSigHex), msg, hexToBytes(intent.maker_pubkey).slice(1))) {
+    return jsonResponse({ error: 'invalid maker signature (must be signed by the intent maker)' }, 403, cors);
+  }
+  const claim = await env.REGISTRY_KV.get(atomicClaimKey(network, assetIdHex, intentIdHex), 'json');
+  const now = Math.floor(Date.now() / 1000);
+  if (!claim || claim.expires_at <= now) return jsonResponse({ ok: true, claim: null }, 200, cors);
+  return jsonResponse({ ok: true, claim }, 200, cors);
 }
 
 async function handleAtomicIntentDelete(assetIdHex, intentIdHex, req, env, network, cors) {
@@ -18944,6 +18992,9 @@ async function handlePreauthBidPost(assetIdHex, req, env, network, cors) {
 // blob strip on the atomic-intent listings).
 function _slimPreauthBid(bid) {
   if (!bid || typeof bid !== 'object') return bid;
+  // The recipient blinding is intentionally public here: an offline walk-away
+  // bid is filled by any seller, who needs (amount, blinding) to build the
+  // buyer's payout note. Only the pre-signed sats spends are stripped.
   const { buyer_sats_spend_sig, buyer_sats_spend_sigs, ...rest } = bid;
   return rest;
 }
@@ -25852,6 +25903,7 @@ async function scanForEtches(env, network) {
 export {
   openingMsg, disclosureMsg, listingMsg, cancelMsg, claimMsg,
   atomicIntentMsg, atomicIntentClaimMsg, atomicIntentFulfilmentMsg, atomicIntentCancelMsg,
+  atomicIntentClaimReadMsg, _slimAtomicClaim, handleAtomicIntentClaimDetail,
   // T_AXFER_VAR (§5.7.6.1) — variable-amount atomic-intent message helpers.
   // Exported so tests/worker-axintent-var can pin byte-for-byte determinism
   // of intent_id derivation, message-byte equality with the dapp side, and
@@ -28352,6 +28404,8 @@ async function _routeFetch(req, env, ctx) {
     const mai3 = url.pathname.match(/^\/assets\/([0-9a-f]{64})\/atomic-intents\/([0-9a-f]{32})\/claim$/);
     if (mai3 && req.method === 'POST')                         return _mutateAndBustAtomicIntents(mai3[1], () => handleAtomicIntentClaim(mai3[1], mai3[2], req, env, network, cors));
     if (mai3 && req.method === 'DELETE')                       return _mutateAndBustAtomicIntents(mai3[1], () => handleAtomicIntentClaimCancel(mai3[1], mai3[2], req, env, network, cors));
+    const maiCd = url.pathname.match(/^\/assets\/([0-9a-f]{64})\/atomic-intents\/([0-9a-f]{32})\/claim-detail$/);
+    if (maiCd && req.method === 'POST')                        return handleAtomicIntentClaimDetail(maiCd[1], maiCd[2], req, env, network, cors);
     const mai4 = url.pathname.match(/^\/assets\/([0-9a-f]{64})\/atomic-intents\/([0-9a-f]{32})\/fulfilment$/);
     if (mai4 && req.method === 'POST')                         return _mutateAndBustAtomicIntents(mai4[1], () => handleAtomicIntentFulfil(mai4[1], mai4[2], req, env, network, cors));
     if (mai4 && req.method === 'GET')                          return handleAtomicIntentFulfilGet(mai4[1], mai4[2], env, network, cors);

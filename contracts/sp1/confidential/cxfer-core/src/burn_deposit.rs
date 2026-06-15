@@ -14,7 +14,7 @@
 
 use crate::bitcoin::{self, verify_merkle_path};
 use crate::{
-    bip340_verify, commitment_hash_compressed, decompress, outpoint_key, verify_cxfer_conservation,
+    bip340_verify, commitment_hash_compressed, decompress, outpoint_key, verify_cxfer_conservation_burned,
     verify_range, Point,
 };
 
@@ -128,6 +128,10 @@ pub struct ProvenanceWitness {
     pub input_commitments: Vec<[u8; 33]>,  // compressed; decompressed for conservation
     pub output_commitments: Vec<[u8; 33]>, // compressed
     pub output_vouts: Vec<u32>,
+    /// Public supply destroyed by this step: 0 for a pure CXFER transfer, > 0 for a CBURN (the kernel
+    /// proves `Σ C_in = burned_amount·H + Σ C_out`, so the change outputs descend from the inputs minus
+    /// the burn). Bound into the kernel message, so it cannot be understated to inflate the change.
+    pub burned_amount: u64,
     pub range_proof: Vec<u8>,
     pub kernel_sig: [u8; 64],
     pub merkle_siblings: Vec<[u8; 32]>,
@@ -200,15 +204,16 @@ fn verify_cxfers(asset: &[u8; 32], cxfers: &[ProvenanceWitness]) -> Result<Vec<V
         for c in &cx.input_commitments {
             input_points.push(decompress(c).ok_or("burn-deposit: input commitment not a curve point")?);
         }
-        if !verify_cxfer_conservation(
+        if !verify_cxfer_conservation_burned(
             asset,
             &cx.input_outpoints,
             &input_points,
             &cx.output_commitments,
+            cx.burned_amount,
             &cx.range_proof,
             &cx.kernel_sig,
         ) {
-            return Err("burn-deposit: provenance cxfer does not conserve value/asset");
+            return Err("burn-deposit: provenance step does not conserve value/asset");
         }
         // 3. Reduce to the linkage shape — commitment hashes derived from the SAME commitments conservation
         //    just verified, so a link can't swap a low-value producing output for a high-value claimed input.
@@ -446,6 +451,7 @@ mod tests {
             input_commitments: vec![in_c],
             output_commitments: vec![out_c],
             output_vouts: vec![0],
+            burned_amount: 0,
             range_proof: rp,
             kernel_sig: sig,
             merkle_siblings: vec![],
@@ -484,5 +490,17 @@ mod tests {
         // a real conserving cxfer, but its input does not match the declared C_0 commitment → not a
         // C_0 descendant → the linkage rejects (no fabricating the supply anchor).
         assert!(verify_provenance(&asset, &c0_op, &[0x00; 32], &b_op, &b_ch, &[w]).is_err());
+    }
+
+    #[test]
+    fn provenance_step_burned_amount_is_kernel_bound() {
+        // The build_valid fixture is a burned = 0 transfer. Claiming a nonzero burn on it shifts the kernel
+        // verify key by −burned·H, so the burned = 0 signature no longer verifies and the step is rejected.
+        // This is what stops an attacker mis-stating the public burn to inflate a CBURN's change outputs.
+        // (A REAL conserving CBURN with burned > 0 is validated in-zkVM by the native-exec generator, as for
+        // the cmint path — no burned-amount fixture exists here.)
+        let (asset, c0_op, c0_ch, b_op, b_ch, mut w) = build_valid();
+        w.burned_amount = 5;
+        assert!(verify_provenance(&asset, &c0_op, &c0_ch, &b_op, &b_ch, &[w]).is_err());
     }
 }
