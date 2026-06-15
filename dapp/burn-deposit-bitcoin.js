@@ -189,7 +189,55 @@ function parseCmint(envHex) {
   };
 }
 
-export { readVarint, extractInputs, extractTaprootEnvelope, parseCetch, parseCmint };
+// parse_burn_envelope (cxfer-core::bitcoin::parse_burn_envelope): a confidential bridge-burn (0x2B) →
+//   { asset, nullifier, dest } (all hex). Layout (env[0]=0x2B, >=129B):
+//   opcode(1) ‖ assetId(32) ‖ bitcoinPoolRoot(32) ‖ nullifier(32) ‖ destCommitment(32).
+function parseBurnEnvelope(envHex) {
+  const env = hexToBytes(envHex);
+  if (env.length < 129 || env[0] !== 0x2b) return null;
+  return {
+    asset: bytesToHex(env.subarray(1, 33)),
+    nullifier: bytesToHex(env.subarray(65, 97)),
+    dest: bytesToHex(env.subarray(97, 129)),
+  };
+}
+
+// parse_cxfer_envelope_full (cxfer-core::bitcoin::parse_cxfer_envelope_full): a confidential transfer
+// (T_CXFER_BPP 0x22 OR T_CXFER 0x23, identical wire shape) → { asset, kernelSig, commitments[], rangeProof }
+// (all hex; commitments compressed). Layout (env[0]∈{0x22,0x23}):
+//   opcode(1) ‖ assetId(32) ‖ kernel_sig(64) ‖ N(1,∈{1,2,4,8}) ‖ N×(commitment(33) ‖ amount_ct(8)) ‖ rpLen(2 LE) ‖ rp.
+function parseCxferEnvelopeFull(envHex) {
+  const env = hexToBytes(envHex);
+  if (env.length < 1 + 32 + 64 + 1 || (env[0] !== 0x22 && env[0] !== 0x23)) return null;
+  const asset = env.subarray(1, 33);
+  const kernelSig = env.subarray(33, 97);
+  let p = 97;
+  const n = env[p]; p += 1;
+  if (![1, 2, 4, 8].includes(n) || p + n * (33 + 8) + 2 > env.length) return null;
+  const commitments = [];
+  for (let i = 0; i < n; i++) { commitments.push(bytesToHex(env.subarray(p, p + 33))); p += 33 + 8; }
+  const rpLen = env[p] | (env[p + 1] << 8); p += 2;
+  if (p + rpLen !== env.length) return null;
+  return { asset: bytesToHex(asset), kernelSig: bytesToHex(kernelSig), commitments, rangeProof: bytesToHex(env.subarray(p, p + rpLen)) };
+}
+
+// classifyConfidentialTx(rawTxHex) → the reflection scan's per-tx classification, MIRRORING the guest's
+// reflect.rs (extract_taproot_envelope → parse_burn_envelope / parse_cxfer_envelope_full): a confidential
+// bridge-burn → {type:'burn', dest}; a confidential transfer → {type:'cxfer', assetId, commitments,
+// kernelSig, rangeProof}; anything else (plain spend, non-confidential envelope) → null. This is the
+// `classifyTx` buildScanReflectionAttester injects; the guest RE-parses from txData and is authoritative, so a
+// misclassification is a liveness failure (the prove fails / skips), never a wrong attestation.
+function classifyConfidentialTx(rawTxHex) {
+  const envHex = extractTaprootEnvelope(rawTxHex);
+  if (!envHex) return null;
+  const burn = parseBurnEnvelope(envHex);
+  if (burn) return { type: 'burn', dest: burn.dest };
+  const cx = parseCxferEnvelopeFull(envHex);
+  if (cx) return { type: 'cxfer', assetId: cx.asset, commitments: cx.commitments, kernelSig: cx.kernelSig, rangeProof: cx.rangeProof };
+  return null;
+}
+
+export { readVarint, extractInputs, extractTaprootEnvelope, parseCetch, parseCmint, parseBurnEnvelope, parseCxferEnvelopeFull, classifyConfidentialTx };
 
 // Build the burnDepositKit the worker injects (buildScanReflectionAttester → makeScanReflectionIndexer).
 // Sources every crypto primitive from the SAME modules the pool/guest use (so verdicts match byte-for-byte)

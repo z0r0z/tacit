@@ -87,10 +87,11 @@ import { hmac } from '@noble/hashes/hmac';
 import { keccak_256 } from '@noble/hashes/sha3';
 import { hexToBytes, bytesToHex, concatBytes } from '@noble/hashes/utils';
 import { bech32, bech32m } from '@scure/base';
-import { buildReflectionAttester } from './reflection-attest.js';
+import { buildScanReflectionAttester } from './reflection-attest.js';
 import { buildConfidentialSettler } from './confidential-settle.js';
 import { buildCrossoutConsumer, crossoutMintLeaf } from './crossout-consumer.js';
 import { decodeCrossoutMint } from '../../dapp/confidential-crossout-consumer.js';
+import { classifyConfidentialTx } from '../../dapp/burn-deposit-bitcoin.js';
 
 secp.etc.hmacSha256Sync = (k, ...m) => hmac(sha256, k, secp.etc.concatBytes(...m));
 
@@ -695,6 +696,24 @@ async function handleProverHealth(env, cors) {
   }, healthy ? 200 : 503, hdr);
 }
 
+// Build the FULL-SCAN reflection attester (the model the deployed reflection ELF expects): it scans every
+// tx of every confirmed block in the un-attested range (completeness — no pool spend omitted) and assembles
+// the prover input. classifyConfidentialTx mirrors the guest's envelope classification (burn / cxfer / plain);
+// buildScanReflectionAttester injects the real burnDepositKit so a holder-submitted TAC burn-deposit onboards.
+// Returns null (inert) unless REFLECTION_ATTEST=1 + REFLECTION_GENESIS_HEIGHT are configured.
+function scanReflectionAttesterFor(env, network) {
+  return buildScanReflectionAttester(env, {
+    deps: { secp, keccak256: keccak_256, sha256 },
+    api: apiText,
+    network,
+    classifyTx: ({ rawHex }) => classifyConfidentialTx(rawHex),
+  });
+}
+// The full-scan ackJob persists a post-batch SNAPSHOT (not just a cursor), but the box-poll ack carries only
+// {jobId, attestedTo}. So /reflection/job stashes the assembled job's newSnapshot in KV keyed by jobId, and
+// /reflection/ack retrieves it. Ephemeral (the snapshot is reproducible by re-assembling), 1-day TTL.
+const reflectionPendingKey = (network, jobId) => `reflection:pending:${network}:${String(jobId).replace(/^0x/, '')}`;
+
 // Reflection relay: serve the next assembled Bitcoin-state batch for the box to prove. The box
 // (ops/scripts/reflection-relay-loop.sh) proves it, submits attestBitcoinStateProven on-chain, then
 // POSTs /reflection/ack. Returns {} when nothing is pending; 404 when reflection attest is off.
@@ -704,10 +723,16 @@ async function handleReflectionJob(req, env, url, cors) {
   // stall every cross-lane / bridge_mint gate. /reflection/job is gated the same for symmetry.
   if (!checkConfidentialAuth(req, env)) return jsonResponse({ error: 'not found' }, 404, { ...cors, 'Cache-Control': 'no-store' });
   const network = url.searchParams.get('network') === 'signet' ? 'signet' : 'mainnet';
-  const att = buildReflectionAttester(env, { deps: { secp, keccak256: keccak_256, sha256 }, api: apiText, network });
+  const att = scanReflectionAttesterFor(env, network);
   if (!att) return jsonResponse({ error: 'reflection attest not configured' }, 404, { ...cors, 'Cache-Control': 'no-store' });
   const job = await att.assembleJob();
-  return jsonResponse(job || {}, 200, { ...cors, 'Cache-Control': 'no-store' });
+  if (job) {
+    // Stash the snapshot so ack (which only carries jobId) can advance the persisted state.
+    await env.REGISTRY_KV.put(reflectionPendingKey(network, job.jobId), JSON.stringify(job.newSnapshot), { expirationTtl: 86400 });
+    const { newSnapshot, ...jobForBox } = job; // the box needs input + jobId + attestedTo, not the snapshot
+    return jsonResponse(jobForBox, 200, { ...cors, 'Cache-Control': 'no-store' });
+  }
+  return jsonResponse({}, 200, { ...cors, 'Cache-Control': 'no-store' });
 }
 
 async function handleReflectionAck(req, env, cors) {
@@ -715,9 +740,16 @@ async function handleReflectionAck(req, env, cors) {
   let body;
   try { body = await req.json(); } catch { return jsonResponse({ ok: false, error: 'bad json' }, 400, cors); }
   const network = body.network === 'signet' ? 'signet' : 'mainnet';
-  const att = buildReflectionAttester(env, { deps: { secp, keccak256: keccak_256, sha256 }, api: apiText, network });
+  const att = scanReflectionAttesterFor(env, network);
   if (!att) return jsonResponse({ error: 'reflection attest not configured' }, 404, cors);
-  const r = await att.ackJob(Number(body.attestedTo) | 0);
+  // Retrieve the snapshot stashed at job-serve time. Missing/expired ⇒ refuse to advance with a null
+  // snapshot (which would reset the canonical state) — the box should re-GET /reflection/job and retry.
+  const jobId = String(body.jobId || '');
+  const snapKey = reflectionPendingKey(network, jobId);
+  const snapRaw = jobId ? await env.REGISTRY_KV.get(snapKey) : null;
+  if (!snapRaw) return jsonResponse({ ok: false, error: 'unknown or expired jobId — re-fetch /reflection/job' }, 409, cors);
+  const r = await att.ackJob(Number(body.attestedTo) | 0, JSON.parse(snapRaw));
+  await env.REGISTRY_KV.delete(snapKey);
   return jsonResponse({ ok: true, ...r }, 200, cors);
 }
 
@@ -21435,15 +21467,9 @@ async function scanForEtches(env, network) {
         // gates the recipient credit identically).
         if (decoded.opcode === T_PREAUTH_BID_VAR && !_validatePreauthBidVarRefundVout(dx, tx)) continue;
         const counted = await _bumpTransferOnce(dx.asset_id, tx.txid);
-        // Reflection attestation ingest (Phase 4.4): record confirmed confidential transfers into
-        // the canonical reflection state (the source of truth the attest cron replays + proves).
-        // Config-gated (env.REFLECTION_ATTEST); best-effort, never blocks the scan.
-        if (decoded.opcode === T_CXFER || decoded.opcode === T_CXFER_BPP) {
-          try {
-            const _att = buildReflectionAttester(env, { deps: { secp, keccak256: keccak_256, sha256 }, api: apiText, network });
-            if (_att) await _att.ingestConfirmedCxfer(tx, dx, txs, h, dx.asset_id);
-          } catch (e) { try { _logCronError(env, 'reflectionIngest', network, e); } catch {} }
-        }
+        // (Reflection attestation no longer ingests per-CXFER here: the full-scan model re-scans EVERY tx of
+        // each confirmed block via the box-poll /reflection/job, so completeness can't depend on this loop
+        // catching only the CXFERs. The cron advances the confirmed tip; the box assembles + proves.)
         // Implicit-cancel detection for opening listings. Any tx that
         // spends the asset_id's UTXOs (CXFER consolidate, AXFER settle,
         // or the maker shuffling funds around) terminates whichever
@@ -29512,16 +29538,26 @@ export default {
       await Promise.allSettled(
         NETWORKS.map(net => scanForEtches(env, net).catch(e => _logCronError(env, 'scanForEtches', net, e))),
       );
-      // Reflection attestation: the scan ingests confirmed CXFERs into the effect log; the
-      // self-hosted box drives proving via the BOX-POLL model (/reflection/job → prove → submit →
-      // /reflection/ack, ops/scripts/reflection-relay-loop.sh), so the cron does NOT prove here.
-      // Only run the synchronous worker-side cycle when a box HTTP prover (REFLECTION_PROVE_URL) is
-      // configured. Config-gated (env.REFLECTION_ATTEST); a null attester is an inert no-op.
-      if (env.REFLECTION_PROVE_URL) {
+      // Reflection attestation (full-scan model): the cron advances the confirmed TIP (the latest
+      // finality-buried Bitcoin height) so the box-poll job (/reflection/job → prove → submit →
+      // /reflection/ack, ops/scripts/reflection-relay-loop.sh) assembles the newly-buried blocks. The cron
+      // does NOT prove (the box does), unless a synchronous box HTTP prover (REFLECTION_PROVE_URL) is set,
+      // in which case it runs the full cycle inline after setting the tip. Config-gated (env.REFLECTION_ATTEST
+      // + REFLECTION_GENESIS_HEIGHT → a null attester is an inert no-op). REFLECTION_CONFIRMATIONS (default 6)
+      // matches the contract's maturity window so a job's tip is buried enough to attest.
+      {
+        const conf = parseInt(env.REFLECTION_CONFIRMATIONS || '6', 10);
         await Promise.allSettled(
-          NETWORKS.map(net => {
-            const _att = buildReflectionAttester(env, { deps: { secp, keccak256: keccak_256, sha256 }, api: apiText, network: net });
-            return _att ? _att.runCycle().catch(e => _logCronError(env, 'reflectionCycle', net, e)) : Promise.resolve();
+          NETWORKS.map(async (net) => {
+            const att = scanReflectionAttesterFor(env, net);
+            if (!att) return;
+            try {
+              const tip = parseInt((await apiText(env, '/blocks/tip/height', { timeoutMs: 10_000 }, net)).trim(), 10);
+              if (Number.isInteger(tip) && tip > conf) await att.setTip(tip - conf);
+            } catch (e) { _logCronError(env, 'reflectionSetTip', net, e); return; }
+            if (env.REFLECTION_PROVE_URL) {
+              await att.runCycle().catch((e) => _logCronError(env, 'reflectionCycle', net, e));
+            }
           }),
         );
       }

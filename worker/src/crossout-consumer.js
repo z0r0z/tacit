@@ -1,8 +1,8 @@
 // Worker-facing factory for the Bitcoin-side CrossOut consumer (Mode B reverse reflection, app glue).
 // Wires the dependency-injected dapp/confidential-crossout-consumer.js to the deployment env: the KV
 // (REGISTRY_KV → Postgres on Render, the default; CF KV is fallback), the Ethereum log reader + its
-// RPC fallback list, and the CrossOutRecorded decoder. Mirrors buildReflectionAttester's shape so it
-// is testable + runtime-agnostic.
+// RPC fallback list, and the CrossOutRecorded decoder. Mirrors the reflection attester's
+// dependency-injected factory shape so it is testable + runtime-agnostic.
 //
 // Trust posture (Mode B): the worker is INDEXER/UX ONLY, never authoritative. The authority for a
 // minted Bitcoin note is the reflection prover's recursive cross-out fold (the eth-reflection guest).

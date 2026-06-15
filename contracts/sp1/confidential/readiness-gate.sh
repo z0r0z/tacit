@@ -67,7 +67,7 @@ reflection_suite() {
   for t in confidential-reflection-scan confidential-reflection-scan-indexer \
            confidential-reflection-attest-scan confidential-reflection-conservation \
            confidential-reflection-state confidential-reflection-witness \
-           confidential-reflection-indexer reflection-attest; do
+           confidential-reflection-indexer; do
     [ -f "tests/$t.mjs" ] || continue
     if ! node "tests/$t.mjs" >>"$TMP.refl" 2>&1; then echo "FAIL $t"; rc=1; fi
   done
