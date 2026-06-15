@@ -113,12 +113,59 @@ the note was consumed. Closing that loop is Mode B.
 
 ---
 
+## Phase C — unified AMM + one LP + cross-chain orderbook (the convergence)  [dep: B]
+
+The destination: **one canonical pool per (asset pair, fee tier), one LP-share set, one orderbook,
+reachable from either chain** — no liquidity fragmentation. A deliberate convergence from "two parallel
+AMMs" to "one canonical AMM + cross-lane access," landing after the fast lane (B). Trade-off to decide
+explicitly: you gain unified liquidity + a single LP, but the Bitcoin pool stops being a standalone
+on-Bitcoin venue (it becomes an access lane onto the canonical pool).
+
+### C1 — Wire the adaptor-swap cross-chain orderbook  [dep: B (crypto layer is earlier)]
+- Implement the EVM `OP_ADAPTOR_{LOCK,CLAIM,REFUND}` guest ops (ride a settle re-prove; only the
+  lock-set leaf primitive exists in `cxfer-core` today) + Bitcoin Taproot timeout-refund recognition.
+- Wire the already-built+tested off-UI modules — `dapp/adaptor-signature.js`, `dapp/adaptor-swap.js`,
+  `dapp/cross-chain-orderbook.js`, `dapp/cbtc-redemption.js` — plus a worker quote-discovery/relay
+  endpoint + the dapp orderbook view.
+- Gate opened: a Bitcoin maker and an Ethereum taker fill the SAME asset atomically WITHOUT bridging
+  (Route B) — e.g. "list a token for tETH; a tETH holder on the other chain fills it scriptlessly."
+
+### C2 — Designate the canonical pool  [dep: B, C1]
+- Make the Ethereum on-chain pool the authoritative AMM for a (pair, fee): one `pool_id`, one reserve
+  set, one LP-share note. Harmonize / map the Bitcoin `pool_id` (SHA256+flags) onto the canonical
+  keccak id so both lanes address the same pool object.
+
+### C3 — Cross-lane LP + trade against the canonical pool  [dep: C2]
+- Bitcoin LPs/traders add liquidity / swap against the canonical Ethereum pool via the fast lane (B) /
+  adaptor swaps, so a single LP position backs fills originating from both chains.
+- Gate opened: **one LP, one book, both chains** — unified liquidity, no fragmentation.
+
+---
+
+## Gas / relayer reality (sanity-checked 2026-06-15)
+
+Gas-abstraction is **live, not just contract-supported** — but operator-subsidized and single-settler:
+- A settler IS running: the GPU box runs `scripts/confidential-settle-loop.sh`, polling the worker's
+  `/confidential/job` queue (`worker/src/confidential-settle.js`), GPU-Groth16-proving each op, and
+  submitting `ConfidentialPool.settle(pv, proof, memos)` paying gas from its own `ETH_PK`. So a user
+  trades on Ethereum holding only the asset (no ETH) — they sign an offline intent (OP_OTC / OP_BID),
+  the box settles.
+- BUT it is ONE operator-run settler (FIFO, shares the box's single GPU with the tETH loop), and in the
+  pilot it self-proves with **no fee taken** (the `ConfidentialPool` "self-prove sets no fees, pays only
+  gas" path) — the operator eats the gas. The in-asset `FeePayment` → `msg.sender` mechanism is built
+  but unexercised; it is the path to a fee-funded relayer.
+- Follow-up (off the A/B/C critical path): exercise `FeePayment` (relayer takes an in-asset fee) and open
+  the settler beyond the single box — that turns "operator-subsidized" into a sustainable, decentralized
+  relayer market.
+
+---
+
 ## Critical path
 ```
 A0 ─┬─ A1 (onboard)
     ├─ A2 (flip pool) ─┬─ A3 (unified portfolio) ─ A5 (network UX)
     │                  └─ A4 (bridge-out UI)
-    └─ B1 (eth-reflection) ─ B2 (loop) ─ B3 (relax gate = fast lane)
+    └─ B1 (eth-reflection) ─ B2 (loop) ─ B3 (fast lane) ─ C1 (x-chain book) ─ C2 (canonical pool) ─ C3 (one LP, one book, both chains)
 ```
 A0 is the shared root and is in flight. Phase A (A1–A5) is mostly **last-mile wiring of code that already
 exists + tests** — low/medium effort, client-side, once A0 lands. Phase B is the heavy lift (recursive
