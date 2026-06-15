@@ -243,7 +243,32 @@ opening (the LP-remove shape) to bind each onboarded note to its cleared amount.
 it was received, including the confidential AMM. The BN254-Groth16-in-zkVM is the single hard dependency (the
 aggregate + the per-receipt openings reuse the generalized machinery). It is gated by the Phase-2 ceremony
 `vk` (no live batch txs exist until then), so it can land in the same coordinated re-prove without blocking
-the other ops, which are already sound.
+the other ops, which are already sound. Scope: ops/DESIGN-in-guest-groth16-verifier.md — the general BN254
+snarkjs-Groth16 verifier is buildable now; only the circuit-specific public-input layout + the baked vk wait
+on the ceremony.
+
+### Orderbook (`T_PREAUTH_BID`/`_VAR`) + OTC (`T_AXFER`) — Track A, the EASIEST class (2026-06-16)
+
+These are **2-party conserving swaps with no pool** — and the generalization covers them most directly of
+all. A bid fill or an OTC settles `maker gives X / taker gives Y` (the offline-buyer bid is the same with a
+pre-funded, pre-signed buyer + a refund leg). Per asset it CONSERVES against REAL counterparty inputs:
+asset X — maker/seller input → taker/buyer receipt; asset Y — taker/buyer input → maker/seller receipt (+
+the bid's refund). That is exactly the CXFER shape, so `asset_scoped_kernel_verify` (under each op's domain)
+handles it with NO pool registry and NO Groth16 — the received notes descend from the counterparties' real
+(live-reflected) inputs by the per-asset conservation kernel. The fill amounts are PUBLIC (the orderbook
+reads `fill_amount` + `price_per_unit` inline from the envelope), which makes the per-asset conservation
+directly checkable and lets each received note bind to its public amount (cleartext or the witnessed-blinding
+shape) exactly like `T_SWAP_VAR`/LP-remove.
+
+So orderbook + OTC need NO new cryptographic machinery — only per-op folds (`fold_bid`, `fold_otc`/`fold_axfer`)
+that gather the op's per-asset inputs (detected live spends) + outputs and verify the asset-scoped kernel under
+the op's domain (`tacit-preauth-bid-var-*`, the AXFER kernel), then onboard the receipts. They are the same
+pattern as the CXFER fold, generalized. **Caveat to confirm during build:** `T_PREAUTH_BID_VAR` carries a BJJ
+binding alongside its secp kernel-against-UTXOs; confirm the CONSERVATION rides the secp kernel (it should —
+the kernel signs against the on-chain input UTXOs, and the fill amount is public), in which case the BJJ is
+only the offline-presig/cross-curve receipt detail and the fold stays pure-secp Track A. The
+hidden-amount variants (`T_AXFER_VAR`) sit with `T_SWAP_BATCH` if their per-fill amount isn't recoverable —
+otherwise a witnessed-amount opening brings them into Track A too.
 
 ## Per-op kernel mapping (the implementation specifics to nail down)
 
