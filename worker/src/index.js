@@ -2286,6 +2286,33 @@ async function ammPoolPut(env, network, poolIdHex, value) {
   await env.REGISTRY_KV.put(ammPoolKey(network, poolIdHex), JSON.stringify(value));
 }
 
+// Per-pool op index (DISCOVERY for trustless client-side replay — SPEC AMM.md
+// "anyone can reconstruct ... by replaying confirmed envelopes"). One key per
+// VALID op, canonically ordered by zero-padded (height, tx_index) so KV.list
+// returns chain order. The dapp's deriveAmmPoolState reads this list, then
+// re-fetches + re-verifies + replays every op from chain — so this index is
+// trusted only for COMPLETENESS (liveness): a missed write just makes a client
+// halt or re-scan, never a wrong reserve. Value is a sentinel ('1') — the
+// client decodes the op from the tx itself, not from here.
+function ammOpKey(network, poolIdHex, height, txIndex, txid) {
+  const h = String(height || 0).padStart(10, '0');
+  const idx = String(txIndex || 0).padStart(6, '0');
+  return network === 'signet'
+    ? `ammop:${poolIdHex}:${h}:${idx}:${txid}`
+    : `ammop:${network}:${poolIdHex}:${h}:${idx}:${txid}`;
+}
+function ammOpPrefix(network, poolIdHex) {
+  return network === 'signet' ? `ammop:${poolIdHex}:` : `ammop:${network}:${poolIdHex}:`;
+}
+async function recordAmmOp(env, network, poolIdHex, height, txIndex, txid) {
+  // Fail-safe: the index is liveness-only, so a write failure must never break
+  // the cron (cf. the scanForEtches swallow-and-freeze fragility).
+  try {
+    if (!/^[0-9a-f]{64}$/.test(String(poolIdHex || ''))) return;
+    await env.REGISTRY_KV.put(ammOpKey(network, poolIdHex, height, txIndex, txid), '1');
+  } catch { /* discovery index miss = liveness only */ }
+}
+
 // Accepted-swap marker. A T_SWAP_VAR / T_SWAP_ROUTE receipt (and change) is a
 // virtual mint: its backing is the pool curve evaluated at the pool's real
 // pre-state reserves, which a light validator cannot reconstruct from local
@@ -23968,6 +23995,7 @@ async function scanForEtches(env, network) {
           // share UTXOs to this pool.
           const lpAssetId = bytesToHex(ammDeriveLpAssetId(poolIdBytes));
 
+          await recordAmmOp(env, network, poolIdHex, h, txIndex, tx.txid);
           await ammPoolPut(env, network, poolIdHex, {
             pool_id: poolIdHex,
             asset_a: bytesToHex(aBytes),
@@ -24118,6 +24146,7 @@ async function scanForEtches(env, network) {
           const newReserveA = BigInt(xPool0.reserve_a) + dA0;
           const newReserveB = BigInt(xPool0.reserve_b) + dB0;
           if (newReserveA >= 1n << 64n || newReserveB >= 1n << 64n) continue;
+          await recordAmmOp(env, network, poolIdHex0, h, txIndex, tx.txid);
           await ammPoolPut(env, network, poolIdHex0, {
             ...xPool0,
             reserve_a: newReserveA.toString(),
@@ -24216,6 +24245,7 @@ async function scanForEtches(env, network) {
         const newReserveA = BigInt(poolR.reserve_a) - expected.deltaA;
         const newReserveB = BigInt(poolR.reserve_b) - expected.deltaB;
         if (newReserveA <= 0n || newReserveB <= 0n) continue;  // defensive
+        await recordAmmOp(env, network, poolIdHexR, h, txIndex, tx.txid);
         await ammPoolPut(env, network, poolIdHexR, {
           ...poolR,
           reserve_a: newReserveA.toString(),
@@ -24533,6 +24563,7 @@ async function scanForEtches(env, network) {
           // Don't upgrade validation tag — Groth16 verify is deferred to
           // the browser-side consumer.
         };
+        await recordAmmOp(env, network, bytesToHex(sbPoolIdBytes), h, txIndex, tx.txid);
         await ammPoolPut(env, network, bytesToHex(sbPoolIdBytes), sbNewPool);
         found++;
       } else if (decoded.opcode === T_PROTOCOL_FEE_CLAIM) {
@@ -24579,6 +24610,7 @@ async function scanForEtches(env, network) {
         catch { continue; }
         if (!cClExpected.equals(cClActual)) continue;
         // Apply state transition: reset accrued, keep crystallized k_last.
+        await recordAmmOp(env, network, cl.pool_id, h, txIndex, tx.txid);
         await ammPoolPut(env, network, cl.pool_id, {
           ...xPoolCl,
           protocol_fee_accrued: '0',
@@ -24797,6 +24829,7 @@ async function scanForEtches(env, network) {
             last_swap_at: tx.status?.block_time || Math.floor(Date.now() / 1000),
             validation: 'verified',
           };
+          await recordAmmOp(env, network, sv.pool_id, h, txIndex, tx.txid);
           await ammPoolPut(env, network, sv.pool_id, newPool);
           await ammSwapAcceptedPut(env, network, tx.txid, {
             h, pool_id: sv.pool_id,
@@ -26866,6 +26899,36 @@ async function _routeFetch(req, env, ctx) {
     //     T_SWAP_VAR envelope with R_A_pre / R_B_pre fields)
     //   - cross-pool router + integrators (refuse pools at validation
     //     tags < 'verified' for high-value flows)
+    // GET /amm/pool/<pool_id>/ops — the pool's op-txid list in canonical
+    // (height, tx_index) order. DISCOVERY for the dapp's trustless replay
+    // (deriveAmmPoolState): the dapp re-fetches + re-verifies + replays each op
+    // from chain, so this is trusted only for completeness (liveness), never for
+    // values. See recordAmmOp.
+    {
+      const opsMatch = url.pathname.match(/^\/amm\/pool\/([0-9a-f]{64})\/ops$/);
+      if (opsMatch && req.method === 'GET') {
+        const poolIdHex = opsMatch[1];
+        const ops = [];
+        let cursor; let listComplete = false;
+        const OPS_PAGE_GUARD = 100;   // 100k ops ceiling
+        for (let page = 0; page < OPS_PAGE_GUARD; page++) {
+          const lst = await env.REGISTRY_KV.list({ prefix: ammOpPrefix(network, poolIdHex), limit: 1000, ...(cursor ? { cursor } : {}) });
+          for (const k of lst.keys) {
+            const parts = k.name.split(':');
+            const txid = parts[parts.length - 1];
+            const ti = parseInt(parts[parts.length - 2], 10);
+            const h = parseInt(parts[parts.length - 3], 10);
+            if (/^[0-9a-f]{64}$/.test(txid) && Number.isInteger(h) && Number.isInteger(ti)) {
+              ops.push({ txid, height: h, tx_index: ti });
+            }
+          }
+          if (lst.list_complete) { listComplete = true; break; }
+          if (!lst.cursor) { listComplete = true; break; }
+          cursor = lst.cursor;
+        }
+        return jsonResponse({ pool_id: poolIdHex, network, ops, count: ops.length, list_complete: listComplete }, 200, cors);
+      }
+    }
     if (url.pathname.startsWith('/amm/pool/') && req.method === 'GET') {
       const tail = url.pathname.slice('/amm/pool/'.length);
       const poolIdHex = tail.toLowerCase().replace(/\/$/, '');
