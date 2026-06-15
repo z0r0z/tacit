@@ -293,7 +293,8 @@ group('slot_split_new — verifySlotLeafOnChain per split output (vout index)');
     const rec = splitOut.newSlotRecords[i];
     const leafRec = {
       kind: 'slot_split_new',
-      asset_id: bytesToHex(ASSET_ID),
+      // §5.24.6: a split output's wrapper is the canonical variant for its denom.
+      asset_id: dapp.ctacVariantAssetId(DENOMINATION),
       denomination: DENOMINATION.toString(),
       leaf_commitment: rec.leafCommitmentHex,
       deposit_txid: tx.txid,
@@ -312,7 +313,7 @@ group('slot_split_new — verifySlotLeafOnChain per split output (vout index)');
   // — verifier reads ss.outputs[0].newLeafHash, which doesn't match → false.
   const mixedLeafRec = {
     kind: 'slot_split_new',
-    asset_id: bytesToHex(ASSET_ID),
+    asset_id: dapp.ctacVariantAssetId(DENOMINATION),
     denomination: DENOMINATION.toString(),
     leaf_commitment: splitOut.newSlotRecords[1].leafCommitmentHex,
     deposit_txid: tx.txid,
@@ -352,7 +353,7 @@ group('slot_merge_new — verifySlotLeafOnChain on the merged-output side');
     oldSlotRecords,
     oldMerkleRoots,
     oldProofs,
-    assetIdNewHex: bytesToHex(ASSET_ID),
+    assetIdNewHex: dapp.ctacVariantAssetId(newDenom),
     denomNew: newDenom,
     newSecret: bytes32('merge-new-secret'),
     newNullifierPreimage: bytes32('merge-new-null'),
@@ -368,7 +369,7 @@ group('slot_merge_new — verifySlotLeafOnChain on the merged-output side');
   });
   const leafRec = {
     kind: 'slot_merge_new',
-    asset_id: bytesToHex(ASSET_ID),
+    asset_id: dapp.ctacVariantAssetId(newDenom),
     denomination: newDenom.toString(),
     leaf_commitment: mergeOut.newSlotRecord.leafCommitmentHex,
     deposit_txid: tx.txid,

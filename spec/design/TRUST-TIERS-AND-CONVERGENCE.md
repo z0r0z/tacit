@@ -119,19 +119,19 @@ items are NOT drop-in fixes — each has a design dependency, noted inline.
 - **AMM (Bitcoin path) → Tier 0:** bring pool reserves/shares under a proof (or
   a consensus indexer), and move the share-commitment value-binding + the
   `[0, 2^64)` range check from the client Groth16 into the consensus path.
-- **cBTC.zk fungibility — enforce §5.24.6.** The `T_SLOT_SPLIT` / `T_SLOT_MERGE`
-  cross-asset rule (an output wrapper may differ from the input only if both
-  declare the same `underlying` + `peg`, with `denom_new ==
-  metadata.custody.denom_sats`) is emitted by the encoder but enforced by no
-  validator. Value is Bitcoin-conserved, so it is neutral while every
-  `self_custody_slot` wrapper shares the BTC underlying. **Dependency:** a slot's
-  `asset_id` is caller-supplied at mint (not derived from `denom`), so the rule
-  needs a general `self_custody_slot` wrapper registry ({underlying, peg,
-  denom_sats}) to validate against — only a hardcoded cBTC.tac tier list
-  (`ctacVariantAssetId`) exists today. **Safe interim:** restrict SPLIT/MERGE to
-  same-`asset_id` outputs (rejects every cross-wrapper relabel; re-open cross-
-  tier splits once the registry lands). Must be enforced before any non-BTC
-  wrapper is registered and before cBTC.zk mainnet.
+- **cBTC.zk fungibility — §5.24.6 ENFORCED (cBTC variant family).** The
+  `T_SLOT_SPLIT` / `T_SLOT_MERGE` cross-asset rule now binds every output wrapper
+  to the canonical variant for its OWN denomination (`asset_id ==
+  ctacVariantAssetId(denom)`) in both the dapp and worker decoders (the dapp
+  recovery scan and the worker indexer both reject a violating envelope), with
+  the builders defaulting to + failing fast on the variant. This permits the
+  intended cross-tier split (1M → 10×100k, each its own variant) and rejects a
+  value-conserving relabel onto a foreign or wrong-denom asset — closing the
+  inflation vector for the current single-underlying (BTC) wrapper family.
+  **Remaining:** the accepted set is the `ctacVariantAssetId` derivation only;
+  introducing a wrapper family with a different `underlying`/`peg` requires
+  extending the decoders' accepted set (a general registry) — and must keep the
+  same-underlying constraint when it does.
 - **cBTC.zk peg — backing coverage.** There is no hard `supply ≤ backing` rule
   (it is detection-time only). **Design reality:** cBTC.zk is self-custody — the
   backing is the locker's own key-path UTXO, so a reclaim happens on Bitcoin and

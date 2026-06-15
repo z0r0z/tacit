@@ -11540,6 +11540,11 @@ function decodeTSlotSplitPayload(payload) {
     const denomNew = (BigInt(dnView.getUint32(4, true)) << 32n) | BigInt(dnView.getUint32(0, true));
     p += 8;
     if (denomNew <= 0n || denomNew >= (1n << BigInt(N_BITS))) return null;
+    // §5.24.6 cross-asset rule: each output wrapper MUST be the canonical
+    // self-custody variant for its denomination (parity with the dapp decoder).
+    // Permits re-tiering within the family; rejects relabeling onto a foreign
+    // or wrong-denom asset.
+    if (bytesToHex(assetIdNewBytes) !== ctacVariantAssetId(denomNew)) return null;
     const newRecipientCommitBytes = payload.slice(p, p + 33); p += 33;
     try { compressedPointFromHex(bytesToHex(newRecipientCommitBytes)); } catch { return null; }
     const newLeafHashBytes = payload.slice(p, p + 32); p += 32;
@@ -11676,6 +11681,9 @@ function decodeTSlotMergePayload(payload) {
   const denomNew = (BigInt(dnView.getUint32(4, true)) << 32n) | BigInt(dnView.getUint32(0, true));
   p += 8;
   if (denomNew <= 0n || denomNew >= (1n << BigInt(N_BITS))) return null;
+  // §5.24.6 cross-asset rule (MERGE): the output wrapper MUST be the canonical
+  // self-custody variant for its denomination (parity with the dapp decoder).
+  if (bytesToHex(assetIdNewBytes) !== ctacVariantAssetId(denomNew)) return null;
   const newRecipientCommitBytes = payload.slice(p, p + 33); p += 33;
   try { compressedPointFromHex(bytesToHex(newRecipientCommitBytes)); } catch { return null; }
   const newLeafHashBytes = payload.slice(p, p + 32); p += 32;

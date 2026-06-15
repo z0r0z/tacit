@@ -107,7 +107,9 @@ function buildFixture() {
   return {
     networkTag: NET_SIGNET,
     inputs,
-    assetIdNew: assetIdShared,
+    // §5.24.6: the merged output wrapper MUST be the canonical self-custody
+    // variant for its own denomination (ctacVariantAssetId(denomNew)).
+    assetIdNew: hexToBytes(dapp.ctacVariantAssetId(denomNew)),
     denomNew,
     newRecipientCommit: newLeaf.recipient_commit,
     newLeafHash: newLeaf.leaf_hash,
