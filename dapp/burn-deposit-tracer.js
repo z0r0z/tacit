@@ -14,12 +14,21 @@ export function makeBurnDepositTracer({ outpointKey }) {
   //   rangeProof, kernelSig, blockTxids:[bytes], index
   // } | null   (null = the outpoint was not produced by a known cxfer)
   //
-  // trace({ getCxferByOutput, noteOutpoint, c0Outpoint }) -> cxfers[] (the provenance DAG, dedup'd by txid)
-  // Throws if a branch dead-ends at an outpoint that is neither a known cxfer output nor C_0 (an
-  // un-provable note — the holder cannot bridge it scan-free), or if the walk exceeds `maxDepth`.
-  function trace({ getCxferByOutput, noteOutpoint, c0Outpoint, maxDepth = 4096 }) {
-    if (noteOutpoint === c0Outpoint) {
-      throw new Error('burn-deposit trace: the note is C_0 itself (bridge the etch supply via a cxfer first)');
+  // trace({ getCxferByOutput, noteOutpoint, c0Outpoint, leafOutpoints }) -> cxfers[] (the provenance DAG,
+  // dedup'd by txid). The walk stops at any SUPPLY LEAF: for a fixed-supply asset that is just C_0; for a
+  // MINTABLE asset (§6.1) it is C_0 PLUS each issuer-authorized cmint output (pass `leafOutpoints`). A leaf is
+  // not produced by a cxfer — it is the etch supply note or an authorized mint, verified separately by the
+  // reflection guest (verify_etch_anchor / verify_cmint_authorized). Throws if a branch dead-ends at an
+  // outpoint that is neither a known cxfer output nor a leaf (an un-provable note — the holder cannot bridge
+  // it scan-free), or if the walk exceeds `maxDepth`.
+  //
+  // `leafOutpoints` (array, optional) generalizes `c0Outpoint`; either or both may be given — their union is
+  // the leaf set. The mintable caller passes leafOutpoints = [c0, ...cmintOutpoints].
+  function trace({ getCxferByOutput, noteOutpoint, c0Outpoint, leafOutpoints, maxDepth = 4096 }) {
+    const leaves = new Set(leafOutpoints || []);
+    if (c0Outpoint != null) leaves.add(c0Outpoint);
+    if (leaves.has(noteOutpoint)) {
+      throw new Error('burn-deposit trace: the note is a supply leaf itself (bridge it via a cxfer first)');
     }
     const cxfers = [];
     const seenCxfer = new Set();
@@ -28,17 +37,17 @@ export function makeBurnDepositTracer({ outpointKey }) {
     while (queue.length) {
       if (++steps > maxDepth) throw new Error('burn-deposit trace: provenance exceeded maxDepth (' + maxDepth + ')');
       const op = queue.shift();
-      if (op === c0Outpoint) continue; // C_0 is the etch supply note — a leaf, not produced by a cxfer
+      if (leaves.has(op)) continue; // a supply leaf — not produced by a cxfer
       const cx = getCxferByOutput(op);
       if (!cx) {
-        throw new Error('burn-deposit trace: outpoint not produced by a known cxfer and != C_0: ' + op);
+        throw new Error('burn-deposit trace: outpoint not produced by a known cxfer and not a supply leaf: ' + op);
       }
       if (seenCxfer.has(cx.txid)) continue;
       seenCxfer.add(cx.txid);
       cxfers.push(cx);
       for (const inp of cx.inputs) {
         const inOp = outpointKey(inp.prevTxid, inp.prevVout);
-        if (inOp !== c0Outpoint) queue.push(inOp); // recurse on every non-C_0 input (full DAG)
+        if (!leaves.has(inOp)) queue.push(inOp); // recurse on every non-leaf input (full DAG)
       }
     }
     return cxfers;

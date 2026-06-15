@@ -228,8 +228,10 @@ fn verify_cxfers(asset: &[u8; 32], cxfers: &[ProvenanceWitness]) -> Result<Vec<V
     Ok(verified)
 }
 
-/// Domain for the issuer-authorized-mint signature message (mintable assets, §6.1).
-pub const CMINT_DOMAIN: &[u8] = b"tacit-cmint-v1";
+/// Domain for the issuer-authorized-mint signature message (mintable assets, §6.1). This is the CANONICAL
+/// message the live dapp signs/validates (`computeMintMsg` / `buildAndBroadcastCMint` / the dapp mint
+/// validator): a mint the dapp accepts as supply is exactly the one the bridge admits as a supply leaf.
+pub const CMINT_DOMAIN: &[u8] = b"tacit-mint-v1";
 
 /// Verify a `T_MINT` (0x24) is an AUTHORIZED supply leaf for a MINTABLE asset → `(leaf_outpoint,
 /// leaf_commitment_hash)` for `valid_leaves`, or None. Checks:
@@ -253,7 +255,7 @@ pub fn verify_cmint_authorized(
         return None; // not mintable — no authorized mints exist
     }
     let env = bitcoin::extract_taproot_envelope(reveal_tx)?;
-    let (mint_asset, _etch_txid, commitment, range_proof, issuer_sig) = bitcoin::parse_cmint(&env)?;
+    let (mint_asset, _etch_txid, commitment, amount_ct, range_proof, issuer_sig) = bitcoin::parse_cmint(&env)?;
     if &mint_asset != asset {
         return None;
     }
@@ -263,13 +265,17 @@ pub fn verify_cmint_authorized(
         return None;
     }
     // commit_anchor = the commit tx's first input outpoint (binds the signature to THIS pair → no re-wrap).
+    // The message is the dapp's canonical `computeMintMsg`:
+    //   sha256(DOMAIN ‖ asset ‖ anchor_txid(internal) ‖ anchor_vout_LE ‖ commitment ‖ amount_ct).
+    // anchor_txid here is the serialized prevout txid (internal order), == the dapp's reverseBytes(display).
     let (anchor_txid, anchor_vout) = *bitcoin::extract_inputs(commit_tx)?.first()?;
-    let mut pre = Vec::with_capacity(CMINT_DOMAIN.len() + 32 + 33 + 32 + 4);
+    let mut pre = Vec::with_capacity(CMINT_DOMAIN.len() + 32 + 32 + 4 + 33 + 8);
     pre.extend_from_slice(CMINT_DOMAIN);
     pre.extend_from_slice(asset);
-    pre.extend_from_slice(&commitment);
     pre.extend_from_slice(&anchor_txid);
     pre.extend_from_slice(&anchor_vout.to_le_bytes());
+    pre.extend_from_slice(&commitment);
+    pre.extend_from_slice(&amount_ct);
     let mint_msg = bitcoin::sha256_once(&pre);
     if !bip340_verify(&issuer_sig, &mint_msg, mint_authority) {
         return None;

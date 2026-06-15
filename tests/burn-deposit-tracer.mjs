@@ -52,6 +52,47 @@ test('dangling lineage (unknown producer) throws', () => {
 test('note == C_0 throws', () => {
   assert.throws(
     () => tracer.trace({ getCxferByOutput: graphOf({}), noteOutpoint: C0, c0Outpoint: C0 }),
-    /the note is C_0/
+    /supply leaf itself/
+  );
+});
+
+// ---- mintable: the walk stops at an authorized cmint output too (leaf set = C_0 ∪ cmints) ----
+test('lineage rooting at a cmint leaf traces to that leaf', () => {
+  const CM = opk('cm', 0); // an issuer-authorized cmint output
+  const g = graphOf({
+    'B:0': cxf('B', [{ prevTxid: 'A', prevVout: 0 }]),
+    'A:0': cxf('A', [{ prevTxid: 'cm', prevVout: 0 }]), // A spends the cmint, not C_0
+  });
+  const cxfers = tracer.trace({ getCxferByOutput: g, noteOutpoint: 'B:0', leafOutpoints: [C0, CM] });
+  assert.deepEqual(cxfers.map((c) => c.txid), ['B', 'A'], 'stops at the cmint leaf (CM not a known cxfer)');
+});
+
+test('mixed lineage from BOTH C_0 and a cmint leaf', () => {
+  const CM = opk('cm', 0);
+  const g = graphOf({
+    'M:0': cxf('M', [{ prevTxid: 'P', prevVout: 0 }, { prevTxid: 'Q', prevVout: 0 }]),
+    'P:0': cxf('P', [{ prevTxid: 'c0', prevVout: 0 }]), // P from C_0
+    'Q:0': cxf('Q', [{ prevTxid: 'cm', prevVout: 0 }]), // Q from the cmint
+  });
+  const cxfers = tracer.trace({ getCxferByOutput: g, noteOutpoint: 'M:0', leafOutpoints: [C0, CM] });
+  assert.deepEqual(cxfers.map((c) => c.txid).sort(), ['M', 'P', 'Q']);
+});
+
+test('without the cmint in the leaf set, a cmint-rooted lineage dead-ends', () => {
+  const g = graphOf({
+    'A:0': cxf('A', [{ prevTxid: 'cm', prevVout: 0 }]),
+  });
+  // only C_0 is a leaf → the cmint outpoint is an unknown producer → throws (can't bridge scan-free)
+  assert.throws(
+    () => tracer.trace({ getCxferByOutput: g, noteOutpoint: 'A:0', c0Outpoint: C0 }),
+    /not a supply leaf/
+  );
+});
+
+test('note == a cmint leaf throws (bridge it via a cxfer first)', () => {
+  const CM = opk('cm', 0);
+  assert.throws(
+    () => tracer.trace({ getCxferByOutput: graphOf({}), noteOutpoint: CM, leafOutpoints: [C0, CM] }),
+    /supply leaf itself/
   );
 });

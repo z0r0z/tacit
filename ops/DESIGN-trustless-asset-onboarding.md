@@ -223,11 +223,36 @@ yields `[C_0]` (no cmints), mintable yields `C_0 ∪ cmints` — then `verify_pr
 includes the cmints (the `T_MINT` tx + the commit tx + inclusion) in the witness. The dapp also needs a
 `T_MINT` signer so a mintable asset can actually mint (then bridge).
 
-**Build status.** Foundation DONE (b409f27): the `valid_leaves` provenance generalization, 88/88.
-REMAINING (multi-turn, like the burn-deposit): `parse_cmint` + `verify_cmint_authorized` (BIP-340 + range +
-commit-anchor) + KATs; the reflect.rs dispatch building `valid_leaves`; the assembler/tracer cmint path; the
-JS mirror `verifyProvenanceLeaves`; the dapp `T_MINT` signer; the re-prove (rotates `BITCOIN_RELAY_VKEY`,
-folds into #11).
+**Canonical mint message = the live dapp's `computeMintMsg` (coherence, not a new message).** The dapp
+already has a complete, security-reviewed Bitcoin-side confidential mint — `buildAndBroadcastCMint` (the
+signer, UI-wired) + the mint validator (re-derives the issuer message + verifies it against the etch's
+`mintAuthority`). Its canonical signed message is
+`sha256("tacit-mint-v1" ‖ asset ‖ anchor_txid(internal) ‖ anchor_vout_LE ‖ commitment ‖ amount_ct)`
+(`anchor = commit_tx.vin[0]`). `verify_cmint_authorized` binds the SAME message byte-for-byte, so a mint the
+live dapp accepts as supply is exactly the one the bridge admits as a supply leaf — no second signer, existing
+mints become bridgeable. (`anchor_txid` from the guest's `extract_inputs` is the serialized prevout = internal
+order = the dapp's `reverseBytes(display_txid)`.)
+
+**Build status (2026-06-15) — cmint-deposit DONE through native-exec; remaining = worker wiring + re-prove.**
+- `parse_cmint` + `verify_cmint_authorized` (BIP-340 issuer sig + BP+ range + commit-anchor anti-re-wrap),
+  message aligned to the dapp `computeMintMsg` (binds `amount_ct`); KATs — 90/90 cxfer-core green (7fb1f07 +
+  this alignment).
+- reflect.rs dispatch building `valid_leaves = C_0 ∪ authorized cmints` via `verify_cmint_authorized`, each
+  cmint reveal confirmed in the canonical pre-anchor chain (4227a5d). The `is_fixed_supply` gate is gone — the
+  criterion self-enforces (a fixed-supply asset has `mint_authority == 0` → every cmint rejected → leaves =
+  `[C_0]`).
+- **Native-exec validated in-zkVM** (a locally-built reflection ELF over the burn-deposit fixture): a
+  real cmint-rooted note **BURN FOLDED** (the burned note descends from the issuer-authorized cmint leaf), the
+  fixed-supply baseline still folds (`n_cmints = 0`), and a tampered issuer sig **folds nothing**
+  (skip-not-panic). Generator: `MINTABLE=1` / `CMINT_TAMPER=1` modes of `gen-reflection-burn-deposit.mjs`.
+- JS mirror `verifyProvenanceLeaves` + `verifyCmintAuthorized` (`dapp/burn-deposit-provenance.js`) + KATs
+  (incl. the commit-anchor binding); tracer multi-leaf path (`burn-deposit-tracer.js` stops at `C_0 ∪ cmint`
+  outpoints) + KATs; the assembler already carries the `cmints` witness (4227a5d).
+- The dapp `T_MINT` signer already exists (`buildAndBroadcastCMint`) and is now coherent with the bridge.
+
+REMAINING: the worker WIRING (the reflection indexer/assembler calling the tracer's cmint leaves + the mirror
+in the live burn-deposit path — the same operational wiring the fixed-supply burn-deposit needs) + the
+re-prove (rotates `BITCOIN_RELAY_VKEY`, folds into #11).
 
 ## Findings / preconditions (impl phase 1)
 - **CETCH layout discrepancy (resolve first):** cxfer-core `parse_etch_meta` reads `cid(32)` right after

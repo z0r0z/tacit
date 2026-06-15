@@ -95,13 +95,21 @@ const S = 1000n, r0 = 0x5151n;
 const C0 = prover.commit(S, r0);
 const C0c = compress(C0);
 
-// ── 2. CETCH etch committing C_0 (canonical layout; mint_authority = 0 → fixed supply). ──
+// MINTABLE mode (env MINTABLE=1): the etch declares an issuer mint_authority and the burned note descends
+// from an issuer-authorized cmint (not C_0). CMINT_TAMPER=1 corrupts the issuer sig → the cmint is rejected.
+const MINTABLE = !!process.env.MINTABLE;
+const issuerPriv = 0x4949494949494949494949494949494949494949494949494949494949494949n % N;
+const mintAuthority = MINTABLE
+  ? Buffer.from(bip340Sign(sha256(new TextEncoder().encode('mint-authority')), issuerPriv).px)
+  : Buffer.alloc(32);
+
+// ── 2. CETCH etch committing C_0 (canonical layout; mint_authority = 0 fixed, or the issuer key if mintable). ──
 const cetch = cat([
   [0x21], [0x03], Buffer.from('TAC'), [0x08],
   C0c,                 // commitment = C_0 (33B)
   Buffer.alloc(8),     // amount_ct
   [0x00, 0x00],        // rp_len = 0
-  Buffer.alloc(32),    // mint_authority = NONE
+  mintAuthority,       // mint_authority (NONE for fixed-supply; the issuer x-only key for mintable)
   [0x00, 0x00],        // img_len = 0
 ]);
 const etchTx = revealTx(cetch, Buffer.alloc(32), 0);
@@ -110,25 +118,56 @@ const assetId = sha256(cat([etchTxid, u32le(0)])); // asset_id_from_etch (vout 0
 const etchTxidHex = hexp(etchTxid);
 const assetHex = hexp(assetId);
 
-// ── 3. Provenance CXFER: (etchTxid,0) C_0 → burned note (1-in/1-out conserving, value S). ──
+// ── 2b. MINTABLE: an issuer-authorized cmint (T_MINT) that the burned note descends from. ──
+let cmint = null;
+if (MINTABLE) {
+  const vMint = 700n, rMint = 0x7171n;
+  const cmintC = prover.commit(vMint, rMint);
+  const cmintCc = compress(cmintC);
+  const { proof: cmintRange } = bppRangeProve([vMint], [rMint]);
+  const anchorTxid = Buffer.alloc(32, 0x5a); // the commit_anchor the issuer sig binds (anti re-wrap)
+  const commitTx = revealTx(Buffer.alloc(0), anchorTxid, 0);
+  const commitTxid = computeTxid(commitTx);
+  const amountCt = Buffer.alloc(8); // the encrypted-amount hint (zero here); bound by the issuer sig
+  // The canonical dapp computeMintMsg: DOMAIN ‖ asset ‖ anchor_txid ‖ anchor_vout_LE ‖ commitment ‖ amount_ct.
+  const mintMsg = sha256(_cat([
+    new TextEncoder().encode('tacit-mint-v1'), assetId, anchorTxid, u32le(0), cmintCc, amountCt,
+  ].map((x) => Uint8Array.from(x))));
+  let issuerSig = bip340Sign(mintMsg, issuerPriv).sig;
+  if (process.env.CMINT_TAMPER) issuerSig = new Uint8Array(64); // corrupt → verify_cmint_authorized rejects
+  const mintEnv = cat([
+    [0x24], assetId, etchTxid, cmintCc, amountCt, u16le(cmintRange.length), cmintRange, issuerSig,
+  ]);
+  const revealMintTx = revealTx(mintEnv, commitTxid, 0); // the reveal spends the commit
+  cmint = { vMint, rMint, cmintC, cmintCc, commitTx, revealMintTx, revealMintTxid: computeTxid(revealMintTx) };
+}
+
+// CXFER input leaf: C_0 (fixed) or the cmint output (mintable). The burned note descends from it.
+const inTxid = MINTABLE ? cmint.revealMintTxid : etchTxid;
+const inC = MINTABLE ? cmint.cmintCc : C0c;
+const inCpt = MINTABLE ? cmint.cmintC : C0;
+const inVal = MINTABLE ? cmint.vMint : S;
+const inBlind = MINTABLE ? cmint.rMint : r0;
+
+// ── 3. Provenance CXFER: input leaf → burned note (1-in/1-out conserving, value preserved). ──
 const r1 = 0x6262n;
-const burned = prover.commit(S, r1);
+const burned = prover.commit(inVal, r1);
 const burnedC = compress(burned);
-const { proof: cxRange } = bppRangeProve([S], [r1]);
-const excess = ((r0 - r1) % N + N) % N;
+const { proof: cxRange } = bppRangeProve([inVal], [r1]);
+const excess = ((inBlind - r1) % N + N) % N;
 const kmsg = sha256(_cat([
   new TextEncoder().encode('tacit-kernel-v1'), assetId, new Uint8Array([1]),
-  etchTxid, u32le(0), new Uint8Array([1]), burnedC, u64le(0),
+  inTxid, u32le(0), new Uint8Array([1]), burnedC, u64le(0),
 ].map((x) => Uint8Array.from(x))));
 const { sig: cxSig, px } = bip340Sign(kmsg, excess);
-const Pchk = C0.add(burned.negate());
+const Pchk = inCpt.add(burned.negate());
 if (Buffer.compare(Buffer.from(compress(Pchk).slice(1)), Buffer.from(px)) !== 0) throw new Error('cxfer not conserving');
 const cxEnv = cat([
   [0x22], assetId, cxSig, [0x01],
   burnedC, Buffer.alloc(8),
   u16le(cxRange.length), cxRange,
 ]);
-const cxTx = revealTx(cxEnv, etchTxid, 0);
+const cxTx = revealTx(cxEnv, inTxid, 0);
 const cxTxid = computeTxid(cxTx);
 const cxTxidHex = hexp(cxTxid);
 const { cx: burnedCx, cy: burnedCy } = xyHex(burned);
@@ -143,10 +182,22 @@ const burnEnv = cat([
 const burnTx = revealTx(burnEnv, cxTxid, 0);
 const burnTxid = computeTxid(burnTx);
 
-// ── 5. Contiguous easy-PoW chain: [etch, cxfer] (prov) then [burn] (scan); prov_tip == prev_hash. ──
+// ── 5. Contiguous easy-PoW chain (prov: etch [+ commit + reveal if mintable] + cxfer; scan: burn). ──
 const etchHdr = mineLinked(computeMerkleRoot([etchTxid]), Buffer.alloc(32));
-const cxHdr = mineLinked(computeMerkleRoot([cxTxid]), dsha256(etchHdr));
-const burnHdr = mineLinked(computeMerkleRoot([burnTxid]), dsha256(cxHdr));
+let provHdrs;
+let lastProvHdr;
+if (MINTABLE) {
+  const commitHdr = mineLinked(computeMerkleRoot([computeTxid(cmint.commitTx)]), dsha256(etchHdr));
+  const revealHdr = mineLinked(computeMerkleRoot([cmint.revealMintTxid]), dsha256(commitHdr));
+  const cxHdr = mineLinked(computeMerkleRoot([cxTxid]), dsha256(revealHdr));
+  provHdrs = [etchHdr, commitHdr, revealHdr, cxHdr];
+  lastProvHdr = cxHdr;
+} else {
+  const cxHdr = mineLinked(computeMerkleRoot([cxTxid]), dsha256(etchHdr));
+  provHdrs = [etchHdr, cxHdr];
+  lastProvHdr = cxHdr;
+}
+const burnHdr = mineLinked(computeMerkleRoot([burnTxid]), dsha256(lastProvHdr));
 
 // ── 6. IMT inserts from genesis (the burned note's ν + the bridge-out dest). ──
 const state = pool.makeScanReflectionState();
@@ -164,10 +215,10 @@ const prior = {
 // uses (it computes the merkle paths + the spent/burn IMT inserts). Single-tx blocks → merkle root == txid.
 const burnDeposit = makeBurnDepositAssembler({ dsha256, cat, bytesToHex: hexp }).assembleBurnDeposit({
   etch: { tx: hexp(etchTx), blockTxids: [etchTxid], index: 0 },
-  provHeaders: [hexp(etchHdr), hexp(cxHdr)],
+  provHeaders: provHdrs.map((h) => hexp(h)),
   cxfers: [{
     txid: cxTxidHex,
-    inputs: [{ prevTxid: etchTxidHex, prevVout: 0, commitment: hexp(C0c) }],
+    inputs: [{ prevTxid: hexp(inTxid), prevVout: 0, commitment: hexp(inC) }],
     outputs: [{ commitment: hexp(burnedC), vout: 0 }],
     rangeProof: hexp(cxRange),
     // TAMPER=1 → a corrupt kernel sig: verify_cxfer_conservation fails → verify_provenance Err → the
@@ -175,6 +226,10 @@ const burnDeposit = makeBurnDepositAssembler({ dsha256, cat, bytesToHex: hexp })
     kernelSig: process.env.TAMPER ? ('0x' + 'ff'.repeat(64)) : hexp(cxSig),
     blockTxids: [cxTxid], index: 0,
   }],
+  // mintable: the issuer-authorized cmint the burned note descends from (empty for fixed-supply).
+  cmints: MINTABLE
+    ? [{ revealTx: hexp(cmint.revealMintTx), commitTx: hexp(cmint.commitTx), blockTxids: [cmint.revealMintTxid], index: 0 }]
+    : [],
   burned: { cx: burnedCx, cy: burnedCy },
   nu: envNu, dest: envDest, scanState: state,
 });
@@ -186,6 +241,6 @@ const fixture = {
   blocks: [{ txs: [{ txData: hexp(burnTx), openings: [], spentInserts: [], outputs: [], burnDeposit }] }],
 };
 
-console.error(`etch=${etchTxidHex.slice(0, 12)} cxfer=${cxTxidHex.slice(0, 12)} burn=${hexp(burnTxid).slice(0, 12)} env_nu=${envNu.slice(0, 12)} S=${S}`);
-console.error(`prov_tip=${hexp(dsha256(cxHdr)).slice(0, 12)} scan_prev=${hexp(burnHdr.subarray(4, 36)).slice(0, 12)} (must match)`);
+console.error(`mode=${MINTABLE ? 'MINTABLE' : 'fixed'} etch=${etchTxidHex.slice(0, 12)} cxfer=${cxTxidHex.slice(0, 12)} burn=${hexp(burnTxid).slice(0, 12)} env_nu=${envNu.slice(0, 12)}`);
+console.error(`prov_tip=${hexp(dsha256(lastProvHdr)).slice(0, 12)} scan_prev=${hexp(burnHdr.subarray(4, 36)).slice(0, 12)} (must match)`);
 console.log(JSON.stringify(fixture, null, 2));

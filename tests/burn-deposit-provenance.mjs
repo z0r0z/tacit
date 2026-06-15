@@ -62,6 +62,118 @@ test('empty DAG rejected', () => {
   assert.equal(dag(C0_OP, C0_CH, opk('0a', 0), 'AA', []), false);
 });
 
+// ---- verifyProvenanceDagLeaves: mintable multi-leaf (mirror provenance_dag_leaves_admits_a_cmint_leaf) ----
+test('multi-leaf admits a cmint-rooted note', () => {
+  const bd = makeBurnDepositProvenance({ outpointKey: opk });
+  const leaves = [[C0_OP, C0_CH], [opk('cc', 0), 'CD']]; // C_0 + an authorized cmint leaf
+  // a note descending from the cmint leaf (not C_0) is real supply
+  const a = { txid: '0a', inputs: [['cc', 0, 'CD']], outputs: [[0, 'AA']] };
+  assert.equal(bd.verifyProvenanceDagLeaves(leaves, opk('0a', 0), 'AA', [a]), true);
+  // the cmint OUTPOINT but a non-authorized commitment hash → rejected (leaves are value-matched)
+  const b = { txid: '0b', inputs: [['cc', 0, 'FF']], outputs: [[0, 'BB']] };
+  assert.equal(bd.verifyProvenanceDagLeaves(leaves, opk('0b', 0), 'BB', [b]), false);
+  // the fixed-supply single-leaf wrapper still rejects a cmint-rooted note (C_0 only)
+  assert.equal(dag(C0_OP, C0_CH, opk('0a', 0), 'AA', [a]), false);
+});
+
+// ---- verifyCmintAuthorized (mirror burn_deposit::verify_cmint_authorized; injected crypto) ----
+// A "good" mintable scenario, then each gate perturbed → null. Fakes mirror the Rust verdicts structurally;
+// the REAL crypto is validated by the reflection guest native-exec (the MINTABLE burn-deposit fixture).
+function cmintHarness(overrides = {}) {
+  const ASSET = 'aa'.repeat(32);
+  const COMMIT = '02' + '11'.repeat(32); // compressed commitment (33B)
+  const ISSUER_SIG = 'cc'.repeat(64);
+  const REVEAL = 'reveal-tx';
+  const COMMITTX = 'commit-tx';
+  const COMMIT_TXID = 'dd'.repeat(32);
+  const REVEAL_TXID = 'ee'.repeat(32);
+  const ANCHOR_TXID = '5a'.repeat(32);
+  const state = {
+    parseAsset: ASSET, // verifyCmintAuthorized checks env asset == ASSET
+    sigOk: true,
+    rangeOk: true,
+    revealSpendsCommit: true,
+    ...overrides,
+  };
+  const bd = makeBurnDepositProvenance({
+    outpointKey: opk,
+    sha256: (b) => b, // identity → mintMsg = the concatenated preimage; bip340Verify ignores it
+    decompress: (c) => (c ? { c } : null),
+    commitmentHashCompressed: (c) => `ch(${c})`,
+    extractTaprootEnvelope: (tx) => (tx === REVEAL ? 'env' : null),
+    parseCmint: (env) => (env === 'env'
+      ? { asset: state.parseAsset, etchTxid: 'ff'.repeat(32), commitment: COMMIT, encryptedAmount: '00'.repeat(8), rangeProof: 'rp', issuerSig: ISSUER_SIG }
+      : null),
+    computeTxid: (tx) => (tx === COMMITTX ? COMMIT_TXID : tx === REVEAL ? REVEAL_TXID : null),
+    extractInputs: (tx) => {
+      if (tx === REVEAL) return [{ prevTxid: state.revealSpendsCommit ? COMMIT_TXID : '99'.repeat(32), prevVout: 0 }];
+      if (tx === COMMITTX) return [{ prevTxid: ANCHOR_TXID, prevVout: 0 }];
+      return null;
+    },
+    bip340Verify: () => state.sigOk,
+    verifyRange: () => state.rangeOk,
+  });
+  return { bd, ASSET, REVEAL, COMMITTX, COMMIT, REVEAL_TXID };
+}
+
+test('cmint: an authorized mint is a valid supply leaf', () => {
+  const { bd, ASSET, REVEAL, COMMITTX, COMMIT, REVEAL_TXID } = cmintHarness();
+  const leaf = bd.verifyCmintAuthorized(ASSET, 'bb'.repeat(32), REVEAL, COMMITTX);
+  assert.deepEqual(leaf, [opk(REVEAL_TXID, 0), `ch(${COMMIT})`], 'leaf = (reveal:0, ch(commitment))');
+});
+test('cmint: non-mintable (zero authority) admits nothing', () => {
+  const { bd, ASSET, REVEAL, COMMITTX } = cmintHarness();
+  assert.equal(bd.verifyCmintAuthorized(ASSET, '00'.repeat(32), REVEAL, COMMITTX), null);
+});
+test('cmint: asset mismatch rejected', () => {
+  const { bd, ASSET, REVEAL, COMMITTX } = cmintHarness({ parseAsset: 'be'.repeat(32) });
+  assert.equal(bd.verifyCmintAuthorized(ASSET, 'bb'.repeat(32), REVEAL, COMMITTX), null);
+});
+test('cmint: reveal not spending the commit tx rejected (broken commit/reveal pair)', () => {
+  const { bd, ASSET, REVEAL, COMMITTX } = cmintHarness({ revealSpendsCommit: false });
+  assert.equal(bd.verifyCmintAuthorized(ASSET, 'bb'.repeat(32), REVEAL, COMMITTX), null);
+});
+test('cmint: bad issuer signature rejected', () => {
+  const { bd, ASSET, REVEAL, COMMITTX } = cmintHarness({ sigOk: false });
+  assert.equal(bd.verifyCmintAuthorized(ASSET, 'bb'.repeat(32), REVEAL, COMMITTX), null);
+});
+test('cmint: out-of-range minted commitment rejected', () => {
+  const { bd, ASSET, REVEAL, COMMITTX } = cmintHarness({ rangeOk: false });
+  assert.equal(bd.verifyCmintAuthorized(ASSET, 'bb'.repeat(32), REVEAL, COMMITTX), null);
+});
+test('cmint: signed message binds the commit anchor (anti-re-wrap)', () => {
+  // The signature must cover domain ‖ asset ‖ commitment ‖ commit-anchor; capture the message the verifier
+  // sees and assert the commit tx's first-input outpoint (the anchor) is in it — so a re-broadcast of the
+  // same mint envelope in a FRESH commit/reveal pair (different anchor) signs a different message → rejected.
+  const ANCHOR_TXID = '5a'.repeat(32);
+  const ASSET = 'aa'.repeat(32);
+  const COMMIT = '02' + '11'.repeat(32);
+  const AMOUNT_CT = 'a1a2a3a4a5a6a7a8';
+  let seen = null;
+  const bd = makeBurnDepositProvenance({
+    outpointKey: opk,
+    sha256: (b) => b,
+    decompress: (c) => ({ c }),
+    commitmentHashCompressed: (c) => `ch(${c})`,
+    extractTaprootEnvelope: () => 'env',
+    parseCmint: () => ({ asset: ASSET, etchTxid: 'ff'.repeat(32), commitment: COMMIT, encryptedAmount: AMOUNT_CT, rangeProof: 'rp', issuerSig: 'cc'.repeat(64) }),
+    computeTxid: (tx) => (tx === 'commit-tx' ? 'dd'.repeat(32) : 'ee'.repeat(32)),
+    extractInputs: (tx) => (tx === 'reveal-tx'
+      ? [{ prevTxid: 'dd'.repeat(32), prevVout: 0 }]
+      : [{ prevTxid: ANCHOR_TXID, prevVout: 7 }]),
+    bip340Verify: (_sig, msg) => { seen = msg; return true; },
+    verifyRange: () => true,
+  });
+  bd.verifyCmintAuthorized(ASSET, 'bb'.repeat(32), 'reveal-tx', 'commit-tx');
+  const msgHex = [...seen].map((x) => x.toString(16).padStart(2, '0')).join('');
+  // canonical layout: DOMAIN ‖ asset ‖ anchor_txid ‖ anchor_vout_LE ‖ commitment ‖ amount_ct
+  assert.equal(
+    msgHex,
+    bytesToHex(new TextEncoder().encode('tacit-mint-v1')) + ASSET + ANCHOR_TXID + '07000000' + COMMIT + AMOUNT_CT,
+    'binds domain, asset, commit-anchor (txid+vout), commitment, amount_ct in canonical order',
+  );
+});
+
 // ---- verifyMerklePath (real double-SHA256, mirror bitcoin::verify_merkle_path test) ----
 test('merkle path verifies inclusion', () => {
   const mk = makeBurnDepositProvenance({ sha256: nobleSha256 }).verifyMerklePath;

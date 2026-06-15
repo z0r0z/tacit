@@ -274,20 +274,20 @@ pub fn verify_etch_anchor(etch_tx: &[u8], asset_id: &[u8; 32]) -> Option<([u8; 3
 ///   `0x24 ‖ assetId(32) ‖ etchTxid(32) ‖ commitment(33) ‖ amount_ct(8) ‖ rp_len(2 LE) ‖ rangeproof ‖ issuer_sig(64)`.
 /// `commitment` is the newly-minted note (additional supply); the issuer signature (verified against the
 /// etch's `mint_authority`) authorizes it. None if malformed.
-pub fn parse_cmint(env: &[u8]) -> Option<([u8; 32], [u8; 32], [u8; 33], &[u8], [u8; 64])> {
+pub fn parse_cmint(env: &[u8]) -> Option<([u8; 32], [u8; 32], [u8; 33], [u8; 8], &[u8], [u8; 64])> {
     if env.is_empty() || env[0] != 0x24 {
         return None;
     }
     let asset_id: [u8; 32] = env.get(1..33)?.try_into().ok()?;
     let etch_txid: [u8; 32] = env.get(33..65)?.try_into().ok()?;
     let commitment: [u8; 33] = env.get(65..98)?.try_into().ok()?;
-    // env[98..106] = amount_ct (skip)
+    let amount_ct: [u8; 8] = env.get(98..106)?.try_into().ok()?; // the issuer-signed encrypted-amount hint
     let rp_len = (*env.get(106)? as usize) | ((*env.get(107)? as usize) << 8);
     let rp_start = 108usize;
     let rp_end = rp_start.checked_add(rp_len)?;
     let range_proof = env.get(rp_start..rp_end)?;
     let issuer_sig: [u8; 64] = env.get(rp_end..rp_end + 64)?.try_into().ok()?;
-    Some((asset_id, etch_txid, commitment, range_proof, issuer_sig))
+    Some((asset_id, etch_txid, commitment, amount_ct, range_proof, issuer_sig))
 }
 
 /// Parse a confidential bridge-burn envelope (opcode 0x2B) → (assetId, nullifier,
@@ -705,10 +705,11 @@ mod tests {
         let sig = [0x77u8; 64];
         env.extend_from_slice(&sig); // issuer_sig
 
-        let (asset, etch, commitment, rp, isig) = parse_cmint(&env).expect("cmint");
+        let (asset, etch, commitment, amount_ct, rp, isig) = parse_cmint(&env).expect("cmint");
         assert_eq!(asset, [0xAA; 32]);
         assert_eq!(etch, [0xEE; 32]);
         assert_eq!(commitment, comm);
+        assert_eq!(amount_ct, [0u8; 8]);
         assert_eq!(rp, &[0xab, 0xcd]);
         assert_eq!(isig, sig);
         assert!(parse_cmint(&[0x21u8, 0, 0]).is_none(), "wrong opcode rejected");
