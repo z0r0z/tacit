@@ -132,16 +132,31 @@ pub fn main() {
         0x6c, 0x51, 0x27, 0x6c, 0x63, 0x6a, 0x93, 0x63, 0x3b, 0x2d, 0x5c, 0xfd, 0x28, 0x3c, 0x2d, 0x44,
     ];
 
-    let eth_pv: Vec<u8> = io::read();
-    assert!(eth_pv.len() >= 288, "eth-reflection public values too short");
-    sp1_lib::verify::verify_sp1_proof(&ETH_REFLECTION_VKEY, &bitcoin::sha256_once(&eth_pv));
-    // EthReflectionPublicValues is 9 static ABI words; read by offset. Order: priorDigest, newDigest,
-    // ethPool, crossOutSetRoot, crossOutCount, finalizedSlot, finalizedExecStateRoot, syncCommitteeRoot,
-    // prevSyncCommitteeRoot. The batch chained FROM the genesis committee (gated once here; the
-    // prev==last-current chaining across sync-committee periods rides the resume-digest — follow-up).
-    assert_eq!(&eth_pv[8 * 32..9 * 32], &ETH_GENESIS_SYNC_COMMITTEE, "eth-reflection: wrong genesis sync-committee");
-    let eth_pool_word: [u8; 32] = eth_pv[2 * 32..3 * 32].try_into().expect("ethPool word"); // gated on-chain == address(this)
-    let crossout_set_root: [u8; 32] = eth_pv[3 * 32..4 * 32].try_into().expect("crossOutSetRoot word");
+    // Mode-B gate. `verify_sp1_proof` (the eth-reflection recursion) is needed ONLY to trust a
+    // `fold_crossout` below (reverse-bridge ETH→BTC). A forward-only batch (burn-deposit / cmint / CXFER
+    // scan) folds no crossout, so it skips the recursion entirely — no deferred-proof obligation, no
+    // eth-reflection inner proof required. mode_b == 0 ⇒ SENTINEL eth state: crossout_set_root = 0 makes
+    // every 0x65 `fold_crossout` fail set-membership (skip-not-panic), so a forward batch can never mint a
+    // crossout without verification; ethPoolReflected = 0 is the "no eth-state attested" sentinel the
+    // contract accepts (otherwise it must == address(this)). A reverse-bridge batch sets mode_b = 1 and
+    // proves exactly as before. This is what lets the forward bridge re-prove without standing up the
+    // eth-reflection guest (it decouples the onboarding re-prove from Mode-B becoming operational).
+    let mode_b: u32 = io::read();
+    let (eth_pool_word, crossout_set_root): ([u8; 32], [u8; 32]) = if mode_b != 0 {
+        let eth_pv: Vec<u8> = io::read();
+        assert!(eth_pv.len() >= 288, "eth-reflection public values too short");
+        sp1_lib::verify::verify_sp1_proof(&ETH_REFLECTION_VKEY, &bitcoin::sha256_once(&eth_pv));
+        // EthReflectionPublicValues is 9 static ABI words; read by offset. Order: priorDigest, newDigest,
+        // ethPool, crossOutSetRoot, crossOutCount, finalizedSlot, finalizedExecStateRoot, syncCommitteeRoot,
+        // prevSyncCommitteeRoot. The batch chained FROM the genesis committee (gated once here; the
+        // prev==last-current chaining across sync-committee periods rides the resume-digest — follow-up).
+        assert_eq!(&eth_pv[8 * 32..9 * 32], &ETH_GENESIS_SYNC_COMMITTEE, "eth-reflection: wrong genesis sync-committee");
+        let ep: [u8; 32] = eth_pv[2 * 32..3 * 32].try_into().expect("ethPool word"); // gated on-chain == address(this)
+        let cr: [u8; 32] = eth_pv[3 * 32..4 * 32].try_into().expect("crossOutSetRoot word");
+        (ep, cr)
+    } else {
+        ([0u8; 32], [0u8; 32]) // sentinel: forward-only batch — no eth recursion, no crossout fold
+    };
 
     // Header chain: non-empty, links (prev_hash) + carries valid PoW, and EXPOSES its anchor
     // (headers[0]'s prev) + tip so the CONTRACT can pin them to the canonical relay — forcing the

@@ -81,15 +81,19 @@ fn write_stdin(f: &serde_json::Value) -> SP1Stdin {
     for kv in cbtc { let t = kv.as_array().unwrap(); r32(&mut s, &t[0]); r32(&mut s, &t[1]); r32(&mut s, &t[2]); }
     s.write(&p.get("cbtcBackingSats").and_then(|v| v.as_u64()).unwrap_or(0));
 
-    // Mode B: the eth-reflection public values the guest reads + verify_sp1_proof's. For a non-crossout
-    // fixture the only field the guest reads is word 8 (prevSyncCommitteeRoot), which must == the pinned
-    // ETH_GENESIS_SYNC_COMMITTEE; the rest is unused (no 0x65 crossout txs). 9 abi words = 288 bytes.
-    let eth_pv = f.get("ethPv").and_then(|v| v.as_str()).map(hexv).unwrap_or_else(|| {
-        let mut b = vec![0u8; 9 * 32];
-        b[8 * 32..9 * 32].copy_from_slice(&hexv("0x8a83300119ac1e64a2318d3db330ed496c51276c636a93633b2d5cfd283c2d44"));
-        b
-    });
-    s.write(&eth_pv);
+    // Mode-B gate (matches reflect.rs): mode_b, then ONLY when set the eth-reflection PV the guest verifies.
+    // A forward-only fixture (modeB absent/0) skips it — no eth_pv, no verify_sp1_proof. modeB=1 carries the
+    // real `ethPv` (9 abi words = 288 bytes; word 8 == pinned ETH_GENESIS_SYNC_COMMITTEE) for a fold_crossout.
+    let mode_b = f.get("modeB").and_then(|v| v.as_u64()).unwrap_or(0);
+    s.write(&(mode_b as u32));
+    if mode_b != 0 {
+        let eth_pv = f.get("ethPv").and_then(|v| v.as_str()).map(hexv).unwrap_or_else(|| {
+            let mut b = vec![0u8; 9 * 32];
+            b[8 * 32..9 * 32].copy_from_slice(&hexv("0x8a83300119ac1e64a2318d3db330ed496c51276c636a93633b2d5cfd283c2d44"));
+            b
+        });
+        s.write(&eth_pv);
+    }
 
     s.write(&f["anchorHeight"].as_u64().unwrap());
     let headers = f["headers"].as_array().unwrap();

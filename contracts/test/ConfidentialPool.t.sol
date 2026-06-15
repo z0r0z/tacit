@@ -1079,6 +1079,24 @@ contract ConfidentialPoolTest is Test {
         pool.attestBitcoinStateProven(abi.encode(r), "");
     }
 
+    /// A FORWARD-ONLY reflection batch (burn-deposit / cmint / CXFER scan) folds no crossOut and skips the
+    /// eth-reflection recursion (mode_b == 0 in the guest), committing the zero ethPoolReflected sentinel.
+    /// That is accepted (it attested no eth-state), where a non-zero non-self pool is still rejected above —
+    /// so the forward bridge can attest + advance without Mode-B being operational, with no inflation path
+    /// (the guest's sentinel crossout_set_root makes every fold_crossout fail membership).
+    function test_attest_zero_eth_pool_accepted_forward_only() public {
+        bytes32 poolRoot = keccak256("fwd-pool-root");
+        bytes32 spentRoot = keccak256("fwd-spent-root");
+        bytes32 burnRoot = keccak256(abi.encodePacked(spentRoot, "burn"));
+        bytes32 prior = pool.knownReflectionDigest();
+        bytes32 next = keccak256(abi.encode(prior, poolRoot, spentRoot, burnRoot, uint64(101)));
+        ConfidentialPool.BitcoinRelayPublicValues memory r = ConfidentialPool.BitcoinRelayPublicValues(
+            prior, poolRoot, spentRoot, burnRoot, 101, next, ANCHOR, ANCHOR, bytes32(0), 0); // ethPool = 0 sentinel
+        pool.attestBitcoinStateProven(abi.encode(r), "");
+        assertTrue(pool.knownBitcoinRoot(poolRoot), "forward-only batch (zero ethPool) attests + advances");
+        assertEq(pool.knownReflectionDigest(), next, "reflection digest advanced on the sentinel batch");
+    }
+
     // The relay anchor (F1): a batch whose tip doesn't match the relay tip (nor a recent ancestor)
     // is rejected — so the proven header chain must be canonical Bitcoin, not a free witness.
     function test_reflection_anchor_rejects_wrong_tip() public {

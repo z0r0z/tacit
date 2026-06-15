@@ -86,6 +86,19 @@ fn write_stdin(f: &serde_json::Value) -> SP1Stdin {
     for kv in cbtc { let t = kv.as_array().unwrap(); r32(&mut s, &t[0]); r32(&mut s, &t[1]); r32(&mut s, &t[2]); }
     s.write(&p.get("cbtcBackingSats").and_then(|v| v.as_u64()).unwrap_or(0));
 
+    // Mode-B gate (matches reflect.rs): mode_b, then ONLY when set the eth-reflection PV. Forward-only
+    // fixtures (modeB absent/0) skip it — no eth_pv, no verify_sp1_proof.
+    let mode_b = f.get("modeB").and_then(|v| v.as_u64()).unwrap_or(0);
+    s.write(&(mode_b as u32));
+    if mode_b != 0 {
+        let eth_pv = f.get("ethPv").and_then(|v| v.as_str()).map(|h| hex::decode(h.trim_start_matches("0x")).unwrap()).unwrap_or_else(|| {
+            let mut b = vec![0u8; 9 * 32];
+            b[8 * 32..9 * 32].copy_from_slice(&hex::decode("8a83300119ac1e64a2318d3db330ed496c51276c636a93633b2d5cfd283c2d44").unwrap());
+            b
+        });
+        s.write(&eth_pv);
+    }
+
     s.write(&f["anchorHeight"].as_u64().unwrap());
     let headers = f["headers"].as_array().unwrap();
     s.write(&(headers.len() as u32));

@@ -660,10 +660,16 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     function attestBitcoinStateProven(bytes calldata publicValues, bytes calldata proofBytes) external nonReentrant {
         SP1_VERIFIER.verifyProof(BITCOIN_RELAY_VKEY, publicValues, proofBytes);
         BitcoinRelayPublicValues memory r = abi.decode(publicValues, (BitcoinRelayPublicValues));
-        // Mode B: the eth-reflection proved crossOutCommitment storage for `ethPoolReflected`; it MUST be
-        // THIS pool, else another pool's crossOuts could fold here (cross-lane inflation). The contract
-        // knows its own address, so this gate breaks the pool↔vkey circularity with no in-guest pool pin.
-        if (address(uint160(uint256(r.ethPoolReflected))) != address(this)) revert WrongEthPool();
+        // Mode B: when this batch folds a crossOut, the eth-reflection proved crossOutCommitment storage
+        // for `ethPoolReflected`; it MUST be THIS pool, else another pool's crossOuts could fold here
+        // (cross-lane inflation). The contract knows its own address, so this gate breaks the pool↔vkey
+        // circularity with no in-guest pool pin. A FORWARD-ONLY batch (burn-deposit / cmint / CXFER scan)
+        // folds no crossOut and skips the eth-reflection recursion entirely; the guest commits the zero
+        // sentinel (mode_b == 0 ⇒ crossout_set_root == 0 ⇒ every fold_crossout fails membership, so no
+        // unverified crossOut can enter), and we accept it here. So either it reflects THIS pool's eth
+        // state, or it attested none — never another pool's.
+        address ethPool = address(uint160(uint256(r.ethPoolReflected)));
+        if (ethPool != address(this) && ethPool != address(0)) revert WrongEthPool();
         // Chain: this cycle must CONTINUE the current attested reflection state (the prover
         // resumed from it), then it becomes the new state. So the reflected roots evolve as
         // one append-only chain — a proof can't fork off a stale state or restart from genesis
