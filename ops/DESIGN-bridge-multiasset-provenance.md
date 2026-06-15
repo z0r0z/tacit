@@ -119,11 +119,37 @@ A code read of the actual Bitcoin op wire formats splits the ops into two classe
   is backed by the pool's `C_0`-descended reserve. Bigger, separate design — do not force it into the
   kernel walk.
 
-**Revised plan.** Split "multiasset" into two tracks: (A) the asset-scoped-kernel walk for OTC/bid
-(confidential, fits the existing `verify_cxfer_conservation` shape — likely NO guest change if the op
-emits a `tacit-kernel-v1`-shaped per-asset sig, since the walk already verifies that); (B) a separate
-pool-reserve-provenance design for AMM-sourced notes (swap/LP), which proves a public-value receipt
-descends from the pool's `C_0`-rooted reserve. Track A is the near-term win; track B is its own design.
+**Correction (2026-06-15, after checking `T_SWAP_BATCH 0x2F`):** there is a THIRD class, and it breaks the
+two-track framing. `T_SWAP_BATCH` is the **confidential** Bitcoin AMM swap — N intents at one uniform
+clearing price, **per-trader amounts hidden**, only net `(Δa_net, Δb_net)` public, enforced by a
+**BabyJubJub + BN254 Groth16 circuit (ceremony-gated)**. AMM.md states plainly that the **CXFER/asset-scoped
+kernel does NOT fit** it: that kernel needs *public* in/out amounts to build the verify key, and
+`T_SWAP_BATCH` hides them. (This also corrects an earlier audit claim that the AMM ops are ceremony-free
+Schnorr+BP+ — `T_SWAP_VAR` is, but `T_SWAP_BATCH` is a trusted-setup Groth16 circuit.)
+
+**Scope (do not conflate the lanes).** The forward bridge proves a **Bitcoin** note descends from `C_0`, so
+the provenance walk only ever encounters **Bitcoin-side** ops. The EVM `OP_SWAP`/`OP_OTC`/`OP_BID` (the
+ConfidentialPool settle ops, opening-sigma confidential) are **Ethereum-side** — they produce post-bridge
+Ethereum notes and are NOT in the forward provenance. (An earlier draft's "asset-scoped kernel for OTC/bid"
+mistakenly leaned on those EVM ops; the relevant ops are the Bitcoin ones below.)
+
+**Bitcoin-side multi-asset ops — three classes, each a distinct provenance treatment:**
+- **(A) Public-amount, per-asset Schnorr kernel — `T_CXFER`, `T_CBURN`.** The asset-scoped kernel (= the
+  existing `verify_cxfer_conservation` shape) applies; **done**. No *other* Bitcoin multi-asset op qualifies —
+  they all either expose public reserves (B) or hide amounts in a circuit (C), so there is **no quick
+  asset-scoped-kernel win beyond CXFER/CBURN**.
+- **(B) Public-reserve AMM — `T_SWAP_VAR`, `T_LP_ADD/REMOVE`.** Public-value receipts; provenance is the
+  pool's `C_0`-rooted reserve lineage. Its own design.
+- **(C) Confidential circuit ops — `T_SWAP_BATCH` (`0x2F`, BabyJubJub+BN254 Groth16) and the Bitcoin
+  orderbook `T_PREAUTH_BID_VAR` (BJJ cross-curve sigmas).** Per-asset conservation is enforced *inside the
+  circuit*, not by a public-amount Schnorr kernel (AMM.md: the CXFER mechanism doesn't fit). The natural walk
+  is to **recursively verify the op's proof** inside the reflection guest (the `verify_sp1_proof` machinery
+  Mode-B already uses) so the output note inherits the proven conservation — OR rely on the public net-deltas
+  + the on-chain curve-floor identity the indexer checks. Its own design.
+
+Net: there is **no single asset-scoped-kernel generalization** across the multi-asset ops, and the only class
+that drops into the existing kernel walk (A) is already done. B needs reserve-lineage provenance; C needs
+batch-proof recursion. The uniform implementation was correctly not attempted — it would have been unsound.
 
 ## Per-op kernel mapping (the implementation specifics to nail down)
 
