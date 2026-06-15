@@ -151,6 +151,35 @@ Net: there is **no single asset-scoped-kernel generalization** across the multi-
 that drops into the existing kernel walk (A) is already done. B needs reserve-lineage provenance; C needs
 batch-proof recursion. The uniform implementation was correctly not attempted — it would have been unsound.
 
+## Track B design (2026-06-15) — public-value reserve lineage (TRACTABLE, no new crypto)
+
+Scoping the reflection guest (`ScanReflection` + `burn_deposit::verify_provenance_leaves`) shows Track B is
+simpler than "a separate Pedersen-kernel design": the AMM ops' values are **public**, so per-asset
+conservation is **arithmetic**, not a Schnorr kernel.
+
+A `T_SWAP_VAR` of `Y_in` for `X_out` against pool `(R_X, R_Y)` is, per asset:
+- asset X: pool note `R_X_pre` → pool note `R_X_post` + user note `X_out`, with `R_X_pre = R_X_post + X_out`;
+- asset Y: user note `Y_in` + pool note `R_Y_pre` → pool note `R_Y_post`, with `Y_in + R_Y_pre = R_Y_post`.
+
+All four reserve quantities and `X_out` are **public u64** on the wire (the receipt's `r_receipt` is cleartext,
+so the user note opens publicly). So the user's `X_out` note descends from the pool's pre-swap `R_X_pre` note
+by a step the walk verifies with **public arithmetic** — no kernel, no sigma. `R_X_pre` traces back through
+prior swaps / `T_LP_ADD`s to `POOL_INIT`, whose seed reserves came from the founder's deposit, which the
+existing provenance walk already roots at `C_0`.
+
+**Impl shape (reflection guest, rotates `BITCOIN_RELAY_VKEY`):** maintain a per-pool reserve-provenance
+component in `ScanReflection` — the current `(R_A, R_B)` and a `c0_backed` flag, handed/resumed like the live
+set. A pool becomes `c0_backed` when every `T_LP_ADD` input note is provenance-verified to `C_0` (reusing
+`verify_provenance_leaves`). Folding a `T_SWAP_VAR` / `T_LP_REMOVE` against a `c0_backed` pool: check the
+public conservation identity, advance the reserves, and **onboard the user's output note as real** (the
+`fold_note_append` path the burn-deposit onboarding already uses) so a later `OP_BRIDGE_MINT` binds
+`v_mint == v_burn`. Fail-closed: a pool not yet `c0_backed`, or a swap whose public arithmetic doesn't
+balance, onboards nothing (skip-not-panic) — completeness only, never over-mint. JS mirror in
+`burn-deposit-provenance.js` + a swap-output-bridges fixture, exactly as CXFER/CBURN were validated.
+
+This is the common-case AMM path and needs no new cryptographic primitive — only the per-pool public-reserve
+lineage state + the arithmetic conservation gate. It rides the launch re-prove with the adaptor ops + Track C.
+
 ## Per-op kernel mapping (the implementation specifics to nail down)
 
 The one thing to pin per op: which on-chain kernel signs the **output** side the bridge needs (the
