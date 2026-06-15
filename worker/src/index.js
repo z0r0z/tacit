@@ -14089,6 +14089,73 @@ async function loadCanonicalPmints(env, network, assetIdHex, tipHeight, capAmoun
   };
 }
 
+// Canonically-credited claim set for a T_DROP pool (SPEC §5.13 step 5 +
+// Confirmation depth) — the T_DCLAIM analog of loadCanonicalPmints. The cron
+// writes a dclaim:* key for every confirmed structurally-valid claim with NO
+// cap/depth filter (the cap is a canonical-order count resolvable only at read
+// time). The dapp validator treats this set as authoritative and REJECTS any
+// claim absent from it, so the credited set MUST apply, in canonical
+// (height, tx_index, txid) order — which KV.list yields because the key embeds
+// zero-padded height + tx_index:
+//   (1) depth ≥ 3   — tip-state claims are pending, not credited (same 3-conf
+//                     rule as §5.9; a shallow claim can reorder/vanish on reorg);
+//   (2) the cap     — only the first cap_amount/per_claim claims credit; the
+//                     rest are cap_overflow;
+//   (3) de-dup txid — a reorg re-confirm leaves two keys for one claim, but one
+//                     claim consumes one cap slot.
+// For merkle-gated drops the leaf-uniqueness gate already bounds claims to the
+// leaf set; OPEN drops (merkle_root == 0) have no per-claim gate, so without
+// this anyone could broadcast claims past cap_amount and every dapp would
+// credit them — inflating the supply-locked dropped asset.
+// Returns { credited_txids, list_complete, resolvable }. `resolvable` is false
+// when the cap can't be computed (missing meta/tip) or the scan exceeds its
+// guard; callers should degrade to optimistic credit (the worker-unreachable
+// posture) rather than assert an incomplete set.
+const DCLAIM_CREDIT_PAGE_GUARD = 64;   // 64k canonical keys before degrading
+async function loadCreditedDclaims(env, network, dropId, tipHeight, capAmountStr, perClaimStr) {
+  let maxClaims = null;
+  try {
+    const cap = BigInt(capAmountStr), per = BigInt(perClaimStr);
+    if (per > 0n) maxClaims = cap / per;
+  } catch { maxClaims = null; }
+  if (maxClaims == null || !Number.isInteger(tipHeight)) {
+    return { credited_txids: [], list_complete: false, resolvable: false };
+  }
+  const credited_txids = [];
+  const seenTxids = new Set();
+  let creditedBig = 0n;
+  let kvCursor;
+  let listComplete = false;
+  let capReached = false;
+  for (let page = 0; page < DCLAIM_CREDIT_PAGE_GUARD; page++) {
+    const opts = { prefix: dclaimPrefix(network, dropId), limit: 1000 };
+    if (kvCursor) opts.cursor = kvCursor;
+    const claimList = await env.REGISTRY_KV.list(opts);
+    for (const k of claimList.keys) {
+      const parts = k.name.split(':');
+      const txid = parts[parts.length - 1];
+      const h = parseInt(parts[parts.length - 3], 10);
+      if (!/^[0-9a-f]{64}$/.test(txid) || !Number.isInteger(h)) continue;
+      if ((tipHeight - h + 1) < PMINT_CONFIRMATION_DEPTH) continue;   // pending — not yet credited
+      if (seenTxids.has(txid)) continue;                              // reorg re-confirm — one claim, one slot
+      seenTxids.add(txid);
+      if (creditedBig >= maxClaims) { capReached = true; continue; }  // cap_overflow
+      creditedBig += 1n;
+      credited_txids.push(txid);
+    }
+    if (claimList.list_complete) { listComplete = true; break; }
+    // Canonical order: once the cap is full every later claim is overflow, so
+    // the credited set is complete even without scanning the tail.
+    if (creditedBig >= maxClaims) { capReached = true; listComplete = true; break; }
+    if (!claimList.cursor) { listComplete = true; break; }
+    kvCursor = claimList.cursor;
+  }
+  // resolvable only if we actually finished accounting (scan completed or cap
+  // filled). Hitting the page guard mid-scan leaves the set possibly missing
+  // legitimately-credited txids → degrade rather than false-reject.
+  return { credited_txids, list_complete: listComplete, resolvable: listComplete || capReached };
+}
+
 // SAFETY_CAP / page bounds for snapshot refresh. The key-only scan is far
 // cheaper than loadCanonicalPmints's value-fetch path, so we can afford a
 // much larger window. 300k keys ≈ 300 KV.list calls (one per 1000-key page)
@@ -26185,6 +26252,10 @@ export {
   // (depth-gated crediting, cap-overflow rejection, reorg-revoke) against
   // an in-memory KV stub without spinning up Cloudflare's runtime.
   PMINT_CONFIRMATION_DEPTH, loadCanonicalPmints,
+  // T_DCLAIM credited-set computation (SPEC §5.13 step 5 + Confirmation depth).
+  // Exported so the drop-dclaim test can pin depth-gating, cap-overflow
+  // ordering, and reorg re-confirm de-dup against an in-memory KV stub.
+  loadCreditedDclaims,
   // Commitment-opening gate applied by the cron + hint indexers (issue #31
   // Problem #3). Exported so tests can pin the valid / mismatch / malformed-
   // point cases without reaching into the cron's block loop. `pedersenCommit`
@@ -27898,7 +27969,15 @@ async function _routeFetch(req, env, ctx) {
       const capAmount = BigInt(v.cap_amount);
       const maxClaimsBig = capAmount / perClaim;
       const DCLAIM_PROGRESS_PAGE_GUARD = 32;
-      let totalSeen = 0;
+      // Mirror the credited-set endpoint's accounting so the progress bar
+      // matches what actually credits (SPEC §5.13): count distinct claims at
+      // depth ≥ 3 only. tip gates by confirmation depth; the Set de-dups a
+      // reorg re-confirm (two keys, one claim). Display-only — never a credit
+      // decision — and degrades to a raw count if tip is unavailable.
+      const dropTip = await fetchTipHeight(env, network);
+      let totalSeen = 0;          // raw confirmed claim keys (incl. pending / overflow / dups)
+      let eligible = 0;           // distinct claims at depth ≥ 3 (credit-eligible, pre-cap)
+      const seenClaimTxids = new Set();
       let kvCursor = undefined;
       let listComplete = false;
       for (let page = 0; page < DCLAIM_PROGRESS_PAGE_GUARD; page++) {
@@ -27906,25 +27985,25 @@ async function _routeFetch(req, env, ctx) {
         if (kvCursor) opts.cursor = kvCursor;
         const claimList = await env.REGISTRY_KV.list(opts);
         totalSeen += claimList.keys.length;
-        // Early-exit once we've enumerated enough claims to fully account
-        // for cap_overflow. Past the cap we don't credit further claims,
-        // so the exact count of overflow is informational only — but the
-        // canonical-order winners are already in the first maxClaims of
-        // the lex-sorted prefix scan, so once totalSeen ≥ maxClaims the
-        // creditedCount answer is locked in regardless of further pages.
-        if (BigInt(totalSeen) >= maxClaimsBig && claimList.list_complete) {
-          listComplete = true;
-          break;
+        for (const k of claimList.keys) {
+          const parts = k.name.split(':');
+          const txid = parts[parts.length - 1];
+          const kh = parseInt(parts[parts.length - 3], 10);
+          if (!/^[0-9a-f]{64}$/.test(txid)) continue;
+          if (Number.isInteger(dropTip) && Number.isInteger(kh) && (dropTip - kh + 1) < PMINT_CONFIRMATION_DEPTH) continue;
+          if (seenClaimTxids.has(txid)) continue;
+          seenClaimTxids.add(txid);
+          eligible++;
         }
         if (claimList.list_complete) { listComplete = true; break; }
         if (!claimList.cursor) { listComplete = true; break; }
         kvCursor = claimList.cursor;
       }
-      const creditedCount = Math.min(totalSeen, Number(maxClaimsBig));
+      const creditedCount = Math.min(eligible, Number(maxClaimsBig));
       const claimed_amount = BigInt(creditedCount) * perClaim;
-      v.claim_count = creditedCount;            // claims credited toward cap
-      v.claim_total_seen = totalSeen;           // includes cap-overflow rejects
-      v.cap_overflow_count = totalSeen - creditedCount;
+      v.claim_count = creditedCount;            // distinct depth-≥3 claims credited toward cap
+      v.claim_total_seen = totalSeen;           // raw confirmed keys (incl. pending / overflow / reorg dups)
+      v.cap_overflow_count = Math.max(0, eligible - creditedCount);
       v.claimed_amount = claimed_amount.toString();
       const remainingAmount = capAmount - claimed_amount;
       v.remaining_amount = (remainingAmount < 0n ? 0n : remainingAmount).toString();
@@ -27951,31 +28030,38 @@ async function _routeFetch(req, env, ctx) {
       // No JSON-per-record overhead; for 1000 claims this is ~70KB vs.
       // ~500KB for the full record path.
       const slim = url.searchParams.get('credited') === '1' && url.searchParams.get('include_txids') === '1';
+      if (slim) {
+        // Canonically-credited claim set — the dapp validator treats this as
+        // authoritative and REJECTS any claim absent from it, so it MUST apply
+        // depth ≥ 3 + cap-overflow ordering + txid de-dup (SPEC §5.13; see
+        // loadCreditedDclaims). When the cap can't be resolved (drop record or
+        // tip unavailable, or the scan exceeds its guard) we 503 so the dapp
+        // degrades to optimistic credit (its worker-unreachable posture) rather
+        // than asserting an unfiltered or empty set.
+        const drop = await env.REGISTRY_KV.get(dropKey(network, dropId), 'json');
+        const tip = await fetchTipHeight(env, network);
+        if (!drop || drop.cap_amount == null || drop.per_claim == null) {
+          return jsonResponse({ error: 'parent drop not indexed' }, 503, cors);
+        }
+        const res = await loadCreditedDclaims(env, network, dropId, tip, drop.cap_amount, drop.per_claim);
+        if (!res.resolvable) {
+          return jsonResponse({ error: 'cap not resolvable (tip unavailable or claim set exceeds scan guard)' }, 503, cors);
+        }
+        return jsonResponse({
+          drop_id: dropId,
+          network,
+          credited_count: res.credited_txids.length,
+          credited_txids: res.credited_txids,
+          cursor: null,
+          list_complete: true,
+          truncated: false,
+        }, 200, cors);
+      }
       const list = await env.REGISTRY_KV.list({
         prefix: dclaimPrefix(network, dropId),
         limit,
         cursor,
       });
-      if (slim) {
-        // KV key suffix is `…:<padded_height>:<padded_tx_index>:<txid>`.
-        // Extract just the trailing txid. The cron's nullifier check means
-        // every key here corresponds to ONE canonical claim per leaf — rewraps
-        // never make it into this list.
-        const credited_txids = [];
-        for (const k of list.keys) {
-          const txid = k.name.split(':').pop();
-          if (/^[0-9a-f]{64}$/.test(txid)) credited_txids.push(txid);
-        }
-        return jsonResponse({
-          drop_id: dropId,
-          network,
-          credited_count: credited_txids.length,
-          credited_txids,
-          cursor: list.list_complete ? null : list.cursor,
-          list_complete: !!list.list_complete,
-          truncated: !list.list_complete,
-        }, 200, cors);
-      }
       const fetched = await Promise.all(list.keys.map(k => env.REGISTRY_KV.get(k.name, 'json')));
       const claims = fetched.filter(v => v && v.kind === 'dclaim');
       return jsonResponse({
