@@ -57,6 +57,9 @@ References: `ARCH-tacit-chain-abstraction.md` (design + gaps), `CHECKLIST-mainne
 ### A1 — Onboard Bitcoin assets to the new pool (TAC first)  [dep: A0]
 - `attest_meta` → canonical ERC20 deploys at `f(asset_id)` (pool = MINTER) → bridge a TAC note in →
   unwrap to the public ERC20. Drive + verify with `CHECKLIST-tac-sepolia-roundtrip.md`.
+- Coverage rides A0's reflection scope: fixed-supply + mintable (cmint) assets; a note that was
+  transferred, burned-through (CBURN), OR received from a swap/LP/OTC/bid (the multiasset generalization).
+  So onboarding is any Tacit asset through any Tacit mutation, not just plain transfers.
 - Gate opened: a Bitcoin asset has a live Ethereum face.
 
 ### A2 — Flip the cross-lane pool config  [dep: A0]
