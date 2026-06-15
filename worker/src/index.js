@@ -16050,6 +16050,24 @@ async function handleListingPost(assetIdHex, req, env, network, cors) {
     return jsonResponse({ error: `amount must be in [0, 2^${N_BITS})` }, 400, cors);
   }
 
+  // Verify both signatures (body-only data) and charge the rate limit BEFORE
+  // any chain fetch, so an unsigned/forged request — or a flood of signed
+  // requests pointing at bogus txids — can't make the worker pay for the
+  // commitment + tx lookups below (each retries propagation lag for ~7s).
+  // The on-chain Pedersen + ownership binding still runs after, against the
+  // now-authenticated opening.
+  const xonly = hexToBytes(ownerPubHex).slice(1);
+  const oMsg = openingMsg(assetIdHex, txidHex, vout, amountStr, blindingHex, ownerPubHex);
+  if (!verifySchnorr(hexToBytes(openingSigHex), oMsg, xonly)) {
+    return jsonResponse({ error: 'invalid opening signature' }, 403, cors);
+  }
+  const lMsg = listingMsg(assetIdHex, txidHex, vout, priceSatsRaw, expiryRaw, makerAddress, openingSigHex);
+  if (!verifySchnorr(hexToBytes(listingSigHex), lMsg, xonly)) {
+    return jsonResponse({ error: 'invalid listing signature' }, 403, cors);
+  }
+  const _orderRl = await _orderbookWriteRateLimit(req, env, ownerPubHex, 'listing', { pkDefault: 500, ipDefault: 1000 });
+  if (!_orderRl.ok) return jsonResponse({ error: `listing rate limited: ${_orderRl.reason}` }, 429, cors);
+
   // Resolve commitment + asset_id from chain. Same path as handleUtxoOpeningPost.
   let resolved;
   try { resolved = await commitmentForUtxo(env, txidHex, vout, network); }
@@ -16080,17 +16098,6 @@ async function handleListingPost(assetIdHex, req, env, network, cors) {
   }
   if (bytesToHex(spk.slice(2, 22)) !== bytesToHex(hash160(hexToBytes(ownerPubHex)))) {
     return jsonResponse({ error: 'owner_pubkey does not control this UTXO' }, 403, cors);
-  }
-
-  // Both sigs verify under x-only(owner_pubkey).
-  const xonly = hexToBytes(ownerPubHex).slice(1);
-  const oMsg = openingMsg(assetIdHex, txidHex, vout, amountStr, blindingHex, ownerPubHex);
-  if (!verifySchnorr(hexToBytes(openingSigHex), oMsg, xonly)) {
-    return jsonResponse({ error: 'invalid opening signature' }, 403, cors);
-  }
-  const lMsg = listingMsg(assetIdHex, txidHex, vout, priceSatsRaw, expiryRaw, makerAddress, openingSigHex);
-  if (!verifySchnorr(hexToBytes(listingSigHex), lMsg, xonly)) {
-    return jsonResponse({ error: 'invalid listing signature' }, 403, cors);
   }
 
   // Store opening (idempotent — overwrites with same content) + listing.
@@ -16509,6 +16516,25 @@ async function handleRangeListingPost(assetIdHex, req, env, network, cors) {
     utxos.push({ txid, vout });
   }
 
+  // Verify both signatures (body-only data) and charge the rate limit BEFORE
+  // the per-UTXO chain validation below, which fans out up to 2×64 retrying
+  // upstream fetches. Without this gate an unsigned/forged request — or a
+  // flood of signed ones referencing bogus txids — forces all that fetch
+  // cost at zero attacker cost.
+  const xonly = hexToBytes(ownerPubHex).slice(1);
+  const dMsg = disclosureMsg(assetIdHex, utxos, threshold, rangeproofHex, ownerPubHex);
+  if (!verifySchnorr(hexToBytes(disclosureSigHex), dMsg, xonly)) {
+    return jsonResponse({ error: 'invalid disclosure signature' }, 403, cors);
+  }
+  // Listing sig over the canonical range-listing msg (binds disclosure_sig +
+  // price + expiry + maker_address + threshold).
+  const lMsg = rangeListingMsg(assetIdHex, threshold, priceSatsRaw, expiryRaw, makerAddress, disclosureSigHex);
+  if (!verifySchnorr(hexToBytes(listingSigHex), lMsg, xonly)) {
+    return jsonResponse({ error: 'invalid listing signature' }, 403, cors);
+  }
+  const _orderRl = await _orderbookWriteRateLimit(req, env, ownerPubHex, 'range-listing', { pkDefault: 300, ipDefault: 600 });
+  if (!_orderRl.ok) return jsonResponse({ error: `listing rate limited: ${_orderRl.reason}` }, 429, cors);
+
   // Validate ownership + asset_id consistency for every referenced UTXO.
   const ownerHash160Hex = bytesToHex(hash160(hexToBytes(ownerPubHex)));
   for (const u of utxos) {
@@ -16528,19 +16554,6 @@ async function handleRangeListingPost(assetIdHex, req, env, network, cors) {
     if (bytesToHex(spk.slice(2, 22)) !== ownerHash160Hex) {
       return jsonResponse({ error: `utxo ${u.txid}:${u.vout}: owner_pubkey does not control this UTXO` }, 403, cors);
     }
-  }
-
-  // Disclosure sig over the canonical disclosure msg.
-  const xonly = hexToBytes(ownerPubHex).slice(1);
-  const dMsg = disclosureMsg(assetIdHex, utxos, threshold, rangeproofHex, ownerPubHex);
-  if (!verifySchnorr(hexToBytes(disclosureSigHex), dMsg, xonly)) {
-    return jsonResponse({ error: 'invalid disclosure signature' }, 403, cors);
-  }
-  // Listing sig over the canonical range-listing msg (binds disclosure_sig +
-  // price + expiry + maker_address + threshold).
-  const lMsg = rangeListingMsg(assetIdHex, threshold, priceSatsRaw, expiryRaw, makerAddress, disclosureSigHex);
-  if (!verifySchnorr(hexToBytes(listingSigHex), lMsg, xonly)) {
-    return jsonResponse({ error: 'invalid listing signature' }, 403, cors);
   }
 
   const listing = {
@@ -18491,6 +18504,47 @@ async function handlePreauthSalePost(assetIdHex, req, env, network, cors) {
     return jsonResponse({ error: 'sale_id does not derive from (asset_outpoint, seller_pubkey, nonce)' }, 400, cors);
   }
 
+  // ---------- signature + rate-limit checks (before chain fetches) ----------
+  // All signed material is body-only, so verifying here — ahead of the
+  // chain-state lookups below (fresh-tx + outspend + commitment, each
+  // retrying propagation lag for ~7s) — means an unsigned/forged or flooding
+  // request can't make the worker pay for those fetches.
+  const authMsg = preauthSaleAuthMsg({
+    assetIdHex, saleIdHex, sellerPubHex,
+    assetOutpointTxidHex, assetOutpointVout: assetOutpointVoutRaw,
+    assetUtxoValue: assetUtxoValueRaw,
+    amountStr, blindingHex,
+    minPriceSats: minPriceSatsRaw,
+    sellerPayoutScriptHex,
+    expiry: expiryRaw,
+    sellerAssetSpendSigHex,
+    nonceHex,
+  });
+  if (!verifySchnorr(hexToBytes(authSigHex), authMsg, hexToBytes(sellerPubHex).slice(1))) {
+    return jsonResponse({ error: 'invalid auth signature' }, 403, cors);
+  }
+  // Seller's pre-signed P2WPKH spend: ECDSA over the BIP-143 sighash that
+  // binds vin[1] (asset outpoint) to vout[1] (payout). Reconstruct the
+  // sighash from the same fields the seller signed; reject if the signature
+  // doesn't verify against this preimage under seller_pubkey.
+  const spendSigBytes = hexToBytes(sellerAssetSpendSigHex);
+  const spendDer = spendSigBytes.slice(0, spendSigBytes.length - 1);
+  const sighash = preauthSellerSpendSighash({
+    assetOutpointTxidHex, assetOutpointVout: assetOutpointVoutRaw,
+    assetUtxoValue: assetUtxoValueRaw,
+    sellerPubHex, sellerPayoutScriptHex,
+    minPriceSats: minPriceSatsRaw,
+  });
+  if (!verifyEcdsaDerSig(spendDer, sighash, hexToBytes(sellerPubHex))) {
+    return jsonResponse({ error: 'seller_asset_spend_sig does not verify against the BIP-143 sighash' }, 403, cors);
+  }
+  // Anti-spam ceiling on listing creation. Charged after sig verification so a
+  // malformed/unsigned body can't burn the seller's daily slots. 100/day/pubkey
+  // is generous for legitimate market-making and tight enough to make
+  // sustained ladder-spam expensive.
+  const _orderRl = await _orderbookWriteRateLimit(req, env, sellerPubHex, 'preauth');
+  if (!_orderRl.ok) return jsonResponse({ error: `listing rate limited: ${_orderRl.reason}` }, 429, cors);
+
   // ---------- chain-state checks ----------
   // The seller must control the asset outpoint as P2WPKH(hash160(seller_pubkey)).
   let assetTx;
@@ -18541,53 +18595,6 @@ async function handlePreauthSalePost(assetIdHex, req, env, network, cors) {
   if (!claimed.equals(onchain)) {
     return jsonResponse({ error: 'asset_opening does not match on-chain commitment' }, 400, cors);
   }
-
-  // ---------- signature checks ----------
-  // Seller's BIP-340 auth signature covers the whole sale-auth body.
-  const authMsg = preauthSaleAuthMsg({
-    assetIdHex, saleIdHex, sellerPubHex,
-    assetOutpointTxidHex, assetOutpointVout: assetOutpointVoutRaw,
-    assetUtxoValue: assetUtxoValueRaw,
-    amountStr, blindingHex,
-    minPriceSats: minPriceSatsRaw,
-    sellerPayoutScriptHex,
-    expiry: expiryRaw,
-    sellerAssetSpendSigHex,
-    nonceHex,
-  });
-  if (!verifySchnorr(hexToBytes(authSigHex), authMsg, hexToBytes(sellerPubHex).slice(1))) {
-    return jsonResponse({ error: 'invalid auth signature' }, 403, cors);
-  }
-
-  // Seller's pre-signed P2WPKH spend: ECDSA over the BIP-143 sighash that
-  // binds vin[1] (asset outpoint) to vout[1] (payout). Reconstruct the
-  // sighash from the same fields the seller signed; reject if the signature
-  // doesn't verify against this preimage under seller_pubkey.
-  const spendSigBytes = hexToBytes(sellerAssetSpendSigHex);
-  const spendDer = spendSigBytes.slice(0, spendSigBytes.length - 1);
-  const sighash = preauthSellerSpendSighash({
-    assetOutpointTxidHex, assetOutpointVout: assetOutpointVoutRaw,
-    assetUtxoValue: assetUtxoValueRaw,
-    sellerPubHex, sellerPayoutScriptHex,
-    minPriceSats: minPriceSatsRaw,
-  });
-  if (!verifyEcdsaDerSig(spendDer, sighash, hexToBytes(sellerPubHex))) {
-    return jsonResponse({ error: 'seller_asset_spend_sig does not verify against the BIP-143 sighash' }, 403, cors);
-  }
-
-  // ---------- rate limit ----------
-  // Charge after sig verification so a malformed/unsigned body can't burn
-  // the seller's daily slots. Anti-spam ceiling on listing creation —
-  // each preauth requires a real on-chain UTXO (the one-live-sale-per-
-  // outpoint check below makes outpoint-recycling impossible without a
-  // cancel), so the natural rate limit is "how many UTXOs you have" —
-  // but a seller who pre-fragments their balance into 1000 small UTXOs
-  // could still flood the asks ladder with listings to grief the UI.
-  // 100 listings/day/pubkey is generous for legitimate market-making
-  // (rotating offers, adjusting prices) and tight enough to make
-  // sustained ladder-spam expensive.
-  const _orderRl = await _orderbookWriteRateLimit(req, env, sellerPubHex, 'preauth');
-  if (!_orderRl.ok) return jsonResponse({ error: `listing rate limited: ${_orderRl.reason}` }, 429, cors);
 
   // ---------- one-live-sale-per-outpoint ----------
   // Check the outpoint index BEFORE the main record so a duplicate doesn't
@@ -20149,12 +20156,23 @@ function bidPartialClaimPrefix(network, aid, bidIdHex) {
 // requires. The signet e2e harness covers the integrated path.
 function _resolveBidPartialOvershoot(records, intentAmtBI, nowSec) {
   const active = records.filter(p => p && (p.expires_at || 0) > nowSec);
-  const sorted = active.slice().sort((a, b) =>
+  // Protected claims have a linked atomic-intent that is already
+  // broadcasting or settled on-chain (`_protected` set by the caller from
+  // the fulfilment state / settled_recorded flag). Evicting one would
+  // delete its bidpclaim + pledge index, and the on-chain settle keys the
+  // durable settled_amount bump off exactly those records — so an evicted
+  // in-flight chunk would never be recorded as consumed and its capacity
+  // would spring back (over-fill past the signed amount). Keep them
+  // unconditionally; greedily fill whatever budget remains with the rest.
+  const protectedClaims = active.filter(p => p._protected);
+  const rest = active.filter(p => !p._protected);
+  const sorted = rest.slice().sort((a, b) =>
     a.axintent_id < b.axintent_id ? -1 : a.axintent_id > b.axintent_id ? 1 : 0
   );
   let kept = 0n;
   const survivors = [];
   const evicted = [];
+  for (const p of protectedClaims) { kept += BigInt(p.fill_amount || '0'); survivors.push(p); }
   for (const p of sorted) {
     const f = BigInt(p.fill_amount || '0');
     if (kept + f <= intentAmtBI) { kept += f; survivors.push(p); }
@@ -20847,6 +20865,22 @@ async function handleBidIntentClaim(assetIdHex, bidIdHex, req, env, network, cor
   if (axintent.maker_pubkey !== sellerPubHex) {
     return jsonResponse({ error: 'linked axintent.maker_pubkey != seller_pubkey' }, 400, cors);
   }
+  // Bind the linked axintent's terms to the bid. The seller's claim reserves
+  // the bid's capacity for BID_CLAIM_TTL; without these checks a seller can
+  // reserve with an axintent of the wrong size or an inflated price (worse
+  // for the buyer than the bid they're nominally filling), so the bid shows
+  // as filled while no honest fill is on offer. The dapp carves the seller
+  // UTXO to exactly fill_amount and prices it at the bid's scaled unit price,
+  // so legitimate fills satisfy both.
+  if (BigInt(axintent.amount || '0') !== fillBI) {
+    return jsonResponse({ error: `linked axintent.amount (${axintent.amount}) must equal fill_amount (${fillAmountStr})` }, 400, cors);
+  }
+  // Seller unit price must not exceed the bid's unit price:
+  //   ax.price_sats / fill_amount ≤ bid.price_sats / bid.amount
+  // Cross-multiplied to avoid rounding (all operands ≥ 0).
+  if (BigInt(axintent.price_sats || '0') * intentAmtBI > BigInt(intent.price_sats || '0') * fillBI) {
+    return jsonResponse({ error: 'linked axintent price exceeds the bid unit price' }, 400, cors);
+  }
   // Pull the bidder's recipient hash160 from the axintent's envelope and
   // require it to match the bid's buyer_pubkey hash160. The seller would
   // have constructed the axintent's recipient blinding ECDH'd against
@@ -20915,10 +20949,29 @@ async function handleBidIntentClaim(assetIdHex, bidIdHex, req, env, network, cor
     );
     const listed = await env.REGISTRY_KV.list({ prefix: bidPartialClaimPrefix(network, assetIdHex, bidIdHex), limit: 1000 });
     const recs = await Promise.all(listed.keys.map(k => env.REGISTRY_KV.get(k.name, 'json')));
-    // Budget for live claims is amount MINUS already-settled capacity — a
-    // settled chunk is durably consumed and must not be re-offered to a new claim.
-    const _settledBI = BigInt(intent.settled_amount || '0');
-    const { kept, survivors, evicted } = _resolveBidPartialOvershoot(recs, intentAmtBI - _settledBI, now);
+    // Flag claims whose linked atomic-intent is already settling/settled so
+    // the resolver never evicts an on-chain commitment (the settle scanner
+    // keys the durable settled_amount bump off the bidpclaim + pledge index;
+    // evicting one mid-flight would drop that bump and re-open consumed
+    // capacity — over-fill). A bidpclaim is protected when it has been
+    // marked settled_recorded, or its axintent has a posted fulfilment.
+    const recsState = await Promise.all((recs || []).map(async (p) => {
+      if (!p || !p.axintent_id) return p;
+      if (p.settled_recorded) return { ...p, _protected: true };
+      try {
+        const ful = await env.REGISTRY_KV.get(atomicFulfilmentKey(network, assetIdHex, p.axintent_id), 'json');
+        if (ful) return { ...p, _protected: true };
+      } catch {}
+      return p;
+    }));
+    // Re-read the bid immediately before resolving + writing. The settle
+    // scanner mutates settled_amount on this same key via its own
+    // read-modify-write; using the value we loaded at the top of the
+    // handler (and writing the whole stale object back) would clobber any
+    // bump the scanner landed in between, springing settled capacity back.
+    const freshBid = (await env.REGISTRY_KV.get(bidIntentKey(network, assetIdHex, bidIdHex), 'json')) || intent;
+    const _settledBI = BigInt(freshBid.settled_amount || '0');
+    const { kept, survivors, evicted } = _resolveBidPartialOvershoot(recsState, intentAmtBI - _settledBI, now);
     if (evicted.length > 0) {
       await Promise.all(evicted.map(p =>
         env.REGISTRY_KV.delete(bidPartialClaimKey(network, assetIdHex, bidIdHex, p.axintent_id))
@@ -20931,35 +20984,40 @@ async function handleBidIntentClaim(assetIdHex, bidIdHex, req, env, network, cor
       ));
     }
     const ourEvicted = evicted.some(p => p.axintent_id === axintentIdHex);
-    intent.remaining_amount = (intentAmtBI - _settledBI - kept).toString();
-    intent.linked_axintents = survivors.map(p => p.axintent_id);
-    if (BigInt(intent.remaining_amount) < minFillBI) {
-      intent.state = 'CLOSED';
-    } else if (!intent.state || intent.state === 'OPEN') {
-      intent.state = survivors.length > 0 ? 'PARTIALLY_RESERVED' : 'OPEN';
+    const _remBI = intentAmtBI - _settledBI - kept;
+    freshBid.remaining_amount = (_remBI < 0n ? 0n : _remBI).toString();
+    freshBid.linked_axintents = survivors.map(p => p.axintent_id);
+    if (BigInt(freshBid.remaining_amount) < minFillBI) {
+      freshBid.state = 'CLOSED';
+    } else if (!freshBid.state || freshBid.state === 'OPEN') {
+      freshBid.state = survivors.length > 0 ? 'PARTIALLY_RESERVED' : 'OPEN';
     }
     // Preserve the bid's auto-evict horizon on the partial-claim update
     // (KV resets TTL on put). Computed from the loaded intent's expiry.
     await env.REGISTRY_KV.put(
       bidIntentKey(network, assetIdHex, bidIdHex),
-      JSON.stringify(intent),
-      { expirationTtl: _ttlFromExpiry(intent.expiry) },
+      JSON.stringify(freshBid),
+      { expirationTtl: _ttlFromExpiry(freshBid.expiry) },
     );
     if (ourEvicted) {
       return jsonResponse({
         error: 'bid remaining insufficient (lost race to concurrent fill; retry with smaller fill_amount or another bid)',
-        remaining_amount: intent.remaining_amount,
+        remaining_amount: freshBid.remaining_amount,
       }, 409, cors);
     }
-    return jsonResponse({ ok: true, claim, intent }, 200, cors);
+    return jsonResponse({ ok: true, claim, intent: freshBid }, 200, cors);
   }
 
-  await env.REGISTRY_KV.put(bidClaimKey(network, assetIdHex, bidIdHex), JSON.stringify(claim));
-  // Cross-bid axintent pledge index (see gate above). Whole-bid
-  // claim records lack an explicit TTL on the KV put — historical
-  // behavior is to let them sit until natural expiry — so size the
-  // pledge index TTL to BID_CLAIM_TTL_SECONDS so the index doesn't
-  // outlive the active window it indexes.
+  // Auto-expire the claim record ~60s past its logical expiry so abandoned
+  // whole-bid reservations don't accumulate in KV (the expires_at check
+  // already gates validity; this just GCs the dead record).
+  await env.REGISTRY_KV.put(
+    bidClaimKey(network, assetIdHex, bidIdHex),
+    JSON.stringify(claim),
+    { expirationTtl: BID_CLAIM_TTL_SECONDS + 60 },
+  );
+  // Cross-bid axintent pledge index (see gate above). TTL matches the
+  // claim's so the index doesn't outlive the active window it indexes.
   await env.REGISTRY_KV.put(
     bidClaimAxintentIndexKey(network, axintentIdHex),
     JSON.stringify({ bid_id: bidIdHex, asset_id: assetIdHex, expires_at: claim.expires_at }),
