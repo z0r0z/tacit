@@ -253,3 +253,17 @@ export async function deriveAmmPoolState(poolIdHex, env) {
   }
   return replayAmmPoolState(ops, deps);
 }
+
+// Shadow comparison — diff a trustless-derived pool state against the worker's
+// reported reserves. Used by the dapp's ammReserveShadowCheck to validate that
+// deriveAmmPoolState reproduces the worker byte-for-byte on live pools BEFORE
+// the credit path is flipped off the worker's numbers. Pure.
+export function compareAmmReserves(derived, worker) {
+  const d = { reserveA: BigInt(derived.reserveA), reserveB: BigInt(derived.reserveB), totalShares: BigInt(derived.totalShares) };
+  const w = { reserveA: BigInt(worker.reserveA), reserveB: BigInt(worker.reserveB), totalShares: BigInt(worker.totalShares) };
+  const diffs = [];
+  if (d.reserveA !== w.reserveA) diffs.push(`reserveA: replay ${d.reserveA} != worker ${w.reserveA}`);
+  if (d.reserveB !== w.reserveB) diffs.push(`reserveB: replay ${d.reserveB} != worker ${w.reserveB}`);
+  if (d.totalShares !== w.totalShares) diffs.push(`totalShares: replay ${d.totalShares} != worker ${w.totalShares}`);
+  return { match: diffs.length === 0, diffs, derived: d, worker: w };
+}

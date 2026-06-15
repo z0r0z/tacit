@@ -15,7 +15,7 @@
 import {
   ammCurveDeltaOut, ammLpAddShares, ammLpRemoveOutputs, AMM_MINIMUM_LIQUIDITY,
 } from '../worker/src/index.js';
-import { replayAmmPoolState, replayOpFromDecoded, deriveAmmPoolState, isqrtBig } from '../dapp/amm-replay.js';
+import { replayAmmPoolState, replayOpFromDecoded, deriveAmmPoolState, compareAmmReserves, isqrtBig } from '../dapp/amm-replay.js';
 
 // Opcode constants (dapp/tacit.js).
 const OPCODES = { T_LP_ADD: 0x2D, T_LP_REMOVE: 0x2E, T_PROTOCOL_FEE_CLAIM: 0x31, T_SWAP_VAR: 0x32 };
@@ -226,6 +226,20 @@ console.log('\nPhase 3 — deriveAmmPoolState (discover + on-chain verify + repl
   await throwsAsync('forged LP_ADD share amount → reject', () =>
     deriveAmmPoolState(POOL, baseEnv({ decodeForOpcode: (_o, payload) =>
       (payload === payloads.t1.payload ? { ...payload, shareAmount: addShares + 1n } : payload) })), /share mismatch/);
+}
+
+console.log('\nShadow comparison (replay vs worker reserves):');
+{
+  const direct = replayAmmPoolState(SEQ, DEPS);
+  const same = compareAmmReserves(direct, { reserveA: direct.reserveA, reserveB: direct.reserveB, totalShares: direct.totalShares });
+  ok('identical reserves → match, no diffs', same.match === true && same.diffs.length === 0);
+  const off = compareAmmReserves(direct, { reserveA: direct.reserveA + 1n, reserveB: direct.reserveB, totalShares: direct.totalShares });
+  ok('a worker reserve drift → mismatch reported', off.match === false && /reserveA/.test(off.diffs[0]));
+  // Accepts string inputs (worker JSON sends decimal strings).
+  const strs = compareAmmReserves(
+    { reserveA: '100', reserveB: '200', totalShares: '300' },
+    { reserveA: '100', reserveB: '200', totalShares: '300' });
+  ok('string reserves compared as bigints', strs.match === true);
 }
 
 console.log(`\n${pass}/${pass + fail} passed`);
