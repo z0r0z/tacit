@@ -180,6 +180,50 @@ balance, onboards nothing (skip-not-panic) — completeness only, never over-min
 This is the common-case AMM path and needs no new cryptographic primitive — only the per-pool public-reserve
 lineage state + the arithmetic conservation gate. It rides the launch re-prove with the adaptor ops + Track C.
 
+### Track B is NOT uniform across the AMM ops — the public-value binding is the line (2026-06-15)
+
+Implementing the folds surfaced a sharp split *within* the AMM ops, decided by whether a withdrawn note's
+value is **publicly bound** to the reserve change:
+
+- **`T_SWAP_VAR` — soundly onboardable (DONE).** The receipt carries a CLEARTEXT `r_receipt`, so
+  `verify_pedersen_opening(C_receipt, delta_out, r_receipt)` binds the onboarded note's value to the public
+  `delta_out`. No inflation: the reflection onboards a note worth exactly the reserve decrease.
+- **`T_LP_ADD` / POOL_INIT — soundly onboardable (DONE).** Per-asset secp kernel
+  (`Σ C_in_X − delta_X·H = excess·G`) binds the LP's *contribution* to the public `delta_X`; reserves are
+  credited from real inputs. (It onboards no withdrawal note — only advances reserve provenance.)
+- **`T_LP_REMOVE` — NOT soundly onboardable as specified (defer, fail-closed).** The withdrawn notes are
+  `recv_X_C_secp(33) ‖ recv_X_C_BJJ(32) ‖ xcurve_sigma(169)` — **hidden value**. `verifyXCurve(sigma,
+  C_secp, C_BJJ)` proves the two commitments open to the *same* value but takes **no public delta**, and
+  nothing else binds `recv_X_C_secp`'s value to the public `delta_a` (only the LP's kernel *signs over*
+  `delta_a`, which is an attestation, not a value proof). So the reflection cannot know the withdrawn note's
+  value equals the reserve decrease — onboarding it could mint more than left the reserve. The reflection
+  correctly **does not** fold it (no `fold_lp_remove` shipped): LP-remove-sourced notes stay non-bridgeable
+  (fail-closed — completeness only, never an over-mint). A sound fix is a protocol amendment giving LP-remove
+  a public receipt opening (the `T_SWAP_VAR` shape) OR full BJJ/Groth16 verification with a BJJ→`delta`
+  binding — a follow-up re-prove, not launch.
+
+### Track C / `T_SWAP_BATCH` feasibility call (2026-06-15) — DEFER to a follow-up re-prove
+
+`T_SWAP_BATCH` (0x2F) is the confidential AMM swap: per-trader amounts hidden in **BabyJubJub Pedersen**
+commitments, the batch clearing enforced by a **BN254 Groth16** circuit (ceremony-gated `vk_cid`), receipts
+bound by the same `xcurve_sigma` as LP-remove. Onboarding a batch receipt for bridging would require, in the
+SP1 reflection guest, ALL of:
+1. **BN254 Groth16 verification in-zkVM** (pairing-heavy; SP1 has BN254 precompiles, so possible but
+   expensive) + baking the batch ceremony `vk` into the reflection guest.
+2. **XCURVE + BJJ Pedersen verification** ported into the guest (~640 lines; the worker itself defers this).
+3. A **confidential (hidden-value) bridge model** — the receipt's value is hidden by design, so
+   `v_mint == v_burn`-public doesn't apply; the bridge would have to carry the hidden value through a
+   kernel-matched confidential mint (a new bridge primitive).
+
+**Call: defer `T_SWAP_BATCH` AND `T_LP_REMOVE` to a follow-up re-prove; ship the launch bundle with
+`T_SWAP_VAR` + `T_LP_ADD` (Track B) + the adaptor ops + CXFER/CBURN.** Rationale: (a) `T_SWAP_BATCH` is
+**not even live** — POOL_INIT references a `vk_cid` produced by the Phase-2 ceremony that hasn't landed, so
+no batch txs exist yet; deferring its bridge support costs nothing today. (b) Both ops are **fail-closed**:
+their notes simply stay non-bridgeable until the follow-up — never wrongly minted. (c) The three
+dependencies above (BN254-in-zkVM, BJJ/XCURVE port, confidential bridge model) are a major, risky lift that
+would dominate the launch re-prove; they share one foundation (BJJ/XCURVE), so a single follow-up re-prove
+unlocks both. The launch bundle stays sound and shippable; confidential-AMM bridging is a clean follow-on.
+
 ## Per-op kernel mapping (the implementation specifics to nail down)
 
 The one thing to pin per op: which on-chain kernel signs the **output** side the bridge needs (the
