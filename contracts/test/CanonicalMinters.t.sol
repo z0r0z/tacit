@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.28;
 
-import {Test} from "forge-std/Test.sol";
+import {Test, stdError} from "forge-std/Test.sol";
 import {CanonicalAssetFactory} from "../src/CanonicalAssetFactory.sol";
 import {CanonicalBridgedERC20} from "../src/CanonicalBridgedERC20.sol";
 import {ConfidentialPool} from "../src/ConfidentialPool.sol";
@@ -119,6 +119,33 @@ contract CanonicalMintersTest is Test {
         vm.prank(AUTH);
         m.mint(ALICE, 1_000_000e18);
         assertEq(m.TOKEN().balanceOf(ALICE), 1_000_000e18, "mints freely when uncapped");
+    }
+
+    /// The lifetime `minted` accumulator can never silently wrap: an uncapped minter that has
+    /// already minted the full uint256 range reverts (checked arithmetic) rather than rolling
+    /// `minted` back to a small value and re-opening phantom headroom — supply can't be inflated
+    /// past the type ceiling. (Solady's _mint independently guards total-supply overflow too.)
+    function test_capped_mint_overflow_reverts() public {
+        CappedMintMinter m = new CappedMintMinter(factory, ETCHER, SALT, "CAP", 18, bytes32(0), AUTH, 0, 0);
+        vm.prank(AUTH);
+        m.mint(ALICE, type(uint256).max);
+        assertEq(m.minted(), type(uint256).max, "lifetime minted saturated at the type ceiling");
+        vm.prank(AUTH);
+        vm.expectRevert(stdError.arithmeticError); // minted + amount overflows the accumulator
+        m.mint(ALICE, 1);
+    }
+
+    /// The Ethereum-side mint authority is deliberately OPEN (any address the deployer picks). A
+    /// zero authority is ACCEPTED — not rejected — and simply yields an inert, non-mintable token:
+    /// fail-closed (no usable key satisfies `msg.sender == address(0)`), no inflation surface, and
+    /// recoverable (a real-authority deploy lands at a different minter/token address). We assert
+    /// the non-guard on purpose so it is not "helpfully" clamped later, removing that flexibility.
+    function test_capped_zero_authority_is_inert_not_reverting() public {
+        CappedMintMinter m = new CappedMintMinter(factory, ETCHER, SALT, "CAP", 18, bytes32(0), address(0), 0, 0);
+        assertEq(m.MINT_AUTHORITY(), address(0), "zero authority accepted (open-minter design)");
+        vm.prank(ALICE);
+        vm.expectRevert(CappedMintMinter.NotAuthority.selector);
+        m.mint(ALICE, 1e18);
     }
 
     // ── Soundness: a mintable form can NEVER become a pool-backed (bridged) asset ──
