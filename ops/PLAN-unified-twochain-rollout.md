@@ -117,9 +117,17 @@ Custody posture (accept+document for launch): self-custody locks → a locker ca
   guest builds + a `mode_b=0` fixture executes clean (recursion skipped, cycles 10.4M→9.1M, burn folds,
   pv=320); cxfer-core 92 green; ConfidentialPool 90 green incl. `test_attest_zero_eth_pool_accepted_forward_only`.
   Witnesses: `mode_b` written before `eth_pv` across all three reflect harnesses.
-- **Remaining for A0:** the actual box groth16 prove on the current toolchain (now sound by construction —
-  no empty deferred set) → rotate `BITCOIN_RELAY_VKEY` → deploy. (B1 later wires the worker assembler to set
-  `mode_b=1` + supply the eth-reflection inner proof for crossOut batches.) Box stopped between attempts (funds).
+- **Re-prove DONE (commit `17f954c`, 2026-06-15).** The gated reflection guest GPU-proved clean on the box
+  (no field-division) and verifies **on-chain** through the vendored SP1VerifierGroth16: new
+  `BITCOIN_RELAY_VKEY = 0x007a9fee…` (off `0x005e6adc`), committed ELF (sha `1173ede8…`, 606920 B), pin +
+  `FROZEN_*` + readiness allowlist rotated, both real fixtures regenerated — `ConfidentialReflectionProofReal`
+  7/7 + `ConfidentialReflectionBurnDepositProofReal` 7/7 verify at the new vkey; settle `0x00d5b572` frozen
+  (its `*ProofReal` + crosslane still green); cxfer-core 92, ConfidentialPool 90. The forward-bridge blocker
+  is gone — the burn-deposit/cmint/CBURN onboarding is provable on the current toolchain.
+- **Remaining for A0:** (a) optionally fold the multiasset generalization (the pending guest impl) in for one
+  more vkey rotation before deploy — else it's a follow-up rotation; (b) **deploy a fresh `ConfidentialPool`**
+  at `0x007a9fee` (+ factory, header relay, genesis anchor) + bootstrap reflection. (B1 later wires the worker
+  assembler to set `mode_b=1` + supply the eth-reflection inner proof for crossOut batches.) Box stopped (funds).
 
 ### A1 — Onboard Bitcoin assets to the new pool (TAC first)  [dep: A0]
 - `attest_meta` → canonical ERC20 deploys at `f(asset_id)` (pool = MINTER) → bridge a TAC note in →
