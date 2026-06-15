@@ -16,6 +16,34 @@
 use bn::{pairing_batch, AffineG1, AffineG2, Fq, Fq2, Fr, Group, Gt, G1, G2};
 use cxfer_core::{G16Proof, G16Vk};
 
+/// The baked T_SWAP_BATCH verifying key — the CID-verified ceremony vk (CANONICAL_AMM_VK_CID), generated
+/// from fixtures/swap_batch_vk.json as big-endian field bytes: `alpha1(G1 64) ‖ beta2(G2 128) ‖
+/// gamma2(128) ‖ delta2(128) ‖ IC[0..124](G1 64 each)` = 8384 B. Embedded so the guest never parses JSON
+/// in-zkVM; regenerate if the ceremony ever rotates (the rotation would also rotate BITCOIN_RELAY_VKEY).
+static BATCH_VK_BYTES: &[u8] = include_bytes!("batch_vk.bin");
+const BATCH_NPUBLIC: usize = 123;
+
+fn rd32(b: &[u8], off: usize) -> [u8; 32] {
+    let mut a = [0u8; 32];
+    a.copy_from_slice(&b[off..off + 32]);
+    a
+}
+
+/// Build the baked swap_batch `G16Vk` from the embedded blob. Panics only on a corrupt embed (a build-time
+/// invariant — the blob is committed + ceremony-CID-verified, never a runtime input).
+pub fn batch_vk() -> G16Vk {
+    let b = BATCH_VK_BYTES;
+    assert_eq!(b.len(), 448 + (BATCH_NPUBLIC + 1) * 64, "baked batch vk size");
+    let g2 = |o: usize| (rd32(b, o), rd32(b, o + 32), rd32(b, o + 64), rd32(b, o + 96));
+    let mut ic = Vec::with_capacity(BATCH_NPUBLIC + 1);
+    let mut off = 448;
+    for _ in 0..(BATCH_NPUBLIC + 1) {
+        ic.push((rd32(b, off), rd32(b, off + 32)));
+        off += 64;
+    }
+    G16Vk { alpha1: (rd32(b, 0), rd32(b, 32)), beta2: g2(64), gamma2: g2(192), delta2: g2(320), ic }
+}
+
 /// Parse a big-endian 32-byte field element into `Fq` (BN254 base field).
 fn fq(b: &[u8; 32]) -> Option<Fq> {
     Fq::from_slice(b).ok()
