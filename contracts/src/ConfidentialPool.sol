@@ -242,7 +242,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     // knownReflectionDigest is seeded to this so the first attestation continues genesis. Pinned in
     // cxfer-core (genesis_digest_matches_contract_constant). Tied to BITCOIN_RELAY_VKEY (one prover).
     bytes32 public constant REFLECTION_GENESIS_DIGEST =
-        0x164ac1b2bd8537ee7d8b6ae9af72b90958649ceed368e55056de8417bcd30044;
+        0x0dd951a946819f644d6a00d1ad0db2d29affccd58d6983d1b24b73e213e6ad7e;
 
     // A shared (Bitcoin-side) asset id => this pool's local registry key. A bridge_mint note
     // carries the SHARED id as its `asset` (it must, to prove membership in the Bitcoin

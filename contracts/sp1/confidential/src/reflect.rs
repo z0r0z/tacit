@@ -29,7 +29,8 @@ use alloy_sol_types::private::U256;
 use alloy_sol_types::SolType;
 use cxfer_core::{
     bitcoin, burn_deposit, commitment_hash, commitment_hash_compressed, from_affine_xy, leaf, nullifier,
-    outpoint_key, scan_tx_spends, verify_cxfer_conservation, LiveUtxoSet, Point, ScanReflection,
+    outpoint_key, scan_tx_spends, verify_cxfer_conservation, LiveUtxoSet, Point, PoolReserveSet,
+    PoolReserveState, ScanReflection,
 };
 use sp1_zkvm::io;
 
@@ -79,9 +80,23 @@ fn read_scan_prior_state() -> ScanReflection {
     let cbtc_lock_triples: Vec<([u8; 32], [u8; 32], [u8; 32])> = (0..n_cbtc_locks).map(|_| (r32(), r32(), r32())).collect();
     let cbtc_locks = LiveUtxoSet::from_sorted(cbtc_lock_triples).expect("handed cBTC lock set not sorted/unique");
     let cbtc_backing_sats: u64 = io::read();
+    // Track B resume state: the per-pool reserve registry — (pool_id, asset_a, asset_b, reserve_a,
+    // reserve_b, c0_backed). Rides digest() (cxfer-core), so a wrong handoff (forged reserve / flipped
+    // backing flag) fails the priorDigest chain. Empty for a no-AMM-pool batch (n=0).
+    let n_pools: u32 = io::read();
+    let pool_entries: Vec<([u8; 32], PoolReserveState)> = (0..n_pools).map(|_| {
+        let pool_id = r32();
+        let asset_a = r32();
+        let asset_b = r32();
+        let reserve_a: u64 = io::read();
+        let reserve_b: u64 = io::read();
+        let c0_backed: u32 = io::read();
+        (pool_id, PoolReserveState { asset_a, asset_b, reserve_a, reserve_b, c0_backed: c0_backed != 0 })
+    }).collect();
+    let pools = PoolReserveSet::from_sorted(pool_entries).expect("handed pool reserve set not sorted/unique");
     ScanReflection {
         pool_root, note_count, spent_root, spent_count, live, burn_root, burn_count, height,
-        cbtc_locks, cbtc_backing_sats,
+        cbtc_locks, cbtc_backing_sats, pools,
     }
 }
 

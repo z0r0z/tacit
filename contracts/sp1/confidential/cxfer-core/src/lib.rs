@@ -1931,6 +1931,89 @@ pub struct PoolReserveState {
     pub c0_backed: bool,
 }
 
+/// The Track-B per-pool reserve registry: a sorted `pool_id → PoolReserveState` map with a committed
+/// `root()` (mirrors `LiveUtxoSet`). The root joins `ScanReflection::digest()`, so a resumed cycle's
+/// handed pools are pinned by the digest chain (`priorDigest == knownReflectionDigest`) — a prover cannot
+/// resume with a forged reserve or a falsely-`c0_backed` pool. POOL_INIT/LP-add insert + advance entries;
+/// `fold_swap_var` reads the looked-up state, applies, and the caller writes it back.
+#[derive(Clone)]
+pub struct PoolReserveSet {
+    entries: Vec<([u8; 32], PoolReserveState)>,
+}
+
+impl Default for PoolReserveSet {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl PoolReserveSet {
+    pub fn new() -> Self {
+        Self { entries: Vec::new() }
+    }
+
+    /// Adopt a handed registry: pool_ids strictly ascending + non-zero (same discipline as `LiveUtxoSet`).
+    pub fn from_sorted(entries: Vec<([u8; 32], PoolReserveState)>) -> Option<Self> {
+        for i in 0..entries.len() {
+            if entries[i].0 == [0u8; 32] {
+                return None;
+            }
+            if i > 0 && !be_lt(&entries[i - 1].0, &entries[i].0) {
+                return None;
+            }
+        }
+        Some(Self { entries })
+    }
+
+    /// The pool's current state, if tracked. Cloned so the caller can fold + write back without holding a
+    /// borrow on `self` (which `fold_swap_var` needs mutably for the note-tree append).
+    pub fn get(&self, pool_id: &[u8; 32]) -> Option<PoolReserveState> {
+        self.entries.binary_search_by(|(k, _)| k.cmp(pool_id)).ok().map(|i| self.entries[i].1.clone())
+    }
+
+    /// Register a new pool (POOL_INIT). Panics on a duplicate pool_id (a malformed batch — a pool is
+    /// initialized once).
+    pub fn insert(&mut self, pool_id: &[u8; 32], state: PoolReserveState) {
+        match self.entries.binary_search_by(|(k, _)| k.cmp(pool_id)) {
+            Ok(_) => panic!("duplicate pool in reserve set"),
+            Err(i) => self.entries.insert(i, (*pool_id, state)),
+        }
+    }
+
+    /// Advance an existing pool's reserves (swap / LP). Panics if the pool isn't registered (the caller
+    /// resolves it via `get` first).
+    pub fn update(&mut self, pool_id: &[u8; 32], state: PoolReserveState) {
+        let i = self.entries.binary_search_by(|(k, _)| k.cmp(pool_id)).expect("pool not in reserve set");
+        self.entries[i].1 = state;
+    }
+
+    /// Committed root: Keccak Merkle over `(pool_id ‖ asset_a ‖ asset_b ‖ reserve_a ‖ reserve_b ‖ c0_backed)`
+    /// leaves in pool_id order. Every field is committed so a resumed handoff can't forge a reserve or flip
+    /// the backing flag without failing the digest chain.
+    pub fn root(&self) -> [u8; 32] {
+        let u64b = |n: u64| {
+            let mut a = [0u8; 32];
+            a[24..].copy_from_slice(&n.to_be_bytes());
+            a
+        };
+        let leaves: Vec<[u8; 32]> = self.entries.iter().map(|(k, s)| {
+            let mut backed = [0u8; 32];
+            if s.c0_backed {
+                backed[31] = 1;
+            }
+            kn(&[k, &s.asset_a, &s.asset_b, &u64b(s.reserve_a), &u64b(s.reserve_b), &backed])
+        }).collect();
+        keccak_merkle_root(&leaves)
+    }
+
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+}
+
 #[derive(Clone)]
 pub struct ScanReflection {
     pub pool_root: [u8; 32],
@@ -1948,6 +2031,9 @@ pub struct ScanReflection {
     // Both are committed in `digest()` so the resumed total can't be forged.
     pub cbtc_locks: LiveUtxoSet,
     pub cbtc_backing_sats: u64,
+    // Track B: per-pool public-reserve provenance (pool_id → reserves + c0_backed). Advanced by the AMM
+    // folds (POOL_INIT / LP / swap); committed in `digest()` so a resumed cycle can't forge a pool's backing.
+    pub pools: PoolReserveSet,
 }
 
 impl Default for ScanReflection {
@@ -1971,6 +2057,7 @@ impl ScanReflection {
             height: 0,
             cbtc_locks: LiveUtxoSet::new(),
             cbtc_backing_sats: 0,
+            pools: PoolReserveSet::new(),
         }
     }
 
@@ -1996,6 +2083,9 @@ impl ScanReflection {
             &u64b(self.height),
             // cBTC backing — pinned so a resumed cycle can't forge the live cBTC.zk lock total.
             &self.cbtc_locks.root(), &u64b(self.cbtc_backing_sats),
+            // Track B: per-pool reserve registry — pinned so a resumed cycle can't forge a pool's
+            // reserves or its c0_backed flag (which would let fold_swap_var onboard unbacked value).
+            &self.pools.root(), &u64b(self.pools.len() as u64),
         ])
     }
 
@@ -2636,7 +2726,7 @@ mod tests {
     fn genesis_digest_matches_contract_constant() {
         assert_eq!(
             ScanReflection::genesis().digest(),
-            arr32("0x164ac1b2bd8537ee7d8b6ae9af72b90958649ceed368e55056de8417bcd30044"),
+            arr32("0x0dd951a946819f644d6a00d1ad0db2d29affccd58d6983d1b24b73e213e6ad7e"),
             "ScanReflection::genesis().digest() drifted from ConfidentialPool.REFLECTION_GENESIS_DIGEST"
         );
     }
@@ -3310,6 +3400,36 @@ mod tests {
         let c_big = compress(&(gen_h() * Scalar::from(big) + ProjectivePoint::generator() * scalar_reduce_be(&r_receipt_bytes)));
         let mut over = env.clone(); over.delta_out = big; over.c_receipt = c_big;
         assert!(sc.fold_swap_var(&mut p, &over, op, &asset_a, &[0x01u8; 32], &path).is_err(), "out-reserve over-draw rejected");
+    }
+
+    #[test]
+    fn pool_reserve_set_insert_get_update_root() {
+        let mut s = PoolReserveSet::new();
+        assert!(s.is_empty());
+        let pid1 = [0x01u8; 32];
+        let pid2 = [0x02u8; 32];
+        let st = |ra, rb, backed| PoolReserveState {
+            asset_a: [0xAAu8; 32], asset_b: [0xBBu8; 32], reserve_a: ra, reserve_b: rb, c0_backed: backed,
+        };
+        s.insert(&pid1, st(100, 200, true));
+        s.insert(&pid2, st(300, 400, false));
+        assert_eq!(s.len(), 2);
+        let got = s.get(&pid1).expect("pid1 tracked");
+        assert_eq!((got.reserve_a, got.reserve_b, got.c0_backed), (100, 200, true));
+        assert!(s.get(&[0x09u8; 32]).is_none(), "untracked pool → None");
+
+        // root is deterministic + sensitive to every committed field (reserves + the backing flag).
+        let root0 = s.root();
+        assert_eq!(root0, s.root(), "root deterministic");
+        s.update(&pid1, st(101, 200, true)); // reserve_a changed
+        assert_ne!(root0, s.root(), "root tracks reserve change");
+        let r1 = s.root();
+        s.update(&pid1, st(101, 200, false)); // c0_backed flipped
+        assert_ne!(r1, s.root(), "root tracks the c0_backed flag");
+
+        // from_sorted rejects an out-of-order / zero-key handoff (a forged resume can't sneak in).
+        assert!(PoolReserveSet::from_sorted(vec![(pid2, st(1, 1, true)), (pid1, st(1, 1, true))]).is_none(), "unsorted rejected");
+        assert!(PoolReserveSet::from_sorted(vec![([0u8; 32], st(1, 1, true))]).is_none(), "zero pool_id rejected");
     }
 
     // REFLECT-1 regression: the reflection prover must NOT fold a confirmed CXFER tx's outputs into
@@ -4007,7 +4127,7 @@ mod tests {
     #[test]
     fn scan_reflection_genesis_digest() {
         let g = ScanReflection::genesis();
-        assert_eq!(hex::encode(g.digest()), "164ac1b2bd8537ee7d8b6ae9af72b90958649ceed368e55056de8417bcd30044", "full-scan genesis digest (JS indexer + contract must match)");
+        assert_eq!(hex::encode(g.digest()), "0dd951a946819f644d6a00d1ad0db2d29affccd58d6983d1b24b73e213e6ad7e", "full-scan genesis digest (JS indexer + contract must match)");
         // empty live set root == empty note-tree root (both keccak_merkle_root([])); spent + burn
         // keep the {0→0} sentinel roots.
         assert_eq!(g.live.root(), g.pool_root);
