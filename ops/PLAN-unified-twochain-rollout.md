@@ -152,11 +152,34 @@ Gas-abstraction is **live, not just contract-supported** — but operator-subsid
   the box settles.
 - BUT it is ONE operator-run settler (FIFO, shares the box's single GPU with the tETH loop), and in the
   pilot it self-proves with **no fee taken** (the `ConfidentialPool` "self-prove sets no fees, pays only
-  gas" path) — the operator eats the gas. The in-asset `FeePayment` → `msg.sender` mechanism is built
-  but unexercised; it is the path to a fee-funded relayer.
-- Follow-up (off the A/B/C critical path): exercise `FeePayment` (relayer takes an in-asset fee) and open
-  the settler beyond the single box — that turns "operator-subsidized" into a sustainable, decentralized
-  relayer market.
+  gas" path) — the operator eats the gas.
+
+Compensating the settler has TWO paths:
+- **Tip-output — no re-prove, shippable now.** The user adds a normal settler-fee OUTPUT note to their
+  own trade; the deployed guest already conserves all outputs (`Σin = Σout`), so it is sound on the
+  current ELF — the settler is just another recipient. The box (prover+settler) enforces it as policy:
+  prove+settle only intents that tip ≥ the schedule to its address (it sees the witness amounts). Pure
+  dapp + worker/box change — no guest, contract, or vkey change. See the near-term item below.
+- **In-proof `FeePayment` — needs a re-prove.** The elegant form: the proof commits `pv.fees` →
+  `_payout(msg.sender)` (`ConfidentialPool.sol:914`). Doubly gated on the guest: the deployed ELF
+  hardcodes `fees = []` (`main.rs:134`) AND lacks the kernel `−fee·H` conservation term (without it the
+  payout is unbacked = a drain). Fold both into the A0 re-prove; then the fee rides in the proof instead
+  of as a separate output and supersedes the tip-output cleanly.
+- Follow-up (off the A/B/C critical path): open the settler beyond the single box — that turns
+  "operator-subsidized" into a sustainable, decentralized relayer market.
+
+### Near-term, no-re-prove: settler-fee tip-output (self-sustaining relaying today)
+Shippable against the LIVE Sepolia pool — **no A0 dependency**:
+1. **dapp:** when building a trade intent (OP_TRANSFER / OP_SWAP / OP_OTC / OP_BID), add an extra OUTPUT
+   note to the settler's published confidential address for the fee (flat or % of the traded asset).
+   Conservation already covers it — it is just another output of the same op.
+2. **worker/box:** publish the settler fee address + schedule; the settle loop
+   (`scripts/confidential-settle-loop.sh` / `worker/src/confidential-settle.js`) verifies the intent
+   includes the tip output (witness amounts are box-visible) and refuses to prove+settle intents that do
+   not pay it.
+3. **(optional) dapp quote:** surface "settler fee: X" so the user sees the cost up front.
+No guest / contract / vkey change. Makes the operator-subsidized settler fee-funded immediately; the
+in-proof `pv.fees` form replaces it at the A0 re-prove.
 
 ---
 
