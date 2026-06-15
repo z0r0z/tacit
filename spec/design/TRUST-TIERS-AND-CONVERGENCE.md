@@ -142,28 +142,42 @@ items are NOT drop-in fixes — each has a design dependency, noted inline.
   — false on mainnet — so an LP-share could be credited with no proof; now gated
   only on the VK being pinned, with proof + VK both on-chain/inlined).
 
-  **Structural verdict (per the no-worker-trust mandate):** the Bitcoin AMM
-  cannot reach Tier 0 by patching. Its reserves/shares are **virtual** —
-  "tracked as virtual public quantities the indexer attests to" (AMM.md), with
-  **no on-chain pool state**. So SWAP/LP_REMOVE output amounts and
-  `T_PROTOCOL_FEE_CLAIM`'s accrued total are computed against worker-held
-  reserves with nothing on chain to verify them against; a per-op proof would
-  still bind to a `reserves_before` the worker supplies. The value-binding fix
-  above removes one worker-trust point (LP-share minting) but the **virtual
-  reserves are an irreducible worker-trust** in this model.
+  **The remaining trust is the WORKER-COMPUTED reserves, and it is reducible.**
+  Today the dapp reads the worker's `reserve_a/reserve_b/lp_total_shares` and
+  computes SWAP/LP_REMOVE/fee-claim amounts against them; the per-trade swaps
+  "carry no proof and trust this single indexer" (AMM.md). But reserves are NOT
+  irreducibly worker-held — they are public and replayable: "anyone can
+  reconstruct exactly what every reserve is at every height by replaying
+  confirmed envelopes" (AMM.md), because every op's deltas are public and
+  kernel-sig-backed (real value moved).
 
-  The EVM settle AMM is the opposite by construction: `struct Pool { reserveA,
-  reserveB, totalShares }` lives on chain and every `OP_SWAP`/`OP_LP_ADD`/
-  `OP_LP_REMOVE` transition is SP1-proven and verified in `settle`
-  (reservePre→reservePost bound by the proof). It is already Tier 0.
+  **Path to Tier 0 (option A) — client-side replay (sound, keeps the AMM on
+  Bitcoin).** The dapp computes reserves itself by replaying the pool's
+  confirmed envelopes (depth ≥ 3, canonical order), and for each op RECOMPUTES
+  the curve output from its own replayed `reserves_before` + the public `deltaIn`
+  and checks the on-chain receipt/output commitment opens to it. Sound: with a
+  correct (complete) replay every commitment opens; if the worker omits or lies
+  about an op, the client's reserves are wrong → its recomputed output ≠ the
+  on-chain commitment → it rejects that op and halts. A malicious/incomplete
+  worker can only cause REJECTION (liveness), never an inflated credit
+  (soundness). The worker drops to discovery-only. No new wire format is needed
+  (receipts + deltas are already on chain); the work is a client-side
+  replay-and-verify engine (incremental, with depth-3-final caching for cost).
+  Liveness still needs op ENUMERATION — worker-list-then-verify is sound, full
+  liveness-trustlessness wants independent enumeration (block scan or a
+  chain-followable op structure).
 
-  **Path to Tier 0: converge — do not rebuild.** Route AMM trading through the
-  EVM proven settle (Bitcoin-native assets reach it via the reflection bridge,
-  same as the tETH → pool move), and retire the virtual-reserve Bitcoin AMM
-  (`T_LP_ADD`/`T_SWAP_VAR`/`T_LP_REMOVE`/`T_PROTOCOL_FEE_CLAIM`). Building a
-  trustless Bitcoin AMM instead would mean putting reserves in an on-chain
-  UTXO-state chain AND a per-op proving system — i.e. duplicating the EVM AMM.
-  Convergence is the only proportionate trustless answer.
+  **Path to Tier 0 (option B) — converge onto the EVM settle AMM**, which is
+  already Tier 0 by construction: `struct Pool { reserveA, reserveB,
+  totalShares }` lives on chain and every transition is SP1-proven and verified
+  in `settle`. Bitcoin-native assets reach it via the reflection bridge (same as
+  tETH → pool). This trades the client replay cost for a bridge hop + one shared
+  proving system.
+
+  Either reaches Tier 0; option A is the smaller change and keeps trading on
+  Bitcoin, option B unifies the AMM onto the proven layer. (Earlier revisions of
+  this note called the worker reserves "irreducible" and convergence "the only
+  answer" — that was wrong; the replay path above is sound.)
 - **Permissionless-mint / claim caps (`T_PMINT`, `T_DCLAIM`) — client-side cap
   computation.** The cap is enforced from confirmed chain state in principle, but
   today the dapp trusts the worker's credited set (`last_credited_*`, the
