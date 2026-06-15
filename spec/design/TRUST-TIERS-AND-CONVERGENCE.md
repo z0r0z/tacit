@@ -13,6 +13,22 @@ models** and, in a few cases, **overlapping scope**. This note makes the trust
 tier of each feature explicit so nothing reads as trustless that isn't, and
 sketches the convergence path that would collapse the redundancy.
 
+## Mandate: no worker trust
+
+The standing requirement is that **nothing trusts a worker for soundness** —
+every feature must be Tier 0. Tier 1 (indexer-attested) is not an acceptable
+end state; it is a temporary, gated-off staging point. A Tier-1 feature reaches
+Tier 0 in exactly one of two ways: (a) its state lives **on chain** and every
+transition is **proven + verified on chain** (the EVM settle model), or (b) its
+state is **a deterministic function of chain history that every client
+re-derives and re-verifies** (replay-and-verify, no worker for soundness). If a
+feature's authoritative state exists *only* in a worker's KV with no on-chain
+counterpart, it is structurally worker-trusting and cannot be patched to Tier 0
+— it must be redesigned onto (a) or converged onto a feature that already is.
+
+This is the lens for everything below: a worker may serve data for *liveness*
+(discovery, hints, caching), but a client must never trust it for *soundness*.
+
 ## The three tiers
 
 **Tier 0 — trustless, proven.** Correctness follows from on-chain verification
@@ -124,12 +140,42 @@ items are NOT drop-in fixes — each has a design dependency, noted inline.
   the sigma), and (b) its LP_ADD Groth16 binds `share_amount` to that BJJ
   commitment + range-bounds the inputs (previously gated on `_isAmmCeremonyUnlocked`
   — false on mainnet — so an LP-share could be credited with no proof; now gated
-  only on the VK being pinned, with proof + VK both on-chain/inlined). **Remaining
-  for full Tier 0:** the pool *reserve/share registry* is still a single
-  non-consensus worker — bring pool state under a proof (or a consensus indexer)
-  so SWAP/LP_REMOVE outputs aren't worker-attested; and apply the same value-
-  binding gate to `T_PROTOCOL_FEE_CLAIM` (today it mints an `lp_asset_id` UTXO
-  with no proof check).
+  only on the VK being pinned, with proof + VK both on-chain/inlined).
+
+  **Structural verdict (per the no-worker-trust mandate):** the Bitcoin AMM
+  cannot reach Tier 0 by patching. Its reserves/shares are **virtual** —
+  "tracked as virtual public quantities the indexer attests to" (AMM.md), with
+  **no on-chain pool state**. So SWAP/LP_REMOVE output amounts and
+  `T_PROTOCOL_FEE_CLAIM`'s accrued total are computed against worker-held
+  reserves with nothing on chain to verify them against; a per-op proof would
+  still bind to a `reserves_before` the worker supplies. The value-binding fix
+  above removes one worker-trust point (LP-share minting) but the **virtual
+  reserves are an irreducible worker-trust** in this model.
+
+  The EVM settle AMM is the opposite by construction: `struct Pool { reserveA,
+  reserveB, totalShares }` lives on chain and every `OP_SWAP`/`OP_LP_ADD`/
+  `OP_LP_REMOVE` transition is SP1-proven and verified in `settle`
+  (reservePre→reservePost bound by the proof). It is already Tier 0.
+
+  **Path to Tier 0: converge — do not rebuild.** Route AMM trading through the
+  EVM proven settle (Bitcoin-native assets reach it via the reflection bridge,
+  same as the tETH → pool move), and retire the virtual-reserve Bitcoin AMM
+  (`T_LP_ADD`/`T_SWAP_VAR`/`T_LP_REMOVE`/`T_PROTOCOL_FEE_CLAIM`). Building a
+  trustless Bitcoin AMM instead would mean putting reserves in an on-chain
+  UTXO-state chain AND a per-op proving system — i.e. duplicating the EVM AMM.
+  Convergence is the only proportionate trustless answer.
+- **Permissionless-mint / claim caps (`T_PMINT`, `T_DCLAIM`) — client-side cap
+  computation.** The cap is enforced from confirmed chain state in principle, but
+  today the dapp trusts the worker's credited set (`last_credited_*`, the
+  `credited_txids` / `cap_overflow_txids` lists) for the per-mint credit
+  decision; the worker is the soundness authority. The de-dup + reorg-detection
+  + depth-3 hardening landed, but Tier 0 requires the **client** to enumerate the
+  asset's `T_PMINT`/`T_DCLAIM`s from chain in canonical order and compute the cap
+  itself (depth ≥ 3, de-dup, overflow) — trusting the worker only to *discover*
+  candidate txids (liveness), never to *decide* credit. The enumeration index is
+  the open problem (a client needs to find an asset's mints without scanning
+  every block); a chain-followable structure (e.g. each mint anchored so the set
+  is walkable) or an accept-from-any-source-then-verify model closes it.
 - **cBTC.zk fungibility — §5.24.6 ENFORCED (cBTC variant family).** The
   `T_SLOT_SPLIT` / `T_SLOT_MERGE` cross-asset rule now binds every output wrapper
   to the canonical variant for its OWN denomination (`asset_id ==
