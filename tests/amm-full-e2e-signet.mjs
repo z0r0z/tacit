@@ -597,6 +597,62 @@ for (const plan of lpAddPlans) {
 }
 
 // =========================================================================
+// Phase 6b: trustless-replay SHADOW CHECK (POOL_INIT + LP_ADD)
+// =========================================================================
+// At this point each LP-added pool has exactly two ops on chain — POOL_INIT
+// then LP_ADD — both fully covered by the client-side replay (no SWAP_ROUTE or
+// fee-claim yet, which the replay fails-closed on). Reconstruct each pool's
+// { reserveA, reserveB, totalShares } from chain ALONE (dapp.ammReserveShadowCheck
+// with discoverOverride feeding the txids we just broadcast — no worker op-index
+// needed) and assert it equals the worker's reported reserves. A MATCH proves the
+// trustless replay reproduces the indexer byte-for-byte on real signet data: the
+// soundness foundation for moving the AMM credit path off the worker. The worker
+// pool record is still consulted by the shadow check, but only for the pool's
+// fee/capability binding params + the reserves being compared against — never for
+// the reserves the replay derives.
+step('6b', 'trustless-replay shadow check (POOL_INIT + LP_ADD vs worker)');
+{
+  let sigTip = null;
+  try {
+    const tr = await fetch('https://mempool.space/signet/api/blocks/tip/height');
+    if (tr.ok) sigTip = parseInt((await tr.text()).trim(), 10);
+  } catch {}
+  if (!Number.isInteger(sigTip)) warn('could not fetch signet tip; shadow check will self-resolve it');
+  for (const label of ['A_TAC_30', 'B_TAC_5']) {
+    const pool = state.pools[label];
+    const lpAdd = state.lpAdds[label];
+    if (!pool || !lpAdd) { warn(`shadow ${label}: missing pool/lpAdd record; skip`); continue; }
+    // Broadcast order as synthetic discover heights (POOL_INIT before LP_ADD);
+    // the real depth-gate uses each tx's on-chain block height via getTx.
+    const ops = [
+      { txid: pool.reveal_txid,  height: 1, txIndex: 0 },
+      { txid: lpAdd.reveal_txid, height: 2, txIndex: 0 },
+    ];
+    try {
+      const r = await dapp.ammReserveShadowCheck(pool.pool_id_hex, {
+        tipHeight: sigTip ?? undefined,
+        confirmations: 1,
+        discoverOverride: async () => ops,
+      });
+      if (r.match) {
+        ok(`shadow ${label}: MATCH — trustless replay == worker from chain alone ` +
+           `(A=${r.derived.reserveA} B=${r.derived.reserveB} S=${r.derived.totalShares})`);
+      } else {
+        for (const d of r.diffs) warn(`  ${d}`);
+        fail(`shadow ${label}: MISMATCH — client replay diverged from worker reserves`);
+      }
+    } catch (e) {
+      const m = String(e.message || e);
+      if (/unconfirmed|confirmation depth/i.test(m)) {
+        warn(`shadow ${label}: ops not yet buried (${m}); skip — re-run to validate`);
+      } else {
+        fail(`shadow ${label}: replay threw — ${m}`);
+      }
+    }
+  }
+}
+
+// =========================================================================
 // Phase 7: single-hop swaps (trader)
 // =========================================================================
 step(7, 'single-hop swaps (trader)');
