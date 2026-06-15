@@ -447,6 +447,41 @@ pub fn main() {
                     &cb_asset, &cx, &cy, tx, lock_vout, &txid, &note_path, &sig_rx, &sig_ry, &sig_z,
                 );
             }
+
+            // Track A: an orderbook bid fill (T_PREAUTH_BID_VAR, 0x5C) is a CXFER on the tacit-asset side —
+            // the seller's asset inputs (the only pool-UTXO spends; the buyer pre-funds in native sats)
+            // conserve into the buyer's filled note + the seller's change under tacit-kernel-v1, with one
+            // aggregated BP+ range over all outputs. So fold it EXACTLY like a cxfer: re-verify Σ C_in =
+            // Σ C_out + range BEFORE onboarding any output note (REFLECT-1 discipline). This onboards the
+            // buyer's filled note (the bridgeable one) + the seller's change. OTC (T_AXFER 0x26) needs NO
+            // branch here — parse_cxfer_envelope_full now accepts 0x26, so the cxfer fold above handles it.
+            if let Some((bid_asset, bid_kernel_sig, bid_commitments, bid_range_proof)) =
+                env.as_ref().and_then(|e| bitcoin::parse_preauth_bid_var_envelope(e))
+            {
+                let in_outpoints: Vec<([u8; 32], u32)> = spends.iter().map(|s| (s.prev_txid, s.prev_vout)).collect();
+                let in_points: Vec<Point> = spends.iter()
+                    .map(|s| from_affine_xy(&s.cx, &s.cy).expect("bid input commitment xy"))
+                    .collect();
+                let in_assets: Vec<[u8; 32]> = spends.iter().map(|s| s.asset).collect();
+                let asset_preserving = in_assets.iter().all(|a| a == &bid_asset);
+                if asset_preserving
+                    && verify_cxfer_conservation(&bid_asset, &in_outpoints, &in_points, &bid_commitments, &bid_range_proof, &bid_kernel_sig)
+                {
+                    // Note-tree append paths are witnessed; vouts are DERIVED (a witnessed vout could key a
+                    // note at a bogus outpoint → its later real spend misses the live set). The bid tx carries
+                    // the envelope_hash at vout[0] (OP_RETURN), so its confidential output notes begin at
+                    // vout[1]; confirm the exact bid-tx output ordering on the box when wiring the assembler
+                    // (a wrong vout is fail-closed — the note onboards unspendable, never over-mints).
+                    let mut paths: Vec<Vec<[u8; 32]>> = Vec::with_capacity(bid_commitments.len());
+                    let mut vouts: Vec<u32> = Vec::with_capacity(bid_commitments.len());
+                    for i in 0..bid_commitments.len() {
+                        paths.push(r_path());
+                        vouts.push(1 + i as u32);
+                    }
+                    state.fold_cxfer(&bid_asset, &in_outpoints, &in_points, &in_assets, &txid, &bid_commitments, &paths, &vouts, &bid_range_proof, &bid_kernel_sig)
+                        .expect("bid fold");
+                }
+            }
         }
         state.height = height;
     }

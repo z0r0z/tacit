@@ -457,8 +457,15 @@ pub fn parse_cxfer_envelope(env: &[u8]) -> Option<([u8; 32], Vec<[u8; 33]>)> {
 /// the leaf-SHAPE binding (`reflected_note_leaf`) cannot catch it — an inflated commitment is still a
 /// valid curve point. Returns `(asset, kernel_sig, output_commitments, range_proof)`; None if not a
 /// well-formed CXFER envelope.
+///
+/// Also accepts **`T_AXFER` (0x26)** — the OTC atomic-settlement variant. Its wire is byte-identical to
+/// CXFER (worker `decodeAxferPayload` == `decodeCxferPayload`); the only difference is the Bitcoin tx
+/// carries aux NON-tacit (sats) inputs alongside the tacit ones. Those sats inputs are not pool UTXOs, so
+/// `scan_tx_spends` never detects them — the tacit-asset side conserves under the SAME `tacit-kernel-v1`
+/// kernel, so a confirmed OTC's output notes onboard exactly like a CXFER's (no new fold). See
+/// ops/DESIGN-bridge-multiasset-provenance.md (orderbook/OTC = Track A).
 pub fn parse_cxfer_envelope_full(env: &[u8]) -> Option<([u8; 32], [u8; 64], Vec<[u8; 33]>, Vec<u8>)> {
-    if env.len() < 1 + 32 + 64 + 1 || (env[0] != 0x23 && env[0] != 0x22) {
+    if env.len() < 1 + 32 + 64 + 1 || (env[0] != 0x23 && env[0] != 0x22 && env[0] != 0x26) {
         return None;
     }
     let asset: [u8; 32] = env[1..33].try_into().ok()?;
@@ -481,6 +488,56 @@ pub fn parse_cxfer_envelope_full(env: &[u8]) -> Option<([u8; 32], [u8; 64], Vec<
     }
     let range_proof = env[p..p + rp_len].to_vec();
     Some((asset, kernel_sig, commitments, range_proof))
+}
+
+/// The `T_PREAUTH_BID_VAR` (0x5C) inline section between `asset_input_count` and `kernel_sig`:
+/// `bid_id(16) ‖ recipient_pubkey(33) ‖ price_per_unit(8) ‖ max_fill(8) ‖ fill_increment(8) ‖
+/// fill_amount(8) ‖ recipient_blinding(32) ‖ refund_script_hash(20) ‖ decimals_scale(1)`.
+pub const PREAUTH_BID_VAR_INLINE: usize = 16 + 33 + 8 + 8 + 8 + 8 + 32 + 20 + 1; // 134
+
+/// Parse a `T_PREAUTH_BID_VAR` (0x5C, buyer-offline partial-fill orderbook bid) into the SAME
+/// `(asset, kernel_sig, output_commitments, range_proof)` tuple as a CXFER — because the bid IS a CXFER on
+/// the tacit-asset side: the seller's asset inputs conserve into the buyer's filled note `output[0]` + the
+/// seller's change `output[1]` under `tacit-kernel-v1`, with ONE aggregated BP+ range over all N outputs
+/// (dapp/tacit.js: "one aggregated rangeproof covers all N output commitments"). The sats legs (the seller's
+/// payment + the buyer's refund) are native-BTC outputs, not pool notes, so they're irrelevant to the tacit
+/// kernel. Feeding this tuple to `verify_cxfer_conservation` + the cxfer fold onboards the bid's output notes
+/// exactly like a transfer's — orderbook = Track A. See ops/DESIGN-bridge-multiasset-provenance.md.
+/// Layout: opcode(1) ‖ asset_id(32) ‖ asset_input_count(1) ‖ INLINE(134) ‖ kernel_sig(64) ‖ N(1, ∈{1,2}) ‖
+/// out[0].commitment(33) [‖ out[1].commitment(33) ‖ out[1].amount_ct(8)] ‖ rp_len(2 LE) ‖ rangeproof.
+/// (Only `out[1]` carries an 8-byte `amount_ct`; the buyer's `out[0]` does not — its blinding is cleartext.)
+pub fn parse_preauth_bid_var_envelope(env: &[u8]) -> Option<([u8; 32], [u8; 64], Vec<[u8; 33]>, Vec<u8>)> {
+    let ks_off = 1 + 32 + 1 + PREAUTH_BID_VAR_INLINE; // 168 — start of kernel_sig
+    if env.len() < ks_off + 64 + 1 + 33 + 2 || env[0] != 0x5C {
+        return None;
+    }
+    let asset: [u8; 32] = env[1..33].try_into().ok()?;
+    let kernel_sig: [u8; 64] = env[ks_off..ks_off + 64].try_into().ok()?;
+    let n = env[ks_off + 64] as usize;
+    if n != 1 && n != 2 {
+        return None;
+    }
+    let mut p = ks_off + 64 + 1; // first output commitment
+    let mut commitments = Vec::with_capacity(n);
+    for i in 0..n {
+        if p + 33 > env.len() {
+            return None;
+        }
+        commitments.push(env[p..p + 33].try_into().ok()?);
+        p += 33;
+        if i == 1 {
+            p += 8; // out[1] carries an 8-byte amount_ct; out[0] does not
+        }
+    }
+    if p + 2 > env.len() {
+        return None;
+    }
+    let rp_len = (env[p] as usize) | ((env[p + 1] as usize) << 8);
+    p += 2;
+    if p + rp_len != env.len() {
+        return None;
+    }
+    Some((asset, kernel_sig, commitments, env[p..p + rp_len].to_vec()))
 }
 
 /// Extract the Tacit Taproot envelope payload from vin[0].witness[1].
@@ -753,6 +810,69 @@ mod tests {
         // truncated before the trailing sigs → None (a swap missing its kernel/intent sig can't fold)
         let truncated = &env[..env.len() - 1];
         assert!(parse_swap_var_envelope(truncated).is_none(), "truncated envelope rejected");
+    }
+
+    #[test]
+    fn parse_axfer_0x26_accepted_as_cxfer() {
+        // OTC (T_AXFER 0x26) is byte-identical to CXFER; the cxfer parser must accept it so the existing
+        // fold onboards an OTC's tacit output notes (the sats legs are native-BTC, invisible to the kernel).
+        let mut env = vec![0x26u8];
+        env.extend_from_slice(&[0xAAu8; 32]); // asset_id
+        env.extend_from_slice(&[0x07u8; 64]); // kernel_sig
+        env.push(2u8); // N = 2
+        let (c0, c1) = ([0x02u8; 33], [0x03u8; 33]);
+        env.extend_from_slice(&c0); env.extend_from_slice(&[0u8; 8]);
+        env.extend_from_slice(&c1); env.extend_from_slice(&[0u8; 8]);
+        env.extend_from_slice(&4u16.to_le_bytes()); env.extend_from_slice(&[0xbbu8; 4]);
+        let (asset, ks, commits, rp) = parse_cxfer_envelope_full(&env).expect("0x26 parses as cxfer");
+        assert_eq!(asset, [0xAAu8; 32]);
+        assert_eq!(ks, [0x07u8; 64]);
+        assert_eq!(commits, vec![c0, c1]);
+        assert_eq!(rp, vec![0xbbu8; 4]);
+    }
+
+    #[test]
+    fn parse_preauth_bid_var_round_trips() {
+        // Build a T_PREAUTH_BID_VAR (0x5C) per the dapp encoder, N=2 (seller change present).
+        let asset = [0xCCu8; 32];
+        let ks = [0x09u8; 64];
+        let (out0, out1) = ([0x02u8; 33], [0x03u8; 33]); // buyer's filled note, seller's change
+        let rp = [0xddu8; 6];
+        let mut env = vec![0x5Cu8];
+        env.extend_from_slice(&asset);
+        env.push(1u8); // asset_input_count
+        env.extend_from_slice(&[0x11u8; 16]); // bid_id
+        env.extend_from_slice(&[0x12u8; 33]); // recipient_pubkey
+        env.extend_from_slice(&100u64.to_le_bytes()); // price_per_unit
+        env.extend_from_slice(&1000u64.to_le_bytes()); // max_fill
+        env.extend_from_slice(&10u64.to_le_bytes()); // fill_increment
+        env.extend_from_slice(&500u64.to_le_bytes()); // fill_amount
+        env.extend_from_slice(&[0x13u8; 32]); // recipient_blinding (cleartext)
+        env.extend_from_slice(&[0x14u8; 20]); // refund_script_hash
+        env.push(8u8); // decimals_scale
+        env.extend_from_slice(&ks); // kernel_sig
+        env.push(2u8); // N = 2
+        env.extend_from_slice(&out0); // out[0].commitment (no amount_ct)
+        env.extend_from_slice(&out1); // out[1].commitment
+        env.extend_from_slice(&[0u8; 8]); // out[1].amount_ct
+        env.extend_from_slice(&(rp.len() as u16).to_le_bytes());
+        env.extend_from_slice(&rp);
+
+        let (a, k, commits, rpout) = parse_preauth_bid_var_envelope(&env).expect("bid parses");
+        assert_eq!(a, asset, "asset");
+        assert_eq!(k, ks, "kernel_sig");
+        assert_eq!(commits, vec![out0, out1], "the bid's two output notes");
+        assert_eq!(rpout, rp.to_vec(), "rangeproof");
+        // N=1 (no seller change) also parses.
+        let mut env1 = env[..233 + 33].to_vec();
+        env1[232] = 1; // N = 1
+        env1.extend_from_slice(&4u16.to_le_bytes()); env1.extend_from_slice(&[0xeeu8; 4]);
+        let (_, _, c1only, _) = parse_preauth_bid_var_envelope(&env1).expect("N=1 bid parses");
+        assert_eq!(c1only, vec![out0], "single output");
+        // wrong opcode + truncated reject.
+        let mut bad = env.clone(); bad[0] = 0x22;
+        assert!(parse_preauth_bid_var_envelope(&bad).is_none(), "non-0x5C rejected");
+        assert!(parse_preauth_bid_var_envelope(&env[..env.len() - 1]).is_none(), "truncated rejected");
     }
 
     #[test]
