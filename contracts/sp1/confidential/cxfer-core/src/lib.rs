@@ -2125,6 +2125,22 @@ pub fn dec_to_be32(s: &str) -> Option<[u8; 32]> {
     Some(acc)
 }
 
+/// AMM farm-id derivation domain (worker `ammDeriveFarmId`).
+pub const AMM_FARM_INIT_DOMAIN: &[u8] = b"tacit-amm-farm-init-v1";
+
+/// Derive a farm_id, mirroring the worker's `ammDeriveFarmId`:
+/// `sha256(domain ‖ pool_id ‖ launcher_pubkey(33) ‖ reward_asset ‖ farm_nonce)`. The reflection keys the
+/// farm treasury by this so a T_LP_HARVEST's reward note is drawn from the right (C0-backed) treasury.
+pub fn amm_derive_farm_id(pool_id: &[u8; 32], launcher_pubkey: &[u8; 33], reward_asset: &[u8; 32], farm_nonce: &[u8; 32]) -> [u8; 32] {
+    let mut h = Sha256::new();
+    h.update(AMM_FARM_INIT_DOMAIN);
+    h.update(pool_id);
+    h.update(launcher_pubkey);
+    h.update(reward_asset);
+    h.update(farm_nonce);
+    h.finalize().into()
+}
+
 /// Track-B per-pool reserve provenance (ops/DESIGN-bridge-multiasset-provenance.md). A Bitcoin AMM
 /// pool's `(asset_a, asset_b)` and current public reserves, plus whether those reserves are known to
 /// descend from the assets' supply note `C_0` (`c0_backed`). The reflection advances this as it folds
@@ -2665,6 +2681,74 @@ impl ScanReflection {
         pool.reserve_b -= delta_b;
         pool.total_shares -= share_amount;
         self.pools.update(pool_id, pool);
+        Ok(())
+    }
+
+    /// Fold a confirmed `T_FARM_INIT` (Track B): establish a farm treasury as a C0-backed reserve. The
+    /// launcher's reward-asset input (the detected live spend) conserves `reward_total` into the (virtual)
+    /// treasury under the SAME `tacit-kernel-v1` input-side kernel as a swap (`C_in − C_change =
+    /// reward_total·H`). The treasury is keyed by `farm_id` in the SAME registry as pools — a degenerate
+    /// pool: `asset_a = reward_asset`, `reserve_a = treasury_remaining`, the rest zero (farm_ids never collide
+    /// with pool_ids — different derivations). A later `T_LP_HARVEST` draws reward notes from it. Fails closed
+    /// on a bad funding kernel / duplicate farm.
+    #[allow(clippy::too_many_arguments)]
+    pub fn fold_farm_init(
+        &mut self,
+        farm_id: &[u8; 32],
+        reward_asset: &[u8; 32],
+        reward_total: u64,
+        launcher_input_outpoint: ([u8; 32], u32),
+        launcher_c_in: &[u8; 33],
+        c_change_or_sentinel: &[u8; 33],
+        kernel_sig: &[u8; 64],
+        inputs_c0_backed: bool,
+    ) -> Result<(), &'static str> {
+        if reward_total == 0 {
+            return Err("farm_init fold: zero treasury");
+        }
+        if self.pools.get(farm_id).is_some() {
+            return Err("farm_init fold: farm already registered");
+        }
+        // The launcher really put `reward_total` of `reward_asset` into the treasury (reuses the swap kernel).
+        if !swap_var_kernel_verify(reward_asset, launcher_input_outpoint, launcher_c_in, c_change_or_sentinel, reward_total, kernel_sig) {
+            return Err("farm_init fold: treasury-funding kernel");
+        }
+        self.pools.insert(farm_id, PoolReserveState {
+            asset_a: *reward_asset, asset_b: [0u8; 32], reserve_a: reward_total, reserve_b: 0,
+            total_shares: 0, c0_backed: inputs_c0_backed,
+        });
+        Ok(())
+    }
+
+    /// Fold a confirmed `T_LP_HARVEST` (Track B): onboard a farmer's reward note (drawn from a C0-backed farm
+    /// treasury) as real + bridgeable. The reward note is DERIVED from the PUBLIC `(reward_amount, reward_r)`
+    /// the envelope carries — `C_reward = reward_amount·H + reward_r·G` — so its value is exactly the treasury
+    /// draw, and the treasury is debited `reward_amount` (≤ the remaining treasury ⇒ no inflation). Onboards
+    /// `C_reward` at the harvest's vout[1]. The accrual/entitlement (is `reward_amount` the harvester's legit
+    /// share?) is the worker's FAIRNESS gate, not a bridge-soundness one — an over-accrual harvest's reward is
+    /// still ≤ the real treasury, never minted.
+    pub fn fold_harvest(
+        &mut self,
+        farm_id: &[u8; 32],
+        reward_amount: u64,
+        reward_r: &[u8; 32],
+        reward_outpoint: &[u8; 32],
+        reward_note_path: &[[u8; 32]],
+    ) -> Result<(), &'static str> {
+        let mut farm = self.pools.get(farm_id).ok_or("harvest fold: unknown farm")?;
+        if !farm.c0_backed {
+            return Err("harvest fold: farm not C0-backed");
+        }
+        if reward_amount == 0 || reward_amount > farm.reserve_a {
+            return Err("harvest fold: reward exceeds treasury");
+        }
+        let c_reward = gen_h() * Scalar::from(reward_amount) + ProjectivePoint::generator() * scalar_reduce_be(reward_r);
+        let c_compressed = compress(&c_reward);
+        let leaf = reflected_note_leaf(&farm.asset_a, &c_compressed).ok_or("harvest fold: reward leaf")?;
+        let ch = commitment_hash_compressed(&c_compressed).ok_or("harvest fold: reward hash")?;
+        self.fold_output(&leaf, reward_note_path, reward_outpoint, &ch, &farm.asset_a)?;
+        farm.reserve_a -= reward_amount;
+        self.pools.update(farm_id, farm);
         Ok(())
     }
 
@@ -4026,6 +4110,45 @@ mod tests {
         assert_ne!(vk.gamma2.0, [0u8; 32]);
         assert_ne!(vk.delta2.0, [0u8; 32]);
         assert!(vk.ic.iter().all(|(x, y)| *x != [0u8; 32] || *y != [0u8; 32]), "no all-zero IC point");
+    }
+
+    #[test]
+    fn fold_farm_init_and_harvest_gates() {
+        let pool_id = [0x40u8; 32];
+        let launcher_pk = [0x02u8; 33];
+        let reward_asset = [0xAAu8; 32];
+        let farm_id = amm_derive_farm_id(&pool_id, &launcher_pk, &reward_asset, &[0x41u8; 32]);
+        assert_eq!(farm_id, amm_derive_farm_id(&pool_id, &launcher_pk, &reward_asset, &[0x41u8; 32]), "farm_id deterministic");
+        // FARM_INIT funding kernel: launcher's C_in − C_change = reward_total·H (swap-kernel shape).
+        let reward_total = 1_000_000u64;
+        let op = [0x77u8; 32];
+        let (v_in, v_change) = (1_500_000u64, 500_000u64);
+        let r_in = scalar_reduce_be(&[0x31u8; 32]);
+        let excess = scalar_reduce_be(&[0x32u8; 32]);
+        let r_change = r_in + excess;
+        let c_in = compress(&(gen_h() * Scalar::from(v_in) + ProjectivePoint::generator() * r_in));
+        let c_change = compress(&(gen_h() * Scalar::from(v_change) + ProjectivePoint::generator() * r_change));
+        let msg = swap_var_kernel_msg(&reward_asset, (op, 0), &c_change, reward_total);
+        let (_p, sig) = bip340_sign(&[0x32u8; 32], &[0x55u8; 32], &msg);
+        let path = [[0u8; 32]; 32];
+
+        // FARM_INIT registers a C0-backed treasury (a degenerate pool keyed by farm_id).
+        let mut sc = ScanReflection::genesis();
+        assert!(sc.fold_farm_init(&farm_id, &reward_asset, reward_total, (op, 0), &c_in, &c_change, &sig, true).is_ok(), "farm_init folds");
+        let f = sc.pools.get(&farm_id).expect("farm registered");
+        assert_eq!((f.asset_a, f.reserve_a, f.total_shares, f.c0_backed), (reward_asset, reward_total, 0, true));
+        // duplicate + bad-kernel reject.
+        assert!(sc.fold_farm_init(&farm_id, &reward_asset, reward_total, (op, 0), &c_in, &c_change, &sig, true).is_err(), "duplicate farm rejected");
+        let farm2 = amm_derive_farm_id(&pool_id, &launcher_pk, &reward_asset, &[0x42u8; 32]);
+        let mut bad = sig; bad[63] ^= 1;
+        assert!(sc.fold_farm_init(&farm2, &reward_asset, reward_total, (op, 0), &c_in, &c_change, &bad, true).is_err(), "bad funding kernel rejected");
+
+        // HARVEST gates (fail before the note append — no path needed).
+        assert!(sc.fold_harvest(&[0x99u8; 32], 100, &[0x33u8; 32], &[0x01u8; 32], &path).is_err(), "unknown farm rejected");
+        assert!(sc.fold_harvest(&farm_id, reward_total + 1, &[0x33u8; 32], &[0x01u8; 32], &path).is_err(), "reward > treasury rejected");
+        assert!(sc.fold_harvest(&farm_id, 0, &[0x33u8; 32], &[0x01u8; 32], &path).is_err(), "zero reward rejected");
+        let mut f2 = sc.pools.get(&farm_id).unwrap(); f2.c0_backed = false; sc.pools.update(&farm_id, f2);
+        assert!(sc.fold_harvest(&farm_id, 100, &[0x33u8; 32], &[0x01u8; 32], &path).is_err(), "non-C0-backed farm rejected");
     }
 
     // REFLECT-1 regression: the reflection prover must NOT fold a confirmed CXFER tx's outputs into

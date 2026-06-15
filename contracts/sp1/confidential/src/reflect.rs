@@ -28,8 +28,8 @@ use alloy_sol_types::sol;
 use alloy_sol_types::private::U256;
 use alloy_sol_types::SolType;
 use cxfer_core::{
-    amm_canonical_pair, amm_derive_pool_id_v1, bitcoin, burn_deposit, commitment_hash,
-    commitment_hash_compressed, decompress, from_affine_xy, leaf, nullifier, outpoint_key,
+    amm_canonical_pair, amm_derive_farm_id, amm_derive_pool_id_v1, bitcoin, burn_deposit, commitment_hash,
+    commitment_hash_compressed, compress, decompress, from_affine_xy, leaf, nullifier, outpoint_key,
     reflected_note_leaf, scan_tx_spends, verify_cxfer_conservation, LiveUtxoSet, Point, PoolReserveSet,
     PoolReserveState, ScanReflection,
 };
@@ -595,6 +595,36 @@ pub fn main() {
                         }
                     }
                 }
+            }
+
+            // Track B: a T_FARM_INIT (0x34) establishes a farm treasury as a C0-backed reserve. The launcher's
+            // reward-asset input (the single detected spend) funds reward_total into the (virtual) treasury
+            // under the swap-shape kernel; fold_farm_init registers it keyed by farm_id. A later T_LP_HARVEST
+            // draws reward notes from it.
+            if let Some(fi) = env.as_ref().and_then(|e| bitcoin::parse_farm_init_envelope(e)) {
+                if spends.len() == 1 {
+                    let s = &spends[0];
+                    if s.asset == fi.reward_asset {
+                        if let Some(c_in_pt) = from_affine_xy(&s.cx, &s.cy) {
+                            let c_in = compress(&c_in_pt);
+                            let farm_id = amm_derive_farm_id(&fi.pool_id, &fi.launcher_pubkey, &fi.reward_asset, &fi.farm_nonce);
+                            // inputs_c0_backed: the launcher's funding input is a detected live (real) spend.
+                            let _ = state.fold_farm_init(
+                                &farm_id, &fi.reward_asset, fi.reward_total, (s.prev_txid, s.prev_vout),
+                                &c_in, &fi.c_change_or_sentinel, &fi.kernel_sig, true,
+                            );
+                        }
+                    }
+                }
+            }
+
+            // Track B: a T_LP_HARVEST (0x3B) onboards a farmer's reward note (minted by decree at vout[1]) as
+            // real + bridgeable. fold_harvest derives the reward note from the PUBLIC (reward_amount, reward_r),
+            // checks it ≤ the C0-backed treasury, onboards it, and debits the treasury. (The accrual fairness
+            // is the worker's; the bridge only needs reward ≤ treasury ⇒ no inflation.)
+            if let Some((farm_id, reward_amount, reward_r)) = env.as_ref().and_then(|e| bitcoin::parse_lp_harvest_envelope(e)) {
+                let reward_path = r_path(); // witnessed per 0x3B (the reward note's append path; vout[1])
+                let _ = state.fold_harvest(&farm_id, reward_amount, &reward_r, &outpoint_key(&txid, 1), &reward_path);
             }
         }
         state.height = height;

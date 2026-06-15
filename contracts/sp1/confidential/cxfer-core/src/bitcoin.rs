@@ -655,6 +655,61 @@ pub fn parse_lp_remove_envelope(env: &[u8]) -> Option<LpRemoveEnvelope> {
     })
 }
 
+/// Parsed `T_FARM_INIT` envelope (0x34) — the fields the reflection's `fold_farm_init` needs (the farm-id
+/// components + the treasury-funding kernel side). reward_per_block / heights / range proof / launcher_sig
+/// ride for the worker's farm bookkeeping.
+pub struct FarmInitEnvelope {
+    pub pool_id: [u8; 32],
+    pub farm_nonce: [u8; 32],
+    pub launcher_pubkey: [u8; 33],
+    pub reward_asset: [u8; 32],
+    pub reward_total: u64,
+    pub c_change_or_sentinel: [u8; 33],
+    pub kernel_sig: [u8; 64],
+}
+
+/// Parse a `T_FARM_INIT` (0x34) envelope. Layout (worker `decodeTFarmInitPayload`): opcode(1) ‖ pool_id(32) ‖
+/// farm_nonce(32) ‖ launcher_pubkey(33) ‖ reward_asset(32) ‖ reward_total(8 LE) ‖ reward_per_block(8) ‖
+/// start_height(4) ‖ end_height(4) ‖ c_change_or_sentinel(33) ‖ rp_len(2 LE) ‖ range_proof(VAR) ‖
+/// kernel_sig(64) ‖ launcher_sig(64). The kernel proves the launcher funded `reward_total` of `reward_asset`
+/// into the treasury (`C_in − C_change = reward_total·H`, same shape as a swap input side).
+pub fn parse_farm_init_envelope(env: &[u8]) -> Option<FarmInitEnvelope> {
+    const RP_LEN_OFF: usize = 1 + 32 + 32 + 33 + 32 + 8 + 8 + 4 + 4 + 33; // 187
+    if env.len() < RP_LEN_OFF + 2 || env[0] != 0x34 {
+        return None;
+    }
+    let rp_len = u16::from_le_bytes(env[RP_LEN_OFF..RP_LEN_OFF + 2].try_into().ok()?) as usize;
+    let ks_off = RP_LEN_OFF + 2 + rp_len;
+    if env.len() < ks_off + 64 + 64 {
+        return None;
+    }
+    Some(FarmInitEnvelope {
+        pool_id: env[1..33].try_into().ok()?,
+        farm_nonce: env[33..65].try_into().ok()?,
+        launcher_pubkey: env[65..98].try_into().ok()?,
+        reward_asset: env[98..130].try_into().ok()?,
+        reward_total: u64::from_le_bytes(env[130..138].try_into().ok()?),
+        c_change_or_sentinel: env[154..187].try_into().ok()?,
+        kernel_sig: env[ks_off..ks_off + 64].try_into().ok()?,
+    })
+}
+
+/// Parse a `T_LP_HARVEST` (0x3B, 226-byte) envelope → `(farm_id, reward_amount, reward_r)`. The reward note
+/// is NOT in the envelope — it's minted by decree at the tx's vout[1], and the reflection DERIVES it as
+/// `reward_amount·H + reward_r·G` (both public). Layout: opcode(1) ‖ farm_id(32) ‖ bond_id(36) ‖
+/// harvester_pubkey(33) ‖ exit_acc_per_share(16) ‖ exit_view_height(4) ‖ reward_amount(8 LE) ‖ reward_r(32) ‖
+/// harvester_sig(64).
+pub fn parse_lp_harvest_envelope(env: &[u8]) -> Option<([u8; 32], u64, [u8; 32])> {
+    if env.len() != 226 || env[0] != 0x3B {
+        return None;
+    }
+    Some((
+        env[1..33].try_into().ok()?,
+        u64::from_le_bytes(env[122..130].try_into().ok()?),
+        env[130..162].try_into().ok()?,
+    ))
+}
+
 /// Extract the Tacit Taproot envelope payload from vin[0].witness[1].
 /// Matches the format PUSH(32) xonly OP_CHECKSIG OP_FALSE OP_IF [pushes] OP_ENDIF,
 /// strips the "TACIT"||v1 frame, returns the payload starting at the opcode byte.
@@ -1091,6 +1146,64 @@ mod tests {
         assert_eq!(p.kernel_sig, ks);
         let mut bad = env.clone(); bad[0] = 0x22;
         assert!(parse_lp_remove_envelope(&bad).is_none(), "non-0x2E rejected");
+    }
+
+    #[test]
+    fn parse_farm_init_round_trips() {
+        let pool_id = [0x40u8; 32];
+        let nonce = [0x41u8; 32];
+        let launcher = [0x02u8; 33];
+        let reward_asset = [0xAAu8; 32];
+        let c_change = [0x06u8; 33];
+        let (ks, lsig) = ([0x0au8; 64], [0x0bu8; 64]);
+        let rp = [0xccu8; 5];
+        let mut env = vec![0x34u8];
+        env.extend_from_slice(&pool_id);
+        env.extend_from_slice(&nonce);
+        env.extend_from_slice(&launcher);
+        env.extend_from_slice(&reward_asset);
+        env.extend_from_slice(&1_000_000u64.to_le_bytes()); // reward_total
+        env.extend_from_slice(&100u64.to_le_bytes()); // reward_per_block
+        env.extend_from_slice(&500u32.to_le_bytes()); // start_height
+        env.extend_from_slice(&1000u32.to_le_bytes()); // end_height
+        env.extend_from_slice(&c_change);
+        env.extend_from_slice(&(rp.len() as u16).to_le_bytes());
+        env.extend_from_slice(&rp);
+        env.extend_from_slice(&ks);
+        env.extend_from_slice(&lsig);
+        let p = parse_farm_init_envelope(&env).expect("farm_init parses");
+        assert_eq!(p.pool_id, pool_id);
+        assert_eq!(p.farm_nonce, nonce);
+        assert_eq!(p.launcher_pubkey, launcher);
+        assert_eq!(p.reward_asset, reward_asset);
+        assert_eq!(p.reward_total, 1_000_000);
+        assert_eq!(p.c_change_or_sentinel, c_change);
+        assert_eq!(p.kernel_sig, ks);
+        let mut bad = env.clone(); bad[0] = 0x22;
+        assert!(parse_farm_init_envelope(&bad).is_none(), "non-0x34 rejected");
+    }
+
+    #[test]
+    fn parse_lp_harvest_round_trips() {
+        let farm_id = [0x40u8; 32];
+        let reward_r = [0x33u8; 32];
+        let mut env = vec![0x3Bu8];
+        env.extend_from_slice(&farm_id);
+        env.extend_from_slice(&[0x11u8; 36]); // bond_id
+        env.extend_from_slice(&[0x02u8; 33]); // harvester_pubkey
+        env.extend_from_slice(&[0x12u8; 16]); // exit_acc_per_share
+        env.extend_from_slice(&5u32.to_le_bytes()); // exit_view_height
+        env.extend_from_slice(&777u64.to_le_bytes()); // reward_amount
+        env.extend_from_slice(&reward_r);
+        env.extend_from_slice(&[0x0cu8; 64]); // harvester_sig
+        assert_eq!(env.len(), 226);
+        let (fid, amt, r) = parse_lp_harvest_envelope(&env).expect("harvest parses");
+        assert_eq!(fid, farm_id);
+        assert_eq!(amt, 777);
+        assert_eq!(r, reward_r);
+        assert!(parse_lp_harvest_envelope(&env[..225]).is_none(), "wrong length rejected");
+        let mut bad = env.clone(); bad[0] = 0x22;
+        assert!(parse_lp_harvest_envelope(&bad).is_none(), "non-0x3B rejected");
     }
 
     #[test]
