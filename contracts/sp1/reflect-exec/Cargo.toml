@@ -28,5 +28,10 @@ path = "src/otc_execute.rs"
 name = "bid-execute"
 path = "src/bid_execute.rs"
 
+# Same, for OP_SWAP_ROUTE (fixtures/route_op.json) — validates the multihop route guest arm + serialization.
+[[bin]]
+name = "route-execute"
+path = "src/route_execute.rs"
+
 [profile.release]
 overflow-checks = true
