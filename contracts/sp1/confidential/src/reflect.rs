@@ -454,11 +454,14 @@ pub fn main() {
             // conserve into the buyer's filled note + the seller's change under tacit-kernel-v1, with one
             // aggregated BP+ range over all outputs. So fold it EXACTLY like a cxfer: re-verify Σ C_in =
             // Σ C_out + range BEFORE onboarding any output note (REFLECT-1 discipline). This onboards the
-            // buyer's filled note (the bridgeable one) + the seller's change. OTC (T_AXFER 0x26) needs NO
-            // branch here — parse_cxfer_envelope_full now accepts 0x26, so the cxfer fold above handles it.
-            if let Some((bid_asset, bid_kernel_sig, bid_commitments, bid_range_proof)) =
-                env.as_ref().and_then(|e| bitcoin::parse_preauth_bid_var_envelope(e))
-            {
+            // buyer's filled note (the bridgeable one) + the seller's change. Handles BOTH the partial-fill
+            // (T_PREAUTH_BID_VAR 0x5C) and the exact-fill (T_PREAUTH_BID 0x5B) walk-away bids — same
+            // CXFER-family conservation, only the inline differs. OTC + the other atomic-settlement variants
+            // (T_AXFER 0x26 / 0x37 / 0x3C / 0x3D) need NO branch here — parse_cxfer_envelope_full accepts
+            // them, so the cxfer fold above handles them.
+            if let Some((bid_asset, bid_kernel_sig, bid_commitments, bid_range_proof)) = env.as_ref().and_then(|e| {
+                bitcoin::parse_preauth_bid_var_envelope(e).or_else(|| bitcoin::parse_preauth_bid_envelope(e))
+            }) {
                 let in_outpoints: Vec<([u8; 32], u32)> = spends.iter().map(|s| (s.prev_txid, s.prev_vout)).collect();
                 let in_points: Vec<Point> = spends.iter()
                     .map(|s| from_affine_xy(&s.cx, &s.cy).expect("bid input commitment xy"))

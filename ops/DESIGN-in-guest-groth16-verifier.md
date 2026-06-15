@@ -51,23 +51,27 @@ One Miller-loop-heavy pairing check (4 pairings) on BN254 + an n-term G1 multiex
    blinding (the `fold_lp_remove` shape), then onboard it (real, live, bridgeable).
 4. **Reserve update** — pool reserves move by the public net deltas; registry advanced.
 
-## BLOCKER — the circuit doesn't exist yet (pre-ceremony)
+## Ceremony status — CONCLUDED (2026-06; not a blocker)
 
-`T_SWAP_BATCH`'s POOL_INIT references a `vk_cid` produced by the Phase-2 ceremony, which has not happened —
-**no batch circuit, no vk, no public-signal layout exists today** (the worker's batch branch is inert by
-design until the ceremony lands). So:
+The Phase-2 ceremony IS done: the canonical Groth16 vk is pinned at `CANONICAL_AMM_VK_CID =
+bafkreibjpe4xfqtq2ziki4uupydnkeiakqi76m674xtdhmxnfbrn4iomp4` (the ceremony bundle at
+`CANONICAL_CEREMONY_CID = bafybeidq2ahzte4sfiqjsmhqta62ufenpppzpch5ppry55tzxzlvltxy2u`, `verification_key.json`
+inside it). So the circuit + vk + public-signal layout EXIST — `T_SWAP_BATCH` is NOT blocked. The verifier can
+be built against the REAL circuit.
 
-- **Buildable now (circuit-agnostic):** the general `groth16_bn254_verify` (the pairing equation + snarkjs
-  format adaptation + the BN254 dependency wiring). This is the reusable core and the bulk of the lift.
-- **Blocked on the ceremony (circuit-specific):** the exact public-input layout, how the reflection
-  re-derives the public inputs from the envelope, and the baked `BATCH_VK`. These can only be pinned once
-  the circuit is finalized.
+Plan to close it:
+1. **Build + unit-test the general `groth16_bn254_verify`** (the pairing equation + snarkjs format adaptation
+   + the BN254 dependency wiring) against the ceremony `verification_key.json` + a real batch proof vector.
+   This is the reusable core and the bulk of the lift.
+2. **Bake `BATCH_VK`** — parse the ceremony `verification_key.json` into the const G16Vk baked into the
+   reflection guest (rotates `BITCOIN_RELAY_VKEY` on change, like any guest constant).
+3. **Pin the public-input layout** from the circuit (the batch's net deltas, reserves, receipt commitments)
+   so the reflection re-derives the public inputs from the on-chain envelope + checks them against the proof.
+4. **`fold_swap_batch`** = the aggregate `asset_scoped_kernel_verify` (have it) + `groth16_bn254_verify` +
+   per-receipt witnessed openings (the `fold_lp_remove` shape) + the net-delta reserve update.
 
-So the honest plan: build + unit-test the general BN254 Groth16 verifier against a KNOWN snarkjs test vector
-(any circom circuit) so the pairing path is proven; wire `fold_swap_batch`'s non-Groth16 parts (aggregate
-kernel + reserve update + per-receipt openings, all already-built primitives); and leave the circuit-specific
-public-input derivation + the baked vk as a one-function gap to close when the ceremony produces the circuit.
-Until then T_SWAP_BATCH stays fail-closed (no live batch txs exist anyway), exactly as it is now.
+The first artifact to pull is the ceremony `verification_key.json` (from the CID) — its `nPublic` +
+`IC` length fix the public-signal count, and its `vk_alpha_1/beta_2/gamma_2/delta_2` are the baked const.
 
 ## Skeleton
 

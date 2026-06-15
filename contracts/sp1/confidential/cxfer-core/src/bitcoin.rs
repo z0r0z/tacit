@@ -458,14 +458,18 @@ pub fn parse_cxfer_envelope(env: &[u8]) -> Option<([u8; 32], Vec<[u8; 33]>)> {
 /// valid curve point. Returns `(asset, kernel_sig, output_commitments, range_proof)`; None if not a
 /// well-formed CXFER envelope.
 ///
-/// Also accepts **`T_AXFER` (0x26)** — the OTC atomic-settlement variant. Its wire is byte-identical to
-/// CXFER (worker `decodeAxferPayload` == `decodeCxferPayload`); the only difference is the Bitcoin tx
-/// carries aux NON-tacit (sats) inputs alongside the tacit ones. Those sats inputs are not pool UTXOs, so
-/// `scan_tx_spends` never detects them — the tacit-asset side conserves under the SAME `tacit-kernel-v1`
-/// kernel, so a confirmed OTC's output notes onboard exactly like a CXFER's (no new fold). See
-/// ops/DESIGN-bridge-multiasset-provenance.md (orderbook/OTC = Track A).
+/// Also accepts the **atomic-settlement family** — `T_AXFER` (0x26, OTC), `T_AXFER_VAR` (0x37, variable
+/// amount), and their BP+ variants `T_AXFER_BPP` (0x3C) / `T_AXFER_VAR_BPP` (0x3D). All are byte-identical
+/// to CXFER (worker `decodeAxferPayload` == `decodeCxferPayload`, the variants differing only in opcode +
+/// rangeproof flavor) and conserve under the SAME `tacit-kernel-v1` kernel — they're one ancestry family
+/// (worker index.js:13282). The Bitcoin tx carries aux NON-tacit (sats) inputs; those aren't pool UTXOs, so
+/// `scan_tx_spends` never sees them, and a confirmed atomic settlement's output notes onboard exactly like a
+/// CXFER's (no new fold). A variant whose rangeproof/wire doesn't actually match fails the conservation gate
+/// (skip-not-panic) — fail-closed, never an over-mint. See ops/DESIGN-bridge-multiasset-provenance.md (Track A).
 pub fn parse_cxfer_envelope_full(env: &[u8]) -> Option<([u8; 32], [u8; 64], Vec<[u8; 33]>, Vec<u8>)> {
-    if env.len() < 1 + 32 + 64 + 1 || (env[0] != 0x23 && env[0] != 0x22 && env[0] != 0x26) {
+    let op = env.first().copied()?;
+    let known = op == 0x23 || op == 0x22 || op == 0x26 || op == 0x37 || op == 0x3C || op == 0x3D;
+    if env.len() < 1 + 32 + 64 + 1 || !known {
         return None;
     }
     let asset: [u8; 32] = env[1..33].try_into().ok()?;
@@ -507,8 +511,28 @@ pub const PREAUTH_BID_VAR_INLINE: usize = 16 + 33 + 8 + 8 + 8 + 8 + 32 + 20 + 1;
 /// out[0].commitment(33) [‖ out[1].commitment(33) ‖ out[1].amount_ct(8)] ‖ rp_len(2 LE) ‖ rangeproof.
 /// (Only `out[1]` carries an 8-byte `amount_ct`; the buyer's `out[0]` does not — its blinding is cleartext.)
 pub fn parse_preauth_bid_var_envelope(env: &[u8]) -> Option<([u8; 32], [u8; 64], Vec<[u8; 33]>, Vec<u8>)> {
-    let ks_off = 1 + 32 + 1 + PREAUTH_BID_VAR_INLINE; // 168 — start of kernel_sig
-    if env.len() < ks_off + 64 + 1 + 33 + 2 || env[0] != 0x5C {
+    parse_preauth_bid_common(env, 0x5C, PREAUTH_BID_VAR_INLINE)
+}
+
+/// The `T_PREAUTH_BID` (0x5B) exact-fill inline section (SPEC §5.7.11): `bid_id(16) ‖ recipient_pubkey(33) ‖
+/// amount(8) ‖ recipient_blinding(32) ‖ price_sats(8)` — no variable-fill params (so 97 vs the var bid's 134).
+pub const PREAUTH_BID_INLINE: usize = 16 + 33 + 8 + 32 + 8; // 97
+
+/// Parse a `T_PREAUTH_BID` (0x5B, the exact-fill / "walk-away only, partial-fill OFF" orderbook bid). Same
+/// CXFER-family conservation as the partial-fill bid (the seller's asset inputs → the buyer's filled note +
+/// seller change under `tacit-kernel-v1`); only the inline section is shorter. Returns the cxfer-compatible
+/// `(asset, kernel_sig, output_commitments, range_proof)` tuple, fed to `verify_cxfer_conservation` + the
+/// cxfer fold exactly like the partial-fill bid.
+pub fn parse_preauth_bid_envelope(env: &[u8]) -> Option<([u8; 32], [u8; 64], Vec<[u8; 33]>, Vec<u8>)> {
+    parse_preauth_bid_common(env, 0x5B, PREAUTH_BID_INLINE)
+}
+
+/// Shared parser for the preauth-bid family — exact-fill (0x5B) + partial-fill (0x5C) differ ONLY in opcode
+/// + inline length; the kernel_sig / N / output-commitment / rangeproof tail is identical (out[0] cleartext
+/// blinding ⇒ no amount_ct; out[1] carries one).
+fn parse_preauth_bid_common(env: &[u8], opcode: u8, inline_len: usize) -> Option<([u8; 32], [u8; 64], Vec<[u8; 33]>, Vec<u8>)> {
+    let ks_off = 1 + 32 + 1 + inline_len; // start of kernel_sig
+    if env.len() < ks_off + 64 + 1 + 33 + 2 || env.first().copied()? != opcode {
         return None;
     }
     let asset: [u8; 32] = env[1..33].try_into().ok()?;
@@ -904,22 +928,57 @@ mod tests {
     }
 
     #[test]
-    fn parse_axfer_0x26_accepted_as_cxfer() {
-        // OTC (T_AXFER 0x26) is byte-identical to CXFER; the cxfer parser must accept it so the existing
-        // fold onboards an OTC's tacit output notes (the sats legs are native-BTC, invisible to the kernel).
-        let mut env = vec![0x26u8];
-        env.extend_from_slice(&[0xAAu8; 32]); // asset_id
-        env.extend_from_slice(&[0x07u8; 64]); // kernel_sig
-        env.push(2u8); // N = 2
+    fn parse_atomic_settlement_variants_accepted_as_cxfer() {
+        // The whole atomic-settlement family (T_AXFER 0x26, T_AXFER_VAR 0x37, + BP+ 0x3C/0x3D) is
+        // byte-identical to CXFER; the cxfer parser must accept each so the existing fold onboards its
+        // tacit output notes (the sats legs are native-BTC, invisible to the kernel).
         let (c0, c1) = ([0x02u8; 33], [0x03u8; 33]);
-        env.extend_from_slice(&c0); env.extend_from_slice(&[0u8; 8]);
-        env.extend_from_slice(&c1); env.extend_from_slice(&[0u8; 8]);
-        env.extend_from_slice(&4u16.to_le_bytes()); env.extend_from_slice(&[0xbbu8; 4]);
-        let (asset, ks, commits, rp) = parse_cxfer_envelope_full(&env).expect("0x26 parses as cxfer");
-        assert_eq!(asset, [0xAAu8; 32]);
-        assert_eq!(ks, [0x07u8; 64]);
-        assert_eq!(commits, vec![c0, c1]);
-        assert_eq!(rp, vec![0xbbu8; 4]);
+        for op in [0x26u8, 0x37, 0x3C, 0x3D] {
+            let mut env = vec![op];
+            env.extend_from_slice(&[0xAAu8; 32]); // asset_id
+            env.extend_from_slice(&[0x07u8; 64]); // kernel_sig
+            env.push(2u8); // N = 2
+            env.extend_from_slice(&c0); env.extend_from_slice(&[0u8; 8]);
+            env.extend_from_slice(&c1); env.extend_from_slice(&[0u8; 8]);
+            env.extend_from_slice(&4u16.to_le_bytes()); env.extend_from_slice(&[0xbbu8; 4]);
+            let (asset, ks, commits, rp) = parse_cxfer_envelope_full(&env).unwrap_or_else(|| panic!("opcode {op:#x} parses as cxfer"));
+            assert_eq!(asset, [0xAAu8; 32]);
+            assert_eq!(ks, [0x07u8; 64]);
+            assert_eq!(commits, vec![c0, c1]);
+            assert_eq!(rp, vec![0xbbu8; 4]);
+        }
+        // a non-family opcode still rejects.
+        let mut bad = vec![0x99u8]; bad.extend_from_slice(&[0u8; 200]);
+        assert!(parse_cxfer_envelope_full(&bad).is_none(), "unknown opcode rejected");
+    }
+
+    #[test]
+    fn parse_preauth_bid_exact_0x5b_round_trips() {
+        // T_PREAUTH_BID (0x5B exact-fill), inline = 97; same cxfer-compatible tuple as the partial-fill bid.
+        let asset = [0xCEu8; 32];
+        let ks = [0x0fu8; 64];
+        let out0 = [0x02u8; 33];
+        let rp = [0xeeu8; 5];
+        let mut env = vec![0x5Bu8];
+        env.extend_from_slice(&asset);
+        env.push(1u8); // asset_input_count
+        env.extend_from_slice(&[0x11u8; 16]); // bid_id
+        env.extend_from_slice(&[0x12u8; 33]); // recipient_pubkey
+        env.extend_from_slice(&500u64.to_le_bytes()); // amount
+        env.extend_from_slice(&[0x13u8; 32]); // recipient_blinding (cleartext)
+        env.extend_from_slice(&100u64.to_le_bytes()); // price_sats
+        env.extend_from_slice(&ks); // kernel_sig
+        env.push(1u8); // N = 1 (exact fill, no seller change)
+        env.extend_from_slice(&out0);
+        env.extend_from_slice(&(rp.len() as u16).to_le_bytes());
+        env.extend_from_slice(&rp);
+        let (a, k, commits, rpout) = parse_preauth_bid_envelope(&env).expect("exact bid parses");
+        assert_eq!(a, asset);
+        assert_eq!(k, ks);
+        assert_eq!(commits, vec![out0]);
+        assert_eq!(rpout, rp.to_vec());
+        // 0x5C parser must reject a 0x5B envelope (opcode-bound).
+        assert!(parse_preauth_bid_var_envelope(&env).is_none(), "var parser rejects exact bid");
     }
 
     #[test]
