@@ -239,9 +239,10 @@ pub const CMINT_DOMAIN: &[u8] = b"tacit-mint-v1";
 ///  - asset-bound: the reveal's `T_MINT` envelope declares THIS `asset`;
 ///  - commit/reveal pair: the reveal spends the `commit_tx`;
 ///  - **authorized + non-re-wrappable:** BIP-340 verify of the issuer signature under `mint_authority` over
-///    `sha256(CMINT_DOMAIN ‖ asset ‖ commitment ‖ commit_anchor)`, where `commit_anchor` is the COMMIT tx's
-///    first input outpoint — so one signature can't be re-wrapped into another commit/reveal pair (which
-///    would mint the same authorization twice);
+///    `sha256(CMINT_DOMAIN ‖ asset ‖ commit_anchor ‖ commitment ‖ amount_ct)` — the live dapp's
+///    `computeMintMsg` byte-for-byte — where `commit_anchor` = `anchor_txid(internal) ‖ anchor_vout_LE` is the
+///    COMMIT tx's first input outpoint — so one signature can't be re-wrapped into another commit/reveal pair
+///    (which would mint the same authorization twice);
 ///  - range: the minted commitment is BP+ range-bounded to [0, 2⁶⁴).
 /// The leaf note is the reveal's vout-0 commitment. The CALLER confirms the reveal + commit txs are real
 /// on-chain (header+merkle), exactly as for the provenance cxfers. Returns None (admit nothing) on any miss.

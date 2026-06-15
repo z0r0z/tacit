@@ -28,7 +28,7 @@ use alloy_sol_types::sol;
 use alloy_sol_types::private::U256;
 use alloy_sol_types::SolType;
 use cxfer_core::{
-    bitcoin, burn_deposit, commitment_hash, commitment_hash_compressed, from_affine_xy, nullifier,
+    bitcoin, burn_deposit, commitment_hash, commitment_hash_compressed, from_affine_xy, leaf, nullifier,
     outpoint_key, scan_tx_spends, verify_cxfer_conservation, LiveUtxoSet, Point, ScanReflection,
 };
 use sp1_zkvm::io;
@@ -267,6 +267,9 @@ pub fn main() {
                     let burned_cy = r32();
                     let (sv, sn, si, sp, snew) = read_spent_insert();
                     let (bk, bn, bv, bi, bp, bnew) = read_burn_insert();
+                    // the proven-real burned note is onboarded as a pool member (so the Ethereum mint binds
+                    // v_mint == v_burn via pool-membership + kernel); its note-tree append path is witnessed.
+                    let note_path = r_path();
 
                     // ── verify (all required; any miss → skip, fold nothing) ──
                     let verified = (|| -> Option<()> {
@@ -314,9 +317,22 @@ pub fn main() {
                         burn_deposit::verify_provenance_leaves(b_asset, &valid_leaves, &burned_outpoint, &burned_ch, &prov).ok()
                     })();
                     if verified.is_some() {
-                        // nullify the burned note in the shared set (no double-use) + authorize bridge_mint → dest.
-                        state.fold_spent(env_nu, &sv, &sn, si, &sp, &snew).expect("burn-deposit spent fold");
-                        state.fold_burn(env_nu, env_dest, &bk, &bn, &bv, bi, &bp, &bnew).expect("burn-deposit burn fold");
+                        // nullify the burned note in the shared set (no double-use) + onboard it as a pool member
+                        // + authorize bridge_mint → dest. skip-not-panic (like the cxfer/crossout/cbtc folds): a ν
+                        // already in the shared set — a re-presented bridge or an in-pool spend of the same note —
+                        // folds nothing rather than wedging the prover (a griefer can't stall reflection with a
+                        // double-bridge tx). The note-append + fold_burn can't fail once fold_spent succeeds: a ν
+                        // absent from the spent set is absent from the burn set too (every bridge-out adds to both).
+                        if state.fold_spent(env_nu, &sv, &sn, si, &sp, &snew).is_ok() {
+                            // Append the burned note to the pool tree with the SAME leaf shape a reflected note
+                            // uses — leaf(asset, Cx, Cy, 0) — so OP_BRIDGE_MINT proves its membership and the
+                            // kernel binds v_mint == v_burn (the burned value is REAL: verify_provenance_leaves
+                            // proved it descends from supply). Append-only (never live): the note is spent now,
+                            // not in-pool-spendable. This makes a burn-deposit mint identical to a reflected one.
+                            let note_leaf = leaf(b_asset, &burned_cx, &burned_cy, &[0u8; 32]);
+                            state.fold_note_append(&note_leaf, &note_path).expect("burn-deposit note append");
+                            state.fold_burn(env_nu, env_dest, &bk, &bn, &bv, bi, &bp, &bnew).expect("burn-deposit burn fold");
+                        }
                     }
                 }
             }

@@ -58,6 +58,7 @@ fn write_burn_deposit(s: &mut SP1Stdin, bd: &serde_json::Value) {
     let bi = &bd["burnInsert"];
     r32(s, &bi["bLowKey"]); r32(s, &bi["bLowNext"]); r32(s, &bi["bLowValue"]); s.write(&bi["bLowIndex"].as_u64().unwrap());
     path(s, &bi["bLowPath"]); path(s, &bi["bNewPath"]);
+    path(s, &bd["notePath"]); // the burned note's pool-tree append path (onboard it as a pool member)
 }
 
 // Fail-closed vkey guard: the derived vkey MUST equal the pinned BITCOIN_RELAY_VKEY, else a drifting

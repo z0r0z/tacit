@@ -1946,6 +1946,19 @@ impl ScanReflection {
         Ok(())
     }
 
+    /// Append a proven-real note to the pool tree WITHOUT marking its outpoint live — for a burn-deposit
+    /// note (a pre-existing Bitcoin note proven real via `burn_deposit::verify_provenance_leaves`) that is
+    /// onboarded and IMMEDIATELY bridged out. It must be a pool member so `OP_BRIDGE_MINT` proves its
+    /// membership and the kernel binds `v_mint == v_burn` (exactly as for a reflected bridge-out), but it
+    /// must NEVER enter the live set: it is spent now, not an in-pool-spendable UTXO. Append-only; the
+    /// caller separately `fold_spent`s its ν and `fold_burn`s ν → dest.
+    pub fn fold_note_append(&mut self, note_leaf: &[u8; 32], note_path: &[[u8; 32]]) -> Result<(), &'static str> {
+        self.pool_root = keccak_tree_append_transition(&self.pool_root, self.note_count, note_path, note_leaf)
+            .ok_or("note append witness invalid")?;
+        self.note_count += 1;
+        Ok(())
+    }
+
     /// Fold a confirmed CXFER tx's outputs into the pool — ONLY if the tx CONSERVES value. Verifies
     /// the BIP-340 kernel + the BP+ range proof over the detected pool-note inputs and the envelope's
     /// outputs (`verify_cxfer_conservation`) BEFORE appending any output note, so a confirmed-but-non-

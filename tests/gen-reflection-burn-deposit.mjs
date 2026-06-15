@@ -231,6 +231,9 @@ const burnDeposit = makeBurnDepositAssembler({ dsha256, cat, bytesToHex: hexp })
     ? [{ revealTx: hexp(cmint.revealMintTx), commitTx: hexp(cmint.commitTx), blockTxids: [cmint.revealMintTxid], index: 0 }]
     : [],
   burned: { cx: burnedCx, cy: burnedCy },
+  // the proven-real burned note onboarded as a pool member (leaf(asset, Cx, Cy, ZERO_OWNER)), so the
+  // Ethereum OP_BRIDGE_MINT binds v_mint == v_burn by membership + kernel, exactly as for a reflected note.
+  burnedNoteLeaf: pool.leaf(assetHex, burnedCx, burnedCy, '0x' + '00'.repeat(32)),
   nu: envNu, dest: envDest, scanState: state,
 });
 const fixture = {

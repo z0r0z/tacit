@@ -167,7 +167,10 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
       const { path } = buildTree().rootAndPath(i);
       return { next: links[i][1], index: i, path };
     }
-    return { insert, root, nonMembershipWitness, membershipWitness, links: () => links.map((l) => l.slice()) };
+    // Is nu already in the set? (a non-throwing membership query — the burn-deposit fold uses it to
+    // skip-not-panic on a re-presented/collided ν, mirroring the guest's fold_spent().is_ok() guard.)
+    const contains = (nuIn) => { const nu = norm(nuIn); return links.some(([v]) => big(v) === big(nu)); };
+    return { insert, root, nonMembershipWitness, membershipWitness, contains, links: () => links.map((l) => l.slice()) };
   }
 
   // ── Bridge-burn accumulator — build side, mirrors cxfer-core UtxoAccumulator ──
@@ -488,6 +491,14 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
       live.insert(outpoint, commitmentHash, asset);
       return w;
     }
+    // A burn-deposit's proven-real note: append it to the note tree (so OP_BRIDGE_MINT proves its
+    // pool membership and the kernel binds v_mint == v_burn), WITHOUT adding it live — it is spent now,
+    // not in-pool-spendable. Mirror of ScanReflection::fold_note_append. Returns the append-path witness.
+    function foldNoteAppend(noteLeaf) {
+      const w = { noteLeaf, notePath: notes.rootAndPath(noteCount()).path };
+      notes.insert(noteLeaf);
+      return w;
+    }
     // A bridge-out: the burn-set insert witness ν → destCommitment, then advance.
     function foldBurn(nu, destCommitment) {
       const burnLeaves = burns.leaves();
@@ -500,7 +511,8 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     function setHeight(h) { if (h < height) throw new Error('reflection height must not decrease'); height = h; }
 
     return {
-      commit, digest, foldSpent, foldOutput, foldBurn, setHeight,
+      commit, digest, foldSpent, foldOutput, foldNoteAppend, foldBurn, setHeight,
+      spentContains: (nu) => spent.contains(nu),
       poolRoot: () => notes.root(), spentRoot: () => spent.root(), burnRoot: () => burns.root(), liveRoot: () => live.root(),
       counts: () => ({ note: noteCount(), spent: spentCount(), live: live.len(), burn: burnCount(), height }),
       live, _acc: { notes, spent, live, burns },
@@ -570,6 +582,32 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
   // clear. The guest re-derives txids + the block merkle root, so completeness is enforced there;
   // here we SIMULATE the scan to emit the matching witnesses in stream order: per tx, the spend
   // openings (vin order), the spent-set inserts, a burn insert, then the outputs.
+  // Zero-shaped witnesses for a burn-deposit the guest reads but folds nothing (invalid provenance / a
+  // re-presented ν). The guest reads these fields UNCONDITIONALLY for stream sync, then discards them.
+  const BD_ZERO_HEX = '0x' + '00'.repeat(32);
+  const BD_ZERO_PATH = Array(TREE_DEPTH).fill(BD_ZERO_HEX);
+  const BD_ZERO_SPENT = { sLowValue: BD_ZERO_HEX, sLowNext: BD_ZERO_HEX, sLowIndex: 0, sLowPath: BD_ZERO_PATH, sNewPath: BD_ZERO_PATH };
+  const BD_ZERO_BURN = { bLowKey: BD_ZERO_HEX, bLowNext: BD_ZERO_HEX, bLowValue: BD_ZERO_HEX, bLowIndex: 0, bLowPath: BD_ZERO_PATH, bNewPath: BD_ZERO_PATH };
+
+  // Fold (or, on invalid provenance, no-op) a burn-deposit, mirroring the reflect.rs dispatch EXACTLY.
+  // ctx = { valid, nu, dest, burnedCx, burnedCy, burnedNoteLeaf, witness:{ etchTx, etchIndex, etchSiblings,
+  // provHeaders, cxfers, cmints } } — the scan indexer assembles `witness` (merkle paths) + computes `valid`
+  // from the JS mirror (verifyProvenanceLeaves over C_0 ∪ authorized cmints). A valid, fresh ν folds
+  // fold_spent → fold_note_append → fold_burn (onboarding the proven-real note as a pool member so the
+  // Ethereum OP_BRIDGE_MINT binds v_mint == v_burn); otherwise nothing folds but the witness is still emitted.
+  function foldBurnDepositTx(state, ctx) {
+    const base = { ...ctx.witness, burnedCx: ctx.burnedCx, burnedCy: ctx.burnedCy };
+    if (ctx.valid && !state.spentContains(ctx.nu)) {
+      return {
+        ...base,
+        spentInsert: state.foldSpent(ctx.nu),
+        notePath: state.foldNoteAppend(ctx.burnedNoteLeaf).notePath,
+        burnInsert: state.foldBurn(ctx.nu, ctx.dest),
+      };
+    }
+    return { ...base, spentInsert: BD_ZERO_SPENT, notePath: BD_ZERO_PATH, burnInsert: BD_ZERO_BURN };
+  }
+
   function assembleReflectionScanInput(state, batch, coords) {
     const norm = (x) => hx(b32(x));
     const c = state.counts();
@@ -611,9 +649,22 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
           coords.delete(norm(key));
         }
         let burnInsert = null;
+        let burnDeposit = null;
         if (tx.env && tx.env.type === 'burn') {
-          if (openings.length !== 1) throw new Error('burn tx must spend exactly one pool note');
-          burnInsert = state.foldBurn(nullifier(openings[0].cx, openings[0].cy), tx.env.dest);
+          if (openings.length === 1) {
+            // Reflected-note bridge-out: the burned note is a live pool note (already nullified above by the
+            // spend scan). Record ν → dest.
+            burnInsert = state.foldBurn(nullifier(openings[0].cx, openings[0].cy), tx.env.dest);
+          } else if (openings.length === 0 && tx.env.burnDeposit) {
+            // BURN-DEPOSIT: a pre-existing, never-reflected note (no live-set spend). The worker assembled the
+            // provenance witness + ran the JS mirror (ctx.valid). The guest reads the witness UNCONDITIONALLY
+            // (stream sync) and folds ONLY if the provenance verifies — mirror that exactly here.
+            burnDeposit = foldBurnDepositTx(state, tx.env.burnDeposit);
+          } else {
+            // Matches the guest's assert spends.is_empty(): a burn that is neither a single live-note spend
+            // nor a witnessed burn-deposit is a desync (the worker must supply a burn-deposit context).
+            throw new Error('burn tx: neither a reflected pool-note spend nor a burn-deposit with provenance');
+          }
         }
         const outputs = [];
         if (tx.env && tx.env.type === 'cxfer') {
@@ -648,7 +699,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
           // full-scan model — surfaced, not folded, so callers see un-onboarded Bitcoin value.
           unreflectedValueEntry.push({ txid: tx.txid, assetId: tx.env.assetId || null });
         }
-        txsOut.push({ txData: tx.txData, openings, spentInserts, burnInsert, outputs });
+        txsOut.push({ txData: tx.txData, openings, spentInserts, burnInsert, outputs, burnDeposit });
       }
       blocksOut.push({ txs: txsOut });
       blockIndex++;

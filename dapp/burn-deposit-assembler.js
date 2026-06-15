@@ -54,9 +54,11 @@ export function makeBurnDepositAssembler({ dsha256, cat, bytesToHex }) {
   //   cxfers:     [{ txid:"0x…", inputs:[{prevTxid,prevVout,commitment}], outputs:[{commitment,vout}],
   //                  rangeProof:"0x…", kernelSig:"0x…", blockTxids:[bytes], index }]
   //   burned:     { cx:"0x…", cy:"0x…" }
+  //   burnedNoteLeaf: "0x…" — leaf(asset, cx, cy, ZERO_OWNER); the proven-real note appended to the pool
+  //                   tree so OP_BRIDGE_MINT binds v_mint == v_burn (caller computes via pool.leaf)
   //   nu, dest:   "0x…" (the burned note's nullifier + the bridge-out destination commitment)
   //   scanState:  pool.makeScanReflectionState() positioned at the batch's prior (advances on fold*)
-  function assembleBurnDeposit({ etch, provHeaders, cxfers, cmints = [], burned, nu, dest, scanState }) {
+  function assembleBurnDeposit({ etch, provHeaders, cxfers, cmints = [], burned, burnedNoteLeaf, nu, dest, scanState }) {
     return {
       etchTx: etch.tx,
       etchIndex: etch.index,
@@ -82,7 +84,10 @@ export function makeBurnDepositAssembler({ dsha256, cat, bytesToHex }) {
       })),
       burnedCx: burned.cx,
       burnedCy: burned.cy,
+      // Fold order mirrors the guest dispatch: fold_spent → fold_note_append → fold_burn (independent
+      // accumulators, but kept in lockstep). foldNoteAppend onboards the burned note as a pool member.
       spentInsert: scanState.foldSpent(nu),
+      notePath: scanState.foldNoteAppend(burnedNoteLeaf).notePath,
       burnInsert: scanState.foldBurn(nu, dest),
     };
   }
