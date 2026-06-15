@@ -95,7 +95,11 @@ Custody posture (accept+document for launch): self-custody locks → a locker ca
   - the `eth_pv` Mode-B prove-harness fix (`2ec31c1`) — without it the reflection prove desyncs (`pv=0`)
   - `get_amount_out` BigUint fix + AMM constant-product check (`2c4184a`)
   - mainnet config (`ETH_GENESIS_SYNC_COMMITTEE`, `ETH_REFLECTION_VKEY`, Bitcoin genesis anchor)
-  Reflection vkey rotates (settle vkey `0x00d5b572` stays frozen — settle source is unchanged).
+  Reflection vkey rotates. **Settle vkey `0x00d5b572` ALSO rotates this cycle** — the launch bundle pulls
+  the adaptor-swap op-set (OP_ADAPTOR_LOCK/CLAIM/REFUND, settle ops 12–14; see `DESIGN-adaptor-swap-guest.md`)
+  forward into A0, so the trustless cBTC↔BTC redemption + cross-chain orderbook ship at launch rather than
+  forcing a later settle re-prove + redeploy. (`cxfer-core` is shared, so any reflection or settle change
+  rebuilds BOTH ELFs and rotates BOTH vkeys regardless — the re-prove is inherently coordinated.)
 - Deploy a fresh `ConfidentialPool` at the new immutable vkeys (+ factory, header relay, genesis anchor);
   bootstrap reflection (first `attestBitcoinStateProven`).
 - Verify: `scripts/tac-roundtrip-verify.sh state` (Phase 0/1 green).
@@ -124,10 +128,34 @@ Custody posture (accept+document for launch): self-custody locks → a locker ca
   7/7 + `ConfidentialReflectionBurnDepositProofReal` 7/7 verify at the new vkey; settle `0x00d5b572` frozen
   (its `*ProofReal` + crosslane still green); cxfer-core 92, ConfidentialPool 90. The forward-bridge blocker
   is gone — the burn-deposit/cmint/CBURN onboarding is provable on the current toolchain.
-- **Remaining for A0:** (a) optionally fold the multiasset generalization (the pending guest impl) in for one
-  more vkey rotation before deploy — else it's a follow-up rotation; (b) **deploy a fresh `ConfidentialPool`**
-  at `0x007a9fee` (+ factory, header relay, genesis anchor) + bootstrap reflection. (B1 later wires the worker
-  assembler to set `mode_b=1` + supply the eth-reflection inner proof for crossOut batches.) Box stopped (funds).
+- **Remaining for A0 — the CONSOLIDATED LAUNCH BUNDLE (decision 2026-06-15: prove once, deploy once).** The
+  immutable deploy vkeys must be FINAL at launch, because any vkey-rotating change landing after launch forces
+  a fresh-pool redeploy **+ note migration** (users' notes live in the old tree). `bridge_mint` is
+  provenance-agnostic (it only checks ν∈burn-set + pool membership + `v_mint==v_burn` + `knownBitcoinRoot`),
+  so all of the below are **guest** changes (no new bridge_mint Solidity) — except the adaptor refund-gate, the
+  one isolated contract addition. Land them ALL as guest changes, validate each in native-exec (cheap), then
+  ONE coordinated re-prove of both ELFs → ONE deploy. Bundle:
+  - **Reflection guest** (rotates `BITCOIN_RELAY_VKEY` off `0x007a9fee`):
+    - **B — public-reserve AMM provenance** (`T_SWAP_VAR`, `T_LP_ADD/REMOVE`): a public-value swap/LP-remove
+      receipt bridges via the pool's `C_0`-rooted reserve lineage. New design (`DESIGN-bridge-multiasset-provenance.md` class B). Common-case AMM.
+    - **C — confidential-circuit provenance** (`T_PREAUTH_BID_VAR` BJJ orderbook; `T_SWAP_BATCH` `0x2F`
+      Groth16): conservation lives inside the op's circuit → batch-proof recursion or public net-deltas.
+      Class C; bid is common, batch is the privacy-opt-in subset (feasibility flag: BN254-Groth16-in-zkVM is
+      the heavy piece — net-delta or fail-closed-until-follow-up if it can't bundle cleanly).
+    - cBTC `0x66` lock already shipped in `0x007a9fee` (`fold_cbtc_lock` + rug-detect); the Bitcoin adaptor
+      leg needs NO reflection change (claim = normal CXFER, refund = CLTV the validator recognizes).
+  - **Settle guest** (rotates `PROGRAM_VKEY` off `0x00d5b572`):
+    - **Adaptor ops 12–14** (the cBTC atomic bridge + cross-chain orderbook): `adaptor_lock_leaf` primitive
+      DONE + KAT'd, dapp layer DONE; remaining = `main.rs` dispatch (mirrors `OP_OTC`) + lock-set/lock-spent
+      accumulators + `settleTimestamp`/`adaptorClaimS` PVs + adversarial fixtures. **+ one contract addition**:
+      the refund `validAfter` `block.timestamp >= ` gate (the mirror of the existing `<=` deadline gate).
+  - **Then:** ONE re-prove (both ELFs) → reconcile pin/`FROZEN_*`/allowlist/`DeployConfidentialPool` defaults →
+    regenerate all `*ProofReal` fixtures → **deploy a fresh `ConfidentialPool`** at both final vkeys (+ factory,
+    header relay, genesis anchor) + bootstrap reflection. (B1 later wires the worker assembler to set
+    `mode_b=1` + supply the eth-reflection inner proof for crossOut batches.) Box stopped (funds).
+  - **Readiness order** (most-ready → hardest): adaptor ops (design complete, primitive + dapp done) → B
+    (common AMM, new design) → C-bid → assess C-batch. All fund-critical → adversarial KATs to the v1 bar
+    before the vkeys lock.
 
 ### A1 — Onboard Bitcoin assets to the new pool (TAC first)  [dep: A0]
 - `attest_meta` → canonical ERC20 deploys at `f(asset_id)` (pool = MINTER) → bridge a TAC note in →
