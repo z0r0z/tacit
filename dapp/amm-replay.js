@@ -187,3 +187,69 @@ export function replayOpFromDecoded(opcode, dec, opcodes) {
   }
   return null;
 }
+
+// Phase 3 — derive a pool's trustless state from chain.
+//
+// deriveAmmPoolState reconstructs { reserveA, reserveB, totalShares } for a pool
+// without trusting the worker for any value. All chain access + decoding is
+// injected so this stays pure/testable; in production the dapp wires its own
+// fetchTx + decoders. The worker is consulted ONLY for `discover` (the op-txid
+// list) — discovery is liveness: every entry is re-fetched from chain, depth-
+// gated, decoded, pool-bound, and value-verified by the replay, so a worker that
+// lies about an op's values or injects a foreign op causes a THROW (halt), never
+// an inflated credit. Withholding an op makes the next op fail its check or the
+// list incomplete — also a halt. So: a malicious/incomplete worker = liveness
+// failure; soundness is the client's.
+//
+// env = {
+//   discover(poolIdHex) -> [{ txid, height, txIndex }]   (any order; re-sorted)
+//   fetchTx(txid) -> tx { status:{confirmed,block_height}, vin:[{witness:[...]}] }
+//   decodeEnvelope(witnessEntry) -> { opcode, payload } | null
+//   decodeForOpcode(opcode, payload) -> decoded fields | null
+//   poolIdForOp(opcode, decoded) -> poolIdHex   (binds an op to its pool)
+//   opcodes, deps (replay math), tipHeight, confirmations? = 3
+// }
+export async function deriveAmmPoolState(poolIdHex, env) {
+  const {
+    discover, fetchTx, decodeEnvelope, decodeForOpcode, poolIdForOp,
+    opcodes, deps, tipHeight, confirmations = 3,
+  } = env || {};
+  for (const [name, fn] of [['discover', discover], ['fetchTx', fetchTx], ['decodeEnvelope', decodeEnvelope], ['decodeForOpcode', decodeForOpcode], ['poolIdForOp', poolIdForOp]]) {
+    if (typeof fn !== 'function') throw new Error(`deriveAmmPoolState: missing ${name}()`);
+  }
+  if (!Number.isInteger(tipHeight)) throw new Error('deriveAmmPoolState: integer tipHeight required (depth gate)');
+
+  const list = await discover(poolIdHex);
+  if (!Array.isArray(list)) throw new Error('deriveAmmPoolState: discover() did not return an array');
+  // Canonical (height, tx_index) order — never trust the discovery's ordering.
+  const sorted = [...list].sort((a, b) => (a.height - b.height) || (a.txIndex - b.txIndex));
+
+  const ops = [];
+  for (const item of sorted) {
+    const txid = item && item.txid;
+    if (typeof txid !== 'string') throw new Error('deriveAmmPoolState: op-list item missing txid');
+    const tx = await fetchTx(txid);
+    if (!tx) throw new Error(`deriveAmmPoolState: op ${txid} unfetchable (halt — set incomplete)`);
+    if (!tx.status || tx.status.confirmed !== true) throw new Error(`deriveAmmPoolState: op ${txid} unconfirmed`);
+    const h = Number(tx.status.block_height);
+    if (!Number.isInteger(h)) throw new Error(`deriveAmmPoolState: op ${txid} has no block height`);
+    // Reorg safety: only ops buried at depth >= confirmations count.
+    if ((tipHeight - h + 1) < confirmations) {
+      throw new Error(`deriveAmmPoolState: op ${txid} below confirmation depth ${confirmations}`);
+    }
+    const wit = tx.vin && tx.vin[0] && tx.vin[0].witness;
+    if (!Array.isArray(wit) || wit.length < 3) throw new Error(`deriveAmmPoolState: op ${txid} carries no envelope`);
+    const decodedEnv = decodeEnvelope(wit[1]);
+    if (!decodedEnv || decodedEnv.opcode == null) throw new Error(`deriveAmmPoolState: op ${txid} envelope decode failed`);
+    const dec = decodeForOpcode(decodedEnv.opcode, decodedEnv.payload);
+    if (!dec) throw new Error(`deriveAmmPoolState: op ${txid} payload decode failed`);
+    // Pool binding: the op must belong to THIS pool, so a worker can't slip a
+    // foreign pool's (individually valid) op into the list and corrupt reserves.
+    const opPool = poolIdForOp(decodedEnv.opcode, dec);
+    if (opPool !== poolIdHex) throw new Error(`deriveAmmPoolState: op ${txid} is for pool ${opPool}, not ${poolIdHex}`);
+    const replayOp = replayOpFromDecoded(decodedEnv.opcode, dec, opcodes);
+    if (!replayOp) throw new Error(`deriveAmmPoolState: op ${txid} is not a pool op (opcode ${decodedEnv.opcode})`);
+    ops.push(replayOp);
+  }
+  return replayAmmPoolState(ops, deps);
+}

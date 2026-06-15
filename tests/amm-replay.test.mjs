@@ -15,7 +15,7 @@
 import {
   ammCurveDeltaOut, ammLpAddShares, ammLpRemoveOutputs, AMM_MINIMUM_LIQUIDITY,
 } from '../worker/src/index.js';
-import { replayAmmPoolState, replayOpFromDecoded, isqrtBig } from '../dapp/amm-replay.js';
+import { replayAmmPoolState, replayOpFromDecoded, deriveAmmPoolState, isqrtBig } from '../dapp/amm-replay.js';
 
 // Opcode constants (dapp/tacit.js).
 const OPCODES = { T_LP_ADD: 0x2D, T_LP_REMOVE: 0x2E, T_PROTOCOL_FEE_CLAIM: 0x31, T_SWAP_VAR: 0x32 };
@@ -164,6 +164,68 @@ console.log('\nPhase 2 — envelope → op adapter (decoded → replay op):');
   // fee_claim through the replay fails closed (crystallization not yet wired).
   throws('fee_claim op → reject (fail closed)', () =>
     replayAmmPoolState([SEQ[0], op4], DEPS), /fee_claim replay not yet wired/);
+}
+
+console.log('\nPhase 3 — deriveAmmPoolState (discover + on-chain verify + replay):');
+{
+  async function throwsAsync(label, fn, match) {
+    try { await fn(); ok(label, false, 'did not throw'); }
+    catch (e) { ok(label, !match || match.test(e.message), e.message); }
+  }
+
+  const POOL = 'aa'.repeat(32);
+  // Decoded payloads (each tagged with its pool), mirroring the real decoders.
+  const payloads = {
+    t0: { opcode: OPCODES.T_LP_ADD, payload: { variant: 1, deltaA: initA, deltaB: initB, shareAmount: initFounder, feeBps: swapFee, poolId: POOL } },
+    t1: { opcode: OPCODES.T_LP_ADD, payload: { variant: 0, deltaA: addA, deltaB: addB, shareAmount: addShares, poolId: POOL } },
+    t2: { opcode: OPCODES.T_SWAP_VAR, payload: { direction: 0, deltaIn: swapIn, minOut: 0n, poolId: POOL } },
+    t3: { opcode: OPCODES.T_LP_REMOVE, payload: { shareAmount: burn, deltaA: remA, deltaB: remB, poolId: POOL } },
+  };
+  const heights = { t0: 100, t1: 101, t2: 102, t3: 103 };
+  const mkTx = (txid) => ({ txid, status: { confirmed: true, block_height: heights[txid] }, vin: [{ witness: ['', txid, ''] }] });
+
+  const baseEnv = (over = {}) => ({
+    discover: async () => [
+      { txid: 't0', height: 100, txIndex: 0 }, { txid: 't1', height: 101, txIndex: 0 },
+      { txid: 't2', height: 102, txIndex: 0 }, { txid: 't3', height: 103, txIndex: 0 },
+    ],
+    fetchTx: async (txid) => (payloads[txid] ? mkTx(txid) : null),
+    decodeEnvelope: (s) => payloads[s] || null,           // witness entry === txid in the mock
+    decodeForOpcode: (_opcode, payload) => payload,
+    poolIdForOp: (_opcode, dec) => dec.poolId,
+    opcodes: OPCODES, deps: DEPS, tipHeight: 110, confirmations: 3,
+    ...over,
+  });
+
+  // 1. Reconstructs the same state as the direct replay — from chain, no worker reserves.
+  const st = await deriveAmmPoolState(POOL, baseEnv());
+  const direct = replayAmmPoolState(SEQ, DEPS);
+  ok('deriveAmmPoolState reproduces the trustless reserves', st.reserveA === direct.reserveA && st.reserveB === direct.reserveB && st.totalShares === direct.totalShares);
+
+  // 2. Out-of-order discovery is re-sorted canonically → same result.
+  const shuffled = baseEnv({ discover: async () => [
+    { txid: 't3', height: 103, txIndex: 0 }, { txid: 't0', height: 100, txIndex: 0 },
+    { txid: 't2', height: 102, txIndex: 0 }, { txid: 't1', height: 101, txIndex: 0 },
+  ] });
+  const st2 = await deriveAmmPoolState(POOL, shuffled);
+  ok('discovery order does not matter (re-sorted by height, tx_index)', st2.reserveA === direct.reserveA);
+
+  // 3. Depth gate: a tip too shallow for the last op → reject.
+  await throwsAsync('op below confirmation depth → reject', () =>
+    deriveAmmPoolState(POOL, baseEnv({ tipHeight: 104 })), /below confirmation depth/);
+
+  // 4. Foreign-pool op injected by the worker → reject (pool binding).
+  await throwsAsync('foreign-pool op in the list → reject', () =>
+    deriveAmmPoolState(POOL, baseEnv({ poolIdForOp: (_o, d) => (d === payloads.t2.payload ? 'bb'.repeat(32) : d.poolId) })), /is for pool/);
+
+  // 5. Withheld/unfetchable op → halt (liveness, not silent wrong state).
+  await throwsAsync('unfetchable op → halt', () =>
+    deriveAmmPoolState(POOL, baseEnv({ fetchTx: async (txid) => (txid === 't2' ? null : mkTx(txid)) })), /unfetchable/);
+
+  // 6. Forged op value (worker lies about an LP_ADD share amount) → reject via replay.
+  await throwsAsync('forged LP_ADD share amount → reject', () =>
+    deriveAmmPoolState(POOL, baseEnv({ decodeForOpcode: (_o, payload) =>
+      (payload === payloads.t1.payload ? { ...payload, shareAmount: addShares + 1n } : payload) })), /share mismatch/);
 }
 
 console.log(`\n${pass}/${pass + fail} passed`);
