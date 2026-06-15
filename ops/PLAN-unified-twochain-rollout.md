@@ -52,14 +52,18 @@ References: `ARCH-tacit-chain-abstraction.md` (design + gaps), `CHECKLIST-mainne
   **unconditional** — every reflection prove (even a forward-only burn-deposit/CXFER batch) creates a
   deferred-proof obligation, and proving with NO inner eth-reflection proof supplied → empty deferred set →
   the `6.2.3` recursion reduction divides by zero. (The settle guest has no recursion, so it's unaffected.)
-- **Fix (decouples A0 from B1) — preferred:** gate `verify_sp1_proof` on the batch actually folding a
-  crossOut. A forward-only batch (burn-deposit / multiasset onboarding / plain CXFER) has no crossOut →
-  skip the recursion → no deferred obligation → groth16 proves WITHOUT the eth-reflection guest. Sound: the
-  ETH state is only needed to validate crossOuts (reverse bridge); a forward batch never consumes it.
-  Reverse-bridge (crossOut) batches still require the inner proof = B1. **This is a guest change (conditional
-  gate + coherent eth-field commitment when skipped) + re-prove** — it unblocks A0 / the forward bridge
-  independently of standing up the eth-reflection guest. Alternative: do B1 now (supply the inner compressed
-  proof so the deferred set is non-empty). Box stopped between attempts (funds). Owner: re-prove session.
+- **Fix IMPLEMENTED (commit `cc6e557`) — A0 decoupled from B1.** Gated `verify_sp1_proof` on a `mode_b`
+  witness: a forward-only batch (burn-deposit / multiasset / plain CXFER) sets `mode_b == 0`, skips the
+  recursion (no deferred obligation → no field-division), and uses the zero sentinel — `crossout_set_root == 0`
+  makes every `fold_crossout` fail membership (skip-not-panic, no unverified crossOut can enter), and
+  `ethPoolReflected == 0` is accepted by `attestBitcoinStateProven` (a non-zero non-self pool is still
+  `WrongEthPool`). Reverse-bridge batches set `mode_b == 1` and prove as before (= B1). Validated locally:
+  guest builds + a `mode_b=0` fixture executes clean (recursion skipped, cycles 10.4M→9.1M, burn folds,
+  pv=320); cxfer-core 92 green; ConfidentialPool 90 green incl. `test_attest_zero_eth_pool_accepted_forward_only`.
+  Witnesses: `mode_b` written before `eth_pv` across all three reflect harnesses.
+- **Remaining for A0:** the actual box groth16 prove on the current toolchain (now sound by construction —
+  no empty deferred set) → rotate `BITCOIN_RELAY_VKEY` → deploy. (B1 later wires the worker assembler to set
+  `mode_b=1` + supply the eth-reflection inner proof for crossOut batches.) Box stopped between attempts (funds).
 
 ### A1 — Onboard Bitcoin assets to the new pool (TAC first)  [dep: A0]
 - `attest_meta` → canonical ERC20 deploys at `f(asset_id)` (pool = MINTER) → bridge a TAC note in →
