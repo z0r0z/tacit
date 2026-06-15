@@ -1,6 +1,13 @@
-# DESIGN — cBTC.tac: (TAC, tETH)-collateralized synthetic CDP on Ethereum (authoritative)
+# DESIGN — cBTC.tac: (TAC, tETH)-collateralized synthetic CDP on Ethereum (DEPRECATED)
 
-> **STATUS: the cBTC.tac architecture of record.** cBTC.tac is a **synthetic BTC-pegged token**, minted
+> **STATUS: DEPRECATED 2026-06-15.** The canonical cBTC.tac design is the real-BTC oracle-free peg in
+> [`DESIGN-cbtc-tac.md`](./DESIGN-cbtc-tac.md) — cBTC.tac is a claim on **real BTC** locked via cBTC.zk
+> (the backing), with the **tETH buffer (Chainlink-sized) as insurance, not the backing**. This
+> (TAC, tETH) synthetic-CDP variant is **not the direction** — retained for reference / the covenant-era
+> discussion only; do not build against it. Its "architecture of record / supersedes the real-BTC
+> lock-claim" claims below are **reversed** by this decision. What follows describes the DEPRECATED design.
+>
+> cBTC.tac is a **synthetic BTC-pegged token**, minted
 > against **(TAC, tETH) collateral** in a Maker-style CDP on **Ethereum** — mature, auditable contracts.
 > **No Bitcoin custody key, no signing-key oracle, no novel Bitcoin crypto.** Supersedes the real-BTC
 > lock-claim (`DESIGN-cbtc-tac.md`), which **parks for the covenant era**: pre-covenant there is no

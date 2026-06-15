@@ -55,6 +55,33 @@ mismatched tag yields a wrong (and, until A0, silently inert) address.
 
 ---
 
+## cBTC.tac issuance track — real-BTC peg (A0-independent)
+
+**Canonical design: `DESIGN-cbtc-tac.md`** — cBTC.tac is a fungible claim on **real BTC** locked via
+cBTC.zk (the backing); the **tETH buffer (Chainlink-sized) is insurance, not the backing**; the peg is
+oracle-free (conservation). The (TAC, tETH) synthetic-CDP `DESIGN-cbtc-tac-cdp.md` is **DEPRECATED**.
+
+**Issuance needs NO re-prove.** The *deployed* Sepolia reflection ELF (`0x005e6adc`) already contains
+`fold_cbtc_lock` (0x66) + the digest-bound `cbtcBackingSats`, and it is a **forward** fold (no Mode B).
+The pool already decodes/exposes `cbtcBackingSats()`. So this track can ship on the CURRENT pool or ride
+A0's fresh deploy (the re-prove carries cBTC unchanged). Sequence:
+- **cBTC1 — deploy `CbtcBuffer.sol`** (+ wire a fail-closed Chainlink ETH/BTC feed). Pure Ethereum; no
+  deploy script exists yet. Reads `ConfidentialPool.cbtcBackingSats()` to size the tETH peg-shortfall buffer.
+- **cBTC2 — box-validate the 0x66 path.** Run a real cBTC.zk lock through the *deployed* reflection ELF
+  on the box (`exec-reflect`) end-to-end — the dispatch + `fold_cbtc_lock` unit KAT are green but the path
+  was never natively executed. This validates the deployed circuit; it is **NOT a re-prove**. Plus the
+  off-chain assembler (emit per-0x66 witnesses) + indexer (scan locks).
+- **cBTC3 — mint/bridge cBTC** rides the existing generic `OP_BRIDGE_MINT` (no cBTC-specific settle op).
+- **cBTC4 — soft-fallback redemption** (market-sell cBTC; the tETH buffer guarantees peg solvency) — no
+  guest change.
+
+Custody posture (accept+document for launch): self-custody locks → a locker can spend their own lock
+("rug"); covered by the tETH buffer + insurance vault, with a covenant vault as the trustless endgame.
+**Re-prove-gated (NOT issuance):** trustless atomic cBTC↔BTC redemption via the adaptor swap
+(`OP_ADAPTOR_*`, specced-not-built) — Phase C territory.
+
+---
+
 ## Phase A — unified experience (bridge-gated value movement)
 
 ### A0 — Re-prove + deploy the production ConfidentialPool  ⟵ FOUNDATION, gates everything below
