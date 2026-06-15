@@ -15,9 +15,9 @@ sp1_zkvm::entrypoint!(main);
 use alloy_sol_types::{sol, SolValue};
 use alloy_sol_types::private::{Address, U256};
 use cxfer_core::{
-    bitcoin, claim_id, clearing_price_matches, decompress, deposit_id, from_affine_xy, get_amount_out,
-    imt_non_membership, intent_context, isqrt, keccak_merkle_verify, leaf, lp_add_shares, lp_share_id,
-    nullifier, pool_id, scalar_reduce_be, utxo_leaf, verify_kernel, verify_opening_sigma,
+    adaptor_lock_leaf, bitcoin, claim_id, clearing_price_matches, decompress, deposit_id, from_affine_xy,
+    get_amount_out, imt_non_membership, intent_context, isqrt, keccak_merkle_verify, leaf, lp_add_shares,
+    lp_share_id, nullifier, pool_id, scalar_reduce_be, utxo_leaf, verify_kernel, verify_opening_sigma,
     verify_pedersen_opening, verify_range, Point,
 };
 use sp1_zkvm::io;
@@ -36,6 +36,9 @@ const OP_OTC: u8 = 9; // confidential OTC: 2-party direct swap of shielded notes
 const OP_BID: u8 = 10; // confidential partial-fill bid: buyer-offline limit order, seller fills a grid amount
 const OP_SWAP_ROUTE: u8 = 11; // confidential multihop: route one input note through ≤ MAX_ROUTE_HOPS pools
 const MAX_ROUTE_HOPS: u32 = 4; // bound the per-route hop count (mirrors the Bitcoin route op)
+const OP_ADAPTOR_LOCK: u8 = 12; // adaptor swap: lock a note into the lock-set under (T, deadline, recipient)
+const OP_ADAPTOR_CLAIM: u8 = 13; // adaptor swap: claim a locked note before its deadline, revealing the kernel s
+const OP_ADAPTOR_REFUND: u8 = 14; // adaptor swap: refund a locked note to its locker after the deadline
 
 const SWAP_DIR_A_TO_B: u8 = 0;
 const SWAP_DIR_B_TO_A: u8 = 1;
@@ -71,6 +74,12 @@ sol! {
         SwapSettlement[] swaps;
         LpSettlement[] liquidity;
         uint64 deadline; // settle expiry (unix secs); 0 = none. The box can't relay a stale proof past it (Expired)
+        // ── adaptor-swap (ops 12–14): the cross-chain atomic-swap lock-set ──────────────────────────
+        bytes32 lockSetRoot; // INPUT: the lock-set root claim/refund membership is proven against (contract checks == stored)
+        bytes32[] lockLeaves; // adaptor_lock_leaf values appended to the lock-set by OP_ADAPTOR_LOCK
+        bytes32[] lockNullifiers; // ν_L consumed by claim/refund → the lock-spent set (spend-once, contract dedups)
+        bytes32[] adaptorClaimS; // the completed kernel `s` per claim — the t-reveal channel the Bitcoin counterparty reads
+        uint64 refundNotBefore; // contract gate: block.timestamp >= this for the batch (max refund deadline; 0 = no refunds)
     }
 }
 
@@ -125,6 +134,9 @@ pub fn main() {
     // THIS set, not the all-spends set — so a note spent in an ordinary Bitcoin transfer is
     // not mintable here (closes the cross-chain inflation path).
     let bitcoin_burn_root = r32();
+    // adaptor swap: the lock-set root claim/refund prove membership against (0 = no lock-set yet / no
+    // claim/refund this batch). The contract checks it == its stored lock-set root before advancing.
+    let lock_set_root = r32();
     let num_ops: u32 = io::read();
 
     let mut nullifiers: Vec<[u8; 32]> = Vec::new();
@@ -141,6 +153,14 @@ pub fn main() {
     // Per-op deadline (Expired), bound in each trading op's sigma context so the box can't forge or
     // stretch it. The guest commits the EARLIEST non-zero deadline; the contract enforces it vs block.time.
     let mut min_deadline: u64 = 0;
+    // adaptor-swap accumulators (ops 12–14). lock_leaves append to the lock-set; lock_nullifiers spend a
+    // locked note once; adaptor_claim_s carries each claim's completed kernel `s` (t-reveal). refund_not_before
+    // is the LATEST refund deadline in the batch — the contract gates block.timestamp >= it (the ≥ mirror of
+    // the ≤ `deadline` gate that covers claims).
+    let mut lock_leaves: Vec<[u8; 32]> = Vec::new();
+    let mut lock_nullifiers: Vec<[u8; 32]> = Vec::new();
+    let mut adaptor_claim_s: Vec<[u8; 32]> = Vec::new();
+    let mut refund_not_before: u64 = 0;
 
     for _ in 0..num_ops {
         let op: u8 = io::read();
@@ -1041,6 +1061,125 @@ pub fn main() {
                 leaves.push(leaf(&asset_final, &out_cx, &out_cy, &out_owner));
                 for s in hop_swaps { swaps.push(s); }
             }
+            OP_ADAPTOR_LOCK => {
+                // Atomic-swap LOCK (the cBTC↔BTC / cross-chain leg): spend a normal note `N` and move its
+                // FULL value into the lock-set as a locked note `L`, committing the adaptor point `T`, the
+                // `deadline`, the `recipient` (who may claim before the deadline) and the `locker` (who may
+                // refund after). `L` lives in the lock-set, NOT the note tree (domain-separated leaf), so no
+                // OP_TRANSFER can touch it — only OP_ADAPTOR_CLAIM / OP_ADAPTOR_REFUND, deadline-exclusive.
+                // Value is prover-visible (bound by openings, kept out of PublicValues); N and L open to the
+                // SAME `amount`, so the lock conserves value (no change, no inflation — split first to lock less).
+                let asset = r32();
+                let locker = r32();    // == N's owner (authorizes the spend by opening N)
+                let recipient = r32(); // the eventual claimer bound into the lock leaf
+                let amount: u64 = io::read();
+                assert!(amount > 0, "adaptor-lock: zero amount");
+                // Adaptor point T (affine x,y) — must be a real curve point; bound into the lock leaf + context.
+                let tx = r32();
+                let ty = r32();
+                from_affine_xy(&tx, &ty).expect("adaptor-lock: T not on curve");
+                let deadline: u64 = io::read();
+                assert!(deadline != 0, "adaptor-lock: deadline required");
+
+                // Spent note N (asset, owned by locker): membership + ν + cross-lane gate.
+                let (n_cx, n_cy, n_pt) = r_commitment();
+                let n_index: u64 = io::read();
+                let n_path = r_path();
+                let n_lf = leaf(&asset, &n_cx, &n_cy, &locker);
+                assert!(spend_root != [0u8; 32], "adaptor-lock: membership requires a non-zero spend root");
+                assert!(keccak_merkle_verify(&n_lf, n_index, &n_path, &spend_root), "adaptor-lock: N membership");
+                let n_nu = nullifier(&n_cx, &n_cy);
+                if bitcoin_spent_root != [0u8; 32] { check_btc_nonmembership(&n_nu, &bitcoin_spent_root); }
+                let n_sig_r = decompress(&r33()).expect("adaptor-lock: N-open R");
+                let n_sig_z = scalar_reduce_be(&r32());
+                // Locked note L (same asset, same value).
+                let (l_cx, l_cy, l_pt) = r_commitment();
+                let l_sig_r = decompress(&r33()).expect("adaptor-lock: L-open R");
+                let l_sig_z = scalar_reduce_be(&r32());
+
+                // Context binds the whole lock: N (locker), L (recipient), T, amount, deadline — so a relayer
+                // can neither re-target the lock to a different recipient/T nor re-price it (the openings fail).
+                if deadline != 0 { min_deadline = if min_deadline == 0 { deadline } else { min_deadline.min(deadline) }; }
+                let ctx = intent_context(
+                    b"tacit-adaptor-lock-intent-v1", &chain_binding, &asset, &asset,
+                    &[(n_cx, n_cy, locker), (l_cx, l_cy, recipient), (tx, ty, [0u8; 32])],
+                    &[amount, deadline],
+                );
+                assert!(verify_opening_sigma(&n_pt, amount, &n_sig_r, &n_sig_z, &ctx), "adaptor-lock: N opening (spend authz + value)");
+                assert!(verify_opening_sigma(&l_pt, amount, &l_sig_r, &l_sig_z, &ctx), "adaptor-lock: L opening (value carry)");
+
+                // Effect: spend N; append L to the lock-set.
+                nullifiers.push(n_nu);
+                lock_leaves.push(adaptor_lock_leaf(&l_cx, &l_cy, &tx, &ty, deadline, &recipient, &locker));
+            }
+            OP_ADAPTOR_CLAIM => {
+                // CLAIM a locked note before its deadline: prove `L` ∈ the lock-set (reconstructing its leaf
+                // pins recipient/T/deadline/locker), spend ν_L once, and emit the recipient's output note with
+                // value conserved by the ADAPTOR-COMPLETED kernel over (L_C − out_C). Committing that kernel's
+                // `s` is the t-reveal channel: the Bitcoin counterparty holding s̃ extracts t = σ·(s − s̃).
+                // The contract enforces block.timestamp <= deadline via the shared `deadline` (≤) gate.
+                let asset = r32();
+                let (l_cx, l_cy, l_pt) = r_commitment(); // the locked note
+                let tx = r32();
+                let ty = r32();
+                let deadline: u64 = io::read();
+                let recipient = r32();
+                let locker = r32();
+                let l_index: u64 = io::read();
+                let l_path = r_path();
+                // Lock-set membership reconstructs the EXACT leaf — so recipient/T/deadline/locker are pinned
+                // (a relayer can't change them without breaking membership).
+                let lock_lf = adaptor_lock_leaf(&l_cx, &l_cy, &tx, &ty, deadline, &recipient, &locker);
+                assert!(lock_set_root != [0u8; 32], "adaptor-claim: membership requires a non-zero lock-set root");
+                assert!(keccak_merkle_verify(&lock_lf, l_index, &l_path, &lock_set_root), "adaptor-claim: L lock-set membership");
+                let l_nu = nullifier(&l_cx, &l_cy);
+
+                // Output note → recipient (owner pinned by the membership-verified lock leaf; no redirect).
+                let (o_cx, o_cy, o_pt) = r_commitment();
+                // Adaptor-completed kernel over (L_C − out_C): a valid kernel ⇒ out conserves L's value without
+                // revealing it. `kernel_z` IS the completed signature `s` (committed for the t-reveal).
+                let kernel_r = decompress(&r33()).expect("adaptor-claim: kernel R");
+                let kernel_s = r32();
+                let kernel_z = scalar_reduce_be(&kernel_s);
+                assert!(verify_kernel(&[l_pt], &[o_pt], &kernel_r, &kernel_z), "adaptor-claim: value conservation");
+
+                // Claim window: bind the lock's deadline into the ≤ gate (settle must land before it).
+                if deadline != 0 { min_deadline = if min_deadline == 0 { deadline } else { min_deadline.min(deadline) }; }
+
+                lock_nullifiers.push(l_nu);
+                leaves.push(leaf(&asset, &o_cx, &o_cy, &recipient));
+                adaptor_claim_s.push(kernel_s);
+            }
+            OP_ADAPTOR_REFUND => {
+                // REFUND a locked note after its deadline: same membership + ν_L spend-once + kernel value
+                // carry as CLAIM, but the output goes to the LOCKER and NO `s` is revealed (no swap completed).
+                // The contract enforces block.timestamp >= deadline via the new `refundNotBefore` (≥) gate.
+                let asset = r32();
+                let (l_cx, l_cy, l_pt) = r_commitment();
+                let tx = r32();
+                let ty = r32();
+                let deadline: u64 = io::read();
+                let recipient = r32();
+                let locker = r32();
+                let l_index: u64 = io::read();
+                let l_path = r_path();
+                let lock_lf = adaptor_lock_leaf(&l_cx, &l_cy, &tx, &ty, deadline, &recipient, &locker);
+                assert!(lock_set_root != [0u8; 32], "adaptor-refund: membership requires a non-zero lock-set root");
+                assert!(keccak_merkle_verify(&lock_lf, l_index, &l_path, &lock_set_root), "adaptor-refund: L lock-set membership");
+                let l_nu = nullifier(&l_cx, &l_cy);
+
+                let (o_cx, o_cy, o_pt) = r_commitment();
+                let kernel_r = decompress(&r33()).expect("adaptor-refund: kernel R");
+                let kernel_z = scalar_reduce_be(&r32());
+                assert!(verify_kernel(&[l_pt], &[o_pt], &kernel_r, &kernel_z), "adaptor-refund: value conservation");
+
+                // Refund window: the contract requires block.timestamp >= the LATEST refund deadline in the batch.
+                assert!(deadline != 0, "adaptor-refund: deadline required");
+                refund_not_before = refund_not_before.max(deadline);
+
+                lock_nullifiers.push(l_nu);
+                leaves.push(leaf(&asset, &o_cx, &o_cy, &locker));
+            }
             _ => panic!("unknown op type"),
         }
     }
@@ -1063,6 +1202,11 @@ pub fn main() {
         swaps,
         liquidity,
         deadline: min_deadline,
+        lockSetRoot: lock_set_root.into(),
+        lockLeaves: lock_leaves.into_iter().map(Into::into).collect(),
+        lockNullifiers: lock_nullifiers.into_iter().map(Into::into).collect(),
+        adaptorClaimS: adaptor_claim_s.into_iter().map(Into::into).collect(),
+        refundNotBefore: refund_not_before,
     };
     io::commit_slice(&pv.abi_encode());
 }

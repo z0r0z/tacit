@@ -128,11 +128,38 @@ spend the **validator** recognizes; the reflection folds it as a normal spend. S
   already discharges the redirect/re-time/T-swap class natively.
 
 ## Remaining (guest owner) + why it rides v1
-- **Guest:** the `main.rs` dispatch for ops 12–14 (read witnesses → call the cxfer-core checks → effects),
-  + the lock-set/lock-spent state, + the `settleTimestamp`/`adaptorClaimS` public values.
-- **Contract:** the `block.timestamp` pass-through + the two new state roots in `settle`.
-- **Box:** `cargo prove` → the rotated `PROGRAM_VKEY` (rides this re-prove) + the swap/lp/otc/bid/adaptor
-  real-proof fixtures.
-Because the settle guest + the contract are already changing this cycle (asset-preservation + cBTC),
-the adaptor ops add **no extra re-prove or deploy** — only the review burden, which the §"soundness
-invariants" + the cxfer-core adversarial KATs must discharge to the v1 bar before the vkey locks.
+- **Guest — LANDED (source, ahead of the ELF; pending the launch re-prove).** `src/main.rs` ops 12–14
+  implemented as the OP_OTC-shaped assembly of audited primitives:
+  - `OP_ADAPTOR_LOCK (12)` — spend `N` (membership + ν + cross-lane), bind the lock under
+    `tacit-adaptor-lock-intent-v1` (notes `[(N,locker),(L,recipient),(T,0)]`, amounts `[amount, deadline]`),
+    `verify_opening_sigma(N→amount)` (spend authz + value) + `verify_opening_sigma(L→amount)` (value carry,
+    full-value lock — split first to lock less), append `adaptor_lock_leaf(L,T,deadline,recipient,locker)`.
+  - `OP_ADAPTOR_CLAIM (13)` — reconstruct the lock leaf (pins recipient/T/deadline/locker), verify lock-set
+    membership against `lockSetRoot`, ν_L → lock-spent, `verify_kernel([L_C],[out_C])` (value carry, the
+    adaptor-completed kernel), emit `leaf(out → recipient)`, push the kernel `s` to `adaptorClaimS` (t-reveal),
+    bind `deadline` into the shared `min_deadline` ≤ gate.
+  - `OP_ADAPTOR_REFUND (14)` — same as claim but output → `locker`, no `s` exposure, and
+    `refundNotBefore = max(refundNotBefore, deadline)` (the ≥ gate).
+  - PV additions (guest `sol!`): `bytes32 lockSetRoot` (input), `bytes32[] lockLeaves`,
+    `bytes32[] lockNullifiers`, `bytes32[] adaptorClaimS`, `uint64 refundNotBefore`. Top-level witness reads
+    a `lock_set_root` after `bitcoin_burn_root`.
+- **Contract — RIDES THE RE-PROVE COMMIT (cannot land earlier: adding PV fields breaks every committed
+  `*ProofReal` `abi.decode`).** In `ConfidentialPool.settle`, mirror the guest `PublicValues` (the 5 fields
+  above), then: (a) `require(pv.lockSetRoot == lockSetRoot)` (the stored lock-set root); (b) append each
+  `pv.lockLeaves[i]` to a SECOND incremental merkle accumulator (`_insertLockLeaf`, parallel to `_insertLeaf`
+  — its own `lockSetRoot` + `lockNextLeafIndex`); (c) dedup each `pv.lockNullifiers[i]` against a
+  `lockSpent` mapping + mark (spend-once); (d) `require(pv.refundNotBefore == 0 || block.timestamp >=
+  pv.refundNotBefore)` (the ≥ mirror of the existing `deadline` ≤ gate). `adaptorClaimS` is emitted in an
+  event (the off-chain t-reveal channel). The lock-set leaves are NOT note-tree leaves (domain-separated),
+  so they never touch `nextLeafIndex` / the reserve floor.
+- **Box (re-prove):** add the `lock_set_root` write (=0 for non-adaptor fixtures) + the 5 PV fields to the
+  exec harnesses (`exec-swap/lp/otc/bid`); `cargo prove` → the rotated `PROGRAM_VKEY`; regenerate the
+  swap/lp/otc/bid `*ProofReal` fixtures + add an adaptor lock→claim and lock→refund fixture + the adversarial
+  rejects (claim-after-deadline, refund-before-deadline, wrong-owner output, ν_L double-spend, normal-transfer
+  on a locked leaf).
+- **Dapp:** the SP1Stdin encoder for ops 12–14 (the witness write order above) — distinct from the existing
+  off-chain adaptor-signature math in `dapp/adaptor-swap.js`.
+Because the settle guest + the contract are already changing this cycle (the consolidated launch bundle:
+multiasset provenance + cBTC), the adaptor ops add **no extra re-prove or deploy** — only the review burden,
+which the §"soundness invariants" + the cxfer-core adversarial KATs must discharge to the v1 bar before the
+vkey locks.
