@@ -355,6 +355,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     error UnknownBitcoinRoot();
     error CrossChainLinkTaken();
     error PoolReserveMismatch();
+    error ConstantProductDecreased();
     error ZeroBitcoinPoolRoot();
     error StaleBitcoinBurnRoot();
     error UnanchoredReflection();
@@ -950,6 +951,12 @@ contract ConfidentialPool is ReentrancyGuardTransient {
             // hold value the guest can't reproduce. The guest carries reserves as u64 (BP+ range), so an
             // out-of-range post would wrap when read back as the next pre, desyncing or locking the pool.
             if (s.reserveAPost > type(uint64).max || s.reserveBPost > type(uint64).max) revert ValueOutOfRange();
+            // Defense-in-depth (mirrors the guest's OP_SWAP constant-product check): a swap moves reserves
+            // along or above the k curve — fees keep k flat-or-growing, never shrinking. A post that drops
+            // k below pre is a compromised-guest drain (the classic AMM attack), so reject it on-chain too.
+            // Reserves are < 2^64 (checked above) so each product fits in u256; identical to the guest's
+            // u128 comparison. LP add/remove legitimately change k → gated in the liquidity loop, not here.
+            if (s.reserveAPost * s.reserveBPost < s.reserveAPre * s.reserveBPre) revert ConstantProductDecreased();
             p.reserveA = s.reserveAPost;
             p.reserveB = s.reserveBPost;
             emit SwapSettled(s.poolId, s.reserveAPost, s.reserveBPost);

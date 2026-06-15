@@ -131,11 +131,13 @@ const T_DCLAIM   = 0x2C; // permissionless claim event against a T_DROP ancestor
 const T_DEPOSIT  = 0x29; // mixer-pool deposit / pool init (SPEC §5.10)
 const T_WITHDRAW = 0x2A; // mixer-pool anonymous withdraw (SPEC §5.11)
 const T_WRAPPER_ATTEST = 0x38; // optional on-chain wrapper attestation (SPEC §5.19)
-// AMM opcodes (SPEC AMM.md + SPEC-SWAP-VAR-AMENDMENT). v1 worker integration
-// is FOUNDATION-ONLY in this build: structural decoders + POOL_INIT registration
-// via launcher-gated trust-the-envelope semantics. Full cryptographic validation
-// (BJJ Pedersen, XCURVE sigma, Groth16 per-pool VK, kernel sigs) is staged for
-// follow-up sessions. NOT MAINNET-READY — signet smoke-test only.
+// AMM opcodes (SPEC AMM.md + SPEC-SWAP-VAR-AMENDMENT). The worker validates the full AMM state
+// machine: kernel-sig value conservation, the constant-product non-decrease + fee-clearing curve,
+// XCURVE sigma binding, aggregate Pedersen, and the MINIMUM_LIQUIDITY floor; LP_ADD/REMOVE are
+// additionally Groth16-verified at dapp credit time against the finalized ceremony VK CID. The pool
+// curve/clearing/share math runs out-of-circuit here (indexer consensus, Runes-style) — it is NOT
+// Bitcoin-consensus-enforced, so per-trade swaps (T_SWAP_VAR/ROUTE) carry no proof and trust this
+// single indexer; that pilot-grade trust model is the gating constraint, not missing validation.
 const T_LP_ADD     = 0x2D; // pool init (variant 1) or standard LP add (variant 0)
 const T_LP_REMOVE  = 0x2E; // LP redeem — share burn → asset A + B
 const T_SWAP_BATCH = 0x2F; // batched uniform-clearing settlement (ceremony-gated)

@@ -1,0 +1,68 @@
+{
+  "_comment": "get_amount_out (per-hop CFMM exact-in) KAT: JS reference == Rust cxfer-core get_amount_out == max delta_out admitted by swap-route cfmmFloorOk. Regenerate: node tests/gen-amount-out-vectors.mjs",
+  "vectors": [
+    {
+      "amountIn": "1000",
+      "reserveIn": "1000000",
+      "reserveOut": "1000000",
+      "feeBps": 0,
+      "amountOut": "999"
+    },
+    {
+      "amountIn": "1000",
+      "reserveIn": "1000000",
+      "reserveOut": "1000000",
+      "feeBps": 30,
+      "amountOut": "996"
+    },
+    {
+      "amountIn": "1000",
+      "reserveIn": "1000000",
+      "reserveOut": "1000000",
+      "feeBps": 1000,
+      "amountOut": "899"
+    },
+    {
+      "amountIn": "1",
+      "reserveIn": "2",
+      "reserveOut": "1000000",
+      "feeBps": 100,
+      "amountOut": "331103"
+    },
+    {
+      "amountIn": "5000000",
+      "reserveIn": "1000000000",
+      "reserveOut": "2000000000",
+      "feeBps": 30,
+      "amountOut": "9920546"
+    },
+    {
+      "amountIn": "7000000",
+      "reserveIn": "5000000000",
+      "reserveOut": "1000000000",
+      "feeBps": 25,
+      "amountOut": "1394552"
+    },
+    {
+      "amountIn": "123457",
+      "reserveIn": "999983",
+      "reserveOut": "1000003",
+      "feeBps": 30,
+      "amountOut": "109598"
+    },
+    {
+      "amountIn": "1000",
+      "reserveIn": "1000000",
+      "reserveOut": "5000",
+      "feeBps": 30,
+      "amountOut": "4"
+    },
+    {
+      "amountIn": "18000000000000000",
+      "reserveIn": "9000000000000000000",
+      "reserveOut": "9000000000000000000",
+      "feeBps": 30,
+      "amountOut": "17910286887945436"
+    }
+  ]
+}

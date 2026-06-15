@@ -13,7 +13,7 @@ import { writeFileSync } from 'node:fs';
 // Battery: one-sided each direction, two-sided dominant each way, exact-cancel (spot), empty,
 // zero + max fee, large reserves (exercise the ~2^142 intermediate product), asymmetric reserves,
 // and a case with no exact binary-search fixed point (forces the 'best' fallback).
-const CASES = [
+export const CASES = [
   { x: 100, y: 0, rA: 1000, rB: 1000, fee: 30 },        // single A→B
   { x: 0, y: 100, rA: 1000, rB: 1000, fee: 30 },        // single B→A
   { x: 100, y: 90, rA: 1000, rB: 1000, fee: 30 },       // two-sided, A-dominant
@@ -28,17 +28,22 @@ const CASES = [
   { x: 18_000_000_000_000_000, y: 0, rA: 9_000_000_000_000_000_000n, rB: 9_000_000_000_000_000_000n, fee: 30 }, // near-u64 reserves
 ];
 
-const vectors = CASES.map((c) => {
-  const sol = solveClearing(BigInt(c.x), BigInt(c.y), BigInt(c.rA), BigInt(c.rB), c.fee);
-  return {
-    x: String(c.x), y: String(c.y), rA: String(c.rA), rB: String(c.rB), fee: c.fee,
-    direction: sol.direction,
-    pNum: sol.P_clear_num.toString(),
-    pDen: sol.P_clear_den.toString(),
-  };
-});
+export function computeVectors() {
+  return CASES.map((c) => {
+    const sol = solveClearing(BigInt(c.x), BigInt(c.y), BigInt(c.rA), BigInt(c.rB), c.fee);
+    return {
+      x: String(c.x), y: String(c.y), rA: String(c.rA), rB: String(c.rB), fee: c.fee,
+      direction: sol.direction,
+      pNum: sol.P_clear_num.toString(),
+      pDen: sol.P_clear_den.toString(),
+    };
+  });
+}
 
-const out = 'contracts/sp1/confidential/fixtures/clearing_vectors.json';
-writeFileSync(out, JSON.stringify({ vectors }, null, 2) + '\n');
-console.log(`wrote ${vectors.length} clearing vectors to ${out}`);
-for (const v of vectors) console.log(`  ${v.direction.padEnd(5)} X=${v.x} Y=${v.y} R=${v.rA}/${v.rB} fee=${v.fee} → P_clear=${v.pNum}/${v.pDen}`);
+if (import.meta.url === `file://${process.argv[1]}`) {
+  const vectors = computeVectors();
+  const out = 'contracts/sp1/confidential/fixtures/clearing_vectors.json';
+  writeFileSync(out, JSON.stringify({ vectors }, null, 2) + '\n');
+  console.log(`wrote ${vectors.length} clearing vectors to ${out}`);
+  for (const v of vectors) console.log(`  ${v.direction.padEnd(5)} X=${v.x} Y=${v.y} R=${v.rA}/${v.rB} fee=${v.fee} → P_clear=${v.pNum}/${v.pDen}`);
+}

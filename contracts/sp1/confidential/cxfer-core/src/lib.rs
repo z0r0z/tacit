@@ -784,11 +784,16 @@ pub fn isqrt(n: u128) -> u128 { n.isqrt() }
 /// u128 throughout: amount_in, R_in, R_out each < 2^64, so R_out · ain_g < 2^64·2^64·10^4 < 2^128.
 /// OP_SWAP_ROUTE chains it hop-by-hop (out_i feeds in_{i+1}); fee_bps ≤ 1000 is enforced upstream.
 pub fn get_amount_out(amount_in: u64, reserve_in: u64, reserve_out: u64, fee_bps: u32) -> u128 {
-    let gamma = (10000 - fee_bps) as u128;        // 10000 − fee
-    let ain_g = amount_in as u128 * gamma;        // amount_in · γ
-    let num = reserve_out as u128 * ain_g;        // R_out · amount_in · γ
-    let den = reserve_in as u128 * 10000 + ain_g; // R_in · 10000 + amount_in · γ
-    num / den
+    // BigUint intermediates: R_out · amount_in · γ reaches ~2^141 for near-u64 reserves, which a u128
+    // product silently overflows (wrap in release / panic in debug) and diverges from the JS/Bitcoin
+    // reference. The quotient amount_out < reserve_out ≤ u64::MAX still fits u128. Same reason
+    // solve_clearing uses BigUint. (KAT: get_amount_out_matches_js_vectors.)
+    use num_bigint::BigUint;
+    let gamma = BigUint::from(10000u32 - fee_bps);              // 10000 − fee
+    let ain_g = BigUint::from(amount_in) * &gamma;             // amount_in · γ
+    let num = BigUint::from(reserve_out) * &ain_g;            // R_out · amount_in · γ
+    let den = BigUint::from(reserve_in) * BigUint::from(10000u32) + &ain_g; // R_in · 10000 + amount_in · γ
+    (num / den).to_string().parse::<u128>().unwrap()
 }
 
 /// Deterministic uniform-price clearing solve — a faithful, byte-for-byte port of
@@ -2699,6 +2704,26 @@ mod tests {
         let (rin, rout) = (1_000_000u128, 1_000_000u128);
         let out = get_amount_out(1000, 1_000_000, 1_000_000, 30);
         assert!((rin + 1000) * (rout - out) >= rin * rout, "constant-product must not decrease");
+    }
+
+    // AMM-ROUTE-2: cross-language KAT — get_amount_out matches tests/amm per-hop reference vectors
+    // (tests/gen-amount-out-vectors.mjs) byte-for-byte. Those vectors are also pinned on the Bitcoin
+    // lane to be exactly the max delta_out swap-route cfmmFloorOk admits, so this asserts the per-hop
+    // curve agrees across the SP1 guest (this), the JS reference, and the Bitcoin route validator —
+    // closing the route-hop drift the batch clearing KAT (clearing_vectors.json) didn't cover.
+    #[test]
+    fn get_amount_out_matches_js_vectors() {
+        let f: serde_json::Value =
+            serde_json::from_str(include_str!("../../fixtures/get_amount_out_vectors.json")).unwrap();
+        for v in f["vectors"].as_array().unwrap() {
+            let a_in: u64 = v["amountIn"].as_str().unwrap().parse().unwrap();
+            let r_in: u64 = v["reserveIn"].as_str().unwrap().parse().unwrap();
+            let r_out: u64 = v["reserveOut"].as_str().unwrap().parse().unwrap();
+            let fee: u32 = v["feeBps"].as_u64().unwrap() as u32;
+            let exp: u128 = v["amountOut"].as_str().unwrap().parse().unwrap();
+            assert_eq!(get_amount_out(a_in, r_in, r_out, fee), exp,
+                "get_amount_out drift on a_in={a_in} R={r_in}/{r_out} fee={fee}");
+        }
     }
 
     // AMM-FEE-2: pin the ORIENTATION of clearing_price_matches. The declared OP_SWAP price is
