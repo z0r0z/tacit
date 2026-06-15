@@ -171,7 +171,11 @@ fn main() {
     let pk = client.setup(elf).expect("setup failed");
     let vk = pk.verifying_key().bytes32();
     println!("BITCOIN_RELAY_VKEY={vk}");
-    assert_vkey(&vk, "bitcoin_relay_vkey");
+    // SKIP_VKEY_ASSERT bypasses the drift guard for the re-prove that ESTABLISHES a new vkey (the guest
+    // changed, so the derived vkey legitimately differs from the old pin). Pin the printed vkey afterward;
+    // every subsequent prove re-asserts against it.
+    if std::env::var("SKIP_VKEY_ASSERT").is_err() { assert_vkey(&vk, "bitcoin_relay_vkey"); }
+    else { println!("(vkey assert skipped — establishing a new pin)"); }
     println!("proving groth16 (cuda)...");
     let proof = client.prove(&pk, s).groth16().run().expect("groth16 proof failed");
     println!("PROVED pv_bytes={}", proof.public_values.as_slice().len());
