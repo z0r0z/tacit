@@ -48,6 +48,9 @@ export function replayAmmPoolState(ops, deps) {
   }
   const MIN_LIQ = BigInt(MINIMUM_LIQUIDITY);
   let reserveA = 0n, reserveB = 0n, totalShares = 0n, initialized = false;
+  // The fee is the POOL's, fixed at POOL_INIT — swaps don't carry it. Carrying
+  // it here means a swap can't claim a different fee than its pool's.
+  let poolFeeBps = 0;
 
   for (let i = 0; i < ops.length; i++) {
     const op = ops[i];
@@ -67,6 +70,7 @@ export function replayAmmPoolState(ops, deps) {
         throw new Error(`replay[${i}]: pool_init founder-share mismatch (declared ${op.shareAmount}, formula ${founder})`);
       }
       reserveA = da; reserveB = db; totalShares = total; initialized = true;
+      poolFeeBps = Number(op.feeBps || 0);
       continue;
     }
 
@@ -85,18 +89,27 @@ export function replayAmmPoolState(ops, deps) {
     }
 
     if (op.kind === 'swap_var') {
+      // SPEC §5.20 outcome taxonomy: re-price the cleartext delta_in at the
+      // ACTUAL (replayed) reserves and the pool's fee — the swap's own declared
+      // R_A_pre/R_B_pre/delta_out are ADVISORY quote context, never trusted.
+      // EXECUTE (advance reserves) iff delta_out_actual >= max(1, min_out);
+      // otherwise PASS-THROUGH (reserves unchanged, the trader is refunded). The
+      // outcome is a deterministic function of the replayed reserves, so the
+      // client computes the same execute/pass the worker did — no per-swap
+      // continuity check is possible (the receipt is the trader's hidden
+      // commitment), but a divergent replay is caught at the next LP_ADD/REMOVE,
+      // whose declared derived values ARE checked against the replayed reserves.
       const deltaIn = BigInt(op.deltaIn);
       if (deltaIn <= 0n) throw new Error(`replay[${i}]: swap non-positive deltaIn`);
       const dir = op.direction | 0;
-      // curveDeltaOut returns { deltaOut, raPost, rbPost } — the canonical
-      // post-reserves the worker/builder use, so the replay advances to exactly
-      // that state (no second reserve-update arithmetic to drift).
-      const r = curveDeltaOut(dir, reserveA, reserveB, deltaIn, op.feeBps | 0);
+      const r = curveDeltaOut(dir, reserveA, reserveB, deltaIn, poolFeeBps);
       const deltaOut = BigInt(r.deltaOut);
-      if (deltaOut <= 0n) throw new Error(`replay[${i}]: swap yields zero out`);
-      if (op.expectDeltaOut != null && BigInt(op.expectDeltaOut) !== deltaOut) {
-        throw new Error(`replay[${i}]: swap out mismatch (declared ${op.expectDeltaOut}, curve ${deltaOut})`);
+      const floor = (op.minOut != null && BigInt(op.minOut) > 1n) ? BigInt(op.minOut) : 1n;
+      if (deltaOut < floor) {
+        // PASS-THROUGH: pool state unchanged.
+        continue;
       }
+      // EXECUTE: advance to the canonical post-reserves.
       reserveA = BigInt(r.raPost);
       reserveB = BigInt(r.rbPost);
       continue;

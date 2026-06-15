@@ -54,9 +54,10 @@ const burn = 500n;
 const { deltaA: remA, deltaB: remB } = ammLpRemoveOutputs(burn, rA2, rB2, S1);
 
 const SEQ = [
-  { kind: 'pool_init', deltaA: initA, deltaB: initB, shareAmount: initFounder },
+  { kind: 'pool_init', deltaA: initA, deltaB: initB, shareAmount: initFounder, feeBps: swapFee },
   { kind: 'lp_add', deltaA: addA, deltaB: addB, shareAmount: addShares },
-  { kind: 'swap_var', direction: 0, deltaIn: swapIn, feeBps: swapFee, expectDeltaOut: swapOut },
+  // minOut 0 → executes (re-priced output >= floor 1).
+  { kind: 'swap_var', direction: 0, deltaIn: swapIn, minOut: 0n },
   { kind: 'lp_remove', sharesBurned: burn, outA: remA, outB: remB },
 ];
 
@@ -96,9 +97,16 @@ throws('pool_init with inflated founder shares → reject', () =>
 throws('lp_add over-claiming shares → reject', () =>
   replayAmmPoolState([SEQ[0], { ...SEQ[1], shareAmount: addShares + 1n }], DEPS), /share mismatch/);
 
-// 6. A swap whose declared output exceeds the curve (over-draining the pool).
-throws('swap over-stating output → reject', () =>
-  replayAmmPoolState([SEQ[0], SEQ[1], { ...SEQ[2], expectDeltaOut: swapOut + 1n }], DEPS), /out mismatch/);
+// 6. §5.20 pass-through: a swap whose re-priced output is below min_out leaves
+//    the pool state UNCHANGED (the trader is refunded). The replay must model
+//    this, not unconditionally execute.
+{
+  const passthrough = { kind: 'swap_var', direction: 0, deltaIn: 100n, minOut: 1_000_000_000n };
+  const st = replayAmmPoolState([SEQ[0], SEQ[1], passthrough], DEPS);
+  ok('pass-through swap leaves reserveA unchanged', st.reserveA === rA1);
+  ok('pass-through swap leaves reserveB unchanged', st.reserveB === rB1);
+  ok('pass-through swap leaves totalShares unchanged', st.totalShares === S1);
+}
 
 // 7. An LP_REMOVE claiming a larger payout than proportional.
 throws('lp_remove over-stating outA → reject', () =>
