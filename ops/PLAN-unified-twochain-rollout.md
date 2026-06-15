@@ -243,14 +243,29 @@ in-proof `pv.fees` form replaces it at the A0 re-prove.
 
 ## Critical path
 ```
-A0 ─┬─ A1 (onboard)
-    ├─ A2 (flip pool) ─┬─ A3 (unified portfolio) ─ A5 (network UX)
-    │                  └─ A4 (bridge-out UI)
-    └─ B1 (eth-reflection) ─ B2 (loop) ─ B3 (fast lane) ─ C1 (x-chain book) ─ C2 (canonical pool) ─ C3 (one LP, one book, both chains)
-```
-A0 is the shared root and is in flight. Phase A (A1–A5) is mostly **last-mile wiring of code that already
-exists + tests** — low/medium effort, client-side, once A0 lands. Phase B is the heavy lift (recursive
-proving + a second re-prove for B3) and delivers the fast lane.
+NOW (no A0 dep):  W1 show EVM identity · W2 EVM-lane recovery · W3 same-asset labels    ← stage in parallel
 
-Smallest first visible win after A0: **A2 + A3** (flip the pool, wire `scanHoldingsCrossChain` into
-`renderHoldings`) — that alone turns two adjacent tabs into one cross-chain portfolio.
+A0  [UNBLOCKED]  prove → rotate BITCOIN_RELAY_VKEY → deploy     (forward-only; no eth-reflection guest)
+    │
+    ├─ FORWARD — near-term ─┬─ A1 onboard (any asset, any mutation) ── A6 gas-free same-chain trading
+    │                       └─ A2 flip pool ── A3 unified portfolio ─┬─ A5 network UX
+    │                                                                └─ A4 bridge-out UI
+    │
+    └─ LATER (decoupled) ── B1 eth-reflection ─ B2 loop ─ B3 fast lane ─ C1 x-chain book ─ C2 canonical pool ─ C3 one LP, both chains
+```
+**A0 is UNBLOCKED** — the reflection-prove field-division is fixed by the conditional Mode-B gate
+(`cc6e557`), so the forward re-prove runs on the current `150e629/6.2.3` toolchain without the
+eth-reflection guest. A0 now collapses to one focused box session: prove → rotate `BITCOIN_RELAY_VKEY` →
+deploy the fresh pool.
+
+The **FORWARD arm (A1–A6) is near-term** once A0 lands — mostly last-mile wiring of code that already
+exists + tests (the merge layer's degrade-clean invariant is green, so A2/A3 is a confident flip). The
+**W1–W3 wins need no A0** and can be staged now in parallel, so the unified UX is ready the moment the
+pool deploys.
+
+The **B/C arm is the decoupled later lift** — B is recursive proving (the eth-reflection guest) + a second
+re-prove for B3 (the fast lane); C is the unified-AMM / one-LP convergence on top of it. It depends on A0
+but **no longer gates the forward experience** — that decoupling (`cc6e557`) is the key change.
+
+Smallest first visible win: **W1–W3 now** (no A0), then **A2 + A3 the moment A0 deploys** — flip the pool,
+wire `scanHoldingsCrossChain` into `renderHoldings`, and two adjacent tabs become one cross-chain portfolio.
