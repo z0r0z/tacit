@@ -380,6 +380,55 @@ pub fn parse_cbtc_lock_envelope(env: &[u8]) -> Option<([u8; 32], u32, [u8; 32], 
     Some((asset, lock_vout, cx, cy))
 }
 
+/// Parsed `T_SWAP_VAR` envelope (opcode 0x32) — the public-reserve AMM swap (SPEC §5.16.3 / AMM.md).
+/// Reserves + amounts are PUBLIC u64 and the receipt's blinding `r_receipt` is cleartext, so the taker's
+/// output note `C_receipt` opens publicly. That is exactly what lets the reflection verify per-asset
+/// conservation by ARITHMETIC (no kernel) before onboarding the taker's output as real — Track B in
+/// ops/DESIGN-bridge-multiasset-provenance.md. Wire (after opcode): `pool_id(32) ‖ direction(1) ‖
+/// R_A_pre(8 LE) ‖ R_B_pre(8) ‖ delta_in(8) ‖ delta_in_min(8) ‖ delta_in_max(8) ‖ delta_out(8) ‖
+/// min_out(8) ‖ tip_amount(8) ‖ tip_asset(1) ‖ expiry_height(4 LE) ‖ trader_pubkey(33) ‖ C_in_secp(33) ‖
+/// C_change_or_sentinel(33) ‖ C_receipt_secp(33) ‖ r_receipt(32) ‖ rangeproof_len(2 LE) ‖
+/// range_proof(VAR) ‖ kernel_sig(64) ‖ intent_sig(64)`.
+pub struct SwapVarEnvelope {
+    pub pool_id: [u8; 32],
+    pub direction: u8, // 0 = A→B (taker gives asset_A, receives asset_B); 1 = B→A
+    pub r_a_pre: u64,
+    pub r_b_pre: u64,
+    pub delta_in: u64,       // taker input amount (added to the in-asset reserve)
+    pub delta_out: u64,      // taker output amount (drawn from the out-asset reserve) — the receipt value
+    pub c_receipt: [u8; 33], // the taker's output note commitment (the bridgeable note)
+    pub r_receipt: [u8; 32], // PUBLIC blinding: C_receipt opens to delta_out under it
+}
+
+/// Parse a `T_SWAP_VAR` envelope. None if not a well-formed 0x32 envelope. Surfaces only the fields the
+/// reflection's Track-B conservation needs; the unread fields (slippage bounds, tip, trader pubkey,
+/// sentinel/change, range proof, sigs) ride for the on-chain validator + price/intent checks.
+pub fn parse_swap_var_envelope(env: &[u8]) -> Option<SwapVarEnvelope> {
+    const PRE_RP: usize = 269; // bytes through rangeproof_len (opcode .. r_receipt .. rp_len)
+    if env.len() < PRE_RP || env[0] != 0x32 {
+        return None;
+    }
+    let direction = env[33];
+    if direction != 0 && direction != 1 {
+        return None;
+    }
+    let rp_len = u16::from_le_bytes(env[267..269].try_into().ok()?) as usize;
+    // kernel_sig + intent_sig follow the range proof — require the full envelope so a truncated one rejects.
+    if env.len() < PRE_RP + rp_len + 64 + 64 {
+        return None;
+    }
+    Some(SwapVarEnvelope {
+        pool_id: env[1..33].try_into().ok()?,
+        direction,
+        r_a_pre: u64::from_le_bytes(env[34..42].try_into().ok()?),
+        r_b_pre: u64::from_le_bytes(env[42..50].try_into().ok()?),
+        delta_in: u64::from_le_bytes(env[50..58].try_into().ok()?),
+        delta_out: u64::from_le_bytes(env[74..82].try_into().ok()?),
+        c_receipt: env[202..235].try_into().ok()?,
+        r_receipt: env[235..267].try_into().ok()?,
+    })
+}
+
 /// Parse a confidential-transfer envelope → (assetId, the N output commitments as compressed
 /// secp256k1 points). Accepts T_CXFER (0x23) AND its BP+ variant T_CXFER_BPP (0x22) — identical
 /// wire shape (SPEC §5.47); real confidential transfers use 0x22. Layout: opcode(1) ‖
@@ -637,6 +686,59 @@ mod tests {
         assert_ne!(verify_merkle_path(&t[1], &[t[2], h23], 1), root, "wrong sibling rejected");
         // single-tx block: empty path → the txid itself
         assert_eq!(verify_merkle_path(&t[0], &[], 0), t[0], "single-tx path = txid");
+    }
+
+    #[test]
+    fn parse_swap_var_envelope_round_trips_and_rejects_malformed() {
+        // Build a T_SWAP_VAR payload byte-for-byte per the dapp/worker wire format.
+        let pool_id = [0x11u8; 32];
+        let c_receipt = [0x02u8; 33];
+        let r_receipt = [0x33u8; 32];
+        let rp = [0xaau8; 5]; // arbitrary range proof
+        let mut env = vec![0x32u8]; // opcode
+        env.extend_from_slice(&pool_id);
+        env.push(1u8); // direction = B→A
+        env.extend_from_slice(&7000u64.to_le_bytes()); // R_A_pre
+        env.extend_from_slice(&3000u64.to_le_bytes()); // R_B_pre
+        env.extend_from_slice(&500u64.to_le_bytes()); // delta_in
+        env.extend_from_slice(&0u64.to_le_bytes()); // delta_in_min
+        env.extend_from_slice(&0u64.to_le_bytes()); // delta_in_max
+        env.extend_from_slice(&990u64.to_le_bytes()); // delta_out
+        env.extend_from_slice(&0u64.to_le_bytes()); // min_out
+        env.extend_from_slice(&0u64.to_le_bytes()); // tip_amount
+        env.push(0u8); // tip_asset
+        env.extend_from_slice(&123u32.to_le_bytes()); // expiry_height
+        env.extend_from_slice(&[0x04u8; 33]); // trader_pubkey
+        env.extend_from_slice(&[0x05u8; 33]); // C_in_secp
+        env.extend_from_slice(&[0x06u8; 33]); // C_change_or_sentinel
+        env.extend_from_slice(&c_receipt); // C_receipt_secp
+        env.extend_from_slice(&r_receipt); // r_receipt
+        env.extend_from_slice(&(rp.len() as u16).to_le_bytes()); // rangeproof_len
+        env.extend_from_slice(&rp); // range_proof
+        env.extend_from_slice(&[0x07u8; 64]); // kernel_sig
+        env.extend_from_slice(&[0x08u8; 64]); // intent_sig
+
+        let p = parse_swap_var_envelope(&env).expect("well-formed swap_var parses");
+        assert_eq!(p.pool_id, pool_id);
+        assert_eq!(p.direction, 1);
+        assert_eq!(p.r_a_pre, 7000);
+        assert_eq!(p.r_b_pre, 3000);
+        assert_eq!(p.delta_in, 500);
+        assert_eq!(p.delta_out, 990);
+        assert_eq!(p.c_receipt, c_receipt);
+        assert_eq!(p.r_receipt, r_receipt);
+
+        // wrong opcode → None
+        let mut bad_op = env.clone();
+        bad_op[0] = 0x2b;
+        assert!(parse_swap_var_envelope(&bad_op).is_none(), "non-0x32 opcode rejected");
+        // bad direction → None
+        let mut bad_dir = env.clone();
+        bad_dir[33] = 2;
+        assert!(parse_swap_var_envelope(&bad_dir).is_none(), "direction not 0 or 1 rejected");
+        // truncated before the trailing sigs → None (a swap missing its kernel/intent sig can't fold)
+        let truncated = &env[..env.len() - 1];
+        assert!(parse_swap_var_envelope(truncated).is_none(), "truncated envelope rejected");
     }
 
     #[test]
