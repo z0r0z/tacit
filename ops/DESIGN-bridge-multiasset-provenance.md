@@ -101,6 +101,30 @@ so the gap can only ever *under*-admit (a real note that can't yet bridge), neve
 4. **Re-prove** — rotates `BITCOIN_RELAY_VKEY` (the mechanical box step). This is the only "ceremony"
    involved; there is no MPC / trusted setup, because the ops are Schnorr + BP+.
 
+## Per-op reality — RESOLVED 2026-06-15 (the generalization is NOT uniform)
+
+A code read of the actual Bitcoin op wire formats splits the ops into two classes, which the
+"asset-scoped kernel" framing above only covers for ONE of them:
+
+- **Confidential 2-party ops — OTC, bid (`T_PREAUTH_BID_VAR`).** Outputs are Pedersen commitments bound
+  by opening sigmas; value + blinding stay hidden. The asset-scoped conservation kernel applies directly:
+  the op-builder (who knows the per-asset excess) signs the X-subset conservation, the walk verifies it,
+  the note bridges. **This is the implementable track.**
+- **Public-reserve AMM ops — `T_SWAP_VAR`, `T_LP_ADD/REMOVE`.** The wire carries the reserves as PUBLIC
+  u64 (`R_A_pre`, `R_B_pre`) and the swap output as a PUBLIC-value receipt (`delta_out` u64 + `r_receipt`
+  in cleartext). A swap receipt is therefore a public-value note minted from the public pool reserve, and
+  its realness to `C_0` is the pool's reserve lineage (LP-adds that descend from `C_0`, minus prior
+  swaps/removes) — a **pool-level provenance**, NOT a per-asset Pedersen-kernel step. The asset-scoped
+  kernel does NOT capture this; a swap/LP-sourced note needs a distinct treatment that proves the receipt
+  is backed by the pool's `C_0`-descended reserve. Bigger, separate design — do not force it into the
+  kernel walk.
+
+**Revised plan.** Split "multiasset" into two tracks: (A) the asset-scoped-kernel walk for OTC/bid
+(confidential, fits the existing `verify_cxfer_conservation` shape — likely NO guest change if the op
+emits a `tacit-kernel-v1`-shaped per-asset sig, since the walk already verifies that); (B) a separate
+pool-reserve-provenance design for AMM-sourced notes (swap/LP), which proves a public-value receipt
+descends from the pool's `C_0`-rooted reserve. Track A is the near-term win; track B is its own design.
+
 ## Per-op kernel mapping (the implementation specifics to nail down)
 
 The one thing to pin per op: which on-chain kernel signs the **output** side the bridge needs (the
