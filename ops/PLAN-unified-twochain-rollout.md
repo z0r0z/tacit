@@ -43,16 +43,23 @@ References: `ARCH-tacit-chain-abstraction.md` (design + gaps), `CHECKLIST-mainne
 - Deploy a fresh `ConfidentialPool` at the new immutable vkeys (+ factory, header relay, genesis anchor);
   bootstrap reflection (first `attestBitcoinStateProven`).
 - Verify: `scripts/tac-roundtrip-verify.sh state` (Phase 0/1 green).
-- Status: **blocked on the prove, root-caused (2026-06-15).** Source synced + new reflection ELF builds on
-  the box; new `BITCOIN_RELAY_VKEY = 0x00970105…` derived (PROVISIONAL — toolchain-dependent). Blocker: the
-  groth16 **reduction** field-divides (`196177702/0`, `Fatal(Reduction task)`) deterministically for ANY
-  reflection fixture (burn-deposit AND a plain CXFER), so it's toolchain/ELF-level, not data-specific. NOT a
-  regression — the box is on the *documented* toolchain (`cargo-prove sp1 150e629` / `sp1 6.2.3`); the prior,
-  smaller reflection ELF (`0x005e6adc`) is what produced the committed fixtures. Next diagnostic (one box
-  session): groth16-prove the **settle** guest on the box → if it proves, the bigger reflection ELF trips a
-  `6.2.3` reduction edge; if it also field-divides, reinstall the `sp1-gpu-server` binary to match `6.2.3`
-  exactly (box's is a Jun-1 build vs cargo-prove's May-23). Box stopped between attempts (funds). Owner:
-  re-prove session.
+- Status: **root-caused → A0's reflection groth16 is coupled to Mode-B (2026-06-15).** Source synced + new
+  reflection ELF builds; `BITCOIN_RELAY_VKEY = 0x00970105…` derived (PROVISIONAL — toolchain-dependent).
+  Diagnostic DONE (decisive): the reflection groth16 field-divides (`196177702/0`, `Fatal(Reduction task)`)
+  but the **settle** guest groth16 **proves clean on the same `150e629/6.2.3` toolchain** (`LOCAL_VERIFY_OK`,
+  real artifacts) — so the toolchain is healthy and it is NOT a regression / not a gpu-server mismatch. The
+  field-division is **reflection-specific**: `verify_sp1_proof` (the Mode-B recursion, `reflect.rs:137`) is
+  **unconditional** — every reflection prove (even a forward-only burn-deposit/CXFER batch) creates a
+  deferred-proof obligation, and proving with NO inner eth-reflection proof supplied → empty deferred set →
+  the `6.2.3` recursion reduction divides by zero. (The settle guest has no recursion, so it's unaffected.)
+- **Fix (decouples A0 from B1) — preferred:** gate `verify_sp1_proof` on the batch actually folding a
+  crossOut. A forward-only batch (burn-deposit / multiasset onboarding / plain CXFER) has no crossOut →
+  skip the recursion → no deferred obligation → groth16 proves WITHOUT the eth-reflection guest. Sound: the
+  ETH state is only needed to validate crossOuts (reverse bridge); a forward batch never consumes it.
+  Reverse-bridge (crossOut) batches still require the inner proof = B1. **This is a guest change (conditional
+  gate + coherent eth-field commitment when skipped) + re-prove** — it unblocks A0 / the forward bridge
+  independently of standing up the eth-reflection guest. Alternative: do B1 now (supply the inner compressed
+  proof so the deferred set is non-empty). Box stopped between attempts (funds). Owner: re-prove session.
 
 ### A1 — Onboard Bitcoin assets to the new pool (TAC first)  [dep: A0]
 - `attest_meta` → canonical ERC20 deploys at `f(asset_id)` (pool = MINTER) → bridge a TAC note in →
@@ -83,8 +90,26 @@ References: `ARCH-tacit-chain-abstraction.md` (design + gaps), `CHECKLIST-mainne
   the unified holdings, lane shown as a secondary attribute rather than a separate tab/selector.
 - Gate opened: the "chain recedes" experience — the user thinks in assets, not chains.
 
-**End of Phase A:** unified portfolio + one-UI round-trip + one identity. Value still crosses chains via
-the finality-gated bridge (not "fast"), which is correct and safe.
+### A6 — Gas-abstract settler (launch trading without ETH)  [dep: A0, A1]
+The trading layer is gas-abstract **by design and the mechanism is on-chain today** — this is a launch
+target, gated only on running the settler, not on new crypto:
+- **On-chain (verified):** `settle()` is permissionless (`ConfidentialPool.sol:763`); `pv.fees[i]` is paid
+  to `msg.sender` in the **traded asset** (`FeePayment{assetId,value}` :260, `_payout(assetId, msg.sender,…)`
+  :914). Orders are offline-signed intents — OP_OTC binds both parties with no on-chain action; OP_BID is
+  buyer-prefunds + pre-signs K grid fills + walks away. So a user holding ONLY the asset (no ETH) signs an
+  intent; a relayer fronts ETH gas and is reimbursed in-asset.
+- **Worker (wired):** `worker/src/confidential-settle.js` is a prove/settle job queue (`buildConfidentialSettler`;
+  `/confidential/{submit,job,ack}`; box-poll, same box shape as the reflection relay). The settle-guest
+  groth16 **proves clean on the current toolchain** (verified 2026-06-15, `LOCAL_VERIFY_OK`) — the relayer's
+  prove path is healthy; it's the SETTLE guest, not the recursion-blocked reflection guest.
+- **Launch gap (operational only):** run a live settler — a box polling `ops/scripts/confidential-settle-loop.sh`,
+  funded with ETH gas, submitting `settle()`; plus a minimal in-asset fee policy (cover gas + margin). Rides
+  A0 (a live pool) + A1 (an onboarded asset to price/denominate fees in, e.g. tETH).
+- Gate opened: **same-chain gas-free trading at launch** — list/fill priced in any onboarded asset; neither
+  maker nor filler needs ETH. (Cross-chain, no-bridge atomic fills = the Phase C adaptor swaps.)
+
+**End of Phase A:** unified portfolio + one-UI round-trip + one identity + gas-free same-chain trading.
+Value still crosses chains via the finality-gated bridge (not "fast"), which is correct and safe.
 
 ---
 
