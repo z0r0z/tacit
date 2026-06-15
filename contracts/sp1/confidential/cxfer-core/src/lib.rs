@@ -285,6 +285,59 @@ pub fn cxfer_kernel_verify(
     bip340_verify(kernel_sig, &msg, &px)
 }
 
+/// Verify a `T_SWAP_VAR` (0x32) kernel signature — the input-side conservation of a public-reserve AMM
+/// swap. Mirrors the worker's `ammSwapVarKernelVerifyPoint` + `ammKernelMsgV1` byte-for-byte: the verify
+/// key is `(C_change_or_sentinel − C_in + delta_in_total·H).x_only` (the sentinel = all-zero ⇒ identity,
+/// the exact-input no-change case), and the message is the same `tacit-kernel-v1` digest as a CXFER with
+/// one input outpoint and `[C_change_or_sentinel]` as the single output. A valid sig proves
+/// `C_in − C_change = delta_in_total·H + excess·G` — the taker really put `delta_in_total` (delta_in + tip)
+/// of `asset_in` into the pool, with no H-inflation. (`cxfer_kernel_verify` can't be reused: it decompresses
+/// every output, so the all-zero sentinel would fail.) See ops/DESIGN-bridge-multiasset-provenance.md (B).
+pub fn swap_var_kernel_verify(
+    asset_in: &[u8; 32],
+    input_outpoint: ([u8; 32], u32),
+    c_in: &[u8; 33],
+    c_change_or_sentinel: &[u8; 33],
+    delta_in_total: u64,
+    kernel_sig: &[u8; 64],
+) -> bool {
+    // msg = tacit-kernel-v1 ‖ asset ‖ 1 ‖ (txid ‖ vout_LE) ‖ 1 ‖ c_change_or_sentinel ‖ delta_in_total_LE
+    let mut h = Sha256::new();
+    h.update(CXFER_KERNEL_DOMAIN);
+    h.update(asset_in);
+    h.update([1u8]);
+    h.update(input_outpoint.0);
+    h.update(input_outpoint.1.to_le_bytes());
+    h.update([1u8]);
+    h.update(c_change_or_sentinel);
+    h.update(delta_in_total.to_le_bytes());
+    let msg: [u8; 32] = h.finalize().into();
+
+    let c_in_pt = match decompress(c_in) {
+        Some(p) => p,
+        None => return false,
+    };
+    let is_sentinel = c_change_or_sentinel.iter().all(|&b| b == 0);
+    let c_change_pt = if is_sentinel {
+        ProjectivePoint::identity()
+    } else {
+        match decompress(c_change_or_sentinel) {
+            Some(p) => p,
+            None => return false,
+        }
+    };
+    let mut p = c_change_pt - c_in_pt;
+    if delta_in_total != 0 {
+        p = p + gen_h() * Scalar::from(delta_in_total);
+    }
+    if p == ProjectivePoint::identity() {
+        return false;
+    }
+    let pc = compress(&p);
+    let px: [u8; 32] = pc[1..].try_into().unwrap();
+    bip340_verify(kernel_sig, &msg, &px)
+}
+
 // ──────────────────── BP+ transcript (length-prefixed sha256) ────────────────────
 
 struct Transcript {
@@ -1864,6 +1917,20 @@ impl WitnessedReflection {
 /// resolved against it (`scan_tx_spends`) — no spend can be omitted, which is what the witnessed
 /// model (relayer-chosen effects) could not guarantee. The detected spends fold into the spent-set
 /// here; the UTXO removal already happened in the scan.
+/// Track-B per-pool reserve provenance (ops/DESIGN-bridge-multiasset-provenance.md). A Bitcoin AMM
+/// pool's `(asset_a, asset_b)` and current public reserves, plus whether those reserves are known to
+/// descend from the assets' supply note `C_0` (`c0_backed`). The reflection advances this as it folds
+/// the pool's confirmed AMM txs; a swap output is onboarded as real only against a `c0_backed` pool whose
+/// tracked reserves match the swap's declared `R_*_pre` (so a forged reserve can't mint unbacked value).
+#[derive(Clone)]
+pub struct PoolReserveState {
+    pub asset_a: [u8; 32],
+    pub asset_b: [u8; 32],
+    pub reserve_a: u64,
+    pub reserve_b: u64,
+    pub c0_backed: bool,
+}
+
 #[derive(Clone)]
 pub struct ScanReflection {
     pub pool_root: [u8; 32],
@@ -2043,6 +2110,87 @@ impl ScanReflection {
             let ch = commitment_hash_compressed(commitment).ok_or("cxfer fold: output commitment not a curve point")?;
             let outpoint = outpoint_key(txid, output_vouts[i]);
             self.fold_output(&note_leaf, &output_paths[i], &outpoint, &ch, asset)?;
+        }
+        Ok(())
+    }
+
+    /// Fold a confirmed `T_SWAP_VAR` (Track B): onboard the taker's receipt note as a real, live pool
+    /// member — ONLY if the pool is C0-backed, the swap's declared reserves match the tracked reserves,
+    /// the input-side kernel verifies, and the receipt opens to `delta_out` ≤ the out-side reserve. Then
+    /// the receipt is bridgeable exactly like any reflected note (`OP_BRIDGE_MINT` binds `v_mint == v_burn`).
+    ///
+    /// Soundness: the receipt's value is `delta_out`, drawn from `R_out_pre` which is C0-backed, so the
+    /// onboarded note descends from `C_0`. The in-side reserve credit (`+delta_in`) is backed because the
+    /// kernel binds it to the taker's REAL spent input `C_in` (a prior live note; the caller resolves it via
+    /// `scan_tx_spends` and passes its asset). The tip leaves the pool (it's `delta_in_total − delta_in`),
+    /// so only `delta_in` is credited. Fails closed (folds nothing, skip-not-panic) on any miss: a forged
+    /// reserve, a bad kernel/opening, an over-draw, or a non-C0-backed pool just leaves the note un-onboarded
+    /// (completeness only — never an over-mint). `pool` is advanced in place on success.
+    #[allow(clippy::too_many_arguments)]
+    pub fn fold_swap_var(
+        &mut self,
+        pool: &mut PoolReserveState,
+        env: &bitcoin::SwapVarEnvelope,
+        input_outpoint: ([u8; 32], u32),
+        input_asset: &[u8; 32],
+        receipt_outpoint: &[u8; 32],
+        receipt_note_path: &[[u8; 32]],
+    ) -> Result<(), &'static str> {
+        // (1) the pool must be C0-backed and its declared reserves must match what we track (anti-forgery).
+        if !pool.c0_backed {
+            return Err("swap_var fold: pool not C0-backed");
+        }
+        if pool.reserve_a != env.r_a_pre || pool.reserve_b != env.r_b_pre {
+            return Err("swap_var fold: declared reserves != tracked reserves");
+        }
+        // (2) direction → in/out assets + reserves.
+        let (asset_in, asset_out, r_in_pre, r_out_pre) = if env.direction == 0 {
+            (&pool.asset_a, &pool.asset_b, pool.reserve_a, pool.reserve_b)
+        } else if env.direction == 1 {
+            (&pool.asset_b, &pool.asset_a, pool.reserve_b, pool.reserve_a)
+        } else {
+            return Err("swap_var fold: bad direction");
+        };
+        // (3) the taker's spent input must be of the pool's in-side asset (carried by the live set).
+        if input_asset != asset_in {
+            return Err("swap_var fold: input asset != pool in-side asset");
+        }
+        // (4) kernel: the taker really contributed delta_in_total = delta_in + tip of asset_in. C_in is a
+        //     real spent live note (resolved by the caller), so the credited delta_in is backed.
+        let delta_in_total = (env.delta_in as u128) + (env.tip_amount as u128);
+        if delta_in_total >= (1u128 << 64) {
+            return Err("swap_var fold: delta_in_total overflow");
+        }
+        if !swap_var_kernel_verify(
+            asset_in, input_outpoint, &env.c_in, &env.c_change_or_sentinel, delta_in_total as u64, &env.kernel_sig,
+        ) {
+            return Err("swap_var fold: kernel verify");
+        }
+        // (5) the receipt opens to delta_out under the PUBLIC r_receipt — its value is exactly delta_out.
+        if env.delta_out == 0 {
+            return Err("swap_var fold: zero delta_out");
+        }
+        let c_receipt_pt = decompress(&env.c_receipt).ok_or("swap_var fold: receipt not a curve point")?;
+        if !verify_pedersen_opening(&c_receipt_pt, env.delta_out, &scalar_reduce_be(&env.r_receipt)) {
+            return Err("swap_var fold: receipt opening != delta_out");
+        }
+        // (6) conservation: the pool can only pay out what it holds of the out-side asset.
+        if env.delta_out > r_out_pre {
+            return Err("swap_var fold: delta_out exceeds out-side reserve");
+        }
+        // (7) onboard the receipt as a real live note (same leaf/UTXO shape as any reflected output), then
+        //     advance the reserves: in-side += delta_in (the tip leaves the pool), out-side −= delta_out.
+        let note_leaf = reflected_note_leaf(asset_out, &env.c_receipt).ok_or("swap_var fold: receipt not a curve point")?;
+        let ch = commitment_hash_compressed(&env.c_receipt).ok_or("swap_var fold: receipt not a curve point")?;
+        self.fold_output(&note_leaf, receipt_note_path, receipt_outpoint, &ch, asset_out)?;
+        let r_in_post = r_in_pre.checked_add(env.delta_in).ok_or("swap_var fold: in-reserve overflow")?;
+        let r_out_post = r_out_pre - env.delta_out; // ≤ checked above
+        if env.direction == 0 {
+            pool.reserve_a = r_in_post;
+            pool.reserve_b = r_out_post;
+        } else {
+            pool.reserve_b = r_in_post;
+            pool.reserve_a = r_out_post;
         }
         Ok(())
     }
@@ -3067,6 +3215,101 @@ mod tests {
 
         // wrong asset → different message → reject
         assert!(!cxfer_kernel_verify(&[0u8; 32], &inputs, &in_commits, &out_compressed, burned, &sig), "wrong asset rejected");
+    }
+
+    // Track B: build a valid T_SWAP_VAR scenario (real kernel sig + real receipt opening) and lock both
+    // the kernel primitive AND fold_swap_var's inflation-critical gates. The positive onboarding round-trip
+    // (which needs real keccak-tree append paths) rides the native-exec reflection fixture.
+    fn swap_var_kernel_msg(asset_in: &[u8; 32], op: ([u8; 32], u32), c_change: &[u8; 33], dit: u64) -> [u8; 32] {
+        let mut h = Sha256::new();
+        h.update(CXFER_KERNEL_DOMAIN);
+        h.update(asset_in);
+        h.update([1u8]);
+        h.update(op.0);
+        h.update(op.1.to_le_bytes());
+        h.update([1u8]);
+        h.update(c_change);
+        h.update(dit.to_le_bytes());
+        h.finalize().into()
+    }
+
+    #[test]
+    fn swap_var_kernel_verify_accepts_real_sig_and_rejects_tamper() {
+        let asset_in = [0xAAu8; 32];
+        let op = ([0x77u8; 32], 1u32);
+        // delta_in_total = v_in − v_change; excess = r_change − r_in ⇒ P = excess·G (pure G-term).
+        let (v_in, v_change, dit) = (1500u64, 500u64, 1000u64);
+        let r_in = scalar_reduce_be(&[0x31u8; 32]);
+        let excess = scalar_reduce_be(&[0x32u8; 32]);
+        let r_change = r_in + excess;
+        let c_in = compress(&(gen_h() * Scalar::from(v_in) + ProjectivePoint::generator() * r_in));
+        let c_change = compress(&(gen_h() * Scalar::from(v_change) + ProjectivePoint::generator() * r_change));
+        let msg = swap_var_kernel_msg(&asset_in, op, &c_change, dit);
+        let (_px, sig) = bip340_sign(&[0x32u8; 32], &[0x55u8; 32], &msg); // d_seed reduces to `excess`
+
+        assert!(swap_var_kernel_verify(&asset_in, op, &c_in, &c_change, dit, &sig), "valid swap kernel verifies");
+        let mut bad = sig; bad[63] ^= 1;
+        assert!(!swap_var_kernel_verify(&asset_in, op, &c_in, &c_change, dit, &bad), "tampered sig rejected");
+        assert!(!swap_var_kernel_verify(&asset_in, op, &c_in, &c_change, dit + 1, &sig), "wrong delta_in_total rejected");
+        assert!(!swap_var_kernel_verify(&[0u8; 32], op, &c_in, &c_change, dit, &sig), "wrong asset rejected");
+    }
+
+    #[test]
+    fn fold_swap_var_gates_reject_inflation() {
+        let asset_a = [0xAAu8; 32];
+        let asset_b = [0xBBu8; 32];
+        // Valid A→B swap: delta_in 1000 (tip 0), delta_out 450 ≤ reserve_b 5000.
+        let op = ([0x77u8; 32], 1u32);
+        let (v_in, v_change, dit) = (1500u64, 500u64, 1000u64);
+        let r_in = scalar_reduce_be(&[0x31u8; 32]);
+        let excess = scalar_reduce_be(&[0x32u8; 32]);
+        let r_change = r_in + excess;
+        let c_in = compress(&(gen_h() * Scalar::from(v_in) + ProjectivePoint::generator() * r_in));
+        let c_change = compress(&(gen_h() * Scalar::from(v_change) + ProjectivePoint::generator() * r_change));
+        let msg = swap_var_kernel_msg(&asset_a, op, &c_change, dit);
+        let (_px, sig) = bip340_sign(&[0x32u8; 32], &[0x55u8; 32], &msg);
+        let delta_out = 450u64;
+        let r_receipt_bytes = [0x44u8; 32];
+        let c_receipt = compress(&(gen_h() * Scalar::from(delta_out) + ProjectivePoint::generator() * scalar_reduce_be(&r_receipt_bytes)));
+        let env = bitcoin::SwapVarEnvelope {
+            pool_id: [0x10u8; 32], direction: 0,
+            r_a_pre: 10_000, r_b_pre: 5_000,
+            delta_in: 1000, tip_amount: 0, delta_out,
+            c_in, c_change_or_sentinel: c_change, c_receipt, r_receipt: r_receipt_bytes, kernel_sig: sig,
+        };
+        let mk_pool = || PoolReserveState { asset_a, asset_b, reserve_a: 10_000, reserve_b: 5_000, c0_backed: true };
+        let path = [[0u8; 32]; 32];
+
+        // gate (1): a pool not yet C0-backed folds NOTHING.
+        let mut p = mk_pool(); p.c0_backed = false;
+        let mut sc = ScanReflection::genesis();
+        assert!(sc.fold_swap_var(&mut p, &env, op, &asset_a, &[0x01u8; 32], &path).is_err(), "non-C0-backed pool rejected");
+
+        // gate (1): declared reserves must match the tracked reserves (no forged R_pre to over-draw).
+        let mut p = mk_pool(); p.reserve_b = 999_999; // tracked ≠ env.r_b_pre
+        assert!(sc.fold_swap_var(&mut p, &env, op, &asset_a, &[0x01u8; 32], &path).is_err(), "forged reserves rejected");
+
+        // gate (3): the spent input must be the pool's in-side asset (no cross-asset credit).
+        let mut p = mk_pool();
+        assert!(sc.fold_swap_var(&mut p, &env, op, &asset_b, &[0x01u8; 32], &path).is_err(), "wrong input asset rejected");
+
+        // gate (4): a bad kernel sig (the taker didn't really put delta_in in) folds nothing.
+        let mut p = mk_pool();
+        let mut bad_env = env.clone(); bad_env.kernel_sig[0] ^= 1;
+        assert!(sc.fold_swap_var(&mut p, &bad_env, op, &asset_a, &[0x01u8; 32], &path).is_err(), "bad kernel rejected");
+
+        // gate (5): the receipt must open to delta_out under r_receipt (no over-stated output value).
+        let mut p = mk_pool();
+        let mut wrong_out = env.clone(); wrong_out.delta_out = 451; // opening is to 450
+        assert!(sc.fold_swap_var(&mut p, &wrong_out, op, &asset_a, &[0x01u8; 32], &path).is_err(), "receipt-opening mismatch rejected");
+
+        // gate (6): can't draw more of the out-asset than the pool holds (the inflation floor). Build a
+        // receipt that DOES open to an over-draw amount + a kernel for it, so only gate (6) trips.
+        let mut p = mk_pool();
+        let big = 6000u64; // > reserve_b 5000
+        let c_big = compress(&(gen_h() * Scalar::from(big) + ProjectivePoint::generator() * scalar_reduce_be(&r_receipt_bytes)));
+        let mut over = env.clone(); over.delta_out = big; over.c_receipt = c_big;
+        assert!(sc.fold_swap_var(&mut p, &over, op, &asset_a, &[0x01u8; 32], &path).is_err(), "out-reserve over-draw rejected");
     }
 
     // REFLECT-1 regression: the reflection prover must NOT fold a confirmed CXFER tx's outputs into

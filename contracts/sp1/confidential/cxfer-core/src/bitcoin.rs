@@ -389,20 +389,25 @@ pub fn parse_cbtc_lock_envelope(env: &[u8]) -> Option<([u8; 32], u32, [u8; 32], 
 /// min_out(8) ‖ tip_amount(8) ‖ tip_asset(1) ‖ expiry_height(4 LE) ‖ trader_pubkey(33) ‖ C_in_secp(33) ‖
 /// C_change_or_sentinel(33) ‖ C_receipt_secp(33) ‖ r_receipt(32) ‖ rangeproof_len(2 LE) ‖
 /// range_proof(VAR) ‖ kernel_sig(64) ‖ intent_sig(64)`.
+#[derive(Clone)]
 pub struct SwapVarEnvelope {
     pub pool_id: [u8; 32],
     pub direction: u8, // 0 = A→B (taker gives asset_A, receives asset_B); 1 = B→A
     pub r_a_pre: u64,
     pub r_b_pre: u64,
-    pub delta_in: u64,       // taker input amount (added to the in-asset reserve)
-    pub delta_out: u64,      // taker output amount (drawn from the out-asset reserve) — the receipt value
-    pub c_receipt: [u8; 33], // the taker's output note commitment (the bridgeable note)
-    pub r_receipt: [u8; 32], // PUBLIC blinding: C_receipt opens to delta_out under it
+    pub delta_in: u64,            // taker input amount credited to the in-asset reserve
+    pub tip_amount: u64,          // settler tip (also drawn from C_in; delta_in_total = delta_in + tip)
+    pub delta_out: u64,           // taker output amount drawn from the out-asset reserve — the receipt value
+    pub c_in: [u8; 33],           // the taker's spent input note commitment (kernel input side)
+    pub c_change_or_sentinel: [u8; 33], // taker's change (or the all-zero sentinel = exact input, no change)
+    pub c_receipt: [u8; 33],      // the taker's output note commitment (the bridgeable note)
+    pub r_receipt: [u8; 32],      // PUBLIC blinding: C_receipt opens to delta_out under it
+    pub kernel_sig: [u8; 64],     // BIP-340 over the input-side conservation (C_in − C_change = delta_in_total·H)
 }
 
-/// Parse a `T_SWAP_VAR` envelope. None if not a well-formed 0x32 envelope. Surfaces only the fields the
-/// reflection's Track-B conservation needs; the unread fields (slippage bounds, tip, trader pubkey,
-/// sentinel/change, range proof, sigs) ride for the on-chain validator + price/intent checks.
+/// Parse a `T_SWAP_VAR` envelope. None if not a well-formed 0x32 envelope. Surfaces the public-reserve
+/// fields + the kernel input side the reflection's Track-B conservation needs; the unread fields
+/// (slippage bounds, trader pubkey, range proof, intent sig) ride for the on-chain validator.
 pub fn parse_swap_var_envelope(env: &[u8]) -> Option<SwapVarEnvelope> {
     const PRE_RP: usize = 269; // bytes through rangeproof_len (opcode .. r_receipt .. rp_len)
     if env.len() < PRE_RP || env[0] != 0x32 {
@@ -414,7 +419,8 @@ pub fn parse_swap_var_envelope(env: &[u8]) -> Option<SwapVarEnvelope> {
     }
     let rp_len = u16::from_le_bytes(env[267..269].try_into().ok()?) as usize;
     // kernel_sig + intent_sig follow the range proof — require the full envelope so a truncated one rejects.
-    if env.len() < PRE_RP + rp_len + 64 + 64 {
+    let ks_off = PRE_RP + rp_len;
+    if env.len() < ks_off + 64 + 64 {
         return None;
     }
     Some(SwapVarEnvelope {
@@ -423,9 +429,13 @@ pub fn parse_swap_var_envelope(env: &[u8]) -> Option<SwapVarEnvelope> {
         r_a_pre: u64::from_le_bytes(env[34..42].try_into().ok()?),
         r_b_pre: u64::from_le_bytes(env[42..50].try_into().ok()?),
         delta_in: u64::from_le_bytes(env[50..58].try_into().ok()?),
+        tip_amount: u64::from_le_bytes(env[90..98].try_into().ok()?),
         delta_out: u64::from_le_bytes(env[74..82].try_into().ok()?),
+        c_in: env[136..169].try_into().ok()?,
+        c_change_or_sentinel: env[169..202].try_into().ok()?,
         c_receipt: env[202..235].try_into().ok()?,
         r_receipt: env[235..267].try_into().ok()?,
+        kernel_sig: env[ks_off..ks_off + 64].try_into().ok()?,
     })
 }
 
@@ -724,9 +734,13 @@ mod tests {
         assert_eq!(p.r_a_pre, 7000);
         assert_eq!(p.r_b_pre, 3000);
         assert_eq!(p.delta_in, 500);
+        assert_eq!(p.tip_amount, 0);
         assert_eq!(p.delta_out, 990);
+        assert_eq!(p.c_in, [0x05u8; 33]);
+        assert_eq!(p.c_change_or_sentinel, [0x06u8; 33]);
         assert_eq!(p.c_receipt, c_receipt);
         assert_eq!(p.r_receipt, r_receipt);
+        assert_eq!(p.kernel_sig, [0x07u8; 64]);
 
         // wrong opcode → None
         let mut bad_op = env.clone();
