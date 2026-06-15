@@ -33,25 +33,80 @@ export function isqrtBig(n) {
   return x;
 }
 
+// Hex of a 32-byte id whether it arrives as a hex string or raw bytes.
+function _toHex(x) {
+  if (typeof x === 'string') return x.toLowerCase();
+  let s = '';
+  for (let i = 0; i < x.length; i++) s += x[i].toString(16).padStart(2, '0');
+  return s;
+}
+
+// Protocol-fee crystallization — mirrors the worker's ammComputeProtocolShares
+// (Uniswap-V2 lazy mintFee skim): the protocol's cut of LP-fee growth, measured
+// as the increase in sqrt(k) (k = reserveA·reserveB) since the last
+// crystallization, diluting existing LPs. Returns the shares to mint.
+//   shares = S·bps·(√k_now − √k_pre) / ((10000−bps)·√k_now + bps·√k_pre)
+export function computeProtocolShares(S_pre, k_pre, k_now, protocolFeeBps) {
+  const S = BigInt(S_pre), kPre = BigInt(k_pre), kNow = BigInt(k_now), bps = BigInt(protocolFeeBps);
+  if (bps <= 0n) return 0n;
+  if (kNow <= kPre) return 0n;
+  if (S === 0n) return 0n;
+  const rootPre = isqrtBig(kPre), rootNow = isqrtBig(kNow);
+  if (rootNow <= rootPre) return 0n;
+  const numerator = S * bps * (rootNow - rootPre);
+  const denominator = (10000n - bps) * rootNow + bps * rootPre;
+  if (denominator === 0n) return 0n;
+  return numerator / denominator;
+}
+
 // ops: [{ kind, ... }] in canonical order. Op shapes (fields are the on-chain /
 // envelope-declared values the caller decoded — see replayOpFromDecoded):
-//   pool_init : { deltaA, deltaB, shareAmount?, feeBps }  shareAmount = founder shares
-//   lp_add    : { deltaA, deltaB, shareAmount? }
-//   swap_var  : { direction, deltaIn, minOut }            re-priced at actual reserves
-//   lp_remove : { sharesBurned, outA?, outB? }
-//   fee_claim : { claimAmount }                           not yet wired (throws)
-//   swap_batch: requires Groth16 verification — not yet wired (throws).
+//   pool_init  : { deltaA, deltaB, shareAmount?, feeBps }  shareAmount = founder shares
+//   lp_add     : { deltaA, deltaB, shareAmount? }
+//   swap_var   : { direction, deltaIn, minOut }            re-priced at actual reserves
+//   swap_route : { hops: [{ direction, feeBps, rAPre, rBPre, deltaAMag, deltaBMag }] }
+//                the subsequence of a multi-hop route's hops on THIS pool, in order
+//   lp_remove  : { sharesBurned, outA?, outB? }
+//   fee_claim  : {}                                         crystallizes protocol fee
+//   swap_batch : requires Groth16 verification — not yet wired (throws).
+//
+// Protocol-fee crystallization (AMM.md §"Accrual model: Uniswap V2 lazy mintFee"):
+// k_last = reserveA·reserveB AT THE LAST CRYSTALLIZATION. It is set at pool_init
+// and at every LP event (lp_add / lp_remove / fee_claim) — NEVER at a swap. The
+// fee accrues virtually in k-growth between LP events; at each LP event the
+// protocol's cut is minted as new shares (diluting LPs). deps.protocolFeeBps +
+// deps.protocolFeeEnabled describe the pool's config; with no protocol fee the
+// crystallization is a no-op.
 export function replayAmmPoolState(ops, deps) {
-  const { curveDeltaOut, lpAddShares, removeOutputs, MINIMUM_LIQUIDITY } = deps || {};
+  const {
+    curveDeltaOut, lpAddShares, removeOutputs, MINIMUM_LIQUIDITY,
+    computeProtocolShares: computeProtoShares, protocolFeeBps: cfgFeeBps, protocolFeeEnabled,
+  } = deps || {};
   if (!Array.isArray(ops) || ops.length === 0) throw new Error('replay: no ops');
   if (typeof curveDeltaOut !== 'function' || typeof lpAddShares !== 'function' || typeof removeOutputs !== 'function') {
     throw new Error('replay: missing pool math (curveDeltaOut / lpAddShares / removeOutputs)');
   }
   const MIN_LIQ = BigInt(MINIMUM_LIQUIDITY);
+  const protoFeeBps = Number(cfgFeeBps || 0);
+  const protoFeeOn = !!protocolFeeEnabled && protoFeeBps > 0 && typeof computeProtoShares === 'function';
   let reserveA = 0n, reserveB = 0n, totalShares = 0n, initialized = false;
   // The fee is the POOL's, fixed at POOL_INIT — swaps don't carry it. Carrying
   // it here means a swap can't claim a different fee than its pool's.
   let poolFeeBps = 0;
+  let kLast = 0n;
+
+  // Crystallize the protocol fee against k-growth since the last crystallization,
+  // minting the protocol's cut as new shares, then advance k_last to k_now. Run
+  // at the START of each LP event (matches the worker / Uniswap V2 mintFee). A
+  // no-op when the pool has no protocol fee. Returns nothing; mutates state.
+  const crystallize = () => {
+    const kNow = reserveA * reserveB;
+    if (protoFeeOn) {
+      const minted = BigInt(computeProtoShares(totalShares, kLast, kNow, protoFeeBps));
+      if (minted > 0n) totalShares += minted;
+    }
+    kLast = kNow;
+  };
 
   for (let i = 0; i < ops.length; i++) {
     const op = ops[i];
@@ -72,12 +127,16 @@ export function replayAmmPoolState(ops, deps) {
       }
       reserveA = da; reserveB = db; totalShares = total; initialized = true;
       poolFeeBps = Number(op.feeBps || 0);
+      kLast = reserveA * reserveB;   // crystallization baseline
       continue;
     }
 
     if (!initialized) throw new Error(`replay[${i}]: ${op.kind} before pool_init`);
 
     if (op.kind === 'lp_add') {
+      // Crystallize FIRST (matches the worker: shares are computed against the
+      // post-crystallization total), then mint the LP's proportional shares.
+      crystallize();
       const da = BigInt(op.deltaA), db = BigInt(op.deltaB);
       if (da <= 0n || db <= 0n) throw new Error(`replay[${i}]: lp_add non-positive deltas`);
       const shares = BigInt(lpAddShares(da, db, reserveA, reserveB, totalShares));
@@ -86,6 +145,7 @@ export function replayAmmPoolState(ops, deps) {
         throw new Error(`replay[${i}]: lp_add share mismatch (declared ${op.shareAmount}, formula ${shares})`);
       }
       reserveA += da; reserveB += db; totalShares += shares;
+      kLast = reserveA * reserveB;   // k_last = post-add product (Uniswap V2)
       continue;
     }
 
@@ -100,6 +160,7 @@ export function replayAmmPoolState(ops, deps) {
       // continuity check is possible (the receipt is the trader's hidden
       // commitment), but a divergent replay is caught at the next LP_ADD/REMOVE,
       // whose declared derived values ARE checked against the replayed reserves.
+      // k_last is NOT touched — the fee accrues virtually until the next LP event.
       const deltaIn = BigInt(op.deltaIn);
       if (deltaIn <= 0n) throw new Error(`replay[${i}]: swap non-positive deltaIn`);
       const dir = op.direction | 0;
@@ -116,7 +177,44 @@ export function replayAmmPoolState(ops, deps) {
       continue;
     }
 
+    if (op.kind === 'swap_route') {
+      // SPEC §5.22 (SPEC-SWAP-ROUTE-AMENDMENT). A multi-hop route is ONE Bitcoin
+      // tx touching several pools; op.hops is the subsequence of its hops on THIS
+      // pool, in route order. Each hop is applied under the SAME constraints the
+      // worker's T_SWAP_ROUTE handler enforces:
+      //   1. the hop's declared pre-reserves must EQUAL the replayed reserves —
+      //      so a route is a HARD checkpoint: a diverged replay halts right here;
+      //   2. the declared output is bounded by the with-fee CFMM curve floor —
+      //      so a forged route can't pay out more than the curve allows;
+      //   3. reserves advance by the DECLARED deltas (pinned by 1 + 2).
+      // k_last is NOT touched (a swap, like swap_var).
+      if (!Array.isArray(op.hops) || op.hops.length === 0) throw new Error(`replay[${i}]: swap_route with no hops for this pool`);
+      const gDen = 10000n;
+      const gNum = gDen - BigInt(poolFeeBps);
+      for (let hI = 0; hI < op.hops.length; hI++) {
+        const hop = op.hops[hI];
+        if (Number(hop.feeBps) !== poolFeeBps) throw new Error(`replay[${i}]: swap_route hop fee_bps ${hop.feeBps} != pool ${poolFeeBps}`);
+        if (BigInt(hop.rAPre) !== reserveA) throw new Error(`replay[${i}]: swap_route hop R_A_pre ${hop.rAPre} != replayed ${reserveA}`);
+        if (BigInt(hop.rBPre) !== reserveB) throw new Error(`replay[${i}]: swap_route hop R_B_pre ${hop.rBPre} != replayed ${reserveB}`);
+        const dir = hop.direction | 0;
+        let rIn, rOut, dIn, dOut;
+        if (dir === 0) { rIn = reserveA; rOut = reserveB; dIn = BigInt(hop.deltaAMag); dOut = BigInt(hop.deltaBMag); }
+        else if (dir === 1) { rIn = reserveB; rOut = reserveA; dIn = BigInt(hop.deltaBMag); dOut = BigInt(hop.deltaAMag); }
+        else throw new Error(`replay[${i}]: swap_route hop bad direction ${dir}`);
+        if (dIn <= 0n || dOut <= 0n) throw new Error(`replay[${i}]: swap_route hop non-positive delta`);
+        if (rOut < dOut) throw new Error(`replay[${i}]: swap_route hop R_out ${rOut} < delta_out ${dOut}`);
+        // CFMM floor: delta_out·(R_in·gDen + gNum·delta_in) ≤ R_out·gNum·delta_in.
+        if (dOut * (rIn * gDen + gNum * dIn) > rOut * gNum * dIn) {
+          throw new Error(`replay[${i}]: swap_route hop violates CFMM curve floor`);
+        }
+        if (dir === 0) { reserveA = rIn + dIn; reserveB = rOut - dOut; }
+        else { reserveB = rIn + dIn; reserveA = rOut - dOut; }
+      }
+      continue;
+    }
+
     if (op.kind === 'lp_remove') {
+      crystallize();
       const burned = BigInt(op.sharesBurned);
       // Cannot burn the locked MINIMUM_LIQUIDITY floor (no note holds it).
       if (burned <= 0n || burned > totalShares - MIN_LIQ) {
@@ -127,16 +225,16 @@ export function replayAmmPoolState(ops, deps) {
       if (op.outA != null && BigInt(op.outA) !== oA) throw new Error(`replay[${i}]: lp_remove outA mismatch (declared ${op.outA}, formula ${oA})`);
       if (op.outB != null && BigInt(op.outB) !== oB) throw new Error(`replay[${i}]: lp_remove outB mismatch (declared ${op.outB}, formula ${oB})`);
       reserveA -= oA; reserveB -= oB; totalShares -= burned;
+      kLast = reserveA * reserveB;   // k_last = post-remove product (Uniswap V2)
       continue;
     }
 
     if (op.kind === 'fee_claim') {
-      // T_PROTOCOL_FEE_CLAIM mints protocol-fee shares crystallized from k growth
-      // since the last claim (a function of k_last + the pool's protocol_fee_bps,
-      // via ammComputeProtocolShares). Trustless replay of it needs k + fee-bps
-      // tracking through every prior op; not yet wired — fail closed rather than
-      // trust the declared claim amount.
-      throw new Error(`replay[${i}]: fee_claim replay not yet wired (protocol-fee crystallization)`);
+      // T_PROTOCOL_FEE_CLAIM crystallizes the protocol's accrued LP-fee skim
+      // (minting shares) and resets the accrued counter; reserves are unchanged.
+      // The minted shares are the only state change — exactly the crystallization.
+      crystallize();
+      continue;
     }
 
     if (op.kind === 'swap_batch') {
@@ -161,9 +259,12 @@ export function replayAmmPoolState(ops, deps) {
 // in Phase 3, on-chain-verifies + canonically orders) the envelopes; this just
 // renames fields. Opcode constants are passed in so this module stays free of
 // the dapp's giant constant table. Returns null for a non-pool-op opcode.
-export function replayOpFromDecoded(opcode, dec, opcodes) {
+// poolIdHex (optional) is the pool being replayed — needed for T_SWAP_ROUTE,
+// whose envelope touches several pools: only the hops on poolIdHex are kept, in
+// route order. For single-pool ops it is ignored.
+export function replayOpFromDecoded(opcode, dec, opcodes, poolIdHex) {
   if (!dec || !opcodes) return null;
-  const { T_LP_ADD, T_SWAP_VAR, T_LP_REMOVE, T_PROTOCOL_FEE_CLAIM } = opcodes;
+  const { T_LP_ADD, T_SWAP_VAR, T_LP_REMOVE, T_PROTOCOL_FEE_CLAIM, T_SWAP_ROUTE } = opcodes;
 
   if (opcode === T_LP_ADD) {
     // variant 1 = POOL_INIT (carries the pool fee tier), variant 0 = standard add.
@@ -177,6 +278,20 @@ export function replayOpFromDecoded(opcode, dec, opcodes) {
   }
   if (opcode === T_SWAP_VAR) {
     return { kind: 'swap_var', direction: dec.direction, deltaIn: dec.deltaIn, minOut: dec.minOut };
+  }
+  if (T_SWAP_ROUTE != null && opcode === T_SWAP_ROUTE) {
+    if (!Array.isArray(dec.hops)) return null;
+    const want = poolIdHex == null ? null : String(poolIdHex).toLowerCase();
+    const mine = dec.hops
+      .filter(hp => want == null || _toHex(hp.poolId) === want)
+      .map(hp => ({
+        direction: hp.direction,
+        feeBps: Number(hp.feeBps),
+        rAPre: hp.R_A_pre, rBPre: hp.R_B_pre,
+        deltaAMag: hp.deltaANetMag, deltaBMag: hp.deltaBNetMag,
+      }));
+    if (mine.length === 0) return null;
+    return { kind: 'swap_route', hops: mine };
   }
   if (opcode === T_LP_REMOVE) {
     // decodeLpRemove returns shareAmount (burned) + deltaA/deltaB (the payouts).
@@ -206,7 +321,8 @@ export function replayOpFromDecoded(opcode, dec, opcodes) {
 //   fetchTx(txid) -> tx { status:{confirmed,block_height}, vin:[{witness:[...]}] }
 //   decodeEnvelope(witnessEntry) -> { opcode, payload } | null
 //   decodeForOpcode(opcode, payload) -> decoded fields | null
-//   poolIdForOp(opcode, decoded) -> poolIdHex   (binds an op to its pool)
+//   poolIdForOp(opcode, decoded) -> poolIdHex | [poolIdHex,...]   (binds an op to
+//     its pool; a multi-pool op like a route returns every pool it touches)
 //   opcodes, deps (replay math), tipHeight, confirmations? = 3
 // }
 export async function deriveAmmPoolState(poolIdHex, env) {
@@ -245,9 +361,12 @@ export async function deriveAmmPoolState(poolIdHex, env) {
     if (!dec) throw new Error(`deriveAmmPoolState: op ${txid} payload decode failed`);
     // Pool binding: the op must belong to THIS pool, so a worker can't slip a
     // foreign pool's (individually valid) op into the list and corrupt reserves.
+    // A multi-pool op (route) returns the set of pools it touches; require this
+    // pool to be one of them.
     const opPool = poolIdForOp(decodedEnv.opcode, dec);
-    if (opPool !== poolIdHex) throw new Error(`deriveAmmPoolState: op ${txid} is for pool ${opPool}, not ${poolIdHex}`);
-    const replayOp = replayOpFromDecoded(decodedEnv.opcode, dec, opcodes);
+    const opPools = Array.isArray(opPool) ? opPool.map(String) : [opPool];
+    if (!opPools.includes(poolIdHex)) throw new Error(`deriveAmmPoolState: op ${txid} is for pool(s) ${opPools.join(',')}, not ${poolIdHex}`);
+    const replayOp = replayOpFromDecoded(decodedEnv.opcode, dec, opcodes, poolIdHex);
     if (!replayOp) throw new Error(`deriveAmmPoolState: op ${txid} is not a pool op (opcode ${decodedEnv.opcode})`);
     ops.push(replayOp);
   }

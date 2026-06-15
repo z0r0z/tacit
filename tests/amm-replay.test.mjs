@@ -14,11 +14,12 @@
 
 import {
   ammCurveDeltaOut, ammLpAddShares, ammLpRemoveOutputs, AMM_MINIMUM_LIQUIDITY,
+  ammComputeProtocolShares,
 } from '../worker/src/index.js';
-import { replayAmmPoolState, replayOpFromDecoded, deriveAmmPoolState, compareAmmReserves, isqrtBig } from '../dapp/amm-replay.js';
+import { replayAmmPoolState, replayOpFromDecoded, deriveAmmPoolState, compareAmmReserves, isqrtBig, computeProtocolShares } from '../dapp/amm-replay.js';
 
 // Opcode constants (dapp/tacit.js).
-const OPCODES = { T_LP_ADD: 0x2D, T_LP_REMOVE: 0x2E, T_PROTOCOL_FEE_CLAIM: 0x31, T_SWAP_VAR: 0x32 };
+const OPCODES = { T_LP_ADD: 0x2D, T_LP_REMOVE: 0x2E, T_PROTOCOL_FEE_CLAIM: 0x31, T_SWAP_VAR: 0x32, T_SWAP_ROUTE: 0x33 };
 
 const DEPS = {
   curveDeltaOut: ammCurveDeltaOut,
@@ -161,9 +162,14 @@ console.log('\nPhase 2 — envelope → op adapter (decoded → replay op):');
   const viaDirect = replayAmmPoolState(SEQ, DEPS);
   ok('adapter→replay reproduces direct-op replay', viaAdapter.reserveA === viaDirect.reserveA && viaAdapter.reserveB === viaDirect.reserveB && viaAdapter.totalShares === viaDirect.totalShares);
 
-  // fee_claim through the replay fails closed (crystallization not yet wired).
-  throws('fee_claim op → reject (fail closed)', () =>
-    replayAmmPoolState([SEQ[0], op4], DEPS), /fee_claim replay not yet wired/);
+  // fee_claim through the replay is now handled: on a pool with no protocol fee
+  // it crystallizes to zero and leaves reserves + shares unchanged.
+  {
+    const st = replayAmmPoolState([SEQ[0], SEQ[1], op4], DEPS);
+    const ref = replayAmmPoolState([SEQ[0], SEQ[1]], DEPS);
+    ok('fee_claim on no-skim pool → reserve/share-neutral',
+      st.reserveA === ref.reserveA && st.reserveB === ref.reserveB && st.totalShares === ref.totalShares);
+  }
 }
 
 console.log('\nPhase 3 — deriveAmmPoolState (discover + on-chain verify + replay):');
@@ -240,6 +246,81 @@ console.log('\nShadow comparison (replay vs worker reserves):');
     { reserveA: '100', reserveB: '200', totalShares: '300' },
     { reserveA: '100', reserveB: '200', totalShares: '300' });
   ok('string reserves compared as bigints', strs.match === true);
+}
+
+console.log('\nSWAP_ROUTE replay (per-pool hop application):');
+{
+  // Pool starts (3000, 3000) after pool_init + lp_add (rA1, rB1, S1). A route
+  // hop A->B (direction 0) on this pool: pre-reserves MUST equal the replayed
+  // reserves, the declared output is curve-bounded, reserves advance by deltas.
+  const POOL = 'aa'.repeat(32);
+  const fee = swapFee;
+  // Canonical curve output for deltaIn=300 at (rA1, rB1) — the route declares
+  // exactly this (the curve maximum; the floor check is an equality here).
+  const rHop = ammCurveDeltaOut(0, rA1, rB1, 300n, fee);
+  const dOut = BigInt(rHop.deltaOut);
+  const goodHop = {
+    poolId: POOL, direction: 0, feeBps: fee,
+    R_A_pre: rA1, R_B_pre: rB1, deltaANetMag: 300n, deltaBNetMag: dOut,
+  };
+  const routeDec = { kind: 'swap_route', hops: [goodHop, { poolId: 'bb'.repeat(32), direction: 0, feeBps: fee, R_A_pre: 1n, R_B_pre: 1n, deltaANetMag: 1n, deltaBNetMag: 1n }] };
+
+  // adapter filters to THIS pool's hops only.
+  const op = replayOpFromDecoded(OPCODES.T_SWAP_ROUTE, routeDec, OPCODES, POOL);
+  ok('route adapter keeps only this pool\'s hop', op.kind === 'swap_route' && op.hops.length === 1 && op.hops[0].deltaAMag === 300n);
+  ok('route adapter for a pool not in the route → null', replayOpFromDecoded(OPCODES.T_SWAP_ROUTE, routeDec, OPCODES, 'cc'.repeat(32)) === null);
+
+  const st = replayAmmPoolState([SEQ[0], SEQ[1], op], DEPS);
+  ok('route hop advances reserveA by delta_in', st.reserveA === rA1 + 300n);
+  ok('route hop advances reserveB by delta_out', st.reserveB === rB1 - dOut);
+  ok('route hop leaves totalShares unchanged', st.totalShares === S1);
+
+  // Pre-reserve mismatch (stale declared R_A_pre) → halt.
+  throws('route hop with wrong R_A_pre → reject (checkpoint)', () =>
+    replayAmmPoolState([SEQ[0], SEQ[1], { kind: 'swap_route', hops: [{ ...op.hops[0], rAPre: rA1 + 1n }] }], DEPS), /R_A_pre/);
+  // Output above the curve maximum → CFMM floor violated → reject.
+  throws('route hop paying out above the curve → reject', () =>
+    replayAmmPoolState([SEQ[0], SEQ[1], { kind: 'swap_route', hops: [{ ...op.hops[0], deltaBMag: dOut + 5n }] }], DEPS), /CFMM curve floor/);
+  // Wrong fee tier vs the pool → reject.
+  throws('route hop fee_bps != pool fee → reject', () =>
+    replayAmmPoolState([SEQ[0], SEQ[1], { kind: 'swap_route', hops: [{ ...op.hops[0], feeBps: fee + 1 }] }], DEPS), /fee_bps/);
+}
+
+console.log('\nProtocol-fee crystallization (Uniswap V2 lazy mintFee):');
+{
+  // The replay's computeProtocolShares mirrors the worker's exactly.
+  const S = 1_000_000n, kPre = 9_000_000n, kNow = 9_500_000n, bps = 30;
+  ok('computeProtocolShares == worker ammComputeProtocolShares',
+    computeProtocolShares(S, kPre, kNow, bps) === ammComputeProtocolShares({ S_pre: S, k_pre: kPre, k_now: kNow, protocol_fee_bps: bps }));
+  ok('no growth (k_now <= k_pre) → 0', computeProtocolShares(S, kNow, kPre, bps) === 0n);
+  ok('zero bps → 0', computeProtocolShares(S, kPre, kNow, 0) === 0n);
+
+  // End-to-end accrual: on a fee-bearing pool a sizable swap grows k materially,
+  // and the NEXT LP event crystallizes the protocol's cut (minting shares =
+  // diluting LPs). The identical op sequence on a no-skim pool mints nothing.
+  // This is exactly the behavior the worker fix (k_last not advanced by swaps)
+  // enables — without it k_last == k_now at the LP event and the cut is always 0.
+  const feeBps = 30, protoBps = 1000;  // 10% protocol cut (max)
+  const feeDeps   = { ...DEPS, computeProtocolShares, protocolFeeBps: protoBps, protocolFeeEnabled: true };
+  const noFeeDeps = { ...DEPS, computeProtocolShares, protocolFeeBps: protoBps, protocolFeeEnabled: false };
+  const pInit   = { kind: 'pool_init', deltaA: 1_000_000n, deltaB: 1_000_000n, feeBps };
+  const swapBig = { kind: 'swap_var', direction: 0, deltaIn: 500_000n, minOut: 0n };
+  // Proportional add against the post-swap reserves (replay computes the shares).
+  const afterSwap = replayAmmPoolState([pInit, swapBig], feeDeps);
+  const addAmt = 20_000n;
+  const lpAddFee = { kind: 'lp_add', deltaA: addAmt, deltaB: (addAmt * afterSwap.reserveB) / afterSwap.reserveA + 1n };
+
+  const afterAddFee   = replayAmmPoolState([pInit, swapBig, lpAddFee], feeDeps);
+  const afterAddNoFee = replayAmmPoolState([pInit, swapBig, lpAddFee], noFeeDeps);
+  ok('fee-bearing pool: LP event after a swap mints protocol shares (accrual works)',
+    afterAddFee.totalShares > afterAddNoFee.totalShares);
+  // The protocol fee dilutes shares but never moves reserves.
+  ok('protocol fee changes shares only, not reserves',
+    afterAddFee.reserveA === afterAddNoFee.reserveA && afterAddFee.reserveB === afterAddNoFee.reserveB);
+  // fee_claim crystallizes the SAME amount as an lp_add would (both are LP events).
+  const afterClaim = replayAmmPoolState([pInit, swapBig, { kind: 'fee_claim' }], feeDeps);
+  ok('fee_claim crystallizes the accrued protocol shares',
+    afterClaim.totalShares > replayAmmPoolState([pInit, swapBig], feeDeps).totalShares);
 }
 
 console.log(`\n${pass}/${pass + fail} passed`);

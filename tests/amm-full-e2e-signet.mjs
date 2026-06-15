@@ -822,7 +822,10 @@ if (!SKIP_LP_REMOVE) {
     if (!poolRec) fail('pool A_TAC_30 missing from worker');
     const R_A = BigInt(poolRec.reserve_a);
     const R_B = BigInt(poolRec.reserve_b);
-    const S   = BigInt(poolRec.lp_total_shares);
+    // Post-crystallization S: A_TAC_30 is a fee-bearing pool and the Phase-7
+    // swaps grew k, so the worker crystallizes the protocol fee at this LP_REMOVE
+    // before computing outputs. Match it or the declared deltas are rejected.
+    const S   = dapp.ammCrystallizedShares(poolRec);
     const shareAmount = BigInt(lpAdd.share_amount);
     const expectedA = (R_A * shareAmount) / S;
     const expectedB = (R_B * shareAmount) / S;

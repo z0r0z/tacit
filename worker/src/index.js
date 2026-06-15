@@ -24556,7 +24556,9 @@ async function scanForEtches(env, network) {
           ...sbPool,
           reserve_a: newReserveA.toString(),
           reserve_b: newReserveB.toString(),
-          k_last: (newReserveA * newReserveB).toString(),
+          // k_last is NOT advanced by swaps — it marks the last crystallization
+          // (AMM.md §"Accrual model"). The protocol fee accrues virtually in the
+          // k-growth this swap creates, crystallized at the next LP event.
           last_swap_batch_txid: tx.txid,
           last_swap_batch_height: h,
           last_swap_batch_at: tx.status?.block_time || Math.floor(Date.now() / 1000),
@@ -24823,7 +24825,9 @@ async function scanForEtches(env, network) {
             ...pool,
             reserve_a: curve.raPost.toString(),
             reserve_b: curve.rbPost.toString(),
-            k_last: (curve.raPost * curve.rbPost).toString(),
+            // k_last is NOT advanced by swaps — it marks the last crystallization
+            // (AMM.md §"Accrual model"). The protocol fee accrues virtually in the
+            // k-growth this swap creates, crystallized at the next LP event.
             last_swap_txid: tx.txid,
             last_swap_height: h,
             last_swap_at: tx.status?.block_time || Math.floor(Date.now() / 1000),
@@ -25036,12 +25040,17 @@ async function scanForEtches(env, network) {
             ...snap._orig,
             reserve_a: snap.reserve_A.toString(),
             reserve_b: snap.reserve_B.toString(),
-            k_last: (snap.reserve_A * snap.reserve_B).toString(),
+            // k_last is NOT advanced by swaps — it marks the last crystallization
+            // (AMM.md §"Accrual model"). Route volume grows k virtually; the
+            // protocol fee crystallizes at the next LP event.
             last_swap_txid: tx.txid,
             last_swap_height: h,
             last_swap_at: tx.status?.block_time || Math.floor(Date.now() / 1000),
             validation: 'verified',
           };
+          // Index the route under EVERY pool it touches so the trustless replay
+          // can discover + re-apply this hop (a route changes reserves like a swap).
+          await recordAmmOp(env, network, pid_hex, h, txIndex, tx.txid);
           await ammPoolPut(env, network, pid_hex, newPool);
         }
         await ammSwapAcceptedPut(env, network, tx.txid, { h, route: true });
