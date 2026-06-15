@@ -116,9 +116,20 @@ These are tracked items, not live exploits. Each should be closed before the
 relevant feature moves from a gated/draft state toward mainnet. The slot/cBTC
 items are NOT drop-in fixes — each has a design dependency, noted inline.
 
-- **AMM (Bitcoin path) → Tier 0:** bring pool reserves/shares under a proof (or
-  a consensus indexer), and move the share-commitment value-binding + the
-  `[0, 2^64)` range check from the client Groth16 into the consensus path.
+- **AMM (Bitcoin path) → Tier 0 — LP-share value-binding DONE; pool-state
+  consensus remaining.** The LP-share value-binding is now a mandatory, ungated,
+  trustless-from-chain check in `validateOutpoint`: an LP-share UTXO is credited
+  only if (a) its xcurve sigma binds the credited secp commitment to the BJJ
+  commitment (`verifyXCurve`, previously dead code because `decodeLpAdd` skipped
+  the sigma), and (b) its LP_ADD Groth16 binds `share_amount` to that BJJ
+  commitment + range-bounds the inputs (previously gated on `_isAmmCeremonyUnlocked`
+  — false on mainnet — so an LP-share could be credited with no proof; now gated
+  only on the VK being pinned, with proof + VK both on-chain/inlined). **Remaining
+  for full Tier 0:** the pool *reserve/share registry* is still a single
+  non-consensus worker — bring pool state under a proof (or a consensus indexer)
+  so SWAP/LP_REMOVE outputs aren't worker-attested; and apply the same value-
+  binding gate to `T_PROTOCOL_FEE_CLAIM` (today it mints an `lp_asset_id` UTXO
+  with no proof check).
 - **cBTC.zk fungibility — §5.24.6 ENFORCED (cBTC variant family).** The
   `T_SLOT_SPLIT` / `T_SLOT_MERGE` cross-asset rule now binds every output wrapper
   to the canonical variant for its OWN denomination (`asset_id ==

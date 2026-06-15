@@ -322,5 +322,32 @@ console.log('\nProduction gate (default-RNG refusal under NODE_ENV=production)')
   }
 }
 
+// The value-binding the LP_ADD consensus gate (validateOutpoint) now enforces:
+// the on-chain T_LP_ADD envelope carries the share xcurve sigma, decodeLpAdd
+// must surface it, and verifyXCurve over the DECODED sigma + commitments gates
+// crediting. This pins the decode→verify wiring that mandatory check relies on.
+console.log('\nDecode→verify wiring (LP_ADD value-binding gate)');
+{
+  const { encodeLpAdd, decodeLpAdd } = await import('../dapp/amm-envelope.js');
+  const v = samples[2]; // a = 12345, an honest sample
+  const z32 = new Uint8Array(32), k = new Uint8Array(64);
+  const env = encodeLpAdd({
+    variant: 0, assetA: z32, assetB: z32, deltaA: 1000n, deltaB: 2000n,
+    shareAmount: v.a, shareCSecp: v.C_secp_bytes, shareCBJJ: v.C_BJJ_bytes,
+    shareXcurveSigma: v.proof, kernelSigA: k, kernelSigB: k, proof: new Uint8Array(256),
+  });
+  const dec = decodeLpAdd(env);
+  test('decodeLpAdd captures the 169-byte share xcurve sigma', () =>
+    !!dec && dec.shareXcurveSigma instanceof Uint8Array && dec.shareXcurveSigma.length === 169);
+  test('decoded sigma round-trips: verifyXCurve(dec.sigma, dec.cSecp, dec.cBJJ) ⇒ accept', () =>
+    !!dec && verifyXCurve(dec.shareXcurveSigma, dec.shareCSecp, dec.shareCBJJ));
+  test('tampered sigma ⇒ verifyXCurve rejects (LP-share would not be credited)', () => {
+    const bad = new Uint8Array(dec.shareXcurveSigma); bad[1] ^= 0x01;
+    return !verifyXCurve(bad, dec.shareCSecp, dec.shareCBJJ);
+  });
+  test('sigma bound to THESE commitments: swapped cBJJ ⇒ reject', () =>
+    !verifyXCurve(dec.shareXcurveSigma, dec.shareCSecp, samples[3].C_BJJ_bytes));
+}
+
 console.log(`\n${pass}/${pass + fail} passed`);
 if (fail > 0) process.exit(1);
