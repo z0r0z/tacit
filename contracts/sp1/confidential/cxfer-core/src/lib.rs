@@ -2125,6 +2125,24 @@ pub fn dec_to_be32(s: &str) -> Option<[u8; 32]> {
     Some(acc)
 }
 
+/// Bitcoin-AMM LP-share asset-id domain (worker `_AMM_LP_ASSET_DOMAIN`). NOTE: distinct from the EVM
+/// settle-guest `lp_share_id` (keccak `pool_id‖"lp"`) — the Bitcoin LP-share asset is `sha256(domain ‖ pool_id)`.
+pub const AMM_LP_ASSET_DOMAIN: &[u8] = b"tacit-amm-lp-v1";
+
+/// Uniswap-V2 minimum-liquidity floor locked at POOL_INIT (worker `AMM_MINIMUM_LIQUIDITY`). The founder's
+/// onboardable share is `isqrt(Δa·Δb) − MINIMUM_LIQUIDITY` (the ML stays locked to a NUMS recipient).
+pub const AMM_MINIMUM_LIQUIDITY: u64 = 1000;
+
+/// Derive the Bitcoin-AMM LP-share asset_id, mirroring the worker's `ammDeriveLpAssetId`:
+/// `sha256("tacit-amm-lp-v1" ‖ pool_id)`. The asset under which LP-share notes (minted at LP-add /
+/// protocol-fee-claim, burned at LP-remove) live.
+pub fn amm_derive_lp_asset_id(pool_id: &[u8; 32]) -> [u8; 32] {
+    let mut h = Sha256::new();
+    h.update(AMM_LP_ASSET_DOMAIN);
+    h.update(pool_id);
+    h.finalize().into()
+}
+
 /// AMM farm-id derivation domain (worker `ammDeriveFarmId`).
 pub const AMM_FARM_INIT_DOMAIN: &[u8] = b"tacit-amm-farm-init-v1";
 
@@ -2750,6 +2768,38 @@ impl ScanReflection {
         farm.reserve_a -= reward_amount;
         self.pools.update(farm_id, farm);
         Ok(())
+    }
+
+    /// Onboard a minted LP-share note (Track B SHARE-SUPPLY provenance). TWO reasons: (1) CORRECTNESS —
+    /// `fold_lp_remove` needs the burned LP-share to be a detected LIVE note; this is what puts it in the live
+    /// set (without it, every LP-remove fails-closed). (2) BRIDGEABILITY — onboarding makes LP-shares (and
+    /// protocol-fee claims, which mint LP-shares) bridgeable. The share's value MUST equal the legitimately
+    /// minted `lp_shares` (the founder's `isqrt(Δa·Δb) − MINIMUM_LIQUIDITY` at POOL_INIT, or `lp_add_shares` at
+    /// LP-add — the caller computes it from the pool's `total_shares` delta), bound by a reflection-WITNESSED
+    /// blinding (`share_csecp` opens to `lp_shares`); without the bind an LP could over-claim the share
+    /// commitment and bridge unbacked LP-shares. The asset is `amm_derive_lp_asset_id(pool_id)` (the Bitcoin
+    /// LP-share asset). See ops/DESIGN-bridge-multiasset-provenance.md + task #18.
+    pub fn fold_lp_share_mint(
+        &mut self,
+        pool_id: &[u8; 32],
+        lp_shares: u64,
+        share_csecp: &[u8; 33],
+        share_r: &[u8; 32],
+        share_path: &[[u8; 32]],
+        share_outpoint: &[u8; 32],
+    ) -> Result<(), &'static str> {
+        if lp_shares == 0 {
+            return Err("lp_share_mint: zero shares");
+        }
+        let share_pt = decompress(share_csecp).ok_or("lp_share_mint: share not a curve point")?;
+        // The share note commits to EXACTLY the legitimately-minted shares (no over-claim → no unbacked bridge).
+        if !verify_pedersen_opening(&share_pt, lp_shares, &scalar_reduce_be(share_r)) {
+            return Err("lp_share_mint: share opening != minted shares");
+        }
+        let lp_asset = amm_derive_lp_asset_id(pool_id);
+        let leaf = reflected_note_leaf(&lp_asset, share_csecp).ok_or("lp_share_mint: leaf")?;
+        let ch = commitment_hash_compressed(share_csecp).ok_or("lp_share_mint: hash")?;
+        self.fold_output(&leaf, share_path, share_outpoint, &ch, &lp_asset)
     }
 
     /// Record a bridge-out in the burn set: ν → destCommitment (witnessed UTXO insert). The spend
@@ -4149,6 +4199,23 @@ mod tests {
         assert!(sc.fold_harvest(&farm_id, 0, &[0x33u8; 32], &[0x01u8; 32], &path).is_err(), "zero reward rejected");
         let mut f2 = sc.pools.get(&farm_id).unwrap(); f2.c0_backed = false; sc.pools.update(&farm_id, f2);
         assert!(sc.fold_harvest(&farm_id, 100, &[0x33u8; 32], &[0x01u8; 32], &path).is_err(), "non-C0-backed farm rejected");
+    }
+
+    #[test]
+    fn fold_lp_share_mint_binds_value() {
+        let pool_id = [0x50u8; 32];
+        // lp_asset_id distinct from the EVM lp_share_id (different hash + domain).
+        assert_ne!(amm_derive_lp_asset_id(&pool_id), lp_share_id(&pool_id), "Bitcoin lp_asset != EVM lp_share_id");
+        assert_eq!(amm_derive_lp_asset_id(&pool_id), amm_derive_lp_asset_id(&pool_id), "deterministic");
+        let lp_shares = 1990u64;
+        let r = [0x71u8; 32];
+        let share = compress(&(gen_h() * Scalar::from(lp_shares) + ProjectivePoint::generator() * scalar_reduce_be(&r)));
+        let path = [[0u8; 32]; 32];
+        let mut sc = ScanReflection::genesis();
+        // gates (fail before the note append — no valid path needed):
+        assert!(sc.fold_lp_share_mint(&pool_id, 0, &share, &r, &path, &[0x01u8; 32]).is_err(), "zero shares rejected");
+        assert!(sc.fold_lp_share_mint(&pool_id, lp_shares + 1, &share, &r, &path, &[0x01u8; 32]).is_err(), "value-mismatch (over-claim) rejected");
+        assert!(sc.fold_lp_share_mint(&pool_id, lp_shares, &share, &[0u8; 32], &path, &[0x01u8; 32]).is_err(), "wrong blinding rejected");
     }
 
     // REFLECT-1 regression: the reflection prover must NOT fold a confirmed CXFER tx's outputs into

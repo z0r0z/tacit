@@ -531,6 +531,9 @@ pub fn main() {
             // to CANONICAL asset order — pools + pool_id derivation are canonical (worker convention). NB the
             // per-asset kernel must be the one the dapp signed in canonical order; confirm on the box.
             if let Some(la) = env.as_ref().and_then(|e| bitcoin::parse_lp_add_envelope(e)) {
+                // Witnesses per 0x2D (stream sync): the minted LP-share note's blinding + its append path.
+                let share_r = r32();
+                let share_path = r_path();
                 if let Some((ca, cb)) = amm_canonical_pair(&la.asset_a, &la.asset_b) {
                     let swapped = la.asset_a != ca;
                     let (da_c, db_c) = if swapped { (la.delta_b, la.delta_a) } else { (la.delta_a, la.delta_b) };
@@ -553,11 +556,26 @@ pub fn main() {
                         };
                         let (a_ops, a_pts) = coll(&ca);
                         let (b_ops, b_pts) = coll(&cb);
+                        let pre_shares = state.pools.get(&pid).map(|p| p.total_shares).unwrap_or(0);
                         // inputs_c0_backed: every contribution is a detected live (real) spend → C0-backed.
-                        let _ = state.fold_lp_add(
+                        if state.fold_lp_add(
                             la.variant, &pid, &ca, &cb, da_c, db_c, la.share_amount, &la.share_csecp,
                             &a_ops, &a_pts, &ka_c, &b_ops, &b_pts, &kb_c, true,
-                        );
+                        ).is_ok() {
+                            // Onboard the LP's minted share note so LP-remove can later burn it AND it bridges.
+                            // The LP's shares = the total_shares delta this op produced (founder's isqrt−ML at
+                            // POOL_INIT; minted at LP-add). The share note is at the LP-add tx's share output —
+                            // confirm the exact share vout on the box (a wrong vout is fail-closed: LP-remove
+                            // can't detect the share, never an over-mint).
+                            if let Some(p) = state.pools.get(&pid) {
+                                let lp_shares = if la.variant == 1 {
+                                    p.total_shares.saturating_sub(cxfer_core::AMM_MINIMUM_LIQUIDITY)
+                                } else {
+                                    p.total_shares.saturating_sub(pre_shares)
+                                };
+                                let _ = state.fold_lp_share_mint(&pid, lp_shares, &la.share_csecp, &share_r, &share_path, &outpoint_key(&txid, 1));
+                            }
+                        }
                     }
                 }
             }
