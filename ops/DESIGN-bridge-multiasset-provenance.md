@@ -191,38 +191,59 @@ value is **publicly bound** to the reserve change:
 - **`T_LP_ADD` / POOL_INIT — soundly onboardable (DONE).** Per-asset secp kernel
   (`Σ C_in_X − delta_X·H = excess·G`) binds the LP's *contribution* to the public `delta_X`; reserves are
   credited from real inputs. (It onboards no withdrawal note — only advances reserve provenance.)
-- **`T_LP_REMOVE` — NOT soundly onboardable as specified (defer, fail-closed).** The withdrawn notes are
-  `recv_X_C_secp(33) ‖ recv_X_C_BJJ(32) ‖ xcurve_sigma(169)` — **hidden value**. `verifyXCurve(sigma,
-  C_secp, C_BJJ)` proves the two commitments open to the *same* value but takes **no public delta**, and
-  nothing else binds `recv_X_C_secp`'s value to the public `delta_a` (only the LP's kernel *signs over*
-  `delta_a`, which is an attestation, not a value proof). So the reflection cannot know the withdrawn note's
-  value equals the reserve decrease — onboarding it could mint more than left the reserve. The reflection
-  correctly **does not** fold it (no `fold_lp_remove` shipped): LP-remove-sourced notes stay non-bridgeable
-  (fail-closed — completeness only, never an over-mint). A sound fix is a protocol amendment giving LP-remove
-  a public receipt opening (the `T_SWAP_VAR` shape) OR full BJJ/Groth16 verification with a BJJ→`delta`
-  binding — a follow-up re-prove, not launch.
+- **`T_LP_REMOVE` — soundly onboardable via a witnessed opening (DONE).** The withdrawn notes are
+  `recv_X_C_secp(33) ‖ recv_X_C_BJJ(32) ‖ xcurve_sigma(169)`; `verifyXCurve` binds `secp ↔ BJJ` but takes no
+  public delta, so the BJJ/XCURVE machinery alone does NOT tie `recv_X_C_secp`'s value to the public
+  `delta_X`. The resolution does **not** need that machinery at all: `delta_X` is **already public** in the
+  envelope, so `fold_lp_remove` binds the withdrawn note to it with a **reflection-witnessed blinding**
+  `r_recv_X` — `verify_pedersen_opening(recv_X_C_secp, delta_X, r_recv_X)` proves the note's value is exactly
+  the reserve decrease. `r_recv_X` is a private witness (never in PublicValues) and `delta_X` was already
+  public, so this leaks nothing and preserves the note's forward-spend privacy. Soundness rests on three
+  checks: the **share-burn kernel** (anti-theft — only a real shareholder withdraws), the **proportional**
+  `delta_X = floor(R_X·share/S)` (keeps the reflection's reserves in lockstep with the worker, so an
+  over-withdrawal that drains the pool is rejected), and the **opening** (value == reserve decrease).
+  `total_shares` is now tracked in `PoolReserveState` (POOL_INIT seeds `isqrt(Δa·Δb)`, LP-add adds
+  `lp_add_shares`). Shipped + KAT'd; bridges with the launch bundle.
 
-### Track C / `T_SWAP_BATCH` feasibility call (2026-06-15) — DEFER to a follow-up re-prove
+### The generalization — one conservation kernel for every secp op (2026-06-16)
 
-`T_SWAP_BATCH` (0x2F) is the confidential AMM swap: per-trader amounts hidden in **BabyJubJub Pedersen**
-commitments, the batch clearing enforced by a **BN254 Groth16** circuit (ceremony-gated `vk_cid`), receipts
-bound by the same `xcurve_sigma` as LP-remove. Onboarding a batch receipt for bridging would require, in the
-SP1 reflection guest, ALL of:
-1. **BN254 Groth16 verification in-zkVM** (pairing-heavy; SP1 has BN254 precompiles, so possible but
-   expensive) + baking the batch ceremony `vk` into the reflection guest.
-2. **XCURVE + BJJ Pedersen verification** ported into the guest (~640 lines; the worker itself defers this).
-3. A **confidential (hidden-value) bridge model** — the receipt's value is hidden by design, so
-   `v_mint == v_burn`-public doesn't apply; the bridge would have to carry the hidden value through a
-   kernel-matched confidential mint (a new bridge primitive).
+Implementing all four ops surfaced that they are the SAME statement. Per asset, every Tacit value-moving op
+proves `Σ C_in − Σ C_out − net·H = excess·G` — the hidden commitments net to a PUBLIC quantity `net` with no
+extra `H`-term, `excess` the signing key, the verify key the residue's x-only. They differ ONLY in the
+message and in what `net` is:
 
-**Call: defer `T_SWAP_BATCH` AND `T_LP_REMOVE` to a follow-up re-prove; ship the launch bundle with
-`T_SWAP_VAR` + `T_LP_ADD` (Track B) + the adaptor ops + CXFER/CBURN.** Rationale: (a) `T_SWAP_BATCH` is
-**not even live** — POOL_INIT references a `vk_cid` produced by the Phase-2 ceremony that hasn't landed, so
-no batch txs exist yet; deferring its bridge support costs nothing today. (b) Both ops are **fail-closed**:
-their notes simply stay non-bridgeable until the follow-up — never wrongly minted. (c) The three
-dependencies above (BN254-in-zkVM, BJJ/XCURVE port, confidential bridge model) are a major, risky lift that
-would dominate the launch re-prove; they share one foundation (BJJ/XCURVE), so a single follow-up re-prove
-unlocks both. The launch bundle stays sound and shippable; confidential-AMM bridging is a clean follow-on.
+| op | `in` | `out` | `net` |
+|----|------|-------|-------|
+| CXFER / CBURN | inputs | outputs | `burned` |
+| `T_SWAP_VAR` | `[C_in]` | `[C_change]` | `delta_in + tip` |
+| `T_LP_ADD` / POOL_INIT | LP inputs (per side) | `[]` | `delta_X` |
+| `T_LP_REMOVE` | LP-share notes | `[]` | `share_amount` |
+
+So there is ONE primitive — `asset_scoped_kernel_verify(msg, in, out, net, sig)` — and the per-op wrappers
+(`swap_var_kernel_verify`, `lp_add_kernel_verify`, `lp_remove_kernel_verify`) just build their domain message
+and delegate. The pool reserve is a public-value note in `PoolReserveSet`; a public-value output (the
+`T_SWAP_VAR` receipt, an LP-remove withdrawal) is bound to its public `delta` by a Pedersen opening (cleartext
+for the swap, reflection-witnessed for LP-remove). The reflection's whole conservation surface is now: this one
+kernel + the public-reserve registry. A future conserving op is bridge-walkable the day it ships as long as it
+emits this kernel — the bridge became a property, not a per-op integration.
+
+### `T_SWAP_BATCH` (0x2F) — the one op the generalization only half-covers
+
+The batch's AGGREGATE conservation IS this kernel: the worker's "aggregate Pedersen identity (per asset A and
+B)" is exactly `Σ C_in − Σ C_out = net·H` on the batch's net deltas. What the generalized kernel does NOT give
+is the per-receipt SPLIT: per-trader amounts are hidden (BabyJubJub Pedersen), and only the **BN254 Groth16**
+clearing proof binds each receipt to its correct share. Without it, a trader could over-state their receipt
+inside a still-aggregate-conserving batch → onboard more than their share → inflation if only they bridge. So
+onboarding a batch receipt soundly needs, in the reflection guest: (1) the aggregate kernel (have it) + the
+net-delta reserve update; (2) **BN254 Groth16 verification in-zkVM** (pairing-heavy; SP1 has BN254
+precompiles) with the ceremony `vk` baked in, to validate the per-receipt split; (3) a per-receipt witnessed
+opening (the LP-remove shape) to bind each onboarded note to its cleared amount.
+
+**Decision (2026-06-16): implement it for feature completion** — TAC must be bridgeable day-one no matter how
+it was received, including the confidential AMM. The BN254-Groth16-in-zkVM is the single hard dependency (the
+aggregate + the per-receipt openings reuse the generalized machinery). It is gated by the Phase-2 ceremony
+`vk` (no live batch txs exist until then), so it can land in the same coordinated re-prove without blocking
+the other ops, which are already sound.
 
 ## Per-op kernel mapping (the implementation specifics to nail down)
 

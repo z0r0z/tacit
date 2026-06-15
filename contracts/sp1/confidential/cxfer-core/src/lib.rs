@@ -319,23 +319,17 @@ pub fn swap_var_kernel_verify(
     };
     let is_sentinel = c_change_or_sentinel.iter().all(|&b| b == 0);
     let c_change_pt = if is_sentinel {
-        ProjectivePoint::identity()
+        ProjectivePoint::identity() // sentinel (no change) ⇒ a zero output
     } else {
         match decompress(c_change_or_sentinel) {
             Some(p) => p,
             None => return false,
         }
     };
-    let mut p = c_change_pt - c_in_pt;
-    if delta_in_total != 0 {
-        p = p + gen_h() * Scalar::from(delta_in_total);
-    }
-    if p == ProjectivePoint::identity() {
-        return false;
-    }
-    let pc = compress(&p);
-    let px: [u8; 32] = pc[1..].try_into().unwrap();
-    bip340_verify(kernel_sig, &msg, &px)
+    // The generalized form: in = [C_in], out = [C_change], net = delta_in_total. The residue
+    // `C_in − C_change − delta_in_total·H` is the negation of the worker's `C_change − C_in + …·H`;
+    // the x-only verify key is identical, so this is byte-equal to the worker's check.
+    asset_scoped_kernel_verify(&msg, &[c_in_pt], &[c_change_pt], delta_in_total, kernel_sig)
 }
 
 /// The per-asset `T_LP_ADD` / POOL_INIT conservation kernel domain (dapp/amm-kernel.js `DOMAIN_LP_ADD`).
@@ -387,17 +381,86 @@ pub fn lp_add_kernel_verify(
     }
     let msg: [u8; 32] = h.finalize().into();
 
-    // key E = Σ C_in_X − delta_x·H
-    let mut e = sum_points(input_commitments);
-    if delta_x != 0 {
-        e = e - gen_h() * Scalar::from(delta_x);
+    // The generalized form: in = the LP's asset-X inputs, out = [], net = delta_x.
+    asset_scoped_kernel_verify(&msg, input_commitments, &[], delta_x, sig)
+}
+
+/// THE unifying conservation primitive (ops/DESIGN-bridge-multiasset-provenance.md). Every Tacit
+/// value-moving op proves the SAME per-asset statement: the hidden input commitments minus the hidden
+/// output commitments net to exactly `net` units of value with no extra H-term —
+/// `Σ C_in − Σ C_out − net·H = excess·G`, where `excess` is the (per-op) signing key and the verify key
+/// is that residue's x-only. CXFER (`net = burned`), `T_SWAP_VAR` (`in=[C_in]`, `out=[C_change]`,
+/// `net = delta_in+tip`), `T_LP_ADD` (`out=[]`, `net = delta_X`), and `T_LP_REMOVE` (`in = LP-share notes`,
+/// `out=[]`, `net = share_amount`) are ALL this kernel — they differ ONLY in the message `msg` (which binds
+/// the op's public fields) and in what `net` denotes. One primitive verifies conservation for every op
+/// (and any future op that conserves an asset against a public quantity). The aggregate Pedersen identity a
+/// `T_SWAP_BATCH` proves is this same shape on the batch's net deltas — see the design doc for why the
+/// batch's per-receipt SPLIT still needs its Groth16 even though its aggregate fits here.
+pub fn asset_scoped_kernel_verify(
+    msg: &[u8; 32],
+    in_commitments: &[Point],
+    out_commitments: &[Point],
+    net: u64,
+    sig: &[u8; 64],
+) -> bool {
+    let mut p = sum_points(in_commitments) - sum_points(out_commitments);
+    if net != 0 {
+        p = p - gen_h() * Scalar::from(net);
     }
-    if e == ProjectivePoint::identity() {
+    if p == ProjectivePoint::identity() {
         return false;
     }
-    let ec = compress(&e);
-    let ex: [u8; 32] = ec[1..].try_into().unwrap();
-    bip340_verify(sig, &msg, &ex)
+    let pc = compress(&p);
+    let px: [u8; 32] = pc[1..].try_into().unwrap();
+    bip340_verify(sig, msg, &px)
+}
+
+/// The per-asset `T_LP_REMOVE` conservation kernel domain (dapp/amm-kernel.js `DOMAIN_LP_REMOVE`).
+pub const LP_REMOVE_KERNEL_DOMAIN: &[u8] = b"tacit-amm-lp-remove-v1";
+
+/// Verify a `T_LP_REMOVE` share-burn kernel — proving the LP's burned LP-share inputs net to EXACTLY
+/// `share_amount` (anti-theft: only a real shareholder can withdraw). Mirrors dapp/amm-kernel.js
+/// `lpRemoveKernelMsg` + `lpRemoveKernelKey`: verify key `(Σ C_in_LP − share_amount·H).x_only`, message
+/// binds `(pool_id, share_amount, delta_a, delta_b, recv_a_secp, recv_b_secp, LP input outpoints)`. Just
+/// the generalized kernel with `in = LP-share notes`, `out = []`, `net = share_amount`. (The withdrawn
+/// `recv_X` values are bound to the public `delta_X` separately, by a reflection-witnessed opening — see
+/// `fold_lp_remove`.)
+#[allow(clippy::too_many_arguments)]
+pub fn lp_remove_kernel_verify(
+    pool_id: &[u8; 32],
+    share_amount: u64,
+    delta_a: u64,
+    delta_b: u64,
+    recv_a_secp: &[u8; 33],
+    recv_b_secp: &[u8; 33],
+    lp_input_outpoints: &[([u8; 32], u32)],
+    lp_input_commitments: &[Point],
+    sig: &[u8; 64],
+) -> bool {
+    if lp_input_outpoints.is_empty() || lp_input_outpoints.len() > 255 {
+        return false;
+    }
+    if lp_input_outpoints.len() != lp_input_commitments.len() {
+        return false;
+    }
+    // msg = tacit-amm-lp-remove-v1 ‖ pool_id ‖ share_amount_LE ‖ delta_a_LE ‖ delta_b_LE ‖
+    //       recv_a_secp ‖ recv_b_secp ‖ n_inputs ‖ (txid ‖ vout_LE)*
+    let mut h = Sha256::new();
+    h.update(LP_REMOVE_KERNEL_DOMAIN);
+    h.update(pool_id);
+    h.update(share_amount.to_le_bytes());
+    h.update(delta_a.to_le_bytes());
+    h.update(delta_b.to_le_bytes());
+    h.update(recv_a_secp);
+    h.update(recv_b_secp);
+    h.update([lp_input_outpoints.len() as u8]);
+    for (txid, vout) in lp_input_outpoints {
+        h.update(txid);
+        h.update(vout.to_le_bytes());
+    }
+    let msg: [u8; 32] = h.finalize().into();
+
+    asset_scoped_kernel_verify(&msg, lp_input_commitments, &[], share_amount, sig)
 }
 
 // ──────────────────── BP+ transcript (length-prefixed sha256) ────────────────────
@@ -1990,6 +2053,10 @@ pub struct PoolReserveState {
     pub asset_b: [u8; 32],
     pub reserve_a: u64,
     pub reserve_b: u64,
+    // Total LP shares outstanding (Uniswap-V2 accounting). Tracked so a T_LP_REMOVE's proportional
+    // withdrawal `delta_X = floor(R_X·share/S)` matches the worker's pool state — keeping the reflection's
+    // reserves in lockstep so later swaps still validate. Advanced by fold_lp_add, drawn by fold_lp_remove.
+    pub total_shares: u64,
     pub c0_backed: bool,
 }
 
@@ -2063,7 +2130,7 @@ impl PoolReserveSet {
             if s.c0_backed {
                 backed[31] = 1;
             }
-            kn(&[k, &s.asset_a, &s.asset_b, &u64b(s.reserve_a), &u64b(s.reserve_b), &backed])
+            kn(&[k, &s.asset_a, &s.asset_b, &u64b(s.reserve_a), &u64b(s.reserve_b), &u64b(s.total_shares), &backed])
         }).collect();
         keccak_merkle_root(&leaves)
     }
@@ -2400,9 +2467,15 @@ impl ScanReflection {
                 if delta_a == 0 || delta_b == 0 {
                     return Err("lp_add fold: POOL_INIT requires non-zero reserves");
                 }
+                // Uniswap-V2 initial total shares = isqrt(Δa·Δb) (the founder gets that minus MINIMUM_LIQUIDITY,
+                // which stays locked — so TOTAL outstanding is isqrt). Tracks the worker's lp_total_shares.
+                let total_shares = isqrt(delta_a as u128 * delta_b as u128);
+                if total_shares > u64::MAX as u128 {
+                    return Err("lp_add fold: POOL_INIT total shares overflow");
+                }
                 self.pools.insert(pool_id, PoolReserveState {
                     asset_a: *asset_a, asset_b: *asset_b, reserve_a: delta_a, reserve_b: delta_b,
-                    c0_backed: inputs_c0_backed,
+                    total_shares: total_shares as u64, c0_backed: inputs_c0_backed,
                 });
                 Ok(())
             }
@@ -2412,8 +2485,14 @@ impl ScanReflection {
                 if &pool.asset_a != asset_a || &pool.asset_b != asset_b {
                     return Err("lp_add fold: LP-add asset mismatch");
                 }
+                // Shares minted over the PRE-add reserves (Uniswap-V2 proportional mint), then reserves grow.
+                let minted = lp_add_shares(pool.total_shares, delta_a, delta_b, pool.reserve_a, pool.reserve_b);
+                if minted > u64::MAX as u128 {
+                    return Err("lp_add fold: minted shares overflow");
+                }
                 pool.reserve_a = pool.reserve_a.checked_add(delta_a).ok_or("lp_add fold: reserve_a overflow")?;
                 pool.reserve_b = pool.reserve_b.checked_add(delta_b).ok_or("lp_add fold: reserve_b overflow")?;
+                pool.total_shares = pool.total_shares.checked_add(minted as u64).ok_or("lp_add fold: total shares overflow")?;
                 // Backing is monotone: it stays true only while every contribution is itself backed.
                 pool.c0_backed = pool.c0_backed && inputs_c0_backed;
                 self.pools.update(pool_id, pool);
@@ -2421,6 +2500,79 @@ impl ScanReflection {
             }
             _ => Err("lp_add fold: bad variant"),
         }
+    }
+
+    /// Fold a confirmed `T_LP_REMOVE` (Track B): the LP burns `share_amount` of LP-shares and withdraws the
+    /// proportional `(delta_a, delta_b)`; onboard the withdrawn notes as real so they bridge like any
+    /// reflected note. Soundness: (1) the share-burn kernel proves the LP owns the shares (anti-theft);
+    /// (2) `delta_X = floor(R_X·share/S)` matches the worker's accounting, so the reflection's reserves stay
+    /// in lockstep (a drain-the-pool over-withdrawal is rejected — a later swap would otherwise desync);
+    /// (3) each `recv_X` opens to the PUBLIC `delta_X` under a reflection-witnessed blinding `r_recv_X`, so
+    /// its value is EXACTLY the reserve decrease (no over-withdrawal mints unbacked value). `r_recv_X` is a
+    /// private witness (never in PublicValues) and `delta_X` is already public on-chain, so this binding
+    /// leaks nothing the envelope didn't and preserves the note's forward-spend privacy. Then reserves +
+    /// shares are drawn down. Fails closed on any miss. See ops/DESIGN-bridge-multiasset-provenance.md (B).
+    #[allow(clippy::too_many_arguments)]
+    pub fn fold_lp_remove(
+        &mut self,
+        pool_id: &[u8; 32],
+        share_amount: u64,
+        delta_a: u64,
+        delta_b: u64,
+        recv_a_secp: &[u8; 33],
+        r_recv_a: &[u8; 32],
+        recv_b_secp: &[u8; 33],
+        r_recv_b: &[u8; 32],
+        lp_input_outpoints: &[([u8; 32], u32)],
+        lp_input_commitments: &[Point],
+        kernel_sig: &[u8; 64],
+        recv_a_path: &[[u8; 32]],
+        recv_a_outpoint: &[u8; 32],
+        recv_b_path: &[[u8; 32]],
+        recv_b_outpoint: &[u8; 32],
+    ) -> Result<(), &'static str> {
+        let mut pool = self.pools.get(pool_id).ok_or("lp_remove fold: unknown pool")?;
+        if !pool.c0_backed {
+            return Err("lp_remove fold: pool not C0-backed");
+        }
+        if pool.total_shares == 0 || share_amount == 0 || share_amount > pool.total_shares {
+            return Err("lp_remove fold: bad share amount");
+        }
+        // (1) proportional withdrawal must equal the worker's ammLpRemoveOutputs (floor toward zero), so the
+        //     reflection's reserves track the worker's; da ≤ reserve_a since share ≤ total_shares.
+        let da = (pool.reserve_a as u128 * share_amount as u128) / pool.total_shares as u128;
+        let db = (pool.reserve_b as u128 * share_amount as u128) / pool.total_shares as u128;
+        if da != delta_a as u128 || db != delta_b as u128 {
+            return Err("lp_remove fold: non-proportional withdrawal");
+        }
+        if delta_a == 0 || delta_b == 0 {
+            return Err("lp_remove fold: zero withdrawal");
+        }
+        // (2) the LP really burned `share_amount` of this pool's shares (anti-theft).
+        if !lp_remove_kernel_verify(pool_id, share_amount, delta_a, delta_b, recv_a_secp, recv_b_secp, lp_input_outpoints, lp_input_commitments, kernel_sig) {
+            return Err("lp_remove fold: share-burn kernel");
+        }
+        // (3) each withdrawn note opens to its PUBLIC delta_X (witnessed blinding) — value == reserve decrease.
+        let recv_a_pt = decompress(recv_a_secp).ok_or("lp_remove fold: recv_a not a curve point")?;
+        if !verify_pedersen_opening(&recv_a_pt, delta_a, &scalar_reduce_be(r_recv_a)) {
+            return Err("lp_remove fold: recv_a opening != delta_a");
+        }
+        let recv_b_pt = decompress(recv_b_secp).ok_or("lp_remove fold: recv_b not a curve point")?;
+        if !verify_pedersen_opening(&recv_b_pt, delta_b, &scalar_reduce_be(r_recv_b)) {
+            return Err("lp_remove fold: recv_b opening != delta_b");
+        }
+        // Onboard both withdrawn notes (real, live, bridgeable), then draw down reserves + shares.
+        let leaf_a = reflected_note_leaf(&pool.asset_a, recv_a_secp).ok_or("lp_remove fold: recv_a leaf")?;
+        let ch_a = commitment_hash_compressed(recv_a_secp).ok_or("lp_remove fold: recv_a hash")?;
+        self.fold_output(&leaf_a, recv_a_path, recv_a_outpoint, &ch_a, &pool.asset_a)?;
+        let leaf_b = reflected_note_leaf(&pool.asset_b, recv_b_secp).ok_or("lp_remove fold: recv_b leaf")?;
+        let ch_b = commitment_hash_compressed(recv_b_secp).ok_or("lp_remove fold: recv_b hash")?;
+        self.fold_output(&leaf_b, recv_b_path, recv_b_outpoint, &ch_b, &pool.asset_b)?;
+        pool.reserve_a -= delta_a;
+        pool.reserve_b -= delta_b;
+        pool.total_shares -= share_amount;
+        self.pools.update(pool_id, pool);
+        Ok(())
     }
 
     /// Record a bridge-out in the burn set: ν → destCommitment (witnessed UTXO insert). The spend
@@ -3505,7 +3657,7 @@ mod tests {
             delta_in: 1000, tip_amount: 0, delta_out,
             c_in, c_change_or_sentinel: c_change, c_receipt, r_receipt: r_receipt_bytes, kernel_sig: sig,
         };
-        let mk_pool = || PoolReserveState { asset_a, asset_b, reserve_a: 10_000, reserve_b: 5_000, c0_backed: true };
+        let mk_pool = || PoolReserveState { asset_a, asset_b, reserve_a: 10_000, reserve_b: 5_000, total_shares: 7_000, c0_backed: true };
         let path = [[0u8; 32]; 32];
 
         // gate (1): a pool not yet C0-backed folds NOTHING.
@@ -3547,7 +3699,7 @@ mod tests {
         let pid1 = [0x01u8; 32];
         let pid2 = [0x02u8; 32];
         let st = |ra, rb, backed| PoolReserveState {
-            asset_a: [0xAAu8; 32], asset_b: [0xBBu8; 32], reserve_a: ra, reserve_b: rb, c0_backed: backed,
+            asset_a: [0xAAu8; 32], asset_b: [0xBBu8; 32], reserve_a: ra, reserve_b: rb, total_shares: 1_000, c0_backed: backed,
         };
         s.insert(&pid1, st(100, 200, true));
         s.insert(&pid2, st(300, 400, false));
@@ -3650,6 +3802,71 @@ mod tests {
         let (_, sbu) = bip340_sign(&[0x42u8; 32], &[0x52u8; 32], &lp_add_msg(0, &pidu, &asset_b, 100, share, &csc, &op_b));
         let cibu = gen_h() * Scalar::from(100u64) + ProjectivePoint::generator() * xb;
         assert!(sc.fold_lp_add(0, &pidu, &asset_a, &asset_b, 100, 100, share, &csc, &op_a, &[ciau], &sau, &op_b, &[cibu], &sbu, true).is_err(), "LP-add to unknown pool rejected");
+    }
+
+    fn lp_remove_msg(pid: &[u8; 32], share: u64, da: u64, db: u64, ra: &[u8; 33], rb: &[u8; 33], inputs: &[([u8; 32], u32)]) -> [u8; 32] {
+        let mut h = Sha256::new();
+        h.update(LP_REMOVE_KERNEL_DOMAIN);
+        h.update(pid);
+        h.update(share.to_le_bytes());
+        h.update(da.to_le_bytes());
+        h.update(db.to_le_bytes());
+        h.update(ra);
+        h.update(rb);
+        h.update([inputs.len() as u8]);
+        for (txid, vout) in inputs {
+            h.update(txid);
+            h.update(vout.to_le_bytes());
+        }
+        h.finalize().into()
+    }
+
+    #[test]
+    fn lp_remove_kernel_verify_and_fold_gates() {
+        let pid = [0x20u8; 32];
+        let asset_a = [0xAAu8; 32];
+        let asset_b = [0xBBu8; 32];
+        // pool: 1000 A / 4000 B, 2000 shares (isqrt(1000·4000)=2000), c0_backed.
+        let mut base = ScanReflection::genesis();
+        base.pools.insert(&pid, PoolReserveState { asset_a, asset_b, reserve_a: 1000, reserve_b: 4000, total_shares: 2000, c0_backed: true });
+        // burn 1000 shares (half) ⇒ delta_a = 500, delta_b = 2000.
+        let (share, da, db) = (1000u64, 500u64, 2000u64);
+        let op = [([0x73u8; 32], 0u32)];
+        let x = scalar_reduce_be(&[0x61u8; 32]);
+        let ci = gen_h() * Scalar::from(share) + ProjectivePoint::generator() * x; // LP-share input opens to `share`
+        let ra = [0x62u8; 32];
+        let rb = [0x63u8; 32];
+        let recv_a = compress(&(gen_h() * Scalar::from(da) + ProjectivePoint::generator() * scalar_reduce_be(&ra)));
+        let recv_b = compress(&(gen_h() * Scalar::from(db) + ProjectivePoint::generator() * scalar_reduce_be(&rb)));
+        let (_p, sig) = bip340_sign(&[0x61u8; 32], &[0x64u8; 32], &lp_remove_msg(&pid, share, da, db, &recv_a, &recv_b, &op));
+        let path = [[0u8; 32]; 32];
+        let oa = [0x01u8; 32];
+        let ob = [0x02u8; 32];
+
+        // kernel primitive: accept + tamper reject.
+        assert!(lp_remove_kernel_verify(&pid, share, da, db, &recv_a, &recv_b, &op, &[ci], &sig), "valid lp-remove kernel");
+        let mut bad = sig; bad[63] ^= 1;
+        assert!(!lp_remove_kernel_verify(&pid, share, da, db, &recv_a, &recv_b, &op, &[ci], &bad), "tampered sig rejected");
+
+        // gate: pool not C0-backed.
+        let mut s1 = base.clone();
+        let mut p = s1.pools.get(&pid).unwrap(); p.c0_backed = false; s1.pools.update(&pid, p);
+        assert!(s1.fold_lp_remove(&pid, share, da, db, &recv_a, &ra, &recv_b, &rb, &op, &[ci], &sig, &path, &oa, &path, &ob).is_err(), "non-C0-backed rejected");
+        // gate: share > total (kernel never reached).
+        let mut s2 = base.clone();
+        assert!(s2.fold_lp_remove(&pid, 3000, da, db, &recv_a, &ra, &recv_b, &rb, &op, &[ci], &sig, &path, &oa, &path, &ob).is_err(), "share > total rejected");
+        // gate: non-proportional withdrawal (delta_a off by one).
+        let mut s3 = base.clone();
+        assert!(s3.fold_lp_remove(&pid, share, da + 1, db, &recv_a, &ra, &recv_b, &rb, &op, &[ci], &sig, &path, &oa, &path, &ob).is_err(), "non-proportional rejected");
+        // gate: bad share-burn kernel.
+        let mut s4 = base.clone();
+        assert!(s4.fold_lp_remove(&pid, share, da, db, &recv_a, &ra, &recv_b, &rb, &op, &[ci], &bad, &path, &oa, &path, &ob).is_err(), "bad kernel rejected");
+        // gate: recv_b opening mismatch (valid kernel, wrong r_recv_b) — no over-stated withdrawal value.
+        let mut s5 = base.clone();
+        assert!(s5.fold_lp_remove(&pid, share, da, db, &recv_a, &ra, &recv_b, &[0u8; 32], &op, &[ci], &sig, &path, &oa, &path, &ob).is_err(), "recv_b opening mismatch rejected");
+        // gate: unknown pool.
+        let mut s6 = base.clone();
+        assert!(s6.fold_lp_remove(&[0x99u8; 32], share, da, db, &recv_a, &ra, &recv_b, &rb, &op, &[ci], &sig, &path, &oa, &path, &ob).is_err(), "unknown pool rejected");
     }
 
     // REFLECT-1 regression: the reflection prover must NOT fold a confirmed CXFER tx's outputs into

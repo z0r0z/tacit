@@ -28,9 +28,9 @@ use alloy_sol_types::sol;
 use alloy_sol_types::private::U256;
 use alloy_sol_types::SolType;
 use cxfer_core::{
-    bitcoin, burn_deposit, commitment_hash, commitment_hash_compressed, from_affine_xy, leaf, nullifier,
-    outpoint_key, scan_tx_spends, verify_cxfer_conservation, LiveUtxoSet, Point, PoolReserveSet,
-    PoolReserveState, ScanReflection,
+    bitcoin, burn_deposit, commitment_hash, commitment_hash_compressed, decompress, from_affine_xy, leaf,
+    nullifier, outpoint_key, reflected_note_leaf, scan_tx_spends, verify_cxfer_conservation, LiveUtxoSet,
+    Point, PoolReserveSet, PoolReserveState, ScanReflection,
 };
 use sp1_zkvm::io;
 
@@ -90,8 +90,9 @@ fn read_scan_prior_state() -> ScanReflection {
         let asset_b = r32();
         let reserve_a: u64 = io::read();
         let reserve_b: u64 = io::read();
+        let total_shares: u64 = io::read();
         let c0_backed: u32 = io::read();
-        (pool_id, PoolReserveState { asset_a, asset_b, reserve_a, reserve_b, c0_backed: c0_backed != 0 })
+        (pool_id, PoolReserveState { asset_a, asset_b, reserve_a, reserve_b, total_shares, c0_backed: c0_backed != 0 })
     }).collect();
     let pools = PoolReserveSet::from_sorted(pool_entries).expect("handed pool reserve set not sorted/unique");
     ScanReflection {
