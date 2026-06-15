@@ -25,7 +25,14 @@ import { makeConfidentialPool } from './confidential-pool.js';
 const ZERO_OWNER = '0x' + '00'.repeat(32);
 const reverseHex = (h) => h.replace(/^0x/, '').match(/../g).reverse().join(''); // display ↔ internal
 
-export function makeScanReflectionIndexer({ secp, keccak256, sha256, ownerTag } = {}) {
+// burnDepositKit (injected by the worker, which owns the Bitcoin tooling) enables the scan-free TAC
+// burn-deposit / cmint-deposit onboarding. It carries:
+//   mirror:    makeBurnDepositProvenance({...crypto, cmint parsers}) — verifyProvenanceLeaves + verifyCmintAuthorized
+//   assembler: makeBurnDepositAssembler({dsha256, cat, bytesToHex}) — buildBurnDepositStatic + merkle helpers
+//   parseEtchAnchor(etchTxHex, assetHex) -> { c0Compressed, mintAuthority } | null  (worker's verify_etch_anchor port)
+//   computeTxidInternal(txHex) -> "0x…"  (internal-order txid == the guest's compute_txid)
+// Absent → burn-deposits are not assembled (a burn tx with a provenance bundle then throws in the scan).
+export function makeScanReflectionIndexer({ secp, keccak256, sha256, ownerTag, burnDepositKit } = {}) {
   const pool = makeConfidentialPool({ secp, keccak256, sha256 });
   const OWNER = ownerTag || ZERO_OWNER;
   let state = pool.makeScanReflectionState();
@@ -34,9 +41,60 @@ export function makeScanReflectionIndexer({ secp, keccak256, sha256, ownerTag } 
   const internal = (displayTxid) => '0x' + reverseHex(displayTxid);
   const withHex = (raw) => (raw.startsWith('0x') ? raw : '0x' + raw);
 
+  // Build the burn-deposit fold context from a holder-traced provenance bundle (the worker assembles this
+  // off-chain via the tracer + its Bitcoin tooling). Routes the lineage through the JS realness mirror
+  // (verifyProvenanceLeaves over valid_leaves = C_0 ∪ issuer-authorized cmints) and the static-witness
+  // builder; the canonical scan (foldBurnDepositTx) performs the actual fold. The criterion self-routes:
+  // a fixed-supply etch has mint_authority = 0 → verifyCmintAuthorized rejects every cmint → leaves = [C_0].
+  //   bundle = { assetId, nu, dest, burned:{cx,cy}, burnedInput:{prevTxid,prevVout},
+  //              etch:{tx,blockTxids,index}, provHeaders:[hex],
+  //              cxfers:[{txid,inputs:[{prevTxid,prevVout,commitment}],outputs:[{commitment,vout}],rangeProof,kernelSig,blockTxids,index}],
+  //              cmints:[{revealTx,commitTx,blockTxids,index}] }   (cmints empty for fixed-supply)
+  function buildBurnDepositCtx(bundle) {
+    if (!burnDepositKit) throw new Error('scan indexer: burn-deposit tx present but no burnDepositKit injected');
+    const { mirror, assembler, parseEtchAnchor, computeTxidInternal } = burnDepositKit;
+    const asset = bundle.assetId;
+    let valid = false;
+    const anchor = parseEtchAnchor(bundle.etch.tx, asset); // { c0Compressed, mintAuthority } | null
+    if (anchor) {
+      const chOf = (compressed) => { const { cx, cy } = pool.decompressCommitment(compressed); return pool.commitmentHash(cx, cy); };
+      const validLeaves = [[pool.outpointKey(computeTxidInternal(bundle.etch.tx), 0), chOf(anchor.c0Compressed)]];
+      for (const cm of (bundle.cmints || [])) {
+        const lf = mirror.verifyCmintAuthorized(asset, anchor.mintAuthority, cm.revealTx, cm.commitTx);
+        if (lf) validLeaves.push(lf); // null = unauthorized/non-mintable → not a leaf
+      }
+      const cxfersForMirror = (bundle.cxfers || []).map((c) => ({
+        txid: c.txid,
+        inputOutpoints: c.inputs.map((i) => [i.prevTxid, i.prevVout]),
+        inputCommitments: c.inputs.map((i) => i.commitment),
+        outputCommitments: c.outputs.map((o) => o.commitment),
+        outputVouts: c.outputs.map((o) => o.vout),
+        rangeProof: c.rangeProof,
+        kernelSig: c.kernelSig,
+        merkleSiblings: assembler.merkleSiblings(c.blockTxids, c.index),
+        merkleIndex: c.index,
+        confirmedBlockRoot: assembler.merkleRoot(c.blockTxids),
+      }));
+      const burnedOutpoint = pool.outpointKey(bundle.burnedInput.prevTxid, bundle.burnedInput.prevVout);
+      const burnedCh = pool.commitmentHash(bundle.burned.cx, bundle.burned.cy);
+      valid = mirror.verifyProvenanceLeaves(asset, validLeaves, burnedOutpoint, burnedCh, cxfersForMirror);
+    }
+    return {
+      valid,
+      nu: bundle.nu,
+      dest: bundle.dest,
+      burnedCx: bundle.burned.cx,
+      burnedCy: bundle.burned.cy,
+      burnedNoteLeaf: pool.leaf(asset, bundle.burned.cx, bundle.burned.cy, OWNER),
+      witness: assembler.buildBurnDepositStatic({
+        etch: bundle.etch, provHeaders: bundle.provHeaders, cxfers: bundle.cxfers || [], cmints: bundle.cmints || [],
+      }),
+    };
+  }
+
   // One worker block-tx → the assembler's tx spec. Plain txs carry only vins (their pool-UTXO
   // spends are detected by the scan); cxfer txs declare output notes; burn txs a bridge-out dest.
-  function txSpec(tx) {
+  function txSpec(tx, burnDeposits) {
     const vins = (tx.vins || []).map((vi) => ({ prevTxid: internal(vi.prevTxidDisplay), vout: vi.vout }));
     const txid = internal(tx.txidDisplay);
     let env = null;
@@ -53,6 +111,11 @@ export function makeScanReflectionIndexer({ secp, keccak256, sha256, ownerTag } 
       };
     } else if (tx.decode && tx.decode.type === 'burn') {
       env = { type: 'burn', dest: tx.decode.dest };
+      // BURN-DEPOSIT (scan-free TAC/cmint onboarding): a 0x2B burn of a pre-existing note (no live-set
+      // spend). If the worker supplied this tx's holder-traced provenance bundle, assemble the fold
+      // context (the canonical scan folds it iff the realness mirror admits it).
+      const bundle = burnDeposits && burnDeposits.get(tx.txidDisplay);
+      if (bundle) env.burnDeposit = buildBurnDepositCtx(bundle);
     } else if (tx.decode && (tx.decode.type === 'mint' || tx.decode.type === 'cmint')) {
       // A confidential-mint value-entry (T_MINT/cmint). The conservation-closed full-scan model does
       // NOT yet reflect it (no free-output deposit path); surface it so the assembler can flag the
@@ -67,8 +130,10 @@ export function makeScanReflectionIndexer({ secp, keccak256, sha256, ownerTag } 
   // `anchorHeight` = headers[0]'s confirmed height. ADVANCES state + coords (the assembler scans
   // every tx's vins, folds the detected effects). Returns the input the box's exec harness writes
   // (its `.nonConserving` lists any cxfer whose outputs were skipped for failing value conservation).
-  function assembleBlocks(blocks, { headers, anchorHeight }) {
-    const batch = { anchorHeight, headers, blocks: blocks.map((b) => ({ txs: (b.txs || []).map(txSpec) })) };
+  // `burnDeposits` (optional): Map(txidDisplay → holder-traced provenance bundle) for any 0x2B burn of a
+  // pre-existing note in this batch — see buildBurnDepositCtx for the bundle shape.
+  function assembleBlocks(blocks, { headers, anchorHeight, burnDeposits } = {}) {
+    const batch = { anchorHeight, headers, blocks: blocks.map((b) => ({ txs: (b.txs || []).map((tx) => txSpec(tx, burnDeposits)) })) };
     return pool.assembleReflectionScanInput(state, batch, coords);
   }
 

@@ -233,7 +233,7 @@ live dapp accepts as supply is exactly the one the bridge admits as a supply lea
 mints become bridgeable. (`anchor_txid` from the guest's `extract_inputs` is the serialized prevout = internal
 order = the dapp's `reverseBytes(display_txid)`.)
 
-**Build status (2026-06-15) — cmint-deposit DONE through native-exec; remaining = worker wiring + re-prove.**
+**Build status (2026-06-15) — cmint-deposit + value binding + worker wiring DONE through native-exec; remaining = re-prove.**
 - `parse_cmint` + `verify_cmint_authorized` (BIP-340 issuer sig + BP+ range + commit-anchor anti-re-wrap),
   message aligned to the dapp `computeMintMsg` (binds `amount_ct`); KATs — 90/90 cxfer-core green (7fb1f07 +
   this alignment).
@@ -249,10 +249,24 @@ order = the dapp's `reverseBytes(display_txid)`.)
   (incl. the commit-anchor binding); tracer multi-leaf path (`burn-deposit-tracer.js` stops at `C_0 ∪ cmint`
   outpoints) + KATs; the assembler already carries the `cmints` witness (4227a5d).
 - The dapp `T_MINT` signer already exists (`buildAndBroadcastCMint`) and is now coherent with the bridge.
+- **Value binding (the inflation crux, 04151a4):** `fold_note_append` onboards the proven-real burned note
+  into the pool tree (append-only, never live) after `verify_provenance_leaves` + `fold_spent` succeed, so the
+  Ethereum `OP_BRIDGE_MINT` binds `v_mint == v_burn` by membership + kernel — a burn-deposit mint becomes
+  identical to a reflected bridge-out. Without this the recording was `ν → env_dest` with `env_dest`'s value
+  unconstrained (a real v=1 burn could authorize a v=10⁹ mint); the existing mint also could not consume a
+  burn-deposit note (no pool membership). `fold_spent` is now skip-not-panic (a re-presented ν folds nothing
+  instead of wedging the prover). Applies identically to fixed-supply and mintable (one shared dispatch).
+- **Worker wiring:** the canonical scan (`confidential-pool.js::foldBurnDepositTx`) folds a 0x2B burn of a
+  pre-existing note iff the JS mirror admits it (`fold_spent → fold_note_append → fold_burn`), else emits a
+  zero witness so the prover stream stays in sync; the scan indexer (`makeScanReflectionIndexer`, a
+  `burnDepositKit` + `assembleBlocks({ burnDeposits })`) builds `valid_leaves = C_0 ∪ authorized cmints`,
+  runs the mirror, and assembles the static witness via `buildBurnDepositStatic`. Tested:
+  `tests/confidential-burn-deposit-wiring.mjs` (valid folds / invalid skips / cmint leaf admitted / snapshot
+  round-trip). The worker injects the kit (its Bitcoin parsers + `parseEtchAnchor`); the live Bitcoin
+  provenance tracing remains the worker's data-plane job.
 
-REMAINING: the worker WIRING (the reflection indexer/assembler calling the tracer's cmint leaves + the mirror
-in the live burn-deposit path — the same operational wiring the fixed-supply burn-deposit needs) + the
-re-prove (rotates `BITCOIN_RELAY_VKEY`, folds into #11).
+REMAINING: the re-prove (rotates `BITCOIN_RELAY_VKEY`, folds into #11) + the worker's live data-plane
+(fetching the etch/cmint/headers + the cxfer-by-output graph the tracer walks).
 
 ## Findings / preconditions (impl phase 1)
 - **CETCH layout discrepancy (resolve first):** cxfer-core `parse_etch_meta` reads `cid(32)` right after

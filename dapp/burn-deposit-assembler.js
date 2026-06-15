@@ -58,7 +58,10 @@ export function makeBurnDepositAssembler({ dsha256, cat, bytesToHex }) {
   //                   tree so OP_BRIDGE_MINT binds v_mint == v_burn (caller computes via pool.leaf)
   //   nu, dest:   "0x…" (the burned note's nullifier + the bridge-out destination commitment)
   //   scanState:  pool.makeScanReflectionState() positioned at the batch's prior (advances on fold*)
-  function assembleBurnDeposit({ etch, provHeaders, cxfers, cmints = [], burned, burnedNoteLeaf, nu, dest, scanState }) {
+  // The STATE-INDEPENDENT part of the witness: the etch + cxfers + cmints with their Bitcoin merkle paths
+  // resolved. The live worker builds this from the holder-traced provenance; the canonical scan
+  // (foldBurnDepositTx) then appends the state-dependent IMT inserts at the fold point.
+  function buildBurnDepositStatic({ etch, provHeaders, cxfers, cmints = [] }) {
     return {
       etchTx: etch.tx,
       etchIndex: etch.index,
@@ -82,6 +85,12 @@ export function makeBurnDepositAssembler({ dsha256, cat, bytesToHex }) {
         merkleSiblings: merkleSiblings(cm.blockTxids, cm.index),
         merkleIndex: cm.index,
       })),
+    };
+  }
+
+  function assembleBurnDeposit({ etch, provHeaders, cxfers, cmints = [], burned, burnedNoteLeaf, nu, dest, scanState }) {
+    return {
+      ...buildBurnDepositStatic({ etch, provHeaders, cxfers, cmints }),
       burnedCx: burned.cx,
       burnedCy: burned.cy,
       // Fold order mirrors the guest dispatch: fold_spent → fold_note_append → fold_burn (independent
@@ -92,5 +101,5 @@ export function makeBurnDepositAssembler({ dsha256, cat, bytesToHex }) {
     };
   }
 
-  return { assembleBurnDeposit, merkleSiblings, merkleRoot };
+  return { assembleBurnDeposit, buildBurnDepositStatic, merkleSiblings, merkleRoot };
 }
