@@ -35,6 +35,14 @@ use cxfer_core::{
 };
 use sp1_zkvm::io;
 
+// The in-guest BN254 Groth16 verifier for T_SWAP_BATCH (reflection-only; pulls the SP1-precompile `bn`
+// crate into this ELF, not the settle one). `groth16_bn254_verify` is ready; the remaining `fold_swap_batch`
+// glue (parse the 0x2F envelope → re-derive the 123 public signals from it → verify against the baked
+// BATCH_VK → per-receipt witnessed-opening onboarding) needs the circuit's public-signal layout + the baked
+// vk. See ops/DESIGN-in-guest-groth16-verifier.md.
+#[allow(dead_code)]
+mod groth16;
+
 sol! {
     struct BitcoinReflectionPublicValues {
         bytes32 priorDigest;       // the reflected state this cycle continues from
