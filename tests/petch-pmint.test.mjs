@@ -235,6 +235,49 @@ await test('reorg-evicted credit promotes the next pending mint', async () => {
 });
 
 // ---------------------------------------------------------------------------
+// REORG RE-CONFIRM DE-DUP — a reorg can re-confirm the same T_PMINT at a new
+// (height, tx_index) while the cron's forward-only scan leaves the prior
+// canonical key in place. Both keys share one mint_txid. Counting both would
+// consume two cap slots for a single on-chain mint, double-counting it toward
+// the cap and displacing a legitimate distinct mint into overflow. The
+// read-side recompute (the SSOT) must de-dup by txid: one mint, one slot.
+// ---------------------------------------------------------------------------
+await test('loadCanonicalPmints de-dups a re-confirmed mint (one txid → one cap slot)', async () => {
+  const env = { REGISTRY_KV: makeKvStub() };
+  // Cap = 200, limit = 100 → 2 slots. 'a' appears at TWO canonical positions
+  // (100 and 101 — a reorg re-confirm); 'b' is a distinct later mint.
+  env.REGISTRY_KV.set(pmintKey(ASSET, 100, 0, 'a'.repeat(64)), mintEvent(100, 0, 'a'.repeat(64)));
+  env.REGISTRY_KV.set(pmintKey(ASSET, 101, 0, 'a'.repeat(64)), mintEvent(101, 0, 'a'.repeat(64))); // duplicate txid
+  env.REGISTRY_KV.set(pmintKey(ASSET, 102, 0, 'b'.repeat(64)), mintEvent(102, 0, 'b'.repeat(64)));
+  const r = await loadCanonicalPmints(env, 'signet', ASSET, 200, '200', '100');
+  // Without de-dup: 'a'@100 + 'a'@101 fill the cap (double-count) and 'b'
+  // overflows. With de-dup: 'a'@100 credits, 'a'@101 is 'duplicate' (skipped),
+  // 'b' credits — cap holds exactly two DISTINCT mints.
+  return r.events.length === 3
+    && r.events[0].mint_txid === 'a'.repeat(64) && r.events[0].status === 'credited'
+    && r.events[1].mint_txid === 'a'.repeat(64) && r.events[1].status === 'duplicate'
+    && r.events[2].mint_txid === 'b'.repeat(64) && r.events[2].status === 'credited'
+    && r.credited_count === '2'
+    && r.cumulative_minted === '200';
+});
+
+await test('refreshPetchProgress de-dups a re-confirmed mint (cap snapshot)', async () => {
+  const env = { REGISTRY_KV: makeKvStub() };
+  env.REGISTRY_KV.set(pmintKey(ASSET, 100, 0, 'a'.repeat(64)), mintEvent(100, 0, 'a'.repeat(64)));
+  env.REGISTRY_KV.set(pmintKey(ASSET, 101, 0, 'a'.repeat(64)), mintEvent(101, 0, 'a'.repeat(64))); // duplicate txid
+  env.REGISTRY_KV.set(pmintKey(ASSET, 102, 0, 'b'.repeat(64)), mintEvent(102, 0, 'b'.repeat(64)));
+  const snap = await refreshPetchProgress(env, 'signet', ASSET, 200, {
+    cap_amount: '200', mint_limit: '100', mint_start_height: 0, mint_end_height: 0, etched_at_height: 99,
+  });
+  // The duplicate is skipped entirely (not credited, not overflow). The cap
+  // holds two distinct mints and the frontier sits at 'b'@102, not 'a'@101.
+  return snap.credited_count === 2
+    && snap.credited_amount === '200'
+    && snap.cap_overflow_count === 0
+    && snap.last_credited_height === 102;
+});
+
+// ---------------------------------------------------------------------------
 // TIP UNAVAILABLE — graceful degrade. mempool.space being slow / 522 must
 // surface as "unknown_depth" rather than incorrectly crediting tip-state mints.
 // ---------------------------------------------------------------------------

@@ -4707,6 +4707,12 @@ function atomicFulfilmentKey(network, aid, intentIdHex) {
     : `axfulfil:${network}:${aid}:${intentIdHex}`;
 }
 function lastScannedKey(network)       { return network === 'signet' ? 'meta:last_scanned' : `meta:last_scanned:${network}`; }
+// Block hash of the highest contiguously-scanned block. Lets the cron detect a
+// reorg below its forward-only cursor: if the canonical hash at last_scanned no
+// longer matches, blocks were re-mined and any pmint/poolleaf keys written for
+// the orphaned heights must be re-derived against the new chain (SPEC §5.9
+// reorg revalidation). Only set on a clean scan tick.
+function lastScannedHashKey(network)   { return network === 'signet' ? 'meta:last_scanned_hash' : `meta:last_scanned_hash:${network}`; }
 // Per-asset CXFER+AXFER transfer counter. Exposed on /assets as
 // `transfer_count` so the Discover/Market UI can surface "popularity"
 // signals (movement is a coarse "is anyone using this?" indicator —
@@ -13892,6 +13898,11 @@ async function handleAssetGet(assetIdHex, env, network, cors) {
 // T_PMINTs surface as 'pending' until they cross this depth; only credited
 // mints count toward `cumulative_minted` and the cap.
 const PMINT_CONFIRMATION_DEPTH = 3;
+// How far the cron rewinds its forward-only cursor when it detects a reorg
+// below last_scanned (block hash at the cursor no longer canonical). Bounded:
+// re-mining ≥6 deep is effectively impossible on Bitcoin mainnet, and the
+// re-scan is idempotent, so a fixed window is both safe and sufficient.
+const PMINT_REORG_REWIND_DEPTH = 6;
 
 // SPEC §5.10 reorg-safety gate. A T_DEPOSIT becomes part of the canonical
 // pool merkle tree only after this many confirmations. Without it a short
@@ -14008,6 +14019,15 @@ async function loadCanonicalPmints(env, network, assetIdHex, tipHeight, capAmoun
   // chain order — SPEC §5.9 *Cap-overflow ordering*.
   let creditedCount = 0n;
   let creditedAmount = 0n;
+  // De-dup by mint_txid. A reorg can re-confirm the same T_PMINT at a new
+  // (height, tx_index), leaving the prior canonical key in place — both keys
+  // share one mint_txid. Counting both would consume two cap slots for a
+  // single on-chain mint. KV.list is canonical order, so the lowest-position
+  // key wins and later duplicates are dropped from cap accounting (SPEC §5.9
+  // — one mint, one slot). Only confirmed (depth ≥ 3) entries register here:
+  // a pending duplicate hasn't been counted yet, so it must not pre-claim the
+  // slot.
+  const seenTxids = new Set();
   const annotated = events.map(e => {
     // Defensive: an earlier worker version (handleAssetHint T_PMINT branch)
     // wrote unconfirmed hints into this canonical namespace with
@@ -14032,21 +14052,26 @@ async function loadCanonicalPmints(env, network, assetIdHex, tipHeight, capAmoun
       status = 'unknown_depth';   // tip unavailable — surface to UI but don't credit
     } else if (depth < PMINT_CONFIRMATION_DEPTH) {
       status = 'pending';
-    } else if (capAmount != null && mintLimit != null) {
-      const wouldBe = creditedAmount + mintLimit;
-      if (wouldBe > capAmount) {
-        status = 'cap_overflow';
+    } else if (typeof e.mint_txid === 'string' && seenTxids.has(e.mint_txid)) {
+      status = 'duplicate';   // reorg re-confirm — already counted at an earlier canonical position
+    } else {
+      if (typeof e.mint_txid === 'string') seenTxids.add(e.mint_txid);
+      if (capAmount != null && mintLimit != null) {
+        const wouldBe = creditedAmount + mintLimit;
+        if (wouldBe > capAmount) {
+          status = 'cap_overflow';
+        } else {
+          status = 'credited';
+          credited = true;
+          creditedCount += 1n;
+          creditedAmount = wouldBe;
+        }
       } else {
-        status = 'credited';
+        status = 'credited';   // missing cap metadata; can't enforce, default to credit
         credited = true;
         creditedCount += 1n;
-        creditedAmount = wouldBe;
+        if (mintLimit != null) creditedAmount += mintLimit;
       }
-    } else {
-      status = 'credited';   // missing cap metadata; can't enforce, default to credit
-      credited = true;
-      creditedCount += 1n;
-      if (mintLimit != null) creditedAmount += mintLimit;
     }
     return { ...e, depth, status, credited };
   });
@@ -14119,6 +14144,10 @@ async function refreshPetchProgress(env, network, aid, tipHeight, petch) {
   // have 0). Cap at 10000 entries to guard against pathological cases.
   const capOverflowTxids = [];
   const CAP_OVERFLOW_TXIDS_MAX = 10000;
+  // De-dup by txid — see loadCanonicalPmints for the reorg re-confirm rationale.
+  // One on-chain mint = one cap slot, regardless of how many canonical keys a
+  // reorg left behind for it.
+  const seenTxids = new Set();
   let truncated = false;
   let canonicalComplete = false;
   let cursor = null;
@@ -14138,6 +14167,8 @@ async function refreshPetchProgress(env, network, aid, tipHeight, petch) {
       if (!Number.isInteger(h) || !Number.isInteger(ti) || !/^[0-9a-f]{64}$/.test(txid)) continue;
       const depth = Math.max(0, tipHeight - h + 1);
       if (depth < PMINT_CONFIRMATION_DEPTH) { pendingCount++; continue; }
+      if (seenTxids.has(txid)) continue;   // reorg re-confirm duplicate — one mint, one slot
+      seenTxids.add(txid);
       if (capAmount != null && mintLimit != null) {
         const wouldBe = creditedAmount + mintLimit;
         if (wouldBe > capAmount) {
@@ -14696,10 +14727,16 @@ async function runOnePmintBackfill(env, cfg) {
 // endpoints.
 async function handlePetchAssetsList(env, network, cors, { limit = 1000 } = {}) {
   const list = await env.REGISTRY_KV.list({ prefix: petchPrefix(network), limit });
+  // Signet's petchPrefix is the bare 'petch:' which lexically also matches the
+  // mainnet keys 'petch:mainnet:<aid>'. Drop those so a signet Discover view
+  // never enumerates mainnet deployments — same filter fetchAndHydratePetchForMarket
+  // applies. (pmint:/petch_progress: namespaces are already disjoint, so cap
+  // numbers never cross-contaminate; this is purely the list surface.)
+  const wanted = list.keys.filter(k => !(network === 'signet' && k.name.startsWith('petch:mainnet:')));
   const tipP = fetchTipHeight(env, network);
   // Curated verified set in parallel; same semantics as /assets.
   const verifiedP = loadVerifiedSet(env, network).catch(() => new Set());
-  const fetched = await Promise.all(list.keys.map(k => env.REGISTRY_KV.get(k.name, 'json')));
+  const fetched = await Promise.all(wanted.map(k => env.REGISTRY_KV.get(k.name, 'json')));
   const assets = fetched.filter(v => v);
   const verifiedSet = await verifiedP;
   for (const a of assets) a.verified = verifiedSet.has(a.asset_id);
@@ -14827,6 +14864,12 @@ async function handlePmintList(assetIdHex, env, network, cors, opts = {}) {
         credited_count: snap?.credited_count ?? null,
         credited_amount: snap?.credited_amount ?? null,
         cap_overflow_count: snap?.cap_overflow_count ?? cap_overflow_txids.length,
+        // Truncation flag for the cap-overflow list. When set, a confirmed mint
+        // that is absent from cap_overflow_txids but sits canonically AFTER
+        // last_credited is still overflow (it just fell past the list cap) — the
+        // client uses this to render it as permanently rejected rather than
+        // "pending forever". See SPEC §5.9 *Cap-overflow ordering*.
+        cap_overflow_truncated: !!snap?.cap_overflow_truncated,
         last_credited_height: snap?.last_credited_height ?? null,
         last_credited_tx_index: snap?.last_credited_tx_index ?? null,
         last_credited_txid: snap?.last_credited_txid ?? null,
@@ -21195,8 +21238,37 @@ async function scanForEtches(env, network) {
   // '0'). Without this distinction, `/rescan?from=1` writes '0' into the key
   // and the next tick mistakes that for "never scanned" and triggers backfill.
   const raw = await env.REGISTRY_KV.get(lastScannedKey(network));
-  const lastScanned = raw === null ? -1 : parseInt(raw, 10);
+  let lastScanned = raw === null ? -1 : parseInt(raw, 10);
   const tip = parseInt((await apiText(env, '/blocks/tip/height', {}, network)).trim(), 10);
+  // ── Reorg detection (SPEC §5.9 revalidation) ─────────────────────────────
+  // The cursor is forward-only, so a reorg below it would otherwise leave the
+  // pmint/poolleaf keys written for now-orphaned heights counted forever (a
+  // re-confirmed mint at a new position is de-duped read-side, but a mint that
+  // simply moved blocks needs its canonical key re-derived). Each clean tick
+  // records the hash of its highest scanned block; if that hash no longer
+  // matches the canonical chain, rewind a bounded window so the forward pass
+  // re-derives those heights. Re-scans are idempotent (position-keyed writes +
+  // *seen markers) — the same property the /rescan admin path relies on.
+  // Fully fail-safe: any error degrades to the prior forward-only behavior
+  // rather than throwing into the cron's swallow-and-freeze catch. Bound is
+  // PMINT_REORG_REWIND_DEPTH (deeper reorgs are out of scope on mainnet; the
+  // depth-3 read gate + read-side de-dup remain conservative backstops). Kill
+  // switch: REORG_DETECT_DISABLE=1.
+  if (lastScanned >= PMINT_REORG_REWIND_DEPTH && env.REORG_DETECT_DISABLE !== '1' && Number.isInteger(tip)) {
+    try {
+      const recordedHash = await env.REGISTRY_KV.get(lastScannedHashKey(network));
+      if (recordedHash) {
+        let canonicalHash = null;
+        try { canonicalHash = (await apiText(env, `/block-height/${lastScanned}`, {}, network)).trim(); } catch { canonicalHash = null; }
+        if (canonicalHash && /^[0-9a-f]{64}$/i.test(canonicalHash) && canonicalHash !== recordedHash) {
+          lastScanned = lastScanned - PMINT_REORG_REWIND_DEPTH;
+          await env.REGISTRY_KV.put(lastScannedKey(network), String(lastScanned));
+          // Drop the stale hash; the forward re-scan records a fresh one below.
+          try { await env.REGISTRY_KV.delete(lastScannedHashKey(network)); } catch {}
+        }
+      }
+    } catch { /* degrade to forward-only — never freeze the cron */ }
+  }
   // Per-network blocks-per-tick budget (signet is sparse, mainnet is dense).
   const blocksPerTick = network === 'mainnet'
     ? safeInt(env.SCAN_BLOCKS_MAINNET, 1, { min: 1, max: 100 })
@@ -25922,6 +25994,16 @@ async function scanForEtches(env, network) {
     await env.REGISTRY_KV.put(dropDirtyKey(network, dropId), '1', { expirationTtl: 86400 });
   }
   await env.REGISTRY_KV.put(lastScannedKey(network), String(lastContiguous));
+  // Record the canonical hash of the highest contiguously-scanned block so the
+  // next tick can detect a reorg below the cursor (see the reorg-detection
+  // block at the top of this function). Fail-safe: a missing hash just disables
+  // reorg detection for one tick rather than throwing into the cron's catch.
+  try {
+    if (lastContiguous >= 0) {
+      const lh = (await apiText(env, `/block-height/${lastContiguous}`, {}, network)).trim();
+      if (lh && /^[0-9a-f]{64}$/i.test(lh)) await env.REGISTRY_KV.put(lastScannedHashKey(network), lh);
+    }
+  } catch { /* reorg detection self-re-arms on the next clean tick */ }
   return { scanned_txs: scanned, found_etches: found, from: startHeight, to: lastContiguous, tip, network };
 }
 
