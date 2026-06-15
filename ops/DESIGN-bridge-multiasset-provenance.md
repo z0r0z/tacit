@@ -247,6 +247,37 @@ the other ops, which are already sound. Scope: ops/DESIGN-in-guest-groth16-verif
 snarkjs-Groth16 verifier is buildable now; only the circuit-specific public-input layout + the baked vk wait
 on the ceremony.
 
+## Stuck notes, healing, and the fungibility relief valve (2026-06-16)
+
+Why does the *lineage op* matter for bridging a *fungible* asset? Because the bridge is **note-based, not
+balance-based**: it mints on Ethereum exactly the value of a SPECIFIC Bitcoin note, proven real (descends
+from C₀). Fungibility means the *holder* is indifferent to which note they hold; the *bridge* is not — it
+must verify the specific note, or a phantom mints unbacked value. So realness is per-note, and a note whose
+lineage runs through an op the reflection can't verify is **fail-closed: non-bridgeable** (but still a valid,
+spendable Bitcoin note — the validator/worker track it; only the bridge won't onboard it).
+
+Healing a stuck note — three routes, and one subtlety:
+1. **Support the op (the permanent fix).** Conservation-gating makes this cheap: a one-line opcode-allowlist
+   + a mechanical re-prove un-sticks ALL such notes at once (the conservation gate is the safety, so the new
+   op needs no bespoke audit).
+2. **The fungibility relief valve — via a NON-Tacit intermediary (sats), NOT a direct Tacit trade.** Subtle:
+   a direct Tacit-asset trade (OTC/swap of the stuck note for a fresh one) does NOT heal — the stuck note is
+   an INPUT to that conserving op, and the reflection can't verify its value (unsupported lineage), so the op
+   fails-closed and the fresh output isn't onboarded either (the stuck input *poisons* any conserving op it
+   feeds). The heal must break the conservation chain: sell the stuck note for **sats** (native BTC — outside
+   the Tacit note graph), then buy a FRESH note (clean lineage — e.g. from an ETH→BTC crossout or a clean
+   holder). The holder ends with a bridgeable note; the stuck note circulates among Bitcoin-native (non-
+   bridging) holders. Works wherever the asset is liquid (TAC); thin for illiquid assets → route 1 is the
+   robust fix.
+3. **Self-describing conservation envelope (the asymptote).** With a uniform `tacit-conserve-v1` wrapper, the
+   reflection bridges ANY conserving op with no per-op parser / no re-prove — so "unsupported" collapses to
+   "non-conserving," which is correctly non-bridgeable anyway.
+
+Is the opcode universe large? No — it's SPEC-curated (~40 ops, additions are deliberate amendments), and
+conservation-gating makes each new conserving op a one-line + mechanical-re-prove add. With the coverage now
+built (transfer/atomic/OTC/bid/swap/LP/farm-reward), there are **no stuck notes for any live flow**; the
+"unsupported op" risk is a tail concern, covered by routes 1–3.
+
 ## Complete coverage map + future-proofing (2026-06-16)
 
 Every way a holding can arrive, and its bridge treatment. The principle: **bridge-onboarding is a
