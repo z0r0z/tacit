@@ -527,6 +527,109 @@ pub(crate) fn gen_h() -> ProjectivePoint {
     panic!("gen_h failed");
 }
 
+/// FS challenge for the cross-curve (secp256k1 ↔ BabyJubJub) Camenisch-Stadler sigma: the low 16 bytes of
+/// `sha256("tacit-amm-xcurve-v1" ‖ C_secp ‖ C_BJJ ‖ A_secp ‖ A_BJJ)` — a 128-bit challenge. Mirrors
+/// dapp/amm-sigma.js `challenge` (pure bytes, no curve ops). Consumed by BOTH the secp half (here) and the
+/// BabyJubJub half (reflection bin, src/babyjubjub.rs); the shared 320-bit response `z_a` is what binds the
+/// hidden amount across the two curves.
+pub fn xcurve_challenge(c_secp: &[u8; 33], c_bjj: &[u8; 32], a_secp: &[u8; 33], a_bjj: &[u8; 32]) -> [u8; 16] {
+    let mut h = Sha256::new();
+    h.update(b"tacit-amm-xcurve-v1");
+    h.update(c_secp);
+    h.update(c_bjj);
+    h.update(a_secp);
+    h.update(a_bjj);
+    let d: [u8; 32] = h.finalize().into();
+    let mut e = [0u8; 16];
+    e.copy_from_slice(&d[16..32]);
+    e
+}
+
+/// Verify the SECP256K1 half of the cross-curve sigma:
+///   `z_a·H_secp + z_r_secp·G_secp == A_secp + e·C_secp`
+/// with `z_a` the shared 320-bit response (reduced mod n in the order-n group) and `e` the 16-byte FS
+/// challenge. Mirrors dapp/amm-sigma.js `verifyXCurve` (secp branch). Fail-closed on a non-canonical
+/// `z_r_secp` (≥ n), a non-curve-point `C_secp`/`A_secp`, or an unsatisfied equation. The BabyJubJub half
+/// (`src/babyjubjub.rs`) must ALSO hold for the binding.
+pub fn xcurve_secp_check(c_secp: &[u8; 33], a_secp: &[u8; 33], z_a: &[u8; 40], z_r_secp: &[u8; 32], e: &[u8; 16]) -> bool {
+    // z_r_secp must be canonical (< n) — mirrors the dapp's `z_r_secp >= SECP_N` reject.
+    let zrs = match Option::<Scalar>::from(Scalar::from_repr(FieldBytes::clone_from_slice(z_r_secp))) {
+        Some(s) => s,
+        None => return false,
+    };
+    let c256 = Scalar::from(256u64);
+    // z_a (320-bit, BE) reduced mod n by Horner; (z_a mod n)·H == z_a·H in the order-n group.
+    let mut za = Scalar::from(0u64);
+    for &b in z_a.iter() {
+        za = za * c256 + Scalar::from(b as u64);
+    }
+    // e (128-bit, BE) → Scalar by Horner (e < n trivially).
+    let mut es = Scalar::from(0u64);
+    for &b in e.iter() {
+        es = es * c256 + Scalar::from(b as u64);
+    }
+    let (cs, asp) = match (decompress(c_secp), decompress(a_secp)) {
+        (Some(x), Some(y)) => (x, y),
+        _ => return false,
+    };
+    gen_h() * za + ProjectivePoint::generator() * zrs == asp + cs * es
+}
+
+/// Verify the `T_SWAP_BATCH` aggregate Pedersen identity for ONE asset X (called for both A and B):
+///   `Σ_{X-input intents} C_in_secp − Σ_{X-output intents} C_out_secp − tip_X_C_secp − δ_X·H == R_net_X·G`
+/// Mirrors the worker `ammCheckAggregatePedersen`. This binds the batch's receipts (the bridgeable notes) to
+/// the traders' REAL spent input notes + the public net delta + the c0-backed reserve — so the TOTAL onboarded
+/// can't exceed what the real inputs + reserve back (the per-receipt SPLIT is bound separately by the Groth16).
+/// `intents` = `(direction, C_in_secp)` per intent; `receipts_c_out` = `C_out_secp` per receipt (same order).
+/// For asset A (`asset_x_is_a = true`): input-side = direction 0 (A→B), output-side = direction 1; swapped for
+/// asset B. `delta_x_sign`: 0 ⇒ +mag (reserve grows), 1 ⇒ −mag. Fail-closed on any non-curve-point input or a
+/// length mismatch. The caller must ALSO confirm each `C_in_secp` is a real spent pool note (the live set).
+pub fn swap_batch_aggregate_identity(
+    intents: &[(u8, [u8; 33])],
+    receipts_c_out: &[[u8; 33]],
+    asset_x_is_a: bool,
+    delta_x_sign: u8,
+    delta_x_mag: u64,
+    tip_x_c_secp: &[u8; 33],
+    r_net_x: &[u8; 32],
+) -> bool {
+    if intents.len() != receipts_c_out.len() {
+        return false;
+    }
+    let mut sum = ProjectivePoint::identity();
+    for (i, (direction, c_in_secp)) in intents.iter().enumerate() {
+        let is_input = (asset_x_is_a && *direction == 0) || (!asset_x_is_a && *direction == 1);
+        let is_output = (asset_x_is_a && *direction == 1) || (!asset_x_is_a && *direction == 0);
+        if is_input {
+            match decompress(c_in_secp) {
+                Some(p) => sum = sum + p,
+                None => return false,
+            }
+        } else if is_output {
+            match decompress(&receipts_c_out[i]) {
+                Some(p) => sum = sum - p,
+                None => return false,
+            }
+        }
+    }
+    match decompress(tip_x_c_secp) {
+        Some(p) => sum = sum - p,
+        None => return false,
+    }
+    if delta_x_mag != 0 {
+        let dh = gen_h() * Scalar::from(delta_x_mag);
+        sum = if delta_x_sign == 0 { sum - dh } else { sum + dh };
+    }
+    // R_net_X reduced mod n (the worker uses modN, not a strict reject), then `sum == R_net_X·G`.
+    sum == ProjectivePoint::generator() * scalar_reduce_be(r_net_x)
+}
+
+/// SHA-256 of `data` (sp1-patched in-zkVM). Exposed for the reflection bin — e.g. the T_SWAP_BATCH
+/// `pool_id_fr = SHA256(pool_id) mod r` public-signal derivation.
+pub fn sha256(data: &[u8]) -> [u8; 32] {
+    Sha256::digest(data).into()
+}
+
 fn bpp_gens(mn: usize) -> (Vec<ProjectivePoint>, Vec<ProjectivePoint>, ProjectivePoint) {
     let gvec: Vec<_> = (0..mn).map(|i| hash_to_curve(b"tacit-bp-G-v1", i as u32)).collect();
     let hvec: Vec<_> = (0..mn).map(|i| hash_to_curve(b"tacit-bp-H-v1", i as u32)).collect();
@@ -2129,7 +2232,7 @@ pub fn dec_to_be32(s: &str) -> Option<[u8; 32]> {
 /// settle-guest `lp_share_id` (keccak `pool_id‖"lp"`) — the Bitcoin LP-share asset is `sha256(domain ‖ pool_id)`.
 pub const AMM_LP_ASSET_DOMAIN: &[u8] = b"tacit-amm-lp-v1";
 
-/// Uniswap-V2 minimum-liquidity floor locked at POOL_INIT (worker `AMM_MINIMUM_LIQUIDITY`). The founder's
+/// Minimum-liquidity floor locked at POOL_INIT (worker `AMM_MINIMUM_LIQUIDITY`). The founder's
 /// onboardable share is `isqrt(Δa·Δb) − MINIMUM_LIQUIDITY` (the ML stays locked to a NUMS recipient).
 pub const AMM_MINIMUM_LIQUIDITY: u64 = 1000;
 
@@ -2170,7 +2273,7 @@ pub struct PoolReserveState {
     pub asset_b: [u8; 32],
     pub reserve_a: u64,
     pub reserve_b: u64,
-    // Total LP shares outstanding (Uniswap-V2 accounting). Tracked so a T_LP_REMOVE's proportional
+    // Total LP shares outstanding (constant-product share accounting). Tracked so a T_LP_REMOVE's proportional
     // withdrawal `delta_X = floor(R_X·share/S)` matches the worker's pool state — keeping the reflection's
     // reserves in lockstep so later swaps still validate. Advanced by fold_lp_add, drawn by fold_lp_remove.
     pub total_shares: u64,
@@ -2541,6 +2644,105 @@ impl ScanReflection {
         Ok(())
     }
 
+    /// Fold a confirmed `T_SWAP_ROUTE` (0x33, Track B): atomic multi-hop AMM routing. The trader's single
+    /// real input note flows through up to 4 pools and lands as ONE receipt note of the final hop's output
+    /// asset (public `r_receipt`, exactly like `fold_swap_var`). Soundness (no bridge inflation) rests on a
+    /// VALUE CHAIN, validated end-to-end before any mutation (all-or-nothing, skip-not-panic on failure):
+    ///   - hop 0's input amount is bound to the trader's REAL spent note by `swap_var_kernel_verify`
+    ///     (sentinel change ⇒ `C_in` commits exactly that amount);
+    ///   - each later hop's `(input asset, input amount)` must equal the prior hop's `(output asset, output
+    ///     amount)` — so no value is conjured between pools (the intermediate flows pool-to-pool, never a note);
+    ///   - every pool is `c0_backed`, its declared `R_*_pre` matches the tracked reserves, and it pays out
+    ///     `≤` its reserve;
+    ///   - the receipt opens to the final hop's output amount under the PUBLIC `r_receipt`.
+    /// AMM PRICE correctness (was each `delta_out` fair for `delta_in`?) is the settler's concern, not the
+    /// reflection's — bridging only needs value conservation: you can't onboard more than the c0-backed
+    /// reserves gave up. A pool repeated within one route is rejected (its staged reserves would be stale);
+    /// such an exotic route just doesn't bridge directly (heal via a CXFER hop) — fail-closed, never an
+    /// over-mint. See ops/DESIGN-bridge-multiasset-provenance.md (Track B).
+    pub fn fold_swap_route(
+        &mut self,
+        env: &bitcoin::SwapRouteEnvelope,
+        input_outpoint: ([u8; 32], u32),
+        input_asset: &[u8; 32],
+        receipt_outpoint: &[u8; 32],
+        receipt_note_path: &[[u8; 32]],
+    ) -> Result<(), &'static str> {
+        if input_asset != &env.trader_input_asset {
+            return Err("swap_route fold: spent input asset != route input asset");
+        }
+        // Validate + stage every hop BEFORE mutating self (all-or-nothing).
+        let mut staged: Vec<([u8; 32], PoolReserveState)> = Vec::with_capacity(env.n_hops);
+        let mut cur_asset = env.trader_input_asset;
+        let mut cur_amount: u64 = 0;
+        for (i, hop) in env.hops.iter().enumerate() {
+            if staged.iter().any(|(pid, _)| pid == &hop.pool_id) {
+                return Err("swap_route fold: pool repeated in route");
+            }
+            let mut pool = self.pools.get(&hop.pool_id).ok_or("swap_route fold: unknown pool")?;
+            if !pool.c0_backed {
+                return Err("swap_route fold: pool not C0-backed");
+            }
+            if pool.reserve_a != hop.r_a_pre || pool.reserve_b != hop.r_b_pre {
+                return Err("swap_route fold: declared reserves != tracked reserves");
+            }
+            let (in_asset, out_asset, r_in, r_out, in_mag, out_mag) = if hop.direction == 0 {
+                (pool.asset_a, pool.asset_b, pool.reserve_a, pool.reserve_b, hop.delta_a_net_mag, hop.delta_b_net_mag)
+            } else {
+                (pool.asset_b, pool.asset_a, pool.reserve_b, pool.reserve_a, hop.delta_b_net_mag, hop.delta_a_net_mag)
+            };
+            if in_asset != cur_asset {
+                return Err("swap_route fold: hop input asset breaks the chain");
+            }
+            if i == 0 {
+                if in_mag == 0 {
+                    return Err("swap_route fold: zero route input");
+                }
+                // sentinel change ⇒ C_in commits EXACTLY in_mag of the input asset (the trader paid it all in).
+                if !swap_var_kernel_verify(&cur_asset, input_outpoint, &env.c_in, &[0u8; 33], in_mag, &env.kernel_sig) {
+                    return Err("swap_route fold: input kernel verify");
+                }
+                cur_amount = in_mag;
+            } else if in_mag != cur_amount {
+                return Err("swap_route fold: hop input amount breaks the chain");
+            }
+            if out_mag == 0 {
+                return Err("swap_route fold: zero hop output");
+            }
+            if out_mag > r_out {
+                return Err("swap_route fold: hop output exceeds reserve");
+            }
+            let r_in_post = r_in.checked_add(in_mag).ok_or("swap_route fold: in-reserve overflow")?;
+            let r_out_post = r_out - out_mag; // ≤ checked above
+            if hop.direction == 0 {
+                pool.reserve_a = r_in_post;
+                pool.reserve_b = r_out_post;
+            } else {
+                pool.reserve_b = r_in_post;
+                pool.reserve_a = r_out_post;
+            }
+            staged.push((hop.pool_id, pool));
+            cur_asset = out_asset;
+            cur_amount = out_mag;
+        }
+        if cur_asset != env.trader_output_asset {
+            return Err("swap_route fold: final hop asset != route output asset");
+        }
+        let c_receipt_pt = decompress(&env.c_receipt).ok_or("swap_route fold: receipt not a curve point")?;
+        if !verify_pedersen_opening(&c_receipt_pt, cur_amount, &scalar_reduce_be(&env.r_receipt)) {
+            return Err("swap_route fold: receipt opening != final output amount");
+        }
+        // commit: onboard the receipt, then write back every hop's advanced reserves.
+        let note_leaf =
+            reflected_note_leaf(&env.trader_output_asset, &env.c_receipt).ok_or("swap_route fold: receipt not a curve point")?;
+        let ch = commitment_hash_compressed(&env.c_receipt).ok_or("swap_route fold: receipt not a curve point")?;
+        self.fold_output(&note_leaf, receipt_note_path, receipt_outpoint, &ch, &env.trader_output_asset)?;
+        for (pid, pool) in staged {
+            self.pools.update(&pid, pool);
+        }
+        Ok(())
+    }
+
     /// Fold a confirmed `T_LP_ADD` / POOL_INIT (Track B): establish or grow a pool's reserves in the
     /// registry, marked `c0_backed` only when BOTH per-asset conservation kernels verify AND the LP's input
     /// notes are real (C0-backed). Both sides prove `Σ value(inputs) = delta_*` (`lp_add_kernel_verify`), so
@@ -2594,7 +2796,7 @@ impl ScanReflection {
                 if delta_a == 0 || delta_b == 0 {
                     return Err("lp_add fold: POOL_INIT requires non-zero reserves");
                 }
-                // Uniswap-V2 initial total shares = isqrt(Δa·Δb) (the founder gets that minus MINIMUM_LIQUIDITY,
+                // Initial total shares = isqrt(Δa·Δb), the geometric-mean first mint (the founder gets that minus MINIMUM_LIQUIDITY,
                 // which stays locked — so TOTAL outstanding is isqrt). Tracks the worker's lp_total_shares.
                 let total_shares = isqrt(delta_a as u128 * delta_b as u128);
                 if total_shares > u64::MAX as u128 {
@@ -2612,7 +2814,7 @@ impl ScanReflection {
                 if &pool.asset_a != asset_a || &pool.asset_b != asset_b {
                     return Err("lp_add fold: LP-add asset mismatch");
                 }
-                // Shares minted over the PRE-add reserves (Uniswap-V2 proportional mint), then reserves grow.
+                // Shares minted over the PRE-add reserves (proportional mint), then reserves grow.
                 let minted = lp_add_shares(pool.total_shares, delta_a, delta_b, pool.reserve_a, pool.reserve_b);
                 if minted > u64::MAX as u128 {
                     return Err("lp_add fold: minted shares overflow");
@@ -3917,6 +4119,132 @@ mod tests {
         let c_big = compress(&(gen_h() * Scalar::from(big) + ProjectivePoint::generator() * scalar_reduce_be(&r_receipt_bytes)));
         let mut over = env.clone(); over.delta_out = big; over.c_receipt = c_big;
         assert!(sc.fold_swap_var(&mut p, &over, op, &asset_a, &[0x01u8; 32], &path).is_err(), "out-reserve over-draw rejected");
+    }
+
+    #[test]
+    fn fold_swap_route_chains_value_and_fails_closed() {
+        // 2-hop route A→M→B: pool1 (A,M) swaps A→M, pool2 (M,B) swaps M→B. The intermediate M (480)
+        // flows pool-to-pool; the trader's 1000 A lands as 230 B in the receipt.
+        let a = [0xAAu8; 32];
+        let m = [0xCCu8; 32];
+        let b = [0xBBu8; 32];
+        let pid1 = [0x11u8; 32];
+        let pid2 = [0x22u8; 32];
+        let op = ([0x77u8; 32], 1u32);
+        let (in_mag, mid, out_amt) = (1000u64, 480u64, 230u64);
+        let r_in = scalar_reduce_be(&[0x31u8; 32]);
+        // c_in commits EXACTLY in_mag (sentinel change ⇒ residue = r_in·G; sign d = r_in).
+        let c_in = compress(&(gen_h() * Scalar::from(in_mag) + ProjectivePoint::generator() * r_in));
+        let msg = swap_var_kernel_msg(&a, op, &[0u8; 33], in_mag);
+        let (_px, sig) = bip340_sign(&[0x31u8; 32], &[0x55u8; 32], &msg);
+        let r_receipt = [0x44u8; 32];
+        let c_receipt = compress(&(gen_h() * Scalar::from(out_amt) + ProjectivePoint::generator() * scalar_reduce_be(&r_receipt)));
+        let env = bitcoin::SwapRouteEnvelope {
+            n_hops: 2,
+            trader_input_asset: a,
+            trader_output_asset: b,
+            hops: vec![
+                bitcoin::SwapRouteHop { pool_id: pid1, direction: 0, r_a_pre: 10_000, r_b_pre: 5_000, delta_a_net_mag: in_mag, delta_b_net_mag: mid },
+                bitcoin::SwapRouteHop { pool_id: pid2, direction: 0, r_a_pre: 8_000, r_b_pre: 3_000, delta_a_net_mag: mid, delta_b_net_mag: out_amt },
+            ],
+            c_in, c_receipt, r_receipt, kernel_sig: sig,
+        };
+        let path = KeccakTreeAccumulator::new().append_path(); // genesis note-append path (note_count 0)
+        let setup = || {
+            let mut sc = ScanReflection::genesis();
+            sc.pools.insert(&pid1, PoolReserveState { asset_a: a, asset_b: m, reserve_a: 10_000, reserve_b: 5_000, total_shares: 7_000, c0_backed: true });
+            sc.pools.insert(&pid2, PoolReserveState { asset_a: m, asset_b: b, reserve_a: 8_000, reserve_b: 3_000, total_shares: 4_000, c0_backed: true });
+            sc
+        };
+
+        // happy path: folds + both pools advance (in += in_mag, out −= out_mag per hop).
+        let mut sc = setup();
+        assert!(sc.fold_swap_route(&env, op, &a, &[0x01u8; 32], &path).is_ok(), "valid 2-hop route folds");
+        assert_eq!((sc.pools.get(&pid1).unwrap().reserve_a, sc.pools.get(&pid1).unwrap().reserve_b), (11_000, 4_520));
+        assert_eq!((sc.pools.get(&pid2).unwrap().reserve_a, sc.pools.get(&pid2).unwrap().reserve_b), (8_480, 2_770));
+
+        // broken value chain: hop 1's M-input ≠ hop 0's M-output ⇒ reject, no mutation.
+        let mut sc = setup();
+        let mut e = env.clone(); e.hops[1].delta_a_net_mag = 481;
+        assert!(sc.fold_swap_route(&e, op, &a, &[0x01u8; 32], &path).is_err(), "broken value chain rejected");
+        assert_eq!(sc.pools.get(&pid1).unwrap().reserve_a, 10_000, "no mutation on chain break");
+
+        // all-or-nothing: a LATER hop's pool not C0-backed ⇒ the earlier (staged) hop is NOT committed.
+        let mut sc = setup();
+        let mut p2 = sc.pools.get(&pid2).unwrap(); p2.c0_backed = false; sc.pools.update(&pid2, p2);
+        assert!(sc.fold_swap_route(&env, op, &a, &[0x01u8; 32], &path).is_err(), "non-C0-backed later hop rejected");
+        assert_eq!(sc.pools.get(&pid1).unwrap().reserve_a, 10_000, "first hop not committed when a later hop fails");
+
+        // final-hop over-draw: out 4000 > reserve_b 3000 (with a matching receipt) ⇒ reject.
+        let mut sc = setup();
+        let mut e = env.clone();
+        e.hops[1].delta_b_net_mag = 4000;
+        e.c_receipt = compress(&(gen_h() * Scalar::from(4000u64) + ProjectivePoint::generator() * scalar_reduce_be(&r_receipt)));
+        assert!(sc.fold_swap_route(&e, op, &a, &[0x01u8; 32], &path).is_err(), "final-hop over-draw rejected");
+
+        // bad input kernel (hop 0's input not really backed) ⇒ reject.
+        let mut sc = setup();
+        let mut e = env.clone(); e.kernel_sig[0] ^= 1;
+        assert!(sc.fold_swap_route(&e, op, &a, &[0x01u8; 32], &path).is_err(), "bad input kernel rejected");
+
+        // receipt opens to the WRONG final amount (231 ≠ 230) ⇒ reject (no over-stated output).
+        let mut sc = setup();
+        let mut e = env.clone();
+        e.c_receipt = compress(&(gen_h() * Scalar::from(231u64) + ProjectivePoint::generator() * scalar_reduce_be(&r_receipt)));
+        assert!(sc.fold_swap_route(&e, op, &a, &[0x01u8; 32], &path).is_err(), "receipt-opening mismatch rejected");
+
+        // spent input of the wrong asset ⇒ reject.
+        let mut sc = setup();
+        assert!(sc.fold_swap_route(&env, op, &b, &[0x01u8; 32], &path).is_err(), "wrong spent input asset rejected");
+    }
+
+    #[test]
+    fn xcurve_secp_half_and_challenge_match_dapp_vector() {
+        // A REAL cross-curve sigma from dapp/amm-sigma.js (generated by tests/_bjjvec.mjs; a=1992; the dapp's
+        // own verifyXCurve returned true). This pins the secp half + the FS challenge byte-for-byte to the dapp.
+        fn hexd(s: &str) -> Vec<u8> {
+            (0..s.len() / 2).map(|i| u8::from_str_radix(&s[2 * i..2 * i + 2], 16).unwrap()).collect()
+        }
+        let proof = hexd("03589ac733552d5517d8aef7bdcc6f08ae185f68a30bbd630baf4bb6e03c52e517f136d5ff8e587f84e72a98c4b00012d148981373b75a7daf3a833bb16935ad8d8a12aa7982ee4cad3fec7c831f32d5df0cf673997497d7dcd3c22e19ae24f8a77a8f5f5849d4e0ddf7bd449ea48707967181040b83dc591f65a1ac12f9872e36132323b54a6303fe004d3129371fd7a0be9a4ad8caf0af536c324578b5c189f12e2864aa76aea0fd");
+        assert_eq!(proof.len(), 169, "vector proof length");
+        let c_secp: [u8; 33] = hexd("02e197540466a06dc7970601045b38ae034d4565ffbffd4de25da835ae9b13a805").try_into().unwrap();
+        let c_bjj: [u8; 32] = hexd("8d49c4743526e7a8463c75f2d946aa4d3f43e429c1cfeefb8d53dd1ea09006a5").try_into().unwrap();
+        let a_secp: [u8; 33] = proof[0..33].try_into().unwrap();
+        let a_bjj: [u8; 32] = proof[33..65].try_into().unwrap();
+        let z_a: [u8; 40] = proof[65..105].try_into().unwrap();
+        let z_r_secp: [u8; 32] = proof[105..137].try_into().unwrap();
+
+        let e = xcurve_challenge(&c_secp, &c_bjj, &a_secp, &a_bjj);
+        assert!(xcurve_secp_check(&c_secp, &a_secp, &z_a, &z_r_secp, &e), "secp half of the real vector verifies");
+
+        // fail-closed: tampered z_a, wrong challenge, non-canonical z_r_secp (all-0xff ≥ n).
+        let mut z_bad = z_a; z_bad[0] ^= 1;
+        assert!(!xcurve_secp_check(&c_secp, &a_secp, &z_bad, &z_r_secp, &e), "tampered z_a rejected");
+        let mut e_bad = e; e_bad[0] ^= 1;
+        assert!(!xcurve_secp_check(&c_secp, &a_secp, &z_a, &z_r_secp, &e_bad), "wrong challenge rejected");
+        assert!(!xcurve_secp_check(&c_secp, &a_secp, &z_a, &[0xffu8; 32], &e), "non-canonical z_r_secp rejected");
+    }
+
+    #[test]
+    fn swap_batch_aggregate_identity_binds_receipts_to_inputs() {
+        // 1-intent direction-0 (A→B) batch, asset-A identity: C_in − tip_A − δ_A·H == R_net_A·G. Construct a
+        // BALANCING vector: tip commits 0 and δ_A = v_in, so the H-terms cancel ⇒ R_net_A = r_in − r_tip.
+        let v_in = 1000u64;
+        let delta_a = 1000u64;
+        let r_in = scalar_reduce_be(&[0x31u8; 32]);
+        let r_tip = scalar_reduce_be(&[0x32u8; 32]);
+        let c_in = compress(&(gen_h() * Scalar::from(v_in) + ProjectivePoint::generator() * r_in));
+        let tip_a = compress(&(ProjectivePoint::generator() * r_tip)); // 0·H + r_tip·G
+        let mut r_net_a = [0u8; 32];
+        r_net_a.copy_from_slice((r_in - r_tip).to_repr().as_slice());
+        let intents = [(0u8, c_in)];
+        let receipts = [c_in]; // direction-0 intent is INPUT-side for asset A ⇒ its receipt isn't summed here
+
+        assert!(swap_batch_aggregate_identity(&intents, &receipts, true, 0, delta_a, &tip_a, &r_net_a), "valid asset-A identity holds");
+        let mut bad_r = r_net_a; bad_r[31] ^= 1;
+        assert!(!swap_batch_aggregate_identity(&intents, &receipts, true, 0, delta_a, &tip_a, &bad_r), "wrong R_net rejected");
+        assert!(!swap_batch_aggregate_identity(&intents, &receipts, true, 0, delta_a + 1, &tip_a, &r_net_a), "wrong delta rejected");
+        assert!(!swap_batch_aggregate_identity(&intents, &receipts, true, 1, delta_a, &tip_a, &r_net_a), "wrong delta sign rejected");
     }
 
     #[test]

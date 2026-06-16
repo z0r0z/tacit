@@ -710,6 +710,313 @@ pub fn parse_lp_harvest_envelope(env: &[u8]) -> Option<([u8; 32], u64, [u8; 32])
     ))
 }
 
+/// One intent's reflection-relevant fields from a T_SWAP_BATCH (0x2F) envelope.
+pub struct SwapBatchIntent {
+    pub direction: u8,       // 0 = A→B, 1 = B→A
+    pub c_in_secp: [u8; 33], // the trader's spent input note (secp) — used by the aggregate Pedersen identity
+    pub c_in_bjj: [u8; 32],  // compressed BabyJubJub input commitment (circuit C_in_BJJ_u/_v after decompress)
+    pub min_out: u64,
+    pub tip_amount: u64,
+}
+
+/// One receipt's reflection-relevant fields: the secp note to onboard, its BabyJubJub twin, and the
+/// cross-curve sigma binding them (so the secp note's value == the Groth16-proven BJJ value).
+pub struct SwapBatchReceipt {
+    pub c_out_secp: [u8; 33],
+    pub c_out_bjj: [u8; 32],
+    pub out_xcurve_sigma: [u8; XCURVE_SIGMA_LEN],
+}
+
+/// A parsed T_SWAP_BATCH (0x2F) envelope — the fields the reflection needs to (a) re-derive the
+/// Groth16 public signals, (b) verify aggregate conservation + advance reserves, and (c) onboard each
+/// receipt's secp note. Mirrors the worker `decodeTSwapBatchPayload` wire format (worker/src/index.js
+/// §"T_SWAP_BATCH decoder"). `has_arbiter` (supplied from the pool registry) selects whether the optional
+/// arbiter block is present; a wrong value mis-aligns the layout and fails closed (returns None).
+/// `R_net_*`, tip commitments, per-intent secp/auth fields, and the settler meta-URI are validated for
+/// length but not surfaced — the pre-reserves come from the registry and intent auth is the settler's job;
+/// the reflection only needs conservation + onboarding inputs.
+pub struct SwapBatchEnvelope {
+    pub asset_a: [u8; 32],
+    pub asset_b: [u8; 32],
+    pub n_intents: usize,
+    pub delta_a_net_sign: u8, // 0 = reserve_a grows by mag, 1 = reserve_a shrinks by mag
+    pub delta_a_net_mag: u64,
+    pub delta_b_net_sign: u8,
+    pub delta_b_net_mag: u64,
+    pub r_net_a: [u8; 32], // published net-blinding residue for asset A (the aggregate identity's RHS = R_net_A·G)
+    pub r_net_b: [u8; 32],
+    pub fee_bps: u16,
+    pub tip_a_amount: u64,
+    pub tip_b_amount: u64,
+    pub tip_a_c_secp: [u8; 33], // per-asset settler-tip commitments (subtracted in the aggregate identity)
+    pub tip_b_c_secp: [u8; 33],
+    pub intents: Vec<SwapBatchIntent>,
+    pub receipts: Vec<SwapBatchReceipt>,
+    pub proof: Vec<u8>,
+}
+
+const SWAP_BATCH_N_MAX: usize = 16;
+const SWAP_BATCH_INTENT_LEN: usize = 1 + 33 + 33 + 32 + XCURVE_SIGMA_LEN + 8 + 8 + 4 + 64; // 352
+const SWAP_BATCH_RECEIPT_LEN: usize = 33 + 32 + XCURVE_SIGMA_LEN; // 234
+
+/// Decode a 9-byte signed-u64 (`sign(1) ∈ {0,1} ‖ magnitude LE(8)`); mirrors the worker `_signedU64Decode`.
+fn parse_signed_u64(b: &[u8]) -> Option<(u8, u64)> {
+    if b.len() < 9 || (b[0] != 0 && b[0] != 1) {
+        return None;
+    }
+    Some((b[0], u64::from_le_bytes(b[1..9].try_into().ok()?)))
+}
+
+/// Parse a `T_SWAP_BATCH` (0x2F, batched uniform-clearing settlement). Returns None on any
+/// malformed/truncated/over-long envelope (fail-closed). See `SwapBatchEnvelope`.
+pub fn parse_swap_batch_envelope(env: &[u8], has_arbiter: bool) -> Option<SwapBatchEnvelope> {
+    if env.first().copied()? != 0x2F {
+        return None;
+    }
+    let take = |p: &mut usize, n: usize| -> Option<()> {
+        let end = p.checked_add(n)?;
+        if end > env.len() {
+            return None;
+        }
+        *p = end;
+        Some(())
+    };
+    let mut p = 1usize;
+    let a0 = p;
+    take(&mut p, 32)?;
+    let asset_a: [u8; 32] = env[a0..a0 + 32].try_into().ok()?;
+    let b0 = p;
+    take(&mut p, 32)?;
+    let asset_b: [u8; 32] = env[b0..b0 + 32].try_into().ok()?;
+    let n0 = p;
+    take(&mut p, 1)?;
+    let n_intents = env[n0] as usize;
+    if n_intents < 1 || n_intents > SWAP_BATCH_N_MAX {
+        return None;
+    }
+    let da0 = p;
+    take(&mut p, 9)?;
+    let (delta_a_net_sign, delta_a_net_mag) = parse_signed_u64(&env[da0..da0 + 9])?;
+    let db0 = p;
+    take(&mut p, 9)?;
+    let (delta_b_net_sign, delta_b_net_mag) = parse_signed_u64(&env[db0..db0 + 9])?;
+    let rna = p;
+    take(&mut p, 32)?; // R_net_A (the aggregate identity's RHS residue; pre-reserves come from the registry)
+    let r_net_a: [u8; 32] = env[rna..rna + 32].try_into().ok()?;
+    let rnb = p;
+    take(&mut p, 32)?; // R_net_B
+    let r_net_b: [u8; 32] = env[rnb..rnb + 32].try_into().ok()?;
+    let f0 = p;
+    take(&mut p, 2)?;
+    let fee_bps = u16::from_le_bytes(env[f0..f0 + 2].try_into().ok()?);
+    let ta0 = p;
+    take(&mut p, 8)?;
+    let tip_a_amount = u64::from_le_bytes(env[ta0..ta0 + 8].try_into().ok()?);
+    let tb0 = p;
+    take(&mut p, 8)?;
+    let tip_b_amount = u64::from_le_bytes(env[tb0..tb0 + 8].try_into().ok()?);
+    let tac = p;
+    take(&mut p, 33)?;
+    let tip_a_c_secp: [u8; 33] = env[tac..tac + 33].try_into().ok()?;
+    let tbc = p;
+    take(&mut p, 33)?;
+    let tip_b_c_secp: [u8; 33] = env[tbc..tbc + 33].try_into().ok()?;
+    take(&mut p, 32 + 32)?; // r_tip_A, r_tip_B (not needed by the reflection)
+    if has_arbiter {
+        take(&mut p, 4 + 32)?; // expected_height, qualifying_set_hash
+        let m0 = p;
+        take(&mut p, 1)?;
+        let m = env[m0] as usize;
+        if m < 1 || m > 16 {
+            return None;
+        }
+        let idx0 = p;
+        take(&mut p, m)?;
+        let mut prev: i32 = -1;
+        for i in 0..m {
+            let idx = env[idx0 + i] as i32;
+            if idx > 15 || idx <= prev {
+                return None;
+            }
+            prev = idx;
+        }
+        take(&mut p, 64 * m)?; // arbiter sigs
+    }
+    let mut intents = Vec::with_capacity(n_intents);
+    for _ in 0..n_intents {
+        let s = p;
+        take(&mut p, SWAP_BATCH_INTENT_LEN)?;
+        let direction = env[s];
+        if direction != 0 && direction != 1 {
+            return None;
+        }
+        let c_in_secp: [u8; 33] = env[s + 34..s + 67].try_into().ok()?; // after direction(1), trader_pubkey(33)
+        let bjj = s + 1 + 33 + 33; // = s+67, after direction, trader_pubkey, c_in_secp
+        let c_in_bjj: [u8; 32] = env[bjj..bjj + 32].try_into().ok()?;
+        let mo = bjj + 32 + XCURVE_SIGMA_LEN; // after c_in_bjj, in_xcurve_sigma
+        let min_out = u64::from_le_bytes(env[mo..mo + 8].try_into().ok()?);
+        let tip_amount = u64::from_le_bytes(env[mo + 8..mo + 16].try_into().ok()?);
+        intents.push(SwapBatchIntent { direction, c_in_secp, c_in_bjj, min_out, tip_amount });
+    }
+    let mut receipts = Vec::with_capacity(n_intents);
+    for _ in 0..n_intents {
+        let s = p;
+        take(&mut p, SWAP_BATCH_RECEIPT_LEN)?;
+        receipts.push(SwapBatchReceipt {
+            c_out_secp: env[s..s + 33].try_into().ok()?,
+            c_out_bjj: env[s + 33..s + 65].try_into().ok()?,
+            out_xcurve_sigma: env[s + 65..s + 65 + XCURVE_SIGMA_LEN].try_into().ok()?,
+        });
+    }
+    let pl = p;
+    take(&mut p, 2)?;
+    let proof_len = u16::from_le_bytes(env[pl..pl + 2].try_into().ok()?) as usize;
+    let pr = p;
+    take(&mut p, proof_len)?;
+    let proof = env[pr..pr + proof_len].to_vec();
+    let sl = p;
+    take(&mut p, 1)?;
+    take(&mut p, env[sl] as usize)?; // settler_meta_uri (informational)
+    if p != env.len() {
+        return None; // trailing bytes ⇒ malformed
+    }
+    Some(SwapBatchEnvelope {
+        asset_a,
+        asset_b,
+        n_intents,
+        delta_a_net_sign,
+        delta_a_net_mag,
+        delta_b_net_sign,
+        delta_b_net_mag,
+        r_net_a,
+        r_net_b,
+        fee_bps,
+        tip_a_amount,
+        tip_b_amount,
+        tip_a_c_secp,
+        tip_b_c_secp,
+        intents,
+        receipts,
+        proof,
+    })
+}
+
+/// One hop of a `T_SWAP_ROUTE` (0x33): a single-pool leg with PUBLIC pre-reserves + net deltas (no
+/// commitments — intermediate assets flow pool-to-pool, never minted as notes). Mirrors the worker
+/// 67-byte hop block.
+#[derive(Clone)]
+pub struct SwapRouteHop {
+    pub pool_id: [u8; 32],
+    pub direction: u8, // 0 = A→B, 1 = B→A
+    pub r_a_pre: u64,
+    pub r_b_pre: u64,
+    pub delta_a_net_mag: u64,
+    pub delta_b_net_mag: u64,
+}
+
+/// A parsed `T_SWAP_ROUTE` (0x33) — atomic multi-hop AMM routing. The trader pays one input note into
+/// hop 0 and receives ONE receipt note of the final hop's output asset (public `r_receipt`, exactly like
+/// `T_SWAP_VAR` — Track B, no circuit). Mirrors the worker `decodeTSwapRoutePayload`. `min_out`, expiry,
+/// trader pubkey, the range proof, and intent_sig are validated for length but not surfaced.
+#[derive(Clone)]
+pub struct SwapRouteEnvelope {
+    pub n_hops: usize,
+    pub trader_input_asset: [u8; 32],
+    pub trader_output_asset: [u8; 32],
+    pub hops: Vec<SwapRouteHop>,
+    pub c_in: [u8; 33],      // the trader's spent input note (kernel-bound to hop 0's input amount)
+    pub c_receipt: [u8; 33], // the final output note to onboard
+    pub r_receipt: [u8; 32], // PUBLIC blinding: C_receipt opens to the final output amount under it
+    pub kernel_sig: [u8; 64],
+}
+
+const SWAP_ROUTE_N_HOPS_MAX: usize = 4;
+const SWAP_ROUTE_HOP_LEN: usize = 32 + 1 + 2 + 8 + 8 + 8 + 8; // 67
+
+/// Parse a `T_SWAP_ROUTE` (0x33). Returns None on any malformed/truncated/over-long envelope (fail-closed).
+pub fn parse_swap_route_envelope(env: &[u8]) -> Option<SwapRouteEnvelope> {
+    if env.first().copied()? != 0x33 {
+        return None;
+    }
+    let take = |p: &mut usize, n: usize| -> Option<()> {
+        let end = p.checked_add(n)?;
+        if end > env.len() {
+            return None;
+        }
+        *p = end;
+        Some(())
+    };
+    let mut p = 1usize;
+    let nh0 = p;
+    take(&mut p, 1)?;
+    let n_hops = env[nh0] as usize;
+    if n_hops < 2 || n_hops > SWAP_ROUTE_N_HOPS_MAX {
+        return None;
+    }
+    let ia = p;
+    take(&mut p, 32)?;
+    let trader_input_asset: [u8; 32] = env[ia..ia + 32].try_into().ok()?;
+    let oa = p;
+    take(&mut p, 32)?;
+    let trader_output_asset: [u8; 32] = env[oa..oa + 32].try_into().ok()?;
+    if trader_input_asset == trader_output_asset {
+        return None; // a route must change asset
+    }
+    take(&mut p, 8 + 4 + 33)?; // min_out, expiry_height, trader_pubkey
+    let mut hops = Vec::with_capacity(n_hops);
+    for _ in 0..n_hops {
+        let s = p;
+        take(&mut p, SWAP_ROUTE_HOP_LEN)?;
+        let direction = env[s + 32];
+        if direction != 0 && direction != 1 {
+            return None;
+        }
+        hops.push(SwapRouteHop {
+            pool_id: env[s..s + 32].try_into().ok()?,
+            direction,
+            // s+33: fee_bps(2) — validated by length, not needed for conservation
+            r_a_pre: u64::from_le_bytes(env[s + 35..s + 43].try_into().ok()?),
+            r_b_pre: u64::from_le_bytes(env[s + 43..s + 51].try_into().ok()?),
+            delta_a_net_mag: u64::from_le_bytes(env[s + 51..s + 59].try_into().ok()?),
+            delta_b_net_mag: u64::from_le_bytes(env[s + 59..s + 67].try_into().ok()?),
+        });
+    }
+    take(&mut p, 32 + 4)?; // trader_input_outpoint (txid BE + vout)
+    let ci = p;
+    take(&mut p, 33)?;
+    let c_in: [u8; 33] = env[ci..ci + 33].try_into().ok()?;
+    let cr = p;
+    take(&mut p, 33)?;
+    let c_receipt: [u8; 33] = env[cr..cr + 33].try_into().ok()?;
+    let rr = p;
+    take(&mut p, 32)?;
+    let r_receipt: [u8; 32] = env[rr..rr + 32].try_into().ok()?;
+    let pl = p;
+    take(&mut p, 2)?;
+    let rp_len = u16::from_le_bytes(env[pl..pl + 2].try_into().ok()?) as usize;
+    if rp_len == 0 {
+        return None;
+    }
+    take(&mut p, rp_len)?;
+    let ks = p;
+    take(&mut p, 64)?;
+    let kernel_sig: [u8; 64] = env[ks..ks + 64].try_into().ok()?;
+    take(&mut p, 64)?; // intent_sig (settler-verified; not a conservation input)
+    if p != env.len() {
+        return None;
+    }
+    Some(SwapRouteEnvelope {
+        n_hops,
+        trader_input_asset,
+        trader_output_asset,
+        hops,
+        c_in,
+        c_receipt,
+        r_receipt,
+        kernel_sig,
+    })
+}
+
 /// Extract the Tacit Taproot envelope payload from vin[0].witness[1].
 /// Matches the format PUSH(32) xonly OP_CHECKSIG OP_FALSE OP_IF [pushes] OP_ENDIF,
 /// strips the "TACIT"||v1 frame, returns the payload starting at the opcode byte.
@@ -1204,6 +1511,133 @@ mod tests {
         assert!(parse_lp_harvest_envelope(&env[..225]).is_none(), "wrong length rejected");
         let mut bad = env.clone(); bad[0] = 0x22;
         assert!(parse_lp_harvest_envelope(&bad).is_none(), "non-0x3B rejected");
+    }
+
+    #[test]
+    fn parse_swap_batch_round_trips_and_fails_closed() {
+        // Synthetic T_SWAP_BATCH (0x2F), no arbiter, n_intents = 1 — mirrors the worker wire format.
+        let mut env = vec![0x2Fu8];
+        env.extend_from_slice(&[0xAAu8; 32]); // assetA
+        env.extend_from_slice(&[0xBBu8; 32]); // assetB
+        env.push(1); // n_intents
+        env.push(0); env.extend_from_slice(&1000u64.to_le_bytes()); // delta_A_net: +1000
+        env.push(1); env.extend_from_slice(&1992u64.to_le_bytes()); // delta_B_net: -1992
+        env.extend_from_slice(&[0x10u8; 32]); // R_net_A
+        env.extend_from_slice(&[0x11u8; 32]); // R_net_B
+        env.extend_from_slice(&30u16.to_le_bytes()); // fee_bps
+        env.extend_from_slice(&0u64.to_le_bytes()); // tip_A_amount
+        env.extend_from_slice(&0u64.to_le_bytes()); // tip_B_amount
+        env.extend_from_slice(&[0x21u8; 33]); // tip_A_C_secp
+        env.extend_from_slice(&[0x22u8; 33]); // tip_B_C_secp
+        env.extend_from_slice(&[0x23u8; 32]); // r_tip_A
+        env.extend_from_slice(&[0x24u8; 32]); // r_tip_B
+        // intent[0] (352 bytes)
+        env.push(0); // direction = A→B
+        env.extend_from_slice(&[0x02u8; 33]); // trader_pubkey
+        env.extend_from_slice(&[0x03u8; 33]); // c_in_secp
+        env.extend_from_slice(&[0x44u8; 32]); // c_in_bjj
+        env.extend_from_slice(&[0xc1u8; XCURVE_SIGMA_LEN]); // in_xcurve_sigma
+        env.extend_from_slice(&500u64.to_le_bytes()); // min_out
+        env.extend_from_slice(&0u64.to_le_bytes()); // tip_amount
+        env.extend_from_slice(&100u32.to_le_bytes()); // expiry_height
+        env.extend_from_slice(&[0x0cu8; 64]); // intent_sig
+        // receipt[0] (234 bytes)
+        env.extend_from_slice(&[0x05u8; 33]); // c_out_secp
+        env.extend_from_slice(&[0x55u8; 32]); // c_out_bjj
+        env.extend_from_slice(&[0xc2u8; XCURVE_SIGMA_LEN]); // out_xcurve_sigma
+        env.extend_from_slice(&4u16.to_le_bytes()); // proof_len
+        env.extend_from_slice(&[0xde, 0xad, 0xbe, 0xef]); // proof
+        env.push(0); // settler_meta_uri_len
+        assert_eq!(env.len(), 889, "synthetic 0x2F envelope length");
+
+        let p = parse_swap_batch_envelope(&env, false).expect("swap_batch parses");
+        assert_eq!(p.asset_a, [0xAAu8; 32]);
+        assert_eq!(p.asset_b, [0xBBu8; 32]);
+        assert_eq!(p.n_intents, 1);
+        assert_eq!((p.delta_a_net_sign, p.delta_a_net_mag), (0, 1000));
+        assert_eq!((p.delta_b_net_sign, p.delta_b_net_mag), (1, 1992));
+        assert_eq!(p.fee_bps, 30);
+        assert_eq!((p.tip_a_amount, p.tip_b_amount), (0, 0));
+        assert_eq!(p.r_net_a, [0x10u8; 32]);
+        assert_eq!(p.r_net_b, [0x11u8; 32]);
+        assert_eq!(p.tip_a_c_secp, [0x21u8; 33]);
+        assert_eq!(p.tip_b_c_secp, [0x22u8; 33]);
+        assert_eq!(p.intents.len(), 1);
+        assert_eq!(p.intents[0].direction, 0);
+        assert_eq!(p.intents[0].c_in_secp, [0x03u8; 33]);
+        assert_eq!(p.intents[0].c_in_bjj, [0x44u8; 32]);
+        assert_eq!(p.intents[0].min_out, 500);
+        assert_eq!(p.intents[0].tip_amount, 0);
+        assert_eq!(p.receipts.len(), 1);
+        assert_eq!(p.receipts[0].c_out_secp, [0x05u8; 33]);
+        assert_eq!(p.receipts[0].c_out_bjj, [0x55u8; 32]);
+        assert_eq!(p.receipts[0].out_xcurve_sigma, [0xc2u8; XCURVE_SIGMA_LEN]);
+        assert_eq!(p.proof, vec![0xde, 0xad, 0xbe, 0xef]);
+
+        // fail-closed: wrong opcode, truncation, trailing byte, has_arbiter mis-alignment, bad n.
+        let mut bad = env.clone(); bad[0] = 0x22;
+        assert!(parse_swap_batch_envelope(&bad, false).is_none(), "non-0x2F rejected");
+        assert!(parse_swap_batch_envelope(&env[..env.len() - 1], false).is_none(), "truncation rejected");
+        let mut long = env.clone(); long.push(0x00);
+        assert!(parse_swap_batch_envelope(&long, false).is_none(), "trailing byte rejected");
+        assert!(parse_swap_batch_envelope(&env, true).is_none(), "has_arbiter mis-alignment rejected");
+        let mut zero_n = env.clone(); zero_n[65] = 0;
+        assert!(parse_swap_batch_envelope(&zero_n, false).is_none(), "n_intents = 0 rejected");
+    }
+
+    #[test]
+    fn parse_swap_route_round_trips_and_fails_closed() {
+        // Synthetic T_SWAP_ROUTE (0x33), 2 hops — mirrors the worker wire format.
+        let mut env = vec![0x33u8];
+        env.push(2); // n_hops
+        env.extend_from_slice(&[0xAAu8; 32]); // trader_input_asset
+        env.extend_from_slice(&[0xBBu8; 32]); // trader_output_asset
+        env.extend_from_slice(&100u64.to_le_bytes()); // min_out
+        env.extend_from_slice(&50u32.to_le_bytes()); // expiry_height
+        env.extend_from_slice(&[0x02u8; 33]); // trader_pubkey
+        // hop 0
+        env.extend_from_slice(&[0x11u8; 32]); env.push(0); env.extend_from_slice(&30u16.to_le_bytes());
+        env.extend_from_slice(&10_000u64.to_le_bytes()); env.extend_from_slice(&5_000u64.to_le_bytes());
+        env.extend_from_slice(&1000u64.to_le_bytes()); env.extend_from_slice(&480u64.to_le_bytes());
+        // hop 1
+        env.extend_from_slice(&[0x22u8; 32]); env.push(0); env.extend_from_slice(&30u16.to_le_bytes());
+        env.extend_from_slice(&8_000u64.to_le_bytes()); env.extend_from_slice(&3_000u64.to_le_bytes());
+        env.extend_from_slice(&480u64.to_le_bytes()); env.extend_from_slice(&230u64.to_le_bytes());
+        env.extend_from_slice(&[0x77u8; 32]); env.extend_from_slice(&1u32.to_le_bytes()); // trader_input_outpoint
+        env.extend_from_slice(&[0x03u8; 33]); // c_in_secp
+        env.extend_from_slice(&[0x05u8; 33]); // c_receipt_secp
+        env.extend_from_slice(&[0x44u8; 32]); // r_receipt
+        env.extend_from_slice(&3u16.to_le_bytes()); env.extend_from_slice(&[0xaa, 0xbb, 0xcc]); // rangeProof
+        env.extend_from_slice(&[0x0cu8; 64]); // kernel_sig
+        env.extend_from_slice(&[0x0du8; 64]); // intent_sig
+        assert_eq!(env.len(), 512, "synthetic 0x33 envelope length");
+
+        let p = parse_swap_route_envelope(&env).expect("swap_route parses");
+        assert_eq!(p.n_hops, 2);
+        assert_eq!(p.trader_input_asset, [0xAAu8; 32]);
+        assert_eq!(p.trader_output_asset, [0xBBu8; 32]);
+        assert_eq!(p.hops.len(), 2);
+        assert_eq!(p.hops[0].pool_id, [0x11u8; 32]);
+        assert_eq!(p.hops[0].direction, 0);
+        assert_eq!((p.hops[0].r_a_pre, p.hops[0].r_b_pre), (10_000, 5_000));
+        assert_eq!((p.hops[0].delta_a_net_mag, p.hops[0].delta_b_net_mag), (1000, 480));
+        assert_eq!(p.hops[1].pool_id, [0x22u8; 32]);
+        assert_eq!((p.hops[1].delta_a_net_mag, p.hops[1].delta_b_net_mag), (480, 230));
+        assert_eq!(p.c_in, [0x03u8; 33]);
+        assert_eq!(p.c_receipt, [0x05u8; 33]);
+        assert_eq!(p.r_receipt, [0x44u8; 32]);
+        assert_eq!(p.kernel_sig, [0x0cu8; 64]);
+
+        // fail-closed: wrong opcode, truncation, trailing byte, n_hops < 2, input==output asset, zero range proof.
+        let mut bad = env.clone(); bad[0] = 0x22;
+        assert!(parse_swap_route_envelope(&bad).is_none(), "non-0x33 rejected");
+        assert!(parse_swap_route_envelope(&env[..env.len() - 1]).is_none(), "truncation rejected");
+        let mut long = env.clone(); long.push(0);
+        assert!(parse_swap_route_envelope(&long).is_none(), "trailing byte rejected");
+        let mut one_hop = env.clone(); one_hop[1] = 1;
+        assert!(parse_swap_route_envelope(&one_hop).is_none(), "n_hops < 2 rejected");
+        let mut same = env.clone(); same[34..66].copy_from_slice(&[0xAAu8; 32]); // output asset = input asset
+        assert!(parse_swap_route_envelope(&same).is_none(), "input==output asset rejected");
     }
 
     #[test]

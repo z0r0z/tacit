@@ -42,6 +42,8 @@ use sp1_zkvm::io;
 // vk. See ops/DESIGN-in-guest-groth16-verifier.md.
 #[allow(dead_code)]
 mod groth16;
+mod babyjubjub;
+mod swap_batch;
 
 sol! {
     struct BitcoinReflectionPublicValues {
@@ -531,6 +533,36 @@ pub fn main() {
                         }
                     }
                 }
+            }
+
+            // Track B: a T_SWAP_ROUTE (0x33) is the multi-hop sibling of T_SWAP_VAR — the trader's single
+            // real input note flows through up to 4 pools and lands as ONE receipt note (public r_receipt, no
+            // circuit). fold_swap_route validates the whole value chain + every hop's reserve floor BEFORE
+            // onboarding the receipt + advancing reserves (all-or-nothing, skip-not-panic). The trader's c_in is
+            // the only detected pool-UTXO spend (pool reserves are registry state).
+            if let Some(rt) = env.as_ref().and_then(|e| bitcoin::parse_swap_route_envelope(e)) {
+                let receipt_path = r_path(); // witnessed per 0x33 (the receipt note's append path; vout 1)
+                if spends.len() == 1 {
+                    let s = &spends[0];
+                    let c_in_real = matches!(
+                        (from_affine_xy(&s.cx, &s.cy), decompress(&rt.c_in)),
+                        (Some(x), Some(y)) if x == y
+                    );
+                    if c_in_real {
+                        let _ = state.fold_swap_route(&rt, (s.prev_txid, s.prev_vout), &s.asset, &outpoint_key(&txid, 1), &receipt_path);
+                    }
+                }
+            }
+
+            // Track C: a T_SWAP_BATCH (0x2F) onboards every receipt of a confidential uniform-clearing batch as
+            // a real, bridgeable note — gated by the BN254 Groth16 (per-receipt split), the aggregate Pedersen
+            // identity (the receipts' total vs the traders' real inputs + the c0-backed reserve), and the
+            // per-receipt cross-curve sigma (secp note ↔ Groth16-proven BabyJubJub value). Arbiter-pinned pools
+            // (rare) aren't handled here (no-arbiter parse); their batches simply don't fold.
+            if let Some(sb) = env.as_ref().and_then(|e| bitcoin::parse_swap_batch_envelope(e, false)) {
+                // Witnessed per 0x2F (stream sync): one append path per receipt (the notes at vouts 1..=n).
+                let receipt_paths: Vec<Vec<[u8; 32]>> = (0..sb.n_intents).map(|_| r_path()).collect();
+                let _ = swap_batch::fold_swap_batch(&mut state, &sb, &txid, &spends, &receipt_paths);
             }
 
             // Track B: a T_LP_ADD / POOL_INIT (0x2D) establishes or grows a pool's c0_backed reserves. The

@@ -286,26 +286,34 @@ the opcode only selects the wire layout. So the question per op is just "which l
 
 | Source | opcodes | treatment | status |
 |--------|---------|-----------|--------|
-| Transfer / atomic settlement / OTC | CXFER 0x22/0x23, AXFER 0x26/0x37, **BP+ 0x3C/0x3D** | Track A — cxfer fold | ✅ |
-| Orderbook bid (walk-away, exact + partial) | 0x5B / 0x5C | Track A — bid branch | ✅ |
-| AMM swap | T_SWAP_VAR 0x32 | Track B — swap fold | ✅ |
-| AMM LP add / remove | 0x2D / 0x2E | Track B — lp folds | ✅ |
-| AMM multihop route | T_SWAP_ROUTE 0x33 | Track B — per-hop receipts (final hop's output) | ⛳ gap |
-| **Farm rewards** | T_LP_HARVEST 0x3B | **Track B — farm treasury is a reserve** | ⛳ gap |
-| Farm bond / unbond | 0x35 / 0x36 | conserving LP-share lock/return (Track A-ish) | ⛳ gap |
-| Confidential batch swap | T_SWAP_BATCH 0x2F | Track C — BN254 Groth16 | 🔨 in progress |
+| Transfer / atomic settlement / OTC | CXFER 0x22/0x23, AXFER 0x26/0x37, **BP+ 0x3C/0x3D** | A — cxfer fold | ✅ |
+| Orderbook bid (walk-away, exact + partial) | 0x5B / 0x5C | A — cxfer fold (bid branch) | ✅ |
+| AMM swap | T_SWAP_VAR 0x32 | B — `fold_swap_var` | ✅ |
+| AMM LP add / remove | 0x2D / 0x2E | B — `fold_lp_add` / `fold_lp_remove` | ✅ |
+| AMM LP-share onboarding | minted at 0x2D | B — `fold_lp_share_mint` | ✅ |
+| AMM multihop route | T_SWAP_ROUTE 0x33 | B — `fold_swap_route` (value-chained across hops) | ✅ |
+| Farm init / rewards | T_FARM_INIT 0x34 / T_LP_HARVEST 0x3B | B — `fold_farm_init` / `fold_harvest` (treasury reserve) | ✅ |
+| Farm refund (launcher reclaim) | T_FARM_REFUND 0x3E | B — treasury draw-down (sibling of harvest) | ⛳ gap |
+| AMM protocol-fee claim | T_PROTOCOL_FEE_CLAIM 0x31 | B — mints an LP-share note, bound to public `protocol_fee_accrued` | ⛳ gap (needs the accrued accumulator in the registry) |
+| Confidential batch swap | T_SWAP_BATCH 0x2F | C — Groth16 ✅ + parser ✅ + BabyJubJub xcurve ✅ + aggregate Pedersen identity ✅ + `fold_swap_batch` (123-signal re-derivation + onboarding, type-checked vs the real crates) | 🔨 end-to-end validation (full envelope+proof vector / box-prove) remains |
 | Issuance (mint / drop claim) | T_MINT/PMINT/DCLAIM | cmint-deposit path (issuer-authorized) | ✅ |
 | cBTC.zk lock / slots | 0x66, T_SLOT_* | cBTC-specific folds | partial |
 
-**Farm rewards (the §"received from LP farm rewards" case).** `T_LP_HARVEST` mints a reward note at vout[1]
-with a PUBLIC `reward_amount` + cleartext `reward_r`, drawn from `farm.treasury_remaining` — a treasury
-funded at `T_FARM_INIT` by the launcher's real reward-asset inputs. This is the SAME shape as the AMM pool
-reserve: support it with a farm-treasury registry (`farm_id → (reward_asset, treasury_remaining, c0_backed)`,
-digest-pinned) + `fold_farm_init` (launcher's live inputs ⇒ c0_backed treasury) + `fold_harvest` (reward note
-opens to the public `reward_amount` ≤ treasury, onboard it, draw down the treasury) — a near-clone of
-`fold_swap_var`/`fold_lp_remove`. Bond/unbond move the LP-share (conserving lock/return; the unbonded share
-is the same one staked, so it onboards like a conserving transfer). Multihop `T_SWAP_ROUTE` is N chained
-swaps — the user's output is the final hop's receipt, onboardable as a swap from the last pool's reserve.
+NB: there is no `T_FARM_BOND`/`T_FARM_UNBOND` opcode (the worker op table has only init 0x34 / harvest 0x3B / refund 0x3E) — staking an LP-share into a farm moves an already-onboarded, already-bridgeable LP-share note, so it needs no fold of its own.
+
+**Farm rewards + multihop route — DONE (2026-06-16).** `T_LP_HARVEST` mints a reward note at vout[1] with a
+PUBLIC `reward_amount` + cleartext `reward_r`, drawn from `farm.treasury_remaining` — a treasury funded at
+`T_FARM_INIT` by the launcher's real reward-asset inputs (same shape as an AMM pool reserve). Shipped as the
+farm-treasury registry + `fold_farm_init` (launcher's live inputs ⇒ c0_backed treasury) + `fold_harvest`
+(reward note opens to the public `reward_amount` ≤ treasury, onboard, draw down). Multihop `T_SWAP_ROUTE` is N
+chained swaps; `fold_swap_route` threads a VALUE CHAIN — hop 0's input is kernel-bound to the trader's real
+spent note, each later hop's `(input asset, amount)` must equal the prior hop's output (no value conjured
+between pools), every pool pays out ≤ its reserve, and the single final receipt opens to the last hop's output
+under a public `r_receipt` — all-or-nothing, no circuit (parser + fold + KATs green). The remaining bucket-B
+siblings: `T_FARM_REFUND` (launcher reclaim) is a treasury draw-down like `fold_harvest`; `T_PROTOCOL_FEE_CLAIM`
+accrues as LP shares (a virtual `protocol_fee_accrued` accumulator), so a claim mints an LP-share note
+(bridgeable, then LP-removable) — but it needs that accumulator tracked in the registry + accrued in the swap
+folds before the claim can be soundly bounded.
 
 **Should we support the BP+ variants even if not dapp-ready?** Already done for the cxfer-LAYOUT family
 (`T_CXFER_BPP` 0x22, `T_AXFER_BPP` 0x3C, `T_AXFER_VAR_BPP` 0x3D) — they share one parser, and the
@@ -324,6 +332,35 @@ conservation gate fails-closed on anything that doesn't actually conserve. The s
    re-prove. Today's ops have bespoke layouts, so we curate a per-layout allowlist; a future "tacit-conserve-
    v1" envelope wrapper would collapse that to a single self-describing path. Worth proposing for the next
    amendment; not required for launch (the curated allowlist + conservation gate already covers every live op).
+
+### The extension contract — adding a bridgeable op is mechanical (2026-06-16)
+
+The pattern is closed: to make a new value-moving opcode bridgeable, classify it into ONE bucket, do that
+bucket's fixed work, re-prove, deploy. No per-op soundness design.
+
+- **Bucket A — conserving secp op** (transfer / OTC / orderbook bid; any new single-asset op whose outputs
+  conserve against real inputs under a BIP-340 kernel). Work: if it's byte-identical to the cxfer family, add
+  the opcode to `parse_cxfer_envelope_full`'s allowlist (**one line**); otherwise add a thin parser yielding
+  `(asset, kernel_sig, output_commitments, range_proof)`. The fold is the existing `fold_cxfer` conservation
+  gate. **No new fold, no new crypto.**
+- **Bucket B — public-reserve op** (AMM swap / route / LP / farm / protocol-fee; outputs drawn from a public,
+  C₀-backed reserve or accumulator the registry tracks). Work: a parser + a fold mirroring
+  `fold_swap_var` / `fold_swap_route` / `fold_lp_remove` — verify the receipt opens to its public amount,
+  enforce the reserve floor, advance the registry. If the op reads a *new* public accumulator (e.g.
+  `protocol_fee_accrued`), add it to `PoolReserveState` and accrue it in the relevant folds. **No Groth16, no
+  BabyJubJub.**
+- **Bucket C — circuit-attested op** (only `T_SWAP_BATCH` today; per-receipt amounts hidden, bound solely by a
+  circuit proof). Work: re-derive the public signals from the envelope, verify the proof
+  (`groth16_bn254_verify`, validated), and onboard each receipt via the BabyJubJub cross-curve sigma
+  (`src/babyjubjub.rs::verify_xcurve`, built + validated against real dapp vectors — the secp note inherits
+  the BJJ-proven value; secp half + FS challenge in cxfer-core, BJJ half over `bn::Fr`). The heavy bucket;
+  reserved for genuinely hidden-per-output ops.
+
+Then: a box re-prove (rotates `BITCOIN_RELAY_VKEY`) + a `ConfidentialPool` deploy on the new vkey. The
+classification IS the design. An op that fits NO bucket (a truly new value primitive) is the only case needing
+fresh analysis — and even then a holder isn't stuck: the fungibility relief valve (§"Stuck notes") lets a
+note from an unsupported lineage be sold for sats and a clean note rebought, so a missing fold never strands
+value, it only defers direct bridging.
 
 ### Orderbook (`T_PREAUTH_BID`/`_VAR`) + OTC (`T_AXFER`) — Track A, the EASIEST class (2026-06-16)
 
