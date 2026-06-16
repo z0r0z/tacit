@@ -684,6 +684,14 @@ pub fn main() {
                 let reward_path = r_path(); // witnessed per 0x3B (the reward note's append path; vout[1])
                 let _ = state.fold_harvest(&farm_id, reward_amount, &reward_r, &outpoint_key(&txid, 1), &reward_path);
             }
+
+            // Track B: a T_FARM_REFUND (0x3E) — the launcher reclaims unspent treasury post-grace. Same shape as
+            // a harvest (a public-r note drawn from the treasury reserve), so fold_harvest onboards it + debits
+            // the treasury — NO new fold (the generalized "draw a reserve + onboard a public-r note" pattern).
+            if let Some((farm_id, refund_amount, refund_r)) = env.as_ref().and_then(|e| bitcoin::parse_farm_refund_envelope(e)) {
+                let refund_path = r_path(); // witnessed per 0x3E (the refund note's append path; vout[1])
+                let _ = state.fold_harvest(&farm_id, refund_amount, &refund_r, &outpoint_key(&txid, 1), &refund_path);
+            }
         }
         state.height = height;
     }

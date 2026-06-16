@@ -710,6 +710,24 @@ pub fn parse_lp_harvest_envelope(env: &[u8]) -> Option<([u8; 32], u64, [u8; 32])
     ))
 }
 
+/// Parse a `T_FARM_REFUND` (0x3E, 174-byte fixed) → `(farm_id, refund_amount, refund_r)`. The launcher
+/// reclaims unspent treasury post-grace; the refund note opens to `refund_amount` under the PUBLIC `refund_r`
+/// — the SAME shape as a harvest reward — so `fold_harvest` onboards it + debits the treasury (no new fold).
+/// The launcher authorization (`launcher_sig`, post-grace timing) is the worker's fairness gate, not a
+/// bridge-soundness one (the refund is ≤ the real treasury, never minted). Mirrors the worker
+/// `decodeTFarmRefundPayload`. Layout: opcode(1)=0x3E ‖ farm_id(32) ‖ launcher_pubkey(33) ‖ refund_amount(8 LE)
+/// ‖ refund_view_height(4) ‖ refund_r(32) ‖ launcher_sig(64).
+pub fn parse_farm_refund_envelope(env: &[u8]) -> Option<([u8; 32], u64, [u8; 32])> {
+    if env.len() != 174 || env[0] != 0x3E {
+        return None;
+    }
+    Some((
+        env[1..33].try_into().ok()?,                       // farm_id
+        u64::from_le_bytes(env[66..74].try_into().ok()?),  // refund_amount (after farm_id(32) + launcher_pubkey(33))
+        env[78..110].try_into().ok()?,                     // refund_r (after refund_amount(8) + refund_view_height(4))
+    ))
+}
+
 /// One intent's reflection-relevant fields from a T_SWAP_BATCH (0x2F) envelope.
 pub struct SwapBatchIntent {
     pub direction: u8,       // 0 = A→B, 1 = B→A
@@ -1492,6 +1510,27 @@ mod tests {
         assert!(parse_lp_harvest_envelope(&env[..225]).is_none(), "wrong length rejected");
         let mut bad = env.clone(); bad[0] = 0x22;
         assert!(parse_lp_harvest_envelope(&bad).is_none(), "non-0x3B rejected");
+    }
+
+    #[test]
+    fn parse_farm_refund_round_trips() {
+        let farm_id = [0x40u8; 32];
+        let refund_r = [0x35u8; 32];
+        let mut env = vec![0x3Eu8];
+        env.extend_from_slice(&farm_id);
+        env.extend_from_slice(&[0x02u8; 33]); // launcher_pubkey
+        env.extend_from_slice(&888u64.to_le_bytes()); // refund_amount
+        env.extend_from_slice(&7u32.to_le_bytes()); // refund_view_height
+        env.extend_from_slice(&refund_r);
+        env.extend_from_slice(&[0x0du8; 64]); // launcher_sig
+        assert_eq!(env.len(), 174);
+        let (fid, amt, r) = parse_farm_refund_envelope(&env).expect("farm_refund parses");
+        assert_eq!(fid, farm_id);
+        assert_eq!(amt, 888);
+        assert_eq!(r, refund_r);
+        assert!(parse_farm_refund_envelope(&env[..173]).is_none(), "wrong length rejected");
+        let mut bad = env.clone(); bad[0] = 0x3B;
+        assert!(parse_farm_refund_envelope(&bad).is_none(), "non-0x3E rejected");
     }
 
     #[test]
