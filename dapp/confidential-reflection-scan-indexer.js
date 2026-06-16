@@ -107,7 +107,9 @@ export function makeScanReflectionIndexer({ secp, keccak256, sha256, ownerTag, b
         rangeProof: tx.decode.rangeProof,   // BP+ range proof over the output commitments
         outputs: tx.decode.commitments.map((comm, j) => {
           const { cx, cy } = pool.decompressCommitment(comm);
-          return { cx, cy, compressed: comm, commitmentHash: pool.commitmentHash(cx, cy), noteLeaf: pool.leaf(tx.decode.assetId, cx, cy, OWNER), vout: j };
+          // Notes are keyed at vout (j + voutBase): a regular cxfer's notes start at vout 0, a preauth-bid
+          // fill's at vout 1 (after the envelope-hash OP_RETURN) — voutBase carries that, matching the guest.
+          return { cx, cy, compressed: comm, commitmentHash: pool.commitmentHash(cx, cy), noteLeaf: pool.leaf(tx.decode.assetId, cx, cy, OWNER), vout: j + (tx.decode.voutBase || 0) };
         }),
       };
     } else if (tx.decode && tx.decode.type === 'burn') {

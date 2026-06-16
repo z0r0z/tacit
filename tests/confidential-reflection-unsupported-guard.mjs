@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 // Fail-loud guard: the reflection scan must SURFACE (never silently treat as plain) any Tacit envelope
-// the guest folds but the JS scan does not yet mirror (AMM lp/swap/route/batch, farm, protocol-fee claim,
-// cBTC lock, bid, crossout, AXFER). classifyConfidentialTx tags them {type:'unsupported'}; the assembler
+// the guest folds but the live classifier does not yet route (the AMM lp/swap/route/batch, farm,
+// protocol-fee claim, cBTC lock, crossout folds are mirrored in the reflection assembler but not yet wired
+// into classifyConfidentialTx; bid + AXFER already route via the cxfer fold). It tags them {type:'unsupported'};
+// the assembler
 // collects them in `unsupportedEnvelopes`; the attester REFUSES the batch — so the relay halts loud rather
 // than attest a divergent (witness-desynced) root. The guest is authoritative, so this is liveness, never
 // soundness. Run: node tests/confidential-reflection-unsupported-guard.mjs

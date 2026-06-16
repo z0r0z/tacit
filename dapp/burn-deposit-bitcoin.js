@@ -225,6 +225,36 @@ function parseCxferEnvelopeFull(envHex) {
   return { asset: bytesToHex(asset), kernelSig: bytesToHex(kernelSig), commitments, rangeProof: bytesToHex(env.subarray(p, p + rpLen)) };
 }
 
+// T_PREAUTH_BID family (0x5B exact-fill / 0x5C partial-fill walk-away bid) — a CXFER on the tacit-asset side
+// (the seller's asset inputs → the buyer's filled note + seller change under tacit-kernel-v1, one BP+ range
+// over the outputs). Returns the SAME { asset, kernelSig, commitments[], rangeProof } shape as
+// parseCxferEnvelopeFull, fed to the IDENTICAL cxfer fold — only the inline-section length and the bid-tx vout
+// base (notes start at vout[1], after the envelope-hash OP_RETURN) differ. Mirrors cxfer-core
+// parse_preauth_bid_common: opcode ‖ asset(32) ‖ skip(1) ‖ inline(97|134) ‖ kernel_sig(64) ‖ N(1,∈{1,2}) ‖
+// N×commitment(33) (out[1] is followed by an 8-byte amount_ct) ‖ rpLen(2 LE) ‖ rp.
+const PREAUTH_BID_INLINE = { 0x5b: 16 + 33 + 8 + 32 + 8, 0x5c: 16 + 33 + 8 + 8 + 8 + 8 + 32 + 20 + 1 }; // 97 / 134
+function parsePreauthBidEnvelope(envHex) {
+  const env = hexToBytes(envHex);
+  const inline = PREAUTH_BID_INLINE[env[0]];
+  if (inline == null) return null;
+  const ksOff = 1 + 32 + 1 + inline;
+  if (env.length < ksOff + 64 + 1 + 33 + 2) return null;
+  const asset = env.subarray(1, 33), kernelSig = env.subarray(ksOff, ksOff + 64);
+  const n = env[ksOff + 64];
+  if (n !== 1 && n !== 2) return null;
+  let p = ksOff + 64 + 1;
+  const commitments = [];
+  for (let i = 0; i < n; i++) {
+    if (p + 33 > env.length) return null;
+    commitments.push(bytesToHex(env.subarray(p, p + 33))); p += 33;
+    if (i === 1) p += 8; // out[1] carries an 8-byte amount_ct; out[0] does not
+  }
+  if (p + 2 > env.length) return null;
+  const rpLen = env[p] | (env[p + 1] << 8); p += 2;
+  if (p + rpLen !== env.length) return null;
+  return { asset: bytesToHex(asset), kernelSig: bytesToHex(kernelSig), commitments, rangeProof: bytesToHex(env.subarray(p, p + rpLen)) };
+}
+
 // classifyConfidentialTx(rawTxHex) → the reflection scan's per-tx classification, MIRRORING the guest's
 // reflect.rs (extract_taproot_envelope → parse_burn_envelope / parse_cxfer_envelope_full): a confidential
 // bridge-burn → {type:'burn', dest}; a confidential transfer → {type:'cxfer', assetId, commitments,
@@ -238,11 +268,14 @@ function classifyConfidentialTx(rawTxHex) {
   if (burn) return { type: 'burn', dest: burn.dest };
   const cx = parseCxferEnvelopeFull(envHex);
   if (cx) return { type: 'cxfer', assetId: cx.asset, commitments: cx.commitments, kernelSig: cx.kernelSig, rangeProof: cx.rangeProof };
+  // A preauth-bid fill (0x5B/0x5C) folds via the SAME cxfer fold; its notes start at vout[1] (voutBase 1).
+  const bid = parsePreauthBidEnvelope(envHex);
+  if (bid) return { type: 'cxfer', assetId: bid.asset, commitments: bid.commitments, kernelSig: bid.kernelSig, rangeProof: bid.rangeProof, voutBase: 1 };
   // env[0] is the opcode (the TACIT frame is already stripped). cetch (0x21) / cmint (0x24) create a note
   // but the conservation-closed full scan does NOT fold them (no free-output deposit path), so the guest
   // treats them as plain too — safe. EVERY OTHER Tacit op (AMM lp/swap/route/batch/farm/protocol-fee,
-  // cBTC lock, bid, crossout, AXFER) IS folded by the guest (reflect.rs reads its fold witnesses). The JS
-  // scan does not yet mirror those folds, so it must SURFACE such a tx, not silently treat it as plain —
+  // cBTC lock, crossout) IS folded by the guest (reflect.rs reads its fold witnesses) but is NOT yet routed
+  // here, so it must SURFACE such a tx, not silently treat it as plain —
   // otherwise the guest reads fold witnesses this scan never emitted and the whole batch's stream desyncs
   // (a wrong / un-chainable digest). Fail-loud: the attester refuses the batch (liveness, not soundness —
   // the guest is authoritative). Mirroring a fold here is what lets the corresponding op attest.
@@ -251,7 +284,7 @@ function classifyConfidentialTx(rawTxHex) {
   return { type: 'unsupported', opcode };
 }
 
-export { readVarint, extractInputs, extractTaprootEnvelope, parseCetch, parseCmint, parseBurnEnvelope, parseCxferEnvelopeFull, classifyConfidentialTx };
+export { readVarint, extractInputs, extractTaprootEnvelope, parseCetch, parseCmint, parseBurnEnvelope, parseCxferEnvelopeFull, parsePreauthBidEnvelope, classifyConfidentialTx };
 
 // Build the burnDepositKit the worker injects (buildScanReflectionAttester → makeScanReflectionIndexer).
 // Sources every crypto primitive from the SAME modules the pool/guest use (so verdicts match byte-for-byte)
