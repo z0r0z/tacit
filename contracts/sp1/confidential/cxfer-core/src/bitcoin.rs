@@ -730,8 +730,8 @@ pub struct SwapBatchReceipt {
 /// A parsed T_SWAP_BATCH (0x2F) envelope — the fields the reflection needs to (a) re-derive the
 /// Groth16 public signals, (b) verify aggregate conservation + advance reserves, and (c) onboard each
 /// receipt's secp note. Mirrors the worker `decodeTSwapBatchPayload` wire format (worker/src/index.js
-/// §"T_SWAP_BATCH decoder"). `has_arbiter` (supplied from the pool registry) selects whether the optional
-/// arbiter block is present; a wrong value mis-aligns the layout and fails closed (returns None).
+/// §"T_SWAP_BATCH decoder"). The v1 wire format has NO optional block (spec/amm/wire-formats.md: the reserved
+/// space is for a future exclusion-claim amendment, not the deprecated arbiter concept), so the layout is fixed.
 /// `R_net_*`, tip commitments, per-intent secp/auth fields, and the settler meta-URI are validated for
 /// length but not surfaced — the pre-reserves come from the registry and intent auth is the settler's job;
 /// the reflection only needs conservation + onboarding inputs.
@@ -769,7 +769,7 @@ fn parse_signed_u64(b: &[u8]) -> Option<(u8, u64)> {
 
 /// Parse a `T_SWAP_BATCH` (0x2F, batched uniform-clearing settlement). Returns None on any
 /// malformed/truncated/over-long envelope (fail-closed). See `SwapBatchEnvelope`.
-pub fn parse_swap_batch_envelope(env: &[u8], has_arbiter: bool) -> Option<SwapBatchEnvelope> {
+pub fn parse_swap_batch_envelope(env: &[u8]) -> Option<SwapBatchEnvelope> {
     if env.first().copied()? != 0x2F {
         return None;
     }
@@ -822,26 +822,7 @@ pub fn parse_swap_batch_envelope(env: &[u8], has_arbiter: bool) -> Option<SwapBa
     take(&mut p, 33)?;
     let tip_b_c_secp: [u8; 33] = env[tbc..tbc + 33].try_into().ok()?;
     take(&mut p, 32 + 32)?; // r_tip_A, r_tip_B (not needed by the reflection)
-    if has_arbiter {
-        take(&mut p, 4 + 32)?; // expected_height, qualifying_set_hash
-        let m0 = p;
-        take(&mut p, 1)?;
-        let m = env[m0] as usize;
-        if m < 1 || m > 16 {
-            return None;
-        }
-        let idx0 = p;
-        take(&mut p, m)?;
-        let mut prev: i32 = -1;
-        for i in 0..m {
-            let idx = env[idx0 + i] as i32;
-            if idx > 15 || idx <= prev {
-                return None;
-            }
-            prev = idx;
-        }
-        take(&mut p, 64 * m)?; // arbiter sigs
-    }
+    // No optional block in v1 (spec/amm/wire-formats.md); the arbiter concept is deprecated.
     let mut intents = Vec::with_capacity(n_intents);
     for _ in 0..n_intents {
         let s = p;
@@ -1550,7 +1531,7 @@ mod tests {
         env.push(0); // settler_meta_uri_len
         assert_eq!(env.len(), 889, "synthetic 0x2F envelope length");
 
-        let p = parse_swap_batch_envelope(&env, false).expect("swap_batch parses");
+        let p = parse_swap_batch_envelope(&env).expect("swap_batch parses");
         assert_eq!(p.asset_a, [0xAAu8; 32]);
         assert_eq!(p.asset_b, [0xBBu8; 32]);
         assert_eq!(p.n_intents, 1);
@@ -1574,15 +1555,14 @@ mod tests {
         assert_eq!(p.receipts[0].out_xcurve_sigma, [0xc2u8; XCURVE_SIGMA_LEN]);
         assert_eq!(p.proof, vec![0xde, 0xad, 0xbe, 0xef]);
 
-        // fail-closed: wrong opcode, truncation, trailing byte, has_arbiter mis-alignment, bad n.
+        // fail-closed: wrong opcode, truncation, trailing byte, bad n.
         let mut bad = env.clone(); bad[0] = 0x22;
-        assert!(parse_swap_batch_envelope(&bad, false).is_none(), "non-0x2F rejected");
-        assert!(parse_swap_batch_envelope(&env[..env.len() - 1], false).is_none(), "truncation rejected");
+        assert!(parse_swap_batch_envelope(&bad).is_none(), "non-0x2F rejected");
+        assert!(parse_swap_batch_envelope(&env[..env.len() - 1]).is_none(), "truncation rejected");
         let mut long = env.clone(); long.push(0x00);
-        assert!(parse_swap_batch_envelope(&long, false).is_none(), "trailing byte rejected");
-        assert!(parse_swap_batch_envelope(&env, true).is_none(), "has_arbiter mis-alignment rejected");
+        assert!(parse_swap_batch_envelope(&long).is_none(), "trailing byte rejected");
         let mut zero_n = env.clone(); zero_n[65] = 0;
-        assert!(parse_swap_batch_envelope(&zero_n, false).is_none(), "n_intents = 0 rejected");
+        assert!(parse_swap_batch_envelope(&zero_n).is_none(), "n_intents = 0 rejected");
     }
 
     #[test]

@@ -163,7 +163,19 @@ C_out_BJJ(32)
 out_xcurve_sigma(169)
 # tail:
 proof_len_LE(2)
-proof(proof_len)
+proof(proof_len)           # Groth16 (BN254 / snarkjs) batch proof — NORMATIVE
+                           # 256-byte serialization, big-endian field elements:
+                           #   pi_a.x(32) || pi_a.y(32)
+                           #   pi_b.x_c0(32) || pi_b.x_c1(32) || pi_b.y_c0(32) || pi_b.y_c1(32)
+                           #   pi_c.x(32) || pi_c.y(32)
+                           # (snarkjs Fp2 limb order [c0, c1].) Verified against the
+                           # ceremony vk BOTH browser-side (snarkjs) AND in the
+                           # reflection guest (cxfer-core BN254 verifier, over public
+                           # signals the guest re-derives from this envelope). A wrong
+                           # serialization fails the pairing check — fail-closed, never
+                           # an unbacked mint; so this layout is a compatibility
+                           # convention between builder + verifier, not a trust root
+                           # (the trust roots are the ceremony vk + the in-guest verify).
 settler_meta_uri_len(1)    # u8, 0..255 (0 = no URI)
 settler_meta_uri(settler_meta_uri_len)  # UTF-8 — informational settler
                                          # metadata pointer (version, identity,

@@ -557,9 +557,9 @@ pub fn main() {
             // Track C: a T_SWAP_BATCH (0x2F) onboards every receipt of a confidential uniform-clearing batch as
             // a real, bridgeable note — gated by the BN254 Groth16 (per-receipt split), the aggregate Pedersen
             // identity (the receipts' total vs the traders' real inputs + the c0-backed reserve), and the
-            // per-receipt cross-curve sigma (secp note ↔ Groth16-proven BabyJubJub value). Arbiter-pinned pools
-            // (rare) aren't handled here (no-arbiter parse); their batches simply don't fold.
-            if let Some(sb) = env.as_ref().and_then(|e| bitcoin::parse_swap_batch_envelope(e, false)) {
+            // per-receipt cross-curve sigma (secp note ↔ Groth16-proven BabyJubJub value). The v1 wire format
+            // has no optional block (the arbiter concept is deprecated), so the layout is fixed.
+            if let Some(sb) = env.as_ref().and_then(|e| bitcoin::parse_swap_batch_envelope(e)) {
                 // Witnessed per 0x2F (stream sync): one append path per receipt (the notes at vouts 1..=n).
                 let receipt_paths: Vec<Vec<[u8; 32]>> = (0..sb.n_intents).map(|_| r_path()).collect();
                 let _ = swap_batch::fold_swap_batch(&mut state, &sb, &txid, &spends, &receipt_paths);
