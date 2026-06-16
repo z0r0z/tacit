@@ -667,8 +667,22 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
       return { notePath: w.notePath };
     }
 
+    // ── Track-B farm-init fold (mirror cxfer-core fold_farm_init) ──
+    // A T_FARM_INIT (0x34) establishes a farm treasury as a C0-backed reserve: the launcher's single detected
+    // reward-asset spend funds reward_total under the SAME swap-shape kernel (C_in − C_change = reward_total·H),
+    // and the treasury is registered as a degenerate pool keyed by farm_id (asset_a = reward asset, the rest 0).
+    // No note onboarded (the treasury is virtual) → no note-path witness. Returns true / null (skip) on any gate.
+    function foldFarmInit(farmId, rewardAsset, rewardTotal, inputOutpoint, cIn, cChangeOrSentinel, kernelSig) {
+      const total = BigInt(rewardTotal);
+      if (total === 0n) return null;
+      if (pools.get(farmId)) return null; // already registered
+      if (!swapVarKernelVerify(rewardAsset, inputOutpoint, cIn, cChangeOrSentinel, total, kernelSig)) return null;
+      pools.set(farmId, { assetA: rewardAsset, assetB: '0x' + '00'.repeat(32), reserveA: total, reserveB: 0n, totalShares: 0n, c0Backed: true, protocolFeeBps: 0, kLast: 0n, protocolFeeAccrued: 0n });
+      return true;
+    }
+
     return {
-      commit, digest, foldSpent, foldOutput, foldNoteAppend, foldBurn, foldCbtcLock, foldCbtcLockSpends, foldSwapVar, foldHarvest, foldProtocolFeeClaim, setHeight,
+      commit, digest, foldSpent, foldOutput, foldNoteAppend, foldBurn, foldCbtcLock, foldCbtcLockSpends, foldSwapVar, foldHarvest, foldProtocolFeeClaim, foldFarmInit, setHeight,
       spentContains: (nu) => spent.contains(nu),
       poolRoot: () => notes.root(), spentRoot: () => spent.root(), burnRoot: () => burns.root(), liveRoot: () => live.root(),
       cbtcBackingSats: () => cbtcBackingSats, cbtcLocks,
@@ -777,6 +791,11 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
   }
   // Bitcoin-AMM LP-share asset-id: sha256(domain ‖ pool_id) (mirror amm_derive_lp_asset_id / ammDeriveLpAssetId).
   const ammDeriveLpAssetId = (poolId) => hx(sha256(concat([AMM_LP_ASSET_DOMAIN, b32(poolId)])));
+  // Bitcoin-AMM farm-id: sha256(domain ‖ pool_id ‖ launcher_pubkey(33) ‖ reward_asset ‖ farm_nonce) (mirror
+  // amm_derive_farm_id / worker ammDeriveFarmId). Keys a farm treasury so a harvest draws from the right one.
+  const AMM_FARM_INIT_DOMAIN = new TextEncoder().encode('tacit-amm-farm-init-v1');
+  const ammDeriveFarmId = (poolId, launcherPubkey, rewardAsset, farmNonce) =>
+    hx(sha256(concat([AMM_FARM_INIT_DOMAIN, b32(poolId), hexToBytes(launcherPubkey), b32(rewardAsset), b32(farmNonce)])));
   // Full conservation: kernel (no inflation) AND every output in BP+ range (no wraparound). The
   // exact predicate the reflection guest re-runs before folding a cxfer's outputs (REFLECT-1).
   function verifyCxferConservation({ asset, inputOutpoints, inputPoints, outsCompressed, rangeProof, kernelSig, burned = 0 }) {
@@ -975,6 +994,14 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
           // claim note (vout 1) as an LP-share note. No input spend — the note is minted by decree.
           const pw = state.foldProtocolFeeClaim(tx.env.poolId, tx.env.amount, tx.env.cSecp, tx.env.blinding, outpointKey(tx.txid, 1));
           if (pw) protocolFee = { notePath: pw.notePath };
+        } else if (tx.env && tx.env.type === 'farm_init') {
+          // Track-B farm-init (0x34): the launcher's single detected reward-asset spend funds the treasury under
+          // the swap-shape kernel; register the farm (a degenerate pool keyed by farm_id). No note → no witness.
+          if (openings.length === 1 && hx(b32(inAssets[0])) === hx(b32(tx.env.rewardAsset))) {
+            const cIn = compressXY(openings[0].cx, openings[0].cy);
+            const farmId = ammDeriveFarmId(tx.env.poolId, tx.env.launcherPubkey, tx.env.rewardAsset, tx.env.farmNonce);
+            state.foldFarmInit(farmId, tx.env.rewardAsset, tx.env.rewardTotal, inOutpoints[0], cIn, tx.env.cChangeOrSentinel, tx.env.kernelSig);
+          }
         }
         txsOut.push({ txData: tx.txData, openings, spentInserts, burnInsert, outputs, burnDeposit, cbtcLock, swapVar, harvest, protocolFee });
       }
@@ -1080,7 +1107,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     liveLeaf, makeLiveUtxoSet, makeScanReflectionState, assembleReflectionScanInput,
     CBTC_ZK_ASSET_ID, CBTC_LOCK_DOMAIN, cbtcLockContext,
     cxferKernelVerify, verifyCxferConservation,
-    protocolFeeShares, crystallizeProtocolFee, ammDeriveLpAssetId, isqrt,
+    protocolFeeShares, crystallizeProtocolFee, ammDeriveLpAssetId, ammDeriveFarmId, isqrt,
     _internal: { keccak, concat, b32, beBytes, hx },
   };
 }
