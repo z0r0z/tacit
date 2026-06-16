@@ -128,6 +128,10 @@ export function encodeLpRemove(args) {
     asBytes(args.recvBCBJJ, 32, 'recvBCBJJ'),
     asBytes(args.recvBXcurveSigma, XCURVE_PROOF_LEN, 'recvBXcurveSigma'),
     asBytes(args.kernelSigLP, 64, 'kernelSigLP'),
+    // option-a opening blindings (reflection): recvACSecp opens to deltaA under rRecvA, recvBCSecp to deltaB
+    // under rRecvB — so the relay can fold the withdrawal without an off-chain witness it cannot derive.
+    asBytes(args.rRecvA, 32, 'rRecvA'),
+    asBytes(args.rRecvB, 32, 'rRecvB'),
   ];
   const proof = args.proof;
   if (!(proof instanceof Uint8Array)) throw new Error('proof must be Uint8Array');
@@ -152,6 +156,9 @@ export function encodeLpAdd(args) {
     asBytes(args.shareXcurveSigma, XCURVE_PROOF_LEN, 'shareXcurveSigma'),
     asBytes(args.kernelSigA, 64, 'kernelSigA'),
     asBytes(args.kernelSigB, 64, 'kernelSigB'),
+    // option-a opening blinding (reflection): shareCSecp opens to the minted LP-share amount under shareR —
+    // lets the relay fold the share-note mint without an off-chain witness. Sits before the variant-1 tail.
+    asBytes(args.shareR, 32, 'shareR'),
   ];
 
   if (variant === 1) {
@@ -235,7 +242,7 @@ function _readU64LE(b, off) {
 }
 export function decodeLpAdd(payload) {
   if (!(payload instanceof Uint8Array)) return null;
-  if (payload.length < 2 + 32 + 32 + 8 + 8 + 8 + 33 + 32 + 169 + 64 + 64 + 2) return null;
+  if (payload.length < 2 + 32 + 32 + 8 + 8 + 8 + 33 + 32 + 169 + 64 + 64 + 32 + 2) return null;
   if (payload[0] !== OPCODE_T_LP_ADD) return null;
   const variant = payload[1];
   if (variant !== 0 && variant !== 1) return null;
@@ -253,7 +260,8 @@ export function decodeLpAdd(payload) {
     // (Σ C_in conservation); the dapp's value-binding uses the sigma + Groth16.
     const shareXcurveSigma = payload.slice(off, off + XCURVE_PROOF_LEN);
     off += XCURVE_PROOF_LEN + 64 + 64;
-    const result = { variant, assetA, assetB, deltaA, deltaB, shareAmount, shareCSecp, shareCBJJ, shareXcurveSigma };
+    const shareR = payload.slice(off, off + 32); off += 32; // option-a opening blinding (between header and the variant-1 tail)
+    const result = { variant, assetA, assetB, deltaA, deltaB, shareAmount, shareCSecp, shareCBJJ, shareXcurveSigma, shareR };
     if (variant === 1) {
       if (off + 2 > payload.length) return null;
       result.feeBps = _readU16LE(payload, off); off += 2;
@@ -297,7 +305,7 @@ export function decodeLpAdd(payload) {
 // it up via canonical (assetA, assetB) from the dapp's pool registry.
 export function decodeLpRemove(payload) {
   if (!(payload instanceof Uint8Array)) return null;
-  const minLen = 1 + 32 + 32 + 8 + 8 + 8 + 33 + 32 + 169 + 33 + 32 + 169 + 64 + 2;
+  const minLen = 1 + 32 + 32 + 8 + 8 + 8 + 33 + 32 + 169 + 33 + 32 + 169 + 64 + 32 + 32 + 2;
   if (payload.length < minLen) return null;
   if (payload[0] !== OPCODE_T_LP_REMOVE) return null;
   let off = 1;
@@ -313,7 +321,9 @@ export function decodeLpRemove(payload) {
     const recvBCSecp = payload.slice(off, off + 33); off += 33;
     const recvBCBJJ = payload.slice(off, off + 32); off += 32;
     off += XCURVE_PROOF_LEN + 64;  // recvBXcurveSigma + kernelSigLP
-    const result = { assetA, assetB, shareAmount, deltaA, deltaB, recvACSecp, recvACBJJ, recvBCSecp, recvBCBJJ };
+    const rRecvA = payload.slice(off, off + 32); off += 32; // option-a opening blindings (between kernel sig and proof)
+    const rRecvB = payload.slice(off, off + 32); off += 32;
+    const result = { assetA, assetB, shareAmount, deltaA, deltaB, recvACSecp, recvACBJJ, recvBCSecp, recvBCBJJ, rRecvA, rRecvB };
     if (off + 2 <= payload.length) {
       const proofLen = _readU16LE(payload, off); off += 2;
       if (off + proofLen <= payload.length) {

@@ -496,15 +496,13 @@ pub fn main() {
             // note_path + the opening sigma per 0x66) so the stream stays in sync; an over-mint /
             // wrong-asset lock folds nothing (skip-not-panic). See
             // ops/DESIGN-cbtc-sats-lock-reflection.md. cf. cxfer-core::ScanReflection::fold_cbtc_lock.
-            if let Some((cb_asset, lock_vout, cx, cy)) =
-                env.as_ref().and_then(|e| bitcoin::parse_cbtc_lock_envelope(e))
-            {
+            if let Some(cb) = env.as_ref().and_then(|e| bitcoin::parse_cbtc_lock_envelope(e)) {
+                // The opening sigma is now ON-CHAIN (parsed from the envelope, option a) — only the note's
+                // append path remains a witness. So per 0x66 the assembler emits exactly one r_path().
                 let note_path = r_path();
-                let sig_rx = r32();
-                let sig_ry = r32();
-                let sig_z = r32();
                 let _ = state.fold_cbtc_lock(
-                    &cb_asset, &cx, &cy, tx, lock_vout, &txid, &note_path, &sig_rx, &sig_ry, &sig_z,
+                    &cb.asset, &cb.cx, &cb.cy, tx, cb.lock_vout, &txid, &note_path,
+                    &cb.sig_rx, &cb.sig_ry, &cb.sig_z,
                 );
             }
 
@@ -620,8 +618,8 @@ pub fn main() {
             // to CANONICAL asset order — pools + pool_id derivation are canonical (worker convention). NB the
             // per-asset kernel must be the one the dapp signed in canonical order; confirm on the box.
             if let Some(la) = env.as_ref().and_then(|e| bitcoin::parse_lp_add_envelope(e)) {
-                // Witnesses per 0x2D (stream sync): the minted LP-share note's blinding + its append path.
-                let share_r = r32();
+                // The share-note blinding is now ON-CHAIN (la.share_r, option a) — only the share note's
+                // append path remains a witness. So per 0x2D the assembler emits exactly one r_path().
                 let share_path = r_path();
                 if let Some((ca, cb)) = amm_canonical_pair(&la.asset_a, &la.asset_b) {
                     let swapped = la.asset_a != ca;
@@ -664,7 +662,7 @@ pub fn main() {
                                 } else {
                                     p.total_shares.saturating_sub(pre_shares)
                                 };
-                                let _ = state.fold_lp_share_mint(&pid, lp_shares, &la.share_csecp, &share_r, &share_path, &outpoint_key(&txid, 1));
+                                let _ = state.fold_lp_share_mint(&pid, lp_shares, &la.share_csecp, &la.share_r, &share_path, &outpoint_key(&txid, 1));
                             }
                         }
                     }
@@ -677,16 +675,15 @@ pub fn main() {
             // envelope carries no fee_bps, so the pool is found by canonical-asset enumeration + disambiguated
             // by which candidate's pool_id makes the share-burn kernel verify.
             if let Some(lr) = env.as_ref().and_then(|e| bitcoin::parse_lp_remove_envelope(e)) {
-                // Witnesses read UNCONDITIONALLY per 0x2E (stream sync): the two recv blindings + append paths.
-                let r_recv_a = r32();
-                let r_recv_b = r32();
+                // The two recv-note blindings are now ON-CHAIN (lr.r_recv_a/b, option a) — only the two
+                // append paths remain witnesses. So per 0x2E the assembler emits exactly two r_path()s.
                 let recv_a_path = r_path();
                 let recv_b_path = r_path();
                 if let Some((ca, cb)) = amm_canonical_pair(&lr.asset_a, &lr.asset_b) {
                     let swapped = lr.asset_a != ca;
                     let (da_c, db_c) = if swapped { (lr.delta_b, lr.delta_a) } else { (lr.delta_a, lr.delta_b) };
                     let (recv_ca, recv_cb) = if swapped { (lr.recv_b_secp, lr.recv_a_secp) } else { (lr.recv_a_secp, lr.recv_b_secp) };
-                    let (rca, rcb) = if swapped { (r_recv_b, r_recv_a) } else { (r_recv_a, r_recv_b) };
+                    let (rca, rcb) = if swapped { (lr.r_recv_b, lr.r_recv_a) } else { (lr.r_recv_a, lr.r_recv_b) };
                     let mut lp_ops = Vec::new();
                     let mut lp_pts = Vec::new();
                     for s in &spends {

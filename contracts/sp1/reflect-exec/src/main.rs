@@ -94,6 +94,9 @@ fn write_stdin(f: &serde_json::Value) -> SP1Stdin {
         s.write(&pe.get("kLast").and_then(|v| v.as_str()).and_then(|x| x.parse::<u128>().ok()).unwrap_or(0u128));
         s.write(&u64f("protocolFeeAccrued"));
     }
+    // FAST-LANE resume count: read by the guest at the END of read_scan_prior_state (after the pools). 0 for a
+    // forward-only fixture (the gens don't set it). Omitting this desyncs the whole stream → an EOF halt.
+    s.write(&p.get("consumedCount").and_then(|v| v.as_u64()).unwrap_or(0));
 
     // Mode-B gate (matches reflect.rs): mode_b, then ONLY when set the eth-reflection PV the guest verifies.
     // A forward-only fixture (modeB absent/0) skips it — no eth_pv, no verify_sp1_proof. modeB=1 carries the
@@ -131,10 +134,10 @@ fn write_stdin(f: &serde_json::Value) -> SP1Stdin {
                 path(&mut s, &bi["bLowPath"]); path(&mut s, &bi["bNewPath"]);
             }
             for o in tx["outputs"].as_array().unwrap() { path(&mut s, &o["notePath"]); }
-            // cBTC.zk sats-lock (0x66): the guest reads note_path + the opening sigma (rx,ry,z) after the
-            // envelope parse — mirror that order here so the witness stream stays in sync.
+            // cBTC.zk sats-lock (0x66): the opening sigma is now ON-CHAIN (option a; the guest parses it), so the
+            // only witness is the note's append path.
             if let Some(cb) = tx.get("cbtcLock").filter(|v| !v.is_null()) {
-                path(&mut s, &cb["notePath"]); r32(&mut s, &cb["sigRx"]); r32(&mut s, &cb["sigRy"]); r32(&mut s, &cb["sigZ"]);
+                path(&mut s, &cb["notePath"]);
             }
             // swap_var (0x32): the guest reads the receipt note-path (+ the change note-path iff
             // non-sentinel) after the envelope — mirror that order.
@@ -151,15 +154,14 @@ fn write_stdin(f: &serde_json::Value) -> SP1Stdin {
             if let Some(sb) = tx.get("swapBatch").filter(|v| !v.is_null()) {
                 for rp in sb["receiptPaths"].as_array().unwrap() { path(&mut s, rp); }
             }
-            // lp_add / POOL_INIT (0x2D): the guest reads (per 0x2D) the minted share note's blinding r, then
-            // its append path — mirror that order.
+            // lp_add / POOL_INIT (0x2D): share_r is now ON-CHAIN (option a; the guest parses it), so the only
+            // witness is the minted share note's append path.
             if let Some(la) = tx.get("lpAdd").filter(|v| !v.is_null()) {
-                r32(&mut s, &la["shareR"]); path(&mut s, &la["sharePath"]);
+                path(&mut s, &la["sharePath"]);
             }
-            // lp_remove (0x2E): the guest reads (unconditionally per 0x2E) r_recv_a, r_recv_b, then the two
-            // recv note-append paths — mirror that order.
+            // lp_remove (0x2E): r_recv_a/b are now ON-CHAIN (option a; the guest parses them), so the only
+            // witnesses are the two recv note-append paths.
             if let Some(lr) = tx.get("lpRemove").filter(|v| !v.is_null()) {
-                r32(&mut s, &lr["rRecvA"]); r32(&mut s, &lr["rRecvB"]);
                 path(&mut s, &lr["recvAPath"]); path(&mut s, &lr["recvBPath"]);
             }
             // harvest (0x3B) / farm-refund (0x3E): the guest reads the reward/refund note's append path after

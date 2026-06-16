@@ -3851,8 +3851,10 @@ function ammCheckAggregatePedersen({ env, inputCommitmentsByIntent, assetXIsA, d
 function decodeTLpRemovePayload(payload) {
   if (!payload) return null;
   if (payload[0] !== T_LP_REMOVE) return null;
-  // 1 + 32 + 32 + 8 + 8 + 8 + (33+32+169)*2 + 64 + 2 = 623 + proof(≥1)
-  const FIXED = 1 + 32 + 32 + 8 + 8 + 8 + 2 * (33 + 32 + XCURVE_PROOF_LEN_AMM) + 64 + 2;
+  // 1 + 32 + 32 + 8 + 8 + 8 + (33+32+169)*2 + 64 + 32 + 32 + 2 = 687 + proof(≥1)
+  // (the two 32-byte opening blindings r_recv_a/b are the option-a reflection additions between the kernel sig
+  // and the proof; settlement does not use them but must account for them so the exact-length check holds.)
+  const FIXED = 1 + 32 + 32 + 8 + 8 + 8 + 2 * (33 + 32 + XCURVE_PROOF_LEN_AMM) + 64 + 32 + 32 + 2;
   if (payload.length < FIXED + 1) return null;
   let p = 1;
   const assetA = payload.slice(p, p + 32); p += 32;
@@ -3876,6 +3878,8 @@ function decodeTLpRemovePayload(payload) {
   const recvBCBJJ = payload.slice(p, p + 32); p += 32;
   const recvBXcurveSigma = payload.slice(p, p + XCURVE_PROOF_LEN_AMM); p += XCURVE_PROOF_LEN_AMM;
   const kernelSigLP = payload.slice(p, p + 64); p += 64;
+  const rRecvA = payload.slice(p, p + 32); p += 32; // option-a reflection opening blindings (settlement ignores)
+  const rRecvB = payload.slice(p, p + 32); p += 32;
   if (p + 2 > payload.length) return null;
   const proofLen = dv.getUint16(p, true); p += 2;
   if (proofLen === 0) return null;
@@ -3883,6 +3887,8 @@ function decodeTLpRemovePayload(payload) {
   const proof = payload.slice(p, p + proofLen);
   return {
     kind: 'lp_remove',
+    r_recv_a: bytesToHex(rRecvA),
+    r_recv_b: bytesToHex(rRecvB),
     asset_a: bytesToHex(assetA),
     asset_b: bytesToHex(assetB),
     share_amount: shareAmount.toString(),
@@ -3912,7 +3918,7 @@ function decodeTLpRemovePayload(payload) {
 function decodeTLpAddPayload(payload) {
   if (!payload) return null;
   if (payload[0] !== T_LP_ADD) return null;
-  const HEADER = 1 + 1 + 32 + 32 + 8 + 8 + 8 + 33 + 32 + XCURVE_PROOF_LEN_AMM + 64 + 64;
+  const HEADER = 1 + 1 + 32 + 32 + 8 + 8 + 8 + 33 + 32 + XCURVE_PROOF_LEN_AMM + 64 + 64 + 32; // +32 share_r (option a)
   if (payload.length < HEADER) return null;
   let p = 1;
   const variant = payload[p]; p += 1;
@@ -3929,6 +3935,7 @@ function decodeTLpAddPayload(payload) {
   const shareXcurveSigma = payload.slice(p, p + XCURVE_PROOF_LEN_AMM); p += XCURVE_PROOF_LEN_AMM;
   const kernelSigA = payload.slice(p, p + 64); p += 64;
   const kernelSigB = payload.slice(p, p + 64); p += 64;
+  const shareR = payload.slice(p, p + 32); p += 32; // option-a reflection opening blinding (before the variant-1 tail; settlement ignores)
   const result = {
     kind: 'lp_add', variant,
     asset_a: bytesToHex(assetA), asset_b: bytesToHex(assetB),
@@ -3937,6 +3944,7 @@ function decodeTLpAddPayload(payload) {
     share_c_secp: bytesToHex(shareCSecp), share_c_bjj: bytesToHex(shareCBJJ),
     share_xcurve_sigma: bytesToHex(shareXcurveSigma),
     kernel_sig_a: bytesToHex(kernelSigA), kernel_sig_b: bytesToHex(kernelSigB),
+    share_r: bytesToHex(shareR),
   };
   if (variant === 1) {
     if (p + 2 > payload.length) return null;

@@ -29,26 +29,26 @@ const r = 0xC0FFEEn;
 const lockVout = 1;
 const { cx, cy } = pool.commitXY(vBtc, r);
 
-// 0x66 envelope: opcode ‖ asset(32) ‖ lock_vout(4 LE) ‖ Cx(32) ‖ Cy(32) — parse_cbtc_lock_envelope.
-const envelope = cat([[0x66], hb(ASSET), u32le(lockVout), hb(cx), hb(cy)]);
-// Taproot tapscript carrying "TACIT"+v1 ‖ envelope (extract_taproot_envelope strips the frame).
-const tapscript = cat([
-  [0x20], Buffer.alloc(32), [0xac], [0x00, 0x63],
-  [0x05], Buffer.from('TACIT'), [0x01, 0x01],
-  [0x4d], Buffer.from([envelope.length & 0xff, (envelope.length >> 8) & 0xff]), envelope,
-  [0x68],
-]);
+// 0x66 envelope: opcode ‖ asset(32) ‖ lock_vout(4 LE) ‖ Cx(32) ‖ Cy(32) ‖ sig_rx(32) ‖ sig_ry(32) ‖ sig_z(32).
+// The opening sigma is ON-CHAIN (option a). The lock txid is witness-stripped (segwit), and the TACIT envelope
+// rides the witness — so the envelope content does NOT affect the txid. We compute the txid from a no-sigma
+// envelope, derive the sigma (which binds the txid), then embed it; the final tx keeps the same txid.
 const dummyTxid = Buffer.alloc(32, 0xcc); // a non-pool input (no live-set hit, no cBTC-lock spend)
 const inputsBuf = cat([dummyTxid, u32le(0), [0x00], [0xfd, 0xff, 0xff, 0xff]]);
-const wit0 = cat([[0x03], [0x40], Buffer.alloc(0x40), varint(tapscript.length), tapscript, [0x21], Buffer.alloc(0x21, 0xc0)]);
-const tx = cat([
-  [0x02, 0x00, 0x00, 0x00], [0x00, 0x01],
-  varint(1), inputsBuf,
-  [0x02], Buffer.alloc(8), [0x00], u64le(vBtc), [0x00], // vout0 (note slot, 0 sats) + vout1 (the lock, v_btc sats)
-  wit0,
-  Buffer.alloc(4),
-]);
-const txid = computeTxid(tx);
+const makeTx = (envelope) => {
+  const tapscript = cat([
+    [0x20], Buffer.alloc(32), [0xac], [0x00, 0x63],
+    [0x05], Buffer.from('TACIT'), [0x01, 0x01],
+    [0x4d], Buffer.from([envelope.length & 0xff, (envelope.length >> 8) & 0xff]), envelope,
+    [0x68],
+  ]);
+  const wit0 = cat([[0x03], [0x40], Buffer.alloc(0x40), varint(tapscript.length), tapscript, [0x21], Buffer.alloc(0x21, 0xc0)]);
+  return cat([[0x02, 0x00, 0x00, 0x00], [0x00, 0x01], varint(1), inputsBuf,
+    [0x02], Buffer.alloc(8), [0x00], u64le(vBtc), [0x00], // vout0 (note slot, 0 sats) + vout1 (the lock, v_btc sats)
+    wit0, Buffer.alloc(4)]);
+};
+const noSig = cat([[0x66], hb(ASSET), u32le(lockVout), hb(cx), hb(cy)]);
+const txid = computeTxid(makeTx(noSig)); // witness-stripped → independent of the envelope sigma
 const txidHex = '0x' + Buffer.from(txid).toString('hex');
 const header = mineHeader(computeMerkleRoot([txid]));
 
@@ -58,6 +58,9 @@ const sg = pool.openingSigma(vBtc, r, ctx, pool.deriveOpeningNonce(r, ctx, 'cbtc
 const R = secp.ProjectivePoint.fromHex(sg.R.replace(/^0x/, '')).toAffine();
 const sigRx = '0x' + R.x.toString(16).padStart(64, '0');
 const sigRy = '0x' + R.y.toString(16).padStart(64, '0');
+// Embed the sigma in the envelope + build the final tx (same txid — the witness is excluded from the txid).
+const envelope = cat([[0x66], hb(ASSET), u32le(lockVout), hb(cx), hb(cy), hb(sigRx), hb(sigRy), hb(sg.z)]);
+const tx = makeTx(envelope);
 
 const state = pool.makeScanReflectionState();
 state.setHeight(BLOCK_HEIGHT - 1);

@@ -35,14 +35,15 @@ const recvA = pool.compressXY(...Object.values(pool.commitXY(deltaA, rRecvA)));
 const recvB = pool.compressXY(...Object.values(pool.commitXY(deltaB, rRecvB)));
 const kernelSig = lpRemoveKernelSig({ poolIdHex: POOL_ID, shareAmount, deltaA, deltaB, recvAHex: recvA, recvBHex: recvB, lpOutpoints: [['0x' + seedTxid.toString('hex'), seedVout]] }, rShare);
 
-// 0x2E envelope (623 bytes): op ‖ asset_a ‖ asset_b ‖ share_amount(8) ‖ delta_a(8) ‖ delta_b(8) ‖
+// 0x2E envelope (687 bytes): op ‖ asset_a ‖ asset_b ‖ share_amount(8) ‖ delta_a(8) ‖ delta_b(8) ‖
 // recv_a_secp(33) ‖ recv_a worker fields(32+169) ‖ recv_b_secp(33) ‖ recv_b worker fields(32+169) ‖
-// kernel_sig(64) ‖ trailing(2). Only the fold-relevant fields are non-zero (the rest are worker range/sigma).
+// kernel_sig(64) ‖ r_recv_a(32) ‖ r_recv_b(32) ‖ proofLen(2)=0. The two opening blindings are ON-CHAIN
+// (option a) — the guest parses them; only the fold-relevant fields are non-zero (the rest are worker range/sigma).
 const envelope = cat([
   [0x2E], hb(ASSET_A), hb(ASSET_B), u64le(shareAmount), u64le(deltaA), u64le(deltaB),
   hb(recvA), Buffer.alloc(32), Buffer.alloc(169),
   hb(recvB), Buffer.alloc(32), Buffer.alloc(169),
-  Buffer.from(kernelSig), Buffer.alloc(2),
+  Buffer.from(kernelSig), be(rRecvA, 32), be(rRecvB, 32), Buffer.alloc(2),
 ]);
 const tapscript = cat([[0x20], Buffer.alloc(32), [0xac], [0x00, 0x63], [0x05], Buffer.from('TACIT'), [0x01, 0x01], [0x4d], Buffer.from([envelope.length & 0xff, (envelope.length >> 8) & 0xff]), envelope, [0x68]]);
 const inputsBuf = cat([seedTxid, u32le(seedVout), [0x00], [0xfd, 0xff, 0xff, 0xff]]);

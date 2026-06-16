@@ -41,6 +41,7 @@ const kernelB = lpAddKernelSig({ variant: 1, poolIdHex: poolId, assetXHex: ASSET
 const header = cat([
   [0x2D], [0x01], hb(ASSET_A), hb(ASSET_B), u64le(deltaA), u64le(deltaB), u64le(lpShares),
   hb(shareCsecp), Buffer.alloc(32), Buffer.alloc(169), Buffer.from(kernelA), Buffer.from(kernelB),
+  be(shareR, 32), // option-a: share_r ON-CHAIN at offset 452 (before the variant-1 tail) — the guest parses it
 ]);
 const tail = cat([u16le(feeBps), [0x00, 0x00, 0x00, 0x00, 0x00], hb(PROTO_FEE_ADDR), u16le(protocolFeeBps), [0x00, 0x00]]);
 const envelope = cat([header, tail]);

@@ -366,18 +366,36 @@ pub fn parse_tx_output(tx_data: &[u8], vout: u32) -> Option<(u64, Vec<u8>)> {
     None
 }
 
-/// cBTC.zk sats-lock envelope (`T_CBTC_LOCK`, opcode 0x66): `asset(32) ‖ lock_vout(4 LE) ‖ Cx(32) ‖
-/// Cy(32)` — the asset, which output of THIS tx is the sats-lock, and the minted cBTC note commitment.
-/// The opening sigma (proving the note opens to the lock's value) rides the witness, not the envelope.
-pub fn parse_cbtc_lock_envelope(env: &[u8]) -> Option<([u8; 32], u32, [u8; 32], [u8; 32])> {
-    if env.len() < 101 || env[0] != 0x66 {
+/// Parsed `T_CBTC_LOCK` envelope (opcode 0x66).
+pub struct CbtcLockEnvelope {
+    pub asset: [u8; 32],
+    pub lock_vout: u32,
+    pub cx: [u8; 32],
+    pub cy: [u8; 32],
+    pub sig_rx: [u8; 32],
+    pub sig_ry: [u8; 32],
+    pub sig_z: [u8; 32],
+}
+
+/// cBTC.zk sats-lock envelope (`T_CBTC_LOCK`, opcode 0x66): `asset(32) ‖ lock_vout(4 LE) ‖ Cx(32) ‖ Cy(32) ‖
+/// sig_rx(32) ‖ sig_ry(32) ‖ sig_z(32)` — the asset, which output of THIS tx is the sats-lock, the minted
+/// cBTC note commitment, and the OPENING SIGMA proving the note opens to the lock's value. The sigma is
+/// ON-CHAIN (it formerly rode the witness): it is a zero-knowledge opening proof — it reveals nothing about
+/// the note's blinding — so the reflection relay, which holds no recipient key, can read it directly and fold
+/// the lock without an off-chain witness source. Fixed 197-byte layout.
+pub fn parse_cbtc_lock_envelope(env: &[u8]) -> Option<CbtcLockEnvelope> {
+    if env.len() < 197 || env[0] != 0x66 {
         return None;
     }
-    let asset: [u8; 32] = env[1..33].try_into().ok()?;
-    let lock_vout = u32::from_le_bytes(env[33..37].try_into().ok()?);
-    let cx: [u8; 32] = env[37..69].try_into().ok()?;
-    let cy: [u8; 32] = env[69..101].try_into().ok()?;
-    Some((asset, lock_vout, cx, cy))
+    Some(CbtcLockEnvelope {
+        asset: env[1..33].try_into().ok()?,
+        lock_vout: u32::from_le_bytes(env[33..37].try_into().ok()?),
+        cx: env[37..69].try_into().ok()?,
+        cy: env[69..101].try_into().ok()?,
+        sig_rx: env[101..133].try_into().ok()?,
+        sig_ry: env[133..165].try_into().ok()?,
+        sig_z: env[165..197].try_into().ok()?,
+    })
 }
 
 /// Parsed `T_SWAP_VAR` envelope (opcode 0x32) — the public-reserve AMM swap (SPEC §5.16.3 / AMM.md).
@@ -582,6 +600,11 @@ pub struct LpAddEnvelope {
     pub share_csecp: [u8; 33],
     pub kernel_sig_a: [u8; 64],
     pub kernel_sig_b: [u8; 64],
+    /// PUBLIC blinding of the minted LP-share note: `share_c_secp` opens to the LP's share amount under it.
+    /// On-chain (option a) so the relay can fold the mint without an off-chain witness — same model as
+    /// SwapVarEnvelope::r_receipt (a key-derived blinding for a public-value reflected note; revealing it
+    /// leaks no value (the share amount is public), no key (it is a PRF output), and is not reused downstream).
+    pub share_r: [u8; 32],
     pub fee_bps: u16,
     // POOL_INIT (variant 1) pool-identity config — all feed the 6-arg pool_id (a protocol-fee or
     // capability-flagged pool gets a DISTINCT pool_id from the canonical no-skim slot). `protocol_fee_bps`
@@ -594,15 +617,17 @@ pub struct LpAddEnvelope {
 
 /// Parse a `T_LP_ADD` (0x2D) envelope. Header (worker `decodeTLpAddPayload`): opcode(1) ‖ variant(1) ‖
 /// asset_a(32) ‖ asset_b(32) ‖ delta_a(8 LE) ‖ delta_b(8) ‖ share_amount(8) ‖ share_c_secp(33) ‖ share_c_bjj(32)
-/// ‖ share_xcurve_sigma(169) ‖ kernel_sig_a(64) ‖ kernel_sig_b(64). For variant 1 (POOL_INIT) a VARIABLE-LENGTH
-/// tail follows: fee_bps(2) ‖ vkLen(1)‖vkCid ‖ cerLen(1)‖ceremonyCid ‖ arbCount(1)‖arbM(1)‖arbiterPubkeys(33·n)
+/// ‖ share_xcurve_sigma(169) ‖ kernel_sig_a(64) ‖ kernel_sig_b(64) ‖ share_r(32, option-a opening blinding).
+/// For variant 1 (POOL_INIT) a VARIABLE-LENGTH tail follows share_r: fee_bps(2) ‖ vkLen(1)‖vkCid ‖
+/// cerLen(1)‖ceremonyCid ‖ arbCount(1)‖arbM(1)‖arbiterPubkeys(33·n)
 /// ‖ lsigCount(1)‖launcherSigs(64·n) ‖ protocol_fee_address(33) ‖ protocol_fee_bps(2) ‖ metaLen(1)‖poolMetaUri ‖
 /// capability_flags(1). The reflection WALKS it to surface the four pool-identity fields (vk/ceremony/
 /// arbiter/launcher/meta bytes skipped — the arbiter fields are zero-count in v1 but always present in the
 /// wire, so the walk skips them regardless). Fails closed on any truncation.
 pub fn parse_lp_add_envelope(env: &[u8]) -> Option<LpAddEnvelope> {
     const HEADER: usize = 1 + 1 + 32 + 32 + 8 + 8 + 8 + 33 + 32 + XCURVE_SIGMA_LEN + 64 + 64; // 452
-    if env.len() < HEADER || env[0] != 0x2D {
+    const TAIL: usize = HEADER + 32; // 484 — share_r(32) sits between the header and the variant-1 tail
+    if env.len() < TAIL || env[0] != 0x2D {
         return None;
     }
     let variant = env[1];
@@ -618,7 +643,7 @@ pub fn parse_lp_add_envelope(env: &[u8]) -> Option<LpAddEnvelope> {
             *p = end;
             Some(())
         };
-        let mut p = HEADER;
+        let mut p = TAIL; // the variant-1 tail begins AFTER share_r
         let f0 = p;
         take(&mut p, 2)?;
         let fee = u16::from_le_bytes(env[f0..f0 + 2].try_into().ok()?);
@@ -663,6 +688,7 @@ pub fn parse_lp_add_envelope(env: &[u8]) -> Option<LpAddEnvelope> {
         share_csecp: env[90..123].try_into().ok()?,
         kernel_sig_a: env[324..388].try_into().ok()?,
         kernel_sig_b: env[388..452].try_into().ok()?,
+        share_r: env[HEADER..TAIL].try_into().ok()?, // 452..484
         fee_bps,
         capability_flags,
         protocol_fee_address,
@@ -671,8 +697,8 @@ pub fn parse_lp_add_envelope(env: &[u8]) -> Option<LpAddEnvelope> {
 }
 
 /// Parsed `T_LP_REMOVE` envelope (0x2E). Surfaces the secp side `fold_lp_remove` needs; the BJJ commitments
-/// + cross-curve sigmas are skipped (the reflection binds each `recv_X_secp` to the public `delta_X` by a
-/// witnessed opening, not the BJJ machinery — see ops/DESIGN-bridge-multiasset-provenance.md).
+/// + cross-curve sigmas are skipped (the reflection binds each `recv_X_secp` to the public `delta_X` by its
+/// on-chain opening blinding `r_recv_X`, not the BJJ machinery — see ops/DESIGN-bridge-multiasset-provenance.md).
 pub struct LpRemoveEnvelope {
     pub asset_a: [u8; 32],
     pub asset_b: [u8; 32],
@@ -682,16 +708,24 @@ pub struct LpRemoveEnvelope {
     pub recv_a_secp: [u8; 33],
     pub recv_b_secp: [u8; 33],
     pub kernel_sig: [u8; 64],
+    /// PUBLIC blindings of the two withdrawn notes: `recv_a_secp` opens to `delta_a` under `r_recv_a`,
+    /// `recv_b_secp` to `delta_b` under `r_recv_b`. On-chain (option a) so the relay folds without an
+    /// off-chain witness — same key-derived-blinding model as SwapVarEnvelope::r_receipt (no value/key/link
+    /// leak: the deltas are public, the blindings are PRF outputs, not reused downstream).
+    pub r_recv_a: [u8; 32],
+    pub r_recv_b: [u8; 32],
 }
 
 /// Parse a `T_LP_REMOVE` (0x2E) envelope. Layout (worker `decodeTLpRemovePayload`): opcode(1) ‖ asset_a(32) ‖
 /// asset_b(32) ‖ share_amount(8 LE) ‖ delta_a(8) ‖ delta_b(8) ‖ recv_a_secp(33) ‖ recv_a_bjj(32) ‖
 /// recv_a_xcurve_sigma(169) ‖ recv_b_secp(33) ‖ recv_b_bjj(32) ‖ recv_b_xcurve_sigma(169) ‖ kernel_sig(64) ‖
-/// proof_len(2) ‖ proof.
+/// r_recv_a(32) ‖ r_recv_b(32) ‖ proof_len(2) ‖ proof. (The two opening blindings are option-a additions
+/// between the kernel sig and the proof.)
 pub fn parse_lp_remove_envelope(env: &[u8]) -> Option<LpRemoveEnvelope> {
     const RECV_B_SECP_OFF: usize = 1 + 32 + 32 + 8 + 8 + 8 + 33 + 32 + XCURVE_SIGMA_LEN; // 323
     const KS_OFF: usize = RECV_B_SECP_OFF + 33 + 32 + XCURVE_SIGMA_LEN; // 557
-    if env.len() < KS_OFF + 64 + 2 || env[0] != 0x2E {
+    const R_OFF: usize = KS_OFF + 64; // 621 — r_recv_a, then r_recv_b
+    if env.len() < R_OFF + 64 + 2 || env[0] != 0x2E {
         return None;
     }
     Some(LpRemoveEnvelope {
@@ -703,6 +737,8 @@ pub fn parse_lp_remove_envelope(env: &[u8]) -> Option<LpRemoveEnvelope> {
         recv_a_secp: env[89..122].try_into().ok()?,
         recv_b_secp: env[RECV_B_SECP_OFF..RECV_B_SECP_OFF + 33].try_into().ok()?,
         kernel_sig: env[KS_OFF..KS_OFF + 64].try_into().ok()?,
+        r_recv_a: env[R_OFF..R_OFF + 32].try_into().ok()?,
+        r_recv_b: env[R_OFF + 32..R_OFF + 64].try_into().ok()?,
     })
 }
 
@@ -1474,6 +1510,7 @@ mod tests {
         env.extend_from_slice(&[0xccu8; 169]); // share_xcurve_sigma
         env.extend_from_slice(&ka); // kernel_sig_a
         env.extend_from_slice(&kb); // kernel_sig_b
+        env.extend_from_slice(&[0xddu8; 32]); // share_r (option-a opening blinding, between header and the variant-1 tail)
         // variant-1 tail: fee_bps + vkCid + ceremonyCid + arbiter(0) + launcher(0) + pf config + meta(0) + flags.
         env.extend_from_slice(&30u16.to_le_bytes()); // fee_bps
         env.push(3); env.extend_from_slice(&[0x66u8; 3]); // vkLen + vkCid
@@ -1492,13 +1529,14 @@ mod tests {
         assert_eq!(p.share_csecp, csc);
         assert_eq!(p.kernel_sig_a, ka);
         assert_eq!(p.kernel_sig_b, kb);
+        assert_eq!(p.share_r, [0xddu8; 32]);
         assert_eq!(p.fee_bps, 30);
         assert_eq!(p.capability_flags, 0x02);
         assert_eq!(p.protocol_fee_address, [0x02u8; 33]);
         assert_eq!(p.protocol_fee_bps, 25);
         assert!(parse_lp_add_envelope(&env[..env.len() - 1]).is_none(), "truncated variant-1 tail rejected");
-        // variant 0 (no fee_bps tail).
-        let mut env0 = env[..452].to_vec();
+        // variant 0 (no fee_bps tail) — HEADER + share_r = 484 bytes.
+        let mut env0 = env[..484].to_vec();
         env0[1] = 0;
         let p0 = parse_lp_add_envelope(&env0).expect("variant-0 lp_add parses");
         assert_eq!((p0.variant, p0.fee_bps), (0, 0));
@@ -1532,6 +1570,8 @@ mod tests {
         env.extend_from_slice(&[0x05u8; 32]); // recv_b_bjj
         env.extend_from_slice(&[0xc2u8; 169]); // recv_b_xcurve_sigma
         env.extend_from_slice(&ks); // kernel_sig
+        env.extend_from_slice(&[0xe1u8; 32]); // r_recv_a (option-a opening blinding, between kernel sig and proof)
+        env.extend_from_slice(&[0xe2u8; 32]); // r_recv_b
         env.extend_from_slice(&4u16.to_le_bytes()); // proof_len
         env.extend_from_slice(&[0xddu8; 4]); // proof
         let p = parse_lp_remove_envelope(&env).expect("lp_remove parses");
@@ -1541,6 +1581,8 @@ mod tests {
         assert_eq!(p.recv_a_secp, recv_a);
         assert_eq!(p.recv_b_secp, recv_b);
         assert_eq!(p.kernel_sig, ks);
+        assert_eq!(p.r_recv_a, [0xe1u8; 32]);
+        assert_eq!(p.r_recv_b, [0xe2u8; 32]);
         let mut bad = env.clone(); bad[0] = 0x22;
         assert!(parse_lp_remove_envelope(&bad).is_none(), "non-0x2E rejected");
     }
