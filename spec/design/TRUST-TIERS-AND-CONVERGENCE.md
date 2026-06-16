@@ -155,8 +155,16 @@ items are NOT drop-in fixes — each has a design dependency, noted inline.
   Bitcoin).** The dapp computes reserves itself by replaying the pool's
   confirmed envelopes (depth ≥ 3, canonical order), and for each op RECOMPUTES
   the curve output from its own replayed `reserves_before` + the public `deltaIn`
-  and checks the on-chain receipt/output commitment opens to it. Sound: with a
-  correct (complete) replay every commitment opens; if the worker omits or lies
+  and checks the on-chain receipt/output commitment opens to it. (That is the
+  `T_SWAP_VAR` case — cleartext `delta_in`, no proof. `T_SWAP_BATCH` —
+  confidential per-trader amounts, one Groth16 — is verified instead by checking
+  that proof against the replayed `reserves_before` as a public input: the
+  aggregate transition is proven without revealing per-trader amounts. So when
+  `T_SWAP_BATCH` ships it MUST expose `reserves_before`/`reserves_after` as public
+  signals, and the dapp MUST verify its own Groth16 against the replay rather
+  than read worker-computed reserves. Either way the client advances reserves
+  from chain alone.) Sound: with a correct (complete) replay every commitment
+  opens; if the worker omits or lies
   about an op, the client's reserves are wrong → its recomputed output ≠ the
   on-chain commitment → it rejects that op and halts. A malicious/incomplete
   worker can only cause REJECTION (liveness), never an inflated credit

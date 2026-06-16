@@ -2,22 +2,22 @@
   "note": "bridge-burn claimId/destCommitment vectors for the Solidity KAT",
   "assetId": "0xa5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5",
   "destChain": 1,
-  "bindNullifier": "0x568b16fe404cb6bcd2a0df3b6ba1b30a5cd7168fed85676e3a456d5a8c4495ce",
+  "bindNullifier": "0x290dbd123256bd35c715ed37239f1edbe70f04571c88aaa4358eb2fa9f219273",
   "count": 2,
   "crossOuts": [
     {
-      "cx": "0x2dd1a16499498a678e5bb7d48ae9e1170432c31fbafdbad7ce8907c6f7c1c498",
-      "cy": "0xfca0c4452e830b1e1fc3af5b7e49737b473037f00df07960338fc3e34c879241",
+      "cx": "0x09b455783144c59a2410e3f98af711f1efa76e92401042bf7c16c0b69d738458",
+      "cy": "0x8a48c05508849d13c484b367895a5d35003df4915979e19465add36f242c3c9f",
       "owner": "0x000000000000000000000000000000000000000000000000000000000000000b",
-      "destCommitment": "0x21b55ce0a135d7020a353b14eaebb22a534cbd30c0c01e5509b3b7ae2490b1e7",
-      "claimId": "0xbe904679721020da9223da3ee517b474addf22dd1650d7b741f96598ae4e1fa8"
+      "destCommitment": "0x0ae607159c51e21702525908482b15578583bc1fca707fb688fb1c710caf0a6c",
+      "claimId": "0x931029b41f3b5ed0694d999931f14790c0a8c81986db5062e022da3a92d31926"
     },
     {
-      "cx": "0x074f9d6502a213177a9ba3fb8bcb4e687d8cdedf52d7096f840c896cc2ddb985",
-      "cy": "0x2d0486f6e4cd20f485fd4bbaf4db7b002bde70eba94ef95a84c56886655ce622",
+      "cx": "0xbbe694e0dcea57cfca94ab3bedf27645c52b1e2b9cd023bd98142075f8968483",
+      "cy": "0x9ea26bf3b806d5bdb063377c5704af92ae033d49d9a8098e1f019e6a949e32c5",
       "owner": "0x000000000000000000000000000000000000000000000000000000000000000b",
-      "destCommitment": "0xf4dfe91cf931ab7a39ec6986cf386c9fcea585bc5550c4389fba4da732e87985",
-      "claimId": "0x897bd867a9a00e69b9617dec76034c1bea8eb430de0b521d934ff76f42837aa7"
+      "destCommitment": "0x35788922aa9c5bda38c7f79d72a54957db102f9642a06acaf4b85b6c0de0d207",
+      "claimId": "0xda8ae39647d18fbee70fcaac5d7ff57fd6edec719404faed2cae6cef0bb5ef30"
     }
   ]
 }
