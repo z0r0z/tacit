@@ -47,6 +47,22 @@ contract BitcoinLightRelayTest is TestHelper {
         r.genesis(0, TEST_TARGET, uint256(type(uint32).max) + 1, keccak256("x"), 0, 1);
     }
 
+    // A non-canonical target — one that compact-encodes to a DIFFERENT value, so
+    // no real header's bits could ever decode to it — would silently brick the
+    // relay at the first advanceTip. Genesis rejects it; the canonical target it
+    // truncates to is accepted, keeping every stored epochTarget canonical.
+    function test_genesis_rejects_noncanonical_target() public {
+        uint256 canonical = uint256(0x020f79) << 160; // == _bitsToTarget(0x17020f79)
+
+        TestLightRelay r = new TestLightRelay();
+        vm.expectRevert(BitcoinLightRelay.InvalidTarget.selector);
+        r.genesis(0, canonical | 1, 1000, keccak256("x"), 0, 1); // low bit truncated by compact
+
+        TestLightRelay r2 = new TestLightRelay();
+        r2.genesis(0, canonical, 1000, keccak256("x"), 0, 1); // canonical: accepted
+        assertEq(r2.epochTarget(0), canonical);
+    }
+
     function test_verifyBlock_single_header() public view {
         bytes memory chain = _buildChain(bytes32(0), bytes32(uint256(0xBEEF)), 1);
         bytes32 mr = relay.verifyBlock(chain, 0, 0);

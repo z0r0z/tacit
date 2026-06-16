@@ -12,7 +12,7 @@ pragma solidity ^0.8.28;
 ///         Operational notes:
 ///         - Tip advances are permissionless. Anyone can call advanceTip().
 ///         - Retargets occur every 2016 blocks. The relay must be at the exact
-///           epoch boundary (tipHeight == epoch * 2016 - 1) before retarget().
+///           epoch boundary (tipHeight == (currentEpoch + 1) * 2016 - 1) before retarget().
 ///         - Withdrawal burn-inclusion proofs (verifyBlock) anchor to the tip
 ///           or a recent ancestor within FINALITY_WINDOW, and SP1 state proofs
 ///           tolerate the same window in the verifier — so a tip advance between
@@ -59,7 +59,7 @@ contract BitcoinLightRelay {
     mapping(bytes32 => uint256) public blockHeight;
     /// @notice Header `timestamp` per block. Feeds advanceTip's median-time-past
     ///         check (Bitcoin's consensus rule: a header's ts must exceed the
-    ///         median of the last 11 ancestors' timestamps).
+    ///         median of up to the last 11 ancestors' timestamps).
     mapping(bytes32 => uint32) public blockTimestamp;
 
     bool public initialized;
@@ -103,9 +103,17 @@ contract BitcoinLightRelay {
         if (initialized) revert AlreadyInitialized();
         if (epochStart % EPOCH_LENGTH != 0) revert InvalidChainLength();
         if (target == 0 || target > MAX_TARGET) revert InvalidTarget();
+        // The target must be compact-canonical: equal to the decode of its own nBits
+        // encoding. advanceTip checks each header against _bitsToTarget(bits), and every
+        // retarget result is already compact-truncated — so a non-canonical genesis
+        // target matches no real header and silently bricks the relay at the first
+        // advance. Reject it here so a malformed checkpoint fails loud at deploy rather
+        // than locking the bridge behind an immutable contract. (This makes every stored
+        // epochTarget canonical: genesis here, retargets via _retargetTarget's round-trip.)
+        if (target != _bitsToTarget(_targetToCompact(target))) revert InvalidTarget();
         // The anchor checkpoint must be a real block with non-zero cumulative work: a zero tipHash
         // terminates the blockParent / median-time-past walks early (bytes32(0) is the walk sentinel)
-        // and a zero tipWork lets any single-block chain tie the bare anchor, so reject both.
+        // and a zero tipWork lets any single-block chain overtake the bare anchor, so reject both.
         if (tipHash == bytes32(0) || tipWork_ == 0) revert InvalidAnchor();
         // The anchor must sit inside the seeded epoch: advanceTip resolves the
         // target for (tipHeight_ + 1) / EPOCH_LENGTH, and only this epoch's
