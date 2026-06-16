@@ -73,7 +73,7 @@ reflection_suite() {
            confidential-reflection-indexer \
            confidential-reflection-unsupported-guard confidential-cbtc-lock-fold \
            confidential-swapvar-fold confidential-harvest-fold confidential-protofee-fold \
-           confidential-farminit-fold \
+           confidential-farminit-fold confidential-lpremove-fold \
            burn-deposit-provenance burn-deposit-assembler burn-deposit-tracer \
            burn-deposit-kit confidential-burn-deposit-wiring confidential-reflection-attest-burndeposit; do
     [ -f "tests/$t.mjs" ] || continue

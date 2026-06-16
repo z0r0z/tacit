@@ -142,6 +142,12 @@ fn write_stdin(f: &serde_json::Value) -> SP1Stdin {
                 path(&mut s, &sw["receiptPath"]);
                 if let Some(cp) = sw.get("changePath").filter(|v| !v.is_null()) { path(&mut s, cp); }
             }
+            // lp_remove (0x2E): the guest reads (unconditionally per 0x2E) r_recv_a, r_recv_b, then the two
+            // recv note-append paths — mirror that order.
+            if let Some(lr) = tx.get("lpRemove").filter(|v| !v.is_null()) {
+                r32(&mut s, &lr["rRecvA"]); r32(&mut s, &lr["rRecvB"]);
+                path(&mut s, &lr["recvAPath"]); path(&mut s, &lr["recvBPath"]);
+            }
             // harvest (0x3B) / farm-refund (0x3E): the guest reads the reward/refund note's append path after
             // the envelope (both dispatch after swap_var) — mirror that order.
             if let Some(hv) = tx.get("harvest").filter(|v| !v.is_null()) {

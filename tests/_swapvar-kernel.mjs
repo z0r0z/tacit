@@ -38,3 +38,13 @@ export function swapVarKernelMsg(assetHex, txidHex, vout, cChangeBytes, deltaInT
 export function swapVarKernelSig({ assetHex, txidHex, vout, cChangeBytes, deltaInTotal, rIn }) {
   return bip340Sign(swapVarKernelMsg(assetHex, txidHex, vout, cChangeBytes, deltaInTotal), rIn);
 }
+
+// LP-remove share-burn kernel: msg = domain ‖ pool_id ‖ share_amount_LE ‖ delta_a_LE ‖ delta_b_LE ‖
+// recv_a_secp(33) ‖ recv_b_secp(33) ‖ n_inputs ‖ (txid ‖ vout_LE)* — signed with the burned LP-shares' total
+// blinding r_total (verify key P = Σ C_in_LP − share_amount·H = r_total·G).
+export function lpRemoveKernelMsg({ poolIdHex, shareAmount, deltaA, deltaB, recvAHex, recvBHex, lpOutpoints }) {
+  const parts = [new TextEncoder().encode('tacit-amm-lp-remove-v1'), hb(poolIdHex), u64le(shareAmount), u64le(deltaA), u64le(deltaB), hb(recvAHex), hb(recvBHex), Uint8Array.of(lpOutpoints.length & 0xff)];
+  for (const [txidHex, vout] of lpOutpoints) { parts.push(hb(txidHex)); parts.push(u32le(vout)); }
+  return sha256(_cat(parts));
+}
+export function lpRemoveKernelSig(opts, rTotal) { return bip340Sign(lpRemoveKernelMsg(opts), rTotal); }

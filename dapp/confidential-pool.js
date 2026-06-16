@@ -307,6 +307,12 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     const keys = () => [...map.keys()].sort(); // hex sort == byte order (fixed-length keys), matching from_sorted
     function set(poolId, s) { map.set(norm(poolId), s); }
     function get(poolId) { const s = map.get(norm(poolId)); return s ? { ...s } : null; }
+    // The pool_ids whose (asset_a, asset_b) match (mirror pool_ids_for_assets) — for variant-0 LP-remove,
+    // which carries no fee_bps, so the pool is found by canonical-pair enumeration then kernel disambiguation.
+    function poolIdsForAssets(assetA, assetB) {
+      const a = norm(assetA), b = norm(assetB);
+      return keys().filter((k) => { const s = map.get(k); return norm(s.assetA) === a && norm(s.assetB) === b; });
+    }
     function root() { const t = new Tree(); for (const k of keys()) t.insert(poolLeaf(k, map.get(k))); return t.root(); }
     // The sorted entries handed to the prover (its from_sorted re-checks the order). reserve/share/k_last
     // are strings — u64/u128 exceed JS Number — so the harness parses them losslessly.
@@ -326,7 +332,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
         kLast: BigInt(e.kLast || 0), protocolFeeAccrued: BigInt(e.protocolFeeAccrued || 0),
       });
     }
-    return { set, get, root, list, load, len: () => map.size };
+    return { set, get, poolIdsForAssets, root, list, load, len: () => map.size };
   }
 
   // ── Reflection state (the Bitcoin-indexer / reflection-prover side) ──
@@ -681,8 +687,50 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
       return true;
     }
 
+    // ── Track-B lp_remove fold (mirror cxfer-core fold_lp_remove + the canonical-pair pool search) ──
+    // The LP burns its detected LP-share spends (which net to share_amount under the share-burn kernel) and
+    // withdraws the proportional (delta_a, delta_b); both withdrawn notes are onboarded (each bound to its
+    // PUBLIC delta_X by a witnessed blinding) and reserves/shares drawn down. The envelope has no fee_bps, so
+    // the pool is found by canonical-pair enumeration + kernel disambiguation. Returns the two recv note-paths,
+    // or null (skip) on any gate. `lpOutpoints` / `lpOpenings` are the detected burned LP-share spends.
+    function foldLpRemove(lr, lpOutpoints, lpOpenings, recvAOutpoint, recvBOutpoint) {
+      const [ca, cb] = ammCanonicalPair(lr.assetA, lr.assetB);
+      if (!ca) return null;
+      const swapped = hx(b32(lr.assetA)) !== ca;
+      const [daC, dbC] = swapped ? [lr.deltaB, lr.deltaA] : [lr.deltaA, lr.deltaB];
+      const [recvCa, recvCb] = swapped ? [lr.recvBSecp, lr.recvASecp] : [lr.recvASecp, lr.recvBSecp];
+      const [rca, rcb] = swapped ? [lr.rRecvB, lr.rRecvA] : [lr.rRecvA, lr.rRecvB];
+      const lpPts = lpOpenings.map((o) => secp.ProjectivePoint.fromAffine({ x: BigInt(o.cx), y: BigInt(o.cy) }));
+      // Find the pool whose pool_id makes the share-burn kernel verify (one V1 candidate per pair), then fold
+      // it (break after the first kernel-match, matching the guest — the non-kernel gates apply to that pool).
+      for (const pid of pools.poolIdsForAssets(ca, cb)) {
+        if (!lpRemoveKernelVerify(pid, lr.shareAmount, daC, dbC, recvCa, recvCb, lpOutpoints, lpPts, lr.kernelSig)) continue;
+        const pool = pools.get(pid);
+        if (!pool || !pool.c0Backed) return null;
+        crystallizeProtocolFee(pool); // crystallize BEFORE the withdrawal (Uniswap-V2 _mintFee)
+        const S = BigInt(pool.totalShares), sa = BigInt(lr.shareAmount);
+        if (S === 0n || sa === 0n || sa > S) return null;
+        const da = (BigInt(pool.reserveA) * sa) / S, db = (BigInt(pool.reserveB) * sa) / S;
+        if (da !== BigInt(daC) || db !== BigInt(dbC)) return null;       // proportional (matches the worker)
+        if (da === 0n || db === 0n) return null;
+        if (!verifyPedersenOpening(recvCa, da, rca)) return null;        // recv_a opens to delta_a (witnessed r)
+        if (!verifyPedersenOpening(recvCb, db, rcb)) return null;        // recv_b opens to delta_b
+        const A = decompressCommitment(recvCa), B = decompressCommitment(recvCb);
+        const wa = foldOutput(leaf(pool.assetA, A.cx, A.cy, CBTC_NOTE_OWNER), recvAOutpoint, commitmentHash(A.cx, A.cy), pool.assetA);
+        const wb = foldOutput(leaf(pool.assetB, B.cx, B.cy, CBTC_NOTE_OWNER), recvBOutpoint, commitmentHash(B.cx, B.cy), pool.assetB);
+        const upd = { ...pool };
+        upd.reserveA = BigInt(pool.reserveA) - da;
+        upd.reserveB = BigInt(pool.reserveB) - db;
+        upd.totalShares = S - sa;
+        upd.kLast = upd.reserveA * upd.reserveB;       // not a fee — advance k_last to the post-removal k
+        pools.set(pid, upd);
+        return { recvAPath: wa.notePath, recvBPath: wb.notePath };
+      }
+      return null;
+    }
+
     return {
-      commit, digest, foldSpent, foldOutput, foldNoteAppend, foldBurn, foldCbtcLock, foldCbtcLockSpends, foldSwapVar, foldHarvest, foldProtocolFeeClaim, foldFarmInit, setHeight,
+      commit, digest, foldSpent, foldOutput, foldNoteAppend, foldBurn, foldCbtcLock, foldCbtcLockSpends, foldSwapVar, foldHarvest, foldProtocolFeeClaim, foldFarmInit, foldLpRemove, setHeight,
       spentContains: (nu) => spent.contains(nu),
       poolRoot: () => notes.root(), spentRoot: () => spent.root(), burnRoot: () => burns.root(), liveRoot: () => live.root(),
       cbtcBackingSats: () => cbtcBackingSats, cbtcLocks,
@@ -796,6 +844,35 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
   const AMM_FARM_INIT_DOMAIN = new TextEncoder().encode('tacit-amm-farm-init-v1');
   const ammDeriveFarmId = (poolId, launcherPubkey, rewardAsset, farmNonce) =>
     hx(sha256(concat([AMM_FARM_INIT_DOMAIN, b32(poolId), hexToBytes(launcherPubkey), b32(rewardAsset), b32(farmNonce)])));
+  // Canonical asset pair (mirror amm_canonical_pair): sort the two asset-ids; returns [ca, cb] (ca < cb) or
+  // [null, null] if equal. A variant-0 LP-remove carries no fee_bps, so the pool is found by enumerating the
+  // registry for this canonical pair (pools.poolIdsForAssets) + disambiguated by which pool_id makes the kernel verify.
+  function ammCanonicalPair(a, b) {
+    const ha = hx(b32(a)), hb2 = hx(b32(b));
+    if (ha === hb2) return [null, null];
+    return BigInt(ha) < BigInt(hb2) ? [ha, hb2] : [hb2, ha];
+  }
+  // Generalized asset-scoped conservation kernel (mirror asset_scoped_kernel_verify): verify key
+  // P = Σ in − Σ out − net·H (x-only), BIP-340 over msg. The shared core of the lp_remove kernel.
+  function assetScopedKernelVerify(msg, inPts, outPts, net, sigHex) {
+    const Z = secp.ProjectivePoint.ZERO;
+    let P = inPts.reduce((a, p) => a.add(p), Z).add(outPts.reduce((a, p) => a.add(p), Z).negate());
+    if (BigInt(net) !== 0n) P = P.add(prover.H.multiply(BigInt(net)).negate());
+    if (P.equals(Z)) return false;                    // identity verify key → reject (matches Rust)
+    let sig; try { sig = hexToBytes(sigHex); } catch { return false; }
+    if (sig.length !== 64) return false;
+    return verifySchnorr(sig, msg, P.toRawBytes(true).slice(1));
+  }
+  // LP-remove share-burn kernel (mirror lp_remove_kernel_verify): the burned LP-share inputs net to EXACTLY
+  // share_amount (anti-theft — only a real shareholder withdraws). msg binds (pool_id, share_amount, delta_a,
+  // delta_b, recv_a_secp, recv_b_secp, LP input outpoints).
+  const LP_REMOVE_KERNEL_DOMAIN = new TextEncoder().encode('tacit-amm-lp-remove-v1');
+  function lpRemoveKernelVerify(poolId, shareAmount, deltaA, deltaB, recvASecp, recvBSecp, lpOutpoints, lpPts, sigHex) {
+    if (lpOutpoints.length === 0 || lpOutpoints.length > 255 || lpOutpoints.length !== lpPts.length) return false;
+    const parts = [LP_REMOVE_KERNEL_DOMAIN, b32(poolId), u64leBytes(shareAmount), u64leBytes(deltaA), u64leBytes(deltaB), hexToBytes(recvASecp), hexToBytes(recvBSecp), Uint8Array.of(lpOutpoints.length & 0xff)];
+    for (const [txid, vout] of lpOutpoints) { parts.push(b32(txid)); parts.push(u32le(vout)); }
+    return assetScopedKernelVerify(sha256(concat(parts)), lpPts, [], shareAmount, sigHex);
+  }
   // Full conservation: kernel (no inflation) AND every output in BP+ range (no wraparound). The
   // exact predicate the reflection guest re-runs before folding a cxfer's outputs (REFLECT-1).
   function verifyCxferConservation({ asset, inputOutpoints, inputPoints, outsCompressed, rangeProof, kernelSig, burned = 0 }) {
@@ -907,6 +984,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
         let swapVar = null;
         let harvest = null;
         let protocolFee = null;
+        let lpRemove = null;
         if (tx.env && tx.env.type === 'burn') {
           if (openings.length === 1) {
             // Reflected-note bridge-out: the burned note is a live pool note (already nullified above by the
@@ -1002,8 +1080,14 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
             const farmId = ammDeriveFarmId(tx.env.poolId, tx.env.launcherPubkey, tx.env.rewardAsset, tx.env.farmNonce);
             state.foldFarmInit(farmId, tx.env.rewardAsset, tx.env.rewardTotal, inOutpoints[0], cIn, tx.env.cChangeOrSentinel, tx.env.kernelSig);
           }
+        } else if (tx.env && tx.env.type === 'lp_remove') {
+          // Track-B lp_remove (0x2E): the LP's detected LP-share spends are burned; onboard the two withdrawn
+          // notes (vout 1, 2) + draw down reserves/shares. Witnesses (read unconditionally per 0x2E): r_recv_a,
+          // r_recv_b, then the two recv append paths.
+          const lw = state.foldLpRemove(tx.env, inOutpoints, openings, outpointKey(tx.txid, 1), outpointKey(tx.txid, 2));
+          if (lw) lpRemove = { rRecvA: tx.env.rRecvA, rRecvB: tx.env.rRecvB, recvAPath: lw.recvAPath, recvBPath: lw.recvBPath };
         }
-        txsOut.push({ txData: tx.txData, openings, spentInserts, burnInsert, outputs, burnDeposit, cbtcLock, swapVar, harvest, protocolFee });
+        txsOut.push({ txData: tx.txData, openings, spentInserts, burnInsert, outputs, burnDeposit, cbtcLock, swapVar, harvest, protocolFee, lpRemove });
       }
       blocksOut.push({ txs: txsOut });
       blockIndex++;
@@ -1107,7 +1191,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     liveLeaf, makeLiveUtxoSet, makeScanReflectionState, assembleReflectionScanInput,
     CBTC_ZK_ASSET_ID, CBTC_LOCK_DOMAIN, cbtcLockContext,
     cxferKernelVerify, verifyCxferConservation,
-    protocolFeeShares, crystallizeProtocolFee, ammDeriveLpAssetId, ammDeriveFarmId, isqrt,
+    protocolFeeShares, crystallizeProtocolFee, ammDeriveLpAssetId, ammDeriveFarmId, ammCanonicalPair, lpRemoveKernelVerify, isqrt,
     _internal: { keccak, concat, b32, beBytes, hx },
   };
 }
