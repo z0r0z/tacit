@@ -630,8 +630,25 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
       return { notePath: w.notePath };
     }
 
+    // ── Track-B harvest / farm-refund fold (mirror cxfer-core fold_harvest) ──
+    // A reward/refund note minted by DECREE at vout[1], drawn from a C0-backed farm treasury. The note is
+    // DERIVED from the public (amount, r): C = amount·H + r·G — so its value is exactly the treasury draw,
+    // and the treasury (reserve_a) is debited amount (≤ remaining ⇒ no inflation). Onboards the note + debits.
+    // Covers T_LP_HARVEST (0x3B) and T_FARM_REFUND (0x3E) — same shape, same fold. null (skip) on any gate.
+    function foldHarvest(farmId, amount, rHex, outpoint) {
+      const farm = pools.get(farmId);
+      if (!farm || !farm.c0Backed) return null;
+      const amt = BigInt(amount);
+      if (amt === 0n || amt > BigInt(farm.reserveA)) return null;
+      const { cx, cy } = commitXY(amt, mod(BigInt(rHex), N)); // amount·H + r·G
+      const w = foldOutput(leaf(farm.assetA, cx, cy, CBTC_NOTE_OWNER), outpoint, commitmentHash(cx, cy), farm.assetA);
+      const upd = { ...farm }; upd.reserveA = BigInt(farm.reserveA) - amt;
+      pools.set(farmId, upd);
+      return { notePath: w.notePath };
+    }
+
     return {
-      commit, digest, foldSpent, foldOutput, foldNoteAppend, foldBurn, foldCbtcLock, foldCbtcLockSpends, foldSwapVar, setHeight,
+      commit, digest, foldSpent, foldOutput, foldNoteAppend, foldBurn, foldCbtcLock, foldCbtcLockSpends, foldSwapVar, foldHarvest, setHeight,
       spentContains: (nu) => spent.contains(nu),
       poolRoot: () => notes.root(), spentRoot: () => spent.root(), burnRoot: () => burns.root(), liveRoot: () => live.root(),
       cbtcBackingSats: () => cbtcBackingSats, cbtcLocks,
@@ -819,6 +836,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
         let burnDeposit = null;
         let cbtcLock = null;
         let swapVar = null;
+        let harvest = null;
         if (tx.env && tx.env.type === 'burn') {
           if (openings.length === 1) {
             // Reflected-note bridge-out: the burned note is a live pool note (already nullified above by the
@@ -896,8 +914,13 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
             const sw = state.foldSwapVar(tx.env, inOutpoints[0], inAssets[0], outpointKey(tx.txid, 1));
             if (sw) swapVar = { receiptPath: sw.notePath };
           }
+        } else if (tx.env && (tx.env.type === 'harvest' || tx.env.type === 'farm_refund')) {
+          // Track-B harvest (0x3B) / farm-refund (0x3E): onboard the decree-minted reward/refund note (vout 1)
+          // drawn from the C0-backed farm treasury. No input spend — the note is derived from the public (amount, r).
+          const hw = state.foldHarvest(tx.env.farmId, tx.env.amount, tx.env.r, outpointKey(tx.txid, 1));
+          if (hw) harvest = { notePath: hw.notePath };
         }
-        txsOut.push({ txData: tx.txData, openings, spentInserts, burnInsert, outputs, burnDeposit, cbtcLock, swapVar });
+        txsOut.push({ txData: tx.txData, openings, spentInserts, burnInsert, outputs, burnDeposit, cbtcLock, swapVar, harvest });
       }
       blocksOut.push({ txs: txsOut });
       blockIndex++;
