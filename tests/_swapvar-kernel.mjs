@@ -48,3 +48,13 @@ export function lpRemoveKernelMsg({ poolIdHex, shareAmount, deltaA, deltaB, recv
   return sha256(_cat(parts));
 }
 export function lpRemoveKernelSig(opts, rTotal) { return bip340Sign(lpRemoveKernelMsg(opts), rTotal); }
+
+// LP-add per-asset kernel: msg = domain ‖ variant ‖ pool_id ‖ asset_x ‖ delta_x_LE ‖ share_amount_LE ‖
+// share_csecp(33) ‖ n_inputs ‖ (txid ‖ vout_LE)* — signed with the asset-X inputs' total blinding r_x
+// (verify key P = Σ C_in_x − delta_x·H = r_x·G).
+export function lpAddKernelMsg({ variant, poolIdHex, assetXHex, deltaX, shareAmount, shareCsecpHex, inputs }) {
+  const parts = [new TextEncoder().encode('tacit-amm-lp-add-v1'), Uint8Array.of(variant & 0xff), hb(poolIdHex), hb(assetXHex), u64le(deltaX), u64le(shareAmount), hb(shareCsecpHex), Uint8Array.of(inputs.length & 0xff)];
+  for (const [txidHex, vout] of inputs) { parts.push(hb(txidHex)); parts.push(u32le(vout)); }
+  return sha256(_cat(parts));
+}
+export function lpAddKernelSig(opts, rX) { return bip340Sign(lpAddKernelMsg(opts), rX); }
