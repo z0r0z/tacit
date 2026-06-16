@@ -131,6 +131,11 @@ fn write_stdin(f: &serde_json::Value) -> SP1Stdin {
                 path(&mut s, &bi["bLowPath"]); path(&mut s, &bi["bNewPath"]);
             }
             for o in tx["outputs"].as_array().unwrap() { path(&mut s, &o["notePath"]); }
+            // cBTC.zk sats-lock (0x66): the guest reads note_path + the opening sigma (rx,ry,z) after the
+            // envelope parse — mirror that order here so the witness stream stays in sync.
+            if let Some(cb) = tx.get("cbtcLock").filter(|v| !v.is_null()) {
+                path(&mut s, &cb["notePath"]); r32(&mut s, &cb["sigRx"]); r32(&mut s, &cb["sigRy"]); r32(&mut s, &cb["sigZ"]);
+            }
         }
     }
     s
@@ -161,4 +166,11 @@ fn main() {
     println!("bitcoinSpentRoot new={}", word(pv, 2));
     if new_burn != prior_burn { println!("BURN FOLDED ✓ (burn-set advanced — the burn-deposit recorded ν → dest)"); }
     else { println!("burn-set UNCHANGED (nothing folded)"); }
+    // Guest↔JS digest parity: the fixture carries the JS assembler's newDigest; the guest must land on it.
+    let new_digest = word(pv, 5);
+    let expected = f["newDigest"].as_str().unwrap_or("").to_lowercase();
+    if !expected.is_empty() {
+        if new_digest == expected { println!("DIGEST_MATCH ✓ guest newDigest == JS assembler ({new_digest})"); }
+        else { eprintln!("DIGEST_MISMATCH ✗ guest={new_digest} js={expected}"); std::process::exit(1); }
+    }
 }

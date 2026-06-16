@@ -756,8 +756,12 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
           state.live.remove(key);
           coords.delete(norm(key));
         }
+        // cBTC.zk self-custody rug: drop the backing of any tracked lock outpoint this tx spends (mirror
+        // the guest's fold_cbtc_lock_spends, run after the vin scan, before the envelope folds). No witness.
+        state.foldCbtcLockSpends(tx.vins || []);
         let burnInsert = null;
         let burnDeposit = null;
+        let cbtcLock = null;
         if (tx.env && tx.env.type === 'burn') {
           if (openings.length === 1) {
             // Reflected-note bridge-out: the burned note is a live pool note (already nullified above by the
@@ -820,8 +824,15 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
           // un-chainable digest. Surface it (loud) so the attester refuses rather than attest a divergent
           // root. Removing an entry here = implementing that fold in the scan state + this assembler.
           unsupportedEnvelopes.push({ txid: tx.txid, opcode: tx.env.opcode });
+        } else if (tx.env && tx.env.type === 'cbtc_lock') {
+          // cBTC.zk sats-lock: fold the lock (gate + track + append the owner-free note) and emit the
+          // witness the guest reads after the 0x66 envelope (note path + the opening sigma rx/ry/z). The
+          // sigma is locker-supplied (in `env` here; the live worker sources it like a burn-deposit bundle,
+          // and must parse `vBtc` from txData rather than trust the caller). lockTxid = the lock tx's txid.
+          const w = state.foldCbtcLock({ asset: tx.env.asset, cx: tx.env.cx, cy: tx.env.cy, vBtc: tx.env.vBtc, lockVout: tx.env.lockVout, lockTxid: tx.txid, sigRx: tx.env.sigRx, sigRy: tx.env.sigRy, sigZ: tx.env.sigZ });
+          if (w) cbtcLock = { notePath: w.notePath, sigRx: tx.env.sigRx, sigRy: tx.env.sigRy, sigZ: tx.env.sigZ };
         }
-        txsOut.push({ txData: tx.txData, openings, spentInserts, burnInsert, outputs, burnDeposit });
+        txsOut.push({ txData: tx.txData, openings, spentInserts, burnInsert, outputs, burnDeposit, cbtcLock });
       }
       blocksOut.push({ txs: txsOut });
       blockIndex++;
