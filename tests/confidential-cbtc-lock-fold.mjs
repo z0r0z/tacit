@@ -9,6 +9,7 @@
 import { keccak_256 } from '../node_modules/@noble/hashes/sha3.js';
 import * as secp from '../node_modules/@noble/secp256k1/index.js';
 import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { makeConfidentialPool } from '../dapp/confidential-pool.js';
 
 const sha256 = (b) => new Uint8Array(createHash('sha256').update(Buffer.from(b)).digest());
@@ -16,6 +17,13 @@ const pool = makeConfidentialPool({ secp, keccak256: keccak_256, sha256 });
 let failures = 0;
 const eq = (a, b, m) => { if (a !== b) { console.error(`FAIL ${m}\n  got ${a}\n  exp ${b}`); failures++; } else console.log(`ok   ${m}`); };
 const ok = (c, m) => { if (!c) { console.error(`FAIL ${m}`); failures++; } else console.log(`ok   ${m}`); };
+
+// ── Rust↔JS constant pin: the dapp's cBTC constants MUST match the protocol (cxfer-core), else the lock
+// context / asset gate silently desyncs from the guest (cf. the REFLECTION_GENESIS_DIGEST three-way pin). ──
+const rustSrc = readFileSync(new URL('../contracts/sp1/confidential/cxfer-core/src/lib.rs', import.meta.url), 'utf8');
+const rustAsset = '0x' + [...rustSrc.match(/CBTC_ZK_ASSET_ID: \[u8; 32\] = \[([\s\S]*?)\];/)[1].matchAll(/0x([0-9a-fA-F]{2})/g)].map((m) => m[1]).join('');
+eq(pool.CBTC_ZK_ASSET_ID, rustAsset, 'CBTC_ZK_ASSET_ID == the protocol (cxfer-core) const, byte-for-byte');
+eq(new TextDecoder().decode(pool.CBTC_LOCK_DOMAIN), rustSrc.match(/CBTC_LOCK_DOMAIN: &\[u8\] = b"([^"]+)"/)[1], 'CBTC_LOCK_DOMAIN == the protocol const');
 
 const asset = pool.CBTC_ZK_ASSET_ID;
 const lockTxid = '0x' + 'a7'.repeat(32);

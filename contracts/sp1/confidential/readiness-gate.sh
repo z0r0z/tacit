@@ -71,6 +71,7 @@ reflection_suite() {
            confidential-reflection-attest-scan confidential-reflection-conservation \
            confidential-reflection-state confidential-reflection-witness \
            confidential-reflection-indexer \
+           confidential-reflection-unsupported-guard confidential-cbtc-lock-fold \
            burn-deposit-provenance burn-deposit-assembler burn-deposit-tracer \
            burn-deposit-kit confidential-burn-deposit-wiring confidential-reflection-attest-burndeposit; do
     [ -f "tests/$t.mjs" ] || continue

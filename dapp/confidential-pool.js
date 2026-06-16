@@ -923,7 +923,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     utxoLeaf, makeUtxoAccumulator, commitmentHash, decompressCommitment, compressXY, outpointKey,
     makeReflectionState, assembleReflectionInput, openingSigma, verifyOpeningSigma, deriveOpeningNonce, intentContext,
     liveLeaf, makeLiveUtxoSet, makeScanReflectionState, assembleReflectionScanInput,
-    CBTC_ZK_ASSET_ID, cbtcLockContext,
+    CBTC_ZK_ASSET_ID, CBTC_LOCK_DOMAIN, cbtcLockContext,
     cxferKernelVerify, verifyCxferConservation,
     _internal: { keccak, concat, b32, beBytes, hx },
   };
