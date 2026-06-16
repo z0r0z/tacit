@@ -302,6 +302,56 @@ function parseSwapBatchEnvelope(envHex) {
   } catch { return null; }
 }
 
+// ── Track-B AMM op parsers (mirror cxfer-core parse_*_envelope) → the assembler's env shape. These ops' fold
+// data is FULLY on-chain (kernel sigs, PUBLIC blindings, commitments in the envelope; the note-tree append
+// paths are indexer-derived), so the live classifier can route them. (lp_add / lp_remove / cBTC also fold but
+// read OFF-CHAIN witnesses — share_r / r_recv / the opening sigma, via the guest's r32() — so they stay
+// guard-deferred until a witness-source is built; swap_batch needs the indexer's async Groth16 pre-verify.) A
+// wrong parse is fail-loud (the guest re-parses txData + is authoritative), never a wrong attestation.
+const _u64le = (e, o) => { let v = 0n; for (let i = 7; i >= 0; i--) v = (v << 8n) | BigInt(e[o + i]); return v.toString(); };
+const _h = (e, a, b) => bytesToHex(e.subarray(a, b));
+
+function parseSwapVarEnvelope(envHex) {
+  const e = hexToBytes(envHex);
+  if (e[0] !== 0x32 || e.length < 269) return null;
+  const rpLen = e[267] | (e[268] << 8), ks = 269 + rpLen;
+  if (e.length < ks + 64) return null;
+  return { type: 'swap_var', poolId: _h(e, 1, 33), direction: e[33], rAPre: _u64le(e, 34), rBPre: _u64le(e, 42), deltaIn: _u64le(e, 50), deltaOut: _u64le(e, 74), tipAmount: _u64le(e, 90), cIn: _h(e, 136, 169), cChangeOrSentinel: _h(e, 169, 202), cReceipt: _h(e, 202, 235), rReceipt: _h(e, 235, 267), kernelSig: _h(e, ks, ks + 64) };
+}
+function parseSwapRouteEnvelope(envHex) {
+  const e = hexToBytes(envHex);
+  if (e[0] !== 0x33) return null;
+  const n = e[1]; if (n < 2 || n > 4) return null;
+  let p = 111; const hops = [];
+  for (let i = 0; i < n; i++) { const s = p; p += 67; if (p > e.length) return null; hops.push({ poolId: _h(e, s, s + 32), direction: e[s + 32], rAPre: _u64le(e, s + 35), rBPre: _u64le(e, s + 43), deltaANetMag: _u64le(e, s + 51), deltaBNetMag: _u64le(e, s + 59) }); }
+  p += 36; // trader_input_outpoint (the fold uses the detected spend, not this)
+  const cIn = _h(e, p, p + 33); p += 33;
+  const cReceipt = _h(e, p, p + 33); p += 33;
+  const rReceipt = _h(e, p, p + 32); p += 32;
+  const rpLen = e[p] | (e[p + 1] << 8); p += 2 + rpLen;
+  if (p + 64 > e.length) return null;
+  return { type: 'swap_route', traderInputAsset: _h(e, 2, 34), traderOutputAsset: _h(e, 34, 66), hops, cIn, cReceipt, rReceipt, kernelSig: _h(e, p, p + 64) };
+}
+function parseHarvestEnvelope(envHex) {
+  const e = hexToBytes(envHex);
+  if (e[0] === 0x3b && e.length === 226) return { type: 'harvest', farmId: _h(e, 1, 33), amount: _u64le(e, 122), r: _h(e, 130, 162) };       // T_LP_HARVEST
+  if (e[0] === 0x3e && e.length === 174) return { type: 'farm_refund', farmId: _h(e, 1, 33), amount: _u64le(e, 66), r: _h(e, 78, 110) };     // T_FARM_REFUND (same fold)
+  return null;
+}
+function parseProtocolFeeClaimEnvelope(envHex) {
+  const e = hexToBytes(envHex);
+  if (e[0] !== 0x31 || e.length !== 202) return null;
+  return { type: 'protocol_fee_claim', poolId: _h(e, 1, 33), amount: _u64le(e, 65), cSecp: _h(e, 73, 106), blinding: _h(e, 106, 138) };
+}
+function parseFarmInitEnvelope(envHex) {
+  const e = hexToBytes(envHex);
+  const HDR = 1 + 32 + 32 + 33 + 32 + 8 + 8 + 4 + 4 + 33; // 187 = rp_len offset
+  if (e[0] !== 0x34 || e.length < HDR + 2) return null;
+  const rpLen = e[HDR] | (e[HDR + 1] << 8), ks = HDR + 2 + rpLen;
+  if (e.length < ks + 64) return null;
+  return { type: 'farm_init', poolId: _h(e, 1, 33), farmNonce: _h(e, 33, 65), launcherPubkey: _h(e, 65, 98), rewardAsset: _h(e, 98, 130), rewardTotal: _u64le(e, 130), cChangeOrSentinel: _h(e, 154, 187), kernelSig: _h(e, ks, ks + 64) };
+}
+
 // classifyConfidentialTx(rawTxHex) → the reflection scan's per-tx classification, MIRRORING the guest's
 // reflect.rs (extract_taproot_envelope → parse_burn_envelope / parse_cxfer_envelope_full): a confidential
 // bridge-burn → {type:'burn', dest}; a confidential transfer → {type:'cxfer', assetId, commitments,
@@ -318,20 +368,25 @@ function classifyConfidentialTx(rawTxHex) {
   // A preauth-bid fill (0x5B/0x5C) folds via the SAME cxfer fold; its notes start at vout[1] (voutBase 1).
   const bid = parsePreauthBidEnvelope(envHex);
   if (bid) return { type: 'cxfer', assetId: bid.asset, commitments: bid.commitments, kernelSig: bid.kernelSig, rangeProof: bid.rangeProof, voutBase: 1 };
+  // Track-B AMM ops whose fold data is FULLY on-chain (the indexer derives only the note paths) → route them
+  // to their fold; the assembler advances the pool registry / onboards the receipt. Decode == the assembler's env.
+  const amm = parseSwapVarEnvelope(envHex) || parseSwapRouteEnvelope(envHex) || parseHarvestEnvelope(envHex)
+    || parseProtocolFeeClaimEnvelope(envHex) || parseFarmInitEnvelope(envHex);
+  if (amm) return amm;
   // env[0] is the opcode (the TACIT frame is already stripped). cetch (0x21) / cmint (0x24) create a note
   // but the conservation-closed full scan does NOT fold them (no free-output deposit path), so the guest
-  // treats them as plain too — safe. EVERY OTHER Tacit op (AMM lp/swap/route/batch/farm/protocol-fee,
-  // cBTC lock, crossout) IS folded by the guest (reflect.rs reads its fold witnesses) but is NOT yet routed
-  // here, so it must SURFACE such a tx, not silently treat it as plain —
-  // otherwise the guest reads fold witnesses this scan never emitted and the whole batch's stream desyncs
-  // (a wrong / un-chainable digest). Fail-loud: the attester refuses the batch (liveness, not soundness —
-  // the guest is authoritative). Mirroring a fold here is what lets the corresponding op attest.
+  // treats them as plain too — safe. The STILL-deferred guest-folded ops: lp_add (0x2D) / lp_remove (0x2E) /
+  // cBTC lock (0x66) read OFF-CHAIN witnesses (share_r / r_recv / the opening sigma) the indexer can't source
+  // yet; swap_batch (0x2F) needs the indexer's async Groth16 pre-verify (the foldSwapBatch hook); crossout. These
+  // must SURFACE (not be treated as plain) — else the guest reads fold witnesses this scan never emitted and the
+  // batch's stream desyncs. Fail-loud: the attester refuses the batch (liveness, not soundness — the guest is
+  // authoritative). Mirroring a fold + routing it here is what lets the corresponding op attest.
   const opcode = hexToBytes(envHex)[0];
   if (opcode === 0x21 || opcode === 0x24) return null; // cetch / cmint — created-but-not-folded (plain)
   return { type: 'unsupported', opcode };
 }
 
-export { readVarint, extractInputs, extractTaprootEnvelope, parseCetch, parseCmint, parseBurnEnvelope, parseCxferEnvelopeFull, parsePreauthBidEnvelope, parseSwapBatchEnvelope, classifyConfidentialTx };
+export { readVarint, extractInputs, extractTaprootEnvelope, parseCetch, parseCmint, parseBurnEnvelope, parseCxferEnvelopeFull, parsePreauthBidEnvelope, parseSwapBatchEnvelope, parseSwapVarEnvelope, parseSwapRouteEnvelope, parseHarvestEnvelope, parseProtocolFeeClaimEnvelope, parseFarmInitEnvelope, classifyConfidentialTx };
 
 // Build the burnDepositKit the worker injects (buildScanReflectionAttester → makeScanReflectionIndexer).
 // Sources every crypto primitive from the SAME modules the pool/guest use (so verdicts match byte-for-byte)

@@ -1,9 +1,9 @@
 #!/usr/bin/env node
-// Fail-loud guard: the reflection scan must SURFACE (never silently treat as plain) any Tacit envelope
-// the guest folds but the live classifier does not yet route (the AMM lp/swap/route/batch, farm,
-// protocol-fee claim, cBTC lock, crossout folds are mirrored in the reflection assembler but not yet wired
-// into classifyConfidentialTx; bid + AXFER already route via the cxfer fold). It tags them {type:'unsupported'};
-// the assembler
+// Fail-loud guard: the reflection scan must SURFACE (never silently treat as plain) any Tacit envelope the
+// guest folds but the live classifier does not yet route. The on-chain AMM ops (swap_var/swap_route/harvest/
+// farm_refund/protocol_fee/farm_init) + bid + AXFER + cxfer now ROUTE; STILL deferred (→ 'unsupported'): lp_add
+// (0x2D) / lp_remove (0x2E) / cBTC lock (0x66) read off-chain witnesses no source supplies yet, swap_batch
+// (0x2F) needs the async Groth16 pre-verify hook, and crossout. It tags those {type:'unsupported'}; the assembler
 // collects them in `unsupportedEnvelopes`; the attester REFUSES the batch — so the relay halts loud rather
 // than attest a divergent (witness-desynced) root. The guest is authoritative, so this is liveness, never
 // soundness. Run: node tests/confidential-reflection-unsupported-guard.mjs
@@ -48,11 +48,12 @@ function tacitTx(body) {
 const lp = classifyConfidentialTx(tacitTx([0x2D, 1, 2, 3, 4])); // T_LP_ADD
 eq(lp && lp.type, 'unsupported', 'lp_add (0x2D) → unsupported');
 eq(lp && lp.opcode, 0x2D, 'lp_add opcode surfaced for the operator');
-eq(classifyConfidentialTx(tacitTx([0x66, 9, 9]))?.type, 'unsupported', 'cBTC lock (0x66) → unsupported');
-eq(classifyConfidentialTx(tacitTx([0x32, 0]))?.type, 'unsupported', 'swap_var (0x32) → unsupported');
-eq(classifyConfidentialTx(tacitTx([0x33, 0]))?.type, 'unsupported', 'swap_route (0x33) → unsupported');
-eq(classifyConfidentialTx(tacitTx([0x31, 0]))?.type, 'unsupported', 'protocol_fee_claim (0x31) → unsupported');
-eq(classifyConfidentialTx(tacitTx([0x3E, 0]))?.type, 'unsupported', 'farm_refund (0x3E) → unsupported');
+eq(classifyConfidentialTx(tacitTx([0x66, 9, 9]))?.type, 'unsupported', 'cBTC lock (0x66) → unsupported (off-chain opening sigma)');
+eq(classifyConfidentialTx(tacitTx([0x2E, 0]))?.type, 'unsupported', 'lp_remove (0x2E) → unsupported (off-chain r_recv witness)');
+eq(classifyConfidentialTx(tacitTx([0x2F, 0]))?.type, 'unsupported', 'swap_batch (0x2F) → unsupported (needs the async Groth16 pre-verify hook)');
+// The on-chain AMM ops (swap_var 0x32 / swap_route 0x33 / harvest 0x3B / farm_refund 0x3E / protocol_fee 0x31 /
+// farm_init 0x34) NOW ROUTE to their folds — see tests/confidential-amm-classify.mjs (a full envelope parses to
+// the fold env; a malformed stub still falls through to 'unsupported', which is fine — the guest re-parses txData).
 // AXFER (atomic settlement) folds via the SAME parse_cxfer_envelope_full → fold_cxfer as cxfer, so the JS
 // mirrors it as 'cxfer' (identical fold → digest parity). A minimal valid cxfer body: opcode ‖ asset(32) ‖
 // kernelSig(64) ‖ N=1 ‖ commitment(33) ‖ amount_ct(8) ‖ rpLen=0.

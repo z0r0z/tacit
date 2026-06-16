@@ -124,10 +124,16 @@ export function makeScanReflectionIndexer({ secp, keccak256, sha256, ownerTag, b
       // NOT yet reflect it (no free-output deposit path); surface it so the assembler can flag the
       // un-onboarded value rather than silently treating the tx as plain.
       env = { type: 'mint', assetId: tx.decode.assetId };
+    } else if (tx.decode && ['swap_var', 'swap_route', 'harvest', 'farm_refund', 'protocol_fee_claim', 'farm_init'].includes(tx.decode.type)) {
+      // Track-B AMM ops whose fold data is fully on-chain (classifyConfidentialTx parsed it) — the assembler's
+      // foldSwapVar/foldSwapRoute/foldHarvest/foldProtocolFeeClaim/foldFarmInit advance the pool registry +
+      // onboard the receipt (deriving the note paths). The decode IS the env shape those folds read.
+      env = tx.decode;
     } else if (tx.decode && tx.decode.type === 'unsupported') {
-      // A Tacit envelope the guest folds but the JS scan does not yet mirror (AMM lp/swap/route/batch,
-      // farm, protocol-fee claim, cBTC lock, bid, crossout, AXFER). Surface it so the assembler flags the
-      // batch + the attester refuses — the guest would read fold witnesses this scan can't emit (a desync).
+      // A Tacit envelope the guest folds but the JS scan does not yet route: lp_add (0x2D) / lp_remove (0x2E) /
+      // cBTC lock (0x66) read off-chain witnesses (share_r / r_recv / opening sigma) no source supplies yet;
+      // swap_batch (0x2F) needs the async Groth16 pre-verify hook; crossout. Surface it so the assembler flags
+      // the batch + the attester refuses — the guest would read fold witnesses this scan can't emit (a desync).
       env = { type: 'unsupported', opcode: tx.decode.opcode };
     }
     return { txData: withHex(tx.rawHex), txid, vins, env };
