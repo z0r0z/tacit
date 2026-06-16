@@ -251,6 +251,25 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     // commits to the same id; first-write-wins, so it cannot be squatted to misroute a payout.
     mapping(bytes32 => bytes32) public localAssetOf;
 
+    // ──────────────────── Adaptor-swap lock set (OP_ADAPTOR_LOCK/CLAIM/REFUND) ────────────────────
+    // Declared at the END of storage so the existing slot layout is unchanged (crossOutCommitment stays
+    // at its slot, which the reverse-reflection prover reads via eth_getProof).
+
+    // A locked note (the confidential conditional-spend leg of an atomic swap) lives in a SEPARATE
+    // incremental-Merkle accumulator, never the note tree — so no OP_TRANSFER can spend it; only a
+    // deadline-gated OP_ADAPTOR_CLAIM / OP_ADAPTOR_REFUND, which the guest proves against a known lock
+    // root. Value conserves lock→claim/refund (the kernel), and the claim/refund OUTPUT is the note-tree
+    // leaf that carries the value back out — so the lock set adds no note-tree leaves and never touches
+    // the reserve floor. Same Keccak hashing + depth as the note tree (shares `zeros`).
+    uint256 public lockNextLeafIndex;
+    bytes32 public lockRoot;
+    bytes32[TREE_LEVELS] public lockFilledSubtrees;
+    mapping(bytes32 => bool) public everKnownLockRoot;
+    // ν of locked notes already claimed or refunded — spend-once (claim XOR refund). A namespace
+    // distinct from `nullifierSpent`: a locked note was never a note-tree leaf, so a claim/refund must
+    // neither be gated by nor consume the note-tree nullifier set.
+    mapping(bytes32 => bool) public lockSpent;
+
     // ──────────────────── Public-values layout ────────────────────
 
     // Boundary effects speak the in-system note value `v`; the contract scales it to
@@ -293,6 +312,13 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         SwapSettlement[] swaps;        // confidential AMM batches (OP_SWAP): pre→post pool reserves
         LpSettlement[] liquidity;      // confidential LP (OP_LP_ADD/REMOVE): pre→post reserves + totalShares
         uint64 deadline;               // settle expiry (unix secs); 0 = none. The guest commits the earliest op deadline
+        // Adaptor-swap leg (OP_ADAPTOR_LOCK/CLAIM/REFUND): a confidential, deadline-gated conditional
+        // spend. A locked note lives in a SEPARATE accumulator (below), never the note tree.
+        bytes32 lockSetRoot;           // lock-set root a claim/refund proved membership against (0 = none)
+        bytes32[] lockLeaves;          // new locked notes appended by OP_ADAPTOR_LOCK
+        bytes32[] lockNullifiers;      // locked-note ν spent by claim/refund (spend-once, claim XOR refund)
+        bytes32[] adaptorClaimS;       // each claim's completed kernel s (off-chain t-reveal; no ETH value)
+        uint64 refundNotBefore;        // latest refund deadline in the batch; a refund settles only at/after it
     }
 
     // ──────────────────── Events ────────────────────
@@ -322,9 +348,16 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     event PoolInitialized(bytes32 indexed poolId, bytes32 assetA, bytes32 assetB, uint256 reserveA, uint256 reserveB, uint32 feeBps);
     event SwapSettled(bytes32 indexed poolId, uint256 reserveA, uint256 reserveB);
     event LiquidityChanged(bytes32 indexed poolId, uint256 reserveA, uint256 reserveB, uint256 totalShares);
+    // A locked note (OP_ADAPTOR_LOCK) was appended to the lock-set accumulator — data availability for
+    // the recipient/locker to track the set (the lock fields themselves travel off-chain).
+    event LockLeavesInserted(uint256 indexed firstLockLeafIndex, bytes32[] lockLeaves);
+    // A claim revealed its completed kernel s — the channel the Bitcoin counterparty reads to extract
+    // the adaptor secret t = σ·(s − s̃). No Ethereum value meaning, no state.
+    event AdaptorClaimsRevealed(bytes32[] completedKernelS);
 
     // ──────────────────── Errors ────────────────────
 
+    error Expired();
     error ZeroVKey();
     error SameAsset();
     error BadVersion();
@@ -335,17 +368,21 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     error UnknownRoot();
     error ZeroAddress();
     error NotAContract();
+    error WrongEthPool();
     error ChainMismatch();
     error DepositExists();
     error NotRegistered();
     error PoolNotMinter();
     error CanonicalAsset();
     error MerkleTreeFull();
+    error RefundTooEarly();
     error StaleRelayProof();
+    error UnknownLockRoot();
     error ValueOutOfRange();
     error AmountNotAligned();
     error CrossChainEscrow();
     error EthValueMismatch();
+    error LockAlreadySpent();
     error MemoLeafMismatch();
     error AlreadyRegistered();
     error BurnAlreadyMinted();
@@ -355,22 +392,20 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     error UnknownBitcoinRoot();
     error CrossChainLinkTaken();
     error PoolReserveMismatch();
-    error ConstantProductDecreased();
     error ZeroBitcoinPoolRoot();
     error StaleBitcoinBurnRoot();
     error UnanchoredReflection();
     error BridgeBurnNotEthHomed();
     error CrossOutClaimMismatch();
-    error CrossOutNullifierNotSpent();
     error NullifierAlreadySpent();
     error StaleBitcoinSpentRoot();
     error StaleReflectionDigest();
     error CrossChainTokenMismatch();
+    error ConstantProductDecreased();
     error FeeOnTransferUnsupported();
+    error CrossOutNullifierNotSpent();
     error BadReflectionConfirmations();
     error BtcHomedValueExitMustBridge();
-    error WrongEthPool();
-    error Expired();
 
     // ──────────────────── Constructor ────────────────────
 
@@ -416,10 +451,15 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         for (uint256 i; i < TREE_LEVELS; ++i) {
             zeros[i] = z;
             filledSubtrees[i] = z;
+            lockFilledSubtrees[i] = z;
             z = _hash(z, z);
         }
         currentRoot = z;
         everKnownRoot[z] = true;
+        // The lock set is an independent tree with the same empty root; seed it identically so the first
+        // claim/refund can pin a known (initially empty) lock root.
+        lockRoot = z;
+        everKnownLockRoot[z] = true;
     }
 
     /// Reject stray ETH: native ETH may only enter through the payable `wrap`, which binds it to a
@@ -775,6 +815,11 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         // Expired: a proof carrying a deadline can't be relayed past it (0 = no expiry). The guest commits
         // the earliest op deadline + binds it in each trader's sigma, so the box can't alter or sit on it.
         if (pv.deadline != 0 && block.timestamp > pv.deadline) revert Expired();
+        // Adaptor REFUND is the ≥ mirror of the deadline ≤ gate above: a refund of a locked note may
+        // settle only at/after the lock's deadline (the guest commits the latest refund deadline in the
+        // batch; 0 = no refund here). With the ≤ gate covering CLAIM (settle-before-deadline), this gives
+        // claim-XOR-refund exclusivity on the verified chain time.
+        if (pv.refundNotBefore != 0 && block.timestamp < pv.refundNotBefore) revert RefundTooEarly();
         // Membership may be proven against an Ethereum root OR a reflected Bitcoin
         // confidential-pool root (cross-lane: a Bitcoin-homed note spent on
         // the Ethereum fast lane). Both are oracle/relay-attested.
@@ -818,9 +863,23 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         // symmetric forward reflection still lets a note be spent on both lanes within the mutual lag.)
         // depositsConsumed is barred too: a consumed EVM deposit must materialize as a leaf (which IS
         // barred here), so a btcHomed batch consuming one could only strand the depositor's escrow.
+        // lockLeaves/lockNullifiers are value-exits too: locking a Bitcoin-homed note (lockLeaves) moves
+        // its value into the EVM lock set (claimable to an EVM note) while its Bitcoin UTXO stays live —
+        // the same duplication the bar prevents; and a claim/refund mints an EVM output. So a btcHomed
+        // batch must carry neither (a Bitcoin-homed note reaches Ethereum only via bridge_burn→mint).
         if (btcHomed && (pv.withdrawals.length != 0 || pv.fees.length != 0 || pv.leaves.length != 0
-            || pv.swaps.length != 0 || pv.liquidity.length != 0 || pv.depositsConsumed.length != 0)) {
+            || pv.swaps.length != 0 || pv.liquidity.length != 0 || pv.depositsConsumed.length != 0
+            || pv.lockLeaves.length != 0 || pv.lockNullifiers.length != 0)) {
             revert BtcHomedValueExitMustBridge();
+        }
+        // The lock-set root a claim/refund proved membership against must be a known lock root (the
+        // empty-set root or one this contract has advanced) — so a forged lock set carrying an
+        // attacker-authored locked note cannot authorize a claim/refund (mint from nothing). A batch that
+        // spends a locked note (lockNullifiers non-empty) MUST pin a known, NON-ZERO lock root; a
+        // lock-only batch (appends, no claim) may carry a zero root it never proved membership against.
+        if (pv.lockSetRoot != bytes32(0) && !everKnownLockRoot[pv.lockSetRoot]) revert UnknownLockRoot();
+        if (pv.lockNullifiers.length != 0 && (pv.lockSetRoot == bytes32(0) || !everKnownLockRoot[pv.lockSetRoot])) {
+            revert UnknownLockRoot();
         }
         // bridge_mint authorizes a mint on the burned note's MEMBERSHIP in the dedicated
         // bridge-burn set, pinned to the CURRENT reflected root. A non-zero burn root must
@@ -841,6 +900,25 @@ contract ConfidentialPool is ReentrancyGuardTransient {
             nullifierSpent[n] = true;
         }
         if (pv.nullifiers.length != 0) emit NullifiersSpent(pv.nullifiers);
+
+        // Adaptor lock-set effects. Spend each locked note once (the spend-once gate: claim XOR refund,
+        // and never twice — including within one batch via set-then-check), then append the batch's new
+        // locked notes to the lock-set accumulator (advancing the lock root a later claim/refund pins).
+        // Lock leaves are NOT note-tree leaves (domain-separated in-guest), so they never touch
+        // nextLeafIndex or the reserve floor; the claim/refund OUTPUT note is the note-tree leaf carrying
+        // the value, inserted with the rest in pv.leaves.
+        for (uint256 i; i < pv.lockNullifiers.length; ++i) {
+            bytes32 l = pv.lockNullifiers[i];
+            if (lockSpent[l]) revert LockAlreadySpent();
+            lockSpent[l] = true;
+        }
+        if (pv.lockLeaves.length != 0) {
+            uint256 firstLockLeafIndex = lockNextLeafIndex;
+            for (uint256 i; i < pv.lockLeaves.length; ++i) _insertLockLeaf(pv.lockLeaves[i]);
+            everKnownLockRoot[lockRoot] = true;
+            emit LockLeavesInserted(firstLockLeafIndex, pv.lockLeaves);
+        }
+        if (pv.adaptorClaimS.length != 0) emit AdaptorClaimsRevealed(pv.adaptorClaimS);
         // No-inflation floor: count EVM-homed spends (Bitcoin-homed cross-lane spends are backed by the
         // reflected Bitcoin tree, not this one). The post-insert invariant below caps total EVM spends at
         // total EVM leaves created — a guest/vkey compromise can't spend more notes than were created here.
@@ -1048,9 +1126,15 @@ contract ConfidentialPool is ReentrancyGuardTransient {
             // scale cannot enable a scale-poison drain: a pool-minted asset has NO escrow and the
             // canonical ERC20 is pool-minted, so a squatter holds zero balance and could not have
             // wrapped (or pool-funded) any note — there is no outstanding value at the old scale.
-            assets[internalId].unitScale = unitScale;
-            assets[internalId].crossChainLink = m.assetId;
+            Asset storage healed = assets[internalId];
+            healed.unitScale = unitScale;
+            healed.crossChainLink = m.assetId;
+            // Overwrite the squat's display name/symbol with the canonical brand + guest-proven ticker
+            // so getAsset() matches the token; re-emit so indexers upsert the corrected record.
+            healed.name = "Tacit Token";
+            healed.symbol = symbol_;
             localAssetOf[m.assetId] = internalId;
+            emit AssetRegistered(internalId, token, unitScale, "Tacit Token", symbol_, ETH_DECIMALS);
             return;
         }
         if (IMintBurn(token).MINTER() != address(this)) return; // not our token
@@ -1131,6 +1215,22 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         }
         currentRoot = h;
         nextLeafIndex++;
+    }
+
+    /// Append a locked note to the lock-set accumulator — identical machinery to `_insertLeaf` on the
+    /// independent lock tree (shares `zeros` + `_hash`; depth-bounded by MAX_LEAVES). A locked note is
+    /// never a note-tree leaf, so the two trees stay disjoint.
+    function _insertLockLeaf(bytes32 leaf) internal {
+        if (lockNextLeafIndex >= MAX_LEAVES) revert MerkleTreeFull();
+        uint256 idx = lockNextLeafIndex;
+        bytes32 h = leaf;
+        for (uint256 i; i < TREE_LEVELS; ++i) {
+            if (idx & 1 == 0) { lockFilledSubtrees[i] = h; h = _hash(h, zeros[i]); }
+            else { h = _hash(lockFilledSubtrees[i], h); }
+            idx >>= 1;
+        }
+        lockRoot = h;
+        lockNextLeafIndex++;
     }
 
     function _hash(bytes32 l, bytes32 r) internal pure returns (bytes32 h) {

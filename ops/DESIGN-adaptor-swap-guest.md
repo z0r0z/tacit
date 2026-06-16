@@ -143,15 +143,25 @@ spend the **validator** recognizes; the reflection folds it as a normal spend. S
   - PV additions (guest `sol!`): `bytes32 lockSetRoot` (input), `bytes32[] lockLeaves`,
     `bytes32[] lockNullifiers`, `bytes32[] adaptorClaimS`, `uint64 refundNotBefore`. Top-level witness reads
     a `lock_set_root` after `bitcoin_burn_root`.
-- **Contract — RIDES THE RE-PROVE COMMIT (cannot land earlier: adding PV fields breaks every committed
-  `*ProofReal` `abi.decode`).** In `ConfidentialPool.settle`, mirror the guest `PublicValues` (the 5 fields
-  above), then: (a) `require(pv.lockSetRoot == lockSetRoot)` (the stored lock-set root); (b) append each
-  `pv.lockLeaves[i]` to a SECOND incremental merkle accumulator (`_insertLockLeaf`, parallel to `_insertLeaf`
-  — its own `lockSetRoot` + `lockNextLeafIndex`); (c) dedup each `pv.lockNullifiers[i]` against a
-  `lockSpent` mapping + mark (spend-once); (d) `require(pv.refundNotBefore == 0 || block.timestamp >=
-  pv.refundNotBefore)` (the ≥ mirror of the existing `deadline` ≤ gate). `adaptorClaimS` is emitted in an
-  event (the off-chain t-reveal channel). The lock-set leaves are NOT note-tree leaves (domain-separated),
-  so they never touch `nextLeafIndex` / the reserve floor.
+- **Contract — LANDED + TESTED (`ConfidentialPool.sol`; lands in the repo now, DEPLOYS with the re-prove).**
+  The earlier "cannot land earlier — adding PV fields breaks every `*ProofReal` `abi.decode`" is NOT so: each
+  settle `*ProofReal` test decodes into its OWN local `PublicValues` copy and never calls `settle`, so
+  extending the contract struct is repo-non-breaking (full confidential forge suite green). The only real
+  coupling is at DEPLOY — the deployed contract's `PublicValues` must match the deployed ELF's layout, so this
+  contract ships together with the adaptor re-prove (a 17-field ELF against this extended contract would revert
+  every settle decode). Implemented: `PublicValues` extended (the 5 fields), and in `settle`
+  (a) `lockSetRoot` pinned to a known lock root (`everKnownLockRoot`; mandatory + non-zero whenever a locked
+  note is spent — a forged lock set can't authorize a claim); (b) `pv.lockLeaves` appended via
+  `_insertLockLeaf` to an INDEPENDENT accumulator (`lockRoot` / `lockNextLeafIndex` / `lockFilledSubtrees`,
+  shares `zeros`+`_hash`, declared at the END of storage so the existing slot layout — e.g. the
+  reverse-reflection-read `crossOutCommitment` — is unchanged); (c) `pv.lockNullifiers` deduped against
+  `lockSpent` (spend-once = claim XOR refund, incl. intra-batch via set-then-check); (d) `refundNotBefore`
+  ≥ gate; PLUS the btcHomed value-exit bar extended to bar `lockLeaves`/`lockNullifiers` (a Bitcoin-homed note
+  can't be locked or claimed on the EVM lane → no cross-lane duplication). `adaptorClaimS` emitted as
+  `AdaptorClaimsRevealed`. The lock-set leaves are NOT note-tree leaves (domain-separated in-guest), so they
+  never touch `nextLeafIndex` / the reserve floor. Regression tests in `ConfidentialPool.t.sol` (mock
+  verifier): lock→claim happy path, ν_L double-spend across AND within a batch, refund-before-deadline,
+  unknown + zero lock root, and the btcHomed-lock bar.
 - **Box (re-prove):** add the `lock_set_root` write (=0 for non-adaptor fixtures) + the 5 PV fields to the
   exec harnesses (`exec-swap/lp/otc/bid`); `cargo prove` → the rotated `PROGRAM_VKEY`; regenerate the
   swap/lp/otc/bid `*ProofReal` fixtures + add an adaptor lock→claim and lock→refund fixture + the adversarial

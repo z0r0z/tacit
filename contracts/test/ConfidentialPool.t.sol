@@ -1455,10 +1455,12 @@ contract ConfidentialPoolTest is Test {
         // Attacker pre-deploys the EXACT etch-proven canonical token (proven symbol + cid, 18 dec) and
         // registerMinted's it with a WRONG scale: tacitDecimals 18 → scale 1 (proven is 8 dec → 10^10).
         address tok = factory.deployCanonical(shared, address(pool), "cBTC", 18, provenCid);
-        bytes32 internalId = pool.registerMinted(tok, "squat", "cBTC", 18);
+        bytes32 internalId = pool.registerMinted(tok, "squat-name", "SQUAT", 18);
         assertEq(pool.localAssetOf(shared), bytes32(0), "squat establishes no cross-chain link");
-        (, , uint256 scaleBefore, , , , , ) = pool.assets(internalId);
+        (, , uint256 scaleBefore, , , string memory nameBefore, string memory symBefore, ) = pool.assets(internalId);
         assertEq(scaleBefore, 1, "squatter registered the wrong scale");
+        assertEq(nameBefore, "squat-name", "squat seeded a bogus display name");
+        assertEq(symBefore, "SQUAT", "squat seeded a bogus display symbol");
 
         // The pool runs the guest-proven attest_meta (proven 8 decimals → scale 10^10).
         address proven = _linkViaAttest(shared, "cBTC", 8);
@@ -1467,6 +1469,10 @@ contract ConfidentialPoolTest is Test {
         (, , uint256 scaleAfter, bytes32 link, , , , ) = pool.assets(internalId);
         assertEq(scaleAfter, 10 ** 10, "scale OVERWRITTEN to the proven scale (squat's wrong scale discarded)");
         assertEq(link, shared, "crossChainLink healed to the shared id");
+        // The squat's bogus display name/symbol are also healed to the canonical brand + proven ticker.
+        (, , , , , string memory nameAfter, string memory symAfter, ) = pool.assets(internalId);
+        assertEq(nameAfter, "Tacit Token", "display name healed to the canonical brand");
+        assertEq(symAfter, "cBTC", "display symbol healed to the guest-proven ticker");
 
         // A bridged withdrawal now exits at the proven scale instead of reverting NotRegistered.
         ConfidentialPool.PublicValues memory pv = _pv();
@@ -1648,5 +1654,135 @@ contract ConfidentialPoolTest is Test {
         pv.fees[0] = ConfidentialPool.FeePayment(assetId, uint256(type(uint64).max) + 1);
         vm.expectRevert(ConfidentialPool.ValueOutOfRange.selector);
         pool.settle(abi.encode(pv), "", new bytes[](0));
+    }
+
+    // ──────────────────── adaptor-swap lock set (OP_ADAPTOR_LOCK/CLAIM/REFUND) ────────────────────
+    //
+    // The guest proves the lock/claim/refund crypto (membership, ν, opening sigmas, kernel conservation,
+    // the deadline binding); the contract owns the lock-set accumulator + the spend-once / lock-root /
+    // refund-time gates these tests lock. Each test exercises the contract gate with the mock verifier
+    // (verifyProof no-ops), so it is the contract's decode + state machine under test.
+
+    // A LOCK batch appends one locked-note leaf and advances the lock root a later claim/refund pins.
+    function _adaptorLock(bytes32 lockLeaf) internal returns (bytes32 newLockRoot) {
+        ConfidentialPool.PublicValues memory pv = _pv();
+        pv.lockLeaves = _arr(lockLeaf);
+        _settle(pv);
+        newLockRoot = pool.lockRoot();
+    }
+
+    function test_adaptor_lock_then_claim() public {
+        bytes32 lockRoot0 = pool.lockRoot();
+        bytes32 lockRoot1 = _adaptorLock(keccak256("lock-leaf-1"));
+        assertTrue(lockRoot1 != lockRoot0, "lock append advanced the lock root");
+        assertTrue(pool.everKnownLockRoot(lockRoot1), "advanced lock root is known");
+        assertEq(pool.lockNextLeafIndex(), 1, "one locked note appended");
+        assertEq(pool.nextLeafIndex(), 0, "a lock adds NO note-tree leaf (reserve floor untouched)");
+
+        // CLAIM: pin the known lock root, spend ν_L once, mint the recipient output, reveal the kernel s.
+        bytes32 lNu = keccak256("lock-nullifier-1");
+        ConfidentialPool.PublicValues memory pv = _pv();
+        pv.lockSetRoot = lockRoot1;
+        pv.lockNullifiers = _arr(lNu);
+        pv.leaves = _arr(keccak256("claim-output-1"));
+        pv.adaptorClaimS = _arr(bytes32(uint256(0x5)));
+        _settle(pv);
+        assertTrue(pool.lockSpent(lNu), "lock nullifier marked spent");
+        assertEq(pool.nextLeafIndex(), 1, "claim minted exactly the output note");
+    }
+
+    // The fund-critical gate: a locked note can be spent ONCE (claim XOR refund) — never claimed then
+    // refunded (or claimed twice). Without the contract's lockSpent dedup the locked value is withdrawable
+    // arbitrarily many times.
+    function test_adaptor_lock_double_spend_across_batches_reverts() public {
+        bytes32 lockRoot1 = _adaptorLock(keccak256("lock-leaf-2"));
+        bytes32 lNu = keccak256("lock-nullifier-2");
+
+        ConfidentialPool.PublicValues memory claim = _pv();
+        claim.lockSetRoot = lockRoot1;
+        claim.lockNullifiers = _arr(lNu);
+        claim.leaves = _arr(keccak256("out-2a"));
+        _settle(claim);
+
+        // Now a refund of the SAME ν_L must revert (claim already consumed it).
+        ConfidentialPool.PublicValues memory refund = _pv();
+        refund.lockSetRoot = lockRoot1;
+        refund.lockNullifiers = _arr(lNu);
+        refund.leaves = _arr(keccak256("out-2b"));
+        vm.expectRevert(ConfidentialPool.LockAlreadySpent.selector);
+        _settle(refund);
+    }
+
+    // The same ν_L twice within ONE batch is also rejected (set-then-check), so a single proof can't
+    // double-claim a locked note.
+    function test_adaptor_lock_double_spend_in_one_batch_reverts() public {
+        bytes32 lockRoot1 = _adaptorLock(keccak256("lock-leaf-2b"));
+        bytes32 lNu = keccak256("lock-nullifier-2b");
+        ConfidentialPool.PublicValues memory pv = _pv();
+        pv.lockSetRoot = lockRoot1;
+        pv.lockNullifiers = new bytes32[](2);
+        pv.lockNullifiers[0] = lNu;
+        pv.lockNullifiers[1] = lNu;
+        pv.leaves = new bytes32[](2);
+        pv.leaves[0] = keccak256("out-2c");
+        pv.leaves[1] = keccak256("out-2d");
+        vm.expectRevert(ConfidentialPool.LockAlreadySpent.selector);
+        _settle(pv);
+    }
+
+    // A refund settles only at/after the lock's deadline (the ≥ mirror of the claim ≤ gate) — so claim
+    // and refund are mutually exclusive on the verified chain time.
+    function test_adaptor_refund_before_deadline_reverts() public {
+        bytes32 lockRoot1 = _adaptorLock(keccak256("lock-leaf-3"));
+        bytes32 lNu = keccak256("lock-nullifier-3");
+        ConfidentialPool.PublicValues memory pv = _pv();
+        pv.lockSetRoot = lockRoot1;
+        pv.lockNullifiers = _arr(lNu);
+        pv.leaves = _arr(keccak256("refund-out-3"));
+        pv.refundNotBefore = uint64(block.timestamp + 1000);
+
+        vm.expectRevert(ConfidentialPool.RefundTooEarly.selector);
+        _settle(pv);
+
+        // at the deadline the refund is allowed
+        vm.warp(block.timestamp + 1000);
+        _settle(pv);
+        assertTrue(pool.lockSpent(lNu), "refund spends the lock nullifier once the deadline passed");
+    }
+
+    // A claim/refund must prove membership against a KNOWN lock root; a forged root (carrying an
+    // attacker-authored locked note) is rejected — closing the "mint from a fabricated lock set" path.
+    function test_adaptor_claim_unknown_lock_root_reverts() public {
+        ConfidentialPool.PublicValues memory pv = _pv();
+        pv.lockSetRoot = bytes32(uint256(0xBADBAD));
+        pv.lockNullifiers = _arr(keccak256("lock-nullifier-4"));
+        pv.leaves = _arr(keccak256("out-4"));
+        vm.expectRevert(ConfidentialPool.UnknownLockRoot.selector);
+        _settle(pv);
+    }
+
+    // A claim (lockNullifiers non-empty) must pin a NON-ZERO known root; a zero root would skip the
+    // in-guest membership gate.
+    function test_adaptor_claim_zero_lock_root_reverts() public {
+        ConfidentialPool.PublicValues memory pv = _pv();
+        pv.lockSetRoot = bytes32(0);
+        pv.lockNullifiers = _arr(keccak256("lock-nullifier-4b"));
+        pv.leaves = _arr(keccak256("out-4b"));
+        vm.expectRevert(ConfidentialPool.UnknownLockRoot.selector);
+        _settle(pv);
+    }
+
+    // Cross-lane safety: a Bitcoin-homed spend may NOT lock (lockLeaves) — that would move Bitcoin-homed
+    // value into the EVM lock set while its Bitcoin UTXO stays live (duplication). It must bridge instead.
+    function test_adaptor_lock_from_btc_homed_note_reverts() public {
+        _seedMaturedRelay(ANCHOR);
+        bytes32 poolRoot = keccak256("btc-pool-root-adaptor");
+        _attestBtc(poolRoot, keccak256("btc-spent-root-adaptor"), 1);
+        ConfidentialPool.PublicValues memory pv = _pv();
+        pv.spendRoot = poolRoot;                            // btcHomed (a known Bitcoin pool root)
+        pv.bitcoinSpentRoot = pool.knownBitcoinSpentRoot(); // pin the current spent root (mandatory)
+        pv.lockLeaves = _arr(keccak256("btc-lock-leaf"));
+        vm.expectRevert(ConfidentialPool.BtcHomedValueExitMustBridge.selector);
+        _settle(pv);
     }
 }
