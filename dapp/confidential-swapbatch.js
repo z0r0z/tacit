@@ -45,3 +45,34 @@ export function swapBatchPublicSignals(env, poolIdHex, reserveA, reserveB) {
   for (const arr of [direction, cInU, cInV, minOut, tip, cOutU, cOutV]) for (const x of arr) s.push(x);
   return s.length === 123 ? s : null;
 }
+
+// Parse a 256-byte Groth16 proof (the guest's G16Proof layout: A(G1 64) ‖ B(G2 128: x_c0 x_c1 y_c0 y_c1) ‖
+// C(G1 64), big-endian field bytes) → a snarkjs proof object. Byte-identical to the dapp's _parseGroth16Proof
+// (and parse_g16_proof in the guest); pi_b limbs in snarkjs [c0, c1] order. Accepts a Uint8Array or 0x-hex.
+const be32dec = (b, o) => { let v = 0n; for (let i = 0; i < 32; i++) v = (v << 8n) | BigInt(b[o + i]); return v.toString(); };
+export function parseGroth16Proof256(proofBytes) {
+  const b = proofBytes instanceof Uint8Array ? proofBytes : hb32Var(proofBytes);
+  if (!(b instanceof Uint8Array) || b.length !== 256) return null;
+  return {
+    pi_a: [be32dec(b, 0), be32dec(b, 32), '1'],
+    pi_b: [[be32dec(b, 64), be32dec(b, 96)], [be32dec(b, 128), be32dec(b, 160)], ['1', '0']],
+    pi_c: [be32dec(b, 192), be32dec(b, 224), '1'],
+    protocol: 'groth16',
+    curve: 'bn128',
+  };
+}
+const hb32Var = (h) => { const s = String(h).replace(/^0x/, ''); const o = new Uint8Array(s.length / 2); for (let i = 0; i < o.length; i++) o[i] = parseInt(s.slice(i * 2, i * 2 + 2), 16); return o; };
+
+// Verify the swap_batch BN254 Groth16 (per-receipt clearing split) against the CID-verified ceremony vk
+// (_CANONICAL_AMM_VK_INLINE.swap_batch in the dapp = batch_vk.bin in the guest), supplied by the caller so this
+// module stays vk-agnostic (no drift). `publicsBigInt` = swapBatchPublicSignals(...) (123 field values). The
+// proof is the envelope's 256 bytes. Returns a Promise<bool>; fail-closed on a malformed proof.
+export async function swapBatchGroth16Verify(vk, publicsBigInt, proofBytes) {
+  const proof = parseGroth16Proof256(proofBytes);
+  if (!proof || !Array.isArray(publicsBigInt)) return false;
+  const publics = publicsBigInt.map((x) => BigInt(x).toString());
+  const sjs = await import('snarkjs');
+  const groth16 = sjs.groth16 || (sjs.default && sjs.default.groth16);
+  if (!groth16 || typeof groth16.verify !== 'function') throw new Error('snarkjs.groth16.verify unavailable');
+  return groth16.verify(vk, publics, proof);
+}
