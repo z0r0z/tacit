@@ -23,12 +23,11 @@ use serde::{Deserialize, Serialize};
 use sp1_helios_primitives::{types::ProofInputs, verify_storage_slot_proofs};
 use tree_hash::TreeHash;
 
-use cxfer_core::eth_reflection::{eth_crossout_leaf, EthCrossOut, DEST_CHAIN_BITCOIN};
+use cxfer_core::eth_reflection::{
+    eth_consumed_leaf, eth_crossout_leaf, mapping_slot_key, plain_slot_key, slot_value_to_u64, EthConsumed,
+    EthCrossOut, CONSUMED_COUNT_SLOT_INDEX, CONSUMED_SLOT_INDEX, CROSSOUT_SLOT_INDEX, DEST_CHAIN_BITCOIN,
+};
 use cxfer_core::{claim_id, keccak_tree_append_transition};
-
-/// Storage slot index of `ConfidentialPool.crossOutCommitment` (the mapping declaration order in the
-/// contract's storage layout). Set from `forge inspect ConfidentialPool storageLayout` at wiring time.
-const CROSSOUT_SLOT_INDEX: u64 = 76; // ConfidentialPool storage layout (forge inspect); re-check on any pool relayout
 
 sol! {
     /// Public values: the append-only cross-out set @ a finalized Ethereum slot. The Bitcoin
@@ -44,6 +43,10 @@ sol! {
         bytes32 syncCommitteeRoot;      // CURRENT sync-committee after the batch (next cycle's prev)
         bytes32 prevSyncCommitteeRoot;  // the sync-committee this batch chained FROM — the Bitcoin guest
                                         // gates the FIRST proof's prev == genesis, then chains (weak-subjectivity)
+        // FAST LANE (consumed-ν reverse reflection). APPENDED so the Bitcoin guest's existing by-offset
+        // reads (fields 2/3/8) stay valid; these are fields 9/10.
+        bytes32 consumedNuSetRoot;      // KeccakTreeAccumulator root over EthConsumed leaves (membership target)
+        uint64  consumedNuCount;        // leaves in the consumed set (append-only, monotone)
     }
 }
 
@@ -55,6 +58,10 @@ struct EthReflInputs {
     prior_set_root: B256,
     prior_count: u64,
     crossouts: Vec<CrossOutWitness>,
+    // FAST LANE: the consumed-ν set resume + the per-slot witnesses (one per proven `bitcoinConsumed[ν]`).
+    prior_consumed_root: B256,
+    prior_consumed_count: u64,
+    consumeds: Vec<ConsumedWitness>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -67,22 +74,31 @@ struct CrossOutWitness {
     append_path: Vec<B256>,
 }
 
-/// Location of `crossOutCommitment[claimId]`: `keccak256(claimId ‖ uint256(SLOT))` — the Solidity
-/// mapping-slot rule, so it matches the `eth_getProof` key the contract exposes.
-fn crossout_slot_key(claim_id: &B256) -> B256 {
-    let mut buf = [0u8; 64];
-    buf[..32].copy_from_slice(claim_id.as_slice());
-    buf[56..64].copy_from_slice(&CROSSOUT_SLOT_INDEX.to_be_bytes());
-    keccak256(buf)
+/// One consumed-ν witness: its `bitcoinConsumed[ν]` slot was proven (value `spend_root != 0`).
+#[derive(Serialize, Deserialize)]
+struct ConsumedWitness {
+    nullifier: B256,
+    spend_root: B256,
+    append_path: Vec<B256>,
 }
 
-/// Digest chaining the eth-reflection state: `keccak(pool ‖ crossOutSetRoot ‖ count_be8)` — the
-/// contract enforces `priorDigest == knownEthReflectionDigest`, advancing it (append-only, no rollback).
-fn eth_refl_digest(pool: &Address, set_root: &B256, count: u64) -> B256 {
-    let mut b = Vec::with_capacity(20 + 32 + 8);
+// Thin B256 adapters over the KAT-pinned cxfer-core slot derivations (single source of truth, tested in
+// cxfer_core::eth_reflection against `cast index`). The eth_getProof key the contract exposes for
+// `crossOutCommitment[claimId]` / `bitcoinConsumed[ν]` (mappings) and `bitcoinConsumedCount` (plain).
+fn crossout_slot_key(claim_id: &B256) -> B256 { B256::from(mapping_slot_key(&claim_id.0, CROSSOUT_SLOT_INDEX)) }
+fn consumed_slot_key(nullifier: &B256) -> B256 { B256::from(mapping_slot_key(&nullifier.0, CONSUMED_SLOT_INDEX)) }
+fn count_slot_key() -> B256 { B256::from(plain_slot_key(CONSUMED_COUNT_SLOT_INDEX)) }
+
+/// Digest chaining the eth-reflection state: `keccak(pool ‖ crossOutSetRoot ‖ count_be8 ‖
+/// consumedNuSetRoot ‖ consumedCount_be8)` — append-only, no rollback. The consumed fields are appended
+/// so a chain built before the fast lane still re-derives the same prefix.
+fn eth_refl_digest(pool: &Address, set_root: &B256, count: u64, consumed_root: &B256, consumed_count: u64) -> B256 {
+    let mut b = Vec::with_capacity(20 + 32 + 8 + 32 + 8);
     b.extend_from_slice(pool.as_slice());
     b.extend_from_slice(set_root.as_slice());
     b.extend_from_slice(&count.to_be_bytes());
+    b.extend_from_slice(consumed_root.as_slice());
+    b.extend_from_slice(&consumed_count.to_be_bytes());
     keccak256(&b)
 }
 
@@ -126,17 +142,45 @@ pub fn main() {
         verified.extend(verify_storage_slot_proofs(exec_state_root, cs).expect("storage proof invalid"));
     }
 
-    // 3. Fold each verified crossOutCommitment slot of `pool` into the append-only set.
+    // 3. Fold each verified slot of `pool` into its set: `crossOutCommitment` → cross-out set (ETH→BTC
+    //    value), `bitcoinConsumed` → consumed-ν set (FAST LANE). The two slot kinds intermix in
+    //    `verified`, so each witness is matched to its slot by KEY, and the total must account for every
+    //    pool slot (no stray slot, no unproven witness).
     let ethr: EthReflInputs = serde_cbor::from_slice(&sp1_zkvm::io::read_vec()).unwrap();
-    let prior_digest = eth_refl_digest(&ethr.pool, &ethr.prior_set_root, ethr.prior_count);
+    let prior_digest = eth_refl_digest(
+        &ethr.pool, &ethr.prior_set_root, ethr.prior_count, &ethr.prior_consumed_root, ethr.prior_consumed_count,
+    );
 
     let pool_slots: Vec<_> = verified.iter().filter(|s| s.contractAddress == ethr.pool).collect();
-    assert_eq!(pool_slots.len(), ethr.crossouts.len(), "verified-slot / witness count mismatch");
+
+    // FAST-LANE FRESHNESS ANCHOR: read ConfidentialPool.bitcoinConsumedCount @ this finalized block. The
+    // consumed fold below MUST cover every recorded consume as of this block (asserted `consumed_count ==
+    // this` after the loop), else a worker could witness only a subset and leave the omitted source notes
+    // live + double-spendable on Bitcoin. MANDATORY: a missing counter slot fails the proof (fail-closed).
+    let count_key = count_slot_key();
+    let onchain_consumed_count = slot_value_to_u64(
+        &pool_slots
+            .iter()
+            .find(|s| s.key == count_key)
+            .expect("bitcoinConsumedCount slot not proven (freshness anchor)")
+            .value
+            .0,
+    );
+
+    // Every OTHER pool slot is exactly one crossOut or one consumed entry — no stray slot, no unproven
+    // witness. The counter slot is excluded here: it is the freshness anchor, not a set entry.
+    let entry_slot_count = pool_slots.iter().filter(|s| s.key != count_key).count();
+    assert_eq!(
+        entry_slot_count,
+        ethr.crossouts.len() + ethr.consumeds.len(),
+        "verified-slot / witness count mismatch",
+    );
 
     let mut set_root: [u8; 32] = ethr.prior_set_root.0;
     let mut count = ethr.prior_count;
-    for (slot, co) in pool_slots.iter().zip(ethr.crossouts.iter()) {
-        assert_eq!(slot.key, crossout_slot_key(&co.claim_id), "slot != crossOutCommitment[claimId]");
+    for co in ethr.crossouts.iter() {
+        let key = crossout_slot_key(&co.claim_id);
+        let slot = pool_slots.iter().find(|s| s.key == key).expect("crossOutCommitment slot not in proven set");
         assert_eq!(slot.value, co.dest_commitment, "slot value != destCommitment");
         assert_eq!(co.dest_chain, DEST_CHAIN_BITCOIN, "only bitcoin-destined cross-outs fold here");
         // Same claimId binding the ConfidentialPool derives on-chain (proves the witnessed fields are real).
@@ -152,11 +196,37 @@ pub fn main() {
             asset_id: co.asset_id.0,
         });
         let path: Vec<[u8; 32]> = co.append_path.iter().map(|p| p.0).collect();
-        set_root = keccak_tree_append_transition(&set_root, count, &path, &leaf).expect("append transition");
+        set_root = keccak_tree_append_transition(&set_root, count, &path, &leaf).expect("crossout append transition");
         count += 1;
     }
 
-    let new_digest = eth_refl_digest(&ethr.pool, &B256::from(set_root), count);
+    // FAST LANE: append each consumed ν (a Bitcoin-homed note spent on Ethereum). The slot VALUE is the
+    // spendRoot (`bitcoinConsumed[ν] = spendRoot`, non-zero), bound into the leaf; ν is the key.
+    let mut consumed_root: [u8; 32] = ethr.prior_consumed_root.0;
+    let mut consumed_count = ethr.prior_consumed_count;
+    for cw in ethr.consumeds.iter() {
+        let key = consumed_slot_key(&cw.nullifier);
+        let slot = pool_slots.iter().find(|s| s.key == key).expect("bitcoinConsumed slot not in proven set");
+        assert_eq!(slot.value, cw.spend_root, "slot value != spendRoot");
+        assert!(cw.spend_root.0 != [0u8; 32], "consumed slot value zero (uninitialized)");
+        let leaf = eth_consumed_leaf(&EthConsumed { nullifier: cw.nullifier.0, spend_root: cw.spend_root.0 });
+        let path: Vec<[u8; 32]> = cw.append_path.iter().map(|p| p.0).collect();
+        consumed_root =
+            keccak_tree_append_transition(&consumed_root, consumed_count, &path, &leaf).expect("consumed append transition");
+        consumed_count += 1;
+    }
+
+    // FRESHNESS: the cumulative folded consumed count must equal the on-chain counter at this finalized
+    // block (the fold is append-only and each entry is a distinct ν). This is what forces completeness —
+    // advancing the finalized slot REQUIRES folding every consume recorded as of it, closing the
+    // subset-witness double-spend the bare set root could not prevent.
+    assert_eq!(
+        consumed_count, onchain_consumed_count,
+        "consumed fold incomplete vs on-chain bitcoinConsumedCount",
+    );
+
+    let new_digest =
+        eth_refl_digest(&ethr.pool, &B256::from(set_root), count, &B256::from(consumed_root), consumed_count);
     let pv = EthReflectionPublicValues {
         priorDigest: prior_digest,
         newDigest: new_digest,
@@ -167,6 +237,8 @@ pub fn main() {
         finalizedExecStateRoot: exec_state_root,
         syncCommitteeRoot: sync_committee_hash,
         prevSyncCommitteeRoot: prev_sync_committee_hash,
+        consumedNuSetRoot: B256::from(consumed_root),
+        consumedNuCount: consumed_count,
     };
     sp1_zkvm::io::commit_slice(&pv.abi_encode());
 }

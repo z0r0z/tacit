@@ -1484,11 +1484,11 @@ contract ConfidentialPoolTest is Test {
 
     // ──────────────────── cross-lane: source-consume invariant ────────────────────
 
-    /// A Bitcoin-homed spend (membership against a knownBitcoinRoot) may mark nullifiers but must
-    /// NOT move value onto Ethereum: reflection is one-directional, so any value-exit duplicates value
-    /// (the Bitcoin UTXO stays live + spendable). Bitcoin→Ethereum value MUST flow through
-    /// bridge_burn→bridge_mint (which consumes the note on Bitcoin first; that path is not btcHomed).
-    function test_btc_homed_withdrawal_reverts() public {
+    /// FAST LANE escrow guard: a Bitcoin-homed value-exit must mint its bridged (pool-minted) asset, never
+    /// pay from escrow funded by Ethereum wraps. `assetId` here is an EXTERNAL escrow ERC20 (not bridged),
+    /// so a btcHomed withdrawal of it is rejected — otherwise a (compromised) guest could drain others'
+    /// escrow against a Bitcoin-homed note that never funded it.
+    function test_btc_homed_withdrawal_escrow_asset_reverts() public {
         bytes32 btcRoot = keccak256("btc-pool-ve");
         bytes32 spent = keccak256("btc-spent-ve");
         _attestBtc(btcRoot, spent, 1);
@@ -1497,27 +1497,101 @@ contract ConfidentialPoolTest is Test {
         pv.bitcoinSpentRoot = spent;     // current reflected spent set (passes the freshness gate)
         pv.nullifiers = _arr(keccak256("ve-nu"));
         pv.withdrawals = new ConfidentialPool.Withdrawal[](1);
-        pv.withdrawals[0] = ConfidentialPool.Withdrawal(assetId, RECIP, 1);
+        pv.withdrawals[0] = ConfidentialPool.Withdrawal(assetId, RECIP, 1); // assetId = escrow ERC20, not pool-minted
         vm.expectRevert(ConfidentialPool.BtcHomedValueExitMustBridge.selector);
         pool.settle(abi.encode(pv), "", new bytes[](0));
     }
 
-    /// Same rule for a new Ethereum leaf (a transfer/change note) minted from a Bitcoin-homed spend.
-    function test_btc_homed_new_leaf_reverts() public {
+    /// FAST LANE: a Bitcoin-homed spend MAY move value onto Ethereum as a new note (a leaf), recording
+    /// each consumed ν in `bitcoinConsumed` so the reverse reflection folds it into the Bitcoin spent set
+    /// (Ethereum-senior). Safety is the vkey⇄guest pairing — the reflection guest pinned by
+    /// BITCOIN_RELAY_VKEY must perform that fold (asserted off-chain, not here).
+    function test_btc_homed_fast_lane_records_consumed() public {
         bytes32 btcRoot = keccak256("btc-pool-leaf");
         bytes32 spent = keccak256("btc-spent-leaf");
         _attestBtc(btcRoot, spent, 1);
         ConfidentialPool.PublicValues memory pv = _pv();
         pv.spendRoot = btcRoot;
         pv.bitcoinSpentRoot = spent;
-        pv.nullifiers = _arr(keccak256("leaf-nu"));
+        bytes32 nu = keccak256("leaf-nu");
+        pv.nullifiers = _arr(nu);
         pv.leaves = _arr(keccak256("ethereum-leaf-from-btc-note"));
-        vm.expectRevert(ConfidentialPool.BtcHomedValueExitMustBridge.selector);
+        vm.expectEmit(false, false, false, true, address(pool));
+        emit ConfidentialPool.BitcoinNotesConsumed(_arr(nu), btcRoot);
         pool.settle(abi.encode(pv), "", new bytes[](1));
+        assertEq(pool.bitcoinConsumed(nu), btcRoot, "consumed nu recorded for the reverse reflection");
+        assertTrue(pool.isNullifierSpent(nu), "nullifier marked");
     }
 
-    /// A nullifier-only Bitcoin-homed spend (no value-exit) is still accepted — it is harmless (no
-    /// Ethereum value created), so the bar is precisely on value movement, not on the lane itself.
+    /// FRESHNESS ANCHOR: each fast-lane value-exit advances `bitcoinConsumedCount` by exactly its
+    /// consumed-note count (every ν is new — the nullifierSpent gate bars repeats), the counter equals the
+    /// number of distinct recorded entries, and it is cumulative + monotone across batches. The
+    /// eth-reflection guest reads this slot from the same finalized state and asserts its folded
+    /// `consumedNuCount` equals it — so a worker cannot witness only a SUBSET of consumes, leaving the
+    /// omitted source notes live + double-spendable on Bitcoin.
+    function test_fast_lane_consumed_count_advances() public {
+        bytes32 btcRoot = keccak256("btc-pool-count");
+        bytes32 spent = keccak256("btc-spent-count");
+        _attestBtc(btcRoot, spent, 1);
+        assertEq(pool.bitcoinConsumedCount(), 0, "starts at zero");
+
+        // Batch 1: two consumed notes + a leaf → count advances by 2, both entries recorded.
+        ConfidentialPool.PublicValues memory pv = _pv();
+        pv.spendRoot = btcRoot;
+        pv.bitcoinSpentRoot = spent;
+        pv.nullifiers = new bytes32[](2);
+        pv.nullifiers[0] = keccak256("cnt-nu-a");
+        pv.nullifiers[1] = keccak256("cnt-nu-b");
+        pv.leaves = _arr(keccak256("cnt-leaf-1"));
+        pool.settle(abi.encode(pv), "", new bytes[](1));
+        assertEq(pool.bitcoinConsumedCount(), 2, "advanced by the batch's consumed count");
+        assertEq(pool.bitcoinConsumed(keccak256("cnt-nu-a")), btcRoot, "entry a recorded");
+        assertEq(pool.bitcoinConsumed(keccak256("cnt-nu-b")), btcRoot, "entry b recorded");
+
+        // Batch 2: one more consumed note → cumulative count = 3 (monotone across batches).
+        ConfidentialPool.PublicValues memory pv2 = _pv();
+        pv2.spendRoot = btcRoot;
+        pv2.bitcoinSpentRoot = spent;
+        pv2.nullifiers = _arr(keccak256("cnt-nu-c"));
+        pv2.leaves = _arr(keccak256("cnt-leaf-2"));
+        pool.settle(abi.encode(pv2), "", new bytes[](1));
+        assertEq(pool.bitcoinConsumedCount(), 3, "cumulative across batches");
+    }
+
+    /// The freshness counter advances ONLY when a consume is recorded (a value-exit). A nullifier-only
+    /// btcHomed batch writes neither `bitcoinConsumed` nor the counter, so `count == #entries` stays exact
+    /// and the eth-reflection equality has no phantom count the guest could never witness a slot for.
+    function test_fast_lane_consumed_count_tracks_only_value_exits() public {
+        bytes32 btcRoot = keccak256("btc-pool-noexit");
+        bytes32 spent = keccak256("btc-spent-noexit");
+        _attestBtc(btcRoot, spent, 1);
+        ConfidentialPool.PublicValues memory pv = _pv();
+        pv.spendRoot = btcRoot;
+        pv.bitcoinSpentRoot = spent;
+        pv.nullifiers = _arr(keccak256("noexit-nu"));
+        pool.settle(abi.encode(pv), "", new bytes[](0));
+        assertEq(pool.bitcoinConsumedCount(), 0, "no value-exit => counter unchanged");
+    }
+
+    /// AMM (and locks / onward crossOut / EVM-deposit consumption) are NOT on the fast lane's first cut:
+    /// they compose with a lane the consumed-ν reflection doesn't cover, so the bridge path stays
+    /// mandatory for them and a btcHomed swap is rejected.
+    function test_btc_homed_swap_still_reverts() public {
+        bytes32 btcRoot = keccak256("btc-pool-swap");
+        bytes32 spent = keccak256("btc-spent-swap");
+        _attestBtc(btcRoot, spent, 1);
+        ConfidentialPool.PublicValues memory pv = _pv();
+        pv.spendRoot = btcRoot;
+        pv.bitcoinSpentRoot = spent;
+        pv.nullifiers = _arr(keccak256("swap-nu"));
+        pv.swaps = new ConfidentialPool.SwapSettlement[](1);
+        pv.swaps[0] = ConfidentialPool.SwapSettlement(keccak256("any-pool"), 0, 0, 0, 0);
+        vm.expectRevert(ConfidentialPool.BtcHomedValueExitMustBridge.selector);
+        pool.settle(abi.encode(pv), "", new bytes[](0));
+    }
+
+    /// A nullifier-only Bitcoin-homed spend (no value-exit) is still accepted and records NOTHING in
+    /// bitcoinConsumed — the consumed-set write is precisely on value movement, not the lane itself.
     function test_btc_homed_nullifier_only_ok() public {
         bytes32 btcRoot = keccak256("btc-pool-noop");
         bytes32 spent = keccak256("btc-spent-noop");
@@ -1528,10 +1602,11 @@ contract ConfidentialPoolTest is Test {
         pv.nullifiers = _arr(keccak256("noop-nu"));
         pool.settle(abi.encode(pv), "", new bytes[](0));
         assertTrue(pool.isNullifierSpent(keccak256("noop-nu")), "nullifier marked");
+        assertEq(pool.bitcoinConsumed(keccak256("noop-nu")), bytes32(0), "no value-exit => no consumed record");
     }
 
-    // A btcHomed batch may not consume an EVM deposit: a consumed deposit must materialize as a leaf
-    // (barred for btcHomed), so consuming one could only strand the depositor's escrow.
+    // A btcHomed batch may not consume an EVM deposit: it composes the fast lane with EVM-side escrow
+    // accounting the consumed-ν reflection doesn't cover, so it stays bridge-only (the bar above).
     function test_btc_homed_deposit_consume_reverts() public {
         bytes32 btcRoot = keccak256("btc-pool-dep");
         bytes32 spent = keccak256("btc-spent-dep");

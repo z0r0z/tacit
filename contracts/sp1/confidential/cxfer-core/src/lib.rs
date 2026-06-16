@@ -2476,6 +2476,10 @@ pub struct ScanReflection {
     // Track B: per-pool public-reserve provenance (pool_id → reserves + c0_backed). Advanced by the AMM
     // folds (POOL_INIT / LP / swap); committed in `digest()` so a resumed cycle can't forge a pool's backing.
     pub pools: PoolReserveSet,
+    // FAST LANE: count of consumed-ν folded from the eth-reflection consumed set (the reverse reflection of
+    // ConfidentialPool.bitcoinConsumed). The resume point so a cycle folds exactly the NEW members in order;
+    // committed in `digest()` so it can't be rolled back to re-open an already-marked-spent note.
+    pub consumed_count: u64,
 }
 
 impl Default for ScanReflection {
@@ -2500,6 +2504,7 @@ impl ScanReflection {
             cbtc_locks: LiveUtxoSet::new(),
             cbtc_backing_sats: 0,
             pools: PoolReserveSet::new(),
+            consumed_count: 0,
         }
     }
 
@@ -2528,6 +2533,8 @@ impl ScanReflection {
             // Track B: per-pool reserve registry — pinned so a resumed cycle can't forge a pool's
             // reserves or its c0_backed flag (which would let fold_swap_var onboard unbacked value).
             &self.pools.root(), &u64b(self.pools.len() as u64),
+            // FAST LANE: how many eth-consumed ν have been folded into the spent set (resume pin).
+            &u64b(self.consumed_count),
         ])
     }
 
@@ -2549,6 +2556,64 @@ impl ScanReflection {
             self.spent_count, s_new_path,
         ).ok_or("spent-set insert witness invalid")?;
         self.spent_count += 1;
+        Ok(())
+    }
+
+    /// FAST LANE (consumed-ν reverse reflection): mark a Bitcoin-homed note SPENT because its ν was
+    /// consumed by a value-exit on the Ethereum fast lane — proven by membership in the eth-reflection
+    /// consumed set (the reverse reflection of `ConfidentialPool.bitcoinConsumed[ν]`). Ethereum-senior:
+    /// the caller runs this BEFORE the Bitcoin block scan, and it REMOVES the source UTXO from `live` so a
+    /// racing Bitcoin spend of that note in this cycle finds it absent (`scan_tx_spends` no longer treats
+    /// it as a pool spend → the racing tx's CXFER outputs fail conservation = voided). The live-removal is
+    /// the void mechanism precisely because `fold_spent` would PANIC on the double-insert otherwise.
+    ///
+    /// Folded in append order: membership is checked at index `self.consumed_count`, which then increments
+    /// — so the caller MUST fold the WHOLE `[prior, consumed_nu_count)` range with no skip (an omitted
+    /// consume leaves the note live on Bitcoin = double-spend). Unlike `fold_crossout`/`fold_cxfer` this is
+    /// NOT skip-not-panic: an `Err` here is a hard prover error (the caller `.expect`s it).
+    ///
+    /// SAFETY INVARIANT (the one the review must close before deploy — see PLAN-fast-lane-shared-nullifier):
+    /// soundness requires the eth proof to be FRESH — `consumed_nu_count` must cover EVERY ν the contract
+    /// has recorded in `bitcoinConsumed` whose source outpoint could be spent in this batch's blocks. If a
+    /// stale eth proof omits a recent consume, its outpoint stays live and a Bitcoin spend would fold it
+    /// (double-credit). Freshness is NOT enforced here; it must be enforced where `knownBitcoinSpentRoot`
+    /// advances (candidate: the contract tracks a `bitcoinConsumedCount` and gates the reflection's
+    /// committed `consumed_count` against it). Until that gate + its interleaving proof exist, this fold is
+    /// worker-trusted for freshness — do not deploy.
+    #[allow(clippy::too_many_arguments)]
+    pub fn fold_consumed(
+        &mut self,
+        nu: &[u8; 32],
+        spend_root: &[u8; 32],
+        cx: &[u8; 32],
+        cy: &[u8; 32],
+        source_txid: &[u8; 32],
+        source_vout: u32,
+        set_path: &[[u8; 32]],
+        consumed_set_root: &[u8; 32],
+        s_low_value: &[u8; 32],
+        s_low_next: &[u8; 32],
+        s_low_index: u64,
+        s_low_path: &[[u8; 32]],
+        s_new_path: &[[u8; 32]],
+    ) -> Result<(), &'static str> {
+        let co = crate::eth_reflection::EthConsumed { nullifier: *nu, spend_root: *spend_root };
+        if !crate::eth_reflection::eth_consumed_member(&co, self.consumed_count, set_path, consumed_set_root) {
+            return Err("consumed fold: ν not the next member of the eth consumed set (skip or wrong order)");
+        }
+        if &nullifier(cx, cy) != nu {
+            return Err("consumed fold: ν != nullifier(Cx,Cy)");
+        }
+        // The source note must be a LIVE Bitcoin pool UTXO bound to this (Cx,Cy). Remove it (Ethereum-senior
+        // void) so a racing Bitcoin spend this cycle isn't detected, then mark ν spent.
+        let outpoint = outpoint_key(source_txid, source_vout);
+        let (live_ch, _asset) = self.live.get(&outpoint).ok_or("consumed fold: source outpoint not a live UTXO")?;
+        if live_ch != commitment_hash(cx, cy) {
+            return Err("consumed fold: live commitment != Cx,Cy");
+        }
+        self.live.remove(&outpoint);
+        self.fold_spent(nu, s_low_value, s_low_next, s_low_index, s_low_path, s_new_path)?;
+        self.consumed_count += 1;
         Ok(())
     }
 
@@ -3589,7 +3654,7 @@ mod tests {
     fn genesis_digest_matches_contract_constant() {
         assert_eq!(
             ScanReflection::genesis().digest(),
-            arr32("0x0dd951a946819f644d6a00d1ad0db2d29affccd58d6983d1b24b73e213e6ad7e"),
+            arr32("0xc5b5d994530ec9125d08c855a9c2935d842396cfc67d91abb42335166664df68"),
             "ScanReflection::genesis().digest() drifted from ConfidentialPool.REFLECTION_GENESIS_DIGEST"
         );
     }
@@ -3661,6 +3726,124 @@ mod tests {
         assert!(!verify_opening_sigma(&c, amount, &r_pt, &z, &ctx2), "context tamper rejected");
         // a forged response is rejected.
         assert!(!verify_opening_sigma(&c, amount, &r_pt, &(z + Scalar::from(1u64)), &ctx), "z tamper rejected");
+    }
+
+    // Kernel prover (mirrors verify_kernel's challenge): R = k·G, e = keccak(KERNEL_DOMAIN‖Cin…‖Cout…‖R),
+    // z = k + e·excess, where `excess` is the discrete log of ΣCin − ΣCout base G (= Σr_in − Σr_out when
+    // values balance). The only secret a real spender feeds in is that excess — i.e. the input blindings.
+    fn prove_kernel(
+        in_c: &[ProjectivePoint],
+        out_c: &[ProjectivePoint],
+        k: &Scalar,
+        excess: &Scalar,
+    ) -> (ProjectivePoint, Scalar) {
+        let r_pt = ProjectivePoint::generator() * k;
+        let mut h = Keccak::v256();
+        h.update(KERNEL_DOMAIN);
+        for p in in_c { h.update(&compress(p)); }
+        for p in out_c { h.update(&compress(p)); }
+        h.update(&compress(&r_pt));
+        let mut hb = [0u8; 32]; h.finalize(&mut hb);
+        let e = scalar_reduce_be(&hb);
+        (r_pt, *k + e * *excess)
+    }
+
+    /// REGRESSION — the kernel IS the spend authorization (bearer model, spec §1). The whole transfer
+    /// lane's anti-theft property rests on this, so pin it.
+    ///
+    /// A note leaf `keccak(asset‖Cx‖Cy‖owner)` carries an UNSIGNED `owner` label — nothing checks it, and
+    /// the nullifier `keccak(Cx‖Cy‖"spent")` is a public function of the commitment. So the only thing
+    /// between a publicly-visible note and theft is `verify_kernel`: a Fiat-Shamir Schnorr PoK of the
+    /// discrete log of X = ΣCin − ΣCout base G. Because H and G are independent NUMS, it verifies iff
+    /// (a) the H-component vanishes → Σv_in = Σv_out (conservation), AND (b) the prover knows
+    /// x = Σr_in − Σr_out (the input blindings). This test pins all of: the owner spends, a party WITHOUT
+    /// the input blinding cannot, value cannot be inflated, and the proof is bound to its output set.
+    #[test]
+    fn kernel_is_the_spend_authorization() {
+        let v: u64 = 1_000;
+        let r_in = scalar_reduce_be(&[0x11u8; 32]);  // the note owner's SECRET input blinding
+        let r_out = scalar_reduce_be(&[0x22u8; 32]); // an output blinding a spender (or thief) chooses
+        let k = scalar_reduce_be(&[0x33u8; 32]);     // the Schnorr nonce (R = k·G)
+
+        // The note as it sits on the tree — only (Cx,Cy) and `owner` are public; r_in is the owner's secret.
+        let c_in = gen_h() * Scalar::from(v) + ProjectivePoint::generator() * r_in;
+        let c_out = gen_h() * Scalar::from(v) + ProjectivePoint::generator() * r_out;
+
+        // (1) HONEST OWNER (knows r_in): excess = r_in − r_out is the dlog of c_in − c_out → a valid spend.
+        let excess = r_in - r_out;
+        let (r_pt, z) = prove_kernel(&[c_in], &[c_out], &k, &excess);
+        assert!(verify_kernel(&[c_in], &[c_out], &r_pt, &z), "owner who knows r_in spends");
+        // z is unique for this R: any other response fails (so a thief cannot fuzz z into validity).
+        assert!(!verify_kernel(&[c_in], &[c_out], &r_pt, &(z + Scalar::from(1u64))), "z is unique");
+
+        // (2) THIEF — sees c_in, c_out, picks r_out + k, but does NOT know r_in. The only z that verifies
+        // for R = k·G is k + e·(r_in − r_out), which embeds r_in. Every excess a thief can form from
+        // known-only values (guessing r_in) is rejected — i.e. theft requires the input blinding.
+        for guess in [Scalar::from(0u64), r_out, Scalar::from(v), k] {
+            let forged_excess = guess - r_out; // what the thief computes assuming r_in = guess
+            let (r_f, z_f) = prove_kernel(&[c_in], &[c_out], &k, &forged_excess);
+            assert!(
+                !verify_kernel(&[c_in], &[c_out], &r_f, &z_f),
+                "a kernel forged without the real input blinding is rejected"
+            );
+        }
+
+        // (3) VALUE INFLATION — even the owner (knowing every blinding) cannot move value: a higher-value
+        // output leaves an H-component in X that no scalar z can cancel (the conservation half of the PoK).
+        let c_out_inflated = gen_h() * Scalar::from(v + 500) + ProjectivePoint::generator() * r_out;
+        let (r_i, z_i) = prove_kernel(&[c_in], &[c_out_inflated], &k, &excess);
+        assert!(!verify_kernel(&[c_in], &[c_out_inflated], &r_i, &z_i), "value inflation rejected");
+
+        // (4) OUTPUT BINDING — the honest proof does not verify against a different output: the challenge
+        // commits ΣCin‖ΣCout, so swapping the output changes e and breaks the equation (non-malleable).
+        let c_out_other = gen_h() * Scalar::from(v) + ProjectivePoint::generator() * scalar_reduce_be(&[0x44u8; 32]);
+        assert!(!verify_kernel(&[c_in], &[c_out_other], &r_pt, &z), "proof is bound to its output set");
+    }
+
+    /// REGRESSION — why adaptor claim/refund MUST stay single-output (audit S-3). The kernel proves only
+    /// that ΣCin − ΣCout has no H-component (Σv_in ≡ Σv_out mod n) plus knowledge of the excess. With TWO
+    /// outputs a prover can split v_in as (v_in + D, n − D): the values still sum to v_in mod n, so the
+    /// kernel ALONE verifies — yet one output now commits to a wildly out-of-range value. TRANSFER guards
+    /// this with an explicit range proof on its outputs; adaptor claim/refund carry NO range proof and are
+    /// safe ONLY because they have exactly ONE output (which the kernel pins to the single input value). If
+    /// a future change gives claim/refund a second output, THIS is the inflation it reopens.
+    #[test]
+    fn kernel_alone_does_not_bound_a_multi_output_split() {
+        let v: u64 = 1_000;
+        let r_in = scalar_reduce_be(&[0xa1u8; 32]);
+        let r_out1 = scalar_reduce_be(&[0xa2u8; 32]);
+        let r_out2 = scalar_reduce_be(&[0xa3u8; 32]);
+        let k = scalar_reduce_be(&[0xa4u8; 32]);
+
+        let c_in = gen_h() * Scalar::from(v) + ProjectivePoint::generator() * r_in;
+        // Split as (v + D, −D): D = 2^64−1, so out2 commits to (n − D) — far outside any 2^64 range.
+        let big = Scalar::from(u64::MAX);
+        let c_out1 = gen_h() * (Scalar::from(v) + big) + ProjectivePoint::generator() * r_out1;
+        let c_out2 = gen_h() * (-big) + ProjectivePoint::generator() * r_out2;
+        let excess = r_in - r_out1 - r_out2;
+        let (r_pt, z) = prove_kernel(&[c_in], &[c_out1, c_out2], &k, &excess);
+        assert!(
+            verify_kernel(&[c_in], &[c_out1, c_out2], &r_pt, &z),
+            "the kernel ALONE admits a 2-output split — a range proof (transfer) or a single output (adaptor) is what bounds it"
+        );
+    }
+
+    /// REGRESSION — the canonical-orientation assert is load-bearing (audit S-5). `pool_id` sorts its pair
+    /// internally, so it is SYMMETRIC: pool_id(a,b) == pool_id(b,a). The contract's pre==live reserve gate
+    /// is keyed by pool_id, so it CANNOT detect a swapped (asset_a, asset_b) — only the guest's
+    /// `be_bytes_lte(asset_a, asset_b) && asset_a != asset_b` assert binds asset_a to the low reserve leg.
+    /// Drop that assert and a prover could clear the high-value leg against the low reserve. Pin both halves.
+    #[test]
+    fn pool_id_is_symmetric_so_orientation_must_be_asserted() {
+        let lo = [0x01u8; 32];
+        let hi = [0x02u8; 32];
+        let fee = 30u32;
+        assert_eq!(pool_id(&lo, &hi, fee), pool_id(&hi, &lo, fee), "pool_id sorts internally (symmetric)");
+        assert_ne!(pool_id(&lo, &hi, fee), pool_id(&lo, &hi, fee + 1), "fee tier is part of the id");
+        // the predicate the guest asserts: true for exactly the canonical order, false otherwise.
+        assert!(crate::bitcoin::be_bytes_lte(&lo, &hi) && lo != hi, "canonical order accepted");
+        assert!(!(crate::bitcoin::be_bytes_lte(&hi, &lo) && hi != lo), "reversed order rejected");
+        assert!(!(lo != lo), "equal assets rejected by the != half");
     }
 
     #[test]
@@ -5443,7 +5626,7 @@ mod tests {
     #[test]
     fn scan_reflection_genesis_digest() {
         let g = ScanReflection::genesis();
-        assert_eq!(hex::encode(g.digest()), "0dd951a946819f644d6a00d1ad0db2d29affccd58d6983d1b24b73e213e6ad7e", "full-scan genesis digest (JS indexer + contract must match)");
+        assert_eq!(hex::encode(g.digest()), "c5b5d994530ec9125d08c855a9c2935d842396cfc67d91abb42335166664df68", "full-scan genesis digest (JS indexer + contract must match)");
         // empty live set root == empty note-tree root (both keccak_merkle_root([])); spent + burn
         // keep the {0→0} sentinel roots.
         assert_eq!(g.live.root(), g.pool_root);

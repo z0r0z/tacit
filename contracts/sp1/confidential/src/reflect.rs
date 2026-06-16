@@ -115,9 +115,12 @@ fn read_scan_prior_state() -> ScanReflection {
         })
     }).collect();
     let pools = PoolReserveSet::from_sorted(pool_entries).expect("handed pool reserve set not sorted/unique");
+    // FAST LANE resume: how many eth-consumed ν have already been folded into the spent set (rides
+    // digest(), so a forged handoff fails the priorDigest chain). 0 until the first fast-lane consume.
+    let consumed_count: u64 = io::read();
     ScanReflection {
         pool_root, note_count, spent_root, spent_count, live, burn_root, burn_count, height,
-        cbtc_locks, cbtc_backing_sats, pools,
+        cbtc_locks, cbtc_backing_sats, pools, consumed_count,
     }
 }
 
@@ -178,20 +181,26 @@ pub fn main() {
     // proves exactly as before. This is what lets the forward bridge re-prove without standing up the
     // eth-reflection guest (it decouples the onboarding re-prove from Mode-B becoming operational).
     let mode_b: u32 = io::read();
-    let (eth_pool_word, crossout_set_root): ([u8; 32], [u8; 32]) = if mode_b != 0 {
+    let (eth_pool_word, crossout_set_root, consumed_set_root, consumed_nu_count):
+        ([u8; 32], [u8; 32], [u8; 32], u64) = if mode_b != 0 {
         let eth_pv: Vec<u8> = io::read();
-        assert!(eth_pv.len() >= 288, "eth-reflection public values too short");
+        assert!(eth_pv.len() >= 11 * 32, "eth-reflection public values too short");
         sp1_lib::verify::verify_sp1_proof(&ETH_REFLECTION_VKEY, &bitcoin::sha256_once(&eth_pv));
-        // EthReflectionPublicValues is 9 static ABI words; read by offset. Order: priorDigest, newDigest,
+        // EthReflectionPublicValues is 11 static ABI words; read by offset. Order: priorDigest, newDigest,
         // ethPool, crossOutSetRoot, crossOutCount, finalizedSlot, finalizedExecStateRoot, syncCommitteeRoot,
-        // prevSyncCommitteeRoot. The batch chained FROM the genesis committee (gated once here; the
-        // prev==last-current chaining across sync-committee periods rides the resume-digest — follow-up).
+        // prevSyncCommitteeRoot, consumedNuSetRoot, consumedNuCount. The batch chained FROM the genesis
+        // committee (gated once here; the prev==last-current chaining across sync-committee periods rides
+        // the resume-digest — follow-up).
         assert_eq!(&eth_pv[8 * 32..9 * 32], &ETH_GENESIS_SYNC_COMMITTEE, "eth-reflection: wrong genesis sync-committee");
         let ep: [u8; 32] = eth_pv[2 * 32..3 * 32].try_into().expect("ethPool word"); // gated on-chain == address(this)
         let cr: [u8; 32] = eth_pv[3 * 32..4 * 32].try_into().expect("crossOutSetRoot word");
-        (ep, cr)
+        let consumed_root: [u8; 32] = eth_pv[9 * 32..10 * 32].try_into().expect("consumedNuSetRoot word");
+        // consumedNuCount — a uint64 ABI-encoded right-aligned in the 32-byte word (field 10).
+        let consumed_cnt = u64::from_be_bytes(eth_pv[11 * 32 - 8..11 * 32].try_into().unwrap());
+        (ep, cr, consumed_root, consumed_cnt)
     } else {
-        ([0u8; 32], [0u8; 32]) // sentinel: forward-only batch — no eth recursion, no crossout fold
+        // sentinel: forward-only batch — no eth recursion, no crossout/consumed fold.
+        ([0u8; 32], [0u8; 32], [0u8; 32], 0u64)
     };
 
     // Header chain: non-empty, links (prev_hash) + carries valid PoW, and EXPOSES its anchor
@@ -204,6 +213,37 @@ pub fn main() {
     let refs: Vec<&[u8]> = headers.iter().map(|h| h.as_slice()).collect();
     let tip_hash = bitcoin::verify_header_chain(&refs).expect("invalid Bitcoin header chain");
     let prev_hash: [u8; 32] = headers[0][4..36].try_into().expect("header prev field");
+
+    // FAST LANE (Ethereum-senior): fold the NEW eth-consumed ν into the spent set BEFORE the block scan,
+    // so each source UTXO is removed from `live` and a racing Bitcoin spend in this batch is voided (its
+    // CXFER outputs fail conservation). COMPLETENESS is mandatory: an omitted consume leaves the note live
+    // on Bitcoin (double-spend), so fold the WHOLE [prior, consumed_nu_count) range and panic on any miss
+    // (the inverse of the crossout/cxfer skip-not-panic discipline). mode_b == 0 ⇒ consumed_nu_count == 0,
+    // so a forward-only batch folds none and `consumed_count` carries unchanged. The witnesses (ν,
+    // spendRoot, Cx, Cy, source outpoint, set-membership path, spent-IMT insert) are read here, ahead of
+    // the per-block tx witnesses, so the assembler/JS mirror MUST emit them in this position. SAFETY: this
+    // is sound only if the eth proof is FRESH (covers every recorded consume) — the freshness gate is the
+    // open review item in PLAN-fast-lane-shared-nullifier.md (a stale eth proof must not advance the
+    // reflected spent set), NOT enforced here.
+    if mode_b != 0 {
+        let prior_consumed = state.consumed_count;
+        assert!(consumed_nu_count >= prior_consumed, "eth consumed count rolled back");
+        for _ in prior_consumed..consumed_nu_count {
+            let nu = r32();
+            let spend_root = r32();
+            let cx = r32();
+            let cy = r32();
+            let src_txid = r32();
+            let src_vout: u32 = io::read();
+            let set_path = r_path();
+            let (sv, sn, si, sp, snew) = read_spent_insert();
+            state.fold_consumed(
+                &nu, &spend_root, &cx, &cy, &src_txid, src_vout, &set_path, &consumed_set_root,
+                &sv, &sn, si, &sp, &snew,
+            ).expect("fast-lane consumed-ν fold (completeness: every consume must mark its source note spent)");
+        }
+        assert_eq!(state.consumed_count, consumed_nu_count, "must fold the entire consumed set (completeness)");
+    }
 
     // FULL SCAN: every tx of every block, in order.
     for block_index in 0..(num_headers as usize) {

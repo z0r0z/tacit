@@ -35,6 +35,10 @@ serde_cbor = "0.11.2"
 tokio = { version = "1.38.0", features = ["full"] }
 tree_hash = "0.10.0"
 alloy-primitives = "1.3.0"
+# Execution-layer provider for the eth_getProof witness (fast-lane storage reads + the bitcoinConsumedCount
+# freshness slot). Versions match the sp1-helios script that builds ContractStorage the same way.
+alloy = { version = "1.0.37", features = ["full"] }
+alloy-trie = "0.9.1"
 helios-consensus-core = { git = "https://github.com/a16z/helios", tag = "0.11.1" }
 helios-ethereum = { git = "https://github.com/a16z/helios", tag = "0.11.1" }
 sp1-helios-primitives = { path = "/root/sp1-helios/primitives" }

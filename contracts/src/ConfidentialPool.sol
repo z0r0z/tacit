@@ -201,8 +201,9 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     // receipts/logs. claimId is unique per burned note, so the write is idempotent. 0 = none.
     mapping(bytes32 => bytes32) public crossOutCommitment;
 
-    // Bitcoin confidential-pool roots the oracle has attested as canonical +
-    // confirmed. A bridge_mint proves the burned note's membership against one of
+    // Bitcoin confidential-pool roots an SP1 relay proof has attested as canonical +
+    // confirmed (attestBitcoinStateProven; no trusted oracle). A bridge_mint proves
+    // the burned note's membership against one of
     // these, so a fake-tree note cannot be minted (the inflation-critical gate).
     // Also accepted as a `spendRoot` for the cross-lane fast lane (a
     // Bitcoin-homed note spent on Ethereum).
@@ -242,7 +243,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     // knownReflectionDigest is seeded to this so the first attestation continues genesis. Pinned in
     // cxfer-core (genesis_digest_matches_contract_constant). Tied to BITCOIN_RELAY_VKEY (one prover).
     bytes32 public constant REFLECTION_GENESIS_DIGEST =
-        0x0dd951a946819f644d6a00d1ad0db2d29affccd58d6983d1b24b73e213e6ad7e;
+        0xc5b5d994530ec9125d08c855a9c2935d842396cfc67d91abb42335166664df68;
 
     // A shared (Bitcoin-side) asset id => this pool's local registry key. A bridge_mint note
     // carries the SHARED id as its `asset` (it must, to prove membership in the Bitcoin
@@ -269,6 +270,29 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     // distinct from `nullifierSpent`: a locked note was never a note-tree leaf, so a claim/refund must
     // neither be gated by nor consume the note-tree nullifier set.
     mapping(bytes32 => bool) public lockSpent;
+
+    // ──────────────────── Fast lane (Bitcoin-homed note spent on Ethereum) ────────────────────
+    // Appended at the END of storage (like the lock set above) so existing slots are unchanged —
+    // crossOutCommitment stays at its slot (76), the index the eth-reflection guest already reflects.
+
+    // A Bitcoin-homed note's nullifier consumed by a value-exit on the Ethereum fast lane:
+    // ν => the Bitcoin pool root (spendRoot) membership was proven against (non-zero = consumed).
+    // The eth-reflection guest proves these slots (eth_getProof, the same mechanism as crossOutCommitment)
+    // and the Bitcoin reflection guest folds them into the Bitcoin SPENT set, so the source note is marked
+    // spent on Bitcoin (Ethereum-senior) — closing the one-directional-reflection gap the bridge-only bar
+    // otherwise enforces. A DEDICATED map, never `nullifierSpent` (which holds native EVM spends that must
+    // never enter Bitcoin's spent set). Written only on a btcHomed fast-lane value-exit; never read on-chain.
+    mapping(bytes32 => bytes32) public bitcoinConsumed;
+
+    // Monotone count of distinct `bitcoinConsumed` entries ever written — the fast-lane FRESHNESS anchor.
+    // Each entry is a distinct ν (the nullifierSpent gate bars a repeat), so this is exactly the number of
+    // consumed notes. The eth-reflection guest reads THIS slot via the same finalized storage proof it uses
+    // for the entries, and asserts its folded `consumedNuCount == bitcoinConsumedCount` at that block. So a
+    // worker cannot witness only a SUBSET of consumes (omitting recent ones) and leave the omitted source
+    // notes live + double-spendable on Bitcoin: advancing the reflection's finalized slot now REQUIRES
+    // folding every consume recorded as of that slot. Appended last so crossOutCommitment(76) /
+    // bitcoinConsumed(119) keep the indices the eth-reflection guest hardcodes.
+    uint256 public bitcoinConsumedCount;
 
     // ──────────────────── Public-values layout ────────────────────
 
@@ -334,7 +358,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     // A Bitcoin burn was minted as an Ethereum note (claimed once). The key is the burned
     // note's nullifier ν (the one-mint-per-burn gate), not a destination-bound claimId.
     event BridgeMinted(bytes32 indexed burnNullifier);
-    // The oracle attested a canonical, confirmed Bitcoin confidential-pool root.
+    // A relay proof attested a canonical, confirmed Bitcoin confidential-pool root.
     event BitcoinRootAttested(bytes32 indexed root);
     // The reflected Bitcoin spent-set indexed-Merkle root advanced.
     event BitcoinSpentRootReflected(bytes32 indexed root);
@@ -344,6 +368,10 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     event BitcoinReflectionAdvanced(bytes32 indexed priorDigest, bytes32 indexed newDigest, uint64 height);
     // An Ethereum note was burned for Bitcoin; validators honor it once past finality.
     event CrossOutRecorded(bytes32 indexed claimId, uint16 destChain, bytes32 destCommitment, bytes32 nullifier, bytes32 assetId);
+    // Fast lane: Bitcoin-homed notes consumed by a value-exit on Ethereum, recorded in `bitcoinConsumed`
+    // for the reverse reflection to fold into the Bitcoin spent set. `spendRoot` = the Bitcoin pool root
+    // membership was proven against. The worker reads this to build the eth-reflection witness set.
+    event BitcoinNotesConsumed(bytes32[] nullifiers, bytes32 spendRoot);
     // A confidential AMM pool was initialized / a batch settled against it.
     event PoolInitialized(bytes32 indexed poolId, bytes32 assetA, bytes32 assetB, uint256 reserveA, uint256 reserveB, uint32 feeBps);
     event SwapSettled(bytes32 indexed poolId, uint256 reserveA, uint256 reserveB);
@@ -822,7 +850,8 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         if (pv.refundNotBefore != 0 && block.timestamp < pv.refundNotBefore) revert RefundTooEarly();
         // Membership may be proven against an Ethereum root OR a reflected Bitcoin
         // confidential-pool root (cross-lane: a Bitcoin-homed note spent on
-        // the Ethereum fast lane). Both are oracle/relay-attested.
+        // the Ethereum fast lane). The Ethereum root is this pool's own tree; the
+        // Bitcoin root is relay-attested (no trusted oracle).
         if (pv.spendRoot != bytes32(0) && !everKnownRoot[pv.spendRoot] && !knownBitcoinRoot[pv.spendRoot]) revert UnknownRoot();
         // Cross-lane non-membership (cross-lane): if the guest proved each
         // spent ν absent from the Bitcoin spent set, it must be against the CURRENT
@@ -850,27 +879,52 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         // bridge_burn MUST therefore originate from an Ethereum-homed note; the contract sees the home
         // lane (the guest sees only the root bytes), so reject btcHomed + crossOuts here.
         if (btcHomed && pv.crossOuts.length != 0) revert BridgeBurnNotEthHomed();
-        // Source-consume invariant (cross-lane): the crossOut bar above is one instance of a general
-        // rule. Reflection is one-directional (Bitcoin→Ethereum only — the reflection prover never
-        // imports the EVM nullifier set), so ANY value-exit of a Bitcoin-homed note (a withdrawal, a
-        // settler fee, a new Ethereum leaf, or a pool credit) lets the value leave to Ethereum while the
-        // original Bitcoin UTXO stays live + spendable on Bitcoin — duplication, no race/reorg needed.
-        // A Bitcoin-homed note's value may reach Ethereum ONLY by being CONSUMED on Bitcoin first:
-        // bridge_burn (on Bitcoin) → bridge_mint (here), which is gated on the reflected bridge-burn set
-        // and is NOT btcHomed (it proves membership against its own pool_root, spendRoot ∈ EVM/0). So a
-        // btcHomed batch may mark nullifiers but must not move value onto Ethereum. (A race-free single-tx
-        // fast lane is impossible without a finality-gated shared nullifier set — the deferred reverse path:
-        // symmetric forward reflection still lets a note be spent on both lanes within the mutual lag.)
-        // depositsConsumed is barred too: a consumed EVM deposit must materialize as a leaf (which IS
-        // barred here), so a btcHomed batch consuming one could only strand the depositor's escrow.
-        // lockLeaves/lockNullifiers are value-exits too: locking a Bitcoin-homed note (lockLeaves) moves
-        // its value into the EVM lock set (claimable to an EVM note) while its Bitcoin UTXO stays live —
-        // the same duplication the bar prevents; and a claim/refund mints an EVM output. So a btcHomed
-        // batch must carry neither (a Bitcoin-homed note reaches Ethereum only via bridge_burn→mint).
-        if (btcHomed && (pv.withdrawals.length != 0 || pv.fees.length != 0 || pv.leaves.length != 0
-            || pv.swaps.length != 0 || pv.liquidity.length != 0 || pv.depositsConsumed.length != 0
-            || pv.lockLeaves.length != 0 || pv.lockNullifiers.length != 0)) {
-            revert BtcHomedValueExitMustBridge();
+        // Source-consume invariant (cross-lane): a Bitcoin-homed note's value may reach Ethereum ONLY if
+        // the note is also retired on Bitcoin — otherwise its value leaves to Ethereum while the original
+        // Bitcoin UTXO stays live + spendable there (duplication). Marking ν in the EVM `nullifierSpent`
+        // set does not reach Bitcoin (forward reflection runs Bitcoin→Ethereum only), so a btcHomed
+        // value-exit must additionally retire the source note on Bitcoin. The crossOut bar above is one
+        // instance. Two paths satisfy the invariant:
+        //  (1) bridge_burn (Bitcoin) → bridge_mint (here): retired on Bitcoin first, then minted against
+        //      the reflected bridge-burn set. NOT btcHomed (membership is against its own pool_root,
+        //      spendRoot ∈ EVM/0), so it never reaches this branch.
+        //  (2) Fast lane: spend the note directly here and record each consumed ν in `bitcoinConsumed`.
+        //      The reverse reflection — the eth-reflection guest proving that slot, the Bitcoin reflection
+        //      guest folding ν into the Bitcoin spent set (Ethereum-senior) — then retires the source note
+        //      on Bitcoin so it can't be re-spent. The guest pinned by BITCOIN_RELAY_VKEY MUST perform that
+        //      fold; the safety rests on the vkey⇄guest coherence, as with every pairing here.
+        // Only a plain spend → {Ethereum leaf, withdrawal, settler fee} rides the fast lane. AMM
+        // (swaps/liquidity), the adaptor lock set, onward crossOut (barred above) and EVM-deposit
+        // consumption each compose it with a lane the consumed-ν reflection doesn't cover, so for those a
+        // btcHomed batch still must bridge.
+        if (btcHomed) {
+            if (pv.swaps.length != 0 || pv.liquidity.length != 0 || pv.depositsConsumed.length != 0
+                || pv.lockLeaves.length != 0 || pv.lockNullifiers.length != 0) {
+                revert BtcHomedValueExitMustBridge();
+            }
+            if (pv.withdrawals.length != 0 || pv.fees.length != 0 || pv.leaves.length != 0) {
+                // Defense-in-depth: a Bitcoin-homed value-exit must MINT its bridged (pool-minted) asset,
+                // never pay from escrow funded by Ethereum wraps. The note's asset is pool-minted by
+                // construction (a btcHomed note is a bridged asset), so a compromised guest pairing it with
+                // an escrow asset here would steal others' escrow — reject. (Leaves are opaque commitments
+                // the contract can't asset-check; the guest binds a btcHomed output to the note's bridged
+                // asset, and a later unwrap of that leaf mints, never drains escrow.)
+                for (uint256 i; i < pv.withdrawals.length; ++i) {
+                    if (!assets[_resolveAsset(pv.withdrawals[i].assetId)].poolMinted) revert BtcHomedValueExitMustBridge();
+                }
+                for (uint256 i; i < pv.fees.length; ++i) {
+                    if (!assets[_resolveAsset(pv.fees[i].assetId)].poolMinted) revert BtcHomedValueExitMustBridge();
+                }
+                // Record every consumed Bitcoin-homed ν (spendRoot = the Bitcoin pool root membership was
+                // proven against) so the reverse reflection folds it into the Bitcoin spent set. The ν are
+                // also marked in nullifierSpent below; this dedicated map is the slot the eth-reflection
+                // guest reflects, and it never holds a native EVM spend.
+                for (uint256 i; i < pv.nullifiers.length; ++i) bitcoinConsumed[pv.nullifiers[i]] = pv.spendRoot;
+                // Advance the freshness anchor: every ν here is a new entry (the nullifierSpent gate above
+                // reverted any repeat), so the count grows by exactly the batch's consumed-note count.
+                bitcoinConsumedCount += pv.nullifiers.length;
+                emit BitcoinNotesConsumed(pv.nullifiers, pv.spendRoot);
+            }
         }
         // The lock-set root a claim/refund proved membership against must be a known lock root (the
         // empty-set root or one this contract has advanced) — so a forged lock set carrying an
