@@ -486,6 +486,16 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
   // size, so a resumed cycle that re-derives this digest has provably been HANDED the committed
   // live set (the contract chains priorDigest). foldSpent/foldOutput/foldBurn build the witness a
   // sub-op needs AND advance, in the guest's per-tx order.
+  // ── cBTC.zk sats-lock constants (mirror cxfer-core CBTC_ZK_ASSET_ID / CBTC_LOCK_DOMAIN) ──
+  const CBTC_ZK_ASSET_ID = '0x62a20d98fc1cd20289621d1315294cb8772f934d822e404b71e1f471cf0679c8';
+  const CBTC_LOCK_DOMAIN = new TextEncoder().encode('tacit-cbtc-lock-v1');
+  const CBTC_NOTE_OWNER = '0x' + '0'.repeat(64); // the cBTC note is owner-free (leaf owner = 0)
+  // The opening-sigma context for a cBTC sats-lock: keccak(domain ‖ asset ‖ lock_txid ‖ lock_vout_LE),
+  // RAW concatenation (NOT 32-padded) — mirrors cxfer-core kn(&[CBTC_LOCK_DOMAIN, asset, txid, vout_le]).
+  // Uses the raw keccak256 dep, not the b32-padding `keccak` helper.
+  const cbtcLockContext = (asset, lockTxid, lockVout) =>
+    hx(keccak256(concat([CBTC_LOCK_DOMAIN, b32(asset), b32(lockTxid), u32le(lockVout)])));
+
   function makeScanReflectionState() {
     const notes = new Tree();
     const spent = makeImtAccumulator();
@@ -558,10 +568,43 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     }
     function setHeight(h) { if (h < height) throw new Error('reflection height must not decrease'); height = h; }
 
+    // ── cBTC.zk sats-lock fold (mirror cxfer-core fold_cbtc_lock / fold_cbtc_lock_spends) ──
+    // The lock value `vBtc` (parsed from the lock output) + the opening sigma (rx,ry,z, locker-supplied)
+    // come from the caller. Gates: asset == the one cBTC.zk id, lock vout != 0 (the note is vout 0), and
+    // the note opens to EXACTLY vBtc under the lock-bound context. Effect: track the lock outpoint + add
+    // backing + append the owner-free note (tree + live). Returns the note-path witness, or null if a gate
+    // fails (skip-not-panic, like the guest). Built on parity-validated primitives (leaf / foldOutput /
+    // outpointKey / commitmentHash / u64be / verifyOpeningSigma); the guest-digest parity for the lock
+    // CONTEXT encoding is confirmed end-to-end by the reflect-exec fixture (the live wiring step).
+    function foldCbtcLock({ asset, cx, cy, vBtc, lockVout, lockTxid, sigRx, sigRy, sigZ }) {
+      if (hx(b32(asset)) !== CBTC_ZK_ASSET_ID) return null;          // not the cBTC.zk asset
+      if ((lockVout >>> 0) === 0) return null;                        // lock vout must differ from the note (vout 0)
+      let R;
+      try { ptFromXY(cx, cy); R = secp.ProjectivePoint.fromAffine({ x: BigInt(sigRx), y: BigInt(sigRy) }); } catch { return null; }
+      const ctx = cbtcLockContext(asset, lockTxid, lockVout);
+      if (!verifyOpeningSigma(cx, cy, BigInt(vBtc), hx(R.toRawBytes(true)), hx(b32(sigZ)), ctx)) return null;
+      cbtcLocks.insert(outpointKey(lockTxid, lockVout), u64be(BigInt(vBtc)), asset);
+      cbtcBackingSats += BigInt(vBtc);
+      const w = foldOutput(leaf(asset, cx, cy, CBTC_NOTE_OWNER), outpointKey(lockTxid, 0), commitmentHash(cx, cy), asset);
+      return { notePath: w.notePath };
+    }
+    // Self-custody rug: drop the backing of any tracked lock outpoint this tx's inputs spend. `vins` =
+    // [{prevTxid, vout}]. Returns the sats removed (saturating, like the guest's saturating_sub).
+    function foldCbtcLockSpends(vins) {
+      let removed = 0n;
+      for (const { prevTxid, vout } of (vins || [])) {
+        const key = outpointKey(prevTxid, vout);
+        const hit = cbtcLocks.get(key);
+        if (hit) { const v = BigInt(hit[0]); cbtcBackingSats = cbtcBackingSats > v ? cbtcBackingSats - v : 0n; cbtcLocks.remove(key); removed += v; }
+      }
+      return removed;
+    }
+
     return {
-      commit, digest, foldSpent, foldOutput, foldNoteAppend, foldBurn, setHeight,
+      commit, digest, foldSpent, foldOutput, foldNoteAppend, foldBurn, foldCbtcLock, foldCbtcLockSpends, setHeight,
       spentContains: (nu) => spent.contains(nu),
       poolRoot: () => notes.root(), spentRoot: () => spent.root(), burnRoot: () => burns.root(), liveRoot: () => live.root(),
+      cbtcBackingSats: () => cbtcBackingSats, cbtcLocks,
       counts: () => ({ note: noteCount(), spent: spentCount(), live: live.len(), burn: burnCount(), height }),
       live, pools, _acc: { notes, spent, live, burns },
     };
@@ -880,6 +923,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     utxoLeaf, makeUtxoAccumulator, commitmentHash, decompressCommitment, compressXY, outpointKey,
     makeReflectionState, assembleReflectionInput, openingSigma, verifyOpeningSigma, deriveOpeningNonce, intentContext,
     liveLeaf, makeLiveUtxoSet, makeScanReflectionState, assembleReflectionScanInput,
+    CBTC_ZK_ASSET_ID, cbtcLockContext,
     cxferKernelVerify, verifyCxferConservation,
     _internal: { keccak, concat, b32, beBytes, hx },
   };
