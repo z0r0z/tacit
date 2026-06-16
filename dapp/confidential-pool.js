@@ -1140,6 +1140,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
         let protocolFee = null;
         let lpRemove = null;
         let lpAdd = null;
+        let swapBatch = null;
         if (tx.env && tx.env.type === 'burn') {
           if (openings.length === 1) {
             // Reflected-note bridge-out: the burned note is a live pool note (already nullified above by the
@@ -1255,8 +1256,17 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
           const spends = openings.map((o, i) => ({ cx: o.cx, cy: o.cy, asset: inAssets[i], outpoint: inOutpoints[i] }));
           const aw = state.foldLpAdd(tx.env, spends, tx.env.shareR, outpointKey(tx.txid, 1));
           if (aw) lpAdd = { shareR: tx.env.shareR, sharePath: aw.sharePath };
+        } else if (tx.env && tx.env.type === 'swap_batch') {
+          // Track-C swap_batch (0x2F): every receipt onboarded as a real note + reserves advanced, gated by the
+          // BN254 Groth16 + the aggregate identity + per-receipt xcurve. The fold (BabyJubJub / snarkjs deps) is
+          // injected as `batch.swapBatchFold` so confidential-pool.js stays lean; it onboards via the state + returns
+          // the n receipt note-paths (the witness, read per 0x2F). The Groth16 verify is the hook's async pre-step.
+          if (typeof batch.swapBatchFold === 'function') {
+            const sw = batch.swapBatchFold(tx.env, tx.txid, openings.map((o) => ({ cx: o.cx, cy: o.cy })));
+            if (sw && sw.receiptPaths) swapBatch = { receiptPaths: sw.receiptPaths };
+          }
         }
-        txsOut.push({ txData: tx.txData, openings, spentInserts, burnInsert, outputs, burnDeposit, cbtcLock, swapVar, swapRoute, harvest, protocolFee, lpRemove, lpAdd });
+        txsOut.push({ txData: tx.txData, openings, spentInserts, burnInsert, outputs, burnDeposit, cbtcLock, swapVar, swapRoute, harvest, protocolFee, lpRemove, lpAdd, swapBatch });
       }
       blocksOut.push({ txs: txsOut });
       blockIndex++;
