@@ -306,6 +306,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     let map = new Map(); // pool_id(hex) -> { assetA, assetB, reserveA, reserveB, totalShares, c0Backed, protocolFeeBps, kLast, protocolFeeAccrued }
     const keys = () => [...map.keys()].sort(); // hex sort == byte order (fixed-length keys), matching from_sorted
     function set(poolId, s) { map.set(norm(poolId), s); }
+    function get(poolId) { const s = map.get(norm(poolId)); return s ? { ...s } : null; }
     function root() { const t = new Tree(); for (const k of keys()) t.insert(poolLeaf(k, map.get(k))); return t.root(); }
     // The sorted entries handed to the prover (its from_sorted re-checks the order). reserve/share/k_last
     // are strings — u64/u128 exceed JS Number — so the harness parses them losslessly.
@@ -325,7 +326,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
         kLast: BigInt(e.kLast || 0), protocolFeeAccrued: BigInt(e.protocolFeeAccrued || 0),
       });
     }
-    return { root, list, load, len: () => map.size };
+    return { set, get, root, list, load, len: () => map.size };
   }
 
   // ── Reflection state (the Bitcoin-indexer / reflection-prover side) ──
@@ -600,8 +601,37 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
       return removed;
     }
 
+    // ── Track-B swap_var fold (mirror cxfer-core fold_swap_var) ──
+    // The pool must be C0-backed + its tracked reserves match the envelope; the taker's spent input (c_in,
+    // a detected live note of the in-side asset) is kernel-bound to delta_in_total; the receipt opens to the
+    // PUBLIC delta_out; delta_out ≤ the out-side reserve. Effect: onboard the receipt + advance reserves
+    // (in += delta_in, out −= delta_out). Returns the receipt note-path witness, or null (skip) on any gate.
+    function foldSwapVar(sv, inputOutpoint, inputAsset, receiptOutpoint) {
+      const pool = pools.get(sv.poolId);
+      if (!pool || !pool.c0Backed) return null;
+      if (BigInt(pool.reserveA) !== BigInt(sv.rAPre) || BigInt(pool.reserveB) !== BigInt(sv.rBPre)) return null;
+      const dir = sv.direction;
+      const [assetIn, assetOut, rInPre, rOutPre] = dir === 0
+        ? [pool.assetA, pool.assetB, BigInt(pool.reserveA), BigInt(pool.reserveB)]
+        : [pool.assetB, pool.assetA, BigInt(pool.reserveB), BigInt(pool.reserveA)];
+      if (hx(b32(inputAsset)) !== hx(b32(assetIn))) return null;
+      const deltaInTotal = BigInt(sv.deltaIn) + BigInt(sv.tipAmount);
+      if (deltaInTotal >= (1n << 64n)) return null;
+      if (!swapVarKernelVerify(assetIn, inputOutpoint, sv.cIn, sv.cChangeOrSentinel, deltaInTotal, sv.kernelSig)) return null;
+      if (BigInt(sv.deltaOut) === 0n) return null;
+      if (!verifyPedersenOpening(sv.cReceipt, BigInt(sv.deltaOut), sv.rReceipt)) return null;
+      if (BigInt(sv.deltaOut) > rOutPre) return null;
+      const { cx, cy } = decompressCommitment(sv.cReceipt);
+      const w = foldOutput(leaf(assetOut, cx, cy, CBTC_NOTE_OWNER), receiptOutpoint, commitmentHash(cx, cy), assetOut);
+      const upd = { ...pool };
+      if (dir === 0) { upd.reserveA = rInPre + BigInt(sv.deltaIn); upd.reserveB = rOutPre - BigInt(sv.deltaOut); }
+      else { upd.reserveB = rInPre + BigInt(sv.deltaIn); upd.reserveA = rOutPre - BigInt(sv.deltaOut); }
+      pools.set(sv.poolId, upd);
+      return { notePath: w.notePath };
+    }
+
     return {
-      commit, digest, foldSpent, foldOutput, foldNoteAppend, foldBurn, foldCbtcLock, foldCbtcLockSpends, setHeight,
+      commit, digest, foldSpent, foldOutput, foldNoteAppend, foldBurn, foldCbtcLock, foldCbtcLockSpends, foldSwapVar, setHeight,
       spentContains: (nu) => spent.contains(nu),
       poolRoot: () => notes.root(), spentRoot: () => spent.root(), burnRoot: () => burns.root(), liveRoot: () => live.root(),
       cbtcBackingSats: () => cbtcBackingSats, cbtcLocks,
@@ -653,6 +683,32 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     let sig; try { sig = hexToBytes(kernelSig); } catch { return false; }
     if (sig.length !== 64) return false;
     return verifySchnorr(sig, cxferKernelMsg(asset, inputOutpoints, outsCompressed, burned), px);
+  }
+  // swap_var kernel (mirror cxfer-core swap_var_kernel_verify → asset_scoped_kernel_verify): the taker's
+  // input C_in contributes delta_in_total of asset_in; verify key P = C_in − C_change − delta_in_total·H
+  // (x-only). A sentinel (all-zero) c_change means no change (C_change = identity). The message binds
+  // asset ‖ the input outpoint ‖ c_change ‖ delta_in_total — distinct from the cxfer kernel message.
+  function swapVarKernelVerify(asset, inputOutpoint, cInHex, cChangeHex, deltaInTotal, kernelSigHex) {
+    const [txid, vout] = inputOutpoint;
+    const msg = sha256(concat([CXFER_KERNEL_DOMAIN, b32(asset), Uint8Array.of(1), b32(txid), u32le(vout), Uint8Array.of(1), hexToBytes(cChangeHex), u64leBytes(deltaInTotal)]));
+    let cInPt; try { cInPt = secp.ProjectivePoint.fromHex(cInHex.replace(/^0x/, '')); } catch { return false; }
+    const isSentinel = /^(0x)?0*$/i.test(cChangeHex);
+    const Z = secp.ProjectivePoint.ZERO;
+    let cChangePt = Z;
+    if (!isSentinel) { try { cChangePt = secp.ProjectivePoint.fromHex(cChangeHex.replace(/^0x/, '')); } catch { return false; } }
+    let P = cInPt.add(cChangePt.negate());
+    if (BigInt(deltaInTotal) !== 0n) P = P.add(prover.H.multiply(BigInt(deltaInTotal)).negate());
+    if (P.equals(Z)) return false;                    // identity verify key → reject (matches Rust)
+    const px = P.toRawBytes(true).slice(1);           // x-only verify key
+    let sig; try { sig = hexToBytes(kernelSigHex); } catch { return false; }
+    if (sig.length !== 64) return false;
+    return verifySchnorr(sig, msg, px);
+  }
+  // Direct Pedersen opening C == amount·H + r·G with a PUBLIC r (mirror verify_pedersen_opening) — a swap
+  // receipt's blinding r_receipt is cleartext, so its value is exactly delta_out.
+  function verifyPedersenOpening(cHex, amount, rHex) {
+    let C; try { C = secp.ProjectivePoint.fromHex(cHex.replace(/^0x/, '')); } catch { return false; }
+    return C.equals(prover.commit(BigInt(amount), mod(BigInt(rHex), N)));
   }
   // Full conservation: kernel (no inflation) AND every output in BP+ range (no wraparound). The
   // exact predicate the reflection guest re-runs before folding a cxfer's outputs (REFLECT-1).
@@ -762,6 +818,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
         let burnInsert = null;
         let burnDeposit = null;
         let cbtcLock = null;
+        let swapVar = null;
         if (tx.env && tx.env.type === 'burn') {
           if (openings.length === 1) {
             // Reflected-note bridge-out: the burned note is a live pool note (already nullified above by the
@@ -831,8 +888,16 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
           // and must parse `vBtc` from txData rather than trust the caller). lockTxid = the lock tx's txid.
           const w = state.foldCbtcLock({ asset: tx.env.asset, cx: tx.env.cx, cy: tx.env.cy, vBtc: tx.env.vBtc, lockVout: tx.env.lockVout, lockTxid: tx.txid, sigRx: tx.env.sigRx, sigRy: tx.env.sigRy, sigZ: tx.env.sigZ });
           if (w) cbtcLock = { notePath: w.notePath, sigRx: tx.env.sigRx, sigRy: tx.env.sigRy, sigZ: tx.env.sigZ };
+        } else if (tx.env && tx.env.type === 'swap_var') {
+          // Track-B swap_var: the taker spends one pool note (detected above); fold the receipt + advance
+          // the pool reserves. Witness = the receipt note-path the guest reads after the 0x32 envelope.
+          // (Sentinel-change only for now; non-sentinel change onboarding is a follow-up.)
+          if (openings.length === 1) {
+            const sw = state.foldSwapVar(tx.env, inOutpoints[0], inAssets[0], outpointKey(tx.txid, 1));
+            if (sw) swapVar = { receiptPath: sw.notePath };
+          }
         }
-        txsOut.push({ txData: tx.txData, openings, spentInserts, burnInsert, outputs, burnDeposit, cbtcLock });
+        txsOut.push({ txData: tx.txData, openings, spentInserts, burnInsert, outputs, burnDeposit, cbtcLock, swapVar });
       }
       blocksOut.push({ txs: txsOut });
       blockIndex++;

@@ -136,6 +136,12 @@ fn write_stdin(f: &serde_json::Value) -> SP1Stdin {
             if let Some(cb) = tx.get("cbtcLock").filter(|v| !v.is_null()) {
                 path(&mut s, &cb["notePath"]); r32(&mut s, &cb["sigRx"]); r32(&mut s, &cb["sigRy"]); r32(&mut s, &cb["sigZ"]);
             }
+            // swap_var (0x32): the guest reads the receipt note-path (+ the change note-path iff
+            // non-sentinel) after the envelope — mirror that order.
+            if let Some(sw) = tx.get("swapVar").filter(|v| !v.is_null()) {
+                path(&mut s, &sw["receiptPath"]);
+                if let Some(cp) = sw.get("changePath").filter(|v| !v.is_null()) { path(&mut s, cp); }
+            }
         }
     }
     s
