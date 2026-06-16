@@ -122,6 +122,11 @@ export function makeScanReflectionIndexer({ secp, keccak256, sha256, ownerTag, b
       // NOT yet reflect it (no free-output deposit path); surface it so the assembler can flag the
       // un-onboarded value rather than silently treating the tx as plain.
       env = { type: 'mint', assetId: tx.decode.assetId };
+    } else if (tx.decode && tx.decode.type === 'unsupported') {
+      // A Tacit envelope the guest folds but the JS scan does not yet mirror (AMM lp/swap/route/batch,
+      // farm, protocol-fee claim, cBTC lock, bid, crossout, AXFER). Surface it so the assembler flags the
+      // batch + the attester refuses — the guest would read fold witnesses this scan can't emit (a desync).
+      env = { type: 'unsupported', opcode: tx.decode.opcode };
     }
     return { txData: withHex(tx.rawHex), txid, vins, env };
   }
@@ -148,6 +153,7 @@ export function makeScanReflectionIndexer({ secp, keccak256, sha256, ownerTag, b
       spentLinks: state._acc.spent.links(),
       liveTriples: state._acc.live.triples(),
       burnNodes: state._acc.burns.nodes(),
+      pools: state.pools.list(),
       height: state.counts().height,
       coords: [...coords.entries()],
     };
@@ -159,7 +165,8 @@ export function makeScanReflectionIndexer({ secp, keccak256, sha256, ownerTag, b
     for (const leaf of (snap.noteLeaves || [])) state._acc.notes.insert(leaf);
     for (const [val] of (snap.spentLinks || []).slice(1)) state._acc.spent.insert(val); // skip the {0→0} sentinel
     for (const [key, , value] of (snap.burnNodes || []).slice(1)) state._acc.burns.insert(key, value);
-    state._acc.live.load(snap.liveTriples || []); // pre-asset `livePairs` snapshots must be re-indexed
+    state._acc.live.load(snap.liveTriples || []); // the live UTXO set: (key, commitmentHash, asset) triples
+    state.pools.load(snap.pools || []); // the per-pool reserve registry (empty until AMM envelopes are folded)
     if (snap.height) state.setHeight(snap.height);
     for (const [k, v] of (snap.coords || [])) coords.set(k, v);
   }

@@ -68,6 +68,15 @@ export function makeScanReflectionAttester({ deps, storage, prove, submit, getBl
       burnDeposits = await getBurnDeposits(txids);
     }
     const input = idx.assembleBlocks(blocks, { headers, anchorHeight: from, burnDeposits });
+    // Fail-loud: if any tx in this range carries a Tacit envelope the guest folds but the JS scan does
+    // not yet mirror (AMM / cBTC / farm / bid / protocol-fee / crossout / AXFER), the guest would read
+    // fold witnesses this assembler never emitted — the prover input is desynced. REFUSE rather than
+    // attest a divergent root; the relay halts at this height until the fold is mirrored (the guest is
+    // authoritative, so this is liveness, never soundness — no wrong attestation can land).
+    if (input.unsupportedEnvelopes && input.unsupportedEnvelopes.length) {
+      const ops = [...new Set(input.unsupportedEnvelopes.map((u) => '0x' + (u.opcode || 0).toString(16)))].join(',');
+      throw new Error(`reflection: ${input.unsupportedEnvelopes.length} unmirrored guest-folded envelope(s) [${ops}] in blocks ${from}..${to}; mirror the fold in the JS scan before attesting (fail-loud, no divergent attestation)`);
+    }
     return { jobId: input.newDigest, input, newSnapshot: idx.snapshot(), attestedTo: to, blocks: heights.length };
   }
 

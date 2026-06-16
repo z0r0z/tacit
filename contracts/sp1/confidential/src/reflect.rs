@@ -92,8 +92,9 @@ fn read_scan_prior_state() -> ScanReflection {
     let cbtc_locks = LiveUtxoSet::from_sorted(cbtc_lock_triples).expect("handed cBTC lock set not sorted/unique");
     let cbtc_backing_sats: u64 = io::read();
     // Track B resume state: the per-pool reserve registry — (pool_id, asset_a, asset_b, reserve_a,
-    // reserve_b, c0_backed). Rides digest() (cxfer-core), so a wrong handoff (forged reserve / flipped
-    // backing flag) fails the priorDigest chain. Empty for a no-AMM-pool batch (n=0).
+    // reserve_b, total_shares, c0_backed, protocol_fee_bps, k_last, protocol_fee_accrued). Rides digest()
+    // (cxfer-core), so a wrong handoff (forged reserve / flipped backing flag / forged accrued skim) fails
+    // the priorDigest chain. Empty for a no-AMM-pool batch (n=0).
     let n_pools: u32 = io::read();
     let pool_entries: Vec<([u8; 32], PoolReserveState)> = (0..n_pools).map(|_| {
         let pool_id = r32();
@@ -103,7 +104,15 @@ fn read_scan_prior_state() -> ScanReflection {
         let reserve_b: u64 = io::read();
         let total_shares: u64 = io::read();
         let c0_backed: u32 = io::read();
-        (pool_id, PoolReserveState { asset_a, asset_b, reserve_a, reserve_b, total_shares, c0_backed: c0_backed != 0 })
+        // Protocol-fee (Uniswap-V2 lazy mintFee) state — committed in the pool leaf (PoolReserveSet::root)
+        // so a resumed cycle can't forge the accrued skim. All zero for a no-skim pool.
+        let protocol_fee_bps: u16 = io::read();
+        let k_last: u128 = io::read();
+        let protocol_fee_accrued: u64 = io::read();
+        (pool_id, PoolReserveState {
+            asset_a, asset_b, reserve_a, reserve_b, total_shares, c0_backed: c0_backed != 0,
+            protocol_fee_bps, k_last, protocol_fee_accrued,
+        })
     }).collect();
     let pools = PoolReserveSet::from_sorted(pool_entries).expect("handed pool reserve set not sorted/unique");
     ScanReflection {

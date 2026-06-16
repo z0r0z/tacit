@@ -286,6 +286,48 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
   };
   const u64be = (n) => beBytes(n, 32); // a u64 as a 32-byte big-endian word (digest encoding)
 
+  // The Track-B pool-registry leaf — byte-identical to cxfer-core PoolReserveSet::root's leaf:
+  // keccak(poolId ‖ assetA ‖ assetB ‖ u64be(reserveA) ‖ u64be(reserveB) ‖ u64be(totalShares) ‖
+  // backed ‖ u64be(protocolFeeBps) ‖ u128be(kLast) ‖ u64be(protocolFeeAccrued)). `backed` is u64be(1|0)
+  // (byte 31 set, matching the Rust `backed[31]=1`); `kLast` is a u128 right-aligned in a 32-byte word
+  // (beBytes is BigInt-exact, so the low 16 bytes carry it — identical to the Rust u128b encoding).
+  const poolLeaf = (poolId, s) => hx(keccak(
+    poolId, s.assetA, s.assetB,
+    u64be(s.reserveA), u64be(s.reserveB), u64be(s.totalShares), u64be(s.c0Backed ? 1 : 0),
+    u64be(s.protocolFeeBps || 0), beBytes(BigInt(s.kLast || 0), 32), u64be(s.protocolFeeAccrued || 0),
+  ));
+  // The Track-B per-pool reserve registry mirror (cxfer-core PoolReserveSet). Sorted by pool_id; the
+  // root rides ScanReflection.digest() so a resumed cycle can't forge a pool's reserves, its c0_backed
+  // flag, or its accrued protocol fee. The worker does not yet FOLD Bitcoin AMM envelopes into it (the
+  // same deferred step as the cBTC-lock fold), so it is empty today — but the resume handoff serializes
+  // whatever it holds, and digest() commits it, so JS == Rust == the contract's REFLECTION_GENESIS_DIGEST.
+  function makePoolReserveSet() {
+    const norm = (x) => hx(b32(x));
+    let map = new Map(); // pool_id(hex) -> { assetA, assetB, reserveA, reserveB, totalShares, c0Backed, protocolFeeBps, kLast, protocolFeeAccrued }
+    const keys = () => [...map.keys()].sort(); // hex sort == byte order (fixed-length keys), matching from_sorted
+    function set(poolId, s) { map.set(norm(poolId), s); }
+    function root() { const t = new Tree(); for (const k of keys()) t.insert(poolLeaf(k, map.get(k))); return t.root(); }
+    // The sorted entries handed to the prover (its from_sorted re-checks the order). reserve/share/k_last
+    // are strings — u64/u128 exceed JS Number — so the harness parses them losslessly.
+    function list() {
+      return keys().map((k) => { const s = map.get(k); return {
+        poolId: k, assetA: norm(s.assetA), assetB: norm(s.assetB),
+        reserveA: String(s.reserveA), reserveB: String(s.reserveB), totalShares: String(s.totalShares),
+        c0Backed: !!s.c0Backed, protocolFeeBps: Number(s.protocolFeeBps || 0),
+        kLast: String(s.kLast || 0), protocolFeeAccrued: String(s.protocolFeeAccrued || 0),
+      }; });
+    }
+    function load(arr) {
+      map = new Map();
+      for (const e of (arr || [])) set(e.poolId, {
+        assetA: e.assetA, assetB: e.assetB, reserveA: BigInt(e.reserveA), reserveB: BigInt(e.reserveB),
+        totalShares: BigInt(e.totalShares), c0Backed: !!e.c0Backed, protocolFeeBps: Number(e.protocolFeeBps || 0),
+        kLast: BigInt(e.kLast || 0), protocolFeeAccrued: BigInt(e.protocolFeeAccrued || 0),
+      });
+    }
+    return { root, list, load, len: () => map.size };
+  }
+
   // ── Reflection state (the Bitcoin-indexer / reflection-prover side) ──
   // The canonical Bitcoin confidential-pool state the reflection prover proves over: the note
   // tree, spent-set, bridge-burn set, and UTXO set, advanced as confirmed effects land. Mirrors
@@ -455,6 +497,9 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     // CbtcBuffer reads a backing the prover cannot forge.
     const cbtcLocks = makeLiveUtxoSet();
     let cbtcBackingSats = 0n;
+    // Track B: the per-pool reserve registry (cxfer-core ScanReflection.pools). Empty until the worker
+    // folds Bitcoin AMM envelopes; rides digest() so a resumed cycle can't forge a pool's reserves/skim.
+    const pools = makePoolReserveSet();
 
     // Counts derive from the accumulators (not a separate cursor), so a snapshot restore that
     // replays the raw leaves/links/nodes reconstructs the exact digest without bookkeeping drift.
@@ -470,6 +515,9 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
         burns.root(), u64be(burnCount()),
         u64be(height),
         cbtcLocks.root(), u64be(cbtcBackingSats),
+        // Track B: per-pool reserve registry — pinned so a resumed cycle can't forge a pool's reserves
+        // or its c0_backed flag (which would let an onboarding fold mint unbacked value).
+        pools.root(), u64be(pools.len()),
       ));
     }
 
@@ -515,7 +563,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
       spentContains: (nu) => spent.contains(nu),
       poolRoot: () => notes.root(), spentRoot: () => spent.root(), burnRoot: () => burns.root(), liveRoot: () => live.root(),
       counts: () => ({ note: noteCount(), spent: spentCount(), live: live.len(), burn: burnCount(), height }),
-      live, _acc: { notes, spent, live, burns },
+      live, pools, _acc: { notes, spent, live, burns },
     };
   }
 
@@ -628,6 +676,9 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
       live: state.live.triples(), liveCount: c.live,
       burnRoot: state.burnRoot(), burnCount: c.burn,
       height: c.height,
+      // Track B: the per-pool reserve registry the guest reads after cbtcBackingSats (empty today; the
+      // harness writes n_pools=0 + no entries, the guest reconstructs the same empty registry).
+      pools: state.pools.list(),
     };
     const blocksOut = [];
     const nonConserving = [];
@@ -637,6 +688,9 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     // ships (SPEC-BITCOIN-REFLECTION-AMENDMENT §6.1). Surface them LOUD so a value-entering envelope is
     // never silently dropped (the guest skips it identically — an unrecognized envelope folds nothing).
     const unreflectedValueEntry = [];
+    // Tacit envelopes the guest FOLDS but this scan does not yet mirror — surfaced so the attester
+    // refuses the batch rather than desync the witness stream. See txSpec / classifyConfidentialTx.
+    const unsupportedEnvelopes = [];
     let blockIndex = 0;
     for (const block of (batch.blocks || [])) {
       state.setHeight((batch.anchorHeight | 0) + blockIndex);
@@ -716,13 +770,20 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
           // A confidential-mint (T_MINT/cmint) value-entry: NOT reflected by the conservation-closed
           // full-scan model — surfaced, not folded, so callers see un-onboarded Bitcoin value.
           unreflectedValueEntry.push({ txid: tx.txid, assetId: tx.env.assetId || null });
+        } else if (tx.env && tx.env.type === 'unsupported') {
+          // A Tacit envelope the guest FOLDS (AMM lp/swap/route/batch, farm, protocol-fee claim, cBTC
+          // lock, bid, crossout, AXFER) but the JS scan does not yet mirror. The guest reads fold
+          // witnesses for it; this scan emits none, so the batch's witness stream would desync → a wrong,
+          // un-chainable digest. Surface it (loud) so the attester refuses rather than attest a divergent
+          // root. Removing an entry here = implementing that fold in the scan state + this assembler.
+          unsupportedEnvelopes.push({ txid: tx.txid, opcode: tx.env.opcode });
         }
         txsOut.push({ txData: tx.txData, openings, spentInserts, burnInsert, outputs, burnDeposit });
       }
       blocksOut.push({ txs: txsOut });
       blockIndex++;
     }
-    return { prior, anchorHeight: batch.anchorHeight | 0, headers: batch.headers || [], blocks: blocksOut, newDigest: state.digest(), nonConserving, unreflectedValueEntry };
+    return { prior, anchorHeight: batch.anchorHeight | 0, headers: batch.headers || [], blocks: blocksOut, newDigest: state.digest(), nonConserving, unreflectedValueEntry, unsupportedEnvelopes };
   }
 
   // Mirror of the guest's keccak_merkle_verify — fold a leaf with its path.

@@ -206,9 +206,13 @@ function parseBurnEnvelope(envHex) {
 // (T_CXFER_BPP 0x22 OR T_CXFER 0x23, identical wire shape) → { asset, kernelSig, commitments[], rangeProof }
 // (all hex; commitments compressed). Layout (env[0]∈{0x22,0x23}):
 //   opcode(1) ‖ assetId(32) ‖ kernel_sig(64) ‖ N(1,∈{1,2,4,8}) ‖ N×(commitment(33) ‖ amount_ct(8)) ‖ rpLen(2 LE) ‖ rp.
+// T_CXFER_BPP(0x22) / T_CXFER(0x23) + the atomic-settlement family T_AXFER(0x26/0x37/0x3C/0x3D): identical
+// wire shape, all folded by the guest via the same parse_cxfer_envelope_full → fold_cxfer (single-asset
+// Σin=Σout kernel + BP+ range), so the JS reflection mirrors them all as 'cxfer'.
+const CXFER_OPCODES = new Set([0x22, 0x23, 0x26, 0x37, 0x3c, 0x3d]);
 function parseCxferEnvelopeFull(envHex) {
   const env = hexToBytes(envHex);
-  if (env.length < 1 + 32 + 64 + 1 || (env[0] !== 0x22 && env[0] !== 0x23)) return null;
+  if (env.length < 1 + 32 + 64 + 1 || !CXFER_OPCODES.has(env[0])) return null;
   const asset = env.subarray(1, 33);
   const kernelSig = env.subarray(33, 97);
   let p = 97;
@@ -234,7 +238,17 @@ function classifyConfidentialTx(rawTxHex) {
   if (burn) return { type: 'burn', dest: burn.dest };
   const cx = parseCxferEnvelopeFull(envHex);
   if (cx) return { type: 'cxfer', assetId: cx.asset, commitments: cx.commitments, kernelSig: cx.kernelSig, rangeProof: cx.rangeProof };
-  return null;
+  // env[0] is the opcode (the TACIT frame is already stripped). cetch (0x21) / cmint (0x24) create a note
+  // but the conservation-closed full scan does NOT fold them (no free-output deposit path), so the guest
+  // treats them as plain too — safe. EVERY OTHER Tacit op (AMM lp/swap/route/batch/farm/protocol-fee,
+  // cBTC lock, bid, crossout, AXFER) IS folded by the guest (reflect.rs reads its fold witnesses). The JS
+  // scan does not yet mirror those folds, so it must SURFACE such a tx, not silently treat it as plain —
+  // otherwise the guest reads fold witnesses this scan never emitted and the whole batch's stream desyncs
+  // (a wrong / un-chainable digest). Fail-loud: the attester refuses the batch (liveness, not soundness —
+  // the guest is authoritative). Mirroring a fold here is what lets the corresponding op attest.
+  const opcode = hexToBytes(envHex)[0];
+  if (opcode === 0x21 || opcode === 0x24) return null; // cetch / cmint — created-but-not-folded (plain)
+  return { type: 'unsupported', opcode };
 }
 
 export { readVarint, extractInputs, extractTaprootEnvelope, parseCetch, parseCmint, parseBurnEnvelope, parseCxferEnvelopeFull, classifyConfidentialTx };

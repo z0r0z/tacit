@@ -103,6 +103,20 @@ fn write_stdin(f: &serde_json::Value) -> SP1Stdin {
     for kv in cbtc { let t = kv.as_array().unwrap(); r32(&mut s, &t[0]); r32(&mut s, &t[1]); r32(&mut s, &t[2]); }
     s.write(&p.get("cbtcBackingSats").and_then(|v| v.as_u64()).unwrap_or(0));
 
+    // Track B resume state (guest reads it after cbtcBackingSats): the per-pool reserve registry. The
+    // assembler emits reserve/share/k_last as strings (u64/u128 exceed JS Number); parse them losslessly.
+    let pools = p.get("pools").and_then(|v| v.as_array()).map(|a| a.as_slice()).unwrap_or(&[]);
+    s.write(&(pools.len() as u32));
+    for pe in pools {
+        let u64f = |k: &str| pe[k].as_u64().or_else(|| pe[k].as_str().and_then(|x| x.parse::<u64>().ok())).unwrap_or(0);
+        r32(&mut s, &pe["poolId"]); r32(&mut s, &pe["assetA"]); r32(&mut s, &pe["assetB"]);
+        s.write(&u64f("reserveA")); s.write(&u64f("reserveB")); s.write(&u64f("totalShares"));
+        s.write(&(if pe["c0Backed"].as_bool().unwrap_or(false) { 1u32 } else { 0u32 }));
+        s.write(&(u64f("protocolFeeBps") as u16));
+        s.write(&pe.get("kLast").and_then(|v| v.as_str()).and_then(|x| x.parse::<u128>().ok()).unwrap_or(0u128));
+        s.write(&u64f("protocolFeeAccrued"));
+    }
+
     // Mode-B gate (matches reflect.rs): write mode_b, then ONLY when set the eth-reflection PV the guest
     // verifies. A forward-only fixture (modeB absent/0) skips it — no eth_pv, no verify_sp1_proof obligation
     // (so the groth16 recursion has no empty deferred set to divide by). modeB=1 fixtures carry the real
