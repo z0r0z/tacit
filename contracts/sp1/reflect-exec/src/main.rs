@@ -142,6 +142,10 @@ fn write_stdin(f: &serde_json::Value) -> SP1Stdin {
                 path(&mut s, &sw["receiptPath"]);
                 if let Some(cp) = sw.get("changePath").filter(|v| !v.is_null()) { path(&mut s, cp); }
             }
+            // swap_route (0x33): the guest reads the receipt note's append path after the envelope — mirror it.
+            if let Some(rt) = tx.get("swapRoute").filter(|v| !v.is_null()) {
+                path(&mut s, &rt["receiptPath"]);
+            }
             // lp_add / POOL_INIT (0x2D): the guest reads (per 0x2D) the minted share note's blinding r, then
             // its append path — mirror that order.
             if let Some(la) = tx.get("lpAdd").filter(|v| !v.is_null()) {

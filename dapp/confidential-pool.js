@@ -636,6 +636,47 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
       return { notePath: w.notePath };
     }
 
+    // ── Track-B swap_route fold (mirror cxfer-core fold_swap_route) ──
+    // The multi-hop sibling of swap_var: the trader's single real input note flows through 2–4 pools and lands
+    // as ONE receipt note. Validate + STAGE every hop before mutating (all-or-nothing): each pool c0-backed +
+    // its tracked reserves match the hop's declared R_pre; the chain links (hop_i input asset/amount == hop_{i-1}
+    // output); hop 0's input is kernel-bound to its magnitude; no hop drains its out-reserve; the final output
+    // asset == the route's output asset and the receipt opens to the final amount. null (skip) on any gate.
+    function foldSwapRoute(env, inputOutpoint, inputAsset, receiptOutpoint) {
+      if (hx(b32(inputAsset)) !== hx(b32(env.traderInputAsset))) return null;
+      const SENTINEL_HEX = '0x' + '00'.repeat(33);
+      const staged = [];
+      let curAsset = env.traderInputAsset, curAmount = 0n;
+      for (let i = 0; i < env.hops.length; i++) {
+        const hop = env.hops[i];
+        if (staged.some(([pid]) => hx(b32(pid)) === hx(b32(hop.poolId)))) return null; // pool repeated
+        const pool = pools.get(hop.poolId);
+        if (!pool || !pool.c0Backed) return null;
+        if (BigInt(pool.reserveA) !== BigInt(hop.rAPre) || BigInt(pool.reserveB) !== BigInt(hop.rBPre)) return null;
+        const dir = hop.direction;
+        const [inAsset, outAsset, rIn, rOut, inMag, outMag] = dir === 0
+          ? [pool.assetA, pool.assetB, BigInt(pool.reserveA), BigInt(pool.reserveB), BigInt(hop.deltaANetMag), BigInt(hop.deltaBNetMag)]
+          : [pool.assetB, pool.assetA, BigInt(pool.reserveB), BigInt(pool.reserveA), BigInt(hop.deltaBNetMag), BigInt(hop.deltaANetMag)];
+        if (hx(b32(inAsset)) !== hx(b32(curAsset))) return null;
+        if (i === 0) {
+          if (inMag === 0n) return null;
+          if (!swapVarKernelVerify(curAsset, inputOutpoint, env.cIn, SENTINEL_HEX, inMag, env.kernelSig)) return null;
+        } else if (inMag !== curAmount) return null;
+        if (outMag === 0n || outMag > rOut) return null;
+        const upd = { ...pool };
+        if (dir === 0) { upd.reserveA = rIn + inMag; upd.reserveB = rOut - outMag; }
+        else { upd.reserveB = rIn + inMag; upd.reserveA = rOut - outMag; }
+        staged.push([hop.poolId, upd]);
+        curAsset = outAsset; curAmount = outMag;
+      }
+      if (hx(b32(curAsset)) !== hx(b32(env.traderOutputAsset))) return null;
+      if (!verifyPedersenOpening(env.cReceipt, curAmount, env.rReceipt)) return null;
+      const { cx, cy } = decompressCommitment(env.cReceipt);
+      const w = foldOutput(leaf(env.traderOutputAsset, cx, cy, CBTC_NOTE_OWNER), receiptOutpoint, commitmentHash(cx, cy), env.traderOutputAsset);
+      for (const [pid, pool] of staged) pools.set(pid, pool);
+      return { receiptPath: w.notePath };
+    }
+
     // ── Track-B harvest / farm-refund fold (mirror cxfer-core fold_harvest) ──
     // A reward/refund note minted by DECREE at vout[1], drawn from a C0-backed farm treasury. The note is
     // DERIVED from the public (amount, r): C = amount·H + r·G — so its value is exactly the treasury draw,
@@ -788,7 +829,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     }
 
     return {
-      commit, digest, foldSpent, foldOutput, foldNoteAppend, foldBurn, foldCbtcLock, foldCbtcLockSpends, foldSwapVar, foldHarvest, foldProtocolFeeClaim, foldFarmInit, foldLpRemove, foldLpAdd, setHeight,
+      commit, digest, foldSpent, foldOutput, foldNoteAppend, foldBurn, foldCbtcLock, foldCbtcLockSpends, foldSwapVar, foldSwapRoute, foldHarvest, foldProtocolFeeClaim, foldFarmInit, foldLpRemove, foldLpAdd, setHeight,
       spentContains: (nu) => spent.contains(nu),
       poolRoot: () => notes.root(), spentRoot: () => spent.root(), burnRoot: () => burns.root(), liveRoot: () => live.root(),
       cbtcBackingSats: () => cbtcBackingSats, cbtcLocks,
@@ -1068,6 +1109,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
         let burnDeposit = null;
         let cbtcLock = null;
         let swapVar = null;
+        let swapRoute = null;
         let harvest = null;
         let protocolFee = null;
         let lpRemove = null;
@@ -1149,6 +1191,13 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
             const sw = state.foldSwapVar(tx.env, inOutpoints[0], inAssets[0], outpointKey(tx.txid, 1));
             if (sw) swapVar = { receiptPath: sw.notePath };
           }
+        } else if (tx.env && tx.env.type === 'swap_route') {
+          // Track-B swap_route (0x33): the trader's single detected input (c_in must match the spend) flows
+          // through 2–4 pools → one receipt note (vout 1). Witness (per 0x33): the receipt's append path.
+          if (openings.length === 1 && compressXY(openings[0].cx, openings[0].cy).toLowerCase() === String(tx.env.cIn).toLowerCase()) {
+            const rw = state.foldSwapRoute(tx.env, inOutpoints[0], inAssets[0], outpointKey(tx.txid, 1));
+            if (rw) swapRoute = { receiptPath: rw.receiptPath };
+          }
         } else if (tx.env && (tx.env.type === 'harvest' || tx.env.type === 'farm_refund')) {
           // Track-B harvest (0x3B) / farm-refund (0x3E): onboard the decree-minted reward/refund note (vout 1)
           // drawn from the C0-backed farm treasury. No input spend — the note is derived from the public (amount, r).
@@ -1181,7 +1230,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
           const aw = state.foldLpAdd(tx.env, spends, tx.env.shareR, outpointKey(tx.txid, 1));
           if (aw) lpAdd = { shareR: tx.env.shareR, sharePath: aw.sharePath };
         }
-        txsOut.push({ txData: tx.txData, openings, spentInserts, burnInsert, outputs, burnDeposit, cbtcLock, swapVar, harvest, protocolFee, lpRemove, lpAdd });
+        txsOut.push({ txData: tx.txData, openings, spentInserts, burnInsert, outputs, burnDeposit, cbtcLock, swapVar, swapRoute, harvest, protocolFee, lpRemove, lpAdd });
       }
       blocksOut.push({ txs: txsOut });
       blockIndex++;
