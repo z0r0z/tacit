@@ -91,6 +91,36 @@ ok(!pool.verifyCxferConservation({ asset: ASSET, inputOutpoints: inOutpoints, in
 let threw = false; try { pool.verifyCxferConservation({ asset: ASSET, inputOutpoints: inOutpoints, inputPoints: Cin, outsCompressed, kernelSig }); } catch { threw = true; }
 ok(threw, 'full conservation THROWS on a missing rangeProof (wiring bug, not a silent drop)');
 
+// ── 2b. CBURN step: a provenance walk THROUGH a supply-burn (burn-deposit follow-up) ──────────────
+// A CBURN destroys `burned` of public supply: Σ C_in = burned·H + Σ C_out, so the change outputs descend
+// from the inputs MINUS the burn. The kernel verify key becomes P = Σ C_in − Σ C_out − burned·H, and the
+// public burn is bound into the kernel message — so a note descending from a CBURN's change is still
+// provably real supply, and the burn can't be understated to inflate the change. Mirrors the Rust
+// provenance_step_burned_amount_is_kernel_bound KAT and the generator's CBURN / CBURN_LIE paths.
+const burned = 200n; // Σin (1000) = burned (200) + Σout (800)
+const cbOut = [{ d: 800n, r: 0xabn }];
+const cbCout = cbOut.map((o) => prover.commit(o.d, o.r));
+const cbOutsCompressed = cbCout.map(compress);
+const cbExcess = ((ins.reduce((s, i) => s + i.r, 0n) - cbOut.reduce((s, o) => s + o.r, 0n)) % N + N) % N;
+const cbMsgParts = [new TextEncoder().encode('tacit-kernel-v1'), be32(BigInt(ASSET)), Uint8Array.of(ins.length)];
+for (const i of ins) { cbMsgParts.push(be32(BigInt(i.txid))); const b = new Uint8Array(4); new DataView(b.buffer).setUint32(0, i.vout, true); cbMsgParts.push(b); }
+cbMsgParts.push(Uint8Array.of(cbOut.length));
+for (const c of cbOutsCompressed) cbMsgParts.push(Uint8Array.from(Buffer.from(c.replace(/^0x/, ''), 'hex')));
+const burnedLE = new Uint8Array(8); new DataView(burnedLE.buffer).setBigUint64(0, burned, true);
+cbMsgParts.push(burnedLE);
+const cbKernelMsg = sha256(_cat(cbMsgParts));
+const cbKernelSig = hx(signSchnorr(cbKernelMsg, be32(cbExcess)));
+const cbRange = hx(bppRangeProve(cbOut.map((o) => o.d), cbOut.map((o) => o.r)).proof);
+
+ok(pool.verifyCxferConservation({ asset: ASSET, inputOutpoints: inOutpoints, inputPoints: Cin, outsCompressed: cbOutsCompressed, rangeProof: cbRange, kernelSig: cbKernelSig, burned }),
+  'full conservation ACCEPTS a conserving CBURN step (Σin = burned·H + Σout)');
+// understate the burn (witness burned = 0 against a sig over burned = 200) → verify key shifts by +burned·H → reject
+ok(!pool.verifyCxferConservation({ asset: ASSET, inputOutpoints: inOutpoints, inputPoints: Cin, outsCompressed: cbOutsCompressed, rangeProof: cbRange, kernelSig: cbKernelSig, burned: 0n }),
+  'full conservation REJECTS an understated burn (can\'t inflate the change by lying about the burn)');
+// the same conserving CBURN sig is NOT a valid burned = 0 transfer either (Σin ≠ Σout): the default path rejects it
+ok(!pool.verifyCxferConservation({ asset: ASSET, inputOutpoints: inOutpoints, inputPoints: Cin, outsCompressed: cbOutsCompressed, rangeProof: cbRange, kernelSig: cbKernelSig }),
+  'full conservation REJECTS the CBURN sig on the default (burned = 0) transfer path');
+
 // ── 3. Assembler SKIPS a non-conserving cxfer (no note folded, inputs still nullified) ───────────
 // Seed a scan state with one live pool note (the cxfer's single input), then feed a cxfer tx whose
 // single output is INFLATED (well-formed range proof, but Σin ≠ Σout so the kernel won't verify).

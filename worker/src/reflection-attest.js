@@ -1,104 +1,35 @@
-// Worker-side reflection attestation (Phase 4.4 wiring). Maintains the canonical confidential-pool
-// reflection state from the worker's confirmed-CXFER scan, and runs attestation cycles: assemble a
-// prover batch → prove on the GPU box → submit ConfidentialPool.attestBitcoinStateProven.
-//
-// Dependency-injected so it is testable + deployment-agnostic. The deployment provides:
-//   deps      : { secp, keccak256, sha256 } (the @noble crypto)
-//   storage   : { load(): Promise<{ effectLog, attestedCount }>, save(state): Promise<void> } (KV/Postgres)
-//   prove     : (input) => Promise<{ vkey, publicValues, proofBytes }>  — the GPU box (tETH-style loop:
-//               the worker enqueues `input`, the box proves exec-reflect-prove.rs, returns the proof)
-//   submit    : (publicValues, proofBytes) => Promise<txHash>  — attestBitcoinStateProven via RPC + relay key
-//   getHeaders: (blockHeights) => Promise<hex[]>  — the 80-byte headers for the batch's blocks
-//
-// The confirmed effect log is the source of truth: state is rebuilt by replaying it (the canonical
-// Bitcoin pool effects, ordered by block + tx index), so a restart/redeploy is always consistent.
+// Worker-side reflection attestation: maintains the canonical Bitcoin confidential-pool reflection state
+// via the FULL-SCAN model (every tx of every confirmed block, F4-complete) and assembles the prover batches
+// the self-hosted GPU box proves + submits to ConfidentialPool.attestBitcoinStateProven (the box-poll relay).
+// Dependency-injected (deps={secp,keccak256,sha256}, storage, getBlockTxs/getHeaders, classifyTx,
+// burnDepositKit) so it is testable + deployment-agnostic. The persisted SNAPSHOT (advanced only on ack,
+// after the on-chain attestation lands) is the source of truth, so a restart/redeploy is always consistent.
 
-import { makeReflectionIndexer } from '../../dapp/confidential-reflection-indexer.js';
 import { makeScanReflectionIndexer } from '../../dapp/confidential-reflection-scan-indexer.js';
+import { makeBurnDepositKit } from '../../dapp/burn-deposit-bitcoin.js';
 
-export function makeReflectionAttester({ deps, storage, prove, submit, getHeaders }) {
-  // Replay the persisted effect log into a fresh indexer → the current canonical state.
-  async function rebuild() {
-    const { effectLog = [], attestedCount = 0 } = (await storage.load()) || {};
-    const idx = makeReflectionIndexer(deps);
-    // deposits first (notes entering), then the ordered transfers/burns that spend them.
-    const resolved = [];
-    for (const eff of effectLog) {
-      if (eff.kind === 'deposit') {
-        idx.applyDeposits([idx.recordDeposit(eff.deposit)], eff.height);
-      } else if (eff.kind === 'transfer') {
-        resolved.push({ raw: eff, spec: idx.resolveTransfer(eff.raw) });
-      } else if (eff.kind === 'burn') {
-        resolved.push({ raw: eff, spec: idx.resolveBurn(eff.raw) });
-      }
-    }
-    return { idx, effectLog, attestedCount, resolved };
-  }
-
-  // The scan calls this when a confirmed pool effect lands (ordered by block + tx index).
-  async function ingest(eff) {
-    const { effectLog = [], attestedCount = 0 } = (await storage.load()) || {};
-    effectLog.push(eff);
-    await storage.save({ effectLog, attestedCount });
-  }
-
-  // Assemble the next un-attested batch into a prover INPUT, without proving/submitting/advancing.
-  // This is the box-poll relay model: the self-hosted box GETs this job, proves it on the GPU
-  // (exec-reflect-prove), submits attestBitcoinStateProven on-chain ITSELF (the relay key stays on
-  // the box), then calls ackJob to advance the cursor — so the cursor only moves after the on-chain
-  // attestation lands. Returns null if nothing is pending. `attestedTo` is the cursor to ack to.
-  async function assembleJob() {
-    const { idx, attestedCount, resolved } = await rebuild();
-    const pending = resolved.slice(attestedCount); // effects not yet attested on-chain
-    if (pending.length === 0) return null;
-
-    // advance the canonical state past the already-attested effects (so `prior` is the attested anchor)
-    const attested = resolved.slice(0, attestedCount);
-    if (attested.length) idx.assembleBatch(attested.map((r) => r.spec), { headers: [], anchorHeight: 0 });
-
-    const blocks = [...new Set(pending.map((r) => r.spec.blockIndex))];
-    const headers = await getHeaders(blocks);
-    const anchorHeight = Math.min(...pending.map((r) => r.raw.height));
-    const specs = pending.map((r) => ({ ...r.spec, blockIndex: blocks.indexOf(r.spec.blockIndex) }));
-
-    const input = idx.assembleBatch(specs, { headers, anchorHeight });
-    return { jobId: input.newDigest, input, attestedTo: resolved.length, pending: pending.length };
-  }
-
-  // Advance the attested cursor after the box confirms the on-chain attestation. Idempotent: a
-  // stale/duplicate ack (attestedTo <= current) is a no-op, so a retried submit can't skip effects.
-  async function ackJob(attestedTo) {
-    const s = (await storage.load()) || { effectLog: [], attestedCount: 0 };
-    if (attestedTo > (s.attestedCount || 0)) await storage.save({ ...s, attestedCount: attestedTo });
-    return { attestedCount: Math.max(attestedTo, s.attestedCount || 0) };
-  }
-
-  // All-in-worker synchronous model (prove + submit via injected URLs). No-op if nothing pending.
-  async function runCycle() {
-    const job = await assembleJob();
-    if (!job) return null;
-    const { vkey, publicValues, proofBytes } = await prove(job.input);
-    const txHash = await submit(publicValues, proofBytes);
-    await ackJob(job.attestedTo);
-    return { txHash, vkey, newDigest: job.input.newDigest, attested: job.pending };
-  }
-
-  return { ingest, runCycle, assembleJob, ackJob, rebuild };
-}
-
-// ── Full-scan attester (F4) — supersedes makeReflectionAttester at cutover ──
+// ── Full-scan reflection attester (the worker's Bitcoin-state relay; the superseded witnessed-effects
+// attester was removed at the scan-attester cutover) ──
 // The canonical state is a SNAPSHOT (the full-scan ScanReflection: live set + accumulators +
 // coords) persisted at the ATTESTED height. A cycle assembles the un-attested block range by
 // fetching EVERY tx of each block (so the guest's merkle-completeness check holds — no pool spend
 // can be omitted), advancing a copy of the snapshot, and proving; the persisted snapshot only
 // advances on ack (after the on-chain attestation), so a failed prove/submit is a safe retry.
 //
-//   deps       : { secp, keccak256, sha256 }
-//   storage    : { load(): {snapshot, attestedHeight, tipHeight} | null, save(state) }
-//   getBlockTxs: (height) => Promise<{ txs: [...] }>  — every tx of the block (the worker block-tx shape)
-//   getHeaders : (heights[]) => Promise<hex[]>        — the 80-byte headers, in height order
+//   deps          : { secp, keccak256, sha256 }
+//   storage       : { load(): {snapshot, attestedHeight, tipHeight} | null, save(state) }
+//   getBlockTxs   : (height) => Promise<{ txs: [...] }>  — every tx of the block (the worker block-tx shape)
+//   getHeaders    : (heights[]) => Promise<hex[]>        — the 80-byte headers, in height order
+//   burnDepositKit: (optional) the TAC burn-deposit / cmint-deposit onboarding tooling the scan indexer
+//                   needs to assemble a 0x2B burn of a PRE-existing (never-reflected) note — see
+//                   makeScanReflectionIndexer's burnDepositKit contract. Absent ⇒ onboarding is inert
+//                   (and getBurnDeposits is never consulted, so the indexer can never see a bundle
+//                   without its verifier — which would throw).
+//   getBurnDeposits: (optional) (txidsDisplay[]) => Promise<Map(txidDisplay → holder-traced bundle)> for
+//                   any burn-deposit in the batch. Looked up by the burn's display txid (a bundle is bound
+//                   to the burn tx, not a block height). Only consulted when burnDepositKit is wired.
 //   prove/submit as above. batchSize caps blocks per cycle (a huge backlog proves in chunks).
-export function makeScanReflectionAttester({ deps, storage, prove, submit, getBlockTxs, getHeaders, genesisHeight, batchSize = 16 }) {
+export function makeScanReflectionAttester({ deps, storage, prove, submit, getBlockTxs, getHeaders, genesisHeight, batchSize = 16, burnDepositKit, getBurnDeposits }) {
   const range = (from, to) => { const a = []; for (let h = from; h <= to; h++) a.push(h); return a; };
   // attestedHeight = the last block folded into the persisted snapshot; the next batch starts at
   // attestedHeight+1. Genesis: nothing attested, so attestedHeight = genesisHeight-1 (the first
@@ -124,11 +55,19 @@ export function makeScanReflectionAttester({ deps, storage, prove, submit, getBl
     const from = s.attestedHeight + 1;
     const to = Math.min(s.tipHeight, from + batchSize - 1);
     const heights = range(from, to);
-    const idx = makeScanReflectionIndexer(deps);
+    const idx = makeScanReflectionIndexer({ ...deps, burnDepositKit });
     idx.load(s.snapshot);
     const blocks = await Promise.all(heights.map((h) => getBlockTxs(h)));
     const headers = await getHeaders(heights);
-    const input = idx.assembleBlocks(blocks, { headers, anchorHeight: from });
+    // Holder-submitted TAC burn-deposit / cmint-deposit provenance bundles for any 0x2B burn of a
+    // pre-existing note in this range, keyed by the burn's display txid. Only consulted when a kit is
+    // wired (the indexer throws if handed a bundle without one), so this stays a no-op pre-onboarding.
+    let burnDeposits;
+    if (burnDepositKit && getBurnDeposits) {
+      const txids = blocks.flatMap((b) => (b.txs || []).map((t) => t.txidDisplay));
+      burnDeposits = await getBurnDeposits(txids);
+    }
+    const input = idx.assembleBlocks(blocks, { headers, anchorHeight: from, burnDeposits });
     return { jobId: input.newDigest, input, newSnapshot: idx.snapshot(), attestedTo: to, blocks: heights.length };
   }
 
@@ -153,61 +92,6 @@ export function makeScanReflectionAttester({ deps, storage, prove, submit, getBl
   return { setTip, assembleJob, ackJob, runCycle, loadState };
 }
 
-// Worker-facing factory: build an attester from env bindings, or null if reflection attestation
-// isn't configured (inert — no hot-path cost). Config:
-//   env.REFLECTION_ATTEST   = '1'        — the enable flag (required)
-//   env.REGISTRY_KV                      — state persistence (required)
-//   env.REFLECTION_PROVE_URL             — OPTIONAL: only the synchronous runCycle model (worker
-//                                          POSTs the input to a box HTTP prover). The default
-//                                          deployment uses the BOX-POLL model instead — the box
-//                                          GETs /reflection/job, proves + submits on-chain itself,
-//                                          POSTs /reflection/ack (ops/scripts/reflection-relay-loop.sh)
-//                                          — which needs no prove/submit URL here.
-// `api` is the worker's esplora text fetcher (for getHeaders); `deps` = { secp, keccak256, sha256 }.
-export function buildReflectionAttester(env, { deps, api, network }) {
-  if (!env || env.REFLECTION_ATTEST !== '1' || !env.REGISTRY_KV) return null;
-  const KEY = `reflection:state:${network}`;
-  const storage = {
-    load: async () => { const s = await env.REGISTRY_KV.get(KEY); return s ? JSON.parse(s) : null; },
-    save: async (s) => env.REGISTRY_KV.put(KEY, JSON.stringify(s)),
-  };
-  const prove = async (input) => {
-    const r = await fetch(env.REFLECTION_PROVE_URL, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(input) });
-    if (!r.ok) throw new Error('reflection prove failed: ' + r.status);
-    return r.json(); // { vkey, publicValues, proofBytes }
-  };
-  const submit = async (publicValues, proofBytes) => {
-    if (!env.REFLECTION_SUBMIT_URL) return null; // prove-only mode until the relay is wired
-    const r = await fetch(env.REFLECTION_SUBMIT_URL, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ publicValues, proofBytes }) });
-    return r.ok ? (await r.json()).txHash : null;
-  };
-  const getHeaders = async (heights) => Promise.all(heights.map(async (h) => {
-    const hash = (await api(env, `/block-height/${h}`, {}, network)).trim();
-    return '0x' + (await api(env, `/block/${hash}/header`, {}, network)).trim();
-  }));
-
-  const att = makeReflectionAttester({ deps, storage, prove, submit, getHeaders });
-  const reverseHex = (h) => h.replace(/^0x/, '').match(/../g).reverse().join(''); // display → internal
-
-  // Build + ingest a confirmed CXFER from the block scan. tx (esplora: .txid, .vin[]), dx (decoded
-  // outputs with .commitment compressed-hex), txs (the block's txs in order), h (height).
-  att.ingestConfirmedCxfer = async (tx, dx, txs, h, assetId) => {
-    const rawTx = await api(env, `/tx/${tx.txid}/hex`, {}, network);
-    const eff = {
-      kind: 'transfer', height: h,
-      raw: {
-        txid: '0x' + reverseHex(tx.txid), assetId, height: h, blockIndex: h,
-        txData: rawTx.trim(), txIndex: txs.findIndex((t) => t.txid === tx.txid),
-        txids: txs.map((t) => '0x' + reverseHex(t.txid)),
-        spentVins: (tx.vin || []).map((vi) => ({ prevTxid: '0x' + reverseHex(vi.txid), vout: vi.vout })),
-        outputCommitments: (dx.outputs || []).map((o) => o.commitment),
-      },
-    };
-    return att.ingest(eff);
-  };
-  return att;
-}
-
 // Worker-facing factory for the FULL-SCAN attester. Wires getBlockTxs/getHeaders to esplora and
 // the canonical-state snapshot to KV. Returns null if reflection attestation isn't configured.
 //   env.REFLECTION_ATTEST          = '1'                — enable flag
@@ -215,19 +99,42 @@ export function buildReflectionAttester(env, { deps, api, network }) {
 //   env.REFLECTION_GENESIS_HEIGHT                       — the first block the reflection scans
 //                                                         (= GENESIS_REFLECTION_ANCHOR's height)
 // `classifyTx({ txid, vin, vout, rawHex }) => null | {type:'cxfer',assetId,commitments[],kernelSig,
-// rangeProof} | {type:'burn',dest}` is the worker's existing protocol decode (T_CXFER/T_CXFER_BPP/
-// T_BRIDGE_BURN), injected so the attester stays decode-agnostic. A cxfer MUST surface its
-// kernelSig (64-byte BIP-340 hex) + rangeProof (BP+ hex) — the assembler re-verifies value
-// conservation before folding the outputs (REFLECT-1); decodeCXferBppPayload already returns both.
-// `api` is the esplora text fetcher.
-export function buildScanReflectionAttester(env, { deps, api, network, classifyTx }) {
+// rangeProof} | {type:'burn',dest}` classifies a tx's confidential envelope, injected so the attester
+// stays decode-agnostic. It MUST mirror the guest's reflect.rs classification (the guest re-parses txData
+// + is authoritative), and a cxfer MUST surface its kernelSig (64-byte BIP-340 hex) + rangeProof (BP+ hex)
+// — the assembler re-verifies value conservation before folding the outputs (REFLECT-1). The worker wires
+// `classifyConfidentialTx` (dapp/burn-deposit-bitcoin.js), a faithful cxfer-core port (NOT the lossy
+// decodeCXferBppPayload, which drops the kernel sig + range proof). `api` is the esplora text fetcher.
+//
+// `burnDepositKit` (optional) enables the scan-free TAC burn-deposit / cmint-deposit onboarding (a 0x2B
+// burn of a PRE-existing, never-reflected note). It is the raw-tx Bitcoin tooling the scan indexer needs
+// — { mirror: makeBurnDepositProvenance(...), assembler: makeBurnDepositAssembler(...),
+// parseEtchAnchor(etchTxHex, assetHex), computeTxidInternal(txHex) } (see makeScanReflectionIndexer).
+// Absent ⇒ onboarding stays inert (holder bundles are never read, the indexer never throws). When wired,
+// holders submit their traced provenance bundle under reflection:burndep:{net}:{burnTxidDisplay}.
+export function buildScanReflectionAttester(env, { deps, api, network, classifyTx, burnDepositKit }) {
   if (!env || env.REFLECTION_ATTEST !== '1' || !env.REGISTRY_KV) return null;
   const genesisHeight = parseInt(env.REFLECTION_GENESIS_HEIGHT || '0', 10);
   if (!genesisHeight) return null;
+  // Build the real TAC burn-deposit / cmint-deposit onboarding kit from the same crypto deps (so the worker
+  // can assemble a holder-traced provenance bundle into the prover input). Overridable for tests; default is
+  // the production kit. Onboarding stays inert until a holder actually submits a bundle (getBurnDeposits).
+  const kit = burnDepositKit || makeBurnDepositKit(deps);
   const KEY = `reflection:scan:${network}`;
   const storage = {
     load: async () => { const s = await env.REGISTRY_KV.get(KEY); return s ? JSON.parse(s) : null; },
     save: async (s) => env.REGISTRY_KV.put(KEY, JSON.stringify(s)),
+  };
+  // Holder-traced burn-deposit bundles, keyed by the burn tx's display txid. Returns the subset present
+  // for this batch's txids. Only invoked by the attester when burnDepositKit is wired.
+  const burnDepKey = (txidDisplay) => `reflection:burndep:${network}:${txidDisplay.replace(/^0x/, '')}`;
+  const getBurnDeposits = async (txidsDisplay) => {
+    const map = new Map();
+    for (const txid of txidsDisplay) {
+      const raw = await env.REGISTRY_KV.get(burnDepKey(txid));
+      if (raw) map.set(txid, JSON.parse(raw));
+    }
+    return map;
   };
   const prove = async (input) => {
     const r = await fetch(env.REFLECTION_PROVE_URL, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(input) });
@@ -258,5 +165,5 @@ export function buildScanReflectionAttester(env, { deps, api, network, classifyT
     }));
     return { txs };
   };
-  return makeScanReflectionAttester({ deps, storage, prove, submit, getBlockTxs, getHeaders, genesisHeight });
+  return makeScanReflectionAttester({ deps, storage, prove, submit, getBlockTxs, getHeaders, genesisHeight, burnDepositKit: kit, getBurnDeposits });
 }

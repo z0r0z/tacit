@@ -146,17 +146,36 @@ contract ConfidentialPoolSwapTest is Test {
 
     function test_settle_swap_moves_reserves() public {
         _init(assetA, assetB, 10000, 20000, 30);
-        // a batch that nets the pool A:10000→15000, B:20000→13300 (a swap of A in for B out)
+        // a batch that nets the pool A:10000→15000, B:20000→13400 (a swap of A in for B out; k
+        // non-decreasing: 15000·13400 = 2.01e8 ≥ 1e4·2e4 = 2e8, the fee-bearing constant-product move)
         ConfidentialPool.PublicValues memory pv = _pv();
         pv.swaps = new ConfidentialPool.SwapSettlement[](1);
-        pv.swaps[0] = _swap(poolId, 10000, 20000, 15000, 13300);
+        pv.swaps[0] = _swap(poolId, 10000, 20000, 15000, 13400);
 
         vm.expectEmit(true, false, false, true, address(pool));
-        emit ConfidentialPool.SwapSettled(poolId, 15000, 13300);
+        emit ConfidentialPool.SwapSettled(poolId, 15000, 13400);
         _settle(pv);
 
         (, , , uint256 rA, uint256 rB, , ) = pool.pools(poolId);
-        assertEq(rA, 15000, "reserveA moved to post"); assertEq(rB, 13300, "reserveB moved to post");
+        assertEq(rA, 15000, "reserveA moved to post"); assertEq(rB, 13400, "reserveB moved to post");
+    }
+
+    // PILOT-BOUNDARY TRIPWIRE — the on-chain swap loop gates pre==live + non-zero + <=u64 ONLY; it
+    // deliberately does NOT enforce escrow >= reserve (the guest proves backing/conservation, and a
+    // poolMinted asset carries NO escrow by design so such a guard is not even viable). This pins the
+    // boundary: a settle moves a reserve to a value with no escrow behind it and the pool accepts it.
+    // The worst-case drain is instead capped at exit by _payout's InsufficientEscrow. If the AMM ever
+    // moves off the single-prover pilot and adds an on-chain backing guard, THIS TEST MUST FLIP.
+    function test_pilot_boundary_swap_post_need_not_be_escrow_backed() public {
+        bytes32 id = _init(assetA, assetB, 10_000, 20_000, 30);
+        assertEq(pool.escrow(assetA), 0, "no wrap: reserves are guest-seeded here, not escrow-backed");
+        ConfidentialPool.PublicValues memory pv = _pv();
+        pv.swaps = new ConfidentialPool.SwapSettlement[](1);
+        pv.swaps[0] = _swap(id, 10_000, 20_000, uint256(type(uint64).max), 1); // pre==live; post far exceeds any escrow
+        _settle(pv); // accepted — the on-chain layer trusts the guest for backing
+        (, , , uint256 rA, , , ) = pool.pools(id);
+        assertEq(rA, uint256(type(uint64).max), "reserveA moved to an escrow-unbacked value");
+        assertLt(pool.escrow(assetA), rA, "reserve exceeds escrow on-chain, by design (guest-trusted)");
     }
 
     function test_settle_swap_stale_pre_reverts() public {
@@ -181,16 +200,16 @@ contract ConfidentialPoolSwapTest is Test {
         _init(assetA, assetB, 10000, 20000, 30);
         ConfidentialPool.PublicValues memory pv1 = _pv();
         pv1.swaps = new ConfidentialPool.SwapSettlement[](1);
-        pv1.swaps[0] = _swap(poolId, 10000, 20000, 15000, 13300);
+        pv1.swaps[0] = _swap(poolId, 10000, 20000, 15000, 13400); // k 2.01e8 ≥ 2e8
         _settle(pv1);
 
-        // a second batch pinning the NEW reserves (15000, 13300) → (12000, 16700)
+        // a second batch pinning the NEW reserves (15000, 13400) → (12000, 17000), k 2.04e8 ≥ 2.01e8
         ConfidentialPool.PublicValues memory pv2 = _pv();
         pv2.swaps = new ConfidentialPool.SwapSettlement[](1);
-        pv2.swaps[0] = _swap(poolId, 15000, 13300, 12000, 16700);
+        pv2.swaps[0] = _swap(poolId, 15000, 13400, 12000, 17000);
         _settle(pv2);
         (, , , uint256 rA, uint256 rB, , ) = pool.pools(poolId);
-        assertEq(rA, 12000); assertEq(rB, 16700);
+        assertEq(rA, 12000); assertEq(rB, 17000);
 
         // a batch re-pinning the original (stale) reserves now fails
         ConfidentialPool.PublicValues memory pv3 = _pv();
@@ -208,6 +227,19 @@ contract ConfidentialPoolSwapTest is Test {
         pv.swaps = new ConfidentialPool.SwapSettlement[](1);
         pv.swaps[0] = _swap(poolId, 10000, 20000, 15000, 0); // zeroes leg B
         vm.expectRevert(ConfidentialPool.ReserveFloorBreach.selector);
+        _settle(pv);
+    }
+
+    // A swap post that drops the constant product below the pre is a compromised-guest drain (the
+    // classic AMM attack: pull a pool below its k curve). The on-chain check mirrors the guest's own
+    // OP_SWAP k-non-decrease (main.rs: a_post·b_post ≥ a_pre·b_pre), so it never false-reverts honest
+    // output but rejects a k-dropping post. Here 12000·16000 = 1.92e8 < 2e8 = 1e4·2e4.
+    function test_settle_swap_k_decrease_reverts() public {
+        _init(assetA, assetB, 10000, 20000, 30);
+        ConfidentialPool.PublicValues memory pv = _pv();
+        pv.swaps = new ConfidentialPool.SwapSettlement[](1);
+        pv.swaps[0] = _swap(poolId, 10000, 20000, 12000, 16000); // k 1.92e8 < 2e8
+        vm.expectRevert(ConfidentialPool.ConstantProductDecreased.selector);
         _settle(pv);
     }
 
@@ -344,5 +376,13 @@ contract ConfidentialPoolSwapTest is Test {
     function test_lp_position_value_uninit_reverts() public {
         vm.expectRevert(ConfidentialPool.PoolNotInit.selector);
         pool.lpPositionValue(keccak256("ghost"), 1);
+    }
+
+    // A created-but-unfunded slot (totalShares == 0) returns (0, 0) rather than reverting on the
+    // proportional divide — a clean read before the first OP_LP_ADD seeds the pool.
+    function test_lp_position_value_unfunded_returns_zero() public {
+        bytes32 id = pool.createPair(assetA, assetB, 30);
+        (uint256 a, uint256 b) = pool.lpPositionValue(id, 100);
+        assertEq(a, 0); assertEq(b, 0, "unfunded slot = zero position");
     }
 }

@@ -57,4 +57,10 @@ contract TestLightRelay is BitcoinLightRelay {
     function exposed_targetToCompact(uint256 target) external pure returns (uint32) {
         return _targetToCompact(target);
     }
+
+    function exposed_retargetTarget(uint256 oldTarget, uint256 firstTs, uint256 lastTs)
+        external pure returns (uint256)
+    {
+        return _retargetTarget(oldTarget, firstTs, lastTs);
+    }
 }

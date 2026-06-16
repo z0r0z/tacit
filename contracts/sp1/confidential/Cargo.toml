@@ -25,6 +25,10 @@ sp1-zkvm = { version = "6.2", features = ["verify"] } # provides syscall_verify_
 sp1-lib = { version = "6.2", features = ["verify"] } # verify_sp1_proof (Mode B recursion in reflect.rs)
 cxfer-core = { path = "cxfer-core" }
 alloy-sol-types = "0.8"
+# BN254 Groth16 verifier for T_SWAP_BATCH (src/groth16.rs, reflection bin only — settle's main.rs never
+# imports it, so it links into the reflection ELF only). SP1-precompile-accelerated `bn` API; the same crate
+# sp1-verifier uses for SP1's own Groth16. Confirm the exact version/source on the box.
+bn = { package = "substrate-bn-succinct-rs", version = "0.6.0", default-features = false }
 
 [profile.release]
 overflow-checks = true

@@ -134,6 +134,30 @@ pub fn compute_merkle_root(txids: &[[u8; 32]]) -> [u8; 32] {
     layer[0]
 }
 
+/// Verify a Bitcoin merkle inclusion PATH: fold `txid` (internal order) with its `siblings` bottom-up,
+/// choosing left/right by each level's index bit, returning the resulting merkle root. Byte-identical to
+/// `compute_merkle_root` (double-SHA256 of `left ‖ right`, internal order). The caller asserts the returned
+/// root == a block's merkle root whose header chains to the relay anchor (`verify_header_chain`) — that is a
+/// CONFIRMED-tx proof WITHOUT a full block scan, which the per-bridge provenance needs (a tx is real iff it
+/// sits in a PoW-buried block). `index` is the tx's 0-based position in the block; odd-node duplication is
+/// implicit in the witnessed siblings (a last odd node's sibling is itself).
+pub fn verify_merkle_path(txid: &[u8; 32], siblings: &[[u8; 32]], mut index: u32) -> [u8; 32] {
+    let mut acc = *txid;
+    for sib in siblings {
+        let mut combined = Vec::with_capacity(64);
+        if index & 1 == 0 {
+            combined.extend_from_slice(&acc);
+            combined.extend_from_slice(sib);
+        } else {
+            combined.extend_from_slice(sib);
+            combined.extend_from_slice(&acc);
+        }
+        acc = double_sha256(&combined);
+        index >>= 1;
+    }
+    acc
+}
+
 /// Single SHA-256 (the Tacit asset-id / domain hash — distinct from the double-SHA txid). Also the
 /// SP1 public-values commit hash the reflection guest feeds `verify_sp1_proof` (Mode B recursion).
 pub fn sha256_once(data: &[u8]) -> [u8; 32] {
@@ -175,10 +199,95 @@ pub fn parse_etch_meta(env: &[u8]) -> Option<([u8; 16], u8, u8, [u8; 32])> {
     ticker[..tlen].copy_from_slice(&env[2..2 + tlen]);
     let mut cid = [0u8; 32];
     let cid_off = 3 + tlen;
-    if env.len() >= cid_off + 32 {
+    // ONLY T_PETCH (0x27) carries a 32-byte content cid immediately after decimals. CETCH (0x21) carries
+    // the supply commitment(33) there (its metadata is `image_uri`, not a content cid) — so for a CETCH,
+    // leave cid = 0 and NEVER misread the commitment as a cid. (Fixes the cross-impl discrepancy where the
+    // worker's canonical CETCH layout `…decimals‖commitment(33)‖…‖mint_authority(32)‖img_len‖image_uri`
+    // disagreed with a cid-after-decimals read — OP_ATTEST_META would otherwise register a garbage cid for
+    // a CETCH-etched asset like TAC. Capturing the CETCH image_uri as a contractURI is a follow-up.)
+    if env[0] == 0x27 && env.len() >= cid_off + 32 {
         cid.copy_from_slice(&env[cid_off..cid_off + 32]);
     }
     Some((ticker, tlen as u8, decimals, cid))
+}
+
+/// Parse a CETCH (0x21) confidential-etch reveal → (supply_commitment `C_0`[33], `mint_authority`[32],
+/// decimals). Byte-canonical with the live worker `decodeCEtchPayload`:
+///   `0x21 ‖ tlen(1,1..16) ‖ ticker(tlen) ‖ decimals(1,0..8) ‖ commitment(33) ‖ amount_ct(8) ‖`
+///   `rp_len(2 LE) ‖ rangeproof(rp_len) ‖ mint_authority(32) ‖ img_len(2 LE) ‖ image_uri`.
+/// `commitment` is the FIXED initial-supply Pedersen commitment (`C_0`) — the trustless supply anchor for
+/// the burn-and-mint onboarding (read once from the etch block; no full-history scan). NOTE: distinct from
+/// `parse_etch_meta`, whose cid-after-decimals shape is the T_PETCH(0x27) form; CETCH carries the supply
+/// commitment there, not a cid. None if malformed.
+pub fn parse_cetch(env: &[u8]) -> Option<([u8; 33], [u8; 32], u8)> {
+    if env.is_empty() || env[0] != 0x21 {
+        return None;
+    }
+    let mut p = 1usize;
+    let tlen = *env.get(p)? as usize;
+    p += 1;
+    if tlen < 1 || tlen > 16 {
+        return None;
+    }
+    p += tlen; // ticker
+    let decimals = *env.get(p)?;
+    p += 1;
+    if decimals > 8 {
+        return None;
+    }
+    let commitment: [u8; 33] = env.get(p..p + 33)?.try_into().ok()?;
+    p += 33;
+    p += 8; // amount_ct
+    let rp_len = (*env.get(p)? as usize) | ((*env.get(p + 1)? as usize) << 8);
+    p += 2;
+    p = p.checked_add(rp_len)?; // skip rangeproof
+    let mint_authority: [u8; 32] = env.get(p..p + 32)?.try_into().ok()?;
+    Some((commitment, mint_authority, decimals))
+}
+
+/// `MINT_AUTH_NONE` (all-zero) ⇒ a FIXED-SUPPLY asset (no issuer minting). The criterion — not an
+/// allowlist — gating the burn-and-mint onboarding path: a fixed-supply asset is eligible (its burn must
+/// then prove realness against the etch-anchored supply `C_0`); a non-zero authority is a mintable asset
+/// (the `cmint`-deposit path instead). cBTC.zk's real-BTC peg is its own concept (`fold_cbtc_lock`).
+pub fn is_fixed_supply(mint_authority: &[u8; 32]) -> bool {
+    mint_authority.iter().all(|&b| b == 0)
+}
+
+/// Bind an `asset_id` to its CETCH reveal tx and extract the supply anchor → `(C_0[33],
+/// mint_authority[32], decimals)`. Succeeds iff `asset_id == asset_id_from_etch(etch_tx)` (so a different
+/// etch can't be substituted) and the tx carries a well-formed CETCH. The CALLER must separately confirm
+/// `etch_tx` is a real, CONFIRMED Bitcoin tx (full-scan its block, or a header+merkle inclusion proof to
+/// the relay anchor) — without confirmation, `asset_id` is attacker-chosen via a fabricated etch (they'd be
+/// their own authority over a made-up id, never a real one whose `asset_id` is pinned to the real etch's
+/// txid). This is the trustless supply anchor for the burn-and-mint onboarding: `C_0` is read ONCE from the
+/// etch, no full-history scan.
+pub fn verify_etch_anchor(etch_tx: &[u8], asset_id: &[u8; 32]) -> Option<([u8; 33], [u8; 32], u8)> {
+    if &asset_id_from_etch(etch_tx)? != asset_id {
+        return None;
+    }
+    let env = extract_taproot_envelope(etch_tx)?;
+    parse_cetch(&env)
+}
+
+/// Parse a T_MINT (0x24) issuer-authorized mint reveal envelope → `(assetId[32], etchTxid[32],
+/// commitment[33], range_proof, issuer_sig[64])`. Byte-canonical with the worker `decodeCMintPayload`:
+///   `0x24 ‖ assetId(32) ‖ etchTxid(32) ‖ commitment(33) ‖ amount_ct(8) ‖ rp_len(2 LE) ‖ rangeproof ‖ issuer_sig(64)`.
+/// `commitment` is the newly-minted note (additional supply); the issuer signature (verified against the
+/// etch's `mint_authority`) authorizes it. None if malformed.
+pub fn parse_cmint(env: &[u8]) -> Option<([u8; 32], [u8; 32], [u8; 33], [u8; 8], &[u8], [u8; 64])> {
+    if env.is_empty() || env[0] != 0x24 {
+        return None;
+    }
+    let asset_id: [u8; 32] = env.get(1..33)?.try_into().ok()?;
+    let etch_txid: [u8; 32] = env.get(33..65)?.try_into().ok()?;
+    let commitment: [u8; 33] = env.get(65..98)?.try_into().ok()?;
+    let amount_ct: [u8; 8] = env.get(98..106)?.try_into().ok()?; // the issuer-signed encrypted-amount hint
+    let rp_len = (*env.get(106)? as usize) | ((*env.get(107)? as usize) << 8);
+    let rp_start = 108usize;
+    let rp_end = rp_start.checked_add(rp_len)?;
+    let range_proof = env.get(rp_start..rp_end)?;
+    let issuer_sig: [u8; 64] = env.get(rp_end..rp_end + 64)?.try_into().ok()?;
+    Some((asset_id, etch_txid, commitment, amount_ct, range_proof, issuer_sig))
 }
 
 /// Parse a confidential bridge-burn envelope (opcode 0x2B) → (assetId, nullifier,
@@ -271,6 +380,65 @@ pub fn parse_cbtc_lock_envelope(env: &[u8]) -> Option<([u8; 32], u32, [u8; 32], 
     Some((asset, lock_vout, cx, cy))
 }
 
+/// Parsed `T_SWAP_VAR` envelope (opcode 0x32) — the public-reserve AMM swap (SPEC §5.16.3 / AMM.md).
+/// Reserves + amounts are PUBLIC u64 and the receipt's blinding `r_receipt` is cleartext, so the taker's
+/// output note `C_receipt` opens publicly. That is exactly what lets the reflection verify per-asset
+/// conservation by ARITHMETIC (no kernel) before onboarding the taker's output as real — Track B in
+/// ops/DESIGN-bridge-multiasset-provenance.md. Wire (after opcode): `pool_id(32) ‖ direction(1) ‖
+/// R_A_pre(8 LE) ‖ R_B_pre(8) ‖ delta_in(8) ‖ delta_in_min(8) ‖ delta_in_max(8) ‖ delta_out(8) ‖
+/// min_out(8) ‖ tip_amount(8) ‖ tip_asset(1) ‖ expiry_height(4 LE) ‖ trader_pubkey(33) ‖ C_in_secp(33) ‖
+/// C_change_or_sentinel(33) ‖ C_receipt_secp(33) ‖ r_receipt(32) ‖ rangeproof_len(2 LE) ‖
+/// range_proof(VAR) ‖ kernel_sig(64) ‖ intent_sig(64)`.
+#[derive(Clone)]
+pub struct SwapVarEnvelope {
+    pub pool_id: [u8; 32],
+    pub direction: u8, // 0 = A→B (taker gives asset_A, receives asset_B); 1 = B→A
+    pub r_a_pre: u64,
+    pub r_b_pre: u64,
+    pub delta_in: u64,            // taker input amount credited to the in-asset reserve
+    pub tip_amount: u64,          // settler tip (also drawn from C_in; delta_in_total = delta_in + tip)
+    pub delta_out: u64,           // taker output amount drawn from the out-asset reserve — the receipt value
+    pub c_in: [u8; 33],           // the taker's spent input note commitment (kernel input side)
+    pub c_change_or_sentinel: [u8; 33], // taker's change (or the all-zero sentinel = exact input, no change)
+    pub c_receipt: [u8; 33],      // the taker's output note commitment (the bridgeable note)
+    pub r_receipt: [u8; 32],      // PUBLIC blinding: C_receipt opens to delta_out under it
+    pub kernel_sig: [u8; 64],     // BIP-340 over the input-side conservation (C_in − C_change = delta_in_total·H)
+}
+
+/// Parse a `T_SWAP_VAR` envelope. None if not a well-formed 0x32 envelope. Surfaces the public-reserve
+/// fields + the kernel input side the reflection's Track-B conservation needs; the unread fields
+/// (slippage bounds, trader pubkey, range proof, intent sig) ride for the on-chain validator.
+pub fn parse_swap_var_envelope(env: &[u8]) -> Option<SwapVarEnvelope> {
+    const PRE_RP: usize = 269; // bytes through rangeproof_len (opcode .. r_receipt .. rp_len)
+    if env.len() < PRE_RP || env[0] != 0x32 {
+        return None;
+    }
+    let direction = env[33];
+    if direction != 0 && direction != 1 {
+        return None;
+    }
+    let rp_len = u16::from_le_bytes(env[267..269].try_into().ok()?) as usize;
+    // kernel_sig + intent_sig follow the range proof — require the full envelope so a truncated one rejects.
+    let ks_off = PRE_RP + rp_len;
+    if env.len() < ks_off + 64 + 64 {
+        return None;
+    }
+    Some(SwapVarEnvelope {
+        pool_id: env[1..33].try_into().ok()?,
+        direction,
+        r_a_pre: u64::from_le_bytes(env[34..42].try_into().ok()?),
+        r_b_pre: u64::from_le_bytes(env[42..50].try_into().ok()?),
+        delta_in: u64::from_le_bytes(env[50..58].try_into().ok()?),
+        tip_amount: u64::from_le_bytes(env[90..98].try_into().ok()?),
+        delta_out: u64::from_le_bytes(env[74..82].try_into().ok()?),
+        c_in: env[136..169].try_into().ok()?,
+        c_change_or_sentinel: env[169..202].try_into().ok()?,
+        c_receipt: env[202..235].try_into().ok()?,
+        r_receipt: env[235..267].try_into().ok()?,
+        kernel_sig: env[ks_off..ks_off + 64].try_into().ok()?,
+    })
+}
+
 /// Parse a confidential-transfer envelope → (assetId, the N output commitments as compressed
 /// secp256k1 points). Accepts T_CXFER (0x23) AND its BP+ variant T_CXFER_BPP (0x22) — identical
 /// wire shape (SPEC §5.47); real confidential transfers use 0x22. Layout: opcode(1) ‖
@@ -289,8 +457,19 @@ pub fn parse_cxfer_envelope(env: &[u8]) -> Option<([u8; 32], Vec<[u8; 33]>)> {
 /// the leaf-SHAPE binding (`reflected_note_leaf`) cannot catch it — an inflated commitment is still a
 /// valid curve point. Returns `(asset, kernel_sig, output_commitments, range_proof)`; None if not a
 /// well-formed CXFER envelope.
+///
+/// Also accepts the **atomic-settlement family** — `T_AXFER` (0x26, OTC), `T_AXFER_VAR` (0x37, variable
+/// amount), and their BP+ variants `T_AXFER_BPP` (0x3C) / `T_AXFER_VAR_BPP` (0x3D). All are byte-identical
+/// to CXFER (worker `decodeAxferPayload` == `decodeCxferPayload`, the variants differing only in opcode +
+/// rangeproof flavor) and conserve under the SAME `tacit-kernel-v1` kernel — they're one ancestry family
+/// (worker index.js:13282). The Bitcoin tx carries aux NON-tacit (sats) inputs; those aren't pool UTXOs, so
+/// `scan_tx_spends` never sees them, and a confirmed atomic settlement's output notes onboard exactly like a
+/// CXFER's (no new fold). A variant whose rangeproof/wire doesn't actually match fails the conservation gate
+/// (skip-not-panic) — fail-closed, never an over-mint. See ops/DESIGN-bridge-multiasset-provenance.md (Track A).
 pub fn parse_cxfer_envelope_full(env: &[u8]) -> Option<([u8; 32], [u8; 64], Vec<[u8; 33]>, Vec<u8>)> {
-    if env.len() < 1 + 32 + 64 + 1 || (env[0] != 0x23 && env[0] != 0x22) {
+    let op = env.first().copied()?;
+    let known = op == 0x23 || op == 0x22 || op == 0x26 || op == 0x37 || op == 0x3C || op == 0x3D;
+    if env.len() < 1 + 32 + 64 + 1 || !known {
         return None;
     }
     let asset: [u8; 32] = env[1..33].try_into().ok()?;
@@ -313,6 +492,222 @@ pub fn parse_cxfer_envelope_full(env: &[u8]) -> Option<([u8; 32], [u8; 64], Vec<
     }
     let range_proof = env[p..p + rp_len].to_vec();
     Some((asset, kernel_sig, commitments, range_proof))
+}
+
+/// The `T_PREAUTH_BID_VAR` (0x5C) inline section between `asset_input_count` and `kernel_sig`:
+/// `bid_id(16) ‖ recipient_pubkey(33) ‖ price_per_unit(8) ‖ max_fill(8) ‖ fill_increment(8) ‖
+/// fill_amount(8) ‖ recipient_blinding(32) ‖ refund_script_hash(20) ‖ decimals_scale(1)`.
+pub const PREAUTH_BID_VAR_INLINE: usize = 16 + 33 + 8 + 8 + 8 + 8 + 32 + 20 + 1; // 134
+
+/// Parse a `T_PREAUTH_BID_VAR` (0x5C, buyer-offline partial-fill orderbook bid) into the SAME
+/// `(asset, kernel_sig, output_commitments, range_proof)` tuple as a CXFER — because the bid IS a CXFER on
+/// the tacit-asset side: the seller's asset inputs conserve into the buyer's filled note `output[0]` + the
+/// seller's change `output[1]` under `tacit-kernel-v1`, with ONE aggregated BP+ range over all N outputs
+/// (dapp/tacit.js: "one aggregated rangeproof covers all N output commitments"). The sats legs (the seller's
+/// payment + the buyer's refund) are native-BTC outputs, not pool notes, so they're irrelevant to the tacit
+/// kernel. Feeding this tuple to `verify_cxfer_conservation` + the cxfer fold onboards the bid's output notes
+/// exactly like a transfer's — orderbook = Track A. See ops/DESIGN-bridge-multiasset-provenance.md.
+/// Layout: opcode(1) ‖ asset_id(32) ‖ asset_input_count(1) ‖ INLINE(134) ‖ kernel_sig(64) ‖ N(1, ∈{1,2}) ‖
+/// out[0].commitment(33) [‖ out[1].commitment(33) ‖ out[1].amount_ct(8)] ‖ rp_len(2 LE) ‖ rangeproof.
+/// (Only `out[1]` carries an 8-byte `amount_ct`; the buyer's `out[0]` does not — its blinding is cleartext.)
+pub fn parse_preauth_bid_var_envelope(env: &[u8]) -> Option<([u8; 32], [u8; 64], Vec<[u8; 33]>, Vec<u8>)> {
+    parse_preauth_bid_common(env, 0x5C, PREAUTH_BID_VAR_INLINE)
+}
+
+/// The `T_PREAUTH_BID` (0x5B) exact-fill inline section (SPEC §5.7.11): `bid_id(16) ‖ recipient_pubkey(33) ‖
+/// amount(8) ‖ recipient_blinding(32) ‖ price_sats(8)` — no variable-fill params (so 97 vs the var bid's 134).
+pub const PREAUTH_BID_INLINE: usize = 16 + 33 + 8 + 32 + 8; // 97
+
+/// Parse a `T_PREAUTH_BID` (0x5B, the exact-fill / "walk-away only, partial-fill OFF" orderbook bid). Same
+/// CXFER-family conservation as the partial-fill bid (the seller's asset inputs → the buyer's filled note +
+/// seller change under `tacit-kernel-v1`); only the inline section is shorter. Returns the cxfer-compatible
+/// `(asset, kernel_sig, output_commitments, range_proof)` tuple, fed to `verify_cxfer_conservation` + the
+/// cxfer fold exactly like the partial-fill bid.
+pub fn parse_preauth_bid_envelope(env: &[u8]) -> Option<([u8; 32], [u8; 64], Vec<[u8; 33]>, Vec<u8>)> {
+    parse_preauth_bid_common(env, 0x5B, PREAUTH_BID_INLINE)
+}
+
+/// Shared parser for the preauth-bid family — exact-fill (0x5B) + partial-fill (0x5C) differ ONLY in opcode
+/// + inline length; the kernel_sig / N / output-commitment / rangeproof tail is identical (out[0] cleartext
+/// blinding ⇒ no amount_ct; out[1] carries one).
+fn parse_preauth_bid_common(env: &[u8], opcode: u8, inline_len: usize) -> Option<([u8; 32], [u8; 64], Vec<[u8; 33]>, Vec<u8>)> {
+    let ks_off = 1 + 32 + 1 + inline_len; // start of kernel_sig
+    if env.len() < ks_off + 64 + 1 + 33 + 2 || env.first().copied()? != opcode {
+        return None;
+    }
+    let asset: [u8; 32] = env[1..33].try_into().ok()?;
+    let kernel_sig: [u8; 64] = env[ks_off..ks_off + 64].try_into().ok()?;
+    let n = env[ks_off + 64] as usize;
+    if n != 1 && n != 2 {
+        return None;
+    }
+    let mut p = ks_off + 64 + 1; // first output commitment
+    let mut commitments = Vec::with_capacity(n);
+    for i in 0..n {
+        if p + 33 > env.len() {
+            return None;
+        }
+        commitments.push(env[p..p + 33].try_into().ok()?);
+        p += 33;
+        if i == 1 {
+            p += 8; // out[1] carries an 8-byte amount_ct; out[0] does not
+        }
+    }
+    if p + 2 > env.len() {
+        return None;
+    }
+    let rp_len = (env[p] as usize) | ((env[p + 1] as usize) << 8);
+    p += 2;
+    if p + rp_len != env.len() {
+        return None;
+    }
+    Some((asset, kernel_sig, commitments, env[p..p + rp_len].to_vec()))
+}
+
+/// The tacit-amm cross-curve (secp↔BabyJubJub) sigma length in the LP envelopes. The reflection skips
+/// past it (it doesn't verify the BJJ side — the secp kernel + public deltas are the Track-B conservation).
+const XCURVE_SIGMA_LEN: usize = 169;
+
+/// Parsed `T_LP_ADD` / POOL_INIT envelope (0x2D). Surfaces the fields the reflection's `fold_lp_add` needs
+/// (the per-asset secp kernel sides + the public deltas); the BJJ commitment + cross-curve sigma are
+/// skipped. `fee_bps` is meaningful only for `variant == 1` (POOL_INIT, which carries it for pool_id
+/// derivation); a `variant == 0` LP-add doesn't carry it (the pool is found by canonical-asset enumeration).
+pub struct LpAddEnvelope {
+    pub variant: u8,
+    pub asset_a: [u8; 32],
+    pub asset_b: [u8; 32],
+    pub delta_a: u64,
+    pub delta_b: u64,
+    pub share_amount: u64,
+    pub share_csecp: [u8; 33],
+    pub kernel_sig_a: [u8; 64],
+    pub kernel_sig_b: [u8; 64],
+    pub fee_bps: u16,
+}
+
+/// Parse a `T_LP_ADD` (0x2D) envelope. Layout (worker `decodeTLpAddPayload`): opcode(1) ‖ variant(1) ‖
+/// asset_a(32) ‖ asset_b(32) ‖ delta_a(8 LE) ‖ delta_b(8) ‖ share_amount(8) ‖ share_c_secp(33) ‖
+/// share_c_bjj(32) ‖ share_xcurve_sigma(169) ‖ kernel_sig_a(64) ‖ kernel_sig_b(64) ‖ [variant 1: fee_bps(2) ‖ …].
+pub fn parse_lp_add_envelope(env: &[u8]) -> Option<LpAddEnvelope> {
+    const HEADER: usize = 1 + 1 + 32 + 32 + 8 + 8 + 8 + 33 + 32 + XCURVE_SIGMA_LEN + 64 + 64; // 452
+    if env.len() < HEADER || env[0] != 0x2D {
+        return None;
+    }
+    let variant = env[1];
+    if variant != 0 && variant != 1 {
+        return None;
+    }
+    let fee_bps = if variant == 1 {
+        if env.len() < HEADER + 2 {
+            return None;
+        }
+        u16::from_le_bytes(env[HEADER..HEADER + 2].try_into().ok()?)
+    } else {
+        0
+    };
+    Some(LpAddEnvelope {
+        variant,
+        asset_a: env[2..34].try_into().ok()?,
+        asset_b: env[34..66].try_into().ok()?,
+        delta_a: u64::from_le_bytes(env[66..74].try_into().ok()?),
+        delta_b: u64::from_le_bytes(env[74..82].try_into().ok()?),
+        share_amount: u64::from_le_bytes(env[82..90].try_into().ok()?),
+        share_csecp: env[90..123].try_into().ok()?,
+        kernel_sig_a: env[324..388].try_into().ok()?,
+        kernel_sig_b: env[388..452].try_into().ok()?,
+        fee_bps,
+    })
+}
+
+/// Parsed `T_LP_REMOVE` envelope (0x2E). Surfaces the secp side `fold_lp_remove` needs; the BJJ commitments
+/// + cross-curve sigmas are skipped (the reflection binds each `recv_X_secp` to the public `delta_X` by a
+/// witnessed opening, not the BJJ machinery — see ops/DESIGN-bridge-multiasset-provenance.md).
+pub struct LpRemoveEnvelope {
+    pub asset_a: [u8; 32],
+    pub asset_b: [u8; 32],
+    pub share_amount: u64,
+    pub delta_a: u64,
+    pub delta_b: u64,
+    pub recv_a_secp: [u8; 33],
+    pub recv_b_secp: [u8; 33],
+    pub kernel_sig: [u8; 64],
+}
+
+/// Parse a `T_LP_REMOVE` (0x2E) envelope. Layout (worker `decodeTLpRemovePayload`): opcode(1) ‖ asset_a(32) ‖
+/// asset_b(32) ‖ share_amount(8 LE) ‖ delta_a(8) ‖ delta_b(8) ‖ recv_a_secp(33) ‖ recv_a_bjj(32) ‖
+/// recv_a_xcurve_sigma(169) ‖ recv_b_secp(33) ‖ recv_b_bjj(32) ‖ recv_b_xcurve_sigma(169) ‖ kernel_sig(64) ‖
+/// proof_len(2) ‖ proof.
+pub fn parse_lp_remove_envelope(env: &[u8]) -> Option<LpRemoveEnvelope> {
+    const RECV_B_SECP_OFF: usize = 1 + 32 + 32 + 8 + 8 + 8 + 33 + 32 + XCURVE_SIGMA_LEN; // 323
+    const KS_OFF: usize = RECV_B_SECP_OFF + 33 + 32 + XCURVE_SIGMA_LEN; // 557
+    if env.len() < KS_OFF + 64 + 2 || env[0] != 0x2E {
+        return None;
+    }
+    Some(LpRemoveEnvelope {
+        asset_a: env[1..33].try_into().ok()?,
+        asset_b: env[33..65].try_into().ok()?,
+        share_amount: u64::from_le_bytes(env[65..73].try_into().ok()?),
+        delta_a: u64::from_le_bytes(env[73..81].try_into().ok()?),
+        delta_b: u64::from_le_bytes(env[81..89].try_into().ok()?),
+        recv_a_secp: env[89..122].try_into().ok()?,
+        recv_b_secp: env[RECV_B_SECP_OFF..RECV_B_SECP_OFF + 33].try_into().ok()?,
+        kernel_sig: env[KS_OFF..KS_OFF + 64].try_into().ok()?,
+    })
+}
+
+/// Parsed `T_FARM_INIT` envelope (0x34) — the fields the reflection's `fold_farm_init` needs (the farm-id
+/// components + the treasury-funding kernel side). reward_per_block / heights / range proof / launcher_sig
+/// ride for the worker's farm bookkeeping.
+pub struct FarmInitEnvelope {
+    pub pool_id: [u8; 32],
+    pub farm_nonce: [u8; 32],
+    pub launcher_pubkey: [u8; 33],
+    pub reward_asset: [u8; 32],
+    pub reward_total: u64,
+    pub c_change_or_sentinel: [u8; 33],
+    pub kernel_sig: [u8; 64],
+}
+
+/// Parse a `T_FARM_INIT` (0x34) envelope. Layout (worker `decodeTFarmInitPayload`): opcode(1) ‖ pool_id(32) ‖
+/// farm_nonce(32) ‖ launcher_pubkey(33) ‖ reward_asset(32) ‖ reward_total(8 LE) ‖ reward_per_block(8) ‖
+/// start_height(4) ‖ end_height(4) ‖ c_change_or_sentinel(33) ‖ rp_len(2 LE) ‖ range_proof(VAR) ‖
+/// kernel_sig(64) ‖ launcher_sig(64). The kernel proves the launcher funded `reward_total` of `reward_asset`
+/// into the treasury (`C_in − C_change = reward_total·H`, same shape as a swap input side).
+pub fn parse_farm_init_envelope(env: &[u8]) -> Option<FarmInitEnvelope> {
+    const RP_LEN_OFF: usize = 1 + 32 + 32 + 33 + 32 + 8 + 8 + 4 + 4 + 33; // 187
+    if env.len() < RP_LEN_OFF + 2 || env[0] != 0x34 {
+        return None;
+    }
+    let rp_len = u16::from_le_bytes(env[RP_LEN_OFF..RP_LEN_OFF + 2].try_into().ok()?) as usize;
+    let ks_off = RP_LEN_OFF + 2 + rp_len;
+    if env.len() < ks_off + 64 + 64 {
+        return None;
+    }
+    Some(FarmInitEnvelope {
+        pool_id: env[1..33].try_into().ok()?,
+        farm_nonce: env[33..65].try_into().ok()?,
+        launcher_pubkey: env[65..98].try_into().ok()?,
+        reward_asset: env[98..130].try_into().ok()?,
+        reward_total: u64::from_le_bytes(env[130..138].try_into().ok()?),
+        c_change_or_sentinel: env[154..187].try_into().ok()?,
+        kernel_sig: env[ks_off..ks_off + 64].try_into().ok()?,
+    })
+}
+
+/// Parse a `T_LP_HARVEST` (0x3B, 226-byte) envelope → `(farm_id, reward_amount, reward_r)`. The reward note
+/// is NOT in the envelope — it's minted by decree at the tx's vout[1], and the reflection DERIVES it as
+/// `reward_amount·H + reward_r·G` (both public). Layout: opcode(1) ‖ farm_id(32) ‖ bond_id(36) ‖
+/// harvester_pubkey(33) ‖ exit_acc_per_share(16) ‖ exit_view_height(4) ‖ reward_amount(8 LE) ‖ reward_r(32) ‖
+/// harvester_sig(64).
+pub fn parse_lp_harvest_envelope(env: &[u8]) -> Option<([u8; 32], u64, [u8; 32])> {
+    if env.len() != 226 || env[0] != 0x3B {
+        return None;
+    }
+    Some((
+        env[1..33].try_into().ok()?,
+        u64::from_le_bytes(env[122..130].try_into().ok()?),
+        env[130..162].try_into().ok()?,
+    ))
 }
 
 /// Extract the Tacit Taproot envelope payload from vin[0].witness[1].
@@ -510,6 +905,384 @@ fn read_varint(data: &[u8], pos: usize) -> Option<(usize, usize)> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn merkle_path_verifies_inclusion() {
+        let t: Vec<[u8; 32]> = (0u8..4).map(|i| [i; 32]).collect();
+        let root = compute_merkle_root(&t);
+        let h = |a: &[u8; 32], b: &[u8; 32]| {
+            let mut c = Vec::with_capacity(64);
+            c.extend_from_slice(a);
+            c.extend_from_slice(b);
+            double_sha256(&c)
+        };
+        let h23 = h(&t[2], &t[3]);
+        // each leaf's path reproduces the root
+        assert_eq!(verify_merkle_path(&t[0], &[t[1], h23], 0), root, "index-0 path → root");
+        assert_eq!(verify_merkle_path(&t[1], &[t[0], h23], 1), root, "index-1 path → root");
+        // a wrong sibling does NOT reproduce the root (forged inclusion rejected)
+        assert_ne!(verify_merkle_path(&t[1], &[t[2], h23], 1), root, "wrong sibling rejected");
+        // single-tx block: empty path → the txid itself
+        assert_eq!(verify_merkle_path(&t[0], &[], 0), t[0], "single-tx path = txid");
+    }
+
+    #[test]
+    fn parse_swap_var_envelope_round_trips_and_rejects_malformed() {
+        // Build a T_SWAP_VAR payload byte-for-byte per the dapp/worker wire format.
+        let pool_id = [0x11u8; 32];
+        let c_receipt = [0x02u8; 33];
+        let r_receipt = [0x33u8; 32];
+        let rp = [0xaau8; 5]; // arbitrary range proof
+        let mut env = vec![0x32u8]; // opcode
+        env.extend_from_slice(&pool_id);
+        env.push(1u8); // direction = B→A
+        env.extend_from_slice(&7000u64.to_le_bytes()); // R_A_pre
+        env.extend_from_slice(&3000u64.to_le_bytes()); // R_B_pre
+        env.extend_from_slice(&500u64.to_le_bytes()); // delta_in
+        env.extend_from_slice(&0u64.to_le_bytes()); // delta_in_min
+        env.extend_from_slice(&0u64.to_le_bytes()); // delta_in_max
+        env.extend_from_slice(&990u64.to_le_bytes()); // delta_out
+        env.extend_from_slice(&0u64.to_le_bytes()); // min_out
+        env.extend_from_slice(&0u64.to_le_bytes()); // tip_amount
+        env.push(0u8); // tip_asset
+        env.extend_from_slice(&123u32.to_le_bytes()); // expiry_height
+        env.extend_from_slice(&[0x04u8; 33]); // trader_pubkey
+        env.extend_from_slice(&[0x05u8; 33]); // C_in_secp
+        env.extend_from_slice(&[0x06u8; 33]); // C_change_or_sentinel
+        env.extend_from_slice(&c_receipt); // C_receipt_secp
+        env.extend_from_slice(&r_receipt); // r_receipt
+        env.extend_from_slice(&(rp.len() as u16).to_le_bytes()); // rangeproof_len
+        env.extend_from_slice(&rp); // range_proof
+        env.extend_from_slice(&[0x07u8; 64]); // kernel_sig
+        env.extend_from_slice(&[0x08u8; 64]); // intent_sig
+
+        let p = parse_swap_var_envelope(&env).expect("well-formed swap_var parses");
+        assert_eq!(p.pool_id, pool_id);
+        assert_eq!(p.direction, 1);
+        assert_eq!(p.r_a_pre, 7000);
+        assert_eq!(p.r_b_pre, 3000);
+        assert_eq!(p.delta_in, 500);
+        assert_eq!(p.tip_amount, 0);
+        assert_eq!(p.delta_out, 990);
+        assert_eq!(p.c_in, [0x05u8; 33]);
+        assert_eq!(p.c_change_or_sentinel, [0x06u8; 33]);
+        assert_eq!(p.c_receipt, c_receipt);
+        assert_eq!(p.r_receipt, r_receipt);
+        assert_eq!(p.kernel_sig, [0x07u8; 64]);
+
+        // wrong opcode → None
+        let mut bad_op = env.clone();
+        bad_op[0] = 0x2b;
+        assert!(parse_swap_var_envelope(&bad_op).is_none(), "non-0x32 opcode rejected");
+        // bad direction → None
+        let mut bad_dir = env.clone();
+        bad_dir[33] = 2;
+        assert!(parse_swap_var_envelope(&bad_dir).is_none(), "direction not 0 or 1 rejected");
+        // truncated before the trailing sigs → None (a swap missing its kernel/intent sig can't fold)
+        let truncated = &env[..env.len() - 1];
+        assert!(parse_swap_var_envelope(truncated).is_none(), "truncated envelope rejected");
+    }
+
+    #[test]
+    fn parse_atomic_settlement_variants_accepted_as_cxfer() {
+        // The whole atomic-settlement family (T_AXFER 0x26, T_AXFER_VAR 0x37, + BP+ 0x3C/0x3D) is
+        // byte-identical to CXFER; the cxfer parser must accept each so the existing fold onboards its
+        // tacit output notes (the sats legs are native-BTC, invisible to the kernel).
+        let (c0, c1) = ([0x02u8; 33], [0x03u8; 33]);
+        for op in [0x26u8, 0x37, 0x3C, 0x3D] {
+            let mut env = vec![op];
+            env.extend_from_slice(&[0xAAu8; 32]); // asset_id
+            env.extend_from_slice(&[0x07u8; 64]); // kernel_sig
+            env.push(2u8); // N = 2
+            env.extend_from_slice(&c0); env.extend_from_slice(&[0u8; 8]);
+            env.extend_from_slice(&c1); env.extend_from_slice(&[0u8; 8]);
+            env.extend_from_slice(&4u16.to_le_bytes()); env.extend_from_slice(&[0xbbu8; 4]);
+            let (asset, ks, commits, rp) = parse_cxfer_envelope_full(&env).unwrap_or_else(|| panic!("opcode {op:#x} parses as cxfer"));
+            assert_eq!(asset, [0xAAu8; 32]);
+            assert_eq!(ks, [0x07u8; 64]);
+            assert_eq!(commits, vec![c0, c1]);
+            assert_eq!(rp, vec![0xbbu8; 4]);
+        }
+        // a non-family opcode still rejects.
+        let mut bad = vec![0x99u8]; bad.extend_from_slice(&[0u8; 200]);
+        assert!(parse_cxfer_envelope_full(&bad).is_none(), "unknown opcode rejected");
+    }
+
+    #[test]
+    fn parse_preauth_bid_exact_0x5b_round_trips() {
+        // T_PREAUTH_BID (0x5B exact-fill), inline = 97; same cxfer-compatible tuple as the partial-fill bid.
+        let asset = [0xCEu8; 32];
+        let ks = [0x0fu8; 64];
+        let out0 = [0x02u8; 33];
+        let rp = [0xeeu8; 5];
+        let mut env = vec![0x5Bu8];
+        env.extend_from_slice(&asset);
+        env.push(1u8); // asset_input_count
+        env.extend_from_slice(&[0x11u8; 16]); // bid_id
+        env.extend_from_slice(&[0x12u8; 33]); // recipient_pubkey
+        env.extend_from_slice(&500u64.to_le_bytes()); // amount
+        env.extend_from_slice(&[0x13u8; 32]); // recipient_blinding (cleartext)
+        env.extend_from_slice(&100u64.to_le_bytes()); // price_sats
+        env.extend_from_slice(&ks); // kernel_sig
+        env.push(1u8); // N = 1 (exact fill, no seller change)
+        env.extend_from_slice(&out0);
+        env.extend_from_slice(&(rp.len() as u16).to_le_bytes());
+        env.extend_from_slice(&rp);
+        let (a, k, commits, rpout) = parse_preauth_bid_envelope(&env).expect("exact bid parses");
+        assert_eq!(a, asset);
+        assert_eq!(k, ks);
+        assert_eq!(commits, vec![out0]);
+        assert_eq!(rpout, rp.to_vec());
+        // 0x5C parser must reject a 0x5B envelope (opcode-bound).
+        assert!(parse_preauth_bid_var_envelope(&env).is_none(), "var parser rejects exact bid");
+    }
+
+    #[test]
+    fn parse_preauth_bid_var_round_trips() {
+        // Build a T_PREAUTH_BID_VAR (0x5C) per the dapp encoder, N=2 (seller change present).
+        let asset = [0xCCu8; 32];
+        let ks = [0x09u8; 64];
+        let (out0, out1) = ([0x02u8; 33], [0x03u8; 33]); // buyer's filled note, seller's change
+        let rp = [0xddu8; 6];
+        let mut env = vec![0x5Cu8];
+        env.extend_from_slice(&asset);
+        env.push(1u8); // asset_input_count
+        env.extend_from_slice(&[0x11u8; 16]); // bid_id
+        env.extend_from_slice(&[0x12u8; 33]); // recipient_pubkey
+        env.extend_from_slice(&100u64.to_le_bytes()); // price_per_unit
+        env.extend_from_slice(&1000u64.to_le_bytes()); // max_fill
+        env.extend_from_slice(&10u64.to_le_bytes()); // fill_increment
+        env.extend_from_slice(&500u64.to_le_bytes()); // fill_amount
+        env.extend_from_slice(&[0x13u8; 32]); // recipient_blinding (cleartext)
+        env.extend_from_slice(&[0x14u8; 20]); // refund_script_hash
+        env.push(8u8); // decimals_scale
+        env.extend_from_slice(&ks); // kernel_sig
+        env.push(2u8); // N = 2
+        env.extend_from_slice(&out0); // out[0].commitment (no amount_ct)
+        env.extend_from_slice(&out1); // out[1].commitment
+        env.extend_from_slice(&[0u8; 8]); // out[1].amount_ct
+        env.extend_from_slice(&(rp.len() as u16).to_le_bytes());
+        env.extend_from_slice(&rp);
+
+        let (a, k, commits, rpout) = parse_preauth_bid_var_envelope(&env).expect("bid parses");
+        assert_eq!(a, asset, "asset");
+        assert_eq!(k, ks, "kernel_sig");
+        assert_eq!(commits, vec![out0, out1], "the bid's two output notes");
+        assert_eq!(rpout, rp.to_vec(), "rangeproof");
+        // N=1 (no seller change) also parses.
+        let mut env1 = env[..233 + 33].to_vec();
+        env1[232] = 1; // N = 1
+        env1.extend_from_slice(&4u16.to_le_bytes()); env1.extend_from_slice(&[0xeeu8; 4]);
+        let (_, _, c1only, _) = parse_preauth_bid_var_envelope(&env1).expect("N=1 bid parses");
+        assert_eq!(c1only, vec![out0], "single output");
+        // wrong opcode + truncated reject.
+        let mut bad = env.clone(); bad[0] = 0x22;
+        assert!(parse_preauth_bid_var_envelope(&bad).is_none(), "non-0x5C rejected");
+        assert!(parse_preauth_bid_var_envelope(&env[..env.len() - 1]).is_none(), "truncated rejected");
+    }
+
+    #[test]
+    fn parse_lp_add_round_trips() {
+        let asset_a = [0xA1u8; 32];
+        let asset_b = [0xB2u8; 32];
+        let csc = [0x02u8; 33];
+        let (ka, kb) = ([0x0au8; 64], [0x0bu8; 64]);
+        let mut env = vec![0x2Du8, 1u8]; // opcode, variant = 1 (POOL_INIT)
+        env.extend_from_slice(&asset_a);
+        env.extend_from_slice(&asset_b);
+        env.extend_from_slice(&1000u64.to_le_bytes()); // delta_a
+        env.extend_from_slice(&4000u64.to_le_bytes()); // delta_b
+        env.extend_from_slice(&2000u64.to_le_bytes()); // share_amount
+        env.extend_from_slice(&csc); // share_c_secp
+        env.extend_from_slice(&[0x03u8; 32]); // share_c_bjj
+        env.extend_from_slice(&[0xccu8; 169]); // share_xcurve_sigma
+        env.extend_from_slice(&ka); // kernel_sig_a
+        env.extend_from_slice(&kb); // kernel_sig_b
+        env.extend_from_slice(&30u16.to_le_bytes()); // fee_bps (variant 1)
+        let p = parse_lp_add_envelope(&env).expect("lp_add parses");
+        assert_eq!(p.variant, 1);
+        assert_eq!(p.asset_a, asset_a);
+        assert_eq!(p.asset_b, asset_b);
+        assert_eq!((p.delta_a, p.delta_b, p.share_amount), (1000, 4000, 2000));
+        assert_eq!(p.share_csecp, csc);
+        assert_eq!(p.kernel_sig_a, ka);
+        assert_eq!(p.kernel_sig_b, kb);
+        assert_eq!(p.fee_bps, 30);
+        // variant 0 (no fee_bps tail).
+        let mut env0 = env[..452].to_vec();
+        env0[1] = 0;
+        let p0 = parse_lp_add_envelope(&env0).expect("variant-0 lp_add parses");
+        assert_eq!((p0.variant, p0.fee_bps), (0, 0));
+        let mut bad = env.clone(); bad[0] = 0x22;
+        assert!(parse_lp_add_envelope(&bad).is_none(), "non-0x2D rejected");
+    }
+
+    #[test]
+    fn parse_lp_remove_round_trips() {
+        let asset_a = [0xA1u8; 32];
+        let asset_b = [0xB2u8; 32];
+        let (recv_a, recv_b) = ([0x02u8; 33], [0x03u8; 33]);
+        let ks = [0x0cu8; 64];
+        let mut env = vec![0x2Eu8];
+        env.extend_from_slice(&asset_a);
+        env.extend_from_slice(&asset_b);
+        env.extend_from_slice(&1000u64.to_le_bytes()); // share_amount
+        env.extend_from_slice(&500u64.to_le_bytes()); // delta_a
+        env.extend_from_slice(&2000u64.to_le_bytes()); // delta_b
+        env.extend_from_slice(&recv_a); // recv_a_secp
+        env.extend_from_slice(&[0x04u8; 32]); // recv_a_bjj
+        env.extend_from_slice(&[0xc1u8; 169]); // recv_a_xcurve_sigma
+        env.extend_from_slice(&recv_b); // recv_b_secp
+        env.extend_from_slice(&[0x05u8; 32]); // recv_b_bjj
+        env.extend_from_slice(&[0xc2u8; 169]); // recv_b_xcurve_sigma
+        env.extend_from_slice(&ks); // kernel_sig
+        env.extend_from_slice(&4u16.to_le_bytes()); // proof_len
+        env.extend_from_slice(&[0xddu8; 4]); // proof
+        let p = parse_lp_remove_envelope(&env).expect("lp_remove parses");
+        assert_eq!(p.asset_a, asset_a);
+        assert_eq!(p.asset_b, asset_b);
+        assert_eq!((p.share_amount, p.delta_a, p.delta_b), (1000, 500, 2000));
+        assert_eq!(p.recv_a_secp, recv_a);
+        assert_eq!(p.recv_b_secp, recv_b);
+        assert_eq!(p.kernel_sig, ks);
+        let mut bad = env.clone(); bad[0] = 0x22;
+        assert!(parse_lp_remove_envelope(&bad).is_none(), "non-0x2E rejected");
+    }
+
+    #[test]
+    fn parse_farm_init_round_trips() {
+        let pool_id = [0x40u8; 32];
+        let nonce = [0x41u8; 32];
+        let launcher = [0x02u8; 33];
+        let reward_asset = [0xAAu8; 32];
+        let c_change = [0x06u8; 33];
+        let (ks, lsig) = ([0x0au8; 64], [0x0bu8; 64]);
+        let rp = [0xccu8; 5];
+        let mut env = vec![0x34u8];
+        env.extend_from_slice(&pool_id);
+        env.extend_from_slice(&nonce);
+        env.extend_from_slice(&launcher);
+        env.extend_from_slice(&reward_asset);
+        env.extend_from_slice(&1_000_000u64.to_le_bytes()); // reward_total
+        env.extend_from_slice(&100u64.to_le_bytes()); // reward_per_block
+        env.extend_from_slice(&500u32.to_le_bytes()); // start_height
+        env.extend_from_slice(&1000u32.to_le_bytes()); // end_height
+        env.extend_from_slice(&c_change);
+        env.extend_from_slice(&(rp.len() as u16).to_le_bytes());
+        env.extend_from_slice(&rp);
+        env.extend_from_slice(&ks);
+        env.extend_from_slice(&lsig);
+        let p = parse_farm_init_envelope(&env).expect("farm_init parses");
+        assert_eq!(p.pool_id, pool_id);
+        assert_eq!(p.farm_nonce, nonce);
+        assert_eq!(p.launcher_pubkey, launcher);
+        assert_eq!(p.reward_asset, reward_asset);
+        assert_eq!(p.reward_total, 1_000_000);
+        assert_eq!(p.c_change_or_sentinel, c_change);
+        assert_eq!(p.kernel_sig, ks);
+        let mut bad = env.clone(); bad[0] = 0x22;
+        assert!(parse_farm_init_envelope(&bad).is_none(), "non-0x34 rejected");
+    }
+
+    #[test]
+    fn parse_lp_harvest_round_trips() {
+        let farm_id = [0x40u8; 32];
+        let reward_r = [0x33u8; 32];
+        let mut env = vec![0x3Bu8];
+        env.extend_from_slice(&farm_id);
+        env.extend_from_slice(&[0x11u8; 36]); // bond_id
+        env.extend_from_slice(&[0x02u8; 33]); // harvester_pubkey
+        env.extend_from_slice(&[0x12u8; 16]); // exit_acc_per_share
+        env.extend_from_slice(&5u32.to_le_bytes()); // exit_view_height
+        env.extend_from_slice(&777u64.to_le_bytes()); // reward_amount
+        env.extend_from_slice(&reward_r);
+        env.extend_from_slice(&[0x0cu8; 64]); // harvester_sig
+        assert_eq!(env.len(), 226);
+        let (fid, amt, r) = parse_lp_harvest_envelope(&env).expect("harvest parses");
+        assert_eq!(fid, farm_id);
+        assert_eq!(amt, 777);
+        assert_eq!(r, reward_r);
+        assert!(parse_lp_harvest_envelope(&env[..225]).is_none(), "wrong length rejected");
+        let mut bad = env.clone(); bad[0] = 0x22;
+        assert!(parse_lp_harvest_envelope(&bad).is_none(), "non-0x3B rejected");
+    }
+
+    #[test]
+    fn parse_cetch_extracts_supply_commitment_and_authority() {
+        // synthetic CETCH per the CANONICAL (worker decodeCEtchPayload) layout:
+        // 0x21 ‖ tlen ‖ ticker ‖ decimals ‖ commitment(33) ‖ amount_ct(8) ‖ rp_len(2 LE) ‖
+        // rangeproof(rp_len) ‖ mint_authority(32) ‖ img_len(2 LE) ‖ image_uri
+        let mut env = vec![0x21u8, 0x03, b'T', b'A', b'C', 0x08]; // opcode, tlen=3, "TAC", decimals=8
+        let c0 = [0xc0u8; 33];
+        env.extend_from_slice(&c0); // supply commitment C_0
+        env.extend_from_slice(&[0u8; 8]); // amount_ct
+        env.extend_from_slice(&[0x03, 0x00]); // rp_len = 3 (LE)
+        env.extend_from_slice(&[0xaa, 0xbb, 0xcc]); // rangeproof (3 bytes)
+        env.extend_from_slice(&[0u8; 32]); // mint_authority = NONE (fixed-supply)
+        env.extend_from_slice(&[0x00, 0x00]); // img_len = 0
+        let auth_off = 6 + 33 + 8 + 2 + 3; // opcode..decimals(6) + C_0(33) + amount_ct(8) + rp_len(2) + rp(3)
+
+        let (commitment, mint_authority, decimals) = parse_cetch(&env).expect("cetch");
+        assert_eq!(commitment, c0, "supply commitment C_0");
+        assert_eq!(decimals, 8, "decimals");
+        assert!(is_fixed_supply(&mint_authority), "all-zero authority ⇒ fixed-supply (TAC)");
+
+        // a non-zero mint_authority ⇒ mintable (the cmint-deposit path, not the burn path)
+        let mut env_mint = env.clone();
+        env_mint[auth_off] = 0x07;
+        let (_, ma, _) = parse_cetch(&env_mint).expect("cetch mintable");
+        assert!(!is_fixed_supply(&ma), "non-zero authority ⇒ mintable");
+
+        // gating: wrong opcode (T_PETCH) rejected; truncation within mint_authority rejected
+        assert!(parse_cetch(&[0x27u8, 0x02, b'H', b'I', 0x00]).is_none(), "T_PETCH opcode rejected");
+        assert!(parse_cetch(&env[..auth_off + 10]).is_none(), "truncated within mint_authority → None");
+    }
+
+    #[test]
+    fn verify_etch_anchor_binds_asset_and_extracts_c0() {
+        let mut payload = vec![0x21u8, 0x03, b'T', b'A', b'C', 0x08];
+        let c0 = [0xc0u8; 33];
+        payload.extend_from_slice(&c0); // C_0
+        payload.extend_from_slice(&[0u8; 8]); // amount_ct
+        payload.extend_from_slice(&[0x00, 0x00]); // rp_len = 0
+        payload.extend_from_slice(&[0u8; 32]); // mint_authority NONE
+        payload.extend_from_slice(&[0x00, 0x00]); // img_len = 0
+        let tx = build_reveal_tx(&payload);
+        let asset_id = asset_id_from_etch(&tx).unwrap();
+
+        let (commitment, ma, decimals) = verify_etch_anchor(&tx, &asset_id).expect("anchor");
+        assert_eq!(commitment, c0, "C_0 anchored from the etch");
+        assert_eq!(decimals, 8);
+        assert!(is_fixed_supply(&ma), "fixed-supply TAC");
+
+        // a different asset_id cannot bind to this etch (no etch substitution)
+        assert!(verify_etch_anchor(&tx, &[0x99u8; 32]).is_none(), "wrong asset_id rejected");
+    }
+
+    #[test]
+    fn parse_cmint_extracts_fields() {
+        // T_MINT: 0x24 ‖ assetId(32) ‖ etchTxid(32) ‖ commitment(33) ‖ amount_ct(8) ‖ rp_len(2) ‖ rp ‖ sig(64)
+        let mut env = vec![0x24u8];
+        env.extend_from_slice(&[0xAA; 32]); // assetId
+        env.extend_from_slice(&[0xEE; 32]); // etchTxid
+        let comm = [0xC1u8; 33];
+        env.extend_from_slice(&comm); // commitment
+        env.extend_from_slice(&[0u8; 8]); // amount_ct
+        env.extend_from_slice(&[0x02, 0x00]); // rp_len = 2 (LE)
+        env.extend_from_slice(&[0xab, 0xcd]); // rangeproof
+        let sig = [0x77u8; 64];
+        env.extend_from_slice(&sig); // issuer_sig
+
+        let (asset, etch, commitment, amount_ct, rp, isig) = parse_cmint(&env).expect("cmint");
+        assert_eq!(asset, [0xAA; 32]);
+        assert_eq!(etch, [0xEE; 32]);
+        assert_eq!(commitment, comm);
+        assert_eq!(amount_ct, [0u8; 8]);
+        assert_eq!(rp, &[0xab, 0xcd]);
+        assert_eq!(isig, sig);
+        assert!(parse_cmint(&[0x21u8, 0, 0]).is_none(), "wrong opcode rejected");
+        assert!(parse_cmint(&env[..env.len() - 1]).is_none(), "truncated sig rejected");
+    }
+
     fn build_reveal_tx(payload: &[u8]) -> Vec<u8> {
         let mut script = Vec::new();
         script.push(0x20); script.extend_from_slice(&[0u8; 32]);
@@ -646,8 +1419,10 @@ mod tests {
 
     #[test]
     fn etch_meta_and_asset_id() {
-        // synthetic CETCH (0x21): ticker "TAC", decimals 8, then a 32-byte metadata CID + filler.
-        let mut payload = vec![0x21u8, 0x03, b'T', b'A', b'C', 0x08];
+        // synthetic T_PETCH (0x27): ticker "TAC", decimals 8, then a 32-byte content cid + filler.
+        // (T_PETCH carries the cid right after decimals; CETCH 0x21 carries the supply commitment there —
+        // covered by parse_cetch's test + the CETCH-cid=0 regression assert below.)
+        let mut payload = vec![0x27u8, 0x03, b'T', b'A', b'C', 0x08];
         let want_cid = [0x42u8; 32];
         payload.extend_from_slice(&want_cid);
         payload.extend_from_slice(&[0u8; 1]);
@@ -672,6 +1447,14 @@ mod tests {
         petch.extend_from_slice(&[0u8; 5]);
         assert!(parse_etch_meta(&petch).is_some(), "T_PETCH parses");
         assert!(parse_etch_meta(&[0x2Bu8, 3, 1, 2, 3]).is_none(), "burn opcode rejected");
+
+        // CETCH (0x21) carries the supply commitment after decimals, NOT a cid — parse_etch_meta must
+        // return cid = 0 there, never the commitment bytes (the OP_ATTEST_META garbage-cid fix).
+        let mut cetch = vec![0x21u8, 0x03, b'T', b'A', b'C', 0x08];
+        cetch.extend_from_slice(&[0x99u8; 33]); // supply commitment (must NOT be read as a cid)
+        let cenv = extract_taproot_envelope(&build_reveal_tx(&cetch)).expect("cetch envelope");
+        let (_, _, _, ccid) = parse_etch_meta(&cenv).expect("CETCH parses via parse_etch_meta");
+        assert_eq!(ccid, [0u8; 32], "CETCH cid = 0 (commitment never misread as cid)");
     }
 
     #[test]

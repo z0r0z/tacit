@@ -68,6 +68,7 @@ fn main() {
     // seller received-B (pay)
     note(&mut s, &f["sellerRecvB"]);
     sig(&mut s, &f["sellerRecvB"]);
+    s.write(&f["deadline"].as_u64().unwrap_or(0)); // op_deadline (guest main.rs:917), last read in OP_BID
 
     let client = ProverClient::builder().cpu().build();
     let (public_values, report) = client.execute(Elf::Static(ELF), s).run().expect("execute failed (guest rejected the BID witness)");

@@ -83,13 +83,16 @@ function buildFixture() {
   const oldProof = new Uint8Array(192);
   for (let i = 0; i < oldProof.length; i++) oldProof[i] = (i * 7 + 13) & 0xff;
 
-  // 4 new slots, denom 250_000 each (sum = denom_old)
+  // 4 new slots, denom 250_000 each (sum = denom_old). §5.24.6: each output
+  // wrapper MUST be the canonical self-custody variant for its OWN denom — so a
+  // 250k-denom output carries ctacVariantAssetId(250_000), not the 1M input's
+  // id. (Re-tiering within the BTC variant family is exactly what SPLIT is for.)
   const outputs = [];
   for (let i = 0; i < 4; i++) {
     const denomNew = 250_000n;
     const l = leafFor(`test-slot-split-new-${i}`, denomNew);
     outputs.push({
-      assetIdNew: assetIdOld, // same wrapper family
+      assetIdNew: hexToBytes(dapp.ctacVariantAssetId(denomNew)),
       denomNew,
       newRecipientCommit: l.recipient_commit,
       newLeafHash: l.leaf_hash,
@@ -329,6 +332,60 @@ group('Optional encrypted-notes tail (§5.26.4)');
   try { dapp.encodeTSlotSplitPayload({ ...fx, encryptedNotes: [null, new Uint8Array(100), null, null] }); }
   catch (e) { threw = String(e.message || e).includes('122-byte'); }
   ok('encoder: non-122-byte note element rejected', threw);
+}
+
+// ============== Group: §5.24.6 cross-asset rule enforcement ==============
+// An output wrapper that is NOT the canonical variant for its denomination
+// (a value-conserving relabel onto a foreign / wrong-denom asset) MUST be
+// rejected by both decoders. This is the §5.24.6 anti-inflation gate.
+group('§5.24.6 — cross-asset relabel rejected');
+{
+  // (a) Output asset_id is a foreign id (not ctacVariantAssetId of any tier).
+  const foreign = { ...buildFixture() };
+  foreign.outputs = foreign.outputs.map(o => ({
+    ...o, assetIdNew: sha256(new TextEncoder().encode('foreign-wrapper-not-a-variant')),
+  }));
+  const pForeign = dapp.encodeTSlotSplitPayload(foreign);
+  ok('foreign output asset → null (dapp)', dapp.decodeTSlotSplitPayload(pForeign) === null);
+  ok('foreign output asset → null (worker)', workerDecode(pForeign) === null);
+
+  // (b) Output asset_id is a VALID variant id but for the WRONG denom (the
+  // 1M-tier id stamped on a 250k-denom output) — the exact relabel §5.24.6 bars.
+  const wrongTier = { ...buildFixture() };
+  wrongTier.outputs = wrongTier.outputs.map(o => ({
+    ...o, assetIdNew: hexToBytes(dapp.ctacVariantAssetId(1_000_000n)), // denom is 250_000
+  }));
+  const pWrong = dapp.encodeTSlotSplitPayload(wrongTier);
+  ok('wrong-denom variant → null (dapp)', dapp.decodeTSlotSplitPayload(pWrong) === null);
+  ok('wrong-denom variant → null (worker)', workerDecode(pWrong) === null);
+
+  // (c) The canonical cross-TIER split (250k variants from a 1M input) is still
+  // ACCEPTED — re-tiering within the family is exactly what SPLIT is for.
+  const ok250 = dapp.encodeTSlotSplitPayload(buildFixture());
+  ok('canonical cross-tier split still accepted (dapp)', dapp.decodeTSlotSplitPayload(ok250) !== null);
+  ok('canonical cross-tier split still accepted (worker)', workerDecode(ok250) !== null);
+
+  // (d) Builder fails fast on a caller-supplied non-variant output asset.
+  let threwBuild = false;
+  try {
+    await dapp.buildSlotSplitEnvelope({
+      networkTag: NET_SIGNET,
+      oldSlotRecord: {
+        assetIdHex: dapp.ctacVariantAssetId(1_000_000n),
+        denomination: '1000000',
+        secretHex: bytesToHex(sha256(new TextEncoder().encode('s'))),
+        nullifierPreimageHex: bytesToHex(sha256(new TextEncoder().encode('n'))),
+      },
+      oldMerkleRoot: new Uint8Array(32),
+      oldProof: new Uint8Array(192),
+      outputs: [
+        { denomNew: 250_000n, assetIdHex: 'aa'.repeat(32) }, // foreign asset
+        { denomNew: 750_000n },
+      ],
+      oldOwnerPriv: sha256(new TextEncoder().encode('p')),
+    });
+  } catch (e) { threwBuild = String(e.message || e).includes('§5.24.6'); }
+  ok('builder rejects non-variant output asset', threwBuild);
 }
 
 console.log(`\n${pass} passed, ${fail} failed.`);

@@ -24,7 +24,7 @@ sol! {
         Withdrawal[] withdrawals; FeePayment[] fees; bytes32[] bitcoinBurnsConsumed;
         CrossOut[] crossOuts; bytes32[] bitcoinRootsUsed; bytes32 bitcoinSpentRoot;
         bytes32 bitcoinBurnRoot; AssetMeta[] assetMetas; SwapSettlement[] swaps;
-        LpSettlement[] liquidity;
+        LpSettlement[] liquidity; uint64 deadline;
     }
 }
 
@@ -65,15 +65,14 @@ fn main() {
     stdin.write(&hexv(b["sigR"].as_str().unwrap()));
     stdin.write(&hexv(b["sigZ"].as_str().unwrap()));
 
-    stdin.write(&f["dShares"].as_u64().unwrap());
-    stdin.write(&f["rem"].as_u64().unwrap());
-
+    // d_shares is DERIVED in-guest (the V2 min rule) — no longer streamed; the share note follows B.
     let s = &f["share"];
     stdin.write(&hexv(s["cx"].as_str().unwrap()));
     stdin.write(&hexv(s["cy"].as_str().unwrap()));
     stdin.write(&hexv(s["owner"].as_str().unwrap()));
     stdin.write(&hexv(s["sigR"].as_str().unwrap()));
     stdin.write(&hexv(s["sigZ"].as_str().unwrap()));
+    stdin.write(&f["deadline"].as_u64().unwrap_or(0)); // op_deadline (guest main.rs:554), after the share sigma
 
     let mode = std::env::var("MODE").unwrap_or_else(|_| "execute".into());
 

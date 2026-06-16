@@ -151,4 +151,67 @@ const BID_SECRET = '0x' + 'cc'.repeat(32);
   ok('substituting a fatter next-funding breaks the buyer opening — the chain value is enforced');
 }
 
+// ───────────────── 6. seed-only recovery of a partially-filled resting bid ─────────────────
+// A wiped buyer recovers its accrued received lots + the live funding note FROM THE SEED ALONE.
+// The single-shot recoverBidOutputs uses the wrong derivation domains for a resting order, so this
+// path (recoverRestingBidOutputs, REST_RECV/REST_FUND keyed by cumulative state) is the only one that
+// reaches them. Regression: without it, a localStorage wipe loses every filled resting-bid lot.
+{
+  const SEED = '0x' + 'de'.repeat(32);
+  const maxFill = 100n, price = 5n, increment = 10n;
+  const fundR = randomScalar();
+  const fund0 = pool.commitXY(maxFill * price, fundR);
+  // bidSecret seed-bound to the funding commitment → reproducible after a wipe.
+  const bidSecret = pool.deriveBidSecret(SEED, fund0.cx, fund0.cy);
+  const rest = bidMod.buildRestingBid({
+    assetA: ASSET_A, assetB: ASSET_B, maxFill, price, increment, chainBinding: CB,
+    buyerOwner: BUYER, fundRSecp: fundR, bidSecret,
+  });
+
+  const tree = new pool.Tree();
+  const leafSet = new Map();
+  const ins = (lf) => { const i = tree.insert(lf); leafSet.set(String(lf).toLowerCase(), { leafIndex: i }); return i; };
+  let headIdx = ins(pool.leaf(ASSET_B, rest.states[0].fund.cx, rest.states[0].fund.cy, BUYER));
+  const LOTS = 3; // partial fill: 30 of 100 A
+  for (let i = 0; i < LOTS; i++) {
+    const C = BigInt(i) * increment;
+    const sInR = randomScalar();
+    const sInC = pool.commitXY(increment, sInR);
+    const sIdx = ins(pool.leaf(ASSET_A, sInC.cx, sInC.cy, SELLER));
+    const spendRoot = tree.rootAndPath(0).root;
+    const filled = bidMod.fillRestingLot(rest, C, {
+      spendRoot, fundLeafIndex: headIdx, fundPath: tree.rootAndPath(headIdx).path,
+      sellerOwner: SELLER, sellerInAmount: increment, sellerInRSecp: sInR,
+      sellerInLeafIndex: sIdx, sellerInPath: tree.rootAndPath(sIdx).path,
+      sellerRecvRSecp: randomScalar(), sellerChangeRSecp: null,
+    });
+    const { leaves } = bidMod.verifyBid(filled, { merkleRootFrom: pool.merkleRootFrom });
+    ins(leaves[0]);                 // buyer received asset_a lot
+    ins(leaves[1]);                 // seller asset_b pay
+    headIdx = ins(leaves[2]);       // next funding (refund) — the new live head
+  }
+
+  const recovered = bidMod.recoverRestingBidOutputs({
+    seed: SEED,
+    bid: { assetA: ASSET_A, assetB: ASSET_B, maxFill, price, increment, buyerOwner: BUYER, fund: { cx: fund0.cx, cy: fund0.cy } },
+    leafSet,
+  });
+  const recvA = recovered.filter(r => r.asset === ASSET_A);
+  assert.strictEqual(recvA.length, LOTS, 'recovers all received asset_a lots from the seed');
+  assert.ok(recvA.every(r => r.value === increment), 'each recovered lot is one increment of asset_a');
+  // The live funding note after LOTS fills is at cumulative state LOTS·increment, value (maxFill−C)·price.
+  const liveC = BigInt(LOTS) * increment;
+  const liveFund = recovered.find(r => r.asset === ASSET_B && r.restingState === liveC);
+  assert.ok(liveFund, 'recovers the current live asset_b funding note');
+  assert.strictEqual(liveFund.value, (maxFill - liveC) * price, 'live funding note carries the remaining value');
+  // The wrong-domain single-shot recovery finds none of these.
+  const wrong = bidMod.recoverBidOutputs({
+    seed: SEED,
+    bid: { assetA: ASSET_A, assetB: ASSET_B, minFill: increment, maxFill, price, increment, buyerOwner: BUYER, fund: { cx: fund0.cx, cy: fund0.cy } },
+    leafSet,
+  });
+  assert.strictEqual(wrong.length, 0, 'single-shot recoverBidOutputs cannot reach resting lots (wrong domains)');
+  ok(`seed-only recovery: ${LOTS} received lots + live funding note recovered; single-shot path finds none`);
+}
+
 console.log(`\n${n} OP_BID resting checks passed.`);

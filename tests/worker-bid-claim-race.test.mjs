@@ -167,5 +167,41 @@ await test('greedy reservation can skip a too-large claim mid-iteration', () => 
       && r.evicted.length === 1 && r.evicted[0].axintent_id === 'bb';
 });
 
+await test('protected claim is never evicted even when it overshoots', () => {
+  // A claim whose linked axintent is already settling on-chain is flagged
+  // `_protected`. Evicting it would drop the settle scanner's durable
+  // settled_amount bump (it keys off the live bidpclaim + pledge index),
+  // re-opening consumed capacity. The resolver must keep it unconditionally.
+  const recs = [
+    { axintent_id: 'aa', fill_amount: '800', expires_at: FUTURE, _protected: true },
+    { axintent_id: 'bb', fill_amount: '800', expires_at: FUTURE },
+  ];
+  const r = _resolveBidPartialOvershoot(recs, 1000n, NOW);
+  // aa (protected) kept; bb evicted (800+800 > 1000).
+  return r.survivors.some(p => p.axintent_id === 'aa')
+      && r.evicted.length === 1 && r.evicted[0].axintent_id === 'bb';
+});
+
+await test('protected claims alone over budget all survive (no eviction)', () => {
+  const recs = [
+    { axintent_id: 'aa', fill_amount: '700', expires_at: FUTURE, _protected: true },
+    { axintent_id: 'bb', fill_amount: '700', expires_at: FUTURE, _protected: true },
+  ];
+  const r = _resolveBidPartialOvershoot(recs, 1000n, NOW);
+  return r.kept === 1400n && r.survivors.length === 2 && r.evicted.length === 0;
+});
+
+await test('protected kept regardless of lex order vs smaller unprotected', () => {
+  // 'zz' is lex-largest (would normally be evicted first) but protected;
+  // the unprotected 'aa' loses instead.
+  const recs = [
+    { axintent_id: 'zz', fill_amount: '600', expires_at: FUTURE, _protected: true },
+    { axintent_id: 'aa', fill_amount: '600', expires_at: FUTURE },
+  ];
+  const r = _resolveBidPartialOvershoot(recs, 1000n, NOW);
+  return r.survivors.length === 1 && r.survivors[0].axintent_id === 'zz'
+      && r.evicted.length === 1 && r.evicted[0].axintent_id === 'aa';
+});
+
 console.log(`\n${pass} passed, ${fail} failed.\n`);
 if (fail > 0) process.exit(1);

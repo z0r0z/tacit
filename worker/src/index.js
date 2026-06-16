@@ -87,10 +87,11 @@ import { hmac } from '@noble/hashes/hmac';
 import { keccak_256 } from '@noble/hashes/sha3';
 import { hexToBytes, bytesToHex, concatBytes } from '@noble/hashes/utils';
 import { bech32, bech32m } from '@scure/base';
-import { buildReflectionAttester } from './reflection-attest.js';
+import { buildScanReflectionAttester } from './reflection-attest.js';
 import { buildConfidentialSettler } from './confidential-settle.js';
 import { buildCrossoutConsumer, crossoutMintLeaf } from './crossout-consumer.js';
 import { decodeCrossoutMint } from '../../dapp/confidential-crossout-consumer.js';
+import { classifyConfidentialTx } from '../../dapp/burn-deposit-bitcoin.js';
 
 secp.etc.hmacSha256Sync = (k, ...m) => hmac(sha256, k, secp.etc.concatBytes(...m));
 
@@ -130,11 +131,13 @@ const T_DCLAIM   = 0x2C; // permissionless claim event against a T_DROP ancestor
 const T_DEPOSIT  = 0x29; // mixer-pool deposit / pool init (SPEC §5.10)
 const T_WITHDRAW = 0x2A; // mixer-pool anonymous withdraw (SPEC §5.11)
 const T_WRAPPER_ATTEST = 0x38; // optional on-chain wrapper attestation (SPEC §5.19)
-// AMM opcodes (SPEC AMM.md + SPEC-SWAP-VAR-AMENDMENT). v1 worker integration
-// is FOUNDATION-ONLY in this build: structural decoders + POOL_INIT registration
-// via launcher-gated trust-the-envelope semantics. Full cryptographic validation
-// (BJJ Pedersen, XCURVE sigma, Groth16 per-pool VK, kernel sigs) is staged for
-// follow-up sessions. NOT MAINNET-READY — signet smoke-test only.
+// AMM opcodes (SPEC AMM.md + SPEC-SWAP-VAR-AMENDMENT). The worker validates the full AMM state
+// machine: kernel-sig value conservation, the constant-product non-decrease + fee-clearing curve,
+// XCURVE sigma binding, aggregate Pedersen, and the MINIMUM_LIQUIDITY floor; LP_ADD/REMOVE are
+// additionally Groth16-verified at dapp credit time against the finalized ceremony VK CID. The pool
+// curve/clearing/share math runs out-of-circuit here (indexer consensus, Runes-style) — it is NOT
+// Bitcoin-consensus-enforced, so per-trade swaps (T_SWAP_VAR/ROUTE) carry no proof and trust this
+// single indexer; that pilot-grade trust model is the gating constraint, not missing validation.
 const T_LP_ADD     = 0x2D; // pool init (variant 1) or standard LP add (variant 0)
 const T_LP_REMOVE  = 0x2E; // LP redeem — share burn → asset A + B
 const T_SWAP_BATCH = 0x2F; // batched uniform-clearing settlement (ceremony-gated)
@@ -695,6 +698,24 @@ async function handleProverHealth(env, cors) {
   }, healthy ? 200 : 503, hdr);
 }
 
+// Build the FULL-SCAN reflection attester (the model the deployed reflection ELF expects): it scans every
+// tx of every confirmed block in the un-attested range (completeness — no pool spend omitted) and assembles
+// the prover input. classifyConfidentialTx mirrors the guest's envelope classification (burn / cxfer / plain);
+// buildScanReflectionAttester injects the real burnDepositKit so a holder-submitted TAC burn-deposit onboards.
+// Returns null (inert) unless REFLECTION_ATTEST=1 + REFLECTION_GENESIS_HEIGHT are configured.
+function scanReflectionAttesterFor(env, network) {
+  return buildScanReflectionAttester(env, {
+    deps: { secp, keccak256: keccak_256, sha256 },
+    api: apiText,
+    network,
+    classifyTx: ({ rawHex }) => classifyConfidentialTx(rawHex),
+  });
+}
+// The full-scan ackJob persists a post-batch SNAPSHOT (not just a cursor), but the box-poll ack carries only
+// {jobId, attestedTo}. So /reflection/job stashes the assembled job's newSnapshot in KV keyed by jobId, and
+// /reflection/ack retrieves it. Ephemeral (the snapshot is reproducible by re-assembling), 1-day TTL.
+const reflectionPendingKey = (network, jobId) => `reflection:pending:${network}:${String(jobId).replace(/^0x/, '')}`;
+
 // Reflection relay: serve the next assembled Bitcoin-state batch for the box to prove. The box
 // (ops/scripts/reflection-relay-loop.sh) proves it, submits attestBitcoinStateProven on-chain, then
 // POSTs /reflection/ack. Returns {} when nothing is pending; 404 when reflection attest is off.
@@ -704,10 +725,16 @@ async function handleReflectionJob(req, env, url, cors) {
   // stall every cross-lane / bridge_mint gate. /reflection/job is gated the same for symmetry.
   if (!checkConfidentialAuth(req, env)) return jsonResponse({ error: 'not found' }, 404, { ...cors, 'Cache-Control': 'no-store' });
   const network = url.searchParams.get('network') === 'signet' ? 'signet' : 'mainnet';
-  const att = buildReflectionAttester(env, { deps: { secp, keccak256: keccak_256, sha256 }, api: apiText, network });
+  const att = scanReflectionAttesterFor(env, network);
   if (!att) return jsonResponse({ error: 'reflection attest not configured' }, 404, { ...cors, 'Cache-Control': 'no-store' });
   const job = await att.assembleJob();
-  return jsonResponse(job || {}, 200, { ...cors, 'Cache-Control': 'no-store' });
+  if (job) {
+    // Stash the snapshot so ack (which only carries jobId) can advance the persisted state.
+    await env.REGISTRY_KV.put(reflectionPendingKey(network, job.jobId), JSON.stringify(job.newSnapshot), { expirationTtl: 86400 });
+    const { newSnapshot, ...jobForBox } = job; // the box needs input + jobId + attestedTo, not the snapshot
+    return jsonResponse(jobForBox, 200, { ...cors, 'Cache-Control': 'no-store' });
+  }
+  return jsonResponse({}, 200, { ...cors, 'Cache-Control': 'no-store' });
 }
 
 async function handleReflectionAck(req, env, cors) {
@@ -715,9 +742,16 @@ async function handleReflectionAck(req, env, cors) {
   let body;
   try { body = await req.json(); } catch { return jsonResponse({ ok: false, error: 'bad json' }, 400, cors); }
   const network = body.network === 'signet' ? 'signet' : 'mainnet';
-  const att = buildReflectionAttester(env, { deps: { secp, keccak256: keccak_256, sha256 }, api: apiText, network });
+  const att = scanReflectionAttesterFor(env, network);
   if (!att) return jsonResponse({ error: 'reflection attest not configured' }, 404, cors);
-  const r = await att.ackJob(Number(body.attestedTo) | 0);
+  // Retrieve the snapshot stashed at job-serve time. Missing/expired ⇒ refuse to advance with a null
+  // snapshot (which would reset the canonical state) — the box should re-GET /reflection/job and retry.
+  const jobId = String(body.jobId || '');
+  const snapKey = reflectionPendingKey(network, jobId);
+  const snapRaw = jobId ? await env.REGISTRY_KV.get(snapKey) : null;
+  if (!snapRaw) return jsonResponse({ ok: false, error: 'unknown or expired jobId — re-fetch /reflection/job' }, 409, cors);
+  const r = await att.ackJob(Number(body.attestedTo) | 0, JSON.parse(snapRaw));
+  await env.REGISTRY_KV.delete(snapKey);
   return jsonResponse({ ok: true, ...r }, 200, cors);
 }
 
@@ -2250,6 +2284,33 @@ async function ammPoolGet(env, network, poolIdHex) {
 }
 async function ammPoolPut(env, network, poolIdHex, value) {
   await env.REGISTRY_KV.put(ammPoolKey(network, poolIdHex), JSON.stringify(value));
+}
+
+// Per-pool op index (DISCOVERY for trustless client-side replay — SPEC AMM.md
+// "anyone can reconstruct ... by replaying confirmed envelopes"). One key per
+// VALID op, canonically ordered by zero-padded (height, tx_index) so KV.list
+// returns chain order. The dapp's deriveAmmPoolState reads this list, then
+// re-fetches + re-verifies + replays every op from chain — so this index is
+// trusted only for COMPLETENESS (liveness): a missed write just makes a client
+// halt or re-scan, never a wrong reserve. Value is a sentinel ('1') — the
+// client decodes the op from the tx itself, not from here.
+function ammOpKey(network, poolIdHex, height, txIndex, txid) {
+  const h = String(height || 0).padStart(10, '0');
+  const idx = String(txIndex || 0).padStart(6, '0');
+  return network === 'signet'
+    ? `ammop:${poolIdHex}:${h}:${idx}:${txid}`
+    : `ammop:${network}:${poolIdHex}:${h}:${idx}:${txid}`;
+}
+function ammOpPrefix(network, poolIdHex) {
+  return network === 'signet' ? `ammop:${poolIdHex}:` : `ammop:${network}:${poolIdHex}:`;
+}
+async function recordAmmOp(env, network, poolIdHex, height, txIndex, txid) {
+  // Fail-safe: the index is liveness-only, so a write failure must never break
+  // the cron (cf. the scanForEtches swallow-and-freeze fragility).
+  try {
+    if (!/^[0-9a-f]{64}$/.test(String(poolIdHex || ''))) return;
+    await env.REGISTRY_KV.put(ammOpKey(network, poolIdHex, height, txIndex, txid), '1');
+  } catch { /* discovery index miss = liveness only */ }
 }
 
 // Accepted-swap marker. A T_SWAP_VAR / T_SWAP_ROUTE receipt (and change) is a
@@ -4673,6 +4734,12 @@ function atomicFulfilmentKey(network, aid, intentIdHex) {
     : `axfulfil:${network}:${aid}:${intentIdHex}`;
 }
 function lastScannedKey(network)       { return network === 'signet' ? 'meta:last_scanned' : `meta:last_scanned:${network}`; }
+// Block hash of the highest contiguously-scanned block. Lets the cron detect a
+// reorg below its forward-only cursor: if the canonical hash at last_scanned no
+// longer matches, blocks were re-mined and any pmint/poolleaf keys written for
+// the orphaned heights must be re-derived against the new chain (SPEC §5.9
+// reorg revalidation). Only set on a clean scan tick.
+function lastScannedHashKey(network)   { return network === 'signet' ? 'meta:last_scanned_hash' : `meta:last_scanned_hash:${network}`; }
 // Per-asset CXFER+AXFER transfer counter. Exposed on /assets as
 // `transfer_count` so the Discover/Market UI can surface "popularity"
 // signals (movement is a coarse "is anyone using this?" indicator —
@@ -11500,6 +11567,11 @@ function decodeTSlotSplitPayload(payload) {
     const denomNew = (BigInt(dnView.getUint32(4, true)) << 32n) | BigInt(dnView.getUint32(0, true));
     p += 8;
     if (denomNew <= 0n || denomNew >= (1n << BigInt(N_BITS))) return null;
+    // §5.24.6 cross-asset rule: each output wrapper MUST be the canonical
+    // self-custody variant for its denomination (parity with the dapp decoder).
+    // Permits re-tiering within the family; rejects relabeling onto a foreign
+    // or wrong-denom asset.
+    if (bytesToHex(assetIdNewBytes) !== ctacVariantAssetId(denomNew)) return null;
     const newRecipientCommitBytes = payload.slice(p, p + 33); p += 33;
     try { compressedPointFromHex(bytesToHex(newRecipientCommitBytes)); } catch { return null; }
     const newLeafHashBytes = payload.slice(p, p + 32); p += 32;
@@ -11636,6 +11708,9 @@ function decodeTSlotMergePayload(payload) {
   const denomNew = (BigInt(dnView.getUint32(4, true)) << 32n) | BigInt(dnView.getUint32(0, true));
   p += 8;
   if (denomNew <= 0n || denomNew >= (1n << BigInt(N_BITS))) return null;
+  // §5.24.6 cross-asset rule (MERGE): the output wrapper MUST be the canonical
+  // self-custody variant for its denomination (parity with the dapp decoder).
+  if (bytesToHex(assetIdNewBytes) !== ctacVariantAssetId(denomNew)) return null;
   const newRecipientCommitBytes = payload.slice(p, p + 33); p += 33;
   try { compressedPointFromHex(bytesToHex(newRecipientCommitBytes)); } catch { return null; }
   const newLeafHashBytes = payload.slice(p, p + 32); p += 32;
@@ -13858,6 +13933,11 @@ async function handleAssetGet(assetIdHex, env, network, cors) {
 // T_PMINTs surface as 'pending' until they cross this depth; only credited
 // mints count toward `cumulative_minted` and the cap.
 const PMINT_CONFIRMATION_DEPTH = 3;
+// How far the cron rewinds its forward-only cursor when it detects a reorg
+// below last_scanned (block hash at the cursor no longer canonical). Bounded:
+// re-mining ≥6 deep is effectively impossible on Bitcoin mainnet, and the
+// re-scan is idempotent, so a fixed window is both safe and sufficient.
+const PMINT_REORG_REWIND_DEPTH = 6;
 
 // SPEC §5.10 reorg-safety gate. A T_DEPOSIT becomes part of the canonical
 // pool merkle tree only after this many confirmations. Without it a short
@@ -13974,6 +14054,15 @@ async function loadCanonicalPmints(env, network, assetIdHex, tipHeight, capAmoun
   // chain order — SPEC §5.9 *Cap-overflow ordering*.
   let creditedCount = 0n;
   let creditedAmount = 0n;
+  // De-dup by mint_txid. A reorg can re-confirm the same T_PMINT at a new
+  // (height, tx_index), leaving the prior canonical key in place — both keys
+  // share one mint_txid. Counting both would consume two cap slots for a
+  // single on-chain mint. KV.list is canonical order, so the lowest-position
+  // key wins and later duplicates are dropped from cap accounting (SPEC §5.9
+  // — one mint, one slot). Only confirmed (depth ≥ 3) entries register here:
+  // a pending duplicate hasn't been counted yet, so it must not pre-claim the
+  // slot.
+  const seenTxids = new Set();
   const annotated = events.map(e => {
     // Defensive: an earlier worker version (handleAssetHint T_PMINT branch)
     // wrote unconfirmed hints into this canonical namespace with
@@ -13998,21 +14087,26 @@ async function loadCanonicalPmints(env, network, assetIdHex, tipHeight, capAmoun
       status = 'unknown_depth';   // tip unavailable — surface to UI but don't credit
     } else if (depth < PMINT_CONFIRMATION_DEPTH) {
       status = 'pending';
-    } else if (capAmount != null && mintLimit != null) {
-      const wouldBe = creditedAmount + mintLimit;
-      if (wouldBe > capAmount) {
-        status = 'cap_overflow';
+    } else if (typeof e.mint_txid === 'string' && seenTxids.has(e.mint_txid)) {
+      status = 'duplicate';   // reorg re-confirm — already counted at an earlier canonical position
+    } else {
+      if (typeof e.mint_txid === 'string') seenTxids.add(e.mint_txid);
+      if (capAmount != null && mintLimit != null) {
+        const wouldBe = creditedAmount + mintLimit;
+        if (wouldBe > capAmount) {
+          status = 'cap_overflow';
+        } else {
+          status = 'credited';
+          credited = true;
+          creditedCount += 1n;
+          creditedAmount = wouldBe;
+        }
       } else {
-        status = 'credited';
+        status = 'credited';   // missing cap metadata; can't enforce, default to credit
         credited = true;
         creditedCount += 1n;
-        creditedAmount = wouldBe;
+        if (mintLimit != null) creditedAmount += mintLimit;
       }
-    } else {
-      status = 'credited';   // missing cap metadata; can't enforce, default to credit
-      credited = true;
-      creditedCount += 1n;
-      if (mintLimit != null) creditedAmount += mintLimit;
     }
     return { ...e, depth, status, credited };
   });
@@ -14028,6 +14122,73 @@ async function loadCanonicalPmints(env, network, assetIdHex, tipHeight, capAmoun
     canonical_truncated: canonicalTruncated,
     orphan_truncated: orphanTruncated,
   };
+}
+
+// Canonically-credited claim set for a T_DROP pool (SPEC §5.13 step 5 +
+// Confirmation depth) — the T_DCLAIM analog of loadCanonicalPmints. The cron
+// writes a dclaim:* key for every confirmed structurally-valid claim with NO
+// cap/depth filter (the cap is a canonical-order count resolvable only at read
+// time). The dapp validator treats this set as authoritative and REJECTS any
+// claim absent from it, so the credited set MUST apply, in canonical
+// (height, tx_index, txid) order — which KV.list yields because the key embeds
+// zero-padded height + tx_index:
+//   (1) depth ≥ 3   — tip-state claims are pending, not credited (same 3-conf
+//                     rule as §5.9; a shallow claim can reorder/vanish on reorg);
+//   (2) the cap     — only the first cap_amount/per_claim claims credit; the
+//                     rest are cap_overflow;
+//   (3) de-dup txid — a reorg re-confirm leaves two keys for one claim, but one
+//                     claim consumes one cap slot.
+// For merkle-gated drops the leaf-uniqueness gate already bounds claims to the
+// leaf set; OPEN drops (merkle_root == 0) have no per-claim gate, so without
+// this anyone could broadcast claims past cap_amount and every dapp would
+// credit them — inflating the supply-locked dropped asset.
+// Returns { credited_txids, list_complete, resolvable }. `resolvable` is false
+// when the cap can't be computed (missing meta/tip) or the scan exceeds its
+// guard; callers should degrade to optimistic credit (the worker-unreachable
+// posture) rather than assert an incomplete set.
+const DCLAIM_CREDIT_PAGE_GUARD = 64;   // 64k canonical keys before degrading
+async function loadCreditedDclaims(env, network, dropId, tipHeight, capAmountStr, perClaimStr) {
+  let maxClaims = null;
+  try {
+    const cap = BigInt(capAmountStr), per = BigInt(perClaimStr);
+    if (per > 0n) maxClaims = cap / per;
+  } catch { maxClaims = null; }
+  if (maxClaims == null || !Number.isInteger(tipHeight)) {
+    return { credited_txids: [], list_complete: false, resolvable: false };
+  }
+  const credited_txids = [];
+  const seenTxids = new Set();
+  let creditedBig = 0n;
+  let kvCursor;
+  let listComplete = false;
+  let capReached = false;
+  for (let page = 0; page < DCLAIM_CREDIT_PAGE_GUARD; page++) {
+    const opts = { prefix: dclaimPrefix(network, dropId), limit: 1000 };
+    if (kvCursor) opts.cursor = kvCursor;
+    const claimList = await env.REGISTRY_KV.list(opts);
+    for (const k of claimList.keys) {
+      const parts = k.name.split(':');
+      const txid = parts[parts.length - 1];
+      const h = parseInt(parts[parts.length - 3], 10);
+      if (!/^[0-9a-f]{64}$/.test(txid) || !Number.isInteger(h)) continue;
+      if ((tipHeight - h + 1) < PMINT_CONFIRMATION_DEPTH) continue;   // pending — not yet credited
+      if (seenTxids.has(txid)) continue;                              // reorg re-confirm — one claim, one slot
+      seenTxids.add(txid);
+      if (creditedBig >= maxClaims) { capReached = true; continue; }  // cap_overflow
+      creditedBig += 1n;
+      credited_txids.push(txid);
+    }
+    if (claimList.list_complete) { listComplete = true; break; }
+    // Canonical order: once the cap is full every later claim is overflow, so
+    // the credited set is complete even without scanning the tail.
+    if (creditedBig >= maxClaims) { capReached = true; listComplete = true; break; }
+    if (!claimList.cursor) { listComplete = true; break; }
+    kvCursor = claimList.cursor;
+  }
+  // resolvable only if we actually finished accounting (scan completed or cap
+  // filled). Hitting the page guard mid-scan leaves the set possibly missing
+  // legitimately-credited txids → degrade rather than false-reject.
+  return { credited_txids, list_complete: listComplete, resolvable: listComplete || capReached };
 }
 
 // SAFETY_CAP / page bounds for snapshot refresh. The key-only scan is far
@@ -14085,6 +14246,10 @@ async function refreshPetchProgress(env, network, aid, tipHeight, petch) {
   // have 0). Cap at 10000 entries to guard against pathological cases.
   const capOverflowTxids = [];
   const CAP_OVERFLOW_TXIDS_MAX = 10000;
+  // De-dup by txid — see loadCanonicalPmints for the reorg re-confirm rationale.
+  // One on-chain mint = one cap slot, regardless of how many canonical keys a
+  // reorg left behind for it.
+  const seenTxids = new Set();
   let truncated = false;
   let canonicalComplete = false;
   let cursor = null;
@@ -14104,6 +14269,8 @@ async function refreshPetchProgress(env, network, aid, tipHeight, petch) {
       if (!Number.isInteger(h) || !Number.isInteger(ti) || !/^[0-9a-f]{64}$/.test(txid)) continue;
       const depth = Math.max(0, tipHeight - h + 1);
       if (depth < PMINT_CONFIRMATION_DEPTH) { pendingCount++; continue; }
+      if (seenTxids.has(txid)) continue;   // reorg re-confirm duplicate — one mint, one slot
+      seenTxids.add(txid);
       if (capAmount != null && mintLimit != null) {
         const wouldBe = creditedAmount + mintLimit;
         if (wouldBe > capAmount) {
@@ -14662,10 +14829,16 @@ async function runOnePmintBackfill(env, cfg) {
 // endpoints.
 async function handlePetchAssetsList(env, network, cors, { limit = 1000 } = {}) {
   const list = await env.REGISTRY_KV.list({ prefix: petchPrefix(network), limit });
+  // Signet's petchPrefix is the bare 'petch:' which lexically also matches the
+  // mainnet keys 'petch:mainnet:<aid>'. Drop those so a signet Discover view
+  // never enumerates mainnet deployments — same filter fetchAndHydratePetchForMarket
+  // applies. (pmint:/petch_progress: namespaces are already disjoint, so cap
+  // numbers never cross-contaminate; this is purely the list surface.)
+  const wanted = list.keys.filter(k => !(network === 'signet' && k.name.startsWith('petch:mainnet:')));
   const tipP = fetchTipHeight(env, network);
   // Curated verified set in parallel; same semantics as /assets.
   const verifiedP = loadVerifiedSet(env, network).catch(() => new Set());
-  const fetched = await Promise.all(list.keys.map(k => env.REGISTRY_KV.get(k.name, 'json')));
+  const fetched = await Promise.all(wanted.map(k => env.REGISTRY_KV.get(k.name, 'json')));
   const assets = fetched.filter(v => v);
   const verifiedSet = await verifiedP;
   for (const a of assets) a.verified = verifiedSet.has(a.asset_id);
@@ -14793,6 +14966,12 @@ async function handlePmintList(assetIdHex, env, network, cors, opts = {}) {
         credited_count: snap?.credited_count ?? null,
         credited_amount: snap?.credited_amount ?? null,
         cap_overflow_count: snap?.cap_overflow_count ?? cap_overflow_txids.length,
+        // Truncation flag for the cap-overflow list. When set, a confirmed mint
+        // that is absent from cap_overflow_txids but sits canonically AFTER
+        // last_credited is still overflow (it just fell past the list cap) — the
+        // client uses this to render it as permanently rejected rather than
+        // "pending forever". See SPEC §5.9 *Cap-overflow ordering*.
+        cap_overflow_truncated: !!snap?.cap_overflow_truncated,
         last_credited_height: snap?.last_credited_height ?? null,
         last_credited_tx_index: snap?.last_credited_tx_index ?? null,
         last_credited_txid: snap?.last_credited_txid ?? null,
@@ -16050,6 +16229,24 @@ async function handleListingPost(assetIdHex, req, env, network, cors) {
     return jsonResponse({ error: `amount must be in [0, 2^${N_BITS})` }, 400, cors);
   }
 
+  // Verify both signatures (body-only data) and charge the rate limit BEFORE
+  // any chain fetch, so an unsigned/forged request — or a flood of signed
+  // requests pointing at bogus txids — can't make the worker pay for the
+  // commitment + tx lookups below (each retries propagation lag for ~7s).
+  // The on-chain Pedersen + ownership binding still runs after, against the
+  // now-authenticated opening.
+  const xonly = hexToBytes(ownerPubHex).slice(1);
+  const oMsg = openingMsg(assetIdHex, txidHex, vout, amountStr, blindingHex, ownerPubHex);
+  if (!verifySchnorr(hexToBytes(openingSigHex), oMsg, xonly)) {
+    return jsonResponse({ error: 'invalid opening signature' }, 403, cors);
+  }
+  const lMsg = listingMsg(assetIdHex, txidHex, vout, priceSatsRaw, expiryRaw, makerAddress, openingSigHex);
+  if (!verifySchnorr(hexToBytes(listingSigHex), lMsg, xonly)) {
+    return jsonResponse({ error: 'invalid listing signature' }, 403, cors);
+  }
+  const _orderRl = await _orderbookWriteRateLimit(req, env, ownerPubHex, 'listing', { pkDefault: 500, ipDefault: 1000 });
+  if (!_orderRl.ok) return jsonResponse({ error: `listing rate limited: ${_orderRl.reason}` }, 429, cors);
+
   // Resolve commitment + asset_id from chain. Same path as handleUtxoOpeningPost.
   let resolved;
   try { resolved = await commitmentForUtxo(env, txidHex, vout, network); }
@@ -16080,17 +16277,6 @@ async function handleListingPost(assetIdHex, req, env, network, cors) {
   }
   if (bytesToHex(spk.slice(2, 22)) !== bytesToHex(hash160(hexToBytes(ownerPubHex)))) {
     return jsonResponse({ error: 'owner_pubkey does not control this UTXO' }, 403, cors);
-  }
-
-  // Both sigs verify under x-only(owner_pubkey).
-  const xonly = hexToBytes(ownerPubHex).slice(1);
-  const oMsg = openingMsg(assetIdHex, txidHex, vout, amountStr, blindingHex, ownerPubHex);
-  if (!verifySchnorr(hexToBytes(openingSigHex), oMsg, xonly)) {
-    return jsonResponse({ error: 'invalid opening signature' }, 403, cors);
-  }
-  const lMsg = listingMsg(assetIdHex, txidHex, vout, priceSatsRaw, expiryRaw, makerAddress, openingSigHex);
-  if (!verifySchnorr(hexToBytes(listingSigHex), lMsg, xonly)) {
-    return jsonResponse({ error: 'invalid listing signature' }, 403, cors);
   }
 
   // Store opening (idempotent — overwrites with same content) + listing.
@@ -16509,6 +16695,25 @@ async function handleRangeListingPost(assetIdHex, req, env, network, cors) {
     utxos.push({ txid, vout });
   }
 
+  // Verify both signatures (body-only data) and charge the rate limit BEFORE
+  // the per-UTXO chain validation below, which fans out up to 2×64 retrying
+  // upstream fetches. Without this gate an unsigned/forged request — or a
+  // flood of signed ones referencing bogus txids — forces all that fetch
+  // cost at zero attacker cost.
+  const xonly = hexToBytes(ownerPubHex).slice(1);
+  const dMsg = disclosureMsg(assetIdHex, utxos, threshold, rangeproofHex, ownerPubHex);
+  if (!verifySchnorr(hexToBytes(disclosureSigHex), dMsg, xonly)) {
+    return jsonResponse({ error: 'invalid disclosure signature' }, 403, cors);
+  }
+  // Listing sig over the canonical range-listing msg (binds disclosure_sig +
+  // price + expiry + maker_address + threshold).
+  const lMsg = rangeListingMsg(assetIdHex, threshold, priceSatsRaw, expiryRaw, makerAddress, disclosureSigHex);
+  if (!verifySchnorr(hexToBytes(listingSigHex), lMsg, xonly)) {
+    return jsonResponse({ error: 'invalid listing signature' }, 403, cors);
+  }
+  const _orderRl = await _orderbookWriteRateLimit(req, env, ownerPubHex, 'range-listing', { pkDefault: 300, ipDefault: 600 });
+  if (!_orderRl.ok) return jsonResponse({ error: `listing rate limited: ${_orderRl.reason}` }, 429, cors);
+
   // Validate ownership + asset_id consistency for every referenced UTXO.
   const ownerHash160Hex = bytesToHex(hash160(hexToBytes(ownerPubHex)));
   for (const u of utxos) {
@@ -16528,19 +16733,6 @@ async function handleRangeListingPost(assetIdHex, req, env, network, cors) {
     if (bytesToHex(spk.slice(2, 22)) !== ownerHash160Hex) {
       return jsonResponse({ error: `utxo ${u.txid}:${u.vout}: owner_pubkey does not control this UTXO` }, 403, cors);
     }
-  }
-
-  // Disclosure sig over the canonical disclosure msg.
-  const xonly = hexToBytes(ownerPubHex).slice(1);
-  const dMsg = disclosureMsg(assetIdHex, utxos, threshold, rangeproofHex, ownerPubHex);
-  if (!verifySchnorr(hexToBytes(disclosureSigHex), dMsg, xonly)) {
-    return jsonResponse({ error: 'invalid disclosure signature' }, 403, cors);
-  }
-  // Listing sig over the canonical range-listing msg (binds disclosure_sig +
-  // price + expiry + maker_address + threshold).
-  const lMsg = rangeListingMsg(assetIdHex, threshold, priceSatsRaw, expiryRaw, makerAddress, disclosureSigHex);
-  if (!verifySchnorr(hexToBytes(listingSigHex), lMsg, xonly)) {
-    return jsonResponse({ error: 'invalid listing signature' }, 403, cors);
   }
 
   const listing = {
@@ -16744,6 +16936,31 @@ function atomicIntentCancelMsg(assetIdHex, intentIdHex) {
     hexToBytes(assetIdHex),
     hexToBytes(intentIdHex),
   ));
+}
+
+// Maker-authenticated claim read. The public list/get expose only a slimmed
+// claim (expires_at + claimed flag); the maker needs the taker_pubkey +
+// requested_amount to build a fulfilment, and proves it's the intent's maker
+// by signing this (verified under intent.maker_pubkey). Pre-settlement the
+// taker's pubkey / requested amount / pledged outpoint are private to the
+// two counterparties.
+function atomicIntentClaimReadMsg(assetIdHex, intentIdHex) {
+  return sha256(concatBytes(
+    new TextEncoder().encode('tacit-axintent-claim-read-v1'),
+    hexToBytes(assetIdHex),
+    hexToBytes(intentIdHex),
+  ));
+}
+
+// Public-facing slim of a taker claim. Strips the genuinely-sensitive fields:
+// taker_utxo (outpoint + value → directly wallet-linking), requested_amount
+// (pre-settlement trade size), and the taker's reusable signature. Keeps
+// taker_pubkey + expires_at, which the maker-tile status, buyer claim-vanish
+// detection, and open-orders panel render; the maker reads the full claim
+// (incl. requested_amount) via the authenticated claim-detail endpoint.
+function _slimAtomicClaim(claim) {
+  if (!claim || typeof claim !== 'object') return claim;
+  return { expires_at: claim.expires_at, taker_pubkey: claim.taker_pubkey, claimed: true };
 }
 
 // Buyer-side claim abort. Signed by the claimant (taker_pubkey) so only
@@ -17987,7 +18204,7 @@ async function loadAtomicIntentsForAsset(env, network, assetIdHex, opts = {}) {
     if (!t) continue;
     const v = t.intent;
     v.expired = (v.expiry || 0) <= now;
-    if (t.claim && t.claim.expires_at > now) v.claim = t.claim;
+    if (t.claim && t.claim.expires_at > now) v.claim = _slimAtomicClaim(t.claim);
     if (t.fulfil) {
       const fulfilledAt = Number(t.fulfil.fulfilled_at) || 0;
       if (fulfilledAt && (now - fulfilledAt) > FULFILMENT_TTL_SECONDS) {
@@ -18056,7 +18273,7 @@ async function handleAtomicIntentGet(assetIdHex, intentIdHex, env, network, cors
   if (!intent) return jsonResponse({ error: 'no such intent' }, 404, cors);
   const now = Math.floor(Date.now() / 1000);
   intent.expired = (intent.expiry || 0) <= now;
-  if (claim && claim.expires_at > now) intent.claim = claim;
+  if (claim && claim.expires_at > now) intent.claim = _slimAtomicClaim(claim);
   if (fulfil) {
     const fulfilledAt = Number(fulfil.fulfilled_at) || 0;
     if (fulfilledAt && (now - fulfilledAt) <= FULFILMENT_TTL_SECONDS) {
@@ -18065,6 +18282,29 @@ async function handleAtomicIntentGet(assetIdHex, intentIdHex, env, network, cors
     }
   }
   return jsonResponse({ asset_id: assetIdHex, intent }, 200, cors);
+}
+
+// Maker-authenticated full-claim read. Returns the taker_pubkey +
+// requested_amount + taker_utxo the maker needs to build a fulfilment, gated
+// on a signature under the intent's maker_pubkey so the sensitive claim
+// fields stay private to the two counterparties pre-settlement.
+async function handleAtomicIntentClaimDetail(assetIdHex, intentIdHex, req, env, network, cors) {
+  if (!/^[0-9a-f]{64}$/.test(assetIdHex)) return jsonResponse({ error: 'invalid asset_id' }, 400, cors);
+  if (!/^[0-9a-f]{32}$/.test(intentIdHex)) return jsonResponse({ error: 'invalid intent_id' }, 400, cors);
+  let body;
+  try { body = await req.json(); } catch { return jsonResponse({ error: 'invalid JSON body' }, 400, cors); }
+  const makerSigHex = String(body.maker_sig ?? '').toLowerCase();
+  if (!/^[0-9a-f]{128}$/.test(makerSigHex)) return jsonResponse({ error: 'maker_sig must be 128 hex chars' }, 400, cors);
+  const intent = await env.REGISTRY_KV.get(atomicIntentKey(network, assetIdHex, intentIdHex), 'json');
+  if (!intent) return jsonResponse({ error: 'no such intent' }, 404, cors);
+  const msg = atomicIntentClaimReadMsg(assetIdHex, intentIdHex);
+  if (!verifySchnorr(hexToBytes(makerSigHex), msg, hexToBytes(intent.maker_pubkey).slice(1))) {
+    return jsonResponse({ error: 'invalid maker signature (must be signed by the intent maker)' }, 403, cors);
+  }
+  const claim = await env.REGISTRY_KV.get(atomicClaimKey(network, assetIdHex, intentIdHex), 'json');
+  const now = Math.floor(Date.now() / 1000);
+  if (!claim || claim.expires_at <= now) return jsonResponse({ ok: true, claim: null }, 200, cors);
+  return jsonResponse({ ok: true, claim }, 200, cors);
 }
 
 async function handleAtomicIntentDelete(assetIdHex, intentIdHex, req, env, network, cors) {
@@ -18491,6 +18731,47 @@ async function handlePreauthSalePost(assetIdHex, req, env, network, cors) {
     return jsonResponse({ error: 'sale_id does not derive from (asset_outpoint, seller_pubkey, nonce)' }, 400, cors);
   }
 
+  // ---------- signature + rate-limit checks (before chain fetches) ----------
+  // All signed material is body-only, so verifying here — ahead of the
+  // chain-state lookups below (fresh-tx + outspend + commitment, each
+  // retrying propagation lag for ~7s) — means an unsigned/forged or flooding
+  // request can't make the worker pay for those fetches.
+  const authMsg = preauthSaleAuthMsg({
+    assetIdHex, saleIdHex, sellerPubHex,
+    assetOutpointTxidHex, assetOutpointVout: assetOutpointVoutRaw,
+    assetUtxoValue: assetUtxoValueRaw,
+    amountStr, blindingHex,
+    minPriceSats: minPriceSatsRaw,
+    sellerPayoutScriptHex,
+    expiry: expiryRaw,
+    sellerAssetSpendSigHex,
+    nonceHex,
+  });
+  if (!verifySchnorr(hexToBytes(authSigHex), authMsg, hexToBytes(sellerPubHex).slice(1))) {
+    return jsonResponse({ error: 'invalid auth signature' }, 403, cors);
+  }
+  // Seller's pre-signed P2WPKH spend: ECDSA over the BIP-143 sighash that
+  // binds vin[1] (asset outpoint) to vout[1] (payout). Reconstruct the
+  // sighash from the same fields the seller signed; reject if the signature
+  // doesn't verify against this preimage under seller_pubkey.
+  const spendSigBytes = hexToBytes(sellerAssetSpendSigHex);
+  const spendDer = spendSigBytes.slice(0, spendSigBytes.length - 1);
+  const sighash = preauthSellerSpendSighash({
+    assetOutpointTxidHex, assetOutpointVout: assetOutpointVoutRaw,
+    assetUtxoValue: assetUtxoValueRaw,
+    sellerPubHex, sellerPayoutScriptHex,
+    minPriceSats: minPriceSatsRaw,
+  });
+  if (!verifyEcdsaDerSig(spendDer, sighash, hexToBytes(sellerPubHex))) {
+    return jsonResponse({ error: 'seller_asset_spend_sig does not verify against the BIP-143 sighash' }, 403, cors);
+  }
+  // Anti-spam ceiling on listing creation. Charged after sig verification so a
+  // malformed/unsigned body can't burn the seller's daily slots. 100/day/pubkey
+  // is generous for legitimate market-making and tight enough to make
+  // sustained ladder-spam expensive.
+  const _orderRl = await _orderbookWriteRateLimit(req, env, sellerPubHex, 'preauth');
+  if (!_orderRl.ok) return jsonResponse({ error: `listing rate limited: ${_orderRl.reason}` }, 429, cors);
+
   // ---------- chain-state checks ----------
   // The seller must control the asset outpoint as P2WPKH(hash160(seller_pubkey)).
   let assetTx;
@@ -18541,53 +18822,6 @@ async function handlePreauthSalePost(assetIdHex, req, env, network, cors) {
   if (!claimed.equals(onchain)) {
     return jsonResponse({ error: 'asset_opening does not match on-chain commitment' }, 400, cors);
   }
-
-  // ---------- signature checks ----------
-  // Seller's BIP-340 auth signature covers the whole sale-auth body.
-  const authMsg = preauthSaleAuthMsg({
-    assetIdHex, saleIdHex, sellerPubHex,
-    assetOutpointTxidHex, assetOutpointVout: assetOutpointVoutRaw,
-    assetUtxoValue: assetUtxoValueRaw,
-    amountStr, blindingHex,
-    minPriceSats: minPriceSatsRaw,
-    sellerPayoutScriptHex,
-    expiry: expiryRaw,
-    sellerAssetSpendSigHex,
-    nonceHex,
-  });
-  if (!verifySchnorr(hexToBytes(authSigHex), authMsg, hexToBytes(sellerPubHex).slice(1))) {
-    return jsonResponse({ error: 'invalid auth signature' }, 403, cors);
-  }
-
-  // Seller's pre-signed P2WPKH spend: ECDSA over the BIP-143 sighash that
-  // binds vin[1] (asset outpoint) to vout[1] (payout). Reconstruct the
-  // sighash from the same fields the seller signed; reject if the signature
-  // doesn't verify against this preimage under seller_pubkey.
-  const spendSigBytes = hexToBytes(sellerAssetSpendSigHex);
-  const spendDer = spendSigBytes.slice(0, spendSigBytes.length - 1);
-  const sighash = preauthSellerSpendSighash({
-    assetOutpointTxidHex, assetOutpointVout: assetOutpointVoutRaw,
-    assetUtxoValue: assetUtxoValueRaw,
-    sellerPubHex, sellerPayoutScriptHex,
-    minPriceSats: minPriceSatsRaw,
-  });
-  if (!verifyEcdsaDerSig(spendDer, sighash, hexToBytes(sellerPubHex))) {
-    return jsonResponse({ error: 'seller_asset_spend_sig does not verify against the BIP-143 sighash' }, 403, cors);
-  }
-
-  // ---------- rate limit ----------
-  // Charge after sig verification so a malformed/unsigned body can't burn
-  // the seller's daily slots. Anti-spam ceiling on listing creation —
-  // each preauth requires a real on-chain UTXO (the one-live-sale-per-
-  // outpoint check below makes outpoint-recycling impossible without a
-  // cancel), so the natural rate limit is "how many UTXOs you have" —
-  // but a seller who pre-fragments their balance into 1000 small UTXOs
-  // could still flood the asks ladder with listings to grief the UI.
-  // 100 listings/day/pubkey is generous for legitimate market-making
-  // (rotating offers, adjusting prices) and tight enough to make
-  // sustained ladder-spam expensive.
-  const _orderRl = await _orderbookWriteRateLimit(req, env, sellerPubHex, 'preauth');
-  if (!_orderRl.ok) return jsonResponse({ error: `listing rate limited: ${_orderRl.reason}` }, 429, cors);
 
   // ---------- one-live-sale-per-outpoint ----------
   // Check the outpoint index BEFORE the main record so a duplicate doesn't
@@ -18937,6 +19171,9 @@ async function handlePreauthBidPost(assetIdHex, req, env, network, cors) {
 // blob strip on the atomic-intent listings).
 function _slimPreauthBid(bid) {
   if (!bid || typeof bid !== 'object') return bid;
+  // The recipient blinding is intentionally public here: an offline walk-away
+  // bid is filled by any seller, who needs (amount, blinding) to build the
+  // buyer's payout note. Only the pre-signed sats spends are stripped.
   const { buyer_sats_spend_sig, buyer_sats_spend_sigs, ...rest } = bid;
   return rest;
 }
@@ -20149,12 +20386,23 @@ function bidPartialClaimPrefix(network, aid, bidIdHex) {
 // requires. The signet e2e harness covers the integrated path.
 function _resolveBidPartialOvershoot(records, intentAmtBI, nowSec) {
   const active = records.filter(p => p && (p.expires_at || 0) > nowSec);
-  const sorted = active.slice().sort((a, b) =>
+  // Protected claims have a linked atomic-intent that is already
+  // broadcasting or settled on-chain (`_protected` set by the caller from
+  // the fulfilment state / settled_recorded flag). Evicting one would
+  // delete its bidpclaim + pledge index, and the on-chain settle keys the
+  // durable settled_amount bump off exactly those records — so an evicted
+  // in-flight chunk would never be recorded as consumed and its capacity
+  // would spring back (over-fill past the signed amount). Keep them
+  // unconditionally; greedily fill whatever budget remains with the rest.
+  const protectedClaims = active.filter(p => p._protected);
+  const rest = active.filter(p => !p._protected);
+  const sorted = rest.slice().sort((a, b) =>
     a.axintent_id < b.axintent_id ? -1 : a.axintent_id > b.axintent_id ? 1 : 0
   );
   let kept = 0n;
   const survivors = [];
   const evicted = [];
+  for (const p of protectedClaims) { kept += BigInt(p.fill_amount || '0'); survivors.push(p); }
   for (const p of sorted) {
     const f = BigInt(p.fill_amount || '0');
     if (kept + f <= intentAmtBI) { kept += f; survivors.push(p); }
@@ -20847,6 +21095,22 @@ async function handleBidIntentClaim(assetIdHex, bidIdHex, req, env, network, cor
   if (axintent.maker_pubkey !== sellerPubHex) {
     return jsonResponse({ error: 'linked axintent.maker_pubkey != seller_pubkey' }, 400, cors);
   }
+  // Bind the linked axintent's terms to the bid. The seller's claim reserves
+  // the bid's capacity for BID_CLAIM_TTL; without these checks a seller can
+  // reserve with an axintent of the wrong size or an inflated price (worse
+  // for the buyer than the bid they're nominally filling), so the bid shows
+  // as filled while no honest fill is on offer. The dapp carves the seller
+  // UTXO to exactly fill_amount and prices it at the bid's scaled unit price,
+  // so legitimate fills satisfy both.
+  if (BigInt(axintent.amount || '0') !== fillBI) {
+    return jsonResponse({ error: `linked axintent.amount (${axintent.amount}) must equal fill_amount (${fillAmountStr})` }, 400, cors);
+  }
+  // Seller unit price must not exceed the bid's unit price:
+  //   ax.price_sats / fill_amount ≤ bid.price_sats / bid.amount
+  // Cross-multiplied to avoid rounding (all operands ≥ 0).
+  if (BigInt(axintent.price_sats || '0') * intentAmtBI > BigInt(intent.price_sats || '0') * fillBI) {
+    return jsonResponse({ error: 'linked axintent price exceeds the bid unit price' }, 400, cors);
+  }
   // Pull the bidder's recipient hash160 from the axintent's envelope and
   // require it to match the bid's buyer_pubkey hash160. The seller would
   // have constructed the axintent's recipient blinding ECDH'd against
@@ -20915,10 +21179,29 @@ async function handleBidIntentClaim(assetIdHex, bidIdHex, req, env, network, cor
     );
     const listed = await env.REGISTRY_KV.list({ prefix: bidPartialClaimPrefix(network, assetIdHex, bidIdHex), limit: 1000 });
     const recs = await Promise.all(listed.keys.map(k => env.REGISTRY_KV.get(k.name, 'json')));
-    // Budget for live claims is amount MINUS already-settled capacity — a
-    // settled chunk is durably consumed and must not be re-offered to a new claim.
-    const _settledBI = BigInt(intent.settled_amount || '0');
-    const { kept, survivors, evicted } = _resolveBidPartialOvershoot(recs, intentAmtBI - _settledBI, now);
+    // Flag claims whose linked atomic-intent is already settling/settled so
+    // the resolver never evicts an on-chain commitment (the settle scanner
+    // keys the durable settled_amount bump off the bidpclaim + pledge index;
+    // evicting one mid-flight would drop that bump and re-open consumed
+    // capacity — over-fill). A bidpclaim is protected when it has been
+    // marked settled_recorded, or its axintent has a posted fulfilment.
+    const recsState = await Promise.all((recs || []).map(async (p) => {
+      if (!p || !p.axintent_id) return p;
+      if (p.settled_recorded) return { ...p, _protected: true };
+      try {
+        const ful = await env.REGISTRY_KV.get(atomicFulfilmentKey(network, assetIdHex, p.axintent_id), 'json');
+        if (ful) return { ...p, _protected: true };
+      } catch {}
+      return p;
+    }));
+    // Re-read the bid immediately before resolving + writing. The settle
+    // scanner mutates settled_amount on this same key via its own
+    // read-modify-write; using the value we loaded at the top of the
+    // handler (and writing the whole stale object back) would clobber any
+    // bump the scanner landed in between, springing settled capacity back.
+    const freshBid = (await env.REGISTRY_KV.get(bidIntentKey(network, assetIdHex, bidIdHex), 'json')) || intent;
+    const _settledBI = BigInt(freshBid.settled_amount || '0');
+    const { kept, survivors, evicted } = _resolveBidPartialOvershoot(recsState, intentAmtBI - _settledBI, now);
     if (evicted.length > 0) {
       await Promise.all(evicted.map(p =>
         env.REGISTRY_KV.delete(bidPartialClaimKey(network, assetIdHex, bidIdHex, p.axintent_id))
@@ -20931,35 +21214,40 @@ async function handleBidIntentClaim(assetIdHex, bidIdHex, req, env, network, cor
       ));
     }
     const ourEvicted = evicted.some(p => p.axintent_id === axintentIdHex);
-    intent.remaining_amount = (intentAmtBI - _settledBI - kept).toString();
-    intent.linked_axintents = survivors.map(p => p.axintent_id);
-    if (BigInt(intent.remaining_amount) < minFillBI) {
-      intent.state = 'CLOSED';
-    } else if (!intent.state || intent.state === 'OPEN') {
-      intent.state = survivors.length > 0 ? 'PARTIALLY_RESERVED' : 'OPEN';
+    const _remBI = intentAmtBI - _settledBI - kept;
+    freshBid.remaining_amount = (_remBI < 0n ? 0n : _remBI).toString();
+    freshBid.linked_axintents = survivors.map(p => p.axintent_id);
+    if (BigInt(freshBid.remaining_amount) < minFillBI) {
+      freshBid.state = 'CLOSED';
+    } else if (!freshBid.state || freshBid.state === 'OPEN') {
+      freshBid.state = survivors.length > 0 ? 'PARTIALLY_RESERVED' : 'OPEN';
     }
     // Preserve the bid's auto-evict horizon on the partial-claim update
     // (KV resets TTL on put). Computed from the loaded intent's expiry.
     await env.REGISTRY_KV.put(
       bidIntentKey(network, assetIdHex, bidIdHex),
-      JSON.stringify(intent),
-      { expirationTtl: _ttlFromExpiry(intent.expiry) },
+      JSON.stringify(freshBid),
+      { expirationTtl: _ttlFromExpiry(freshBid.expiry) },
     );
     if (ourEvicted) {
       return jsonResponse({
         error: 'bid remaining insufficient (lost race to concurrent fill; retry with smaller fill_amount or another bid)',
-        remaining_amount: intent.remaining_amount,
+        remaining_amount: freshBid.remaining_amount,
       }, 409, cors);
     }
-    return jsonResponse({ ok: true, claim, intent }, 200, cors);
+    return jsonResponse({ ok: true, claim, intent: freshBid }, 200, cors);
   }
 
-  await env.REGISTRY_KV.put(bidClaimKey(network, assetIdHex, bidIdHex), JSON.stringify(claim));
-  // Cross-bid axintent pledge index (see gate above). Whole-bid
-  // claim records lack an explicit TTL on the KV put — historical
-  // behavior is to let them sit until natural expiry — so size the
-  // pledge index TTL to BID_CLAIM_TTL_SECONDS so the index doesn't
-  // outlive the active window it indexes.
+  // Auto-expire the claim record ~60s past its logical expiry so abandoned
+  // whole-bid reservations don't accumulate in KV (the expires_at check
+  // already gates validity; this just GCs the dead record).
+  await env.REGISTRY_KV.put(
+    bidClaimKey(network, assetIdHex, bidIdHex),
+    JSON.stringify(claim),
+    { expirationTtl: BID_CLAIM_TTL_SECONDS + 60 },
+  );
+  // Cross-bid axintent pledge index (see gate above). TTL matches the
+  // claim's so the index doesn't outlive the active window it indexes.
   await env.REGISTRY_KV.put(
     bidClaimAxintentIndexKey(network, axintentIdHex),
     JSON.stringify({ bid_id: bidIdHex, asset_id: assetIdHex, expires_at: claim.expires_at }),
@@ -21052,8 +21340,37 @@ async function scanForEtches(env, network) {
   // '0'). Without this distinction, `/rescan?from=1` writes '0' into the key
   // and the next tick mistakes that for "never scanned" and triggers backfill.
   const raw = await env.REGISTRY_KV.get(lastScannedKey(network));
-  const lastScanned = raw === null ? -1 : parseInt(raw, 10);
+  let lastScanned = raw === null ? -1 : parseInt(raw, 10);
   const tip = parseInt((await apiText(env, '/blocks/tip/height', {}, network)).trim(), 10);
+  // ── Reorg detection (SPEC §5.9 revalidation) ─────────────────────────────
+  // The cursor is forward-only, so a reorg below it would otherwise leave the
+  // pmint/poolleaf keys written for now-orphaned heights counted forever (a
+  // re-confirmed mint at a new position is de-duped read-side, but a mint that
+  // simply moved blocks needs its canonical key re-derived). Each clean tick
+  // records the hash of its highest scanned block; if that hash no longer
+  // matches the canonical chain, rewind a bounded window so the forward pass
+  // re-derives those heights. Re-scans are idempotent (position-keyed writes +
+  // *seen markers) — the same property the /rescan admin path relies on.
+  // Fully fail-safe: any error degrades to the prior forward-only behavior
+  // rather than throwing into the cron's swallow-and-freeze catch. Bound is
+  // PMINT_REORG_REWIND_DEPTH (deeper reorgs are out of scope on mainnet; the
+  // depth-3 read gate + read-side de-dup remain conservative backstops). Kill
+  // switch: REORG_DETECT_DISABLE=1.
+  if (lastScanned >= PMINT_REORG_REWIND_DEPTH && env.REORG_DETECT_DISABLE !== '1' && Number.isInteger(tip)) {
+    try {
+      const recordedHash = await env.REGISTRY_KV.get(lastScannedHashKey(network));
+      if (recordedHash) {
+        let canonicalHash = null;
+        try { canonicalHash = (await apiText(env, `/block-height/${lastScanned}`, {}, network)).trim(); } catch { canonicalHash = null; }
+        if (canonicalHash && /^[0-9a-f]{64}$/i.test(canonicalHash) && canonicalHash !== recordedHash) {
+          lastScanned = lastScanned - PMINT_REORG_REWIND_DEPTH;
+          await env.REGISTRY_KV.put(lastScannedKey(network), String(lastScanned));
+          // Drop the stale hash; the forward re-scan records a fresh one below.
+          try { await env.REGISTRY_KV.delete(lastScannedHashKey(network)); } catch {}
+        }
+      }
+    } catch { /* degrade to forward-only — never freeze the cron */ }
+  }
   // Per-network blocks-per-tick budget (signet is sparse, mainnet is dense).
   const blocksPerTick = network === 'mainnet'
     ? safeInt(env.SCAN_BLOCKS_MAINNET, 1, { min: 1, max: 100 })
@@ -21326,15 +21643,9 @@ async function scanForEtches(env, network) {
         // gates the recipient credit identically).
         if (decoded.opcode === T_PREAUTH_BID_VAR && !_validatePreauthBidVarRefundVout(dx, tx)) continue;
         const counted = await _bumpTransferOnce(dx.asset_id, tx.txid);
-        // Reflection attestation ingest (Phase 4.4): record confirmed confidential transfers into
-        // the canonical reflection state (the source of truth the attest cron replays + proves).
-        // Config-gated (env.REFLECTION_ATTEST); best-effort, never blocks the scan.
-        if (decoded.opcode === T_CXFER || decoded.opcode === T_CXFER_BPP) {
-          try {
-            const _att = buildReflectionAttester(env, { deps: { secp, keccak256: keccak_256, sha256 }, api: apiText, network });
-            if (_att) await _att.ingestConfirmedCxfer(tx, dx, txs, h, dx.asset_id);
-          } catch (e) { try { _logCronError(env, 'reflectionIngest', network, e); } catch {} }
-        }
+        // (Reflection attestation no longer ingests per-CXFER here: the full-scan model re-scans EVERY tx of
+        // each confirmed block via the box-poll /reflection/job, so completeness can't depend on this loop
+        // catching only the CXFERs. The cron advances the confirmed tip; the box assembles + proves.)
         // Implicit-cancel detection for opening listings. Any tx that
         // spends the asset_id's UTXOs (CXFER consolidate, AXFER settle,
         // or the maker shuffling funds around) terminates whichever
@@ -23684,6 +23995,7 @@ async function scanForEtches(env, network) {
           // share UTXOs to this pool.
           const lpAssetId = bytesToHex(ammDeriveLpAssetId(poolIdBytes));
 
+          await recordAmmOp(env, network, poolIdHex, h, txIndex, tx.txid);
           await ammPoolPut(env, network, poolIdHex, {
             pool_id: poolIdHex,
             asset_a: bytesToHex(aBytes),
@@ -23834,6 +24146,7 @@ async function scanForEtches(env, network) {
           const newReserveA = BigInt(xPool0.reserve_a) + dA0;
           const newReserveB = BigInt(xPool0.reserve_b) + dB0;
           if (newReserveA >= 1n << 64n || newReserveB >= 1n << 64n) continue;
+          await recordAmmOp(env, network, poolIdHex0, h, txIndex, tx.txid);
           await ammPoolPut(env, network, poolIdHex0, {
             ...xPool0,
             reserve_a: newReserveA.toString(),
@@ -23932,6 +24245,7 @@ async function scanForEtches(env, network) {
         const newReserveA = BigInt(poolR.reserve_a) - expected.deltaA;
         const newReserveB = BigInt(poolR.reserve_b) - expected.deltaB;
         if (newReserveA <= 0n || newReserveB <= 0n) continue;  // defensive
+        await recordAmmOp(env, network, poolIdHexR, h, txIndex, tx.txid);
         await ammPoolPut(env, network, poolIdHexR, {
           ...poolR,
           reserve_a: newReserveA.toString(),
@@ -24242,13 +24556,16 @@ async function scanForEtches(env, network) {
           ...sbPool,
           reserve_a: newReserveA.toString(),
           reserve_b: newReserveB.toString(),
-          k_last: (newReserveA * newReserveB).toString(),
+          // k_last is NOT advanced by swaps — it marks the last crystallization
+          // (AMM.md §"Accrual model"). The protocol fee accrues virtually in the
+          // k-growth this swap creates, crystallized at the next LP event.
           last_swap_batch_txid: tx.txid,
           last_swap_batch_height: h,
           last_swap_batch_at: tx.status?.block_time || Math.floor(Date.now() / 1000),
           // Don't upgrade validation tag — Groth16 verify is deferred to
           // the browser-side consumer.
         };
+        await recordAmmOp(env, network, bytesToHex(sbPoolIdBytes), h, txIndex, tx.txid);
         await ammPoolPut(env, network, bytesToHex(sbPoolIdBytes), sbNewPool);
         found++;
       } else if (decoded.opcode === T_PROTOCOL_FEE_CLAIM) {
@@ -24295,6 +24612,7 @@ async function scanForEtches(env, network) {
         catch { continue; }
         if (!cClExpected.equals(cClActual)) continue;
         // Apply state transition: reset accrued, keep crystallized k_last.
+        await recordAmmOp(env, network, cl.pool_id, h, txIndex, tx.txid);
         await ammPoolPut(env, network, cl.pool_id, {
           ...xPoolCl,
           protocol_fee_accrued: '0',
@@ -24507,12 +24825,15 @@ async function scanForEtches(env, network) {
             ...pool,
             reserve_a: curve.raPost.toString(),
             reserve_b: curve.rbPost.toString(),
-            k_last: (curve.raPost * curve.rbPost).toString(),
+            // k_last is NOT advanced by swaps — it marks the last crystallization
+            // (AMM.md §"Accrual model"). The protocol fee accrues virtually in the
+            // k-growth this swap creates, crystallized at the next LP event.
             last_swap_txid: tx.txid,
             last_swap_height: h,
             last_swap_at: tx.status?.block_time || Math.floor(Date.now() / 1000),
             validation: 'verified',
           };
+          await recordAmmOp(env, network, sv.pool_id, h, txIndex, tx.txid);
           await ammPoolPut(env, network, sv.pool_id, newPool);
           await ammSwapAcceptedPut(env, network, tx.txid, {
             h, pool_id: sv.pool_id,
@@ -24719,12 +25040,17 @@ async function scanForEtches(env, network) {
             ...snap._orig,
             reserve_a: snap.reserve_A.toString(),
             reserve_b: snap.reserve_B.toString(),
-            k_last: (snap.reserve_A * snap.reserve_B).toString(),
+            // k_last is NOT advanced by swaps — it marks the last crystallization
+            // (AMM.md §"Accrual model"). Route volume grows k virtually; the
+            // protocol fee crystallizes at the next LP event.
             last_swap_txid: tx.txid,
             last_swap_height: h,
             last_swap_at: tx.status?.block_time || Math.floor(Date.now() / 1000),
             validation: 'verified',
           };
+          // Index the route under EVERY pool it touches so the trustless replay
+          // can discover + re-apply this hop (a route changes reserves like a swap).
+          await recordAmmOp(env, network, pid_hex, h, txIndex, tx.txid);
           await ammPoolPut(env, network, pid_hex, newPool);
         }
         await ammSwapAcceptedPut(env, network, tx.txid, { h, route: true });
@@ -25785,6 +26111,16 @@ async function scanForEtches(env, network) {
     await env.REGISTRY_KV.put(dropDirtyKey(network, dropId), '1', { expirationTtl: 86400 });
   }
   await env.REGISTRY_KV.put(lastScannedKey(network), String(lastContiguous));
+  // Record the canonical hash of the highest contiguously-scanned block so the
+  // next tick can detect a reorg below the cursor (see the reorg-detection
+  // block at the top of this function). Fail-safe: a missing hash just disables
+  // reorg detection for one tick rather than throwing into the cron's catch.
+  try {
+    if (lastContiguous >= 0) {
+      const lh = (await apiText(env, `/block-height/${lastContiguous}`, {}, network)).trim();
+      if (lh && /^[0-9a-f]{64}$/i.test(lh)) await env.REGISTRY_KV.put(lastScannedHashKey(network), lh);
+    }
+  } catch { /* reorg detection self-re-arms on the next clean tick */ }
   return { scanned_txs: scanned, found_etches: found, from: startHeight, to: lastContiguous, tip, network };
 }
 
@@ -25794,6 +26130,7 @@ async function scanForEtches(env, network) {
 export {
   openingMsg, disclosureMsg, listingMsg, cancelMsg, claimMsg,
   atomicIntentMsg, atomicIntentClaimMsg, atomicIntentFulfilmentMsg, atomicIntentCancelMsg,
+  atomicIntentClaimReadMsg, _slimAtomicClaim, handleAtomicIntentClaimDetail,
   // T_AXFER_VAR (§5.7.6.1) — variable-amount atomic-intent message helpers.
   // Exported so tests/worker-axintent-var can pin byte-for-byte determinism
   // of intent_id derivation, message-byte equality with the dapp side, and
@@ -25965,6 +26302,10 @@ export {
   // (depth-gated crediting, cap-overflow rejection, reorg-revoke) against
   // an in-memory KV stub without spinning up Cloudflare's runtime.
   PMINT_CONFIRMATION_DEPTH, loadCanonicalPmints,
+  // T_DCLAIM credited-set computation (SPEC §5.13 step 5 + Confirmation depth).
+  // Exported so the drop-dclaim test can pin depth-gating, cap-overflow
+  // ordering, and reorg re-confirm de-dup against an in-memory KV stub.
+  loadCreditedDclaims,
   // Commitment-opening gate applied by the cron + hint indexers (issue #31
   // Problem #3). Exported so tests can pin the valid / mismatch / malformed-
   // point cases without reaching into the cron's block loop. `pedersenCommit`
@@ -26567,6 +26908,36 @@ async function _routeFetch(req, env, ctx) {
     //     T_SWAP_VAR envelope with R_A_pre / R_B_pre fields)
     //   - cross-pool router + integrators (refuse pools at validation
     //     tags < 'verified' for high-value flows)
+    // GET /amm/pool/<pool_id>/ops — the pool's op-txid list in canonical
+    // (height, tx_index) order. DISCOVERY for the dapp's trustless replay
+    // (deriveAmmPoolState): the dapp re-fetches + re-verifies + replays each op
+    // from chain, so this is trusted only for completeness (liveness), never for
+    // values. See recordAmmOp.
+    {
+      const opsMatch = url.pathname.match(/^\/amm\/pool\/([0-9a-f]{64})\/ops$/);
+      if (opsMatch && req.method === 'GET') {
+        const poolIdHex = opsMatch[1];
+        const ops = [];
+        let cursor; let listComplete = false;
+        const OPS_PAGE_GUARD = 100;   // 100k ops ceiling
+        for (let page = 0; page < OPS_PAGE_GUARD; page++) {
+          const lst = await env.REGISTRY_KV.list({ prefix: ammOpPrefix(network, poolIdHex), limit: 1000, ...(cursor ? { cursor } : {}) });
+          for (const k of lst.keys) {
+            const parts = k.name.split(':');
+            const txid = parts[parts.length - 1];
+            const ti = parseInt(parts[parts.length - 2], 10);
+            const h = parseInt(parts[parts.length - 3], 10);
+            if (/^[0-9a-f]{64}$/.test(txid) && Number.isInteger(h) && Number.isInteger(ti)) {
+              ops.push({ txid, height: h, tx_index: ti });
+            }
+          }
+          if (lst.list_complete) { listComplete = true; break; }
+          if (!lst.cursor) { listComplete = true; break; }
+          cursor = lst.cursor;
+        }
+        return jsonResponse({ pool_id: poolIdHex, network, ops, count: ops.length, list_complete: listComplete }, 200, cors);
+      }
+    }
     if (url.pathname.startsWith('/amm/pool/') && req.method === 'GET') {
       const tail = url.pathname.slice('/amm/pool/'.length);
       const poolIdHex = tail.toLowerCase().replace(/\/$/, '');
@@ -27678,7 +28049,15 @@ async function _routeFetch(req, env, ctx) {
       const capAmount = BigInt(v.cap_amount);
       const maxClaimsBig = capAmount / perClaim;
       const DCLAIM_PROGRESS_PAGE_GUARD = 32;
-      let totalSeen = 0;
+      // Mirror the credited-set endpoint's accounting so the progress bar
+      // matches what actually credits (SPEC §5.13): count distinct claims at
+      // depth ≥ 3 only. tip gates by confirmation depth; the Set de-dups a
+      // reorg re-confirm (two keys, one claim). Display-only — never a credit
+      // decision — and degrades to a raw count if tip is unavailable.
+      const dropTip = await fetchTipHeight(env, network);
+      let totalSeen = 0;          // raw confirmed claim keys (incl. pending / overflow / dups)
+      let eligible = 0;           // distinct claims at depth ≥ 3 (credit-eligible, pre-cap)
+      const seenClaimTxids = new Set();
       let kvCursor = undefined;
       let listComplete = false;
       for (let page = 0; page < DCLAIM_PROGRESS_PAGE_GUARD; page++) {
@@ -27686,25 +28065,25 @@ async function _routeFetch(req, env, ctx) {
         if (kvCursor) opts.cursor = kvCursor;
         const claimList = await env.REGISTRY_KV.list(opts);
         totalSeen += claimList.keys.length;
-        // Early-exit once we've enumerated enough claims to fully account
-        // for cap_overflow. Past the cap we don't credit further claims,
-        // so the exact count of overflow is informational only — but the
-        // canonical-order winners are already in the first maxClaims of
-        // the lex-sorted prefix scan, so once totalSeen ≥ maxClaims the
-        // creditedCount answer is locked in regardless of further pages.
-        if (BigInt(totalSeen) >= maxClaimsBig && claimList.list_complete) {
-          listComplete = true;
-          break;
+        for (const k of claimList.keys) {
+          const parts = k.name.split(':');
+          const txid = parts[parts.length - 1];
+          const kh = parseInt(parts[parts.length - 3], 10);
+          if (!/^[0-9a-f]{64}$/.test(txid)) continue;
+          if (Number.isInteger(dropTip) && Number.isInteger(kh) && (dropTip - kh + 1) < PMINT_CONFIRMATION_DEPTH) continue;
+          if (seenClaimTxids.has(txid)) continue;
+          seenClaimTxids.add(txid);
+          eligible++;
         }
         if (claimList.list_complete) { listComplete = true; break; }
         if (!claimList.cursor) { listComplete = true; break; }
         kvCursor = claimList.cursor;
       }
-      const creditedCount = Math.min(totalSeen, Number(maxClaimsBig));
+      const creditedCount = Math.min(eligible, Number(maxClaimsBig));
       const claimed_amount = BigInt(creditedCount) * perClaim;
-      v.claim_count = creditedCount;            // claims credited toward cap
-      v.claim_total_seen = totalSeen;           // includes cap-overflow rejects
-      v.cap_overflow_count = totalSeen - creditedCount;
+      v.claim_count = creditedCount;            // distinct depth-≥3 claims credited toward cap
+      v.claim_total_seen = totalSeen;           // raw confirmed keys (incl. pending / overflow / reorg dups)
+      v.cap_overflow_count = Math.max(0, eligible - creditedCount);
       v.claimed_amount = claimed_amount.toString();
       const remainingAmount = capAmount - claimed_amount;
       v.remaining_amount = (remainingAmount < 0n ? 0n : remainingAmount).toString();
@@ -27731,31 +28110,38 @@ async function _routeFetch(req, env, ctx) {
       // No JSON-per-record overhead; for 1000 claims this is ~70KB vs.
       // ~500KB for the full record path.
       const slim = url.searchParams.get('credited') === '1' && url.searchParams.get('include_txids') === '1';
+      if (slim) {
+        // Canonically-credited claim set — the dapp validator treats this as
+        // authoritative and REJECTS any claim absent from it, so it MUST apply
+        // depth ≥ 3 + cap-overflow ordering + txid de-dup (SPEC §5.13; see
+        // loadCreditedDclaims). When the cap can't be resolved (drop record or
+        // tip unavailable, or the scan exceeds its guard) we 503 so the dapp
+        // degrades to optimistic credit (its worker-unreachable posture) rather
+        // than asserting an unfiltered or empty set.
+        const drop = await env.REGISTRY_KV.get(dropKey(network, dropId), 'json');
+        const tip = await fetchTipHeight(env, network);
+        if (!drop || drop.cap_amount == null || drop.per_claim == null) {
+          return jsonResponse({ error: 'parent drop not indexed' }, 503, cors);
+        }
+        const res = await loadCreditedDclaims(env, network, dropId, tip, drop.cap_amount, drop.per_claim);
+        if (!res.resolvable) {
+          return jsonResponse({ error: 'cap not resolvable (tip unavailable or claim set exceeds scan guard)' }, 503, cors);
+        }
+        return jsonResponse({
+          drop_id: dropId,
+          network,
+          credited_count: res.credited_txids.length,
+          credited_txids: res.credited_txids,
+          cursor: null,
+          list_complete: true,
+          truncated: false,
+        }, 200, cors);
+      }
       const list = await env.REGISTRY_KV.list({
         prefix: dclaimPrefix(network, dropId),
         limit,
         cursor,
       });
-      if (slim) {
-        // KV key suffix is `…:<padded_height>:<padded_tx_index>:<txid>`.
-        // Extract just the trailing txid. The cron's nullifier check means
-        // every key here corresponds to ONE canonical claim per leaf — rewraps
-        // never make it into this list.
-        const credited_txids = [];
-        for (const k of list.keys) {
-          const txid = k.name.split(':').pop();
-          if (/^[0-9a-f]{64}$/.test(txid)) credited_txids.push(txid);
-        }
-        return jsonResponse({
-          drop_id: dropId,
-          network,
-          credited_count: credited_txids.length,
-          credited_txids,
-          cursor: list.list_complete ? null : list.cursor,
-          list_complete: !!list.list_complete,
-          truncated: !list.list_complete,
-        }, 200, cors);
-      }
       const fetched = await Promise.all(list.keys.map(k => env.REGISTRY_KV.get(k.name, 'json')));
       const claims = fetched.filter(v => v && v.kind === 'dclaim');
       return jsonResponse({
@@ -28294,6 +28680,8 @@ async function _routeFetch(req, env, ctx) {
     const mai3 = url.pathname.match(/^\/assets\/([0-9a-f]{64})\/atomic-intents\/([0-9a-f]{32})\/claim$/);
     if (mai3 && req.method === 'POST')                         return _mutateAndBustAtomicIntents(mai3[1], () => handleAtomicIntentClaim(mai3[1], mai3[2], req, env, network, cors));
     if (mai3 && req.method === 'DELETE')                       return _mutateAndBustAtomicIntents(mai3[1], () => handleAtomicIntentClaimCancel(mai3[1], mai3[2], req, env, network, cors));
+    const maiCd = url.pathname.match(/^\/assets\/([0-9a-f]{64})\/atomic-intents\/([0-9a-f]{32})\/claim-detail$/);
+    if (maiCd && req.method === 'POST')                        return handleAtomicIntentClaimDetail(maiCd[1], maiCd[2], req, env, network, cors);
     const mai4 = url.pathname.match(/^\/assets\/([0-9a-f]{64})\/atomic-intents\/([0-9a-f]{32})\/fulfilment$/);
     if (mai4 && req.method === 'POST')                         return _mutateAndBustAtomicIntents(mai4[1], () => handleAtomicIntentFulfil(mai4[1], mai4[2], req, env, network, cors));
     if (mai4 && req.method === 'GET')                          return handleAtomicIntentFulfilGet(mai4[1], mai4[2], env, network, cors);
@@ -29400,16 +29788,26 @@ export default {
       await Promise.allSettled(
         NETWORKS.map(net => scanForEtches(env, net).catch(e => _logCronError(env, 'scanForEtches', net, e))),
       );
-      // Reflection attestation: the scan ingests confirmed CXFERs into the effect log; the
-      // self-hosted box drives proving via the BOX-POLL model (/reflection/job → prove → submit →
-      // /reflection/ack, ops/scripts/reflection-relay-loop.sh), so the cron does NOT prove here.
-      // Only run the synchronous worker-side cycle when a box HTTP prover (REFLECTION_PROVE_URL) is
-      // configured. Config-gated (env.REFLECTION_ATTEST); a null attester is an inert no-op.
-      if (env.REFLECTION_PROVE_URL) {
+      // Reflection attestation (full-scan model): the cron advances the confirmed TIP (the latest
+      // finality-buried Bitcoin height) so the box-poll job (/reflection/job → prove → submit →
+      // /reflection/ack, ops/scripts/reflection-relay-loop.sh) assembles the newly-buried blocks. The cron
+      // does NOT prove (the box does), unless a synchronous box HTTP prover (REFLECTION_PROVE_URL) is set,
+      // in which case it runs the full cycle inline after setting the tip. Config-gated (env.REFLECTION_ATTEST
+      // + REFLECTION_GENESIS_HEIGHT → a null attester is an inert no-op). REFLECTION_CONFIRMATIONS (default 6)
+      // matches the contract's maturity window so a job's tip is buried enough to attest.
+      {
+        const conf = parseInt(env.REFLECTION_CONFIRMATIONS || '6', 10);
         await Promise.allSettled(
-          NETWORKS.map(net => {
-            const _att = buildReflectionAttester(env, { deps: { secp, keccak256: keccak_256, sha256 }, api: apiText, network: net });
-            return _att ? _att.runCycle().catch(e => _logCronError(env, 'reflectionCycle', net, e)) : Promise.resolve();
+          NETWORKS.map(async (net) => {
+            const att = scanReflectionAttesterFor(env, net);
+            if (!att) return;
+            try {
+              const tip = parseInt((await apiText(env, '/blocks/tip/height', { timeoutMs: 10_000 }, net)).trim(), 10);
+              if (Number.isInteger(tip) && tip > conf) await att.setTip(tip - conf);
+            } catch (e) { _logCronError(env, 'reflectionSetTip', net, e); return; }
+            if (env.REFLECTION_PROVE_URL) {
+              await att.runCycle().catch((e) => _logCronError(env, 'reflectionCycle', net, e));
+            }
           }),
         );
       }

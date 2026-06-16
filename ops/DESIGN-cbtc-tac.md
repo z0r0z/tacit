@@ -6,7 +6,9 @@
 > from "the backing" to a **custody-insurance backstop** whose trigger is **reflection-proven**, not
 > oracle-attested. **Supersedes the CDP framing in [`DESIGN-cbtc-tac-bond-guest.md`](./DESIGN-cbtc-tac-bond-guest.md)**
 > (its §5 price oracle was in the critical mint path — removed here; its `bond_position`/lien machinery is
-> *repurposed* as the insurance vault below). Builds on the peg foundation in
+> *repurposed* as the insurance vault below) — and the (TAC, tETH) synthetic-CDP variant in
+> [`DESIGN-cbtc-tac-cdp.md`](./DESIGN-cbtc-tac-cdp.md), **DEPRECATED 2026-06-15** (canonical decision:
+> back the peg with real BTC, not an oracle-priced Ethereum CDP). Builds on the peg foundation in
 > [`DESIGN-cbtc-sats-lock-reflection.md`](./DESIGN-cbtc-sats-lock-reflection.md) (`fold_cbtc_lock`, built).
 >
 > **Why this shape:** a BTC-pegged synthetic minted against a (TAC, tETH) bond *needs* a BTC price, and

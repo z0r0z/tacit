@@ -239,7 +239,13 @@ contract PoolHandler is Test {
         uint256 maxIn = head < cap ? head : cap;
         if (maxIn == 0 || liveOut <= 1) return;
         uint256 dIn = bound(inSeed, 1, maxIn);
-        uint256 dOut = bound(outSeed, 1, liveOut - 1);
+        // Out leg bounded by the constant-product curve so the swap is k-non-decreasing — the guest's
+        // OP_SWAP invariant, now also gated on-chain (ConstantProductDecreased). dOut ≤ rOut·dIn/(rIn+dIn)
+        // ⇒ (rIn+dIn)·(rOut−dOut) ≥ rIn·rOut, so an honest handler swap is never rejected by that floor.
+        uint256 rIn = inIsLo ? rA : rB;
+        uint256 maxOut = (liveOut * dIn) / (rIn + dIn);
+        if (maxOut == 0) return;
+        uint256 dOut = bound(outSeed, 1, maxOut);
         uint256 newA = inIsLo ? rA + dIn : rA - dOut;
         uint256 newB = inIsLo ? rB - dOut : rB + dIn;
         ConfidentialPool.PublicValues memory pv = _pv();

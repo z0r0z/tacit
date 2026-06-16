@@ -398,7 +398,7 @@ export function computeSwapRouteEnvelopeHash(payload) {
 // can only push the actual delta_out DOWN from the curve (toward pool's
 // favor), so the indexer enforces the upper-bound inequality.
 
-function cfmmFloorOk({ delta_in, delta_out, R_in, R_out, fee_bps }) {
+export function cfmmFloorOk({ delta_in, delta_out, R_in, R_out, fee_bps }) {
   const gNum = 10000n - BigInt(fee_bps);
   const gDen = 10000n;
   const lhs = BigInt(delta_out) * (BigInt(R_in) * gDen + gNum * BigInt(delta_in));

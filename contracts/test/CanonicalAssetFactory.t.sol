@@ -5,6 +5,7 @@ import {Test} from "forge-std/Test.sol";
 import {CanonicalAssetFactory} from "../src/CanonicalAssetFactory.sol";
 import {CanonicalBridgedERC20} from "../src/CanonicalBridgedERC20.sol";
 import {ConfidentialPool} from "../src/ConfidentialPool.sol";
+import {ERC20} from "solady/tokens/ERC20.sol";
 
 /// The canonical asset hub: a CREATE2 factory issues a deterministic public ERC20 per
 /// asset (the public face, Uniswap-tradeable), gated mint/burn by the bridge/collateral
@@ -20,6 +21,9 @@ contract CanonicalAssetFactoryTest is Test {
 
     address constant ETCHER = address(0xE7C);
     bytes32 constant SALT = bytes32(uint256(7));
+
+    // keccak256("Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)")
+    bytes32 constant PERMIT_TYPEHASH = 0x6e71edae12b1b97f4d1f60370fef10105fa2faae0126114a169c64845d6126c9;
 
     function setUp() public {
         factory = new CanonicalAssetFactory();
@@ -112,6 +116,57 @@ contract CanonicalAssetFactoryTest is Test {
         bytes32 poolAsset = pool.registerWrapped(address(real), 1, bytes32(0), "Conf cBTC", "ccBTC", 8);
         assertEq(pool.canonicalTokenFor(poolAsset), address(real), "the registered (real) token is returned");
         assertEq(pool.canonicalTokenFor(keccak256("impostor")), address(0), "an unregistered asset resolves to address(0)");
+    }
+
+    /// The backing minter is unconstrained by design (a native Ethereum asset gets an
+    /// Ethereum-side minter of the deployer's choosing). address(0) is accepted and yields an
+    /// inert, non-mintable token — fail-closed, no inflation surface, recoverable — rather than
+    /// reverting. Asserted so the non-guard is not silently clamped later.
+    function test_zero_minter_deploys_inert_token() public {
+        CanonicalBridgedERC20 tok = CanonicalBridgedERC20(factory.deployCanonical(ASSET, address(0), "cBTC", 8));
+        assertEq(tok.MINTER(), address(0), "zero minter accepted (open-minter design)");
+        vm.prank(USER);
+        vm.expectRevert(CanonicalBridgedERC20.NotMinter.selector);
+        tok.mint(USER, 1); // no usable key satisfies msg.sender == address(0)
+    }
+
+    /// Every canonical token shares the constant brand name "Tacit Token" and symbols are NOT
+    /// unique, so two distinct assets can carry identical (name, symbol). The EIP-2612 permit
+    /// domain binds the contract address (and chainid), so each token's DOMAIN_SEPARATOR is
+    /// distinct — a permit signed for one canonical token can never be replayed against another.
+    function test_permit_domain_separator_is_token_specific() public {
+        CanonicalBridgedERC20 a = CanonicalBridgedERC20(factory.deployCanonical(keccak256("asset-A"), MINTER, "TAC", 18));
+        CanonicalBridgedERC20 b = CanonicalBridgedERC20(factory.deployCanonical(keccak256("asset-B"), MINTER, "TAC", 18));
+        assertTrue(address(a) != address(b), "distinct token addresses");
+        assertEq(a.name(), b.name(), "shared constant brand name");
+        assertEq(a.symbol(), b.symbol(), "identical (non-unique) symbols");
+        assertTrue(a.DOMAIN_SEPARATOR() != b.DOMAIN_SEPARATOR(), "permit domain is token-specific (no cross-token replay)");
+    }
+
+    /// Behavioral proof of the above: a real EIP-2612 permit signed for token A authorizes A, but
+    /// the EXACT same signature replayed against same-named sibling B reverts InvalidPermit — the
+    /// domain binds the verifying contract, so an allowance can never leak across canonical tokens.
+    function test_permit_signed_for_one_token_reverts_on_sibling() public {
+        (address owner, uint256 pk) = makeAddrAndKey("permit-owner");
+        address spender = address(0x5DEF);
+        uint256 value = 1234e18;
+        uint256 deadline = block.timestamp + 1 days;
+
+        CanonicalBridgedERC20 a = CanonicalBridgedERC20(factory.deployCanonical(keccak256("permit-A"), MINTER, "TAC", 18));
+        CanonicalBridgedERC20 b = CanonicalBridgedERC20(factory.deployCanonical(keccak256("permit-B"), MINTER, "TAC", 18));
+
+        bytes32 structHash = keccak256(abi.encode(PERMIT_TYPEHASH, owner, spender, value, a.nonces(owner), deadline));
+        bytes32 digest = keccak256(abi.encodePacked("\x19\x01", a.DOMAIN_SEPARATOR(), structHash));
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(pk, digest);
+
+        // valid on the intended token
+        a.permit(owner, spender, value, deadline, v, r, s);
+        assertEq(a.allowance(owner, spender), value, "permit authorizes the token it was signed for");
+
+        // the SAME signature is rejected by the sibling (distinct domain) — no cross-token replay
+        vm.expectRevert(ERC20.InvalidPermit.selector);
+        b.permit(owner, spender, value, deadline, v, r, s);
+        assertEq(b.allowance(owner, spender), 0, "sibling token grants no allowance from a foreign-domain permit");
     }
 
     // ── self-certifying EVM-etch path: the asset id commits to (symbol, decimals) ──

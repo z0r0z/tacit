@@ -733,6 +733,21 @@ contract ConfidentialPoolTest is Test {
         pool.settle(abi.encode(pv), "", new bytes[](0));
     }
 
+    /// A crossOut whose nullifier is NOT spent in the same batch is rejected: the burn must consume
+    /// its Ethereum source note (ν in pv.nullifiers), else it would mint a Bitcoin note for free.
+    function test_cross_out_nullifier_not_spent_reverts() public {
+        _seedLeaves(1);
+        ConfidentialPool.PublicValues memory pv = _pv();
+        bytes32 nu = keccak256("unspent-nu");
+        bytes32 destC = keccak256("dest-c");
+        bytes32 claimId = _claimId(1, destC, nu, assetId);
+        // No pv.nullifiers — the crossOut references nu but the batch never spends it.
+        pv.crossOuts = new ConfidentialPool.CrossOut[](1);
+        pv.crossOuts[0] = ConfidentialPool.CrossOut(1, destC, nu, assetId, claimId);
+        vm.expectRevert(ConfidentialPool.CrossOutNullifierNotSpent.selector);
+        pool.settle(abi.encode(pv), "", new bytes[](0));
+    }
+
     /// A bridge_burn whose spent input is BITCOIN-homed (membership proven against a
     /// knownBitcoinRoot) is rejected: the crossOut would mint a fresh equal-value note on
     /// Bitcoin while the original Bitcoin UTXO stays live + spendable there (the reflection
@@ -1035,6 +1050,51 @@ contract ConfidentialPoolTest is Test {
         , ANCHOR, ANCHOR, bytes32(uint256(uint160(address(pool)))), 0);
         vm.expectRevert(ConfidentialPool.StaleBitcoinBurnRoot.selector);
         pool.attestBitcoinStateProven(abi.encode(r), "");
+    }
+
+    /// Symmetric to the zero spent/burn-root rejections: a zero Bitcoin POOL root must also be
+    /// rejected. bridge_mint proves the burned note's membership against a knownBitcoinRoot, so
+    /// marking an empty tree (root 0) canonical would let a mint prove membership against nothing.
+    /// The reflection prover seeds a non-zero empty-tree root, so a legitimate pool root is never 0.
+    function test_attest_zero_pool_root_rejected() public {
+        bytes32 prior = pool.knownReflectionDigest();
+        ConfidentialPool.BitcoinRelayPublicValues memory r = ConfidentialPool.BitcoinRelayPublicValues(
+            prior, bytes32(0), keccak256("s"), keccak256("b"), 1, keccak256("n")
+        , ANCHOR, ANCHOR, bytes32(uint256(uint160(address(pool)))), 0);
+        vm.expectRevert(ConfidentialPool.ZeroBitcoinPoolRoot.selector);
+        pool.attestBitcoinStateProven(abi.encode(r), "");
+    }
+
+    /// Mode B cross-lane inflation guard: a reflection proof must declare THIS pool as the reflected
+    /// eth pool (ethPoolReflected == address(this)). The contract knows its own address, so a proof
+    /// carrying a DIFFERENT pool's address — whose crossOuts would otherwise fold into this pool's
+    /// reflected state (cross-lane inflation) — is rejected, breaking the pool<->vkey circularity
+    /// with no in-guest pool pin.
+    function test_attest_wrong_eth_pool_rejected() public {
+        bytes32 prior = pool.knownReflectionDigest();
+        ConfidentialPool.BitcoinRelayPublicValues memory r = ConfidentialPool.BitcoinRelayPublicValues(
+            prior, keccak256("pr"), keccak256("s"), keccak256("b"), 1, keccak256("n")
+        , ANCHOR, ANCHOR, bytes32(uint256(uint160(address(0xBADBAD)))), 0);
+        vm.expectRevert(ConfidentialPool.WrongEthPool.selector);
+        pool.attestBitcoinStateProven(abi.encode(r), "");
+    }
+
+    /// A FORWARD-ONLY reflection batch (burn-deposit / cmint / CXFER scan) folds no crossOut and skips the
+    /// eth-reflection recursion (mode_b == 0 in the guest), committing the zero ethPoolReflected sentinel.
+    /// That is accepted (it attested no eth-state), where a non-zero non-self pool is still rejected above —
+    /// so the forward bridge can attest + advance without Mode-B being operational, with no inflation path
+    /// (the guest's sentinel crossout_set_root makes every fold_crossout fail membership).
+    function test_attest_zero_eth_pool_accepted_forward_only() public {
+        bytes32 poolRoot = keccak256("fwd-pool-root");
+        bytes32 spentRoot = keccak256("fwd-spent-root");
+        bytes32 burnRoot = keccak256(abi.encodePacked(spentRoot, "burn"));
+        bytes32 prior = pool.knownReflectionDigest();
+        bytes32 next = keccak256(abi.encode(prior, poolRoot, spentRoot, burnRoot, uint64(101)));
+        ConfidentialPool.BitcoinRelayPublicValues memory r = ConfidentialPool.BitcoinRelayPublicValues(
+            prior, poolRoot, spentRoot, burnRoot, 101, next, ANCHOR, ANCHOR, bytes32(0), 0); // ethPool = 0 sentinel
+        pool.attestBitcoinStateProven(abi.encode(r), "");
+        assertTrue(pool.knownBitcoinRoot(poolRoot), "forward-only batch (zero ethPool) attests + advances");
+        assertEq(pool.knownReflectionDigest(), next, "reflection digest advanced on the sentinel batch");
     }
 
     // The relay anchor (F1): a batch whose tip doesn't match the relay tip (nor a recent ancestor)
@@ -1462,6 +1522,21 @@ contract ConfidentialPoolTest is Test {
         pv.nullifiers = _arr(keccak256("noop-nu"));
         pool.settle(abi.encode(pv), "", new bytes[](0));
         assertTrue(pool.isNullifierSpent(keccak256("noop-nu")), "nullifier marked");
+    }
+
+    // A btcHomed batch may not consume an EVM deposit: a consumed deposit must materialize as a leaf
+    // (barred for btcHomed), so consuming one could only strand the depositor's escrow.
+    function test_btc_homed_deposit_consume_reverts() public {
+        bytes32 btcRoot = keccak256("btc-pool-dep");
+        bytes32 spent = keccak256("btc-spent-dep");
+        _attestBtc(btcRoot, spent, 1);
+        ConfidentialPool.PublicValues memory pv = _pv();
+        pv.spendRoot = btcRoot;
+        pv.bitcoinSpentRoot = spent;
+        pv.nullifiers = _arr(keccak256("dep-nu"));
+        pv.depositsConsumed = _arr(keccak256("some-deposit"));
+        vm.expectRevert(ConfidentialPool.BtcHomedValueExitMustBridge.selector);
+        pool.settle(abi.encode(pv), "", new bytes[](0));
     }
 
     // ──────────────────── reserve floor: bridge_mint accounting ────────────────────

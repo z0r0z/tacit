@@ -1,0 +1,224 @@
+# Trust Tiers & Convergence
+
+Status: design note (architecture + roadmap). Non-normative — it organizes
+the existing spec; it does not change any opcode or invariant.
+
+## Why this note
+
+The protocol has grown by amendment. The core confidential-UTXO model
+(Pedersen commitments + BP+ range proofs + Mimblewimble kernel signatures +
+`asset_id = SHA256(reveal_txid ‖ vout)`) is one coherent, self-consistent
+system. Around it, several features have been added with **different trust
+models** and, in a few cases, **overlapping scope**. This note makes the trust
+tier of each feature explicit so nothing reads as trustless that isn't, and
+sketches the convergence path that would collapse the redundancy.
+
+## Mandate: no worker trust
+
+The standing requirement is that **nothing trusts a worker for soundness** —
+every feature must be Tier 0. Tier 1 (indexer-attested) is not an acceptable
+end state; it is a temporary, gated-off staging point. A Tier-1 feature reaches
+Tier 0 in exactly one of two ways: (a) its state lives **on chain** and every
+transition is **proven + verified on chain** (the EVM settle model), or (b) its
+state is **a deterministic function of chain history that every client
+re-derives and re-verifies** (replay-and-verify, no worker for soundness). If a
+feature's authoritative state exists *only* in a worker's KV with no on-chain
+counterpart, it is structurally worker-trusting and cannot be patched to Tier 0
+— it must be redesigned onto (a) or converged onto a feature that already is.
+
+This is the lens for everything below: a worker may serve data for *liveness*
+(discovery, hints, caching), but a client must never trust it for *soundness*.
+
+## The three tiers
+
+**Tier 0 — trustless, proven.** Correctness follows from on-chain verification
+(an SP1 Groth16 proof and/or a Bitcoin kernel signature) plus the relay
+anchoring. No off-chain party is trusted for soundness. Liveness may still
+depend on a prover/relay being run.
+
+**Tier 1 — indexer-attested (pilot).** A single non-consensus worker maintains
+authoritative state (e.g. AMM pool reserves/shares). Soundness of *value
+conservation* may be proven, but at least one binding or the aggregate state is
+worker-attested or client-only. Gated off mainnet until the consensus path
+closes.
+
+**Tier 2 — self-custody / externally-insured.** The protocol cannot *prevent*
+the failure mode at its own layer; it *detects* it and pushes *coverage* to an
+external, governable mechanism. Trustlessness is conditional on that mechanism.
+
+## Feature → tier
+
+| Feature | Tier | Basis |
+|---|---|---|
+| CETCH / T_MINT (confidential etch + mintable supply) | 0 | range proof + issuer Schnorr over an anchored message; asset_id = f(txid) |
+| T_PETCH / T_PMINT (fair-launch) | 0 | cap counted at depth ≥ 3 in canonical order; envelope-level invariants |
+| T_DROP / T_DCLAIM (claim pool) | 0 | kernel sig (deposit) + depth-3 canonical cap count (credit set) |
+| T_DEPOSIT / T_WITHDRAW (mixer) | 0 | kernel sig + nullifier set + reserve floor (#spent ≤ #leaves) |
+| Confidential pool settle (CXFER/AXFER/SWAP/LP/OTC/BID) on EVM | 0 | SP1 proof of the op loop; amounts bound by opening sigmas |
+| Reflection bridge mint (Bitcoin burn → EVM supply) | 0 | dedicated burn set + `v_mint == v_burn` kernel + relay-anchored confirmation ≥ `REFLECTION_CONFIRMATIONS` |
+| EVM-AMM LP add (`OP_LP_ADD`) | 0 | share derived in-guest; deposits membership- + opening-bound; floor-rounded |
+| cBTC.zk mint (`fold_cbtc_lock`) | 0 (mint) | note Pedersen-bound to the confirmed lock's real `v_btc`, 1:1 |
+| Bitcoin-side AMM (`T_LP_ADD 0x2D` …) | 1 | deposit conservation proven by kernel sigs, but pool reserves/shares are worker-attested and the share-commitment value-binding + range are client-Groth16 only |
+| tETH bridge (`0x60–0x65`) | 0/1 | Tornado-shape mixer with its own circuit/verifier/relay; separate set + trust surface from the confidential pool |
+| cBTC.zk peg (the *backing*, not the mint) | 2 | self-custody lock is the locker's own key-path UTXO; a reclaim is detected (backing decremented, INV-1 flagged), coverage via the cBTC.tac bond |
+| cBTC.tac bond | 2 | over-collateralized, governable; explicitly not trustless (MakerDAO-shape) |
+
+Each Tier-1/Tier-2 feature is already gated off mainnet or labeled
+non-trustless in its amendment. The point of the table is that the
+*system-level* trust story is **feature-dependent**, and should be read tier by
+tier rather than as a single "trustless" claim.
+
+## Redundancy & convergence
+
+Three feature pairs overlap. In each, the more general system functionally
+subsumes the special-purpose one; keeping both means two soundness surfaces,
+two circuits/verifiers, and two recovery paths.
+
+1. **tETH bridge ↔ confidential-pool reflection bridge.** The pool is
+   multi-asset with arbitrary confidential amounts; the tETH bridge is
+   single-asset, fixed-denomination, Tornado-shape. The pool generalizes the
+   *function*. They already share the burn verifier. They remain complementary
+   while the tETH set is the mainnet-proven ETH path and the pool bridge is on
+   the pilot deployment, because the Tornado *fixed-denomination anonymity set*
+   is a distinct privacy property the pool's amount-hiding does not directly
+   replicate. **Convergence target:** re-express ETH as a confidential-pool
+   asset (optionally over a denomination ladder to preserve the set property),
+   then retire `0x60–0x65`.
+
+2. **Bitcoin-side AMM (`0x2D…`, Tier 1) ↔ EVM-AMM (`OP_LP_ADD`, Tier 0).** Same
+   constant-product math (`isqrt` first-mint, min-share, `MINIMUM_LIQUIDITY =
+   1000` on both sides). The EVM path proves it; the Bitcoin path defers the
+   value-binding + range to a client Groth16 and trusts the worker for pool
+   state. **Convergence target:** route AMM through the proven (Tier-0) path, or
+   bring the Bitcoin AMM's pool state under a proof so it reaches Tier 0.
+
+3. **cBTC.tac (Tier 2 bond) ↔ cBTC.zk (Tier 0 mint / Tier 2 peg).** These are
+   complementary by design (one is TAC-collateralized, one is real-BTC
+   self-custody) rather than redundant, but they should be presented as the two
+   halves of one peg story with their tiers stated, since cBTC.zk's
+   trustlessness is conditional on the cBTC.tac buffer's adequacy.
+
+## tETH → confidential-pool migration readiness
+
+The migration target is **already built and sound** — no new protocol code is
+required to move the tETH concept from the dedicated mixer into the pool:
+
+- **Raw-ETH support exists and is audited.** `underlying == address(0)` is the
+  native-ETH sentinel; `wrap` is `payable` and escrows `msg.value`, binding the
+  note to `value = amount / unitScale` (so a note can never claim more than was
+  escrowed); `_payout` releases ETH via `forceSafeTransferETH` under an escrow
+  floor + checks-effects-interactions + the settle reentrancy guard. Fee-on-
+  transfer ERC20s are rejected at the boundary.
+- **Bidirectional bridging exists.** ETH in via `wrap`, out via unwrap/`_payout`,
+  Ethereum↔Bitcoin via the reflection bridge + `crossChainLink`/`localAssetOf`
+  resolution (all proven paths).
+- **Registration is permissionless** (the pool has no owner). Migration is an
+  operational flow: register native ETH (and/or the tETH ERC20) once, then users
+  `wrap` (or redeem tETH → ETH → `wrap`). The Tornado fixed-denomination
+  anonymity set is the one privacy property to preserve in the move (optionally
+  run ETH over a denomination ladder).
+
+Operational note (one-time, low severity): the wrapped-asset id is
+`sha256("tacit-evm-token-v1" ‖ chainid ‖ underlying)` — a function of
+`underlying` only — and registration is **first-write-wins on `unitScale`**. A
+front-run can lock a suboptimal-but-bounded granularity for native ETH (not
+fund-losing: `unitScale ∈ (0, 10^18]`). Register native ETH at the intended
+scale early; a future redeploy should fix `unitScale` to a constant for
+`address(0)` to remove the front-run entirely.
+
+## Correctness items to close before promotion
+
+These are tracked items, not live exploits. Each should be closed before the
+relevant feature moves from a gated/draft state toward mainnet. The slot/cBTC
+items are NOT drop-in fixes — each has a design dependency, noted inline.
+
+- **AMM (Bitcoin path) → Tier 0 — LP-share value-binding DONE; pool-state
+  consensus remaining.** The LP-share value-binding is now a mandatory, ungated,
+  trustless-from-chain check in `validateOutpoint`: an LP-share UTXO is credited
+  only if (a) its xcurve sigma binds the credited secp commitment to the BJJ
+  commitment (`verifyXCurve`, previously dead code because `decodeLpAdd` skipped
+  the sigma), and (b) its LP_ADD Groth16 binds `share_amount` to that BJJ
+  commitment + range-bounds the inputs (previously gated on `_isAmmCeremonyUnlocked`
+  — false on mainnet — so an LP-share could be credited with no proof; now gated
+  only on the VK being pinned, with proof + VK both on-chain/inlined).
+
+  **The remaining trust is the WORKER-COMPUTED reserves, and it is reducible.**
+  Today the dapp reads the worker's `reserve_a/reserve_b/lp_total_shares` and
+  computes SWAP/LP_REMOVE/fee-claim amounts against them; the per-trade swaps
+  "carry no proof and trust this single indexer" (AMM.md). But reserves are NOT
+  irreducibly worker-held — they are public and replayable: "anyone can
+  reconstruct exactly what every reserve is at every height by replaying
+  confirmed envelopes" (AMM.md), because every op's deltas are public and
+  kernel-sig-backed (real value moved).
+
+  **Path to Tier 0 (option A) — client-side replay (sound, keeps the AMM on
+  Bitcoin).** The dapp computes reserves itself by replaying the pool's
+  confirmed envelopes (depth ≥ 3, canonical order), and for each op RECOMPUTES
+  the curve output from its own replayed `reserves_before` + the public `deltaIn`
+  and checks the on-chain receipt/output commitment opens to it. Sound: with a
+  correct (complete) replay every commitment opens; if the worker omits or lies
+  about an op, the client's reserves are wrong → its recomputed output ≠ the
+  on-chain commitment → it rejects that op and halts. A malicious/incomplete
+  worker can only cause REJECTION (liveness), never an inflated credit
+  (soundness). The worker drops to discovery-only. No new wire format is needed
+  (receipts + deltas are already on chain); the work is a client-side
+  replay-and-verify engine (incremental, with depth-3-final caching for cost).
+  Liveness still needs op ENUMERATION — worker-list-then-verify is sound, full
+  liveness-trustlessness wants independent enumeration (block scan or a
+  chain-followable op structure).
+
+  **Path to Tier 0 (option B) — converge onto the EVM settle AMM**, which is
+  already Tier 0 by construction: `struct Pool { reserveA, reserveB,
+  totalShares }` lives on chain and every transition is SP1-proven and verified
+  in `settle`. Bitcoin-native assets reach it via the reflection bridge (same as
+  tETH → pool). This trades the client replay cost for a bridge hop + one shared
+  proving system.
+
+  Either reaches Tier 0; option A is the smaller change and keeps trading on
+  Bitcoin, option B unifies the AMM onto the proven layer. (Earlier revisions of
+  this note called the worker reserves "irreducible" and convergence "the only
+  answer" — that was wrong; the replay path above is sound.)
+- **Permissionless-mint / claim caps (`T_PMINT`, `T_DCLAIM`) — client-side cap
+  computation.** The cap is enforced from confirmed chain state in principle, but
+  today the dapp trusts the worker's credited set (`last_credited_*`, the
+  `credited_txids` / `cap_overflow_txids` lists) for the per-mint credit
+  decision; the worker is the soundness authority. The de-dup + reorg-detection
+  + depth-3 hardening landed, but Tier 0 requires the **client** to enumerate the
+  asset's `T_PMINT`/`T_DCLAIM`s from chain in canonical order and compute the cap
+  itself (depth ≥ 3, de-dup, overflow) — trusting the worker only to *discover*
+  candidate txids (liveness), never to *decide* credit. The enumeration index is
+  the open problem (a client needs to find an asset's mints without scanning
+  every block); a chain-followable structure (e.g. each mint anchored so the set
+  is walkable) or an accept-from-any-source-then-verify model closes it.
+- **cBTC.zk fungibility — §5.24.6 ENFORCED (cBTC variant family).** The
+  `T_SLOT_SPLIT` / `T_SLOT_MERGE` cross-asset rule now binds every output wrapper
+  to the canonical variant for its OWN denomination (`asset_id ==
+  ctacVariantAssetId(denom)`) in both the dapp and worker decoders (the dapp
+  recovery scan and the worker indexer both reject a violating envelope), with
+  the builders defaulting to + failing fast on the variant. This permits the
+  intended cross-tier split (1M → 10×100k, each its own variant) and rejects a
+  value-conserving relabel onto a foreign or wrong-denom asset — closing the
+  inflation vector for the current single-underlying (BTC) wrapper family.
+  **Remaining:** the accepted set is the `ctacVariantAssetId` derivation only;
+  introducing a wrapper family with a different `underlying`/`peg` requires
+  extending the decoders' accepted set (a general registry) — and must keep the
+  same-underlying constraint when it does.
+- **cBTC.zk peg — backing coverage.** There is no hard `supply ≤ backing` rule
+  (it is detection-time only). **Design reality:** cBTC.zk is self-custody — the
+  backing is the locker's own key-path UTXO, so a reclaim happens on Bitcoin and
+  **cannot be prevented on the EVM side**; a settle-side floor cannot stop it.
+  The meaningful guarantee is a **buffer-coverage invariant** (`supply ≤ backing
+  + buffer_capacity`) enforced in the cBTC.tac buffer layer, with a sized,
+  governable policy. Promotion past the pilot should make that coverage explicit
+  rather than detection-only.
+
+## Reading guide
+
+When evaluating a claim about the protocol, resolve it to a tier first:
+- a Tier-0 claim is enforced by a proof/signature on chain;
+- a Tier-1 claim trusts the worker for the attested aggregate;
+- a Tier-2 claim is insured, not prevented.
+
+The trustless core (Tier 0) is the foundation; the convergence work above is
+about pulling the periphery toward it and shrinking the surface, rather than
+adding more parallel systems.

@@ -84,14 +84,15 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     /// up to this; `unitScale = 10^(ETH_DECIMALS − tacitDecimals)` does the amount scaling.
     uint8 public constant ETH_DECIMALS = 18;
     uint16 public constant PV_VERSION = 1;
-    /// Cap on a confidential AMM pool's fee (basis points). initPool is permissionless + one-per-slot,
+    /// Cap on a confidential AMM pool's fee (basis points). createPair is permissionless + one-per-slot,
     /// so bounding the fee stops a front-runner from seeding the only slot with an unusable 100% fee.
     uint32 public constant MAX_POOL_FEE_BPS = 1000; // 10%
-    /// V2-style minimum liquidity: this many of a pool's seed shares (the rLo basis) are permanently
-    /// locked at initPool — no note holds them — so a fully-exited pool keeps a live share/reserve floor
-    /// and the one-per-(pair,fee) slot can never be emptied to a bricked, un-rejoinable state. The
-    /// founder's own position is the REMAINDER (rLo − this), recorded as a claimable LP-share note — so a
+    /// V2-style minimum liquidity: this many of a pool's seed shares are permanently locked by the first
+    /// OP_LP_ADD — no note holds them — so a fully-exited pool keeps a live share/reserve floor and the
+    /// one-per-(pair,fee) slot can never be emptied to a bricked, un-rejoinable state. The founder's own
+    /// position is the REMAINDER (seed shares − this), recorded as a claimable LP-share note — so a
     /// founder recovers their seed rather than donating all of it (only this standard lock is donated).
+    /// Enforced on-chain by the settle LP loop (sharesPost can never drop below this).
     uint256 public constant MINIMUM_LIQUIDITY = 1000;
 
     // ──────────────────── Immutables ────────────────────
@@ -175,8 +176,9 @@ contract ConfidentialPool is ReentrancyGuardTransient {
 
     // A constant-product pool over two in-system assets. Reserves are PUBLIC on-chain state
     // (the swap circuit reads them as input); only the per-trade amounts are hidden, cleared at
-    // one uniform price for the whole batch. Initialized by initPool (Ethereum-origin, LP-funded)
-    // — the funding asset is escrowed like a wrap, so a pool's reserves are always backed.
+    // one uniform price for the whole batch. The slot is created empty by createPair; the first
+    // OP_LP_ADD funds reserves from the founder's existing shielded notes, so reserves are always
+    // backed by the same escrow that backs every circulating note (escrow is touched only at wrap).
     struct Pool { bool init; bytes32 assetA; bytes32 assetB; uint256 reserveA; uint256 reserveB; uint32 feeBps; uint256 totalShares; }
     mapping(bytes32 => Pool) public pools;       // poolId => Pool
 
@@ -240,7 +242,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     // knownReflectionDigest is seeded to this so the first attestation continues genesis. Pinned in
     // cxfer-core (genesis_digest_matches_contract_constant). Tied to BITCOIN_RELAY_VKEY (one prover).
     bytes32 public constant REFLECTION_GENESIS_DIGEST =
-        0x164ac1b2bd8537ee7d8b6ae9af72b90958649ceed368e55056de8417bcd30044;
+        0x0dd951a946819f644d6a00d1ad0db2d29affccd58d6983d1b24b73e213e6ad7e;
 
     // A shared (Bitcoin-side) asset id => this pool's local registry key. A bridge_mint note
     // carries the SHARED id as its `asset` (it must, to prove membership in the Bitcoin
@@ -318,10 +320,6 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     event CrossOutRecorded(bytes32 indexed claimId, uint16 destChain, bytes32 destCommitment, bytes32 nullifier, bytes32 assetId);
     // A confidential AMM pool was initialized / a batch settled against it.
     event PoolInitialized(bytes32 indexed poolId, bytes32 assetA, bytes32 assetB, uint256 reserveA, uint256 reserveB, uint32 feeBps);
-    // The founder's seed LP-share position, recorded as a claimable deposit (asset = lp_share_id(poolId),
-    // value = rLo − MINIMUM_LIQUIDITY). The founder mints the note by proving the opening in a settle
-    // (the OP_WRAP path), exactly like a wrap — so the seed is recoverable, not donated.
-    event PoolSeeded(bytes32 indexed poolId, bytes32 indexed depositId, bytes32 lpAsset, uint256 shares, bytes32 cx, bytes32 cy, bytes32 owner);
     event SwapSettled(bytes32 indexed poolId, uint256 reserveA, uint256 reserveB);
     event LiquidityChanged(bytes32 indexed poolId, uint256 reserveA, uint256 reserveB, uint256 totalShares);
 
@@ -336,7 +334,6 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     error PoolNotInit();
     error UnknownRoot();
     error ZeroAddress();
-    error ZeroReserve();
     error NotAContract();
     error ChainMismatch();
     error DepositExists();
@@ -349,7 +346,6 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     error AmountNotAligned();
     error CrossChainEscrow();
     error EthValueMismatch();
-    error InsufficientSeed();
     error MemoLeafMismatch();
     error AlreadyRegistered();
     error BurnAlreadyMinted();
@@ -359,11 +355,13 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     error UnknownBitcoinRoot();
     error CrossChainLinkTaken();
     error PoolReserveMismatch();
+    error ConstantProductDecreased();
     error ZeroBitcoinPoolRoot();
     error StaleBitcoinBurnRoot();
     error UnanchoredReflection();
     error BridgeBurnNotEthHomed();
     error CrossOutClaimMismatch();
+    error CrossOutNullifierNotSpent();
     error NullifierAlreadySpent();
     error StaleBitcoinSpentRoot();
     error StaleReflectionDigest();
@@ -424,8 +422,8 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         everKnownRoot[z] = true;
     }
 
-    /// Reject stray ETH: native ETH may only enter through the payable `wrap` / `initPool`, which
-    /// bind it to a deposit / pool reserve. A bare send would otherwise be unaccounted + stuck.
+    /// Reject stray ETH: native ETH may only enter through the payable `wrap`, which binds it to a
+    /// deposit. A bare send would otherwise be unaccounted + stuck.
     receive() external payable {
         revert EthValueMismatch();
     }
@@ -435,8 +433,11 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     /// @notice Register an EXTERNAL ERC20 (e.g. USDC) as a confidential asset: the pool
     ///         escrows it on wrap and releases it on unwrap. `unitScale` maps underlying
     ///         base units to the in-system value unit (so a note's value stays within the
-    ///         Bulletproofs+ range; wrap amounts must be a multiple of it); `crossChainLink`
-    ///         ties this asset to its Bitcoin-side id for the cross-chain generation (0 if none).
+    ///         Bulletproofs+ range; wrap amounts must be a multiple of it). `crossChainLink`
+    ///         MUST be 0 here: an escrow asset can never claim a Bitcoin-side id (its escrow
+    ///         can't back bridged supply, so a bridge_mint would drain escrow it never funded)
+    ///         — a non-zero link reverts CrossChainEscrow. A cross-chain link is bound only on
+    ///         a pool-minted asset, and only by the guest-proven attest_meta path.
     function registerWrapped(
         address underlying,
         uint256 unitScale,
@@ -444,7 +445,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         string calldata name_,
         string calldata symbol_,
         uint8 decimals_
-    ) external returns (bytes32 assetId) {
+    ) external nonReentrant returns (bytes32 assetId) {
         return _register(underlying, unitScale, crossChainLink, false, name_, symbol_, decimals_);
     }
 
@@ -455,8 +456,11 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     ///         scale 10^10; 6-dec USDC → 6, scale 1). Symmetric to `registerMintedAuto`;
     ///         the pool escrows the ERC20 (no minting). `name`/`symbol` mirror the
     ///         underlying — external assets keep their own identity, not the Tacit brand.
+    ///         `crossChainLink` MUST be 0 (see `registerWrapped`: an escrow asset can never
+    ///         claim a Bitcoin-side id; a non-zero link reverts CrossChainEscrow).
     function registerWrappedAuto(address underlying, bytes32 crossChainLink)
         external
+        nonReentrant
         returns (bytes32 assetId)
     {
         uint8 d = IERC20Metadata(underlying).decimals();
@@ -486,7 +490,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         string calldata name_,
         string calldata symbol_,
         uint8 tacitDecimals
-    ) external returns (bytes32 assetId) {
+    ) external nonReentrant returns (bytes32 assetId) {
         // The pool must be able to mint/burn this ERC20, else the asset can never exit.
         if (IMintBurn(canonicalErc20).MINTER() != address(this)) revert PoolNotMinter();
         if (tacitDecimals > ETH_DECIMALS) revert BadDecimals();
@@ -616,7 +620,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     ///         empty slot — the first funder becomes the founder, so the pair is never lost. No funding
     ///         here: the first add's reserves are backed by the spent notes' existing escrow (the same
     ///         escrow that backs every circulating note), so escrow is touched only at the wrap boundary.
-    function createPair(bytes32 assetA, bytes32 assetB, uint32 feeBps) external returns (bytes32 poolId) {
+    function createPair(bytes32 assetA, bytes32 assetB, uint32 feeBps) external nonReentrant returns (bytes32 poolId) {
         if (assetA == assetB) revert SameAsset();
         if (!assets[assetA].registered || !assets[assetB].registered) revert NotRegistered();
         if (feeBps > MAX_POOL_FEE_BPS) revert FeeTooHigh();
@@ -653,13 +657,19 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     ///         bridge_mint can prove membership against it) and advances the reflected
     ///         spent-set root (the cross-lane non-membership freshness root). The height
     ///         must strictly increase, so a stale proof can't roll the spent set back.
-    function attestBitcoinStateProven(bytes calldata publicValues, bytes calldata proofBytes) external {
+    function attestBitcoinStateProven(bytes calldata publicValues, bytes calldata proofBytes) external nonReentrant {
         SP1_VERIFIER.verifyProof(BITCOIN_RELAY_VKEY, publicValues, proofBytes);
         BitcoinRelayPublicValues memory r = abi.decode(publicValues, (BitcoinRelayPublicValues));
-        // Mode B: the eth-reflection proved crossOutCommitment storage for `ethPoolReflected`; it MUST be
-        // THIS pool, else another pool's crossOuts could fold here (cross-lane inflation). The contract
-        // knows its own address, so this gate breaks the pool↔vkey circularity with no in-guest pool pin.
-        if (address(uint160(uint256(r.ethPoolReflected))) != address(this)) revert WrongEthPool();
+        // Mode B: when this batch folds a crossOut, the eth-reflection proved crossOutCommitment storage
+        // for `ethPoolReflected`; it MUST be THIS pool, else another pool's crossOuts could fold here
+        // (cross-lane inflation). The contract knows its own address, so this gate breaks the pool↔vkey
+        // circularity with no in-guest pool pin. A FORWARD-ONLY batch (burn-deposit / cmint / CXFER scan)
+        // folds no crossOut and skips the eth-reflection recursion entirely; the guest commits the zero
+        // sentinel (mode_b == 0 ⇒ crossout_set_root == 0 ⇒ every fold_crossout fails membership, so no
+        // unverified crossOut can enter), and we accept it here. So either it reflects THIS pool's eth
+        // state, or it attested none — never another pool's.
+        address ethPool = address(uint160(uint256(r.ethPoolReflected)));
+        if (ethPool != address(this) && ethPool != address(0)) revert WrongEthPool();
         // Chain: this cycle must CONTINUE the current attested reflection state (the prover
         // resumed from it), then it becomes the new state. So the reflected roots evolve as
         // one append-only chain — a proof can't fork off a stale state or restart from genesis
@@ -806,8 +816,12 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         // btcHomed batch may mark nullifiers but must not move value onto Ethereum. (A race-free single-tx
         // fast lane is impossible without a finality-gated shared nullifier set — the deferred reverse path:
         // symmetric forward reflection still lets a note be spent on both lanes within the mutual lag.)
+        // depositsConsumed is barred too: a consumed EVM deposit must materialize as a leaf (which IS
+        // barred here), so a btcHomed batch consuming one could only strand the depositor's escrow.
         if (btcHomed && (pv.withdrawals.length != 0 || pv.fees.length != 0 || pv.leaves.length != 0
-            || pv.swaps.length != 0 || pv.liquidity.length != 0)) revert BtcHomedValueExitMustBridge();
+            || pv.swaps.length != 0 || pv.liquidity.length != 0 || pv.depositsConsumed.length != 0)) {
+            revert BtcHomedValueExitMustBridge();
+        }
         // bridge_mint authorizes a mint on the burned note's MEMBERSHIP in the dedicated
         // bridge-burn set, pinned to the CURRENT reflected root. A non-zero burn root must
         // be current; and whenever a bridge_mint is present (bitcoinBurnsConsumed non-empty)
@@ -912,6 +926,14 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         for (uint256 i; i < pv.crossOuts.length; ++i) {
             CrossOut memory c = pv.crossOuts[i];
             if (keccak256(abi.encodePacked(c.destChain, c.destCommitment, c.nullifier, c.assetId)) != c.claimId) revert CrossOutClaimMismatch();
+            // Bind the burn to its source on-chain: the crossOut's ν must be spent in THIS batch (present
+            // in pv.nullifiers, all marked above). The guest nullifies it, but the contract enforces the
+            // link so a crossOut can never mint a Bitcoin note without consuming its Ethereum source note.
+            bool spentHere;
+            for (uint256 j; j < pv.nullifiers.length; ++j) {
+                if (pv.nullifiers[j] == c.nullifier) { spentHere = true; break; }
+            }
+            if (!spentHere) revert CrossOutNullifierNotSpent();
             crossOutCommitment[c.claimId] = c.destCommitment; // storage anchor for reverse-reflection inclusion proofs
             emit CrossOutRecorded(c.claimId, c.destChain, c.destCommitment, c.nullifier, c.assetId);
         }
@@ -931,10 +953,16 @@ contract ConfidentialPool is ReentrancyGuardTransient {
             // pool's reserves are never 0, so a guest-supplied post that zeroes a leg can only be a
             // compromise — reject it rather than let the pool be drained/bricked.
             if (s.reserveAPost == 0 || s.reserveBPost == 0) revert ReserveFloorBreach();
-            // Reserves stay < 2^64 — the same bound _fundReserve enforces at init, so a pool can never
+            // Reserves stay < 2^64 — the same bound the LP loop enforces at funding, so a pool can never
             // hold value the guest can't reproduce. The guest carries reserves as u64 (BP+ range), so an
             // out-of-range post would wrap when read back as the next pre, desyncing or locking the pool.
             if (s.reserveAPost > type(uint64).max || s.reserveBPost > type(uint64).max) revert ValueOutOfRange();
+            // Defense-in-depth (mirrors the guest's OP_SWAP constant-product check): a swap moves reserves
+            // along or above the k curve — fees keep k flat-or-growing, never shrinking. A post that drops
+            // k below pre is a compromised-guest drain (the classic AMM attack), so reject it on-chain too.
+            // Reserves are < 2^64 (checked above) so each product fits in u256; identical to the guest's
+            // u128 comparison. LP add/remove legitimately change k → gated in the liquidity loop, not here.
+            if (s.reserveAPost * s.reserveBPost < s.reserveAPre * s.reserveBPre) revert ConstantProductDecreased();
             p.reserveA = s.reserveAPost;
             p.reserveB = s.reserveBPost;
             emit SwapSettled(s.poolId, s.reserveAPost, s.reserveBPost);
@@ -958,8 +986,8 @@ contract ConfidentialPool is ReentrancyGuardTransient {
             if (l.reserveAPost == 0 || l.reserveBPost == 0 || l.sharesPost < MINIMUM_LIQUIDITY) {
                 revert ReserveFloorBreach();
             }
-            // Reserves AND totalShares stay < 2^64 (the BP+/u64 bound _fundReserve sets at init): a post
-            // beyond it would wrap when the guest reads it back as the next pre, locking the pool.
+            // Reserves AND totalShares stay < 2^64 (the BP+/u64 bound the first LP add sets at funding): a
+            // post beyond it would wrap when the guest reads it back as the next pre, locking the pool.
             if (l.reserveAPost > type(uint64).max || l.reserveBPost > type(uint64).max
                 || l.sharesPost > type(uint64).max) revert ValueOutOfRange();
             p.reserveA = l.reserveAPost;
@@ -984,6 +1012,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     function lpPositionValue(bytes32 poolId, uint256 shares) external view returns (uint256 amountA, uint256 amountB) {
         Pool storage p = pools[poolId];
         if (!p.init) revert PoolNotInit();
+        if (p.totalShares == 0) return (0, 0); // created but unfunded (no first OP_LP_ADD yet)
         amountA = p.reserveA * shares / p.totalShares;
         amountB = p.reserveB * shares / p.totalShares;
     }

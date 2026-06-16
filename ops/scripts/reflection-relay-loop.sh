@@ -45,9 +45,12 @@ CXFER="${CXFER_DIR:-/root/work/cxfer}"
 
 log() { echo "[reflection-relay $(date -u +%H:%M:%S)] $*"; }
 
-ack() { # attestedTo txHash
+ack() { # attestedTo txHash jobId
+  # jobId (= the job's input.newDigest) lets the worker retrieve the post-batch snapshot it stashed at
+  # /reflection/job time (the full-scan ack advances a snapshot, not just a cursor). A missing/expired
+  # jobId → 409, on which the worker re-serves the job (idempotent via the on-chain digest-chain).
   curl -fsS -X POST "$WORKER_BASE/reflection/ack" -H "authorization: Bearer $BOX_TOKEN" -H 'content-type: application/json' \
-    -d "{\"network\":\"$NETWORK\",\"attestedTo\":$1,\"txHash\":\"${2:-}\"}" >/dev/null 2>&1 \
+    -d "{\"network\":\"$NETWORK\",\"attestedTo\":$1,\"txHash\":\"${2:-}\",\"jobId\":\"${3:-}\"}" >/dev/null 2>&1 \
     || log "ack failed (worker will re-serve; on-chain idempotent via digest-chain)"
 }
 
@@ -63,7 +66,7 @@ while true; do
   ONCHAIN=$(cast call "$POOL_ADDR" 'knownReflectionDigest()(bytes32)' --rpc-url "$RPC_URL" 2>/dev/null || echo "")
   if [ "$ONCHAIN" = "$NEW_DIGEST" ]; then
     log "batch newDigest already attested on-chain — re-acking attestedTo=$ATTESTED_TO"
-    ack "$ATTESTED_TO" ""; continue
+    ack "$ATTESTED_TO" "" "$NEW_DIGEST"; continue
   fi
 
   echo "$JOB" | jq -c '.input' > "$CXFER/fixtures/reflection_input.json"
@@ -85,5 +88,5 @@ while true; do
   if [ -z "$TX" ]; then log "submit failed (see /tmp/reflect-send.log) — retrying job"; sleep 30; continue; fi
 
   log "attested: tx=$TX"
-  ack "$ATTESTED_TO" "$TX"
+  ack "$ATTESTED_TO" "$TX" "$NEW_DIGEST"
 done

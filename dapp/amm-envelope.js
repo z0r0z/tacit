@@ -248,8 +248,12 @@ export function decodeLpAdd(payload) {
     const shareAmount = _readU64LE(payload, off); off += 8;
     const shareCSecp = payload.slice(off, off + 33); off += 33;
     const shareCBJJ = payload.slice(off, off + 32); off += 32;
+    // Capture the share xcurve sigma (binds shareCSecp ↔ shareCBJJ to the same
+    // hidden value). The two 64-byte kernel sigs that follow are worker-side
+    // (Σ C_in conservation); the dapp's value-binding uses the sigma + Groth16.
+    const shareXcurveSigma = payload.slice(off, off + XCURVE_PROOF_LEN);
     off += XCURVE_PROOF_LEN + 64 + 64;
-    const result = { variant, assetA, assetB, deltaA, deltaB, shareAmount, shareCSecp, shareCBJJ };
+    const result = { variant, assetA, assetB, deltaA, deltaB, shareAmount, shareCSecp, shareCBJJ, shareXcurveSigma };
     if (variant === 1) {
       if (off + 2 > payload.length) return null;
       result.feeBps = _readU16LE(payload, off); off += 2;

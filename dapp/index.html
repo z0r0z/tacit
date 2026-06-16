@@ -8753,7 +8753,9 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms #farms-refresh-btn {
         <label style="flex:1;min-width:240px;">Saved deposits on this browser
           <select id="mixer-withdraw-saved-select"><option value="">— pick a saved deposit or paste below —</option></select>
         </label>
+        <button id="btn-mixer-recover-deposits" title="Re-derive your deposits from your wallet key by scanning the chain — recovers them even after a browser-data wipe, with no JSON backup.">Recover from key</button>
       </div>
+      <div id="mixer-recover-status" class="muted" style="font-size:11px;margin-bottom:8px;"></div>
       <textarea id="mixer-withdraw-record" rows="4" placeholder="…or paste deposit record JSON / use share-link below" aria-label="Deposit record JSON" style="width:100%;font-family:monospace;font-size:12px;"></textarea>
       <div class="flex" style="gap:8px;align-items:center;margin-top:8px;">
         <input id="mixer-withdraw-sharelink" type="text" placeholder="#mix=…" style="flex:1;font-family:monospace;font-size:12px;">
@@ -9159,8 +9161,9 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms #farms-refresh-btn {
     AMM trusted setup ceremony in progress. Farm bonding + harvest unlock once the canonical verifying key is published — farm metadata and your bonds are visible now, but stake/harvest/unbond actions activate when the ceremony attestation verifies.
   </div>
   <div class="section" data-farms-ceremony-gated="1">
-    <div class="section-header"><span>farms</span><span><span id="farms-status" class="muted" style="font-size:11px;"></span> <button id="farms-refresh-btn" class="btn-secondary" style="font-size:10px;padding:3px 8px;">Refresh</button></span></div>
+    <div class="section-header"><span>farms</span><span><span id="farms-status" class="muted" style="font-size:11px;"></span> <button id="farms-recover-btn" class="btn-secondary" style="font-size:10px;padding:3px 8px;" title="Re-credit your lp_return + reward notes from the chain + farm records — recovers them after a browser-data wipe.">Recover from key</button> <button id="farms-refresh-btn" class="btn-secondary" style="font-size:10px;padding:3px 8px;">Refresh</button></span></div>
     <div class="section-body">
+      <div id="farms-recover-status" class="muted" style="font-size:11px;margin-bottom:8px;"></div>
       <p class="muted" style="margin-bottom:12px;">
         Stake LP shares against a farm to earn streamed reward emissions.
         Each farm runs over a fixed Bitcoin block range (start_height →

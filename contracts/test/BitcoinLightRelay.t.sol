@@ -183,6 +183,39 @@ contract BitcoinLightRelayTest is TestHelper {
         assertEq(r.exposed_bitsToTarget(r.exposed_targetToCompact(maxT)), maxT);
     }
 
+    // A last-block timestamp earlier than the first-block timestamp is a NEGATIVE actualTimespan on
+    // Bitcoin, which Core clamps up to TARGET_TIMESPAN/4. The relay must compute the SAME target (never
+    // revert on the uint underflow), so a sub-finality reorg at a boundary can't brick retarget.
+    function test_retarget_target_clamps_negative_timespan() public {
+        TestLightRelay r = new TestLightRelay();
+        uint256 oldTarget = r.exposed_bitsToTarget(0x1702068f); // a recent mainnet target
+        uint256 timespan = r.TARGET_TIMESPAN();
+
+        // last < first (negative span) floors to 0 → clamps to TARGET_TIMESPAN/4 (no revert).
+        uint256 negSpan = r.exposed_retargetTarget(oldTarget, 1000, 500);
+        // An explicit minimal span (exactly TARGET_TIMESPAN/4) yields the identical clamped target.
+        uint256 minSpan = r.exposed_retargetTarget(oldTarget, 0, timespan / 4);
+        assertEq(negSpan, minSpan, "negative span clamps to TARGET_TIMESPAN/4");
+        // Below an even (no-change) span's target, confirming the clamp raised difficulty as Core does.
+        uint256 evenSpan = r.exposed_retargetTarget(oldTarget, 0, timespan);
+        assertLt(negSpan, evenSpan, "min-span target sits below the even-span target");
+        // A span at/over the upper clamp can't exceed the *4 cap either.
+        uint256 hugeSpan = r.exposed_retargetTarget(oldTarget, 0, timespan * 100);
+        assertEq(hugeSpan, r.exposed_retargetTarget(oldTarget, 0, timespan * 4), "huge span clamps to *4");
+    }
+
+    // Genesis rejects a malformed anchor checkpoint: a zero tipHash (which would terminate the
+    // blockParent / median-time-past walks) or zero cumulative work (which any block could tie).
+    function test_genesis_rejects_zero_anchor() public {
+        TestLightRelay r = new TestLightRelay();
+        vm.expectRevert(BitcoinLightRelay.InvalidAnchor.selector);
+        r.genesis(0, TEST_TARGET, 1000, bytes32(0), 0, 1); // zero tipHash
+
+        TestLightRelay r2 = new TestLightRelay();
+        vm.expectRevert(BitcoinLightRelay.InvalidAnchor.selector);
+        r2.genesis(0, TEST_TARGET, 1000, keccak256("x"), 0, 0); // zero tipWork
+    }
+
     // Burn-inclusion proofs anchor to the tip OR a canonical ancestor within
     // FINALITY_WINDOW (6), so a tip advance mid-withdrawal doesn't revert — while
     // still rejecting beyond-window, forged-side-chain, and ahead-of-tip claims.
