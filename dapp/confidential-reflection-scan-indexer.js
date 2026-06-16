@@ -125,17 +125,16 @@ export function makeScanReflectionIndexer({ secp, keccak256, sha256, ownerTag, b
       // NOT yet reflect it (no free-output deposit path); surface it so the assembler can flag the
       // un-onboarded value rather than silently treating the tx as plain.
       env = { type: 'mint', assetId: tx.decode.assetId };
-    } else if (tx.decode && ['swap_var', 'swap_route', 'harvest', 'farm_refund', 'protocol_fee_claim', 'farm_init', 'swap_batch'].includes(tx.decode.type)) {
-      // Track-B/C AMM ops whose fold data is fully on-chain (classifyConfidentialTx parsed it) — the assembler's
-      // foldSwapVar/foldSwapRoute/foldHarvest/foldProtocolFeeClaim/foldFarmInit (and the swap_batch hook) advance
-      // the pool registry + onboard the receipt(s). The decode IS the env shape those folds read. (swap_batch's
-      // BN254 Groth16 is verified by the injected hook against the fold-point reserves — see assembleBlocks.)
+    } else if (tx.decode && ['swap_var', 'swap_route', 'harvest', 'farm_refund', 'protocol_fee_claim', 'farm_init', 'swap_batch', 'lp_add', 'lp_remove', 'cbtc_lock'].includes(tx.decode.type)) {
+      // Track-B/C AMM + cBTC ops whose fold data is fully on-chain (classifyConfidentialTx parsed it, incl. the
+      // option-a opening blindings for lp_add/lp_remove/cbtc_lock) — the assembler's fold advances the pool/lock
+      // registry + onboards the receipt(s). The decode IS the env shape those folds read. (swap_batch's BN254
+      // Groth16 is verified by the injected hook against the fold-point reserves — see assembleBlocks.)
       env = tx.decode;
     } else if (tx.decode && tx.decode.type === 'unsupported') {
-      // A Tacit envelope the guest folds but the JS scan does not yet route: lp_add (0x2D) / lp_remove (0x2E) /
-      // cBTC lock (0x66) read off-chain witnesses (share_r / r_recv / opening sigma) no source supplies yet;
-      // crossout. Surface it so the assembler flags the batch + the attester refuses — the guest would read fold
-      // witnesses this scan can't emit (a desync).
+      // A Tacit envelope the guest folds but the JS scan does not yet route (crossout) — surface it so the
+      // assembler flags the batch + the attester refuses, rather than emit a witness short the paths the guest
+      // reads (a desync). Liveness, never a wrong digest (the guest is authoritative).
       env = { type: 'unsupported', opcode: tx.decode.opcode };
     }
     return { txData: withHex(tx.rawHex), txid, vins, env };

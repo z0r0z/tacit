@@ -60,6 +60,27 @@ const A = '0x' + 'a1'.repeat(32), B = '0x' + 'b2'.repeat(32), C = '0x' + 'c3'.re
   const d = parseHarvestEnvelope('0x' + Buffer.from(e).toString('hex'));
   ok(d && d.type === 'farm_refund' && numEq(d.amount, 1000) && norm(d.farmId) === 'ab'.repeat(32) && norm(d.r) === 'cd'.repeat(32), 'farm_refund (0x3E): type/farmId/amount/r');
 }
+// ── lp_add / POOL_INIT (0x2D): the share blinding rides the envelope (option a) ──
+{
+  const d = classifyConfidentialTx(txData('gen-reflection-lpadd-synth.mjs'));
+  ok(d && d.type === 'lp_add' && d.variant === 1 && norm(d.assetA) === 'a1'.repeat(32) && numEq(d.deltaA, 4000) && numEq(d.deltaB, 9000)
+    && norm(d.shareR).length === 64 && norm(d.kernelSigA).length === 128 && norm(d.kernelSigB).length === 128,
+    'lp_add (0x2D): type/variant/assets/deltas/shareR/kernels');
+}
+// ── lp_remove (0x2E): the two recv blindings ride the envelope (option a) ──
+{
+  const d = classifyConfidentialTx(txData('gen-reflection-lpremove-synth.mjs'));
+  ok(d && d.type === 'lp_remove' && numEq(d.shareAmount, 100000) && numEq(d.deltaA, 100000) && numEq(d.deltaB, 200000)
+    && norm(d.rRecvA).length === 64 && norm(d.rRecvB).length === 64 && norm(d.recvASecp).length === 66 && norm(d.kernelSig).length === 128,
+    'lp_remove (0x2E): type/share/deltas/rRecvA/rRecvB/recvASecp/kernel');
+}
+// ── cBTC lock (0x66): opening sigma rides the envelope (option a); v_btc stamped from the lock output ──
+{
+  const d = classifyConfidentialTx(txData('gen-reflection-cbtc-synth.mjs'));
+  ok(d && d.type === 'cbtc_lock' && numEq(d.vBtc, 123456) && d.lockVout === 1
+    && norm(d.sigRx).length === 64 && norm(d.sigRy).length === 64 && norm(d.sigZ).length === 64,
+    'cbtc_lock (0x66): type/vBtc/lockVout/sigRx/sigRy/sigZ');
+}
 // ── swap_batch (0x2F): its gen fullProves a real 1-intent A→B batch (snarkjs + the ~95MB head zkey), which is
 // heavy enough to deadlock a memory-constrained machine — so it is OPT-IN (RUN_SWAPBATCH_GEN=1, set on the box)
 // and time-bounded. When off/absent/timed-out, SKIP LOUD (never a silent pass) — the box's reflect-exec

@@ -1218,7 +1218,9 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
           // the assembler emits per 0x66 is the note's append path. The sigma still feeds the fold via `tx.env`
           // (the parser populates it from the envelope). lockTxid = the lock tx's txid.
           const w = state.foldCbtcLock({ asset: tx.env.asset, cx: tx.env.cx, cy: tx.env.cy, vBtc: tx.env.vBtc, lockVout: tx.env.lockVout, lockTxid: tx.txid, sigRx: tx.env.sigRx, sigRy: tx.env.sigRy, sigZ: tx.env.sigZ });
-          if (w) cbtcLock = { notePath: w.notePath };
+          // The guest reads note_path for ANY parseable 0x66 before the fold; emit it even on a skip (the
+          // guest discards it then) so the witness stream stays aligned.
+          cbtcLock = { notePath: w ? w.notePath : state.notePathPeek() };
         } else if (tx.env && tx.env.type === 'swap_var') {
           // Track-B swap_var: the taker spends one pool note (detected above); fold the receipt + advance
           // the pool reserves. Witness = the receipt note-path the guest reads after the 0x32 envelope.
@@ -1257,14 +1259,18 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
           // notes (vout 1, 2) + draw down reserves/shares. The two recv blindings r_recv_a/b are now ON-CHAIN
           // (option a; the guest parses them) — so the only witnesses per 0x2E are the two recv append paths.
           const lw = state.foldLpRemove(tx.env, inOutpoints, openings, outpointKey(tx.txid, 1), outpointKey(tx.txid, 2));
-          if (lw) lpRemove = { recvAPath: lw.recvAPath, recvBPath: lw.recvBPath };
+          // The guest reads BOTH recv paths for any parseable 0x2E before the fold (e.g. an untracked-pool
+          // lp_remove legitimately skips) — emit both even on a skip (discarded then) to keep the stream aligned.
+          lpRemove = lw ? { recvAPath: lw.recvAPath, recvBPath: lw.recvBPath } : { recvAPath: state.notePathPeek(), recvBPath: state.notePathPeek() };
         } else if (tx.env && tx.env.type === 'lp_add') {
           // Track-B lp_add / POOL_INIT (0x2D): the LP's detected per-asset spends fund the pool (insert for
           // POOL_INIT, grow for LP-add); onboard the minted LP-share note (vout 1). The share blinding share_r is
           // now ON-CHAIN (option a; the guest parses it) — so the only witness per 0x2D is the share append path.
           const spends = openings.map((o, i) => ({ cx: o.cx, cy: o.cy, asset: inAssets[i], outpoint: inOutpoints[i] }));
           const aw = state.foldLpAdd(tx.env, spends, tx.env.shareR, outpointKey(tx.txid, 1));
-          if (aw) lpAdd = { sharePath: aw.sharePath };
+          // The guest reads share_path for any parseable 0x2D before the fold; emit it even on a skip (discarded
+          // then) so the witness stream stays aligned.
+          lpAdd = { sharePath: aw ? aw.sharePath : state.notePathPeek() };
         } else if (tx.env && tx.env.type === 'swap_batch') {
           // Track-C swap_batch (0x2F): every receipt onboarded as a real note + reserves advanced, gated by the
           // BN254 Groth16 + the aggregate identity + per-receipt xcurve. The fold (BabyJubJub / snarkjs deps) is

@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 // Fail-loud guard: the reflection scan must SURFACE (never silently treat as plain) any Tacit envelope the
 // guest folds but the live classifier does not yet route. The on-chain AMM ops (swap_var/swap_route/harvest/
-// farm_refund/protocol_fee/farm_init) + swap_batch (0x2F) + bid + AXFER + cxfer now ROUTE; STILL deferred (→
-// 'unsupported'): lp_add (0x2D) / lp_remove (0x2E) / cBTC lock (0x66) read off-chain witnesses no source
-// supplies yet, and crossout. It tags those {type:'unsupported'}; the assembler collects them in
-// `unsupportedEnvelopes`; the attester REFUSES the batch — so the relay halts loud rather than attest a
-// divergent (witness-desynced) root. The guest is authoritative, so this is liveness, never soundness.
-// Run: node tests/confidential-reflection-unsupported-guard.mjs
+// farm_refund/protocol_fee/farm_init) + swap_batch (0x2F) + lp_add (0x2D) + lp_remove (0x2E) + cBTC lock (0x66)
+// + bid + AXFER + cxfer now ROUTE (a MALFORMED stub of any still falls through to 'unsupported' — safe, the
+// guest re-parses + likewise folds nothing). STILL deferred (→ 'unsupported'): crossout. It tags those
+// {type:'unsupported'}; the assembler collects them in `unsupportedEnvelopes`; the attester REFUSES the batch
+// — so the relay halts loud rather than attest a divergent (witness-desynced) root. The guest is authoritative,
+// so this is liveness, never soundness. Run: node tests/confidential-reflection-unsupported-guard.mjs
 
 import { keccak_256 } from '../node_modules/@noble/hashes/sha3.js';
 import * as secp from '../node_modules/@noble/secp256k1/index.js';
@@ -45,11 +45,14 @@ function tacitTx(body) {
 }
 
 // ── Part A: classifyConfidentialTx — the worker's injected classifier ──
-const lp = classifyConfidentialTx(tacitTx([0x2D, 1, 2, 3, 4])); // T_LP_ADD
-eq(lp && lp.type, 'unsupported', 'lp_add (0x2D) → unsupported');
+// lp_add (0x2D) / lp_remove (0x2E) / cBTC (0x66) now ROUTE for a well-formed envelope (the opening blindings ride
+// the wire — option a). A MALFORMED stub (too short for the parser) still falls through to 'unsupported' — safe:
+// the guest re-parses txData + likewise folds nothing, so the witness stream stays in sync.
+const lp = classifyConfidentialTx(tacitTx([0x2D, 1, 2, 3, 4])); // T_LP_ADD (malformed stub)
+eq(lp && lp.type, 'unsupported', 'malformed lp_add (0x2D) → unsupported (valid ones route — see amm-classify)');
 eq(lp && lp.opcode, 0x2D, 'lp_add opcode surfaced for the operator');
-eq(classifyConfidentialTx(tacitTx([0x66, 9, 9]))?.type, 'unsupported', 'cBTC lock (0x66) → unsupported (off-chain opening sigma)');
-eq(classifyConfidentialTx(tacitTx([0x2E, 0]))?.type, 'unsupported', 'lp_remove (0x2E) → unsupported (off-chain r_recv witness)');
+eq(classifyConfidentialTx(tacitTx([0x66, 9, 9]))?.type, 'unsupported', 'malformed cBTC lock (0x66) → unsupported (valid ones route)');
+eq(classifyConfidentialTx(tacitTx([0x2E, 0]))?.type, 'unsupported', 'malformed lp_remove (0x2E) → unsupported (valid ones route)');
 // swap_batch (0x2F) now ROUTES (see tests/confidential-amm-classify.mjs for a full envelope → swap_batch). A
 // MALFORMED stub still falls through to 'unsupported' (parser returns null) — safe: the guest re-parses txData
 // and likewise folds nothing, so the witness stream stays in sync (the attester refuses, liveness not soundness).

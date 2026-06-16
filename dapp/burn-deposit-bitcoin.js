@@ -352,6 +352,84 @@ function parseFarmInitEnvelope(envHex) {
   return { type: 'farm_init', poolId: _h(e, 1, 33), farmNonce: _h(e, 33, 65), launcherPubkey: _h(e, 65, 98), rewardAsset: _h(e, 98, 130), rewardTotal: _u64le(e, 130), cChangeOrSentinel: _h(e, 154, 187), kernelSig: _h(e, ks, ks + 64) };
 }
 
+// T_LP_ADD / POOL_INIT (0x2D) — option-a wire: the minted share note's blinding share_r rides the envelope at
+// offset 452 (between the header and the variant-1 tail). Mirrors cxfer-core parse_lp_add_envelope → the fold env.
+function parseLpAddEnvelope(envHex) {
+  const e = hexToBytes(envHex);
+  const HEADER = 452, TAIL = 484;
+  if (e[0] !== 0x2D || e.length < TAIL) return null;
+  const variant = e[1];
+  if (variant !== 0 && variant !== 1) return null;
+  let feeBps = 0, capabilityFlags = 0, protocolFeeAddress = '0x' + '00'.repeat(33), protocolFeeBps = 0;
+  if (variant === 1) {
+    let p = TAIL;
+    const need = (n) => { if (p + n > e.length) throw 0; const s = p; p += n; return s; };
+    try {
+      const f0 = need(2); feeBps = e[f0] | (e[f0 + 1] << 8);
+      need(1 + e[p]);                          // vkLen ‖ vkCid
+      need(1 + e[p]);                          // cerLen ‖ ceremonyCid
+      const ac = e[need(1)]; need(1); need(ac * 33); // arbCount, then arbM ‖ arbiter pubkeys
+      const lc = e[need(1)]; need(lc * 64);    // lsigCount ‖ launcher sigs
+      const pa = need(33); protocolFeeAddress = _h(e, pa, pa + 33);
+      const pb = need(2); protocolFeeBps = e[pb] | (e[pb + 1] << 8);
+      need(1 + e[p]);                          // metaLen ‖ poolMetaUri
+      capabilityFlags = e[need(1)];
+      if (capabilityFlags & 0x04) return null; // reserved arbiter-authority — fail closed (matches the guest)
+    } catch { return null; }
+  }
+  return {
+    type: 'lp_add', variant,
+    assetA: _h(e, 2, 34), assetB: _h(e, 34, 66),
+    deltaA: _u64le(e, 66), deltaB: _u64le(e, 74), shareAmount: _u64le(e, 82),
+    shareCsecp: _h(e, 90, 123), kernelSigA: _h(e, 324, 388), kernelSigB: _h(e, 388, 452),
+    shareR: _h(e, HEADER, TAIL),
+    feeBps, capabilityFlags, protocolFeeAddress, protocolFeeBps,
+  };
+}
+
+// T_LP_REMOVE (0x2E) — option-a wire: the two recv blindings r_recv_a/b ride after the kernel sig (offset 621),
+// before the proof. Mirrors cxfer-core parse_lp_remove_envelope.
+function parseLpRemoveEnvelope(envHex) {
+  const e = hexToBytes(envHex);
+  const RECV_B = 323, KS = 557, R = KS + 64; // 621
+  if (e[0] !== 0x2E || e.length < R + 64 + 2) return null;
+  return {
+    type: 'lp_remove',
+    assetA: _h(e, 1, 33), assetB: _h(e, 33, 65),
+    shareAmount: _u64le(e, 65), deltaA: _u64le(e, 73), deltaB: _u64le(e, 81),
+    recvASecp: _h(e, 89, 122), recvBSecp: _h(e, RECV_B, RECV_B + 33),
+    kernelSig: _h(e, KS, KS + 64), rRecvA: _h(e, R, R + 32), rRecvB: _h(e, R + 32, R + 64),
+  };
+}
+
+// T_CBTC_LOCK (0x66) — option-a wire: the opening sigma (rx,ry,z) rides after Cy (offset 101). v_btc is NOT in
+// the envelope (it is the lock output's sats value); the caller stamps it from the tx output at lock_vout.
+function parseCbtcLockEnvelope(envHex) {
+  const e = hexToBytes(envHex);
+  if (e[0] !== 0x66 || e.length < 197) return null;
+  return {
+    type: 'cbtc_lock', asset: _h(e, 1, 33),
+    lockVout: e[33] | (e[34] << 8) | (e[35] << 16) | (e[36] * 0x1000000),
+    cx: _h(e, 37, 69), cy: _h(e, 69, 101),
+    sigRx: _h(e, 101, 133), sigRy: _h(e, 133, 165), sigZ: _h(e, 165, 197),
+  };
+}
+
+// The sats value of output[vout] in a raw (segwit or legacy) tx — cBTC's v_btc, the lock output the note must
+// open to. The guest reads it from the tx the same way; null if vout is out of range / the tx is malformed.
+function txOutputValue(rawTxHex, vout) {
+  const tx = hexToBytes(rawTxHex.startsWith('0x') ? rawTxHex.slice(2) : rawTxHex);
+  let pos = (tx[4] === 0x00 && tx[5] === 0x01) ? 6 : 4; // skip version (+ segwit marker/flag)
+  let r = readVarint(tx, pos); if (!r) return null; const inCount = r[0]; pos += r[1];
+  for (let i = 0; i < inCount; i++) { pos += 36; r = readVarint(tx, pos); if (!r) return null; pos += r[1] + r[0] + 4; }
+  r = readVarint(tx, pos); if (!r) return null; const outCount = r[0]; pos += r[1];
+  for (let i = 0; i < outCount; i++) {
+    if (i === vout) { let v = 0n; for (let j = 7; j >= 0; j--) v = (v << 8n) | BigInt(tx[pos + j]); return v.toString(); }
+    pos += 8; r = readVarint(tx, pos); if (!r) return null; pos += r[1] + r[0];
+  }
+  return null;
+}
+
 // classifyConfidentialTx(rawTxHex) → the reflection scan's per-tx classification, MIRRORING the guest's
 // reflect.rs (extract_taproot_envelope → parse_burn_envelope / parse_cxfer_envelope_full): a confidential
 // bridge-burn → {type:'burn', dest}; a confidential transfer → {type:'cxfer', assetId, commitments,
@@ -378,19 +456,28 @@ function classifyConfidentialTx(rawTxHex) {
   // parser returns no `type`, so stamp it); the assembler's swap_batch branch reads exactly these fields.
   const sb = parseSwapBatchEnvelope(envHex);
   if (sb) return { type: 'swap_batch', ...sb };
+  // lp_add (0x2D) / lp_remove (0x2E): the opening blindings (share_r / r_recv_a/b) now ride the envelope
+  // (option a), so the indexer can fold them — route to their fold env.
+  const la = parseLpAddEnvelope(envHex);
+  if (la) return la;
+  const lr = parseLpRemoveEnvelope(envHex);
+  if (lr) return lr;
+  // cBTC lock (0x66): the opening sigma is on-chain (option a); v_btc is the lock output's sats value, stamped
+  // from the tx (the guest reads it from the tx the same way). A malformed lock output → fail-loud unsupported.
+  const cb = parseCbtcLockEnvelope(envHex);
+  if (cb) { const vBtc = txOutputValue(rawTxHex, cb.lockVout); return vBtc == null ? { type: 'unsupported', opcode: 0x66 } : { ...cb, vBtc }; }
   // env[0] is the opcode (the TACIT frame is already stripped). cetch (0x21) / cmint (0x24) create a note
   // but the conservation-closed full scan does NOT fold them (no free-output deposit path), so the guest
-  // treats them as plain too — safe. The STILL-deferred guest-folded ops: lp_add (0x2D) / lp_remove (0x2E) /
-  // cBTC lock (0x66) read OFF-CHAIN witnesses (share_r / r_recv / the opening sigma) the indexer can't source
-  // yet. These must SURFACE (not be treated as plain) — else the guest reads fold witnesses this scan never
-  // emitted and the batch's stream desyncs. Fail-loud: the attester refuses the batch (liveness, not soundness —
-  // the guest is authoritative). Mirroring a fold + routing it here is what lets the corresponding op attest.
+  // treats them as plain too — safe. Any remaining guest-folded op the scan doesn't yet route (crossout) must
+  // SURFACE (not be treated as plain) — else the guest reads fold witnesses this scan never emitted and the
+  // batch's stream desyncs. Fail-loud: the attester refuses the batch (liveness, not soundness — the guest is
+  // authoritative). Mirroring a fold + routing it here is what lets the corresponding op attest.
   const opcode = hexToBytes(envHex)[0];
   if (opcode === 0x21 || opcode === 0x24) return null; // cetch / cmint — created-but-not-folded (plain)
   return { type: 'unsupported', opcode };
 }
 
-export { readVarint, extractInputs, extractTaprootEnvelope, parseCetch, parseCmint, parseBurnEnvelope, parseCxferEnvelopeFull, parsePreauthBidEnvelope, parseSwapBatchEnvelope, parseSwapVarEnvelope, parseSwapRouteEnvelope, parseHarvestEnvelope, parseProtocolFeeClaimEnvelope, parseFarmInitEnvelope, classifyConfidentialTx };
+export { readVarint, extractInputs, extractTaprootEnvelope, parseCetch, parseCmint, parseBurnEnvelope, parseCxferEnvelopeFull, parsePreauthBidEnvelope, parseSwapBatchEnvelope, parseSwapVarEnvelope, parseSwapRouteEnvelope, parseHarvestEnvelope, parseProtocolFeeClaimEnvelope, parseFarmInitEnvelope, parseLpAddEnvelope, parseLpRemoveEnvelope, parseCbtcLockEnvelope, txOutputValue, classifyConfidentialTx };
 
 // Build the burnDepositKit the worker injects (buildScanReflectionAttester → makeScanReflectionIndexer).
 // Sources every crypto primitive from the SAME modules the pool/guest use (so verdicts match byte-for-byte)
