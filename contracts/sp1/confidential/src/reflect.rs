@@ -28,7 +28,7 @@ use alloy_sol_types::sol;
 use alloy_sol_types::private::U256;
 use alloy_sol_types::SolType;
 use cxfer_core::{
-    amm_canonical_pair, amm_derive_farm_id, amm_derive_pool_id_v1, bitcoin, burn_deposit, commitment_hash,
+    amm_canonical_pair, amm_derive_farm_id, amm_derive_pool_id_full, amm_derive_pool_id_v1, bitcoin, burn_deposit, commitment_hash,
     commitment_hash_compressed, compress, decompress, from_affine_xy, leaf, nullifier, outpoint_key,
     reflected_note_leaf, scan_tx_spends, verify_cxfer_conservation, LiveUtxoSet, Point, PoolReserveSet,
     PoolReserveState, ScanReflection,
@@ -579,7 +579,9 @@ pub fn main() {
                     let (da_c, db_c) = if swapped { (la.delta_b, la.delta_a) } else { (la.delta_a, la.delta_b) };
                     let (ka_c, kb_c) = if swapped { (la.kernel_sig_b, la.kernel_sig_a) } else { (la.kernel_sig_a, la.kernel_sig_b) };
                     let pool_id = if la.variant == 1 {
-                        amm_derive_pool_id_v1(&ca, &cb, la.fee_bps)
+                        // 6-arg pool_id: a protocol-fee / capability-flagged pool gets a DISTINCT pool_id from
+                        // the canonical no-skim slot (matching the worker), so it's findable for swaps + claims.
+                        amm_derive_pool_id_full(&ca, &cb, la.fee_bps, la.capability_flags, &la.protocol_fee_address, la.protocol_fee_bps)
                     } else {
                         state.pools.pool_ids_for_assets(&ca, &cb).first().copied()
                     };
@@ -600,7 +602,7 @@ pub fn main() {
                         // inputs_c0_backed: every contribution is a detected live (real) spend → C0-backed.
                         if state.fold_lp_add(
                             la.variant, &pid, &ca, &cb, da_c, db_c, la.share_amount, &la.share_csecp,
-                            &a_ops, &a_pts, &ka_c, &b_ops, &b_pts, &kb_c, true,
+                            &a_ops, &a_pts, &ka_c, &b_ops, &b_pts, &kb_c, true, la.protocol_fee_bps,
                         ).is_ok() {
                             // Onboard the LP's minted share note so LP-remove can later burn it AND it bridges.
                             // The LP's shares = the total_shares delta this op produced (founder's isqrt−ML at
@@ -691,6 +693,14 @@ pub fn main() {
             if let Some((farm_id, refund_amount, refund_r)) = env.as_ref().and_then(|e| bitcoin::parse_farm_refund_envelope(e)) {
                 let refund_path = r_path(); // witnessed per 0x3E (the refund note's append path; vout[1])
                 let _ = state.fold_harvest(&farm_id, refund_amount, &refund_r, &outpoint_key(&txid, 1), &refund_path);
+            }
+
+            // Track B: a T_PROTOCOL_FEE_CLAIM (0x31) — the pool's fee recipient claims the CREATOR-earned
+            // protocol-fee LP-share skim as a real, bridgeable note. fold_protocol_fee_claim crystallizes the
+            // swap-driven accrual, requires claim == accrued (exact), and onboards the claim note (vout[1]).
+            if let Some((cl_pool_id, cl_amount, cl_c_secp, cl_blinding)) = env.as_ref().and_then(|e| bitcoin::parse_protocol_fee_claim_envelope(e)) {
+                let claim_path = r_path(); // witnessed per 0x31 (the claim note's append path; vout[1])
+                let _ = state.fold_protocol_fee_claim(&cl_pool_id, cl_amount, &cl_c_secp, &cl_blinding, &outpoint_key(&txid, 1), &claim_path);
             }
         }
         state.height = height;

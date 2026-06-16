@@ -583,11 +583,23 @@ pub struct LpAddEnvelope {
     pub kernel_sig_a: [u8; 64],
     pub kernel_sig_b: [u8; 64],
     pub fee_bps: u16,
+    // POOL_INIT (variant 1) pool-identity config — all feed the 6-arg pool_id (a protocol-fee or
+    // capability-flagged pool gets a DISTINCT pool_id from the canonical no-skim slot). `protocol_fee_bps`
+    // also seeds the lazy-mintFee tier (creator-earned LP-fee skim). `capability_flags` is a Bitcoin-side
+    // concept only (the EVM settle/bridge side has no pools). Zero/none for variant 0.
+    pub capability_flags: u8,
+    pub protocol_fee_address: [u8; 33], // all-zero ⇒ no protocol fee
+    pub protocol_fee_bps: u16,          // 0 ⇒ no protocol fee
 }
 
-/// Parse a `T_LP_ADD` (0x2D) envelope. Layout (worker `decodeTLpAddPayload`): opcode(1) ‖ variant(1) ‖
-/// asset_a(32) ‖ asset_b(32) ‖ delta_a(8 LE) ‖ delta_b(8) ‖ share_amount(8) ‖ share_c_secp(33) ‖
-/// share_c_bjj(32) ‖ share_xcurve_sigma(169) ‖ kernel_sig_a(64) ‖ kernel_sig_b(64) ‖ [variant 1: fee_bps(2) ‖ …].
+/// Parse a `T_LP_ADD` (0x2D) envelope. Header (worker `decodeTLpAddPayload`): opcode(1) ‖ variant(1) ‖
+/// asset_a(32) ‖ asset_b(32) ‖ delta_a(8 LE) ‖ delta_b(8) ‖ share_amount(8) ‖ share_c_secp(33) ‖ share_c_bjj(32)
+/// ‖ share_xcurve_sigma(169) ‖ kernel_sig_a(64) ‖ kernel_sig_b(64). For variant 1 (POOL_INIT) a VARIABLE-LENGTH
+/// tail follows: fee_bps(2) ‖ vkLen(1)‖vkCid ‖ cerLen(1)‖ceremonyCid ‖ arbCount(1)‖arbM(1)‖arbiterPubkeys(33·n)
+/// ‖ lsigCount(1)‖launcherSigs(64·n) ‖ protocol_fee_address(33) ‖ protocol_fee_bps(2) ‖ metaLen(1)‖poolMetaUri ‖
+/// capability_flags(1). The reflection WALKS it to surface the four pool-identity fields (vk/ceremony/
+/// arbiter/launcher/meta bytes skipped — the arbiter fields are zero-count in v1 but always present in the
+/// wire, so the walk skips them regardless). Fails closed on any truncation.
 pub fn parse_lp_add_envelope(env: &[u8]) -> Option<LpAddEnvelope> {
     const HEADER: usize = 1 + 1 + 32 + 32 + 8 + 8 + 8 + 33 + 32 + XCURVE_SIGMA_LEN + 64 + 64; // 452
     if env.len() < HEADER || env[0] != 0x2D {
@@ -597,13 +609,43 @@ pub fn parse_lp_add_envelope(env: &[u8]) -> Option<LpAddEnvelope> {
     if variant != 0 && variant != 1 {
         return None;
     }
-    let fee_bps = if variant == 1 {
-        if env.len() < HEADER + 2 {
-            return None;
-        }
-        u16::from_le_bytes(env[HEADER..HEADER + 2].try_into().ok()?)
+    let (fee_bps, capability_flags, protocol_fee_address, protocol_fee_bps) = if variant == 1 {
+        let take = |p: &mut usize, n: usize| -> Option<()> {
+            let end = p.checked_add(n)?;
+            if end > env.len() {
+                return None;
+            }
+            *p = end;
+            Some(())
+        };
+        let mut p = HEADER;
+        let f0 = p;
+        take(&mut p, 2)?;
+        let fee = u16::from_le_bytes(env[f0..f0 + 2].try_into().ok()?);
+        take(&mut p, 1)?;
+        { let n = env[p - 1] as usize; take(&mut p, n)?; } // vkLen(1) ‖ vkCid
+        take(&mut p, 1)?;
+        { let n = env[p - 1] as usize; take(&mut p, n)?; } // cerLen(1) ‖ ceremonyCid
+        take(&mut p, 1)?;
+        let arb_count = env[p - 1] as usize;
+        take(&mut p, 1)?; // arbM (worker-validated; not needed here)
+        take(&mut p, arb_count.checked_mul(33)?)?; // arbiter pubkeys (zero-count in v1)
+        take(&mut p, 1)?;
+        let lsig_count = env[p - 1] as usize;
+        take(&mut p, lsig_count.checked_mul(64)?)?; // launcher sigs
+        let pa = p;
+        take(&mut p, 33)?;
+        let addr: [u8; 33] = env[pa..pa + 33].try_into().ok()?;
+        let pb = p;
+        take(&mut p, 2)?;
+        let pf = u16::from_le_bytes(env[pb..pb + 2].try_into().ok()?);
+        take(&mut p, 1)?;
+        { let n = env[p - 1] as usize; take(&mut p, n)?; } // metaLen(1) ‖ poolMetaUri
+        take(&mut p, 1)?;
+        let cf = env[p - 1]; // capability_flags
+        (fee, cf, addr, pf)
     } else {
-        0
+        (0, 0, [0u8; 33], 0)
     };
     Some(LpAddEnvelope {
         variant,
@@ -616,6 +658,9 @@ pub fn parse_lp_add_envelope(env: &[u8]) -> Option<LpAddEnvelope> {
         kernel_sig_a: env[324..388].try_into().ok()?,
         kernel_sig_b: env[388..452].try_into().ok()?,
         fee_bps,
+        capability_flags,
+        protocol_fee_address,
+        protocol_fee_bps,
     })
 }
 
@@ -1423,7 +1468,16 @@ mod tests {
         env.extend_from_slice(&[0xccu8; 169]); // share_xcurve_sigma
         env.extend_from_slice(&ka); // kernel_sig_a
         env.extend_from_slice(&kb); // kernel_sig_b
-        env.extend_from_slice(&30u16.to_le_bytes()); // fee_bps (variant 1)
+        // variant-1 tail: fee_bps + vkCid + ceremonyCid + arbiter(0) + launcher(0) + pf config + meta(0) + flags.
+        env.extend_from_slice(&30u16.to_le_bytes()); // fee_bps
+        env.push(3); env.extend_from_slice(&[0x66u8; 3]); // vkLen + vkCid
+        env.push(3); env.extend_from_slice(&[0x67u8; 3]); // cerLen + ceremonyCid
+        env.push(0); env.push(0); // arbCount, arbM (no arbiter in v1)
+        env.push(0); // lsigCount (no launcher sigs)
+        env.extend_from_slice(&[0x02u8; 33]); // protocol_fee_address (a creator-fee pool)
+        env.extend_from_slice(&25u16.to_le_bytes()); // protocol_fee_bps
+        env.push(0); // metaLen (no meta uri)
+        env.push(0x02); // capability_flags
         let p = parse_lp_add_envelope(&env).expect("lp_add parses");
         assert_eq!(p.variant, 1);
         assert_eq!(p.asset_a, asset_a);
@@ -1433,6 +1487,10 @@ mod tests {
         assert_eq!(p.kernel_sig_a, ka);
         assert_eq!(p.kernel_sig_b, kb);
         assert_eq!(p.fee_bps, 30);
+        assert_eq!(p.capability_flags, 0x02);
+        assert_eq!(p.protocol_fee_address, [0x02u8; 33]);
+        assert_eq!(p.protocol_fee_bps, 25);
+        assert!(parse_lp_add_envelope(&env[..env.len() - 1]).is_none(), "truncated variant-1 tail rejected");
         // variant 0 (no fee_bps tail).
         let mut env0 = env[..452].to_vec();
         env0[1] = 0;

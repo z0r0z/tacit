@@ -2190,15 +2190,34 @@ pub fn amm_canonical_pair(a: &[u8; 32], b: &[u8; 32]) -> Option<([u8; 32], [u8; 
 /// `ammDerivePoolId`: `sha256(domain ‖ low ‖ high ‖ fee_bps_LE(2) ‖ 0x00)`. POOL_INIT carries `fee_bps`,
 /// so the reflection reconstructs the exact pool_id the LP kernel signed over; a variant-0 LP-add /
 /// LP-remove (no `fee_bps` on the wire) is matched by canonical-asset enumeration over the registry.
-pub fn amm_derive_pool_id_v1(asset_a: &[u8; 32], asset_b: &[u8; 32], fee_bps: u16) -> Option<[u8; 32]> {
+pub fn amm_derive_pool_id_full(
+    asset_a: &[u8; 32],
+    asset_b: &[u8; 32],
+    fee_bps: u16,
+    capability_flags: u8,
+    protocol_fee_address: &[u8; 33],
+    protocol_fee_bps: u16,
+) -> Option<[u8; 32]> {
     let (low, high) = amm_canonical_pair(asset_a, asset_b)?;
     let mut h = Sha256::new();
     h.update(AMM_POOL_ID_DOMAIN);
     h.update(low);
     h.update(high);
     h.update(fee_bps.to_le_bytes());
-    h.update([0u8]); // capability_flags = 0 (V1 canonical no-skim variant — no protocol-fee terms appended)
+    h.update([capability_flags]);
+    // The protocol-fee suffix is appended iff a fee is enabled (joint-non-zero with the address) — so a
+    // protocol-fee / capability-flagged pool gets a DISTINCT pool_id from the canonical no-skim slot.
+    // Mirrors the worker `ammDerivePoolId`. (capability_flags is a Bitcoin-side concept; the EVM side has no pools.)
+    if protocol_fee_bps != 0 {
+        h.update(protocol_fee_address);
+        h.update(protocol_fee_bps.to_le_bytes());
+    }
     Some(h.finalize().into())
+}
+
+/// The canonical NO-SKIM pool_id (capability_flags = 0, no protocol fee) — the slot LPs + swappers route to.
+pub fn amm_derive_pool_id_v1(asset_a: &[u8; 32], asset_b: &[u8; 32], fee_bps: u16) -> Option<[u8; 32]> {
+    amm_derive_pool_id_full(asset_a, asset_b, fee_bps, 0, &[0u8; 33], 0)
 }
 
 // ──────────────────── Groth16 (BN254) — T_SWAP_BATCH verifier foundation ────────────────────
@@ -2303,6 +2322,37 @@ pub struct PoolReserveState {
     // reserves in lockstep so later swaps still validate. Advanced by fold_lp_add, drawn by fold_lp_remove.
     pub total_shares: u64,
     pub c0_backed: bool,
+    // Protocol-fee (Uniswap-V2 lazy `mintFee`) state, set at POOL_INIT from the 6-arg pool_id config. This is
+    // a creator-earned LP-fee skim (any pool creator can enable it), not just protocol governance:
+    //   `protocol_fee_bps` — the skim tier (0 = the canonical no-skim pool);
+    //   `k_last` — `reserve_a·reserve_b` at the last crystallization (advanced only at LP events, NOT swaps);
+    //   `protocol_fee_accrued` — virtual LP-shares owed to the fee recipient, minted at LP events + claimed by
+    //   T_PROTOCOL_FEE_CLAIM. All three ride `root()` so a resumed cycle can't forge the accrued fee.
+    pub protocol_fee_bps: u16,
+    pub k_last: u128,
+    pub protocol_fee_accrued: u64,
+}
+
+impl PoolReserveState {
+    /// Crystallize the Uniswap-V2 lazy protocol fee from the SWAP-driven k-growth since `k_last`: mint the skim
+    /// as LP shares (into `protocol_fee_accrued` + `total_shares`) and advance `k_last` to the CURRENT k. Call
+    /// at every LP event (LP_ADD / LP_REMOVE / PROTOCOL_FEE_CLAIM) on the CURRENT (pre-liquidity-change) reserves;
+    /// for LP_ADD/REMOVE the caller RE-SETS `k_last` to the post-change k afterward, so an LP deposit is never
+    /// taxed as a fee (Uniswap V2 `_mintFee` / worker `ammCrystallizeProtocolFee`). No-op for a no-skim pool.
+    pub fn crystallize_protocol_fee(&mut self) {
+        if self.protocol_fee_bps == 0 {
+            return;
+        }
+        let k_now = (self.reserve_a as u128) * (self.reserve_b as u128);
+        if k_now <= self.k_last {
+            self.k_last = k_now; // baseline only (no growth)
+            return;
+        }
+        let shares = protocol_fee_shares(self.total_shares, self.k_last, k_now, self.protocol_fee_bps);
+        self.protocol_fee_accrued = self.protocol_fee_accrued.saturating_add(shares);
+        self.total_shares = self.total_shares.saturating_add(shares);
+        self.k_last = k_now;
+    }
 }
 
 /// The Track-B per-pool reserve registry: a sorted `pool_id → PoolReserveState` map with a committed
@@ -2370,12 +2420,20 @@ impl PoolReserveSet {
             a[24..].copy_from_slice(&n.to_be_bytes());
             a
         };
+        let u128b = |n: u128| {
+            let mut a = [0u8; 32];
+            a[16..].copy_from_slice(&n.to_be_bytes());
+            a
+        };
         let leaves: Vec<[u8; 32]> = self.entries.iter().map(|(k, s)| {
             let mut backed = [0u8; 32];
             if s.c0_backed {
                 backed[31] = 1;
             }
-            kn(&[k, &s.asset_a, &s.asset_b, &u64b(s.reserve_a), &u64b(s.reserve_b), &u64b(s.total_shares), &backed])
+            kn(&[
+                k, &s.asset_a, &s.asset_b, &u64b(s.reserve_a), &u64b(s.reserve_b), &u64b(s.total_shares),
+                &backed, &u64b(s.protocol_fee_bps as u64), &u128b(s.k_last), &u64b(s.protocol_fee_accrued),
+            ])
         }).collect();
         keccak_merkle_root(&leaves)
     }
@@ -2796,6 +2854,7 @@ impl ScanReflection {
         b_input_commitments: &[Point],
         b_kernel_sig: &[u8; 64],
         inputs_c0_backed: bool,
+        protocol_fee_bps: u16, // POOL_INIT only: the pool's lazy-mintFee tier (0 = canonical no-skim pool)
     ) -> Result<(), &'static str> {
         if asset_a == asset_b {
             return Err("lp_add fold: assets must differ");
@@ -2830,6 +2889,7 @@ impl ScanReflection {
                 self.pools.insert(pool_id, PoolReserveState {
                     asset_a: *asset_a, asset_b: *asset_b, reserve_a: delta_a, reserve_b: delta_b,
                     total_shares: total_shares as u64, c0_backed: inputs_c0_backed,
+                    protocol_fee_bps, k_last: delta_a as u128 * delta_b as u128, protocol_fee_accrued: 0,
                 });
                 Ok(())
             }
@@ -2839,6 +2899,10 @@ impl ScanReflection {
                 if &pool.asset_a != asset_a || &pool.asset_b != asset_b {
                     return Err("lp_add fold: LP-add asset mismatch");
                 }
+                // Crystallize the protocol fee from swap-driven k-growth BEFORE the deposit (Uniswap V2
+                // `_mintFee`): `total_shares` may grow, so the proportional mint is over the POST-crystallization
+                // supply — matching the worker, which crystallizes before computing the LP's shares.
+                pool.crystallize_protocol_fee();
                 // Shares minted over the PRE-add reserves (proportional mint), then reserves grow.
                 let minted = lp_add_shares(pool.total_shares, delta_a, delta_b, pool.reserve_a, pool.reserve_b);
                 if minted > u64::MAX as u128 {
@@ -2849,6 +2913,9 @@ impl ScanReflection {
                 pool.total_shares = pool.total_shares.checked_add(minted as u64).ok_or("lp_add fold: total shares overflow")?;
                 // Backing is monotone: it stays true only while every contribution is itself backed.
                 pool.c0_backed = pool.c0_backed && inputs_c0_backed;
+                // The LP deposit itself isn't a fee — advance k_last to the POST-deposit k (so the next
+                // crystallization counts only swap growth, never this deposit).
+                pool.k_last = pool.reserve_a as u128 * pool.reserve_b as u128;
                 self.pools.update(pool_id, pool);
                 Ok(())
             }
@@ -2889,6 +2956,10 @@ impl ScanReflection {
         if !pool.c0_backed {
             return Err("lp_remove fold: pool not C0-backed");
         }
+        // Crystallize the protocol fee from swap-driven k-growth BEFORE the withdrawal (Uniswap V2 `_mintFee`),
+        // so the proportional `delta_X = floor(R_X·share/S)` is over the POST-crystallization supply — matching
+        // the worker, which crystallizes before computing the LP's outputs.
+        pool.crystallize_protocol_fee();
         if pool.total_shares == 0 || share_amount == 0 || share_amount > pool.total_shares {
             return Err("lp_remove fold: bad share amount");
         }
@@ -2925,6 +2996,53 @@ impl ScanReflection {
         pool.reserve_a -= delta_a;
         pool.reserve_b -= delta_b;
         pool.total_shares -= share_amount;
+        // The withdrawal isn't a fee — advance k_last to the POST-removal k.
+        pool.k_last = pool.reserve_a as u128 * pool.reserve_b as u128;
+        self.pools.update(pool_id, pool);
+        Ok(())
+    }
+
+    /// Fold a confirmed `T_PROTOCOL_FEE_CLAIM` (0x31): the pool's fee recipient (a CREATOR-earned LP-fee skim,
+    /// not just governance) claims the accrued protocol-fee LP-shares as a real note. The claim is an LP event,
+    /// so crystallize first, then require `claim_amount` == the post-crystallization `protocol_fee_accrued`
+    /// (the worker's exact-claim rule — no over/under-mint), onboard the claim note (opens to `claim_amount`
+    /// under the PUBLIC `claim_blinding`, asset = the pool's Bitcoin LP-share asset), and reset the accrued to 0.
+    /// The crystallize already added these shares to `total_shares`, so they're backed by the pool's reserves —
+    /// the claim just materializes them as a bridgeable note. The claimer authorization (sig == fee recipient)
+    /// is the worker's fairness gate, not bridge-soundness. No-op for a no-skim pool; fails closed on any miss.
+    pub fn fold_protocol_fee_claim(
+        &mut self,
+        pool_id: &[u8; 32],
+        claim_amount: u64,
+        claim_c_secp: &[u8; 33],
+        claim_blinding: &[u8; 32],
+        claim_outpoint: &[u8; 32],
+        claim_note_path: &[[u8; 32]],
+    ) -> Result<(), &'static str> {
+        let mut pool = self.pools.get(pool_id).ok_or("protocol_fee_claim fold: unknown pool")?;
+        if !pool.c0_backed {
+            return Err("protocol_fee_claim fold: pool not C0-backed");
+        }
+        if pool.protocol_fee_bps == 0 {
+            return Err("protocol_fee_claim fold: pool has no protocol fee");
+        }
+        // Crystallize the swap-driven skim (this claim is an LP event), then require the exact accrued amount.
+        pool.crystallize_protocol_fee();
+        if claim_amount == 0 || claim_amount != pool.protocol_fee_accrued {
+            return Err("protocol_fee_claim fold: claim != accrued");
+        }
+        // The claim note opens to `claim_amount` under the PUBLIC blinding (value == the accrued skim).
+        let c_pt = decompress(claim_c_secp).ok_or("protocol_fee_claim fold: claim not a curve point")?;
+        if !verify_pedersen_opening(&c_pt, claim_amount, &scalar_reduce_be(claim_blinding)) {
+            return Err("protocol_fee_claim fold: claim opening != claim_amount");
+        }
+        // Onboard as a note of the pool's Bitcoin LP-share asset (the crystallize already counted these in
+        // total_shares — bridging them is backed; this just materializes the virtual claim as a real note).
+        let lp_asset = amm_derive_lp_asset_id(pool_id);
+        let leaf = reflected_note_leaf(&lp_asset, claim_c_secp).ok_or("protocol_fee_claim fold: claim leaf")?;
+        let ch = commitment_hash_compressed(claim_c_secp).ok_or("protocol_fee_claim fold: claim hash")?;
+        self.fold_output(&leaf, claim_note_path, claim_outpoint, &ch, &lp_asset)?;
+        pool.protocol_fee_accrued = 0; // the accrued skim is now a claimed note
         self.pools.update(pool_id, pool);
         Ok(())
     }
@@ -2961,6 +3079,7 @@ impl ScanReflection {
         self.pools.insert(farm_id, PoolReserveState {
             asset_a: *reward_asset, asset_b: [0u8; 32], reserve_a: reward_total, reserve_b: 0,
             total_shares: 0, c0_backed: inputs_c0_backed,
+            protocol_fee_bps: 0, k_last: 0, protocol_fee_accrued: 0, // a farm treasury has no protocol fee
         });
         Ok(())
     }
@@ -4111,7 +4230,7 @@ mod tests {
             delta_in: 1000, tip_amount: 0, delta_out,
             c_in, c_change_or_sentinel: c_change, c_receipt, r_receipt: r_receipt_bytes, kernel_sig: sig,
         };
-        let mk_pool = || PoolReserveState { asset_a, asset_b, reserve_a: 10_000, reserve_b: 5_000, total_shares: 7_000, c0_backed: true };
+        let mk_pool = || PoolReserveState { asset_a, asset_b, reserve_a: 10_000, reserve_b: 5_000, total_shares: 7_000, c0_backed: true, protocol_fee_bps: 0, k_last: 0, protocol_fee_accrued: 0 };
         let path = [[0u8; 32]; 32];
 
         // gate (1): a pool not yet C0-backed folds NOTHING.
@@ -4177,8 +4296,8 @@ mod tests {
         let path = KeccakTreeAccumulator::new().append_path(); // genesis note-append path (note_count 0)
         let setup = || {
             let mut sc = ScanReflection::genesis();
-            sc.pools.insert(&pid1, PoolReserveState { asset_a: a, asset_b: m, reserve_a: 10_000, reserve_b: 5_000, total_shares: 7_000, c0_backed: true });
-            sc.pools.insert(&pid2, PoolReserveState { asset_a: m, asset_b: b, reserve_a: 8_000, reserve_b: 3_000, total_shares: 4_000, c0_backed: true });
+            sc.pools.insert(&pid1, PoolReserveState { asset_a: a, asset_b: m, reserve_a: 10_000, reserve_b: 5_000, total_shares: 7_000, c0_backed: true, protocol_fee_bps: 0, k_last: 0, protocol_fee_accrued: 0 });
+            sc.pools.insert(&pid2, PoolReserveState { asset_a: m, asset_b: b, reserve_a: 8_000, reserve_b: 3_000, total_shares: 4_000, c0_backed: true, protocol_fee_bps: 0, k_last: 0, protocol_fee_accrued: 0 });
             sc
         };
 
@@ -4290,6 +4409,46 @@ mod tests {
     }
 
     #[test]
+    fn fold_protocol_fee_claim_crystallizes_and_onboards() {
+        let pool_id = [0x40u8; 32];
+        let (a, b) = ([0xAAu8; 32], [0xBBu8; 32]);
+        // A 300-bps-protocol-fee pool, k_last = (1M)² at the last crystallization, then swap-grown to (4M)².
+        let mk = || {
+            let mut sc = ScanReflection::genesis();
+            sc.pools.insert(&pool_id, PoolReserveState {
+                asset_a: a, asset_b: b, reserve_a: 4_000_000, reserve_b: 4_000_000, total_shares: 1_000_000,
+                c0_backed: true, protocol_fee_bps: 300, k_last: 1_000_000u128 * 1_000_000, protocol_fee_accrued: 0,
+            });
+            sc
+        };
+        // The fold crystallizes the swap-growth (1M·1M → 4M·4M) and requires claim == accrued.
+        let expected = protocol_fee_shares(1_000_000, 1_000_000u128 * 1_000_000, 4_000_000u128 * 4_000_000, 300);
+        assert!(expected > 0, "fee accrues on swap growth");
+        let r = [0x44u8; 32];
+        let c = compress(&(gen_h() * Scalar::from(expected) + ProjectivePoint::generator() * scalar_reduce_be(&r)));
+        let path = KeccakTreeAccumulator::new().append_path();
+
+        let mut sc = mk();
+        assert!(sc.fold_protocol_fee_claim(&pool_id, expected, &c, &r, &[0x01u8; 32], &path).is_ok(), "exact claim folds");
+        let pool = sc.pools.get(&pool_id).unwrap();
+        assert_eq!(pool.protocol_fee_accrued, 0, "accrued reset after claim");
+        assert_eq!(pool.total_shares, 1_000_000 + expected, "crystallized fee counted in total_shares");
+
+        // fail-closed: claim ≠ accrued, claim 0, bad opening, no-protocol-fee pool.
+        let mut sc = mk();
+        assert!(sc.fold_protocol_fee_claim(&pool_id, expected + 1, &c, &r, &[0x01u8; 32], &path).is_err(), "claim != accrued rejected");
+        let mut sc = mk();
+        let wrong_c = compress(&(gen_h() * Scalar::from(expected + 1) + ProjectivePoint::generator() * scalar_reduce_be(&r)));
+        assert!(sc.fold_protocol_fee_claim(&pool_id, expected, &wrong_c, &r, &[0x01u8; 32], &path).is_err(), "claim opening mismatch rejected");
+        let mut sc = ScanReflection::genesis();
+        sc.pools.insert(&pool_id, PoolReserveState {
+            asset_a: a, asset_b: b, reserve_a: 4_000_000, reserve_b: 4_000_000, total_shares: 1_000_000,
+            c0_backed: true, protocol_fee_bps: 0, k_last: 0, protocol_fee_accrued: 0,
+        });
+        assert!(sc.fold_protocol_fee_claim(&pool_id, 1, &c, &r, &[0x01u8; 32], &path).is_err(), "no-protocol-fee pool rejected");
+    }
+
+    #[test]
     fn pool_reserve_set_insert_get_update_root() {
         let mut s = PoolReserveSet::new();
         assert!(s.is_empty());
@@ -4297,6 +4456,7 @@ mod tests {
         let pid2 = [0x02u8; 32];
         let st = |ra, rb, backed| PoolReserveState {
             asset_a: [0xAAu8; 32], asset_b: [0xBBu8; 32], reserve_a: ra, reserve_b: rb, total_shares: 1_000, c0_backed: backed,
+            protocol_fee_bps: 0, k_last: 0, protocol_fee_accrued: 0,
         };
         s.insert(&pid1, st(100, 200, true));
         s.insert(&pid2, st(300, 400, false));
@@ -4362,17 +4522,17 @@ mod tests {
 
         // POOL_INIT (backed): pool registered with the seeded reserves + c0_backed.
         let mut sc = ScanReflection::genesis();
-        assert!(sc.fold_lp_add(1, &pid, &asset_a, &asset_b, da, db, share, &csc, &op_a, &[cia], &sa, &op_b, &[cib], &sb, true).is_ok(), "POOL_INIT folds");
+        assert!(sc.fold_lp_add(1, &pid, &asset_a, &asset_b, da, db, share, &csc, &op_a, &[cia], &sa, &op_b, &[cib], &sb, true, 0).is_ok(), "POOL_INIT folds");
         let p = sc.pools.get(&pid).expect("pool registered");
         assert_eq!((p.reserve_a, p.reserve_b, p.c0_backed), (da, db, true));
         // duplicate POOL_INIT → reject.
-        assert!(sc.fold_lp_add(1, &pid, &asset_a, &asset_b, da, db, share, &csc, &op_a, &[cia], &sa, &op_b, &[cib], &sb, true).is_err(), "duplicate POOL_INIT rejected");
+        assert!(sc.fold_lp_add(1, &pid, &asset_a, &asset_b, da, db, share, &csc, &op_a, &[cia], &sa, &op_b, &[cib], &sb, true, 0).is_err(), "duplicate POOL_INIT rejected");
 
         // bad B kernel → fold nothing (fresh pool id).
         let pid2 = [0x11u8; 32];
         let (_x, sa2) = bip340_sign(&[0x41u8; 32], &[0x51u8; 32], &lp_add_msg(1, &pid2, &asset_a, da, share, &csc, &op_a));
         let mut sc2 = ScanReflection::genesis();
-        assert!(sc2.fold_lp_add(1, &pid2, &asset_a, &asset_b, da, db, share, &csc, &op_a, &[cia], &sa2, &op_b, &[cib], &[0u8; 64], true).is_err(), "bad B kernel rejected");
+        assert!(sc2.fold_lp_add(1, &pid2, &asset_a, &asset_b, da, db, share, &csc, &op_a, &[cia], &sa2, &op_b, &[cib], &[0u8; 64], true, 0).is_err(), "bad B kernel rejected");
         assert!(sc2.pools.get(&pid2).is_none(), "rejected POOL_INIT registered nothing");
 
         // POOL_INIT whose inputs aren't C0-backed ⇒ pool registered but NOT c0_backed (no swap can onboard).
@@ -4380,7 +4540,7 @@ mod tests {
         let (_y, sa3) = bip340_sign(&[0x41u8; 32], &[0x51u8; 32], &lp_add_msg(1, &pid3, &asset_a, da, share, &csc, &op_a));
         let (_z, sb3) = bip340_sign(&[0x42u8; 32], &[0x52u8; 32], &lp_add_msg(1, &pid3, &asset_b, db, share, &csc, &op_b));
         let mut sc3 = ScanReflection::genesis();
-        assert!(sc3.fold_lp_add(1, &pid3, &asset_a, &asset_b, da, db, share, &csc, &op_a, &[cia], &sa3, &op_b, &[cib], &sb3, false).is_ok());
+        assert!(sc3.fold_lp_add(1, &pid3, &asset_a, &asset_b, da, db, share, &csc, &op_a, &[cia], &sa3, &op_b, &[cib], &sb3, false, 0).is_ok());
         assert!(!sc3.pools.get(&pid3).unwrap().c0_backed, "unbacked pool is not c0_backed");
 
         // LP-add (variant 0) grows the first pool's reserves.
@@ -4388,7 +4548,7 @@ mod tests {
         let (_w, sa0) = bip340_sign(&[0x41u8; 32], &[0x51u8; 32], &lp_add_msg(0, &pid, &asset_a, 500, share, &csc, &op_a));
         let cib0 = gen_h() * Scalar::from(2000u64) + ProjectivePoint::generator() * xb;
         let (_v, sb0) = bip340_sign(&[0x42u8; 32], &[0x52u8; 32], &lp_add_msg(0, &pid, &asset_b, 2000, share, &csc, &op_b));
-        assert!(sc.fold_lp_add(0, &pid, &asset_a, &asset_b, 500, 2000, share, &csc, &op_a, &[cia0], &sa0, &op_b, &[cib0], &sb0, true).is_ok(), "LP-add grows reserves");
+        assert!(sc.fold_lp_add(0, &pid, &asset_a, &asset_b, 500, 2000, share, &csc, &op_a, &[cia0], &sa0, &op_b, &[cib0], &sb0, true, 0).is_ok(), "LP-add grows reserves");
         let p2 = sc.pools.get(&pid).unwrap();
         assert_eq!((p2.reserve_a, p2.reserve_b), (da + 500, db + 2000), "reserves grew");
 
@@ -4398,7 +4558,7 @@ mod tests {
         let ciau = gen_h() * Scalar::from(100u64) + ProjectivePoint::generator() * xa;
         let (_, sbu) = bip340_sign(&[0x42u8; 32], &[0x52u8; 32], &lp_add_msg(0, &pidu, &asset_b, 100, share, &csc, &op_b));
         let cibu = gen_h() * Scalar::from(100u64) + ProjectivePoint::generator() * xb;
-        assert!(sc.fold_lp_add(0, &pidu, &asset_a, &asset_b, 100, 100, share, &csc, &op_a, &[ciau], &sau, &op_b, &[cibu], &sbu, true).is_err(), "LP-add to unknown pool rejected");
+        assert!(sc.fold_lp_add(0, &pidu, &asset_a, &asset_b, 100, 100, share, &csc, &op_a, &[ciau], &sau, &op_b, &[cibu], &sbu, true, 0).is_err(), "LP-add to unknown pool rejected");
     }
 
     fn lp_remove_msg(pid: &[u8; 32], share: u64, da: u64, db: u64, ra: &[u8; 33], rb: &[u8; 33], inputs: &[([u8; 32], u32)]) -> [u8; 32] {
@@ -4425,7 +4585,7 @@ mod tests {
         let asset_b = [0xBBu8; 32];
         // pool: 1000 A / 4000 B, 2000 shares (isqrt(1000·4000)=2000), c0_backed.
         let mut base = ScanReflection::genesis();
-        base.pools.insert(&pid, PoolReserveState { asset_a, asset_b, reserve_a: 1000, reserve_b: 4000, total_shares: 2000, c0_backed: true });
+        base.pools.insert(&pid, PoolReserveState { asset_a, asset_b, reserve_a: 1000, reserve_b: 4000, total_shares: 2000, c0_backed: true, protocol_fee_bps: 0, k_last: 0, protocol_fee_accrued: 0 });
         // burn 1000 shares (half) ⇒ delta_a = 500, delta_b = 2000.
         let (share, da, db) = (1000u64, 500u64, 2000u64);
         let op = [([0x73u8; 32], 0u32)];
@@ -4480,7 +4640,7 @@ mod tests {
         assert_ne!(id, amm_derive_pool_id_v1(&a, &b, 100).unwrap(), "fee-sensitive");
         // enumeration finds the pool by its canonical assets (stored canonical only).
         let mut s = PoolReserveSet::new();
-        s.insert(&id, PoolReserveState { asset_a: a, asset_b: b, reserve_a: 1, reserve_b: 1, total_shares: 1, c0_backed: true });
+        s.insert(&id, PoolReserveState { asset_a: a, asset_b: b, reserve_a: 1, reserve_b: 1, total_shares: 1, c0_backed: true, protocol_fee_bps: 0, k_last: 0, protocol_fee_accrued: 0 });
         assert_eq!(s.pool_ids_for_assets(&a, &b), vec![id]);
         assert!(s.pool_ids_for_assets(&b, &a).is_empty(), "stored in canonical order only");
     }
