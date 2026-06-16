@@ -31,6 +31,11 @@ interface ICanonicalDeployParams {
 ///         the richer name is off-chain in IPFS), so the per-asset identity is the
 ///         `symbol` (the etch ticker, trustlessly proven) and the address — not a
 ///         spoofable or off-chain-sourced name field.
+///
+/// @dev    Inherits solady's default Permit2 support: the canonical Permit2 singleton holds an infinite
+///         allowance on every token (gasless approvals for the public/Uniswap face). Safe here — the pool
+///         never custodies its own canonical tokens (pool-minted assets have no escrow; mint goes to the
+///         recipient, burn pulls from `msg.sender`) — but integrators should expect the nonzero default.
 contract CanonicalBridgedERC20 is ERC20 {
     address public immutable MINTER;
     bytes32 public immutable ASSET_ID;
@@ -43,6 +48,7 @@ contract CanonicalBridgedERC20 is ERC20 {
     uint8 private immutable _decimals;
 
     error NotMinter();
+    error ZeroAddress();
 
     constructor() {
         (bytes32 assetId, address minter, string memory s, uint8 d, bytes32 cid) =
@@ -75,13 +81,17 @@ contract CanonicalBridgedERC20 is ERC20 {
     }
 
     /// @notice Mint backed supply. Only the minter, which enforces the backing (the SP1
-    ///         bridge proof for bridged assets; collateral health for synthetics).
+    ///         bridge proof for bridged assets; collateral health for synthetics). Rejects the zero
+    ///         address — solady's `_mint` does not, and minting there is irreversible locked supply.
     function mint(address to, uint256 amount) external {
         if (msg.sender != MINTER) revert NotMinter();
+        if (to == address(0)) revert ZeroAddress();
         _mint(to, amount);
     }
 
-    /// @notice Burn on redemption — the minter releases the backing on the source side.
+    /// @notice Burn on redemption — the minter releases the backing on the source side. The minter may
+    ///         burn ANY holder's balance (the bridge burns the depositor's tokens on wrap), so a minter
+    ///         implementation must only ever burn with the holder's consent.
     function burn(address from, uint256 amount) external {
         if (msg.sender != MINTER) revert NotMinter();
         _burn(from, amount);

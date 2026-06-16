@@ -27,9 +27,11 @@ contract CanonicalAssetFactory {
     /// @dev Domain tag for the EVM etch id derivation.
     bytes public constant ETCH_TAG = "tacit-evm-etch-v1";
 
-    /// @dev keccak of the (constant, arg-less) ERC20 creation code — the CREATE2 init-code hash.
-    ///      Cached so `predict` doesn't re-hash the full creation code on every call.
-    bytes32 private immutable _INIT_CODE_HASH = keccak256(type(CanonicalBridgedERC20).creationCode);
+    /// @notice keccak of the (constant, arg-less) ERC20 creation code — the CREATE2 init-code hash,
+    ///         read by `predict` (the rehash is paid once at deploy). Public so off-chain tooling derives
+    ///         a canonical address from this factory's exact deployed bytecode rather than a hardcoded
+    ///         hash that drifts with compiler settings.
+    bytes32 public immutable INIT_CODE_HASH = keccak256(type(CanonicalBridgedERC20).creationCode);
 
     /// @dev deploy slot => canonical ERC20 (0 if unset). The slot binds the backing
     ///      authority (`minter`) and the FULL metadata (`symbol`, `decimals`, `cid`)
@@ -145,7 +147,7 @@ contract CanonicalAssetFactory {
         returns (address)
     {
         bytes32 salt = _slot(assetId, minter, symbol_, decimals_, cid);
-        return address(uint160(uint256(keccak256(abi.encodePacked(bytes1(0xff), address(this), salt, _INIT_CODE_HASH)))));
+        return address(uint160(uint256(keccak256(abi.encodePacked(bytes1(0xff), address(this), salt, INIT_CODE_HASH)))));
     }
 
     function predict(bytes32 assetId, address minter, string calldata symbol_, uint8 decimals_)

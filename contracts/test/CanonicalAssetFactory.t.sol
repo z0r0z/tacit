@@ -223,6 +223,29 @@ contract CanonicalAssetFactoryTest is Test {
         assertEq(CanonicalBridgedERC20(token).MINTER(), MINTER);
     }
 
+    /// solady's _mint does NOT reject the zero address — minting there is irreversible locked supply.
+    /// CanonicalBridgedERC20.mint guards it so a careless/compromised minter can't inflate into the void.
+    /// (The NotMinter check still fires first, so the guard is pure defense-in-depth for the real minter.)
+    function test_mint_rejects_zero_recipient() public {
+        CanonicalBridgedERC20 tok = _deploy(); // minter = MINTER
+        vm.prank(MINTER);
+        vm.expectRevert(CanonicalBridgedERC20.ZeroAddress.selector);
+        tok.mint(address(0), 1e8);
+        assertEq(tok.totalSupply(), 0, "no supply minted to the void");
+    }
+
+    /// INIT_CODE_HASH is exposed so off-chain tooling derives the canonical address from this factory's
+    /// exact deployed bytecode (it shifts with compiler settings) rather than a hardcoded hash that
+    /// drifts. It must reproduce predict() via the standard CREATE2 formula.
+    function test_init_code_hash_reproduces_predict() public view {
+        bytes32 h = factory.INIT_CODE_HASH();
+        assertEq(h, keccak256(type(CanonicalBridgedERC20).creationCode), "exposed hash == creationCode hash");
+        bytes32 salt = keccak256(abi.encode(ASSET, MINTER, string("cBTC"), uint8(8), bytes32(0)));
+        address computed =
+            address(uint160(uint256(keccak256(abi.encodePacked(bytes1(0xff), address(factory), salt, h)))));
+        assertEq(computed, factory.predict(ASSET, MINTER, "cBTC", 8), "off-chain CREATE2 from INIT_CODE_HASH == predict()");
+    }
+
     function test_metaHash_distinguishes_symbol_decimals_and_cid() public view {
         bytes32 h = factory.metaHash("TAC", 18);
         assertTrue(h != factory.metaHash("TAK", 18), "symbol bound");
