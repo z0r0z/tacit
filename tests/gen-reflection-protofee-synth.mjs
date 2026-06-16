@@ -51,7 +51,7 @@ const txSpec = {
   vins: [{ prevTxid: '0x' + dummyTxid.toString('hex'), vout: 0 }],
   env: { type: 'protocol_fee_claim', poolId: POOL_ID, amount: accrued.toString(), cSecp: claimCSecp, blinding: '0x' + Buffer.from(be(claimBlinding, 32)).toString('hex') },
 };
-const input = pool.assembleReflectionScanInput(state, {
+const input = await pool.assembleReflectionScanInput(state, {
   anchorHeight: BLOCK_HEIGHT, headers: ['0x' + Buffer.from(header).toString('hex')], blocks: [{ txs: [txSpec] }],
 }, new Map());
 

@@ -75,7 +75,7 @@ const burnBlock = (txidDisplay) => ({ txs: [{ txidDisplay, rawHex: 'bb'.repeat(4
   const idx = makeScanReflectionIndexer({ ...deps, burnDepositKit: kit });
   const before = idx.state().counts();
   const tx0 = dtx(0x20);
-  const input = idx.assembleBlocks([burnBlock(tx0)], { headers: ['0x' + '00'.repeat(80)], anchorHeight: 700, burnDeposits: new Map([[tx0, mkBundle()]]) });
+  const input = await idx.assembleBlocks([burnBlock(tx0)], { headers: ['0x' + '00'.repeat(80)], anchorHeight: 700, burnDeposits: new Map([[tx0, mkBundle()]]) });
   const after = idx.state().counts();
   const bd = input.blocks[0].txs[0].burnDeposit;
   ok(bd != null, 'valid: a burnDeposit witness is emitted');
@@ -95,7 +95,7 @@ const burnBlock = (txidDisplay) => ({ txs: [{ txidDisplay, rawHex: 'bb'.repeat(4
   const before = idx.state().counts();
   const rootsBefore = idx.roots(); // { poolRoot, spentRoot, burnRoot, height } — only height should move
   const tx0 = dtx(0x30);
-  const input = idx.assembleBlocks([burnBlock(tx0)], { headers: ['0x' + '00'.repeat(80)], anchorHeight: 701, burnDeposits: new Map([[tx0, mkBundle()]]) });
+  const input = await idx.assembleBlocks([burnBlock(tx0)], { headers: ['0x' + '00'.repeat(80)], anchorHeight: 701, burnDeposits: new Map([[tx0, mkBundle()]]) });
   const after = idx.state().counts();
   const rootsAfter = idx.roots();
   const bd = input.blocks[0].txs[0].burnDeposit;
@@ -115,7 +115,7 @@ const burnBlock = (txidDisplay) => ({ txs: [{ txidDisplay, rawHex: 'bb'.repeat(4
   const idx = makeScanReflectionIndexer({ ...deps, burnDepositKit: kit });
   const tx0 = dtx(0x40);
   const cmints = [{ revealTx: 'cc'.repeat(60), commitTx: 'dd'.repeat(30), blockTxids: [Buffer.alloc(32, 0xcc)], index: 0 }];
-  idx.assembleBlocks([burnBlock(tx0)], { headers: ['0x' + '00'.repeat(80)], anchorHeight: 702, burnDeposits: new Map([[tx0, mkBundle(cmints)]]) });
+  await idx.assembleBlocks([burnBlock(tx0)], { headers: ['0x' + '00'.repeat(80)], anchorHeight: 702, burnDeposits: new Map([[tx0, mkBundle(cmints)]]) });
   eq(seen.cmintCalls, 1, 'mintable: verifyCmintAuthorized called once for the cmint');
   eq(seen.leaves.length, 2, 'mintable: valid_leaves = [C_0, authorized cmint]');
   eq(seen.leaves[1][0], CMINT_LEAF[0], 'mintable: the cmint leaf outpoint is admitted');
@@ -126,7 +126,7 @@ const burnBlock = (txidDisplay) => ({ txs: [{ txidDisplay, rawHex: 'bb'.repeat(4
   const { kit } = makeKit(true);
   const idx = makeScanReflectionIndexer({ ...deps, burnDepositKit: kit });
   const tx0 = dtx(0x50);
-  idx.assembleBlocks([burnBlock(tx0)], { headers: ['0x' + '00'.repeat(80)], anchorHeight: 703, burnDeposits: new Map([[tx0, mkBundle()]]) });
+  await idx.assembleBlocks([burnBlock(tx0)], { headers: ['0x' + '00'.repeat(80)], anchorHeight: 703, burnDeposits: new Map([[tx0, mkBundle()]]) });
   const digest = idx.digest();
   const restored = makeScanReflectionIndexer({ ...deps, burnDepositKit: kit });
   restored.load(idx.snapshot());
@@ -143,7 +143,7 @@ const burnBlock = (txidDisplay) => ({ txs: [{ txidDisplay, rawHex: 'bb'.repeat(4
   const rootsBefore = idx.roots();
   const tx0 = dtx(0x60);
   let input, threw = false;
-  try { input = idx.assembleBlocks([burnBlock(tx0)], { headers: ['0x' + '00'.repeat(80)], anchorHeight: 704 /* no burnDeposits */ }); }
+  try { input = await idx.assembleBlocks([burnBlock(tx0)], { headers: ['0x' + '00'.repeat(80)], anchorHeight: 704 /* no burnDeposits */ }); }
   catch { threw = true; }
   ok(!threw, 'no-bundle: assembleBlocks does not throw on a bundle-less burn-deposit');
   const bd = input && input.blocks[0].txs[0].burnDeposit;

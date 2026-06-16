@@ -37,7 +37,7 @@ const block0 = { txs: [{
   vins: [{ prevTxidDisplay: dtx(0xee), vout: 3 }],     // a non-pool input — no spend detected
   decode: { type: 'cxfer', assetId, ...conservingZeroCxfer(assetId, [11n, 22n]) },
 }] };
-const in0 = idx.assembleBlocks([block0], { headers: ['0x' + '00'.repeat(80)], anchorHeight: 500 });
+const in0 = await idx.assembleBlocks([block0], { headers: ['0x' + '00'.repeat(80)], anchorHeight: 500 });
 eq(in0.prior.poolRoot, makeScanReflectionIndexer(deps).roots().poolRoot, 'block0 prior == genesis pool root');
 ne(in0.newDigest, genesis, 'block0 advances the digest');
 eq(idx.liveCount(), 2, 'two outputs are now live');
@@ -54,7 +54,7 @@ const block1 = { txs: [
   { txidDisplay: dtx(0x20), rawHex: 'bb'.repeat(40), vins: [{ prevTxidDisplay: tx0internalDisplay, vout: 0 }], decode: null },
   { txidDisplay: dtx(0x21), rawHex: 'cc'.repeat(40), vins: [{ prevTxidDisplay: tx0internalDisplay, vout: 1 }], decode: { type: 'burn', dest: v(0xde57) } },
 ] };
-const in1 = idx.assembleBlocks([block1], { headers: ['0x' + '11'.repeat(80)], anchorHeight: 501 });
+const in1 = await idx.assembleBlocks([block1], { headers: ['0x' + '11'.repeat(80)], anchorHeight: 501 });
 eq(in1.prior.poolRoot, in0.newDigest ? in1.prior.poolRoot : null, 'block1 prior exists');
 eq(in1.prior.liveCount, 2, 'block1 prior had two live notes');
 eq(idx.liveCount(), 0, 'both outputs spent → live set empty');
@@ -78,7 +78,7 @@ eq(restored.liveCount(), 0, 'restored live count matches');
 const block2 = { txs: [{ txidDisplay: dtx(0x30), rawHex: 'dd'.repeat(50), vins: [], decode: { type: 'cxfer', assetId, ...conservingZeroCxfer(assetId, [33n]) } }] };
 const in2live = makeScanReflectionIndexer(deps);
 in2live.load(JSON.parse(JSON.stringify(snap)));
-const r2 = in2live.assembleBlocks([block2], { headers: ['0x' + '22'.repeat(80)], anchorHeight: 502 });
+const r2 = await in2live.assembleBlocks([block2], { headers: ['0x' + '22'.repeat(80)], anchorHeight: 502 });
 eq(r2.prior.poolRoot, idx.roots().poolRoot, 'restored indexer continues from the snapshot root');
 eq(in2live.liveCount(), 1, 'the new deposit is live in the restored indexer');
 

@@ -7,6 +7,7 @@
 
 import { makeScanReflectionIndexer } from '../../dapp/confidential-reflection-scan-indexer.js';
 import { makeBurnDepositKit } from '../../dapp/burn-deposit-bitcoin.js';
+import { SWAP_BATCH_VK } from '../../dapp/confidential-swapbatch-vk.js';
 
 // ── Full-scan reflection attester (the worker's Bitcoin-state relay; the superseded witnessed-effects
 // attester was removed at the scan-attester cutover) ──
@@ -55,7 +56,7 @@ export function makeScanReflectionAttester({ deps, storage, prove, submit, getBl
     const from = s.attestedHeight + 1;
     const to = Math.min(s.tipHeight, from + batchSize - 1);
     const heights = range(from, to);
-    const idx = makeScanReflectionIndexer({ ...deps, burnDepositKit });
+    const idx = makeScanReflectionIndexer({ ...deps, burnDepositKit, swapBatchVk: SWAP_BATCH_VK });
     idx.load(s.snapshot);
     const blocks = await Promise.all(heights.map((h) => getBlockTxs(h)));
     const headers = await getHeaders(heights);
@@ -67,7 +68,7 @@ export function makeScanReflectionAttester({ deps, storage, prove, submit, getBl
       const txids = blocks.flatMap((b) => (b.txs || []).map((t) => t.txidDisplay));
       burnDeposits = await getBurnDeposits(txids);
     }
-    const input = idx.assembleBlocks(blocks, { headers, anchorHeight: from, burnDeposits });
+    const input = await idx.assembleBlocks(blocks, { headers, anchorHeight: from, burnDeposits });
     // Fail-loud: if any tx in this range carries a Tacit envelope the guest folds but the JS scan does
     // not yet mirror (AMM / cBTC / farm / bid / protocol-fee / crossout / AXFER), the guest would read
     // fold witnesses this assembler never emitted — the prover input is desynced. REFUSE rather than

@@ -90,13 +90,23 @@ export async function swapBatchGroth16Verify(vk, publicsBigInt, proofBytes) {
 
 // Fold a confirmed T_SWAP_BATCH (0x2F) — mirror cxfer-core swap_batch.rs fold_swap_batch. All-or-nothing:
 // every gate runs (and the post-reserves are computed) BEFORE any state mutation, then each receipt is onboarded
-// as a real bridgeable note + the reserves advance by the public net deltas. SYNC: the BN254 Groth16 verify is
-// the caller's ASYNC pre-step (swapBatchGroth16Verify over swapBatchPublicSignals + the inline ceremony vk),
-// injected as `groth16Ok` — the fold still gates on it; a wrong flag yields a wrong digest the contract rejects
+// as a real bridgeable note + the reserves advance by the public net deltas. ASYNC: the BN254 Groth16 verify
+// (swapBatchGroth16Verify over swapBatchPublicSignals + the injected ceremony `vk`) runs against the pool's
+// FOLD-POINT reserves p.reserveA/B — so a prior same-block op that moved them is reflected (the settler proved
+// against exactly these), and a bad/forged proof yields a skip (null), exactly the guest's skip-not-panic
 // (liveness, not soundness — the guest re-verifies). `pool` = makeConfidentialPool (crypto helpers), `state` =
-// its scan state (foldOutput / pools), `spends` = the detected pool-UTXO spends (the traders' c_in_secp inputs).
-// Returns { receiptPaths } (the n onboarded note-paths, for the witness), or null (skip) on any gate.
-export function foldSwapBatch(pool, state, env, txidHex, spends, { groth16Ok } = {}) {
+// its scan state (foldOutput / pools), `spends` = the detected pool-UTXO spends (the traders' c_in_secp inputs),
+// `vk` = the inline ceremony vk (== the guest's batch_vk.bin). Returns { receiptPaths } (the n onboarded
+// note-paths, for the witness), or null (skip) on any gate. `verify(vk, env, poolId, rA, rB)` is the Groth16
+// step (defaults to defaultSwapBatchVerify — re-derive publics + snarkjs-verify); unit tests inject a mock to
+// exercise the non-Groth16 gates without a real proof. The publics-building lives INSIDE verify so the mock
+// fully bypasses it.
+async function defaultSwapBatchVerify(vk, env, poolIdHex, reserveA, reserveB) {
+  const publics = swapBatchPublicSignals(env, poolIdHex, reserveA, reserveB);
+  if (!publics) return false;
+  return swapBatchGroth16Verify(vk, publics, env.proof);
+}
+export async function foldSwapBatch(pool, state, env, txidHex, spends, { vk, verify = defaultSwapBatchVerify } = {}) {
   const ni = env.nIntents;
   if (env.intents.length !== ni || env.receipts.length !== ni) return null;
   // 1. resolve the pool (canonical pair → v1 pool_id) + tracked reserves; c0-backed + canonically oriented.
@@ -111,7 +121,11 @@ export function foldSwapBatch(pool, state, env, txidHex, spends, { groth16Ok } =
   const newA = applySigned(BigInt(p.reserveA), env.deltaANetSign, BigInt(env.deltaANetMag));
   const newB = applySigned(BigInt(p.reserveB), env.deltaBNetSign, BigInt(env.deltaBNetMag));
   if (newA === null || newB === null) return null;
-  // 3. Groth16 (per-receipt split) — pre-verified async by the caller (see swapBatchGroth16Verify).
+  // 3. Groth16 (per-receipt clearing split) — verified HERE against the fold-point reserves p.reserveA/B (the
+  // settler proved against exactly these; a prior same-block op that moved them is already folded into p). A
+  // forged proof or a reserve mismatch fails closed → skip. Async (snarkjs); vk injected by the caller.
+  let groth16Ok = false;
+  try { groth16Ok = await verify(vk, env, poolId, p.reserveA, p.reserveB); } catch { return null; }
   if (!groth16Ok) return null;
   // 4. aggregate Pedersen identity per asset A + B (binds the receipts' total to real inputs + reserve).
   const intentsSecp = env.intents.map((it) => ({ direction: Number(it.direction), cInSecp: it.cInSecp }));

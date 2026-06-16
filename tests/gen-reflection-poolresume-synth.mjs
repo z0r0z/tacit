@@ -43,7 +43,7 @@ const txid = computeTxid(tx);
 const header = mineHeader(computeMerkleRoot([txid]));
 
 const txSpec = { txData: '0x' + tx.toString('hex'), txid: '0x' + Buffer.from(txid).toString('hex'), vins: [{ prevTxid: '0x' + dummyPrev.toString('hex'), vout: 0 }], env: null };
-const input = pool.assembleReflectionScanInput(state, {
+const input = await pool.assembleReflectionScanInput(state, {
   anchorHeight: BLOCK_HEIGHT, headers: ['0x' + Buffer.from(header).toString('hex')], blocks: [{ txs: [txSpec] }],
 }, new Map());
 

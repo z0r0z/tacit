@@ -93,7 +93,7 @@ const txSpec = {
     outputs: decode.commitments.map((comm, j) => { const { cx, cy } = pool.decompressCommitment(comm); return { cx, cy, compressed: comm, commitmentHash: pool.commitmentHash(cx, cy), noteLeaf: pool.leaf(decode.assetId, cx, cy, ZERO_OWNER), vout: j + decode.voutBase }; }),
   },
 };
-const input = pool.assembleReflectionScanInput(state, {
+const input = await pool.assembleReflectionScanInput(state, {
   anchorHeight: BLOCK_HEIGHT, headers: ['0x' + Buffer.from(header).toString('hex')], blocks: [{ txs: [txSpec] }],
 }, coords);
 

@@ -127,7 +127,7 @@ const txSpec = {
     outputs: Cout.map((C, j) => { const { cx, cy } = xyHex(C); return { cx, cy, compressed: '0x' + Buffer.from(compress(C)).toString('hex'), commitmentHash: pool.commitmentHash(cx, cy), noteLeaf: pool.leaf(ASSET_HEX, cx, cy, ZERO_OWNER), vout: j }; }),
   },
 };
-const input = pool.assembleReflectionScanInput(state, {
+const input = await pool.assembleReflectionScanInput(state, {
   anchorHeight: BLOCK_HEIGHT, headers: ['0x' + Buffer.from(header).toString('hex')], blocks: [{ txs: [txSpec] }],
 }, coords);
 

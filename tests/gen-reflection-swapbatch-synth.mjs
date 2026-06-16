@@ -108,7 +108,8 @@ const inOutpoint = pool.outpointKey('0x' + seedTxid.toString('hex'), seedVout);
 state.foldOutput(pool.leaf(ASSET_A, cInXY.cx, cInXY.cy, ZERO_OWNER), inOutpoint, pool.commitmentHash(cInXY.cx, cInXY.cy), ASSET_A);
 coords.set(inOutpoint.toLowerCase(), { cx: cInXY.cx, cy: cInXY.cy });
 
-// ── 6. pre-verify the Groth16 (async) against the inline ceremony vk; gate the hook on it ──
+// ── 6. fixture sanity check: my publics == the circuit's, and the proof verifies against the inline ceremony
+// vk (the SAME vk + reserves the fold uses internally — foldSwapBatch now does the Groth16 verify itself). ──
 const inlineVk = JSON.parse(readFileSync(process.env.SWAPBATCH_VK || '/tmp/swapbatch-inline-vk.json'));
 const mine = swapBatchPublicSignals(env, poolId, reserveA, reserveB).map((x) => x.toString());
 const pubMatch = mine.every((v, i) => v === publicSignals[i]);
@@ -116,8 +117,8 @@ const groth16Ok = await swapBatchGroth16Verify(inlineVk, mine.map(BigInt), proof
 console.error(`publics match circuit=${pubMatch} groth16(inline vk)=${groth16Ok}`);
 
 const txSpec = { txData: '0x' + tx.toString('hex'), txid: txidHex, vins: [{ prevTxid: '0x' + seedTxid.toString('hex'), vout: seedVout }], env: { type: 'swap_batch', ...env } };
-const swapBatchFold = (e, tid, spends) => foldSwapBatch(pool, state, e, tid, spends, { groth16Ok });
-const input = pool.assembleReflectionScanInput(state, {
+const swapBatchFold = (e, tid, spends) => foldSwapBatch(pool, state, e, tid, spends, { vk: inlineVk });
+const input = await pool.assembleReflectionScanInput(state, {
   anchorHeight: BLOCK_HEIGHT, headers: ['0x' + Buffer.from(header).toString('hex')], blocks: [{ txs: [txSpec] }], swapBatchFold,
 }, coords);
 

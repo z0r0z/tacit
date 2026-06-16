@@ -830,6 +830,9 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
 
     return {
       commit, digest, foldSpent, foldOutput, foldNoteAppend, foldBurn, foldCbtcLock, foldCbtcLockSpends, foldSwapVar, foldSwapRoute, foldHarvest, foldProtocolFeeClaim, foldFarmInit, foldLpRemove, foldLpAdd, setHeight,
+      // The next free slot's note append-path, computed WITHOUT inserting — the swap_batch witness emits this n
+      // times on a skip (the guest reads n receipt paths unconditionally, then discards them when the fold bails).
+      notePathPeek: () => notes.rootAndPath(noteCount()).path,
       spentContains: (nu) => spent.contains(nu),
       poolRoot: () => notes.root(), spentRoot: () => spent.root(), burnRoot: () => burns.root(), liveRoot: () => live.root(),
       cbtcBackingSats: () => cbtcBackingSats, cbtcLocks,
@@ -1082,7 +1085,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     return { ...base, spentInsert: BD_ZERO_SPENT, notePath: BD_ZERO_PATH, burnInsert: BD_ZERO_BURN };
   }
 
-  function assembleReflectionScanInput(state, batch, coords) {
+  async function assembleReflectionScanInput(state, batch, coords) {
     const norm = (x) => hx(b32(x));
     const c = state.counts();
     const prior = {
@@ -1259,11 +1262,19 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
         } else if (tx.env && tx.env.type === 'swap_batch') {
           // Track-C swap_batch (0x2F): every receipt onboarded as a real note + reserves advanced, gated by the
           // BN254 Groth16 + the aggregate identity + per-receipt xcurve. The fold (BabyJubJub / snarkjs deps) is
-          // injected as `batch.swapBatchFold` so confidential-pool.js stays lean; it onboards via the state + returns
-          // the n receipt note-paths (the witness, read per 0x2F). The Groth16 verify is the hook's async pre-step.
+          // injected as `batch.swapBatchFold` so confidential-pool.js stays lean; the hook is async — its Groth16
+          // verify runs against the pool's CURRENT (fold-point) reserves, so a prior same-block op that moved them
+          // is reflected. The guest reads n receipt paths UNCONDITIONALLY (dispatch r_path()×n) before folding, so
+          // the witness must carry n paths whether the fold onboards or skips; on a skip the guest discards them
+          // (no append → digest unchanged), so the frontier path ×n keeps the stream aligned.
           if (typeof batch.swapBatchFold === 'function') {
-            const sw = batch.swapBatchFold(tx.env, tx.txid, openings.map((o) => ({ cx: o.cx, cy: o.cy })));
-            if (sw && sw.receiptPaths) swapBatch = { receiptPaths: sw.receiptPaths };
+            const n = tx.env.nIntents | 0;
+            const sw = await batch.swapBatchFold(tx.env, tx.txid, openings.map((o) => ({ cx: o.cx, cy: o.cy })));
+            swapBatch = { receiptPaths: (sw && sw.receiptPaths) ? sw.receiptPaths : Array.from({ length: n }, () => state.notePathPeek()) };
+          } else {
+            // No verify hook wired (no vk) — the guest WOULD fold this; surface it so the attester refuses rather
+            // than emit a witness short n paths (a desync). Liveness, never a wrong digest.
+            unsupportedEnvelopes.push({ txid: tx.txid, opcode: 0x2f });
           }
         }
         txsOut.push({ txData: tx.txData, openings, spentInserts, burnInsert, outputs, burnDeposit, cbtcLock, swapVar, swapRoute, harvest, protocolFee, lpRemove, lpAdd, swapBatch });

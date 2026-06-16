@@ -79,7 +79,7 @@ const txSpec = {
     rReceipt: '0x' + Buffer.from(be(rReceipt, 32)).toString('hex'), kernelSig: '0x' + Buffer.from(kernelSig).toString('hex'),
   },
 };
-const input = pool.assembleReflectionScanInput(state, {
+const input = await pool.assembleReflectionScanInput(state, {
   anchorHeight: BLOCK_HEIGHT, headers: ['0x' + Buffer.from(header).toString('hex')], blocks: [{ txs: [txSpec] }],
 }, coords);
 

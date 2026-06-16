@@ -70,7 +70,7 @@ const batch = {
 };
 
 const d0 = st.digest();
-const input = pool.assembleReflectionScanInput(st, batch, coords);
+const input = await pool.assembleReflectionScanInput(st, batch, coords);
 ne(input.newDigest, d0, 'the batch advances the digest');
 eq(input.newDigest, st.digest(), 'newDigest == the advanced state');
 eq(input.prior.poolRoot, pool.makeScanReflectionState().poolRoot(), 'prior captured the genesis pool root');
@@ -108,7 +108,7 @@ const noteBefore = stM.counts().note;
 const mintBatch = { anchorHeight: 200, headers: ['0x' + '00'.repeat(80)], blocks: [{ txs: [
   { txData: '0xmint01', txid: v(0x91), vins: [{ prevTxid: v(0x90), vout: 0 }], env: { type: 'mint', assetId: v(0xa55e7) } },
 ] }] };
-const mintInput = pool.assembleReflectionScanInput(stM, mintBatch, new Map());
+const mintInput = await pool.assembleReflectionScanInput(stM, mintBatch, new Map());
 eq(mintInput.unreflectedValueEntry.length, 1, 'the mint is surfaced as an unreflected value-entry');
 eq(mintInput.unreflectedValueEntry[0].txid, v(0x91), 'the surfaced entry names the mint txid');
 eq(stM.counts().note, noteBefore, 'the mint folds NO note (value does not enter bitcoinPoolRoot)');

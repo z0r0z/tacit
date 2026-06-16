@@ -373,14 +373,18 @@ function classifyConfidentialTx(rawTxHex) {
   const amm = parseSwapVarEnvelope(envHex) || parseSwapRouteEnvelope(envHex) || parseHarvestEnvelope(envHex)
     || parseProtocolFeeClaimEnvelope(envHex) || parseFarmInitEnvelope(envHex);
   if (amm) return amm;
+  // T_SWAP_BATCH (0x2F): fold data is fully on-chain too, but its BN254 Groth16 verify is async — the indexer's
+  // injected hook verifies it against the pool's fold-point reserves, then onboards the n receipts. Route it (the
+  // parser returns no `type`, so stamp it); the assembler's swap_batch branch reads exactly these fields.
+  const sb = parseSwapBatchEnvelope(envHex);
+  if (sb) return { type: 'swap_batch', ...sb };
   // env[0] is the opcode (the TACIT frame is already stripped). cetch (0x21) / cmint (0x24) create a note
   // but the conservation-closed full scan does NOT fold them (no free-output deposit path), so the guest
   // treats them as plain too — safe. The STILL-deferred guest-folded ops: lp_add (0x2D) / lp_remove (0x2E) /
   // cBTC lock (0x66) read OFF-CHAIN witnesses (share_r / r_recv / the opening sigma) the indexer can't source
-  // yet; swap_batch (0x2F) needs the indexer's async Groth16 pre-verify (the foldSwapBatch hook); crossout. These
-  // must SURFACE (not be treated as plain) — else the guest reads fold witnesses this scan never emitted and the
-  // batch's stream desyncs. Fail-loud: the attester refuses the batch (liveness, not soundness — the guest is
-  // authoritative). Mirroring a fold + routing it here is what lets the corresponding op attest.
+  // yet. These must SURFACE (not be treated as plain) — else the guest reads fold witnesses this scan never
+  // emitted and the batch's stream desyncs. Fail-loud: the attester refuses the batch (liveness, not soundness —
+  // the guest is authoritative). Mirroring a fold + routing it here is what lets the corresponding op attest.
   const opcode = hexToBytes(envHex)[0];
   if (opcode === 0x21 || opcode === 0x24) return null; // cetch / cmint — created-but-not-folded (plain)
   return { type: 'unsupported', opcode };

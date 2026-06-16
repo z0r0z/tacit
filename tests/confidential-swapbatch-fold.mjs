@@ -61,11 +61,12 @@ function seed({ c0 = true } = {}) {
 }
 const spends = [{ cx: cInXY.cx, cy: cInXY.cy }];
 
-// ── accept ──
+// ── accept ── (verify injected true — exercises the aggregate / xcurve / spend / reserve gates; the REAL
+// snarkjs Groth16 verify is covered end-to-end by gen-reflection-swapbatch-synth + reflect-exec on the box.)
 {
   const st = seed();
   const g0 = st.digest();
-  const w = foldSwapBatch(pool, st, env, txid, spends, { groth16Ok: true });
+  const w = await foldSwapBatch(pool, st, env, txid, spends, { verify: async () => true });
   ok(w && w.receiptPaths && w.receiptPaths.length === 1, 'batch folds (1 receipt note-path)');
   eq(st.counts().note, 2, 'receipt onboarded (1 seeded c_in + 1 receipt)');
   const p = st.pools.get(poolId);
@@ -75,17 +76,17 @@ const spends = [{ cx: cInXY.cx, cy: cInXY.cy }];
 }
 
 // ── gates reject (no mutation) ──
-const rejects = (label, st, run) => {
+const rejects = async (label, st, run) => {
   const before = st.counts().note, rA = st.pools.get(poolId) ? st.pools.get(poolId).reserveA + '' : '-';
-  ok(run() === null, label + ' → skip');
+  ok((await run()) === null, label + ' → skip');
   eq(st.counts().note, before, label + ': no receipt onboarded');
   if (st.pools.get(poolId)) eq(st.pools.get(poolId).reserveA + '', rA, label + ': reserves unchanged');
 };
-rejects('groth16 not verified', seed(), () => foldSwapBatch(pool, seed(), env, txid, spends, { groth16Ok: false }));
-rejects('wrong R_net_A (aggregate fails)', seed(), () => foldSwapBatch(pool, seed(), { ...env, rNetA: beHex(rIn - rTipA + 1n) }, txid, spends, { groth16Ok: true }));
-rejects('tampered receipt xcurve sigma', seed(), () => { const bad = new Uint8Array(outXcurveSigma); bad[0] ^= 1; return foldSwapBatch(pool, seed(), { ...env, receipts: [{ cOutSecp, cOutBjj, outXcurveSigma: hx(bad) }] }, txid, spends, { groth16Ok: true }); });
-rejects('intent c_in not a real spend', seed(), () => foldSwapBatch(pool, seed(), env, txid, [], { groth16Ok: true }));
-rejects('pool not c0-backed', seed({ c0: false }), () => foldSwapBatch(pool, seed({ c0: false }), env, txid, spends, { groth16Ok: true }));
+await rejects('groth16 not verified', seed(), () => foldSwapBatch(pool, seed(), env, txid, spends, { verify: async () => false }));
+await rejects('wrong R_net_A (aggregate fails)', seed(), () => foldSwapBatch(pool, seed(), { ...env, rNetA: beHex(rIn - rTipA + 1n) }, txid, spends, { verify: async () => true }));
+await rejects('tampered receipt xcurve sigma', seed(), () => { const bad = new Uint8Array(outXcurveSigma); bad[0] ^= 1; return foldSwapBatch(pool, seed(), { ...env, receipts: [{ cOutSecp, cOutBjj, outXcurveSigma: hx(bad) }] }, txid, spends, { verify: async () => true }); });
+await rejects('intent c_in not a real spend', seed(), () => foldSwapBatch(pool, seed(), env, txid, [], { verify: async () => true }));
+await rejects('pool not c0-backed', seed({ c0: false }), () => foldSwapBatch(pool, seed({ c0: false }), env, txid, spends, { verify: async () => true }));
 
 console.log(failures ? `\n${failures} FAIL` : '\nall ok');
 process.exit(failures ? 1 : 0);

@@ -21,6 +21,7 @@
 // re-verifies value conservation (REFLECT-1) before folding the outputs, mirroring the guest.
 
 import { makeConfidentialPool } from './confidential-pool.js';
+import { foldSwapBatch } from './confidential-swapbatch.js';
 
 const ZERO_OWNER = '0x' + '00'.repeat(32);
 const reverseHex = (h) => h.replace(/^0x/, '').match(/../g).reverse().join(''); // display ↔ internal
@@ -32,7 +33,7 @@ const reverseHex = (h) => h.replace(/^0x/, '').match(/../g).reverse().join(''); 
 //   parseEtchAnchor(etchTxHex, assetHex) -> { c0Compressed, mintAuthority } | null  (worker's verify_etch_anchor port)
 //   computeTxidInternal(txHex) -> "0x…"  (internal-order txid == the guest's compute_txid)
 // Absent → burn-deposits are not assembled (a burn tx with a provenance bundle then throws in the scan).
-export function makeScanReflectionIndexer({ secp, keccak256, sha256, ownerTag, burnDepositKit } = {}) {
+export function makeScanReflectionIndexer({ secp, keccak256, sha256, ownerTag, burnDepositKit, swapBatchVk } = {}) {
   const pool = makeConfidentialPool({ secp, keccak256, sha256 });
   const OWNER = ownerTag || ZERO_OWNER;
   let state = pool.makeScanReflectionState();
@@ -124,16 +125,17 @@ export function makeScanReflectionIndexer({ secp, keccak256, sha256, ownerTag, b
       // NOT yet reflect it (no free-output deposit path); surface it so the assembler can flag the
       // un-onboarded value rather than silently treating the tx as plain.
       env = { type: 'mint', assetId: tx.decode.assetId };
-    } else if (tx.decode && ['swap_var', 'swap_route', 'harvest', 'farm_refund', 'protocol_fee_claim', 'farm_init'].includes(tx.decode.type)) {
-      // Track-B AMM ops whose fold data is fully on-chain (classifyConfidentialTx parsed it) — the assembler's
-      // foldSwapVar/foldSwapRoute/foldHarvest/foldProtocolFeeClaim/foldFarmInit advance the pool registry +
-      // onboard the receipt (deriving the note paths). The decode IS the env shape those folds read.
+    } else if (tx.decode && ['swap_var', 'swap_route', 'harvest', 'farm_refund', 'protocol_fee_claim', 'farm_init', 'swap_batch'].includes(tx.decode.type)) {
+      // Track-B/C AMM ops whose fold data is fully on-chain (classifyConfidentialTx parsed it) — the assembler's
+      // foldSwapVar/foldSwapRoute/foldHarvest/foldProtocolFeeClaim/foldFarmInit (and the swap_batch hook) advance
+      // the pool registry + onboard the receipt(s). The decode IS the env shape those folds read. (swap_batch's
+      // BN254 Groth16 is verified by the injected hook against the fold-point reserves — see assembleBlocks.)
       env = tx.decode;
     } else if (tx.decode && tx.decode.type === 'unsupported') {
       // A Tacit envelope the guest folds but the JS scan does not yet route: lp_add (0x2D) / lp_remove (0x2E) /
       // cBTC lock (0x66) read off-chain witnesses (share_r / r_recv / opening sigma) no source supplies yet;
-      // swap_batch (0x2F) needs the async Groth16 pre-verify hook; crossout. Surface it so the assembler flags
-      // the batch + the attester refuses — the guest would read fold witnesses this scan can't emit (a desync).
+      // crossout. Surface it so the assembler flags the batch + the attester refuses — the guest would read fold
+      // witnesses this scan can't emit (a desync).
       env = { type: 'unsupported', opcode: tx.decode.opcode };
     }
     return { txData: withHex(tx.rawHex), txid, vins, env };
@@ -146,8 +148,13 @@ export function makeScanReflectionIndexer({ secp, keccak256, sha256, ownerTag, b
   // (its `.nonConserving` lists any cxfer whose outputs were skipped for failing value conservation).
   // `burnDeposits` (optional): Map(txidDisplay → holder-traced provenance bundle) for any 0x2B burn of a
   // pre-existing note in this batch — see buildBurnDepositCtx for the bundle shape.
-  function assembleBlocks(blocks, { headers, anchorHeight, burnDeposits } = {}) {
+  async function assembleBlocks(blocks, { headers, anchorHeight, burnDeposits } = {}) {
     const batch = { anchorHeight, headers, blocks: blocks.map((b) => ({ txs: (b.txs || []).map((tx) => txSpec(tx, burnDeposits)) })) };
+    // swap_batch (0x2F): the per-0x2F hook the assembler awaits — verifies the BN254 Groth16 against the pool's
+    // fold-point reserves (vk == the guest's batch_vk.bin) then onboards the n receipts. Built per-call so it
+    // captures the CURRENT `state` (load() may have replaced it). Absent vk ⇒ no hook ⇒ swap_batch surfaces as
+    // unsupported and the attester refuses (liveness, never a wrong digest — see the assembler's swap_batch arm).
+    if (swapBatchVk) batch.swapBatchFold = (env, txid, spends) => foldSwapBatch(pool, state, env, txid, spends, { vk: swapBatchVk });
     return pool.assembleReflectionScanInput(state, batch, coords);
   }
 

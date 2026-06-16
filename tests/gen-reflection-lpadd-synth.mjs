@@ -75,7 +75,7 @@ const txSpec = {
     feeBps, capabilityFlags: 0, protocolFeeAddress: PROTO_FEE_ADDR, protocolFeeBps,
   },
 };
-const input = pool.assembleReflectionScanInput(state, {
+const input = await pool.assembleReflectionScanInput(state, {
   anchorHeight: BLOCK_HEIGHT, headers: ['0x' + Buffer.from(header_blk).toString('hex')], blocks: [{ txs: [txSpec] }],
 }, coords);
 

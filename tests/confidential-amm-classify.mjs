@@ -7,6 +7,7 @@
 // no longer 'unsupported'. Run: node tests/confidential-amm-classify.mjs
 
 import { execFileSync } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { keccak_256 } from '../node_modules/@noble/hashes/sha3.js';
 import * as secp from '../node_modules/@noble/secp256k1/index.js';
 import { createHash } from 'node:crypto';
@@ -58,6 +59,30 @@ const A = '0x' + 'a1'.repeat(32), B = '0x' + 'b2'.repeat(32), C = '0x' + 'c3'.re
   const e = new Uint8Array(174); e[0] = 0x3e; e.fill(0xab, 1, 33); e[66] = 0xe8; e[67] = 0x03; e.fill(0xcd, 78, 110);
   const d = parseHarvestEnvelope('0x' + Buffer.from(e).toString('hex'));
   ok(d && d.type === 'farm_refund' && numEq(d.amount, 1000) && norm(d.farmId) === 'ab'.repeat(32) && norm(d.r) === 'cd'.repeat(32), 'farm_refund (0x3E): type/farmId/amount/r');
+}
+// ── swap_batch (0x2F): its gen fullProves a real 1-intent A→B batch (snarkjs + the ~95MB head zkey), which is
+// heavy enough to deadlock a memory-constrained machine — so it is OPT-IN (RUN_SWAPBATCH_GEN=1, set on the box)
+// and time-bounded. When off/absent/timed-out, SKIP LOUD (never a silent pass) — the box's reflect-exec
+// DIGEST_MATCH is the authority for the fold; here we only assert a real 0x2F classifies to swap_batch. ──
+{
+  const ZKEY = process.env.REFLECT_SWAPBATCH_ZKEY || '/tmp/head-swapbatch.zkey';
+  const VK = process.env.SWAPBATCH_VK || '/tmp/swapbatch-inline-vk.json';
+  const WASM = 'dapp/circuits/amm/build/amm_swap_batch_js/amm_swap_batch.wasm';
+  let raw = null;
+  if (process.env.RUN_SWAPBATCH_GEN === '1' && existsSync(ZKEY) && existsSync(VK) && existsSync(WASM)) {
+    try {
+      raw = JSON.parse(execFileSync('node', ['tests/gen-reflection-swapbatch-synth.mjs'],
+        { encoding: 'utf8', maxBuffer: 64 << 20, timeout: 180000, stdio: ['ignore', 'pipe', 'ignore'] })).blocks[0].txs[0].txData;
+    } catch (e) { console.error(`SKIP swap_batch classify: gen failed/timed out (${e.code || e.message}) — validated on the box`); }
+  } else {
+    console.error('SKIP swap_batch classify: set RUN_SWAPBATCH_GEN=1 with the head zkey to run (validated on the box)');
+  }
+  if (raw) {
+    const d = classifyConfidentialTx(raw);
+    ok(d && d.type === 'swap_batch' && d.nIntents === 1 && d.intents.length === 1 && d.receipts.length === 1
+      && norm(d.proof).length === 512 && norm(d.assetA).length === 64 && norm(d.assetB).length === 64,
+      'swap_batch (0x2F): classifies to swap_batch (1 intent/receipt, 256B proof)');
+  }
 }
 
 console.log(failures ? `\n${failures} FAIL` : '\nall ok — AMM ops route live (classify parses each on-chain envelope to its fold env)');
