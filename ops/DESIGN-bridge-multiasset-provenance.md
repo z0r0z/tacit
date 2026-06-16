@@ -293,8 +293,8 @@ the opcode only selects the wire layout. So the question per op is just "which l
 | AMM LP-share onboarding | minted at 0x2D | B — `fold_lp_share_mint` | ✅ |
 | AMM multihop route | T_SWAP_ROUTE 0x33 | B — `fold_swap_route` (value-chained across hops) | ✅ |
 | Farm init / rewards | T_FARM_INIT 0x34 / T_LP_HARVEST 0x3B | B — `fold_farm_init` / `fold_harvest` (treasury reserve) | ✅ |
-| Farm refund (launcher reclaim) | T_FARM_REFUND 0x3E | B — treasury draw-down (sibling of harvest) | ⛳ gap |
-| AMM protocol-fee claim | T_PROTOCOL_FEE_CLAIM 0x31 | B — mints an LP-share note, bound to public `protocol_fee_accrued` | ⛳ gap (needs the accrued accumulator in the registry) |
+| Farm refund (launcher reclaim) | T_FARM_REFUND 0x3E | B — treasury draw-down, reuses `fold_harvest` | ✅ |
+| AMM protocol-fee claim (creator LP-skim) | T_PROTOCOL_FEE_CLAIM 0x31 | B — in-guest Uniswap-V2 accrual (`crystallize_protocol_fee` at LP events) + `fold_protocol_fee_claim` (claim == accrued ⇒ onboard LP-share note); needs the 6-arg `pool_id` (`capability_flags` + protocol-fee config from the variant-1 POOL_INIT walk) | ✅ |
 | Confidential batch swap | T_SWAP_BATCH 0x2F | C — Groth16 ✅ + parser ✅ + BabyJubJub xcurve ✅ + aggregate Pedersen identity ✅ + `fold_swap_batch` (123-signal re-derivation + onboarding, type-checked vs the real crates) | 🔨 end-to-end validation (full envelope+proof vector / box-prove) remains |
 | Issuance (mint / drop claim) | T_MINT/PMINT/DCLAIM | cmint-deposit path (issuer-authorized) | ✅ |
 | cBTC.zk lock / slots | 0x66, T_SLOT_* | cBTC-specific folds | partial |
