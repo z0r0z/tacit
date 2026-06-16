@@ -1000,6 +1000,32 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     const a = (sp * BigInt(dA)) / BigInt(reserveA), b = (sp * BigInt(dB)) / BigInt(reserveB);
     return a < b ? a : b;
   }
+  // swap_batch aggregate Pedersen identity (mirror swap_batch_aggregate_identity) — the per-asset NO-INFLATION
+  // bound for a T_SWAP_BATCH: Σ(input C_in_secp) − Σ(output C_out_secp) − tip_X − (±δ_X·H) == R_net_X·G. Ties
+  // the receipts' total to the traders' REAL spent inputs + the public net delta + the c0-backed reserve, so a
+  // batch can't onboard unbacked value. `intents`: [{direction, cInSecp}]; `receiptsCOut`: compressed hex[].
+  function swapBatchAggregateIdentity(intents, receiptsCOut, assetXIsA, deltaXSign, deltaXMag, tipXCSecp, rNetX) {
+    if (intents.length !== receiptsCOut.length) return false;
+    const Z = secp.ProjectivePoint.ZERO;
+    const pt = (h) => secp.ProjectivePoint.fromHex(String(h).replace(/^0x/, ''));
+    let sum = Z;
+    try {
+      for (let i = 0; i < intents.length; i++) {
+        const dir = intents[i].direction;
+        const isInput = (assetXIsA && dir === 0) || (!assetXIsA && dir === 1);
+        const isOutput = (assetXIsA && dir === 1) || (!assetXIsA && dir === 0);
+        if (isInput) sum = sum.add(pt(intents[i].cInSecp));
+        else if (isOutput) sum = sum.add(pt(receiptsCOut[i]).negate());
+      }
+      sum = sum.add(pt(tipXCSecp).negate());
+    } catch { return false; }
+    if (BigInt(deltaXMag) !== 0n) {
+      const dh = prover.H.multiply(BigInt(deltaXMag));
+      sum = deltaXSign === 0 ? sum.add(dh.negate()) : sum.add(dh);
+    }
+    const k = mod(BigInt(rNetX), N);                          // R_net_X reduced mod n (matches scalar_reduce_be)
+    return sum.equals(k === 0n ? Z : secp.ProjectivePoint.BASE.multiply(k));
+  }
   // Full conservation: kernel (no inflation) AND every output in BP+ range (no wraparound). The
   // exact predicate the reflection guest re-runs before folding a cxfer's outputs (REFLECT-1).
   function verifyCxferConservation({ asset, inputOutpoints, inputPoints, outsCompressed, rangeProof, kernelSig, burned = 0 }) {
@@ -1334,7 +1360,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     liveLeaf, makeLiveUtxoSet, makeScanReflectionState, assembleReflectionScanInput,
     CBTC_ZK_ASSET_ID, CBTC_LOCK_DOMAIN, cbtcLockContext,
     cxferKernelVerify, verifyCxferConservation,
-    protocolFeeShares, crystallizeProtocolFee, ammDeriveLpAssetId, ammDeriveFarmId, ammCanonicalPair, ammDerivePoolIdFull, lpRemoveKernelVerify, lpAddKernelVerify, lpAddShares, AMM_MINIMUM_LIQUIDITY, isqrt,
+    protocolFeeShares, crystallizeProtocolFee, ammDeriveLpAssetId, ammDeriveFarmId, ammCanonicalPair, ammDerivePoolIdFull, lpRemoveKernelVerify, lpAddKernelVerify, lpAddShares, swapBatchAggregateIdentity, AMM_MINIMUM_LIQUIDITY, isqrt,
     _internal: { keccak, concat, b32, beBytes, hx },
   };
 }

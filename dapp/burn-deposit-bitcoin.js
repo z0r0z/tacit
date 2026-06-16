@@ -255,6 +255,53 @@ function parsePreauthBidEnvelope(envHex) {
   return { asset: bytesToHex(asset), kernelSig: bytesToHex(kernelSig), commitments, rangeProof: bytesToHex(env.subarray(p, p + rpLen)) };
 }
 
+// T_SWAP_BATCH (0x2F) — a batched uniform-clearing settlement; onboards every receipt as a real note, gated by
+// a BN254 Groth16 (per-receipt split) + the aggregate Pedersen identity + per-receipt BabyJubJub sigma. This
+// parser surfaces the fields the reflection fold needs (mirror cxfer-core parse_swap_batch_envelope); the fold
+// itself (Groth16 + BJJ verify) is the assembler's swap_batch branch. Layout: opcode ‖ asset_a(32) ‖ asset_b(32)
+// ‖ n_intents(1) ‖ δa(9 signed) ‖ δb(9) ‖ R_net_a(32) ‖ R_net_b(32) ‖ fee_bps(2) ‖ tip_a(8) ‖ tip_b(8) ‖
+// tip_a_c(33) ‖ tip_b_c(33) ‖ r_tip_a(32) ‖ r_tip_b(32) ‖ n×intent(352) ‖ n×receipt(234) ‖ proofLen(2) ‖ proof ‖
+// metaLen(1) ‖ meta. intent = dir(1) ‖ pubkey(33) ‖ c_in_secp(33) ‖ c_in_bjj(32) ‖ in_xsigma(169) ‖ min_out(8) ‖
+// tip(8) ‖ expiry(4) ‖ sig(64). receipt = c_out_secp(33) ‖ c_out_bjj(32) ‖ out_xsigma(169).
+const SWAP_BATCH_XSIGMA = 169, SWAP_BATCH_INTENT_LEN = 1 + 33 + 33 + 32 + 169 + 8 + 8 + 4 + 64, SWAP_BATCH_RECEIPT_LEN = 33 + 32 + 169; // 352, 234
+function parseSwapBatchEnvelope(envHex) {
+  const env = hexToBytes(envHex);
+  if (env[0] !== 0x2f) return null;
+  let p = 1;
+  const u64le = (o) => { let v = 0n; for (let i = 7; i >= 0; i--) v = (v << 8n) | BigInt(env[o + i]); return v; };
+  const u16le = (o) => env[o] | (env[o + 1] << 8);
+  try {
+    const take = (n) => { const s = p; if (p + n > env.length) throw 0; p += n; return s; };
+    const aA = take(32), aB = take(32);
+    const niOff = take(1); const ni = env[niOff]; if (ni < 1 || ni > 16) return null;
+    const da = take(9); if (env[da] > 1) return null;
+    const db = take(9); if (env[db] > 1) return null;
+    const rna = take(32), rnb = take(32), fb = take(2), taA = take(8), tbA = take(8), tac = take(33), tbc = take(33);
+    take(32); take(32); // r_tip_a, r_tip_b (not needed by the reflection)
+    const intents = [];
+    for (let i = 0; i < ni; i++) {
+      const s = take(SWAP_BATCH_INTENT_LEN); const dir = env[s]; if (dir > 1) return null;
+      intents.push({ direction: dir, cInSecp: bytesToHex(env.subarray(s + 34, s + 67)), cInBjj: bytesToHex(env.subarray(s + 67, s + 99)), minOut: u64le(s + 268).toString(), tipAmount: u64le(s + 276).toString() });
+    }
+    const receipts = [];
+    for (let i = 0; i < ni; i++) {
+      const s = take(SWAP_BATCH_RECEIPT_LEN);
+      receipts.push({ cOutSecp: bytesToHex(env.subarray(s, s + 33)), cOutBjj: bytesToHex(env.subarray(s + 33, s + 65)), outXcurveSigma: bytesToHex(env.subarray(s + 65, s + 65 + SWAP_BATCH_XSIGMA)) });
+    }
+    const plOff = take(2); const proofLen = u16le(plOff); const prOff = take(proofLen);
+    const slOff = take(1); take(env[slOff]); // settler_meta_uri (informational)
+    if (p !== env.length) return null;
+    return {
+      assetA: bytesToHex(env.subarray(aA, aA + 32)), assetB: bytesToHex(env.subarray(aB, aB + 32)), nIntents: ni,
+      deltaANetSign: env[da], deltaANetMag: u64le(da + 1).toString(), deltaBNetSign: env[db], deltaBNetMag: u64le(db + 1).toString(),
+      rNetA: bytesToHex(env.subarray(rna, rna + 32)), rNetB: bytesToHex(env.subarray(rnb, rnb + 32)),
+      feeBps: u16le(fb), tipAAmount: u64le(taA).toString(), tipBAmount: u64le(tbA).toString(),
+      tipACSecp: bytesToHex(env.subarray(tac, tac + 33)), tipBCSecp: bytesToHex(env.subarray(tbc, tbc + 33)),
+      intents, receipts, proof: bytesToHex(env.subarray(prOff, prOff + proofLen)),
+    };
+  } catch { return null; }
+}
+
 // classifyConfidentialTx(rawTxHex) → the reflection scan's per-tx classification, MIRRORING the guest's
 // reflect.rs (extract_taproot_envelope → parse_burn_envelope / parse_cxfer_envelope_full): a confidential
 // bridge-burn → {type:'burn', dest}; a confidential transfer → {type:'cxfer', assetId, commitments,
@@ -284,7 +331,7 @@ function classifyConfidentialTx(rawTxHex) {
   return { type: 'unsupported', opcode };
 }
 
-export { readVarint, extractInputs, extractTaprootEnvelope, parseCetch, parseCmint, parseBurnEnvelope, parseCxferEnvelopeFull, parsePreauthBidEnvelope, classifyConfidentialTx };
+export { readVarint, extractInputs, extractTaprootEnvelope, parseCetch, parseCmint, parseBurnEnvelope, parseCxferEnvelopeFull, parsePreauthBidEnvelope, parseSwapBatchEnvelope, classifyConfidentialTx };
 
 // Build the burnDepositKit the worker injects (buildScanReflectionAttester → makeScanReflectionIndexer).
 // Sources every crypto primitive from the SAME modules the pool/guest use (so verdicts match byte-for-byte)
