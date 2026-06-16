@@ -647,8 +647,28 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
       return { notePath: w.notePath };
     }
 
+    // ── Track-B protocol-fee claim fold (mirror cxfer-core fold_protocol_fee_claim) ──
+    // The pool's fee recipient claims the creator-earned protocol-fee LP-share skim as a real bridgeable note.
+    // Crystallize the swap-driven accrual, require claim == accrued (exact, no over-mint), verify the claim note
+    // opens to claim_amount under its PUBLIC blinding, onboard it as an LP-share note, reset accrued. The skim
+    // was already counted into total_shares by crystallize, so bridging it is backed. null (skip) on any gate.
+    function foldProtocolFeeClaim(poolId, claimAmount, claimCSecp, claimBlinding, outpoint) {
+      const pool = pools.get(poolId);
+      if (!pool || !pool.c0Backed) return null;
+      if (Number(pool.protocolFeeBps || 0) === 0) return null;
+      crystallizeProtocolFee(pool); // mutates the copy: accrued / total_shares / k_last
+      const amt = BigInt(claimAmount);
+      if (amt === 0n || amt !== BigInt(pool.protocolFeeAccrued)) return null;
+      if (!verifyPedersenOpening(claimCSecp, amt, claimBlinding)) return null;
+      const lpAsset = ammDeriveLpAssetId(poolId);
+      const { cx, cy } = decompressCommitment(claimCSecp);
+      const w = foldOutput(leaf(lpAsset, cx, cy, CBTC_NOTE_OWNER), outpoint, commitmentHash(cx, cy), lpAsset);
+      pools.set(poolId, { ...pool, protocolFeeAccrued: 0n });
+      return { notePath: w.notePath };
+    }
+
     return {
-      commit, digest, foldSpent, foldOutput, foldNoteAppend, foldBurn, foldCbtcLock, foldCbtcLockSpends, foldSwapVar, foldHarvest, setHeight,
+      commit, digest, foldSpent, foldOutput, foldNoteAppend, foldBurn, foldCbtcLock, foldCbtcLockSpends, foldSwapVar, foldHarvest, foldProtocolFeeClaim, setHeight,
       spentContains: (nu) => spent.contains(nu),
       poolRoot: () => notes.root(), spentRoot: () => spent.root(), burnRoot: () => burns.root(), liveRoot: () => live.root(),
       cbtcBackingSats: () => cbtcBackingSats, cbtcLocks,
@@ -727,6 +747,36 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     let C; try { C = secp.ProjectivePoint.fromHex(cHex.replace(/^0x/, '')); } catch { return false; }
     return C.equals(prover.commit(BigInt(amount), mod(BigInt(rHex), N)));
   }
+  // ── Track-B protocol-fee crystallization (mirror cxfer-core PoolReserveState::crystallize_protocol_fee +
+  // protocol_fee_shares — the Uniswap-V2 lazy mintFee skim from SWAP-driven k-growth). isqrt / shares are the
+  // byte-for-byte BigInt port of the worker's ammIsqrt / ammComputeProtocolShares the protocol cites. ──
+  const U64_MAX = (1n << 64n) - 1n;
+  const AMM_LP_ASSET_DOMAIN = new TextEncoder().encode('tacit-amm-lp-v1');
+  const isqrt = (nIn) => { let n = BigInt(nIn); if (n < 2n) return n < 0n ? 0n : n; let x = n, y = (x + 1n) >> 1n; while (y < x) { x = y; y = (x + n / x) >> 1n; } return x; };
+  function protocolFeeShares(sPre, kPre, kNow, feeBps) {
+    const S = BigInt(sPre), kp = BigInt(kPre), kn = BigInt(kNow), bps = BigInt(feeBps);
+    if (bps === 0n || S === 0n || kn <= kp) return 0n;
+    const rootPre = isqrt(kp), rootNow = isqrt(kn);
+    if (rootNow <= rootPre) return 0n;
+    const den = (10000n - bps) * rootNow + bps * rootPre;
+    if (den === 0n) return 0n;
+    const r = (S * bps * (rootNow - rootPre)) / den;
+    return r > U64_MAX ? U64_MAX : r;     // saturate to u64 (matches the Rust unwrap_or(u64::MAX))
+  }
+  const satU64 = (x) => (x > U64_MAX ? U64_MAX : x);
+  // The reflection's crystallize gates ONLY on protocol_fee_bps (PoolReserveState has no fee-recipient
+  // address). Mutates the passed pool copy: mint the swap-driven skim into accrued + total_shares, advance k_last.
+  function crystallizeProtocolFee(pool) {
+    if (Number(pool.protocolFeeBps || 0) === 0) return;
+    const kNow = BigInt(pool.reserveA) * BigInt(pool.reserveB);
+    if (kNow <= BigInt(pool.kLast || 0)) { pool.kLast = kNow; return; }
+    const shares = protocolFeeShares(pool.totalShares, pool.kLast, kNow, pool.protocolFeeBps);
+    pool.protocolFeeAccrued = satU64(BigInt(pool.protocolFeeAccrued || 0) + shares);
+    pool.totalShares = satU64(BigInt(pool.totalShares || 0) + shares);
+    pool.kLast = kNow;
+  }
+  // Bitcoin-AMM LP-share asset-id: sha256(domain ‖ pool_id) (mirror amm_derive_lp_asset_id / ammDeriveLpAssetId).
+  const ammDeriveLpAssetId = (poolId) => hx(sha256(concat([AMM_LP_ASSET_DOMAIN, b32(poolId)])));
   // Full conservation: kernel (no inflation) AND every output in BP+ range (no wraparound). The
   // exact predicate the reflection guest re-runs before folding a cxfer's outputs (REFLECT-1).
   function verifyCxferConservation({ asset, inputOutpoints, inputPoints, outsCompressed, rangeProof, kernelSig, burned = 0 }) {
@@ -837,6 +887,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
         let cbtcLock = null;
         let swapVar = null;
         let harvest = null;
+        let protocolFee = null;
         if (tx.env && tx.env.type === 'burn') {
           if (openings.length === 1) {
             // Reflected-note bridge-out: the burned note is a live pool note (already nullified above by the
@@ -919,8 +970,13 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
           // drawn from the C0-backed farm treasury. No input spend — the note is derived from the public (amount, r).
           const hw = state.foldHarvest(tx.env.farmId, tx.env.amount, tx.env.r, outpointKey(tx.txid, 1));
           if (hw) harvest = { notePath: hw.notePath };
+        } else if (tx.env && tx.env.type === 'protocol_fee_claim') {
+          // Track-B protocol-fee claim (0x31): crystallize the pool's swap-driven fee accrual + onboard the
+          // claim note (vout 1) as an LP-share note. No input spend — the note is minted by decree.
+          const pw = state.foldProtocolFeeClaim(tx.env.poolId, tx.env.amount, tx.env.cSecp, tx.env.blinding, outpointKey(tx.txid, 1));
+          if (pw) protocolFee = { notePath: pw.notePath };
         }
-        txsOut.push({ txData: tx.txData, openings, spentInserts, burnInsert, outputs, burnDeposit, cbtcLock, swapVar, harvest });
+        txsOut.push({ txData: tx.txData, openings, spentInserts, burnInsert, outputs, burnDeposit, cbtcLock, swapVar, harvest, protocolFee });
       }
       blocksOut.push({ txs: txsOut });
       blockIndex++;
@@ -1024,6 +1080,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     liveLeaf, makeLiveUtxoSet, makeScanReflectionState, assembleReflectionScanInput,
     CBTC_ZK_ASSET_ID, CBTC_LOCK_DOMAIN, cbtcLockContext,
     cxferKernelVerify, verifyCxferConservation,
+    protocolFeeShares, crystallizeProtocolFee, ammDeriveLpAssetId, isqrt,
     _internal: { keccak, concat, b32, beBytes, hx },
   };
 }

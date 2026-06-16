@@ -147,6 +147,11 @@ fn write_stdin(f: &serde_json::Value) -> SP1Stdin {
             if let Some(hv) = tx.get("harvest").filter(|v| !v.is_null()) {
                 path(&mut s, &hv["notePath"]);
             }
+            // protocol-fee claim (0x31): the guest reads the claim note's append path after the envelope
+            // (dispatches after harvest/refund) — mirror that order.
+            if let Some(pf) = tx.get("protocolFee").filter(|v| !v.is_null()) {
+                path(&mut s, &pf["notePath"]);
+            }
         }
     }
     s
