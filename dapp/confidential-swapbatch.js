@@ -5,9 +5,20 @@
 // babyjubjub.rs mirrors it byte-for-byte — and (for the Groth16 step, wired next) snarkjs + the inline ceremony vk.
 
 import { unpackPoint, P_FR, mod } from './amm-bjj.js';
+import { verifyXCurve } from './amm-sigma.js';
 import { sha256 } from './vendor/tacit-deps.min.js';
 
 const N_MAX = 16;
+const ZERO_ADDR33 = '0x' + '00'.repeat(33);
+const ZERO_OWNER = '0x' + '00'.repeat(32);
+const U64_MAX = (1n << 64n) - 1n;
+const norm = (x) => String(x).replace(/^0x/, '').toLowerCase().padStart(64, '0');
+const hu8 = (h) => { const s = String(h).replace(/^0x/, ''); const o = new Uint8Array(s.length / 2); for (let i = 0; i < o.length; i++) o[i] = parseInt(s.slice(i * 2, i * 2 + 2), 16); return o; };
+// reserve ± mag with u64 bounds (mirror apply_signed): sign 0 grows, 1 shrinks; null on overflow/underflow.
+function applySigned(reserve, sign, mag) {
+  if (Number(sign) === 0) { const v = reserve + mag; return v > U64_MAX ? null : v; }
+  return reserve < mag ? null : reserve - mag;
+}
 const bytesToBig = (b) => { let n = 0n; for (const x of b) n = (n << 8n) | BigInt(x); return n; };
 const hb32 = (h) => { const s = String(h).replace(/^0x/, '').padStart(64, '0'); const o = new Uint8Array(32); for (let i = 0; i < 32; i++) o[i] = parseInt(s.slice(i * 2, i * 2 + 2), 16); return o; };
 
@@ -75,4 +86,55 @@ export async function swapBatchGroth16Verify(vk, publicsBigInt, proofBytes) {
   const groth16 = sjs.groth16 || (sjs.default && sjs.default.groth16);
   if (!groth16 || typeof groth16.verify !== 'function') throw new Error('snarkjs.groth16.verify unavailable');
   return groth16.verify(vk, publics, proof);
+}
+
+// Fold a confirmed T_SWAP_BATCH (0x2F) — mirror cxfer-core swap_batch.rs fold_swap_batch. All-or-nothing:
+// every gate runs (and the post-reserves are computed) BEFORE any state mutation, then each receipt is onboarded
+// as a real bridgeable note + the reserves advance by the public net deltas. SYNC: the BN254 Groth16 verify is
+// the caller's ASYNC pre-step (swapBatchGroth16Verify over swapBatchPublicSignals + the inline ceremony vk),
+// injected as `groth16Ok` — the fold still gates on it; a wrong flag yields a wrong digest the contract rejects
+// (liveness, not soundness — the guest re-verifies). `pool` = makeConfidentialPool (crypto helpers), `state` =
+// its scan state (foldOutput / pools), `spends` = the detected pool-UTXO spends (the traders' c_in_secp inputs).
+// Returns { receiptPaths } (the n onboarded note-paths, for the witness), or null (skip) on any gate.
+export function foldSwapBatch(pool, state, env, txidHex, spends, { groth16Ok } = {}) {
+  const ni = env.nIntents;
+  if (env.intents.length !== ni || env.receipts.length !== ni) return null;
+  // 1. resolve the pool (canonical pair → v1 pool_id) + tracked reserves; c0-backed + canonically oriented.
+  const [aLo, aHi] = pool.ammCanonicalPair(env.assetA, env.assetB);
+  if (!aLo) return null;
+  const poolId = pool.ammDerivePoolIdFull(aLo, aHi, env.feeBps, 0, ZERO_ADDR33, 0);
+  if (!poolId) return null;
+  const p = state.pools.get(poolId);
+  if (!p || !p.c0Backed) return null;
+  if (norm(env.assetA) !== norm(p.assetA) || norm(env.assetB) !== norm(p.assetB)) return null;
+  // 2. post-reserves up front (an over-draw is caught before any mutation).
+  const newA = applySigned(BigInt(p.reserveA), env.deltaANetSign, BigInt(env.deltaANetMag));
+  const newB = applySigned(BigInt(p.reserveB), env.deltaBNetSign, BigInt(env.deltaBNetMag));
+  if (newA === null || newB === null) return null;
+  // 3. Groth16 (per-receipt split) — pre-verified async by the caller (see swapBatchGroth16Verify).
+  if (!groth16Ok) return null;
+  // 4. aggregate Pedersen identity per asset A + B (binds the receipts' total to real inputs + reserve).
+  const intentsSecp = env.intents.map((it) => ({ direction: Number(it.direction), cInSecp: it.cInSecp }));
+  const receiptsSecp = env.receipts.map((r) => r.cOutSecp);
+  if (!pool.swapBatchAggregateIdentity(intentsSecp, receiptsSecp, true, env.deltaANetSign, BigInt(env.deltaANetMag), env.tipACSecp, env.rNetA)) return null;
+  if (!pool.swapBatchAggregateIdentity(intentsSecp, receiptsSecp, false, env.deltaBNetSign, BigInt(env.deltaBNetMag), env.tipBCSecp, env.rNetB)) return null;
+  // 5. each intent's c_in_secp is a REAL spent pool note (so the aggregate's inputs are backed value).
+  for (const it of env.intents) {
+    let cin; try { cin = pool.decompressCommitment(it.cInSecp); } catch { return null; }
+    if (!spends.some((sp) => norm(sp.cx) === norm(cin.cx) && norm(sp.cy) === norm(cin.cy))) return null;
+  }
+  // 6. per receipt: the cross-curve sigma binds C_out_secp ↔ C_out_BJJ (secp note value == the cleared amount).
+  for (const r of env.receipts) {
+    if (!verifyXCurve(hu8(r.outXcurveSigma), hu8(r.cOutSecp), hu8(r.cOutBjj))) return null;
+  }
+  // ---- all gates passed; COMMIT: onboard each receipt (asset = its output side), then advance reserves. ----
+  const receiptPaths = [];
+  for (let i = 0; i < ni; i++) {
+    const outAsset = Number(env.intents[i].direction) === 0 ? p.assetB : p.assetA;
+    const { cx, cy } = pool.decompressCommitment(env.receipts[i].cOutSecp);
+    const w = state.foldOutput(pool.leaf(outAsset, cx, cy, ZERO_OWNER), pool.outpointKey(txidHex, i + 1), pool.commitmentHash(cx, cy), outAsset);
+    receiptPaths.push(w.notePath);
+  }
+  state.pools.set(poolId, { ...p, reserveA: newA, reserveB: newB });
+  return { receiptPaths };
 }
