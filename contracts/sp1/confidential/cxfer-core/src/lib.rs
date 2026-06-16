@@ -1077,6 +1077,31 @@ pub fn get_amount_out(amount_in: u64, reserve_in: u64, reserve_out: u64, fee_bps
     (num / den).to_string().parse::<u128>().unwrap()
 }
 
+/// Uniswap-V2 lazy-`mintFee` protocol-share crystallization (mirrors worker `ammComputeProtocolShares`):
+///   `newShares = floor( S·bps·(√k_now − √k_pre) / ((10000−bps)·√k_now + bps·√k_pre) )`.
+/// The protocol-fee skim is minted as LP shares from the SWAP-driven k-growth since the last crystallization
+/// (`k_pre`). BigUint intermediates: the numerator reaches ~2^142 (`S·bps·Δroot`), which a u128 would overflow
+/// + diverge from the Bitcoin/JS reference. Returns 0 on no growth / disabled fee (bps 0) / zero supply
+/// (fail-safe). `fee_bps ≤ AMM_PROTOCOL_FEE_BPS_MAX` is enforced upstream (the pool's stored config).
+pub fn protocol_fee_shares(s_pre: u64, k_pre: u128, k_now: u128, fee_bps: u16) -> u64 {
+    if fee_bps == 0 || s_pre == 0 || k_now <= k_pre {
+        return 0;
+    }
+    let root_pre = isqrt(k_pre);
+    let root_now = isqrt(k_now);
+    if root_now <= root_pre {
+        return 0;
+    }
+    use num_bigint::BigUint;
+    let bps = BigUint::from(fee_bps);
+    let num = BigUint::from(s_pre) * &bps * BigUint::from(root_now - root_pre);
+    let den = BigUint::from(10000u32 - fee_bps as u32) * BigUint::from(root_now) + &bps * BigUint::from(root_pre);
+    if den == BigUint::from(0u32) {
+        return 0;
+    }
+    (num / den).to_string().parse::<u64>().unwrap_or(u64::MAX)
+}
+
 /// Deterministic uniform-price clearing solve — a faithful, byte-for-byte port of
 /// tests/amm-clearing.mjs `solveClearing` (AMM.md §4, the normative indexer-determinism rule).
 /// OP_SWAP uses it to ENFORCE the pool's fee tier: the guest re-derives P_clear from the public
@@ -4245,6 +4270,23 @@ mod tests {
         assert!(!swap_batch_aggregate_identity(&intents, &receipts, true, 0, delta_a, &tip_a, &bad_r), "wrong R_net rejected");
         assert!(!swap_batch_aggregate_identity(&intents, &receipts, true, 0, delta_a + 1, &tip_a, &r_net_a), "wrong delta rejected");
         assert!(!swap_batch_aggregate_identity(&intents, &receipts, true, 1, delta_a, &tip_a, &r_net_a), "wrong delta sign rejected");
+    }
+
+    #[test]
+    fn protocol_fee_shares_matches_uniswap_v2_formula() {
+        // S=10000, bps=300, k grows 1e6 → 4e6 (√1000 → √2000):
+        //   num = 10000·300·(2000−1000) = 3_000_000_000
+        //   den = (10000−300)·2000 + 300·1000 = 19_700_000  ⇒ floor = 152.
+        assert_eq!(protocol_fee_shares(10000, 1_000_000, 4_000_000, 300), 152);
+        // guards: disabled fee, zero supply, no growth, no √-growth ⇒ 0.
+        assert_eq!(protocol_fee_shares(10000, 1_000_000, 4_000_000, 0), 0, "bps 0");
+        assert_eq!(protocol_fee_shares(0, 1_000_000, 4_000_000, 300), 0, "S 0");
+        assert_eq!(protocol_fee_shares(10000, 4_000_000, 4_000_000, 300), 0, "no growth");
+        assert_eq!(protocol_fee_shares(10000, 4_000_000, 1_000_000, 300), 0, "k shrank");
+        assert_eq!(protocol_fee_shares(10000, 1_000_000, 1_000_001, 300), 0, "growth below a √-step");
+        // wide inputs (no u128 overflow in the ~2^142 numerator): just must not panic + stay ≤ S-ish.
+        let big = protocol_fee_shares(1u64 << 60, 1u128 << 100, 1u128 << 110, 1000);
+        assert!(big > 0 && big < (1u64 << 60), "wide-input crystallization sane");
     }
 
     #[test]

@@ -728,6 +728,26 @@ pub fn parse_farm_refund_envelope(env: &[u8]) -> Option<([u8; 32], u64, [u8; 32]
     ))
 }
 
+/// Parse a `T_PROTOCOL_FEE_CLAIM` (0x31, 202-byte fixed) → `(pool_id, claim_amount, claim_c_secp, claim_blinding)`.
+/// The founder-pinned recipient mints the pool's accrued protocol-fee LP-shares: `claim_c_secp` is the minted
+/// note (opens to `claim_amount` under the PUBLIC `claim_blinding`), of asset `amm_derive_lp_asset_id(pool_id)`.
+/// The reflection's `fold_protocol_fee_claim` crystallizes the pool's protocol fee (`protocol_fee_shares`) and
+/// requires `claim_amount == accrued` (no over-mint) before onboarding. Mirrors the worker
+/// `decodeTProtocolFeeClaimPayload`. Layout: opcode(1)=0x31 ‖ pool_id(32) ‖ claimer_pubkey_x_only(32) ‖
+/// claim_amount(8 LE) ‖ claim_C_secp(33) ‖ claim_blinding(32) ‖ claim_sig(64). (The claimer sig + x-only==fee
+/// recipient are the worker's authorization gate, not a bridge-soundness one.)
+pub fn parse_protocol_fee_claim_envelope(env: &[u8]) -> Option<([u8; 32], u64, [u8; 33], [u8; 32])> {
+    if env.len() != 202 || env[0] != 0x31 {
+        return None;
+    }
+    Some((
+        env[1..33].try_into().ok()?,                       // pool_id
+        u64::from_le_bytes(env[65..73].try_into().ok()?),  // claim_amount (after pool_id(32) + claimer_x_only(32))
+        env[73..106].try_into().ok()?,                     // claim_C_secp
+        env[106..138].try_into().ok()?,                    // claim_blinding
+    ))
+}
+
 /// One intent's reflection-relevant fields from a T_SWAP_BATCH (0x2F) envelope.
 pub struct SwapBatchIntent {
     pub direction: u8,       // 0 = A→B, 1 = B→A
@@ -1531,6 +1551,29 @@ mod tests {
         assert!(parse_farm_refund_envelope(&env[..173]).is_none(), "wrong length rejected");
         let mut bad = env.clone(); bad[0] = 0x3B;
         assert!(parse_farm_refund_envelope(&bad).is_none(), "non-0x3E rejected");
+    }
+
+    #[test]
+    fn parse_protocol_fee_claim_round_trips() {
+        let pool_id = [0x40u8; 32];
+        let claim_c = [0x05u8; 33];
+        let claim_blinding = [0x44u8; 32];
+        let mut env = vec![0x31u8];
+        env.extend_from_slice(&pool_id);
+        env.extend_from_slice(&[0x02u8; 32]); // claimer_pubkey_x_only
+        env.extend_from_slice(&777u64.to_le_bytes()); // claim_amount
+        env.extend_from_slice(&claim_c);
+        env.extend_from_slice(&claim_blinding);
+        env.extend_from_slice(&[0x0cu8; 64]); // claim_sig
+        assert_eq!(env.len(), 202);
+        let (pid, amt, c, r) = parse_protocol_fee_claim_envelope(&env).expect("claim parses");
+        assert_eq!(pid, pool_id);
+        assert_eq!(amt, 777);
+        assert_eq!(c, claim_c);
+        assert_eq!(r, claim_blinding);
+        assert!(parse_protocol_fee_claim_envelope(&env[..201]).is_none(), "wrong length rejected");
+        let mut bad = env.clone(); bad[0] = 0x3E;
+        assert!(parse_protocol_fee_claim_envelope(&bad).is_none(), "non-0x31 rejected");
     }
 
     #[test]
