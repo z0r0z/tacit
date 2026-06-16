@@ -643,6 +643,12 @@ pub fn parse_lp_add_envelope(env: &[u8]) -> Option<LpAddEnvelope> {
         { let n = env[p - 1] as usize; take(&mut p, n)?; } // metaLen(1) ‖ poolMetaUri
         take(&mut p, 1)?;
         let cf = env[p - 1]; // capability_flags
+        // POOL_CAP_ARBITER_AUTHORITY (0x04) is reserved (spec/amm/wire-formats.md
+        // "Pool ID derivation"): asserting it would require appending the arbiter
+        // quorum root to pool_id, which no fold implements yet. Fail closed.
+        if cf & 0x04 != 0 {
+            return None;
+        }
         (fee, cf, addr, pf)
     } else {
         (0, 0, [0u8; 33], 0)
@@ -1496,6 +1502,13 @@ mod tests {
         env0[1] = 0;
         let p0 = parse_lp_add_envelope(&env0).expect("variant-0 lp_add parses");
         assert_eq!((p0.variant, p0.fee_bps), (0, 0));
+        // POOL_CAP_ARBITER_AUTHORITY (0x04) is reserved + unimplemented → fail closed.
+        let mut arb = env.clone();
+        let last = arb.len() - 1;
+        arb[last] = 0x04;
+        assert!(parse_lp_add_envelope(&arb).is_none(), "reserved arbiter-authority capability rejected");
+        arb[last] = 0x06; // 0x02 | 0x04 — set alongside an implemented bit, still rejected
+        assert!(parse_lp_add_envelope(&arb).is_none(), "arbiter-authority bit rejected even with other bits set");
         let mut bad = env.clone(); bad[0] = 0x22;
         assert!(parse_lp_add_envelope(&bad).is_none(), "non-0x2D rejected");
     }

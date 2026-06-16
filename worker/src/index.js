@@ -3992,6 +3992,10 @@ function decodeTLpAddPayload(payload) {
     p += metaLen;
     if (p + 1 > payload.length) return null;
     const poolCapabilityFlags = payload[p]; p += 1;
+    // POOL_CAP_ARBITER_AUTHORITY (0x04) is reserved (spec/amm/wire-formats.md
+    // "Pool ID derivation"): asserting it would require appending the arbiter
+    // quorum root to pool_id, which this indexer does not implement. Fail closed.
+    if ((poolCapabilityFlags & 0x04) !== 0) return null;
     result.fee_bps = feeBps;
     result.vk_cid = vkCid;
     result.ceremony_cid = ceremonyCid;

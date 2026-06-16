@@ -85,7 +85,22 @@ pool_capability_flags(1)   # u8 bitmap of opt-in pool behaviors.
                             #                (bit clear) rejects N=1 to
                             #                preserve amount confidentiality
                             #                (see AMM_MIN_BATCH_SIZE below).
-                            # bits 2-7   — reserved for future amendments.
+                            # bit 2 (0x04) — POOL_CAP_ARBITER_AUTHORITY:
+                            #                reserved. When a follow-up
+                            #                amendment assigns this bit, the
+                            #                pinned arbiter quorum gains
+                            #                authority over pool state and the
+                            #                pool_id preimage MUST append
+                            #                arbiter_quorum_root (see "Pool ID
+                            #                derivation"). Until then the bit
+                            #                MUST be clear; indexers reject
+                            #                POOL_INIT that sets it (fail
+                            #                closed — an indexer that does not
+                            #                implement an asserted authority
+                            #                bit cannot derive the pool_id or
+                            #                enforce the behavior, so it must
+                            #                not onboard the pool).
+                            # bits 3-7   — reserved for future amendments.
                             # The closest tacit can get to Uniswap V4 hooks:
                             # protocol-defined feature flags, NOT pluggable
                             # executable code.
@@ -207,6 +222,89 @@ deviations):
 Indexers MUST reject any `T_SWAP_BATCH` whose tx layout deviates,
 whose `vout[0]` OP_RETURN data ≠ recomputed `envelope_hash`, or whose
 per-intent / per-receipt ordering ≠ `intent_id` ascending byte-order.
+
+## Pool ID derivation
+
+The canonical pool identifier. Two POOL_INITs over the same `(asset_A,
+asset_B)` with different `fee_bps`, `capability_flags`, or protocol-fee
+configuration are different canonical pools (distinct `pool_id`s).
+
+```
+pool_id = SHA256(
+    "tacit-amm-pool-v1"
+    || asset_A_lex_min(32)
+    || asset_B_lex_max(32)
+    || fee_bps_LE(2)
+    || capability_flags(1)
+    [ || protocol_fee_address(33) || protocol_fee_bps_LE(2) ]   # iff protocol_fee_bps != 0
+    [ || arbiter_quorum_root(32) ]                              # iff capability_flags & 0x04
+)
+```
+
+The optional fields are appended in this fixed order (protocol-fee
+first, arbiter second) so the preimage is deterministic. A feature that
+is off is **absent** from the preimage, never present-as-zero — so a
+no-fee, no-authority pool uses the 84-byte preimage and is the canonical
+slot LPs and swappers route to. The protocol-fee suffix is appended iff
+`protocol_fee_bps != 0` (jointly non-zero with the address, per the
+decoder rule). Indexers MUST supply these fields from the POOL_INIT
+envelope (variant=1) or the existing pool record (variant=0 / SWAP /
+REMOVE).
+
+`arbiter_quorum_root` binds the pinned arbiter set to the pool's
+identity, so a pool's attestation quorum is fixed at launch and cannot
+be re-specified under the same `pool_id`. It is appended **iff**
+`capability_flags & POOL_CAP_ARBITER_AUTHORITY (0x04)` is set, and is
+defined over the quorum **as declared** in POOL_INIT (declared order is
+load-bearing — the m-of-n `arbiter_signer_indices` in the attestation
+block below reference positions in this list):
+
+```
+arbiter_quorum_root = SHA256(
+    "tacit-amm-arbiter-quorum-v1"
+    || arbiter_m(1)                      # threshold, 1..arbiter_count
+    || arbiter_count(1)                  # 0..16
+    || arbiter_pubkeys(33 * arbiter_count)   # compressed secp256k1, POOL_INIT order
+)
+```
+
+In v1 `POOL_CAP_ARBITER_AUTHORITY` is unassigned and MUST be clear, so
+`arbiter_quorum_root` is never appended and the arbiter set is not part
+of any pool's identity.
+
+### Arbiter attestation block (opt-in, off by default)
+
+`T_SWAP_BATCH` (and `T_SWAP_VAR`) carry an optional arbiter block when
+the pool has `arbiter_pubkeys` pinned at POOL_INIT, immediately after the
+tip fields and before the per-intent array:
+
+```
+expected_height_LE(4)
+qualifying_set_hash(32)                  # SHA256("tacit-amm-qset-v1" || ...)
+arbiter_m(1)                             # 1..arbiter_count
+arbiter_signer_indices(arbiter_m)        # u8 each, ascending distinct, < arbiter_count
+arbiter_sigs(64 * arbiter_m)             # BIP-340, over the qualifying-set message
+```
+
+The block is a **fairness / anti-censorship attestation**: the quorum
+attests that the settler assembled the batch against the correct
+qualifying set of intents at `expected_height`. It is **not** authority
+over reserves or notes — value conservation is enforced entirely by the
+Groth16 proof, the aggregate Pedersen identity, `R_net`, and the
+cross-curve sigmas, none of which reference the arbiter set. A pool that
+pins no arbiters omits the block. Whether the attestation is present
+does not change the reserve math; it is a settler-honesty gate the
+worker applies as policy.
+
+Because the attestation carries no authority over value, the reflection
+fold does not enforce it and the arbiter set need not be bound to
+`pool_id` (the `0x04` bit stays clear). The reservation above exists so
+that if a follow-up amendment ever grants the quorum authority over pool
+state, the binding is already specified: that amendment sets `0x04`,
+appends `arbiter_quorum_root` to the pool_id, and ships the reflection
+fold that verifies the authoritative op. Until such a fold exists the
+reflection layer fails closed on any unrecognized op — it skips it
+rather than acting on it — so reserving the binding now is forward-safe.
 
 ## Kernel-msg construction
 

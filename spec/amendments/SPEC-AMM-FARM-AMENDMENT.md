@@ -131,9 +131,11 @@ T_FARM_INIT envelope payload (consumed by indexer; OP_RETURN at
 vout[0] carries SHA256(payload) as envelope_hash):
 
 opcode                     1 B  = 0x34
-pool_id                   32 B  (= SHA256("tacit-amm-pool-v1" || asset_A || asset_B
-                                  || fee_bps || protocol_fee_config || capability_flags),
-                                  see AMM.md §"Pool state")
+pool_id                   32 B  (canonical derivation in
+                                  spec/amm/wire-formats.md §"Pool ID derivation":
+                                  SHA256("tacit-amm-pool-v1" || asset_A || asset_B
+                                  || fee_bps_LE || capability_flags
+                                  || [protocol_fee config iff enabled]))
 farm_nonce                32 B  launcher-supplied randomness; participates in farm_id
                                   derivation. Allows the same launcher to fund multiple
                                   concurrent farms against the same pool.
