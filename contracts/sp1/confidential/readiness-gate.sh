@@ -61,13 +61,18 @@ node_suite() {
 
 # node helper: the Bitcoin reflection indexer + prover-input tests. The SHIPPED model is the
 # full SCAN (confidential-reflection-scan*: every tx of every block, F4-complete); the witnessed
-# (state/witness/indexer) tests stay as the superseded-model cross-check oracle. Both must be green.
+# (state/witness/indexer) tests stay as the superseded-model cross-check oracle. The burn-deposit
+# block covers the scan-free TAC onboarding (realness mirror, assembler, tracer, the raw-tx kit,
+# the indexer wiring, and the attester injection seam). Both styles run under plain `node` (the
+# node:test files auto-run + set the exit code), and all must be green.
 reflection_suite() {
   local t rc=0
   for t in confidential-reflection-scan confidential-reflection-scan-indexer \
            confidential-reflection-attest-scan confidential-reflection-conservation \
            confidential-reflection-state confidential-reflection-witness \
-           confidential-reflection-indexer; do
+           confidential-reflection-indexer \
+           burn-deposit-provenance burn-deposit-assembler burn-deposit-tracer \
+           burn-deposit-kit confidential-burn-deposit-wiring confidential-reflection-attest-burndeposit; do
     [ -f "tests/$t.mjs" ] || continue
     if ! node "tests/$t.mjs" >>"$TMP.refl" 2>&1; then echo "FAIL $t"; rc=1; fi
   done
