@@ -45,7 +45,7 @@ fn u64_be(n: u64) -> [u8; 32] {
 /// these: `R_*_pre` come from the registry, `pool_id_fr = SHA256(pool_id) mod r`, and the BJJ coordinates are
 /// recovered by the validated `babyjubjub::unpack` of the envelope's commitments (padding the unused slots with
 /// the BJJ identity `(0,1)`, like the circuit). Returns None on a bad point / out-of-range count.
-fn swap_batch_public_signals(env: &SwapBatchEnvelope, pool_id: &[u8; 32], reserve_a: u64, reserve_b: u64) -> Option<Vec<[u8; 32]>> {
+pub fn swap_batch_public_signals(env: &SwapBatchEnvelope, pool_id: &[u8; 32], reserve_a: u64, reserve_b: u64) -> Option<Vec<[u8; 32]>> {
     if env.n_intents == 0 || env.n_intents > N_MAX || env.intents.len() != env.n_intents || env.receipts.len() != env.n_intents {
         return None;
     }
