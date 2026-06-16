@@ -26,17 +26,22 @@ const ZERO_OWNER = '0x' + '00'.repeat(32);
 const BLOCK_HEIGHT = 310000;
 const reserveA = 1000000n, reserveB = 2000000n, deltaIn = 1000n, deltaOut = 1990n;
 const rIn = 0xAAA1n, rReceipt = 0xBBB2n;
+const CHANGE = BigInt(process.env.SWAPVAR_CHANGE || 0), rChange = 0xC3C3n; // SWAPVAR_CHANGE>0 → non-sentinel change note (vout 2)
 
-// c_in = the taker's input note (= exactly delta_in → sentinel, no change); c_receipt opens to delta_out.
-const cInXY = pool.commitXY(deltaIn, rIn);
+// c_in = the taker's input note. Sentinel: == delta_in (no change). Non-sentinel: carries delta_in+CHANGE under
+// rIn+rChange, plus a change note CHANGE·H+rChange·G — so the kernel key P = c_in − c_change − delta_in·H = rIn·G
+// (sign with rIn either way). c_receipt opens to delta_out.
+const cInXY = CHANGE > 0n ? pool.commitXY(deltaIn + CHANGE, rIn + rChange) : pool.commitXY(deltaIn, rIn);
 const cIn = pool.compressXY(cInXY.cx, cInXY.cy);
 const cReceiptXY = pool.commitXY(deltaOut, rReceipt);
 const cReceipt = pool.compressXY(cReceiptXY.cx, cReceiptXY.cy);
+const cChangeHex = CHANGE > 0n ? pool.compressXY(...Object.values(pool.commitXY(CHANGE, rChange))) : ('0x' + '00'.repeat(33));
 const SENTINEL = Buffer.alloc(33);
+const cChangeField = CHANGE > 0n ? hb(cChangeHex) : SENTINEL;
 const seedTxid = Buffer.alloc(32, 0x77), seedVout = 0;
 
-// delta_in_total = delta_in (tip 0); sentinel change → verify key P = C_in − delta_in·H = r_in·G.
-const kernelSig = swapVarKernelSig({ assetHex: ASSET_A, txidHex: '0x' + seedTxid.toString('hex'), vout: seedVout, cChangeBytes: SENTINEL, deltaInTotal: deltaIn, rIn });
+// delta_in_total = delta_in (tip 0); verify key P = C_in − C_change − delta_in·H = r_in·G (sign with r_in).
+const kernelSig = swapVarKernelSig({ assetHex: ASSET_A, txidHex: '0x' + seedTxid.toString('hex'), vout: seedVout, cChangeBytes: cChangeField, deltaInTotal: deltaIn, rIn });
 
 // T_SWAP_VAR envelope (rp_len = 0; layout per parse_swap_var_envelope).
 const envelope = cat([
@@ -46,7 +51,7 @@ const envelope = cat([
   u64le(deltaOut), u64le(0),
   u64le(0), [0x00], u32le(0),
   Buffer.alloc(33),                                  // trader_pubkey (unused by the fold)
-  hb(cIn), SENTINEL, hb(cReceipt), be(rReceipt, 32),
+  hb(cIn), cChangeField, hb(cReceipt), be(rReceipt, 32),
   u16le(0),                                          // rp_len = 0
   Buffer.from(kernelSig), Buffer.alloc(64),          // kernel_sig, intent_sig (dummy)
 ]);
@@ -75,7 +80,7 @@ const txSpec = {
     type: 'swap_var', poolId: POOL_ID, direction: 0,
     rAPre: reserveA.toString(), rBPre: reserveB.toString(),
     deltaIn: deltaIn.toString(), tipAmount: '0', deltaOut: deltaOut.toString(),
-    cIn, cChangeOrSentinel: '0x' + '00'.repeat(33), cReceipt,
+    cIn, cChangeOrSentinel: cChangeHex, cReceipt,
     rReceipt: '0x' + Buffer.from(be(rReceipt, 32)).toString('hex'), kernelSig: '0x' + Buffer.from(kernelSig).toString('hex'),
   },
 };
@@ -84,6 +89,9 @@ const input = await pool.assembleReflectionScanInput(state, {
 }, coords);
 
 const sv = input.blocks[0].txs[0].swapVar;
-console.error(`swap_var: dIn=${deltaIn} dOut=${deltaOut} reservesPost=A:${reserveA + deltaIn} B:${reserveB - deltaOut} folded=${!!sv} newDigest=${input.newDigest}`);
-if (!sv) { console.error('FATAL: swap_var was not folded (a gate failed) — fixture would not validate'); process.exit(1); }
+const p = state.pools.get(POOL_ID);
+const folded = BigInt(p.reserveA) === reserveA + deltaIn && BigInt(p.reserveB) === reserveB - deltaOut; // reserves moved ⇒ the fold ran (swapVar is now always set via the skip-path peek)
+console.error(`swap_var: dIn=${deltaIn} dOut=${deltaOut} CHANGE=${CHANGE} reservesPost=A:${p.reserveA} B:${p.reserveB} folded=${folded} changePath=${!!(sv && sv.changePath)} newDigest=${input.newDigest}`);
+if (!folded) { console.error('FATAL: swap_var reserves did not advance (the fold was skipped) — fixture would not validate'); process.exit(1); }
+if (CHANGE > 0n && !(sv && sv.changePath)) { console.error('FATAL: non-sentinel swap_var emitted no changePath'); process.exit(1); }
 console.log(JSON.stringify(input));

@@ -20,7 +20,7 @@ let failures = 0;
 const ok = (c, m) => { if (!c) { console.error(`FAIL ${m}`); failures++; } else console.log(`ok   ${m}`); };
 const norm = (x) => (typeof x === 'string' ? x.replace(/^0x/, '').toLowerCase() : x);
 const numEq = (a, b) => { try { return BigInt(a) === BigInt(b); } catch { return false; } };
-const txData = (gen) => JSON.parse(execFileSync('node', [`tests/${gen}`], { encoding: 'utf8', maxBuffer: 64 << 20, stdio: ['ignore', 'pipe', 'ignore'] })).blocks[0].txs[0].txData;
+const txData = (gen, env) => JSON.parse(execFileSync('node', [`tests/${gen}`], { encoding: 'utf8', maxBuffer: 64 << 20, stdio: ['ignore', 'pipe', 'ignore'], env: { ...process.env, ...(env || {}) } })).blocks[0].txs[0].txData;
 const ZERO33 = '0x' + '00'.repeat(33);
 const A = '0x' + 'a1'.repeat(32), B = '0x' + 'b2'.repeat(32), C = '0x' + 'c3'.repeat(32);
 
@@ -30,6 +30,12 @@ const A = '0x' + 'a1'.repeat(32), B = '0x' + 'b2'.repeat(32), C = '0x' + 'c3'.re
   ok(d && d.type === 'swap_var', 'swap_var: type');
   ok(d && norm(d.poolId) === '99'.repeat(32) && d.direction === 0 && numEq(d.rAPre, 1000000) && numEq(d.rBPre, 2000000) && numEq(d.deltaIn, 1000) && numEq(d.deltaOut, 1990), '  swap_var: poolId/dir/reserves/deltas');
   ok(d && /^(0x)?0{66}$/i.test(d.cChangeOrSentinel) && norm(d.cReceipt).length === 66 && norm(d.kernelSig).length === 128, '  swap_var: sentinel change + 33B cReceipt + 64B kernelSig');
+}
+// ── swap_var NON-sentinel (the common case — taker gets a change note at vout 2) ──
+{
+  const d = classifyConfidentialTx(txData('gen-reflection-swapvar-synth.mjs', { SWAPVAR_CHANGE: '500' }));
+  ok(d && d.type === 'swap_var' && norm(d.cChangeOrSentinel).length === 66 && !/^(0x)?0{66}$/i.test(d.cChangeOrSentinel),
+    'swap_var non-sentinel: classifies with a real change commitment (the fold onboards it at vout 2)');
 }
 // ── swap_route (gen: A→C via pool1(A,B) + pool2(B,C); hop0 R 1e6/2e6 d 1000/1900, hop1 R 2e6/4e6 d 1900/3600) ──
 {
@@ -66,6 +72,13 @@ const A = '0x' + 'a1'.repeat(32), B = '0x' + 'b2'.repeat(32), C = '0x' + 'c3'.re
   ok(d && d.type === 'lp_add' && d.variant === 1 && norm(d.assetA) === 'a1'.repeat(32) && numEq(d.deltaA, 4000) && numEq(d.deltaB, 9000)
     && norm(d.shareR).length === 64 && norm(d.kernelSigA).length === 128 && norm(d.kernelSigB).length === 128,
     'lp_add (0x2D): type/variant/assets/deltas/shareR/kernels');
+}
+// ── lp_add variant 0 (add to an existing pool — proportional mint, no variant-1 tail) ──
+{
+  const d = classifyConfidentialTx(txData('gen-reflection-lpadd-v0-synth.mjs'));
+  ok(d && d.type === 'lp_add' && d.variant === 0 && numEq(d.deltaA, 100000) && numEq(d.deltaB, 200000)
+    && numEq(d.shareAmount, 100000) && norm(d.shareR).length === 64 && d.feeBps === 0,
+    'lp_add variant-0 (0x2D): type/variant0/deltas/shareAmount/shareR');
 }
 // ── lp_remove (0x2E): the two recv blindings ride the envelope (option a) ──
 {

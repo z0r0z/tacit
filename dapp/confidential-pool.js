@@ -616,9 +616,10 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     // ── Track-B swap_var fold (mirror cxfer-core fold_swap_var) ──
     // The pool must be C0-backed + its tracked reserves match the envelope; the taker's spent input (c_in,
     // a detected live note of the in-side asset) is kernel-bound to delta_in_total; the receipt opens to the
-    // PUBLIC delta_out; delta_out ≤ the out-side reserve. Effect: onboard the receipt + advance reserves
-    // (in += delta_in, out −= delta_out). Returns the receipt note-path witness, or null (skip) on any gate.
-    function foldSwapVar(sv, inputOutpoint, inputAsset, receiptOutpoint) {
+    // PUBLIC delta_out; delta_out ≤ the out-side reserve. Effect: onboard the receipt (vout 1) + the taker's
+    // change (vout 2, iff non-sentinel — the COMMON case: a swap whose input note exceeds delta_in_total) +
+    // advance reserves. Returns { notePath (receipt), changePath (iff change onboarded) }, or null on any gate.
+    function foldSwapVar(sv, inputOutpoint, inputAsset, receiptOutpoint, changeOutpoint) {
       const pool = pools.get(sv.poolId);
       if (!pool || !pool.c0Backed) return null;
       if (BigInt(pool.reserveA) !== BigInt(sv.rAPre) || BigInt(pool.reserveB) !== BigInt(sv.rBPre)) return null;
@@ -639,7 +640,19 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
       if (dir === 0) { upd.reserveA = rInPre + BigInt(sv.deltaIn); upd.reserveB = rOutPre - BigInt(sv.deltaOut); }
       else { upd.reserveB = rInPre + BigInt(sv.deltaIn); upd.reserveA = rOutPre - BigInt(sv.deltaOut); }
       pools.set(sv.poolId, upd);
-      return { notePath: w.notePath };
+      // The taker's change (leftover of c_in, kernel-bound) — onboard it (in-asset note at vout 2) so it isn't
+      // stranded, iff non-sentinel. Best-effort like the guest's `let _ = fold_output`: a malformed change folds
+      // nothing (the caller still emits its witnessed path). Sentinel = the all-zero c_change placeholder.
+      let changePath;
+      const isSentinel = /^(0x)?0+$/.test(String(sv.cChangeOrSentinel));
+      if (!isSentinel) {
+        try {
+          const ch = decompressCommitment(sv.cChangeOrSentinel);
+          const cw = foldOutput(leaf(assetIn, ch.cx, ch.cy, CBTC_NOTE_OWNER), changeOutpoint, commitmentHash(ch.cx, ch.cy), assetIn);
+          changePath = cw.notePath;
+        } catch { /* malformed change → guest reads the path then folds nothing; caller peeks */ }
+      }
+      return { notePath: w.notePath, changePath };
     }
 
     // ── Track-B swap_route fold (mirror cxfer-core fold_swap_route) ──
@@ -1222,30 +1235,36 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
           // guest discards it then) so the witness stream stays aligned.
           cbtcLock = { notePath: w ? w.notePath : state.notePathPeek() };
         } else if (tx.env && tx.env.type === 'swap_var') {
-          // Track-B swap_var: the taker spends one pool note (detected above); fold the receipt + advance
-          // the pool reserves. Witness = the receipt note-path the guest reads after the 0x32 envelope.
-          // (Sentinel-change only for now; non-sentinel change onboarding is a follow-up.)
-          if (openings.length === 1) {
-            const sw = state.foldSwapVar(tx.env, inOutpoints[0], inAssets[0], outpointKey(tx.txid, 1));
-            if (sw) swapVar = { receiptPath: sw.notePath };
-          }
+          // Track-B swap_var: the taker spends one pool note (detected above); fold the receipt (vout 1) + the
+          // change (vout 2, iff non-sentinel — the common case) + advance reserves. The guest reads the receipt
+          // path ALWAYS + the change path iff non-sentinel, BEFORE the fold — so emit both unconditionally
+          // (peek on a skip / when openings≠1; the guest discards them then) to keep the witness stream aligned.
+          const svSentinel = /^(0x)?0+$/.test(String(tx.env.cChangeOrSentinel));
+          const sw = openings.length === 1
+            ? state.foldSwapVar(tx.env, inOutpoints[0], inAssets[0], outpointKey(tx.txid, 1), outpointKey(tx.txid, 2))
+            : null;
+          swapVar = { receiptPath: sw ? sw.notePath : state.notePathPeek() };
+          if (!svSentinel) swapVar.changePath = (sw && sw.changePath) ? sw.changePath : state.notePathPeek();
         } else if (tx.env && tx.env.type === 'swap_route') {
           // Track-B swap_route (0x33): the trader's single detected input (c_in must match the spend) flows
-          // through 2–4 pools → one receipt note (vout 1). Witness (per 0x33): the receipt's append path.
-          if (openings.length === 1 && compressXY(openings[0].cx, openings[0].cy).toLowerCase() === String(tx.env.cIn).toLowerCase()) {
-            const rw = state.foldSwapRoute(tx.env, inOutpoints[0], inAssets[0], outpointKey(tx.txid, 1));
-            if (rw) swapRoute = { receiptPath: rw.receiptPath };
-          }
+          // through 2–4 pools → one receipt note (vout 1). The guest reads the receipt path for ANY parseable
+          // 0x33 before the fold — emit it even when the spend/route doesn't fold (peek; the guest discards it).
+          const rw = (openings.length === 1 && compressXY(openings[0].cx, openings[0].cy).toLowerCase() === String(tx.env.cIn).toLowerCase())
+            ? state.foldSwapRoute(tx.env, inOutpoints[0], inAssets[0], outpointKey(tx.txid, 1))
+            : null;
+          swapRoute = { receiptPath: rw ? rw.receiptPath : state.notePathPeek() };
         } else if (tx.env && (tx.env.type === 'harvest' || tx.env.type === 'farm_refund')) {
           // Track-B harvest (0x3B) / farm-refund (0x3E): onboard the decree-minted reward/refund note (vout 1)
           // drawn from the C0-backed farm treasury. No input spend — the note is derived from the public (amount, r).
+          // The guest reads the note path for any parseable 0x3B/0x3E before the fold — emit it even on a skip.
           const hw = state.foldHarvest(tx.env.farmId, tx.env.amount, tx.env.r, outpointKey(tx.txid, 1));
-          if (hw) harvest = { notePath: hw.notePath };
+          harvest = { notePath: hw ? hw.notePath : state.notePathPeek() };
         } else if (tx.env && tx.env.type === 'protocol_fee_claim') {
           // Track-B protocol-fee claim (0x31): crystallize the pool's swap-driven fee accrual + onboard the
-          // claim note (vout 1) as an LP-share note. No input spend — the note is minted by decree.
+          // claim note (vout 1) as an LP-share note. No input spend — the note is minted by decree. The guest
+          // reads the claim path for any parseable 0x31 before the fold — emit it even on a skip (peek).
           const pw = state.foldProtocolFeeClaim(tx.env.poolId, tx.env.amount, tx.env.cSecp, tx.env.blinding, outpointKey(tx.txid, 1));
-          if (pw) protocolFee = { notePath: pw.notePath };
+          protocolFee = { notePath: pw ? pw.notePath : state.notePathPeek() };
         } else if (tx.env && tx.env.type === 'farm_init') {
           // Track-B farm-init (0x34): the launcher's single detected reward-asset spend funds the treasury under
           // the swap-shape kernel; register the farm (a degenerate pool keyed by farm_id). No note → no witness.
