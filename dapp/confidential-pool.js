@@ -1174,9 +1174,13 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
           srcTxid: norm(cons.srcTxid), srcVout: cons.srcVout | 0, setPath: cons.setPath.map(norm), spentInsert: w,
         });
       }
-      // The eth_pv pins consumedNuCount = the post-loop count (the guest asserts equality); the block scan's
-      // crossout onboards do not touch it, so build it here once the consumed set is fully folded.
-      ethPvHex = buildEthPv(modeBIn.crossoutSetRoot, modeBIn.consumedSetRoot, state.getConsumedCount());
+      // The eth_pv: prefer the real eth proof's public values (production — carries the populated ethPool so
+      // the on-chain ethPoolReflected == address(this) gate passes); fall back to a synthetic build for tests
+      // (ethPool zeroed, which the state digest does not depend on). consumedNuCount = the post-loop count
+      // (the guest asserts equality); the block-scan crossout onboards do not touch it.
+      ethPvHex = modeBIn.ethPv
+        ? (modeBIn.ethPv.startsWith('0x') ? modeBIn.ethPv.toLowerCase() : '0x' + modeBIn.ethPv.toLowerCase())
+        : buildEthPv(modeBIn.crossoutSetRoot, modeBIn.consumedSetRoot, state.getConsumedCount());
     }
     const blocksOut = [];
     const nonConserving = [];
@@ -1467,6 +1471,47 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     return hx(concat(words));
   }
 
+  // Assemble the `batch.modeB` witness bundle for a reverse-reflection (mode_b=1) fixture from the eth
+  // proof's attested sets — the indexer→fixture handoff (G3). The eth-reflection prover (eth_prove) emits
+  // its set alongside eth_pv.hex; given that bundle + the batch's 0x65 txs + the resolved Bitcoin source
+  // notes, this rebuilds the SAME append-only keccak sets the eth guest committed and derives each leaf's
+  // FINAL membership path (NOT the append-time frontier — later appends fill higher siblings). Used by both
+  // the gen (reflect-exec DIGEST_MATCH-validated) and the worker's assembleBlocks, so the two agree.
+  //   ethBundle       = { ethPv:0x<704hex>, crossouts:[{claimId,destCommitment,asset}], consumeds:[{nu,spendRoot}] }
+  //                     (the eth guest's sets in APPEND order; ethPv = the real proof PV, ethPool populated)
+  //   crossoutTxs     = [{ txid, claimId }]  — the 0x65 mints in this batch (matched to the set by claimId)
+  //   consumedSources = [{ nu, cx, cy, srcTxid, srcVout }] — each consumed ν's live Bitcoin source note
+  //                     (the caller resolves ν → its live note; the gen knows it, the worker via its index)
+  // Returns { modeB, membership: Map(txid → {setIndex,setPath}) }; the caller stamps each 0x65 env.membership.
+  function buildModeBBatch(ethBundle, crossoutTxs, consumedSources) {
+    const ethPv = ethBundle.ethPv.startsWith('0x') ? ethBundle.ethPv.toLowerCase() : '0x' + ethBundle.ethPv.toLowerCase();
+    const pvWord = (i) => '0x' + ethPv.slice(2 + i * 64, 2 + i * 64 + 64);
+    const eq = (a, b) => hx(b32(a)) === hx(b32(b));
+    const crossoutSetRoot = pvWord(3), consumedSetRoot = pvWord(9);
+
+    const coLeaves = (ethBundle.crossouts || []).map((c) => ethCrossoutLeaf(c.claimId, DEST_CHAIN_BITCOIN, c.destCommitment, c.asset));
+    if (coLeaves.length && !eq(merkleRootFrom(coLeaves[0], 0, merklePath(coLeaves, 0)), crossoutSetRoot))
+      throw new Error('mode-b: reconstructed crossout set root != eth proof word 3 (bundle/proof mismatch)');
+    const membership = new Map();
+    for (const tx of (crossoutTxs || [])) {
+      const idx = (ethBundle.crossouts || []).findIndex((c) => eq(c.claimId, tx.claimId));
+      if (idx < 0) continue; // not an eth crossOutSet member → no membership; the assembler skips-with-witness
+      membership.set(tx.txid, { setIndex: idx, setPath: merklePath(coLeaves, idx) });
+    }
+
+    const coNuLeaves = (ethBundle.consumeds || []).map((c) => ethConsumedLeaf(c.nu, c.spendRoot));
+    if (coNuLeaves.length && !eq(merkleRootFrom(coNuLeaves[0], 0, merklePath(coNuLeaves, 0)), consumedSetRoot))
+      throw new Error('mode-b: reconstructed consumed set root != eth proof word 9 (bundle/proof mismatch)');
+    const consumed = [];
+    (ethBundle.consumeds || []).forEach((c, i) => {
+      const src = (consumedSources || []).find((s) => eq(s.nu, c.nu));
+      if (!src) throw new Error('mode-b: consumed ν has no resolved Bitcoin source note: ' + c.nu);
+      consumed.push({ cx: src.cx, cy: src.cy, srcTxid: src.srcTxid, srcVout: src.srcVout, spendRoot: c.spendRoot, setPath: merklePath(coNuLeaves, i) });
+    });
+
+    return { modeB: { ethPv, crossoutSetRoot, consumedSetRoot, consumed }, membership };
+  }
+
   // ── opening proof-of-knowledge (swap / LP), mirror of cxfer_core::verify_opening_sigma ──
   // Prove knowledge of the blinding `r` for a commitment of a PUBLIC `amount`, bound to a 32-byte
   // `context` (the trade terms), WITHOUT revealing `r`. The settle box verifies this instead of
@@ -1531,7 +1576,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     utxoLeaf, makeUtxoAccumulator, commitmentHash, decompressCommitment, compressXY, outpointKey,
     makeReflectionState, assembleReflectionInput, openingSigma, verifyOpeningSigma, deriveOpeningNonce, intentContext,
     liveLeaf, makeLiveUtxoSet, makeScanReflectionState, assembleReflectionScanInput,
-    DEST_CHAIN_BITCOIN, ethCrossoutLeaf, ethConsumedLeaf, ethCrossoutMember, buildEthPv,
+    DEST_CHAIN_BITCOIN, ethCrossoutLeaf, ethConsumedLeaf, ethCrossoutMember, buildEthPv, buildModeBBatch,
     CBTC_ZK_ASSET_ID, CBTC_LOCK_DOMAIN, cbtcLockContext,
     cxferKernelVerify, verifyCxferConservation,
     protocolFeeShares, crystallizeProtocolFee, ammDeriveLpAssetId, ammDeriveFarmId, ammCanonicalPair, ammDerivePoolIdFull, lpRemoveKernelVerify, lpAddKernelVerify, lpAddShares, swapBatchAggregateIdentity, AMM_MINIMUM_LIQUIDITY, isqrt,

@@ -125,7 +125,7 @@ async function main() {
     headers: blocks.map((b) => b.headerHex),
     blocks: blocks.map((b) => ({ txs: b.txsHex.map((txData) => ({ txData, txid: null, vins: [], env: null })) })),
   };
-  const fixture = cp.assembleReflectionScanInput(state, batch, new Map());
+  const fixture = await cp.assembleReflectionScanInput(state, batch, new Map());
   console.log(`prior.height=${fixture.prior.height}  newDigest=${fixture.newDigest}`);
   console.log(`nonConserving=${fixture.nonConserving.length}  unreflectedValueEntry=${fixture.unreflectedValueEntry.length}`);
 

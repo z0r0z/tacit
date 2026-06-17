@@ -130,11 +130,19 @@ remains — the eth inner-proof pipeline scope:
   `fixture.ethPv == eth proof public values` (the real `ethPool` word rides through so the on-chain
   `ethPoolReflected == address(this)` gate passes). Box setup: copy `contracts/sp1/reflect-stdin` →
   `/root/work/reflect-stdin` (sibling of `/root/work/confidential`).
-- **G3 — indexer→fixture handoff (`REGEN_CMD`).** The loop's fixture builder must emit a mode_b=1
-  `reflection_input.json`: the JS assembler (`assembleReflectionScanInput` with `batch.modeB`) now
-  produces it, but the indexer must source `f["ethPv"]` from `out/eth_pv.hex` + the consumed/crossout
-  membership witnesses (via the crossout-consumer events). `build-reflection-bootstrap-fixture.mjs`
-  currently sets `env:null` (runbook step 4).
+- **G3 — indexer→fixture handoff — JS core DONE (2026-06-17), box emit + worker threading remain.**
+  `buildModeBBatch` (confidential-pool.js) rebuilds the eth crossout/consumed sets from the eth proof's
+  bundle and derives each leaf's FINAL membership path (NOT the append-time frontier); the scan-indexer's
+  `assembleBlocks` now accepts `{ ethBundle, consumedSources }` → matches each 0x65 to its crossOutSet
+  entry, stamps `env.membership`, and sets `batch.modeB`; the assembler prefers the real `modeB.ethPv`
+  (populated `ethPool` for the on-chain gate) over the synthetic `buildEthPv`. Validated:
+  `gen-reflection-modeb-synth` drives the full path THROUGH `buildModeBBatch` → reflect-exec DIGEST_MATCH
+  `0x1c05cc0c`. **The eth-bundle contract** (what `eth_prove` must emit alongside `eth_pv.hex`):
+  `{ ethPv:0x<704hex>, crossouts:[{claimId,destCommitment,asset}], consumeds:[{nu,spendRoot}] }` in the
+  set's APPEND order. REMAINING: (a) `eth_prove` writes that bundle (box; couples with G1's witness
+  population); (b) the attester's `assembleJob` threads `ethBundle` + `consumedSources` (the worker
+  resolves each consumed ν → its live Bitcoin source note's `cx,cy,txid,vout`) into `assembleBlocks`.
+  (Also fixed `build-reflection-bootstrap-fixture.mjs`'s missing `await` on the now-async assembler.)
 - **G4 — vkey + genesis pinning (lockstep).** The eth ELF's vkey must == `reflect.rs`'s
   `ETH_REFLECTION_VKEY`; the genesis anchor (`ETH_GENESIS_SYNC_COMMITTEE` + `GENESIS_SLOT 10462624`)
   captured together. The eth ELF is box-built inside sp1-helios's workspace — not a committed/pinned repo

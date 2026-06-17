@@ -147,13 +147,29 @@ export function makeScanReflectionIndexer({ secp, keccak256, sha256, ownerTag, b
   // (its `.nonConserving` lists any cxfer whose outputs were skipped for failing value conservation).
   // `burnDeposits` (optional): Map(txidDisplay → holder-traced provenance bundle) for any 0x2B burn of a
   // pre-existing note in this batch — see buildBurnDepositCtx for the bundle shape.
-  async function assembleBlocks(blocks, { headers, anchorHeight, burnDeposits } = {}) {
+  async function assembleBlocks(blocks, { headers, anchorHeight, burnDeposits, ethBundle, consumedSources } = {}) {
     const batch = { anchorHeight, headers, blocks: blocks.map((b) => ({ txs: (b.txs || []).map((tx) => txSpec(tx, burnDeposits)) })) };
     // swap_batch (0x2F): the per-0x2F hook the assembler awaits — verifies the BN254 Groth16 against the pool's
     // fold-point reserves (vk == the guest's batch_vk.bin) then onboards the n receipts. Built per-call so it
     // captures the CURRENT `state` (load() may have replaced it). Absent vk ⇒ no hook ⇒ swap_batch surfaces as
     // unsupported and the attester refuses (liveness, never a wrong digest — see the assembler's swap_batch arm).
     if (swapBatchVk) batch.swapBatchFold = (env, txid, spends) => foldSwapBatch(pool, state, env, txid, spends, { vk: swapBatchVk });
+    // Mode-B reverse reflection (ETH→BTC): given the eth proof's attested sets (ethBundle — eth_prove emits it
+    // alongside eth_pv.hex: { ethPv, crossouts:[{claimId,destCommitment,asset}], consumeds:[{nu,spendRoot}] })
+    // plus the resolved Bitcoin source note per consumed ν (consumedSources), assemble the mode_b=1 witnesses:
+    // match each 0x65 mint to its crossOutSet entry (stamp env.membership) + the consumed-ν fast lane. Absent
+    // ethBundle ⇒ a forward batch (mode_b=0) — every 0x65 skips against crossout_set_root=0.
+    if (ethBundle) {
+      const crossoutTxs = [];
+      for (const b of batch.blocks) for (const spec of b.txs) {
+        if (spec.env && spec.env.type === 'crossout_mint') crossoutTxs.push({ txid: spec.txid, claimId: spec.env.claimId });
+      }
+      const { modeB, membership } = pool.buildModeBBatch(ethBundle, crossoutTxs, consumedSources || []);
+      for (const b of batch.blocks) for (const spec of b.txs) {
+        if (spec.env && spec.env.type === 'crossout_mint') spec.env.membership = membership.get(spec.txid) || null;
+      }
+      batch.modeB = modeB;
+    }
     return pool.assembleReflectionScanInput(state, batch, coords);
   }
 
