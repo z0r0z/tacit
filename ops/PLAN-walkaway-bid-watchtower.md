@@ -94,5 +94,10 @@ opt-in, capped, self-reclaimable, main wallet isolated.
 ## Out of scope
 
 A fully-offline, zero-infrastructure, zero-trust buyer bid for a confidential
-asset is not constructible on today's Bitcoin (no covenant can introspect the
-Pedersen amount). Revisit if CTV/CSFS/APO land.
+asset is not constructible on today's Bitcoin: the asset quantity lives in a
+Pedersen commitment that Script cannot introspect. The named covenant proposals
+(CTV/CSFS/APO) do not change this — they constrain transaction structure (output
+scripts, sat values, templates, signature rebinding), not the hidden commitment
+value. A trustless version would require verifying a range/opening proof inside
+Script (OP_CAT / STARK-class introspection), a much longer horizon; until then
+the watchtower is the durable walk-away path.

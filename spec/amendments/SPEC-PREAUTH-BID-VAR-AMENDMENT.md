@@ -1,19 +1,22 @@
 # SPEC §5.7.12 — T_PREAUTH_BID_VAR (`0x5C`) — Buyer-Offline Partial-Fill Preauth Bid
 
-> **Status: ✅ Shipped.** Variable-amount variant of §5.7.11
-> `T_PREAUTH_BID`. Opcode `0x5C` in the preauth/offline-trading
-> family block (`0x5B`–`0x5E`). Wire format, worker endpoints, buyer
-> + seller flows, indexer-enforced refund-vout rule, and chain-only
-> recovery all signet-validated end-to-end
-> (`tests/preauth-bid-var-onchain-e2e-signet.mjs` and
-> `tests/preauth-bid-var-8dec-onchain-e2e-signet.mjs`).
+> **Status: 📝 Reserved — superseded by the watchtower walk-away path.**
+> Variable-amount variant of §5.7.11 `T_PREAUTH_BID`. Opcode `0x5C` in the
+> preauth/offline-trading family block (`0x5B`–`0x5E`). The wire format, worker
+> endpoints, buyer + seller flows, refund-vout rule, and chain-only recovery are
+> signet-validated end-to-end (`tests/preauth-bid-var-onchain-e2e-signet.mjs`
+> and `tests/preauth-bid-var-8dec-onchain-e2e-signet.mjs`) and kept as a
+> reserved reference. The active walk-away-bid path is the watchtower
+> (`ops/PLAN-walkaway-bid-watchtower.md`): a standalone pre-signature binds the
+> buyer's sats payout but not the confidential asset delivery (the Pedersen
+> amount is invisible to Script), so completing a fill while the buyer is away
+> uses a party that verifies delivery online before paying.
 >
 > The "holy grail" buyer UX: post one bid for *up to* a target
 > amount at a per-unit price, walk away, sellers fill in chunks
 > until the order is filled or expires. Functionally analogous to
-> a limit order on a centralized exchange — but settled trustlessly
-> on Bitcoin with no maker bond, no orderbook operator trust, and
-> no buyer round-trip per fill.
+> a limit order on a centralized exchange — with no maker bond and
+> no buyer round-trip per fill — delivered via the watchtower path.
 >
 > The inline section carries a `decimals_scale` byte so quantities
 > in `max_fill` / `fill_amount` / `fill_increment` are denominated in

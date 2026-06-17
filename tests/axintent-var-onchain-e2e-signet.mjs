@@ -224,7 +224,8 @@ console.log(`\n[4/8] Taker: claim intent with requested_amount=${REQUESTED}`);
 setWallet(TAKER_SK, TAKER_PUB);
 // Pull the intent from the worker so claimAxferVarIntent has the
 // canonical record (it needs amount + price + min_take_amount).
-const WORKER = 'https://tacit-pin.rosscampbell9.workers.dev';
+const WORKER = (typeof globalThis !== 'undefined' && typeof globalThis.__TACIT_WORKER_BASE__ === 'string' && globalThis.__TACIT_WORKER_BASE__)
+  || 'https://api.tacit.finance';
 async function loadIntent() {
   const r = await fetch(`${WORKER}/assets/${state.intent.asset_id}/atomic-intents?network=signet`);
   if (!r.ok) fail(`could not list intents (HTTP ${r.status})`);

@@ -188,13 +188,17 @@ const T_CBTC_TAC_WITHDRAW_ATOMIC = 0x58; // atomic WITHDRAW + LP_REMOVE in one e
 const T_CBTC_TAC_TOP_UP         = 0x59; // strengthen bond on open position (SPEC §5.50)
 const T_CBTC_TAC_BOND_RELEASE   = 0x5A; // partial bond release on open position (SPEC §5.51)
 // 0x5B–0x5E: preauth/offline-trading family (SPEC-PREAUTH-BID-AMENDMENT.md §5.7.11).
-// 0x5C–0x5E reserved for the named follow-ups (variable-amount, batched-fill, both-sides match).
+// 0x5B/0x5C are a reserved pre-signed construction; 0x5D–0x5E stay reserved for
+// the named follow-ups (batched-fill, both-sides match). Walk-away bids are
+// served by the watchtower path (ops/PLAN-walkaway-bid-watchtower.md), which
+// completes a buyer's fill from a bounded, self-reclaimable funding UTXO and
+// signs the full settlement online.
 const T_PREAUTH_BID             = 0x5B; // buyer-offline preauth bid, exact-fill (SPEC §5.7.11)
 const T_PREAUTH_BID_VAR         = 0x5C; // buyer-offline preauth bid, partial-fill (SPEC §5.7.12)
-// The online bid-intent flow is the active bid path. New buyer-offline
-// pre-signed bid POSTs are parked behind this flag as a follow-up; GET +
-// DELETE stay live so existing records still read and cancel. Flip to true to
-// re-accept POSTs (mirrors the dapp ENABLE_T_PREAUTH_BID* flag).
+// The online bid-intent flow + watchtower are the active bid paths. Buyer-offline
+// pre-signed bid POSTs stay parked; GET + DELETE stay live so existing records
+// still read and cancel. Flip to true only for signet regression harnesses
+// (mirrors the dapp ENABLE_T_PREAUTH_BID* flag).
 const PREAUTH_BIDS_POST_ENABLED = false;
 // Hosted walk-away watchtower (ops/PLAN-hosted-watchtower-render.md). Buyers
 // register an online bid-intent for a managed instance to complete while they
@@ -15258,6 +15262,21 @@ async function commitmentForUtxo(env, txidHex, vout, network, opts = {}) {
     if (!cx) throw new Error('invalid T_AXFER payload');
     if (vout >= cx.outputs.length) throw new Error(`T_AXFER vout ${vout} out of range`);
     return { commitment: cx.outputs[vout].commitment, asset_id: cx.asset_id };
+  }
+  if (decoded.opcode === T_AXFER_VAR || decoded.opcode === T_AXFER_VAR_BPP) {
+    // SPEC §5.7.6.1 / §5.7.9. Interleaved on-chain layout: tacit outputs live at
+    // vout 0 (recipient) and vout 2 (maker change); vout 1 (BTC payment),
+    // vout 3 (OP_RETURN) and 4+ (taker change) are non-tacit. Mirrors the dapp's
+    // getParentEnvelopeData so var-produced notes resolve in the marketplace
+    // endpoints (listings / atomic-intents / preauth-sales all call this).
+    const cv = decoded.opcode === T_AXFER_VAR_BPP
+      ? decodeAxferVarBppPayload(decoded.payload)
+      : decodeAxferVarPayload(decoded.payload);
+    if (!cv) throw new Error('invalid T_AXFER_VAR payload');
+    const outIdx = vout === 0 ? 0 : vout === 2 ? 1 : null;
+    if (outIdx === null) throw new Error(`T_AXFER_VAR vout ${vout} is not a tacit-asset output (only vout 0 + vout 2)`);
+    if (outIdx >= cv.outputs.length) throw new Error(`T_AXFER_VAR output index ${outIdx} out of range`);
+    return { commitment: cv.outputs[outIdx].commitment, asset_id: cv.asset_id };
   }
   if (decoded.opcode === T_PREAUTH_BID) {
     // T_PREAUTH_BID (§5.7.11) canonical settlement layout:
