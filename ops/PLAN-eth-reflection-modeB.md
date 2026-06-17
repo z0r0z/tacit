@@ -139,10 +139,13 @@ remains — the eth inner-proof pipeline scope:
   `gen-reflection-modeb-synth` drives the full path THROUGH `buildModeBBatch` → reflect-exec DIGEST_MATCH
   `0x1c05cc0c`. **The eth-bundle contract** (what `eth_prove` must emit alongside `eth_pv.hex`):
   `{ ethPv:0x<704hex>, crossouts:[{claimId,destCommitment,asset}], consumeds:[{nu,spendRoot}] }` in the
-  set's APPEND order. REMAINING: (a) `eth_prove` writes that bundle (box; couples with G1's witness
-  population); (b) the attester's `assembleJob` threads `ethBundle` + `consumedSources` (the worker
-  resolves each consumed ν → its live Bitcoin source note's `cx,cy,txid,vout`) into `assembleBlocks`.
-  (Also fixed `build-reflection-bootstrap-fixture.mjs`'s missing `await` on the now-async assembler.)
+  set's APPEND order. The attester threads it via an injected `ethBundleSource({from,to,blocks})` →
+  `assembleBlocks` (forward batch when absent). Validated end-to-end through the production indexer:
+  `gen-reflection-modeb-indexer` (worker-shaped block → `assembleBlocks` → `buildModeBBatch` → onboard) →
+  reflect-exec DIGEST_MATCH `0xa9c689c9`. REMAINING: (a) `eth_prove` writes the bundle (box; couples with
+  G1); (b) wire `ethBundleSource` to read `out/eth_set.json`; (c) the consumed-ν fast lane needs the worker
+  to resolve each ν → its live source note's `cx,cy,txid,vout` (a live-note→outpoint index extension — the
+  crossout-mint path needs none). (Also fixed `build-reflection-bootstrap-fixture.mjs`'s missing `await`.)
 - **G4 — vkey + genesis pinning (lockstep).** The eth ELF's vkey must == `reflect.rs`'s
   `ETH_REFLECTION_VKEY`; the genesis anchor (`ETH_GENESIS_SYNC_COMMITTEE` + `GENESIS_SLOT 10462624`)
   captured together. The eth ELF is box-built inside sp1-helios's workspace — not a committed/pinned repo
