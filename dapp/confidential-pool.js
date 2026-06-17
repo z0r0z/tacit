@@ -579,6 +579,42 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
       burns.insert(nu, destCommitment);
       return w;
     }
+    // FAST LANE (mirror cxfer-core ScanReflection::fold_consumed): a Bitcoin-homed note consumed by a
+    // value-exit on the Ethereum fast lane (reverse reflection of ConfidentialPool.bitcoinConsumed[ν]).
+    // Ethereum-senior void: REMOVE the source UTXO from live (so a racing Bitcoin spend this cycle finds it
+    // absent and is voided), then mark ν spent and advance the consumed count. Returns the spent-set insert
+    // witness. The ν↔(Cx,Cy) binding + live-membership are reproduced here; the eth-consumed-set membership
+    // is the guest's soundness (this reproduces the STATE TRANSITION the guest commits). The forward-only
+    // JS scan never calls this — it exists for Mode-B reverse-reflection reconstruction.
+    function foldConsumed(nu, cx, cy, sourceTxid, sourceVout) {
+      const computed = nullifier(cx, cy);
+      if (computed !== hx(b32(nu))) return null;                                  // ν must bind (Cx,Cy)
+      const key = outpointKey(sourceTxid, sourceVout);
+      const hit = live.get(key);
+      if (hit == null || hx(b32(hit[0])) !== commitmentHash(cx, cy)) return null; // source must be a live UTXO bound to (Cx,Cy)
+      live.remove(key);
+      const w = foldSpent(computed);
+      consumedCount += 1n;
+      return w;
+    }
+    // Mode-B reverse mint (mirror cxfer-core ScanReflection::fold_crossout): onboard a T_CROSSOUT_MINT (0x65)
+    // note IFF it is a member of the eth-reflection crossOutSet (the value Ethereum committed to bridge to
+    // Bitcoin). dest_commitment = leaf(asset, Cx, Cy, owner=0) is BOTH the membership target and the minted
+    // note's leaf, so the note cannot claim a different value than the eth record. Skip-not-panic (return
+    // null) on a non-curve commitment or a non-member — a FORWARD batch passes crossoutSetRoot=0, so every
+    // 0x65 skips. Spend-less mint (the backing is the consumed eth value). Returns the note-append witness.
+    function foldCrossout(asset, claimId, cx, cy, setIndex, setPath, crossoutSetRoot, txid, vout) {
+      const ZERO_OWNER = '0x' + '00'.repeat(32);
+      try { ptFromXY(cx, cy).assertValidity(); } catch { return null; }            // commitment must be a curve point
+      const destCommitment = leaf(asset, cx, cy, ZERO_OWNER);
+      const co = { claimId, destChain: DEST_CHAIN_BITCOIN, destCommitment, asset };
+      if (!ethCrossoutMember(co, setIndex, setPath, crossoutSetRoot)) return null;  // not an eth crossOutSet member
+      return foldOutput(destCommitment, outpointKey(txid, vout), commitmentHash(cx, cy), asset);
+    }
+    // Resume: the prior eth-consumed fold count. The forward-only scan stays 0, but a resumed post-fast-lane
+    // state must carry the prior count or its digest() diverges from the guest's (which pins it last).
+    function setConsumedCount(c) { consumedCount = BigInt(c); }
+    function getConsumedCount() { return consumedCount; }
     function setHeight(h) { if (h < height) throw new Error('reflection height must not decrease'); height = h; }
 
     // ── cBTC.zk sats-lock fold (mirror cxfer-core fold_cbtc_lock / fold_cbtc_lock_spends) ──
@@ -848,7 +884,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     }
 
     return {
-      commit, digest, foldSpent, foldOutput, foldNoteAppend, foldBurn, foldCbtcLock, foldCbtcLockSpends, foldSwapVar, foldSwapRoute, foldHarvest, foldProtocolFeeClaim, foldFarmInit, foldLpRemove, foldLpAdd, setHeight,
+      commit, digest, foldSpent, foldOutput, foldNoteAppend, foldBurn, foldCbtcLock, foldCbtcLockSpends, foldSwapVar, foldSwapRoute, foldHarvest, foldProtocolFeeClaim, foldFarmInit, foldLpRemove, foldLpAdd, foldConsumed, foldCrossout, setConsumedCount, getConsumedCount, setHeight,
       // The next free slot's note append-path, computed WITHOUT inserting — the swap_batch witness emits this n
       // times on a skip (the guest reads n receipt paths unconditionally, then discards them when the fold bails).
       notePathPeek: () => notes.rootAndPath(noteCount()).path,
@@ -1116,7 +1152,32 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
       // Track B: the per-pool reserve registry the guest reads after cbtcBackingSats (empty today; the
       // harness writes n_pools=0 + no entries, the guest reconstructs the same empty registry).
       pools: state.pools.list(),
+      // FAST-LANE resume count (the guest reads it last in read_scan_prior_state); 0 for a forward batch.
+      consumedCount: Number(state.getConsumedCount()),
     };
+    // Mode-B reverse reflection: when the batch carries an eth-reflection proof (modeB), fold its attested
+    // consumed-ν set into the spent set BEFORE the block scan (Ethereum-senior void), emitting the witnesses
+    // in the guest's read position (after the headers, before the per-tx scan). The crossout MINTS onboard
+    // in the block scan below. A forward batch leaves modeBIn null → mode_b=0, no eth_pv, no consumed/crossout
+    // fold (every 0x65 skips against crossoutSetRoot=0). See ops/PLAN-eth-reflection-modeB.md.
+    const modeBIn = batch.modeB || null;
+    const consumedOut = [];
+    let ethPvHex = null;
+    if (modeBIn) {
+      for (const cons of (modeBIn.consumed || [])) {
+        const nu = nullifier(cons.cx, cons.cy);
+        const w = state.foldConsumed(nu, cons.cx, cons.cy, cons.srcTxid, cons.srcVout);
+        if (!w) throw new Error('mode-b consumed-ν fold failed (source not a live note bound to Cx,Cy): ' + norm(nu));
+        coords.delete(norm(outpointKey(cons.srcTxid, cons.srcVout)));
+        consumedOut.push({
+          nu: norm(nu), spendRoot: norm(cons.spendRoot), cx: norm(cons.cx), cy: norm(cons.cy),
+          srcTxid: norm(cons.srcTxid), srcVout: cons.srcVout | 0, setPath: cons.setPath.map(norm), spentInsert: w,
+        });
+      }
+      // The eth_pv pins consumedNuCount = the post-loop count (the guest asserts equality); the block scan's
+      // crossout onboards do not touch it, so build it here once the consumed set is fully folded.
+      ethPvHex = buildEthPv(modeBIn.crossoutSetRoot, modeBIn.consumedSetRoot, state.getConsumedCount());
+    }
     const blocksOut = [];
     const nonConserving = [];
     // Value-entry envelopes (T_MINT/cmint) the full-scan model does NOT yet reflect: the model is
@@ -1309,18 +1370,38 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
             unsupportedEnvelopes.push({ txid: tx.txid, opcode: 0x2f });
           }
         } else if (tx.env && tx.env.type === 'crossout_mint') {
-          // Track-D Mode-B reverse mint (0x65): in a FORWARD batch (mode_b=0) crossout_set_root=0, so the guest's
-          // fold_crossout ALWAYS skips (set-membership fails) — onboards nothing, digest unchanged. But it reads
-          // set_index + set_path + note_path for ANY parseable 0x65 before the fold, so emit them (skip-with-
-          // witness) to keep the stream aligned. (The actual onboarding is the mode_b=1 reverse-prove path.)
-          crossoutMint = { setIndex: 0, setPath: Array(32).fill('0x' + '00'.repeat(32)), notePath: state.notePathPeek() };
+          // Track-D Mode-B reverse mint (0x65). The guest reads set_index + set_path + note_path for ANY
+          // parseable 0x65 before the fold, so emit them whether it onboards or skips (stream sync).
+          if (modeBIn) {
+            // Reverse-prove batch: onboard the note IFF it is a crossOutSet member. The membership witness
+            // (setIndex + setPath against crossOutSetRoot) comes from the eth-reflection proof — the consumer
+            // matches each 0x65 to its eth record and attaches it as tx.env.membership. fold_crossout skips a
+            // non-member / non-curve commitment (notePath = the frontier peek then, no append).
+            const m = tx.env.membership;
+            if (!m) {
+              unsupportedEnvelopes.push({ txid: tx.txid, opcode: 0x65 });
+            } else {
+              const w = state.foldCrossout(tx.env.asset, tx.env.claimId, tx.env.cx, tx.env.cy, m.setIndex | 0, m.setPath, modeBIn.crossoutSetRoot, tx.txid, 0);
+              crossoutMint = { setIndex: m.setIndex | 0, setPath: m.setPath.map(norm), notePath: w ? w.notePath : state.notePathPeek() };
+            }
+          } else {
+            // FORWARD batch (mode_b=0): crossout_set_root=0, so fold_crossout always skips — onboards nothing,
+            // digest unchanged. Emit the skip-with-witness (sentinel set + the frontier note-path).
+            crossoutMint = { setIndex: 0, setPath: Array(32).fill('0x' + '00'.repeat(32)), notePath: state.notePathPeek() };
+          }
         }
         txsOut.push({ txData: tx.txData, openings, spentInserts, burnInsert, outputs, burnDeposit, cbtcLock, swapVar, swapRoute, harvest, protocolFee, lpRemove, lpAdd, swapBatch, crossoutMint });
       }
       blocksOut.push({ txs: txsOut });
       blockIndex++;
     }
-    return { prior, anchorHeight: batch.anchorHeight | 0, headers: batch.headers || [], blocks: blocksOut, newDigest: state.digest(), nonConserving, unreflectedValueEntry, unsupportedEnvelopes };
+    return {
+      prior, anchorHeight: batch.anchorHeight | 0, headers: batch.headers || [], blocks: blocksOut,
+      newDigest: state.digest(), nonConserving, unreflectedValueEntry, unsupportedEnvelopes,
+      // Mode-B reverse reflection: mode_b + the eth-reflection PV (the guest verify_sp1_proof-binds it) + the
+      // consumed-ν witness stream. A forward batch is mode_b=0 with no eth_pv/consumed (the harness/guest skip).
+      modeB: modeBIn ? 1 : 0, ...(modeBIn ? { ethPv: ethPvHex, consumed: consumedOut } : {}),
+    };
   }
 
   // Mirror of the guest's keccak_merkle_verify — fold a leaf with its path.
@@ -1351,6 +1432,39 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
       h = ((index >>> i) & 1) ? keccak256(concat([sib, h])) : keccak256(concat([h, sib]));
     }
     return hx(h);
+  }
+
+  // ── Mode-B eth-reflection set ABI (mirror cxfer-core::eth_reflection) ──
+  // The reverse-bridge cross-out / consumed-ν sets the eth-reflection guest commits and the Bitcoin guest
+  // checks membership against. The leaf is keccak of the RAW concatenation (kn — no 32-byte padding).
+  const DEST_CHAIN_BITCOIN = 1;
+  // Sepolia genesis sync-committee anchor — MUST equal reflect.rs ETH_GENESIS_SYNC_COMMITTEE (the word-8
+  // assert). Re-anchor in lockstep with the guest for a production deploy.
+  const ETH_GENESIS_SYNC_COMMITTEE = '0x8a83300119ac1e64a2318d3db330ed496c51276c636a93633b2d5cfd283c2d44';
+  const be2 = (n) => Uint8Array.from([(n >> 8) & 0xff, n & 0xff]);
+  // eth_crossout_leaf = keccak(claimId ‖ destChain_be2 ‖ destCommitment ‖ assetId).
+  function ethCrossoutLeaf(claimId, destChain, destCommitment, asset) {
+    return hx(keccak256(concat([b32(claimId), be2(destChain), b32(destCommitment), b32(asset)])));
+  }
+  // eth_consumed_leaf = keccak(ν ‖ spendRoot).
+  function ethConsumedLeaf(nu, spendRoot) {
+    return hx(keccak256(concat([b32(nu), b32(spendRoot)])));
+  }
+  // eth_crossout_member — keccak-merkle membership of a cross-out leaf in crossOutSetRoot (verifyPath mirror).
+  function ethCrossoutMember(co, index, path, setRoot) {
+    return verifyPath(ethCrossoutLeaf(co.claimId, co.destChain, co.destCommitment, co.asset), index, path, setRoot);
+  }
+  // Build the 11-word EthReflectionPublicValues the guest verify_sp1_proof-binds, then reads by offset:
+  // word3 = crossOutSetRoot, word8 = genesis sync-committee anchor, word9 = consumedNuSetRoot, word10
+  // low-8 = consumedNuCount. The other words (priorDigest/newDigest/ethPool/counts/slots/finalizedRoots)
+  // are unread by the Bitcoin guest, so they are zero in this mirror.
+  function buildEthPv(crossoutSetRoot, consumedSetRoot, consumedNuCount) {
+    const words = Array.from({ length: 11 }, () => new Uint8Array(32));
+    words[3] = b32(crossoutSetRoot);
+    words[8] = b32(ETH_GENESIS_SYNC_COMMITTEE);
+    words[9] = b32(consumedSetRoot);
+    words[10] = u64be(BigInt(consumedNuCount)); // count as a 32-byte BE word — the guest reads its low 8 bytes
+    return hx(concat(words));
   }
 
   // ── opening proof-of-knowledge (swap / LP), mirror of cxfer_core::verify_opening_sigma ──
@@ -1417,6 +1531,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     utxoLeaf, makeUtxoAccumulator, commitmentHash, decompressCommitment, compressXY, outpointKey,
     makeReflectionState, assembleReflectionInput, openingSigma, verifyOpeningSigma, deriveOpeningNonce, intentContext,
     liveLeaf, makeLiveUtxoSet, makeScanReflectionState, assembleReflectionScanInput,
+    DEST_CHAIN_BITCOIN, ethCrossoutLeaf, ethConsumedLeaf, ethCrossoutMember, buildEthPv,
     CBTC_ZK_ASSET_ID, CBTC_LOCK_DOMAIN, cbtcLockContext,
     cxferKernelVerify, verifyCxferConservation,
     protocolFeeShares, crystallizeProtocolFee, ammDeriveLpAssetId, ammDeriveFarmId, ammCanonicalPair, ammDerivePoolIdFull, lpRemoveKernelVerify, lpAddKernelVerify, lpAddShares, swapBatchAggregateIdentity, AMM_MINIMUM_LIQUIDITY, isqrt,

@@ -100,12 +100,13 @@ fn write_stdin(f: &serde_json::Value) -> SP1Stdin {
 
     // Mode-B gate (matches reflect.rs): mode_b, then ONLY when set the eth-reflection PV the guest verifies.
     // A forward-only fixture (modeB absent/0) skips it — no eth_pv, no verify_sp1_proof. modeB=1 carries the
-    // real `ethPv` (9 abi words = 288 bytes; word 8 == pinned ETH_GENESIS_SYNC_COMMITTEE) for a fold_crossout.
+    // real `ethPv` (11 abi words = 352 bytes; word 8 == pinned ETH_GENESIS_SYNC_COMMITTEE, word 9 =
+    // consumedNuSetRoot, word 10 low-8 = consumedNuCount) for a fold_crossout / fold_consumed.
     let mode_b = f.get("modeB").and_then(|v| v.as_u64()).unwrap_or(0);
     s.write(&(mode_b as u32));
     if mode_b != 0 {
         let eth_pv = f.get("ethPv").and_then(|v| v.as_str()).map(hexv).unwrap_or_else(|| {
-            let mut b = vec![0u8; 9 * 32];
+            let mut b = vec![0u8; 11 * 32];
             b[8 * 32..9 * 32].copy_from_slice(&hexv("0x8a83300119ac1e64a2318d3db330ed496c51276c636a93633b2d5cfd283c2d44"));
             b
         });
@@ -116,6 +117,24 @@ fn write_stdin(f: &serde_json::Value) -> SP1Stdin {
     let headers = f["headers"].as_array().unwrap();
     s.write(&(headers.len() as u32));
     for hh in headers { s.write(&hexv(hh.as_str().unwrap())); }
+
+    // FAST LANE (Mode-B): the guest folds the eth-consumed ν set AFTER the headers, BEFORE the block scan
+    // (reflect.rs). For each consumed ν: nu, spendRoot, Cx, Cy, srcTxid, srcVout(u32), set_path, then the
+    // spent-IMT insert witness — mirror that exact order. A forward fixture has no `consumed` (mode_b=0).
+    if mode_b != 0 {
+        for cons in f.get("consumed").and_then(|v| v.as_array()).map(|a| a.as_slice()).unwrap_or(&[]) {
+            r32(&mut s, &cons["nu"]);
+            r32(&mut s, &cons["spendRoot"]);
+            r32(&mut s, &cons["cx"]);
+            r32(&mut s, &cons["cy"]);
+            r32(&mut s, &cons["srcTxid"]);
+            s.write(&(cons["srcVout"].as_u64().unwrap() as u32));
+            path(&mut s, &cons["setPath"]);
+            let si = &cons["spentInsert"];
+            r32(&mut s, &si["sLowValue"]); r32(&mut s, &si["sLowNext"]); s.write(&si["sLowIndex"].as_u64().unwrap());
+            path(&mut s, &si["sLowPath"]); path(&mut s, &si["sNewPath"]);
+        }
+    }
 
     for block in f["blocks"].as_array().unwrap() {
         let txs = block["txs"].as_array().unwrap();
