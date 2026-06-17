@@ -59,3 +59,28 @@ first, the safer direction), and far cheaper than the full reverse fast lane.
 
 Design-of-record; implementation follows the alpha sanity/cleanup. Completes the "one wallet, two chains"
 loop in the cheap direction.
+
+## Build spec for the round-trip CLIs (scoped 2026-06-17)
+The four build gaps, with what exists vs. what to build:
+1. **crossOut settle witness CLI — DONE** (`a2c01f5`): `gen-cxfer-crossout-fixture.mjs` (`buildBridgeBurn`) +
+   `exec_crossout.rs` (`OP_BRIDGE_BURN`). Box-ready (`MODE=execute`/`groth16`). The LIVE crossOut also needs a
+   wrapped note in the pool first (wrap settle → a real EVM note to burn) + the box for the groth16.
+2. **`0x65` broadcast CLI — to build (#11).** `encodeCrossoutMint({assetId,claimId,cx,cy,owner})` EXISTS
+   (`confidential-crossout-consumer.js`) and `makeCrossoutBroadcaster` EXISTS but is **unwired** — it needs an
+   injected `buildAndBroadcastEnvelope(payload) => {txid,vout}`. There is **no generic** one: tacit.js has
+   per-envelope commit/reveal flows (`encodeEnvelopeScript(wallet.xonly(), payload)` → commit tx → reveal tx
+   with the envelope in the Taproot witness → broadcast; e.g. the CETCH / burn flows). BUILD: a headless
+   `buildAndBroadcastEnvelope` (extract the generic commit/reveal from one flow, or write one) driven by a
+   jsdom + tacit.js(signet) harness over the funded signet wallet (`tb1qjpjvtvjyqskr8p356smwjvzwj96spkzwdh7zwp`,
+   `~/.tacit-validation/signet.json`), like the existing `*-onchain-e2e-signet.mjs` harnesses. GATE: the real
+   broadcast needs a live crossOut `claimId` (the `0x65` note `cx,cy,owner` MUST equal the crossOut's
+   `destCommitment`), so it runs AFTER step 1's live settle.
+3. **reflection `fold_crossout` fixture (#12)**: extend `scripts/build-reflection-bootstrap-fixture.mjs` to
+   mark the `0x65` tx as a `crossout_mint` (decode `0x65` → the note) so the reflection folds it; GPU
+   `bitcoin_prove` → `attestBitcoinStateProven` (GATE: relay must be advancing).
+4. **bridge_mint / fast-spend witness (#12)**: `exec-bridgemint.rs` op-JSON (the Bitcoin note opening +
+   membership vs the attested root) → settle → the note re-mints on ETH (bridge_mint) or fast-spends.
+
+**These need a focused contiguous session with the box restarted + the relay advancing** (the live chain:
+wrap → crossOut settle → `0x65` → attest → fast-spend). The CLI *code* for #11 can be written offline but
+not validated end-to-end until that chain runs. All fold into the alpha re-prove (A0).
