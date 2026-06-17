@@ -912,6 +912,36 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         emit PublicSwap(poolId, msg.sender, to, assetIn, vIn, vOut);
     }
 
+    event SharesShielded(bytes32 indexed poolId, address indexed owner, uint256 shares, bytes32 depositId);
+
+    /// @dev The pool-specific LP-share asset id = keccak(poolId‖"lp") — the SAME derivation the guest's
+    ///      lp_share_id + the dapp's lpShareId use, so an OP_WRAP that mints the share note and the
+    ///      OP_LP_REMOVE that spends it agree on the leaf's asset.
+    function _lpShareId(bytes32 poolId) internal pure returns (bytes32) {
+        return keccak256(abi.encodePacked(poolId, "lp"));
+    }
+
+    /// @notice Opt-in privacy for an LP position: convert PUBLIC LP shares into a confidential LP-share
+    ///         NOTE. Burns `shares` of the caller's public `lpShares` and records a pending deposit that the
+    ///         EXISTING OP_WRAP settle consumes into a share note (commitment `commit` = keccak(Cx‖Cy‖owner),
+    ///         exactly like wrap; the guest verifies the note opens to `shares` on consume — the amount
+    ///         binding, so no on-chain EC + no new guest op). `pools[poolId].totalShares` is UNCHANGED — the
+    ///         position only changes FORM (public ledger → hidden note), so reserves still back it and a
+    ///         later confidential OP_LP_REMOVE withdraws the proportional amount. The minted share note is
+    ///         spendable ONLY via OP_LP_REMOVE (its asset = lp_share_id, which is unregistered, so an
+    ///         OP_UNWRAP of it reverts NotRegistered — it can't be drained as a plain asset).
+    function shieldShares(bytes32 poolId, uint256 shares, bytes32 commit) external nonReentrant returns (bytes32 depositId) {
+        if (!pools[poolId].init) revert PoolNotInit();
+        uint256 bal = lpShares[poolId][msg.sender];
+        if (shares == 0 || shares > bal) revert InsufficientLiquidity();
+        if (shares > type(uint64).max) revert ValueOutOfRange(); // the guest carries the note value as u64
+        lpShares[poolId][msg.sender] = bal - shares; // burn public; totalShares unchanged (form change)
+        depositId = keccak256(abi.encode(_lpShareId(poolId), shares, commit));
+        if (depositStatus[depositId] != 0) revert DepositExists();
+        depositStatus[depositId] = 1;
+        emit SharesShielded(poolId, msg.sender, shares, depositId);
+    }
+
     // ──────────────────── Bitcoin state attestation (relay-proven, no oracle) ────────────────────
 
     /// Bitcoin state proven by the reflection prover (re-derived from relayed headers + the

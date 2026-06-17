@@ -89,5 +89,10 @@ public swap path is a separate opt-in for non-private traders if ever wanted.
   add, MIN_LIQUIDITY-breach revert — 3/3 green). Founding is proof-free; reserves stay u64-compatible; the
   `lpShares` getter exposes only public positions (confidential note-shares are disjoint, in the tree — no
   downgrade). Confirmed: the public path is independent of the parallel `wrap`→commit-digest privacy revamp.
-- `shieldShares` (public LP-share → confidential share note, the opt-in privacy step) + the zRouter-style
-  periphery: **still to implement** (review in the A0 bundle, PLAN-unified-twochain-rollout.md).
+- `shieldShares` (public LP-share → confidential share note, opt-in privacy): **IMPLEMENTED** (next-gen,
+  commit 4d530f4) — reuses OP_WRAP via a pending deposit keyed (lpShareId, shares, commit); no guest change,
+  no on-chain EC. `totalShares` unchanged (form change); the share note is OP_LP_REMOVE-only (its asset =
+  unregistered lp_share_id, so OP_UNWRAP reverts). Tested (ConfidentialPoolPublicAmm.t.sol).
+- The **zRouter-style periphery router** (composes the public add/remove/swap + the wrap→prove→settle
+  orchestration + approvals/ETH): **still to implement** (review in the A0 bundle). Permissionless, no
+  special privileges — calls the public entries + relays proofs, so deployable/iterable off the immutable core.

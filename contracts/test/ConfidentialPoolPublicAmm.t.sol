@@ -93,4 +93,26 @@ contract ConfidentialPoolPublicAmmTest is Test {
         assertEq(rA, 1_500_000); assertEq(rB, 1_500_000);
         assertEq(ts1, ts0 + sh2, "totalShares grew by minted");
     }
+
+    function test_shield_shares_records_pending_deposit() public {
+        uint256 sh = pool.createPairAndAddLiquidityPublic(assetA, assetB, 30, 1_000_000, 1_000_000, address(this));
+        bytes32 id = _pid(assetA, assetB, 30);
+        (,,,,,, uint256 tsBefore) = pool.pools(id);
+        bytes32 commit = keccak256("note-commit");
+        uint256 n = sh / 2;
+        bytes32 depositId = pool.shieldShares(id, n, commit);
+        assertEq(pool.lpShares(id, address(this)), sh - n, "public shares burned");
+        assertEq(pool.depositStatus(depositId), 1, "pending shielded deposit recorded");
+        bytes32 shareAssetId = keccak256(abi.encodePacked(id, "lp"));
+        assertEq(depositId, keccak256(abi.encode(shareAssetId, n, commit)), "depositId binds (lpShareId, shares, commit)");
+        (,,,,,, uint256 tsAfter) = pool.pools(id);
+        assertEq(tsAfter, tsBefore, "totalShares unchanged (position only changes form)");
+    }
+
+    function test_shield_more_than_balance_reverts() public {
+        uint256 sh = pool.createPairAndAddLiquidityPublic(assetA, assetB, 30, 1_000_000, 1_000_000, address(this));
+        bytes32 id = _pid(assetA, assetB, 30);
+        vm.expectRevert(ConfidentialPool.InsufficientLiquidity.selector);
+        pool.shieldShares(id, sh + 1, keccak256("x"));
+    }
 }
