@@ -189,3 +189,44 @@ the pool is what must be prevented; that reduces to "the reflected spent set is 
 - Whether to bind `bitcoinConsumed[ν]` to the spendRoot (extra audit trail) or just a bool. Spend-root
   binding lets a later audit tie each consumed `ν` to the exact Bitcoin root it was proven against.
 - Maturity-window length: tie to `REFLECTION_CONFIRMATIONS` (the deploy knob) so it scales with backing.
+
+## Live Mode-B drive (2026-06-18) — what blocks the first real reverse-bridge fold
+
+Driving `wrap → crossOut → 0x65 → fold` live on the canonical-signet pool `0x3D38a004` got steps 1–3
+on-chain (crossOut `crossOutCommitment[0x64beaad5…]=0xb588cd2b…`, `0x65` reveal `c5142fbd…` @ signet 309292)
+but surfaced three things in step 4 (the eth-reflection prove + the Bitcoin Mode-B fold):
+
+1. **eth_prove stale-block bug — FIXED in source.** `eth_prove.rs` read `exec_block` from the pinned-genesis
+   bootstrap store, not the advanced finalized header, so `eth_getProof`/`eth_getLogs` hit a block thousands
+   of slots before the crossOut. Now reads it from `finality_update.finalized_header()` (the block the guest
+   advances to + verifies storage against). Confirmed: getLogs then finds the crossOut.
+
+2. **Beacon update/finality period gap — config.** `get_updates(genesis_period, 128)` returned only periods
+   1277–1279 while finality was period 1281, so the guest's `verify_finality_update` can't reach the
+   finality committee. Need a consensus RPC that serves the full update chain through `finality_period − 1`
+   (publicnode lagged). No code change; pick the RPC / retry until the update set bridges to finality.
+
+3. **🔴 `bitcoinConsumedCount` (slot 120) is never seeded — requires a fresh deploy.** At count 0 the slot is
+   absent from the storage trie, so `eth_getProof` returns an **exclusion** proof and the guest's
+   `verify_storage_slot_proofs` rejects it (`main.rs:130`; the guest then `expect`s the slot at `main.rs:154`).
+   Seeding 0 in the ctor is impossible (a zero slot is deleted, never stored). The two coherent fixes, both
+   rotating the eth-reflection vkey → reflection-prover → BITCOIN_RELAY_VKEY (so they fold into the alpha
+   re-prove + a fresh pool deploy):
+   - **(preferred) handle the exclusion proof:** extend `sp1_helios_primitives::verify_storage_slot_proofs`
+     (vendored at `/root/sp1-helios/primitives`, NOT in this repo) to verify an exclusion proof and yield
+     value 0, then let the guest read `bitcoinConsumedCount` as 0 when provably absent. Keeps count/set at 0,
+     no sentinel. Soundness is preserved — a verified exclusion proves the slot is genuinely 0, so the
+     freshness invariant (fold every recorded consume) still holds (there are none).
+   - **(alt) non-zero sentinel:** ctor seeds `bitcoinConsumedCount = 1` (writes the slot → inclusion proof),
+     mirror the existing spent-set `imt_leaf(0,0)` sentinel by genesis-seeding the eth + Bitcoin consumed
+     sets with one sentinel leaf (`prior_consumed_count = 1`), and real consumes increment from 1. Coherent
+     but spans contract + cxfer-core + reflect.rs + eth-reflection guest + the JS mirrors — implement in ONE
+     pass; a contract-only seed makes the repo incoherent-if-deployed.
+
+   Do NOT land a partial slot-120 change: it rotates vkeys and can't be validated without the full re-prove.
+
+**Also fold into the same cycle:** re-pin a fresher `GENESIS_SLOT` / `ETH_GENESIS_SYNC_COMMITTEE` (the pinned
+slot 10462624 is ~4 periods back; it still works but the older it gets the more updates the guest must verify
+in-circuit), and re-pin `reflect.rs ETH_REFLECTION_VKEY` to the rebuilt eth-reflection vkey (the local
+committed value is the reverted mainnet placeholder; the box build pins the Sepolia recursion vkey
+`[316051978, 39823114, …]` / on-chain `0x0025ad24…`).

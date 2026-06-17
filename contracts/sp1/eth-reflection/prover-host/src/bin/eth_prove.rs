@@ -128,12 +128,26 @@ fn main() -> anyhow::Result<()> {
             let expected_current_slot = client.expected_current_slot();
             eprintln!("updates={} finalized_slot={}", updates.len(), client.store.finalized_header.beacon().slot);
 
-            let exec_block: u64 = *client
-                .store
-                .finalized_header
+            // exec_block = the CURRENT finalized execution block — what the guest advances to (via the
+            // updates + finality_update) and verifies the storage proofs against. Read it from the
+            // finality_update, NOT client.store.finalized_header: the store stays pinned at GENESIS_SLOT
+            // (the weak-subjectivity anchor), so reading exec_block from it gives a block thousands of
+            // slots stale — before any recent crossOut — and getLogs/getProof would miss the entry while
+            // the guest verifies against the advanced finalized state root (a host↔guest block mismatch).
+            let sp = |s: u64| s / (32 * 256);
+            let exec_block: u64 = *finality_update
+                .finalized_header()
                 .execution()
-                .expect("no finalized execution header in store")
+                .expect("no finalized execution header in finality_update")
                 .block_number();
+            eprintln!(
+                "finalized slot {} (period {}), exec_block {exec_block}; bootstrap was slot {} (period {}), {} updates",
+                finality_update.finalized_header().beacon().slot,
+                sp(finality_update.finalized_header().beacon().slot),
+                client.store.finalized_header.beacon().slot,
+                sp(client.store.finalized_header.beacon().slot),
+                updates.len(),
+            );
 
             let provider =
                 ProviderBuilder::new().connect_http(exec_rpc.parse().expect("bad SOURCE_EXECUTION_RPC url"));

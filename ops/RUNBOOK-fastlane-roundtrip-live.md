@@ -8,17 +8,37 @@ inline. Folds into the alpha re-prove (A0, `PLAN-unified-twochain-rollout.md`).
 ## Wired inputs (from the 2026-06-17 validation re-prove)
 | | value |
 |---|---|
-| Validation pool (Sepolia) | `0xdcFccAf30a6f2aad28e66ea9470e768B934ADb8F` |
+| Validation pool (Sepolia) | `0x3D38a00406d97Ba2F5df7d30246b810C90AC7444` (on the canonical-signet relay; supersedes the dead-fork `0xdcFccAf3`/`0x991726A5`) |
 | PROGRAM_VKEY / BITCOIN_RELAY_VKEY | `0x0073ee38…` / `0x003281ea…` |
 | SP1_VERIFIER (v6.1.0 leaf) | `0xb69f2584CBcFf99a58C4e7002E8b89Af54a6f4e2` |
-| HEADER_RELAY / CANONICAL_FACTORY | `0xEbBb986E…` / `0x631c77ce…` |
-| ETH wallet (deployer/settler, funded) | `0xD5B75Ea6dfC22E234ecA88e5C75f5E1972b2C6E1` (`~/.tacit-validation/eth.json`) |
+| HEADER_RELAY (canonical signet) / CANONICAL_FACTORY | `0x70C8022e45728ccdCacA85eF57C74aD9E535cDe7` / `0x631c77ce…` |
+| ETH_REFLECTION_VKEY (recursion, box reflect.rs pin) | `[316051978, 39823114, …]` (on-chain `0x0025ad24…`); local committed reflect.rs holds the reverted mainnet placeholder |
+| ETH wallet (deployer/settler, funded) | `0xD5B75Ea6dfC22E234ecA88e5C75f5E1972b2C6E1` (`~/.tacit-validation/eth.json`, key at `[0].private_key`) |
 | Signet wallet (funded) | `tb1qjpjvtvjyqskr8p356smwjvzwj96spkzwdh7zwp` (`~/.tacit-validation/signet.json`) |
-| Box / Sepolia RPC | vast `40707240` ssh8.vast.ai:27240 (`~/.ssh/vast_prover`) · `https://ethereum-sepolia-rpc.publicnode.com` |
+| Box / Sepolia RPCs | vast `40707240` ssh8.vast.ai:27240 (`~/.ssh/vast_prover`) · consensus `ethereum-sepolia-beacon-api.publicnode.com` · execution `sepolia.gateway.tenderly.co` (handles wide eth_getLogs/getProof; publicnode caps ranges) |
+
+## Status (2026-06-18) — steps 1–3 DONE on `0x3D38a004`; step 4 (Mode-B fold) BLOCKED
+Verified on-chain on the canonical-signet pool `0x3D38a004`:
+- **Step 1 wrap** — done (note in tree; asset `0x2a0f3c…`).
+- **Step 2 crossOut settle** — done: `crossOutCommitment[0x64beaad5…] = 0xb588cd2b…` (CrossOutRecorded @ Sepolia block 11081519).
+- **Step 3 `0x65` broadcast** — done: reveal tx `c5142fbd…` @ signet block 309292 (leaf == destCommitment, verified).
+
+**Step 4 (reflection fold + attest) cannot complete on this deployment — two blockers found driving it live:**
+1. **eth_prove stale-block bug — FIXED** (`eth_prove.rs`): it read `exec_block` from the pinned-genesis
+   bootstrap store, so getLogs/getProof hit a block before the crossOut. Now reads the current finalized
+   block from `finality_update.finalized_header()`. After the fix getLogs finds the crossOut (1 entry).
+2. **Beacon period gap (config):** `get_updates` returns to period 1279 but finality is 1281 — the guest's
+   `verify_finality_update` needs the period-1280 update. Use a beacon RPC that serves the full update set.
+3. **🔴 Slot 120 `bitcoinConsumedCount` is never ctor-seeded (needs a fresh deploy).** At count 0 the slot is
+   absent from the storage trie, so `eth_getProof` yields an exclusion proof the eth-reflection guest rejects
+   (`verify_storage_slot_proofs`: got None, expected Some(0x80)). Seeding 0 in the ctor is impossible (zero
+   slots aren't stored). Fix = make the guest treat an absent freshness slot as 0 (handle the exclusion proof),
+   which rotates the eth-reflection vkey → rebuild reflection-prover → new BITCOIN_RELAY_VKEY → **fresh pool
+   deploy** (fold into the alpha re-prove). Until then the live Mode-B fold cannot run on ANY count-0 pool.
 
 ## Prereqs (gates — check FIRST)
-- [ ] `vastai start instance 40707240`; ELFs intact (`/root/work/confidential/target/.../{confidential-pool-prover,reflection-prover}` shas `8e6d4c95…`/`1723762e…`); re-derive vkeys (`derive_vkeys`) == above.
-- [ ] **Relay advancing:** `cast call 0xEbBb986E… 'tip()(bytes32)'` must change over ~10 min (it was stalled at `0x6da483f8…`). If stalled, the attest (step 5) blocks — start/poke the header relayer first.
+- [ ] `vastai start instance 40707240`; ELFs intact (`/root/work/confidential/target/.../{confidential-pool-prover,reflection-prover}` shas `8e6d4c95…`/`1723762e…`); re-derive vkeys (`derive_vkeys`) == above. After ANY guest rebuild, **also rebuild the host bins** (`eth_prove`/`bitcoin_prove` `include_bytes!` the ELFs) and confirm `eth_vkey` == the reflect.rs `ETH_REFLECTION_VKEY` pin.
+- [x] **Relay tracks canonical signet** (`0x70C8022e`, `tipHeight()` advances via `advance-relay.sh` with `RELAY_ADDRESS=0x70C8022e` + the eth key). The old dead-fork relay `0xEbBb986E` is superseded.
 
 ## The chain
 1. **Register a wrap asset + wrap a note** (seeds an EVM note; validates `PROGRAM_VKEY` on-chain). Deploy a
