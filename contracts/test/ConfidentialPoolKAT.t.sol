@@ -58,9 +58,14 @@ contract ConfidentialPoolKATTest is Test {
             bytes32 nullifier = keccak256(abi.encodePacked(cx, cy, "spent"));
             assertEq(nullifier, vm.parseJsonBytes32(json, string.concat(base, ".nullifier")), "nullifier layout");
 
-            // matches ConfidentialPool.wrap()'s keccak256(abi.encode(assetId, value, ...)),
+            // commit = keccak(Cx ‖ Cy ‖ owner): the digest wrap takes in place of the raw coords +
+            // owner, matching cxfer-core::deposit_commit, the guest, and dapp/confidential-pool.js.
+            bytes32 commit = keccak256(abi.encodePacked(cx, cy, owner));
+            assertEq(commit, vm.parseJsonBytes32(json, string.concat(base, ".commit")), "commit layout");
+
+            // matches ConfidentialPool.wrap()'s keccak256(abi.encode(assetId, value, commit)),
             // where value = amount/unitScale is derived on-chain (binds note value to escrow).
-            bytes32 depositId = keccak256(abi.encode(assetId, value, cx, cy, owner));
+            bytes32 depositId = keccak256(abi.encode(assetId, value, commit));
             assertEq(depositId, vm.parseJsonBytes32(json, string.concat(base, ".depositId")), "depositId layout");
         }
     }

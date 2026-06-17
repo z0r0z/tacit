@@ -122,10 +122,11 @@ contract ConfidentialPoolTest is Test {
 
     function _wrap(uint256 amount, bytes32 cx, bytes32 cy, bytes32 owner) internal returns (bytes32 depositId) {
         vm.prank(USER);
-        pool.wrap(assetId, amount, cx, cy, owner);
-        // the contract binds the deposit to the in-system value = amount/unitScale.
+        pool.wrap(assetId, amount, keccak256(abi.encodePacked(cx, cy, owner)));
+        // the contract binds the deposit to the in-system value = amount/unitScale, over the
+        // coord/owner digest keccak(Cx‖Cy‖owner) (the raw coords never reach the chain).
         uint256 value = amount / pool.getAsset(assetId).unitScale;
-        depositId = keccak256(abi.encode(assetId, value, cx, cy, owner));
+        depositId = keccak256(abi.encode(assetId, value, keccak256(abi.encodePacked(cx, cy, owner))));
     }
 
     function _arr(bytes32 a) internal pure returns (bytes32[] memory out) {
@@ -195,14 +196,14 @@ contract ConfidentialPoolTest is Test {
         _wrap(100, bytes32(uint256(1)), bytes32(uint256(2)), bytes32(uint256(3)));
         vm.prank(USER);
         vm.expectRevert(ConfidentialPool.DepositExists.selector);
-        pool.wrap(assetId, 100, bytes32(uint256(1)), bytes32(uint256(2)), bytes32(uint256(3)));
+        pool.wrap(assetId, 100, keccak256(abi.encodePacked(bytes32(uint256(1)), bytes32(uint256(2)), bytes32(uint256(3)))));
     }
 
     function test_wrap_unaligned_reverts() public {
         bytes32 a2 = pool.registerWrapped(address(new MockERC20()), 10, bytes32(0), "X", "X", 18);
         vm.prank(USER);
         vm.expectRevert(ConfidentialPool.AmountNotAligned.selector);
-        pool.wrap(a2, 5, bytes32(uint256(1)), bytes32(uint256(2)), bytes32(uint256(3)));
+        pool.wrap(a2, 5, keccak256(abi.encodePacked(bytes32(uint256(1)), bytes32(uint256(2)), bytes32(uint256(3)))));
     }
 
     function test_wrap_value_over_u64_reverts() public {
@@ -212,7 +213,7 @@ contract ConfidentialPoolTest is Test {
         token.mint(USER, huge);
         vm.prank(USER);
         vm.expectRevert(ConfidentialPool.ValueOutOfRange.selector);
-        pool.wrap(assetId, huge, bytes32(uint256(1)), bytes32(uint256(2)), bytes32(uint256(3)));
+        pool.wrap(assetId, huge, keccak256(abi.encodePacked(bytes32(uint256(1)), bytes32(uint256(2)), bytes32(uint256(3)))));
     }
 
     function test_register_duplicate_reverts() public {
@@ -250,7 +251,7 @@ contract ConfidentialPoolTest is Test {
         uint256 amt = 5e10; // 5 in-system units
         vm.deal(USER, amt);
         vm.prank(USER);
-        pool.wrap{value: amt}(ethId, amt, bytes32(uint256(1)), bytes32(uint256(2)), bytes32(uint256(3)));
+        pool.wrap{value: amt}(ethId, amt, keccak256(abi.encodePacked(bytes32(uint256(1)), bytes32(uint256(2)), bytes32(uint256(3)))));
         assertEq(pool.escrow(ethId), amt, "ETH escrowed");
         assertEq(address(pool).balance, amt, "pool holds the wei");
     }
@@ -260,14 +261,14 @@ contract ConfidentialPoolTest is Test {
         vm.deal(USER, 1e10);
         vm.prank(USER);
         vm.expectRevert(ConfidentialPool.EthValueMismatch.selector);
-        pool.wrap{value: 1e10 - 1}(ethId, 1e10, bytes32(uint256(1)), bytes32(uint256(2)), bytes32(uint256(3)));
+        pool.wrap{value: 1e10 - 1}(ethId, 1e10, keccak256(abi.encodePacked(bytes32(uint256(1)), bytes32(uint256(2)), bytes32(uint256(3)))));
     }
 
     function test_unwrap_native_eth_pays_recipient() public {
         bytes32 ethId = pool.registerWrapped(address(0), 1e10, bytes32(0), "cETH", "cETH", 18);
         vm.deal(USER, 7e10);
         vm.prank(USER);
-        pool.wrap{value: 7e10}(ethId, 7e10, bytes32(uint256(1)), bytes32(uint256(2)), bytes32(uint256(3)));
+        pool.wrap{value: 7e10}(ethId, 7e10, keccak256(abi.encodePacked(bytes32(uint256(1)), bytes32(uint256(2)), bytes32(uint256(3)))));
         ConfidentialPool.PublicValues memory pv = _pv();
         pv.withdrawals = new ConfidentialPool.Withdrawal[](1);
         pv.withdrawals[0] = ConfidentialPool.Withdrawal(ethId, RECIP, 7); // value 7 → 7·1e10 wei
@@ -281,7 +282,7 @@ contract ConfidentialPoolTest is Test {
         bytes32 ethId = pool.registerWrapped(address(0), 1e10, bytes32(0), "cETH", "cETH", 18);
         vm.deal(USER, 1e10);
         vm.prank(USER);
-        pool.wrap{value: 1e10}(ethId, 1e10, bytes32(uint256(9)), bytes32(uint256(8)), bytes32(uint256(7)));
+        pool.wrap{value: 1e10}(ethId, 1e10, keccak256(abi.encodePacked(bytes32(uint256(9)), bytes32(uint256(8)), bytes32(uint256(7)))));
         address rejector = address(new EthRejector());
         ConfidentialPool.PublicValues memory pv = _pv();
         pv.withdrawals = new ConfidentialPool.Withdrawal[](1);
@@ -424,11 +425,12 @@ contract ConfidentialPoolTest is Test {
 
         // wrap amount = 3·scale → in-system value 3; deposit is bound to the value.
         vm.prank(USER);
-        pool.wrap(a8, 3 * scale, cx, cy, owner);
-        bytes32 id = keccak256(abi.encode(a8, uint256(3), cx, cy, owner));
+        pool.wrap(a8, 3 * scale, keccak256(abi.encodePacked(cx, cy, owner)));
+        bytes32 commit = keccak256(abi.encodePacked(cx, cy, owner));
+        bytes32 id = keccak256(abi.encode(a8, uint256(3), commit));
         assertEq(pool.depositStatus(id), 1, "deposit bound to value, not amount");
         // the amount-bound id (the pre-harmonization layout) must NOT exist.
-        assertEq(pool.depositStatus(keccak256(abi.encode(a8, 3 * scale, cx, cy, owner))), 0, "not bound to amount");
+        assertEq(pool.depositStatus(keccak256(abi.encode(a8, 3 * scale, commit))), 0, "not bound to amount");
         assertEq(pool.escrow(a8), 3 * scale, "escrow holds the underlying");
 
         // settle: consume the deposit (insert its leaf) and unwrap value 2 to RECIP.
@@ -515,8 +517,8 @@ contract ConfidentialPoolTest is Test {
 
         bytes32 idA = _wrap(100, bytes32(uint256(1)), bytes32(uint256(2)), bytes32(uint256(3)));
         vm.prank(USER);
-        pool.wrap(assetB, 200, bytes32(uint256(4)), bytes32(uint256(5)), bytes32(uint256(6)));
-        bytes32 idB = keccak256(abi.encode(assetB, uint256(200), bytes32(uint256(4)), bytes32(uint256(5)), bytes32(uint256(6))));
+        pool.wrap(assetB, 200, keccak256(abi.encodePacked(bytes32(uint256(4)), bytes32(uint256(5)), bytes32(uint256(6)))));
+        bytes32 idB = keccak256(abi.encode(assetB, uint256(200), keccak256(abi.encodePacked(bytes32(uint256(4)), bytes32(uint256(5)), bytes32(uint256(6))))));
 
         ConfidentialPool.PublicValues memory pv = _pv();
         pv.depositsConsumed = new bytes32[](2);
@@ -999,7 +1001,7 @@ contract ConfidentialPoolTest is Test {
 
         // RE-ENTER: a wrap BURNS the canonical ERC20 (back to confidential).
         vm.prank(USER);
-        pool.wrap(a, 1000, bytes32(uint256(7)), bytes32(uint256(8)), bytes32(uint256(9)));
+        pool.wrap(a, 1000, keccak256(abi.encodePacked(bytes32(uint256(7)), bytes32(uint256(8)), bytes32(uint256(9)))));
         assertEq(tac.balanceOf(USER), 0, "re-entry burned the public ERC20");
         assertEq(tac.totalSupply(), 0, "supply back to confidential");
         assertEq(pool.escrow(a), 0, "still no escrow");
@@ -1350,7 +1352,7 @@ contract ConfidentialPoolTest is Test {
 
         // Wrap ETH → tETH: escrow == the deposited ETH (escrow tracks supply).
         uint256 amt = 0.5 ether; // a multiple of UNIT_SCALE (1e10)
-        pool.wrap{value: amt}(teth, amt, bytes32(uint256(1)), bytes32(uint256(2)), bytes32(uint256(3)));
+        pool.wrap{value: amt}(teth, amt, keccak256(abi.encodePacked(bytes32(uint256(1)), bytes32(uint256(2)), bytes32(uint256(3)))));
         assertEq(pool.escrow(teth), amt, "escrow == deposited ETH");
 
         _seedLeaves(2); // headroom for the no-inflation floor (a withdrawal spends a nullifier)
@@ -1932,7 +1934,7 @@ contract ConfidentialPoolTest is Test {
         vm.startPrank(USER);
         fot.approve(address(pool), type(uint256).max);
         vm.expectRevert(ConfidentialPool.FeeOnTransferUnsupported.selector);
-        pool.wrap(fotAsset, 100, bytes32(uint256(1)), bytes32(uint256(2)), bytes32(uint256(3)));
+        pool.wrap(fotAsset, 100, keccak256(abi.encodePacked(bytes32(uint256(1)), bytes32(uint256(2)), bytes32(uint256(3)))));
         vm.stopPrank();
     }
 

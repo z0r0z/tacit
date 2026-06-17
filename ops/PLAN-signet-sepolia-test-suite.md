@@ -13,14 +13,25 @@ reverted). **Fixed:** `MAX_TARGET` is now a ctor immutable (`BitcoinLightRelay`)
 signet relay (`initTestnetGenesis` from `BTC_*` env) — now correct for current signet difficulty.
 
 ## The surface, ordered (each phase live on signet/sepolia)
-- **A — relay + pool (foundation).** `DeployTestnet.s.sol`: deploy `TestnetLightRelay` seeded at a recent
-  **canonical** signet block (`BTC_GENESIS_*` from a near-tip block; `RUNBOOK-fastlane-roundtrip-live.md`
-  has the param recipe) → `advance-relay.sh` (canonical headers, no fork) → deploy the confidential pool
-  anchored to it (the re-proven vkeys `0x0073ee38`/`0x003281ea`) → first `attestBitcoinStateProven`
-  (= `BITCOIN_RELAY_VKEY` live on-chain + the Bitcoin pool root established).
-- **B — settle op-set (single-chain, PROGRAM_VKEY live).** wrap (→ a note + `PROGRAM_VKEY` on-chain),
-  transfer, withdraw, OP_SWAP, OP_LP_ADD/REMOVE, OP_OTC, OP_BID, OP_SWAP_ROUTE, the adaptor ops
-  (LOCK/CLAIM/REFUND). Each: build witness → box groth16 → settle. Exercises every op the guest ships.
+- **A — relay + pool (foundation). ✅ DONE 2026-06-17, all live on Sepolia + signet.** Signet relay
+  `0x70C8022e45728ccdCacA85eF57C74aD9E535cDe7` (`TestnetLightRelay`, genesis canonical blk 309247,
+  advanced to 309263) → pool `0x3D38a00406d97Ba2F5df7d30246b810C90AC7444` (vkeys `0x0073ee38`/`0x003281ea`,
+  anchor blk 309251) → first `attestBitcoinStateProven` tx `0x22d23ee9…539f58a8` (forward reflection
+  groth16 over [309252..309257]; pool root `0x27ae5ba0…` now canonical, digest advanced to `0x95f38b9e…`,
+  lastRelayHeight 309257). `BITCOIN_RELAY_VKEY` LIVE; guest↔JS digest parity confirmed end-to-end. Box
+  build-gap lesson (rebuild host bins after a guest rebuild; wire `reflect-stdin`) recorded in memory.
+- **B — settle op-set (single-chain, PROGRAM_VKEY live). IN PROGRESS 2026-06-17/18.** ✅ `PROGRAM_VKEY
+  0x0073ee38` LIVE: **wrap** (register native ETH `0x2a0f3cb4…` → `wrap()` pending deposit → OP_WRAP
+  settle tx 0x1bb59976…, leaf 0, root R1) + **transfer** (OP_TRANSFER tx 0xbea5d5c2…, nullifier spent,
+  leaf 1, root 0x9068baf7) — the note lifecycle (create+spend) proven. **unwrap** (OP_UNWRAP, full ETH
+  round-trip) proving. KEY FINDING: the deployed guest `0x0073ee38` implements ALL 15 ops (WRAP..UNWRAP..
+  SWAP/LP/OTC/BID/SWAP_ROUTE + ADAPTOR_LOCK/CLAIM/REFUND=12/13/14) and the contract `settle()` handles
+  them — so EVERY remaining op (incl. cross-chain bridge + adaptor atomic-swap) is supportable on the LIVE
+  stack with **NO redeploy + NO reprove**; remaining work is validation-only (witness → prove vs the
+  EXISTING vkey → settle; AMM ops just need a `createPair` direct call first). Builders: e2e-confidential-
+  settle.mjs (wrap/transfer), build-unwrap-3D38.mjs + harnesses/exec-unwrap.rs (NEW), gen-confidential-
+  {swap,lp,otc,bid}-fixture.mjs (unit-targeted, need live-state adaptation). Box harness fix per op:
+  repoint ELF cxfer-guest→confidential-pool-prover + add the lock_set_root write.
 - **C — bridge BTC→ETH** (`bridge_burn` on Bitcoin → reflect into the burn set → `bridge_mint` on ETH).
 - **D — fast lane** (a btcHomed note spent directly on ETH; needs C's reflected note). Finishes the
   **live fast-lane verification.** Uses the committed crosslane fixtures/harnesses + the contract bar.

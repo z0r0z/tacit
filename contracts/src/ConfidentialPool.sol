@@ -294,6 +294,14 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     // bitcoinConsumed(119) keep the indices the eth-reflection guest hardcodes.
     uint256 public bitcoinConsumedCount;
 
+    // Public (non-shielded) LP shares: poolId => owner => shares. APPENDED LAST (like the lock set +
+    // fast-lane maps above) so crossOutCommitment(76) / bitcoinConsumed(119) / bitcoinConsumedCount(120)
+    // keep the slots the eth-reflection guest hardcodes. The PUBLIC add/remove path
+    // (createPairAndAddLiquidityPublic / removeLiquidityPublic) credits/burns here; the CONFIDENTIAL path
+    // mints/burns shielded share NOTES (in the tree, not here). pools[poolId].totalShares is the single
+    // shared accumulator = Σ public lpShares + Σ confidential note-shares + the locked MINIMUM_LIQUIDITY.
+    mapping(bytes32 => mapping(address => uint256)) public lpShares;
+
     // ──────────────────── Public-values layout ────────────────────
 
     // Boundary effects speak the in-system note value `v`; the contract scales it to
@@ -348,7 +356,12 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     // ──────────────────── Events ────────────────────
 
     event AssetRegistered(bytes32 indexed assetId, address indexed underlying, uint256 unitScale, string name, string symbol, uint8 decimals);
-    event Wrap(bytes32 indexed depositId, bytes32 indexed assetId, uint256 amount, bytes32 cx, bytes32 cy, bytes32 owner);
+    // depositId binds (assetId, value, cx, cy, owner); the commitment coordinates and owner are NOT
+    // published, so a deposit note's nullifier (a function of its commitment) stays externally
+    // uncomputable and its later spend is unlinkable — the same standing as any in-pool note. `amount`
+    // is public regardless (the underlying transfer reveals it) and lets a seed-only recovery match
+    // re-derived candidate deposits to the emitted depositId.
+    event Wrap(bytes32 indexed depositId, bytes32 indexed assetId, uint256 amount);
     event Settled(bytes32 indexed newRoot, uint256 leavesInserted, uint256 nullifiersSpent);
     event Withdraw(bytes32 indexed assetId, address indexed recipient, uint256 amount);
     // Note data availability for recovery: each inserted leaf with its encrypted
@@ -650,12 +663,16 @@ contract ConfidentialPool is ReentrancyGuardTransient {
 
     // ──────────────────── Wrap (public deposit) ────────────────────
 
-    /// @notice Escrow `amount` of the asset's underlying and record a pending
-    ///         deposit for the note commitment C = (cx, cy) owned by `owner`. The
-    ///         note is inserted into the tree only when a proof consumes the
-    ///         deposit (the guest verifies C opens to amount/unitScale). Amount is
-    ///         public at this boundary; everything after is blinded.
-    function wrap(bytes32 assetId, uint256 amount, bytes32 cx, bytes32 cy, bytes32 owner) external payable nonReentrant {
+    /// @notice Escrow `amount` of the asset's underlying and record a pending deposit for a note
+    ///         commitment. `commit` = keccak(Cx‖Cy‖owner) is a digest of the note's secp256k1
+    ///         commitment coordinates and owner — only the digest reaches the chain, never the raw
+    ///         coords. So a deposit note's ν = keccak(Cx‖Cy‖"spent") stays externally uncomputable
+    ///         (its later spend is unlinkable, the standing of any in-pool note) and the static
+    ///         owner can't cluster a wallet's deposits. The note is inserted into the tree only when
+    ///         a proof consumes the deposit (the guest, which holds the coords + owner, reproduces
+    ///         `commit` and verifies C opens to amount/unitScale). Amount is public at this boundary
+    ///         (the underlying transfer reveals it); everything after is blinded.
+    function wrap(bytes32 assetId, uint256 amount, bytes32 commit) external payable nonReentrant {
         Asset storage a = assets[assetId];
         if (!a.registered) revert NotRegistered();
         if (amount == 0 || amount % a.unitScale != 0) revert AmountNotAligned();
@@ -671,7 +688,10 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         // value wraps), so the deposit — and the escrowed amount — would be unconsumable.
         // Reject at the boundary instead of locking funds.
         if (value > type(uint64).max) revert ValueOutOfRange();
-        bytes32 depositId = keccak256(abi.encode(assetId, value, cx, cy, owner));
+        // The guest reproduces this exact id from (assetId, value, keccak(Cx‖Cy‖owner)) — the coords
+        // and owner it holds as witness — so the value binding holds without the contract ever seeing
+        // them. Distinct hash from ν, so the published id (in Wrap) never yields a note's nullifier.
+        bytes32 depositId = keccak256(abi.encode(assetId, value, commit));
         if (depositStatus[depositId] != 0) revert DepositExists();
         depositStatus[depositId] = 1;
 
@@ -695,7 +715,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
             if (SafeTransferLib.balanceOf(a.underlying, address(this)) - balBefore != amount) revert FeeOnTransferUnsupported();
             escrow[assetId] += amount;
         }
-        emit Wrap(depositId, assetId, amount, cx, cy, owner);
+        emit Wrap(depositId, assetId, amount);
     }
 
     /// @notice Create an EMPTY confidential AMM pool SLOT for a (canonical pair, fee tier) — lazy,
@@ -709,16 +729,187 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     ///         here: the first add's reserves are backed by the spent notes' existing escrow (the same
     ///         escrow that backs every circulating note), so escrow is touched only at the wrap boundary.
     function createPair(bytes32 assetA, bytes32 assetB, uint32 feeBps) external nonReentrant returns (bytes32 poolId) {
+        poolId = _ensurePair(assetA, assetB, feeBps, true); // standalone: revert if the slot already exists
+    }
+
+    /// @notice Atomic create-and-seed (zAMM-style standard UX): lazy-create the (assetA, assetB, feeBps)
+    ///         pool if it doesn't exist, then settle — so ONE tx founds the pool AND seeds its
+    ///         reserves/ratio/depth from the OP_LP_ADD carried in `publicValues`. A no-op create if the
+    ///         slot is already initialized (the existing pool is reused, not reverted). EITHER side may be
+    ///         native ETH (tETH) — the native-ETH asset id is a normal registered asset id here, so a
+    ///         tETH/TOKEN pool is created + seeded atomically with no special-casing.
+    ///         SECURITY — asset-id ordering + binding: `_ensurePair` stores the CANONICAL (sorted) pair, so
+    ///         the created `poolId` is order-independent (createPairAndSettle(A,B,..) ≡ (B,A,..)) and equals
+    ///         the guest's `pool_id(canonical(assetA,assetB), feeBps)`. The lp_add's committed
+    ///         `LpSettlement.poolId` must hit an INITIALIZED slot in `_settle` (PoolNotInit), so a caller
+    ///         that passes assets NOT matching the proof's notes just creates an unrelated empty slot and
+    ///         the settle reverts — the (assetA,assetB) args can never rebind the proof to the wrong pool.
+    function createPairAndSettle(
+        bytes32 assetA,
+        bytes32 assetB,
+        uint32 feeBps,
+        bytes calldata publicValues,
+        bytes calldata proofBytes,
+        bytes[] calldata memos
+    ) external nonReentrant {
+        _ensurePair(assetA, assetB, feeBps, false); // idempotent: reuse the slot if it already exists
+        _settle(publicValues, proofBytes, memos);
+    }
+
+    /// @dev Validate + (idempotently) initialize a confidential AMM pool slot. `revertIfExists` selects the
+    ///      standalone createPair semantics (revert PoolExists) vs the atomic create-and-seed path (reuse
+    ///      an existing slot). The poolId + stored pool are CANONICAL (assets sorted) and FEE-BOUND,
+    ///      mirroring the guest's pool_id and the Bitcoin AMM: (A,B) ≡ (B,A) is one pool, each fee a
+    ///      DISTINCT pool. Permissionless + front-run-proof: a front-run only registers the empty slot —
+    ///      the first funder (the first OP_LP_ADD) sets the reserves/ratio, so the pair is never lost.
+    function _ensurePair(bytes32 assetA, bytes32 assetB, uint32 feeBps, bool revertIfExists) internal returns (bytes32 poolId) {
         if (assetA == assetB) revert SameAsset();
         if (!assets[assetA].registered || !assets[assetB].registered) revert NotRegistered();
         if (feeBps > MAX_POOL_FEE_BPS) revert FeeTooHigh();
-        // The poolId + the stored pool are CANONICAL (assets sorted) and FEE-BOUND, mirroring the guest's
-        // pool_id and the Bitcoin AMM: (A,B) ≡ (B,A) is one pool, each fee tier is a DISTINCT pool.
         (bytes32 lo, bytes32 hi) = assetA < assetB ? (assetA, assetB) : (assetB, assetA);
         poolId = keccak256(abi.encode(lo, hi, feeBps));
-        if (pools[poolId].init) revert PoolExists();
+        if (pools[poolId].init) {
+            if (revertIfExists) revert PoolExists();
+            return poolId; // atomic create-and-seed: the slot already exists, reuse it
+        }
         pools[poolId] = Pool({init: true, assetA: lo, assetB: hi, reserveA: 0, reserveB: 0, feeBps: feeBps, totalShares: 0});
         emit PoolInitialized(poolId, lo, hi, 0, 0, feeBps); // empty; the first OP_LP_ADD seeds reserves + shares
+    }
+
+    // ──────────────────── Public (non-shielded) AMM periphery ────────────────────
+    // Public ERC20/ETH ⇄ public AMM, no proof — the surface a zRouter-style periphery composes for users
+    // who want standard AMM UX (add/remove/swap) against the pool's PUBLIC reserves. Founding/adding
+    // liquidity is public at the wrap boundary anyway, so no settle proof is needed; only HIDING a position
+    // or amount needs the confidential (note + proof) path. Both forms share pools[poolId] (reserves +
+    // totalShares) + escrow, so a confidential op reading the reserves/total stays correct.
+
+    error InsufficientLiquidity();
+    error SlippageExceeded();
+    event PublicLiquidityAdded(bytes32 indexed poolId, address indexed to, uint256 valueA, uint256 valueB, uint256 shares);
+    event PublicLiquidityRemoved(bytes32 indexed poolId, address indexed owner, address indexed to, uint256 valueA, uint256 valueB, uint256 shares);
+    event PublicSwap(bytes32 indexed poolId, address indexed sender, address indexed to, bytes32 assetIn, uint256 valueIn, uint256 valueOut);
+
+    /// @dev Integer sqrt (Babylonian) for the first-mint share = isqrt(valueA·valueB).
+    function _isqrt(uint256 x) internal pure returns (uint256 y) {
+        if (x == 0) return 0;
+        uint256 z = (x + 1) / 2; y = x;
+        while (z < y) { y = z; z = (x / z + z) / 2; }
+    }
+
+    /// @dev Escrow a PUBLIC deposit of `amount` of `assetId` and return the in-system value (amount/unitScale).
+    ///      Mirrors `wrap`'s escrow logic (pool-minted burn / native-ETH escrow / fee-on-transfer-safe ERC20).
+    ///      Native-ETH msg.value coverage is checked by the caller (it knows which legs are ETH).
+    function _ingestPublic(bytes32 assetId, uint256 amount) internal returns (uint256 value) {
+        Asset storage a = assets[assetId];
+        if (!a.registered) revert NotRegistered();
+        if (amount == 0 || amount % a.unitScale != 0) revert AmountNotAligned();
+        value = amount / a.unitScale;
+        if (value > type(uint64).max) revert ValueOutOfRange();
+        if (a.poolMinted) {
+            IMintBurn(a.underlying).burn(msg.sender, amount);
+        } else if (a.underlying == address(0)) {
+            escrow[assetId] += amount; // native ETH — caller verified msg.value covers it
+        } else {
+            uint256 balBefore = SafeTransferLib.balanceOf(a.underlying, address(this));
+            SafeTransferLib.safeTransferFrom(a.underlying, msg.sender, address(this), amount);
+            if (SafeTransferLib.balanceOf(a.underlying, address(this)) - balBefore != amount) revert FeeOnTransferUnsupported();
+            escrow[assetId] += amount;
+        }
+    }
+
+    /// @notice Atomic create-and-seed from PUBLIC funds (zAMM-style): lazy-create the pool, escrow public
+    ///         `amountA`/`amountB` (ERC20 and/or native ETH via msg.value — EITHER side may be tETH), set
+    ///         reserves, and credit public LP shares to `to`. First add → totalShares = isqrt(vA·vB) with
+    ///         MINIMUM_LIQUIDITY locked (noteless floor); later add → proportional (limiting-leg min rule,
+    ///         excess accrues to the pool). One tx, no proof. `assetA`/`assetB` may be in any order; the
+    ///         pool is canonical, so reserves line up with the stored low→high mapping.
+    function createPairAndAddLiquidityPublic(
+        bytes32 assetA, bytes32 assetB, uint32 feeBps, uint256 amountA, uint256 amountB, address to
+    ) external payable nonReentrant returns (uint256 sharesMinted) {
+        if (to == address(0)) revert ZeroAddress();
+        bytes32 poolId = _ensurePair(assetA, assetB, feeBps, false);
+        Pool storage p = pools[poolId];
+        // Canonical orientation: reserveA is the LOW asset's reserve. Map the caller's (asset,amount) pairs.
+        (bytes32 assetLo, bytes32 assetHi, uint256 amtLo, uint256 amtHi) =
+            assetA < assetB ? (assetA, assetB, amountA, amountB) : (assetB, assetA, amountB, amountA);
+        // ETH coverage: at most one leg is native ETH; msg.value must equal that leg's amount (0 if none).
+        uint256 expectedEth = (assets[assetLo].underlying == address(0) ? amtLo : 0)
+                            + (assets[assetHi].underlying == address(0) ? amtHi : 0);
+        if (msg.value != expectedEth) revert EthValueMismatch();
+        uint256 vLo = _ingestPublic(assetLo, amtLo);
+        uint256 vHi = _ingestPublic(assetHi, amtHi);
+        if (p.totalShares == 0) {
+            uint256 minted = _isqrt(vLo * vHi);
+            if (minted <= MINIMUM_LIQUIDITY) revert InsufficientLiquidity();
+            p.reserveA = vLo; p.reserveB = vHi; p.totalShares = minted;
+            sharesMinted = minted - MINIMUM_LIQUIDITY; // MINIMUM_LIQUIDITY is the permanent noteless floor
+            lpShares[poolId][to] += sharesMinted;
+        } else {
+            uint256 sA = (vLo * p.totalShares) / p.reserveA;
+            uint256 sB = (vHi * p.totalShares) / p.reserveB;
+            sharesMinted = sA < sB ? sA : sB;
+            if (sharesMinted == 0) revert InsufficientLiquidity();
+            p.reserveA += vLo; p.reserveB += vHi; p.totalShares += sharesMinted;
+            lpShares[poolId][to] += sharesMinted;
+        }
+        // Reserves/total stay u64-compatible (the confidential guest reads them as u64).
+        if (p.reserveA > type(uint64).max || p.reserveB > type(uint64).max || p.totalShares > type(uint64).max) revert ValueOutOfRange();
+        emit PublicLiquidityAdded(poolId, to, vLo, vHi, sharesMinted);
+    }
+
+    /// @notice Burn PUBLIC LP shares and withdraw the proportional reserves to `to` (public ERC20/ETH out).
+    ///         Can never remove the locked MINIMUM_LIQUIDITY. Confidential (note) shares are untouched — a
+    ///         caller can only burn their own `lpShares` balance.
+    function removeLiquidityPublic(
+        bytes32 assetA, bytes32 assetB, uint32 feeBps, uint256 shares, address to
+    ) external nonReentrant returns (uint256 amountLo, uint256 amountHi) {
+        if (to == address(0)) revert ZeroAddress();
+        (bytes32 lo, bytes32 hi) = assetA < assetB ? (assetA, assetB) : (assetB, assetA);
+        bytes32 poolId = keccak256(abi.encode(lo, hi, feeBps));
+        Pool storage p = pools[poolId];
+        if (!p.init) revert PoolNotInit();
+        uint256 bal = lpShares[poolId][msg.sender];
+        if (shares == 0 || shares > bal) revert InsufficientLiquidity();
+        if (p.totalShares - shares < MINIMUM_LIQUIDITY) revert InsufficientLiquidity();
+        uint256 vLo = (p.reserveA * shares) / p.totalShares;
+        uint256 vHi = (p.reserveB * shares) / p.totalShares;
+        lpShares[poolId][msg.sender] = bal - shares;
+        p.totalShares -= shares; p.reserveA -= vLo; p.reserveB -= vHi;
+        amountLo = _payout(lo, to, vLo);
+        amountHi = _payout(hi, to, vHi);
+        emit PublicLiquidityRemoved(poolId, msg.sender, to, vLo, vHi, shares);
+    }
+
+    /// @notice PUBLIC swap against the pool's public reserves (no privacy — the amount is revealed; for a
+    ///         hidden-amount swap use the confidential OP_SWAP). Constant-product with the pool fee; k can
+    ///         only increase. `minAmountOut` is in the OUTPUT asset's underlying units (slippage bound).
+    function swapPublic(
+        bytes32 assetIn, bytes32 assetOut, uint32 feeBps, uint256 amountIn, uint256 minAmountOut, address to
+    ) external payable nonReentrant returns (uint256 amountOut) {
+        if (to == address(0)) revert ZeroAddress();
+        if (assetIn == assetOut) revert SameAsset();
+        (bytes32 lo, bytes32 hi) = assetIn < assetOut ? (assetIn, assetOut) : (assetOut, assetIn);
+        bytes32 poolId = keccak256(abi.encode(lo, hi, feeBps));
+        Pool storage p = pools[poolId];
+        if (!p.init) revert PoolNotInit();
+        uint256 expectedEth = assets[assetIn].underlying == address(0) ? amountIn : 0;
+        if (msg.value != expectedEth) revert EthValueMismatch();
+        uint256 kPre = p.reserveA * p.reserveB;
+        uint256 vIn = _ingestPublic(assetIn, amountIn);
+        bool inIsLo = assetIn == lo;
+        uint256 reserveIn = inIsLo ? p.reserveA : p.reserveB;
+        uint256 reserveOut = inIsLo ? p.reserveB : p.reserveA;
+        // out = floor(reserveOut · vIn · γ / (reserveIn · 10000 + vIn · γ)), γ = 10000 − feeBps
+        uint256 g = 10000 - uint256(p.feeBps);
+        uint256 vInG = vIn * g;
+        uint256 vOut = (reserveOut * vInG) / (reserveIn * 10000 + vInG);
+        if (vOut == 0 || vOut >= reserveOut) revert InsufficientLiquidity();
+        if (inIsLo) { p.reserveA += vIn; p.reserveB -= vOut; } else { p.reserveB += vIn; p.reserveA -= vOut; }
+        if (p.reserveA * p.reserveB < kPre) revert InsufficientLiquidity(); // constant-product non-decrease
+        if (p.reserveA > type(uint64).max || p.reserveB > type(uint64).max) revert ValueOutOfRange();
+        amountOut = _payout(assetOut, to, vOut);
+        if (amountOut < minAmountOut) revert SlippageExceeded();
+        emit PublicSwap(poolId, msg.sender, to, assetIn, vIn, vOut);
     }
 
     // ──────────────────── Bitcoin state attestation (relay-proven, no oracle) ────────────────────
@@ -866,6 +1057,14 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     ///        `pv.leaves`), data-availability only — unverified, owner-decryptable
     ///        for seed-only recovery. Emitted in `LeavesInserted`.
     function settle(bytes calldata publicValues, bytes calldata proofBytes, bytes[] calldata memos) external nonReentrant {
+        _settle(publicValues, proofBytes, memos);
+    }
+
+    /// @dev The settle body, shared by the standalone `settle` and the atomic `createPairAndSettle`
+    ///      (which lazy-creates the pool first). Internal so the create-and-seed wrapper reuses it under
+    ///      one reentrancy guard — `settle` is `nonReentrant`, so `this.settle()` from a wrapper would
+    ///      self-revert; the shared internal avoids that.
+    function _settle(bytes calldata publicValues, bytes calldata proofBytes, bytes[] calldata memos) internal {
         SP1_VERIFIER.verifyProof(PROGRAM_VKEY, publicValues, proofBytes);
         PublicValues memory pv = abi.decode(publicValues, (PublicValues));
 

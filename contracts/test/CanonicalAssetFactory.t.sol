@@ -98,7 +98,7 @@ contract CanonicalAssetFactoryTest is Test {
         vm.prank(USER);
         tok.approve(address(pool), 100e8);
         vm.prank(USER);
-        pool.wrap(poolAsset, 100e8, bytes32(uint256(1)), bytes32(uint256(2)), bytes32(uint256(3)));
+        pool.wrap(poolAsset, 100e8, keccak256(abi.encodePacked(bytes32(uint256(1)), bytes32(uint256(2)), bytes32(uint256(3)))));
 
         assertEq(pool.escrow(poolAsset), 100e8, "pool escrows the canonical ERC20 (confidential face)");
         assertEq(tok.balanceOf(address(pool)), 100e8, "ERC20 custodied by the pool");

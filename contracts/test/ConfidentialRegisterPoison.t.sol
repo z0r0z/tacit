@@ -50,6 +50,6 @@ contract ConfidentialRegisterPoisonTest is Test {
 
         // and a realistic USDC amount wraps fine — the lane is usable, not bricked.
         vm.prank(USER);
-        pool.wrap(assetId, 1_000e6, bytes32(uint256(1)), bytes32(uint256(2)), bytes32(uint256(3)));
+        pool.wrap(assetId, 1_000e6, keccak256(abi.encodePacked(bytes32(uint256(1)), bytes32(uint256(2)), bytes32(uint256(3)))));
     }
 }

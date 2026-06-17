@@ -101,7 +101,7 @@ contract ConfidentialTacWalkthroughTest is Test {
 
         // ── 4. wrap (re-enter): back to confidential — the pool BURNS the ERC20 ──
         vm.prank(BOB);
-        pool.wrap(tacAsset, 20e8, bytes32(uint256(1)), bytes32(uint256(2)), bytes32(uint256(3)));
+        pool.wrap(tacAsset, 20e8, keccak256(abi.encodePacked(bytes32(uint256(1)), bytes32(uint256(2)), bytes32(uint256(3)))));
         assertEq(tac.balanceOf(BOB), 0, "re-entry burned BOB's public TAC");
         assertEq(tac.totalSupply(), 30e8, "supply back to 30 (only USER's stays public)");
     }

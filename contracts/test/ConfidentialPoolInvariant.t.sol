@@ -96,11 +96,11 @@ contract PoolHandler is Test {
         bytes32 cy = keccak256(abi.encode("cy", nonce));
         bytes32 owner = keccak256(abi.encode("ow", nonce));
         nonce++;
-        bytes32 depId = keccak256(abi.encode(id, value, cx, cy, owner));
+        bytes32 depId = keccak256(abi.encode(id, value, keccak256(abi.encodePacked(cx, cy, owner))));
         if (pool.depositStatus(depId) != 0) return;
         t.mint(address(this), amount);
         t.approve(address(pool), amount);
-        pool.wrap(id, amount, cx, cy, owner);
+        pool.wrap(id, amount, keccak256(abi.encodePacked(cx, cy, owner)));
         ghostEscrow[id] += amount;
         pending.push(depId);
     }
@@ -197,8 +197,8 @@ contract PoolHandler is Test {
         uint256 amtB = rb * scaleB;
         tokenA.mint(address(this), amtA); tokenA.approve(address(pool), amtA);
         tokenB.mint(address(this), amtB); tokenB.approve(address(pool), amtB);
-        pool.wrap(assetA, amtA, keccak256("seedcxA"), keccak256("seedcyA"), keccak256("seedowA"));
-        pool.wrap(assetB, amtB, keccak256("seedcxB"), keccak256("seedcyB"), keccak256("seedowB"));
+        pool.wrap(assetA, amtA, keccak256(abi.encodePacked(keccak256("seedcxA"), keccak256("seedcyA"), keccak256("seedowA"))));
+        pool.wrap(assetB, amtB, keccak256(abi.encodePacked(keccak256("seedcxB"), keccak256("seedcyB"), keccak256("seedowB"))));
         ghostEscrow[assetA] += amtA; ghostEscrow[assetB] += amtB;
         // First-mint settle: consume both deposits (insert their leaves), spend them into the reserves
         // (nullify), seed reserves + totalShares (rLo), mint the LP-share leaf.
@@ -206,8 +206,8 @@ contract PoolHandler is Test {
         ConfidentialPool.PublicValues memory pv = _pv();
         pv.spendRoot = pool.currentRoot();
         pv.depositsConsumed = new bytes32[](2);
-        pv.depositsConsumed[0] = keccak256(abi.encode(assetA, ra, keccak256("seedcxA"), keccak256("seedcyA"), keccak256("seedowA")));
-        pv.depositsConsumed[1] = keccak256(abi.encode(assetB, rb, keccak256("seedcxB"), keccak256("seedcyB"), keccak256("seedowB")));
+        pv.depositsConsumed[0] = keccak256(abi.encode(assetA, ra, keccak256(abi.encodePacked(keccak256("seedcxA"), keccak256("seedcyA"), keccak256("seedowA")))));
+        pv.depositsConsumed[1] = keccak256(abi.encode(assetB, rb, keccak256(abi.encodePacked(keccak256("seedcxB"), keccak256("seedcyB"), keccak256("seedowB")))));
         pv.nullifiers = new bytes32[](2);
         pv.nullifiers[0] = keccak256("seednuA"); pv.nullifiers[1] = keccak256("seednuB");
         pv.leaves = new bytes32[](3); // 2 consumed-deposit leaves + 1 LP-share leaf

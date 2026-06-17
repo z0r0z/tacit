@@ -56,7 +56,7 @@ contract ConfidentialPoolFuzzTest is Test {
         vm.prank(USER);
         t.approve(address(pool), amount);
         vm.prank(USER);
-        pool.wrap(id, amount, bytes32(uint256(1)), bytes32(uint256(2)), bytes32(uint256(3)));
+        pool.wrap(id, amount, keccak256(abi.encodePacked(bytes32(uint256(1)), bytes32(uint256(2)), bytes32(uint256(3)))));
         assertEq(pool.escrow(id), amount, "escrow holds the underlying");
 
         ConfidentialPool.PublicValues memory pv = _pv();
@@ -83,10 +83,11 @@ contract ConfidentialPoolFuzzTest is Test {
         vm.prank(USER);
         t.approve(address(pool), amount);
         vm.prank(USER);
-        pool.wrap(id, amount, cx, cy, owner);
+        pool.wrap(id, amount, keccak256(abi.encodePacked(cx, cy, owner)));
 
-        assertEq(pool.depositStatus(keccak256(abi.encode(id, uint256(value), cx, cy, owner))), 1, "bound to value");
-        assertEq(pool.depositStatus(keccak256(abi.encode(id, amount, cx, cy, owner))), 0, "not bound to amount");
+        bytes32 commit = keccak256(abi.encodePacked(cx, cy, owner));
+        assertEq(pool.depositStatus(keccak256(abi.encode(id, uint256(value), commit))), 1, "bound to value");
+        assertEq(pool.depositStatus(keccak256(abi.encode(id, amount, commit))), 0, "not bound to amount");
     }
 
     /// An in-system value above u64 is rejected at the boundary (it would bind a
@@ -99,7 +100,7 @@ contract ConfidentialPoolFuzzTest is Test {
         t.approve(address(pool), amount);
         vm.prank(USER);
         vm.expectRevert(ConfidentialPool.ValueOutOfRange.selector);
-        pool.wrap(id, amount, bytes32(uint256(1)), bytes32(uint256(2)), bytes32(uint256(3)));
+        pool.wrap(id, amount, keccak256(abi.encodePacked(bytes32(uint256(1)), bytes32(uint256(2)), bytes32(uint256(3)))));
     }
 
     /// An amount that is not a whole multiple of unitScale is rejected (sub-precision
@@ -113,7 +114,7 @@ contract ConfidentialPoolFuzzTest is Test {
         t.approve(address(pool), amount);
         vm.prank(USER);
         vm.expectRevert(ConfidentialPool.AmountNotAligned.selector);
-        pool.wrap(id, amount, bytes32(uint256(1)), bytes32(uint256(2)), bytes32(uint256(3)));
+        pool.wrap(id, amount, keccak256(abi.encodePacked(bytes32(uint256(1)), bytes32(uint256(2)), bytes32(uint256(3)))));
     }
 
     /// A crossOut record is honored only if its claimId binds its own fields — the
@@ -168,7 +169,7 @@ contract ConfidentialPoolFuzzTest is Test {
 
         // re-enter: wrap burns the ERC20 back to confidential
         vm.prank(USER);
-        pool.wrap(a, amount, bytes32(uint256(7)), bytes32(uint256(8)), bytes32(uint256(9)));
+        pool.wrap(a, amount, keccak256(abi.encodePacked(bytes32(uint256(7)), bytes32(uint256(8)), bytes32(uint256(9)))));
         assertEq(tac.totalSupply(), 0, "supply back to confidential");
         assertEq(pool.escrow(a), 0, "still no escrow");
     }
