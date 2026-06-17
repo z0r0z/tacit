@@ -1,0 +1,18 @@
+# Shared reflection-stdin serializer: the SINGLE source of truth for the SP1Stdin byte stream the
+# full-scan reflection guest (contracts/sp1/confidential/src/reflect.rs) reads via io::read. Both the
+# LOCAL execute validator (reflect-exec) and the BOX recursion prover (eth-reflection/prover-host
+# bitcoin_prove) depend on this so the two writers can never drift from the guest's read order again.
+# Pure sp1-sdk/serde_json/hex (no box-absolute or guest-crate deps) so it builds locally AND on the box.
+[package]
+name = "reflect-stdin"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "reflect_stdin"
+path = "src/lib.rs"
+
+[dependencies]
+sp1-sdk = { version = "6.2", default-features = false, features = ["blocking"] }
+serde_json = "1"
+hex = "0.4"

@@ -96,6 +96,56 @@ Why this is clean, not just feasible:
   the worker no longer authoritative for cross-out validity — it's in the trustless reflection. Provide
   the off-chain reflection-proof verify path for Bitcoin-light clients.
 
+## Phase 3 status + the remaining gaps (2026-06-17)
+
+The prover infra is largely BUILT (the Phase 3 bullet above predates it). What exists, what's stale, what
+remains — the eth inner-proof pipeline scope:
+
+**Built + has run on the box (don't rebuild):**
+- `eth-reflection` guest (`src/main.rs`) — complete + sound: helios sync-committee + finality, the pool
+  storage-slot MPT proofs, folds each `crossOutCommitment` → cross-out set + each `bitcoinConsumed` →
+  consumed set (with the on-chain `claimId` binding), enforces the freshness anchor (`consumedNuCount ==
+  on-chain bitcoinConsumedCount`), commits the 11-word `EthReflectionPublicValues`.
+- `prover-host/src/bin/eth_prove.rs` (stage-i) — helios bootstrap (pinned `GENESIS_SLOT`) → `eth_getProof`
+  of the pool slots → preflight verify → **compressed** proof + `eth_pv.hex` (~50s).
+- `prover-host/src/bin/bitcoin_prove.rs` (stage-iii recursion) — loads the eth proof, `write_proof`s it,
+  proves compressed/groth16, local-verifies.
+- `prover-host/run-reflect-loop.sh` — durable loop: `[REGEN_CMD] → eth_prove → bitcoin_prove groth16 →
+  submit attestBitcoinStateProven`, GPU cleanup, heartbeat, digest persistence, reboot cron, DRY-RUN vs
+  SUBMIT_URL. `lib.rs` (helios bootstrap), `eth_vkey.rs` (vkey derivation), the Phase-0 anchor, the
+  inter-guest ABI, and the §A gate design (D1) are all in place.
+
+**The remaining gaps:**
+- **G1 — `eth_prove` proves an EMPTY set.** `crossouts`/`consumeds` are `vec![]` and the resume is
+  hardcoded empty. Wire the witness population from on-chain events (`CrossOutRecorded` / the consumed
+  events) + the `append_path` frontier per appended leaf + the cross-cycle resume
+  (`prior_set_root`/`prior_count`/`prior_consumed_*` from the last cycle). The `eth_getProof` key
+  derivation + preflight already handle non-empty key sets.
+- **G2 — bitcoin_prove writer drift — DONE (2026-06-17).** The old `write_prior`/`write_scan_rest`
+  predated the mode_b gate (no `mode_b` flag, `eth_pv` ungated, no consumed-ν loop, none of the Track-B/C
+  or crossout witnesses). Factored the writer into a shared crate `contracts/sp1/reflect-stdin`
+  (`write_stdin`, pure sp1-sdk/serde_json/hex) consumed by BOTH `reflect-exec` — DIGEST_MATCH-validated
+  (forward `0x5ec86a90` + reverse mode_b=1 `0x1c05cc0c`) — and `bitcoin_prove`, so the prover writer can
+  no longer drift from the guest. bitcoin_prove now gates the eth recursion on `modeB` and asserts
+  `fixture.ethPv == eth proof public values` (the real `ethPool` word rides through so the on-chain
+  `ethPoolReflected == address(this)` gate passes). Box setup: copy `contracts/sp1/reflect-stdin` →
+  `/root/work/reflect-stdin` (sibling of `/root/work/confidential`).
+- **G3 — indexer→fixture handoff (`REGEN_CMD`).** The loop's fixture builder must emit a mode_b=1
+  `reflection_input.json`: the JS assembler (`assembleReflectionScanInput` with `batch.modeB`) now
+  produces it, but the indexer must source `f["ethPv"]` from `out/eth_pv.hex` + the consumed/crossout
+  membership witnesses (via the crossout-consumer events). `build-reflection-bootstrap-fixture.mjs`
+  currently sets `env:null` (runbook step 4).
+- **G4 — vkey + genesis pinning (lockstep).** The eth ELF's vkey must == `reflect.rs`'s
+  `ETH_REFLECTION_VKEY`; the genesis anchor (`ETH_GENESIS_SYNC_COMMITTEE` + `GENESIS_SLOT 10462624`)
+  captured together. The eth ELF is box-built inside sp1-helios's workspace — not a committed/pinned repo
+  artifact yet; needs the canonical-ELF discipline the other guests have.
+- **G5 — deploy/§A-gate (Phase 4).** Deploy with the recursive `BITCOIN_RELAY_VKEY` + the genesis anchor;
+  the SAME coordinated re-prove bundle as the reflection Track-B/C work, not a standalone deploy.
+
+**Validation ladder:** reflect-exec DIGEST_MATCH (done, no GPU) → compressed recursion on the box
+(`PROOF_MODE=compressed`, fast — validates `verify_sp1_proof` accepts the eth proof over a real mode_b=1
+fixture) → groth16 (on-chain fixture). G2 unblocks the first real recursive prove of a mode_b=1 fixture.
+
 ## Trust model (after Mode B)
 
 - **Trust root:** SP1 soundness + the Succinct Groth16 verifier (immutable leaf, same as tETH) +

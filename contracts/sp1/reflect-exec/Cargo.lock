@@ -2898,6 +2898,16 @@ name = "reflect-exec"
 version = "0.1.0"
 dependencies = [
  "hex",
+ "reflect-stdin",
+ "serde_json",
+ "sp1-sdk",
+]
+
+[[package]]
+name = "reflect-stdin"
+version = "0.1.0"
+dependencies = [
+ "hex",
  "serde_json",
  "sp1-sdk",
 ]

@@ -10,6 +10,9 @@ edition = "2021"
 sp1-sdk = { version = "6.2", default-features = false, features = ["blocking"] }
 serde_json = "1"
 hex = "0.4"
+# Shared SP1Stdin serializer (the single source of truth for the guest's io::read order) — also used by
+# the box recursion prover (eth-reflection/prover-host bitcoin_prove), so the two cannot drift.
+reflect-stdin = { path = "../reflect-stdin" }
 
 [[bin]]
 name = "reflect-execute"
