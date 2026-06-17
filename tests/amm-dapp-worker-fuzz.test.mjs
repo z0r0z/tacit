@@ -126,6 +126,7 @@ group('POOL_INIT fuzz — 100 random (Δa, Δb, fee, caps)');
         shareCSecp: shareCSecpBytes, shareCBJJ: shareCBJJBytes,
         shareXcurveSigma: xcurveSigma,
         kernelSigA: sigA, kernelSigB: sigB,
+        shareR: Uint8Array.from(Buffer.from(r_secp.toString(16).padStart(64, '0'), 'hex')), // option-a: on-chain share opening blinding
         feeBps, vkCid: 'bafyTest', ceremonyCid: 'bafyCe',
         arbiterPubkeys: [], launcherSigs: [],
         protocolFeeAddress: new Uint8Array(33), protocolFeeBps: 0,

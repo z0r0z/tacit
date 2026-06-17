@@ -94,6 +94,14 @@ const A = '0x' + 'a1'.repeat(32), B = '0x' + 'b2'.repeat(32), C = '0x' + 'c3'.re
     && norm(d.sigRx).length === 64 && norm(d.sigRy).length === 64 && norm(d.sigZ).length === 64,
     'cbtc_lock (0x66): type/vBtc/lockVout/sigRx/sigRy/sigZ');
 }
+// ── crossout_mint (0x65, Mode-B reverse): the forward scan ROUTES it (vs refusing) so it can emit the
+// witnesses + skip (fold_crossout is a no-op in a forward batch) ──
+{
+  const d = classifyConfidentialTx(txData('gen-reflection-crossout-synth.mjs'));
+  ok(d && d.type === 'crossout_mint' && norm(d.asset).length === 64 && norm(d.claimId).length === 64
+    && norm(d.cx).length === 64 && norm(d.cy).length === 64,
+    'crossout_mint (0x65): type/asset/claimId/cx/cy');
+}
 // ── swap_batch (0x2F): its gen fullProves a real 1-intent A→B batch (snarkjs + the ~95MB head zkey), which is
 // heavy enough to deadlock a memory-constrained machine — so it is OPT-IN (RUN_SWAPBATCH_GEN=1, set on the box)
 // and time-bounded. When off/absent/timed-out, SKIP LOUD (never a silent pass) — the box's reflect-exec

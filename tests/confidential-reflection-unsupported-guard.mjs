@@ -1,12 +1,13 @@
 #!/usr/bin/env node
 // Fail-loud guard: the reflection scan must SURFACE (never silently treat as plain) any Tacit envelope the
-// guest folds but the live classifier does not yet route. The on-chain AMM ops (swap_var/swap_route/harvest/
-// farm_refund/protocol_fee/farm_init) + swap_batch (0x2F) + lp_add (0x2D) + lp_remove (0x2E) + cBTC lock (0x66)
-// + bid + AXFER + cxfer now ROUTE (a MALFORMED stub of any still falls through to 'unsupported' — safe, the
-// guest re-parses + likewise folds nothing). STILL deferred (→ 'unsupported'): crossout. It tags those
-// {type:'unsupported'}; the assembler collects them in `unsupportedEnvelopes`; the attester REFUSES the batch
-// — so the relay halts loud rather than attest a divergent (witness-desynced) root. The guest is authoritative,
-// so this is liveness, never soundness. Run: node tests/confidential-reflection-unsupported-guard.mjs
+// guest folds but the live classifier does not yet route. EVERY guest fold now ROUTES: the on-chain AMM ops
+// (swap_var/swap_route/harvest/farm_refund/protocol_fee/farm_init) + swap_batch (0x2F) + lp_add (0x2D) +
+// lp_remove (0x2E) + cBTC lock (0x66) + crossout_mint (0x65, Mode-B reverse — forward-skip mirror) + bid +
+// AXFER + cxfer (a MALFORMED stub of any still falls through to 'unsupported' — safe, the guest re-parses +
+// likewise folds nothing). A future-only/unmirrored guest fold would tag {type:'unsupported'}; the assembler
+// collects those in `unsupportedEnvelopes`; the attester REFUSES the batch — so the relay halts loud rather
+// than attest a divergent (witness-desynced) root. The guest is authoritative, so this is liveness, never
+// soundness. Run: node tests/confidential-reflection-unsupported-guard.mjs
 
 import { keccak_256 } from '../node_modules/@noble/hashes/sha3.js';
 import * as secp from '../node_modules/@noble/secp256k1/index.js';

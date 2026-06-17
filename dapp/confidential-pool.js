@@ -1163,6 +1163,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
         let lpRemove = null;
         let lpAdd = null;
         let swapBatch = null;
+        let crossoutMint = null;
         if (tx.env && tx.env.type === 'burn') {
           if (openings.length === 1) {
             // Reflected-note bridge-out: the burned note is a live pool note (already nullified above by the
@@ -1307,8 +1308,14 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
             // than emit a witness short n paths (a desync). Liveness, never a wrong digest.
             unsupportedEnvelopes.push({ txid: tx.txid, opcode: 0x2f });
           }
+        } else if (tx.env && tx.env.type === 'crossout_mint') {
+          // Track-D Mode-B reverse mint (0x65): in a FORWARD batch (mode_b=0) crossout_set_root=0, so the guest's
+          // fold_crossout ALWAYS skips (set-membership fails) — onboards nothing, digest unchanged. But it reads
+          // set_index + set_path + note_path for ANY parseable 0x65 before the fold, so emit them (skip-with-
+          // witness) to keep the stream aligned. (The actual onboarding is the mode_b=1 reverse-prove path.)
+          crossoutMint = { setIndex: 0, setPath: Array(32).fill('0x' + '00'.repeat(32)), notePath: state.notePathPeek() };
         }
-        txsOut.push({ txData: tx.txData, openings, spentInserts, burnInsert, outputs, burnDeposit, cbtcLock, swapVar, swapRoute, harvest, protocolFee, lpRemove, lpAdd, swapBatch });
+        txsOut.push({ txData: tx.txData, openings, spentInserts, burnInsert, outputs, burnDeposit, cbtcLock, swapVar, swapRoute, harvest, protocolFee, lpRemove, lpAdd, swapBatch, crossoutMint });
       }
       blocksOut.push({ txs: txsOut });
       blockIndex++;

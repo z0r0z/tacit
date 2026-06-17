@@ -430,6 +430,18 @@ function txOutputValue(rawTxHex, vout) {
   return null;
 }
 
+// T_CROSSOUT_MINT (0x65) — the Mode-B reverse mint (ETH→BTC). In a FORWARD batch (mode_b=0) the guest's
+// fold_crossout ALWAYS skips (crossout_set_root=0 → set-membership fails) — it onboards nothing — but it reads
+// the witnesses (set_index, set_path, note_path) for ANY parseable 0x65 first. Routing it (vs 'unsupported')
+// lets the forward scan emit those witnesses + skip, so a 0x65 (a reverse-mint once that path is live, or a
+// crafted one) no longer makes the attester refuse the block. The actual onboarding is the mode_b=1
+// reverse-prove path (separate). Layout: opcode ‖ asset(32) ‖ claim_id(32) ‖ Cx(32) ‖ Cy(32) ‖ owner(32).
+function parseCrossoutMintEnvelope(envHex) {
+  const e = hexToBytes(envHex);
+  if (e[0] !== 0x65 || e.length < 161) return null;
+  return { type: 'crossout_mint', asset: _h(e, 1, 33), claimId: _h(e, 33, 65), cx: _h(e, 65, 97), cy: _h(e, 97, 129), owner: _h(e, 129, 161) };
+}
+
 // classifyConfidentialTx(rawTxHex) → the reflection scan's per-tx classification, MIRRORING the guest's
 // reflect.rs (extract_taproot_envelope → parse_burn_envelope / parse_cxfer_envelope_full): a confidential
 // bridge-burn → {type:'burn', dest}; a confidential transfer → {type:'cxfer', assetId, commitments,
@@ -466,18 +478,21 @@ function classifyConfidentialTx(rawTxHex) {
   // from the tx (the guest reads it from the tx the same way). A malformed lock output → fail-loud unsupported.
   const cb = parseCbtcLockEnvelope(envHex);
   if (cb) { const vBtc = txOutputValue(rawTxHex, cb.lockVout); return vBtc == null ? { type: 'unsupported', opcode: 0x66 } : { ...cb, vBtc }; }
+  // T_CROSSOUT_MINT (0x65, Mode-B reverse): route it so the forward scan emits the witnesses the guest reads +
+  // skips (fold_crossout is a no-op in a forward batch — crossout_set_root=0), instead of refusing the block.
+  const co = parseCrossoutMintEnvelope(envHex);
+  if (co) return co;
   // env[0] is the opcode (the TACIT frame is already stripped). cetch (0x21) / cmint (0x24) create a note
   // but the conservation-closed full scan does NOT fold them (no free-output deposit path), so the guest
-  // treats them as plain too — safe. Any remaining guest-folded op the scan doesn't yet route (crossout) must
-  // SURFACE (not be treated as plain) — else the guest reads fold witnesses this scan never emitted and the
-  // batch's stream desyncs. Fail-loud: the attester refuses the batch (liveness, not soundness — the guest is
-  // authoritative). Mirroring a fold + routing it here is what lets the corresponding op attest.
+  // treats them as plain too — safe. Every other guest-folded op now routes; a still-unmirrored guest fold
+  // would SURFACE here (not be treated as plain) — else the guest reads fold witnesses this scan never emitted
+  // and the batch's stream desyncs. Fail-loud: the attester refuses (liveness, not soundness — guest is authoritative).
   const opcode = hexToBytes(envHex)[0];
   if (opcode === 0x21 || opcode === 0x24) return null; // cetch / cmint — created-but-not-folded (plain)
   return { type: 'unsupported', opcode };
 }
 
-export { readVarint, extractInputs, extractTaprootEnvelope, parseCetch, parseCmint, parseBurnEnvelope, parseCxferEnvelopeFull, parsePreauthBidEnvelope, parseSwapBatchEnvelope, parseSwapVarEnvelope, parseSwapRouteEnvelope, parseHarvestEnvelope, parseProtocolFeeClaimEnvelope, parseFarmInitEnvelope, parseLpAddEnvelope, parseLpRemoveEnvelope, parseCbtcLockEnvelope, txOutputValue, classifyConfidentialTx };
+export { readVarint, extractInputs, extractTaprootEnvelope, parseCetch, parseCmint, parseBurnEnvelope, parseCxferEnvelopeFull, parsePreauthBidEnvelope, parseSwapBatchEnvelope, parseSwapVarEnvelope, parseSwapRouteEnvelope, parseHarvestEnvelope, parseProtocolFeeClaimEnvelope, parseFarmInitEnvelope, parseLpAddEnvelope, parseLpRemoveEnvelope, parseCbtcLockEnvelope, parseCrossoutMintEnvelope, txOutputValue, classifyConfidentialTx };
 
 // Build the burnDepositKit the worker injects (buildScanReflectionAttester → makeScanReflectionIndexer).
 // Sources every crypto primitive from the SAME modules the pool/guest use (so verdicts match byte-for-byte)

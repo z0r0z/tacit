@@ -154,6 +154,13 @@ fn write_stdin(f: &serde_json::Value) -> SP1Stdin {
             if let Some(sb) = tx.get("swapBatch").filter(|v| !v.is_null()) {
                 for rp in sb["receiptPaths"].as_array().unwrap() { path(&mut s, rp); }
             }
+            // crossout_mint (0x65, Mode-B reverse): the guest reads set_index + set_path + note_path for any
+            // parseable 0x65 (fold_crossout skips in a forward batch — crossout_set_root=0) — mirror that order.
+            if let Some(cm) = tx.get("crossoutMint").filter(|v| !v.is_null()) {
+                s.write(&cm["setIndex"].as_u64().unwrap());
+                path(&mut s, &cm["setPath"]);
+                path(&mut s, &cm["notePath"]);
+            }
             // lp_add / POOL_INIT (0x2D): share_r is now ON-CHAIN (option a; the guest parses it), so the only
             // witness is the minted share note's append path.
             if let Some(la) = tx.get("lpAdd").filter(|v| !v.is_null()) {
