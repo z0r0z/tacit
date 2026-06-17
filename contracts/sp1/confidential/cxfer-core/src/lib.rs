@@ -2480,6 +2480,12 @@ pub struct ScanReflection {
     // ConfidentialPool.bitcoinConsumed). The resume point so a cycle folds exactly the NEW members in order;
     // committed in `digest()` so it can't be rolled back to re-open an already-marked-spent note.
     pub consumed_count: u64,
+    // FAST LANE / Mode-B anchor: the eth-reflection accumulator digest (eth_refl_digest = the eth proof's
+    // committed newDigest, binding crossOutSetRoot + consumedNuSetRoot + both counts) as of the last Mode-B
+    // cycle; [0;32] until the first. Committed in `digest()` so the contract's priorDigest chain forces the
+    // NEXT Mode-B cycle's witnessed eth prior to continue it — closing the forged-eth-prior bypass of the
+    // consumed-ν / crossout folds (a witnessed prior set root is no longer free). See reflect.rs Mode-B.
+    pub eth_refl_digest: [u8; 32],
 }
 
 impl Default for ScanReflection {
@@ -2505,6 +2511,7 @@ impl ScanReflection {
             cbtc_backing_sats: 0,
             pools: PoolReserveSet::new(),
             consumed_count: 0,
+            eth_refl_digest: [0u8; 32],
         }
     }
 
@@ -2535,6 +2542,9 @@ impl ScanReflection {
             &self.pools.root(), &u64b(self.pools.len() as u64),
             // FAST LANE: how many eth-consumed ν have been folded into the spent set (resume pin).
             &u64b(self.consumed_count),
+            // FAST LANE / Mode-B: the eth-reflection accumulator digest (binds both eth set roots + counts)
+            // as of the last Mode-B cycle — the cross-cycle anchor that bars a forged witnessed eth prior.
+            &self.eth_refl_digest,
         ])
     }
 
@@ -2572,14 +2582,15 @@ impl ScanReflection {
     /// consume leaves the note live on Bitcoin = double-spend). Unlike `fold_crossout`/`fold_cxfer` this is
     /// NOT skip-not-panic: an `Err` here is a hard prover error (the caller `.expect`s it).
     ///
-    /// SAFETY INVARIANT (the one the review must close before deploy — see PLAN-fast-lane-shared-nullifier):
-    /// soundness requires the eth proof to be FRESH — `consumed_nu_count` must cover EVERY ν the contract
-    /// has recorded in `bitcoinConsumed` whose source outpoint could be spent in this batch's blocks. If a
-    /// stale eth proof omits a recent consume, its outpoint stays live and a Bitcoin spend would fold it
-    /// (double-credit). Freshness is NOT enforced here; it must be enforced where `knownBitcoinSpentRoot`
-    /// advances (candidate: the contract tracks a `bitcoinConsumedCount` and gates the reflection's
-    /// committed `consumed_count` against it). Until that gate + its interleaving proof exist, this fold is
-    /// worker-trusted for freshness — do not deploy.
+    /// FRESHNESS + ANCHOR (both enforced outside this fn — soundness rests on them). (1) COUNT freshness:
+    /// the eth proof must cover EVERY ν recorded in `bitcoinConsumed`, else an omitted consume's outpoint
+    /// stays live = double-credit. Enforced by the eth-reflection guest (`consumedNuCount ==
+    /// bitcoinConsumedCount` at its finalized slot) + the contract (`ConsumedCountStale`: the reflection's
+    /// committed count == `bitcoinConsumedCount` now). (2) SET-CONTENT anchor: the eth accumulator the fold
+    /// is authorized against must be the REAL one — `reflect.rs` requires the eth proof's priorDigest to
+    /// continue `state.eth_refl_digest` (pinned by the contract's priorDigest chain), so a witnessed forged
+    /// prior that satisfies (1) vacuously is rejected. This fn assumes both hold; it only reproduces the
+    /// state transition (`eth_consumed_member` against the trusted set root + the ν↔note binding).
     #[allow(clippy::too_many_arguments)]
     pub fn fold_consumed(
         &mut self,
@@ -3654,9 +3665,37 @@ mod tests {
     fn genesis_digest_matches_contract_constant() {
         assert_eq!(
             ScanReflection::genesis().digest(),
-            arr32("0xc5b5d994530ec9125d08c855a9c2935d842396cfc67d91abb42335166664df68"),
+            arr32("0xeab17bcb92a60d3504973e52dad54aaafe331d87999f94304fac7c29cf126388"),
             "ScanReflection::genesis().digest() drifted from ConfidentialPool.REFLECTION_GENESIS_DIGEST"
         );
+    }
+
+    /// Mode-B anchor regression: the resume digest binds `eth_refl_digest` (the eth proof's committed
+    /// newDigest, which commits crossOutSetRoot + consumedNuSetRoot + both counts), so the contract's
+    /// `priorDigest == knownReflectionDigest` chain forces each Mode-B cycle's witnessed eth prior to
+    /// continue the one the prior cycle committed (DESIGN-mode-b-recursion.md §2; reflect.rs Mode-B).
+    /// Without this, a witnessed eth accumulator prior is free and a fold could be authorized by a
+    /// forged set that still satisfies the freshness COUNT gate. Two states equal in every Bitcoin
+    /// field but recording a different authorizing eth accumulator MUST differ.
+    #[test]
+    fn resume_digest_binds_eth_reflection_accumulator() {
+        let pool = [0x11u8; 20];
+        let root_a = arr32("0x00000000000000000000000000000000000000000000000000000000000000aa");
+        let root_b = arr32("0x00000000000000000000000000000000000000000000000000000000000000bb");
+        // Distinct authorizing eth accumulators ⇒ distinct eth_refl_digest ⇒ distinct resume digest.
+        let da = eth_reflection::eth_refl_digest(&pool, &root_a, 1, &root_a, 1);
+        let db = eth_reflection::eth_refl_digest(&pool, &root_b, 1, &root_b, 1);
+        assert_ne!(da, db, "the two eth accumulators must hash distinctly");
+        let mut sa = ScanReflection::genesis();
+        sa.eth_refl_digest = da;
+        let mut sb = ScanReflection::genesis();
+        sb.eth_refl_digest = db;
+        assert_ne!(
+            sa.digest(), sb.digest(),
+            "resume digest must bind the eth-reflection accumulator (the cross-cycle anchor)",
+        );
+        // Genesis (no Mode-B yet) carries the zero anchor and differs from any folded eth state.
+        assert_ne!(ScanReflection::genesis().digest(), sa.digest(), "genesis anchor is zero, distinct");
     }
 
     /// The reflected note leaf is DERIVED from the envelope (asset + commitment), never witnessed —
@@ -5626,7 +5665,7 @@ mod tests {
     #[test]
     fn scan_reflection_genesis_digest() {
         let g = ScanReflection::genesis();
-        assert_eq!(hex::encode(g.digest()), "c5b5d994530ec9125d08c855a9c2935d842396cfc67d91abb42335166664df68", "full-scan genesis digest (JS indexer + contract must match)");
+        assert_eq!(hex::encode(g.digest()), "eab17bcb92a60d3504973e52dad54aaafe331d87999f94304fac7c29cf126388", "full-scan genesis digest (JS indexer + contract must match)");
         // empty live set root == empty note-tree root (both keccak_merkle_root([])); spent + burn
         // keep the {0→0} sentinel roots.
         assert_eq!(g.live.root(), g.pool_root);

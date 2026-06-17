@@ -74,6 +74,11 @@ contract DeployConfidentialPool is Script {
         // (default 6, the mainnet standard; a faster test chain may pick fewer). Unused when reflection is
         // off; ctor-bounded to 1..144 when on.
         uint256 reflectionConfirmations = vm.envOr("REFLECTION_CONFIRMATIONS", uint256(6));
+        // GENERATIONAL deploys: the reflection-resume digest. 0 (default) = a genesis-anchored gen-1 (the
+        // first cycle continues the protocol genesis digest). For a later generation that JOINS the shared
+        // Bitcoin reflection mid-stream, set this to the CURRENT reflected digest (paired with a near-tip
+        // GENESIS_REFLECTION_ANCHOR) so it never replays Bitcoin history. See ops/PLAN-pool-generations.md.
+        bytes32 reflectionResumeDigest = vm.envOr("REFLECTION_RESUME_DIGEST", bytes32(0));
 
         // ── Coherence guards (the tETH deploy bar): the deployed guest must be the proven one ──
         // Pin cross-check: the PROGRAM_VKEY must equal the committed elf-vkey-pin.json
@@ -106,7 +111,7 @@ contract DeployConfidentialPool is Script {
         require(expectedChainId == 0 || block.chainid == expectedChainId, "block.chainid != EXPECTED_CHAIN_ID");
 
         vm.startBroadcast();
-        ConfidentialPool pool = new ConfidentialPool(sp1Verifier, vkey, bitcoinRelayVKey, canonicalFactory, headerRelay, genesisReflectionAnchor, reflectionConfirmations);
+        ConfidentialPool pool = new ConfidentialPool(sp1Verifier, vkey, bitcoinRelayVKey, canonicalFactory, headerRelay, genesisReflectionAnchor, reflectionConfirmations, reflectionResumeDigest);
 
         address sampleUnderlying = vm.envOr("SAMPLE_UNDERLYING", address(0));
         bytes32 sampleAsset;
@@ -119,6 +124,17 @@ contract DeployConfidentialPool is Script {
                 vm.envOr("SAMPLE_SYMBOL", string("cSMPL")),
                 uint8(vm.envOr("SAMPLE_DECIMALS", uint256(18)))
             );
+        }
+
+        // tETH (shielded ETH, ops/PLAN-teth-subsumption.md) — register it ATOMICALLY in this broadcast so
+        // the native-ETH cross-chain link can't be front-run (registerWrapped is permissionless and
+        // first-write-wins on the link). 0 = skip. Native ETH (address(0)) at 18 dec → Tacit 8 ⇒ unitScale
+        // 10^10; the Bitcoin etch id is the link, so a bridged/fast-laned tETH note resolves here on unwrap.
+        bytes32 tethBitcoinId = vm.envOr("TETH_BITCOIN_ID", bytes32(0));
+        bytes32 tethAsset;
+        if (tethBitcoinId != bytes32(0)) {
+            tethAsset = pool.registerWrapped(address(0), 10 ** 10, tethBitcoinId, "Tacit ETH", "tETH", 18);
+            require(pool.localAssetOf(tethBitcoinId) == tethAsset, "tETH link not bound");
         }
         vm.stopBroadcast();
 
@@ -133,6 +149,10 @@ contract DeployConfidentialPool is Script {
         if (sampleUnderlying != address(0)) {
             console2.log("sample asset underlying:", sampleUnderlying);
             console2.logBytes32(sampleAsset);
+        }
+        if (tethBitcoinId != bytes32(0)) {
+            console2.log("tETH asset (native-ETH shielded ETH, unwrap -> ETH):");
+            console2.logBytes32(tethAsset);
         }
     }
 }

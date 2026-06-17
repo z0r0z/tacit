@@ -57,6 +57,10 @@ sol! {
         bytes32 bitcoinTipHash;    // double-SHA256 of the last header — the batch's new tip
         bytes32 ethPoolReflected;  // Mode B: the eth-reflection's ethPool — attest gates it == address(this)
         uint256 cbtcBackingSats;   // cBTC: Σ live self-custody cBTC.zk lock sats (the off-pool buffer reads it)
+        // FAST-LANE FRESHNESS: how many eth-consumed ν this batch has folded into the spent set. attest
+        // gates it == ConfidentialPool.bitcoinConsumedCount, so the spent set can advance ONLY after every
+        // recorded consume is folded — closing the stale-eth-proof double-credit.
+        uint64  consumedCount;
     }
 }
 
@@ -118,9 +122,13 @@ fn read_scan_prior_state() -> ScanReflection {
     // FAST LANE resume: how many eth-consumed ν have already been folded into the spent set (rides
     // digest(), so a forged handoff fails the priorDigest chain). 0 until the first fast-lane consume.
     let consumed_count: u64 = io::read();
+    // FAST LANE / Mode-B anchor resume: the eth-reflection accumulator digest committed by the last
+    // Mode-B cycle ([0;32] until the first). Rides digest(), so a forged handoff fails the priorDigest
+    // chain — and the Mode-B fold below requires the eth proof's prior to continue exactly this.
+    let eth_refl_digest = r32();
     ScanReflection {
         pool_root, note_count, spent_root, spent_count, live, burn_root, burn_count, height,
-        cbtc_locks, cbtc_backing_sats, pools, consumed_count,
+        cbtc_locks, cbtc_backing_sats, pools, consumed_count, eth_refl_digest,
     }
 }
 
@@ -197,6 +205,22 @@ pub fn main() {
         let consumed_root: [u8; 32] = eth_pv[9 * 32..10 * 32].try_into().expect("consumedNuSetRoot word");
         // consumedNuCount — a uint64 ABI-encoded right-aligned in the 32-byte word (field 10).
         let consumed_cnt = u64::from_be_bytes(eth_pv[11 * 32 - 8..11 * 32].try_into().unwrap());
+        // CROSS-CYCLE ANCHOR (closes the forged-eth-prior bypass). The eth-reflection accumulator prior
+        // (prior_set_root / prior_consumed_root / counts) is WITNESSED into the eth guest, so the freshness
+        // COUNT gate alone (consumedNuCount == bitcoinConsumedCount) is satisfiable by a forged prior that
+        // folds nothing real. Bind it: the eth proof's priorDigest (word 0) MUST continue the digest the
+        // last Mode-B cycle committed (resumed in `state.eth_refl_digest`, itself pinned by the contract's
+        // priorDigest == knownReflectionDigest chain); the FIRST Mode-B cycle continues the eth genesis
+        // (empty accumulator for this pool). Then carry forward the new committed digest (word 1). With this,
+        // a witnessed prior must equal the real prior accumulation, so every folded crossout / consumed ν is
+        // backed by a slot actually proven in some cycle. (DESIGN-mode-b-recursion.md §2.)
+        let expected_prior = if state.eth_refl_digest == [0u8; 32] {
+            cxfer_core::eth_reflection::eth_refl_genesis_digest(&ep[12..32])
+        } else {
+            state.eth_refl_digest
+        };
+        assert_eq!(&eth_pv[0..32], &expected_prior[..], "eth-reflection prior must continue the committed chain");
+        state.eth_refl_digest = eth_pv[32..64].try_into().expect("eth newDigest word");
         (ep, cr, consumed_root, consumed_cnt)
     } else {
         // sentinel: forward-only batch — no eth recursion, no crossout/consumed fold.
@@ -221,10 +245,12 @@ pub fn main() {
     // (the inverse of the crossout/cxfer skip-not-panic discipline). mode_b == 0 ⇒ consumed_nu_count == 0,
     // so a forward-only batch folds none and `consumed_count` carries unchanged. The witnesses (ν,
     // spendRoot, Cx, Cy, source outpoint, set-membership path, spent-IMT insert) are read here, ahead of
-    // the per-block tx witnesses, so the assembler/JS mirror MUST emit them in this position. SAFETY: this
-    // is sound only if the eth proof is FRESH (covers every recorded consume) — the freshness gate is the
-    // open review item in PLAN-fast-lane-shared-nullifier.md (a stale eth proof must not advance the
-    // reflected spent set), NOT enforced here.
+    // the per-block tx witnesses, so the assembler/JS mirror MUST emit them in this position. SAFETY rests
+    // on two gates enforced ABOVE/outside this loop: (1) COUNT freshness — the eth guest ties consumedNuCount
+    // to bitcoinConsumedCount@finalized-slot and the contract's ConsumedCountStale ties it to NOW, so the eth
+    // proof covers every recorded consume; (2) the SET-CONTENT anchor just enforced in the mode_b block (the
+    // eth proof's priorDigest must continue state.eth_refl_digest), so the consumed set itself is the real
+    // accumulation and a forged prior can't slip fake/omitted ν past the count gate.
     if mode_b != 0 {
         let prior_consumed = state.consumed_count;
         assert!(consumed_nu_count >= prior_consumed, "eth consumed count rolled back");
@@ -763,6 +789,7 @@ pub fn main() {
         bitcoinTipHash: tip_hash.into(),
         ethPoolReflected: eth_pool_word.into(),
         cbtcBackingSats: U256::from(state.cbtc_backing_sats), // reflection-attested cBTC backing
+        consumedCount: state.consumed_count, // fast-lane freshness: attest gates this == bitcoinConsumedCount
     };
     io::commit_slice(&BitcoinReflectionPublicValues::abi_encode(&pv));
 }

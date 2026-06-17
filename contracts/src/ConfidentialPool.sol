@@ -243,7 +243,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     // knownReflectionDigest is seeded to this so the first attestation continues genesis. Pinned in
     // cxfer-core (genesis_digest_matches_contract_constant). Tied to BITCOIN_RELAY_VKEY (one prover).
     bytes32 public constant REFLECTION_GENESIS_DIGEST =
-        0xc5b5d994530ec9125d08c855a9c2935d842396cfc67d91abb42335166664df68;
+        0xeab17bcb92a60d3504973e52dad54aaafe331d87999f94304fac7c29cf126388;
 
     // A shared (Bitcoin-side) asset id => this pool's local registry key. A bridge_mint note
     // carries the SHARED id as its `asset` (it must, to prove membership in the Bitcoin
@@ -415,6 +415,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     error AlreadyRegistered();
     error BurnAlreadyMinted();
     error DepositNotPending();
+    error ConsumedCountStale();
     error InsufficientEscrow();
     error ReserveFloorBreach();
     error UnknownBitcoinRoot();
@@ -444,7 +445,8 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         address canonicalFactory_,
         address headerRelay_,
         bytes32 genesisReflectionAnchor_,
-        uint256 reflectionConfirmations_
+        uint256 reflectionConfirmations_,
+        bytes32 reflectionResumeDigest_
     ) {
         if (sp1Verifier_ == address(0)) revert ZeroAddress();
         if (programVKey_ == bytes32(0)) revert ZeroVKey();
@@ -473,7 +475,14 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         // would revert every attest_meta settle) with no recovery on an immutable pool. 0 = disabled.
         if (canonicalFactory_ != address(0) && canonicalFactory_.code.length == 0) revert NotAContract();
         CANONICAL_FACTORY = ICanonicalAssetFactory(canonicalFactory_);
-        knownReflectionDigest = REFLECTION_GENESIS_DIGEST; // the first cycle continues genesis
+        // The reflection-resume anchor. 0 ⇒ a genesis-anchored deploy (gen-1): the first cycle continues the
+        // protocol genesis digest. NON-ZERO ⇒ a GENERATIONAL deploy (gen-N) that joins the SHARED Bitcoin
+        // reflection mid-stream — it seeds at the CURRENT (near-tip) reflected digest, so it never replays
+        // Bitcoin history (the 73-block bootstrap OOM). It must be paired with the matching
+        // `genesisReflectionAnchor_` (the same reflected state's tip); a mismatch is fail-closed (the first
+        // attest reverts StaleReflectionDigest / UnanchoredReflection — no fund risk, just can't bootstrap).
+        // See ops/PLAN-pool-generations.md.
+        knownReflectionDigest = reflectionResumeDigest_ == bytes32(0) ? REFLECTION_GENESIS_DIGEST : reflectionResumeDigest_;
 
         bytes32 z = bytes32(0);
         for (uint256 i; i < TREE_LEVELS; ++i) {
@@ -606,17 +615,28 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         if (underlying == address(0) && unitScale > 10 ** uint256(ETH_DECIMALS)) revert BadDecimals();
         assetId = sha256(abi.encodePacked("tacit-evm-token-v1", uint64(block.chainid), underlying));
         if (assets[assetId].registered) revert AlreadyRegistered();
-        // A cross-chain link makes the asset's SHARED id resolve to this local entry on
-        // unwrap of a bridged note (H-2). Accept it only for a pool-minted asset whose
-        // canonical token COMMITS to the same id (ASSET_ID == link) — an external/escrow
-        // token can never claim a shared id — and first-write-wins, so it cannot be
-        // squatted to misroute a bridged payout.
+        // A cross-chain link makes the asset's SHARED id resolve to this local entry on unwrap of a
+        // bridged note (H-2). TWO backings may claim a Bitcoin id:
+        //  - a POOL-MINTED asset whose canonical token COMMITS to the same id (ASSET_ID == link); or
+        //  - NATIVE ETH (tETH = shielded ETH, ops/PLAN-teth-subsumption.md): the protocol's OWN escrow backs
+        //    the bridged supply, so a link is allowed — unlike a FOREIGN ERC20 escrow, whose backing the
+        //    pool can't control (that stays CrossChainEscrow). There is no token to commit the id
+        //    (address(0) is not a contract) so the ASSET_ID check is skipped; soundness rests on the
+        //    escrow==supply invariant: tETH is minted ONLY against an ETH wrap, and the contract is
+        //    FAIL-CLOSED on escrow (a shortfall reverts an unwrap with InsufficientEscrow — locks, never
+        //    drains). A foreign asset registered native-ETH with a fake link is inert (no escrow, never
+        //    bridge-minted). first-write-wins, so a link cannot be squatted to misroute a bridged payout.
         if (crossChainLink != bytes32(0)) {
-            if (!poolMinted) revert CrossChainEscrow();
-            try IAssetId(underlying).ASSET_ID() returns (bytes32 aid) {
-                if (aid != crossChainLink) revert CrossChainTokenMismatch();
-            } catch {
-                revert CrossChainTokenMismatch();
+            if (underlying == address(0)) {
+                // native ETH (tETH): the protocol's own escrow is the bridged backing — no token-commit.
+            } else if (!poolMinted) {
+                revert CrossChainEscrow(); // a foreign ERC20 escrow cannot back bridged supply
+            } else {
+                try IAssetId(underlying).ASSET_ID() returns (bytes32 aid) {
+                    if (aid != crossChainLink) revert CrossChainTokenMismatch();
+                } catch {
+                    revert CrossChainTokenMismatch();
+                }
             }
             if (localAssetOf[crossChainLink] != bytes32(0)) revert CrossChainLinkTaken();
             localAssetOf[crossChainLink] = assetId;
@@ -717,6 +737,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         bytes32 bitcoinTipHash;   // the batch's tip block hash — anchored to a matured ancestor of RELAY.tip()
         bytes32 ethPoolReflected; // Mode B: the eth-reflection's ethPool (gated == address(this) below)
         uint256 cbtcBackingSats;  // cBTC: Σ live self-custody cBTC.zk lock sats (the off-pool buffer reads it)
+        uint64 consumedCount;     // fast-lane freshness: eth-consumed ν folded into the spent set; gated == bitcoinConsumedCount
     }
 
     /// @notice Attest Bitcoin confidential-pool state via an SP1 relay proof — the ONLY
@@ -759,6 +780,16 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         // knownBitcoinRoot); a zero root would mark an empty tree canonical, so reject it too —
         // matching the spent/burn-root sentinels above.
         if (r.bitcoinPoolRoot == bytes32(0)) revert ZeroBitcoinPoolRoot();
+        // FAST-LANE FRESHNESS: the reflection must have folded EVERY recorded fast-lane consume before it
+        // may advance the spent set. The eth-reflection guest already ties its `consumedCount` to
+        // `bitcoinConsumedCount` at its FINALIZED Ethereum slot; this gate ties it to NOW — so the proof's
+        // finalized slot is forced recent enough to cover every consume. Without it a worker could attest a
+        // racing Bitcoin spend of a note already fast-spent on Ethereum (its source still live) and
+        // double-credit it. A consume landing between the proof's finalized slot and this tx makes the attest
+        // revert; the worker re-attests with a fresher eth proof (a liveness retry, never a safety gap). Once
+        // any consume exists, a forward-only (mode_b==0, consumedCount-unchanged) batch can no longer advance
+        // the spent set — exactly the intended Ethereum-senior ordering.
+        if (r.consumedCount != bitcoinConsumedCount) revert ConsumedCountStale();
         // Relay anchor (mirror SP1PoolRootVerifier): pin the batch's prev to the prior attested tip
         // and its tip to a MATURED ancestor of the canonical relay tip (≥ REFLECTION_CONFIRMATIONS deep,
         // each within the finality window). With the guest's verify_header_chain linking the batch back
@@ -893,16 +924,25 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         //      guest folding ν into the Bitcoin spent set (Ethereum-senior) — then retires the source note
         //      on Bitcoin so it can't be re-spent. The guest pinned by BITCOIN_RELAY_VKEY MUST perform that
         //      fold; the safety rests on the vkey⇄guest coherence, as with every pairing here.
-        // Only a plain spend → {Ethereum leaf, withdrawal, settler fee} rides the fast lane. AMM
-        // (swaps/liquidity), the adaptor lock set, onward crossOut (barred above) and EVM-deposit
-        // consumption each compose it with a lane the consumed-ν reflection doesn't cover, so for those a
-        // btcHomed batch still must bridge.
+        // A plain spend → {Ethereum leaf, withdrawal, settler fee}, an AMM swap, or an LP add rides the fast
+        // lane: a swap's input funds reserve-in / an LP-add's inputs fund both reserves in ratio (guest-bound
+        // asset via the membership leaf + per-input cross-lane non-membership), and the output is a leaf or a
+        // shielded LP-share note backed by the pool. Neither pays escrow (the output is a note), so the
+        // pool-minted exit guard below is for withdrawals/fees only. The adaptor lock set, onward crossOut
+        // (barred above), EVM-deposit consumption, and a bridge_mint (bitcoinBurnsConsumed) each compose it
+        // with a lane the consumed-ν reflection doesn't cover, so for those a btcHomed batch still must
+        // bridge. A bridge_mint is Ethereum-homed by construction (it proves the burned note's membership
+        // against its own pool_root, not a knownBitcoinRoot), so an honest batch never reaches this with a
+        // burn — barring it explicitly mirrors the crossOut bar above (defense-in-depth vs a compromised
+        // guest). (An LP-remove of a btcHomed share can't form: LP-share notes are pool-minted on Ethereum,
+        // so they are never members of a knownBitcoinRoot — the guest's membership check rejects it.)
         if (btcHomed) {
-            if (pv.swaps.length != 0 || pv.liquidity.length != 0 || pv.depositsConsumed.length != 0
-                || pv.lockLeaves.length != 0 || pv.lockNullifiers.length != 0) {
+            if (pv.depositsConsumed.length != 0
+                || pv.lockLeaves.length != 0 || pv.lockNullifiers.length != 0 || pv.bitcoinBurnsConsumed.length != 0) {
                 revert BtcHomedValueExitMustBridge();
             }
-            if (pv.withdrawals.length != 0 || pv.fees.length != 0 || pv.leaves.length != 0) {
+            if (pv.withdrawals.length != 0 || pv.fees.length != 0 || pv.leaves.length != 0
+                || pv.swaps.length != 0 || pv.liquidity.length != 0) {
                 // Defense-in-depth: a Bitcoin-homed value-exit must MINT its bridged (pool-minted) asset,
                 // never pay from escrow funded by Ethereum wraps. The note's asset is pool-minted by
                 // construction (a btcHomed note is a bridged asset), so a compromised guest pairing it with

@@ -521,6 +521,10 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     // folded into the spent set via Mode-B reverse reflection. The JS scan is forward-only (no Mode-B fold), so
     // it stays 0 — but it MUST ride digest() (the guest pins it) or the guest↔JS digest diverges.
     let consumedCount = 0n;
+    // FAST-LANE / Mode-B anchor (cxfer-core ScanReflection.eth_refl_digest): the eth-reflection accumulator
+    // digest committed by the last Mode-B cycle; genesis 0x00..00 for the forward-only JS scan. Rides digest()
+    // (the guest pins it last) so guest↔JS parity holds; set during Mode-B reconstruction when that's wired.
+    let ethReflDigest = '0x' + '00'.repeat(32);
 
     // Counts derive from the accumulators (not a separate cursor), so a snapshot restore that
     // replays the raw leaves/links/nodes reconstructs the exact digest without bookkeeping drift.
@@ -541,6 +545,9 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
         pools.root(), u64be(pools.len()),
         // FAST LANE: eth-consumed ν fold count (cxfer-core pins it last; 0 for the forward-only JS scan).
         u64be(consumedCount),
+        // FAST LANE / Mode-B: the eth-reflection accumulator anchor (cxfer-core pins it after consumed_count;
+        // genesis 0x00..00 for the forward-only JS scan).
+        ethReflDigest,
       ));
     }
 
@@ -615,6 +622,10 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     // state must carry the prior count or its digest() diverges from the guest's (which pins it last).
     function setConsumedCount(c) { consumedCount = BigInt(c); }
     function getConsumedCount() { return consumedCount; }
+    // Mode-B anchor resume (mirror cxfer-core ScanReflection.eth_refl_digest): set the eth-reflection
+    // accumulator digest a resumed post-Mode-B state continues from; forward-only stays genesis 0x00..00.
+    function setEthReflDigest(d) { ethReflDigest = hx(b32(d)); }
+    function getEthReflDigest() { return ethReflDigest; }
     function setHeight(h) { if (h < height) throw new Error('reflection height must not decrease'); height = h; }
 
     // ── cBTC.zk sats-lock fold (mirror cxfer-core fold_cbtc_lock / fold_cbtc_lock_spends) ──
@@ -884,7 +895,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     }
 
     return {
-      commit, digest, foldSpent, foldOutput, foldNoteAppend, foldBurn, foldCbtcLock, foldCbtcLockSpends, foldSwapVar, foldSwapRoute, foldHarvest, foldProtocolFeeClaim, foldFarmInit, foldLpRemove, foldLpAdd, foldConsumed, foldCrossout, setConsumedCount, getConsumedCount, setHeight,
+      commit, digest, foldSpent, foldOutput, foldNoteAppend, foldBurn, foldCbtcLock, foldCbtcLockSpends, foldSwapVar, foldSwapRoute, foldHarvest, foldProtocolFeeClaim, foldFarmInit, foldLpRemove, foldLpAdd, foldConsumed, foldCrossout, setConsumedCount, getConsumedCount, setEthReflDigest, getEthReflDigest, setHeight,
       // The next free slot's note append-path, computed WITHOUT inserting — the swap_batch witness emits this n
       // times on a skip (the guest reads n receipt paths unconditionally, then discards them when the fold bails).
       notePathPeek: () => notes.rootAndPath(noteCount()).path,
@@ -1154,6 +1165,9 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
       pools: state.pools.list(),
       // FAST-LANE resume count (the guest reads it last in read_scan_prior_state); 0 for a forward batch.
       consumedCount: Number(state.getConsumedCount()),
+      // FAST-LANE / Mode-B anchor: the eth-reflection accumulator digest (read right after consumedCount);
+      // genesis 0x00..00 for a forward batch (the guest reconstructs the same zero anchor).
+      ethReflDigest: state.getEthReflDigest(),
     };
     // Mode-B reverse reflection: when the batch carries an eth-reflection proof (modeB), fold its attested
     // consumed-ν set into the spent set BEFORE the block scan (Ethereum-senior void), emitting the witnesses
@@ -1181,6 +1195,10 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
       ethPvHex = modeBIn.ethPv
         ? (modeBIn.ethPv.startsWith('0x') ? modeBIn.ethPv.toLowerCase() : '0x' + modeBIn.ethPv.toLowerCase())
         : buildEthPv(modeBIn.crossoutSetRoot, modeBIn.consumedSetRoot, state.getConsumedCount());
+      // Cross-cycle anchor (mirror reflect.rs): carry forward the eth proof's committed newDigest (word 1)
+      // so the batch's newDigest binds it — the contract's priorDigest chain then forces the next Mode-B
+      // cycle to continue this eth accumulator. word 1 = bytes 32..64 = hex chars 64..128 (after '0x').
+      state.setEthReflDigest('0x' + ethPvHex.slice(2 + 64, 2 + 128));
     }
     const blocksOut = [];
     const nonConserving = [];
@@ -1454,17 +1472,37 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
   function ethConsumedLeaf(nu, spendRoot) {
     return hx(keccak256(concat([b32(nu), b32(spendRoot)])));
   }
+  // Mode-B accumulator digest (mirror cxfer_core::eth_reflection::eth_refl_digest): keccak(pool20 ‖
+  // crossOutSetRoot ‖ crossOutCount_be8 ‖ consumedNuSetRoot ‖ consumedNuCount_be8). The Bitcoin guest
+  // anchors this (the eth proof's committed newDigest) into its resume digest, so each Mode-B cycle must
+  // continue the prior one — the cross-cycle anchor. `pool20` is the 20-byte address; counts are u64 BE.
+  const EMPTY_ETH_SET_ROOT = '0x27ae5ba08d7291c96c8cbddcc148bf48a6d68c7974b94356f53754ef6171d757'; // KeccakTreeAccumulator::new().root()
+  function ethReflDigest(pool20, setRoot, count, consumedRoot, consumedCount) {
+    return hx(keccak256(concat([pool20, b32(setRoot), be8(count), b32(consumedRoot), be8(consumedCount)])));
+  }
+  // The genesis accumulator digest for `pool` (both sets empty) — the prior the FIRST Mode-B cycle continues.
+  function ethReflGenesisDigest(pool20) {
+    return ethReflDigest(pool20, EMPTY_ETH_SET_ROOT, 0, EMPTY_ETH_SET_ROOT, 0);
+  }
   // eth_crossout_member — keccak-merkle membership of a cross-out leaf in crossOutSetRoot (verifyPath mirror).
   function ethCrossoutMember(co, index, path, setRoot) {
     return verifyPath(ethCrossoutLeaf(co.claimId, co.destChain, co.destCommitment, co.asset), index, path, setRoot);
   }
   // Build the 11-word EthReflectionPublicValues the guest verify_sp1_proof-binds, then reads by offset:
-  // word3 = crossOutSetRoot, word8 = genesis sync-committee anchor, word9 = consumedNuSetRoot, word10
-  // low-8 = consumedNuCount. The other words (priorDigest/newDigest/ethPool/counts/slots/finalizedRoots)
-  // are unread by the Bitcoin guest, so they are zero in this mirror.
-  function buildEthPv(crossoutSetRoot, consumedSetRoot, consumedNuCount) {
+  // word0 = priorDigest, word1 = newDigest, word2 = ethPool, word3 = crossOutSetRoot, word4 = crossOutCount,
+  // word8 = genesis sync-committee anchor, word9 = consumedNuSetRoot, word10 low-8 = consumedNuCount. The
+  // Bitcoin guest now ANCHORS words 0/1 (the cross-cycle chain) in addition to reading 3/9/10, so a synthetic
+  // PV must carry a coherent genesis prior + new digest. This synth stands for the FIRST Mode-B cycle from a
+  // given pool (priorDigest = eth genesis for that pool); the real eth proof carries the chained values.
+  function buildEthPv(crossoutSetRoot, consumedSetRoot, consumedNuCount, crossOutCount = 0, pool = null) {
     const words = Array.from({ length: 11 }, () => new Uint8Array(32));
+    const poolWord = pool ? b32(pool) : new Uint8Array(32); // ethPool (zeroed for tests; on-chain gates it == address(this))
+    const pool20 = poolWord.slice(12, 32);
+    words[0] = b32(ethReflGenesisDigest(pool20));            // priorDigest — the first Mode-B cycle continues eth genesis
+    words[1] = b32(ethReflDigest(pool20, crossoutSetRoot, crossOutCount, consumedSetRoot, consumedNuCount)); // newDigest
+    words[2] = poolWord;
     words[3] = b32(crossoutSetRoot);
+    words[4] = u64be(BigInt(crossOutCount));
     words[8] = b32(ETH_GENESIS_SYNC_COMMITTEE);
     words[9] = b32(consumedSetRoot);
     words[10] = u64be(BigInt(consumedNuCount)); // count as a 32-byte BE word — the guest reads its low 8 bytes

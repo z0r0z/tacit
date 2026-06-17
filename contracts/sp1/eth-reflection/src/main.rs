@@ -16,7 +16,7 @@
 #![no_main]
 sp1_zkvm::entrypoint!(main);
 
-use alloy_primitives::{keccak256, Address, B256};
+use alloy_primitives::{Address, B256};
 use alloy_sol_types::{sol, SolValue};
 use helios_consensus_core::{apply_finality_update, apply_update, verify_finality_update, verify_update};
 use serde::{Deserialize, Serialize};
@@ -24,8 +24,9 @@ use sp1_helios_primitives::{types::ProofInputs, verify_storage_slot_proofs};
 use tree_hash::TreeHash;
 
 use cxfer_core::eth_reflection::{
-    eth_consumed_leaf, eth_crossout_leaf, mapping_slot_key, plain_slot_key, slot_value_to_u64, EthConsumed,
-    EthCrossOut, CONSUMED_COUNT_SLOT_INDEX, CONSUMED_SLOT_INDEX, CROSSOUT_SLOT_INDEX, DEST_CHAIN_BITCOIN,
+    eth_consumed_leaf, eth_crossout_leaf, eth_refl_digest, mapping_slot_key, plain_slot_key, slot_value_to_u64,
+    EthConsumed, EthCrossOut, CONSUMED_COUNT_SLOT_INDEX, CONSUMED_SLOT_INDEX, CROSSOUT_SLOT_INDEX,
+    DEST_CHAIN_BITCOIN,
 };
 use cxfer_core::{claim_id, keccak_tree_append_transition};
 
@@ -89,19 +90,6 @@ fn crossout_slot_key(claim_id: &B256) -> B256 { B256::from(mapping_slot_key(&cla
 fn consumed_slot_key(nullifier: &B256) -> B256 { B256::from(mapping_slot_key(&nullifier.0, CONSUMED_SLOT_INDEX)) }
 fn count_slot_key() -> B256 { B256::from(plain_slot_key(CONSUMED_COUNT_SLOT_INDEX)) }
 
-/// Digest chaining the eth-reflection state: `keccak(pool ‖ crossOutSetRoot ‖ count_be8 ‖
-/// consumedNuSetRoot ‖ consumedCount_be8)` — append-only, no rollback. The consumed fields are appended
-/// so a chain built before the fast lane still re-derives the same prefix.
-fn eth_refl_digest(pool: &Address, set_root: &B256, count: u64, consumed_root: &B256, consumed_count: u64) -> B256 {
-    let mut b = Vec::with_capacity(20 + 32 + 8 + 32 + 8);
-    b.extend_from_slice(pool.as_slice());
-    b.extend_from_slice(set_root.as_slice());
-    b.extend_from_slice(&count.to_be_bytes());
-    b.extend_from_slice(consumed_root.as_slice());
-    b.extend_from_slice(&consumed_count.to_be_bytes());
-    keccak256(&b)
-}
-
 pub fn main() {
     // 1. Light-client verification (verbatim from sp1-helios `light_client.rs`): apply sync-committee
     //    updates, then the finality update, against the resumed store / genesis / forks.
@@ -147,9 +135,10 @@ pub fn main() {
     //    `verified`, so each witness is matched to its slot by KEY, and the total must account for every
     //    pool slot (no stray slot, no unproven witness).
     let ethr: EthReflInputs = serde_cbor::from_slice(&sp1_zkvm::io::read_vec()).unwrap();
-    let prior_digest = eth_refl_digest(
-        &ethr.pool, &ethr.prior_set_root, ethr.prior_count, &ethr.prior_consumed_root, ethr.prior_consumed_count,
-    );
+    let prior_digest = B256::from(eth_refl_digest(
+        ethr.pool.as_slice(), ethr.prior_set_root.as_slice(), ethr.prior_count,
+        ethr.prior_consumed_root.as_slice(), ethr.prior_consumed_count,
+    ));
 
     let pool_slots: Vec<_> = verified.iter().filter(|s| s.contractAddress == ethr.pool).collect();
 
@@ -226,7 +215,7 @@ pub fn main() {
     );
 
     let new_digest =
-        eth_refl_digest(&ethr.pool, &B256::from(set_root), count, &B256::from(consumed_root), consumed_count);
+        B256::from(eth_refl_digest(ethr.pool.as_slice(), &set_root, count, &consumed_root, consumed_count));
     let pv = EthReflectionPublicValues {
         priorDigest: prior_digest,
         newDigest: new_digest,

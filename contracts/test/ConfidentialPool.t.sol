@@ -84,7 +84,7 @@ contract ConfidentialPoolTest is Test {
         verifier = new MockSP1Verifier();
         factory = new CanonicalAssetFactory();
         relay = new MockRelay(ANCHOR);
-        pool = new ConfidentialPool(address(verifier), VKEY, RELAY_VKEY, address(factory), address(relay), ANCHOR, 6);
+        pool = new ConfidentialPool(address(verifier), VKEY, RELAY_VKEY, address(factory), address(relay), ANCHOR, 6, bytes32(0));
         // The pool now anchors a reflection batch's tip to the relay tip walked back
         // REFLECTION_CONFIRMATIONS (the maturity guard), so seed a chain that buries ANCHOR exactly that
         // deep: walking the relay's parents back REFLECTION_CONFIRMATIONS hops reaches ANCHOR. The attest
@@ -152,7 +152,7 @@ contract ConfidentialPoolTest is Test {
         bytes32 prior = pool.knownReflectionDigest(); // continue the current attested state
         bytes32 next = keccak256(abi.encode(prior, poolRoot, spentRoot, burnRoot, height));
         ConfidentialPool.BitcoinRelayPublicValues memory r =
-            ConfidentialPool.BitcoinRelayPublicValues(prior, poolRoot, spentRoot, burnRoot, height, next, ANCHOR, ANCHOR, bytes32(uint256(uint160(address(pool)))), 0);
+            ConfidentialPool.BitcoinRelayPublicValues(prior, poolRoot, spentRoot, burnRoot, height, next, ANCHOR, ANCHOR, bytes32(uint256(uint160(address(pool)))), 0, uint64(pool.bitcoinConsumedCount()));
         pool.attestBitcoinStateProven(abi.encode(r), "");
     }
 
@@ -162,7 +162,7 @@ contract ConfidentialPoolTest is Test {
         bytes32 prior = pool.knownReflectionDigest();
         bytes32 next = keccak256(abi.encode(prior, poolRoot, spentRoot, burnRoot, height, backing));
         ConfidentialPool.BitcoinRelayPublicValues memory r =
-            ConfidentialPool.BitcoinRelayPublicValues(prior, poolRoot, spentRoot, burnRoot, height, next, ANCHOR, ANCHOR, bytes32(uint256(uint160(address(pool)))), backing);
+            ConfidentialPool.BitcoinRelayPublicValues(prior, poolRoot, spentRoot, burnRoot, height, next, ANCHOR, ANCHOR, bytes32(uint256(uint160(address(pool)))), backing, uint64(pool.bitcoinConsumedCount()));
         pool.attestBitcoinStateProven(abi.encode(r), "");
     }
 
@@ -858,7 +858,7 @@ contract ConfidentialPoolTest is Test {
         bytes32 prior = pool.knownReflectionDigest();
         ConfidentialPool.BitcoinRelayPublicValues memory r = ConfidentialPool.BitcoinRelayPublicValues(
             prior, keccak256("r2"), keccak256("s2"), keccak256("b2"), 199, keccak256("next2")
-        , ANCHOR, ANCHOR, bytes32(uint256(uint160(address(pool)))), 0);
+        , ANCHOR, ANCHOR, bytes32(uint256(uint160(address(pool)))), 0, uint64(pool.bitcoinConsumedCount()));
         vm.expectRevert(ConfidentialPool.StaleRelayProof.selector);
         pool.attestBitcoinStateProven(abi.encode(r), "");
     }
@@ -913,7 +913,7 @@ contract ConfidentialPoolTest is Test {
     /// ERC20 with exactly that (symbol, decimals) — no trusted metadata, no manual step.
     function test_settle_auto_registers_from_attested_meta() public {
         CanonicalAssetFactory factory = new CanonicalAssetFactory();
-        ConfidentialPool p = new ConfidentialPool(address(verifier), VKEY, RELAY_VKEY, address(factory), address(relay), ANCHOR, 6);
+        ConfidentialPool p = new ConfidentialPool(address(verifier), VKEY, RELAY_VKEY, address(factory), address(relay), ANCHOR, 6, bytes32(0));
 
         // The guest now confirms the asset is real + funded on Bitcoin: it proves a note
         // for this asset_id is a member of a relay-attested pool root and commits that root
@@ -922,7 +922,7 @@ contract ConfidentialPoolTest is Test {
         bytes32 prior = p.knownReflectionDigest();
         ConfidentialPool.BitcoinRelayPublicValues memory rl = ConfidentialPool.BitcoinRelayPublicValues(
             prior, attRoot, keccak256("sentinel"), keccak256("sentinel-burn"), 1, keccak256("next")
-        , ANCHOR, ANCHOR, bytes32(uint256(uint160(address(p)))), 0);
+        , ANCHOR, ANCHOR, bytes32(uint256(uint160(address(p)))), 0, uint64(p.bitcoinConsumedCount()));
         p.attestBitcoinStateProven(abi.encode(rl), "");
 
         bytes32 tacId = keccak256("attested-TAC");
@@ -960,7 +960,7 @@ contract ConfidentialPoolTest is Test {
     /// is rejected — no junk canonical ERC20 can be lazy-deployed from it.
     function test_settle_attest_meta_requires_attested_pool_root() public {
         CanonicalAssetFactory factory = new CanonicalAssetFactory();
-        ConfidentialPool p = new ConfidentialPool(address(verifier), VKEY, RELAY_VKEY, address(factory), address(relay), ANCHOR, 6);
+        ConfidentialPool p = new ConfidentialPool(address(verifier), VKEY, RELAY_VKEY, address(factory), address(relay), ANCHOR, 6, bytes32(0));
 
         ConfidentialPool.PublicValues memory pv;
         pv.version = p.PV_VERSION();
@@ -1032,7 +1032,7 @@ contract ConfidentialPoolTest is Test {
         bytes32 prior = pool.knownReflectionDigest();
         ConfidentialPool.BitcoinRelayPublicValues memory r = ConfidentialPool.BitcoinRelayPublicValues(
             prior, keccak256("some-pool-root"), bytes32(0), keccak256("b"), 1, keccak256("n")
-        , ANCHOR, ANCHOR, bytes32(uint256(uint160(address(pool)))), 0);
+        , ANCHOR, ANCHOR, bytes32(uint256(uint160(address(pool)))), 0, uint64(pool.bitcoinConsumedCount()));
         vm.expectRevert(ConfidentialPool.StaleBitcoinSpentRoot.selector);
         pool.attestBitcoinStateProven(abi.encode(r), "");
     }
@@ -1047,7 +1047,7 @@ contract ConfidentialPoolTest is Test {
         bytes32 prior = pool.knownReflectionDigest();
         ConfidentialPool.BitcoinRelayPublicValues memory r = ConfidentialPool.BitcoinRelayPublicValues(
             prior, keccak256("some-pool-root"), keccak256("s"), bytes32(0), 1, keccak256("n")
-        , ANCHOR, ANCHOR, bytes32(uint256(uint160(address(pool)))), 0);
+        , ANCHOR, ANCHOR, bytes32(uint256(uint160(address(pool)))), 0, uint64(pool.bitcoinConsumedCount()));
         vm.expectRevert(ConfidentialPool.StaleBitcoinBurnRoot.selector);
         pool.attestBitcoinStateProven(abi.encode(r), "");
     }
@@ -1060,7 +1060,7 @@ contract ConfidentialPoolTest is Test {
         bytes32 prior = pool.knownReflectionDigest();
         ConfidentialPool.BitcoinRelayPublicValues memory r = ConfidentialPool.BitcoinRelayPublicValues(
             prior, bytes32(0), keccak256("s"), keccak256("b"), 1, keccak256("n")
-        , ANCHOR, ANCHOR, bytes32(uint256(uint160(address(pool)))), 0);
+        , ANCHOR, ANCHOR, bytes32(uint256(uint160(address(pool)))), 0, uint64(pool.bitcoinConsumedCount()));
         vm.expectRevert(ConfidentialPool.ZeroBitcoinPoolRoot.selector);
         pool.attestBitcoinStateProven(abi.encode(r), "");
     }
@@ -1074,7 +1074,7 @@ contract ConfidentialPoolTest is Test {
         bytes32 prior = pool.knownReflectionDigest();
         ConfidentialPool.BitcoinRelayPublicValues memory r = ConfidentialPool.BitcoinRelayPublicValues(
             prior, keccak256("pr"), keccak256("s"), keccak256("b"), 1, keccak256("n")
-        , ANCHOR, ANCHOR, bytes32(uint256(uint160(address(0xBADBAD)))), 0);
+        , ANCHOR, ANCHOR, bytes32(uint256(uint160(address(0xBADBAD)))), 0, uint64(pool.bitcoinConsumedCount()));
         vm.expectRevert(ConfidentialPool.WrongEthPool.selector);
         pool.attestBitcoinStateProven(abi.encode(r), "");
     }
@@ -1091,7 +1091,7 @@ contract ConfidentialPoolTest is Test {
         bytes32 prior = pool.knownReflectionDigest();
         bytes32 next = keccak256(abi.encode(prior, poolRoot, spentRoot, burnRoot, uint64(101)));
         ConfidentialPool.BitcoinRelayPublicValues memory r = ConfidentialPool.BitcoinRelayPublicValues(
-            prior, poolRoot, spentRoot, burnRoot, 101, next, ANCHOR, ANCHOR, bytes32(0), 0); // ethPool = 0 sentinel
+            prior, poolRoot, spentRoot, burnRoot, 101, next, ANCHOR, ANCHOR, bytes32(0), 0, uint64(pool.bitcoinConsumedCount())); // ethPool = 0 sentinel
         pool.attestBitcoinStateProven(abi.encode(r), "");
         assertTrue(pool.knownBitcoinRoot(poolRoot), "forward-only batch (zero ethPool) attests + advances");
         assertEq(pool.knownReflectionDigest(), next, "reflection digest advanced on the sentinel batch");
@@ -1103,7 +1103,7 @@ contract ConfidentialPoolTest is Test {
         bytes32 prior = pool.knownReflectionDigest();
         ConfidentialPool.BitcoinRelayPublicValues memory r = ConfidentialPool.BitcoinRelayPublicValues(
             prior, keccak256("pr"), keccak256("s"), keccak256("sb"), 1, keccak256("n"), ANCHOR, keccak256("not-the-relay-tip")
-        , bytes32(uint256(uint160(address(pool)))), 0);
+        , bytes32(uint256(uint160(address(pool)))), 0, uint64(pool.bitcoinConsumedCount()));
         vm.expectRevert(ConfidentialPool.UnanchoredReflection.selector);
         pool.attestBitcoinStateProven(abi.encode(r), "");
     }
@@ -1113,7 +1113,7 @@ contract ConfidentialPoolTest is Test {
         bytes32 prior = pool.knownReflectionDigest();
         ConfidentialPool.BitcoinRelayPublicValues memory r = ConfidentialPool.BitcoinRelayPublicValues(
             prior, keccak256("pr"), keccak256("s"), keccak256("sb"), 1, keccak256("n"), keccak256("not-the-prior-tip"), ANCHOR
-        , bytes32(uint256(uint160(address(pool)))), 0);
+        , bytes32(uint256(uint160(address(pool)))), 0, uint64(pool.bitcoinConsumedCount()));
         vm.expectRevert(ConfidentialPool.UnanchoredReflection.selector);
         pool.attestBitcoinStateProven(abi.encode(r), "");
     }
@@ -1127,7 +1127,7 @@ contract ConfidentialPoolTest is Test {
         bytes32 freshTip = relay.tip(); // 0 confirmations deep — above the matured anchor, not buried
         ConfidentialPool.BitcoinRelayPublicValues memory r = ConfidentialPool.BitcoinRelayPublicValues(
             prior, keccak256("pr"), keccak256("s"), keccak256("sb"), 1, keccak256("n"), ANCHOR, freshTip
-        , bytes32(uint256(uint160(address(pool)))), 0);
+        , bytes32(uint256(uint160(address(pool)))), 0, uint64(pool.bitcoinConsumedCount()));
         vm.expectRevert(ConfidentialPool.UnanchoredReflection.selector);
         pool.attestBitcoinStateProven(abi.encode(r), "");
     }
@@ -1143,14 +1143,14 @@ contract ConfidentialPoolTest is Test {
         // a proof that doesn't continue the current digest is rejected
         ConfidentialPool.BitcoinRelayPublicValues memory bad = ConfidentialPool.BitcoinRelayPublicValues(
             keccak256("wrong-prior"), keccak256("r2"), keccak256("s2"), keccak256("b2"), 11, keccak256("n2")
-        , ANCHOR, ANCHOR, bytes32(uint256(uint160(address(pool)))), 0);
+        , ANCHOR, ANCHOR, bytes32(uint256(uint160(address(pool)))), 0, uint64(pool.bitcoinConsumedCount()));
         vm.expectRevert(ConfidentialPool.StaleReflectionDigest.selector);
         pool.attestBitcoinStateProven(abi.encode(bad), "");
 
         // a zero newDigest is never a valid reflected state
         ConfidentialPool.BitcoinRelayPublicValues memory z = ConfidentialPool.BitcoinRelayPublicValues(
             advanced, keccak256("r3"), keccak256("s3"), keccak256("b3"), 11, bytes32(0)
-        , ANCHOR, ANCHOR, bytes32(uint256(uint160(address(pool)))), 0);
+        , ANCHOR, ANCHOR, bytes32(uint256(uint160(address(pool)))), 0, uint64(pool.bitcoinConsumedCount()));
         vm.expectRevert(ConfidentialPool.StaleReflectionDigest.selector);
         pool.attestBitcoinStateProven(abi.encode(z), "");
     }
@@ -1286,11 +1286,11 @@ contract ConfidentialPoolTest is Test {
     /// (UnanchoredReflection) forever. Both are ctor-enforced.
     function test_ctor_reflection_requires_relay_and_anchor() public {
         vm.expectRevert(ConfidentialPool.ZeroAddress.selector); // missing header relay
-        new ConfidentialPool(address(verifier), VKEY, RELAY_VKEY, address(factory), address(0), ANCHOR, 6);
+        new ConfidentialPool(address(verifier), VKEY, RELAY_VKEY, address(factory), address(0), ANCHOR, 6, bytes32(0));
         vm.expectRevert(ConfidentialPool.ZeroAddress.selector); // missing genesis anchor
-        new ConfidentialPool(address(verifier), VKEY, RELAY_VKEY, address(factory), address(relay), bytes32(0), 6);
+        new ConfidentialPool(address(verifier), VKEY, RELAY_VKEY, address(factory), address(relay), bytes32(0), 6, bytes32(0));
         // Both present → deploys, anchor seeded.
-        ConfidentialPool ok = new ConfidentialPool(address(verifier), VKEY, RELAY_VKEY, address(factory), address(relay), ANCHOR, 6);
+        ConfidentialPool ok = new ConfidentialPool(address(verifier), VKEY, RELAY_VKEY, address(factory), address(relay), ANCHOR, 6, bytes32(0));
         assertEq(ok.lastReflectionBlockHash(), ANCHOR, "genesis anchor seeded");
         assertEq(ok.REFLECTION_CONFIRMATIONS(), 6, "maturity depth set");
     }
@@ -1301,15 +1301,78 @@ contract ConfidentialPoolTest is Test {
     /// deploy (relay vkey 0) doesn't read the value, so any value is accepted.
     function test_ctor_reflection_confirmations_bounds() public {
         vm.expectRevert(ConfidentialPool.BadReflectionConfirmations.selector); // zero maturity with reflection on
-        new ConfidentialPool(address(verifier), VKEY, RELAY_VKEY, address(factory), address(relay), ANCHOR, 0);
+        new ConfidentialPool(address(verifier), VKEY, RELAY_VKEY, address(factory), address(relay), ANCHOR, 0, bytes32(0));
         vm.expectRevert(ConfidentialPool.BadReflectionConfirmations.selector); // above MAX
-        new ConfidentialPool(address(verifier), VKEY, RELAY_VKEY, address(factory), address(relay), ANCHOR, 145);
+        new ConfidentialPool(address(verifier), VKEY, RELAY_VKEY, address(factory), address(relay), ANCHOR, 145, bytes32(0));
         // a deeper-but-bounded depth is fine
-        ConfidentialPool deep = new ConfidentialPool(address(verifier), VKEY, RELAY_VKEY, address(factory), address(relay), ANCHOR, 144);
+        ConfidentialPool deep = new ConfidentialPool(address(verifier), VKEY, RELAY_VKEY, address(factory), address(relay), ANCHOR, 144, bytes32(0));
         assertEq(deep.REFLECTION_CONFIRMATIONS(), 144, "max maturity depth");
         // reflection OFF: the maturity value is unused, so even 0 deploys
-        ConfidentialPool off = new ConfidentialPool(address(verifier), VKEY, bytes32(0), address(factory), address(0), bytes32(0), 0);
+        ConfidentialPool off = new ConfidentialPool(address(verifier), VKEY, bytes32(0), address(factory), address(0), bytes32(0), 0, bytes32(0));
         assertEq(off.REFLECTION_CONFIRMATIONS(), 0, "off: unvalidated, unused");
+    }
+
+    /// GENERATIONAL anchoring (ops/PLAN-pool-generations.md): a gen deployed with `reflectionResumeDigest`
+    /// = 0 seeds `knownReflectionDigest` to the protocol genesis (gen-1, continues genesis); a NON-ZERO
+    /// resume digest seeds it there — a gen-N joining the SHARED Bitcoin reflection mid-stream at near-tip,
+    /// so it never replays Bitcoin history. The block-anchor + this digest are the matched resume pair.
+    function test_generational_reflection_resume_digest() public {
+        // gen-1: default 0 ⇒ continues the protocol genesis digest.
+        ConfidentialPool gen1 = new ConfidentialPool(address(verifier), VKEY, RELAY_VKEY, address(factory), address(relay), ANCHOR, 6, bytes32(0));
+        assertEq(gen1.knownReflectionDigest(), gen1.REFLECTION_GENESIS_DIGEST(), "gen-1 seeds the genesis digest");
+
+        // gen-N: a non-zero near-tip resume digest seeds knownReflectionDigest to it (no history replay).
+        bytes32 nearTip = keccak256("near-tip-reflected-digest");
+        ConfidentialPool genN = new ConfidentialPool(address(verifier), VKEY, RELAY_VKEY, address(factory), address(relay), ANCHOR, 6, nearTip);
+        assertEq(genN.knownReflectionDigest(), nearTip, "gen-N resumes at the near-tip digest");
+        assertTrue(genN.knownReflectionDigest() != genN.REFLECTION_GENESIS_DIGEST(), "gen-N is not genesis-anchored");
+    }
+
+    /// STAGE 1 — tETH subsumption (ops/PLAN-teth-subsumption.md): NATIVE ETH may carry a cross-chain link
+    /// (tETH = shielded ETH), while a FOREIGN ERC20 escrow + a link stays barred. The escrow==supply
+    /// invariant: wrap ETH → escrow tracks it; an unwrap draws EXACTLY the value released; and the contract
+    /// is FAIL-CLOSED on escrow (an unwrap beyond escrow reverts InsufficientEscrow — locks, never drains).
+    /// No escrow-drain-defense change: tETH→ETH is a normal (non-btcHomed) unwrap, so the defense never fires.
+    function test_teth_native_eth_link_and_escrow_supply_invariant() public {
+        bytes32 tethBitcoinId = keccak256("teth-bitcoin-canonical-id");
+        // Native ETH (address(0)) + a cross-chain link is now allowed — the protocol's own escrow backs it.
+        bytes32 teth = pool.registerWrapped(address(0), 10 ** 10, tethBitcoinId, "Tacit ETH", "tETH", 18);
+        assertEq(pool.localAssetOf(tethBitcoinId), teth, "the Bitcoin tETH id resolves to the native-ETH asset");
+        (, address und, , bytes32 link, bool pm, , ,) = pool.assets(teth);
+        assertEq(und, address(0), "native ETH backing");
+        assertEq(link, tethBitcoinId, "carries the Bitcoin link");
+        assertTrue(!pm, "escrow-backed, not pool-minted");
+
+        // A FOREIGN ERC20 escrow + a link is STILL barred (its backing the pool can't control).
+        MockERC20 ext = new MockERC20();
+        vm.expectRevert(ConfidentialPool.CrossChainEscrow.selector);
+        pool.registerWrapped(address(ext), 1, keccak256("foreign-link"), "X", "X", 18);
+
+        // Wrap ETH → tETH: escrow == the deposited ETH (escrow tracks supply).
+        uint256 amt = 0.5 ether; // a multiple of UNIT_SCALE (1e10)
+        pool.wrap{value: amt}(teth, amt, bytes32(uint256(1)), bytes32(uint256(2)), bytes32(uint256(3)));
+        assertEq(pool.escrow(teth), amt, "escrow == deposited ETH");
+
+        _seedLeaves(2); // headroom for the no-inflation floor (a withdrawal spends a nullifier)
+
+        // Unwrap part — a NORMAL (non-btcHomed) withdrawal: native ETH released, escrow drawn by exactly it.
+        uint256 outValue = (amt / 1e10) / 2; // half, in tacit-units
+        ConfidentialPool.PublicValues memory pv = _pv();
+        pv.nullifiers = _arr(keccak256("teth-note-nu"));
+        pv.withdrawals = new ConfidentialPool.Withdrawal[](1);
+        pv.withdrawals[0] = ConfidentialPool.Withdrawal(teth, RECIP, outValue);
+        uint256 balBefore = RECIP.balance;
+        pool.settle(abi.encode(pv), "", new bytes[](0));
+        assertEq(pool.escrow(teth), amt - outValue * 1e10, "escrow drawn by exactly the unwrapped value");
+        assertEq(RECIP.balance - balBefore, outValue * 1e10, "native ETH released to the recipient");
+
+        // FAIL-CLOSED: an unwrap beyond the remaining escrow reverts (a shortfall locks, never drains).
+        ConfidentialPool.PublicValues memory over = _pv();
+        over.nullifiers = _arr(keccak256("teth-note-nu-2"));
+        over.withdrawals = new ConfidentialPool.Withdrawal[](1);
+        over.withdrawals[0] = ConfidentialPool.Withdrawal(teth, RECIP, amt / 1e10); // > remaining escrow
+        vm.expectRevert(ConfidentialPool.InsufficientEscrow.selector);
+        pool.settle(abi.encode(over), "", new bytes[](0));
     }
 
     function test_settle_withdraw_unregistered_asset_reverts() public {
@@ -1330,7 +1393,7 @@ contract ConfidentialPoolTest is Test {
         bytes32 attRoot = keccak256(abi.encode("att-root", assetId));
         bytes32 prior = pool.knownReflectionDigest();
         pool.attestBitcoinStateProven(
-            abi.encode(ConfidentialPool.BitcoinRelayPublicValues(prior, attRoot, keccak256("s"), keccak256("sb"), 1, keccak256("n"), ANCHOR, ANCHOR, bytes32(uint256(uint160(address(pool)))), 0)),
+            abi.encode(ConfidentialPool.BitcoinRelayPublicValues(prior, attRoot, keccak256("s"), keccak256("sb"), 1, keccak256("n"), ANCHOR, ANCHOR, bytes32(uint256(uint160(address(pool)))), 0, uint64(pool.bitcoinConsumedCount()))),
             ""
         );
         ConfidentialPool.PublicValues memory pv = _pv();
@@ -1573,21 +1636,218 @@ contract ConfidentialPoolTest is Test {
         assertEq(pool.bitcoinConsumedCount(), 0, "no value-exit => counter unchanged");
     }
 
-    /// AMM (and locks / onward crossOut / EVM-deposit consumption) are NOT on the fast lane's first cut:
-    /// they compose with a lane the consumed-ν reflection doesn't cover, so the bridge path stays
-    /// mandatory for them and a btcHomed swap is rejected.
-    function test_btc_homed_swap_still_reverts() public {
-        bytes32 btcRoot = keccak256("btc-pool-swap");
-        bytes32 spent = keccak256("btc-spent-swap");
-        _attestBtc(btcRoot, spent, 1);
+    /// FAST-LANE FRESHNESS GATE: once a consume is recorded, a reflection that has NOT folded it
+    /// (`consumedCount < bitcoinConsumedCount`) cannot advance the spent set — this is the contract-side
+    /// close of the stale-eth-proof double-credit (a worker can't attest a racing Bitcoin spend while a
+    /// recent consume's source note is still live). The same reflection that DID fold it attests normally.
+    function test_fast_lane_freshness_gate_rejects_stale_attest() public {
+        bytes32 btcRoot = keccak256("fl-fresh-pool");
+        bytes32 spent = keccak256("fl-fresh-spent");
+        _attestBtc(btcRoot, spent, 1); // setup; bitcoinConsumedCount == 0
+
+        // Fast-lane consume: a btcHomed leaf records bitcoinConsumed[ν] and bumps the counter to 1.
         ConfidentialPool.PublicValues memory pv = _pv();
         pv.spendRoot = btcRoot;
         pv.bitcoinSpentRoot = spent;
-        pv.nullifiers = _arr(keccak256("swap-nu"));
+        pv.nullifiers = _arr(keccak256("fresh-nu"));
+        pv.leaves = _arr(keccak256("fresh-leaf"));
+        pool.settle(abi.encode(pv), "", new bytes[](1));
+        assertEq(pool.bitcoinConsumedCount(), 1, "consume recorded");
+
+        bytes32 prior = pool.knownReflectionDigest();
+        bytes32 ethPool = bytes32(uint256(uint160(address(pool))));
+        // A reflection that did NOT fold the consume (consumedCount 0) is rejected before it can advance.
+        ConfidentialPool.BitcoinRelayPublicValues memory stale = ConfidentialPool.BitcoinRelayPublicValues(
+            prior, keccak256("fl-r2"), keccak256("fl-s2"), keccak256("fl-b2"), 2, keccak256("fl-next"),
+            ANCHOR, ANCHOR, ethPool, 0, 0);
+        vm.expectRevert(ConfidentialPool.ConsumedCountStale.selector);
+        pool.attestBitcoinStateProven(abi.encode(stale), "");
+
+        // The same reflection that DID fold it (consumedCount 1) attests.
+        ConfidentialPool.BitcoinRelayPublicValues memory fresh = ConfidentialPool.BitcoinRelayPublicValues(
+            prior, keccak256("fl-r2"), keccak256("fl-s2"), keccak256("fl-b2"), 2, keccak256("fl-next"),
+            ANCHOR, ANCHOR, ethPool, 0, 1);
+        pool.attestBitcoinStateProven(abi.encode(fresh), "");
+    }
+
+    /// FAST-LANE SWAP (one-settle): a Bitcoin-homed note may be the INPUT to an Ethereum AMM swap in a
+    /// single settle. The guest already binds the input's asset (membership leaf) + the per-input
+    /// cross-lane non-membership, so this is a contract-only relaxation; the consumed ν is recorded for the
+    /// reverse reflection exactly like a leaf exit, and a swap pays no escrow (its output is a note backed
+    /// by the pool's LP-funded reserve). Locks, EVM-deposit consumption and bridge_mint stay barred (the
+    /// reverts tests below); swap + LP-add ride the fast lane.
+    function test_btc_homed_swap_records_consumed() public {
+        // A funded pool over (assetId, a fresh assetB).
+        MockERC20 tokenB = new MockERC20();
+        bytes32 assetB = pool.registerWrapped(address(tokenB), 1, bytes32(0), "Conf B", "cB", 18);
+        (bytes32 lo, bytes32 hi) = assetId < assetB ? (assetId, assetB) : (assetB, assetId);
+        bytes32 pid = pool.createPair(lo, hi, 30);
+        ConfidentialPool.PublicValues memory lp = _pv();
+        lp.liquidity = new ConfidentialPool.LpSettlement[](1);
+        lp.liquidity[0] = ConfidentialPool.LpSettlement(pid, 0, 0, 0, 100000, 200000, 100000);
+        _settle(lp);
+
+        // Bob's Bitcoin-homed note funds the swap in ONE settle (spendRoot is a knownBitcoinRoot).
+        bytes32 btcRoot = keccak256("btc-pool-swap");
+        bytes32 spent = keccak256("btc-spent-swap");
+        _attestBtc(btcRoot, spent, 1);
+        bytes32 nu = keccak256("swap-nu");
+        ConfidentialPool.PublicValues memory pv = _pv();
+        pv.spendRoot = btcRoot;
+        pv.bitcoinSpentRoot = spent;
+        pv.nullifiers = _arr(nu);
+        pv.leaves = _arr(keccak256("swap-out-note")); // the trader's received note (a pool-backed leaf)
         pv.swaps = new ConfidentialPool.SwapSettlement[](1);
-        pv.swaps[0] = ConfidentialPool.SwapSettlement(keccak256("any-pool"), 0, 0, 0, 0);
-        vm.expectRevert(ConfidentialPool.BtcHomedValueExitMustBridge.selector);
-        pool.settle(abi.encode(pv), "", new bytes[](0));
+        pv.swaps[0] = ConfidentialPool.SwapSettlement(pid, 100000, 200000, 110000, 182000); // k grows (fee)
+        vm.expectEmit(false, false, false, true, address(pool));
+        emit ConfidentialPool.BitcoinNotesConsumed(_arr(nu), btcRoot);
+        pool.settle(abi.encode(pv), "", new bytes[](1));
+        assertEq(pool.bitcoinConsumed(nu), btcRoot, "consumed swap-input nu recorded for the reverse reflection");
+        assertEq(pool.bitcoinConsumedCount(), 1, "freshness count advanced by the swap consume");
+        assertTrue(pool.isNullifierSpent(nu), "nullifier marked");
+        (, , , uint256 ra, , ,) = pool.pools(pid);
+        assertEq(ra, 110000, "the btcHomed swap advanced the pool");
+    }
+
+    /// FAST-LANE LP-ADD (one-settle): a Bitcoin holder may add liquidity in one settle. The guest binds both
+    /// input assets (membership leaves) + the per-input cross-lane non-membership + the in-ratio
+    /// conservation, and the output is a shielded LP-share note (no escrow payout). Both consumed ν are
+    /// recorded for the reverse reflection. (A btcHomed LP-REMOVE can't form — LP-share notes are
+    /// pool-minted on Ethereum, so membership against a Bitcoin root fails in the guest.)
+    function test_btc_homed_lp_add_records_consumed() public {
+        // A pool with initial liquidity.
+        MockERC20 tokenB = new MockERC20();
+        bytes32 assetB = pool.registerWrapped(address(tokenB), 1, bytes32(0), "Conf B", "cB", 18);
+        (bytes32 lo, bytes32 hi) = assetId < assetB ? (assetId, assetB) : (assetB, assetId);
+        bytes32 pid = pool.createPair(lo, hi, 30);
+        ConfidentialPool.PublicValues memory seed = _pv();
+        seed.liquidity = new ConfidentialPool.LpSettlement[](1);
+        seed.liquidity[0] = ConfidentialPool.LpSettlement(pid, 0, 0, 0, 100000, 200000, 100000);
+        _settle(seed);
+
+        // Bob's two Bitcoin-homed notes add liquidity in-ratio in ONE settle.
+        bytes32 btcRoot = keccak256("btc-pool-lp");
+        bytes32 spent = keccak256("btc-spent-lp");
+        _attestBtc(btcRoot, spent, 1);
+        bytes32 nuA = keccak256("lp-nu-a");
+        bytes32 nuB = keccak256("lp-nu-b");
+        ConfidentialPool.PublicValues memory pv = _pv();
+        pv.spendRoot = btcRoot;
+        pv.bitcoinSpentRoot = spent;
+        pv.nullifiers = new bytes32[](2);
+        pv.nullifiers[0] = nuA;
+        pv.nullifiers[1] = nuB;
+        pv.leaves = _arr(keccak256("lp-share-note")); // the shielded LP-share note
+        pv.liquidity = new ConfidentialPool.LpSettlement[](1);
+        pv.liquidity[0] = ConfidentialPool.LpSettlement(pid, 100000, 200000, 100000, 110000, 220000, 110000); // +10% in ratio
+        pool.settle(abi.encode(pv), "", new bytes[](1));
+        assertEq(pool.bitcoinConsumed(nuA), btcRoot, "consumed lp-input A recorded for the reverse reflection");
+        assertEq(pool.bitcoinConsumed(nuB), btcRoot, "consumed lp-input B recorded");
+        assertEq(pool.bitcoinConsumedCount(), 2, "freshness count advanced by both inputs");
+        (, , , uint256 ra, , ,) = pool.pools(pid);
+        assertEq(ra, 110000, "the btcHomed LP-add grew reserve A");
+    }
+
+    /// FAST-LANE OTC FILL (one-settle, BOTH legs Bitcoin-homed): two Bitcoin holders match a confidential
+    /// order directly on Ethereum in one settle. A batch proves membership against a SINGLE spendRoot, so a
+    /// btcHomed OTC necessarily has both legs Bitcoin-homed (both notes are members of the same Bitcoin pool
+    /// root). A MIXED-lane fill (one Bitcoin party, one Ethereum party) cannot be a single batch — the one
+    /// spendRoot can't be both a Bitcoin and an EVM root — and is the two-settle on-ramp instead
+    /// (test_stage2_swap_via_two_settle is the same shape). The op emits only leaves + nullifiers, so it rides
+    /// the relaxed leaves bar; both spent ν are recorded in bitcoinConsumed for the reverse reflection (the
+    /// guest runs check_btc_nonmembership per input — main.rs:750/774). ops/PLAN-fast-lane-trading.md (Flow A).
+    function test_btc_homed_otc_records_consumed() public {
+        bytes32 btcRoot = keccak256("btc-pool-otc");
+        bytes32 spent = keccak256("btc-spent-otc");
+        _attestBtc(btcRoot, spent, 1);
+        bytes32 mNu = keccak256("otc-maker-nu");
+        bytes32 tNu = keccak256("otc-taker-nu");
+        ConfidentialPool.PublicValues memory pv = _pv();
+        pv.spendRoot = btcRoot;
+        pv.bitcoinSpentRoot = spent;
+        pv.nullifiers = new bytes32[](2);
+        pv.nullifiers[0] = mNu; // maker input (asset_a)
+        pv.nullifiers[1] = tNu; // taker input (asset_b)
+        pv.leaves = new bytes32[](2);
+        pv.leaves[0] = keccak256("otc-taker-recv"); // taker receives asset_a
+        pv.leaves[1] = keccak256("otc-maker-recv"); // maker receives asset_b
+        vm.expectEmit(false, false, false, true, address(pool));
+        emit ConfidentialPool.BitcoinNotesConsumed(pv.nullifiers, btcRoot);
+        pool.settle(abi.encode(pv), "", new bytes[](2));
+        assertEq(pool.bitcoinConsumed(mNu), btcRoot, "maker leg recorded for the reverse reflection");
+        assertEq(pool.bitcoinConsumed(tNu), btcRoot, "taker leg recorded");
+        assertEq(pool.bitcoinConsumedCount(), 2, "freshness count advanced by both OTC legs");
+    }
+
+    /// FAST-LANE BID FILL (one-settle, BOTH legs Bitcoin-homed): a resting confidential limit order matched
+    /// directly on Ethereum — the buyer's funding note + the seller's note both Bitcoin-homed (single
+    /// spendRoot, same reasoning as the OTC test above). OP_BID emits only leaves + nullifiers, so it rides
+    /// the relaxed leaves bar; both spent ν (funding + seller) are recorded in bitcoinConsumed for the
+    /// reverse reflection (the guest runs check_btc_nonmembership per input — main.rs:874/914). A partial
+    /// fill emits 4 leaves (buyer fill + seller pay + buyer refund + seller change).
+    /// ops/PLAN-fast-lane-trading.md (Flow A).
+    function test_btc_homed_bid_records_consumed() public {
+        bytes32 btcRoot = keccak256("btc-pool-bid");
+        bytes32 spent = keccak256("btc-spent-bid");
+        _attestBtc(btcRoot, spent, 1);
+        bytes32 fundNu = keccak256("bid-fund-nu");
+        bytes32 sellerNu = keccak256("bid-seller-nu");
+        ConfidentialPool.PublicValues memory pv = _pv();
+        pv.spendRoot = btcRoot;
+        pv.bitcoinSpentRoot = spent;
+        pv.nullifiers = new bytes32[](2);
+        pv.nullifiers[0] = fundNu;   // buyer funding (asset_b)
+        pv.nullifiers[1] = sellerNu; // seller input (asset_a)
+        pv.leaves = new bytes32[](4);
+        pv.leaves[0] = keccak256("bid-buyer-recv-a");  // buyer receives asset_a (chosen_f)
+        pv.leaves[1] = keccak256("bid-seller-recv-b"); // seller receives asset_b (pay)
+        pv.leaves[2] = keccak256("bid-buyer-refund");  // partial-fill refund (asset_b)
+        pv.leaves[3] = keccak256("bid-seller-change"); // seller change (asset_a)
+        vm.expectEmit(false, false, false, true, address(pool));
+        emit ConfidentialPool.BitcoinNotesConsumed(pv.nullifiers, btcRoot);
+        pool.settle(abi.encode(pv), "", new bytes[](4));
+        assertEq(pool.bitcoinConsumed(fundNu), btcRoot, "buyer funding leg recorded for the reverse reflection");
+        assertEq(pool.bitcoinConsumed(sellerNu), btcRoot, "seller leg recorded");
+        assertEq(pool.bitcoinConsumedCount(), 2, "freshness count advanced by both BID legs");
+    }
+
+    /// TWO-SETTLE SWAP (still supported alongside the one-settle path): a Bitcoin holder can also swap via
+    /// (1) a btcHomed fast-spend that produces an Ethereum LEAF (the on-ramp), then (2) a NORMAL
+    /// non-btcHomed swap of that note. This path touches no bar and stays valid; the one-settle atomic
+    /// version (test_btc_homed_swap_records_consumed) is the contract-relaxed shortcut. ops/PLAN-fast-lane-trading.md.
+    function test_stage2_swap_via_two_settle_no_bar_change() public {
+        // A funded pool over (assetId, a fresh assetB).
+        MockERC20 tokenB = new MockERC20();
+        bytes32 assetB = pool.registerWrapped(address(tokenB), 1, bytes32(0), "Conf B", "cB", 18);
+        (bytes32 lo, bytes32 hi) = assetId < assetB ? (assetId, assetB) : (assetB, assetId);
+        bytes32 pid = pool.createPair(lo, hi, 30);
+        ConfidentialPool.PublicValues memory lp = _pv();
+        lp.liquidity = new ConfidentialPool.LpSettlement[](1);
+        lp.liquidity[0] = ConfidentialPool.LpSettlement(pid, 0, 0, 0, 100000, 200000, 100000);
+        _settle(lp);
+
+        // (1) On-ramp: Bob's Bitcoin-homed note → an Ethereum LEAF via the fast lane (a btcHomed leaf).
+        bytes32 btcRoot = keccak256("s2-btc-pool");
+        bytes32 spent = keccak256("s2-btc-spent");
+        _attestBtc(btcRoot, spent, 1);
+        ConfidentialPool.PublicValues memory ramp = _pv();
+        ramp.spendRoot = btcRoot;
+        ramp.bitcoinSpentRoot = spent;
+        ramp.nullifiers = _arr(keccak256("s2-onramp-nu"));
+        ramp.leaves = _arr(keccak256("s2-eth-note")); // the Ethereum note Bob now holds
+        pool.settle(abi.encode(ramp), "", new bytes[](1));
+        assertEq(pool.bitcoinConsumed(keccak256("s2-onramp-nu")), btcRoot, "fast-laned, recorded for reflection");
+
+        // (2) NORMAL swap of the fast-laned note — non-btcHomed (spendRoot is an EVM root), no bar change.
+        ConfidentialPool.PublicValues memory sw = _pv();
+        sw.spendRoot = pool.currentRoot();
+        sw.nullifiers = _arr(keccak256("s2-eth-note-nu"));
+        sw.leaves = _arr(keccak256("s2-out-note"));
+        sw.swaps = new ConfidentialPool.SwapSettlement[](1);
+        sw.swaps[0] = ConfidentialPool.SwapSettlement(pid, 100000, 200000, 110000, 182000); // k grows (fee)
+        pool.settle(abi.encode(sw), "", new bytes[](1));
+        (, , , uint256 ra, , ,) = pool.pools(pid);
+        assertEq(ra, 110000, "the pool advanced by a NORMAL swap of the fast-laned note");
     }
 
     /// A nullifier-only Bitcoin-homed spend (no value-exit) is still accepted and records NOTHING in

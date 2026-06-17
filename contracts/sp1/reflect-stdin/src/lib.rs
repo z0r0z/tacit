@@ -109,6 +109,13 @@ pub fn write_stdin(f: &serde_json::Value) -> SP1Stdin {
     // FAST-LANE resume count: read by the guest at the END of read_scan_prior_state (after the pools). 0 for a
     // forward-only fixture (the gens don't set it). Omitting this desyncs the whole stream → an EOF halt.
     s.write(&p.get("consumedCount").and_then(|v| v.as_u64()).unwrap_or(0));
+    // FAST-LANE / Mode-B anchor: the eth-reflection accumulator digest committed by the last Mode-B cycle
+    // (read right after consumedCount). [0;32] for a never-Mode-B chain — write 32 zero bytes so the stream
+    // stays in sync; a non-zero value resumes the eth chain the next Mode-B fold must continue.
+    match p.get("ethReflDigest").and_then(|v| v.as_str()) {
+        Some(hx) => s.write(&hexv(hx)),
+        None => s.write(&vec![0u8; 32]),
+    }
 
     // Mode-B gate (matches reflect.rs): mode_b, then ONLY when set the eth-reflection PV the guest verifies.
     // A forward-only fixture (modeB absent/0) skips it — no eth_pv, no verify_sp1_proof. modeB=1 carries the

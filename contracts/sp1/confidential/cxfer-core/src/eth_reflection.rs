@@ -47,7 +47,7 @@
 //! `destCommitment`, `assetId`, and `destChain == BITCOIN` by construction — with no need for the
 //! Ethereum nullifier (which it never sees).
 
-use crate::{keccak_merkle_verify, kn};
+use crate::{keccak_merkle_verify, kn, KeccakTreeAccumulator};
 
 /// `destChain` selector — matches `ConfidentialPool.CrossOut.destChain`.
 pub const DEST_CHAIN_BITCOIN: u16 = 1;
@@ -137,6 +137,28 @@ pub fn plain_slot_key(slot: u64) -> [u8; 32] {
 pub fn slot_value_to_u64(value: &[u8; 32]) -> u64 {
     assert!(value[..24].iter().all(|&b| b == 0), "storage count exceeds u64");
     u64::from_be_bytes(value[24..32].try_into().unwrap())
+}
+
+// ──────────────────── eth-reflection accumulator digest (the cross-cycle anchor) ────────────────────
+// SINGLE SOURCE for the digest the eth-reflection guest commits as priorDigest/newDigest AND the value
+// the Bitcoin reflection guest stores in `ScanReflection.eth_refl_digest` to chain it. The Bitcoin guest
+// folds this into its own resume digest, so the contract's `priorDigest == knownReflectionDigest` chain
+// transitively forces each Mode-B cycle's witnessed eth prior to continue the one the prior cycle
+// committed — a witnessed eth accumulator prior can no longer be forged. (DESIGN-mode-b-recursion.md §2.)
+
+/// `keccak(pool ‖ crossOutSetRoot ‖ crossOutCount_be8 ‖ consumedNuSetRoot ‖ consumedNuCount_be8)`.
+/// `pool` is the 20-byte address; the two roots are 32 bytes each. Binds the WHOLE eth accumulator
+/// (both sets + counts) into one chaining value, so anchoring it covers crossOut and consumed alike.
+pub fn eth_refl_digest(pool: &[u8], set_root: &[u8], count: u64, consumed_root: &[u8], consumed_count: u64) -> [u8; 32] {
+    kn(&[pool, set_root, &count.to_be_bytes(), consumed_root, &consumed_count.to_be_bytes()])
+}
+
+/// The eth-reflection accumulator's GENESIS digest for `pool`: both sets empty (the append-only
+/// `KeccakTreeAccumulator` empty root), both counts 0. The Bitcoin guest requires the FIRST Mode-B
+/// eth proof's priorDigest to equal this (before any cycle has committed an eth state).
+pub fn eth_refl_genesis_digest(pool: &[u8]) -> [u8; 32] {
+    let empty = KeccakTreeAccumulator::new().root();
+    eth_refl_digest(pool, &empty, 0, &empty, 0)
 }
 
 #[cfg(test)]
