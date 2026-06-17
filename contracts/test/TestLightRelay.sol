@@ -6,6 +6,9 @@ import "../src/lib/BitcoinLightRelay.sol";
 /// @dev Test relay that skips PoW and tip-anchoring checks.
 ///      Validates chain linkage only. Production uses BitcoinLightRelay directly.
 contract TestLightRelay is BitcoinLightRelay {
+    // MAX_TARGET is a ctor param now; tests use the mainnet cap (== TEST_TARGET in TestHelper).
+    constructor() BitcoinLightRelay(0x00000000ffff0000000000000000000000000000000000000000000000000000) {}
+
     function verifyBlock(
         bytes calldata headers,
         uint256,
@@ -50,7 +53,7 @@ contract TestLightRelay is BitcoinLightRelay {
     }
 
     /// @dev Expose the retarget compact-encoding helpers for round-trip tests.
-    function exposed_bitsToTarget(uint32 bits) external pure returns (uint256) {
+    function exposed_bitsToTarget(uint32 bits) external view returns (uint256) {
         return _bitsToTarget(bits);
     }
 
@@ -59,7 +62,7 @@ contract TestLightRelay is BitcoinLightRelay {
     }
 
     function exposed_retargetTarget(uint256 oldTarget, uint256 firstTs, uint256 lastTs)
-        external pure returns (uint256)
+        external view returns (uint256)
     {
         return _retargetTarget(oldTarget, firstTs, lastTs);
     }

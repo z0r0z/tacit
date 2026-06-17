@@ -19,6 +19,11 @@ contract MockBurnVerifier {
 }
 
 contract TestnetLightRelay is BitcoinLightRelay {
+    // Signet powLimit (0x00000377ae…, easier/larger than the mainnet cap) — signet blocks are below
+    // mainnet difficulty, so MAX_TARGET must be the signet floor or the retarget clamp would cap real
+    // signet targets. initTestnetGenesis below sets epochTarget directly (no MAX_TARGET genesis check).
+    constructor() BitcoinLightRelay(0x00000377ae000000000000000000000000000000000000000000000000000000) {}
+
     function _bitsToTarget(uint32 bits) internal pure override returns (uint256) {
         if (bits & 0x00800000 != 0) revert InvalidTarget();
         uint256 exp = bits >> 24;

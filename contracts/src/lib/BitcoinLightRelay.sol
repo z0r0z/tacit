@@ -29,7 +29,11 @@ contract BitcoinLightRelay {
 
     uint256 public constant EPOCH_LENGTH = 2016;
     uint256 public constant TARGET_TIMESPAN = 14 * 24 * 60 * 60;
-    uint256 public constant MAX_TARGET = 0x00000000ffff0000000000000000000000000000000000000000000000000000;
+    // Difficulty floor: the easiest (largest) valid target — caps genesis + retarget. NETWORK-SPECIFIC, so
+    // it is a ctor immutable, NOT a constant: MAINNET MUST pass the canonical mainnet cap
+    // 0x00000000ffff0000…; signet passes its (easier, larger) powLimit 0x00000377ae… (signet blocks are
+    // below mainnet difficulty, so the mainnet cap would reject every real signet header).
+    uint256 public immutable MAX_TARGET;
     uint256 public constant PROOF_LENGTH = 4;
     /// Burn-inclusion proofs (verifyBlock) may anchor to the tip or a recent
     /// ancestor within this many blocks, so a tip advance between header fetch
@@ -87,7 +91,11 @@ contract BitcoinLightRelay {
 
     // ──────────────────── Constructor ────────────────────
 
-    constructor() { DEPLOYER = msg.sender; }
+    constructor(uint256 maxTarget_) {
+        if (maxTarget_ == 0) revert InvalidTarget();
+        DEPLOYER = msg.sender;
+        MAX_TARGET = maxTarget_;
+    }
 
     // ──────────────────── Genesis ────────────────────
 
@@ -365,7 +373,7 @@ contract BitcoinLightRelay {
         }
     }
 
-    function _bitsToTarget(uint32 bits) internal pure virtual returns (uint256) {
+    function _bitsToTarget(uint32 bits) internal view virtual returns (uint256) {
         if (bits & 0x00800000 != 0) revert InvalidTarget();
         uint256 exp = bits >> 24;
         uint256 mantissa = bits & 0x7fffff;
@@ -387,7 +395,7 @@ contract BitcoinLightRelay {
     ///      the first-block timestamp (a negative span) floors to 0 here, which the [TARGET_TIMESPAN/4,
     ///      TARGET_TIMESPAN*4] clamp lifts to TARGET_TIMESPAN/4 — the exact value Bitcoin Core computes —
     ///      rather than reverting on the uint underflow (which would brick the relay at that boundary).
-    function _retargetTarget(uint256 oldTarget, uint256 firstTs, uint256 lastTs) internal pure returns (uint256) {
+    function _retargetTarget(uint256 oldTarget, uint256 firstTs, uint256 lastTs) internal view returns (uint256) {
         uint256 elapsed = lastTs > firstTs ? lastTs - firstTs : 0;
         if (elapsed < TARGET_TIMESPAN / 4) elapsed = TARGET_TIMESPAN / 4;
         if (elapsed > TARGET_TIMESPAN * 4) elapsed = TARGET_TIMESPAN * 4;

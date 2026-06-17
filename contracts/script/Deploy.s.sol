@@ -46,7 +46,9 @@ contract DeployTacitBridge is Script {
 
         vm.startBroadcast(deployerKey);
 
-        BitcoinLightRelay relay = new BitcoinLightRelay();
+        // MAX_TARGET is network-specific: mainnet cap by default; signet passes its powLimit via env.
+        uint256 relayMaxTarget = vm.envOr("RELAY_MAX_TARGET", uint256(0x00000000ffff0000000000000000000000000000000000000000000000000000));
+        BitcoinLightRelay relay = new BitcoinLightRelay(relayMaxTarget);
         relay.genesis(genesisEpochStart, genesisTarget, genesisTimestamp,
                       genesisTipHash, genesisTipHeight, genesisTipWork);
 
