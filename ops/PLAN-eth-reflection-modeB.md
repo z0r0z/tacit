@@ -116,11 +116,18 @@ remains — the eth inner-proof pipeline scope:
   inter-guest ABI, and the §A gate design (D1) are all in place.
 
 **The remaining gaps:**
-- **G1 — `eth_prove` proves an EMPTY set.** `crossouts`/`consumeds` are `vec![]` and the resume is
-  hardcoded empty. Wire the witness population from on-chain events (`CrossOutRecorded` / the consumed
-  events) + the `append_path` frontier per appended leaf + the cross-cycle resume
-  (`prior_set_root`/`prior_count`/`prior_consumed_*` from the last cycle). The `eth_getProof` key
-  derivation + preflight already handle non-empty key sets.
+- **G1 — eth_prove witness population — DONE (2026-06-17, box-compile-pending).** `eth_prove` now reads
+  `CrossOutRecorded` (Bitcoin-destined only) + `BitcoinNotesConsumed` logs via `eth_getLogs` from the
+  last-folded block to the FINALIZED execution block, resumes the append-only accumulators from a persisted
+  state (`out/eth_set_state.json`), builds one witness per new entry (its `eth_getProof` slot + the
+  `KeccakTreeAccumulator::append_path` frontier — the SAME cxfer-core primitive the guest folds with), and
+  emits `out/eth_set.json` (the cumulative set + the real proof PV — the bundle `buildModeBBatch` consumes).
+  Correctness of the set/leaf/append rests on shared cxfer-core (consistent with the guest by construction;
+  the JS↔guest path agreement is already reflect-exec-proven). BOX-COMPILE-PENDING: the alloy log-decode +
+  I/O can't be built locally (prover-host's box-absolute deps) — run `cargo +stable build --release --bin
+  eth_prove` on the box; the only expected adjustments are alloy API surface (Log field access / Filter
+  block types). REMAINING glue: a `REGEN_CMD` script reads `eth_set.json` → `assembleBlocks({ethBundle})` →
+  the mode_b=1 Bitcoin fixture (the dapp API + the eth emit are both in place — this is the thin connector).
 - **G2 — bitcoin_prove writer drift — DONE (2026-06-17).** The old `write_prior`/`write_scan_rest`
   predated the mode_b gate (no `mode_b` flag, `eth_pv` ungated, no consumed-ν loop, none of the Track-B/C
   or crossout witnesses). Factored the writer into a shared crate `contracts/sp1/reflect-stdin`
