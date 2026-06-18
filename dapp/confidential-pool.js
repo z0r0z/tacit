@@ -632,36 +632,35 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     function getEthReflDigest() { return ethReflDigest; }
     function setHeight(h) { if (h < height) throw new Error('reflection height must not decrease'); height = h; }
 
-    // ── cBTC.zk sats-lock fold (mirror cxfer-core fold_cbtc_lock / fold_cbtc_lock_spends) ──
-    // The lock value `vBtc` (parsed from the lock output) + the opening sigma (rx,ry,z, locker-supplied)
-    // come from the caller. Gates: asset == the one cBTC.zk id, lock vout != 0 (the note is vout 0), and
-    // the note opens to EXACTLY vBtc under the lock-bound context. Effect: track the lock outpoint + add
-    // backing + append the owner-free note (tree + live). Returns the note-path witness, or null if a gate
-    // fails (skip-not-panic, like the guest). Built on parity-validated primitives (leaf / foldOutput /
-    // outpointKey / commitmentHash / u64be / verifyOpeningSigma); the guest-digest parity for the lock
-    // CONTEXT encoding is confirmed end-to-end by the reflect-exec fixture (the live wiring step).
-    function foldCbtcLock({ asset, cx, cy, vBtc, lockVout, lockTxid, sigRx, sigRy, sigZ }) {
+    // ── cBTC.zk self-custody lock fold — TRACK, not mint (mirror cxfer-core fold_cbtc_lock) ──
+    // The lock value `vBtc` (parsed from the lock output) comes from the caller. Gates: asset == the one
+    // cBTC.zk id, lock vout != 0, the outpoint isn't already tracked, and (cx,cy) is a curve point. Effect:
+    // track the lock outpoint + accrue backing — both ride digest(). The cBTC NOTE is NOT minted here: it is
+    // minted later by ConfidentialPool.mintCbtc (OP_CBTC_MINT), gated on this lock + a native-ETH escrow,
+    // where the value-opening (note == vBtc) is checked. Returns the per-cycle `cbtcLocksFolded` delta
+    // {outpoint, vBtc, commitment} for the contract's lock registry, or null if a gate fails (skip-not-panic).
+    function foldCbtcLock({ asset, cx, cy, vBtc, lockVout, lockTxid }) {
       if (hx(b32(asset)) !== CBTC_ZK_ASSET_ID) return null;          // not the cBTC.zk asset
-      if ((lockVout >>> 0) === 0) return null;                        // lock vout must differ from the note (vout 0)
-      let R;
-      try { ptFromXY(cx, cy); R = secp.ProjectivePoint.fromAffine({ x: BigInt(sigRx), y: BigInt(sigRy) }); } catch { return null; }
-      const ctx = cbtcLockContext(asset, lockTxid, lockVout);
-      if (!verifyOpeningSigma(cx, cy, BigInt(vBtc), hx(R.toRawBytes(true)), hx(b32(sigZ)), ctx)) return null;
-      cbtcLocks.insert(outpointKey(lockTxid, lockVout), u64be(BigInt(vBtc)), asset);
+      if ((lockVout >>> 0) === 0) return null;                        // lock vout must not be 0
+      try { ptFromXY(cx, cy); } catch { return null; }               // commitment must be a curve point
+      const outpoint = outpointKey(lockTxid, lockVout);
+      if (cbtcLocks.get(outpoint)) return null;                       // one lock backs one mint
+      cbtcLocks.insert(outpoint, u64be(BigInt(vBtc)), asset);
       cbtcBackingSats += BigInt(vBtc);
-      const w = foldOutput(leaf(asset, cx, cy, CBTC_NOTE_OWNER), outpointKey(lockTxid, 0), commitmentHash(cx, cy), asset);
-      return { notePath: w.notePath };
+      return { outpoint: hx(b32(outpoint)), vBtc: BigInt(vBtc), commitment: commitmentHash(cx, cy) };
     }
-    // Self-custody rug: drop the backing of any tracked lock outpoint this tx's inputs spend. `vins` =
-    // [{prevTxid, vout}]. Returns the sats removed (saturating, like the guest's saturating_sub).
+    // Self-custody lock spends: drop the backing of any tracked lock outpoint this tx's inputs spend, and
+    // return the spent outpoints for the per-cycle `cbtcLocksSpent` array (the contract flags them so the
+    // CollateralEngine can slash an un-redeemed rug). `vins` = [{prevTxid, vout}].
     function foldCbtcLockSpends(vins) {
       let removed = 0n;
+      const spent = [];
       for (const { prevTxid, vout } of (vins || [])) {
         const key = outpointKey(prevTxid, vout);
         const hit = cbtcLocks.get(key);
-        if (hit) { const v = BigInt(hit[0]); cbtcBackingSats = cbtcBackingSats > v ? cbtcBackingSats - v : 0n; cbtcLocks.remove(key); removed += v; }
+        if (hit) { const v = BigInt(hit[0]); cbtcBackingSats = cbtcBackingSats > v ? cbtcBackingSats - v : 0n; cbtcLocks.remove(key); removed += v; spent.push(hx(b32(key))); }
       }
-      return removed;
+      return { removed, spent };
     }
 
     // ── Track-B swap_var fold (mirror cxfer-core fold_swap_var) ──

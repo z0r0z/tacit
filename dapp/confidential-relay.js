@@ -9,7 +9,7 @@
 //
 // fetchImpl injected for Node tests / non-window contexts; defaults to global fetch.
 
-export function makeConfidentialRelay({ base, fetchImpl } = {}) {
+export function makeConfidentialRelay({ base, fetchImpl, guard } = {}) {
   const f = fetchImpl || (typeof fetch !== 'undefined' ? fetch : null);
   if (!f) throw new Error('confidential-relay: no fetch available');
   const root = (base || '').replace(/\/$/, '');
@@ -21,12 +21,30 @@ export function makeConfidentialRelay({ base, fetchImpl } = {}) {
     return body;
   }
 
-  // Enqueue a confidential op. type ∈ {wrap, unwrap, transfer, swap, lp, otc, bid}; op = the fixture-shaped witness;
-  // memos = per-leaf recovery ciphertexts (hex, one per committed leaf) or []. Returns {jobId,status}.
-  async function submitOp({ type, op, memos = [] } = {}) {
+  // Enqueue a confidential op. type ∈ {unwrap, transfer, swap, lp, otc, route, bid}; op = the fixture-shaped
+  // witness. RECOVERY CHOKEPOINT: an op that creates leaves MUST pass `outputs` (one recovery descriptor per
+  // leaf, same order as the op's leaves) + the matching `leaves` + an `ephRand` scalar source. submitOp seals
+  // one memo per output through the guard and runs the assertOutputsRecoverable tripwire BEFORE queuing, so no
+  // op can ship a seed-only-unrecoverable leaf. A leaf-less op (unwrap) passes `memos: []`. (Back-compat: a
+  // relay constructed without a guard passes raw `memos` through unchecked — for non-leaf-bearing tests.)
+  async function submitOp({ type, op, leaves = [], outputs = null, ephRand, memos = null } = {}) {
+    let sealedMemos;
+    if (outputs != null) {
+      if (!guard) throw new Error('confidential-relay: `outputs` given but no recovery guard wired (pass `guard` to makeConfidentialRelay)');
+      if (typeof ephRand !== 'function') throw new Error('confidential-relay: an op with `outputs` needs an `ephRand` scalar source for the memo seal');
+      sealedMemos = guard.sealMemosForOutputs({ outputs, ephRand });
+      guard.assertOutputsRecoverable({ leaves, outputs, memos: sealedMemos });
+    } else {
+      sealedMemos = memos || [];
+      // With the guard wired, an op shipping leaves (non-empty memos) but no `outputs` can't be
+      // recovery-checked — reject it so nothing bypasses the guard. Leaf-less ops (unwrap) pass with [].
+      if (guard && sealedMemos.length) {
+        throw new Error('confidential-relay: pass `outputs` (recovery descriptors) for any op that creates leaves — raw memos bypass the recovery guard');
+      }
+    }
     const res = await f(`${root}/confidential/submit`, {
       method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ type, op, memos }),
+      body: JSON.stringify({ type, op, memos: sealedMemos }),
     });
     return asJson(res);
   }
