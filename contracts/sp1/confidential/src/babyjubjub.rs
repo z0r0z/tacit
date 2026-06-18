@@ -11,6 +11,14 @@
 //! Soundness: BOTH halves of the sigma must verify; the shared 320-bit response `z_a` (reduced mod each
 //! curve's order) binds the SAME hidden amount across secp and BabyJubJub, so a settler can't put a
 //! `C_out_secp` committing a different value than the Groth16-cleared `C_out_BJJ`.
+//!
+//! NARROW CLAIM (same as cxfer-core/sigma.rs): the challenge `e` is 128-bit (xcurve_challenge, intentional /
+//! circuit-sized), and `z_a` is reduced modulo EACH curve's order — so the sigma proves the amount equal
+//! MODULO each group order, not as an unbounded integer. Integer equality follows only because the
+//! T_SWAP_BATCH Groth16 circuit RANGE-CHECKS every cleared receipt amount (≪ both orders) and the secp/
+//! aggregate side can't onboard a value outside that range. That range check is the load-bearing invariant.
+//! (The h_bjj/g_bjj NUMS constants are pinned in the guest binary — which BITCOIN_RELAY_VKEY commits to —
+//! and validated against the dapp's hash-to-curve in the standalone harness.)
 
 use bn::{arith::U256, Fr};
 use cxfer_core::{xcurve_challenge, xcurve_secp_check};
