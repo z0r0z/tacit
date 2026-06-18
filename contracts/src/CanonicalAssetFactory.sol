@@ -74,9 +74,9 @@ contract CanonicalAssetFactory {
         return _token[_slot(assetId, minter, symbol_, decimals_, bytes32(0))];
     }
 
-    /// @dev Deploy-time parameters read back by the ERC20 constructor (so its init code
-    ///      is constant and the address is f(assetId)). Set immediately before CREATE2
-    ///      and cleared immediately after.
+    /// @dev Deploy-time parameters read back by the ERC20 constructor (so its init code is
+    ///      constant and the address is f(assetId, minter, symbol, decimals, cid) — the salt). Set
+    ///      immediately before CREATE2 and cleared immediately after.
     struct DeployParams {
         bytes32 assetId;
         address minter;
@@ -158,9 +158,10 @@ contract CanonicalAssetFactory {
         return predict(assetId, minter, symbol_, decimals_, bytes32(0));
     }
 
-    /// @notice Etch an EVM-native canonical asset: the id is DERIVED from the metadata,
-    ///         so it is self-certifying — re-deriving anywhere yields the same id, and
-    ///         the metadata cannot be forged for it. Permissionless; address = f(id).
+    /// @notice Etch an EVM-native canonical asset: the id is DERIVED from the metadata, so it is
+    ///         self-certifying — re-deriving anywhere yields the same id, and the metadata cannot be
+    ///         forged for it. Permissionless; the id fixes (symbol, decimals, cid), so the token
+    ///         address is f(id, minter) (the full salt is (id, minter, symbol, decimals, cid)).
     function etchCanonical(address etcher, bytes32 salt, address minter, string calldata symbol_, uint8 decimals_, bytes32 cid)
         external
         returns (bytes32 assetId, address token)
@@ -219,6 +220,10 @@ contract CanonicalAssetFactory {
         internal
         returns (address token)
     {
+        // Bound the symbol (matching metaHash) so the deployCanonical path — which doesn't derive through
+        // metaHash — can't deploy a runaway-length label (gas/indexer grief). A zero id or zero minter is
+        // permitted by design: it yields an inert, unmintable token (no authority).
+        if (bytes(symbol_).length > 255) revert LabelTooLong();
         bytes32 slot = _slot(assetId, minter, symbol_, decimals_, cid);
         if (_token[slot] != address(0)) revert AlreadyDeployed();
         _params = DeployParams({assetId: assetId, minter: minter, symbol: symbol_, decimals: decimals_, cid: cid});

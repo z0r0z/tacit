@@ -24,6 +24,8 @@ abstract contract CanonicalMinter {
     CanonicalBridgedERC20 public immutable TOKEN;
     bytes32 public immutable ASSET_ID;
 
+    error AdoptedTokenMismatch();
+
     constructor(
         CanonicalAssetFactory factory,
         address etcher,
@@ -41,6 +43,15 @@ abstract contract CanonicalMinter {
         if (token == address(0)) {
             (assetId, token) = factory.etchCanonical(etcher, salt, address(this), symbol_, decimals_, cid);
         }
+        // Defense-in-depth (the factory is a trusted immutable, but these checks are free — constructor
+        // only — and catch a wrong/compromised factory early): the resolved token must be THIS minter's,
+        // at the proven id + metadata. CREATE2 already makes a factory-deployed slot token bit-identical,
+        // so an honest factory always passes.
+        if (
+            CanonicalBridgedERC20(token).MINTER() != address(this)
+                || CanonicalBridgedERC20(token).ASSET_ID() != assetId
+                || CanonicalBridgedERC20(token).decimals() != decimals_
+        ) revert AdoptedTokenMismatch();
         ASSET_ID = assetId;
         TOKEN = CanonicalBridgedERC20(token);
     }
