@@ -132,6 +132,9 @@ pub fn fold_swap_batch(
     if env.intents.len() != env.n_intents || env.receipts.len() != env.n_intents || receipt_paths.len() != env.n_intents {
         return false;
     }
+    if env.fee_bps > 1000 {
+        return false; // MAX_POOL_FEE_BPS — reject an invalid fee tier even if a bad pool state ever entered
+    }
     // 1. resolve the pool (canonical pair → pool_id) + its tracked reserves; must be C0-backed + canonically
     //    oriented (so `direction` maps to the right reserve side).
     let (a_lo, a_hi) = match amm_canonical_pair(&env.asset_a, &env.asset_b) {
@@ -158,6 +161,15 @@ pub fn fold_swap_batch(
         Some(v) => v,
         None => return false,
     };
+    // post-reserves must stay positive and must not shrink the constant product. The Groth16 clearing
+    // should already guarantee k_post >= k_pre, but enforce it here too — cheap defense-in-depth against a
+    // public-signal / verifying-key drift, mirroring the EVM-side confidential swap settlement.
+    if new_a == 0 || new_b == 0 {
+        return false;
+    }
+    if (new_a as u128) * (new_b as u128) < (pool.reserve_a as u128) * (pool.reserve_b as u128) {
+        return false;
+    }
     // 3. Groth16 verify (per-receipt split correctness) over the re-derived public signals.
     let pubs = match swap_batch_public_signals(env, &pool_id, pool.reserve_a, pool.reserve_b) {
         Some(p) => p,
@@ -173,23 +185,45 @@ pub fn fold_swap_batch(
     // 4. aggregate Pedersen identity per asset A + B (binds the receipts' total to real inputs + reserve).
     let intents_secp: Vec<(u8, [u8; 33])> = env.intents.iter().map(|it| (it.direction, it.c_in_secp)).collect();
     let receipts_secp: Vec<[u8; 33]> = env.receipts.iter().map(|r| r.c_out_secp).collect();
-    if !swap_batch_aggregate_identity(&intents_secp, &receipts_secp, true, env.delta_a_net_sign, env.delta_a_net_mag, &env.tip_a_c_secp, &env.r_net_a) {
+    if !swap_batch_aggregate_identity(&intents_secp, &receipts_secp, true, env.delta_a_net_sign, env.delta_a_net_mag, env.tip_a_amount, &env.r_net_a) {
         return false;
     }
-    if !swap_batch_aggregate_identity(&intents_secp, &receipts_secp, false, env.delta_b_net_sign, env.delta_b_net_mag, &env.tip_b_c_secp, &env.r_net_b) {
+    if !swap_batch_aggregate_identity(&intents_secp, &receipts_secp, false, env.delta_b_net_sign, env.delta_b_net_mag, env.tip_b_amount, &env.r_net_b) {
         return false;
     }
-    // 5. each intent's C_in_secp must be a REAL spent pool note (so the aggregate's inputs are backed value).
+    // 5. ONE-TO-ONE: each intent's C_in_secp must match a DISTINCT real spent pool note of the intent's
+    //    INPUT asset (direction 0 = A→B inputs asset A; direction 1 = B→A inputs asset B). The aggregate
+    //    identity counts each intent's input once, so without distinctness a single real UTXO reused across
+    //    two intents would be double-counted (inflation), and without the asset check an asset-X note could
+    //    pose as an A/B input (relabel — the Pedersen commitment is asset-blind). Every detected spend must
+    //    back exactly one intent input (no unaccounted real spend).
+    let mut used = vec![false; spends.len()];
     for it in env.intents.iter() {
-        let real = spends.iter().any(|sp| {
-            matches!(
-                (from_affine_xy(&sp.cx, &sp.cy), decompress(&it.c_in_secp)),
-                (Some(x), Some(y)) if x == y
-            )
-        });
-        if !real {
+        if it.direction > 1 {
             return false;
         }
+        let expected_asset = if it.direction == 0 { pool.asset_a } else { pool.asset_b };
+        let in_pt = match decompress(&it.c_in_secp) {
+            Some(p) => p,
+            None => return false,
+        };
+        let mut matched = None;
+        for (j, sp) in spends.iter().enumerate() {
+            if used[j] || sp.asset != expected_asset {
+                continue;
+            }
+            if matches!(from_affine_xy(&sp.cx, &sp.cy), Some(x) if x == in_pt) {
+                matched = Some(j);
+                break;
+            }
+        }
+        match matched {
+            Some(j) => used[j] = true,
+            None => return false,
+        }
+    }
+    if used.iter().any(|u| !*u) {
+        return false;
     }
     // 6. per receipt: the cross-curve sigma binds C_out_secp ↔ C_out_BJJ (the secp note's value == the
     //    Groth16-proven cleared amount).

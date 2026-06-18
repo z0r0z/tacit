@@ -572,7 +572,7 @@ pub fn swap_batch_aggregate_identity(
     asset_x_is_a: bool,
     delta_x_sign: u8,
     delta_x_mag: u64,
-    tip_x_c_secp: &[u8; 33],
+    tip_x_amount: u64,
     r_net_x: &[u8; 32],
 ) -> bool {
     if intents.len() != receipts_c_out.len() {
@@ -594,9 +594,11 @@ pub fn swap_batch_aggregate_identity(
             }
         }
     }
-    match decompress(tip_x_c_secp) {
-        Some(p) => sum = sum - p,
-        None => return false,
+    // The tip is the settler's PUBLIC fee (bound by the Groth16 tip_amount public signal), subtracted as
+    // tip·H — NOT a free Pedersen commitment. A free tip commitment is unconstrained: a prover could set it
+    // to absorb an arbitrary surplus and inflate the receipts past the real inputs + reserve.
+    if tip_x_amount != 0 {
+        sum = sum - gen_h() * Scalar::from(tip_x_amount);
     }
     if delta_x_mag != 0 {
         let dh = gen_h() * Scalar::from(delta_x_mag);
@@ -4528,24 +4530,25 @@ mod tests {
 
     #[test]
     fn swap_batch_aggregate_identity_binds_receipts_to_inputs() {
-        // 1-intent direction-0 (A→B) batch, asset-A identity: C_in − tip_A − δ_A·H == R_net_A·G. Construct a
-        // BALANCING vector: tip commits 0 and δ_A = v_in, so the H-terms cancel ⇒ R_net_A = r_in − r_tip.
+        // 1-intent direction-0 (A→B) batch, asset-A identity: C_in − tip_A·H − δ_A·H == R_net_A·G. The tip is
+        // a PUBLIC amount (0 here, bound by the Groth16 signal); with δ_A = v_in the H-terms cancel ⇒ R_net_A = r_in.
         let v_in = 1000u64;
         let delta_a = 1000u64;
         let r_in = scalar_reduce_be(&[0x31u8; 32]);
-        let r_tip = scalar_reduce_be(&[0x32u8; 32]);
         let c_in = compress(&(gen_h() * Scalar::from(v_in) + ProjectivePoint::generator() * r_in));
-        let tip_a = compress(&(ProjectivePoint::generator() * r_tip)); // 0·H + r_tip·G
         let mut r_net_a = [0u8; 32];
-        r_net_a.copy_from_slice((r_in - r_tip).to_repr().as_slice());
+        r_net_a.copy_from_slice(r_in.to_repr().as_slice());
         let intents = [(0u8, c_in)];
         let receipts = [c_in]; // direction-0 intent is INPUT-side for asset A ⇒ its receipt isn't summed here
 
-        assert!(swap_batch_aggregate_identity(&intents, &receipts, true, 0, delta_a, &tip_a, &r_net_a), "valid asset-A identity holds");
+        assert!(swap_batch_aggregate_identity(&intents, &receipts, true, 0, delta_a, 0, &r_net_a), "valid asset-A identity holds");
         let mut bad_r = r_net_a; bad_r[31] ^= 1;
-        assert!(!swap_batch_aggregate_identity(&intents, &receipts, true, 0, delta_a, &tip_a, &bad_r), "wrong R_net rejected");
-        assert!(!swap_batch_aggregate_identity(&intents, &receipts, true, 0, delta_a + 1, &tip_a, &r_net_a), "wrong delta rejected");
-        assert!(!swap_batch_aggregate_identity(&intents, &receipts, true, 1, delta_a, &tip_a, &r_net_a), "wrong delta sign rejected");
+        assert!(!swap_batch_aggregate_identity(&intents, &receipts, true, 0, delta_a, 0, &bad_r), "wrong R_net rejected");
+        assert!(!swap_batch_aggregate_identity(&intents, &receipts, true, 0, delta_a + 1, 0, &r_net_a), "wrong delta rejected");
+        assert!(!swap_batch_aggregate_identity(&intents, &receipts, true, 1, delta_a, 0, &r_net_a), "wrong delta sign rejected");
+        // The tip is now a BOUND public amount (tip·H), not a free slack commitment: a nonzero tip with the
+        // same balancing R_net must fail (a free tip could have absorbed the surplus and inflated receipts).
+        assert!(!swap_batch_aggregate_identity(&intents, &receipts, true, 0, delta_a, 1, &r_net_a), "unaccounted public tip rejected");
     }
 
     #[test]
