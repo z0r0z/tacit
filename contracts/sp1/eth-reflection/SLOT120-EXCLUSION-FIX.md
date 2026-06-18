@@ -1,4 +1,44 @@
-# Slot-120 exclusion-proof fix — ready-to-apply (alpha re-prove)
+# Slot-120 exclusion-proof fix — APPLIED + VALIDATED LIVE (2026-06-18)
+
+**Status:** applied on the prover box (`/root/sp1-helios/primitives/src/lib.rs`) and **validated end-to-end**:
+the eth-reflection guest rebuilt clean → recursion vkey rotated `0x0025ad24 → 0x0081d2c6`; reflection-prover
+rebuilt → BITCOIN_RELAY_VKEY `0x003281ea → 0x00155dba` (PROGRAM_VKEY unchanged `0x0073ee38`). A full
+`eth_prove` against the live pool `0x3D38a004` then SUCCEEDED: `eth_getProof proved 2 slot(s) incl.
+bitcoinConsumedCount` (the exact preflight that failed before), compressed proof rc=0, `WROTE eth_set.json`
+(crossOutSetRoot `0xc905fff9`, ethPool `0x3D38a004`). The exact applied diff is below.
+
+**Beacon note (period gap — resolved without re-anchor):** publicnode's `light_client/updates` endpoint is
+inconsistent (returned 3 updates for the genesis period while finality was 2 periods ahead → the guest's
+`verify_finality_update` failed). **`https://lodestar-sepolia.chainsafe.io` serves the full update set** (6
+updates bridging genesis 10462624 → finality), so the existing genesis pin works — NO re-anchor needed. Use
+lodestar as `SOURCE_CONSENSUS_RPC` and `https://sepolia.gateway.tenderly.co` for execution (publicnode caps
+eth_getLogs ranges).
+
+**Exact applied diff** (`verify_storage_slot_proofs` per-slot loop — the real source, confirmed on the box):
+```rust
+// BEFORE:                                          // AFTER:
+let mut rlp_encoded_value = Vec::new();             let expected_value = if value.is_zero() {
+value.encode(&mut rlp_encoded_value);                   None  // zero slot is deleted from the trie → exclusion proof
+if let Err(e) = proof::verify_proof(               } else {
+    contract_storage.value.storage_root,               let mut rlp_encoded_value = Vec::new();
+    key_nibbles,                                       value.encode(&mut rlp_encoded_value);
+    Some(rlp_encoded_value),                           Some(rlp_encoded_value)
+    &slot.mpt_proof,                               };
+) { anyhow::bail!(...); }                          if let Err(e) = proof::verify_proof(
+                                                       contract_storage.value.storage_root, key_nibbles,
+                                                       expected_value, &slot.mpt_proof,
+                                                   ) { anyhow::bail!(...); }
+// the slot is still pushed with value 0, so the guest's bitcoinConsumedCount read returns 0 (no guest change).
+```
+
+**Related finding — crossOut dest-owner (fund-loss footgun), FIXED.** Driving the fold surfaced that the
+prior drive's crossOut recorded `destCommitment` binding a NON-ZERO owner ("btc-dest-owner"), but
+`fold_crossout` mints `leaf(asset,cx,cy,ZERO_OWNER)` (the Bitcoin bearer convention) — so that crossOut is
+**unfoldable** (the Ethereum note is burned into a Bitcoin note no reflection can mint = self-inflicted fund
+loss). Fixed: the crossOut builder now uses ZERO_OWNER (`tests/gen-cxfer-crossout-fixture.mjs`), and the
+settle guest now FORCES ZERO_OWNER for Bitcoin-dest crossOuts (`contracts/sp1/confidential/src/main.rs`,
+folds into the settle re-prove — rotates PROGRAM_VKEY). The fold logic itself is correct (the ZERO_OWNER
+synthetic mode-b fixture mints 1 note; the live JS resume reproduced the on-chain digest `0x95f38b9e` exactly).
 
 **Problem.** The Mode-B eth-reflection guest reads `ConfidentialPool.bitcoinConsumedCount` (storage slot
 120) every cycle as the fast-lane freshness anchor (`src/main.rs:149-157`). At count 0 the slot has never

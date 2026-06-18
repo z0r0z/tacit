@@ -15,7 +15,7 @@ sp1_zkvm::entrypoint!(main);
 use alloy_sol_types::{sol, SolValue};
 use alloy_sol_types::private::{Address, U256};
 use cxfer_core::{
-    adaptor_lock_leaf, bitcoin, claim_id, clearing_price_matches, decompress, deposit_id, from_affine_xy,
+    adaptor_lock_leaf, bitcoin, claim_id, clearing_price_matches, decompress, deposit_commit, deposit_id, from_affine_xy,
     get_amount_out, imt_non_membership, intent_context, isqrt, keccak_merkle_verify, leaf, lp_add_shares,
     lp_share_id, nullifier, pool_id, scalar_reduce_be, utxo_leaf, verify_kernel, verify_opening_sigma,
     verify_pedersen_opening, verify_range, Point,
@@ -143,7 +143,7 @@ pub fn main() {
     let mut leaves: Vec<[u8; 32]> = Vec::new();
     let mut deposits: Vec<[u8; 32]> = Vec::new();
     let mut withdrawals: Vec<Withdrawal> = Vec::new();
-    let fees: Vec<FeePayment> = Vec::new(); // fee path: follow-up (kernel −fee·H term)
+    let mut fees: Vec<FeePayment> = Vec::new(); // OP_UNWRAP relayer fee (gasless exit)
     let mut bitcoin_burns: Vec<[u8; 32]> = Vec::new(); // OP_BRIDGE_MINT burned-note nullifiers
     let mut bitcoin_roots: Vec<[u8; 32]> = Vec::new(); // Bitcoin pool roots minted against
     let mut cross_outs: Vec<CrossOut> = Vec::new();
@@ -178,7 +178,9 @@ pub fn main() {
                 let r = scalar_reduce_be(&r32());
                 assert!(verify_pedersen_opening(&c, value, &r), "wrap opening");
                 leaves.push(leaf(&asset, &cx, &cy, &owner));
-                deposits.push(deposit_id(&asset, &u64_be32(value), &cx, &cy, &owner));
+                // The contract's wrap binds depositId over keccak(Cx‖Cy‖owner), never the raw coords;
+                // reproduce that digest here so the ids match (the value binding is unchanged).
+                deposits.push(deposit_id(&asset, &u64_be32(value), &deposit_commit(&cx, &cy, &owner)));
             }
             OP_TRANSFER => {
                 // n-in / m-out, hidden amounts: membership + range + conservation.
@@ -251,7 +253,14 @@ pub fn main() {
                 for _ in 0..m_out {
                     let (cx, cy, p) = r_commitment();
                     let owner = r32();
-                    dest_commitments.push(leaf(&asset, &cx, &cy, &owner)); // Bitcoin-side leaf
+                    // A Bitcoin-homed pool note is owner-free (ZERO_OWNER bearer; the blinding is the key)
+                    // and the reflection's fold_crossout mints leaf(asset,cx,cy,ZERO_OWNER). Force ZERO_OWNER
+                    // for the Bitcoin dest leaf so a non-zero witness owner can never record an UNFOLDABLE
+                    // destCommitment — that would burn the Ethereum note into a Bitcoin note no reflection can
+                    // mint (self-inflicted fund loss). owner is still read to keep the witness stream in sync;
+                    // it is vestigial for a Bitcoin destination (dest_chain == 1).
+                    let dest_owner = if dest_chain == 1 { [0u8; 32] } else { owner };
+                    dest_commitments.push(leaf(&asset, &cx, &cy, &dest_owner)); // Bitcoin-side leaf
                     out_pts.push(p);
                 }
 
@@ -347,6 +356,14 @@ pub fn main() {
                 let value: u64 = io::read();
                 let r = scalar_reduce_be(&r32());
                 let recipient = r20();
+                // Relayer fee (gasless exit): the note opens to `value`; the recipient receives
+                // `value − fee` and the settler (msg.sender — the relay box that pays gas) is paid
+                // `fee`. Both legs are PUBLIC in-system values that sum back to the proven `value`,
+                // so a third party can settle the exit for the user with no separate fee proof — and
+                // the contract's unitScale scaling bounds each payout to its note-backed value. A
+                // self-settling user simply sets fee = 0. fee ≤ value (no negative payout).
+                let fee: u64 = io::read();
+                assert!(fee <= value, "unwrap fee exceeds value");
 
                 let lf = leaf(&asset, &cx, &cy, &owner);
                 assert!(spend_root != [0u8; 32], "membership requires a non-zero spend root");
@@ -355,11 +372,17 @@ pub fn main() {
                 let nu = nullifier(&cx, &cy);
                 if bitcoin_spent_root != [0u8; 32] { check_btc_nonmembership(&nu, &bitcoin_spent_root); }
                 nullifiers.push(nu);
-                withdrawals.push(Withdrawal {
-                    assetId: asset.into(),
-                    recipient: Address::from(recipient),
-                    value: U256::from(value),
-                });
+                let net = value - fee;
+                if net != 0 {
+                    withdrawals.push(Withdrawal {
+                        assetId: asset.into(),
+                        recipient: Address::from(recipient),
+                        value: U256::from(net),
+                    });
+                }
+                if fee != 0 {
+                    fees.push(FeePayment { assetId: asset.into(), value: U256::from(fee) });
+                }
             }
             OP_ATTEST_META => {
                 // Trustless metadata, CONFIRMATION-GATED. Prove (asset_id, ticker, decimals)

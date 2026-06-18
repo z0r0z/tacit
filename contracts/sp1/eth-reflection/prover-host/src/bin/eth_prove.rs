@@ -122,6 +122,14 @@ fn main() -> anyhow::Result<()> {
         let out = rt.block_on(async {
             eprintln!("bootstrapping helios on {rpc} (chain {chain_id}) genesis_slot={genesis_slot:?} pool={pool}");
             let client = get_client(genesis_slot, &rpc, chain_id).await?;
+            {
+                use tree_hash::TreeHash;
+                eprintln!(
+                    "[genesis-capture] genesis_slot={:?} sync_committee_root=0x{}",
+                    genesis_slot,
+                    hex::encode(client.store.current_sync_committee.tree_hash_root().0)
+                );
+            }
             let updates = get_updates(&client).await;
             let finality_update = client.rpc.get_finality_update().await
                 .map_err(|e| anyhow::anyhow!("finality_update: {e:?}"))?;

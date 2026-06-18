@@ -26,7 +26,7 @@ const pool = makeConfidentialPool({ secp, keccak256: keccak_256, sha256 });
 
 const ASSET = '0x' + 'a5'.repeat(32);
 const OWNER = '0x' + Buffer.from('owner-stealth'.padEnd(32, '\0')).toString('hex');      // EVM note owner
-const BTC_OWNER = '0x' + Buffer.from('btc-dest-owner'.padEnd(32, '\0')).toString('hex'); // Bitcoin dest owner
+const BTC_OWNER = '0x' + '00'.repeat(32); // Bitcoin-homed pool notes are owner-free (ZERO_OWNER bearer convention; reflection fold_crossout mints leaf(asset,cx,cy,0), so a non-zero dest owner records an UNFOLDABLE destCommitment = burned value that can never be minted on Bitcoin)
 const beHex = (n) => '0x' + n.toString(16).padStart(64, '0');
 const xy = (P) => { const a = P.toAffine(); return { cx: beHex(a.x), cy: beHex(a.y) }; };
 const ptHex = (P) => '0x' + Buffer.from(P.toRawBytes(true)).toString('hex');
