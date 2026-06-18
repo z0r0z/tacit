@@ -2951,6 +2951,12 @@ impl ScanReflection {
                 if total_shares > u64::MAX as u128 {
                     return Err("lp_add fold: POOL_INIT total shares overflow");
                 }
+                // The protocol skim is a fraction of the LP fee out of 10000; protocol_fee_shares computes
+                // `10000 - protocol_fee_bps`, so a POOL_INIT setting it >= 10000 (it's a u16) would underflow.
+                // Bound it < 10000 (skim < 100%); a tighter fairness cap is a product policy on top of this.
+                if protocol_fee_bps >= 10000 {
+                    return Err("lp_add fold: protocol fee bps must be < 10000");
+                }
                 self.pools.insert(pool_id, PoolReserveState {
                     asset_a: *asset_a, asset_b: *asset_b, reserve_a: delta_a, reserve_b: delta_b,
                     total_shares: total_shares as u64, c0_backed: inputs_c0_backed,
