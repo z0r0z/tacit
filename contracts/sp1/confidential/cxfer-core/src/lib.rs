@@ -697,9 +697,13 @@ pub fn verify_range(commitments: &[ProjectivePoint], proof: &[u8]) -> bool {
     let e = t.challenge(b"e");
     let esq = e * e;
 
-    // ---- inverses ----
-    let y_inv = y.invert().unwrap();
-    let challenges_inv: Vec<Scalar> = challenges.iter().map(|u| u.invert().unwrap()).collect();
+    // ---- inverses ---- (reject, don't panic, on a zero scalar: the transcript avoids a zero challenge,
+    // but a hostile proof shouldn't be able to panic the guest — a non-invertible scalar is just invalid)
+    let y_inv = match Option::<Scalar>::from(y.invert()) { Some(v) => v, None => return false };
+    let mut challenges_inv: Vec<Scalar> = Vec::with_capacity(challenges.len());
+    for u in &challenges {
+        match Option::<Scalar>::from(u.invert()) { Some(v) => challenges_inv.push(v), None => return false }
+    }
 
     // ---- y^MN, y^(MN+1) ----
     let mut y_mn = y;
@@ -980,6 +984,9 @@ pub fn lp_share_id(pool_id: &[u8; 32]) -> [u8; 32] { kn(&[pool_id, b"lp"]) }
 /// tests/amm-clearing.mjs `lpAddShares` (AMM.md §"Indexer determinism rules: Rounding"). u128 product
 /// so S·dA (each < 2^64) never overflows. Callers pass a live pool (reserve_a, reserve_b > 0).
 pub fn lp_add_shares(shares_pre: u64, d_a: u64, d_b: u64, reserve_a: u64, reserve_b: u64) -> u128 {
+    // A live pool has nonzero reserves (the caller adds to an initialized pool); guard the divisor anyway
+    // so a malformed input is a 0-share no-op, never a divide-by-zero guest panic.
+    if reserve_a == 0 || reserve_b == 0 { return 0; }
     let sp = shares_pre as u128;
     let a = sp * d_a as u128 / reserve_a as u128;
     let b = sp * d_b as u128 / reserve_b as u128;
@@ -990,6 +997,7 @@ pub fn lp_add_shares(shares_pre: u64, d_a: u64, d_b: u64, reserve_a: u64, reserv
 /// the rounding dust stays for the remaining LPs (never over-withdrawn). Mirrors tests/amm-clearing.mjs
 /// `lpRemoveOutputs`. u128 product (reserve·shares each < 2^64).
 pub fn lp_remove_output(reserve: u64, shares: u64, total: u64) -> u128 {
+    if total == 0 { return 0; } // caller checks total_shares > 0; guard the divisor against a guest panic
     reserve as u128 * shares as u128 / total as u128
 }
 
@@ -1675,6 +1683,11 @@ impl LiveUtxoSet {
     /// Add a new output's outpoint → `(commitment hash, asset_id)`. Panics on a duplicate key
     /// (outpoints are unique — a duplicate is a malformed batch, never a valid Bitcoin state).
     pub fn insert(&mut self, key: &[u8; 32], value: &[u8; 32], asset: &[u8; 32]) {
+        // panic, NOT Result, is the intended fail-closed: a duplicate outpoint is a prover bug, and a
+        // panic mid-fold discards the ENTIRE batch proof — so no partially-mutated ScanReflection state
+        // ever reaches a committed root. (A `Result` here would weaken that: a skip-not-panic caller could
+        // ignore the Err and keep the note-root mutation that ran before this insert.) The Err-returning
+        // fold paths instead validate before mutating, so their skip-not-panic is partial-state-free too.
         match self.entries.binary_search_by(|(k, _, _)| k.cmp(key)) {
             Ok(_) => panic!("duplicate outpoint in live set"),
             Err(i) => self.entries.insert(i, (*key, *value, *asset)),
@@ -2215,6 +2228,17 @@ pub fn dec_to_be32(s: &str) -> Option<[u8; 32]> {
             return None; // overflowed 2^256 — not a valid BN254 field element
         }
     }
+    // A canonical field element is < the BN254 base modulus q. Reject [q, 2^256): a value there is a
+    // malformed vk/proof element, not just a 2^256 overflow. (q is the larger of Fq/Fr, so an Fr scalar
+    // gets the looser q bound here; the pairing step reduces/validates Fr in its own field.) Array Ord on
+    // [u8; 32] is lexicographic = big-endian numeric.
+    const BN254_Q: [u8; 32] = [
+        0x30, 0x64, 0x4e, 0x72, 0xe1, 0x31, 0xa0, 0x29, 0xb8, 0x50, 0x45, 0xb6, 0x81, 0x81, 0x58, 0x5d,
+        0x97, 0x81, 0x6a, 0x91, 0x68, 0x71, 0xca, 0x8d, 0x3c, 0x20, 0x8c, 0x16, 0xd8, 0x7c, 0xfd, 0x47,
+    ];
+    if acc >= BN254_Q {
+        return None;
+    }
     Some(acc)
 }
 
@@ -2295,8 +2319,11 @@ impl PoolReserveState {
             return;
         }
         let shares = protocol_fee_shares(self.total_shares, self.k_last, k_now, self.protocol_fee_bps);
-        self.protocol_fee_accrued = self.protocol_fee_accrued.saturating_add(shares);
-        self.total_shares = self.total_shares.saturating_add(shares);
+        // checked, not saturating: a silent cap would diverge consensus state from exact protocol math.
+        // Unreachable for real values (total_shares = isqrt(reserve_a·reserve_b) stays well under 2^51 for
+        // any real BTC reserves), so the overflow aborts the proof (fail-closed) rather than ever firing.
+        self.protocol_fee_accrued = self.protocol_fee_accrued.checked_add(shares).expect("protocol fee accrued overflow");
+        self.total_shares = self.total_shares.checked_add(shares).expect("protocol fee total_shares overflow");
         self.k_last = k_now;
     }
 }

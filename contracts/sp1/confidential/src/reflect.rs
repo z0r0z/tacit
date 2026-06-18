@@ -220,6 +220,11 @@ pub fn main() {
         // re-anchor (which rotates the eth vkey ⇒ re-pin ETH_REFLECTION_VKEY + re-prove), a deferred feature.
         assert_eq!(&eth_pv[8 * 32..9 * 32], &ETH_GENESIS_SYNC_COMMITTEE, "eth-reflection: wrong genesis sync-committee");
         let ep: [u8; 32] = eth_pv[2 * 32..3 * 32].try_into().expect("ethPool word"); // gated on-chain == address(this)
+        // A Mode-B proof must carry a REAL pool: ethPool == 0 is the mode_b==0 "no eth-state" sentinel the
+        // contract accepts, so a Mode-B proof with ethPool 0 would be mistaken for it (the guest still used
+        // this proof's crossout/consumed roots). Also require a canonical 20-byte address (high 12 bytes 0)
+        // so the ABI word can't be a non-address that still compares != 0.
+        assert!(ep != [0u8; 32] && ep[..12].iter().all(|&b| b == 0), "mode_b ethPool must be a nonzero canonical address");
         let cr: [u8; 32] = eth_pv[3 * 32..4 * 32].try_into().expect("crossOutSetRoot word");
         let consumed_root: [u8; 32] = eth_pv[9 * 32..10 * 32].try_into().expect("consumedNuSetRoot word");
         // consumedNuCount — a uint64 ABI-encoded right-aligned in the 32-byte word (field 10).
