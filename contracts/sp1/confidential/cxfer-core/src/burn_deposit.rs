@@ -90,32 +90,61 @@ pub fn verify_provenance_dag_leaves(
             produced.push((op, *ch));
         }
     }
-    // 2. Resolve every input to a produced output (value-matched) or a valid supply leaf; reject an outpoint
-    //    consumed twice (an in-DAG double-spend), a dangling input, or a value-swapping seam.
+    // 2. Reject an outpoint consumed twice (an in-DAG double-spend).
     let mut consumed: Vec<[u8; 32]> = Vec::new();
     for cx in cxfers {
         if cx.inputs.is_empty() {
             return false;
         }
-        for (ptxid, pvout, in_ch) in &cx.inputs {
+        for (ptxid, pvout, _) in &cx.inputs {
             let op = outpoint_key(ptxid, *pvout);
             if consumed.iter().any(|o| o == &op) {
                 return false;
             }
             consumed.push(op);
-            let linked = produced.iter().any(|(o, ch)| o == &op && ch == in_ch);
-            let is_leaf = valid_leaves.iter().any(|(o, ch)| &op == o && in_ch == ch);
-            if !linked && !is_leaf {
-                return false;
-            }
         }
     }
-    // 3. The burned note must be produced by the DAG and NOT consumed inside it.
-    let produced_burned = produced
+    // 3. REACHABILITY from the valid supply leaves (not just local edge consistency): a CXFER is accepted
+    //    only once EVERY input resolves to a reachable note — a valid leaf, or an output of an
+    //    already-accepted CXFER, value-matched by commitment hash (so a value-swapping seam can't open).
+    //    Iterate to a fixpoint. A cycle, a disconnected component, or a future-output dependency never
+    //    becomes reachable, so it stays unaccepted — and EVERY CXFER must be accepted, so the whole DAG is
+    //    rejected unless it genuinely descends from a leaf. (Without this, a closed cycle conserving its own
+    //    fabricated notes — whose openings the prover knows — would mint value rooted in nothing.)
+    let mut reachable: Vec<([u8; 32], [u8; 32])> = valid_leaves.to_vec();
+    let mut accepted = vec![false; cxfers.len()];
+    loop {
+        let mut progress = false;
+        for (i, cx) in cxfers.iter().enumerate() {
+            if accepted[i] {
+                continue;
+            }
+            let all_inputs_reachable = cx.inputs.iter().all(|(ptxid, pvout, in_ch)| {
+                let op = outpoint_key(ptxid, *pvout);
+                reachable.iter().any(|(o, ch)| o == &op && ch == in_ch)
+            });
+            if all_inputs_reachable {
+                accepted[i] = true;
+                progress = true;
+                for (vout, ch) in &cx.outputs {
+                    reachable.push((outpoint_key(&cx.txid, *vout), *ch));
+                }
+            }
+        }
+        if !progress {
+            break;
+        }
+    }
+    if accepted.iter().any(|&a| !a) {
+        return false; // an unreachable CXFER ⇒ a cycle / disconnected component / not rooted in supply
+    }
+    // 4. The burned note must be reachable (descends from a valid leaf) and NOT consumed inside the DAG
+    //    (it is spent by the later burn tx, not by a child CXFER).
+    let reachable_burned = reachable
         .iter()
         .any(|(o, ch)| o == burned_outpoint && ch == burned_commitment_hash);
     let consumed_burned = consumed.iter().any(|o| o == burned_outpoint);
-    produced_burned && !consumed_burned
+    reachable_burned && !consumed_burned
 }
 
 /// One provenance CXFER plus the witnesses to verify its crypto: compressed input/output commitments, the
@@ -254,6 +283,7 @@ pub const CMINT_DOMAIN: &[u8] = b"tacit-mint-v1";
 pub fn verify_cmint_authorized(
     asset: &[u8; 32],
     mint_authority: &[u8; 32],
+    expected_etch_txid: &[u8; 32],
     reveal_tx: &[u8],
     commit_tx: &[u8],
 ) -> Option<([u8; 32], [u8; 32])> {
@@ -261,8 +291,14 @@ pub fn verify_cmint_authorized(
         return None; // not mintable — no authorized mints exist
     }
     let env = bitcoin::extract_taproot_envelope(reveal_tx)?;
-    let (mint_asset, _etch_txid, commitment, amount_ct, range_proof, issuer_sig) = bitcoin::parse_cmint(&env)?;
+    let (mint_asset, etch_txid, commitment, amount_ct, range_proof, issuer_sig) = bitcoin::parse_cmint(&env)?;
     if &mint_asset != asset {
+        return None;
+    }
+    // The mint must reference the SAME etch as the asset it claims to mint — the T_MINT carries etchTxid,
+    // so bind it (defense-in-depth: the asset already commits to its etch txid, this rejects a mint whose
+    // declared etch disagrees rather than silently ignoring the field).
+    if &etch_txid != expected_etch_txid {
         return None;
     }
     // commit/reveal pair: the reveal's first input spends the commit tx.
@@ -379,6 +415,27 @@ mod tests {
     }
 
     #[test]
+    fn dag_cycle_not_rooted_in_supply_rejected() {
+        // A spends B:0, B spends A:0 — a closed cycle that conserves internally (the prover knows all its
+        // openings) but never reaches C_0. Every local edge is consistent (each input is a produced
+        // output, value-matched), yet neither CXFER is reachable from the leaf, so reachability rejects the
+        // whole DAG — and with it the cycle-minted "burned" note. Local edge consistency alone accepted it.
+        let a = VerifiedCxfer { txid: [0x0A; 32], inputs: vec![([0x0B; 32], 0, [0xBB; 32])], outputs: vec![(0, [0xAA; 32])] };
+        let b = VerifiedCxfer { txid: [0x0B; 32], inputs: vec![([0x0A; 32], 0, [0xAA; 32])], outputs: vec![(0, [0xBB; 32])] };
+        assert!(!verify_provenance_dag(&c0_op(), &c0_ch(), &op(0x0A, 0), &[0xAA; 32], &[a, b]));
+    }
+
+    #[test]
+    fn dag_disconnected_component_rejected() {
+        // A is a real C_0 descendant; B is a self-consistent island (spends A's burned output but produces
+        // a note claimed as burned) — wait, that's connected. A true island: A from C_0, plus C spending a
+        // note D no CXFER produces. The burned note is C's output; C never becomes reachable → rejected.
+        let a = VerifiedCxfer { txid: [0x0A; 32], inputs: vec![([0x00; 32], 0, c0_ch())], outputs: vec![(0, [0xAA; 32])] };
+        let c = VerifiedCxfer { txid: [0x0C; 32], inputs: vec![([0xDD; 32], 0, [0xDE; 32])], outputs: vec![(0, [0xCC; 32])] };
+        assert!(!verify_provenance_dag(&c0_op(), &c0_ch(), &op(0x0C, 0), &[0xCC; 32], &[a, c]));
+    }
+
+    #[test]
     fn provenance_dag_leaves_admits_a_cmint_leaf() {
         // MINTABLE: valid leaves = C_0 AND an issuer-authorized cmint output. A note descending from the
         // cmint leaf (not C_0) is real supply.
@@ -408,7 +465,7 @@ mod tests {
     #[test]
     fn cmint_rejects_non_mintable_authority() {
         // mint_authority all-zero (a fixed-supply asset) ⇒ no authorized mints — None before any tx parse.
-        assert!(verify_cmint_authorized(&[0xAA; 32], &[0u8; 32], &[], &[]).is_none());
+        assert!(verify_cmint_authorized(&[0xAA; 32], &[0u8; 32], &[0u8; 32], &[], &[]).is_none());
     }
 
     // ---- verify_provenance (composition over real conserving crypto) ----

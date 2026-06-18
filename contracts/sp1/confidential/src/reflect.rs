@@ -396,6 +396,11 @@ pub fn main() {
                     let n_prov_headers: u32 = io::read();
                     let prov_headers: Vec<Vec<u8>> = (0..n_prov_headers).map(|_| io::read()).collect();
                     let n_cxfers: u32 = io::read();
+                    // Cap the DAG size: reachability is O(n^2) in the cxfer count, and the Vec::with_capacity
+                    // below trusts it. 1024 is far above any real provenance depth; a pathological witness is a
+                    // clean reject, not an unbounded proving blowup. (A prover already pays its own proving
+                    // cost, but bound the worst case explicitly.)
+                    assert!(n_cxfers <= 1024, "burn-deposit: provenance cxfer count over cap");
                     let mut prov: Vec<burn_deposit::ProvenanceWitness> = Vec::with_capacity(n_cxfers as usize);
                     for _ in 0..n_cxfers {
                         let txid = r32();
@@ -433,6 +438,7 @@ pub fn main() {
                     // mintable: issuer-authorized cmint witnesses (each: the T_MINT reveal tx + the commit tx
                     // + the reveal's merkle inclusion). Empty (n=0) for a fixed-supply asset.
                     let n_cmints: u32 = io::read();
+                    assert!(n_cmints <= 1024, "burn-deposit: cmint count over cap");
                     #[allow(clippy::type_complexity)]
                     let mut cmints: Vec<(Vec<u8>, Vec<u8>, Vec<[u8; 32]>, u32, Vec<[u8; 32]>, Vec<u8>, Vec<[u8; 32]>)> =
                         Vec::with_capacity(n_cmints as usize);
@@ -490,18 +496,28 @@ pub fn main() {
                         let c0_ch = commitment_hash_compressed(&c0_compressed)?;
                         let mut valid_leaves: Vec<([u8; 32], [u8; 32])> = Vec::with_capacity(1 + cmints.len());
                         valid_leaves.push((c0_outpoint, c0_ch));
+                        let mut seen_commits: Vec<[u8; 32]> = Vec::with_capacity(cmints.len());
                         for (reveal_tx, commit_tx, msib, midx, reveal_wtxid_siblings, reveal_coinbase, reveal_cb_txid_siblings) in &cmints {
                             let reveal_txid = bitcoin::compute_txid(reveal_tx)?;
                             let root = bitcoin::verify_merkle_path(&reveal_txid, msib, *midx);
                             if !prov_headers.iter().any(|h| bitcoin::extract_merkle_root(h) == root) {
                                 return None;
                             }
+                            // Replay guard: ONE commit tx authorizes ONE mint. The issuer signature binds the
+                            // commit's input anchor but NOT which commit OUTPUT the reveal spends, so two reveals
+                            // spending different outputs of the same commit would reuse a single authorization to
+                            // mint two supply leaves. Reject a repeated commit (one commit ⇒ one leaf).
+                            let commit_txid = bitcoin::compute_txid(commit_tx)?;
+                            if seen_commits.contains(&commit_txid) {
+                                return None;
+                            }
+                            seen_commits.push(commit_txid);
                             // The CMINT envelope is read from the reveal's WITNESS — bind it (BIP141). commit_tx
                             // needs no witness auth: it's bound by txid (reveal spends commit_txid) + its inputs.
                             bitcoin::verify_tx_witness_committed(
                                 reveal_tx, *midx, reveal_wtxid_siblings, reveal_coinbase, reveal_cb_txid_siblings, &root,
                             )?;
-                            valid_leaves.push(burn_deposit::verify_cmint_authorized(b_asset, &mint_authority, reveal_tx, commit_tx)?);
+                            valid_leaves.push(burn_deposit::verify_cmint_authorized(b_asset, &mint_authority, &etch_txid, reveal_tx, commit_tx)?);
                         }
                         // (4) burned note: outpoint = the burn tx's spent input; env ν is the note's REAL ν.
                         let inputs = bitcoin::extract_inputs(tx)?;
