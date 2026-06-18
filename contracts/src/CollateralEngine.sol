@@ -58,7 +58,11 @@ interface IAmmTwap {
 ///         A shared native-ETH **insurance reserve** (funded by slashing surplus + liquidation penalties,
 ///         never by honest users) backstops the tail.
 contract CollateralEngine is Ownable, ReentrancyGuard {
-    IConfidentialPoolCollateral public immutable POOL;
+    // The pool. Set once (owner) after deploy — NOT immutable — to break the engine↔pool circular dep:
+    // the pool's COLLATERAL_ENGINE pointer is immutable, so the engine is deployed FIRST (pool unknown),
+    // the pool is deployed with the engine's address, then setPool wires it back. After the one-time set
+    // it is fixed (re-set reverts), so it is immutable in practice.
+    IConfidentialPoolCollateral public POOL;
     bytes32 public immutable CBTC_ASSET_ID; // the one canonical real-BTC asset (collateral)
     bytes32 public immutable CUSD_ASSET_ID; // = cdp_debt_asset_id(address(this)); cUSD is this controller's asset
     uint8 public immutable CBTC_DEC; // cBTC base-unit decimals (sats scale, e.g. 8)
@@ -121,6 +125,15 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
         // checks `debtAsset == keccak("tacit-cdp-debt-v1" ‖ controller)`, so this engine is its sole minter.
         CUSD_ASSET_ID = keccak256(abi.encodePacked("tacit-cdp-debt-v1", bytes20(uint160(address(this)))));
         _initializeOwner(admin);
+    }
+
+    error PoolAlreadySet();
+
+    /// @notice Wire the pool once after deploy (the engine↔pool circular-dep break). Reverts if already set,
+    ///         so it is fixed after the one call. No-op path for tests/deploys that pass the pool in the ctor.
+    function setPool(address pool) external onlyOwner {
+        if (address(POOL) != address(0)) revert PoolAlreadySet();
+        POOL = IConfidentialPoolCollateral(pool);
     }
 
     // ─────────────────────── owner-governed knobs ───────────────────────

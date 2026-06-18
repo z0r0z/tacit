@@ -56,12 +56,16 @@ bridge / reflection** path depends on the reflection-guest constants (items 1–
 
 ## Re-prove / deploy order
 
-0. **Build the tree that has the fast-lane PV field.** `reflect.rs`'s `consumedCount` field in
-   `BitcoinReflectionPublicValues` (11th field) is intentionally **uncommitted** until the promotion
-   commit. The box must `cargo prove build` the **working tree** (which has it), not a clean checkout —
-   a clean checkout drops it, the reflection guest commits **10** fields, the contract decodes **11**,
-   and every `attestBitcoinStateProven` reverts on `abi.decode`. Confirm `git diff reflect.rs` shows the
-   `consumedCount` field present before building.
+0. **Build the committed working tree (it carries the full PV surface).** Both public-value structs grew
+   and the contract decodes the grown shapes, so the box must `cargo prove build` the committed source —
+   any drift makes `abi.decode` revert. As of the confidential-DeFi v1 work (committed `df98d38`/`0fa28ac`):
+   - **Reflection** `BitcoinReflectionPublicValues`: `consumedCount` (fast-lane) **+** `cbtcLocksFolded[]`
+     **+** `cbtcLocksSpent[]` (cBTC per-lock surfacing) — all committed; the contract's
+     `BitcoinRelayPublicValues` matches.
+   - **Settle** `PublicValues`: `cdpPositionRoot` + `CdpMint[]`/`CdpClose[]`/`CdpLiquidate[]` + `CbtcMint[]`
+     (ops 15–18) appended last; the contract's `PublicValues` matches. New header input: `cdp_position_root`.
+   - The cBTC lock-fold is **track-not-mint** + the cBTC note is **owner-free (bearer)**; `fold_cbtc_lock`
+     re-validates the (Cx,Cy) curve point. Confirm `git status` is clean of these before building.
    - The committed `ETH_REFLECTION_VKEY [u32;8]` is **stale** (set in `f405e62`, before the eth-reflection
      guest gained the consumed-set in `c5b319a`). Item 2 (recompute it) is therefore load-bearing, not a
      formality — and because the reflection ELF embeds it, the resulting `BITCOIN_RELAY_VKEY` will **differ
@@ -71,10 +75,17 @@ bridge / reflection** path depends on the reflection-guest constants (items 1–
 2. Build the canonical eth-reflection ELF → recompute `ETH_REFLECTION_VKEY` → set it (item 2).
 3. Build the canonical settle + reflection ELFs. The prover box must run the **committed canonical
    ELF** (`include_bytes!`), never a native rebuild — drift → `ProofInvalid`.
-4. Pin the resulting `PROGRAM_VKEY` / `BITCOIN_RELAY_VKEY` in `sp1/confidential/elf-vkey-pin.json`.
-5. Deploy `ConfidentialPool` with the mainnet vkeys + genesis anchor + `HEADER_RELAY` (the deploy
-   script's `require`s enforce vkey↔pin coherence and a wired relay).
-6. Re-run `readiness-gate.sh` and the forge + cxfer-core suites against the pinned ELFs.
+4. **DIGEST_MATCH** on the new ELFs: reflect-exec a cBTC-lock reflection fixture + a CDP-mint/cBTC-mint
+   settle fixture and confirm the guest accepts + the digest/PV equals the JS mirror. The pinned ELF
+   predates the cBTC/CDP code, so this is the one end-to-end gate the static audit could not run.
+5. Pin the resulting `PROGRAM_VKEY` / `BITCOIN_RELAY_VKEY` in `sp1/confidential/elf-vkey-pin.json`.
+6. Deploy `ConfidentialPool` with the mainnet vkeys + genesis anchor + `HEADER_RELAY` + the
+   `COLLATERAL_ENGINE` (CREATE2-predict it so cBTC/cUSD are live/turn-on-able, or 0 to launch cBTC dormant —
+   note 0 forecloses turn-on without a fresh pool). The deploy script's `require`s enforce vkey↔pin
+   coherence, the verifier/factory codehashes, and a wired relay.
+7. Re-run `readiness-gate.sh` and the forge + cxfer-core suites against the pinned ELFs.
+
+See `MEMO-confidential-defi-v1-mainnet.md` for the consolidated, ordered launch sequence (cBTC + cUSD).
 
 ## Known limitations to carry into the runbook (not blockers)
 

@@ -51,6 +51,23 @@ contract CollateralEngineTest is Test {
         legs[0] = CdpLeg({asset: CBTC, value: v});
     }
 
+    function test_setPool_once_breaks_circular_dep() public {
+        // deploy with pool unknown (the real-deploy order: engine first), then wire it once.
+        CollateralEngine e = new CollateralEngine(address(0), CBTC, 8, 8, admin);
+        assertEq(address(e.POOL()), address(0));
+        vm.prank(admin);
+        e.setPool(address(pool));
+        assertEq(address(e.POOL()), address(pool));
+        // one-shot: re-set reverts
+        vm.prank(admin);
+        vm.expectRevert(CollateralEngine.PoolAlreadySet.selector);
+        e.setPool(address(0xdead));
+        // owner-only
+        CollateralEngine e2 = new CollateralEngine(address(0), CBTC, 8, 8, admin);
+        vm.expectRevert();
+        e2.setPool(address(pool));
+    }
+
     function test_cusd_asset_id_is_controller_derived() public view {
         assertEq(eng.CUSD_ASSET_ID(), keccak256(abi.encodePacked("tacit-cdp-debt-v1", bytes20(uint160(address(eng))))));
     }
