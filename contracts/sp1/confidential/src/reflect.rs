@@ -403,36 +403,31 @@ pub fn main() {
                     assert!(n_cxfers <= 1024, "burn-deposit: provenance cxfer count over cap");
                     let mut prov: Vec<burn_deposit::ProvenanceWitness> = Vec::with_capacity(n_cxfers as usize);
                     for _ in 0..n_cxfers {
-                        let txid = r32();
+                        // The CXFER tx bytes: txid (computed), the envelope (asset, kernel sig, output
+                        // commitments, range proof) and the input outpoints are all derived from these in
+                        // verify_cxfers — the conserving step is bound to the real on-chain tx.
+                        let tx: Vec<u8> = io::read();
                         let n_in: u32 = io::read();
-                        let mut input_outpoints = Vec::with_capacity(n_in as usize);
-                        let mut input_commitments = Vec::with_capacity(n_in as usize);
-                        for _ in 0..n_in {
-                            let pt = r32();
-                            let pv: u32 = io::read();
-                            input_outpoints.push((pt, pv));
-                            input_commitments.push(r_n::<33>());
-                        }
+                        // Spent-note commitment POINTS (Bitcoin records only the outpoint); bound by the DAG.
+                        let input_commitments: Vec<[u8; 33]> = (0..n_in).map(|_| r_n::<33>()).collect();
                         let n_out: u32 = io::read();
-                        let mut output_commitments = Vec::with_capacity(n_out as usize);
-                        let mut output_vouts = Vec::with_capacity(n_out as usize);
-                        for _ in 0..n_out {
-                            output_commitments.push(r_n::<33>());
-                            let v: u32 = io::read();
-                            output_vouts.push(v);
-                        }
-                        // 0 for a pure CXFER transfer; > 0 for a CBURN step (its change outputs descend
-                        // from the inputs minus this public burn). Bound into the kernel message.
+                        // Produced-note vouts (values are tx-derived from the envelope's commitments).
+                        let output_vouts: Vec<u32> = (0..n_out).map(|_| io::read()).collect();
+                        // 0 for a pure CXFER transfer; > 0 for a CBURN step (kernel-bound, can't be understated).
                         let burned_amount: u64 = io::read();
-                        let range_proof: Vec<u8> = io::read();
-                        let kernel_sig = r_n::<64>();
                         let n_sib: u32 = io::read();
                         let merkle_siblings: Vec<[u8; 32]> = (0..n_sib).map(|_| r32()).collect();
                         let merkle_index: u32 = io::read();
                         let confirmed_block_root = r32();
+                        // BIP141 witness authentication: wtxid path + same-block coinbase commitment.
+                        let n_wsib: u32 = io::read();
+                        let wtxid_siblings: Vec<[u8; 32]> = (0..n_wsib).map(|_| r32()).collect();
+                        let coinbase: Vec<u8> = io::read();
+                        let n_cbsib: u32 = io::read();
+                        let coinbase_txid_siblings: Vec<[u8; 32]> = (0..n_cbsib).map(|_| r32()).collect();
                         prov.push(burn_deposit::ProvenanceWitness {
-                            txid, input_outpoints, input_commitments, output_commitments, output_vouts,
-                            burned_amount, range_proof, kernel_sig, merkle_siblings, merkle_index, confirmed_block_root,
+                            tx, input_commitments, output_vouts, burned_amount, merkle_siblings, merkle_index,
+                            confirmed_block_root, wtxid_siblings, coinbase, coinbase_txid_siblings,
                         });
                     }
                     // mintable: issuer-authorized cmint witnesses (each: the T_MINT reveal tx + the commit tx
