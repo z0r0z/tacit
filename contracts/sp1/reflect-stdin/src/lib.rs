@@ -20,10 +20,30 @@
 use sp1_sdk::SP1Stdin;
 
 fn hexv(s: &str) -> Vec<u8> { hex::decode(s.trim_start_matches("0x")).unwrap() }
-fn r32(s: &mut SP1Stdin, v: &serde_json::Value) { s.write(&hexv(v.as_str().unwrap())); }
-fn path(s: &mut SP1Stdin, v: &serde_json::Value) { for p in v.as_array().unwrap() { s.write(&hexv(p.as_str().unwrap())); } }
-fn h(s: &mut SP1Stdin, v: &serde_json::Value, k: &str) { s.write(&hexv(v[k].as_str().unwrap())); }
-fn u32w(s: &mut SP1Stdin, v: &serde_json::Value, k: &str) { s.write(&(v[k].as_u64().unwrap() as u32)); }
+// Every fixed-width field is length-checked so a malformed fixture fails LOUDLY here rather than silently
+// shifting the stream (the guest reads fixed widths via io::read — a wrong length desyncs everything after).
+fn r32(s: &mut SP1Stdin, v: &serde_json::Value) {
+    let b = hexv(v.as_str().expect("r32 field"));
+    assert_eq!(b.len(), 32, "r32 field must be exactly 32 bytes");
+    s.write(&b);
+}
+// The guest's r_path() always reads EXACTLY 32 siblings (the pool-tree / IMT / eth-set depth), so the
+// serializer must write exactly 32. (Variable-length Bitcoin merkle siblings are written length-prefixed
+// elsewhere, not through path().)
+fn path(s: &mut SP1Stdin, v: &serde_json::Value) {
+    let a = v.as_array().expect("path array");
+    assert_eq!(a.len(), 32, "path must have exactly 32 siblings");
+    for p in a { r32(s, p); }
+}
+fn h(s: &mut SP1Stdin, v: &serde_json::Value, k: &str) {
+    let b = hexv(v[k].as_str().unwrap_or_else(|| panic!("hex field {k}")));
+    s.write(&b);
+}
+fn u32w(s: &mut SP1Stdin, v: &serde_json::Value, k: &str) {
+    let x = v[k].as_u64().unwrap_or_else(|| panic!("u32 field {k}"));
+    assert!(x <= u32::MAX as u64, "{k} over u32");
+    s.write(&(x as u32));
+}
 
 // TAC burn-deposit witness (reflect.rs read order for a 0x2B burn of a non-live-set note).
 fn write_burn_deposit(s: &mut SP1Stdin, bd: &serde_json::Value) {
@@ -91,7 +111,8 @@ pub fn write_stdin(f: &serde_json::Value) -> SP1Stdin {
     let cbtc = p.get("cbtcLocks").and_then(|v| v.as_array()).map(|a| a.as_slice()).unwrap_or(&[]);
     s.write(&(cbtc.len() as u32));
     for kv in cbtc { let t = kv.as_array().unwrap(); r32(&mut s, &t[0]); r32(&mut s, &t[1]); r32(&mut s, &t[2]); }
-    s.write(&p.get("cbtcBackingSats").and_then(|v| v.as_u64()).unwrap_or(0));
+    // string-or-number (the assembler emits large u64 sats as a string, like the pool reserves below).
+    s.write(&p.get("cbtcBackingSats").and_then(|v| v.as_u64().or_else(|| v.as_str().and_then(|x| x.parse::<u64>().ok()))).unwrap_or(0));
 
     // Track B resume state (guest reads it after cbtcBackingSats): the per-pool reserve registry. The
     // assembler emits reserve/share/k_last as strings (u64/u128 exceed JS Number); parse them losslessly.
@@ -102,13 +123,16 @@ pub fn write_stdin(f: &serde_json::Value) -> SP1Stdin {
         r32(&mut s, &pe["poolId"]); r32(&mut s, &pe["assetA"]); r32(&mut s, &pe["assetB"]);
         s.write(&u64f("reserveA")); s.write(&u64f("reserveB")); s.write(&u64f("totalShares"));
         s.write(&(if pe["c0Backed"].as_bool().unwrap_or(false) { 1u32 } else { 0u32 }));
-        s.write(&(u64f("protocolFeeBps") as u16));
+        let pfb = u64f("protocolFeeBps");
+        assert!(pfb <= u16::MAX as u64, "protocolFeeBps over u16");
+        s.write(&(pfb as u16));
         s.write(&pe.get("kLast").and_then(|v| v.as_str()).and_then(|x| x.parse::<u128>().ok()).unwrap_or(0u128));
         s.write(&u64f("protocolFeeAccrued"));
     }
     // FAST-LANE resume count: read by the guest at the END of read_scan_prior_state (after the pools). 0 for a
     // forward-only fixture (the gens don't set it). Omitting this desyncs the whole stream → an EOF halt.
-    s.write(&p.get("consumedCount").and_then(|v| v.as_u64()).unwrap_or(0));
+    let prior_consumed = p.get("consumedCount").and_then(|v| v.as_u64()).unwrap_or(0);
+    s.write(&prior_consumed);
     // FAST-LANE / Mode-B anchor: the eth-reflection accumulator digest committed by the last Mode-B cycle
     // (read right after consumedCount). [0;32] for a never-Mode-B chain — write 32 zero bytes so the stream
     // stays in sync; a non-zero value resumes the eth chain the next Mode-B fold must continue.
@@ -123,12 +147,19 @@ pub fn write_stdin(f: &serde_json::Value) -> SP1Stdin {
     // consumedNuSetRoot, word 10 low-8 = consumedNuCount) for a fold_crossout / fold_consumed.
     let mode_b = f.get("modeB").and_then(|v| v.as_u64()).unwrap_or(0);
     s.write(&(mode_b as u32));
+    // consumedNuCount drives how many fast-lane consumed witnesses the guest reads (it derives the count
+    // from the eth proof, NOT the stream); capture it from ethPv word 10 so the consumed loop can assert it.
+    let mut consumed_nu_count = prior_consumed;
     if mode_b != 0 {
+        // A real recursion proof carries the eth proof's actual public values (bitcoin_prove asserts
+        // ethPv == eth.public_values before proving); the zero-ethPool fallback is for a LOCAL execute only.
         let eth_pv = f.get("ethPv").and_then(|v| v.as_str()).map(hexv).unwrap_or_else(|| {
             let mut b = vec![0u8; 11 * 32];
             b[8 * 32..9 * 32].copy_from_slice(&hexv("0x8a83300119ac1e64a2318d3db330ed496c51276c636a93633b2d5cfd283c2d44"));
             b
         });
+        assert_eq!(eth_pv.len(), 11 * 32, "ethPv must be exactly 11 ABI words (352 bytes)");
+        consumed_nu_count = u64::from_be_bytes(eth_pv[11 * 32 - 8..11 * 32].try_into().unwrap());
         s.write(&eth_pv);
     }
 
@@ -141,7 +172,14 @@ pub fn write_stdin(f: &serde_json::Value) -> SP1Stdin {
     // (reflect.rs). For each consumed ν: nu, spendRoot, Cx, Cy, srcTxid, srcVout(u32), set_path, then the
     // spent-IMT insert witness — mirror that exact order. A forward fixture has no `consumed` (mode_b=0).
     if mode_b != 0 {
-        for cons in f.get("consumed").and_then(|v| v.as_array()).map(|a| a.as_slice()).unwrap_or(&[]) {
+        let consumed = f.get("consumed").and_then(|v| v.as_array()).map(|a| a.as_slice()).unwrap_or(&[]);
+        // The guest reads exactly `consumedNuCount - prior.consumedCount` consumed witnesses (it counts them
+        // from the eth proof, not the stream), so the fixture must carry exactly that many or the rest of the
+        // stream desyncs.
+        assert!(consumed_nu_count >= prior_consumed, "consumedNuCount rolled back below the prior count");
+        assert_eq!(consumed.len() as u64, consumed_nu_count - prior_consumed,
+            "consumed witness count must equal consumedNuCount - prior.consumedCount (stream would desync)");
+        for cons in consumed {
             r32(&mut s, &cons["nu"]);
             r32(&mut s, &cons["spendRoot"]);
             r32(&mut s, &cons["cx"]);
@@ -207,10 +245,16 @@ pub fn write_stdin(f: &serde_json::Value) -> SP1Stdin {
             if let Some(lr) = tx.get("lpRemove").filter(|v| !v.is_null()) {
                 path(&mut s, &lr["recvAPath"]); path(&mut s, &lr["recvBPath"]);
             }
-            // harvest (0x3B) / farm-refund (0x3E): the guest reads the reward/refund note's append path after
-            // the envelope (both dispatch after swap_var) — mirror that order.
+            // harvest (0x3B) / farm-refund (0x3E): two SEPARATE guest branches, each reading one note-append
+            // path after the envelope (harvest dispatches before farm_refund). A tx carries exactly one of the
+            // two envelopes, so exactly one path is read. The JS assembler emits BOTH under the single
+            // "harvest" key (confidential-pool.js: `type === 'harvest' || 'farm_refund'`); the "farmRefund"
+            // branch below is defensive so a future split key can't desync the stream.
             if let Some(hv) = tx.get("harvest").filter(|v| !v.is_null()) {
                 path(&mut s, &hv["notePath"]);
+            }
+            if let Some(fr) = tx.get("farmRefund").filter(|v| !v.is_null()) {
+                path(&mut s, &fr["notePath"]);
             }
             // protocol-fee claim (0x31): the guest reads the claim note's append path after the envelope
             // (dispatches after harvest/refund) — mirror that order.
