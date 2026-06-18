@@ -23,7 +23,10 @@ fn main() {
     let s = write_stdin(&f);
     let client = ProverClient::builder().cpu().build();
     let (out, rep) = client.execute(Elf::Static(elf), s).run().expect("execute failed (guest panicked / witness desync)");
-    let pv = out.as_slice();
+    // BitcoinReflectionPublicValues is now a DYNAMIC tuple (it carries cbtcLocksFolded[]/cbtcLocksSpent[]),
+    // so abi_encode prepends a 0x20 offset word — skip it so word(i) indexes struct field i again.
+    let raw = out.as_slice();
+    let pv = if raw.len() >= 32 && raw[..31].iter().all(|&b| b == 0) && raw[31] == 0x20 { &raw[32..] } else { raw };
     println!("EXECUTE_OK cycles={} pv_bytes={}", rep.total_instruction_count(), pv.len());
     // BitcoinReflectionPublicValues: [0]priorDigest [1]poolRoot [2]spentRoot [3]burnRoot [4]height
     // [5]newDigest [6]prevHash [7]tipHash [8]ethPoolReflected [9]cbtcBackingSats.
