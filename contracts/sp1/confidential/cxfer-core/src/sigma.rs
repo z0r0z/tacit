@@ -7,6 +7,15 @@
 //! Challenge e = last 16 bytes (BE) of SHA256(DOMAIN ‖ C_secp ‖ C_BJJ ‖ A_secp ‖ A_BJJ).
 //! Checks: secp  z_a·H + z_r_secp·G == A_secp + e·C_secp
 //!         BJJ   z_a·H_BJJ + z_r_BJJ·G_BJJ == A_BJJ + e·C_BJJ
+//!
+//! SECURITY CLAIM (deliberately narrow): this proves the two commitments hide the same amount AS A SCALAR
+//! MODULO EACH GROUP ORDER (z_a is the shared response, reduced mod n_secp on secp and mod n_BJJ on BJJ),
+//! NOT as an unbounded integer, at 128-bit challenge soundness (e is 128 bits, matching the JS prover +
+//! amm_swap_batch.circom — intentional, circuit-sized). So modular equality ⇒ integer equality ONLY when
+//! the amount is independently range-bounded well below both orders. It is the CALLER's invariant that every
+//! C_secp / C_BJJ accepted through this proof is also range-checked (the BJJ circuit range-checks; the secp
+//! note is BP+ range-bounded or publicly amount-opened). The sigma is a cross-curve equality hinge — NOT a
+//! proof the amount is AMM-allowed, the note live, the reserves correct, or the trade authorized.
 
 use crate::{bjj, decompress, gen_h, scalar_reduce_be};
 use k256::elliptic_curve::group::Group;
