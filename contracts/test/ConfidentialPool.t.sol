@@ -85,7 +85,7 @@ contract ConfidentialPoolTest is Test {
         verifier = new MockSP1Verifier();
         factory = new CanonicalAssetFactory();
         relay = new MockRelay(ANCHOR);
-        pool = new ConfidentialPool(address(verifier), VKEY, RELAY_VKEY, address(factory), address(relay), ANCHOR, 6, bytes32(0));
+        pool = new ConfidentialPool(address(verifier), VKEY, RELAY_VKEY, address(factory), address(relay), ANCHOR, 6, bytes32(0), bytes32(0));
         // The pool now anchors a reflection batch's tip to the relay tip walked back
         // REFLECTION_CONFIRMATIONS (the maturity guard), so seed a chain that buries ANCHOR exactly that
         // deep: walking the relay's parents back REFLECTION_CONFIRMATIONS hops reaches ANCHOR. The attest
@@ -104,6 +104,13 @@ contract ConfidentialPoolTest is Test {
     function _pv() internal view returns (ConfidentialPool.PublicValues memory pv) {
         pv.version = pool.PV_VERSION();
         pv.chainBinding = keccak256(abi.encodePacked(block.chainid, address(pool)));
+        pv.spendRoot = bytes32(0);
+    }
+
+    // Like _pv but bound to a specific pool deployment (for tests that spin up their own pool).
+    function _pvFor(ConfidentialPool target) internal view returns (ConfidentialPool.PublicValues memory pv) {
+        pv.version = target.PV_VERSION();
+        pv.chainBinding = keccak256(abi.encodePacked(block.chainid, address(target)));
         pv.spendRoot = bytes32(0);
     }
 
@@ -916,7 +923,7 @@ contract ConfidentialPoolTest is Test {
     /// ERC20 with exactly that (symbol, decimals) — no trusted metadata, no manual step.
     function test_settle_auto_registers_from_attested_meta() public {
         CanonicalAssetFactory factory = new CanonicalAssetFactory();
-        ConfidentialPool p = new ConfidentialPool(address(verifier), VKEY, RELAY_VKEY, address(factory), address(relay), ANCHOR, 6, bytes32(0));
+        ConfidentialPool p = new ConfidentialPool(address(verifier), VKEY, RELAY_VKEY, address(factory), address(relay), ANCHOR, 6, bytes32(0), bytes32(0));
 
         // The guest now confirms the asset is real + funded on Bitcoin: it proves a note
         // for this asset_id is a member of a relay-attested pool root and commits that root
@@ -963,7 +970,7 @@ contract ConfidentialPoolTest is Test {
     /// is rejected — no junk canonical ERC20 can be lazy-deployed from it.
     function test_settle_attest_meta_requires_attested_pool_root() public {
         CanonicalAssetFactory factory = new CanonicalAssetFactory();
-        ConfidentialPool p = new ConfidentialPool(address(verifier), VKEY, RELAY_VKEY, address(factory), address(relay), ANCHOR, 6, bytes32(0));
+        ConfidentialPool p = new ConfidentialPool(address(verifier), VKEY, RELAY_VKEY, address(factory), address(relay), ANCHOR, 6, bytes32(0), bytes32(0));
 
         ConfidentialPool.PublicValues memory pv;
         pv.version = p.PV_VERSION();
@@ -1289,11 +1296,11 @@ contract ConfidentialPoolTest is Test {
     /// (UnanchoredReflection) forever. Both are ctor-enforced.
     function test_ctor_reflection_requires_relay_and_anchor() public {
         vm.expectRevert(ConfidentialPool.ZeroAddress.selector); // missing header relay
-        new ConfidentialPool(address(verifier), VKEY, RELAY_VKEY, address(factory), address(0), ANCHOR, 6, bytes32(0));
+        new ConfidentialPool(address(verifier), VKEY, RELAY_VKEY, address(factory), address(0), ANCHOR, 6, bytes32(0), bytes32(0));
         vm.expectRevert(ConfidentialPool.ZeroAddress.selector); // missing genesis anchor
-        new ConfidentialPool(address(verifier), VKEY, RELAY_VKEY, address(factory), address(relay), bytes32(0), 6, bytes32(0));
+        new ConfidentialPool(address(verifier), VKEY, RELAY_VKEY, address(factory), address(relay), bytes32(0), 6, bytes32(0), bytes32(0));
         // Both present → deploys, anchor seeded.
-        ConfidentialPool ok = new ConfidentialPool(address(verifier), VKEY, RELAY_VKEY, address(factory), address(relay), ANCHOR, 6, bytes32(0));
+        ConfidentialPool ok = new ConfidentialPool(address(verifier), VKEY, RELAY_VKEY, address(factory), address(relay), ANCHOR, 6, bytes32(0), bytes32(0));
         assertEq(ok.lastReflectionBlockHash(), ANCHOR, "genesis anchor seeded");
         assertEq(ok.REFLECTION_CONFIRMATIONS(), 6, "maturity depth set");
     }
@@ -1304,14 +1311,14 @@ contract ConfidentialPoolTest is Test {
     /// deploy (relay vkey 0) doesn't read the value, so any value is accepted.
     function test_ctor_reflection_confirmations_bounds() public {
         vm.expectRevert(ConfidentialPool.BadReflectionConfirmations.selector); // zero maturity with reflection on
-        new ConfidentialPool(address(verifier), VKEY, RELAY_VKEY, address(factory), address(relay), ANCHOR, 0, bytes32(0));
+        new ConfidentialPool(address(verifier), VKEY, RELAY_VKEY, address(factory), address(relay), ANCHOR, 0, bytes32(0), bytes32(0));
         vm.expectRevert(ConfidentialPool.BadReflectionConfirmations.selector); // above MAX
-        new ConfidentialPool(address(verifier), VKEY, RELAY_VKEY, address(factory), address(relay), ANCHOR, 145, bytes32(0));
+        new ConfidentialPool(address(verifier), VKEY, RELAY_VKEY, address(factory), address(relay), ANCHOR, 145, bytes32(0), bytes32(0));
         // a deeper-but-bounded depth is fine
-        ConfidentialPool deep = new ConfidentialPool(address(verifier), VKEY, RELAY_VKEY, address(factory), address(relay), ANCHOR, 144, bytes32(0));
+        ConfidentialPool deep = new ConfidentialPool(address(verifier), VKEY, RELAY_VKEY, address(factory), address(relay), ANCHOR, 144, bytes32(0), bytes32(0));
         assertEq(deep.REFLECTION_CONFIRMATIONS(), 144, "max maturity depth");
         // reflection OFF: the maturity value is unused, so even 0 deploys
-        ConfidentialPool off = new ConfidentialPool(address(verifier), VKEY, bytes32(0), address(factory), address(0), bytes32(0), 0, bytes32(0));
+        ConfidentialPool off = new ConfidentialPool(address(verifier), VKEY, bytes32(0), address(factory), address(0), bytes32(0), 0, bytes32(0), bytes32(0));
         assertEq(off.REFLECTION_CONFIRMATIONS(), 0, "off: unvalidated, unused");
     }
 
@@ -1321,61 +1328,93 @@ contract ConfidentialPoolTest is Test {
     /// so it never replays Bitcoin history. The block-anchor + this digest are the matched resume pair.
     function test_generational_reflection_resume_digest() public {
         // gen-1: default 0 ⇒ continues the protocol genesis digest.
-        ConfidentialPool gen1 = new ConfidentialPool(address(verifier), VKEY, RELAY_VKEY, address(factory), address(relay), ANCHOR, 6, bytes32(0));
+        ConfidentialPool gen1 = new ConfidentialPool(address(verifier), VKEY, RELAY_VKEY, address(factory), address(relay), ANCHOR, 6, bytes32(0), bytes32(0));
         assertEq(gen1.knownReflectionDigest(), gen1.REFLECTION_GENESIS_DIGEST(), "gen-1 seeds the genesis digest");
 
         // gen-N: a non-zero near-tip resume digest seeds knownReflectionDigest to it (no history replay).
         bytes32 nearTip = keccak256("near-tip-reflected-digest");
-        ConfidentialPool genN = new ConfidentialPool(address(verifier), VKEY, RELAY_VKEY, address(factory), address(relay), ANCHOR, 6, nearTip);
+        ConfidentialPool genN = new ConfidentialPool(address(verifier), VKEY, RELAY_VKEY, address(factory), address(relay), ANCHOR, 6, nearTip, bytes32(0));
         assertEq(genN.knownReflectionDigest(), nearTip, "gen-N resumes at the near-tip digest");
         assertTrue(genN.knownReflectionDigest() != genN.REFLECTION_GENESIS_DIGEST(), "gen-N is not genesis-anchored");
     }
 
-    /// STAGE 1 — tETH subsumption (ops/PLAN-teth-subsumption.md): NATIVE ETH may carry a cross-chain link
-    /// (tETH = shielded ETH), while a FOREIGN ERC20 escrow + a link stays barred. The escrow==supply
-    /// invariant: wrap ETH → escrow tracks it; an unwrap draws EXACTLY the value released; and the contract
-    /// is FAIL-CLOSED on escrow (an unwrap beyond escrow reverts InsufficientEscrow — locks, never drains).
+    /// STAGE 1 — tETH subsumption (ops/PLAN-teth-subsumption.md): NATIVE ETH carries a cross-chain link
+    /// PINNED AT CONSTRUCTION (tETH = shielded ETH); the permissionless registerWrapped can't set a
+    /// native-ETH link, and a FOREIGN ERC20 escrow + a link stays barred. The escrow==supply invariant:
+    /// wrap ETH → escrow tracks it; an unwrap draws EXACTLY the value released; and the contract is
+    /// FAIL-CLOSED on escrow (an unwrap beyond escrow reverts InsufficientEscrow — locks, never drains).
     /// No escrow-drain-defense change: tETH→ETH is a normal (non-btcHomed) unwrap, so the defense never fires.
     function test_teth_native_eth_link_and_escrow_supply_invariant() public {
         bytes32 tethBitcoinId = keccak256("teth-bitcoin-canonical-id");
-        // Native ETH (address(0)) + a cross-chain link is now allowed — the protocol's own escrow backs it.
-        bytes32 teth = pool.registerWrapped(address(0), 10 ** 10, tethBitcoinId, "Tacit ETH", "tETH", 18);
-        assertEq(pool.localAssetOf(tethBitcoinId), teth, "the Bitcoin tETH id resolves to the native-ETH asset");
-        (, address und, , bytes32 link, bool pm, , ,) = pool.assets(teth);
+        // The native-ETH (address(0)) cross-chain link is set ONLY by the constructor (TETH_BITCOIN_LINK).
+        ConfidentialPool p = new ConfidentialPool(
+            address(verifier), VKEY, RELAY_VKEY, address(factory), address(relay), ANCHOR, 6, bytes32(0), tethBitcoinId
+        );
+        bytes32 teth = p.localAssetOf(tethBitcoinId);
+        assertTrue(teth != bytes32(0), "ctor pinned the Bitcoin tETH id to the native-ETH asset");
+        assertEq(p.TETH_BITCOIN_LINK(), tethBitcoinId, "immutable records the pinned link");
+        (, address und, , bytes32 link, bool pm, , ,) = p.assets(teth);
         assertEq(und, address(0), "native ETH backing");
         assertEq(link, tethBitcoinId, "carries the Bitcoin link");
         assertTrue(!pm, "escrow-backed, not pool-minted");
 
+        // The PUBLIC registerWrapped can't bind a native-ETH link (the slot is also already taken).
+        vm.expectRevert(ConfidentialPool.CrossChainEscrow.selector);
+        p.registerWrapped(address(0), 10 ** 10, keccak256("another-link"), "X", "X", 18);
+
         // A FOREIGN ERC20 escrow + a link is STILL barred (its backing the pool can't control).
         MockERC20 ext = new MockERC20();
         vm.expectRevert(ConfidentialPool.CrossChainEscrow.selector);
-        pool.registerWrapped(address(ext), 1, keccak256("foreign-link"), "X", "X", 18);
+        p.registerWrapped(address(ext), 1, keccak256("foreign-link"), "X", "X", 18);
 
         // Wrap ETH → tETH: escrow == the deposited ETH (escrow tracks supply).
         uint256 amt = 0.5 ether; // a multiple of UNIT_SCALE (1e10)
-        pool.wrap{value: amt}(teth, amt, keccak256(abi.encodePacked(bytes32(uint256(1)), bytes32(uint256(2)), bytes32(uint256(3)))));
-        assertEq(pool.escrow(teth), amt, "escrow == deposited ETH");
+        p.wrap{value: amt}(teth, amt, keccak256(abi.encodePacked(bytes32(uint256(1)), bytes32(uint256(2)), bytes32(uint256(3)))));
+        assertEq(p.escrow(teth), amt, "escrow == deposited ETH");
 
-        _seedLeaves(2); // headroom for the no-inflation floor (a withdrawal spends a nullifier)
+        // headroom for the no-inflation floor (a withdrawal spends a nullifier)
+        ConfidentialPool.PublicValues memory seed = _pvFor(p);
+        seed.leaves = new bytes32[](2);
+        seed.leaves[0] = keccak256("teth-seed-0");
+        seed.leaves[1] = keccak256("teth-seed-1");
+        p.settle(abi.encode(seed), "", new bytes[](2));
 
         // Unwrap part — a NORMAL (non-btcHomed) withdrawal: native ETH released, escrow drawn by exactly it.
         uint256 outValue = (amt / 1e10) / 2; // half, in tacit-units
-        ConfidentialPool.PublicValues memory pv = _pv();
+        ConfidentialPool.PublicValues memory pv = _pvFor(p);
         pv.nullifiers = _arr(keccak256("teth-note-nu"));
         pv.withdrawals = new ConfidentialPool.Withdrawal[](1);
         pv.withdrawals[0] = ConfidentialPool.Withdrawal(teth, RECIP, outValue);
         uint256 balBefore = RECIP.balance;
-        pool.settle(abi.encode(pv), "", new bytes[](0));
-        assertEq(pool.escrow(teth), amt - outValue * 1e10, "escrow drawn by exactly the unwrapped value");
+        p.settle(abi.encode(pv), "", new bytes[](0));
+        assertEq(p.escrow(teth), amt - outValue * 1e10, "escrow drawn by exactly the unwrapped value");
         assertEq(RECIP.balance - balBefore, outValue * 1e10, "native ETH released to the recipient");
 
         // FAIL-CLOSED: an unwrap beyond the remaining escrow reverts (a shortfall locks, never drains).
-        ConfidentialPool.PublicValues memory over = _pv();
+        ConfidentialPool.PublicValues memory over = _pvFor(p);
         over.nullifiers = _arr(keccak256("teth-note-nu-2"));
         over.withdrawals = new ConfidentialPool.Withdrawal[](1);
         over.withdrawals[0] = ConfidentialPool.Withdrawal(teth, RECIP, amt / 1e10); // > remaining escrow
         vm.expectRevert(ConfidentialPool.InsufficientEscrow.selector);
-        pool.settle(abi.encode(over), "", new bytes[](0));
+        p.settle(abi.encode(over), "", new bytes[](0));
+    }
+
+    /// The native-ETH cross-chain link can be bound ONLY at construction — the permissionless registerWrapped
+    /// rejects a native-ETH link (single slot, no token to authenticate it against), and an unlinked native-ETH
+    /// escrow asset is still registerable.
+    function test_native_eth_link_rejected_on_registerWrapped() public {
+        // Fresh pool with NO tETH link: native ETH may still be registered as a plain link-free escrow asset.
+        ConfidentialPool p = new ConfidentialPool(
+            address(verifier), VKEY, RELAY_VKEY, address(factory), address(relay), ANCHOR, 6, bytes32(0), bytes32(0)
+        );
+        assertEq(p.TETH_BITCOIN_LINK(), bytes32(0), "no tETH link pinned");
+        // A native-ETH link on the permissionless path reverts.
+        vm.expectRevert(ConfidentialPool.CrossChainEscrow.selector);
+        p.registerWrapped(address(0), 1, keccak256("squat-link"), "cETH", "cETH", 18);
+        // The same native-ETH registration WITHOUT a link succeeds (plain shielded ETH).
+        bytes32 ceth = p.registerWrapped(address(0), 1, bytes32(0), "cETH", "cETH", 18);
+        assertTrue(ceth != bytes32(0), "link-free native ETH registers");
+        assertEq(p.localAssetOf(keccak256("squat-link")), bytes32(0), "no link was bound");
     }
 
     function test_settle_withdraw_unregistered_asset_reverts() public {

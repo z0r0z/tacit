@@ -157,7 +157,7 @@ contract CanonicalMintersTest is Test {
     function test_mintable_minter_can_never_be_pool_backed() public {
         CappedMintMinter m = new CappedMintMinter(factory, ETCHER, SALT, "CAP", 18, bytes32(0), AUTH, 0, 0);
         ConfidentialPool pool =
-            new ConfidentialPool(address(0x5117), bytes32(uint256(1)), bytes32(0), address(0), address(0), bytes32(0), 6, bytes32(0));
+            new ConfidentialPool(address(0x5117), bytes32(uint256(1)), bytes32(0), address(0), address(0), bytes32(0), 6, bytes32(0), bytes32(0));
         address token = address(m.TOKEN()); // resolve before expectRevert (else it consumes this staticcall)
         vm.expectRevert(ConfidentialPool.PoolNotMinter.selector);
         pool.registerMinted(token, "x", "x", 18); // MINTER is the helper, not the pool

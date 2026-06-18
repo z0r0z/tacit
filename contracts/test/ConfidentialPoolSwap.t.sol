@@ -31,7 +31,7 @@ contract ConfidentialPoolSwapTest is Test {
 
     function setUp() public {
         vm.chainId(1);
-        pool = new ConfidentialPool(address(new MockSP1Verifier()), bytes32(uint256(0xABCD)), bytes32(0), address(0), address(0), bytes32(0), 6, bytes32(0));
+        pool = new ConfidentialPool(address(new MockSP1Verifier()), bytes32(uint256(0xABCD)), bytes32(0), address(0), address(0), bytes32(0), 6, bytes32(0), bytes32(0));
         tokenA = new MockERC20();
         tokenB = new MockERC20();
         assetA = pool.registerWrapped(address(tokenA), 1, bytes32(0), "Conf A", "cA", 18);

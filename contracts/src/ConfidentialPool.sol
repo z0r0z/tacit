@@ -136,6 +136,11 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     /// Factory used to lazily deploy a Tacit asset's canonical ERC20 on first bridge_mint,
     /// with the guest-proven metadata (OP_ATTEST_META). 0 = auto-register disabled.
     ICanonicalAssetFactory public immutable CANONICAL_FACTORY;
+    /// Canonical Bitcoin-side asset id bound to NATIVE ETH (tETH = shielded ETH) for this generation,
+    /// pinned at construction. Native ETH has no token whose ASSET_ID could authenticate a cross-chain
+    /// link, so the link is set once here rather than via the permissionless registerWrapped — fixing it
+    /// at deploy and keeping the tacit-side tETH id consistent across pool generations. 0 ⇒ no tETH here.
+    bytes32 public immutable TETH_BITCOIN_LINK;
 
     // ──────────────────── Commitment tree (global, Keccak) ────────────────────
 
@@ -460,7 +465,8 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         address headerRelay_,
         bytes32 genesisReflectionAnchor_,
         uint256 reflectionConfirmations_,
-        bytes32 reflectionResumeDigest_
+        bytes32 reflectionResumeDigest_,
+        bytes32 tethBitcoinLink_
     ) {
         if (sp1Verifier_ == address(0)) revert ZeroAddress();
         if (programVKey_ == bytes32(0)) revert ZeroVKey();
@@ -511,6 +517,16 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         // claim/refund can pin a known (initially empty) lock root.
         lockRoot = z;
         everKnownLockRoot[z] = true;
+
+        // Pin native ETH (tETH) for this generation. Set here — not via the permissionless registerWrapped
+        // — so the single native-ETH slot's cross-chain link is fixed at construction and identical across
+        // generations. 0 ⇒ this generation doesn't host tETH (native ETH may still be registered later as a
+        // plain link-free escrow asset). Native ETH at 18 dec → Tacit 8 ⇒ unitScale 10^10; the native-ETH
+        // register path makes no external call, so this is constructor-safe.
+        TETH_BITCOIN_LINK = tethBitcoinLink_;
+        if (tethBitcoinLink_ != bytes32(0)) {
+            _register(address(0), 10 ** 10, tethBitcoinLink_, false, "Tacit ETH", "tETH", 18);
+        }
     }
 
     /// Reject stray ETH: native ETH may only enter through the payable `wrap`, which binds it to a
@@ -525,10 +541,10 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     ///         escrows it on wrap and releases it on unwrap. `unitScale` maps underlying
     ///         base units to the in-system value unit (so a note's value stays within the
     ///         Bulletproofs+ range; wrap amounts must be a multiple of it). `crossChainLink`
-    ///         MUST be 0 here: an escrow asset can never claim a Bitcoin-side id (its escrow
-    ///         can't back bridged supply, so a bridge_mint would drain escrow it never funded)
-    ///         — a non-zero link reverts CrossChainEscrow. A cross-chain link is bound only on
-    ///         a pool-minted asset, and only by the guest-proven attest_meta path.
+    ///         MUST be 0 here. An external ERC20 escrow can never claim a Bitcoin-side id (a non-zero
+    ///         link reverts CrossChainEscrow); native ETH's link (tETH) is pinned at construction
+    ///         (`TETH_BITCOIN_LINK`), not on this permissionless path. A pool-minted asset's link is
+    ///         bound only by the guest-proven attest_meta path.
     function registerWrapped(
         address underlying,
         uint256 unitScale,
@@ -537,6 +553,10 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         string calldata symbol_,
         uint8 decimals_
     ) external nonReentrant returns (bytes32 assetId) {
+        // Native ETH's cross-chain link is pinned at construction (TETH_BITCOIN_LINK), never set here: as a
+        // single-slot asset with no token to authenticate a link against, binding it on this permissionless
+        // path would be first-writer-wins. A non-zero link on native ETH is rejected.
+        if (underlying == address(0) && crossChainLink != bytes32(0)) revert CrossChainEscrow();
         return _register(underlying, unitScale, crossChainLink, false, name_, symbol_, decimals_);
     }
 
@@ -633,16 +653,17 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         // bridged note (H-2). TWO backings may claim a Bitcoin id:
         //  - a POOL-MINTED asset whose canonical token COMMITS to the same id (ASSET_ID == link); or
         //  - NATIVE ETH (tETH = shielded ETH, ops/PLAN-teth-subsumption.md): the protocol's OWN escrow backs
-        //    the bridged supply, so a link is allowed — unlike a FOREIGN ERC20 escrow, whose backing the
-        //    pool can't control (that stays CrossChainEscrow). There is no token to commit the id
-        //    (address(0) is not a contract) so the ASSET_ID check is skipped; soundness rests on the
-        //    escrow==supply invariant: tETH is minted ONLY against an ETH wrap, and the contract is
-        //    FAIL-CLOSED on escrow (a shortfall reverts an unwrap with InsufficientEscrow — locks, never
-        //    drains). A foreign asset registered native-ETH with a fake link is inert (no escrow, never
-        //    bridge-minted). first-write-wins, so a link cannot be squatted to misroute a bridged payout.
+        //    the bridged supply. There is no token to commit the id (address(0) is not a contract), so the
+        //    ASSET_ID check can't authenticate the link; instead the native-ETH link is set ONLY from the
+        //    constructor (TETH_BITCOIN_LINK) — registerWrapped rejects it — so it is fixed at deploy and
+        //    consistent across generations, never a permissionless first-writer choice. A FOREIGN ERC20
+        //    escrow + a link stays CrossChainEscrow (its backing the pool can't control). Soundness rests on
+        //    the escrow==supply invariant: tETH is minted ONLY against an ETH wrap, and the contract is
+        //    FAIL-CLOSED on escrow (a shortfall reverts an unwrap with InsufficientEscrow).
         if (crossChainLink != bytes32(0)) {
             if (underlying == address(0)) {
-                // native ETH (tETH): the protocol's own escrow is the bridged backing — no token-commit.
+                // native ETH (tETH): reached only from the constructor (registerWrapped bars a native-ETH
+                // link); the protocol's own escrow is the bridged backing, and there is no token to commit.
             } else if (!poolMinted) {
                 revert CrossChainEscrow(); // a foreign ERC20 escrow cannot back bridged supply
             } else {
@@ -1011,7 +1032,9 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     ///         `BITCOIN_RELAY_VKEY`, then marks the proven pool root canonical (so a
     ///         bridge_mint can prove membership against it) and advances the reflected
     ///         spent-set root (the cross-lane non-membership freshness root). The height
-    ///         must strictly increase, so a stale proof can't roll the spent set back.
+    ///         must not decrease (equal heights are valid — a batch may fold several effects
+    ///         from one block; only a rollback is rejected), so a stale proof can't roll the
+    ///         spent set back.
     function attestBitcoinStateProven(bytes calldata publicValues, bytes calldata proofBytes) external nonReentrant {
         SP1_VERIFIER.verifyProof(BITCOIN_RELAY_VKEY, publicValues, proofBytes);
         BitcoinRelayPublicValues memory r = abi.decode(publicValues, (BitcoinRelayPublicValues));
@@ -1234,8 +1257,9 @@ contract ConfidentialPool is ReentrancyGuardTransient {
                 // also marked in nullifierSpent below; this dedicated map is the slot the eth-reflection
                 // guest reflects, and it never holds a native EVM spend.
                 for (uint256 i; i < pv.nullifiers.length; ++i) bitcoinConsumed[pv.nullifiers[i]] = pv.spendRoot;
-                // Advance the freshness anchor: every ν here is a new entry (the nullifierSpent gate above
-                // reverted any repeat), so the count grows by exactly the batch's consumed-note count.
+                // Advance the freshness anchor: every ν here is a new entry — the nullifierSpent gate below
+                // reverts any repeat in this same tx (rolling back this increment), so the count grows by
+                // exactly the batch's distinct consumed-note count.
                 bitcoinConsumedCount += pv.nullifiers.length;
                 emit BitcoinNotesConsumed(pv.nullifiers, pv.spendRoot);
             }

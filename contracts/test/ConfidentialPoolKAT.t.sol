@@ -20,7 +20,7 @@ contract ConfidentialPoolKATTest is Test {
 
     function setUp() public {
         vm.chainId(1);
-        pool = new ConfidentialPool(address(new AcceptVerifier()), bytes32(uint256(0xABCD)), bytes32(0), address(0), address(0), bytes32(0), 6, bytes32(0));
+        pool = new ConfidentialPool(address(new AcceptVerifier()), bytes32(uint256(0xABCD)), bytes32(0), address(0), address(0), bytes32(0), 6, bytes32(0), bytes32(0));
         json = vm.readFile(string.concat(vm.projectRoot(), "/test/fixtures/confidential_pool.json"));
     }
 

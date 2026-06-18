@@ -77,7 +77,7 @@ contract CanonicalAssetFactoryTest is Test {
     /// the asset could never exit (mint would revert), a footgun.
     function test_registerMinted_requires_pool_as_minter() public {
         CanonicalBridgedERC20 tok = _deploy(); // minter = MINTER, not the pool
-        ConfidentialPool pool = new ConfidentialPool(address(0x5117), bytes32(uint256(1)), bytes32(0), address(0), address(0), bytes32(0), 6, bytes32(0));
+        ConfidentialPool pool = new ConfidentialPool(address(0x5117), bytes32(uint256(1)), bytes32(0), address(0), address(0), bytes32(0), 6, bytes32(0), bytes32(0));
         vm.expectRevert(ConfidentialPool.PoolNotMinter.selector);
         pool.registerMinted(address(tok), "x", "x", 8);
     }
@@ -90,7 +90,7 @@ contract CanonicalAssetFactoryTest is Test {
         tok.mint(USER, 100e8);
 
         // verifier address is a non-zero placeholder; wrap never calls it (only settle does).
-        ConfidentialPool pool = new ConfidentialPool(address(0x5117), bytes32(uint256(1)), bytes32(0), address(0), address(0), bytes32(0), 6, bytes32(0));
+        ConfidentialPool pool = new ConfidentialPool(address(0x5117), bytes32(uint256(1)), bytes32(0), address(0), address(0), bytes32(0), 6, bytes32(0), bytes32(0));
         // Pure escrow custody (no cross-chain link): an externally-minted canonical token
         // escrowed for its confidential face. A cross-chain link is reserved for pool-minted
         // assets (where the pool is the supply authority backing bridge_mint), so escrowing
@@ -114,7 +114,7 @@ contract CanonicalAssetFactoryTest is Test {
     function test_canonicalTokenFor_rejects_impostors() public {
         CanonicalBridgedERC20 real = _deploy();
         ConfidentialPool pool =
-            new ConfidentialPool(address(0x5117), bytes32(uint256(1)), bytes32(0), address(0), address(0), bytes32(0), 6, bytes32(0));
+            new ConfidentialPool(address(0x5117), bytes32(uint256(1)), bytes32(0), address(0), address(0), bytes32(0), 6, bytes32(0), bytes32(0));
         bytes32 poolAsset = pool.registerWrapped(address(real), 1, bytes32(0), "Conf cBTC", "ccBTC", 8);
         assertEq(pool.canonicalTokenFor(poolAsset), address(real), "the registered (real) token is returned");
         assertEq(pool.canonicalTokenFor(keccak256("impostor")), address(0), "an unregistered asset resolves to address(0)");
@@ -336,7 +336,7 @@ contract CanonicalAssetFactoryTest is Test {
     // lazy-deploy + harmonize behavior is covered by ConfidentialPool.t.sol's attest_meta tests.
 
     function _pool() internal returns (ConfidentialPool) {
-        return new ConfidentialPool(address(0x5117), bytes32(uint256(1)), bytes32(0), address(0), address(0), bytes32(0), 6, bytes32(0));
+        return new ConfidentialPool(address(0x5117), bytes32(uint256(1)), bytes32(0), address(0), address(0), bytes32(0), 6, bytes32(0), bytes32(0));
     }
 
     // ── external ERC20 registration derives the Tacit-side scale (registerWrappedAuto) ──
