@@ -63,6 +63,19 @@ contract DeployConfidentialPool is Script {
         // the guest-proven etch metadata (attest_meta) — the only path that establishes a
         // cross-chain registry link. address(0) leaves auto-register disabled (local assets only).
         address canonicalFactory = vm.envOr("CANONICAL_FACTORY", address(0));
+        // Pin the factory codehash like the verifier: the pool trusts whatever factory it is wired to,
+        // forever, to issue canonical tokens (a malicious factory could return tokens that fake MINTER()/
+        // ASSET_ID()). EXPECTED_FACTORY_CODEHASH = the deployed CanonicalAssetFactory's extcodehash —
+        // REQUIRED on mainnet (chainid 1) when a factory is wired, and enforced whenever supplied
+        // elsewhere. CANONICAL_FACTORY=0 (auto-register off) needs no pin.
+        bytes32 expectedFactoryCodehash = vm.envOr("EXPECTED_FACTORY_CODEHASH", bytes32(0));
+        require(
+            canonicalFactory == address(0) || block.chainid != 1 || expectedFactoryCodehash != bytes32(0),
+            "mainnet: set EXPECTED_FACTORY_CODEHASH to the canonical CanonicalAssetFactory codehash (or CANONICAL_FACTORY=0)"
+        );
+        if (canonicalFactory != address(0) && expectedFactoryCodehash != bytes32(0)) {
+            require(canonicalFactory.codehash == expectedFactoryCodehash, "CANONICAL_FACTORY codehash != EXPECTED_FACTORY_CODEHASH (wrong/impostor factory?)");
+        }
         // Bitcoin light relay (BitcoinLightRelay) used to anchor each reflection proof's header tip to
         // canonical Bitcoin. REQUIRED when BITCOIN_RELAY_VKEY != 0 (the ctor enforces it); address(0)
         // for an Ethereum-only deploy. GENESIS_REFLECTION_ANCHOR = the Bitcoin block hash the first
