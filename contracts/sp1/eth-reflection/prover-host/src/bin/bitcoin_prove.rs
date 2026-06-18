@@ -36,7 +36,23 @@ fn main() {
             "fixture ethPv != eth proof public values (regenerate the fixture from out/eth_pv.hex)");
         let SP1Proof::Compressed(reduce) = eth.proof else { panic!("eth proof not compressed") };
         let eth_pk = pclient.setup(Elf::Static(ETH_ELF)).expect("setup eth");
-        println!("eth vkey = {}", eth_pk.verifying_key().bytes32());
+        // COHERENCE GUARD: the eth ELF's recursion vk_digest MUST equal the constant the Bitcoin guest
+        // (reflect.rs ETH_REFLECTION_VKEY) bakes into its `verify_sp1_proof` call. If they drift, the Bitcoin
+        // guest at best rejects every Mode-B proof (fail-closed) and at worst — if a wrong-but-valid digest
+        // is ever pinned — recursively trusts the WRONG inner program (forged crossOut/consumed-ν sets). Assert
+        // here so a drift fails LOUDLY before the GPU spend, printing the value to re-pin. Keep this array in
+        // lockstep with reflect.rs:169-170 (rebuilding the eth ELF rotates it).
+        const ETH_REFLECTION_VKEY: [u32; 8] =
+            [959691297, 1573580327, 461851140, 794766140, 2109164942, 1629874690, 166258058, 1674560259];
+        let derived = eth_pk.verifying_key().hash_u32();
+        assert_eq!(
+            derived, ETH_REFLECTION_VKEY,
+            "ETH_REFLECTION_VKEY DRIFT: this eth ELF's recursion vkey {derived:?} != the constant the Bitcoin \
+             guest verifies against (reflect.rs ETH_REFLECTION_VKEY). Re-pin BOTH reflect.rs:169-170 and \
+             bitcoin_prove.rs to {derived:?}, then re-prove the Bitcoin guest so its baked vkey matches the eth \
+             ELF being recursed.",
+        );
+        println!("eth vkey = {} (recursion hash_u32 == reflect.rs ETH_REFLECTION_VKEY ✓)", eth_pk.verifying_key().bytes32());
         stdin.write_proof(*reduce, eth_pk.verifying_key().vk.clone());
     } else {
         println!("forward batch (modeB=0): no eth recursion");

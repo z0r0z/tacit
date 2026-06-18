@@ -28,7 +28,7 @@ contract ConfidentialInitPoolGriefTest is Test {
 
     function setUp() public {
         vm.chainId(1);
-        pool = new ConfidentialPool(address(new MockSP1VerifierG()), bytes32(uint256(0xABCD)), bytes32(0), address(0), address(0), bytes32(0), 6, bytes32(0), bytes32(0));
+        pool = new ConfidentialPool(address(new MockSP1VerifierG()), bytes32(uint256(0xABCD)), bytes32(0), address(0), address(0), bytes32(0), 6, bytes32(0), bytes32(0), address(0));
         tokenA = new MockERC20G();
         tokenB = new MockERC20G();
         assetA = pool.registerWrapped(address(tokenA), 1, bytes32(0), "Conf A", "cA", 18);

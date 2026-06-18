@@ -7,7 +7,9 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-sp1-sdk = { version = "6.2", default-features = false, features = ["blocking"] }
+# Pinned =6.2.3 to match the prover box (prover-host / exec-prove): the vkey-derive bin must compute the
+# SAME vkey the box's proving system pins, and the shared reflect-stdin SP1Stdin type must unify with it.
+sp1-sdk = { version = "=6.2.3", default-features = false, features = ["blocking"] }
 serde_json = "1"
 hex = "0.4"
 # Shared SP1Stdin serializer (the single source of truth for the guest's io::read order) — also used by
@@ -17,6 +19,12 @@ reflect-stdin = { path = "../reflect-stdin" }
 [[bin]]
 name = "reflect-execute"
 path = "src/main.rs"
+
+# Derive a guest ELF's vkey locally (CPU setup): the on-chain bytes32 + the recursion [u32;8]
+# (vk.hash_u32() = ETH_REFLECTION_VKEY). Mirrors prover-host/eth_vkey without its box-absolute deps.
+[[bin]]
+name = "vkey-derive"
+path = "src/vkey_derive.rs"
 
 # Local execute-mode validator for the OP_OTC settle guest: serializes fixtures/otc_op.json in the
 # guest's io::read order (same as exec-otc.rs) and executes the locally-built cxfer-guest ELF — a

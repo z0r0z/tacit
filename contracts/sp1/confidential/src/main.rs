@@ -15,10 +15,11 @@ sp1_zkvm::entrypoint!(main);
 use alloy_sol_types::{sol, SolValue};
 use alloy_sol_types::private::{Address, U256};
 use cxfer_core::{
-    adaptor_lock_leaf, bitcoin, claim_id, clearing_price_matches, decompress, deposit_commit, deposit_id, from_affine_xy,
-    get_amount_out, imt_non_membership, intent_context, isqrt, keccak_merkle_verify, leaf, lp_add_shares,
+    adaptor_lock_leaf, bitcoin, cdp_basket_leg, cdp_basket_root, cdp_debt_asset_id, cdp_position_leaf,
+    cdp_position_nullifier, claim_id, clearing_price_matches, commitment_hash, decompress, deposit_commit, deposit_id,
+    from_affine_xy, get_amount_out, imt_non_membership, intent_context, isqrt, keccak_merkle_verify, leaf, lp_add_shares,
     lp_share_id, nullifier, pool_id, scalar_reduce_be, utxo_leaf, verify_kernel, verify_opening_sigma,
-    verify_pedersen_opening, verify_range, Point,
+    verify_pedersen_opening, verify_range, Point, CBTC_ZK_ASSET_ID,
 };
 use sp1_zkvm::io;
 
@@ -39,6 +40,14 @@ const MAX_ROUTE_HOPS: u32 = 4; // bound the per-route hop count (mirrors the Bit
 const OP_ADAPTOR_LOCK: u8 = 12; // adaptor swap: lock a note into the lock-set under (T, deadline, recipient)
 const OP_ADAPTOR_CLAIM: u8 = 13; // adaptor swap: claim a locked note before its deadline, revealing the kernel s
 const OP_ADAPTOR_REFUND: u8 = 14; // adaptor swap: refund a locked note to its locker after the deadline
+// Generic confidential CDP (ops/DESIGN-confidential-defi-v1.md §4): lock a basket of collateral notes into
+// a controller-bound position + mint a controller-derived debt asset. The guest enforces structure +
+// conservation only; the contract calls the MUTABLE controller (onCdpMint/Close/Liquidate) for all pricing
+// /ratio policy. cUSD-on-cBTC is the first instance (single-leg cBTC basket).
+const OP_CDP_MINT: u8 = 15; // open: lock collateral basket → mint debt note (controller authorizes the amount)
+const OP_CDP_CLOSE: u8 = 16; // close: burn the exact debt → reclaim the collateral basket (no oracle/veto)
+const OP_CDP_LIQUIDATE: u8 = 17; // liquidate: seize the basket to the controller (controller proves unhealthy)
+const OP_CBTC_MINT: u8 = 18; // mint cBTC against a reflection-recorded self-custody lock (contract gates lock + escrow)
 
 const SWAP_DIR_A_TO_B: u8 = 0;
 const SWAP_DIR_B_TO_A: u8 = 1;
@@ -56,6 +65,21 @@ sol! {
     struct AssetMeta { bytes32 assetId; bytes16 ticker; uint8 tickerLen; uint8 decimals; bytes32 cid; }
     struct SwapSettlement { bytes32 poolId; uint256 reserveAPre; uint256 reserveBPre; uint256 reserveAPost; uint256 reserveBPost; }
     struct LpSettlement { bytes32 poolId; uint256 reserveAPre; uint256 reserveBPre; uint256 sharesPre; uint256 reserveAPost; uint256 reserveBPost; uint256 sharesPost; }
+    // Generic CDP (ops/DESIGN-confidential-defi-v1.md §4). A leg = one basket collateral (asset, public value).
+    struct CdpLeg { bytes32 asset; uint256 value; }
+    // OP_CDP_MINT: the contract appends `positionLeaf` to its position set + calls
+    // controller.onCdpMint(legs, debtValue); it MUST check debtAsset == cdp_debt_asset_id(controller).
+    struct CdpMint { address controller; bytes32 debtAsset; uint256 debtValue; bytes32 positionLeaf; CdpLeg[] legs; }
+    // OP_CDP_CLOSE: the contract dedups `positionNullifier` + calls controller.onCdpClose(debtValue, legs).
+    struct CdpClose { address controller; uint256 debtValue; bytes32 positionNullifier; CdpLeg[] legs; }
+    // OP_CDP_LIQUIDATE: the contract dedups `positionNullifier` + calls controller.onCdpLiquidate(legs,
+    // debtValue) (reverts if healthy); the seized legs ride `withdrawals` to the controller.
+    struct CdpLiquidate { address controller; uint256 debtValue; bytes32 positionNullifier; CdpLeg[] legs; }
+    // OP_CBTC_MINT (ops/DESIGN-confidential-defi-v1.md §3.2): mint cBTC against a reflection-recorded
+    // self-custody lock. The guest verified the note opens to EXACTLY `vBtc` (the conservation peg); the
+    // contract checks cbtcLock[outpoint].vBtc == vBtc + commitment match + !cbtcMinted + the CollateralEngine
+    // escrow, then inserts the cBTC leaf (which rides `leaves`). bridge_mint-shaped.
+    struct CbtcMint { bytes32 outpoint; uint256 vBtc; bytes32 commitment; }
     struct PublicValues {
         uint16 version;
         bytes32 chainBinding;
@@ -80,6 +104,12 @@ sol! {
         bytes32[] lockNullifiers; // ν_L consumed by claim/refund → the lock-spent set (spend-once, contract dedups)
         bytes32[] adaptorClaimS; // the completed kernel `s` per claim — the t-reveal channel the Bitcoin counterparty reads
         uint64 refundNotBefore; // contract gate: block.timestamp >= this for the batch (max refund deadline; 0 = no refunds)
+        // ── generic CDP (ops 15–17) ───────────────────────────────────────────────────────────────────
+        bytes32 cdpPositionRoot; // INPUT: the position-set root CLOSE/LIQUIDATE prove membership against (contract checks == stored)
+        CdpMint[] cdpMints;          // open: append positionLeaf to the position set + controller.onCdpMint authorizes
+        CdpClose[] cdpCloses;        // close: dedup positionNullifier + controller.onCdpClose accounting
+        CdpLiquidate[] cdpLiquidations; // liquidate: dedup positionNullifier + controller.onCdpLiquidate (reverts if healthy)
+        CbtcMint[] cbtcMints;        // cBTC mint: contract gates on the recorded lock + the native-ETH escrow
     }
 }
 
@@ -137,6 +167,9 @@ pub fn main() {
     // adaptor swap: the lock-set root claim/refund prove membership against (0 = no lock-set yet / no
     // claim/refund this batch). The contract checks it == its stored lock-set root before advancing.
     let lock_set_root = r32();
+    // CDP: the position-set root CLOSE/LIQUIDATE prove membership against (0 = no position set yet / no
+    // close/liquidate this batch). The contract checks it == its stored CDP position root before advancing.
+    let cdp_position_root = r32();
     let num_ops: u32 = io::read();
 
     let mut nullifiers: Vec<[u8; 32]> = Vec::new();
@@ -161,6 +194,13 @@ pub fn main() {
     let mut lock_nullifiers: Vec<[u8; 32]> = Vec::new();
     let mut adaptor_claim_s: Vec<[u8; 32]> = Vec::new();
     let mut refund_not_before: u64 = 0;
+    // CDP accumulators (ops 15–17): per-op records the contract reads to call the mutable controller +
+    // advance/dedup its position set. The note effects (collateral ν, debt note leaf, released-collateral
+    // leaves, seized-collateral withdrawals) ride the shared nullifiers/leaves/withdrawals arrays.
+    let mut cdp_mints: Vec<CdpMint> = Vec::new();
+    let mut cdp_closes: Vec<CdpClose> = Vec::new();
+    let mut cdp_liquidations: Vec<CdpLiquidate> = Vec::new();
+    let mut cbtc_mints: Vec<CbtcMint> = Vec::new();
 
     for _ in 0..num_ops {
         let op: u8 = io::read();
@@ -1203,6 +1243,173 @@ pub fn main() {
                 lock_nullifiers.push(l_nu);
                 leaves.push(leaf(&asset, &o_cx, &o_cy, &locker));
             }
+            OP_CDP_MINT => {
+                // Open a CDP: lock a BASKET of collateral notes into a controller-bound position and mint a
+                // controller-derived debt note. The guest enforces STRUCTURE + conservation only — each leg
+                // note is spent + opens to its PUBLIC value, the debt note opens to the PUBLIC debt value;
+                // the contract calls controller.onCdpMint(legs, debtValue) for the pricing/ratio policy
+                // (revert = deny). The debt asset = derive(controller) so the controller is its sole minter.
+                // Owner stays confidential; only the boundary amounts are public (like wrap/withdraw).
+                let controller = r20();
+                let owner = r32();
+                let debt_value: u64 = io::read();
+                let nonce = r32();
+                let n_legs: u32 = io::read();
+                assert!(n_legs > 0, "cdp-mint: empty basket");
+                assert!(spend_root != [0u8; 32], "cdp-mint: membership requires a non-zero spend root");
+                let mut leg_hashes: Vec<[u8; 32]> = Vec::with_capacity(n_legs as usize);
+                let mut legs_pv: Vec<CdpLeg> = Vec::with_capacity(n_legs as usize);
+                for _ in 0..n_legs {
+                    let asset = r32();
+                    let (cx, cy, pt) = r_commitment();
+                    let value: u64 = io::read();
+                    let index: u64 = io::read();
+                    let path = r_path();
+                    let r = scalar_reduce_be(&r32());
+                    // spend the collateral note (owned by `owner`): membership + value opening + ν + cross-lane
+                    let lf = leaf(&asset, &cx, &cy, &owner);
+                    assert!(keccak_merkle_verify(&lf, index, &path, &spend_root), "cdp-mint: collateral membership");
+                    assert!(verify_pedersen_opening(&pt, value, &r), "cdp-mint: collateral opening");
+                    let nu = nullifier(&cx, &cy);
+                    if bitcoin_spent_root != [0u8; 32] { check_btc_nonmembership(&nu, &bitcoin_spent_root); }
+                    nullifiers.push(nu);
+                    leg_hashes.push(cdp_basket_leg(&asset, value));
+                    legs_pv.push(CdpLeg { asset: asset.into(), value: U256::from(value) });
+                }
+                // mint the debt note (asset = derive(controller)), owned by `owner`, opening to debt_value
+                let debt_asset = cdp_debt_asset_id(&controller);
+                let (d_cx, d_cy, d_pt) = r_commitment();
+                let d_r = scalar_reduce_be(&r32());
+                assert!(verify_pedersen_opening(&d_pt, debt_value, &d_r), "cdp-mint: debt opening");
+                leaves.push(leaf(&debt_asset, &d_cx, &d_cy, &owner));
+                // the position leaf the contract appends to its position set (CLOSE/LIQUIDATE prove against it)
+                let basket_root = cdp_basket_root(&leg_hashes);
+                let position_leaf = cdp_position_leaf(&controller, &debt_asset, &basket_root, debt_value, &owner, &nonce);
+                cdp_mints.push(CdpMint {
+                    controller: Address::from(controller),
+                    debtAsset: debt_asset.into(),
+                    debtValue: U256::from(debt_value),
+                    positionLeaf: position_leaf.into(),
+                    legs: legs_pv,
+                });
+            }
+            OP_CDP_CLOSE => {
+                // Close a CDP (unconditional — NO oracle/controller veto): reproduce the position leaf from
+                // the revealed legs + fields, prove it ∈ cdp_position_root, burn debt notes (asset =
+                // derive(controller)) summing to EXACTLY the position debt, and re-mint each leg as a FRESH
+                // note opening to its recorded value, owned by the position owner. The contract dedups the
+                // position ν and calls controller.onCdpClose to decrement its outstanding debt.
+                let controller = r20();
+                let owner = r32();
+                let debt_value: u64 = io::read();
+                let nonce = r32();
+                let position_index: u64 = io::read();
+                let position_path = r_path();
+                let n_legs: u32 = io::read();
+                assert!(n_legs > 0, "cdp-close: empty basket");
+                assert!(spend_root != [0u8; 32], "cdp-close: membership requires a non-zero spend root");
+                let mut leg_hashes: Vec<[u8; 32]> = Vec::with_capacity(n_legs as usize);
+                let mut legs_pv: Vec<CdpLeg> = Vec::with_capacity(n_legs as usize);
+                for _ in 0..n_legs {
+                    let asset = r32();
+                    let value: u64 = io::read();
+                    // re-mint a FRESH collateral note to the owner, opening to the recorded value
+                    let (cx, cy, pt) = r_commitment();
+                    let r = scalar_reduce_be(&r32());
+                    assert!(verify_pedersen_opening(&pt, value, &r), "cdp-close: released-leg opening");
+                    leaves.push(leaf(&asset, &cx, &cy, &owner));
+                    leg_hashes.push(cdp_basket_leg(&asset, value));
+                    legs_pv.push(CdpLeg { asset: asset.into(), value: U256::from(value) });
+                }
+                // reconstruct + prove position membership
+                let debt_asset = cdp_debt_asset_id(&controller);
+                let basket_root = cdp_basket_root(&leg_hashes);
+                let position_leaf = cdp_position_leaf(&controller, &debt_asset, &basket_root, debt_value, &owner, &nonce);
+                assert!(cdp_position_root != [0u8; 32], "cdp-close: membership requires a non-zero position root");
+                assert!(keccak_merkle_verify(&position_leaf, position_index, &position_path, &cdp_position_root), "cdp-close: position membership");
+                // burn debt notes (any holders) summing to EXACTLY the position debt
+                let n_debt: u32 = io::read();
+                let mut repaid: u128 = 0;
+                for _ in 0..n_debt {
+                    let (cx, cy, pt) = r_commitment();
+                    let d_owner = r32();
+                    let value: u64 = io::read();
+                    let index: u64 = io::read();
+                    let path = r_path();
+                    let r = scalar_reduce_be(&r32());
+                    let lf = leaf(&debt_asset, &cx, &cy, &d_owner);
+                    assert!(keccak_merkle_verify(&lf, index, &path, &spend_root), "cdp-close: debt membership");
+                    assert!(verify_pedersen_opening(&pt, value, &r), "cdp-close: debt opening");
+                    let nu = nullifier(&cx, &cy);
+                    if bitcoin_spent_root != [0u8; 32] { check_btc_nonmembership(&nu, &bitcoin_spent_root); }
+                    nullifiers.push(nu);
+                    repaid += value as u128;
+                }
+                assert!(repaid == debt_value as u128, "cdp-close: must repay exactly the position debt");
+                cdp_closes.push(CdpClose {
+                    controller: Address::from(controller),
+                    debtValue: U256::from(debt_value),
+                    positionNullifier: cdp_position_nullifier(&position_leaf).into(),
+                    legs: legs_pv,
+                });
+            }
+            OP_CDP_LIQUIDATE => {
+                // Liquidate a CDP: reproduce the position leaf, prove it ∈ cdp_position_root, and SEIZE the
+                // basket by WITHDRAWING each leg's value to the controller (public — a contract can't hold a
+                // confidential note). The AUTHORITY is the contract's: it calls controller.onCdpLiquidate(legs,
+                // debtValue), which proves (its oracle) the position is undercollateralized + covers the debt
+                // (buy+burn the cUSD from the seized proceeds), and reverts if healthy. The position is consumed.
+                let controller = r20();
+                let owner = r32();
+                let debt_value: u64 = io::read();
+                let nonce = r32();
+                let position_index: u64 = io::read();
+                let position_path = r_path();
+                let n_legs: u32 = io::read();
+                assert!(n_legs > 0, "cdp-liquidate: empty basket");
+                let controller_addr = Address::from(controller);
+                let mut leg_hashes: Vec<[u8; 32]> = Vec::with_capacity(n_legs as usize);
+                let mut legs_pv: Vec<CdpLeg> = Vec::with_capacity(n_legs as usize);
+                for _ in 0..n_legs {
+                    let asset = r32();
+                    let value: u64 = io::read();
+                    leg_hashes.push(cdp_basket_leg(&asset, value));
+                    legs_pv.push(CdpLeg { asset: asset.into(), value: U256::from(value) });
+                    // seize: withdraw the leg's value to the controller (the value is bound by the basket root)
+                    withdrawals.push(Withdrawal { assetId: asset.into(), recipient: controller_addr, value: U256::from(value) });
+                }
+                let debt_asset = cdp_debt_asset_id(&controller);
+                let basket_root = cdp_basket_root(&leg_hashes);
+                let position_leaf = cdp_position_leaf(&controller, &debt_asset, &basket_root, debt_value, &owner, &nonce);
+                assert!(cdp_position_root != [0u8; 32], "cdp-liquidate: membership requires a non-zero position root");
+                assert!(keccak_merkle_verify(&position_leaf, position_index, &position_path, &cdp_position_root), "cdp-liquidate: position membership");
+                cdp_liquidations.push(CdpLiquidate {
+                    controller: controller_addr,
+                    debtValue: U256::from(debt_value),
+                    positionNullifier: cdp_position_nullifier(&position_leaf).into(),
+                    legs: legs_pv,
+                });
+            }
+            OP_CBTC_MINT => {
+                // Mint cBTC against a self-custody Bitcoin lock the reflection recorded. The guest verifies
+                // ONLY the value-binding: the note commitment opens to EXACTLY `v_btc` (conservation peg,
+                // blinding hidden). The contract gates the rest (cbtcLock[outpoint].vBtc == v_btc, the
+                // committed note matches the lock's pre-committed commitment, !cbtcMinted, and the
+                // CollateralEngine native-ETH escrow is sufficient) before inserting the leaf. cBTC's asset
+                // id is the pinned CBTC_ZK_ASSET_ID — bridge_mint-shaped (no on-chain secp opening needed).
+                let outpoint = r32();
+                let v_btc: u64 = io::read();
+                let owner = r32();
+                let (cx, cy, c) = r_commitment();
+                let r = scalar_reduce_be(&r32());
+                assert!(verify_pedersen_opening(&c, v_btc, &r), "cbtc-mint: note opening (note != locked sats)");
+                leaves.push(leaf(&CBTC_ZK_ASSET_ID, &cx, &cy, &owner));
+                cbtc_mints.push(CbtcMint {
+                    outpoint: outpoint.into(),
+                    vBtc: U256::from(v_btc),
+                    commitment: commitment_hash(&cx, &cy).into(),
+                });
+            }
             _ => panic!("unknown op type"),
         }
     }
@@ -1230,6 +1437,11 @@ pub fn main() {
         lockNullifiers: lock_nullifiers.into_iter().map(Into::into).collect(),
         adaptorClaimS: adaptor_claim_s.into_iter().map(Into::into).collect(),
         refundNotBefore: refund_not_before,
+        cdpPositionRoot: cdp_position_root.into(),
+        cdpMints: cdp_mints,
+        cdpCloses: cdp_closes,
+        cdpLiquidations: cdp_liquidations,
+        cbtcMints: cbtc_mints,
     };
     io::commit_slice(&pv.abi_encode());
 }

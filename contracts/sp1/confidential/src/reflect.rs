@@ -30,7 +30,7 @@ use alloy_sol_types::SolType;
 use cxfer_core::{
     amm_canonical_pair, amm_derive_farm_id, amm_derive_pool_id_full, amm_derive_pool_id_v1, bitcoin, burn_deposit, commitment_hash,
     commitment_hash_compressed, compress, decompress, from_affine_xy, leaf, nullifier, outpoint_key,
-    reflected_note_leaf, scan_tx_spends, verify_cxfer_conservation, LiveUtxoSet, Point, PoolReserveSet,
+    reflected_note_leaf, scan_tx_spends, verify_cxfer_conservation, CbtcLockFold, LiveUtxoSet, Point, PoolReserveSet,
     PoolReserveState, ScanReflection,
 };
 use sp1_zkvm::io;
@@ -46,6 +46,15 @@ mod babyjubjub;
 mod swap_batch;
 
 sol! {
+    // A self-custody cBTC.zk lock this batch newly tracked (cf. cxfer-core CbtcLockFold). The contract
+    // records `cbtcLock[outpoint] = {vBtc, commitment}` so a later ConfidentialPool.mintCbtc can mint the
+    // pre-committed cBTC note 1:1 against the lock, gated on a native-ETH escrow. The value-opening
+    // (note == vBtc, the conservation peg) is checked at mint, not here.
+    struct CbtcLockFolded {
+        bytes32 outpoint;     // keccak(lock_txid ‖ lock_vout)
+        uint256 vBtc;         // the locked output's sats (objective Bitcoin data, proven by the confirmed tx)
+        bytes32 commitment;   // keccak(Cx‖Cy) of the locker's pre-committed cBTC note (anti-griefing bind)
+    }
     struct BitcoinReflectionPublicValues {
         bytes32 priorDigest;       // the reflected state this cycle continues from
         bytes32 bitcoinPoolRoot;   // note-tree root after the batch
@@ -57,6 +66,13 @@ sol! {
         bytes32 bitcoinTipHash;    // double-SHA256 of the last header — the batch's new tip
         bytes32 ethPoolReflected;  // Mode B: the eth-reflection's ethPool — attest gates it == address(this)
         uint256 cbtcBackingSats;   // cBTC: Σ live self-custody cBTC.zk lock sats (the off-pool buffer reads it)
+        // cBTC per-lock surfacing (ops/DESIGN-confidential-defi-v1.md §3): the per-batch deltas the contract
+        // records into its per-lock registry. `cbtcLocksFolded` = locks newly tracked this batch (gate the
+        // escrow-mint); `cbtcLocksSpent` = tracked locks spent this batch (the engine slashes the escrow if it
+        // wasn't released by a redemption — the contract classifies rug-vs-redeem). Proven arrays, like the
+        // settle guest's leaves / bitcoinBurnsConsumed.
+        CbtcLockFolded[] cbtcLocksFolded;
+        bytes32[] cbtcLocksSpent;
         // FAST-LANE FRESHNESS: how many eth-consumed ν this batch has folded into the spent set. attest
         // gates it == ConfidentialPool.bitcoinConsumedCount, so the spent set can advance ONLY after every
         // recorded consume is folded — closing the stale-eth-proof double-credit.
@@ -196,9 +212,12 @@ pub fn main() {
         sp1_lib::verify::verify_sp1_proof(&ETH_REFLECTION_VKEY, &bitcoin::sha256_once(&eth_pv));
         // EthReflectionPublicValues is 11 static ABI words; read by offset. Order: priorDigest, newDigest,
         // ethPool, crossOutSetRoot, crossOutCount, finalizedSlot, finalizedExecStateRoot, syncCommitteeRoot,
-        // prevSyncCommitteeRoot, consumedNuSetRoot, consumedNuCount. The batch chained FROM the genesis
-        // committee (gated once here; the prev==last-current chaining across sync-committee periods rides
-        // the resume-digest — follow-up).
+        // prevSyncCommitteeRoot, consumedNuSetRoot, consumedNuCount. WEAK-SUBJECTIVITY ANCHOR: every cycle's eth
+        // proof MUST have chained FROM the pinned genesis sync-committee (word 8). This is enforced statically
+        // here, NOT carried forward — the eth guest re-bootstraps from genesis each cycle and replays the LC
+        // update chain to the finalized slot. Cross-period chaining (carry word 7 syncCommitteeRoot into the
+        // next cycle's word 8) is NOT implemented; advancing past a far-future genesis is an operational
+        // re-anchor (which rotates the eth vkey ⇒ re-pin ETH_REFLECTION_VKEY + re-prove), a deferred feature.
         assert_eq!(&eth_pv[8 * 32..9 * 32], &ETH_GENESIS_SYNC_COMMITTEE, "eth-reflection: wrong genesis sync-committee");
         let ep: [u8; 32] = eth_pv[2 * 32..3 * 32].try_into().expect("ethPool word"); // gated on-chain == address(this)
         let cr: [u8; 32] = eth_pv[3 * 32..4 * 32].try_into().expect("crossOutSetRoot word");
@@ -271,6 +290,11 @@ pub fn main() {
         assert_eq!(state.consumed_count, consumed_nu_count, "must fold the entire consumed set (completeness)");
     }
 
+    // cBTC per-lock deltas accumulated across the whole batch, surfaced in the public values for the
+    // contract's per-lock registry (mint gate) + slash (rug). See ops/DESIGN-confidential-defi-v1.md §3.
+    let mut cbtc_folded: Vec<CbtcLockFold> = Vec::new();
+    let mut cbtc_spent: Vec<[u8; 32]> = Vec::new();
+
     // FULL SCAN: every tx of every block, in order.
     for block_index in 0..(num_headers as usize) {
         let merkle_root = bitcoin::extract_merkle_root(&headers[block_index]);
@@ -293,11 +317,12 @@ pub fn main() {
             let spends = scan_tx_spends(tx, &mut state.live, || (r32(), r32()))
                 .expect("vin scan / opening bind");
 
-            // cBTC: a SELF-CUSTODY rug — any input that spends a tracked cBTC.zk lock outpoint drops its
-            // sats from the backing total (the lock is gone; the off-pool buffer covers the shortfall). A
-            // plain Bitcoin spend (no Tacit ν), independent of the pool-UTXO scan above, and BEFORE the
-            // 0x66 mint below so an in-block create-then-spend nets correctly.
-            state.fold_cbtc_lock_spends(tx);
+            // cBTC: a SELF-CUSTODY lock spend — any input that spends a tracked cBTC.zk lock outpoint drops
+            // its sats from the backing and surfaces the spent outpoint (the contract classifies rug vs.
+            // honest redemption: spent ∧ escrow-not-released ⇒ slash). A plain Bitcoin spend (no Tacit ν),
+            // independent of the pool-UTXO scan above, and BEFORE the 0x66 track below so an in-block
+            // create-then-spend nets correctly.
+            cbtc_spent.extend(state.fold_cbtc_lock_spends(tx));
 
             // Classify by envelope: most txs have none (their spends are plain pool-UTXO spends,
             // still nullified). A burn envelope marks a bridge-out; a cxfer envelope declares
@@ -514,22 +539,18 @@ pub fn main() {
                 );
             }
 
-            // cBTC.zk: a real-BTC sats-lock mint (T_CBTC_LOCK, 0x66). Fold the minted cBTC note ONLY if
-            // the envelope tx has, at lock_vout, a confirmed self-custody lock output (the locker's OWN
-            // output, any scriptPubKey) of value v_btc AND the note commits to exactly v_btc (opening
-            // sigma). Spend-less mint (the lock is the backing); a later spend of the lock is a rug caught
-            // by fold_cbtc_lock_spends. Witnesses are read for EVERY 0x66 tx (the assembler MUST emit
-            // note_path + the opening sigma per 0x66) so the stream stays in sync; an over-mint /
-            // wrong-asset lock folds nothing (skip-not-panic). See
-            // ops/DESIGN-cbtc-sats-lock-reflection.md. cf. cxfer-core::ScanReflection::fold_cbtc_lock.
+            // cBTC.zk: a real-BTC self-custody lock (T_CBTC_LOCK, 0x66). TRACK it (no note minted here) if
+            // the envelope tx has, at lock_vout != 0, a confirmed self-custody lock output (the locker's OWN
+            // output, any scriptPubKey) of value v_btc. The cBTC note is minted later by
+            // ConfidentialPool.mintCbtc — gated on this lock (surfaced in cbtcLocksFolded) + a native-ETH
+            // escrow, where the value-opening (note == v_btc) is checked. A later spend of the lock is a rug
+            // caught by fold_cbtc_lock_spends above. No witness is read per 0x66 (track-not-mint appends no
+            // note); a wrong-asset / duplicate / vout-0 lock folds nothing (skip-not-panic). See
+            // ops/DESIGN-confidential-defi-v1.md §3. cf. cxfer-core::ScanReflection::fold_cbtc_lock.
             if let Some(cb) = env.as_ref().and_then(|e| bitcoin::parse_cbtc_lock_envelope(e)) {
-                // The opening sigma is now ON-CHAIN (parsed from the envelope, option a) — only the note's
-                // append path remains a witness. So per 0x66 the assembler emits exactly one r_path().
-                let note_path = r_path();
-                let _ = state.fold_cbtc_lock(
-                    &cb.asset, &cb.cx, &cb.cy, tx, cb.lock_vout, &txid, &note_path,
-                    &cb.sig_rx, &cb.sig_ry, &cb.sig_z,
-                );
+                if let Ok(f) = state.fold_cbtc_lock(&cb.asset, &cb.cx, &cb.cy, tx, cb.lock_vout, &txid) {
+                    cbtc_folded.push(f);
+                }
             }
 
             // Track A: an orderbook bid fill (T_PREAUTH_BID_VAR, 0x5C) is a CXFER on the tacit-asset side —
@@ -789,6 +810,12 @@ pub fn main() {
         bitcoinTipHash: tip_hash.into(),
         ethPoolReflected: eth_pool_word.into(),
         cbtcBackingSats: U256::from(state.cbtc_backing_sats), // reflection-attested cBTC backing
+        cbtcLocksFolded: cbtc_folded.iter().map(|f| CbtcLockFolded {
+            outpoint: f.outpoint.into(),
+            vBtc: U256::from(f.v_btc),
+            commitment: f.commitment_hash.into(),
+        }).collect(),
+        cbtcLocksSpent: cbtc_spent.iter().map(|o| (*o).into()).collect(),
         consumedCount: state.consumed_count, // fast-lane freshness: attest gates this == bitcoinConsumedCount
     };
     io::commit_slice(&BitcoinReflectionPublicValues::abi_encode(&pv));

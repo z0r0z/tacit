@@ -27,9 +27,9 @@ writeFileSync('/tmp/wrap-memo.hex', w.memo);
 console.log('POOL=' + ux.cfg.pool);
 console.log('ASSET=' + w.wrapArgs.assetId);
 console.log('AMOUNT=' + w.amount);
-console.log('CX=' + w.wrapArgs.cx);
-console.log('CY=' + w.wrapArgs.cy);
-console.log('OWNER=' + w.wrapArgs.owner);
+// wrap takes only the commit digest keccak(Cx‖Cy‖owner); the raw coords stay in the OP_WRAP witness
+// (/tmp/wrapop.json), never on-chain. So the deposit note's nullifier is not publicly computable.
+console.log('COMMIT=' + w.wrapArgs.commit);
 console.log('DEPOSITID=' + w.depositId);
 console.log('LEAF=' + w.leaf);
 console.log('VALUE=' + w.note.value);

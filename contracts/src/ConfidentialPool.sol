@@ -53,6 +53,28 @@ interface IRelay {
     function blockParent(bytes32 blockHash) external view returns (bytes32);
 }
 
+/// One collateral basket leg (asset, public value) — mirrors the settle guest's CdpLeg + CollateralEngine.
+/// File-level so both the CDP-controller interface and the pool's PublicValues share the exact tuple shape.
+struct CdpLeg {
+    bytes32 asset;
+    uint256 value;
+}
+
+/// A mutable CDP controller (e.g. CollateralEngine) the pool calls during settle to apply ALL pricing/ratio
+/// policy for its own controller-derived debt asset. The pool proves structure + conservation; the controller
+/// reverts to DENY a mint / a liquidation. See ops/DESIGN-confidential-defi-v1.md §4.
+interface ICdpController {
+    function onCdpMint(CdpLeg[] calldata legs, uint256 debtValue, bytes32 positionLeaf) external;
+    function onCdpClose(uint256 debtValue, CdpLeg[] calldata legs, bytes32 positionNullifier) external;
+    function onCdpLiquidate(CdpLeg[] calldata legs, uint256 debtValue, bytes32 positionNullifier) external;
+}
+
+/// The cBTC native-ETH escrow gate (CollateralEngine): the pool reads it before minting cBTC against a
+/// reflection-recorded self-custody lock. The engine NEVER mints/moves backing — it only sizes the escrow.
+interface ICollateralEngine {
+    function escrowSufficient(bytes32 outpoint, uint256 vBtc) external view returns (bool);
+}
+
 /// @title ConfidentialPool
 /// @notice Phase-1 confidential token: a multi-asset shielded pool on Ethereum
 ///         with arbitrary hidden amounts on secp256k1 notes (C = v·H + r·G), the
@@ -144,6 +166,12 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     /// link, so the link is set once here rather than via the permissionless registerWrapped — fixing it
     /// at deploy and keeping the tacit-side tETH id consistent across pool generations. 0 ⇒ no tETH here.
     bytes32 public immutable TETH_BITCOIN_LINK;
+
+    /// The cBTC native-ETH escrow gate (CollateralEngine). Immutable pointer set at deploy (the engine is
+    /// itself the mutable, DAO-governed policy contract; this pointer just names it). 0 ⇒ cBTC mint is inert
+    /// (no escrow gate available → OP_CBTC_MINT fails closed). The engine can NEVER mint/move backing — it
+    /// only answers escrowSufficient; the proof + this contract hold the value.
+    ICollateralEngine public immutable COLLATERAL_ENGINE;
 
     // ──────────────────── Commitment tree (global, Keccak) ────────────────────
 
@@ -241,7 +269,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     bytes32 public knownReflectionDigest;
 
     // cBTC: the reflection-attested Σ of live self-custody cBTC.zk lock sats (the real-BTC backing behind
-    // cBTC). Reflection-verified state, advanced each attestation — the off-pool CbtcBuffer reads it via
+    // cBTC). Reflection-verified state, advanced each attestation — the off-pool CollateralEngine reads it via
     // the cbtcBackingSats() view to size the peg shortfall (circulating cBTC vs this). The peg itself is
     // oracle-free; this is consumed only by the (standalone, governable) buffer, never by settle. Exposed
     // through the named cbtcBackingSats() view (the buffer's integration point), so it needs no auto-getter.
@@ -313,6 +341,31 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     // shared accumulator = Σ public lpShares + Σ confidential note-shares + the locked MINIMUM_LIQUIDITY.
     mapping(bytes32 => mapping(address => uint256)) public lpShares;
 
+    // ──────────────────── cBTC self-custody lock registry + CDP position set ────────────────────
+    // APPENDED LAST (after the lock set + fast-lane maps + lpShares) so crossOutCommitment(76) /
+    // bitcoinConsumed(119) / bitcoinConsumedCount(120) keep the slots the eth-reflection guest hardcodes.
+
+    // cBTC: per-lock state recorded from the reflection's cbtcLocksFolded / cbtcLocksSpent. cbtcLockVBtc and
+    // cbtcLockCommitment are the OP_CBTC_MINT gate (the note must match the lock's value + pre-committed
+    // commitment); cbtcLockSpent flags a spend the CollateralEngine slashes if it wasn't a redemption;
+    // cbtcMinted is the one-mint-per-lock gate. See ops/DESIGN-confidential-defi-v1.md §3.
+    mapping(bytes32 => uint64) public cbtcLockVBtc;
+    mapping(bytes32 => bytes32) public cbtcLockCommitment;
+    mapping(bytes32 => bool) public cbtcLockSpent;
+    mapping(bytes32 => bool) public cbtcMinted;
+
+    // CDP position set (ops 15–17): a confidential CDP position lives in a SEPARATE incremental-Merkle
+    // accumulator (same hashing/depth as the note + lock trees), never the note tree — so only an
+    // OP_CDP_CLOSE / OP_CDP_LIQUIDATE (proven against a known cdp root) can consume it. The position is
+    // domain-separated in-guest; close/liquidate spend its nullifier once (cdpPositionSpent).
+    uint256 public cdpNextLeafIndex;
+    bytes32 public cdpRoot;
+    bytes32[TREE_LEVELS] internal cdpFilledSubtrees;
+    mapping(bytes32 => bool) public everKnownCdpRoot;
+    mapping(bytes32 => bool) public cdpPositionSpent;
+
+    // ──────────────────── cBTC escrow views (the CollateralEngine reads these) ────────────────────
+
     // ──────────────────── Public-values layout ────────────────────
 
     // Boundary effects speak the in-system note value `v`; the contract scales it to
@@ -336,6 +389,12 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     // reserves (so the guest cleared against the real pool) and sets the reserves to post.
     struct SwapSettlement { bytes32 poolId; uint256 reserveAPre; uint256 reserveBPre; uint256 reserveAPost; uint256 reserveBPost; }
     struct LpSettlement { bytes32 poolId; uint256 reserveAPre; uint256 reserveBPre; uint256 sharesPre; uint256 reserveAPost; uint256 reserveBPost; uint256 sharesPost; }
+    // Generic CDP (ops 15–17) + cBTC mint (op 18). The guest proved structure + conservation; the contract
+    // applies the controller's policy + the cBTC lock/escrow gate. See ops/DESIGN-confidential-defi-v1.md §§3,4.
+    struct CdpMint { address controller; bytes32 debtAsset; uint256 debtValue; bytes32 positionLeaf; CdpLeg[] legs; }
+    struct CdpClose { address controller; uint256 debtValue; bytes32 positionNullifier; CdpLeg[] legs; }
+    struct CdpLiquidate { address controller; uint256 debtValue; bytes32 positionNullifier; CdpLeg[] legs; }
+    struct CbtcMint { bytes32 outpoint; uint256 vBtc; bytes32 commitment; }
 
     struct PublicValues {
         uint16 version;
@@ -362,6 +421,12 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         bytes32[] lockNullifiers;      // locked-note ν spent by claim/refund (spend-once, claim XOR refund)
         bytes32[] adaptorClaimS;       // each claim's completed kernel s (off-chain t-reveal; no ETH value)
         uint64 refundNotBefore;        // latest refund deadline in the batch; a refund settles only at/after it
+        // Generic CDP (ops 15–17) + cBTC mint (op 18) — appended last (existing slot/decoder layout unchanged).
+        bytes32 cdpPositionRoot;       // position-set root CLOSE/LIQUIDATE proved membership against (0 = none)
+        CdpMint[] cdpMints;            // open: append positionLeaf to the position set + controller.onCdpMint
+        CdpClose[] cdpCloses;          // close: dedup positionNullifier + controller.onCdpClose
+        CdpLiquidate[] cdpLiquidations; // liquidate: dedup positionNullifier + controller.onCdpLiquidate (reverts if healthy)
+        CbtcMint[] cbtcMints;          // cBTC mint: gated on the recorded lock + the native-ETH escrow
     }
 
     // ──────────────────── Events ────────────────────
@@ -406,6 +471,12 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     // A claim revealed its completed kernel s — the channel the Bitcoin counterparty reads to extract
     // the adaptor secret t = σ·(s − s̃). No Ethereum value meaning, no state.
     event AdaptorClaimsRevealed(bytes32[] completedKernelS);
+    // A CDP position opened (controller-authorized) → appended to the position set.
+    event CdpPositionMinted(bytes32 indexed positionLeaf, address indexed controller, uint256 debtValue);
+    // A CDP position consumed (spent once) by a close (liquidated=false) or a liquidation (true).
+    event CdpPositionConsumed(bytes32 indexed positionNullifier, bool liquidated);
+    // A cBTC note minted against a self-custody lock (one-mint-per-lock; escrow-gated).
+    event CbtcNoteMinted(bytes32 indexed lockOutpoint, uint256 vBtc);
 
     // ──────────────────── Errors ────────────────────
 
@@ -459,6 +530,12 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     error CrossOutNullifierNotSpent();
     error BadReflectionConfirmations();
     error BtcHomedValueExitMustBridge();
+    error UnknownCdpRoot();
+    error BadCdpController();
+    error CdpPositionAlreadySpent();
+    error CbtcLockMismatch();
+    error CbtcAlreadyMinted();
+    error CbtcEscrowInsufficient();
 
     // ──────────────────── Constructor ────────────────────
 
@@ -471,7 +548,8 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         bytes32 genesisReflectionAnchor_,
         uint256 reflectionConfirmations_,
         bytes32 reflectionResumeDigest_,
-        bytes32 tethBitcoinLink_
+        bytes32 tethBitcoinLink_,
+        address collateralEngine_
     ) {
         if (sp1Verifier_ == address(0)) revert ZeroAddress();
         if (programVKey_ == bytes32(0)) revert ZeroVKey();
@@ -509,11 +587,16 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         // See ops/PLAN-pool-generations.md.
         knownReflectionDigest = reflectionResumeDigest_ == bytes32(0) ? REFLECTION_GENESIS_DIGEST : reflectionResumeDigest_;
 
+        // The CollateralEngine is the mutable policy contract; this pointer just names it (may be 0 ⇒ cBTC
+        // mint inert). It can never mint/move backing, so no code-check gate is needed.
+        COLLATERAL_ENGINE = ICollateralEngine(collateralEngine_);
+
         bytes32 z = bytes32(0);
         for (uint256 i; i < TREE_LEVELS; ++i) {
             zeros[i] = z;
             filledSubtrees[i] = z;
             lockFilledSubtrees[i] = z;
+            cdpFilledSubtrees[i] = z;
             z = _hash(z, z);
         }
         currentRoot = z;
@@ -522,6 +605,10 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         // claim/refund can pin a known (initially empty) lock root.
         lockRoot = z;
         everKnownLockRoot[z] = true;
+        // The CDP position set is likewise an independent tree with the same empty root; seed it so the
+        // first close/liquidate can pin a known (initially empty) position root.
+        cdpRoot = z;
+        everKnownCdpRoot[z] = true;
 
         // Pin native ETH (tETH) for this generation. Set here — not via the permissionless registerWrapped
         // — so the single native-ETH slot's cross-chain link is fixed at construction and identical across
@@ -832,6 +919,15 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         }
     }
 
+    /// @dev Ceil division for the in-ratio liquidity add: charging the CEIL reserve required for the chosen
+    ///      shares (vs floor) keeps an add from minting shares for slightly-less-than-pro-rata reserves, so
+    ///      the rounding favors existing LPs (matching swap/remove). Always ≤ the leg's deposited value
+    ///      (sharesMinted ≤ floor(v·totalShares/reserve) ⇒ sharesMinted·reserve/totalShares ≤ v), so the
+    ///      refund stays ≥ 0.
+    function _ceilDiv(uint256 x, uint256 y) internal pure returns (uint256) {
+        return x == 0 ? 0 : (x - 1) / y + 1;
+    }
+
     /// @dev Escrow a PUBLIC deposit of `amount` of `assetId` and return the in-system value (amount/unitScale).
     ///      Mirrors `wrap`'s escrow logic (pool-minted burn / native-ETH escrow / fee-on-transfer-safe ERC20).
     ///      Native-ETH msg.value coverage is checked by the caller (it knows which legs are ETH).
@@ -880,10 +976,11 @@ contract ConfidentialPool is ReentrancyGuardTransient {
             uint256 sB = (vHi * p.totalShares) / p.reserveB;
             sharesMinted = sA < sB ? sA : sB;
             if (sharesMinted == 0) revert InsufficientLiquidity();
-            // Credit only the in-ratio portion backing the minted shares; refund the excess leg (CEI-last)
-            // so an off-ratio add can't silently donate it to the existing LPs.
-            uint256 addLo = sharesMinted * p.reserveA / p.totalShares;
-            uint256 addHi = sharesMinted * p.reserveB / p.totalShares;
+            // Charge the CEIL reserve required for the minted shares and refund the excess leg (CEI-last):
+            // ceil (not floor) keeps the add from minting shares for under-pro-rata reserves, so the rounding
+            // favors existing LPs (the swap/remove direction); it is always ≤ vLo/vHi, so the refund stays ≥ 0.
+            uint256 addLo = _ceilDiv(sharesMinted * p.reserveA, p.totalShares);
+            uint256 addHi = _ceilDiv(sharesMinted * p.reserveB, p.totalShares);
             p.reserveA += addLo; p.reserveB += addHi; p.totalShares += sharesMinted;
             lpShares[poolId][to] += sharesMinted;
             // Only the ACCUMULATING add can exceed u64; the first add below is vLo/vHi ≤ u64 (the
@@ -1018,6 +1115,10 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     /// Bitcoin state proven by the reflection prover (re-derived from relayed headers + the
     /// folded confirmed pool effects in SP1) — the trustless input to the bridge_mint root
     /// gate and the cross-lane spent-set. Field order matches the prover's commitment.
+    // A self-custody cBTC.zk lock newly tracked this batch (mirrors the reflection guest's CbtcLockFolded).
+    // attestBitcoinStateProven records cbtcLock{vBtc,commitment}[outpoint] so a later OP_CBTC_MINT can mint
+    // the pre-committed cBTC note 1:1 against the lock, gated on a native-ETH escrow.
+    struct CbtcLockFolded { bytes32 outpoint; uint256 vBtc; bytes32 commitment; }
     struct BitcoinRelayPublicValues {
         bytes32 priorDigest;      // the reflected state this proof CONTINUES (== knownReflectionDigest)
         bytes32 bitcoinPoolRoot;  // the Bitcoin confidential-pool note-tree root
@@ -1029,6 +1130,8 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         bytes32 bitcoinTipHash;   // the batch's tip block hash — anchored to a matured ancestor of RELAY.tip()
         bytes32 ethPoolReflected; // Mode B: the eth-reflection's ethPool (gated == address(this) below)
         uint256 cbtcBackingSats;  // cBTC: Σ live self-custody cBTC.zk lock sats (the off-pool buffer reads it)
+        CbtcLockFolded[] cbtcLocksFolded; // locks newly tracked this batch → cbtcLock[] (the OP_CBTC_MINT gate)
+        bytes32[] cbtcLocksSpent;  // tracked locks spent this batch → cbtcLockSpent[] (the engine slashes if not redeemed)
         uint64 consumedCount;     // fast-lane freshness: eth-consumed ν folded into the spent set; gated == bitcoinConsumedCount
     }
 
@@ -1100,6 +1203,17 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         knownBitcoinBurnRoot = r.bitcoinBurnRoot;
         knownReflectionDigest = r.newDigest;
         knownCbtcBackingSats = r.cbtcBackingSats; // cBTC backing advances with the reflected state
+        // cBTC per-lock registry (ops/DESIGN-confidential-defi-v1.md §3): record each newly-tracked lock so
+        // a later OP_CBTC_MINT can mint the pre-committed note against it (gated on the CollateralEngine
+        // escrow), and flag each spent lock so the engine can slash an un-redeemed rug. Proven arrays — the
+        // same trust as cbtcBackingSats, just per-lock. The guest binds (outpoint, vBtc, commitment); vBtc is
+        // a real u64 lock value (parse_tx_output) so the downcast is exact.
+        for (uint256 i; i < r.cbtcLocksFolded.length; ++i) {
+            CbtcLockFolded memory f = r.cbtcLocksFolded[i];
+            cbtcLockVBtc[f.outpoint] = uint64(f.vBtc);
+            cbtcLockCommitment[f.outpoint] = f.commitment;
+        }
+        for (uint256 i; i < r.cbtcLocksSpent.length; ++i) cbtcLockSpent[r.cbtcLocksSpent[i]] = true;
         emit BitcoinRootAttested(r.bitcoinPoolRoot);
         emit BitcoinSpentRootReflected(r.bitcoinSpentRoot);
         emit BitcoinBurnRootReflected(r.bitcoinBurnRoot);
@@ -1107,7 +1221,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     }
 
     /// @notice The reflection-attested live cBTC.zk lock backing (Σ live self-custody lock sats). The
-    ///         standalone CbtcBuffer reads this vs the circulating cBTC supply to size the peg shortfall;
+    ///         standalone CollateralEngine reads this vs the circulating cBTC supply to size the peg shortfall;
     ///         settle never reads it (the cBTC peg is real-BTC, oracle-free, this is buffer-only).
     function cbtcBackingSats() external view returns (uint256) {
         return knownCbtcBackingSats;
@@ -1317,6 +1431,60 @@ contract ConfidentialPool is ReentrancyGuardTransient {
             emit LockLeavesInserted(firstLockLeafIndex, pv.lockLeaves);
         }
         if (pv.adaptorClaimS.length != 0) emit AdaptorClaimsRevealed(pv.adaptorClaimS);
+
+        // ── Generic CDP (ops 15–17) + cBTC mint (op 18) ──────────────────────────────────────────────
+        // The CDP position set mirrors the lock set: CLOSE/LIQUIDATE prove membership against a KNOWN cdp
+        // root; MINT appends new positions (advancing it); a position's nullifier is spent once. ALL
+        // pricing/ratio policy is the controller's (onCdpMint/onCdpLiquidate revert to DENY). A position is
+        // ALWAYS the controller's OWN derived debt asset (`debtAsset == keccak("tacit-cdp-debt-v1" ‖
+        // controller)`), so a controller can only ever mint/free its own asset — never cBTC/TAC.
+        if (pv.cdpPositionRoot != bytes32(0) && !everKnownCdpRoot[pv.cdpPositionRoot]) revert UnknownCdpRoot();
+        if (
+            (pv.cdpCloses.length != 0 || pv.cdpLiquidations.length != 0)
+                && (pv.cdpPositionRoot == bytes32(0) || !everKnownCdpRoot[pv.cdpPositionRoot])
+        ) revert UnknownCdpRoot();
+
+        for (uint256 i; i < pv.cdpMints.length; ++i) {
+            CdpMint memory m = pv.cdpMints[i];
+            if (m.debtAsset != keccak256(abi.encodePacked("tacit-cdp-debt-v1", m.controller))) revert BadCdpController();
+            _insertCdpPositionLeaf(m.positionLeaf);
+            ICdpController(m.controller).onCdpMint(m.legs, m.debtValue, m.positionLeaf);
+            emit CdpPositionMinted(m.positionLeaf, m.controller, m.debtValue);
+        }
+        if (pv.cdpMints.length != 0) everKnownCdpRoot[cdpRoot] = true;
+
+        for (uint256 i; i < pv.cdpCloses.length; ++i) {
+            CdpClose memory c = pv.cdpCloses[i];
+            if (cdpPositionSpent[c.positionNullifier]) revert CdpPositionAlreadySpent();
+            cdpPositionSpent[c.positionNullifier] = true;
+            ICdpController(c.controller).onCdpClose(c.debtValue, c.legs, c.positionNullifier);
+            emit CdpPositionConsumed(c.positionNullifier, false);
+        }
+        for (uint256 i; i < pv.cdpLiquidations.length; ++i) {
+            CdpLiquidate memory q = pv.cdpLiquidations[i];
+            if (cdpPositionSpent[q.positionNullifier]) revert CdpPositionAlreadySpent();
+            cdpPositionSpent[q.positionNullifier] = true;
+            // The controller proves (its oracle) the position is unhealthy + covers the debt; reverts if
+            // healthy. The seized basket rides pv.withdrawals (recipient = controller), paid by the loop below.
+            ICdpController(q.controller).onCdpLiquidate(q.legs, q.debtValue, q.positionNullifier);
+            emit CdpPositionConsumed(q.positionNullifier, true);
+        }
+
+        // cBTC mint (op 18): the cBTC note leaf rides pv.leaves (inserted below, conservation-free value
+        // entry like bridge_mint). Gate it on the reflection-recorded lock (the locked sats + the locker's
+        // pre-committed commitment), one-mint-per-lock, and the native-ETH escrow at the CollateralEngine.
+        for (uint256 i; i < pv.cbtcMints.length; ++i) {
+            CbtcMint memory cm = pv.cbtcMints[i];
+            if (cm.vBtc == 0 || cbtcLockVBtc[cm.outpoint] != uint64(cm.vBtc)) revert CbtcLockMismatch();
+            if (cbtcLockCommitment[cm.outpoint] != cm.commitment) revert CbtcLockMismatch();
+            if (cbtcMinted[cm.outpoint]) revert CbtcAlreadyMinted();
+            if (address(COLLATERAL_ENGINE) == address(0) || !COLLATERAL_ENGINE.escrowSufficient(cm.outpoint, cm.vBtc)) {
+                revert CbtcEscrowInsufficient();
+            }
+            cbtcMinted[cm.outpoint] = true;
+            emit CbtcNoteMinted(cm.outpoint, cm.vBtc);
+        }
+
         // No-inflation floor: count EVM-homed spends (Bitcoin-homed cross-lane spends are backed by the
         // reflected Bitcoin tree, not this one). The post-insert invariant below caps total EVM spends at
         // total EVM leaves created — a guest/vkey compromise can't spend more notes than were created here.
@@ -1462,6 +1630,10 @@ contract ConfidentialPool is ReentrancyGuardTransient {
             if (l.reserveAPost == 0 || l.reserveBPost == 0 || l.sharesPost < MINIMUM_LIQUIDITY) {
                 revert ReserveFloorBreach();
             }
+            // First confidential add (sharesPre == 0): mirror the public first-add — totalShares must EXCEED
+            // the locked MINIMUM_LIQUIDITY (not merely equal it), so the founder gets a real position rather
+            // than a noteless pool where every share is the permanent floor. Public path rejects minted ≤ MIN.
+            if (l.sharesPre == 0 && l.sharesPost <= MINIMUM_LIQUIDITY) revert InsufficientLiquidity();
             // Reserves AND totalShares stay < 2^64 (the BP+/u64 bound the first LP add sets at funding): a
             // post beyond it would wrap when the guest reads it back as the next pre, locking the pool.
             if (l.reserveAPost > type(uint64).max || l.reserveBPost > type(uint64).max
@@ -1612,6 +1784,22 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         }
         lockRoot = h;
         lockNextLeafIndex++;
+    }
+
+    /// Append a CDP position to the position-set accumulator — identical machinery to `_insertLockLeaf` on
+    /// its own independent tree (shares `zeros` + `_hash`; depth-bounded by MAX_LEAVES). A position leaf is
+    /// never a note-tree or lock-set leaf (domain-separated in-guest), so the trees stay disjoint.
+    function _insertCdpPositionLeaf(bytes32 leaf) internal {
+        if (cdpNextLeafIndex >= MAX_LEAVES) revert MerkleTreeFull();
+        uint256 idx = cdpNextLeafIndex;
+        bytes32 h = leaf;
+        for (uint256 i; i < TREE_LEVELS; ++i) {
+            if (idx & 1 == 0) { cdpFilledSubtrees[i] = h; h = _hash(h, zeros[i]); }
+            else { h = _hash(cdpFilledSubtrees[i], h); }
+            idx >>= 1;
+        }
+        cdpRoot = h;
+        cdpNextLeafIndex++;
     }
 
     function _hash(bytes32 l, bytes32 r) internal pure returns (bytes32 h) {

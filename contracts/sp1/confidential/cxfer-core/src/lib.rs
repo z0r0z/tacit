@@ -54,8 +54,10 @@ pub fn scalar_reduce_be(bytes: &[u8; 32]) -> Scalar {
 
 /// parse a canonical 32-byte big-endian scalar (< n), else None (matches `>= SECP_N → false`).
 fn scalar_canonical_be(bytes: &[u8]) -> Option<Scalar> {
-    if bytes.len() != 32 { return None; }
-    let fb = FieldBytes::clone_from_slice(bytes);
+    let fb: FieldBytes = match <[u8; 32]>::try_from(bytes) {
+        Ok(a) => a.into(),
+        Err(_) => return None,
+    };
     Option::<Scalar>::from(Scalar::from_repr(fb))
 }
 
@@ -105,26 +107,6 @@ pub const CBTC_LOCK_DOMAIN: &[u8] = b"tacit-cbtc-lock-v1";
 /// Adaptor-swap LOCK-SET leaf domain — see ops/DESIGN-adaptor-swap-guest.md. Domain-separated from
 /// the note-tree `leaf` so a locked note is NEVER spendable by a normal OP_TRANSFER (and vice-versa).
 pub const ADAPTOR_LOCK_DOMAIN: &[u8] = b"tacit-adaptor-lock-v1";
-
-/// cBTC.tac confidential-bond BONDED-POSITION leaf domain — see ops/DESIGN-cbtc-tac-bond-guest.md.
-/// Domain-separated from the note-tree `leaf` and the adaptor lock set, so a bonded (TAC,tETH) LP note
-/// is NEVER spendable by a normal transfer / LP-remove — only by OP_BOND_REDEEM / OP_BOND_SLASH.
-pub const BOND_POSITION_DOMAIN: &[u8] = b"tacit-cbtc-tac-bond-v1";
-
-// ──── cBTC.tac bond price/ratio/health gate (§5): freeze the STRUCTURE, not the ORACLE ────
-// The guest verifies a RELAY-signed CAPACITY (mint) / HEALTH (slash) over the position + a recent
-// anchor, then enforces the conservation. The dual-TWAP / BOND_RATIO / IL-floor / LIQ_THRESHOLD all
-// live in the relay's `max_mint` / `unhealthy` computation — tunable post-deploy with NO guest change.
-// Only this attestation INTERFACE is frozen into PROGRAM_VKEY (the minimal immutable surface; it's
-// upgradeable to a price-only attestation with in-guest ratio math in a later re-prove if desired).
-/// Mint-capacity attestation domain — the relay signs (bond ‖ asset ‖ max_mint ‖ anchor).
-pub const BOND_ATTEST_MINT_DOMAIN: &[u8] = b"tacit-cbtc-tac-bond-mint-v1";
-/// Slash-health attestation domain — the relay signs (position_leaf ‖ anchor).
-pub const BOND_ATTEST_SLASH_DOMAIN: &[u8] = b"tacit-cbtc-tac-bond-slash-v1";
-/// The pinned bond-oracle / relay x-only pubkey that signs capacity + health attestations.
-/// TODO(cbtc-tac): set to the production relay key before the re-prove (baked into PROGRAM_VKEY);
-/// reuse the existing relay-anchor key if it serves, else a dedicated bond-oracle key. Placeholder.
-pub const BOND_ORACLE_PUBKEY_X: [u8; 32] = [0xba; 32];
 
 /// Schnorr proof of knowledge of the blinding `r` for a Pedersen commitment with a PUBLIC
 /// `amount`: proves the prover knows `r` such that `commitment = amount·H + r·G`, binding the
@@ -553,7 +535,7 @@ pub fn xcurve_challenge(c_secp: &[u8; 33], c_bjj: &[u8; 32], a_secp: &[u8; 33], 
 /// (`src/babyjubjub.rs`) must ALSO hold for the binding.
 pub fn xcurve_secp_check(c_secp: &[u8; 33], a_secp: &[u8; 33], z_a: &[u8; 40], z_r_secp: &[u8; 32], e: &[u8; 16]) -> bool {
     // z_r_secp must be canonical (< n) — mirrors the dapp's `z_r_secp >= SECP_N` reject.
-    let zrs = match Option::<Scalar>::from(Scalar::from_repr(FieldBytes::clone_from_slice(z_r_secp))) {
+    let zrs = match Option::<Scalar>::from(Scalar::from_repr(FieldBytes::from(*z_r_secp))) {
         Some(s) => s,
         None => return false,
     };
@@ -672,7 +654,7 @@ pub fn verify_range(commitments: &[ProjectivePoint], proof: &[u8]) -> bool {
 
     // ---- parse ----
     let mut off = 0usize;
-    let mut take33 = |o: &mut usize| -> Option<ProjectivePoint> {
+    let take33 = |o: &mut usize| -> Option<ProjectivePoint> {
         let mut a = [0u8; 33];
         a.copy_from_slice(&proof[*o..*o + 33]);
         *o += 33;
@@ -913,105 +895,64 @@ pub fn adaptor_lock_leaf(
 ) -> [u8; 32] {
     kn(&[ADAPTOR_LOCK_DOMAIN, cx, cy, tx, ty, &deadline.to_be_bytes(), recipient, locker])
 }
-/// The cBTC.tac BONDED-POSITION leaf (ops/DESIGN-cbtc-tac-bond-guest.md): binds the bonded note's OWN
-/// asset (`bond_asset`, the LP-share id) AND commitment (Cx,Cy), the synthetic asset minted against it
-/// (`cbtc_asset`), the exact `minted_amount`, the `issuer` repaid on redeem, and a `position_nonce` for
-/// uniqueness. OP_BOND_REDEEM / OP_BOND_SLASH must reproduce this EXACT leaf to prove bonded-set
-/// membership, so the relayer can neither free a different bond, RELABEL the released note to a dearer
-/// asset (binding `bond_asset` blocks the relabel-inflation), burn a different amount, nor redirect the
-/// LP. Domain-separated from the note-tree `leaf` (a bonded LP is never spendable by a normal
-/// transfer/LP-remove) and from the adaptor lock set. The amount rides as a witness (hidden from public
-/// values, OP_OTC pattern); the leaf merely commits it.
-#[allow(clippy::too_many_arguments)]
-pub fn bond_position_leaf(
-    bond_asset: &[u8; 32],
-    bond_cx: &[u8; 32], bond_cy: &[u8; 32],
-    cbtc_asset: &[u8; 32],
-    minted_amount: u64,
-    issuer: &[u8; 32], position_nonce: &[u8; 32],
+
+// ──────────────────── generic confidential CDP (ops/DESIGN-confidential-defi-v1.md §4) ────────────────────
+// A position locks a BASKET of collateral legs and mints a controller-derived debt asset against it. The
+// guest freezes ONLY the structure + conservation; ALL pricing/ratio policy lives in the MUTABLE Ethereum
+// controller, which the pool calls at settle (`onCdpMint`/`onCdpLiquidate`). cUSD-on-cBTC is the first
+// instance; a single-leg basket (n=1) is the simple case, n>1 the MakerDAO-style multi-collateral one.
+
+/// CDP position-leaf domain — disjoint from the note-tree `leaf`, the adaptor lock set, and the cBTC lock
+/// set, so collateral locked in a position is NEVER spendable by a normal transfer.
+pub const CDP_POSITION_DOMAIN: &[u8] = b"tacit-cdp-position-v1";
+/// CDP debt-asset domain — the debt asset id is derived from the CONTROLLER alone.
+pub const CDP_DEBT_DOMAIN: &[u8] = b"tacit-cdp-debt-v1";
+
+/// The CDP debt asset id = keccak(CDP_DEBT_DOMAIN ‖ controller) — derived from the controller (an Ethereum
+/// address) ALONE, so ONE controller mints ONE debt asset regardless of the basket. A controller is the
+/// SOLE minter of its own asset (permissionless, no registry/admin); a rogue controller can only inflate
+/// its OWN worthless-unless-collateralized token, never an existing asset (cBTC/TAC). The contract
+/// re-derives the same id and enforces `debt_asset == cdp_debt_asset_id(controller)`.
+pub fn cdp_debt_asset_id(controller: &[u8; 20]) -> [u8; 32] {
+    kn(&[CDP_DEBT_DOMAIN, controller])
+}
+
+/// One collateral basket leg's hash: keccak(asset ‖ value_be). The leg value is PUBLIC at the CDP
+/// boundary (so the controller can price it on-chain via Chainlink). It binds (asset, value) only — the
+/// original collateral note is SPENT at mint, and CLOSE re-mints a FRESH note opening to this recorded
+/// value (re-minting the original commitment would collide with its already-spent nullifier), so the
+/// commitment is not part of the leg. Position uniqueness comes from the leaf nonce.
+pub fn cdp_basket_leg(asset: &[u8; 32], value: u64) -> [u8; 32] {
+    let mut v32 = [0u8; 32];
+    v32[24..].copy_from_slice(&value.to_be_bytes());
+    kn(&[asset, &v32])
+}
+
+/// The basket root = keccak Merkle root over the leg hashes (in witnessed order). Binds the WHOLE basket
+/// into the position leaf, so CLOSE/LIQUIDATE must reproduce every leg to act on the position.
+pub fn cdp_basket_root(legs: &[[u8; 32]]) -> [u8; 32] {
+    keccak_merkle_root(legs)
+}
+
+/// The CDP position leaf: binds the controller, its derived debt asset, the basket root, the PUBLIC debt
+/// value, the (confidential) owner, and a uniqueness nonce. CLOSE/LIQUIDATE reproduce this EXACT leaf to
+/// prove membership, so a relayer can't free a different position, change the debt, or redirect the
+/// collateral. Domain-separated (CDP_POSITION_DOMAIN).
+pub fn cdp_position_leaf(
+    controller: &[u8; 20], debt_asset: &[u8; 32], basket_root: &[u8; 32],
+    debt_value: u64, owner: &[u8; 32], nonce: &[u8; 32],
 ) -> [u8; 32] {
-    kn(&[BOND_POSITION_DOMAIN, bond_asset, bond_cx, bond_cy, cbtc_asset, &minted_amount.to_be_bytes(), issuer, position_nonce])
+    let mut dv = [0u8; 32];
+    dv[24..].copy_from_slice(&debt_value.to_be_bytes());
+    kn(&[CDP_POSITION_DOMAIN, controller, debt_asset, basket_root, &dv, owner, nonce])
 }
-/// A relay CAPACITY attestation for OP_BOND_MINT (§5, the hybrid). The relay signs these fields; the
-/// guest then RE-DERIVES the spot capacity ceiling from the LIVE pool reserves using the SAME
-/// (price, ratio) the relay attests, and rejects a `max_mint` above it (within `band_bps`). So the
-/// relay's only un-bounded input is the single exogenous TAC/BTC price — the (TAC,tETH) reserves that
-/// dominate the valuation are guest-enforced from on-chain state, not trusted to the relay.
-#[derive(Clone)]
-pub struct BondMintAttest {
-    pub bond_cx: [u8; 32],
-    pub bond_cy: [u8; 32],
-    pub cbtc_asset: [u8; 32],
-    pub max_mint: u64,          // the relay's TWAP'd capacity (caps the mint)
-    pub sats_per_tac_num: u64,  // the attested TAC/BTC price as a rational (sats per TAC)
-    pub sats_per_tac_den: u64,
-    pub ratio_bps: u32,         // BOND_RATIO in bps (25000 = 2.5x)
-    pub anchor: [u8; 32],       // freshness anchor (recency enforced against the batch's relay state)
+
+/// The CDP position nullifier (spend-once): keccak(CDP_POSITION_DOMAIN ‖ position_leaf ‖ "spent"). The
+/// contract dedups it across CLOSE/LIQUIDATE so a position is consumed at most once.
+pub fn cdp_position_nullifier(position_leaf: &[u8; 32]) -> [u8; 32] {
+    kn(&[CDP_POSITION_DOMAIN, position_leaf, b"spent"])
 }
-impl BondMintAttest {
-    /// The 32-byte message the relay signs — binds EVERY field, so none can be swapped post-signing.
-    pub fn msg(&self) -> [u8; 32] {
-        kn(&[
-            BOND_ATTEST_MINT_DOMAIN, &self.bond_cx, &self.bond_cy, &self.cbtc_asset,
-            &self.max_mint.to_be_bytes(), &self.sats_per_tac_num.to_be_bytes(),
-            &self.sats_per_tac_den.to_be_bytes(), &self.ratio_bps.to_be_bytes(), &self.anchor,
-        ])
-    }
-}
-/// The trustless SPOT capacity ceiling (§5 hybrid): the fair-LP value of the bonded share in TAC,
-/// `2·(share/total)·reserve_tac`, priced to sats at the attested rate and divided by the ratio, widened
-/// by `band_bps` to allow legitimate TWAP-vs-spot drift:
-///   ceiling_sats = 2·share·reserve_tac·num·(10000+band_bps) / (total·den·ratio_bps).
-/// The guest caps the relay's `max_mint` at this, so a relay cannot authorize a mint inconsistent with
-/// the LIVE reserves (stale/phantom reserves, or a capacity inflated past what those reserves justify,
-/// are rejected). u128-checked — `None` (→ reject) on overflow or a zero denominator: fail-closed.
-pub fn bond_spot_capacity_ceiling(
-    share: u64, total_shares: u64, reserve_tac: u64,
-    sats_per_tac_num: u64, sats_per_tac_den: u64, ratio_bps: u32, band_bps: u32,
-) -> Option<u128> {
-    if total_shares == 0 || sats_per_tac_den == 0 || ratio_bps == 0 { return None; }
-    let numer = 2u128
-        .checked_mul(share as u128)?
-        .checked_mul(reserve_tac as u128)?
-        .checked_mul(sats_per_tac_num as u128)?
-        .checked_mul(10_000u128.checked_add(band_bps as u128)?)?;
-    let denom = (total_shares as u128)
-        .checked_mul(sats_per_tac_den as u128)?
-        .checked_mul(ratio_bps as u128)?;
-    Some(numer / denom)
-}
-/// The full OP_BOND_MINT gate (§5 hybrid): accept a mint of `minted_amount` against the bonded share IFF
-/// (a) the pinned relay (`oracle_x`) signed the attestation, (b) `minted_amount <= att.max_mint`, and
-/// (c) `att.max_mint` is within `bond_spot_capacity_ceiling` of the LIVE reserves at the attested
-/// price/ratio. (a) is the relay's price/TWAP trust; (c) binds it to on-chain AMM state, so the relay
-/// can't over-authorize beyond what live reserves justify without also moving the visible pool.
-#[allow(clippy::too_many_arguments)]
-pub fn verify_bond_mint(
-    att: &BondMintAttest, minted_amount: u64,
-    share: u64, total_shares: u64, reserve_tac: u64, band_bps: u32,
-    sig: &[u8; 64], oracle_x: &[u8; 32],
-) -> bool {
-    if minted_amount > att.max_mint { return false; }
-    let ceiling = match bond_spot_capacity_ceiling(
-        share, total_shares, reserve_tac, att.sats_per_tac_num, att.sats_per_tac_den, att.ratio_bps, band_bps,
-    ) {
-        Some(c) => c,
-        None => return false,
-    };
-    if att.max_mint as u128 > ceiling { return false; }
-    bip340_verify(sig, &att.msg(), oracle_x)
-}
-/// The 32-byte message a relay signs to attest a position is SLASHABLE (§5): binds the exact
-/// `position_leaf` (so it can't be replayed onto a healthy position) and a freshness `anchor`.
-pub fn bond_slash_health_msg(position_leaf: &[u8; 32], anchor: &[u8; 32]) -> [u8; 32] {
-    kn(&[BOND_ATTEST_SLASH_DOMAIN, position_leaf, anchor])
-}
-/// The OP_BOND_SLASH gate: accept a slash of `position_leaf` IFF the pinned relay (`oracle_x`) signed
-/// that it is under-collateralized at `anchor`. The health call (the dual-TWAP comparison) is the
-/// relay's; the guest binds it to the exact position so a slash can't be redirected.
-pub fn verify_bond_slash_health(position_leaf: &[u8; 32], anchor: &[u8; 32], sig: &[u8; 64], oracle_x: &[u8; 32]) -> bool {
-    bip340_verify(sig, &bond_slash_health_msg(position_leaf, anchor), oracle_x)
-}
+
 /// Confidential-AMM pool id, matching `ConfidentialPool`'s `keccak256(abi.encode(low, high, feeBps))`
 /// (three 32-byte ABI words). Binds an OP_SWAP/LP batch's reserves to the exact (canonical pair, fee
 /// tier) pool, so a prover can't settle one pool's op against another's reserves.
@@ -1213,11 +1154,16 @@ pub fn confirm_pool_tx(
         .collect();
     Some((txid, outpoints))
 }
-/// deposit id = keccak(asset_id ‖ value_be32 ‖ Cx ‖ Cy ‖ owner) — binds the note's
-/// in-system value (the contract derives the same value = amount/unitScale at wrap, so
-/// value·unitScale == escrowed amount: the wrap-side no-inflation gate).
-pub fn deposit_id(asset_id: &[u8; 32], value_be32: &[u8; 32], cx: &[u8; 32], cy: &[u8; 32], owner: &[u8; 32]) -> [u8; 32] {
-    kn(&[asset_id, value_be32, cx, cy, owner])
+/// deposit commit = keccak(Cx ‖ Cy ‖ owner) — the digest the contract's `wrap` takes in place of the
+/// raw coords + owner, so they never appear in public calldata. Distinct preimage from `nullifier`
+/// (no "spent" tag) and `leaf` (no asset prefix), so publishing it yields neither.
+pub fn deposit_commit(cx: &[u8; 32], cy: &[u8; 32], owner: &[u8; 32]) -> [u8; 32] { kn(&[cx, cy, owner]) }
+/// deposit id = keccak(asset_id ‖ value_be32 ‖ commit), commit = deposit_commit(Cx, Cy, owner) —
+/// binds the note's in-system value (the contract derives the same value = amount/unitScale at wrap,
+/// so value·unitScale == escrowed amount: the wrap-side no-inflation gate) over the coord/owner
+/// digest rather than the raw coords, which keeps them off-chain.
+pub fn deposit_id(asset_id: &[u8; 32], value_be32: &[u8; 32], commit: &[u8; 32]) -> [u8; 32] {
+    kn(&[asset_id, value_be32, commit])
 }
 /// claimId = keccak(abi.encodePacked(destChain:uint16, destCommitment, nullifier,
 /// asset_id)) — matches ConfidentialPool.settle's on-chain re-derivation and the
@@ -2456,6 +2402,17 @@ impl PoolReserveSet {
     }
 }
 
+/// The per-cycle delta `fold_cbtc_lock` returns — surfaced in the reflection public values as a
+/// `cbtcLocksFolded` entry. `commitment_hash = keccak(Cx‖Cy)` binds the locker's pre-committed cBTC note
+/// so only that note can be minted against this lock by `ConfidentialPool.mintCbtc` (anti-griefing); the
+/// value-opening (note == v_btc) is checked there, not here. See ops/DESIGN-confidential-defi-v1.md §3.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct CbtcLockFold {
+    pub outpoint: [u8; 32],
+    pub v_btc: u64,
+    pub commitment_hash: [u8; 32],
+}
+
 #[derive(Clone)]
 pub struct ScanReflection {
     pub pool_root: [u8; 32],
@@ -2786,13 +2743,18 @@ impl ScanReflection {
         if env.delta_out > r_out_pre {
             return Err("swap_var fold: delta_out exceeds out-side reserve");
         }
-        // (7) onboard the receipt as a real live note (same leaf/UTXO shape as any reflected output), then
-        //     advance the reserves: in-side += delta_in (the tip leaves the pool), out-side −= delta_out.
+        // (7) compute the post-reserves BEFORE any state mutation (validate-then-commit, as fold_swap_route /
+        //     fold_swap_batch already do): in-side += delta_in (the tip leaves the pool), out-side −= delta_out.
+        //     Running the fallible checked_add ahead of fold_output keeps the fold strictly all-or-nothing — a
+        //     receipt note can never be onboarded while the reserve debit is skipped (which would leave the
+        //     out-side reserve overstated and double-extractable by a later swap).
+        let r_in_post = r_in_pre.checked_add(env.delta_in).ok_or("swap_var fold: in-reserve overflow")?;
+        let r_out_post = r_out_pre - env.delta_out; // ≤ checked above
+        // Onboard the receipt as a real live note (same leaf/UTXO shape as any reflected output). fold_output
+        // is itself atomic (it returns Err before mutating on a bad append path), so nothing partial lands.
         let note_leaf = reflected_note_leaf(asset_out, &env.c_receipt).ok_or("swap_var fold: receipt not a curve point")?;
         let ch = commitment_hash_compressed(&env.c_receipt).ok_or("swap_var fold: receipt not a curve point")?;
         self.fold_output(&note_leaf, receipt_note_path, receipt_outpoint, &ch, asset_out)?;
-        let r_in_post = r_in_pre.checked_add(env.delta_in).ok_or("swap_var fold: in-reserve overflow")?;
-        let r_out_post = r_out_pre - env.delta_out; // ≤ checked above
         if env.direction == 0 {
             pool.reserve_a = r_in_post;
             pool.reserve_b = r_out_post;
@@ -2861,7 +2823,7 @@ impl ScanReflection {
                 if !swap_var_kernel_verify(&cur_asset, input_outpoint, &env.c_in, &[0u8; 33], in_mag, &env.kernel_sig) {
                     return Err("swap_route fold: input kernel verify");
                 }
-                cur_amount = in_mag;
+                // cur_amount is set to this hop's out_mag at the loop tail (below); no first-hop seed needed.
             } else if in_mag != cur_amount {
                 return Err("swap_route fold: hop input amount breaks the chain");
             }
@@ -3300,7 +3262,6 @@ impl ScanReflection {
     /// job, NOT the reflection — this proves only that the MINT is backed. `tx_data` is the confirmed
     /// envelope tx (the caller verified inclusion + PoW via the full-scan). See
     /// ops/DESIGN-cbtc-sats-lock-reflection.md.
-    #[allow(clippy::too_many_arguments)]
     pub fn fold_cbtc_lock(
         &mut self,
         asset: &[u8; 32],
@@ -3309,73 +3270,58 @@ impl ScanReflection {
         tx_data: &[u8],
         lock_vout: u32,
         lock_txid: &[u8; 32],
-        note_path: &[[u8; 32]],
-        sig_rx: &[u8; 32],
-        sig_ry: &[u8; 32],
-        sig_z: &[u8; 32],
-    ) -> Result<(), &'static str> {
-        // Asset binding — only the one canonical cBTC.zk id (a fabricated etch can only mint a
+    ) -> Result<CbtcLockFold, &'static str> {
+        // Asset binding — only the one canonical cBTC.zk id (a fabricated etch can only name a
         // worthless made-up id, never the real allowlisted one).
         if asset != &CBTC_ZK_ASSET_ID {
             return Err("cbtc lock: not the cBTC.zk asset");
         }
-        // The minted commitment must be a real secp256k1 point.
-        let c = from_affine_xy(cx, cy).ok_or("cbtc lock: commitment not a curve point")?;
-        // The confirmed lock output: the canonical vault scriptPubKey + its public value v_btc.
+        // The confirmed lock output: the LOCKER'S OWN output (self-custody, ANY scriptPubKey — no vault,
+        // no custodial key) and its public value v_btc (objective Bitcoin data, proven by the confirmed tx).
         let (v_btc, _spk) =
             bitcoin::parse_tx_output(tx_data, lock_vout).ok_or("cbtc lock: no such output")?;
-        // SELF-CUSTODY: the lock is the LOCKER'S OWN output (vout `lock_vout` of THIS committing tx — an
-        // output the committer creates, so they control it; NO protocol vault, NO custodial key). Its sats
-        // back the cBTC note; a later spend of it (a rug) is detected by `fold_cbtc_lock_spends`, dropping
-        // the backing (the off-pool tETH buffer then covers the shortfall). The lock vout must differ from
-        // the note's vout 0 so their outpoints can't collide.
+        // vout 0 is reserved disjoint from the historical note outpoint; a real lock is a later output.
         if lock_vout == 0 {
-            return Err("cbtc lock: lock vout must not be 0 (the note outpoint)");
+            return Err("cbtc lock: lock vout must not be 0");
         }
-        // Conservation: the note commits to EXACTLY v_btc — opening sigma, blinding NOT revealed, bound
-        // to THIS lock (asset ‖ lock_txid ‖ lock_vout) so it cannot be replayed against another lock.
-        let r = from_affine_xy(sig_rx, sig_ry).ok_or("cbtc lock: sigma R not a curve point")?;
-        let z = scalar_reduce_be(sig_z);
-        let context = kn(&[CBTC_LOCK_DOMAIN, asset, lock_txid, &lock_vout.to_le_bytes()]);
-        if !verify_opening_sigma(&c, v_btc, &r, &z, &context) {
-            return Err("cbtc lock: value-binding failed (note != locked sats)");
-        }
-        // Track the self-custody lock (its outpoint → v_btc) and add its sats to the backing total. Both
-        // ride `digest()`, so a resumed cycle can't forge the backing. A duplicate lock outpoint can't
-        // re-add (LiveUtxoSet::insert panics on a duplicate key — one lock backs one note).
         let lock_outpoint = outpoint_key(lock_txid, lock_vout);
+        // One lock backs one mint: a duplicate outpoint folds nothing (skip-not-panic).
+        if self.cbtc_locks.get(&lock_outpoint).is_some() {
+            return Err("cbtc lock: outpoint already tracked");
+        }
+        // TRACK, don't mint. Record the lock (outpoint → v_btc) + the backing total — both ride `digest()`,
+        // so a resumed cycle can't forge the backing. The cBTC NOTE is NOT folded here: minting moves to
+        // ConfidentialPool.mintCbtc (gated on this lock + a native-ETH escrow), where the value-opening
+        // (note == v_btc, the conservation peg) is checked. The returned `commitment_hash` binds the
+        // locker's pre-committed note so only that note can be minted against this lock (anti-griefing).
         let mut v32 = [0u8; 32];
         v32[24..].copy_from_slice(&v_btc.to_be_bytes());
         self.cbtc_locks.insert(&lock_outpoint, &v32, asset);
         self.cbtc_backing_sats = self.cbtc_backing_sats.saturating_add(v_btc);
-        // Fold the owner-free cBTC note (the mint's vout 0). Single-use is structural — the lock + the note
-        // are outputs of one tx, deduped by the note outpoint.
-        let note_leaf = leaf(asset, cx, cy, &[0u8; 32]);
-        let note_outpoint = outpoint_key(lock_txid, 0);
-        let ch = commitment_hash(cx, cy);
-        self.fold_output(&note_leaf, note_path, &note_outpoint, &ch, asset)
+        Ok(CbtcLockFold { outpoint: lock_outpoint, v_btc, commitment_hash: commitment_hash(cx, cy) })
     }
 
-    /// Detect a SELF-CUSTODY rug: scan a confirmed tx's inputs for any spending a tracked cBTC.zk lock
-    /// outpoint, and drop its sats from the backing (the lock is gone, so the cBTC it backed is now
-    /// under-backed — the off-pool buffer covers it). Returns the sats removed (0 if none). A lock spend is
-    /// a plain Bitcoin spend — NO Tacit ν / opening (unlike a pool-note spend in `scan_tx_spends`).
-    pub fn fold_cbtc_lock_spends(&mut self, tx_data: &[u8]) -> u64 {
+    /// Detect SELF-CUSTODY lock spends: scan a confirmed tx's inputs for any spending a tracked cBTC.zk
+    /// lock outpoint; drop its sats from the backing, remove it from the live index, and RETURN the spent
+    /// outpoint(s) for the per-cycle `cbtcLocksSpent` public-value array. The contract classifies rug vs.
+    /// honest redemption (spent ∧ escrow-not-released ⇒ rug ⇒ slash). A lock spend is a plain Bitcoin
+    /// spend — NO Tacit ν / opening (unlike a pool-note spend in `scan_tx_spends`).
+    pub fn fold_cbtc_lock_spends(&mut self, tx_data: &[u8]) -> Vec<[u8; 32]> {
         let inputs = match bitcoin::extract_inputs(tx_data) {
             Some(i) => i,
-            None => return 0,
+            None => return Vec::new(),
         };
-        let mut removed = 0u64;
+        let mut spent = Vec::new();
         for (txid, vout) in &inputs {
             let key = outpoint_key(txid, *vout);
             if let Some((vbytes, _asset)) = self.cbtc_locks.get(&key) {
                 let v = u64::from_be_bytes(vbytes[24..].try_into().unwrap());
                 self.cbtc_backing_sats = self.cbtc_backing_sats.saturating_sub(v);
                 self.cbtc_locks.remove(&key);
-                removed = removed.saturating_add(v);
+                spent.push(key);
             }
         }
-        removed
+        spent
     }
 }
 
@@ -3459,69 +3405,59 @@ mod tests {
         let asset = CBTC_ZK_ASSET_ID;
         let lock_txid = [0x33u8; 32];
         let lock_vout: u32 = 1;
+        // the locker's pre-committed cBTC note commitment (a real point; reflection only binds its hash —
+        // the value-opening note==v_btc is the contract's mintCbtc check, not the reflection's).
         let gamma = scalar_reduce_be(&[0x44u8; 32]);
-        let k = scalar_reduce_be(&[0x55u8; 32]);
-        let context = kn(&[CBTC_LOCK_DOMAIN, &asset, &lock_txid, &lock_vout.to_le_bytes()]);
-
         let c = gen_h() * Scalar::from(v_btc) + ProjectivePoint::generator() * gamma;
         let cb = c.to_affine().to_encoded_point(false);
         let cx: [u8; 32] = cb.as_bytes()[1..33].try_into().unwrap();
         let cy: [u8; 32] = cb.as_bytes()[33..65].try_into().unwrap();
-        let (r_pt, z) = prove_opening_sigma(v_btc, &gamma, &k, &context);
-        let rb = r_pt.to_affine().to_encoded_point(false);
-        let sig_rx: [u8; 32] = rb.as_bytes()[1..33].try_into().unwrap();
-        let sig_ry: [u8; 32] = rb.as_bytes()[33..65].try_into().unwrap();
-        let mut sig_z = [0u8; 32];
-        sig_z.copy_from_slice(&z.to_bytes());
-        let note_path = KeccakTreeAccumulator::new().append_path();
         // self-custody: the lock pays the locker's OWN output — any P2TR-shaped SPK works (no vault check).
         let lock_spk: &[u8] = &[
             0x51, 0x20, 0xcb, 0xcb, 0xcb, 0xcb, 0xcb, 0xcb, 0xcb, 0xcb, 0xcb, 0xcb, 0xcb, 0xcb, 0xcb, 0xcb,
             0xcb, 0xcb, 0xcb, 0xcb, 0xcb, 0xcb, 0xcb, 0xcb, 0xcb, 0xcb, 0xcb, 0xcb, 0xcb, 0xcb, 0xcb, 0xcb,
             0xcb, 0xcb,
         ];
+        let expect_outpoint = outpoint_key(&lock_txid, lock_vout);
 
-        // a backed mint folds AND accrues the backing (the lock's sats)
+        // TRACK-not-mint: a backed lock folds (returns the delta), accrues the backing, mints NO note.
         let tx = tx_with_lock(v_btc, lock_spk, lock_vout);
         let mut st = ScanReflection::genesis();
-        st.fold_cbtc_lock(&asset, &cx, &cy, &tx, lock_vout, &lock_txid, &note_path, &sig_rx, &sig_ry, &sig_z)
-            .expect("a backed cBTC lock folds");
-        assert_eq!(st.note_count, 1, "cBTC note appended on a backed lock");
+        let f = st.fold_cbtc_lock(&asset, &cx, &cy, &tx, lock_vout, &lock_txid)
+            .expect("a backed cBTC lock tracks");
+        assert_eq!(f, CbtcLockFold { outpoint: expect_outpoint, v_btc, commitment_hash: commitment_hash(&cx, &cy) }, "fold delta surfaces (outpoint, v_btc, commitment)");
+        assert_eq!(st.note_count, 0, "track-not-mint: reflection mints NO cBTC note (the contract does)");
         assert_eq!(st.cbtc_backing_sats, v_btc, "backing accrued the locked sats");
 
-        // RUG: a later tx spends the self-custody lock outpoint → the backing drops (the off-pool buffer covers it)
+        // duplicate outpoint → folds nothing (one lock backs one mint)
+        assert!(st.fold_cbtc_lock(&asset, &cx, &cy, &tx, lock_vout, &lock_txid).is_err(), "duplicate lock rejected");
+
+        // RUG: a later tx spends the self-custody lock outpoint → backing drops + the spent outpoint surfaces
         let mut spend_tx: Vec<u8> = vec![0x02, 0, 0, 0, 0x01]; // version + 1 input
         spend_tx.extend_from_slice(&lock_txid);
         spend_tx.extend_from_slice(&lock_vout.to_le_bytes());
         spend_tx.extend_from_slice(&[0x00, 0xff, 0xff, 0xff, 0xff]); // empty scriptSig + sequence
         spend_tx.extend_from_slice(&[0x01, 0, 0, 0, 0, 0, 0, 0, 0, 0x00, 0, 0, 0, 0]); // 1 dummy output + locktime
-        assert_eq!(st.fold_cbtc_lock_spends(&spend_tx), v_btc, "the rug removed the lock's sats");
+        assert_eq!(st.fold_cbtc_lock_spends(&spend_tx), vec![expect_outpoint], "the rug surfaces the spent lock outpoint");
         assert_eq!(st.cbtc_backing_sats, 0, "backing dropped to 0 after the rug");
 
         // wrong asset → reject
         let mut st2 = ScanReflection::genesis();
-        assert!(st2.fold_cbtc_lock(&[0x99u8; 32], &cx, &cy, &tx, lock_vout, &lock_txid, &note_path, &sig_rx, &sig_ry, &sig_z).is_err(), "wrong asset rejected");
-        assert_eq!(st2.note_count, 0);
-
-        // over-mint: a lock output worth LESS than the note claims → opening sigma fails
-        let tx_low = tx_with_lock(v_btc - 1, lock_spk, lock_vout);
-        let mut st3 = ScanReflection::genesis();
-        assert!(st3.fold_cbtc_lock(&asset, &cx, &cy, &tx_low, lock_vout, &lock_txid, &note_path, &sig_rx, &sig_ry, &sig_z).is_err(), "over-mint (note > locked sats) rejected");
-        assert_eq!(st3.note_count, 0);
+        assert!(st2.fold_cbtc_lock(&[0x99u8; 32], &cx, &cy, &tx, lock_vout, &lock_txid).is_err(), "wrong asset rejected");
+        assert_eq!(st2.cbtc_backing_sats, 0);
 
         // SELF-CUSTODY: the lock output's scriptPubKey is the LOCKER's OWN — ANY SPK folds (no vault check)
         let tx_any = tx_with_lock(v_btc, &[0x51, 0x20, 0xaa, 0xbb], lock_vout);
         let mut st4 = ScanReflection::genesis();
-        st4.fold_cbtc_lock(&asset, &cx, &cy, &tx_any, lock_vout, &lock_txid, &note_path, &sig_rx, &sig_ry, &sig_z)
+        st4.fold_cbtc_lock(&asset, &cx, &cy, &tx_any, lock_vout, &lock_txid)
             .expect("self-custody: any lock-output SPK folds");
-        assert_eq!(st4.note_count, 1, "folded under self-custody (no vault check)");
         assert_eq!(st4.cbtc_backing_sats, v_btc, "backing tracked");
 
-        // lock vout 0 collides with the note outpoint → reject
+        // lock vout 0 reserved → reject
         let tx0 = tx_with_lock(v_btc, lock_spk, 0);
         let mut st5 = ScanReflection::genesis();
-        assert!(st5.fold_cbtc_lock(&asset, &cx, &cy, &tx0, 0, &lock_txid, &note_path, &sig_rx, &sig_ry, &sig_z).is_err(), "lock vout 0 rejected");
-        assert_eq!(st5.note_count, 0);
+        assert!(st5.fold_cbtc_lock(&asset, &cx, &cy, &tx0, 0, &lock_txid).is_err(), "lock vout 0 rejected");
+        assert_eq!(st5.cbtc_backing_sats, 0);
     }
 
     /// Adaptor-swap lock-set leaf (ops/DESIGN-adaptor-swap-guest.md): deterministic, binds EVERY field
@@ -3549,33 +3485,48 @@ mod tests {
         assert_ne!(base, leaf(&cx, &cy, &tx, &ty), "lock leaf disjoint from a normal note leaf");
     }
 
-    /// cBTC.tac bonded-position leaf (ops/DESIGN-cbtc-tac-bond-guest.md): deterministic, binds EVERY
-    /// field (so redeem/slash can't free a different bond, burn a different amount, or redirect the
-    /// LP), and is disjoint from the note-tree `leaf` AND the adaptor lock set (a bonded LP is never
-    /// normal-spendable, and the two locked-note families never collide).
+    /// Generic CDP primitives (ops/DESIGN-confidential-defi-v1.md §4): the debt asset is controller-derived
+    /// (sole minter), the position leaf binds every field + the basket root, and the position nullifier /
+    /// leaf / debt-asset are domain-separated from each other and from notes / adaptor locks / cBTC locks.
     #[test]
-    fn bond_position_leaf_is_deterministic_and_binds_every_field() {
-        let basset = [0x41u8; 32]; let bcx = [0x51u8; 32]; let bcy = [0x52u8; 32];
-        let cbtc = [0x61u8; 32];
-        let amount = 250_000u64;
-        let issuer = [0x71u8; 32]; let nonce = [0x81u8; 32];
-        let base = bond_position_leaf(&basset, &bcx, &bcy, &cbtc, amount, &issuer, &nonce);
-        assert_eq!(base, bond_position_leaf(&basset, &bcx, &bcy, &cbtc, amount, &issuer, &nonce));
-        let bump = |b: &[u8; 32]| { let mut x = *b; x[0] ^= 1; x };
-        assert_ne!(base, bond_position_leaf(&bump(&basset), &bcx, &bcy, &cbtc, amount, &issuer, &nonce), "bond asset bound (anti-relabel)");
-        assert_ne!(base, bond_position_leaf(&basset, &bump(&bcx), &bcy, &cbtc, amount, &issuer, &nonce), "bond Cx bound");
-        assert_ne!(base, bond_position_leaf(&basset, &bcx, &bump(&bcy), &cbtc, amount, &issuer, &nonce), "bond Cy bound");
-        assert_ne!(base, bond_position_leaf(&basset, &bcx, &bcy, &bump(&cbtc), amount, &issuer, &nonce), "cbtc asset bound");
-        assert_ne!(base, bond_position_leaf(&basset, &bcx, &bcy, &cbtc, amount + 1, &issuer, &nonce), "minted amount bound");
-        assert_ne!(base, bond_position_leaf(&basset, &bcx, &bcy, &cbtc, amount, &bump(&issuer), &nonce), "issuer bound");
-        assert_ne!(base, bond_position_leaf(&basset, &bcx, &bcy, &cbtc, amount, &issuer, &bump(&nonce)), "nonce bound");
-        // disjoint from a normal note leaf AND from an adaptor lock leaf over the same bytes
-        assert_ne!(base, leaf(&basset, &bcx, &bcy, &cbtc), "bonded leaf disjoint from a note leaf");
-        assert_ne!(base, adaptor_lock_leaf(&bcx, &bcy, &cbtc, &issuer, amount, &issuer, &nonce), "bonded leaf disjoint from an adaptor lock leaf");
+    fn cdp_primitives_bind_and_separate() {
+        let controller_a = [0xc1u8; 20];
+        let controller_b = [0xc2u8; 20];
+        // debt asset = f(controller) ALONE — distinct controllers ⇒ distinct assets; deterministic.
+        let da = cdp_debt_asset_id(&controller_a);
+        assert_eq!(da, cdp_debt_asset_id(&controller_a), "debt asset deterministic");
+        assert_ne!(da, cdp_debt_asset_id(&controller_b), "debt asset derives from the controller (sole minter)");
+
+        // basket root binds every leg (asset, value); order-sensitive; n=1 and n>1 both work.
+        let leg = |a: u8, v: u64| cdp_basket_leg(&[a; 32], v);
+        let single = cdp_basket_root(&[leg(0xaa, 100)]);
+        let multi = cdp_basket_root(&[leg(0xaa, 100), leg(0xbb, 200)]);
+        assert_ne!(single, multi, "basket root binds the leg set");
+        assert_ne!(cdp_basket_leg(&[0xaa; 32], 100), cdp_basket_leg(&[0xaa; 32], 101), "leg binds value");
+        assert_ne!(cdp_basket_leg(&[0xaa; 32], 100), cdp_basket_leg(&[0xab; 32], 100), "leg binds asset");
+
+        // position leaf binds every field
+        let owner = [0x71u8; 32]; let nonce = [0x81u8; 32];
+        let base = cdp_position_leaf(&controller_a, &da, &single, 50, &owner, &nonce);
+        assert_eq!(base, cdp_position_leaf(&controller_a, &da, &single, 50, &owner, &nonce), "deterministic");
+        assert_ne!(base, cdp_position_leaf(&controller_b, &da, &single, 50, &owner, &nonce), "controller bound");
+        assert_ne!(base, cdp_position_leaf(&controller_a, &cdp_debt_asset_id(&controller_b), &single, 50, &owner, &nonce), "debt asset bound");
+        assert_ne!(base, cdp_position_leaf(&controller_a, &da, &multi, 50, &owner, &nonce), "basket root bound");
+        assert_ne!(base, cdp_position_leaf(&controller_a, &da, &single, 51, &owner, &nonce), "debt value bound");
+        assert_ne!(base, cdp_position_leaf(&controller_a, &da, &single, 50, &[0x72; 32], &nonce), "owner bound");
+        assert_ne!(base, cdp_position_leaf(&controller_a, &da, &single, 50, &owner, &[0x82; 32]), "nonce bound");
+
+        // the position nullifier is one-to-one with the leaf and domain-separated from a note nullifier
+        let nu = cdp_position_nullifier(&base);
+        assert_eq!(nu, cdp_position_nullifier(&base), "position ν deterministic");
+        assert_ne!(nu, cdp_position_nullifier(&cdp_position_leaf(&controller_a, &da, &single, 50, &owner, &[0x82; 32])), "distinct positions ⇒ distinct ν");
+        // position leaf must never collide with a normal note leaf or an adaptor lock leaf (domain sep)
+        assert_ne!(base, leaf(&single, &owner, &nonce, &owner), "position leaf disjoint from a note leaf");
+        assert_ne!(base, adaptor_lock_leaf(&single, &owner, &single, &owner, 50, &owner, &nonce), "position leaf disjoint from an adaptor lock leaf");
     }
 
-    /// Produce a valid BIP-340 signature for the bond-attestation KATs: even-y P (negate d if odd),
-    /// even-y R (negate k), e = H_tag(rx‖px‖msg), s = k + e·d. Mirrors what the relay/dapp signs.
+    /// Produce a valid BIP-340 signature for the kernel/opening KATs (LP-add / lp-remove / swap-var
+    /// kernels): even-y P (negate d if odd), even-y R (negate k), e = H_tag(rx‖px‖msg), s = k + e·d.
     fn bip340_sign(d_seed: &[u8; 32], k_seed: &[u8; 32], msg: &[u8; 32]) -> ([u8; 32], [u8; 64]) {
         let mut d = scalar_reduce_be(d_seed);
         if compress(&(ProjectivePoint::generator() * d))[0] == 0x03 { d = -d; }
@@ -3593,66 +3544,6 @@ mod tests {
         sig[0..32].copy_from_slice(&rx);
         sig[32..64].copy_from_slice(s.to_bytes().as_slice());
         (px, sig)
-    }
-
-    /// §5 spot ceiling arithmetic: fair-LP value 2·(share/total)·reserve_tac, priced + ratio'd + banded;
-    /// fails closed (None) on a zero denominator or u128 overflow.
-    #[test]
-    fn bond_spot_capacity_ceiling_math_and_fail_closed() {
-        // share=total (100%), reserve_tac=1000 → value 2000 TAC; 50 sats/TAC → 100000 sats; /2.5x → 40000.
-        assert_eq!(bond_spot_capacity_ceiling(100, 100, 1000, 50, 1, 25000, 0), Some(40_000));
-        assert_eq!(bond_spot_capacity_ceiling(50, 100, 1000, 50, 1, 25000, 0), Some(20_000), "half share");
-        assert_eq!(bond_spot_capacity_ceiling(100, 100, 1000, 50, 1, 25000, 1000), Some(44_000), "+10% band");
-        assert_eq!(bond_spot_capacity_ceiling(100, 100, 500, 50, 1, 25000, 0), Some(20_000), "half reserve");
-        // fail-closed
-        assert_eq!(bond_spot_capacity_ceiling(100, 0, 1000, 50, 1, 25000, 0), None, "zero total shares");
-        assert_eq!(bond_spot_capacity_ceiling(100, 100, 1000, 50, 0, 25000, 0), None, "zero price denom");
-        assert_eq!(bond_spot_capacity_ceiling(100, 100, 1000, 50, 1, 0, 0), None, "zero ratio");
-        assert_eq!(bond_spot_capacity_ceiling(u64::MAX, 1, u64::MAX, u64::MAX, 1, 25000, 0), None, "overflow → fail closed");
-    }
-
-    /// §5 mint gate (hybrid): a relay capacity within the LIVE-reserve ceiling verifies and bounds the
-    /// mint; over-cap, a max_mint ABOVE the spot ceiling (rogue/stale relay), shrunken live reserves, a
-    /// tampered field, and a wrong oracle key each reject — no unbacked over-mint, relay bounded by AMM.
-    #[test]
-    fn bond_mint_gate_verifies_and_rejects_tamper() {
-        let share = 100u64; let total = 100u64; let reserve_tac = 1000u64; let band = 0u32;
-        let att = BondMintAttest {
-            bond_cx: [0x51u8; 32], bond_cy: [0x52u8; 32], cbtc_asset: [0x61u8; 32],
-            max_mint: 40_000, sats_per_tac_num: 50, sats_per_tac_den: 1, ratio_bps: 25_000, anchor: [0x91u8; 32],
-        };
-        let (oracle_x, sig) = bip340_sign(&[0x01u8; 32], &[0x02u8; 32], &att.msg());
-        // at/under the (ceiling-consistent) cap with the relay sig → accept
-        assert!(verify_bond_mint(&att, 40_000, share, total, reserve_tac, band, &sig, &oracle_x), "at-cap mint");
-        assert!(verify_bond_mint(&att, 39_999, share, total, reserve_tac, band, &sig, &oracle_x), "under mint");
-        // minted over the attested cap → reject
-        assert!(!verify_bond_mint(&att, 40_001, share, total, reserve_tac, band, &sig, &oracle_x), "over-cap mint rejected");
-        // THE TRUSTLESS GUARD: a relay max_mint ABOVE the live-reserve ceiling rejects even with a valid sig
-        let att_hi = BondMintAttest { max_mint: 50_000, ..att.clone() };
-        let (ox_hi, sig_hi) = bip340_sign(&[0x01u8; 32], &[0x02u8; 32], &att_hi.msg());
-        assert!(!verify_bond_mint(&att_hi, 50_000, share, total, reserve_tac, band, &sig_hi, &ox_hi), "max_mint above spot ceiling rejected");
-        // stale/phantom reserves: same attestation but LIVE reserves halved → ceiling 20000 < 40000 → reject
-        assert!(!verify_bond_mint(&att, 40_000, share, total, 500, band, &sig, &oracle_x), "max_mint above live-reserve ceiling rejected");
-        // a tampered field (signed over the original) → sig mismatch → reject
-        let mut att_t = att.clone(); att_t.cbtc_asset = [0u8; 32];
-        assert!(!verify_bond_mint(&att_t, 40_000, share, total, reserve_tac, band, &sig, &oracle_x), "asset tamper rejected");
-        // wrong oracle key → reject
-        let (other_x, _) = bip340_sign(&[0x09u8; 32], &[0x0au8; 32], &[0u8; 32]);
-        assert!(!verify_bond_mint(&att, 40_000, share, total, reserve_tac, band, &sig, &other_x), "wrong oracle key rejected");
-    }
-
-    /// §5 slash gate: a relay-signed health verifies for the exact position; a different position,
-    /// a different anchor, and a wrong oracle key each reject (no slash redirection / replay).
-    #[test]
-    fn bond_slash_health_attestation_verifies_and_rejects_tamper() {
-        let pos = bond_position_leaf(&[0x41u8; 32], &[0x51u8; 32], &[0x52u8; 32], &[0x61u8; 32], 250_000, &[0x71u8; 32], &[0x81u8; 32]);
-        let anchor = [0x92u8; 32];
-        let (oracle_x, sig) = bip340_sign(&[0x03u8; 32], &[0x04u8; 32], &bond_slash_health_msg(&pos, &anchor));
-        assert!(verify_bond_slash_health(&pos, &anchor, &sig, &oracle_x), "valid slash attestation");
-        assert!(!verify_bond_slash_health(&[0u8; 32], &anchor, &sig, &oracle_x), "wrong position rejected");
-        assert!(!verify_bond_slash_health(&pos, &[0u8; 32], &sig, &oracle_x), "wrong anchor rejected");
-        let (other_x, _) = bip340_sign(&[0x0bu8; 32], &[0x0cu8; 32], &[0u8; 32]);
-        assert!(!verify_bond_slash_health(&pos, &anchor, &sig, &other_x), "wrong oracle key rejected");
     }
 
     /// Pin ScanReflection::genesis().digest() (the SHIPPED full-scan reflection model) to the
@@ -4097,7 +3988,7 @@ mod tests {
             let value: u64 = note["value"].as_str().unwrap().parse().unwrap();
             // deposit id binds the in-system value (not the underlying `amount`); the
             // contract derives the same value = amount/unitScale at wrap.
-            assert_eq!(deposit_id(&asset, &u64_be32(value), &cx, &cy, &owner), arr32(note["depositId"].as_str().unwrap()), "depositId");
+            assert_eq!(deposit_id(&asset, &u64_be32(value), &deposit_commit(&cx, &cy, &owner)), arr32(note["depositId"].as_str().unwrap()), "depositId");
 
             // Pedersen opening: C reconstructed from (cx,cy) opens to (value, blinding).
             let c = from_affine_xy(&cx, &cy).unwrap();

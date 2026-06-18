@@ -9048,7 +9048,17 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms #farms-refresh-btn {
           <button id="cpool-wrap-btn" style="padding:6px 14px;font-size:13px;cursor:pointer;">Wrap</button>
         </div>
         <div id="cpool-wrap-status" class="muted" style="font-size:11px;margin-top:6px;"></div>
-        <div class="muted" style="font-size:11px;margin-top:6px;">Fund your confidential account (above) with Sepolia ETH first. The deposit escrows ETH; your cETH note appears after the settle. Transfer / unwrap next.</div>
+        <div class="muted" style="font-size:11px;margin-top:6px;">Fund your confidential account (above) with Sepolia ETH first. The deposit escrows ETH; your cETH note appears after the settle.</div>
+      </div>
+      <div style="margin-top:16px;border-top:1px solid var(--hairline,#eee);padding-top:12px;">
+        <div style="font-weight:600;margin-bottom:6px;">Exit cETH → ETH <span class="muted" style="font-weight:400;font-size:11px;">· gasless — the relayer settles on-chain for a small fee</span></div>
+        <input id="cpool-exit-recipient" type="text" placeholder="Recipient address (default: your account)" style="width:100%;box-sizing:border-box;padding:6px;font-size:12px;border:1px solid var(--ink,#ccc);border-radius:4px;margin-bottom:6px;">
+        <label style="display:flex;gap:6px;align-items:center;font-size:11px;margin-bottom:8px;cursor:pointer;">
+          <input id="cpool-exit-selfsettle" type="checkbox"> No fee (relayer settles at no charge — for your own exits)
+        </label>
+        <div id="cpool-exit-list" class="muted" style="font-size:12px;">Unlock + wrap to see your exitable notes.</div>
+        <div id="cpool-exit-status" class="muted" style="font-size:11px;margin-top:6px;"></div>
+        <div class="muted" style="font-size:11px;margin-top:6px;">Each exit spends one whole note. The relayer settles on-chain so you need no ETH for gas; by default a small fee is taken from your withdrawal. The full value exits to the recipient with no fee when the box settles at no charge.</div>
       </div>
     </div>
   </div>

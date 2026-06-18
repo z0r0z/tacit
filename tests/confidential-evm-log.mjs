@@ -69,16 +69,17 @@ assert.strictEqual(bm.type, 'BridgeMinted');
 assert.strictEqual(bm.claimId.toLowerCase(), cid.toLowerCase(), 'BridgeMinted claimId');
 ok('BridgeMinted decodes its indexed claimId with empty data');
 
-// ── Wrap ──
-const cx = kc('cx'), cy = kc('cy'), owner = kc('owner'), depositId = kc('dep'), assetId = kc('a');
-const wData = cast(`abi-encode "x(uint256,bytes32,bytes32,bytes32)" 100 ${cx} ${cy} ${owner}`);
+// ── Wrap (commitment coords + owner are NOT emitted — deposit-spend unlinkability) ──
+const depositId = kc('dep'), assetId = kc('a');
+const wData = cast(`abi-encode "x(uint256)" 100`);
 const w = dec.decodeLog({ topics: [dec.TOPIC0.Wrap, depositId, assetId], data: wData });
 assert.strictEqual(w.type, 'Wrap');
 assert.strictEqual(w.amount, 100n, 'wrap amount uint256');
-assert.strictEqual(w.cx.toLowerCase(), cx, 'wrap cx');
+assert.strictEqual(w.cx, undefined, 'wrap no longer emits cx');
+assert.strictEqual(w.owner, undefined, 'wrap no longer emits owner');
 assert.strictEqual(w.depositId.toLowerCase(), depositId.toLowerCase(), 'depositId topic');
 assert.strictEqual(w.assetId.toLowerCase(), assetId.toLowerCase(), 'assetId topic');
-ok('Wrap decodes both indexed topics + uint256 amount + commitment fields');
+ok('Wrap decodes both indexed topics + uint256 amount (commitment/owner omitted on-chain)');
 
 // ── unknown logs are dropped; decoded stream feeds the client indexer ──
 const stream = dec.decodeLogs([

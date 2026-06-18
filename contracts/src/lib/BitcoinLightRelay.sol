@@ -123,10 +123,12 @@ contract BitcoinLightRelay {
         // terminates the blockParent / median-time-past walks early (bytes32(0) is the walk sentinel)
         // and a zero tipWork lets any single-block chain overtake the bare anchor, so reject both.
         if (tipHash == bytes32(0) || tipWork_ == 0) revert InvalidAnchor();
-        // The anchor must sit inside the seeded epoch: advanceTip resolves the
-        // target for (tipHeight_ + 1) / EPOCH_LENGTH, and only this epoch's
-        // target is stored below. An out-of-epoch anchor reverts UnknownEpoch on
-        // the first advance and bricks the relay, so reject it at genesis.
+        // The anchor must sit inside the seeded epoch [epochStart, epochStart + EPOCH_LENGTH):
+        // only this epoch's target is stored below. An anchor at or beyond the next epoch
+        // start has no stored target for the block above it, so the first advanceTip reverts
+        // UnknownEpoch and bricks the relay. An anchor at the epoch's last block stays in
+        // range — there the boundary is crossed by retarget() (which sets the next target)
+        // before advanceTip, never by advanceTip alone.
         if (tipHeight_ < epochStart || tipHeight_ >= epochStart + EPOCH_LENGTH) revert InvalidChainLength();
         // startTimestamp is cast to the anchor's uint32 header timestamp; a value
         // past uint32 would truncate and corrupt the median-time-past baseline.

@@ -29,10 +29,11 @@ bridge / reflection** path depends on the reflection-guest constants (items 1–
 
 ## cxfer-core — `contracts/sp1/confidential/cxfer-core/src/lib.rs`
 
-4. **`BOND_ORACLE_PUBKEY_X`** (`lib.rs` ~L124) — currently `[0xba; 32]` **placeholder**.
-   - No settle op uses the bond path today, so this is **not** a pool/bridge launch blocker. It is
-     baked into the vkey only if a bond op is wired. Set the production relay/bond-oracle key before
-     any `OP_BOND_*` ships.
+4. **(removed)** The cBTC.tac confidential-bond guest primitives (`BOND_ORACLE_PUBKEY_X`,
+   `bond_position_leaf`, `BondMintAttest`, `verify_bond_mint`/`_slash_health`) were deleted — the
+   cBTC design no longer uses a confidential CDP bond (see `DESIGN-cbtc.md`; cBTC is real-BTC-backed
+   with a native-ETH slashable escrow on Ethereum). There is no bond constant to finalize before the
+   re-prove.
 
 ## Cross-contract pins (verify, no value to choose)
 
@@ -41,12 +42,31 @@ bridge / reflection** path depends on the reflection-guest constants (items 1–
    - **Verified 76** on the current contract (after the dead-code cleanup). Re-check on any pool
      storage relayout.
 
+5b. **`CONSUMED_SLOT_INDEX = 119` / `CONSUMED_COUNT_SLOT_INDEX = 120`** (`cxfer-core/eth_reflection.rs`
+    ~L114/117; imported by `eth-reflection/src/main.rs` + `eth_prove.rs`) — the fast-lane consumed-ν
+    map + the freshness counter.
+    - Must equal `forge inspect ConfidentialPool storageLayout` (after `forge clean`) for
+      `bitcoinConsumed` (119) and `bitcoinConsumedCount` (120). `eth_prove` proves these slots and the
+      guest folds them; a wrong index silently reads zero → the freshness gate never advances.
+    - Re-check on any pool storage relayout (these sit just past `crossOutCommitment` @ 76).
+
 6. **`CHAIN_BINDING`** — derived in the pool ctor from `block.chainid` + `address(this)`; the guest
    stamps it into every proof. Mainnet chainid + the deployed pool address are bound automatically;
    no manual value, but confirm the deploy script reads the right chain.
 
 ## Re-prove / deploy order
 
+0. **Build the tree that has the fast-lane PV field.** `reflect.rs`'s `consumedCount` field in
+   `BitcoinReflectionPublicValues` (11th field) is intentionally **uncommitted** until the promotion
+   commit. The box must `cargo prove build` the **working tree** (which has it), not a clean checkout —
+   a clean checkout drops it, the reflection guest commits **10** fields, the contract decodes **11**,
+   and every `attestBitcoinStateProven` reverts on `abi.decode`. Confirm `git diff reflect.rs` shows the
+   `consumedCount` field present before building.
+   - The committed `ETH_REFLECTION_VKEY [u32;8]` is **stale** (set in `f405e62`, before the eth-reflection
+     guest gained the consumed-set in `c5b319a`). Item 2 (recompute it) is therefore load-bearing, not a
+     formality — and because the reflection ELF embeds it, the resulting `BITCOIN_RELAY_VKEY` will **differ
+     from the staged `0x00d06eda`**. Treat the `_staged_reprove_*` vkeys in `elf-vkey-pin.json` as a
+     prediction to sanity-check against, not values to promote blind.
 1. Set items 1–4 to mainnet values.
 2. Build the canonical eth-reflection ELF → recompute `ETH_REFLECTION_VKEY` → set it (item 2).
 3. Build the canonical settle + reflection ELFs. The prover box must run the **committed canonical

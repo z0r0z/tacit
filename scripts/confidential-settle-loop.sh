@@ -30,6 +30,7 @@ log() { echo "[$(date -u '+%Y-%m-%d %H:%M:%S')] $*"; }
 harness_for() {
   case "$1" in
     wrap)     echo "exec-wrap.rs";;
+    unwrap)   echo "exec-unwrap.rs";;
     transfer) echo "exec-prove.rs";;
     swap)     echo "exec-swap.rs";;
     lp)       echo "exec-lp.rs";;

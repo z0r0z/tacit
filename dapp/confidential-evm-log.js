@@ -20,7 +20,7 @@ export function makeConfidentialEvmLog({ keccak256 }) {
     NullifiersSpent: 'NullifiersSpent(bytes32[])',
     CrossOutRecorded: 'CrossOutRecorded(bytes32,uint16,bytes32,bytes32,bytes32)',
     BridgeMinted: 'BridgeMinted(bytes32)',
-    Wrap: 'Wrap(bytes32,bytes32,uint256,bytes32,bytes32,bytes32)',
+    Wrap: 'Wrap(bytes32,bytes32,uint256)',
   };
   const TOPIC0 = Object.fromEntries(Object.entries(SIGS).map(([k, s]) => [k, topic(s)]));
   const byTopic0 = Object.fromEntries(Object.entries(TOPIC0).map(([k, t]) => [t.toLowerCase(), k]));
@@ -89,15 +89,14 @@ export function makeConfidentialEvmLog({ keccak256 }) {
       return { type: 'BridgeMinted', claimId: String(topics[1]) };
     }
     if (kind === 'Wrap') {
-      // indexed: depositId (topic1), assetId (topic2). data: (uint256 amount, bytes32 cx, bytes32 cy, bytes32 owner)
+      // indexed: depositId (topic1), assetId (topic2). data: (uint256 amount). The commitment
+      // coordinates + owner are NOT emitted (deposit-spend unlinkability); a seed-only recovery
+      // re-derives them per index and matches its computed depositId against topic1.
       return {
         type: 'Wrap',
         depositId: String(topics[1]),
         assetId: String(topics[2]),
         amount: uintAt(data, 0),
-        cx: wordHexAt(data, 32),
-        cy: wordHexAt(data, 64),
-        owner: wordHexAt(data, 96),
       };
     }
     return null;

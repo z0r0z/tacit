@@ -10,10 +10,12 @@ PK=$(cat /root/loop-state/.ethpk)
 D=/root/work/cxfer; OP=$D/e2e/wrap_op.json
 ASSET=$(jq -r .asset "$OP"); VALUE=$(jq -r .value "$OP")
 CX=$(jq -r .cx "$OP"); CY=$(jq -r .cy "$OP"); OWNER=$(jq -r .owner "$OP")
+# wrap takes only the commit digest keccak(Cx‖Cy‖owner); the raw coords stay in the OP_WRAP witness.
+COMMIT=$(cast keccak "0x${CX#0x}${CY#0x}${OWNER#0x}")
 EXPECT_R1=0x807b865fc9644436ccffd5d82c0fa1dfb563b8c14e545cb8edc3af8ed78b96a6
 
-echo "[W1] wrap(asset,$VALUE,cx,cy,owner) value=$VALUE wei"
-cast send "$POOL" "wrap(bytes32,uint256,bytes32,bytes32,bytes32)" "$ASSET" "$VALUE" "$CX" "$CY" "$OWNER" \
+echo "[W1] wrap(asset,$VALUE,commit) value=$VALUE wei"
+cast send "$POOL" "wrap(bytes32,uint256,bytes32)" "$ASSET" "$VALUE" "$COMMIT" \
   --value "$VALUE" --private-key "$PK" --rpc-url "$RPC" 2>&1 | grep -iE "status|transactionHash" | head -2
 
 echo "[W2] fresh gpu-server + groth16-prove OP_WRAP..."

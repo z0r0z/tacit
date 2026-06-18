@@ -58,6 +58,31 @@ export function contractURI(cid) {
   return 'ipfs://f01551220' + Buffer.from(c).toString('hex');
 }
 
+// Every Tacit etch (CETCH and T_PETCH alike) references its metadata blob by `image_uri` (an ipfs://
+// URI) at the envelope tail, NOT an inline cid. The worker decoders (decodeCEtchPayload /
+// decodeCPetchPayload) surface that URI; this resolves it to the same raw-CIDv1 digest the guest does
+// (cxfer-core `cetch_image_cid` / `petch_image_cid` → `ipfs_raw_cidv1_digest`), so the dapp/worker
+// predict the SAME canonical token address (the cid is in the CREATE2 salt) and render the SAME
+// contractURI. Raw codec (0x55) only: dag-pb / CIDv0 / non-ipfs / path-suffixed URIs return null
+// (→ cid 0), exactly as the guest, so the harmonization never mispoints a contractURI at a re-encoded
+// object.
+export function cidFromIpfsUri(uri) {
+  const PREFIX = 'ipfs://b'; // ipfs:// ‖ multibase base32 tag 'b'
+  if (typeof uri !== 'string' || !uri.startsWith(PREFIX)) return null;
+  const out = []; let acc = 0, bits = 0;
+  for (const ch of uri.slice(PREFIX.length)) {
+    const c = ch.charCodeAt(0);
+    let v;
+    if (c >= 97 && c <= 122) v = c - 97;          // a-z → 0..25
+    else if (c >= 50 && c <= 55) v = c - 50 + 26; // 2-7 → 26..31
+    else return null;                             // uppercase / padding / path → not a bare lowercase CID
+    acc = (acc << 5) | v; bits += 5;
+    if (bits >= 8) { bits -= 8; if (out.length >= 36) return null; out.push((acc >> bits) & 0xff); }
+  }
+  if (out.length !== 36 || out[0] !== 0x01 || out[1] !== 0x55 || out[2] !== 0x12 || out[3] !== 0x20) return null;
+  return Buffer.from(out.slice(4));
+}
+
 // Run the KAT only when executed directly (`node tests/…mjs`); stay side-effect-free when
 // imported (e.g. by scripts/pin-asset-metadata.mjs, which reuses the exports above).
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
@@ -105,6 +130,23 @@ assert.strictEqual(hex(metadataCid(metaJson)),
   '0x28acd844984260a912bbf07394159648dc2b278c487f2e7bd1aeb2ab9d6410fb', 'metadataCid = sha256(json) KAT');
 ok('metadataCid(json) = sha256(bytes) equals the kubo raw-CID digest (no IPFS encoder needed)');
 
-console.log(`\n${n}/7 confidential-canonical-asset-id checks passed`);
+// 7. image_uri → cid (CETCH and T_PETCH both): TAC's live image_uri resolves to the SAME 32-byte
+// digest the guest surfaces (cxfer-core bitcoin.rs `etch_meta_and_asset_id` KAT — asserted there for
+// both a CETCH and a T_PETCH envelope) and round-trips to its contractURI. The resolution is
+// etch-type-agnostic — only the Bitcoin envelope walk that LOCATES image_uri differs per type.
+const TAC_IMAGE_URI = 'ipfs://bafkreig7m5j66zlaewjvo6bipk723udgdhnyl7ve5k2suofuvhi2mmb3ai';
+const tacCid = cidFromIpfsUri(TAC_IMAGE_URI);
+assert.strictEqual(hex(tacCid),
+  '0xdf6753ef656025935778287abfadd06619db85fea4eab52a38b4a9d1a6303b02', 'image_uri → raw-CIDv1 digest (TAC KAT)');
+assert.strictEqual(contractURI(tacCid),
+  'ipfs://f01551220df6753ef656025935778287abfadd06619db85fea4eab52a38b4a9d1a6303b02', 'TAC contractURI round-trips');
+// Only raw codec is surfaced — dag-pb / CIDv0 / non-ipfs / path-suffixed → null (cid 0), matching the guest.
+assert.strictEqual(cidFromIpfsUri('ipfs://bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi'), null, 'dag-pb → null');
+assert.strictEqual(cidFromIpfsUri('ipfs://QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG'), null, 'CIDv0 → null');
+assert.strictEqual(cidFromIpfsUri('https://example.com/meta.json'), null, 'non-ipfs → null');
+assert.strictEqual(cidFromIpfsUri(TAC_IMAGE_URI + '/logo.png'), null, 'path-suffixed → null (bare CID only)');
+ok('image_uri resolves to the guest-identical raw-CIDv1 cid (CETCH + T_PETCH bridge metadata, raw-only)');
+
+console.log(`\n${n}/8 confidential-canonical-asset-id checks passed`);
 console.log('  example asset_id =', hex(id));
 }

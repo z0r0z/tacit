@@ -74,7 +74,7 @@ contract ConfidentialReflectionProofRealTest is Test {
         // == address(this). This fixture's eth proof used POOL=0 (a real attest binds the pool).
         assertEq(ethPoolReflected, bytes32(0), "ethPoolReflected passthrough (POOL=0 here; gated on-chain)");
         // cBTC.zk: Σ live self-custody lock sats, digest-bound; 0 for this no-cBTC-lock fixture. The
-        // off-pool CbtcBuffer reads cbtcBackingSats() to size the peg shortfall.
+        // off-pool CollateralEngine reads cbtcBackingSats() to size the peg shortfall.
         assertEq(cbtcBackingSats, 0, "cbtcBackingSats (no cBTC lock in this fixture)");
     }
 

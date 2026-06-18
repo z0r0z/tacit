@@ -114,8 +114,13 @@ contract DeployConfidentialPool is Script {
         uint256 expectedChainId = vm.envOr("EXPECTED_CHAIN_ID", uint256(0));
         require(expectedChainId == 0 || block.chainid == expectedChainId, "block.chainid != EXPECTED_CHAIN_ID");
 
+        // The CollateralEngine (cBTC native-ETH escrow gate + cUSD CDP controller). 0 ⇒ cBTC mint is inert
+        // at launch (the lock-fold + CDP ops are still in the immutable surface; cBTC turns on later by
+        // deploying the engine and a fresh pool that points at it, or via CREATE2 address-prediction so the
+        // engine and pool can reference each other). See ops/DESIGN-confidential-defi-v1.md §6.
+        address collateralEngine = vm.envOr("COLLATERAL_ENGINE", address(0));
         vm.startBroadcast();
-        ConfidentialPool pool = new ConfidentialPool(sp1Verifier, vkey, bitcoinRelayVKey, canonicalFactory, headerRelay, genesisReflectionAnchor, reflectionConfirmations, reflectionResumeDigest, tethBitcoinId);
+        ConfidentialPool pool = new ConfidentialPool(sp1Verifier, vkey, bitcoinRelayVKey, canonicalFactory, headerRelay, genesisReflectionAnchor, reflectionConfirmations, reflectionResumeDigest, tethBitcoinId, collateralEngine);
 
         address sampleUnderlying = vm.envOr("SAMPLE_UNDERLYING", address(0));
         bytes32 sampleAsset;

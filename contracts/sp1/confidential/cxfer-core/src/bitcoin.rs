@@ -177,12 +177,13 @@ pub fn asset_id_from_etch(tx_data: &[u8]) -> Option<[u8; 32]> {
 
 /// Parse the `(ticker, decimals, cid)` an etch reveal envelope declares ON-CHAIN. `env` is the
 /// payload from `extract_taproot_envelope` (`env[0]` = opcode). Per SPEC §5.1/§5.8:
-/// `opcode(1) ‖ ticker_len(1, 1..16) ‖ ticker ‖ decimals(1, 0..8) ‖ [cid(32)] ‖ …`. CETCH=0x21,
-/// T_PETCH=0x27. The optional 32-byte `cid` (immediately after decimals) is the asset's IPFS
-/// metadata content hash (the CIDv1 raw sha256 digest → a logo/description JSON); absent ⇒
-/// [0;32] (no metadata). The reveal txid binds it exactly like ticker+decimals, so a bridged
-/// asset's contractURI is trustless. Returns `(ticker[..len], len, decimals, cid)`; None if not a
-/// well-formed etch.
+/// Header layout (shared prefix): `opcode(1) ‖ ticker_len(1, 1..16) ‖ ticker ‖ decimals(1, 0..8) ‖ …`.
+/// CETCH=0x21, T_PETCH=0x27. The 32-byte `cid` is NOT inline: it is resolved from the `image_uri` at the
+/// END of the reveal envelope (see `cetch_image_cid` / `petch_image_cid`) when that URI is an `ipfs://`
+/// raw-CIDv1 — the asset's IPFS metadata content hash (CIDv1 raw sha256 digest → a logo/description JSON);
+/// absent / non-raw ⇒ [0;32] (no metadata). The reveal txid binds it exactly like ticker+decimals, so a
+/// bridged asset's contractURI is trustless. Returns `(ticker[..len], len, decimals, cid)`; None only if
+/// the header is not a well-formed etch (the cid is best-effort and never causes a None).
 pub fn parse_etch_meta(env: &[u8]) -> Option<([u8; 16], u8, u8, [u8; 32])> {
     if env.len() < 3 || (env[0] != 0x21 && env[0] != 0x27) {
         return None;
@@ -197,18 +198,118 @@ pub fn parse_etch_meta(env: &[u8]) -> Option<([u8; 16], u8, u8, [u8; 32])> {
     }
     let mut ticker = [0u8; 16];
     ticker[..tlen].copy_from_slice(&env[2..2 + tlen]);
-    let mut cid = [0u8; 32];
-    let cid_off = 3 + tlen;
-    // ONLY T_PETCH (0x27) carries a 32-byte content cid immediately after decimals. CETCH (0x21) carries
-    // the supply commitment(33) there (its metadata is `image_uri`, not a content cid) — so for a CETCH,
-    // leave cid = 0 and NEVER misread the commitment as a cid. (Fixes the cross-impl discrepancy where the
-    // worker's canonical CETCH layout `…decimals‖commitment(33)‖…‖mint_authority(32)‖img_len‖image_uri`
-    // disagreed with a cid-after-decimals read — OP_ATTEST_META would otherwise register a garbage cid for
-    // a CETCH-etched asset like TAC. Capturing the CETCH image_uri as a contractURI is a follow-up.)
-    if env[0] == 0x27 && env.len() >= cid_off + 32 {
-        cid.copy_from_slice(&env[cid_off..cid_off + 32]);
-    }
+    // Neither etch type carries the cid inline: both reference their metadata blob (`{name, image, …}`
+    // JSON) by an `image_uri` at the END of the reveal envelope — CETCH after its supply commitment +
+    // mint authority, T_PETCH after its cap/limit/height fair-mint window. Resolve that URI to the same
+    // 32-byte raw-CIDv1 digest the Ethereum `contractURI` reconstructs (`ipfs://f01551220‖hex`), so EVERY
+    // bridged Tacit asset — a CETCH (e.g. TAC) or a T_PETCH fair-mint — gets an identical, trustless
+    // contractURI. Best-effort: a missing / non-`ipfs://` / non-raw-CIDv1 `image_uri` yields 0 (no
+    // metadata), never a parse failure — so ticker/decimals and attest liveness are unaffected.
+    let cid = match env[0] {
+        0x21 => cetch_image_cid(env),
+        0x27 => petch_image_cid(env),
+        _ => [0u8; 32], // unreachable: env[0] is gated to {0x21, 0x27} above
+    };
     Some((ticker, tlen as u8, decimals, cid))
+}
+
+/// Walk a CETCH (0x21) reveal envelope to its trailing `image_uri` and return the 32-byte content
+/// digest when it is an `ipfs://` raw CIDv1, else `[0;32]`. CETCH references its metadata blob
+/// (`{name, description, image, …}`) by URI rather than inline like a T_PETCH cid; this surfaces it
+/// into the same `cid` slot so the bridged asset's Ethereum `contractURI` is identical and trustless.
+/// Mirrors `parse_cetch`'s walk, then reads `img_len(2 LE) ‖ image_uri`. Fully bounds-checked — any
+/// malformed/short envelope returns `[0;32]` rather than panicking (preserves attest liveness).
+fn cetch_image_cid(env: &[u8]) -> [u8; 32] {
+    let z = [0u8; 32];
+    if env.first() != Some(&0x21) {
+        return z;
+    }
+    let tlen = match env.get(1) {
+        Some(&t) if (1..=16).contains(&(t as usize)) => t as usize,
+        _ => return z,
+    };
+    // 0x21 ‖ tlen(1) ‖ ticker(tlen) ‖ decimals(1) ‖ commitment(33) ‖ amount_ct(8) ‖ rp_len(2 LE)
+    //   ‖ rangeproof(rp_len) ‖ mint_authority(32) ‖ img_len(2 LE) ‖ image_uri(img_len)
+    let mut p = 2 + tlen + 1 + 33 + 8; // → rp_len
+    let rp_len = match (env.get(p), env.get(p + 1)) {
+        (Some(&a), Some(&b)) => (a as usize) | ((b as usize) << 8),
+        _ => return z,
+    };
+    p = match p.checked_add(2 + rp_len + 32) {
+        Some(v) => v, // → img_len
+        None => return z,
+    };
+    let img_len = match (env.get(p), env.get(p + 1)) {
+        (Some(&a), Some(&b)) => (a as usize) | ((b as usize) << 8),
+        _ => return z,
+    };
+    p += 2;
+    match env.get(p..p + img_len).and_then(ipfs_raw_cidv1_digest) {
+        Some(d) => d,
+        None => z,
+    }
+}
+
+/// Walk a T_PETCH (0x27) permissionless-mint deployment envelope to its trailing `image_uri` and return
+/// the raw-CIDv1 content digest, else `[0;32]`. Like a CETCH, a T_PETCH references its metadata blob by
+/// URI rather than inline; the fields between `decimals` and the URI are the fair-mint terms (cap, per-mint
+/// limit, height window). Layout: `0x27 ‖ tlen ‖ ticker(tlen) ‖ decimals(1) ‖ cap(8) ‖ limit(8) ‖
+/// start_h(4) ‖ end_h(4) ‖ img_len(2 LE) ‖ image_uri(img_len)`. Bounds-checked — short/malformed → `[0;32]`.
+fn petch_image_cid(env: &[u8]) -> [u8; 32] {
+    let z = [0u8; 32];
+    if env.first() != Some(&0x27) {
+        return z;
+    }
+    let tlen = match env.get(1) {
+        Some(&t) if (1..=16).contains(&(t as usize)) => t as usize,
+        _ => return z,
+    };
+    let p = 2 + tlen + 1 + 8 + 8 + 4 + 4; // ticker ‖ decimals ‖ cap ‖ limit ‖ start_h ‖ end_h → img_len
+    let img_len = match (env.get(p), env.get(p + 1)) {
+        (Some(&a), Some(&b)) => (a as usize) | ((b as usize) << 8),
+        _ => return z,
+    };
+    match env.get(p + 2..p + 2 + img_len).and_then(ipfs_raw_cidv1_digest) {
+        Some(d) => d,
+        None => z,
+    }
+}
+
+/// Decode an `ipfs://` CIDv1 (multibase base32 `b…`, raw codec `0x55`, sha2-256, 32-byte digest) URI to
+/// its 32-byte content digest, or `None` if it is not exactly that shape. The raw codec is required so
+/// the digest round-trips to the same CID via the contract's `f01551220‖hex` (base16) reconstruction —
+/// a dag-pb (`0x70`) or CIDv0 (`Qm…`) CID would re-encode to a different object, so those return `None`
+/// (→ cid 0). Bare CID only: a trailing `/path` decodes to >36 bytes and is rejected.
+fn ipfs_raw_cidv1_digest(uri: &[u8]) -> Option<[u8; 32]> {
+    const PREFIX: &[u8] = b"ipfs://b"; // `ipfs://` ‖ multibase base32 tag `b`
+    let b32 = uri.strip_prefix(PREFIX)?;
+    // RFC4648 base32, lowercase, no padding → bytes. CIDv1 raw sha2-256 is exactly 36 bytes:
+    // 0x01(v1) ‖ 0x55(raw) ‖ 0x12(sha2-256) ‖ 0x20(len 32) ‖ digest(32).
+    let mut out = [0u8; 36];
+    let (mut acc, mut bits, mut n) = (0u32, 0u32, 0usize);
+    for &c in b32 {
+        let v = match c {
+            b'a'..=b'z' => c - b'a',
+            b'2'..=b'7' => c - b'2' + 26,
+            _ => return None, // uppercase / padding / path separator → not a bare lowercase CID
+        } as u32;
+        acc = (acc << 5) | v;
+        bits += 5;
+        if bits >= 8 {
+            bits -= 8;
+            if n >= out.len() {
+                return None; // decodes to more than 36 bytes → not a bare raw-CIDv1
+            }
+            out[n] = ((acc >> bits) & 0xff) as u8;
+            n += 1;
+        }
+    }
+    if n != 36 || out[0] != 0x01 || out[1] != 0x55 || out[2] != 0x12 || out[3] != 0x20 {
+        return None;
+    }
+    let mut digest = [0u8; 32];
+    digest.copy_from_slice(&out[4..]);
+    Some(digest)
 }
 
 /// Parse a CETCH (0x21) confidential-etch reveal → (supply_commitment `C_0`[33], `mint_authority`[32],
@@ -216,9 +317,10 @@ pub fn parse_etch_meta(env: &[u8]) -> Option<([u8; 16], u8, u8, [u8; 32])> {
 ///   `0x21 ‖ tlen(1,1..16) ‖ ticker(tlen) ‖ decimals(1,0..8) ‖ commitment(33) ‖ amount_ct(8) ‖`
 ///   `rp_len(2 LE) ‖ rangeproof(rp_len) ‖ mint_authority(32) ‖ img_len(2 LE) ‖ image_uri`.
 /// `commitment` is the FIXED initial-supply Pedersen commitment (`C_0`) — the trustless supply anchor for
-/// the burn-and-mint onboarding (read once from the etch block; no full-history scan). NOTE: distinct from
-/// `parse_etch_meta`, whose cid-after-decimals shape is the T_PETCH(0x27) form; CETCH carries the supply
-/// commitment there, not a cid. None if malformed.
+/// the burn-and-mint onboarding (read once from the etch block; no full-history scan). Walks the same
+/// CETCH envelope as `parse_etch_meta` but surfaces a different slice: this reads the supply commitment +
+/// mint authority, while `parse_etch_meta` reads ticker/decimals + the metadata cid (resolved from the
+/// trailing `image_uri`). None if malformed.
 pub fn parse_cetch(env: &[u8]) -> Option<([u8; 33], [u8; 32], u8)> {
     if env.is_empty() || env[0] != 0x21 {
         return None;
@@ -2028,19 +2130,28 @@ mod tests {
 
     #[test]
     fn etch_meta_and_asset_id() {
-        // synthetic T_PETCH (0x27): ticker "TAC", decimals 8, then a 32-byte content cid + filler.
-        // (T_PETCH carries the cid right after decimals; CETCH 0x21 carries the supply commitment there —
-        // covered by parse_cetch's test + the CETCH-cid=0 regression assert below.)
+        // A T_PETCH (0x27) references its metadata blob by `image_uri` at the envelope TAIL — after the
+        // cap/limit/height fair-mint terms — NOT inline (matches the dapp `encodeCPetchPayload` / worker
+        // `decodeCPetchPayload` wire format). parse_etch_meta resolves the cid from it via the same
+        // raw-CIDv1 path a CETCH uses, so both etch shapes yield an identical Ethereum contractURI.
+        let petch_uri = b"ipfs://bafkreig7m5j66zlaewjvo6bipk723udgdhnyl7ve5k2suofuvhi2mmb3ai";
         let mut payload = vec![0x27u8, 0x03, b'T', b'A', b'C', 0x08];
-        let want_cid = [0x42u8; 32];
-        payload.extend_from_slice(&want_cid);
-        payload.extend_from_slice(&[0u8; 1]);
+        payload.extend_from_slice(&[0u8; 8]); // cap
+        payload.extend_from_slice(&[0u8; 8]); // limit
+        payload.extend_from_slice(&[0u8; 4]); // start_h
+        payload.extend_from_slice(&[0u8; 4]); // end_h
+        payload.extend_from_slice(&[(petch_uri.len() & 0xff) as u8, ((petch_uri.len() >> 8) & 0xff) as u8]); // img_len LE
+        payload.extend_from_slice(petch_uri);
         let tx = build_reveal_tx(&payload);
         let env = extract_taproot_envelope(&tx).expect("etch envelope");
         let (ticker, tlen, decimals, cid) = parse_etch_meta(&env).expect("etch meta");
         assert_eq!(&ticker[..tlen as usize], b"TAC", "ticker");
         assert_eq!(decimals, 8, "decimals");
-        assert_eq!(cid, want_cid, "metadata cid");
+        assert_eq!(
+            hex::encode(cid),
+            "df6753ef656025935778287abfadd06619db85fea4eab52a38b4a9d1a6303b02",
+            "T_PETCH image_uri (raw CIDv1) → its 32-byte content digest"
+        );
 
         // asset_id = sha256(compute_txid ‖ vout0), bound to the tx.
         let id = asset_id_from_etch(&tx).unwrap();
@@ -2057,13 +2168,45 @@ mod tests {
         assert!(parse_etch_meta(&petch).is_some(), "T_PETCH parses");
         assert!(parse_etch_meta(&[0x2Bu8, 3, 1, 2, 3]).is_none(), "burn opcode rejected");
 
-        // CETCH (0x21) carries the supply commitment after decimals, NOT a cid — parse_etch_meta must
-        // return cid = 0 there, never the commitment bytes (the OP_ATTEST_META garbage-cid fix).
+        // CETCH (0x21) carries the supply commitment after decimals, NOT a cid — a SHORT CETCH (no
+        // trailing image_uri) must resolve cid = 0, never the commitment bytes (the garbage-cid fix).
         let mut cetch = vec![0x21u8, 0x03, b'T', b'A', b'C', 0x08];
         cetch.extend_from_slice(&[0x99u8; 33]); // supply commitment (must NOT be read as a cid)
         let cenv = extract_taproot_envelope(&build_reveal_tx(&cetch)).expect("cetch envelope");
         let (_, _, _, ccid) = parse_etch_meta(&cenv).expect("CETCH parses via parse_etch_meta");
-        assert_eq!(ccid, [0u8; 32], "CETCH cid = 0 (commitment never misread as cid)");
+        assert_eq!(ccid, [0u8; 32], "short CETCH (no image_uri) → cid = 0");
+
+        // A FULL CETCH references its metadata blob by `image_uri`; parse_etch_meta resolves the cid from
+        // it (raw CIDv1) so a bridged CETCH (TAC) gets the same trustless contractURI a T_PETCH would.
+        // KAT: TAC's live image_uri decodes to this 32-byte digest (mirrored in
+        // tests/confidential-canonical-asset-id.mjs; reconstructs to ipfs://f01551220‖hex on Ethereum).
+        let build_cetch = |uri: &[u8]| -> Vec<u8> {
+            let mut e = vec![0x21u8, 0x03, b'T', b'A', b'C', 0x08];
+            e.extend_from_slice(&[0x02u8; 33]); // commitment C_0
+            e.extend_from_slice(&[0u8; 8]); // amount_ct
+            e.extend_from_slice(&[0u8, 0u8]); // rp_len = 0 (empty rangeproof)
+            e.extend_from_slice(&[0u8; 32]); // mint_authority = 0 (fixed supply)
+            e.extend_from_slice(&[(uri.len() & 0xff) as u8, ((uri.len() >> 8) & 0xff) as u8]); // img_len LE
+            e.extend_from_slice(uri);
+            e
+        };
+        let tac_uri = b"ipfs://bafkreig7m5j66zlaewjvo6bipk723udgdhnyl7ve5k2suofuvhi2mmb3ai";
+        let tenv = extract_taproot_envelope(&build_reveal_tx(&build_cetch(tac_uri))).expect("tac cetch env");
+        let (_, _, _, tcid) = parse_etch_meta(&tenv).expect("full CETCH parses");
+        assert_eq!(
+            hex::encode(tcid),
+            "df6753ef656025935778287abfadd06619db85fea4eab52a38b4a9d1a6303b02",
+            "CETCH image_uri (raw CIDv1) → its 32-byte content digest (TAC live KAT)"
+        );
+
+        // Non-raw / non-ipfs image_uris are NOT surfaced (they cannot round-trip the f01551220 form) →
+        // cid 0, so the harmonization never mispoints a contractURI to a re-encoded object.
+        let dagpb = b"ipfs://bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi"; // dag-pb (0x70)
+        let denv = extract_taproot_envelope(&build_reveal_tx(&build_cetch(dagpb))).expect("dagpb cetch env");
+        assert_eq!(parse_etch_meta(&denv).unwrap().3, [0u8; 32], "dag-pb CIDv1 → cid 0 (only raw 0x55 surfaced)");
+        let https = b"https://example.com/meta.json";
+        let henv = extract_taproot_envelope(&build_reveal_tx(&build_cetch(https))).expect("https cetch env");
+        assert_eq!(parse_etch_meta(&henv).unwrap().3, [0u8; 32], "non-ipfs image_uri → cid 0");
     }
 
     #[test]

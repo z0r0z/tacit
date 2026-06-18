@@ -38,13 +38,13 @@ contract ConfidentialTacWalkthroughTest is Test {
         bytes32 prior = pool.knownReflectionDigest();
         bytes32 next = keccak256(abi.encode(prior, poolRoot));
         pool.attestBitcoinStateProven(
-            abi.encode(ConfidentialPool.BitcoinRelayPublicValues(prior, poolRoot, keccak256("imt-empty-sentinel"), BURN_SENTINEL, 1, next, bytes32(0), bytes32(0), bytes32(uint256(uint160(address(pool)))), 0, uint64(pool.bitcoinConsumedCount()))), ""
+            abi.encode(ConfidentialPool.BitcoinRelayPublicValues(prior, poolRoot, keccak256("imt-empty-sentinel"), BURN_SENTINEL, 1, next, bytes32(0), bytes32(0), bytes32(uint256(uint160(address(pool)))), 0, new ConfidentialPool.CbtcLockFolded[](0), new bytes32[](0), uint64(pool.bitcoinConsumedCount()))), ""
         );
     }
 
     function setUp() public {
         CanonicalAssetFactory factory = new CanonicalAssetFactory();
-        pool = new ConfidentialPool(address(new AcceptVerifier()), bytes32(uint256(0xABCD)), bytes32(0), address(factory), address(0), bytes32(0), 6, bytes32(0), bytes32(0));
+        pool = new ConfidentialPool(address(new AcceptVerifier()), bytes32(uint256(0xABCD)), bytes32(0), address(factory), address(0), bytes32(0), 6, bytes32(0), bytes32(0), address(0));
         // Deploy TAC's canonical ERC20 (ETH_DECIMALS) with the POOL as its sole minter.
         tac = CanonicalBridgedERC20(factory.deployCanonical(keccak256("TAC"), address(pool), "TAC", 18));
         // Register it as a LOCAL Tacit-recorded (pool-minted) asset: wrap burns, unwrap mints.

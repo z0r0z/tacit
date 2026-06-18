@@ -166,14 +166,27 @@ wallets, marketplaces, and the dapp:
   from the supplied metadata (`CanonicalAssetFactory.deriveAssetId` / `etchCanonical`)
   and anyone can recompute the binding (`verifyMetadata`). Exactly one official
   `(symbol, decimals, cid)` per id.
-- **Bitcoin-native etch (e.g. TAC):** `(ticker, decimals, cid)` live on-chain in the CETCH /
-  T_PETCH reveal envelope — `opcode ‖ tlen ‖ ticker ‖ decimals ‖ [cid(32)]` — transitively
-  bound to the id via the txid (`asset_id = sha256(reveal_txid ‖ 0)`,
-  `reveal_txid = double_sha256(reveal_tx)`). The bridge proves them once at first mint (the
-  SP1 attest_meta proof's `AssetMeta` carries the `cid`) and the canonical ERC20 carries
-  them immutably; `contractURI()` reconstructs `ipfs://f01551220‖hex(cid)` from it
-  (CIDv1 base16: `f` multibase ‖ `01` v1 ‖ `55` raw ‖ `12` sha2-256 ‖ `20` len-32 ‖ cid). The
-  CID is optional — absent ⇒ `cid = 0` ⇒ empty `contractURI`.
+- **Bitcoin-native etch (e.g. TAC):** `(ticker, decimals, cid)` live on-chain in the reveal
+  envelope, transitively bound to the id via the txid (`asset_id = sha256(reveal_txid ‖ 0)`,
+  `reveal_txid = double_sha256(reveal_tx)`). The two etch shapes carry the `cid` differently,
+  and the SP1 attest_meta proof resolves both to the SAME 32-byte raw-CIDv1 digest. **Neither etch
+  carries the cid inline** — both reference their metadata blob (`{name, image, …}` JSON) by an
+  **`image_uri`** (an `ipfs://` URI) at the TAIL of the reveal envelope; only the fields between
+  `decimals` and that URI differ:
+  - **CETCH** (confidential / fixed-supply etch, e.g. TAC) — `… ‖ commitment(33) ‖ amount_ct(8) ‖
+    rp_len(2) ‖ rangeproof ‖ mint_authority(32) ‖ img_len(2) ‖ image_uri` (`cetch_image_cid`).
+  - **T_PETCH** (permissionless fair-mint etch) — `… ‖ cap(8) ‖ limit(8) ‖ start_h(4) ‖ end_h(4) ‖
+    img_len(2) ‖ image_uri` (`petch_image_cid`).
+
+  The guest (`cxfer-core` `bitcoin.rs`) resolves the cid from that URI when it is a raw-codec CIDv1;
+  a non-raw / CIDv0 / non-`ipfs://` / path-suffixed URI resolves to `cid = 0` (it could not
+  round-trip the base16 form below).
+
+  The bridge proves them once at first mint (the proof's `AssetMeta` carries the `cid`) and the
+  canonical ERC20 carries them immutably; `contractURI()` reconstructs `ipfs://f01551220‖hex(cid)`
+  (CIDv1 base16: `f` multibase ‖ `01` v1 ‖ `55` raw ‖ `12` sha2-256 ‖ `20` len-32 ‖ cid) and
+  emits EIP-7572 `ContractURIUpdated` at deploy. The CID is optional — absent ⇒ `cid = 0` ⇒
+  empty `contractURI`.
 - **Wrapped ERC20:** the id binds the underlying, whose `symbol`/`decimals` are read from
   that token directly.
 
@@ -390,10 +403,14 @@ the value/nullifier ones). Each is required before any proof is accepted:
 - **B1 — wrap value↔escrow.** For every `wrap`, assert `value · unitScale == amount`
   (`value` = the note's committed u64; `amount` = the escrowed underlying, u256).
   `unitScale` is NOT a free witness: the deposit id binds the SCALED `value` —
-  `deposit_id = keccak(asset ‖ value ‖ Cx ‖ Cy ‖ owner)` (`value` as a 32-byte big-endian
-  word) — which the contract re-derives as `value = amount / assets[assetId].unitScale`
-  with the asset's trusted scale, so a matching id forces `value·unitScale == amount`
-  (the guest never sees `unitScale`). Compute `value·unitScale` in ≥u128 (can exceed u64).
+  `deposit_id = keccak(asset ‖ value ‖ commit)`, `commit = keccak(Cx ‖ Cy ‖ owner)`
+  (`value` as a 32-byte big-endian word) — which the contract re-derives as
+  `value = amount / assets[assetId].unitScale` with the asset's trusted scale, so a matching
+  id forces `value·unitScale == amount` (the guest never sees `unitScale`). Compute
+  `value·unitScale` in ≥u128 (can exceed u64). The commit DIGEST — not the raw `(Cx, Cy, owner)`
+  — is what `wrap` takes in calldata, so a deposit note's `ν = keccak(Cx ‖ Cy ‖ "spent")` is never
+  publicly computable from on-chain data (deposit→spend stays unlinkable) and the static `owner`
+  cannot cluster a wallet's deposits.
 - **B2 — unwrap payout↔value.** For every `unwrap`/withdrawal the guest emits the proven
   in-system `value`; the contract pays `amount = value · assets[assetId].unitScale` with the
   asset's trusted stored scale (the withdrawal carries `value`, NOT `unitScale` — the guest

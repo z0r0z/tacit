@@ -71,11 +71,15 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
   // Derived from the commitment (not a free secret), so a note has exactly one nullifier.
   const SPENT = new Uint8Array([0x73, 0x70, 0x65, 0x6e, 0x74]); // "spent"
   const nullifier = (cx, cy) => hx(keccak256(concat([b32(cx), b32(cy), SPENT])));
-  // deposit id = keccak(abi.encode(assetId, value, Cx, Cy, owner)); binds the note's
-  // in-system value (the contract derives the same value = amount/unitScale at wrap, so
-  // a matching id forces value·unitScale == escrowed amount). Static types encode ==
-  // packed 32-byte words, so value is its big-endian 32-byte form.
-  const depositId = (assetId, value, cx, cy, owner) => hx(keccak256(concat([b32(assetId), beBytes(value, 32), b32(cx), b32(cy), b32(owner)])));
+  // deposit commit = keccak(Cx ‖ Cy ‖ owner) — the digest the contract's wrap takes in place of the
+  // raw coords + owner, so they never appear in public calldata (ν = keccak(Cx‖Cy‖"spent") stays
+  // externally uncomputable and the static owner can't cluster a wallet's deposits).
+  const depositCommit = (cx, cy, owner) => hx(keccak(cx, cy, owner));
+  // deposit id = keccak(abi.encode(assetId, value, commit)); binds the note's in-system value (the
+  // contract derives the same value = amount/unitScale at wrap, so a matching id forces
+  // value·unitScale == escrowed amount) over the coord/owner digest. Static types encode == packed
+  // 32-byte words, so value is its big-endian 32-byte form.
+  const depositId = (assetId, value, cx, cy, owner) => hx(keccak256(concat([b32(assetId), beBytes(value, 32), b32(depositCommit(cx, cy, owner))])));
 
   // ── Keccak incremental Merkle, matching ConfidentialPool._insertLeaf ──
   const zeros = (() => {
@@ -1609,7 +1613,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
 
   return {
     prover, TREE_DEPTH, zeros: zeros.map(hx),
-    commitXY, deriveNote, deriveBidSecret, leaf, nullifier, depositId, Tree, verifyPath, merklePath, merkleRootFrom,
+    commitXY, deriveNote, deriveBidSecret, leaf, nullifier, depositCommit, depositId, Tree, verifyPath, merklePath, merkleRootFrom,
     imtLeaf, imtRoot, imtEmptyRoot, makeImtAccumulator,
     utxoLeaf, makeUtxoAccumulator, commitmentHash, decompressCommitment, compressXY, outpointKey,
     makeReflectionState, assembleReflectionInput, openingSigma, verifyOpeningSigma, deriveOpeningNonce, intentContext,
