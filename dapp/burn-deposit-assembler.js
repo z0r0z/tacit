@@ -9,6 +9,19 @@
 // pre-anchor headers) is the worker's job. This module builds the witness GIVEN that data — the same shape
 // gen-reflection-burn-deposit.mjs produces synthetically, so the generator's native-exec exercises it.
 //
+// GUEST FORMAT CHANGE (pending, gates burn-deposit re-enablement). The guest's burn_deposit.rs now binds each
+// provenance/etch/cmint step to the ACTUAL confirmed tx: it derives the txid (computed, not free), the
+// CXFER/CETCH/CMINT envelope, and the input outpoints FROM the tx bytes, and authenticates the witness via the
+// BIP141 commitment (wtxid merkle path + the same-block coinbase). So each provenance tx now needs, instead of
+// a free txid + separately-witnessed inputs/outputs/kernel/range: the full `tx` bytes, the spent-note
+// `inputCommitments` (points only; Bitcoin records just the outpoint), the produced `outputVouts`, and the
+// witness-commitment proof — `wtxidSiblings` (over the block's wtxids, coinbase wtxid := 0), `coinbase` (the
+// tx carrying the 6a24aa21a9ed commitment + reserved-value witness), and `coinbaseTxidSiblings` (the coinbase
+// at txid index 0). The worker's tracer must therefore fetch each provenance block's coinbase + wtxids. This
+// module, the SP1-stdin serializer + foldBurnDepositTx mirror in confidential-pool.js, and the generator are
+// updated together and re-verified by the native-exec gate (gen-reflection-burn-deposit.mjs) before
+// burn-deposit onboarding is re-enabled. Until then the serialization below is the pre-change shape.
+//
 // Deps (injected so the worker + the test generator each supply their own Bitcoin helpers):
 //   dsha256(Uint8Array) -> Uint8Array     (double-SHA256, internal order)
 //   cat([Uint8Array]) -> Uint8Array
