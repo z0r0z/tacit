@@ -82,7 +82,7 @@ bridgemint(){ # <nu>
   local nu="${1:?bridgemint needs the burned-note nullifier ν}"
   echo "Phase 3 — bridge_mint fired for ν=$nu"
   ck   "bridgeMinted[ν] == true"   "$(call 'bridgeMinted(bytes32)(bool)' "$nu")"    "true"
-  ck   "nullifierSpent[ν] == true" "$(call 'isNullifierSpent(bytes32)(bool)' "$nu")" "true"
+  ck   "nullifierSpent[ν] == true" "$(call 'nullifierSpent(bytes32)(bool)' "$nu")" "true"
   ckgt "nextLeafIndex > 0"         "$(call 'nextLeafIndex()(uint256)')"             0
 }
 
@@ -104,7 +104,7 @@ crossout(){ # <claimId> <destCommitment> <nu>
   local cid="${1:?crossout needs <claimId>}" dest="${2:?<destCommitment>}" nu="${3:?<ν>}"
   echo "Phase 6 — crossOut recorded (bridge back to Bitcoin)"
   ck "crossOutCommitment[claimId] == destCommitment" "$(call 'crossOutCommitment(bytes32)(bytes32)' "$cid")" "$dest"
-  ck "nullifierSpent[ν] == true"                     "$(call 'isNullifierSpent(bytes32)(bool)' "$nu")"      "true"
+  ck "nullifierSpent[ν] == true"                     "$(call 'nullifierSpent(bytes32)(bool)' "$nu")"      "true"
 }
 
 invariants(){
@@ -116,8 +116,10 @@ submit_wrap(){ # state-changing — needs PRIVATE_KEY + a funded caller holding 
   : "${PRIVATE_KEY:?set PRIVATE_KEY}" "${AMOUNT:?set AMOUNT}" "${CX:?set CX}" "${CY:?set CY}" "${OWNER:?set OWNER}"
   local localId; localId=$(call 'localAssetOf(bytes32)(bytes32)' "$TAC")
   [ "$(lc "$localId")" != "$ZERO32" ] || { echo "TAC not onboarded yet (localAssetOf == 0); run Phase 2 first"; exit 1; }
+  # wrap takes only the commit digest keccak(Cx‖Cy‖owner); the raw coords stay in the OP_WRAP witness.
+  local commit; commit=$(cast keccak "0x${CX#0x}${CY#0x}${OWNER#0x}")
   echo "submit wrap(localAssetOf(TAC)=$localId, amount=$AMOUNT) — burns the ERC20, records the deposit"
-  cast send "$POOL" 'wrap(bytes32,uint256,bytes32,bytes32,bytes32)' "$localId" "$AMOUNT" "$CX" "$CY" "$OWNER" \
+  cast send "$POOL" 'wrap(bytes32,uint256,bytes32)' "$localId" "$AMOUNT" "$commit" \
     --rpc-url "$RPC" --private-key "$PRIVATE_KEY"
 }
 

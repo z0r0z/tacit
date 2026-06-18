@@ -2,9 +2,11 @@
 pragma solidity ^0.8.28;
 
 import {Test} from "forge-std/Test.sol";
+import {Vm} from "forge-std/Vm.sol";
 import {CanonicalAssetFactory} from "../src/CanonicalAssetFactory.sol";
 import {CanonicalBridgedERC20} from "../src/CanonicalBridgedERC20.sol";
 import {ConfidentialPool} from "../src/ConfidentialPool.sol";
+import {assetOf} from "./helpers/AssetView.sol";
 import {ERC20} from "solady/tokens/ERC20.sol";
 
 /// The canonical asset hub: a CREATE2 factory issues a deterministic public ERC20 per
@@ -300,6 +302,34 @@ contract CanonicalAssetFactoryTest is Test {
         assertEq(tok.contractURI(), "", "absent metadata -> empty contractURI");
     }
 
+    /// EIP-7572: a token carrying metadata emits ContractURIUpdated at deploy so marketplaces
+    /// index the contract-level metadata without polling. The CID is immutable, so it fires once.
+    function test_contractURI_event_emitted_once_with_metadata() public {
+        bytes32 cid = 0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f;
+        address predicted = factory.predict(ASSET, MINTER, "cBTC", 8, cid);
+        vm.recordLogs();
+        factory.deployCanonical(ASSET, MINTER, "cBTC", 8, cid);
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        uint256 hits;
+        for (uint256 i; i < logs.length; ++i) {
+            if (logs[i].emitter == predicted && logs[i].topics[0] == keccak256("ContractURIUpdated()")) hits++;
+        }
+        assertEq(hits, 1, "ContractURIUpdated emitted exactly once by the token at deploy");
+    }
+
+    /// A token with no metadata stays silent — there is nothing for a marketplace to fetch.
+    function test_no_contractURI_event_without_metadata() public {
+        address predicted = factory.predict(ASSET, MINTER, "cBTC", 8);
+        vm.recordLogs();
+        factory.deployCanonical(ASSET, MINTER, "cBTC", 8); // cid = 0
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        for (uint256 i; i < logs.length; ++i) {
+            if (logs[i].emitter == predicted) {
+                assertTrue(logs[i].topics[0] != keccak256("ContractURIUpdated()"), "no metadata -> no event");
+            }
+        }
+    }
+
     // ── pool lazy-deploys + harmonizes decimals from guest-proven metadata (attest_meta) ──
     // registerMintedAuto was removed: a cross-chain link is established ONLY by the guest-proven
     // attest_meta path (so a caller can't bind a link with an unauthenticated decimals/scale). Its
@@ -316,13 +346,13 @@ contract CanonicalAssetFactoryTest is Test {
         // 18-decimal external ERC20 (WETH-like) -> 8 on Tacit, scale 10^10
         address weth = factory.deployCanonical(keccak256("WETH-ext"), MINTER, "WE", 18);
         bytes32 a18 = pool.registerWrappedAuto(weth, bytes32(0));
-        assertEq(pool.getAsset(a18).unitScale, 1e10, "18-dec -> scale 10^10");
-        assertEq(pool.getAsset(a18).decimals, 18);
-        assertFalse(pool.getAsset(a18).poolMinted, "external ERC20 = escrow");
+        assertEq(assetOf(pool, a18).unitScale, 1e10, "18-dec -> scale 10^10");
+        assertEq(assetOf(pool, a18).decimals, 18);
+        assertFalse(assetOf(pool, a18).poolMinted, "external ERC20 = escrow");
         // 6-decimal external ERC20 (USDC-like) -> 6 on Tacit, scale 1 (no loss)
         address usdc = factory.deployCanonical(keccak256("USDC-ext"), MINTER, "US", 6);
         bytes32 a6 = pool.registerWrappedAuto(usdc, bytes32(0));
-        assertEq(pool.getAsset(a6).unitScale, 1, "6-dec -> scale 1");
-        assertEq(pool.getAsset(a6).decimals, 6);
+        assertEq(assetOf(pool, a6).unitScale, 1, "6-dec -> scale 1");
+        assertEq(assetOf(pool, a6).decimals, 6);
     }
 }

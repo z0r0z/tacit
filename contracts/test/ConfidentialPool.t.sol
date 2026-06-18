@@ -3,6 +3,7 @@ pragma solidity ^0.8.28;
 
 import {Test} from "forge-std/Test.sol";
 import {ConfidentialPool, ISP1Verifier} from "../src/ConfidentialPool.sol";
+import {assetOf} from "./helpers/AssetView.sol";
 import {CanonicalAssetFactory} from "../src/CanonicalAssetFactory.sol";
 import {CanonicalBridgedERC20} from "../src/CanonicalBridgedERC20.sol";
 import {ERC20} from "solady/tokens/ERC20.sol";
@@ -125,7 +126,7 @@ contract ConfidentialPoolTest is Test {
         pool.wrap(assetId, amount, keccak256(abi.encodePacked(cx, cy, owner)));
         // the contract binds the deposit to the in-system value = amount/unitScale, over the
         // coord/owner digest keccak(Cx‖Cy‖owner) (the raw coords never reach the chain).
-        uint256 value = amount / pool.getAsset(assetId).unitScale;
+        uint256 value = amount / assetOf(pool, assetId).unitScale;
         depositId = keccak256(abi.encode(assetId, value, keccak256(abi.encodePacked(cx, cy, owner))));
     }
 
@@ -186,7 +187,7 @@ contract ConfidentialPoolTest is Test {
         assertEq(token.balanceOf(address(pool)), 100, "held");
         assertEq(pool.depositStatus(id), 1, "pending");
 
-        ConfidentialPool.Asset memory a = pool.getAsset(assetId);
+        ConfidentialPool.Asset memory a = assetOf(pool, assetId);
         assertEq(a.name, "Conf Mock");
         assertEq(a.symbol, "cMCK");
         assertEq(a.decimals, 18);
@@ -240,7 +241,7 @@ contract ConfidentialPoolTest is Test {
 
     function test_register_native_eth() public {
         bytes32 ethId = pool.registerWrapped(address(0), 1e10, bytes32(0), "Confidential ETH", "cETH", 18);
-        ConfidentialPool.Asset memory a = pool.getAsset(ethId);
+        ConfidentialPool.Asset memory a = assetOf(pool, ethId);
         assertTrue(a.registered && !a.poolMinted, "ETH is a registered escrow asset");
         assertEq(a.underlying, address(0), "native ETH sentinel");
         assertEq(a.unitScale, 1e10, "8-dec in-system granularity (10 gwei)");
@@ -340,7 +341,7 @@ contract ConfidentialPoolTest is Test {
         pv.leaves = _arr(keccak256("out-1"));
         _settle(pv);
 
-        assertTrue(pool.isNullifierSpent(keccak256("null-1")), "nullifier marked");
+        assertTrue(pool.nullifierSpent(keccak256("null-1")), "nullifier marked");
         assertEq(pool.nextLeafIndex(), 2, "two leaves");
     }
 
@@ -499,8 +500,8 @@ contract ConfidentialPoolTest is Test {
         assertEq(pool.depositStatus(id1), 2, "dep1 consumed");
         assertEq(pool.depositStatus(id2), 2, "dep2 consumed");
         assertEq(pool.nextLeafIndex(), 4, "4 leaves inserted");
-        assertTrue(pool.isNullifierSpent(keccak256("nT")), "transfer nullifier");
-        assertTrue(pool.isNullifierSpent(keccak256("nU")), "unwrap nullifier");
+        assertTrue(pool.nullifierSpent(keccak256("nT")), "transfer nullifier");
+        assertTrue(pool.nullifierSpent(keccak256("nU")), "unwrap nullifier");
         assertEq(token.balanceOf(RECIP), 30, "unwrap paid");
         assertEq(token.balanceOf(SETTLER), 5, "settler fee paid");
         assertEq(pool.escrow(assetId), 115, "escrow = 150 - 30 - 5");
@@ -695,7 +696,7 @@ contract ConfidentialPoolTest is Test {
         emit CrossOutRecorded(claimId, destChain, destC, nu, assetId);
         pool.settle(abi.encode(pv), "", new bytes[](0));
 
-        assertTrue(pool.isNullifierSpent(nu), "burned note nullified");
+        assertTrue(pool.nullifierSpent(nu), "burned note nullified");
         // Storage anchor for the reverse-reflection (Mode B) inclusion proof: the cross-out is
         // persisted in the state trie (claimId => destCommitment), not just the event.
         assertEq(pool.crossOutCommitment(claimId), destC, "cross-out anchored in storage");
@@ -799,7 +800,7 @@ contract ConfidentialPoolTest is Test {
         pv.crossOuts[0] = ConfidentialPool.CrossOut(destChain, destC, nu, assetId, claimId);
 
         pool.settle(abi.encode(pv), "", new bytes[](0));
-        assertTrue(pool.isNullifierSpent(nu), "eth-homed burn note nullified");
+        assertTrue(pool.nullifierSpent(nu), "eth-homed burn note nullified");
     }
 
     /// Atomic cross-chain swap: one settle carries both legs — Bob's X output
@@ -829,8 +830,8 @@ contract ConfidentialPoolTest is Test {
         emit CrossOutRecorded(cid, 1, destC, nuBobY, assetY);
         pool.settle(abi.encode(pv), "", new bytes[](1));
 
-        assertTrue(pool.isNullifierSpent(nuAliceX), "Alice's X input spent");
-        assertTrue(pool.isNullifierSpent(nuBobY), "Bob's Y input spent");
+        assertTrue(pool.nullifierSpent(nuAliceX), "Alice's X input spent");
+        assertTrue(pool.nullifierSpent(nuBobY), "Bob's Y input spent");
         assertEq(pool.nextLeafIndex(), preLeaves + 1, "Bob's X minted on Ethereum (one new leaf)");
     }
 
@@ -946,7 +947,7 @@ contract ConfidentialPoolTest is Test {
         assertEq(CanonicalBridgedERC20(token).MINTER(), address(p), "pool is minter");
 
         bytes32 internalId = sha256(abi.encodePacked("tacit-evm-token-v1", uint64(block.chainid), token));
-        ConfidentialPool.Asset memory a = p.getAsset(internalId);
+        ConfidentialPool.Asset memory a = assetOf(p, internalId);
         assertTrue(a.registered, "registered");
         assertEq(a.unitScale, 1e10, "unitScale = 10^(18-8)");
         assertEq(a.crossChainLink, tacId, "linked to the Bitcoin asset id");
@@ -1024,7 +1025,7 @@ contract ConfidentialPoolTest is Test {
         pv.nullifiers = new bytes32[](1);
         pv.nullifiers[0] = keccak256("btc-homed-note");
         _settle(pv); // no UnknownRoot revert — Bitcoin root accepted as a spend root
-        assertTrue(pool.isNullifierSpent(keccak256("btc-homed-note")), "fast-spent on Ethereum");
+        assertTrue(pool.nullifierSpent(keccak256("btc-homed-note")), "fast-spent on Ethereum");
     }
 
     /// The relay can never reflect a ZERO spent-set root: an empty Bitcoin spent set has
@@ -1219,7 +1220,7 @@ contract ConfidentialPoolTest is Test {
         pv.bitcoinSpentRoot = spent;       // pins the current root → gate satisfied
         pv.nullifiers = _arr(keccak256("nu-note"));
         _settle(pv);
-        assertTrue(pool.isNullifierSpent(keccak256("nu-note")), "fast-spent with cross-lane proof");
+        assertTrue(pool.nullifierSpent(keccak256("nu-note")), "fast-spent with cross-lane proof");
     }
 
     /// Cross-lane single-spend: a Bitcoin-homed note fast-spent on Ethereum cannot then be
@@ -1238,7 +1239,7 @@ contract ConfidentialPoolTest is Test {
         pv.bitcoinSpentRoot = spentEmpty;
         pv.nullifiers = _arr(nu);
         _settle(pv);
-        assertTrue(pool.isNullifierSpent(nu), "fast-spent");
+        assertTrue(pool.nullifierSpent(nu), "fast-spent");
 
         // 2) note later burned on Bitcoin (ν now in the reflected spent set); a bridge_mint
         //    of the SAME ν carries ν in `nullifiers` (post-fix guest) → must revert.
@@ -1453,7 +1454,7 @@ contract ConfidentialPoolTest is Test {
         );
         // The pool's local registry resolves the shared id to the correct-cid token.
         bytes32 localId = pool.localAssetOf(shared);
-        assertEq(pool.getAsset(localId).underlying, tok, "linked to the etch-proven token");
+        assertEq(assetOf(pool, localId).underlying, tok, "linked to the etch-proven token");
     }
 
     /// A bridged note carries the SHARED (Bitcoin-side) asset id. The attest_meta path links the
@@ -1585,7 +1586,7 @@ contract ConfidentialPoolTest is Test {
         emit ConfidentialPool.BitcoinNotesConsumed(_arr(nu), btcRoot);
         pool.settle(abi.encode(pv), "", new bytes[](1));
         assertEq(pool.bitcoinConsumed(nu), btcRoot, "consumed nu recorded for the reverse reflection");
-        assertTrue(pool.isNullifierSpent(nu), "nullifier marked");
+        assertTrue(pool.nullifierSpent(nu), "nullifier marked");
     }
 
     /// FRESHNESS ANCHOR: each fast-lane value-exit advances `bitcoinConsumedCount` by exactly its
@@ -1706,7 +1707,7 @@ contract ConfidentialPoolTest is Test {
         pool.settle(abi.encode(pv), "", new bytes[](1));
         assertEq(pool.bitcoinConsumed(nu), btcRoot, "consumed swap-input nu recorded for the reverse reflection");
         assertEq(pool.bitcoinConsumedCount(), 1, "freshness count advanced by the swap consume");
-        assertTrue(pool.isNullifierSpent(nu), "nullifier marked");
+        assertTrue(pool.nullifierSpent(nu), "nullifier marked");
         (, , , uint256 ra, , ,) = pool.pools(pid);
         assertEq(ra, 110000, "the btcHomed swap advanced the pool");
     }
@@ -1863,7 +1864,7 @@ contract ConfidentialPoolTest is Test {
         pv.bitcoinSpentRoot = spent;
         pv.nullifiers = _arr(keccak256("noop-nu"));
         pool.settle(abi.encode(pv), "", new bytes[](0));
-        assertTrue(pool.isNullifierSpent(keccak256("noop-nu")), "nullifier marked");
+        assertTrue(pool.nullifierSpent(keccak256("noop-nu")), "nullifier marked");
         assertEq(pool.bitcoinConsumed(keccak256("noop-nu")), bytes32(0), "no value-exit => no consumed record");
     }
 

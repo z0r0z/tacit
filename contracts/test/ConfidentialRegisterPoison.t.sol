@@ -3,6 +3,7 @@ pragma solidity ^0.8.28;
 
 import {Test} from "forge-std/Test.sol";
 import {ConfidentialPool, ISP1Verifier} from "../src/ConfidentialPool.sol";
+import {assetOf} from "./helpers/AssetView.sol";
 import {ERC20} from "solady/tokens/ERC20.sol";
 
 contract RealToken is ERC20 {
@@ -44,7 +45,7 @@ contract ConfidentialRegisterPoisonTest is Test {
 
         // the honest auto-registration then succeeds, deriving scale 1 (decimals 6 ≤ 8).
         bytes32 assetId = pool.registerWrappedAuto(address(usdc), bytes32(0));
-        ConfidentialPool.Asset memory a = pool.getAsset(assetId);
+        ConfidentialPool.Asset memory a = assetOf(pool, assetId);
         assertEq(a.unitScale, 1, "honest auto-scale (decimals 6 <= 8 => scale 1)");
         assertTrue(a.registered);
 

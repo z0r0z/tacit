@@ -50,6 +50,10 @@ contract CanonicalBridgedERC20 is ERC20 {
     error NotMinter();
     error ZeroAddress();
 
+    /// @dev EIP-7572: signals indexers/marketplaces to (re)fetch `contractURI`. The metadata is
+    ///      immutable (bound into ASSET_ID), so it is emitted once at deploy — never again.
+    event ContractURIUpdated();
+
     constructor() {
         (bytes32 assetId, address minter, string memory s, uint8 d, bytes32 cid) =
             ICanonicalDeployParams(msg.sender).deployParams();
@@ -58,6 +62,7 @@ contract CanonicalBridgedERC20 is ERC20 {
         _symbol = s;
         _decimals = d;
         METADATA_CID = cid;
+        if (cid != bytes32(0)) emit ContractURIUpdated();
     }
 
     function name() public pure override returns (string memory) { return "Tacit Token"; }

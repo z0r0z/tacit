@@ -132,7 +132,7 @@ contract ConfidentialPoolFuzzTest is Test {
         ok.crossOuts = new ConfidentialPool.CrossOut[](1);
         ok.crossOuts[0] = ConfidentialPool.CrossOut(destChain, destC, nu, id, right);
         _settle(ok);
-        assertTrue(pool.isNullifierSpent(nu), "burned note nullified");
+        assertTrue(pool.nullifierSpent(nu), "burned note nullified");
 
         // wrong binding reverts (fresh nullifier so we reach the crossOut loop)
         ConfidentialPool.PublicValues memory bad = _pv();
@@ -181,7 +181,7 @@ contract ConfidentialPoolFuzzTest is Test {
         pv.nullifiers = new bytes32[](1);
         pv.nullifiers[0] = nu;
         _settle(pv);
-        assertTrue(pool.isNullifierSpent(nu), "spent");
+        assertTrue(pool.nullifierSpent(nu), "spent");
 
         ConfidentialPool.PublicValues memory pv2 = _pv();
         pv2.nullifiers = new bytes32[](1);

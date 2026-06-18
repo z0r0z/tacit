@@ -360,29 +360,4 @@ contract ConfidentialPoolSwapTest is Test {
         _settle(pv2);
     }
 
-    // lpPositionValue: the proportional (A, B) a share count redeems at the live reserves — a read
-    // helper for a position display, matching the guest's proportional-remove floor.
-    function test_lp_position_value_view() public {
-        _init(assetA, assetB, 100000, 200000, 30); // totalShares = 100000
-        (uint256 a, uint256 b) = pool.lpPositionValue(poolId, 100000);
-        assertEq(a, 100000); assertEq(b, 200000, "full shares = full reserves");
-        (a, b) = pool.lpPositionValue(poolId, 25000);
-        assertEq(a, 25000); assertEq(b, 50000, "quarter shares = quarter reserves");
-        // the founder's claimable position (rLo − MINIMUM_LIQUIDITY)
-        (a, b) = pool.lpPositionValue(poolId, 100000 - 1000);
-        assertEq(a, 99000); assertEq(b, 198000, "founder shares");
-    }
-
-    function test_lp_position_value_uninit_reverts() public {
-        vm.expectRevert(ConfidentialPool.PoolNotInit.selector);
-        pool.lpPositionValue(keccak256("ghost"), 1);
-    }
-
-    // A created-but-unfunded slot (totalShares == 0) returns (0, 0) rather than reverting on the
-    // proportional divide — a clean read before the first OP_LP_ADD seeds the pool.
-    function test_lp_position_value_unfunded_returns_zero() public {
-        bytes32 id = pool.createPair(assetA, assetB, 30);
-        (uint256 a, uint256 b) = pool.lpPositionValue(id, 100);
-        assertEq(a, 0); assertEq(b, 0, "unfunded slot = zero position");
-    }
 }

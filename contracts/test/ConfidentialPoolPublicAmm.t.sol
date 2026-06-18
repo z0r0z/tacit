@@ -115,4 +115,32 @@ contract ConfidentialPoolPublicAmmTest is Test {
         vm.expectRevert(ConfidentialPool.InsufficientLiquidity.selector);
         pool.shieldShares(id, sh + 1, keccak256("x"));
     }
+
+    // Hardening regression: removeLiquidityPublic must REVERT cleanly (never underflow) if a confidential LP
+    // settle ever drives totalShares below the still-recorded public-share balance. The unchecked floor guard
+    // is `shares + MINIMUM_LIQUIDITY > totalShares` (an addition) rather than `totalShares - shares < MIN`,
+    // so it can't underflow past the guard into the reserve subtraction. Honest settles keep totalShares ≥
+    // Σ public shares + MIN_LIQUIDITY, so this state is only reachable under a compromised/buggy guest.
+    function test_remove_liquidity_reverts_when_total_shares_mis_set_below_balance() public {
+        uint256 sh = pool.createPairAndAddLiquidityPublic(assetA, assetB, 30, 1_000_000, 1_000_000, address(this));
+        bytes32 id = _pid(assetA, assetB, 30);
+        assertEq(pool.lpShares(id, address(this)), sh, "public balance recorded");
+
+        // A settle that drops totalShares to the MIN_LIQUIDITY floor (well below the public balance). pre
+        // matches the live (1e6, 1e6, 1e6) state; equal reserves sidestep canonical-orientation concerns.
+        ConfidentialPool.PublicValues memory pv;
+        pv.version = pool.PV_VERSION();
+        pv.chainBinding = keccak256(abi.encodePacked(block.chainid, address(pool)));
+        pv.liquidity = new ConfidentialPool.LpSettlement[](1);
+        pv.liquidity[0] =
+            ConfidentialPool.LpSettlement(id, 1_000_000, 1_000_000, 1_000_000, 1_000_000, 1_000_000, 1000);
+        pool.settle(abi.encode(pv), "", new bytes[](0));
+        (,,,,,, uint256 ts) = pool.pools(id);
+        assertEq(ts, 1000, "totalShares now below the public balance");
+
+        // Removing the full public balance: totalShares - shares would underflow; the addition-form guard
+        // reverts at the floor check instead — no reserve subtraction, no payout, no drain.
+        vm.expectRevert(ConfidentialPool.InsufficientLiquidity.selector);
+        pool.removeLiquidityPublic(assetA, assetB, 30, sh, address(this));
+    }
 }

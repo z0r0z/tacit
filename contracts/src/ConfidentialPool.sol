@@ -141,8 +141,8 @@ contract ConfidentialPool is ReentrancyGuardTransient {
 
     uint256 public nextLeafIndex;
     bytes32 public currentRoot;
-    bytes32[TREE_LEVELS] public zeros;
-    bytes32[TREE_LEVELS] public filledSubtrees;
+    bytes32[TREE_LEVELS] internal zeros;
+    bytes32[TREE_LEVELS] internal filledSubtrees;
     mapping(bytes32 => bool) public everKnownRoot;
 
     // ──────────────────── Nullifiers (global) ────────────────────
@@ -235,8 +235,9 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     // cBTC: the reflection-attested Σ of live self-custody cBTC.zk lock sats (the real-BTC backing behind
     // cBTC). Reflection-verified state, advanced each attestation — the off-pool CbtcBuffer reads it via
     // the cbtcBackingSats() view to size the peg shortfall (circulating cBTC vs this). The peg itself is
-    // oracle-free; this is consumed only by the (standalone, governable) buffer, never by settle.
-    uint256 public knownCbtcBackingSats;
+    // oracle-free; this is consumed only by the (standalone, governable) buffer, never by settle. Exposed
+    // through the named cbtcBackingSats() view (the buffer's integration point), so it needs no auto-getter.
+    uint256 internal knownCbtcBackingSats;
 
     // The reflection prover's genesis digest — ScanReflection::genesis().digest() (the shipped
     // full-scan model): an empty note tree + sentinel-seeded spent/burn sets + empty live-UTXO set.
@@ -264,7 +265,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     // the reserve floor. Same Keccak hashing + depth as the note tree (shares `zeros`).
     uint256 public lockNextLeafIndex;
     bytes32 public lockRoot;
-    bytes32[TREE_LEVELS] public lockFilledSubtrees;
+    bytes32[TREE_LEVELS] internal lockFilledSubtrees;
     mapping(bytes32 => bool) public everKnownLockRoot;
     // ν of locked notes already claimed or refunded — spend-once (claim XOR refund). A namespace
     // distinct from `nullifierSpent`: a locked note was never a note-tree leaf, so a claim/refund must
@@ -767,7 +768,13 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         if (!assets[assetA].registered || !assets[assetB].registered) revert NotRegistered();
         if (feeBps > MAX_POOL_FEE_BPS) revert FeeTooHigh();
         (bytes32 lo, bytes32 hi) = assetA < assetB ? (assetA, assetB) : (assetB, assetA);
-        poolId = keccak256(abi.encode(lo, hi, feeBps));
+        assembly ("memory-safe") {
+            let m := mload(0x40)
+            mstore(m, lo)
+            mstore(add(m, 0x20), hi)
+            mstore(add(m, 0x40), and(feeBps, 0xffffffff))
+            poolId := keccak256(m, 0x60)
+        }
         if (pools[poolId].init) {
             if (revertIfExists) revert PoolExists();
             return poolId; // atomic create-and-seed: the slot already exists, reuse it
@@ -792,8 +799,11 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     /// @dev Integer sqrt (Babylonian) for the first-mint share = isqrt(valueA·valueB).
     function _isqrt(uint256 x) internal pure returns (uint256 y) {
         if (x == 0) return 0;
-        uint256 z = (x + 1) / 2; y = x;
-        while (z < y) { y = z; z = (x / z + z) / 2; }
+        // Called only with u64·u64 ≤ 2^128, so x+1 and x/z+z never overflow.
+        unchecked {
+            uint256 z = (x + 1) / 2; y = x;
+            while (z < y) { y = z; z = (x / z + z) / 2; }
+        }
     }
 
     /// @dev Escrow a PUBLIC deposit of `amount` of `assetId` and return the in-system value (amount/unitScale).
@@ -820,9 +830,10 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     /// @notice Atomic create-and-seed from PUBLIC funds (zAMM-style): lazy-create the pool, escrow public
     ///         `amountA`/`amountB` (ERC20 and/or native ETH via msg.value — EITHER side may be tETH), set
     ///         reserves, and credit public LP shares to `to`. First add → totalShares = isqrt(vA·vB) with
-    ///         MINIMUM_LIQUIDITY locked (noteless floor); later add → proportional (limiting-leg min rule,
-    ///         excess accrues to the pool). One tx, no proof. `assetA`/`assetB` may be in any order; the
-    ///         pool is canonical, so reserves line up with the stored low→high mapping.
+    ///         MINIMUM_LIQUIDITY locked (noteless floor); later add → proportional (limiting-leg min rule),
+    ///         with the off-ratio excess of the other leg refunded to the caller (never donated to the pool).
+    ///         One tx, no proof. `assetA`/`assetB` may be in any order; the pool is canonical, so reserves
+    ///         line up with the stored low→high mapping.
     function createPairAndAddLiquidityPublic(
         bytes32 assetA, bytes32 assetB, uint32 feeBps, uint256 amountA, uint256 amountB, address to
     ) external payable nonReentrant returns (uint256 sharesMinted) {
@@ -838,22 +849,30 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         if (msg.value != expectedEth) revert EthValueMismatch();
         uint256 vLo = _ingestPublic(assetLo, amtLo);
         uint256 vHi = _ingestPublic(assetHi, amtHi);
-        if (p.totalShares == 0) {
-            uint256 minted = _isqrt(vLo * vHi);
-            if (minted <= MINIMUM_LIQUIDITY) revert InsufficientLiquidity();
-            p.reserveA = vLo; p.reserveB = vHi; p.totalShares = minted;
-            sharesMinted = minted - MINIMUM_LIQUIDITY; // MINIMUM_LIQUIDITY is the permanent noteless floor
-            lpShares[poolId][to] += sharesMinted;
-        } else {
+        if (p.totalShares != 0) {
             uint256 sA = (vLo * p.totalShares) / p.reserveA;
             uint256 sB = (vHi * p.totalShares) / p.reserveB;
             sharesMinted = sA < sB ? sA : sB;
             if (sharesMinted == 0) revert InsufficientLiquidity();
-            p.reserveA += vLo; p.reserveB += vHi; p.totalShares += sharesMinted;
+            // Credit only the in-ratio portion backing the minted shares; refund the excess leg (CEI-last)
+            // so an off-ratio add can't silently donate it to the existing LPs.
+            uint256 addLo = sharesMinted * p.reserveA / p.totalShares;
+            uint256 addHi = sharesMinted * p.reserveB / p.totalShares;
+            p.reserveA += addLo; p.reserveB += addHi; p.totalShares += sharesMinted;
             lpShares[poolId][to] += sharesMinted;
+            // Only the ACCUMULATING add can exceed u64; the first add below is vLo/vHi ≤ u64 (the
+            // _ingestPublic gate) with minted = isqrt(vLo·vHi) ≤ 2^64 by construction.
+            if (p.reserveA > type(uint64).max || p.reserveB > type(uint64).max || p.totalShares > type(uint64).max) revert ValueOutOfRange();
+            if (vLo > addLo) _payout(assetLo, msg.sender, vLo - addLo);
+            if (vHi > addHi) _payout(assetHi, msg.sender, vHi - addHi);
+            emit PublicLiquidityAdded(poolId, to, addLo, addHi, sharesMinted);
+            return sharesMinted;
         }
-        // Reserves/total stay u64-compatible (the confidential guest reads them as u64).
-        if (p.reserveA > type(uint64).max || p.reserveB > type(uint64).max || p.totalShares > type(uint64).max) revert ValueOutOfRange();
+        uint256 minted = _isqrt(vLo * vHi);
+        if (minted <= MINIMUM_LIQUIDITY) revert InsufficientLiquidity();
+        p.reserveA = vLo; p.reserveB = vHi; p.totalShares = minted;
+        sharesMinted = minted - MINIMUM_LIQUIDITY; // MINIMUM_LIQUIDITY is the permanent noteless floor
+        lpShares[poolId][to] += sharesMinted;
         emit PublicLiquidityAdded(poolId, to, vLo, vHi, sharesMinted);
     }
 
@@ -865,16 +884,31 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     ) external nonReentrant returns (uint256 amountLo, uint256 amountHi) {
         if (to == address(0)) revert ZeroAddress();
         (bytes32 lo, bytes32 hi) = assetA < assetB ? (assetA, assetB) : (assetB, assetA);
-        bytes32 poolId = keccak256(abi.encode(lo, hi, feeBps));
+        bytes32 poolId;
+        assembly ("memory-safe") {
+            let m := mload(0x40)
+            mstore(m, lo)
+            mstore(add(m, 0x20), hi)
+            mstore(add(m, 0x40), and(feeBps, 0xffffffff))
+            poolId := keccak256(m, 0x60)
+        }
         Pool storage p = pools[poolId];
         if (!p.init) revert PoolNotInit();
         uint256 bal = lpShares[poolId][msg.sender];
         if (shares == 0 || shares > bal) revert InsufficientLiquidity();
-        if (p.totalShares - shares < MINIMUM_LIQUIDITY) revert InsufficientLiquidity();
-        uint256 vLo = (p.reserveA * shares) / p.totalShares;
-        uint256 vHi = (p.reserveB * shares) / p.totalShares;
-        lpShares[poolId][msg.sender] = bal - shares;
-        p.totalShares -= shares; p.reserveA -= vLo; p.reserveB -= vHi;
+        uint256 vLo;
+        uint256 vHi;
+        // shares ≤ bal ≤ u64 and u64 reserves keep the products in u256. The floor guard is written as an
+        // addition (shares + MINIMUM_LIQUIDITY > totalShares), NOT totalShares − shares, so it can't underflow
+        // and itself proves shares < totalShares — making every subtraction below non-negative (and vLo/vHi ≤
+        // their reserve) even if a prior settle mis-set totalShares.
+        unchecked {
+            if (shares + MINIMUM_LIQUIDITY > p.totalShares) revert InsufficientLiquidity();
+            vLo = p.reserveA * shares / p.totalShares;
+            vHi = p.reserveB * shares / p.totalShares;
+            lpShares[poolId][msg.sender] = bal - shares;
+            p.totalShares -= shares; p.reserveA -= vLo; p.reserveB -= vHi;
+        }
         amountLo = _payout(lo, to, vLo);
         amountHi = _payout(hi, to, vHi);
         emit PublicLiquidityRemoved(poolId, msg.sender, to, vLo, vHi, shares);
@@ -889,23 +923,34 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         if (to == address(0)) revert ZeroAddress();
         if (assetIn == assetOut) revert SameAsset();
         (bytes32 lo, bytes32 hi) = assetIn < assetOut ? (assetIn, assetOut) : (assetOut, assetIn);
-        bytes32 poolId = keccak256(abi.encode(lo, hi, feeBps));
+        bytes32 poolId;
+        assembly ("memory-safe") {
+            let m := mload(0x40)
+            mstore(m, lo)
+            mstore(add(m, 0x20), hi)
+            mstore(add(m, 0x40), and(feeBps, 0xffffffff))
+            poolId := keccak256(m, 0x60)
+        }
         Pool storage p = pools[poolId];
         if (!p.init) revert PoolNotInit();
         uint256 expectedEth = assets[assetIn].underlying == address(0) ? amountIn : 0;
         if (msg.value != expectedEth) revert EthValueMismatch();
-        uint256 kPre = p.reserveA * p.reserveB;
         uint256 vIn = _ingestPublic(assetIn, amountIn);
         bool inIsLo = assetIn == lo;
         uint256 reserveIn = inIsLo ? p.reserveA : p.reserveB;
         uint256 reserveOut = inIsLo ? p.reserveB : p.reserveA;
-        // out = floor(reserveOut · vIn · γ / (reserveIn · 10000 + vIn · γ)), γ = 10000 − feeBps
-        uint256 g = 10000 - uint256(p.feeBps);
-        uint256 vInG = vIn * g;
-        uint256 vOut = (reserveOut * vInG) / (reserveIn * 10000 + vInG);
-        if (vOut == 0 || vOut >= reserveOut) revert InsufficientLiquidity();
-        if (inIsLo) { p.reserveA += vIn; p.reserveB -= vOut; } else { p.reserveB += vIn; p.reserveA -= vOut; }
-        if (p.reserveA * p.reserveB < kPre) revert InsufficientLiquidity(); // constant-product non-decrease
+        uint256 vOut;
+        // u64-bounded reserves + fee ≤ MAX_POOL_FEE_BPS ⇒ products fit u256, γ-sub can't underflow, and
+        // vOut < reserveOut is enforced before the reserve subtraction — so unchecked is safe.
+        unchecked {
+            uint256 kPre = p.reserveA * p.reserveB;
+            // out = floor(reserveOut · vIn · γ / (reserveIn · 10000 + vIn · γ)), γ = 10000 − feeBps
+            uint256 vInG = vIn * (10000 - uint256(p.feeBps));
+            vOut = (reserveOut * vInG) / (reserveIn * 10000 + vInG);
+            if (vOut == 0 || vOut >= reserveOut) revert InsufficientLiquidity();
+            if (inIsLo) { p.reserveA += vIn; p.reserveB -= vOut; } else { p.reserveB += vIn; p.reserveA -= vOut; }
+            if (p.reserveA * p.reserveB < kPre) revert InsufficientLiquidity(); // constant-product non-decrease
+        }
         if (p.reserveA > type(uint64).max || p.reserveB > type(uint64).max) revert ValueOutOfRange();
         amountOut = _payout(assetOut, to, vOut);
         if (amountOut < minAmountOut) revert SlippageExceeded();
@@ -1400,30 +1445,13 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         emit Settled(currentRoot, pv.leaves.length, pv.nullifiers.length);
     }
 
-    // ──────────────────── Views ────────────────────
-
-    function isKnownRoot(bytes32 root) external view returns (bool) { return everKnownRoot[root]; }
-    function isNullifierSpent(bytes32 n) external view returns (bool) { return nullifierSpent[n]; }
-    function getAsset(bytes32 assetId) external view returns (Asset memory) { return assets[assetId]; }
-
-    /// The reserves `shares` LP-share notes redeem at the pool's CURRENT state: a proportional
-    /// (assetA, assetB) claim, `reserve·shares/totalShares` per leg — the same floor the guest's
-    /// OP_LP_REMOVE proves. In-system value units (scale to underlying by each asset's unitScale for a
-    /// public figure). A read helper for a "your position = X A + Y B" display; settlement never reads it.
-    function lpPositionValue(bytes32 poolId, uint256 shares) external view returns (uint256 amountA, uint256 amountB) {
-        Pool storage p = pools[poolId];
-        if (!p.init) revert PoolNotInit();
-        if (p.totalShares == 0) return (0, 0); // created but unfunded (no first OP_LP_ADD yet)
-        amountA = p.reserveA * shares / p.totalShares;
-        amountB = p.reserveB * shares / p.totalShares;
-    }
-
     // ──────────────────── Internals ────────────────────
 
     /// Lazy-register a Tacit asset from guest-proven metadata: deploy its canonical ERC20
     /// (address = f(asset_id)) with the proven `(symbol, decimals)` and `unitScale` derived
-    /// to harmonize to `ETH_DECIMALS`. Idempotent + tolerant — a malformed or already-known
-    /// entry is skipped, never reverting the whole settle.
+    /// to harmonize to `ETH_DECIMALS`. Idempotent — a malformed or already-known entry is skipped (returns
+    /// early), so it never blocks the settle on bad metadata. A revert from the factory itself
+    /// (tokenOf/deployCanonical) still propagates; the factory is a trusted immutable wired at construction.
     function _autoRegisterFromMeta(AssetMeta memory m) internal {
         if (address(CANONICAL_FACTORY) == address(0)) return; // not wired
         if (m.decimals > ETH_DECIMALS || m.tickerLen == 0 || m.tickerLen > 16) return;
@@ -1453,7 +1481,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
             healed.unitScale = unitScale;
             healed.crossChainLink = m.assetId;
             // Overwrite the squat's display name/symbol with the canonical brand + guest-proven ticker
-            // so getAsset() matches the token; re-emit so indexers upsert the corrected record.
+            // so the `assets` registry entry matches the token; re-emit so indexers upsert the corrected record.
             healed.name = "Tacit Token";
             healed.symbol = symbol_;
             localAssetOf[m.assetId] = internalId;
@@ -1513,7 +1541,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
             IMintBurn(a.underlying).mint(to, amount);
         } else {
             if (escrow[assetId] < amount) revert InsufficientEscrow();
-            escrow[assetId] -= amount;
+            unchecked { escrow[assetId] -= amount; } // guarded by the check directly above
             if (a.underlying == address(0)) {
                 // Native ETH — force-send so a non-payable recipient can't brick the batch settle.
                 // Safe under reentrancy: the escrow decrement is committed first (checks-effects-

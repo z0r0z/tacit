@@ -145,8 +145,8 @@ contract ConfidentialTacWalkthroughTest is Test {
         assertEq(tac.balanceOf(ALICE), amount, "Alice withdrew TAC as public ERC20");
         assertEq(tac.balanceOf(BOB), 0, "Bob never held public TAC; he sent it confidentially");
         assertEq(tac.totalSupply(), amount, "single supply authority = the pool");
-        assertTrue(pool.isNullifierSpent(keccak256("bob-note-nu")), "Bob's note spent");
-        assertTrue(pool.isNullifierSpent(keccak256("alice-note-nu")), "Alice's note spent on exit");
+        assertTrue(pool.nullifierSpent(keccak256("bob-note-nu")), "Bob's note spent");
+        assertTrue(pool.nullifierSpent(keccak256("alice-note-nu")), "Alice's note spent on exit");
 
         // Alice's public TAC trades like any ERC20.
         vm.prank(ALICE);
