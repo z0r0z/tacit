@@ -14,17 +14,25 @@
 //! `KeccakTreeAccumulator`. Its public values (alloy `sol!`, defined in the guest crate):
 //!
 //! ```text
-//! struct EthReflectionPublicValues {
-//!     bytes32 priorDigest;             // eth-reflection state this cycle continues from (append-only chain)
-//!     bytes32 newDigest;               // state after this cycle (next cycle's prior)
-//!     address ethPool;                 // the ConfidentialPool whose crossOutCommitment slots were proven
-//!     bytes32 crossOutSetRoot;         // KeccakTreeAccumulator root over EthCrossOut leaves — the membership target
-//!     uint64  crossOutCount;           // leaves in the set (append-only; monotone)
-//!     uint64  finalizedSlot;           // beacon slot of the finalized header proven against (monotone)
-//!     bytes32 finalizedExecStateRoot;  // execution stateRoot the storage proofs were verified against
-//!     bytes32 syncCommitteeRoot;       // the sync-committee anchor the proof chained from (weak-subjectivity)
+//! struct EthReflectionPublicValues {     // 11 static ABI words; reflect.rs Mode-B reads them by offset
+//!     bytes32 priorDigest;             // [0] eth app-accumulator state this cycle continues from (chain)
+//!     bytes32 newDigest;               // [1] app-accumulator state after this cycle (next cycle's prior)
+//!     address ethPool;                 // [2] the ConfidentialPool whose crossOut/consumed slots were proven
+//!     bytes32 crossOutSetRoot;         // [3] KeccakTreeAccumulator root over EthCrossOut leaves — membership target
+//!     uint64  crossOutCount;           // [4] leaves in the crossOut set (append-only; monotone)
+//!     uint64  finalizedSlot;           // [5] beacon slot of the finalized header proven against (monotone)
+//!     bytes32 finalizedExecStateRoot;  // [6] execution stateRoot the storage proofs were verified against
+//!     bytes32 syncCommitteeRoot;       // [7] sync committee AFTER the proven light-client update
+//!     bytes32 prevSyncCommitteeRoot;   // [8] genesis / weak-subjectivity anchor the chain started from —
+//!                                      //     reflect.rs asserts word [8] == the pinned ETH_GENESIS_SYNC_COMMITTEE
+//!     bytes32 consumedNuSetRoot;       // [9] KeccakTreeAccumulator root over EthConsumed leaves (fast lane)
+//!     uint64  consumedNuCount;         // [10] leaves in the consumed-ν set (append-only; the completeness count)
 //! }
 //! ```
+//! NOTE: `eth_refl_digest` (priorDigest/newDigest) chains the APP ACCUMULATOR ONLY — both set roots + counts
+//! (see below). Finality progression (monotone `finalizedSlot`, light-client verification, the weak-
+//! subjectivity anchor) is re-proven by the eth guest EACH cycle and gated on-chain by the freshness count,
+//! NOT carried in the digest — so do not read priorDigest/newDigest as pinning finality.
 //!
 //! ## How the Bitcoin reflection consumes it (Phase 2)
 //!
@@ -150,6 +158,9 @@ pub fn slot_value_to_u64(value: &[u8; 32]) -> u64 {
 /// `pool` is the 20-byte address; the two roots are 32 bytes each. Binds the WHOLE eth accumulator
 /// (both sets + counts) into one chaining value, so anchoring it covers crossOut and consumed alike.
 pub fn eth_refl_digest(pool: &[u8], set_root: &[u8], count: u64, consumed_root: &[u8], consumed_count: u64) -> [u8; 32] {
+    // `pool` is the 20-byte address (callers pass the low 20 bytes of the ABI word, e.g. `&ep[12..32]`); a
+    // wrong slice — the full 32-byte word vs. the low 20 — chains a DIFFERENT genesis digest, so pin it.
+    assert_eq!(pool.len(), 20, "eth_refl_digest: pool must be the 20-byte address");
     kn(&[pool, set_root, &count.to_be_bytes(), consumed_root, &consumed_count.to_be_bytes()])
 }
 
