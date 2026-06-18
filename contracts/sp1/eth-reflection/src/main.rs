@@ -135,6 +135,10 @@ pub fn main() {
     //    `verified`, so each witness is matched to its slot by KEY, and the total must account for every
     //    pool slot (no stray slot, no unproven witness).
     let ethr: EthReflInputs = serde_cbor::from_slice(&sp1_zkvm::io::read_vec()).unwrap();
+    // The pool address is witnessed and becomes `ethPool`; reject the zero sentinel here too. The Bitcoin
+    // reflection guest treats ethPool == 0 as the mode_b==0 "no eth-state" marker, so a real Mode-B proof
+    // must never emit it (defense-in-depth — reflect.rs also rejects it).
+    assert!(ethr.pool != Address::ZERO, "eth-reflection: zero pool address (reserved sentinel)");
     let prior_digest = B256::from(eth_refl_digest(
         ethr.pool.as_slice(), ethr.prior_set_root.as_slice(), ethr.prior_count,
         ethr.prior_consumed_root.as_slice(), ethr.prior_consumed_count,
@@ -164,6 +168,19 @@ pub fn main() {
         ethr.crossouts.len() + ethr.consumeds.len(),
         "verified-slot / witness count mismatch",
     );
+    // Reject duplicate witnesses locally: a key folded twice would mis-count the set even though each
+    // individual MPT proof is valid (the consumed double-fold is also caught system-side by the Bitcoin
+    // guest's fold_consumed — a re-folded ν's source is already removed — but rejecting it here is sharper).
+    for i in 0..ethr.consumeds.len() {
+        for j in (i + 1)..ethr.consumeds.len() {
+            assert!(ethr.consumeds[i].nullifier != ethr.consumeds[j].nullifier, "duplicate consumed nullifier");
+        }
+    }
+    for i in 0..ethr.crossouts.len() {
+        for j in (i + 1)..ethr.crossouts.len() {
+            assert!(ethr.crossouts[i].claim_id != ethr.crossouts[j].claim_id, "duplicate crossOut claimId");
+        }
+    }
 
     let mut set_root: [u8; 32] = ethr.prior_set_root.0;
     let mut count = ethr.prior_count;
@@ -171,6 +188,7 @@ pub fn main() {
         let key = crossout_slot_key(&co.claim_id);
         let slot = pool_slots.iter().find(|s| s.key == key).expect("crossOutCommitment slot not in proven set");
         assert_eq!(slot.value, co.dest_commitment, "slot value != destCommitment");
+        assert!(co.dest_commitment.0 != [0u8; 32], "zero crossOut commitment (unset slot)");
         assert_eq!(co.dest_chain, DEST_CHAIN_BITCOIN, "only bitcoin-destined cross-outs fold here");
         // Same claimId binding the ConfidentialPool derives on-chain (proves the witnessed fields are real).
         assert_eq!(
