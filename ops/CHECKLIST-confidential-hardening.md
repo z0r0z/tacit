@@ -49,20 +49,22 @@ confirm each guest change before the re-prove (`EXECUTE_OK` + `DIGEST_MATCH`).
 
 - [ ] **B1. `reflect-stdin` + worker assembler for the new burn-deposit witness format.**
   The burn-deposit provenance witness now carries full tx bytes (+ wtxid path + coinbase + coinbase txid path)
-  instead of a free txid plus separately-witnessed fields. Update the serializer + the JS mirror + the worker
-  tracer to emit the new shape. Burn-deposit onboarding stays disabled until this lands.
+  instead of a free txid plus separately-witnessed fields. Update `write_burn_deposit` + the JS mirror + the
+  worker tracer to emit the new shape. Burn-deposit onboarding stays disabled until this lands.
   - `contracts/sp1/reflect-stdin/src/lib.rs` `write_burn_deposit`
   - `dapp/burn-deposit-assembler.js` (format documented there), `dapp/burn-deposit-tracer.js` (must fetch each
     provenance block's coinbase + wtxids), and `foldBurnDepositTx` in `dapp/confidential-pool.js`.
   - Verify via `reflect-exec` once the stream matches.
+  - NOTE: general `reflect-stdin` field-discipline hardening is **landed** (path/r32 lengths, u32/u16 bounds,
+    ethPv == 352, consumed-count delta assert, cbtcBackingSats string-or-number, farm-refund convention). This
+    burn-deposit format change is the one remaining `reflect-stdin` edit.
 
-- [ ] **B2. Coinbase-commitment helper for the remaining reflection fixture builders + the live indexer.**
+- [x] **B2. Coinbase-commitment helper — reproducible template landed (`gen-reflection-cxfer-synth.mjs`).**
   The witness-commitment gate requires a real coinbase BIP141 commitment before any Taproot envelope folds.
-  `tests/gen-reflection-cxfer-synth.mjs` is the reproducible template; the other `gen-reflection-*-synth.mjs`
+  The cxfer-synth builder now prepends a valid coinbase + re-mines the header, and reflect-exec confirms
+  `EXECUTE_OK` + `DIGEST_MATCH`. REMAINING: roll the same helper out to the other `gen-reflection-*-synth.mjs`
   builders (lp/swap/farm/bid/crossout/protofee/harvest/swapbatch/…) and the live indexer
-  (`dapp/confidential-reflection-scan-indexer.js`) still produce coinbase-less blocks. Factor a shared
-  `prependCoinbaseCommitment(txs, header)` helper and apply it everywhere; the live worker must prepend the
-  block's real coinbase + wtxid data.
+  (`dapp/confidential-reflection-scan-indexer.js`) so the worker prepends the block's real coinbase + wtxids.
 
 ---
 
@@ -119,7 +121,16 @@ confirm each guest change before the re-prove (`EXECUTE_OK` + `DIGEST_MATCH`).
 
 ---
 
-## Validation cheat-sheet
+## F. Process / CI
+
+- [ ] **F1. Make `reflect-exec` parity a mandatory CI gate for every fixture / schema change.**
+  `reflect-stdin` derives stream *writes* from JSON keys while the guest derives *reads* from tx parsing +
+  state, so they only stay in lockstep if every fixture is executed against the guest. The base-order and
+  width/count asserts are landed, but the per-tx conditional reads (openings == detected spends,
+  `swapBatch.receiptPaths == n_intents`, output paths only when the envelope folds) can't be self-derived in
+  the serializer — `reflect-exec` (`EXECUTE_OK` + `DIGEST_MATCH`) is the guard. It's a cheap **host** run (SP1
+  execute mode, no box), so wire it into CI over the committed reflection fixtures + a freshly built ELF, and
+  run it on any `reflect.rs` / `reflect-stdin` / builder change.
 
 ```
 # build the reflection guest ELF (host)
