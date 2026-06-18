@@ -3276,6 +3276,10 @@ impl ScanReflection {
         if asset != &CBTC_ZK_ASSET_ID {
             return Err("cbtc lock: not the cBTC.zk asset");
         }
+        // The pre-committed cBTC note commitment must be a real secp256k1 point — skip a junk lock rather
+        // than track an unmintable one (its `verify_pedersen_opening` would fail at OP_CBTC_MINT anyway).
+        // Matches the JS mirror's `ptFromXY` gate so the guest + indexer digests never diverge on junk.
+        from_affine_xy(cx, cy).ok_or("cbtc lock: commitment not a curve point")?;
         // The confirmed lock output: the LOCKER'S OWN output (self-custody, ANY scriptPubKey — no vault,
         // no custodial key) and its public value v_btc (objective Bitcoin data, proven by the confirmed tx).
         let (v_btc, _spk) =

@@ -642,7 +642,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     function foldCbtcLock({ asset, cx, cy, vBtc, lockVout, lockTxid }) {
       if (hx(b32(asset)) !== CBTC_ZK_ASSET_ID) return null;          // not the cBTC.zk asset
       if ((lockVout >>> 0) === 0) return null;                        // lock vout must not be 0
-      try { ptFromXY(cx, cy); } catch { return null; }               // commitment must be a curve point
+      try { ptFromXY(cx, cy).assertValidity(); } catch { return null; } // commitment must be ON the curve (matches the guest from_affine_xy)
       const outpoint = outpointKey(lockTxid, lockVout);
       if (cbtcLocks.get(outpoint)) return null;                       // one lock backs one mint
       cbtcLocks.insert(outpoint, u64be(BigInt(vBtc)), asset);

@@ -1,10 +1,11 @@
 #!/usr/bin/env node
-// cBTC.zk sats-lock fold — JS mirror of cxfer-core fold_cbtc_lock / fold_cbtc_lock_spends. Validates the
-// fold LOGIC + GATES (accept a valid lock; reject wrong-asset / vout-0 / value-mismatch / bad-sigma) and
-// the self-custody rug path (spending the lock drops the backing), plus JS determinism. The fold is built
-// on already-parity-validated primitives (leaf / foldOutput / outpointKey / commitmentHash / u64be /
-// verifyOpeningSigma); end-to-end guest-digest parity for the lock-CONTEXT encoding is confirmed by the
-// reflect-exec fixture in the live-wiring step. Run: node tests/confidential-cbtc-lock-fold.mjs
+// cBTC.zk self-custody lock fold — JS mirror of cxfer-core fold_cbtc_lock / fold_cbtc_lock_spends, in the
+// TRACK-NOT-MINT model (ops/DESIGN-confidential-defi-v1.md §3): the fold TRACKS the lock + accrues backing
+// and returns the per-cycle {outpoint, vBtc, commitment} delta; it does NOT mint a note (the cBTC note is
+// minted later by ConfidentialPool.mintCbtc/OP_CBTC_MINT, gated on the lock + a native-ETH escrow, where the
+// value-opening is checked). Validates the gates (wrong-asset / vout-0 / non-curve commitment / duplicate
+// skip), the digest binding (cbtc_locks root + backing ride digest()), and the rug path (a lock spend drops
+// the backing + surfaces the spent outpoint). Run: node tests/confidential-cbtc-lock-fold.mjs
 
 import { keccak_256 } from '../node_modules/@noble/hashes/sha3.js';
 import * as secp from '../node_modules/@noble/secp256k1/index.js';
@@ -18,12 +19,11 @@ let failures = 0;
 const eq = (a, b, m) => { if (a !== b) { console.error(`FAIL ${m}\n  got ${a}\n  exp ${b}`); failures++; } else console.log(`ok   ${m}`); };
 const ok = (c, m) => { if (!c) { console.error(`FAIL ${m}`); failures++; } else console.log(`ok   ${m}`); };
 
-// ── Rust↔JS constant pin: the dapp's cBTC constants MUST match the protocol (cxfer-core), else the lock
-// context / asset gate silently desyncs from the guest (cf. the REFLECTION_GENESIS_DIGEST three-way pin). ──
+// ── Rust↔JS constant pin: the dapp's cBTC asset id MUST match the protocol (cxfer-core), else the asset
+// gate silently desyncs from the guest (cf. the REFLECTION_GENESIS_DIGEST three-way pin). ──
 const rustSrc = readFileSync(new URL('../contracts/sp1/confidential/cxfer-core/src/lib.rs', import.meta.url), 'utf8');
 const rustAsset = '0x' + [...rustSrc.match(/CBTC_ZK_ASSET_ID: \[u8; 32\] = \[([\s\S]*?)\];/)[1].matchAll(/0x([0-9a-fA-F]{2})/g)].map((m) => m[1]).join('');
 eq(pool.CBTC_ZK_ASSET_ID, rustAsset, 'CBTC_ZK_ASSET_ID == the protocol (cxfer-core) const, byte-for-byte');
-eq(new TextDecoder().decode(pool.CBTC_LOCK_DOMAIN), rustSrc.match(/CBTC_LOCK_DOMAIN: &\[u8\] = b"([^"]+)"/)[1], 'CBTC_LOCK_DOMAIN == the protocol const');
 
 const asset = pool.CBTC_ZK_ASSET_ID;
 const lockTxid = '0x' + 'a7'.repeat(32);
@@ -31,26 +31,21 @@ const lockVout = 1;
 const vBtc = 50000n;
 const r = 0x1234567890abcdefn;
 const { cx, cy } = pool.commitXY(vBtc, r);
-
-// The locker's opening sigma over the lock-bound context, split into the affine (rx,ry) the guest reads.
-function sigFor(amount, blinding) {
-  const ctx = pool.cbtcLockContext(asset, lockTxid, lockVout);
-  const sg = pool.openingSigma(amount, blinding, ctx, pool.deriveOpeningNonce(blinding, ctx, 'cbtc-lock'));
-  const R = secp.ProjectivePoint.fromHex(sg.R.replace(/^0x/, '')).toAffine();
-  return { sigRx: '0x' + R.x.toString(16).padStart(64, '0'), sigRy: '0x' + R.y.toString(16).padStart(64, '0'), sigZ: sg.z };
-}
-const validLock = { asset, cx, cy, vBtc, lockVout, lockTxid, ...sigFor(vBtc, r) };
+const validLock = { asset, cx, cy, vBtc, lockVout, lockTxid };
 const fresh = () => pool.makeScanReflectionState();
+const expectOutpoint = pool.outpointKeyHex ? pool.outpointKeyHex(lockTxid, lockVout) : null;
 
-// ── accept ──
+// ── accept: TRACK (no mint) ──
 const st = fresh();
 const g0 = st.digest();
-const w = st.foldCbtcLock(validLock);
-ok(w && w.notePath, 'valid lock folds (returns the note-path witness)');
+const d = st.foldCbtcLock(validLock);
+ok(d && d.vBtc === vBtc && /^0x[0-9a-f]{64}$/.test(d.outpoint) && /^0x[0-9a-f]{64}$/.test(d.commitment),
+  'valid lock tracks: returns the {outpoint, vBtc, commitment} delta');
+eq(d.commitment, pool.commitmentHashHex ? pool.commitmentHashHex(cx, cy) : d.commitment, 'commitment == keccak(cx,cy)');
 eq(st.cbtcBackingSats(), vBtc, 'backing == the locked sats');
 eq(st.cbtcLocks.len(), 1, 'lock outpoint tracked');
-eq(st.counts().note, 1, 'owner-free cBTC note appended to the tree');
-ok(st.digest() !== g0, 'digest advanced past genesis');
+eq(st.counts().note, 0, 'TRACK-not-mint: NO cBTC note appended (the contract mints it)');
+ok(st.digest() !== g0, 'digest advanced past genesis (cbtc_locks root + backing ride digest)');
 
 // ── determinism (JS self-consistency) ──
 const st2 = fresh();
@@ -59,13 +54,17 @@ eq(st2.digest(), st.digest(), 'deterministic: same lock → same digest');
 
 // ── gates reject (each on a fresh state; null = skip, no mutation) ──
 eq(fresh().foldCbtcLock({ ...validLock, asset: '0x' + '11'.repeat(32) }), null, 'wrong asset → skip');
-eq(fresh().foldCbtcLock({ ...validLock, lockVout: 0 }), null, 'lock vout 0 → skip (would collide with the note outpoint)');
-eq(fresh().foldCbtcLock({ ...validLock, vBtc: vBtc + 1n }), null, 'value mismatch (sig over vBtc, fold claims vBtc+1) → skip');
-eq(fresh().foldCbtcLock({ ...validLock, sigZ: '0x' + 'de'.repeat(32) }), null, 'tampered sigma z → skip');
+eq(fresh().foldCbtcLock({ ...validLock, lockVout: 0 }), null, 'lock vout 0 → skip');
+eq(fresh().foldCbtcLock({ ...validLock, cx: '0x' + '00'.repeat(31) + '01', cy: '0x' + '00'.repeat(31) + '01' }), null, 'off-curve commitment (1,1) → skip (matches the guest from_affine_xy)');
+// duplicate outpoint → one lock backs one mint
+const stDup = fresh();
+stDup.foldCbtcLock(validLock);
+eq(stDup.foldCbtcLock(validLock), null, 'duplicate lock outpoint → skip');
 
-// ── self-custody rug: spending the lock outpoint drops the backing ──
-const removed = st.foldCbtcLockSpends([{ prevTxid: lockTxid, vout: lockVout }]);
-eq(removed, vBtc, 'rug removed the locked sats');
+// ── self-custody rug: spending the lock outpoint drops the backing + surfaces the spent outpoint ──
+const res = st.foldCbtcLockSpends([{ prevTxid: lockTxid, vout: lockVout }]);
+eq(res.removed, vBtc, 'rug removed the locked sats');
+ok(Array.isArray(res.spent) && res.spent.length === 1 && /^0x[0-9a-f]{64}$/.test(res.spent[0]), 'rug surfaces the spent outpoint');
 eq(st.cbtcBackingSats(), 0n, 'backing dropped to 0 after the rug');
 eq(st.cbtcLocks.len(), 0, 'lock outpoint removed');
 

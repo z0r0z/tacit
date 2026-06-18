@@ -383,10 +383,12 @@ pub fn main() {
                 bitcoin_roots.push(pool_root);
             }
             OP_UNWRAP => {
-                // spend a note to a public recipient: membership + opening, pay out the
-                // PROVEN in-system value. The contract scales it to underlying by the
-                // asset's trusted unitScale, so the payout is bound to the note value
-                // (the guest emits `value`, never an independent underlying amount).
+                // Spend a note to a PUBLIC recipient via an OPENING SIGMA (not the raw blinding): the
+                // settler verifies the note opening WITHOUT learning r, and the intent context binds
+                // (recipient, value, fee), so it can neither spend the note elsewhere nor redirect the
+                // withdrawal / pad the fee — the swap/LP trustless-settler pattern applied to the gasless
+                // exit. The contract scales `value` to underlying by the asset's trusted unitScale, so each
+                // payout is bound to the note value (the guest emits `value`, never an underlying amount).
                 let asset = r32();
                 let (cx, cy, c) = r_commitment();
                 let owner = r32();
@@ -394,21 +396,28 @@ pub fn main() {
                 let path = r_path();
                 let _secret = r32(); // B3: vestigial — ν is note-bound, not secret-derived
                 let value: u64 = io::read();
-                let r = scalar_reduce_be(&r32());
                 let recipient = r20();
                 // Relayer fee (gasless exit): the note opens to `value`; the recipient receives
-                // `value − fee` and the settler (msg.sender — the relay box that pays gas) is paid
-                // `fee`. Both legs are PUBLIC in-system values that sum back to the proven `value`,
-                // so a third party can settle the exit for the user with no separate fee proof — and
-                // the contract's unitScale scaling bounds each payout to its note-backed value. A
-                // self-settling user simply sets fee = 0. fee ≤ value (no negative payout).
+                // `value − fee` and the settler (msg.sender — the relay box that pays gas) is paid `fee`.
+                // Both legs are PUBLIC in-system values summing to the proven `value`; a self-settling user
+                // sets fee = 0. fee ≤ value (no negative payout). Both are bound in the sigma below, so the
+                // box cannot move value from the recipient leg to its own fee leg.
                 let fee: u64 = io::read();
                 assert!(fee <= value, "unwrap fee exceeds value");
+                let sig_r = decompress(&r33()).expect("unwrap: sigma R");
+                let sig_z = scalar_reduce_be(&r32());
 
                 let lf = leaf(&asset, &cx, &cy, &owner);
                 assert!(spend_root != [0u8; 32], "membership requires a non-zero spend root");
                 assert!(keccak_merkle_verify(&lf, leaf_index, &path, &spend_root), "membership");
-                assert!(verify_pedersen_opening(&c, value, &r), "unwrap opening");
+                // The 20-byte EVM recipient is bound in the asset_b slot (unwrap touches a single asset).
+                let mut recip32 = [0u8; 32];
+                recip32[12..].copy_from_slice(&recipient);
+                let ctx = intent_context(
+                    b"tacit-unwrap-intent-v1", &chain_binding, &asset, &recip32,
+                    &[(cx, cy, owner)], &[value, fee],
+                );
+                assert!(verify_opening_sigma(&c, value, &sig_r, &sig_z, &ctx), "unwrap opening sigma");
                 let nu = nullifier(&cx, &cy);
                 if bitcoin_spent_root != [0u8; 32] { check_btc_nonmembership(&nu, &bitcoin_spent_root); }
                 nullifiers.push(nu);
@@ -1399,11 +1408,16 @@ pub fn main() {
                 // id is the pinned CBTC_ZK_ASSET_ID — bridge_mint-shaped (no on-chain secp opening needed).
                 let outpoint = r32();
                 let v_btc: u64 = io::read();
-                let owner = r32();
                 let (cx, cy, c) = r_commitment();
                 let r = scalar_reduce_be(&r32());
                 assert!(verify_pedersen_opening(&c, v_btc, &r), "cbtc-mint: note opening (note != locked sats)");
-                leaves.push(leaf(&CBTC_ZK_ASSET_ID, &cx, &cy, &owner));
+                // OWNER-FREE bearer note (owner = 0), the cBTC model: control is the secret blinding `r`
+                // (the locker's), NOT the owner label. (Cx,Cy) is public on the Bitcoin lock tx, so an
+                // owner-bearing leaf would let a front-runner mint it to an unscannable owner + block the
+                // re-mint (cbtcMinted is one-shot) — griefing. With owner=0 a front-run just mints the
+                // locker's OWN note (only they hold `r`); it cannot be redirected. Matches fold_cbtc_lock's
+                // historical owner-free note + the JS CBTC_NOTE_OWNER.
+                leaves.push(leaf(&CBTC_ZK_ASSET_ID, &cx, &cy, &[0u8; 32]));
                 cbtc_mints.push(CbtcMint {
                     outpoint: outpoint.into(),
                     vBtc: U256::from(v_btc),

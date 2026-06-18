@@ -43,7 +43,7 @@ contract CollateralEngineTest is Test {
         ethBtc = new MockFeed(0.05e8, 8);
         btcUsd = new MockFeed(60000e8, 8);
         vm.prank(admin);
-        eng.setFeeds(address(ethBtc), address(btcUsd));
+        eng.setFeeds(address(ethBtc), address(btcUsd), address(0), address(0));
     }
 
     function _legs(uint256 v) internal pure returns (CdpLeg[] memory legs) {

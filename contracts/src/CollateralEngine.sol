@@ -2,6 +2,7 @@
 pragma solidity ^0.8.24;
 
 import {Ownable} from "solady/auth/Ownable.sol";
+import {ReentrancyGuard} from "solady/utils/ReentrancyGuard.sol";
 
 /// @dev The immutable ConfidentialPool surface this engine reads/serves. The pool is the authority for
 ///      all proven Bitcoin/CDP state; the engine only sizes escrows, prices collateral, and routes
@@ -28,6 +29,12 @@ interface IAggregatorV3 {
     function decimals() external view returns (uint8);
 }
 
+/// @notice An on-chain AMM-derived TWAP (the shielded-pool / canonical pool) used as the second source
+///         that bounds the Chainlink feed (fail-closed on excess deviation). `price` is in `decimals` places.
+interface IAmmTwap {
+    function twap() external view returns (uint256 price, uint8 decimals);
+}
+
 /// @title CollateralEngine
 /// @notice The unified collateral / insurance core for Tacit confidential DeFi v1 — the conjoined
 ///         buffer + insurance + per-locker escrow + cUSD CDP controller (supersedes `CbtcBuffer` +
@@ -50,7 +57,7 @@ interface IAggregatorV3 {
 ///
 ///         A shared native-ETH **insurance reserve** (funded by slashing surplus + liquidation penalties,
 ///         never by honest users) backstops the tail.
-contract CollateralEngine is Ownable {
+contract CollateralEngine is Ownable, ReentrancyGuard {
     IConfidentialPoolCollateral public immutable POOL;
     bytes32 public immutable CBTC_ASSET_ID; // the one canonical real-BTC asset (collateral)
     bytes32 public immutable CUSD_ASSET_ID; // = cdp_debt_asset_id(address(this)); cUSD is this controller's asset
@@ -60,7 +67,10 @@ contract CollateralEngine is Ownable {
     // --- owner-governed (owner → DAO); pricing/ratios are policy, never the peg ---
     IAggregatorV3 public ethBtcFeed; // answer = BTC per 1 ETH
     IAggregatorV3 public btcUsdFeed; // answer = USD per 1 BTC
+    IAmmTwap public ethBtcTwap; // optional 2nd source bounding ethBtcFeed (0 = single-source)
+    IAmmTwap public btcUsdTwap; // optional 2nd source bounding btcUsdFeed — the cUSD peg is BTC/USD-load-bearing
     uint256 public maxStaleness = 3600; // Chainlink freshness (seconds), fail-closed
+    uint256 public maxDeviationBps; // |chainlink − amm| bound vs the TWAP (0 = skip; set once a pool deepens)
     uint256 public escrowRatioBps = 15000; // cBTC escrow over-collateralization (1.5×) vs the locked BTC value
     uint256 public cdpRatioBps = 15000; // cUSD mint collateralization floor (1.5×): debt_usd ≤ collateral_usd / ratio
     uint256 public liqRatioBps = 12500; // cUSD liquidation threshold (1.25×): below this, a position is seizable
@@ -89,6 +99,8 @@ contract CollateralEngine is Ownable {
     error NotPool();
     error BadFeed();
     error StaleFeed();
+    error FeedDeviation();
+    error ZeroRecipient();
     error NotCbtcCollateral();
     error Undercollateralized();
     error PositionHealthy();
@@ -113,10 +125,19 @@ contract CollateralEngine is Ownable {
 
     // ─────────────────────── owner-governed knobs ───────────────────────
 
-    function setFeeds(address ethBtc, address btcUsd) external onlyOwner {
+    function setFeeds(address ethBtc, address btcUsd, address ethBtcTwap_, address btcUsdTwap_) external onlyOwner {
         ethBtcFeed = IAggregatorV3(ethBtc);
         btcUsdFeed = IAggregatorV3(btcUsd);
+        ethBtcTwap = IAmmTwap(ethBtcTwap_);
+        btcUsdTwap = IAmmTwap(btcUsdTwap_);
         emit FeedsSet(ethBtc, btcUsd);
+    }
+
+    /// @notice Set the Chainlink↔AMM-TWAP deviation bound (bps). 0 disables it (single-source Chainlink) —
+    ///         the launch posture until the cUSD / cBTC pool deepens enough to be a trustworthy 2nd source;
+    ///         the design (DESIGN-confidential-defi-v1.md §6) wants it active for the BTC/USD (cUSD-peg) feed.
+    function setDeviationBound(uint256 bps) external onlyOwner {
+        maxDeviationBps = bps;
     }
 
     function setParams(uint256 _maxStaleness, uint256 _escrowRatioBps, uint256 _cdpRatioBps, uint256 _liqRatioBps)
@@ -134,25 +155,35 @@ contract CollateralEngine is Ownable {
 
     // ─────────────────────── validated Chainlink prices (fail-closed) ───────────────────────
 
-    function _price(IAggregatorV3 feed) internal view returns (uint256 price, uint8 dec) {
+    function _price(IAggregatorV3 feed, IAmmTwap twap) internal view returns (uint256 price, uint8 dec) {
         if (address(feed) == address(0)) revert BadFeed();
-        (, int256 ans,, uint256 updatedAt,) = feed.latestRoundData();
+        (uint80 roundId, int256 ans,, uint256 updatedAt, uint80 answeredInRound) = feed.latestRoundData();
         if (ans <= 0) revert BadFeed();
         if (block.timestamp - updatedAt > maxStaleness) revert StaleFeed();
+        if (answeredInRound < roundId) revert StaleFeed(); // a carried-over (incomplete) round
         price = uint256(ans);
         dec = feed.decimals();
+        // 2nd-source sanity bound: |chainlink − amm| / amm ≤ maxDeviationBps. Skipped when unset (launch
+        // single-source) — fail-closed once wired, so a single bad/manipulated feed round can't set the mark.
+        if (address(twap) != address(0) && maxDeviationBps != 0) {
+            (uint256 amm, uint8 ammDec) = twap.twap();
+            uint256 cl18 = price * 1e18 / (10 ** uint256(dec));
+            uint256 amm18 = amm * 1e18 / (10 ** uint256(ammDec));
+            uint256 diff = cl18 > amm18 ? cl18 - amm18 : amm18 - cl18;
+            if (amm18 == 0 || diff * 10_000 > maxDeviationBps * amm18) revert FeedDeviation();
+        }
     }
 
     /// @notice Native-ETH (wei) equal in value to `vBtc` cBTC base units at the validated ETH/BTC mark.
     function ethWeiForBtc(uint256 vBtc) public view returns (uint256) {
-        (uint256 price, uint8 dec) = _price(ethBtcFeed); // BTC per ETH, `dec` places
+        (uint256 price, uint8 dec) = _price(ethBtcFeed, ethBtcTwap); // BTC per ETH, `dec` places
         // wei = vBtc / 10^CBTC_DEC (BTC) ÷ (price/10^dec) (BTC/ETH) × 10^18
         return vBtc * (10 ** uint256(dec)) * 1e18 / (price * (10 ** uint256(CBTC_DEC)));
     }
 
     /// @notice USD value (in cUSD base units) of `vBtc` cBTC base units at the validated BTC/USD mark.
     function btcToUsd(uint256 vBtc) public view returns (uint256) {
-        (uint256 price, uint8 dec) = _price(btcUsdFeed); // USD per BTC, `dec` places
+        (uint256 price, uint8 dec) = _price(btcUsdFeed, btcUsdTwap); // USD per BTC, `dec` places
         // usd = vBtc / 10^CBTC_DEC (BTC) × price/10^dec (USD/BTC) × 10^CUSD_DEC
         return vBtc * price * (10 ** uint256(CUSD_DEC)) / ((10 ** uint256(dec)) * (10 ** uint256(CBTC_DEC)));
     }
@@ -181,7 +212,8 @@ contract CollateralEngine is Ownable {
     ///         and the BTC unlocked atomically). Owner/DAO (or a future authorized redemption module) marks
     ///         the redemption; the marked outpoint then becomes non-slashable. Bounded: returns posted ETH,
     ///         never mints cBTC or touches backing.
-    function releaseEscrow(bytes32 outpoint, address to) external onlyOwner {
+    function releaseEscrow(bytes32 outpoint, address to) external onlyOwner nonReentrant {
+        if (to == address(0)) revert ZeroRecipient();
         uint256 amt = escrowOf[outpoint];
         escrowOf[outpoint] = 0;
         escrowReleased[outpoint] = true;
@@ -257,7 +289,8 @@ contract CollateralEngine is Ownable {
 
     /// @notice Owner/DAO draws from the reserve to settle a covered shortfall (e.g. fund an async cBTC
     ///         buy-and-burn or cover CDP bad debt). Bounded: only manages backstop capital.
-    function drawInsurance(uint256 amount, address to) external onlyOwner {
+    function drawInsurance(uint256 amount, address to) external onlyOwner nonReentrant {
+        if (to == address(0)) revert ZeroRecipient();
         insuranceReserve -= amount;
         (bool ok,) = payable(to).call{value: amount}("");
         require(ok, "send");
