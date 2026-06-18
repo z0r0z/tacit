@@ -305,6 +305,17 @@ pub fn main() {
         let txids: Vec<[u8; 32]> =
             txs.iter().map(|t| bitcoin::compute_txid(t)).collect::<Option<_>>().expect("malformed tx in block");
         assert_eq!(bitcoin::compute_merkle_root(&txids), merkle_root, "provided txs are not the complete block");
+        // BIP141 witness commitment: bind the SegWit WITNESS data too (the txid merkle above commits only
+        // the stripped serialization). Tacit envelopes live in the Taproot WITNESS, so without this a
+        // prover could keep a real txid and swap the witness for a fake envelope. The commitment lives in
+        // the coinbase's TXID-committed outputs, so a present commitment that doesn't match the provided
+        // witnesses is tampered (hard reject); envelope extraction is gated on a verified commitment below.
+        let tx_refs: Vec<&[u8]> = txs.iter().map(|t| t.as_slice()).collect();
+        let witness_committed = match bitcoin::verify_witness_commitment(&tx_refs) {
+            Some(true) => true,
+            Some(false) => panic!("block witness commitment mismatch (tampered witnesses)"),
+            None => false, // non-segwit block: no commitment, hence no witness envelopes to fold
+        };
         let height = anchor_height + block_index as u64;
         assert!(height >= state.height, "reflection height must not decrease");
 
@@ -327,7 +338,9 @@ pub fn main() {
             // Classify by envelope: most txs have none (their spends are plain pool-UTXO spends,
             // still nullified). A burn envelope marks a bridge-out; a cxfer envelope declares
             // output notes.
-            let env = bitcoin::extract_taproot_envelope(tx);
+            // Envelopes are consensus-bound only when the block's witness commitment verified (above);
+            // a block without one (non-segwit) carries no Taproot envelopes to fold.
+            let env = if witness_committed { bitcoin::extract_taproot_envelope(tx) } else { None };
             let burn = env.as_ref().and_then(|e| bitcoin::parse_burn_envelope(e));
             // CXFER surfaces the kernel sig + range proof too, so the fold can RE-VERIFY value
             // conservation (Σ C_in = Σ C_out) + output range before injecting any note (REFLECT-1).

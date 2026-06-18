@@ -1258,6 +1258,74 @@ pub fn verify_tx_in_block(header: &[u8], tx_data: &[u8], tx_index: u32, txids: &
     Some(txid)
 }
 
+/// BIP141 witness commitment — prove a block's SegWit WITNESS data is consensus-committed, not just the
+/// txids. The txid merkle root (verify_tx_in_block / the reflection scan) commits only the stripped
+/// serialization (version+ins+outs+locktime), so a Tacit envelope read from the Taproot WITNESS
+/// (extract_taproot_envelope) is NOT bound by it — a prover could keep a real txid but swap the witness
+/// for a fake envelope. This binds the witness: over the block's full txs, recompute the wtxid merkle
+/// root (coinbase wtxid := 0; wtxid := double_sha256(full tx incl. witness)) and check the coinbase's
+/// commitment, `double_sha256(witness_root ‖ coinbase_reserved_value) == commitment`. The commitment +
+/// reserved value are read from the coinbase, whose OUTPUTS are txid-committed (already proven by the
+/// merkle check), so a prover can't fake "no commitment". Returns:
+///   Some(true)  — a commitment is present and the provided witnesses match it (witnesses are bound);
+///   Some(false) — a commitment is present but the witnesses DON'T match (tampered → caller rejects);
+///   None        — no commitment output (a non-segwit block: no witness envelopes to fold).
+pub fn verify_witness_commitment(txs: &[&[u8]]) -> Option<bool> {
+    let coinbase = *txs.first()?;
+    let (commitment, reserved) = parse_coinbase_commitment(coinbase)?;
+    let mut wtxids: Vec<[u8; 32]> = Vec::with_capacity(txs.len());
+    wtxids.push([0u8; 32]); // coinbase wtxid := 0 (BIP141)
+    for &t in txs.iter().skip(1) {
+        wtxids.push(double_sha256(t));
+    }
+    let witness_root = compute_merkle_root(&wtxids);
+    let mut preimage = [0u8; 64];
+    preimage[..32].copy_from_slice(&witness_root);
+    preimage[32..].copy_from_slice(&reserved);
+    Some(double_sha256(&preimage) == commitment)
+}
+
+/// Read the coinbase's BIP141 witness commitment (`6a24aa21a9ed‖<32B>`, the LAST such output wins) and
+/// the 32-byte witness reserved value (input 0's single witness item). Total/non-panicking on hostile
+/// input — checked_add throughout, returns None on any truncation.
+fn parse_coinbase_commitment(tx: &[u8]) -> Option<([u8; 32], [u8; 32])> {
+    if tx.len() < 6 || tx[4] != 0x00 || tx[5] != 0x01 { return None; } // segwit marker/flag
+    let mut pos = 6usize;
+    let (in_count, vl) = read_varint(tx, pos)?;
+    pos = pos.checked_add(vl)?;
+    for _ in 0..in_count {
+        pos = pos.checked_add(36)?; // prevout (txid + vout)
+        let (slen, vl) = read_varint(tx, pos)?;
+        pos = pos.checked_add(vl)?.checked_add(slen)?.checked_add(4)?; // scriptSig + sequence
+    }
+    let (out_count, vl) = read_varint(tx, pos)?;
+    pos = pos.checked_add(vl)?;
+    let mut commitment: Option<[u8; 32]> = None;
+    for _ in 0..out_count {
+        pos = pos.checked_add(8)?; // value
+        let (slen, vl) = read_varint(tx, pos)?;
+        pos = pos.checked_add(vl)?;
+        let end = pos.checked_add(slen)?;
+        if end > tx.len() { return None; }
+        let s = &tx[pos..end];
+        if s.len() == 38 && s[0] == 0x6a && s[1] == 0x24 && s[2] == 0xaa && s[3] == 0x21 && s[4] == 0xa9 && s[5] == 0xed {
+            commitment = Some(s[6..38].try_into().ok()?); // LAST commitment output wins (BIP141)
+        }
+        pos = end;
+    }
+    let commitment = commitment?;
+    // Witness for input 0: wit_count, then item 0 = the 32-byte reserved value.
+    let (wit_count, vl) = read_varint(tx, pos)?;
+    pos = pos.checked_add(vl)?;
+    if wit_count == 0 { return None; }
+    let (item_len, vl) = read_varint(tx, pos)?;
+    pos = pos.checked_add(vl)?;
+    if item_len != 32 { return None; }
+    let end = pos.checked_add(32)?;
+    if end > tx.len() { return None; }
+    Some((commitment, tx[pos..end].try_into().ok()?))
+}
+
 /// Verify a chain of consecutive 80-byte headers: each header links to its predecessor
 /// (its prev-block-hash field == the predecessor's double-SHA256) and has valid PoW.
 /// Returns the chain tip's block hash (internal byte order) on success. The reflection
@@ -2237,6 +2305,47 @@ mod tests {
         fake_segwit64.extend_from_slice(&[0u8; 58]);
         assert_eq!(fake_segwit64.len(), 64);
         assert!(compute_txid(&fake_segwit64).is_some(), "64-byte segwit-shaped tx is not the collision case");
+    }
+
+    // CRITICAL (witness commitment): a Tacit envelope lives in the Taproot WITNESS, but the txid merkle
+    // strips it — so swapping the witness keeps the txid. verify_witness_commitment must detect the swap
+    // (BIP141 wtxid commitment), else a prover could fold a counterfeit envelope into a real block.
+    #[test]
+    fn witness_commitment_detects_swapped_witness() {
+        // A minimal SegWit tx whose only witness item is `wit` (the envelope stand-in).
+        fn segwit_tx(wit: &[u8]) -> Vec<u8> {
+            let mut t = vec![0x01u8, 0, 0, 0, 0x00, 0x01, 0x01]; // version, marker, flag, 1 input
+            t.extend_from_slice(&[0u8; 32]); t.extend_from_slice(&[0, 0, 0, 0]); // prevout
+            t.push(0x00); t.extend_from_slice(&[0xff, 0xff, 0xff, 0xff]);        // scriptSig len 0, sequence
+            t.push(0x01); t.extend_from_slice(&[0u8; 8]); t.push(0x01); t.push(0x51); // 1 output: value 0, OP_1
+            t.push(0x01); t.push(wit.len() as u8); t.extend_from_slice(wit);     // witness: 1 item
+            t.extend_from_slice(&[0, 0, 0, 0]);                                  // locktime
+            t
+        }
+        let tx1 = segwit_tx(b"real-witness");
+        let reserved = [0x07u8; 32];
+        let witness_root = compute_merkle_root(&[[0u8; 32], double_sha256(&tx1)]);
+        let mut pre = [0u8; 64];
+        pre[..32].copy_from_slice(&witness_root); pre[32..].copy_from_slice(&reserved);
+        let commitment = double_sha256(&pre);
+        // Coinbase carrying the BIP141 commitment output + the reserved-value witness.
+        let mut cb = vec![0x01u8, 0, 0, 0, 0x00, 0x01, 0x01]; // version, marker, flag, 1 input
+        cb.extend_from_slice(&[0u8; 32]); cb.extend_from_slice(&[0xff, 0xff, 0xff, 0xff]); // coinbase prevout
+        cb.push(0x00); cb.extend_from_slice(&[0xff, 0xff, 0xff, 0xff]);                    // scriptSig len 0, sequence
+        cb.push(0x01); cb.extend_from_slice(&[0u8; 8]);                                    // 1 output, value 0
+        cb.push(0x26); cb.extend_from_slice(&[0x6a, 0x24, 0xaa, 0x21, 0xa9, 0xed]); cb.extend_from_slice(&commitment);
+        cb.push(0x01); cb.push(0x20); cb.extend_from_slice(&reserved);                     // witness: the 32-byte reserved value
+        cb.extend_from_slice(&[0, 0, 0, 0]);                                               // locktime
+
+        let txs: Vec<&[u8]> = vec![cb.as_slice(), tx1.as_slice()];
+        assert_eq!(verify_witness_commitment(&txs), Some(true), "honest witnesses verify");
+
+        // Swap tx1's witness for a fake envelope: the txid is UNCHANGED (the attack premise), but the
+        // BIP141 commitment now fails — so the guest rejects the fold.
+        let tx1_fake = segwit_tx(b"FAKE-TACIT-envelope-payload");
+        assert_eq!(compute_txid(&tx1), compute_txid(&tx1_fake), "swapping the witness keeps the txid");
+        let txs_fake: Vec<&[u8]> = vec![cb.as_slice(), tx1_fake.as_slice()];
+        assert_eq!(verify_witness_commitment(&txs_fake), Some(false), "a swapped witness breaks the commitment");
     }
 
     // Hardening (total parsers): malformed / truncated tx bytes are a clean reject (None), never a
