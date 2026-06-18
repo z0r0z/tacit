@@ -54,7 +54,7 @@ Soundness (the load-bearing invariants):
 | Pool-minted supply conserved; never escrows | L1 | `testFuzz_poolminted_supply_conserved`, `test_pool_minted_asset_exit_and_reenter` |
 | Tree append-only; root always in accepted history | L1 | `invariant_leafCount`, `invariant_rootAlwaysKnown` |
 | Nullifier spends once (no double-spend) | L1 | `testFuzz_nullifier_spends_once`, `test_settle_nullifier_reuse_reverts` |
-| Relay height strictly increases; spent/burn roots never zero | L1 | `invariant_relayMonotonic`, `test_stale_relay_proof_rejected`, `test_attest_zero_spent_root_rejected` |
+| Relay height never decreases (equal heights valid — a batch may fold several effects from one block); spent/burn roots never zero | L1 | `invariant_relayMonotonic`, `test_stale_relay_proof_rejected`, `test_attest_zero_spent_root_rejected` |
 | Per-output range `[0, 2⁶⁴)` (B1/B7) | L2 | `verify_range` KAT (`range_accepts_js_proof_and_rejects_tamper`) |
 | Per-asset conservation kernel (no inflation) | L2 | `kernel_accepts_js_proof_and_rejects_tamper` |
 | Note-bound nullifier ν = keccak(Cx‖Cy‖"spent") (B3) | L2/L3/L4 | `keccak_primitives_and_opening_match_js_and_contract`; `confidential-bridge-{mint,burn}.mjs` B3 pins |
@@ -86,6 +86,7 @@ Soundness (the load-bearing invariants):
   **Residual is operational only:** a Bitcoin reorg deeper than the finality window (accept-and-document, as on the tETH bridge / AMM) and the relay running (liveness). `BITCOIN_RELAY_VKEY` stays 0 on the Ethereum-only deploy until the relay is wired + cross-chain activated.
 - **Bitcoin-side confidential-pool indexer — DONE (full scan).** The shipped indexer is `dapp/confidential-reflection-scan-indexer.js` (+ `worker/src/reflection-attest.js`): it assembles the full-scan batch (every tx of every block + the live UTXO set) and drives the attestation cycle. Covered by `tests/confidential-reflection-scan*.mjs` (the witnessed-model `confidential-reflection-{state,witness,indexer}.mjs` stay as the superseded-model cross-check oracle); gate layer 8 runs both.
 - **Bridge cross-lane settle proof (L5) — DONE.** A real settle proof exercising the cross-lane non-membership gate verifies on-chain (`ConfidentialCrossLaneProofReal`, fixture `crosslane_groth16.json`, vkey `0x00bb82ef…`).
+- **First-mint registration for `bridge_mint` — operational invariant (lock-not-loss).** A `bridge_mint` leaf carries the burned note's SHARED (Bitcoin-side) asset id; the leaf is opaque, so `settle` cannot verify on-chain that the asset has a local registry entry. For a NOT-yet-registered cross-chain asset the bridge-mint settle MUST carry (or be preceded by) that asset's `attest_meta` (`OP_ATTEST_META`), which lazy-deploys its canonical ERC20 and binds `localAssetOf`; otherwise the minted note is un-unwrappable until the asset is registered. Value is recoverable (the note still unwraps once the asset is registered), never lost — but the indexer/attest worker should register first so a recipient never holds a temporarily-stuck note. Native ETH (tETH) is exempt: its link is pinned at construction (`TETH_BITCOIN_LINK`), so a tETH `bridge_mint` always resolves.
 
 ## Adding to the suite
 

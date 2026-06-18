@@ -62,6 +62,15 @@ contract ConfidentialProofRealTest is Test {
         verifier.verifyProof(bytes32(uint256(vkey) ^ 1), publicValues, proofBytes);
     }
 
+    /// The TCB assumption behind ConfidentialPool NOT needing an in-contract zero-vkey guard on
+    /// attestBitcoinStateProven: the REAL SP1 verifier rejects a zero program vkey — no valid proof exists
+    /// for it — so a reflection-off deployment (BITCOIN_RELAY_VKEY == 0) cannot have Bitcoin state attested
+    /// even if attest is reachable; the verify call itself reverts.
+    function test_zero_vkey_rejected() public {
+        vm.expectRevert();
+        verifier.verifyProof(bytes32(0), publicValues, proofBytes);
+    }
+
     /// Tampered public values are rejected (the proof commits to these exact bytes).
     function test_tampered_public_values_rejected() public {
         bytes memory bad = publicValues;
