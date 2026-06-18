@@ -248,8 +248,19 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
       if (net <= 0n) throw new Error('note too small for a gasless exit (relay fee ≥ value); self-settle instead');
     }
     const to = (recipient || account(walletPriv).address).toLowerCase();
+    const cb = chainBindingHex();
+    // Opening sigma (NOT the raw blinding): bind the spend to (recipient, value, fee) so the relay box
+    // verifies the note opening WITHOUT learning r and can neither redirect the withdrawal nor pad the
+    // fee (the swap/LP trustless-settler pattern). The 20-byte recipient binds in the asset_b slot; the
+    // nonce is derived per (r, context) so a relay rebuild/re-quote never reuses one. `blinding` is
+    // NEVER put in the op — the box only gets the sigma.
+    const recip32 = '0x' + '0'.repeat(24) + to.replace(/^0x/, '');
+    const ctx = pool.intentContext('tacit-unwrap-intent-v1', cb, note.asset, recip32,
+      [[note.cx, note.cy, note.owner]], [BigInt(note.value), fee]);
+    const nonce = pool.deriveOpeningNonce(note.blinding, ctx, 'unwrap');
+    const sig = pool.openingSigma(BigInt(note.value), note.blinding, ctx, nonce);
     const op = {
-      chainBinding: chainBindingHex(),
+      chainBinding: cb,
       spendRoot: note.root,
       asset: note.asset,
       cx: note.cx, cy: note.cy, owner: note.owner,
@@ -257,9 +268,9 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
       path: note.path,
       secret: note.secret,
       value: String(note.value),
-      blinding: note.blinding,
       recipient: to,
       fee: fee.toString(),
+      sigR: sig.R, sigZ: sig.z,
     };
     return { op, fee, net, recipient: to, asset: note.asset, ticker, selfSettle };
   }

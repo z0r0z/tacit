@@ -177,9 +177,15 @@ test('buildUnwrap selfSettle: no-fee exit preserved — full value to recipient,
   assert.equal(self.net, BigInt(note.value), 'full value exits to the recipient');
   assert.equal(self.op.fee, '0', 'witness carries fee = 0 (guest: net = value, no FeePayment)');
 
-  // a dust note that can't be relayed gaslessly CAN still self-settle (fee 0)
+  // a dust note that can't be relayed gaslessly CAN still self-settle (fee 0). Use a REAL note (proper
+  // blinding + commitment) so the opening sigma is well-formed — a real note never has a zero blinding.
   const z = '0x' + '00'.repeat(32);
-  const dust = { asset: CONFIDENTIAL_POOL_UX.sepolia.assets[0].assetId, value: '50000000000000', root: z, cx: z, cy: z, owner: z, leafIndex: 0, path: [z], secret: z, blinding: z };
+  const asset0 = CONFIDENTIAL_POOL_UX.sepolia.assets[0].assetId;
+  const idd = ux.identity(walletPriv);
+  const dn = ux.pool.deriveNote(idd.priv, asset0, 7);
+  const dnBlind = '0x' + BigInt(dn.blinding).toString(16).padStart(64, '0');
+  const dc = ux.pool.commitXY(50000000000000n, dnBlind);
+  const dust = { asset: asset0, value: '50000000000000', root: z, cx: dc.cx, cy: dc.cy, owner: idd.owner, leafIndex: 0, path: [z], secret: dn.secret, blinding: dnBlind };
   const dustSelf = ux.buildUnwrap({ note: dust, walletPriv, selfSettle: true });
   assert.equal(dustSelf.fee, 0n);
   assert.equal(dustSelf.net, 50000000000000n, 'dust note exits in full when self-settled');
@@ -211,4 +217,35 @@ test('wrap: signs an EIP-1559 deposit tx (no broadcast)', async () => {
   assert.match(r.signedRaw, /^0x02/, 'EIP-1559 typed-tx envelope');
   assert.equal(r.txHash, null);
   assert.equal(r.from, ux.account(walletPriv).address);
+});
+
+test('buildUnwrap: the opening sigma binds recipient + fee, and no raw blinding reaches the settler', () => {
+  const ux = makeConfidentialPoolUx({ ...deps, fetchImpl: async () => {} });
+  const walletPriv = '0x' + '55'.repeat(32);
+  const w = ux.buildWrap({ walletPriv, amountWei: '1000000000000000', ticker: 'cETH', index: 0 });
+  const events = [{ type: 'LeavesInserted', firstLeafIndex: 0, leaves: [w.leaf], memos: [w.memo] }];
+  const note = ux.indexer.recover(events, walletPriv)[0];
+
+  const recip = '0x' + 'cc'.repeat(20);
+  const built = ux.buildUnwrap({ note, walletPriv, recipient: recip, selfSettle: true }); // fee = 0
+  const op = built.op;
+  // the gasless-exit op hands the box the SIGMA, never the raw blinding (the redirect/fee-pad surface)
+  assert.equal(op.blinding, undefined, 'no raw blinding handed to the settler');
+  assert.ok(op.sigR && op.sigZ, 'opening sigma (R, z) present');
+
+  const pool = ux.pool;
+  const ctxOf = (recipientHex, feeUnits) => pool.intentContext(
+    'tacit-unwrap-intent-v1', op.chainBinding, note.asset,
+    '0x' + '0'.repeat(24) + recipientHex.replace(/^0x/, ''),
+    [[note.cx, note.cy, note.owner]], [BigInt(note.value), feeUnits],
+  );
+  // verifies against the committed (recipient, value, fee)
+  assert.ok(pool.verifyOpeningSigma(note.cx, note.cy, BigInt(note.value), op.sigR, op.sigZ, ctxOf(recip, 0n)),
+    'sigma opens the note under the committed intent');
+  // a settler redirecting the recipient to itself yields a DIFFERENT context → the sigma fails
+  assert.ok(!pool.verifyOpeningSigma(note.cx, note.cy, BigInt(note.value), op.sigR, op.sigZ, ctxOf('0x' + 'ee'.repeat(20), 0n)),
+    'redirecting the recipient breaks the sigma (no settler theft)');
+  // padding the fee (moving value from the recipient leg to the settler) also breaks the sigma
+  assert.ok(!pool.verifyOpeningSigma(note.cx, note.cy, BigInt(note.value), op.sigR, op.sigZ, ctxOf(recip, BigInt(note.value))),
+    'padding the fee breaks the sigma');
 });
