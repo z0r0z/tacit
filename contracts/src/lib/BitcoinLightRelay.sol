@@ -20,10 +20,13 @@ pragma solidity ^0.8.28;
 ///           preserved: the chain end sits at or below the tip.
 ///         - Genesis checkpoint is set by the deployer and is trusted. Values
 ///           should be independently verifiable from any Bitcoin block explorer.
-///         - Deep reorgs crossing retarget boundaries are currently out of scope.
-///           The relay uses global epoch targets, not branch-specific retargets.
-///           This is acceptable because such reorgs have never occurred on
-///           Bitcoin mainnet (deepest historical reorg: 4 blocks, 2013).
+///         - Reorgs crossing a retarget boundary are out of scope: the relay uses global epoch
+///           targets (not branch-specific), and a boundary block replaced across SEPARATE advanceTip
+///           submissions leaves the cached epoch-start timestamp on the prior chain, which can
+///           mis-target the next retarget. The relay driver therefore submits a boundary-crossing
+///           chain in ONE advanceTip call (the boundary block in the batch that wins), so the cache
+///           tracks the canonical chain. Such reorgs have never occurred on Bitcoin mainnet (deepest:
+///           4 blocks, 2013) — a documented relay-liveness assumption.
 contract BitcoinLightRelay {
     // ──────────────────── Constants ────────────────────
 
@@ -196,7 +199,11 @@ contract BitcoinLightRelay {
             if (expectedTarget == 0) revert UnknownEpoch();
 
             uint256 target = _bitsToTarget(bits);
-            if (target != expectedTarget) revert InvalidPoW();
+            // Exact canonical compact, not just an equal-decoding alias: Bitcoin Core rejects a
+            // non-canonical nBits (e.g. a leading-zero mantissa) that decodes to the same target.
+            // expectedTarget is canonical (genesis guard + retarget round-trip), so this is the nBits a
+            // real header carries; the decoded `target` (== expectedTarget once this passes) is used below.
+            if (bits != _targetToCompact(expectedTarget)) revert InvalidPoW();
             if (_reverseU256(uint256(bh)) > target) revert InvalidPoW();
 
             // Timestamp validation. (a) Future-drift: header ts must not exceed
@@ -279,16 +286,18 @@ contract BitcoinLightRelay {
 
             uint256 target = _bitsToTarget(bits);
 
+            // Exact canonical compact (see advanceTip): the header's nBits must be the canonical encoding
+            // of the expected target, not merely an equal-decoding alias.
             if (i < PROOF_LENGTH) {
-                if (target != oldTarget) revert InvalidPoW();
+                if (bits != _targetToCompact(oldTarget)) revert InvalidPoW();
             } else if (i == PROOF_LENGTH) {
                 uint256 newTarget = _retargetTarget(oldTarget, epochStartTimestamp[oldEpoch], lastOldTimestamp);
                 epochTarget[oldEpoch + 1] = newTarget;
                 // Epoch start timestamp set by advanceTip when it processes
                 // the first canonical block of the new epoch — not here.
-                if (target != newTarget) revert InvalidPoW();
+                if (bits != _targetToCompact(newTarget)) revert InvalidPoW();
             } else {
-                if (target != epochTarget[oldEpoch + 1]) revert InvalidPoW();
+                if (bits != _targetToCompact(epochTarget[oldEpoch + 1])) revert InvalidPoW();
             }
 
             if (_reverseU256(uint256(bh)) > target) revert InvalidPoW();
@@ -329,7 +338,11 @@ contract BitcoinLightRelay {
             if (expectedTarget == 0) revert UnknownEpoch();
 
             uint256 target = _bitsToTarget(bits);
-            if (target != expectedTarget) revert InvalidPoW();
+            // Exact canonical compact, not just an equal-decoding alias: Bitcoin Core rejects a
+            // non-canonical nBits (e.g. a leading-zero mantissa) that decodes to the same target.
+            // expectedTarget is canonical (genesis guard + retarget round-trip), so this is the nBits a
+            // real header carries; the decoded `target` (== expectedTarget once this passes) is used below.
+            if (bits != _targetToCompact(expectedTarget)) revert InvalidPoW();
             if (_reverseU256(uint256(bh)) > target) revert InvalidPoW();
 
             if (i == 0) merkleRoot = mr;
