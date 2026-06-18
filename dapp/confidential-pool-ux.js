@@ -11,6 +11,7 @@ import { makeConfidentialIndexer } from './confidential-indexer.js';
 import { makeConfidentialEvmLog } from './confidential-evm-log.js';
 import { makeConfidentialRelay } from './confidential-relay.js';
 import { makeEvmTx } from './evm-tx.js';
+import { makeRecoveryGuard } from './confidential-recovery-guard.js';
 
 // Live deployments — keyed by the dapp's EVM-chain label. Sepolia pilot v1 mirrors the on-chain core
 // (the pool from the 2026-06-14 deploy) + cETH (assetId is deterministic, identical across pool versions).
@@ -117,6 +118,10 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   const evmTx = makeEvmTx({ secp, keccak256 });
   const pool = indexer._pool;   // commitXY / deriveNote / leaf / depositId
   const memo = indexer._memo;   // sealMemo / encodeMemo
+  // Seed-only recovery guard: seals one memo per output + the submit-time tripwire that no op ships an
+  // unrecoverable leaf. Wrap (below) is the reference integration; transfer/swap/lp/otc/route/adaptor
+  // assemblers must build the same `outputs` descriptors and run these two calls before submit.
+  const guard = makeRecoveryGuard({ memo });
 
   const _hex = (b) => Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('');
   const _word = (v) => (typeof v === 'bigint' ? v.toString(16) : String(v).replace(/^0x/, '')).padStart(64, '0');
@@ -148,24 +153,33 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     const blindingHex = '0x' + BigInt(blinding).toString(16).padStart(64, '0'); // deriveNote gives a bigint; the wrapOp/memo/harness need hex
     const { cx, cy } = pool.commitXY(value, blindingHex);
     const leaf = pool.leaf(meta.assetId, cx, cy, id.owner);
+    // The on-chain wrap takes only this digest of the coords + owner; the raw values stay off-chain
+    // (carried in the private OP_WRAP witness below), so the deposit note's ν is never computable.
+    const commit = pool.depositCommit(cx, cy, id.owner);
     const depositId = pool.depositId(meta.assetId, value, cx, cy, id.owner);
     const note = { value: value.toString(), blinding: blindingHex, secret, asset: meta.assetId, owner: id.owner, cx, cy };
 
-    // self-recovery memo, sealed to the user's own pubkey; eph deterministic from the secret (the memo
-    // carries the full opening, so a fixed eph is fine and makes the build reproducible).
+    // Recovery (channel a: memo-sealed) — the reference integration every op assembler follows: describe
+    // each output leaf, seal a memo per output through the guard, then trip-wire that every leaf is
+    // recoverable BEFORE submit. Wrap has one output (the deposit note), sealed to the user's own pubkey;
+    // eph is deterministic from the secret (the memo carries the full opening, so a fixed eph is fine and
+    // keeps the build reproducible).
     const ephRand = () => (BigInt(secret) % secp.CURVE.n) || 1n;
-    const memoHex = memo.encodeMemo(memo.sealMemo(id.pubHex, note, ephRand));
+    const outputs = [{ ...note, ownerPub: id.pubHex }];
+    const memos = guard.sealMemosForOutputs({ outputs, ephRand });
+    guard.assertOutputsRecoverable({ leaves: [leaf], outputs, memos });
+    const memoHex = memos[0];
 
-    // pool.wrap(bytes32 assetId, uint256 amount, bytes32 cx, bytes32 cy, bytes32 owner)
-    const calldata = '0x' + _selector('wrap(bytes32,uint256,bytes32,bytes32,bytes32)')
-      + _word(meta.assetId) + _word(amount) + _word(cx) + _word(cy) + _word(id.owner);
+    // pool.wrap(bytes32 assetId, uint256 amount, bytes32 commit) — commit = keccak(Cx‖Cy‖owner)
+    const calldata = '0x' + _selector('wrap(bytes32,uint256,bytes32)')
+      + _word(meta.assetId) + _word(amount) + _word(commit);
 
     return {
-      note, leaf, depositId, memo: memoHex,
+      note, leaf, depositId, commit, memo: memoHex, memos, outputs,
       // the OP_WRAP witness the box proves (chainBinding stamped at submit); OP_WRAP is box-driven, not a queue type
       wrapOp: { asset: meta.assetId, value: value.toString(), cx, cy, owner: id.owner, blinding: blindingHex },
       to: cfg.pool, amount: amount.toString(), calldata,
-      wrapArgs: { assetId: meta.assetId, amount: amount.toString(), cx, cy, owner: id.owner },
+      wrapArgs: { assetId: meta.assetId, amount: amount.toString(), commit },
     };
   }
 
@@ -186,5 +200,77 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     return { ...w, from: acct.address, nonce: nonce.toString(), signedRaw: signed.raw, txHash };
   }
 
-  return { cfg, assetByTicker, account, identity, rpc, ethCall, fetchEvents, balance, tickerOf, buildWrap, wrap, relay, indexer, evmLog, evmTx, pool, memo };
+  // ── gasless exit (0xbow-style relayed unwrap) ──
+  // The user spends a shielded note; the relay box settles ConfidentialPool.settle() on-chain (pays the
+  // gas) and is paid `fee` out of the note value as `pv.fees → msg.sender`, so the user RECEIVES
+  // value−fee and signs NOTHING on-chain — a true gasless exit. The fee is in the withdrawn asset's
+  // in-system units: max(minFee, ceil(feeBps/1e4 · value)). A user holding gas can self-settle (fee = 0
+  // and broadcast settle themselves). The guest's OP_UNWRAP splits value → withdrawal(value−fee) +
+  // fee, both public legs summing to the proven value (no separate fee proof).
+  const RELAY_FEE_BPS = 30n;                                 // 0.30% of the exit
+  const RELAY_MIN_FEE = { cETH: 100000000000000n };          // per-ticker floor (in-system units) to cover settle gas
+
+  // CHAIN_BINDING == keccak256(abi.encodePacked(uint256 chainid, address(pool))) — the same value the
+  // contract stamps; the guest must commit it so a proof is bound to this deployment.
+  function chainBindingHex() {
+    const cid = BigInt(cfg.chainId).toString(16).padStart(64, '0');
+    const addr = cfg.pool.replace(/^0x/, '').toLowerCase().padStart(40, '0');
+    const bytes = Uint8Array.from(((cid + addr).match(/../g) || []).map((h) => parseInt(h, 16)));
+    return '0x' + _hex(keccak256(bytes));
+  }
+
+  // Quote the relay fee for exiting a note of `value` (in-system units). { fee, net, value }.
+  function quoteUnwrapFee(value, ticker = 'cETH', { feeBps = RELAY_FEE_BPS, minFee } = {}) {
+    const v = BigInt(value);
+    const floor = minFee != null ? BigInt(minFee) : (RELAY_MIN_FEE[ticker] ?? 0n);
+    const pct = (v * BigInt(feeBps) + 9999n) / 10000n; // ceil
+    let fee = pct > floor ? pct : floor;
+    if (fee > v) fee = v; // never a negative payout; net ≤ 0 ⇒ the note is too small to relay
+    return { fee, net: v - fee, value: v };
+  }
+
+  // Build the OP_UNWRAP witness for a relayed exit. `note` is a recovered note from balance().notes
+  // (it carries the membership path + root). Returns { op, fee, net, recipient, ticker } — submit `op`
+  // to the relay as type 'unwrap'. recipient defaults to the user's own EVM account.
+  // `selfSettle: true` builds a NO-FEE exit (fee = 0, full value to the recipient) — the original
+  // OP_UNWRAP behavior, for a user who settles on-chain themselves (pays their own gas). It also lets a
+  // dust note (too small to relay) still exit. Otherwise the relay fee is quoted and deducted.
+  function buildUnwrap({ note, walletPriv, recipient, feeOpts, selfSettle = false } = {}) {
+    if (!note) throw new Error('buildUnwrap: note required');
+    const ticker = tickerOf(note.asset) || 'cETH';
+    let fee, net;
+    if (selfSettle) {
+      fee = 0n; net = BigInt(note.value);
+    } else {
+      ({ fee, net } = quoteUnwrapFee(note.value, ticker, feeOpts || {}));
+      if (net <= 0n) throw new Error('note too small for a gasless exit (relay fee ≥ value); self-settle instead');
+    }
+    const to = (recipient || account(walletPriv).address).toLowerCase();
+    const op = {
+      chainBinding: chainBindingHex(),
+      spendRoot: note.root,
+      asset: note.asset,
+      cx: note.cx, cy: note.cy, owner: note.owner,
+      leafIndex: Number(note.leafIndex),
+      path: note.path,
+      secret: note.secret,
+      value: String(note.value),
+      blinding: note.blinding,
+      recipient: to,
+      fee: fee.toString(),
+    };
+    return { op, fee, net, recipient: to, asset: note.asset, ticker, selfSettle };
+  }
+
+  // Submit a gasless exit to the relay (no user tx) and, by default, block until it settles on-chain.
+  // The box collects `fee`; the user receives `net`. Returns the build + { jobId, status, txHash }.
+  async function unwrap({ note, walletPriv, recipient, feeOpts, wait = true, waitOpts } = {}) {
+    const built = buildUnwrap({ note, walletPriv, recipient, feeOpts });
+    const sub = await relay.submitOp({ type: 'unwrap', op: built.op, memos: [] }); // no new leaf ⇒ no memo
+    if (!wait) return { ...built, jobId: sub.jobId, status: sub.status };
+    const st = await relay.waitForSettle(sub.jobId, waitOpts);
+    return { ...built, jobId: sub.jobId, status: st.status, txHash: st.txHash };
+  }
+
+  return { cfg, assetByTicker, account, identity, rpc, ethCall, fetchEvents, balance, tickerOf, buildWrap, wrap, quoteUnwrapFee, buildUnwrap, unwrap, chainBindingHex, relay, indexer, evmLog, evmTx, pool, memo };
 }

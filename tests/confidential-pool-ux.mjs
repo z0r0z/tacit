@@ -87,8 +87,16 @@ test('buildWrap: coherent note + pool.wrap calldata', () => {
   assert.equal(w.leaf, ux.pool.leaf(w.note.asset, cx, cy, w.note.owner));
   assert.equal(w.to, '0x991726A547DCdB57ba660E395D9c7D7C3FcAdF79');
   assert.equal(w.amount, amountWei);
-  // calldata = 4-byte selector + 5 × 32-byte words
-  assert.equal(w.calldata.length, 2 + 2 * (4 + 5 * 32));
+  // calldata = 4-byte selector + 3 × 32-byte words (assetId, amount, commit) — the raw coords + owner
+  // are NOT in calldata; only commit = keccak(Cx‖Cy‖owner) is, so the note's ν stays uncomputable.
+  assert.equal(w.calldata.length, 2 + 2 * (4 + 3 * 32));
+  assert.equal(w.commit, ux.pool.depositCommit(cx, cy, w.note.owner));
+  const cd = w.calldata.toLowerCase();
+  for (const secret of [cx, cy, w.note.owner]) {
+    assert.ok(!cd.includes(secret.toLowerCase().replace(/^0x/, '')), 'raw commitment coord/owner must not appear in wrap calldata');
+  }
+  // the depositId still binds value over the digest (the on-chain no-inflation gate)
+  assert.equal(w.depositId, ux.pool.depositId(w.note.asset, BigInt(w.note.value), cx, cy, w.note.owner));
   // rejects misaligned / non-positive amounts
   assert.throws(() => ux.buildWrap({ walletPriv, amountWei: '0', ticker: 'cETH' }));
 });
@@ -104,6 +112,89 @@ test('buildWrap + recovery round-trip: the wrapped note recovers seed-only from 
   assert.equal(notes.length, 1, 'wrapped note recovered from chain + seed alone');
   assert.equal(BigInt(notes[0].value), BigInt(amountWei));
   assert.equal(notes[0].cx.toLowerCase(), w.note.cx.toLowerCase());
+});
+
+test('buildWrap: the output passes the recovery guard, and a stripped memo is caught before submit', async () => {
+  const ux = makeConfidentialPoolUx({ ...deps, fetchImpl: async () => {} });
+  const { makeRecoveryGuard } = await import('../dapp/confidential-recovery-guard.js');
+  const guard = makeRecoveryGuard({ memo: ux.indexer._memo });
+  const w = ux.buildWrap({ walletPriv: '0x' + '33'.repeat(32), amountWei: '1000000000000000', ticker: 'cETH', index: 0 });
+  // buildWrap routes its seal through the guard and exposes the aligned outputs/memos it validated.
+  assert.equal(w.outputs.length, 1, 'one output descriptor');
+  assert.equal(w.memos.length, 1, 'one aligned memo');
+  assert.equal(w.memos[0], w.memo, 'singular memo == memos[0] (back-compat)');
+  guard.assertOutputsRecoverable({ leaves: [w.leaf], outputs: w.outputs, memos: w.memos });
+  // a memo-sealed (non-seed-derived) output with its memo stripped is an unrecoverable leaf — the
+  // submit-time tripwire rejects it BEFORE it can reach the chain (= permanent fund loss).
+  assert.throws(
+    () => guard.assertOutputsRecoverable({ leaves: [w.leaf], outputs: w.outputs, memos: ['0x'] }),
+    /unrecoverable|recovery channel/,
+    'a wrap output with its memo stripped is rejected at submit'
+  );
+});
+
+test('buildUnwrap: gasless exit splits value into net + relay fee, op matches the box harness', () => {
+  const ux = makeConfidentialPoolUx({ ...deps, fetchImpl: async () => {} });
+  const walletPriv = '0x' + '44'.repeat(32);
+  const amountWei = '1000000000000000'; // 0.001 ETH
+  const w = ux.buildWrap({ walletPriv, amountWei, ticker: 'cETH', index: 0 });
+  const events = [{ type: 'LeavesInserted', firstLeafIndex: 0, leaves: [w.leaf], memos: [w.memo] }];
+  const note = ux.indexer.recover(events, walletPriv)[0];
+
+  // fee = max(floor 1e14, ceil(0.3% of 1e15 = 3e12)) = 1e14; the floor dominates a small exit
+  const q = ux.quoteUnwrapFee(note.value, 'cETH');
+  assert.equal(q.fee, 100000000000000n, 'floor fee dominates small exit');
+  assert.equal(q.net, 900000000000000n, 'user receives value − fee');
+  assert.equal(q.fee + q.net, BigInt(note.value), 'fee + net == proven value (conserved)');
+
+  const built = ux.buildUnwrap({ note, walletPriv });
+  assert.equal(built.fee, q.fee);
+  assert.equal(built.net, q.net);
+  // op shape == the fields exec-unwrap.rs reads (same stdin order as the guest)
+  assert.equal(built.op.spendRoot, note.root);
+  assert.equal(built.op.asset, note.asset);
+  assert.equal(built.op.value, String(note.value));
+  assert.equal(built.op.fee, q.fee.toString());
+  assert.equal(built.op.leafIndex, 0);
+  assert.ok(Array.isArray(built.op.path) && built.op.path.length > 0, 'membership path present');
+  assert.equal(built.op.recipient, ux.account(walletPriv).address.toLowerCase(), 'defaults to the user EVM account');
+  // chainBinding == keccak(abi.encodePacked(chainid, pool)) — what the contract stamps + the guest commits
+  const cid = (11155111n).toString(16).padStart(64, '0');
+  const addr = POOL.replace(/^0x/, '').toLowerCase();
+  const expect = '0x' + Buffer.from(keccak_256(Uint8Array.from((cid + addr).match(/../g).map((h) => parseInt(h, 16))))).toString('hex');
+  assert.equal(built.op.chainBinding, expect, 'chainBinding = keccak(chainid‖pool)');
+});
+
+test('buildUnwrap selfSettle: no-fee exit preserved — full value to recipient, fee 0', () => {
+  const ux = makeConfidentialPoolUx({ ...deps, fetchImpl: async () => {} });
+  const walletPriv = '0x' + '55'.repeat(32);
+  const w = ux.buildWrap({ walletPriv, amountWei: '1000000000000000', ticker: 'cETH', index: 0 });
+  const events = [{ type: 'LeavesInserted', firstLeafIndex: 0, leaves: [w.leaf], memos: [w.memo] }];
+  const note = ux.indexer.recover(events, walletPriv)[0];
+
+  const self = ux.buildUnwrap({ note, walletPriv, selfSettle: true });
+  assert.equal(self.fee, 0n, 'self-settle pays no fee');
+  assert.equal(self.net, BigInt(note.value), 'full value exits to the recipient');
+  assert.equal(self.op.fee, '0', 'witness carries fee = 0 (guest: net = value, no FeePayment)');
+
+  // a dust note that can't be relayed gaslessly CAN still self-settle (fee 0)
+  const z = '0x' + '00'.repeat(32);
+  const dust = { asset: CONFIDENTIAL_POOL_UX.sepolia.assets[0].assetId, value: '50000000000000', root: z, cx: z, cy: z, owner: z, leafIndex: 0, path: [z], secret: z, blinding: z };
+  const dustSelf = ux.buildUnwrap({ note: dust, walletPriv, selfSettle: true });
+  assert.equal(dustSelf.fee, 0n);
+  assert.equal(dustSelf.net, 50000000000000n, 'dust note exits in full when self-settled');
+});
+
+test('quoteUnwrapFee: percent dominates a large exit; a dust note is rejected for gasless exit', () => {
+  const ux = makeConfidentialPoolUx({ ...deps, fetchImpl: async () => {} });
+  // 1 ETH: 0.3% = 3e15 > floor 1e14 → percent applies
+  const big = ux.quoteUnwrapFee(1000000000000000000n, 'cETH');
+  assert.equal(big.fee, 3000000000000000n, '0.3% of 1e18');
+  assert.equal(big.net, 997000000000000000n);
+  // a note at/under the floor can't be relayed (the fee would eat it) → buildUnwrap throws
+  const z = '0x' + '00'.repeat(32);
+  const dust = { asset: CONFIDENTIAL_POOL_UX.sepolia.assets[0].assetId, value: '50000000000000', root: z, cx: z, cy: z, owner: z, leafIndex: 0, path: [z], secret: z, blinding: z };
+  assert.throws(() => ux.buildUnwrap({ note: dust, walletPriv: '0x' + '44'.repeat(32) }), /too small/);
 });
 
 test('wrap: signs an EIP-1559 deposit tx (no broadcast)', async () => {
