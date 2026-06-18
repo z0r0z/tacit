@@ -957,8 +957,10 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     ///         One tx, no proof. `assetA`/`assetB` may be in any order; the pool is canonical, so reserves
     ///         line up with the stored low→high mapping.
     function createPairAndAddLiquidityPublic(
-        bytes32 assetA, bytes32 assetB, uint32 feeBps, uint256 amountA, uint256 amountB, address to
+        bytes32 assetA, bytes32 assetB, uint32 feeBps, uint256 amountA, uint256 amountB,
+        uint256 minSharesOut, uint64 deadline, address to
     ) external payable nonReentrant returns (uint256 sharesMinted) {
+        if (deadline != 0 && block.timestamp > deadline) revert Expired();
         if (to == address(0)) revert ZeroAddress();
         bytes32 poolId = _ensurePair(assetA, assetB, feeBps, false);
         Pool storage p = pools[poolId];
@@ -976,6 +978,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
             uint256 sB = (vHi * p.totalShares) / p.reserveB;
             sharesMinted = sA < sB ? sA : sB;
             if (sharesMinted == 0) revert InsufficientLiquidity();
+            if (sharesMinted < minSharesOut) revert SlippageExceeded(); // shares slippage (price moved before inclusion)
             // Charge the CEIL reserve required for the minted shares and refund the excess leg (CEI-last):
             // ceil (not floor) keeps the add from minting shares for under-pro-rata reserves, so the rounding
             // favors existing LPs (the swap/remove direction); it is always ≤ vLo/vHi, so the refund stays ≥ 0.
@@ -995,6 +998,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         if (minted <= MINIMUM_LIQUIDITY) revert InsufficientLiquidity();
         p.reserveA = vLo; p.reserveB = vHi; p.totalShares = minted;
         sharesMinted = minted - MINIMUM_LIQUIDITY; // MINIMUM_LIQUIDITY is the permanent noteless floor
+        if (sharesMinted < minSharesOut) revert SlippageExceeded(); // shares slippage on the first add too
         lpShares[poolId][to] += sharesMinted;
         emit PublicLiquidityAdded(poolId, to, vLo, vHi, sharesMinted);
     }
@@ -1003,8 +1007,10 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     ///         Can never remove the locked MINIMUM_LIQUIDITY. Confidential (note) shares are untouched — a
     ///         caller can only burn their own `lpShares` balance.
     function removeLiquidityPublic(
-        bytes32 assetA, bytes32 assetB, uint32 feeBps, uint256 shares, address to
+        bytes32 assetA, bytes32 assetB, uint32 feeBps, uint256 shares,
+        uint256 minAmountA, uint256 minAmountB, uint64 deadline, address to
     ) external nonReentrant returns (uint256 amountLo, uint256 amountHi) {
+        if (deadline != 0 && block.timestamp > deadline) revert Expired();
         if (to == address(0)) revert ZeroAddress();
         (bytes32 lo, bytes32 hi) = assetA < assetB ? (assetA, assetB) : (assetB, assetA);
         bytes32 poolId;
@@ -1034,15 +1040,20 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         }
         amountLo = _payout(lo, to, vLo);
         amountHi = _payout(hi, to, vHi);
+        // Output slippage in the caller's (assetA, assetB) orientation, mapped to canonical lo/hi.
+        (uint256 minLo, uint256 minHi) = assetA < assetB ? (minAmountA, minAmountB) : (minAmountB, minAmountA);
+        if (amountLo < minLo || amountHi < minHi) revert SlippageExceeded();
         emit PublicLiquidityRemoved(poolId, msg.sender, to, vLo, vHi, shares);
     }
 
     /// @notice PUBLIC swap against the pool's public reserves (no privacy — the amount is revealed; for a
     ///         hidden-amount swap use the confidential OP_SWAP). Constant-product with the pool fee; k can
-    ///         only increase. `minAmountOut` is in the OUTPUT asset's underlying units (slippage bound).
+    ///         only increase. `minAmountOut` is in the OUTPUT asset's underlying units (slippage bound);
+    ///         `deadline` is a unix-secs expiry (0 = none) so a pending tx can't execute much later.
     function swapPublic(
-        bytes32 assetIn, bytes32 assetOut, uint32 feeBps, uint256 amountIn, uint256 minAmountOut, address to
+        bytes32 assetIn, bytes32 assetOut, uint32 feeBps, uint256 amountIn, uint256 minAmountOut, uint64 deadline, address to
     ) external payable nonReentrant returns (uint256 amountOut) {
+        if (deadline != 0 && block.timestamp > deadline) revert Expired();
         if (to == address(0)) revert ZeroAddress();
         if (assetIn == assetOut) revert SameAsset();
         (bytes32 lo, bytes32 hi) = assetIn < assetOut ? (assetIn, assetOut) : (assetOut, assetIn);

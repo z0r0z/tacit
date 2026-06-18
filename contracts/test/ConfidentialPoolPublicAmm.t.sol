@@ -44,7 +44,7 @@ contract ConfidentialPoolPublicAmmTest is Test {
 
     function test_public_amm_lifecycle() public {
         // ── create + seed (founding) ──
-        uint256 sh = pool.createPairAndAddLiquidityPublic(assetA, assetB, 30, 1_000_000, 4_000_000, address(this));
+        uint256 sh = pool.createPairAndAddLiquidityPublic(assetA, assetB, 30, 1_000_000, 4_000_000, 0, 0, address(this));
         bytes32 id = _pid(assetA, assetB, 30);
         (bool init,,, uint256 rA, uint256 rB,, uint256 ts) = pool.pools(id);
         // canonical: reserveA is the LOW asset's reserve
@@ -60,7 +60,7 @@ contract ConfidentialPoolPublicAmmTest is Test {
         // ── public swap A->B (k must not decrease) ──
         uint256 kPre = rA * rB;
         uint256 bBefore = tokenB.balanceOf(address(this));
-        uint256 out = pool.swapPublic(assetA, assetB, 30, 100_000, 0, address(this));
+        uint256 out = pool.swapPublic(assetA, assetB, 30, 100_000, 0, 0, address(this));
         assertGt(out, 0, "got output");
         assertEq(tokenB.balanceOf(address(this)) - bBefore, out, "B paid out to recipient");
         (,,, uint256 rA2, uint256 rB2,,) = pool.pools(id);
@@ -68,7 +68,7 @@ contract ConfidentialPoolPublicAmmTest is Test {
 
         // ── remove all founder shares → totalShares falls to the MIN_LIQUIDITY floor ──
         uint256 aBefore = tokenA.balanceOf(address(this));
-        (uint256 la, uint256 lb) = pool.removeLiquidityPublic(assetA, assetB, 30, sh, address(this));
+        (uint256 la, uint256 lb) = pool.removeLiquidityPublic(assetA, assetB, 30, sh, 0, 0, 0, address(this));
         assertEq(pool.lpShares(id, address(this)), 0, "shares burned");
         (,,,,,, uint256 ts2) = pool.pools(id);
         assertEq(ts2, 1000, "totalShares == MINIMUM_LIQUIDITY floor (noteless)");
@@ -77,25 +77,58 @@ contract ConfidentialPoolPublicAmmTest is Test {
     }
 
     function test_remove_cannot_breach_min_liquidity() public {
-        uint256 sh = pool.createPairAndAddLiquidityPublic(assetA, assetB, 30, 1_000_000, 1_000_000, address(this));
+        uint256 sh = pool.createPairAndAddLiquidityPublic(assetA, assetB, 30, 1_000_000, 1_000_000, 0, 0, address(this));
         // attempting to remove MORE than (totalShares - MIN) reverts
         vm.expectRevert(ConfidentialPool.InsufficientLiquidity.selector);
-        pool.removeLiquidityPublic(assetA, assetB, 30, sh + 1, address(this));
+        pool.removeLiquidityPublic(assetA, assetB, 30, sh + 1, 0, 0, 0, address(this));
     }
 
     function test_proportional_add_to_existing() public {
-        pool.createPairAndAddLiquidityPublic(assetA, assetB, 30, 1_000_000, 1_000_000, address(this));
+        pool.createPairAndAddLiquidityPublic(assetA, assetB, 30, 1_000_000, 1_000_000, 0, 0, address(this));
         bytes32 id = _pid(assetA, assetB, 30);
         (,,,,,, uint256 ts0) = pool.pools(id);
-        uint256 sh2 = pool.createPairAndAddLiquidityPublic(assetA, assetB, 30, 500_000, 500_000, address(this));
+        uint256 sh2 = pool.createPairAndAddLiquidityPublic(assetA, assetB, 30, 500_000, 500_000, 0, 0, address(this));
         (,,, uint256 rA, uint256 rB,, uint256 ts1) = pool.pools(id);
         assertEq(sh2, ts0 / 2, "in-ratio add mints proportional shares");
         assertEq(rA, 1_500_000); assertEq(rB, 1_500_000);
         assertEq(ts1, ts0 + sh2, "totalShares grew by minted");
     }
 
+    /// Router-standard guards on the public periphery: a unix-secs `deadline` (0 = none) and per-action
+    /// slippage bounds (minSharesOut on add, minAmountA/B on remove, minAmountOut on swap).
+    function test_public_amm_deadline_and_slippage_guards() public {
+        pool.createPairAndAddLiquidityPublic(assetA, assetB, 30, 1_000_000, 1_000_000, 0, 0, address(this));
+        bytes32 id = _pid(assetA, assetB, 30);
+        vm.warp(1000);
+
+        // deadline: a past expiry reverts on all three public actions (checked first, before any effect)
+        vm.expectRevert(ConfidentialPool.Expired.selector);
+        pool.swapPublic(assetA, assetB, 30, 1000, 0, 999, address(this));
+        vm.expectRevert(ConfidentialPool.Expired.selector);
+        pool.createPairAndAddLiquidityPublic(assetA, assetB, 30, 1000, 1000, 0, 999, address(this));
+        vm.expectRevert(ConfidentialPool.Expired.selector);
+        pool.removeLiquidityPublic(assetA, assetB, 30, 1000, 0, 0, 999, address(this));
+
+        // minSharesOut: requiring more LP shares than the add yields reverts (a subsequent add)
+        vm.expectRevert(ConfidentialPool.SlippageExceeded.selector);
+        pool.createPairAndAddLiquidityPublic(assetA, assetB, 30, 500_000, 500_000, type(uint256).max, 0, address(this));
+
+        // minAmount on remove: requiring more underlying than the proportional withdrawal yields reverts
+        uint256 sh = pool.lpShares(id, address(this));
+        vm.expectRevert(ConfidentialPool.SlippageExceeded.selector);
+        pool.removeLiquidityPublic(assetA, assetB, 30, sh / 2, type(uint256).max, 0, 0, address(this));
+
+        // minAmountOut on swap: requiring more output than possible reverts
+        vm.expectRevert(ConfidentialPool.SlippageExceeded.selector);
+        pool.swapPublic(assetA, assetB, 30, 1000, type(uint256).max, 0, address(this));
+
+        // sanity: the same actions succeed with satisfiable bounds + a future deadline
+        uint256 outOk = pool.swapPublic(assetA, assetB, 30, 1000, 1, uint64(block.timestamp + 1), address(this));
+        assertGt(outOk, 0, "swap succeeds within deadline + slippage");
+    }
+
     function test_shield_shares_records_pending_deposit() public {
-        uint256 sh = pool.createPairAndAddLiquidityPublic(assetA, assetB, 30, 1_000_000, 1_000_000, address(this));
+        uint256 sh = pool.createPairAndAddLiquidityPublic(assetA, assetB, 30, 1_000_000, 1_000_000, 0, 0, address(this));
         bytes32 id = _pid(assetA, assetB, 30);
         (,,,,,, uint256 tsBefore) = pool.pools(id);
         bytes32 commit = keccak256("note-commit");
@@ -110,7 +143,7 @@ contract ConfidentialPoolPublicAmmTest is Test {
     }
 
     function test_shield_more_than_balance_reverts() public {
-        uint256 sh = pool.createPairAndAddLiquidityPublic(assetA, assetB, 30, 1_000_000, 1_000_000, address(this));
+        uint256 sh = pool.createPairAndAddLiquidityPublic(assetA, assetB, 30, 1_000_000, 1_000_000, 0, 0, address(this));
         bytes32 id = _pid(assetA, assetB, 30);
         vm.expectRevert(ConfidentialPool.InsufficientLiquidity.selector);
         pool.shieldShares(id, sh + 1, keccak256("x"));
@@ -122,7 +155,7 @@ contract ConfidentialPoolPublicAmmTest is Test {
     // so it can't underflow past the guard into the reserve subtraction. Honest settles keep totalShares ≥
     // Σ public shares + MIN_LIQUIDITY, so this state is only reachable under a compromised/buggy guest.
     function test_remove_liquidity_reverts_when_total_shares_mis_set_below_balance() public {
-        uint256 sh = pool.createPairAndAddLiquidityPublic(assetA, assetB, 30, 1_000_000, 1_000_000, address(this));
+        uint256 sh = pool.createPairAndAddLiquidityPublic(assetA, assetB, 30, 1_000_000, 1_000_000, 0, 0, address(this));
         bytes32 id = _pid(assetA, assetB, 30);
         assertEq(pool.lpShares(id, address(this)), sh, "public balance recorded");
 
@@ -141,6 +174,6 @@ contract ConfidentialPoolPublicAmmTest is Test {
         // Removing the full public balance: totalShares - shares would underflow; the addition-form guard
         // reverts at the floor check instead — no reserve subtraction, no payout, no drain.
         vm.expectRevert(ConfidentialPool.InsufficientLiquidity.selector);
-        pool.removeLiquidityPublic(assetA, assetB, 30, sh, address(this));
+        pool.removeLiquidityPublic(assetA, assetB, 30, sh, 0, 0, 0, address(this));
     }
 }
