@@ -59,6 +59,7 @@ Soundness (the load-bearing invariants):
 | Per-asset conservation kernel (no inflation) | L2 | `kernel_accepts_js_proof_and_rejects_tamper` |
 | Note-bound nullifier ν = keccak(Cx‖Cy‖"spent") (B3) | L2/L3/L4 | `keccak_primitives_and_opening_match_js_and_contract`; `confidential-bridge-{mint,burn}.mjs` B3 pins |
 | Cross-lane non-membership: unspent proves absent, spent cannot (B4) | L2 | `imt_accumulator_matches_js`, `imt_non_membership_matches_js` |
+| Fast-lane freshness: a reflection must fold every recorded consume before advancing the spent set (Ethereum-senior; no stale-eth-proof double-credit) — incl. an escrow-backed bridged asset (tETH) whose btcHomed leaf later unwraps escrow | L1/L2 | `test_fast_lane_freshness_gate_rejects_stale_attest`, `test_fast_lane_consumed_count_advances`, `test_fast_lane_consumed_count_tracks_only_value_exits`, `confidential-fastlane-consumed.mjs` |
 | Bridge-mint burn authority: member proves present, non-member rejects (B5) | L2 | `imt_membership_round_trips` |
 | Empty spent/burn set has a **non-zero** sentinel root | L2 | `reflection_state_commits_relay_public_values`, `imt_accumulator_matches_js` |
 | claimId / destCommitment non-malleable, guest-matching | L1/L2/L3 | `testFuzz_crossout_claimid_binding`, `test_crossout_claimid_matches_js`, `claim_id_and_dest_commitment_match_js_and_contract` |
