@@ -3001,6 +3001,13 @@ impl ScanReflection {
         if pool.total_shares == 0 || share_amount == 0 || share_amount > pool.total_shares {
             return Err("lp_remove fold: bad share amount");
         }
+        // Minimum-liquidity floor: the AMM_MINIMUM_LIQUIDITY shares locked at POOL_INIT must remain, so a
+        // remove burns only the unlocked shares. Unreachable under correct minting (the locked shares are
+        // never owned), enforced here as defense-in-depth, mirroring the Solidity pool. (share_amount <=
+        // total_shares above, so the subtraction can't underflow.)
+        if pool.total_shares - share_amount < AMM_MINIMUM_LIQUIDITY {
+            return Err("lp_remove fold: minimum liquidity breach");
+        }
         // (1) proportional withdrawal must equal the worker's ammLpRemoveOutputs (floor toward zero), so the
         //     reflection's reserves track the worker's; da ≤ reserve_a since share ≤ total_shares.
         let da = (pool.reserve_a as u128 * share_amount as u128) / pool.total_shares as u128;

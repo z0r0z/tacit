@@ -36,32 +36,34 @@ pub fn compute_txid(tx_data: &[u8]) -> Option<[u8; 32]> {
         return Some(double_sha256(tx_data));
     }
     let version = &tx_data[0..4]; // is_segwit ⇒ len > 5
-    let mut pos = 6; // skip version(4) + marker(1) + flag(1)
+    // checked_add throughout: an attacker-supplied varint length can't wrap `pos` (which would skip a
+    // bounds check / make outputs_end < inputs_start → an OOB slice panic). A wrap is a clean None.
+    let mut pos = 6usize; // skip version(4) + marker(1) + flag(1)
     let (input_count, vi_len) = read_varint(tx_data, pos)?;
     let inputs_start = pos;
-    pos += vi_len;
+    pos = pos.checked_add(vi_len)?;
     for _ in 0..input_count {
-        pos += 36;
+        pos = pos.checked_add(36)?;
         let (script_len, vi_len) = read_varint(tx_data, pos)?;
-        pos += vi_len + script_len + 4;
+        pos = pos.checked_add(vi_len)?.checked_add(script_len)?.checked_add(4)?;
     }
     let (output_count, vi_len) = read_varint(tx_data, pos)?;
-    pos += vi_len;
+    pos = pos.checked_add(vi_len)?;
     for _ in 0..output_count {
-        pos += 8;
+        pos = pos.checked_add(8)?;
         let (script_len, vi_len) = read_varint(tx_data, pos)?;
-        pos += vi_len + script_len;
+        pos = pos.checked_add(vi_len)?.checked_add(script_len)?;
     }
     let outputs_end = pos;
     for _ in 0..input_count {
         let (wit_count, vi_len) = read_varint(tx_data, pos)?;
-        pos += vi_len;
+        pos = pos.checked_add(vi_len)?;
         for _ in 0..wit_count {
             let (item_len, vi_len) = read_varint(tx_data, pos)?;
-            pos += vi_len + item_len;
+            pos = pos.checked_add(vi_len)?.checked_add(item_len)?;
         }
     }
-    if outputs_end > tx_data.len() || pos + 4 > tx_data.len() { return None; }
+    if outputs_end > tx_data.len() || pos.checked_add(4)? > tx_data.len() { return None; }
     let locktime = &tx_data[pos..pos + 4];
 
     let mut stripped = Vec::with_capacity(version.len() + (outputs_end - inputs_start) + 4);
@@ -398,7 +400,7 @@ pub fn parse_cmint(env: &[u8]) -> Option<([u8; 32], [u8; 32], [u8; 33], [u8; 8],
 /// The reflection prover binds a reflected bridge-out's destCommitment (and ν) to this, so a
 /// burn's Ethereum mint cannot be redirected to a different destination. None if malformed.
 pub fn parse_burn_envelope(env: &[u8]) -> Option<([u8; 32], [u8; 32], [u8; 32])> {
-    if env.len() < 129 || env[0] != 0x2B {
+    if env.len() != 129 || env[0] != 0x2B {
         return None;
     }
     let asset: [u8; 32] = env[1..33].try_into().ok()?;
@@ -415,7 +417,7 @@ pub fn parse_burn_envelope(env: &[u8]) -> Option<([u8; 32], [u8; 32], [u8; 32])>
 /// no value. `owner` is carried for completeness; a Bitcoin-destined cross-out's reflected leaf uses
 /// the zero owner sentinel (see `ScanReflection::fold_crossout`). None if malformed.
 pub fn parse_crossout_mint_envelope(env: &[u8]) -> Option<([u8; 32], [u8; 32], [u8; 32], [u8; 32], [u8; 32])> {
-    if env.len() < 161 || env[0] != 0x65 {
+    if env.len() != 161 || env[0] != 0x65 {
         return None;
     }
     let asset: [u8; 32] = env[1..33].try_into().ok()?;
@@ -486,7 +488,7 @@ pub struct CbtcLockEnvelope {
 /// the note's blinding — so the reflection relay, which holds no recipient key, can read it directly and fold
 /// the lock without an off-chain witness source. Fixed 197-byte layout.
 pub fn parse_cbtc_lock_envelope(env: &[u8]) -> Option<CbtcLockEnvelope> {
-    if env.len() < 197 || env[0] != 0x66 {
+    if env.len() != 197 || env[0] != 0x66 {
         return None;
     }
     Some(CbtcLockEnvelope {
@@ -1235,9 +1237,10 @@ pub fn parse_swap_route_envelope(env: &[u8]) -> Option<SwapRouteEnvelope> {
 ///
 /// This is the per-event confirmation the bridge_mint guest does inline; the reflection
 /// prover reuses it for each deposit/spend before folding it into the pool/spent roots.
-/// Chain-linkage to the relay anchor (canonical chain) + confirmation depth are the
-/// caller's relay-anchor layer — this proves "in a PoW-valid block", not "buried in the
-/// canonical chain".
+/// UNANCHORED + TXID-ONLY. Chain-linkage to the relay anchor (canonical chain) + confirmation depth are
+/// the caller's relay-anchor layer — this proves "in a PoW-valid block", not "buried in the canonical
+/// chain". It commits only the TXID merkle (the stripped serialization): a payload read from the Taproot
+/// WITNESS is NOT bound here — the caller must additionally check `verify_witness_commitment`.
 pub fn verify_tx_in_block(header: &[u8], tx_data: &[u8], tx_index: u32, txids: &[[u8; 32]]) -> Option<[u8; 32]> {
     if header.len() != 80 {
         return None;
@@ -1381,19 +1384,22 @@ pub fn extract_inputs(tx_data: &[u8]) -> Option<Vec<([u8; 32], u32)>> {
     if input_count == 0 {
         return None;
     }
-    pos += vi_len;
-    let mut inputs = Vec::with_capacity(input_count);
+    pos = pos.checked_add(vi_len)?;
+    // Vec::new (not with_capacity(input_count)): input_count is an attacker-supplied varint, so
+    // with_capacity could panic on a runaway count before the loop even bounds-checks it.
+    let mut inputs = Vec::new();
     for _ in 0..input_count {
-        if pos + 36 > tx_data.len() {
+        let outpoint_end = pos.checked_add(36)?;
+        if outpoint_end > tx_data.len() {
             return None;
         }
         let mut txid = [0u8; 32];
         txid.copy_from_slice(&tx_data[pos..pos + 32]);
         let vout = u32::from_le_bytes([tx_data[pos + 32], tx_data[pos + 33], tx_data[pos + 34], tx_data[pos + 35]]);
         inputs.push((txid, vout));
-        pos += 36;
+        pos = outpoint_end;
         let (script_len, vi_len2) = read_varint(tx_data, pos)?;
-        pos += vi_len2 + script_len + 4; // input script + sequence(4)
+        pos = pos.checked_add(vi_len2)?.checked_add(script_len)?.checked_add(4)?; // input script + sequence(4)
     }
     Some(inputs)
 }
@@ -1403,28 +1409,29 @@ pub fn extract_taproot_envelope(tx_data: &[u8]) -> Option<Vec<u8>> {
     let mut pos = 6;
     let (input_count, vi_len) = read_varint(tx_data, pos)?;
     if input_count == 0 { return None; }
-    pos += vi_len;
+    pos = pos.checked_add(vi_len)?; // checked_add throughout: an attacker varint can't wrap pos past a bound
     for _ in 0..input_count {
-        pos += 36;
+        pos = pos.checked_add(36)?;
         let (script_len, vi_len) = read_varint(tx_data, pos)?;
-        pos += vi_len + script_len + 4;
+        pos = pos.checked_add(vi_len)?.checked_add(script_len)?.checked_add(4)?;
     }
     let (output_count, vi_len) = read_varint(tx_data, pos)?;
-    pos += vi_len;
+    pos = pos.checked_add(vi_len)?;
     for _ in 0..output_count {
-        pos += 8;
+        pos = pos.checked_add(8)?;
         let (script_len, vi_len) = read_varint(tx_data, pos)?;
-        pos += vi_len + script_len;
+        pos = pos.checked_add(vi_len)?.checked_add(script_len)?;
     }
     let (wit_count, vi_len) = read_varint(tx_data, pos)?;
-    pos += vi_len;
+    pos = pos.checked_add(vi_len)?;
     if wit_count < 2 { return None; }
     let (item0_len, vi_len) = read_varint(tx_data, pos)?;
-    pos += vi_len + item0_len;
+    pos = pos.checked_add(vi_len)?.checked_add(item0_len)?;
     let (script_len, vi_len) = read_varint(tx_data, pos)?;
-    pos += vi_len;
-    if pos + script_len > tx_data.len() { return None; }
-    let script = &tx_data[pos..pos + script_len];
+    pos = pos.checked_add(vi_len)?;
+    let script_end = pos.checked_add(script_len)?;
+    if script_end > tx_data.len() { return None; }
+    let script = &tx_data[pos..script_end];
     if script.len() < 36 { return None; }
     let mut sp = 0;
     if script[sp] != 32 { return None; } sp += 1; // PUSH(32)

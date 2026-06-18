@@ -744,14 +744,18 @@ pub fn main() {
                     let (da_c, db_c) = if swapped { (lr.delta_b, lr.delta_a) } else { (lr.delta_a, lr.delta_b) };
                     let (recv_ca, recv_cb) = if swapped { (lr.recv_b_secp, lr.recv_a_secp) } else { (lr.recv_a_secp, lr.recv_b_secp) };
                     let (rca, rcb) = if swapped { (lr.r_recv_b, lr.r_recv_a) } else { (lr.r_recv_a, lr.r_recv_b) };
-                    let mut lp_ops = Vec::new();
-                    let mut lp_pts = Vec::new();
-                    for s in &spends {
-                        lp_ops.push((s.prev_txid, s.prev_vout));
-                        lp_pts.push(from_affine_xy(&s.cx, &s.cy).expect("lp_remove input xy"));
-                    }
                     // Find the pool whose pool_id makes the share-burn kernel verify (one V1 candidate per pair).
+                    // Only inputs whose STORED asset is this pool's LP-share asset are eligible to be burned as
+                    // shares (mirrors fold_lp_add's per-asset filter): the kernel is asset-blind, so without the
+                    // filter a value-equal non-LP note could be burned as LP shares to withdraw real reserves.
                     for pid in state.pools.pool_ids_for_assets(&ca, &cb) {
+                        let lp_asset = cxfer_core::amm_derive_lp_asset_id(&pid);
+                        let mut lp_ops = Vec::new();
+                        let mut lp_pts = Vec::new();
+                        for s in spends.iter().filter(|s| s.asset == lp_asset) {
+                            lp_ops.push((s.prev_txid, s.prev_vout));
+                            lp_pts.push(from_affine_xy(&s.cx, &s.cy).expect("lp_remove input xy"));
+                        }
                         if cxfer_core::lp_remove_kernel_verify(&pid, lr.share_amount, da_c, db_c, &recv_ca, &recv_cb, &lp_ops, &lp_pts, &lr.kernel_sig) {
                             let _ = state.fold_lp_remove(
                                 &pid, lr.share_amount, da_c, db_c, &recv_ca, &rca, &recv_cb, &rcb,
