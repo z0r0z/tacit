@@ -49,7 +49,12 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   const evm = makeEvmAccount({ secp, keccak256, sha256 });
   const indexer = makeConfidentialIndexer({ secp, keccak256, sha256 });
   const evmLog = makeConfidentialEvmLog({ keccak256 });
-  const relay = makeConfidentialRelay({ base: cfg.relayBase, fetchImpl: _fetch });
+  // Seed-only recovery guard (shared): seals one memo per output + the submit-time tripwire that no op ships
+  // an unrecoverable leaf. Injected into the relay so EVERY box-settled op (transfer/swap/lp/otc/route/bid)
+  // passes the recovery assert at submit; wrap (on-chain) uses it directly as the reference integration.
+  const memo = indexer._memo;   // sealMemo / encodeMemo / decodeMemo
+  const guard = makeRecoveryGuard({ memo });
+  const relay = makeConfidentialRelay({ base: cfg.relayBase, fetchImpl: _fetch, guard });
 
   const assetByTicker = Object.fromEntries(cfg.assets.map((a) => [a.ticker, a]));
 
@@ -117,11 +122,8 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   // ── wrap on-ramp ──
   const evmTx = makeEvmTx({ secp, keccak256 });
   const pool = indexer._pool;   // commitXY / deriveNote / leaf / depositId
-  const memo = indexer._memo;   // sealMemo / encodeMemo
-  // Seed-only recovery guard: seals one memo per output + the submit-time tripwire that no op ships an
-  // unrecoverable leaf. Wrap (below) is the reference integration; transfer/swap/lp/otc/route/adaptor
-  // assemblers must build the same `outputs` descriptors and run these two calls before submit.
-  const guard = makeRecoveryGuard({ memo });
+  // `memo` + `guard` are defined above (shared with the relay chokepoint). Wrap is the reference integration:
+  // build outputs[] descriptors → guard.sealMemosForOutputs → guard.assertOutputsRecoverable before submit.
 
   const _hex = (b) => Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('');
   const _word = (v) => (typeof v === 'bigint' ? v.toString(16) : String(v).replace(/^0x/, '')).padStart(64, '0');

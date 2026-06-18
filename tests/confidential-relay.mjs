@@ -100,4 +100,54 @@ const swapOp = { reserveAPre: 1000, reserveBPre: 1000, intents: [{ amountIn: 100
   ok('waitForSettle times out if the box never settles');
 }
 
+// ───────────────── 5. recovery-guard chokepoint: seal + assert before queuing ─────────────────
+{
+  const q = makeConfidentialSettler({ storage: freshStore(), hash });
+  // a mock guard standing in for makeRecoveryGuard (the real seal/assert is covered by
+  // confidential-recovery-guard.mjs): seals one memo per output, asserts every leaf is recoverable.
+  const guard = {
+    sealMemosForOutputs: ({ outputs, ephRand }) => {
+      void ephRand();
+      return outputs.map((o) => (o && o.seedDerived ? '0x' : '0x' + 'cc'.repeat(68)));
+    },
+    assertOutputsRecoverable: ({ leaves, outputs, memos }) => {
+      if (leaves.length !== outputs.length || memos.length !== outputs.length) throw new Error('aligned');
+      outputs.forEach((o, i) => { if (!(o && o.seedDerived) && memos[i] === '0x') throw new Error('recovery channel'); });
+    },
+  };
+  const relay = makeConfidentialRelay({ base: '', fetchImpl: mockFetch(q), guard });
+  const eph = () => 7n;
+
+  // (a) an op with outputs gets its memos sealed + asserted, and the box receives the sealed memos
+  const { jobId } = await relay.submitOp({
+    type: 'transfer', op: { inputs: [], outputs: [] },
+    leaves: ['0x' + '11'.repeat(32)], outputs: [{ ownerPub: '0x02' + 'ab'.repeat(32) }], ephRand: eph,
+  });
+  const claimed = await q.nextJob();
+  assert.strictEqual(claimed.jobId, jobId);
+  assert.deepStrictEqual(claimed.memos, ['0x' + 'cc'.repeat(68)], 'box receives the guard-sealed memos');
+  ok('submitOp seals + asserts an op output before queuing');
+
+  // (b) raw memos without outputs descriptors cannot bypass the guard
+  await assert.rejects(
+    () => relay.submitOp({ type: 'transfer', op: {}, memos: ['0xdead'] }),
+    /bypass the recovery guard/,
+    'a leaf-bearing op without outputs descriptors is rejected',
+  );
+
+  // (c) outputs without an ephRand scalar source is rejected before sealing
+  await assert.rejects(
+    () => relay.submitOp({ type: 'transfer', op: {}, leaves: ['0x' + '11'.repeat(32)], outputs: [{ ownerPub: '0x02' }] }),
+    /ephRand/,
+    'sealing needs an ephRand source',
+  );
+
+  // (d) a seed-derived output carries an empty-memo placeholder and asserts clean (the BID-style channel)
+  const r2 = await relay.submitOp({
+    type: 'bid', op: {}, leaves: ['0x' + '22'.repeat(32)], outputs: [{ seedDerived: true }], ephRand: eph,
+  });
+  assert.ok(r2.jobId, 'seed-derived output submits with an empty-memo placeholder');
+  ok('seed-derived outputs pass with an empty memo; bypass + missing-ephRand are rejected');
+}
+
 console.log(`\n${n} confidential-relay checks passed.`);
