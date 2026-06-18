@@ -242,13 +242,12 @@ contract BitcoinLightRelay {
             tip = prevHash;
             tipHeight = height;
             tipWork = cumWork;
-            // Commit the new epoch's first-block timestamp from the WINNING chain. Overwrite (not
-            // first-write-wins): a sub-finality-window reorg can replace the boundary block, and
-            // retarget() reads this value as the epoch-start anchor — caching the losing fork's
-            // timestamp would mis-target the next epoch (even a 1s difference flips the compact
-            // mantissa) and permanently revert retarget(). The winning chain is canonical by the
-            // work rule, so its boundary timestamp is the correct one. (Genesis-epoch start stays
-            // the deployer value: blocks below the anchor are never re-submitted here.)
+            // Cache the new epoch's first-block timestamp from the WINNING chain — INFORMATIONAL (the
+            // public epochStartTimestamp getter). retarget reads the epoch start FRESH via _epochStartTs
+            // (walking the canonical chain), so this cache is no longer the retarget anchor and a boundary
+            // block replaced across separate advanceTip submissions can't stale it (even a 1s diff flips
+            // the compact mantissa). Genesis-epoch start stays the deployer value: blocks below the anchor
+            // are never re-submitted here.
             if (pendingEpochTs != 0) {
                 epochStartTimestamp[pendingEpochStart] = pendingEpochTs;
             }
@@ -291,10 +290,11 @@ contract BitcoinLightRelay {
             if (i < PROOF_LENGTH) {
                 if (bits != _targetToCompact(oldTarget)) revert InvalidPoW();
             } else if (i == PROOF_LENGTH) {
-                uint256 newTarget = _retargetTarget(oldTarget, epochStartTimestamp[oldEpoch], lastOldTimestamp);
+                // Read the old epoch's first-block timestamp FRESH from the winning chain (_epochStartTs
+                // walks back from the tip), not the advanceTip cache — so a boundary block replaced across
+                // separate advanceTip submissions can't leave a stale epoch-start that mis-targets here.
+                uint256 newTarget = _retargetTarget(oldTarget, _epochStartTs(oldEpoch), lastOldTimestamp);
                 epochTarget[oldEpoch + 1] = newTarget;
-                // Epoch start timestamp set by advanceTip when it processes
-                // the first canonical block of the new epoch — not here.
                 if (bits != _targetToCompact(newTarget)) revert InvalidPoW();
             } else {
                 if (bits != _targetToCompact(epochTarget[oldEpoch + 1])) revert InvalidPoW();
@@ -418,6 +418,20 @@ contract BitcoinLightRelay {
         if (rawTarget > MAX_TARGET) rawTarget = MAX_TARGET;
         // Compact-encode then re-expand to match Bitcoin's precision truncation.
         return _bitsToTarget(_targetToCompact(rawTarget));
+    }
+
+    /// @dev The `epoch`'s first-block timestamp on the WINNING chain, read fresh by walking back from the
+    ///      tip (retarget requires it at the epoch's last block) to height `epoch * EPOCH_LENGTH`. Reading
+    ///      it from the canonical chain — not the advanceTip epochStartTimestamp cache, which commits only
+    ///      when the boundary block is in the WINNING batch — means a boundary block replaced across
+    ///      SEPARATE advanceTip submissions can't leave a stale epoch-start that mis-targets the next
+    ///      retarget. The genesis epoch's first block sits below the mid-epoch anchor (never stored here),
+    ///      so there the deployer-seeded epochStartTimestamp is authoritative.
+    function _epochStartTs(uint256 epoch) internal view returns (uint256) {
+        if (epoch == genesisEpoch) return epochStartTimestamp[epoch];
+        bytes32 cur = tip;
+        for (uint256 h = tipHeight; h > epoch * EPOCH_LENGTH; --h) cur = blockParent[cur];
+        return blockTimestamp[cur];
     }
 
     /// @dev Compact-encode a 256-bit target to nBits, matching Bitcoin's SetCompact.

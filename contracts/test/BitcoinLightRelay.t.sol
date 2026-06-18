@@ -254,4 +254,29 @@ contract BitcoinLightRelayTest is TestHelper {
         vm.expectRevert(); // claims to end ahead of the tip
         r.exposed_anchorChain(107, bh[6]);
     }
+
+    // Finding 1: retarget reads the OLD epoch's start timestamp FRESH from the winning chain via
+    // _epochStartTs (walking back from the tip), NOT the advanceTip cache — so a boundary block replaced
+    // across separate advanceTip submissions can't leave a stale epoch-start that mis-targets the
+    // retarget. A short chain near a non-genesis boundary stands in for a full 2016-block epoch.
+    function test_epoch_start_ts_reads_winning_chain_not_stale_cache() public {
+        TestLightRelay r = new TestLightRelay();
+        r.genesis(0, TEST_TARGET, 1000, keccak256("g"), 0, 1); // genesisEpoch = 0
+        // Canonical chain into epoch 1: heights 2016 (epoch-1 first block) .. 2019.
+        bytes32 b2016 = keccak256("b2016");
+        bytes32 b2017 = keccak256("b2017");
+        bytes32 b2018 = keccak256("b2018");
+        bytes32 b2019 = keccak256("b2019");
+        r.seedBlock(b2016, keccak256("b2015"), 5000); // epoch-1 start, ts 5000 (the WINNING chain)
+        r.seedBlock(b2017, b2016, 5001);
+        r.seedBlock(b2018, b2017, 5002);
+        r.seedBlock(b2019, b2018, 5003);
+        r.seedTip(b2019, 2019);
+        // Plant a STALE cache, as a losing-fork multi-call submission would have left it.
+        r.seedEpochStartTimestamp(1, 9999);
+        // The walk-back reads the chain's block@2016 ts (5000), ignoring the stale 9999 cache.
+        assertEq(r.exposed_epochStartTs(1), 5000, "non-genesis: winning chain's epoch-start, not the stale cache");
+        // The genesis epoch's start block is below the mid-epoch anchor (not stored), so it uses the seed.
+        assertEq(r.exposed_epochStartTs(0), 1000, "genesis: falls back to the deployer-seeded epoch-start");
+    }
 }

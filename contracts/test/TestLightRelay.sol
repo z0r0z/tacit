@@ -66,4 +66,15 @@ contract TestLightRelay is BitcoinLightRelay {
     {
         return _retargetTarget(oldTarget, firstTs, lastTs);
     }
+
+    /// @dev Exercise the retarget epoch-start walk-back (Finding 1) in isolation — advanceTip's real PoW
+    ///      makes a full 2-epoch synthetic chain impractical, so seed a short chain near the boundary.
+    function exposed_epochStartTs(uint256 epoch) external view returns (uint256) {
+        return _epochStartTs(epoch);
+    }
+
+    /// @dev Plant a STALE epoch-start cache value to prove _epochStartTs ignores it (reads the chain).
+    function seedEpochStartTimestamp(uint256 epoch, uint256 ts) external {
+        epochStartTimestamp[epoch] = ts;
+    }
 }
