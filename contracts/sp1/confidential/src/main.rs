@@ -37,6 +37,7 @@ const OP_OTC: u8 = 9; // confidential OTC: 2-party direct swap of shielded notes
 const OP_BID: u8 = 10; // confidential partial-fill bid: buyer-offline limit order, seller fills a grid amount
 const OP_SWAP_ROUTE: u8 = 11; // confidential multihop: route one input note through ≤ MAX_ROUTE_HOPS pools
 const MAX_ROUTE_HOPS: u32 = 4; // bound the per-route hop count (mirrors the Bitcoin route op)
+const MAX_OPS: u32 = 256; // bound the per-batch op count — predictable proving memory; far above any real batch
 const OP_ADAPTOR_LOCK: u8 = 12; // adaptor swap: lock a note into the lock-set under (T, deadline, recipient)
 const OP_ADAPTOR_CLAIM: u8 = 13; // adaptor swap: claim a locked note before its deadline, revealing the kernel s
 const OP_ADAPTOR_REFUND: u8 = 14; // adaptor swap: refund a locked note to its locker after the deadline
@@ -171,6 +172,7 @@ pub fn main() {
     // close/liquidate this batch). The contract checks it == its stored CDP position root before advancing.
     let cdp_position_root = r32();
     let num_ops: u32 = io::read();
+    assert!(num_ops <= MAX_OPS, "batch op count over MAX_OPS");
 
     let mut nullifiers: Vec<[u8; 32]> = Vec::new();
     let mut leaves: Vec<[u8; 32]> = Vec::new();
@@ -227,6 +229,7 @@ pub fn main() {
                 let asset = r32();
                 let n_in: u32 = io::read();
                 let m_out: u32 = io::read();
+                assert!(n_in > 0 && m_out > 0, "transfer: empty in/out (no-op settlement)");
 
                 let mut in_pts: Vec<Point> = Vec::with_capacity(n_in as usize);
                 for _ in 0..n_in {
@@ -266,6 +269,10 @@ pub fn main() {
                 // (minted on Bitcoin). Every claimId binds to the first input's ν.
                 let asset = r32();
                 let dest_chain = io::read::<u32>() as u16;
+                // Only Bitcoin (1) and Ethereum (2) cross-outs are honored downstream (the reflection folds
+                // dest_chain==1; an Ethereum crossOut is consumed on Eth). Reject an unsupported destination
+                // so a user can't burn into a record nobody redeems.
+                assert!(dest_chain == 1 || dest_chain == 2, "bridge-burn: unsupported dest chain");
                 let n_in: u32 = io::read();
                 let m_out: u32 = io::read();
 
@@ -485,6 +492,7 @@ pub fn main() {
                 let asset_a = r32();
                 let asset_b = r32();
                 let fee_bps: u32 = io::read(); // pool fee tier — binds the pool id (multi-fee-tier)
+                assert!(fee_bps <= 1000, "fee tier over MAX_POOL_FEE_BPS"); // guard 10000-fee_bps before AMM math
                 let pid = pool_id(&asset_a, &asset_b, fee_bps);
                 // Canonical orientation: asset_a MUST be the low asset of the (sorted) pool pair, so it
                 // maps to the contract's p.reserveA. pool_id sorts internally, so a reversed (asset_a,
@@ -618,6 +626,7 @@ pub fn main() {
                 let asset_a = r32();
                 let asset_b = r32();
                 let fee_bps: u32 = io::read(); // pool fee tier — binds the pool id (multi-fee-tier)
+                assert!(fee_bps <= 1000, "fee tier over MAX_POOL_FEE_BPS"); // guard 10000-fee_bps before AMM math
                 let pid = pool_id(&asset_a, &asset_b, fee_bps);
                 // Canonical orientation (see OP_SWAP): asset_a must be the low asset that maps to the
                 // contract's p.reserveA, else an in-ratio add could be cleared against a swapped
@@ -717,6 +726,7 @@ pub fn main() {
                 let asset_a = r32();
                 let asset_b = r32();
                 let fee_bps: u32 = io::read(); // pool fee tier — binds the pool id (multi-fee-tier)
+                assert!(fee_bps <= 1000, "fee tier over MAX_POOL_FEE_BPS"); // guard 10000-fee_bps before AMM math
                 let pid = pool_id(&asset_a, &asset_b, fee_bps);
                 // Canonical orientation (see OP_SWAP): asset_a must be the low asset that maps to the
                 // contract's p.reserveA, else the proportional withdrawal da=floor(R_A·ds/sp) — computed
@@ -1079,6 +1089,7 @@ pub fn main() {
                 for _ in 0..n_hops {
                     let asset_next = r32();
                     let fee_bps: u32 = io::read();
+                    assert!(fee_bps <= 1000, "route hop fee over MAX_POOL_FEE_BPS"); // guard get_amount_out's 10000-fee_bps
                     let reserve_a_pre: u64 = io::read(); // CANONICAL reserves (low asset = reserveA)
                     let reserve_b_pre: u64 = io::read();
                     assert!(cur_asset != asset_next, "route: hop maps an asset to itself");
@@ -1262,16 +1273,24 @@ pub fn main() {
                 let controller = r20();
                 let owner = r32();
                 let debt_value: u64 = io::read();
+                assert!(debt_value > 0, "cdp-mint: zero debt"); // a zero-debt position only bloats the set
                 let nonce = r32();
                 let n_legs: u32 = io::read();
                 assert!(n_legs > 0, "cdp-mint: empty basket");
                 assert!(spend_root != [0u8; 32], "cdp-mint: membership requires a non-zero spend root");
                 let mut leg_hashes: Vec<[u8; 32]> = Vec::with_capacity(n_legs as usize);
                 let mut legs_pv: Vec<CdpLeg> = Vec::with_capacity(n_legs as usize);
+                // Canonical basket: legs strictly asset-sorted (so basket_root is order-independent + no
+                // duplicate asset — a controller can price each asset once, no aggregation ambiguity) and
+                // every leg value > 0. asset ids are SHA256 (never 0), so > [0;32] holds for the first leg.
+                let mut prev_asset = [0u8; 32];
                 for _ in 0..n_legs {
                     let asset = r32();
+                    assert!(asset > prev_asset, "cdp-mint: basket legs must be strictly asset-sorted (no dups)");
+                    prev_asset = asset;
                     let (cx, cy, pt) = r_commitment();
                     let value: u64 = io::read();
+                    assert!(value > 0, "cdp-mint: zero-value collateral leg");
                     let index: u64 = io::read();
                     let path = r_path();
                     let r = scalar_reduce_be(&r32());
@@ -1408,6 +1427,7 @@ pub fn main() {
                 // id is the pinned CBTC_ZK_ASSET_ID — bridge_mint-shaped (no on-chain secp opening needed).
                 let outpoint = r32();
                 let v_btc: u64 = io::read();
+                assert!(v_btc > 0, "cbtc-mint: zero sats"); // a zero-value cBTC bearer note is pure clutter
                 let (cx, cy, c) = r_commitment();
                 let r = scalar_reduce_be(&r32());
                 assert!(verify_pedersen_opening(&c, v_btc, &r), "cbtc-mint: note opening (note != locked sats)");
