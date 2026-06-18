@@ -1329,6 +1329,41 @@ fn parse_coinbase_commitment(tx: &[u8]) -> Option<([u8; 32], [u8; 32])> {
     Some((commitment, tx[pos..end].try_into().ok()?))
 }
 
+/// Authenticate that `tx`'s WITNESS is consensus-committed in the block its txid sits in (BIP141), using
+/// compact merkle PATHS rather than the full block. For the burn-deposit provenance path: the caller has
+/// already proven `tx`'s txid into `txid_root` (a canonical block's txid merkle root, ∈ the provenance
+/// headers) at `tx_index`. This adds the witness binding:
+///   1. the same-block coinbase: its txid (index 0) must prove to the SAME `txid_root` (so the commitment
+///      we read belongs to `tx`'s block, not another);
+///   2. recompute the witness merkle root from `tx`'s wtxid (= dsha256(full tx)) at `tx_index` (the same
+///      index it has in the txid tree; the coinbase's wtxid is 0 in this tree) via `wtxid_siblings`;
+///   3. check the coinbase BIP141 commitment: dsha256(witness_root ‖ reserved) == commitment.
+/// Without this, a provenance tx's Taproot envelope (CETCH supply note / CMINT) is bound only by txid
+/// merkle — which strips witness — so a swapped witness with a fake envelope would pass.
+pub fn verify_tx_witness_committed(
+    tx: &[u8],
+    tx_index: u32,
+    wtxid_siblings: &[[u8; 32]],
+    coinbase: &[u8],
+    coinbase_txid_siblings: &[[u8; 32]],
+    txid_root: &[u8; 32],
+) -> Option<()> {
+    // (1) the coinbase is in the same block as `tx` (its txid at index 0 proves to the same txid root).
+    let coinbase_txid = compute_txid(coinbase)?;
+    if &verify_merkle_path(&coinbase_txid, coinbase_txid_siblings, 0) != txid_root {
+        return None;
+    }
+    let (commitment, reserved) = parse_coinbase_commitment(coinbase)?;
+    // (2) `tx`'s wtxid is committed in the witness tree at the same index.
+    let wtxid = double_sha256(tx);
+    let witness_root = verify_merkle_path(&wtxid, wtxid_siblings, tx_index);
+    // (3) coinbase BIP141 commitment over (witness_root ‖ reserved).
+    let mut preimage = [0u8; 64];
+    preimage[..32].copy_from_slice(&witness_root);
+    preimage[32..].copy_from_slice(&reserved);
+    if double_sha256(&preimage) == commitment { Some(()) } else { None }
+}
+
 /// Verify a chain of consecutive 80-byte headers: each header links to its predecessor
 /// (its prev-block-hash field == the predecessor's double-SHA256) and has valid PoW.
 /// Returns the chain tip's block hash (internal byte order) on success. The reflection
@@ -2353,6 +2388,54 @@ mod tests {
         assert_eq!(compute_txid(&tx1), compute_txid(&tx1_fake), "swapping the witness keeps the txid");
         let txs_fake: Vec<&[u8]> = vec![cb.as_slice(), tx1_fake.as_slice()];
         assert_eq!(verify_witness_commitment(&txs_fake), Some(false), "a swapped witness breaks the commitment");
+    }
+
+    // Path-based witness commitment (burn-deposit provenance): the same forgery, authenticated via merkle
+    // PATHS instead of a full block. A swapped witness keeps the txid (the txid path still passes) but
+    // breaks the wtxid/coinbase-commitment binding.
+    #[test]
+    fn tx_witness_committed_via_path_detects_swap() {
+        fn segwit_tx(wit: &[u8]) -> Vec<u8> {
+            let mut t = vec![0x01u8, 0, 0, 0, 0x00, 0x01, 0x01];
+            t.extend_from_slice(&[0u8; 32]); t.extend_from_slice(&[0, 0, 0, 0]);
+            t.push(0x00); t.extend_from_slice(&[0xff, 0xff, 0xff, 0xff]);
+            t.push(0x01); t.extend_from_slice(&[0u8; 8]); t.push(0x01); t.push(0x51);
+            t.push(0x01); t.push(wit.len() as u8); t.extend_from_slice(wit);
+            t.extend_from_slice(&[0, 0, 0, 0]);
+            t
+        }
+        let tx1 = segwit_tx(b"real-witness");
+        let reserved = [0x09u8; 32];
+        let witness_root = compute_merkle_root(&[[0u8; 32], double_sha256(&tx1)]);
+        let mut pre = [0u8; 64];
+        pre[..32].copy_from_slice(&witness_root); pre[32..].copy_from_slice(&reserved);
+        let commitment = double_sha256(&pre);
+        let mut cb = vec![0x01u8, 0, 0, 0, 0x00, 0x01, 0x01];
+        cb.extend_from_slice(&[0u8; 32]); cb.extend_from_slice(&[0xff, 0xff, 0xff, 0xff]);
+        cb.push(0x00); cb.extend_from_slice(&[0xff, 0xff, 0xff, 0xff]);
+        cb.push(0x01); cb.extend_from_slice(&[0u8; 8]);
+        cb.push(0x26); cb.extend_from_slice(&[0x6a, 0x24, 0xaa, 0x21, 0xa9, 0xed]); cb.extend_from_slice(&commitment);
+        cb.push(0x01); cb.push(0x20); cb.extend_from_slice(&reserved);
+        cb.extend_from_slice(&[0, 0, 0, 0]);
+
+        // The block is [coinbase, tx1]; tx1 is at index 1. (coinbase wtxid := 0 in the witness tree.)
+        let cb_txid = compute_txid(&cb).unwrap();
+        let tx1_txid = compute_txid(&tx1).unwrap();
+        let txid_root = compute_merkle_root(&[cb_txid, tx1_txid]);
+        assert_eq!(
+            verify_tx_witness_committed(&tx1, 1, &[[0u8; 32]], &cb, &[tx1_txid], &txid_root),
+            Some(()),
+            "honest provenance tx witness is committed",
+        );
+        // Swap tx1's witness: txid (hence txid_root + the coinbase's same-block proof) is unchanged, but
+        // the wtxid no longer matches the coinbase commitment.
+        let tx1_fake = segwit_tx(b"FAKE-CETCH-supply-note");
+        assert_eq!(compute_txid(&tx1_fake).unwrap(), tx1_txid, "swap keeps the txid");
+        assert_eq!(
+            verify_tx_witness_committed(&tx1_fake, 1, &[[0u8; 32]], &cb, &[tx1_txid], &txid_root),
+            None,
+            "a swapped provenance witness fails the commitment",
+        );
     }
 
     // Hardening (total parsers): malformed / truncated tx bytes are a clean reject (None), never a

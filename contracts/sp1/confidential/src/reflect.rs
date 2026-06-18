@@ -261,6 +261,14 @@ pub fn main() {
     let refs: Vec<&[u8]> = headers.iter().map(|h| h.as_slice()).collect();
     let tip_hash = bitcoin::verify_header_chain(&refs).expect("invalid Bitcoin header chain");
     let prev_hash: [u8; 32] = headers[0][4..36].try_into().expect("header prev field");
+    // Strict append-only: the first scanned block must be exactly the one after the last reflected block.
+    // state.height is the prior reflected height (bound by priorDigest); the contract pins prev_hash to the
+    // last reflected block, so headers[0] (which extends prev_hash) is at state.height + 1. Without this a
+    // prover could witness an INFLATED anchor_height — ratcheting the contract's lastRelayHeight forward to
+    // brick honest proofs whose real height is lower — or a DEFLATED one to re-fold blocks at/under the
+    // prior tip (the reflection has no rollback). This also makes the contract's recent-ancestor prevHash
+    // tolerance unreachable: an ancestor sits below state.height, so the batch would fail this equality.
+    assert_eq!(anchor_height, state.height + 1, "reflection must append exactly (anchor_height == prior reflected height + 1)");
 
     // FAST LANE (Ethereum-senior): fold the NEW eth-consumed ν into the spent set BEFORE the block scan,
     // so each source UTXO is removed from `live` and a racing Bitcoin spend in this batch is voided (its
@@ -377,6 +385,14 @@ pub fn main() {
                     let etch_index: u32 = io::read();
                     let n_etch_sib: u32 = io::read();
                     let etch_siblings: Vec<[u8; 32]> = (0..n_etch_sib).map(|_| r32()).collect();
+                    // BIP141 witness authentication for the etch (its CETCH supply note C_0 + mint authority
+                    // are read from the WITNESS, which the txid merkle path above does NOT bind): the tx's
+                    // wtxid path + the same-block coinbase commitment.
+                    let n_etch_wsib: u32 = io::read();
+                    let etch_wtxid_siblings: Vec<[u8; 32]> = (0..n_etch_wsib).map(|_| r32()).collect();
+                    let etch_coinbase: Vec<u8> = io::read();
+                    let n_etch_cb_sib: u32 = io::read();
+                    let etch_cb_txid_siblings: Vec<[u8; 32]> = (0..n_etch_cb_sib).map(|_| r32()).collect();
                     let n_prov_headers: u32 = io::read();
                     let prov_headers: Vec<Vec<u8>> = (0..n_prov_headers).map(|_| io::read()).collect();
                     let n_cxfers: u32 = io::read();
@@ -417,14 +433,22 @@ pub fn main() {
                     // mintable: issuer-authorized cmint witnesses (each: the T_MINT reveal tx + the commit tx
                     // + the reveal's merkle inclusion). Empty (n=0) for a fixed-supply asset.
                     let n_cmints: u32 = io::read();
-                    let mut cmints: Vec<(Vec<u8>, Vec<u8>, Vec<[u8; 32]>, u32)> = Vec::with_capacity(n_cmints as usize);
+                    #[allow(clippy::type_complexity)]
+                    let mut cmints: Vec<(Vec<u8>, Vec<u8>, Vec<[u8; 32]>, u32, Vec<[u8; 32]>, Vec<u8>, Vec<[u8; 32]>)> =
+                        Vec::with_capacity(n_cmints as usize);
                     for _ in 0..n_cmints {
                         let reveal_tx: Vec<u8> = io::read();
                         let commit_tx: Vec<u8> = io::read();
                         let n_msib: u32 = io::read();
                         let msib: Vec<[u8; 32]> = (0..n_msib).map(|_| r32()).collect();
                         let midx: u32 = io::read();
-                        cmints.push((reveal_tx, commit_tx, msib, midx));
+                        // BIP141 witness authentication for the reveal (its CMINT envelope is in the WITNESS).
+                        let n_rwsib: u32 = io::read();
+                        let reveal_wtxid_siblings: Vec<[u8; 32]> = (0..n_rwsib).map(|_| r32()).collect();
+                        let reveal_coinbase: Vec<u8> = io::read();
+                        let n_rcb_sib: u32 = io::read();
+                        let reveal_cb_txid_siblings: Vec<[u8; 32]> = (0..n_rcb_sib).map(|_| r32()).collect();
+                        cmints.push((reveal_tx, commit_tx, msib, midx, reveal_wtxid_siblings, reveal_coinbase, reveal_cb_txid_siblings));
                     }
                     let burned_cx = r32();
                     let burned_cy = r32();
@@ -449,6 +473,12 @@ pub fn main() {
                         if !prov_headers.iter().any(|h| bitcoin::extract_merkle_root(h) == etch_root) {
                             return None;
                         }
+                        // The CETCH (C_0 + mint authority) is read from the etch WITNESS, so bind it to the
+                        // block (BIP141), not just txid-merkle inclusion — else a swapped witness with a fake
+                        // CETCH would pass and forge the asset's supply anchor / mint authority.
+                        bitcoin::verify_tx_witness_committed(
+                            &etch_tx, etch_index, &etch_wtxid_siblings, &etch_coinbase, &etch_cb_txid_siblings, &etch_root,
+                        )?;
                         // (3) every provenance CXFER's confirmed block root is one of the canonical chain's roots.
                         if !prov.iter().all(|c| prov_headers.iter().any(|h| bitcoin::extract_merkle_root(h) == c.confirmed_block_root)) {
                             return None;
@@ -460,12 +490,17 @@ pub fn main() {
                         let c0_ch = commitment_hash_compressed(&c0_compressed)?;
                         let mut valid_leaves: Vec<([u8; 32], [u8; 32])> = Vec::with_capacity(1 + cmints.len());
                         valid_leaves.push((c0_outpoint, c0_ch));
-                        for (reveal_tx, commit_tx, msib, midx) in &cmints {
+                        for (reveal_tx, commit_tx, msib, midx, reveal_wtxid_siblings, reveal_coinbase, reveal_cb_txid_siblings) in &cmints {
                             let reveal_txid = bitcoin::compute_txid(reveal_tx)?;
                             let root = bitcoin::verify_merkle_path(&reveal_txid, msib, *midx);
                             if !prov_headers.iter().any(|h| bitcoin::extract_merkle_root(h) == root) {
                                 return None;
                             }
+                            // The CMINT envelope is read from the reveal's WITNESS — bind it (BIP141). commit_tx
+                            // needs no witness auth: it's bound by txid (reveal spends commit_txid) + its inputs.
+                            bitcoin::verify_tx_witness_committed(
+                                reveal_tx, *midx, reveal_wtxid_siblings, reveal_coinbase, reveal_cb_txid_siblings, &root,
+                            )?;
                             valid_leaves.push(burn_deposit::verify_cmint_authorized(b_asset, &mint_authority, reveal_tx, commit_tx)?);
                         }
                         // (4) burned note: outpoint = the burn tx's spent input; env ν is the note's REAL ν.
