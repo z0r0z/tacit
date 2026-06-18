@@ -20,6 +20,8 @@ interface IMintBurn {
 /// deploy a Tacit asset's public ERC20 on first registration. `CanonicalAssetFactory`
 /// implements this.
 interface ICanonicalAssetFactory {
+    /// The DEPLOYED canonical token for these params, or address(0) if not yet deployed — a stored
+    /// mapping, NOT a CREATE2 prediction, so the pool deploys exactly when this returns address(0).
     function tokenOf(bytes32 assetId, address minter, string calldata symbol_, uint8 decimals_, bytes32 cid)
         external
         view
@@ -131,7 +133,8 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     /// prev must equal this or a recent ancestor). Seeded to the genesis anchor in the ctor.
     bytes32 public lastReflectionBlockHash;
     /// Monotonic guard: the highest Bitcoin height a relay proof has attested. A proof
-    /// must strictly advance it, so a stale proof cannot roll the spent root backward.
+    /// must not decrease it (equal heights are valid — a batch may fold several effects from one
+    /// block), so a stale proof cannot roll the spent root backward.
     uint64 public lastRelayHeight;
     /// Factory used to lazily deploy a Tacit asset's canonical ERC20 on first bridge_mint,
     /// with the guest-proven metadata (OP_ATTEST_META). 0 = auto-register disabled.
@@ -254,8 +257,10 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     // A shared (Bitcoin-side) asset id => this pool's local registry key. A bridge_mint note
     // carries the SHARED id as its `asset` (it must, to prove membership in the Bitcoin
     // pool), so the registry resolves that id back to the local entry on unwrap — else a
-    // bridged note could never exit. Set only for a pool-minted asset whose canonical token
-    // commits to the same id; first-write-wins, so it cannot be squatted to misroute a payout.
+    // bridged note could never exit. Set for a pool-minted asset whose canonical token commits to the
+    // same id (via the guest-proven attest_meta path), or for NATIVE ETH (tETH) whose link is pinned in
+    // the constructor (TETH_BITCOIN_LINK) — never a permissionless caller's choice, so it cannot be
+    // squatted to misroute a payout.
     mapping(bytes32 => bytes32) public localAssetOf;
 
     // ──────────────────── Adaptor-swap lock set (OP_ADAPTOR_LOCK/CLAIM/REFUND) ────────────────────
@@ -1240,12 +1245,13 @@ contract ConfidentialPool is ReentrancyGuardTransient {
             }
             if (pv.withdrawals.length != 0 || pv.fees.length != 0 || pv.leaves.length != 0
                 || pv.swaps.length != 0 || pv.liquidity.length != 0) {
-                // Defense-in-depth: a Bitcoin-homed value-exit must MINT its bridged (pool-minted) asset,
-                // never pay from escrow funded by Ethereum wraps. The note's asset is pool-minted by
-                // construction (a btcHomed note is a bridged asset), so a compromised guest pairing it with
-                // an escrow asset here would steal others' escrow — reject. (Leaves are opaque commitments
-                // the contract can't asset-check; the guest binds a btcHomed output to the note's bridged
-                // asset, and a later unwrap of that leaf mints, never drains escrow.)
+                // A Bitcoin-homed DIRECT exit (withdrawal/fee) must resolve to a POOL-MINTED asset: those
+                // mint on exit, so a btcHomed batch never pays native-ETH/ERC20 escrow directly here. An
+                // escrow-backed bridged asset (tETH) is thus not exitable as a direct withdrawal/fee in a
+                // btcHomed batch; it exits as a LEAF, and its later, SEPARATE (non-btcHomed) unwrap draws
+                // escrow — backed 1:1 by the source note the reverse reflection retires on Bitcoin
+                // (bitcoinConsumed, below). Leaves are opaque, so the guest — not this contract — binds a
+                // btcHomed output to the source note's bridged asset.
                 for (uint256 i; i < pv.withdrawals.length; ++i) {
                     if (!assets[_resolveAsset(pv.withdrawals[i].assetId)].poolMinted) revert BtcHomedValueExitMustBridge();
                 }
