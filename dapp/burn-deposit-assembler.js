@@ -9,7 +9,7 @@
 // pre-anchor headers) is the worker's job. This module builds the witness GIVEN that data — the same shape
 // gen-reflection-burn-deposit.mjs produces synthetically, so the generator's native-exec exercises it.
 //
-// GUEST FORMAT CHANGE (pending, gates burn-deposit re-enablement). The guest's burn_deposit.rs now binds each
+// The guest's burn_deposit.rs binds each
 // provenance/etch/cmint step to the ACTUAL confirmed tx: it derives the txid (computed, not free), the
 // CXFER/CETCH/CMINT envelope, and the input outpoints FROM the tx bytes, and authenticates the witness via the
 // BIP141 commitment (wtxid merkle path + the same-block coinbase). So each provenance tx now needs, instead of
@@ -18,9 +18,9 @@
 // witness-commitment proof — `wtxidSiblings` (over the block's wtxids, coinbase wtxid := 0), `coinbase` (the
 // tx carrying the 6a24aa21a9ed commitment + reserved-value witness), and `coinbaseTxidSiblings` (the coinbase
 // at txid index 0). The worker's tracer must therefore fetch each provenance block's coinbase + wtxids. This
-// module, the SP1-stdin serializer + foldBurnDepositTx mirror in confidential-pool.js, and the generator are
-// updated together and re-verified by the native-exec gate (gen-reflection-burn-deposit.mjs) before
-// burn-deposit onboarding is re-enabled. Until then the serialization below is the pre-change shape.
+// module, the SP1-stdin serializer + foldBurnDepositTx mirror in confidential-pool.js, and the generator use
+// this same shape. A record's `blockWtxids` is the full ordered wtxid list; its coinbase leaf MUST be the
+// BIP141 zero sentinel (the helper enforces that instead of trusting a fetched coinbase wtxid).
 //
 // Deps (injected so the worker + the test generator each supply their own Bitcoin helpers):
 //   dsha256(Uint8Array) -> Uint8Array     (double-SHA256, internal order)
@@ -48,6 +48,7 @@ export function makeBurnDepositAssembler({ dsha256, cat, bytesToHex }) {
     return sibs;
   }
   function merkleRoot(txids) {
+    if (!txids.length) throw new Error('merkleRoot: empty block');
     let layer = txids.map((t) => Uint8Array.from(t));
     while (layer.length > 1) {
       const next = [];
@@ -61,8 +62,27 @@ export function makeBurnDepositAssembler({ dsha256, cat, bytesToHex }) {
     return bytesToHex(layer[0]);
   }
 
+  const ZERO32 = new Uint8Array(32);
+  function witnessPath(record, label) {
+    if (!Array.isArray(record.blockTxids) || !Array.isArray(record.blockWtxids)) {
+      throw new Error(`${label}: blockTxids and blockWtxids required`);
+    }
+    if (record.blockTxids.length !== record.blockWtxids.length || record.index <= 0 || record.index >= record.blockTxids.length) {
+      throw new Error(`${label}: witness arrays/index invalid (protocol tx must follow coinbase)`);
+    }
+    if (typeof record.coinbase !== 'string' || !record.coinbase.startsWith('0x')) {
+      throw new Error(`${label}: raw coinbase required`);
+    }
+    const wtxids = record.blockWtxids.map((x, i) => i === 0 ? ZERO32 : x);
+    return {
+      wtxidSiblings: merkleSiblings(wtxids, record.index),
+      coinbase: record.coinbase,
+      coinbaseTxidSiblings: merkleSiblings(record.blockTxids, 0),
+    };
+  }
+
   // Build the burnDeposit witness.
-  //   etch:       { tx:"0x…", blockTxids:[bytes], index }
+  //   etch:       { tx:"0x…", blockTxids:[bytes], blockWtxids:[bytes], coinbase:"0x…", index }
   //   provHeaders:["0x…"] (the pre-anchor chain whose tip == the batch anchor's prev_hash)
   //   cxfers:     [{ txid:"0x…", inputs:[{prevTxid,prevVout,commitment}], outputs:[{commitment,vout}],
   //                  rangeProof:"0x…", kernelSig:"0x…", blockTxids:[bytes], index }]
@@ -75,30 +95,44 @@ export function makeBurnDepositAssembler({ dsha256, cat, bytesToHex }) {
   // resolved. The live worker builds this from the holder-traced provenance; the canonical scan
   // (foldBurnDepositTx) then appends the state-dependent IMT inserts at the fold point.
   function buildBurnDepositStatic({ etch, provHeaders, cxfers, cmints = [] }) {
+    const ew = witnessPath(etch, 'etch');
     return {
       etchTx: etch.tx,
       etchIndex: etch.index,
       etchSiblings: merkleSiblings(etch.blockTxids, etch.index),
+      etchWtxidSiblings: ew.wtxidSiblings,
+      etchCoinbase: ew.coinbase,
+      etchCoinbaseTxidSiblings: ew.coinbaseTxidSiblings,
       provHeaders,
-      cxfers: cxfers.map((c) => ({
-        txid: c.txid,
-        inputs: c.inputs,
-        outputs: c.outputs,
-        burnedAmount: c.burnedAmount || 0, // 0 for a transfer; > 0 for a CBURN step (Σ C_in = burned·H + Σ C_out)
-        rangeProof: c.rangeProof,
-        kernelSig: c.kernelSig,
-        merkleSiblings: merkleSiblings(c.blockTxids, c.index),
-        merkleIndex: c.index,
-        confirmedBlockRoot: merkleRoot(c.blockTxids),
-      })),
+      cxfers: cxfers.map((c, i) => {
+        const w = witnessPath(c, `cxfer[${i}]`);
+        return {
+          tx: c.tx,
+          inputCommitments: c.inputs.map((x) => x.commitment),
+          outputVouts: c.outputs.map((x) => x.vout),
+          burnedAmount: c.burnedAmount || 0,
+          merkleSiblings: merkleSiblings(c.blockTxids, c.index),
+          merkleIndex: c.index,
+          confirmedBlockRoot: merkleRoot(c.blockTxids),
+          wtxidSiblings: w.wtxidSiblings,
+          coinbase: w.coinbase,
+          coinbaseTxidSiblings: w.coinbaseTxidSiblings,
+        };
+      }),
       // mintable: issuer-authorized cmints in the lineage (revealTx + commitTx + reveal merkle inclusion).
       // Empty for fixed-supply. cm: { revealTx, commitTx, blockTxids, index }.
-      cmints: cmints.map((cm) => ({
-        revealTx: cm.revealTx,
-        commitTx: cm.commitTx,
-        merkleSiblings: merkleSiblings(cm.blockTxids, cm.index),
-        merkleIndex: cm.index,
-      })),
+      cmints: cmints.map((cm, i) => {
+        const w = witnessPath(cm, `cmint[${i}]`);
+        return {
+          revealTx: cm.revealTx,
+          commitTx: cm.commitTx,
+          merkleSiblings: merkleSiblings(cm.blockTxids, cm.index),
+          merkleIndex: cm.index,
+          revealWtxidSiblings: w.wtxidSiblings,
+          revealCoinbase: w.coinbase,
+          revealCoinbaseTxidSiblings: w.coinbaseTxidSiblings,
+        };
+      }),
     };
   }
 
@@ -115,5 +149,5 @@ export function makeBurnDepositAssembler({ dsha256, cat, bytesToHex }) {
     };
   }
 
-  return { assembleBurnDeposit, buildBurnDepositStatic, merkleSiblings, merkleRoot };
+  return { assembleBurnDeposit, buildBurnDepositStatic, merkleSiblings, merkleRoot, witnessPath };
 }

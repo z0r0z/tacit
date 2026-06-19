@@ -36,6 +36,7 @@ fn main() {
     stdin.write(&vec![0u8; 32]); // bitcoinSpentRoot = 0
     stdin.write(&vec![0u8; 32]); // bitcoinBurnRoot = 0
     stdin.write(&vec![0u8; 32]); // lockSetRoot = 0 (no adaptor claim/refund; guest header reads it unconditionally — main.rs:139)
+    stdin.write(&vec![0u8; 32]); // cdpPositionRoot = 0 (no CDP close/liquidate in this batch)
     stdin.write(&1u32);          // numOps
     stdin.write(&9u8);           // OP_OTC
     stdin.write(&hexv(f["assetA"].as_str().unwrap()));

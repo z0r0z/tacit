@@ -33,8 +33,6 @@ interface ICanonicalAssetFactory {
 
 /// Minimal ERC20 metadata read for deriving the Tacit-side scale of an external token.
 interface IERC20Metadata {
-    function name() external view returns (string memory);
-    function symbol() external view returns (string memory);
     function decimals() external view returns (uint8);
 }
 
@@ -100,78 +98,78 @@ interface ICollateralEngine {
 contract ConfidentialPool is ReentrancyGuardTransient {
     // ──────────────────── Constants ────────────────────
 
-    uint256 public constant TREE_LEVELS = 32;
-    uint256 public constant MAX_LEAVES = 1 << TREE_LEVELS;
+    uint256 internal constant TREE_LEVELS = 32;
+    uint256 internal constant MAX_LEAVES = 1 << TREE_LEVELS;
 
     /// Decimals every Tacit-native asset is presented at on Ethereum (the ERC20
     /// convention). A Tacit asset's native precision (≤ 8, Bitcoin's limit) is harmonized
     /// up to this; `unitScale = 10^(ETH_DECIMALS − tacitDecimals)` does the amount scaling.
-    uint8 public constant ETH_DECIMALS = 18;
-    uint16 public constant PV_VERSION = 1;
+    uint8 internal constant ETH_DECIMALS = 18;
+    uint16 internal constant PV_VERSION = 1;
     /// Cap on a confidential AMM pool's fee (basis points). createPair is permissionless + one-per-slot,
     /// so bounding the fee stops a front-runner from seeding the only slot with an unusable 100% fee.
-    uint32 public constant MAX_POOL_FEE_BPS = 1000; // 10%
+    uint32 internal constant MAX_POOL_FEE_BPS = 1000; // 10%
     /// V2-style minimum liquidity: this many of a pool's seed shares are permanently locked by the first
     /// OP_LP_ADD — no note holds them — so a fully-exited pool keeps a live share/reserve floor and the
     /// one-per-(pair,fee) slot can never be emptied to a bricked, un-rejoinable state. The founder's own
     /// position is the REMAINDER (seed shares − this), recorded as a claimable LP-share note — so a
     /// founder recovers their seed rather than donating all of it (only this standard lock is donated).
     /// Enforced on-chain by the settle LP loop (sharesPost can never drop below this).
-    uint256 public constant MINIMUM_LIQUIDITY = 1000;
+    uint256 internal constant MINIMUM_LIQUIDITY = 1000;
 
     // ──────────────────── Immutables ────────────────────
 
-    ISP1Verifier public immutable SP1_VERIFIER;
-    bytes32 public immutable PROGRAM_VKEY;
+    ISP1Verifier internal immutable SP1_VERIFIER;
+    bytes32 internal immutable PROGRAM_VKEY;
     /// keccak(chainid, address(this)) — the guest stamps this into the public
     /// values, so a proof is bound to this deployment and cannot be replayed.
-    bytes32 public immutable CHAIN_BINDING;
+    bytes32 internal immutable CHAIN_BINDING;
     /// vkey of the Bitcoin-state relay prover. Bitcoin confidential-pool state (the note
     /// tree root + the spent-nullifier root) is attested ONLY by an SP1 proof against this
     /// vkey — re-derived from relayed Bitcoin headers (the SP1PoolRootVerifier pattern).
     /// No trusted oracle: the proof is the sole authority.
-    bytes32 public immutable BITCOIN_RELAY_VKEY;
+    bytes32 internal immutable BITCOIN_RELAY_VKEY;
     /// Bitcoin light relay used to anchor each reflection proof's header chain to canonical
     /// Bitcoin (mirrors SP1PoolRootVerifier). 0 ⇒ reflection inactive (the ctor bars a non-zero
     /// BITCOIN_RELAY_VKEY without a relay). When set, attest pins the proof's tip to a MATURED
     /// ancestor of RELAY.tip() (RELAY.tip() walked back REFLECTION_CONFIRMATIONS, then within
     /// REFLECTION_FINALITY_WINDOW) and its prev to the prior attested tip — which forces the whole
     /// proven chain to be canonical Bitcoin AND buries every folded effect that many confirmations.
-    IRelay public immutable HEADER_RELAY;
+    IRelay internal immutable HEADER_RELAY;
     /// Max ancestor distance accepted for the reflection prev/tip anchor (sub-window reorg tolerance).
-    uint256 public constant REFLECTION_FINALITY_WINDOW = 6;
+    uint256 internal constant REFLECTION_FINALITY_WINDOW = 6;
     /// Maturity depth for a reflected batch: its tip must be buried at least this many blocks below the
     /// canonical relay tip, so every effect it folds — above all a bridge-burn that authorizes a
     /// bridge_mint — carries that many Bitcoin confirmations. Without it a burn at ~1 confirmation could
     /// authorize a mint, and a shallow tip reorg would then strand it (the burned note re-lives on
     /// Bitcoin while the Ethereum mint stands = value duplication). The on-chain analog of the mixer's
     /// CONFIRMATION_DEPTH — set per deployment (a faster test chain may pick fewer than mainnet's 6).
-    uint256 public immutable REFLECTION_CONFIRMATIONS;
+    uint256 internal immutable REFLECTION_CONFIRMATIONS;
     /// Upper bound on REFLECTION_CONFIRMATIONS: the anchor walks it (+ the window) in storage per attest,
     /// so an unbounded value would make attest exceed the block gas limit and brick reflection. 144 ≈ a
     /// day of Bitcoin blocks — far above any sane confirmation depth.
-    uint256 public constant MAX_REFLECTION_CONFIRMATIONS = 144;
+    uint256 internal constant MAX_REFLECTION_CONFIRMATIONS = 144;
     /// The Bitcoin block hash at the tip of the last attested reflection batch (the next batch's
     /// prev must equal this or a recent ancestor). Seeded to the genesis anchor in the ctor.
-    bytes32 public lastReflectionBlockHash;
+    bytes32 internal lastReflectionBlockHash;
     /// Monotonic guard: the highest Bitcoin height a relay proof has attested. A proof
     /// must not decrease it (equal heights are valid — a batch may fold several effects from one
     /// block), so a stale proof cannot roll the spent root backward.
-    uint64 public lastRelayHeight;
+    uint64 internal lastRelayHeight;
     /// Factory used to lazily deploy a Tacit asset's canonical ERC20 on first bridge_mint,
     /// with the guest-proven metadata (OP_ATTEST_META). 0 = auto-register disabled.
-    ICanonicalAssetFactory public immutable CANONICAL_FACTORY;
+    ICanonicalAssetFactory internal immutable CANONICAL_FACTORY;
     /// Canonical Bitcoin-side asset id bound to NATIVE ETH (tETH = shielded ETH) for this generation,
     /// pinned at construction. Native ETH has no token whose ASSET_ID could authenticate a cross-chain
     /// link, so the link is set once here rather than via the permissionless registerWrapped — fixing it
     /// at deploy and keeping the tacit-side tETH id consistent across pool generations. 0 ⇒ no tETH here.
-    bytes32 public immutable TETH_BITCOIN_LINK;
+    bytes32 internal immutable TETH_BITCOIN_LINK;
 
     /// The cBTC native-ETH escrow gate (CollateralEngine). Immutable pointer set at deploy (the engine is
     /// itself the mutable, DAO-governed policy contract; this pointer just names it). 0 ⇒ cBTC mint is inert
     /// (no escrow gate available → OP_CBTC_MINT fails closed). The engine can NEVER mint/move backing — it
     /// only answers escrowSufficient; the proof + this contract hold the value.
-    ICollateralEngine public immutable COLLATERAL_ENGINE;
+    ICollateralEngine internal immutable COLLATERAL_ENGINE;
 
     // ──────────────────── Commitment tree (global, Keccak) ────────────────────
 
@@ -189,7 +187,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     // (the total leaves ever created — deposits, settle outputs, bridge-mints). Bitcoin-homed cross-lane
     // spends are backed by the reflected Bitcoin tree, not this one, so they are excluded. Mirrors the
     // Bitcoin mixer's #spent ≤ #leaves reserve floor; bounds a guest/vkey compromise to real deposits.
-    uint256 public evmNullifiersSpent;
+    uint256 internal evmNullifiersSpent;
 
     // ──────────────────── Assets ────────────────────
 
@@ -205,7 +203,20 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         uint8 decimals;
     }
 
-    mapping(bytes32 => Asset) public assets;     // asset_id => Asset
+    struct AssetStore {
+        bool registered;
+        address underlying;   // ERC-20 backing; for poolMinted assets, the canonical ERC20 this pool mints/burns
+        uint256 unitScale;    // underlying base units per in-system value unit
+        bytes32 crossChainLink; // Bitcoin-side asset id for shared-asset recognition (0 if none)
+        bool poolMinted;      // true ⇒ this pool mints/burns the canonical ERC20; false ⇒ escrow-backed
+        bytes32 name;
+        bytes32 symbol;
+        uint8 nameLen;
+        uint8 symbolLen;
+        uint8 decimals;
+    }
+
+    mapping(bytes32 => AssetStore) internal _assets; // asset_id => Asset
     mapping(bytes32 => uint256) public escrow;   // asset_id => escrowed underlying
 
     // ──────────────────── Confidential AMM pools (OP_SWAP) ────────────────────
@@ -272,14 +283,14 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     // cBTC). Reflection-verified state, advanced each attestation — the off-pool CollateralEngine reads it via
     // the cbtcBackingSats() view to size the peg shortfall (circulating cBTC vs this). The peg itself is
     // oracle-free; this is consumed only by the (standalone, governable) buffer, never by settle. Exposed
-    // through the named cbtcBackingSats() view (the buffer's integration point), so it needs no auto-getter.
-    uint256 internal knownCbtcBackingSats;
+    // through the named cbtcBackingSats() view (the buffer's integration point).
+    uint256 public cbtcBackingSats;
 
     // The reflection prover's genesis digest — ScanReflection::genesis().digest() (the shipped
     // full-scan model): an empty note tree + sentinel-seeded spent/burn sets + empty live-UTXO set.
     // knownReflectionDigest is seeded to this so the first attestation continues genesis. Pinned in
     // cxfer-core (genesis_digest_matches_contract_constant). Tied to BITCOIN_RELAY_VKEY (one prover).
-    bytes32 public constant REFLECTION_GENESIS_DIGEST =
+    bytes32 internal constant REFLECTION_GENESIS_DIGEST =
         0xeab17bcb92a60d3504973e52dad54aaafe331d87999f94304fac7c29cf126388;
 
     // A shared (Bitcoin-side) asset id => this pool's local registry key. A bridge_mint note
@@ -301,14 +312,14 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     // root. Value conserves lock→claim/refund (the kernel), and the claim/refund OUTPUT is the note-tree
     // leaf that carries the value back out — so the lock set adds no note-tree leaves and never touches
     // the reserve floor. Same Keccak hashing + depth as the note tree (shares `zeros`).
-    uint256 public lockNextLeafIndex;
+    uint256 internal lockNextLeafIndex;
     bytes32 public lockRoot;
     bytes32[TREE_LEVELS] internal lockFilledSubtrees;
-    mapping(bytes32 => bool) public everKnownLockRoot;
+    mapping(bytes32 => bool) internal everKnownLockRoot;
     // ν of locked notes already claimed or refunded — spend-once (claim XOR refund). A namespace
     // distinct from `nullifierSpent`: a locked note was never a note-tree leaf, so a claim/refund must
     // neither be gated by nor consume the note-tree nullifier set.
-    mapping(bytes32 => bool) public lockSpent;
+    mapping(bytes32 => bool) internal lockSpent;
 
     // ──────────────────── Fast lane (Bitcoin-homed note spent on Ethereum) ────────────────────
     // Appended at the END of storage (like the lock set above) so existing slots are unchanged —
@@ -349,20 +360,26 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     // cbtcLockCommitment are the OP_CBTC_MINT gate (the note must match the lock's value + pre-committed
     // commitment); cbtcLockSpent flags a spend the CollateralEngine slashes if it wasn't a redemption;
     // cbtcMinted is the one-mint-per-lock gate. See ops/DESIGN-confidential-defi-v1.md §3.
-    mapping(bytes32 => uint64) public cbtcLockVBtc;
-    mapping(bytes32 => bytes32) public cbtcLockCommitment;
+    mapping(bytes32 => uint64) internal cbtcLockVBtc;
+    mapping(bytes32 => bytes32) internal cbtcLockCommitment;
     mapping(bytes32 => bool) public cbtcLockSpent;
-    mapping(bytes32 => bool) public cbtcMinted;
+    mapping(bytes32 => bool) internal _cbtcMinted;
 
     // CDP position set (ops 15–17): a confidential CDP position lives in a SEPARATE incremental-Merkle
     // accumulator (same hashing/depth as the note + lock trees), never the note tree — so only an
     // OP_CDP_CLOSE / OP_CDP_LIQUIDATE (proven against a known cdp root) can consume it. The position is
     // domain-separated in-guest; close/liquidate spend its nullifier once (cdpPositionSpent).
-    uint256 public cdpNextLeafIndex;
+    uint256 internal cdpNextLeafIndex;
     bytes32 public cdpRoot;
     bytes32[TREE_LEVELS] internal cdpFilledSubtrees;
-    mapping(bytes32 => bool) public everKnownCdpRoot;
-    mapping(bytes32 => bool) public cdpPositionSpent;
+    mapping(bytes32 => bool) internal everKnownCdpRoot;
+    mapping(bytes32 => bool) internal cdpPositionSpent;
+
+    // Enumerable fast-lane consume log. The mapping form keeps append-only storage cheap while letting the
+    // eth-reflection guest prove the exact index range [priorCount, bitcoinConsumedCount), rather than a
+    // worker-selected set of `bitcoinConsumed[nu]` keys whose cardinality merely matches the counter.
+    // APPENDED LAST: its declaration slot is a guest-pinned protocol interface.
+    mapping(uint256 => bytes32) public bitcoinConsumedAt;
 
     // ──────────────────── cBTC escrow views (the CollateralEngine reads these) ────────────────────
 
@@ -621,12 +638,6 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         }
     }
 
-    /// Reject stray ETH: native ETH may only enter through the payable `wrap`, which binds it to a
-    /// deposit. A bare send would otherwise be unaccounted + stuck.
-    receive() external payable {
-        revert EthValueMismatch();
-    }
-
     // ──────────────────── Asset registry ────────────────────
 
     /// @notice Register an EXTERNAL ERC20 (e.g. USDC) as a confidential asset: the pool
@@ -669,10 +680,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         uint8 d = IERC20Metadata(underlying).decimals();
         uint8 tacitDecimals = d > 8 ? 8 : d;
         uint256 unitScale = 10 ** uint256(d - tacitDecimals);
-        return _register(
-            underlying, unitScale, crossChainLink, false,
-            IERC20Metadata(underlying).name(), IERC20Metadata(underlying).symbol(), d
-        );
+        return _register(underlying, unitScale, crossChainLink, false, "", "", d);
     }
 
     /// @notice Register a LOCAL pool-minted asset whose canonical ERC20 THIS POOL mints/burns
@@ -739,8 +747,8 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         }
         // Native ETH is 18-decimal; bound its escrow scale the same way (poolMinted+address(0) reverted above).
         if (underlying == address(0) && unitScale > 10 ** uint256(ETH_DECIMALS)) revert BadDecimals();
-        assetId = sha256(abi.encodePacked("tacit-evm-token-v1", uint64(block.chainid), underlying));
-        if (assets[assetId].registered) revert AlreadyRegistered();
+        assetId = _evmAssetId(underlying);
+        if (_assets[assetId].registered) revert AlreadyRegistered();
         // A cross-chain link makes the asset's SHARED id resolve to this local entry on unwrap of a
         // bridged note (H-2). TWO backings may claim a Bitcoin id:
         //  - a POOL-MINTED asset whose canonical token COMMITS to the same id (ASSET_ID == link); or
@@ -768,11 +776,43 @@ contract ConfidentialPool is ReentrancyGuardTransient {
             if (localAssetOf[crossChainLink] != bytes32(0)) revert CrossChainLinkTaken();
             localAssetOf[crossChainLink] = assetId;
         }
-        assets[assetId] = Asset({
+        (bytes32 packedName, uint8 nameLen) = _packShortString(name_);
+        (bytes32 packedSymbol, uint8 symbolLen) = _packShortString(symbol_);
+        _assets[assetId] = AssetStore({
             registered: true, underlying: underlying, unitScale: unitScale, crossChainLink: crossChainLink,
-            poolMinted: poolMinted, name: name_, symbol: symbol_, decimals: decimals_
+            poolMinted: poolMinted, name: packedName, symbol: packedSymbol, nameLen: nameLen,
+            symbolLen: symbolLen, decimals: decimals_
         });
         emit AssetRegistered(assetId, underlying, unitScale, name_, symbol_, decimals_);
+    }
+
+    function assets(bytes32 assetId)
+        external
+        view
+        returns (
+            bool registered,
+            address underlying,
+            uint256 unitScale,
+            bytes32 crossChainLink,
+            bool poolMinted,
+            string memory name,
+            string memory symbol,
+            uint8 decimals
+        )
+    {
+        AssetStore storage a = _assets[assetId];
+        registered = a.registered;
+        underlying = a.underlying;
+        unitScale = a.unitScale;
+        crossChainLink = a.crossChainLink;
+        poolMinted = a.poolMinted;
+        name = _unpackShortString(a.name, a.nameLen);
+        symbol = _unpackShortString(a.symbol, a.symbolLen);
+        decimals = a.decimals;
+    }
+
+    function cbtcMinted(bytes32 outpoint) external view returns (bool) {
+        return _cbtcMinted[outpoint];
     }
 
     // ──────────────────── Wrap (public deposit) ────────────────────
@@ -787,7 +827,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     ///         `commit` and verifies C opens to amount/unitScale). Amount is public at this boundary
     ///         (the underlying transfer reveals it); everything after is blinded.
     function wrap(bytes32 assetId, uint256 amount, bytes32 commit) external payable nonReentrant {
-        Asset storage a = assets[assetId];
+        AssetStore storage a = _assets[assetId];
         if (!a.registered) revert NotRegistered();
         if (amount == 0 || amount % a.unitScale != 0) revert AmountNotAligned();
 
@@ -878,9 +918,19 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     ///      the first funder (the first OP_LP_ADD) sets the reserves/ratio, so the pair is never lost.
     function _ensurePair(bytes32 assetA, bytes32 assetB, uint32 feeBps, bool revertIfExists) internal returns (bytes32 poolId) {
         if (assetA == assetB) revert SameAsset();
-        if (!assets[assetA].registered || !assets[assetB].registered) revert NotRegistered();
+        if (!_assets[assetA].registered || !_assets[assetB].registered) revert NotRegistered();
         if (feeBps > MAX_POOL_FEE_BPS) revert FeeTooHigh();
         (bytes32 lo, bytes32 hi) = assetA < assetB ? (assetA, assetB) : (assetB, assetA);
+        poolId = _poolId(lo, hi, feeBps);
+        if (pools[poolId].init) {
+            if (revertIfExists) revert PoolExists();
+            return poolId; // atomic create-and-seed: the slot already exists, reuse it
+        }
+        pools[poolId] = Pool({init: true, assetA: lo, assetB: hi, reserveA: 0, reserveB: 0, feeBps: feeBps, totalShares: 0});
+        emit PoolInitialized(poolId, lo, hi, 0, 0, feeBps); // empty; the first OP_LP_ADD seeds reserves + shares
+    }
+
+    function _poolId(bytes32 lo, bytes32 hi, uint32 feeBps) internal pure returns (bytes32 poolId) {
         assembly ("memory-safe") {
             let m := mload(0x40)
             mstore(m, lo)
@@ -888,12 +938,6 @@ contract ConfidentialPool is ReentrancyGuardTransient {
             mstore(add(m, 0x40), and(feeBps, 0xffffffff))
             poolId := keccak256(m, 0x60)
         }
-        if (pools[poolId].init) {
-            if (revertIfExists) revert PoolExists();
-            return poolId; // atomic create-and-seed: the slot already exists, reuse it
-        }
-        pools[poolId] = Pool({init: true, assetA: lo, assetB: hi, reserveA: 0, reserveB: 0, feeBps: feeBps, totalShares: 0});
-        emit PoolInitialized(poolId, lo, hi, 0, 0, feeBps); // empty; the first OP_LP_ADD seeds reserves + shares
     }
 
     // ──────────────────── Public (non-shielded) AMM periphery ────────────────────
@@ -905,9 +949,6 @@ contract ConfidentialPool is ReentrancyGuardTransient {
 
     error InsufficientLiquidity();
     error SlippageExceeded();
-    event PublicLiquidityAdded(bytes32 indexed poolId, address indexed to, uint256 valueA, uint256 valueB, uint256 shares);
-    event PublicLiquidityRemoved(bytes32 indexed poolId, address indexed owner, address indexed to, uint256 valueA, uint256 valueB, uint256 shares);
-    event PublicSwap(bytes32 indexed poolId, address indexed sender, address indexed to, bytes32 assetIn, uint256 valueIn, uint256 valueOut);
 
     /// @dev Integer sqrt (Babylonian) for the first-mint share = isqrt(valueA·valueB).
     function _isqrt(uint256 x) internal pure returns (uint256 y) {
@@ -925,14 +966,14 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     ///      (sharesMinted ≤ floor(v·totalShares/reserve) ⇒ sharesMinted·reserve/totalShares ≤ v), so the
     ///      refund stays ≥ 0.
     function _ceilDiv(uint256 x, uint256 y) internal pure returns (uint256) {
-        return x == 0 ? 0 : (x - 1) / y + 1;
+        unchecked { return (x + y - 1) / y; }
     }
 
     /// @dev Escrow a PUBLIC deposit of `amount` of `assetId` and return the in-system value (amount/unitScale).
     ///      Mirrors `wrap`'s escrow logic (pool-minted burn / native-ETH escrow / fee-on-transfer-safe ERC20).
     ///      Native-ETH msg.value coverage is checked by the caller (it knows which legs are ETH).
     function _ingestPublic(bytes32 assetId, uint256 amount) internal returns (uint256 value) {
-        Asset storage a = assets[assetId];
+        AssetStore storage a = _assets[assetId];
         if (!a.registered) revert NotRegistered();
         if (amount == 0 || amount % a.unitScale != 0) revert AmountNotAligned();
         value = amount / a.unitScale;
@@ -968,8 +1009,8 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         (bytes32 assetLo, bytes32 assetHi, uint256 amtLo, uint256 amtHi) =
             assetA < assetB ? (assetA, assetB, amountA, amountB) : (assetB, assetA, amountB, amountA);
         // ETH coverage: at most one leg is native ETH; msg.value must equal that leg's amount (0 if none).
-        uint256 expectedEth = (assets[assetLo].underlying == address(0) ? amtLo : 0)
-                            + (assets[assetHi].underlying == address(0) ? amtHi : 0);
+        uint256 expectedEth = (_assets[assetLo].underlying == address(0) ? amtLo : 0)
+                            + (_assets[assetHi].underlying == address(0) ? amtHi : 0);
         if (msg.value != expectedEth) revert EthValueMismatch();
         uint256 vLo = _ingestPublic(assetLo, amtLo);
         uint256 vHi = _ingestPublic(assetHi, amtHi);
@@ -991,7 +1032,6 @@ contract ConfidentialPool is ReentrancyGuardTransient {
             if (p.reserveA > type(uint64).max || p.reserveB > type(uint64).max || p.totalShares > type(uint64).max) revert ValueOutOfRange();
             if (vLo > addLo) _payout(assetLo, msg.sender, vLo - addLo);
             if (vHi > addHi) _payout(assetHi, msg.sender, vHi - addHi);
-            emit PublicLiquidityAdded(poolId, to, addLo, addHi, sharesMinted);
             return sharesMinted;
         }
         uint256 minted = _isqrt(vLo * vHi);
@@ -1000,7 +1040,6 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         sharesMinted = minted - MINIMUM_LIQUIDITY; // MINIMUM_LIQUIDITY is the permanent noteless floor
         if (sharesMinted < minSharesOut) revert SlippageExceeded(); // shares slippage on the first add too
         lpShares[poolId][to] += sharesMinted;
-        emit PublicLiquidityAdded(poolId, to, vLo, vHi, sharesMinted);
     }
 
     /// @notice Burn PUBLIC LP shares and withdraw the proportional reserves to `to` (public ERC20/ETH out).
@@ -1013,14 +1052,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         if (deadline != 0 && block.timestamp > deadline) revert Expired();
         if (to == address(0)) revert ZeroAddress();
         (bytes32 lo, bytes32 hi) = assetA < assetB ? (assetA, assetB) : (assetB, assetA);
-        bytes32 poolId;
-        assembly ("memory-safe") {
-            let m := mload(0x40)
-            mstore(m, lo)
-            mstore(add(m, 0x20), hi)
-            mstore(add(m, 0x40), and(feeBps, 0xffffffff))
-            poolId := keccak256(m, 0x60)
-        }
+        bytes32 poolId = _poolId(lo, hi, feeBps);
         Pool storage p = pools[poolId];
         if (!p.init) revert PoolNotInit();
         uint256 bal = lpShares[poolId][msg.sender];
@@ -1043,7 +1075,6 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         // Output slippage in the caller's (assetA, assetB) orientation, mapped to canonical lo/hi.
         (uint256 minLo, uint256 minHi) = assetA < assetB ? (minAmountA, minAmountB) : (minAmountB, minAmountA);
         if (amountLo < minLo || amountHi < minHi) revert SlippageExceeded();
-        emit PublicLiquidityRemoved(poolId, msg.sender, to, vLo, vHi, shares);
     }
 
     /// @notice PUBLIC swap against the pool's public reserves (no privacy — the amount is revealed; for a
@@ -1057,17 +1088,10 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         if (to == address(0)) revert ZeroAddress();
         if (assetIn == assetOut) revert SameAsset();
         (bytes32 lo, bytes32 hi) = assetIn < assetOut ? (assetIn, assetOut) : (assetOut, assetIn);
-        bytes32 poolId;
-        assembly ("memory-safe") {
-            let m := mload(0x40)
-            mstore(m, lo)
-            mstore(add(m, 0x20), hi)
-            mstore(add(m, 0x40), and(feeBps, 0xffffffff))
-            poolId := keccak256(m, 0x60)
-        }
+        bytes32 poolId = _poolId(lo, hi, feeBps);
         Pool storage p = pools[poolId];
         if (!p.init) revert PoolNotInit();
-        uint256 expectedEth = assets[assetIn].underlying == address(0) ? amountIn : 0;
+        uint256 expectedEth = _assets[assetIn].underlying == address(0) ? amountIn : 0;
         if (msg.value != expectedEth) revert EthValueMismatch();
         uint256 vIn = _ingestPublic(assetIn, amountIn);
         bool inIsLo = assetIn == lo;
@@ -1088,16 +1112,18 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         if (p.reserveA > type(uint64).max || p.reserveB > type(uint64).max) revert ValueOutOfRange();
         amountOut = _payout(assetOut, to, vOut);
         if (amountOut < minAmountOut) revert SlippageExceeded();
-        emit PublicSwap(poolId, msg.sender, to, assetIn, vIn, vOut);
     }
-
-    event SharesShielded(bytes32 indexed poolId, address indexed owner, uint256 shares, bytes32 depositId);
 
     /// @dev The pool-specific LP-share asset id = keccak(poolId‖"lp") — the SAME derivation the guest's
     ///      lp_share_id + the dapp's lpShareId use, so an OP_WRAP that mints the share note and the
     ///      OP_LP_REMOVE that spends it agree on the leaf's asset.
-    function _lpShareId(bytes32 poolId) internal pure returns (bytes32) {
-        return keccak256(abi.encodePacked(poolId, "lp"));
+    function _lpShareId(bytes32 poolId) internal pure returns (bytes32 id) {
+        assembly ("memory-safe") {
+            let m := mload(0x40)
+            mstore(m, poolId)
+            mstore(add(m, 0x20), shl(240, 0x6c70))
+            id := keccak256(m, 0x22)
+        }
     }
 
     /// @notice Opt-in privacy for an LP position: convert PUBLIC LP shares into a confidential LP-share
@@ -1118,7 +1144,6 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         depositId = keccak256(abi.encode(_lpShareId(poolId), shares, commit));
         if (depositStatus[depositId] != 0) revert DepositExists();
         depositStatus[depositId] = 1;
-        emit SharesShielded(poolId, msg.sender, shares, depositId);
     }
 
     // ──────────────────── Bitcoin state attestation (relay-proven, no oracle) ────────────────────
@@ -1213,7 +1238,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         knownBitcoinSpentRoot = r.bitcoinSpentRoot;
         knownBitcoinBurnRoot = r.bitcoinBurnRoot;
         knownReflectionDigest = r.newDigest;
-        knownCbtcBackingSats = r.cbtcBackingSats; // cBTC backing advances with the reflected state
+        cbtcBackingSats = r.cbtcBackingSats; // cBTC backing advances with the reflected state
         // cBTC per-lock registry (ops/DESIGN-confidential-defi-v1.md §3): record each newly-tracked lock so
         // a later OP_CBTC_MINT can mint the pre-committed note against it (gated on the CollateralEngine
         // escrow), and flag each spent lock so the engine can slash an un-redeemed rug. Proven arrays — the
@@ -1229,13 +1254,6 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         emit BitcoinSpentRootReflected(r.bitcoinSpentRoot);
         emit BitcoinBurnRootReflected(r.bitcoinBurnRoot);
         emit BitcoinReflectionAdvanced(r.priorDigest, r.newDigest, r.bitcoinHeight);
-    }
-
-    /// @notice The reflection-attested live cBTC.zk lock backing (Σ live self-custody lock sats). The
-    ///         standalone CollateralEngine reads this vs the circulating cBTC supply to size the peg shortfall;
-    ///         settle never reads it (the cBTC peg is real-BTC, oracle-free, this is buffer-only).
-    function cbtcBackingSats() external view returns (uint256) {
-        return knownCbtcBackingSats;
     }
 
     /// Anchor a reflection batch to canonical Bitcoin: `prev` must equal the prior attested tip or a
@@ -1378,16 +1396,19 @@ contract ConfidentialPool is ReentrancyGuardTransient {
                 // (bitcoinConsumed, below). Leaves are opaque, so the guest — not this contract — binds a
                 // btcHomed output to the source note's bridged asset.
                 for (uint256 i; i < pv.withdrawals.length; ++i) {
-                    if (!assets[_resolveAsset(pv.withdrawals[i].assetId)].poolMinted) revert BtcHomedValueExitMustBridge();
+                    if (!_assets[_resolveAsset(pv.withdrawals[i].assetId)].poolMinted) revert BtcHomedValueExitMustBridge();
                 }
                 for (uint256 i; i < pv.fees.length; ++i) {
-                    if (!assets[_resolveAsset(pv.fees[i].assetId)].poolMinted) revert BtcHomedValueExitMustBridge();
+                    if (!_assets[_resolveAsset(pv.fees[i].assetId)].poolMinted) revert BtcHomedValueExitMustBridge();
                 }
                 // Record every consumed Bitcoin-homed ν (spendRoot = the Bitcoin pool root membership was
                 // proven against) so the reverse reflection folds it into the Bitcoin spent set. The ν are
                 // also marked in nullifierSpent below; this dedicated map is the slot the eth-reflection
                 // guest reflects, and it never holds a native EVM spend.
-                for (uint256 i; i < pv.nullifiers.length; ++i) bitcoinConsumed[pv.nullifiers[i]] = pv.spendRoot;
+                for (uint256 i; i < pv.nullifiers.length; ++i) {
+                    bitcoinConsumed[pv.nullifiers[i]] = pv.spendRoot;
+                    bitcoinConsumedAt[bitcoinConsumedCount + i] = pv.nullifiers[i];
+                }
                 // Advance the freshness anchor: every ν here is a new entry — the nullifierSpent gate below
                 // reverts any repeat in this same tx (rolling back this increment), so the count grows by
                 // exactly the batch's distinct consumed-note count.
@@ -1488,11 +1509,11 @@ contract ConfidentialPool is ReentrancyGuardTransient {
             CbtcMint memory cm = pv.cbtcMints[i];
             if (cm.vBtc == 0 || cbtcLockVBtc[cm.outpoint] != uint64(cm.vBtc)) revert CbtcLockMismatch();
             if (cbtcLockCommitment[cm.outpoint] != cm.commitment) revert CbtcLockMismatch();
-            if (cbtcMinted[cm.outpoint]) revert CbtcAlreadyMinted();
+            if (_cbtcMinted[cm.outpoint]) revert CbtcAlreadyMinted();
             if (address(COLLATERAL_ENGINE) == address(0) || !COLLATERAL_ENGINE.escrowSufficient(cm.outpoint, cm.vBtc)) {
                 revert CbtcEscrowInsufficient();
             }
-            cbtcMinted[cm.outpoint] = true;
+            _cbtcMinted[cm.outpoint] = true;
             emit CbtcNoteMinted(cm.outpoint, cm.vBtc);
         }
 
@@ -1678,10 +1699,10 @@ contract ConfidentialPool is ReentrancyGuardTransient {
             // binds it (txid → envelope), so the token's contractURI is trustless. 0 ⇒ no metadata.
             token = CANONICAL_FACTORY.deployCanonical(m.assetId, address(this), symbol_, ETH_DECIMALS, m.cid);
         }
-        bytes32 internalId = sha256(abi.encodePacked("tacit-evm-token-v1", uint64(block.chainid), token));
+        bytes32 internalId = _evmAssetId(token);
         if (localAssetOf[m.assetId] != bytes32(0)) return; // shared id already linked
         uint256 unitScale = 10 ** uint256(ETH_DECIMALS - m.decimals);
-        if (assets[internalId].registered) {
+        if (_assets[internalId].registered) {
             // The canonical token already has a LOCAL registry entry (e.g. a permissionless
             // registerMinted squat of this exact token, which sets no cross-chain link). That must
             // not strand the bridged shared id: adopt the GUEST-PROVEN scale (the authoritative one)
@@ -1690,13 +1711,17 @@ contract ConfidentialPool is ReentrancyGuardTransient {
             // scale cannot enable a scale-poison drain: a pool-minted asset has NO escrow and the
             // canonical ERC20 is pool-minted, so a squatter holds zero balance and could not have
             // wrapped (or pool-funded) any note — there is no outstanding value at the old scale.
-            Asset storage healed = assets[internalId];
+            AssetStore storage healed = _assets[internalId];
             healed.unitScale = unitScale;
             healed.crossChainLink = m.assetId;
             // Overwrite the squat's display name/symbol with the canonical brand + guest-proven ticker
             // so the `assets` registry entry matches the token; re-emit so indexers upsert the corrected record.
-            healed.name = "Tacit Token";
-            healed.symbol = symbol_;
+            (bytes32 packedName, uint8 nameLen) = _packShortString("Tacit Token");
+            (bytes32 packedSymbol, uint8 symbolLen) = _packShortString(symbol_);
+            healed.name = packedName;
+            healed.nameLen = nameLen;
+            healed.symbol = packedSymbol;
+            healed.symbolLen = symbolLen;
             localAssetOf[m.assetId] = internalId;
             emit AssetRegistered(internalId, token, unitScale, "Tacit Token", symbol_, ETH_DECIMALS);
             return;
@@ -1707,7 +1732,35 @@ contract ConfidentialPool is ReentrancyGuardTransient {
 
     function _sliceTicker(bytes16 t, uint8 len) internal pure returns (bytes memory out) {
         out = new bytes(len);
-        for (uint256 i; i < len; ++i) out[i] = t[i];
+        assembly ("memory-safe") {
+            mstore(add(out, 0x20), t)
+        }
+    }
+
+    function _evmAssetId(address underlying) internal view returns (bytes32 assetId) {
+        assembly ("memory-safe") {
+            let m := mload(0x40)
+            mstore(m, shl(112, 0x74616369742d65766d2d746f6b656e2d7631)) // "tacit-evm-token-v1"
+            mstore(add(m, 18), shl(192, chainid()))
+            mstore(add(m, 26), shl(96, underlying))
+            if iszero(staticcall(gas(), 2, m, 46, m, 32)) { revert(0, 0) }
+            assetId := mload(m)
+        }
+    }
+
+    function _packShortString(string memory s) internal pure returns (bytes32 data, uint8 len) {
+        assembly ("memory-safe") {
+            len := mload(s)
+            if gt(len, 31) { len := 31 }
+            data := mload(add(s, 0x20))
+        }
+    }
+
+    function _unpackShortString(bytes32 data, uint8 len) internal pure returns (string memory s) {
+        s = new string(len);
+        assembly ("memory-safe") {
+            mstore(add(s, 0x20), data)
+        }
     }
 
     /// Resolve a note's `asset` to this pool's local registry key: a native note carries
@@ -1715,7 +1768,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     /// id, which `localAssetOf` maps to the local entry. Returns the input unchanged if
     /// neither is registered (the caller then reverts NotRegistered).
     function _resolveAsset(bytes32 assetId) internal view returns (bytes32) {
-        if (assets[assetId].registered) return assetId;
+        if (_assets[assetId].registered) return assetId;
         bytes32 local = localAssetOf[assetId];
         if (local != bytes32(0)) return local;
         return assetId;
@@ -1729,7 +1782,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     ///         backing authority can; first-write-wins on `localAssetOf` means a shared id stays bound to
     ///         the first (real) token, so an impostor can't hijack the resolution.
     function canonicalTokenFor(bytes32 assetId) external view returns (address) {
-        Asset storage a = assets[_resolveAsset(assetId)];
+        AssetStore storage a = _assets[_resolveAsset(assetId)];
         return a.registered ? a.underlying : address(0);
     }
 
@@ -1744,7 +1797,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         // id directly. Without this, a bridged note's shared id has no registry entry and
         // the unwrap reverts NotRegistered, locking the bridged value (H-2).
         assetId = _resolveAsset(assetId);
-        Asset storage a = assets[assetId];
+        AssetStore storage a = _assets[assetId];
         if (!a.registered) revert NotRegistered();
         if (to == address(0)) revert ZeroAddress();
         amount = value * a.unitScale;
@@ -1769,48 +1822,61 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     }
 
     function _insertLeaf(bytes32 leaf) internal {
-        if (nextLeafIndex >= MAX_LEAVES) revert MerkleTreeFull();
         uint256 idx = nextLeafIndex;
-        bytes32 h = leaf;
-        for (uint256 i; i < TREE_LEVELS; ++i) {
-            if (idx & 1 == 0) { filledSubtrees[i] = h; h = _hash(h, zeros[i]); }
-            else { h = _hash(filledSubtrees[i], h); }
-            idx >>= 1;
+        uint256 filledSlot;
+        assembly ("memory-safe") {
+            filledSlot := filledSubtrees.slot
         }
-        currentRoot = h;
-        nextLeafIndex++;
+        currentRoot = _insertTreeLeaf(leaf, idx, filledSlot);
+        unchecked { nextLeafIndex = idx + 1; }
     }
 
     /// Append a locked note to the lock-set accumulator — identical machinery to `_insertLeaf` on the
     /// independent lock tree (shares `zeros` + `_hash`; depth-bounded by MAX_LEAVES). A locked note is
     /// never a note-tree leaf, so the two trees stay disjoint.
     function _insertLockLeaf(bytes32 leaf) internal {
-        if (lockNextLeafIndex >= MAX_LEAVES) revert MerkleTreeFull();
         uint256 idx = lockNextLeafIndex;
-        bytes32 h = leaf;
-        for (uint256 i; i < TREE_LEVELS; ++i) {
-            if (idx & 1 == 0) { lockFilledSubtrees[i] = h; h = _hash(h, zeros[i]); }
-            else { h = _hash(lockFilledSubtrees[i], h); }
-            idx >>= 1;
+        uint256 filledSlot;
+        assembly ("memory-safe") {
+            filledSlot := lockFilledSubtrees.slot
         }
-        lockRoot = h;
-        lockNextLeafIndex++;
+        lockRoot = _insertTreeLeaf(leaf, idx, filledSlot);
+        unchecked { lockNextLeafIndex = idx + 1; }
     }
 
     /// Append a CDP position to the position-set accumulator — identical machinery to `_insertLockLeaf` on
     /// its own independent tree (shares `zeros` + `_hash`; depth-bounded by MAX_LEAVES). A position leaf is
     /// never a note-tree or lock-set leaf (domain-separated in-guest), so the trees stay disjoint.
     function _insertCdpPositionLeaf(bytes32 leaf) internal {
-        if (cdpNextLeafIndex >= MAX_LEAVES) revert MerkleTreeFull();
         uint256 idx = cdpNextLeafIndex;
-        bytes32 h = leaf;
-        for (uint256 i; i < TREE_LEVELS; ++i) {
-            if (idx & 1 == 0) { cdpFilledSubtrees[i] = h; h = _hash(h, zeros[i]); }
-            else { h = _hash(cdpFilledSubtrees[i], h); }
-            idx >>= 1;
+        uint256 filledSlot;
+        assembly ("memory-safe") {
+            filledSlot := cdpFilledSubtrees.slot
         }
-        cdpRoot = h;
-        cdpNextLeafIndex++;
+        cdpRoot = _insertTreeLeaf(leaf, idx, filledSlot);
+        unchecked { cdpNextLeafIndex = idx + 1; }
+    }
+
+    function _insertTreeLeaf(bytes32 leaf, uint256 idx, uint256 filledSlot) internal returns (bytes32 h) {
+        if (idx >= MAX_LEAVES) revert MerkleTreeFull();
+        assembly ("memory-safe") {
+            let zerosSlot := zeros.slot
+            h := leaf
+            for { let i := 0 } lt(i, 32) { i := add(i, 1) } {
+                switch iszero(and(idx, 1))
+                case 1 {
+                    sstore(add(filledSlot, i), h)
+                    mstore(0x00, h)
+                    mstore(0x20, sload(add(zerosSlot, i)))
+                }
+                default {
+                    mstore(0x00, sload(add(filledSlot, i)))
+                    mstore(0x20, h)
+                }
+                h := keccak256(0x00, 0x40)
+                idx := shr(1, idx)
+            }
+        }
     }
 
     function _hash(bytes32 l, bytes32 r) internal pure returns (bytes32 h) {

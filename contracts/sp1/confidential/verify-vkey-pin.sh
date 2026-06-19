@@ -12,6 +12,8 @@ set -euo pipefail
 #     (it needs the box + the fixture); CI runs the sha256 leg.
 #
 # Exit non-zero on any mismatch.
+export LC_ALL=C
+export LANG=C
 
 cd "$(dirname "$0")"
 PIN="elf-vkey-pin.json"
@@ -25,7 +27,7 @@ if command -v shasum >/dev/null 2>&1; then
 else
   act_sha=$(sha256sum "$ELF" | cut -d' ' -f1)
 fi
-pin_sha=$(grep -oE '"elf_sha256"[[:space:]]*:[[:space:]]*"[0-9a-f]{64}"' "$PIN" | grep -oE '[0-9a-f]{64}')
+pin_sha=$(grep -oE '"elf_sha256"[[:space:]]*:[[:space:]]*"[0-9a-f]{64}"' "$PIN" | grep -oE '[0-9a-f]{64}' | head -1)
 
 if [ "$pin_sha" != "$act_sha" ]; then
   echo "FAIL: ELF sha256 mismatch"
@@ -41,7 +43,7 @@ echo "PASS: settle-guest ELF sha256 matches pin ($act_sha)"
 RELF="elf/reflection-prover"
 [ -f "$RELF" ] || { echo "FAIL: missing $RELF"; exit 1; }
 if command -v shasum >/dev/null 2>&1; then ract=$(shasum -a 256 "$RELF" | cut -d' ' -f1); else ract=$(sha256sum "$RELF" | cut -d' ' -f1); fi
-rpin=$(grep -oE '"reflection_elf_sha256"[[:space:]]*:[[:space:]]*"[0-9a-f]{64}"' "$PIN" | grep -oE '[0-9a-f]{64}')
+rpin=$(grep -oE '"reflection_elf_sha256"[[:space:]]*:[[:space:]]*"[0-9a-f]{64}"' "$PIN" | grep -oE '[0-9a-f]{64}' | head -1)
 if [ "$rpin" != "$ract" ]; then
   echo "FAIL: reflection ELF sha256 mismatch"
   echo "  pinned:   $rpin"
@@ -51,8 +53,8 @@ if [ "$rpin" != "$ract" ]; then
 fi
 echo "PASS: reflection ELF sha256 matches pin ($ract)"
 
-pin_vkey=$(grep -oE '"program_vkey"[[:space:]]*:[[:space:]]*"0x[0-9a-f]{64}"' "$PIN" | grep -oE '0x[0-9a-f]{64}')
-relay_vkey=$(grep -oE '"bitcoin_relay_vkey"[[:space:]]*:[[:space:]]*"0x[0-9a-f]{64}"' "$PIN" | grep -oE '0x[0-9a-f]{64}')
+pin_vkey=$(grep -oE '"program_vkey"[[:space:]]*:[[:space:]]*"0x[0-9a-f]{64}"' "$PIN" | grep -oE '0x[0-9a-f]{64}' | head -1)
+relay_vkey=$(grep -oE '"bitcoin_relay_vkey"[[:space:]]*:[[:space:]]*"0x[0-9a-f]{64}"' "$PIN" | grep -oE '0x[0-9a-f]{64}' | head -1)
 # Fail closed on a missing/malformed vkey field: a blank program_vkey would deploy a zero PROGRAM_VKEY
 # (every settle reverts), and the guest_state prose has lagged these fields before — so assert the
 # machine-read fields are present + well-formed here, and treat the fields (not the prose) as canonical.
@@ -61,32 +63,26 @@ relay_vkey=$(grep -oE '"bitcoin_relay_vkey"[[:space:]]*:[[:space:]]*"0x[0-9a-f]{
 echo "PINNED program_vkey:       $pin_vkey  (settle; ConfidentialSwapProofReal / ConfidentialProofReal)"
 echo "PINNED bitcoin_relay_vkey: $relay_vkey  (reflection; ConfidentialReflectionProofReal)"
 
-# ── Reflection leg FROZEN (Mode B, 2026-06-13) ────────────────────────────────────────────────
-# The reflection vkey is FINAL: its groth16 proof verifies on-chain (ConfidentialReflectionProofReal)
-# and the REFLECT-1 both-sided conservation test is confirmed + allowlisted (readiness-gate layer 9).
-# The settle-side re-prove (deadline/AMM PublicValues) is settle-ONLY and dead-code for the reflection
-# guest, so it MUST REPRODUCE these exact bytes — never rotate them. A drift here means cxfer-core's
-# reflection path actually moved, which silently invalidates the on-chain fixture + the allowlist with
-# no other gate catching it. To re-prove the reflection guest DELIBERATELY, bump both FROZEN_* below in
-# the SAME commit that regenerates reflection_groth16.json + re-runs the layer-9 confirmation + re-allowlists.
-# Bumped 2026-06-13 in the coordinated re-prove: the AMM consolidation (da8cd9c) added fns to the SHARED
-# cxfer-core, which compiles wholesale into BOTH guest ELFs (no per-bin DCE), so it rotated the reflection
-# vkey 0x002d2536…→0x004d8dbd… even though it touched no reflection code. The reflection chain was redone
-# for the new vkey (fixture + both-sided conservation + allowlist). Any future cxfer-core change rotates
-# this again — bump it with a matching re-prove + re-confirm.
-FROZEN_REFLECTION_VKEY="0x007a9feef7f58594cfb2ae5e59610e235b309beb23c4a1dc59d68935a0785648"
-FROZEN_REFLECTION_ELF_SHA="1173ede85b00fcbbc5ff66200e82d9a270ada34ad9f9c55db1642b74f070900f"
+# ── Reflection leg deliberately pinned (Sepolia E2, 2026-06-19) ───────────────────────────────
+# The reflection vkey is an explicit coordination point: its Groth16 proofs verify on-chain
+# (ConfidentialReflectionProofReal + ConfidentialReflectionBurnDepositProofReal) and readiness-gate
+# layer 9 must separately allowlist the exact vkey after a REFLECT-1 conservation negative test.
+# Any reflection ELF drift invalidates the on-chain fixtures and the soundness allowlist, so a
+# deliberate re-prove must bump both FROZEN_* here in the same commit that regenerates the reflection
+# fixtures and re-runs the layer-9 confirmation. The name is historical: these are not "never rotate"
+# constants, they are fail-closed drift guards for the currently pinned reflection ELF.
+FROZEN_REFLECTION_VKEY="0x008c9fa6e9ee312ba99be8ba5a222ad161912fafebc3cec893e3dfc25f041160"
+FROZEN_REFLECTION_ELF_SHA="121659ce8f5c2e42c092a18de3651d33b43c25db0321c9b71e628e62fc78c689"
 if [ "$relay_vkey" != "$FROZEN_REFLECTION_VKEY" ] || [ "$rpin" != "$FROZEN_REFLECTION_ELF_SHA" ]; then
   echo "FAIL: reflection leg drifted from the frozen Mode-B values"
   echo "  bitcoin_relay_vkey:    got $relay_vkey  expected $FROZEN_REFLECTION_VKEY"
   echo "  reflection_elf_sha256: got $rpin  expected $FROZEN_REFLECTION_ELF_SHA"
-  echo "  The reflection vkey is FINAL (on-chain-verified + allowlisted). A settle re-prove is settle-ONLY and"
-  echo "  must reproduce it. If you DELIBERATELY re-proved the reflection guest, also regenerate"
-  echo "  test/fixtures/reflection_groth16.json, re-run the readiness-gate layer-9 both-sided conservation"
-  echo "  confirmation, re-allowlist the new vkey, AND bump the FROZEN_* constants here — all in the same commit."
+  echo "  Reflection ELF drift must be deliberate. Regenerate reflection_groth16.json and"
+  echo "  reflection_burn_deposit_groth16.json, re-run the readiness-gate layer-9 conservation"
+  echo "  confirmation, re-allowlist the new vkey, and bump FROZEN_* here — all in the same commit."
   exit 1
 fi
-echo "PASS: reflection leg matches the frozen Mode-B vkey/sha (on-chain-verified + allowlisted)"
+echo "PASS: reflection leg matches the pinned Sepolia E2 vkey/sha"
 
 # Cross-artifact coherence: the on-chain reflection fixture's vkey IS the pin, so the proof a deployer
 # sets BITCOIN_RELAY_VKEY to is the same one that verifies on-chain (mirror of test_fixture_vkey_matches_pin).

@@ -28,7 +28,7 @@ contract ConfidentialPoolKATTest is Test {
         bytes32[] memory leaves = vm.parseJsonBytes32Array(json, ".treeLeaves");
 
         ConfidentialPool.PublicValues memory pv;
-        pv.version = pool.PV_VERSION();
+        pv.version = 1;
         pv.chainBinding = keccak256(abi.encodePacked(block.chainid, address(pool)));
         pv.leaves = leaves;
         pool.settle(abi.encode(pv), "", new bytes[](leaves.length));
@@ -73,7 +73,7 @@ contract ConfidentialPoolKATTest is Test {
     function test_membership_path_folds() public {
         bytes32[] memory leaves = vm.parseJsonBytes32Array(json, ".treeLeaves");
         ConfidentialPool.PublicValues memory pv;
-        pv.version = pool.PV_VERSION();
+        pv.version = 1;
         pv.chainBinding = keccak256(abi.encodePacked(block.chainid, address(pool)));
         pv.leaves = leaves;
         pool.settle(abi.encode(pv), "", new bytes[](leaves.length));

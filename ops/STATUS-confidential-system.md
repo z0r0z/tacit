@@ -6,11 +6,15 @@ plans: `PLAN-confidential-token-rollup.md` (Phase 1/2), `PLAN-confidential-cross
 `PLAN-confidential-btc-relay.md` (the relay), `RUNBOOK-confidential-pool-deploy.md`,
 `RUNBOOK-confidential-mainnet-deploy.md`, `PLAN-teth-confidential-onboarding.md`.
 
-## CURRENT STATE — 2026-06-14 (live pilot + path to mainnet)
+## CURRENT STATE — 2026-06-19 (Sepolia E2 pins + live-pilot history)
 
-**Live on Sepolia + signet, on `main`:** the confidential shielded pool + bidirectional bridge pilot.
-- Pool **`0x991726A547DCdB57ba660E395D9c7D7C3FcAdF79`**, `PROGRAM_VKEY` **`0x00d5b572`** (settle) /
-  `BITCOIN_RELAY_VKEY` **`0x005e6adc`** (reflection) — both FROZEN (`elf-vkey-pin.json`). cETH registered.
+**Current repo pins for the next Sepolia deploy/redeploy:** `PROGRAM_VKEY` **`0x005c8a3d`** (settle) /
+`BITCOIN_RELAY_VKEY` **`0x008c9fa6`** (reflection), with committed ELFs + refreshed `*ProofReal`
+fixtures in `elf-vkey-pin.json`.
+
+**Historical live pilot on Sepolia + signet:** the confidential shielded pool + bidirectional bridge pilot.
+- Pool **`0x991726A547DCdB57ba660E395D9c7D7C3FcAdF79`** was proven live on the prior pins; redeploy/repoint
+  it to the E2 pins above before treating the current repo artifacts as the live verifier surface. cETH registered.
 - **First on-chain reflection attest landed** (Bitcoin→ETH proven, tx `0xf6940dd4…`); the signet relay
   advances on the GH Actions cron. Settle stack proven (cETH wrap→settle→seed-only-recover). Shielded
   Pool tab live at tacit.finance (the dapp serves this pool).
@@ -20,8 +24,9 @@ plans: `PLAN-confidential-token-rollup.md` (Phase 1/2), `PLAN-confidential-cross
 round-trip (signet note → non-empty reflect → mint) + cBTC-lock + live swap/LP/OTC/BID on the pilot.
 
 **Mainnet path — tasks #11/#12 (`RUNBOOK-confidential-mainnet-deploy.md`):** gated on a reflection
-re-anchor + re-prove (the eth weak-subjectivity anchor is Sepolia-specific → new `BITCOIN_RELAY_VKEY`;
-settle vkey unchanged), then a near-tip deploy. tETH onboards under its existing id `3cba71e1…`.
+re-anchor + mainnet re-prove (the eth weak-subjectivity anchor is Sepolia-specific → new
+`BITCOIN_RELAY_VKEY`; mainnet may also rotate settle if source changed), then a near-tip deploy. tETH
+onboards under its existing id `3cba71e1…`.
 
 > The sections below are build history; vkey/address references in them predate the current frozen pin.
 

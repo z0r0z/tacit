@@ -28,7 +28,7 @@ use alloy_sol_types::sol;
 use alloy_sol_types::private::U256;
 use alloy_sol_types::SolType;
 use cxfer_core::{
-    amm_canonical_pair, amm_derive_farm_id, amm_derive_pool_id_full, amm_derive_pool_id_v1, bitcoin, burn_deposit, commitment_hash,
+    amm_canonical_pair, amm_derive_farm_id, amm_derive_pool_id_full, bitcoin, burn_deposit, commitment_hash,
     commitment_hash_compressed, compress, decompress, from_affine_xy, leaf, nullifier, outpoint_key,
     reflected_note_leaf, scan_tx_spends, verify_cxfer_conservation, CbtcLockFold, LiveUtxoSet, Point, PoolReserveSet,
     PoolReserveState, ScanReflection,

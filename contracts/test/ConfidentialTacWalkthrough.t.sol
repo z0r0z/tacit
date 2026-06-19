@@ -56,7 +56,7 @@ contract ConfidentialTacWalkthroughTest is Test {
         pool.settle(abi.encode(pv), "", memos);
     }
     function _pv() internal view returns (ConfidentialPool.PublicValues memory pv) {
-        pv.version = pool.PV_VERSION();
+        pv.version = 1;
         pv.chainBinding = keccak256(abi.encodePacked(block.chainid, address(pool)));
     }
 

@@ -17,7 +17,7 @@ confirm each guest change before the re-prove (`EXECUTE_OK` + `DIGEST_MATCH`).
 
 ## A. Re-prove bundle — guest + dapp (land together with the coordinated re-prove)
 
-- [ ] **A1. Opening sigmas for `OP_WRAP` / `OP_CDP_MINT` / `OP_CDP_CLOSE` / `OP_CBTC_MINT`.**
+- [x] **A1. Opening sigmas for `OP_WRAP` / `OP_CDP_MINT` / `OP_CDP_CLOSE` / `OP_CBTC_MINT`.**
   These ops verify the note opening by reading the raw blinding (`scalar_reduce_be(&r32())` →
   `verify_pedersen_opening`), unlike every other value op (swap/LP/OTC/BID/route/unwrap), which binds via an
   opening sigma so the prover verifies the amount without learning the blinding. Bring these four ops onto the
@@ -30,7 +30,7 @@ confirm each guest change before the re-prove (`EXECUTE_OK` + `DIGEST_MATCH`).
     never `blinding`.
   - This is the single largest remaining soundness-model item.
 
-- [ ] **A2. `OP_ATTEST_META` witness authentication.**
+- [x] **A2. `OP_ATTEST_META` witness authentication.**
   The op derives the asset id from the etch txid and parses ticker/decimals/cid from the etch tx WITNESS, but
   proves only note-membership — the metadata envelope itself is not block-committed (wrong decimals would
   mis-set `unitScale`). Bind it with `bitcoin::verify_tx_witness_committed` (helper already in cxfer-core), and
@@ -39,7 +39,7 @@ confirm each guest change before the re-prove (`EXECUTE_OK` + `DIGEST_MATCH`).
     coinbase + coinbase txid path + etch block root).
   - Dapp/assembler: provide the new fields.
 
-- [ ] **A3. `OP_UNWRAP` box witness serializer.**
+- [x] **A3. `OP_UNWRAP` box witness serializer.**
   The guest is staged and the dapp emits `sigR/sigZ`; the box's unwrap witness serializer must emit
   `sigR(33) / sigZ(32)` in place of `blinding` (witness order: …value, recipient, fee, sigR, sigZ).
 
@@ -47,7 +47,7 @@ confirm each guest change before the re-prove (`EXECUTE_OK` + `DIGEST_MATCH`).
 
 ## B. Assembler chain — liveness (host code; gates burn-deposit + the witness gate)
 
-- [ ] **B1. `reflect-stdin` + worker assembler for the new burn-deposit witness format.**
+- [x] **B1. `reflect-stdin` + worker assembler for the new burn-deposit witness format.**
   The burn-deposit provenance witness now carries full tx bytes (+ wtxid path + coinbase + coinbase txid path)
   instead of a free txid plus separately-witnessed fields. Update `write_burn_deposit` + the JS mirror + the
   worker tracer to emit the new shape. Burn-deposit onboarding stays disabled until this lands.
@@ -70,22 +70,44 @@ confirm each guest change before the re-prove (`EXECUTE_OK` + `DIGEST_MATCH`).
 
 ## C. swap_batch / Groth16 — before `T_SWAP_BATCH` is live-classified (box / pipeline)
 
-- [ ] **C1. End-to-end snarkjs proof-vector KAT.**
+- [x] **C1. End-to-end snarkjs proof-vector KAT.**
   A real ceremony-zkey proof through `swap_batch_public_signals → groth16_bn254_verify → verify_xcurve`:
   verifies true; mutating each of the 123 public signals fails; mutating each proof point class fails; confirm
   the snarkjs G2 Fp2 limb order against the verifier. This is the documented remaining step for swap_batch;
   the component primitives + the aggregate identity are already KAT'd.
+  - Ceremony artifact FOUND + CID-verified: final `amm_swap_batch` zkey CID
+    `bafybeieb5hafaix2xwvnmsodby4vkvcpdv4bpt4ny3etza4lpy2rxefwqm`, SHA-256
+    `6ed30983a1c2faf287f3d2fc95fae08cc926aa563b2df2dc752c01f46ee03031`. Exporting its VK is byte-identical
+    to canonical VK CID `bafkreidc35fn7w3pxa4u7phjulzgrgm3js5ifmgqil7liedkqb2bdgdtp4`; the local R1CS
+    SHA-256 is the pinned `2d9db81d…495f4`.
+  - `tests/gen-swapbatch-prove.mjs` now full-proves with that zkey and checks: exact 123-signal derivation,
+    valid proof, native snarkjs G2 `[c0,c1]` round-trip, every one of the 123 public-signal mutations rejects,
+    and mutations of proof classes A/B/C reject. All pass.
+  - The real vector also passed the Rust in-guest `groth16_bn254_verify` with `Fq2::new(c0,c1)` (execution
+    proceeded to the later aggregate gate), confirming the verifier's G2 limb order. That run exposed and
+    fixed two integration bugs: the synth lacked a BIP141 coinbase witness commitment, and the guest discarded
+    `r_tip_A/B` while the worker aggregate includes the bound tip commitments.
+  - Full assembled-fold box KAT PASSED on the isolated Vast.ai workspace
+    `/root/work/swapbatch-kat`: fixture SHA-256
+    `8c420d42a6923b7c4e2ffd43f4b9163e5eb37c91788fe9123b3ddc8420238cb3`,
+    `EXECUTE_OK cycles=5358273975`, and
+    `DIGEST_MATCH` at `0x658cad1f0e9de708804da9abcf3eea1cf7163f6f2543442fda4351dcfb3e2def`.
+    This exercises the real ceremony proof through the Rust
+    `swap_batch_public_signals → groth16_bn254_verify → aggregate/tip-opening → verify_xcurve → receipt fold`
+    path.
 
-- [ ] **C2. G2 subgroup behaviour.**
+- [x] **C2. G2 subgroup behaviour.**
   Confirm the SP1 `bn` crate's `AffineG2::new` (and `AffineG1::new`) reject non-prime-subgroup points for the
   adversarial proof elements (`proof.a/b/c`); if not, add explicit subgroup checks.
   - `contracts/sp1/confidential/src/groth16.rs`
+  - Confirmed against pinned `substrate-bn-succinct-rs 0.6.0`: `G2Params::check_order() = true`, so the
+    checked `AffineG2::new` returns `NotInSubgroup`; BN254 G1 has cofactor 1.
 
 ---
 
 ## D. Hardening follow-ups (recommended; reviewed as sound today)
 
-- [ ] **D1. Enumerable `bitcoinConsumedAt[index]` for eth-reflection consumed-ν.**
+- [x] **D1. Enumerable `bitcoinConsumedAt[index]` for eth-reflection consumed-ν.**
   Consumed-ν completeness is enforced today (the Bitcoin guest's `fold_consumed` requires a live source per
   entry), but the eth guest proves "these slots exist," not "these are all consumed slots up to the count."
   Add `mapping(uint64 => bytes32) bitcoinConsumedAt` written on each consume, and have the eth guest prove the
@@ -93,11 +115,12 @@ confirm each guest change before the re-prove (`EXECUTE_OK` + `DIGEST_MATCH`).
   interaction. Pin the new slot in `scripts/verify-reflection-slots.sh`.
   - `contracts/src/ConfidentialPool.sol`, `contracts/sp1/eth-reflection/src/main.rs`
 
-- [ ] **D2. Burn-deposit stream-synchronized-but-invalid KATs.**
+- [x] **D2. Burn-deposit stream-synchronized-but-invalid KATs.**
   The DAG-level adversarial cases are covered; add full-stream cases (bad etch / bad cmint / non-conserving
   provenance / witness-commitment mismatch) — now runnable on the host via `reflect-exec`.
+  - Landed in `tests/reflection-burn-deposit-stream-kat.sh` and the mandatory parity workflow.
 
-- [ ] **D3. Minor parser/arith ergonomics.**
+- [x] **D3. Minor parser/arith ergonomics.**
   `solve_clearing` → `Option` (currently fail-closed via panic); the per-array caps the settle review suggested
   beyond `MAX_OPS` (e.g. nullifier/leaf/withdrawal counts).
 
@@ -105,25 +128,33 @@ confirm each guest change before the re-prove (`EXECUTE_OK` + `DIGEST_MATCH`).
 
 ## E. Operational
 
-- [ ] **E1. `ConfidentialPool` codesize (EIP-170) + clean compile.**
-  The cBTC/CDP additions pushed the contract over the size limit and it does not currently compile cleanly —
-  which also blocks `scripts/verify-reflection-slots.sh` (needs `forge inspect`). Factor it back under limit
-  before deploy. See `project_confidential_pool_codesize` for the size-fix approach (cut redundant getters that
-  duplicate public mappings; `--skip test` / pre-cache the verifier to dodge the build OOM).
+- [x] **E1. `ConfidentialPool` codesize (EIP-170) + clean compile.**
+  Runtime is back under the 24,576-byte deploy cap without splitting the public AMM/router surface:
+  `forge inspect src/ConfidentialPool.sol:ConfidentialPool deployedBytecode` measures **24,320 bytes**.
+  `forge build` compiles cleanly. Main cuts: shared Merkle tree insertion helper, compact asset metadata
+  storage with a compatibility `assets()` getter, trimmed immutable/diagnostic getters, removed duplicate
+  public periphery events, low-run optimizer/no-CBOR config, and exact-packed assembly for the LP-share id and
+  shared asset-id SHA-256 precompile call. Integration-critical getters remain, including `cbtcMinted()` for
+  `CollateralEngine`.
 
-- [ ] **E2. Coordinated re-prove + re-pin.**
-  One box step bundles every guest change above (the A-items, plus the witness commitments / swap_batch /
-  strict-append / mode_b / eth-reflection guards already landed in source): rebuild the canonical ELF on the
-  box (never a native rebuild — ELF drift → ProofInvalid), derive the vkey, re-pin
-  `BITCOIN_RELAY_VKEY` / the settle vkey. See `scripts/confidential-reprove-apply.sh`.
-
-- [ ] **E3. Reclaim disk.** Local `/private/tmp` / build targets near full; intermittently breaks tooling.
+- [x] **E2. Coordinated Sepolia/pilot re-prove + re-pin.**
+  Completed on the Vast prover box from the synced current source, then applied as one local pin/fixture
+  update. Canonical ELFs:
+  - Settle `cxfer-guest`: `PROGRAM_VKEY = 0x005c8a3dc76fdb1df8540736b73d893e5cff55c403442ef0f01a945a41775406`,
+    sha256 `4438a10b67f4c878a6144dcfa8976e30393cb32d59815db43d27705f518ce97c`, 859,024 bytes.
+  - Reflection `reflection-prover`: `BITCOIN_RELAY_VKEY = 0x008c9fa6e9ee312ba99be8ba5a222ad161912fafebc3cec893e3dfc25f041160`,
+    sha256 `121659ce8f5c2e42c092a18de3651d33b43c25db0321c9b71e628e62fc78c689`, 980,816 bytes.
+  - Regenerated and locally verified real Groth16 fixtures for transfer, swap, LP, OTC, BID, crosslane,
+    reflection, and reflection burn-deposit. `scripts/confidential-reprove-apply.sh` now matches the current
+    artifact layout and includes the burn-deposit fixture.
+  - Scope note: this clears the Sepolia/pilot E2 hardening item. The mainnet re-anchor/re-prove remains a
+    separate network-specific checklist (`ops/CHECKLIST-mainnet-reprove.md`).
 
 ---
 
 ## F. Process / CI
 
-- [ ] **F1. Make `reflect-exec` parity a mandatory CI gate for every fixture / schema change.**
+- [x] **F1. Make `reflect-exec` parity a mandatory CI gate for every fixture / schema change.**
   `reflect-stdin` derives stream *writes* from JSON keys while the guest derives *reads* from tx parsing +
   state, so they only stay in lockstep if every fixture is executed against the guest. The base-order and
   width/count asserts are landed, but the per-tx conditional reads (openings == detected spends,

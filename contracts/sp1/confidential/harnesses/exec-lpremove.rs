@@ -1,7 +1,7 @@
 // OP_LP_REMOVE box harness — burn a shielded LP-share note, withdraw the proportional reserves as two
 // fresh notes. Reads OP_FILE (lp_remove_op.json), proves in the zkVM, verifies locally, writes
 // public_values.hex + proof_bytes.hex. MODE=groth16 -> GPU. stdin order = the guest's io::read for an
-// OP_LP_REMOVE batch (main.rs): header roots (incl. lock_set_root), then op 0 fields.
+// OP_LP_REMOVE batch (main.rs): header roots (incl. lock_set_root + cdp_position_root), then op 0 fields.
 use sp1_sdk::{blocking::{ProverClient, Prover, ProveRequest}, SP1Stdin, Elf, ProvingKey, HashableKey};
 const ELF: &[u8] = include_bytes!("/root/work/confidential/target/elf-compilation/riscv64im-succinct-zkvm-elf/release/confidential-pool-prover");
 fn hexv(s: &str) -> Vec<u8> { hex::decode(s.trim_start_matches("0x")).unwrap() }
@@ -13,6 +13,7 @@ fn main() {
     stdin.write(&vec![0u8; 32]); // bitcoin_spent_root = 0
     stdin.write(&vec![0u8; 32]); // bitcoin_burn_root = 0
     stdin.write(&vec![0u8; 32]); // lock_set_root = 0
+    stdin.write(&vec![0u8; 32]); // cdp_position_root = 0
     stdin.write(&1u32);          // num_ops
     stdin.write(&8u8);           // OP_LP_REMOVE
     stdin.write(&hexv(f["assetA"].as_str().unwrap()));

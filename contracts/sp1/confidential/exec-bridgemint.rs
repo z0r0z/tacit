@@ -14,6 +14,8 @@ fn main() {
     stdin.write(&vec![0u8; 32]);                              // spendRoot (unused by bridge_mint)
     stdin.write(&vec![0u8; 32]);                              // bitcoinSpentRoot (unused by bridge_mint)
     stdin.write(&hexv(f["bitcoinBurnRoot"].as_str().unwrap())); // bridge-burn set root (ν → destCommitment)
+    stdin.write(&vec![0u8; 32]);                              // lockSetRoot = 0 (no adaptor claim/refund)
+    stdin.write(&vec![0u8; 32]);                              // cdpPositionRoot = 0 (no CDP close/liquidate)
     stdin.write(&1u32);                                       // numOps
     stdin.write(&4u8);                                        // OP_BRIDGE_MINT
     stdin.write(&hexv(f["asset"].as_str().unwrap()));

@@ -4,7 +4,9 @@ out = "out"
 libs = ["lib"]
 via_ir = true
 optimizer = true
-optimizer_runs = 100
+optimizer_runs = 1
+bytecode_hash = "none"
+cbor_metadata = false
 fs_permissions = [{ access = "read", path = "./test/fixtures" }, { access = "read", path = "./sp1/elf-vkey-pin.json" }, { access = "read", path = "./sp1/confidential/elf-vkey-pin.json" }, { access = "read", path = "./sp1/confidential/fixtures" }]
 
 # See more config options https://github.com/foundry-rs/foundry/blob/master/crates/config/README.md#all-options

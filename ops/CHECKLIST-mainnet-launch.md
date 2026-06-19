@@ -29,7 +29,7 @@ prerequisites below pass. The dapp auto-deploys from `main`; the worker
 The settle and reflection guest **sources are ahead of the committed ELFs** by
 new mainnet features (reflection: TAC burn-deposit + cmint-deposit onboarding;
 settle: adaptor-swap ops). They re-prove together and rotate both vkeys. The
-current Sepolia vkeys (`0x00d5b572` settle / `0x007a9fee` reflection) are frozen
+current Sepolia E2 vkeys (`0x005c8a3d` settle / `0x008c9fa6` reflection) are pinned
 and valid — REFLECT-1 and asset-preservation are already in them; this bundle is
 new capability, not a fix.
 

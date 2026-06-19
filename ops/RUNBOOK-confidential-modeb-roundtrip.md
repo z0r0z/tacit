@@ -10,8 +10,8 @@ reflected Bitcoin pool is seeded only by `crossout_mint`s (value that came FROM 
 must therefore crossOut to Bitcoin first, then bridge_mint back.
 
 ## Prerequisites
-- Box 40707240 (cuda) up; committed ELFs staged — **verify BOTH** guest vkeys vs the pin (settle
-  `0x00d5b572`, reflection `0x005e6adc`); a drifted ELF LOCAL_VERIFY_OKs but reverts on-chain.
+- Box 40707240 (cuda) up; committed ELFs staged — **verify BOTH** guest vkeys vs the pin (current Sepolia E2:
+  settle `0x005c8a3d`, reflection `0x008c9fa6`); a drifted ELF LOCAL_VERIFY_OKs but reverts on-chain.
 - A cETH note in pilot pool `0x991726A5` (have one: value 1e15, recovered seed-only; opening from
   `scripts/build-ceth-wrap.mjs`).
 - Signet wallet funded (`~/.tacit-signet-test.key`, ~76803 sats) for the 0x65 broadcast.

@@ -14,7 +14,7 @@ import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { makeConfidentialPool } from '../dapp/confidential-pool.js';
 import { pedersenBJJ, packPoint, P_FR, mod } from '../dapp/amm-bjj.js';
-import { swapBatchPublicSignals, swapBatchGroth16Verify } from '../dapp/confidential-swapbatch.js';
+import { parseGroth16Proof256, swapBatchPublicSignals, swapBatchGroth16Verify } from '../dapp/confidential-swapbatch.js';
 
 const require = createRequire(import.meta.url);
 const snarkjs = require('snarkjs');
@@ -76,6 +76,33 @@ const run = async () => {
   const be32 = (dec) => { let v = BigInt(dec); const o = new Uint8Array(32); for (let i = 31; i >= 0; i--) { o[i] = Number(v & 0xffn); v >>= 8n; } return o; };
   const proofBytes = new Uint8Array([...be32(proof.pi_a[0]), ...be32(proof.pi_a[1]), ...be32(proof.pi_b[0][0]), ...be32(proof.pi_b[0][1]), ...be32(proof.pi_b[1][0]), ...be32(proof.pi_b[1][1]), ...be32(proof.pi_c[0]), ...be32(proof.pi_c[1])]);
   ok(await swapBatchGroth16Verify(vk, mine.map(BigInt), proofBytes), 'real proof verifies via swapBatchGroth16Verify (256B-parse + my publics + the vk)');
+  const parsed = parseGroth16Proof256(proofBytes);
+  ok(parsed?.pi_b?.[0]?.[0] === proof.pi_b[0][0] && parsed?.pi_b?.[1]?.[1] === proof.pi_b[1][1],
+    'snarkjs G2 Fp2 limbs round-trip in native [c0,c1] order');
+
+  // Known-answer rejection matrix: every public-signal slot is binding, and each proof point class rejects
+  // tampering. Keep this against the ceremony key—not a development key—so it closes the production path.
+  let allPublicTamperRejected = true;
+  for (let i = 0; i < mine.length; i++) {
+    const bad = mine.map(BigInt);
+    bad[i] = (bad[i] + 1n) % P_FR;
+    if (await swapBatchGroth16Verify(vk, bad, proofBytes)) {
+      allPublicTamperRejected = false;
+      console.error(`FAIL mutated public signal ${i} verified`);
+      break;
+    }
+  }
+  ok(allPublicTamperRejected, 'mutating each of the 123 public signals is rejected');
+  let allProofClassesRejected = true;
+  for (const [label, offset] of [['A', 0], ['B', 64], ['C', 192]]) {
+    const bad = new Uint8Array(proofBytes);
+    bad[offset] ^= 1;
+    if (await swapBatchGroth16Verify(vk, mine.map(BigInt), bad)) {
+      allProofClassesRejected = false;
+      console.error(`FAIL mutated proof point ${label} verified`);
+    }
+  }
+  ok(allProofClassesRejected, 'mutating each proof point class (A, B, C) is rejected');
 
   console.log(failures ? `\n${failures} FAIL` : '\nall ok — swap_batch Groth16 validated end-to-end against the real circuit');
   process.exit(failures ? 1 : 0);

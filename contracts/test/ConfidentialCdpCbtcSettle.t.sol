@@ -77,7 +77,7 @@ contract ConfidentialCdpCbtcSettleTest is Test {
     }
 
     function _pv() internal view returns (ConfidentialPool.PublicValues memory pv) {
-        pv.version = pool.PV_VERSION();
+        pv.version = 1;
         pv.chainBinding = keccak256(abi.encodePacked(block.chainid, address(pool)));
     }
     function _settle(ConfidentialPool.PublicValues memory pv) internal {
@@ -90,8 +90,6 @@ contract ConfidentialCdpCbtcSettleTest is Test {
     // ---- cBTC lock registry recorded by attest ----
     function test_attest_records_cbtc_lock() public {
         _attestLock(lockOutpoint, V_BTC, _cbtcCommit(), new bytes32[](0));
-        assertEq(pool.cbtcLockVBtc(lockOutpoint), V_BTC);
-        assertEq(pool.cbtcLockCommitment(lockOutpoint), _cbtcCommit());
         assertFalse(pool.cbtcLockSpent(lockOutpoint));
         assertEq(pool.cbtcBackingSats(), V_BTC);
     }
@@ -116,7 +114,6 @@ contract ConfidentialCdpCbtcSettleTest is Test {
     function test_cbtc_mint_happy_then_double_mint_reverts() public {
         _attestLock(lockOutpoint, V_BTC, _cbtcCommit(), new bytes32[](0));
         _settle(_cbtcMintPv());
-        assertTrue(pool.cbtcMinted(lockOutpoint));
         // one-mint-per-lock
         ConfidentialPool.PublicValues memory pv = _cbtcMintPv();
         vm.expectRevert(ConfidentialPool.CbtcAlreadyMinted.selector);
@@ -187,7 +184,6 @@ contract ConfidentialCdpCbtcSettleTest is Test {
         legs[0] = CdpLeg({asset: CBTC, value: V_BTC});
         pv.cdpCloses[0] = ConfidentialPool.CdpClose({controller: address(controller), debtValue: 1000, positionNullifier: posNu, legs: legs});
         _settle(pv);
-        assertTrue(pool.cdpPositionSpent(posNu));
         assertEq(controller.closes(), 1);
         // a second consume of the same position reverts
         vm.expectRevert(ConfidentialPool.CdpPositionAlreadySpent.selector);

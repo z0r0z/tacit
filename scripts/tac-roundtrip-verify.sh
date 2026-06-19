@@ -13,13 +13,15 @@
 #   POOL=0x<pool> ./scripts/tac-roundtrip-verify.sh crossout <claimId> <destCommitment> <nu>
 #   POOL=0x<pool> PRIVATE_KEY=0x.. AMOUNT=.. CX=.. CY=.. OWNER=.. ./scripts/tac-roundtrip-verify.sh submit-wrap
 #
-# Env: RPC (auto-fallback), POOL (required), FACTORY (default: read from pool), TAC, TAC_CID, PIN.
+# Env: RPC (auto-fallback), POOL (required), FACTORY (required for onboard), TAC, TAC_CID, PIN.
+# Optional deployment facts for preflight logging/checks: PROGRAM_VKEY, BITCOIN_RELAY_VKEY, HEADER_RELAY.
 set -uo pipefail
 
 POOL="${POOL:?set POOL to the deployed ConfidentialPool address}"
 TAC="${TAC:-0xf0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b}"
 TAC_CID="${TAC_CID:-0x0000000000000000000000000000000000000000000000000000000000000000}"
 PIN="${PIN:-$(cd "$(dirname "$0")/.." && pwd)/contracts/sp1/confidential/elf-vkey-pin.json}"
+REFLECTION_GENESIS_DIGEST="${REFLECTION_GENESIS_DIGEST:-0xeab17bcb92a60d3504973e52dad54aaafe331d87999f94304fac7c29cf126388}"
 ZERO32=0x0000000000000000000000000000000000000000000000000000000000000000
 ZEROADDR=0x0000000000000000000000000000000000000000
 
@@ -39,7 +41,10 @@ call(){ cast call "$POOL" "$@" --rpc-url "$RPC" 2>/dev/null; }
 fcall(){ cast call "$FACTORY" "$@" --rpc-url "$RPC" 2>/dev/null; }
 tcall(){ local t="$1"; shift; cast call "$t" "$@" --rpc-url "$RPC" 2>/dev/null; }
 
-FACTORY="${FACTORY:-$(call 'CANONICAL_FACTORY()(address)')}"
+FACTORY="${FACTORY:-}"
+PROGRAM_VKEY="${PROGRAM_VKEY:-}"
+BITCOIN_RELAY_VKEY="${BITCOIN_RELAY_VKEY:-}"
+HEADER_RELAY="${HEADER_RELAY:-}"
 
 fail=0
 ck(){   if [ "$(lc "$(unq "$2")")" = "$(lc "$(unq "$3")")" ]; then echo "  PASS $1"; else echo "  FAIL $1 — got [$2] want [$3]"; fail=1; fi; }
@@ -48,23 +53,33 @@ ckgt(){ if [ "$(num "$2")" -gt "$3" ] 2>/dev/null; then echo "  PASS $1 ($(num "
 ckge(){ if [ "$(num "$2")" -ge "$(num "$3")" ] 2>/dev/null; then echo "  PASS $1 ($(num "$2") >= $(num "$3"))"; else echo "  FAIL $1 — got [$2], must be >= [$3]"; fail=1; fi; }
 
 preflight(){
-  echo "Phase 0 — preconditions (deployed circuit == pin)"
-  ck   "PROGRAM_VKEY == pin"       "$(call 'PROGRAM_VKEY()(bytes32)')"       "$(jq -r '.program_vkey' "$PIN")"
-  ck   "BITCOIN_RELAY_VKEY == pin" "$(call 'BITCOIN_RELAY_VKEY()(bytes32)')" "$(jq -r '.bitcoin_relay_vkey' "$PIN")"
-  ckne "CANONICAL_FACTORY != 0"    "$(call 'CANONICAL_FACTORY()(address)')"  "$ZEROADDR"
-  ckne "HEADER_RELAY != 0"         "$(call 'HEADER_RELAY()(address)')"       "$ZEROADDR"
+  echo "Phase 0 — preconditions (deployment facts + live pool)"
+  echo "  INFO circuit/config immutables are trimmed from the runtime ABI for EIP-170; verify them from the deploy tx/broadcast and pin file."
+  if [ -n "$PROGRAM_VKEY" ]; then
+    ck "PROGRAM_VKEY env == pin" "$PROGRAM_VKEY" "$(jq -r '.program_vkey' "$PIN")"
+  else
+    echo "  SKIP PROGRAM_VKEY env not set (checked by DeployConfidentialPool against $PIN)"
+  fi
+  if [ -n "$BITCOIN_RELAY_VKEY" ]; then
+    ck "BITCOIN_RELAY_VKEY env == pin" "$BITCOIN_RELAY_VKEY" "$(jq -r '.bitcoin_relay_vkey' "$PIN")"
+  else
+    echo "  SKIP BITCOIN_RELAY_VKEY env not set (checked by deployment/broadcast artifacts)"
+  fi
+  if [ -n "$FACTORY" ]; then ckne "FACTORY env != 0" "$FACTORY" "$ZEROADDR"; else echo "  SKIP FACTORY env not set (required for onboard)"; fi
+  if [ -n "$HEADER_RELAY" ]; then ckne "HEADER_RELAY env != 0" "$HEADER_RELAY" "$ZEROADDR"; else echo "  SKIP HEADER_RELAY env not set (verify from deployment/broadcast artifacts)"; fi
+  ckne "knownReflectionDigest initialized" "$(call 'knownReflectionDigest()(bytes32)')" "$ZERO32"
 }
 
 reflection(){
   echo "Phase 1 — reflection bootstrapped (Bitcoin state attested)"
-  ckne "knownReflectionDigest advanced off genesis" "$(call 'knownReflectionDigest()(bytes32)')" "$(call 'REFLECTION_GENESIS_DIGEST()(bytes32)')"
-  ckgt "lastRelayHeight > 0"        "$(call 'lastRelayHeight()(uint64)')"      0
+  ckne "knownReflectionDigest advanced off genesis" "$(call 'knownReflectionDigest()(bytes32)')" "$REFLECTION_GENESIS_DIGEST"
   ckne "knownBitcoinBurnRoot != 0"  "$(call 'knownBitcoinBurnRoot()(bytes32)')"  "$ZERO32"
   ckne "knownBitcoinSpentRoot != 0" "$(call 'knownBitcoinSpentRoot()(bytes32)')" "$ZERO32"
 }
 
 onboard(){
   echo "Phase 2 — TAC onboarded + canonical ERC20 deployed at f(asset_id)"
+  : "${FACTORY:?set FACTORY to CanonicalAssetFactory address for onboard checks}"
   local predicted token
   predicted=$(fcall 'predict(bytes32,address,string,uint8,bytes32)(address)' "$TAC" "$POOL" "TAC" 18 "$TAC_CID")
   token=$(call 'canonicalTokenFor(bytes32)(address)' "$TAC")
@@ -109,7 +124,8 @@ crossout(){ # <claimId> <destCommitment> <nu>
 
 invariants(){
   echo "Invariants"
-  ckge "evmNullifiersSpent <= nextLeafIndex (no-inflation floor)" "$(call 'nextLeafIndex()(uint256)')" "$(call 'evmNullifiersSpent()(uint256)')"
+  echo "  INFO evmNullifiersSpent is internal after EIP-170 trimming; the floor is still enforced inside settle."
+  ckge "nextLeafIndex readable" "$(call 'nextLeafIndex()(uint256)')" 0
 }
 
 submit_wrap(){ # state-changing — needs PRIVATE_KEY + a funded caller holding the TAC ERC20
@@ -123,7 +139,7 @@ submit_wrap(){ # state-changing — needs PRIVATE_KEY + a funded caller holding 
     --rpc-url "$RPC" --private-key "$PRIVATE_KEY"
 }
 
-echo "pool=$POOL  factory=$FACTORY  rpc=$RPC"
+echo "pool=$POOL  factory=${FACTORY:-<set FACTORY for onboard>}  rpc=$RPC"
 cmd="${1:-state}"; shift 2>/dev/null || true
 case "$cmd" in
   preflight)  preflight;;

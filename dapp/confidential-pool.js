@@ -1132,7 +1132,11 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
   // verified() returns None at the first check (prov_headers empty) → folds nothing. Emitting this skip
   // witness (vs throwing) keeps the stream in sync AND means a bundle-less burn can't wedge the cycle.
   // The box harness write_burn_deposit loops over each array length, so empty arrays serialize as n=0.
-  const BD_ZERO_WITNESS = { etchTx: '0x', etchIndex: 0, etchSiblings: [], provHeaders: [], cxfers: [], cmints: [] };
+  const BD_ZERO_WITNESS = {
+    etchTx: '0x', etchIndex: 0, etchSiblings: [],
+    etchWtxidSiblings: [], etchCoinbase: '0x', etchCoinbaseTxidSiblings: [],
+    provHeaders: [], cxfers: [], cmints: [],
+  };
   const BD_SKIP_CTX = { valid: false, nu: BD_ZERO_HEX, dest: BD_ZERO_HEX, burnedCx: BD_ZERO_HEX, burnedCy: BD_ZERO_HEX, burnedNoteLeaf: BD_ZERO_HEX, witness: BD_ZERO_WITNESS };
 
   // Fold (or, on invalid provenance, no-op) a burn-deposit, mirroring the reflect.rs dispatch EXACTLY.

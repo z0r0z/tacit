@@ -47,7 +47,7 @@ contract ConfidentialPoolSwapTest is Test {
     }
 
     function _pv() internal view returns (ConfidentialPool.PublicValues memory pv) {
-        pv.version = pool.PV_VERSION();
+        pv.version = 1;
         pv.chainBinding = keccak256(abi.encodePacked(block.chainid, address(pool)));
     }
     function _settle(ConfidentialPool.PublicValues memory pv) internal {
@@ -137,7 +137,7 @@ contract ConfidentialPoolSwapTest is Test {
     }
 
     function test_init_fee_too_high_reverts() public {
-        uint32 tooHigh = pool.MAX_POOL_FEE_BPS() + 1;
+        uint32 tooHigh = 1000 + 1;
         vm.expectRevert(ConfidentialPool.FeeTooHigh.selector);
         pool.createPair(assetA, assetB, tooHigh);
     }

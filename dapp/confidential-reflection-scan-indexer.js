@@ -48,9 +48,10 @@ export function makeScanReflectionIndexer({ secp, keccak256, sha256, ownerTag, b
   // builder; the canonical scan (foldBurnDepositTx) performs the actual fold. The criterion self-routes:
   // a fixed-supply etch has mint_authority = 0 → verifyCmintAuthorized rejects every cmint → leaves = [C_0].
   //   bundle = { assetId, nu, dest, burned:{cx,cy}, burnedInput:{prevTxid,prevVout},
-  //              etch:{tx,blockTxids,index}, provHeaders:[hex],
-  //              cxfers:[{txid,inputs:[{prevTxid,prevVout,commitment}],outputs:[{commitment,vout}],rangeProof,kernelSig,blockTxids,index}],
-  //              cmints:[{revealTx,commitTx,blockTxids,index}] }   (cmints empty for fixed-supply)
+  //              etch:{tx,blockTxids,blockWtxids,coinbase,index}, provHeaders:[hex],
+  //              cxfers:[{tx,txid,inputs:[{prevTxid,prevVout,commitment}],outputs:[{commitment,vout}],
+  //                        rangeProof,kernelSig,blockTxids,blockWtxids,coinbase,index}],
+  //              cmints:[{revealTx,commitTx,blockTxids,blockWtxids,coinbase,index}] } (cmints empty for fixed-supply)
   function buildBurnDepositCtx(bundle) {
     if (!burnDepositKit) throw new Error('scan indexer: burn-deposit tx present but no burnDepositKit injected');
     const { mirror, assembler, parseEtchAnchor, computeTxidInternal } = burnDepositKit;

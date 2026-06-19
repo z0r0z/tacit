@@ -20,8 +20,8 @@
 use bn::Fr;
 use cxfer_core::{
     amm_canonical_pair, amm_derive_pool_id_v1, bitcoin::SwapBatchEnvelope, commitment_hash_compressed,
-    decompress, from_affine_xy, outpoint_key, reflected_note_leaf, sha256, swap_batch_aggregate_identity,
-    DetectedSpend, G16Proof, ScanReflection,
+    decompress, from_affine_xy, outpoint_key, reflected_note_leaf, scalar_reduce_be, sha256,
+    swap_batch_aggregate_identity, verify_pedersen_opening, DetectedSpend, G16Proof, ScanReflection,
 };
 
 const N_MAX: usize = 16;
@@ -182,13 +182,28 @@ pub fn fold_swap_batch(
     if !crate::groth16::groth16_bn254_verify(&crate::groth16::batch_vk(), &proof, &pubs) {
         return false;
     }
+    // Bind the aggregate's tip commitments to the Groth16-public tip amounts before allowing their
+    // blindings to participate in R_net (mirrors the worker's ammVerifyTipOpening + aggregate check).
+    let tip_a = match decompress(&env.tip_a_c_secp) {
+        Some(p) => p,
+        None => return false,
+    };
+    let tip_b = match decompress(&env.tip_b_c_secp) {
+        Some(p) => p,
+        None => return false,
+    };
+    if !verify_pedersen_opening(&tip_a, env.tip_a_amount, &scalar_reduce_be(&env.r_tip_a))
+        || !verify_pedersen_opening(&tip_b, env.tip_b_amount, &scalar_reduce_be(&env.r_tip_b))
+    {
+        return false;
+    }
     // 4. aggregate Pedersen identity per asset A + B (binds the receipts' total to real inputs + reserve).
     let intents_secp: Vec<(u8, [u8; 33])> = env.intents.iter().map(|it| (it.direction, it.c_in_secp)).collect();
     let receipts_secp: Vec<[u8; 33]> = env.receipts.iter().map(|r| r.c_out_secp).collect();
-    if !swap_batch_aggregate_identity(&intents_secp, &receipts_secp, true, env.delta_a_net_sign, env.delta_a_net_mag, env.tip_a_amount, &env.r_net_a) {
+    if !swap_batch_aggregate_identity(&intents_secp, &receipts_secp, true, env.delta_a_net_sign, env.delta_a_net_mag, &env.tip_a_c_secp, &env.r_net_a) {
         return false;
     }
-    if !swap_batch_aggregate_identity(&intents_secp, &receipts_secp, false, env.delta_b_net_sign, env.delta_b_net_mag, env.tip_b_amount, &env.r_net_b) {
+    if !swap_batch_aggregate_identity(&intents_secp, &receipts_secp, false, env.delta_b_net_sign, env.delta_b_net_mag, &env.tip_b_c_secp, &env.r_net_b) {
         return false;
     }
     // 5. ONE-TO-ONE: each intent's C_in_secp must match a DISTINCT real spent pool note of the intent's

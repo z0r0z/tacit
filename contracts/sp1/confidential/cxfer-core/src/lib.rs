@@ -572,7 +572,7 @@ pub fn swap_batch_aggregate_identity(
     asset_x_is_a: bool,
     delta_x_sign: u8,
     delta_x_mag: u64,
-    tip_x_amount: u64,
+    tip_x_c_secp: &[u8; 33],
     r_net_x: &[u8; 32],
 ) -> bool {
     if intents.len() != receipts_c_out.len() {
@@ -594,12 +594,12 @@ pub fn swap_batch_aggregate_identity(
             }
         }
     }
-    // The tip is the settler's PUBLIC fee (bound by the Groth16 tip_amount public signal), subtracted as
-    // tip·H — NOT a free Pedersen commitment. A free tip commitment is unconstrained: a prover could set it
-    // to absorb an arbitrary surplus and inflate the receipts past the real inputs + reserve.
-    if tip_x_amount != 0 {
-        sum = sum - gen_h() * Scalar::from(tip_x_amount);
-    }
+    // The caller first verifies this commitment opens to the Groth16-public tip amount under the envelope's
+    // r_tip. Once bound, subtracting the full point mirrors the worker and includes its blinding in R_net.
+    sum = match decompress(tip_x_c_secp) {
+        Some(p) => sum - p,
+        None => return false,
+    };
     if delta_x_mag != 0 {
         let dh = gen_h() * Scalar::from(delta_x_mag);
         sum = if delta_x_sign == 0 { sum - dh } else { sum + dh };
@@ -1060,30 +1060,30 @@ pub fn protocol_fee_shares(s_pre: u64, k_pre: u128, k_now: u128, fee_bps: u16) -
 /// the fee is actually charged (the constant-product non-decrease alone is only the ZERO-fee floor).
 /// Returns (P_clear_num, P_clear_den). BigUint throughout (like the JS BigInt) so the intermediate
 /// products — R_B·γ_num·Δa reaches ~2^142 — never overflow.
-pub fn solve_clearing(x: u64, y: u64, r_a: u64, r_b: u64, fee_bps: u32) -> (num_bigint::BigUint, num_bigint::BigUint) {
+pub fn solve_clearing(x: u64, y: u64, r_a: u64, r_b: u64, fee_bps: u32) -> Option<(num_bigint::BigUint, num_bigint::BigUint)> {
     use num_bigint::BigUint;
     let xb = BigUint::from(x);
     let rab = BigUint::from(r_a);
     let rbb = BigUint::from(r_b);
     // Empty batch: spot price = R_A / R_B (den guarded to 1 when R_B == 0).
     if x == 0 && y == 0 {
-        return (rab, if r_b == 0 { BigUint::from(1u32) } else { rbb });
+        return Some((rab, if r_b == 0 { BigUint::from(1u32) } else { rbb }));
     }
-    assert!(r_a != 0 && r_b != 0, "solve: pool reserves must be > 0 for a non-empty batch");
+    if r_a == 0 || r_b == 0 || fee_bps > 10000 { return None; }
     let g_num = BigUint::from(10000u32 - fee_bps); // fee_bps ≤ 1000 is enforced upstream
     let g_den = BigUint::from(10000u32);
     let lhs = &xb * &rbb;          // X·R_B
     let rhs = BigUint::from(y) * &rab; // Y·R_A
     if lhs > rhs {
         let (pn, pd) = solve_a_to_b(x, y, r_a, r_b, &g_num, &g_den);
-        (pn, pd)
+        Some((pn, pd))
     } else if lhs < rhs {
         // Symmetric B→A: solve with (X,Y),(R_A,R_B) swapped, then reciprocate P_clear.
         let (pn, pd) = solve_a_to_b(y, x, r_b, r_a, &g_num, &g_den);
-        (pd, pn)
+        Some((pd, pn))
     } else {
         // Exact-cancel batch → spot.
-        (rab, rbb)
+        Some((rab, rbb))
     }
 }
 
@@ -1132,7 +1132,7 @@ fn solve_a_to_b(x: u64, y: u64, r_a: u64, r_b: u64, g_num: &num_bigint::BigUint,
 /// price_den == P_clear_num. Keeping the BigUint inside cxfer-core so the zkVM guest just calls a bool.
 pub fn clearing_price_matches(x: u64, y: u64, r_a: u64, r_b: u64, fee_bps: u32, price_num: u64, price_den: u64) -> bool {
     use num_bigint::BigUint;
-    let (pc_num, pc_den) = solve_clearing(x, y, r_a, r_b, fee_bps);
+    let Some((pc_num, pc_den)) = solve_clearing(x, y, r_a, r_b, fee_bps) else { return false; };
     pc_den == BigUint::from(price_num) && pc_num == BigUint::from(price_den)
 }
 /// Bind a spent pool note to its nullifier: given the outpoint's committed value (proven in
@@ -3911,12 +3911,20 @@ mod tests {
             let r_a: u64 = v["rA"].as_str().unwrap().parse().unwrap();
             let r_b: u64 = v["rB"].as_str().unwrap().parse().unwrap();
             let fee: u32 = v["fee"].as_u64().unwrap() as u32;
-            let (pn, pd) = solve_clearing(x, y, r_a, r_b, fee);
+            let (pn, pd) = solve_clearing(x, y, r_a, r_b, fee).expect("valid clearing vector");
             let exp_n = BigUint::from_str(v["pNum"].as_str().unwrap()).unwrap();
             let exp_d = BigUint::from_str(v["pDen"].as_str().unwrap()).unwrap();
             assert_eq!(pn, exp_n, "P_clear_num drift on X={x} Y={y} R={r_a}/{r_b} fee={fee}");
             assert_eq!(pd, exp_d, "P_clear_den drift on X={x} Y={y} R={r_a}/{r_b} fee={fee}");
         }
+    }
+
+    #[test]
+    fn solve_clearing_fails_closed_on_invalid_nonempty_pool_or_fee() {
+        assert!(solve_clearing(1, 0, 0, 10, 30).is_none());
+        assert!(solve_clearing(0, 1, 10, 0, 30).is_none());
+        assert!(solve_clearing(1, 0, 10, 10, 10001).is_none());
+        assert!(!clearing_price_matches(1, 0, 0, 10, 30, 1, 1));
     }
 
     // AMM-LP-1: lp_add_shares is the min rule (the EVM guest's OP_LP_ADD share computation) and must
@@ -4530,25 +4538,27 @@ mod tests {
 
     #[test]
     fn swap_batch_aggregate_identity_binds_receipts_to_inputs() {
-        // 1-intent direction-0 (A→B) batch, asset-A identity: C_in − tip_A·H − δ_A·H == R_net_A·G. The tip is
-        // a PUBLIC amount (0 here, bound by the Groth16 signal); with δ_A = v_in the H-terms cancel ⇒ R_net_A = r_in.
+        // 1-intent direction-0 (A→B) batch, asset-A identity:
+        // C_in − tip_A_C − δ_A·H == R_net_A·G. The caller separately proves tip_A_C opens to the Groth16-public
+        // tip amount, so its blinding participates in R_net just like the worker.
         let v_in = 1000u64;
         let delta_a = 1000u64;
         let r_in = scalar_reduce_be(&[0x31u8; 32]);
+        let r_tip = scalar_reduce_be(&[0x41u8; 32]);
         let c_in = compress(&(gen_h() * Scalar::from(v_in) + ProjectivePoint::generator() * r_in));
+        let tip_c = compress(&(ProjectivePoint::generator() * r_tip));
         let mut r_net_a = [0u8; 32];
-        r_net_a.copy_from_slice(r_in.to_repr().as_slice());
+        r_net_a.copy_from_slice((r_in - r_tip).to_repr().as_slice());
         let intents = [(0u8, c_in)];
         let receipts = [c_in]; // direction-0 intent is INPUT-side for asset A ⇒ its receipt isn't summed here
 
-        assert!(swap_batch_aggregate_identity(&intents, &receipts, true, 0, delta_a, 0, &r_net_a), "valid asset-A identity holds");
+        assert!(swap_batch_aggregate_identity(&intents, &receipts, true, 0, delta_a, &tip_c, &r_net_a), "valid asset-A identity holds");
         let mut bad_r = r_net_a; bad_r[31] ^= 1;
-        assert!(!swap_batch_aggregate_identity(&intents, &receipts, true, 0, delta_a, 0, &bad_r), "wrong R_net rejected");
-        assert!(!swap_batch_aggregate_identity(&intents, &receipts, true, 0, delta_a + 1, 0, &r_net_a), "wrong delta rejected");
-        assert!(!swap_batch_aggregate_identity(&intents, &receipts, true, 1, delta_a, 0, &r_net_a), "wrong delta sign rejected");
-        // The tip is now a BOUND public amount (tip·H), not a free slack commitment: a nonzero tip with the
-        // same balancing R_net must fail (a free tip could have absorbed the surplus and inflated receipts).
-        assert!(!swap_batch_aggregate_identity(&intents, &receipts, true, 0, delta_a, 1, &r_net_a), "unaccounted public tip rejected");
+        assert!(!swap_batch_aggregate_identity(&intents, &receipts, true, 0, delta_a, &tip_c, &bad_r), "wrong R_net rejected");
+        assert!(!swap_batch_aggregate_identity(&intents, &receipts, true, 0, delta_a + 1, &tip_c, &r_net_a), "wrong delta rejected");
+        assert!(!swap_batch_aggregate_identity(&intents, &receipts, true, 1, delta_a, &tip_c, &r_net_a), "wrong delta sign rejected");
+        let wrong_tip_c = compress(&(ProjectivePoint::generator() * (r_tip + Scalar::from(1u64))));
+        assert!(!swap_batch_aggregate_identity(&intents, &receipts, true, 0, delta_a, &wrong_tip_c, &r_net_a), "wrong tip commitment rejected");
     }
 
     #[test]

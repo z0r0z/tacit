@@ -159,6 +159,11 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     // (carried in the private OP_WRAP witness below), so the deposit note's ν is never computable.
     const commit = pool.depositCommit(cx, cy, id.owner);
     const depositId = pool.depositId(meta.assetId, value, cx, cy, id.owner);
+    const cb = chainBindingHex();
+    const wrapCtx = pool.intentContext('tacit-wrap-intent-v1', cb, meta.assetId, depositId,
+      [[cx, cy, id.owner]], [value]);
+    const wrapNonce = pool.deriveOpeningNonce(blindingHex, wrapCtx, 'wrap');
+    const wrapSig = pool.openingSigma(value, blindingHex, wrapCtx, wrapNonce);
     const note = { value: value.toString(), blinding: blindingHex, secret, asset: meta.assetId, owner: id.owner, cx, cy };
 
     // Recovery (channel a: memo-sealed) — the reference integration every op assembler follows: describe
@@ -179,7 +184,8 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     return {
       note, leaf, depositId, commit, memo: memoHex, memos, outputs,
       // the OP_WRAP witness the box proves (chainBinding stamped at submit); OP_WRAP is box-driven, not a queue type
-      wrapOp: { asset: meta.assetId, value: value.toString(), cx, cy, owner: id.owner, blinding: blindingHex },
+      wrapOp: { chainBinding: cb, asset: meta.assetId, value: value.toString(), cx, cy, owner: id.owner,
+        sigR: wrapSig.R, sigZ: wrapSig.z },
       to: cfg.pool, amount: amount.toString(), calldata,
       wrapArgs: { assetId: meta.assetId, amount: amount.toString(), commit },
     };
@@ -275,6 +281,22 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     return { op, fee, net, recipient: to, asset: note.asset, ticker, selfSettle };
   }
 
+  // OP_ATTEST_META witness. The worker supplies the block data from one canonical block fetch; the box
+  // authenticates the etch's witness envelope through BIP141 before using its ticker/decimals/CID.
+  function buildAttestMeta({ etchTx, etchIndex, etchWtxidSiblings, etchCoinbase,
+    etchCoinbaseTxidSiblings, etchBlockRoot, note } = {}) {
+    if (!note?.path || note.root == null) throw new Error('buildAttestMeta: funded note membership required');
+    if (!Array.isArray(etchWtxidSiblings) || !Array.isArray(etchCoinbaseTxidSiblings)) {
+      throw new Error('buildAttestMeta: BIP141 paths required');
+    }
+    return {
+      etchTx, etchIndex: Number(etchIndex), etchWtxidSiblings, etchCoinbase,
+      etchCoinbaseTxidSiblings, etchBlockRoot,
+      cx: note.cx, cy: note.cy, owner: note.owner, leafIndex: Number(note.leafIndex),
+      path: note.path, poolRoot: note.root,
+    };
+  }
+
   // Submit a gasless exit to the relay (no user tx) and, by default, block until it settles on-chain.
   // The box collects `fee`; the user receives `net`. Returns the build + { jobId, status, txHash }.
   async function unwrap({ note, walletPriv, recipient, feeOpts, wait = true, waitOpts } = {}) {
@@ -285,5 +307,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     return { ...built, jobId: sub.jobId, status: st.status, txHash: st.txHash };
   }
 
-  return { cfg, assetByTicker, account, identity, rpc, ethCall, fetchEvents, balance, tickerOf, buildWrap, wrap, quoteUnwrapFee, buildUnwrap, unwrap, chainBindingHex, relay, indexer, evmLog, evmTx, pool, memo };
+  return { cfg, assetByTicker, account, identity, rpc, ethCall, fetchEvents, balance, tickerOf,
+    buildWrap, wrap, quoteUnwrapFee, buildUnwrap, unwrap, buildAttestMeta, chainBindingHex,
+    relay, indexer, evmLog, evmTx, pool, memo };
 }

@@ -11,8 +11,6 @@ import {ReentrancyGuard} from "solady/utils/ReentrancyGuard.sol";
 interface IConfidentialPoolCollateral {
     /// Σ live self-custody cBTC.zk lock sats (reflection-attested, oracle-free).
     function cbtcBackingSats() external view returns (uint256);
-    /// A tracked cBTC lock's recorded sats (0 if unknown) — set from the reflection `cbtcLocksFolded`.
-    function cbtcLockVBtc(bytes32 outpoint) external view returns (uint64);
     /// True once the reflection surfaced this lock outpoint as SPENT (`cbtcLocksSpent`).
     function cbtcLockSpent(bytes32 outpoint) external view returns (bool);
     /// True once cBTC was minted against this lock (the escrow became live).

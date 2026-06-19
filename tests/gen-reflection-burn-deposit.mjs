@@ -164,7 +164,8 @@ const kmsg = sha256(_cat([
   new TextEncoder().encode('tacit-kernel-v1'), assetId, new Uint8Array([1]),
   inTxid, u32le(0), new Uint8Array([1]), burnedC, u64le(cburn),
 ].map((x) => Uint8Array.from(x))));
-const { sig: cxSig, px } = bip340Sign(kmsg, excess);
+const { sig: cxSigValid, px } = bip340Sign(kmsg, excess);
+const cxSig = process.env.TAMPER ? Buffer.alloc(64, 0xff) : cxSigValid;
 const burnTerm = cburn > 0n ? prover.H.multiply(cburn).negate() : secp.ProjectivePoint.ZERO; // − cburn·H
 const Pchk = inCpt.add(burned.negate()).add(burnTerm);
 if (Buffer.compare(Buffer.from(compress(Pchk).slice(1)), Buffer.from(px)) !== 0) throw new Error('step not conserving');
@@ -178,6 +179,32 @@ const cxTxid = computeTxid(cxTx);
 const cxTxidHex = hexp(cxTxid);
 const { cx: burnedCx, cy: burnedCy } = xyHex(burned);
 
+// Every witness-carried protocol envelope is authenticated by BIP141: place it after a synthetic
+// coinbase whose commitment binds the two-leaf witness tree [coinbase=0, wtxid(tx)].
+function witnessBlock(tx, reservedByte) {
+  const reserved = Buffer.alloc(32, reservedByte);
+  const wtxid = dsha256(tx);
+  const witnessRoot = dsha256(cat([Buffer.alloc(32), wtxid]));
+  const commitment = dsha256(cat([witnessRoot, reserved]));
+  const coinbase = cat([
+    [0x02, 0x00, 0x00, 0x00], [0x00, 0x01],
+    [0x01], Buffer.alloc(32), [0xff, 0xff, 0xff, 0xff], [0x00], [0xff, 0xff, 0xff, 0xff],
+    [0x01], Buffer.alloc(8), [0x26], [0x6a, 0x24, 0xaa, 0x21, 0xa9, 0xed], commitment,
+    [0x01], [0x20], reserved, Buffer.alloc(4),
+  ]);
+  const txid = computeTxid(tx);
+  const coinbaseTxid = computeTxid(coinbase);
+  return {
+    coinbase: hexp(coinbase),
+    txids: [coinbaseTxid, txid],
+    wtxids: [Buffer.alloc(32), wtxid],
+    root: computeMerkleRoot([coinbaseTxid, txid]),
+  };
+}
+const etchBlock = witnessBlock(etchTx, 1);
+const cxBlock = witnessBlock(cxTx, 2);
+const cmintBlock = MINTABLE ? witnessBlock(cmint.revealMintTx, 3) : null;
+
 // ── 4. Burn tx (0x2B) spending the burned note → env_nu (the note's real ν) + env_dest. ──
 const envNu = pool.nullifier(burnedCx, burnedCy);
 const envDest = '0x' + 'dd'.repeat(32);
@@ -187,28 +214,30 @@ const burnEnv = cat([
 ]);
 const burnTx = revealTx(burnEnv, cxTxid, 0);
 const burnTxid = computeTxid(burnTx);
+const burnBlock = witnessBlock(burnTx, 4);
 
 // ── 5. Contiguous easy-PoW chain (prov: etch [+ commit + reveal if mintable] + cxfer; scan: burn). ──
-const etchHdr = mineLinked(computeMerkleRoot([etchTxid]), Buffer.alloc(32));
+const etchHdr = mineLinked(etchBlock.root, Buffer.alloc(32));
 let provHdrs;
 let lastProvHdr;
 if (MINTABLE) {
   const commitHdr = mineLinked(computeMerkleRoot([computeTxid(cmint.commitTx)]), dsha256(etchHdr));
-  const revealHdr = mineLinked(computeMerkleRoot([cmint.revealMintTxid]), dsha256(commitHdr));
-  const cxHdr = mineLinked(computeMerkleRoot([cxTxid]), dsha256(revealHdr));
+  const revealHdr = mineLinked(cmintBlock.root, dsha256(commitHdr));
+  const cxHdr = mineLinked(cxBlock.root, dsha256(revealHdr));
   provHdrs = [etchHdr, commitHdr, revealHdr, cxHdr];
   lastProvHdr = cxHdr;
 } else {
-  const cxHdr = mineLinked(computeMerkleRoot([cxTxid]), dsha256(etchHdr));
+  const cxHdr = mineLinked(cxBlock.root, dsha256(etchHdr));
   provHdrs = [etchHdr, cxHdr];
   lastProvHdr = cxHdr;
 }
-const burnHdr = mineLinked(computeMerkleRoot([burnTxid]), dsha256(lastProvHdr));
+const burnHdr = mineLinked(burnBlock.root, dsha256(lastProvHdr));
 
 // ── 6. IMT inserts from genesis (the burned note's ν + the bridge-out dest). ──
 const state = pool.makeScanReflectionState();
 state.setHeight(ANCHOR_HEIGHT - 1);
 const c0 = state.counts();
+const priorDigest = state.digest();
 const prior = {
   poolRoot: state.poolRoot(), noteCount: c0.note,
   spentRoot: state.spentRoot(), spentCount: c0.spent,
@@ -218,26 +247,29 @@ const prior = {
   cbtcLocks: [], cbtcBackingSats: 0, // the gap the committed assembler/harness omit (guest reads them)
 };
 // ── 7. Fixture (the burnDeposit witness) — built via the shared dapp/burn-deposit-assembler.js the worker
-// uses (it computes the merkle paths + the spent/burn IMT inserts). Single-tx blocks → merkle root == txid.
+// uses (it computes both txid/wtxid paths + the spent/burn IMT inserts).
 const burnDeposit = makeBurnDepositAssembler({ dsha256, cat, bytesToHex: hexp }).assembleBurnDeposit({
-  etch: { tx: hexp(etchTx), blockTxids: [etchTxid], index: 0 },
+  etch: { tx: hexp(etchTx), blockTxids: etchBlock.txids, blockWtxids: etchBlock.wtxids,
+    coinbase: process.env.ETCH_WITNESS_TAMPER ? etchBlock.coinbase.slice(0, -2) + '01' : etchBlock.coinbase, index: 1 },
   provHeaders: provHdrs.map((h) => hexp(h)),
   cxfers: [{
-    txid: cxTxidHex,
+    tx: hexp(cxTx), txid: cxTxidHex,
     inputs: [{ prevTxid: hexp(inTxid), prevVout: 0, commitment: hexp(inC) }],
     outputs: [{ commitment: hexp(burnedC), vout: 0 }],
     // 0 for a transfer; > 0 for a CBURN step. CBURN_LIE=1 witnesses a DIFFERENT burn than was signed
     // (0 instead of `cburn`) → the kernel verify key shifts → rejected (you can't understate the burn).
     burnedAmount: Number(process.env.CBURN_LIE ? 0n : cburn),
     rangeProof: hexp(cxRange),
-    // TAMPER=1 → a corrupt kernel sig: verify_cxfer_conservation fails → verify_provenance Err → the
-    // dispatch SKIPS (folds nothing), proving fail-closed (the burn-set must stay UNCHANGED).
-    kernelSig: process.env.TAMPER ? ('0x' + 'ff'.repeat(64)) : hexp(cxSig),
-    blockTxids: [cxTxid], index: 0,
+    // TAMPER=1 is baked into `tx` above; these decoded mirror fields are retained only for the JS
+    // pre-check and are not serialized as free witness data.
+    kernelSig: hexp(cxSig),
+    blockTxids: cxBlock.txids, blockWtxids: cxBlock.wtxids,
+    coinbase: process.env.WITNESS_TAMPER ? cxBlock.coinbase.slice(0, -2) + '01' : cxBlock.coinbase, index: 1,
   }],
   // mintable: the issuer-authorized cmint the burned note descends from (empty for fixed-supply).
   cmints: MINTABLE
-    ? [{ revealTx: hexp(cmint.revealMintTx), commitTx: hexp(cmint.commitTx), blockTxids: [cmint.revealMintTxid], index: 0 }]
+    ? [{ revealTx: hexp(cmint.revealMintTx), commitTx: hexp(cmint.commitTx), blockTxids: cmintBlock.txids,
+         blockWtxids: cmintBlock.wtxids, coinbase: cmintBlock.coinbase, index: 1 }]
     : [],
   burned: { cx: burnedCx, cy: burnedCy },
   // the proven-real burned note onboarded as a pool member (leaf(asset, Cx, Cy, ZERO_OWNER)), so the
@@ -245,14 +277,22 @@ const burnDeposit = makeBurnDepositAssembler({ dsha256, cat, bytesToHex: hexp })
   burnedNoteLeaf: pool.leaf(assetHex, burnedCx, burnedCy, '0x' + '00'.repeat(32)),
   nu: envNu, dest: envDest, scanState: state,
 });
+// The guest advances the reflected height after consuming this scan block. The insert helpers above mutate
+// the other accumulators only, so mirror that final transition before committing the parity digest.
+state.setHeight(ANCHOR_HEIGHT);
 const fixture = {
   note: 'TAC burn-deposit: C_0 → conserving cxfer → burned note → 0x2B burn; native-exec the reflect guest to fold it.',
   prior,
   anchorHeight: ANCHOR_HEIGHT,
   headers: [hexp(burnHdr)],
-  blocks: [{ txs: [{ txData: hexp(burnTx), openings: [], spentInserts: [], outputs: [], burnDeposit }] }],
+  blocks: [{ txs: [
+    { txData: burnBlock.coinbase, openings: [], spentInserts: [], outputs: [], burnDeposit: null },
+    { txData: hexp(burnTx), openings: [], spentInserts: [], outputs: [], burnDeposit },
+  ] }],
+  newDigest: state.digest(),
 };
 
 console.error(`mode=${MINTABLE ? 'MINTABLE' : 'fixed'} etch=${etchTxidHex.slice(0, 12)} cxfer=${cxTxidHex.slice(0, 12)} burn=${hexp(burnTxid).slice(0, 12)} env_nu=${envNu.slice(0, 12)}`);
 console.error(`prov_tip=${hexp(dsha256(lastProvHdr)).slice(0, 12)} scan_prev=${hexp(burnHdr.subarray(4, 36)).slice(0, 12)} (must match)`);
+console.error(`priorDigest=${priorDigest} newDigest=${fixture.newDigest}`);
 console.log(JSON.stringify(fixture, null, 2));

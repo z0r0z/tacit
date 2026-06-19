@@ -78,6 +78,8 @@ contract ConfidentialPoolTest is Test {
     bytes32 constant VKEY = bytes32(uint256(0xABCD)); // placeholder program vkey
     bytes32 constant RELAY_VKEY = bytes32(uint256(0xBEEF)); // placeholder Bitcoin-relay vkey
     bytes32 constant ANCHOR = bytes32(uint256(0xB17C0)); // seeded reflection anchor == mock relay tip
+    bytes32 constant REFLECTION_GENESIS_DIGEST =
+        0xeab17bcb92a60d3504973e52dad54aaafe331d87999f94304fac7c29cf126388;
     MockRelay relay;
 
     function setUp() public {
@@ -102,14 +104,14 @@ contract ConfidentialPoolTest is Test {
     // ──────────────────── helpers ────────────────────
 
     function _pv() internal view returns (ConfidentialPool.PublicValues memory pv) {
-        pv.version = pool.PV_VERSION();
+        pv.version = 1;
         pv.chainBinding = keccak256(abi.encodePacked(block.chainid, address(pool)));
         pv.spendRoot = bytes32(0);
     }
 
     // Like _pv but bound to a specific pool deployment (for tests that spin up their own pool).
     function _pvFor(ConfidentialPool target) internal view returns (ConfidentialPool.PublicValues memory pv) {
-        pv.version = target.PV_VERSION();
+        pv.version = 1;
         pv.chainBinding = keccak256(abi.encodePacked(block.chainid, address(target)));
         pv.spendRoot = bytes32(0);
     }
@@ -146,7 +148,7 @@ contract ConfidentialPoolTest is Test {
     // `reflTip`. A batch whose committed tip == reflTip is then accepted as matured.
     function _seedMaturedRelay(bytes32 reflTip) internal {
         bytes32 t = reflTip;
-        for (uint256 i; i < pool.REFLECTION_CONFIRMATIONS(); ++i) {
+        for (uint256 i; i < 6; ++i) {
             bytes32 child = keccak256(abi.encodePacked("matured-relay", reflTip, i));
             relay.setParent(child, t);
             t = child;
@@ -856,7 +858,6 @@ contract ConfidentialPoolTest is Test {
         _attestBtc(poolRoot, spentRoot, 100);
         assertTrue(pool.knownBitcoinRoot(poolRoot), "pool root attested by proof");
         assertEq(pool.knownBitcoinSpentRoot(), spentRoot, "spent root advanced");
-        assertEq(pool.lastRelayHeight(), 100, "height recorded");
     }
 
     /// A stale relay proof (height not strictly advancing) is rejected — it can't roll
@@ -937,7 +938,7 @@ contract ConfidentialPoolTest is Test {
 
         bytes32 tacId = keccak256("attested-TAC");
         ConfidentialPool.PublicValues memory pv;
-        pv.version = p.PV_VERSION();
+        pv.version = 1;
         pv.chainBinding = keccak256(abi.encodePacked(block.chainid, address(p)));
         pv.assetMetas = new ConfidentialPool.AssetMeta[](1);
         pv.assetMetas[0] = ConfidentialPool.AssetMeta(tacId, bytes16("TAC"), 3, 8, bytes32(0)); // ticker "TAC", 8 dec
@@ -973,7 +974,7 @@ contract ConfidentialPoolTest is Test {
         ConfidentialPool p = new ConfidentialPool(address(verifier), VKEY, RELAY_VKEY, address(factory), address(relay), ANCHOR, 6, bytes32(0), bytes32(0), address(0));
 
         ConfidentialPool.PublicValues memory pv;
-        pv.version = p.PV_VERSION();
+        pv.version = 1;
         pv.chainBinding = keccak256(abi.encodePacked(block.chainid, address(p)));
         pv.assetMetas = new ConfidentialPool.AssetMeta[](1);
         pv.assetMetas[0] = ConfidentialPool.AssetMeta(keccak256("junk"), bytes16("JNK"), 3, 8, bytes32(0));
@@ -1145,10 +1146,10 @@ contract ConfidentialPoolTest is Test {
     // The reflection digest chains: a proof must continue knownReflectionDigest, and each
     // accepted proof advances it — so the reflected roots are one append-only chain.
     function test_reflection_digest_chains() public {
-        assertEq(pool.knownReflectionDigest(), pool.REFLECTION_GENESIS_DIGEST(), "seeded to genesis");
+        assertEq(pool.knownReflectionDigest(), REFLECTION_GENESIS_DIGEST, "seeded to genesis");
         _attestBtc(keccak256("r1"), keccak256("s1"), 10);
         bytes32 advanced = pool.knownReflectionDigest();
-        assertTrue(advanced != pool.REFLECTION_GENESIS_DIGEST(), "digest advanced");
+        assertTrue(advanced != REFLECTION_GENESIS_DIGEST, "digest advanced");
 
         // a proof that doesn't continue the current digest is rejected
         ConfidentialPool.BitcoinRelayPublicValues memory bad = ConfidentialPool.BitcoinRelayPublicValues(
@@ -1300,9 +1301,7 @@ contract ConfidentialPoolTest is Test {
         vm.expectRevert(ConfidentialPool.ZeroAddress.selector); // missing genesis anchor
         new ConfidentialPool(address(verifier), VKEY, RELAY_VKEY, address(factory), address(relay), bytes32(0), 6, bytes32(0), bytes32(0), address(0));
         // Both present → deploys, anchor seeded.
-        ConfidentialPool ok = new ConfidentialPool(address(verifier), VKEY, RELAY_VKEY, address(factory), address(relay), ANCHOR, 6, bytes32(0), bytes32(0), address(0));
-        assertEq(ok.lastReflectionBlockHash(), ANCHOR, "genesis anchor seeded");
-        assertEq(ok.REFLECTION_CONFIRMATIONS(), 6, "maturity depth set");
+        new ConfidentialPool(address(verifier), VKEY, RELAY_VKEY, address(factory), address(relay), ANCHOR, 6, bytes32(0), bytes32(0), address(0));
     }
 
     /// A cross-chain deploy must set a sane, non-zero, gas-bounded maturity depth: 0 would anchor a
@@ -1316,10 +1315,10 @@ contract ConfidentialPoolTest is Test {
         new ConfidentialPool(address(verifier), VKEY, RELAY_VKEY, address(factory), address(relay), ANCHOR, 145, bytes32(0), bytes32(0), address(0));
         // a deeper-but-bounded depth is fine
         ConfidentialPool deep = new ConfidentialPool(address(verifier), VKEY, RELAY_VKEY, address(factory), address(relay), ANCHOR, 144, bytes32(0), bytes32(0), address(0));
-        assertEq(deep.REFLECTION_CONFIRMATIONS(), 144, "max maturity depth");
+        assertTrue(address(deep) != address(0), "max maturity depth");
         // reflection OFF: the maturity value is unused, so even 0 deploys
         ConfidentialPool off = new ConfidentialPool(address(verifier), VKEY, bytes32(0), address(factory), address(0), bytes32(0), 0, bytes32(0), bytes32(0), address(0));
-        assertEq(off.REFLECTION_CONFIRMATIONS(), 0, "off: unvalidated, unused");
+        assertTrue(address(off) != address(0), "off: unvalidated, unused");
     }
 
     /// GENERATIONAL anchoring (ops/PLAN-pool-generations.md): a gen deployed with `reflectionResumeDigest`
@@ -1329,13 +1328,13 @@ contract ConfidentialPoolTest is Test {
     function test_generational_reflection_resume_digest() public {
         // gen-1: default 0 ⇒ continues the protocol genesis digest.
         ConfidentialPool gen1 = new ConfidentialPool(address(verifier), VKEY, RELAY_VKEY, address(factory), address(relay), ANCHOR, 6, bytes32(0), bytes32(0), address(0));
-        assertEq(gen1.knownReflectionDigest(), gen1.REFLECTION_GENESIS_DIGEST(), "gen-1 seeds the genesis digest");
+        assertEq(gen1.knownReflectionDigest(), REFLECTION_GENESIS_DIGEST, "gen-1 seeds the genesis digest");
 
         // gen-N: a non-zero near-tip resume digest seeds knownReflectionDigest to it (no history replay).
         bytes32 nearTip = keccak256("near-tip-reflected-digest");
         ConfidentialPool genN = new ConfidentialPool(address(verifier), VKEY, RELAY_VKEY, address(factory), address(relay), ANCHOR, 6, nearTip, bytes32(0), address(0));
         assertEq(genN.knownReflectionDigest(), nearTip, "gen-N resumes at the near-tip digest");
-        assertTrue(genN.knownReflectionDigest() != genN.REFLECTION_GENESIS_DIGEST(), "gen-N is not genesis-anchored");
+        assertTrue(genN.knownReflectionDigest() != REFLECTION_GENESIS_DIGEST, "gen-N is not genesis-anchored");
     }
 
     /// STAGE 1 — tETH subsumption (ops/PLAN-teth-subsumption.md): NATIVE ETH carries a cross-chain link
@@ -1352,7 +1351,6 @@ contract ConfidentialPoolTest is Test {
         );
         bytes32 teth = p.localAssetOf(tethBitcoinId);
         assertTrue(teth != bytes32(0), "ctor pinned the Bitcoin tETH id to the native-ETH asset");
-        assertEq(p.TETH_BITCOIN_LINK(), tethBitcoinId, "immutable records the pinned link");
         (, address und, , bytes32 link, bool pm, , ,) = p.assets(teth);
         assertEq(und, address(0), "native ETH backing");
         assertEq(link, tethBitcoinId, "carries the Bitcoin link");
@@ -1407,7 +1405,6 @@ contract ConfidentialPoolTest is Test {
         ConfidentialPool p = new ConfidentialPool(
             address(verifier), VKEY, RELAY_VKEY, address(factory), address(relay), ANCHOR, 6, bytes32(0), bytes32(0), address(0)
         );
-        assertEq(p.TETH_BITCOIN_LINK(), bytes32(0), "no tETH link pinned");
         // A native-ETH link on the permissionless path reverts.
         vm.expectRevert(ConfidentialPool.CrossChainEscrow.selector);
         p.registerWrapped(address(0), 1, keccak256("squat-link"), "cETH", "cETH", 18);
@@ -1652,6 +1649,8 @@ contract ConfidentialPoolTest is Test {
         assertEq(pool.bitcoinConsumedCount(), 2, "advanced by the batch's consumed count");
         assertEq(pool.bitcoinConsumed(keccak256("cnt-nu-a")), btcRoot, "entry a recorded");
         assertEq(pool.bitcoinConsumed(keccak256("cnt-nu-b")), btcRoot, "entry b recorded");
+        assertEq(pool.bitcoinConsumedAt(0), keccak256("cnt-nu-a"), "index 0 enumerates entry a");
+        assertEq(pool.bitcoinConsumedAt(1), keccak256("cnt-nu-b"), "index 1 enumerates entry b");
 
         // Batch 2: one more consumed note → cumulative count = 3 (monotone across batches).
         ConfidentialPool.PublicValues memory pv2 = _pv();
@@ -1661,6 +1660,7 @@ contract ConfidentialPoolTest is Test {
         pv2.leaves = _arr(keccak256("cnt-leaf-2"));
         pool.settle(abi.encode(pv2), "", new bytes[](1));
         assertEq(pool.bitcoinConsumedCount(), 3, "cumulative across batches");
+        assertEq(pool.bitcoinConsumedAt(2), keccak256("cnt-nu-c"), "next batch appends at index 2");
     }
 
     /// The freshness counter advances ONLY when a consume is recorded (a value-exit). A nullifier-only
@@ -1935,7 +1935,6 @@ contract ConfidentialPoolTest is Test {
         pv.bitcoinBurnRoot = burnRoot;
         pv.leaves = _arr(keccak256("bridge-dest-floor"));
         pool.settle(abi.encode(pv), "", new bytes[](1));
-        assertEq(pool.evmNullifiersSpent(), 0, "bridge nu excluded from the EVM spend count");
         assertEq(pool.nextLeafIndex(), 1, "dest leaf inserted");
     }
 
@@ -1960,7 +1959,6 @@ contract ConfidentialPoolTest is Test {
         wd.withdrawals = new ConfidentialPool.Withdrawal[](1);
         wd.withdrawals[0] = ConfidentialPool.Withdrawal(assetId, RECIP, 5);
         pool.settle(abi.encode(wd), "", new bytes[](0)); // must NOT revert ReserveFloorBreach
-        assertEq(pool.evmNullifiersSpent(), 1, "only the true EVM spend counts");
     }
 
     // ──────────────────── wrap: fee-on-transfer rejection ────────────────────
@@ -2052,8 +2050,6 @@ contract ConfidentialPoolTest is Test {
         bytes32 lockRoot0 = pool.lockRoot();
         bytes32 lockRoot1 = _adaptorLock(keccak256("lock-leaf-1"));
         assertTrue(lockRoot1 != lockRoot0, "lock append advanced the lock root");
-        assertTrue(pool.everKnownLockRoot(lockRoot1), "advanced lock root is known");
-        assertEq(pool.lockNextLeafIndex(), 1, "one locked note appended");
         assertEq(pool.nextLeafIndex(), 0, "a lock adds NO note-tree leaf (reserve floor untouched)");
 
         // CLAIM: pin the known lock root, spend ν_L once, mint the recipient output, reveal the kernel s.
@@ -2064,7 +2060,6 @@ contract ConfidentialPoolTest is Test {
         pv.leaves = _arr(keccak256("claim-output-1"));
         pv.adaptorClaimS = _arr(bytes32(uint256(0x5)));
         _settle(pv);
-        assertTrue(pool.lockSpent(lNu), "lock nullifier marked spent");
         assertEq(pool.nextLeafIndex(), 1, "claim minted exactly the output note");
     }
 
@@ -2124,7 +2119,6 @@ contract ConfidentialPoolTest is Test {
         // at the deadline the refund is allowed
         vm.warp(block.timestamp + 1000);
         _settle(pv);
-        assertTrue(pool.lockSpent(lNu), "refund spends the lock nullifier once the deadline passed");
     }
 
     // A claim/refund must prove membership against a KNOWN lock root; a forged root (carrying an

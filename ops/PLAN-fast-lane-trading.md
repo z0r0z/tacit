@@ -101,9 +101,9 @@ Extend it as follows — each is a relaxation + a backing check, NOT a foundatio
   anchoring is tracked separately and lands in the same coordinated re-prove.
   - **Harness-drift fix (2026-06-17, gates the WHOLE settle re-prove):** the `prover-host` settle harnesses
     were last re-proven (commit `1434278`) BEFORE the adaptor-swap op-set (commit `7720405`) added a 5th
-    unconditional header root, `lock_set_root` (`main.rs:139`). Every settle harness wrote only 4 header
+    unconditional header roots, `lock_set_root` / `cdp_position_root` (`main.rs:172-175`). Every settle harness wrote too few header
     roots → it would desync against the current `confidential-pool-prover` guest at re-prove time. **Fixed in
-    ALL 8 settle harnesses** (each now writes `lockSetRoot = 0` after `bitcoinBurnRoot`): the cross-lane
+    ALL settle harnesses** (each now writes `lockSetRoot = 0` and `cdpPositionRoot = 0` after `bitcoinBurnRoot`): the cross-lane
     `exec_crosslane.rs` / `exec_crosslane_swap.rs` / `exec_crosslane_otc.rs` + the Ethereum-only
     `exec_swap.rs` / `exec_otc.rs` / `exec_lp.rs` / `exec_bid.rs` / `exec_confidential.rs`.
 

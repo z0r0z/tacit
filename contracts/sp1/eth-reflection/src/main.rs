@@ -25,7 +25,7 @@ use tree_hash::TreeHash;
 
 use cxfer_core::eth_reflection::{
     eth_consumed_leaf, eth_crossout_leaf, eth_refl_digest, mapping_slot_key, plain_slot_key, slot_value_to_u64,
-    EthConsumed, EthCrossOut, CONSUMED_COUNT_SLOT_INDEX, CONSUMED_SLOT_INDEX, CROSSOUT_SLOT_INDEX,
+    EthConsumed, EthCrossOut, CONSUMED_AT_SLOT_INDEX, CONSUMED_COUNT_SLOT_INDEX, CONSUMED_SLOT_INDEX, CROSSOUT_SLOT_INDEX,
     DEST_CHAIN_BITCOIN,
 };
 use cxfer_core::{claim_id, keccak_tree_append_transition};
@@ -88,6 +88,11 @@ struct ConsumedWitness {
 // `crossOutCommitment[claimId]` / `bitcoinConsumed[ν]` (mappings) and `bitcoinConsumedCount` (plain).
 fn crossout_slot_key(claim_id: &B256) -> B256 { B256::from(mapping_slot_key(&claim_id.0, CROSSOUT_SLOT_INDEX)) }
 fn consumed_slot_key(nullifier: &B256) -> B256 { B256::from(mapping_slot_key(&nullifier.0, CONSUMED_SLOT_INDEX)) }
+fn consumed_at_slot_key(index: u64) -> B256 {
+    let mut key = [0u8; 32];
+    key[24..].copy_from_slice(&index.to_be_bytes());
+    B256::from(mapping_slot_key(&key, CONSUMED_AT_SLOT_INDEX))
+}
 fn count_slot_key() -> B256 { B256::from(plain_slot_key(CONSUMED_COUNT_SLOT_INDEX)) }
 
 pub fn main() {
@@ -165,7 +170,7 @@ pub fn main() {
     let entry_slot_count = pool_slots.iter().filter(|s| s.key != count_key).count();
     assert_eq!(
         entry_slot_count,
-        ethr.crossouts.len() + ethr.consumeds.len(),
+        ethr.crossouts.len() + 2 * ethr.consumeds.len(),
         "verified-slot / witness count mismatch",
     );
     // Reject duplicate witnesses locally: a key folded twice would mis-count the set even though each
@@ -211,7 +216,16 @@ pub fn main() {
     // spendRoot (`bitcoinConsumed[ν] = spendRoot`, non-zero), bound into the leaf; ν is the key.
     let mut consumed_root: [u8; 32] = ethr.prior_consumed_root.0;
     let mut consumed_count = ethr.prior_consumed_count;
-    for cw in ethr.consumeds.iter() {
+    for (offset, cw) in ethr.consumeds.iter().enumerate() {
+        let expected_index = ethr.prior_consumed_count
+            .checked_add(offset as u64)
+            .expect("consumed index overflow");
+        let at_slot = pool_slots
+            .iter()
+            .find(|s| s.key == consumed_at_slot_key(expected_index))
+            .expect("bitcoinConsumedAt[index] slot not in proven set");
+        assert_eq!(at_slot.value, cw.nullifier, "bitcoinConsumedAt[index] != witnessed nullifier");
+        assert!(cw.nullifier.0 != [0u8; 32], "zero consumed nullifier");
         let key = consumed_slot_key(&cw.nullifier);
         let slot = pool_slots.iter().find(|s| s.key == key).expect("bitcoinConsumed slot not in proven set");
         assert_eq!(slot.value, cw.spend_root, "slot value != spendRoot");

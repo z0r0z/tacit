@@ -87,16 +87,43 @@ const receiptBytes = cat([hb(cOutSecp), hb(cOutBjj), Buffer.from(outXcurveSigma)
 const envelope = cat([
   [0x2f], hb(ASSET_A), hb(ASSET_B), [0x01],
   signedU64(0, X), signedU64(1, Y), hb(rNetA), hb(rNetB), u16le(feeBps), u64le(0), u64le(0), hb(env.tipACSecp), hb(env.tipBCSecp),
-  Buffer.alloc(32), Buffer.alloc(32), intentBytes, receiptBytes, u16le(proofBytes.length), proofBytes, [0x00],
+  be32buf(rTipA), be32buf(rTipB), intentBytes, receiptBytes, u16le(proofBytes.length), proofBytes, [0x00],
 ]);
 
 // ── 4. the swap_batch tx: spend the trader's c_in + the 0x2F envelope in the witness ──
-const tapscript = cat([[0x20], Buffer.alloc(32), [0xac], [0x00, 0x63], [0x05], Buffer.from('TACIT'), [0x01, 0x01], [0x4d], Buffer.from([envelope.length & 0xff, (envelope.length >> 8) & 0xff]), envelope, [0x68]]);
+const pushData = (b) => b.length < 0x4c
+  ? cat([[b.length], b])
+  : b.length <= 0xff
+    ? cat([[0x4c, b.length], b])
+    : cat([[0x4d, b.length & 0xff, (b.length >> 8) & 0xff], b]);
+const payloadPushes = [];
+for (let i = 0; i < envelope.length; i += 520) payloadPushes.push(pushData(envelope.subarray(i, Math.min(i + 520, envelope.length))));
+const tapscript = cat([
+  [0x20], Buffer.alloc(32), [0xac], [0x00, 0x63],
+  [0x05], Buffer.from('TACIT'), [0x01, 0x01],
+  ...payloadPushes,
+  [0x68],
+]);
 const inputsBuf = cat([seedTxid, u32le(seedVout), [0x00], [0xfd, 0xff, 0xff, 0xff]]);
 const wit0 = cat([[0x03], [0x40], Buffer.alloc(0x40), varint(tapscript.length), tapscript, [0x21], Buffer.alloc(0x21, 0xc0)]);
 const tx = cat([[0x02, 0x00, 0x00, 0x00], [0x00, 0x01], varint(1), inputsBuf, [0x01], Buffer.alloc(8), [0x00], wit0, Buffer.alloc(4)]);
 const txid = computeTxid(tx), txidHex = '0x' + Buffer.from(txid).toString('hex');
-const header = mineHeader(computeMerkleRoot([txid]));
+// Authenticate the witness-carried envelope with a valid BIP141 coinbase commitment. Without this,
+// the reflection guest deliberately ignores every Taproot envelope in the block.
+const dsha = (b) => sha256(sha256(b));
+const reserved = Buffer.alloc(32, 7);
+const witnessRoot = dsha(cat([Buffer.alloc(32), dsha(tx)])); // coinbase wtxid is defined as zero
+const wcommit = dsha(cat([witnessRoot, reserved]));
+const coinbase = cat([
+  [0x02, 0x00, 0x00, 0x00], [0x00, 0x01],
+  [0x01], Buffer.alloc(32), [0xff, 0xff, 0xff, 0xff], [0x00], [0xff, 0xff, 0xff, 0xff],
+  [0x01], Buffer.alloc(8), [0x26], [0x6a, 0x24, 0xaa, 0x21, 0xa9, 0xed], wcommit,
+  [0x01], [0x20], reserved,
+  Buffer.alloc(4),
+]);
+const cbTxid = computeTxid(coinbase);
+const coinbaseSpec = { txData: hx(coinbase), txid: hx(cbTxid), vins: [], env: null };
+const header = mineHeader(computeMerkleRoot([cbTxid, txid]));
 
 // ── 5. seed the pool + the trader's c_in (a live A note) ──
 const state = pool.makeScanReflectionState();
@@ -119,10 +146,10 @@ console.error(`publics match circuit=${pubMatch} groth16(inline vk)=${groth16Ok}
 const txSpec = { txData: '0x' + tx.toString('hex'), txid: txidHex, vins: [{ prevTxid: '0x' + seedTxid.toString('hex'), vout: seedVout }], env: { type: 'swap_batch', ...env } };
 const swapBatchFold = (e, tid, spends) => foldSwapBatch(pool, state, e, tid, spends, { vk: inlineVk });
 const input = await pool.assembleReflectionScanInput(state, {
-  anchorHeight: BLOCK_HEIGHT, headers: ['0x' + Buffer.from(header).toString('hex')], blocks: [{ txs: [txSpec] }], swapBatchFold,
+  anchorHeight: BLOCK_HEIGHT, headers: ['0x' + Buffer.from(header).toString('hex')], blocks: [{ txs: [coinbaseSpec, txSpec] }], swapBatchFold,
 }, coords);
 
-const sb = input.blocks[0].txs[0].swapBatch;
+const sb = input.blocks[0].txs[1].swapBatch;
 const p = state.pools.get(poolId);
 console.error(`swap_batch: ${X}A→${Y}B folded=${!!sb} receipts=${sb ? sb.receiptPaths.length : 0} reservesPost=A:${p.reserveA} B:${p.reserveB} newDigest=${input.newDigest}`);
 if (!pubMatch || !groth16Ok || !sb) { console.error('FATAL: publics/groth16/fold failed — fixture would not validate'); process.exit(1); }

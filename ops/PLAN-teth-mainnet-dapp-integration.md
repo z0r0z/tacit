@@ -1,4 +1,8 @@
-# tETH mainnet → dapp integration plan
+# tETH mainnet → dapp integration plan (legacy alpha)
+
+> Status note: the standalone tETH mixer was the legacy alpha ETH bridge. It is superseded by
+> `ConfidentialPool` for the forward ETH path. Keep this plan for historical context, existing-note
+> recovery/redemption, and migration reference — not as the production roadmap for new ETH deposits.
 
 Goal: let public dapp users bridge ETH ↔ tETH on **Ethereum mainnet + mainnet
 Bitcoin**, safely, behind a conservative cap. Everything below is sequenced so
@@ -69,7 +73,8 @@ consecutive cycles unattended on mainnet.
 
 Steps:
 - **B1.** Confirm `TETH_DEPLOYMENTS.mainnet` (done: mixer + deployBlock 0x180ff46
-  + assetId). Relay/verifier are derived on-chain (`HEADER_RELAY()`), no hardcode.
+  + assetId). Relay/verifier are derived on-chain from the tETH mixer (`HEADER_RELAY()`), no hardcode.
+  This is legacy-alpha verification; new ETH flow should bind to `ConfidentialPool`.
 - **B2 (deposit).** Verify the UI deposit path (`bridgeDepositETH` →
   `deposit(bytes32,uint256)`, selector `1de26e16`) enforces the 0.001 cap on
   chainId 1, and the commitment derivation matches the guest. Smoke-test one

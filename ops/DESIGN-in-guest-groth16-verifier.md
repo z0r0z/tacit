@@ -53,11 +53,12 @@ One Miller-loop-heavy pairing check (4 pairings) on BN254 + an n-term G1 multiex
 
 ## Ceremony status — CONCLUDED (2026-06; not a blocker)
 
-The Phase-2 ceremony IS done: the canonical Groth16 vk is pinned at `CANONICAL_AMM_VK_CID =
-bafkreibjpe4xfqtq2ziki4uupydnkeiakqi76m674xtdhmxnfbrn4iomp4` (the ceremony bundle at
-`CANONICAL_CEREMONY_CID = bafybeidq2ahzte4sfiqjsmhqta62ufenpppzpch5ppry55tzxzlvltxy2u`, `verification_key.json`
-inside it). So the circuit + vk + public-signal layout EXIST — `T_SWAP_BATCH` is NOT blocked. The verifier can
-be built against the REAL circuit.
+The Phase-2 ceremony IS done: the canonical wrapper VK is pinned at `CANONICAL_AMM_VK_CID =
+bafkreibjpe4xfqtq2ziki4uupydnkeiakqi76m674xtdhmxnfbrn4iomp4`. The canonical ceremony directory is
+`bafybeiheww2ndia2gld4mu7x2h7iwzawv6likpmfpklm6x5kj3btaniuam`; its `amm_swap_batch_vk.json` is CID
+`bafkreidc35fn7w3pxa4u7phjulzgrgm3js5ifmgqil7liedkqb2bdgdtp4`, and the final swap-batch zkey is CID
+`bafybeieb5hafaix2xwvnmsodby4vkvcpdv4bpt4ny3etza4lpy2rxefwqm`. So the circuit + vk + public-signal
+layout EXIST — `T_SWAP_BATCH` is NOT blocked. The verifier can be built against the REAL circuit.
 
 Plan to close it:
 1. **Build + unit-test the general `groth16_bn254_verify`** (the pairing equation + snarkjs format adaptation
@@ -84,6 +85,19 @@ The first artifact to pull is the ceremony `verification_key.json` (from the CID
 - **Parser + types landed (cxfer-core, locally tested).** `dec_to_be32` (snarkjs decimal → BE-32 field bytes,
   overflow-checked), `G1Aff`/`G2Aff`/`G16Vk`/`G16Proof`. KAT `parse_swap_batch_ceremony_vk` parses the REAL
   ceremony vk → the 124-IC G16Vk (every element a valid field byte) — the foundation for baking `BATCH_VK`.
+
+## Validation (2026-06-19) — real ceremony vector passed end-to-end
+
+- Final zkey CID `bafybeieb5hafaix2xwvnmsodby4vkvcpdv4bpt4ny3etza4lpy2rxefwqm`, SHA-256
+  `6ed30983a1c2faf287f3d2fc95fae08cc926aa563b2df2dc752c01f46ee03031`; its exported VK is byte-identical
+  to canonical swap-batch VK CID `bafkreidc35fn7w3pxa4u7phjulzgrgm3js5ifmgqil7liedkqb2bdgdtp4`.
+- `tests/gen-swapbatch-prove.mjs` passes the valid proof and rejects every one of the 123 public-signal
+  mutations plus A/B/C proof-point mutations. The real vector confirms the guest's native
+  `Fq2::new(c0,c1)` snarkjs limb order.
+- Full reflection execute passed on Vast.ai from isolated workspace `/root/work/swapbatch-kat`, fixture
+  SHA-256 `8c420d42a6923b7c4e2ffd43f4b9163e5eb37c91788fe9123b3ddc8420238cb3`:
+  `EXECUTE_OK cycles=5358273975` and `DIGEST_MATCH` at
+  `0x658cad1f0e9de708804da9abcf3eea1cf7163f6f2543442fda4351dcfb3e2def`.
 
 **Remaining to close it:**
 1. **The BN254 pairing** — `groth16_bn254_verify` (the skeleton below) over a BN254 crate (SP1

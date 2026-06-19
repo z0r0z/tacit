@@ -16,7 +16,7 @@ genesis `eab17bcb…`). 364 forge tests + JS round-trips green. Branch `confiden
       `bitcoinConsumed=119`, `bitcoinConsumedCount=120`.
 - [x] `ETH_REFLECTION_VKEY` (reflect.rs:169) confirmed STALE — re-pin is load-bearing (step 2).
 - [x] Cross-lane acceptance harnesses + fixtures present (swap/OTC/LP/BID); all 8 settle harnesses
-      write the `lock_set_root` header word.
+      write the `lock_set_root` and `cdp_position_root` header words.
 
 ## Re-prove order (★ = box; ☆ = dev-box edit I make when you paste the value back)
 

@@ -12,10 +12,10 @@ Ethereum sync committee. No admin/oracle on the verify path.
 
 ## 0. The one non-mechanical prerequisite — re-anchor the reflection guest
 
-The frozen reflection vkey `0x005e6adc` pins the eth-reflection **genesis sync-committee anchor**
+The current Sepolia E2 reflection vkey `0x008c9fa6` pins the eth-reflection **genesis sync-committee anchor**
 `0x8a83…` = **Sepolia** finalizedSlot 10462624. helios bootstraps from a chain-specific weak-subjectivity
 checkpoint, so an eth-reflection proof produced on **Ethereum mainnet** carries mainnet's sync-committee
-root — the Sepolia-anchored guest would reject it. So the frozen reflection guest **cannot be reused on
+root — the Sepolia-anchored guest would reject it. So the Sepolia reflection guest **cannot be reused on
 mainnet**.
 
 Required, in one coordinated re-prove (the box step; correctness, not convenience):
@@ -24,9 +24,10 @@ Required, in one coordinated re-prove (the box step; correctness, not convenienc
 2. Rebuild the Bitcoin reflection guest (it pins `ETH_REFLECTION_VKEY` + the anchor) → **new
    `BITCOIN_RELAY_VKEY`**. Regenerate `ConfidentialReflectionProofReal` + `elf-vkey-pin.json`
    (`bitcoin_relay_vkey` + the `FROZEN_*` drift guards + the readiness-gate allowlist), all in one commit.
-- **`PROGRAM_VKEY` (settle, `0x00d5b572`) does NOT change** — the settle guest doesn't touch the eth anchor
-  (cxfer-core is unchanged). Only the reflection leg rotates. Deploy mainnet with the **new**
-  `BITCOIN_RELAY_VKEY` and the **same** `PROGRAM_VKEY`.
+- **`PROGRAM_VKEY` starts from the current pinned settle vkey (`0x005c8a3d`)**, but derive it from the same
+  canonical box bundle: if the mainnet source snapshot changes settle code, rotate and re-pin it in the
+  same commit as the reflection leg. Deploy mainnet with the re-anchored `BITCOIN_RELAY_VKEY` and the
+  reconciled `PROGRAM_VKEY`.
 - (Alternative, if the reverse bridge isn't wanted at launch: a forward-only Mode-A reflection guest with no
   `verify_sp1_proof` — also a re-prove, also a new reflection vkey. Mode B is the recommended path so
   ETH→BTC works day one.)
@@ -37,7 +38,7 @@ Required, in one coordinated re-prove (the box step; correctness, not convenienc
 
 | arg | value | note |
 |---|---|---|
-| `PROGRAM_VKEY` | `0x00d5b572…` (unchanged) | settle guest; script cross-checks `elf-vkey-pin.json` |
+| `PROGRAM_VKEY` | current pinned settle vkey (`0x005c8a3d…` unless the mainnet bundle rotates it) | settle guest; script cross-checks `elf-vkey-pin.json` |
 | `BITCOIN_RELAY_VKEY` | the **re-anchored** reflection vkey (§0) | must == pin `bitcoin_relay_vkey` |
 | `SP1_VERIFIER` | Succinct's **mainnet** `SP1VerifierGroth16` immutable leaf | NOT the gateway; obtain its address + `extcodehash` |
 | `EXPECTED_VERIFIER_CODEHASH` | the leaf's codehash | **REQUIRED on chainid 1** (ctor + script enforce) |
@@ -95,7 +96,7 @@ BITCOIN_RELAY_VKEY=<re-anchored reflection vkey> CANONICAL_FACTORY=<factory> HEA
 GENESIS_REFLECTION_ANCHOR=<relay tip, internal-LE> ACK_REFLECTION_ANCHORED=1 \
   forge script script/DeployConfidentialPool.s.sol --rpc-url $ETH_MAINNET --private-key $PK --broadcast --verify
 ```
-`PROGRAM_VKEY` defaults to the pinned `0x00d5b572`; the script reverts on a pin mismatch and on a missing
+`PROGRAM_VKEY` defaults to the pinned `0x005c8a3d`; the script reverts on a pin mismatch and on a missing
 `EXPECTED_VERIFIER_CODEHASH` at chainid 1.
 
 ---

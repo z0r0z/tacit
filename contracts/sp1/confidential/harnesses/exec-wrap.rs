@@ -12,6 +12,8 @@ fn main() {
     stdin.write(&vec![0u8; 32]); // spend_root = 0 (OP_WRAP needs no membership)
     stdin.write(&vec![0u8; 32]); // bitcoin_spent_root = 0 (Ethereum-only)
     stdin.write(&vec![0u8; 32]); // bitcoin_burn_root = 0
+    stdin.write(&vec![0u8; 32]); // lock_set_root = 0
+    stdin.write(&vec![0u8; 32]); // cdp_position_root = 0
     stdin.write(&1u32);          // num_ops
     stdin.write(&0u8);           // OP_WRAP
     stdin.write(&hexv(f["asset"].as_str().unwrap()));
@@ -19,7 +21,8 @@ fn main() {
     stdin.write(&hexv(f["cx"].as_str().unwrap()));
     stdin.write(&hexv(f["cy"].as_str().unwrap()));
     stdin.write(&hexv(f["owner"].as_str().unwrap()));
-    stdin.write(&hexv(f["blinding"].as_str().unwrap())); // r (the note blinding)
+    stdin.write(&hexv(f["sigR"].as_str().unwrap())); // opening-sigma R (33B); blinding stays with the user
+    stdin.write(&hexv(f["sigZ"].as_str().unwrap()));
 
     let mode = std::env::var("MODE").unwrap_or_else(|_| "compressed".into());
     if mode != "groth16" {

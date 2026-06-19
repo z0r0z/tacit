@@ -142,7 +142,7 @@ spend the **validator** recognizes; the reflection folds it as a normal spend. S
     `refundNotBefore = max(refundNotBefore, deadline)` (the ≥ gate).
   - PV additions (guest `sol!`): `bytes32 lockSetRoot` (input), `bytes32[] lockLeaves`,
     `bytes32[] lockNullifiers`, `bytes32[] adaptorClaimS`, `uint64 refundNotBefore`. Top-level witness reads
-    a `lock_set_root` after `bitcoin_burn_root`.
+    a `lock_set_root` and `cdp_position_root` after `bitcoin_burn_root`.
 - **Contract — LANDED + TESTED (`ConfidentialPool.sol`; lands in the repo now, DEPLOYS with the re-prove).**
   The earlier "cannot land earlier — adding PV fields breaks every `*ProofReal` `abi.decode`" is NOT so: each
   settle `*ProofReal` test decodes into its OWN local `PublicValues` copy and never calls `settle`, so
@@ -162,7 +162,7 @@ spend the **validator** recognizes; the reflection folds it as a normal spend. S
   never touch `nextLeafIndex` / the reserve floor. Regression tests in `ConfidentialPool.t.sol` (mock
   verifier): lock→claim happy path, ν_L double-spend across AND within a batch, refund-before-deadline,
   unknown + zero lock root, and the btcHomed-lock bar.
-- **Box (re-prove):** add the `lock_set_root` write (=0 for non-adaptor fixtures) + the 5 PV fields to the
+- **Box (re-prove):** add the `lock_set_root` and `cdp_position_root` writes (=0 for non-adaptor / non-CDP fixtures) + the PV fields to the
   exec harnesses (`exec-swap/lp/otc/bid`); `cargo prove` → the rotated `PROGRAM_VKEY`; regenerate the
   swap/lp/otc/bid `*ProofReal` fixtures + add an adaptor lock→claim and lock→refund fixture + the adversarial
   rejects (claim-after-deadline, refund-before-deadline, wrong-owner output, ν_L double-spend, normal-transfer

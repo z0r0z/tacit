@@ -41,6 +41,8 @@ fn build_stdin(f: &serde_json::Value) -> SP1Stdin {
     s.write(&hexv(f["spendRoot"].as_str().unwrap()));
     s.write(&vec![0u8; 32]); // bitcoinSpentRoot = 0
     s.write(&vec![0u8; 32]); // bitcoinBurnRoot = 0
+    s.write(&vec![0u8; 32]); // lockSetRoot = 0 (no adaptor claim/refund in this batch)
+    s.write(&vec![0u8; 32]); // cdpPositionRoot = 0 (no CDP close/liquidate in this batch)
     s.write(&1u32);          // numOps
     s.write(&10u8);          // OP_BID
     s.write(&hexv(f["assetA"].as_str().unwrap()));

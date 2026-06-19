@@ -15,7 +15,7 @@
 
 const TREE_DEPTH = 32;
 
-export function makeConfidentialCdp({ keccak256 }) {
+export function makeConfidentialCdp({ keccak256, pool }) {
   const enc = new TextEncoder();
   const CDP_POSITION_DOMAIN = enc.encode('tacit-cdp-position-v1');
   const CDP_DEBT_DOMAIN = enc.encode('tacit-cdp-debt-v1');
@@ -85,5 +85,37 @@ export function makeConfidentialCdp({ keccak256 }) {
   // The cBTC mint commitment binding (== cxfer-core commitment_hash) — the OP_CBTC_MINT anti-griefing bind.
   const cbtcMintCommitment = (cx, cy) => hx(k(b32(cx), b32(cy)));
 
-  return { debtAssetId, basketLeg, basketRoot, positionLeaf, positionNullifier, cbtcMintCommitment };
+  // Opening-sigma builders for the CDP/cBTC op serializers. They deliberately return no blinding: the
+  // untrusted proving box receives only (R,z), while each context binds the complete public intent that
+  // the settle guest checks. `pool` is makeConfidentialPool(...), injected by the caller.
+  const sigma = (domain, chainBinding, asset, bind, note, amounts, label, extraNotes = []) => {
+    if (!pool) throw new Error('opening sigma requires the confidential-pool helper');
+    const notes = [[note.cx, note.cy, note.owner], ...extraNotes];
+    const ctx = pool.intentContext(domain, chainBinding, asset, bind, notes, amounts.map(BigInt));
+    const nonce = pool.deriveOpeningNonce(note.blinding, ctx, label);
+    const sig = pool.openingSigma(BigInt(note.value), note.blinding, ctx, nonce);
+    return { sigR: sig.R, sigZ: sig.z };
+  };
+  const controllerWord = (controller) => hx(concat([new Uint8Array(12), addr20(controller)]));
+  const cdpMintCollateralSigma = ({ chainBinding, controller, nonce, owner, asset, note, debtValue, index }) =>
+    sigma('tacit-cdp-mint-collateral-v1', chainBinding, asset, nonce, note,
+      [note.value, debtValue, index], 'cdp-mint-collateral', [[controllerWord(controller), nonce, owner]]);
+  const cdpMintDebtSigma = ({ chainBinding, controller, nonce, owner, note }) =>
+    sigma('tacit-cdp-mint-debt-v1', chainBinding, debtAssetId(controller), nonce, note,
+      [note.value], 'cdp-mint-debt', [[controllerWord(controller), nonce, owner]]);
+  const cdpCloseReleaseSigma = ({ chainBinding, positionLeaf: position, asset, note }) =>
+    sigma('tacit-cdp-close-release-v1', chainBinding, asset, position, note, [note.value], 'cdp-close-release');
+  const cdpCloseDebtSigma = ({ chainBinding, positionLeaf: position, debtAsset, debtValue, index, note }) =>
+    sigma('tacit-cdp-close-debt-v1', chainBinding, debtAsset, position, note,
+      [note.value, debtValue, index], 'cdp-close-debt');
+  const cbtcMintSigma = ({ chainBinding, cbtcAssetId, outpoint, note }) => {
+    const bearer = { ...note, owner: '0x' + '00'.repeat(32) };
+    return sigma('tacit-cbtc-mint-intent-v1', chainBinding, cbtcAssetId, outpoint, bearer,
+      [note.value], 'cbtc-mint');
+  };
+
+  return {
+    debtAssetId, basketLeg, basketRoot, positionLeaf, positionNullifier, cbtcMintCommitment,
+    cdpMintCollateralSigma, cdpMintDebtSigma, cdpCloseReleaseSigma, cdpCloseDebtSigma, cbtcMintSigma,
+  };
 }

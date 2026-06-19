@@ -146,11 +146,51 @@ export function buildScanReflectionAttester(env, { deps, api, network, classifyT
   // Holder-traced burn-deposit bundles, keyed by the burn tx's display txid. Returns the subset present
   // for this batch's txids. Only invoked by the attester when burnDepositKit is wired.
   const burnDepKey = (txidDisplay) => `reflection:burndep:${network}:${txidDisplay.replace(/^0x/, '')}`;
+  const hexBytes = (h) => {
+    const s = String(h).replace(/^0x/, '');
+    if (s.length % 2) throw new Error('reflection: odd hex');
+    const out = new Uint8Array(s.length / 2);
+    for (let i = 0; i < out.length; i++) out[i] = parseInt(s.slice(2 * i, 2 * i + 2), 16);
+    return out;
+  };
+  const reverse = (b) => Uint8Array.from(b).reverse();
+  const dsha = (b) => deps.sha256(deps.sha256(b));
+  const blockWitnessCache = new Map();
+  async function blockWitness(record, txHex) {
+    let hash = record.blockHash;
+    if (!hash && record.blockHeight != null) hash = (await api(env, `/block-height/${record.blockHeight}`, {}, network)).trim();
+    if (!hash) throw new Error('burn-deposit provenance record requires blockHash or blockHeight');
+    let block = blockWitnessCache.get(hash);
+    if (!block) {
+      const displays = JSON.parse(await api(env, `/block/${hash}/txids`, {}, network));
+      const raws = await Promise.all(displays.map((id) => api(env, `/tx/${id}/hex`, {}, network).then((x) => x.trim())));
+      block = {
+        coinbase: '0x' + raws[0],
+        blockTxids: displays.map((id) => reverse(hexBytes(id))),
+        blockWtxids: raws.map((raw) => dsha(hexBytes(raw))),
+      };
+      blockWitnessCache.set(hash, block);
+    }
+    const txid = kit.computeTxidInternal(txHex).toLowerCase();
+    const index = block.blockTxids.findIndex((id) => '0x' + [...id].map((x) => x.toString(16).padStart(2, '0')).join('') === txid);
+    if (index <= 0) throw new Error('burn-deposit protocol tx absent from block or at coinbase index');
+    return { ...block, index };
+  }
+  async function enrichBurnDeposit(bundle) {
+    const etch = { ...bundle.etch, ...(await blockWitness(bundle.etch, bundle.etch.tx)) };
+    const cxfers = await Promise.all((bundle.cxfers || []).map(async (c) => ({
+      ...c, ...(await blockWitness(c, c.tx)),
+    })));
+    const cmints = await Promise.all((bundle.cmints || []).map(async (cm) => ({
+      ...cm, ...(await blockWitness(cm, cm.revealTx)),
+    })));
+    return { ...bundle, etch, cxfers, cmints };
+  }
   const getBurnDeposits = async (txidsDisplay) => {
     const map = new Map();
     for (const txid of txidsDisplay) {
       const raw = await env.REGISTRY_KV.get(burnDepKey(txid));
-      if (raw) map.set(txid, JSON.parse(raw));
+      if (raw) map.set(txid, await enrichBurnDeposit(JSON.parse(raw)));
     }
     return map;
   };

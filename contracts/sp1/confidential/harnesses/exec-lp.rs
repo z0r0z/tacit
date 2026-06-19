@@ -35,6 +35,8 @@ fn main() {
     stdin.write(&hexv(f["spendRoot"].as_str().unwrap()));
     stdin.write(&vec![0u8; 32]); // bitcoinSpentRoot = 0
     stdin.write(&vec![0u8; 32]); // bitcoinBurnRoot = 0
+    stdin.write(&vec![0u8; 32]); // lockSetRoot = 0 (no adaptor claim/refund in this batch)
+    stdin.write(&vec![0u8; 32]); // cdpPositionRoot = 0 (no CDP close/liquidate in this batch)
     stdin.write(&1u32);          // numOps
     stdin.write(&7u8);           // OP_LP_ADD
 

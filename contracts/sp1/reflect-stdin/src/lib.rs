@@ -19,7 +19,9 @@
 //! `== address(this)` gate — `bitcoin_prove` asserts `f["ethPv"] == eth.public_values` before proving.
 use sp1_sdk::SP1Stdin;
 
-fn hexv(s: &str) -> Vec<u8> { hex::decode(s.trim_start_matches("0x")).unwrap() }
+fn hexv(s: &str) -> Vec<u8> {
+    hex::decode(s.trim_start_matches("0x")).unwrap()
+}
 // Every fixed-width field is length-checked so a malformed fixture fails LOUDLY here rather than silently
 // shifting the stream (the guest reads fixed widths via io::read — a wrong length desyncs everything after).
 fn r32(s: &mut SP1Stdin, v: &serde_json::Value) {
@@ -33,7 +35,9 @@ fn r32(s: &mut SP1Stdin, v: &serde_json::Value) {
 fn path(s: &mut SP1Stdin, v: &serde_json::Value) {
     let a = v.as_array().expect("path array");
     assert_eq!(a.len(), 32, "path must have exactly 32 siblings");
-    for p in a { r32(s, p); }
+    for p in a {
+        r32(s, p);
+    }
 }
 fn h(s: &mut SP1Stdin, v: &serde_json::Value, k: &str) {
     let b = hexv(v[k].as_str().unwrap_or_else(|| panic!("hex field {k}")));
@@ -51,48 +55,118 @@ fn write_burn_deposit(s: &mut SP1Stdin, bd: &serde_json::Value) {
     u32w(s, bd, "etchIndex");
     let esib = bd["etchSiblings"].as_array().unwrap();
     s.write(&(esib.len() as u32));
-    for x in esib { s.write(&hexv(x.as_str().unwrap())); }
+    for x in esib {
+        r32(s, x);
+    }
+    let ewsib = bd["etchWtxidSiblings"]
+        .as_array()
+        .expect("etchWtxidSiblings array");
+    s.write(&(ewsib.len() as u32));
+    for x in ewsib {
+        r32(s, x);
+    }
+    h(s, bd, "etchCoinbase");
+    let ecbsib = bd["etchCoinbaseTxidSiblings"]
+        .as_array()
+        .expect("etchCoinbaseTxidSiblings array");
+    s.write(&(ecbsib.len() as u32));
+    for x in ecbsib {
+        r32(s, x);
+    }
     let phs = bd["provHeaders"].as_array().unwrap();
     s.write(&(phs.len() as u32));
-    for hh in phs { s.write(&hexv(hh.as_str().unwrap())); }
+    for hh in phs {
+        s.write(&hexv(hh.as_str().unwrap()));
+    }
     let cxfers = bd["cxfers"].as_array().unwrap();
     s.write(&(cxfers.len() as u32));
     for c in cxfers {
-        h(s, c, "txid");
-        let ins = c["inputs"].as_array().unwrap();
+        h(s, c, "tx");
+        let ins = c["inputCommitments"]
+            .as_array()
+            .expect("inputCommitments array");
         s.write(&(ins.len() as u32));
-        for i in ins { h(s, i, "prevTxid"); u32w(s, i, "prevVout"); h(s, i, "commitment"); }
-        let outs = c["outputs"].as_array().unwrap();
+        for i in ins {
+            let b = hexv(i.as_str().expect("input commitment"));
+            assert_eq!(b.len(), 33, "input commitment must be exactly 33 bytes");
+            s.write(&b);
+        }
+        let outs = c["outputVouts"].as_array().expect("outputVouts array");
         s.write(&(outs.len() as u32));
-        for o in outs { h(s, o, "commitment"); u32w(s, o, "vout"); }
+        for o in outs {
+            let x = o.as_u64().expect("output vout");
+            assert!(x <= u32::MAX as u64, "output vout over u32");
+            s.write(&(x as u32));
+        }
         s.write(&c["burnedAmount"].as_u64().unwrap_or(0)); // 0 for a transfer, > 0 for a CBURN step
-        h(s, c, "rangeProof");
-        h(s, c, "kernelSig");
         let msib = c["merkleSiblings"].as_array().unwrap();
         s.write(&(msib.len() as u32));
-        for x in msib { s.write(&hexv(x.as_str().unwrap())); }
+        for x in msib {
+            r32(s, x);
+        }
         u32w(s, c, "merkleIndex");
-        h(s, c, "confirmedBlockRoot");
+        r32(s, &c["confirmedBlockRoot"]);
+        let wsib = c["wtxidSiblings"].as_array().expect("wtxidSiblings array");
+        s.write(&(wsib.len() as u32));
+        for x in wsib {
+            r32(s, x);
+        }
+        h(s, c, "coinbase");
+        let cbsib = c["coinbaseTxidSiblings"]
+            .as_array()
+            .expect("coinbaseTxidSiblings array");
+        s.write(&(cbsib.len() as u32));
+        for x in cbsib {
+            r32(s, x);
+        }
     }
     // mintable: issuer-authorized cmints (reveal tx + commit tx + reveal merkle inclusion). Empty for fixed.
-    let cmints = bd.get("cmints").and_then(|v| v.as_array()).map(|a| a.as_slice()).unwrap_or(&[]);
+    let cmints = bd
+        .get("cmints")
+        .and_then(|v| v.as_array())
+        .map(|a| a.as_slice())
+        .unwrap_or(&[]);
     s.write(&(cmints.len() as u32));
     for cm in cmints {
         h(s, cm, "revealTx");
         h(s, cm, "commitTx");
         let msib = cm["merkleSiblings"].as_array().unwrap();
         s.write(&(msib.len() as u32));
-        for x in msib { s.write(&hexv(x.as_str().unwrap())); }
+        for x in msib {
+            s.write(&hexv(x.as_str().unwrap()));
+        }
         u32w(s, cm, "merkleIndex");
+        let rwsib = cm["revealWtxidSiblings"]
+            .as_array()
+            .expect("revealWtxidSiblings array");
+        s.write(&(rwsib.len() as u32));
+        for x in rwsib {
+            r32(s, x);
+        }
+        h(s, cm, "revealCoinbase");
+        let rcbsib = cm["revealCoinbaseTxidSiblings"]
+            .as_array()
+            .expect("revealCoinbaseTxidSiblings array");
+        s.write(&(rcbsib.len() as u32));
+        for x in rcbsib {
+            r32(s, x);
+        }
     }
     h(s, bd, "burnedCx");
     h(s, bd, "burnedCy");
     let si = &bd["spentInsert"];
-    r32(s, &si["sLowValue"]); r32(s, &si["sLowNext"]); s.write(&si["sLowIndex"].as_u64().unwrap());
-    path(s, &si["sLowPath"]); path(s, &si["sNewPath"]);
+    r32(s, &si["sLowValue"]);
+    r32(s, &si["sLowNext"]);
+    s.write(&si["sLowIndex"].as_u64().unwrap());
+    path(s, &si["sLowPath"]);
+    path(s, &si["sNewPath"]);
     let bi = &bd["burnInsert"];
-    r32(s, &bi["bLowKey"]); r32(s, &bi["bLowNext"]); r32(s, &bi["bLowValue"]); s.write(&bi["bLowIndex"].as_u64().unwrap());
-    path(s, &bi["bLowPath"]); path(s, &bi["bNewPath"]);
+    r32(s, &bi["bLowKey"]);
+    r32(s, &bi["bLowNext"]);
+    r32(s, &bi["bLowValue"]);
+    s.write(&bi["bLowIndex"].as_u64().unwrap());
+    path(s, &bi["bLowPath"]);
+    path(s, &bi["bNewPath"]);
     path(s, &bd["notePath"]); // the burned note's pool-tree append path (onboard it as a pool member)
 }
 
@@ -101,32 +175,80 @@ fn write_burn_deposit(s: &mut SP1Stdin, bd: &serde_json::Value) {
 pub fn write_stdin(f: &serde_json::Value) -> SP1Stdin {
     let p = &f["prior"];
     let mut s = SP1Stdin::new();
-    r32(&mut s, &p["poolRoot"]);  s.write(&p["noteCount"].as_u64().unwrap());
-    r32(&mut s, &p["spentRoot"]); s.write(&p["spentCount"].as_u64().unwrap());
+    r32(&mut s, &p["poolRoot"]);
+    s.write(&p["noteCount"].as_u64().unwrap());
+    r32(&mut s, &p["spentRoot"]);
+    s.write(&p["spentCount"].as_u64().unwrap());
     let live = p["live"].as_array().unwrap();
     s.write(&(live.len() as u32));
-    for kv in live { let t = kv.as_array().unwrap(); r32(&mut s, &t[0]); r32(&mut s, &t[1]); r32(&mut s, &t[2]); }
-    r32(&mut s, &p["burnRoot"]);  s.write(&p["burnCount"].as_u64().unwrap());
+    for kv in live {
+        let t = kv.as_array().unwrap();
+        r32(&mut s, &t[0]);
+        r32(&mut s, &t[1]);
+        r32(&mut s, &t[2]);
+    }
+    r32(&mut s, &p["burnRoot"]);
+    s.write(&p["burnCount"].as_u64().unwrap());
     s.write(&p["height"].as_u64().unwrap());
-    let cbtc = p.get("cbtcLocks").and_then(|v| v.as_array()).map(|a| a.as_slice()).unwrap_or(&[]);
+    let cbtc = p
+        .get("cbtcLocks")
+        .and_then(|v| v.as_array())
+        .map(|a| a.as_slice())
+        .unwrap_or(&[]);
     s.write(&(cbtc.len() as u32));
-    for kv in cbtc { let t = kv.as_array().unwrap(); r32(&mut s, &t[0]); r32(&mut s, &t[1]); r32(&mut s, &t[2]); }
+    for kv in cbtc {
+        let t = kv.as_array().unwrap();
+        r32(&mut s, &t[0]);
+        r32(&mut s, &t[1]);
+        r32(&mut s, &t[2]);
+    }
     // string-or-number (the assembler emits large u64 sats as a string, like the pool reserves below).
-    s.write(&p.get("cbtcBackingSats").and_then(|v| v.as_u64().or_else(|| v.as_str().and_then(|x| x.parse::<u64>().ok()))).unwrap_or(0));
+    s.write(
+        &p.get("cbtcBackingSats")
+            .and_then(|v| {
+                v.as_u64()
+                    .or_else(|| v.as_str().and_then(|x| x.parse::<u64>().ok()))
+            })
+            .unwrap_or(0),
+    );
 
     // Track B resume state (guest reads it after cbtcBackingSats): the per-pool reserve registry. The
     // assembler emits reserve/share/k_last as strings (u64/u128 exceed JS Number); parse them losslessly.
-    let pools = p.get("pools").and_then(|v| v.as_array()).map(|a| a.as_slice()).unwrap_or(&[]);
+    let pools = p
+        .get("pools")
+        .and_then(|v| v.as_array())
+        .map(|a| a.as_slice())
+        .unwrap_or(&[]);
     s.write(&(pools.len() as u32));
     for pe in pools {
-        let u64f = |k: &str| pe[k].as_u64().or_else(|| pe[k].as_str().and_then(|x| x.parse::<u64>().ok())).unwrap_or(0);
-        r32(&mut s, &pe["poolId"]); r32(&mut s, &pe["assetA"]); r32(&mut s, &pe["assetB"]);
-        s.write(&u64f("reserveA")); s.write(&u64f("reserveB")); s.write(&u64f("totalShares"));
-        s.write(&(if pe["c0Backed"].as_bool().unwrap_or(false) { 1u32 } else { 0u32 }));
+        let u64f = |k: &str| {
+            pe[k]
+                .as_u64()
+                .or_else(|| pe[k].as_str().and_then(|x| x.parse::<u64>().ok()))
+                .unwrap_or(0)
+        };
+        r32(&mut s, &pe["poolId"]);
+        r32(&mut s, &pe["assetA"]);
+        r32(&mut s, &pe["assetB"]);
+        s.write(&u64f("reserveA"));
+        s.write(&u64f("reserveB"));
+        s.write(&u64f("totalShares"));
+        s.write(
+            &(if pe["c0Backed"].as_bool().unwrap_or(false) {
+                1u32
+            } else {
+                0u32
+            }),
+        );
         let pfb = u64f("protocolFeeBps");
         assert!(pfb <= u16::MAX as u64, "protocolFeeBps over u16");
         s.write(&(pfb as u16));
-        s.write(&pe.get("kLast").and_then(|v| v.as_str()).and_then(|x| x.parse::<u128>().ok()).unwrap_or(0u128));
+        s.write(
+            &pe.get("kLast")
+                .and_then(|v| v.as_str())
+                .and_then(|x| x.parse::<u128>().ok())
+                .unwrap_or(0u128),
+        );
         s.write(&u64f("protocolFeeAccrued"));
     }
     // FAST-LANE resume count: read by the guest at the END of read_scan_prior_state (after the pools). 0 for a
@@ -153,12 +275,22 @@ pub fn write_stdin(f: &serde_json::Value) -> SP1Stdin {
     if mode_b != 0 {
         // A real recursion proof carries the eth proof's actual public values (bitcoin_prove asserts
         // ethPv == eth.public_values before proving); the zero-ethPool fallback is for a LOCAL execute only.
-        let eth_pv = f.get("ethPv").and_then(|v| v.as_str()).map(hexv).unwrap_or_else(|| {
-            let mut b = vec![0u8; 11 * 32];
-            b[8 * 32..9 * 32].copy_from_slice(&hexv("0x8a83300119ac1e64a2318d3db330ed496c51276c636a93633b2d5cfd283c2d44"));
-            b
-        });
-        assert_eq!(eth_pv.len(), 11 * 32, "ethPv must be exactly 11 ABI words (352 bytes)");
+        let eth_pv = f
+            .get("ethPv")
+            .and_then(|v| v.as_str())
+            .map(hexv)
+            .unwrap_or_else(|| {
+                let mut b = vec![0u8; 11 * 32];
+                b[8 * 32..9 * 32].copy_from_slice(&hexv(
+                    "0x8a83300119ac1e64a2318d3db330ed496c51276c636a93633b2d5cfd283c2d44",
+                ));
+                b
+            });
+        assert_eq!(
+            eth_pv.len(),
+            11 * 32,
+            "ethPv must be exactly 11 ABI words (352 bytes)"
+        );
         consumed_nu_count = u64::from_be_bytes(eth_pv[11 * 32 - 8..11 * 32].try_into().unwrap());
         s.write(&eth_pv);
     }
@@ -166,17 +298,26 @@ pub fn write_stdin(f: &serde_json::Value) -> SP1Stdin {
     s.write(&f["anchorHeight"].as_u64().unwrap());
     let headers = f["headers"].as_array().unwrap();
     s.write(&(headers.len() as u32));
-    for hh in headers { s.write(&hexv(hh.as_str().unwrap())); }
+    for hh in headers {
+        s.write(&hexv(hh.as_str().unwrap()));
+    }
 
     // FAST LANE (Mode-B): the guest folds the eth-consumed ν set AFTER the headers, BEFORE the block scan
     // (reflect.rs). For each consumed ν: nu, spendRoot, Cx, Cy, srcTxid, srcVout(u32), set_path, then the
     // spent-IMT insert witness — mirror that exact order. A forward fixture has no `consumed` (mode_b=0).
     if mode_b != 0 {
-        let consumed = f.get("consumed").and_then(|v| v.as_array()).map(|a| a.as_slice()).unwrap_or(&[]);
+        let consumed = f
+            .get("consumed")
+            .and_then(|v| v.as_array())
+            .map(|a| a.as_slice())
+            .unwrap_or(&[]);
         // The guest reads exactly `consumedNuCount - prior.consumedCount` consumed witnesses (it counts them
         // from the eth proof, not the stream), so the fixture must carry exactly that many or the rest of the
         // stream desyncs.
-        assert!(consumed_nu_count >= prior_consumed, "consumedNuCount rolled back below the prior count");
+        assert!(
+            consumed_nu_count >= prior_consumed,
+            "consumedNuCount rolled back below the prior count"
+        );
         assert_eq!(consumed.len() as u64, consumed_nu_count - prior_consumed,
             "consumed witness count must equal consumedNuCount - prior.consumedCount (stream would desync)");
         for cons in consumed {
@@ -188,28 +329,45 @@ pub fn write_stdin(f: &serde_json::Value) -> SP1Stdin {
             s.write(&(cons["srcVout"].as_u64().unwrap() as u32));
             path(&mut s, &cons["setPath"]);
             let si = &cons["spentInsert"];
-            r32(&mut s, &si["sLowValue"]); r32(&mut s, &si["sLowNext"]); s.write(&si["sLowIndex"].as_u64().unwrap());
-            path(&mut s, &si["sLowPath"]); path(&mut s, &si["sNewPath"]);
+            r32(&mut s, &si["sLowValue"]);
+            r32(&mut s, &si["sLowNext"]);
+            s.write(&si["sLowIndex"].as_u64().unwrap());
+            path(&mut s, &si["sLowPath"]);
+            path(&mut s, &si["sNewPath"]);
         }
     }
 
     for block in f["blocks"].as_array().unwrap() {
         let txs = block["txs"].as_array().unwrap();
         s.write(&(txs.len() as u32));
-        for tx in txs { s.write(&hexv(tx["txData"].as_str().unwrap())); }
         for tx in txs {
-            for op in tx["openings"].as_array().unwrap() { r32(&mut s, &op["cx"]); r32(&mut s, &op["cy"]); }
+            s.write(&hexv(tx["txData"].as_str().unwrap()));
+        }
+        for tx in txs {
+            for op in tx["openings"].as_array().unwrap() {
+                r32(&mut s, &op["cx"]);
+                r32(&mut s, &op["cy"]);
+            }
             for si in tx["spentInserts"].as_array().unwrap() {
-                r32(&mut s, &si["sLowValue"]); r32(&mut s, &si["sLowNext"]); s.write(&si["sLowIndex"].as_u64().unwrap());
-                path(&mut s, &si["sLowPath"]); path(&mut s, &si["sNewPath"]);
+                r32(&mut s, &si["sLowValue"]);
+                r32(&mut s, &si["sLowNext"]);
+                s.write(&si["sLowIndex"].as_u64().unwrap());
+                path(&mut s, &si["sLowPath"]);
+                path(&mut s, &si["sNewPath"]);
             }
             if let Some(bd) = tx.get("burnDeposit").filter(|v| !v.is_null()) {
                 write_burn_deposit(&mut s, bd);
             } else if let Some(bi) = tx.get("burnInsert").filter(|v| !v.is_null()) {
-                r32(&mut s, &bi["bLowKey"]); r32(&mut s, &bi["bLowNext"]); r32(&mut s, &bi["bLowValue"]); s.write(&bi["bLowIndex"].as_u64().unwrap());
-                path(&mut s, &bi["bLowPath"]); path(&mut s, &bi["bNewPath"]);
+                r32(&mut s, &bi["bLowKey"]);
+                r32(&mut s, &bi["bLowNext"]);
+                r32(&mut s, &bi["bLowValue"]);
+                s.write(&bi["bLowIndex"].as_u64().unwrap());
+                path(&mut s, &bi["bLowPath"]);
+                path(&mut s, &bi["bNewPath"]);
             }
-            for o in tx["outputs"].as_array().unwrap() { path(&mut s, &o["notePath"]); }
+            for o in tx["outputs"].as_array().unwrap() {
+                path(&mut s, &o["notePath"]);
+            }
             // cBTC.zk self-custody lock (0x66): TRACK-not-mint — the guest folds NO note (the cBTC note is
             // minted later by ConfidentialPool.mintCbtc, gated on the lock + a native-ETH escrow), so per
             // ops/DESIGN-confidential-defi-v1.md §3 there is NO per-0x66 witness to serialize.
@@ -217,7 +375,9 @@ pub fn write_stdin(f: &serde_json::Value) -> SP1Stdin {
             // non-sentinel) after the envelope — mirror that order.
             if let Some(sw) = tx.get("swapVar").filter(|v| !v.is_null()) {
                 path(&mut s, &sw["receiptPath"]);
-                if let Some(cp) = sw.get("changePath").filter(|v| !v.is_null()) { path(&mut s, cp); }
+                if let Some(cp) = sw.get("changePath").filter(|v| !v.is_null()) {
+                    path(&mut s, cp);
+                }
             }
             // swap_route (0x33): the guest reads the receipt note's append path after the envelope — mirror it.
             if let Some(rt) = tx.get("swapRoute").filter(|v| !v.is_null()) {
@@ -226,7 +386,9 @@ pub fn write_stdin(f: &serde_json::Value) -> SP1Stdin {
             // swap_batch (0x2F): the guest reads one receipt note-append path per intent (the notes at vouts
             // 1..=n) after the envelope — mirror that order.
             if let Some(sb) = tx.get("swapBatch").filter(|v| !v.is_null()) {
-                for rp in sb["receiptPaths"].as_array().unwrap() { path(&mut s, rp); }
+                for rp in sb["receiptPaths"].as_array().unwrap() {
+                    path(&mut s, rp);
+                }
             }
             // crossout_mint (0x65, Mode-B reverse): the guest reads set_index + set_path + note_path for any
             // parseable 0x65 (fold_crossout skips in a forward batch — crossout_set_root=0) — mirror that order.
@@ -243,7 +405,8 @@ pub fn write_stdin(f: &serde_json::Value) -> SP1Stdin {
             // lp_remove (0x2E): r_recv_a/b are ON-CHAIN (option a; the guest parses them), so the only
             // witnesses are the two recv note-append paths.
             if let Some(lr) = tx.get("lpRemove").filter(|v| !v.is_null()) {
-                path(&mut s, &lr["recvAPath"]); path(&mut s, &lr["recvBPath"]);
+                path(&mut s, &lr["recvAPath"]);
+                path(&mut s, &lr["recvBPath"]);
             }
             // harvest (0x3B) / farm-refund (0x3E): two SEPARATE guest branches, each reading one note-append
             // path after the envelope (harvest dispatches before farm_refund). A tx carries exactly one of the

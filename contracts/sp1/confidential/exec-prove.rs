@@ -31,6 +31,8 @@ fn main() {
     stdin.write(&hexv(f["spendRoot"].as_str().unwrap()));
     stdin.write(&vec![0u8; 32]); // bitcoinSpentRoot = 0 (Ethereum-only mode, no cross-lane check)
     stdin.write(&vec![0u8; 32]); // bitcoinBurnRoot = 0 (no bridge_mint in this batch)
+    stdin.write(&vec![0u8; 32]); // lockSetRoot = 0 (no adaptor claim/refund in this batch)
+    stdin.write(&vec![0u8; 32]); // cdpPositionRoot = 0 (no CDP close/liquidate in this batch)
     stdin.write(&1u32);
     stdin.write(&1u8); // OP_TRANSFER
     stdin.write(&hexv(f["asset"].as_str().unwrap()));

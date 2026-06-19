@@ -14,6 +14,7 @@ fn main() {
     stdin.write(&hexv(f["bitcoinSpentRoot"].as_str().unwrap())); // != 0 → cross-lane check on
     stdin.write(&vec![0u8; 32]); // bitcoinBurnRoot = 0 (transfer-only, no bridge_mint)
     stdin.write(&vec![0u8; 32]); // lockSetRoot = 0 (no adaptor claim/refund; guest header reads it unconditionally — main.rs:139)
+    stdin.write(&vec![0u8; 32]); // cdpPositionRoot = 0 (no CDP close/liquidate in this batch)
     stdin.write(&1u32);
     stdin.write(&1u8); // OP_TRANSFER
     stdin.write(&hexv(f["asset"].as_str().unwrap()));

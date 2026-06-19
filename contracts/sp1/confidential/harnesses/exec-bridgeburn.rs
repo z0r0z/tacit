@@ -1,7 +1,7 @@
 // OP_BRIDGE_BURN box harness — burn EVM notes into Bitcoin destination crossOuts (ETH→BTC source side).
 // Reads OP_FILE (bridgeburn_op.json), proves the op in the zkVM, verifies locally, writes
 // public_values.hex + proof_bytes.hex. MODE=groth16 -> GPU. stdin order = the guest's io::read for an
-// OP_BRIDGE_BURN batch (main.rs): header roots (incl. lock_set_root), then op 0 fields.
+// OP_BRIDGE_BURN batch (main.rs): header roots (incl. lock_set_root + cdp_position_root), then op 0 fields.
 use sp1_sdk::{blocking::{ProverClient, Prover, ProveRequest}, SP1Stdin, Elf, ProvingKey, HashableKey};
 const ELF: &[u8] = include_bytes!("/root/work/confidential/target/elf-compilation/riscv64im-succinct-zkvm-elf/release/confidential-pool-prover");
 fn hexv(s: &str) -> Vec<u8> { hex::decode(s.trim_start_matches("0x")).unwrap() }
@@ -13,6 +13,7 @@ fn main() {
     stdin.write(&vec![0u8; 32]); // bitcoin_spent_root = 0 (EVM-homed burn)
     stdin.write(&vec![0u8; 32]); // bitcoin_burn_root = 0
     stdin.write(&vec![0u8; 32]); // lock_set_root = 0
+    stdin.write(&vec![0u8; 32]); // cdp_position_root = 0
     stdin.write(&1u32);          // num_ops
     stdin.write(&3u8);           // OP_BRIDGE_BURN
     stdin.write(&hexv(f["asset"].as_str().unwrap()));

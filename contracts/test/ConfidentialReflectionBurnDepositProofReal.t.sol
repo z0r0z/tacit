@@ -11,9 +11,8 @@ import {SP1Verifier} from "./vendor/sp1/v6.1.0/SP1VerifierGroth16.sol";
 /// truth that the burn-deposit dispatch (reflect.rs ~208) is sound, not just native-exec/JS-mirror validated.
 ///
 /// TURNKEY / GATED: the fixture (test/fixtures/reflection_burn_deposit_groth16.json) is produced by the
-/// mainnet re-prove — the committed/deployed reflection ELF (0x005e6adc) predates the burn-deposit dispatch,
-/// so this proof can only exist once the box GPU-proves the dispatch-containing guest. Until then every test
-/// here SELF-SKIPS (vm.skip) so the suite stays green; the moment the fixture lands it verifies for real.
+/// Sepolia E2 coordinated re-prove. If the fixture is absent in a partial checkout these tests self-skip;
+/// in the canonical tree it verifies for real at the pinned BITCOIN_RELAY_VKEY.
 ///
 /// Box command to generate the fixture (on the prover host, after the re-prove builds the guest):
 ///   REFLECT_INPUT=/root/work/cxfer/fixtures/reflection_burn_deposit.json REFLECT_OUT_TAG=burndep \
@@ -22,6 +21,23 @@ import {SP1Verifier} from "./vendor/sp1/v6.1.0/SP1VerifierGroth16.sol";
 /// The input fixture is built by tests/gen-reflection-burn-deposit.mjs (a fixed-supply C_0 → conserving
 /// CXFER → 0x2B burn, easy-PoW so the guest accepts it).
 contract ConfidentialReflectionBurnDepositProofRealTest is Test {
+    struct CbtcLockFolded { bytes32 outpoint; uint256 vBtc; bytes32 commitment; }
+    struct BitcoinRelayPublicValues {
+        bytes32 priorDigest;
+        bytes32 bitcoinPoolRoot;
+        bytes32 bitcoinSpentRoot;
+        bytes32 bitcoinBurnRoot;
+        uint64 bitcoinHeight;
+        bytes32 newDigest;
+        bytes32 bitcoinPrevHash;
+        bytes32 bitcoinTipHash;
+        bytes32 ethPoolReflected;
+        uint256 cbtcBackingSats;
+        CbtcLockFolded[] cbtcLocksFolded;
+        bytes32[] cbtcLocksSpent;
+        uint64 consumedCount;
+    }
+
     SP1Verifier verifier;
     bool fixturePresent;
     bytes32 vkey;
@@ -71,33 +87,27 @@ contract ConfidentialReflectionBurnDepositProofRealTest is Test {
         assertEq(vkey, vm.parseJsonBytes32(pin, ".bitcoin_relay_vkey"), "fixture vkey != pinned bitcoin_relay_vkey");
     }
 
-    /// The burn-deposit ACTUALLY folded: decode the 10-field BitcoinReflectionPublicValues and assert the
+    /// The burn-deposit ACTUALLY folded: decode the dynamic BitcoinReflectionPublicValues and assert the
     /// onboarding effects — the burned note is appended to the pool tree (poolRoot advances), its ν is
     /// nullified (spentRoot advances), and ν → destCommitment is recorded in the bridge-burn set (burnRoot
     /// advances + non-zero). bitcoinBurnRoot is what OP_BRIDGE_MINT proves membership against on Ethereum,
     /// so this is the surface that authorizes the v_mint == v_burn mint.
     function test_burn_deposit_public_values_reflect_the_fold() public gated {
-        (
-            bytes32 priorDigest,
-            bytes32 poolRoot,
-            bytes32 spentRoot,
-            bytes32 burnRoot,
-            uint64 height,
-            bytes32 newDigest,
-            bytes32 prevHash,
-            bytes32 tipHash,
-            ,
-            uint256 cbtcBackingSats
-        ) = abi.decode(publicValues, (bytes32, bytes32, bytes32, bytes32, uint64, bytes32, bytes32, bytes32, bytes32, uint256));
-        assertEq(height, expectedHeight, "the burn-deposit scan block height");
-        assertTrue(priorDigest != bytes32(0) && newDigest != bytes32(0) && newDigest != priorDigest, "digest advanced");
+        BitcoinRelayPublicValues memory pv = abi.decode(publicValues, (BitcoinRelayPublicValues));
+        assertEq(pv.bitcoinHeight, expectedHeight, "the burn-deposit scan block height");
+        assertEq(pv.newDigest, 0xb276adf40cb9bfa1c08b11250dcd81afcfb30be3b19bf6e89c9f7968376af190, "burn-deposit newDigest");
+        assertTrue(pv.priorDigest != bytes32(0) && pv.newDigest != bytes32(0) && pv.newDigest != pv.priorDigest, "digest advanced");
         // The three burn-deposit effects (vs the assembled input's prior roots):
-        assertTrue(burnRoot != bytes32(0) && burnRoot != priorBurnRoot, "burnRoot advanced: nu -> dest recorded (mint authority)");
-        assertTrue(poolRoot != priorPoolRoot, "poolRoot advanced: the burned note onboarded as a pool member");
-        assertTrue(spentRoot != priorSpentRoot, "spentRoot advanced: the burned note's nu nullified (no double-bridge)");
-        assertTrue(tipHash != bytes32(0), "committed Bitcoin tip (relay anchor)");
-        prevHash; // bound in the proof; the contract checks it against the prior attested tip
-        assertEq(cbtcBackingSats, 0, "no cBTC lock in this burn-deposit fixture");
+        assertTrue(pv.bitcoinBurnRoot != bytes32(0) && pv.bitcoinBurnRoot != priorBurnRoot, "burnRoot advanced: nu -> dest recorded (mint authority)");
+        assertTrue(pv.bitcoinPoolRoot != priorPoolRoot, "poolRoot advanced: the burned note onboarded as a pool member");
+        assertTrue(pv.bitcoinSpentRoot != priorSpentRoot, "spentRoot advanced: the burned note's nu nullified (no double-bridge)");
+        assertTrue(pv.bitcoinTipHash != bytes32(0), "committed Bitcoin tip (relay anchor)");
+        pv.bitcoinPrevHash; // bound in the proof; the contract checks it against the prior attested tip
+        assertEq(pv.ethPoolReflected, bytes32(0), "forward fixture has no Mode-B eth pool");
+        assertEq(pv.cbtcBackingSats, 0, "no cBTC lock in this burn-deposit fixture");
+        assertEq(pv.cbtcLocksFolded.length, 0, "no cBTC locks folded");
+        assertEq(pv.cbtcLocksSpent.length, 0, "no cBTC locks spent");
+        assertEq(pv.consumedCount, 0, "no fast-lane consumes folded");
     }
 
     /// The proof's selector matches this verifier version.

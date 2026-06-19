@@ -26,7 +26,7 @@ contract ConfidentialPoolFuzzTest is Test {
     }
 
     function _pv() internal view returns (ConfidentialPool.PublicValues memory pv) {
-        pv.version = pool.PV_VERSION();
+        pv.version = 1;
         pv.chainBinding = keccak256(abi.encodePacked(block.chainid, address(pool)));
     }
     function _settle(ConfidentialPool.PublicValues memory pv) internal {

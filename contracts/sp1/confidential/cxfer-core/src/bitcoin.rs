@@ -979,6 +979,8 @@ pub struct SwapBatchEnvelope {
     pub tip_b_amount: u64,
     pub tip_a_c_secp: [u8; 33], // per-asset settler-tip commitments (subtracted in the aggregate identity)
     pub tip_b_c_secp: [u8; 33],
+    pub r_tip_a: [u8; 32], // openings bind tip_*_c_secp = tip_*_amount·H + r_tip_*·G
+    pub r_tip_b: [u8; 32],
     pub intents: Vec<SwapBatchIntent>,
     pub receipts: Vec<SwapBatchReceipt>,
     pub proof: Vec<u8>,
@@ -1050,7 +1052,12 @@ pub fn parse_swap_batch_envelope(env: &[u8]) -> Option<SwapBatchEnvelope> {
     let tbc = p;
     take(&mut p, 33)?;
     let tip_b_c_secp: [u8; 33] = env[tbc..tbc + 33].try_into().ok()?;
-    take(&mut p, 32 + 32)?; // r_tip_A, r_tip_B (not needed by the reflection)
+    let rta = p;
+    take(&mut p, 32)?;
+    let r_tip_a: [u8; 32] = env[rta..rta + 32].try_into().ok()?;
+    let rtb = p;
+    take(&mut p, 32)?;
+    let r_tip_b: [u8; 32] = env[rtb..rtb + 32].try_into().ok()?;
     // No optional block in v1 (spec/amm/wire-formats.md); the arbiter concept is deprecated.
     let mut intents = Vec::with_capacity(n_intents);
     for _ in 0..n_intents {
@@ -1105,6 +1112,8 @@ pub fn parse_swap_batch_envelope(env: &[u8]) -> Option<SwapBatchEnvelope> {
         tip_b_amount,
         tip_a_c_secp,
         tip_b_c_secp,
+        r_tip_a,
+        r_tip_b,
         intents,
         receipts,
         proof,
@@ -1950,6 +1959,8 @@ mod tests {
         assert_eq!(p.r_net_b, [0x11u8; 32]);
         assert_eq!(p.tip_a_c_secp, [0x21u8; 33]);
         assert_eq!(p.tip_b_c_secp, [0x22u8; 33]);
+        assert_eq!(p.r_tip_a, [0x23u8; 32]);
+        assert_eq!(p.r_tip_b, [0x24u8; 32]);
         assert_eq!(p.intents.len(), 1);
         assert_eq!(p.intents[0].direction, 0);
         assert_eq!(p.intents[0].c_in_secp, [0x03u8; 33]);

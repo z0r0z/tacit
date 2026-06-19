@@ -63,7 +63,7 @@ tETH becomes shielded ETH in the pool; unwrap → native ETH (`PLAN-teth-subsump
   `exec_crosslane_otc.rs` (OTC fill), `crosslane_lp_op.json` / `exec_crosslane_lp.rs` (LP-add),
   `crosslane_bid_op.json` / `exec_crosslane_bid.rs` (BID fill). All validated host-side (JS round-trip);
   they execute/prove on the box at re-prove time. **Harness drift fixed
-  (all 8 settle harnesses):** each now writes the `lock_set_root` header word added after their last re-prove
+  (all 8 settle harnesses):** each now writes the `lock_set_root` / `cdp_position_root` header words added after their last re-prove
   (commit 7720405, the adaptor-swap op-set) — see `PLAN-fast-lane-trading.md` §1.
 
 ## Stage 4 — follow-ups

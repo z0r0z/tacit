@@ -13,7 +13,7 @@
 //!   (b) the `bn` package version/source resolves to the SP1-accelerated build;
 //!   (c) `Gt::one()` is the correct target (the multi-pairing product is 1 iff the equation holds).
 
-use bn::{pairing_batch, AffineG1, AffineG2, Fq, Fq2, Fr, Group, Gt, G1, G2};
+use bn::{pairing_batch, AffineG1, AffineG2, Fq, Fq2, Fr, Gt, G1, G2};
 use cxfer_core::{G16Proof, G16Vk};
 
 /// The baked T_SWAP_BATCH verifying key — the CID-verified ceremony vk (CANONICAL_AMM_VK_CID), generated
@@ -68,6 +68,7 @@ fn g1(p: &([u8; 32], [u8; 32])) -> Option<G1> {
     if p.0 == [0u8; 32] && p.1 == [0u8; 32] {
         return Some(G1::zero());
     }
+    // BN254 G1 has cofactor 1, so every on-curve point is in the prime-order subgroup.
     Some(AffineG1::new(fq(&p.0)?, fq(&p.1)?).ok()?.into())
 }
 
@@ -87,6 +88,8 @@ fn g1_proof(p: &([u8; 32], [u8; 32])) -> Option<G1> {
 fn g2(p: &([u8; 32], [u8; 32], [u8; 32], [u8; 32])) -> Option<G2> {
     let x = Fq2::new(fq(&p.0)?, fq(&p.1)?);
     let y = Fq2::new(fq(&p.2)?, fq(&p.3)?);
+    // substrate-bn-succinct-rs 0.6.0 sets G2Params::check_order() = true; AffineG2::new therefore
+    // returns NotInSubgroup for an on-curve torsion point. Keep using the checked constructor here.
     Some(AffineG2::new(x, y).ok()?.into())
 }
 

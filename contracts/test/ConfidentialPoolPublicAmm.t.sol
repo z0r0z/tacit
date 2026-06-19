@@ -162,7 +162,7 @@ contract ConfidentialPoolPublicAmmTest is Test {
         // A settle that drops totalShares to the MIN_LIQUIDITY floor (well below the public balance). pre
         // matches the live (1e6, 1e6, 1e6) state; equal reserves sidestep canonical-orientation concerns.
         ConfidentialPool.PublicValues memory pv;
-        pv.version = pool.PV_VERSION();
+        pv.version = 1;
         pv.chainBinding = keccak256(abi.encodePacked(block.chainid, address(pool)));
         pv.liquidity = new ConfidentialPool.LpSettlement[](1);
         pv.liquidity[0] =
