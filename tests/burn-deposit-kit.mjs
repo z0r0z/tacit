@@ -174,6 +174,8 @@ const G = secp.ProjectivePoint.BASE.toRawBytes(true); // a real 33-byte compress
   const burnEnv = bcat([[0x2b], asset, poolRoot, nu, dest]);
   const b = classifyConfidentialTx(hex(buildRevealTx(burnEnv)));
   ok(b && b.type === 'burn', 'classify: a 0x2B confidential bridge-burn → type burn');
+  eq(b && b.assetId, hex(asset), 'classify: burn assetId surfaced');
+  eq(b && b.nullifier, hex(nu), 'classify: burn nullifier surfaced');
   eq(b && b.dest, hex(dest), 'classify: burn destCommitment');
   eq(parseBurnEnvelope(hex(burnEnv)).nullifier, hex(nu), 'parseBurnEnvelope: nullifier');
 

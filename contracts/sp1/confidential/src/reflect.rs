@@ -24,14 +24,14 @@
 #![no_main]
 sp1_zkvm::entrypoint!(main);
 
-use alloy_sol_types::sol;
 use alloy_sol_types::private::U256;
+use alloy_sol_types::sol;
 use alloy_sol_types::SolType;
 use cxfer_core::{
-    amm_canonical_pair, amm_derive_farm_id, amm_derive_pool_id_full, bitcoin, burn_deposit, commitment_hash,
-    commitment_hash_compressed, compress, decompress, from_affine_xy, leaf, nullifier, outpoint_key,
-    reflected_note_leaf, scan_tx_spends, verify_cxfer_conservation, CbtcLockFold, LiveUtxoSet, Point, PoolReserveSet,
-    PoolReserveState, ScanReflection,
+    amm_canonical_pair, amm_derive_farm_id, amm_derive_pool_id_full, bitcoin, burn_deposit,
+    commitment_hash, commitment_hash_compressed, compress, decompress, from_affine_xy, leaf,
+    nullifier, outpoint_key, reflected_note_leaf, scan_tx_spends, verify_cxfer_conservation,
+    CbtcLockFold, LiveUtxoSet, Point, PoolReserveSet, PoolReserveState, ScanReflection,
 };
 use sp1_zkvm::io;
 
@@ -40,9 +40,9 @@ use sp1_zkvm::io;
 // glue (parse the 0x2F envelope → re-derive the 123 public signals from it → verify against the baked
 // BATCH_VK → per-receipt witnessed-opening onboarding) needs the circuit's public-signal layout + the baked
 // vk. See ops/DESIGN-in-guest-groth16-verifier.md.
+mod babyjubjub;
 #[allow(dead_code)]
 mod groth16;
-mod babyjubjub;
 mod swap_batch;
 
 sol! {
@@ -84,8 +84,12 @@ fn r_n<const N: usize>() -> [u8; N] {
     let v: Vec<u8> = io::read();
     v.try_into().expect("witness field length")
 }
-fn r32() -> [u8; 32] { r_n::<32>() }
-fn r_path() -> Vec<[u8; 32]> { (0..32).map(|_| r32()).collect() }
+fn r32() -> [u8; 32] {
+    r_n::<32>()
+}
+fn r_path() -> Vec<[u8; 32]> {
+    (0..32).map(|_| r32()).collect()
+}
 
 /// Resume anchor: the headless roots + counts, the HANDED live UTXO set (sorted (key,value)
 /// pairs), and the height. `from_sorted` rejects an unsorted/duplicate handoff; the digest
@@ -99,8 +103,10 @@ fn read_scan_prior_state() -> ScanReflection {
     let n_live: u32 = io::read();
     // Each live entry is (outpoint key, commitment_hash, asset_id): the asset is carried so the
     // CXFER fold can re-impose asset preservation on a spend (the digest commits all three).
-    let live_triples: Vec<([u8; 32], [u8; 32], [u8; 32])> = (0..n_live).map(|_| (r32(), r32(), r32())).collect();
-    let live = LiveUtxoSet::from_sorted(live_triples).expect("handed live UTXO set not sorted/unique");
+    let live_triples: Vec<([u8; 32], [u8; 32], [u8; 32])> =
+        (0..n_live).map(|_| (r32(), r32(), r32())).collect();
+    let live =
+        LiveUtxoSet::from_sorted(live_triples).expect("handed live UTXO set not sorted/unique");
     let burn_root = r32();
     let burn_count: u64 = io::read();
     let height: u64 = io::read();
@@ -108,33 +114,48 @@ fn read_scan_prior_state() -> ScanReflection {
     // Σ backing sats. Both ride digest() (cxfer-core), so a wrong handoff fails the priorDigest chain.
     // Empty for a no-lock batch (n=0, sats=0); the assembler/indexer emit the prior set for live locks.
     let n_cbtc_locks: u32 = io::read();
-    let cbtc_lock_triples: Vec<([u8; 32], [u8; 32], [u8; 32])> = (0..n_cbtc_locks).map(|_| (r32(), r32(), r32())).collect();
-    let cbtc_locks = LiveUtxoSet::from_sorted(cbtc_lock_triples).expect("handed cBTC lock set not sorted/unique");
+    let cbtc_lock_triples: Vec<([u8; 32], [u8; 32], [u8; 32])> =
+        (0..n_cbtc_locks).map(|_| (r32(), r32(), r32())).collect();
+    let cbtc_locks = LiveUtxoSet::from_sorted(cbtc_lock_triples)
+        .expect("handed cBTC lock set not sorted/unique");
     let cbtc_backing_sats: u64 = io::read();
     // Track B resume state: the per-pool reserve registry — (pool_id, asset_a, asset_b, reserve_a,
     // reserve_b, total_shares, c0_backed, protocol_fee_bps, k_last, protocol_fee_accrued). Rides digest()
     // (cxfer-core), so a wrong handoff (forged reserve / flipped backing flag / forged accrued skim) fails
     // the priorDigest chain. Empty for a no-AMM-pool batch (n=0).
     let n_pools: u32 = io::read();
-    let pool_entries: Vec<([u8; 32], PoolReserveState)> = (0..n_pools).map(|_| {
-        let pool_id = r32();
-        let asset_a = r32();
-        let asset_b = r32();
-        let reserve_a: u64 = io::read();
-        let reserve_b: u64 = io::read();
-        let total_shares: u64 = io::read();
-        let c0_backed: u32 = io::read();
-        // Protocol-fee (Uniswap-V2 lazy mintFee) state — committed in the pool leaf (PoolReserveSet::root)
-        // so a resumed cycle can't forge the accrued skim. All zero for a no-skim pool.
-        let protocol_fee_bps: u16 = io::read();
-        let k_last: u128 = io::read();
-        let protocol_fee_accrued: u64 = io::read();
-        (pool_id, PoolReserveState {
-            asset_a, asset_b, reserve_a, reserve_b, total_shares, c0_backed: c0_backed != 0,
-            protocol_fee_bps, k_last, protocol_fee_accrued,
+    let pool_entries: Vec<([u8; 32], PoolReserveState)> = (0..n_pools)
+        .map(|_| {
+            let pool_id = r32();
+            let asset_a = r32();
+            let asset_b = r32();
+            let reserve_a: u64 = io::read();
+            let reserve_b: u64 = io::read();
+            let total_shares: u64 = io::read();
+            let c0_backed: u32 = io::read();
+            // Protocol-fee (Uniswap-V2 lazy mintFee) state — committed in the pool leaf (PoolReserveSet::root)
+            // so a resumed cycle can't forge the accrued skim. All zero for a no-skim pool.
+            let protocol_fee_bps: u16 = io::read();
+            let k_last: u128 = io::read();
+            let protocol_fee_accrued: u64 = io::read();
+            (
+                pool_id,
+                PoolReserveState {
+                    asset_a,
+                    asset_b,
+                    reserve_a,
+                    reserve_b,
+                    total_shares,
+                    c0_backed: c0_backed != 0,
+                    protocol_fee_bps,
+                    k_last,
+                    protocol_fee_accrued,
+                },
+            )
         })
-    }).collect();
-    let pools = PoolReserveSet::from_sorted(pool_entries).expect("handed pool reserve set not sorted/unique");
+        .collect();
+    let pools = PoolReserveSet::from_sorted(pool_entries)
+        .expect("handed pool reserve set not sorted/unique");
     // FAST LANE resume: how many eth-consumed ν have already been folded into the spent set (rides
     // digest(), so a forged handoff fails the priorDigest chain). 0 until the first fast-lane consume.
     let consumed_count: u64 = io::read();
@@ -143,8 +164,19 @@ fn read_scan_prior_state() -> ScanReflection {
     // chain — and the Mode-B fold below requires the eth proof's prior to continue exactly this.
     let eth_refl_digest = r32();
     ScanReflection {
-        pool_root, note_count, spent_root, spent_count, live, burn_root, burn_count, height,
-        cbtc_locks, cbtc_backing_sats, pools, consumed_count, eth_refl_digest,
+        pool_root,
+        note_count,
+        spent_root,
+        spent_count,
+        live,
+        burn_root,
+        burn_count,
+        height,
+        cbtc_locks,
+        cbtc_backing_sats,
+        pools,
+        consumed_count,
+        eth_refl_digest,
     }
 }
 
@@ -159,7 +191,14 @@ fn read_spent_insert() -> ([u8; 32], [u8; 32], u64, Vec<[u8; 32]>, Vec<[u8; 32]>
 }
 
 /// One bridge-burn set insert witness (ν → destCommitment; the low node + the two paths).
-fn read_burn_insert() -> ([u8; 32], [u8; 32], [u8; 32], u64, Vec<[u8; 32]>, Vec<[u8; 32]>) {
+fn read_burn_insert() -> (
+    [u8; 32],
+    [u8; 32],
+    [u8; 32],
+    u64,
+    Vec<[u8; 32]>,
+    Vec<[u8; 32]>,
+) {
     let low_key = r32();
     let low_next = r32();
     let low_value = r32();
@@ -180,10 +219,11 @@ pub fn main() {
     // the prover via SP1Stdin::write_proof), so a `fold_crossout` below trusts a cross-out finalized on
     // Ethereum — not the worker. See ops/PLAN-eth-reflection-modeB.md + ops/DESIGN-mode-b-recursion.md.
     // The eth-reflection guest's RECURSION vk_digest (vk.hash_u32(), the Poseidon digest verify_sp1_proof
-    // checks — NOT the on-chain bytes32 0x00726774…). Rebuilding that ELF rotates this; recompute via
+    // checks — NOT the on-chain bytes32 0x0081d2c6…). Rebuilding that ELF rotates this; recompute via
     // prover-host/eth_vkey and keep in lockstep.
-    const ETH_REFLECTION_VKEY: [u32; 8] =
-        [959691297, 1573580327, 461851140, 794766140, 2109164942, 1629874690, 166258058, 1674560259];
+    const ETH_REFLECTION_VKEY: [u32; 8] = [
+        1089037164, 291760170, 687406231, 696197423, 1042459346, 1019538966, 544568070, 685838131,
+    ];
     // Genesis sync-committee anchor (beacon weak-subjectivity bootstrap — NOT circular with the pool),
     // pinned at re-prove time to the chosen Sepolia finalized checkpoint. The pool address is NOT pinned
     // here: it's passed through as `ethPoolReflected` and gated on-chain == address(this), which breaks
@@ -191,8 +231,9 @@ pub fn main() {
     // Sepolia genesis sync-committee anchor, captured from the stage-i eth compressed proof
     // (prevSyncCommitteeRoot @ finalizedSlot 10462624). Re-anchor for a production deploy.
     const ETH_GENESIS_SYNC_COMMITTEE: [u8; 32] = [
-        0x8a, 0x83, 0x30, 0x01, 0x19, 0xac, 0x1e, 0x64, 0xa2, 0x31, 0x8d, 0x3d, 0xb3, 0x30, 0xed, 0x49,
-        0x6c, 0x51, 0x27, 0x6c, 0x63, 0x6a, 0x93, 0x63, 0x3b, 0x2d, 0x5c, 0xfd, 0x28, 0x3c, 0x2d, 0x44,
+        0x8a, 0x83, 0x30, 0x01, 0x19, 0xac, 0x1e, 0x64, 0xa2, 0x31, 0x8d, 0x3d, 0xb3, 0x30, 0xed,
+        0x49, 0x6c, 0x51, 0x27, 0x6c, 0x63, 0x6a, 0x93, 0x63, 0x3b, 0x2d, 0x5c, 0xfd, 0x28, 0x3c,
+        0x2d, 0x44,
     ];
 
     // Mode-B gate. `verify_sp1_proof` (the eth-reflection recursion) is needed ONLY to trust a
@@ -205,10 +246,17 @@ pub fn main() {
     // proves exactly as before. This is what lets the forward bridge re-prove without standing up the
     // eth-reflection guest (it decouples the onboarding re-prove from Mode-B becoming operational).
     let mode_b: u32 = io::read();
-    let (eth_pool_word, crossout_set_root, consumed_set_root, consumed_nu_count):
-        ([u8; 32], [u8; 32], [u8; 32], u64) = if mode_b != 0 {
+    let (eth_pool_word, crossout_set_root, consumed_set_root, consumed_nu_count): (
+        [u8; 32],
+        [u8; 32],
+        [u8; 32],
+        u64,
+    ) = if mode_b != 0 {
         let eth_pv: Vec<u8> = io::read();
-        assert!(eth_pv.len() >= 11 * 32, "eth-reflection public values too short");
+        assert!(
+            eth_pv.len() >= 11 * 32,
+            "eth-reflection public values too short"
+        );
         sp1_lib::verify::verify_sp1_proof(&ETH_REFLECTION_VKEY, &bitcoin::sha256_once(&eth_pv));
         // EthReflectionPublicValues is 11 static ABI words; read by offset. Order: priorDigest, newDigest,
         // ethPool, crossOutSetRoot, crossOutCount, finalizedSlot, finalizedExecStateRoot, syncCommitteeRoot,
@@ -218,15 +266,26 @@ pub fn main() {
         // update chain to the finalized slot. Cross-period chaining (carry word 7 syncCommitteeRoot into the
         // next cycle's word 8) is NOT implemented; advancing past a far-future genesis is an operational
         // re-anchor (which rotates the eth vkey ⇒ re-pin ETH_REFLECTION_VKEY + re-prove), a deferred feature.
-        assert_eq!(&eth_pv[8 * 32..9 * 32], &ETH_GENESIS_SYNC_COMMITTEE, "eth-reflection: wrong genesis sync-committee");
+        assert_eq!(
+            &eth_pv[8 * 32..9 * 32],
+            &ETH_GENESIS_SYNC_COMMITTEE,
+            "eth-reflection: wrong genesis sync-committee"
+        );
         let ep: [u8; 32] = eth_pv[2 * 32..3 * 32].try_into().expect("ethPool word"); // gated on-chain == address(this)
-        // A Mode-B proof must carry a REAL pool: ethPool == 0 is the mode_b==0 "no eth-state" sentinel the
-        // contract accepts, so a Mode-B proof with ethPool 0 would be mistaken for it (the guest still used
-        // this proof's crossout/consumed roots). Also require a canonical 20-byte address (high 12 bytes 0)
-        // so the ABI word can't be a non-address that still compares != 0.
-        assert!(ep != [0u8; 32] && ep[..12].iter().all(|&b| b == 0), "mode_b ethPool must be a nonzero canonical address");
-        let cr: [u8; 32] = eth_pv[3 * 32..4 * 32].try_into().expect("crossOutSetRoot word");
-        let consumed_root: [u8; 32] = eth_pv[9 * 32..10 * 32].try_into().expect("consumedNuSetRoot word");
+                                                                                     // A Mode-B proof must carry a REAL pool: ethPool == 0 is the mode_b==0 "no eth-state" sentinel the
+                                                                                     // contract accepts, so a Mode-B proof with ethPool 0 would be mistaken for it (the guest still used
+                                                                                     // this proof's crossout/consumed roots). Also require a canonical 20-byte address (high 12 bytes 0)
+                                                                                     // so the ABI word can't be a non-address that still compares != 0.
+        assert!(
+            ep != [0u8; 32] && ep[..12].iter().all(|&b| b == 0),
+            "mode_b ethPool must be a nonzero canonical address"
+        );
+        let cr: [u8; 32] = eth_pv[3 * 32..4 * 32]
+            .try_into()
+            .expect("crossOutSetRoot word");
+        let consumed_root: [u8; 32] = eth_pv[9 * 32..10 * 32]
+            .try_into()
+            .expect("consumedNuSetRoot word");
         // consumedNuCount — a uint64 ABI-encoded right-aligned in the 32-byte word (field 10).
         let consumed_cnt = u64::from_be_bytes(eth_pv[11 * 32 - 8..11 * 32].try_into().unwrap());
         // CROSS-CYCLE ANCHOR (closes the forged-eth-prior bypass). The eth-reflection accumulator prior
@@ -243,7 +302,11 @@ pub fn main() {
         } else {
             state.eth_refl_digest
         };
-        assert_eq!(&eth_pv[0..32], &expected_prior[..], "eth-reflection prior must continue the committed chain");
+        assert_eq!(
+            &eth_pv[0..32],
+            &expected_prior[..],
+            "eth-reflection prior must continue the committed chain"
+        );
         state.eth_refl_digest = eth_pv[32..64].try_into().expect("eth newDigest word");
         (ep, cr, consumed_root, consumed_cnt)
     } else {
@@ -257,7 +320,10 @@ pub fn main() {
     let anchor_height: u64 = io::read();
     let num_headers: u32 = io::read();
     let headers: Vec<Vec<u8>> = (0..num_headers).map(|_| io::read()).collect();
-    assert!(num_headers > 0, "reflection batch needs >=1 header to anchor");
+    assert!(
+        num_headers > 0,
+        "reflection batch needs >=1 header to anchor"
+    );
     let refs: Vec<&[u8]> = headers.iter().map(|h| h.as_slice()).collect();
     let tip_hash = bitcoin::verify_header_chain(&refs).expect("invalid Bitcoin header chain");
     let prev_hash: [u8; 32] = headers[0][4..36].try_into().expect("header prev field");
@@ -268,7 +334,11 @@ pub fn main() {
     // brick honest proofs whose real height is lower — or a DEFLATED one to re-fold blocks at/under the
     // prior tip (the reflection has no rollback). This also makes the contract's recent-ancestor prevHash
     // tolerance unreachable: an ancestor sits below state.height, so the batch would fail this equality.
-    assert_eq!(anchor_height, state.height + 1, "reflection must append exactly (anchor_height == prior reflected height + 1)");
+    assert_eq!(
+        anchor_height,
+        state.height + 1,
+        "reflection must append exactly (anchor_height == prior reflected height + 1)"
+    );
 
     // FAST LANE (Ethereum-senior): fold the NEW eth-consumed ν into the spent set BEFORE the block scan,
     // so each source UTXO is removed from `live` and a racing Bitcoin spend in this batch is voided (its
@@ -285,7 +355,10 @@ pub fn main() {
     // accumulation and a forged prior can't slip fake/omitted ν past the count gate.
     if mode_b != 0 {
         let prior_consumed = state.consumed_count;
-        assert!(consumed_nu_count >= prior_consumed, "eth consumed count rolled back");
+        assert!(
+            consumed_nu_count >= prior_consumed,
+            "eth consumed count rolled back"
+        );
         for _ in prior_consumed..consumed_nu_count {
             let nu = r32();
             let spend_root = r32();
@@ -300,7 +373,10 @@ pub fn main() {
                 &sv, &sn, si, &sp, &snew,
             ).expect("fast-lane consumed-ν fold (completeness: every consume must mark its source note spent)");
         }
-        assert_eq!(state.consumed_count, consumed_nu_count, "must fold the entire consumed set (completeness)");
+        assert_eq!(
+            state.consumed_count, consumed_nu_count,
+            "must fold the entire consumed set (completeness)"
+        );
     }
 
     // cBTC per-lock deltas accumulated across the whole batch, surfaced in the public values for the
@@ -315,9 +391,16 @@ pub fn main() {
         let txs: Vec<Vec<u8>> = (0..n_tx).map(|_| io::read()).collect();
         // Completeness of the tx set: the provided txs ARE the whole block — their txid merkle
         // root equals the header's. So no tx (hence no pool spend) can be silently omitted.
-        let txids: Vec<[u8; 32]> =
-            txs.iter().map(|t| bitcoin::compute_txid(t)).collect::<Option<_>>().expect("malformed tx in block");
-        assert_eq!(bitcoin::compute_merkle_root(&txids), merkle_root, "provided txs are not the complete block");
+        let txids: Vec<[u8; 32]> = txs
+            .iter()
+            .map(|t| bitcoin::compute_txid(t))
+            .collect::<Option<_>>()
+            .expect("malformed tx in block");
+        assert_eq!(
+            bitcoin::compute_merkle_root(&txids),
+            merkle_root,
+            "provided txs are not the complete block"
+        );
         // BIP141 witness commitment: bind the SegWit WITNESS data too (the txid merkle above commits only
         // the stripped serialization). Tacit envelopes live in the Taproot WITNESS, so without this a
         // prover could keep a real txid and swap the witness for a fake envelope. The commitment lives in
@@ -330,7 +413,10 @@ pub fn main() {
             None => false, // non-segwit block: no commitment, hence no witness envelopes to fold
         };
         let height = anchor_height + block_index as u64;
-        assert!(height >= state.height, "reflection height must not decrease");
+        assert!(
+            height >= state.height,
+            "reflection height must not decrease"
+        );
 
         for (ti, tx) in txs.iter().enumerate() {
             let txid = txids[ti];
@@ -353,16 +439,24 @@ pub fn main() {
             // output notes.
             // Envelopes are consensus-bound only when the block's witness commitment verified (above);
             // a block without one (non-segwit) carries no Taproot envelopes to fold.
-            let env = if witness_committed { bitcoin::extract_taproot_envelope(tx) } else { None };
+            let env = if witness_committed {
+                bitcoin::extract_taproot_envelope(tx)
+            } else {
+                None
+            };
             let burn = env.as_ref().and_then(|e| bitcoin::parse_burn_envelope(e));
             // CXFER surfaces the kernel sig + range proof too, so the fold can RE-VERIFY value
             // conservation (Σ C_in = Σ C_out) + output range before injecting any note (REFLECT-1).
-            let cxfer = env.as_ref().and_then(|e| bitcoin::parse_cxfer_envelope_full(e));
+            let cxfer = env
+                .as_ref()
+                .and_then(|e| bitcoin::parse_cxfer_envelope_full(e));
 
             // Fold the detected spends into the spent-set (witnessed IMT insert, in scan order).
             for s in &spends {
                 let (sv, sn, si, sp, snew) = read_spent_insert();
-                state.fold_spent(&s.nu, &sv, &sn, si, &sp, &snew).expect("spent-set fold");
+                state
+                    .fold_spent(&s.nu, &sv, &sn, si, &sp, &snew)
+                    .expect("spent-set fold");
             }
 
             // A bridge-out records ν → destCommitment in the burn set (the burned note is the
@@ -372,14 +466,15 @@ pub fn main() {
                     // Reflected-note bridge-out: the burned note is in the live set (this near-tip
                     // reflection saw it created), already nullified above by `fold_spent`. Record ν → dest.
                     let (bk, bn, bv, bi, bp, bnew) = read_burn_insert();
-                    state.fold_burn(env_nu, env_dest, &bk, &bn, &bv, bi, &bp, &bnew).expect("burn-set fold");
-                } else {
+                    state
+                        .fold_burn(env_nu, env_dest, &bk, &bn, &bv, bi, &bp, &bnew)
+                        .expect("burn-set fold");
+                } else if spends.is_empty() {
                     // BURN-DEPOSIT (scan-free onboarding): the burned note is a PRE-existing, never-reflected
                     // note (no live-set spend). Admit it ONLY if the witness proves it descends from the
                     // asset's etch supply note C_0 through confirmed, conserving CXFERs. The provenance
                     // blocks are pre-anchor, so their canonicity is a header chain whose tip == this batch's
                     // relay-pinned anchor (prev_hash). See ops/DESIGN-trustless-asset-onboarding.md.
-                    assert!(spends.is_empty(), "burn envelope: neither a reflected-note spend nor a burn-deposit");
                     // ── witnesses (read UNCONDITIONALLY so the io stream stays in sync; fold only if valid) ──
                     let etch_tx: Vec<u8> = io::read();
                     let etch_index: u32 = io::read();
@@ -389,19 +484,26 @@ pub fn main() {
                     // are read from the WITNESS, which the txid merkle path above does NOT bind): the tx's
                     // wtxid path + the same-block coinbase commitment.
                     let n_etch_wsib: u32 = io::read();
-                    let etch_wtxid_siblings: Vec<[u8; 32]> = (0..n_etch_wsib).map(|_| r32()).collect();
+                    let etch_wtxid_siblings: Vec<[u8; 32]> =
+                        (0..n_etch_wsib).map(|_| r32()).collect();
                     let etch_coinbase: Vec<u8> = io::read();
                     let n_etch_cb_sib: u32 = io::read();
-                    let etch_cb_txid_siblings: Vec<[u8; 32]> = (0..n_etch_cb_sib).map(|_| r32()).collect();
+                    let etch_cb_txid_siblings: Vec<[u8; 32]> =
+                        (0..n_etch_cb_sib).map(|_| r32()).collect();
                     let n_prov_headers: u32 = io::read();
-                    let prov_headers: Vec<Vec<u8>> = (0..n_prov_headers).map(|_| io::read()).collect();
+                    let prov_headers: Vec<Vec<u8>> =
+                        (0..n_prov_headers).map(|_| io::read()).collect();
                     let n_cxfers: u32 = io::read();
                     // Cap the DAG size: reachability is O(n^2) in the cxfer count, and the Vec::with_capacity
                     // below trusts it. 1024 is far above any real provenance depth; a pathological witness is a
                     // clean reject, not an unbounded proving blowup. (A prover already pays its own proving
                     // cost, but bound the worst case explicitly.)
-                    assert!(n_cxfers <= 1024, "burn-deposit: provenance cxfer count over cap");
-                    let mut prov: Vec<burn_deposit::ProvenanceWitness> = Vec::with_capacity(n_cxfers as usize);
+                    assert!(
+                        n_cxfers <= 1024,
+                        "burn-deposit: provenance cxfer count over cap"
+                    );
+                    let mut prov: Vec<burn_deposit::ProvenanceWitness> =
+                        Vec::with_capacity(n_cxfers as usize);
                     for _ in 0..n_cxfers {
                         // The CXFER tx bytes: txid (computed), the envelope (asset, kernel sig, output
                         // commitments, range proof) and the input outpoints are all derived from these in
@@ -409,7 +511,8 @@ pub fn main() {
                         let tx: Vec<u8> = io::read();
                         let n_in: u32 = io::read();
                         // Spent-note commitment POINTS (Bitcoin records only the outpoint); bound by the DAG.
-                        let input_commitments: Vec<[u8; 33]> = (0..n_in).map(|_| r_n::<33>()).collect();
+                        let input_commitments: Vec<[u8; 33]> =
+                            (0..n_in).map(|_| r_n::<33>()).collect();
                         let n_out: u32 = io::read();
                         // Produced-note vouts (values are tx-derived from the envelope's commitments).
                         let output_vouts: Vec<u32> = (0..n_out).map(|_| io::read()).collect();
@@ -424,10 +527,19 @@ pub fn main() {
                         let wtxid_siblings: Vec<[u8; 32]> = (0..n_wsib).map(|_| r32()).collect();
                         let coinbase: Vec<u8> = io::read();
                         let n_cbsib: u32 = io::read();
-                        let coinbase_txid_siblings: Vec<[u8; 32]> = (0..n_cbsib).map(|_| r32()).collect();
+                        let coinbase_txid_siblings: Vec<[u8; 32]> =
+                            (0..n_cbsib).map(|_| r32()).collect();
                         prov.push(burn_deposit::ProvenanceWitness {
-                            tx, input_commitments, output_vouts, burned_amount, merkle_siblings, merkle_index,
-                            confirmed_block_root, wtxid_siblings, coinbase, coinbase_txid_siblings,
+                            tx,
+                            input_commitments,
+                            output_vouts,
+                            burned_amount,
+                            merkle_siblings,
+                            merkle_index,
+                            confirmed_block_root,
+                            wtxid_siblings,
+                            coinbase,
+                            coinbase_txid_siblings,
                         });
                     }
                     // mintable: issuer-authorized cmint witnesses (each: the T_MINT reveal tx + the commit tx
@@ -435,8 +547,15 @@ pub fn main() {
                     let n_cmints: u32 = io::read();
                     assert!(n_cmints <= 1024, "burn-deposit: cmint count over cap");
                     #[allow(clippy::type_complexity)]
-                    let mut cmints: Vec<(Vec<u8>, Vec<u8>, Vec<[u8; 32]>, u32, Vec<[u8; 32]>, Vec<u8>, Vec<[u8; 32]>)> =
-                        Vec::with_capacity(n_cmints as usize);
+                    let mut cmints: Vec<(
+                        Vec<u8>,
+                        Vec<u8>,
+                        Vec<[u8; 32]>,
+                        u32,
+                        Vec<[u8; 32]>,
+                        Vec<u8>,
+                        Vec<[u8; 32]>,
+                    )> = Vec::with_capacity(n_cmints as usize);
                     for _ in 0..n_cmints {
                         let reveal_tx: Vec<u8> = io::read();
                         let commit_tx: Vec<u8> = io::read();
@@ -445,11 +564,21 @@ pub fn main() {
                         let midx: u32 = io::read();
                         // BIP141 witness authentication for the reveal (its CMINT envelope is in the WITNESS).
                         let n_rwsib: u32 = io::read();
-                        let reveal_wtxid_siblings: Vec<[u8; 32]> = (0..n_rwsib).map(|_| r32()).collect();
+                        let reveal_wtxid_siblings: Vec<[u8; 32]> =
+                            (0..n_rwsib).map(|_| r32()).collect();
                         let reveal_coinbase: Vec<u8> = io::read();
                         let n_rcb_sib: u32 = io::read();
-                        let reveal_cb_txid_siblings: Vec<[u8; 32]> = (0..n_rcb_sib).map(|_| r32()).collect();
-                        cmints.push((reveal_tx, commit_tx, msib, midx, reveal_wtxid_siblings, reveal_coinbase, reveal_cb_txid_siblings));
+                        let reveal_cb_txid_siblings: Vec<[u8; 32]> =
+                            (0..n_rcb_sib).map(|_| r32()).collect();
+                        cmints.push((
+                            reveal_tx,
+                            commit_tx,
+                            msib,
+                            midx,
+                            reveal_wtxid_siblings,
+                            reveal_coinbase,
+                            reveal_cb_txid_siblings,
+                        ));
                     }
                     let burned_cx = r32();
                     let burned_cy = r32();
@@ -469,19 +598,33 @@ pub fn main() {
                         // (2) the etch is a valid CETCH in a canonical block, asset-bound (fixed OR mintable;
                         //     the mint_authority gates the cmints below). C_0 is its supply note.
                         let etch_txid = bitcoin::compute_txid(&etch_tx)?;
-                        let (c0_compressed, mint_authority, _dec) = bitcoin::verify_etch_anchor(&etch_tx, b_asset)?;
-                        let etch_root = bitcoin::verify_merkle_path(&etch_txid, &etch_siblings, etch_index);
-                        if !prov_headers.iter().any(|h| bitcoin::extract_merkle_root(h) == etch_root) {
+                        let (c0_compressed, mint_authority, _dec) =
+                            bitcoin::verify_etch_anchor(&etch_tx, b_asset)?;
+                        let etch_root =
+                            bitcoin::verify_merkle_path(&etch_txid, &etch_siblings, etch_index);
+                        if !prov_headers
+                            .iter()
+                            .any(|h| bitcoin::extract_merkle_root(h) == etch_root)
+                        {
                             return None;
                         }
                         // The CETCH (C_0 + mint authority) is read from the etch WITNESS, so bind it to the
                         // block (BIP141), not just txid-merkle inclusion — else a swapped witness with a fake
                         // CETCH would pass and forge the asset's supply anchor / mint authority.
                         bitcoin::verify_tx_witness_committed(
-                            &etch_tx, etch_index, &etch_wtxid_siblings, &etch_coinbase, &etch_cb_txid_siblings, &etch_root,
+                            &etch_tx,
+                            etch_index,
+                            &etch_wtxid_siblings,
+                            &etch_coinbase,
+                            &etch_cb_txid_siblings,
+                            &etch_root,
                         )?;
                         // (3) every provenance CXFER's confirmed block root is one of the canonical chain's roots.
-                        if !prov.iter().all(|c| prov_headers.iter().any(|h| bitcoin::extract_merkle_root(h) == c.confirmed_block_root)) {
+                        if !prov.iter().all(|c| {
+                            prov_headers
+                                .iter()
+                                .any(|h| bitcoin::extract_merkle_root(h) == c.confirmed_block_root)
+                        }) {
                             return None;
                         }
                         // (3b) valid supply leaves = C_0 + each issuer-authorized cmint output, the cmint reveal
@@ -489,13 +632,26 @@ pub fn main() {
                         //      verify_cmint_authorized rejects every cmint → leaves = [C_0] (criterion self-enforces).
                         let c0_outpoint = outpoint_key(&etch_txid, 0);
                         let c0_ch = commitment_hash_compressed(&c0_compressed)?;
-                        let mut valid_leaves: Vec<([u8; 32], [u8; 32])> = Vec::with_capacity(1 + cmints.len());
+                        let mut valid_leaves: Vec<([u8; 32], [u8; 32])> =
+                            Vec::with_capacity(1 + cmints.len());
                         valid_leaves.push((c0_outpoint, c0_ch));
                         let mut seen_commits: Vec<[u8; 32]> = Vec::with_capacity(cmints.len());
-                        for (reveal_tx, commit_tx, msib, midx, reveal_wtxid_siblings, reveal_coinbase, reveal_cb_txid_siblings) in &cmints {
+                        for (
+                            reveal_tx,
+                            commit_tx,
+                            msib,
+                            midx,
+                            reveal_wtxid_siblings,
+                            reveal_coinbase,
+                            reveal_cb_txid_siblings,
+                        ) in &cmints
+                        {
                             let reveal_txid = bitcoin::compute_txid(reveal_tx)?;
                             let root = bitcoin::verify_merkle_path(&reveal_txid, msib, *midx);
-                            if !prov_headers.iter().any(|h| bitcoin::extract_merkle_root(h) == root) {
+                            if !prov_headers
+                                .iter()
+                                .any(|h| bitcoin::extract_merkle_root(h) == root)
+                            {
                                 return None;
                             }
                             // Replay guard: ONE commit tx authorizes ONE mint. The issuer signature binds the
@@ -510,9 +666,20 @@ pub fn main() {
                             // The CMINT envelope is read from the reveal's WITNESS — bind it (BIP141). commit_tx
                             // needs no witness auth: it's bound by txid (reveal spends commit_txid) + its inputs.
                             bitcoin::verify_tx_witness_committed(
-                                reveal_tx, *midx, reveal_wtxid_siblings, reveal_coinbase, reveal_cb_txid_siblings, &root,
+                                reveal_tx,
+                                *midx,
+                                reveal_wtxid_siblings,
+                                reveal_coinbase,
+                                reveal_cb_txid_siblings,
+                                &root,
                             )?;
-                            valid_leaves.push(burn_deposit::verify_cmint_authorized(b_asset, &mint_authority, &etch_txid, reveal_tx, commit_tx)?);
+                            valid_leaves.push(burn_deposit::verify_cmint_authorized(
+                                b_asset,
+                                &mint_authority,
+                                &etch_txid,
+                                reveal_tx,
+                                commit_tx,
+                            )?);
                         }
                         // (4) burned note: outpoint = the burn tx's spent input; env ν is the note's REAL ν.
                         let inputs = bitcoin::extract_inputs(tx)?;
@@ -523,7 +690,14 @@ pub fn main() {
                         }
                         let burned_ch = commitment_hash(&burned_cx, &burned_cy);
                         // (5) the burned note descends from a valid supply leaf (C_0 ∪ authorized cmints).
-                        burn_deposit::verify_provenance_leaves(b_asset, &valid_leaves, &burned_outpoint, &burned_ch, &prov).ok()
+                        burn_deposit::verify_provenance_leaves(
+                            b_asset,
+                            &valid_leaves,
+                            &burned_outpoint,
+                            &burned_ch,
+                            &prov,
+                        )
+                        .ok()
                     })();
                     if verified.is_some() {
                         // nullify the burned note in the shared set (no double-use) + onboard it as a pool member
@@ -539,10 +713,20 @@ pub fn main() {
                             // proved it descends from supply). Append-only (never live): the note is spent now,
                             // not in-pool-spendable. This makes a burn-deposit mint identical to a reflected one.
                             let note_leaf = leaf(b_asset, &burned_cx, &burned_cy, &[0u8; 32]);
-                            state.fold_note_append(&note_leaf, &note_path).expect("burn-deposit note append");
-                            state.fold_burn(env_nu, env_dest, &bk, &bn, &bv, bi, &bp, &bnew).expect("burn-deposit burn fold");
+                            state
+                                .fold_note_append(&note_leaf, &note_path)
+                                .expect("burn-deposit note append");
+                            state
+                                .fold_burn(env_nu, env_dest, &bk, &bn, &bv, bi, &bp, &bnew)
+                                .expect("burn-deposit burn fold");
                         }
                     }
+                } else {
+                    // A burn envelope that spends live pool notes but does not bind exactly one of those
+                    // spends by ν is not a reflected bridge-out and is not a scan-free burn-deposit. The
+                    // live spends were already nullified above; read no burn-deposit witnesses and fold no
+                    // burn entry. This keeps malformed / multi-live-spend burns skip-not-panic and preserves
+                    // the witness stream (matching the JS assembler).
                 }
             }
 
@@ -553,8 +737,10 @@ pub fn main() {
             // lane-spendable pool value (REFLECT-1). Each output note leaf is DERIVED from the envelope
             // (never a free witness), its outpoint added to the live set for later spends in the batch.
             if let Some((asset, kernel_sig, commitments, range_proof)) = &cxfer {
-                let in_outpoints: Vec<([u8; 32], u32)> = spends.iter().map(|s| (s.prev_txid, s.prev_vout)).collect();
-                let in_points: Vec<Point> = spends.iter()
+                let in_outpoints: Vec<([u8; 32], u32)> =
+                    spends.iter().map(|s| (s.prev_txid, s.prev_vout)).collect();
+                let in_points: Vec<Point> = spends
+                    .iter()
                     .map(|s| from_affine_xy(&s.cx, &s.cy).expect("input commitment xy"))
                     .collect();
                 let in_assets: Vec<[u8; 32]> = spends.iter().map(|s| s.asset).collect();
@@ -569,7 +755,16 @@ pub fn main() {
                 // and carries no output witnesses — read none, skip (a SKIP, not a panic, so a griefed
                 // envelope can't wedge the prover). Conserving + asset-preserving cxfers read their
                 // witnesses and fold; a fold error there is a real witness bug (panics).
-                if asset_preserving && verify_cxfer_conservation(asset, &in_outpoints, &in_points, commitments, range_proof, kernel_sig) {
+                if asset_preserving
+                    && verify_cxfer_conservation(
+                        asset,
+                        &in_outpoints,
+                        &in_points,
+                        commitments,
+                        range_proof,
+                        kernel_sig,
+                    )
+                {
                     // Derive each output's vout from its index: the i-th envelope commitment is the
                     // tx's i-th confidential output (the convention commitmentForUtxo resolves by). A
                     // witnessed vout let a prover key a note at a bogus outpoint, so its later real
@@ -581,7 +776,19 @@ pub fn main() {
                         paths.push(r_path());
                         vouts.push(i as u32);
                     }
-                    state.fold_cxfer(asset, &in_outpoints, &in_points, &in_assets, &txid, commitments, &paths, &vouts, range_proof, kernel_sig)
+                    state
+                        .fold_cxfer(
+                            asset,
+                            &in_outpoints,
+                            &in_points,
+                            &in_assets,
+                            &txid,
+                            commitments,
+                            &paths,
+                            &vouts,
+                            range_proof,
+                            kernel_sig,
+                        )
                         .expect("cxfer fold");
                 }
             }
@@ -591,15 +798,25 @@ pub fn main() {
             // spend-less mint (no pool inputs to nullify). Witnesses are read for EVERY 0x65 tx (the
             // assembler provides a set per 0x65, bogus for non-members) so the stream stays in sync; a
             // non-member folds nothing (skip-not-panic, like a non-conserving cxfer).
-            if let Some((co_asset, claim_id, cx, cy, _owner)) =
-                env.as_ref().and_then(|e| bitcoin::parse_crossout_mint_envelope(e))
+            if let Some((co_asset, claim_id, cx, cy, _owner)) = env
+                .as_ref()
+                .and_then(|e| bitcoin::parse_crossout_mint_envelope(e))
             {
                 let set_index: u64 = io::read();
                 let set_path = r_path();
                 let note_path = r_path();
                 // vout 0 = the mint's single confidential output (the dapp's T_CROSSOUT_MINT layout).
                 let _ = state.fold_crossout(
-                    &co_asset, &claim_id, &cx, &cy, set_index, &set_path, &crossout_set_root, &txid, 0, &note_path,
+                    &co_asset,
+                    &claim_id,
+                    &cx,
+                    &cy,
+                    set_index,
+                    &set_path,
+                    &crossout_set_root,
+                    &txid,
+                    0,
+                    &note_path,
                 );
             }
 
@@ -611,8 +828,13 @@ pub fn main() {
             // caught by fold_cbtc_lock_spends above. No witness is read per 0x66 (track-not-mint appends no
             // note); a wrong-asset / duplicate / vout-0 lock folds nothing (skip-not-panic). See
             // ops/DESIGN-confidential-defi-v1.md §3. cf. cxfer-core::ScanReflection::fold_cbtc_lock.
-            if let Some(cb) = env.as_ref().and_then(|e| bitcoin::parse_cbtc_lock_envelope(e)) {
-                if let Ok(f) = state.fold_cbtc_lock(&cb.asset, &cb.cx, &cb.cy, tx, cb.lock_vout, &txid) {
+            if let Some(cb) = env
+                .as_ref()
+                .and_then(|e| bitcoin::parse_cbtc_lock_envelope(e))
+            {
+                if let Ok(f) =
+                    state.fold_cbtc_lock(&cb.asset, &cb.cx, &cb.cy, tx, cb.lock_vout, &txid)
+                {
                     cbtc_folded.push(f);
                 }
             }
@@ -627,17 +849,29 @@ pub fn main() {
             // CXFER-family conservation, only the inline differs. OTC + the other atomic-settlement variants
             // (T_AXFER 0x26 / 0x37 / 0x3C / 0x3D) need NO branch here — parse_cxfer_envelope_full accepts
             // them, so the cxfer fold above handles them.
-            if let Some((bid_asset, bid_kernel_sig, bid_commitments, bid_range_proof)) = env.as_ref().and_then(|e| {
-                bitcoin::parse_preauth_bid_var_envelope(e).or_else(|| bitcoin::parse_preauth_bid_envelope(e))
-            }) {
-                let in_outpoints: Vec<([u8; 32], u32)> = spends.iter().map(|s| (s.prev_txid, s.prev_vout)).collect();
-                let in_points: Vec<Point> = spends.iter()
+            if let Some((bid_asset, bid_kernel_sig, bid_commitments, bid_range_proof)) =
+                env.as_ref().and_then(|e| {
+                    bitcoin::parse_preauth_bid_var_envelope(e)
+                        .or_else(|| bitcoin::parse_preauth_bid_envelope(e))
+                })
+            {
+                let in_outpoints: Vec<([u8; 32], u32)> =
+                    spends.iter().map(|s| (s.prev_txid, s.prev_vout)).collect();
+                let in_points: Vec<Point> = spends
+                    .iter()
                     .map(|s| from_affine_xy(&s.cx, &s.cy).expect("bid input commitment xy"))
                     .collect();
                 let in_assets: Vec<[u8; 32]> = spends.iter().map(|s| s.asset).collect();
                 let asset_preserving = in_assets.iter().all(|a| a == &bid_asset);
                 if asset_preserving
-                    && verify_cxfer_conservation(&bid_asset, &in_outpoints, &in_points, &bid_commitments, &bid_range_proof, &bid_kernel_sig)
+                    && verify_cxfer_conservation(
+                        &bid_asset,
+                        &in_outpoints,
+                        &in_points,
+                        &bid_commitments,
+                        &bid_range_proof,
+                        &bid_kernel_sig,
+                    )
                 {
                     // Note-tree append paths are witnessed; vouts are DERIVED (a witnessed vout could key a
                     // note at a bogus outpoint → its later real spend misses the live set). The bid tx carries
@@ -650,7 +884,19 @@ pub fn main() {
                         paths.push(r_path());
                         vouts.push(1 + i as u32);
                     }
-                    state.fold_cxfer(&bid_asset, &in_outpoints, &in_points, &in_assets, &txid, &bid_commitments, &paths, &vouts, &bid_range_proof, &bid_kernel_sig)
+                    state
+                        .fold_cxfer(
+                            &bid_asset,
+                            &in_outpoints,
+                            &in_points,
+                            &in_assets,
+                            &txid,
+                            &bid_commitments,
+                            &paths,
+                            &vouts,
+                            &bid_range_proof,
+                            &bid_kernel_sig,
+                        )
                         .expect("bid fold");
                 }
             }
@@ -660,7 +906,10 @@ pub fn main() {
             // re-verifies the input-side kernel + the receipt opening + the out-reserve floor BEFORE onboarding
             // (skip-not-panic). The pool reserve is registry state (not a live UTXO), so the taker's c_in is
             // the only detected pool-UTXO spend.
-            if let Some(sv) = env.as_ref().and_then(|e| bitcoin::parse_swap_var_envelope(e)) {
+            if let Some(sv) = env
+                .as_ref()
+                .and_then(|e| bitcoin::parse_swap_var_envelope(e))
+            {
                 let is_sentinel = sv.c_change_or_sentinel.iter().all(|&b| b == 0);
                 // Witnesses read UNCONDITIONALLY per 0x32 (stream sync): the receipt's append path (vout 1) +
                 // the change's (vout 2), the latter only when non-sentinel — both deterministic from the envelope.
@@ -675,8 +924,22 @@ pub fn main() {
                     );
                     if c_in_real {
                         if let Some(mut pool) = state.pools.get(&sv.pool_id) {
-                            let asset_in = if sv.direction == 0 { pool.asset_a } else { pool.asset_b };
-                            if state.fold_swap_var(&mut pool, &sv, (s.prev_txid, s.prev_vout), &s.asset, &outpoint_key(&txid, 1), &receipt_path).is_ok() {
+                            let asset_in = if sv.direction == 0 {
+                                pool.asset_a
+                            } else {
+                                pool.asset_b
+                            };
+                            if state
+                                .fold_swap_var(
+                                    &mut pool,
+                                    &sv,
+                                    (s.prev_txid, s.prev_vout),
+                                    &s.asset,
+                                    &outpoint_key(&txid, 1),
+                                    &receipt_path,
+                                )
+                                .is_ok()
+                            {
                                 state.pools.update(&sv.pool_id, pool);
                                 // Onboard the taker's change (leftover of c_in, kernel-bound) so it isn't stranded.
                                 if let Some(cp) = change_path.as_ref() {
@@ -684,7 +947,13 @@ pub fn main() {
                                         reflected_note_leaf(&asset_in, &sv.c_change_or_sentinel),
                                         commitment_hash_compressed(&sv.c_change_or_sentinel),
                                     ) {
-                                        let _ = state.fold_output(&lf, cp, &outpoint_key(&txid, 2), &ch, &asset_in);
+                                        let _ = state.fold_output(
+                                            &lf,
+                                            cp,
+                                            &outpoint_key(&txid, 2),
+                                            &ch,
+                                            &asset_in,
+                                        );
                                     }
                                 }
                             }
@@ -698,7 +967,10 @@ pub fn main() {
             // circuit). fold_swap_route validates the whole value chain + every hop's reserve floor BEFORE
             // onboarding the receipt + advancing reserves (all-or-nothing, skip-not-panic). The trader's c_in is
             // the only detected pool-UTXO spend (pool reserves are registry state).
-            if let Some(rt) = env.as_ref().and_then(|e| bitcoin::parse_swap_route_envelope(e)) {
+            if let Some(rt) = env
+                .as_ref()
+                .and_then(|e| bitcoin::parse_swap_route_envelope(e))
+            {
                 let receipt_path = r_path(); // witnessed per 0x33 (the receipt note's append path; vout 1)
                 if spends.len() == 1 {
                     let s = &spends[0];
@@ -707,7 +979,13 @@ pub fn main() {
                         (Some(x), Some(y)) if x == y
                     );
                     if c_in_real {
-                        let _ = state.fold_swap_route(&rt, (s.prev_txid, s.prev_vout), &s.asset, &outpoint_key(&txid, 1), &receipt_path);
+                        let _ = state.fold_swap_route(
+                            &rt,
+                            (s.prev_txid, s.prev_vout),
+                            &s.asset,
+                            &outpoint_key(&txid, 1),
+                            &receipt_path,
+                        );
                     }
                 }
             }
@@ -717,10 +995,15 @@ pub fn main() {
             // identity (the receipts' total vs the traders' real inputs + the c0-backed reserve), and the
             // per-receipt cross-curve sigma (secp note ↔ Groth16-proven BabyJubJub value). The v1 wire format
             // has no optional block (the arbiter concept is deprecated), so the layout is fixed.
-            if let Some(sb) = env.as_ref().and_then(|e| bitcoin::parse_swap_batch_envelope(e)) {
+            if let Some(sb) = env
+                .as_ref()
+                .and_then(|e| bitcoin::parse_swap_batch_envelope(e))
+            {
                 // Witnessed per 0x2F (stream sync): one append path per receipt (the notes at vouts 1..=n).
-                let receipt_paths: Vec<Vec<[u8; 32]>> = (0..sb.n_intents).map(|_| r_path()).collect();
-                let _ = swap_batch::fold_swap_batch(&mut state, &sb, &txid, &spends, &receipt_paths);
+                let receipt_paths: Vec<Vec<[u8; 32]>> =
+                    (0..sb.n_intents).map(|_| r_path()).collect();
+                let _ =
+                    swap_batch::fold_swap_batch(&mut state, &sb, &txid, &spends, &receipt_paths);
             }
 
             // Track B: a T_LP_ADD / POOL_INIT (0x2D) establishes or grows a pool's c0_backed reserves. The
@@ -734,12 +1017,27 @@ pub fn main() {
                 let share_path = r_path();
                 if let Some((ca, cb)) = amm_canonical_pair(&la.asset_a, &la.asset_b) {
                     let swapped = la.asset_a != ca;
-                    let (da_c, db_c) = if swapped { (la.delta_b, la.delta_a) } else { (la.delta_a, la.delta_b) };
-                    let (ka_c, kb_c) = if swapped { (la.kernel_sig_b, la.kernel_sig_a) } else { (la.kernel_sig_a, la.kernel_sig_b) };
+                    let (da_c, db_c) = if swapped {
+                        (la.delta_b, la.delta_a)
+                    } else {
+                        (la.delta_a, la.delta_b)
+                    };
+                    let (ka_c, kb_c) = if swapped {
+                        (la.kernel_sig_b, la.kernel_sig_a)
+                    } else {
+                        (la.kernel_sig_a, la.kernel_sig_b)
+                    };
                     let pool_id = if la.variant == 1 {
                         // 6-arg pool_id: a protocol-fee / capability-flagged pool gets a DISTINCT pool_id from
                         // the canonical no-skim slot (matching the worker), so it's findable for swaps + claims.
-                        amm_derive_pool_id_full(&ca, &cb, la.fee_bps, la.capability_flags, &la.protocol_fee_address, la.protocol_fee_bps)
+                        amm_derive_pool_id_full(
+                            &ca,
+                            &cb,
+                            la.fee_bps,
+                            la.capability_flags,
+                            &la.protocol_fee_address,
+                            la.protocol_fee_bps,
+                        )
                     } else {
                         state.pools.pool_ids_for_assets(&ca, &cb).first().copied()
                     };
@@ -758,10 +1056,27 @@ pub fn main() {
                         let (b_ops, b_pts) = coll(&cb);
                         let pre_shares = state.pools.get(&pid).map(|p| p.total_shares).unwrap_or(0);
                         // inputs_c0_backed: every contribution is a detected live (real) spend → C0-backed.
-                        if state.fold_lp_add(
-                            la.variant, &pid, &ca, &cb, da_c, db_c, la.share_amount, &la.share_csecp,
-                            &a_ops, &a_pts, &ka_c, &b_ops, &b_pts, &kb_c, true, la.protocol_fee_bps,
-                        ).is_ok() {
+                        if state
+                            .fold_lp_add(
+                                la.variant,
+                                &pid,
+                                &ca,
+                                &cb,
+                                da_c,
+                                db_c,
+                                la.share_amount,
+                                &la.share_csecp,
+                                &a_ops,
+                                &a_pts,
+                                &ka_c,
+                                &b_ops,
+                                &b_pts,
+                                &kb_c,
+                                true,
+                                la.protocol_fee_bps,
+                            )
+                            .is_ok()
+                        {
                             // Onboard the LP's minted share note so LP-remove can later burn it AND it bridges.
                             // The LP's shares = the total_shares delta this op produced (founder's isqrt−ML at
                             // POOL_INIT; minted at LP-add). The share note is at the LP-add tx's share output —
@@ -769,11 +1084,19 @@ pub fn main() {
                             // can't detect the share, never an over-mint).
                             if let Some(p) = state.pools.get(&pid) {
                                 let lp_shares = if la.variant == 1 {
-                                    p.total_shares.saturating_sub(cxfer_core::AMM_MINIMUM_LIQUIDITY)
+                                    p.total_shares
+                                        .saturating_sub(cxfer_core::AMM_MINIMUM_LIQUIDITY)
                                 } else {
                                     p.total_shares.saturating_sub(pre_shares)
                                 };
-                                let _ = state.fold_lp_share_mint(&pid, lp_shares, &la.share_csecp, &la.share_r, &share_path, &outpoint_key(&txid, 1));
+                                let _ = state.fold_lp_share_mint(
+                                    &pid,
+                                    lp_shares,
+                                    &la.share_csecp,
+                                    &la.share_r,
+                                    &share_path,
+                                    &outpoint_key(&txid, 1),
+                                );
                             }
                         }
                     }
@@ -785,16 +1108,31 @@ pub fn main() {
             // (each bound to its PUBLIC delta_X by a witnessed blinding) + draws down reserves/shares. The
             // envelope carries no fee_bps, so the pool is found by canonical-asset enumeration + disambiguated
             // by which candidate's pool_id makes the share-burn kernel verify.
-            if let Some(lr) = env.as_ref().and_then(|e| bitcoin::parse_lp_remove_envelope(e)) {
+            if let Some(lr) = env
+                .as_ref()
+                .and_then(|e| bitcoin::parse_lp_remove_envelope(e))
+            {
                 // The two recv-note blindings are now ON-CHAIN (lr.r_recv_a/b, option a) — only the two
                 // append paths remain witnesses. So per 0x2E the assembler emits exactly two r_path()s.
                 let recv_a_path = r_path();
                 let recv_b_path = r_path();
                 if let Some((ca, cb)) = amm_canonical_pair(&lr.asset_a, &lr.asset_b) {
                     let swapped = lr.asset_a != ca;
-                    let (da_c, db_c) = if swapped { (lr.delta_b, lr.delta_a) } else { (lr.delta_a, lr.delta_b) };
-                    let (recv_ca, recv_cb) = if swapped { (lr.recv_b_secp, lr.recv_a_secp) } else { (lr.recv_a_secp, lr.recv_b_secp) };
-                    let (rca, rcb) = if swapped { (lr.r_recv_b, lr.r_recv_a) } else { (lr.r_recv_a, lr.r_recv_b) };
+                    let (da_c, db_c) = if swapped {
+                        (lr.delta_b, lr.delta_a)
+                    } else {
+                        (lr.delta_a, lr.delta_b)
+                    };
+                    let (recv_ca, recv_cb) = if swapped {
+                        (lr.recv_b_secp, lr.recv_a_secp)
+                    } else {
+                        (lr.recv_a_secp, lr.recv_b_secp)
+                    };
+                    let (rca, rcb) = if swapped {
+                        (lr.r_recv_b, lr.r_recv_a)
+                    } else {
+                        (lr.r_recv_a, lr.r_recv_b)
+                    };
                     // Find the pool whose pool_id makes the share-burn kernel verify (one V1 candidate per pair).
                     // Only inputs whose STORED asset is this pool's LP-share asset are eligible to be burned as
                     // shares (mirrors fold_lp_add's per-asset filter): the kernel is asset-blind, so without the
@@ -807,10 +1145,33 @@ pub fn main() {
                             lp_ops.push((s.prev_txid, s.prev_vout));
                             lp_pts.push(from_affine_xy(&s.cx, &s.cy).expect("lp_remove input xy"));
                         }
-                        if cxfer_core::lp_remove_kernel_verify(&pid, lr.share_amount, da_c, db_c, &recv_ca, &recv_cb, &lp_ops, &lp_pts, &lr.kernel_sig) {
+                        if cxfer_core::lp_remove_kernel_verify(
+                            &pid,
+                            lr.share_amount,
+                            da_c,
+                            db_c,
+                            &recv_ca,
+                            &recv_cb,
+                            &lp_ops,
+                            &lp_pts,
+                            &lr.kernel_sig,
+                        ) {
                             let _ = state.fold_lp_remove(
-                                &pid, lr.share_amount, da_c, db_c, &recv_ca, &rca, &recv_cb, &rcb,
-                                &lp_ops, &lp_pts, &lr.kernel_sig, &recv_a_path, &outpoint_key(&txid, 1), &recv_b_path, &outpoint_key(&txid, 2),
+                                &pid,
+                                lr.share_amount,
+                                da_c,
+                                db_c,
+                                &recv_ca,
+                                &rca,
+                                &recv_cb,
+                                &rcb,
+                                &lp_ops,
+                                &lp_pts,
+                                &lr.kernel_sig,
+                                &recv_a_path,
+                                &outpoint_key(&txid, 1),
+                                &recv_b_path,
+                                &outpoint_key(&txid, 2),
                             );
                             break;
                         }
@@ -822,17 +1183,31 @@ pub fn main() {
             // reward-asset input (the single detected spend) funds reward_total into the (virtual) treasury
             // under the swap-shape kernel; fold_farm_init registers it keyed by farm_id. A later T_LP_HARVEST
             // draws reward notes from it.
-            if let Some(fi) = env.as_ref().and_then(|e| bitcoin::parse_farm_init_envelope(e)) {
+            if let Some(fi) = env
+                .as_ref()
+                .and_then(|e| bitcoin::parse_farm_init_envelope(e))
+            {
                 if spends.len() == 1 {
                     let s = &spends[0];
                     if s.asset == fi.reward_asset {
                         if let Some(c_in_pt) = from_affine_xy(&s.cx, &s.cy) {
                             let c_in = compress(&c_in_pt);
-                            let farm_id = amm_derive_farm_id(&fi.pool_id, &fi.launcher_pubkey, &fi.reward_asset, &fi.farm_nonce);
+                            let farm_id = amm_derive_farm_id(
+                                &fi.pool_id,
+                                &fi.launcher_pubkey,
+                                &fi.reward_asset,
+                                &fi.farm_nonce,
+                            );
                             // inputs_c0_backed: the launcher's funding input is a detected live (real) spend.
                             let _ = state.fold_farm_init(
-                                &farm_id, &fi.reward_asset, fi.reward_total, (s.prev_txid, s.prev_vout),
-                                &c_in, &fi.c_change_or_sentinel, &fi.kernel_sig, true,
+                                &farm_id,
+                                &fi.reward_asset,
+                                fi.reward_total,
+                                (s.prev_txid, s.prev_vout),
+                                &c_in,
+                                &fi.c_change_or_sentinel,
+                                &fi.kernel_sig,
+                                true,
                             );
                         }
                     }
@@ -843,25 +1218,53 @@ pub fn main() {
             // real + bridgeable. fold_harvest derives the reward note from the PUBLIC (reward_amount, reward_r),
             // checks it ≤ the C0-backed treasury, onboards it, and debits the treasury. (The accrual fairness
             // is the worker's; the bridge only needs reward ≤ treasury ⇒ no inflation.)
-            if let Some((farm_id, reward_amount, reward_r)) = env.as_ref().and_then(|e| bitcoin::parse_lp_harvest_envelope(e)) {
+            if let Some((farm_id, reward_amount, reward_r)) = env
+                .as_ref()
+                .and_then(|e| bitcoin::parse_lp_harvest_envelope(e))
+            {
                 let reward_path = r_path(); // witnessed per 0x3B (the reward note's append path; vout[1])
-                let _ = state.fold_harvest(&farm_id, reward_amount, &reward_r, &outpoint_key(&txid, 1), &reward_path);
+                let _ = state.fold_harvest(
+                    &farm_id,
+                    reward_amount,
+                    &reward_r,
+                    &outpoint_key(&txid, 1),
+                    &reward_path,
+                );
             }
 
             // Track B: a T_FARM_REFUND (0x3E) — the launcher reclaims unspent treasury post-grace. Same shape as
             // a harvest (a public-r note drawn from the treasury reserve), so fold_harvest onboards it + debits
             // the treasury — NO new fold (the generalized "draw a reserve + onboard a public-r note" pattern).
-            if let Some((farm_id, refund_amount, refund_r)) = env.as_ref().and_then(|e| bitcoin::parse_farm_refund_envelope(e)) {
+            if let Some((farm_id, refund_amount, refund_r)) = env
+                .as_ref()
+                .and_then(|e| bitcoin::parse_farm_refund_envelope(e))
+            {
                 let refund_path = r_path(); // witnessed per 0x3E (the refund note's append path; vout[1])
-                let _ = state.fold_harvest(&farm_id, refund_amount, &refund_r, &outpoint_key(&txid, 1), &refund_path);
+                let _ = state.fold_harvest(
+                    &farm_id,
+                    refund_amount,
+                    &refund_r,
+                    &outpoint_key(&txid, 1),
+                    &refund_path,
+                );
             }
 
             // Track B: a T_PROTOCOL_FEE_CLAIM (0x31) — the pool's fee recipient claims the CREATOR-earned
             // protocol-fee LP-share skim as a real, bridgeable note. fold_protocol_fee_claim crystallizes the
             // swap-driven accrual, requires claim == accrued (exact), and onboards the claim note (vout[1]).
-            if let Some((cl_pool_id, cl_amount, cl_c_secp, cl_blinding)) = env.as_ref().and_then(|e| bitcoin::parse_protocol_fee_claim_envelope(e)) {
+            if let Some((cl_pool_id, cl_amount, cl_c_secp, cl_blinding)) = env
+                .as_ref()
+                .and_then(|e| bitcoin::parse_protocol_fee_claim_envelope(e))
+            {
                 let claim_path = r_path(); // witnessed per 0x31 (the claim note's append path; vout[1])
-                let _ = state.fold_protocol_fee_claim(&cl_pool_id, cl_amount, &cl_c_secp, &cl_blinding, &outpoint_key(&txid, 1), &claim_path);
+                let _ = state.fold_protocol_fee_claim(
+                    &cl_pool_id,
+                    cl_amount,
+                    &cl_c_secp,
+                    &cl_blinding,
+                    &outpoint_key(&txid, 1),
+                    &claim_path,
+                );
             }
         }
         state.height = height;
@@ -878,11 +1281,14 @@ pub fn main() {
         bitcoinTipHash: tip_hash.into(),
         ethPoolReflected: eth_pool_word.into(),
         cbtcBackingSats: U256::from(state.cbtc_backing_sats), // reflection-attested cBTC backing
-        cbtcLocksFolded: cbtc_folded.iter().map(|f| CbtcLockFolded {
-            outpoint: f.outpoint.into(),
-            vBtc: U256::from(f.v_btc),
-            commitment: f.commitment_hash.into(),
-        }).collect(),
+        cbtcLocksFolded: cbtc_folded
+            .iter()
+            .map(|f| CbtcLockFolded {
+                outpoint: f.outpoint.into(),
+                vBtc: U256::from(f.v_btc),
+                commitment: f.commitment_hash.into(),
+            })
+            .collect(),
         cbtcLocksSpent: cbtc_spent.iter().map(|o| (*o).into()).collect(),
         consumedCount: state.consumed_count, // fast-lane freshness: attest gates this == bitcoinConsumedCount
     };

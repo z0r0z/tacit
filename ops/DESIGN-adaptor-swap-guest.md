@@ -156,9 +156,9 @@ spend the **validator** recognizes; the reflection folds it as a normal spend. S
   shares `zeros`+`_hash`, declared at the END of storage so the existing slot layout — e.g. the
   reverse-reflection-read `crossOutCommitment` — is unchanged); (c) `pv.lockNullifiers` deduped against
   `lockSpent` (spend-once = claim XOR refund, incl. intra-batch via set-then-check); (d) `refundNotBefore`
-  ≥ gate; PLUS the btcHomed value-exit bar extended to bar `lockLeaves`/`lockNullifiers` (a Bitcoin-homed note
-  can't be locked or claimed on the EVM lane → no cross-lane duplication). `adaptorClaimS` emitted as
-  `AdaptorClaimsRevealed`. The lock-set leaves are NOT note-tree leaves (domain-separated in-guest), so they
+	  ≥ gate; PLUS the btcHomed value-exit bar extended to bar `lockLeaves`/`lockNullifiers` (a Bitcoin-homed note
+	  can't be locked or claimed on the EVM lane → no cross-lane duplication). `adaptorClaimS` remains in
+	  settle public values; its dedicated event is trimmed for pool bytecode size. The lock-set leaves are NOT note-tree leaves (domain-separated in-guest), so they
   never touch `nextLeafIndex` / the reserve floor. Regression tests in `ConfidentialPool.t.sol` (mock
   verifier): lock→claim happy path, ν_L double-spend across AND within a batch, refund-before-deadline,
   unknown + zero lock root, and the btcHomed-lock bar.

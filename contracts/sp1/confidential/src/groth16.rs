@@ -40,16 +40,37 @@ fn rd32(b: &[u8], off: usize) -> [u8; 32] {
 /// invariant — the blob is committed + ceremony-CID-verified, never a runtime input).
 pub fn batch_vk() -> G16Vk {
     let b = BATCH_VK_BYTES;
-    assert_eq!(b.len(), 448 + (BATCH_NPUBLIC + 1) * 64, "baked batch vk size");
-    assert_eq!(cxfer_core::sha256(b), BATCH_VK_SHA256, "baked batch vk digest (ceremony provenance)");
-    let g2 = |o: usize| (rd32(b, o), rd32(b, o + 32), rd32(b, o + 64), rd32(b, o + 96));
+    assert_eq!(
+        b.len(),
+        448 + (BATCH_NPUBLIC + 1) * 64,
+        "baked batch vk size"
+    );
+    assert_eq!(
+        cxfer_core::sha256(b),
+        BATCH_VK_SHA256,
+        "baked batch vk digest (ceremony provenance)"
+    );
+    let g2 = |o: usize| {
+        (
+            rd32(b, o),
+            rd32(b, o + 32),
+            rd32(b, o + 64),
+            rd32(b, o + 96),
+        )
+    };
     let mut ic = Vec::with_capacity(BATCH_NPUBLIC + 1);
     let mut off = 448;
     for _ in 0..(BATCH_NPUBLIC + 1) {
         ic.push((rd32(b, off), rd32(b, off + 32)));
         off += 64;
     }
-    G16Vk { alpha1: (rd32(b, 0), rd32(b, 32)), beta2: g2(64), gamma2: g2(192), delta2: g2(320), ic }
+    G16Vk {
+        alpha1: (rd32(b, 0), rd32(b, 32)),
+        beta2: g2(64),
+        gamma2: g2(192),
+        delta2: g2(320),
+        ic,
+    }
 }
 
 /// Parse a big-endian 32-byte field element into `Fq` (BN254 base field).

@@ -57,7 +57,7 @@ before any bridge_mint can prove membership.
 - [ ] Assert reflection advanced off genesis and the cross-chain roots are live:
   ```sh
   cast call $POOL 'knownReflectionDigest()(bytes32)' --rpc-url $RPC   # != $REFLECTION_GENESIS_DIGEST
-  cast call $POOL 'knownBitcoinRoot(bytes32)(bool)' <attested pool root> --rpc-url $RPC  # true (from BitcoinRootAttested)
+  cast call $POOL 'knownBitcoinRoot(bytes32)(bool)' <attested pool root> --rpc-url $RPC  # true
   cast call $POOL 'knownBitcoinBurnRoot()(bytes32)' --rpc-url $RPC    # != 0  (bridge_mint authority)
   cast call $POOL 'knownBitcoinSpentRoot()(bytes32)' --rpc-url $RPC   # != 0  (cross-lane gate)
   ```
@@ -101,7 +101,6 @@ before any bridge_mint can prove membership.
       `pv.bitcoinRootsUsed=[<pool root>]`, `pv.leaves=[dest_leaf]`.
 - [ ] Assert the mint fired once, bound to the burn, and created an Ethereum-homed note:
   ```sh
-  cast logs --address $POOL 'BridgeMinted(bytes32)' --from-block <settle blk> --rpc-url $RPC   # ν present
   cast call $POOL 'bridgeMinted(bytes32)(bool)' <ν> --rpc-url $RPC      # true (one-mint-per-burn)
   cast call $POOL 'nextLeafIndex()(uint256)' --rpc-url $RPC             # +1
   cast call $POOL 'nullifierSpent(bytes32)(bool)' <ν> --rpc-url $RPC    # true (shared EVM namespace)
@@ -115,11 +114,10 @@ before any bridge_mint can prove membership.
       `pv.withdrawals = [{assetId: TAC, recipient, value}]` (the pool resolves the shared id to the
       local entry and pays `value · unitScale`).
 - [ ] Assert the public ERC20 is now held and supply == the unwrapped value (no inflation):
-  ```sh
-  cast call $PREDICTED 'balanceOf(address)(uint256)' <recipient> --rpc-url $RPC   # == value · unitScale
-  cast call $PREDICTED 'totalSupply()(uint256)' --rpc-url $RPC                     # == that amount
-  cast logs --address $POOL 'Withdraw(bytes32,address,uint256)' --from-block <blk> --rpc-url $RPC
-  ```
+	  ```sh
+	  cast call $PREDICTED 'balanceOf(address)(uint256)' <recipient> --rpc-url $RPC   # == value · unitScale
+	  cast call $PREDICTED 'totalSupply()(uint256)' --rpc-url $RPC                     # == that amount
+	  ```
   The recipient now holds tradeable, Uniswap-able TAC ERC20.
 
 ## Phase 5 — Re-wrap (public → confidential, inside the pool)

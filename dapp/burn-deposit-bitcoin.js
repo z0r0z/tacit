@@ -190,11 +190,11 @@ function parseCmint(envHex) {
 }
 
 // parse_burn_envelope (cxfer-core::bitcoin::parse_burn_envelope): a confidential bridge-burn (0x2B) →
-//   { asset, nullifier, dest } (all hex). Layout (env[0]=0x2B, >=129B):
+//   { asset, nullifier, dest } (all hex). Layout (env[0]=0x2B, exactly 129B):
 //   opcode(1) ‖ assetId(32) ‖ bitcoinPoolRoot(32) ‖ nullifier(32) ‖ destCommitment(32).
 function parseBurnEnvelope(envHex) {
   const env = hexToBytes(envHex);
-  if (env.length < 129 || env[0] !== 0x2b) return null;
+  if (env.length !== 129 || env[0] !== 0x2b) return null;
   return {
     asset: bytesToHex(env.subarray(1, 33)),
     nullifier: bytesToHex(env.subarray(65, 97)),
@@ -304,32 +304,37 @@ function parseSwapBatchEnvelope(envHex) {
 
 // ── Track-B AMM op parsers (mirror cxfer-core parse_*_envelope) → the assembler's env shape. These ops' fold
 // data is FULLY on-chain (kernel sigs, PUBLIC blindings, commitments in the envelope; the note-tree append
-// paths are indexer-derived), so the live classifier can route them. (lp_add / lp_remove / cBTC also fold but
-// read OFF-CHAIN witnesses — share_r / r_recv / the opening sigma, via the guest's r32() — so they stay
-// guard-deferred until a witness-source is built; swap_batch needs the indexer's async Groth16 pre-verify.) A
-// wrong parse is fail-loud (the guest re-parses txData + is authoritative), never a wrong attestation.
+// paths are indexer-derived), so the live classifier can route them. A wrong parse is fail-loud (the guest
+// re-parses txData + is authoritative), never a wrong attestation.
 const _u64le = (e, o) => { let v = 0n; for (let i = 7; i >= 0; i--) v = (v << 8n) | BigInt(e[o + i]); return v.toString(); };
 const _h = (e, a, b) => bytesToHex(e.subarray(a, b));
 
 function parseSwapVarEnvelope(envHex) {
   const e = hexToBytes(envHex);
   if (e[0] !== 0x32 || e.length < 269) return null;
+  if (e[33] !== 0 && e[33] !== 1) return null;
   const rpLen = e[267] | (e[268] << 8), ks = 269 + rpLen;
-  if (e.length < ks + 64) return null;
+  if (e.length < ks + 64 + 64) return null; // kernel_sig + intent_sig
   return { type: 'swap_var', poolId: _h(e, 1, 33), direction: e[33], rAPre: _u64le(e, 34), rBPre: _u64le(e, 42), deltaIn: _u64le(e, 50), deltaOut: _u64le(e, 74), tipAmount: _u64le(e, 90), cIn: _h(e, 136, 169), cChangeOrSentinel: _h(e, 169, 202), cReceipt: _h(e, 202, 235), rReceipt: _h(e, 235, 267), kernelSig: _h(e, ks, ks + 64) };
 }
 function parseSwapRouteEnvelope(envHex) {
   const e = hexToBytes(envHex);
   if (e[0] !== 0x33) return null;
   const n = e[1]; if (n < 2 || n > 4) return null;
+  if (_h(e, 2, 34) === _h(e, 34, 66)) return null;
   let p = 111; const hops = [];
-  for (let i = 0; i < n; i++) { const s = p; p += 67; if (p > e.length) return null; hops.push({ poolId: _h(e, s, s + 32), direction: e[s + 32], rAPre: _u64le(e, s + 35), rBPre: _u64le(e, s + 43), deltaANetMag: _u64le(e, s + 51), deltaBNetMag: _u64le(e, s + 59) }); }
+  for (let i = 0; i < n; i++) {
+    const s = p; p += 67; if (p > e.length) return null;
+    const direction = e[s + 32]; if (direction !== 0 && direction !== 1) return null;
+    hops.push({ poolId: _h(e, s, s + 32), direction, rAPre: _u64le(e, s + 35), rBPre: _u64le(e, s + 43), deltaANetMag: _u64le(e, s + 51), deltaBNetMag: _u64le(e, s + 59) });
+  }
   p += 36; // trader_input_outpoint (the fold uses the detected spend, not this)
   const cIn = _h(e, p, p + 33); p += 33;
   const cReceipt = _h(e, p, p + 33); p += 33;
   const rReceipt = _h(e, p, p + 32); p += 32;
-  const rpLen = e[p] | (e[p + 1] << 8); p += 2 + rpLen;
-  if (p + 64 > e.length) return null;
+  if (p + 2 > e.length) return null;
+  const rpLen = e[p] | (e[p + 1] << 8); if (rpLen === 0) return null; p += 2 + rpLen;
+  if (p + 64 + 64 !== e.length) return null; // kernel_sig + intent_sig, exact end
   return { type: 'swap_route', traderInputAsset: _h(e, 2, 34), traderOutputAsset: _h(e, 34, 66), hops, cIn, cReceipt, rReceipt, kernelSig: _h(e, p, p + 64) };
 }
 function parseHarvestEnvelope(envHex) {
@@ -348,7 +353,7 @@ function parseFarmInitEnvelope(envHex) {
   const HDR = 1 + 32 + 32 + 33 + 32 + 8 + 8 + 4 + 4 + 33; // 187 = rp_len offset
   if (e[0] !== 0x34 || e.length < HDR + 2) return null;
   const rpLen = e[HDR] | (e[HDR + 1] << 8), ks = HDR + 2 + rpLen;
-  if (e.length < ks + 64) return null;
+  if (e.length < ks + 64 + 64) return null; // kernel_sig + launcher_sig
   return { type: 'farm_init', poolId: _h(e, 1, 33), farmNonce: _h(e, 33, 65), launcherPubkey: _h(e, 65, 98), rewardAsset: _h(e, 98, 130), rewardTotal: _u64le(e, 130), cChangeOrSentinel: _h(e, 154, 187), kernelSig: _h(e, ks, ks + 64) };
 }
 
@@ -363,16 +368,17 @@ function parseLpAddEnvelope(envHex) {
   let feeBps = 0, capabilityFlags = 0, protocolFeeAddress = '0x' + '00'.repeat(33), protocolFeeBps = 0;
   if (variant === 1) {
     let p = TAIL;
-    const need = (n) => { if (p + n > e.length) throw 0; const s = p; p += n; return s; };
+    const need = (n) => { if (!Number.isInteger(n) || n < 0 || p + n > e.length) throw 0; const s = p; p += n; return s; };
+    const needLenPrefixed = () => { const l = e[need(1)]; need(l); };
     try {
       const f0 = need(2); feeBps = e[f0] | (e[f0 + 1] << 8);
-      need(1 + e[p]);                          // vkLen ‖ vkCid
-      need(1 + e[p]);                          // cerLen ‖ ceremonyCid
+      needLenPrefixed();                        // vkLen ‖ vkCid
+      needLenPrefixed();                        // cerLen ‖ ceremonyCid
       const ac = e[need(1)]; need(1); need(ac * 33); // arbCount, then arbM ‖ arbiter pubkeys
       const lc = e[need(1)]; need(lc * 64);    // lsigCount ‖ launcher sigs
       const pa = need(33); protocolFeeAddress = _h(e, pa, pa + 33);
       const pb = need(2); protocolFeeBps = e[pb] | (e[pb + 1] << 8);
-      need(1 + e[p]);                          // metaLen ‖ poolMetaUri
+      needLenPrefixed();                        // metaLen ‖ poolMetaUri
       capabilityFlags = e[need(1)];
       if (capabilityFlags & 0x04) return null; // reserved arbiter-authority — fail closed (matches the guest)
     } catch { return null; }
@@ -406,7 +412,7 @@ function parseLpRemoveEnvelope(envHex) {
 // the envelope (it is the lock output's sats value); the caller stamps it from the tx output at lock_vout.
 function parseCbtcLockEnvelope(envHex) {
   const e = hexToBytes(envHex);
-  if (e[0] !== 0x66 || e.length < 197) return null;
+  if (e[0] !== 0x66 || e.length !== 197) return null;
   return {
     type: 'cbtc_lock', asset: _h(e, 1, 33),
     lockVout: e[33] | (e[34] << 8) | (e[35] << 16) | (e[36] * 0x1000000),
@@ -438,13 +444,13 @@ function txOutputValue(rawTxHex, vout) {
 // reverse-prove path (separate). Layout: opcode ‖ asset(32) ‖ claim_id(32) ‖ Cx(32) ‖ Cy(32) ‖ owner(32).
 function parseCrossoutMintEnvelope(envHex) {
   const e = hexToBytes(envHex);
-  if (e[0] !== 0x65 || e.length < 161) return null;
+  if (e[0] !== 0x65 || e.length !== 161) return null;
   return { type: 'crossout_mint', asset: _h(e, 1, 33), claimId: _h(e, 33, 65), cx: _h(e, 65, 97), cy: _h(e, 97, 129), owner: _h(e, 129, 161) };
 }
 
 // classifyConfidentialTx(rawTxHex) → the reflection scan's per-tx classification, MIRRORING the guest's
 // reflect.rs (extract_taproot_envelope → parse_burn_envelope / parse_cxfer_envelope_full): a confidential
-// bridge-burn → {type:'burn', dest}; a confidential transfer → {type:'cxfer', assetId, commitments,
+// bridge-burn → {type:'burn', assetId, nullifier, dest}; a confidential transfer → {type:'cxfer', assetId, commitments,
 // kernelSig, rangeProof}; anything else (plain spend, non-confidential envelope) → null. This is the
 // `classifyTx` buildScanReflectionAttester injects; the guest RE-parses from txData and is authoritative, so a
 // misclassification is a liveness failure (the prove fails / skips), never a wrong attestation.
@@ -452,7 +458,7 @@ function classifyConfidentialTx(rawTxHex) {
   const envHex = extractTaprootEnvelope(rawTxHex);
   if (!envHex) return null;
   const burn = parseBurnEnvelope(envHex);
-  if (burn) return { type: 'burn', dest: burn.dest };
+  if (burn) return { type: 'burn', assetId: burn.asset, nullifier: burn.nullifier, dest: burn.dest };
   const cx = parseCxferEnvelopeFull(envHex);
   if (cx) return { type: 'cxfer', assetId: cx.asset, commitments: cx.commitments, kernelSig: cx.kernelSig, rangeProof: cx.rangeProof };
   // A preauth-bid fill (0x5B/0x5C) folds via the SAME cxfer fold; its notes start at vout[1] (voutBase 1).
@@ -482,14 +488,11 @@ function classifyConfidentialTx(rawTxHex) {
   // skips (fold_crossout is a no-op in a forward batch — crossout_set_root=0), instead of refusing the block.
   const co = parseCrossoutMintEnvelope(envHex);
   if (co) return co;
-  // env[0] is the opcode (the TACIT frame is already stripped). cetch (0x21) / cmint (0x24) create a note
-  // but the conservation-closed full scan does NOT fold them (no free-output deposit path), so the guest
-  // treats them as plain too — safe. Every other guest-folded op now routes; a still-unmirrored guest fold
-  // would SURFACE here (not be treated as plain) — else the guest reads fold witnesses this scan never emitted
-  // and the batch's stream desyncs. Fail-loud: the attester refuses (liveness, not soundness — guest is authoritative).
-  const opcode = hexToBytes(envHex)[0];
-  if (opcode === 0x21 || opcode === 0x24) return null; // cetch / cmint — created-but-not-folded (plain)
-  return { type: 'unsupported', opcode };
+  // Anything that reaches here is either a created-not-folded envelope (cetch/cmint), an unknown opcode, or a
+  // malformed/truncated instance of a known opcode. The Rust guest also parses no fold in all of those cases and
+  // reads no per-op witnesses, so mirror it as plain traffic. `unsupported` is reserved for explicit callers /
+  // missing fold hooks that know a parseable guest-folded envelope would desync the stream.
+  return null;
 }
 
 export { readVarint, extractInputs, extractTaprootEnvelope, parseCetch, parseCmint, parseBurnEnvelope, parseCxferEnvelopeFull, parsePreauthBidEnvelope, parseSwapBatchEnvelope, parseSwapVarEnvelope, parseSwapRouteEnvelope, parseHarvestEnvelope, parseProtocolFeeClaimEnvelope, parseFarmInitEnvelope, parseLpAddEnvelope, parseLpRemoveEnvelope, parseCbtcLockEnvelope, parseCrossoutMintEnvelope, txOutputValue, classifyConfidentialTx };

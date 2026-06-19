@@ -2,7 +2,8 @@
 //   (1) independently-constructed preimages + keccak (byte-parity with cxfer-core lib.rs `cdp_*`), and
 //   (2) the structural KAT cxfer-core asserts (determinism, field-binding, domain-separation).
 // keccak_256 is the same dep the dapp injects, so a green run pins the JS layout to the Rust + the
-// on-chain ConfidentialPool / CollateralEngine derivations. Run: node tests/confidential-cdp.mjs
+// on-chain ConfidentialPool / CollateralEngine derivations, including the top-up helper surface.
+// Run: node tests/confidential-cdp.mjs
 import { keccak_256 } from '../node_modules/@noble/hashes/sha3.js';
 import assert from 'node:assert';
 import { makeConfidentialCdp } from '../dapp/confidential-cdp.js';
@@ -37,6 +38,7 @@ const controllerB = '0x' + 'c2'.repeat(20);
   const someLeaf = '0x' + '42'.repeat(32);
   const expNu = hx(keccak_256(cat(enc.encode('tacit-cdp-position-v1'), bytesN(someLeaf, 32), enc.encode('spent'))));
   assert.equal(cdp.positionNullifier(someLeaf), expNu, 'positionNullifier byte-parity');
+  assert.equal(typeof cdp.cdpTopupCollateralSigma, 'function', 'top-up sigma helper exported');
 }
 
 // (2) structural KAT — mirrors cxfer-core::tests::cdp_primitives_bind_and_separate.

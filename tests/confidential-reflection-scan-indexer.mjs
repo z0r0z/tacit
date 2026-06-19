@@ -31,11 +31,12 @@ const genesis = idx.digest();
 
 // Block 0 (height 500): one CXFER tx with two output notes (deposits). vins are non-pool.
 const tx0disp = dtx(0x10);
+const cxf = conservingZeroCxfer(assetId, [11n, 22n]);
 const block0 = { txs: [{
   txidDisplay: tx0disp,
   rawHex: 'aa'.repeat(60),
   vins: [{ prevTxidDisplay: dtx(0xee), vout: 3 }],     // a non-pool input — no spend detected
-  decode: { type: 'cxfer', assetId, ...conservingZeroCxfer(assetId, [11n, 22n]) },
+  decode: { type: 'cxfer', assetId, ...cxf },
 }] };
 const in0 = await idx.assembleBlocks([block0], { headers: ['0x' + '00'.repeat(80)], anchorHeight: 500 });
 eq(in0.prior.poolRoot, makeScanReflectionIndexer(deps).roots().poolRoot, 'block0 prior == genesis pool root');
@@ -47,12 +48,14 @@ eq(in0.blocks[0].txs[0].openings.length, 0, 'non-pool input → no spend opening
 // The internal-order txid the outputs are keyed under (so block1 can spend them).
 const reverseHex = (h) => h.replace(/^0x/, '').match(/../g).reverse().join('');
 const tx0internalDisplay = tx0disp; // block1 references the SAME display txid as its prevTxid
+const out1 = idx.pool.decompressCommitment(cxf.commitments[1]);
+const burnNu = idx.pool.nullifier(out1.cx, out1.cy);
 
 // Block 1 (height 501): a plain spend of output 0, and a bridge-out burn of output 1.
 const afterBlock0 = idx.digest();
 const block1 = { txs: [
   { txidDisplay: dtx(0x20), rawHex: 'bb'.repeat(40), vins: [{ prevTxidDisplay: tx0internalDisplay, vout: 0 }], decode: null },
-  { txidDisplay: dtx(0x21), rawHex: 'cc'.repeat(40), vins: [{ prevTxidDisplay: tx0internalDisplay, vout: 1 }], decode: { type: 'burn', dest: v(0xde57) } },
+  { txidDisplay: dtx(0x21), rawHex: 'cc'.repeat(40), vins: [{ prevTxidDisplay: tx0internalDisplay, vout: 1 }], decode: { type: 'burn', assetId, nullifier: burnNu, dest: v(0xde57) } },
 ] };
 const in1 = await idx.assembleBlocks([block1], { headers: ['0x' + '11'.repeat(80)], anchorHeight: 501 });
 eq(in1.prior.poolRoot, in0.newDigest ? in1.prior.poolRoot : null, 'block1 prior exists');

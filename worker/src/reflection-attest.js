@@ -117,7 +117,7 @@ export function makeScanReflectionAttester({ deps, storage, prove, submit, getBl
 //   env.REFLECTION_GENESIS_HEIGHT                       — the first block the reflection scans
 //                                                         (= GENESIS_REFLECTION_ANCHOR's height)
 // `classifyTx({ txid, vin, vout, rawHex }) => null | {type:'cxfer',assetId,commitments[],kernelSig,
-// rangeProof} | {type:'burn',dest}` classifies a tx's confidential envelope, injected so the attester
+// rangeProof} | {type:'burn',assetId,nullifier,dest}` classifies a tx's confidential envelope, injected so the attester
 // stays decode-agnostic. It MUST mirror the guest's reflect.rs classification (the guest re-parses txData
 // + is authoritative), and a cxfer MUST surface its kernelSig (64-byte BIP-340 hex) + rangeProof (BP+ hex)
 // — the assembler re-verifies value conservation before folding the outputs (REFLECT-1). The worker wires

@@ -7,19 +7,17 @@ pragma solidity 0.8.20;
 import {Test} from "forge-std/Test.sol";
 import {SP1Verifier} from "./vendor/sp1/v6.1.0/SP1VerifierGroth16.sol";
 
-/// Verifies a REAL SP1 Groth16 proof of the Mode-B REFLECTION guest ON-CHAIN, through the genuine
+/// Verifies a REAL SP1 Groth16 proof of the REFLECTION guest ON-CHAIN, through the genuine
 /// SP1VerifierGroth16 — no mock. The proof was GPU-proven on the prover box
-/// (contracts/sp1/eth-reflection/prover-host/bitcoin_prove.rs): the reflection guest RECURSIVELY
-/// verifies the eth-reflection compressed proof (verify_sp1_proof) and scans real signet block 307547
+/// (contracts/sp1/eth-reflection/prover-host/bitcoin_prove.rs): the reflection guest scans real signet through block 307547
 /// (real PoW + full-block-merkle inclusion, real vins, witnessed accumulator transitions). Its vkey is
 /// BITCOIN_RELAY_VKEY (genesis-pinned + the recursion hash_u32 digest); its public values are the
 /// dynamic BitcoinReflectionPublicValues that ConfidentialPool.attestBitcoinStateProven verifies +
 /// chains (incl. ethPoolReflected, cBTC per-lock deltas, consumedCount). Fixture:
-/// contracts/test/fixtures/reflection_groth16.json. The CXFER is a synthetic but value-CONSERVING
-/// transfer (gen-reflection-cxfer-synth: 2-in/2-out Σv_in=Σv_out=1000, real BIP-340 kernel + BP+ range),
-/// so its two output notes ARE folded into bitcoinPoolRoot (REFLECT-1 conservation gate passes); the
-/// confirmed both-sided negative test (readiness-gate layer 9) shows the same ELF SKIPS a non-conserving
-/// CXFER instead.
+/// contracts/test/fixtures/reflection_groth16.json. The fixture is regenerated from the committed
+/// forward reflection input after the burn-envelope multi-live-spend / mismatched-ν skip-not-panic
+/// hardening; the confirmed both-sided negative test (readiness-gate layer 9)
+/// still shows the same ELF SKIPS non-conserving CXFERs.
 contract ConfidentialReflectionProofRealTest is Test {
     struct CbtcLockFolded { bytes32 outpoint; uint256 vBtc; bytes32 commitment; }
     struct BitcoinRelayPublicValues {
@@ -69,16 +67,16 @@ contract ConfidentialReflectionProofRealTest is Test {
     function test_reflection_public_values_decode() public view {
         BitcoinRelayPublicValues memory pv = abi.decode(publicValues, (BitcoinRelayPublicValues));
         assertEq(pv.bitcoinHeight, 307547, "the real signet block height");
-        assertEq(pv.newDigest, 0x522e57e3ab07b8adcbf8341341a7e532c8278b3cf1c9fdd48cf62e9f5fa0b475, "newDigest (conserving CXFER folded, cBTC/consumed-count digest)");
+        assertEq(pv.bitcoinPoolRoot, 0x1658bfbe60f84b673045cad56a060c91cfa8a442d4320431a949bf2180d496c6, "bitcoinPoolRoot (forward reflection fixture)");
+        assertEq(pv.newDigest, 0x522e57e3ab07b8adcbf8341341a7e532c8278b3cf1c9fdd48cf62e9f5fa0b475, "newDigest (forward reflection fixture)");
         assertTrue(pv.priorDigest != bytes32(0) && pv.bitcoinPoolRoot != bytes32(0) && pv.bitcoinSpentRoot != bytes32(0), "non-zero roots");
         // The header anchor the contract pins to RELAY.tip()/the prior tip: tip non-zero, prev = the
         // batch's resume anchor (headers[0]'s prev field).
         assertTrue(pv.bitcoinTipHash != bytes32(0), "committed Bitcoin tip hash (relay anchor)");
         pv.bitcoinPrevHash; // bound in the proof; the contract checks it against the prior attested tip
         assertTrue(pv.bitcoinBurnRoot != bytes32(0), "burn root is the non-zero sentinel (no burns in this transfer)");
-        // Mode B: the eth-reflection's ethPool, passed through; attestBitcoinStateProven gates it
-        // == address(this). This fixture's eth proof used POOL=0 (a real attest binds the pool).
-        assertEq(pv.ethPoolReflected, bytes32(0), "ethPoolReflected passthrough (POOL=0 here; gated on-chain)");
+        // Forward batch (modeB=0): no eth-reflection proof is supplied, so ethPoolReflected is the zero sentinel.
+        assertEq(pv.ethPoolReflected, bytes32(0), "ethPoolReflected zero sentinel");
         // cBTC.zk: Σ live self-custody lock sats, digest-bound; 0 for this no-cBTC-lock fixture. The
         // off-pool CollateralEngine reads cbtcBackingSats() to size the peg shortfall.
         assertEq(pv.cbtcBackingSats, 0, "cbtcBackingSats (no cBTC lock in this fixture)");

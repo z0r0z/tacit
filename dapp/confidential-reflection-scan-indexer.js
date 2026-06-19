@@ -14,7 +14,7 @@
 //   vins: [{ prevTxidDisplay, vout }],        // every input (display-order prev txid)
 //   decode: null                              // a plain tx (its pool spends are caught by the scan)
 //         | { type:'cxfer', assetId, commitments:[compressed-33 hex], kernelSig, rangeProof }
-//         | { type:'burn', dest }             // destCommitment (bound by the guest from the envelope)
+//         | { type:'burn', assetId, nullifier, dest } // bridge-burn envelope fields (ν binds live bridge-outs)
 //         | { type:'mint', assetId }          // T_MINT/cmint value-entry — surfaced, NOT yet reflected
 // } ] }
 // A cxfer decode MUST surface kernelSig (64-byte BIP-340 hex) + rangeProof (BP+ hex): the assembler
@@ -96,7 +96,7 @@ export function makeScanReflectionIndexer({ secp, keccak256, sha256, ownerTag, b
   }
 
   // One worker block-tx → the assembler's tx spec. Plain txs carry only vins (their pool-UTXO
-  // spends are detected by the scan); cxfer txs declare output notes; burn txs a bridge-out dest.
+  // spends are detected by the scan); cxfer txs declare output notes; burn txs declare ν → dest.
   function txSpec(tx, burnDeposits) {
     const vins = (tx.vins || []).map((vi) => ({ prevTxid: internal(vi.prevTxidDisplay), vout: vi.vout }));
     const txid = internal(tx.txidDisplay);
@@ -115,7 +115,7 @@ export function makeScanReflectionIndexer({ secp, keccak256, sha256, ownerTag, b
         }),
       };
     } else if (tx.decode && tx.decode.type === 'burn') {
-      env = { type: 'burn', dest: tx.decode.dest };
+      env = { type: 'burn', assetId: tx.decode.assetId || null, nullifier: tx.decode.nullifier || null, dest: tx.decode.dest };
       // BURN-DEPOSIT (scan-free TAC/cmint onboarding): a 0x2B burn of a pre-existing note (no live-set
       // spend). If the worker supplied this tx's holder-traced provenance bundle, assemble the fold
       // context (the canonical scan folds it iff the realness mirror admits it).

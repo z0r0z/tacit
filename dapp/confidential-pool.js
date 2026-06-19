@@ -1112,7 +1112,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
 
   // ── Assemble the FULL-SCAN reflection input (the new guest's io::read order) ──
   // batch = { anchorHeight, headers (80-byte hex), blocks: [{ txs: [{ txData, txid, vins:
-  // [{prevTxid,vout}], env: null | {type:'burn', dest} | {type:'cxfer', assetId, kernelSig,
+  // [{prevTxid,vout}], env: null | {type:'burn', nullifier, dest} | {type:'cxfer', assetId, kernelSig,
   // rangeProof, outputs:[{cx,cy, compressed, commitmentHash, noteLeaf, vout}]} }] }] }. A cxfer
   // env's outputs are folded ONLY if it conserves value (REFLECT-1); a non-conserving cxfer's
   // detected spends are still nullified but it injects no notes (the guest skips it identically).
@@ -1257,8 +1257,10 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
         if (tx.env && tx.env.type === 'burn') {
           if (openings.length === 1) {
             // Reflected-note bridge-out: the burned note is a live pool note (already nullified above by the
-            // spend scan). Record ν → dest.
-            burnInsert = state.foldBurn(nullifier(openings[0].cx, openings[0].cy), tx.env.dest);
+            // spend scan) AND the envelope binds that exact ν. If it doesn't, this is a malformed burn
+            // envelope: the spend remains nullified, but no burn witness is read/folded.
+            const liveNu = nullifier(openings[0].cx, openings[0].cy);
+            if (tx.env.nullifier && norm(tx.env.nullifier) === norm(liveNu)) burnInsert = state.foldBurn(liveNu, tx.env.dest);
           } else if (openings.length === 0 && tx.env.burnDeposit) {
             // BURN-DEPOSIT: a pre-existing, never-reflected note (no live-set spend). The worker assembled the
             // provenance witness + ran the JS mirror (ctx.valid). The guest reads the witness UNCONDITIONALLY
@@ -1271,10 +1273,9 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
             // wedge the attestation cycle (a griefer could otherwise broadcast one to halt reflection).
             burnDeposit = foldBurnDepositTx(state, BD_SKIP_CTX);
           } else {
-            // openings.length >= 2 under a burn envelope: the guest's `assert!(spends.is_empty())` fails (it
-            // panics), so this IS a genuine desync. (Making the guest skip-not-panic for a multi-spend burn
-            // is a separate hardening that needs a re-prove.)
-            throw new Error('burn tx: multiple live-note spends under a burn envelope (guest asserts spends.is_empty())');
+            // openings.length >= 2 under a burn envelope: malformed bridge-out (no single ν can bind the
+            // burn). The guest now skip-not-panics here: the live spends were already nullified, and no
+            // burn-deposit witnesses are read.
           }
         }
         const outputs = [];
@@ -1317,14 +1318,11 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
           // root. Removing an entry here = implementing that fold in the scan state + this assembler.
           unsupportedEnvelopes.push({ txid: tx.txid, opcode: tx.env.opcode });
         } else if (tx.env && tx.env.type === 'cbtc_lock') {
-          // cBTC.zk sats-lock: fold the lock (gate + track + append the owner-free note). The opening sigma
-          // (rx/ry/z) is now ON-CHAIN in the 0x66 envelope (option a) — the guest parses it, so the only witness
-          // the assembler emits per 0x66 is the note's append path. The sigma still feeds the fold via `tx.env`
-          // (the parser populates it from the envelope). lockTxid = the lock tx's txid.
+          // cBTC.zk sats-lock: fold the lock (gate + track) without minting a pool note here. The opening sigma
+          // (rx/ry/z) is ON-CHAIN in the 0x66 envelope (option a), so no off-chain witness and no note-path are
+          // serialized per 0x66; reflect-stdin intentionally ignores this debug marker. lockTxid = this txid.
           const w = state.foldCbtcLock({ asset: tx.env.asset, cx: tx.env.cx, cy: tx.env.cy, vBtc: tx.env.vBtc, lockVout: tx.env.lockVout, lockTxid: tx.txid, sigRx: tx.env.sigRx, sigRy: tx.env.sigRy, sigZ: tx.env.sigZ });
-          // The guest reads note_path for ANY parseable 0x66 before the fold; emit it even on a skip (the
-          // guest discards it then) so the witness stream stays aligned.
-          cbtcLock = { notePath: w ? w.notePath : state.notePathPeek() };
+          cbtcLock = { tracked: !!w };
         } else if (tx.env && tx.env.type === 'swap_var') {
           // Track-B swap_var: the taker spends one pool note (detected above); fold the receipt (vout 1) + the
           // change (vout 2, iff non-sentinel — the common case) + advance reserves. The guest reads the receipt
@@ -1401,6 +1399,11 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
         } else if (tx.env && tx.env.type === 'crossout_mint') {
           // Track-D Mode-B reverse mint (0x65). The guest reads set_index + set_path + note_path for ANY
           // parseable 0x65 before the fold, so emit them whether it onboards or skips (stream sync).
+          const skipCrossoutMint = () => ({
+            setIndex: 0,
+            setPath: Array(32).fill('0x' + '00'.repeat(32)),
+            notePath: state.notePathPeek(),
+          });
           if (modeBIn) {
             // Reverse-prove batch: onboard the note IFF it is a crossOutSet member. The membership witness
             // (setIndex + setPath against crossOutSetRoot) comes from the eth-reflection proof — the consumer
@@ -1408,7 +1411,10 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
             // non-member / non-curve commitment (notePath = the frontier peek then, no append).
             const m = tx.env.membership;
             if (!m) {
-              unsupportedEnvelopes.push({ txid: tx.txid, opcode: 0x65 });
+              // Non-member 0x65s are valid Bitcoin traffic, just not authorized by this eth-reflection set.
+              // The guest still reads a witness tuple for stream alignment, then fold_crossout fails
+              // membership and onboards nothing.
+              crossoutMint = skipCrossoutMint();
             } else {
               const w = state.foldCrossout(tx.env.asset, tx.env.claimId, tx.env.cx, tx.env.cy, m.setIndex | 0, m.setPath, modeBIn.crossoutSetRoot, tx.txid, 0);
               crossoutMint = { setIndex: m.setIndex | 0, setPath: m.setPath.map(norm), notePath: w ? w.notePath : state.notePathPeek() };
@@ -1416,7 +1422,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
           } else {
             // FORWARD batch (mode_b=0): crossout_set_root=0, so fold_crossout always skips — onboards nothing,
             // digest unchanged. Emit the skip-with-witness (sentinel set + the frontier note-path).
-            crossoutMint = { setIndex: 0, setPath: Array(32).fill('0x' + '00'.repeat(32)), notePath: state.notePathPeek() };
+            crossoutMint = skipCrossoutMint();
           }
         }
         txsOut.push({ txData: tx.txData, openings, spentInserts, burnInsert, outputs, burnDeposit, cbtcLock, swapVar, swapRoute, harvest, protocolFee, lpRemove, lpAdd, swapBatch, crossoutMint });

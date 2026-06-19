@@ -142,11 +142,20 @@ confirm each guest change before the re-prove (`EXECUTE_OK` + `DIGEST_MATCH`).
   update. Canonical ELFs:
   - Settle `cxfer-guest`: `PROGRAM_VKEY = 0x005c8a3dc76fdb1df8540736b73d893e5cff55c403442ef0f01a945a41775406`,
     sha256 `4438a10b67f4c878a6144dcfa8976e30393cb32d59815db43d27705f518ce97c`, 859,024 bytes.
-  - Reflection `reflection-prover`: `BITCOIN_RELAY_VKEY = 0x008c9fa6e9ee312ba99be8ba5a222ad161912fafebc3cec893e3dfc25f041160`,
-    sha256 `121659ce8f5c2e42c092a18de3651d33b43c25db0321c9b71e628e62fc78c689`, 980,816 bytes.
+  - Reflection `reflection-prover`: `BITCOIN_RELAY_VKEY = 0x0032a552d82143745ed675a217822187e15118060dcea1514589ce47c2ec3c02`,
+    sha256 `36224f90d603510d464ba3bfbfbee641ea96e13d6d1fa254a9aa509b044d32a5`, 1,016,856 bytes
+    after the follow-up burn-envelope hardening rotation (multi-live-spend / mismatched-ν burns are
+    skip-not-panic and read no burn-deposit witnesses).
   - Regenerated and locally verified real Groth16 fixtures for transfer, swap, LP, OTC, BID, crosslane,
     reflection, and reflection burn-deposit. `scripts/confidential-reprove-apply.sh` now matches the current
     artifact layout and includes the burn-deposit fixture.
+  - Live Sepolia/signet pilot status: source-side wrap + bridge-burn + signet `0x65` reveal succeeded on the
+    pre-fix pilot pool, and the Sepolia relay was advanced to signet height 309,525. Because the BIP141/Mode-B
+    fix deliberately rotated `BITCOIN_RELAY_VKEY`, final attest/bridge-mint/fast-lane validation must be
+    repeated against a freshly deployed pool that uses the pinned vkey above.
+  - Pilot harnesses preserved: CI now runs the Mode-B indexer regression for non-member `0x65` skip witnesses,
+    and `scripts/advance-relay-raw.mjs` is the cast-free relay-advance fallback used when local Foundry RPC
+    transport setup is flaky.
   - Scope note: this clears the Sepolia/pilot E2 hardening item. The mainnet re-anchor/re-prove remains a
     separate network-specific checklist (`ops/CHECKLIST-mainnet-reprove.md`).
 

@@ -35,21 +35,28 @@ const destCommitment = pool.leaf(ASSET_CO, coCx, coCy, OWNER);
 const coLeaf = pool.ethCrossoutLeaf(CLAIM, pool.DEST_CHAIN_BITCOIN, destCommitment, ASSET_CO);
 const coRoot = pool.merkleRootFrom(coLeaf, 0, pool.merklePath([coLeaf], 0));
 
-const envelope = cat([[0x65], hb(ASSET_CO), hb(CLAIM), hb(coCx), hb(coCy), hb(OWNER)]);
-const tapscript = cat([[0x20], Buffer.alloc(32), [0xac], [0x00, 0x63], [0x05], Buffer.from('TACIT'), [0x01, 0x01], [0x4d], Buffer.from([envelope.length & 0xff, (envelope.length >> 8) & 0xff]), envelope, [0x68]]);
-const dummyTxid = Buffer.alloc(32, 0x65);
-const inputsBuf = cat([dummyTxid, u32le(0), [0x00], [0xfd, 0xff, 0xff, 0xff]]);
-const wit0 = cat([[0x03], [0x40], Buffer.alloc(0x40), varint(tapscript.length), tapscript, [0x21], Buffer.alloc(0x21, 0xc0)]);
-const tx = cat([[0x02, 0x00, 0x00, 0x00], [0x00, 0x01], varint(1), inputsBuf, [0x01], Buffer.alloc(8), [0x00], wit0, Buffer.alloc(4)]);
-const rawHex = tx.toString('hex');
-const txidInternal = '0x' + Buffer.from(computeTxid(tx)).toString('hex');
-const txidDisplay = reverseHex(txidInternal);          // the worker hands display-order txids
-const header = mineHeader(computeMerkleRoot([computeTxid(tx)]));
+function revealTx(claim, fill) {
+  const envelope = cat([[0x65], hb(ASSET_CO), hb(claim), hb(coCx), hb(coCy), hb(OWNER)]);
+  const tapscript = cat([[0x20], Buffer.alloc(32), [0xac], [0x00, 0x63], [0x05], Buffer.from('TACIT'), [0x01, 0x01], [0x4d], Buffer.from([envelope.length & 0xff, (envelope.length >> 8) & 0xff]), envelope, [0x68]]);
+  const dummyTxid = Buffer.alloc(32, fill);
+  const inputsBuf = cat([dummyTxid, u32le(0), [0x00], [0xfd, 0xff, 0xff, 0xff]]);
+  const wit0 = cat([[0x03], [0x40], Buffer.alloc(0x40), varint(tapscript.length), tapscript, [0x21], Buffer.alloc(0x21, 0xc0)]);
+  const tx = cat([[0x02, 0x00, 0x00, 0x00], [0x00, 0x01], varint(1), inputsBuf, [0x01], Buffer.alloc(8), [0x00], wit0, Buffer.alloc(4)]);
+  const rawHex = tx.toString('hex');
+  const txidInternal = '0x' + Buffer.from(computeTxid(tx)).toString('hex');
+  const txidDisplay = reverseHex(txidInternal);          // the worker hands display-order txids
+  const decode = classifyConfidentialTx('0x' + rawHex);
+  if (!decode || decode.type !== 'crossout_mint') { console.error('FATAL: 0x65 did not classify to crossout_mint'); process.exit(1); }
+  return { tx, txidDisplay, rawHex, vins: [{ prevTxidDisplay: reverseHex('0x' + dummyTxid.toString('hex')), vout: 0 }], decode };
+}
 
-// The worker block-tx shape: classifyConfidentialTx parses the 0x65 → a crossout_mint decode.
-const decode = classifyConfidentialTx('0x' + rawHex);
-if (!decode || decode.type !== 'crossout_mint') { console.error('FATAL: 0x65 did not classify to crossout_mint'); process.exit(1); }
-const block = { txs: [{ txidDisplay, rawHex, vins: [{ prevTxidDisplay: reverseHex('0x' + dummyTxid.toString('hex')), vout: 0 }], decode }] };
+const nonMemberTx = revealTx('0x' + 'd1'.repeat(32), 0x66);
+const memberTx = revealTx(CLAIM, 0x65);
+const header = mineHeader(computeMerkleRoot([computeTxid(nonMemberTx.tx), computeTxid(memberTx.tx)]));
+
+// The worker block-tx shape: classifyConfidentialTx parses both 0x65s. The first is not an eth set
+// member and must still emit a skip witness; the second is the real crossOut and onboards.
+const block = { txs: [nonMemberTx, memberTx] };
 
 // The eth proof bundle (eth_prove emits it alongside eth_pv.hex). One crossout, no consumed-ν.
 const ethBundle = {
@@ -63,10 +70,12 @@ const input = await idx.assembleBlocks([block], {
   headers: ['0x' + Buffer.from(header).toString('hex')], anchorHeight: BLOCK_HEIGHT, ethBundle, consumedSources: [],
 });
 
-const cm = input.blocks[0].txs[0].crossoutMint;
+const skip = input.blocks[0].txs[0].crossoutMint;
+const cm = input.blocks[0].txs[1].crossoutMint;
 const checks = {
   modeB: input.modeB === 1,
   ethPvFromBundle: input.ethPv === ethBundle.ethPv,
+  nonMemberSkipWitness: !!skip && skip.setIndex === 0 && skip.setPath.length === 32 && skip.notePath.length === 32,
   membershipStamped: !!cm && cm.setIndex === 0 && cm.setPath.length === 32 && cm.notePath.length === 32,
   onboarded: idx.liveCount() === 1,                    // the crossout note entered the live set
   noConsumed: !input.consumed || input.consumed.length === 0,

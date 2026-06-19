@@ -71,8 +71,8 @@ echo "PINNED bitcoin_relay_vkey: $relay_vkey  (reflection; ConfidentialReflectio
 # deliberate re-prove must bump both FROZEN_* here in the same commit that regenerates the reflection
 # fixtures and re-runs the layer-9 confirmation. The name is historical: these are not "never rotate"
 # constants, they are fail-closed drift guards for the currently pinned reflection ELF.
-FROZEN_REFLECTION_VKEY="0x008c9fa6e9ee312ba99be8ba5a222ad161912fafebc3cec893e3dfc25f041160"
-FROZEN_REFLECTION_ELF_SHA="121659ce8f5c2e42c092a18de3651d33b43c25db0321c9b71e628e62fc78c689"
+FROZEN_REFLECTION_VKEY="0x0032a552d82143745ed675a217822187e15118060dcea1514589ce47c2ec3c02"
+FROZEN_REFLECTION_ELF_SHA="36224f90d603510d464ba3bfbfbee641ea96e13d6d1fa254a9aa509b044d32a5"
 if [ "$relay_vkey" != "$FROZEN_REFLECTION_VKEY" ] || [ "$rpin" != "$FROZEN_REFLECTION_ELF_SHA" ]; then
   echo "FAIL: reflection leg drifted from the frozen Mode-B values"
   echo "  bitcoin_relay_vkey:    got $relay_vkey  expected $FROZEN_REFLECTION_VKEY"
@@ -84,14 +84,17 @@ if [ "$relay_vkey" != "$FROZEN_REFLECTION_VKEY" ] || [ "$rpin" != "$FROZEN_REFLE
 fi
 echo "PASS: reflection leg matches the pinned Sepolia E2 vkey/sha"
 
-# Cross-artifact coherence: the on-chain reflection fixture's vkey IS the pin, so the proof a deployer
-# sets BITCOIN_RELAY_VKEY to is the same one that verifies on-chain (mirror of test_fixture_vkey_matches_pin).
-RFX="../../test/fixtures/reflection_groth16.json"
-if [ -f "$RFX" ]; then
-  fx_vkey=$(grep -oE '"vkey"[[:space:]]*:[[:space:]]*"0x[0-9a-f]{64}"' "$RFX" | grep -oE '0x[0-9a-f]{64}')
-  [ "$fx_vkey" = "$relay_vkey" ] || { echo "FAIL: reflection_groth16.json vkey ($fx_vkey) != pinned bitcoin_relay_vkey ($relay_vkey)"; exit 1; }
-  echo "PASS: reflection_groth16 fixture vkey matches the pin"
-fi
+# Cross-artifact coherence: every on-chain reflection fixture's vkey IS the pin, so each proof a deployer
+# relies on verifies against the same BITCOIN_RELAY_VKEY that will be deployed.
+for RFX in "../../test/fixtures/reflection_groth16.json" "../../test/fixtures/reflection_burn_deposit_groth16.json"; do
+  if [ -f "$RFX" ]; then
+    fx_name="$(basename "$RFX")"
+    fx_vkey=$(grep -oE '"vkey"[[:space:]]*:[[:space:]]*"0x[0-9a-f]{64}"' "$RFX" | grep -oE '0x[0-9a-f]{64}' | head -1 || true)
+    [ -n "$fx_vkey" ] || { echo "FAIL: $fx_name vkey missing/malformed"; exit 1; }
+    [ "$fx_vkey" = "$relay_vkey" ] || { echo "FAIL: $fx_name vkey ($fx_vkey) != pinned bitcoin_relay_vkey ($relay_vkey)"; exit 1; }
+    echo "PASS: $fx_name fixture vkey matches the pin"
+  fi
+done
 echo
 echo "The sha256 checks above prove the committed bytes; they do NOT prove the pinned vkey is the one"
 echo "this ELF derives. That binding is enforced mechanically at:"

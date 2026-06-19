@@ -13,14 +13,15 @@
 #[cfg(not(test))]
 sp1_zkvm::entrypoint!(main);
 
-use alloy_sol_types::{sol, SolValue};
 use alloy_sol_types::private::{Address, U256};
+use alloy_sol_types::{sol, SolValue};
 use cxfer_core::{
-    adaptor_lock_leaf, bitcoin, cdp_basket_leg, cdp_basket_root, cdp_debt_asset_id, cdp_position_leaf,
-    cdp_position_nullifier, claim_id, clearing_price_matches, commitment_hash, decompress, deposit_commit, deposit_id,
-    from_affine_xy, get_amount_out, imt_non_membership, intent_context, isqrt, keccak_merkle_verify, leaf, lp_add_shares,
-    lp_share_id, nullifier, pool_id, scalar_reduce_be, utxo_leaf, verify_kernel, verify_opening_sigma,
-    verify_range, Point, CBTC_ZK_ASSET_ID,
+    adaptor_lock_leaf, bitcoin, cdp_basket_leg, cdp_basket_root, cdp_debt_asset_id,
+    cdp_position_leaf, cdp_position_nullifier, claim_id, clearing_price_matches, commitment_hash,
+    decompress, deposit_commit, deposit_id, from_affine_xy, get_amount_out, imt_non_membership,
+    intent_context, isqrt, keccak_merkle_verify, leaf, lp_add_shares, lp_share_id, nullifier,
+    pool_id, scalar_reduce_be, utxo_leaf, verify_kernel, verify_opening_sigma, verify_range, Point,
+    CBTC_ZK_ASSET_ID,
 };
 use sp1_zkvm::io;
 
@@ -44,14 +45,15 @@ const MAX_BITCOIN_MERKLE_DEPTH: u32 = 64;
 const OP_ADAPTOR_LOCK: u8 = 12; // adaptor swap: lock a note into the lock-set under (T, deadline, recipient)
 const OP_ADAPTOR_CLAIM: u8 = 13; // adaptor swap: claim a locked note before its deadline, revealing the kernel s
 const OP_ADAPTOR_REFUND: u8 = 14; // adaptor swap: refund a locked note to its locker after the deadline
-// Generic confidential CDP (ops/DESIGN-confidential-defi-v1.md §4): lock a basket of collateral notes into
-// a controller-bound position + mint a controller-derived debt asset. The guest enforces structure +
-// conservation only; the contract calls the MUTABLE controller (onCdpMint/Close/Liquidate) for all pricing
-// /ratio policy. cUSD-on-cBTC is the first instance (single-leg cBTC basket).
+                                  // Generic confidential CDP (ops/DESIGN-confidential-defi-v1.md §4): lock a basket of collateral notes into
+                                  // a controller-bound position + mint a controller-derived debt asset. The guest enforces structure +
+                                  // conservation only; the contract calls the MUTABLE controller (onCdpMint/Close/Liquidate/Topup) for all
+                                  // pricing /ratio policy. cUSD-on-cBTC is the first instance (single-leg cBTC basket).
 const OP_CDP_MINT: u8 = 15; // open: lock collateral basket → mint debt note (controller authorizes the amount)
 const OP_CDP_CLOSE: u8 = 16; // close: burn the exact debt → reclaim the collateral basket (no oracle/veto)
 const OP_CDP_LIQUIDATE: u8 = 17; // liquidate: seize the basket to the controller (controller proves unhealthy)
 const OP_CBTC_MINT: u8 = 18; // mint cBTC against a reflection-recorded self-custody lock (contract gates lock + escrow)
+const OP_CDP_TOPUP: u8 = 19; // top-up: consume old position + append replacement with larger collateral basket
 
 const SWAP_DIR_A_TO_B: u8 = 0;
 const SWAP_DIR_B_TO_A: u8 = 1;
@@ -79,6 +81,16 @@ sol! {
     // OP_CDP_LIQUIDATE: the contract dedups `positionNullifier` + calls controller.onCdpLiquidate(legs,
     // debtValue) (reverts if healthy); the seized legs ride `withdrawals` to the controller.
     struct CdpLiquidate { address controller; uint256 debtValue; bytes32 positionNullifier; CdpLeg[] legs; }
+    // OP_CDP_TOPUP: consume an existing position and append a same-debt replacement with a larger basket.
+    // The controller authorizes the replacement health; outstanding debt is unchanged.
+    struct CdpTopup {
+        address controller;
+        uint256 debtValue;
+        bytes32 oldPositionNullifier;
+        bytes32 newPositionLeaf;
+        CdpLeg[] oldLegs;
+        CdpLeg[] newLegs;
+    }
     // OP_CBTC_MINT (ops/DESIGN-confidential-defi-v1.md §3.2): mint cBTC against a reflection-recorded
     // self-custody lock. The guest verified the note opens to EXACTLY `vBtc` (the conservation peg); the
     // contract checks cbtcLock[outpoint].vBtc == vBtc + commitment match + !cbtcMinted + the CollateralEngine
@@ -108,11 +120,12 @@ sol! {
         bytes32[] lockNullifiers; // ν_L consumed by claim/refund → the lock-spent set (spend-once, contract dedups)
         bytes32[] adaptorClaimS; // the completed kernel `s` per claim — the t-reveal channel the Bitcoin counterparty reads
         uint64 refundNotBefore; // contract gate: block.timestamp >= this for the batch (max refund deadline; 0 = no refunds)
-        // ── generic CDP (ops 15–17) ───────────────────────────────────────────────────────────────────
-        bytes32 cdpPositionRoot; // INPUT: the position-set root CLOSE/LIQUIDATE prove membership against (contract checks == stored)
+        // ── generic CDP (ops 15–17, 19) ────────────────────────────────────────────────────────────────
+        bytes32 cdpPositionRoot; // INPUT: position-set root CLOSE/LIQUIDATE/TOPUP prove membership against
         CdpMint[] cdpMints;          // open: append positionLeaf to the position set + controller.onCdpMint authorizes
         CdpClose[] cdpCloses;        // close: dedup positionNullifier + controller.onCdpClose accounting
         CdpLiquidate[] cdpLiquidations; // liquidate: dedup positionNullifier + controller.onCdpLiquidate (reverts if healthy)
+        CdpTopup[] cdpTopups;        // top-up: consume old position + append replacement with larger basket
         CbtcMint[] cbtcMints;        // cBTC mint: contract gates on the recorded lock + the native-ETH escrow
     }
 }
@@ -121,9 +134,15 @@ fn r_n<const N: usize>() -> [u8; N] {
     let v: Vec<u8> = io::read();
     v.try_into().expect("witness field length")
 }
-fn r32() -> [u8; 32] { r_n::<32>() }
-fn r33() -> [u8; 33] { r_n::<33>() }
-fn r20() -> [u8; 20] { r_n::<20>() }
+fn r32() -> [u8; 32] {
+    r_n::<32>()
+}
+fn r33() -> [u8; 33] {
+    r_n::<33>()
+}
+fn r20() -> [u8; 20] {
+    r_n::<20>()
+}
 
 /// Big-endian 32-byte encoding of an in-system u64 value — the deposit-id /
 /// withdrawal value field the contract derives as `amount / unitScale`.
@@ -146,6 +165,31 @@ fn r_path() -> Vec<[u8; 32]> {
     (0..32).map(|_| r32()).collect()
 }
 
+fn merge_cdp_legs(old: &[([u8; 32], u64)], added: &[([u8; 32], u64)]) -> Vec<([u8; 32], u64)> {
+    let mut out: Vec<([u8; 32], u64)> = Vec::with_capacity(old.len() + added.len());
+    let mut i = 0usize;
+    let mut j = 0usize;
+    while i < old.len() || j < added.len() {
+        if j == added.len() || (i < old.len() && old[i].0 < added[j].0) {
+            out.push(old[i]);
+            i += 1;
+        } else if i == old.len() || added[j].0 < old[i].0 {
+            out.push(added[j]);
+            j += 1;
+        } else {
+            let sum = old[i].1 as u128 + added[j].1 as u128;
+            assert!(
+                sum <= u64::MAX as u128,
+                "cdp-topup: collateral leg overflow"
+            );
+            out.push((old[i].0, sum as u64));
+            i += 1;
+            j += 1;
+        }
+    }
+    out
+}
+
 /// Cross-lane gate (cross-lane): assert `nu` is absent from the reflected
 /// Bitcoin spent set committed by `root`, reading the IMT non-membership witness
 /// (low leaf value/next/index/path). Called only when the root is non-zero.
@@ -154,7 +198,10 @@ fn check_btc_nonmembership(nu: &[u8; 32], root: &[u8; 32]) {
     let low_next = r32();
     let low_index: u64 = io::read();
     let low_path = r_path();
-    assert!(imt_non_membership(root, nu, &low_value, &low_next, low_index, &low_path), "cross-lane: nu spent on Bitcoin");
+    assert!(
+        imt_non_membership(root, nu, &low_value, &low_next, low_index, &low_path),
+        "cross-lane: nu spent on Bitcoin"
+    );
 }
 
 pub fn main() {
@@ -205,6 +252,7 @@ pub fn main() {
     let mut cdp_mints: Vec<CdpMint> = Vec::new();
     let mut cdp_closes: Vec<CdpClose> = Vec::new();
     let mut cdp_liquidations: Vec<CdpLiquidate> = Vec::new();
+    let mut cdp_topups: Vec<CdpTopup> = Vec::new();
     let mut cbtc_mints: Vec<CbtcMint> = Vec::new();
 
     for _ in 0..num_ops {
@@ -222,12 +270,20 @@ pub fn main() {
                 let owner = r32();
                 let sig_r = decompress(&r33()).expect("wrap: sigma R");
                 let sig_z = scalar_reduce_be(&r32());
-                let dep_id = deposit_id(&asset, &u64_be32(value), &deposit_commit(&cx, &cy, &owner));
+                let dep_id =
+                    deposit_id(&asset, &u64_be32(value), &deposit_commit(&cx, &cy, &owner));
                 let ctx = intent_context(
-                    b"tacit-wrap-intent-v1", &chain_binding, &asset, &dep_id,
-                    &[(cx, cy, owner)], &[value],
+                    b"tacit-wrap-intent-v1",
+                    &chain_binding,
+                    &asset,
+                    &dep_id,
+                    &[(cx, cy, owner)],
+                    &[value],
                 );
-                assert!(verify_opening_sigma(&c, value, &sig_r, &sig_z, &ctx), "wrap opening sigma");
+                assert!(
+                    verify_opening_sigma(&c, value, &sig_r, &sig_z, &ctx),
+                    "wrap opening sigma"
+                );
                 leaves.push(leaf(&asset, &cx, &cy, &owner));
                 // The contract's wrap binds depositId over keccak(Cx‖Cy‖owner), never the raw coords;
                 // reproduce that digest here so the ids match (the value binding is unchanged).
@@ -238,8 +294,14 @@ pub fn main() {
                 let asset = r32();
                 let n_in: u32 = io::read();
                 let m_out: u32 = io::read();
-                assert!(n_in > 0 && m_out > 0, "transfer: empty in/out (no-op settlement)");
-                assert!(n_in <= MAX_ITEMS_PER_OP && m_out <= MAX_ITEMS_PER_OP, "transfer: item count over cap");
+                assert!(
+                    n_in > 0 && m_out > 0,
+                    "transfer: empty in/out (no-op settlement)"
+                );
+                assert!(
+                    n_in <= MAX_ITEMS_PER_OP && m_out <= MAX_ITEMS_PER_OP,
+                    "transfer: item count over cap"
+                );
 
                 let mut in_pts: Vec<Point> = Vec::with_capacity(n_in as usize);
                 for _ in 0..n_in {
@@ -249,10 +311,18 @@ pub fn main() {
                     let path = r_path();
                     let _secret = r32(); // B3: vestigial — ν is note-bound, not secret-derived
                     let lf = leaf(&asset, &cx, &cy, &owner);
-                    assert!(spend_root != [0u8; 32], "membership requires a non-zero spend root");
-                    assert!(keccak_merkle_verify(&lf, leaf_index, &path, &spend_root), "membership");
+                    assert!(
+                        spend_root != [0u8; 32],
+                        "membership requires a non-zero spend root"
+                    );
+                    assert!(
+                        keccak_merkle_verify(&lf, leaf_index, &path, &spend_root),
+                        "membership"
+                    );
                     let nu = nullifier(&cx, &cy);
-                    if bitcoin_spent_root != [0u8; 32] { check_btc_nonmembership(&nu, &bitcoin_spent_root); }
+                    if bitcoin_spent_root != [0u8; 32] {
+                        check_btc_nonmembership(&nu, &bitcoin_spent_root);
+                    }
                     nullifiers.push(nu);
                     in_pts.push(p);
                 }
@@ -270,7 +340,10 @@ pub fn main() {
 
                 let kernel_r = decompress(&r33()).expect("kernel R");
                 let kernel_z = scalar_reduce_be(&r32());
-                assert!(verify_kernel(&in_pts, &out_pts, &kernel_r, &kernel_z), "conservation");
+                assert!(
+                    verify_kernel(&in_pts, &out_pts, &kernel_r, &kernel_z),
+                    "conservation"
+                );
             }
             OP_BRIDGE_BURN => {
                 // Ethereum → Bitcoin: like a transfer, but outputs are destination
@@ -282,11 +355,16 @@ pub fn main() {
                 // Only Bitcoin (1) and Ethereum (2) cross-outs are honored downstream (the reflection folds
                 // dest_chain==1; an Ethereum crossOut is consumed on Eth). Reject an unsupported destination
                 // so a user can't burn into a record nobody redeems.
-                assert!(dest_chain == 1 || dest_chain == 2, "bridge-burn: unsupported dest chain");
+                assert!(
+                    dest_chain == 1 || dest_chain == 2,
+                    "bridge-burn: unsupported dest chain"
+                );
                 let n_in: u32 = io::read();
                 let m_out: u32 = io::read();
-                assert!(n_in > 0 && m_out > 0 && n_in <= MAX_ITEMS_PER_OP && m_out <= MAX_ITEMS_PER_OP,
-                    "bridge-burn: item count out of range");
+                assert!(
+                    n_in > 0 && m_out > 0 && n_in <= MAX_ITEMS_PER_OP && m_out <= MAX_ITEMS_PER_OP,
+                    "bridge-burn: item count out of range"
+                );
 
                 let mut in_pts: Vec<Point> = Vec::with_capacity(n_in as usize);
                 let mut bind: Option<[u8; 32]> = None;
@@ -297,11 +375,21 @@ pub fn main() {
                     let path = r_path();
                     let _secret = r32(); // B3: vestigial — ν is note-bound, not secret-derived
                     let lf = leaf(&asset, &cx, &cy, &owner);
-                    assert!(spend_root != [0u8; 32], "membership requires a non-zero spend root");
-                    assert!(keccak_merkle_verify(&lf, leaf_index, &path, &spend_root), "membership");
+                    assert!(
+                        spend_root != [0u8; 32],
+                        "membership requires a non-zero spend root"
+                    );
+                    assert!(
+                        keccak_merkle_verify(&lf, leaf_index, &path, &spend_root),
+                        "membership"
+                    );
                     let nu = nullifier(&cx, &cy);
-                    if bitcoin_spent_root != [0u8; 32] { check_btc_nonmembership(&nu, &bitcoin_spent_root); }
-                    if bind.is_none() { bind = Some(nu); }
+                    if bitcoin_spent_root != [0u8; 32] {
+                        check_btc_nonmembership(&nu, &bitcoin_spent_root);
+                    }
+                    if bind.is_none() {
+                        bind = Some(nu);
+                    }
                     nullifiers.push(nu);
                     in_pts.push(p);
                 }
@@ -327,7 +415,10 @@ pub fn main() {
                 assert!(verify_range(&out_pts, &bp_proof), "range");
                 let kernel_r = decompress(&r33()).expect("kernel R");
                 let kernel_z = scalar_reduce_be(&r32());
-                assert!(verify_kernel(&in_pts, &out_pts, &kernel_r, &kernel_z), "conservation");
+                assert!(
+                    verify_kernel(&in_pts, &out_pts, &kernel_r, &kernel_z),
+                    "conservation"
+                );
 
                 for dest_commitment in dest_commitments {
                     let cid = claim_id(dest_chain, &dest_commitment, &bind, &asset);
@@ -361,7 +452,10 @@ pub fn main() {
                 let in_leaf_index: u64 = io::read();
                 let in_path = r_path();
                 let in_leaf = leaf(&asset, &in_cx, &in_cy, &in_owner);
-                assert!(keccak_merkle_verify(&in_leaf, in_leaf_index, &in_path, &pool_root), "bridge_mint: btc pool membership");
+                assert!(
+                    keccak_merkle_verify(&in_leaf, in_leaf_index, &in_path, &pool_root),
+                    "bridge_mint: btc pool membership"
+                );
                 let nu = nullifier(&in_cx, &in_cy);
 
                 // Destination note minted on Ethereum. Conservation binds v_out == v_in,
@@ -378,18 +472,27 @@ pub fn main() {
                 // mint) and the destination cannot be redirected. The batch's bitcoin_burn_root
                 // is pinned to the CURRENT reflected root on-chain (a stale/fabricated set is
                 // rejected).
-                assert!(bitcoin_burn_root != [0u8; 32], "bridge_mint: burn root required");
+                assert!(
+                    bitcoin_burn_root != [0u8; 32],
+                    "bridge_mint: burn root required"
+                );
                 let bm_next = r32();
                 let bm_index: u64 = io::read();
                 let bm_path = r_path();
                 let bm_leaf = utxo_leaf(&nu, &bm_next, &dest_leaf);
-                assert!(keccak_merkle_verify(&bm_leaf, bm_index, &bm_path, &bitcoin_burn_root), "bridge_mint: nu not in Bitcoin bridge-burn set, or wrong destination");
+                assert!(
+                    keccak_merkle_verify(&bm_leaf, bm_index, &bm_path, &bitcoin_burn_root),
+                    "bridge_mint: nu not in Bitcoin bridge-burn set, or wrong destination"
+                );
 
                 let bp_proof: Vec<u8> = io::read();
                 assert!(verify_range(&[out_pt], &bp_proof), "bridge_mint: range");
                 let kernel_r = decompress(&r33()).expect("bridge_mint: R");
                 let kernel_z = scalar_reduce_be(&r32());
-                assert!(verify_kernel(&[in_pt], &[out_pt], &kernel_r, &kernel_z), "bridge_mint: conservation");
+                assert!(
+                    verify_kernel(&[in_pt], &[out_pt], &kernel_r, &kernel_z),
+                    "bridge_mint: conservation"
+                );
 
                 // Effects: mint the dest note, record the root, gate one-mint-per-burned-ν,
                 // and consume ν in the GLOBAL Ethereum nullifier set. A Bitcoin-homed note
@@ -427,18 +530,33 @@ pub fn main() {
                 let sig_z = scalar_reduce_be(&r32());
 
                 let lf = leaf(&asset, &cx, &cy, &owner);
-                assert!(spend_root != [0u8; 32], "membership requires a non-zero spend root");
-                assert!(keccak_merkle_verify(&lf, leaf_index, &path, &spend_root), "membership");
+                assert!(
+                    spend_root != [0u8; 32],
+                    "membership requires a non-zero spend root"
+                );
+                assert!(
+                    keccak_merkle_verify(&lf, leaf_index, &path, &spend_root),
+                    "membership"
+                );
                 // The 20-byte EVM recipient is bound in the asset_b slot (unwrap touches a single asset).
                 let mut recip32 = [0u8; 32];
                 recip32[12..].copy_from_slice(&recipient);
                 let ctx = intent_context(
-                    b"tacit-unwrap-intent-v1", &chain_binding, &asset, &recip32,
-                    &[(cx, cy, owner)], &[value, fee],
+                    b"tacit-unwrap-intent-v1",
+                    &chain_binding,
+                    &asset,
+                    &recip32,
+                    &[(cx, cy, owner)],
+                    &[value, fee],
                 );
-                assert!(verify_opening_sigma(&c, value, &sig_r, &sig_z, &ctx), "unwrap opening sigma");
+                assert!(
+                    verify_opening_sigma(&c, value, &sig_r, &sig_z, &ctx),
+                    "unwrap opening sigma"
+                );
                 let nu = nullifier(&cx, &cy);
-                if bitcoin_spent_root != [0u8; 32] { check_btc_nonmembership(&nu, &bitcoin_spent_root); }
+                if bitcoin_spent_root != [0u8; 32] {
+                    check_btc_nonmembership(&nu, &bitcoin_spent_root);
+                }
                 nullifiers.push(nu);
                 let net = value - fee;
                 if net != 0 {
@@ -449,7 +567,10 @@ pub fn main() {
                     });
                 }
                 if fee != 0 {
-                    fees.push(FeePayment { assetId: asset.into(), value: U256::from(fee) });
+                    fees.push(FeePayment {
+                        assetId: asset.into(),
+                        value: U256::from(fee),
+                    });
                 }
             }
             OP_ATTEST_META => {
@@ -462,27 +583,40 @@ pub fn main() {
                 // no real note, so it cannot register junk metadata. The pool_root is pushed
                 // to bitcoinRootsUsed → the contract already gates it ∈ knownBitcoinRoot.
                 let etch_tx: Vec<u8> = io::read();
-                let asset = bitcoin::asset_id_from_etch(&etch_tx).expect("attest: malformed etch tx");
+                let asset =
+                    bitcoin::asset_id_from_etch(&etch_tx).expect("attest: malformed etch tx");
                 let env = bitcoin::extract_taproot_envelope(&etch_tx).expect("attest: envelope");
-                let (ticker, tlen, decimals, cid) = bitcoin::parse_etch_meta(&env).expect("attest: etch meta");
+                let (ticker, tlen, decimals, cid) =
+                    bitcoin::parse_etch_meta(&env).expect("attest: etch meta");
                 // The metadata envelope is in Taproot witness, so txid inclusion alone does not authenticate
                 // it. Prove the etch wtxid under the block's BIP141 coinbase commitment and expose that
                 // block's txid root to the contract's relay-confirmation gate.
                 let etch_index: u32 = io::read();
                 let n_wtxid_siblings: u32 = io::read();
-                assert!(n_wtxid_siblings <= MAX_BITCOIN_MERKLE_DEPTH, "attest: wtxid path over cap");
+                assert!(
+                    n_wtxid_siblings <= MAX_BITCOIN_MERKLE_DEPTH,
+                    "attest: wtxid path over cap"
+                );
                 let wtxid_siblings: Vec<[u8; 32]> = (0..n_wtxid_siblings).map(|_| r32()).collect();
                 let coinbase: Vec<u8> = io::read();
                 let n_coinbase_siblings: u32 = io::read();
-                assert!(n_coinbase_siblings <= MAX_BITCOIN_MERKLE_DEPTH, "attest: coinbase path over cap");
+                assert!(
+                    n_coinbase_siblings <= MAX_BITCOIN_MERKLE_DEPTH,
+                    "attest: coinbase path over cap"
+                );
                 let coinbase_txid_siblings: Vec<[u8; 32]> =
                     (0..n_coinbase_siblings).map(|_| r32()).collect();
                 let etch_block_root = r32();
                 assert!(
                     bitcoin::verify_tx_witness_committed(
-                        &etch_tx, etch_index, &wtxid_siblings, &coinbase,
-                        &coinbase_txid_siblings, &etch_block_root,
-                    ).is_some(),
+                        &etch_tx,
+                        etch_index,
+                        &wtxid_siblings,
+                        &coinbase,
+                        &coinbase_txid_siblings,
+                        &etch_block_root,
+                    )
+                    .is_some(),
                     "attest: etch witness not block-committed",
                 );
                 bitcoin_roots.push(etch_block_root);
@@ -496,7 +630,10 @@ pub fn main() {
                 let path = r_path();
                 let pool_root = r32();
                 let lf = leaf(&asset, &cx, &cy, &owner);
-                assert!(keccak_merkle_verify(&lf, leaf_index, &path, &pool_root), "attest: asset not in attested Bitcoin pool");
+                assert!(
+                    keccak_merkle_verify(&lf, leaf_index, &path, &pool_root),
+                    "attest: asset not in attested Bitcoin pool"
+                );
                 bitcoin_roots.push(pool_root);
 
                 asset_metas.push(AssetMeta {
@@ -533,14 +670,20 @@ pub fn main() {
                 // asset_a with the low asset's reserve and clear the batch on a swapped reserve→asset map,
                 // minting the high-value leg for the low-value one (settle gates p.reserveA == reserve_a_pre
                 // but never the asset identities — the guest is the only orientation pin).
-                assert!(bitcoin::be_bytes_lte(&asset_a, &asset_b) && asset_a != asset_b, "swap: non-canonical asset order");
+                assert!(
+                    bitcoin::be_bytes_lte(&asset_a, &asset_b) && asset_a != asset_b,
+                    "swap: non-canonical asset order"
+                );
                 let reserve_a_pre: u64 = io::read();
                 let reserve_b_pre: u64 = io::read();
                 let price_num: u64 = io::read(); // uniform price: price_num B per price_den A
                 let price_den: u64 = io::read();
                 assert!(price_num > 0 && price_den > 0, "swap: zero price");
                 let n_intents: u32 = io::read();
-                assert!(n_intents > 0 && n_intents <= MAX_ITEMS_PER_OP, "swap: intent count out of range");
+                assert!(
+                    n_intents > 0 && n_intents <= MAX_ITEMS_PER_OP,
+                    "swap: intent count out of range"
+                );
 
                 // u128 flow accumulators (sums of u64 amounts across the batch can exceed u64).
                 let mut gross_a_in: u128 = 0;
@@ -550,7 +693,10 @@ pub fn main() {
 
                 for _ in 0..n_intents {
                     let direction: u8 = io::read();
-                    assert!(direction == SWAP_DIR_A_TO_B || direction == SWAP_DIR_B_TO_A, "swap: bad direction");
+                    assert!(
+                        direction == SWAP_DIR_A_TO_B || direction == SWAP_DIR_B_TO_A,
+                        "swap: bad direction"
+                    );
                     let (in_asset, out_asset) = if direction == SWAP_DIR_A_TO_B {
                         (&asset_a, &asset_b)
                     } else {
@@ -563,10 +709,18 @@ pub fn main() {
                     let in_leaf_index: u64 = io::read();
                     let in_path = r_path();
                     let in_lf = leaf(in_asset, &in_cx, &in_cy, &in_owner);
-                    assert!(spend_root != [0u8; 32], "swap: membership requires a non-zero spend root");
-                    assert!(keccak_merkle_verify(&in_lf, in_leaf_index, &in_path, &spend_root), "swap: membership");
+                    assert!(
+                        spend_root != [0u8; 32],
+                        "swap: membership requires a non-zero spend root"
+                    );
+                    assert!(
+                        keccak_merkle_verify(&in_lf, in_leaf_index, &in_path, &spend_root),
+                        "swap: membership"
+                    );
                     let nu = nullifier(&in_cx, &in_cy);
-                    if bitcoin_spent_root != [0u8; 32] { check_btc_nonmembership(&nu, &bitcoin_spent_root); }
+                    if bitcoin_spent_root != [0u8; 32] {
+                        check_btc_nonmembership(&nu, &bitcoin_spent_root);
+                    }
 
                     let amount_in: u64 = io::read();
                     let amount_out: u64 = io::read();
@@ -575,7 +729,13 @@ pub fn main() {
                     let in_sig_z = scalar_reduce_be(&r32());
                     let min_out: u64 = io::read();
                     let intent_deadline: u64 = io::read(); // bound in this trader's sigma (per-op Expired)
-                    if intent_deadline != 0 { min_deadline = if min_deadline == 0 { intent_deadline } else { min_deadline.min(intent_deadline) }; }
+                    if intent_deadline != 0 {
+                        min_deadline = if min_deadline == 0 {
+                            intent_deadline
+                        } else {
+                            min_deadline.min(intent_deadline)
+                        };
+                    }
                     let (out_cx, out_cy, out_pt) = r_commitment();
                     let out_owner = r32();
                     let out_sig_r = decompress(&r33()).expect("swap: out sigma R");
@@ -590,12 +750,27 @@ pub fn main() {
                     // (membership-pinned) C_in ⇒ no over-claim, no inflation; C_out commits to exactly
                     // amount_out so only the trader (who knows r_out, never sent) can later spend it.
                     let ctx = intent_context(
-                        b"tacit-swap-intent-v1", &chain_binding, &asset_a, &asset_b,
+                        b"tacit-swap-intent-v1",
+                        &chain_binding,
+                        &asset_a,
+                        &asset_b,
                         &[(in_cx, in_cy, in_owner), (out_cx, out_cy, out_owner)],
-                        &[direction as u64, amount_in, amount_out, min_out, intent_deadline],
+                        &[
+                            direction as u64,
+                            amount_in,
+                            amount_out,
+                            min_out,
+                            intent_deadline,
+                        ],
                     );
-                    assert!(verify_opening_sigma(&in_pt, amount_in, &in_sig_r, &in_sig_z, &ctx), "swap: input opening");
-                    assert!(verify_opening_sigma(&out_pt, amount_out, &out_sig_r, &out_sig_z, &ctx), "swap: output opening");
+                    assert!(
+                        verify_opening_sigma(&in_pt, amount_in, &in_sig_r, &in_sig_z, &ctx),
+                        "swap: input opening"
+                    );
+                    assert!(
+                        verify_opening_sigma(&out_pt, amount_out, &out_sig_r, &out_sig_z, &ctx),
+                        "swap: output opening"
+                    );
 
                     // Uniform-price clearing: amount_out = floor(amount_in · P), one price per batch.
                     //   A→B: in·num == out·den + rem,  rem < den
@@ -625,21 +800,44 @@ pub fn main() {
                 // Net reserve move (no underflow), and the constant-product non-decrease.
                 let a_pre = reserve_a_pre as u128;
                 let b_pre = reserve_b_pre as u128;
-                assert!(a_pre + gross_a_in >= gross_a_out, "swap: reserve A underflow");
-                assert!(b_pre + gross_b_in >= gross_b_out, "swap: reserve B underflow");
+                assert!(
+                    a_pre + gross_a_in >= gross_a_out,
+                    "swap: reserve A underflow"
+                );
+                assert!(
+                    b_pre + gross_b_in >= gross_b_out,
+                    "swap: reserve B underflow"
+                );
                 let a_post = a_pre + gross_a_in - gross_a_out;
                 let b_post = b_pre + gross_b_in - gross_b_out;
-                assert!(a_post <= u64::MAX as u128 && b_post <= u64::MAX as u128, "swap: reserve overflow");
-                assert!(a_post * b_post >= a_pre * b_pre, "swap: constant-product decreased");
+                assert!(
+                    a_post <= u64::MAX as u128 && b_post <= u64::MAX as u128,
+                    "swap: reserve overflow"
+                );
+                assert!(
+                    a_post * b_post >= a_pre * b_pre,
+                    "swap: constant-product decreased"
+                );
 
                 // Enforce the pool's FEE TIER: re-derive the deterministic clearing price (AMM.md §4)
                 // from the public reserves + gross flows + fee_bps and require the batch's declared
                 // uniform price to equal it EXACTLY. The constant-product non-decrease above is only the
                 // ZERO-fee floor; without this a self-solved batch could clear at the zero-fee price and
                 // starve LPs of the fee they're owed. This makes the fee tier economically real.
-                assert!(gross_a_in <= u64::MAX as u128 && gross_b_in <= u64::MAX as u128, "swap: gross flow over u64");
                 assert!(
-                    clearing_price_matches(gross_a_in as u64, gross_b_in as u64, reserve_a_pre, reserve_b_pre, fee_bps, price_num, price_den),
+                    gross_a_in <= u64::MAX as u128 && gross_b_in <= u64::MAX as u128,
+                    "swap: gross flow over u64"
+                );
+                assert!(
+                    clearing_price_matches(
+                        gross_a_in as u64,
+                        gross_b_in as u64,
+                        reserve_a_pre,
+                        reserve_b_pre,
+                        fee_bps,
+                        price_num,
+                        price_den
+                    ),
                     "swap: declared price is not the fee-clearing price"
                 );
 
@@ -665,7 +863,10 @@ pub fn main() {
                 // Canonical orientation (see OP_SWAP): asset_a must be the low asset that maps to the
                 // contract's p.reserveA, else an in-ratio add could be cleared against a swapped
                 // reserve→asset map.
-                assert!(bitcoin::be_bytes_lte(&asset_a, &asset_b) && asset_a != asset_b, "lp_add: non-canonical asset order");
+                assert!(
+                    bitcoin::be_bytes_lte(&asset_a, &asset_b) && asset_a != asset_b,
+                    "lp_add: non-canonical asset order"
+                );
                 let lp_asset = lp_share_id(&pid);
                 let r_a_pre: u64 = io::read();
                 let r_b_pre: u64 = io::read();
@@ -690,7 +891,13 @@ pub fn main() {
                 let s_sig_r = decompress(&r33()).expect("lp_add: share sigma R");
                 let s_sig_z = scalar_reduce_be(&r32());
                 let op_deadline: u64 = io::read(); // bound in the LP's sigma (per-op Expired)
-                if op_deadline != 0 { min_deadline = if min_deadline == 0 { op_deadline } else { min_deadline.min(op_deadline) }; }
+                if op_deadline != 0 {
+                    min_deadline = if min_deadline == 0 {
+                        op_deadline
+                    } else {
+                        min_deadline.min(op_deadline)
+                    };
+                }
 
                 // Constant-product mint: the FIRST provider (empty pool, shares_pre==0) sets totalShares =
                 // isqrt(dA·dB) and gets isqrt − MINIMUM_LIQUIDITY as their note (MINIMUM_LIQUIDITY = the
@@ -700,22 +907,40 @@ pub fn main() {
                 // the pool), no exact-ratio gate (the old `dA·R_B == dB·R_A` forced dA to be a multiple of
                 // R_A/gcd and broke incremental adds once a traded pool went coprime). d_shares is DERIVED
                 // in-guest (not witnessed), so it can't be over-claimed; the share note must open to it.
-                let da = d_a as u128; let db = d_b as u128;
-                let ra = r_a_pre as u128; let rb = r_b_pre as u128; let sp = shares_pre as u128;
-                let (d_shares_u128, r_a_post, r_b_post, s_post): (u128, u128, u128, u128) = if shares_pre == 0 {
-                    assert!(r_a_pre == 0 && r_b_pre == 0, "lp_add: first mint requires an empty pool");
-                    assert!(da > 0 && db > 0, "lp_add: first mint needs both sides");
-                    assert!(da <= u64::MAX as u128 && db <= u64::MAX as u128, "lp_add: first-mint reserve overflow");
-                    let total = isqrt(da * db);
-                    assert!(total > MINIMUM_LIQUIDITY, "lp_add: initial liquidity below MINIMUM_LIQUIDITY");
-                    (total - MINIMUM_LIQUIDITY, da, db, total)
-                } else {
-                    assert!(ra > 0 && rb > 0, "lp_add: pool must be initialized");
-                    let ds = lp_add_shares(shares_pre, d_a, d_b, r_a_pre, r_b_pre);
-                    assert!(ds > 0, "lp_add: zero shares minted (dust add)"); // reject a dust add that mints nothing
-                    assert!((ra + da) <= u64::MAX as u128 && (rb + db) <= u64::MAX as u128 && (sp + ds) <= u64::MAX as u128, "lp_add: overflow");
-                    (ds, ra + da, rb + db, sp + ds)
-                };
+                let da = d_a as u128;
+                let db = d_b as u128;
+                let ra = r_a_pre as u128;
+                let rb = r_b_pre as u128;
+                let sp = shares_pre as u128;
+                let (d_shares_u128, r_a_post, r_b_post, s_post): (u128, u128, u128, u128) =
+                    if shares_pre == 0 {
+                        assert!(
+                            r_a_pre == 0 && r_b_pre == 0,
+                            "lp_add: first mint requires an empty pool"
+                        );
+                        assert!(da > 0 && db > 0, "lp_add: first mint needs both sides");
+                        assert!(
+                            da <= u64::MAX as u128 && db <= u64::MAX as u128,
+                            "lp_add: first-mint reserve overflow"
+                        );
+                        let total = isqrt(da * db);
+                        assert!(
+                            total > MINIMUM_LIQUIDITY,
+                            "lp_add: initial liquidity below MINIMUM_LIQUIDITY"
+                        );
+                        (total - MINIMUM_LIQUIDITY, da, db, total)
+                    } else {
+                        assert!(ra > 0 && rb > 0, "lp_add: pool must be initialized");
+                        let ds = lp_add_shares(shares_pre, d_a, d_b, r_a_pre, r_b_pre);
+                        assert!(ds > 0, "lp_add: zero shares minted (dust add)"); // reject a dust add that mints nothing
+                        assert!(
+                            (ra + da) <= u64::MAX as u128
+                                && (rb + db) <= u64::MAX as u128
+                                && (sp + ds) <= u64::MAX as u128,
+                            "lp_add: overflow"
+                        );
+                        (ds, ra + da, rb + db, sp + ds)
+                    };
                 assert!(d_shares_u128 <= u64::MAX as u128, "lp_add: shares overflow");
                 let d_shares = d_shares_u128 as u64;
 
@@ -723,34 +948,67 @@ pub fn main() {
                 // box can't redirect the minted LP-share note or alter the amounts (the sigmas commit to
                 // it), and never learns a blinding (so it can't spend the A/B contribution notes).
                 let ctx = intent_context(
-                    b"tacit-lp-add-v1", &chain_binding, &asset_a, &asset_b,
-                    &[(a_cx, a_cy, a_owner), (b_cx, b_cy, b_owner), (s_cx, s_cy, s_owner)],
+                    b"tacit-lp-add-v1",
+                    &chain_binding,
+                    &asset_a,
+                    &asset_b,
+                    &[
+                        (a_cx, a_cy, a_owner),
+                        (b_cx, b_cy, b_owner),
+                        (s_cx, s_cy, s_owner),
+                    ],
                     &[d_a, d_b, d_shares, op_deadline],
                 );
 
                 // Spend the two contribution notes: membership + ν + cross-lane + opening sigma (binds d_a/d_b).
                 let a_lf = leaf(&asset_a, &a_cx, &a_cy, &a_owner);
-                assert!(spend_root != [0u8; 32], "lp_add: membership requires a non-zero spend root");
-                assert!(keccak_merkle_verify(&a_lf, a_idx, &a_path, &spend_root), "lp_add: A membership");
+                assert!(
+                    spend_root != [0u8; 32],
+                    "lp_add: membership requires a non-zero spend root"
+                );
+                assert!(
+                    keccak_merkle_verify(&a_lf, a_idx, &a_path, &spend_root),
+                    "lp_add: A membership"
+                );
                 let a_nu = nullifier(&a_cx, &a_cy);
-                if bitcoin_spent_root != [0u8; 32] { check_btc_nonmembership(&a_nu, &bitcoin_spent_root); }
-                assert!(verify_opening_sigma(&a_pt, d_a, &a_sig_r, &a_sig_z, &ctx), "lp_add: A opening");
+                if bitcoin_spent_root != [0u8; 32] {
+                    check_btc_nonmembership(&a_nu, &bitcoin_spent_root);
+                }
+                assert!(
+                    verify_opening_sigma(&a_pt, d_a, &a_sig_r, &a_sig_z, &ctx),
+                    "lp_add: A opening"
+                );
                 let b_lf = leaf(&asset_b, &b_cx, &b_cy, &b_owner);
-                assert!(keccak_merkle_verify(&b_lf, b_idx, &b_path, &spend_root), "lp_add: B membership");
+                assert!(
+                    keccak_merkle_verify(&b_lf, b_idx, &b_path, &spend_root),
+                    "lp_add: B membership"
+                );
                 let b_nu = nullifier(&b_cx, &b_cy);
-                if bitcoin_spent_root != [0u8; 32] { check_btc_nonmembership(&b_nu, &bitcoin_spent_root); }
-                assert!(verify_opening_sigma(&b_pt, d_b, &b_sig_r, &b_sig_z, &ctx), "lp_add: B opening");
+                if bitcoin_spent_root != [0u8; 32] {
+                    check_btc_nonmembership(&b_nu, &bitcoin_spent_root);
+                }
+                assert!(
+                    verify_opening_sigma(&b_pt, d_b, &b_sig_r, &b_sig_z, &ctx),
+                    "lp_add: B opening"
+                );
 
                 // The minted LP-share note opens to the DERIVED d_shares (can't claim more than earned).
-                assert!(verify_opening_sigma(&s_pt, d_shares, &s_sig_r, &s_sig_z, &ctx), "lp_add: share opening");
+                assert!(
+                    verify_opening_sigma(&s_pt, d_shares, &s_sig_r, &s_sig_z, &ctx),
+                    "lp_add: share opening"
+                );
 
                 nullifiers.push(a_nu);
                 nullifiers.push(b_nu);
                 leaves.push(leaf(&lp_asset, &s_cx, &s_cy, &s_owner));
                 liquidity.push(LpSettlement {
                     poolId: pid.into(),
-                    reserveAPre: U256::from(r_a_pre), reserveBPre: U256::from(r_b_pre), sharesPre: U256::from(shares_pre),
-                    reserveAPost: U256::from(r_a_post as u64), reserveBPost: U256::from(r_b_post as u64), sharesPost: U256::from(s_post as u64),
+                    reserveAPre: U256::from(r_a_pre),
+                    reserveBPre: U256::from(r_b_pre),
+                    sharesPre: U256::from(shares_pre),
+                    reserveAPost: U256::from(r_a_post as u64),
+                    reserveBPost: U256::from(r_b_post as u64),
+                    sharesPost: U256::from(s_post as u64),
                 });
             }
             OP_LP_REMOVE => {
@@ -765,7 +1023,10 @@ pub fn main() {
                 // Canonical orientation (see OP_SWAP): asset_a must be the low asset that maps to the
                 // contract's p.reserveA, else the proportional withdrawal da=floor(R_A·ds/sp) — computed
                 // from the low reserve — would be emitted as the HIGH-value asset_a note (LP over-withdraw).
-                assert!(bitcoin::be_bytes_lte(&asset_a, &asset_b) && asset_a != asset_b, "lp_remove: non-canonical asset order");
+                assert!(
+                    bitcoin::be_bytes_lte(&asset_a, &asset_b) && asset_a != asset_b,
+                    "lp_remove: non-canonical asset order"
+                );
                 let lp_asset = lp_share_id(&pid);
                 let r_a_pre: u64 = io::read();
                 let r_b_pre: u64 = io::read();
@@ -791,49 +1052,95 @@ pub fn main() {
                 let b_sig_r = decompress(&r33()).expect("lp_remove: B sigma R");
                 let b_sig_z = scalar_reduce_be(&r32());
                 let op_deadline: u64 = io::read(); // bound in the LP's sigma (per-op Expired)
-                if op_deadline != 0 { min_deadline = if min_deadline == 0 { op_deadline } else { min_deadline.min(op_deadline) }; }
+                if op_deadline != 0 {
+                    min_deadline = if min_deadline == 0 {
+                        op_deadline
+                    } else {
+                        min_deadline.min(op_deadline)
+                    };
+                }
 
                 // Intent context binds the spent LP-share note + the two minted A/B notes + the
                 // amounts: the box can't redirect the withdrawn A/B notes or alter d_shares/dA/dB, and
                 // never learns the share blinding (so it can't spend the LP-share note).
                 let ctx = intent_context(
-                    b"tacit-lp-remove-v1", &chain_binding, &asset_a, &asset_b,
-                    &[(s_cx, s_cy, s_owner), (a_cx, a_cy, a_owner), (b_cx, b_cy, b_owner)],
+                    b"tacit-lp-remove-v1",
+                    &chain_binding,
+                    &asset_a,
+                    &asset_b,
+                    &[
+                        (s_cx, s_cy, s_owner),
+                        (a_cx, a_cy, a_owner),
+                        (b_cx, b_cy, b_owner),
+                    ],
                     &[d_shares, d_a, d_b, op_deadline],
                 );
 
                 // Spend the LP-share note: membership + ν + cross-lane + opening sigma (binds d_shares).
                 let s_lf = leaf(&lp_asset, &s_cx, &s_cy, &s_owner);
-                assert!(spend_root != [0u8; 32], "lp_remove: membership requires a non-zero spend root");
-                assert!(keccak_merkle_verify(&s_lf, s_idx, &s_path, &spend_root), "lp_remove: share membership");
+                assert!(
+                    spend_root != [0u8; 32],
+                    "lp_remove: membership requires a non-zero spend root"
+                );
+                assert!(
+                    keccak_merkle_verify(&s_lf, s_idx, &s_path, &spend_root),
+                    "lp_remove: share membership"
+                );
                 let s_nu = nullifier(&s_cx, &s_cy);
-                if bitcoin_spent_root != [0u8; 32] { check_btc_nonmembership(&s_nu, &bitcoin_spent_root); }
-                assert!(verify_opening_sigma(&s_pt, d_shares, &s_sig_r, &s_sig_z, &ctx), "lp_remove: share opening");
+                if bitcoin_spent_root != [0u8; 32] {
+                    check_btc_nonmembership(&s_nu, &bitcoin_spent_root);
+                }
+                assert!(
+                    verify_opening_sigma(&s_pt, d_shares, &s_sig_r, &s_sig_z, &ctx),
+                    "lp_remove: share opening"
+                );
 
-                let da = d_a as u128; let db = d_b as u128;
-                let ra = r_a_pre as u128; let rb = r_b_pre as u128;
-                let sp = shares_pre as u128; let ds = d_shares as u128;
+                let da = d_a as u128;
+                let db = d_b as u128;
+                let ra = r_a_pre as u128;
+                let rb = r_b_pre as u128;
+                let sp = shares_pre as u128;
+                let ds = d_shares as u128;
                 assert!(sp > 0 && ds > 0 && ds <= sp, "lp_remove: shares in range");
                 // The locked MINIMUM_LIQUIDITY can never be removed (no note holds it), so totalShares
                 // stays ≥ MINIMUM_LIQUIDITY — keeping the (pair,fee) slot live after a full exit. Reject
                 // a remove that would breach it in-guest (fail-fast; the contract enforces the same gate).
-                assert!(sp - ds >= MINIMUM_LIQUIDITY, "lp_remove: would breach MINIMUM_LIQUIDITY floor");
+                assert!(
+                    sp - ds >= MINIMUM_LIQUIDITY,
+                    "lp_remove: would breach MINIMUM_LIQUIDITY floor"
+                );
                 // Proportional withdrawal, floor toward the pool (dust stays for remaining LPs).
                 assert!((rem_a as u128) < sp, "lp_remove: remA range");
-                assert!(ra * ds == da * sp + rem_a as u128, "lp_remove: dA = floor(R_A·shares/total)");
+                assert!(
+                    ra * ds == da * sp + rem_a as u128,
+                    "lp_remove: dA = floor(R_A·shares/total)"
+                );
                 assert!((rem_b as u128) < sp, "lp_remove: remB range");
-                assert!(rb * ds == db * sp + rem_b as u128, "lp_remove: dB = floor(R_B·shares/total)");
+                assert!(
+                    rb * ds == db * sp + rem_b as u128,
+                    "lp_remove: dB = floor(R_B·shares/total)"
+                );
                 // The withdrawn A/B notes open to dA/dB (sigma — the box never learns r_a/r_b).
-                assert!(verify_opening_sigma(&a_pt, d_a, &a_sig_r, &a_sig_z, &ctx), "lp_remove: A opening");
-                assert!(verify_opening_sigma(&b_pt, d_b, &b_sig_r, &b_sig_z, &ctx), "lp_remove: B opening");
+                assert!(
+                    verify_opening_sigma(&a_pt, d_a, &a_sig_r, &a_sig_z, &ctx),
+                    "lp_remove: A opening"
+                );
+                assert!(
+                    verify_opening_sigma(&b_pt, d_b, &b_sig_r, &b_sig_z, &ctx),
+                    "lp_remove: B opening"
+                );
 
                 nullifiers.push(s_nu);
                 leaves.push(leaf(&asset_a, &a_cx, &a_cy, &a_owner));
                 leaves.push(leaf(&asset_b, &b_cx, &b_cy, &b_owner));
                 liquidity.push(LpSettlement {
                     poolId: pid.into(),
-                    reserveAPre: U256::from(r_a_pre), reserveBPre: U256::from(r_b_pre), sharesPre: U256::from(shares_pre),
-                    reserveAPost: U256::from((ra - da) as u64), reserveBPost: U256::from((rb - db) as u64), sharesPost: U256::from((sp - ds) as u64),
+                    reserveAPre: U256::from(r_a_pre),
+                    reserveBPre: U256::from(r_b_pre),
+                    sharesPre: U256::from(shares_pre),
+                    reserveAPost: U256::from((ra - da) as u64),
+                    reserveBPost: U256::from((rb - db) as u64),
+                    sharesPost: U256::from((sp - ds) as u64),
                 });
             }
             OP_OTC => {
@@ -860,10 +1167,18 @@ pub fn main() {
                 let m_in_index: u64 = io::read();
                 let m_in_path = r_path();
                 let m_in_lf = leaf(&asset_a, &m_in_cx, &m_in_cy, &maker_owner);
-                assert!(spend_root != [0u8; 32], "otc: membership requires a non-zero spend root");
-                assert!(keccak_merkle_verify(&m_in_lf, m_in_index, &m_in_path, &spend_root), "otc: maker membership");
+                assert!(
+                    spend_root != [0u8; 32],
+                    "otc: membership requires a non-zero spend root"
+                );
+                assert!(
+                    keccak_merkle_verify(&m_in_lf, m_in_index, &m_in_path, &spend_root),
+                    "otc: maker membership"
+                );
                 let m_nu = nullifier(&m_in_cx, &m_in_cy);
-                if bitcoin_spent_root != [0u8; 32] { check_btc_nonmembership(&m_nu, &bitcoin_spent_root); }
+                if bitcoin_spent_root != [0u8; 32] {
+                    check_btc_nonmembership(&m_nu, &bitcoin_spent_root);
+                }
                 let m_in_amount: u64 = io::read();
                 let m_in_sig_r = decompress(&r33()).expect("otc: maker-in R");
                 let m_in_sig_z = scalar_reduce_be(&r32());
@@ -874,7 +1189,9 @@ pub fn main() {
                     let sr = decompress(&r33()).expect("otc: maker-change R");
                     let sz = scalar_reduce_be(&r32());
                     Some((cx, cy, pt, sr, sz))
-                } else { None };
+                } else {
+                    None
+                };
                 // Maker received (asset_b, value v_b).
                 let (m_rv_cx, m_rv_cy, m_rv_pt) = r_commitment();
                 let m_rv_sig_r = decompress(&r33()).expect("otc: maker-recv R");
@@ -885,9 +1202,14 @@ pub fn main() {
                 let t_in_index: u64 = io::read();
                 let t_in_path = r_path();
                 let t_in_lf = leaf(&asset_b, &t_in_cx, &t_in_cy, &taker_owner);
-                assert!(keccak_merkle_verify(&t_in_lf, t_in_index, &t_in_path, &spend_root), "otc: taker membership");
+                assert!(
+                    keccak_merkle_verify(&t_in_lf, t_in_index, &t_in_path, &spend_root),
+                    "otc: taker membership"
+                );
                 let t_nu = nullifier(&t_in_cx, &t_in_cy);
-                if bitcoin_spent_root != [0u8; 32] { check_btc_nonmembership(&t_nu, &bitcoin_spent_root); }
+                if bitcoin_spent_root != [0u8; 32] {
+                    check_btc_nonmembership(&t_nu, &bitcoin_spent_root);
+                }
                 let t_in_amount: u64 = io::read();
                 let t_in_sig_r = decompress(&r33()).expect("otc: taker-in R");
                 let t_in_sig_z = scalar_reduce_be(&r32());
@@ -898,7 +1220,9 @@ pub fn main() {
                     let sr = decompress(&r33()).expect("otc: taker-change R");
                     let sz = scalar_reduce_be(&r32());
                     Some((cx, cy, pt, sr, sz))
-                } else { None };
+                } else {
+                    None
+                };
                 // Taker received (asset_a, value v_a).
                 let (t_rv_cx, t_rv_cy, t_rv_pt) = r_commitment();
                 let t_rv_sig_r = decompress(&r33()).expect("otc: taker-recv R");
@@ -907,54 +1231,108 @@ pub fn main() {
                 // ---- Shared intent context: every touched note + owner + both amounts ----
                 let mut ctx_notes: Vec<([u8; 32], [u8; 32], [u8; 32])> =
                     vec![(m_in_cx, m_in_cy, maker_owner)];
-                if let Some((cx, cy, _, _, _)) = m_change { ctx_notes.push((cx, cy, maker_owner)); }
+                if let Some((cx, cy, _, _, _)) = m_change {
+                    ctx_notes.push((cx, cy, maker_owner));
+                }
                 ctx_notes.push((m_rv_cx, m_rv_cy, maker_owner));
                 ctx_notes.push((t_in_cx, t_in_cy, taker_owner));
-                if let Some((cx, cy, _, _, _)) = t_change { ctx_notes.push((cx, cy, taker_owner)); }
+                if let Some((cx, cy, _, _, _)) = t_change {
+                    ctx_notes.push((cx, cy, taker_owner));
+                }
                 ctx_notes.push((t_rv_cx, t_rv_cy, taker_owner));
                 let op_deadline: u64 = io::read(); // bound in BOTH parties' sigmas (per-op Expired)
-                if op_deadline != 0 { min_deadline = if min_deadline == 0 { op_deadline } else { min_deadline.min(op_deadline) }; }
+                if op_deadline != 0 {
+                    min_deadline = if min_deadline == 0 {
+                        op_deadline
+                    } else {
+                        min_deadline.min(op_deadline)
+                    };
+                }
                 let ctx = intent_context(
-                    b"tacit-otc-intent-v1", &chain_binding, &asset_a, &asset_b,
-                    &ctx_notes, &[v_a, v_b, op_deadline],
+                    b"tacit-otc-intent-v1",
+                    &chain_binding,
+                    &asset_a,
+                    &asset_b,
+                    &ctx_notes,
+                    &[v_a, v_b, op_deadline],
                 );
 
                 // ---- Authorizations: each party's input opens (proving the spend is theirs) and
                 //      each output opens to its bound amount (no redirect / no re-price) ----
-                assert!(verify_opening_sigma(&m_in_pt, m_in_amount, &m_in_sig_r, &m_in_sig_z, &ctx), "otc: maker-in opening");
-                assert!(verify_opening_sigma(&t_in_pt, t_in_amount, &t_in_sig_r, &t_in_sig_z, &ctx), "otc: taker-in opening");
-                assert!(verify_opening_sigma(&m_rv_pt, v_b, &m_rv_sig_r, &m_rv_sig_z, &ctx), "otc: maker-recv opening");
-                assert!(verify_opening_sigma(&t_rv_pt, v_a, &t_rv_sig_r, &t_rv_sig_z, &ctx), "otc: taker-recv opening");
+                assert!(
+                    verify_opening_sigma(&m_in_pt, m_in_amount, &m_in_sig_r, &m_in_sig_z, &ctx),
+                    "otc: maker-in opening"
+                );
+                assert!(
+                    verify_opening_sigma(&t_in_pt, t_in_amount, &t_in_sig_r, &t_in_sig_z, &ctx),
+                    "otc: taker-in opening"
+                );
+                assert!(
+                    verify_opening_sigma(&m_rv_pt, v_b, &m_rv_sig_r, &m_rv_sig_z, &ctx),
+                    "otc: maker-recv opening"
+                );
+                assert!(
+                    verify_opening_sigma(&t_rv_pt, v_a, &t_rv_sig_r, &t_rv_sig_z, &ctx),
+                    "otc: taker-recv opening"
+                );
 
                 // ---- Per-asset conservation (u128 sums; canonical change form) ----
                 let change_a: u64 = match m_change {
                     Some((_, _, pt, sr, sz)) => {
                         assert!(m_in_amount > v_a, "otc: maker change requires input > give");
                         let c = m_in_amount - v_a;
-                        assert!(verify_opening_sigma(&pt, c, &sr, &sz, &ctx), "otc: maker-change opening");
+                        assert!(
+                            verify_opening_sigma(&pt, c, &sr, &sz, &ctx),
+                            "otc: maker-change opening"
+                        );
                         c
                     }
-                    None => { assert!(m_in_amount == v_a, "otc: maker exact input required without change"); 0 }
+                    None => {
+                        assert!(
+                            m_in_amount == v_a,
+                            "otc: maker exact input required without change"
+                        );
+                        0
+                    }
                 };
                 let change_b: u64 = match t_change {
                     Some((_, _, pt, sr, sz)) => {
                         assert!(t_in_amount > v_b, "otc: taker change requires input > give");
                         let c = t_in_amount - v_b;
-                        assert!(verify_opening_sigma(&pt, c, &sr, &sz, &ctx), "otc: taker-change opening");
+                        assert!(
+                            verify_opening_sigma(&pt, c, &sr, &sz, &ctx),
+                            "otc: taker-change opening"
+                        );
                         c
                     }
-                    None => { assert!(t_in_amount == v_b, "otc: taker exact input required without change"); 0 }
+                    None => {
+                        assert!(
+                            t_in_amount == v_b,
+                            "otc: taker exact input required without change"
+                        );
+                        0
+                    }
                 };
-                assert!(m_in_amount as u128 == v_a as u128 + change_a as u128, "otc: asset_a conservation");
-                assert!(t_in_amount as u128 == v_b as u128 + change_b as u128, "otc: asset_b conservation");
+                assert!(
+                    m_in_amount as u128 == v_a as u128 + change_a as u128,
+                    "otc: asset_a conservation"
+                );
+                assert!(
+                    t_in_amount as u128 == v_b as u128 + change_b as u128,
+                    "otc: asset_b conservation"
+                );
 
                 // ---- Emit ν + leaves (fixed order; client + memos mirror it) ----
                 nullifiers.push(m_nu);
                 nullifiers.push(t_nu);
                 leaves.push(leaf(&asset_a, &t_rv_cx, &t_rv_cy, &taker_owner)); // taker receives asset_a (v_a)
                 leaves.push(leaf(&asset_b, &m_rv_cx, &m_rv_cy, &maker_owner)); // maker receives asset_b (v_b)
-                if let Some((cx, cy, _, _, _)) = m_change { leaves.push(leaf(&asset_a, &cx, &cy, &maker_owner)); }
-                if let Some((cx, cy, _, _, _)) = t_change { leaves.push(leaf(&asset_b, &cx, &cy, &taker_owner)); }
+                if let Some((cx, cy, _, _, _)) = m_change {
+                    leaves.push(leaf(&asset_a, &cx, &cy, &maker_owner));
+                }
+                if let Some((cx, cy, _, _, _)) = t_change {
+                    leaves.push(leaf(&asset_b, &cx, &cy, &taker_owner));
+                }
             }
             OP_BID => {
                 // Buyer-offline partial-fill bid (confidential limit order; Bitcoin T_PREAUTH_BID_VAR
@@ -975,7 +1353,10 @@ pub fn main() {
                 let increment: u64 = io::read();
                 assert!(min_fill > 0 && price > 0 && increment > 0, "bid: zero term");
                 assert!(max_fill >= min_fill, "bid: max < min");
-                assert!((max_fill - min_fill) % increment == 0, "bid: grid not increment-aligned");
+                assert!(
+                    (max_fill - min_fill) % increment == 0,
+                    "bid: grid not increment-aligned"
+                );
                 assert!(asset_a != asset_b, "bid: same asset");
                 let buyer_owner = r32();
 
@@ -984,16 +1365,27 @@ pub fn main() {
                 let fund_index: u64 = io::read();
                 let fund_path = r_path();
                 let fund_lf = leaf(&asset_b, &fund_cx, &fund_cy, &buyer_owner);
-                assert!(spend_root != [0u8; 32], "bid: membership requires a non-zero spend root");
-                assert!(keccak_merkle_verify(&fund_lf, fund_index, &fund_path, &spend_root), "bid: funding membership");
+                assert!(
+                    spend_root != [0u8; 32],
+                    "bid: membership requires a non-zero spend root"
+                );
+                assert!(
+                    keccak_merkle_verify(&fund_lf, fund_index, &fund_path, &spend_root),
+                    "bid: funding membership"
+                );
                 let fund_nu = nullifier(&fund_cx, &fund_cy);
-                if bitcoin_spent_root != [0u8; 32] { check_btc_nonmembership(&fund_nu, &bitcoin_spent_root); }
+                if bitcoin_spent_root != [0u8; 32] {
+                    check_btc_nonmembership(&fund_nu, &bitcoin_spent_root);
+                }
                 let fund_sig_r = decompress(&r33()).expect("bid: fund R");
                 let fund_sig_z = scalar_reduce_be(&r32());
 
                 // Chosen fill (on the grid) + the buyer's pre-signed received notes for it.
                 let chosen_f: u64 = io::read();
-                assert!(chosen_f >= min_fill && chosen_f <= max_fill, "bid: fill out of range");
+                assert!(
+                    chosen_f >= min_fill && chosen_f <= max_fill,
+                    "bid: fill out of range"
+                );
                 assert!((chosen_f - min_fill) % increment == 0, "bid: fill off grid");
                 let (ra_cx, ra_cy, ra_pt) = r_commitment(); // buyer receives asset_a (chosen_f)
                 let ra_sig_r = decompress(&r33()).expect("bid: recv-a R");
@@ -1025,9 +1417,14 @@ pub fn main() {
                 let s_in_index: u64 = io::read();
                 let s_in_path = r_path();
                 let s_in_lf = leaf(&asset_a, &s_in_cx, &s_in_cy, &s_owner);
-                assert!(keccak_merkle_verify(&s_in_lf, s_in_index, &s_in_path, &spend_root), "bid: seller membership");
+                assert!(
+                    keccak_merkle_verify(&s_in_lf, s_in_index, &s_in_path, &spend_root),
+                    "bid: seller membership"
+                );
                 let s_nu = nullifier(&s_in_cx, &s_in_cy);
-                if bitcoin_spent_root != [0u8; 32] { check_btc_nonmembership(&s_nu, &bitcoin_spent_root); }
+                if bitcoin_spent_root != [0u8; 32] {
+                    check_btc_nonmembership(&s_nu, &bitcoin_spent_root);
+                }
                 let s_in_amount: u64 = io::read();
                 let s_in_sig_r = decompress(&r33()).expect("bid: seller-in R");
                 let s_in_sig_z = scalar_reduce_be(&r32());
@@ -1037,55 +1434,125 @@ pub fn main() {
                     let sr = decompress(&r33()).expect("bid: seller-change R");
                     let sz = scalar_reduce_be(&r32());
                     Some((cx, cy, pt, sr, sz))
-                } else { None };
+                } else {
+                    None
+                };
                 // Seller received (asset_b, value pay = chosen_f·price).
                 let (s_rv_cx, s_rv_cy, s_rv_pt) = r_commitment();
                 let s_rv_sig_r = decompress(&r33()).expect("bid: seller-recv R");
                 let s_rv_sig_z = scalar_reduce_be(&r32());
 
                 let s_change_amt: u64 = match s_change {
-                    Some(_) => { assert!(s_in_amount > chosen_f, "bid: seller change requires input > fill"); s_in_amount - chosen_f }
-                    None => { assert!(s_in_amount == chosen_f, "bid: seller exact input required without change"); 0 }
+                    Some(_) => {
+                        assert!(
+                            s_in_amount > chosen_f,
+                            "bid: seller change requires input > fill"
+                        );
+                        s_in_amount - chosen_f
+                    }
+                    None => {
+                        assert!(
+                            s_in_amount == chosen_f,
+                            "bid: seller exact input required without change"
+                        );
+                        0
+                    }
                 };
 
                 // Buyer context: PRE-SIGNED OFFLINE, so it binds only buyer-knowable data (the bid
                 // terms + the buyer's funding/received notes + chosen_f) — never the seller's notes.
                 let mut b_notes: Vec<([u8; 32], [u8; 32], [u8; 32])> =
                     vec![(fund_cx, fund_cy, buyer_owner), (ra_cx, ra_cy, buyer_owner)];
-                if let Some((cx, cy, _, _, _)) = refund_note { b_notes.push((cx, cy, buyer_owner)); }
+                if let Some((cx, cy, _, _, _)) = refund_note {
+                    b_notes.push((cx, cy, buyer_owner));
+                }
                 let op_deadline: u64 = io::read(); // buyer's bid expiry, bound in their pre-signed sigma (per-op Expired)
-                if op_deadline != 0 { min_deadline = if min_deadline == 0 { op_deadline } else { min_deadline.min(op_deadline) }; }
+                if op_deadline != 0 {
+                    min_deadline = if min_deadline == 0 {
+                        op_deadline
+                    } else {
+                        min_deadline.min(op_deadline)
+                    };
+                }
                 let buyer_ctx = intent_context(
-                    b"tacit-bid-buyer-v1", &chain_binding, &asset_a, &asset_b,
-                    &b_notes, &[min_fill, max_fill, price, increment, chosen_f, op_deadline],
+                    b"tacit-bid-buyer-v1",
+                    &chain_binding,
+                    &asset_a,
+                    &asset_b,
+                    &b_notes,
+                    &[min_fill, max_fill, price, increment, chosen_f, op_deadline],
                 );
-                assert!(verify_opening_sigma(&fund_pt, v_fund, &fund_sig_r, &fund_sig_z, &buyer_ctx), "bid: funding opening");
-                assert!(verify_opening_sigma(&ra_pt, chosen_f, &ra_sig_r, &ra_sig_z, &buyer_ctx), "bid: buyer-recv-a opening");
-                if let Some((_, _, pt, sr, sz)) = refund_note { assert!(verify_opening_sigma(&pt, refund, &sr, &sz, &buyer_ctx), "bid: buyer-refund opening"); }
+                assert!(
+                    verify_opening_sigma(&fund_pt, v_fund, &fund_sig_r, &fund_sig_z, &buyer_ctx),
+                    "bid: funding opening"
+                );
+                assert!(
+                    verify_opening_sigma(&ra_pt, chosen_f, &ra_sig_r, &ra_sig_z, &buyer_ctx),
+                    "bid: buyer-recv-a opening"
+                );
+                if let Some((_, _, pt, sr, sz)) = refund_note {
+                    assert!(
+                        verify_opening_sigma(&pt, refund, &sr, &sz, &buyer_ctx),
+                        "bid: buyer-refund opening"
+                    );
+                }
 
                 // Seller context: the seller is online, so it binds the seller's notes + chosen_f.
                 let mut s_notes: Vec<([u8; 32], [u8; 32], [u8; 32])> =
                     vec![(s_in_cx, s_in_cy, s_owner), (s_rv_cx, s_rv_cy, s_owner)];
-                if let Some((cx, cy, _, _, _)) = s_change { s_notes.push((cx, cy, s_owner)); }
+                if let Some((cx, cy, _, _, _)) = s_change {
+                    s_notes.push((cx, cy, s_owner));
+                }
                 let seller_ctx = intent_context(
-                    b"tacit-bid-seller-v1", &chain_binding, &asset_a, &asset_b,
-                    &s_notes, &[chosen_f, price],
+                    b"tacit-bid-seller-v1",
+                    &chain_binding,
+                    &asset_a,
+                    &asset_b,
+                    &s_notes,
+                    &[chosen_f, price],
                 );
-                assert!(verify_opening_sigma(&s_in_pt, s_in_amount, &s_in_sig_r, &s_in_sig_z, &seller_ctx), "bid: seller-in opening");
-                assert!(verify_opening_sigma(&s_rv_pt, pay, &s_rv_sig_r, &s_rv_sig_z, &seller_ctx), "bid: seller-recv opening");
-                if let Some((_, _, pt, sr, sz)) = s_change { assert!(verify_opening_sigma(&pt, s_change_amt, &sr, &sz, &seller_ctx), "bid: seller-change opening"); }
+                assert!(
+                    verify_opening_sigma(
+                        &s_in_pt,
+                        s_in_amount,
+                        &s_in_sig_r,
+                        &s_in_sig_z,
+                        &seller_ctx
+                    ),
+                    "bid: seller-in opening"
+                );
+                assert!(
+                    verify_opening_sigma(&s_rv_pt, pay, &s_rv_sig_r, &s_rv_sig_z, &seller_ctx),
+                    "bid: seller-recv opening"
+                );
+                if let Some((_, _, pt, sr, sz)) = s_change {
+                    assert!(
+                        verify_opening_sigma(&pt, s_change_amt, &sr, &sz, &seller_ctx),
+                        "bid: seller-change opening"
+                    );
+                }
 
                 // Per-asset conservation.
-                assert!(v_fund as u128 == pay as u128 + refund as u128, "bid: asset_b conservation");
-                assert!(s_in_amount as u128 == chosen_f as u128 + s_change_amt as u128, "bid: asset_a conservation");
+                assert!(
+                    v_fund as u128 == pay as u128 + refund as u128,
+                    "bid: asset_b conservation"
+                );
+                assert!(
+                    s_in_amount as u128 == chosen_f as u128 + s_change_amt as u128,
+                    "bid: asset_a conservation"
+                );
 
                 // Emit ν + leaves (fixed order; client + memos mirror it).
                 nullifiers.push(fund_nu);
                 nullifiers.push(s_nu);
                 leaves.push(leaf(&asset_a, &ra_cx, &ra_cy, &buyer_owner)); // buyer receives asset_a (chosen_f)
                 leaves.push(leaf(&asset_b, &s_rv_cx, &s_rv_cy, &s_owner)); // seller receives asset_b (pay)
-                if let Some((cx, cy, _, _, _)) = refund_note { leaves.push(leaf(&asset_b, &cx, &cy, &buyer_owner)); } // buyer refund
-                if let Some((cx, cy, _, _, _)) = s_change { leaves.push(leaf(&asset_a, &cx, &cy, &s_owner)); } // seller change
+                if let Some((cx, cy, _, _, _)) = refund_note {
+                    leaves.push(leaf(&asset_b, &cx, &cy, &buyer_owner));
+                } // buyer refund
+                if let Some((cx, cy, _, _, _)) = s_change {
+                    leaves.push(leaf(&asset_a, &cx, &cy, &s_owner));
+                } // seller change
             }
             OP_SWAP_ROUTE => {
                 // Confidential MULTIHOP: route one input note through up to MAX_ROUTE_HOPS pools to one
@@ -1104,14 +1571,23 @@ pub fn main() {
                 let in_sig_r = decompress(&r33()).expect("route: in sigma R");
                 let in_sig_z = scalar_reduce_be(&r32());
                 let n_hops: u32 = io::read();
-                assert!(n_hops >= 1 && n_hops <= MAX_ROUTE_HOPS, "route: hop count out of range");
+                assert!(
+                    n_hops >= 1 && n_hops <= MAX_ROUTE_HOPS,
+                    "route: hop count out of range"
+                );
                 let min_out: u64 = io::read();
                 let (out_cx, out_cy, out_pt) = r_commitment();
                 let out_owner = r32();
                 let out_sig_r = decompress(&r33()).expect("route: out sigma R");
                 let out_sig_z = scalar_reduce_be(&r32());
                 let op_deadline: u64 = io::read(); // bound in the trader's sigma (per-op Expired)
-                if op_deadline != 0 { min_deadline = if min_deadline == 0 { op_deadline } else { min_deadline.min(op_deadline) }; }
+                if op_deadline != 0 {
+                    min_deadline = if min_deadline == 0 {
+                        op_deadline
+                    } else {
+                        min_deadline.min(op_deadline)
+                    };
+                }
 
                 // Walk the hops: compute each pool's exact-in output, thread it into the next hop, and stage
                 // a SwapSettlement per hop. Per-hop reserves are witnessed (the prover supplies the live
@@ -1126,13 +1602,20 @@ pub fn main() {
                     assert!(fee_bps <= 1000, "route hop fee over MAX_POOL_FEE_BPS"); // guard get_amount_out's 10000-fee_bps
                     let reserve_a_pre: u64 = io::read(); // CANONICAL reserves (low asset = reserveA)
                     let reserve_b_pre: u64 = io::read();
-                    assert!(cur_asset != asset_next, "route: hop maps an asset to itself");
+                    assert!(
+                        cur_asset != asset_next,
+                        "route: hop maps an asset to itself"
+                    );
                     let pid = pool_id(&cur_asset, &asset_next, fee_bps);
                     // Orientation: the pool stores reserveA for the canonical-low asset. cur_is_lo ⇒ the
                     // flow is low→high (input is reserveA, output reserveB); else high→low. pool_id sorts
                     // internally, so the pid is identical either way — only the in/out mapping flips.
                     let cur_is_lo = bitcoin::be_bytes_lte(&cur_asset, &asset_next);
-                    let (r_in, r_out) = if cur_is_lo { (reserve_a_pre, reserve_b_pre) } else { (reserve_b_pre, reserve_a_pre) };
+                    let (r_in, r_out) = if cur_is_lo {
+                        (reserve_a_pre, reserve_b_pre)
+                    } else {
+                        (reserve_b_pre, reserve_a_pre)
+                    };
                     assert!(r_in > 0 && r_out > 0, "route: hop pool not initialized");
                     let out = get_amount_out(cur_amount, r_in, r_out, fee_bps);
                     assert!(out > 0, "route: hop output rounds to zero");
@@ -1140,12 +1623,21 @@ pub fn main() {
                     let r_in_post = r_in as u128 + cur_amount as u128;
                     assert!(r_in_post <= u64::MAX as u128, "route: hop reserve overflow");
                     // Constant-product non-decrease (LP protection): (R_in+in)·(R_out−out) ≥ R_in·R_out.
-                    assert!(r_in_post * r_out_post >= r_in as u128 * r_out as u128, "route: constant-product decreased");
-                    let (reserve_a_post, reserve_b_post) = if cur_is_lo { (r_in_post, r_out_post) } else { (r_out_post, r_in_post) };
+                    assert!(
+                        r_in_post * r_out_post >= r_in as u128 * r_out as u128,
+                        "route: constant-product decreased"
+                    );
+                    let (reserve_a_post, reserve_b_post) = if cur_is_lo {
+                        (r_in_post, r_out_post)
+                    } else {
+                        (r_out_post, r_in_post)
+                    };
                     hop_swaps.push(SwapSettlement {
                         poolId: pid.into(),
-                        reserveAPre: U256::from(reserve_a_pre), reserveBPre: U256::from(reserve_b_pre),
-                        reserveAPost: U256::from(reserve_a_post as u64), reserveBPost: U256::from(reserve_b_post as u64),
+                        reserveAPre: U256::from(reserve_a_pre),
+                        reserveBPre: U256::from(reserve_b_pre),
+                        reserveAPost: U256::from(reserve_a_post as u64),
+                        reserveBPost: U256::from(reserve_b_post as u64),
                     });
                     cur_asset = asset_next;
                     cur_amount = out as u64;
@@ -1159,24 +1651,43 @@ pub fn main() {
                 // effect is amount_out — pinned here — so a re-route that changed the result would fail the
                 // output opening or min_out; the trader gets exactly what they signed for, or the tx reverts.
                 let ctx = intent_context(
-                    b"tacit-route-intent-v1", &chain_binding, &asset_0, &asset_final,
+                    b"tacit-route-intent-v1",
+                    &chain_binding,
+                    &asset_0,
+                    &asset_final,
                     &[(in_cx, in_cy, in_owner), (out_cx, out_cy, out_owner)],
                     &[amount_in, amount_out, min_out, n_hops as u64, op_deadline],
                 );
 
                 // Spend the input note (membership + ν + cross-lane + opening binds amount_in).
                 let in_lf = leaf(&asset_0, &in_cx, &in_cy, &in_owner);
-                assert!(spend_root != [0u8; 32], "route: membership requires a non-zero spend root");
-                assert!(keccak_merkle_verify(&in_lf, in_leaf_index, &in_path, &spend_root), "route: membership");
+                assert!(
+                    spend_root != [0u8; 32],
+                    "route: membership requires a non-zero spend root"
+                );
+                assert!(
+                    keccak_merkle_verify(&in_lf, in_leaf_index, &in_path, &spend_root),
+                    "route: membership"
+                );
                 let nu = nullifier(&in_cx, &in_cy);
-                if bitcoin_spent_root != [0u8; 32] { check_btc_nonmembership(&nu, &bitcoin_spent_root); }
-                assert!(verify_opening_sigma(&in_pt, amount_in, &in_sig_r, &in_sig_z, &ctx), "route: input opening");
+                if bitcoin_spent_root != [0u8; 32] {
+                    check_btc_nonmembership(&nu, &bitcoin_spent_root);
+                }
+                assert!(
+                    verify_opening_sigma(&in_pt, amount_in, &in_sig_r, &in_sig_z, &ctx),
+                    "route: input opening"
+                );
                 // The output note opens to the final amount_out (only the trader, who knows r_out, can spend it).
-                assert!(verify_opening_sigma(&out_pt, amount_out, &out_sig_r, &out_sig_z, &ctx), "route: output opening");
+                assert!(
+                    verify_opening_sigma(&out_pt, amount_out, &out_sig_r, &out_sig_z, &ctx),
+                    "route: output opening"
+                );
 
                 nullifiers.push(nu);
                 leaves.push(leaf(&asset_final, &out_cx, &out_cy, &out_owner));
-                for s in hop_swaps { swaps.push(s); }
+                for s in hop_swaps {
+                    swaps.push(s);
+                }
             }
             OP_ADAPTOR_LOCK => {
                 // Atomic-swap LOCK (the cBTC↔BTC / cross-chain leg): spend a normal note `N` and move its
@@ -1187,7 +1698,7 @@ pub fn main() {
                 // Value is prover-visible (bound by openings, kept out of PublicValues); N and L open to the
                 // SAME `amount`, so the lock conserves value (no change, no inflation — split first to lock less).
                 let asset = r32();
-                let locker = r32();    // == N's owner (authorizes the spend by opening N)
+                let locker = r32(); // == N's owner (authorizes the spend by opening N)
                 let recipient = r32(); // the eventual claimer bound into the lock leaf
                 let amount: u64 = io::read();
                 assert!(amount > 0, "adaptor-lock: zero amount");
@@ -1203,10 +1714,18 @@ pub fn main() {
                 let n_index: u64 = io::read();
                 let n_path = r_path();
                 let n_lf = leaf(&asset, &n_cx, &n_cy, &locker);
-                assert!(spend_root != [0u8; 32], "adaptor-lock: membership requires a non-zero spend root");
-                assert!(keccak_merkle_verify(&n_lf, n_index, &n_path, &spend_root), "adaptor-lock: N membership");
+                assert!(
+                    spend_root != [0u8; 32],
+                    "adaptor-lock: membership requires a non-zero spend root"
+                );
+                assert!(
+                    keccak_merkle_verify(&n_lf, n_index, &n_path, &spend_root),
+                    "adaptor-lock: N membership"
+                );
                 let n_nu = nullifier(&n_cx, &n_cy);
-                if bitcoin_spent_root != [0u8; 32] { check_btc_nonmembership(&n_nu, &bitcoin_spent_root); }
+                if bitcoin_spent_root != [0u8; 32] {
+                    check_btc_nonmembership(&n_nu, &bitcoin_spent_root);
+                }
                 let n_sig_r = decompress(&r33()).expect("adaptor-lock: N-open R");
                 let n_sig_z = scalar_reduce_be(&r32());
                 // Locked note L (same asset, same value).
@@ -1216,18 +1735,39 @@ pub fn main() {
 
                 // Context binds the whole lock: N (locker), L (recipient), T, amount, deadline — so a relayer
                 // can neither re-target the lock to a different recipient/T nor re-price it (the openings fail).
-                if deadline != 0 { min_deadline = if min_deadline == 0 { deadline } else { min_deadline.min(deadline) }; }
+                if deadline != 0 {
+                    min_deadline = if min_deadline == 0 {
+                        deadline
+                    } else {
+                        min_deadline.min(deadline)
+                    };
+                }
                 let ctx = intent_context(
-                    b"tacit-adaptor-lock-intent-v1", &chain_binding, &asset, &asset,
-                    &[(n_cx, n_cy, locker), (l_cx, l_cy, recipient), (tx, ty, [0u8; 32])],
+                    b"tacit-adaptor-lock-intent-v1",
+                    &chain_binding,
+                    &asset,
+                    &asset,
+                    &[
+                        (n_cx, n_cy, locker),
+                        (l_cx, l_cy, recipient),
+                        (tx, ty, [0u8; 32]),
+                    ],
                     &[amount, deadline],
                 );
-                assert!(verify_opening_sigma(&n_pt, amount, &n_sig_r, &n_sig_z, &ctx), "adaptor-lock: N opening (spend authz + value)");
-                assert!(verify_opening_sigma(&l_pt, amount, &l_sig_r, &l_sig_z, &ctx), "adaptor-lock: L opening (value carry)");
+                assert!(
+                    verify_opening_sigma(&n_pt, amount, &n_sig_r, &n_sig_z, &ctx),
+                    "adaptor-lock: N opening (spend authz + value)"
+                );
+                assert!(
+                    verify_opening_sigma(&l_pt, amount, &l_sig_r, &l_sig_z, &ctx),
+                    "adaptor-lock: L opening (value carry)"
+                );
 
                 // Effect: spend N; append L to the lock-set.
                 nullifiers.push(n_nu);
-                lock_leaves.push(adaptor_lock_leaf(&l_cx, &l_cy, &tx, &ty, deadline, &recipient, &locker));
+                lock_leaves.push(adaptor_lock_leaf(
+                    &l_cx, &l_cy, &tx, &ty, deadline, &recipient, &locker,
+                ));
             }
             OP_ADAPTOR_CLAIM => {
                 // CLAIM a locked note before its deadline: prove `L` ∈ the lock-set (reconstructing its leaf
@@ -1246,9 +1786,16 @@ pub fn main() {
                 let l_path = r_path();
                 // Lock-set membership reconstructs the EXACT leaf — so recipient/T/deadline/locker are pinned
                 // (a relayer can't change them without breaking membership).
-                let lock_lf = adaptor_lock_leaf(&l_cx, &l_cy, &tx, &ty, deadline, &recipient, &locker);
-                assert!(lock_set_root != [0u8; 32], "adaptor-claim: membership requires a non-zero lock-set root");
-                assert!(keccak_merkle_verify(&lock_lf, l_index, &l_path, &lock_set_root), "adaptor-claim: L lock-set membership");
+                let lock_lf =
+                    adaptor_lock_leaf(&l_cx, &l_cy, &tx, &ty, deadline, &recipient, &locker);
+                assert!(
+                    lock_set_root != [0u8; 32],
+                    "adaptor-claim: membership requires a non-zero lock-set root"
+                );
+                assert!(
+                    keccak_merkle_verify(&lock_lf, l_index, &l_path, &lock_set_root),
+                    "adaptor-claim: L lock-set membership"
+                );
                 let l_nu = nullifier(&l_cx, &l_cy);
 
                 // Output note → recipient (owner pinned by the membership-verified lock leaf; no redirect).
@@ -1258,10 +1805,19 @@ pub fn main() {
                 let kernel_r = decompress(&r33()).expect("adaptor-claim: kernel R");
                 let kernel_s = r32();
                 let kernel_z = scalar_reduce_be(&kernel_s);
-                assert!(verify_kernel(&[l_pt], &[o_pt], &kernel_r, &kernel_z), "adaptor-claim: value conservation");
+                assert!(
+                    verify_kernel(&[l_pt], &[o_pt], &kernel_r, &kernel_z),
+                    "adaptor-claim: value conservation"
+                );
 
                 // Claim window: bind the lock's deadline into the ≤ gate (settle must land before it).
-                if deadline != 0 { min_deadline = if min_deadline == 0 { deadline } else { min_deadline.min(deadline) }; }
+                if deadline != 0 {
+                    min_deadline = if min_deadline == 0 {
+                        deadline
+                    } else {
+                        min_deadline.min(deadline)
+                    };
+                }
 
                 lock_nullifiers.push(l_nu);
                 leaves.push(leaf(&asset, &o_cx, &o_cy, &recipient));
@@ -1280,15 +1836,25 @@ pub fn main() {
                 let locker = r32();
                 let l_index: u64 = io::read();
                 let l_path = r_path();
-                let lock_lf = adaptor_lock_leaf(&l_cx, &l_cy, &tx, &ty, deadline, &recipient, &locker);
-                assert!(lock_set_root != [0u8; 32], "adaptor-refund: membership requires a non-zero lock-set root");
-                assert!(keccak_merkle_verify(&lock_lf, l_index, &l_path, &lock_set_root), "adaptor-refund: L lock-set membership");
+                let lock_lf =
+                    adaptor_lock_leaf(&l_cx, &l_cy, &tx, &ty, deadline, &recipient, &locker);
+                assert!(
+                    lock_set_root != [0u8; 32],
+                    "adaptor-refund: membership requires a non-zero lock-set root"
+                );
+                assert!(
+                    keccak_merkle_verify(&lock_lf, l_index, &l_path, &lock_set_root),
+                    "adaptor-refund: L lock-set membership"
+                );
                 let l_nu = nullifier(&l_cx, &l_cy);
 
                 let (o_cx, o_cy, o_pt) = r_commitment();
                 let kernel_r = decompress(&r33()).expect("adaptor-refund: kernel R");
                 let kernel_z = scalar_reduce_be(&r32());
-                assert!(verify_kernel(&[l_pt], &[o_pt], &kernel_r, &kernel_z), "adaptor-refund: value conservation");
+                assert!(
+                    verify_kernel(&[l_pt], &[o_pt], &kernel_r, &kernel_z),
+                    "adaptor-refund: value conservation"
+                );
 
                 // Refund window: the contract requires block.timestamp >= the LATEST refund deadline in the batch.
                 assert!(deadline != 0, "adaptor-refund: deadline required");
@@ -1312,7 +1878,10 @@ pub fn main() {
                 let n_legs: u32 = io::read();
                 assert!(n_legs > 0, "cdp-mint: empty basket");
                 assert!(n_legs <= MAX_ITEMS_PER_OP, "cdp-mint: basket over cap");
-                assert!(spend_root != [0u8; 32], "cdp-mint: membership requires a non-zero spend root");
+                assert!(
+                    spend_root != [0u8; 32],
+                    "cdp-mint: membership requires a non-zero spend root"
+                );
                 let mut leg_hashes: Vec<[u8; 32]> = Vec::with_capacity(n_legs as usize);
                 let mut legs_pv: Vec<CdpLeg> = Vec::with_capacity(n_legs as usize);
                 // Canonical basket: legs strictly asset-sorted (so basket_root is order-independent + no
@@ -1323,7 +1892,10 @@ pub fn main() {
                 controller32[12..].copy_from_slice(&controller);
                 for _ in 0..n_legs {
                     let asset = r32();
-                    assert!(asset > prev_asset, "cdp-mint: basket legs must be strictly asset-sorted (no dups)");
+                    assert!(
+                        asset > prev_asset,
+                        "cdp-mint: basket legs must be strictly asset-sorted (no dups)"
+                    );
                     prev_asset = asset;
                     let (cx, cy, pt) = r_commitment();
                     let value: u64 = io::read();
@@ -1334,17 +1906,32 @@ pub fn main() {
                     let sig_z = scalar_reduce_be(&r32());
                     // spend the collateral note (owned by `owner`): membership + value opening + ν + cross-lane
                     let lf = leaf(&asset, &cx, &cy, &owner);
-                    assert!(keccak_merkle_verify(&lf, index, &path, &spend_root), "cdp-mint: collateral membership");
-                    let ctx = intent_context(
-                        b"tacit-cdp-mint-collateral-v1", &chain_binding, &asset, &nonce,
-                        &[(cx, cy, owner), (controller32, nonce, owner)], &[value, debt_value, index],
+                    assert!(
+                        keccak_merkle_verify(&lf, index, &path, &spend_root),
+                        "cdp-mint: collateral membership"
                     );
-                    assert!(verify_opening_sigma(&pt, value, &sig_r, &sig_z, &ctx), "cdp-mint: collateral opening sigma");
+                    let ctx = intent_context(
+                        b"tacit-cdp-mint-collateral-v1",
+                        &chain_binding,
+                        &asset,
+                        &nonce,
+                        &[(cx, cy, owner), (controller32, nonce, owner)],
+                        &[value, debt_value, index],
+                    );
+                    assert!(
+                        verify_opening_sigma(&pt, value, &sig_r, &sig_z, &ctx),
+                        "cdp-mint: collateral opening sigma"
+                    );
                     let nu = nullifier(&cx, &cy);
-                    if bitcoin_spent_root != [0u8; 32] { check_btc_nonmembership(&nu, &bitcoin_spent_root); }
+                    if bitcoin_spent_root != [0u8; 32] {
+                        check_btc_nonmembership(&nu, &bitcoin_spent_root);
+                    }
                     nullifiers.push(nu);
                     leg_hashes.push(cdp_basket_leg(&asset, value));
-                    legs_pv.push(CdpLeg { asset: asset.into(), value: U256::from(value) });
+                    legs_pv.push(CdpLeg {
+                        asset: asset.into(),
+                        value: U256::from(value),
+                    });
                 }
                 // mint the debt note (asset = derive(controller)), owned by `owner`, opening to debt_value
                 let debt_asset = cdp_debt_asset_id(&controller);
@@ -1352,14 +1939,28 @@ pub fn main() {
                 let d_sig_r = decompress(&r33()).expect("cdp-mint: debt sigma R");
                 let d_sig_z = scalar_reduce_be(&r32());
                 let debt_ctx = intent_context(
-                    b"tacit-cdp-mint-debt-v1", &chain_binding, &debt_asset, &nonce,
-                    &[(d_cx, d_cy, owner), (controller32, nonce, owner)], &[debt_value],
+                    b"tacit-cdp-mint-debt-v1",
+                    &chain_binding,
+                    &debt_asset,
+                    &nonce,
+                    &[(d_cx, d_cy, owner), (controller32, nonce, owner)],
+                    &[debt_value],
                 );
-                assert!(verify_opening_sigma(&d_pt, debt_value, &d_sig_r, &d_sig_z, &debt_ctx), "cdp-mint: debt opening sigma");
+                assert!(
+                    verify_opening_sigma(&d_pt, debt_value, &d_sig_r, &d_sig_z, &debt_ctx),
+                    "cdp-mint: debt opening sigma"
+                );
                 leaves.push(leaf(&debt_asset, &d_cx, &d_cy, &owner));
                 // the position leaf the contract appends to its position set (CLOSE/LIQUIDATE prove against it)
                 let basket_root = cdp_basket_root(&leg_hashes);
-                let position_leaf = cdp_position_leaf(&controller, &debt_asset, &basket_root, debt_value, &owner, &nonce);
+                let position_leaf = cdp_position_leaf(
+                    &controller,
+                    &debt_asset,
+                    &basket_root,
+                    debt_value,
+                    &owner,
+                    &nonce,
+                );
                 cdp_mints.push(CdpMint {
                     controller: Address::from(controller),
                     debtAsset: debt_asset.into(),
@@ -1383,7 +1984,10 @@ pub fn main() {
                 let n_legs: u32 = io::read();
                 assert!(n_legs > 0, "cdp-close: empty basket");
                 assert!(n_legs <= MAX_ITEMS_PER_OP, "cdp-close: basket over cap");
-                assert!(spend_root != [0u8; 32], "cdp-close: membership requires a non-zero spend root");
+                assert!(
+                    spend_root != [0u8; 32],
+                    "cdp-close: membership requires a non-zero spend root"
+                );
                 let mut leg_hashes: Vec<[u8; 32]> = Vec::with_capacity(n_legs as usize);
                 let mut legs_pv: Vec<CdpLeg> = Vec::with_capacity(n_legs as usize);
                 let mut released: Vec<([u8; 32], u64, [u8; 32], [u8; 32], Point, Point, [u8; 32])> =
@@ -1397,26 +2001,57 @@ pub fn main() {
                     let sig_z = r32();
                     released.push((asset, value, cx, cy, pt, sig_r, sig_z));
                     leg_hashes.push(cdp_basket_leg(&asset, value));
-                    legs_pv.push(CdpLeg { asset: asset.into(), value: U256::from(value) });
+                    legs_pv.push(CdpLeg {
+                        asset: asset.into(),
+                        value: U256::from(value),
+                    });
                 }
                 // reconstruct + prove position membership
                 let debt_asset = cdp_debt_asset_id(&controller);
                 let basket_root = cdp_basket_root(&leg_hashes);
-                let position_leaf = cdp_position_leaf(&controller, &debt_asset, &basket_root, debt_value, &owner, &nonce);
-                assert!(cdp_position_root != [0u8; 32], "cdp-close: membership requires a non-zero position root");
-                assert!(keccak_merkle_verify(&position_leaf, position_index, &position_path, &cdp_position_root), "cdp-close: position membership");
+                let position_leaf = cdp_position_leaf(
+                    &controller,
+                    &debt_asset,
+                    &basket_root,
+                    debt_value,
+                    &owner,
+                    &nonce,
+                );
+                assert!(
+                    cdp_position_root != [0u8; 32],
+                    "cdp-close: membership requires a non-zero position root"
+                );
+                assert!(
+                    keccak_merkle_verify(
+                        &position_leaf,
+                        position_index,
+                        &position_path,
+                        &cdp_position_root
+                    ),
+                    "cdp-close: position membership"
+                );
                 for (asset, value, cx, cy, pt, sig_r, sig_z) in released {
                     let sig_z = scalar_reduce_be(&sig_z);
                     let ctx = intent_context(
-                        b"tacit-cdp-close-release-v1", &chain_binding, &asset, &position_leaf,
-                        &[(cx, cy, owner)], &[value],
+                        b"tacit-cdp-close-release-v1",
+                        &chain_binding,
+                        &asset,
+                        &position_leaf,
+                        &[(cx, cy, owner)],
+                        &[value],
                     );
-                    assert!(verify_opening_sigma(&pt, value, &sig_r, &sig_z, &ctx), "cdp-close: released-leg opening sigma");
+                    assert!(
+                        verify_opening_sigma(&pt, value, &sig_r, &sig_z, &ctx),
+                        "cdp-close: released-leg opening sigma"
+                    );
                     leaves.push(leaf(&asset, &cx, &cy, &owner));
                 }
                 // burn debt notes (any holders) summing to EXACTLY the position debt
                 let n_debt: u32 = io::read();
-                assert!(n_debt > 0 && n_debt <= MAX_ITEMS_PER_OP, "cdp-close: debt input count out of range");
+                assert!(
+                    n_debt > 0 && n_debt <= MAX_ITEMS_PER_OP,
+                    "cdp-close: debt input count out of range"
+                );
                 let mut repaid: u128 = 0;
                 for _ in 0..n_debt {
                     let (cx, cy, pt) = r_commitment();
@@ -1427,18 +2062,33 @@ pub fn main() {
                     let sig_r = decompress(&r33()).expect("cdp-close: debt sigma R");
                     let sig_z = scalar_reduce_be(&r32());
                     let lf = leaf(&debt_asset, &cx, &cy, &d_owner);
-                    assert!(keccak_merkle_verify(&lf, index, &path, &spend_root), "cdp-close: debt membership");
-                    let ctx = intent_context(
-                        b"tacit-cdp-close-debt-v1", &chain_binding, &debt_asset, &position_leaf,
-                        &[(cx, cy, d_owner)], &[value, debt_value, index],
+                    assert!(
+                        keccak_merkle_verify(&lf, index, &path, &spend_root),
+                        "cdp-close: debt membership"
                     );
-                    assert!(verify_opening_sigma(&pt, value, &sig_r, &sig_z, &ctx), "cdp-close: debt opening sigma");
+                    let ctx = intent_context(
+                        b"tacit-cdp-close-debt-v1",
+                        &chain_binding,
+                        &debt_asset,
+                        &position_leaf,
+                        &[(cx, cy, d_owner)],
+                        &[value, debt_value, index],
+                    );
+                    assert!(
+                        verify_opening_sigma(&pt, value, &sig_r, &sig_z, &ctx),
+                        "cdp-close: debt opening sigma"
+                    );
                     let nu = nullifier(&cx, &cy);
-                    if bitcoin_spent_root != [0u8; 32] { check_btc_nonmembership(&nu, &bitcoin_spent_root); }
+                    if bitcoin_spent_root != [0u8; 32] {
+                        check_btc_nonmembership(&nu, &bitcoin_spent_root);
+                    }
                     nullifiers.push(nu);
                     repaid += value as u128;
                 }
-                assert!(repaid == debt_value as u128, "cdp-close: must repay exactly the position debt");
+                assert!(
+                    repaid == debt_value as u128,
+                    "cdp-close: must repay exactly the position debt"
+                );
                 cdp_closes.push(CdpClose {
                     controller: Address::from(controller),
                     debtValue: U256::from(debt_value),
@@ -1468,20 +2118,199 @@ pub fn main() {
                     let asset = r32();
                     let value: u64 = io::read();
                     leg_hashes.push(cdp_basket_leg(&asset, value));
-                    legs_pv.push(CdpLeg { asset: asset.into(), value: U256::from(value) });
+                    legs_pv.push(CdpLeg {
+                        asset: asset.into(),
+                        value: U256::from(value),
+                    });
                     // seize: withdraw the leg's value to the controller (the value is bound by the basket root)
-                    withdrawals.push(Withdrawal { assetId: asset.into(), recipient: controller_addr, value: U256::from(value) });
+                    withdrawals.push(Withdrawal {
+                        assetId: asset.into(),
+                        recipient: controller_addr,
+                        value: U256::from(value),
+                    });
                 }
                 let debt_asset = cdp_debt_asset_id(&controller);
                 let basket_root = cdp_basket_root(&leg_hashes);
-                let position_leaf = cdp_position_leaf(&controller, &debt_asset, &basket_root, debt_value, &owner, &nonce);
-                assert!(cdp_position_root != [0u8; 32], "cdp-liquidate: membership requires a non-zero position root");
-                assert!(keccak_merkle_verify(&position_leaf, position_index, &position_path, &cdp_position_root), "cdp-liquidate: position membership");
+                let position_leaf = cdp_position_leaf(
+                    &controller,
+                    &debt_asset,
+                    &basket_root,
+                    debt_value,
+                    &owner,
+                    &nonce,
+                );
+                assert!(
+                    cdp_position_root != [0u8; 32],
+                    "cdp-liquidate: membership requires a non-zero position root"
+                );
+                assert!(
+                    keccak_merkle_verify(
+                        &position_leaf,
+                        position_index,
+                        &position_path,
+                        &cdp_position_root
+                    ),
+                    "cdp-liquidate: position membership"
+                );
                 cdp_liquidations.push(CdpLiquidate {
                     controller: controller_addr,
                     debtValue: U256::from(debt_value),
                     positionNullifier: cdp_position_nullifier(&position_leaf).into(),
                     legs: legs_pv,
+                });
+            }
+            OP_CDP_TOPUP => {
+                // Top up a CDP without changing its debt: reproduce the OLD position, prove it ∈ the
+                // position set, spend fresh collateral notes, and append a replacement position with the same
+                // debt and a strictly larger canonical basket. No debt note is minted or burned; the contract
+                // consumes the old position ν, appends `new_position_leaf`, and asks the controller to approve
+                // the replacement health. This is the Maker-style rescue path without introducing mutable
+                // in-place position state.
+                let controller = r20();
+                let owner = r32();
+                let debt_value: u64 = io::read();
+                assert!(debt_value > 0, "cdp-topup: zero debt");
+                let old_nonce = r32();
+                let new_nonce = r32();
+                let position_index: u64 = io::read();
+                let position_path = r_path();
+                let n_old_legs: u32 = io::read();
+                assert!(n_old_legs > 0, "cdp-topup: empty old basket");
+                assert!(
+                    n_old_legs <= MAX_ITEMS_PER_OP,
+                    "cdp-topup: old basket over cap"
+                );
+
+                let mut old_leg_hashes: Vec<[u8; 32]> = Vec::with_capacity(n_old_legs as usize);
+                let mut old_legs_raw: Vec<([u8; 32], u64)> =
+                    Vec::with_capacity(n_old_legs as usize);
+                let mut old_legs_pv: Vec<CdpLeg> = Vec::with_capacity(n_old_legs as usize);
+                let mut prev_asset = [0u8; 32];
+                for _ in 0..n_old_legs {
+                    let asset = r32();
+                    assert!(
+                        asset > prev_asset,
+                        "cdp-topup: old basket legs must be strictly asset-sorted"
+                    );
+                    prev_asset = asset;
+                    let value: u64 = io::read();
+                    assert!(value > 0, "cdp-topup: zero-value old collateral leg");
+                    old_leg_hashes.push(cdp_basket_leg(&asset, value));
+                    old_legs_raw.push((asset, value));
+                    old_legs_pv.push(CdpLeg {
+                        asset: asset.into(),
+                        value: U256::from(value),
+                    });
+                }
+
+                let debt_asset = cdp_debt_asset_id(&controller);
+                let old_basket_root = cdp_basket_root(&old_leg_hashes);
+                let old_position_leaf = cdp_position_leaf(
+                    &controller,
+                    &debt_asset,
+                    &old_basket_root,
+                    debt_value,
+                    &owner,
+                    &old_nonce,
+                );
+                assert!(
+                    cdp_position_root != [0u8; 32],
+                    "cdp-topup: membership requires a non-zero position root"
+                );
+                assert!(
+                    keccak_merkle_verify(
+                        &old_position_leaf,
+                        position_index,
+                        &position_path,
+                        &cdp_position_root
+                    ),
+                    "cdp-topup: position membership",
+                );
+
+                let n_added_legs: u32 = io::read();
+                assert!(n_added_legs > 0, "cdp-topup: empty added basket");
+                assert!(
+                    n_added_legs <= MAX_ITEMS_PER_OP,
+                    "cdp-topup: added basket over cap"
+                );
+                assert!(
+                    spend_root != [0u8; 32],
+                    "cdp-topup: membership requires a non-zero spend root"
+                );
+                let mut added_legs_raw: Vec<([u8; 32], u64)> =
+                    Vec::with_capacity(n_added_legs as usize);
+                prev_asset = [0u8; 32];
+                let mut controller32 = [0u8; 32];
+                controller32[12..].copy_from_slice(&controller);
+                for _ in 0..n_added_legs {
+                    let asset = r32();
+                    assert!(
+                        asset > prev_asset,
+                        "cdp-topup: added legs must be strictly asset-sorted"
+                    );
+                    prev_asset = asset;
+                    let (cx, cy, pt) = r_commitment();
+                    let value: u64 = io::read();
+                    assert!(value > 0, "cdp-topup: zero-value added collateral leg");
+                    let index: u64 = io::read();
+                    let path = r_path();
+                    let sig_r = decompress(&r33()).expect("cdp-topup: collateral sigma R");
+                    let sig_z = scalar_reduce_be(&r32());
+                    let lf = leaf(&asset, &cx, &cy, &owner);
+                    assert!(
+                        keccak_merkle_verify(&lf, index, &path, &spend_root),
+                        "cdp-topup: collateral membership"
+                    );
+                    let ctx = intent_context(
+                        b"tacit-cdp-topup-collateral-v1",
+                        &chain_binding,
+                        &asset,
+                        &old_position_leaf,
+                        &[(cx, cy, owner), (controller32, new_nonce, owner)],
+                        &[value, debt_value, index],
+                    );
+                    assert!(
+                        verify_opening_sigma(&pt, value, &sig_r, &sig_z, &ctx),
+                        "cdp-topup: collateral opening sigma"
+                    );
+                    let nu = nullifier(&cx, &cy);
+                    if bitcoin_spent_root != [0u8; 32] {
+                        check_btc_nonmembership(&nu, &bitcoin_spent_root);
+                    }
+                    nullifiers.push(nu);
+                    added_legs_raw.push((asset, value));
+                }
+
+                let new_legs_raw = merge_cdp_legs(&old_legs_raw, &added_legs_raw);
+                assert!(
+                    new_legs_raw.len() <= MAX_ITEMS_PER_OP as usize,
+                    "cdp-topup: replacement basket over cap"
+                );
+                let mut new_leg_hashes: Vec<[u8; 32]> = Vec::with_capacity(new_legs_raw.len());
+                let mut new_legs_pv: Vec<CdpLeg> = Vec::with_capacity(new_legs_raw.len());
+                for (asset, value) in new_legs_raw {
+                    new_leg_hashes.push(cdp_basket_leg(&asset, value));
+                    new_legs_pv.push(CdpLeg {
+                        asset: asset.into(),
+                        value: U256::from(value),
+                    });
+                }
+                let new_basket_root = cdp_basket_root(&new_leg_hashes);
+                let new_position_leaf = cdp_position_leaf(
+                    &controller,
+                    &debt_asset,
+                    &new_basket_root,
+                    debt_value,
+                    &owner,
+                    &new_nonce,
+                );
+                cdp_topups.push(CdpTopup {
+                    controller: Address::from(controller),
+                    debtValue: U256::from(debt_value),
+                    oldPositionNullifier: cdp_position_nullifier(&old_position_leaf).into(),
+                    newPositionLeaf: new_position_leaf.into(),
+                    oldLegs: old_legs_pv,
+                    newLegs: new_legs_pv,
                 });
             }
             OP_CBTC_MINT => {
@@ -1498,8 +2327,12 @@ pub fn main() {
                 let sig_r = decompress(&r33()).expect("cbtc-mint: sigma R");
                 let sig_z = scalar_reduce_be(&r32());
                 let ctx = intent_context(
-                    b"tacit-cbtc-mint-intent-v1", &chain_binding, &CBTC_ZK_ASSET_ID, &outpoint,
-                    &[(cx, cy, [0u8; 32])], &[v_btc],
+                    b"tacit-cbtc-mint-intent-v1",
+                    &chain_binding,
+                    &CBTC_ZK_ASSET_ID,
+                    &outpoint,
+                    &[(cx, cy, [0u8; 32])],
+                    &[v_btc],
                 );
                 assert!(
                     verify_opening_sigma(&c, v_btc, &sig_r, &sig_z, &ctx),
@@ -1549,6 +2382,7 @@ pub fn main() {
         cdpMints: cdp_mints,
         cdpCloses: cdp_closes,
         cdpLiquidations: cdp_liquidations,
+        cdpTopups: cdp_topups,
         cbtcMints: cbtc_mints,
     };
     io::commit_slice(&pv.abi_encode());

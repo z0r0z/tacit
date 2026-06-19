@@ -1,4 +1,7 @@
 {
+  "scripts": {
+    "test:reflection-modeb-indexer": "node tests/gen-reflection-modeb-indexer.mjs > /tmp/reflection_modeb_indexer.json"
+  },
   "dependencies": {
     "@noble/hashes": "^2.2.0",
     "@noble/secp256k1": "^2.3.0",

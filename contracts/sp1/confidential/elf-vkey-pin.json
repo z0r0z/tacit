@@ -3,13 +3,22 @@
   "elf_sha256": "4438a10b67f4c878a6144dcfa8976e30393cb32d59815db43d27705f518ce97c",
   "elf_bytes": 859024,
   "program_vkey": "0x005c8a3dc76fdb1df8540736b73d893e5cff55c403442ef0f01a945a41775406",
-  "reflection_elf_sha256": "121659ce8f5c2e42c092a18de3651d33b43c25db0321c9b71e628e62fc78c689",
-  "reflection_elf_bytes": 980816,
-  "bitcoin_relay_vkey": "0x008c9fa6e9ee312ba99be8ba5a222ad161912fafebc3cec893e3dfc25f041160",
+  "reflection_elf_sha256": "36224f90d603510d464ba3bfbfbee641ea96e13d6d1fa254a9aa509b044d32a5",
+  "reflection_elf_bytes": 1016856,
+  "bitcoin_relay_vkey": "0x0032a552d82143745ed675a217822187e15118060dcea1514589ce47c2ec3c02",
   "_vkey_authority": "program_vkey + bitcoin_relay_vkey are the AUTHORITATIVE deploy vkeys for the committed ELFs; guest_state below is descriptive prose only (it has lagged the fields before). The vkey<->ELF binding is enforced mechanically at prove time by the EXPECT_VKEY / ELF_VKEY_PIN guard in exec-prove.rs (program_vkey) and exec-reflect-prove.rs (bitcoin_relay_vkey), and at deploy time by DeployConfidentialPool's require(vkey == .program_vkey). After any ELF rebuild, derive both vkeys on the prover host and reconcile every field here in the same commit.",
-  "guest_state": "Sepolia E2 coordinated re-prove finalized: settle guest 0x005c8a3dc76fdb1df8540736b73d893e5cff55c403442ef0f01a945a41775406 (ELF sha 4438a10b67f4c878a6144dcfa8976e30393cb32d59815db43d27705f518ce97c, 859024 bytes) and reflection guest 0x008c9fa6e9ee312ba99be8ba5a222ad161912fafebc3cec893e3dfc25f041160 (ELF sha 121659ce8f5c2e42c092a18de3651d33b43c25db0321c9b71e628e62fc78c689, 980816 bytes). Real Groth16 fixtures for transfer/swap/lp/otc/bid/crosslane/reflection/reflection_burn_deposit were regenerated from the same staged ELFs and locally verified before pinning. Mainnet re-anchor/re-prove remains a separate checklist.",
+  "guest_state": "Sepolia/signet E2 reflection leg rebuilt after pilot diagnostics, then rotated for burn-envelope liveness hardening: settle guest 0x005c8a3dc76fdb1df8540736b73d893e5cff55c403442ef0f01a945a41775406 (ELF sha 4438a10b67f4c878a6144dcfa8976e30393cb32d59815db43d27705f518ce97c, 859024 bytes) remains unchanged; reflection guest 0x0032a552d82143745ed675a217822187e15118060dcea1514589ce47c2ec3c02 (ELF sha 36224f90d603510d464ba3bfbfbee641ea96e13d6d1fa254a9aa509b044d32a5, 1016856 bytes) includes the BIP141 witness-commitment trailing-byte fix, Mode-B non-member 0x65 skip-witness alignment, and burn-envelope skip-not-panic for multi-live-spend / mismatched-ν transactions. Mainnet re-anchor/re-prove remains a separate checklist.",
+  "_multi_live_burn_rebuild_2026_06_19": {
+    "status": "reflection ELF rebuilt after replacing the guest-side multi-live-spend burn assert with skip-not-panic behavior",
+    "reflection": {
+      "bitcoin_relay_vkey": "0x0032a552d82143745ed675a217822187e15118060dcea1514589ce47c2ec3c02",
+      "elf_sha256": "36224f90d603510d464ba3bfbfbee641ea96e13d6d1fa254a9aa509b044d32a5",
+      "elf_bytes": 1016856
+    },
+    "note": "Groth16 reflection fixtures must be regenerated from this pinned reflection ELF before deploying this BITCOIN_RELAY_VKEY."
+  },
   "_e2_reprove_2026_06_19": {
-    "status": "FINALIZED Sepolia/pilot coordinated re-prove",
+    "status": "FINALIZED Sepolia/signet pilot re-prove. The reflection leg's final pin is the multi-live-burn skip-not-panic rebuild below (BITCOIN_RELAY_VKEY 0x0032a552); the intermediate BIP141 + Mode-B reflection vkey 0x0006921c / ELF sha f66eb9d8 / 980816 bytes was superseded and is NOT the committed ELF.",
     "remote_artifacts": "/root/work/e2-reprove/artifacts on the Vast prover box",
     "settle": {
       "program_vkey": "0x005c8a3dc76fdb1df8540736b73d893e5cff55c403442ef0f01a945a41775406",
@@ -17,9 +26,9 @@
       "elf_bytes": 859024
     },
     "reflection": {
-      "bitcoin_relay_vkey": "0x008c9fa6e9ee312ba99be8ba5a222ad161912fafebc3cec893e3dfc25f041160",
-      "elf_sha256": "121659ce8f5c2e42c092a18de3651d33b43c25db0321c9b71e628e62fc78c689",
-      "elf_bytes": 980816
+      "bitcoin_relay_vkey": "0x0032a552d82143745ed675a217822187e15118060dcea1514589ce47c2ec3c02",
+      "elf_sha256": "36224f90d603510d464ba3bfbfbee641ea96e13d6d1fa254a9aa509b044d32a5",
+      "elf_bytes": 1016856
     },
     "fixtures": [
       "confidential_groth16.json",

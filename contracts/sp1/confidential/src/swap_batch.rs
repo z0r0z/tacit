@@ -19,9 +19,10 @@
 
 use bn::Fr;
 use cxfer_core::{
-    amm_canonical_pair, amm_derive_pool_id_v1, bitcoin::SwapBatchEnvelope, commitment_hash_compressed,
-    decompress, from_affine_xy, outpoint_key, reflected_note_leaf, scalar_reduce_be, sha256,
-    swap_batch_aggregate_identity, verify_pedersen_opening, DetectedSpend, G16Proof, ScanReflection,
+    amm_canonical_pair, amm_derive_pool_id_v1, bitcoin::SwapBatchEnvelope,
+    commitment_hash_compressed, decompress, from_affine_xy, outpoint_key, reflected_note_leaf,
+    scalar_reduce_be, sha256, swap_batch_aggregate_identity, verify_pedersen_opening,
+    DetectedSpend, G16Proof, ScanReflection,
 };
 
 const N_MAX: usize = 16;
@@ -45,13 +46,24 @@ fn u64_be(n: u64) -> [u8; 32] {
 /// these: `R_*_pre` come from the registry, `pool_id_fr = SHA256(pool_id) mod r`, and the BJJ coordinates are
 /// recovered by the validated `babyjubjub::unpack` of the envelope's commitments (padding the unused slots with
 /// the BJJ identity `(0,1)`, like the circuit). Returns None on a bad point / out-of-range count.
-pub fn swap_batch_public_signals(env: &SwapBatchEnvelope, pool_id: &[u8; 32], reserve_a: u64, reserve_b: u64) -> Option<Vec<[u8; 32]>> {
-    if env.n_intents == 0 || env.n_intents > N_MAX || env.intents.len() != env.n_intents || env.receipts.len() != env.n_intents {
+pub fn swap_batch_public_signals(
+    env: &SwapBatchEnvelope,
+    pool_id: &[u8; 32],
+    reserve_a: u64,
+    reserve_b: u64,
+) -> Option<Vec<[u8; 32]>> {
+    if env.n_intents == 0
+        || env.n_intents > N_MAX
+        || env.intents.len() != env.n_intents
+        || env.receipts.len() != env.n_intents
+    {
         return None;
     }
     let mut s: Vec<[u8; 32]> = Vec::with_capacity(123);
     // [0..11] globals.
-    s.push(fr_to_be(Fr::from_bytes_be_mod_order(&sha256(pool_id)).ok()?)); // pool_id_fr = SHA256(pool_id) mod r
+    s.push(fr_to_be(
+        Fr::from_bytes_be_mod_order(&sha256(pool_id)).ok()?,
+    )); // pool_id_fr = SHA256(pool_id) mod r
     s.push(u64_be(reserve_a)); // R_A_pre
     s.push(u64_be(reserve_b)); // R_B_pre
     s.push(u64_be(env.delta_a_net_sign as u64));
@@ -85,7 +97,9 @@ pub fn swap_batch_public_signals(env: &SwapBatchEnvelope, pool_id: &[u8; 32], re
         c_out_u[i] = fr_to_be(ou);
         c_out_v[i] = fr_to_be(ov);
     }
-    for arr in [&direction, &c_in_u, &c_in_v, &min_out, &tip, &c_out_u, &c_out_v] {
+    for arr in [
+        &direction, &c_in_u, &c_in_v, &min_out, &tip, &c_out_u, &c_out_v,
+    ] {
         for x in arr.iter() {
             s.push(*x);
         }
@@ -129,7 +143,10 @@ pub fn fold_swap_batch(
     spends: &[DetectedSpend],
     receipt_paths: &[Vec<[u8; 32]>],
 ) -> bool {
-    if env.intents.len() != env.n_intents || env.receipts.len() != env.n_intents || receipt_paths.len() != env.n_intents {
+    if env.intents.len() != env.n_intents
+        || env.receipts.len() != env.n_intents
+        || receipt_paths.len() != env.n_intents
+    {
         return false;
     }
     if env.fee_bps > 1000 {
@@ -198,12 +215,32 @@ pub fn fold_swap_batch(
         return false;
     }
     // 4. aggregate Pedersen identity per asset A + B (binds the receipts' total to real inputs + reserve).
-    let intents_secp: Vec<(u8, [u8; 33])> = env.intents.iter().map(|it| (it.direction, it.c_in_secp)).collect();
+    let intents_secp: Vec<(u8, [u8; 33])> = env
+        .intents
+        .iter()
+        .map(|it| (it.direction, it.c_in_secp))
+        .collect();
     let receipts_secp: Vec<[u8; 33]> = env.receipts.iter().map(|r| r.c_out_secp).collect();
-    if !swap_batch_aggregate_identity(&intents_secp, &receipts_secp, true, env.delta_a_net_sign, env.delta_a_net_mag, &env.tip_a_c_secp, &env.r_net_a) {
+    if !swap_batch_aggregate_identity(
+        &intents_secp,
+        &receipts_secp,
+        true,
+        env.delta_a_net_sign,
+        env.delta_a_net_mag,
+        &env.tip_a_c_secp,
+        &env.r_net_a,
+    ) {
         return false;
     }
-    if !swap_batch_aggregate_identity(&intents_secp, &receipts_secp, false, env.delta_b_net_sign, env.delta_b_net_mag, &env.tip_b_c_secp, &env.r_net_b) {
+    if !swap_batch_aggregate_identity(
+        &intents_secp,
+        &receipts_secp,
+        false,
+        env.delta_b_net_sign,
+        env.delta_b_net_mag,
+        &env.tip_b_c_secp,
+        &env.r_net_b,
+    ) {
         return false;
     }
     // 5. ONE-TO-ONE: each intent's C_in_secp must match a DISTINCT real spent pool note of the intent's
@@ -217,7 +254,11 @@ pub fn fold_swap_batch(
         if it.direction > 1 {
             return false;
         }
-        let expected_asset = if it.direction == 0 { pool.asset_a } else { pool.asset_b };
+        let expected_asset = if it.direction == 0 {
+            pool.asset_a
+        } else {
+            pool.asset_b
+        };
         let in_pt = match decompress(&it.c_in_secp) {
             Some(p) => p,
             None => return false,
@@ -251,11 +292,22 @@ pub fn fold_swap_batch(
     // ---- all validation passed; COMMIT: onboard each receipt, then advance reserves. ----
     for (i, r) in env.receipts.iter().enumerate() {
         // receipt asset = the OUTPUT side for this intent: direction 0 (A→B) ⇒ receives B; direction 1 ⇒ A.
-        let out_asset = if env.intents[i].direction == 0 { pool.asset_b } else { pool.asset_a };
-        let leaf = reflected_note_leaf(&out_asset, &r.c_out_secp).expect("receipt commitment is a curve point");
+        let out_asset = if env.intents[i].direction == 0 {
+            pool.asset_b
+        } else {
+            pool.asset_a
+        };
+        let leaf = reflected_note_leaf(&out_asset, &r.c_out_secp)
+            .expect("receipt commitment is a curve point");
         let ch = commitment_hash_compressed(&r.c_out_secp).expect("receipt commitment hash");
         state
-            .fold_output(&leaf, &receipt_paths[i], &outpoint_key(txid, (i + 1) as u32), &ch, &out_asset)
+            .fold_output(
+                &leaf,
+                &receipt_paths[i],
+                &outpoint_key(txid, (i + 1) as u32),
+                &ch,
+                &out_asset,
+            )
             .expect("swap_batch receipt append");
     }
     pool.reserve_a = new_a;

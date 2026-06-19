@@ -54,6 +54,10 @@ jobs:
         run: |
           node tests/gen-reflection-cxfer-synth.mjs > /tmp/reflection_input.json
           node tests/gen-reflection-burn-deposit.mjs > /tmp/reflection_burn_deposit.json
+      - name: Mode-B indexer regression (non-member 0x65 skip witness)
+        run: |
+          node tests/gen-reflection-modeb-indexer.mjs > /tmp/reflection_modeb_indexer.json
+          node -e 'const fs=require("fs"); const f=JSON.parse(fs.readFileSync("/tmp/reflection_modeb_indexer.json","utf8")); if (f.modeB !== 1) throw new Error("modeB fixture was not assembled as mode_b=1"); if (!f.blocks?.[0]?.txs?.[0]?.crossoutMint) throw new Error("non-member 0x65 did not emit skip witness"); if (!f.blocks?.[0]?.txs?.[1]?.crossoutMint) throw new Error("member 0x65 did not emit membership witness");'
       - name: Build reflection guest
         working-directory: contracts/sp1/confidential
         run: cargo prove build --bin reflection-prover

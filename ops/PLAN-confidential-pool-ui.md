@@ -19,7 +19,7 @@ had the right structure but a wrong selector — corrected below). Build it in a
 
 ## Verified specifics (corrections)
 - `wrap(bytes32,uint256,bytes32)` selector = **`0x8be3ad21`** — the third arg is `commit = keccak(Cx‖Cy‖owner)`; the raw coords/owner stay off-chain (in the OP_WRAP witness), so the deposit note's nullifier is not publicly computable. `settle(bytes,bytes,bytes[])` = `0x717fd7f2`.
-- Events: `Wrap(bytes32 indexed depositId, bytes32 indexed assetId, uint256 amount, bytes32 cx, bytes32 cy, bytes32 owner)`; `Settled(bytes32 indexed newRoot, uint256 leavesInserted, uint256 nullifiersSpent)`; `LeavesInserted(uint256 indexed firstLeafIndex, bytes32[] leaves, bytes[] memos)`; `NullifiersSpent(bytes32[] nullifiers)` (ConfidentialPool.sol:285-291).
+- Events kept for the UI/recovery path: `Wrap(bytes32 indexed depositId, bytes32 indexed assetId, uint256 amount)`, `LeavesInserted(uint256 indexed firstLeafIndex, bytes32[] leaves, bytes[] memos)`, and `NullifiersSpent(bytes32[] nullifiers)`. Convenience settle/withdraw logs are trimmed for pool bytecode size.
 - `settle()` requires exactly ONE memo per inserted leaf (else `MemoLeafMismatch` 0x2763eb74) — every op the UI submits carries `memos.length == #output leaves`.
 
 ## The deposit→consume reality (decides the on-ramp)

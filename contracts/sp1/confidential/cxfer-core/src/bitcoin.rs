@@ -1297,7 +1297,8 @@ pub fn verify_witness_commitment(txs: &[&[u8]]) -> Option<bool> {
     Some(double_sha256(&preimage) == commitment)
 }
 
-/// Read the coinbase's BIP141 witness commitment (`6a24aa21a9ed‖<32B>`, the LAST such output wins) and
+/// Read the coinbase's BIP141 witness commitment (`6a24aa21a9ed‖<32B>`, optional trailing bytes allowed,
+/// the LAST such output wins) and
 /// the 32-byte witness reserved value (input 0's single witness item). Total/non-panicking on hostile
 /// input — checked_add throughout, returns None on any truncation.
 fn parse_coinbase_commitment(tx: &[u8]) -> Option<([u8; 32], [u8; 32])> {
@@ -1320,7 +1321,7 @@ fn parse_coinbase_commitment(tx: &[u8]) -> Option<([u8; 32], [u8; 32])> {
         let end = pos.checked_add(slen)?;
         if end > tx.len() { return None; }
         let s = &tx[pos..end];
-        if s.len() == 38 && s[0] == 0x6a && s[1] == 0x24 && s[2] == 0xaa && s[3] == 0x21 && s[4] == 0xa9 && s[5] == 0xed {
+        if s.len() >= 38 && s[0] == 0x6a && s[1] == 0x24 && s[2] == 0xaa && s[3] == 0x21 && s[4] == 0xa9 && s[5] == 0xed {
             commitment = Some(s[6..38].try_into().ok()?); // LAST commitment output wins (BIP141)
         }
         pos = end;
@@ -2386,7 +2387,8 @@ mod tests {
         cb.extend_from_slice(&[0u8; 32]); cb.extend_from_slice(&[0xff, 0xff, 0xff, 0xff]); // coinbase prevout
         cb.push(0x00); cb.extend_from_slice(&[0xff, 0xff, 0xff, 0xff]);                    // scriptSig len 0, sequence
         cb.push(0x01); cb.extend_from_slice(&[0u8; 8]);                                    // 1 output, value 0
-        cb.push(0x26); cb.extend_from_slice(&[0x6a, 0x24, 0xaa, 0x21, 0xa9, 0xed]); cb.extend_from_slice(&commitment);
+        cb.push(0x28); cb.extend_from_slice(&[0x6a, 0x24, 0xaa, 0x21, 0xa9, 0xed]); cb.extend_from_slice(&commitment);
+        cb.extend_from_slice(&[0x99, 0x42]); // BIP141 permits optional bytes after the 36-byte commitment.
         cb.push(0x01); cb.push(0x20); cb.extend_from_slice(&reserved);                     // witness: the 32-byte reserved value
         cb.extend_from_slice(&[0, 0, 0, 0]);                                               // locktime
 

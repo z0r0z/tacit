@@ -63,20 +63,29 @@ fn pt_eq(p: &Pt, q: &Pt) -> bool {
 /// here + validated against the dapp's hash-to-curve in the harness.
 pub fn h_bjj() -> Pt {
     (
-        fr_hex(&hx("13969c921b0a36e78280a9ff5415b7756761b630fd5fa30d7537e3640cbf6da5")),
-        fr_hex(&hx("1553d34ea48b8d61df6de5ca9ae5d95183746714ba21af253a46c18a6c2279e4")),
+        fr_hex(&hx(
+            "13969c921b0a36e78280a9ff5415b7756761b630fd5fa30d7537e3640cbf6da5",
+        )),
+        fr_hex(&hx(
+            "1553d34ea48b8d61df6de5ca9ae5d95183746714ba21af253a46c18a6c2279e4",
+        )),
     )
 }
 pub fn g_bjj() -> Pt {
     (
-        fr_hex(&hx("16b271021d857578ee55d438a32eed9081bfe28579f6e671c87c58a035b49b7b")),
-        fr_hex(&hx("2447904d61713ffa77c624c908255001a5f369e2548764cb4adbc6e454ae9884")),
+        fr_hex(&hx(
+            "16b271021d857578ee55d438a32eed9081bfe28579f6e671c87c58a035b49b7b",
+        )),
+        fr_hex(&hx(
+            "2447904d61713ffa77c624c908255001a5f369e2548764cb4adbc6e454ae9884",
+        )),
     )
 }
 
 // (P_FR − 1) / 2 — the high-half threshold for the point-compression sign bit.
 fn pm1d2() -> U256 {
-    fr_dec("10944121435919637611123202872628637544274182200208017171849102093287904247808").into_u256()
+    fr_dec("10944121435919637611123202872628637544274182200208017171849102093287904247808")
+        .into_u256()
 }
 // N_BJJ = ORDER_BJJ / 8 (the prime subgroup order), big-endian.
 fn n_bjj_bytes() -> [u8; 32] {
@@ -139,12 +148,14 @@ fn fr_sqrt(n: Fr) -> Option<Fr> {
     if n.is_zero() {
         return Some(Fr::zero());
     }
-    let exp_half = fr_dec("10944121435919637611123202872628637544274182200208017171849102093287904247808"); // (p−1)/2
+    let exp_half =
+        fr_dec("10944121435919637611123202872628637544274182200208017171849102093287904247808"); // (p−1)/2
     if n.pow(exp_half) != Fr::one() {
         return None; // not a quadratic residue
     }
     let q = fr_dec("81540058820840996586704275553141814055101440848469862132140264610111"); // odd part of p−1
-    let q_plus_1_over_2 = fr_dec("40770029410420498293352137776570907027550720424234931066070132305056");
+    let q_plus_1_over_2 =
+        fr_dec("40770029410420498293352137776570907027550720424234931066070132305056");
     let nonresidue = fr_dec("5");
     let mut m: u32 = 28; // S
     let mut c = nonresidue.pow(q);

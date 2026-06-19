@@ -4,7 +4,7 @@
 // subscribes to the contract, decodes with this, and serves the ordered stream;
 // the client recovers. No off-chain note storage — the chain is the source.
 //
-// Decodes: LeavesInserted, NullifiersSpent, CrossOutRecorded, BridgeMinted, Wrap.
+// Decodes: LeavesInserted, NullifiersSpent, CrossOutRecorded, Wrap.
 // Minimal in-module ABI reading (no ethers/web3 dep), exactly the shapes these
 // events use. keccak256 injected for the topic0 signature hashes.
 
@@ -19,7 +19,6 @@ export function makeConfidentialEvmLog({ keccak256 }) {
     LeavesInserted: 'LeavesInserted(uint256,bytes32[],bytes[])',
     NullifiersSpent: 'NullifiersSpent(bytes32[])',
     CrossOutRecorded: 'CrossOutRecorded(bytes32,uint16,bytes32,bytes32,bytes32)',
-    BridgeMinted: 'BridgeMinted(bytes32)',
     Wrap: 'Wrap(bytes32,bytes32,uint256)',
   };
   const TOPIC0 = Object.fromEntries(Object.entries(SIGS).map(([k, s]) => [k, topic(s)]));
@@ -84,9 +83,6 @@ export function makeConfidentialEvmLog({ keccak256 }) {
         nullifier: wordHexAt(data, 64),
         assetId: wordHexAt(data, 96),
       };
-    }
-    if (kind === 'BridgeMinted') {
-      return { type: 'BridgeMinted', claimId: String(topics[1]) };
     }
     if (kind === 'Wrap') {
       // indexed: depositId (topic1), assetId (topic2). data: (uint256 amount). The commitment

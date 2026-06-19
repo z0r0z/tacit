@@ -6,7 +6,7 @@ import {ReentrancyGuard} from "solady/utils/ReentrancyGuard.sol";
 
 /// @dev The immutable ConfidentialPool surface this engine reads/serves. The pool is the authority for
 ///      all proven Bitcoin/CDP state; the engine only sizes escrows, prices collateral, and routes
-///      seizures — it can NEVER mint a confidential asset, move backing, or break a peg (all of which are
+///      seizures - it can NEVER mint a confidential asset, move backing, or break a peg (all of which are
 ///      proof-enforced in the pool). See ops/DESIGN-confidential-defi-v1.md §§3,4,6.
 interface IConfidentialPoolCollateral {
     /// Σ live self-custody cBTC.zk lock sats (reflection-attested, oracle-free).
@@ -37,7 +37,7 @@ interface IAmmTwap {
 /// @notice The unified collateral / insurance core for Tacit confidential DeFi v1 — the conjoined
 ///         buffer + insurance + per-locker escrow + cUSD CDP controller (supersedes `CbtcBuffer` +
 ///         `InsuranceVault`). All POLICY lives here (mutable, Solady `Ownable` → DAO); the immutable
-///         `ConfidentialPool` calls `onCdpMint/Close/Liquidate` and reads `escrowSufficient` but holds
+///         `ConfidentialPool` calls `onCdpMint/Close/Liquidate/Topup` and reads `escrowSufficient` but holds
 ///         the proofs. Two roles:
 ///
 ///         1. **cBTC escrow (native ETH, Chainlink ETH/BTC sized):** a self-custody locker posts a
@@ -53,8 +53,8 @@ interface IAmmTwap {
 ///            requires the position be below `liqRatio` (reverts if healthy). Unlike cBTC, cUSD is a CDP
 ///            stablecoin: BTC/USD IS load-bearing for its peg (the DAI model).
 ///
-///         A shared native-ETH **insurance reserve** (funded by slashing surplus + liquidation penalties,
-///         never by honest users) backstops the tail.
+///         A shared native-ETH **insurance reserve** (funded by slashed escrows and explicit top-ups)
+///         backstops rug-recovery shortfall and CDP bad debt.
 contract CollateralEngine is Ownable, ReentrancyGuard {
     // The pool. Set once (owner) after deploy — NOT immutable — to break the engine↔pool circular dep:
     // the pool's COLLATERAL_ENGINE pointer is immutable, so the engine is deployed FIRST (pool unknown),
@@ -86,7 +86,7 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
     uint256 public outstandingCusd; // total cUSD debt minted across open positions (base units)
 
     // --- shared insurance reserve (native ETH) ---
-    uint256 public insuranceReserve; // wei; funded by slash surplus + liquidation, backstops bad debt
+    uint256 public insuranceReserve; // wei; funded by slash proceeds + explicit top-ups, backstops bad debt
 
     event FeedsSet(address ethBtcFeed, address btcUsdFeed);
     event ParamsSet(uint256 maxStaleness, uint256 escrowRatioBps, uint256 cdpRatioBps, uint256 liqRatioBps);
@@ -96,18 +96,33 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
     event CdpMinted(bytes32 indexed positionLeaf, uint256 debtValue, uint256 collateralUsd);
     event CdpClosed(bytes32 indexed positionNullifier, uint256 debtValue);
     event CdpLiquidated(bytes32 indexed positionNullifier, uint256 debtValue, uint256 collateralUsd);
+    event CdpToppedUp(
+        bytes32 indexed oldPositionNullifier,
+        bytes32 indexed newPositionLeaf,
+        uint256 debtValue,
+        uint256 oldCollateralUsd,
+        uint256 newCollateralUsd
+    );
     event InsuranceFunded(address indexed from, uint256 amount);
+    event InsuranceDrawn(address indexed to, uint256 amount);
 
     error NotPool();
+    error BadPool();
+    error BadParams();
     error BadFeed();
     error StaleFeed();
     error FeedDeviation();
+    error BadAmount();
     error ZeroRecipient();
     error NotCbtcCollateral();
     error Undercollateralized();
     error PositionHealthy();
+    error DebtAccountingUnderflow();
+    error BadEscrow();
+    error NothingToRelease();
     error NothingToSlash();
     error EscrowLocked();
+    error InsufficientReserve();
 
     modifier onlyPool() {
         if (msg.sender != address(POOL)) revert NotPool();
@@ -115,6 +130,10 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
     }
 
     constructor(address pool, bytes32 cbtcAssetId, uint8 cbtcDec, uint8 cusdDec, address admin) {
+        if (admin == address(0) || cbtcAssetId == bytes32(0) || cbtcDec > 18 || cusdDec > 18) {
+            revert BadParams();
+        }
+        if (pool != address(0) && pool.code.length == 0) revert BadPool();
         POOL = IConfidentialPoolCollateral(pool);
         CBTC_ASSET_ID = cbtcAssetId;
         CBTC_DEC = cbtcDec;
@@ -128,15 +147,26 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
     error PoolAlreadySet();
 
     /// @notice Wire the pool once after deploy (the engine↔pool circular-dep break). Reverts if already set,
-    ///         so it is fixed after the one call. No-op path for tests/deploys that pass the pool in the ctor.
+    ///         zero, or non-contract, so it is fixed after the one call. No-op path for tests/deploys that pass
+    ///         the pool in the ctor.
     function setPool(address pool) external onlyOwner {
         if (address(POOL) != address(0)) revert PoolAlreadySet();
+        if (pool == address(0) || pool.code.length == 0) revert BadPool();
         POOL = IConfidentialPoolCollateral(pool);
     }
 
     // ─────────────────────── owner-governed knobs ───────────────────────
 
     function setFeeds(address ethBtc, address btcUsd, address ethBtcTwap_, address btcUsdTwap_) external onlyOwner {
+        if (ethBtc == address(0) || btcUsd == address(0) || ethBtc.code.length == 0 || btcUsd.code.length == 0) {
+            revert BadFeed();
+        }
+        if (
+            (ethBtcTwap_ != address(0) && ethBtcTwap_.code.length == 0)
+                || (btcUsdTwap_ != address(0) && btcUsdTwap_.code.length == 0)
+        ) {
+            revert BadFeed();
+        }
         ethBtcFeed = IAggregatorV3(ethBtc);
         btcUsdFeed = IAggregatorV3(btcUsd);
         ethBtcTwap = IAmmTwap(ethBtcTwap_);
@@ -148,6 +178,7 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
     ///         the launch posture until the cUSD / cBTC pool deepens enough to be a trustworthy 2nd source;
     ///         the design (DESIGN-confidential-defi-v1.md §6) wants it active for the BTC/USD (cUSD-peg) feed.
     function setDeviationBound(uint256 bps) external onlyOwner {
+        if (bps > 10_000) revert BadParams();
         maxDeviationBps = bps;
     }
 
@@ -155,8 +186,11 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
         external
         onlyOwner
     {
-        // liquidation threshold must sit below the mint floor (else a fresh mint is instantly liquidatable).
-        require(_liqRatioBps < _cdpRatioBps && _liqRatioBps >= 10000, "ratios");
+        // Liquidation threshold must sit below the mint floor (else a fresh mint is instantly liquidatable).
+        // Escrow below 100% of the locked BTC value weakens the cBTC rug deterrent; 0 staleness is a footgun.
+        if (_maxStaleness == 0 || _escrowRatioBps < 10_000 || _liqRatioBps < 10_000 || _liqRatioBps >= _cdpRatioBps) {
+            revert BadParams();
+        }
         maxStaleness = _maxStaleness;
         escrowRatioBps = _escrowRatioBps;
         cdpRatioBps = _cdpRatioBps;
@@ -170,7 +204,9 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
         if (address(feed) == address(0)) revert BadFeed();
         (uint80 roundId, int256 ans,, uint256 updatedAt, uint80 answeredInRound) = feed.latestRoundData();
         if (ans <= 0) revert BadFeed();
-        if (block.timestamp - updatedAt > maxStaleness) revert StaleFeed();
+        if (updatedAt == 0 || updatedAt > block.timestamp || block.timestamp - updatedAt > maxStaleness) {
+            revert StaleFeed();
+        }
         if (answeredInRound < roundId) revert StaleFeed(); // a carried-over (incomplete) round
         price = uint256(ans);
         dec = feed.decimals();
@@ -207,14 +243,18 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
     }
 
     /// @notice True iff the lock outpoint holds at least `requiredEscrow(vBtc)` native ETH — the gate the
-    ///         pool's cBTC mint reads before minting cBTC against the lock.
+    ///         pool's cBTC mint reads before minting cBTC against the lock. Released/slashed outpoints are
+    ///         terminal and can never become sufficient again.
     function escrowSufficient(bytes32 outpoint, uint256 vBtc) external view returns (bool) {
-        return escrowOf[outpoint] >= requiredEscrow(vBtc);
+        return !escrowReleased[outpoint] && !escrowSlashed[outpoint] && escrowOf[outpoint] >= requiredEscrow(vBtc);
     }
 
     /// @notice Post (or top up) the refundable native-ETH escrow for a Bitcoin lock outpoint. Anyone may
     ///         fund; it is returned on an honest redeem (`releaseEscrow`) and slashable on a proven rug.
+    ///         Zero-value posts and terminal outpoints are rejected to avoid inert or unslashable escrows.
     function postEscrow(bytes32 outpoint) external payable {
+        if (outpoint == bytes32(0) || msg.value == 0) revert BadEscrow();
+        if (escrowReleased[outpoint] || escrowSlashed[outpoint]) revert EscrowLocked();
         escrowOf[outpoint] += msg.value;
         emit EscrowPosted(outpoint, msg.sender, msg.value);
     }
@@ -224,8 +264,11 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
     ///         the redemption; the marked outpoint then becomes non-slashable. Bounded: returns posted ETH,
     ///         never mints cBTC or touches backing.
     function releaseEscrow(bytes32 outpoint, address to) external onlyOwner nonReentrant {
+        if (outpoint == bytes32(0)) revert BadEscrow();
         if (to == address(0)) revert ZeroRecipient();
+        if (escrowReleased[outpoint] || escrowSlashed[outpoint]) revert EscrowLocked();
         uint256 amt = escrowOf[outpoint];
+        if (amt == 0) revert NothingToRelease();
         escrowOf[outpoint] = 0;
         escrowReleased[outpoint] = true;
         (bool ok,) = payable(to).call{value: amt}("");
@@ -239,6 +282,8 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
     ///         funds the async cBTC buy-and-burn). The guest never decides rug-vs-redeem — this contract does,
     ///         from the proven spend flag + its own release ledger.
     function slash(bytes32 outpoint) external {
+        if (outpoint == bytes32(0)) revert BadEscrow();
+        if (address(POOL) == address(0)) revert BadPool();
         if (escrowReleased[outpoint] || escrowSlashed[outpoint]) revert EscrowLocked();
         if (!POOL.cbtcMinted(outpoint) || !POOL.cbtcLockSpent(outpoint)) revert NothingToSlash();
         uint256 amt = escrowOf[outpoint];
@@ -256,6 +301,7 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
     ///         policy and reverts to DENY. v1 accepts only cBTC collateral legs (multi-asset baskets are a
     ///         future controller, no re-prove).
     function onCdpMint(CdpLeg[] calldata legs, uint256 debtValue, bytes32 positionLeaf) external onlyPool {
+        if (debtValue == 0) revert BadAmount();
         uint256 collateralUsd = _basketUsd(legs);
         // debt_usd (== debtValue, both in CUSD_DEC) ≤ collateralUsd · 10000 / cdpRatioBps
         if (debtValue * cdpRatioBps > collateralUsd * 10_000) revert Undercollateralized();
@@ -266,34 +312,61 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
     /// @notice Account a CDP close (the pool proved the exact debt burned + collateral released). No oracle,
     ///         no veto — repaying is unconditional; just decrement outstanding debt.
     function onCdpClose(uint256 debtValue, CdpLeg[] calldata, bytes32 positionNullifier) external onlyPool {
-        outstandingCusd = outstandingCusd > debtValue ? outstandingCusd - debtValue : 0;
+        if (debtValue == 0) revert BadAmount();
+        if (debtValue > outstandingCusd) revert DebtAccountingUnderflow();
+        outstandingCusd -= debtValue;
         emit CdpClosed(positionNullifier, debtValue);
     }
 
     /// @notice Authorize a liquidation: require the position be BELOW `liqRatio` at the validated mark
-    ///         (reverts if healthy). The pool has withdrawn the seized basket to this engine (public); the
-    ///         engine covers the cUSD debt from the seized collateral (async buy-and-burn) with the insurance
-    ///         reserve as backstop. Permissionless — anyone may trigger when actually unhealthy.
+    ///         (reverts if healthy). If this callback returns, the same pool settlement pays the seized basket
+    ///         to this engine as public withdrawals; the engine covers the cUSD debt from those proceeds
+    ///         (async buy-and-burn) with the insurance reserve as backstop.
     function onCdpLiquidate(CdpLeg[] calldata legs, uint256 debtValue, bytes32 positionNullifier) external onlyPool {
+        if (debtValue == 0) revert BadAmount();
+        if (debtValue > outstandingCusd) revert DebtAccountingUnderflow();
         uint256 collateralUsd = _basketUsd(legs);
         // healthy iff collateralUsd ≥ debt_usd · liqRatio/10000 → liquidatable only when strictly below.
         if (collateralUsd * 10_000 >= debtValue * liqRatioBps) revert PositionHealthy();
-        outstandingCusd = outstandingCusd > debtValue ? outstandingCusd - debtValue : 0;
+        outstandingCusd -= debtValue;
         emit CdpLiquidated(positionNullifier, debtValue, collateralUsd);
+    }
+
+    /// @notice Authorize a CDP top-up: the pool proved an old position was consumed and a replacement position
+    ///         with the same debt and a larger basket was appended. Outstanding cUSD is unchanged; this only
+    ///         approves the replacement basket and requires it be back at the mint collateralization floor, so
+    ///         dust top-ups cannot roll an unhealthy position just to avoid liquidation.
+    function onCdpTopup(
+        CdpLeg[] calldata oldLegs,
+        CdpLeg[] calldata newLegs,
+        uint256 debtValue,
+        bytes32 oldPositionNullifier,
+        bytes32 newPositionLeaf
+    ) external onlyPool {
+        if (debtValue == 0) revert BadAmount();
+        uint256 oldCollateralUsd = _basketUsd(oldLegs);
+        uint256 newCollateralUsd = _basketUsd(newLegs);
+        if (newCollateralUsd <= oldCollateralUsd) revert Undercollateralized();
+        if (debtValue * cdpRatioBps > newCollateralUsd * 10_000) revert Undercollateralized();
+        emit CdpToppedUp(oldPositionNullifier, newPositionLeaf, debtValue, oldCollateralUsd, newCollateralUsd);
     }
 
     /// @dev Sum the USD value of a collateral basket; v1 requires every leg to be cBTC.
     function _basketUsd(CdpLeg[] calldata legs) internal view returns (uint256 usd) {
+        if (legs.length == 0) revert Undercollateralized();
         for (uint256 i; i < legs.length; ++i) {
             if (legs[i].asset != CBTC_ASSET_ID) revert NotCbtcCollateral();
+            if (legs[i].value == 0) revert Undercollateralized();
             usd += btcToUsd(legs[i].value);
         }
     }
 
     // ─────────────────────── shared insurance reserve ───────────────────────
 
-    /// @notice Fund the shared native-ETH insurance reserve (backstops rug-recovery shortfall + CDP bad debt).
+    /// @notice Explicitly fund the shared native-ETH insurance reserve (backstops rug-recovery shortfall +
+    ///         CDP bad debt).
     function fundInsurance() external payable {
+        if (msg.value == 0) revert BadAmount();
         insuranceReserve += msg.value;
         emit InsuranceFunded(msg.sender, msg.value);
     }
@@ -301,15 +374,20 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
     /// @notice Owner/DAO draws from the reserve to settle a covered shortfall (e.g. fund an async cBTC
     ///         buy-and-burn or cover CDP bad debt). Bounded: only manages backstop capital.
     function drawInsurance(uint256 amount, address to) external onlyOwner nonReentrant {
+        if (amount == 0) revert BadAmount();
         if (to == address(0)) revert ZeroRecipient();
+        if (amount > insuranceReserve) revert InsufficientReserve();
         insuranceReserve -= amount;
         (bool ok,) = payable(to).call{value: amount}("");
         require(ok, "send");
+        emit InsuranceDrawn(to, amount);
     }
 
     receive() external payable {
-        insuranceReserve += msg.value;
-        emit InsuranceFunded(msg.sender, msg.value);
+        if (msg.value != 0) {
+            insuranceReserve += msg.value;
+            emit InsuranceFunded(msg.sender, msg.value);
+        }
     }
 }
 

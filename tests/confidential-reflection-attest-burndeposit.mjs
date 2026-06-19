@@ -30,6 +30,13 @@ const eq = (a, b, msg) => ok(a === b, `${msg}${a === b ? '' : ` (got ${a} exp ${
 const v = (n) => '0x' + BigInt(n).toString(16).padStart(64, '0');
 const dtx = (b) => '0x' + b.toString(16).padStart(2, '0') + 'ff'.repeat(31); // display-order txid
 const G = '0x' + Buffer.from(secp.ProjectivePoint.BASE.toRawBytes(true)).toString('hex'); // a real compressed point
+const coinbase = '0x' + '00'.repeat(120);
+const mined = (b) => ({
+  blockTxids: [Buffer.alloc(32, 0), Buffer.alloc(32, b)],
+  blockWtxids: [Buffer.alloc(32, 0), Buffer.alloc(32, b ^ 0xff)],
+  coinbase,
+  index: 1,
+});
 
 const assetId = v(0xa55e7);
 const burned = { cx: v(0xb1), cy: v(0xb2) };
@@ -43,9 +50,9 @@ const mkBundle = () => ({
   dest: v(0xde57),
   burned,
   burnedInput: { prevTxid: v(0xb117), prevVout: 0 },
-  etch: { tx: 'aa'.repeat(40), blockTxids: [Buffer.alloc(32, 0xe7)], index: 0 },
+  etch: { tx: 'aa'.repeat(40), ...mined(0xe7) },
   provHeaders: ['0x' + '00'.repeat(80)],
-  cxfers: [{ txid: dtx(0x0a), inputs: [{ prevTxid: dtx(0x0b), prevVout: 0, commitment: G }], outputs: [{ commitment: G, vout: 0 }], rangeProof: '0x', kernelSig: '0x' + '11'.repeat(64), blockTxids: [Buffer.alloc(32, 0x0a)], index: 0 }],
+  cxfers: [{ txid: dtx(0x0a), inputs: [{ prevTxid: dtx(0x0b), prevVout: 0, commitment: G }], outputs: [{ commitment: G, vout: 0 }], rangeProof: '0x', kernelSig: '0x' + '11'.repeat(64), ...mined(0x0a) }],
   cmints: [],
 });
 
@@ -63,7 +70,7 @@ const makeKit = (verdict) => ({
 // A scanned block at the genesis height with a single 0x2B burn of a note NOT in the live set
 // (→ the burn-deposit branch). The bundle is keyed by this tx's display txid.
 const BURN_TXID = dtx(0x20);
-const burnBlock = { txs: [{ txidDisplay: BURN_TXID, rawHex: 'bb'.repeat(40), vins: [{ prevTxidDisplay: dtx(0xb1), vout: 0 }], decode: { type: 'burn', dest: v(0xde57) } }] };
+const burnBlock = { txs: [{ txidDisplay: BURN_TXID, rawHex: 'bb'.repeat(40), vins: [{ prevTxidDisplay: dtx(0xb1), vout: 0 }], decode: { type: 'burn', assetId, nullifier: v(0x17ad), dest: v(0xde57) } }] };
 
 // A plain (non-burn) tx block — exercises the safety gate without tripping the pre-existing burn-of-
 // non-live-note panic (see test 4): no kit ⇒ getBurnDeposits must not be consulted, assembly still works.
