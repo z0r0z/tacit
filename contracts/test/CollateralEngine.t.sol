@@ -10,6 +10,7 @@ contract MockPool {
     mapping(bytes32 => bool) public cbtcLockSpent;
     mapping(bytes32 => bool) public cbtcMinted;
     uint256 public cbtcBackingSats;
+    address public cbtcToken; // what canonicalTokenFor resolves cBTC to (0 = not pool-registered)
 
     function setLock(bytes32 o, uint64 v) external {
         cbtcLockVBtc[o] = v;
@@ -25,6 +26,29 @@ contract MockPool {
 
     function setBacking(uint256 b) external {
         cbtcBackingSats = b;
+    }
+
+    function setCanonicalToken(address t) external {
+        cbtcToken = t;
+    }
+
+    function canonicalTokenFor(bytes32) external view returns (address) {
+        return cbtcToken;
+    }
+}
+
+/// Minimal ERC20 for the seized-cBTC recovery path (just enough for SafeTransferLib.safeTransfer).
+contract MockERC20 {
+    mapping(address => uint256) public balanceOf;
+
+    function mint(address to, uint256 amt) external {
+        balanceOf[to] += amt;
+    }
+
+    function transfer(address to, uint256 amt) external returns (bool) {
+        balanceOf[msg.sender] -= amt;
+        balanceOf[to] += amt;
+        return true;
     }
 }
 
@@ -442,5 +466,47 @@ contract CollateralEngineTest is Test {
         vm.prank(admin);
         vm.expectRevert(CollateralEngine.ZeroRecipient.selector);
         eng.drawInsurance(1 ether, address(0));
+    }
+
+    // The cBTC seized on a CDP liquidation lands in the engine (the controller-recipient); recoverSeizedCbtc
+    // is the ONLY way it leaves, scoped to exactly the pool-resolved cBTC token (never an arbitrary balance),
+    // and never touches the native-ETH escrow/insurance (those leave only via release/draw).
+    function test_recoverSeizedCbtc_routes_only_the_pool_resolved_token() public {
+        MockERC20 cbtc = new MockERC20();
+        pool.setCanonicalToken(address(cbtc));
+        cbtc.mint(address(eng), 5e18); // a liquidation seize: the pool paid cBTC here
+
+        // also hold native ETH (escrow + insurance) — recovery must leave it untouched.
+        eng.postEscrow{value: 30 ether}(keccak256("untouched-escrow"));
+        eng.fundInsurance{value: 2 ether}();
+        uint256 ethBefore = address(eng).balance;
+
+        address dao = address(0xDA0);
+        // guards
+        vm.prank(admin);
+        vm.expectRevert(CollateralEngine.ZeroRecipient.selector);
+        eng.recoverSeizedCbtc(1e18, address(0));
+        vm.prank(admin);
+        vm.expectRevert(CollateralEngine.BadAmount.selector);
+        eng.recoverSeizedCbtc(0, dao);
+        // owner-only
+        vm.expectRevert();
+        eng.recoverSeizedCbtc(1e18, dao);
+
+        // happy: the DAO moves seized cBTC into the buy-and-burn destination
+        vm.prank(admin);
+        eng.recoverSeizedCbtc(5e18, dao);
+        assertEq(cbtc.balanceOf(dao), 5e18);
+        assertEq(cbtc.balanceOf(address(eng)), 0);
+        assertEq(address(eng).balance, ethBefore); // ETH escrow/insurance untouched
+        assertEq(eng.insuranceReserve(), 2 ether);
+    }
+
+    function test_recoverSeizedCbtc_reverts_when_cbtc_not_pool_registered() public {
+        // pool resolves cBTC to address(0) → nothing could have been seized (the seize withdrawal would
+        // itself have reverted), so there is nothing to recover.
+        vm.prank(admin);
+        vm.expectRevert(CollateralEngine.NotCbtcCollateral.selector);
+        eng.recoverSeizedCbtc(1e18, address(0xDA0));
     }
 }

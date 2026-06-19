@@ -428,6 +428,28 @@ contract ConfidentialCdpCbtcSettleTest is Test {
         assertEq(controller.liquidations(), 1);
     }
 
+    // A REAL liquidation seizes the basket as a PUBLIC cBTC withdrawal to the controller (the guest emits
+    // this in OP_CDP_LIQUIDATE), so cBTC must resolve to a registered pool-minted ERC20 for the seize to pay
+    // out. CBTC_ZK_ASSET_ID is note-only here (no registry link), so the seize fails closed — documenting the
+    // cBTC.zk → cBTC.tac link prerequisite that must be wired before cBTC CDPs can be liquidated. The engine's
+    // recoverSeizedCbtc closes the OTHER half (recovering the seized token once that link exists).
+    function test_liquidation_seize_of_unregistered_cbtc_fails_closed() public {
+        _settle(_cdpMintPv(address(controller), _cdpDebtAsset(address(controller)), keccak256("pos-seize")));
+        ConfidentialPool.PublicValues memory pv = _pv();
+        pv.cdpPositionRoot = pool.cdpRoot();
+        pv.cdpLiquidations = new ConfidentialPool.CdpLiquidate[](1);
+        CdpLeg[] memory legs = new CdpLeg[](1);
+        legs[0] = CdpLeg({asset: CBTC, value: V_BTC});
+        pv.cdpLiquidations[0] = ConfidentialPool.CdpLiquidate({
+            controller: address(controller), debtValue: 1000, positionNullifier: keccak256("pos-seize-nu"), legs: legs
+        });
+        pv.withdrawals = new ConfidentialPool.Withdrawal[](1);
+        pv.withdrawals[0] = ConfidentialPool.Withdrawal({assetId: CBTC, recipient: address(controller), value: V_BTC});
+
+        vm.expectRevert(ConfidentialPool.NotRegistered.selector);
+        _settle(pv);
+    }
+
     function test_btc_homed_cdp_mint_records_consumed_nullifier() public {
         bytes32 btcRoot = keccak256("btc-cdp-root");
         bytes32 spentRoot = keccak256("btc-cdp-spent");

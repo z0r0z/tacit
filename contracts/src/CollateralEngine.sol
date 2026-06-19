@@ -3,6 +3,7 @@ pragma solidity ^0.8.24;
 
 import {Ownable} from "solady/auth/Ownable.sol";
 import {ReentrancyGuard} from "solady/utils/ReentrancyGuard.sol";
+import {SafeTransferLib} from "solady/utils/SafeTransferLib.sol";
 
 /// @dev The immutable ConfidentialPool surface this engine reads/serves. The pool is the authority for
 ///      all proven Bitcoin/CDP state; the engine only sizes escrows, prices collateral, and routes
@@ -15,6 +16,10 @@ interface IConfidentialPoolCollateral {
     function cbtcLockSpent(bytes32 outpoint) external view returns (bool);
     /// True once cBTC was minted against this lock (the escrow became live).
     function cbtcMinted(bytes32 outpoint) external view returns (bool);
+    /// The canonical ERC20 the pool mints/escrows for an asset id (resolving a shared id to its local
+    /// entry), or address(0) if none. The seized-cBTC recovery resolves the cBTC token through this, so it
+    /// can only ever move the exact token a liquidation seize pays here — never an arbitrary balance.
+    function canonicalTokenFor(bytes32 assetId) external view returns (address);
 }
 
 /// @notice Chainlink aggregator (answer in `decimals()` places). Used for ETH/BTC (escrow sizing) and
@@ -105,6 +110,7 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
     );
     event InsuranceFunded(address indexed from, uint256 amount);
     event InsuranceDrawn(address indexed to, uint256 amount);
+    event SeizedCbtcRecovered(address indexed token, address indexed to, uint256 amount);
 
     error NotPool();
     error BadPool();
@@ -381,6 +387,29 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
         (bool ok,) = payable(to).call{value: amount}("");
         require(ok, "send");
         emit InsuranceDrawn(to, amount);
+    }
+
+    /// @notice Owner/DAO recovers cBTC SEIZED on a CDP liquidation, to route into the buy-and-burn that
+    ///         retires the liquidated cUSD. The pool pays a liquidation's seized basket here (the controller)
+    ///         as cBTC, but the engine is not upgradeable and books no ERC20, so without a recovery path the
+    ///         seized collateral would be stranded and liquidation recovery could never complete.
+    ///
+    ///         Deliberately NARROW (not a general token sweep): the token is resolved from the pool as the
+    ///         canonical cBTC ERC20 — the SAME token a seize pays here — so this can only ever move seized
+    ///         cBTC, never an arbitrary balance, and it touches no backing/escrow/reserve (those are native
+    ///         ETH held in the pool or this engine, unreachable by an ERC20 transfer). Seized cBTC is forfeited
+    ///         collateral (protocol capital, already taken from the liquidated position), not user funds; this
+    ///         is the same DAO trust as drawInsurance, scoped to exactly the one asset.
+    function recoverSeizedCbtc(uint256 amount, address to) external onlyOwner nonReentrant {
+        if (to == address(0)) revert ZeroRecipient();
+        if (amount == 0) revert BadAmount();
+        // Resolve the cBTC token through the pool (CBTC_ASSET_ID may be a shared id), so recovery always
+        // targets exactly the token a seize mints/transfers here. 0 ⇒ cBTC isn't pool-registered, so no seize
+        // could have landed (the seize withdrawal would itself revert) — nothing to recover.
+        address token = POOL.canonicalTokenFor(CBTC_ASSET_ID);
+        if (token == address(0)) revert NotCbtcCollateral();
+        SafeTransferLib.safeTransfer(token, to, amount);
+        emit SeizedCbtcRecovered(token, to, amount);
     }
 
     receive() external payable {

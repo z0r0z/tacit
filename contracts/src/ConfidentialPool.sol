@@ -308,6 +308,14 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     bytes32 internal constant REFLECTION_GENESIS_DIGEST =
         0xeab17bcb92a60d3504973e52dad54aaafe331d87999f94304fac7c29cf126388;
 
+    // cBTC.zk's canonical asset id = keccak256("tacit-cbtc-zk-lock-v1") (cxfer-core CBTC_ZK_ASSET_ID) — the
+    // fixed domain const the reflection guest mints real-BTC-locked cBTC notes under. Pinned so the
+    // constructor can link it to the canonical cBTC.tac ERC20: it is a lock position, NOT a Bitcoin etch, so
+    // the permissionless attest_meta link path can't reach it, and (unlike a foreign id) it has one canonical
+    // backing. Referenced ONLY in the constructor, so it adds no runtime bytecode.
+    bytes32 internal constant CBTC_ZK_ASSET_ID =
+        0x62a20d98fc1cd20289621d1315294cb8772f934d822e404b71e1f471cf0679c8;
+
     // A shared (Bitcoin-side) asset id => this pool's local registry key. A bridge_mint note
     // carries the SHARED id as its `asset` (it must, to prove membership in the Bitcoin
     // pool), so the registry resolves that id back to the local entry on unwrap — else a
@@ -1449,11 +1457,13 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         // Expired: a proof carrying a deadline can't be relayed past it (0 = no expiry). The guest commits
         // the earliest op deadline + binds it in each trader's sigma, so the box can't alter or sit on it.
         if (pv.deadline != 0 && block.timestamp > pv.deadline) revert Expired();
-        // Adaptor REFUND is the ≥ mirror of the deadline ≤ gate above: a refund of a locked note may
-        // settle only at/after the lock's deadline (the guest commits the latest refund deadline in the
-        // batch; 0 = no refund here). With the ≤ gate covering CLAIM (settle-before-deadline), this gives
-        // claim-XOR-refund exclusivity on the verified chain time.
-        if (pv.refundNotBefore != 0 && block.timestamp < pv.refundNotBefore) revert RefundTooEarly();
+        // Adaptor REFUND is the strict mirror of the deadline ≤ gate above: a refund of a locked note may
+        // settle only STRICTLY AFTER the lock's deadline (the guest commits the latest refund deadline in the
+        // batch; 0 = no refund here). CLAIM is gated settle-at-or-before-deadline (≤), so making refund
+        // settle-strictly-after (>, not ≥) leaves the two windows DISJOINT — at the exact deadline instant only
+        // a claim passes, so there is no shared boundary second where both a claim and a refund of the same
+        // lock would settle. Spend-once already bars double-execution; this removes the boundary ambiguity.
+        if (pv.refundNotBefore != 0 && block.timestamp <= pv.refundNotBefore) revert RefundTooEarly();
         // Membership may be proven against an Ethereum root OR a reflected Bitcoin
         // confidential-pool root (cross-lane: a Bitcoin-homed note spent on
         // the Ethereum fast lane). The Ethereum root is this pool's own tree; the

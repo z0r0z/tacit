@@ -2591,8 +2591,15 @@ contract ConfidentialPoolTest is Test {
         vm.expectRevert(ConfidentialPool.RefundTooEarly.selector);
         _settle(pv);
 
-        // at the deadline the refund is allowed
+        // AT the deadline the refund is STILL too early: the boundary instant belongs to CLAIM (which settles
+        // at ≤ deadline), so refund settles only STRICTLY AFTER it — the claim/refund windows are disjoint,
+        // with no shared second where both would pass.
         vm.warp(block.timestamp + 1000);
+        vm.expectRevert(ConfidentialPool.RefundTooEarly.selector);
+        _settle(pv);
+
+        // one second past the deadline the refund is allowed
+        vm.warp(block.timestamp + 1);
         _settle(pv);
     }
 
