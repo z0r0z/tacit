@@ -1,12 +1,15 @@
 # DESIGN — cBTC redemption: trustless atomic cBTC↔BTC swap (the hard peg)
 
-> **STATUS: the redemption layer for fungible cBTC — and it reuses the adaptor work wholesale.** A fungible
-> cBTC holder can't unlock a stranger's self-custody lock, so redemption is an **atomic swap**: the holder
-> burns cBTC ⇄ a locker unlocks their BTC, bound by an **adaptor signature (PTLC)** and matched by the
-> cross-chain orderbook. Trustless, 1:1, no custodian, no mediator — Tacit's niche. Companion to
-> `DESIGN-cbtc.md` (it fixes that doc's glossed fungibility/redemption), built on `dapp/adaptor-signature.js`
-> + `dapp/adaptor-swap.js` + `dapp/cross-chain-orderbook.js` (all built + tested) and the `OP_ADAPTOR_*`
-> guest ops (specced, ride the re-prove).
+> **STATUS: the redemption layer for fungible cBTC — a single-tx Bitcoin-native atomic swap the guest can
+> classify trustlessly.** A fungible cBTC holder can't unlock a stranger's self-custody lock, so redemption
+> is an **atomic swap**: the holder burns cBTC ⇄ a locker unlocks their BTC, in **ONE co-signed Bitcoin tx**
+> (a `T_CBTC_REDEEM` 0x67 envelope) matched by the cross-chain orderbook. Trustless, 1:1, no custodian, no
+> mediator — Tacit's niche. The reflection's `fold_cbtc_redeem` recognizes the redeem in-guest and retires
+> the lock without flagging it as a rug, so the honest-redeemer slash race is closed with **no owner
+> attestation** (supersedes the earlier 2-tx adaptor framing, whose cross-chain/ordering split forced the
+> owner to attest redemptions). Companion to `DESIGN-cbtc.md`; matched by `dapp/cross-chain-orderbook.js`
+> (built); the 0x67 guest op (`fold_cbtc_redeem` + native tests) and the dapp tx-builder + JS digest mirror
+> ride the re-prove.
 
 ## 1. Why redemption is a swap (the fungibility consequence)
 
@@ -20,18 +23,23 @@ cBTC is fungible because every unit is backed by the **aggregate** pool of self-
 
 So redemption = `H` gives cBTC (burned) ⇄ `L` gives BTC (their lock, unlocked to `H`). Both want it.
 
-## 2. The atomic mechanism (adaptor / PTLC — the existing primitive)
+## 2. The atomic mechanism (single-tx Bitcoin-native swap — trustlessly classifiable)
 
-It's a cBTC↔BTC atomic swap, the exact shape `dapp/adaptor-swap.js` implements:
-- `L` builds the Bitcoin tx spending their lock to `H`, **adaptor-locked to `T = t·G`** (incomplete —
-  needs `t`).
-- `H`'s **cBTC burn** in the Tacit pool is bound to the same `T` (`OP_ADAPTOR_CLAIM`/redeem op): completing
-  it **reveals `t`** (`t = σ·(s − s̃)`, the adaptor `s`-exposure already specced).
-- `H` claims `L`'s BTC by revealing `t`; `L` extracts `t` from that and completes the unlock-to-`H`.
-- **Atomic:** either `H` gets BTC *and* the cBTC is burned, or neither happens. No trusted party.
+It's a cBTC↔BTC atomic swap in **ONE co-signed Bitcoin tx**, carrying a `T_CBTC_REDEEM` (0x67) envelope:
+- The tx has **`L`'s lock outpoint as a vin** (the unlock — `L` signs) AND **`H`'s cBTC note(s) as vins**,
+  BURNED (`H` provides the openings; `Σ C_in = v_btc·H`, no cBTC output — the audited CXFER burn kernel).
+- The envelope names `(lock_txid, lock_vout, v_btc, kernel_sig)`. Both sides co-sign the single tx, so it
+  confirms whole or not at all — **atomic:** either `H` gets `L`'s BTC *and* the cBTC is burned, or neither.
+- **Why single-tx (vs. a 2-tx adaptor):** the rug-vs-redeem classifier runs in the *Bitcoin* reflection,
+  which only sees Bitcoin txs. A single tx lets the guest see the lock-unlock AND the matching cBTC burn
+  together — `ScanReflection::fold_cbtc_redeem` retires the lock off the live set BEFORE the rug scan, so an
+  honest exit never enters `cbtcLocksSpent` and is never slashable. A 2-tx adaptor split the burn (often on
+  Ethereum, or a separate Bitcoin tx) from the spend, leaving it invisible/ordering-fragile to the Bitcoin
+  reflection — the owner had to attest redemptions (the slash race). The single tx makes it trustless.
 
-`L`'s lock is plain self-custody (their key) — the redemption just spends it to `H` via an adaptor-signed
-tx, no special lock script. (The covenant endgame replaces the adaptor with a script-enforced redemption.)
+`L`'s lock is plain self-custody (their key); the redemption is a normal co-signed spend, no special lock
+script. (The covenant endgame replaces the co-signing with a script-enforced redemption.) The cross-chain
+orderbook (§3) still matches `H`/`L` and composes the single redeem tx per fill.
 
 ## 3. The matching (the cross-chain orderbook — also built)
 

@@ -316,6 +316,12 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     bytes32 internal constant CBTC_ZK_ASSET_ID =
         0x62a20d98fc1cd20289621d1315294cb8772f934d822e404b71e1f471cf0679c8;
 
+    // The cBTC.tac metadata CID baked into its canonical factory address (the CREATE2 salt includes the cid).
+    // 0 = no metadata for V1 (contractURI empty); set to the real cBTC IPFS metadata CID before the
+    // production deploy if wanted — it is immutable and fixes the cBTC.tac identity. Constructor-only ⇒ no
+    // runtime cost. cBTC = Tacit's canonical confidential-Bitcoin token; iterate the brand in a later gen.
+    bytes32 internal constant CBTC_METADATA_CID = bytes32(0);
+
     // A shared (Bitcoin-side) asset id => this pool's local registry key. A bridge_mint note
     // carries the SHARED id as its `asset` (it must, to prove membership in the Bitcoin
     // pool), so the registry resolves that id back to the local entry on unwrap — else a
@@ -403,6 +409,13 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     // worker-selected set of `bitcoinConsumed[nu]` keys whose cardinality merely matches the counter.
     // APPENDED LAST: its declaration slot is a guest-pinned protocol interface.
     mapping(uint256 => bytes32) public bitcoinConsumedAt;
+
+    // Value-free Bitcoin-authorized calls (SPEC-BITCOIN-HOOK-AMENDMENT §1.4): the reflection proves a signed
+    // Bitcoin call envelope; attest records it here; the separate BtcCallExecutor fires it, so a hostile
+    // target can never revert the attest. Stores only a 32-byte commitment per callId =
+    // keccak(target‖calldataHash‖callerPubkey); the executor re-supplies those fields (public from the
+    // Bitcoin tx) and checks them against this commitment. Appended after the guest-pinned slots.
+    mapping(bytes32 => bytes32) public pendingBtcCall;
 
     // ──────────────────── cBTC escrow views (the CollateralEngine reads these) ────────────────────
 
@@ -521,7 +534,6 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         bytes32[] bitcoinRootsUsed; // Bitcoin pool roots a bridge_mint proved membership against
         bytes32 bitcoinSpentRoot; // Bitcoin spent-set IMT root the guest proved non-membership against (0 = none)
         bytes32 bitcoinBurnRoot; // Bitcoin bridge-burn IMT root a bridge_mint proved burn membership against (0 = none)
-        AssetMeta[] assetMetas; // etch-proven (asset_id, ticker, decimals) → trustless lazy-register
         SwapSettlement[] swaps; // confidential AMM batches (OP_SWAP): pre→post pool reserves
         LpSettlement[] liquidity; // confidential LP (OP_LP_ADD/REMOVE): pre→post reserves + totalShares
         uint64 deadline; // settle expiry (unix secs); 0 = none. The guest commits the earliest op deadline
@@ -712,6 +724,28 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         if (tethBitcoinLink_ != bytes32(0)) {
             _register(address(0), 10 ** 10, tethBitcoinLink_, false, "Tacit ETH", "tETH", 18);
         }
+
+        // Day-1 cBTC.tac (hardcoded V1; iterate the brand/metadata via a later generation). When this is a
+        // cBTC-capable deployment — a CanonicalAssetFactory to materialize the token AND a CollateralEngine
+        // for the cBTC mint's native-ETH escrow gate — deploy-or-adopt the canonical cBTC.tac ERC20 (pool =
+        // sole MINTER, deterministic factory address) and pin cBTC.zk → it. The reflection guest mints
+        // real-BTC-locked cBTC notes under CBTC_ZK_ASSET_ID (the shared cross-chain id), so resolving that id
+        // to a pool-minted ERC20 is what lets a cBTC note mint cBTC.tac on exit, a cUSD-CDP liquidation seize
+        // pay out, and the engine's recoverSeizedCbtc resolve the token. cBTC.zk is a lock POSITION (not a
+        // Bitcoin etch), so it has one canonical backing and the permissionless attest_meta link path can't
+        // reach it — hence the constructor pin, mirroring tETH above. Native precision 8 (sats) → unitScale
+        // 10^(18−8)=10^10 onto the 18-dec ERC20. deploy-or-adopt (tokenOf-first) is front-run-safe: the
+        // factory address is salt-bound to (id, this, "cBTC", 18, cid), so any pre-deploy IS the canonical
+        // token (pool-minted, right id). 0 factory or 0 engine ⇒ no cBTC here (no test sets both).
+        if (address(CANONICAL_FACTORY) != address(0) && collateralEngine_ != address(0)) {
+            address cbtcTac =
+                CANONICAL_FACTORY.tokenOf(CBTC_ZK_ASSET_ID, address(this), "cBTC", ETH_DECIMALS, CBTC_METADATA_CID);
+            if (cbtcTac == address(0)) {
+                cbtcTac =
+                    CANONICAL_FACTORY.deployCanonical(CBTC_ZK_ASSET_ID, address(this), "cBTC", ETH_DECIMALS, CBTC_METADATA_CID);
+            }
+            _register(cbtcTac, 10 ** 10, CBTC_ZK_ASSET_ID, true, "Tacit Token", "cBTC", ETH_DECIMALS);
+        }
     }
 
     // ──────────────────── Asset registry ────────────────────
@@ -877,8 +911,8 @@ contract ConfidentialPool is ReentrancyGuardTransient {
             uint256 unitScale,
             bytes32 crossChainLink,
             bool poolMinted,
-            string memory name,
-            string memory symbol,
+            bytes32 name,
+            bytes32 symbol,
             uint8 decimals
         )
     {
@@ -888,13 +922,9 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         unitScale = a.unitScale;
         crossChainLink = a.crossChainLink;
         poolMinted = a.poolMinted;
-        name = _unpackShortString(a.name, a.nameLen);
-        symbol = _unpackShortString(a.symbol, a.symbolLen);
+        name = a.name; // packed short string (left-aligned bytes, null-padded); decode off-chain
+        symbol = a.symbol;
         decimals = a.decimals;
-    }
-
-    function cbtcMinted(bytes32 outpoint) external view returns (bool) {
-        return _cbtcMinted[outpoint];
     }
 
     // ──────────────────── Wrap (public deposit) ────────────────────
@@ -1305,6 +1335,8 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         CbtcLockFolded[] cbtcLocksFolded; // locks newly tracked this batch → cbtcLock[] (the OP_CBTC_MINT gate)
         bytes32[] cbtcLocksSpent; // tracked locks spent this batch → cbtcLockSpent[] (the engine slashes if not redeemed)
         uint64 consumedCount; // fast-lane freshness: eth-consumed ν folded into the spent set; gated == bitcoinConsumedCount
+        AssetMeta[] attestedAssetMetas; // etch-authenticated (asset_id,ticker,decimals,cid) → lazy-register canonical ERC20
+        bytes32[] btcCallsFolded; // value-free Bitcoin-authorized calls, flat (callId, recordHash) pairs → pendingBtcCall[]
     }
 
     /// @notice Attest Bitcoin confidential-pool state via an SP1 relay proof — the ONLY
@@ -1388,6 +1420,21 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         }
         for (uint256 i; i < r.cbtcLocksSpent.length; ++i) {
             cbtcLockSpent[r.cbtcLocksSpent[i]] = true;
+        }
+        // Trustless metadata: lazy-register the canonical ERC20 for each asset whose etch the reflection
+        // authenticated (BIP141 witness commitment + canonical provenance header chain, proven by this SP1
+        // proof). Idempotent — _autoRegisterFromMeta skips an already-registered asset — so a re-attested
+        // meta is a no-op. This replaces the settle-side OP_ATTEST_META: the anchor the settle guest lacked
+        // (no relay) already exists here, for an etch of any age.
+        for (uint256 i; i < r.attestedAssetMetas.length; ++i) {
+            _autoRegisterFromMeta(r.attestedAssetMetas[i]);
+        }
+        // Record each value-free Bitcoin-authorized call; BtcCallExecutor fires it (never inline — a hostile
+        // target must not be able to revert this attest). Re-attesting a fired call is harmless (the executor
+        // gates one-shot on its own `fired` set), so no spent-flag is kept here.
+        bytes32[] memory calls = r.btcCallsFolded;
+        for (uint256 i; i + 1 < calls.length; i += 2) {
+            pendingBtcCall[calls[i]] = calls[i + 1];
         }
     }
 
@@ -1751,13 +1798,6 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         // leaf); a compromised proof that fabricates spends beyond the real leaf set trips this.
         if (evmNullifiersSpent > nextLeafIndex) revert ReserveFloorBreach();
 
-        // Trustless first-mint metadata: lazy-register any Tacit asset whose (ticker,
-        // decimals) the guest proved from its etch (OP_ATTEST_META) — deploy its canonical
-        // ERC20 at the factory's f(asset_id) address with the proven metadata + derived
-        // scale, so a later unwrap can mint it. One-time per asset; skipped once registered.
-        for (uint256 i; i < pv.assetMetas.length; ++i) {
-            _autoRegisterFromMeta(pv.assetMetas[i]);
-        }
 
         for (uint256 i; i < pv.withdrawals.length; ++i) {
             Withdrawal memory w = pv.withdrawals[i];
@@ -1933,13 +1973,6 @@ contract ConfidentialPool is ReentrancyGuardTransient {
             len := mload(s)
             if gt(len, 31) { len := 31 }
             data := mload(add(s, 0x20))
-        }
-    }
-
-    function _unpackShortString(bytes32 data, uint8 len) internal pure returns (string memory s) {
-        s = new string(len);
-        assembly ("memory-safe") {
-            mstore(add(s, 0x20), data)
         }
     }
 

@@ -502,6 +502,63 @@ pub fn parse_cbtc_lock_envelope(env: &[u8]) -> Option<CbtcLockEnvelope> {
     })
 }
 
+/// Parsed `T_BTC_CALL` envelope (opcode 0x68) — a value-free Bitcoin-authorized Ethereum call.
+pub struct BtcCallEnvelope {
+    pub executor: [u8; 20],
+    pub target: [u8; 20],
+    pub calldata_hash: [u8; 32],
+    pub caller_pubkey: [u8; 32],
+    pub call_nonce: [u8; 32],
+    pub sig: [u8; 64],
+}
+
+/// Value-free Bitcoin call envelope (`T_BTC_CALL`, opcode 0x68): `executor(20) ‖ target(20) ‖
+/// calldata_hash(32) ‖ caller_pubkey(32, x-only) ‖ call_nonce(32) ‖ sig(64)` = 201 bytes. `executor` is the
+/// specific BtcCallExecutor the caller authorizes — bound into the signed message AND the recordHash so the
+/// call can fire on exactly that deployment (chain + pool) and nowhere else (no cross-deployment replay). The
+/// BIP-340 `sig` by `caller_pubkey` over `keccak("tacit-btc-call-v1" ‖ executor ‖ target ‖ calldata_hash ‖
+/// caller_pubkey ‖ call_nonce)` proves a Bitcoin party authorized exactly this call; the reflection surfaces
+/// (callId, recordHash) for the BtcCallExecutor to fire. No value, no note. (SPEC-BITCOIN-HOOK-AMENDMENT §1.4.)
+pub fn parse_btc_call_envelope(env: &[u8]) -> Option<BtcCallEnvelope> {
+    if env.len() != 201 || env[0] != 0x68 {
+        return None;
+    }
+    Some(BtcCallEnvelope {
+        executor: env[1..21].try_into().ok()?,
+        target: env[21..41].try_into().ok()?,
+        calldata_hash: env[41..73].try_into().ok()?,
+        caller_pubkey: env[73..105].try_into().ok()?,
+        call_nonce: env[105..137].try_into().ok()?,
+        sig: env[137..201].try_into().ok()?,
+    })
+}
+
+/// Parsed `T_CBTC_REDEEM` envelope (opcode 0x67) — the honest single-tx cBTC↔BTC redemption.
+pub struct CbtcRedeemEnvelope {
+    pub lock_txid: [u8; 32],
+    pub lock_vout: u32,
+    pub v_btc: u64,
+    pub kernel_sig: [u8; 64],
+}
+
+/// cBTC single-tx redemption envelope (`T_CBTC_REDEEM`, opcode 0x67): `lock_txid(32) ‖ lock_vout(4 LE) ‖
+/// v_btc(8 LE) ‖ kernel_sig(64)` = 109 bytes. Names the self-custody lock outpoint this tx redeems and the
+/// public sats it retires; the SAME tx BURNS exactly `v_btc` of cBTC (its cBTC vins, no cBTC output), proven
+/// by `kernel_sig` (the audited CXFER kernel, `Σ C_in = v_btc·H`) against the live-set-resolved input
+/// commitments — so supply ↓ and backing ↓ together (the §redemption conservation identity). A redeemed lock
+/// leaves the live set WITHOUT entering the slashable spent set, so an honest exit is never a rug.
+pub fn parse_cbtc_redeem_envelope(env: &[u8]) -> Option<CbtcRedeemEnvelope> {
+    if env.len() != 109 || env[0] != 0x67 {
+        return None;
+    }
+    Some(CbtcRedeemEnvelope {
+        lock_txid: env[1..33].try_into().ok()?,
+        lock_vout: u32::from_le_bytes(env[33..37].try_into().ok()?),
+        v_btc: u64::from_le_bytes(env[37..45].try_into().ok()?),
+        kernel_sig: env[45..109].try_into().ok()?,
+    })
+}
+
 /// Parsed `T_SWAP_VAR` envelope (opcode 0x32) — the public-reserve AMM swap (SPEC §5.16.3 / AMM.md).
 /// Reserves + amounts are PUBLIC u64 and the receipt's blinding `r_receipt` is cleartext, so the taker's
 /// output note `C_receipt` opens publicly. That is exactly what lets the reflection verify per-asset

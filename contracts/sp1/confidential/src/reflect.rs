@@ -31,7 +31,7 @@ use cxfer_core::{
     amm_canonical_pair, amm_derive_farm_id, amm_derive_pool_id_full, bitcoin, burn_deposit,
     commitment_hash, commitment_hash_compressed, compress, decompress, from_affine_xy, leaf,
     nullifier, outpoint_key, reflected_note_leaf, scan_tx_spends, verify_cxfer_conservation,
-    CbtcLockFold, LiveUtxoSet, Point, PoolReserveSet, PoolReserveState, ScanReflection,
+    CbtcLockFold, LiveUtxoSet, Point, PoolReserveSet, PoolReserveState, ScanReflection, CBTC_ZK_ASSET_ID,
 };
 use sp1_zkvm::io;
 
@@ -55,6 +55,15 @@ sol! {
         uint256 vBtc;         // the locked output's sats (objective Bitcoin data, proven by the confirmed tx)
         bytes32 commitment;   // keccak(Cx‖Cy) of the locker's pre-committed cBTC note (anti-griefing bind)
     }
+    // (asset_id, ticker, decimals, cid) parsed from an etch this batch authenticated — byte-identical to the
+    // settle guest's AssetMeta + ConfidentialPool.AssetMeta so the contract's `_autoRegisterFromMeta` decodes it.
+    struct AssetMeta {
+        bytes32 assetId;
+        bytes16 ticker;
+        uint8 tickerLen;
+        uint8 decimals;
+        bytes32 cid;
+    }
     struct BitcoinReflectionPublicValues {
         bytes32 priorDigest;       // the reflected state this cycle continues from
         bytes32 bitcoinPoolRoot;   // note-tree root after the batch
@@ -77,6 +86,12 @@ sol! {
         // gates it == ConfidentialPool.bitcoinConsumedCount, so the spent set can advance ONLY after every
         // recorded consume is folded — closing the stale-eth-proof double-credit.
         uint64  consumedCount;
+        // Trustless metadata: assets whose etch this batch authenticated (BIP141 witness commitment + the
+        // canonical provenance header chain) — surfaced so attest can lazy-register each canonical ERC20.
+        // The SP1 proof binds them to a real, confirmed etch, so the contract needs no further anchor.
+        AssetMeta[] attestedAssetMetas;
+        // value-free Bitcoin-authorized calls → ConfidentialPool.pendingBtcCall, flat (callId, recordHash) pairs.
+        bytes32[] btcCallsFolded;
     }
 }
 
@@ -383,6 +398,9 @@ pub fn main() {
     // contract's per-lock registry (mint gate) + slash (rug). See ops/DESIGN-confidential-defi-v1.md §3.
     let mut cbtc_folded: Vec<CbtcLockFold> = Vec::new();
     let mut cbtc_spent: Vec<[u8; 32]> = Vec::new();
+    let mut attested_metas: Vec<AssetMeta> = Vec::new();
+    // The value-free Bitcoin-call fold pushes (callId, recordHash) pairs here (flat) → contract pendingBtcCall.
+    let mut btc_calls_folded: Vec<[u8; 32]> = Vec::new();
 
     // FULL SCAN: every tx of every block, in order.
     for block_index in 0..(num_headers as usize) {
@@ -427,23 +445,47 @@ pub fn main() {
             let spends = scan_tx_spends(tx, &mut state.live, || (r32(), r32()))
                 .expect("vin scan / opening bind");
 
-            // cBTC: a SELF-CUSTODY lock spend — any input that spends a tracked cBTC.zk lock outpoint drops
-            // its sats from the backing and surfaces the spent outpoint (the contract classifies rug vs.
-            // honest redemption: spent ∧ escrow-not-released ⇒ slash). A plain Bitcoin spend (no Tacit ν),
-            // independent of the pool-UTXO scan above, and BEFORE the 0x66 track below so an in-block
-            // create-then-spend nets correctly.
-            cbtc_spent.extend(state.fold_cbtc_lock_spends(tx));
-
-            // Classify by envelope: most txs have none (their spends are plain pool-UTXO spends,
-            // still nullified). A burn envelope marks a bridge-out; a cxfer envelope declares
-            // output notes.
-            // Envelopes are consensus-bound only when the block's witness commitment verified (above);
-            // a block without one (non-segwit) carries no Taproot envelopes to fold.
+            // The Taproot envelope (consensus-bound only when the block's witness commitment verified above;
+            // a non-segwit block carries none). Parsed here so the cBTC redeem below runs BEFORE the rug scan.
             let env = if witness_committed {
                 bitcoin::extract_taproot_envelope(tx)
             } else {
                 None
             };
+
+            // cBTC single-tx REDEMPTION (T_CBTC_REDEEM, 0x67) — the honest exit, classified IN-GUEST (no
+            // owner attestation). This tx both UNLOCKS a tracked lock AND burns exactly its sats of cBTC in
+            // the same tx (Σ C_in = v_btc·H, the audited CXFER burn). Recognized BEFORE the rug scan: a valid
+            // redeem retires the lock HERE (off the live set), so fold_cbtc_lock_spends no longer sees it → it
+            // never enters cbtcLocksSpent → an honest redeemer is never slashable (closing the slash race
+            // trustlessly). The burn inputs are this tx's cBTC note spends, already bound to their stored
+            // commitment + asset and nullified by scan_tx_spends. A bare lock spend with no matching in-tx burn
+            // stays tracked and folds as a rug below — so a rugger can't spoof a redeem without truly burning
+            // the matching cBTC (which IS the honest retirement).
+            if let Some(rd) = env.as_ref().and_then(|e| bitcoin::parse_cbtc_redeem_envelope(e)) {
+                let cbtc_ins: Vec<_> = spends.iter().filter(|s| s.asset == CBTC_ZK_ASSET_ID).collect();
+                let in_ops: Vec<([u8; 32], u32)> =
+                    cbtc_ins.iter().map(|s| (s.prev_txid, s.prev_vout)).collect();
+                if let (Some(in_pts), Some(tx_ins)) = (
+                    cbtc_ins.iter().map(|s| from_affine_xy(&s.cx, &s.cy)).collect::<Option<Vec<Point>>>(),
+                    bitcoin::extract_inputs(tx),
+                ) {
+                    let _ = state.fold_cbtc_redeem(
+                        &rd.lock_txid, rd.lock_vout, rd.v_btc, &tx_ins, &in_ops, &in_pts, &rd.kernel_sig,
+                    );
+                }
+            }
+
+            // cBTC RUG: a self-custody lock spend NOT matched by a redeem above — any input spending a tracked
+            // cBTC.zk lock outpoint drops its sats from the backing and surfaces the spent outpoint for
+            // cbtcLocksSpent (the engine slashes it: spent ∧ escrow-not-released ⇒ rug). A plain Bitcoin spend
+            // (no Tacit ν), independent of the pool-UTXO scan above, and BEFORE the 0x66 track below so an
+            // in-block create-then-spend nets correctly.
+            cbtc_spent.extend(state.fold_cbtc_lock_spends(tx));
+
+            // Classify by envelope (`env` parsed above, before the cBTC redeem/rug scan): most txs have none
+            // (their spends are plain pool-UTXO spends, still nullified). A burn envelope marks a bridge-out;
+            // a cxfer envelope declares output notes.
             let burn = env.as_ref().and_then(|e| bitcoin::parse_burn_envelope(e));
             // CXFER surfaces the kernel sig + range proof too, so the fold can RE-VERIFY value
             // conservation (Σ C_in = Σ C_out) + output range before injecting any note (REFLECT-1).
@@ -719,6 +761,24 @@ pub fn main() {
                             state
                                 .fold_burn(env_nu, env_dest, &bk, &bn, &bv, bi, &bp, &bnew)
                                 .expect("burn-deposit burn fold");
+                            // The etch was BIP141 witness-committed + canonical above, so its declared
+                            // (ticker, decimals, cid) are authentic — surface them once for attest to
+                            // lazy-register the asset's canonical ERC20 (idempotent on the contract).
+                            if !attested_metas.iter().any(|m| m.assetId.0 == *b_asset) {
+                                if let Some(meta_env) = bitcoin::extract_taproot_envelope(&etch_tx) {
+                                    if let Some((ticker, tlen, decimals, cid)) =
+                                        bitcoin::parse_etch_meta(&meta_env)
+                                    {
+                                        attested_metas.push(AssetMeta {
+                                            assetId: (*b_asset).into(),
+                                            ticker: ticker.into(),
+                                            tickerLen: tlen,
+                                            decimals,
+                                            cid: cid.into(),
+                                        });
+                                    }
+                                }
+                            }
                         }
                     }
                 } else {
@@ -837,6 +897,22 @@ pub fn main() {
                 {
                     cbtc_folded.push(f);
                 }
+            }
+
+            // Value-free Bitcoin-authorized call (T_BTC_CALL, 0x68): a confirmed, Schnorr-signed Bitcoin tx
+            // that authorizes an arbitrary Ethereum call carrying NO value. fold_btc_call verifies the BIP-340
+            // sig by caller_pubkey over the domain-tagged call binding, then returns (callId, recordHash) —
+            // surfaced as a flat pair for ConfidentialPool.attest → pendingBtcCall, fired by the off-pool
+            // BtcCallExecutor (never inline, so a hostile target can't revert this attest). No note, no mint.
+            // Witness-carried like every Tacit envelope (authenticated by the BIP141 commitment gate above);
+            // a bad/absent sig folds nothing (skip-not-panic). SPEC-BITCOIN-HOOK-AMENDMENT §1.4.
+            if let Some((call_id, record_hash)) = env
+                .as_ref()
+                .and_then(|e| bitcoin::parse_btc_call_envelope(e))
+                .and_then(|c| cxfer_core::fold_btc_call(&c))
+            {
+                btc_calls_folded.push(call_id);
+                btc_calls_folded.push(record_hash);
             }
 
             // Track A: an orderbook bid fill (T_PREAUTH_BID_VAR, 0x5C) is a CXFER on the tacit-asset side —
@@ -1055,6 +1131,8 @@ pub fn main() {
                         let (a_ops, a_pts) = coll(&ca);
                         let (b_ops, b_pts) = coll(&cb);
                         let pre_shares = state.pools.get(&pid).map(|p| p.total_shares).unwrap_or(0);
+                        let pre_accrued =
+                            state.pools.get(&pid).map(|p| p.protocol_fee_accrued).unwrap_or(0);
                         // inputs_c0_backed: every contribution is a detected live (real) spend → C0-backed.
                         if state
                             .fold_lp_add(
@@ -1087,7 +1165,16 @@ pub fn main() {
                                     p.total_shares
                                         .saturating_sub(cxfer_core::AMM_MINIMUM_LIQUIDITY)
                                 } else {
-                                    p.total_shares.saturating_sub(pre_shares)
+                                    // The total_shares delta includes the protocol-fee shares crystallized
+                                    // inside fold_lp_add (added to BOTH total_shares and protocol_fee_accrued).
+                                    // Those belong to the fee recipient and are onboarded separately by
+                                    // fold_protocol_fee_claim — exclude them so the LP's note carries only its
+                                    // own freshly minted shares (else the crystallized shares mint twice).
+                                    let crystallized =
+                                        p.protocol_fee_accrued.saturating_sub(pre_accrued);
+                                    p.total_shares
+                                        .saturating_sub(pre_shares)
+                                        .saturating_sub(crystallized)
                                 };
                                 let _ = state.fold_lp_share_mint(
                                     &pid,
@@ -1291,6 +1378,8 @@ pub fn main() {
             .collect(),
         cbtcLocksSpent: cbtc_spent.iter().map(|o| (*o).into()).collect(),
         consumedCount: state.consumed_count, // fast-lane freshness: attest gates this == bitcoinConsumedCount
+        attestedAssetMetas: attested_metas,
+        btcCallsFolded: btc_calls_folded.into_iter().map(Into::into).collect(),
     };
     io::commit_slice(&BitcoinReflectionPublicValues::abi_encode(&pv));
 }

@@ -662,6 +662,28 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
       }
       return { removed, spent };
     }
+    // cBTC single-tx REDEMPTION (mirror cxfer-core fold_cbtc_redeem) — the honest exit. The SAME tx UNLOCKS
+    // the lock AND burns exactly its sats of cBTC (Σ C_in = vBtc·H, zero outputs — the audited cxfer burn
+    // kernel). Run BEFORE foldCbtcLockSpends so a valid redeem retires the lock here (off the live set) and it
+    // never enters cbtcLocksSpent → an honest redeemer is never slashable. `inOutpoints`/`inPoints` = the tx's
+    // cBTC note spends (the burn inputs); `txVins` must contain the lock outpoint (the in-tx unlock). A bad
+    // burn / untracked-or-mismatched lock / missing unlock returns null (fail-closed → the lock stays tracked
+    // and a bare spend folds it as a rug). Returns the retired outpoint hex, or null.
+    function foldCbtcRedeem({ lockTxid, lockVout, vBtc, txVins, inOutpoints, inPoints, kernelSig }) {
+      vBtc = BigInt(vBtc);
+      if (vBtc === 0n) return null;
+      const unlocked = (txVins || []).some(({ prevTxid, vout }) =>
+        hx(b32(outpointKey(prevTxid, vout))) === hx(b32(outpointKey(lockTxid, lockVout))));
+      if (!unlocked) return null;                                     // lock not unlocked in this tx
+      const key = outpointKey(lockTxid, lockVout);
+      const hit = cbtcLocks.get(key);
+      if (!hit) return null;                                          // lock not tracked
+      if (BigInt(hit[0]) !== vBtc) return null;                       // value mismatch
+      if (!cxferKernelVerify({ asset: CBTC_ZK_ASSET_ID, inputOutpoints: inOutpoints, inputPoints: inPoints, outsCompressed: [], kernelSig, burned: vBtc })) return null;
+      cbtcBackingSats = cbtcBackingSats > vBtc ? cbtcBackingSats - vBtc : 0n;
+      cbtcLocks.remove(key);
+      return hx(b32(key));
+    }
 
     // ── Track-B swap_var fold (mirror cxfer-core fold_swap_var) ──
     // The pool must be C0-backed + its tracked reserves match the envelope; the taker's spent input (c_in,
@@ -864,6 +886,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
       };
       const [aOps, aPts] = coll(ca), [bOps, bPts] = coll(cb);
       const preShares = pools.get(pid) ? BigInt(pools.get(pid).totalShares) : 0n;
+      const preAccrued = pools.get(pid) ? BigInt(pools.get(pid).protocolFeeAccrued || 0n) : 0n;
       if (!lpAddKernelVerify(la.variant, pid, ca, daC, la.shareAmount, la.shareCsecp, aOps, aPts, kaC)) return null;
       if (!lpAddKernelVerify(la.variant, pid, cb, dbC, la.shareAmount, la.shareCsecp, bOps, bPts, kbC)) return null;
       if (la.variant === 1) {                            // POOL_INIT: a fresh pool
@@ -886,9 +909,12 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
         upd.kLast = upd.reserveA * upd.reserveB;          // deposit isn't a fee — advance k_last to the post-deposit k
         pools.set(pid, upd);
       } else { return null; }
-      // Onboard the LP's minted share note (lp_shares = the total_shares delta this op produced).
+      // Onboard the LP's minted share note. variant 0: the total_shares delta also includes the protocol-fee
+      // shares crystallized inside the fold (counted in both totalShares and protocolFeeAccrued); those are
+      // onboarded separately by the protocol-fee claim, so exclude them — the LP's note carries only its mint.
       const p = pools.get(pid);
-      const lpShares = la.variant === 1 ? BigInt(p.totalShares) - AMM_MINIMUM_LIQUIDITY : BigInt(p.totalShares) - preShares;
+      const crystallized = la.variant === 1 ? 0n : (BigInt(p.protocolFeeAccrued || 0n) - preAccrued);
+      const lpShares = la.variant === 1 ? BigInt(p.totalShares) - AMM_MINIMUM_LIQUIDITY : BigInt(p.totalShares) - preShares - crystallized;
       if (lpShares <= 0n) return null;
       if (!verifyPedersenOpening(la.shareCsecp, lpShares, shareR)) return null;
       const lpAsset = ammDeriveLpAssetId(pid);
@@ -898,7 +924,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     }
 
     return {
-      commit, digest, foldSpent, foldOutput, foldNoteAppend, foldBurn, foldCbtcLock, foldCbtcLockSpends, foldSwapVar, foldSwapRoute, foldHarvest, foldProtocolFeeClaim, foldFarmInit, foldLpRemove, foldLpAdd, foldConsumed, foldCrossout, setConsumedCount, getConsumedCount, setEthReflDigest, getEthReflDigest, setHeight,
+      commit, digest, foldSpent, foldOutput, foldNoteAppend, foldBurn, foldCbtcLock, foldCbtcLockSpends, foldCbtcRedeem, foldSwapVar, foldSwapRoute, foldHarvest, foldProtocolFeeClaim, foldFarmInit, foldLpRemove, foldLpAdd, foldConsumed, foldCrossout, setConsumedCount, getConsumedCount, setEthReflDigest, getEthReflDigest, setHeight,
       // The next free slot's note append-path, computed WITHOUT inserting — the swap_batch witness emits this n
       // times on a skip (the guest reads n receipt paths unconditionally, then discards them when the fold bails).
       notePathPeek: () => notes.rootAndPath(noteCount()).path,
@@ -944,7 +970,9 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
       throw new Error('cxfer kernel: missing asset/kernelSig/commitments');
     }
     if (inputOutpoints.length !== inputPoints.length) return false;
-    if (inputOutpoints.length > 255 || outsCompressed.length < 1 || outsCompressed.length > 255) return false;
+    // 0 outputs is a pure burn (the cBTC redeem) — allowed, matching the guest cxfer_kernel_verify (a
+    // zero-output, zero-burn tx still rejects below via the P==identity check).
+    if (inputOutpoints.length > 255 || outsCompressed.length > 255) return false;
     let outPoints; try { outPoints = cxferOutPoints(outsCompressed); } catch { return false; }
     const Z = secp.ProjectivePoint.ZERO;
     let P = inputPoints.reduce((a, p) => a.add(p), Z).add(outPoints.reduce((a, p) => a.add(p), Z).negate());
@@ -1239,6 +1267,19 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
           spentInserts.push(state.foldSpent(nullifier(co.cx, co.cy)));
           state.live.remove(key);
           coords.delete(norm(key));
+        }
+        // cBTC single-tx REDEEM (0x67): the honest exit — recognize it BEFORE the rug scan so a redeemed lock
+        // is retired off the live set and never flagged a rug. The burn inputs are this tx's cBTC note spends
+        // (the index-aligned openings/inOutpoints, filtered to the cBTC asset).
+        if (tx.env && tx.env.type === 'cbtc_redeem') {
+          const ci = [];
+          for (let i = 0; i < inAssets.length; i++) if (inAssets[i] === CBTC_ZK_ASSET_ID) ci.push(i);
+          let inPts = null;
+          try { inPts = ci.map((i) => ptFromXY(openings[i].cx, openings[i].cy)); } catch { inPts = null; }
+          if (inPts) state.foldCbtcRedeem({
+            lockTxid: tx.env.lockTxid, lockVout: tx.env.lockVout, vBtc: tx.env.vBtc,
+            txVins: tx.vins || [], inOutpoints: ci.map((i) => inOutpoints[i]), inPoints: inPts, kernelSig: tx.env.kernelSig,
+          });
         }
         // cBTC.zk self-custody rug: drop the backing of any tracked lock outpoint this tx spends (mirror
         // the guest's fold_cbtc_lock_spends, run after the vin scan, before the envelope folds). No witness.

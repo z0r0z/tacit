@@ -24,6 +24,8 @@ fn main() {
     s.write(&hexv(f["spendRoot"].as_str().unwrap()));
     s.write(&vec![0u8; 32]); // bitcoinSpentRoot = 0
     s.write(&vec![0u8; 32]); // bitcoinBurnRoot = 0
+    s.write(&vec![0u8; 32]); // lockSetRoot = 0
+    s.write(&vec![0u8; 32]); // cdpPositionRoot = 0
     s.write(&1u32);          // numOps
     s.write(&OP_SWAP_ROUTE);
 

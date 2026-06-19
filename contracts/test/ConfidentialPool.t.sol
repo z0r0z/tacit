@@ -226,7 +226,9 @@ contract ConfidentialPoolTest is Test {
             0,
             new ConfidentialPool.CbtcLockFolded[](0),
             new bytes32[](0),
-            uint64(pool.bitcoinConsumedCount())
+            uint64(pool.bitcoinConsumedCount()),
+            new ConfidentialPool.AssetMeta[](0),
+            new bytes32[](0)
         );
         pool.attestBitcoinStateProven(abi.encode(r), "");
     }
@@ -249,7 +251,9 @@ contract ConfidentialPoolTest is Test {
             backing,
             new ConfidentialPool.CbtcLockFolded[](0),
             new bytes32[](0),
-            uint64(pool.bitcoinConsumedCount())
+            uint64(pool.bitcoinConsumedCount()),
+            new ConfidentialPool.AssetMeta[](0),
+            new bytes32[](0)
         );
         pool.attestBitcoinStateProven(abi.encode(r), "");
     }
@@ -1028,7 +1032,9 @@ contract ConfidentialPoolTest is Test {
             0,
             new ConfidentialPool.CbtcLockFolded[](0),
             new bytes32[](0),
-            uint64(pool.bitcoinConsumedCount())
+            uint64(pool.bitcoinConsumedCount()),
+            new ConfidentialPool.AssetMeta[](0),
+            new bytes32[](0)
         );
         vm.expectRevert(ConfidentialPool.StaleRelayProof.selector);
         pool.attestBitcoinStateProven(abi.encode(r), "");
@@ -1078,9 +1084,12 @@ contract ConfidentialPoolTest is Test {
 
     // ──────────────────── trustless first-mint metadata (OP_ATTEST_META) ────────────────────
 
-    /// A settle carrying guest-proven asset metadata lazy-deploys + registers the canonical
-    /// ERC20 with exactly that (symbol, decimals) — no trusted metadata, no manual step.
-    function test_settle_auto_registers_from_attested_meta() public {
+    /// Trustless metadata via the REFLECTION attestation (the v1 path): the reflection authenticates an
+    /// asset's etch (BIP141 witness commitment + canonical provenance header chain — any age) and surfaces
+    /// (asset_id, ticker, decimals, cid) in `attestedAssetMetas`; attestBitcoinStateProven lazy-registers the
+    /// canonical ERC20 from it. No settle op, no on-chain etch-block anchor needed (the reflection already
+    /// anchored it). This is what registers TAC and other Tacit-native assets.
+    function test_attest_auto_registers_from_attested_meta() public {
         CanonicalAssetFactory factory = new CanonicalAssetFactory();
         ConfidentialPool p = new ConfidentialPool(
             address(verifier),
@@ -1095,14 +1104,13 @@ contract ConfidentialPoolTest is Test {
             address(0)
         );
 
-        // The guest now confirms the asset is real + funded on Bitcoin: it proves a note
-        // for this asset_id is a member of a relay-attested pool root and commits that root
-        // in bitcoinRootsUsed (gated ∈ knownBitcoinRoot). Attest the root first.
-        bytes32 attRoot = keccak256("attested-pool-root");
+        bytes32 tacId = keccak256("attested-TAC");
         bytes32 prior = p.knownReflectionDigest();
+        ConfidentialPool.AssetMeta[] memory metas = new ConfidentialPool.AssetMeta[](1);
+        metas[0] = ConfidentialPool.AssetMeta(tacId, bytes16("TAC"), 3, 8, bytes32(0)); // ticker "TAC", 8 dec
         ConfidentialPool.BitcoinRelayPublicValues memory rl = ConfidentialPool.BitcoinRelayPublicValues(
             prior,
-            attRoot,
+            keccak256("attested-pool-root"),
             keccak256("sentinel"),
             keccak256("sentinel-burn"),
             1,
@@ -1113,26 +1121,18 @@ contract ConfidentialPoolTest is Test {
             0,
             new ConfidentialPool.CbtcLockFolded[](0),
             new bytes32[](0),
-            uint64(p.bitcoinConsumedCount())
+            uint64(p.bitcoinConsumedCount()),
+            metas,
+            new bytes32[](0)
         );
         p.attestBitcoinStateProven(abi.encode(rl), "");
 
-        bytes32 tacId = keccak256("attested-TAC");
-        ConfidentialPool.PublicValues memory pv;
-        pv.version = 1;
-        pv.chainBinding = keccak256(abi.encodePacked(block.chainid, address(p)));
-        pv.assetMetas = new ConfidentialPool.AssetMeta[](1);
-        pv.assetMetas[0] = ConfidentialPool.AssetMeta(tacId, bytes16("TAC"), 3, 8, bytes32(0)); // ticker "TAC", 8 dec
-        pv.bitcoinRootsUsed = new bytes32[](1);
-        pv.bitcoinRootsUsed[0] = attRoot; // the confirmation root the guest proved membership against
-        p.settle(abi.encode(pv), "", new bytes[](0));
-
+        // The reflection attestation alone lazy-deployed + linked the canonical ERC20 — no settle involved.
         address token = factory.tokenOf(tacId, address(p), "TAC", 18);
-        assertTrue(token != address(0), "lazy-deployed");
+        assertTrue(token != address(0), "lazy-deployed at attest time");
         assertEq(token, factory.predict(tacId, address(p), "TAC", 18), "at f(asset_id, pool, meta)");
         assertEq(CanonicalBridgedERC20(token).symbol(), "TAC", "proven ticker");
         assertEq(CanonicalBridgedERC20(token).decimals(), 18, "harmonized to 18");
-        assertEq(CanonicalBridgedERC20(token).name(), "Tacit Token", "brand");
         assertEq(CanonicalBridgedERC20(token).MINTER(), address(p), "pool is minter");
 
         bytes32 internalId = sha256(abi.encodePacked("tacit-evm-token-v1", uint64(block.chainid), token));
@@ -1140,40 +1140,6 @@ contract ConfidentialPoolTest is Test {
         assertTrue(a.registered, "registered");
         assertEq(a.unitScale, 1e10, "unitScale = 10^(18-8)");
         assertEq(a.crossChainLink, tacId, "linked to the Bitcoin asset id");
-
-        // idempotent: a second attest of the same asset doesn't revert or re-register
-        p.settle(abi.encode(pv), "", new bytes[](0));
-        assertEq(factory.tokenOf(tacId, address(p), "TAC", 18), token, "still the same canonical token");
-    }
-
-    /// Trustless metadata is CONFIRMATION-GATED: the guest proves the asset's note
-    /// membership against a Bitcoin pool root and commits it in bitcoinRootsUsed, so a
-    /// fabricated/unconfirmed etch (membership against a root the relay never attested)
-    /// is rejected — no junk canonical ERC20 can be lazy-deployed from it.
-    function test_settle_attest_meta_requires_attested_pool_root() public {
-        CanonicalAssetFactory factory = new CanonicalAssetFactory();
-        ConfidentialPool p = new ConfidentialPool(
-            address(verifier),
-            VKEY,
-            RELAY_VKEY,
-            address(factory),
-            address(relay),
-            ANCHOR,
-            6,
-            bytes32(0),
-            bytes32(0),
-            address(0)
-        );
-
-        ConfidentialPool.PublicValues memory pv;
-        pv.version = 1;
-        pv.chainBinding = keccak256(abi.encodePacked(block.chainid, address(p)));
-        pv.assetMetas = new ConfidentialPool.AssetMeta[](1);
-        pv.assetMetas[0] = ConfidentialPool.AssetMeta(keccak256("junk"), bytes16("JNK"), 3, 8, bytes32(0));
-        pv.bitcoinRootsUsed = new bytes32[](1);
-        pv.bitcoinRootsUsed[0] = keccak256("un-attested-root"); // never relay-attested
-        vm.expectRevert(ConfidentialPool.UnknownBitcoinRoot.selector);
-        p.settle(abi.encode(pv), "", new bytes[](0));
     }
 
     // ──────────────────── Tacit-recorded asset: pool is the canonical ERC20 minter ────────────────────
@@ -1246,7 +1212,9 @@ contract ConfidentialPoolTest is Test {
             0,
             new ConfidentialPool.CbtcLockFolded[](0),
             new bytes32[](0),
-            uint64(pool.bitcoinConsumedCount())
+            uint64(pool.bitcoinConsumedCount()),
+            new ConfidentialPool.AssetMeta[](0),
+            new bytes32[](0)
         );
         vm.expectRevert(ConfidentialPool.StaleBitcoinSpentRoot.selector);
         pool.attestBitcoinStateProven(abi.encode(r), "");
@@ -1273,7 +1241,9 @@ contract ConfidentialPoolTest is Test {
             0,
             new ConfidentialPool.CbtcLockFolded[](0),
             new bytes32[](0),
-            uint64(pool.bitcoinConsumedCount())
+            uint64(pool.bitcoinConsumedCount()),
+            new ConfidentialPool.AssetMeta[](0),
+            new bytes32[](0)
         );
         vm.expectRevert(ConfidentialPool.StaleBitcoinBurnRoot.selector);
         pool.attestBitcoinStateProven(abi.encode(r), "");
@@ -1298,7 +1268,9 @@ contract ConfidentialPoolTest is Test {
             0,
             new ConfidentialPool.CbtcLockFolded[](0),
             new bytes32[](0),
-            uint64(pool.bitcoinConsumedCount())
+            uint64(pool.bitcoinConsumedCount()),
+            new ConfidentialPool.AssetMeta[](0),
+            new bytes32[](0)
         );
         vm.expectRevert(ConfidentialPool.ZeroBitcoinPoolRoot.selector);
         pool.attestBitcoinStateProven(abi.encode(r), "");
@@ -1324,7 +1296,9 @@ contract ConfidentialPoolTest is Test {
             0,
             new ConfidentialPool.CbtcLockFolded[](0),
             new bytes32[](0),
-            uint64(pool.bitcoinConsumedCount())
+            uint64(pool.bitcoinConsumedCount()),
+            new ConfidentialPool.AssetMeta[](0),
+            new bytes32[](0)
         );
         vm.expectRevert(ConfidentialPool.WrongEthPool.selector);
         pool.attestBitcoinStateProven(abi.encode(r), "");
@@ -1354,7 +1328,9 @@ contract ConfidentialPoolTest is Test {
             0,
             new ConfidentialPool.CbtcLockFolded[](0),
             new bytes32[](0),
-            uint64(pool.bitcoinConsumedCount())
+            uint64(pool.bitcoinConsumedCount()),
+            new ConfidentialPool.AssetMeta[](0),
+            new bytes32[](0)
         ); // ethPool = 0 sentinel
         pool.attestBitcoinStateProven(abi.encode(r), "");
         assertTrue(pool.knownBitcoinRoot(poolRoot), "forward-only batch (zero ethPool) attests + advances");
@@ -1378,7 +1354,9 @@ contract ConfidentialPoolTest is Test {
             0,
             new ConfidentialPool.CbtcLockFolded[](0),
             new bytes32[](0),
-            uint64(pool.bitcoinConsumedCount())
+            uint64(pool.bitcoinConsumedCount()),
+            new ConfidentialPool.AssetMeta[](0),
+            new bytes32[](0)
         );
         vm.expectRevert(ConfidentialPool.UnanchoredReflection.selector);
         pool.attestBitcoinStateProven(abi.encode(r), "");
@@ -1400,7 +1378,9 @@ contract ConfidentialPoolTest is Test {
             0,
             new ConfidentialPool.CbtcLockFolded[](0),
             new bytes32[](0),
-            uint64(pool.bitcoinConsumedCount())
+            uint64(pool.bitcoinConsumedCount()),
+            new ConfidentialPool.AssetMeta[](0),
+            new bytes32[](0)
         );
         vm.expectRevert(ConfidentialPool.UnanchoredReflection.selector);
         pool.attestBitcoinStateProven(abi.encode(r), "");
@@ -1426,7 +1406,9 @@ contract ConfidentialPoolTest is Test {
             0,
             new ConfidentialPool.CbtcLockFolded[](0),
             new bytes32[](0),
-            uint64(pool.bitcoinConsumedCount())
+            uint64(pool.bitcoinConsumedCount()),
+            new ConfidentialPool.AssetMeta[](0),
+            new bytes32[](0)
         );
         vm.expectRevert(ConfidentialPool.UnanchoredReflection.selector);
         pool.attestBitcoinStateProven(abi.encode(r), "");
@@ -1454,7 +1436,9 @@ contract ConfidentialPoolTest is Test {
             0,
             new ConfidentialPool.CbtcLockFolded[](0),
             new bytes32[](0),
-            uint64(pool.bitcoinConsumedCount())
+            uint64(pool.bitcoinConsumedCount()),
+            new ConfidentialPool.AssetMeta[](0),
+            new bytes32[](0)
         );
         vm.expectRevert(ConfidentialPool.StaleReflectionDigest.selector);
         pool.attestBitcoinStateProven(abi.encode(bad), "");
@@ -1473,7 +1457,9 @@ contract ConfidentialPoolTest is Test {
             0,
             new ConfidentialPool.CbtcLockFolded[](0),
             new bytes32[](0),
-            uint64(pool.bitcoinConsumedCount())
+            uint64(pool.bitcoinConsumedCount()),
+            new ConfidentialPool.AssetMeta[](0),
+            new bytes32[](0)
         );
         vm.expectRevert(ConfidentialPool.StaleReflectionDigest.selector);
         pool.attestBitcoinStateProven(abi.encode(z), "");
@@ -1865,6 +1851,10 @@ contract ConfidentialPoolTest is Test {
     function _linkViaAttest(bytes32 assetId, string memory symbol_, uint8 decimals_) internal returns (address token) {
         bytes32 attRoot = keccak256(abi.encode("att-root", assetId));
         bytes32 prior = pool.knownReflectionDigest();
+        ConfidentialPool.AssetMeta[] memory metas = new ConfidentialPool.AssetMeta[](1);
+        metas[0] = ConfidentialPool.AssetMeta(
+            assetId, bytes16(bytes(symbol_)), uint8(bytes(symbol_).length), decimals_, _metaCid(assetId)
+        );
         pool.attestBitcoinStateProven(
             abi.encode(
                 ConfidentialPool.BitcoinRelayPublicValues(
@@ -1880,19 +1870,13 @@ contract ConfidentialPoolTest is Test {
                     0,
                     new ConfidentialPool.CbtcLockFolded[](0),
                     new bytes32[](0),
-                    uint64(pool.bitcoinConsumedCount())
+                    uint64(pool.bitcoinConsumedCount()),
+                    metas,
+                    new bytes32[](0)
                 )
             ),
             ""
         );
-        ConfidentialPool.PublicValues memory pv = _pv();
-        pv.assetMetas = new ConfidentialPool.AssetMeta[](1);
-        pv.assetMetas[0] = ConfidentialPool.AssetMeta(
-            assetId, bytes16(bytes(symbol_)), uint8(bytes(symbol_).length), decimals_, _metaCid(assetId)
-        );
-        pv.bitcoinRootsUsed = new bytes32[](1);
-        pv.bitcoinRootsUsed[0] = attRoot;
-        _settle(pv);
         token = factory.tokenOf(assetId, address(pool), symbol_, 18, _metaCid(assetId));
     }
 
@@ -2008,10 +1992,10 @@ contract ConfidentialPoolTest is Test {
         address tok = factory.deployCanonical(shared, address(pool), "cBTC", 18, provenCid);
         bytes32 internalId = pool.registerMinted(tok, "squat-name", "SQUAT", 18);
         assertEq(pool.localAssetOf(shared), bytes32(0), "squat establishes no cross-chain link");
-        (,, uint256 scaleBefore,,, string memory nameBefore, string memory symBefore,) = pool.assets(internalId);
-        assertEq(scaleBefore, 1, "squatter registered the wrong scale");
-        assertEq(nameBefore, "squat-name", "squat seeded a bogus display name");
-        assertEq(symBefore, "SQUAT", "squat seeded a bogus display symbol");
+        ConfidentialPool.Asset memory aBefore = assetOf(pool, internalId);
+        assertEq(aBefore.unitScale, 1, "squatter registered the wrong scale");
+        assertEq(aBefore.name, "squat-name", "squat seeded a bogus display name");
+        assertEq(aBefore.symbol, "SQUAT", "squat seeded a bogus display symbol");
 
         // The pool runs the guest-proven attest_meta (proven 8 decimals → scale 10^10).
         address proven = _linkViaAttest(shared, "cBTC", 8);
@@ -2021,9 +2005,9 @@ contract ConfidentialPoolTest is Test {
         assertEq(scaleAfter, 10 ** 10, "scale OVERWRITTEN to the proven scale (squat's wrong scale discarded)");
         assertEq(link, shared, "crossChainLink healed to the shared id");
         // The squat's bogus display name/symbol are also healed to the canonical brand + proven ticker.
-        (,,,,, string memory nameAfter, string memory symAfter,) = pool.assets(internalId);
-        assertEq(nameAfter, "Tacit Token", "display name healed to the canonical brand");
-        assertEq(symAfter, "cBTC", "display symbol healed to the guest-proven ticker");
+        ConfidentialPool.Asset memory aAfter = assetOf(pool, internalId);
+        assertEq(aAfter.name, "Tacit Token", "display name healed to the canonical brand");
+        assertEq(aAfter.symbol, "cBTC", "display symbol healed to the guest-proven ticker");
 
         // A bridged withdrawal now exits at the proven scale instead of reverting NotRegistered.
         ConfidentialPool.PublicValues memory pv = _pv();
@@ -2161,7 +2145,9 @@ contract ConfidentialPoolTest is Test {
             0,
             new ConfidentialPool.CbtcLockFolded[](0),
             new bytes32[](0),
-            0
+            0,
+            new ConfidentialPool.AssetMeta[](0),
+            new bytes32[](0)
         );
         vm.expectRevert(ConfidentialPool.ConsumedCountStale.selector);
         pool.attestBitcoinStateProven(abi.encode(stale), "");
@@ -2180,7 +2166,9 @@ contract ConfidentialPoolTest is Test {
             0,
             new ConfidentialPool.CbtcLockFolded[](0),
             new bytes32[](0),
-            1
+            1,
+            new ConfidentialPool.AssetMeta[](0),
+            new bytes32[](0)
         );
         pool.attestBitcoinStateProven(abi.encode(fresh), "");
     }
@@ -2637,5 +2625,42 @@ contract ConfidentialPoolTest is Test {
         pv.lockLeaves = _arr(keccak256("btc-lock-leaf"));
         vm.expectRevert(ConfidentialPool.BtcHomedValueExitMustBridge.selector);
         _settle(pv);
+    }
+
+    /// SPEC-BITCOIN-HOOK-AMENDMENT §1.4: attestBitcoinStateProven records each flat (callId, recordHash) pair
+    /// from the reflection's `btcCallsFolded` into `pendingBtcCall` — the guest→contract round-trip the
+    /// off-pool BtcCallExecutor reads. Exercises the 15-field relay-PV decode with a NON-empty calls array.
+    function test_attest_records_btc_calls() public {
+        bytes32 callId = keccak256("btc-call-1");
+        bytes32 recordHash = keccak256("record-1");
+        assertEq(pool.pendingBtcCall(callId), bytes32(0), "unset before attest");
+
+        bytes32 poolRoot = keccak256("btccall-pool");
+        bytes32 spentRoot = keccak256("btccall-spent");
+        bytes32 burnRoot = keccak256(abi.encodePacked(spentRoot, "burn"));
+        bytes32 prior = pool.knownReflectionDigest();
+        bytes32 next = keccak256(abi.encode(prior, poolRoot, spentRoot, burnRoot, uint64(1), "btccall"));
+        bytes32[] memory calls = new bytes32[](2);
+        calls[0] = callId;
+        calls[1] = recordHash;
+        ConfidentialPool.BitcoinRelayPublicValues memory r = ConfidentialPool.BitcoinRelayPublicValues(
+            prior,
+            poolRoot,
+            spentRoot,
+            burnRoot,
+            uint64(1),
+            next,
+            ANCHOR,
+            ANCHOR,
+            bytes32(uint256(uint160(address(pool)))),
+            0,
+            new ConfidentialPool.CbtcLockFolded[](0),
+            new bytes32[](0),
+            uint64(pool.bitcoinConsumedCount()),
+            new ConfidentialPool.AssetMeta[](0),
+            calls
+        );
+        pool.attestBitcoinStateProven(abi.encode(r), "");
+        assertEq(pool.pendingBtcCall(callId), recordHash, "attest recorded the call commitment");
     }
 }

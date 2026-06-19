@@ -31,7 +31,8 @@ const OP_TRANSFER: u8 = 1;
 const OP_UNWRAP: u8 = 2;
 const OP_BRIDGE_BURN: u8 = 3; // Ethereum note → Bitcoin (emit crossOut)
 const OP_BRIDGE_MINT: u8 = 4; // Bitcoin burn → Ethereum note (verify Bitcoin burn)
-const OP_ATTEST_META: u8 = 5; // etch reveal → prove (asset_id, ticker, decimals) trustlessly
+// 5 = RESERVED (was OP_ATTEST_META; asset metadata is now reflection-attested via attestBitcoinStateProven).
+// Wire value — do not renumber the ops below it; assign 5 to the next new op to fill the slot.
 const OP_SWAP: u8 = 6; // confidential AMM batch: hidden-amount swaps against public pool reserves
 const OP_LP_ADD: u8 = 7; // confidential LP: add liquidity in-ratio, mint a shielded LP-share note
 const OP_LP_REMOVE: u8 = 8; // confidential LP: burn a shielded LP-share note, withdraw the underlying
@@ -68,7 +69,6 @@ sol! {
     struct Withdrawal { bytes32 assetId; address recipient; uint256 value; }
     struct FeePayment { bytes32 assetId; uint256 value; }
     struct CrossOut { uint16 destChain; bytes32 destCommitment; bytes32 nullifier; bytes32 assetId; bytes32 claimId; }
-    struct AssetMeta { bytes32 assetId; bytes16 ticker; uint8 tickerLen; uint8 decimals; bytes32 cid; }
     struct SwapSettlement { bytes32 poolId; uint256 reserveAPre; uint256 reserveBPre; uint256 reserveAPost; uint256 reserveBPost; }
     struct LpSettlement { bytes32 poolId; uint256 reserveAPre; uint256 reserveBPre; uint256 sharesPre; uint256 reserveAPost; uint256 reserveBPost; uint256 sharesPost; }
     // Generic CDP (ops/DESIGN-confidential-defi-v1.md §4). A leg = one basket collateral (asset, public value).
@@ -110,7 +110,6 @@ sol! {
         bytes32[] bitcoinRootsUsed;
         bytes32 bitcoinSpentRoot;
         bytes32 bitcoinBurnRoot;
-        AssetMeta[] assetMetas;
         SwapSettlement[] swaps;
         LpSettlement[] liquidity;
         uint64 deadline; // settle expiry (unix secs); 0 = none. The box can't relay a stale proof past it (Expired)
@@ -232,7 +231,6 @@ pub fn main() {
     let mut bitcoin_burns: Vec<[u8; 32]> = Vec::new(); // OP_BRIDGE_MINT burned-note nullifiers
     let mut bitcoin_roots: Vec<[u8; 32]> = Vec::new(); // Bitcoin pool roots minted against
     let mut cross_outs: Vec<CrossOut> = Vec::new();
-    let mut asset_metas: Vec<AssetMeta> = Vec::new();
     let mut swaps: Vec<SwapSettlement> = Vec::new();
     let mut liquidity: Vec<LpSettlement> = Vec::new();
     // Per-op deadline (Expired), bound in each trading op's sigma context so the box can't forge or
@@ -352,11 +350,13 @@ pub fn main() {
                 // (minted on Bitcoin). Every claimId binds to the first input's ν.
                 let asset = r32();
                 let dest_chain = io::read::<u32>() as u16;
-                // Only Bitcoin (1) and Ethereum (2) cross-outs are honored downstream (the reflection folds
-                // dest_chain==1; an Ethereum crossOut is consumed on Eth). Reject an unsupported destination
-                // so a user can't burn into a record nobody redeems.
+                // Only Bitcoin (1) cross-outs are redeemable today: the reflection folds dest_chain==1
+                // (fold_crossout is Bitcoin-only) and the eth-reflection consumer rejects non-Bitcoin dests.
+                // An Ethereum re-home (dest_chain==2) has no consumer yet, so accepting it would let a user
+                // burn into a record nobody redeems (value sink). Re-enable 2 here once the Eth re-home
+                // consumer ships. Reject any unsupported destination outright.
                 assert!(
-                    dest_chain == 1 || dest_chain == 2,
+                    dest_chain == 1,
                     "bridge-burn: unsupported dest chain"
                 );
                 let n_in: u32 = io::read();
@@ -572,77 +572,6 @@ pub fn main() {
                         value: U256::from(fee),
                     });
                 }
-            }
-            OP_ATTEST_META => {
-                // Trustless metadata, CONFIRMATION-GATED. Prove (asset_id, ticker, decimals)
-                // from the etch reveal tx AND that the asset is real + funded on the
-                // relay-attested Bitcoin pool: a member note keyed by THIS asset_id exists
-                // under a relay-confirmed pool root. asset_id = sha256(reveal_txid ‖ 0) binds
-                // the txid → the envelope's ticker+decimals; the note membership binds the
-                // asset_id to a confirmed Bitcoin deposit. A fabricated/unconfirmed etch has
-                // no real note, so it cannot register junk metadata. The pool_root is pushed
-                // to bitcoinRootsUsed → the contract already gates it ∈ knownBitcoinRoot.
-                let etch_tx: Vec<u8> = io::read();
-                let asset =
-                    bitcoin::asset_id_from_etch(&etch_tx).expect("attest: malformed etch tx");
-                let env = bitcoin::extract_taproot_envelope(&etch_tx).expect("attest: envelope");
-                let (ticker, tlen, decimals, cid) =
-                    bitcoin::parse_etch_meta(&env).expect("attest: etch meta");
-                // The metadata envelope is in Taproot witness, so txid inclusion alone does not authenticate
-                // it. Prove the etch wtxid under the block's BIP141 coinbase commitment and expose that
-                // block's txid root to the contract's relay-confirmation gate.
-                let etch_index: u32 = io::read();
-                let n_wtxid_siblings: u32 = io::read();
-                assert!(
-                    n_wtxid_siblings <= MAX_BITCOIN_MERKLE_DEPTH,
-                    "attest: wtxid path over cap"
-                );
-                let wtxid_siblings: Vec<[u8; 32]> = (0..n_wtxid_siblings).map(|_| r32()).collect();
-                let coinbase: Vec<u8> = io::read();
-                let n_coinbase_siblings: u32 = io::read();
-                assert!(
-                    n_coinbase_siblings <= MAX_BITCOIN_MERKLE_DEPTH,
-                    "attest: coinbase path over cap"
-                );
-                let coinbase_txid_siblings: Vec<[u8; 32]> =
-                    (0..n_coinbase_siblings).map(|_| r32()).collect();
-                let etch_block_root = r32();
-                assert!(
-                    bitcoin::verify_tx_witness_committed(
-                        &etch_tx,
-                        etch_index,
-                        &wtxid_siblings,
-                        &coinbase,
-                        &coinbase_txid_siblings,
-                        &etch_block_root,
-                    )
-                    .is_some(),
-                    "attest: etch witness not block-committed",
-                );
-                bitcoin_roots.push(etch_block_root);
-
-                // Confirmation: a note for THIS asset_id is a member of a relay-attested
-                // Bitcoin pool root (proves the asset exists + is funded on Bitcoin).
-                let cx = r32();
-                let cy = r32();
-                let owner = r32();
-                let leaf_index: u64 = io::read();
-                let path = r_path();
-                let pool_root = r32();
-                let lf = leaf(&asset, &cx, &cy, &owner);
-                assert!(
-                    keccak_merkle_verify(&lf, leaf_index, &path, &pool_root),
-                    "attest: asset not in attested Bitcoin pool"
-                );
-                bitcoin_roots.push(pool_root);
-
-                asset_metas.push(AssetMeta {
-                    assetId: asset.into(),
-                    ticker: ticker.into(),
-                    tickerLen: tlen,
-                    decimals,
-                    cid: cid.into(),
-                });
             }
             OP_SWAP => {
                 // Confidential AMM batch: hidden-amount swaps against a pool with PUBLIC reserves.
@@ -1766,7 +1695,7 @@ pub fn main() {
                 // Effect: spend N; append L to the lock-set.
                 nullifiers.push(n_nu);
                 lock_leaves.push(adaptor_lock_leaf(
-                    &l_cx, &l_cy, &tx, &ty, deadline, &recipient, &locker,
+                    &asset, &l_cx, &l_cy, &tx, &ty, deadline, &recipient, &locker,
                 ));
             }
             OP_ADAPTOR_CLAIM => {
@@ -1784,10 +1713,11 @@ pub fn main() {
                 let locker = r32();
                 let l_index: u64 = io::read();
                 let l_path = r_path();
-                // Lock-set membership reconstructs the EXACT leaf — so recipient/T/deadline/locker are pinned
-                // (a relayer can't change them without breaking membership).
+                // Lock-set membership reconstructs the EXACT leaf — so asset/recipient/T/deadline/locker are
+                // pinned (neither a relayer nor the claimer can change them without breaking membership); the
+                // output note below is minted in that same membership-pinned `asset`.
                 let lock_lf =
-                    adaptor_lock_leaf(&l_cx, &l_cy, &tx, &ty, deadline, &recipient, &locker);
+                    adaptor_lock_leaf(&asset, &l_cx, &l_cy, &tx, &ty, deadline, &recipient, &locker);
                 assert!(
                     lock_set_root != [0u8; 32],
                     "adaptor-claim: membership requires a non-zero lock-set root"
@@ -1837,7 +1767,7 @@ pub fn main() {
                 let l_index: u64 = io::read();
                 let l_path = r_path();
                 let lock_lf =
-                    adaptor_lock_leaf(&l_cx, &l_cy, &tx, &ty, deadline, &recipient, &locker);
+                    adaptor_lock_leaf(&asset, &l_cx, &l_cy, &tx, &ty, deadline, &recipient, &locker);
                 assert!(
                     lock_set_root != [0u8; 32],
                     "adaptor-refund: membership requires a non-zero lock-set root"
@@ -2369,7 +2299,6 @@ pub fn main() {
         bitcoinRootsUsed: bitcoin_roots.into_iter().map(Into::into).collect(),
         bitcoinSpentRoot: bitcoin_spent_root.into(),
         bitcoinBurnRoot: bitcoin_burn_root.into(),
-        assetMetas: asset_metas,
         swaps,
         liquidity,
         deadline: min_deadline,

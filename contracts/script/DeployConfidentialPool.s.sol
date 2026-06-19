@@ -33,6 +33,12 @@ contract DeployConfidentialPool is Script {
     // (Prior: …0x00d5b572 (cBTC.zk) — superseded by the Sepolia E2 coordinated re-prove.)
     bytes32 constant DEFAULT_VKEY = 0x005c8a3dc76fdb1df8540736b73d893e5cff55c403442ef0f01a945a41775406;
 
+    // cBTC.zk canonical asset id (cxfer-core CBTC_ZK_ASSET_ID) — the shared id real-BTC-locked cBTC notes
+    // mint under. When a factory + a CollateralEngine are both wired, the pool constructor deploy-or-adopts
+    // the canonical cBTC.tac ERC20 and pins cBTC.zk → it (so a cBTC note / a cUSD-CDP seize exits to a
+    // mintable token); this id is how the deploy confirms that pin landed.
+    bytes32 constant CBTC_ZK_ASSET_ID = 0x62a20d98fc1cd20289621d1315294cb8772f934d822e404b71e1f471cf0679c8;
+
     function run() external {
         address sp1Verifier = vm.envAddress("SP1_VERIFIER");
         require(sp1Verifier != address(0), "set SP1_VERIFIER (pinned immutable Groth16 leaf)");
@@ -127,10 +133,12 @@ contract DeployConfidentialPool is Script {
         uint256 expectedChainId = vm.envOr("EXPECTED_CHAIN_ID", uint256(0));
         require(expectedChainId == 0 || block.chainid == expectedChainId, "block.chainid != EXPECTED_CHAIN_ID");
 
-        // The CollateralEngine (cBTC native-ETH escrow gate + cUSD CDP controller). 0 ⇒ cBTC mint is inert
-        // at launch (the lock-fold + CDP ops are still in the immutable surface; cBTC turns on later by
-        // deploying the engine and a fresh pool that points at it, or via CREATE2 address-prediction so the
-        // engine and pool can reference each other). See ops/DESIGN-confidential-defi-v1.md §6.
+        // The CollateralEngine (cBTC native-ETH escrow gate + cUSD CDP controller). With a CANONICAL_FACTORY
+        // ALSO wired, the pool constructor deploys-or-adopts the canonical cBTC.tac ERC20 + pins cBTC.zk → it
+        // (day-1 cBTC, confirmed below). 0 ⇒ cBTC mint is inert (the lock-fold + CDP ops stay in the immutable
+        // surface, dormant); turn cBTC on later by deploying the engine and a fresh pool that points at it
+        // (engine↔pool circular dep: deploy the engine first with pool=0, then the pool with the engine
+        // address, then engine.setPool(pool)). See ops/DESIGN-confidential-defi-v1.md §6.
         address collateralEngine = vm.envOr("COLLATERAL_ENGINE", address(0));
         vm.startBroadcast();
         ConfidentialPool pool = new ConfidentialPool(sp1Verifier, vkey, bitcoinRelayVKey, canonicalFactory, headerRelay, genesisReflectionAnchor, reflectionConfirmations, reflectionResumeDigest, tethBitcoinId, collateralEngine);
@@ -156,6 +164,15 @@ contract DeployConfidentialPool is Script {
             tethAsset = pool.localAssetOf(tethBitcoinId);
             require(tethAsset != bytes32(0), "tETH link not bound");
         }
+
+        // Day-1 cBTC.tac: when a factory + a CollateralEngine are both wired, the constructor deploy-or-adopts
+        // the canonical cBTC.tac ERC20 and pins cBTC.zk → it. Confirm it landed (fail closed), so a broadcast
+        // can't silently ship a cBTC-capable pool whose cBTC notes can't exit.
+        address cbtcTac;
+        if (canonicalFactory != address(0) && collateralEngine != address(0)) {
+            cbtcTac = pool.canonicalTokenFor(CBTC_ZK_ASSET_ID);
+            require(cbtcTac != address(0), "cBTC.tac not pinned by constructor (factory/engine wired)");
+        }
         vm.stopBroadcast();
 
         console2.log("ConfidentialPool:", address(pool));
@@ -173,6 +190,9 @@ contract DeployConfidentialPool is Script {
         if (tethBitcoinId != bytes32(0)) {
             console2.log("tETH asset (native-ETH shielded ETH, unwrap -> ETH):");
             console2.logBytes32(tethAsset);
+        }
+        if (cbtcTac != address(0)) {
+            console2.log("cBTC.tac (canonical confidential-Bitcoin ERC20, pool-minted):", cbtcTac);
         }
     }
 }

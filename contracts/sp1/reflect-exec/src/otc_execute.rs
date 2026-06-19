@@ -42,6 +42,8 @@ fn main() {
     stdin.write(&hexv(f["spendRoot"].as_str().unwrap()));
     stdin.write(&vec![0u8; 32]); // bitcoinSpentRoot = 0
     stdin.write(&vec![0u8; 32]); // bitcoinBurnRoot = 0
+    stdin.write(&vec![0u8; 32]); // lockSetRoot = 0
+    stdin.write(&vec![0u8; 32]); // cdpPositionRoot = 0
     stdin.write(&1u32);          // numOps
     stdin.write(&9u8);           // OP_OTC
     stdin.write(&hexv(f["assetA"].as_str().unwrap()));

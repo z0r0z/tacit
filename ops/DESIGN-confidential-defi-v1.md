@@ -102,16 +102,21 @@ A dedicated contract path (bridge_mint-shaped, but gated on the *lock* registry 
    One-mint-per-lock via `cbtcMinted[outpoint]`. cBTC's asset id is the fixed `CBTC_ZK_ASSET_ID` (the one
    canonical real-BTC asset, not controller-derived).
 
-### 3.3 Slash / redeem — the contract classifies
+### 3.3 Slash / redeem — the **guest** classifies (trustless, single-tx redeem)
 
-- **Redeem (honest):** an atomic cBTC↔BTC swap (an exiting locker unlocks BTC to a redeeming holder, the
-  cBTC burn reveals the adaptor secret — `DESIGN-cbtc-redemption.md`). The engine marks
-  `escrowReleased[outpoint]` when the redemption is proven, and returns the ETH.
-- **Slash (rug):** `attestBitcoinStateProven` records each `cbtcLocksSpent(outpoint)` into
-  `cbtcLockSpent[outpoint] = true`. The engine's `slash(outpoint)` fires iff `cbtcLockSpent[outpoint]`
-  **and** `escrowReleased[outpoint]` is false ⇒ a rug ⇒ it **slashes** the native ETH. The slashed ETH
-  backs the now-unbacked cBTC (held / used to buy+burn cBTC over the async redemption rail). The guest
-  never decides rug-vs-redeem; the engine does, from the proven spend flag + its own release ledger.
+- **Redeem (honest):** a single-tx Bitcoin-native cBTC↔BTC swap — one co-signed tx UNLOCKS the lock AND
+  BURNS exactly its sats of cBTC (`Σ C_in = v_btc·H`, the audited CXFER burn; `DESIGN-cbtc-redemption.md`).
+  The reflection's `fold_cbtc_redeem` recognizes it BEFORE the rug scan and RETIRES the lock off the live
+  set, so it never enters `cbtcLocksSpent` ⇒ an honest redeemer is **never slashable** (the slash race is
+  closed in-guest, no owner attestation). Supply ↓ and backing ↓ together (conservation preserved).
+- **Slash (rug):** a bare lock spend with **no** matching in-tx cBTC burn stays tracked and folds as a rug:
+  `attestBitcoinStateProven` records each `cbtcLocksSpent(outpoint)` into `cbtcLockSpent[outpoint] = true`,
+  and `slash(outpoint)` fires iff `cbtcLockSpent[outpoint]` **and** `escrowReleased[outpoint]` is false ⇒ it
+  **slashes** the native ETH (backing the now-unbacked cBTC via the async buy+burn rail). The guest now
+  **does** decide rug-vs-redeem — a rugger can't spoof a redeem without truly burning the matching cBTC,
+  which IS the honest retirement. The engine's owner-attested `releaseEscrow` remains only to RETURN an
+  honest redeemer's own escrow (benign: it can't slash or steal); a guest-surfaced `cbtcLockRedeemed` for
+  permissionless release is a follow-up.
 
 ### 3.4 Trust ledger (cBTC)
 | Concern | Mechanism | Trust |
@@ -289,4 +294,12 @@ fully local + testable; step 5 needs the box; step 6 is the launch.
   assets gain CDP programmability through the same ops.
 - Richer policy (dynamic ratios, interest, partial liquidation, stability fees) = controller logic, mutable.
 - Full amount-privacy for CDP positions (hide the boundary amounts via a committed-capacity attestation)
-  = a later, additive controller+guest option; the v1 boundary-public model is the simple, sound start.
+  = a later, additive controller+guest option. The v1 boundary-public model is not merely the simple
+  start: public boundary amounts are **load-bearing for solvency** — they let keepers liquidate
+  permissionlessly against the live oracle, and let anyone audit `total_debt ≤ total_collateral` without
+  trusting a prover. Amount-privacy is therefore a distinct design (an in-guest capacity check against a
+  pinned, freshness-gated oracle round + a proof-gated liquidation path for hidden positions), not a
+  drop-in toggle. Owner-privacy (shipped) already removes targeting/doxxing, and the minted debt note
+  (e.g. cUSD) already circulates fully confidential, so the marginal privacy of hiding the position's
+  boundary amounts is bounded while the cost (liquidation redesign) is real — hence v1 keeps them public
+  by deliberate choice, not omission.

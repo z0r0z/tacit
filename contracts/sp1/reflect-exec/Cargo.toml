@@ -44,5 +44,34 @@ path = "src/bid_execute.rs"
 name = "route-execute"
 path = "src/route_execute.rs"
 
+# Same, for OP_CBTC_MINT (fixtures/cbtc_mint_op.json) — validates the cBTC-mint guest arm (bearer-note opening
+# sigma) + serialization in-zkVM. Closes the cBTC parity gap with the swap/lp/otc/route/bid harnesses.
+[[bin]]
+name = "cbtc-mint-execute"
+path = "src/cbtc_mint_execute.rs"
+
+# Same, for OP_CDP_MINT (fixtures/cdp_mint_op.json) — validates the CDP-mint guest arm (collateral membership
+# + opening sigmas + controller-derived debt note) + serialization in-zkVM. Closes the CDP parity gap.
+[[bin]]
+name = "cdp-mint-execute"
+path = "src/cdp_mint_execute.rs"
+
+# Same, for OP_CDP_LIQUIDATE (fixtures/cdp_liquidate_op.json) — validates the position-membership seize arm.
+[[bin]]
+name = "cdp-liquidate-execute"
+path = "src/cdp_liquidate_execute.rs"
+
+# Same, for OP_CDP_TOPUP (fixtures/cdp_topup_op.json) — validates the old-position membership + fresh-collateral
+# membership/sigma + the merge to the replacement position.
+[[bin]]
+name = "cdp-topup-execute"
+path = "src/cdp_topup_execute.rs"
+
+# Same, for OP_CDP_CLOSE (fixtures/cdp_close_op.json) — validates position membership + released-collateral
+# re-mint sigmas + debt-note burns summing to the position debt.
+[[bin]]
+name = "cdp-close-execute"
+path = "src/cdp_close_execute.rs"
+
 [profile.release]
 overflow-checks = true

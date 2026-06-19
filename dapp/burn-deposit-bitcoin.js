@@ -421,6 +421,23 @@ function parseCbtcLockEnvelope(envHex) {
   };
 }
 
+// T_CBTC_REDEEM (0x67) — the single-tx Bitcoin-native cBTC↔BTC redemption: the same tx UNLOCKS the named lock
+// AND burns exactly v_btc of cBTC (Σ C_in = v_btc·H, the audited CXFER burn). Recognized so the reflection
+// folds it (fold_cbtc_redeem) BEFORE the rug scan — retiring the lock off the live set, never slashing an
+// honest exit. Layout: opcode ‖ lock_txid(32) ‖ lock_vout(4 LE) ‖ v_btc(8 LE) ‖ kernel_sig(64) = 109 bytes.
+function parseCbtcRedeemEnvelope(envHex) {
+  const e = hexToBytes(envHex);
+  if (e[0] !== 0x67 || e.length !== 109) return null;
+  let v = 0n; for (let j = 7; j >= 0; j--) v = (v << 8n) | BigInt(e[37 + j]);
+  return {
+    type: 'cbtc_redeem',
+    lockTxid: _h(e, 1, 33),
+    lockVout: e[33] | (e[34] << 8) | (e[35] << 16) | (e[36] * 0x1000000),
+    vBtc: v.toString(),
+    kernelSig: _h(e, 45, 109),
+  };
+}
+
 // The sats value of output[vout] in a raw (segwit or legacy) tx — cBTC's v_btc, the lock output the note must
 // open to. The guest reads it from the tx the same way; null if vout is out of range / the tx is malformed.
 function txOutputValue(rawTxHex, vout) {
@@ -484,6 +501,10 @@ function classifyConfidentialTx(rawTxHex) {
   // from the tx (the guest reads it from the tx the same way). A malformed lock output → fail-loud unsupported.
   const cb = parseCbtcLockEnvelope(envHex);
   if (cb) { const vBtc = txOutputValue(rawTxHex, cb.lockVout); return vBtc == null ? { type: 'unsupported', opcode: 0x66 } : { ...cb, vBtc }; }
+  // cBTC redeem (0x67): the honest single-tx exit. v_btc + the kernel sig are on-chain in the envelope; the
+  // assembler's fold_cbtc_redeem re-verifies the burn against the tx's cBTC vins. Decode == the fold env.
+  const cr = parseCbtcRedeemEnvelope(envHex);
+  if (cr) return cr;
   // T_CROSSOUT_MINT (0x65, Mode-B reverse): route it so the forward scan emits the witnesses the guest reads +
   // skips (fold_crossout is a no-op in a forward batch — crossout_set_root=0), instead of refusing the block.
   const co = parseCrossoutMintEnvelope(envHex);
@@ -495,7 +516,7 @@ function classifyConfidentialTx(rawTxHex) {
   return null;
 }
 
-export { readVarint, extractInputs, extractTaprootEnvelope, parseCetch, parseCmint, parseBurnEnvelope, parseCxferEnvelopeFull, parsePreauthBidEnvelope, parseSwapBatchEnvelope, parseSwapVarEnvelope, parseSwapRouteEnvelope, parseHarvestEnvelope, parseProtocolFeeClaimEnvelope, parseFarmInitEnvelope, parseLpAddEnvelope, parseLpRemoveEnvelope, parseCbtcLockEnvelope, parseCrossoutMintEnvelope, txOutputValue, classifyConfidentialTx };
+export { readVarint, extractInputs, extractTaprootEnvelope, parseCetch, parseCmint, parseBurnEnvelope, parseCxferEnvelopeFull, parsePreauthBidEnvelope, parseSwapBatchEnvelope, parseSwapVarEnvelope, parseSwapRouteEnvelope, parseHarvestEnvelope, parseProtocolFeeClaimEnvelope, parseFarmInitEnvelope, parseLpAddEnvelope, parseLpRemoveEnvelope, parseCbtcLockEnvelope, parseCbtcRedeemEnvelope, parseCrossoutMintEnvelope, txOutputValue, classifyConfidentialTx };
 
 // Build the burnDepositKit the worker injects (buildScanReflectionAttester → makeScanReflectionIndexer).
 // Sources every crypto primitive from the SAME modules the pool/guest use (so verdicts match byte-for-byte)

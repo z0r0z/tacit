@@ -126,7 +126,7 @@ export function makeScanReflectionIndexer({ secp, keccak256, sha256, ownerTag, b
       // NOT yet reflect it (no free-output deposit path); surface it so the assembler can flag the
       // un-onboarded value rather than silently treating the tx as plain.
       env = { type: 'mint', assetId: tx.decode.assetId };
-    } else if (tx.decode && ['swap_var', 'swap_route', 'harvest', 'farm_refund', 'protocol_fee_claim', 'farm_init', 'swap_batch', 'lp_add', 'lp_remove', 'cbtc_lock', 'crossout_mint'].includes(tx.decode.type)) {
+    } else if (tx.decode && ['swap_var', 'swap_route', 'harvest', 'farm_refund', 'protocol_fee_claim', 'farm_init', 'swap_batch', 'lp_add', 'lp_remove', 'cbtc_lock', 'cbtc_redeem', 'crossout_mint'].includes(tx.decode.type)) {
       // Track-B/C AMM + cBTC ops whose fold data is fully on-chain (classifyConfidentialTx parsed it, incl. the
       // option-a opening blindings for lp_add/lp_remove/cbtc_lock) — the assembler's fold advances the pool/lock
       // registry + onboards the receipt(s). The decode IS the env shape those folds read. (swap_batch's BN254
