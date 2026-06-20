@@ -46,6 +46,13 @@ contract MockPermit2 {
         allowed[owner][p.details.token][p.spender] = p.details.amount;
     }
 
+    function permit(address owner, IPermit2.PermitBatch calldata p, bytes calldata) external {
+        permitCalls++;
+        for (uint256 i; i < p.details.length; i++) {
+            allowed[owner][p.details[i].token][p.spender] = p.details[i].amount;
+        }
+    }
+
     function transferFrom(address from, address to, uint160 amount, address token) external {
         uint160 a = allowed[from][token][msg.sender];
         require(a >= amount, "P2: insufficient permit allowance");
@@ -412,5 +419,84 @@ contract ConfidentialWrapRouterTest is Test {
         assertGe(out, 900, "output >= minOut");
         assertEq(tok.balanceOf(user), out, "swap output sent to the user");
         assertEq(usdc.balanceOf(address(router)), 0, "router holds no input");
+    }
+
+    // ──────────────────── Public AMM liquidity (gasless approve) ────────────────────
+
+    function _poolId(bytes32 a, bytes32 b, uint32 feeBps) internal pure returns (bytes32) {
+        (bytes32 lo, bytes32 hi) = a < b ? (a, b) : (b, a);
+        return keccak256(abi.encodePacked(lo, hi, uint256(feeBps)));
+    }
+
+    function _permitBatch(address tA, uint256 aA, address tB, uint256 aB, uint64 deadline)
+        internal
+        view
+        returns (IPermit2.PermitBatch memory pb)
+    {
+        IPermit2.PermitDetails[] memory dets = new IPermit2.PermitDetails[](2);
+        dets[0] = IPermit2.PermitDetails({token: tA, amount: uint160(aA), expiration: uint48(deadline), nonce: 0});
+        dets[1] = IPermit2.PermitDetails({token: tB, amount: uint160(aB), expiration: uint48(deadline), nonce: 0});
+        pb = IPermit2.PermitBatch({details: dets, spender: address(router), sigDeadline: deadline});
+    }
+
+    function test_addLiquidityPublicWithPermit2_firstAdd_createsPool() public {
+        MockUSDC tok = new MockUSDC();
+        bytes32 tokId = pool.registerWrapped(address(tok), 1, bytes32(0), "Tok", "TOK", 6);
+        uint256 amtA = 1000;
+        uint256 amtB = 4000; // isqrt(1000*4000)=2000 ⇒ shares = 2000 - MINIMUM_LIQUIDITY(1000) = 1000
+        tok.mint(user, amtB);
+        uint64 deadline = uint64(block.timestamp + 1 hours);
+        vm.startPrank(user);
+        usdc.approve(address(permit2), type(uint256).max);
+        tok.approve(address(permit2), type(uint256).max);
+        vm.stopPrank();
+
+        vm.prank(user);
+        uint256 shares = router.addLiquidityPublicWithPermit2(
+            address(usdc), address(tok), FEE_BPS, amtA, amtB, 0, deadline, user,
+            _permitBatch(address(usdc), amtA, address(tok), amtB, deadline), hex""
+        );
+
+        assertEq(shares, 1000, "first-add shares = isqrt - MINIMUM_LIQUIDITY");
+        assertEq(pool.lpShares(_poolId(assetId, tokId, FEE_BPS), user), shares, "shares credited to the user");
+        assertEq(usdc.balanceOf(user), 10_000 - amtA, "user paid amtA");
+        assertEq(tok.balanceOf(user), 0, "user paid amtB (first add consumes both legs fully)");
+        assertEq(usdc.balanceOf(address(router)), 0, "router holds no tokenA");
+        assertEq(tok.balanceOf(address(router)), 0, "router holds no tokenB");
+    }
+
+    function test_addLiquidityPublicWithPermit2_forwardsRefund() public {
+        // seed a 1:1 pool from this contract so the user's add is a (proportional) later add
+        MockUSDC tok = new MockUSDC();
+        bytes32 tokId = pool.registerWrapped(address(tok), 1, bytes32(0), "Tok", "TOK", 6);
+        uint256 seed = 1_000_000;
+        usdc.mint(address(this), seed);
+        tok.mint(address(this), seed);
+        usdc.approve(address(pool), type(uint256).max);
+        tok.approve(address(pool), type(uint256).max);
+        pool.createPairAndAddLiquidityPublic(assetId, tokId, FEE_BPS, seed, seed, 0, 0, address(this));
+
+        // user adds OFF-RATIO (2000 USDC + 1000 TOK into a 1:1 pool) → ~1000 USDC excess must be refunded
+        uint256 amtA = 2000;
+        uint256 amtB = 1000;
+        tok.mint(user, amtB);
+        uint64 deadline = uint64(block.timestamp + 1 hours);
+        vm.startPrank(user);
+        usdc.approve(address(permit2), type(uint256).max);
+        tok.approve(address(permit2), type(uint256).max);
+        vm.stopPrank();
+
+        vm.prank(user);
+        uint256 shares = router.addLiquidityPublicWithPermit2(
+            address(usdc), address(tok), FEE_BPS, amtA, amtB, 0, deadline, user,
+            _permitBatch(address(usdc), amtA, address(tok), amtB, deadline), hex""
+        );
+
+        assertGt(shares, 0, "shares minted");
+        // TOK is the limiting leg (1000); the 1000 USDC excess is refunded by the pool and forwarded to the user
+        assertEq(usdc.balanceOf(user), 10_000 - 1000, "off-ratio USDC excess refunded (net 1000 spent)");
+        assertEq(tok.balanceOf(user), 0, "TOK fully used");
+        assertEq(usdc.balanceOf(address(router)), 0, "router forwarded the refund, holds nothing");
+        assertEq(tok.balanceOf(address(router)), 0, "router holds no TOK");
     }
 }

@@ -16,6 +16,16 @@ interface IConfidentialPool {
         uint64 deadline,
         address to
     ) external payable returns (uint256 amountOut);
+    function createPairAndAddLiquidityPublic(
+        bytes32 assetA,
+        bytes32 assetB,
+        uint32 feeBps,
+        uint256 amountA,
+        uint256 amountB,
+        uint256 minSharesOut,
+        uint64 deadline,
+        address to
+    ) external payable returns (uint256 sharesMinted);
 }
 
 /// EIP-2612 permit (USDC and most modern ERC20s; DAI's non-standard permit is NOT this shape — those go
@@ -42,7 +52,14 @@ interface IPermit2 {
         uint256 sigDeadline;
     }
 
+    struct PermitBatch {
+        PermitDetails[] details;
+        address spender;
+        uint256 sigDeadline;
+    }
+
     function permit(address owner, PermitSingle calldata permitSingle, bytes calldata signature) external;
+    function permit(address owner, PermitBatch calldata permitBatch, bytes calldata signature) external;
     function transferFrom(address from, address to, uint160 amount, address token) external;
 }
 
@@ -224,6 +241,40 @@ contract ConfidentialWrapRouter is ReentrancyGuardTransient {
             POOL.swapPublic(_evmAssetId(tokenIn), _evmAssetId(tokenOut), feeBps, amountIn, minAmountOut, deadline, to);
     }
 
+    // ──────────────────── Public AMM liquidity (gasless approve) ────────────────────
+
+    /// @notice One-tx PUBLIC liquidity add via a Permit2 batch (ONE signature for BOTH tokens): pull
+    ///         `amountA` of `tokenA` + `amountB` of `tokenB`, lazily create the (canonical) pool if it
+    ///         doesn't exist, add liquidity, and credit the LP shares to `to`. The off-ratio excess the pool
+    ///         refunds (to msg.sender == this router) is forwarded back to the caller, so the router keeps no
+    ///         balance. ERC20-only — a native-ETH leg would need a payable variant. `feeBps`/`minSharesOut`/
+    ///         `deadline` are the pool's; caller passes token ADDRESSES (the router derives the asset ids).
+    function addLiquidityPublicWithPermit2(
+        address tokenA,
+        address tokenB,
+        uint32 feeBps,
+        uint256 amountA,
+        uint256 amountB,
+        uint256 minSharesOut,
+        uint64 deadline,
+        address to,
+        IPermit2.PermitBatch calldata permitBatch,
+        bytes calldata signature
+    ) external nonReentrant returns (uint256 sharesMinted) {
+        if (amountA > type(uint160).max || amountB > type(uint160).max) revert AmountTooLarge();
+        try PERMIT2.permit(msg.sender, permitBatch, signature) {} catch {}
+        PERMIT2.transferFrom(msg.sender, address(this), uint160(amountA), tokenA);
+        PERMIT2.transferFrom(msg.sender, address(this), uint160(amountB), tokenB);
+        _lazyApprove(tokenA, amountA);
+        _lazyApprove(tokenB, amountB);
+        sharesMinted = POOL.createPairAndAddLiquidityPublic(
+            _evmAssetId(tokenA), _evmAssetId(tokenB), feeBps, amountA, amountB, minSharesOut, deadline, to
+        );
+        // The pool pays the off-ratio refund to msg.sender (== this router); forward it to the caller.
+        _refund(tokenA, msg.sender);
+        _refund(tokenB, msg.sender);
+    }
+
     // ──────────────────── Internals ────────────────────
 
     /// Pull `amount` of an EIP-2612 token from the caller (its signed allowance) into the router, then lazily
@@ -289,6 +340,13 @@ contract ConfidentialWrapRouter is ReentrancyGuardTransient {
         if (IERC20Allowance(token).allowance(address(this), address(POOL)) < amount) {
             SafeTransferLib.safeApproveWithRetry(token, address(POOL), type(uint256).max);
         }
+    }
+
+    /// Forward the router's full balance of `token` to `to` — used to return the pool's off-ratio LP refund,
+    /// so the router never retains a token balance across calls.
+    function _refund(address token, address to) internal {
+        uint256 bal = SafeTransferLib.balanceOf(token, address(this));
+        if (bal != 0) SafeTransferLib.safeTransfer(token, to, bal);
     }
 
     /// The pool's internal asset id for an underlying ERC20 — MUST mirror ConfidentialPool._evmAssetId:
