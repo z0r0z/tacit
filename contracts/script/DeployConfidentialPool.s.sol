@@ -3,6 +3,7 @@ pragma solidity ^0.8.28;
 
 import {Script, console2} from "forge-std/Script.sol";
 import {ConfidentialPool} from "../src/ConfidentialPool.sol";
+import {ConfidentialRouter} from "../src/ConfidentialRouter.sol";
 
 /// @notice Deploy ConfidentialPool, wired to the SP1 verifier and the full
 ///         confidential guest's program vkey.
@@ -31,13 +32,19 @@ contract DeployConfidentialPool is Script {
     // 4438a10b… (elf-vkey-pin.json). A real Groth16 of this ELF verifies on-chain at this vkey
     // (test/Confidential{Swap,Lp,Otc,Bid}ProofReal). Override via PROGRAM_VKEY env if the guest changes.
     // (Prior: …0x00d5b572 (cBTC.zk) — superseded by the Sepolia E2 coordinated re-prove.)
-    bytes32 constant DEFAULT_VKEY = 0x005c8a3dc76fdb1df8540736b73d893e5cff55c403442ef0f01a945a41775406;
+    bytes32 constant DEFAULT_VKEY = 0x00516e622d8fa554b8ef2c6cee2c3436aafda1a33b39f86a131072a7ae52e0ea;
 
     // cBTC.zk canonical asset id (cxfer-core CBTC_ZK_ASSET_ID) — the shared id real-BTC-locked cBTC notes
     // mint under. When a factory + a CollateralEngine are both wired, the pool constructor deploy-or-adopts
     // the canonical cBTC.tac ERC20 and pins cBTC.zk → it (so a cBTC note / a cUSD-CDP seize exits to a
     // mintable token); this id is how the deploy confirms that pin landed.
     bytes32 constant CBTC_ZK_ASSET_ID = 0x62a20d98fc1cd20289621d1315294cb8772f934d822e404b71e1f471cf0679c8;
+
+    // ConfidentialRouter singletons (same address on most chains): Uniswap Permit2 (AllowanceTransfer) and the
+    // pinned zRouter aggregator (routes a swap across V2/V3/V4/Curve/zAMM). The router pins both IMMUTABLY;
+    // override via PERMIT2 / ZROUTER env on a chain/test where they differ. Skip the router with DEPLOY_ROUTER=false.
+    address constant PERMIT2 = 0x000000000022D473030F116dDEE9F6B43aC78BA3;
+    address constant ZROUTER = 0x000000000000FB114709235f1ccBFfb925F600e4;
 
     function run() external {
         address sp1Verifier = vm.envAddress("SP1_VERIFIER");
@@ -173,6 +180,16 @@ contract DeployConfidentialPool is Script {
             cbtcTac = pool.canonicalTokenFor(CBTC_ZK_ASSET_ID);
             require(cbtcTac != address(0), "cBTC.tac not pinned by constructor (factory/engine wired)");
         }
+
+        // Periphery router (one-tx wrap / private payment / public-AMM / zaps), pinned to this pool + the
+        // canonical Permit2 + the pinned zRouter aggregator (all immutable). It custodies nothing across calls,
+        // so it needs no post-deploy wiring. DEPLOY_ROUTER=false skips it (e.g. a router-less core deploy).
+        address router;
+        if (vm.envOr("DEPLOY_ROUTER", true)) {
+            address zr = vm.envOr("ZROUTER", ZROUTER);
+            address p2 = vm.envOr("PERMIT2", PERMIT2);
+            router = address(new ConfidentialRouter(address(pool), zr, p2));
+        }
         vm.stopBroadcast();
 
         console2.log("ConfidentialPool:", address(pool));
@@ -193,6 +210,9 @@ contract DeployConfidentialPool is Script {
         }
         if (cbtcTac != address(0)) {
             console2.log("cBTC.tac (canonical confidential-Bitcoin ERC20, pool-minted):", cbtcTac);
+        }
+        if (router != address(0)) {
+            console2.log("ConfidentialRouter (wrap/pay/swap/zap periphery):", router);
         }
     }
 }
