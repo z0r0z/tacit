@@ -210,17 +210,18 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         uint8 decimals;
     }
 
+    // Field order is LAYOUT-ONLY (the `assets()` getter fixes the external tuple order, and `_assets` is
+    // internal + not storage-proven by any guest). The sub-word fields pack with the 20-byte address into ONE
+    // slot (1+20+1+1 = 23 ≤ 32), so the hot trio registered/poolMinted/underlying shares a single warm SLOAD on
+    // every wrap/payout, and a registration writes 3 slots. name/symbol are NOT stored — they ride the
+    // `AssetRegistered` event (the dapp reads them there), saving two slots + the packing on every register.
     struct AssetStore {
         bool registered;
         address underlying; // ERC-20 backing; for poolMinted assets, the canonical ERC20 this pool mints/burns
+        bool poolMinted; // true ⇒ this pool mints/burns the canonical ERC20; false ⇒ escrow-backed
+        uint8 decimals;
         uint256 unitScale; // underlying base units per in-system value unit
         bytes32 crossChainLink; // Bitcoin-side asset id for shared-asset recognition (0 if none)
-        bool poolMinted; // true ⇒ this pool mints/burns the canonical ERC20; false ⇒ escrow-backed
-        bytes32 name;
-        bytes32 symbol;
-        uint8 nameLen;
-        uint8 symbolLen;
-        uint8 decimals;
     }
 
     mapping(bytes32 => AssetStore) internal _assets; // asset_id => Asset
@@ -306,21 +307,28 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     // knownReflectionDigest is seeded to this so the first attestation continues genesis. Pinned in
     // cxfer-core (genesis_digest_matches_contract_constant). Tied to BITCOIN_RELAY_VKEY (one prover).
     bytes32 internal constant REFLECTION_GENESIS_DIGEST =
-        0xeab17bcb92a60d3504973e52dad54aaafe331d87999f94304fac7c29cf126388;
+        0x7b058378c57dc5e8586e588ed5b010862924ec34dfce88495379135ae006ef41;
 
     // cBTC.zk's canonical asset id = keccak256("tacit-cbtc-zk-lock-v1") (cxfer-core CBTC_ZK_ASSET_ID) — the
     // fixed domain const the reflection guest mints real-BTC-locked cBTC notes under. Pinned so the
     // constructor can link it to the canonical cBTC.tac ERC20: it is a lock position, NOT a Bitcoin etch, so
     // the permissionless attest_meta link path can't reach it, and (unlike a foreign id) it has one canonical
-    // backing. Referenced ONLY in the constructor, so it adds no runtime bytecode.
-    bytes32 internal constant CBTC_ZK_ASSET_ID =
+    // backing. Public so launch scripts/dapps/engine config can assert one shared id before enabling cBTC.
+    bytes32 public constant CBTC_ZK_ASSET_ID =
         0x62a20d98fc1cd20289621d1315294cb8772f934d822e404b71e1f471cf0679c8;
 
-    // The cBTC.tac metadata CID baked into its canonical factory address (the CREATE2 salt includes the cid).
-    // 0 = no metadata for V1 (contractURI empty); set to the real cBTC IPFS metadata CID before the
-    // production deploy if wanted — it is immutable and fixes the cBTC.tac identity. Constructor-only ⇒ no
-    // runtime cost. cBTC = Tacit's canonical confidential-Bitcoin token; iterate the brand in a later gen.
-    bytes32 internal constant CBTC_METADATA_CID = bytes32(0);
+    // The tacBTC (cBTC.tac) metadata CID (EIP-7572 contractURI) = sha256 of contracts/cbtc-tac-metadata.json
+    // (raw CIDv1), whose image is contracts/cbtc-tac-icon.svg. Baked into the canonical factory address via
+    // the CREATE2 salt, so it is immutable and fixes the tacBTC identity + address; pinned before the
+    // cBTC-capable deploy. tacBTC = the public ERC-20 form of cBTC (Tacit's confidential Bitcoin).
+    bytes32 internal constant CBTC_METADATA_CID =
+        0x4fdafc3227875f0973780cc0aa6aa186c8cb00a0564fbed8bdf1f0cfa16b06cc;
+
+    // The tacUSD (cUSD.tac) metadata CID (EIP-7572 contractURI) = sha256 of contracts/cusd-tac-metadata.json
+    // (raw CIDv1), image contracts/cusd-tac-icon.svg. tacUSD = the public ERC-20 form of cUSD, Tacit's
+    // cBTC-collateralized CDP dollar. Baked into the canonical factory address via the CREATE2 salt.
+    bytes32 internal constant CUSD_METADATA_CID =
+        0x0e80e326b5a3b085dd5aecc8553a164917d94e57d081ac2dd2ab2d92e6b86b77;
 
     // A shared (Bitcoin-side) asset id => this pool's local registry key. A bridge_mint note
     // carries the SHARED id as its `asset` (it must, to prove membership in the Bitcoin
@@ -413,11 +421,17 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     // Value-free Bitcoin-authorized calls (SPEC-BITCOIN-HOOK-AMENDMENT §1.4): the reflection proves a signed
     // Bitcoin call envelope; attest records it here; the separate BtcCallExecutor fires it, so a hostile
     // target can never revert the attest. Stores only a 32-byte commitment per callId =
-    // keccak(target‖calldataHash‖callerPubkey); the executor re-supplies those fields (public from the
+    // keccak(executor‖target‖calldataHash‖callerPubkey); the executor re-supplies those fields (public from the
     // Bitcoin tx) and checks them against this commitment. Appended after the guest-pinned slots.
     mapping(bytes32 => bytes32) public pendingBtcCall;
 
-    // ──────────────────── cBTC escrow views (the CollateralEngine reads these) ────────────────────
+    // Escrow-mode farm treasury (ops/PLAN-evm-farm-rewards.md): controller => its escrow-backed reward asset
+    // (pinned on first fundFarm) and the funded, not-yet-distributed budget (in-system units). The harvest bound
+    // in _settle debits the budget by debtValue; fundFarm/recoverFarm reuse the escrow + payout machinery so the
+    // invariant escrow[asset] == Σ outstanding reward notes + Σ farmTreasury holds. Internal (no getter) for the
+    // codesize budget — the dapp reads the treasury from the controller's notify/harvest events.
+    mapping(address => bytes32) internal farmRewardAsset;
+    mapping(address => uint256) internal farmTreasury;
 
     // ──────────────────── Public-values layout ────────────────────
 
@@ -581,6 +595,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     // for the reverse reflection to fold into the Bitcoin spent set. `spendRoot` = the Bitcoin pool root
     // membership was proven against. The worker reads this to build the eth-reflection witness set.
     event BitcoinNotesConsumed(bytes32[] nullifiers, bytes32 spendRoot);
+
     // ──────────────────── Errors ────────────────────
 
     error Expired();
@@ -602,14 +617,18 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     error CanonicalAsset();
     error MerkleTreeFull();
     error RefundTooEarly();
+    error UnknownCdpRoot();
     error StaleRelayProof();
     error UnknownLockRoot();
     error ValueOutOfRange();
     error AmountNotAligned();
+    error BadCdpController();
+    error CbtcLockMismatch();
     error CrossChainEscrow();
     error EthValueMismatch();
     error LockAlreadySpent();
     error MemoLeafMismatch();
+    error SlippageExceeded();
     error AlreadyRegistered();
     error BurnAlreadyMinted();
     error DepositNotPending();
@@ -624,19 +643,17 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     error UnanchoredReflection();
     error BridgeBurnNotEthHomed();
     error CrossOutClaimMismatch();
+    error InsufficientLiquidity();
     error NullifierAlreadySpent();
     error StaleBitcoinSpentRoot();
     error StaleReflectionDigest();
+    error CdpPositionAlreadySpent();
     error CrossChainTokenMismatch();
     error ConstantProductDecreased();
     error FeeOnTransferUnsupported();
     error CrossOutNullifierNotSpent();
     error BadReflectionConfirmations();
     error BtcHomedValueExitMustBridge();
-    error UnknownCdpRoot();
-    error BadCdpController();
-    error CdpPositionAlreadySpent();
-    error CbtcLockMismatch();
 
     // ──────────────────── Constructor ────────────────────
 
@@ -681,6 +698,10 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         // trustless first-mint metadata (_autoRegisterFromMeta skips on a zero factory; a non-contract
         // would revert every attest_meta settle) with no recovery on an immutable pool. 0 = disabled.
         if (canonicalFactory_ != address(0) && canonicalFactory_.code.length == 0) revert NotAContract();
+        if (collateralEngine_ != address(0)) {
+            if (canonicalFactory_ == address(0)) revert ZeroAddress();
+            if (collateralEngine_.code.length == 0) revert NotAContract();
+        }
         CANONICAL_FACTORY = ICanonicalAssetFactory(canonicalFactory_);
         // The reflection-resume anchor. 0 ⇒ a genesis-anchored deploy (gen-1): the first cycle continues the
         // protocol genesis digest. NON-ZERO ⇒ a GENERATIONAL deploy (gen-N) that joins the SHARED Bitcoin
@@ -693,7 +714,8 @@ contract ConfidentialPool is ReentrancyGuardTransient {
             reflectionResumeDigest_ == bytes32(0) ? REFLECTION_GENESIS_DIGEST : reflectionResumeDigest_;
 
         // The CollateralEngine is the mutable policy contract; this pointer just names it (may be 0 ⇒ cBTC
-        // mint inert). It can never mint/move backing, so no code-check gate is needed.
+        // mint inert). Non-zero cBTC mode is atomic: engine contract + canonical factory, so a cBTC note can
+        // both mint privately and resolve to cBTC.tac on public exit/recovery.
         COLLATERAL_ENGINE = ICollateralEngine(collateralEngine_);
 
         bytes32 z = bytes32(0);
@@ -735,17 +757,38 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         // Bitcoin etch), so it has one canonical backing and the permissionless attest_meta link path can't
         // reach it — hence the constructor pin, mirroring tETH above. Native precision 8 (sats) → unitScale
         // 10^(18−8)=10^10 onto the 18-dec ERC20. deploy-or-adopt (tokenOf-first) is front-run-safe: the
-        // factory address is salt-bound to (id, this, "cBTC", 18, cid), so any pre-deploy IS the canonical
-        // token (pool-minted, right id). 0 factory or 0 engine ⇒ no cBTC here (no test sets both).
-        if (address(CANONICAL_FACTORY) != address(0) && collateralEngine_ != address(0)) {
+        // factory address is salt-bound to (id, this, "tacBTC", 18, cid), so any pre-deploy IS the canonical
+        // token (pool-minted, right id). 0 engine ⇒ no cBTC mint path here.
+        if (collateralEngine_ != address(0)) {
             address cbtcTac =
-                CANONICAL_FACTORY.tokenOf(CBTC_ZK_ASSET_ID, address(this), "cBTC", ETH_DECIMALS, CBTC_METADATA_CID);
+                CANONICAL_FACTORY.tokenOf(CBTC_ZK_ASSET_ID, address(this), "tacBTC", ETH_DECIMALS, CBTC_METADATA_CID);
             if (cbtcTac == address(0)) {
                 cbtcTac =
-                    CANONICAL_FACTORY.deployCanonical(CBTC_ZK_ASSET_ID, address(this), "cBTC", ETH_DECIMALS, CBTC_METADATA_CID);
+                    CANONICAL_FACTORY.deployCanonical(CBTC_ZK_ASSET_ID, address(this), "tacBTC", ETH_DECIMALS, CBTC_METADATA_CID);
             }
-            _register(cbtcTac, 10 ** 10, CBTC_ZK_ASSET_ID, true, "Tacit Token", "cBTC", ETH_DECIMALS);
+            _register(cbtcTac, 10 ** 10, CBTC_ZK_ASSET_ID, true, "Tacit Bitcoin", "tacBTC", ETH_DECIMALS);
+
+            // Day-1 tacUSD (cUSD.tac). The engine IS the cUSD CDP controller, so the debt asset id is
+            // keccak("tacit-cdp-debt-v1" ‖ engine) — derivable here from the engine address (mirrors
+            // cxfer-core::cdp_debt_asset_id and the _settle CDP-mint check). Deploy-or-adopt its canonical
+            // 18-dec ERC20 (pool = sole MINTER) and pin that debt id → it, so a cUSD CDP note exits to tacUSD
+            // on unwrap and a wrapped tacUSD burns back into a shielded cUSD note. Symmetric to tacBTC. The
+            // engine must be deployed with cusdDec = 8 (matches unitScale 10^10 onto the 18-dec ERC20).
+            bytes32 cusdId = keccak256(abi.encodePacked("tacit-cdp-debt-v1", collateralEngine_));
+            address cusdTac =
+                CANONICAL_FACTORY.tokenOf(cusdId, address(this), "tacUSD", ETH_DECIMALS, CUSD_METADATA_CID);
+            if (cusdTac == address(0)) {
+                cusdTac =
+                    CANONICAL_FACTORY.deployCanonical(cusdId, address(this), "tacUSD", ETH_DECIMALS, CUSD_METADATA_CID);
+            }
+            _register(cusdTac, 10 ** 10, cusdId, true, "Tacit USD", "tacUSD", ETH_DECIMALS);
         }
+    }
+
+    // ──────────────────── cBTC escrow views (the CollateralEngine reads these) ────────────────────
+
+    function cbtcMinted(bytes32 outpoint) external view returns (bool) {
+        return _cbtcMinted[outpoint];
     }
 
     // ──────────────────── Asset registry ────────────────────
@@ -885,18 +928,12 @@ contract ConfidentialPool is ReentrancyGuardTransient {
             if (localAssetOf[crossChainLink] != bytes32(0)) revert CrossChainLinkTaken();
             localAssetOf[crossChainLink] = assetId;
         }
-        (bytes32 packedName, uint8 nameLen) = _packShortString(name_);
-        (bytes32 packedSymbol, uint8 symbolLen) = _packShortString(symbol_);
         _assets[assetId] = AssetStore({
             registered: true,
             underlying: underlying,
             unitScale: unitScale,
             crossChainLink: crossChainLink,
             poolMinted: poolMinted,
-            name: packedName,
-            symbol: packedSymbol,
-            nameLen: nameLen,
-            symbolLen: symbolLen,
             decimals: decimals_
         });
         emit AssetRegistered(assetId, underlying, unitScale, name_, symbol_, decimals_);
@@ -911,19 +948,16 @@ contract ConfidentialPool is ReentrancyGuardTransient {
             uint256 unitScale,
             bytes32 crossChainLink,
             bool poolMinted,
-            bytes32 name,
-            bytes32 symbol,
             uint8 decimals
         )
     {
         AssetStore storage a = _assets[assetId];
+        // name/symbol are not stored — read them from the AssetRegistered event.
         registered = a.registered;
         underlying = a.underlying;
         unitScale = a.unitScale;
         crossChainLink = a.crossChainLink;
         poolMinted = a.poolMinted;
-        name = a.name; // packed short string (left-aligned bytes, null-padded); decode off-chain
-        symbol = a.symbol;
         decimals = a.decimals;
     }
 
@@ -953,7 +987,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         // value exceeds u64 would bind a deposit id the guest can never reproduce (its
         // value wraps), so the deposit — and the escrowed amount — would be unconsumable.
         // Reject at the boundary instead of locking funds.
-        if (value > type(uint64).max) revert ValueOutOfRange();
+        _ckU64(value);
         // The guest reproduces this exact id from (assetId, value, keccak(Cx‖Cy‖owner)) — the coords
         // and owner it holds as witness — so the value binding holds without the contract ever seeing
         // them. Distinct hash from ν, so the published id (in Wrap) never yields a note's nullifier.
@@ -961,28 +995,15 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         if (depositStatus[depositId] != 0) revert DepositExists();
         depositStatus[depositId] = 1;
 
-        if (a.poolMinted) {
-            // Tacit-recorded asset: burn the canonical ERC20 (re-entering confidential).
-            if (msg.value != 0) revert EthValueMismatch();
-            IMintBurn(a.underlying).burn(msg.sender, amount);
-        } else if (a.underlying == address(0)) {
-            // Native ETH: escrow exactly msg.value (no token transfer).
+        // ETH coverage: native ETH (underlying 0) must arrive as exactly msg.value; every token path
+        // (pool-minted burn or external ERC20 escrow) forbids ETH. CEI: depositStatus is already set above,
+        // before this move's external token call.
+        if (a.underlying == address(0)) {
             if (msg.value != amount) revert EthValueMismatch();
-            escrow[assetId] += amount;
-        } else {
-            // External ERC20: escrow it (no ETH). Measure the realized balance delta and require it to
-            // equal `amount`. A fee-on-transfer / deflationary / negative-rebasing token delivers less
-            // than declared; crediting the full amount would over-state escrow and leave the LAST
-            // withdrawer of this asset short (their safeTransfer reverts while escrow still shows a
-            // balance). Reject such a token at the boundary instead of silently booking the shortfall.
-            if (msg.value != 0) revert EthValueMismatch();
-            uint256 balBefore = SafeTransferLib.balanceOf(a.underlying, address(this));
-            SafeTransferLib.safeTransferFrom(a.underlying, msg.sender, address(this), amount);
-            if (SafeTransferLib.balanceOf(a.underlying, address(this)) - balBefore != amount) {
-                revert FeeOnTransferUnsupported();
-            }
-            escrow[assetId] += amount;
+        } else if (msg.value != 0) {
+            revert EthValueMismatch();
         }
+        _moveInUnderlying(a, assetId, amount);
         emit Wrap(depositId, assetId, amount);
     }
 
@@ -1037,8 +1058,9 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         if (assetA == assetB) revert SameAsset();
         if (!_assets[assetA].registered || !_assets[assetB].registered) revert NotRegistered();
         if (feeBps > MAX_POOL_FEE_BPS) revert FeeTooHigh();
-        (bytes32 lo, bytes32 hi) = assetA < assetB ? (assetA, assetB) : (assetB, assetA);
-        poolId = _poolId(lo, hi, feeBps);
+        bytes32 lo;
+        bytes32 hi;
+        (poolId, lo, hi) = _poolIdFor(assetA, assetB, feeBps);
         if (pools[poolId].init) {
             if (revertIfExists) revert PoolExists();
             return poolId; // atomic create-and-seed: the slot already exists, reuse it
@@ -1057,15 +1079,23 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         }
     }
 
+    /// @dev Canonical poolId + the sorted (lo, hi) asset ids for a pair — the shared sort every public-AMM
+    ///      entrypoint (+ _ensurePair) needs, so (A,B) ≡ (B,A) maps to one pool in exactly one place.
+    function _poolIdFor(bytes32 x, bytes32 y, uint32 feeBps)
+        internal
+        pure
+        returns (bytes32 poolId, bytes32 lo, bytes32 hi)
+    {
+        (lo, hi) = x < y ? (x, y) : (y, x);
+        poolId = _poolId(lo, hi, feeBps);
+    }
+
     // ──────────────────── Public (non-shielded) AMM periphery ────────────────────
     // Public ERC20/ETH ⇄ public AMM, no proof — the surface a zRouter-style periphery composes for users
     // who want standard AMM UX (add/remove/swap) against the pool's PUBLIC reserves. Founding/adding
     // liquidity is public at the wrap boundary anyway, so no settle proof is needed; only HIDING a position
     // or amount needs the confidential (note + proof) path. Both forms share pools[poolId] (reserves +
     // totalShares) + escrow, so a confidential op reading the reserves/total stays correct.
-
-    error InsufficientLiquidity();
-    error SlippageExceeded();
 
     /// @dev Integer sqrt (Babylonian) for the first-mint share = isqrt(valueA·valueB).
     ///      The public add path rejects zero input amounts before calling this helper.
@@ -1092,20 +1122,26 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         }
     }
 
-    /// @dev Escrow a PUBLIC deposit of `amount` of `assetId` and return the in-system value (amount/unitScale).
-    ///      Mirrors `wrap`'s escrow logic (pool-minted burn / native-ETH escrow / fee-on-transfer-safe ERC20).
-    ///      Native-ETH msg.value coverage is checked by the caller (it knows which legs are ETH).
-    function _ingestPublic(bytes32 assetId, uint256 amount) internal returns (uint256 value) {
-        AssetStore storage a = _assets[assetId];
-        if (!a.registered) revert NotRegistered();
-        if (amount == 0 || amount % a.unitScale != 0) revert AmountNotAligned();
-        value = amount / a.unitScale;
-        if (value > type(uint64).max) revert ValueOutOfRange();
+    /// @dev Reject a value the note model can't carry (the BP+ range is < 2^64); shared by every boundary that
+    ///      re-bounds a guest-carried u64 to its range.
+    function _ckU64(uint256 v) internal pure {
+        if (v > type(uint64).max) revert ValueOutOfRange();
+    }
+
+    /// @dev Move `amount` of the asset IN to the pool's custody: burn the canonical ERC20 (pool-minted),
+    ///      escrow native ETH, or escrow an external ERC20 with a realized-delta (fee-on-transfer) guard.
+    ///      Shared by `wrap` and `_ingestPublic`. msg.value coverage is the CALLER's responsibility — `wrap`
+    ///      checks it per-asset; the public-AMM callers aggregate it across both legs.
+    function _moveInUnderlying(AssetStore storage a, bytes32 assetId, uint256 amount) internal {
         if (a.poolMinted) {
+            // Tacit-recorded asset: burn the canonical ERC20 (re-entering confidential).
             IMintBurn(a.underlying).burn(msg.sender, amount);
         } else if (a.underlying == address(0)) {
             escrow[assetId] += amount; // native ETH — caller verified msg.value covers it
         } else {
+            // External ERC20: measure the realized balance delta and require it to equal `amount`. A
+            // fee-on-transfer / deflationary token delivers less; crediting the full amount would over-state
+            // escrow and short the LAST withdrawer of this asset. Reject it at the boundary instead.
             uint256 balBefore = SafeTransferLib.balanceOf(a.underlying, address(this));
             SafeTransferLib.safeTransferFrom(a.underlying, msg.sender, address(this), amount);
             if (SafeTransferLib.balanceOf(a.underlying, address(this)) - balBefore != amount) {
@@ -1113,6 +1149,17 @@ contract ConfidentialPool is ReentrancyGuardTransient {
             }
             escrow[assetId] += amount;
         }
+    }
+
+    /// @dev Escrow a PUBLIC deposit of `amount` of `assetId` and return the in-system value (amount/unitScale).
+    ///      Native-ETH msg.value coverage is checked by the caller (it knows which legs are ETH).
+    function _ingestPublic(bytes32 assetId, uint256 amount) internal returns (uint256 value) {
+        AssetStore storage a = _assets[assetId];
+        if (!a.registered) revert NotRegistered();
+        if (amount == 0 || amount % a.unitScale != 0) revert AmountNotAligned();
+        value = amount / a.unitScale;
+        _ckU64(value);
+        _moveInUnderlying(a, assetId, amount);
     }
 
     /// @notice Atomic create-and-seed from PUBLIC funds (zAMM-style): lazy-create the pool, escrow public
@@ -1194,8 +1241,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     ) external nonReentrant returns (uint256 amountLo, uint256 amountHi) {
         if (deadline != 0 && block.timestamp > deadline) revert Expired();
         if (to == address(0)) revert ZeroAddress();
-        (bytes32 lo, bytes32 hi) = assetA < assetB ? (assetA, assetB) : (assetB, assetA);
-        bytes32 poolId = _poolId(lo, hi, feeBps);
+        (bytes32 poolId, bytes32 lo, bytes32 hi) = _poolIdFor(assetA, assetB, feeBps);
         Pool storage p = pools[poolId];
         if (!p.init) revert PoolNotInit();
         uint256 bal = lpShares[poolId][msg.sender];
@@ -1238,8 +1284,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         if (deadline != 0 && block.timestamp > deadline) revert Expired();
         if (to == address(0)) revert ZeroAddress();
         if (assetIn == assetOut) revert SameAsset();
-        (bytes32 lo, bytes32 hi) = assetIn < assetOut ? (assetIn, assetOut) : (assetOut, assetIn);
-        bytes32 poolId = _poolId(lo, hi, feeBps);
+        (bytes32 poolId, bytes32 lo,) = _poolIdFor(assetIn, assetOut, feeBps);
         Pool storage p = pools[poolId];
         if (!p.init) revert PoolNotInit();
         uint256 expectedEth = _assets[assetIn].underlying == address(0) ? amountIn : 0;
@@ -1264,9 +1309,10 @@ contract ConfidentialPool is ReentrancyGuardTransient {
                 p.reserveB += vIn;
                 p.reserveA -= vOut;
             }
-            if (p.reserveA * p.reserveB < kPre) revert InsufficientLiquidity(); // constant-product non-decrease
+            if (p.reserveA * p.reserveB < kPre) revert ConstantProductDecreased(); // k non-decrease (mirrors settle)
         }
-        if (p.reserveA > type(uint64).max || p.reserveB > type(uint64).max) revert ValueOutOfRange();
+        _ckU64(p.reserveA);
+        _ckU64(p.reserveB);
         amountOut = _payout(assetOut, to, vOut);
         if (amountOut < minAmountOut) revert SlippageExceeded();
     }
@@ -1300,11 +1346,45 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         if (!pools[poolId].init) revert PoolNotInit();
         uint256 bal = lpShares[poolId][msg.sender];
         if (shares == 0 || shares > bal) revert InsufficientLiquidity();
-        if (shares > type(uint64).max) revert ValueOutOfRange(); // the guest carries the note value as u64
+        _ckU64(shares); // the guest carries the note value as u64
         lpShares[poolId][msg.sender] = bal - shares; // burn public; totalShares unchanged (form change)
         depositId = keccak256(abi.encode(_lpShareId(poolId), shares, commit));
         if (depositStatus[depositId] != 0) revert DepositExists();
         depositStatus[depositId] = 1;
+    }
+
+    // ──────────────────── Farm escrow treasury (ops/PLAN-evm-farm-rewards.md) ────────────────────
+
+    /// @notice Fund OR wind down a farm's escrow treasury (one entrypoint to share the dispatch + guard).
+    ///         `amount > 0` FUNDS: the funder (msg.sender) deposits `amount` of an escrow-backed reward asset's
+    ///         underlying into escrow, credited to `controller`'s budget with NO note — so the value backs the
+    ///         controller's later harvest reward notes (the _settle harvest bound debits this budget). Pinned to
+    ///         one reward asset on first fund (a pool-minted or native asset is rejected — those are mint-mode).
+    ///         `amount == 0` RECOVERS: the controller (msg.sender) reclaims its full remaining budget (funded −
+    ///         distributed) to `to` — exactly the escrow not backing outstanding reward notes, so it can never
+    ///         reach another farm's backing. The FarmController calls this from `recover` after its period + grace.
+    function farmEscrow(address controller, bytes32 rewardAsset, uint256 amount, address to)
+        external
+        nonReentrant
+        returns (uint256 out)
+    {
+        if (amount == 0) {
+            if (farmRewardAsset[msg.sender] != rewardAsset) revert NotRegistered();
+            out = farmTreasury[msg.sender];
+            farmTreasury[msg.sender] = 0;
+            _payout(rewardAsset, to, out);
+        } else {
+            bytes32 pinned = farmRewardAsset[controller];
+            if (pinned == bytes32(0)) {
+                AssetStore storage a = _assets[rewardAsset];
+                if (a.poolMinted || a.underlying == address(0)) revert NotRegistered();
+                farmRewardAsset[controller] = rewardAsset;
+            } else if (pinned != rewardAsset) {
+                revert NotRegistered();
+            }
+            out = _ingestPublic(rewardAsset, amount);
+            farmTreasury[controller] += out;
+        }
     }
 
     // ──────────────────── Bitcoin state attestation (relay-proven, no oracle) ────────────────────
@@ -1511,12 +1591,20 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         // a claim passes, so there is no shared boundary second where both a claim and a refund of the same
         // lock would settle. Spend-once already bars double-execution; this removes the boundary ambiguity.
         if (pv.refundNotBefore != 0 && block.timestamp <= pv.refundNotBefore) revert RefundTooEarly();
-        // Membership may be proven against an Ethereum root OR a reflected Bitcoin
-        // confidential-pool root (cross-lane: a Bitcoin-homed note spent on
-        // the Ethereum fast lane). The Ethereum root is this pool's own tree; the
-        // Bitcoin root is relay-attested (no trusted oracle).
-        if (pv.spendRoot != bytes32(0) && !everKnownRoot[pv.spendRoot] && !knownBitcoinRoot[pv.spendRoot]) {
-            revert UnknownRoot();
+        // Membership may be proven against an Ethereum root OR a reflected Bitcoin confidential-pool root
+        // (cross-lane: a Bitcoin-homed note spent on the Ethereum fast lane). The Ethereum root is this
+        // pool's own tree; the Bitcoin root is relay-attested (no trusted oracle). Resolve the home lane in
+        // ONE read of each set: a known Ethereum root ⇒ EVM-homed; else a known relay-attested Bitcoin root
+        // ⇒ btcHomed; else neither is known ⇒ UnknownRoot. spendRoot == 0 is a no-input batch (neither homed).
+        bool btcHomed;
+        if (pv.spendRoot != bytes32(0)) {
+            if (everKnownRoot[pv.spendRoot]) {
+                // Ethereum-homed: this pool's own note tree.
+            } else if (knownBitcoinRoot[pv.spendRoot]) {
+                btcHomed = true;
+            } else {
+                revert UnknownRoot();
+            }
         }
         // Cross-lane non-membership (cross-lane): if the guest proved each
         // spent ν absent from the Bitcoin spent set, it must be against the CURRENT
@@ -1529,7 +1617,6 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         // it must pin the CURRENT Bitcoin spent-set root, so a proof can't skip the
         // gate by committing a zero/omitted bitcoinSpentRoot and re-spend on Ethereum a
         // note already spent on Bitcoin. Ethereum-homed spends carry no Bitcoin history.
-        bool btcHomed = pv.spendRoot != bytes32(0) && !everKnownRoot[pv.spendRoot] && knownBitcoinRoot[pv.spendRoot];
         // Fail closed: a Bitcoin-homed spend MUST pin the CURRENT, NON-ZERO reflected
         // spent-set root. A zero root means the cross-lane set is uninitialized (or a
         // relay reflected an empty set as 0) — allowing it would let the guest skip its
@@ -1607,14 +1694,17 @@ contract ConfidentialPool is ReentrancyGuardTransient {
                 // proven against) so the reverse reflection folds it into the Bitcoin spent set. The ν are
                 // also marked in nullifierSpent below; this dedicated map is the slot the eth-reflection
                 // guest reflects, and it never holds a native EVM spend.
-                for (uint256 i; i < pv.nullifiers.length; ++i) {
-                    bitcoinConsumed[pv.nullifiers[i]] = pv.spendRoot;
-                    bitcoinConsumedAt[bitcoinConsumedCount + i] = pv.nullifiers[i];
+                uint256 baseCount = bitcoinConsumedCount;
+                uint256 nlen = pv.nullifiers.length;
+                for (uint256 i; i < nlen; ++i) {
+                    bytes32 nu = pv.nullifiers[i];
+                    bitcoinConsumed[nu] = pv.spendRoot;
+                    bitcoinConsumedAt[baseCount + i] = nu;
                 }
                 // Advance the freshness anchor: every ν here is a new entry — the nullifierSpent gate below
                 // reverts any repeat in this same tx (rolling back this increment), so the count grows by
                 // exactly the batch's distinct consumed-note count.
-                bitcoinConsumedCount += pv.nullifiers.length;
+                bitcoinConsumedCount = baseCount + nlen;
                 emit BitcoinNotesConsumed(pv.nullifiers, pv.spendRoot);
             }
         }
@@ -1664,10 +1754,14 @@ contract ConfidentialPool is ReentrancyGuardTransient {
             lockSpent[l] = true;
         }
         if (pv.lockLeaves.length != 0) {
-            for (uint256 i; i < pv.lockLeaves.length; ++i) {
-                _insertLockLeaf(pv.lockLeaves[i]);
+            uint256 filledSlot;
+            assembly ("memory-safe") {
+                filledSlot := lockFilledSubtrees.slot
             }
-            everKnownLockRoot[lockRoot] = true;
+            (uint256 endIdx, bytes32 root) = _appendLeaves(pv.lockLeaves, lockNextLeafIndex, filledSlot);
+            lockNextLeafIndex = endIdx;
+            lockRoot = root;
+            everKnownLockRoot[root] = true;
         }
 
         // ── Generic CDP (ops 15–17, 19) + cBTC mint (op 18) ───────────────────────────────────────────
@@ -1688,7 +1782,17 @@ contract ConfidentialPool is ReentrancyGuardTransient {
             if (m.debtAsset != keccak256(abi.encodePacked("tacit-cdp-debt-v1", m.controller))) {
                 revert BadCdpController();
             }
-            _insertCdpPositionLeaf(m.positionLeaf);
+            // positionLeaf sentinels (SPEC-CONTROLLER-VAULT-AMENDMENT): 0 = bare payout, 1 = farm receipt
+            // (bond when debtValue == 0, harvest when > 0) — neither is a real position, so skip the insert
+            // (real leaves are keccak, always > 1); the controller's onCdpMint applies the policy (a harvest
+            // bounds reward = debtValue against the receipt checkpoint carried in the leg values).
+            if (uint256(m.positionLeaf) > 1) _insertCdpPositionLeaf(m.positionLeaf);
+            // Escrow-mode farm harvest: debit the funded treasury by the reward (positionLeaf == 1, debtValue > 0)
+            // so a harvest never exceeds the funded budget; the reward note is backed by escrow[rewardAsset].
+            if (farmRewardAsset[m.controller] != bytes32(0) && uint256(m.positionLeaf) == 1 && m.debtValue != 0) {
+                if (farmTreasury[m.controller] < m.debtValue) revert InsufficientEscrow();
+                farmTreasury[m.controller] -= m.debtValue;
+            }
             ICdpController(m.controller).onCdpMint(m.legs, m.debtValue, m.positionLeaf);
         }
         if (pv.cdpMints.length != 0) everKnownCdpRoot[cdpRoot] = true;
@@ -1717,8 +1821,8 @@ contract ConfidentialPool is ReentrancyGuardTransient {
             if (q.controller.code.length == 0) revert BadCdpController();
             if (cdpPositionSpent[q.positionNullifier]) revert CdpPositionAlreadySpent();
             cdpPositionSpent[q.positionNullifier] = true;
-            // The controller proves (its oracle) the position is unhealthy + covers the debt; reverts if
-            // healthy. The seized basket rides pv.withdrawals (recipient = controller), paid by the loop below.
+            // The guest already burned debt notes summing exactly to debtValue and produced the seized-basket
+            // withdrawals. The controller proves (its oracle) the position is unhealthy; reverts if healthy.
             ICdpController(q.controller).onCdpLiquidate(q.legs, q.debtValue, q.positionNullifier);
         }
 
@@ -1729,7 +1833,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
             CbtcMint memory cm = pv.cbtcMints[i];
             if (cm.vBtc == 0 || cbtcLockVBtc[cm.outpoint] != cm.vBtc) revert CbtcLockMismatch();
             if (cbtcLockCommitment[cm.outpoint] != cm.commitment) revert CbtcLockMismatch();
-            if (_cbtcMinted[cm.outpoint]) revert CbtcLockMismatch();
+            if (cbtcLockSpent[cm.outpoint] || _cbtcMinted[cm.outpoint]) revert CbtcLockMismatch();
             if (address(COLLATERAL_ENGINE) == address(0) || !COLLATERAL_ENGINE.escrowSufficient(cm.outpoint, cm.vBtc)) {
                 revert CbtcLockMismatch();
             }
@@ -1787,10 +1891,14 @@ contract ConfidentialPool is ReentrancyGuardTransient {
 
         if (pv.leaves.length != 0) {
             uint256 firstLeafIndex = nextLeafIndex;
-            for (uint256 i; i < pv.leaves.length; ++i) {
-                _insertLeaf(pv.leaves[i]);
+            uint256 filledSlot;
+            assembly ("memory-safe") {
+                filledSlot := filledSubtrees.slot
             }
-            everKnownRoot[currentRoot] = true;
+            (uint256 endIdx, bytes32 root) = _appendLeaves(pv.leaves, firstLeafIndex, filledSlot);
+            nextLeafIndex = endIdx;
+            currentRoot = root;
+            everKnownRoot[root] = true;
             emit LeavesInserted(firstLeafIndex, pv.leaves, memos);
         }
         // No-inflation reserve floor (mixer #spent ≤ #leaves): total EVM-homed spends can never exceed
@@ -1798,18 +1906,17 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         // leaf); a compromised proof that fabricates spends beyond the real leaf set trips this.
         if (evmNullifiersSpent > nextLeafIndex) revert ReserveFloorBreach();
 
-
         for (uint256 i; i < pv.withdrawals.length; ++i) {
             Withdrawal memory w = pv.withdrawals[i];
             // A note value is a guest-carried u64 (the BP+ range is < 2^64); re-bound it at the public
             // boundary, mirroring wrap's u64 gate, so a single effect can't carry a value the note model
             // can't represent. The paid underlying (value·unitScale) is still u256.
-            if (w.value > type(uint64).max) revert ValueOutOfRange();
+            _ckU64(w.value);
             _payout(w.assetId, w.recipient, w.value);
         }
 
         for (uint256 i; i < pv.fees.length; ++i) {
-            if (pv.fees[i].value > type(uint64).max) revert ValueOutOfRange();
+            _ckU64(pv.fees[i].value);
             _payout(pv.fees[i].assetId, msg.sender, pv.fees[i].value);
         }
 
@@ -1854,7 +1961,8 @@ contract ConfidentialPool is ReentrancyGuardTransient {
             // Reserves stay < 2^64 — the same bound the LP loop enforces at funding, so a pool can never
             // hold value the guest can't reproduce. The guest carries reserves as u64 (BP+ range), so an
             // out-of-range post would wrap when read back as the next pre, desyncing or locking the pool.
-            if (s.reserveAPost > type(uint64).max || s.reserveBPost > type(uint64).max) revert ValueOutOfRange();
+            _ckU64(s.reserveAPost);
+            _ckU64(s.reserveBPost);
             // Defense-in-depth (mirrors the guest's OP_SWAP constant-product check): a swap moves reserves
             // along or above the k curve — fees keep k flat-or-growing, never shrinking. A post that drops
             // k below pre is a compromised-guest drain (the classic AMM attack), so reject it on-chain too.
@@ -1909,6 +2017,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     function _autoRegisterFromMeta(AssetMeta memory m) internal {
         if (address(CANONICAL_FACTORY) == address(0)) return; // not wired
         if (m.decimals > ETH_DECIMALS || m.tickerLen == 0 || m.tickerLen > 16) return;
+        if (localAssetOf[m.assetId] != bytes32(0)) return; // shared id already linked (e.g. native tETH)
         string memory symbol_ = string(_sliceTicker(m.ticker, m.tickerLen));
         // The factory address binds `m.cid` into the salt, so a token pre-deployed with a
         // different cid lands at a different address and is never resolved here — the
@@ -1920,7 +2029,6 @@ contract ConfidentialPool is ReentrancyGuardTransient {
             token = CANONICAL_FACTORY.deployCanonical(m.assetId, address(this), symbol_, ETH_DECIMALS, m.cid);
         }
         bytes32 internalId = _evmAssetId(token);
-        if (localAssetOf[m.assetId] != bytes32(0)) return; // shared id already linked
         uint256 unitScale = 10 ** uint256(ETH_DECIMALS - m.decimals);
         if (_assets[internalId].registered) {
             // The canonical token already has a LOCAL registry entry (e.g. a permissionless
@@ -1934,15 +2042,9 @@ contract ConfidentialPool is ReentrancyGuardTransient {
             AssetStore storage healed = _assets[internalId];
             healed.unitScale = unitScale;
             healed.crossChainLink = m.assetId;
-            // Overwrite the squat's display name/symbol with the canonical brand + guest-proven ticker
-            // so the `assets` registry entry matches the token; re-emit so indexers upsert the corrected record.
-            (bytes32 packedName, uint8 nameLen) = _packShortString("Tacit Token");
-            (bytes32 packedSymbol, uint8 symbolLen) = _packShortString(symbol_);
-            healed.name = packedName;
-            healed.nameLen = nameLen;
-            healed.symbol = packedSymbol;
-            healed.symbolLen = symbolLen;
             localAssetOf[m.assetId] = internalId;
+            // Re-emit the canonical brand + guest-proven ticker so indexers upsert the corrected record (the
+            // name/symbol are event-carried, not stored).
             emit AssetRegistered(internalId, token, unitScale, "Tacit Token", symbol_, ETH_DECIMALS);
             return;
         }
@@ -1965,14 +2067,6 @@ contract ConfidentialPool is ReentrancyGuardTransient {
             mstore(add(m, 26), shl(96, underlying))
             if iszero(staticcall(gas(), 2, m, 46, m, 32)) { revert(0, 0) }
             assetId := mload(m)
-        }
-    }
-
-    function _packShortString(string memory s) internal pure returns (bytes32 data, uint8 len) {
-        assembly ("memory-safe") {
-            len := mload(s)
-            if gt(len, 31) { len := 31 }
-            data := mload(add(s, 0x20))
         }
     }
 
@@ -2036,36 +2130,30 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         }
     }
 
-    function _insertLeaf(bytes32 leaf) internal {
-        uint256 idx = nextLeafIndex;
-        uint256 filledSlot;
-        assembly ("memory-safe") {
-            filledSlot := filledSubtrees.slot
-        }
-        currentRoot = _insertTreeLeaf(leaf, idx, filledSlot);
-        unchecked {
-            nextLeafIndex = idx + 1;
-        }
-    }
-
-    /// Append a locked note to the lock-set accumulator — identical machinery to `_insertLeaf` on the
-    /// independent lock tree (shares `zeros` + `_hash`; depth-bounded by MAX_LEAVES). A locked note is
-    /// never a note-tree leaf, so the two trees stay disjoint.
-    function _insertLockLeaf(bytes32 leaf) internal {
-        uint256 idx = lockNextLeafIndex;
-        uint256 filledSlot;
-        assembly ("memory-safe") {
-            filledSlot := lockFilledSubtrees.slot
-        }
-        lockRoot = _insertTreeLeaf(leaf, idx, filledSlot);
-        unchecked {
-            lockNextLeafIndex = idx + 1;
+    /// Append a batch of leaves to an incremental-Merkle accumulator in ONE pass: each leaf walks
+    /// `_insertTreeLeaf` (updating `filledSlot`'s subtrees per level), and the caller writes the advanced
+    /// leaf index + final root ONCE — vs the per-leaf path, which re-read the index and re-stored an
+    /// intermediate (discarded) root on every leaf. `filledSlot` selects the tree, so the note + lock
+    /// accumulators share this body; the CDP tree inserts singly (interleaved with controller calls) and
+    /// keeps `_insertCdpPositionLeaf`. Returns the index past the last leaf and the final root.
+    function _appendLeaves(bytes32[] memory leaves, uint256 startIdx, uint256 filledSlot)
+        internal
+        returns (uint256 endIdx, bytes32 root)
+    {
+        endIdx = startIdx;
+        uint256 n = leaves.length;
+        for (uint256 i; i < n; ++i) {
+            root = _insertTreeLeaf(leaves[i], endIdx, filledSlot);
+            unchecked {
+                ++endIdx;
+            }
         }
     }
 
-    /// Append a CDP position to the position-set accumulator — identical machinery to `_insertLockLeaf` on
-    /// its own independent tree (shares `zeros` + `_hash`; depth-bounded by MAX_LEAVES). A position leaf is
-    /// never a note-tree or lock-set leaf (domain-separated in-guest), so the trees stay disjoint.
+    /// Append a CDP position to the position-set accumulator — identical machinery to `_appendLeaves` /
+    /// `_insertTreeLeaf` on its own independent tree (shares `zeros` + `_hash`; depth-bounded by
+    /// MAX_LEAVES). A position leaf is never a note-tree or lock-set leaf (domain-separated in-guest), so
+    /// the trees stay disjoint.
     function _insertCdpPositionLeaf(bytes32 leaf) internal {
         uint256 idx = cdpNextLeafIndex;
         uint256 filledSlot;
