@@ -328,7 +328,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     // (raw CIDv1), image contracts/cusd-tac-icon.svg. tacUSD = the public ERC-20 form of cUSD, Tacit's
     // cBTC-collateralized CDP dollar. Baked into the canonical factory address via the CREATE2 salt.
     bytes32 internal constant CUSD_METADATA_CID =
-        0x0e80e326b5a3b085dd5aecc8553a164917d94e57d081ac2dd2ab2d92e6b86b77;
+        0x927144081b10389996f30ec9e2182ae5c04c397d79f497e23947926a51214ab0;
 
     // A shared (Bitcoin-side) asset id => this pool's local registry key. A bridge_mint note
     // carries the SHARED id as its `asset` (it must, to prove membership in the Bitcoin
