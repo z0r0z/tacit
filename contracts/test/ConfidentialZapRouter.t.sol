@@ -4,7 +4,8 @@ pragma solidity ^0.8.28;
 import {Test} from "forge-std/Test.sol";
 import {ConfidentialPool} from "../src/ConfidentialPool.sol";
 import {ConfidentialZapRouter} from "../src/ConfidentialZapRouter.sol";
-import {StubVerifier, MockUSDC} from "./ConfidentialWrapRouter.t.sol";
+import {StubVerifier, MockUSDC, MockPermit2} from "./ConfidentialWrapRouter.t.sol";
+import {IPermit2} from "../src/ConfidentialZapRouter.sol";
 
 /// Stand-in for zRouter: takes ETH (msg.value == swapAmount) and mints `out = value*RATE/1e18` of TOK to
 /// `to` — simulating sourcing the other LP leg from external liquidity, with the output forced to the caller.
@@ -17,17 +18,24 @@ contract MockZRouter {
         RATE = rate;
     }
 
-    function swapV2(address to, bool, address, address tokenOut, uint256 swapAmount, uint256 amountLimit, uint256)
+    function swapV2(address to, bool, address tokenIn, address tokenOut, uint256 swapAmount, uint256 amountLimit, uint256)
         external
         payable
         returns (uint256, uint256)
     {
         require(tokenOut == TOK, "wrong out");
-        require(msg.value == swapAmount, "value != swapAmount");
-        uint256 out = (msg.value * RATE) / 1e18;
+        uint256 inAmt;
+        if (msg.value > 0) {
+            require(msg.value == swapAmount, "value != swapAmount");
+            inAmt = msg.value;
+        } else {
+            require(MockUSDC(tokenIn).transferFrom(msg.sender, address(this), swapAmount), "pull in"); // token-in
+            inAmt = swapAmount;
+        }
+        uint256 out = (inAmt * RATE) / 1e18;
         require(out >= amountLimit, "slippage");
         MockUSDC(TOK).mint(to, out);
-        return (msg.value, out);
+        return (inAmt, out);
     }
 }
 
@@ -36,6 +44,7 @@ contract ConfidentialZapRouterTest is Test {
     ConfidentialZapRouter zap;
     MockUSDC tokenB;
     MockZRouter zr;
+    MockPermit2 permit2;
     bytes32 tethId;
     bytes32 tokenBId;
 
@@ -61,7 +70,8 @@ contract ConfidentialZapRouterTest is Test {
         tokenBId = pool.registerWrapped(address(tokenB), 1, bytes32(0), "Tok B", "TOKB", 6);
         tethId = _evmAssetId(address(0));
         zr = new MockZRouter(address(tokenB), 2e6); // 0.5 ETH (5e17 wei) -> 1e6 TOKB
-        zap = new ConfidentialZapRouter(address(pool), address(zr));
+        permit2 = new MockPermit2();
+        zap = new ConfidentialZapRouter(address(pool), address(zr), address(permit2));
     }
 
     /// The zRouter swap calldata the dapp would build (here MockZRouter.swapV2): swap `ethToSwap` of ETH to
@@ -213,6 +223,68 @@ contract ConfidentialZapRouterTest is Test {
         assertEq(pool.nextLeafIndex(), 1, "farm-receipt leaf inserted by the settle");
         assertEq(address(zap).balance, 0, "zap holds no ETH");
         assertEq(tokenB.balanceOf(address(zap)), 0, "zap holds no tokenB");
+    }
+
+    // ──────────────────── Token-in zap (ERC20 via Permit2) ────────────────────
+
+    function test_zapTokenIntoShieldedLP_confidentialOutput() public {
+        MockUSDC tokenA = new MockUSDC();
+        pool.registerWrapped(address(tokenA), 1, bytes32(0), "Tok A", "TOKA", 6);
+        MockZRouter zr1 = new MockZRouter(address(tokenB), 1e18); // 1:1 token-in
+        ConfidentialZapRouter zt = new ConfidentialZapRouter(address(pool), address(zr1), address(permit2));
+
+        uint256 forSwap = 1e6;
+        uint256 forLP = 1e6;
+        uint256 total = forSwap + forLP;
+        tokenA.mint(user, total);
+        uint64 deadline = uint64(block.timestamp + 1 hours);
+        bytes32 commit = keccak256("recipient-tokenA-lp");
+
+        vm.prank(user);
+        tokenA.approve(address(permit2), type(uint256).max); // one-time Permit2 setup
+
+        IPermit2.PermitSingle memory ps = IPermit2.PermitSingle({
+            details: IPermit2.PermitDetails({
+                token: address(tokenA),
+                amount: uint160(total),
+                expiration: uint48(deadline),
+                nonce: 0
+            }),
+            spender: address(zt),
+            sigDeadline: deadline
+        });
+        ConfidentialZapRouter.TokenZap memory z = ConfidentialZapRouter.TokenZap({
+            tokenB: address(tokenB),
+            feeBps: FEE_BPS,
+            tokenAForSwap: forSwap,
+            tokenAForLP: forLP,
+            tokenBLeg: 1e6, // 1:1 swap → exactly forSwap of tokenB
+            minShares: 0,
+            deadline: deadline,
+            commit: commit
+        });
+        bytes memory zrData = abi.encodeWithSelector(
+            MockZRouter.swapV2.selector,
+            address(zt),
+            false,
+            address(tokenA),
+            address(tokenB),
+            forSwap,
+            uint256(0),
+            uint256(deadline)
+        );
+
+        vm.prank(user);
+        (bytes32 depositId, uint256 shares) = zt.zapTokenIntoShieldedLP(z, ps, hex"", zrData);
+
+        assertGt(shares, 0, "shares minted");
+        bytes32 poolId = _poolId(_evmAssetId(address(tokenA)), tokenBId, FEE_BPS);
+        // CONFIDENTIAL output: a pending LP-share-note deposit bound to commit
+        assertEq(uint256(pool.depositStatus(depositId)), 1, "pending LP-share-note deposit");
+        assertEq(depositId, keccak256(abi.encode(_lpShareId(poolId), shares, commit)), "depositId binds lpShareId+shares+commit");
+        assertEq(tokenA.balanceOf(user), 0, "user spent both legs of token A");
+        assertEq(tokenA.balanceOf(address(zt)), 0, "router holds no token A");
+        assertEq(tokenB.balanceOf(address(zt)), 0, "router holds no token B");
     }
 
     receive() external payable {}

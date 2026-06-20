@@ -23,6 +23,26 @@ interface IERC20Allowance {
     function allowance(address owner, address spender) external view returns (uint256);
 }
 
+/// Permit2 (AllowanceTransfer) — for token-in zaps: the user signs an allowance (after a one-time
+/// token.approve(PERMIT2, max)) and the router pulls the input token by signature.
+interface IPermit2 {
+    struct PermitDetails {
+        address token;
+        uint160 amount;
+        uint48 expiration;
+        uint48 nonce;
+    }
+
+    struct PermitSingle {
+        PermitDetails details;
+        address spender;
+        uint256 sigDeadline;
+    }
+
+    function permit(address owner, PermitSingle calldata permitSingle, bytes calldata signature) external;
+    function transferFrom(address from, address to, uint160 amount, address token) external;
+}
+
 /// @title ConfidentialZapRouter
 /// @notice Cold-start zap into a Tacit confidential-pool public LP: a user supplies a SINGLE asset (native
 ///         ETH here), the router sources the other leg from the pinned external aggregator (zRouter), and
@@ -47,12 +67,28 @@ contract ConfidentialZapRouter is ReentrancyGuardTransient {
     /// zRouter — the pinned external AMM aggregator. Low-level-called with caller-built swap calldata so any
     /// zRouter venue (V2/V3/V4/Curve/zAMM) works without this router hardcoding one; the address is immutable.
     address public immutable ZROUTER;
+    /// Permit2 singleton — the signed pull for token-in zaps.
+    IPermit2 public immutable PERMIT2;
 
     error ZRouterCallFailed();
+    error AmountTooLarge();
 
-    constructor(address pool_, address zRouter_) {
+    /// Parameters for a token-in zap (bundled to keep the entrypoints under the stack limit).
+    struct TokenZap {
+        address tokenB; // the leg sourced from zRouter (paired with the input token A)
+        uint32 feeBps;
+        uint256 tokenAForSwap; // token A routed through zRouter for tokenB
+        uint256 tokenAForLP; // token A for the LP leg
+        uint256 tokenBLeg; // exact tokenB for the LP leg (the swap must source at least this)
+        uint256 minShares;
+        uint64 deadline;
+        bytes32 commit; // recipient's LP-share note commitment
+    }
+
+    constructor(address pool_, address zRouter_, address permit2_) {
         POOL = IConfidentialPool(pool_);
         ZROUTER = zRouter_;
+        PERMIT2 = IPermit2(permit2_);
     }
 
     /// @notice Cold-start zap from native ETH: route `ethToSwap` of `msg.value` through zRouter for `tokenB`
@@ -157,6 +193,42 @@ contract ConfidentialZapRouter is ReentrancyGuardTransient {
         _refundETH(msg.sender);
     }
 
+    // ──────────────────── Token-in zaps (ERC20 via Permit2, confidential output) ────────────────────
+
+    /// @notice Token-in analog of `zapETHIntoShieldedLP`: pull token A (Permit2), route `tokenAForSwap` of it
+    ///         through zRouter for `tokenB`, add EXACTLY (`tokenAForLP`, `tokenBLeg`) to the LP, and shield the
+    ///         shares into an owner-blinded LP-share note bound to `z.commit`. Token A is the Permit2 permit's
+    ///         token; both legs ERC20. Leftovers swept to the caller.
+    function zapTokenIntoShieldedLP(
+        TokenZap calldata z,
+        IPermit2.PermitSingle calldata permitSingle,
+        bytes calldata signature,
+        bytes calldata zrSwapData
+    ) external nonReentrant returns (bytes32 depositId, uint256 sharesMinted) {
+        address tokenA = permitSingle.details.token;
+        (depositId, sharesMinted) = _zapTokenToShieldedShares(tokenA, z, permitSingle, signature, zrSwapData);
+        _refund(tokenA, msg.sender);
+        _refund(z.tokenB, msg.sender);
+    }
+
+    /// @notice Token-in analog of `zapETHIntoFarm`: token A → shielded LP-share note → settle the caller's
+    ///         self-proved bond (OP_LP_BOND). Same deterministic-shares + self-proved/fee-free settle model.
+    function zapTokenIntoFarm(
+        TokenZap calldata z,
+        IPermit2.PermitSingle calldata permitSingle,
+        bytes calldata signature,
+        bytes calldata zrSwapData,
+        bytes calldata publicValues,
+        bytes calldata proof,
+        bytes[] calldata memos
+    ) external nonReentrant returns (uint256 sharesMinted) {
+        address tokenA = permitSingle.details.token;
+        (, sharesMinted) = _zapTokenToShieldedShares(tokenA, z, permitSingle, signature, zrSwapData);
+        POOL.settle(publicValues, proof, memos);
+        _refund(tokenA, msg.sender);
+        _refund(z.tokenB, msg.sender);
+    }
+
     // ──────────────────── Internals ────────────────────
 
     /// Exact-leg zap → shield the LP shares into a note deposit. Swaps for AT LEAST `tokenBLeg` on zRouter
@@ -192,6 +264,41 @@ contract ConfidentialZapRouter is ReentrancyGuardTransient {
             tethId, tokenBId, feeBps, ethLeg, tokenBLeg, minShares, deadline, address(this)
         );
         depositId = POOL.shieldShares(_poolId(tethId, tokenBId, feeBps), sharesMinted, commit);
+    }
+
+    /// Token-in core: pull token A (Permit2), swap `tokenAForSwap` of it on zRouter for >= tokenBLeg, add
+    /// EXACTLY (tokenAForLP, tokenBLeg) to the LP (deterministic shares), and shield the shares to `commit`.
+    function _zapTokenToShieldedShares(
+        address tokenA,
+        TokenZap calldata z,
+        IPermit2.PermitSingle calldata permitSingle,
+        bytes calldata signature,
+        bytes calldata zrSwapData
+    ) internal returns (bytes32 depositId, uint256 sharesMinted) {
+        uint256 total = z.tokenAForSwap + z.tokenAForLP;
+        if (total > type(uint160).max) revert AmountTooLarge();
+        try PERMIT2.permit(msg.sender, permitSingle, signature) {} catch {}
+        PERMIT2.transferFrom(msg.sender, address(this), uint160(total), tokenA);
+        _lazyApprove(tokenA, ZROUTER, z.tokenAForSwap); // let zRouter pull the swap input
+        uint256 beforeB = SafeTransferLib.balanceOf(z.tokenB, address(this));
+        (bool ok, bytes memory ret) = ZROUTER.call(zrSwapData);
+        if (!ok) {
+            if (ret.length != 0) {
+                assembly ("memory-safe") {
+                    revert(add(ret, 0x20), mload(ret))
+                }
+            }
+            revert ZRouterCallFailed();
+        }
+        require(SafeTransferLib.balanceOf(z.tokenB, address(this)) - beforeB >= z.tokenBLeg, "zap: short swap output");
+        bytes32 tokenAId = _evmAssetId(tokenA);
+        bytes32 tokenBId = _evmAssetId(z.tokenB);
+        _lazyApprove(tokenA, address(POOL), z.tokenAForLP);
+        _lazyApprove(z.tokenB, address(POOL), z.tokenBLeg);
+        sharesMinted = POOL.createPairAndAddLiquidityPublic(
+            tokenAId, tokenBId, z.feeBps, z.tokenAForLP, z.tokenBLeg, z.minShares, z.deadline, address(this)
+        );
+        depositId = POOL.shieldShares(_poolId(tokenAId, tokenBId, z.feeBps), sharesMinted, z.commit);
     }
 
     /// Canonical poolId — mirrors ConfidentialPool._poolId (keccak(lo ‖ hi ‖ feeBps)).
