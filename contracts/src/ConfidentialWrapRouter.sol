@@ -7,6 +7,15 @@ import {SafeTransferLib} from "solady/utils/SafeTransferLib.sol";
 interface IConfidentialPool {
     function wrap(bytes32 assetId, uint256 amount, bytes32 commit) external payable;
     function settle(bytes calldata publicValues, bytes calldata proofBytes, bytes[] calldata memos) external;
+    function swapPublic(
+        bytes32 assetIn,
+        bytes32 assetOut,
+        uint32 feeBps,
+        uint256 amountIn,
+        uint256 minAmountOut,
+        uint64 deadline,
+        address to
+    ) external payable returns (uint256 amountOut);
 }
 
 /// EIP-2612 permit (USDC and most modern ERC20s; DAI's non-standard permit is NOT this shape — those go
@@ -150,7 +159,94 @@ contract ConfidentialWrapRouter is ReentrancyGuardTransient {
         POOL.settle(publicValues, proof, memos);
     }
 
+    // ──────────────────── Native ETH (no permit — msg.value IS the approval) ────────────────────
+
+    /// @notice One-tx on-ramp of native ETH into a confidential deposit: send `msg.value` and the router
+    ///         wraps it to `commit` as the pinned native-ETH (tETH) asset. No permit/approval needed — ETH
+    ///         is carried by the call. A later settle inserts the leaf + memo. (Reverts if this generation
+    ///         didn't register native ETH, i.e. tETH isn't a pool asset.)
+    function wrapETH(bytes32 commit) external payable nonReentrant {
+        _wrapETH(msg.value, commit);
+    }
+
+    /// @notice One-tx native-ETH private payment — the ETH analog of `wrapAndSettleWithPermit`: wrap
+    ///         `msg.value` to a recipient-owned `commit`, then settle the self-proved batch that consumes the
+    ///         deposit, inserts the recipient's leaf, and emits the recipient's memo. Same self-proved /
+    ///         fee-free settle constraint (the settle runs with msg.sender == this router).
+    function wrapAndSettleETH(
+        bytes32 commit,
+        bytes calldata publicValues,
+        bytes calldata proof,
+        bytes[] calldata memos
+    ) external payable nonReentrant {
+        _wrapETH(msg.value, commit);
+        POOL.settle(publicValues, proof, memos);
+    }
+
+    // ──────────────────── Public AMM swap (gasless approve) ────────────────────
+
+    /// @notice One-tx PUBLIC swap with a gasless approval (EIP-2612): pull `amountIn` of `tokenIn`, swap it
+    ///         against the pool's public reserves, and send the output straight to `to`. The amount is public
+    ///         (this is the transparent lane; for a hidden-amount swap use the confidential OP_SWAP). The pool
+    ///         enforces slippage (`minAmountOut`, in the output's underlying) + `deadline`; `deadline` doubles
+    ///         as the permit-signature expiry. Caller passes token ADDRESSES; the router derives the asset ids.
+    function swapPublicWithPermit(
+        address tokenIn,
+        address tokenOut,
+        uint32 feeBps,
+        uint256 amountIn,
+        uint256 minAmountOut,
+        uint64 deadline,
+        address to,
+        uint8 v,
+        bytes32 r,
+        bytes32 s
+    ) external nonReentrant returns (uint256 amountOut) {
+        _pull2612(tokenIn, amountIn, deadline, v, r, s);
+        amountOut =
+            POOL.swapPublic(_evmAssetId(tokenIn), _evmAssetId(tokenOut), feeBps, amountIn, minAmountOut, deadline, to);
+    }
+
+    /// @notice One-tx PUBLIC swap via Permit2 (any ERC20 after a one-time `token.approve(PERMIT2, max)`).
+    function swapPublicWithPermit2(
+        address tokenIn,
+        address tokenOut,
+        uint32 feeBps,
+        uint256 amountIn,
+        uint256 minAmountOut,
+        uint64 deadline,
+        address to,
+        IPermit2.PermitSingle calldata permitSingle,
+        bytes calldata signature
+    ) external nonReentrant returns (uint256 amountOut) {
+        _pullPermit2(tokenIn, amountIn, permitSingle, signature);
+        amountOut =
+            POOL.swapPublic(_evmAssetId(tokenIn), _evmAssetId(tokenOut), feeBps, amountIn, minAmountOut, deadline, to);
+    }
+
     // ──────────────────── Internals ────────────────────
+
+    /// Pull `amount` of an EIP-2612 token from the caller (its signed allowance) into the router, then lazily
+    /// approve the pool. Shared by wrap + swap. `permit` is best-effort (try/catch) so a replayed permit can't
+    /// grief the call — the `safeTransferFrom` still enforces the allowance.
+    function _pull2612(address token, uint256 amount, uint256 deadline, uint8 v, bytes32 r, bytes32 s) internal {
+        try IERC2612(token).permit(msg.sender, address(this), amount, deadline, v, r, s) {} catch {}
+        SafeTransferLib.safeTransferFrom(token, msg.sender, address(this), amount);
+        _lazyApprove(token, amount);
+    }
+
+    /// Permit2 analog of `_pull2612` (any ERC20 after a one-time `token.approve(PERMIT2, max)`).
+    function _pullPermit2(
+        address token,
+        uint256 amount,
+        IPermit2.PermitSingle calldata permitSingle,
+        bytes calldata signature
+    ) internal {
+        if (amount > type(uint160).max) revert AmountTooLarge(); // Permit2 amounts are uint160
+        try PERMIT2.permit(msg.sender, permitSingle, signature) {} catch {}
+        PERMIT2.transferFrom(msg.sender, address(this), uint160(amount), token);
+        _lazyApprove(token, amount);
+    }
 
     function _wrap2612(
         address token,
@@ -161,9 +257,8 @@ contract ConfidentialWrapRouter is ReentrancyGuardTransient {
         bytes32 r,
         bytes32 s
     ) internal {
-        try IERC2612(token).permit(msg.sender, address(this), amount, deadline, v, r, s) {} catch {}
-        SafeTransferLib.safeTransferFrom(token, msg.sender, address(this), amount);
-        _approveAndWrap(token, amount, commit);
+        _pull2612(token, amount, deadline, v, r, s);
+        POOL.wrap(_evmAssetId(token), amount, commit);
     }
 
     function _wrapPermit2(
@@ -173,24 +268,27 @@ contract ConfidentialWrapRouter is ReentrancyGuardTransient {
         IPermit2.PermitSingle calldata permitSingle,
         bytes calldata signature
     ) internal {
-        if (amount > type(uint160).max) revert AmountTooLarge(); // Permit2 amounts are uint160
-        try PERMIT2.permit(msg.sender, permitSingle, signature) {} catch {}
-        PERMIT2.transferFrom(msg.sender, address(this), uint160(amount), token);
-        _approveAndWrap(token, amount, commit);
+        _pullPermit2(token, amount, permitSingle, signature);
+        POOL.wrap(_evmAssetId(token), amount, commit);
     }
 
-    /// Lazily grant the pool an infinite allowance (once per token), then wrap. Approving only when the
-    /// standing allowance is short — vs a fresh approve every call — saves the ~20k SSTORE on every repeat
-    /// wrap, the standard router pattern. Safe: the router holds no token balance between calls (nothing for
-    /// the pool to pull) and the pool is the immutable, pinned target. `safeApproveWithRetry` resets-then-sets
-    /// for tokens (USDT-style) that require a 0 allowance before a new non-zero one; a token that decrements
-    /// an infinite allowance just trips the `< amount` check again later and is re-approved. The pool then
-    /// pulls `amount` from this router (escrow asset) or burns it (pool-minted) and binds the note to `commit`.
-    function _approveAndWrap(address token, uint256 amount, bytes32 commit) internal {
+    /// Forward `amount` of native ETH to the pool's wrap (no approval — the pool checks msg.value == amount
+    /// for the native-ETH asset). The router forwards exactly what it received, holding no ETH after. The
+    /// native-ETH asset id is `_evmAssetId(address(0))` — the same id the pool registered tETH under.
+    function _wrapETH(uint256 amount, bytes32 commit) internal {
+        POOL.wrap{value: amount}(_evmAssetId(address(0)), amount, commit);
+    }
+
+    /// Lazily grant the pool an infinite allowance (once per token). Approving only when the standing
+    /// allowance is short — vs a fresh approve every call — saves the ~20k SSTORE on every repeat wrap/swap,
+    /// the standard router pattern. Safe: the router holds no token balance between calls (nothing for the
+    /// pool to pull) and the pool is the immutable, pinned target. `safeApproveWithRetry` resets-then-sets for
+    /// tokens (USDT-style) that require a 0 allowance before a new non-zero one; a token that decrements an
+    /// infinite allowance just trips the `< amount` check again later and is re-approved.
+    function _lazyApprove(address token, uint256 amount) internal {
         if (IERC20Allowance(token).allowance(address(this), address(POOL)) < amount) {
             SafeTransferLib.safeApproveWithRetry(token, address(POOL), type(uint256).max);
         }
-        POOL.wrap(_evmAssetId(token), amount, commit);
     }
 
     /// The pool's internal asset id for an underlying ERC20 — MUST mirror ConfidentialPool._evmAssetId:

@@ -65,6 +65,7 @@ contract ConfidentialWrapRouterTest is Test {
     address user;
     bytes32 constant COMMIT = keccak256("user-note-commitment");
     uint256 constant AMOUNT = 1000;
+    bytes32 constant TETH_LINK = bytes32(uint256(0x7e74)); // non-zero ⇒ ctor registers native ETH (tETH)
 
     bytes32 constant PERMIT_TYPEHASH =
         keccak256("Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)");
@@ -84,7 +85,7 @@ contract ConfidentialWrapRouterTest is Test {
             bytes32(0), // anchor
             0, // confirmations
             bytes32(0), // resume digest
-            bytes32(0), // tETH link
+            TETH_LINK, // tETH link → registers native ETH (tETH) as a pool asset
             address(0) // collateral engine
         );
         usdc = new MockUSDC();
@@ -306,5 +307,110 @@ contract ConfidentialWrapRouterTest is Test {
         assertEq(pool.escrow(assetId), AMOUNT * 2, "both wraps escrowed");
         assertEq(usdc.balanceOf(address(router)), 0, "router holds nothing");
         assertGe(usdc.allowance(address(router), address(pool)), AMOUNT, "standing allowance persists");
+    }
+
+    // ──────────────────── Native ETH ────────────────────
+
+    /// tETH's asset id — mirrors ConfidentialPool._evmAssetId(address(0)) = sha256(domain‖chainid‖0).
+    function _tethId() internal view returns (bytes32) {
+        return sha256(
+            abi.encodePacked(bytes18(0x74616369742d65766d2d746f6b656e2d7631), uint64(block.chainid), address(0))
+        );
+    }
+
+    function test_wrapETH_oneTransaction() public {
+        uint256 amountWei = 1e15; // 0.001 ETH; tETH unitScale 1e10 → value 1e5
+        bytes32 tethId = _tethId();
+        bytes32 commit = keccak256("eth-note");
+        bytes32 depositId = keccak256(abi.encode(tethId, amountWei / 1e10, commit));
+        vm.deal(user, 1 ether);
+
+        vm.prank(user);
+        router.wrapETH{value: amountWei}(commit);
+
+        assertEq(pool.escrow(tethId), amountWei, "tETH escrow credited msg.value");
+        assertEq(uint256(pool.depositStatus(depositId)), 1, "deposit pending under commit");
+        assertEq(address(router).balance, 0, "router forwards all ETH, holds none");
+    }
+
+    function test_wrapAndSettleETH_privatePayment() public {
+        uint256 amountWei = 1e15;
+        bytes32 tethId = _tethId();
+        bytes32 bobCommit = keccak256("eth-bob-commit");
+        bytes32 bobLeaf = keccak256("eth-bob-leaf");
+        bytes32 depositId = keccak256(abi.encode(tethId, amountWei / 1e10, bobCommit));
+        bytes[] memory memos = new bytes[](1);
+        memos[0] = abi.encodePacked(bytes32("eph"), bytes32("ct"));
+        vm.deal(user, 1 ether);
+
+        vm.prank(user);
+        router.wrapAndSettleETH{value: amountWei}(bobCommit, _privatePaymentPv(depositId, bobLeaf), hex"", memos);
+
+        assertEq(pool.escrow(tethId), amountWei, "escrow credited");
+        assertEq(uint256(pool.depositStatus(depositId)), 2, "deposit consumed by the settle");
+        assertEq(pool.nextLeafIndex(), 1, "recipient note leaf inserted");
+        assertEq(address(router).balance, 0, "router holds no ETH after");
+    }
+
+    // ──────────────────── Public AMM swap (gasless approve) ────────────────────
+
+    uint32 constant FEE_BPS = 30;
+
+    /// Register a second token + seed a USDC/TOK public pool (this contract funds both legs), so the router
+    /// has live reserves to swap against. Returns the output token + its asset id.
+    function _seedPool() internal returns (MockUSDC tok, bytes32 tokId) {
+        tok = new MockUSDC();
+        tokId = pool.registerWrapped(address(tok), 1, bytes32(0), "Tok", "TOK", 6);
+        uint256 seed = 1_000_000;
+        usdc.mint(address(this), seed);
+        tok.mint(address(this), seed);
+        usdc.approve(address(pool), type(uint256).max);
+        tok.approve(address(pool), type(uint256).max);
+        pool.createPairAndAddLiquidityPublic(assetId, tokId, FEE_BPS, seed, seed, 0, 0, address(this));
+    }
+
+    function test_swapPublicWithPermit() public {
+        (MockUSDC tok,) = _seedPool();
+        uint256 amountIn = 1000;
+        uint256 deadline = block.timestamp + 1 hours;
+        (uint8 v, bytes32 r, bytes32 s) = _sign2612(amountIn, deadline);
+
+        vm.prank(user);
+        uint256 out = router.swapPublicWithPermit(
+            address(usdc), address(tok), FEE_BPS, amountIn, 900, uint64(deadline), user, v, r, s
+        );
+
+        assertGe(out, 900, "output >= minOut (slippage honored)");
+        assertEq(usdc.balanceOf(user), 10_000 - amountIn, "user paid exactly amountIn");
+        assertEq(tok.balanceOf(user), out, "swap output sent straight to the user");
+        assertEq(usdc.balanceOf(address(router)), 0, "router holds no input");
+        assertEq(tok.balanceOf(address(router)), 0, "router holds no output");
+    }
+
+    function test_swapPublicWithPermit2() public {
+        (MockUSDC tok,) = _seedPool();
+        uint256 amountIn = 1000;
+        uint64 deadline = uint64(block.timestamp + 1 hours);
+
+        vm.prank(user);
+        usdc.approve(address(permit2), type(uint256).max); // one-time Permit2 setup
+        IPermit2.PermitSingle memory ps = IPermit2.PermitSingle({
+            details: IPermit2.PermitDetails({
+                token: address(usdc),
+                amount: uint160(amountIn),
+                expiration: uint48(deadline),
+                nonce: 0
+            }),
+            spender: address(router),
+            sigDeadline: deadline
+        });
+
+        vm.prank(user);
+        uint256 out =
+            router.swapPublicWithPermit2(address(usdc), address(tok), FEE_BPS, amountIn, 900, deadline, user, ps, hex"");
+
+        assertGe(out, 900, "output >= minOut");
+        assertEq(tok.balanceOf(user), out, "swap output sent to the user");
+        assertEq(usdc.balanceOf(address(router)), 0, "router holds no input");
     }
 }
