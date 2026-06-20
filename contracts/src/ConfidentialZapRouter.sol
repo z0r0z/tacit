@@ -17,6 +17,7 @@ interface IConfidentialPool {
     ) external payable returns (uint256 sharesMinted);
     function shieldShares(bytes32 poolId, uint256 shares, bytes32 commit) external returns (bytes32 depositId);
     function settle(bytes calldata publicValues, bytes calldata proofBytes, bytes[] calldata memos) external;
+    function wrap(bytes32 assetId, uint256 amount, bytes32 commit) external payable;
 }
 
 interface IERC20Allowance {
@@ -229,7 +230,63 @@ contract ConfidentialZapRouter is ReentrancyGuardTransient {
         _refund(z.tokenB, msg.sender);
     }
 
+    // ──────────────────── Swap-and-wrap (any asset -> a confidential NOTE) ────────────────────
+
+    /// @notice Swap native ETH to `tokenOut` on zRouter, then WRAP exactly `wrapAmount` of it into the
+    ///         confidential pool as a deposit bound to `commit` — pay in ETH but receive a confidential
+    ///         `tokenOut` NOTE (single asset, not LP). `commit` is the recipient's note commitment, so this is
+    ///         a private swap-and-shield (or the deposit leg of swap-and-pay; see zapETHToPayment). The swap
+    ///         must source at least `wrapAmount` (which must be unitScale-aligned for `tokenOut`); leftovers
+    ///         (excess tokenOut + unspent ETH) are swept to the caller.
+    function zapETHToShieldedNote(address tokenOut, uint256 wrapAmount, bytes32 commit, bytes calldata zrSwapData)
+        external
+        payable
+        nonReentrant
+    {
+        _swapAndWrap(tokenOut, wrapAmount, commit, zrSwapData);
+        _refund(tokenOut, msg.sender);
+        _refundETH(msg.sender);
+    }
+
+    /// @notice One-tx private payment funded by ETH in a different asset: swap ETH -> `tokenOut`, wrap exactly
+    ///         `wrapAmount` to the recipient's `commit`, then settle the caller's self-proved batch consuming
+    ///         the deposit into the recipient's note (+ memo). `wrapAmount` fixes the note value so the dapp
+    ///         pre-derives the deposit id for the settle. Self-proved / fee-free settle (msg.sender == this
+    ///         router), same constraint as the wrap router's wrapAndSettle.
+    function zapETHToPayment(
+        address tokenOut,
+        uint256 wrapAmount,
+        bytes32 commit,
+        bytes calldata zrSwapData,
+        bytes calldata publicValues,
+        bytes calldata proof,
+        bytes[] calldata memos
+    ) external payable nonReentrant {
+        _swapAndWrap(tokenOut, wrapAmount, commit, zrSwapData);
+        POOL.settle(publicValues, proof, memos);
+        _refund(tokenOut, msg.sender);
+        _refundETH(msg.sender);
+    }
+
     // ──────────────────── Internals ────────────────────
+
+    /// Swap msg.value of ETH to `tokenOut` on zRouter (caller's calldata, output to this), then wrap EXACTLY
+    /// `wrapAmount` into the pool as a deposit for `commit`. The swap must source >= wrapAmount.
+    function _swapAndWrap(address tokenOut, uint256 wrapAmount, bytes32 commit, bytes calldata zrSwapData) internal {
+        uint256 beforeOut = SafeTransferLib.balanceOf(tokenOut, address(this));
+        (bool ok, bytes memory ret) = ZROUTER.call{value: msg.value}(zrSwapData);
+        if (!ok) {
+            if (ret.length != 0) {
+                assembly ("memory-safe") {
+                    revert(add(ret, 0x20), mload(ret))
+                }
+            }
+            revert ZRouterCallFailed();
+        }
+        require(SafeTransferLib.balanceOf(tokenOut, address(this)) - beforeOut >= wrapAmount, "zap: short swap output");
+        _lazyApprove(tokenOut, address(POOL), wrapAmount);
+        POOL.wrap(_evmAssetId(tokenOut), wrapAmount, commit);
+    }
 
     /// Exact-leg zap → shield the LP shares into a note deposit. Swaps for AT LEAST `tokenBLeg` on zRouter
     /// (caller's exact-out calldata), adds EXACTLY (ethLeg, tokenBLeg) to the LP (so the minted share count is

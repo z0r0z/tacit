@@ -287,5 +287,55 @@ contract ConfidentialZapRouterTest is Test {
         assertEq(tokenB.balanceOf(address(zt)), 0, "router holds no token B");
     }
 
+    // ──────────────────── Swap-and-wrap (ETH -> a confidential note / private payment) ────────────────────
+
+    function test_zapETHToShieldedNote_swapsThenWraps() public {
+        vm.deal(user, 1 ether);
+        uint256 wrapAmount = 1e6;
+        uint64 deadline = uint64(block.timestamp + 1 hours);
+        bytes32 commit = keccak256("recipient-usdc-note");
+
+        vm.prank(user);
+        zap.zapETHToShieldedNote{value: 1 ether}(
+            address(tokenB), wrapAmount, commit, _zrSwapData(address(zap), 1 ether, deadline)
+        );
+
+        // 1 ETH -> 2e6 tokenB (mock); wrap 1e6 as a confidential note deposit, refund the 1e6 excess
+        bytes32 depositId = keccak256(abi.encode(tokenBId, wrapAmount, commit));
+        assertEq(uint256(pool.depositStatus(depositId)), 1, "pending confidential note deposit");
+        assertEq(pool.escrow(tokenBId), wrapAmount, "wrapped amount escrowed");
+        assertEq(tokenB.balanceOf(user), 2e6 - wrapAmount, "excess swapped tokenB refunded");
+        assertEq(tokenB.balanceOf(address(zap)), 0, "zap holds no tokenB");
+        assertEq(address(zap).balance, 0, "zap holds no ETH");
+    }
+
+    function test_zapETHToPayment_swapsWrapsThenSettles() public {
+        vm.deal(user, 1 ether);
+        uint256 wrapAmount = 1e6;
+        uint64 deadline = uint64(block.timestamp + 1 hours);
+        bytes32 commit = keccak256("bob-usdc-note");
+
+        bytes32 depositId = keccak256(abi.encode(tokenBId, wrapAmount, commit));
+        bytes[] memory memos = new bytes[](1);
+        memos[0] = abi.encodePacked(bytes32("eph"), bytes32("ct"));
+
+        vm.prank(user);
+        zap.zapETHToPayment{value: 1 ether}(
+            address(tokenB),
+            wrapAmount,
+            commit,
+            _zrSwapData(address(zap), 1 ether, deadline),
+            _bondPv(depositId, keccak256("bob-note-leaf")),
+            hex"",
+            memos
+        );
+
+        assertEq(uint256(pool.depositStatus(depositId)), 2, "deposit consumed into the recipient's note");
+        assertEq(pool.nextLeafIndex(), 1, "recipient note leaf inserted by the settle");
+        assertEq(tokenB.balanceOf(user), 2e6 - wrapAmount, "excess swapped tokenB refunded");
+        assertEq(tokenB.balanceOf(address(zap)), 0, "zap holds no tokenB");
+        assertEq(address(zap).balance, 0, "zap holds no ETH");
+    }
+
     receive() external payable {}
 }
