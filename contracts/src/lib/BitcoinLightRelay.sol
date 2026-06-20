@@ -79,18 +79,18 @@ contract BitcoinLightRelay {
 
     // ──────────────────── Errors ────────────────────
 
-    error AlreadyInitialized();
-    error ChainNotAnchored();
-    error InvalidAnchor();
-    error InvalidChainLength();
-    error InvalidHeaderChain();
     error InvalidPoW();
-    error InvalidTarget();
-    error InvalidTimestamp();
-    error NotInitialized();
     error Unauthorized();
     error UnknownEpoch();
+    error InvalidAnchor();
+    error InvalidTarget();
     error UnknownParent();
+    error NotInitialized();
+    error ChainNotAnchored();
+    error InvalidTimestamp();
+    error AlreadyInitialized();
+    error InvalidChainLength();
+    error InvalidHeaderChain();
 
     // ──────────────────── Constructor ────────────────────
 

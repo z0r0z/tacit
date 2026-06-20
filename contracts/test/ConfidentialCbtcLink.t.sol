@@ -13,10 +13,10 @@ contract AcceptVerifier is ISP1Verifier {
 
 /// End-to-end coverage for the DAY-1 cBTC link (closes M-1): with a CanonicalAssetFactory AND a
 /// CollateralEngine both wired, the pool constructor deploy-or-adopts the canonical cBTC.tac ERC20 and pins
-/// cBTC.zk → it, so (1) a cBTC note / a cUSD-CDP liquidation seize resolves to a mintable token (was
+/// cBTC.zk → it, so (1) a cBTC note / a cUSD-CDP seized-collateral payout resolves to a mintable token (was
 /// NotRegistered — see ConfidentialCdpCbtcSettle.test_liquidation_seize_of_unregistered_cbtc_fails_closed),
-/// and (2) the engine's recoverSeizedCbtc can move the seized cBTC for the buy-and-burn. Real factory +
-/// engine + pool (mock verifier only).
+/// and (2) the engine's narrow recovery path can move any cBTC explicitly/accidentally paid there. Real
+/// factory + engine + pool (mock verifier only).
 contract ConfidentialCbtcLinkTest is Test {
     ConfidentialPool pool;
     CanonicalAssetFactory factory;
@@ -55,6 +55,8 @@ contract ConfidentialCbtcLinkTest is Test {
 
     function test_constructor_pins_cbtc_tac() public view {
         CanonicalBridgedERC20 cbtc = _cbtcTac();
+        assertEq(pool.CBTC_ZK_ASSET_ID(), CBTC, "pool exposes the canonical cBTC.zk id");
+        assertEq(engine.CANONICAL_CBTC_ASSET_ID(), CBTC, "engine pins the same cBTC.zk id");
         assertTrue(address(cbtc) != address(0), "cBTC.tac pinned");
         assertEq(cbtc.MINTER(), address(pool), "pool is the sole minter");
         assertEq(cbtc.ASSET_ID(), CBTC, "token commits CBTC_ZK_ASSET_ID");
@@ -63,7 +65,43 @@ contract ConfidentialCbtcLinkTest is Test {
         assertEq(pool.canonicalTokenFor(CBTC), address(cbtc));
     }
 
-    // A cBTC withdrawal/seize now RESOLVES (M-1 link closed) and mints cBTC.tac at unitScale 10^10.
+    function test_constructor_rejects_half_wired_cbtc_mode() public {
+        CollateralEngine e = new CollateralEngine(address(0), CBTC, 8, 8, admin);
+        address verifier = address(new AcceptVerifier());
+
+        vm.expectRevert(ConfidentialPool.ZeroAddress.selector);
+        new ConfidentialPool(
+            verifier,
+            bytes32(uint256(0xABCD)),
+            bytes32(0),
+            address(0),
+            address(0),
+            bytes32(0),
+            6,
+            bytes32(0),
+            bytes32(0),
+            address(e)
+        );
+
+        address notEngine = makeAddr("not-engine");
+        assertEq(notEngine.code.length, 0, "test sentinel is an EOA");
+        vm.expectRevert(ConfidentialPool.NotAContract.selector);
+        new ConfidentialPool(
+            verifier,
+            bytes32(uint256(0xABCD)),
+            bytes32(0),
+            address(factory),
+            address(0),
+            bytes32(0),
+            6,
+            bytes32(0),
+            bytes32(0),
+            notEngine
+        );
+    }
+
+    // A public cBTC withdrawal, including a liquidation seizure payout, now RESOLVES (M-1 link closed) and
+    // mints cBTC.tac at unitScale 10^10.
     function test_cbtc_withdrawal_resolves_and_mints() public {
         address recipient = address(0xB0B);
         uint64 vBtc = 100_000; // sats
@@ -74,8 +112,8 @@ contract ConfidentialCbtcLinkTest is Test {
         assertEq(_cbtcTac().balanceOf(recipient), uint256(vBtc) * 1e10, "minted cBTC.tac = sats * 10^10");
     }
 
-    // Full loop: a liquidation seizes cBTC to the engine (the controller-recipient), then the DAO recovers it.
-    function test_seize_to_engine_then_recover() public {
+    // Explicit engine-recipient payout/recovery path: cBTC paid to the engine can still be recovered.
+    function test_explicit_engine_recipient_cbtc_then_recover() public {
         uint64 vBtc = 250_000;
         uint256 baseUnits = uint256(vBtc) * 1e10;
         ConfidentialPool.PublicValues memory pv = _pv();
@@ -85,12 +123,12 @@ contract ConfidentialCbtcLinkTest is Test {
         pool.settle(abi.encode(pv), "", new bytes[](0));
 
         CanonicalBridgedERC20 cbtc = _cbtcTac();
-        assertEq(cbtc.balanceOf(address(engine)), baseUnits, "engine holds the seized cBTC.tac");
+        assertEq(cbtc.balanceOf(address(engine)), baseUnits, "engine holds stranded cBTC.tac");
 
         address dao = address(0xDA0);
         vm.prank(admin);
         engine.recoverSeizedCbtc(baseUnits, dao);
-        assertEq(cbtc.balanceOf(dao), baseUnits, "DAO recovered the seized cBTC for buy-and-burn");
-        assertEq(cbtc.balanceOf(address(engine)), 0, "engine drained of the seized cBTC");
+        assertEq(cbtc.balanceOf(dao), baseUnits, "DAO recovered the stranded cBTC");
+        assertEq(cbtc.balanceOf(address(engine)), 0, "engine drained of stranded cBTC");
     }
 }

@@ -5,7 +5,7 @@ import {Test} from "forge-std/Test.sol";
 import {ERC20} from "solady/tokens/ERC20.sol";
 import {SafeTransferLib} from "solady/utils/SafeTransferLib.sol";
 import {ConfidentialPool} from "../src/ConfidentialPool.sol";
-import {ConfidentialWrapRouter, IPermit2} from "../src/ConfidentialWrapRouter.sol";
+import {ConfidentialRouter, IPermit2} from "../src/ConfidentialRouter.sol";
 
 /// Minimal SP1 verifier stub — `wrap`/`registerWrapped` never call it, but the pool ctor needs a non-zero
 /// verifier address with the right surface.
@@ -61,9 +61,9 @@ contract MockPermit2 {
     }
 }
 
-contract ConfidentialWrapRouterTest is Test {
+contract ConfidentialRouterTest is Test {
     ConfidentialPool pool;
-    ConfidentialWrapRouter router;
+    ConfidentialRouter router;
     MockUSDC usdc;
     MockPermit2 permit2;
     bytes32 assetId;
@@ -100,7 +100,7 @@ contract ConfidentialWrapRouterTest is Test {
         assetId = pool.registerWrapped(address(usdc), 1, bytes32(0), "USD Coin", "USDC", 6);
 
         permit2 = new MockPermit2();
-        router = new ConfidentialWrapRouter(address(pool), address(permit2));
+        router = new ConfidentialRouter(address(pool), address(0), address(permit2));
 
         usdc.mint(user, 10_000);
     }
@@ -211,7 +211,7 @@ contract ConfidentialWrapRouterTest is Test {
     function test_wrapWithPermit2_revertsAmountTooLarge() public {
         IPermit2.PermitSingle memory ps; // contents irrelevant — guard trips first
         vm.prank(user);
-        vm.expectRevert(ConfidentialWrapRouter.AmountTooLarge.selector);
+        vm.expectRevert(ConfidentialRouter.AmountTooLarge.selector);
         router.wrapWithPermit2(address(usdc), uint256(type(uint160).max) + 1, COMMIT, ps, hex"");
     }
 

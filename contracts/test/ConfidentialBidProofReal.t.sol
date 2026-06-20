@@ -18,7 +18,6 @@ contract ConfidentialBidProofRealTest is Test {
     struct Withdrawal { bytes32 assetId; address recipient; uint256 value; }
     struct FeePayment { bytes32 assetId; uint256 value; }
     struct CrossOut { uint16 destChain; bytes32 destCommitment; bytes32 nullifier; bytes32 assetId; bytes32 claimId; }
-    struct AssetMeta { bytes32 assetId; bytes16 ticker; uint8 tickerLen; uint8 decimals; bytes32 cid; }
     struct SwapSettlement { bytes32 poolId; uint256 reserveAPre; uint256 reserveBPre; uint256 reserveAPost; uint256 reserveBPost; }
     struct LpSettlement { bytes32 poolId; uint256 reserveAPre; uint256 reserveBPre; uint256 sharesPre; uint256 reserveAPost; uint256 reserveBPost; uint256 sharesPost; }
     struct PublicValues {
@@ -26,7 +25,7 @@ contract ConfidentialBidProofRealTest is Test {
         bytes32[] nullifiers; bytes32[] leaves; bytes32[] depositsConsumed;
         Withdrawal[] withdrawals; FeePayment[] fees; bytes32[] bitcoinBurnsConsumed;
         CrossOut[] crossOuts; bytes32[] bitcoinRootsUsed; bytes32 bitcoinSpentRoot;
-        bytes32 bitcoinBurnRoot; AssetMeta[] assetMetas; SwapSettlement[] swaps;
+        bytes32 bitcoinBurnRoot; SwapSettlement[] swaps;
         LpSettlement[] liquidity;
     }
 

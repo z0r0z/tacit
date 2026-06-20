@@ -3,9 +3,9 @@ pragma solidity ^0.8.28;
 
 import {Test} from "forge-std/Test.sol";
 import {ConfidentialPool} from "../src/ConfidentialPool.sol";
-import {ConfidentialZapRouter} from "../src/ConfidentialZapRouter.sol";
-import {StubVerifier, MockUSDC, MockPermit2} from "./ConfidentialWrapRouter.t.sol";
-import {IPermit2} from "../src/ConfidentialZapRouter.sol";
+import {ConfidentialRouter} from "../src/ConfidentialRouter.sol";
+import {StubVerifier, MockUSDC, MockPermit2} from "./ConfidentialRouter.t.sol";
+import {IPermit2} from "../src/ConfidentialRouter.sol";
 
 /// Stand-in for zRouter: takes ETH (msg.value == swapAmount) and mints `out = value*RATE/1e18` of TOK to
 /// `to` — simulating sourcing the other LP leg from external liquidity, with the output forced to the caller.
@@ -39,9 +39,9 @@ contract MockZRouter {
     }
 }
 
-contract ConfidentialZapRouterTest is Test {
+contract ConfidentialRouterZapTest is Test {
     ConfidentialPool pool;
-    ConfidentialZapRouter zap;
+    ConfidentialRouter zap;
     MockUSDC tokenB;
     MockZRouter zr;
     MockPermit2 permit2;
@@ -71,7 +71,7 @@ contract ConfidentialZapRouterTest is Test {
         tethId = _evmAssetId(address(0));
         zr = new MockZRouter(address(tokenB), 2e6); // 0.5 ETH (5e17 wei) -> 1e6 TOKB
         permit2 = new MockPermit2();
-        zap = new ConfidentialZapRouter(address(pool), address(zr), address(permit2));
+        zap = new ConfidentialRouter(address(pool), address(zr), address(permit2));
     }
 
     /// The zRouter swap calldata the dapp would build (here MockZRouter.swapV2): swap `ethToSwap` of ETH to
@@ -231,7 +231,7 @@ contract ConfidentialZapRouterTest is Test {
         MockUSDC tokenA = new MockUSDC();
         pool.registerWrapped(address(tokenA), 1, bytes32(0), "Tok A", "TOKA", 6);
         MockZRouter zr1 = new MockZRouter(address(tokenB), 1e18); // 1:1 token-in
-        ConfidentialZapRouter zt = new ConfidentialZapRouter(address(pool), address(zr1), address(permit2));
+        ConfidentialRouter zt = new ConfidentialRouter(address(pool), address(zr1), address(permit2));
 
         uint256 forSwap = 1e6;
         uint256 forLP = 1e6;
@@ -253,7 +253,7 @@ contract ConfidentialZapRouterTest is Test {
             spender: address(zt),
             sigDeadline: deadline
         });
-        ConfidentialZapRouter.TokenZap memory z = ConfidentialZapRouter.TokenZap({
+        ConfidentialRouter.TokenZap memory z = ConfidentialRouter.TokenZap({
             tokenB: address(tokenB),
             feeBps: FEE_BPS,
             tokenAForSwap: forSwap,

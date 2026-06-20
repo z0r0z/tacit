@@ -7,8 +7,8 @@ import {SafeTransferLib} from "solady/utils/SafeTransferLib.sol";
 
 /// @dev The immutable ConfidentialPool surface this engine reads/serves. The pool is the authority for
 ///      all proven Bitcoin/CDP state; the engine only sizes escrows, prices collateral, and routes
-///      seizures - it can NEVER mint a confidential asset, move backing, or break a peg (all of which are
-///      proof-enforced in the pool). See ops/DESIGN-confidential-defi-v1.md §§3,4,6.
+///      narrow recovery/backstop actions — it can NEVER mint a confidential asset, move backing, or break a
+///      peg (all of which are proof-enforced in the pool). See ops/DESIGN-confidential-defi-v1.md §§3,4,6.
 interface IConfidentialPoolCollateral {
     /// Σ live self-custody cBTC.zk lock sats (reflection-attested, oracle-free).
     function cbtcBackingSats() external view returns (uint256);
@@ -17,8 +17,8 @@ interface IConfidentialPoolCollateral {
     /// True once cBTC was minted against this lock (the escrow became live).
     function cbtcMinted(bytes32 outpoint) external view returns (bool);
     /// The canonical ERC20 the pool mints/escrows for an asset id (resolving a shared id to its local
-    /// entry), or address(0) if none. The seized-cBTC recovery resolves the cBTC token through this, so it
-    /// can only ever move the exact token a liquidation seize pays here — never an arbitrary balance.
+    /// entry), or address(0) if none. The stranded-cBTC recovery resolves the cBTC token through this, so it
+    /// can only ever move the exact cBTC.tac token the pool mints on public cBTC withdrawal.
     function canonicalTokenFor(bytes32 assetId) external view returns (address);
 }
 
@@ -39,8 +39,8 @@ interface IAmmTwap {
 }
 
 /// @title CollateralEngine
-/// @notice The unified collateral / insurance core for Tacit confidential DeFi v1 — the conjoined
-///         buffer + insurance + per-locker escrow + cUSD CDP controller (supersedes `CbtcBuffer` +
+/// @notice The unified collateral / reserve core for Tacit confidential DeFi v1 — the conjoined
+///         buffer + protocol reserve + per-locker escrow + cUSD CDP controller (supersedes `CbtcBuffer` +
 ///         `InsuranceVault`). All POLICY lives here (mutable, Solady `Ownable` → DAO); the immutable
 ///         `ConfidentialPool` calls `onCdpMint/Close/Liquidate/Topup` and reads `escrowSufficient` but holds
 ///         the proofs. Two roles:
@@ -58,9 +58,14 @@ interface IAmmTwap {
 ///            requires the position be below `liqRatio` (reverts if healthy). Unlike cBTC, cUSD is a CDP
 ///            stablecoin: BTC/USD IS load-bearing for its peg (the DAI model).
 ///
-///         A shared native-ETH **insurance reserve** (funded by slashed escrows and explicit top-ups)
-///         backstops rug-recovery shortfall and CDP bad debt.
+///         A shared native-ETH protocol reserve (funded by slashed escrows and explicit top-ups) backstops
+///         rug-recovery shortfall and CDP bad debt. V1 keeps one reserve for simplicity; owner should be a
+///         DAO/timelock or purpose-built policy contract for progressively more programmatic draws.
 contract CollateralEngine is Ownable, ReentrancyGuard {
+    bytes32 public constant CANONICAL_CBTC_ASSET_ID =
+        0x62a20d98fc1cd20289621d1315294cb8772f934d822e404b71e1f471cf0679c8;
+    uint8 public constant CANONICAL_CBTC_DECIMALS = 8;
+
     // The pool. Set once (owner) after deploy — NOT immutable — to break the engine↔pool circular dep:
     // the pool's COLLATERAL_ENGINE pointer is immutable, so the engine is deployed FIRST (pool unknown),
     // the pool is deployed with the engine's address, then setPool wires it back. After the one-time set
@@ -90,7 +95,7 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
     // --- cUSD CDP accounting ---
     uint256 public outstandingCusd; // total cUSD debt minted across open positions (base units)
 
-    // --- shared insurance reserve (native ETH) ---
+    // --- shared protocol reserve (native ETH) ---
     uint256 public insuranceReserve; // wei; funded by slash proceeds + explicit top-ups, backstops bad debt
 
     event FeedsSet(address ethBtcFeed, address btcUsdFeed);
@@ -110,33 +115,44 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
     );
     event InsuranceFunded(address indexed from, uint256 amount);
     event InsuranceDrawn(address indexed to, uint256 amount);
+    event InsuranceDrawnFor(bytes32 indexed purpose, address indexed to, uint256 amount);
     event SeizedCbtcRecovered(address indexed token, address indexed to, uint256 amount);
 
-    error NotPool();
-    error BadPool();
-    error BadParams();
     error BadFeed();
-    error StaleFeed();
-    error FeedDeviation();
+    error BadPool();
+    error NotPool();
     error BadAmount();
-    error ZeroRecipient();
-    error NotCbtcCollateral();
-    error Undercollateralized();
-    error PositionHealthy();
-    error DebtAccountingUnderflow();
     error BadEscrow();
-    error NothingToRelease();
-    error NothingToSlash();
+    error BadParams();
+    error StaleFeed();
+    error BadPurpose();
     error EscrowLocked();
+    error FeedDeviation();
+    error ZeroRecipient();
+    error NothingToSlash();
+    error PoolAlreadySet();
+    error BadPositionLeaf();
+    error PositionHealthy();
+    error NothingToRelease();
+    error NotCbtcCollateral();
     error InsufficientReserve();
+    error Undercollateralized();
+    error DebtAccountingUnderflow();
 
     modifier onlyPool() {
-        if (msg.sender != address(POOL)) revert NotPool();
+        _onlyPool();
         _;
     }
 
+    function _onlyPool() internal view {
+        if (msg.sender != address(POOL)) revert NotPool();
+    }
+
     constructor(address pool, bytes32 cbtcAssetId, uint8 cbtcDec, uint8 cusdDec, address admin) {
-        if (admin == address(0) || cbtcAssetId == bytes32(0) || cbtcDec > 18 || cusdDec > 18) {
+        if (
+            admin == address(0) || cbtcAssetId != CANONICAL_CBTC_ASSET_ID
+                || cbtcDec != CANONICAL_CBTC_DECIMALS || cusdDec > 18
+        ) {
             revert BadParams();
         }
         if (pool != address(0) && pool.code.length == 0) revert BadPool();
@@ -149,8 +165,6 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
         CUSD_ASSET_ID = keccak256(abi.encodePacked("tacit-cdp-debt-v1", bytes20(uint160(address(this)))));
         _initializeOwner(admin);
     }
-
-    error PoolAlreadySet();
 
     /// @notice Wire the pool once after deploy (the engine↔pool circular-dep break). Reverts if already set,
     ///         zero, or non-contract, so it is fixed after the one call. No-op path for tests/deploys that pass
@@ -214,6 +228,7 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
             revert StaleFeed();
         }
         if (answeredInRound < roundId) revert StaleFeed(); // a carried-over (incomplete) round
+        // forge-lint: disable-next-line(unsafe-typecast)
         price = uint256(ans);
         dec = feed.decimals();
         // 2nd-source sanity bound: |chainlink − amm| / amm ≤ maxDeviationBps. Skipped when unset (launch
@@ -265,28 +280,34 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
         emit EscrowPosted(outpoint, msg.sender, msg.value);
     }
 
-    /// @notice Release a lock's escrow back to the locker on a PROVEN honest redemption (the cBTC was burned
-    ///         and the BTC unlocked atomically). Owner/DAO (or a future authorized redemption module) marks
-    ///         the redemption; the marked outpoint then becomes non-slashable. Bounded: returns posted ETH,
-    ///         never mints cBTC or touches backing.
+    /// @notice Release a lock's escrow back to the locker after an observed/proven honest redemption (the
+    ///         cBTC was burned and the BTC unlocked atomically). V1 is owner/DAO-attested; a future redemption
+    ///         module can own this path once the reflection surfaces redeemed-lock proofs directly. The marked
+    ///         outpoint becomes non-slashable. A lock that already minted cBTC and was reflection-proven spent
+    ///         is a rug, not releasable. Bounded: returns posted ETH, never mints cBTC or touches backing.
     function releaseEscrow(bytes32 outpoint, address to) external onlyOwner nonReentrant {
         if (outpoint == bytes32(0)) revert BadEscrow();
         if (to == address(0)) revert ZeroRecipient();
         if (escrowReleased[outpoint] || escrowSlashed[outpoint]) revert EscrowLocked();
+        if (address(POOL) != address(0) && POOL.cbtcMinted(outpoint) && POOL.cbtcLockSpent(outpoint)) {
+            revert EscrowLocked();
+        }
         uint256 amt = escrowOf[outpoint];
         if (amt == 0) revert NothingToRelease();
         escrowOf[outpoint] = 0;
         escrowReleased[outpoint] = true;
-        (bool ok,) = payable(to).call{value: amt}("");
-        require(ok, "send");
+        SafeTransferLib.safeTransferETH(to, amt);
         emit EscrowReleased(outpoint, to, amt);
     }
 
     /// @notice Slash a rugged lock's escrow: permissionless, but only when the reflection has PROVEN the
     ///         lock spent (`cbtcLockSpent`), cBTC was actually minted against it, and it was never released
-    ///         by a redemption. The slashed ETH backs the now-unbacked cBTC via the insurance reserve (which
-    ///         funds the async cBTC buy-and-burn). The guest never decides rug-vs-redeem — this contract does,
-    ///         from the proven spend flag + its own release ledger.
+    ///         by a redemption. The reflection guest only surfaces bare lock spends as `cbtcLockSpent`
+    ///         (honest in-tx redeems burn matching cBTC and retire the lock before the rug scan); this
+    ///         contract adds the release ledger and one-shot slash accounting. The slashed ETH backs the
+    ///         now-unbacked cBTC via the protocol reserve; DAO policy can spend that reserve on an async
+    ///         cBTC rug buy-and-burn. This is separate from cUSD CDP liquidation, which burns debt inside
+    ///         the pool proof.
     function slash(bytes32 outpoint) external {
         if (outpoint == bytes32(0)) revert BadEscrow();
         if (address(POOL) == address(0)) revert BadPool();
@@ -307,6 +328,7 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
     ///         policy and reverts to DENY. v1 accepts only cBTC collateral legs (multi-asset baskets are a
     ///         future controller, no re-prove).
     function onCdpMint(CdpLeg[] calldata legs, uint256 debtValue, bytes32 positionLeaf) external onlyPool {
+        if (uint256(positionLeaf) <= 1) revert BadPositionLeaf();
         if (debtValue == 0) revert BadAmount();
         uint256 collateralUsd = _basketUsd(legs);
         // debt_usd (== debtValue, both in CUSD_DEC) ≤ collateralUsd · 10000 / cdpRatioBps
@@ -325,9 +347,9 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
     }
 
     /// @notice Authorize a liquidation: require the position be BELOW `liqRatio` at the validated mark
-    ///         (reverts if healthy). If this callback returns, the same pool settlement pays the seized basket
-    ///         to this engine as public withdrawals; the engine covers the cUSD debt from those proceeds
-    ///         (async buy-and-burn) with the insurance reserve as backstop.
+    ///         (reverts if healthy). The pool proof has already burned debt notes summing exactly to
+    ///         `debtValue` and pays the seized basket as public withdrawals in the same settlement, so this
+    ///         callback only gates health and decrements open-position debt.
     function onCdpLiquidate(CdpLeg[] calldata legs, uint256 debtValue, bytes32 positionNullifier) external onlyPool {
         if (debtValue == 0) revert BadAmount();
         if (debtValue > outstandingCusd) revert DebtAccountingUnderflow();
@@ -349,6 +371,7 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
         bytes32 oldPositionNullifier,
         bytes32 newPositionLeaf
     ) external onlyPool {
+        if (uint256(newPositionLeaf) <= 1) revert BadPositionLeaf();
         if (debtValue == 0) revert BadAmount();
         uint256 oldCollateralUsd = _basketUsd(oldLegs);
         uint256 newCollateralUsd = _basketUsd(newLegs);
@@ -367,39 +390,52 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
         }
     }
 
-    // ─────────────────────── shared insurance reserve ───────────────────────
+    // ─────────────────────── shared protocol reserve ───────────────────────
 
-    /// @notice Explicitly fund the shared native-ETH insurance reserve (backstops rug-recovery shortfall +
-    ///         CDP bad debt).
+    /// @notice Explicitly fund the shared native-ETH protocol reserve (backstops rug-recovery shortfall +
+    ///         CDP bad debt). Plain ETH sends to this contract are also accounted as reserve funding.
     function fundInsurance() external payable {
         if (msg.value == 0) revert BadAmount();
         insuranceReserve += msg.value;
         emit InsuranceFunded(msg.sender, msg.value);
     }
 
-    /// @notice Owner/DAO draws from the reserve to settle a covered shortfall (e.g. fund an async cBTC
-    ///         buy-and-burn or cover CDP bad debt). Bounded: only manages backstop capital.
+    /// @notice Owner/DAO draws from the reserve to settle a covered shortfall (e.g. fund an async cBTC rug
+    ///         buy-and-burn or governance-recognized CDP bad debt). Normal cUSD liquidation is not async:
+    ///         the pool proof burns exact cUSD debt before collateral can leave. Bounded: only manages
+    ///         backstop capital.
     function drawInsurance(uint256 amount, address to) external onlyOwner nonReentrant {
+        _drawInsurance(amount, to);
+    }
+
+    /// @notice Same reserve draw, but with a purpose tag for DAO / future policy-module auditability.
+    ///         Examples: keccak256("CBTC_RUG_BUY_BURN"), keccak256("CDP_BAD_DEBT").
+    function drawInsuranceFor(bytes32 purpose, uint256 amount, address to) external onlyOwner nonReentrant {
+        if (purpose == bytes32(0)) revert BadPurpose();
+        _drawInsurance(amount, to);
+        emit InsuranceDrawnFor(purpose, to, amount);
+    }
+
+    function _drawInsurance(uint256 amount, address to) internal {
         if (amount == 0) revert BadAmount();
         if (to == address(0)) revert ZeroRecipient();
         if (amount > insuranceReserve) revert InsufficientReserve();
         insuranceReserve -= amount;
-        (bool ok,) = payable(to).call{value: amount}("");
-        require(ok, "send");
+        SafeTransferLib.safeTransferETH(to, amount);
         emit InsuranceDrawn(to, amount);
     }
 
-    /// @notice Owner/DAO recovers cBTC SEIZED on a CDP liquidation, to route into the buy-and-burn that
-    ///         retires the liquidated cUSD. The pool pays a liquidation's seized basket here (the controller)
-    ///         as cBTC, but the engine is not upgradeable and books no ERC20, so without a recovery path the
-    ///         seized collateral would be stranded and liquidation recovery could never complete.
+    /// @notice Owner/DAO recovers cBTC stranded in this engine (for example from an explicit controller-
+    ///         recipient recovery path). Atomic cUSD liquidations burn debt in-proof and normally pay seized
+    ///         collateral directly to the liquidator, but this narrow recovery keeps accidental/controller-held
+    ///         cBTC from becoming permanently stuck.
     ///
     ///         Deliberately NARROW (not a general token sweep): the token is resolved from the pool as the
-    ///         canonical cBTC ERC20 — the SAME token a seize pays here — so this can only ever move seized
-    ///         cBTC, never an arbitrary balance, and it touches no backing/escrow/reserve (those are native
-    ///         ETH held in the pool or this engine, unreachable by an ERC20 transfer). Seized cBTC is forfeited
-    ///         collateral (protocol capital, already taken from the liquidated position), not user funds; this
-    ///         is the same DAO trust as drawInsurance, scoped to exactly the one asset.
+    ///         canonical cBTC ERC20, so this can only ever move the protocol's cBTC, never an arbitrary
+    ///         balance, and it touches no backing/escrow/reserve (those are native ETH held in the pool or
+    ///         this engine, unreachable by an ERC20 transfer). If cBTC reaches this engine through an
+    ///         explicit engine-recipient route, it is protocol capital, not note escrow; this is the same DAO
+    ///         trust as drawInsurance, scoped to exactly the one asset.
     function recoverSeizedCbtc(uint256 amount, address to) external onlyOwner nonReentrant {
         if (to == address(0)) revert ZeroRecipient();
         if (amount == 0) revert BadAmount();

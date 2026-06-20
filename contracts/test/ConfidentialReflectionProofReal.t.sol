@@ -68,7 +68,7 @@ contract ConfidentialReflectionProofRealTest is Test {
         BitcoinRelayPublicValues memory pv = abi.decode(publicValues, (BitcoinRelayPublicValues));
         assertEq(pv.bitcoinHeight, 307547, "the real signet block height");
         assertEq(pv.bitcoinPoolRoot, 0x1658bfbe60f84b673045cad56a060c91cfa8a442d4320431a949bf2180d496c6, "bitcoinPoolRoot (forward reflection fixture)");
-        assertEq(pv.newDigest, 0x522e57e3ab07b8adcbf8341341a7e532c8278b3cf1c9fdd48cf62e9f5fa0b475, "newDigest (forward reflection fixture)");
+        assertEq(pv.newDigest, 0x752306d92533173884c734177ce64a470c2454e4db57622064501434046f631c, "newDigest (forward reflection fixture)");
         assertTrue(pv.priorDigest != bytes32(0) && pv.bitcoinPoolRoot != bytes32(0) && pv.bitcoinSpentRoot != bytes32(0), "non-zero roots");
         // The header anchor the contract pins to RELAY.tip()/the prior tip: tip non-zero, prev = the
         // batch's resume anchor (headers[0]'s prev field).

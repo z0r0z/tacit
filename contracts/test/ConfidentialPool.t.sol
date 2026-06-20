@@ -116,7 +116,7 @@ contract ConfidentialPoolTest is Test {
     bytes32 constant VKEY = bytes32(uint256(0xABCD)); // placeholder program vkey
     bytes32 constant RELAY_VKEY = bytes32(uint256(0xBEEF)); // placeholder Bitcoin-relay vkey
     bytes32 constant ANCHOR = bytes32(uint256(0xB17C0)); // seeded reflection anchor == mock relay tip
-    bytes32 constant REFLECTION_GENESIS_DIGEST = 0xeab17bcb92a60d3504973e52dad54aaafe331d87999f94304fac7c29cf126388;
+    bytes32 constant REFLECTION_GENESIS_DIGEST = 0x7b058378c57dc5e8586e588ed5b010862924ec34dfce88495379135ae006ef41;
     MockRelay relay;
 
     function setUp() public {
@@ -278,9 +278,7 @@ contract ConfidentialPoolTest is Test {
         assertEq(pool.depositStatus(id), 1, "pending");
 
         ConfidentialPool.Asset memory a = assetOf(pool, assetId);
-        assertEq(a.name, "Conf Mock");
-        assertEq(a.symbol, "cMCK");
-        assertEq(a.decimals, 18);
+        assertEq(a.decimals, 18); // name/symbol now ride the AssetRegistered event, not assets()
     }
 
     function test_wrap_duplicate_reverts() public {
@@ -1760,7 +1758,7 @@ contract ConfidentialPoolTest is Test {
         );
         bytes32 teth = p.localAssetOf(tethBitcoinId);
         assertTrue(teth != bytes32(0), "ctor pinned the Bitcoin tETH id to the native-ETH asset");
-        (, address und,, bytes32 link, bool pm,,,) = p.assets(teth);
+        (, address und,, bytes32 link, bool pm,) = p.assets(teth);
         assertEq(und, address(0), "native ETH backing");
         assertEq(link, tethBitcoinId, "carries the Bitcoin link");
         assertTrue(!pm, "escrow-backed, not pool-minted");
@@ -1832,6 +1830,62 @@ contract ConfidentialPoolTest is Test {
         bytes32 ceth = p.registerWrapped(address(0), 1, bytes32(0), "cETH", "cETH", 18);
         assertTrue(ceth != bytes32(0), "link-free native ETH registers");
         assertEq(p.localAssetOf(keccak256("squat-link")), bytes32(0), "no link was bound");
+    }
+
+    function test_teth_attested_meta_does_not_deploy_shadow_erc20() public {
+        bytes32 tethBitcoinId = keccak256("teth-bitcoin-canonical-id");
+        ConfidentialPool p = new ConfidentialPool(
+            address(verifier),
+            VKEY,
+            RELAY_VKEY,
+            address(factory),
+            address(relay),
+            ANCHOR,
+            6,
+            bytes32(0),
+            tethBitcoinId,
+            address(0)
+        );
+        bytes32 nativeId = p.localAssetOf(tethBitcoinId);
+        assertTrue(nativeId != bytes32(0), "native tETH link pinned");
+
+        ConfidentialPool.AssetMeta[] memory metas = new ConfidentialPool.AssetMeta[](1);
+        metas[0] = ConfidentialPool.AssetMeta(
+            tethBitcoinId, bytes16("tETH"), 4, 8, _metaCid(tethBitcoinId)
+        );
+        p.attestBitcoinStateProven(
+            abi.encode(
+                ConfidentialPool.BitcoinRelayPublicValues(
+                    p.knownReflectionDigest(),
+                    keccak256("teth-meta-root"),
+                    keccak256("teth-meta-spent"),
+                    keccak256("teth-meta-burn"),
+                    1,
+                    keccak256("teth-meta-digest"),
+                    ANCHOR,
+                    ANCHOR,
+                    bytes32(uint256(uint160(address(p)))),
+                    0,
+                    new ConfidentialPool.CbtcLockFolded[](0),
+                    new bytes32[](0),
+                    uint64(p.bitcoinConsumedCount()),
+                    metas,
+                    new bytes32[](0)
+                )
+            ),
+            ""
+        );
+
+        assertEq(p.localAssetOf(tethBitcoinId), nativeId, "shared id still resolves to native ETH");
+        (, address underlying,, bytes32 link, bool poolMinted,) = p.assets(nativeId);
+        assertEq(underlying, address(0), "native ETH backing preserved");
+        assertEq(link, tethBitcoinId, "tETH link preserved");
+        assertTrue(!poolMinted, "not converted to pool-minted ERC20");
+        assertEq(
+            factory.tokenOf(tethBitcoinId, address(p), "tETH", 18, _metaCid(tethBitcoinId)),
+            address(0),
+            "no shadow canonical ERC20 deployed for native tETH"
+        );
     }
 
     function test_settle_withdraw_unregistered_asset_reverts() public {
@@ -1955,7 +2009,7 @@ contract ConfidentialPoolTest is Test {
     function test_registerMinted_is_local_only_no_link() public {
         address tok = factory.deployCanonical(keccak256("local-asset"), address(pool), "LOC", 18);
         bytes32 a = pool.registerMinted(tok, "Conf LOC", "LOC", 18);
-        (,,, bytes32 link,,,,) = pool.assets(a);
+        (,,, bytes32 link,,) = pool.assets(a);
         assertEq(link, bytes32(0), "registerMinted establishes no cross-chain link");
         assertEq(pool.localAssetOf(keccak256("local-asset")), bytes32(0), "no localAssetOf entry");
     }
@@ -1967,7 +2021,7 @@ contract ConfidentialPoolTest is Test {
         bytes32 shared = keccak256("proven-8dec");
         address tok = _linkViaAttest(shared, "cBTC", 8); // proven 8 decimals → scale 10^10
         bytes32 localId = pool.localAssetOf(shared);
-        (,, uint256 unitScale,,,,,) = pool.assets(localId);
+        (,, uint256 unitScale,,,) = pool.assets(localId);
         assertEq(unitScale, 10 ** 10, "scale derived from PROVEN decimals (8), not caller-chosen");
 
         ConfidentialPool.PublicValues memory pv = _pv();
@@ -1994,20 +2048,16 @@ contract ConfidentialPoolTest is Test {
         assertEq(pool.localAssetOf(shared), bytes32(0), "squat establishes no cross-chain link");
         ConfidentialPool.Asset memory aBefore = assetOf(pool, internalId);
         assertEq(aBefore.unitScale, 1, "squatter registered the wrong scale");
-        assertEq(aBefore.name, "squat-name", "squat seeded a bogus display name");
-        assertEq(aBefore.symbol, "SQUAT", "squat seeded a bogus display symbol");
 
         // The pool runs the guest-proven attest_meta (proven 8 decimals → scale 10^10).
         address proven = _linkViaAttest(shared, "cBTC", 8);
         assertEq(proven, tok, "attest_meta resolves the same salt-bound token (not a fresh deploy)");
         assertEq(pool.localAssetOf(shared), internalId, "link HEALED despite the prior squat");
-        (,, uint256 scaleAfter, bytes32 link,,,,) = pool.assets(internalId);
+        (,, uint256 scaleAfter, bytes32 link,,) = pool.assets(internalId);
         assertEq(scaleAfter, 10 ** 10, "scale OVERWRITTEN to the proven scale (squat's wrong scale discarded)");
         assertEq(link, shared, "crossChainLink healed to the shared id");
-        // The squat's bogus display name/symbol are also healed to the canonical brand + proven ticker.
-        ConfidentialPool.Asset memory aAfter = assetOf(pool, internalId);
-        assertEq(aAfter.name, "Tacit Token", "display name healed to the canonical brand");
-        assertEq(aAfter.symbol, "cBTC", "display symbol healed to the guest-proven ticker");
+        // The squat's bogus display name/symbol are healed too — now via the re-emitted AssetRegistered event
+        // ("Tacit Token" / the proven ticker), not stored, so not asserted through assets() here.
 
         // A bridged withdrawal now exits at the proven scale instead of reverting NotRegistered.
         ConfidentialPool.PublicValues memory pv = _pv();

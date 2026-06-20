@@ -3,6 +3,8 @@ pragma solidity ^0.8.28;
 
 import {Test} from "forge-std/Test.sol";
 import {ConfidentialPool, ISP1Verifier, ICdpController, ICollateralEngine, CdpLeg} from "../src/ConfidentialPool.sol";
+import {CanonicalAssetFactory} from "../src/CanonicalAssetFactory.sol";
+import {CanonicalBridgedERC20} from "../src/CanonicalBridgedERC20.sol";
 
 // Mock verifier: accept any proof (the guest crypto is the real-proof suite's job; this pins the on-chain
 // cBTC-lock-registry + CDP state machine + the controller/escrow gates).
@@ -70,6 +72,7 @@ contract ConfidentialCdpCbtcSettleTest is Test {
     ConfidentialPool pool;
     MockEngine engine;
     MockController controller;
+    CanonicalAssetFactory factory;
 
     bytes32 constant CBTC = 0x62a20d98fc1cd20289621d1315294cb8772f934d822e404b71e1f471cf0679c8; // CBTC_ZK_ASSET_ID
     bytes32 lockOutpoint = keccak256("lock-outpoint-1");
@@ -80,13 +83,14 @@ contract ConfidentialCdpCbtcSettleTest is Test {
     function setUp() public {
         vm.chainId(1);
         engine = new MockEngine();
+        factory = new CanonicalAssetFactory();
         // Reflection anchoring is disabled in this focused state-machine test; the mock verifier makes
         // verifyProof a no-op so we can drive the decoded public values directly.
         pool = new ConfidentialPool(
             address(new MockSP1Verifier()),
             bytes32(uint256(0xABCD)),
             bytes32(0),
-            address(0),
+            address(factory),
             address(0),
             bytes32(0),
             6,
@@ -204,11 +208,23 @@ contract ConfidentialCdpCbtcSettleTest is Test {
 
     function test_cbtc_mint_happy_then_double_mint_reverts() public {
         _attestLock(lockOutpoint, V_BTC, _cbtcCommit(), new bytes32[](0));
+        assertFalse(pool.cbtcMinted(lockOutpoint));
         _settle(_cbtcMintPv());
+        assertTrue(pool.cbtcMinted(lockOutpoint));
         // one-mint-per-lock
         ConfidentialPool.PublicValues memory pv = _cbtcMintPv();
         vm.expectRevert(ConfidentialPool.CbtcLockMismatch.selector);
         _settle(pv);
+    }
+
+    function test_cbtc_mint_rejects_spent_lock() public {
+        _attestLock(lockOutpoint, V_BTC, _cbtcCommit(), new bytes32[](0));
+        bytes32[] memory spent = new bytes32[](1);
+        spent[0] = lockOutpoint;
+        _attestLock(bytes32(0), V_BTC, bytes32(0), spent);
+
+        vm.expectRevert(ConfidentialPool.CbtcLockMismatch.selector);
+        _settle(_cbtcMintPv());
     }
 
     function test_cbtc_mint_requires_recorded_lock() public {
@@ -428,12 +444,10 @@ contract ConfidentialCdpCbtcSettleTest is Test {
         assertEq(controller.liquidations(), 1);
     }
 
-    // A REAL liquidation seizes the basket as a PUBLIC cBTC withdrawal to the controller (the guest emits
-    // this in OP_CDP_LIQUIDATE), so cBTC must resolve to a registered pool-minted ERC20 for the seize to pay
-    // out. CBTC_ZK_ASSET_ID is note-only here (no registry link), so the seize fails closed — documenting the
-    // cBTC.zk → cBTC.tac link prerequisite that must be wired before cBTC CDPs can be liquidated. The engine's
-    // recoverSeizedCbtc closes the OTHER half (recovering the seized token once that link exists).
-    function test_liquidation_seize_of_unregistered_cbtc_fails_closed() public {
+    // A liquidation/seizure payout is a PUBLIC cBTC withdrawal emitted by the proof, so cBTC must resolve to
+    // a registered pool-minted ERC20 for the payout to succeed. cBTC-capable pools now wire factory + engine
+    // atomically, so the payout mints canonical cBTC.tac instead of failing closed on an unregistered note id.
+    function test_liquidation_seize_of_cbtc_resolves_and_mints() public {
         _settle(_cdpMintPv(address(controller), _cdpDebtAsset(address(controller)), keccak256("pos-seize")));
         ConfidentialPool.PublicValues memory pv = _pv();
         pv.cdpPositionRoot = pool.cdpRoot();
@@ -446,8 +460,10 @@ contract ConfidentialCdpCbtcSettleTest is Test {
         pv.withdrawals = new ConfidentialPool.Withdrawal[](1);
         pv.withdrawals[0] = ConfidentialPool.Withdrawal({assetId: CBTC, recipient: address(controller), value: V_BTC});
 
-        vm.expectRevert(ConfidentialPool.NotRegistered.selector);
         _settle(pv);
+        CanonicalBridgedERC20 cbtc = CanonicalBridgedERC20(pool.canonicalTokenFor(CBTC));
+        assertEq(controller.liquidations(), 1);
+        assertEq(cbtc.balanceOf(address(controller)), uint256(V_BTC) * 1e10);
     }
 
     function test_btc_homed_cdp_mint_records_consumed_nullifier() public {

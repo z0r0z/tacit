@@ -37,7 +37,7 @@ contract MockPool {
     }
 }
 
-/// Minimal ERC20 for the seized-cBTC recovery path (just enough for SafeTransferLib.safeTransfer).
+/// Minimal ERC20 for the stranded-cBTC recovery path (just enough for SafeTransferLib.safeTransfer).
 contract MockERC20 {
     mapping(address => uint256) public balanceOf;
 
@@ -127,6 +127,12 @@ contract CollateralEngineTest is Test {
         new CollateralEngine(address(0), bytes32(0), 8, 8, admin);
 
         vm.expectRevert(CollateralEngine.BadParams.selector);
+        new CollateralEngine(address(0), bytes32(uint256(CBTC) ^ 1), 8, 8, admin);
+
+        vm.expectRevert(CollateralEngine.BadParams.selector);
+        new CollateralEngine(address(0), CBTC, 7, 8, admin);
+
+        vm.expectRevert(CollateralEngine.BadParams.selector);
         new CollateralEngine(address(0), CBTC, 19, 8, admin);
 
         vm.expectRevert(CollateralEngine.BadParams.selector);
@@ -137,6 +143,13 @@ contract CollateralEngineTest is Test {
 
         vm.expectRevert(CollateralEngine.BadPool.selector);
         new CollateralEngine(address(0xBEEF), CBTC, 8, 8, admin);
+    }
+
+    function test_canonical_cbtc_id_is_pinned() public view {
+        assertEq(eng.CANONICAL_CBTC_ASSET_ID(), CBTC);
+        assertEq(eng.CANONICAL_CBTC_DECIMALS(), 8);
+        assertEq(eng.CBTC_ASSET_ID(), CBTC);
+        assertEq(eng.CBTC_DEC(), 8);
     }
 
     function test_setPool_once_breaks_circular_dep() public {
@@ -269,7 +282,7 @@ contract CollateralEngineTest is Test {
         vm.expectRevert(CollateralEngine.NothingToSlash.selector); // minted but not spent
         eng.slash(o);
         pool.setSpent(o, true);
-        eng.slash(o); // proven rug → slashed into the insurance reserve
+        eng.slash(o); // proven rug -> slashed into the protocol reserve
         assertEq(eng.escrowOf(o), 0);
         assertEq(eng.insuranceReserve(), 30 ether);
         vm.expectRevert(CollateralEngine.EscrowLocked.selector); // one-shot
@@ -283,11 +296,33 @@ contract CollateralEngineTest is Test {
         bytes32 o = keccak256("lock-3");
         eng.postEscrow{value: 30 ether}(o);
         pool.setMinted(o, true);
-        pool.setSpent(o, true);
         vm.prank(admin);
         eng.releaseEscrow(o, admin); // proven honest redeem
+        pool.setSpent(o, true);
         vm.expectRevert(CollateralEngine.EscrowLocked.selector);
         eng.slash(o);
+    }
+
+    function test_release_rejects_proven_minted_spent_lock_but_allows_unminted_spent_lock() public {
+        bytes32 rugged = keccak256("lock-rugged");
+        eng.postEscrow{value: 30 ether}(rugged);
+        pool.setMinted(rugged, true);
+        pool.setSpent(rugged, true);
+
+        vm.prank(admin);
+        vm.expectRevert(CollateralEngine.EscrowLocked.selector);
+        eng.releaseEscrow(rugged, admin);
+
+        eng.slash(rugged);
+        assertEq(eng.insuranceReserve(), 30 ether);
+
+        bytes32 unminted = keccak256("lock-unminted-spent");
+        eng.postEscrow{value: 1 ether}(unminted);
+        pool.setSpent(unminted, true);
+        uint256 before = admin.balance;
+        vm.prank(admin);
+        eng.releaseEscrow(unminted, admin);
+        assertEq(admin.balance, before + 1 ether);
     }
 
     function test_slash_requires_pool_and_nonzero_outpoint() public {
@@ -307,6 +342,12 @@ contract CollateralEngineTest is Test {
         vm.prank(address(pool));
         vm.expectRevert(CollateralEngine.BadAmount.selector);
         eng.onCdpMint(legs, 0, keccak256("p0"));
+        vm.prank(address(pool));
+        vm.expectRevert(CollateralEngine.BadPositionLeaf.selector);
+        eng.onCdpMint(legs, 40000e8, bytes32(0));
+        vm.prank(address(pool));
+        vm.expectRevert(CollateralEngine.BadPositionLeaf.selector);
+        eng.onCdpMint(legs, 40000e8, bytes32(uint256(1)));
         // exactly at the floor: ok
         vm.prank(address(pool));
         eng.onCdpMint(legs, 40000e8, keccak256("p1"));
@@ -392,6 +433,10 @@ contract CollateralEngineTest is Test {
         eng.onCdpTopup(oldLegs, topped, 0, keccak256("old-nu"), keccak256("new-leaf"));
 
         vm.prank(address(pool));
+        vm.expectRevert(CollateralEngine.BadPositionLeaf.selector);
+        eng.onCdpTopup(oldLegs, topped, 50000e8, keccak256("old-nu"), bytes32(0));
+
+        vm.prank(address(pool));
         vm.expectRevert(CollateralEngine.Undercollateralized.selector);
         eng.onCdpTopup(oldLegs, sameLegs, 50000e8, keccak256("old-nu"), keccak256("same-leaf"));
 
@@ -452,6 +497,16 @@ contract CollateralEngineTest is Test {
         eng.drawInsurance(1 ether, admin);
         assertEq(eng.insuranceReserve(), 1 ether);
         assertEq(admin.balance, before + 1 ether);
+
+        vm.prank(admin);
+        vm.expectRevert(CollateralEngine.BadPurpose.selector);
+        eng.drawInsuranceFor(bytes32(0), 1, admin);
+
+        before = admin.balance;
+        vm.prank(admin);
+        eng.drawInsuranceFor(keccak256("CDP_BAD_DEBT"), 1 ether, admin);
+        assertEq(eng.insuranceReserve(), 0);
+        assertEq(admin.balance, before + 1 ether);
     }
 
     function test_zero_recipients_revert() public {
@@ -468,13 +523,13 @@ contract CollateralEngineTest is Test {
         eng.drawInsurance(1 ether, address(0));
     }
 
-    // The cBTC seized on a CDP liquidation lands in the engine (the controller-recipient); recoverSeizedCbtc
-    // is the ONLY way it leaves, scoped to exactly the pool-resolved cBTC token (never an arbitrary balance),
-    // and never touches the native-ETH escrow/insurance (those leave only via release/draw).
+    // If cBTC is explicitly/accidentally paid to the engine, recoverSeizedCbtc is the ONLY way it leaves,
+    // scoped to exactly the pool-resolved cBTC token (never an arbitrary balance), and never touches the
+    // native-ETH escrow/insurance (those leave only via release/draw).
     function test_recoverSeizedCbtc_routes_only_the_pool_resolved_token() public {
         MockERC20 cbtc = new MockERC20();
         pool.setCanonicalToken(address(cbtc));
-        cbtc.mint(address(eng), 5e18); // a liquidation seize: the pool paid cBTC here
+        cbtc.mint(address(eng), 5e18); // explicit engine-recipient payout
 
         // also hold native ETH (escrow + insurance) — recovery must leave it untouched.
         eng.postEscrow{value: 30 ether}(keccak256("untouched-escrow"));
@@ -493,7 +548,7 @@ contract CollateralEngineTest is Test {
         vm.expectRevert();
         eng.recoverSeizedCbtc(1e18, dao);
 
-        // happy: the DAO moves seized cBTC into the buy-and-burn destination
+        // happy: the DAO moves stranded cBTC into the recovery destination
         vm.prank(admin);
         eng.recoverSeizedCbtc(5e18, dao);
         assertEq(cbtc.balanceOf(dao), 5e18);
@@ -503,8 +558,7 @@ contract CollateralEngineTest is Test {
     }
 
     function test_recoverSeizedCbtc_reverts_when_cbtc_not_pool_registered() public {
-        // pool resolves cBTC to address(0) → nothing could have been seized (the seize withdrawal would
-        // itself have reverted), so there is nothing to recover.
+        // pool resolves cBTC to address(0), so no public cBTC withdrawal could have paid this engine.
         vm.prank(admin);
         vm.expectRevert(CollateralEngine.NotCbtcCollateral.selector);
         eng.recoverSeizedCbtc(1e18, address(0xDA0));

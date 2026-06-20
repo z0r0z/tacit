@@ -95,7 +95,7 @@ contract ConfidentialReflectionBurnDepositProofRealTest is Test {
     function test_burn_deposit_public_values_reflect_the_fold() public gated {
         BitcoinRelayPublicValues memory pv = abi.decode(publicValues, (BitcoinRelayPublicValues));
         assertEq(pv.bitcoinHeight, expectedHeight, "the burn-deposit scan block height");
-        assertEq(pv.newDigest, 0xb276adf40cb9bfa1c08b11250dcd81afcfb30be3b19bf6e89c9f7968376af190, "burn-deposit newDigest");
+        assertEq(pv.newDigest, 0x3b5980a9016b751e40b74fa7ada9d957502e15061f8e0054290e23fb83652716, "burn-deposit newDigest");
         assertTrue(pv.priorDigest != bytes32(0) && pv.newDigest != bytes32(0) && pv.newDigest != pv.priorDigest, "digest advanced");
         // The three burn-deposit effects (vs the assembled input's prior roots):
         assertTrue(pv.bitcoinBurnRoot != bytes32(0) && pv.bitcoinBurnRoot != priorBurnRoot, "burnRoot advanced: nu -> dest recorded (mint authority)");

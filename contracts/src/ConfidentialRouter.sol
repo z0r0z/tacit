@@ -1,0 +1,652 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.28;
+
+import {ReentrancyGuardTransient} from "solady/utils/ReentrancyGuardTransient.sol";
+import {SafeTransferLib} from "solady/utils/SafeTransferLib.sol";
+
+interface IConfidentialPool {
+    function wrap(bytes32 assetId, uint256 amount, bytes32 commit) external payable;
+    function settle(bytes calldata publicValues, bytes calldata proofBytes, bytes[] calldata memos) external;
+    function swapPublic(
+        bytes32 assetIn,
+        bytes32 assetOut,
+        uint32 feeBps,
+        uint256 amountIn,
+        uint256 minAmountOut,
+        uint64 deadline,
+        address to
+    ) external payable returns (uint256 amountOut);
+    function createPairAndAddLiquidityPublic(
+        bytes32 assetA,
+        bytes32 assetB,
+        uint32 feeBps,
+        uint256 amountA,
+        uint256 amountB,
+        uint256 minSharesOut,
+        uint64 deadline,
+        address to
+    ) external payable returns (uint256 sharesMinted);
+    function shieldShares(bytes32 poolId, uint256 shares, bytes32 commit) external returns (bytes32 depositId);
+}
+
+/// EIP-2612 permit (USDC and most modern ERC20s; DAI's non-standard permit is NOT this shape — those go
+/// through Permit2 instead).
+interface IERC2612 {
+    function permit(address owner, address spender, uint256 value, uint256 deadline, uint8 v, bytes32 r, bytes32 s)
+        external;
+}
+
+/// Uniswap Permit2 (AllowanceTransfer) — the canonical singleton at
+/// 0x000000000022D473030F116dDEE9F6B43aC78BA3 on every chain. After a ONE-TIME `token.approve(PERMIT2, max)`,
+/// every later approval is a signature, for ANY ERC20 (permit-native or not).
+interface IPermit2 {
+    struct PermitDetails {
+        address token;
+        uint160 amount;
+        uint48 expiration;
+        uint48 nonce;
+    }
+
+    struct PermitSingle {
+        PermitDetails details;
+        address spender;
+        uint256 sigDeadline;
+    }
+
+    struct PermitBatch {
+        PermitDetails[] details;
+        address spender;
+        uint256 sigDeadline;
+    }
+
+    function permit(address owner, PermitSingle calldata permitSingle, bytes calldata signature) external;
+    function permit(address owner, PermitBatch calldata permitBatch, bytes calldata signature) external;
+    function transferFrom(address from, address to, uint160 amount, address token) external;
+}
+
+interface IERC20Allowance {
+    function allowance(address owner, address spender) external view returns (uint256);
+}
+
+/// @title ConfidentialRouter
+/// @notice One periphery router for ConfidentialPool, collapsing each common flow into a single transaction
+///         with a signature-based approval (EIP-2612 / Permit2 / native msg.value). It spans four families:
+///
+///           1. ON-RAMP (wrap*) — public→confidential deposit for `commit` (a later settle inserts the leaf
+///              + memo). EIP-2612, Permit2, or native ETH.
+///           2. PRIVATE PAYMENT (wrapAndSettle* / zapETHToPayment) — wrap to a recipient-owned `commit`, then
+///              settle a self-proved batch that consumes the deposit, inserts the recipient's note leaf, and
+///              emits the recipient's ECDH memo (the discovery channel). Sender + amount are public; only the
+///              RECIPIENT is hidden (`commit` binds the note's owner, not msg.sender).
+///           3. PUBLIC AMM (swapPublic* / addLiquidityPublic*) — gasless-approve transparent-lane swap / LP add.
+///           4. ZAPS (zap*) — source liquidity from the pinned external aggregator (zRouter) and land it in the
+///              confidential pool: cold-start a public LP, shield an LP position into a note, bond it into a
+///              farm, or swap-and-wrap any asset into a confidential note / private payment.
+///
+///  Trust model. The router takes the user's tokens only TRANSIENTLY within a call — it pulls them via the
+///  signed approval (or msg.value), hands them to `wrap`/`swapPublic`/`createPair…`/zRouter, sweeps every
+///  leftover back to the caller, and holds NO token or ETH balance across transactions. Its only standing
+///  state is a lazy (infinite) allowance to the immutable, PINNED targets — the POOL and zRouter — harmless
+///  since there is never a resting balance for them to pull. Both external targets are immutable: the POOL
+///  and zRouter addresses are never arbitrary; only the swap SELECTION within zRouter (`zrSwapData`, routed
+///  across V2/V3/V4/Curve/zAMM) is the caller's. The note stays the user's: `commit` is forwarded verbatim,
+///  the router never sees note secrets, and a malicious/buggy call can at worst revert (atomic) — it cannot
+///  redirect or retain funds. A hostile `zrSwapData` yields too little output, the downstream slippage gate
+///  (`minShares` / `minAmountOut` / the wrap value binding) reverts, and the whole tx unwinds — fail-closed.
+///  nonReentrant on every entrypoint. Settles run with msg.sender == this router, so the private-payment /
+///  bond flows MUST be self-proved with NO settler fees (`pv.fees` empty) — fee-free by construction.
+///
+///  Consolidated (vs a separate wrap + zap router) so a user grants ONE Permit2 allowance that covers every
+///  flow, and the shared permit / lazy-approve / asset-id / refund machinery lives once.
+///
+///  Why periphery, not the pool: ConfidentialPool is immutable + codesize-bound, and permit standards vary
+///  (EIP-2612 / DAI-style / Permit2). Keeping this here lets it support every flavor and be replaced as
+///  standards evolve, without bloating the value-custody core. The pool needs no change — `wrap` pulls from
+///  `msg.sender` and binds the note via `commit`, `settle` is permissionless, and the public-AMM entrypoints
+///  credit a caller-chosen `to`.
+contract ConfidentialRouter is ReentrancyGuardTransient {
+    IConfidentialPool public immutable POOL;
+    IPermit2 public immutable PERMIT2;
+    /// zRouter — the pinned external AMM aggregator (0x000000000000FB114709235f1ccBFfb925F600e4). Low-level
+    /// called with caller-built swap calldata so any zRouter venue (V2/V3/V4/Curve/zAMM) works without this
+    /// router hardcoding one; the address is immutable, so the target is never arbitrary.
+    address public immutable ZROUTER;
+
+    error AmountTooLarge();
+    error ZRouterCallFailed();
+
+    /// Parameters for a token-in zap (bundled to keep the entrypoints under the stack limit).
+    struct TokenZap {
+        address tokenB; // the leg sourced from zRouter (paired with the input token A)
+        uint32 feeBps;
+        uint256 tokenAForSwap; // token A routed through zRouter for tokenB
+        uint256 tokenAForLP; // token A for the LP leg
+        uint256 tokenBLeg; // exact tokenB for the LP leg (the swap must source at least this)
+        uint256 minShares;
+        uint64 deadline;
+        bytes32 commit; // recipient's LP-share note commitment
+    }
+
+    constructor(address pool_, address zRouter_, address permit2_) {
+        POOL = IConfidentialPool(pool_);
+        ZROUTER = zRouter_;
+        PERMIT2 = IPermit2(permit2_);
+    }
+
+    // ──────────────────── One-tx on-ramp (wrap only) ────────────────────
+
+    /// @notice One-tx wrap of an EIP-2612 token (e.g. USDC): the user signs an allowance to THIS router and
+    ///         the router pulls `amount` and wraps it to `commit`. `permit` is best-effort (try/catch) so a
+    ///         front-runner replaying the same permit can't grief the wrap by pre-consuming the nonce — the
+    ///         `safeTransferFrom` below still enforces the allowance.
+    /// @param token  the underlying ERC20 (already registered in the pool via registerWrapped/Auto).
+    /// @param amount underlying amount to escrow (must be a multiple of the asset's unitScale, per the pool).
+    /// @param commit the note commitment keccak(Cx‖Cy‖owner) — identical to a direct `wrap`; binds the note
+    ///        (and, for a payment, the recipient). The caller computes it; the router only forwards it.
+    function wrapWithPermit(
+        address token,
+        uint256 amount,
+        bytes32 commit,
+        uint256 deadline,
+        uint8 v,
+        bytes32 r,
+        bytes32 s
+    ) external nonReentrant {
+        _wrap2612(token, amount, commit, deadline, v, r, s);
+    }
+
+    /// @notice One-tx wrap via Permit2 (works for ANY ERC20 after a one-time `token.approve(PERMIT2, max)`).
+    function wrapWithPermit2(
+        address token,
+        uint256 amount,
+        bytes32 commit,
+        IPermit2.PermitSingle calldata permitSingle,
+        bytes calldata signature
+    ) external nonReentrant {
+        _wrapPermit2(token, amount, commit, permitSingle, signature);
+    }
+
+    // ──────────────────── One-tx private payment (wrap + self-proved settle) ────────────────────
+
+    /// @notice One-tx private payment with an EIP-2612 token: wrap `amount` to a recipient-owned `commit`,
+    ///         then settle a SELF-PROVED batch that consumes the deposit, inserts the recipient's note leaf,
+    ///         and emits the recipient's encrypted memo (via the pool's LeavesInserted). The caller builds
+    ///         `publicValues`/`proof`/`memos` off-chain (the proof binds the deposit's value to the leaf).
+    /// @dev    The settle runs with msg.sender == this router, so it MUST be a self-proved batch with NO
+    ///         settler fees (`pv.fees` empty) — any fee would be paid to the router and stranded.
+    function wrapAndSettleWithPermit(
+        address token,
+        uint256 amount,
+        bytes32 commit,
+        uint256 deadline,
+        uint8 v,
+        bytes32 r,
+        bytes32 s,
+        bytes calldata publicValues,
+        bytes calldata proof,
+        bytes[] calldata memos
+    ) external nonReentrant {
+        _wrap2612(token, amount, commit, deadline, v, r, s);
+        POOL.settle(publicValues, proof, memos);
+    }
+
+    /// @notice One-tx private payment via Permit2 (any ERC20). See `wrapAndSettleWithPermit` for the
+    ///         self-proved / fee-free settle constraint.
+    function wrapAndSettleWithPermit2(
+        address token,
+        uint256 amount,
+        bytes32 commit,
+        IPermit2.PermitSingle calldata permitSingle,
+        bytes calldata signature,
+        bytes calldata publicValues,
+        bytes calldata proof,
+        bytes[] calldata memos
+    ) external nonReentrant {
+        _wrapPermit2(token, amount, commit, permitSingle, signature);
+        POOL.settle(publicValues, proof, memos);
+    }
+
+    // ──────────────────── Native ETH (no permit — msg.value IS the approval) ────────────────────
+
+    /// @notice One-tx on-ramp of native ETH into a confidential deposit: send `msg.value` and the router
+    ///         wraps it to `commit` as the pinned native-ETH (tETH) asset. No permit/approval needed — ETH
+    ///         is carried by the call. A later settle inserts the leaf + memo. (Reverts if this generation
+    ///         didn't register native ETH, i.e. tETH isn't a pool asset.)
+    function wrapETH(bytes32 commit) external payable nonReentrant {
+        _wrapETH(msg.value, commit);
+    }
+
+    /// @notice One-tx native-ETH private payment — the ETH analog of `wrapAndSettleWithPermit`: wrap
+    ///         `msg.value` to a recipient-owned `commit`, then settle the self-proved batch that consumes the
+    ///         deposit, inserts the recipient's leaf, and emits the recipient's memo. Same self-proved /
+    ///         fee-free settle constraint (the settle runs with msg.sender == this router).
+    function wrapAndSettleETH(
+        bytes32 commit,
+        bytes calldata publicValues,
+        bytes calldata proof,
+        bytes[] calldata memos
+    ) external payable nonReentrant {
+        _wrapETH(msg.value, commit);
+        POOL.settle(publicValues, proof, memos);
+    }
+
+    // ──────────────────── Public AMM swap (gasless approve) ────────────────────
+
+    /// @notice One-tx PUBLIC swap with a gasless approval (EIP-2612): pull `amountIn` of `tokenIn`, swap it
+    ///         against the pool's public reserves, and send the output straight to `to`. The amount is public
+    ///         (this is the transparent lane; for a hidden-amount swap use the confidential OP_SWAP). The pool
+    ///         enforces slippage (`minAmountOut`, in the output's underlying) + `deadline`; `deadline` doubles
+    ///         as the permit-signature expiry. Caller passes token ADDRESSES; the router derives the asset ids.
+    function swapPublicWithPermit(
+        address tokenIn,
+        address tokenOut,
+        uint32 feeBps,
+        uint256 amountIn,
+        uint256 minAmountOut,
+        uint64 deadline,
+        address to,
+        uint8 v,
+        bytes32 r,
+        bytes32 s
+    ) external nonReentrant returns (uint256 amountOut) {
+        _pull2612(tokenIn, amountIn, deadline, v, r, s);
+        amountOut =
+            POOL.swapPublic(_evmAssetId(tokenIn), _evmAssetId(tokenOut), feeBps, amountIn, minAmountOut, deadline, to);
+    }
+
+    /// @notice One-tx PUBLIC swap via Permit2 (any ERC20 after a one-time `token.approve(PERMIT2, max)`).
+    function swapPublicWithPermit2(
+        address tokenIn,
+        address tokenOut,
+        uint32 feeBps,
+        uint256 amountIn,
+        uint256 minAmountOut,
+        uint64 deadline,
+        address to,
+        IPermit2.PermitSingle calldata permitSingle,
+        bytes calldata signature
+    ) external nonReentrant returns (uint256 amountOut) {
+        _pullPermit2(tokenIn, amountIn, permitSingle, signature);
+        amountOut =
+            POOL.swapPublic(_evmAssetId(tokenIn), _evmAssetId(tokenOut), feeBps, amountIn, minAmountOut, deadline, to);
+    }
+
+    // ──────────────────── Public AMM liquidity (gasless approve) ────────────────────
+
+    /// @notice One-tx PUBLIC liquidity add via a Permit2 batch (ONE signature for BOTH tokens): pull
+    ///         `amountA` of `tokenA` + `amountB` of `tokenB`, lazily create the (canonical) pool if it
+    ///         doesn't exist, add liquidity, and credit the LP shares to `to`. The off-ratio excess the pool
+    ///         refunds (to msg.sender == this router) is forwarded back to the caller, so the router keeps no
+    ///         balance. ERC20-only — a native-ETH leg would need a payable variant. `feeBps`/`minSharesOut`/
+    ///         `deadline` are the pool's; caller passes token ADDRESSES (the router derives the asset ids).
+    function addLiquidityPublicWithPermit2(
+        address tokenA,
+        address tokenB,
+        uint32 feeBps,
+        uint256 amountA,
+        uint256 amountB,
+        uint256 minSharesOut,
+        uint64 deadline,
+        address to,
+        IPermit2.PermitBatch calldata permitBatch,
+        bytes calldata signature
+    ) external nonReentrant returns (uint256 sharesMinted) {
+        if (amountA > type(uint160).max || amountB > type(uint160).max) revert AmountTooLarge();
+        try PERMIT2.permit(msg.sender, permitBatch, signature) {} catch {}
+        PERMIT2.transferFrom(msg.sender, address(this), uint160(amountA), tokenA);
+        PERMIT2.transferFrom(msg.sender, address(this), uint160(amountB), tokenB);
+        _lazyApprove(tokenA, address(POOL), amountA);
+        _lazyApprove(tokenB, address(POOL), amountB);
+        sharesMinted = POOL.createPairAndAddLiquidityPublic(
+            _evmAssetId(tokenA), _evmAssetId(tokenB), feeBps, amountA, amountB, minSharesOut, deadline, to
+        );
+        // The pool pays the off-ratio refund to msg.sender (== this router); forward it to the caller.
+        _refund(tokenA, msg.sender);
+        _refund(tokenB, msg.sender);
+    }
+
+    // ──────────────────── Zap: cold-start a public LP from ETH (external sourcing) ────────────────────
+
+    /// @notice Cold-start zap from native ETH: route `ethToSwap` of `msg.value` through zRouter for `tokenB`
+    ///         (via the caller's `zrSwapData`, which MUST send the output to this router), then add the
+    ///         remaining ETH + the received `tokenB` into the confidential pool's public LP (tETH/tokenB at
+    ///         `feeBps`), crediting shares to `to`. The pool is lazily created on the first add (cold start),
+    ///         so the (remaining ETH : received tokenB) ratio sets the initial price — the caller chooses
+    ///         `ethToSwap` (and the swap's amounts) to land the price they want. Leftovers go back to the caller.
+    /// @param tokenB     the ERC20 other leg (registered in the pool); paired with native ETH (tETH).
+    /// @param feeBps     the confidential pool's fee tier for the pair.
+    /// @param ethToSwap  how much of msg.value to forward to zRouter for the swap (the rest is the ETH leg).
+    /// @param minShares  slippage floor on the LP shares minted (the downstream backstop; set the swap's own
+    ///                   amountLimit inside `zrSwapData` too).
+    /// @param deadline   expiry for the LP add (the swap's own deadline lives in `zrSwapData`).
+    /// @param to         recipient of the LP shares.
+    /// @param zrSwapData ABI-encoded zRouter swap call (e.g. swapV2/swapV3/swapV4/swapVZ/swapCurve) for the
+    ///                   venue with depth, swapping ETH->tokenB with the output recipient set to THIS router.
+    function zapETHIntoLP(
+        address tokenB,
+        uint32 feeBps,
+        uint256 ethToSwap,
+        uint256 minShares,
+        uint64 deadline,
+        address to,
+        bytes calldata zrSwapData
+    ) external payable nonReentrant returns (uint256 sharesMinted) {
+        uint256 remainingEth = msg.value - ethToSwap; // reverts (underflow) if ethToSwap > msg.value
+
+        uint256 beforeB = SafeTransferLib.balanceOf(tokenB, address(this));
+        _callZRouter(ethToSwap, zrSwapData);
+        uint256 gotB = SafeTransferLib.balanceOf(tokenB, address(this)) - beforeB;
+
+        _lazyApprove(tokenB, address(POOL), gotB);
+        sharesMinted = POOL.createPairAndAddLiquidityPublic{value: remainingEth}(
+            _evmAssetId(address(0)), _evmAssetId(tokenB), feeBps, remainingEth, gotB, minShares, deadline, to
+        );
+
+        _refund(tokenB, msg.sender);
+        _refundETH(msg.sender);
+    }
+
+    // ──────────────────── Zap: confidential-output (public entry, shielded position) ────────────────────
+
+    /// @notice Same public entry (ETH → zRouter → LP) as `zapETHIntoLP`, but the LP position is delivered
+    ///         CONFIDENTIALLY: the minted shares are shielded into an owner-blinded LP-share NOTE bound to
+    ///         `commit`, so the holder can send it privately or bond it into a farm — vs `zapETHIntoLP`, which
+    ///         leaves a PUBLIC lpShares balance. The swap + add are still public (amounts/sender visible); only
+    ///         the OUTPUT position is shielded. EXACT legs (`ethLeg`, `tokenBLeg`) make the minted share count
+    ///         deterministic (the dapp can pre-derive it). Returns the LP-share-note deposit id.
+    function zapETHIntoShieldedLP(
+        address tokenB,
+        uint32 feeBps,
+        uint256 ethLeg,
+        uint256 tokenBLeg,
+        uint256 minShares,
+        uint64 deadline,
+        bytes32 commit,
+        bytes calldata zrSwapData
+    ) external payable nonReentrant returns (bytes32 depositId, uint256 sharesMinted) {
+        (depositId, sharesMinted) =
+            _zapToShieldedShares(tokenB, feeBps, ethLeg, tokenBLeg, minShares, deadline, commit, zrSwapData);
+        _refund(tokenB, msg.sender);
+        _refundETH(msg.sender);
+    }
+
+    /// @notice One-tx ETH → CONFIDENTIAL farm position: zap into the LP, shield the shares to `commit`, then
+    ///         settle the caller's self-proved batch that consumes the LP-share deposit and bonds it
+    ///         (OP_LP_BOND → owner-blinded farm-receipt note earning TAC rewards). Deterministic shares (exact
+    ///         legs) let the dapp pre-build the bond proof. Self-proved / fee-free settle (msg.sender == this).
+    function zapETHIntoFarm(
+        address tokenB,
+        uint32 feeBps,
+        uint256 ethLeg,
+        uint256 tokenBLeg,
+        uint256 minShares,
+        uint64 deadline,
+        bytes32 commit,
+        bytes calldata zrSwapData,
+        bytes calldata publicValues,
+        bytes calldata proof,
+        bytes[] calldata memos
+    ) external payable nonReentrant returns (uint256 sharesMinted) {
+        (, sharesMinted) =
+            _zapToShieldedShares(tokenB, feeBps, ethLeg, tokenBLeg, minShares, deadline, commit, zrSwapData);
+        POOL.settle(publicValues, proof, memos);
+        _refund(tokenB, msg.sender);
+        _refundETH(msg.sender);
+    }
+
+    /// @notice Token-in analog of `zapETHIntoShieldedLP`: pull token A (Permit2), route `tokenAForSwap` of it
+    ///         through zRouter for `tokenB`, add EXACTLY (`tokenAForLP`, `tokenBLeg`) to the LP, and shield the
+    ///         shares into an owner-blinded LP-share note bound to `z.commit`. Token A is the Permit2 permit's
+    ///         token; both legs ERC20. Leftovers swept to the caller.
+    function zapTokenIntoShieldedLP(
+        TokenZap calldata z,
+        IPermit2.PermitSingle calldata permitSingle,
+        bytes calldata signature,
+        bytes calldata zrSwapData
+    ) external nonReentrant returns (bytes32 depositId, uint256 sharesMinted) {
+        address tokenA = permitSingle.details.token;
+        (depositId, sharesMinted) = _zapTokenToShieldedShares(tokenA, z, permitSingle, signature, zrSwapData);
+        _refund(tokenA, msg.sender);
+        _refund(z.tokenB, msg.sender);
+    }
+
+    /// @notice Token-in analog of `zapETHIntoFarm`: token A → shielded LP-share note → settle the caller's
+    ///         self-proved bond (OP_LP_BOND). Same deterministic-shares + self-proved/fee-free settle model.
+    function zapTokenIntoFarm(
+        TokenZap calldata z,
+        IPermit2.PermitSingle calldata permitSingle,
+        bytes calldata signature,
+        bytes calldata zrSwapData,
+        bytes calldata publicValues,
+        bytes calldata proof,
+        bytes[] calldata memos
+    ) external nonReentrant returns (uint256 sharesMinted) {
+        address tokenA = permitSingle.details.token;
+        (, sharesMinted) = _zapTokenToShieldedShares(tokenA, z, permitSingle, signature, zrSwapData);
+        POOL.settle(publicValues, proof, memos);
+        _refund(tokenA, msg.sender);
+        _refund(z.tokenB, msg.sender);
+    }
+
+    // ──────────────────── Zap: swap-and-wrap (any asset -> a confidential NOTE) ────────────────────
+
+    /// @notice Swap native ETH to `tokenOut` on zRouter, then WRAP exactly `wrapAmount` of it into the
+    ///         confidential pool as a deposit bound to `commit` — pay in ETH but receive a confidential
+    ///         `tokenOut` NOTE (single asset, not LP). `commit` is the recipient's note commitment, so this is
+    ///         a private swap-and-shield (or the deposit leg of swap-and-pay; see zapETHToPayment). The swap
+    ///         must source at least `wrapAmount` (which must be unitScale-aligned for `tokenOut`); leftovers
+    ///         (excess tokenOut + unspent ETH) are swept to the caller.
+    function zapETHToShieldedNote(address tokenOut, uint256 wrapAmount, bytes32 commit, bytes calldata zrSwapData)
+        external
+        payable
+        nonReentrant
+    {
+        _swapAndWrap(tokenOut, wrapAmount, commit, zrSwapData);
+        _refund(tokenOut, msg.sender);
+        _refundETH(msg.sender);
+    }
+
+    /// @notice One-tx private payment funded by ETH in a different asset: swap ETH -> `tokenOut`, wrap exactly
+    ///         `wrapAmount` to the recipient's `commit`, then settle the caller's self-proved batch consuming
+    ///         the deposit into the recipient's note (+ memo). `wrapAmount` fixes the note value so the dapp
+    ///         pre-derives the deposit id for the settle. Self-proved / fee-free settle (msg.sender == this).
+    function zapETHToPayment(
+        address tokenOut,
+        uint256 wrapAmount,
+        bytes32 commit,
+        bytes calldata zrSwapData,
+        bytes calldata publicValues,
+        bytes calldata proof,
+        bytes[] calldata memos
+    ) external payable nonReentrant {
+        _swapAndWrap(tokenOut, wrapAmount, commit, zrSwapData);
+        POOL.settle(publicValues, proof, memos);
+        _refund(tokenOut, msg.sender);
+        _refundETH(msg.sender);
+    }
+
+    // ──────────────────── Internals: permit pulls + wrap ────────────────────
+
+    /// Pull `amount` of an EIP-2612 token from the caller (its signed allowance) into the router, then lazily
+    /// approve the pool. Shared by wrap + swap. `permit` is best-effort (try/catch) so a replayed permit can't
+    /// grief the call — the `safeTransferFrom` still enforces the allowance.
+    function _pull2612(address token, uint256 amount, uint256 deadline, uint8 v, bytes32 r, bytes32 s) internal {
+        try IERC2612(token).permit(msg.sender, address(this), amount, deadline, v, r, s) {} catch {}
+        SafeTransferLib.safeTransferFrom(token, msg.sender, address(this), amount);
+        _lazyApprove(token, address(POOL), amount);
+    }
+
+    /// Permit2 analog of `_pull2612` (any ERC20 after a one-time `token.approve(PERMIT2, max)`).
+    function _pullPermit2(
+        address token,
+        uint256 amount,
+        IPermit2.PermitSingle calldata permitSingle,
+        bytes calldata signature
+    ) internal {
+        if (amount > type(uint160).max) revert AmountTooLarge(); // Permit2 amounts are uint160
+        try PERMIT2.permit(msg.sender, permitSingle, signature) {} catch {}
+        PERMIT2.transferFrom(msg.sender, address(this), uint160(amount), token);
+        _lazyApprove(token, address(POOL), amount);
+    }
+
+    function _wrap2612(
+        address token,
+        uint256 amount,
+        bytes32 commit,
+        uint256 deadline,
+        uint8 v,
+        bytes32 r,
+        bytes32 s
+    ) internal {
+        _pull2612(token, amount, deadline, v, r, s);
+        POOL.wrap(_evmAssetId(token), amount, commit);
+    }
+
+    function _wrapPermit2(
+        address token,
+        uint256 amount,
+        bytes32 commit,
+        IPermit2.PermitSingle calldata permitSingle,
+        bytes calldata signature
+    ) internal {
+        _pullPermit2(token, amount, permitSingle, signature);
+        POOL.wrap(_evmAssetId(token), amount, commit);
+    }
+
+    /// Forward `amount` of native ETH to the pool's wrap (no approval — the pool checks msg.value == amount
+    /// for the native-ETH asset). The native-ETH asset id is `_evmAssetId(address(0))` — the same id the pool
+    /// registered tETH under.
+    function _wrapETH(uint256 amount, bytes32 commit) internal {
+        POOL.wrap{value: amount}(_evmAssetId(address(0)), amount, commit);
+    }
+
+    // ──────────────────── Internals: zaps ────────────────────
+
+    /// Low-level call the PINNED zRouter with the caller's swap calldata, forwarding `value` ETH; bubble its
+    /// revert reason (or ZRouterCallFailed). The router holds no standing approval to zRouter for ETH paths,
+    /// so a hostile call can at most waste the forwarded ETH (recovered by the downstream slippage gate).
+    function _callZRouter(uint256 value, bytes calldata zrSwapData) internal {
+        (bool ok, bytes memory ret) = ZROUTER.call{value: value}(zrSwapData);
+        if (!ok) {
+            if (ret.length != 0) {
+                assembly ("memory-safe") {
+                    revert(add(ret, 0x20), mload(ret))
+                }
+            }
+            revert ZRouterCallFailed();
+        }
+    }
+
+    /// Swap msg.value of ETH to `tokenOut` on zRouter (caller's calldata, output to this), then wrap EXACTLY
+    /// `wrapAmount` into the pool as a deposit for `commit`. The swap must source >= wrapAmount.
+    function _swapAndWrap(address tokenOut, uint256 wrapAmount, bytes32 commit, bytes calldata zrSwapData) internal {
+        uint256 beforeOut = SafeTransferLib.balanceOf(tokenOut, address(this));
+        _callZRouter(msg.value, zrSwapData);
+        require(SafeTransferLib.balanceOf(tokenOut, address(this)) - beforeOut >= wrapAmount, "zap: short swap output");
+        _lazyApprove(tokenOut, address(POOL), wrapAmount);
+        POOL.wrap(_evmAssetId(tokenOut), wrapAmount, commit);
+    }
+
+    /// Exact-leg zap → shield the LP shares into a note deposit. Swaps for AT LEAST `tokenBLeg` on zRouter
+    /// (caller's exact-out calldata), adds EXACTLY (ethLeg, tokenBLeg) to the LP (so the minted share count is
+    /// deterministic), and shields the minted shares to `commit`. Leftovers are swept by the public caller.
+    function _zapToShieldedShares(
+        address tokenB,
+        uint32 feeBps,
+        uint256 ethLeg,
+        uint256 tokenBLeg,
+        uint256 minShares,
+        uint64 deadline,
+        bytes32 commit,
+        bytes calldata zrSwapData
+    ) internal returns (bytes32 depositId, uint256 sharesMinted) {
+        uint256 ethForSwap = msg.value - ethLeg; // reverts (underflow) if ethLeg > msg.value
+        uint256 beforeB = SafeTransferLib.balanceOf(tokenB, address(this));
+        _callZRouter(ethForSwap, zrSwapData);
+        require(SafeTransferLib.balanceOf(tokenB, address(this)) - beforeB >= tokenBLeg, "zap: short swap output");
+        bytes32 tethId = _evmAssetId(address(0));
+        bytes32 tokenBId = _evmAssetId(tokenB);
+        _lazyApprove(tokenB, address(POOL), tokenBLeg);
+        // EXACT legs ⇒ deterministic shares; `to == this` so the router holds them to shield.
+        sharesMinted = POOL.createPairAndAddLiquidityPublic{value: ethLeg}(
+            tethId, tokenBId, feeBps, ethLeg, tokenBLeg, minShares, deadline, address(this)
+        );
+        depositId = POOL.shieldShares(_poolId(tethId, tokenBId, feeBps), sharesMinted, commit);
+    }
+
+    /// Token-in core: pull token A (Permit2), swap `tokenAForSwap` of it on zRouter for >= tokenBLeg, add
+    /// EXACTLY (tokenAForLP, tokenBLeg) to the LP (deterministic shares), and shield the shares to `commit`.
+    function _zapTokenToShieldedShares(
+        address tokenA,
+        TokenZap calldata z,
+        IPermit2.PermitSingle calldata permitSingle,
+        bytes calldata signature,
+        bytes calldata zrSwapData
+    ) internal returns (bytes32 depositId, uint256 sharesMinted) {
+        uint256 total = z.tokenAForSwap + z.tokenAForLP;
+        if (total > type(uint160).max) revert AmountTooLarge();
+        try PERMIT2.permit(msg.sender, permitSingle, signature) {} catch {}
+        PERMIT2.transferFrom(msg.sender, address(this), uint160(total), tokenA);
+        _lazyApprove(tokenA, ZROUTER, z.tokenAForSwap); // let zRouter pull the swap input
+        uint256 beforeB = SafeTransferLib.balanceOf(z.tokenB, address(this));
+        _callZRouter(0, zrSwapData); // token-in: no ETH forwarded (zRouter pulls the approved token)
+        require(SafeTransferLib.balanceOf(z.tokenB, address(this)) - beforeB >= z.tokenBLeg, "zap: short swap output");
+        bytes32 tokenAId = _evmAssetId(tokenA);
+        bytes32 tokenBId = _evmAssetId(z.tokenB);
+        _lazyApprove(tokenA, address(POOL), z.tokenAForLP);
+        _lazyApprove(z.tokenB, address(POOL), z.tokenBLeg);
+        sharesMinted = POOL.createPairAndAddLiquidityPublic(
+            tokenAId, tokenBId, z.feeBps, z.tokenAForLP, z.tokenBLeg, z.minShares, z.deadline, address(this)
+        );
+        depositId = POOL.shieldShares(_poolId(tokenAId, tokenBId, z.feeBps), sharesMinted, z.commit);
+    }
+
+    /// Canonical poolId — mirrors ConfidentialPool._poolId (keccak(lo ‖ hi ‖ feeBps)).
+    function _poolId(bytes32 a, bytes32 b, uint32 feeBps) internal pure returns (bytes32) {
+        (bytes32 lo, bytes32 hi) = a < b ? (a, b) : (b, a);
+        return keccak256(abi.encodePacked(lo, hi, uint256(feeBps)));
+    }
+
+    // ──────────────────── Internals: approvals, refunds, asset id ────────────────────
+
+    /// Lazily grant `spender` (the pinned pool, or zRouter for token-in) an infinite allowance — once per
+    /// (token, spender) — vs a fresh approve every call, saving the ~20k SSTORE on every repeat. Safe: the
+    /// router holds no token balance between calls (nothing to pull) and spenders are pinned. `safeApprove…`
+    /// resets-then-sets for tokens (USDT-style) that require a 0 allowance first; a token that decrements an
+    /// infinite allowance just trips the `< amount` check later and is re-approved.
+    function _lazyApprove(address token, address spender, uint256 amount) internal {
+        if (IERC20Allowance(token).allowance(address(this), spender) < amount) {
+            SafeTransferLib.safeApproveWithRetry(token, spender, type(uint256).max);
+        }
+    }
+
+    /// Forward the router's full balance of `token` to `to` — pool off-ratio refunds + swap dust — so the
+    /// router never retains a token balance across calls.
+    function _refund(address token, address to) internal {
+        uint256 bal = SafeTransferLib.balanceOf(token, address(this));
+        if (bal != 0) SafeTransferLib.safeTransfer(token, to, bal);
+    }
+
+    function _refundETH(address to) internal {
+        uint256 bal = address(this).balance;
+        if (bal != 0) SafeTransferLib.forceSafeTransferETH(to, bal);
+    }
+
+    /// The pool's internal asset id for an underlying ERC20 — MUST mirror ConfidentialPool._evmAssetId:
+    /// sha256("tacit-evm-token-v1" ‖ chainid ‖ underlying). Every registerWrapped/_register keys the asset
+    /// under exactly this id, so deriving it here lets the caller pass only the token address (address(0) for
+    /// native ETH/tETH). A token whose derived id isn't registered simply makes the pool revert (fail-closed).
+    function _evmAssetId(address underlying) internal view returns (bytes32 assetId) {
+        assembly ("memory-safe") {
+            let m := mload(0x40)
+            mstore(m, shl(112, 0x74616369742d65766d2d746f6b656e2d7631)) // "tacit-evm-token-v1"
+            mstore(add(m, 18), shl(192, chainid()))
+            mstore(add(m, 26), shl(96, underlying))
+            if iszero(staticcall(gas(), 2, m, 46, m, 32)) { revert(0, 0) }
+            assetId := mload(m)
+        }
+    }
+
+    /// Accept the pool's native-ETH off-ratio refund (forceSafeTransferETH) so it lands cleanly to be swept.
+    receive() external payable {}
+}

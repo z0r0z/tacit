@@ -39,6 +39,7 @@ contract SP1PoolRootVerifierTest is Test {
     bytes32 constant GENESIS = bytes32(uint256(0xBBCC));
     bytes32 constant VK_HASH = bytes32(uint256(0xDD));
     uint8 constant NTAG = 0x01;
+    uint256 constant CONFIRMATIONS = 6;
     uint256 constant DENOM = 1 ether;
     bytes32 denomB32 = bytes32(DENOM);
     bytes32 poolId;
@@ -60,7 +61,7 @@ contract SP1PoolRootVerifierTest is Test {
         emptyBurnsHash = sha256(abi.encodePacked(zeroBatches));
         verifier = new SP1PoolRootVerifier(
             address(sp1), address(relay), VKEY, address(mixerMock),
-            AID, NTAG, VK_HASH, pids, denoms,
+            AID, NTAG, CONFIRMATIONS, VK_HASH, pids, denoms,
             GENESIS
         );
     }
@@ -81,7 +82,7 @@ contract SP1PoolRootVerifierTest is Test {
         vm.expectRevert();
         new SP1PoolRootVerifier(
             address(sp1), address(relay), VKEY, address(mixerMock),
-            AID, NTAG, VK_HASH, pids, denoms, GENESIS
+            AID, NTAG, CONFIRMATIONS, VK_HASH, pids, denoms, GENESIS
         );
     }
 
@@ -89,7 +90,7 @@ contract SP1PoolRootVerifierTest is Test {
         (bytes32[] memory pids, bytes32[] memory denoms) = _denomArrays(16);
         SP1PoolRootVerifier v = new SP1PoolRootVerifier(
             address(sp1), address(relay), VKEY, address(mixerMock),
-            AID, NTAG, VK_HASH, pids, denoms, GENESIS
+            AID, NTAG, CONFIRMATIONS, VK_HASH, pids, denoms, GENESIS
         );
         assertEq(v.NUM_DENOMS(), 16);
     }
@@ -116,6 +117,16 @@ contract SP1PoolRootVerifierTest is Test {
 
     function _submitEmpty(bytes memory pv, bytes32 depositAcc) internal {
         verifier.proveStateTransition(_withTail(pv, depositAcc, _emptyBurns()), "");
+    }
+
+    function _anchorMatured(bytes32 proven) internal returns (bytes32 tip) {
+        tip = proven;
+        for (uint256 i = 1; i <= CONFIRMATIONS; ++i) {
+            bytes32 child = keccak256(abi.encode("mature", proven, i));
+            relay.setParent(child, tip);
+            tip = child;
+        }
+        relay.setTip(tip);
     }
 
     function _buildPV(
@@ -166,7 +177,7 @@ contract SP1PoolRootVerifierTest is Test {
     // ──── Domain check tests ────
 
     function test_wrong_denomination_reverts() public {
-        relay.setTip(bytes32(uint256(0xFF)));
+        _anchorMatured(bytes32(uint256(0xFF)));
         bytes memory pv = _buildPV(
             bytes32(uint256(0xFF)), AID, NTAG, uint64(block.chainid),
             address(mixerMock), VK_HASH, sha256(abi.encodePacked(_roots(bytes32(0)))),
@@ -178,7 +189,7 @@ contract SP1PoolRootVerifierTest is Test {
     }
 
     function test_wrong_mixer_address_reverts() public {
-        relay.setTip(bytes32(uint256(0xFF)));
+        _anchorMatured(bytes32(uint256(0xFF)));
         bytes memory pv = _buildPV(
             bytes32(uint256(0xFF)), AID, NTAG, uint64(block.chainid),
             address(0xDEAD), VK_HASH, sha256(abi.encodePacked(_roots(bytes32(0)))),
@@ -189,7 +200,7 @@ contract SP1PoolRootVerifierTest is Test {
     }
 
     function test_wrong_chain_id_reverts() public {
-        relay.setTip(bytes32(uint256(0xFF)));
+        _anchorMatured(bytes32(uint256(0xFF)));
         bytes memory pv = _buildPV(
             bytes32(uint256(0xFF)), AID, NTAG, 99999,
             address(mixerMock), VK_HASH, sha256(abi.encodePacked(_roots(bytes32(0)))),
@@ -200,7 +211,7 @@ contract SP1PoolRootVerifierTest is Test {
     }
 
     function test_wrong_asset_id_reverts() public {
-        relay.setTip(bytes32(uint256(0xFF)));
+        _anchorMatured(bytes32(uint256(0xFF)));
         bytes memory pv = _buildPV(
             bytes32(uint256(0xFF)), bytes32(uint256(0xBAD)), NTAG, uint64(block.chainid),
             address(mixerMock), VK_HASH, sha256(abi.encodePacked(_roots(bytes32(0)))),
@@ -211,7 +222,7 @@ contract SP1PoolRootVerifierTest is Test {
     }
 
     function test_wrong_vk_hash_reverts() public {
-        relay.setTip(bytes32(uint256(0xFF)));
+        _anchorMatured(bytes32(uint256(0xFF)));
         bytes memory pv = _buildPV(
             bytes32(uint256(0xFF)), AID, NTAG, uint64(block.chainid),
             address(mixerMock), bytes32(uint256(0xBAD)), sha256(abi.encodePacked(_roots(bytes32(0)))),
@@ -222,7 +233,7 @@ contract SP1PoolRootVerifierTest is Test {
     }
 
     function test_wrong_genesis_reverts() public {
-        relay.setTip(bytes32(uint256(0xFF)));
+        _anchorMatured(bytes32(uint256(0xFF)));
         bytes memory pv = _validPV(bytes32(uint256(0xFF)), bytes32(0), bytes32(0));
         _set32(pv, 72, bytes32(uint256(0xBAD))); // wrong prev_block_hash
         // Reorg finality window: walks blockParent up to FINALITY_WINDOW.
@@ -238,20 +249,28 @@ contract SP1PoolRootVerifierTest is Test {
         _submitEmpty(pv, bytes32(0));
     }
 
+    function test_shallow_tip_reverts() public {
+        bytes32 shallow = bytes32(uint256(0xFF));
+        relay.setTip(shallow);
+        bytes memory pv = _validPV(shallow, bytes32(0), bytes32(0));
+        vm.expectRevert(SP1PoolRootVerifier.NotRelayTip.selector);
+        _submitEmpty(pv, bytes32(0));
+    }
+
     function test_finalityWindow_acceptsAncestorTip() public {
-        // Reorg finality window: a proof whose lastBlockHash is the relay's
-        // current tip OR a confirmed ancestor within FINALITY_WINDOW=6 should
-        // be accepted. Simulates "prover started 4 blocks ago, relay advanced
-        // in the meantime; the older lastBlockHash is still in-window." Audit #2.
+        // Reorg finality window: a proof whose lastBlockHash is the matured
+        // anchor OR a recent ancestor of it should be accepted. Simulates
+        // "prover started a few blocks ago, relay advanced in the meantime;
+        // the older lastBlockHash is still in-window." Audit #2.
         bytes32 oldTip = bytes32(uint256(0xAA));
         bytes32 mid1   = bytes32(uint256(0xBB));
         bytes32 mid2   = bytes32(uint256(0xCC));
-        bytes32 newTip = bytes32(uint256(0xDD));
-        relay.setParent(newTip, mid2);
+        bytes32 matured = bytes32(uint256(0xDD));
+        relay.setParent(matured, mid2);
         relay.setParent(mid2, mid1);
         relay.setParent(mid1, oldTip);
-        relay.setTip(newTip);
-        // PV: lastBlockHash = oldTip (3 ancestors deep, within window=6)
+        _anchorMatured(matured);
+        // PV: lastBlockHash = oldTip (3 ancestors behind the matured anchor, within window=6)
         bytes memory pv = _validPV(oldTip, bytes32(0), bytes32(0));
         // Should succeed (no revert)
         _submitEmpty(pv, bytes32(0));
@@ -260,7 +279,7 @@ contract SP1PoolRootVerifierTest is Test {
     // ──── Root accumulator tests ────
 
     function test_wrong_accumulator_reverts() public {
-        relay.setTip(bytes32(uint256(0xFF)));
+        _anchorMatured(bytes32(uint256(0xFF)));
         mixerMock.addRoot(poolId, bytes32(uint256(0x111)));
         // PV commits a deposit accumulator hash that does not match the calldata.
         bytes memory pv = _buildPV(
@@ -273,7 +292,7 @@ contract SP1PoolRootVerifierTest is Test {
     }
 
     function test_wrong_accumulator_vs_mixer_reverts() public {
-        relay.setTip(bytes32(uint256(0xFF)));
+        _anchorMatured(bytes32(uint256(0xFF)));
         mixerMock.addRoot(poolId, bytes32(uint256(0x111)));
         bytes32 acc = sha256(abi.encodePacked(bytes32(0), bytes32(uint256(0x111))));
         // Calldata acc hash matches PV, but acc value disagrees with the mixer.
@@ -290,7 +309,7 @@ contract SP1PoolRootVerifierTest is Test {
 
     function test_valid_submission_succeeds() public {
         bytes32 tipHash = bytes32(uint256(0xFF));
-        relay.setTip(tipHash);
+        _anchorMatured(tipHash);
         bytes32 r1 = bytes32(uint256(0x111));
         mixerMock.addRoot(poolId, r1);
         // Compute the correct running accumulator matching the mixer.
@@ -303,7 +322,7 @@ contract SP1PoolRootVerifierTest is Test {
 
     function test_wrong_burn_batch_hash_reverts() public {
         bytes32 tipHash = bytes32(uint256(0xFF));
-        relay.setTip(tipHash);
+        _anchorMatured(tipHash);
         bytes32[] memory burns = new bytes32[](1);
         burns[0] = bytes32(uint256(0xB04D));
         bytes memory pv = _buildPV(
@@ -317,7 +336,7 @@ contract SP1PoolRootVerifierTest is Test {
 
     function test_incremental_state_chaining() public {
         bytes32 tipHash = bytes32(uint256(0xFF));
-        relay.setTip(tipHash);
+        _anchorMatured(tipHash);
         // First proof: genesis → state A
         bytes32 newPoolRoot = bytes32(uint256(0xAAA));
         bytes32 newNullHash = bytes32(uint256(0xBBB));
@@ -335,7 +354,7 @@ contract SP1PoolRootVerifierTest is Test {
 
         // Second proof: must chain from state A
         bytes32 tipHash2 = bytes32(uint256(0xEE));
-        relay.setTip(tipHash2);
+        _anchorMatured(tipHash2);
         bytes32 nextPoolRoot = bytes32(uint256(0xDDD));
         bytes32 nextPoolsHash = sha256(abi.encodePacked(_roots(nextPoolRoot)));
         bytes memory pv2 = new bytes(461);
@@ -362,16 +381,53 @@ contract SP1PoolRootVerifierTest is Test {
         assertEq(storedHeight, 8);
     }
 
+    function test_height_regression_reverts() public {
+        bytes32 tipHash = bytes32(uint256(0xFF));
+        _anchorMatured(tipHash);
+        bytes32 newPoolRoot = bytes32(uint256(0xAAA));
+        bytes32 newNullHash = bytes32(uint256(0xBBB));
+        bytes32 newCommitment = bytes32(uint256(0xCCC));
+        bytes32 newPoolsHash = sha256(abi.encodePacked(_roots(newPoolRoot)));
+        bytes memory pv1 = _validPV(tipHash, newPoolRoot, bytes32(0));
+        _set32(pv1, 136, newNullHash);
+        _setU64(pv1, 168, 5);
+        _set32(pv1, 429, newCommitment);
+        _submitEmpty(pv1, bytes32(0));
+
+        bytes32 tipHash2 = bytes32(uint256(0xEE));
+        _anchorMatured(tipHash2);
+        bytes memory pv2 = new bytes(461);
+        _set32(pv2, 0, newPoolsHash);
+        _set32(pv2, 32, newNullHash);
+        _setU64(pv2, 64, 5);
+        _set32(pv2, 72, tipHash);
+        _set32(pv2, 104, sha256(abi.encodePacked(_roots(bytes32(uint256(0xDDD))))));
+        _set32(pv2, 136, bytes32(uint256(0xEEE)));
+        _setU64(pv2, 168, 4); // newHeight < prevHeight
+        _set32(pv2, 176, sha256(abi.encodePacked(_roots(bytes32(0)))));
+        _set32(pv2, 208, emptyBurnsHash);
+        _set32(pv2, 240, VK_HASH);
+        _set32(pv2, 272, AID);
+        pv2[304] = bytes1(NTAG);
+        _setU64(pv2, 305, uint64(block.chainid));
+        _setAddr(pv2, 313, address(mixerMock));
+        _set32(pv2, 333, tipHash2);
+        _set32(pv2, 365, denomsHash);
+        _set32(pv2, 397, newCommitment);
+        vm.expectRevert(SP1PoolRootVerifier.StateMismatch.selector);
+        _submitEmpty(pv2, bytes32(0));
+    }
+
     function test_incremental_wrong_prev_root_reverts() public {
         bytes32 tipHash = bytes32(uint256(0xFF));
-        relay.setTip(tipHash);
+        _anchorMatured(tipHash);
         // First proof
         bytes memory pv1 = _validPV(tipHash, bytes32(uint256(0xAAA)), bytes32(0));
         _set32(pv1, 429, bytes32(uint256(0xCCC)));
         _submitEmpty(pv1, bytes32(0));
         // Second proof with wrong prevPoolsHash — domain fields must be correct to reach state check
         bytes32 tipHash2 = bytes32(uint256(0xEE));
-        relay.setTip(tipHash2);
+        _anchorMatured(tipHash2);
         bytes memory pv2 = new bytes(461);
         _set32(pv2, 0, bytes32(uint256(0xDEAD))); // wrong prevPoolsHash
         _set32(pv2, 240, VK_HASH);
@@ -393,7 +449,7 @@ contract SP1PoolRootVerifierTest is Test {
         vm.expectRevert(SP1PoolRootVerifier.ZeroGenesis.selector);
         new SP1PoolRootVerifier(
             address(sp1), address(relay), VKEY, address(mixerMock),
-            AID, NTAG, VK_HASH, pids, denoms,
+            AID, NTAG, CONFIRMATIONS, VK_HASH, pids, denoms,
             bytes32(0)
         );
     }

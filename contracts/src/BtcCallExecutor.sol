@@ -4,7 +4,7 @@ pragma solidity ^0.8.28;
 import {ReentrancyGuardTransient} from "solady/utils/ReentrancyGuardTransient.sol";
 
 interface IConfidentialPoolBtcCalls {
-    /// callId => keccak(target ‖ calldataHash ‖ callerPubkey), recorded by attestBitcoinStateProven; 0 = unknown.
+    /// callId => keccak(executor ‖ target ‖ calldataHash ‖ callerPubkey), recorded by attestBitcoinStateProven; 0 = unknown.
     function pendingBtcCall(bytes32 callId) external view returns (bytes32 recordHash);
 }
 
@@ -31,9 +31,9 @@ contract BtcCallExecutor is ReentrancyGuardTransient {
 
     event BtcCallExecuted(bytes32 indexed callId, address indexed target, bytes32 callerPubkey);
 
+    error BadRecord();
     error NotProven();
     error AlreadyFired();
-    error BadRecord();
 
     constructor(address pool) {
         POOL = IConfidentialPoolBtcCalls(pool);
