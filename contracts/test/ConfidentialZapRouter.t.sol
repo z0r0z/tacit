@@ -134,5 +134,86 @@ contract ConfidentialZapRouterTest is Test {
         assertLe(user.balance, 1 ether, "user spent up to 1 ETH");
     }
 
+    // ──────────────────── Confidential-output zaps ────────────────────
+
+    function _lpShareId(bytes32 poolId) internal pure returns (bytes32) {
+        return keccak256(abi.encodePacked(poolId, bytes2(0x6c70))); // keccak(poolId ‖ "lp")
+    }
+
+    function _isqrt(uint256 x) internal pure returns (uint256 y) {
+        unchecked {
+            uint256 z = (x + 1) / 2;
+            y = x;
+            while (z < y) {
+                y = z;
+                z = (x / z + z) / 2;
+            }
+        }
+    }
+
+    /// Minimal self-proved settle that consumes the LP-share deposit + inserts the farm-receipt leaf — the
+    /// orchestration the bond pv performs (the real OP_LP_BOND cdpMint is the dapp's; the mock verifier
+    /// accepts any proof, so this isolates the zap→shield→settle composition).
+    function _bondPv(bytes32 depositId, bytes32 leaf) internal view returns (bytes memory) {
+        ConfidentialPool.PublicValues memory pv;
+        pv.version = 1;
+        pv.chainBinding = keccak256(abi.encodePacked(block.chainid, address(pool)));
+        pv.depositsConsumed = new bytes32[](1);
+        pv.depositsConsumed[0] = depositId;
+        pv.leaves = new bytes32[](1);
+        pv.leaves[0] = leaf;
+        return abi.encode(pv);
+    }
+
+    function test_zapETHIntoShieldedLP_givesConfidentialNoteDeposit() public {
+        vm.deal(user, 2 ether);
+        uint256 ethLeg = 0.5 ether;
+        uint256 tokenBLeg = 1e6;
+        uint64 deadline = uint64(block.timestamp + 1 hours);
+        bytes32 commit = keccak256("recipient-lp-note");
+
+        vm.prank(user);
+        (bytes32 depositId, uint256 shares) = zap.zapETHIntoShieldedLP{value: 1 ether}(
+            address(tokenB), FEE_BPS, ethLeg, tokenBLeg, 0, deadline, commit, _zrSwapData(address(zap), 0.5 ether, deadline)
+        );
+
+        assertGt(shares, 0, "shares minted");
+        bytes32 poolId = _poolId(tethId, tokenBId, FEE_BPS);
+        // CONFIDENTIAL output: a pending LP-share-NOTE deposit bound to commit — NOT a public lpShares balance
+        assertEq(uint256(pool.depositStatus(depositId)), 1, "pending LP-share-note deposit");
+        assertEq(depositId, keccak256(abi.encode(_lpShareId(poolId), shares, commit)), "depositId binds lpShareId+shares+commit");
+        assertEq(pool.lpShares(poolId, address(zap)), 0, "router shielded all its shares");
+        assertEq(pool.lpShares(poolId, user), 0, "user got NO public shares (output is confidential)");
+        assertEq(address(zap).balance, 0, "zap holds no ETH");
+        assertEq(tokenB.balanceOf(address(zap)), 0, "zap holds no tokenB");
+    }
+
+    function test_zapETHIntoFarm_zapsShieldsThenBonds() public {
+        vm.deal(user, 2 ether);
+        uint256 ethLeg = 0.5 ether;
+        uint256 tokenBLeg = 1e6;
+        uint64 deadline = uint64(block.timestamp + 1 hours);
+        bytes32 commit = keccak256("farmer-lp-note");
+
+        // deterministic shares (exact legs) ⇒ the dapp pre-derives the LP-share-note deposit id for the bond pv
+        uint256 shares = _isqrt((ethLeg / 1e10) * tokenBLeg) - 1000;
+        bytes32 poolId = _poolId(tethId, tokenBId, FEE_BPS);
+        bytes32 depositId = keccak256(abi.encode(_lpShareId(poolId), shares, commit));
+        bytes[] memory memos = new bytes[](1);
+        memos[0] = abi.encodePacked(bytes32("eph"), bytes32("ct"));
+
+        vm.prank(user);
+        uint256 minted = zap.zapETHIntoFarm{value: 1 ether}(
+            address(tokenB), FEE_BPS, ethLeg, tokenBLeg, 0, deadline, commit,
+            _zrSwapData(address(zap), 0.5 ether, deadline), _bondPv(depositId, keccak256("farm-receipt")), hex"", memos
+        );
+
+        assertEq(minted, shares, "deterministic shares matched the pre-derived bond pv");
+        assertEq(uint256(pool.depositStatus(depositId)), 2, "LP-share deposit consumed by the bond settle");
+        assertEq(pool.nextLeafIndex(), 1, "farm-receipt leaf inserted by the settle");
+        assertEq(address(zap).balance, 0, "zap holds no ETH");
+        assertEq(tokenB.balanceOf(address(zap)), 0, "zap holds no tokenB");
+    }
+
     receive() external payable {}
 }
