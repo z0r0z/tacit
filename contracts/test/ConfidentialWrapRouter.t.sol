@@ -1,0 +1,289 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.28;
+
+import {Test} from "forge-std/Test.sol";
+import {ERC20} from "solady/tokens/ERC20.sol";
+import {SafeTransferLib} from "solady/utils/SafeTransferLib.sol";
+import {ConfidentialPool} from "../src/ConfidentialPool.sol";
+import {ConfidentialWrapRouter, IPermit2} from "../src/ConfidentialWrapRouter.sol";
+
+/// Minimal SP1 verifier stub — `wrap`/`registerWrapped` never call it, but the pool ctor needs a non-zero
+/// verifier address with the right surface.
+contract StubVerifier {
+    function verifyProof(bytes32, bytes calldata, bytes calldata) external view {}
+}
+
+/// EIP-2612 token (Solady ERC20 provides `permit` / `DOMAIN_SEPARATOR` / `nonces` from `name()`), shaped
+/// like USDC (6 decimals).
+contract MockUSDC is ERC20 {
+    function name() public pure override returns (string memory) {
+        return "USD Coin";
+    }
+
+    function symbol() public pure override returns (string memory) {
+        return "USDC";
+    }
+
+    function decimals() public pure override returns (uint8) {
+        return 6;
+    }
+
+    function mint(address to, uint256 amount) external {
+        _mint(to, amount);
+    }
+}
+
+/// Faithful-enough Permit2 (AllowanceTransfer) mock: `permit` records the signed allowance owner→spender
+/// for a token (the real singleton verifies an EIP-712 sig over the same struct — irrelevant to testing the
+/// router's orchestration); `transferFrom` (caller == spender) consumes it and pulls via the token's own
+/// allowance to Permit2 (the user's one-time `approve(PERMIT2, max)`).
+contract MockPermit2 {
+    mapping(address => mapping(address => mapping(address => uint160))) public allowed; // owner=>token=>spender=>amt
+    uint256 public permitCalls;
+
+    function permit(address owner, IPermit2.PermitSingle calldata p, bytes calldata) external {
+        permitCalls++;
+        allowed[owner][p.details.token][p.spender] = p.details.amount;
+    }
+
+    function transferFrom(address from, address to, uint160 amount, address token) external {
+        uint160 a = allowed[from][token][msg.sender];
+        require(a >= amount, "P2: insufficient permit allowance");
+        allowed[from][token][msg.sender] = a - amount;
+        SafeTransferLib.safeTransferFrom(token, from, to, amount);
+    }
+}
+
+contract ConfidentialWrapRouterTest is Test {
+    ConfidentialPool pool;
+    ConfidentialWrapRouter router;
+    MockUSDC usdc;
+    MockPermit2 permit2;
+    bytes32 assetId;
+
+    uint256 constant USER_PK = 0xA11CE;
+    address user;
+    bytes32 constant COMMIT = keccak256("user-note-commitment");
+    uint256 constant AMOUNT = 1000;
+
+    bytes32 constant PERMIT_TYPEHASH =
+        keccak256("Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)");
+
+    event LeavesInserted(uint256 indexed firstLeafIndex, bytes32[] leaves, bytes[] memos);
+
+    function setUp() public {
+        vm.chainId(1); // the router derives assetId = sha256(domain‖chainid‖token); must match registration
+        user = vm.addr(USER_PK);
+
+        pool = new ConfidentialPool(
+            address(new StubVerifier()),
+            bytes32(uint256(0xABCD)), // program vkey
+            bytes32(0), // bitcoin relay vkey OFF (no relay/anchor needed)
+            address(0), // factory off
+            address(0), // relay off
+            bytes32(0), // anchor
+            0, // confirmations
+            bytes32(0), // resume digest
+            bytes32(0), // tETH link
+            address(0) // collateral engine
+        );
+        usdc = new MockUSDC();
+        // unitScale 1 ⇒ value == amount (6-dec token, tacit precision 6); link 0 (escrow asset).
+        assetId = pool.registerWrapped(address(usdc), 1, bytes32(0), "USD Coin", "USDC", 6);
+
+        permit2 = new MockPermit2();
+        router = new ConfidentialWrapRouter(address(pool), address(permit2));
+
+        usdc.mint(user, 10_000);
+    }
+
+    // ──────────────────── helpers ────────────────────
+
+    function _expectedDepositId(uint256 amount, bytes32 commit) internal view returns (bytes32) {
+        // depositId = keccak(assetId, value, commit), value = amount/unitScale (unitScale == 1 here).
+        return keccak256(abi.encode(assetId, amount, commit));
+    }
+
+    function _sign2612(uint256 amount, uint256 deadline) internal view returns (uint8 v, bytes32 r, bytes32 s) {
+        bytes32 structHash =
+            keccak256(abi.encode(PERMIT_TYPEHASH, user, address(router), amount, usdc.nonces(user), deadline));
+        bytes32 digest = keccak256(abi.encodePacked("\x19\x01", usdc.DOMAIN_SEPARATOR(), structHash));
+        (v, r, s) = vm.sign(USER_PK, digest);
+    }
+
+    function _assertWrapped() internal view {
+        assertEq(usdc.balanceOf(user), 10_000 - AMOUNT, "user debited exactly amount");
+        assertEq(pool.escrow(assetId), AMOUNT, "pool escrow credited amount");
+        assertEq(uint256(pool.depositStatus(_expectedDepositId(AMOUNT, COMMIT))), 1, "deposit pending under commit");
+        // No standing custody / allowance left in the router (escrow path consumes the approval).
+        assertEq(usdc.balanceOf(address(router)), 0, "router holds no tokens after wrap");
+        assertEq(usdc.allowance(address(router), address(pool)), 0, "no leftover router->pool allowance");
+    }
+
+    // ──────────────────── EIP-2612 path (USDC) ────────────────────
+
+    function test_wrapWithPermit_oneTransaction() public {
+        uint256 deadline = block.timestamp + 1 hours;
+        (uint8 v, bytes32 r, bytes32 s) = _sign2612(AMOUNT, deadline);
+
+        vm.prank(user);
+        router.wrapWithPermit(address(usdc), AMOUNT, COMMIT, deadline, v, r, s);
+
+        _assertWrapped();
+        // The permit actually set + consumed the allowance (one-tx, no prior approve).
+        assertEq(usdc.allowance(user, address(router)), 0, "permit allowance fully consumed");
+    }
+
+    /// The note belongs to whoever is in `commit`, NOT to the router: the deposit id a router-wrap produces
+    /// is byte-identical to the one a direct user `wrap(assetId, amount, commit)` would produce.
+    function test_note_boundToCommit_notRouter() public {
+        uint256 deadline = block.timestamp + 1 hours;
+        (uint8 v, bytes32 r, bytes32 s) = _sign2612(AMOUNT, deadline);
+
+        vm.prank(user);
+        router.wrapWithPermit(address(usdc), AMOUNT, COMMIT, deadline, v, r, s);
+
+        // Same id a direct wrap would mint — proving the router is a transparent payer, not the owner.
+        assertEq(uint256(pool.depositStatus(_expectedDepositId(AMOUNT, COMMIT))), 1);
+    }
+
+    /// A front-runner replaying the permit (consuming the nonce) must not be able to grief the wrap: the
+    /// try/catch swallows the now-failing permit and the wrap proceeds on the already-present allowance.
+    function test_wrapWithPermit_frontrunResilient() public {
+        uint256 deadline = block.timestamp + 1 hours;
+        (uint8 v, bytes32 r, bytes32 s) = _sign2612(AMOUNT, deadline);
+
+        // Attacker front-runs by submitting the user's permit directly (allowance now set, nonce consumed).
+        usdc.permit(user, address(router), AMOUNT, deadline, v, r, s);
+
+        // The same call now hits a permit that reverts (used nonce) — but the wrap still completes.
+        vm.prank(user);
+        router.wrapWithPermit(address(usdc), AMOUNT, COMMIT, deadline, v, r, s);
+
+        _assertWrapped();
+    }
+
+    /// Fail-closed: a bad/empty permit AND no pre-existing allowance ⇒ the pull reverts ⇒ whole tx reverts,
+    /// nothing escrowed.
+    function test_wrapWithPermit_revertsWithoutAllowance() public {
+        vm.prank(user);
+        vm.expectRevert(); // safeTransferFrom reverts (no allowance), after the swallowed bad permit
+        router.wrapWithPermit(address(usdc), AMOUNT, COMMIT, block.timestamp + 1 hours, 27, bytes32(0), bytes32(0));
+
+        assertEq(pool.escrow(assetId), 0, "nothing escrowed on failure");
+    }
+
+    // ──────────────────── Permit2 path (any ERC20) ────────────────────
+
+    function test_wrapWithPermit2_oneTransaction() public {
+        // One-time Permit2 setup the user does once per token, ever.
+        vm.prank(user);
+        usdc.approve(address(permit2), type(uint256).max);
+
+        IPermit2.PermitSingle memory ps = IPermit2.PermitSingle({
+            details: IPermit2.PermitDetails({
+                token: address(usdc),
+                amount: uint160(AMOUNT),
+                expiration: uint48(block.timestamp + 1 hours),
+                nonce: 0
+            }),
+            spender: address(router),
+            sigDeadline: block.timestamp + 1 hours
+        });
+
+        vm.prank(user);
+        router.wrapWithPermit2(address(usdc), AMOUNT, COMMIT, ps, hex"");
+
+        _assertWrapped();
+        assertEq(permit2.permitCalls(), 1, "router invoked Permit2.permit");
+        assertEq(permit2.allowed(user, address(usdc), address(router)), 0, "permit2 allowance consumed");
+    }
+
+    function test_wrapWithPermit2_revertsAmountTooLarge() public {
+        IPermit2.PermitSingle memory ps; // contents irrelevant — guard trips first
+        vm.prank(user);
+        vm.expectRevert(ConfidentialWrapRouter.AmountTooLarge.selector);
+        router.wrapWithPermit2(address(usdc), uint256(type(uint160).max) + 1, COMMIT, ps, hex"");
+    }
+
+    // ──────────────────── One-tx private payment (wrap + self-proved settle) ────────────────────
+
+    /// Encode a minimal self-proved settle that consumes `depositId` and inserts the recipient's `leaf`
+    /// (the value-binding lives in the real proof; the mock verifier accepts any, isolating router
+    /// orchestration). Everything else (nullifiers, fees, withdrawals, ...) is empty.
+    function _privatePaymentPv(bytes32 depositId, bytes32 leaf) internal view returns (bytes memory) {
+        ConfidentialPool.PublicValues memory pv;
+        pv.version = 1;
+        pv.chainBinding = keccak256(abi.encodePacked(block.chainid, address(pool)));
+        pv.depositsConsumed = new bytes32[](1);
+        pv.depositsConsumed[0] = depositId;
+        pv.leaves = new bytes32[](1);
+        pv.leaves[0] = leaf;
+        return abi.encode(pv);
+    }
+
+    /// The headline UX: Alice pays Bob in ONE tx — permit USDC, wrap to a Bob-owned commit, and settle a
+    /// self-proved batch that inserts Bob's note leaf and emits Bob's ECDH memo (the channel Bob
+    /// trial-decrypts on tacit.finance). Recipient hidden (commit), sender + amount public (public USDC).
+    function test_wrapAndSettleWithPermit_privatePayment() public {
+        bytes32 bobCommit = keccak256("bob-owned-note-commit"); // = keccak(Cx‖Cy‖bobOwner), built off-chain
+        bytes32 bobLeaf = keccak256("bob-note-leaf");
+        bytes32 depositId = keccak256(abi.encode(assetId, AMOUNT, bobCommit));
+
+        bytes[] memory memos = new bytes[](1);
+        memos[0] = abi.encodePacked(bytes32("ephemeralPub"), bytes32("ciphertext-sealed-to-bob")); // ECDH memo
+        bytes32[] memory leaves = new bytes32[](1);
+        leaves[0] = bobLeaf;
+
+        uint256 deadline = block.timestamp + 1 hours;
+        (uint8 v, bytes32 r, bytes32 s) = _sign2612(AMOUNT, deadline);
+
+        // The recipient's discovery channel: the memo is emitted with the leaf, by the pool, in this one tx.
+        vm.expectEmit(true, false, false, true, address(pool));
+        emit LeavesInserted(0, leaves, memos);
+
+        vm.prank(user);
+        router.wrapAndSettleWithPermit(
+            address(usdc), AMOUNT, bobCommit, deadline, v, r, s, _privatePaymentPv(depositId, bobLeaf), hex"", memos
+        );
+
+        assertEq(usdc.balanceOf(user), 10_000 - AMOUNT, "sender debited (public)");
+        assertEq(pool.escrow(assetId), AMOUNT, "escrow credited");
+        assertEq(uint256(pool.depositStatus(depositId)), 2, "deposit consumed by the settle");
+        assertEq(pool.nextLeafIndex(), 1, "recipient note leaf inserted");
+        assertEq(usdc.balanceOf(address(router)), 0, "router holds nothing after");
+    }
+
+    function test_wrapAndSettleWithPermit2_privatePayment() public {
+        vm.prank(user);
+        usdc.approve(address(permit2), type(uint256).max); // one-time Permit2 setup
+
+        bytes32 bobCommit = keccak256("bob-owned-note-commit-2");
+        bytes32 bobLeaf = keccak256("bob-note-leaf-2");
+        bytes32 depositId = keccak256(abi.encode(assetId, AMOUNT, bobCommit));
+
+        bytes[] memory memos = new bytes[](1);
+        memos[0] = abi.encodePacked(bytes32("ephemeralPub"), bytes32("ciphertext-sealed-to-bob"));
+
+        IPermit2.PermitSingle memory ps = IPermit2.PermitSingle({
+            details: IPermit2.PermitDetails({
+                token: address(usdc),
+                amount: uint160(AMOUNT),
+                expiration: uint48(block.timestamp + 1 hours),
+                nonce: 0
+            }),
+            spender: address(router),
+            sigDeadline: block.timestamp + 1 hours
+        });
+
+        vm.prank(user);
+        router.wrapAndSettleWithPermit2(
+            address(usdc), AMOUNT, bobCommit, ps, hex"", _privatePaymentPv(depositId, bobLeaf), hex"", memos
+        );
+
+        assertEq(pool.escrow(assetId), AMOUNT, "escrow credited");
+        assertEq(uint256(pool.depositStatus(depositId)), 2, "deposit consumed");
+        assertEq(pool.nextLeafIndex(), 1, "recipient note leaf inserted");
+        assertEq(usdc.balanceOf(address(router)), 0, "router holds nothing after");
+    }
+}
