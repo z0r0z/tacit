@@ -37,6 +37,10 @@ interface IPermit2 {
     function transferFrom(address from, address to, uint160 amount, address token) external;
 }
 
+interface IERC20Allowance {
+    function allowance(address owner, address spender) external view returns (uint256);
+}
+
 /// @title ConfidentialWrapRouter
 /// @notice Periphery for ConfidentialPool: collapse "approve + wrap" (and optionally the settle that inserts
 ///         the note + emits its encrypted memo) into ONE transaction using a signature-based approval
@@ -50,10 +54,11 @@ interface IPermit2 {
 ///              token is public); only the RECIPIENT is hidden — `commit` binds the note's owner, not msg.sender.
 ///
 ///  Trust model: the router takes the user's tokens only TRANSIENTLY within the call — it pulls them via the
-///  signed approval, hands them to `wrap`, and holds nothing across transactions (no balances; each wrap
-///  approves the pool for EXACTLY the amount it then consumes, leaving zero). The note stays the user's:
-///  `commit` is forwarded verbatim, the router never sees the note secrets, and a malicious/buggy router can
-///  at worst make the (atomic) call revert — it cannot redirect or retain funds.
+///  signed approval and hands them straight to `wrap`, holding no token balance across transactions. It keeps
+///  a standing (lazy, infinite) allowance to the POOL only — harmless here, since the router never holds
+///  tokens between calls for the pool to pull, and the pool is the immutable, pinned target. The note stays
+///  the user's: `commit` is forwarded verbatim, the router never sees the note secrets, and a malicious/buggy
+///  router can at worst make the (atomic) call revert — it cannot redirect or retain funds.
 ///
 ///  Why periphery, not the pool: ConfidentialPool is immutable + codesize-bound, and permit standards vary
 ///  (EIP-2612 / DAI-style / Permit2). Keeping this here lets it support every flavor and be replaced as
@@ -174,12 +179,17 @@ contract ConfidentialWrapRouter is ReentrancyGuardTransient {
         _approveAndWrap(token, amount, commit);
     }
 
-    /// Approve the pool for EXACTLY `amount` (so no standing allowance survives the call) and wrap.
-    /// `safeApproveWithRetry` resets-then-sets for tokens (USDT-style) that require a 0 allowance before a
-    /// new non-zero one. The pool pulls `amount` from this router (msg.sender == router) for an escrow asset,
-    /// or burns it from the router for a pool-minted asset, and binds the note to `commit`.
+    /// Lazily grant the pool an infinite allowance (once per token), then wrap. Approving only when the
+    /// standing allowance is short — vs a fresh approve every call — saves the ~20k SSTORE on every repeat
+    /// wrap, the standard router pattern. Safe: the router holds no token balance between calls (nothing for
+    /// the pool to pull) and the pool is the immutable, pinned target. `safeApproveWithRetry` resets-then-sets
+    /// for tokens (USDT-style) that require a 0 allowance before a new non-zero one; a token that decrements
+    /// an infinite allowance just trips the `< amount` check again later and is re-approved. The pool then
+    /// pulls `amount` from this router (escrow asset) or burns it (pool-minted) and binds the note to `commit`.
     function _approveAndWrap(address token, uint256 amount, bytes32 commit) internal {
-        SafeTransferLib.safeApproveWithRetry(token, address(POOL), amount);
+        if (IERC20Allowance(token).allowance(address(this), address(POOL)) < amount) {
+            SafeTransferLib.safeApproveWithRetry(token, address(POOL), type(uint256).max);
+        }
         POOL.wrap(_evmAssetId(token), amount, commit);
     }
 

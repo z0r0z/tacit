@@ -115,9 +115,10 @@ contract ConfidentialWrapRouterTest is Test {
         assertEq(usdc.balanceOf(user), 10_000 - AMOUNT, "user debited exactly amount");
         assertEq(pool.escrow(assetId), AMOUNT, "pool escrow credited amount");
         assertEq(uint256(pool.depositStatus(_expectedDepositId(AMOUNT, COMMIT))), 1, "deposit pending under commit");
-        // No standing custody / allowance left in the router (escrow path consumes the approval).
+        // The router holds NO token balance between calls (the key safety property); it keeps a standing
+        // (lazy infinite) pool allowance — the optimization — which is harmless since there's nothing to pull.
         assertEq(usdc.balanceOf(address(router)), 0, "router holds no tokens after wrap");
-        assertEq(usdc.allowance(address(router), address(pool)), 0, "no leftover router->pool allowance");
+        assertGe(usdc.allowance(address(router), address(pool)), AMOUNT, "standing pool allowance (lazy approve)");
     }
 
     // ──────────────────── EIP-2612 path (USDC) ────────────────────
@@ -285,5 +286,25 @@ contract ConfidentialWrapRouterTest is Test {
         assertEq(uint256(pool.depositStatus(depositId)), 2, "deposit consumed");
         assertEq(pool.nextLeafIndex(), 1, "recipient note leaf inserted");
         assertEq(usdc.balanceOf(address(router)), 0, "router holds nothing after");
+    }
+
+    /// The lazy infinite approve is set once per token and reused: a second wrap needs no fresh approval,
+    /// the standing pool allowance persists, and the router still holds nothing.
+    function test_lazyApprove_reusedAcrossWraps() public {
+        uint256 d1 = block.timestamp + 1 hours;
+        (uint8 v1, bytes32 r1, bytes32 s1) = _sign2612(AMOUNT, d1);
+        vm.prank(user);
+        router.wrapWithPermit(address(usdc), AMOUNT, keccak256("c1"), d1, v1, r1, s1);
+        assertGe(usdc.allowance(address(router), address(pool)), AMOUNT, "standing allowance after first wrap");
+
+        // second wrap (fresh permit nonce, new commit): reuses the standing allowance, no re-approve
+        uint256 d2 = block.timestamp + 1 hours;
+        (uint8 v2, bytes32 r2, bytes32 s2) = _sign2612(AMOUNT, d2);
+        vm.prank(user);
+        router.wrapWithPermit(address(usdc), AMOUNT, keccak256("c2"), d2, v2, r2, s2);
+
+        assertEq(pool.escrow(assetId), AMOUNT * 2, "both wraps escrowed");
+        assertEq(usdc.balanceOf(address(router)), 0, "router holds nothing");
+        assertGe(usdc.allowance(address(router), address(pool)), AMOUNT, "standing allowance persists");
     }
 }
