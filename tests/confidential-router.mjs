@@ -1,0 +1,126 @@
+import { test } from 'node:test';
+import assert from 'node:assert';
+import { createHash } from 'node:crypto';
+import { keccak_256 } from '../node_modules/@noble/hashes/sha3.js';
+import * as secp from '../node_modules/@noble/secp256k1/index.js';
+import { hmac } from '../node_modules/@noble/hashes/hmac.js';
+import { sha256 as nobleSha256 } from '../node_modules/@noble/hashes/sha2.js';
+import { makeConfidentialRouter } from '../dapp/confidential-router.js';
+import { CONFIDENTIAL_POOL_UX } from '../dapp/confidential-pool-ux.js';
+
+const _cat = (arrs) => { const t = arrs.reduce((s, a) => s + a.length, 0); const o = new Uint8Array(t); let p = 0; for (const a of arrs) { o.set(a, p); p += a.length; } return o; };
+secp.etc.hmacSha256Sync = (key, ...m) => hmac(nobleSha256, key, _cat(m));
+const sha256 = (b) => new Uint8Array(createHash('sha256').update(Buffer.from(b)).digest());
+const deps = { secp, keccak256: keccak_256, sha256 };
+
+// Fixed vectors — IDENTICAL to the `cast calldata` / `cast keccak` references generated with foundry.
+const A = '0x1111111111111111111111111111111111111111';
+const B = '0x2222222222222222222222222222222222222222';
+const C = '0x3333333333333333333333333333333333333333333333333333333333333333';
+const ROUTER = '0x4444444444444444444444444444444444444444';
+const TO = '0x5555555555555555555555555555555555555555';
+const R = '0x00000000000000000000000000000000000000000000000000000000000000bb';
+const S = '0x00000000000000000000000000000000000000000000000000000000000000cc';
+const SIG = '0x' + 'aa'.repeat(65);
+
+// cast keccak references (foundry)
+const CAST = {
+  details: '0x65626cad6cb96493bf6f5ebea28756c966f023ab9e8a83a7101849d5573b3678',
+  single: '0xf3841cd1ff0085026a6327b620b67997ce40f282c88a8e905a7a5626e310f3d0',
+  batch: '0xaf1b0d30d2cab0380e68f0689007e3254993c596f2fdd0aaa7f4d04f79440863',
+  erc2612: '0x6e71edae12b1b97f4d1f60370fef10105fa2faae0126114a169c64845d6126c9',
+};
+// cast calldata references (foundry) — the gold-standard ABI check
+const CALLDATA = {
+  wrapWithPermit: '0x530ad4a6000000000000000000000000111111111111111111111111111111111111111100000000000000000000000000000000000000000000000000000000000f42403333333333333333333333333333333333333333333333333333333333333333000000000000000000000000000000000000000000000000000000006553f100000000000000000000000000000000000000000000000000000000000000001b00000000000000000000000000000000000000000000000000000000000000bb00000000000000000000000000000000000000000000000000000000000000cc',
+  wrapETH: '0x859a9cee3333333333333333333333333333333333333333333333333333333333333333',
+  wrapWithPermit2: '0xcc0c6653000000000000000000000000111111111111111111111111111111111111111100000000000000000000000000000000000000000000000000000000000f42403333333333333333333333333333333333333333333333333333333333333333000000000000000000000000111111111111111111111111111111111111111100000000000000000000000000000000000000000000000000000000000f4240000000000000000000000000000000000000000000000000000000006b49d20000000000000000000000000000000000000000000000000000000000000000050000000000000000000000004444444444444444444444444444444444444444000000000000000000000000000000000000000000000000000000006553f10000000000000000000000000000000000000000000000000000000000000001400000000000000000000000000000000000000000000000000000000000000041aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa00000000000000000000000000000000000000000000000000000000000000',
+  swapPermit2: '0xa02962d700000000000000000000000011111111111111111111111111111111111111110000000000000000000000002222222222222222222222222222222222222222000000000000000000000000000000000000000000000000000000000000001e00000000000000000000000000000000000000000000000000000000000f424000000000000000000000000000000000000000000000000000000000000f1b30000000000000000000000000000000000000000000000000000000006553f1000000000000000000000000005555555555555555555555555555555555555555000000000000000000000000111111111111111111111111111111111111111100000000000000000000000000000000000000000000000000000000000f4240000000000000000000000000000000000000000000000000000000006b49d20000000000000000000000000000000000000000000000000000000000000000050000000000000000000000004444444444444444444444444444444444444444000000000000000000000000000000000000000000000000000000006553f10000000000000000000000000000000000000000000000000000000000000001c00000000000000000000000000000000000000000000000000000000000000041aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa00000000000000000000000000000000000000000000000000000000000000',
+  addLiq: '0xe1ee93d800000000000000000000000011111111111111111111111111111111111111110000000000000000000000002222222222222222222222222222222222222222000000000000000000000000000000000000000000000000000000000000001e00000000000000000000000000000000000000000000000000000000000f424000000000000000000000000000000000000000000000000000000000001e84800000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000006553f1000000000000000000000000005555555555555555555555555555555555555555000000000000000000000000000000000000000000000000000000000000014000000000000000000000000000000000000000000000000000000000000002c000000000000000000000000000000000000000000000000000000000000000600000000000000000000000004444444444444444444444444444444444444444000000000000000000000000000000000000000000000000000000006553f1000000000000000000000000000000000000000000000000000000000000000002000000000000000000000000111111111111111111111111111111111111111100000000000000000000000000000000000000000000000000000000000f4240000000000000000000000000000000000000000000000000000000006b49d2000000000000000000000000000000000000000000000000000000000000000005000000000000000000000000222222222222222222222222222222222222222200000000000000000000000000000000000000000000000000000000001e8480000000000000000000000000000000000000000000000000000000006b49d20000000000000000000000000000000000000000000000000000000000000000060000000000000000000000000000000000000000000000000000000000000041aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa00000000000000000000000000000000000000000000000000000000000000',
+};
+
+const cfg = { chainId: 11155111, router: ROUTER, permit2: '0x000000000022D473030F116dDEE9F6B43aC78BA3' };
+const rt = () => makeConfidentialRouter({ ...deps, cfg });
+const permitSingle = { details: { token: A, amount: '1000000', expiration: 1800000000, nonce: 5 }, spender: ROUTER, sigDeadline: '1700000000' };
+
+test('typehashes match the canonical Permit2 / EIP-2612 (cast keccak)', () => {
+  const r = rt();
+  assert.equal(r.typehashes.details, CAST.details);
+  assert.equal(r.typehashes.single, CAST.single);
+  assert.equal(r.typehashes.batch, CAST.batch);
+  assert.equal(r.typehashes.erc2612, CAST.erc2612);
+});
+
+test('_evmAssetId(address(0)) == the live cETH asset id (config + ConfidentialPool._evmAssetId)', () => {
+  const r = rt();
+  assert.equal(r.evmAssetId().toLowerCase(), CONFIDENTIAL_POOL_UX.sepolia.assets[0].assetId.toLowerCase());
+});
+
+test('calldata is byte-for-byte identical to `cast calldata` (full ABI encoding)', () => {
+  const r = rt();
+  assert.equal(r.wrapWithPermitCalldata({ token: A, amount: '1000000', commit: C, deadline: 1700000000, v: 27, r: R, s: S }), CALLDATA.wrapWithPermit);
+  assert.equal(r.wrapETHCalldata({ commit: C }), CALLDATA.wrapETH);
+  assert.equal(r.wrapWithPermit2Calldata({ token: A, amount: '1000000', commit: C, permitSingle, signature: SIG }), CALLDATA.wrapWithPermit2);
+  assert.equal(r.swapPublicWithPermit2Calldata({ tokenIn: A, tokenOut: B, feeBps: 30, amountIn: '1000000', minAmountOut: '990000', deadline: 1700000000, to: TO, permitSingle, signature: SIG }), CALLDATA.swapPermit2);
+  const permitBatch = { details: [{ token: A, amount: '1000000', expiration: 1800000000, nonce: 5 }, { token: B, amount: '2000000', expiration: 1800000000, nonce: 6 }], spender: ROUTER, sigDeadline: '1700000000' };
+  assert.equal(r.addLiquidityPublicWithPermit2Calldata({ tokenA: A, tokenB: B, feeBps: 30, amountA: '1000000', amountB: '2000000', minSharesOut: '0', deadline: 1700000000, to: TO, permitBatch, signature: SIG }), CALLDATA.addLiq);
+});
+
+// Independent EIP-712 digest recomputation (uses the CAST-verified typehashes) → verify the module's signature.
+const hexToBytes = (h) => Uint8Array.from((String(h).replace(/^0x/, '').match(/../g) || []).map((x) => parseInt(x, 16)));
+const toHex = (b) => '0x' + Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('');
+const utf8 = (s) => new TextEncoder().encode(s);
+const kh = (b) => toHex(keccak_256(b));
+const w32 = (v) => BigInt(v).toString(16).padStart(64, '0');
+const aw = (a) => String(a).replace(/^0x/, '').toLowerCase().padStart(64, '0');
+const hw = (words) => kh(_cat(words.map(hexToBytes)));
+const DOMAIN_NCV = kh(utf8('EIP712Domain(string name,uint256 chainId,address verifyingContract)'));
+const DOMAIN_NVCV = kh(utf8('EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)'));
+
+test('Permit2 single signature verifies under the canonical digest', () => {
+  const r = rt();
+  const priv = '0x' + '11'.repeat(31) + '22';
+  const pub = secp.getPublicKey(hexToBytes(priv), true);
+  const { permitSingle: ps, signature } = r.signPermit2Single({ token: A, amount: '1000000', expiration: 1800000000, nonce: 5, sigDeadline: '1700000000', priv });
+  // canonical Permit2 domain + PermitSingle struct hash, independent of the module's internals
+  const domain = hw(['0x' + DOMAIN_NCV.slice(2), '0x' + kh(utf8('Permit2')).slice(2), '0x' + w32(11155111), '0x' + aw(cfg.permit2)]);
+  const detH = hw([CAST.details, '0x' + aw(A), '0x' + w32('1000000'), '0x' + w32(1800000000), '0x' + w32(5)]);
+  const sh = hw([CAST.single, detH, '0x' + aw(ROUTER), '0x' + w32('1700000000')]);
+  const digest = kh(_cat([Uint8Array.of(0x19, 0x01), hexToBytes(domain), hexToBytes(sh)]));
+  const compact = hexToBytes(signature).subarray(0, 64);
+  assert.ok(secp.verify(compact, hexToBytes(digest), pub), 'module signature verifies under the canonical digest');
+  assert.equal(ps.spender, ROUTER);
+});
+
+test('EIP-2612 signature verifies under the token domain digest', () => {
+  const r = rt();
+  const priv = '0x' + '33'.repeat(31) + '44';
+  const pub = secp.getPublicKey(hexToBytes(priv), true);
+  const owner = '0x' + toHex(keccak_256(secp.getPublicKey(hexToBytes(priv), false).subarray(1))).slice(2).slice(24); // address
+  const sig = r.signErc2612({ token: A, name: 'USD Coin', version: '2', owner, value: '1000000', nonce: 0, deadline: 1700000000, priv });
+  const domain = hw(['0x' + DOMAIN_NVCV.slice(2), '0x' + kh(utf8('USD Coin')).slice(2), '0x' + kh(utf8('2')).slice(2), '0x' + w32(11155111), '0x' + aw(A)]);
+  const sh = hw([CAST.erc2612, '0x' + aw(owner), '0x' + aw(ROUTER), '0x' + w32('1000000'), '0x' + w32(0), '0x' + w32('1700000000')]);
+  const digest = kh(_cat([Uint8Array.of(0x19, 0x01), hexToBytes(domain), hexToBytes(sh)]));
+  const compact = _cat([hexToBytes(sig.r), hexToBytes(sig.s)]);
+  assert.ok(secp.verify(compact, hexToBytes(digest), pub), 'EIP-2612 signature verifies under the token domain');
+});
+
+test('high-level builder returns a ready tx (to=router, value, calldata)', () => {
+  const r = rt();
+  const priv = '0x' + '55'.repeat(31) + '66';
+  const b = r.buildWrapWithPermit2({ priv, token: A, amount: '1000000', commit: C, permit2Nonce: 5, expiration: 1800000000, sigDeadline: '1700000000' });
+  assert.equal(b.to, ROUTER.toLowerCase());
+  assert.equal(b.value, 0n);
+  assert.ok(b.calldata.startsWith('0xcc0c6653'), 'wrapWithPermit2 selector');
+  // the builder's calldata == the standalone encoder for the signed permit
+  assert.equal(b.calldata, r.wrapWithPermit2Calldata({ token: A, amount: '1000000', commit: C, permitSingle: b.permitSingle, signature: b.signature }));
+  const eth = r.buildWrapETH({ commit: C, amount: '1000000000000000' });
+  assert.equal(eth.value, 1000000000000000n);
+  assert.equal(eth.calldata, CALLDATA.wrapETH);
+});
+
+test('routerAddr throws when cfg.router is unset (encoding still works)', () => {
+  const r = makeConfidentialRouter({ ...deps, cfg: { chainId: 11155111 } });
+  assert.equal(r.evmAssetId().toLowerCase(), CONFIDENTIAL_POOL_UX.sepolia.assets[0].assetId.toLowerCase());
+  assert.throws(() => r.buildWrapETH({ commit: C, amount: '1' }), /cfg.router not set/);
+});

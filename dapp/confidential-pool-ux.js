@@ -19,6 +19,11 @@ export const CONFIDENTIAL_POOL_UX = {
   sepolia: {
     chainId: 11155111,
     pool: '0x991726A547DCdB57ba660E395D9c7D7C3FcAdF79',
+    // ConfidentialRouter (periphery: one-tx wrap / private-payment / public-AMM / zaps). Set from the next
+    // DeployConfidentialPool broadcast (DEPLOY_ROUTER pins permit2 + zRouter). null ⇒ router flows disabled.
+    router: null,
+    permit2: '0x000000000022D473030F116dDEE9F6B43aC78BA3', // Uniswap Permit2 singleton (same on every chain)
+    zRouter: '0x000000000000FB114709235f1ccBFfb925F600e4', // pinned zRouter aggregator (V2/V3/V4/Curve/zAMM)
     deployBlock: 11057316,
     rpcs: [
       'https://ethereum-sepolia-rpc.publicnode.com',
