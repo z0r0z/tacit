@@ -27,7 +27,7 @@ export function makeConfidentialRelay({ base, fetchImpl, guard } = {}) {
   // one memo per output through the guard and runs the assertOutputsRecoverable tripwire BEFORE queuing, so no
   // op can ship a seed-only-unrecoverable leaf. A leaf-less op (unwrap) passes `memos: []`. (Back-compat: a
   // relay constructed without a guard passes raw `memos` through unchecked — for non-leaf-bearing tests.)
-  async function submitOp({ type, op, leaves = [], outputs = null, ephRand, memos = null } = {}) {
+  async function submitOp({ type, op, leaves = [], outputs = null, ephRand, memos = null, mode } = {}) {
     let sealedMemos;
     if (outputs != null) {
       if (!guard) throw new Error('confidential-relay: `outputs` given but no recovery guard wired (pass `guard` to makeConfidentialRelay)');
@@ -44,7 +44,7 @@ export function makeConfidentialRelay({ base, fetchImpl, guard } = {}) {
     }
     const res = await f(`${root}/confidential/submit`, {
       method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ type, op, memos: sealedMemos }),
+      body: JSON.stringify({ type, op, memos: sealedMemos, ...(mode ? { mode } : {}) }),
     });
     return asJson(res);
   }
@@ -78,5 +78,31 @@ export function makeConfidentialRelay({ base, fetchImpl, guard } = {}) {
     return waitForSettle(jobId, waitOpts);
   }
 
-  return { submitOp, status, waitForSettle, settle };
+  // Prove-only poll: resolve when the box has proven the op (mode 'prove'), returning
+  // { publicValues, proof, ... } for the dapp to embed in a user-sent ConfidentialRouter tx. A job that the
+  // box ends up settling instead (already-settled dedup) also resolves — the caller can branch on st.status.
+  async function waitForProof(jobId, { intervalMs = 4000, timeoutMs = 5 * 60 * 1000, onUpdate, sleep } = {}) {
+    const wait = sleep || ((ms) => new Promise((r) => setTimeout(r, ms)));
+    const deadline = Date.now() + timeoutMs;
+    let last = null;
+    for (;;) {
+      const st = await status(jobId);
+      if (st.status !== last) { last = st.status; if (onUpdate) onUpdate(st); }
+      if (st.status === 'proven') return st;
+      if (st.status === 'settled') return st;
+      if (st.status === 'failed') throw new Error(`prove failed: ${st.error || 'unknown'}`);
+      if (st.status === 'unknown') throw new Error('relay lost the job (worker restart / KV miss)');
+      if (Date.now() > deadline) throw new Error('prove timed out (box offline or backlogged)');
+      await wait(intervalMs);
+    }
+  }
+
+  // Convenience: submit a prove-only job and block until the proof is ready.
+  async function prove(opSpec, waitOpts) {
+    const r = await submitOp({ ...opSpec, mode: 'prove' });
+    if (r.status === 'proven' || r.status === 'settled') return { jobId: r.jobId, ...(await status(r.jobId)) };
+    return waitForProof(r.jobId, waitOpts);
+  }
+
+  return { submitOp, status, waitForSettle, settle, waitForProof, prove };
 }

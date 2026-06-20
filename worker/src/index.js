@@ -760,11 +760,14 @@ async function handleReflectionAck(req, env, cors) {
 }
 
 // ===== Confidential settle relay (box-poll prove/settle queue for ConfidentialPool) =====
-// POST /confidential/submit {type, op, memos?} → enqueue a confidential op (public,
-//      permissionless — a bad witness just fails to prove). GET /confidential/job → the box claims
-//      the next job; POST /confidential/ack {jobId, txHash?|error?} → the box reports the settle
-//      (both box routes gated by CONFIDENTIAL_BOX_TOKEN/DEBUG_TOKEN, default-deny 404). GET
-//      /confidential/status?id= → the dapp polls. Config-gated on CONFIDENTIAL_SETTLE=1.
+// POST /confidential/submit {type, op, memos?, mode?} → enqueue a confidential op (public,
+//      permissionless — a bad witness just fails to prove). mode 'settle' (default) = box proves AND
+//      submits settle on-chain; mode 'prove' = box proves only and acks {publicValues, proof} for the dapp
+//      to embed in a user-sent ConfidentialRouter tx. GET /confidential/job → the box claims the next job
+//      (its `mode` says submit-or-prove); POST /confidential/ack {jobId, txHash?|error?|publicValues+proof}
+//      → the box reports the outcome (both box routes gated by CONFIDENTIAL_BOX_TOKEN/DEBUG_TOKEN,
+//      default-deny 404). GET /confidential/status?id= → the dapp polls (a 'proven' job carries the
+//      artifacts). Config-gated on CONFIDENTIAL_SETTLE=1.
 function confSettler(env) {
   if (env.CONFIDENTIAL_SETTLE !== '1') return null;
   const kv = env.CONFIDENTIAL_KV || env.REGISTRY_KV;
@@ -790,7 +793,7 @@ async function handleConfidentialSubmit(req, env, cors) {
   let body;
   try { body = await req.json(); } catch { return jsonResponse({ ok: false, error: 'bad json' }, 400, cors); }
   try {
-    const r = await q.submitJob({ type: body.type, op: body.op, memos: body.memos });
+    const r = await q.submitJob({ type: body.type, op: body.op, memos: body.memos, mode: body.mode });
     return jsonResponse({ ok: true, ...r }, 200, { ...cors, 'Cache-Control': 'no-store' });
   } catch (e) { return jsonResponse({ ok: false, error: String(e && e.message || e) }, 400, cors); }
 }
@@ -808,7 +811,7 @@ async function handleConfidentialAck(req, env, cors) {
   let body;
   try { body = await req.json(); } catch { return jsonResponse({ ok: false, error: 'bad json' }, 400, cors); }
   if (!body.jobId) return jsonResponse({ ok: false, error: 'jobId required' }, 400, cors);
-  const r = await q.ackJob(String(body.jobId), { txHash: body.txHash, error: body.error });
+  const r = await q.ackJob(String(body.jobId), { txHash: body.txHash, error: body.error, publicValues: body.publicValues, proof: body.proof });
   return jsonResponse(r, 200, cors);
 }
 async function handleConfidentialStatus(env, url, cors) {

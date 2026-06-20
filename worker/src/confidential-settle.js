@@ -21,13 +21,23 @@ export function makeConfidentialSettler({ storage, hash, now }) {
   // storage: { getPending()->id[], putPending(id[]), getJob(id)->job|null, putJob(id, job) }
   const clock = now || (() => Date.now());
 
-  // jobId = hash of the witness (type+op) → idempotent: resubmitting the same op returns the same job.
-  function jobIdOf(type, op) { return hash(JSON.stringify({ type, op })); }
+  // jobId = hash of the witness (type+op[+mode]) → idempotent: resubmitting the same op returns the same job.
+  // `settle` keeps the legacy id (type+op); a `prove`-only job for the same op is a DISTINCT id so the two can
+  // coexist (e.g. the same deposit consume both prove-only for a router tx and box-settled).
+  function jobIdOf(type, op, mode = 'settle') {
+    return hash(JSON.stringify(mode === 'settle' ? { type, op } : { type, op, mode }));
+  }
 
-  async function submitJob({ type, op, memos }) {
+  // mode:
+  //   'settle' (default) — the box GPU-proves AND submits ConfidentialPool.settle() on-chain (the relayed flow).
+  //   'prove'            — the box GPU-proves but does NOT submit; it acks { publicValues, proof } which the
+  //                        dapp embeds into a USER-SENT ConfidentialRouter tx (wrapAndSettle* / zapETHToPayment /
+  //                        farm bond). The router pulls from msg.sender, so only the user can send it.
+  async function submitJob({ type, op, memos, mode = 'settle' }) {
     if (!type || !op) throw new Error('submitJob: type + op required');
     if (!['wrap', 'unwrap', 'transfer', 'swap', 'lp', 'otc', 'bid'].includes(type)) throw new Error(`submitJob: unknown type ${type}`);
-    const id = jobIdOf(type, op);
+    if (!['settle', 'prove'].includes(mode)) throw new Error(`submitJob: unknown mode ${mode}`);
+    const id = jobIdOf(type, op, mode);
     const existing = await storage.getJob(id);
     if (existing && existing.status !== 'failed') {
       return { jobId: id, status: existing.status, deduped: true };
@@ -38,8 +48,9 @@ export function makeConfidentialSettler({ storage, hash, now }) {
       throw new Error('submitJob: queue full, retry later');
     }
     const job = {
-      id, type, op, memos: memos || [],
+      id, type, op, mode, memos: memos || [],
       status: 'pending', createdAt: clock(), claimedAt: 0, txHash: null, error: null,
+      publicValues: null, proof: null,
     };
     await storage.putJob(id, job);
     if (!pend.includes(id)) { pend.push(id); await storage.putPending(pend); }
@@ -57,30 +68,43 @@ export function makeConfidentialSettler({ storage, hash, now }) {
       if (claimable) {
         j.status = 'proving'; j.claimedAt = clock();
         await storage.putJob(id, j);
-        return { jobId: id, type: j.type, op: j.op, memos: j.memos };
+        // `mode` tells the box whether to submit on-chain ('settle') or just return the proof ('prove').
+        return { jobId: id, type: j.type, op: j.op, memos: j.memos, mode: j.mode || 'settle' };
       }
     }
     return null;
   }
 
-  // The box reports the settle outcome. Idempotent: acking a settled job again is a no-op.
-  async function ackJob(jobId, { txHash, error } = {}) {
+  // The box reports the outcome. 'settle' jobs ack { txHash }; 'prove' jobs ack { publicValues, proof } (no
+  // on-chain submit) → status 'proven'. Idempotent: re-acking a terminal-success job returns its artifacts.
+  async function ackJob(jobId, { txHash, error, publicValues, proof } = {}) {
     const j = await storage.getJob(jobId);
     if (!j) return { ok: false, reason: 'unknown job' };
-    if (j.status === 'settled') return { ok: true, status: 'settled', txHash: j.txHash };
-    if (error) { j.status = 'failed'; j.error = String(error); }
-    else { j.status = 'settled'; j.txHash = txHash || null; }
+    if (j.status === 'settled' || j.status === 'proven') {
+      return { ok: true, status: j.status, txHash: j.txHash, publicValues: j.publicValues, proof: j.proof };
+    }
+    if (error) {
+      j.status = 'failed'; j.error = String(error);
+    } else if ((j.mode || 'settle') === 'prove') {
+      if (!publicValues || !proof) { j.status = 'failed'; j.error = 'prove-only ack missing publicValues/proof'; }
+      else { j.status = 'proven'; j.publicValues = publicValues; j.proof = proof; }
+    } else {
+      j.status = 'settled'; j.txHash = txHash || null;
+    }
     await storage.putJob(jobId, j);
-    // Either outcome leaves the pending queue (the job record is kept for status lookups).
+    // Any terminal outcome leaves the pending queue (the job record is kept for status lookups).
     const pend = (await storage.getPending()).filter((x) => x !== jobId);
     await storage.putPending(pend);
-    return { ok: true, status: j.status, txHash: j.txHash };
+    return { ok: true, status: j.status, txHash: j.txHash, publicValues: j.publicValues, proof: j.proof };
   }
 
   async function jobStatus(jobId) {
     const j = await storage.getJob(jobId);
     if (!j) return null;
-    return { jobId, type: j.type, status: j.status, txHash: j.txHash, error: j.error, createdAt: j.createdAt };
+    // A 'proven' job carries the artifacts the dapp embeds into the user-sent router tx (publicValues, proof);
+    // both are public (they go on-chain in the settle call anyway).
+    return { jobId, type: j.type, mode: j.mode || 'settle', status: j.status, txHash: j.txHash, error: j.error,
+      createdAt: j.createdAt, publicValues: j.publicValues || null, proof: j.proof || null };
   }
 
   async function pendingCount() {

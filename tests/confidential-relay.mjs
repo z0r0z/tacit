@@ -28,7 +28,7 @@ function mockFetch(q) {
     const reply = (status, obj) => ({ ok: status >= 200 && status < 300, status, statusText: String(status), text: async () => JSON.stringify(obj) });
     if (url.pathname === '/confidential/submit' && opts.method === 'POST') {
       const b = JSON.parse(opts.body);
-      try { return reply(200, { ok: true, ...(await q.submitJob({ type: b.type, op: b.op, memos: b.memos })) }); }
+      try { return reply(200, { ok: true, ...(await q.submitJob({ type: b.type, op: b.op, memos: b.memos, mode: b.mode })) }); }
       catch (e) { return reply(400, { error: String(e.message) }); }
     }
     if (url.pathname === '/confidential/status') {
@@ -148,6 +148,43 @@ const swapOp = { reserveAPre: 1000, reserveBPre: 1000, intents: [{ amountIn: 100
   });
   assert.ok(r2.jobId, 'seed-derived output submits with an empty-memo placeholder');
   ok('seed-derived outputs pass with an empty memo; bypass + missing-ephRand are rejected');
+}
+
+// ───────────────── 6. prove-only mode: box returns artifacts, waitForProof resolves (router flow) ─────────────────
+{
+  const q = makeConfidentialSettler({ storage: freshStore(), hash });
+  const relay = makeConfidentialRelay({ base: '', fetchImpl: mockFetch(q) });
+  const payOp = { depositsConsumed: ['0xdep'], leaves: ['0xleaf'] };
+
+  // prove-only submit: distinct jobId from a settle-mode submit of the SAME op (they coexist)
+  const settleId = q.jobIdOf('wrap', payOp, 'settle');
+  const { jobId, status } = await relay.submitOp({ type: 'wrap', op: payOp, mode: 'prove' });
+  assert.strictEqual(status, 'pending');
+  assert.notStrictEqual(jobId, settleId, 'prove-only job has a distinct id from the settle job');
+
+  // box claims → sees mode 'prove' → proves (no on-chain submit) → acks the artifacts
+  const claimed = await q.nextJob();
+  assert.strictEqual(claimed.jobId, jobId);
+  assert.strictEqual(claimed.mode, 'prove', 'box is told to prove-only');
+  await q.ackJob(jobId, { publicValues: '0xpv', proof: '0xpf' });
+
+  const seen = [];
+  const final = await relay.waitForProof(jobId, { intervalMs: 0, sleep: noSleep, onUpdate: (s) => seen.push(s.status) });
+  assert.strictEqual(final.status, 'proven');
+  assert.strictEqual(final.publicValues, '0xpv');
+  assert.strictEqual(final.proof, '0xpf');
+  assert.ok(seen.includes('proven'), 'onUpdate fired for the proven state');
+  ok('prove-only: submit(mode:prove) → box acks {publicValues,proof} → waitForProof resolves with artifacts');
+
+  // a prove-only ack missing the artifacts fails closed
+  const q2 = makeConfidentialSettler({ storage: freshStore(), hash });
+  const relay2 = makeConfidentialRelay({ base: '', fetchImpl: mockFetch(q2) });
+  const j2 = (await relay2.submitOp({ type: 'wrap', op: payOp, mode: 'prove' })).jobId;
+  await q2.nextJob();
+  const ack = await q2.ackJob(j2, { txHash: '0xnope' }); // settle-style ack on a prove job → fail
+  assert.strictEqual(ack.status, 'failed');
+  await assert.rejects(() => relay2.waitForProof(j2, { intervalMs: 0, sleep: noSleep }), /prove failed/);
+  ok('a prove-only ack without publicValues/proof fails closed');
 }
 
 console.log(`\n${n} confidential-relay checks passed.`);

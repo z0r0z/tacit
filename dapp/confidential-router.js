@@ -126,6 +126,27 @@ export function makeConfidentialRouter({ secp, keccak256, sha256, cfg } = {}) {
     for (const d of pb.details) arr += addrWord(d.token) + word(BigInt(d.amount)) + word(BigInt(d.expiration)) + word(BigInt(d.nonce));
     return head + arr;
   }
+  // bytes[] (dynamic array of dynamic bytes): count ‖ offset_i (relative to the offsets block) ‖ enc(bytes_i).
+  function encBytesArray(items) {
+    const encs = (items || []).map(encBytes);
+    let off = encs.length * 32, head = '';
+    for (const e of encs) { head += word(BigInt(off)); off += e.length / 2; }
+    return word(BigInt(encs.length)) + head + encs.join('');
+  }
+  // Generic head/tail ABI assembly: static words inline, trailing dynamic params (bytes / bytes[]) as offsets +
+  // blobs. parts: [{ static: '<hex, 64-char multiple>' } | { bytes: '<hex>' } | { bytesArray: ['<hex>', …] }].
+  function abiArgs(parts) {
+    const headWords = parts.reduce((acc, p) => acc + (p.static != null ? p.static.length / 64 : 1), 0);
+    let head = '', tail = '', tailPos = headWords * 32;
+    for (const p of parts) {
+      if (p.static != null) { head += p.static; continue; }
+      const blob = p.bytes != null ? encBytes(p.bytes) : encBytesArray(p.bytesArray);
+      head += word(BigInt(tailPos));
+      tail += blob;
+      tailPos += blob.length / 2;
+    }
+    return head + tail;
+  }
 
   // ── Calldata builders (proof-free) ──
   function wrapWithPermitCalldata({ token, amount, commit, deadline, v, r, s }) {
@@ -169,6 +190,34 @@ export function makeConfidentialRouter({ secp, keccak256, sha256, cfg } = {}) {
       + head + word(BigInt(batchOffset)) + word(BigInt(sigOffset)) + batchBlob + encBytes(signature);
   }
 
+  // ── Atomic-settle calldata: the router embeds a box prove-only proof (publicValues, proof, memos[]) ──
+  function wrapAndSettleWithPermitCalldata({ token, amount, commit, deadline, v, r, s, publicValues, proof, memos }) {
+    return '0x' + selector('wrapAndSettleWithPermit(address,uint256,bytes32,uint256,uint8,bytes32,bytes32,bytes,bytes,bytes[])')
+      + abiArgs([
+        { static: addrWord(token) }, { static: word(BigInt(amount)) }, { static: word(commit) }, { static: word(BigInt(deadline)) },
+        { static: word(BigInt(v)) }, { static: word(r) }, { static: word(s) },
+        { bytes: publicValues }, { bytes: proof }, { bytesArray: memos },
+      ]);
+  }
+  function wrapAndSettleWithPermit2Calldata({ token, amount, commit, permitSingle, signature, publicValues, proof, memos }) {
+    return '0x' + selector('wrapAndSettleWithPermit2(address,uint256,bytes32,((address,uint160,uint48,uint48),address,uint256),bytes,bytes,bytes,bytes[])')
+      + abiArgs([
+        { static: addrWord(token) }, { static: word(BigInt(amount)) }, { static: word(commit) }, { static: encPermitSingle(permitSingle) },
+        { bytes: signature }, { bytes: publicValues }, { bytes: proof }, { bytesArray: memos },
+      ]);
+  }
+  function wrapAndSettleETHCalldata({ commit, publicValues, proof, memos }) {
+    return '0x' + selector('wrapAndSettleETH(bytes32,bytes,bytes,bytes[])')
+      + abiArgs([{ static: word(commit) }, { bytes: publicValues }, { bytes: proof }, { bytesArray: memos }]);
+  }
+  function zapETHToPaymentCalldata({ tokenOut, wrapAmount, commit, zrSwapData, publicValues, proof, memos }) {
+    return '0x' + selector('zapETHToPayment(address,uint256,bytes32,bytes,bytes,bytes,bytes[])')
+      + abiArgs([
+        { static: addrWord(tokenOut) }, { static: word(BigInt(wrapAmount)) }, { static: word(commit) },
+        { bytes: zrSwapData }, { bytes: publicValues }, { bytes: proof }, { bytesArray: memos },
+      ]);
+  }
+
   // ── High-level builders: sign the permit + assemble { to, value, calldata } for evm-tx.signEip1559 ──
   // The caller supplies `commit` (from confidential-pool-ux's note derivation / an invoice) + the on-chain
   // nonces. `amount` is the underlying amount (wei-scale); `value` is always 0 except wrapETH.
@@ -201,16 +250,36 @@ export function makeConfidentialRouter({ secp, keccak256, sha256, cfg } = {}) {
     return { to: routerAddr(), value: 0n, calldata: addLiquidityPublicWithPermit2Calldata({ tokenA, tokenB, feeBps, amountA, amountB, minSharesOut, deadline, to, permitBatch, signature }), permitBatch, signature };
   }
 
+  // ── Atomic-settle builders: caller supplies the box prove-only artifacts { publicValues, proof, memos }
+  //    (from relay.prove(...)) + the wrap/permit/zap inputs → { to, value, calldata } for the user's tx ──
+  function buildWrapAndSettleETH({ commit, amount, publicValues, proof, memos }) {
+    return { to: routerAddr(), value: BigInt(amount), calldata: wrapAndSettleETHCalldata({ commit, publicValues, proof, memos }) };
+  }
+  function buildWrapAndSettleWithPermit({ priv, owner, token, name, version, amount, commit, tokenNonce, deadline, publicValues, proof, memos }) {
+    const sig = signErc2612({ token, name, version, owner, value: amount, nonce: tokenNonce, deadline, priv });
+    return { to: routerAddr(), value: 0n, calldata: wrapAndSettleWithPermitCalldata({ token, amount, commit, deadline, v: sig.v, r: sig.r, s: sig.s, publicValues, proof, memos }), permitSig: sig };
+  }
+  function buildWrapAndSettleWithPermit2({ priv, token, amount, commit, permit2Nonce, expiration, sigDeadline, publicValues, proof, memos }) {
+    const { permitSingle, signature } = signPermit2Single({ token, amount, expiration, nonce: permit2Nonce, sigDeadline, priv });
+    return { to: routerAddr(), value: 0n, calldata: wrapAndSettleWithPermit2Calldata({ token, amount, commit, permitSingle, signature, publicValues, proof, memos }), permitSingle, signature };
+  }
+  function buildZapETHToPayment({ tokenOut, wrapAmount, commit, zrSwapData, amount, publicValues, proof, memos }) {
+    return { to: routerAddr(), value: BigInt(amount), calldata: zapETHToPaymentCalldata({ tokenOut, wrapAmount, commit, zrSwapData, publicValues, proof, memos }) };
+  }
+
   return {
     PERMIT2_ADDRESS, ZROUTER_ADDRESS, routerAddr, evmAssetId,
     // EIP-712 typehashes (public constants — exposed for cross-checking vs the canonical Permit2/EIP-2612)
     typehashes: { details: PERMIT_DETAILS_TYPEHASH, single: PERMIT_SINGLE_TYPEHASH, batch: PERMIT_BATCH_TYPEHASH, erc2612: PERMIT_2612_TYPEHASH },
     // signing
     signErc2612, signPermit2Single, signPermit2Batch,
-    // calldata
+    // calldata (proof-free)
     wrapWithPermitCalldata, wrapWithPermit2Calldata, wrapETHCalldata,
     swapPublicWithPermitCalldata, swapPublicWithPermit2Calldata, addLiquidityPublicWithPermit2Calldata,
+    // calldata (atomic-settle: embeds a box prove-only proof)
+    wrapAndSettleWithPermitCalldata, wrapAndSettleWithPermit2Calldata, wrapAndSettleETHCalldata, zapETHToPaymentCalldata,
     // builders
     buildWrapWithPermit, buildWrapWithPermit2, buildWrapETH, buildSwapPublicWithPermit2, buildAddLiquidityPublicWithPermit2,
+    buildWrapAndSettleWithPermit, buildWrapAndSettleWithPermit2, buildWrapAndSettleETH, buildZapETHToPayment,
   };
 }
