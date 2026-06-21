@@ -178,6 +178,18 @@ else
     "full-scan reflection indexer not built (dapp/confidential-reflection-scan-indexer.js absent)"
 fi
 
+# ── BRIDGE layer 8b: reflection fixture freshness (guest == committed newDigest) ─
+# Every committed reflection input fixture pins a newDigest — the assembler's expected reflected
+# state for that input. Replaying it through the guest must reproduce it; a drift is a stale fixture
+# or a guest<->JS divergence, and any re-prove built on it bakes in the wrong digest (this is how the
+# redeem fixture's 0xba53-vs-0xc737 drift surfaced). Execute-mode replay is heavy → skipped under FAST.
+if [ "${READINESS_FAST:-0}" = "1" ]; then
+  block_gate "Reflection fixtures: guest == committed newDigest" BRIDGE "skipped (READINESS_FAST=1)"
+else
+  run_gate "Reflection fixtures: guest == committed newDigest (freshness)" BRIDGE \
+    bash contracts/sp1/confidential/verify-reflection-fixtures.sh
+fi
+
 # ── BRIDGE layer 9: reflection guest soundness (FAIL-CLOSED allowlist) ────
 # The gate verifies coherence + that a real Groth16 verifies — it CANNOT see an in-guest logic bug
 # (the contract sees only hashes), so a coherent, on-chain-verifying reflection vkey is NOT evidence

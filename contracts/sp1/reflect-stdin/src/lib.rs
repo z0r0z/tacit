@@ -179,7 +179,11 @@ pub fn write_stdin(f: &serde_json::Value) -> SP1Stdin {
     s.write(&p["noteCount"].as_u64().unwrap());
     r32(&mut s, &p["spentRoot"]);
     s.write(&p["spentCount"].as_u64().unwrap());
-    let live = p["live"].as_array().unwrap();
+    let live = p
+        .get("live")
+        .and_then(|v| v.as_array())
+        .map(|a| a.as_slice())
+        .unwrap_or(&[]);
     s.write(&(live.len() as u32));
     for kv in live {
         let t = kv.as_array().unwrap();
