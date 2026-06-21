@@ -4,7 +4,7 @@ out = "out"
 libs = ["lib"]
 via_ir = true
 optimizer = true
-optimizer_runs = 1
+optimizer_runs = 200
 bytecode_hash = "none"
 cbor_metadata = false
 fs_permissions = [{ access = "read", path = "./test/fixtures" }, { access = "read", path = "./sp1/elf-vkey-pin.json" }, { access = "read", path = "./sp1/confidential/elf-vkey-pin.json" }, { access = "read", path = "./sp1/confidential/fixtures" }]
