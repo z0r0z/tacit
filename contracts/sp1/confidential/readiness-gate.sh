@@ -250,7 +250,17 @@ fi
 # cargo run --release --manifest-path contracts/sp1/reflect-exec/Cargo.toml --bin reflect-execute -- /tmp/refl_nonconserve_0032.json`
 # returned EXECUTE_OK (3,090,627 cycles) with burn-set UNCHANGED, proving the guest still skips the
 # non-conserving CXFER instead of reading/folding phantom outputs. Lineage (superseded pin): 0x0006921c.
-CONFIRMED_SOUND_REFL_VKEYS="0x0032a552d82143745ed675a217822187e15118060dcea1514589ce47c2ec3c02 0x0006921c364ff0c13a006f3117a2c0d40d2df44ca8671a13c86eaa50492395bd 0x008c9fa6e9ee312ba99be8ba5a222ad161912fafebc3cec893e3dfc25f041160 0x007a9feef7f58594cfb2ae5e59610e235b309beb23c4a1dc59d68935a0785648 0x005e6adc6f6d208a7c1652b13626c5e5cdf802fb05418dd64ec5b67f4763d23d 0x004d8dbda0b8590cebe53a74140804389e5a3d2cefe8076c37cf5172e617790d 0x002d2536aa22213fb4e178432a8068e80b041308b4e626c761b74705f71af96c 0x0068747232900af2f75fde3a5fb1143ccac63c56128394e638683cdcd5f307a3"
+# CONFIRMED 0x00fdfe08 (2026-06-21): pre-freeze re-prove — the shared cxfer-core farm/settle additions
+# (OP_FARM_HARVEST witnessed reward_asset + farm settle ops + adaptor/unwrap opening-sigmas) recompile
+# into the reflection ELF wholesale (sha 36224f90→27863304, 1016856→1068624 bytes), rotating its vkey
+# 0x0032a552→0x00fdfe08 although reflect.rs logic is untouched. Both-sided REFLECT-1 test RE-RUN against THIS
+# committed ELF via reflect-exec (bin reflect-execute, EXECUTE level): the CONSERVING control
+# (gen-reflection-cxfer-synth) FOLDS → EXECUTE_OK 23,221,497 cycles, DIGEST_MATCH ✓ (newDigest 0x752306d9…
+# == JS assembler); the NON-CONSERVING case (gen-reflection-nonconserve, Σ C_in = 0 vs the multi-input
+# kernel) SKIPS → EXECUTE_OK 4,044,379 cycles, nothing folded, no panic. So 0x00fdfe08 folds valid CXFERs
+# yet skips phantom ones — it defeats the REFLECT-1 attack. Lineage (superseded pin): 0x0032a552.
+# (Known-UNSOUND, never confirm: 0x0050d656, 0x0099e1c7.)
+CONFIRMED_SOUND_REFL_VKEYS="0x00fdfe08721b3ad298529bf632975a2f0ca29440004536d1fa5f43eadd3b0891 0x0032a552d82143745ed675a217822187e15118060dcea1514589ce47c2ec3c02 0x0006921c364ff0c13a006f3117a2c0d40d2df44ca8671a13c86eaa50492395bd 0x008c9fa6e9ee312ba99be8ba5a222ad161912fafebc3cec893e3dfc25f041160 0x007a9feef7f58594cfb2ae5e59610e235b309beb23c4a1dc59d68935a0785648 0x005e6adc6f6d208a7c1652b13626c5e5cdf802fb05418dd64ec5b67f4763d23d 0x004d8dbda0b8590cebe53a74140804389e5a3d2cefe8076c37cf5172e617790d 0x002d2536aa22213fb4e178432a8068e80b041308b4e626c761b74705f71af96c 0x0068747232900af2f75fde3a5fb1143ccac63c56128394e638683cdcd5f307a3"
 refl_confirmed=0
 for v in $CONFIRMED_SOUND_REFL_VKEYS; do [ "$RPIN_VKEY" = "$v" ] && refl_confirmed=1; done
 if [ "$refl_confirmed" = 1 ]; then
