@@ -7,6 +7,31 @@ import {SafeTransferLib} from "solady/utils/SafeTransferLib.sol";
 interface IConfidentialPool {
     function wrap(bytes32 assetId, uint256 amount, bytes32 commit) external payable;
     function settle(bytes calldata publicValues, bytes calldata proofBytes, bytes[] calldata memos) external;
+    function canonicalTokenFor(bytes32 assetId) external view returns (address);
+    function localAssetOf(bytes32 assetId) external view returns (bytes32);
+    function assets(bytes32 assetId)
+        external
+        view
+        returns (
+            bool registered,
+            address underlying,
+            uint256 unitScale,
+            bytes32 crossChainLink,
+            bool poolMinted,
+            uint8 decimals
+        );
+    function pools(bytes32 poolId)
+        external
+        view
+        returns (
+            bool init,
+            bytes32 assetA,
+            bytes32 assetB,
+            uint256 reserveA,
+            uint256 reserveB,
+            uint32 feeBps,
+            uint256 totalShares
+        );
     function swapPublic(
         bytes32 assetIn,
         bytes32 assetOut,
@@ -26,6 +51,17 @@ interface IConfidentialPool {
         uint64 deadline,
         address to
     ) external payable returns (uint256 sharesMinted);
+    function removeLiquidityPublicFrom(
+        bytes32 assetA,
+        bytes32 assetB,
+        uint32 feeBps,
+        uint256 shares,
+        uint256 minAmountA,
+        uint256 minAmountB,
+        uint64 deadline,
+        address owner,
+        address to
+    ) external returns (uint256 amountLo, uint256 amountHi);
     function shieldShares(bytes32 poolId, uint256 shares, bytes32 commit) external returns (bytes32 depositId);
 }
 
@@ -82,6 +118,8 @@ interface IERC20Allowance {
 ///           4. ZAPS (zap*) — source liquidity from the pinned external aggregator (zRouter) and land it in the
 ///              confidential pool: cold-start a public LP, shield an LP position into a note, bond it into a
 ///              farm, or swap-and-wrap any asset into a confidential note / private payment.
+///           5. EXTERNAL AMM (swap*ViaZRouter*) — user-directed zRouter swaps with router-held output
+///              balance-delta checks, for routes that should stay outside the confidential pool.
 ///
 ///  Trust model. The router takes the user's tokens only TRANSIENTLY within a call — it pulls them via the
 ///  signed approval (or msg.value), hands them to `wrap`/`swapPublic`/`createPair…`/zRouter, and sweeps each
@@ -116,7 +154,10 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
     address public immutable ZROUTER;
 
     error AmountTooLarge();
+    error BadPath();
+    error BadProofIntent();
     error BadTarget();
+    error MaxAmountExceeded();
     error ZRouterCallFailed();
 
     /// Parameters for a token-in zap (bundled to keep the entrypoints under the stack limit).
@@ -243,6 +284,59 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
         _refundETH(msg.sender); // sweep a (mis-built) settle fee paid in native ETH back to the caller
     }
 
+    // ──────────────────── One-tx CDP open (wrap collateral + mint cUSD proof) ────────────────────
+
+    /// @notice One-tx CDP open with EIP-2612 collateral. The proof MUST consume the wrapped collateral
+    ///         deposit and carry OP_CDP_MINT outputs (cUSD debt note + position leaf) under the configured
+    ///         controller. This is a named UX entrypoint over the same trust boundary as `wrapAndSettle*`.
+    function wrapAndMintCusdWithPermit(
+        address token,
+        uint256 amount,
+        bytes32 commit,
+        uint256 deadline,
+        uint8 v,
+        bytes32 r,
+        bytes32 s,
+        bytes calldata publicValues,
+        bytes calldata proof,
+        bytes[] calldata memos
+    ) external nonReentrant {
+        _requireCdpMintIntent(publicValues);
+        _wrap2612(token, amount, commit, deadline, v, r, s);
+        POOL.settle(publicValues, proof, memos);
+        _refund(token, msg.sender);
+    }
+
+    /// @notice One-tx CDP open via Permit2 collateral. See `wrapAndMintCusdWithPermit`.
+    function wrapAndMintCusdWithPermit2(
+        address token,
+        uint256 amount,
+        bytes32 commit,
+        IPermit2.PermitSingle calldata permitSingle,
+        bytes calldata signature,
+        bytes calldata publicValues,
+        bytes calldata proof,
+        bytes[] calldata memos
+    ) external nonReentrant {
+        _requireCdpMintIntent(publicValues);
+        _wrapPermit2(token, amount, commit, permitSingle, signature);
+        POOL.settle(publicValues, proof, memos);
+        _refund(token, msg.sender);
+    }
+
+    /// @notice One-tx CDP open with native ETH collateral. See `wrapAndMintCusdWithPermit`.
+    function wrapETHAndMintCusd(
+        bytes32 commit,
+        bytes calldata publicValues,
+        bytes calldata proof,
+        bytes[] calldata memos
+    ) external payable nonReentrant {
+        _requireCdpMintIntent(publicValues);
+        _wrapETH(msg.value, commit);
+        POOL.settle(publicValues, proof, memos);
+        _refundETH(msg.sender);
+    }
+
     // ──────────────────── Public AMM swap (gasless approve) ────────────────────
 
     /// @notice One-tx PUBLIC swap with a gasless approval (EIP-2612): pull `amountIn` of `tokenIn`, swap it
@@ -284,6 +378,189 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
             POOL.swapPublic(_evmAssetId(tokenIn), _evmAssetId(tokenOut), feeBps, amountIn, minAmountOut, deadline, to);
     }
 
+    /// @notice PUBLIC pool swap with native ETH as input (tETH leg). Send `msg.value`; output goes directly
+    ///         to `to`. This is the ETH analog of `swapPublicWithPermit*` and keeps native AMM routing
+    ///         one-tx without wrapping first.
+    function swapPublicETH(address tokenOut, uint32 feeBps, uint256 minAmountOut, uint64 deadline, address to)
+        external
+        payable
+        nonReentrant
+        returns (uint256 amountOut)
+    {
+        amountOut = POOL.swapPublic{value: msg.value}(
+            _evmAssetId(address(0)), _evmAssetId(tokenOut), feeBps, msg.value, minAmountOut, deadline, to
+        );
+    }
+
+    /// @notice Multi-hop PUBLIC pool swap via Permit2. `path[i]` is the output token of hop i and `fees[i]`
+    ///         is that hop's fee tier; input token is the Permit2 token. Intermediate outputs are held only
+    ///         long enough to feed the next pool hop, and the final output goes directly to `to`.
+    function swapPublicPathWithPermit2(
+        address[] calldata path,
+        uint32[] calldata fees,
+        uint256 amountIn,
+        uint256 minAmountOut,
+        uint64 deadline,
+        address to,
+        IPermit2.PermitSingle calldata permitSingle,
+        bytes calldata signature
+    ) external nonReentrant returns (uint256 amountOut) {
+        _checkPath(path, fees, to);
+        address tokenIn = permitSingle.details.token;
+        _pullPermit2(tokenIn, amountIn, permitSingle, signature);
+        amountOut = _swapPublicPath(tokenIn, path, fees, amountIn, minAmountOut, deadline, to);
+
+        _refund(tokenIn, msg.sender);
+        for (uint256 i; i < path.length; ++i) {
+            _refund(path[i], msg.sender);
+        }
+    }
+
+    /// @notice Multi-hop PUBLIC pool swap with native ETH as the first asset. Each `path` token must be an
+    ///         ERC20 output; native ETH is supported as input only, which keeps intermediate routing simple.
+    function swapPublicETHPath(
+        address[] calldata path,
+        uint32[] calldata fees,
+        uint256 minAmountOut,
+        uint64 deadline,
+        address to
+    ) external payable nonReentrant returns (uint256 amountOut) {
+        _checkPath(path, fees, to);
+        amountOut = _swapPublicETHPath(path, fees, msg.value, minAmountOut, deadline, to);
+
+        for (uint256 i; i < path.length; ++i) {
+            _refund(path[i], msg.sender);
+        }
+        _refundETH(msg.sender);
+    }
+
+    /// @notice PUBLIC exact-output helper via Permit2. The pool is exact-input, so the router derives the
+    ///         required input from live reserves, pulls ONLY that amount, and executes with
+    ///         `minAmountOut = amountOut`. If reserves cannot satisfy `amountOut` within `maxAmountIn`, revert.
+    function swapPublicExactOutWithPermit2(
+        address tokenOut,
+        uint32 feeBps,
+        uint256 amountOut,
+        uint256 maxAmountIn,
+        uint64 deadline,
+        address to,
+        IPermit2.PermitSingle calldata permitSingle,
+        bytes calldata signature
+    ) external nonReentrant returns (uint256 amountIn, uint256 amountOutActual) {
+        address tokenIn = permitSingle.details.token;
+        bytes32 assetIn = _evmAssetId(tokenIn);
+        bytes32 assetOut = _evmAssetId(tokenOut);
+        amountIn = _publicAmountInForExactOut(assetIn, assetOut, feeBps, amountOut);
+        if (amountIn > maxAmountIn) revert MaxAmountExceeded();
+        _pullPermit2(tokenIn, amountIn, permitSingle, signature);
+        amountOutActual = POOL.swapPublic(assetIn, assetOut, feeBps, amountIn, amountOut, deadline, to);
+        _refund(tokenIn, msg.sender);
+    }
+
+    /// @notice Native ETH analog of `swapPublicExactOutWithPermit2`: send up to `msg.value`; only the live
+    ///         reserve-derived input is forwarded to the pool and the rest is refunded.
+    function swapPublicETHExactOut(address tokenOut, uint32 feeBps, uint256 amountOut, uint64 deadline, address to)
+        external
+        payable
+        nonReentrant
+        returns (uint256 amountIn, uint256 amountOutActual)
+    {
+        bytes32 ethId = _evmAssetId(address(0));
+        bytes32 outId = _evmAssetId(tokenOut);
+        amountIn = _publicAmountInForExactOut(ethId, outId, feeBps, amountOut);
+        if (amountIn > msg.value) revert MaxAmountExceeded();
+        amountOutActual =
+            POOL.swapPublic{value: amountIn}(ethId, outId, feeBps, amountIn, amountOut, deadline, to);
+        _refundETH(msg.sender);
+    }
+
+    /// @notice Multi-hop exact-output helper via Permit2. Computes the required first-hop input by walking the
+    ///         path backwards over live reserves, pulls only that amount, then executes the exact-input path.
+    function swapPublicPathExactOutWithPermit2(
+        address[] calldata path,
+        uint32[] calldata fees,
+        uint256 amountOut,
+        uint256 maxAmountIn,
+        uint64 deadline,
+        address to,
+        IPermit2.PermitSingle calldata permitSingle,
+        bytes calldata signature
+    ) external nonReentrant returns (uint256 amountIn, uint256 amountOutActual) {
+        _checkPath(path, fees, to);
+        address tokenIn = permitSingle.details.token;
+        amountIn = _publicPathAmountInForExactOut(tokenIn, path, fees, amountOut);
+        if (amountIn > maxAmountIn) revert MaxAmountExceeded();
+        _pullPermit2(tokenIn, amountIn, permitSingle, signature);
+        amountOutActual = _swapPublicPath(tokenIn, path, fees, amountIn, amountOut, deadline, to);
+        _refund(tokenIn, msg.sender);
+        for (uint256 i; i < path.length; ++i) {
+            _refund(path[i], msg.sender);
+        }
+    }
+
+    /// @notice Native ETH first-hop exact-output helper for public AMM paths. Refunds `msg.value - amountIn`.
+    function swapPublicETHPathExactOut(
+        address[] calldata path,
+        uint32[] calldata fees,
+        uint256 amountOut,
+        uint64 deadline,
+        address to
+    ) external payable nonReentrant returns (uint256 amountIn, uint256 amountOutActual) {
+        _checkPath(path, fees, to);
+        amountIn = _publicETHPathAmountInForExactOut(path, fees, amountOut);
+        if (amountIn > msg.value) revert MaxAmountExceeded();
+        amountOutActual = _swapPublicETHPath(path, fees, amountIn, amountOut, deadline, to);
+        for (uint256 i; i < path.length; ++i) {
+            _refund(path[i], msg.sender);
+        }
+        _refundETH(msg.sender);
+    }
+
+    // ──────────────────── External zRouter swaps (plain AMM routing) ────────────────────
+
+    /// @notice Swap native ETH through the pinned zRouter and send the ERC20 output to `to`. `zrSwapData`
+    ///         must direct zRouter output to THIS router; this function transfers only the observed balance
+    ///         delta and reverts if it is below `minAmountOut`.
+    function swapETHViaZRouter(address tokenOut, uint256 minAmountOut, address to, bytes calldata zrSwapData)
+        external
+        payable
+        nonReentrant
+        returns (uint256 amountOut)
+    {
+        if (tokenOut == address(0) || to == address(0)) revert BadTarget();
+        uint256 beforeOut = SafeTransferLib.balanceOf(tokenOut, address(this));
+        _callZRouter(msg.value, zrSwapData);
+        amountOut = SafeTransferLib.balanceOf(tokenOut, address(this)) - beforeOut;
+        require(amountOut >= minAmountOut, "zap: short swap output");
+        SafeTransferLib.safeTransfer(tokenOut, to, amountOut);
+        _refund(tokenOut, msg.sender); // sweep any pre-existing residue; the fresh delta went to `to`
+        _refundETH(msg.sender);
+    }
+
+    /// @notice Swap an ERC20 through the pinned zRouter using Permit2. `zrSwapData` must spend at most
+    ///         `amountIn` from this router and send the ERC20 output to THIS router.
+    function swapTokenViaZRouterWithPermit2(
+        address tokenOut,
+        uint256 amountIn,
+        uint256 minAmountOut,
+        address to,
+        IPermit2.PermitSingle calldata permitSingle,
+        bytes calldata signature,
+        bytes calldata zrSwapData
+    ) external nonReentrant returns (uint256 amountOut) {
+        if (tokenOut == address(0) || to == address(0)) revert BadTarget();
+        address tokenIn = permitSingle.details.token;
+        _pullPermit2(tokenIn, amountIn, permitSingle, signature);
+        _lazyApprove(tokenIn, ZROUTER, amountIn);
+        uint256 beforeOut = SafeTransferLib.balanceOf(tokenOut, address(this));
+        _callZRouter(0, zrSwapData);
+        amountOut = SafeTransferLib.balanceOf(tokenOut, address(this)) - beforeOut;
+        require(amountOut >= minAmountOut, "zap: short swap output");
+        SafeTransferLib.safeTransfer(tokenOut, to, amountOut);
+        _refund(tokenIn, msg.sender);
+        _refund(tokenOut, msg.sender); // sweep any pre-existing residue; the fresh delta went to `to`
+    }
+
     // ──────────────────── Public AMM liquidity (gasless approve) ────────────────────
 
     /// @notice One-tx PUBLIC liquidity add via a Permit2 batch (ONE signature for BOTH tokens): pull
@@ -318,6 +595,44 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
         // The pool pays the off-ratio refund to msg.sender (== this router); forward it to the caller.
         _refund(tokenA, msg.sender);
         _refund(tokenB, msg.sender);
+    }
+
+    /// @notice Simple native-ETH + ERC20 public LP add. Pulls `tokenAmount` via Permit2, pairs it with
+    ///         `msg.value` as the tETH leg, lazily creates the pool if needed, and forwards off-ratio refunds.
+    function addLiquidityPublicETHWithPermit2(
+        address token,
+        uint32 feeBps,
+        uint256 tokenAmount,
+        uint256 minSharesOut,
+        uint64 deadline,
+        address to,
+        IPermit2.PermitSingle calldata permitSingle,
+        bytes calldata signature
+    ) external payable nonReentrant returns (uint256 sharesMinted) {
+        _pullPermit2(token, tokenAmount, permitSingle, signature);
+        _lazyApprove(token, address(POOL), tokenAmount);
+        sharesMinted = POOL.createPairAndAddLiquidityPublic{value: msg.value}(
+            _evmAssetId(address(0)), _evmAssetId(token), feeBps, msg.value, tokenAmount, minSharesOut, deadline, to
+        );
+        _refund(token, msg.sender);
+        _refundETH(msg.sender);
+    }
+
+    /// @notice Remove PUBLIC LP shares through a prior pool approval. Outputs are sent directly to `to`.
+    function removeLiquidityPublic(
+        address tokenA,
+        address tokenB,
+        uint32 feeBps,
+        uint256 shares,
+        uint256 minAmountA,
+        uint256 minAmountB,
+        uint64 deadline,
+        address to
+    ) external nonReentrant returns (uint256 amountLo, uint256 amountHi) {
+        if (to == address(0)) revert BadTarget();
+        return POOL.removeLiquidityPublicFrom(
+            _evmAssetId(tokenA), _evmAssetId(tokenB), feeBps, shares, minAmountA, minAmountB, deadline, msg.sender, to
+        );
     }
 
     // ──────────────────── Zap: cold-start a public LP from ETH (external sourcing) ────────────────────
@@ -463,6 +778,40 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
         _refundETH(msg.sender);
     }
 
+    /// @notice Swap native ETH to the pool's canonical ERC20 for `assetId`, then burn/wrap it into a
+    ///         confidential note. This is the cBTC/cUSD launch path: callers pass the stable shared id
+    ///         (e.g. CBTC_ZK_ASSET_ID or the CollateralEngine-derived cUSD id), while the router resolves the
+    ///         pool-local wrap id and verifies the canonical token before touching funds.
+    function zapETHToCanonicalNote(bytes32 assetId, uint256 wrapAmount, bytes32 commit, bytes calldata zrSwapData)
+        external
+        payable
+        nonReentrant
+    {
+        address tokenOut = _swapAndWrapCanonical(assetId, wrapAmount, commit, zrSwapData, msg.value);
+        _refund(tokenOut, msg.sender);
+        _refundETH(msg.sender);
+    }
+
+    /// @notice Token-in analog of `zapETHToCanonicalNote`: pull any ERC20 via Permit2, route `amountIn` of it
+    ///         through zRouter into the pool's canonical ERC20 for `assetId`, then burn/wrap `wrapAmount` into
+    ///         a confidential note. Excess input/output is swept back to the caller.
+    function zapTokenToCanonicalNoteWithPermit2(
+        bytes32 assetId,
+        uint256 amountIn,
+        uint256 wrapAmount,
+        bytes32 commit,
+        IPermit2.PermitSingle calldata permitSingle,
+        bytes calldata signature,
+        bytes calldata zrSwapData
+    ) external nonReentrant {
+        address tokenIn = permitSingle.details.token;
+        _pullPermit2(tokenIn, amountIn, permitSingle, signature);
+        _lazyApprove(tokenIn, ZROUTER, amountIn);
+        address tokenOut = _swapAndWrapCanonical(assetId, wrapAmount, commit, zrSwapData, 0);
+        _refund(tokenIn, msg.sender);
+        _refund(tokenOut, msg.sender);
+    }
+
     /// @notice One-tx private payment funded by ETH in a different asset: swap ETH -> `tokenOut`, wrap exactly
     ///         `wrapAmount` to the recipient's `commit`, then settle the caller's self-proved batch consuming
     ///         the deposit into the recipient's note (+ memo). `wrapAmount` fixes the note value so the dapp
@@ -480,6 +829,90 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
         POOL.settle(publicValues, proof, memos);
         _refund(tokenOut, msg.sender);
         _refundETH(msg.sender);
+    }
+
+    /// @notice One-tx CDP open funded by native ETH through zRouter: swap ETH -> collateral token, wrap
+    ///         exactly `wrapAmount`, then settle a CDP-mint proof consuming that deposit. This is the CDP
+    ///         analog of `zapETHToPayment`, with a light publicValues guard requiring OP_CDP_MINT intent.
+    function zapETHToCdpMint(
+        address tokenOut,
+        uint256 wrapAmount,
+        bytes32 commit,
+        bytes calldata zrSwapData,
+        bytes calldata publicValues,
+        bytes calldata proof,
+        bytes[] calldata memos
+    ) external payable nonReentrant {
+        _requireCdpMintIntent(publicValues);
+        _swapAndWrap(tokenOut, wrapAmount, commit, zrSwapData);
+        POOL.settle(publicValues, proof, memos);
+        _refund(tokenOut, msg.sender);
+        _refundETH(msg.sender);
+    }
+
+    /// @notice Permit2 token-in CDP zap: pull `amountIn`, route it through zRouter into `tokenOut`, wrap
+    ///         exactly `wrapAmount`, then settle the CDP mint proof. Excess input/output is swept back.
+    function zapTokenToCdpMintWithPermit2(
+        address tokenOut,
+        uint256 amountIn,
+        uint256 wrapAmount,
+        bytes32 commit,
+        IPermit2.PermitSingle calldata permitSingle,
+        bytes calldata signature,
+        bytes calldata zrSwapData,
+        bytes calldata publicValues,
+        bytes calldata proof,
+        bytes[] calldata memos
+    ) external nonReentrant {
+        _requireCdpMintIntent(publicValues);
+        address tokenIn = permitSingle.details.token;
+        _pullPermit2(tokenIn, amountIn, permitSingle, signature);
+        _lazyApprove(tokenIn, ZROUTER, amountIn);
+        _swapAndWrapWithValue(tokenOut, wrapAmount, commit, zrSwapData, 0);
+        POOL.settle(publicValues, proof, memos);
+        _refund(tokenIn, msg.sender);
+        _refund(tokenOut, msg.sender);
+    }
+
+    /// @notice Canonical-asset CDP zap for cBTC/cUSD launch UX: callers pass the shared `assetId` (for
+    ///         example cBTC), and the router resolves the local canonical token before wrapping collateral.
+    function zapETHToCanonicalCdpMint(
+        bytes32 assetId,
+        uint256 wrapAmount,
+        bytes32 commit,
+        bytes calldata zrSwapData,
+        bytes calldata publicValues,
+        bytes calldata proof,
+        bytes[] calldata memos
+    ) external payable nonReentrant {
+        _requireCdpMintIntent(publicValues);
+        address tokenOut = _swapAndWrapCanonical(assetId, wrapAmount, commit, zrSwapData, msg.value);
+        POOL.settle(publicValues, proof, memos);
+        _refund(tokenOut, msg.sender);
+        _refundETH(msg.sender);
+    }
+
+    /// @notice Permit2 token-in analog of `zapETHToCanonicalCdpMint`.
+    function zapTokenToCanonicalCdpMintWithPermit2(
+        bytes32 assetId,
+        uint256 amountIn,
+        uint256 wrapAmount,
+        bytes32 commit,
+        IPermit2.PermitSingle calldata permitSingle,
+        bytes calldata signature,
+        bytes calldata zrSwapData,
+        bytes calldata publicValues,
+        bytes calldata proof,
+        bytes[] calldata memos
+    ) external nonReentrant {
+        _requireCdpMintIntent(publicValues);
+        address tokenIn = permitSingle.details.token;
+        _pullPermit2(tokenIn, amountIn, permitSingle, signature);
+        _lazyApprove(tokenIn, ZROUTER, amountIn);
+        address tokenOut = _swapAndWrapCanonical(assetId, wrapAmount, commit, zrSwapData, 0);
+        POOL.settle(publicValues, proof, memos);
+        _refund(tokenIn, msg.sender);
+        _refund(tokenOut, msg.sender);
     }
 
     // ──────────────────── Internals: permit pulls + wrap ────────────────────
@@ -537,6 +970,7 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
     /// revert reason (or ZRouterCallFailed). The router holds no standing approval to zRouter for ETH paths,
     /// so a hostile call can at most waste the forwarded ETH (recovered by the downstream slippage gate).
     function _callZRouter(uint256 value, bytes calldata zrSwapData) internal {
+        if (ZROUTER == address(0)) revert BadTarget();
         (bool ok, bytes memory ret) = ZROUTER.call{value: value}(zrSwapData);
         if (!ok) {
             if (ret.length != 0) {
@@ -551,11 +985,43 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
     /// Swap msg.value of ETH to `tokenOut` on zRouter (caller's calldata, output to this), then wrap EXACTLY
     /// `wrapAmount` into the pool as a deposit for `commit`. The swap must source >= wrapAmount.
     function _swapAndWrap(address tokenOut, uint256 wrapAmount, bytes32 commit, bytes calldata zrSwapData) internal {
+        _swapAndWrapWithValue(tokenOut, wrapAmount, commit, zrSwapData, msg.value);
+    }
+
+    function _swapAndWrapWithValue(
+        address tokenOut,
+        uint256 wrapAmount,
+        bytes32 commit,
+        bytes calldata zrSwapData,
+        uint256 value
+    ) internal {
         uint256 beforeOut = SafeTransferLib.balanceOf(tokenOut, address(this));
-        _callZRouter(msg.value, zrSwapData);
+        _callZRouter(value, zrSwapData);
         require(SafeTransferLib.balanceOf(tokenOut, address(this)) - beforeOut >= wrapAmount, "zap: short swap output");
         _lazyApprove(tokenOut, address(POOL), wrapAmount);
         POOL.wrap(_evmAssetId(tokenOut), wrapAmount, commit);
+    }
+
+    /// Resolve a launch canonical/shared id (cBTC/cUSD) to the pool-local wrap id and canonical ERC20, then
+    /// swap into that ERC20 and re-enter the confidential pool by burning/wrapping the local id.
+    function _swapAndWrapCanonical(
+        bytes32 assetId,
+        uint256 wrapAmount,
+        bytes32 commit,
+        bytes calldata zrSwapData,
+        uint256 value
+    ) internal returns (address tokenOut) {
+        tokenOut = POOL.canonicalTokenFor(assetId);
+        if (tokenOut == address(0)) revert BadTarget();
+        bytes32 wrapAssetId = POOL.localAssetOf(assetId);
+        if (wrapAssetId == bytes32(0)) wrapAssetId = assetId;
+        if (POOL.canonicalTokenFor(wrapAssetId) != tokenOut) revert BadTarget();
+
+        uint256 beforeOut = SafeTransferLib.balanceOf(tokenOut, address(this));
+        _callZRouter(value, zrSwapData);
+        require(SafeTransferLib.balanceOf(tokenOut, address(this)) - beforeOut >= wrapAmount, "zap: short swap output");
+        _lazyApprove(tokenOut, address(POOL), wrapAmount);
+        POOL.wrap(wrapAssetId, wrapAmount, commit);
     }
 
     /// Exact-leg zap → shield the LP shares into a note deposit. Swaps for AT LEAST `tokenBLeg` on zRouter
@@ -635,6 +1101,169 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
         if (IERC20Allowance(token).allowance(address(this), spender) < amount) {
             SafeTransferLib.safeApproveWithRetry(token, spender, type(uint256).max);
         }
+    }
+
+    function _checkPath(address[] calldata path, uint32[] calldata fees, address to) internal view {
+        if (path.length == 0 || path.length != fees.length || to == address(0) || to == address(this)) {
+            revert BadPath();
+        }
+        for (uint256 i; i < path.length; ++i) {
+            if (path[i] == address(0)) revert BadPath();
+        }
+    }
+
+    function _swapPublicPath(
+        address tokenIn,
+        address[] calldata path,
+        uint32[] calldata fees,
+        uint256 amountIn,
+        uint256 minAmountOut,
+        uint64 deadline,
+        address to
+    ) internal returns (uint256 amountOut) {
+        address curToken = tokenIn;
+        uint256 curAmount = amountIn;
+        for (uint256 i; i < path.length; ++i) {
+            address nextToken = path[i];
+            bool last = i == path.length - 1;
+            _lazyApprove(curToken, address(POOL), curAmount);
+            curAmount = POOL.swapPublic(
+                _evmAssetId(curToken),
+                _evmAssetId(nextToken),
+                fees[i],
+                curAmount,
+                last ? minAmountOut : 0,
+                deadline,
+                last ? to : address(this)
+            );
+            curToken = nextToken;
+        }
+        amountOut = curAmount;
+    }
+
+    function _swapPublicETHPath(
+        address[] calldata path,
+        uint32[] calldata fees,
+        uint256 amountIn,
+        uint256 minAmountOut,
+        uint64 deadline,
+        address to
+    ) internal returns (uint256 amountOut) {
+        uint256 curAmount = amountIn;
+        bytes32 curAsset = _evmAssetId(address(0));
+        for (uint256 i; i < path.length; ++i) {
+            address nextToken = path[i];
+            bool last = i == path.length - 1;
+            curAmount = POOL.swapPublic{value: i == 0 ? amountIn : 0}(
+                curAsset,
+                _evmAssetId(nextToken),
+                fees[i],
+                curAmount,
+                last ? minAmountOut : 0,
+                deadline,
+                last ? to : address(this)
+            );
+            curAsset = _evmAssetId(nextToken);
+            if (!last) _lazyApprove(nextToken, address(POOL), curAmount);
+        }
+        amountOut = curAmount;
+    }
+
+    function _publicPathAmountInForExactOut(
+        address tokenIn,
+        address[] calldata path,
+        uint32[] calldata fees,
+        uint256 amountOut
+    ) internal view returns (uint256 amountIn) {
+        uint256 needed = amountOut;
+        for (uint256 i = path.length; i != 0;) {
+            unchecked {
+                --i;
+            }
+            bytes32 assetIn = i == 0 ? _evmAssetId(tokenIn) : _evmAssetId(path[i - 1]);
+            needed = _publicAmountInForExactOut(assetIn, _evmAssetId(path[i]), fees[i], needed);
+        }
+        amountIn = needed;
+    }
+
+    function _publicETHPathAmountInForExactOut(address[] calldata path, uint32[] calldata fees, uint256 amountOut)
+        internal
+        view
+        returns (uint256 amountIn)
+    {
+        uint256 needed = amountOut;
+        for (uint256 i = path.length; i != 0;) {
+            unchecked {
+                --i;
+            }
+            bytes32 assetIn = i == 0 ? _evmAssetId(address(0)) : _evmAssetId(path[i - 1]);
+            needed = _publicAmountInForExactOut(assetIn, _evmAssetId(path[i]), fees[i], needed);
+        }
+        amountIn = needed;
+    }
+
+    function _publicAmountInForExactOut(bytes32 assetIn, bytes32 assetOut, uint32 feeBps, uint256 amountOut)
+        internal
+        view
+        returns (uint256 amountIn)
+    {
+        if (amountOut == 0) revert BadPath();
+        uint256 inScale = _unitScale(assetIn);
+        uint256 outScale = _unitScale(assetOut);
+        uint256 valueOut = _ceilDiv(amountOut, outScale);
+        (uint256 reserveIn, uint256 reserveOut) = _publicReserves(assetIn, assetOut, feeBps);
+        if (valueOut == 0 || valueOut >= reserveOut || feeBps >= 10000) revert BadPath();
+        uint256 num = reserveIn * valueOut * 10000;
+        uint256 den = (reserveOut - valueOut) * (10000 - uint256(feeBps));
+        amountIn = ((num / den) + 1) * inScale;
+    }
+
+    function _publicReserves(bytes32 assetIn, bytes32 assetOut, uint32 feeBps)
+        internal
+        view
+        returns (uint256 reserveIn, uint256 reserveOut)
+    {
+        (bool init, bytes32 assetA, bytes32 assetB, uint256 reserveA, uint256 reserveB, uint32 gotFee,) =
+            POOL.pools(_poolId(assetIn, assetOut, feeBps));
+        if (!init || gotFee != feeBps) revert BadPath();
+        if (assetIn == assetA && assetOut == assetB) return (reserveA, reserveB);
+        if (assetIn == assetB && assetOut == assetA) return (reserveB, reserveA);
+        revert BadPath();
+    }
+
+    function _unitScale(bytes32 assetId) internal view returns (uint256 unitScale) {
+        bool registered;
+        (registered,, unitScale,,,) = POOL.assets(assetId);
+        if (!registered || unitScale == 0) revert BadTarget();
+    }
+
+    function _ceilDiv(uint256 a, uint256 b) internal pure returns (uint256) {
+        return a == 0 ? 0 : ((a - 1) / b) + 1;
+    }
+
+    /// `PublicValues` is ABI-encoded as one tuple argument (`abi.encode(pv)`), so word 0 is the tuple offset.
+    /// Field 22 is `cdpMints`; requiring a non-empty array prevents CDP-named entrypoints from accidentally
+    /// accepting a plain private-payment settle while leaving full semantic validation to the pool + proof.
+    function _requireCdpMintIntent(bytes calldata publicValues) internal pure {
+        uint256 tupleStart;
+        uint256 cdpOffset;
+        uint256 cdpLen;
+        assembly ("memory-safe") {
+            tupleStart := calldataload(publicValues.offset)
+        }
+        if (tupleStart > publicValues.length || publicValues.length - tupleStart < 27 * 32) {
+            revert BadProofIntent();
+        }
+        assembly ("memory-safe") {
+            cdpOffset := calldataload(add(add(publicValues.offset, tupleStart), mul(22, 32)))
+        }
+        if (cdpOffset > publicValues.length || tupleStart + cdpOffset > publicValues.length - 32) {
+            revert BadProofIntent();
+        }
+        assembly ("memory-safe") {
+            cdpLen := calldataload(add(add(publicValues.offset, tupleStart), cdpOffset))
+        }
+        if (cdpLen == 0) revert BadProofIntent();
     }
 
     /// Forward the router's full balance of `token` to `to` — pool off-ratio refunds + swap dust — so the
