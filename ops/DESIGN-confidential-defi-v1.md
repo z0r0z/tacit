@@ -2,8 +2,8 @@
 
 > **STATUS: the confidential-DeFi architecture of record (2026-06-18).** v1 ships three things together:
 > **(1) cBTC** — tokenized real Bitcoin (self-custody lock + native-ETH slashable escrow); **(2) cUSD** —
-> a cBTC-collateralized confidential stablecoin; **(3) a unified collateral/insurance engine** (the
-> conjoined buffer + insurance + escrow). All three sit on a **minimal, generic, immutable core** (the
+> a cBTC-collateralized confidential stablecoin; **(3) a unified collateral/reserve engine** (the
+> conjoined buffer + protocol reserve + escrow). All three sit on a **minimal, generic, immutable core** (the
 > two SP1 vkeys + the immutable `ConfidentialPool`); **all policy lives in mutable Ethereum contracts**
 > that plug into the core.
 >
@@ -24,7 +24,7 @@ deployable Ethereum contract. So the design rule is:
   was locked into a controller-bound position; a controller-derived debt note was minted; value is
   conserved") and nothing about whether that was *wise*.
 - **Mutable Ethereum contracts = all policy + programmability.** Pricing (Chainlink), collateral ratios,
-  liquidation venues, insurance sizing, new collateral types — all in contracts that can be deployed,
+  liquidation venues, reserve sizing, new collateral types — all in contracts that can be deployed,
   tuned by a DAO, and added later **without a re-prove or a pool redeploy**.
 
 This is what lets new DeFi primitives (lending, leverage, other stablecoins, structured positions on
@@ -37,7 +37,7 @@ Tacit *or* Bitcoin assets) ship as **just a new Ethereum controller** on top of 
 | **cBTC** | yes (self-custody lock) | conservation (1 cBTC = locked sats) | Chainlink ETH/BTC sizes the **escrow only**, never the peg | active |
 | **cUSD** | via cBTC collateral | CDP over-collateralization + liquidation | Chainlink BTC/USD is **load-bearing** (CDP stablecoin, like DAI) | active |
 | **generic CDP primitive** | any | n/a (a mechanism) | per-controller | active (cUSD is its first instance) |
-| **unified collateral/insurance engine** | n/a | n/a | ETH/BTC + BTC/USD | active |
+| **unified collateral/reserve engine** | n/a | n/a | ETH/BTC + BTC/USD | active |
 
 ## 2. The immutable / mutable split
 
@@ -50,8 +50,8 @@ Tacit *or* Bitcoin assets) ship as **just a new Ethereum controller** on top of 
   **cBTC escrow-mint/slash seam** + the extended public-values layout. No policy.
 
 **MUTABLE (deployable, DAO-tunable, pluggable — no re-prove):**
-- **`CollateralEngine`** (the conjoined buffer + insurance + escrow): native-ETH cBTC escrows, the cUSD
-  CDP controller, the shared insurance reserve, all Chainlink feeds. All ratios/prices/venues here.
+- **`CollateralEngine`** (the conjoined buffer + protocol reserve + escrow): native-ETH cBTC escrows,
+  the cUSD CDP controller, the shared protocol reserve, all Chainlink feeds. All ratios/prices/venues here.
 - **Future controllers** — any new collateral primitive: deploy a controller, it mints its own
   controller-derived asset, it plugs into the same guest CDP ops + the same pool callback.
 
@@ -112,7 +112,7 @@ A dedicated contract path (bridge_mint-shaped, but gated on the *lock* registry 
 - **Slash (rug):** a bare lock spend with **no** matching in-tx cBTC burn stays tracked and folds as a rug:
   `attestBitcoinStateProven` records each `cbtcLocksSpent(outpoint)` into `cbtcLockSpent[outpoint] = true`,
   and `slash(outpoint)` fires iff `cbtcLockSpent[outpoint]` **and** `escrowReleased[outpoint]` is false ⇒ it
-  **slashes** the native ETH (backing the now-unbacked cBTC via the async buy+burn rail). The guest now
+  **slashes** the native ETH (backing the now-unbacked cBTC via the async cBTC rug buy+burn rail). The guest now
   **does** decide rug-vs-redeem — a rugger can't spoof a redeem without truly burning the matching cBTC,
   which IS the honest retirement. The engine's owner-attested `releaseEscrow` remains only to RETURN an
   honest redeemer's own escrow (benign: it can't slash or steal); a guest-surfaced `cbtcLockRedeemed` for
@@ -176,11 +176,11 @@ guest never interprets the legs' *meaning* (which mix, what ratios) — that's t
   wrap/withdraw. Conservation: each spent collateral note opens to its `value_i`; the debt note opens to
   `debt_value`.
 - **`OP_CDP_CLOSE` (16):** prove `cdp_position_leaf` membership; spend debt notes (asset D) summing to
-  `≥ debt_value`; release the basket (mint each leg's asset-`i` note with its commitment back to the
+  exactly `debt_value`; release the basket (mint each leg's asset-`i` note with its commitment back to the
   owner). Pure conservation — **no oracle, no controller policy** (you can always repay and reclaim).
-- **`OP_CDP_LIQUIDATE` (17):** prove `cdp_position_leaf` membership; seize the basket to the controller /
-  its auction (mint each leg to the controller's address). The *authority* to liquidate is the contract's
-  (§4.4) — the guest only enforces the structural seizure + that the debt is retired against the controller.
+- **`OP_CDP_LIQUIDATE` (17):** prove `cdp_position_leaf` membership; spend debt notes (asset D) summing to
+  exactly `debt_value`; seize the basket to the liquidator / auction recipient. The *authority* to liquidate
+  is the contract's (§4.4) — the guest enforces the structural seizure + atomic debt retirement.
 
 ### 4.4 The pool ↔ controller seam (policy via a mutable contract)
 
@@ -192,9 +192,9 @@ controller named by the position (and checks `debt_asset == derive(controller)`)
   contract-governed per-asset ratios**, basket eligibility, debt ceilings — and **reverts to deny**. The
   pool proceeds only if the controller approves. This is where a MakerDAO-style multi-collateral basket
   with governed weights lives, entirely in mutable code.
-- `OP_CDP_LIQUIDATE` → `controller.onCdpLiquidate(positionLeaf, legs[], debt_value)`. The controller
-  proves (via its oracles) the position is unhealthy and routes the seizure/auction + covers the debt from
-  the position/insurance. Reverts if healthy.
+- `OP_CDP_LIQUIDATE` → `controller.onCdpLiquidate(legs[], debt_value, positionNullifier)`. The controller
+  proves (via its oracles) the position is unhealthy. The proof has already burned the debt, so this callback
+  only gates health and accounts the closed debt. Reverts if healthy.
 - `OP_CDP_CLOSE` → optional `controller.onCdpClose(...)` for accounting; never a veto (repaying is
   unconditional).
 
@@ -209,7 +209,7 @@ blast radius to **its own** token's holders, exactly the desired property.
   (`onCdpMint/Liquidate/Close` carrying the legs).
 - **Mutable (policy, in the controller):** which assets are eligible basket legs and their governed
   **per-asset ratios/weights**, the oracle(s), the liquidation threshold + venue + penalty, the debt
-  ceiling, the insurance backstop, fees. All tunable post-deploy, all per-controller — a single-asset
+  ceiling, the reserve/backstop policy, fees. All tunable post-deploy, all per-controller — a single-asset
   cUSD vault and a MakerDAO-style multi-collateral basket are both *just controllers* on the same core.
 
 ## 5. cUSD — the first CDP controller (cBTC collateral, Chainlink BTC/USD)
@@ -217,8 +217,10 @@ blast radius to **its own** token's holders, exactly the desired property.
 cUSD is **one instantiation** of §4: a `CdpController` whose debt asset is `derive(cUSD_controller)` and
 whose v1 basket is a **single leg, cBTC**, and whose `onCdpMint` reads **Chainlink BTC/USD** to enforce
 `debt_value_usd ≤ collateral_value_btc · price_btc_usd / ratio`. Liquidation triggers when the
-collateralization ratio falls below the liquidation threshold; the seized cBTC is auctioned (over the
-async confidential venue) to cover the cUSD debt, with the insurance reserve covering any shortfall.
+collateralization ratio falls below the liquidation threshold; the liquidator / auction recipient supplies
+cUSD debt notes summing to exactly `debt_value` inside the proof and receives the seized cBTC collateral.
+There is no post-settlement cUSD buy-and-burn leg for normal liquidation; the protocol reserve remains a
+governance/programmatic backstop for tail bad debt or recovery shortfalls.
 Because the position is already basket-shaped, a later cUSD-v2 (or a separate stablecoin) can accept a
 governed multi-asset basket — cBTC + Tacit LP shares + Tacit/bridged assets + ERC20s — with **no
 re-prove**, just a new/upgraded controller.
@@ -229,19 +231,21 @@ stablecoin (DAI is identical) and is the honest, accepted trade for a simple v1 
 cBTC's pre-covenant risk profile (its collateral is economically-secured real BTC); sized conservatively
 for a pilot.
 
-## 6. The unified collateral/insurance engine (conjoin buffer + insurance + escrow)
+## 6. The unified collateral/reserve engine (conjoin buffer + protocol reserve + escrow)
 
 `CollateralEngine` (Solady `Ownable` → DAO) replaces and conjoins `CbtcBuffer` + `InsuranceVault` + the
 per-locker escrow into **one** contract — the protocol's DeFi-safety core:
 - **cBTC escrows:** per-lock native-ETH balances; `postEscrow` (Chainlink ETH/BTC sized), `release` (on
   proven redeem), `slash` (on proven rug, §3.3).
-- **cUSD CDP backstop:** the `onCdpMint/Liquidate` policy for the cUSD controller (Chainlink BTC/USD,
-  ratio, liquidation routing).
-- **Shared insurance reserve:** absorbs the tail (rug-recovery shortfall, liquidation bad debt); funded
-  by slashing surplus + liquidation penalties, never by honest users.
+- **cUSD CDP policy:** the `onCdpMint/Liquidate` health gate and accounting for the cUSD controller
+  (Chainlink BTC/USD, ratio, liquidation threshold).
+- **Shared protocol reserve:** absorbs the tail (rug-recovery shortfall, liquidation bad debt); funded by
+  slashed escrows, explicit top-ups, and future liquidation spreads/penalties. V1 keeps one reserve for
+  simplicity; draws are owner/DAO controlled and purpose-tagged, so ownership can later move to a
+  programmatic reserve policy contract without changing the pool or guest.
 - **Feeds:** ETH/BTC + BTC/USD Chainlink, each with staleness + AMM-TWAP-deviation fail-closed bounds.
 
-**Bounded by construction:** the engine can size escrows, price collateral, and route liquidations, but it
+**Bounded by construction:** the engine can size escrows, price collateral, and gate liquidations, but it
 can **never** mint a confidential asset, move cBTC backing, or break a peg — those are all proof-enforced
 in the immutable core. Owner = deployer → `transferOwnership(dao)`.
 

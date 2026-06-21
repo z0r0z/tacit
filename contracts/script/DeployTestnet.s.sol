@@ -130,6 +130,7 @@ contract DeployTestnet is Script {
         denoms[5] = 1 ether;
         denoms[6] = 10 ether;
         denoms[7] = 100 ether;
+        uint256 confirmationDepth = 6;
 
         address deployer = vm.addr(deployerKey);
         // One verifier covers all denominations, so the mixer is the next deploy after it.
@@ -144,7 +145,7 @@ contract DeployTestnet is Script {
 
         SP1PoolRootVerifier verifier = new SP1PoolRootVerifier(
             sp1Verifier, address(relay), programVKey, predictedMixer,
-            assetId, networkTag, groth16VkHash, poolIds, denomsTacit,
+            assetId, networkTag, confirmationDepth, groth16VkHash, poolIds, denomsTacit,
             signetTipHash
         );
         console.log("SP1PoolRootVerifier (all denoms):", address(verifier));
@@ -154,7 +155,7 @@ contract DeployTestnet is Script {
 
         TacitBridgeMixer mixer = new TacitBridgeMixer(
             address(relay), burnVerifier, address(0),
-            6, denoms, verifiers, networkTag, assetId
+            confirmationDepth, denoms, verifiers, networkTag, assetId
         );
         require(address(mixer) == predictedMixer, "nonce mismatch");
 

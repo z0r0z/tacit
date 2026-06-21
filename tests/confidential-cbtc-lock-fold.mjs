@@ -54,6 +54,7 @@ eq(st2.digest(), st.digest(), 'deterministic: same lock → same digest');
 
 // ── gates reject (each on a fresh state; null = skip, no mutation) ──
 eq(fresh().foldCbtcLock({ ...validLock, asset: '0x' + '11'.repeat(32) }), null, 'wrong asset → skip');
+eq(fresh().foldCbtcLock({ ...validLock, vBtc: 0n }), null, 'zero-value lock → skip');
 eq(fresh().foldCbtcLock({ ...validLock, lockVout: 0 }), null, 'lock vout 0 → skip');
 eq(fresh().foldCbtcLock({ ...validLock, cx: '0x' + '00'.repeat(31) + '01', cy: '0x' + '00'.repeat(31) + '01' }), null, 'off-curve commitment (1,1) → skip (matches the guest from_affine_xy)');
 // duplicate outpoint → one lock backs one mint

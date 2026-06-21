@@ -52,10 +52,9 @@ the mixed-lane fill. Instant on Ethereum either way.
 his Bitcoin-homed TAC into it (TAC reserve up, backed by his consumed note) and extracts tETH (tETH reserve
 down, backed by the pool's LP-funded reserve). One settle, instant on Ethereum.
 
-**Extraction (both flows).** The tETH the filler/swapper receives is an Ethereum note. Unwrap it to the
-public **tETH ERC20** instantly (Tacit's wrapped-ETH, already first-cut), redeem that to **native ETH** via
-the bridge (the WETH-style shortcut), or send it back to **Bitcoin** via `crossOut`. Detail in *Extraction —
-getting tETH out* below.
+**Extraction (both flows).** The tETH the filler/swapper receives is an Ethereum note. Unwrap it directly to
+**native ETH** through the pinned native-ETH asset, keep it shielded, or send it back to **Bitcoin** via
+`crossOut`. Detail in *Extraction — getting tETH out* below.
 
 ## The one soundness invariant (everything else follows)
 
@@ -215,9 +214,8 @@ foundation's path).
 - The consumed-ν reverse reflection, the freshness gate (`bitcoinConsumedCount` + the attest `consumedCount`
   gate), the Ethereum-senior void (live-removal), the genesis-digest pin — all reused as-is.
 - The slow `bridge_burn → bridge_mint` and `crossOut` paths stay the race-free defaults.
-- Extraction on Ethereum is the existing `withdrawal` (to the tETH ERC20); on Bitcoin the existing
-  `crossOut`. The native-ETH shortcut is an ADDITIVE, bridge-side primitive (the tETH ERC20's WETH-style
-  redeem) — it changes neither the trading bar nor the foundation.
+- Extraction on Ethereum is the existing `withdrawal` to native ETH for the pinned tETH asset; on Bitcoin the
+  existing `crossOut`. The native-ETH path changes neither the trading bar nor the foundation.
 
 ## Phasing
 1. **Ship the send/withdraw bundle first** (re-prove + the box steps in `PLAN-fast-lane-shared-nullifier.md`).
@@ -237,11 +235,11 @@ foundation's path).
    both-legs-Bitcoin OTC/BID is the contract-ready case above. All four value-injecting ops (swap/LP/OTC/BID)
    now have a one-settle cross-lane acceptance fixture + box harness, ready for the Stage-0 re-prove.
 
-**Parallel, independent track — the native-ETH shortcut (bridge-side).** The tETH-ERC20 `withdraw → ETH`
-redeem + the unified supply ledger ships against the bridge, not the trading bar, so it can land on its own
-schedule. Sequence it to land with the **swap cut** — that's the moment the full "Bitcoin TAC → real ETH"
-demo becomes one clean flow; until then the swap cut already delivers "Bitcoin TAC → tETH ERC20" (a liquid,
-self-evidently redeemable public token).
+**Parallel, independent track — the native-ETH bridge-side path.** The pinned tETH native-ETH unwrap + the
+unified supply ledger ship against the bridge, not the trading bar, so they can land on their own schedule.
+Sequence it to land with the **swap cut** — that's the moment the full "Bitcoin TAC → real ETH" demo becomes
+one clean flow; until then the swap cut delivers a shielded tETH note that exits through the native unwrap
+once the pool deployment is live.
 
 Each trading cut is one bar relaxation + one backing assertion + one review — additive over a foundation
 that's already built and (after the bundle) proven; the native-ETH shortcut is a bridge-side primitive

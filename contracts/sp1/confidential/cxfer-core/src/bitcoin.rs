@@ -482,11 +482,10 @@ pub struct CbtcLockEnvelope {
 }
 
 /// cBTC.zk sats-lock envelope (`T_CBTC_LOCK`, opcode 0x66): `asset(32) ‖ lock_vout(4 LE) ‖ Cx(32) ‖ Cy(32) ‖
-/// sig_rx(32) ‖ sig_ry(32) ‖ sig_z(32)` — the asset, which output of THIS tx is the sats-lock, the minted
-/// cBTC note commitment, and the OPENING SIGMA proving the note opens to the lock's value. The sigma is
-/// ON-CHAIN (it formerly rode the witness): it is a zero-knowledge opening proof — it reveals nothing about
-/// the note's blinding — so the reflection relay, which holds no recipient key, can read it directly and fold
-/// the lock without an off-chain witness source. Fixed 197-byte layout.
+/// reserved_sig_rx(32) ‖ reserved_sig_ry(32) ‖ reserved_sig_z(32)`. The reflection guest is now
+/// TRACK-not-mint: it records only the lock output and the pre-committed cBTC note commitment hash. The
+/// note's value-opening proof is checked later by `OP_CBTC_MINT`; these trailing sigma-shaped fields remain
+/// only for wire compatibility with existing builders/tests. Fixed 197-byte layout.
 pub fn parse_cbtc_lock_envelope(env: &[u8]) -> Option<CbtcLockEnvelope> {
     if env.len() != 197 || env[0] != 0x66 {
         return None;
@@ -912,6 +911,9 @@ pub struct FarmInitEnvelope {
     pub launcher_pubkey: [u8; 33],
     pub reward_asset: [u8; 32],
     pub reward_total: u64,
+    /// Total reward units/block — the farm `rate` the reflection feeds to `FarmRewardState` at init
+    /// (SPEC-CONTROLLER-VAULT-AMENDMENT §8.4).
+    pub reward_per_block: u64,
     pub c_change_or_sentinel: [u8; 33],
     pub kernel_sig: [u8; 64],
 }
@@ -937,6 +939,7 @@ pub fn parse_farm_init_envelope(env: &[u8]) -> Option<FarmInitEnvelope> {
         launcher_pubkey: env[65..98].try_into().ok()?,
         reward_asset: env[98..130].try_into().ok()?,
         reward_total: u64::from_le_bytes(env[130..138].try_into().ok()?),
+        reward_per_block: u64::from_le_bytes(env[138..146].try_into().ok()?),
         c_change_or_sentinel: env[154..187].try_into().ok()?,
         kernel_sig: env[ks_off..ks_off + 64].try_into().ok()?,
     })
@@ -955,6 +958,41 @@ pub fn parse_lp_harvest_envelope(env: &[u8]) -> Option<([u8; 32], u64, [u8; 32])
         env[1..33].try_into().ok()?,
         u64::from_le_bytes(env[122..130].try_into().ok()?),
         env[130..162].try_into().ok()?,
+    ))
+}
+
+/// Extract the fixed-prefix fields of a `T_LP_BOND` (0x35) envelope →
+/// `(farm_id, bonder_pubkey, bond_amount, entry_acc_per_share, bond_view_height)`. The bond uses `bond_amount`;
+/// the receipt's `rps_entry` is the reflection's live `rps` (the envelope's `entry_acc_per_share` is not
+/// trusted). Variable length (a BP+ range-proof tail); only the fixed prefix is parsed. Mirrors `encodeLpBond`.
+pub fn parse_lp_bond_fields(env: &[u8]) -> Option<([u8; 32], [u8; 33], u64, u128, u32)> {
+    if env.len() < 94 || env[0] != 0x35 {
+        return None;
+    }
+    Some((
+        env[1..33].try_into().ok()?,
+        env[33..66].try_into().ok()?,
+        u64::from_le_bytes(env[66..74].try_into().ok()?),
+        u128::from_le_bytes(env[74..90].try_into().ok()?),
+        u32::from_le_bytes(env[90..94].try_into().ok()?),
+    ))
+}
+
+/// Parse a `T_LP_UNBOND` (0x36, 142-byte fixed) → `(farm_id, unbonder_pubkey, shares, unbond_view_height)`.
+/// Unbond closes a farm position: the reflection proves the bond's RECEIPT note (the `(shares, rps_entry,
+/// owner, nonce)` checkpoint, owner + nonce + rps_entry witnessed), nullifies it, drops `shares` from the
+/// farm's `total_shares`, and re-mints the released LP-share notes at the tx's vouts. No reward is claimed
+/// (harvest first to collect accrual). Layout: opcode(1)=0x36 ‖ farm_id(32) ‖ unbonder_pubkey(33) ‖
+/// shares(8 LE) ‖ unbond_view_height(4 LE) ‖ unbonder_sig(64). Mirrors the dapp `encodeLpUnbond`.
+pub fn parse_lp_unbond_fields(env: &[u8]) -> Option<([u8; 32], [u8; 33], u64, u32)> {
+    if env.len() != 142 || env[0] != 0x36 {
+        return None;
+    }
+    Some((
+        env[1..33].try_into().ok()?,
+        env[33..66].try_into().ok()?,
+        u64::from_le_bytes(env[66..74].try_into().ok()?),
+        u32::from_le_bytes(env[74..78].try_into().ok()?),
     ))
 }
 
@@ -1017,7 +1055,7 @@ pub struct SwapBatchReceipt {
 /// Groth16 public signals, (b) verify aggregate conservation + advance reserves, and (c) onboard each
 /// receipt's secp note. Mirrors the worker `decodeTSwapBatchPayload` wire format (worker/src/index.js
 /// §"T_SWAP_BATCH decoder"). The v1 wire format has NO optional block (spec/amm/wire-formats.md: the reserved
-/// space is for a future exclusion-claim amendment, not the deprecated arbiter concept), so the layout is fixed.
+/// space is for a future exclusion-claim amendment), so the layout is fixed.
 /// `R_net_*`, tip commitments, per-intent secp/auth fields, and the settler meta-URI are validated for
 /// length but not surfaced — the pre-reserves come from the registry and intent auth is the settler's job;
 /// the reflection only needs conservation + onboarding inputs.
@@ -1115,7 +1153,7 @@ pub fn parse_swap_batch_envelope(env: &[u8]) -> Option<SwapBatchEnvelope> {
     let rtb = p;
     take(&mut p, 32)?;
     let r_tip_b: [u8; 32] = env[rtb..rtb + 32].try_into().ok()?;
-    // No optional block in v1 (spec/amm/wire-formats.md); the arbiter concept is deprecated.
+    // No optional block in v1 (spec/amm/wire-formats.md).
     let mut intents = Vec::with_capacity(n_intents);
     for _ in 0..n_intents {
         let s = p;
@@ -1895,10 +1933,57 @@ mod tests {
         assert_eq!(p.launcher_pubkey, launcher);
         assert_eq!(p.reward_asset, reward_asset);
         assert_eq!(p.reward_total, 1_000_000);
+        assert_eq!(p.reward_per_block, 100);
         assert_eq!(p.c_change_or_sentinel, c_change);
         assert_eq!(p.kernel_sig, ks);
         let mut bad = env.clone(); bad[0] = 0x22;
         assert!(parse_farm_init_envelope(&bad).is_none(), "non-0x34 rejected");
+    }
+
+    // SPEC-CONTROLLER-VAULT-AMENDMENT §8.4: the TRUSTLESS fold extracts the accumulator-per-share fields the
+    // EXISTING bond/harvest envelopes already carry (the reflection now validates them via FarmRewardState).
+    #[test]
+    fn parse_lp_bond_and_harvest_fields_round_trip() {
+        // T_LP_BOND (0x35) fixed prefix: farm_id ‖ bonder_pubkey(33) ‖ bond_amount(8) ‖ entry_acc(16) ‖ view_h(4)
+        let farm = [0x77u8; 32];
+        let bonder = [0x03u8; 33];
+        let mut bond = vec![0x35u8];
+        bond.extend_from_slice(&farm);
+        bond.extend_from_slice(&bonder);
+        bond.extend_from_slice(&1234u64.to_le_bytes());
+        bond.extend_from_slice(&987654321u128.to_le_bytes());
+        bond.extend_from_slice(&42u32.to_le_bytes());
+        bond.extend_from_slice(&[0u8; 50]); // c_change + rp + sigs tail (ignored by the prefix parser)
+        let (f, bp, amt, entry, vh) = parse_lp_bond_fields(&bond).expect("bond fields");
+        assert_eq!((f, bp, amt, entry, vh), (farm, bonder, 1234, 987654321u128, 42));
+
+        // T_LP_HARVEST (0x3B, 226): farm_id ‖ bond_id(36) ‖ pubkey(33) ‖ exit_acc(16) ‖ view_h(4) ‖ reward(8) ‖ reward_r(32) ‖ sig(64)
+        let reward_r = [0x66u8; 32];
+        let mut h = vec![0x3Bu8];
+        h.extend_from_slice(&farm);
+        h.extend_from_slice(&[0x55u8; 36]); // bond_id
+        h.extend_from_slice(&[0x04u8; 33]); // harvester_pubkey
+        h.extend_from_slice(&555_000u128.to_le_bytes()); // exit_acc_per_share
+        h.extend_from_slice(&99u32.to_le_bytes()); // exit_view_height
+        h.extend_from_slice(&777u64.to_le_bytes()); // reward_amount
+        h.extend_from_slice(&reward_r);
+        h.extend_from_slice(&[0x07u8; 64]); // harvester_sig
+        assert_eq!(h.len(), 226);
+        let (hf, hrew, hrr) = parse_lp_harvest_envelope(&h).expect("harvest fields");
+        assert_eq!((hf, hrew, hrr), (farm, 777, reward_r));
+
+        // T_LP_UNBOND (0x36, 142): farm_id ‖ unbonder_pubkey(33) ‖ shares(8) ‖ view_h(4) ‖ sig(64)
+        let mut u = vec![0x36u8];
+        u.extend_from_slice(&farm);
+        u.extend_from_slice(&bonder);
+        u.extend_from_slice(&1234u64.to_le_bytes());
+        u.extend_from_slice(&42u32.to_le_bytes());
+        u.extend_from_slice(&[0x09u8; 64]); // unbonder_sig
+        assert_eq!(u.len(), 142);
+        let (uf, ubp, ush, uvh) = parse_lp_unbond_fields(&u).expect("unbond fields");
+        assert_eq!((uf, ubp, ush, uvh), (farm, bonder, 1234, 42));
+        u[0] = 0x37; // wrong opcode folds nothing
+        assert!(parse_lp_unbond_fields(&u).is_none());
     }
 
     #[test]

@@ -81,6 +81,18 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
   // 32-byte words, so value is its big-endian 32-byte form.
   const depositId = (assetId, value, cx, cy, owner) => hx(keccak256(concat([b32(assetId), beBytes(value, 32), b32(depositCommit(cx, cy, owner))])));
 
+  // ── Fair-farm receipt primitives (SPEC-CONTROLLER-VAULT-AMENDMENT §4) — byte-identical to cxfer-core
+  // farm_receipt_leaf / farm_receipt_nullifier. The leaf is a RAW concat (kn): domain ‖ farm ‖ shares(8 LE) ‖
+  // rps_entry(16 LE) ‖ owner ‖ nonce — NOT 32-byte-padded words, so it can't use the `keccak(...)` helper.
+  const FARM_RPS_PRECISION = 1n << 64n;
+  const FARM_RECEIPT_DOM = new TextEncoder().encode('tacit-farm-receipt-v1');
+  const FARM_RECEIPT_NULL_DOM = new TextEncoder().encode('tacit-farm-receipt-null-v1');
+  const leBytes = (n, len) => { const b = new Uint8Array(len); let v = BigInt(n); for (let i = 0; i < len; i++) { b[i] = Number(v & 0xffn); v >>= 8n; } return b; };
+  const farmReceiptLeaf = (farm, shares, rpsEntry, owner, nonce) =>
+    hx(keccak256(concat([FARM_RECEIPT_DOM, b32(farm), leBytes(shares, 8), leBytes(rpsEntry, 16), b32(owner), b32(nonce)])));
+  const farmReceiptNullifier = (leafHex) => hx(keccak256(concat([FARM_RECEIPT_NULL_DOM, b32(leafHex)])));
+  const farmHarvestNewEntry = (shares, rpsEntry, reward) => BigInt(rpsEntry) + (BigInt(reward) * FARM_RPS_PRECISION) / BigInt(shares);
+
   // ── Keccak incremental Merkle, matching ConfidentialPool._insertLeaf ──
   const zeros = (() => {
     const z = [ZERO32];
@@ -339,6 +351,33 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     return { set, get, poolIdsForAssets, root, list, load, len: () => map.size };
   }
 
+  // ── Fair-farm reward-per-share accumulator (cxfer-core FarmRewardSet) — GLOBAL per-farm state only:
+  // (rate, total_shares, rps, last_height). Root over keccak(farm_id ‖ rate ‖ total_shares ‖ rps ‖ last_height),
+  // each a 32-byte BE word, committed in digest(). The per-staker checkpoint is the owner-blinded receipt note
+  // in the note tree, not here (parity with the EVM controller).
+  function makeFarmRewardSet() {
+    const norm = (x) => hx(b32(x));
+    let map = new Map(); // farm_id(hex) -> { rate, totalShares, rps, lastHeight } (all BigInt)
+    const keys = () => [...map.keys()].sort();
+    const has = (farmId) => map.has(norm(farmId));
+    const get = (farmId) => { const s = map.get(norm(farmId)); return s ? { ...s } : null; };
+    const set = (farmId, s) => map.set(norm(farmId), s);
+    // accrue the global rps over elapsed blocks (mirrors FarmRewardState::accrue)
+    function accrue(s, height) {
+      const h = BigInt(height);
+      if (h > s.lastHeight) {
+        if (s.totalShares !== 0n) s.rps += (s.rate * (h - s.lastHeight) * FARM_RPS_PRECISION) / s.totalShares;
+        s.lastHeight = h;
+      }
+    }
+    const farmLeaf = (k, s) => hx(keccak(k, u64be(s.rate), u64be(s.totalShares), u64be(s.rps), u64be(s.lastHeight)));
+    const root = () => { const t = new Tree(); for (const k of keys()) t.insert(farmLeaf(k, map.get(k))); return t.root(); };
+    const len = () => map.size;
+    const list = () => keys().map((k) => { const s = map.get(k); return { farmId: k, rate: String(s.rate), totalShares: String(s.totalShares), rps: String(s.rps), lastHeight: String(s.lastHeight) }; });
+    const load = (arr) => { map = new Map(); for (const e of (arr || [])) set(e.farmId, { rate: BigInt(e.rate), totalShares: BigInt(e.totalShares), rps: BigInt(e.rps), lastHeight: BigInt(e.lastHeight) }); };
+    return { has, get, set, accrue, root, len, list, load, keys };
+  }
+
   // ── Reflection state (the Bitcoin-indexer / reflection-prover side) ──
   // The canonical Bitcoin confidential-pool state the reflection prover proves over: the note
   // tree, spent-set, bridge-burn set, and UTXO set, advanced as confirmed effects land. Mirrors
@@ -521,6 +560,9 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     // Track B: the per-pool reserve registry (cxfer-core ScanReflection.pools). Empty until the worker
     // folds Bitcoin AMM envelopes; rides digest() so a resumed cycle can't forge a pool's reserves/skim.
     const pools = makePoolReserveSet();
+    // Fair farms (cxfer-core ScanReflection.farm_rewards): the per-farm reward-per-share accumulator. Populated
+    // by FARM_INIT / LP_BOND / LP_HARVEST / LP_UNBOND folds; rides digest() so a resumed cycle can't forge rps.
+    const farmRewards = makeFarmRewardSet();
     // FAST-LANE resume count (cxfer-core ScanReflection.consumed_count): how many eth-consumed ν have been
     // folded into the spent set via Mode-B reverse reflection. The JS scan is forward-only (no Mode-B fold), so
     // it stays 0 — but it MUST ride digest() (the guest pins it) or the guest↔JS digest diverges.
@@ -552,6 +594,11 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
         // FAST LANE / Mode-B: the eth-reflection accumulator anchor (cxfer-core pins it after consumed_count;
         // genesis 0x00..00 for the forward-only JS scan).
         ethReflDigest,
+        // Fair farms (cxfer-core ScanReflection.farm_rewards): the per-farm reward-per-share accumulator
+        // (rate, total_shares, rps). Pinned so a resumed cycle can't forge a farm's rps / total_shares. The
+        // per-staker receipts ride the note tree (poolRoot) + the spent set — no separate per-bond commitment
+        // (parity with the EVM position-tree receipt; the deanonymizing bond map was removed).
+        farmRewards.root(), u64be(farmRewards.len()),
       ));
     }
 
@@ -580,6 +627,61 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
       const w = { noteLeaf, notePath: notes.rootAndPath(noteCount()).path };
       notes.insert(noteLeaf);
       return w;
+    }
+    // ── Fair-farm folds (SPEC-CONTROLLER-VAULT-AMENDMENT §4) — mirror cxfer-core fold_farm_init_rewards /
+    // fold_lp_bond / fold_lp_harvest / fold_lp_unbond. The receipt is an owner-blinded note in the note tree;
+    // its nullifier rides the spent set; the global accumulator is `farmRewards`. ──
+    function foldFarmInitRewards(farmId, rate) {
+      if (farmRewards.has(farmId)) return false;
+      farmRewards.set(farmId, { rate: BigInt(rate), totalShares: 0n, rps: 0n, lastHeight: BigInt(height) });
+      return true;
+    }
+    // BOND: accrue, total_shares += shares, append the receipt committing (shares, rps_entry = live rps, owner,
+    // nonce). Returns the witness (owner, nonce, receiptPath) + the leaf/rpsEntry (the staker keeps these to harvest).
+    function foldLpBond(farmId, shares, owner, nonce) {
+      const st = farmRewards.get(farmId);
+      if (!st) return null;
+      farmRewards.accrue(st, height);
+      const rpsEntry = st.rps;
+      st.totalShares += BigInt(shares);
+      const lf = farmReceiptLeaf(farmId, shares, rpsEntry, owner, nonce);
+      const w = foldNoteAppend(lf);
+      farmRewards.set(farmId, st);
+      return { owner: hx(b32(owner)), nonce: hx(b32(nonce)), receiptPath: w.notePath, leaf: lf, rpsEntry: String(rpsEntry) };
+    }
+    // HARVEST: bound reward ≤ shares·(rps − rps_entry) against the LIVE rps, prove the old receipt's note-tree
+    // membership, nullify it, append the advanced receipt. total_shares untouched (principal stays staked).
+    function foldLpHarvest(farmId, shares, rpsEntry, owner, oldNonce, newNonce, reward) {
+      const st = farmRewards.get(farmId);
+      if (!st) return null;
+      farmRewards.accrue(st, height);
+      if (BigInt(rpsEntry) > st.rps) return null;
+      if (BigInt(reward) * FARM_RPS_PRECISION > BigInt(shares) * (st.rps - BigInt(rpsEntry))) return null;
+      const oldLeaf = farmReceiptLeaf(farmId, shares, rpsEntry, owner, oldNonce);
+      const oldIndex = notes.leaves.findIndex((l) => hx(l).toLowerCase() === oldLeaf.toLowerCase());
+      if (oldIndex < 0) return null;
+      const oldPath = notes.rootAndPath(oldIndex).path;
+      const sw = foldSpent(farmReceiptNullifier(oldLeaf));
+      const newEntry = farmHarvestNewEntry(shares, rpsEntry, reward);
+      const aw = foldNoteAppend(farmReceiptLeaf(farmId, shares, newEntry, owner, newNonce));
+      farmRewards.set(farmId, st);
+      return { owner: hx(b32(owner)), oldNonce: hx(b32(oldNonce)), newNonce: hx(b32(newNonce)),
+        shares: String(shares), rpsEntry: String(rpsEntry), oldIndex, oldPath,
+        spentInsert: sw, newReceiptPath: aw.notePath, newEntry: String(newEntry) };
+    }
+    // UNBOND: prove the receipt's membership, nullify it, drop `shares` from total_shares. No reward, no new receipt.
+    function foldLpUnbond(farmId, shares, rpsEntry, owner, nonce) {
+      const st = farmRewards.get(farmId);
+      if (!st) return null;
+      const lf = farmReceiptLeaf(farmId, shares, rpsEntry, owner, nonce);
+      const oldIndex = notes.leaves.findIndex((l) => hx(l).toLowerCase() === lf.toLowerCase());
+      if (oldIndex < 0) return null;
+      const oldPath = notes.rootAndPath(oldIndex).path;
+      const sw = foldSpent(farmReceiptNullifier(lf));
+      farmRewards.accrue(st, height);
+      st.totalShares -= BigInt(shares);
+      farmRewards.set(farmId, st);
+      return { owner: hx(b32(owner)), nonce: hx(b32(nonce)), rpsEntry: String(rpsEntry), oldIndex, oldPath, spentInsert: sw };
     }
     // A bridge-out: the burn-set insert witness ν → destCommitment, then advance.
     function foldBurn(nu, destCommitment) {
@@ -634,13 +736,15 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
 
     // ── cBTC.zk self-custody lock fold — TRACK, not mint (mirror cxfer-core fold_cbtc_lock) ──
     // The lock value `vBtc` (parsed from the lock output) comes from the caller. Gates: asset == the one
-    // cBTC.zk id, lock vout != 0, the outpoint isn't already tracked, and (cx,cy) is a curve point. Effect:
-    // track the lock outpoint + accrue backing — both ride digest(). The cBTC NOTE is NOT minted here: it is
-    // minted later by ConfidentialPool.mintCbtc (OP_CBTC_MINT), gated on this lock + a native-ETH escrow,
-    // where the value-opening (note == vBtc) is checked. Returns the per-cycle `cbtcLocksFolded` delta
+    // cBTC.zk id, vBtc != 0, lock vout != 0, the outpoint isn't already tracked, and (cx,cy) is a curve
+    // point. Effect: track the lock outpoint + accrue backing — both ride digest(). The cBTC NOTE is NOT
+    // minted here: it is minted later by ConfidentialPool.mintCbtc (OP_CBTC_MINT), gated on this lock + a
+    // native-ETH escrow, where the value-opening (note == vBtc) is checked. Returns the per-cycle
+    // `cbtcLocksFolded` delta
     // {outpoint, vBtc, commitment} for the contract's lock registry, or null if a gate fails (skip-not-panic).
     function foldCbtcLock({ asset, cx, cy, vBtc, lockVout, lockTxid }) {
       if (hx(b32(asset)) !== CBTC_ZK_ASSET_ID) return null;          // not the cBTC.zk asset
+      if (BigInt(vBtc) === 0n) return null;                           // zero-sat locks are inert / rejected on-chain
       if ((lockVout >>> 0) === 0) return null;                        // lock vout must not be 0
       try { ptFromXY(cx, cy).assertValidity(); } catch { return null; } // commitment must be ON the curve (matches the guest from_affine_xy)
       const outpoint = outpointKey(lockTxid, lockVout);
@@ -925,6 +1029,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
 
     return {
       commit, digest, foldSpent, foldOutput, foldNoteAppend, foldBurn, foldCbtcLock, foldCbtcLockSpends, foldCbtcRedeem, foldSwapVar, foldSwapRoute, foldHarvest, foldProtocolFeeClaim, foldFarmInit, foldLpRemove, foldLpAdd, foldConsumed, foldCrossout, setConsumedCount, getConsumedCount, setEthReflDigest, getEthReflDigest, setHeight,
+      foldFarmInitRewards, foldLpBond, foldLpHarvest, foldLpUnbond, farmRewards,
       // The next free slot's note append-path, computed WITHOUT inserting — the swap_batch witness emits this n
       // times on a skip (the guest reads n receipt paths unconditionally, then discards them when the fold bails).
       notePathPeek: () => notes.rootAndPath(noteCount()).path,
@@ -1203,6 +1308,9 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
       // FAST-LANE / Mode-B anchor: the eth-reflection accumulator digest (read right after consumedCount);
       // genesis 0x00..00 for a forward batch (the guest reconstructs the same zero anchor).
       ethReflDigest: state.getEthReflDigest(),
+      // Fair farms: the per-farm reward-per-share accumulator handoff (read right after ethReflDigest); empty
+      // for a no-farm chain, populated when a resumed cycle continues a chain with live farms.
+      farmRewards: state.farmRewards.list(),
     };
     // Mode-B reverse reflection: when the batch carries an eth-reflection proof (modeB), fold its attested
     // consumed-ν set into the spent set BEFORE the block scan (Ethereum-senior void), emitting the witnesses
@@ -1295,6 +1403,9 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
         let lpAdd = null;
         let swapBatch = null;
         let crossoutMint = null;
+        let lpBond = null;
+        let lpUnbond = null;
+        let farmRefund = null;
         if (tx.env && tx.env.type === 'burn') {
           if (openings.length === 1) {
             // Reflected-note bridge-out: the burned note is a live pool note (already nullified above by the
@@ -1359,9 +1470,9 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
           // root. Removing an entry here = implementing that fold in the scan state + this assembler.
           unsupportedEnvelopes.push({ txid: tx.txid, opcode: tx.env.opcode });
         } else if (tx.env && tx.env.type === 'cbtc_lock') {
-          // cBTC.zk sats-lock: fold the lock (gate + track) without minting a pool note here. The opening sigma
-          // (rx/ry/z) is ON-CHAIN in the 0x66 envelope (option a), so no off-chain witness and no note-path are
-          // serialized per 0x66; reflect-stdin intentionally ignores this debug marker. lockTxid = this txid.
+          // cBTC.zk sats-lock: fold the lock (gate + track) without minting a pool note here. The 0x66
+          // envelope still carries legacy sigma-shaped fields for wire compatibility, but track-not-mint
+          // ignores them; the value-opening proof is checked later by OP_CBTC_MINT. lockTxid = this txid.
           const w = state.foldCbtcLock({ asset: tx.env.asset, cx: tx.env.cx, cy: tx.env.cy, vBtc: tx.env.vBtc, lockVout: tx.env.lockVout, lockTxid: tx.txid, sigRx: tx.env.sigRx, sigRy: tx.env.sigRy, sigZ: tx.env.sigZ });
           cbtcLock = { tracked: !!w };
         } else if (tx.env && tx.env.type === 'swap_var') {
@@ -1383,12 +1494,32 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
             ? state.foldSwapRoute(tx.env, inOutpoints[0], inAssets[0], outpointKey(tx.txid, 1))
             : null;
           swapRoute = { receiptPath: rw ? rw.receiptPath : state.notePathPeek() };
-        } else if (tx.env && (tx.env.type === 'harvest' || tx.env.type === 'farm_refund')) {
-          // Track-B harvest (0x3B) / farm-refund (0x3E): onboard the decree-minted reward/refund note (vout 1)
-          // drawn from the C0-backed farm treasury. No input spend — the note is derived from the public (amount, r).
-          // The guest reads the note path for any parseable 0x3B/0x3E before the fold — emit it even on a skip.
+        } else if (tx.env && tx.env.type === 'harvest') {
+          // Trustless harvest (0x3B): foldLpHarvest bounds the reward against the live rps + nullifies the old
+          // receipt + appends the advanced one; foldHarvest then materializes the reward note (vout 1) + debits
+          // the C0-backed treasury. The guest reads the receipt witnesses THEN the reward note path — same order.
+          const ZH = '0x' + '00'.repeat(32);
+          const hlp = state.foldLpHarvest(tx.env.farmId, tx.env.shares, tx.env.rpsEntry, tx.env.owner, tx.env.oldNonce, tx.env.newNonce, tx.env.amount);
           const hw = state.foldHarvest(tx.env.farmId, tx.env.amount, tx.env.r, outpointKey(tx.txid, 1));
-          harvest = { notePath: hw ? hw.notePath : state.notePathPeek() };
+          harvest = hlp
+            ? { ...hlp, notePath: hw ? hw.notePath : state.notePathPeek() }
+            : { owner: ZH, oldNonce: ZH, newNonce: ZH, shares: '0', rpsEntry: '0', oldIndex: 0, oldPath: state.notePathPeek(), spentInsert: { sLowValue: ZH, sLowNext: ZH, sLowIndex: 0, sLowPath: state.notePathPeek(), sNewPath: state.notePathPeek() }, newReceiptPath: state.notePathPeek(), notePath: hw ? hw.notePath : state.notePathPeek() };
+        } else if (tx.env && tx.env.type === 'farm_refund') {
+          // Farm-refund (0x3E): the launcher's treasury reclaim — a public-r note draw (no receipt).
+          const hw = state.foldHarvest(tx.env.farmId, tx.env.amount, tx.env.r, outpointKey(tx.txid, 1));
+          farmRefund = { notePath: hw ? hw.notePath : state.notePathPeek() };
+        } else if (tx.env && tx.env.type === 'lp_bond') {
+          // Trustless bond (0x35): append the owner-blinded receipt note + track total_shares.
+          const ZH = '0x' + '00'.repeat(32);
+          const lb = state.foldLpBond(tx.env.farmId, tx.env.shares, tx.env.owner, tx.env.nonce);
+          lpBond = lb ? { owner: lb.owner, nonce: lb.nonce, receiptPath: lb.receiptPath }
+                      : { owner: ZH, nonce: ZH, receiptPath: state.notePathPeek() };
+        } else if (tx.env && tx.env.type === 'lp_unbond') {
+          // Trustless unbond (0x36): prove + nullify the receipt, drop total_shares.
+          const ZH = '0x' + '00'.repeat(32);
+          const ub = state.foldLpUnbond(tx.env.farmId, tx.env.shares, tx.env.rpsEntry, tx.env.owner, tx.env.nonce);
+          lpUnbond = ub ? { owner: ub.owner, nonce: ub.nonce, rpsEntry: ub.rpsEntry, oldIndex: ub.oldIndex, oldPath: ub.oldPath, spentInsert: ub.spentInsert }
+                        : { owner: ZH, nonce: ZH, rpsEntry: '0', oldIndex: 0, oldPath: state.notePathPeek(), spentInsert: { sLowValue: ZH, sLowNext: ZH, sLowIndex: 0, sLowPath: state.notePathPeek(), sNewPath: state.notePathPeek() } };
         } else if (tx.env && tx.env.type === 'protocol_fee_claim') {
           // Track-B protocol-fee claim (0x31): crystallize the pool's swap-driven fee accrual + onboard the
           // claim note (vout 1) as an LP-share note. No input spend — the note is minted by decree. The guest
@@ -1401,7 +1532,9 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
           if (openings.length === 1 && hx(b32(inAssets[0])) === hx(b32(tx.env.rewardAsset))) {
             const cIn = compressXY(openings[0].cx, openings[0].cy);
             const farmId = ammDeriveFarmId(tx.env.poolId, tx.env.launcherPubkey, tx.env.rewardAsset, tx.env.farmNonce);
-            state.foldFarmInit(farmId, tx.env.rewardAsset, tx.env.rewardTotal, inOutpoints[0], cIn, tx.env.cChangeOrSentinel, tx.env.kernelSig);
+            const fiOk = state.foldFarmInit(farmId, tx.env.rewardAsset, tx.env.rewardTotal, inOutpoints[0], cIn, tx.env.cChangeOrSentinel, tx.env.kernelSig);
+            // Fair farm: register the reward-per-share accumulator with the envelope's reward_per_block rate.
+            if (fiOk) state.foldFarmInitRewards(farmId, tx.env.rewardPerBlock || 0);
           }
         } else if (tx.env && tx.env.type === 'lp_remove') {
           // Track-B lp_remove (0x2E): the LP's detected LP-share spends are burned; onboard the two withdrawn
@@ -1466,7 +1599,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
             crossoutMint = skipCrossoutMint();
           }
         }
-        txsOut.push({ txData: tx.txData, openings, spentInserts, burnInsert, outputs, burnDeposit, cbtcLock, swapVar, swapRoute, harvest, protocolFee, lpRemove, lpAdd, swapBatch, crossoutMint });
+        txsOut.push({ txData: tx.txData, openings, spentInserts, burnInsert, outputs, burnDeposit, cbtcLock, swapVar, swapRoute, harvest, protocolFee, lpRemove, lpAdd, swapBatch, crossoutMint, lpBond, lpUnbond, farmRefund });
       }
       blocksOut.push({ txs: txsOut });
       blockIndex++;
@@ -1668,6 +1801,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     utxoLeaf, makeUtxoAccumulator, commitmentHash, decompressCommitment, compressXY, outpointKey,
     makeReflectionState, assembleReflectionInput, openingSigma, verifyOpeningSigma, deriveOpeningNonce, intentContext,
     liveLeaf, makeLiveUtxoSet, makeScanReflectionState, assembleReflectionScanInput,
+    farmReceiptLeaf, farmReceiptNullifier, farmHarvestNewEntry, makeFarmRewardSet, FARM_RPS_PRECISION,
     DEST_CHAIN_BITCOIN, ethCrossoutLeaf, ethConsumedLeaf, ethCrossoutMember, buildEthPv, buildModeBBatch,
     CBTC_ZK_ASSET_ID, CBTC_LOCK_DOMAIN, cbtcLockContext,
     cxferKernelVerify, verifyCxferConservation,

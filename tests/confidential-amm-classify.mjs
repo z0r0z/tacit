@@ -87,7 +87,7 @@ const A = '0x' + 'a1'.repeat(32), B = '0x' + 'b2'.repeat(32), C = '0x' + 'c3'.re
     && norm(d.rRecvA).length === 64 && norm(d.rRecvB).length === 64 && norm(d.recvASecp).length === 66 && norm(d.kernelSig).length === 128,
     'lp_remove (0x2E): type/share/deltas/rRecvA/rRecvB/recvASecp/kernel');
 }
-// ── cBTC lock (0x66): opening sigma rides the envelope (option a); v_btc stamped from the lock output ──
+// ── cBTC lock (0x66): legacy sigma-shaped fields ride the envelope; v_btc is stamped from the lock output ──
 {
   const d = classifyConfidentialTx(txData('gen-reflection-cbtc-synth.mjs'));
   ok(d && d.type === 'cbtc_lock' && numEq(d.vBtc, 123456) && d.lockVout === 1

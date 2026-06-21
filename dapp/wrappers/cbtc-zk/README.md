@@ -1,4 +1,4 @@
-# cBTC.zk — canonical wrapper assets
+# tacBTC — canonical wrapper assets (cBTC.zk note model)
 
 Static-payload assets the first minter uses to CETCH the canonical
 cBTC.zk asset on Bitcoin mainnet (and signet for testing). Kept in-repo
@@ -33,7 +33,7 @@ off-band copy.
 3. **Pin the updated `metadata.json` to IPFS**, capture its CID. This
    is the value used as the CETCH's `image_uri` parameter.
 4. **CETCH from the dapp's Etch tab.** Recommended parameters:
-   - `ticker`: `cBTC.zk`
+   - `ticker`: `tacBTC`
    - `decimals`: `8`
    - `supply`: `2_100_000_000_000_000` (21M BTC expressed at 8 decimals
      = total sat-granularity cap; matches Bitcoin's hard cap and is the

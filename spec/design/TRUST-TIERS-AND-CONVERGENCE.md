@@ -113,8 +113,8 @@ required to move the tETH concept from the dedicated mixer into the pool:
   Ethereum↔Bitcoin via the reflection bridge + `crossChainLink`/`localAssetOf`
   resolution (all proven paths).
 - **Registration is permissionless** (the pool has no owner). Migration is an
-  operational flow: register native ETH (and/or the tETH ERC20) once, then users
-  `wrap` (or redeem tETH → ETH → `wrap`). The Tornado fixed-denomination
+  operational flow: pin native ETH to the tETH Bitcoin id at deploy, then users
+  `wrap` (or redeem legacy tETH → ETH → `wrap`). The Tornado fixed-denomination
   anonymity set is the one privacy property to preserve in the move (optionally
   run ETH over a denomination ladder).
 

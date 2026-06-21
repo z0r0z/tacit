@@ -18,9 +18,10 @@ use alloy_sol_types::{sol, SolValue};
 use cxfer_core::{
     adaptor_lock_leaf, bitcoin, cdp_basket_leg, cdp_basket_root, cdp_debt_asset_id,
     cdp_position_leaf, cdp_position_nullifier, claim_id, clearing_price_matches, commitment_hash,
-    decompress, deposit_commit, deposit_id, from_affine_xy, get_amount_out, imt_non_membership,
-    intent_context, isqrt, keccak_merkle_verify, leaf, lp_add_shares, lp_share_id, nullifier,
-    pool_id, scalar_reduce_be, utxo_leaf, verify_kernel, verify_opening_sigma, verify_range, Point,
+    decompress, deposit_commit, deposit_id, farm_harvest_new_entry, farm_receipt_leaf,
+    farm_receipt_nullifier, from_affine_xy, get_amount_out, imt_non_membership, intent_context,
+    isqrt, keccak_merkle_verify, leaf, lp_add_shares, lp_share_id, nullifier, pool_id,
+    scalar_reduce_be, utxo_leaf, verify_kernel, verify_opening_sigma, verify_range, Point,
     CBTC_ZK_ASSET_ID,
 };
 use sp1_zkvm::io;
@@ -52,9 +53,16 @@ const OP_ADAPTOR_REFUND: u8 = 14; // adaptor swap: refund a locked note to its l
                                   // pricing /ratio policy. cUSD-on-cBTC is the first instance (single-leg cBTC basket).
 const OP_CDP_MINT: u8 = 15; // open: lock collateral basket → mint debt note (controller authorizes the amount)
 const OP_CDP_CLOSE: u8 = 16; // close: burn the exact debt → reclaim the collateral basket (no oracle/veto)
-const OP_CDP_LIQUIDATE: u8 = 17; // liquidate: seize the basket to the controller (controller proves unhealthy)
+const OP_CDP_LIQUIDATE: u8 = 17; // liquidate: burn exact debt, then seize basket (controller proves unhealthy)
 const OP_CBTC_MINT: u8 = 18; // mint cBTC against a reflection-recorded self-custody lock (contract gates lock + escrow)
 const OP_CDP_TOPUP: u8 = 19; // top-up: consume old position + append replacement with larger collateral basket
+// Fair farms (SPEC-CONTROLLER-VAULT-AMENDMENT §4) — the per-stake reward-per-share receipt, byte-identical to
+// the Bitcoin reflection (`farm_receipt_leaf` in the note tree, nullified via the spent set). bond/harvest/
+// unbond ride a positionLeaf == 1 sentinel CdpMint (debtValue discriminates bond=0 / harvest>0) + a CdpClose,
+// so the FROZEN pool needs no change — the receipt is a note in `pv.leaves`, its nullifier in `pv.nullifiers`.
+const OP_FARM_BOND: u8 = 20; // lock LP-share notes → mint a receipt note (shares, rps_entry); controller checks rps_entry == rps_live
+const OP_FARM_HARVEST: u8 = 21; // prove receipt → bound reward, nullify old + append advanced receipt + reward note
+const OP_FARM_UNBOND: u8 = 22; // prove receipt → nullify, re-mint the LP-share notes, controller drops the shares
 
 const SWAP_DIR_A_TO_B: u8 = 0;
 const SWAP_DIR_B_TO_A: u8 = 1;
@@ -78,8 +86,9 @@ sol! {
     struct CdpMint { address controller; bytes32 debtAsset; uint256 debtValue; bytes32 positionLeaf; CdpLeg[] legs; }
     // OP_CDP_CLOSE: the contract dedups `positionNullifier` + calls controller.onCdpClose(debtValue, legs).
     struct CdpClose { address controller; uint256 debtValue; bytes32 positionNullifier; CdpLeg[] legs; }
-    // OP_CDP_LIQUIDATE: the contract dedups `positionNullifier` + calls controller.onCdpLiquidate(legs,
-    // debtValue) (reverts if healthy); the seized legs ride `withdrawals` to the controller.
+    // OP_CDP_LIQUIDATE: burn exact debt notes, then the contract dedups `positionNullifier` + calls
+    // controller.onCdpLiquidate(legs, debtValue) (reverts if healthy); seized legs ride `withdrawals` to
+    // the liquidator.
     struct CdpLiquidate { address controller; uint256 debtValue; bytes32 positionNullifier; CdpLeg[] legs; }
     // OP_CDP_TOPUP: consume an existing position and append a same-debt replacement with a larger basket.
     // The controller authorizes the replacement health; outstanding debt is unchanged.
@@ -1729,7 +1738,28 @@ pub fn main() {
                 let l_nu = nullifier(&l_cx, &l_cy);
 
                 // Output note → recipient (owner pinned by the membership-verified lock leaf; no redirect).
+                let amount: u64 = io::read(); // prover-visible (kept out of PublicValues); == L's value by the kernel
                 let (o_cx, o_cy, o_pt) = r_commitment();
+                // Require an OPENING on O — the recipient proves they know its blinding for `amount`, symmetric
+                // with the lock's N/L openings. This makes O a real recipient-controlled note (an output whose
+                // blinding the recipient can't open is rejected). Since L's blinding is the locker's secret, a
+                // valid kernel over (L_C − O_C) can then only be produced by completing the locker's T-adaptor
+                // signature — so committing the kernel `s` below always reveals `t` (the cross-chain settlement
+                // guarantee, not a worker convention).
+                let o_sig_r = decompress(&r33()).expect("adaptor-claim: O-open R");
+                let o_sig_z = scalar_reduce_be(&r32());
+                let o_ctx = intent_context(
+                    b"tacit-adaptor-claim-out-v1",
+                    &chain_binding,
+                    &asset,
+                    &asset,
+                    &[(o_cx, o_cy, recipient), (l_cx, l_cy, locker)],
+                    &[amount, deadline],
+                );
+                assert!(
+                    verify_opening_sigma(&o_pt, amount, &o_sig_r, &o_sig_z, &o_ctx),
+                    "adaptor-claim: O opening (recipient controls the output)"
+                );
                 // Adaptor-completed kernel over (L_C − out_C): a valid kernel ⇒ out conserves L's value without
                 // revealing it. `kernel_z` IS the completed signature `s` (committed for the t-reveal).
                 let kernel_r = decompress(&r33()).expect("adaptor-claim: kernel R");
@@ -1803,15 +1833,21 @@ pub fn main() {
                 let controller = r20();
                 let owner = r32();
                 let debt_value: u64 = io::read();
-                assert!(debt_value > 0, "cdp-mint: zero debt"); // a zero-debt position only bloats the set
                 let nonce = r32();
                 let n_legs: u32 = io::read();
-                assert!(n_legs > 0, "cdp-mint: empty basket");
+                // SPEC-CONTROLLER-VAULT-AMENDMENT §§1-2: relax the two anti-bloat asserts so one op serves three
+                // shapes. `debt_value == 0` ⇒ a BOND (lock the basket into a controller position, mint NO debt
+                // note — for farms/staking/vesting). `n_legs == 0` ⇒ a PAYOUT (mint the controller token to a
+                // recipient, no collateral, no position — positionLeaf = 0). The normal CDP (both > 0) is
+                // unchanged. Both zero is an empty op — rejected.
+                assert!(debt_value > 0 || n_legs > 0, "cdp-mint: empty op (zero debt and empty basket)");
                 assert!(n_legs <= MAX_ITEMS_PER_OP, "cdp-mint: basket over cap");
-                assert!(
-                    spend_root != [0u8; 32],
-                    "cdp-mint: membership requires a non-zero spend root"
-                );
+                if n_legs > 0 {
+                    assert!(
+                        spend_root != [0u8; 32],
+                        "cdp-mint: membership requires a non-zero spend root"
+                    );
+                }
                 let mut leg_hashes: Vec<[u8; 32]> = Vec::with_capacity(n_legs as usize);
                 let mut legs_pv: Vec<CdpLeg> = Vec::with_capacity(n_legs as usize);
                 // Canonical basket: legs strictly asset-sorted (so basket_root is order-independent + no
@@ -1863,34 +1899,35 @@ pub fn main() {
                         value: U256::from(value),
                     });
                 }
-                // mint the debt note (asset = derive(controller)), owned by `owner`, opening to debt_value
+                // mint the debt/payout note (asset = derive(controller)), owned by `owner`, opening to
+                // debt_value — SKIPPED for a bond (debt_value == 0 mints nothing; the basket is locked unpriced).
                 let debt_asset = cdp_debt_asset_id(&controller);
-                let (d_cx, d_cy, d_pt) = r_commitment();
-                let d_sig_r = decompress(&r33()).expect("cdp-mint: debt sigma R");
-                let d_sig_z = scalar_reduce_be(&r32());
-                let debt_ctx = intent_context(
-                    b"tacit-cdp-mint-debt-v1",
-                    &chain_binding,
-                    &debt_asset,
-                    &nonce,
-                    &[(d_cx, d_cy, owner), (controller32, nonce, owner)],
-                    &[debt_value],
-                );
-                assert!(
-                    verify_opening_sigma(&d_pt, debt_value, &d_sig_r, &d_sig_z, &debt_ctx),
-                    "cdp-mint: debt opening sigma"
-                );
-                leaves.push(leaf(&debt_asset, &d_cx, &d_cy, &owner));
-                // the position leaf the contract appends to its position set (CLOSE/LIQUIDATE prove against it)
-                let basket_root = cdp_basket_root(&leg_hashes);
-                let position_leaf = cdp_position_leaf(
-                    &controller,
-                    &debt_asset,
-                    &basket_root,
-                    debt_value,
-                    &owner,
-                    &nonce,
-                );
+                if debt_value > 0 {
+                    let (d_cx, d_cy, d_pt) = r_commitment();
+                    let d_sig_r = decompress(&r33()).expect("cdp-mint: debt sigma R");
+                    let d_sig_z = scalar_reduce_be(&r32());
+                    let debt_ctx = intent_context(
+                        b"tacit-cdp-mint-debt-v1",
+                        &chain_binding,
+                        &debt_asset,
+                        &nonce,
+                        &[(d_cx, d_cy, owner), (controller32, nonce, owner)],
+                        &[debt_value],
+                    );
+                    assert!(
+                        verify_opening_sigma(&d_pt, debt_value, &d_sig_r, &d_sig_z, &debt_ctx),
+                        "cdp-mint: debt opening sigma"
+                    );
+                    leaves.push(leaf(&debt_asset, &d_cx, &d_cy, &owner));
+                }
+                // the position leaf the contract appends to its position set (CLOSE/LIQUIDATE prove against it),
+                // or the `0` sentinel for a PAYOUT (n_legs == 0 ⇒ no position; the pool skips the insert).
+                let position_leaf = if n_legs > 0 {
+                    let basket_root = cdp_basket_root(&leg_hashes);
+                    cdp_position_leaf(&controller, &debt_asset, &basket_root, debt_value, &owner, &nonce)
+                } else {
+                    [0u8; 32]
+                };
                 cdp_mints.push(CdpMint {
                     controller: Address::from(controller),
                     debtAsset: debt_asset.into(),
@@ -2027,21 +2064,27 @@ pub fn main() {
                 });
             }
             OP_CDP_LIQUIDATE => {
-                // Liquidate a CDP: reproduce the position leaf, prove it ∈ cdp_position_root, and SEIZE the
-                // basket by WITHDRAWING each leg's value to the controller (public — a contract can't hold a
-                // confidential note). The AUTHORITY is the contract's: it calls controller.onCdpLiquidate(legs,
-                // debtValue), which proves (its oracle) the position is undercollateralized + covers the debt
-                // (buy+burn the cUSD from the seized proceeds), and reverts if healthy. The position is consumed.
+                // Liquidate a CDP atomically: reproduce the position leaf, prove it ∈ cdp_position_root, burn
+                // controller-derived debt notes summing to EXACTLY the position debt, and SEIZE the basket by
+                // WITHDRAWING each leg's value to the liquidator. The contract still calls
+                // controller.onCdpLiquidate(legs, debtValue), which proves (its oracle) the position is
+                // undercollateralized and reverts if healthy. No async buy-and-burn remains: the debt is
+                // retired inside this proof before collateral can leave.
                 let controller = r20();
                 let owner = r32();
                 let debt_value: u64 = io::read();
                 let nonce = r32();
+                let liquidator = r20();
                 let position_index: u64 = io::read();
                 let position_path = r_path();
                 let n_legs: u32 = io::read();
                 assert!(n_legs > 0, "cdp-liquidate: empty basket");
                 assert!(n_legs <= MAX_ITEMS_PER_OP, "cdp-liquidate: basket over cap");
-                let controller_addr = Address::from(controller);
+                assert!(
+                    spend_root != [0u8; 32],
+                    "cdp-liquidate: debt membership requires a non-zero spend root"
+                );
+                let liquidator_addr = Address::from(liquidator);
                 let mut leg_hashes: Vec<[u8; 32]> = Vec::with_capacity(n_legs as usize);
                 let mut legs_pv: Vec<CdpLeg> = Vec::with_capacity(n_legs as usize);
                 for _ in 0..n_legs {
@@ -2052,10 +2095,10 @@ pub fn main() {
                         asset: asset.into(),
                         value: U256::from(value),
                     });
-                    // seize: withdraw the leg's value to the controller (the value is bound by the basket root)
+                    // seize: withdraw the leg's value to the liquidator (the value is bound by the basket root)
                     withdrawals.push(Withdrawal {
                         assetId: asset.into(),
-                        recipient: controller_addr,
+                        recipient: liquidator_addr,
                         value: U256::from(value),
                     });
                 }
@@ -2082,8 +2125,50 @@ pub fn main() {
                     ),
                     "cdp-liquidate: position membership"
                 );
+                let n_debt: u32 = io::read();
+                assert!(
+                    n_debt > 0 && n_debt <= MAX_ITEMS_PER_OP,
+                    "cdp-liquidate: debt input count out of range"
+                );
+                let mut repaid: u128 = 0;
+                for _ in 0..n_debt {
+                    let (cx, cy, pt) = r_commitment();
+                    let d_owner = r32();
+                    let value: u64 = io::read();
+                    let index: u64 = io::read();
+                    let path = r_path();
+                    let sig_r = decompress(&r33()).expect("cdp-liquidate: debt sigma R");
+                    let sig_z = scalar_reduce_be(&r32());
+                    let lf = leaf(&debt_asset, &cx, &cy, &d_owner);
+                    assert!(
+                        keccak_merkle_verify(&lf, index, &path, &spend_root),
+                        "cdp-liquidate: debt membership"
+                    );
+                    let ctx = intent_context(
+                        b"tacit-cdp-liquidate-debt-v1",
+                        &chain_binding,
+                        &debt_asset,
+                        &position_leaf,
+                        &[(cx, cy, d_owner)],
+                        &[value, debt_value, index],
+                    );
+                    assert!(
+                        verify_opening_sigma(&pt, value, &sig_r, &sig_z, &ctx),
+                        "cdp-liquidate: debt opening sigma"
+                    );
+                    let nu = nullifier(&cx, &cy);
+                    if bitcoin_spent_root != [0u8; 32] {
+                        check_btc_nonmembership(&nu, &bitcoin_spent_root);
+                    }
+                    nullifiers.push(nu);
+                    repaid += value as u128;
+                }
+                assert!(
+                    repaid == debt_value as u128,
+                    "cdp-liquidate: must repay exactly the position debt"
+                );
                 cdp_liquidations.push(CdpLiquidate {
-                    controller: controller_addr,
+                    controller: Address::from(controller),
                     debtValue: U256::from(debt_value),
                     positionNullifier: cdp_position_nullifier(&position_leaf).into(),
                     legs: legs_pv,
@@ -2241,6 +2326,174 @@ pub fn main() {
                     newPositionLeaf: new_position_leaf.into(),
                     oldLegs: old_legs_pv,
                     newLegs: new_legs_pv,
+                });
+            }
+            OP_FARM_BOND => {
+                // Lock LP-share notes into a farm position (SPEC-CONTROLLER-VAULT-AMENDMENT §4): spend the
+                // basket (conserve `shares`), append a RECEIPT note committing (shares, rps_entry, owner, nonce)
+                // — byte-identical to the Bitcoin `farm_receipt_leaf`. The bond emits a positionLeaf == 1 /
+                // debtValue == 0 CdpMint with legs = [shares, rps_entry], so the controller binds `rps_entry ==
+                // rps_live` (no backdating) + `total_shares += shares`, and the FROZEN pool skips the position
+                // insert (positionLeaf ≤ 1). The receipt rides `pv.leaves`; no pool change.
+                let controller = r20();
+                let owner = r32();
+                let rps_entry: u128 = io::read(); // witnessed; the controller binds it to the live rps at settle
+                let nonce = r32();
+                let lp_asset = r32(); // the bonded LP-share asset (all legs share it)
+                let mut controller32 = [0u8; 32];
+                controller32[12..].copy_from_slice(&controller);
+                let n_legs: u32 = io::read();
+                assert!(n_legs > 0 && n_legs <= MAX_ITEMS_PER_OP, "farm-bond: basket count");
+                assert!(spend_root != [0u8; 32], "farm-bond: membership requires a non-zero spend root");
+                let mut shares: u64 = 0;
+                for _ in 0..n_legs {
+                    let (cx, cy, pt) = r_commitment();
+                    let value: u64 = io::read();
+                    assert!(value > 0, "farm-bond: zero-value leg");
+                    let index: u64 = io::read();
+                    let path = r_path();
+                    let sig_r = decompress(&r33()).expect("farm-bond: leg sigma R");
+                    let sig_z = scalar_reduce_be(&r32());
+                    let lf = leaf(&lp_asset, &cx, &cy, &owner);
+                    assert!(keccak_merkle_verify(&lf, index, &path, &spend_root), "farm-bond: leg membership");
+                    let ctx = intent_context(
+                        b"tacit-farm-bond-leg-v1",
+                        &chain_binding,
+                        &lp_asset,
+                        &nonce,
+                        &[(cx, cy, owner), (controller32, nonce, owner)],
+                        &[value, index],
+                    );
+                    assert!(
+                        verify_opening_sigma(&pt, value, &sig_r, &sig_z, &ctx),
+                        "farm-bond: leg opening sigma"
+                    );
+                    let nu = nullifier(&cx, &cy);
+                    if bitcoin_spent_root != [0u8; 32] {
+                        check_btc_nonmembership(&nu, &bitcoin_spent_root);
+                    }
+                    nullifiers.push(nu);
+                    shares += value;
+                }
+                leaves.push(farm_receipt_leaf(&controller32, shares, rps_entry, &owner, &nonce));
+                let debt_asset = cdp_debt_asset_id(&controller);
+                let mut sentinel = [0u8; 32];
+                sentinel[31] = 1; // positionLeaf == 1 (fair-farm sentinel); debtValue == 0 ⇒ BOND
+                cdp_mints.push(CdpMint {
+                    controller: Address::from(controller),
+                    debtAsset: debt_asset.into(),
+                    debtValue: U256::from(0u64),
+                    positionLeaf: sentinel.into(),
+                    legs: vec![
+                        CdpLeg { asset: lp_asset.into(), value: U256::from(shares) },
+                        CdpLeg { asset: [0u8; 32].into(), value: U256::from(rps_entry) },
+                    ],
+                });
+            }
+            OP_FARM_HARVEST => {
+                // Claim accrued reward, keeping the principal staked (SPEC-CONTROLLER-VAULT-AMENDMENT §4): prove
+                // the OLD receipt note is in the pool tree, nullify it (spend-once), append the checkpoint-
+                // advanced receipt + the reward note, and emit a positionLeaf == 1 / debtValue == reward CdpMint
+                // with legs = [shares, rps_entry] so the controller bounds `reward ≤ shares·(rps − rps_entry)`.
+                // total_shares is untouched (the controller's harvest branch never writes it) — principal stays.
+                let controller = r20();
+                let owner = r32();
+                let shares: u64 = io::read();
+                let rps_entry: u128 = io::read();
+                let old_nonce = r32();
+                let new_nonce = r32();
+                let reward: u64 = io::read();
+                assert!(reward > 0, "farm-harvest: zero reward");
+                let mut controller32 = [0u8; 32];
+                controller32[12..].copy_from_slice(&controller);
+                let old_index: u64 = io::read();
+                let old_path = r_path();
+                let old_leaf = farm_receipt_leaf(&controller32, shares, rps_entry, &owner, &old_nonce);
+                assert!(spend_root != [0u8; 32], "farm-harvest: membership requires a non-zero spend root");
+                assert!(
+                    keccak_merkle_verify(&old_leaf, old_index, &old_path, &spend_root),
+                    "farm-harvest: receipt membership"
+                );
+                nullifiers.push(farm_receipt_nullifier(&old_leaf));
+                let new_entry = farm_harvest_new_entry(shares, rps_entry, reward);
+                leaves.push(farm_receipt_leaf(&controller32, shares, new_entry, &owner, &new_nonce));
+                let debt_asset = cdp_debt_asset_id(&controller);
+                // The reward note's asset: an escrow-backed reward asset (ESCROW mode, the pool's farmTreasury
+                // backs it) or the controller's pool-minted debt asset (MINT mode, == debt_asset). Witnessed so
+                // one op serves both; the CdpMint.debtAsset below stays the controller-derived debt id.
+                let reward_asset = r32();
+                let (r_cx, r_cy, r_pt) = r_commitment();
+                let r_sig_r = decompress(&r33()).expect("farm-harvest: reward sigma R");
+                let r_sig_z = scalar_reduce_be(&r32());
+                let r_ctx = intent_context(
+                    b"tacit-farm-harvest-reward-v1",
+                    &chain_binding,
+                    &reward_asset,
+                    &new_nonce,
+                    &[(r_cx, r_cy, owner)],
+                    &[reward],
+                );
+                assert!(
+                    verify_opening_sigma(&r_pt, reward, &r_sig_r, &r_sig_z, &r_ctx),
+                    "farm-harvest: reward opening sigma"
+                );
+                leaves.push(leaf(&reward_asset, &r_cx, &r_cy, &owner));
+                let mut sentinel = [0u8; 32];
+                sentinel[31] = 1; // positionLeaf == 1; debtValue == reward > 0 ⇒ HARVEST
+                cdp_mints.push(CdpMint {
+                    controller: Address::from(controller),
+                    debtAsset: debt_asset.into(),
+                    debtValue: U256::from(reward),
+                    positionLeaf: sentinel.into(),
+                    legs: vec![
+                        CdpLeg { asset: [0u8; 32].into(), value: U256::from(shares) },
+                        CdpLeg { asset: [0u8; 32].into(), value: U256::from(rps_entry) },
+                    ],
+                });
+            }
+            OP_FARM_UNBOND => {
+                // Close a farm position (SPEC-CONTROLLER-VAULT-AMENDMENT §4): prove the receipt note, nullify it,
+                // re-mint the released LP-share note (opening to `shares`), and emit a CdpClose so the controller
+                // drops `total_shares -= shares` + enforces the lock-up. Harvest first to collect accrual.
+                let controller = r20();
+                let owner = r32();
+                let shares: u64 = io::read();
+                let rps_entry: u128 = io::read();
+                let nonce = r32();
+                let lp_asset = r32();
+                let mut controller32 = [0u8; 32];
+                controller32[12..].copy_from_slice(&controller);
+                let old_index: u64 = io::read();
+                let old_path = r_path();
+                let receipt = farm_receipt_leaf(&controller32, shares, rps_entry, &owner, &nonce);
+                assert!(spend_root != [0u8; 32], "farm-unbond: membership requires a non-zero spend root");
+                assert!(
+                    keccak_merkle_verify(&receipt, old_index, &old_path, &spend_root),
+                    "farm-unbond: receipt membership"
+                );
+                let receipt_null = farm_receipt_nullifier(&receipt);
+                nullifiers.push(receipt_null);
+                let (cx, cy, pt) = r_commitment();
+                let sig_r = decompress(&r33()).expect("farm-unbond: release sigma R");
+                let sig_z = scalar_reduce_be(&r32());
+                let ctx = intent_context(
+                    b"tacit-farm-unbond-release-v1",
+                    &chain_binding,
+                    &lp_asset,
+                    &nonce,
+                    &[(cx, cy, owner)],
+                    &[shares],
+                );
+                assert!(
+                    verify_opening_sigma(&pt, shares, &sig_r, &sig_z, &ctx),
+                    "farm-unbond: release opening sigma"
+                );
+                leaves.push(leaf(&lp_asset, &cx, &cy, &owner));
+                cdp_closes.push(CdpClose {
+                    controller: Address::from(controller),
+                    debtValue: U256::from(0u64),
+                    positionNullifier: receipt_null.into(),
+                    legs: vec![CdpLeg { asset: lp_asset.into(), value: U256::from(shares) }],
                 });
             }
             OP_CBTC_MINT => {

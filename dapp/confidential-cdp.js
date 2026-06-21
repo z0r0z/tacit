@@ -108,6 +108,9 @@ export function makeConfidentialCdp({ keccak256, pool }) {
   const cdpCloseDebtSigma = ({ chainBinding, positionLeaf: position, debtAsset, debtValue, index, note }) =>
     sigma('tacit-cdp-close-debt-v1', chainBinding, debtAsset, position, note,
       [note.value, debtValue, index], 'cdp-close-debt');
+  const cdpLiquidateDebtSigma = ({ chainBinding, positionLeaf: position, debtAsset, debtValue, index, note }) =>
+    sigma('tacit-cdp-liquidate-debt-v1', chainBinding, debtAsset, position, note,
+      [note.value, debtValue, index], 'cdp-liquidate-debt');
   const cdpTopupCollateralSigma = ({ chainBinding, oldPositionLeaf, controller, newNonce, owner, asset, note, debtValue, index }) =>
     sigma('tacit-cdp-topup-collateral-v1', chainBinding, asset, oldPositionLeaf, note,
       [note.value, debtValue, index], 'cdp-topup-collateral', [[controllerWord(controller), newNonce, owner]]);
@@ -120,6 +123,6 @@ export function makeConfidentialCdp({ keccak256, pool }) {
   return {
     debtAssetId, basketLeg, basketRoot, positionLeaf, positionNullifier, cbtcMintCommitment,
     cdpMintCollateralSigma, cdpMintDebtSigma, cdpCloseReleaseSigma, cdpCloseDebtSigma,
-    cdpTopupCollateralSigma, cbtcMintSigma,
+    cdpLiquidateDebtSigma, cdpTopupCollateralSigma, cbtcMintSigma,
   };
 }

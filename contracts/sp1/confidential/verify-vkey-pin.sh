@@ -63,6 +63,29 @@ relay_vkey=$(grep -oE '"bitcoin_relay_vkey"[[:space:]]*:[[:space:]]*"0x[0-9a-f]{
 echo "PINNED program_vkey:       $pin_vkey  (settle; ConfidentialSwapProofReal / ConfidentialProofReal)"
 echo "PINNED bitcoin_relay_vkey: $relay_vkey  (reflection; ConfidentialReflectionProofReal)"
 
+# ── Deploy-script ↔ pin coherence (the anti-brick gate: the deployed verifier's vkey must equal the
+# pinned program_vkey BEFORE deploy — caught here, not just at the on-chain DeployConfidentialPool require). ──
+for DEPLOY in "../../script/DeployConfidentialPool.s.sol"; do
+  [ -f "$DEPLOY" ] || continue
+  dep_vkey=$(grep -oE 'DEFAULT_VKEY[[:space:]]*=[[:space:]]*0x[0-9a-f]{64}' "$DEPLOY" | grep -oE '0x[0-9a-f]{64}' | head -1 || true)
+  [ -n "$dep_vkey" ] || { echo "FAIL: DEFAULT_VKEY missing/malformed in $DEPLOY"; exit 1; }
+  [ "$dep_vkey" = "$pin_vkey" ] || { echo "FAIL: $(basename "$DEPLOY") DEFAULT_VKEY ($dep_vkey) != pinned program_vkey ($pin_vkey)"; exit 1; }
+  echo "PASS: $(basename "$DEPLOY") DEFAULT_VKEY matches the pinned program_vkey"
+done
+
+# ── Every committed Groth16 fixture must bind to one of the two pinned vkeys (a fixture matching neither
+# is a stale proof from before a re-prove — re-prove + recommit it, don't ship drift). ──
+ns=0; nr=0
+for FX in ../../test/fixtures/*_groth16.json; do
+  [ -f "$FX" ] || continue
+  fxv=$(grep -oE '"vkey"[[:space:]]*:[[:space:]]*"0x[0-9a-f]{64}"' "$FX" | grep -oE '0x[0-9a-f]{64}' | head -1 || true)
+  [ -n "$fxv" ] || { echo "FAIL: $(basename "$FX") vkey missing/malformed"; exit 1; }
+  if [ "$fxv" = "$pin_vkey" ]; then ns=$((ns + 1));
+  elif [ "$fxv" = "$relay_vkey" ]; then nr=$((nr + 1));
+  else echo "FAIL: $(basename "$FX") vkey ($fxv) matches NEITHER pinned vkey — stale proof, re-prove + recommit"; exit 1; fi
+done
+echo "PASS: all committed Groth16 fixtures bind to a pinned vkey ($ns settle / $nr reflection)"
+
 # ── Reflection leg deliberately pinned (Sepolia E2, 2026-06-19) ───────────────────────────────
 # The reflection vkey is an explicit coordination point: its Groth16 proofs verify on-chain
 # (ConfidentialReflectionProofReal + ConfidentialReflectionBurnDepositProofReal) and readiness-gate
@@ -71,8 +94,8 @@ echo "PINNED bitcoin_relay_vkey: $relay_vkey  (reflection; ConfidentialReflectio
 # deliberate re-prove must bump both FROZEN_* here in the same commit that regenerates the reflection
 # fixtures and re-runs the layer-9 confirmation. The name is historical: these are not "never rotate"
 # constants, they are fail-closed drift guards for the currently pinned reflection ELF.
-FROZEN_REFLECTION_VKEY="0x0032a552d82143745ed675a217822187e15118060dcea1514589ce47c2ec3c02"
-FROZEN_REFLECTION_ELF_SHA="36224f90d603510d464ba3bfbfbee641ea96e13d6d1fa254a9aa509b044d32a5"
+FROZEN_REFLECTION_VKEY="0x00fdfe08721b3ad298529bf632975a2f0ca29440004536d1fa5f43eadd3b0891"
+FROZEN_REFLECTION_ELF_SHA="27863304fe6acf4f3a1a790d197caa4ab331cbc454073a5cf14e2d1bbb8403b7"
 if [ "$relay_vkey" != "$FROZEN_REFLECTION_VKEY" ] || [ "$rpin" != "$FROZEN_REFLECTION_ELF_SHA" ]; then
   echo "FAIL: reflection leg drifted from the frozen Mode-B values"
   echo "  bitcoin_relay_vkey:    got $relay_vkey  expected $FROZEN_REFLECTION_VKEY"

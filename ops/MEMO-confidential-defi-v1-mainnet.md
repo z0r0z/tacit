@@ -71,7 +71,7 @@ breaks the circular dep (both can't be immutable-constructor). Order:
 - [ ] Register **cBTC** as a canonical (mint-backed) asset; confirm `cbtcBackingSats()` reads 0 (no locks yet)
       and an `OP_CBTC_MINT` against a real lock + a funded escrow mints 1:1.
 - [ ] cUSD: open a CDP (lock cBTC → mint cUSD) within `cdpRatio`; confirm `onCdpMint` gates it and a
-      liquidation below `liqRatio` seizes to the engine.
+      liquidation below `liqRatio` burns exact cUSD debt in-proof, then seizes collateral to the liquidator.
 - [ ] Flip the dapp gate for the confidential-DeFi surface (alongside the §A items in
       `CHECKLIST-mainnet-launch.md`).
 
@@ -80,6 +80,8 @@ breaks the circular dep (both can't be immutable-constructor). Order:
   matching-burn classification — a clean follow-up); the DAO is the bounded trust there.
 - cUSD's peg is **Chainlink BTC/USD-load-bearing** (CDP-stablecoin, DAI-model); size conservatively + wire
   the deviation bound as the 2nd source once the pool deepens.
+- The native-ETH reserve is a **protocol backstop**, not user insurance. V1 keeps one DAO/timelock-managed
+  reserve with purpose-tagged draws; a later policy contract can own the engine for programmatic draws.
 - Reorg posture (deep-reorg-beyond-`REFLECTION_CONFIRMATIONS`) = accept-and-document, as on the bridge/mixer
   (`ACK_REFLECTION_ANCHORED`).
 - Mode-B eth-reflection re-anchors periodically (proving cost grows with chain-age since genesis).

@@ -39,6 +39,7 @@ const controllerB = '0x' + 'c2'.repeat(20);
   const expNu = hx(keccak_256(cat(enc.encode('tacit-cdp-position-v1'), bytesN(someLeaf, 32), enc.encode('spent'))));
   assert.equal(cdp.positionNullifier(someLeaf), expNu, 'positionNullifier byte-parity');
   assert.equal(typeof cdp.cdpTopupCollateralSigma, 'function', 'top-up sigma helper exported');
+  assert.equal(typeof cdp.cdpLiquidateDebtSigma, 'function', 'liquidation debt sigma helper exported');
 }
 
 // (2) structural KAT — mirrors cxfer-core::tests::cdp_primitives_bind_and_separate.

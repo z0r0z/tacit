@@ -48,7 +48,7 @@ contract CanonicalBridgedERC20 is ERC20 {
     uint8 private immutable _decimals;
 
     error NotMinter();
-    error ZeroAddress();
+    error InvalidRecipient();
 
     /// @dev EIP-7572: signals indexers/marketplaces to (re)fetch `contractURI`. The metadata is
     ///      immutable (bound into ASSET_ID), so it is emitted once at deploy — never again.
@@ -87,10 +87,11 @@ contract CanonicalBridgedERC20 is ERC20 {
 
     /// @notice Mint backed supply. Only the minter, which enforces the backing (the SP1
     ///         bridge proof for bridged assets; collateral health for synthetics). Rejects the zero
-    ///         address — solady's `_mint` does not, and minting there is irreversible locked supply.
+    ///         address and the token itself — solady guards neither, and supply minted to either is
+    ///         stranded (no holder can move it; only the minter could burn it back).
     function mint(address to, uint256 amount) external {
         if (msg.sender != MINTER) revert NotMinter();
-        if (to == address(0)) revert ZeroAddress();
+        if (to == address(0) || to == address(this)) revert InvalidRecipient();
         _mint(to, amount);
     }
 

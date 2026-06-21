@@ -370,8 +370,8 @@ learn Bitcoin's state (the hard §2 direction). But this is a **trustless,
 permissionless data relay** — categorically unlike a capital relayer — and **most of
 it already runs on mainnet**: the `BitcoinLightRelay` SPV client (header chain,
 per-epoch difficulty / `retarget`, PoW + median-time-past + future-drift checks,
-`tip()`/`blockParent()`, `FINALITY_WINDOW` reorg tolerance) and `SP1PoolRootVerifier`
-(SP1 proofs of Bitcoin pool state anchored to the relay tip) are the live tETH
+  `tip()`/`blockParent()`, `FINALITY_WINDOW` reorg tolerance) and `SP1PoolRootVerifier`
+  (SP1 proofs of Bitcoin pool state anchored to a relay-matured tip) are the live tETH
 bridge's machinery. So cross-lane does **not** mean "build a Bitcoin light client on
 Ethereum" — that exists. It means adding a *confidential-pool* reflection prover (a
 sibling of the mixer's, anchored to the **same** `BitcoinLightRelay`, reusing

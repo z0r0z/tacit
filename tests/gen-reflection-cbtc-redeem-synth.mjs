@@ -59,8 +59,9 @@ const rLock = 0xC0FFEEn;
 const lockXY = pool.commitXY(vBtc, rLock);
 const lockVout = 1;
 
-// 0x66 lock tx (mirrors gen-reflection-cbtc-synth.mjs): a self-custody lock output (v_btc sats) at vout 1, the
-// owner-free note commitment in the envelope, the locker's opening sigma as the witness — witness-stripped txid.
+// 0x66 lock tx (mirrors gen-reflection-cbtc-synth.mjs): a self-custody lock output (v_btc sats) at vout 1 and
+// the owner-free note commitment in the envelope. The trailing sigma-shaped fields are legacy compatibility
+// padding; OP_CBTC_MINT checks the value opening later. Witness-stripped txid.
 const lockDummyIn = Buffer.alloc(32, 0xcc);
 const lockInputs = cat([lockDummyIn, u32le(0), [0x00], [0xfd, 0xff, 0xff, 0xff]]);
 const tapWrap = (envelope) => cat([

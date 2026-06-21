@@ -73,5 +73,21 @@ path = "src/cdp_topup_execute.rs"
 name = "cdp-close-execute"
 path = "src/cdp_close_execute.rs"
 
+# Same, for OP_FARM_BOND/HARVEST/UNBOND (fixtures/farm_{bond,harvest,unbond}_op.json) — validates the fair-farm
+# settle arms: leg/receipt membership against spendRoot + the opening sigmas + the receipt-leaf serialization.
+[[bin]]
+name = "farm-execute"
+path = "src/farm_execute.rs"
+
+# OP_ADAPTOR_CLAIM: lock-set membership + the output opening sigma + the adaptor-completed conservation kernel.
+[[bin]]
+name = "adaptor-execute"
+path = "src/adaptor_execute.rs"
+
+# OP_ADAPTOR_LOCK / OP_ADAPTOR_REFUND / OP_LP_REMOVE — the last three settle arms (op-selected via REM_OP).
+[[bin]]
+name = "remaining-execute"
+path = "src/remaining_execute.rs"
+
 [profile.release]
 overflow-checks = true

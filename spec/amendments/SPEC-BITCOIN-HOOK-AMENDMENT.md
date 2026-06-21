@@ -3,12 +3,14 @@
 > **STATUS** (2026-06-20). **Mode B (value-free reflected call, §1.4) is IMPLEMENTED** on the
 > `confidential-transfer-nm` branch — guest (`parse_btc_call_envelope` + `fold_btc_call` + the `reflect.rs`
 > fold + KAT), contract (`pendingBtcCall` + the attest record loop, codesize-reclaimed back under EIP-170),
-> and the `BtcCallExecutor` sidecar (6 tests green); the e2e attest-record round-trip is covered
-> (`test_attest_records_btc_calls`). Rides the coordinated reflection re-prove (`BITCOIN_RELAY_VKEY`).
-> **Mode A (value-bound hook on `OP_BRIDGE_MINT`, §1) remains a DRAFT follow-up.** Remaining for Mode B is
-> dapp UX only: a `0x68` envelope tx-builder (Schnorr-sign the call) + an `executeBtcCall` driver. (The
-> reflect-exec DIGEST_MATCH mirror needs no change — `btcCallsFolded` is not in `state.digest()`, and the
-> harness reads `newDigest` at a fixed word index that the appended field doesn't shift.)
+> the `BtcCallExecutor` sidecar (6 tests green); the e2e attest-record round-trip
+> (`test_attest_records_btc_calls`); and the dapp codec — `dapp/confidential-btc-call.js`
+> (`encodeBtcCallEnvelope` + `encodeExecuteBtcCall`, cross-validated against the guest/contract byte formats
+> in `tests/confidential-btc-call.mjs`, 6 green) + the `confidential-btc-call-actions.js` commit+reveal
+> broadcaster. Rides the coordinated reflection re-prove (`BITCOIN_RELAY_VKEY`). **Mode A (value-bound hook
+> on `OP_BRIDGE_MINT`, §1) remains a DRAFT follow-up.** Remaining for Mode B is only UI wiring (a button/form
+> over the codec). (The reflect-exec DIGEST_MATCH mirror needs no change — `btcCallsFolded` is not in
+> `state.digest()`, and the harness reads `newDigest` at a fixed word index the appended field doesn't shift.)
 >
 > Adds an **optional callback to the existing `OP_BRIDGE_MINT`** — not a new op — so a proven Bitcoin burn
 > can trigger an arbitrary Ethereum contract call with the bridged value, while preserving bounded authority.

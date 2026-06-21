@@ -263,6 +263,34 @@ pub fn write_stdin(f: &serde_json::Value) -> SP1Stdin {
         None => s.write(&vec![0u8; 32]),
     }
 
+    // Fair farms (SPEC-CONTROLLER-VAULT-AMENDMENT §4): the per-farm reward-per-share accumulator handoff, read
+    // by the guest right after ethReflDigest (before the Mode-B gate). (farmId, rate, totalShares, rps,
+    // lastHeight) — the assembler emits rps (u128) + totalShares (u64) as strings. Empty (n=0) for a no-farm
+    // chain; omitting it desyncs the stream → an EOF halt.
+    let farms = p
+        .get("farmRewards")
+        .and_then(|v| v.as_array())
+        .map(|a| a.as_slice())
+        .unwrap_or(&[]);
+    s.write(&(farms.len() as u32));
+    for fe in farms {
+        let u64f = |k: &str| {
+            fe[k]
+                .as_u64()
+                .or_else(|| fe[k].as_str().and_then(|x| x.parse::<u64>().ok()))
+                .unwrap_or(0)
+        };
+        r32(&mut s, &fe["farmId"]);
+        s.write(&u64f("rate"));
+        s.write(&u64f("totalShares"));
+        s.write(
+            &fe.get("rps")
+                .and_then(|v| v.as_u64().map(|n| n as u128).or_else(|| v.as_str().and_then(|x| x.parse::<u128>().ok())))
+                .unwrap_or(0u128),
+        );
+        s.write(&u64f("lastHeight"));
+    }
+
     // Mode-B gate (matches reflect.rs): mode_b, then ONLY when set the eth-reflection PV the guest verifies.
     // A forward-only fixture (modeB absent/0) skips it — no eth_pv, no verify_sp1_proof. modeB=1 carries the
     // real `ethPv` (11 abi words = 352 bytes; word 8 == pinned ETH_GENESIS_SYNC_COMMITTEE, word 9 =
@@ -408,16 +436,64 @@ pub fn write_stdin(f: &serde_json::Value) -> SP1Stdin {
                 path(&mut s, &lr["recvAPath"]);
                 path(&mut s, &lr["recvBPath"]);
             }
-            // harvest (0x3B) / farm-refund (0x3E): two SEPARATE guest branches, each reading one note-append
-            // path after the envelope (harvest dispatches before farm_refund). A tx carries exactly one of the
-            // two envelopes, so exactly one path is read. The JS assembler emits BOTH under the single
-            // "harvest" key (confidential-pool.js: `type === 'harvest' || 'farm_refund'`); the "farmRefund"
-            // branch below is defensive so a future split key can't desync the stream.
-            if let Some(hv) = tx.get("harvest").filter(|v| !v.is_null()) {
-                path(&mut s, &hv["notePath"]);
+            // lp_bond (0x35): the trustless farm receipt — the guest reads (owner, nonce, receipt append path)
+            // and appends the owner-blinded receipt note committing (shares, rps_entry). Mirror that order.
+            if let Some(lb) = tx.get("lpBond").filter(|v| !v.is_null()) {
+                r32(&mut s, &lb["owner"]);
+                r32(&mut s, &lb["nonce"]);
+                path(&mut s, &lb["receiptPath"]);
             }
+            // harvest (0x3B): TRUSTLESS — the guest first reads the receipt witnesses (owner, old/new nonce,
+            // shares, rps_entry, old index + membership path, the receipt-nullifier IMT insert, the advanced
+            // receipt's append path), then the reward note's append path (fold_harvest). Mirror that exact order.
+            if let Some(hv) = tx.get("harvest").filter(|v| !v.is_null()) {
+                r32(&mut s, &hv["owner"]);
+                r32(&mut s, &hv["oldNonce"]);
+                r32(&mut s, &hv["newNonce"]);
+                s.write(
+                    &hv["shares"].as_u64()
+                        .or_else(|| hv["shares"].as_str().and_then(|x| x.parse::<u64>().ok()))
+                        .unwrap_or(0),
+                );
+                s.write(
+                    &hv.get("rpsEntry")
+                        .and_then(|v| v.as_u64().map(|n| n as u128).or_else(|| v.as_str().and_then(|x| x.parse::<u128>().ok())))
+                        .unwrap_or(0u128),
+                );
+                s.write(&hv["oldIndex"].as_u64().unwrap_or(0));
+                path(&mut s, &hv["oldPath"]);
+                let si = &hv["spentInsert"];
+                r32(&mut s, &si["sLowValue"]);
+                r32(&mut s, &si["sLowNext"]);
+                s.write(&si["sLowIndex"].as_u64().unwrap_or(0));
+                path(&mut s, &si["sLowPath"]);
+                path(&mut s, &si["sNewPath"]);
+                path(&mut s, &hv["newReceiptPath"]);
+                path(&mut s, &hv["notePath"]); // the reward note's append path (fold_harvest)
+            }
+            // farm-refund (0x3E): one note-append path (the launcher's refund note; still the public-r treasury
+            // draw — no receipt). A tx carries exactly one of bond/harvest/refund/unbond, so only one set fires.
             if let Some(fr) = tx.get("farmRefund").filter(|v| !v.is_null()) {
                 path(&mut s, &fr["notePath"]);
+            }
+            // lp_unbond (0x36): TRUSTLESS — the guest reads (owner, nonce, rps_entry, old index + membership
+            // path, the receipt-nullifier IMT insert) to retire the receipt + drop the shares. Mirror that order.
+            if let Some(ub) = tx.get("lpUnbond").filter(|v| !v.is_null()) {
+                r32(&mut s, &ub["owner"]);
+                r32(&mut s, &ub["nonce"]);
+                s.write(
+                    &ub.get("rpsEntry")
+                        .and_then(|v| v.as_u64().map(|n| n as u128).or_else(|| v.as_str().and_then(|x| x.parse::<u128>().ok())))
+                        .unwrap_or(0u128),
+                );
+                s.write(&ub["oldIndex"].as_u64().unwrap_or(0));
+                path(&mut s, &ub["oldPath"]);
+                let si = &ub["spentInsert"];
+                r32(&mut s, &si["sLowValue"]);
+                r32(&mut s, &si["sLowNext"]);
+                s.write(&si["sLowIndex"].as_u64().unwrap_or(0));
+                path(&mut s, &si["sLowPath"]);
+                path(&mut s, &si["sNewPath"]);
             }
             // protocol-fee claim (0x31): the guest reads the claim note's append path after the envelope
             // (dispatches after harvest/refund) — mirror that order.

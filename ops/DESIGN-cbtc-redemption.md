@@ -45,10 +45,12 @@ orderbook (§3) still matches `H`/`L` and composes the single redeem tx per fill
 
 `dapp/cross-chain-orderbook.js` already matches cross-chain offers + composes `makeAdaptorSwap` per fill.
 Redemption is one market on it:
-- **Redeem offers** (`H`: cBTC → BTC) and **close offers** (`L`: lock-BTC → retire cBTC) posted at par (1:1
-  for redemption; a small fee/spread is the locker's incentive + the arbitrage that pins the peg).
-- Matched by amount + price; each fill drives an atomic adaptor swap (§2). Partial fills supported (the
-  orderbook already does grid partials).
+- **Redeem offers** (`H`: cBTC → BTC) and **close offers** (`L`: lock-BTC → retire cBTC) posted at par
+  (1:1 for the cBTC burn itself). Any fee/spread must be paid outside the cBTC burn, because the reflection
+  guest verifies `burn == tracked lock value` exactly.
+- Matched by whole lock. v1 does **not** support partial redemption of one tracked lock: spending a Bitcoin
+  UTXO consumes the whole lock, and the guest drops the whole lock from backing. Partial fills require a
+  future change-lock fold.
 
 ## 4. Conservation (the supply ⇄ backing identity)
 
@@ -79,7 +81,7 @@ insolvency, because the backing is real and proven.
 
 ## 7. What it reuses vs. what's new
 - **Reused (built + tested):** `adaptor-signature.js` (BIP-340-faithful PTLC), `adaptor-swap.js` (the swap
-  state machine), `cross-chain-orderbook.js` (matching + partial fills).
+  state machine), `cross-chain-orderbook.js` (matching; cBTC redemption uses whole-lock fills).
 - **Guest (rides the re-prove):** the `OP_ADAPTOR_*` settle ops so the cBTC **burn reveals `t`** in-proof
   (`DESIGN-adaptor-swap-guest.md`) — the redemption is their first concrete consumer. The Bitcoin-side
   unlock is a normal adaptor-signed spend (validator/wallet, no guest change).

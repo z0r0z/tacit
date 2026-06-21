@@ -2,8 +2,8 @@
 // Build a full-scan reflection prover input around a SYNTHETIC cBTC.zk sats-lock (T_CBTC_LOCK 0x66) tx so
 // the reflection guest folds it and MUST land on the same newDigest the JS assembler computes — the
 // reflect-exec guest↔JS digest-parity check for the cBTC fold. One easy-PoW 1-tx block: a lock output
-// (v_btc sats) at vout 1, the owner-free note commitment in the envelope, the locker's opening sigma as the
-// witness. Mirrors gen-reflection-cxfer-synth.mjs.
+// (v_btc sats) at vout 1 and the owner-free note commitment in the envelope. The trailing sigma-shaped
+// fields are legacy compatibility padding; OP_CBTC_MINT checks the value opening later.
 //   node tests/gen-reflection-cbtc-synth.mjs > /tmp/cbtc-reflect-input.json
 
 import { keccak_256 } from '../node_modules/@noble/hashes/sha3.js';
@@ -29,10 +29,10 @@ const r = 0xC0FFEEn;
 const lockVout = 1;
 const { cx, cy } = pool.commitXY(vBtc, r);
 
-// 0x66 envelope: opcode ‖ asset(32) ‖ lock_vout(4 LE) ‖ Cx(32) ‖ Cy(32) ‖ sig_rx(32) ‖ sig_ry(32) ‖ sig_z(32).
-// The opening sigma is ON-CHAIN (option a). The lock txid is witness-stripped (segwit), and the TACIT envelope
-// rides the witness — so the envelope content does NOT affect the txid. We compute the txid from a no-sigma
-// envelope, derive the sigma (which binds the txid), then embed it; the final tx keeps the same txid.
+// 0x66 envelope: opcode ‖ asset(32) ‖ lock_vout(4 LE) ‖ Cx(32) ‖ Cy(32) ‖ reserved_rx(32) ‖ reserved_ry(32)
+// ‖ reserved_z(32). The lock txid is witness-stripped (segwit), and the TACIT envelope rides the witness —
+// so the envelope content does NOT affect the txid. We compute the txid from a short envelope, derive legacy
+// compatibility fields, then embed them; the final tx keeps the same txid.
 const dummyTxid = Buffer.alloc(32, 0xcc); // a non-pool input (no live-set hit, no cBTC-lock spend)
 const inputsBuf = cat([dummyTxid, u32le(0), [0x00], [0xfd, 0xff, 0xff, 0xff]]);
 const makeTx = (envelope) => {
@@ -52,7 +52,7 @@ const txid = computeTxid(makeTx(noSig)); // witness-stripped → independent of 
 const txidHex = '0x' + Buffer.from(txid).toString('hex');
 const header = mineHeader(computeMerkleRoot([txid]));
 
-// The locker's opening sigma over the lock-bound context (asset ‖ lock_txid ‖ lock_vout), split into R(x,y).
+// Legacy compatibility fields over the lock-bound context (asset ‖ lock_txid ‖ lock_vout), split into R(x,y).
 const ctx = pool.cbtcLockContext(ASSET, txidHex, lockVout);
 const sg = pool.openingSigma(vBtc, r, ctx, pool.deriveOpeningNonce(r, ctx, 'cbtc-lock'));
 const R = secp.ProjectivePoint.fromHex(sg.R.replace(/^0x/, '')).toAffine();

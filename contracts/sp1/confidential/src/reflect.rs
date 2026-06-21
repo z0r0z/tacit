@@ -31,7 +31,8 @@ use cxfer_core::{
     amm_canonical_pair, amm_derive_farm_id, amm_derive_pool_id_full, bitcoin, burn_deposit,
     commitment_hash, commitment_hash_compressed, compress, decompress, from_affine_xy, leaf,
     nullifier, outpoint_key, reflected_note_leaf, scan_tx_spends, verify_cxfer_conservation,
-    CbtcLockFold, LiveUtxoSet, Point, PoolReserveSet, PoolReserveState, ScanReflection, CBTC_ZK_ASSET_ID,
+    CbtcLockFold, FarmRewardSet, FarmRewardState, LiveUtxoSet, Point, PoolReserveSet, PoolReserveState,
+    ScanReflection, CBTC_ZK_ASSET_ID,
 };
 use sp1_zkvm::io;
 
@@ -178,6 +179,24 @@ fn read_scan_prior_state() -> ScanReflection {
     // Mode-B cycle ([0;32] until the first). Rides digest(), so a forged handoff fails the priorDigest
     // chain — and the Mode-B fold below requires the eth proof's prior to continue exactly this.
     let eth_refl_digest = r32();
+    // Farms (SPEC-CONTROLLER-VAULT-AMENDMENT §4): the per-farm reward-per-share accumulator handoff —
+    // (farm_id, rate, total_shares, rps, last_height), read right after eth_refl_digest. Rides digest()
+    // (cxfer-core), so a forged handoff (a forged rps / total_shares that would let an over-reward harvest
+    // pass) fails the priorDigest chain. Empty (n=0) for a no-farm chain. The per-staker receipts ride the
+    // note tree (pool_root) + spent set (already resumed above), so they need NO separate handoff.
+    let n_farms: u32 = io::read();
+    let farm_entries: Vec<([u8; 32], FarmRewardState)> = (0..n_farms)
+        .map(|_| {
+            let farm_id = r32();
+            let rate: u64 = io::read();
+            let total_shares: u64 = io::read();
+            let rps: u128 = io::read();
+            let last_height: u64 = io::read();
+            (farm_id, FarmRewardState { rate, total_shares, rps, last_height })
+        })
+        .collect();
+    let farm_rewards = FarmRewardSet::from_sorted(farm_entries)
+        .expect("handed farm reward set not sorted/unique");
     ScanReflection {
         pool_root,
         note_count,
@@ -192,6 +211,11 @@ fn read_scan_prior_state() -> ScanReflection {
         pools,
         consumed_count,
         eth_refl_digest,
+        // Farms (SPEC-CONTROLLER-VAULT-AMENDMENT §4): the per-farm reward-per-share accumulator, resumed
+        // from the witnessed (farm_id → rate/total_shares/rps/last_height) handoff above + committed in
+        // `digest()`. The per-staker receipts ride the note tree (resumed via pool_root) + spent set (resumed
+        // via spent_root), so they carry no separate handoff.
+        farm_rewards,
     }
 }
 
@@ -435,6 +459,10 @@ pub fn main() {
             height >= state.height,
             "reflection height must not decrease"
         );
+        // Advance the reflected height NOW (after the monotonicity check), so the per-tx folds — the fair-farm
+        // rps accrual in particular — see THIS block's height. Matches the JS assembler, which setHeight()s
+        // before its tx loop. (The only loop reader of state.height was the monotonicity check above.)
+        state.height = height;
 
         for (ti, tx) in txs.iter().enumerate() {
             let txid = txids[ti];
@@ -1070,7 +1098,7 @@ pub fn main() {
             // a real, bridgeable note — gated by the BN254 Groth16 (per-receipt split), the aggregate Pedersen
             // identity (the receipts' total vs the traders' real inputs + the c0-backed reserve), and the
             // per-receipt cross-curve sigma (secp note ↔ Groth16-proven BabyJubJub value). The v1 wire format
-            // has no optional block (the arbiter concept is deprecated), so the layout is fixed.
+            // has no optional block, so the layout is fixed.
             if let Some(sb) = env
                 .as_ref()
                 .and_then(|e| bitcoin::parse_swap_batch_envelope(e))
@@ -1286,30 +1314,72 @@ pub fn main() {
                                 &fi.farm_nonce,
                             );
                             // inputs_c0_backed: the launcher's funding input is a detected live (real) spend.
-                            let _ = state.fold_farm_init(
-                                &farm_id,
-                                &fi.reward_asset,
-                                fi.reward_total,
-                                (s.prev_txid, s.prev_vout),
-                                &c_in,
-                                &fi.c_change_or_sentinel,
-                                &fi.kernel_sig,
-                                true,
-                            );
+                            if state
+                                .fold_farm_init(
+                                    &farm_id,
+                                    &fi.reward_asset,
+                                    fi.reward_total,
+                                    (s.prev_txid, s.prev_vout),
+                                    &c_in,
+                                    &fi.c_change_or_sentinel,
+                                    &fi.kernel_sig,
+                                    true,
+                                )
+                                .is_ok()
+                            {
+                                // Farm (SPEC-CONTROLLER-VAULT-AMENDMENT §8.4): register the reward-per-share
+                                // accumulator with the envelope's `reward_per_block` rate — the harvest bounds
+                                // the reward against this rps.
+                                let _ = state.fold_farm_init_rewards(&farm_id, fi.reward_per_block);
+                            }
                         }
                     }
                 }
             }
 
-            // Track B: a T_LP_HARVEST (0x3B) onboards a farmer's reward note (minted by decree at vout[1]) as
-            // real + bridgeable. fold_harvest derives the reward note from the PUBLIC (reward_amount, reward_r),
-            // checks it ≤ the C0-backed treasury, onboards it, and debits the treasury. (The accrual fairness
-            // is the worker's; the bridge only needs reward ≤ treasury ⇒ no inflation.)
+            // Track B: a T_LP_BOND (0x35) locks LP-share notes into a farm position. The trustless receipt
+            // model (SPEC-CONTROLLER-VAULT-AMENDMENT §4): accrue the farm, add `bond_amount` to `total_shares`,
+            // and append the owner-blinded RECEIPT note committing `(shares, rps_entry = live rps, owner,
+            // nonce)`. `rps_entry` is computed in-fold (the envelope's `entry_acc_per_share` is IGNORED — no
+            // backdating). The `(owner, nonce, receipt append path)` are witnessed. The farm must be registered
+            // (FARM_INIT). NOTE (prove-validated refinement): `bond_amount` is bound to the spent LP-share value
+            // by the bond's homomorphic kernel + BP+ tail (the confidential spends carry no plaintext value);
+            // that kernel check rides the AMM-kernel layer, not folded here — this branch is the receipt+rps
+            // bookkeeping against the verified `fold_lp_bond`.
+            if let Some((farm_id, _bonder_pubkey, bond_amount, _entry_acc, _view_h)) =
+                env.as_ref().and_then(|e| bitcoin::parse_lp_bond_fields(e))
+            {
+                let owner = r32(); // blinded owner commitment (pubkey + b·G), witnessed
+                let nonce = r32(); // receipt nonce, witnessed
+                let receipt_path = r_path(); // append-path witness for the receipt leaf at note_count
+                let _ = state.fold_lp_bond(&farm_id, bond_amount, &owner, &nonce, &receipt_path);
+            }
+
+            // Track B: a T_LP_HARVEST (0x3B) claims a farmer's accrued reward, keeping the principal staked.
+            // SPEC-CONTROLLER-VAULT-AMENDMENT §4: `fold_lp_harvest` proves the bond's RECEIPT note is in the note
+            // tree, bounds `reward ≤ shares·(rps − rps_entry)` against the reflection's live `rps` (the guest's
+            // own accumulator, not the envelope's claimed `exit_acc_per_share`), nullifies the old receipt, and
+            // appends the checkpoint-advanced one. Then `fold_harvest` materializes the reward note (vout[1])
+            // from the PUBLIC `(reward_amount, reward_r)` and debits the C0-backed treasury (the no-inflation
+            // backstop). The accrual fairness is proof-bound.
             if let Some((farm_id, reward_amount, reward_r)) = env
                 .as_ref()
                 .and_then(|e| bitcoin::parse_lp_harvest_envelope(e))
             {
-                let reward_path = r_path(); // witnessed per 0x3B (the reward note's append path; vout[1])
+                let owner = r32();
+                let old_nonce = r32();
+                let new_nonce = r32();
+                let shares: u64 = io::read();
+                let rps_entry: u128 = io::read();
+                let old_index: u64 = io::read();
+                let old_path = r_path(); // receipt membership path against pool_root
+                let (lv, ln, li, lp, snp) = read_spent_insert(); // receipt nullifier IMT insert
+                let new_receipt_path = r_path(); // advanced-receipt append path
+                let _ = state.fold_lp_harvest(
+                    &farm_id, shares, rps_entry, &owner, &old_nonce, &new_nonce, reward_amount,
+                    old_index, &old_path, &lv, &ln, li, &lp, &snp, &new_receipt_path,
+                );
+                let reward_path = r_path(); // the reward note's append path (vout[1])
                 let _ = state.fold_harvest(
                     &farm_id,
                     reward_amount,
@@ -1336,6 +1406,27 @@ pub fn main() {
                 );
             }
 
+            // Track B: a T_LP_UNBOND (0x36) closes a farm position. TRUSTLESS (SPEC-CONTROLLER-VAULT-AMENDMENT
+            // §4): `fold_lp_unbond` proves the bond's RECEIPT note is in the note tree, nullifies it, and drops
+            // `shares` from the farm's `total_shares`. No reward is claimed (harvest first to collect accrual).
+            // `(owner, nonce, rps_entry, membership + nullifier witnesses)` are witnessed. NOTE (prove-validated
+            // refinement): re-minting the released LP-share notes is the bond's homomorphic kernel run in
+            // reverse (AMM-kernel layer), not folded here — this branch is the receipt-retire + share bookkeeping
+            // against the verified `fold_lp_unbond`.
+            if let Some((farm_id, _unbonder_pubkey, shares, _view_h)) =
+                env.as_ref().and_then(|e| bitcoin::parse_lp_unbond_fields(e))
+            {
+                let owner = r32();
+                let nonce = r32();
+                let rps_entry: u128 = io::read();
+                let old_index: u64 = io::read();
+                let old_path = r_path(); // receipt membership path against pool_root
+                let (lv, ln, li, lp, snp) = read_spent_insert(); // receipt nullifier IMT insert
+                let _ = state.fold_lp_unbond(
+                    &farm_id, shares, rps_entry, &owner, &nonce, old_index, &old_path, &lv, &ln, li, &lp, &snp,
+                );
+            }
+
             // Track B: a T_PROTOCOL_FEE_CLAIM (0x31) — the pool's fee recipient claims the CREATOR-earned
             // protocol-fee LP-share skim as a real, bridgeable note. fold_protocol_fee_claim crystallizes the
             // swap-driven accrual, requires claim == accrued (exact), and onboards the claim note (vout[1]).
@@ -1354,7 +1445,6 @@ pub fn main() {
                 );
             }
         }
-        state.height = height;
     }
 
     let pv = BitcoinReflectionPublicValues {

@@ -5916,7 +5916,7 @@ body[data-market-mode="asset"] [data-market-bids-section] {
 }
 
 /* AMM-ceremony gating: advanced mixer sections (slot wrap / rotate /
-   burn / cBTC.tac deposit / withdraw) depend on the AMM ceremony
+   burn) depend on the AMM ceremony
    being finalized before they're safe to surface. Hide them entirely
    until body carries the tacit-amm-ceremony-ready class (set by JS
    once the ceremony finalization signal lands). Until then, only the
@@ -8865,119 +8865,6 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms #farms-refresh-btn {
     </div>
   </div>
 
-  <!-- SPEC-CBTC-TAC-AMENDMENT §5.47 v1 lien model — cBTC.tac mint helper.
-       Locks a live cBTC.zk slot's leaf + attaches a lien on a depositor's
-       LP-share UTXO of the canonical (cBTC.zk, TAC) AMM pool. The LP-share
-       UTXO stays in the depositor's wallet but is economically immobile
-       (worker refuses any spend via commitmentForUtxo's lien check). Mints
-       cBTC.tac at the depositor's recipient_commit. -->
-  <div class="section" data-mixer-pool-op="true" data-amm-gated="1" id="cbtc-tac-deposit-section">
-    <div class="section-header"><span>deposit slot → cBTC.tac (v1 lien model)</span></div>
-    <div class="section-body">
-      <div class="muted" style="margin-bottom:10px;">
-        Bond LP-shares against a live cBTC.zk slot to mint cBTC.tac — a tacit-asset wrapper for BTC. cBTC.tac is transferable amount-privately and tradeable on the marketplace.
-      </div>
-      <div style="margin-bottom:10px;">
-        <label style="display:inline-flex;align-items:center;gap:6px;font-size:12px;">
-          <input type="radio" name="cbtc-tac-deposit-mode" id="cbtc-tac-deposit-mode-lien" value="lien" checked>
-          <span><strong>Lien mode</strong> — bond an existing LP-share UTXO (continues earning fees)</span>
-        </label>
-        <label style="display:inline-flex;align-items:center;gap:6px;font-size:12px;margin-left:14px;">
-          <input type="radio" name="cbtc-tac-deposit-mode" id="cbtc-tac-deposit-mode-atomic" value="atomic">
-          <span><strong>Atomic mode</strong> — LP + deposit in one tx; bring raw cBTC.zk + TAC</span>
-        </label>
-      </div>
-      <div class="flex" style="gap:8px;flex-wrap:wrap;align-items:flex-end;">
-        <label style="flex:2;min-width:280px;">Live slot to deposit
-          <select id="cbtc-tac-deposit-slot"><option value="">— pick a live slot —</option></select>
-        </label>
-        <label style="flex:2;min-width:280px;" id="cbtc-tac-deposit-lp-utxo-wrap">LP-share UTXO to lien as bond
-          <select id="cbtc-tac-deposit-lp-utxo"><option value="">— pick an LP-share UTXO (must be ≥ 2× slot value) —</option></select>
-        </label>
-        <button id="btn-cbtc-tac-deposit-broadcast" disabled>Deposit &amp; broadcast</button>
-      </div>
-      <div class="flex" style="gap:8px;flex-wrap:wrap;align-items:flex-end;margin-top:8px;display:none;" id="cbtc-tac-deposit-atomic-fields">
-        <label style="flex:2;min-width:280px;">Pool (cBTC.zk/TAC) to LP into
-          <select id="cbtc-tac-deposit-atomic-pool"><option value="">— pick a TAC-paired pool —</option></select>
-        </label>
-        <label style="flex:1;min-width:200px;">cBTC.zk input UTXO
-          <select id="cbtc-tac-deposit-atomic-cbtc"><option value="">— pick cBTC.zk UTXO —</option></select>
-        </label>
-        <label style="flex:1;min-width:200px;">TAC input UTXO
-          <select id="cbtc-tac-deposit-atomic-tac"><option value="">— pick TAC UTXO —</option></select>
-        </label>
-      </div>
-      <div id="cbtc-tac-deposit-out" class="muted" style="margin-top:10px;display:none;white-space:pre-wrap;font-family:monospace;font-size:12px;"></div>
-    </div>
-  </div>
-
-  <!-- SPEC-CBTC-TAC-AMENDMENT §5.47 v1 lien model — cooperative withdraw.
-       Closes an active cBTC.tac position: spends the slot's K_btc UTXO
-       (key-path Schnorr under r_btc) + burns the cBTC.tac UTXOs (asset-
-       spend kernel sigs) in one Bitcoin tx. The worker releases the lien
-       on the depositor's LP-share UTXO atomically (no on-chain bond
-       return — the LP-share UTXO stays in your wallet, just unliened).
-       Sats payout lands at the chosen address. v1 = cooperative exit
-       (withdrawer == depositor). -->
-  <div class="section" data-mixer-pool-op="true" data-amm-gated="1" id="cbtc-tac-withdraw-section">
-    <div class="section-header"><span>withdraw cBTC.tac → sats (v1 lien release)</span></div>
-    <div class="section-body">
-      <div class="muted" style="margin-bottom:10px;">
-        Close an active cBTC.tac position. Spends the underlying slot UTXO atomically with the cBTC.tac burn; sats land at the chosen payout address. Same-wallet redemption only in v1 (the depositor's r_btc is required to sign the slot input).
-      </div>
-      <div style="margin-bottom:10px;">
-        <label style="display:inline-flex;align-items:center;gap:6px;font-size:12px;">
-          <input type="radio" name="cbtc-tac-withdraw-mode" id="cbtc-tac-withdraw-mode-release" value="release" checked>
-          <span><strong>Release mode</strong> — burn cBTC.tac, get BTC payout; LP shares stay liened then become spendable</span>
-        </label>
-        <label style="display:inline-flex;align-items:center;gap:6px;font-size:12px;margin-left:14px;">
-          <input type="radio" name="cbtc-tac-withdraw-mode" id="cbtc-tac-withdraw-mode-atomic" value="atomic">
-          <span><strong>Atomic mode</strong> — also LP_REMOVE; get BTC + cBTC.zk + TAC back in one tx</span>
-        </label>
-      </div>
-      <div class="flex" style="gap:8px;flex-wrap:wrap;align-items:flex-end;">
-        <label style="flex:2;min-width:280px;">Active position to withdraw
-          <select id="cbtc-tac-withdraw-position"><option value="">— pick an active position —</option></select>
-        </label>
-        <label style="flex:2;min-width:240px;">Payout address <span class="muted" style="font-size:11px;">(optional — empty = this wallet)</span>
-          <input id="cbtc-tac-withdraw-payout" type="text" placeholder="bc1q… / tb1q… (P2WPKH bech32)" style="width:100%;font-family:monospace;font-size:12px;">
-        </label>
-        <button id="btn-cbtc-tac-withdraw-broadcast" disabled>Withdraw &amp; broadcast</button>
-      </div>
-      <div id="cbtc-tac-withdraw-out" class="muted" style="margin-top:10px;display:none;white-space:pre-wrap;font-family:monospace;font-size:12px;"></div>
-      <div style="margin-top:14px;padding-top:10px;border-top:1px dashed var(--ink-faint);">
-        <div class="muted" style="font-size:11px;margin-bottom:6px;">
-          <strong>Your cBTC.tac positions on this browser.</strong> Each row is one open or closed position: slot leaf, denomination, TAC bond, current state, deposit txid. Back up before clearing browser data — losing a position record means losing the mint blinding needed to identify your cBTC.tac UTXO.
-        </div>
-        <div id="cbtc-tac-positions-list"><div class="muted" style="font-size:11px;">No cBTC.tac positions yet on this network.</div></div>
-      </div>
-    </div>
-  </div>
-
-  <!-- SPEC-CBTC-TAC-AMENDMENT §5.47 v1 — T_CTAC_LIEN_CLAIM (opcode 0x4C).
-       cBTC.tac holder burns shares pro-rata for LP-share UTXOs from the
-       global claim pool (filled by force-closed / rugged positions'
-       liens). The new LP-share UTXO can be T_LP_REMOVE'd for cBTC.zk +
-       TAC at current pool ratios, or held for AMM fee yield. -->
-  <div class="section" data-mixer-pool-op="true" id="ctac-lien-claim-section" style="display:none;">
-    <div class="section-header"><span>claim LP shares from cBTC.tac claim pool</span></div>
-    <div class="section-body">
-      <div class="muted" style="margin-bottom:10px;">
-        Burn cBTC.tac to claim your pro-rata slice of the global claim pool — LP shares of the canonical (cBTC.zk, TAC) AMM pool released by force-closed or rugged positions. The shares mint to your wallet; you can later remove the liquidity for cBTC.zk + TAC, or hold for AMM fee yield.
-      </div>
-      <div class="muted" style="font-size:11px;margin-bottom:10px;">
-        <strong>Claim pool size:</strong> <span id="ctac-claim-pool-size">—</span> LP shares · <strong>Outstanding cBTC.tac:</strong> <span id="ctac-outstanding-supply">—</span> · <strong>Per-share rate:</strong> <span id="ctac-per-share-rate">—</span>
-      </div>
-      <div class="flex" style="gap:8px;flex-wrap:wrap;align-items:flex-end;">
-        <label style="flex:2;min-width:280px;">cBTC.tac UTXOs to burn
-          <select id="ctac-lien-claim-utxos" multiple style="height:80px;font-family:monospace;font-size:12px;"></select>
-        </label>
-        <button id="btn-ctac-lien-claim-broadcast" disabled>Claim &amp; broadcast</button>
-      </div>
-      <div id="ctac-lien-claim-out" class="muted" style="margin-top:10px;display:none;white-space:pre-wrap;font-family:monospace;font-size:12px;"></div>
-    </div>
-  </div>
-
   <div class="section" id="mixer-trusted-setup-section">
     <div class="section-header"><span>trusted setup</span></div>
     <div class="section-body">
@@ -9237,8 +9124,8 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms #farms-refresh-btn {
         </div>
         <div class="protocol-card">
           <h4>Wrapped BTC, no custodian</h4>
-          <p>cBTC.zk locks real BTC with no federation, co-signer, or oracle. cBTC.tac layers fungibility on top.</p>
-          <p class="crypto-claim">Slot keys derived from mixer secrets · TAC over-collateralization</p>
+          <p>cBTC.zk locks real BTC with no federation, co-signer, or oracle. tacBTC is its single, fungible ERC-20 form.</p>
+          <p class="crypto-claim">Slot keys derived from mixer secrets · ETH-escrow backed</p>
         </div>
         <div class="protocol-card">
           <h4>Atomic marketplace</h4>
@@ -9322,18 +9209,6 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms #farms-refresh-btn {
         <span class="hex">0x45</span><span class="op">T_SLOT_ROTATE</span><span class="desc">cBTC.zk: atomic key rotation / transfer of a slot</span>
         <span class="hex">0x46</span><span class="op">T_SLOT_SPLIT</span><span class="desc">cBTC.zk: atomic 1→N slot split, ΣD_new = D_old</span>
         <span class="hex">0x47</span><span class="op">T_SLOT_MERGE</span><span class="desc">cBTC.zk: atomic N→1 slot merge</span>
-      </div>
-      <p class="protocol-kicker">Fungible wrapped BTC via collateralized lien</p>
-      <div class="script-decode" style="margin:10px 0;">
-        <span class="hex">0x49</span><span class="op">T_CBTC_TAC_DEPOSIT</span><span class="desc">cBTC.tac: lien on canonical (cBTC.zk, TAC) LP-share → mint fungible cBTC.tac</span>
-        <span class="hex">0x4A</span><span class="op">T_CBTC_TAC_WITHDRAW</span><span class="desc">cooperative unwind: burn cBTC.tac → release LP-share lien + spend slot</span>
-        <span class="hex">0x4B</span><span class="op">T_CBTC_TAC_FORCE_CLOSE</span><span class="desc">permissionless transfer to claim pool when collateral ratio falls below threshold</span>
-        <span class="hex">0x57</span><span class="op">T_CBTC_TAC_DEPOSIT_ATOMIC</span><span class="desc">atomic LP_ADD + cBTC.tac mint in one envelope</span>
-        <span class="hex">0x58</span><span class="op">T_CBTC_TAC_WITHDRAW_ATOMIC</span><span class="desc">atomic cBTC.tac burn + LP_REMOVE + slot redeem</span>
-        <span class="hex">0x59</span><span class="op">T_CBTC_TAC_TOP_UP</span><span class="desc">strengthen TAC bond on an open cBTC.tac position</span>
-        <span class="hex">0x5A</span><span class="op">T_CBTC_TAC_BOND_RELEASE</span><span class="desc">partial bond release on an open position</span>
-        <span class="hex">0x4C</span><span class="op">T_SHARE_SLASH_CLAIM</span><span class="desc">claim LP-share from the cBTC.tac claim pool after force-close</span>
-        <span class="hex">0x4F</span><span class="op">T_CTAC_LIEN_SPLIT</span><span class="desc">split a liened LP-share UTXO</span>
       </div>
       <p class="protocol-kicker">Trustless ETH-Bitcoin bridge (BRIDGE.md)</p>
       <div class="script-decode" style="margin:10px 0;">
@@ -9501,7 +9376,7 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms #farms-refresh-btn {
       <p style="margin-top:8px;"><strong>T_PETCH (permissionless mints).</strong> No issuer trust at all. The deploy declares <code>cap_amount</code>, <code>mint_limit</code>, and an optional height window; deployer receives zero tokens. Each <code>T_PMINT</code> reveals <code>(amount, blinding)</code> on chain, so cumulative supply against the cap is auditable from chain alone — no attestation channel needed.</p>
       <p style="margin-top:8px;"><strong>Mixer + cBTC.zk (Groth16 + Phase 2 ceremony).</strong> Both share the same <code>withdraw.circom</code> primitive. Soundness rests on ≥ 1 honest contributor in the Phase 2 ceremony; privacy (zero-knowledge) is unconditional and does <em>not</em> depend on the ceremony. The canonical v1 mixer ceremony (Phase 2, beacon-finalized 2026-05-11, 2,227 contributors) is hardcoded in the dApp as the trust anchor; cBTC.zk slots reuse the same vk. cBTC.zk's BTC anchor is cryptographic — the slot's spending key is derived from a mixer leaf's secret — so no federation and no co-signer.</p>
       <p style="margin-top:8px;"><strong>AMM circuits (Phase 2 ceremony in flight).</strong> The three AMM circuits run independent Phase 2 chains under one shared <code>pot18</code> Phase 1, with one Bitcoin-block beacon at finalization. Same ≥ 1-honest-per-circuit assumption as the mixer. Pool reserves are virtual public quantities the indexer tracks — no UTXO holds any pool's funds, so no party can rug. The constant-product invariant is plain arithmetic on public reserves; Groth16 binds hidden per-trader amounts to public batch deltas.</p>
-      <p style="margin-top:8px;"><strong>cBTC.tac (collateralized lien).</strong> Two trust legs: the BTC anchor at L1 (cryptographic — cBTC.zk's slot lock works as long as Bitcoin + Groth16 + secp256k1 hardness hold) and the TAC collateral substrate (economic — TAC stays valuable enough relative to BTC that bonded slots remain over-margined). The collateral leg reuses the same indexer-consensus trust model that already makes Runes/Ordinals tradeable at scale: TAC's market-validated value becomes the bond that makes wrapped BTC trustless without federation. Same shape as MakerDAO's ETH-collateralized stablecoins; not the same shape as wBTC's BitGo + auditors.</p>
+      <p style="margin-top:8px;"><strong>tacBTC (ETH-escrow backed).</strong> One fungible ERC-20 form of wrapped BTC, minted against cBTC.zk Bitcoin locks plus a CollateralEngine ETH escrow. Two trust legs: the BTC anchor at L1 (cryptographic — cBTC.zk's slot lock works as long as Bitcoin + Groth16 + secp256k1 hardness hold) and the ETH collateral substrate (economic — the escrow stays over-margined relative to BTC). Same shape as MakerDAO's ETH-collateralized stablecoins; not the same shape as wBTC's BitGo + auditors.</p>
       <p style="margin-top:8px;"><strong>tETH bridge (Groth16 + Ethereum root check).</strong> Every <code>T_BRIDGE_DEPOSIT</code> is client-side verified before the dApp accepts it: the Groth16 proof in the OP_RETURN envelope is re-verified against the canonical VK, and the <code>ethRoot</code> is checked against the Ethereum mixer contract's <code>isKnownDepositRoot</code> via <code>eth_call</code> to public RPCs (no API key required). Invalid proofs or fabricated roots are rejected before entering local state. The worker performs the same root check during indexing. Fake tETH cannot circulate — it's caught at every layer. On the withdrawal side, SP1-verified Bitcoin inclusion + Groth16 burn proof + bind hash + pool balance solvency all pass independently. Bridge deposit notes and shielded withdrawal UTXOs are both deterministically derived from <code>HMAC(privkey, domain || index)</code> — recoverable from privkey alone, no backup file required. See <a href="https://github.com/z0r0z/tacit/blob/main/BRIDGE.md" target="_blank" rel="noopener noreferrer">BRIDGE.md</a>.</p>
       <p style="margin-top:8px;"><strong>After issuance.</strong> No participant can inflate (kernel sig blocks unbalanced CXFER / T_AXFER / T_BURN; <code>T_PMINT</code> caps are chain-auditable; AMM circuits bind hidden amounts to public deltas), burn covertly (BURN's <code>burned_amount</code> is public and bound into the kernel msg), or substitute assets (asset_id consistency checked across every input's parent envelope). Recursive client-side validation guarantees this independent of any indexer's honesty.</p>
       </details>
@@ -9733,7 +9608,7 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms #farms-refresh-btn {
     <div class="faq-body">
       <div class="faq-q">What is tacit?</div>
       <div class="faq-a">
-        Confidential tokens on Bitcoin. Every transfer hides amounts by default; opt in to <strong>shielded addresses</strong> to hide who's receiving, and to the <strong>mixer pool</strong> to break the on-chain link between deposit and withdrawal entirely. The same rails carry a <strong>native AMM</strong> with confidential trade sizes and <strong>trustless wrapped BTC</strong> (cBTC.zk, plus the fungible cBTC.tac) — all settling in ordinary Bitcoin transactions, all verifiable by anyone reading the chain. No federation, no sidechain, no off-chain proofs. Your private key plus the chain rebuild your full balance, years later on a fresh device.
+        Confidential tokens on Bitcoin. Every transfer hides amounts by default; opt in to <strong>shielded addresses</strong> to hide who's receiving, and to the <strong>mixer pool</strong> to break the on-chain link between deposit and withdrawal entirely. The same rails carry a <strong>native AMM</strong> with confidential trade sizes and <strong>trustless wrapped BTC</strong> (cBTC.zk, surfaced as the fungible tacBTC) — all settling in ordinary Bitcoin transactions, all verifiable by anyone reading the chain. No federation, no sidechain, no off-chain proofs. Your private key plus the chain rebuild your full balance, years later on a fresh device.
       </div>
 
       <div class="faq-q">Why not just use Runes / Liquid / RGB / a rollup?</div>
@@ -9743,14 +9618,14 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms #farms-refresh-btn {
 
       <div class="faq-q">What's actually new here architecturally?</div>
       <div class="faq-a">
-        Indexer-validated meta-protocols (Runes, Ordinals, BRC-20) already prove at production scale that <em>consensus of indexers over chain state</em> can underwrite real market value with no Bitcoin-consensus enforcement. Tacit takes that same substrate and layers two things on it: <strong>cryptographic primitives</strong> where they must be cryptographic (Pedersen + bulletproofs for shielded amounts, BIP-341-style blinded-pubkey commits for shielded addresses, Groth16 + Poseidon-Merkle for anonymous spend, BabyJubJub Pedersen for in-circuit AMM logic, secp256k1 slot locks for trustless wrapped BTC), and <strong>economic discipline</strong> where indexer-validated value can carry it (TAC over-collateralization for cBTC.tac, slash-on-violation for liened LP-share UTXOs). Indexer consensus + cryptographic privacy + market-validated collateral = smart-contract-shaped properties (AMM, collateralized wrapping, batched settlement) on Bitcoin L1, with no VM, no sidechain, no rollup. See <a href="https://github.com/z0r0z/tacit/blob/main/spec/CIRCUITS.md" target="_blank" rel="noopener noreferrer">CIRCUITS.md</a> for the full primitive walkthrough.
+        Indexer-validated meta-protocols (Runes, Ordinals, BRC-20) already prove at production scale that <em>consensus of indexers over chain state</em> can underwrite real market value with no Bitcoin-consensus enforcement. Tacit takes that same substrate and layers two things on it: <strong>cryptographic primitives</strong> where they must be cryptographic (Pedersen + bulletproofs for shielded amounts, BIP-341-style blinded-pubkey commits for shielded addresses, Groth16 + Poseidon-Merkle for anonymous spend, BabyJubJub Pedersen for in-circuit AMM logic, secp256k1 slot locks for trustless wrapped BTC), and <strong>economic discipline</strong> where indexer-validated value can carry it (ETH-escrow over-collateralization for tacBTC). Indexer consensus + cryptographic privacy + market-validated collateral = smart-contract-shaped properties (AMM, collateralized wrapping, batched settlement) on Bitcoin L1, with no VM, no sidechain, no rollup. See <a href="https://github.com/z0r0z/tacit/blob/main/spec/CIRCUITS.md" target="_blank" rel="noopener noreferrer">CIRCUITS.md</a> for the full primitive walkthrough.
       </div>
 
       <div class="faq-q">What else can I do besides send / receive?</div>
       <div class="faq-a">
         <strong>Trade on the orderbook</strong> — five marketplace flows, all settling via <code>T_AXFER</code> / <code>T_AXFER_VAR</code>: <em>preauth sales</em> (§5.7.8 — seller pre-signs once, buyer settles whenever), <em>batched preauth-take</em> (§5.7.8.1 — N preauths in ONE reveal tx, ~70% fee reduction), <em>atomic intents</em> (§5.7.6 — claim &amp; take), <em>variable-amount intents</em> (§5.7.6.1 — partial-fillable seller offers), and <em>variable-fill bids</em> (§5.7.7 — partial-fillable buyer offers). Every fill settles atomically on Bitcoin, signed by both parties.
-        <strong>Native AMM</strong> (<code>T_LP_ADD</code> / <code>T_LP_REMOVE</code> / <code>T_SWAP_BATCH</code> / <code>T_SWAP_VAR</code> / <code>T_SWAP_ROUTE</code>, AMM.md) — uniform-clearing block-batched market with confidential per-trader amounts (Groth16) plus a per-trade variable-amount path that needs no Groth16 at all. LP shares are themselves tacit assets — mixer-composable for anonymous positions, and the collateral substrate for cBTC.tac.
-        <strong>Trustless wrapped BTC</strong> (<code>cBTC.zk</code>, §5.21–§5.23) — lock real BTC at a Taproot output whose spending key is derived from a mixer leaf's secret. No federation, no co-signer, no oracle. <strong>Fungible wrapped BTC</strong> (<code>cBTC.tac</code>) layers an LP-share lien on top with TAC over-collateralization, so amount-granular wrapped BTC is itself a standard tacit asset.
+        <strong>Native AMM</strong> (<code>T_LP_ADD</code> / <code>T_LP_REMOVE</code> / <code>T_SWAP_BATCH</code> / <code>T_SWAP_VAR</code> / <code>T_SWAP_ROUTE</code>, AMM.md) — uniform-clearing block-batched market with confidential per-trader amounts (Groth16) plus a per-trade variable-amount path that needs no Groth16 at all. LP shares are themselves tacit assets — mixer-composable for anonymous positions.
+        <strong>Trustless wrapped BTC</strong> (<code>cBTC.zk</code>, §5.21–§5.23) — lock real BTC at a Taproot output whose spending key is derived from a mixer leaf's secret. No federation, no co-signer, no oracle. <strong>Fungible wrapped BTC</strong> (<code>tacBTC</code>) is the single ERC-20 form: arbitrary-amount, minted against cBTC.zk locks plus a CollateralEngine ETH escrow, behaving like any other tacit asset.
         <strong>Mixer</strong> (<code>T_DEPOSIT</code> / <code>T_WITHDRAW</code>) — break the on-chain link between deposit and withdraw via Groth16. Canonical v1 ceremony beacon-finalized 2026-05-11 with 2,227 contributors. The same circuit underpins cBTC.zk slot semantics.
         <strong>Drops</strong> (<code>T_DROP</code> / <code>T_DCLAIM</code>) — public claim pools, optionally Merkle-gated. <strong>Fair-launch mints</strong> (<code>T_PETCH</code> / <code>T_PMINT</code>) — permissionless cap-gated minting.
       </div>
@@ -9799,7 +9674,7 @@ body:not(.tacit-amm-ceremony-ready) #tab-farms #farms-refresh-btn {
       <div class="faq-q">Can I trade BTC here?</div>
       <div class="faq-a">
         Yes — directly, today. Every orderbook trade pays in real Bitcoin satoshis: maker signs, taker signs, asset ↔ sats settles atomically in one Bitcoin tx. No wrap needed.
-        Wrapped BTC matters when you want amount-confidential BTC balances or a tacit-side BTC token for the AMM (pools are tacit-asset ↔ tacit-asset by design). Tacit has two wrappers, both trustless: <strong>cBTC.zk</strong> locks real BTC at a Taproot output whose spending key is derived from a mixer leaf's secret — no federation, no co-signer, no oracle. <strong>cBTC.tac</strong> layers an LP-share lien on top of a cBTC.zk anchor with TAC over-collateralization, giving you fungible amount-granular wrapped BTC that behaves like any other tacit asset (CXFER it, swap it, LP it, mix it). Same trust model that already makes Runes/Ordinals tradeable, structurally aligned into a bond.
+        Wrapped BTC matters when you want amount-confidential BTC balances or a tacit-side BTC token for the AMM (pools are tacit-asset ↔ tacit-asset by design). Tacit's wrapper is trustless: <strong>cBTC.zk</strong> locks real BTC at a Taproot output whose spending key is derived from a mixer leaf's secret — no federation, no co-signer, no oracle. <strong>tacBTC</strong> is its single fungible ERC-20 form: arbitrary-amount, minted against cBTC.zk locks plus a CollateralEngine ETH escrow, giving you amount-granular wrapped BTC that behaves like any other tacit asset (CXFER it, swap it, LP it, mix it). Same trust model that already makes Runes/Ordinals tradeable.
       </div>
 
       <div class="faq-q">What's the cost per transfer / swap?</div>

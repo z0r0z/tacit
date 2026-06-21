@@ -38,8 +38,9 @@ day-one is config, not code.
 4. **Build the Bitcoin-side `CrossOut` consumer** 🔴 — the ETH→Bitcoin direction: Bitcoin validators /
    indexer honor `CrossOutRecorded` and mint the destination Tacit note. → **`bridge_burn` round-trips
    (ETH→Bitcoin)**. *(largest new build)*
-5. **Register tETH + TAC cross-chain links** 🔴 — on the deployed pool, the canonical ERC20s committing
-   to their ids (`ASSET_ID == crossChainLink`). → assets recognized cross-chain.
+5. **Pin tETH + register TAC cross-chain links** 🔴 — tETH is the constructor-pinned native-ETH link;
+   pool-minted assets like TAC resolve through canonical ERC20s committing to their ids
+   (`ASSET_ID == crossChainLink`). → assets recognized cross-chain.
 6. **Flip on dapp + worker** 🟡 — set `CROSSLANE_DEPLOYMENTS[net].pool`, mark TAC `live:true`, wire the
    asset-aware bridge UI; worker cross-lane config. → **tETH + TAC cross-lane day-one**.
 

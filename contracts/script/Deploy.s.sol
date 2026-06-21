@@ -58,6 +58,7 @@ contract DeployTacitBridge is Script {
         denoms[5] = 1 ether;
         denoms[6] = 10 ether;
         denoms[7] = 100 ether;
+        uint256 confirmationDepth = 6;
 
         vm.startBroadcast(deployerKey);
 
@@ -80,7 +81,7 @@ contract DeployTacitBridge is Script {
 
         SP1PoolRootVerifier verifier = new SP1PoolRootVerifier(
             sp1Verifier, address(relay), programVKey, predictedMixer,
-            assetId, networkTag, groth16VkHash, poolIds, denomsTacit,
+            assetId, networkTag, confirmationDepth, groth16VkHash, poolIds, denomsTacit,
             genesisTipHash
         );
         console.log("SP1PoolRootVerifier (all denoms):", address(verifier));
@@ -90,7 +91,7 @@ contract DeployTacitBridge is Script {
 
         TacitBridgeMixer mixer = new TacitBridgeMixer(
             address(relay), burnVerifier, address(0),
-            6, denoms, verifiers, networkTag, assetId
+            confirmationDepth, denoms, verifiers, networkTag, assetId
         );
         require(address(mixer) == predictedMixer, "nonce mismatch");
 

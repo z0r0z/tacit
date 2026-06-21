@@ -16,6 +16,7 @@ set -euo pipefail
 #   ASSET_ID      tETH asset id (0x-prefixed)
 # Optional env:
 #   ETH_RPC (default Sepolia public) | NETWORK (signet|mainnet) | NETWORK_TAG | CHAIN_ID
+#   CONFIRMATIONS (default 6; relay tip must be at least START_HEIGHT+NUM_BLOCKS-1+CONFIRMATIONS)
 #   VASTAI_USER (default root) | REMOTE_DIR
 
 VASTAI_USER="${VASTAI_USER:-root}"
@@ -24,6 +25,7 @@ ETH_RPC="${ETH_RPC:-https://ethereum-sepolia-rpc.publicnode.com}"
 NETWORK="${NETWORK:-signet}"
 NETWORK_TAG="${NETWORK_TAG:-1}"
 CHAIN_ID="${CHAIN_ID:-11155111}"
+CONFIRMATIONS="${CONFIRMATIONS:-6}"
 
 : "${VASTAI_HOST:?Set VASTAI_HOST}"
 : "${VASTAI_PORT:?Set VASTAI_PORT}"
@@ -48,6 +50,7 @@ MODE="${EXECUTE_ONLY:---onchain}"  # --execute-only if requested, else groth16 f
 
 echo "=== tETH SP1 Prover (vast.ai: ${VASTAI_USER}@${VASTAI_HOST}:${VASTAI_PORT}) ==="
 echo "  Blocks: ${START_HEIGHT}..$((START_HEIGHT + NUM_BLOCKS - 1))  Network: ${NETWORK}"
+echo "  Verifier maturity: relay tip must be proof tip + ${CONFIRMATIONS} confirmations"
 echo ""
 
 # ──── Step 1: prove on the instance (pull latest guest first) ────

@@ -90,23 +90,32 @@ const noteLeaf = (asset, cx, cy, owner) => kc(asset, cx, cy, owner);
 }
 
 // ───────────────────────── OP_CDP_LIQUIDATE (op 17) ─────────────────────────
-// Reproduce a position from its legs + fields, prove it ∈ cdpPositionRoot, seize the basket as withdrawals.
-// No sigmas/notes — just the position membership. The controller health-veto is the contract's (not execute).
+// Reproduce a position from its legs + fields, prove it ∈ cdpPositionRoot, burn debt notes summing to EXACTLY
+// the debt, and seize the basket as withdrawals to the liquidator. The controller health-veto is the
+// contract's (not execute).
 {
   const controller = '0x' + 'c2'.repeat(20);
   const owner = '0x' + 'a2'.repeat(32);
   const nonce = '0x' + 'b2'.repeat(32);
+  const liquidator = '0x' + 'd2'.repeat(20);
   const debtValue = 30000n;
   const legs = [{ asset: CBTC, value: 90000n }];
   const basketRoot = cdp.basketRoot(legs.map((l) => cdp.basketLeg(l.asset, l.value)));
   const debtAsset = cdp.debtAssetId(controller);
   const positionLeaf = cdp.positionLeaf(controller, debtAsset, basketRoot, debtValue, owner, nonce);
   const { root: cdpPositionRoot, path: positionPath } = singleLeafRootPath(positionLeaf);
+  // burned debt note: a debt-asset note (∈ spendRoot) opening to EXACTLY debtValue (liquidation sigma).
+  const dr = '0x' + '0'.repeat(63) + '8';
+  const { cx: dcx, cy: dcy } = pool.commitXY(debtValue, dr);
+  const { root: spendRoot, path: debtPath } = singleLeafRootPath(noteLeaf(debtAsset, dcx, dcy, owner));
+  const debtNote = { cx: dcx, cy: dcy, owner, value: debtValue, blinding: dr };
+  const debtSig = cdp.cdpLiquidateDebtSigma({ chainBinding, positionLeaf, debtAsset, debtValue, index: 0, note: debtNote });
   const fx = {
-    chainBinding, cdpPositionRoot, controller, owner, nonce, debtValue: Number(debtValue),
+    chainBinding, spendRoot, cdpPositionRoot, controller, owner, nonce, liquidator, debtValue: Number(debtValue),
     positionIndex: 0, positionPath,
     legs: legs.map((l) => ({ asset: l.asset, value: Number(l.value) })),
-    expected: { withdrawals: 1, cdpLiquidations: 1 },
+    debt: [{ cx: dcx, cy: dcy, owner, value: Number(debtValue), index: 0, path: debtPath, sigR: debtSig.sigR, sigZ: debtSig.sigZ }],
+    expected: { nullifiers: 1, withdrawals: 1, cdpLiquidations: 1 },
   };
   writeFileSync(new URL('cdp_liquidate_op.json', dir), JSON.stringify(fx, null, 2));
   console.log('wrote cdp_liquidate_op.json  (positionLeaf=' + positionLeaf.slice(0, 12) + '…)');

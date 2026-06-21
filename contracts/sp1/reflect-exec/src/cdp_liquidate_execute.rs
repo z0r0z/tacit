@@ -1,8 +1,9 @@
 // LOCAL execute-mode validator for the OP_CDP_LIQUIDATE settle guest. Runs the locally-built cxfer-guest ELF
 // against contracts/sp1/confidential/fixtures/cdp_liquidate_op.json, in the SAME io::read order as the guest's
 // OP_CDP_LIQUIDATE arm. A clean execute proves the guest ACCEPTS the witness — the position leaf reproduced
-// from its legs/fields proves membership against cdpPositionRoot, and the basket is seized as withdrawals to
-// the controller — validating the arm + serialization without a Groth16 proof. The controller's health-veto
+// from its legs/fields proves membership against cdpPositionRoot, debt notes prove membership against
+// spendRoot + burn to exactly debtValue, and the basket is seized as withdrawals to the liquidator —
+// validating the arm + serialization without a Groth16 proof. The controller's health-veto
 // (onCdpLiquidate) is the contract's, not execute. Parity with route/otc/bid/cbtc-mint/cdp-mint.
 //
 //   cargo run --release --bin cdp-liquidate-execute
@@ -18,9 +19,9 @@ fn hexv(s: &str) -> Vec<u8> { hex::decode(s.trim_start_matches("0x")).unwrap() }
 fn main() {
     let f: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(FIXTURE).unwrap()).unwrap();
     let mut s = SP1Stdin::new();
-    // ── batch header (no note membership; the position proves against cdpPositionRoot) ──
+    // ── batch header (debt notes prove against spendRoot; the position against cdpPositionRoot) ──
     s.write(&hexv(f["chainBinding"].as_str().unwrap()));
-    s.write(&vec![0u8; 32]); // spendRoot = 0
+    s.write(&hexv(f["spendRoot"].as_str().unwrap()));
     s.write(&vec![0u8; 32]); // bitcoinSpentRoot = 0
     s.write(&vec![0u8; 32]); // bitcoinBurnRoot = 0
     s.write(&vec![0u8; 32]); // lockSetRoot = 0
@@ -33,6 +34,7 @@ fn main() {
     s.write(&hexv(f["owner"].as_str().unwrap()));
     s.write(&f["debtValue"].as_u64().unwrap());
     s.write(&hexv(f["nonce"].as_str().unwrap()));
+    s.write(&hexv(f["liquidator"].as_str().unwrap()));
     s.write(&f["positionIndex"].as_u64().unwrap());
     for p in f["positionPath"].as_array().unwrap() { s.write(&hexv(p.as_str().unwrap())); }
     let legs = f["legs"].as_array().unwrap();
@@ -40,6 +42,18 @@ fn main() {
     for leg in legs {
         s.write(&hexv(leg["asset"].as_str().unwrap()));
         s.write(&leg["value"].as_u64().unwrap());
+    }
+    let debt = f["debt"].as_array().unwrap();
+    s.write(&(debt.len() as u32)); // n_debt
+    for d in debt {
+        s.write(&hexv(d["cx"].as_str().unwrap()));
+        s.write(&hexv(d["cy"].as_str().unwrap()));
+        s.write(&hexv(d["owner"].as_str().unwrap()));
+        s.write(&d["value"].as_u64().unwrap());
+        s.write(&d["index"].as_u64().unwrap());
+        for p in d["path"].as_array().unwrap() { s.write(&hexv(p.as_str().unwrap())); }
+        s.write(&hexv(d["sigR"].as_str().unwrap()));
+        s.write(&hexv(d["sigZ"].as_str().unwrap()));
     }
 
     let client = ProverClient::builder().cpu().build();
@@ -49,9 +63,10 @@ fn main() {
         .expect("execute failed (guest rejected the CDP-liquidate witness)");
     let ex = &f["expected"];
     println!(
-        "EXECUTE_OK cycles={} pv_bytes={} withdrawals={} cdpLiquidations={}",
+        "EXECUTE_OK cycles={} pv_bytes={} nullifiers={} withdrawals={} cdpLiquidations={}",
         report.total_instruction_count(),
         public_values.as_slice().len(),
+        ex["nullifiers"].as_u64().unwrap(),
         ex["withdrawals"].as_u64().unwrap(),
         ex["cdpLiquidations"].as_u64().unwrap()
     );

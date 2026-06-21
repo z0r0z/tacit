@@ -4,8 +4,9 @@ set -euo pipefail
 # tETH Bridge: continuous SP1 prover loop for vast.ai.
 #
 # Runs on the instance. Each cycle advances the Bitcoin light relay to a bounded
-# target, generates an SP1 proof of the pool-state transition over exactly those
-# blocks (so lastBlockHash == RELAY.tip()), and submits it to the verifier.
+# target plus CONFIRMATIONS, generates an SP1 proof of the pool-state transition
+# over only the mature target blocks (so lastBlockHash == RELAY.tip() walked back
+# CONFIRMATIONS), and submits it to the verifier.
 #
 # Setup once: scripts/vastai-setup.sh (installs Rust + Foundry, builds the host
 # which embeds the committed canonical guest ELF — no SP1 toolchain / guest build).
@@ -136,7 +137,7 @@ ensure_gpu_server() {
 }
 
 run_proof_cycle() {
-  local last_proven btc_tip start_height target max_confirmed relay_tip num_blocks
+  local last_proven btc_tip start_height target max_confirmed relay_tip relay_target num_blocks
   ensure_gpu_server
   last_proven=$(get_last_proven_height)
   btc_tip=$(get_btc_tip)
@@ -144,7 +145,9 @@ run_proof_cycle() {
 
   if [[ "$last_proven" == "0" ]]; then start_height=$FIRST_DEPOSIT_BLOCK; else start_height=$((last_proven + 1)); fi
 
-  # Bounded batch ending exactly at the relay tip (verifier needs lastBlockHash == RELAY.tip()).
+  # Bounded batch ending at a mature block. The verifier requires lastBlockHash
+  # to be RELAY.tip() walked back CONFIRMATIONS (or a near ancestor), so the
+  # relay target is the proof target plus the maturity depth.
   target=$((start_height + BLOCKS_PER_PROOF - 1))
   max_confirmed=$((btc_tip - CONFIRMATIONS))
   [[ "$target" -gt "$max_confirmed" ]] && target=$max_confirmed
@@ -196,11 +199,13 @@ run_proof_cycle() {
     fi
   fi
 
-  # Advance the relay to exactly $target, in <=20-header chunks.
+  relay_target=$((target + CONFIRMATIONS))
+
+  # Advance the relay to exactly $relay_target, in <=20-header chunks.
   relay_tip=$(get_relay_tip)
   [[ -n "$relay_tip" ]] || { log "could not fetch relay tip (RPC unreachable?); skipping cycle"; return 1; }
-  while [[ "$relay_tip" -lt "$target" ]]; do
-    local chunk_end=$((relay_tip + 20)); [[ "$chunk_end" -gt "$target" ]] && chunk_end=$target
+  while [[ "$relay_tip" -lt "$relay_target" ]]; do
+    local chunk_end=$((relay_tip + 20)); [[ "$chunk_end" -gt "$relay_target" ]] && chunk_end=$relay_target
     log "Advancing relay $relay_tip -> $chunk_end"
     local headers=""
     for h in $(seq $((relay_tip + 1)) "$chunk_end"); do
@@ -230,7 +235,7 @@ run_proof_cycle() {
   done
 
   num_blocks=$((target - start_height + 1))
-  log "Proving blocks $start_height..$target ($num_blocks) up to relay tip"
+  log "Proving mature blocks $start_height..$target ($num_blocks); relay anchored at $relay_target"
 
   # Fetch published CXFER openings from the worker so the bridge guest can
   # verify Pedersen conservation on tETH CXFER outputs (without them the

@@ -36,9 +36,9 @@ deposit (TAC, tETH) collateral ─▶ open a CDP position ─▶ mint cBTC.tac u
 
 ## 2. Collateral + valuation (where the "oracle" is, and why it's safe)
 
-- **Collateral:** the canonical **cTAC** + **tETH** ERC20s (or their LP). **tETH is exogenous** (real ETH,
-  breaks TAC-reflexivity, the primary safety leg); **TAC is capped** (a bounded bootstrap leg, never the
-  sole backing — the death-spiral the prior design removed stays removed).
+- **Collateral:** canonical **cTAC** plus **tETH/native-ETH pool notes or LP exposure**. **tETH is exogenous**
+  (real ETH, breaks TAC-reflexivity, the primary safety leg); **TAC is capped** (a bounded bootstrap leg,
+  never the sole backing — the death-spiral the prior design removed stays removed).
 - **Valuation:** `collateralValueBtc = tac·satsPerTac + teth·satsPerTeth`, where `satsPerTac` / `satsPerTeth`
   are **TAC-governance-set, on-chain, periodic, per-epoch-bounded** parameters — **not a hot signing key**.
   Governance is slow, transparent, and **bounded**: it can mis-size the refs (→ slightly mis-collateralized,

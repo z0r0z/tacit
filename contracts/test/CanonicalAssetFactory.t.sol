@@ -231,9 +231,24 @@ contract CanonicalAssetFactoryTest is Test {
     function test_mint_rejects_zero_recipient() public {
         CanonicalBridgedERC20 tok = _deploy(); // minter = MINTER
         vm.prank(MINTER);
-        vm.expectRevert(CanonicalBridgedERC20.ZeroAddress.selector);
+        vm.expectRevert(CanonicalBridgedERC20.InvalidRecipient.selector);
         tok.mint(address(0), 1e8);
         assertEq(tok.totalSupply(), 0, "no supply minted to the void");
+    }
+
+    /// Minting to the token's OWN address is the same footgun class as the zero address: the token
+    /// has no sweep, so the balance is stranded (only the minter could burn it back). Guarded alongside
+    /// address(0) so a careless/compromised minter can't strand supply in the contract.
+    function test_mint_rejects_token_itself() public {
+        CanonicalBridgedERC20 tok = _deploy(); // minter = MINTER
+        vm.prank(MINTER);
+        vm.expectRevert(CanonicalBridgedERC20.InvalidRecipient.selector);
+        tok.mint(address(tok), 1e8);
+        assertEq(tok.totalSupply(), 0, "no supply stranded in the token");
+        // a normal recipient is unaffected by the guard
+        vm.prank(MINTER);
+        tok.mint(USER, 1e8);
+        assertEq(tok.balanceOf(USER), 1e8, "ordinary mint still works");
     }
 
     /// INIT_CODE_HASH is exposed so off-chain tooling derives the canonical address from this factory's

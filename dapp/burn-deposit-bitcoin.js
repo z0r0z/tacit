@@ -408,8 +408,9 @@ function parseLpRemoveEnvelope(envHex) {
   };
 }
 
-// T_CBTC_LOCK (0x66) — option-a wire: the opening sigma (rx,ry,z) rides after Cy (offset 101). v_btc is NOT in
-// the envelope (it is the lock output's sats value); the caller stamps it from the tx output at lock_vout.
+// T_CBTC_LOCK (0x66) — track-not-mint wire: legacy sigma-shaped fields still ride after Cy (offset 101) for
+// compatibility, but reflection ignores them. v_btc is NOT in the envelope; the caller stamps it from the tx
+// output at lock_vout, and OP_CBTC_MINT later proves the note opens to exactly that value.
 function parseCbtcLockEnvelope(envHex) {
   const e = hexToBytes(envHex);
   if (e[0] !== 0x66 || e.length !== 197) return null;
@@ -497,8 +498,8 @@ function classifyConfidentialTx(rawTxHex) {
   if (la) return la;
   const lr = parseLpRemoveEnvelope(envHex);
   if (lr) return lr;
-  // cBTC lock (0x66): the opening sigma is on-chain (option a); v_btc is the lock output's sats value, stamped
-  // from the tx (the guest reads it from the tx the same way). A malformed lock output → fail-loud unsupported.
+  // cBTC lock (0x66): v_btc is the lock output's sats value, stamped from the tx (the guest reads it from
+  // the tx the same way). A malformed lock output → fail-loud unsupported.
   const cb = parseCbtcLockEnvelope(envHex);
   if (cb) { const vBtc = txOutputValue(rawTxHex, cb.lockVout); return vBtc == null ? { type: 'unsupported', opcode: 0x66 } : { ...cb, vBtc }; }
   // cBTC redeem (0x67): the honest single-tx exit. v_btc + the kernel sig are on-chain in the envelope; the

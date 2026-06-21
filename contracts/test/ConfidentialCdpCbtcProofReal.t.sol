@@ -5,12 +5,12 @@ pragma solidity 0.8.20;
 import {Test} from "forge-std/Test.sol";
 import {SP1Verifier} from "./vendor/sp1/v6.1.0/SP1VerifierGroth16.sol";
 
-/// Verifies REAL SP1 Groth16 proofs of the CDP (OP_CDP_MINT/CLOSE — the cUSD vault path) and cBTC
-/// (OP_CBTC_MINT) settle ops ON-CHAIN, through the genuine SP1VerifierGroth16 (v6.1.0) — no mock. GPU-proven on
-/// the box (contracts/sp1/confidential/exec-gap.rs) against the committed settle ELF, the vkey the pool deploys
-/// with. Brings CDP/cUSD + cBTC to the same on-chain-proof bar as swap/lp/otc/bid/farm; the contract-side gates
-/// (controller policy, cBTC lock/escrow) are covered by ConfidentialCdpCbtcSettle. Fixtures:
-/// contracts/test/fixtures/{cdp_mint,cdp_close,cbtc_mint}_groth16.json.
+/// Verifies REAL SP1 Groth16 proofs of the full CDP family (OP_CDP_MINT/CLOSE/LIQUIDATE/TOPUP — the cUSD vault
+/// path) and cBTC (OP_CBTC_MINT) settle ops ON-CHAIN, through the genuine SP1VerifierGroth16 (v6.1.0) — no mock.
+/// GPU-proven on the box (contracts/sp1/confidential/exec-gap.rs) against the committed settle ELF, the vkey the
+/// pool deploys with. Brings CDP/cUSD + cBTC to the same on-chain-proof bar as swap/lp/otc/bid/farm; the
+/// contract-side gates (controller policy, cBTC lock/escrow) are covered by ConfidentialCdpCbtcSettle. Fixtures:
+/// contracts/test/fixtures/{cdp_mint,cdp_close,cdp_liquidate,cdp_topup,cbtc_mint}_groth16.json.
 contract ConfidentialCdpCbtcProofRealTest is Test {
     struct Withdrawal { bytes32 assetId; address recipient; uint256 value; }
     struct FeePayment { bytes32 assetId; uint256 value; }
@@ -107,6 +107,44 @@ contract ConfidentialCdpCbtcProofRealTest is Test {
         assertEq(pv.cbtcMints.length, 1, "one CbtcMint");
         assertGt(pv.cbtcMints[0].vBtc, 0, "vBtc > 0");
         assertEq(pv.leaves.length, 1, "one leaf (the cBTC note)");
+    }
+
+    // ── CDP LIQUIDATE (the seize path) ──
+    function test_cdp_liquidate_proof_verifies_onchain() public view {
+        (bytes32 vkey, bytes memory pv, bytes memory proof) = _load("cdp_liquidate_groth16.json");
+        verifier.verifyProof(vkey, pv, proof);
+    }
+
+    function test_cdp_liquidate_fixture_vkey_matches_pin() public view {
+        (bytes32 vkey,,) = _load("cdp_liquidate_groth16.json");
+        assertEq(vkey, _pinnedVkey(), "cdp_liquidate fixture vkey != pinned program_vkey");
+    }
+
+    function test_cdp_liquidate_settlement_decodes() public view {
+        (, bytes memory pvb,) = _load("cdp_liquidate_groth16.json");
+        PublicValues memory pv = abi.decode(pvb, (PublicValues));
+        assertEq(pv.cdpLiquidations.length, 1, "one CdpLiquidate");
+        assertEq(pv.withdrawals.length, 1, "the seized basket paid out as a withdrawal");
+        assertEq(pv.nullifiers.length, 1, "one nullifier (the debt note burned)");
+    }
+
+    // ── CDP TOPUP (add collateral) ──
+    function test_cdp_topup_proof_verifies_onchain() public view {
+        (bytes32 vkey, bytes memory pv, bytes memory proof) = _load("cdp_topup_groth16.json");
+        verifier.verifyProof(vkey, pv, proof);
+    }
+
+    function test_cdp_topup_fixture_vkey_matches_pin() public view {
+        (bytes32 vkey,,) = _load("cdp_topup_groth16.json");
+        assertEq(vkey, _pinnedVkey(), "cdp_topup fixture vkey != pinned program_vkey");
+    }
+
+    function test_cdp_topup_settlement_decodes() public view {
+        (, bytes memory pvb,) = _load("cdp_topup_groth16.json");
+        PublicValues memory pv = abi.decode(pvb, (PublicValues));
+        assertEq(pv.cdpTopups.length, 1, "one CdpTopup");
+        assertGt(uint256(pv.cdpTopups[0].newPositionLeaf), 1, "a REAL new position leaf");
+        assertEq(pv.nullifiers.length, 1, "one nullifier (the old position)");
     }
 
     function test_tampered_proof_rejected() public {

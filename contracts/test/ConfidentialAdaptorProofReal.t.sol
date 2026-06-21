@@ -5,14 +5,14 @@ pragma solidity 0.8.20;
 import {Test} from "forge-std/Test.sol";
 import {SP1Verifier} from "./vendor/sp1/v6.1.0/SP1VerifierGroth16.sol";
 
-/// Verifies a REAL SP1 Groth16 proof of the adaptor-swap claim (OP_ADAPTOR_CLAIM) ON-CHAIN, through the genuine
-/// SP1VerifierGroth16 (v6.1.0) — no mock. GPU-proven on the box (exec-gap.rs, op 13) against the committed settle
-/// ELF; the witness (lock-set membership of L, the output O opening-sigma — the locker-griefing fix — and the
-/// adaptor-completed conservation kernel over L_C−O_C) is built from scratch in
-/// scripts/build-adaptor-exec-fixture.mjs and pre-validated by the reflect-exec adaptor-execute emulator. This
-/// brings the adaptor to the same on-chain-proof bar as every other value path; the contract-side lock-set /
-/// deadline gates are covered by ConfidentialPool.t.sol (test_adaptor_*). Fixture:
-/// contracts/test/fixtures/adaptor_claim_groth16.json.
+/// Verifies REAL SP1 Groth16 proofs of the FULL adaptor-swap lifecycle — lock (OP_ADAPTOR_LOCK), claim
+/// (OP_ADAPTOR_CLAIM) and refund (OP_ADAPTOR_REFUND) — ON-CHAIN, through the genuine SP1VerifierGroth16 (v6.1.0)
+/// — no mock. GPU-proven on the box (exec-gap.rs, ops 12/13/14) against the committed settle ELF; the witnesses
+/// (lock-set membership, opening-sigmas — incl. the claim's locker-griefing fix — and the adaptor-completed
+/// conservation kernel over L_C−O_C) are built from scratch in scripts/build-adaptor-exec-fixture.mjs +
+/// build-remaining-exec-fixtures.mjs and pre-validated by the reflect-exec adaptor/remaining-execute emulators.
+/// The contract-side lock-set / deadline gates are covered by ConfidentialPool.t.sol (test_adaptor_*). Fixtures:
+/// contracts/test/fixtures/adaptor_{claim,lock,refund}_groth16.json.
 contract ConfidentialAdaptorProofRealTest is Test {
     struct Withdrawal { bytes32 assetId; address recipient; uint256 value; }
     struct FeePayment { bytes32 assetId; uint256 value; }
@@ -70,6 +70,45 @@ contract ConfidentialAdaptorProofRealTest is Test {
         assertEq(pv.leaves.length, 1, "one leaf (the recipient output note O)");
         assertTrue(pv.lockSetRoot != bytes32(0), "membership proven against a non-zero lock-set root");
         assertEq(pv.cdpMints.length, 0, "no CDP mint on an adaptor claim");
+    }
+
+    // ── LOCK (spend N → append L to the lock-set under a real curve point T) ──
+    function test_adaptor_lock_proof_verifies_onchain() public view {
+        (bytes32 vkey, bytes memory pv, bytes memory proof) = _load("adaptor_lock_groth16.json");
+        verifier.verifyProof(vkey, pv, proof);
+    }
+
+    function test_adaptor_lock_fixture_vkey_matches_pin() public view {
+        (bytes32 vkey,,) = _load("adaptor_lock_groth16.json");
+        assertEq(vkey, _pinnedVkey(), "adaptor_lock fixture vkey != pinned program_vkey");
+    }
+
+    function test_adaptor_lock_settlement_decodes() public view {
+        (, bytes memory pvb,) = _load("adaptor_lock_groth16.json");
+        PublicValues memory pv = abi.decode(pvb, (PublicValues));
+        assertEq(pv.lockLeaves.length, 1, "one lock leaf appended (L)");
+        assertEq(pv.nullifiers.length, 1, "one nullifier (N spent into the lock)");
+        assertEq(pv.leaves.length, 0, "L lives in the lock-set, not the note tree");
+    }
+
+    // ── REFUND (spend a locked L back to the locker after the deadline, no s revealed) ──
+    function test_adaptor_refund_proof_verifies_onchain() public view {
+        (bytes32 vkey, bytes memory pv, bytes memory proof) = _load("adaptor_refund_groth16.json");
+        verifier.verifyProof(vkey, pv, proof);
+    }
+
+    function test_adaptor_refund_fixture_vkey_matches_pin() public view {
+        (bytes32 vkey,,) = _load("adaptor_refund_groth16.json");
+        assertEq(vkey, _pinnedVkey(), "adaptor_refund fixture vkey != pinned program_vkey");
+    }
+
+    function test_adaptor_refund_settlement_decodes() public view {
+        (, bytes memory pvb,) = _load("adaptor_refund_groth16.json");
+        PublicValues memory pv = abi.decode(pvb, (PublicValues));
+        assertEq(pv.lockNullifiers.length, 1, "one lock nullifier (L refunded)");
+        assertEq(pv.leaves.length, 1, "one leaf (the output note back to the locker)");
+        assertEq(pv.adaptorClaimS.length, 0, "no kernel s revealed on a refund");
+        assertGt(pv.refundNotBefore, 0, "the refund deadline gate is set");
     }
 
     function test_tampered_proof_rejected() public {

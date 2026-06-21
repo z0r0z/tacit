@@ -30,30 +30,30 @@ test('postClose + redeem: atomic 1:1, burn == unlock, lock unwound', () => {
   assert.equal(r.swap.t, 0xabcn, 'the adaptor swap is bound to t');
 });
 
-test('peg-protective: a close that would pay out more BTC than it retires is rejected', () => {
+test('exact-par: a close that would retire less cBTC than it unlocks is rejected', () => {
   const { redeem } = setup();
   assert.throws(
     () => redeem.postClose({ locker: 'L', lockId: 'x', btcAmount: 100n, cbtcWanted: 99n }),
-    /peg-protective/,
+    /exactly/,
   );
 });
 
-test('fee/spread: close may retire MORE cBTC than the BTC it unlocks (>= holds, locker keeps the spread)', () => {
+test('exact-par: a close that would retire more cBTC than it unlocks is rejected', () => {
   const { redeem } = setup();
-  const id = redeem.postClose({ locker: 'L', lockId: 'x', btcAmount: 100n, cbtcWanted: 101n }); // 1% fee
-  const r = redeem.redeem(id, { holder: 'H', btcToTake: 100n, t: 1n, nearDeadline: 1, farDeadline: 2 });
-  assert.equal(r.btcUnlocked, 100n);
-  assert.equal(r.cbtcBurned, 101n, 'burns 101 cBTC for 100 BTC — supply drops > backing drops');
-  assert.ok(r.cbtcBurned >= r.btcUnlocked, 'invariant holds');
+  assert.throws(
+    () => redeem.postClose({ locker: 'L', lockId: 'x', btcAmount: 100n, cbtcWanted: 101n }),
+    /exactly/,
+  );
 });
 
-test('partial redemption', () => {
+test('partial redemption is rejected because v1 retires whole locks', () => {
   const { redeem, orderbook } = setup();
   const id = redeem.postClose({ locker: 'L', lockId: 'x', btcAmount: 100n, cbtcWanted: 100n });
-  const r = redeem.redeem(id, { holder: 'H', btcToTake: 40n, t: 1n, nearDeadline: 1, farDeadline: 2 });
-  assert.equal(r.btcUnlocked, 40n);
-  assert.equal(r.cbtcBurned, 40n);
-  assert.equal(orderbook.get(id).remaining, 60n, '60 BTC of the lock still offered');
+  assert.throws(
+    () => redeem.redeem(id, { holder: 'H', btcToTake: 40n, t: 1n, nearDeadline: 1, farDeadline: 2 }),
+    /partial lock redemption unsupported/,
+  );
+  assert.equal(orderbook.get(id).remaining, 100n, 'whole lock remains offered');
 });
 
 test('missing lockId is rejected (no BTC source)', () => {
