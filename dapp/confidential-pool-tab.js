@@ -5,6 +5,7 @@
 
 import { secp, sha256, keccak_256 } from './vendor/tacit-deps.min.js';
 import { makeConfidentialPoolUx } from './confidential-pool-ux.js';
+import { classifyFinality, finalityBadgeHtml, listProvisional } from './confidential-finality.js';
 
 let _ux = null;
 function getUx() {
@@ -112,6 +113,35 @@ function wireExit(wallet, ux, notes) {
   }
 }
 
+let _finalityTimer = null;
+
+// Cross-chain finality indicator. Always shows the pool's finality model; for any provisional
+// Bitcoin-arbitrated action a cross-chain flow registered (confidential-finality.trackProvisional), shows
+// a live anchoring countdown that flips to "Bitcoin-final" once anchored. Ethereum-only actions (wrap /
+// exit) are final in seconds and are deliberately NOT flagged here.
+function renderFinality() {
+  const box = el('cpool-finality');
+  if (!box) return;
+  const now = Date.now();
+  const pending = listProvisional().map((a) => ({
+    a, s: classifyFinality({ settledAtMs: a.settledAtMs, nowMs: now, anchored: a.anchored, anchorWindowMs: a.anchorWindowMs }),
+  }));
+  const model = 'Finality: Ethereum pool actions (wrap, transfer, exit) are final in seconds. '
+    + 'Cross-chain (Bitcoin-homed) value is fast-final on Ethereum, then settles to Bitcoin over ~1 hr — '
+    + 'reversible by a deep Bitcoin reorg until anchored.';
+  const safeLabel = (l) => String(l == null ? 'Cross-chain action' : l).replace(/[<>&]/g, '');
+  const rows = pending.map(({ a, s }) =>
+    `<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-top:8px;">`
+    + `<span>${safeLabel(a.label)}</span>${finalityBadgeHtml(s)}</div>`
+    + `<div class="muted" style="font-size:10px;margin-top:2px;">${s.detail}</div>`).join('');
+  box.innerHTML = `<div class="muted" style="border:1px solid var(--hairline,#eee);border-radius:4px;padding:8px;">`
+    + `<div>${model}</div>${rows}</div>`;
+
+  // Keep the countdown live only while something is still provisional.
+  if (_finalityTimer) { clearInterval(_finalityTimer); _finalityTimer = null; }
+  if (pending.some(({ s }) => s.tone === 'pending')) _finalityTimer = setInterval(renderFinality, 30000);
+}
+
 // Render the user's confidential account (derived Sepolia EVM address) + seed-only cETH balance into the
 // panel. Safe to call with a locked wallet (shows the unlock prompt). `wallet` is the tacit.js wallet object.
 export async function renderConfidentialPoolTab(wallet) {
@@ -127,6 +157,7 @@ export async function renderConfidentialPoolTab(wallet) {
     if (balEl) balEl.innerHTML = '';
     if (el('cpool-exit-list')) el('cpool-exit-list').textContent = 'Unlock + wrap to see your exitable notes.';
     if (el('cpool-exit-status')) el('cpool-exit-status').textContent = '';
+    renderFinality();
     return;
   }
 
@@ -155,6 +186,7 @@ export async function renderConfidentialPoolTab(wallet) {
       }).join('');
     }
     wireExit(wallet, ux, notes);
+    renderFinality();
   } catch (e) {
     if (statusEl) statusEl.textContent = 'Could not scan the pool: ' + (e && e.message || e);
   }

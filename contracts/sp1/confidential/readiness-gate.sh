@@ -52,7 +52,8 @@ node_suite() {
   for t in confidential-memo confidential-indexer confidential-transfer-roundtrip \
            confidential-bridge-mint confidential-bridge-burn confidential-btc-relay \
            confidential-canonical-asset-id confidential-evm-log confidential-note-binds-amm \
-           confidential-swap-op confidential-lp-op confidential-otc-op confidential-bid-op; do
+           confidential-swap-op confidential-lp-op confidential-otc-op confidential-bid-op \
+           confidential-finality; do
     if ! node "tests/$t.mjs" >>"$TMP.node" 2>&1; then echo "FAIL $t"; rc=1; fi
   done
   cat "$TMP.node" >>"$TMP" 2>/dev/null; rm -f "$TMP.node"
