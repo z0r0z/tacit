@@ -124,7 +124,7 @@ pub const CONSUMED_SLOT_INDEX: u64 = 119;
 /// to assert it folded the COMPLETE recorded consume set as of the finalized block.
 pub const CONSUMED_COUNT_SLOT_INDEX: u64 = 120;
 /// `bitcoinConsumedAt` (mapping index => nullifier) declaration slot. Appended after the CDP tree state.
-pub const CONSUMED_AT_SLOT_INDEX: u64 = 162;
+pub const CONSUMED_AT_SLOT_INDEX: u64 = 163;
 
 /// Storage location of `mapping(bytes32 => _)[key]` declared at `slot`: `keccak256(key ‖ uint256(slot))`
 /// — the Solidity mapping-slot rule, matching the `eth_getProof` key the contract exposes.
