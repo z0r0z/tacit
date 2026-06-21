@@ -84,10 +84,13 @@ interface IERC20Allowance {
 ///              farm, or swap-and-wrap any asset into a confidential note / private payment.
 ///
 ///  Trust model. The router takes the user's tokens only TRANSIENTLY within a call — it pulls them via the
-///  signed approval (or msg.value), hands them to `wrap`/`swapPublic`/`createPair…`/zRouter, sweeps every
-///  leftover back to the caller, and holds NO token or ETH balance across transactions. Its only standing
-///  state is a lazy (infinite) allowance to the immutable, PINNED targets — the POOL and zRouter — harmless
-///  since there is never a resting balance for them to pull. Both external targets are immutable: the POOL
+///  signed approval (or msg.value), hands them to `wrap`/`swapPublic`/`createPair…`/zRouter, and sweeps each
+///  NAMED leg (plus the pool's off-ratio refund) back to the caller, so a well-formed call leaves no resting
+///  balance. The router is strictly NON-CUSTODIAL: any stray residue — a multi-hop swap's non-named dust, a
+///  direct transfer — is not owner-attributed, so the next caller's refund sweeps it; never leave value
+///  resting here. Its only standing state is a lazy (infinite) allowance to the immutable, PINNED targets —
+///  the POOL and zRouter — safe because those targets are trusted and a well-formed call holds nothing for
+///  them to pull beyond what the caller supplied. Both external targets are immutable: the POOL
 ///  and zRouter addresses are never arbitrary; only the swap SELECTION within zRouter (`zrSwapData`, routed
 ///  across V2/V3/V4/Curve/zAMM) is the caller's. The note stays the user's: `commit` is forwarded verbatim,
 ///  the router never sees note secrets, and a malicious/buggy call can at worst revert (atomic) — it cannot
@@ -173,7 +176,8 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
     ///         and emits the recipient's encrypted memo (via the pool's LeavesInserted). The caller builds
     ///         `publicValues`/`proof`/`memos` off-chain (the proof binds the deposit's value to the leaf).
     /// @dev    The settle runs with msg.sender == this router, so it MUST be a self-proved batch with NO
-    ///         settler fees (`pv.fees` empty) — any fee would be paid to the router and stranded.
+    ///         settler fees (`pv.fees` empty). A fee in `token` is swept back to the caller below; a fee in
+    ///         any other asset would strand (non-custodial residue) — so build fee-free.
     function wrapAndSettleWithPermit(
         address token,
         uint256 amount,
@@ -188,6 +192,7 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
     ) external nonReentrant {
         _wrap2612(token, amount, commit, deadline, v, r, s);
         POOL.settle(publicValues, proof, memos);
+        _refund(token, msg.sender); // sweep a (mis-built) settle fee paid in `token` back to the caller
     }
 
     /// @notice One-tx private payment via Permit2 (any ERC20). See `wrapAndSettleWithPermit` for the
@@ -204,6 +209,7 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
     ) external nonReentrant {
         _wrapPermit2(token, amount, commit, permitSingle, signature);
         POOL.settle(publicValues, proof, memos);
+        _refund(token, msg.sender); // sweep a (mis-built) settle fee paid in `token` back to the caller
     }
 
     // ──────────────────── Native ETH (no permit — msg.value IS the approval) ────────────────────
@@ -228,6 +234,7 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
     ) external payable nonReentrant {
         _wrapETH(msg.value, commit);
         POOL.settle(publicValues, proof, memos);
+        _refundETH(msg.sender); // sweep a (mis-built) settle fee paid in native ETH back to the caller
     }
 
     // ──────────────────── Public AMM swap (gasless approve) ────────────────────

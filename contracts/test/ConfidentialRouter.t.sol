@@ -61,9 +61,32 @@ contract MockPermit2 {
     }
 }
 
+interface IMintable {
+    function mint(address to, uint256 amount) external;
+}
+
+/// Minimal zRouter stand-in: simulates an aggregator swap by delivering the OUTPUT token to the caller (the
+/// ConfidentialRouter). `swapETHForToken` keeps the forwarded ETH and mints `outAmount` of `tokenOut`;
+/// `swapTokenForToken` pulls `inAmount` of `tokenIn` (via the router's standing approval) then mints
+/// `outAmount` of `tokenOut`. The router gates on its OWN balance delta, so where the mock sends output is
+/// what's checked — exactly the property under test. The test picks `outAmount` to model an exact, an
+/// over-, or a short swap.
+contract MockZRouter {
+    function swapETHForToken(address tokenOut, uint256 outAmount) external payable {
+        IMintable(tokenOut).mint(msg.sender, outAmount);
+    }
+
+    function swapTokenForToken(address tokenIn, uint256 inAmount, address tokenOut, uint256 outAmount) external {
+        SafeTransferLib.safeTransferFrom(tokenIn, msg.sender, address(this), inAmount);
+        IMintable(tokenOut).mint(msg.sender, outAmount);
+    }
+}
+
 contract ConfidentialRouterTest is Test {
     ConfidentialPool pool;
     ConfidentialRouter router;
+    ConfidentialRouter zapRouter; // wired to a live MockZRouter (the bare `router` has zRouter off)
+    MockZRouter zr;
     MockUSDC usdc;
     MockPermit2 permit2;
     bytes32 assetId;
@@ -101,6 +124,9 @@ contract ConfidentialRouterTest is Test {
 
         permit2 = new MockPermit2();
         router = new ConfidentialRouter(address(pool), address(0), address(permit2));
+        // A second router wired to a live MockZRouter, for the zap family (the bare `router` keeps zRouter off).
+        zr = new MockZRouter();
+        zapRouter = new ConfidentialRouter(address(pool), address(zr), address(permit2));
 
         usdc.mint(user, 10_000);
     }
@@ -498,5 +524,294 @@ contract ConfidentialRouterTest is Test {
         assertEq(tok.balanceOf(user), 0, "TOK fully used");
         assertEq(usdc.balanceOf(address(router)), 0, "router forwarded the refund, holds nothing");
         assertEq(tok.balanceOf(address(router)), 0, "router holds no TOK");
+    }
+
+    // ──────────────────── Zaps (MockZRouter-backed) ────────────────────
+
+    uint256 constant MINIMUM_LIQUIDITY = 1000; // mirrors the pool's locked floor (cold-add: isqrt(vA·vB) − MIN)
+
+    /// Mirror of ConfidentialPool._lpShareId(poolId) = keccak(poolId ‖ "lp").
+    function _lpShareId(bytes32 poolId) internal pure returns (bytes32) {
+        return keccak256(abi.encodePacked(poolId, bytes2(0x6c70)));
+    }
+
+    /// The deposit id shieldShares mints for an LP-share note: keccak(lpShareId ‖ shares ‖ commit).
+    function _lpDepositId(bytes32 poolId, uint256 shares, bytes32 commit) internal pure returns (bytes32) {
+        return keccak256(abi.encode(_lpShareId(poolId), shares, commit));
+    }
+
+    function _permitSingle(address token, uint256 amount, address spender)
+        internal
+        view
+        returns (IPermit2.PermitSingle memory)
+    {
+        return IPermit2.PermitSingle({
+            details: IPermit2.PermitDetails({
+                token: token,
+                amount: uint160(amount),
+                expiration: uint48(block.timestamp + 1 hours),
+                nonce: 0
+            }),
+            spender: spender,
+            sigDeadline: block.timestamp + 1 hours
+        });
+    }
+
+    function _registerTok(string memory sym) internal returns (MockUSDC tok, bytes32 tokId) {
+        tok = new MockUSDC();
+        tokId = pool.registerWrapped(address(tok), 1, bytes32(0), sym, sym, 6);
+    }
+
+    function _memos() internal pure returns (bytes[] memory memos) {
+        memos = new bytes[](1);
+        memos[0] = abi.encodePacked(bytes32("eph"), bytes32("ct"));
+    }
+
+    // ── swap-and-wrap into a confidential NOTE ──
+
+    function test_zapETHToShieldedNote_swapsWrapsAndSweepsExcess() public {
+        (MockUSDC out, bytes32 outId) = _registerTok("OUT");
+        bytes32 commit = keccak256("out-note");
+        uint256 wrapAmount = 5000;
+        uint256 swapOut = 6000; // sources MORE than wrapAmount → the 1000 OUT excess returns to the caller
+        vm.deal(user, 1 ether);
+        bytes memory zrData = abi.encodeCall(MockZRouter.swapETHForToken, (address(out), swapOut));
+
+        vm.prank(user);
+        zapRouter.zapETHToShieldedNote{value: 1e15}(address(out), wrapAmount, commit, zrData);
+
+        assertEq(uint256(pool.depositStatus(keccak256(abi.encode(outId, wrapAmount, commit)))), 1, "note deposit pending");
+        assertEq(pool.escrow(outId), wrapAmount, "exactly wrapAmount escrowed");
+        assertEq(out.balanceOf(user), swapOut - wrapAmount, "OUT excess swept to the caller");
+        assertEq(out.balanceOf(address(zapRouter)), 0, "router holds no OUT");
+        assertEq(address(zapRouter).balance, 0, "router holds no ETH");
+    }
+
+    function test_zapETHToPayment_swapWrapSettle() public {
+        (MockUSDC out, bytes32 outId) = _registerTok("OUT");
+        bytes32 bobCommit = keccak256("bob-out");
+        uint256 wrapAmount = 5000;
+        bytes32 depositId = keccak256(abi.encode(outId, wrapAmount, bobCommit));
+        vm.deal(user, 1 ether);
+        bytes memory zrData = abi.encodeCall(MockZRouter.swapETHForToken, (address(out), wrapAmount));
+
+        vm.prank(user);
+        zapRouter.zapETHToPayment{value: 1e15}(
+            address(out), wrapAmount, bobCommit, zrData, _privatePaymentPv(depositId, keccak256("bob-out-leaf")), hex"", _memos()
+        );
+
+        assertEq(uint256(pool.depositStatus(depositId)), 2, "deposit consumed by the settle");
+        assertEq(pool.nextLeafIndex(), 1, "recipient leaf inserted");
+        assertEq(out.balanceOf(address(zapRouter)), 0, "router holds no OUT");
+        assertEq(address(zapRouter).balance, 0, "router holds no ETH");
+    }
+
+    // ── ETH → public / shielded / farmed LP ──
+
+    function test_zapETHIntoLP_coldStartPublicLp() public {
+        (MockUSDC tokB, bytes32 tokBId) = _registerTok("TKB");
+        uint256 gotB = 2e5; // value 2e5 (unitScale 1)
+        vm.deal(user, 1 ether);
+        bytes memory zrData = abi.encodeCall(MockZRouter.swapETHForToken, (address(tokB), gotB));
+        uint64 deadline = uint64(block.timestamp + 1 hours);
+
+        // msg.value 3e15: 1e15 → zRouter swap, 2e15 → tETH LP leg (value 2e5, aligned to unitScale 1e10)
+        vm.prank(user);
+        uint256 shares = zapRouter.zapETHIntoLP{value: 3e15}(address(tokB), FEE_BPS, 1e15, 0, deadline, user, zrData);
+
+        assertEq(shares, 2e5 - MINIMUM_LIQUIDITY, "cold-start shares = isqrt(vA*vB) - MIN");
+        assertEq(pool.lpShares(_poolId(_tethId(), tokBId, FEE_BPS), user), shares, "shares credited to `to`");
+        assertEq(tokB.balanceOf(address(zapRouter)), 0, "router holds no TKB");
+        assertEq(address(zapRouter).balance, 0, "router holds no ETH");
+    }
+
+    function test_zapETHIntoShieldedLP_shieldsPosition() public {
+        (MockUSDC tokB, bytes32 tokBId) = _registerTok("TKB");
+        bytes32 commit = keccak256("lp-note");
+        uint256 tokBLeg = 2e5;
+        vm.deal(user, 1 ether);
+        bytes memory zrData = abi.encodeCall(MockZRouter.swapETHForToken, (address(tokB), tokBLeg));
+        uint64 deadline = uint64(block.timestamp + 1 hours);
+
+        vm.prank(user);
+        (bytes32 depositId, uint256 shares) =
+            zapRouter.zapETHIntoShieldedLP{value: 3e15}(address(tokB), FEE_BPS, 2e15, tokBLeg, 0, deadline, commit, zrData);
+
+        bytes32 poolId = _poolId(_tethId(), tokBId, FEE_BPS);
+        assertEq(shares, 2e5 - MINIMUM_LIQUIDITY, "deterministic shares (exact legs)");
+        assertEq(depositId, _lpDepositId(poolId, shares, commit), "LP-share deposit id");
+        assertEq(uint256(pool.depositStatus(depositId)), 1, "LP-share note deposit pending");
+        assertEq(pool.lpShares(poolId, address(zapRouter)), 0, "router shielded all shares, holds none public");
+        assertEq(tokB.balanceOf(address(zapRouter)), 0, "router holds no TKB");
+        assertEq(address(zapRouter).balance, 0, "router holds no ETH");
+    }
+
+    function test_zapETHIntoFarm_shieldThenSettleBond() public {
+        (MockUSDC tokB, bytes32 tokBId) = _registerTok("TKB");
+        bytes32 commit = keccak256("farm-note");
+        uint256 tokBLeg = 2e5;
+        uint256 expectedShares = 2e5 - MINIMUM_LIQUIDITY;
+        bytes32 lpDepositId = _lpDepositId(_poolId(_tethId(), tokBId, FEE_BPS), expectedShares, commit);
+        vm.deal(user, 1 ether);
+        bytes memory zrData = abi.encodeCall(MockZRouter.swapETHForToken, (address(tokB), tokBLeg));
+
+        vm.prank(user);
+        uint256 shares = zapRouter.zapETHIntoFarm{value: 3e15}(
+            address(tokB), FEE_BPS, 2e15, tokBLeg, 0, uint64(block.timestamp + 1 hours), commit, zrData,
+            _privatePaymentPv(lpDepositId, keccak256("farm-receipt")), hex"", _memos()
+        );
+
+        assertEq(shares, expectedShares, "deterministic shares");
+        assertEq(uint256(pool.depositStatus(lpDepositId)), 2, "LP-share deposit consumed (bonded) by the settle");
+        assertEq(pool.nextLeafIndex(), 1, "farm-receipt leaf inserted");
+        assertEq(tokB.balanceOf(address(zapRouter)), 0, "router holds no TKB");
+        assertEq(address(zapRouter).balance, 0, "router holds no ETH");
+    }
+
+    // ── token-in → shielded / farmed LP ──
+
+    function test_zapTokenIntoShieldedLP() public {
+        (MockUSDC tokB, bytes32 tokBId) = _registerTok("TKB");
+        bytes32 commit = keccak256("tok-lp-note");
+        vm.prank(user);
+        usdc.approve(address(permit2), type(uint256).max);
+
+        ConfidentialRouter.TokenZap memory z = ConfidentialRouter.TokenZap({
+            tokenB: address(tokB),
+            feeBps: FEE_BPS,
+            tokenAForSwap: 2000,
+            tokenAForLP: 2000,
+            tokenBLeg: 2000,
+            minShares: 0,
+            deadline: uint64(block.timestamp + 1 hours),
+            commit: commit
+        });
+        bytes memory zrData = abi.encodeCall(MockZRouter.swapTokenForToken, (address(usdc), 2000, address(tokB), 2000));
+
+        vm.prank(user);
+        (bytes32 depositId, uint256 shares) =
+            zapRouter.zapTokenIntoShieldedLP(z, _permitSingle(address(usdc), 4000, address(zapRouter)), hex"", zrData);
+
+        assertEq(shares, 2000 - MINIMUM_LIQUIDITY, "deterministic shares");
+        assertEq(depositId, _lpDepositId(_poolId(assetId, tokBId, FEE_BPS), shares, commit), "LP-share deposit id");
+        assertEq(uint256(pool.depositStatus(depositId)), 1, "LP-share deposit pending");
+        assertEq(usdc.balanceOf(user), 10_000 - 4000, "user paid swap + LP legs (no excess)");
+        assertEq(usdc.balanceOf(address(zapRouter)), 0, "router holds no USDC");
+        assertEq(tokB.balanceOf(address(zapRouter)), 0, "router holds no TKB");
+    }
+
+    function test_zapTokenIntoFarm() public {
+        (MockUSDC tokB, bytes32 tokBId) = _registerTok("TKB");
+        bytes32 commit = keccak256("tok-farm-note");
+        vm.prank(user);
+        usdc.approve(address(permit2), type(uint256).max);
+
+        ConfidentialRouter.TokenZap memory z = ConfidentialRouter.TokenZap({
+            tokenB: address(tokB),
+            feeBps: FEE_BPS,
+            tokenAForSwap: 2000,
+            tokenAForLP: 2000,
+            tokenBLeg: 2000,
+            minShares: 0,
+            deadline: uint64(block.timestamp + 1 hours),
+            commit: commit
+        });
+        bytes memory zrData = abi.encodeCall(MockZRouter.swapTokenForToken, (address(usdc), 2000, address(tokB), 2000));
+        bytes32 lpDepositId = _lpDepositId(_poolId(assetId, tokBId, FEE_BPS), 2000 - MINIMUM_LIQUIDITY, commit);
+
+        vm.prank(user);
+        uint256 shares = zapRouter.zapTokenIntoFarm(
+            z, _permitSingle(address(usdc), 4000, address(zapRouter)), hex"", zrData,
+            _privatePaymentPv(lpDepositId, keccak256("tok-farm-leaf")), hex"", _memos()
+        );
+
+        assertEq(shares, 2000 - MINIMUM_LIQUIDITY, "deterministic shares");
+        assertEq(uint256(pool.depositStatus(lpDepositId)), 2, "LP-share deposit consumed (bonded)");
+        assertEq(pool.nextLeafIndex(), 1, "farm-receipt leaf inserted");
+        assertEq(usdc.balanceOf(address(zapRouter)), 0, "router holds no USDC");
+        assertEq(tokB.balanceOf(address(zapRouter)), 0, "router holds no TKB");
+    }
+
+    // ── fail-closed + leftover-forwarding invariants ──
+
+    /// A swap that sources LESS than the wrap/LP leg requires trips the balance-delta gate → the whole tx
+    /// unwinds (fail-closed), nothing escrowed, no ETH stranded.
+    function test_zap_shortSwapOutput_reverts() public {
+        (MockUSDC out, bytes32 outId) = _registerTok("OUT");
+        vm.deal(user, 1 ether);
+        bytes memory zrData = abi.encodeCall(MockZRouter.swapETHForToken, (address(out), 4000)); // < 5000 needed
+
+        vm.prank(user);
+        vm.expectRevert(bytes("zap: short swap output"));
+        zapRouter.zapETHToShieldedNote{value: 1e15}(address(out), 5000, keccak256("c"), zrData);
+
+        assertEq(pool.escrow(outId), 0, "nothing escrowed on the reverted zap");
+        assertEq(address(zapRouter).balance, 0, "no ETH stranded");
+    }
+
+    /// A failing zRouter call bubbles up (here as ZRouterCallFailed for an empty revert) — the zap can't
+    /// silently swallow a bad swap.
+    function test_zap_zRouterCallFails_reverts() public {
+        (MockUSDC out,) = _registerTok("OUT");
+        vm.deal(user, 1 ether);
+        bytes memory zrData = abi.encodeWithSignature("doesNotExist()"); // no such selector on the mock
+
+        vm.prank(user);
+        vm.expectRevert(ConfidentialRouter.ZRouterCallFailed.selector);
+        zapRouter.zapETHToShieldedNote{value: 1e15}(address(out), 5000, keccak256("c"), zrData);
+    }
+
+    /// The pool's off-ratio LP refund (paid to msg.sender == router) is forwarded to the caller through a
+    /// zap — proving the router keeps no balance even when the add is off-ratio.
+    function test_zapToken_offRatioExcess_forwardedToCaller() public {
+        (MockUSDC tokB, bytes32 tokBId) = _registerTok("TKB");
+        // seed a 1:1 USDC/TKB pool from this contract so the user's zap is a (warm) proportional add
+        uint256 seed = 1_000_000;
+        usdc.mint(address(this), seed);
+        tokB.mint(address(this), seed);
+        usdc.approve(address(pool), type(uint256).max);
+        tokB.approve(address(pool), type(uint256).max);
+        pool.createPairAndAddLiquidityPublic(assetId, tokBId, FEE_BPS, seed, seed, 0, 0, address(this));
+
+        vm.prank(user);
+        usdc.approve(address(permit2), type(uint256).max);
+        ConfidentialRouter.TokenZap memory z = ConfidentialRouter.TokenZap({
+            tokenB: address(tokB),
+            feeBps: FEE_BPS,
+            tokenAForSwap: 2000,
+            tokenAForLP: 4000, // off-ratio: TKB (2000) is the limiting leg in the 1:1 pool → 2000 USDC refunded
+            tokenBLeg: 2000,
+            minShares: 0,
+            deadline: uint64(block.timestamp + 1 hours),
+            commit: keccak256("offratio-note")
+        });
+        bytes memory zrData = abi.encodeCall(MockZRouter.swapTokenForToken, (address(usdc), 2000, address(tokB), 2000));
+
+        vm.prank(user);
+        zapRouter.zapTokenIntoShieldedLP(z, _permitSingle(address(usdc), 6000, address(zapRouter)), hex"", zrData);
+
+        // pulled 6000 USDC (2000 swap + 4000 LP); the pool consumes 2000 for the LP and refunds 2000 → caller
+        assertEq(usdc.balanceOf(user), 10_000 - 4000, "net USDC = 2000 swap + 2000 LP (2000 off-ratio excess refunded)");
+        assertEq(usdc.balanceOf(address(zapRouter)), 0, "router forwarded the refund, holds no USDC");
+        assertEq(tokB.balanceOf(address(zapRouter)), 0, "router holds no TKB");
+    }
+
+    /// R-2 hardening: a settle relayed through wrapAndSettle now sweeps a fee/residue resting in the wrapped
+    /// `token` back to the caller (was: stranded in the router). Modeled by a stray balance the settle leaves.
+    function test_wrapAndSettle_refundsStrandedWrapToken() public {
+        usdc.mint(address(router), 250); // stand-in for a settler fee paid to the router (msg.sender) in `token`
+        bytes32 bobCommit = keccak256("bob-fee-c");
+        bytes32 depositId = keccak256(abi.encode(assetId, AMOUNT, bobCommit));
+        uint256 deadline = block.timestamp + 1 hours;
+        (uint8 v, bytes32 r, bytes32 s) = _sign2612(AMOUNT, deadline);
+        uint256 userBefore = usdc.balanceOf(user);
+
+        vm.prank(user);
+        router.wrapAndSettleWithPermit(
+            address(usdc), AMOUNT, bobCommit, deadline, v, r, s, _privatePaymentPv(depositId, keccak256("bob-fee-l")), hex"", _memos()
+        );
+
+        assertEq(usdc.balanceOf(address(router)), 0, "router swept the stranded token (no residue left)");
+        assertEq(usdc.balanceOf(user), userBefore - AMOUNT + 250, "caller received the swept token (net of the wrap)");
     }
 }
