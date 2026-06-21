@@ -36,10 +36,16 @@ interface IFarmPool {
 ///     reward note fresh. No treasury, no `recover` (un-minted = un-inflated); `notify` only sets the rate.
 contract FarmController is ICdpController {
     address public immutable POOL;
+    /// The single asset accepted as farm stake / LP shares.
+    bytes32 public immutable STAKE_ASSET;
     /// The asset paid as reward. ESCROW: an escrow-backed pool asset the funder deposits. MINT: the controller's
     /// own pool-minted debt asset (`keccak("tacit-cdp-debt-v1" ‖ this)`). ESCROW_MODE selects the treasury path.
     bytes32 public immutable REWARD_ASSET;
     bool public immutable ESCROW_MODE;
+    /// true ⇒ a reward farm: only receipt ops (bond/harvest, positionLeaf == 1) are accepted, so a bare
+    /// position lock can't be routed here to inflate `totalShares` and dilute receipt holders' rps without
+    /// ever harvesting. false ⇒ a plain position-lock vault (bare bonds, no rps receipts).
+    bool public immutable RECEIPT_MODE;
 
     /// PRECISION ≥ the max share count (note values, ≤ u64) so any reward ≥ 1 advances the checkpoint. Pinned to
     /// `2 ** 64` to equal the Bitcoin reflection's `FARM_RPS_PRECISION` byte-for-byte — so a receipt's `rps_entry`
@@ -54,10 +60,10 @@ contract FarmController is ICdpController {
     /// the pool skips the position insert for it. positionLeaf > 1 is a bare position lock (no rps receipt).
     bytes32 internal constant RECEIPT = bytes32(uint256(1));
 
-    address public gov; // the farm creator/funder (ESCROW) or the protocol (MINT): notify + recover authority
+    address public immutable gov; // the farm creator/funder (ESCROW) or the protocol (MINT): notify + recover authority
     uint256 public rate; // reward units/sec (Synthetix `rewardRate`); set by notify, backed by the treasury in ESCROW
     uint256 public periodFinish; // emission ends here; accrual is clamped to it (no emission past the funded window)
-    uint256 public lockUntil; // global lock-up: no unbond before this
+    uint256 public lockUntil; // global lock-up: no unbond before this; gov may only shorten/clear it
     uint256 public totalShares;
     uint256 public rps; // Σ rate·dt·PRECISION/totalShares over [start, min(now, periodFinish)] — reward-per-share
     uint256 public lastUpdate;
@@ -73,6 +79,11 @@ contract FarmController is ICdpController {
     error ZeroDuration();
     error EntryAheadOfRps();
     error BarePayoutUnsupported();
+    error BadFarmShape();
+    error WrongStakeAsset();
+    error WrongRewardAsset();
+    error LockExtensionForbidden();
+    error RateTooHigh();
 
     event RewardNotified(uint256 reward, uint256 rate, uint256 periodFinish);
     event Recovered(address indexed to, uint256 amount);
@@ -82,11 +93,22 @@ contract FarmController is ICdpController {
         _;
     }
 
-    constructor(address pool, bytes32 rewardAsset, bool escrowMode, address gov_, uint256 lockUntil_) {
+    constructor(
+        address pool,
+        bytes32 stakeAsset,
+        bytes32 rewardAsset,
+        bool escrowMode,
+        bool receiptMode,
+        address gov_,
+        uint256 lockUntil_
+    ) {
         if (pool == address(0) || gov_ == address(0)) revert ZeroAddress();
+        if (stakeAsset == bytes32(0) || rewardAsset == bytes32(0)) revert BadFarmShape();
         POOL = pool;
+        STAKE_ASSET = stakeAsset;
         REWARD_ASSET = rewardAsset;
         ESCROW_MODE = escrowMode;
+        RECEIPT_MODE = receiptMode;
         gov = gov_;
         lockUntil = lockUntil_;
         lastUpdate = block.timestamp;
@@ -107,6 +129,11 @@ contract FarmController is ICdpController {
             uint256 leftover = (periodFinish - block.timestamp) * rate;
             rate = (reward + leftover) / duration;
         }
+        // Bound the rate so accrual (`rate · dt · PRECISION`) and the harvest check (`shares · (rps − entry)`)
+        // can never overflow u256 for any realistic elapsed time. An unchecked overflow in `_accrue` would
+        // revert every bond/harvest AND unbond (onCdpClose accrues too), locking stakers' principal — so a
+        // fat-fingered or hostile rate must fail here instead. u64/sec dwarfs any real farm's emission.
+        if (rate > type(uint64).max) revert RateTooHigh();
         periodFinish = block.timestamp + duration;
         lastUpdate = block.timestamp;
         emit RewardNotified(reward, rate, periodFinish);
@@ -142,6 +169,15 @@ contract FarmController is ICdpController {
         return rps + (rate * (applicable - lastUpdate) * PRECISION) / totalShares;
     }
 
+    function _stakeWeight(CdpLeg[] calldata legs) internal view returns (uint256 w) {
+        if (legs.length == 0) revert BadFarmShape();
+        for (uint256 i; i < legs.length; ++i) {
+            if (legs[i].asset != STAKE_ASSET) revert WrongStakeAsset();
+            if (legs[i].value == 0) revert BadFarmShape();
+            w += legs[i].value;
+        }
+    }
+
     /// One callback for the receipt sentinel (leaf == 1: bond when debtValue == 0, harvest when > 0), a bare
     /// position lock (leaf > 1), and a bare payout (leaf == 0). `legs = [shares, rps_entry]` for the receipt ops.
     /// ESCROW harvests are additionally treasury-bounded by the pool BEFORE this call (it debits the per-farm
@@ -150,36 +186,49 @@ contract FarmController is ICdpController {
     function onCdpMint(CdpLeg[] calldata legs, uint256 debtValue, bytes32 positionLeaf) external onlyPool {
         _accrue();
         if (positionLeaf == RECEIPT) {
+            if (legs.length != 2 || legs[0].value == 0 || legs[1].asset != bytes32(0)) revert BadFarmShape();
             uint256 shares = legs[0].value;
             uint256 rpsEntry = legs[1].value;
             if (debtValue == 0) {
                 // BOND: the receipt note commits rps_entry — it MUST equal the live rps, so a backdated receipt
                 // can't earn pre-bond reward (the one spot that can need a prove→settle retry if rps moved).
+                if (legs[0].asset != STAKE_ASSET) revert WrongStakeAsset();
                 if (rpsEntry != rps) revert EntryNotLive();
                 totalShares += shares;
             } else {
                 // HARVEST: bound the reward to real accrual. totalShares is untouched — the principal stays
                 // staked (the receipt is consumed + re-minted advanced by the guest; bond once, harvest many).
+                if (legs[0].asset != REWARD_ASSET) revert WrongRewardAsset();
                 if (rpsEntry > rps) revert EntryAheadOfRps();
                 if (debtValue * PRECISION > shares * (rps - rpsEntry)) revert OverClaim();
             }
         } else if (positionLeaf == bytes32(0)) {
             revert BarePayoutUnsupported(); // this farm meters every payout; it has no unmetered faucet
         } else {
-            // bare bond: lock a position basket with no rps receipt; track the public bonded weight.
-            totalShares += _weight(legs);
+            // bare bond: lock a position basket with no rps receipt; track the public bonded weight. A reward
+            // farm (RECEIPT_MODE) rejects it — bare weight would dilute receipt holders' rps without ever
+            // harvesting; only a plain lock vault accepts bare bonds.
+            if (RECEIPT_MODE) revert NotSupported();
+            if (debtValue != 0) revert BadFarmShape();
+            totalShares += _stakeWeight(legs);
         }
     }
 
     /// unbond: enforce the global lock-up, then release; `legs` = the released basket (public).
-    function onCdpClose(uint256, /*debtValue*/ CdpLeg[] calldata legs, bytes32 /*positionNullifier*/ )
+    function onCdpClose(
+        uint256 debtValue,
+        CdpLeg[] calldata legs,
+        bytes32 /*positionNullifier*/
+    )
         external
         onlyPool
     {
+        if (debtValue != 0) revert BadFarmShape();
         if (block.timestamp < lockUntil) revert Locked();
         _accrue();
-        uint256 w = _weight(legs);
-        totalShares = w <= totalShares ? totalShares - w : 0;
+        uint256 w = _stakeWeight(legs);
+        if (w > totalShares) revert BadFarmShape();
+        totalShares -= w;
     }
 
     function onCdpLiquidate(CdpLeg[] calldata, uint256, bytes32) external view onlyPool {
@@ -190,16 +239,11 @@ contract FarmController is ICdpController {
         revert NotSupported();
     }
 
-    /// Set the unbond lock-up. Rate is set only through `notifyRewardAmount` (so it stays backed by the treasury
-    /// in ESCROW mode), never here.
+    /// Shorten/clear the unbond lock-up. The initial maximum lock is a deploy-time choice; after users enter,
+    /// governance must not be able to extend their exit horizon.
     function setLockUntil(uint256 newLockUntil) external {
         if (msg.sender != gov) revert NotGov();
+        if (newLockUntil > lockUntil) revert LockExtensionForbidden();
         lockUntil = newLockUntil;
-    }
-
-    function _weight(CdpLeg[] calldata legs) internal pure returns (uint256 w) {
-        for (uint256 i; i < legs.length; ++i) {
-            w += legs[i].value;
-        }
     }
 }

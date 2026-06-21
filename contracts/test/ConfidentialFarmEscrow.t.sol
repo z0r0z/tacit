@@ -64,6 +64,10 @@ contract ConfidentialFarmEscrowTest is Test {
 
     // A harvest settle: CdpMint(positionLeaf == 1, debtValue == reward) + a reward-note leaf + the old-receipt ν.
     function _harvest(uint256 rewardAmt) internal {
+        _harvestAsset(rewardAmt, rewardId); // escrow reward (the funded asset)
+    }
+
+    function _harvestAsset(uint256 rewardAmt, bytes32 rewardAsset) internal {
         ConfidentialPool.PublicValues memory pv;
         pv.version = 1;
         pv.chainBinding = keccak256(abi.encodePacked(block.chainid, address(pool)));
@@ -73,7 +77,9 @@ contract ConfidentialFarmEscrowTest is Test {
         pv.leaves[0] = keccak256(abi.encodePacked("rewardnote", rewardAmt));
         pv.cdpMints = new ConfidentialPool.CdpMint[](1);
         CdpLeg[] memory legs = new CdpLeg[](2);
-        legs[0] = CdpLeg(bytes32(0), 100); // shares
+        // The guest binds legs[0].asset to the minted reward note's asset; the pool reads it to require escrow
+        // backing for any non-debt (escrow) reward asset.
+        legs[0] = CdpLeg(rewardAsset, 100); // (rewardAsset, shares)
         legs[1] = CdpLeg(bytes32(0), 0); // rps_entry
         pv.cdpMints[0] = ConfidentialPool.CdpMint({
             controller: address(controller),
@@ -111,6 +117,21 @@ contract ConfidentialFarmEscrowTest is Test {
         _fund(500);
         vm.expectRevert(ConfidentialPool.InsufficientEscrow.selector);
         _harvest(501); // exceeds the funded budget
+    }
+
+    /// An UNFUNDED escrow farm cannot harvest: an escrow-asset reward (legs[0].asset == rewardId, != the
+    /// controller's debt asset) must be treasury-backed even when farmRewardAsset was never pinned — otherwise
+    /// the reward note would be drawn from the pool's shared escrow of that asset.
+    function test_unfunded_escrow_harvest_reverts() public {
+        vm.expectRevert(ConfidentialPool.InsufficientEscrow.selector);
+        _harvest(100); // no _fund() ⇒ no backing
+    }
+
+    /// MINT mode: the reward IS the controller's own pool-minted debt asset (legs[0].asset == debtAsset), so
+    /// no treasury is needed (un-minted is un-inflated) and the harvest settles unfunded.
+    function test_mint_mode_harvest_needs_no_treasury() public {
+        bytes32 debtAsset = keccak256(abi.encodePacked("tacit-cdp-debt-v1", address(controller)));
+        _harvestAsset(100, debtAsset); // no revert (no escrow backing required)
     }
 
     function test_recover_gated_to_pinned_controller() public {

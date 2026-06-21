@@ -401,7 +401,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     // The CollateralEngine's trustless escrow-claim gate. Mutually exclusive with cbtcLockSpent (a redeem
     // retires the lock before the rug scan, so it never enters cbtcLocksSpent).
     mapping(bytes32 => bool) public cbtcLockRedeemed;
-    mapping(bytes32 => bool) internal _cbtcMinted;
+    mapping(bytes32 => bool) public cbtcMinted;
 
     // CDP position set (ops 15–17): a confidential CDP position lives in a SEPARATE incremental-Merkle
     // accumulator (same hashing/depth as the note + lock trees), never the note tree — so only an
@@ -790,12 +790,6 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         }
     }
 
-    // ──────────────────── cBTC escrow views (the CollateralEngine reads these) ────────────────────
-
-    function cbtcMinted(bytes32 outpoint) external view returns (bool) {
-        return _cbtcMinted[outpoint];
-    }
-
     // ──────────────────── Asset registry ────────────────────
 
     /// @notice Register an EXTERNAL ERC20 (e.g. USDC) as a confidential asset: the pool
@@ -980,19 +974,17 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     function wrap(bytes32 assetId, uint256 amount, bytes32 commit) external payable nonReentrant {
         AssetStore storage a = _assets[assetId];
         if (!a.registered) revert NotRegistered();
-        if (amount == 0 || amount % a.unitScale != 0) revert AmountNotAligned();
 
         // The note commits to the in-system value v = amount / unitScale. Bind the
         // deposit to v (not the underlying amount): the guest knows only v and proves
         // C opens to it, so a matching deposit id forces v·unitScale == amount —
         // the note can never claim more value than was escrowed (the wrap-side
         // no-inflation gate, since the guest cannot see unitScale).
-        uint256 value = amount / a.unitScale;
+        uint256 value = _amountToValue(amount, a.unitScale);
         // The guest carries `value` as a u64 (and the BP+ range is < 2^64). A wrap whose
         // value exceeds u64 would bind a deposit id the guest can never reproduce (its
         // value wraps), so the deposit — and the escrowed amount — would be unconsumable.
         // Reject at the boundary instead of locking funds.
-        _ckU64(value);
         // The guest reproduces this exact id from (assetId, value, keccak(Cx‖Cy‖owner)) — the coords
         // and owner it holds as witness — so the value binding holds without the contract ever seeing
         // them. Distinct hash from ν, so the published id (in Wrap) never yields a note's nullifier.
@@ -1161,9 +1153,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     function _ingestPublic(bytes32 assetId, uint256 amount) internal returns (uint256 value) {
         AssetStore storage a = _assets[assetId];
         if (!a.registered) revert NotRegistered();
-        if (amount == 0 || amount % a.unitScale != 0) revert AmountNotAligned();
-        value = amount / a.unitScale;
-        _ckU64(value);
+        value = _amountToValue(amount, a.unitScale);
         _moveInUnderlying(a, assetId, amount);
     }
 
@@ -1184,8 +1174,8 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         uint64 deadline,
         address to
     ) external payable nonReentrant returns (uint256 sharesMinted) {
-        if (deadline != 0 && block.timestamp > deadline) revert Expired();
-        if (to == address(0)) revert ZeroAddress();
+        _checkDeadline(deadline);
+        _checkRecipient(to);
         bytes32 poolId = _ensurePair(assetA, assetB, feeBps, false);
         Pool storage p = pools[poolId];
         // Canonical orientation: reserveA is the LOW asset's reserve. Map the caller's (asset,amount) pairs.
@@ -1244,8 +1234,8 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         uint64 deadline,
         address to
     ) external nonReentrant returns (uint256 amountLo, uint256 amountHi) {
-        if (deadline != 0 && block.timestamp > deadline) revert Expired();
-        if (to == address(0)) revert ZeroAddress();
+        _checkDeadline(deadline);
+        _checkRecipient(to);
         (bytes32 poolId, bytes32 lo, bytes32 hi) = _poolIdFor(assetA, assetB, feeBps);
         Pool storage p = pools[poolId];
         if (!p.init) revert PoolNotInit();
@@ -1286,8 +1276,8 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         uint64 deadline,
         address to
     ) external payable nonReentrant returns (uint256 amountOut) {
-        if (deadline != 0 && block.timestamp > deadline) revert Expired();
-        if (to == address(0)) revert ZeroAddress();
+        _checkDeadline(deadline);
+        _checkRecipient(to);
         if (assetIn == assetOut) revert SameAsset();
         (bytes32 poolId, bytes32 lo,) = _poolIdFor(assetIn, assetOut, feeBps);
         Pool storage p = pools[poolId];
@@ -1512,19 +1502,23 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         }
         for (uint256 i; i < r.cbtcLocksSpent.length; ++i) {
             bytes32 outpoint = r.cbtcLocksSpent[i];
-            if (outpoint == bytes32(0) || cbtcLockVBtc[outpoint] == 0 || cbtcLockSpent[outpoint]) {
+            if (
+                outpoint == bytes32(0) || cbtcLockVBtc[outpoint] == 0 || cbtcLockSpent[outpoint]
+                    || cbtcLockRedeemed[outpoint]
+            ) {
                 revert CbtcLockMismatch();
             }
-            if (cbtcLockRedeemed[outpoint]) revert CbtcLockMismatch();
             cbtcLockSpent[outpoint] = true;
         }
         // Honest redemptions (mutually exclusive with a spend): the engine's trustless escrow-claim gate.
         for (uint256 i; i < r.cbtcLocksRedeemed.length; ++i) {
             bytes32 outpoint = r.cbtcLocksRedeemed[i];
-            if (outpoint == bytes32(0) || cbtcLockVBtc[outpoint] == 0 || cbtcLockRedeemed[outpoint]) {
+            if (
+                outpoint == bytes32(0) || cbtcLockVBtc[outpoint] == 0 || cbtcLockSpent[outpoint]
+                    || cbtcLockRedeemed[outpoint]
+            ) {
                 revert CbtcLockMismatch();
             }
-            if (cbtcLockSpent[outpoint]) revert CbtcLockMismatch();
             cbtcLockRedeemed[outpoint] = true;
         }
         // Trustless metadata: lazy-register the canonical ERC20 for each asset whose etch the reflection
@@ -1610,7 +1604,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         if (pv.chainBinding != CHAIN_BINDING) revert ChainMismatch();
         // Expired: a proof carrying a deadline can't be relayed past it (0 = no expiry). The guest commits
         // the earliest op deadline + binds it in each trader's sigma, so the box can't alter or sit on it.
-        if (pv.deadline != 0 && block.timestamp > pv.deadline) revert Expired();
+        _checkDeadline(pv.deadline);
         // Adaptor REFUND is the strict mirror of the deadline ≤ gate above: a refund of a locked note may
         // settle only STRICTLY AFTER the lock's deadline (the guest commits the latest refund deadline in the
         // batch; 0 = no refund here). CLAIM is gated settle-at-or-before-deadline (≤), so making refund
@@ -1636,7 +1630,8 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         // Cross-lane non-membership (cross-lane): if the guest proved each
         // spent ν absent from the Bitcoin spent set, it must be against the CURRENT
         // reflected root — a stale root could omit a recent Bitcoin spend.
-        if (pv.bitcoinSpentRoot != bytes32(0) && pv.bitcoinSpentRoot != knownBitcoinSpentRoot) {
+        bytes32 bitcoinSpentRoot = pv.bitcoinSpentRoot;
+        if (bitcoinSpentRoot == bytes32(0) ? btcHomed : bitcoinSpentRoot != knownBitcoinSpentRoot) {
             revert StaleBitcoinSpentRoot();
         }
         // Cross-lane non-membership is MANDATORY for a Bitcoin-homed spend (membership
@@ -1650,9 +1645,6 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         // non-membership check (the guest keys it off `bitcoin_spent_root != 0`) and
         // re-spend on Ethereum a note already spent on Bitcoin. The reflection prover
         // seeds a non-zero empty-IMT sentinel, so a legitimate spent root is never 0.
-        if (btcHomed && (pv.bitcoinSpentRoot == bytes32(0) || pv.bitcoinSpentRoot != knownBitcoinSpentRoot)) {
-            revert StaleBitcoinSpentRoot();
-        }
         // A bridge_burn (crossOut) emits an authoritative, one-per-claimId instruction to MINT a
         // note on Bitcoin, while the spent input is nullified ONLY in the Ethereum set. The reflection
         // prover reflects Bitcoin spends → Ethereum, never the reverse, so an Ethereum nullification is
@@ -1740,8 +1732,8 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         // attacker-authored locked note cannot authorize a claim/refund (mint from nothing). A batch that
         // spends a locked note (lockNullifiers non-empty) MUST pin a known, NON-ZERO lock root; a
         // lock-only batch (appends, no claim) may carry a zero root it never proved membership against.
-        if (pv.lockSetRoot != bytes32(0) && !everKnownLockRoot[pv.lockSetRoot]) revert UnknownLockRoot();
-        if (pv.lockNullifiers.length != 0 && (pv.lockSetRoot == bytes32(0) || !everKnownLockRoot[pv.lockSetRoot])) {
+        bytes32 lockSetRoot = pv.lockSetRoot;
+        if (lockSetRoot == bytes32(0) ? pv.lockNullifiers.length != 0 : !everKnownLockRoot[lockSetRoot]) {
             revert UnknownLockRoot();
         }
         // bridge_mint authorizes a mint on the burned note's MEMBERSHIP in the dedicated
@@ -1749,13 +1741,10 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         // be current; and whenever a bridge_mint is present (bitcoinBurnsConsumed non-empty)
         // it is MANDATORY and non-zero — so a mint can never be authorized against the
         // generic spent set (which would duplicate value, H-1) or a stale/omitted root.
-        if (pv.bitcoinBurnRoot != bytes32(0) && pv.bitcoinBurnRoot != knownBitcoinBurnRoot) {
-            revert StaleBitcoinBurnRoot();
-        }
-        if (
-            pv.bitcoinBurnsConsumed.length != 0
-                && (pv.bitcoinBurnRoot == bytes32(0) || pv.bitcoinBurnRoot != knownBitcoinBurnRoot)
-        ) revert StaleBitcoinBurnRoot();
+        bytes32 bitcoinBurnRoot = pv.bitcoinBurnRoot;
+        if (bitcoinBurnRoot == bytes32(0)
+                ? pv.bitcoinBurnsConsumed.length != 0
+                : bitcoinBurnRoot != knownBitcoinBurnRoot) revert StaleBitcoinBurnRoot();
         if (memos.length != pv.leaves.length) revert MemoLeafMismatch();
 
         // Cross-lane gate (cross-lane): a note already spent on Bitcoin cannot be
@@ -1797,11 +1786,10 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         // ALL pricing/ratio policy is the controller's (onCdpMint/onCdpLiquidate/onCdpTopup revert to DENY).
         // A position is ALWAYS the controller's OWN derived debt asset (`debtAsset == keccak("tacit-cdp-debt-v1"
         // ‖ controller)`), so a controller can only ever mint/free its own asset — never cBTC/TAC.
-        if (pv.cdpPositionRoot != bytes32(0) && !everKnownCdpRoot[pv.cdpPositionRoot]) revert UnknownCdpRoot();
-        if (
-            (pv.cdpCloses.length != 0 || pv.cdpLiquidations.length != 0 || pv.cdpTopups.length != 0)
-                && (pv.cdpPositionRoot == bytes32(0) || !everKnownCdpRoot[pv.cdpPositionRoot])
-        ) revert UnknownCdpRoot();
+        bytes32 cdpPositionRoot = pv.cdpPositionRoot;
+        if ((pv.cdpCloses.length != 0 || pv.cdpLiquidations.length != 0 || pv.cdpTopups.length != 0)
+                ? cdpPositionRoot == bytes32(0) || !everKnownCdpRoot[cdpPositionRoot]
+                : cdpPositionRoot != bytes32(0) && !everKnownCdpRoot[cdpPositionRoot]) revert UnknownCdpRoot();
 
         for (uint256 i; i < pv.cdpMints.length; ++i) {
             CdpMint memory m = pv.cdpMints[i];
@@ -1814,11 +1802,21 @@ contract ConfidentialPool is ReentrancyGuardTransient {
             // (real leaves are keccak, always > 1); the controller's onCdpMint applies the policy (a harvest
             // bounds reward = debtValue against the receipt checkpoint carried in the leg values).
             if (uint256(m.positionLeaf) > 1) _insertCdpPositionLeaf(m.positionLeaf);
-            // Escrow-mode farm harvest: debit the funded treasury by the reward (positionLeaf == 1, debtValue > 0)
-            // so a harvest never exceeds the funded budget; the reward note is backed by escrow[rewardAsset].
-            if (farmRewardAsset[m.controller] != bytes32(0) && uint256(m.positionLeaf) == 1 && m.debtValue != 0) {
-                if (farmTreasury[m.controller] < m.debtValue) revert InsufficientEscrow();
-                farmTreasury[m.controller] -= m.debtValue;
+            // Farm reward mint (positionLeaf == 1, debtValue > 0): the controller conjures a reward note whose
+            // asset the guest binds into legs[0] (== the minted leaf's asset). The ONLY asset a farm may mint
+            // unbacked is its OWN pool-minted debt asset (== m.debtAsset, MINT mode — un-minted is un-inflated).
+            // ANY other reward asset MUST be covered by the funded per-farm treasury, enforced here regardless
+            // of whether farmRewardAsset was ever pinned — so an UNFUNDED "escrow" farm can't mint reward notes
+            // drawn from another holder's escrow. Keyed off the guest-bound leg (not controller state), so a
+            // hostile ICdpController can't evade it: the guest, not the controller, ties the leg to the mint.
+            if (uint256(m.positionLeaf) == 1 && m.debtValue != 0) {
+                bytes32 rewardAsset = m.legs.length != 0 ? m.legs[0].asset : bytes32(0);
+                if (rewardAsset != m.debtAsset) {
+                    if (farmRewardAsset[m.controller] != rewardAsset || farmTreasury[m.controller] < m.debtValue) {
+                        revert InsufficientEscrow();
+                    }
+                    farmTreasury[m.controller] -= m.debtValue;
+                }
             }
             ICdpController(m.controller).onCdpMint(m.legs, m.debtValue, m.positionLeaf);
         }
@@ -1830,8 +1828,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
             if (uint256(t.newPositionLeaf) <= 1) revert BadCdpController();
             // Mint already checked derived debtAsset for the position leaf the proof consumes.
             // Top-up keeps no duplicate debtAsset field here: the old/new leaves bind the same controller debt.
-            if (cdpPositionSpent[t.oldPositionNullifier]) revert CdpPositionAlreadySpent();
-            cdpPositionSpent[t.oldPositionNullifier] = true;
+            _spendCdpPosition(t.oldPositionNullifier);
             _insertCdpPositionLeaf(t.newPositionLeaf);
             ICdpController(t.controller)
                 .onCdpTopup(t.oldLegs, t.newLegs, t.debtValue, t.oldPositionNullifier, t.newPositionLeaf);
@@ -1841,15 +1838,13 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         for (uint256 i; i < pv.cdpCloses.length; ++i) {
             CdpClose memory c = pv.cdpCloses[i];
             if (c.controller.code.length == 0) revert BadCdpController();
-            if (cdpPositionSpent[c.positionNullifier]) revert CdpPositionAlreadySpent();
-            cdpPositionSpent[c.positionNullifier] = true;
+            _spendCdpPosition(c.positionNullifier);
             ICdpController(c.controller).onCdpClose(c.debtValue, c.legs, c.positionNullifier);
         }
         for (uint256 i; i < pv.cdpLiquidations.length; ++i) {
             CdpLiquidate memory q = pv.cdpLiquidations[i];
             if (q.controller.code.length == 0) revert BadCdpController();
-            if (cdpPositionSpent[q.positionNullifier]) revert CdpPositionAlreadySpent();
-            cdpPositionSpent[q.positionNullifier] = true;
+            _spendCdpPosition(q.positionNullifier);
             // The guest already burned debt notes summing exactly to debtValue and produced the seized-basket
             // withdrawals. The controller proves (its oracle) the position is unhealthy; reverts if healthy.
             ICdpController(q.controller).onCdpLiquidate(q.legs, q.debtValue, q.positionNullifier);
@@ -1860,15 +1855,18 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         // pre-committed commitment), one-mint-per-lock, and the native-ETH escrow at the CollateralEngine.
         for (uint256 i; i < pv.cbtcMints.length; ++i) {
             CbtcMint memory cm = pv.cbtcMints[i];
-            if (cm.vBtc == 0 || cbtcLockVBtc[cm.outpoint] != cm.vBtc) revert CbtcLockMismatch();
-            if (cbtcLockCommitment[cm.outpoint] != cm.commitment) revert CbtcLockMismatch();
-            if (cbtcLockSpent[cm.outpoint] || cbtcLockRedeemed[cm.outpoint] || _cbtcMinted[cm.outpoint]) {
+            bytes32 outpoint = cm.outpoint;
+            uint256 vBtc = cm.vBtc;
+            if (vBtc == 0 || cbtcLockVBtc[outpoint] != vBtc || cbtcLockCommitment[outpoint] != cm.commitment) {
                 revert CbtcLockMismatch();
             }
-            if (address(COLLATERAL_ENGINE) == address(0) || !COLLATERAL_ENGINE.escrowSufficient(cm.outpoint, cm.vBtc)) {
+            if (cbtcLockSpent[outpoint] || cbtcLockRedeemed[outpoint] || cbtcMinted[outpoint]) {
                 revert CbtcLockMismatch();
             }
-            _cbtcMinted[cm.outpoint] = true;
+            if (address(COLLATERAL_ENGINE) == address(0) || !COLLATERAL_ENGINE.escrowSufficient(outpoint, vBtc)) {
+                revert CbtcLockMismatch();
+            }
+            cbtcMinted[outpoint] = true;
         }
 
         // No-inflation floor: count EVM-homed spends (Bitcoin-homed cross-lane spends are backed by the
@@ -1885,14 +1883,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
             uint256 added;
             for (uint256 i; i < pv.nullifiers.length; ++i) {
                 bytes32 n = pv.nullifiers[i];
-                bool isBurn;
-                for (uint256 j; j < pv.bitcoinBurnsConsumed.length; ++j) {
-                    if (pv.bitcoinBurnsConsumed[j] == n) {
-                        isBurn = true;
-                        break;
-                    }
-                }
-                if (!isBurn) ++added;
+                if (!_contains(pv.bitcoinBurnsConsumed, n)) ++added;
             }
             evmNullifiersSpent += added;
         }
@@ -1911,14 +1902,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         if (pv.bitcoinRootsUsed.length != pv.bitcoinBurnsConsumed.length) revert BridgeMintRootMismatch();
         for (uint256 i; i < pv.bitcoinBurnsConsumed.length; ++i) {
             bytes32 burnNullifier = pv.bitcoinBurnsConsumed[i];
-            bool nullified;
-            for (uint256 j; j < pv.nullifiers.length; ++j) {
-                if (pv.nullifiers[j] == burnNullifier) {
-                    nullified = true;
-                    break;
-                }
-            }
-            if (!nullified) revert BridgeBurnNotNullified();
+            if (!_contains(pv.nullifiers, burnNullifier)) revert BridgeBurnNotNullified();
             if (bridgeMinted[burnNullifier]) revert BurnAlreadyMinted();
             bridgeMinted[burnNullifier] = true;
         }
@@ -1971,14 +1955,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
             // Bind the burn to its source on-chain: the crossOut's ν must be spent in THIS batch (present
             // in pv.nullifiers, all marked above). The guest nullifies it, but the contract enforces the
             // link so a crossOut can never mint a Bitcoin note without consuming its Ethereum source note.
-            bool spentHere;
-            for (uint256 j; j < pv.nullifiers.length; ++j) {
-                if (pv.nullifiers[j] == c.nullifier) {
-                    spentHere = true;
-                    break;
-                }
-            }
-            if (!spentHere) revert CrossOutNullifierNotSpent();
+            if (!_contains(pv.nullifiers, c.nullifier)) revert CrossOutNullifierNotSpent();
             crossOutCommitment[c.claimId] = c.destCommitment; // storage anchor for reverse-reflection inclusion proofs
             emit CrossOutRecorded(c.claimId, c.destChain, c.destCommitment, c.nullifier, c.assetId);
         }
@@ -2048,6 +2025,33 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     }
 
     // ──────────────────── Internals ────────────────────
+
+    function _contains(bytes32[] memory xs, bytes32 x) internal pure returns (bool) {
+        uint256 n = xs.length;
+        for (uint256 i; i < n; ++i) {
+            if (xs[i] == x) return true;
+        }
+        return false;
+    }
+
+    function _spendCdpPosition(bytes32 positionNullifier) internal {
+        if (cdpPositionSpent[positionNullifier]) revert CdpPositionAlreadySpent();
+        cdpPositionSpent[positionNullifier] = true;
+    }
+
+    function _checkDeadline(uint64 deadline) internal view {
+        if (deadline != 0 && block.timestamp > deadline) revert Expired();
+    }
+
+    function _checkRecipient(address to) internal pure {
+        if (to == address(0)) revert ZeroAddress();
+    }
+
+    function _amountToValue(uint256 amount, uint256 unitScale) internal pure returns (uint256 value) {
+        if (amount == 0 || amount % unitScale != 0) revert AmountNotAligned();
+        value = amount / unitScale;
+        _ckU64(value);
+    }
 
     /// Lazy-register a Tacit asset from guest-proven metadata: deploy its canonical ERC20
     /// (address = f(asset_id)) with the proven `(symbol, decimals)` and `unitScale` derived
@@ -2146,7 +2150,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         assetId = _resolveAsset(assetId);
         AssetStore storage a = _assets[assetId];
         if (!a.registered) revert NotRegistered();
-        if (to == address(0)) revert ZeroAddress();
+        _checkRecipient(to);
         amount = value * a.unitScale;
         if (a.poolMinted) {
             // Tacit-recorded asset: mint the canonical ERC20 (exit to public). The
