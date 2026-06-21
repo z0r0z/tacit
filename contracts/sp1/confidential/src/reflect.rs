@@ -78,11 +78,14 @@ sol! {
         uint256 cbtcBackingSats;   // cBTC: Σ live self-custody cBTC.zk lock sats (the off-pool buffer reads it)
         // cBTC per-lock surfacing (ops/DESIGN-confidential-defi-v1.md §3): the per-batch deltas the contract
         // records into its per-lock registry. `cbtcLocksFolded` = locks newly tracked this batch (gate the
-        // escrow-mint); `cbtcLocksSpent` = tracked locks spent this batch (the engine slashes the escrow if it
-        // wasn't released by a redemption — the contract classifies rug-vs-redeem). Proven arrays, like the
-        // settle guest's leaves / bitcoinBurnsConsumed.
+        // escrow-mint); `cbtcLocksSpent` = tracked locks BARE-spent this batch (a rug — the engine slashes the
+        // escrow); `cbtcLocksRedeemed` = tracked locks HONESTLY redeemed this batch (cBTC burned + lock
+        // unlocked atomically — the engine's TRUSTLESS escrow-claim gate). Spent and redeemed are mutually
+        // exclusive (a redeem retires the lock before the rug scan). Proven arrays, like the settle guest's
+        // leaves / bitcoinBurnsConsumed.
         CbtcLockFolded[] cbtcLocksFolded;
         bytes32[] cbtcLocksSpent;
+        bytes32[] cbtcLocksRedeemed;
         // FAST-LANE FRESHNESS: how many eth-consumed ν this batch has folded into the spent set. attest
         // gates it == ConfidentialPool.bitcoinConsumedCount, so the spent set can advance ONLY after every
         // recorded consume is folded — closing the stale-eth-proof double-credit.
@@ -422,6 +425,7 @@ pub fn main() {
     // contract's per-lock registry (mint gate) + slash (rug). See ops/DESIGN-confidential-defi-v1.md §3.
     let mut cbtc_folded: Vec<CbtcLockFold> = Vec::new();
     let mut cbtc_spent: Vec<[u8; 32]> = Vec::new();
+    let mut cbtc_redeemed: Vec<[u8; 32]> = Vec::new();
     let mut attested_metas: Vec<AssetMeta> = Vec::new();
     // The value-free Bitcoin-call fold pushes (callId, recordHash) pairs here (flat) → contract pendingBtcCall.
     let mut btc_calls_folded: Vec<[u8; 32]> = Vec::new();
@@ -498,9 +502,13 @@ pub fn main() {
                     cbtc_ins.iter().map(|s| from_affine_xy(&s.cx, &s.cy)).collect::<Option<Vec<Point>>>(),
                     bitcoin::extract_inputs(tx),
                 ) {
-                    let _ = state.fold_cbtc_redeem(
+                    // On a valid redeem, surface the retired outpoint so the engine's escrow-claim gate is
+                    // proof-driven (`outpoint_key` — the same key the lock set / cbtcLocksSpent use).
+                    if let Ok(redeemed_op) = state.fold_cbtc_redeem(
                         &rd.lock_txid, rd.lock_vout, rd.v_btc, &tx_ins, &in_ops, &in_pts, &rd.kernel_sig,
-                    );
+                    ) {
+                        cbtc_redeemed.push(redeemed_op);
+                    }
                 }
             }
 
@@ -1467,6 +1475,7 @@ pub fn main() {
             })
             .collect(),
         cbtcLocksSpent: cbtc_spent.iter().map(|o| (*o).into()).collect(),
+        cbtcLocksRedeemed: cbtc_redeemed.iter().map(|o| (*o).into()).collect(),
         consumedCount: state.consumed_count, // fast-lane freshness: attest gates this == bitcoinConsumedCount
         attestedAssetMetas: attested_metas,
         btcCallsFolded: btc_calls_folded.into_iter().map(Into::into).collect(),

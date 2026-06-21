@@ -12,8 +12,11 @@ import {SafeTransferLib} from "solady/utils/SafeTransferLib.sol";
 interface IConfidentialPoolCollateral {
     /// Σ live self-custody cBTC.zk lock sats (reflection-attested, oracle-free).
     function cbtcBackingSats() external view returns (uint256);
-    /// True once the reflection surfaced this lock outpoint as SPENT (`cbtcLocksSpent`).
+    /// True once the reflection surfaced this lock outpoint as SPENT (`cbtcLocksSpent`) — a bare spend (rug).
     function cbtcLockSpent(bytes32 outpoint) external view returns (bool);
+    /// True once the reflection PROVED this lock honestly redeemed (`cbtcLocksRedeemed`): the single-tx
+    /// atomic swap unlocked the lock AND burned exactly its sats of cBTC. The trustless escrow-release gate.
+    function cbtcLockRedeemed(bytes32 outpoint) external view returns (bool);
     /// True once cBTC was minted against this lock (the escrow became live).
     function cbtcMinted(bytes32 outpoint) external view returns (bool);
     /// The canonical ERC20 the pool mints/escrows for an asset id (resolving a shared id to its local
@@ -47,8 +50,8 @@ interface IAmmTwap {
 ///
 ///         1. **cBTC escrow (native ETH, Chainlink ETH/BTC sized):** a self-custody locker posts a
 ///            refundable native-ETH escrow keyed by their Bitcoin lock outpoint, `≥ escrowRatio · v_btc`.
-///            On an honest atomic redeem the escrow is released; on a proven rug (the reflection surfaces
-///            the lock spent without a redemption) anyone may `slash` it. Chainlink sizes the escrow only,
+///            On a reflection-PROVEN honest redeem each funder permissionlessly `claimEscrow`s its share (the reflection surfaces
+///            a redeem vs. a rug); on a proven rug anyone may `slash` it to the reserve — no owner in the path. Chainlink sizes the escrow only,
 ///            never cBTC's peg (which is conservation, oracle-free) — an oracle failure mis-sizes the
 ///            deterrent, it cannot de-peg cBTC.
 ///
@@ -87,10 +90,12 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
     uint256 public cdpRatioBps = 15000; // cUSD mint collateralization floor (1.5×): debt_usd ≤ collateral_usd / ratio
     uint256 public liqRatioBps = 12500; // cUSD liquidation threshold (1.25×): below this, a position is seizable
 
-    // --- cBTC escrow accounting (native ETH per lock outpoint) ---
-    mapping(bytes32 => uint256) public escrowOf; // outpoint → posted native ETH (wei)
-    mapping(bytes32 => bool) public escrowReleased; // outpoint → released by a proven redeem (then non-slashable)
-    mapping(bytes32 => bool) public escrowSlashed; // outpoint → already slashed (one-shot)
+    // --- cBTC escrow accounting (native ETH per lock outpoint, per funder) ---
+    // Per-(outpoint, funder) so "anyone may fund" is preserved AND each funder reclaims exactly its own
+    // share trustlessly once the reflection proves the redemption (no owner, no recipient choice).
+    mapping(bytes32 => mapping(address => uint256)) public escrowOf; // outpoint → funder → posted wei
+    mapping(bytes32 => uint256) public escrowTotal; // outpoint → Σ unclaimed escrow (the escrowSufficient gate)
+    mapping(bytes32 => bool) public escrowSlashed; // outpoint → already slashed (one-shot; shares become unclaimable)
 
     // --- cUSD CDP accounting ---
     uint256 public outstandingCusd; // total cUSD debt minted across open positions (base units)
@@ -150,8 +155,8 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
 
     constructor(address pool, bytes32 cbtcAssetId, uint8 cbtcDec, uint8 cusdDec, address admin) {
         if (
-            admin == address(0) || cbtcAssetId != CANONICAL_CBTC_ASSET_ID
-                || cbtcDec != CANONICAL_CBTC_DECIMALS || cusdDec > 18
+            admin == address(0) || cbtcAssetId != CANONICAL_CBTC_ASSET_ID || cbtcDec != CANONICAL_CBTC_DECIMALS
+                || cusdDec > 18
         ) {
             revert BadParams();
         }
@@ -208,7 +213,12 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
     {
         // Liquidation threshold must sit below the mint floor (else a fresh mint is instantly liquidatable).
         // Escrow below 100% of the locked BTC value weakens the cBTC rug deterrent; 0 staleness is a footgun.
-        if (_maxStaleness == 0 || _escrowRatioBps < 10_000 || _liqRatioBps < 10_000 || _liqRatioBps >= _cdpRatioBps) {
+        // Upper ceilings are sanity bounds (a governance fat-finger is fail-closed but bounded anyway): a
+        // ratio over 10x is nonsensical for a CDP, and accepting prices older than a day defeats freshness.
+        if (
+            _maxStaleness == 0 || _maxStaleness > 1 days || _escrowRatioBps < 10_000 || _escrowRatioBps > 100_000
+                || _liqRatioBps < 10_000 || _liqRatioBps >= _cdpRatioBps || _cdpRatioBps > 100_000
+        ) {
             revert BadParams();
         }
         maxStaleness = _maxStaleness;
@@ -264,58 +274,68 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
     }
 
     /// @notice True iff the lock outpoint holds at least `requiredEscrow(vBtc)` native ETH — the gate the
-    ///         pool's cBTC mint reads before minting cBTC against the lock. Released/slashed outpoints are
-    ///         terminal and can never become sufficient again.
+    ///         pool's cBTC mint reads before minting cBTC against the lock. A spent/redeemed/slashed outpoint is
+    ///         terminal and can never become sufficient again. (Re-mint is independently barred by the pool.)
     function escrowSufficient(bytes32 outpoint, uint256 vBtc) external view returns (bool) {
-        return !escrowReleased[outpoint] && !escrowSlashed[outpoint] && escrowOf[outpoint] >= requiredEscrow(vBtc);
+        if (address(POOL) != address(0) && (POOL.cbtcLockSpent(outpoint) || POOL.cbtcLockRedeemed(outpoint))) {
+            return false;
+        }
+        return !escrowSlashed[outpoint] && escrowTotal[outpoint] >= requiredEscrow(vBtc);
     }
 
     /// @notice Post (or top up) the refundable native-ETH escrow for a Bitcoin lock outpoint. Anyone may
-    ///         fund; it is returned on an honest redeem (`releaseEscrow`) and slashable on a proven rug.
-    ///         Zero-value posts and terminal outpoints are rejected to avoid inert or unslashable escrows.
+    ///         fund (per-funder share); it is reclaimable via `claimEscrow` once the reflection proves the
+    ///         redemption (or before any cBTC mint), and slashable on a proven rug. Zero-value posts and
+    ///         terminal outpoints are rejected to avoid inert or unslashable escrows.
     function postEscrow(bytes32 outpoint) external payable {
         if (outpoint == bytes32(0) || msg.value == 0) revert BadEscrow();
-        if (escrowReleased[outpoint] || escrowSlashed[outpoint]) revert EscrowLocked();
-        escrowOf[outpoint] += msg.value;
+        if (escrowSlashed[outpoint]) revert EscrowLocked();
+        if (address(POOL) != address(0) && (POOL.cbtcLockSpent(outpoint) || POOL.cbtcLockRedeemed(outpoint))) {
+            revert EscrowLocked();
+        }
+        escrowOf[outpoint][msg.sender] += msg.value;
+        escrowTotal[outpoint] += msg.value;
         emit EscrowPosted(outpoint, msg.sender, msg.value);
     }
 
-    /// @notice Release a lock's escrow back to the locker after an observed/proven honest redemption (the
-    ///         cBTC was burned and the BTC unlocked atomically). V1 is owner/DAO-attested; a future redemption
-    ///         module can own this path once the reflection surfaces redeemed-lock proofs directly. The marked
-    ///         outpoint becomes non-slashable. A lock that already minted cBTC and was reflection-proven spent
-    ///         is a rug, not releasable. Bounded: returns posted ETH, never mints cBTC or touches backing.
-    function releaseEscrow(bytes32 outpoint, address to) external onlyOwner nonReentrant {
+    /// @notice Trustlessly reclaim your escrow share — PERMISSIONLESS, no owner, no recipient choice (the
+    ///         refund goes to the funder). Allowed when the reflection PROVED the lock honestly redeemed
+    ///         (`cbtcLockRedeemed`: cBTC burned + lock unlocked atomically), OR no cBTC was ever minted against
+    ///         it (`!cbtcMinted`: a still-pending escrow). A proven rug is instead slashed to the reserve.
+    ///         Safe before a mint: the cBTC mint reads `escrowSufficient` atomically, so reclaiming first only
+    ///         makes that mint see too little escrow and decline — no cBTC is ever minted against a reclaimed
+    ///         escrow. Bounded: returns posted ETH, never mints cBTC or touches backing.
+    function claimEscrow(bytes32 outpoint) external nonReentrant {
         if (outpoint == bytes32(0)) revert BadEscrow();
-        if (to == address(0)) revert ZeroRecipient();
-        if (escrowReleased[outpoint] || escrowSlashed[outpoint]) revert EscrowLocked();
-        if (address(POOL) != address(0) && POOL.cbtcMinted(outpoint) && POOL.cbtcLockSpent(outpoint)) {
-            revert EscrowLocked();
-        }
-        uint256 amt = escrowOf[outpoint];
+        if (address(POOL) == address(0)) revert BadPool();
+        if (escrowSlashed[outpoint]) revert EscrowLocked();
+        // Locked only while it backs OUTSTANDING cBTC (minted ∧ not-yet-redeemed); claimable iff redeemed OR
+        // never minted.
+        if (POOL.cbtcMinted(outpoint) && !POOL.cbtcLockRedeemed(outpoint)) revert EscrowLocked();
+        uint256 amt = escrowOf[outpoint][msg.sender];
         if (amt == 0) revert NothingToRelease();
-        escrowOf[outpoint] = 0;
-        escrowReleased[outpoint] = true;
-        SafeTransferLib.safeTransferETH(to, amt);
-        emit EscrowReleased(outpoint, to, amt);
+        escrowOf[outpoint][msg.sender] = 0;
+        escrowTotal[outpoint] -= amt;
+        SafeTransferLib.safeTransferETH(msg.sender, amt);
+        emit EscrowReleased(outpoint, msg.sender, amt);
     }
 
-    /// @notice Slash a rugged lock's escrow: permissionless, but only when the reflection has PROVEN the
-    ///         lock spent (`cbtcLockSpent`), cBTC was actually minted against it, and it was never released
-    ///         by a redemption. The reflection guest only surfaces bare lock spends as `cbtcLockSpent`
-    ///         (honest in-tx redeems burn matching cBTC and retire the lock before the rug scan); this
-    ///         contract adds the release ledger and one-shot slash accounting. The slashed ETH backs the
-    ///         now-unbacked cBTC via the protocol reserve; DAO policy can spend that reserve on an async
-    ///         cBTC rug buy-and-burn. This is separate from cUSD CDP liquidation, which burns debt inside
-    ///         the pool proof.
+    /// @notice Slash a rugged lock's WHOLE escrow to the reserve: permissionless, but only when the reflection
+    ///         has PROVEN the lock spent (`cbtcLockSpent`) and cBTC was actually minted against it. The guest
+    ///         surfaces a bare lock spend as `cbtcLockSpent` and an honest in-tx redeem as `cbtcLockRedeemed`
+    ///         (mutually exclusive: a redeem retires the lock before the rug scan, so it never enters
+    ///         `cbtcLockSpent`) — so spent ∧ minted ⇒ rug. One-shot; the per-funder shares are left in place
+    ///         but become unclaimable (`claimEscrow` reverts on a slashed outpoint). The slashed ETH backs the
+    ///         now-unbacked cBTC via the protocol reserve; DAO policy can spend that reserve on an async cBTC
+    ///         rug buy-and-burn. Separate from cUSD CDP liquidation, which burns debt inside the pool proof.
     function slash(bytes32 outpoint) external {
         if (outpoint == bytes32(0)) revert BadEscrow();
         if (address(POOL) == address(0)) revert BadPool();
-        if (escrowReleased[outpoint] || escrowSlashed[outpoint]) revert EscrowLocked();
+        if (escrowSlashed[outpoint]) revert EscrowLocked();
         if (!POOL.cbtcMinted(outpoint) || !POOL.cbtcLockSpent(outpoint)) revert NothingToSlash();
-        uint256 amt = escrowOf[outpoint];
+        uint256 amt = escrowTotal[outpoint];
         if (amt == 0) revert NothingToSlash();
-        escrowOf[outpoint] = 0;
+        escrowTotal[outpoint] = 0;
         escrowSlashed[outpoint] = true;
         insuranceReserve += amt;
         emit EscrowSlashed(outpoint, amt, amt);

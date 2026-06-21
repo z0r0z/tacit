@@ -226,6 +226,7 @@ contract ConfidentialPoolTest is Test {
             0,
             new ConfidentialPool.CbtcLockFolded[](0),
             new bytes32[](0),
+            new bytes32[](0),
             uint64(pool.bitcoinConsumedCount()),
             new ConfidentialPool.AssetMeta[](0),
             new bytes32[](0)
@@ -250,6 +251,7 @@ contract ConfidentialPoolTest is Test {
             bytes32(uint256(uint160(address(pool)))),
             backing,
             new ConfidentialPool.CbtcLockFolded[](0),
+            new bytes32[](0),
             new bytes32[](0),
             uint64(pool.bitcoinConsumedCount()),
             new ConfidentialPool.AssetMeta[](0),
@@ -723,11 +725,13 @@ contract ConfidentialPoolTest is Test {
     /// A Bitcoin burn mints an Ethereum note (leaf) gated one-mint-per-burn on the burned
     /// note's nullifier, and marks bridgeMinted — the tETH acceptedBitcoinBurns pattern.
     function test_bridge_mint_marks_claim_and_inserts_leaf() public {
-        bytes32 burnRoot = _attestBtc(keccak256("bm-pool-1"), keccak256("bm-spent-1"), 1);
+        bytes32 root = keccak256("bm-pool-1");
+        bytes32 burnRoot = _attestBtc(root, keccak256("bm-spent-1"), 1);
         ConfidentialPool.PublicValues memory pv = _pv();
         bytes32 burnNullifier = keccak256("btc-burn-1");
-        pv.bitcoinBurnsConsumed = new bytes32[](1);
-        pv.bitcoinBurnsConsumed[0] = burnNullifier;
+        pv.nullifiers = _arr(burnNullifier);
+        pv.bitcoinBurnsConsumed = _arr(burnNullifier);
+        pv.bitcoinRootsUsed = _arr(root);
         pv.bitcoinBurnRoot = burnRoot;
         pv.leaves = new bytes32[](1);
         pv.leaves[0] = keccak256("minted-note");
@@ -739,7 +743,8 @@ contract ConfidentialPoolTest is Test {
     }
 
     function test_bridge_mint_excludes_burn_nullifier_not_first_in_consumed_list() public {
-        bytes32 burnRoot = _attestBtc(keccak256("bm-pool-second"), keccak256("bm-spent-second"), 1);
+        bytes32 root = keccak256("bm-pool-second");
+        bytes32 burnRoot = _attestBtc(root, keccak256("bm-spent-second"), 1);
         bytes32 burnA = keccak256("btc-burn-a");
         bytes32 burnB = keccak256("btc-burn-b");
 
@@ -748,47 +753,84 @@ contract ConfidentialPoolTest is Test {
         pv.bitcoinBurnsConsumed[0] = burnA;
         pv.bitcoinBurnsConsumed[1] = burnB;
         pv.bitcoinBurnRoot = burnRoot;
-        pv.nullifiers = new bytes32[](1);
+        pv.bitcoinRootsUsed = new bytes32[](2);
+        pv.bitcoinRootsUsed[0] = root;
+        pv.bitcoinRootsUsed[1] = root;
+        pv.nullifiers = new bytes32[](2);
         pv.nullifiers[0] = burnB;
+        pv.nullifiers[1] = burnA;
 
         pool.settle(abi.encode(pv), "", new bytes[](0));
         assertTrue(pool.bridgeMinted(burnA), "first burn marked");
         assertTrue(pool.bridgeMinted(burnB), "second burn marked");
         assertTrue(pool.nullifierSpent(burnB), "burn nullifier spent");
+        assertTrue(pool.nullifierSpent(burnA), "other burn nullifier spent");
     }
 
     /// The same Bitcoin burn cannot be minted twice (one note, not two).
     function test_bridge_mint_double_claim_reverts() public {
-        bytes32 burnRoot = _attestBtc(keccak256("bm-pool-2"), keccak256("bm-spent-2"), 1);
+        bytes32 root = keccak256("bm-pool-2");
+        bytes32 burnRoot = _attestBtc(root, keccak256("bm-spent-2"), 1);
         ConfidentialPool.PublicValues memory pv = _pv();
         bytes32 burnNullifier = keccak256("btc-burn-2");
-        pv.bitcoinBurnsConsumed = new bytes32[](1);
-        pv.bitcoinBurnsConsumed[0] = burnNullifier;
+        pv.nullifiers = _arr(burnNullifier);
+        pv.bitcoinBurnsConsumed = _arr(burnNullifier);
+        pv.bitcoinRootsUsed = _arr(root);
         pv.bitcoinBurnRoot = burnRoot;
         pv.leaves = new bytes32[](1);
         pv.leaves[0] = keccak256("note");
         pool.settle(abi.encode(pv), "", new bytes[](1));
 
         ConfidentialPool.PublicValues memory pv2 = _pv();
-        pv2.bitcoinBurnsConsumed = new bytes32[](1);
-        pv2.bitcoinBurnsConsumed[0] = burnNullifier; // replay
+        pv2.nullifiers = _arr(burnNullifier);
+        pv2.bitcoinBurnsConsumed = _arr(burnNullifier); // replay
+        pv2.bitcoinRootsUsed = _arr(root);
         pv2.bitcoinBurnRoot = burnRoot;
         pv2.leaves = new bytes32[](1);
         pv2.leaves[0] = keccak256("note2");
-        vm.expectRevert(ConfidentialPool.BurnAlreadyMinted.selector);
+        vm.expectRevert(ConfidentialPool.NullifierAlreadySpent.selector);
         pool.settle(abi.encode(pv2), "", new bytes[](1));
     }
 
     /// An intra-batch duplicate Bitcoin-burn claim is rejected too.
     function test_bridge_mint_intrabatch_duplicate_reverts() public {
-        bytes32 burnRoot = _attestBtc(keccak256("bm-pool-3"), keccak256("bm-spent-3"), 1);
+        bytes32 root = keccak256("bm-pool-3");
+        bytes32 burnRoot = _attestBtc(root, keccak256("bm-spent-3"), 1);
         ConfidentialPool.PublicValues memory pv = _pv();
         bytes32 burnNullifier = keccak256("btc-burn-3");
         pv.bitcoinBurnsConsumed = new bytes32[](2);
         pv.bitcoinBurnsConsumed[0] = burnNullifier;
         pv.bitcoinBurnsConsumed[1] = burnNullifier;
+        pv.nullifiers = _arr(burnNullifier);
+        pv.bitcoinRootsUsed = new bytes32[](2);
+        pv.bitcoinRootsUsed[0] = root;
+        pv.bitcoinRootsUsed[1] = root;
         pv.bitcoinBurnRoot = burnRoot;
         vm.expectRevert(ConfidentialPool.BurnAlreadyMinted.selector);
+        pool.settle(abi.encode(pv), "", new bytes[](0));
+    }
+
+    function test_bridge_mint_requires_burn_nullifier_in_global_nullifiers() public {
+        bytes32 root = keccak256("bm-pool-nu-required");
+        bytes32 burnRoot = _attestBtc(root, keccak256("bm-spent-nu-required"), 1);
+        ConfidentialPool.PublicValues memory pv = _pv();
+        bytes32 burnNullifier = keccak256("btc-burn-nu-required");
+        pv.bitcoinBurnsConsumed = _arr(burnNullifier);
+        pv.bitcoinRootsUsed = _arr(root);
+        pv.bitcoinBurnRoot = burnRoot;
+        vm.expectRevert(ConfidentialPool.BridgeBurnNotNullified.selector);
+        pool.settle(abi.encode(pv), "", new bytes[](0));
+    }
+
+    function test_bridge_mint_requires_root_for_each_burn() public {
+        bytes32 root = keccak256("bm-pool-root-required");
+        bytes32 burnRoot = _attestBtc(root, keccak256("bm-spent-root-required"), 1);
+        ConfidentialPool.PublicValues memory pv = _pv();
+        bytes32 burnNullifier = keccak256("btc-burn-root-required");
+        pv.nullifiers = _arr(burnNullifier);
+        pv.bitcoinBurnsConsumed = _arr(burnNullifier);
+        pv.bitcoinBurnRoot = burnRoot;
+        vm.expectRevert(ConfidentialPool.BridgeMintRootMismatch.selector);
         pool.settle(abi.encode(pv), "", new bytes[](0));
     }
 
@@ -1030,6 +1072,7 @@ contract ConfidentialPoolTest is Test {
             0,
             new ConfidentialPool.CbtcLockFolded[](0),
             new bytes32[](0),
+            new bytes32[](0),
             uint64(pool.bitcoinConsumedCount()),
             new ConfidentialPool.AssetMeta[](0),
             new bytes32[](0)
@@ -1047,8 +1090,8 @@ contract ConfidentialPoolTest is Test {
         ConfidentialPool.PublicValues memory pv = _pv();
         bytes32 root = keccak256("unknown-btc-root");
         bytes32 burnNullifier = keccak256("mint-burn");
-        pv.bitcoinBurnsConsumed = new bytes32[](1);
-        pv.bitcoinBurnsConsumed[0] = burnNullifier;
+        pv.nullifiers = _arr(burnNullifier);
+        pv.bitcoinBurnsConsumed = _arr(burnNullifier);
         pv.bitcoinBurnRoot = burnRoot;
         pv.bitcoinRootsUsed = new bytes32[](1);
         pv.bitcoinRootsUsed[0] = root;
@@ -1066,8 +1109,8 @@ contract ConfidentialPoolTest is Test {
 
         ConfidentialPool.PublicValues memory pv = _pv();
         bytes32 burnNullifier = keccak256("mint-burn-2");
-        pv.bitcoinBurnsConsumed = new bytes32[](1);
-        pv.bitcoinBurnsConsumed[0] = burnNullifier;
+        pv.nullifiers = _arr(burnNullifier);
+        pv.bitcoinBurnsConsumed = _arr(burnNullifier);
         pv.bitcoinBurnRoot = burnRoot;
         pv.bitcoinRootsUsed = new bytes32[](1);
         pv.bitcoinRootsUsed[0] = root;
@@ -1118,6 +1161,7 @@ contract ConfidentialPoolTest is Test {
             bytes32(uint256(uint160(address(p)))),
             0,
             new ConfidentialPool.CbtcLockFolded[](0),
+            new bytes32[](0),
             new bytes32[](0),
             uint64(p.bitcoinConsumedCount()),
             metas,
@@ -1210,6 +1254,7 @@ contract ConfidentialPoolTest is Test {
             0,
             new ConfidentialPool.CbtcLockFolded[](0),
             new bytes32[](0),
+            new bytes32[](0),
             uint64(pool.bitcoinConsumedCount()),
             new ConfidentialPool.AssetMeta[](0),
             new bytes32[](0)
@@ -1239,6 +1284,7 @@ contract ConfidentialPoolTest is Test {
             0,
             new ConfidentialPool.CbtcLockFolded[](0),
             new bytes32[](0),
+            new bytes32[](0),
             uint64(pool.bitcoinConsumedCount()),
             new ConfidentialPool.AssetMeta[](0),
             new bytes32[](0)
@@ -1265,6 +1311,7 @@ contract ConfidentialPoolTest is Test {
             bytes32(uint256(uint160(address(pool)))),
             0,
             new ConfidentialPool.CbtcLockFolded[](0),
+            new bytes32[](0),
             new bytes32[](0),
             uint64(pool.bitcoinConsumedCount()),
             new ConfidentialPool.AssetMeta[](0),
@@ -1293,6 +1340,7 @@ contract ConfidentialPoolTest is Test {
             bytes32(uint256(uint160(address(0xBADBAD)))),
             0,
             new ConfidentialPool.CbtcLockFolded[](0),
+            new bytes32[](0),
             new bytes32[](0),
             uint64(pool.bitcoinConsumedCount()),
             new ConfidentialPool.AssetMeta[](0),
@@ -1326,6 +1374,7 @@ contract ConfidentialPoolTest is Test {
             0,
             new ConfidentialPool.CbtcLockFolded[](0),
             new bytes32[](0),
+            new bytes32[](0),
             uint64(pool.bitcoinConsumedCount()),
             new ConfidentialPool.AssetMeta[](0),
             new bytes32[](0)
@@ -1352,6 +1401,7 @@ contract ConfidentialPoolTest is Test {
             0,
             new ConfidentialPool.CbtcLockFolded[](0),
             new bytes32[](0),
+            new bytes32[](0),
             uint64(pool.bitcoinConsumedCount()),
             new ConfidentialPool.AssetMeta[](0),
             new bytes32[](0)
@@ -1375,6 +1425,7 @@ contract ConfidentialPoolTest is Test {
             bytes32(uint256(uint160(address(pool)))),
             0,
             new ConfidentialPool.CbtcLockFolded[](0),
+            new bytes32[](0),
             new bytes32[](0),
             uint64(pool.bitcoinConsumedCount()),
             new ConfidentialPool.AssetMeta[](0),
@@ -1403,6 +1454,7 @@ contract ConfidentialPoolTest is Test {
             bytes32(uint256(uint160(address(pool)))),
             0,
             new ConfidentialPool.CbtcLockFolded[](0),
+            new bytes32[](0),
             new bytes32[](0),
             uint64(pool.bitcoinConsumedCount()),
             new ConfidentialPool.AssetMeta[](0),
@@ -1434,6 +1486,7 @@ contract ConfidentialPoolTest is Test {
             0,
             new ConfidentialPool.CbtcLockFolded[](0),
             new bytes32[](0),
+            new bytes32[](0),
             uint64(pool.bitcoinConsumedCount()),
             new ConfidentialPool.AssetMeta[](0),
             new bytes32[](0)
@@ -1454,6 +1507,7 @@ contract ConfidentialPoolTest is Test {
             bytes32(uint256(uint160(address(pool)))),
             0,
             new ConfidentialPool.CbtcLockFolded[](0),
+            new bytes32[](0),
             new bytes32[](0),
             uint64(pool.bitcoinConsumedCount()),
             new ConfidentialPool.AssetMeta[](0),
@@ -1850,9 +1904,7 @@ contract ConfidentialPoolTest is Test {
         assertTrue(nativeId != bytes32(0), "native tETH link pinned");
 
         ConfidentialPool.AssetMeta[] memory metas = new ConfidentialPool.AssetMeta[](1);
-        metas[0] = ConfidentialPool.AssetMeta(
-            tethBitcoinId, bytes16("tETH"), 4, 8, _metaCid(tethBitcoinId)
-        );
+        metas[0] = ConfidentialPool.AssetMeta(tethBitcoinId, bytes16("tETH"), 4, 8, _metaCid(tethBitcoinId));
         p.attestBitcoinStateProven(
             abi.encode(
                 ConfidentialPool.BitcoinRelayPublicValues(
@@ -1867,6 +1919,7 @@ contract ConfidentialPoolTest is Test {
                     bytes32(uint256(uint160(address(p)))),
                     0,
                     new ConfidentialPool.CbtcLockFolded[](0),
+                    new bytes32[](0),
                     new bytes32[](0),
                     uint64(p.bitcoinConsumedCount()),
                     metas,
@@ -1923,6 +1976,7 @@ contract ConfidentialPoolTest is Test {
                     bytes32(uint256(uint160(address(pool)))),
                     0,
                     new ConfidentialPool.CbtcLockFolded[](0),
+                    new bytes32[](0),
                     new bytes32[](0),
                     uint64(pool.bitcoinConsumedCount()),
                     metas,
@@ -2195,6 +2249,7 @@ contract ConfidentialPoolTest is Test {
             0,
             new ConfidentialPool.CbtcLockFolded[](0),
             new bytes32[](0),
+            new bytes32[](0),
             0,
             new ConfidentialPool.AssetMeta[](0),
             new bytes32[](0)
@@ -2215,6 +2270,7 @@ contract ConfidentialPoolTest is Test {
             ethPool,
             0,
             new ConfidentialPool.CbtcLockFolded[](0),
+            new bytes32[](0),
             new bytes32[](0),
             1,
             new ConfidentialPool.AssetMeta[](0),
@@ -2438,11 +2494,13 @@ contract ConfidentialPoolTest is Test {
     /// A bridge_mint pushes the BITCOIN burned-note ν into BOTH nullifiers and bitcoinBurnsConsumed.
     /// That ν is Bitcoin-homed (never an EVM leaf), so it must NOT count toward the EVM spend floor.
     function test_bridge_mint_excluded_from_reserve_floor() public {
-        bytes32 burnRoot = _attestBtc(keccak256("bm-floor-pool"), keccak256("bm-floor-spent"), 1);
+        bytes32 root = keccak256("bm-floor-pool");
+        bytes32 burnRoot = _attestBtc(root, keccak256("bm-floor-spent"), 1);
         ConfidentialPool.PublicValues memory pv = _pv();
         bytes32 bridgeNu = keccak256("bridge-nu-floor");
         pv.nullifiers = _arr(bridgeNu); // real guest: ν in both arrays
         pv.bitcoinBurnsConsumed = _arr(bridgeNu);
+        pv.bitcoinRootsUsed = _arr(root);
         pv.bitcoinBurnRoot = burnRoot;
         pv.leaves = _arr(keccak256("bridge-dest-floor"));
         pool.settle(abi.encode(pv), "", new bytes[](1));
@@ -2454,12 +2512,14 @@ contract ConfidentialPoolTest is Test {
     /// settle saw evmNullifiersSpent (2) > nextLeafIndex (1) and reverted ReserveFloorBreach.
     function test_bridge_round_trip_does_not_trip_floor() public {
         _wrap(10, bytes32(uint256(0x100)), bytes32(uint256(0x101)), bytes32(uint256(0x102))); // seed escrow
-        bytes32 burnRoot = _attestBtc(keccak256("rt-pool"), keccak256("rt-spent"), 1);
+        bytes32 root = keccak256("rt-pool");
+        bytes32 burnRoot = _attestBtc(root, keccak256("rt-spent"), 1);
 
         ConfidentialPool.PublicValues memory mint = _pv();
         bytes32 bridgeNu = keccak256("rt-bridge-nu");
         mint.nullifiers = _arr(bridgeNu);
         mint.bitcoinBurnsConsumed = _arr(bridgeNu);
+        mint.bitcoinRootsUsed = _arr(root);
         mint.bitcoinBurnRoot = burnRoot;
         mint.leaves = _arr(keccak256("rt-dest"));
         pool.settle(abi.encode(mint), "", new bytes[](1));
@@ -2506,11 +2566,11 @@ contract ConfidentialPoolTest is Test {
         pool.settle(abi.encode(pv), "", new bytes[](0));
     }
 
-    /// The floor counts EVM spends BY IDENTITY, so disjoint arrays cannot suppress the count: a batch
-    /// pairing 2 fabricated EVM nullifiers with 2 UNRELATED consumed bridge-burns no longer cancels to
-    /// zero (a raw-length count would compute 2-2=0 and pass). With 1 seeded leaf, 2 EVM spends > 1.
-    function test_disjoint_bridge_burns_do_not_suppress_floor() public {
-        bytes32 burnRoot = _attestBtc(keccak256("dj-pool"), keccak256("dj-spent"), 1);
+    /// Bridge burns must be a subset of the global nullifier list, so disjoint arrays are rejected before
+    /// they could suppress the EVM reserve-floor count.
+    function test_disjoint_bridge_burns_revert() public {
+        bytes32 root = keccak256("dj-pool");
+        bytes32 burnRoot = _attestBtc(root, keccak256("dj-spent"), 1);
         _seedLeaves(1);
         ConfidentialPool.PublicValues memory pv = _pv();
         pv.spendRoot = pool.currentRoot();
@@ -2520,8 +2580,11 @@ contract ConfidentialPoolTest is Test {
         pv.bitcoinBurnsConsumed = new bytes32[](2); // disjoint from nullifiers
         pv.bitcoinBurnsConsumed[0] = keccak256("dj-burn-x");
         pv.bitcoinBurnsConsumed[1] = keccak256("dj-burn-y");
+        pv.bitcoinRootsUsed = new bytes32[](2);
+        pv.bitcoinRootsUsed[0] = root;
+        pv.bitcoinRootsUsed[1] = root;
         pv.bitcoinBurnRoot = burnRoot;
-        vm.expectRevert(ConfidentialPool.ReserveFloorBreach.selector);
+        vm.expectRevert(ConfidentialPool.BridgeBurnNotNullified.selector);
         pool.settle(abi.encode(pv), "", new bytes[](0));
     }
 
@@ -2706,11 +2769,43 @@ contract ConfidentialPoolTest is Test {
             0,
             new ConfidentialPool.CbtcLockFolded[](0),
             new bytes32[](0),
+            new bytes32[](0),
             uint64(pool.bitcoinConsumedCount()),
             new ConfidentialPool.AssetMeta[](0),
             calls
         );
         pool.attestBitcoinStateProven(abi.encode(r), "");
         assertEq(pool.pendingBtcCall(callId), recordHash, "attest recorded the call commitment");
+    }
+
+    function test_attest_rejects_odd_btc_call_pairs() public {
+        bytes32 poolRoot = keccak256("btccall-odd-pool");
+        bytes32 spentRoot = keccak256("btccall-odd-spent");
+        bytes32 burnRoot = keccak256(abi.encodePacked(spentRoot, "burn"));
+        bytes32 prior = pool.knownReflectionDigest();
+        bytes32 next = keccak256(abi.encode(prior, poolRoot, spentRoot, burnRoot, uint64(1), "btccall-odd"));
+        bytes32[] memory calls = new bytes32[](1);
+        calls[0] = keccak256("dangling-call-id");
+        ConfidentialPool.BitcoinRelayPublicValues memory r = ConfidentialPool.BitcoinRelayPublicValues(
+            prior,
+            poolRoot,
+            spentRoot,
+            burnRoot,
+            uint64(1),
+            next,
+            ANCHOR,
+            ANCHOR,
+            bytes32(uint256(uint160(address(pool)))),
+            0,
+            new ConfidentialPool.CbtcLockFolded[](0),
+            new bytes32[](0),
+            new bytes32[](0),
+            uint64(pool.bitcoinConsumedCount()),
+            new ConfidentialPool.AssetMeta[](0),
+            calls
+        );
+
+        vm.expectRevert(ConfidentialPool.BadBtcCallPairs.selector);
+        pool.attestBitcoinStateProven(abi.encode(r), "");
     }
 }

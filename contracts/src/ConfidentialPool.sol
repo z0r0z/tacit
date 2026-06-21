@@ -314,21 +314,18 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     // constructor can link it to the canonical cBTC.tac ERC20: it is a lock position, NOT a Bitcoin etch, so
     // the permissionless attest_meta link path can't reach it, and (unlike a foreign id) it has one canonical
     // backing. Public so launch scripts/dapps/engine config can assert one shared id before enabling cBTC.
-    bytes32 public constant CBTC_ZK_ASSET_ID =
-        0x62a20d98fc1cd20289621d1315294cb8772f934d822e404b71e1f471cf0679c8;
+    bytes32 public constant CBTC_ZK_ASSET_ID = 0x62a20d98fc1cd20289621d1315294cb8772f934d822e404b71e1f471cf0679c8;
 
     // The tacBTC (cBTC.tac) metadata CID (EIP-7572 contractURI) = sha256 of contracts/cbtc-tac-metadata.json
     // (raw CIDv1), whose image is contracts/cbtc-tac-icon.svg. Baked into the canonical factory address via
     // the CREATE2 salt, so it is immutable and fixes the tacBTC identity + address; pinned before the
     // cBTC-capable deploy. tacBTC = the public ERC-20 form of cBTC (Tacit's confidential Bitcoin).
-    bytes32 internal constant CBTC_METADATA_CID =
-        0x4fdafc3227875f0973780cc0aa6aa186c8cb00a0564fbed8bdf1f0cfa16b06cc;
+    bytes32 internal constant CBTC_METADATA_CID = 0x4fdafc3227875f0973780cc0aa6aa186c8cb00a0564fbed8bdf1f0cfa16b06cc;
 
     // The tacUSD (cUSD.tac) metadata CID (EIP-7572 contractURI) = sha256 of contracts/cusd-tac-metadata.json
     // (raw CIDv1), image contracts/cusd-tac-icon.svg. tacUSD = the public ERC-20 form of cUSD, Tacit's
     // cBTC-collateralized CDP dollar. Baked into the canonical factory address via the CREATE2 salt.
-    bytes32 internal constant CUSD_METADATA_CID =
-        0x927144081b10389996f30ec9e2182ae5c04c397d79f497e23947926a51214ab0;
+    bytes32 internal constant CUSD_METADATA_CID = 0x927144081b10389996f30ec9e2182ae5c04c397d79f497e23947926a51214ab0;
 
     // A shared (Bitcoin-side) asset id => this pool's local registry key. A bridge_mint note
     // carries the SHARED id as its `asset` (it must, to prove membership in the Bitcoin
@@ -400,6 +397,10 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     mapping(bytes32 => uint64) internal cbtcLockVBtc;
     mapping(bytes32 => bytes32) internal cbtcLockCommitment;
     mapping(bytes32 => bool) public cbtcLockSpent;
+    // Reflection-proven HONEST redemption (single-tx atomic swap: lock unlocked AND its sats of cBTC burned).
+    // The CollateralEngine's trustless escrow-claim gate. Mutually exclusive with cbtcLockSpent (a redeem
+    // retires the lock before the rug scan, so it never enters cbtcLocksSpent).
+    mapping(bytes32 => bool) public cbtcLockRedeemed;
     mapping(bytes32 => bool) internal _cbtcMinted;
 
     // CDP position set (ops 15–17): a confidential CDP position lives in a SEPARATE incremental-Merkle
@@ -654,6 +655,9 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     error CrossOutNullifierNotSpent();
     error BadReflectionConfirmations();
     error BtcHomedValueExitMustBridge();
+    error BridgeMintRootMismatch();
+    error BridgeBurnNotNullified();
+    error BadBtcCallPairs();
 
     // ──────────────────── Constructor ────────────────────
 
@@ -763,8 +767,9 @@ contract ConfidentialPool is ReentrancyGuardTransient {
             address cbtcTac =
                 CANONICAL_FACTORY.tokenOf(CBTC_ZK_ASSET_ID, address(this), "tacBTC", ETH_DECIMALS, CBTC_METADATA_CID);
             if (cbtcTac == address(0)) {
-                cbtcTac =
-                    CANONICAL_FACTORY.deployCanonical(CBTC_ZK_ASSET_ID, address(this), "tacBTC", ETH_DECIMALS, CBTC_METADATA_CID);
+                cbtcTac = CANONICAL_FACTORY.deployCanonical(
+                    CBTC_ZK_ASSET_ID, address(this), "tacBTC", ETH_DECIMALS, CBTC_METADATA_CID
+                );
             }
             _register(cbtcTac, 10 ** 10, CBTC_ZK_ASSET_ID, true, "Tacit Bitcoin", "tacBTC", ETH_DECIMALS);
 
@@ -1414,6 +1419,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         uint256 cbtcBackingSats; // cBTC: Σ live self-custody cBTC.zk lock sats (the off-pool buffer reads it)
         CbtcLockFolded[] cbtcLocksFolded; // locks newly tracked this batch → cbtcLock[] (the OP_CBTC_MINT gate)
         bytes32[] cbtcLocksSpent; // tracked locks spent this batch → cbtcLockSpent[] (the engine slashes if not redeemed)
+        bytes32[] cbtcLocksRedeemed; // locks HONESTLY redeemed this batch → cbtcLockRedeemed[] (the engine's trustless claim gate)
         uint64 consumedCount; // fast-lane freshness: eth-consumed ν folded into the spent set; gated == bitcoinConsumedCount
         AssetMeta[] attestedAssetMetas; // etch-authenticated (asset_id,ticker,decimals,cid) → lazy-register canonical ERC20
         bytes32[] btcCallsFolded; // value-free Bitcoin-authorized calls, flat (callId, recordHash) pairs → pendingBtcCall[]
@@ -1491,15 +1497,35 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         // a later OP_CBTC_MINT can mint the pre-committed note against it (gated on the CollateralEngine
         // escrow), and flag each spent lock so the engine can slash an un-redeemed rug. Proven arrays — the
         // same trust as cbtcBackingSats, just per-lock. The guest binds (outpoint, vBtc, commitment); vBtc is
-        // a real u64 lock value (parse_tx_output) so the downcast is exact.
+        // a real u64 lock value (parse_tx_output) so the downcast is exact. Fold first so a create-then-spend
+        // inside one reflected Bitcoin batch records a terminal, unmintable lock instead of blocking attest
+        // liveness; terminal arrays below still reject outpoints that were neither already known nor folded.
         for (uint256 i; i < r.cbtcLocksFolded.length; ++i) {
             CbtcLockFolded memory f = r.cbtcLocksFolded[i];
             if (f.vBtc == 0 || f.vBtc > type(uint64).max) revert ValueOutOfRange();
+            if (
+                f.outpoint == bytes32(0) || cbtcLockVBtc[f.outpoint] != 0 || cbtcLockSpent[f.outpoint]
+                    || cbtcLockRedeemed[f.outpoint]
+            ) revert CbtcLockMismatch();
             cbtcLockVBtc[f.outpoint] = uint64(f.vBtc);
             cbtcLockCommitment[f.outpoint] = f.commitment;
         }
         for (uint256 i; i < r.cbtcLocksSpent.length; ++i) {
-            cbtcLockSpent[r.cbtcLocksSpent[i]] = true;
+            bytes32 outpoint = r.cbtcLocksSpent[i];
+            if (outpoint == bytes32(0) || cbtcLockVBtc[outpoint] == 0 || cbtcLockSpent[outpoint]) {
+                revert CbtcLockMismatch();
+            }
+            if (cbtcLockRedeemed[outpoint]) revert CbtcLockMismatch();
+            cbtcLockSpent[outpoint] = true;
+        }
+        // Honest redemptions (mutually exclusive with a spend): the engine's trustless escrow-claim gate.
+        for (uint256 i; i < r.cbtcLocksRedeemed.length; ++i) {
+            bytes32 outpoint = r.cbtcLocksRedeemed[i];
+            if (outpoint == bytes32(0) || cbtcLockVBtc[outpoint] == 0 || cbtcLockRedeemed[outpoint]) {
+                revert CbtcLockMismatch();
+            }
+            if (cbtcLockSpent[outpoint]) revert CbtcLockMismatch();
+            cbtcLockRedeemed[outpoint] = true;
         }
         // Trustless metadata: lazy-register the canonical ERC20 for each asset whose etch the reflection
         // authenticated (BIP141 witness commitment + canonical provenance header chain, proven by this SP1
@@ -1513,6 +1539,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         // target must not be able to revert this attest). Re-attesting a fired call is harmless (the executor
         // gates one-shot on its own `fired` set), so no spent-flag is kept here.
         bytes32[] memory calls = r.btcCallsFolded;
+        if (calls.length % 2 != 0) revert BadBtcCallPairs();
         for (uint256 i; i + 1 < calls.length; i += 2) {
             pendingBtcCall[calls[i]] = calls[i + 1];
         }
@@ -1799,7 +1826,9 @@ contract ConfidentialPool is ReentrancyGuardTransient {
 
         for (uint256 i; i < pv.cdpTopups.length; ++i) {
             CdpTopup memory t = pv.cdpTopups[i];
-            // Mint already checked controller code + derived debtAsset for the position leaf the proof consumes.
+            if (t.controller.code.length == 0) revert BadCdpController();
+            if (uint256(t.newPositionLeaf) <= 1) revert BadCdpController();
+            // Mint already checked derived debtAsset for the position leaf the proof consumes.
             // Top-up keeps no duplicate debtAsset field here: the old/new leaves bind the same controller debt.
             if (cdpPositionSpent[t.oldPositionNullifier]) revert CdpPositionAlreadySpent();
             cdpPositionSpent[t.oldPositionNullifier] = true;
@@ -1833,7 +1862,9 @@ contract ConfidentialPool is ReentrancyGuardTransient {
             CbtcMint memory cm = pv.cbtcMints[i];
             if (cm.vBtc == 0 || cbtcLockVBtc[cm.outpoint] != cm.vBtc) revert CbtcLockMismatch();
             if (cbtcLockCommitment[cm.outpoint] != cm.commitment) revert CbtcLockMismatch();
-            if (cbtcLockSpent[cm.outpoint] || _cbtcMinted[cm.outpoint]) revert CbtcLockMismatch();
+            if (cbtcLockSpent[cm.outpoint] || cbtcLockRedeemed[cm.outpoint] || _cbtcMinted[cm.outpoint]) {
+                revert CbtcLockMismatch();
+            }
             if (address(COLLATERAL_ENGINE) == address(0) || !COLLATERAL_ENGINE.escrowSufficient(cm.outpoint, cm.vBtc)) {
                 revert CbtcLockMismatch();
             }
@@ -1877,8 +1908,17 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         // member of the relay-attested Bitcoin spent set, so the note really was burned).
         // Keying the gate on ν — not a dest-bound claimId — means a single burn can mint
         // to exactly one destination, once.
+        if (pv.bitcoinRootsUsed.length != pv.bitcoinBurnsConsumed.length) revert BridgeMintRootMismatch();
         for (uint256 i; i < pv.bitcoinBurnsConsumed.length; ++i) {
             bytes32 burnNullifier = pv.bitcoinBurnsConsumed[i];
+            bool nullified;
+            for (uint256 j; j < pv.nullifiers.length; ++j) {
+                if (pv.nullifiers[j] == burnNullifier) {
+                    nullified = true;
+                    break;
+                }
+            }
+            if (!nullified) revert BridgeBurnNotNullified();
             if (bridgeMinted[burnNullifier]) revert BurnAlreadyMinted();
             bridgeMinted[burnNullifier] = true;
         }

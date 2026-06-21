@@ -8,6 +8,7 @@ import {CollateralEngine, CdpLeg} from "../src/CollateralEngine.sol";
 contract MockPool {
     mapping(bytes32 => uint64) public cbtcLockVBtc;
     mapping(bytes32 => bool) public cbtcLockSpent;
+    mapping(bytes32 => bool) public cbtcLockRedeemed;
     mapping(bytes32 => bool) public cbtcMinted;
     uint256 public cbtcBackingSats;
     address public cbtcToken; // what canonicalTokenFor resolves cBTC to (0 = not pool-registered)
@@ -18,6 +19,10 @@ contract MockPool {
 
     function setSpent(bytes32 o, bool s) external {
         cbtcLockSpent[o] = s;
+    }
+
+    function setRedeemed(bytes32 o, bool r) external {
+        cbtcLockRedeemed[o] = r;
     }
 
     function setMinted(bytes32 o, bool m) external {
@@ -214,6 +219,25 @@ contract CollateralEngineTest is Test {
         vm.expectRevert(CollateralEngine.BadParams.selector);
         eng.setParams(3600, 15000, 15000, 9999);
 
+        // upper ceilings: staleness > 1 day, escrow ratio > 10x, cdp ratio > 10x all revert (fat-finger guard)
+        vm.prank(admin);
+        vm.expectRevert(CollateralEngine.BadParams.selector);
+        eng.setParams(1 days + 1, 15000, 15000, 12500);
+
+        vm.prank(admin);
+        vm.expectRevert(CollateralEngine.BadParams.selector);
+        eng.setParams(3600, 100_001, 15000, 12500);
+
+        vm.prank(admin);
+        vm.expectRevert(CollateralEngine.BadParams.selector);
+        eng.setParams(3600, 15000, 100_001, 12500);
+
+        // the ceilings themselves are accepted (boundary)
+        vm.prank(admin);
+        eng.setParams(1 days, 100_000, 100_000, 99_999);
+        assertEq(eng.maxStaleness(), 1 days);
+        assertEq(eng.cdpRatioBps(), 100_000);
+
         vm.prank(admin);
         vm.expectRevert(CollateralEngine.BadParams.selector);
         eng.setDeviationBound(10001);
@@ -239,7 +263,8 @@ contract CollateralEngineTest is Test {
         assertFalse(eng.escrowSufficient(o, vBtc));
         eng.postEscrow{value: 30 ether}(o);
         assertTrue(eng.escrowSufficient(o, vBtc));
-        assertEq(eng.escrowOf(o), 30 ether);
+        assertEq(eng.escrowOf(o, address(this)), 30 ether, "per-funder share");
+        assertEq(eng.escrowTotal(o), 30 ether, "outpoint total");
     }
 
     function test_escrow_rejects_zero_empty_and_terminal_reposts() public {
@@ -251,25 +276,34 @@ contract CollateralEngineTest is Test {
         vm.expectRevert(CollateralEngine.BadEscrow.selector);
         eng.postEscrow{value: 0}(o);
 
-        vm.prank(admin);
+        // claim guards: zero outpoint and nothing posted by the caller
         vm.expectRevert(CollateralEngine.BadEscrow.selector);
-        eng.releaseEscrow(bytes32(0), admin);
-
-        vm.prank(admin);
+        eng.claimEscrow(bytes32(0));
         vm.expectRevert(CollateralEngine.NothingToRelease.selector);
-        eng.releaseEscrow(o, admin);
+        eng.claimEscrow(o);
 
+        // a SLASHED outpoint is terminal: no re-post, and the stale share is unclaimable
         eng.postEscrow{value: 30 ether}(o);
-        vm.prank(admin);
-        eng.releaseEscrow(o, admin);
+        pool.setMinted(o, true);
+        pool.setSpent(o, true);
+        eng.slash(o);
         assertFalse(eng.escrowSufficient(o, 1e8));
-
         vm.expectRevert(CollateralEngine.EscrowLocked.selector);
         eng.postEscrow{value: 30 ether}(o);
-
-        vm.prank(admin);
         vm.expectRevert(CollateralEngine.EscrowLocked.selector);
-        eng.releaseEscrow(o, admin);
+        eng.claimEscrow(o);
+
+        bytes32 redeemed = keccak256("lock-redeemed-terminal");
+        pool.setRedeemed(redeemed, true);
+        assertFalse(eng.escrowSufficient(redeemed, 1e8));
+        vm.expectRevert(CollateralEngine.EscrowLocked.selector);
+        eng.postEscrow{value: 30 ether}(redeemed);
+
+        bytes32 spent = keccak256("lock-spent-terminal");
+        pool.setSpent(spent, true);
+        assertFalse(eng.escrowSufficient(spent, 1e8));
+        vm.expectRevert(CollateralEngine.EscrowLocked.selector);
+        eng.postEscrow{value: 30 ether}(spent);
     }
 
     function test_slash_only_on_proven_unredeemed_rug() public {
@@ -283,7 +317,7 @@ contract CollateralEngineTest is Test {
         eng.slash(o);
         pool.setSpent(o, true);
         eng.slash(o); // proven rug -> slashed into the protocol reserve
-        assertEq(eng.escrowOf(o), 0);
+        assertEq(eng.escrowTotal(o), 0);
         assertEq(eng.insuranceReserve(), 30 ether);
         vm.expectRevert(CollateralEngine.EscrowLocked.selector); // one-shot
         eng.slash(o);
@@ -292,37 +326,104 @@ contract CollateralEngineTest is Test {
         eng.postEscrow{value: 1 ether}(o);
     }
 
-    function test_released_escrow_not_slashable() public {
-        bytes32 o = keccak256("lock-3");
+    address constant ALICE = address(0xA11CE5);
+    address constant BOB = address(0xB0B);
+
+    /// A reflection-PROVEN redeem (mutually exclusive with a rug spend) lets the funder reclaim its share
+    /// permissionlessly (no owner); the retired lock is never spent, so there is nothing to slash.
+    function test_redeemed_escrow_is_claimable_not_slashable() public {
+        vm.deal(ALICE, 100 ether);
+        bytes32 o = keccak256("lock-redeemed");
+        vm.prank(ALICE);
         eng.postEscrow{value: 30 ether}(o);
         pool.setMinted(o, true);
-        vm.prank(admin);
-        eng.releaseEscrow(o, admin); // proven honest redeem
-        pool.setSpent(o, true);
-        vm.expectRevert(CollateralEngine.EscrowLocked.selector);
+        pool.setRedeemed(o, true); // honest redeem proven by the reflection
+        assertFalse(eng.escrowSufficient(o, 1e8), "redeemed lock cannot back a fresh mint");
+
+        uint256 before = ALICE.balance;
+        vm.prank(ALICE);
+        eng.claimEscrow(o);
+        assertEq(ALICE.balance, before + 30 ether, "funder reclaimed its share, no owner involved");
+        assertEq(eng.escrowTotal(o), 0);
+        vm.expectRevert(CollateralEngine.NothingToSlash.selector); // retired lock, never spent
         eng.slash(o);
     }
 
-    function test_release_rejects_proven_minted_spent_lock_but_allows_unminted_spent_lock() public {
+    /// A proven rug (minted ∧ spent, NOT redeemed) cannot be claimed — it is slashed to the reserve. An
+    /// un-minted escrow is reclaimable by its funder (no cBTC was ever backed by it).
+    function test_claim_blocked_on_rug_allowed_when_unminted() public {
+        vm.deal(ALICE, 100 ether);
+
         bytes32 rugged = keccak256("lock-rugged");
+        vm.prank(ALICE);
         eng.postEscrow{value: 30 ether}(rugged);
         pool.setMinted(rugged, true);
         pool.setSpent(rugged, true);
-
-        vm.prank(admin);
+        vm.prank(ALICE);
         vm.expectRevert(CollateralEngine.EscrowLocked.selector);
-        eng.releaseEscrow(rugged, admin);
-
+        eng.claimEscrow(rugged);
         eng.slash(rugged);
         assertEq(eng.insuranceReserve(), 30 ether);
 
-        bytes32 unminted = keccak256("lock-unminted-spent");
+        bytes32 unminted = keccak256("lock-unminted");
+        vm.prank(ALICE);
         eng.postEscrow{value: 1 ether}(unminted);
-        pool.setSpent(unminted, true);
-        uint256 before = admin.balance;
-        vm.prank(admin);
-        eng.releaseEscrow(unminted, admin);
-        assertEq(admin.balance, before + 1 ether);
+        uint256 before = ALICE.balance;
+        vm.prank(ALICE);
+        eng.claimEscrow(unminted); // never minted → reclaimable
+        assertEq(ALICE.balance, before + 1 ether);
+    }
+
+    /// While the escrow backs OUTSTANDING cBTC (minted ∧ not-yet-redeemed) it is locked; the proven
+    /// redemption is what unlocks it.
+    function test_claim_blocked_while_backing_outstanding_cbtc() public {
+        vm.deal(ALICE, 100 ether);
+        bytes32 o = keccak256("lock-live");
+        vm.prank(ALICE);
+        eng.postEscrow{value: 30 ether}(o);
+        pool.setMinted(o, true); // minted, not yet redeemed → locked
+        vm.prank(ALICE);
+        vm.expectRevert(CollateralEngine.EscrowLocked.selector);
+        eng.claimEscrow(o);
+        pool.setRedeemed(o, true); // proven redemption unlocks it
+        vm.prank(ALICE);
+        eng.claimEscrow(o);
+        assertEq(eng.escrowTotal(o), 0);
+    }
+
+    /// Per-funder shares: each funder reclaims exactly its own; neither can take the other's, no double-claim,
+    /// and a non-funder gets nothing.
+    function test_claim_per_funder_shares() public {
+        vm.deal(ALICE, 100 ether);
+        vm.deal(BOB, 100 ether);
+        bytes32 o = keccak256("lock-shared");
+        vm.prank(ALICE);
+        eng.postEscrow{value: 20 ether}(o);
+        vm.prank(BOB);
+        eng.postEscrow{value: 10 ether}(o);
+        assertEq(eng.escrowTotal(o), 30 ether);
+        assertEq(eng.escrowOf(o, ALICE), 20 ether);
+        assertEq(eng.escrowOf(o, BOB), 10 ether);
+        pool.setRedeemed(o, true);
+
+        vm.prank(address(0xC0FFEE)); // a non-funder
+        vm.expectRevert(CollateralEngine.NothingToRelease.selector);
+        eng.claimEscrow(o);
+
+        uint256 aBefore = ALICE.balance;
+        vm.prank(ALICE);
+        eng.claimEscrow(o);
+        assertEq(ALICE.balance, aBefore + 20 ether, "alice reclaimed only her share");
+        assertEq(eng.escrowTotal(o), 10 ether, "bob's share remains");
+        vm.prank(ALICE);
+        vm.expectRevert(CollateralEngine.NothingToRelease.selector); // no double-claim
+        eng.claimEscrow(o);
+
+        uint256 bBefore = BOB.balance;
+        vm.prank(BOB);
+        eng.claimEscrow(o);
+        assertEq(BOB.balance, bBefore + 10 ether);
+        assertEq(eng.escrowTotal(o), 0);
     }
 
     function test_slash_requires_pool_and_nonzero_outpoint() public {
@@ -510,17 +611,16 @@ contract CollateralEngineTest is Test {
     }
 
     function test_zero_recipients_revert() public {
-        bytes32 o = keccak256("lock-zero-recipient");
-        eng.postEscrow{value: 1 ether}(o);
-
-        vm.prank(admin);
-        vm.expectRevert(CollateralEngine.ZeroRecipient.selector);
-        eng.releaseEscrow(o, address(0));
-
+        // claimEscrow refunds the funder (msg.sender) — no recipient to zero. The owner reserve draws still
+        // guard the zero recipient.
         eng.fundInsurance{value: 1 ether}();
         vm.prank(admin);
         vm.expectRevert(CollateralEngine.ZeroRecipient.selector);
         eng.drawInsurance(1 ether, address(0));
+
+        vm.prank(admin);
+        vm.expectRevert(CollateralEngine.ZeroRecipient.selector);
+        eng.drawInsuranceFor(keccak256("P"), 1 ether, address(0));
     }
 
     // If cBTC is explicitly/accidentally paid to the engine, recoverSeizedCbtc is the ONLY way it leaves,
