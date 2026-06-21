@@ -116,6 +116,7 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
     address public immutable ZROUTER;
 
     error AmountTooLarge();
+    error BadTarget();
     error ZRouterCallFailed();
 
     /// Parameters for a token-in zap (bundled to keep the entrypoints under the stack limit).
@@ -131,6 +132,12 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
     }
 
     constructor(address pool_, address zRouter_, address permit2_) {
+        if (
+            pool_ == address(0) || pool_.code.length == 0 || permit2_ == address(0) || permit2_.code.length == 0
+                || (zRouter_ != address(0) && zRouter_.code.length == 0)
+        ) {
+            revert BadTarget();
+        }
         POOL = IConfidentialPool(pool_);
         ZROUTER = zRouter_;
         PERMIT2 = IPermit2(permit2_);
@@ -226,12 +233,11 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
     ///         `msg.value` to a recipient-owned `commit`, then settle the self-proved batch that consumes the
     ///         deposit, inserts the recipient's leaf, and emits the recipient's memo. Same self-proved /
     ///         fee-free settle constraint (the settle runs with msg.sender == this router).
-    function wrapAndSettleETH(
-        bytes32 commit,
-        bytes calldata publicValues,
-        bytes calldata proof,
-        bytes[] calldata memos
-    ) external payable nonReentrant {
+    function wrapAndSettleETH(bytes32 commit, bytes calldata publicValues, bytes calldata proof, bytes[] calldata memos)
+        external
+        payable
+        nonReentrant
+    {
         _wrapETH(msg.value, commit);
         POOL.settle(publicValues, proof, memos);
         _refundETH(msg.sender); // sweep a (mis-built) settle fee paid in native ETH back to the caller
@@ -298,7 +304,9 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
         IPermit2.PermitBatch calldata permitBatch,
         bytes calldata signature
     ) external nonReentrant returns (uint256 sharesMinted) {
-        if (amountA > type(uint160).max || amountB > type(uint160).max) revert AmountTooLarge();
+        if (amountA > type(uint160).max || amountB > type(uint160).max) {
+            revert AmountTooLarge();
+        }
         try PERMIT2.permit(msg.sender, permitBatch, signature) {} catch {}
         PERMIT2.transferFrom(msg.sender, address(this), uint160(amountA), tokenA);
         PERMIT2.transferFrom(msg.sender, address(this), uint160(amountB), tokenB);
@@ -371,8 +379,9 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
         bytes32 commit,
         bytes calldata zrSwapData
     ) external payable nonReentrant returns (bytes32 depositId, uint256 sharesMinted) {
-        (depositId, sharesMinted) =
-            _zapToShieldedShares(tokenB, feeBps, ethLeg, tokenBLeg, minShares, deadline, commit, zrSwapData);
+        (depositId, sharesMinted) = _zapToShieldedShares(
+            tokenB, feeBps, ethLeg, tokenBLeg, minShares, deadline, commit, zrSwapData
+        );
         _refund(tokenB, msg.sender);
         _refundETH(msg.sender);
     }
@@ -394,8 +403,9 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
         bytes calldata proof,
         bytes[] calldata memos
     ) external payable nonReentrant returns (uint256 sharesMinted) {
-        (, sharesMinted) =
-            _zapToShieldedShares(tokenB, feeBps, ethLeg, tokenBLeg, minShares, deadline, commit, zrSwapData);
+        (, sharesMinted) = _zapToShieldedShares(
+            tokenB, feeBps, ethLeg, tokenBLeg, minShares, deadline, commit, zrSwapData
+        );
         POOL.settle(publicValues, proof, memos);
         _refund(tokenB, msg.sender);
         _refundETH(msg.sender);
@@ -496,15 +506,9 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
         _lazyApprove(token, address(POOL), amount);
     }
 
-    function _wrap2612(
-        address token,
-        uint256 amount,
-        bytes32 commit,
-        uint256 deadline,
-        uint8 v,
-        bytes32 r,
-        bytes32 s
-    ) internal {
+    function _wrap2612(address token, uint256 amount, bytes32 commit, uint256 deadline, uint8 v, bytes32 r, bytes32 s)
+        internal
+    {
         _pull2612(token, amount, deadline, v, r, s);
         POOL.wrap(_evmAssetId(token), amount, commit);
     }
@@ -608,10 +612,16 @@ contract ConfidentialRouter is ReentrancyGuardTransient {
         depositId = POOL.shieldShares(_poolId(tokenAId, tokenBId, z.feeBps), sharesMinted, z.commit);
     }
 
-    /// Canonical poolId — mirrors ConfidentialPool._poolId (keccak(lo ‖ hi ‖ feeBps)).
-    function _poolId(bytes32 a, bytes32 b, uint32 feeBps) internal pure returns (bytes32) {
+    /// Canonical poolId — a byte-for-byte mirror of ConfidentialPool._poolId (keccak(lo ‖ hi ‖ feeBps)).
+    function _poolId(bytes32 a, bytes32 b, uint32 feeBps) internal pure returns (bytes32 poolId) {
         (bytes32 lo, bytes32 hi) = a < b ? (a, b) : (b, a);
-        return keccak256(abi.encodePacked(lo, hi, uint256(feeBps)));
+        assembly ("memory-safe") {
+            let m := mload(0x40)
+            mstore(m, lo)
+            mstore(add(m, 0x20), hi)
+            mstore(add(m, 0x40), and(feeBps, 0xffffffff))
+            poolId := keccak256(m, 0x60)
+        }
     }
 
     // ──────────────────── Internals: approvals, refunds, asset id ────────────────────
