@@ -434,6 +434,9 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     mapping(address => bytes32) internal farmRewardAsset;
     mapping(address => uint256) internal farmTreasury;
 
+    // owner => operator allowed to removeLiquidityPublicFrom(owner)
+    mapping(address => address) internal lpOperator;
+
     // ──────────────────── Public-values layout ────────────────────
 
     // Boundary effects speak the in-system note value `v`; the contract scales it to
@@ -1014,7 +1017,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     ///         empty slot — the first funder becomes the founder, so the pair is never lost. No funding
     ///         here: the first add's reserves are backed by the spent notes' existing escrow (the same
     ///         escrow that backs every circulating note), so escrow is touched only at the wrap boundary.
-    function createPair(bytes32 assetA, bytes32 assetB, uint32 feeBps) external nonReentrant returns (bytes32 poolId) {
+    function createPair(bytes32 assetA, bytes32 assetB, uint32 feeBps) external returns (bytes32 poolId) {
         poolId = _ensurePair(assetA, assetB, feeBps, true); // standalone: revert if the slot already exists
     }
 
@@ -1221,10 +1224,14 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         lpShares[poolId][to] += sharesMinted;
     }
 
+    function approveLpOperator(address operator) external {
+        lpOperator[msg.sender] = operator;
+    }
+
     /// @notice Burn PUBLIC LP shares and withdraw the proportional reserves to `to` (public ERC20/ETH out).
-    ///         Can never remove the locked MINIMUM_LIQUIDITY. Confidential (note) shares are untouched — a
-    ///         caller can only burn their own `lpShares` balance.
-    function removeLiquidityPublic(
+    ///         Can never remove the locked MINIMUM_LIQUIDITY. If `owner != msg.sender`, the caller must be an
+    ///         LP operator approved by `owner` via `approveLpOperator(caller)`.
+    function removeLiquidityPublicFrom(
         bytes32 assetA,
         bytes32 assetB,
         uint32 feeBps,
@@ -1232,15 +1239,29 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         uint256 minAmountA,
         uint256 minAmountB,
         uint64 deadline,
+        address owner,
         address to
     ) external nonReentrant returns (uint256 amountLo, uint256 amountHi) {
+        if (owner != msg.sender && lpOperator[owner] != msg.sender) revert InsufficientLiquidity();
+        return _removeLiquidityPublicFrom(assetA, assetB, feeBps, shares, minAmountA, minAmountB, deadline, owner, to);
+    }
+
+    function _removeLiquidityPublicFrom(
+        bytes32 assetA,
+        bytes32 assetB,
+        uint32 feeBps,
+        uint256 shares,
+        uint256 minAmountA,
+        uint256 minAmountB,
+        uint64 deadline,
+        address owner,
+        address to
+    ) internal returns (uint256 amountLo, uint256 amountHi) {
         _checkDeadline(deadline);
-        _checkRecipient(to);
         (bytes32 poolId, bytes32 lo, bytes32 hi) = _poolIdFor(assetA, assetB, feeBps);
         Pool storage p = pools[poolId];
-        if (!p.init) revert PoolNotInit();
-        uint256 bal = lpShares[poolId][msg.sender];
-        if (shares == 0 || shares > bal) revert InsufficientLiquidity();
+        uint256 bal = lpShares[poolId][owner];
+        if (shares > bal) revert InsufficientLiquidity();
         uint256 vLo;
         uint256 vHi;
         // shares ≤ bal ≤ u64 and u64 reserves keep the products in u256. The floor guard is written as an
@@ -1251,7 +1272,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
             if (shares + MINIMUM_LIQUIDITY > p.totalShares) revert InsufficientLiquidity();
             vLo = p.reserveA * shares / p.totalShares;
             vHi = p.reserveB * shares / p.totalShares;
-            lpShares[poolId][msg.sender] = bal - shares;
+            lpShares[poolId][owner] = bal - shares;
             p.totalShares -= shares;
             p.reserveA -= vLo;
             p.reserveB -= vHi;
