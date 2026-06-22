@@ -213,6 +213,27 @@ export function makeConfidentialAirdrop({ stealth, secp, sha256, keccak256, curv
     return { funding, drop };
   }
 
+  // Pack buildAirdrop's lock ops into ONE multi-op proof for the box (harness exec-stealthlockbatch.rs):
+  // a shared header (all locks share chainBinding + the pre-state spendRoot — one proof, one root) + the N
+  // per-lock field sets the guest reads. Submit as { type: 'stealthlockbatch', op: <this>, memos: <the N
+  // buildAirdrop memos> }: a pure lock emits no note leaf (pv.leaves.length == 0), so the N stealth memos
+  // ride the settle calldata as the lock-memo tail (the pool's relaxed memo check accepts memos.length == N
+  // here). The relaying worker / any indexer reads them from that calldata to feed scanAirdrop; the
+  // sender-published bundle is the trustless fallback.
+  function packStealthLockBatch(ops) {
+    if (!ops.length) throw new Error('airdrop batch: no ops');
+    const { chainBinding, spendRoot } = ops[0];
+    for (const o of ops) {
+      if (o.chainBinding !== chainBinding || o.spendRoot !== spendRoot) {
+        throw new Error('airdrop batch: every lock must share chainBinding + spendRoot (one proof, one header)');
+      }
+    }
+    const pick = (o) => ({ asset: o.asset, locker: o.locker, ownerPub: o.ownerPub, amount: o.amount, deadline: o.deadline,
+      nCx: o.nCx, nCy: o.nCy, nIndex: o.nIndex, nPath: o.nPath, nSigR: o.nSigR, nSigZ: o.nSigZ,
+      lCx: o.lCx, lCy: o.lCy, lSigR: o.lSigR, lSigZ: o.lSigZ });
+    return { chainBinding, spendRoot, ops: ops.map(pick) };
+  }
+
   return { buildAirdrop, scanAirdrop, sealStealthMemo, openStealthMemo, ephPriv, lockBlinding,
-    planFunding, buildFunding, fundingNotesFor, runAirdrop };
+    planFunding, buildFunding, fundingNotesFor, runAirdrop, packStealthLockBatch };
 }

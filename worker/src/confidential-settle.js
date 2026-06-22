@@ -2,7 +2,7 @@
 //
 // The shielded-pool prover lives on a GPU box behind NAT (same box as the reflection relay), so it
 // POLLS the worker rather than the worker pushing to it: the dapp assembles a confidential op
-// (transfer / swap / lp), submits the witness here, the box claims it via /confidential/job, GPU
+// (transfer / swap / route / lp), submits the witness here, the box claims it via /confidential/job, GPU
 // Groth16-proves the settle guest, submits ConfidentialPool.settle(pv, proof, memos) on-chain, then
 // /confidential/ack marks it done. Mirrors [[reflection-attest]]'s box-poll shape; this one is a
 // multi-job QUEUE (user-initiated) rather than a single advancing cursor.
@@ -17,8 +17,11 @@ const CLAIM_TTL_MS = 10 * 60 * 1000; // a claimed-but-unfinished job is reclaima
 // rejected until the box drains the backlog; dedup of an in-flight op is unaffected.
 const MAX_PENDING_JOBS = 512;
 
-export function makeConfidentialSettler({ storage, hash, now }) {
+export function makeConfidentialSettler({ storage, hash, now, feeGate }) {
   // storage: { getPending()->id[], putPending(id[]), getJob(id)->job|null, putJob(id, job) }
+  // feeGate({ type, op }) -> bool : OPTIONAL profitability gate for the relayed (mode:'settle') flow — reject
+  //   a fee below the current gas-priced floor (relay-quote.js `passesFloor`) before burning a prove cycle.
+  //   Absent ⇒ no gate (the initial relayer can run ungated / fully subsidized).
   const clock = now || (() => Date.now());
 
   // jobId = hash of the witness (type+op[+mode]) → idempotent: resubmitting the same op returns the same job.
@@ -35,8 +38,13 @@ export function makeConfidentialSettler({ storage, hash, now }) {
   //                        farm bond). The router pulls from msg.sender, so only the user can send it.
   async function submitJob({ type, op, memos, mode = 'settle' }) {
     if (!type || !op) throw new Error('submitJob: type + op required');
-    if (!['wrap', 'unwrap', 'transfer', 'swap', 'lp', 'otc', 'bid'].includes(type)) throw new Error(`submitJob: unknown type ${type}`);
+    if (!['wrap', 'unwrap', 'transfer', 'swap', 'route', 'lp', 'otc', 'bid', 'bridgeburn', 'cdpmint', 'farmbond', 'farmharvest', 'farmunbond', 'adaptorlock', 'adaptorclaim', 'adaptorrefund', 'cdpclose', 'cdptopup', 'bridgemint', 'cbtcmint', 'stealthlock', 'stealthlockbatch', 'stealthclaim', 'stealthrefund', 'bridgestealthmint'].includes(type)) throw new Error(`submitJob: unknown type ${type}`);
     if (!['settle', 'prove'].includes(mode)) throw new Error(`submitJob: unknown mode ${mode}`);
+    // Profitability gate (relayed flow only): a fee below the current gas-priced floor is rejected BEFORE it
+    // burns a GPU prove cycle. `prove` jobs are user-sent (the user pays gas), so they're never gated.
+    if (mode === 'settle' && feeGate && !feeGate({ type, op })) {
+      throw new Error('submitJob: relay fee below the current floor — re-quote higher or self-settle');
+    }
     const id = jobIdOf(type, op, mode);
     const existing = await storage.getJob(id);
     if (existing && existing.status !== 'failed') {
@@ -118,7 +126,7 @@ export function makeConfidentialSettler({ storage, hash, now }) {
 }
 
 // KV-backed wiring for the worker runtime. KV keys: cps:pending (id[]), cps:job:<id> (job).
-export function buildConfidentialSettler(env, { hash }) {
+export function buildConfidentialSettler(env, { hash, feeGate }) {
   const KV = env.CONFIDENTIAL_KV || env.REGISTRY_KV;
   const storage = {
     getPending: async () => { const s = await KV.get('cps:pending'); return s ? JSON.parse(s) : []; },
@@ -126,5 +134,5 @@ export function buildConfidentialSettler(env, { hash }) {
     getJob: async (id) => { const s = await KV.get('cps:job:' + id); return s ? JSON.parse(s) : null; },
     putJob: async (id, job) => KV.put('cps:job:' + id, JSON.stringify(job)),
   };
-  return makeConfidentialSettler({ storage, hash });
+  return makeConfidentialSettler({ storage, hash, feeGate });
 }

@@ -16,12 +16,14 @@ sp1_zkvm::entrypoint!(main);
 use alloy_sol_types::private::{Address, U256};
 use alloy_sol_types::{sol, SolValue};
 use cxfer_core::{
-    adaptor_lock_leaf, bitcoin, cdp_basket_leg, cdp_basket_root, cdp_debt_asset_id,
+    adaptor_lock_leaf, bip340_verify, bitcoin, cdp_basket_leg, cdp_basket_root, cdp_debt_asset_id,
     cdp_position_leaf, cdp_position_nullifier, claim_id, clearing_price_matches, commitment_hash,
     decompress, deposit_commit, deposit_id, farm_harvest_new_entry, farm_receipt_leaf,
     farm_receipt_nullifier, from_affine_xy, get_amount_out, imt_non_membership, intent_context,
     isqrt, keccak_merkle_verify, leaf, lp_add_shares, lp_share_id, nullifier, pool_id,
-    scalar_reduce_be, utxo_leaf, verify_kernel, verify_opening_sigma, verify_range, Point,
+    scalar_reduce_be, stealth_claim_msg, stealth_lock_leaf, utxo_leaf, verify_kernel,
+    verify_kernel_with_fee, verify_opening_sigma,
+    verify_range, Point,
     CBTC_ZK_ASSET_ID,
 };
 use sp1_zkvm::io;
@@ -63,6 +65,10 @@ const OP_CDP_TOPUP: u8 = 19; // top-up: consume old position + append replacemen
 const OP_FARM_BOND: u8 = 20; // lock LP-share notes → mint a receipt note (shares, rps_entry); controller checks rps_entry == rps_live
 const OP_FARM_HARVEST: u8 = 21; // prove receipt → bound reward, nullify old + append advanced receipt + reward note
 const OP_FARM_UNBOND: u8 = 22; // prove receipt → nullify, re-mint the LP-share notes, controller drops the shares
+const OP_STEALTH_LOCK: u8 = 23; // stealth-receive: lock a note under the recipient's one-time pubkey (shared lock-set)
+const OP_STEALTH_CLAIM: u8 = 24; // stealth-receive: recipient claims via a BIP-340 sig under that one-time pubkey
+const OP_STEALTH_REFUND: u8 = 25; // stealth-receive: locker reclaims an unclaimed lock after the deadline (kernel-gated)
+const OP_BRIDGE_STEALTH_MINT: u8 = 26; // Bitcoin burn → Ethereum STEALTH LOCK: mint a Bitcoin-burned note's value into the shared lock-set under the recipient's one-time pubkey (cross-chain confidential pay); claimed via OP_STEALTH_CLAIM
 
 const SWAP_DIR_A_TO_B: u8 = 0;
 const SWAP_DIR_B_TO_A: u8 = 1;
@@ -349,12 +355,23 @@ pub fn main() {
                 let bp_proof: Vec<u8> = io::read();
                 assert!(verify_range(&out_pts, &bp_proof), "range");
 
+                // Relay fee (gasless privacy): a public FeePayment of `fee` in the transfer asset, paid
+                // to the settler (msg.sender). Conservation becomes Σin = Σout + fee, so the kernel checks
+                // the excess after removing fee·H — a relay can't pad it (that leaves an H-term the Schnorr
+                // fails). fee = 0 ⇒ byte-identical to the fee-free transfer.
+                let fee: u64 = io::read();
                 let kernel_r = decompress(&r33()).expect("kernel R");
                 let kernel_z = scalar_reduce_be(&r32());
                 assert!(
-                    verify_kernel(&in_pts, &out_pts, &kernel_r, &kernel_z),
+                    verify_kernel_with_fee(&in_pts, &out_pts, fee, &kernel_r, &kernel_z),
                     "conservation"
                 );
+                if fee != 0 {
+                    fees.push(FeePayment {
+                        assetId: asset.into(),
+                        value: U256::from(fee),
+                    });
+                }
             }
             OP_BRIDGE_BURN => {
                 // Ethereum → Bitcoin: like a transfer, but outputs are destination
@@ -426,12 +443,22 @@ pub fn main() {
 
                 let bp_proof: Vec<u8> = io::read();
                 assert!(verify_range(&out_pts, &bp_proof), "range");
+                // Relay fee (gasless privacy): a public FeePayment of `fee` in the burned asset, paid to
+                // the settler (msg.sender) on Ethereum. Conservation crosses the boundary net of the fee:
+                // Σ value_in (ETH burned) = Σ value_out (BTC minted) + fee. fee = 0 ⇒ the fee-free burn.
+                let fee: u64 = io::read();
                 let kernel_r = decompress(&r33()).expect("kernel R");
                 let kernel_z = scalar_reduce_be(&r32());
                 assert!(
-                    verify_kernel(&in_pts, &out_pts, &kernel_r, &kernel_z),
+                    verify_kernel_with_fee(&in_pts, &out_pts, fee, &kernel_r, &kernel_z),
                     "conservation"
                 );
+                if fee != 0 {
+                    fees.push(FeePayment {
+                        assetId: asset.into(),
+                        value: U256::from(fee),
+                    });
+                }
 
                 for dest_commitment in dest_commitments {
                     let cid = claim_id(dest_chain, &dest_commitment, &bind, &asset);
@@ -513,6 +540,104 @@ pub fn main() {
                 // makes the burn share that namespace — closing the fastlane→burn→mint
                 // cross-lane double-spend (the contract's nullifier loop reverts a reused ν).
                 leaves.push(dest_leaf);
+                nullifiers.push(nu);
+                bitcoin_burns.push(nu);
+                bitcoin_roots.push(pool_root);
+            }
+            OP_BRIDGE_STEALTH_MINT => {
+                // Bitcoin → Ethereum, confidential PAY-TO-STEALTH. Like OP_BRIDGE_MINT, but the burned note's
+                // value is minted into the SHARED stealth lock-set under the recipient's one-time pubkey
+                // (owner_pub) instead of a plain note — so the SENDER cannot spend it: only the recipient's
+                // BIP-340 claim (OP_STEALTH_CLAIM) can, and the sender (locker) can only refund after the
+                // deadline (OP_STEALTH_REFUND). The Bitcoin burn declared dest_leaf = stealth_lock_leaf(…) as
+                // its (opaque 32-byte) destCommitment, so the SAME bridge-burn set (ν → destCommitment) pins it
+                // — no Bitcoin-side or reflection change. Conservation has two binds: the kernel proves
+                // v_in == v_L (the burned note's value; it needs that note's blinding, so only the burner can
+                // mint — no third party redirects the burn), and the opening sigma proves L opens to the
+                // cleartext `amount`. Together amount == v_in: the lock's claimable amount equals exactly the
+                // value burned on Bitcoin, so the claim mints no more than was burned (no inflation past the
+                // existing bridge_mint guard). One-mint-per-ν via bitcoin_burns + the contract's bridgeMinted.
+                let asset = r32();
+                // The Bitcoin confidential-pool root the burned note is a member of (gated ∈ knownBitcoinRoot
+                // on-chain — canonical + relay-confirmed, not forgeable).
+                let pool_root = r32();
+
+                // Burned input note: membership in the Bitcoin pool.
+                let (in_cx, in_cy, in_pt) = r_commitment();
+                let in_owner = r32();
+                let in_leaf_index: u64 = io::read();
+                let in_path = r_path();
+                let in_leaf = leaf(&asset, &in_cx, &in_cy, &in_owner);
+                assert!(
+                    keccak_merkle_verify(&in_leaf, in_leaf_index, &in_path, &pool_root),
+                    "bridge_stealth_mint: btc pool membership"
+                );
+                let nu = nullifier(&in_cx, &in_cy);
+
+                // Recipient one-time stealth pubkey. Reject a non-curve owner_pub so a typo'd address can't
+                // create an unclaimable lock (the locker can still refund either way); an honest O = B + s·G is
+                // always a valid x-coordinate.
+                let owner_pub = r32();
+                {
+                    let mut owner_comp = [2u8; 33];
+                    owner_comp[1..].copy_from_slice(&owner_pub);
+                    decompress(&owner_comp).expect("bridge_stealth_mint: owner_pub is not a valid x-only pubkey");
+                }
+                let amount: u64 = io::read();
+                assert!(amount > 0, "bridge_stealth_mint: zero amount");
+                let deadline: u64 = io::read();
+                assert!(deadline != 0, "bridge_stealth_mint: deadline required");
+                let locker = r32(); // refund recipient (the burner), bound into the lock leaf
+
+                // Locked note L the value is minted into (opens to `amount`).
+                let (l_cx, l_cy, l_pt) = r_commitment();
+                let l_sig_r = decompress(&r33()).expect("bridge_stealth_mint: L-open R");
+                let l_sig_z = scalar_reduce_be(&r32());
+
+                // The burn pinned dest_leaf = stealth_lock_leaf(…); the bridge-burn set (ν → destCommitment)
+                // thus authorizes exactly this lock for ν, and only once.
+                let dest_leaf = stealth_lock_leaf(&asset, &l_cx, &l_cy, &owner_pub, amount, deadline, &locker);
+                assert!(
+                    bitcoin_burn_root != [0u8; 32],
+                    "bridge_stealth_mint: burn root required"
+                );
+                let bm_next = r32();
+                let bm_index: u64 = io::read();
+                let bm_path = r_path();
+                let bm_leaf = utxo_leaf(&nu, &bm_next, &dest_leaf);
+                assert!(
+                    keccak_merkle_verify(&bm_leaf, bm_index, &bm_path, &bitcoin_burn_root),
+                    "bridge_stealth_mint: nu not in Bitcoin bridge-burn set, or wrong stealth destination"
+                );
+
+                // Bind the cleartext `amount` to L (so a later claim, which mints the leaf-pinned amount, is
+                // honest — no over-mint via an amount label that exceeds L's committed value).
+                let ctx = intent_context(
+                    b"tacit-bridge-stealth-mint-v1",
+                    &chain_binding,
+                    &asset,
+                    &asset,
+                    &[(l_cx, l_cy, owner_pub)],
+                    &[amount, deadline],
+                );
+                assert!(
+                    verify_opening_sigma(&l_pt, amount, &l_sig_r, &l_sig_z, &ctx),
+                    "bridge_stealth_mint: L opening (amount binding)"
+                );
+
+                // Conservation: v_in (burned note) == v_L. Requires the burned note's blinding, so only its
+                // owner can mint. With the opening sigma above (v_L == amount), amount == v_in.
+                let kernel_r = decompress(&r33()).expect("bridge_stealth_mint: R");
+                let kernel_z = scalar_reduce_be(&r32());
+                assert!(
+                    verify_kernel(&[in_pt], &[l_pt], &kernel_r, &kernel_z),
+                    "bridge_stealth_mint: conservation"
+                );
+
+                // Effects: append the lock to the SHARED lock-set (claimed via OP_STEALTH_CLAIM, refunded via
+                // OP_STEALTH_REFUND), spend ν once in the GLOBAL nullifier set, gate one-mint-per-burned-ν
+                // (bitcoin_burns + contract bridgeMinted), and record the Bitcoin pool root.
+                lock_leaves.push(dest_leaf);
                 nullifiers.push(nu);
                 bitcoin_burns.push(nu);
                 bitcoin_roots.push(pool_root);
@@ -665,6 +790,11 @@ pub fn main() {
                     }
 
                     let amount_in: u64 = io::read();
+                    // Relay fee (gasless privacy): carved in the INPUT asset; only amount_in − fee swaps,
+                    // and `fee` is paid to the settler (msg.sender). Bound in the intent sigma below;
+                    // fee = 0 ⇒ self-settle. Each trader in the batch covers their own relay fee.
+                    let fee: u64 = io::read();
+                    assert!(fee < amount_in, "swap: fee >= input");
                     let amount_out: u64 = io::read();
                     let rem: u64 = io::read();
                     let in_sig_r = decompress(&r33()).expect("swap: in sigma R");
@@ -703,6 +833,7 @@ pub fn main() {
                             amount_out,
                             min_out,
                             intent_deadline,
+                            fee,
                         ],
                     );
                     assert!(
@@ -717,7 +848,7 @@ pub fn main() {
                     // Uniform-price clearing: amount_out = floor(amount_in · P), one price per batch.
                     //   A→B: in·num == out·den + rem,  rem < den
                     //   B→A: in·den == out·num + rem,  rem < num   (P inverted for the other side)
-                    let ain = amount_in as u128;
+                    let ain = (amount_in - fee) as u128; // the amount that actually swaps (relay fee carved off)
                     let aout = amount_out as u128;
                     let num = price_num as u128;
                     let den = price_den as u128;
@@ -737,6 +868,12 @@ pub fn main() {
 
                     nullifiers.push(nu);
                     leaves.push(leaf(out_asset, &out_cx, &out_cy, &out_owner));
+                    if fee != 0 {
+                        fees.push(FeePayment {
+                            assetId: (*in_asset).into(),
+                            value: U256::from(fee),
+                        });
+                    }
                 }
 
                 // Net reserve move (no underflow), and the constant-product non-decrease.
@@ -841,6 +978,13 @@ pub fn main() {
                     };
                 }
 
+                // Relay fee (gasless privacy): carved from the A contribution in asset_a; the LP earns
+                // shares on (d_a − fee) and the settler (msg.sender) is paid `fee`. The A note still opens
+                // to its full value d_a; fee = 0 ⇒ self-settle. Bound in the intent sigma below.
+                let fee: u64 = io::read();
+                assert!(fee < d_a, "lp_add: fee >= A contribution");
+                let add_a = d_a - fee;
+
                 // Constant-product mint: the FIRST provider (empty pool, shares_pre==0) sets totalShares =
                 // isqrt(dA·dB) and gets isqrt − MINIMUM_LIQUIDITY as their note (MINIMUM_LIQUIDITY = the
                 // permanent NOTELESS floor, so reserves can never fully drain → the (pair,fee) slot can't be
@@ -849,7 +993,7 @@ pub fn main() {
                 // the pool), no exact-ratio gate (the old `dA·R_B == dB·R_A` forced dA to be a multiple of
                 // R_A/gcd and broke incremental adds once a traded pool went coprime). d_shares is DERIVED
                 // in-guest (not witnessed), so it can't be over-claimed; the share note must open to it.
-                let da = d_a as u128;
+                let da = add_a as u128; // fee carved off the A contribution before the pool/share math
                 let db = d_b as u128;
                 let ra = r_a_pre as u128;
                 let rb = r_b_pre as u128;
@@ -873,7 +1017,7 @@ pub fn main() {
                         (total - MINIMUM_LIQUIDITY, da, db, total)
                     } else {
                         assert!(ra > 0 && rb > 0, "lp_add: pool must be initialized");
-                        let ds = lp_add_shares(shares_pre, d_a, d_b, r_a_pre, r_b_pre);
+                        let ds = lp_add_shares(shares_pre, add_a, d_b, r_a_pre, r_b_pre);
                         assert!(ds > 0, "lp_add: zero shares minted (dust add)"); // reject a dust add that mints nothing
                         assert!(
                             (ra + da) <= u64::MAX as u128
@@ -899,7 +1043,7 @@ pub fn main() {
                         (b_cx, b_cy, b_owner),
                         (s_cx, s_cy, s_owner),
                     ],
-                    &[d_a, d_b, d_shares, op_deadline],
+                    &[d_a, d_b, d_shares, op_deadline, fee],
                 );
 
                 // Spend the two contribution notes: membership + ν + cross-lane + opening sigma (binds d_a/d_b).
@@ -943,6 +1087,12 @@ pub fn main() {
                 nullifiers.push(a_nu);
                 nullifiers.push(b_nu);
                 leaves.push(leaf(&lp_asset, &s_cx, &s_cy, &s_owner));
+                if fee != 0 {
+                    fees.push(FeePayment {
+                        assetId: asset_a.into(),
+                        value: U256::from(fee),
+                    });
+                }
                 liquidity.push(LpSettlement {
                     poolId: pid.into(),
                     reserveAPre: U256::from(r_a_pre),
@@ -1002,6 +1152,13 @@ pub fn main() {
                     };
                 }
 
+                // Relay fee (gasless privacy): carved from the A withdrawal in asset_a; the A note opens
+                // to (d_a − fee) and the settler (msg.sender) is paid `fee`. The pool still releases the
+                // full proportional d_a; fee = 0 ⇒ self-settle. Bound in the intent sigma below.
+                let fee: u64 = io::read();
+                assert!(fee < d_a, "lp_remove: fee >= A withdrawal");
+                let net_a = d_a - fee;
+
                 // Intent context binds the spent LP-share note + the two minted A/B notes + the
                 // amounts: the box can't redirect the withdrawn A/B notes or alter d_shares/dA/dB, and
                 // never learns the share blinding (so it can't spend the LP-share note).
@@ -1015,7 +1172,7 @@ pub fn main() {
                         (a_cx, a_cy, a_owner),
                         (b_cx, b_cy, b_owner),
                     ],
-                    &[d_shares, d_a, d_b, op_deadline],
+                    &[d_shares, d_a, d_b, op_deadline, fee],
                 );
 
                 // Spend the LP-share note: membership + ν + cross-lane + opening sigma (binds d_shares).
@@ -1064,8 +1221,8 @@ pub fn main() {
                 );
                 // The withdrawn A/B notes open to dA/dB (sigma — the box never learns r_a/r_b).
                 assert!(
-                    verify_opening_sigma(&a_pt, d_a, &a_sig_r, &a_sig_z, &ctx),
-                    "lp_remove: A opening"
+                    verify_opening_sigma(&a_pt, net_a, &a_sig_r, &a_sig_z, &ctx),
+                    "lp_remove: A opening (net of relay fee)"
                 );
                 assert!(
                     verify_opening_sigma(&b_pt, d_b, &b_sig_r, &b_sig_z, &ctx),
@@ -1075,6 +1232,12 @@ pub fn main() {
                 nullifiers.push(s_nu);
                 leaves.push(leaf(&asset_a, &a_cx, &a_cy, &a_owner));
                 leaves.push(leaf(&asset_b, &b_cx, &b_cy, &b_owner));
+                if fee != 0 {
+                    fees.push(FeePayment {
+                        assetId: asset_a.into(),
+                        value: U256::from(fee),
+                    });
+                }
                 liquidity.push(LpSettlement {
                     poolId: pid.into(),
                     reserveAPre: U256::from(r_a_pre),
@@ -1190,13 +1353,21 @@ pub fn main() {
                         min_deadline.min(op_deadline)
                     };
                 }
+                // Relay fees (gasless privacy): each party may carve a fee from the asset they RECEIVE —
+                // fee_a from the taker's received v_a (asset_a), fee_b from the maker's received v_b
+                // (asset_b) — paid to the settler (msg.sender). Either/both default 0 (self-settle); bound
+                // in the shared sigma context below so the box can't pad them.
+                let fee_a: u64 = io::read();
+                let fee_b: u64 = io::read();
+                assert!(fee_a < v_a, "otc: fee_a >= taker receipt");
+                assert!(fee_b < v_b, "otc: fee_b >= maker receipt");
                 let ctx = intent_context(
                     b"tacit-otc-intent-v1",
                     &chain_binding,
                     &asset_a,
                     &asset_b,
                     &ctx_notes,
-                    &[v_a, v_b, op_deadline],
+                    &[v_a, v_b, op_deadline, fee_a, fee_b],
                 );
 
                 // ---- Authorizations: each party's input opens (proving the spend is theirs) and
@@ -1210,12 +1381,12 @@ pub fn main() {
                     "otc: taker-in opening"
                 );
                 assert!(
-                    verify_opening_sigma(&m_rv_pt, v_b, &m_rv_sig_r, &m_rv_sig_z, &ctx),
-                    "otc: maker-recv opening"
+                    verify_opening_sigma(&m_rv_pt, v_b - fee_b, &m_rv_sig_r, &m_rv_sig_z, &ctx),
+                    "otc: maker-recv opening (net of relay fee)"
                 );
                 assert!(
-                    verify_opening_sigma(&t_rv_pt, v_a, &t_rv_sig_r, &t_rv_sig_z, &ctx),
-                    "otc: taker-recv opening"
+                    verify_opening_sigma(&t_rv_pt, v_a - fee_a, &t_rv_sig_r, &t_rv_sig_z, &ctx),
+                    "otc: taker-recv opening (net of relay fee)"
                 );
 
                 // ---- Per-asset conservation (u128 sums; canonical change form) ----
@@ -1274,6 +1445,12 @@ pub fn main() {
                 }
                 if let Some((cx, cy, _, _, _)) = t_change {
                     leaves.push(leaf(&asset_b, &cx, &cy, &taker_owner));
+                }
+                if fee_a != 0 {
+                    fees.push(FeePayment { assetId: asset_a.into(), value: U256::from(fee_a) });
+                }
+                if fee_b != 0 {
+                    fees.push(FeePayment { assetId: asset_b.into(), value: U256::from(fee_b) });
                 }
             }
             OP_BID => {
@@ -1416,6 +1593,11 @@ pub fn main() {
                         min_deadline.min(op_deadline)
                     };
                 }
+                // Relay fee (gasless privacy): the seller is the online filler, so it carves the fee from
+                // its received payment `pay` (asset_b), paid to the settler (msg.sender). Bound in the
+                // SELLER context below — the buyer's pre-signed offline sigma is untouched; fee = 0 ⇒ self-settle.
+                let fee: u64 = io::read();
+                assert!(fee < pay, "bid: fee >= seller payment");
                 let buyer_ctx = intent_context(
                     b"tacit-bid-buyer-v1",
                     &chain_binding,
@@ -1451,7 +1633,7 @@ pub fn main() {
                     &asset_a,
                     &asset_b,
                     &s_notes,
-                    &[chosen_f, price],
+                    &[chosen_f, price, fee],
                 );
                 assert!(
                     verify_opening_sigma(
@@ -1464,8 +1646,8 @@ pub fn main() {
                     "bid: seller-in opening"
                 );
                 assert!(
-                    verify_opening_sigma(&s_rv_pt, pay, &s_rv_sig_r, &s_rv_sig_z, &seller_ctx),
-                    "bid: seller-recv opening"
+                    verify_opening_sigma(&s_rv_pt, pay - fee, &s_rv_sig_r, &s_rv_sig_z, &seller_ctx),
+                    "bid: seller-recv opening (net of relay fee)"
                 );
                 if let Some((_, _, pt, sr, sz)) = s_change {
                     assert!(
@@ -1495,6 +1677,9 @@ pub fn main() {
                 if let Some((cx, cy, _, _, _)) = s_change {
                     leaves.push(leaf(&asset_a, &cx, &cy, &s_owner));
                 } // seller change
+                if fee != 0 {
+                    fees.push(FeePayment { assetId: asset_b.into(), value: U256::from(fee) });
+                }
             }
             OP_SWAP_ROUTE => {
                 // Confidential MULTIHOP: route one input note through up to MAX_ROUTE_HOPS pools to one
@@ -1510,6 +1695,12 @@ pub fn main() {
                 let in_leaf_index: u64 = io::read();
                 let in_path = r_path();
                 let amount_in: u64 = io::read();
+                // Relay fee (gasless privacy): carved in the INPUT asset and paid to the settler
+                // (msg.sender), so a third party can relay the route and the trader never broadcasts from
+                // their own address. fee = 0 ⇒ self-settle (no leg, identical to the fee-free path). The
+                // fee is bound in the intent sigma below, so the box can neither pad it nor redirect it.
+                let fee: u64 = io::read();
+                assert!(fee < amount_in, "route: fee >= input");
                 let in_sig_r = decompress(&r33()).expect("route: in sigma R");
                 let in_sig_z = scalar_reduce_be(&r32());
                 let n_hops: u32 = io::read();
@@ -1536,7 +1727,7 @@ pub fn main() {
                 // pre); the contract's pre==live gate + sequential application force them to be the real,
                 // chained reserves — so the route can't settle against stale or fabricated pool state.
                 let mut cur_asset = asset_0;
-                let mut cur_amount: u64 = amount_in;
+                let mut cur_amount: u64 = amount_in - fee; // route the post-fee input
                 let mut hop_swaps: Vec<SwapSettlement> = Vec::with_capacity(n_hops as usize);
                 for _ in 0..n_hops {
                     let asset_next = r32();
@@ -1598,7 +1789,7 @@ pub fn main() {
                     &asset_0,
                     &asset_final,
                     &[(in_cx, in_cy, in_owner), (out_cx, out_cy, out_owner)],
-                    &[amount_in, amount_out, min_out, n_hops as u64, op_deadline],
+                    &[amount_in, amount_out, min_out, n_hops as u64, op_deadline, fee],
                 );
 
                 // Spend the input note (membership + ν + cross-lane + opening binds amount_in).
@@ -1629,6 +1820,15 @@ pub fn main() {
                 leaves.push(leaf(&asset_final, &out_cx, &out_cy, &out_owner));
                 for s in hop_swaps {
                     swaps.push(s);
+                }
+                // Pay the relayer the input-asset fee (gasless privacy). asset_0 is a registered pool
+                // asset (a note of it was just spent), so settle's _payout resolves it; the input note
+                // opened to the gross amount_in, of which (amount_in − fee) entered the route above.
+                if fee != 0 {
+                    fees.push(FeePayment {
+                        assetId: asset_0.into(),
+                        value: U256::from(fee),
+                    });
                 }
             }
             OP_ADAPTOR_LOCK => {
@@ -1813,10 +2013,16 @@ pub fn main() {
                 let l_nu = nullifier(&l_cx, &l_cy);
 
                 let (o_cx, o_cy, o_pt) = r_commitment();
+                // Relay fee (gasless privacy): the locker reclaims its locked note net of a fee paid to the
+                // settler (msg.sender) — safe here because REFUND reveals no `s` (no t-reveal), so the kernel
+                // is plain conservation L = O + fee. fee = 0 ⇒ the fee-free refund. (CLAIM cannot do this: its
+                // kernel IS the t-reveal channel and must stay zero-value, so a claim is relayed fee-less and
+                // the recipient pays via the funded follow-up spend of the claimed note.)
+                let fee: u64 = io::read();
                 let kernel_r = decompress(&r33()).expect("adaptor-refund: kernel R");
                 let kernel_z = scalar_reduce_be(&r32());
                 assert!(
-                    verify_kernel(&[l_pt], &[o_pt], &kernel_r, &kernel_z),
+                    verify_kernel_with_fee(&[l_pt], &[o_pt], fee, &kernel_r, &kernel_z),
                     "adaptor-refund: value conservation"
                 );
 
@@ -1826,6 +2032,12 @@ pub fn main() {
 
                 lock_nullifiers.push(l_nu);
                 leaves.push(leaf(&asset, &o_cx, &o_cy, &locker));
+                if fee != 0 {
+                    fees.push(FeePayment {
+                        assetId: asset.into(),
+                        value: U256::from(fee),
+                    });
+                }
             }
             OP_CDP_MINT => {
                 // Open a CDP: lock a BASKET of collateral notes into a controller-bound position and mint a
@@ -1908,9 +2120,15 @@ pub fn main() {
                     });
                 }
                 // mint the debt/payout note (asset = derive(controller)), owned by `owner`, opening to
-                // debt_value — SKIPPED for a bond (debt_value == 0 mints nothing; the basket is locked unpriced).
+                // debt_value − fee — SKIPPED for a bond (debt_value == 0 mints nothing; the basket is locked unpriced).
                 let debt_asset = cdp_debt_asset_id(&controller);
+                // Relay fee (gasless privacy): carved from the minted debt note. The position records the GROSS
+                // debt_value (the controller's health check is on that), the user's note opens to debt_value − fee,
+                // and the settler (msg.sender) is paid `fee` in the debt asset. fee = 0 ⇒ self-settle; a bond
+                // (debt_value == 0) has no debt note, so fee must be 0. Bound in the debt sigma context.
+                let fee: u64 = io::read();
                 if debt_value > 0 {
+                    assert!(fee < debt_value, "cdp-mint: fee >= debt");
                     let (d_cx, d_cy, d_pt) = r_commitment();
                     let d_sig_r = decompress(&r33()).expect("cdp-mint: debt sigma R");
                     let d_sig_z = scalar_reduce_be(&r32());
@@ -1920,13 +2138,21 @@ pub fn main() {
                         &debt_asset,
                         &nonce,
                         &[(d_cx, d_cy, owner), (controller32, nonce, owner)],
-                        &[debt_value],
+                        &[debt_value, fee],
                     );
                     assert!(
-                        verify_opening_sigma(&d_pt, debt_value, &d_sig_r, &d_sig_z, &debt_ctx),
-                        "cdp-mint: debt opening sigma"
+                        verify_opening_sigma(&d_pt, debt_value - fee, &d_sig_r, &d_sig_z, &debt_ctx),
+                        "cdp-mint: debt opening sigma (net of relay fee)"
                     );
                     leaves.push(leaf(&debt_asset, &d_cx, &d_cy, &owner));
+                    if fee != 0 {
+                        fees.push(FeePayment {
+                            assetId: debt_asset.into(),
+                            value: U256::from(fee),
+                        });
+                    }
+                } else {
+                    assert!(fee == 0, "cdp-mint: fee requires a debt note");
                 }
                 // the position leaf the contract appends to its position set (CLOSE/LIQUIDATE prove against it),
                 // or the `0` sentinel for a PAYOUT (n_legs == 0 ⇒ no position; the pool skips the insert).
@@ -1961,6 +2187,10 @@ pub fn main() {
                 let n_legs: u32 = io::read();
                 assert!(n_legs > 0, "cdp-close: empty basket");
                 assert!(n_legs <= MAX_ITEMS_PER_OP, "cdp-close: basket over cap");
+                // Relay fee (gasless privacy): carved from the FIRST released collateral leg — the user gets
+                // back value[0] − fee, the settler (msg.sender) is paid `fee` in that leg's asset, and the
+                // basket membership + controller still use the GROSS value. fee = 0 ⇒ self-settle.
+                let fee: u64 = io::read();
                 assert!(
                     spend_root != [0u8; 32],
                     "cdp-close: membership requires a non-zero spend root"
@@ -2008,21 +2238,31 @@ pub fn main() {
                     ),
                     "cdp-close: position membership"
                 );
-                for (asset, value, cx, cy, pt, sig_r, sig_z) in released {
+                for (i, (asset, value, cx, cy, pt, sig_r, sig_z)) in released.into_iter().enumerate() {
                     let sig_z = scalar_reduce_be(&sig_z);
+                    // The first leg carries the op's relay fee: it opens to value − fee (the others open to
+                    // their full value). The fee is bound in this leg's context so the box can't pad it.
+                    let leg_fee = if i == 0 { fee } else { 0 };
+                    assert!(leg_fee == 0 || leg_fee < value, "cdp-close: fee >= leg value");
                     let ctx = intent_context(
                         b"tacit-cdp-close-release-v1",
                         &chain_binding,
                         &asset,
                         &position_leaf,
                         &[(cx, cy, owner)],
-                        &[value],
+                        &[value, leg_fee],
                     );
                     assert!(
-                        verify_opening_sigma(&pt, value, &sig_r, &sig_z, &ctx),
+                        verify_opening_sigma(&pt, value - leg_fee, &sig_r, &sig_z, &ctx),
                         "cdp-close: released-leg opening sigma"
                     );
                     leaves.push(leaf(&asset, &cx, &cy, &owner));
+                    if leg_fee != 0 {
+                        fees.push(FeePayment {
+                            assetId: asset.into(),
+                            value: U256::from(leg_fee),
+                        });
+                    }
                 }
                 // burn debt notes (any holders) summing to EXACTLY the position debt
                 let n_debt: u32 = io::read();
@@ -2434,6 +2674,11 @@ pub fn main() {
                 let new_nonce = r32();
                 let reward: u64 = io::read();
                 assert!(reward > 0, "farm-harvest: zero reward");
+                // Relay fee (gasless privacy): carved from the harvested REWARD note — pay the relay out of
+                // yield. The reward note opens to reward − fee, the settler (msg.sender) is paid `fee` in the
+                // reward asset, and the controller still bounds the GROSS reward. fee = 0 ⇒ self-settle.
+                let fee: u64 = io::read();
+                assert!(fee < reward, "farm-harvest: fee >= reward");
                 let mut controller32 = [0u8; 32];
                 controller32[12..].copy_from_slice(&controller);
                 let old_index: u64 = io::read();
@@ -2461,13 +2706,19 @@ pub fn main() {
                     &reward_asset,
                     &new_nonce,
                     &[(r_cx, r_cy, owner)],
-                    &[reward],
+                    &[reward, fee],
                 );
                 assert!(
-                    verify_opening_sigma(&r_pt, reward, &r_sig_r, &r_sig_z, &r_ctx),
-                    "farm-harvest: reward opening sigma"
+                    verify_opening_sigma(&r_pt, reward - fee, &r_sig_r, &r_sig_z, &r_ctx),
+                    "farm-harvest: reward opening sigma (net of relay fee)"
                 );
                 leaves.push(leaf(&reward_asset, &r_cx, &r_cy, &owner));
+                if fee != 0 {
+                    fees.push(FeePayment {
+                        assetId: reward_asset.into(),
+                        value: U256::from(fee),
+                    });
+                }
                 let mut sentinel = [0u8; 32];
                 sentinel[31] = 1; // positionLeaf == 1; debtValue == reward > 0 ⇒ HARVEST
                 cdp_mints.push(CdpMint {
@@ -2489,6 +2740,11 @@ pub fn main() {
                 let controller = r20();
                 let owner = r32();
                 let shares: u64 = io::read();
+                // Relay fee (gasless privacy): carved from the released LP-share note — the user gets back
+                // shares − fee, the settler (msg.sender) is paid `fee` in the LP asset, and the controller
+                // still drops the GROSS shares. fee = 0 ⇒ self-settle.
+                let fee: u64 = io::read();
+                assert!(fee < shares, "farm-unbond: fee >= shares");
                 let rps_entry: u128 = io::read();
                 let nonce = r32();
                 let lp_asset = r32();
@@ -2513,13 +2769,19 @@ pub fn main() {
                     &lp_asset,
                     &nonce,
                     &[(cx, cy, owner)],
-                    &[shares],
+                    &[shares, fee],
                 );
                 assert!(
-                    verify_opening_sigma(&pt, shares, &sig_r, &sig_z, &ctx),
-                    "farm-unbond: release opening sigma"
+                    verify_opening_sigma(&pt, shares - fee, &sig_r, &sig_z, &ctx),
+                    "farm-unbond: release opening sigma (net of relay fee)"
                 );
                 leaves.push(leaf(&lp_asset, &cx, &cy, &owner));
+                if fee != 0 {
+                    fees.push(FeePayment {
+                        assetId: lp_asset.into(),
+                        value: U256::from(fee),
+                    });
+                }
                 cdp_closes.push(CdpClose {
                     controller: Address::from(controller),
                     debtValue: U256::from(0u64),
@@ -2566,6 +2828,163 @@ pub fn main() {
                     vBtc: U256::from(v_btc),
                     commitment: commitment_hash(&cx, &cy).into(),
                 });
+            }
+            OP_STEALTH_LOCK => {
+                // Stealth-receive LOCK: spend a normal note N and move its FULL value into the SHARED lock-set
+                // as a locked note L, bound to the recipient's one-time stealth pubkey `owner_pub`. Disjoint
+                // leaf domain from the adaptor lock (`stealth_lock_leaf`), so the two lock kinds never
+                // cross-claim. `amount` is bound in the leaf so a later claim cannot over-mint; `deadline`/
+                // `locker` carry the refund path. The sender (locker) knows L's blinding but NOT owner_pub's
+                // one-time key, and L is unreachable by transfer/swap — so only the recipient can claim.
+                let asset = r32();
+                let locker = r32(); // == N's owner (authorizes the spend by opening N)
+                let owner_pub = r32(); // recipient one-time stealth x-only pubkey (the claim signs under it)
+                // Reject a non-curve owner_pub at lock time (a typo'd / garbage stealth address) so it can't
+                // create an unclaimable lock — an honest one-time pubkey O = B + s·G is always a valid
+                // x-coordinate. (The locker can still refund either way; this just fails fast.)
+                {
+                    let mut owner_comp = [2u8; 33];
+                    owner_comp[1..].copy_from_slice(&owner_pub);
+                    decompress(&owner_comp).expect("stealth-lock: owner_pub is not a valid x-only pubkey");
+                }
+                let amount: u64 = io::read();
+                assert!(amount > 0, "stealth-lock: zero amount");
+                let deadline: u64 = io::read();
+                assert!(deadline != 0, "stealth-lock: deadline required");
+
+                let (n_cx, n_cy, n_pt) = r_commitment();
+                let n_index: u64 = io::read();
+                let n_path = r_path();
+                let n_lf = leaf(&asset, &n_cx, &n_cy, &locker);
+                assert!(spend_root != [0u8; 32], "stealth-lock: membership requires a non-zero spend root");
+                assert!(keccak_merkle_verify(&n_lf, n_index, &n_path, &spend_root), "stealth-lock: N membership");
+                let n_nu = nullifier(&n_cx, &n_cy);
+                if bitcoin_spent_root != [0u8; 32] {
+                    check_btc_nonmembership(&n_nu, &bitcoin_spent_root);
+                }
+                let n_sig_r = decompress(&r33()).expect("stealth-lock: N-open R");
+                let n_sig_z = scalar_reduce_be(&r32());
+                let (l_cx, l_cy, l_pt) = r_commitment();
+                let l_sig_r = decompress(&r33()).expect("stealth-lock: L-open R");
+                let l_sig_z = scalar_reduce_be(&r32());
+
+                let ctx = intent_context(
+                    b"tacit-stealth-lock-intent-v1",
+                    &chain_binding,
+                    &asset,
+                    &asset,
+                    &[(n_cx, n_cy, locker), (l_cx, l_cy, owner_pub)],
+                    &[amount, deadline],
+                );
+                assert!(
+                    verify_opening_sigma(&n_pt, amount, &n_sig_r, &n_sig_z, &ctx),
+                    "stealth-lock: N opening (spend authz + value)"
+                );
+                assert!(
+                    verify_opening_sigma(&l_pt, amount, &l_sig_r, &l_sig_z, &ctx),
+                    "stealth-lock: L opening (value carry)"
+                );
+
+                nullifiers.push(n_nu);
+                lock_leaves.push(stealth_lock_leaf(&asset, &l_cx, &l_cy, &owner_pub, amount, deadline, &locker));
+            }
+            OP_STEALTH_CLAIM => {
+                // Stealth-receive CLAIM: the recipient proves L ∈ the lock-set (reconstructing its leaf pins
+                // asset/owner_pub/amount/deadline/locker), spends ν_L once, and mints output M to an owner THEY
+                // choose. Authorized by a BIP-340 signature under `owner_pub` over the exact (lock, M, fee), so
+                // only the one-time-key holder can claim and a relayer can neither redirect M nor pad the fee.
+                // No kernel: `amount` is leaf-pinned and M opens to `amount − fee` (+ the fee leg) ⇒ conserved.
+                let asset = r32();
+                let (l_cx, l_cy, _l_pt) = r_commitment(); // locked note (point validated; value pinned by the leaf)
+                let owner_pub = r32();
+                let amount: u64 = io::read();
+                let deadline: u64 = io::read();
+                let locker = r32();
+                let l_index: u64 = io::read();
+                let l_path = r_path();
+                let lock_lf = stealth_lock_leaf(&asset, &l_cx, &l_cy, &owner_pub, amount, deadline, &locker);
+                assert!(lock_set_root != [0u8; 32], "stealth-claim: membership requires a non-zero lock-set root");
+                assert!(
+                    keccak_merkle_verify(&lock_lf, l_index, &l_path, &lock_set_root),
+                    "stealth-claim: L lock-set membership"
+                );
+                let l_nu = nullifier(&l_cx, &l_cy);
+
+                let (m_cx, m_cy, m_pt) = r_commitment();
+                let m_owner = r32();
+                let fee: u64 = io::read();
+                assert!(fee < amount, "stealth-claim: fee must be < the locked amount");
+                let net = amount - fee;
+                let m_sig_r = decompress(&r33()).expect("stealth-claim: M-open R");
+                let m_sig_z = scalar_reduce_be(&r32());
+                let m_ctx = intent_context(
+                    b"tacit-stealth-claim-out-v1",
+                    &chain_binding,
+                    &asset,
+                    &asset,
+                    &[(m_cx, m_cy, m_owner)],
+                    &[amount, fee],
+                );
+                assert!(
+                    verify_opening_sigma(&m_pt, net, &m_sig_r, &m_sig_z, &m_ctx),
+                    "stealth-claim: M opening (recipient controls the output, net of fee)"
+                );
+
+                let mut owner_sig = [0u8; 64];
+                owner_sig[..32].copy_from_slice(&r32());
+                owner_sig[32..].copy_from_slice(&r32());
+                let claim_msg = stealth_claim_msg(&chain_binding, &lock_lf, &m_cx, &m_cy, &m_owner, amount, fee);
+                assert!(
+                    bip340_verify(&owner_sig, &claim_msg, &owner_pub),
+                    "stealth-claim: one-time-key signature (only the recipient can claim)"
+                );
+
+                min_deadline = if min_deadline == 0 { deadline } else { min_deadline.min(deadline) };
+
+                lock_nullifiers.push(l_nu);
+                leaves.push(leaf(&asset, &m_cx, &m_cy, &m_owner));
+                if fee != 0 {
+                    fees.push(FeePayment { assetId: asset.into(), value: U256::from(fee) });
+                }
+            }
+            OP_STEALTH_REFUND => {
+                // Stealth-receive REFUND: after the deadline, the LOCKER reclaims an unclaimed lock (typo /
+                // dead-address safety). Same membership + ν_L as CLAIM, but kernel-gated like OP_ADAPTOR_REFUND:
+                // the kernel over (L_C − O_C) can only be produced by the locker (who alone knows L's blinding),
+                // so a non-locker can neither refund nor redirect — the output is the locker's note. Optional fee.
+                let asset = r32();
+                let (l_cx, l_cy, l_pt) = r_commitment();
+                let owner_pub = r32();
+                let amount: u64 = io::read();
+                let deadline: u64 = io::read();
+                let locker = r32();
+                let l_index: u64 = io::read();
+                let l_path = r_path();
+                let lock_lf = stealth_lock_leaf(&asset, &l_cx, &l_cy, &owner_pub, amount, deadline, &locker);
+                assert!(lock_set_root != [0u8; 32], "stealth-refund: membership requires a non-zero lock-set root");
+                assert!(
+                    keccak_merkle_verify(&lock_lf, l_index, &l_path, &lock_set_root),
+                    "stealth-refund: L lock-set membership"
+                );
+                let l_nu = nullifier(&l_cx, &l_cy);
+
+                let (o_cx, o_cy, o_pt) = r_commitment();
+                let fee: u64 = io::read();
+                let kernel_r = decompress(&r33()).expect("stealth-refund: kernel R");
+                let kernel_z = scalar_reduce_be(&r32());
+                assert!(
+                    verify_kernel_with_fee(&[l_pt], &[o_pt], fee, &kernel_r, &kernel_z),
+                    "stealth-refund: value conservation (locker-only kernel)"
+                );
+
+                assert!(deadline != 0, "stealth-refund: deadline required");
+                refund_not_before = refund_not_before.max(deadline);
+
+                lock_nullifiers.push(l_nu);
+                leaves.push(leaf(&asset, &o_cx, &o_cy, &locker));
+                if fee != 0 {
+                    fees.push(FeePayment { assetId: asset.into(), value: U256::from(fee) });
+                }
             }
             _ => panic!("unknown op type"),
         }

@@ -54,6 +54,7 @@ node_suite() {
            confidential-canonical-asset-id confidential-evm-log confidential-note-binds-amm \
            confidential-swap-op confidential-lp-op confidential-otc-op confidential-bid-op \
            confidential-stealth confidential-stealth-op confidential-airdrop \
+           confidential-bridge-stealth-op \
            confidential-finality; do
     if ! node "tests/$t.mjs" >>"$TMP.node" 2>&1; then echo "FAIL $t"; rc=1; fi
   done
@@ -285,6 +286,42 @@ else
     "pinned reflection vkey ($RPIN_VKEY) is NOT in the confirmed-conservation allowlist — BRIDGE is fail-closed until a negative test proves THIS ELF skips a non-conserving CXFER (REFLECT-1). The source fix + worker mirror exist (verify_cxfer_conservation / fold_cxfer + reflect.rs check-before-fold + tests/confidential-reflection-conservation.mjs); confirm the pinned build enforces them, then allowlist the vkey. See RUNBOOK-confidential-pool-readiness.md."
 fi
 
+# ── DAY1 layer A: launch-asset engine coverage (oracle / escrow / slash / CDP / cBTC) ─────────
+# The day-1 assets (cBTC / cUSD) the launch depends on: the Chainlink oracle (stale/future/deviation
+# fail-closed), the native-ETH escrow + slashing, the cUSD CDP mint/close/liquidate/topup lifecycle, and
+# the cross-chain cBTC.zk lock → backing → liquidation seize (real Groth16). CollateralEngine +
+# ChainlinkEthBtcAdapter are NOT matched by layer 1's 'Confidential|CanonicalAsset' filter, so gate them here.
+run_gate "Forge: launch-asset engine — oracle/escrow/slash/CDP/cBTC lifecycle" DAY1 \
+  forge test --root contracts --offline \
+    --match-contract 'CollateralEngine|ChainlinkEthBtcAdapter|ConfidentialCbtcLink|ConfidentialCdpCbtc'
+
+# ── DAY1 layer B: airdrop distributor + orchestrated deploy rehearsal + wired day-1 walkthrough ─
+run_gate "Forge: airdrop distributor + deploy-suite rehearsal + day-1 integration" DAY1 \
+  forge test --root contracts --offline \
+    --match-contract 'MerkleDistributor|DeployV1Suite|V1Day1Integration'
+
+# ── DAY1 layer C: airdrop merkle JS builder ↔ Solidity verifier parity ────────
+if [ -f tests/airdrop-merkle-evm.test.mjs ]; then
+  run_gate "Airdrop merkle: JS builder ↔ Solidity MerkleProofLib parity" DAY1 \
+    node tests/airdrop-merkle-evm.test.mjs
+else
+  block_gate "Airdrop merkle parity" DAY1 "tests/airdrop-merkle-evm.test.mjs absent"
+fi
+
+# ── DAY1 layer D: the day-1 deploy artifacts are present (one-command suite + airdrop + config sync) ─
+day1_artifacts() {
+  local f rc=0
+  for f in contracts/src/MerkleDistributor.sol contracts/script/DeployV1Suite.s.sol \
+           contracts/script/DeployMerkleDistributor.s.sol contracts/script/DeployCanonicalAssetFactory.s.sol \
+           contracts/script/DeployBtcCallExecutor.s.sol contracts/script/DeployCanonicalTac.s.sol \
+           contracts/script/DeployTestnetRelay.s.sol contracts/deploy-v1-suite-testnet.sh \
+           contracts/deploy-v1-suite-mainnet.sh tools/airdrop/build-merkle.mjs tools/sync-deployment-config.mjs; do
+    [ -f "$f" ] || { echo "MISSING $f"; rc=1; }
+  done
+  return $rc
+}
+run_gate "Day-1 deploy artifacts present (suite + airdrop + config sync)" DAY1 day1_artifacts
+
 # ── verdicts ─────────────────────────────────────────────────────────────────
 echo
 echo "──────────────────────────────── SUMMARY ────────────────────────────────────"
@@ -295,13 +332,15 @@ done
 echo
 printf '  totals: PASS=%d  FAIL=%d  BLOCKED=%d\n\n' "$pass" "$fail" "$blocked"
 
-pool_open=0; bridge_open=0
+pool_open=0; bridge_open=0; day1_open=0
 for r in "${RESULTS[@]}"; do
   IFS='|' read -r st ti nm <<<"$r"
-  if [ "$st" != "PASS" ]; then
-    [ "$ti" = "POOL" ] && pool_open=$((pool_open+1))
-    bridge_open=$((bridge_open+1))   # cross-lane requires every pool gate too
-  fi
+  [ "$st" = "PASS" ] && continue
+  case "$ti" in
+    POOL)   pool_open=$((pool_open+1)); bridge_open=$((bridge_open+1));; # cross-lane needs every pool gate
+    BRIDGE) bridge_open=$((bridge_open+1));;
+    DAY1)   day1_open=$((day1_open+1));;
+  esac
 done
 
 if [ "$pool_open" -eq 0 ]; then
@@ -313,6 +352,13 @@ if [ "$bridge_open" -eq 0 ]; then
   echo "  BRIDGE (Bitcoin cross-chain):    READY"
 else
   echo "  BRIDGE (Bitcoin cross-chain):    NOT READY ($bridge_open gate(s) open above)"
+fi
+# DAY1 = the launch-asset + scripted-deploy surface (builds on POOL): engine oracle/escrow/slash/CDP/cBTC,
+# the airdrop distributor, the orchestrated suite rehearsal, and the day-1 deploy artifacts.
+if [ "$pool_open" -eq 0 ] && [ "$day1_open" -eq 0 ]; then
+  echo "  DAY1 (launch assets + scripted deploy):  READY"
+else
+  echo "  DAY1 (launch assets + scripted deploy):  NOT READY ($day1_open day1 + $pool_open pool gate(s) open)"
 fi
 echo "──────────────────────────────────────────────────────────────────────────────"
 

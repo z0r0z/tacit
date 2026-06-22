@@ -162,4 +162,20 @@ const events = leaves.map((leaf, i) => ({ leaf, memo: memos[i] }));
   ok('runAirdrop: split settles first, denominations feed the locks, recipients scan the result');
 }
 
+// (9) multi-op batch pack: one proof header (shared chainBinding + spendRoot) + N per-lock field sets
+{
+  const batch = airdrop.packStealthLockBatch(ops);
+  assert.equal(batch.chainBinding, cb, 'batch carries the shared chainBinding');
+  assert.equal(batch.spendRoot, spendRoot, 'batch carries the shared pre-state spendRoot');
+  assert.equal(batch.ops.length, ops.length, 'one packed lock per recipient');
+  const FIELDS = ['asset', 'locker', 'ownerPub', 'amount', 'deadline', 'nCx', 'nCy', 'nIndex', 'nPath', 'nSigR', 'nSigZ', 'lCx', 'lCy', 'lSigR', 'lSigZ'];
+  for (let i = 0; i < ops.length; i++) for (const k of FIELDS) assert.deepEqual(batch.ops[i][k], ops[i][k], `batch op ${i} preserves ${k}`);
+  // header fields must NOT be repeated per op (they're written once in the shared header)
+  assert.equal(batch.ops[0].chainBinding, undefined, 'per-op chainBinding stripped (header-level)');
+  assert.equal(batch.ops[0].spendRoot, undefined, 'per-op spendRoot stripped (header-level)');
+  const mixed = [ops[0], { ...ops[1], spendRoot: '0x' + 'fe'.repeat(32) }];
+  assert.throws(() => airdrop.packStealthLockBatch(mixed), /share chainBinding \+ spendRoot/, 'mismatched header rejected (one proof, one root)');
+  ok('packStealthLockBatch: shared header + N per-lock field sets; mismatched roots rejected');
+}
+
 console.log(`confidential-airdrop: all ${n} checks passed`);
