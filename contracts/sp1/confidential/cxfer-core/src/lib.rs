@@ -977,13 +977,17 @@ pub fn cdp_basket_root(legs: &[[u8; 32]]) -> [u8; 32] {
 /// value, the (confidential) owner, and a uniqueness nonce. CLOSE/LIQUIDATE reproduce this EXACT leaf to
 /// prove membership, so a relayer can't free a different position, change the debt, or redirect the
 /// collateral. Domain-separated (CDP_POSITION_DOMAIN).
+/// `rate_snapshot` is the controller's RAY-scaled debt accumulator captured at mint (32-byte big-endian),
+/// committed so the controller can compute accrued debt `principal · rate / rate_snapshot` at close. Bound
+/// into the leaf so CLOSE/LIQUIDATE/TOPUP reproduce it exactly (membership pins it — a borrower cannot forge
+/// a higher snapshot to dodge the stability fee). Inert (0) for fee-free controllers (farms).
 pub fn cdp_position_leaf(
     controller: &[u8; 20], debt_asset: &[u8; 32], basket_root: &[u8; 32],
-    debt_value: u64, owner: &[u8; 32], nonce: &[u8; 32],
+    debt_value: u64, rate_snapshot: &[u8; 32], owner: &[u8; 32], nonce: &[u8; 32],
 ) -> [u8; 32] {
     let mut dv = [0u8; 32];
     dv[24..].copy_from_slice(&debt_value.to_be_bytes());
-    kn(&[CDP_POSITION_DOMAIN, controller, debt_asset, basket_root, &dv, owner, nonce])
+    kn(&[CDP_POSITION_DOMAIN, controller, debt_asset, basket_root, &dv, rate_snapshot, owner, nonce])
 }
 
 /// The CDP position nullifier (spend-once): keccak(CDP_POSITION_DOMAIN ‖ position_leaf ‖ "spent"). The
@@ -4331,20 +4335,21 @@ mod tests {
         assert_ne!(cdp_basket_leg(&[0xaa; 32], 100), cdp_basket_leg(&[0xab; 32], 100), "leg binds asset");
 
         // position leaf binds every field
-        let owner = [0x71u8; 32]; let nonce = [0x81u8; 32];
-        let base = cdp_position_leaf(&controller_a, &da, &single, 50, &owner, &nonce);
-        assert_eq!(base, cdp_position_leaf(&controller_a, &da, &single, 50, &owner, &nonce), "deterministic");
-        assert_ne!(base, cdp_position_leaf(&controller_b, &da, &single, 50, &owner, &nonce), "controller bound");
-        assert_ne!(base, cdp_position_leaf(&controller_a, &cdp_debt_asset_id(&controller_b), &single, 50, &owner, &nonce), "debt asset bound");
-        assert_ne!(base, cdp_position_leaf(&controller_a, &da, &multi, 50, &owner, &nonce), "basket root bound");
-        assert_ne!(base, cdp_position_leaf(&controller_a, &da, &single, 51, &owner, &nonce), "debt value bound");
-        assert_ne!(base, cdp_position_leaf(&controller_a, &da, &single, 50, &[0x72; 32], &nonce), "owner bound");
-        assert_ne!(base, cdp_position_leaf(&controller_a, &da, &single, 50, &owner, &[0x82; 32]), "nonce bound");
+        let owner = [0x71u8; 32]; let nonce = [0x81u8; 32]; let snap = [0x91u8; 32];
+        let base = cdp_position_leaf(&controller_a, &da, &single, 50, &snap, &owner, &nonce);
+        assert_eq!(base, cdp_position_leaf(&controller_a, &da, &single, 50, &snap, &owner, &nonce), "deterministic");
+        assert_ne!(base, cdp_position_leaf(&controller_b, &da, &single, 50, &snap, &owner, &nonce), "controller bound");
+        assert_ne!(base, cdp_position_leaf(&controller_a, &cdp_debt_asset_id(&controller_b), &single, 50, &snap, &owner, &nonce), "debt asset bound");
+        assert_ne!(base, cdp_position_leaf(&controller_a, &da, &multi, 50, &snap, &owner, &nonce), "basket root bound");
+        assert_ne!(base, cdp_position_leaf(&controller_a, &da, &single, 51, &snap, &owner, &nonce), "debt value bound");
+        assert_ne!(base, cdp_position_leaf(&controller_a, &da, &single, 50, &[0x92; 32], &owner, &nonce), "rate snapshot bound");
+        assert_ne!(base, cdp_position_leaf(&controller_a, &da, &single, 50, &snap, &[0x72; 32], &nonce), "owner bound");
+        assert_ne!(base, cdp_position_leaf(&controller_a, &da, &single, 50, &snap, &owner, &[0x82; 32]), "nonce bound");
 
         // the position nullifier is one-to-one with the leaf and domain-separated from a note nullifier
         let nu = cdp_position_nullifier(&base);
         assert_eq!(nu, cdp_position_nullifier(&base), "position ν deterministic");
-        assert_ne!(nu, cdp_position_nullifier(&cdp_position_leaf(&controller_a, &da, &single, 50, &owner, &[0x82; 32])), "distinct positions ⇒ distinct ν");
+        assert_ne!(nu, cdp_position_nullifier(&cdp_position_leaf(&controller_a, &da, &single, 50, &snap, &owner, &[0x82; 32])), "distinct positions ⇒ distinct ν");
         // position leaf must never collide with a normal note leaf or an adaptor lock leaf (domain sep)
         assert_ne!(base, leaf(&single, &owner, &nonce, &owner), "position leaf disjoint from a note leaf");
         assert_ne!(base, adaptor_lock_leaf(&single, &single, &owner, &single, &owner, 50, &owner, &nonce), "position leaf disjoint from an adaptor lock leaf");

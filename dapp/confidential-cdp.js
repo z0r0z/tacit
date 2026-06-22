@@ -9,7 +9,8 @@
 //   basket leg   = keccak( asset[32]                ‖ value_be[32] )
 //   basket root  = keccak Merkle root over the leg hashes, depth 32, zero-padded (keccak_merkle_root)
 //   position leaf= keccak( "tacit-cdp-position-v1"  ‖ controller[20] ‖ debtAsset[32] ‖ basketRoot[32]
-//                          ‖ debtValue_be[32] ‖ owner[32] ‖ nonce[32] )
+//                          ‖ debtValue_be[32] ‖ rateSnapshot[32] ‖ owner[32] ‖ nonce[32] )
+//     rateSnapshot = the controller's RAY-scaled debt accumulator at mint (32B BE); 0 for fee-free controllers.
 //   position ν   = keccak( "tacit-cdp-position-v1"  ‖ positionLeaf[32] ‖ "spent" )
 //   cBTC commit  = keccak( Cx[32] ‖ Cy[32] )                          (== cxfer-core commitment_hash)
 
@@ -75,9 +76,12 @@ export function makeConfidentialCdp({ keccak256, pool }) {
     return hx(level[0]);
   };
 
-  // The domain-separated CDP position leaf — CLOSE/LIQUIDATE reproduce it to prove membership.
-  const positionLeaf = (controller, debtAsset, basketRootHex, debtValue, owner, nonce) =>
-    hx(k(CDP_POSITION_DOMAIN, addr20(controller), b32(debtAsset), b32(basketRootHex), be(debtValue, 32), b32(owner), b32(nonce)));
+  // The domain-separated CDP position leaf — CLOSE/LIQUIDATE/TOPUP reproduce it to prove membership.
+  // `rateSnapshot` (32-byte hex) is the controller's debt accumulator at mint, committed so the controller
+  // can price accrued debt; pass the 0 word for a fee-free controller (a farm).
+  const positionLeaf = (controller, debtAsset, basketRootHex, debtValue, rateSnapshot, owner, nonce) =>
+    hx(k(CDP_POSITION_DOMAIN, addr20(controller), b32(debtAsset), b32(basketRootHex), be(debtValue, 32),
+      b32(rateSnapshot), b32(owner), b32(nonce)));
 
   // The position nullifier — the contract dedups it (close XOR liquidate, once).
   const positionNullifier = (leafHex) => hx(k(CDP_POSITION_DOMAIN, b32(leafHex), SPENT));

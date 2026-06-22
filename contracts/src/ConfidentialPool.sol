@@ -62,13 +62,27 @@ struct CdpLeg {
 /// policy for its own controller-derived debt asset. The pool proves structure + conservation; the controller
 /// reverts to DENY a mint / a liquidation. See ops/DESIGN-confidential-defi-v1.md §4.
 interface ICdpController {
-    function onCdpMint(CdpLeg[] calldata legs, uint256 debtValue, bytes32 positionLeaf) external;
-    function onCdpClose(uint256 debtValue, CdpLeg[] calldata legs, bytes32 positionNullifier) external;
-    function onCdpLiquidate(CdpLeg[] calldata legs, uint256 debtValue, bytes32 positionNullifier) external;
+    function onCdpMint(CdpLeg[] calldata legs, uint256 debtValue, bytes32 positionLeaf, uint256 rateSnapshot)
+        external;
+    function onCdpClose(
+        uint256 principal,
+        uint256 repaid,
+        uint256 rateSnapshot,
+        CdpLeg[] calldata legs,
+        bytes32 positionNullifier
+    ) external;
+    function onCdpLiquidate(
+        CdpLeg[] calldata legs,
+        uint256 principal,
+        uint256 repaid,
+        uint256 rateSnapshot,
+        bytes32 positionNullifier
+    ) external;
     function onCdpTopup(
         CdpLeg[] calldata oldLegs,
         CdpLeg[] calldata newLegs,
         uint256 debtValue,
+        uint256 rateSnapshot,
         bytes32 oldPositionNullifier,
         bytes32 newPositionLeaf
     ) external;
@@ -416,8 +430,10 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     // Enumerable fast-lane consume log. The mapping form keeps append-only storage cheap while letting the
     // eth-reflection guest prove the exact index range [priorCount, bitcoinConsumedCount), rather than a
     // worker-selected set of `bitcoinConsumed[nu]` keys whose cardinality merely matches the counter.
-    // APPENDED LAST: its declaration slot is a guest-pinned protocol interface.
-    mapping(uint256 => bytes32) public bitcoinConsumedAt;
+    // APPENDED LAST: its declaration slot is a guest-pinned protocol interface. Internal (no auto-getter) to
+    // reclaim codesize for the cUSD fee surface — the guest reads it by storage proof, not the getter, and
+    // its slot is unchanged by dropping the getter (verified by the slot-layout test via vm.load).
+    mapping(uint256 => bytes32) internal bitcoinConsumedAt;
 
     // Value-free Bitcoin-authorized calls (SPEC-BITCOIN-HOOK-AMENDMENT §1.4): the reflection proves a signed
     // Bitcoin call envelope; attest records it here; the separate BtcCallExecutor fires it, so a hostile
@@ -501,24 +517,33 @@ contract ConfidentialPool is ReentrancyGuardTransient {
 
     // Generic CDP (ops 15–17, 19) + cBTC mint (op 18). The guest proved structure + conservation; the contract
     // applies the controller's policy + the cBTC lock/escrow gate. See ops/DESIGN-confidential-defi-v1.md §§3,4.
+    // rateSnapshot = the cUSD debt accumulator captured at mint (the leaf commits it; the engine accrues
+    // `owed = principal · rate / rateSnapshot`). repaid = cUSD actually burned (== owed). The guest carries
+    // these verbatim; ALL fee arithmetic is the controller's. Dormant (rate == RAY): rateSnapshot == rate so
+    // owed == principal == repaid, and these collapse to the interest-free path.
     struct CdpMint {
         address controller;
         bytes32 debtAsset;
         uint256 debtValue;
         bytes32 positionLeaf;
+        uint256 rateSnapshot;
         CdpLeg[] legs;
     }
 
     struct CdpClose {
         address controller;
-        uint256 debtValue;
+        uint256 debtValue; // the position PRINCIPAL (the leaf's committed debt)
+        uint256 repaid; // cUSD burned (== accrued debt at the mark; == debtValue when dormant)
+        uint256 rateSnapshot;
         bytes32 positionNullifier;
         CdpLeg[] legs;
     }
 
     struct CdpLiquidate {
         address controller;
-        uint256 debtValue;
+        uint256 debtValue; // the position PRINCIPAL
+        uint256 repaid; // cUSD burned (== accrued debt)
+        uint256 rateSnapshot;
         bytes32 positionNullifier;
         CdpLeg[] legs;
     }
@@ -526,6 +551,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     struct CdpTopup {
         address controller;
         uint256 debtValue;
+        uint256 rateSnapshot;
         bytes32 oldPositionNullifier;
         bytes32 newPositionLeaf;
         CdpLeg[] oldLegs;
@@ -1839,7 +1865,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
                     farmTreasury[m.controller] -= m.debtValue;
                 }
             }
-            ICdpController(m.controller).onCdpMint(m.legs, m.debtValue, m.positionLeaf);
+            ICdpController(m.controller).onCdpMint(m.legs, m.debtValue, m.positionLeaf, m.rateSnapshot);
         }
         if (pv.cdpMints.length != 0) everKnownCdpRoot[cdpRoot] = true;
 
@@ -1851,8 +1877,9 @@ contract ConfidentialPool is ReentrancyGuardTransient {
             // Top-up keeps no duplicate debtAsset field here: the old/new leaves bind the same controller debt.
             _spendCdpPosition(t.oldPositionNullifier);
             _insertCdpPositionLeaf(t.newPositionLeaf);
-            ICdpController(t.controller)
-                .onCdpTopup(t.oldLegs, t.newLegs, t.debtValue, t.oldPositionNullifier, t.newPositionLeaf);
+            ICdpController(t.controller).onCdpTopup(
+                t.oldLegs, t.newLegs, t.debtValue, t.rateSnapshot, t.oldPositionNullifier, t.newPositionLeaf
+            );
         }
         if (pv.cdpTopups.length != 0) everKnownCdpRoot[cdpRoot] = true;
 
@@ -1860,7 +1887,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
             CdpClose memory c = pv.cdpCloses[i];
             if (c.controller.code.length == 0) revert BadCdpController();
             _spendCdpPosition(c.positionNullifier);
-            ICdpController(c.controller).onCdpClose(c.debtValue, c.legs, c.positionNullifier);
+            ICdpController(c.controller).onCdpClose(c.debtValue, c.repaid, c.rateSnapshot, c.legs, c.positionNullifier);
         }
         for (uint256 i; i < pv.cdpLiquidations.length; ++i) {
             CdpLiquidate memory q = pv.cdpLiquidations[i];
@@ -1868,7 +1895,9 @@ contract ConfidentialPool is ReentrancyGuardTransient {
             _spendCdpPosition(q.positionNullifier);
             // The guest already burned debt notes summing exactly to debtValue and produced the seized-basket
             // withdrawals. The controller proves (its oracle) the position is unhealthy; reverts if healthy.
-            ICdpController(q.controller).onCdpLiquidate(q.legs, q.debtValue, q.positionNullifier);
+            ICdpController(q.controller).onCdpLiquidate(
+                q.legs, q.debtValue, q.repaid, q.rateSnapshot, q.positionNullifier
+            );
         }
 
         // cBTC mint (op 18): the cBTC note leaf rides pv.leaves (inserted below, conservation-free value

@@ -183,7 +183,10 @@ contract FarmController is ICdpController {
     /// ESCROW harvests are additionally treasury-bounded by the pool BEFORE this call (it debits the per-farm
     /// treasury by debtValue), so a harvest can never exceed the funded reward — here we only enforce the rps
     /// fairness bound, identical in both modes.
-    function onCdpMint(CdpLeg[] calldata legs, uint256 debtValue, bytes32 positionLeaf) external onlyPool {
+    function onCdpMint(CdpLeg[] calldata legs, uint256 debtValue, bytes32 positionLeaf, uint256 /*rateSnapshot*/)
+        external
+        onlyPool
+    {
         _accrue();
         if (positionLeaf == RECEIPT) {
             if (legs.length != 2 || legs[0].value == 0 || legs[1].asset != bytes32(0)) revert BadFarmShape();
@@ -214,16 +217,20 @@ contract FarmController is ICdpController {
         }
     }
 
-    /// unbond: enforce the global lock-up, then release; `legs` = the released basket (public).
+    /// unbond: enforce the global lock-up, then release; `legs` = the released basket (public). The stability-
+    /// fee params (`repaid`, `rateSnapshot`) are inert here — a farm never accrues a cUSD debt; `principal`
+    /// (the position debt) must be 0 for an unbond.
     function onCdpClose(
-        uint256 debtValue,
+        uint256 principal,
+        uint256, /*repaid*/
+        uint256, /*rateSnapshot*/
         CdpLeg[] calldata legs,
         bytes32 /*positionNullifier*/
     )
         external
         onlyPool
     {
-        if (debtValue != 0) revert BadFarmShape();
+        if (principal != 0) revert BadFarmShape();
         if (block.timestamp < lockUntil) revert Locked();
         _accrue();
         uint256 w = _stakeWeight(legs);
@@ -231,11 +238,15 @@ contract FarmController is ICdpController {
         totalShares -= w;
     }
 
-    function onCdpLiquidate(CdpLeg[] calldata, uint256, bytes32) external view onlyPool {
+    function onCdpLiquidate(CdpLeg[] calldata, uint256, uint256, uint256, bytes32) external view onlyPool {
         revert NotSupported();
     }
 
-    function onCdpTopup(CdpLeg[] calldata, CdpLeg[] calldata, uint256, bytes32, bytes32) external view onlyPool {
+    function onCdpTopup(CdpLeg[] calldata, CdpLeg[] calldata, uint256, uint256, bytes32, bytes32)
+        external
+        view
+        onlyPool
+    {
         revert NotSupported();
     }
 

@@ -22,6 +22,10 @@ const cdp = makeConfidentialCdp({ keccak256: keccak_256, pool });
 const CBTC = '0x62a20d98fc1cd20289621d1315294cb8772f934d822e404b71e1f471cf0679c8';
 const chainBinding = '0x' + '11'.repeat(32);
 const ZERO = '0x' + '00'.repeat(32);
+// The position's rate snapshot — for a cUSD CDP it is the engine's RAY-scaled accumulator at mint (dormant
+// launch ⇒ 1e27 = 1.0). It is committed into the position leaf + written in the io stream; the guest carries
+// it (no rate math), the contract prices accrued debt against it.
+const RATE_SNAPSHOT = '0x' + (10n ** 27n).toString(16).padStart(64, '0');
 const dir = new URL('../contracts/sp1/confidential/fixtures/', import.meta.url);
 
 // Keccak incremental-Merkle helpers (match the on-chain tree + cxfer-core).
@@ -80,7 +84,7 @@ const noteLeaf = (asset, cx, cy, owner) => kc(asset, cx, cy, owner);
   const debtSig = cdp.cdpMintDebtSigma({ chainBinding, controller, nonce, owner, note: debtNote });
 
   const fx = {
-    chainBinding, spendRoot, controller, owner, nonce, debtValue: Number(debtValue),
+    chainBinding, spendRoot, controller, owner, nonce, debtValue: Number(debtValue), rateSnapshot: RATE_SNAPSHOT,
     legs: [{ asset: CBTC, cx, cy, value: Number(cv), index: 0, path, sigR: legSig.sigR, sigZ: legSig.sigZ }],
     debt: { cx: dcx, cy: dcy, sigR: debtSig.sigR, sigZ: debtSig.sigZ },
     expected: { nullifiers: 1, leaves: 1, cdpMints: 1 },
@@ -102,7 +106,7 @@ const noteLeaf = (asset, cx, cy, owner) => kc(asset, cx, cy, owner);
   const legs = [{ asset: CBTC, value: 90000n }];
   const basketRoot = cdp.basketRoot(legs.map((l) => cdp.basketLeg(l.asset, l.value)));
   const debtAsset = cdp.debtAssetId(controller);
-  const positionLeaf = cdp.positionLeaf(controller, debtAsset, basketRoot, debtValue, owner, nonce);
+  const positionLeaf = cdp.positionLeaf(controller, debtAsset, basketRoot, debtValue, RATE_SNAPSHOT, owner, nonce);
   const { root: cdpPositionRoot, path: positionPath } = singleLeafRootPath(positionLeaf);
   // burned debt note: a debt-asset note (∈ spendRoot) opening to EXACTLY debtValue (liquidation sigma).
   const dr = '0x' + '0'.repeat(63) + '8';
@@ -112,7 +116,7 @@ const noteLeaf = (asset, cx, cy, owner) => kc(asset, cx, cy, owner);
   const debtSig = cdp.cdpLiquidateDebtSigma({ chainBinding, positionLeaf, debtAsset, debtValue, index: 0, note: debtNote });
   const fx = {
     chainBinding, spendRoot, cdpPositionRoot, controller, owner, nonce, liquidator, debtValue: Number(debtValue),
-    positionIndex: 0, positionPath,
+    rateSnapshot: RATE_SNAPSHOT, positionIndex: 0, positionPath,
     legs: legs.map((l) => ({ asset: l.asset, value: Number(l.value) })),
     debt: [{ cx: dcx, cy: dcy, owner, value: Number(debtValue), index: 0, path: debtPath, sigR: debtSig.sigR, sigZ: debtSig.sigZ }],
     expected: { nullifiers: 1, withdrawals: 1, cdpLiquidations: 1 },
@@ -133,7 +137,7 @@ const noteLeaf = (asset, cx, cy, owner) => kc(asset, cx, cy, owner);
   const oldLegs = [{ asset: CBTC, value: 90000n }];
   const oldBasketRoot = cdp.basketRoot(oldLegs.map((l) => cdp.basketLeg(l.asset, l.value)));
   const debtAsset = cdp.debtAssetId(controller);
-  const oldPositionLeaf = cdp.positionLeaf(controller, debtAsset, oldBasketRoot, debtValue, owner, oldNonce);
+  const oldPositionLeaf = cdp.positionLeaf(controller, debtAsset, oldBasketRoot, debtValue, RATE_SNAPSHOT, owner, oldNonce);
   const { root: cdpPositionRoot, path: positionPath } = singleLeafRootPath(oldPositionLeaf);
   // added collateral: a fresh note of a DISTINCT asset (no merge-dup), member of the note tree at index 0.
   const ASSET2 = '0x' + 'aa'.repeat(32);
@@ -144,7 +148,7 @@ const noteLeaf = (asset, cx, cy, owner) => kc(asset, cx, cy, owner);
   const addSig = cdp.cdpTopupCollateralSigma({ chainBinding, oldPositionLeaf, controller, newNonce, owner, asset: ASSET2, note: addNote, debtValue, index: 0 });
   const fx = {
     chainBinding, spendRoot, cdpPositionRoot, controller, owner, oldNonce, newNonce, debtValue: Number(debtValue),
-    positionIndex: 0, positionPath,
+    rateSnapshot: RATE_SNAPSHOT, positionIndex: 0, positionPath,
     oldLegs: oldLegs.map((l) => ({ asset: l.asset, value: Number(l.value) })),
     addedLegs: [{ asset: ASSET2, cx, cy, value: Number(av), index: 0, path: addPath, sigR: addSig.sigR, sigZ: addSig.sigZ }],
     expected: { nullifiers: 1, cdpTopups: 1 },
@@ -164,7 +168,7 @@ const noteLeaf = (asset, cx, cy, owner) => kc(asset, cx, cy, owner);
   const legs = [{ asset: CBTC, value: 90000n }];
   const debtAsset = cdp.debtAssetId(controller);
   const basketRoot = cdp.basketRoot(legs.map((l) => cdp.basketLeg(l.asset, l.value)));
-  const positionLeaf = cdp.positionLeaf(controller, debtAsset, basketRoot, debtValue, owner, nonce);
+  const positionLeaf = cdp.positionLeaf(controller, debtAsset, basketRoot, debtValue, RATE_SNAPSHOT, owner, nonce);
   const { root: cdpPositionRoot, path: positionPath } = singleLeafRootPath(positionLeaf);
   // released collateral: a FRESH note re-minted to the owner, opening to the leg value (release sigma).
   const rr = '0x' + '0'.repeat(63) + '4';
@@ -179,7 +183,7 @@ const noteLeaf = (asset, cx, cy, owner) => kc(asset, cx, cy, owner);
   const debtSig = cdp.cdpCloseDebtSigma({ chainBinding, positionLeaf, debtAsset, debtValue, index: 0, note: debtNote });
   const fx = {
     chainBinding, spendRoot, cdpPositionRoot, controller, owner, nonce, debtValue: Number(debtValue),
-    positionIndex: 0, positionPath,
+    rateSnapshot: RATE_SNAPSHOT, positionIndex: 0, positionPath,
     legs: [{ asset: CBTC, value: Number(legs[0].value), cx, cy, sigR: relSig.sigR, sigZ: relSig.sigZ }],
     debt: [{ cx: dcx, cy: dcy, owner, value: Number(debtValue), index: 0, path: debtPath, sigR: debtSig.sigR, sigZ: debtSig.sigZ }],
     expected: { nullifiers: 1, leaves: 1, cdpCloses: 1 },

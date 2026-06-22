@@ -2186,8 +2186,16 @@ contract ConfidentialPoolTest is Test {
         assertEq(pool.bitcoinConsumedCount(), 2, "advanced by the batch's consumed count");
         assertEq(pool.bitcoinConsumed(keccak256("cnt-nu-a")), btcRoot, "entry a recorded");
         assertEq(pool.bitcoinConsumed(keccak256("cnt-nu-b")), btcRoot, "entry b recorded");
-        assertEq(pool.bitcoinConsumedAt(0), keccak256("cnt-nu-a"), "index 0 enumerates entry a");
-        assertEq(pool.bitcoinConsumedAt(1), keccak256("cnt-nu-b"), "index 1 enumerates entry b");
+        assertEq(
+            bytes32(vm.load(address(pool), keccak256(abi.encode(uint256(0), uint256(163))))),
+            keccak256("cnt-nu-a"),
+            "index 0 enumerates entry a"
+        );
+        assertEq(
+            bytes32(vm.load(address(pool), keccak256(abi.encode(uint256(1), uint256(163))))),
+            keccak256("cnt-nu-b"),
+            "index 1 enumerates entry b"
+        );
 
         // Batch 2: one more consumed note → cumulative count = 3 (monotone across batches).
         ConfidentialPool.PublicValues memory pv2 = _pv();
@@ -2197,7 +2205,11 @@ contract ConfidentialPoolTest is Test {
         pv2.leaves = _arr(keccak256("cnt-leaf-2"));
         pool.settle(abi.encode(pv2), "", new bytes[](1));
         assertEq(pool.bitcoinConsumedCount(), 3, "cumulative across batches");
-        assertEq(pool.bitcoinConsumedAt(2), keccak256("cnt-nu-c"), "next batch appends at index 2");
+        assertEq(
+            bytes32(vm.load(address(pool), keccak256(abi.encode(uint256(2), uint256(163))))),
+            keccak256("cnt-nu-c"),
+            "next batch appends at index 2"
+        );
     }
 
     /// The freshness counter advances ONLY when a consume is recorded (a value-exit). A nullifier-only

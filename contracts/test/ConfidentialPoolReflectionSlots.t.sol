@@ -59,6 +59,10 @@ contract ConfidentialPoolReflectionSlotsTest is Test {
         uint256 idx = 7;
         bytes32 sentinel = bytes32(uint256(0xABCDEF));
         vm.store(address(pool), _mappingSlot(bytes32(idx), CONSUMED_AT_SLOT_INDEX), sentinel);
-        assertEq(pool.bitcoinConsumedAt(idx), sentinel, "bitcoinConsumedAt moved off slot 163");
+        assertEq(
+            bytes32(vm.load(address(pool), _mappingSlot(bytes32(idx), CONSUMED_AT_SLOT_INDEX))),
+            sentinel,
+            "bitcoinConsumedAt moved off slot 163"
+        );
     }
 }

@@ -4,7 +4,9 @@ pragma solidity ^0.8.28;
 import {Test} from "forge-std/Test.sol";
 import {ERC20} from "solady/tokens/ERC20.sol";
 import {SafeTransferLib} from "solady/utils/SafeTransferLib.sol";
-import {ConfidentialPool} from "../src/ConfidentialPool.sol";
+import {CanonicalAssetFactory} from "../src/CanonicalAssetFactory.sol";
+import {CollateralEngine} from "../src/CollateralEngine.sol";
+import {ConfidentialPool, CdpLeg} from "../src/ConfidentialPool.sol";
 import {ConfidentialRouter, IPermit2} from "../src/ConfidentialRouter.sol";
 
 /// Minimal SP1 verifier stub — `wrap`/`registerWrapped` never call it, but the pool ctor needs a non-zero
@@ -73,13 +75,41 @@ interface IMintable {
 /// over-, or a short swap.
 contract MockZRouter {
     function swapETHForToken(address tokenOut, uint256 outAmount) external payable {
-        IMintable(tokenOut).mint(msg.sender, outAmount);
+        try IMintable(tokenOut).mint(msg.sender, outAmount) {}
+        catch {
+            SafeTransferLib.safeTransfer(tokenOut, msg.sender, outAmount);
+        }
     }
 
     function swapTokenForToken(address tokenIn, uint256 inAmount, address tokenOut, uint256 outAmount) external {
         SafeTransferLib.safeTransferFrom(tokenIn, msg.sender, address(this), inAmount);
-        IMintable(tokenOut).mint(msg.sender, outAmount);
+        try IMintable(tokenOut).mint(msg.sender, outAmount) {}
+        catch {
+            SafeTransferLib.safeTransfer(tokenOut, msg.sender, outAmount);
+        }
     }
+}
+
+contract MockCdpController {
+    uint256 public mintCalls;
+    uint256 public lastDebtValue;
+    bytes32 public lastPositionLeaf;
+    bytes32 public lastLegAsset;
+    uint256 public lastLegValue;
+
+    function onCdpMint(CdpLeg[] calldata legs, uint256 debtValue, bytes32 positionLeaf, uint256) external {
+        mintCalls++;
+        lastDebtValue = debtValue;
+        lastPositionLeaf = positionLeaf;
+        if (legs.length != 0) {
+            lastLegAsset = legs[0].asset;
+            lastLegValue = legs[0].value;
+        }
+    }
+
+    function onCdpClose(uint256, uint256, uint256, CdpLeg[] calldata, bytes32) external {}
+    function onCdpLiquidate(CdpLeg[] calldata, uint256, uint256, uint256, bytes32) external {}
+    function onCdpTopup(CdpLeg[] calldata, CdpLeg[] calldata, uint256, uint256, bytes32, bytes32) external {}
 }
 
 contract ConfidentialRouterTest is Test {
@@ -92,10 +122,12 @@ contract ConfidentialRouterTest is Test {
     bytes32 assetId;
 
     uint256 constant USER_PK = 0xA11CE;
+    uint256 constant RAY = 1e27;
     address user;
     bytes32 constant COMMIT = keccak256("user-note-commitment");
     uint256 constant AMOUNT = 1000;
     bytes32 constant TETH_LINK = bytes32(uint256(0x7e74)); // non-zero ⇒ ctor registers native ETH (tETH)
+    bytes32 constant CBTC_ZK_ASSET_ID = 0x62a20d98fc1cd20289621d1315294cb8772f934d822e404b71e1f471cf0679c8;
 
     bytes32 constant PERMIT_TYPEHASH =
         keccak256("Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)");
@@ -129,6 +161,17 @@ contract ConfidentialRouterTest is Test {
         zapRouter = new ConfidentialRouter(address(pool), address(zr), address(permit2));
 
         usdc.mint(user, 10_000);
+    }
+
+    function test_constructor_rejects_bad_targets() public {
+        vm.expectRevert(ConfidentialRouter.BadTarget.selector);
+        new ConfidentialRouter(address(0), address(0), address(permit2));
+
+        vm.expectRevert(ConfidentialRouter.BadTarget.selector);
+        new ConfidentialRouter(address(pool), address(0xBEEF), address(permit2));
+
+        vm.expectRevert(ConfidentialRouter.BadTarget.selector);
+        new ConfidentialRouter(address(pool), address(0), address(0xBEEF));
     }
 
     // ──────────────────── helpers ────────────────────
@@ -217,10 +260,7 @@ contract ConfidentialRouterTest is Test {
 
         IPermit2.PermitSingle memory ps = IPermit2.PermitSingle({
             details: IPermit2.PermitDetails({
-                token: address(usdc),
-                amount: uint160(AMOUNT),
-                expiration: uint48(block.timestamp + 1 hours),
-                nonce: 0
+                token: address(usdc), amount: uint160(AMOUNT), expiration: uint48(block.timestamp + 1 hours), nonce: 0
             }),
             spender: address(router),
             sigDeadline: block.timestamp + 1 hours
@@ -254,6 +294,36 @@ contract ConfidentialRouterTest is Test {
         pv.depositsConsumed[0] = depositId;
         pv.leaves = new bytes32[](1);
         pv.leaves[0] = leaf;
+        return abi.encode(pv);
+    }
+
+    function _cdpMintPv(
+        bytes32 depositId,
+        bytes32 debtLeaf,
+        MockCdpController controller,
+        bytes32 collateralAsset,
+        uint256 collateralValue,
+        uint256 debtValue,
+        bytes32 positionLeaf
+    ) internal view returns (bytes memory) {
+        ConfidentialPool.PublicValues memory pv;
+        pv.version = 1;
+        pv.chainBinding = keccak256(abi.encodePacked(block.chainid, address(pool)));
+        pv.depositsConsumed = new bytes32[](1);
+        pv.depositsConsumed[0] = depositId;
+        pv.leaves = new bytes32[](1);
+        pv.leaves[0] = debtLeaf;
+        pv.cdpMints = new ConfidentialPool.CdpMint[](1);
+        CdpLeg[] memory legs = new CdpLeg[](1);
+        legs[0] = CdpLeg({asset: collateralAsset, value: collateralValue});
+        pv.cdpMints[0] = ConfidentialPool.CdpMint({
+            controller: address(controller),
+            debtAsset: keccak256(abi.encodePacked("tacit-cdp-debt-v1", address(controller))),
+            debtValue: debtValue,
+            positionLeaf: positionLeaf,
+            rateSnapshot: RAY,
+            legs: legs
+        });
         return abi.encode(pv);
     }
 
@@ -302,10 +372,7 @@ contract ConfidentialRouterTest is Test {
 
         IPermit2.PermitSingle memory ps = IPermit2.PermitSingle({
             details: IPermit2.PermitDetails({
-                token: address(usdc),
-                amount: uint160(AMOUNT),
-                expiration: uint48(block.timestamp + 1 hours),
-                nonce: 0
+                token: address(usdc), amount: uint160(AMOUNT), expiration: uint48(block.timestamp + 1 hours), nonce: 0
             }),
             spender: address(router),
             sigDeadline: block.timestamp + 1 hours
@@ -320,6 +387,86 @@ contract ConfidentialRouterTest is Test {
         assertEq(uint256(pool.depositStatus(depositId)), 2, "deposit consumed");
         assertEq(pool.nextLeafIndex(), 1, "recipient note leaf inserted");
         assertEq(usdc.balanceOf(address(router)), 0, "router holds nothing after");
+    }
+
+    function test_wrapAndMintCusdWithPermit_cdpOpen() public {
+        MockCdpController controller = new MockCdpController();
+        bytes32 commit = keccak256("cdp-collateral-commit");
+        bytes32 debtLeaf = keccak256("cdp-cusd-note");
+        bytes32 positionLeaf = keccak256("cdp-position-leaf");
+        bytes32 depositId = keccak256(abi.encode(assetId, AMOUNT, commit));
+        uint256 deadline = block.timestamp + 1 hours;
+        (uint8 v, bytes32 r, bytes32 s) = _sign2612(AMOUNT, deadline);
+
+        vm.prank(user);
+        router.wrapAndMintCusdWithPermit(
+            address(usdc),
+            AMOUNT,
+            commit,
+            deadline,
+            v,
+            r,
+            s,
+            _cdpMintPv(depositId, debtLeaf, controller, assetId, AMOUNT, 500, positionLeaf),
+            hex"",
+            _memos()
+        );
+
+        assertEq(uint256(pool.depositStatus(depositId)), 2, "collateral deposit consumed by CDP proof");
+        assertEq(pool.nextLeafIndex(), 1, "cUSD debt note inserted");
+        assertEq(controller.mintCalls(), 1, "controller policy hook called");
+        assertEq(controller.lastDebtValue(), 500, "debt value passed to controller");
+        assertEq(controller.lastPositionLeaf(), positionLeaf, "position leaf passed to controller");
+        assertEq(controller.lastLegAsset(), assetId, "collateral asset passed to controller");
+        assertEq(controller.lastLegValue(), AMOUNT, "collateral value passed to controller");
+        assertEq(usdc.balanceOf(address(router)), 0, "router holds no collateral");
+    }
+
+    function test_wrapAndMintCusdWithPermit2_cdpOpen() public {
+        MockCdpController controller = new MockCdpController();
+        bytes32 commit = keccak256("cdp-p2-collateral");
+        bytes32 depositId = keccak256(abi.encode(assetId, AMOUNT, commit));
+        vm.prank(user);
+        usdc.approve(address(permit2), type(uint256).max);
+
+        vm.prank(user);
+        router.wrapAndMintCusdWithPermit2(
+            address(usdc),
+            AMOUNT,
+            commit,
+            _permitSingle(address(usdc), AMOUNT, address(router)),
+            hex"",
+            _cdpMintPv(depositId, keccak256("cdp-p2-debt"), controller, assetId, AMOUNT, 500, keccak256("cdp-p2-pos")),
+            hex"",
+            _memos()
+        );
+
+        assertEq(uint256(pool.depositStatus(depositId)), 2, "collateral deposit consumed");
+        assertEq(controller.mintCalls(), 1, "controller called");
+        assertEq(usdc.balanceOf(address(router)), 0, "router holds no collateral");
+    }
+
+    function test_wrapAndMintCusd_rejectsPlainPaymentProof() public {
+        bytes32 commit = keccak256("not-cdp-collateral");
+        bytes32 depositId = keccak256(abi.encode(assetId, AMOUNT, commit));
+        vm.prank(user);
+        usdc.approve(address(permit2), type(uint256).max);
+
+        vm.prank(user);
+        vm.expectRevert(ConfidentialRouter.BadProofIntent.selector);
+        router.wrapAndMintCusdWithPermit2(
+            address(usdc),
+            AMOUNT,
+            commit,
+            _permitSingle(address(usdc), AMOUNT, address(router)),
+            hex"",
+            _privatePaymentPv(depositId, keccak256("plain-payment-leaf")),
+            hex"",
+            _memos()
+        );
+
+        assertEq(pool.escrow(assetId), 0, "guard trips before wrapping collateral");
+        assertEq(usdc.balanceOf(user), 10_000, "user token balance unchanged");
     }
 
     /// The lazy infinite approve is set once per token and reused: a second wrap needs no fresh approval,
@@ -346,9 +493,8 @@ contract ConfidentialRouterTest is Test {
 
     /// tETH's asset id — mirrors ConfidentialPool._evmAssetId(address(0)) = sha256(domain‖chainid‖0).
     function _tethId() internal view returns (bytes32) {
-        return sha256(
-            abi.encodePacked(bytes18(0x74616369742d65766d2d746f6b656e2d7631), uint64(block.chainid), address(0))
-        );
+        return
+            sha256(abi.encodePacked(bytes18(0x74616369742d65766d2d746f6b656e2d7631), uint64(block.chainid), address(0)));
     }
 
     function test_wrapETH_oneTransaction() public {
@@ -382,6 +528,38 @@ contract ConfidentialRouterTest is Test {
         assertEq(pool.escrow(tethId), amountWei, "escrow credited");
         assertEq(uint256(pool.depositStatus(depositId)), 2, "deposit consumed by the settle");
         assertEq(pool.nextLeafIndex(), 1, "recipient note leaf inserted");
+        assertEq(address(router).balance, 0, "router holds no ETH after");
+    }
+
+    function test_wrapETHAndMintCusd_cdpOpen() public {
+        MockCdpController controller = new MockCdpController();
+        uint256 amountWei = 1e15;
+        uint256 collateralValue = amountWei / 1e10;
+        bytes32 tethId = _tethId();
+        bytes32 commit = keccak256("eth-cdp-collateral");
+        bytes32 depositId = keccak256(abi.encode(tethId, collateralValue, commit));
+        vm.deal(user, 1 ether);
+
+        vm.prank(user);
+        router.wrapETHAndMintCusd{value: amountWei}(
+            commit,
+            _cdpMintPv(
+                depositId,
+                keccak256("eth-cdp-debt"),
+                controller,
+                tethId,
+                collateralValue,
+                50_000,
+                keccak256("eth-cdp-position")
+            ),
+            hex"",
+            _memos()
+        );
+
+        assertEq(uint256(pool.depositStatus(depositId)), 2, "tETH collateral deposit consumed");
+        assertEq(controller.mintCalls(), 1, "controller called");
+        assertEq(controller.lastLegAsset(), tethId, "tETH collateral passed to controller");
+        assertEq(controller.lastLegValue(), collateralValue, "scaled tETH value passed to controller");
         assertEq(address(router).balance, 0, "router holds no ETH after");
     }
 
@@ -429,22 +607,253 @@ contract ConfidentialRouterTest is Test {
         usdc.approve(address(permit2), type(uint256).max); // one-time Permit2 setup
         IPermit2.PermitSingle memory ps = IPermit2.PermitSingle({
             details: IPermit2.PermitDetails({
-                token: address(usdc),
-                amount: uint160(amountIn),
-                expiration: uint48(deadline),
-                nonce: 0
+                token: address(usdc), amount: uint160(amountIn), expiration: uint48(deadline), nonce: 0
             }),
             spender: address(router),
             sigDeadline: deadline
         });
 
         vm.prank(user);
-        uint256 out =
-            router.swapPublicWithPermit2(address(usdc), address(tok), FEE_BPS, amountIn, 900, deadline, user, ps, hex"");
+        uint256 out = router.swapPublicWithPermit2(
+            address(usdc), address(tok), FEE_BPS, amountIn, 900, deadline, user, ps, hex""
+        );
 
         assertGe(out, 900, "output >= minOut");
         assertEq(tok.balanceOf(user), out, "swap output sent to the user");
         assertEq(usdc.balanceOf(address(router)), 0, "router holds no input");
+    }
+
+    function test_swapPublicExactOutWithPermit2_pullsOnlyNeededInput() public {
+        (MockUSDC tok,) = _seedPool();
+        uint256 desiredOut = 900;
+        uint256 maxAmountIn = 2000;
+        uint64 deadline = uint64(block.timestamp + 1 hours);
+        vm.prank(user);
+        usdc.approve(address(permit2), type(uint256).max);
+
+        vm.prank(user);
+        (uint256 amountIn, uint256 amountOut) = router.swapPublicExactOutWithPermit2(
+            address(tok),
+            FEE_BPS,
+            desiredOut,
+            maxAmountIn,
+            deadline,
+            user,
+            _permitSingle(address(usdc), maxAmountIn, address(router)),
+            hex""
+        );
+
+        assertLe(amountIn, maxAmountIn, "input bounded by max");
+        assertGe(amountOut, desiredOut, "desired output satisfied");
+        assertEq(usdc.balanceOf(user), 10_000 - amountIn, "only needed input pulled");
+        assertEq(tok.balanceOf(user), amountOut, "output sent to user");
+        assertEq(usdc.balanceOf(address(router)), 0, "router holds no input");
+        assertEq(tok.balanceOf(address(router)), 0, "router holds no output");
+    }
+
+    function test_swapPublicETH() public {
+        MockUSDC tok = new MockUSDC();
+        bytes32 tokId = pool.registerWrapped(address(tok), 1, bytes32(0), "Tok", "TOK", 6);
+        uint256 ethSeed = 2e15; // tETH value 200_000
+        uint256 tokSeed = 200_000;
+        tok.mint(address(this), tokSeed);
+        tok.approve(address(pool), type(uint256).max);
+        pool.createPairAndAddLiquidityPublic{value: ethSeed}(
+            _tethId(), tokId, FEE_BPS, ethSeed, tokSeed, 0, 0, address(this)
+        );
+
+        vm.deal(user, 1 ether);
+        vm.prank(user);
+        uint256 out =
+            router.swapPublicETH{value: 1e15}(address(tok), FEE_BPS, 1, uint64(block.timestamp + 1 hours), user);
+
+        assertGt(out, 0, "ETH public swap returns output");
+        assertEq(tok.balanceOf(user), out, "output sent directly to user");
+        assertEq(address(router).balance, 0, "router holds no ETH");
+        assertEq(tok.balanceOf(address(router)), 0, "router holds no output");
+    }
+
+    function test_swapPublicETHExactOut_refundsExcessValue() public {
+        MockUSDC tok = new MockUSDC();
+        bytes32 tokId = pool.registerWrapped(address(tok), 1, bytes32(0), "Tok", "TOK", 6);
+        uint256 ethSeed = 2e15;
+        uint256 tokSeed = 200_000;
+        tok.mint(address(this), tokSeed);
+        tok.approve(address(pool), type(uint256).max);
+        pool.createPairAndAddLiquidityPublic{value: ethSeed}(
+            _tethId(), tokId, FEE_BPS, ethSeed, tokSeed, 0, 0, address(this)
+        );
+
+        uint256 desiredOut = 50_000;
+        vm.deal(user, 1 ether);
+        vm.prank(user);
+        (uint256 amountIn, uint256 amountOut) = router.swapPublicETHExactOut{value: 1e15}(
+            address(tok), FEE_BPS, desiredOut, uint64(block.timestamp + 1 hours), user
+        );
+
+        assertLt(amountIn, 1e15, "did not spend whole msg.value");
+        assertGe(amountOut, desiredOut, "desired output satisfied");
+        assertEq(user.balance, 1 ether - amountIn, "excess ETH refunded");
+        assertEq(tok.balanceOf(user), amountOut, "output sent to user");
+        assertEq(address(router).balance, 0, "router holds no ETH");
+    }
+
+    function test_swapPublicPathWithPermit2_multihop() public {
+        MockUSDC mid = new MockUSDC();
+        MockUSDC out = new MockUSDC();
+        bytes32 midId = pool.registerWrapped(address(mid), 1, bytes32(0), "Mid", "MID", 6);
+        bytes32 outId = pool.registerWrapped(address(out), 1, bytes32(0), "Out", "OUT", 6);
+        uint256 seed = 1_000_000;
+        usdc.mint(address(this), seed);
+        mid.mint(address(this), seed * 2);
+        out.mint(address(this), seed);
+        usdc.approve(address(pool), type(uint256).max);
+        mid.approve(address(pool), type(uint256).max);
+        out.approve(address(pool), type(uint256).max);
+        pool.createPairAndAddLiquidityPublic(assetId, midId, FEE_BPS, seed, seed, 0, 0, address(this));
+        pool.createPairAndAddLiquidityPublic(midId, outId, FEE_BPS, seed, seed, 0, 0, address(this));
+
+        uint256 amountIn = 1000;
+        uint64 deadline = uint64(block.timestamp + 1 hours);
+        address[] memory path = new address[](2);
+        path[0] = address(mid);
+        path[1] = address(out);
+        uint32[] memory fees = new uint32[](2);
+        fees[0] = FEE_BPS;
+        fees[1] = FEE_BPS;
+        vm.prank(user);
+        usdc.approve(address(permit2), type(uint256).max);
+
+        vm.prank(user);
+        uint256 got = router.swapPublicPathWithPermit2(
+            path, fees, amountIn, 1, deadline, user, _permitSingle(address(usdc), amountIn, address(router)), hex""
+        );
+
+        assertGt(got, 0, "multihop returns final output");
+        assertEq(out.balanceOf(user), got, "final output sent to user");
+        assertEq(usdc.balanceOf(user), 10_000 - amountIn, "user paid input");
+        assertEq(usdc.balanceOf(address(router)), 0, "router holds no input");
+        assertEq(mid.balanceOf(address(router)), 0, "router holds no intermediate");
+        assertEq(out.balanceOf(address(router)), 0, "router holds no output");
+    }
+
+    function test_swapPublicPathExactOutWithPermit2_multihopPullsOnlyNeededInput() public {
+        MockUSDC mid = new MockUSDC();
+        MockUSDC out = new MockUSDC();
+        bytes32 midId = pool.registerWrapped(address(mid), 1, bytes32(0), "Mid", "MID", 6);
+        bytes32 outId = pool.registerWrapped(address(out), 1, bytes32(0), "Out", "OUT", 6);
+        uint256 seed = 1_000_000;
+        usdc.mint(address(this), seed);
+        mid.mint(address(this), seed * 2);
+        out.mint(address(this), seed);
+        usdc.approve(address(pool), type(uint256).max);
+        mid.approve(address(pool), type(uint256).max);
+        out.approve(address(pool), type(uint256).max);
+        pool.createPairAndAddLiquidityPublic(assetId, midId, FEE_BPS, seed, seed, 0, 0, address(this));
+        pool.createPairAndAddLiquidityPublic(midId, outId, FEE_BPS, seed, seed, 0, 0, address(this));
+
+        address[] memory path = new address[](2);
+        path[0] = address(mid);
+        path[1] = address(out);
+        uint32[] memory fees = new uint32[](2);
+        fees[0] = FEE_BPS;
+        fees[1] = FEE_BPS;
+        uint256 desiredOut = 750;
+        uint256 maxAmountIn = 2500;
+        vm.prank(user);
+        usdc.approve(address(permit2), type(uint256).max);
+
+        vm.prank(user);
+        (uint256 amountIn, uint256 amountOut) = router.swapPublicPathExactOutWithPermit2(
+            path,
+            fees,
+            desiredOut,
+            maxAmountIn,
+            uint64(block.timestamp + 1 hours),
+            user,
+            _permitSingle(address(usdc), maxAmountIn, address(router)),
+            hex""
+        );
+
+        assertLe(amountIn, maxAmountIn, "input bounded by max");
+        assertGe(amountOut, desiredOut, "desired final output satisfied");
+        assertEq(usdc.balanceOf(user), 10_000 - amountIn, "only needed input pulled");
+        assertEq(out.balanceOf(user), amountOut, "final output sent to user");
+        assertEq(mid.balanceOf(address(router)), 0, "router holds no intermediate");
+    }
+
+    function test_swapPublicETHPath_multihop() public {
+        MockUSDC mid = new MockUSDC();
+        MockUSDC out = new MockUSDC();
+        bytes32 midId = pool.registerWrapped(address(mid), 1, bytes32(0), "Mid", "MID", 6);
+        bytes32 outId = pool.registerWrapped(address(out), 1, bytes32(0), "Out", "OUT", 6);
+        uint256 ethSeed = 2e15;
+        uint256 seed = 200_000;
+        mid.mint(address(this), seed * 2);
+        out.mint(address(this), seed);
+        mid.approve(address(pool), type(uint256).max);
+        out.approve(address(pool), type(uint256).max);
+        pool.createPairAndAddLiquidityPublic{value: ethSeed}(
+            _tethId(), midId, FEE_BPS, ethSeed, seed, 0, 0, address(this)
+        );
+        pool.createPairAndAddLiquidityPublic(midId, outId, FEE_BPS, seed, seed, 0, 0, address(this));
+
+        address[] memory path = new address[](2);
+        path[0] = address(mid);
+        path[1] = address(out);
+        uint32[] memory fees = new uint32[](2);
+        fees[0] = FEE_BPS;
+        fees[1] = FEE_BPS;
+        vm.deal(user, 1 ether);
+
+        vm.prank(user);
+        uint256 got = router.swapPublicETHPath{value: 1e15}(path, fees, 1, uint64(block.timestamp + 1 hours), user);
+
+        assertGt(got, 0, "ETH multihop returns final output");
+        assertEq(out.balanceOf(user), got, "final output sent to user");
+        assertEq(address(router).balance, 0, "router holds no ETH");
+        assertEq(mid.balanceOf(address(router)), 0, "router holds no intermediate");
+        assertEq(out.balanceOf(address(router)), 0, "router holds no output");
+    }
+
+    function test_swapPublicETHPathExactOut_multihopRefundsExcessValue() public {
+        MockUSDC mid = new MockUSDC();
+        MockUSDC out = new MockUSDC();
+        bytes32 midId = pool.registerWrapped(address(mid), 1, bytes32(0), "Mid", "MID", 6);
+        bytes32 outId = pool.registerWrapped(address(out), 1, bytes32(0), "Out", "OUT", 6);
+        uint256 ethSeed = 2e15;
+        uint256 seed = 200_000;
+        mid.mint(address(this), seed * 2);
+        out.mint(address(this), seed);
+        mid.approve(address(pool), type(uint256).max);
+        out.approve(address(pool), type(uint256).max);
+        pool.createPairAndAddLiquidityPublic{value: ethSeed}(
+            _tethId(), midId, FEE_BPS, ethSeed, seed, 0, 0, address(this)
+        );
+        pool.createPairAndAddLiquidityPublic(midId, outId, FEE_BPS, seed, seed, 0, 0, address(this));
+
+        address[] memory path = new address[](2);
+        path[0] = address(mid);
+        path[1] = address(out);
+        uint32[] memory fees = new uint32[](2);
+        fees[0] = FEE_BPS;
+        fees[1] = FEE_BPS;
+        uint256 desiredOut = 750;
+        uint256 maxValue = 1e15;
+        vm.deal(user, 1 ether);
+
+        vm.prank(user);
+        (uint256 amountIn, uint256 amountOut) = router.swapPublicETHPathExactOut{value: maxValue}(
+            path, fees, desiredOut, uint64(block.timestamp + 1 hours), user
+        );
+
+        assertLt(amountIn, maxValue, "only needed ETH forwarded");
+        assertGe(amountOut, desiredOut, "desired final output satisfied");
+        assertEq(address(user).balance, 1 ether - amountIn, "excess ETH refunded");
+        assertEq(out.balanceOf(user), amountOut, "final output sent to user");
+        assertEq(address(router).balance, 0, "router holds no ETH");
+        assertEq(mid.balanceOf(address(router)), 0, "router holds no intermediate");
+        assertEq(out.balanceOf(address(router)), 0, "router holds no output");
     }
 
     // ──────────────────── Public AMM liquidity (gasless approve) ────────────────────
@@ -479,8 +888,16 @@ contract ConfidentialRouterTest is Test {
 
         vm.prank(user);
         uint256 shares = router.addLiquidityPublicWithPermit2(
-            address(usdc), address(tok), FEE_BPS, amtA, amtB, 0, deadline, user,
-            _permitBatch(address(usdc), amtA, address(tok), amtB, deadline), hex""
+            address(usdc),
+            address(tok),
+            FEE_BPS,
+            amtA,
+            amtB,
+            0,
+            deadline,
+            user,
+            _permitBatch(address(usdc), amtA, address(tok), amtB, deadline),
+            hex""
         );
 
         assertEq(shares, 1000, "first-add shares = isqrt - MINIMUM_LIQUIDITY");
@@ -514,8 +931,16 @@ contract ConfidentialRouterTest is Test {
 
         vm.prank(user);
         uint256 shares = router.addLiquidityPublicWithPermit2(
-            address(usdc), address(tok), FEE_BPS, amtA, amtB, 0, deadline, user,
-            _permitBatch(address(usdc), amtA, address(tok), amtB, deadline), hex""
+            address(usdc),
+            address(tok),
+            FEE_BPS,
+            amtA,
+            amtB,
+            0,
+            deadline,
+            user,
+            _permitBatch(address(usdc), amtA, address(tok), amtB, deadline),
+            hex""
         );
 
         assertGt(shares, 0, "shares minted");
@@ -523,6 +948,77 @@ contract ConfidentialRouterTest is Test {
         assertEq(usdc.balanceOf(user), 10_000 - 1000, "off-ratio USDC excess refunded (net 1000 spent)");
         assertEq(tok.balanceOf(user), 0, "TOK fully used");
         assertEq(usdc.balanceOf(address(router)), 0, "router forwarded the refund, holds nothing");
+        assertEq(tok.balanceOf(address(router)), 0, "router holds no TOK");
+    }
+
+    function test_addLiquidityPublicETHWithPermit2_addsEthTokenAndRefunds() public {
+        MockUSDC tok = new MockUSDC();
+        bytes32 tokId = pool.registerWrapped(address(tok), 1, bytes32(0), "Tok", "TOK", 6);
+        uint256 tokenAmount = 4000;
+        tok.mint(user, tokenAmount);
+        vm.deal(user, 1 ether);
+        vm.startPrank(user);
+        tok.approve(address(permit2), type(uint256).max);
+        vm.stopPrank();
+
+        vm.prank(user);
+        uint256 shares = router.addLiquidityPublicETHWithPermit2{value: 2e13}(
+            address(tok),
+            FEE_BPS,
+            tokenAmount,
+            0,
+            uint64(block.timestamp + 1 hours),
+            user,
+            _permitSingle(address(tok), tokenAmount, address(router)),
+            hex""
+        );
+
+        assertGt(shares, 0, "ETH/token shares minted");
+        assertEq(pool.lpShares(_poolId(_tethId(), tokId, FEE_BPS), user), shares, "shares credited to user");
+        assertEq(tok.balanceOf(user), 0, "token leg consumed");
+        assertEq(tok.balanceOf(address(router)), 0, "router holds no token");
+        assertEq(address(router).balance, 0, "router holds no ETH");
+    }
+
+    function test_removeLiquidityPublic_burnsApprovedUserShares() public {
+        MockUSDC tok = new MockUSDC();
+        bytes32 tokId = pool.registerWrapped(address(tok), 1, bytes32(0), "Tok", "TOK", 6);
+        uint256 seed = 1_000_000;
+        usdc.mint(user, seed);
+        tok.mint(user, seed);
+        uint64 deadline = uint64(block.timestamp + 1 hours);
+        vm.startPrank(user);
+        usdc.approve(address(permit2), type(uint256).max);
+        tok.approve(address(permit2), type(uint256).max);
+        uint256 shares = router.addLiquidityPublicWithPermit2(
+            address(usdc),
+            address(tok),
+            FEE_BPS,
+            seed,
+            seed,
+            0,
+            deadline,
+            user,
+            _permitBatch(address(usdc), seed, address(tok), seed, deadline),
+            hex""
+        );
+        vm.stopPrank();
+
+        bytes32 poolId = _poolId(assetId, tokId, FEE_BPS);
+        vm.prank(user);
+        pool.approveLpOperator(address(router));
+        uint256 usdcBefore = usdc.balanceOf(user);
+        uint256 tokBefore = tok.balanceOf(user);
+
+        vm.prank(user);
+        (uint256 amountLo, uint256 amountHi) =
+            router.removeLiquidityPublic(address(usdc), address(tok), FEE_BPS, shares, 0, 0, deadline, user);
+
+        assertEq(pool.lpShares(poolId, user), 0, "user shares burned");
+        assertGt(amountLo + amountHi, 0, "underlying returned");
+        assertGt(usdc.balanceOf(user), usdcBefore, "USDC returned");
+        assertGt(tok.balanceOf(user), tokBefore, "TOK returned");
+        assertEq(usdc.balanceOf(address(router)), 0, "router holds no USDC");
         assertEq(tok.balanceOf(address(router)), 0, "router holds no TOK");
     }
 
@@ -547,10 +1043,7 @@ contract ConfidentialRouterTest is Test {
     {
         return IPermit2.PermitSingle({
             details: IPermit2.PermitDetails({
-                token: token,
-                amount: uint160(amount),
-                expiration: uint48(block.timestamp + 1 hours),
-                nonce: 0
+                token: token, amount: uint160(amount), expiration: uint48(block.timestamp + 1 hours), nonce: 0
             }),
             spender: spender,
             sigDeadline: block.timestamp + 1 hours
@@ -560,6 +1053,243 @@ contract ConfidentialRouterTest is Test {
     function _registerTok(string memory sym) internal returns (MockUSDC tok, bytes32 tokId) {
         tok = new MockUSDC();
         tokId = pool.registerWrapped(address(tok), 1, bytes32(0), sym, sym, 6);
+    }
+
+    // ── plain zRouter swaps ──
+
+    function test_swapETHViaZRouter_sendsOutputAndSweeps() public {
+        (MockUSDC out,) = _registerTok("OUT");
+        uint256 swapOut = 6000;
+        vm.deal(user, 1 ether);
+        bytes memory zrData = abi.encodeCall(MockZRouter.swapETHForToken, (address(out), swapOut));
+
+        vm.prank(user);
+        uint256 got = zapRouter.swapETHViaZRouter{value: 1e15}(address(out), 5000, user, zrData);
+
+        assertEq(got, swapOut, "observed balance delta returned");
+        assertEq(out.balanceOf(user), swapOut, "zRouter output delivered to user");
+        assertEq(out.balanceOf(address(zapRouter)), 0, "router holds no OUT");
+        assertEq(address(zapRouter).balance, 0, "router holds no ETH");
+    }
+
+    function test_swapTokenViaZRouterWithPermit2_sendsOutputAndSweeps() public {
+        (MockUSDC out,) = _registerTok("OUT");
+        uint256 amountIn = 2000;
+        uint256 swapOut = 5000;
+        vm.prank(user);
+        usdc.approve(address(permit2), type(uint256).max);
+        bytes memory zrData =
+            abi.encodeCall(MockZRouter.swapTokenForToken, (address(usdc), amountIn, address(out), swapOut));
+
+        vm.prank(user);
+        uint256 got = zapRouter.swapTokenViaZRouterWithPermit2(
+            address(out),
+            amountIn,
+            4000,
+            user,
+            _permitSingle(address(usdc), amountIn, address(zapRouter)),
+            hex"",
+            zrData
+        );
+
+        assertEq(got, swapOut, "observed balance delta returned");
+        assertEq(usdc.balanceOf(user), 10_000 - amountIn, "user paid token input");
+        assertEq(out.balanceOf(user), swapOut, "zRouter output delivered to user");
+        assertEq(usdc.balanceOf(address(zapRouter)), 0, "router holds no input");
+        assertEq(out.balanceOf(address(zapRouter)), 0, "router holds no output");
+    }
+
+    function test_zapETHToCdpMint_swapWrapSettle() public {
+        (MockUSDC collateral, bytes32 collateralId) = _registerTok("COL");
+        MockCdpController controller = new MockCdpController();
+        uint256 wrapAmount = 1000;
+        bytes32 commit = keccak256("eth-zap-cdp-collateral");
+        bytes32 depositId = keccak256(abi.encode(collateralId, wrapAmount, commit));
+        bytes memory zrData = abi.encodeCall(MockZRouter.swapETHForToken, (address(collateral), 1500));
+        vm.deal(user, 1 ether);
+
+        vm.prank(user);
+        zapRouter.zapETHToCdpMint{value: 1e15}(
+            address(collateral),
+            wrapAmount,
+            commit,
+            zrData,
+            _cdpMintPv(
+                depositId,
+                keccak256("zap-eth-cdp-debt"),
+                controller,
+                collateralId,
+                wrapAmount,
+                500,
+                keccak256("zap-eth-cdp-pos")
+            ),
+            hex"",
+            _memos()
+        );
+
+        assertEq(uint256(pool.depositStatus(depositId)), 2, "zapped collateral deposit consumed");
+        assertEq(controller.mintCalls(), 1, "controller called");
+        assertEq(controller.lastLegAsset(), collateralId, "collateral asset passed");
+        assertEq(collateral.balanceOf(user), 500, "excess swap output refunded");
+        assertEq(collateral.balanceOf(address(zapRouter)), 0, "router holds no collateral");
+        assertEq(address(zapRouter).balance, 0, "router holds no ETH");
+    }
+
+    function test_zapTokenToCdpMintWithPermit2_swapWrapSettle() public {
+        (MockUSDC collateral, bytes32 collateralId) = _registerTok("COL");
+        MockCdpController controller = new MockCdpController();
+        uint256 amountIn = 2000;
+        uint256 wrapAmount = 1000;
+        bytes32 commit = keccak256("token-zap-cdp-collateral");
+        bytes32 depositId = keccak256(abi.encode(collateralId, wrapAmount, commit));
+        bytes memory zrData =
+            abi.encodeCall(MockZRouter.swapTokenForToken, (address(usdc), amountIn, address(collateral), 1500));
+        vm.prank(user);
+        usdc.approve(address(permit2), type(uint256).max);
+
+        vm.prank(user);
+        zapRouter.zapTokenToCdpMintWithPermit2(
+            address(collateral),
+            amountIn,
+            wrapAmount,
+            commit,
+            _permitSingle(address(usdc), amountIn, address(zapRouter)),
+            hex"",
+            zrData,
+            _cdpMintPv(
+                depositId,
+                keccak256("zap-token-cdp-debt"),
+                controller,
+                collateralId,
+                wrapAmount,
+                500,
+                keccak256("zap-token-cdp-pos")
+            ),
+            hex"",
+            _memos()
+        );
+
+        assertEq(uint256(pool.depositStatus(depositId)), 2, "zapped collateral deposit consumed");
+        assertEq(controller.mintCalls(), 1, "controller called");
+        assertEq(usdc.balanceOf(user), 10_000 - amountIn, "user paid zRouter input");
+        assertEq(collateral.balanceOf(user), 500, "excess output refunded");
+        assertEq(usdc.balanceOf(address(zapRouter)), 0, "router holds no input");
+        assertEq(collateral.balanceOf(address(zapRouter)), 0, "router holds no collateral");
+    }
+
+    function test_swapViaZRouter_disabledTarget_reverts() public {
+        (MockUSDC out,) = _registerTok("OUT");
+        vm.deal(user, 1 ether);
+        vm.prank(user);
+        vm.expectRevert(ConfidentialRouter.BadTarget.selector);
+        router.swapETHViaZRouter{value: 1e15}(address(out), 0, user, hex"");
+    }
+
+    function test_swapViaZRouter_rejectsNativeOutputOrZeroRecipient() public {
+        vm.deal(user, 1 ether);
+
+        vm.prank(user);
+        vm.expectRevert(ConfidentialRouter.BadTarget.selector);
+        zapRouter.swapETHViaZRouter{value: 1e15}(address(0), 0, user, hex"");
+
+        vm.prank(user);
+        vm.expectRevert(ConfidentialRouter.BadTarget.selector);
+        zapRouter.swapETHViaZRouter{value: 1e15}(address(usdc), 0, address(0), hex"");
+
+        vm.prank(user);
+        usdc.approve(address(permit2), type(uint256).max);
+
+        vm.prank(user);
+        vm.expectRevert(ConfidentialRouter.BadTarget.selector);
+        zapRouter.swapTokenViaZRouterWithPermit2(
+            address(0), 1, 0, user, _permitSingle(address(usdc), 1, address(zapRouter)), hex"", hex""
+        );
+
+        vm.prank(user);
+        vm.expectRevert(ConfidentialRouter.BadTarget.selector);
+        zapRouter.swapTokenViaZRouterWithPermit2(
+            address(usdc), 1, 0, address(0), _permitSingle(address(usdc), 1, address(zapRouter)), hex"", hex""
+        );
+    }
+
+    function _launchPool() internal returns (ConfidentialPool p, ConfidentialRouter r, bytes32 cusdId) {
+        CanonicalAssetFactory factory = new CanonicalAssetFactory();
+        CollateralEngine engine = new CollateralEngine(address(0), CBTC_ZK_ASSET_ID, 8, 8, address(this));
+        p = new ConfidentialPool(
+            address(new StubVerifier()),
+            bytes32(uint256(0xBEEF)),
+            bytes32(0),
+            address(factory),
+            address(0),
+            bytes32(0),
+            0,
+            bytes32(0),
+            TETH_LINK,
+            address(engine)
+        );
+        r = new ConfidentialRouter(address(p), address(zr), address(permit2));
+        cusdId = engine.CUSD_ASSET_ID();
+    }
+
+    function _mintCanonicalToZRouter(ConfidentialPool p, bytes32 canonAssetId, uint256 value) internal {
+        ConfidentialPool.PublicValues memory pv;
+        pv.version = 1;
+        pv.chainBinding = keccak256(abi.encodePacked(block.chainid, address(p)));
+        pv.withdrawals = new ConfidentialPool.Withdrawal[](1);
+        pv.withdrawals[0] = ConfidentialPool.Withdrawal(canonAssetId, address(zr), value);
+        p.settle(abi.encode(pv), hex"", new bytes[](0));
+    }
+
+    function test_zapETHToCanonicalNote_getsLaunchCbtc() public {
+        (ConfidentialPool p, ConfidentialRouter r,) = _launchPool();
+        bytes32 localCbtc = p.localAssetOf(CBTC_ZK_ASSET_ID);
+        address cbtc = p.canonicalTokenFor(CBTC_ZK_ASSET_ID);
+        assertTrue(localCbtc != bytes32(0), "shared cBTC id resolves to local pool asset");
+        assertEq(p.canonicalTokenFor(localCbtc), cbtc, "local id resolves to same canonical token");
+
+        uint256 wrapAmount = 1e10; // one sat-denominated cBTC value unit, scaled to the 18-dec canonical ERC20
+        bytes32 commit = keccak256("launch-cbtc-note");
+        _mintCanonicalToZRouter(p, CBTC_ZK_ASSET_ID, 1);
+        assertEq(ERC20(cbtc).balanceOf(address(zr)), wrapAmount, "zRouter funded with canonical cBTC");
+
+        vm.deal(user, 1 ether);
+        bytes memory zrData = abi.encodeCall(MockZRouter.swapETHForToken, (cbtc, wrapAmount));
+
+        vm.prank(user);
+        r.zapETHToCanonicalNote{value: 1e15}(CBTC_ZK_ASSET_ID, wrapAmount, commit, zrData);
+
+        assertEq(uint256(p.depositStatus(keccak256(abi.encode(localCbtc, 1, commit)))), 1, "local cBTC note pending");
+        assertEq(ERC20(cbtc).balanceOf(address(zr)), 0, "zRouter paid output");
+        assertEq(ERC20(cbtc).balanceOf(address(r)), 0, "router burned/wrapped cBTC");
+        assertEq(ERC20(cbtc).totalSupply(), 0, "public cBTC supply re-entered confidential");
+    }
+
+    function test_zapTokenToCanonicalNoteWithPermit2_getsLaunchCusd() public {
+        (ConfidentialPool p, ConfidentialRouter r, bytes32 cusdId) = _launchPool();
+        bytes32 localCusd = p.localAssetOf(cusdId);
+        address cusd = p.canonicalTokenFor(cusdId);
+        assertTrue(localCusd != bytes32(0), "shared cUSD id resolves to local pool asset");
+        assertEq(p.canonicalTokenFor(localCusd), cusd, "local id resolves to same canonical token");
+
+        uint256 amountIn = 2000;
+        uint256 wrapAmount = 1e10;
+        bytes32 commit = keccak256("launch-cusd-note");
+        _mintCanonicalToZRouter(p, cusdId, 1);
+        bytes memory zrData = abi.encodeCall(MockZRouter.swapTokenForToken, (address(usdc), amountIn, cusd, wrapAmount));
+
+        vm.prank(user);
+        usdc.approve(address(permit2), type(uint256).max);
+
+        vm.prank(user);
+        r.zapTokenToCanonicalNoteWithPermit2(
+            cusdId, amountIn, wrapAmount, commit, _permitSingle(address(usdc), amountIn, address(r)), hex"", zrData
+        );
+
+        assertEq(uint256(p.depositStatus(keccak256(abi.encode(localCusd, 1, commit)))), 1, "local cUSD note pending");
+        assertEq(usdc.balanceOf(user), 10_000 - amountIn, "user paid input token");
+        assertEq(usdc.balanceOf(address(r)), 0, "router holds no input");
+        assertEq(ERC20(cusd).balanceOf(address(r)), 0, "router burned/wrapped cUSD");
+        assertEq(ERC20(cusd).totalSupply(), 0, "public cUSD supply re-entered confidential");
     }
 
     function _memos() internal pure returns (bytes[] memory memos) {
@@ -580,7 +1310,9 @@ contract ConfidentialRouterTest is Test {
         vm.prank(user);
         zapRouter.zapETHToShieldedNote{value: 1e15}(address(out), wrapAmount, commit, zrData);
 
-        assertEq(uint256(pool.depositStatus(keccak256(abi.encode(outId, wrapAmount, commit)))), 1, "note deposit pending");
+        assertEq(
+            uint256(pool.depositStatus(keccak256(abi.encode(outId, wrapAmount, commit)))), 1, "note deposit pending"
+        );
         assertEq(pool.escrow(outId), wrapAmount, "exactly wrapAmount escrowed");
         assertEq(out.balanceOf(user), swapOut - wrapAmount, "OUT excess swept to the caller");
         assertEq(out.balanceOf(address(zapRouter)), 0, "router holds no OUT");
@@ -597,7 +1329,13 @@ contract ConfidentialRouterTest is Test {
 
         vm.prank(user);
         zapRouter.zapETHToPayment{value: 1e15}(
-            address(out), wrapAmount, bobCommit, zrData, _privatePaymentPv(depositId, keccak256("bob-out-leaf")), hex"", _memos()
+            address(out),
+            wrapAmount,
+            bobCommit,
+            zrData,
+            _privatePaymentPv(depositId, keccak256("bob-out-leaf")),
+            hex"",
+            _memos()
         );
 
         assertEq(uint256(pool.depositStatus(depositId)), 2, "deposit consumed by the settle");
@@ -634,8 +1372,9 @@ contract ConfidentialRouterTest is Test {
         uint64 deadline = uint64(block.timestamp + 1 hours);
 
         vm.prank(user);
-        (bytes32 depositId, uint256 shares) =
-            zapRouter.zapETHIntoShieldedLP{value: 3e15}(address(tokB), FEE_BPS, 2e15, tokBLeg, 0, deadline, commit, zrData);
+        (bytes32 depositId, uint256 shares) = zapRouter.zapETHIntoShieldedLP{value: 3e15}(
+            address(tokB), FEE_BPS, 2e15, tokBLeg, 0, deadline, commit, zrData
+        );
 
         bytes32 poolId = _poolId(_tethId(), tokBId, FEE_BPS);
         assertEq(shares, 2e5 - MINIMUM_LIQUIDITY, "deterministic shares (exact legs)");
@@ -657,8 +1396,17 @@ contract ConfidentialRouterTest is Test {
 
         vm.prank(user);
         uint256 shares = zapRouter.zapETHIntoFarm{value: 3e15}(
-            address(tokB), FEE_BPS, 2e15, tokBLeg, 0, uint64(block.timestamp + 1 hours), commit, zrData,
-            _privatePaymentPv(lpDepositId, keccak256("farm-receipt")), hex"", _memos()
+            address(tokB),
+            FEE_BPS,
+            2e15,
+            tokBLeg,
+            0,
+            uint64(block.timestamp + 1 hours),
+            commit,
+            zrData,
+            _privatePaymentPv(lpDepositId, keccak256("farm-receipt")),
+            hex"",
+            _memos()
         );
 
         assertEq(shares, expectedShares, "deterministic shares");
@@ -721,8 +1469,13 @@ contract ConfidentialRouterTest is Test {
 
         vm.prank(user);
         uint256 shares = zapRouter.zapTokenIntoFarm(
-            z, _permitSingle(address(usdc), 4000, address(zapRouter)), hex"", zrData,
-            _privatePaymentPv(lpDepositId, keccak256("tok-farm-leaf")), hex"", _memos()
+            z,
+            _permitSingle(address(usdc), 4000, address(zapRouter)),
+            hex"",
+            zrData,
+            _privatePaymentPv(lpDepositId, keccak256("tok-farm-leaf")),
+            hex"",
+            _memos()
         );
 
         assertEq(shares, 2000 - MINIMUM_LIQUIDITY, "deterministic shares");
@@ -808,7 +1561,16 @@ contract ConfidentialRouterTest is Test {
 
         vm.prank(user);
         router.wrapAndSettleWithPermit(
-            address(usdc), AMOUNT, bobCommit, deadline, v, r, s, _privatePaymentPv(depositId, keccak256("bob-fee-l")), hex"", _memos()
+            address(usdc),
+            AMOUNT,
+            bobCommit,
+            deadline,
+            v,
+            r,
+            s,
+            _privatePaymentPv(depositId, keccak256("bob-fee-l")),
+            hex"",
+            _memos()
         );
 
         assertEq(usdc.balanceOf(address(router)), 0, "router swept the stranded token (no residue left)");

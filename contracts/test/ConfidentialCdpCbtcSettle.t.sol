@@ -44,21 +44,21 @@ contract MockController is ICdpController {
         revertTopup = t;
     }
 
-    function onCdpMint(CdpLeg[] calldata, uint256, bytes32) external {
+    function onCdpMint(CdpLeg[] calldata, uint256, bytes32, uint256) external {
         require(!revertMint, "deny");
         mints++;
     }
 
-    function onCdpClose(uint256, CdpLeg[] calldata, bytes32) external {
+    function onCdpClose(uint256, uint256, uint256, CdpLeg[] calldata, bytes32) external {
         closes++;
     }
 
-    function onCdpLiquidate(CdpLeg[] calldata, uint256, bytes32) external {
+    function onCdpLiquidate(CdpLeg[] calldata, uint256, uint256, uint256, bytes32) external {
         require(!revertLiquidate, "healthy");
         liquidations++;
     }
 
-    function onCdpTopup(CdpLeg[] calldata, CdpLeg[] calldata, uint256, bytes32, bytes32) external {
+    function onCdpTopup(CdpLeg[] calldata, CdpLeg[] calldata, uint256, uint256, bytes32, bytes32) external {
         require(!revertTopup, "topup-deny");
         topups++;
     }
@@ -75,6 +75,7 @@ contract ConfidentialCdpCbtcSettleTest is Test {
     CanonicalAssetFactory factory;
 
     bytes32 constant CBTC = 0x62a20d98fc1cd20289621d1315294cb8772f934d822e404b71e1f471cf0679c8; // CBTC_ZK_ASSET_ID
+    uint256 constant RAY = 1e27;
     bytes32 lockOutpoint = keccak256("lock-outpoint-1");
     uint64 constant V_BTC = 100_000;
     bytes32 cbtcCx = bytes32(uint256(0xC0));
@@ -121,6 +122,17 @@ contract ConfidentialCdpCbtcSettleTest is Test {
         view
         returns (ConfidentialPool.BitcoinRelayPublicValues memory r)
     {
+        r = _lockAttestPvWithRedeemed(prior, outpoint, vBtc, commitment, spent, new bytes32[](0));
+    }
+
+    function _lockAttestPvWithRedeemed(
+        bytes32 prior,
+        bytes32 outpoint,
+        uint256 vBtc,
+        bytes32 commitment,
+        bytes32[] memory spent,
+        bytes32[] memory redeemed
+    ) internal view returns (ConfidentialPool.BitcoinRelayPublicValues memory r) {
         r.priorDigest = prior;
         r.bitcoinPoolRoot = keccak256(abi.encode("pool", block.number, outpoint));
         r.bitcoinSpentRoot = keccak256("spent-sentinel");
@@ -135,6 +147,7 @@ contract ConfidentialCdpCbtcSettleTest is Test {
                 ConfidentialPool.CbtcLockFolded({outpoint: outpoint, vBtc: vBtc, commitment: commitment});
         }
         r.cbtcLocksSpent = spent;
+        r.cbtcLocksRedeemed = redeemed;
         r.consumedCount = 0;
     }
 
@@ -197,6 +210,92 @@ contract ConfidentialCdpCbtcSettleTest is Test {
         assertTrue(pool.cbtcLockSpent(lockOutpoint));
     }
 
+    function test_attest_records_same_batch_folded_and_spent_lock_as_terminal() public {
+        ConfidentialPool.BitcoinRelayPublicValues memory r =
+            _lockAttestPv(pool.knownReflectionDigest(), lockOutpoint, V_BTC, _cbtcCommit(), _arr(lockOutpoint));
+
+        vm.roll(block.number + 1);
+        pool.attestBitcoinStateProven(abi.encode(r), "");
+        assertTrue(pool.cbtcLockSpent(lockOutpoint));
+
+        vm.expectRevert(ConfidentialPool.CbtcLockMismatch.selector);
+        _settle(_cbtcMintPv());
+    }
+
+    function test_attest_records_redeemed_lock() public {
+        _attestLock(lockOutpoint, V_BTC, _cbtcCommit(), new bytes32[](0));
+        ConfidentialPool.BitcoinRelayPublicValues memory r = _lockAttestPvWithRedeemed(
+            pool.knownReflectionDigest(), bytes32(0), V_BTC, bytes32(0), new bytes32[](0), _arr(lockOutpoint)
+        );
+        vm.roll(block.number + 1);
+        pool.attestBitcoinStateProven(abi.encode(r), "");
+        assertTrue(pool.cbtcLockRedeemed(lockOutpoint));
+    }
+
+    function test_attest_rejects_spent_redeemed_conflict() public {
+        _attestLock(lockOutpoint, V_BTC, _cbtcCommit(), new bytes32[](0));
+        ConfidentialPool.BitcoinRelayPublicValues memory r = _lockAttestPvWithRedeemed(
+            pool.knownReflectionDigest(), bytes32(0), V_BTC, bytes32(0), _arr(lockOutpoint), _arr(lockOutpoint)
+        );
+        vm.roll(block.number + 1);
+        vm.expectRevert(ConfidentialPool.CbtcLockMismatch.selector);
+        pool.attestBitcoinStateProven(abi.encode(r), "");
+    }
+
+    function test_attest_rejects_unknown_spent_or_redeemed_lock() public {
+        bytes32 unknown = keccak256("unknown-lock-delta");
+
+        ConfidentialPool.BitcoinRelayPublicValues memory spent = _lockAttestPvWithRedeemed(
+            pool.knownReflectionDigest(), bytes32(0), V_BTC, bytes32(0), _arr(unknown), new bytes32[](0)
+        );
+        vm.roll(block.number + 1);
+        vm.expectRevert(ConfidentialPool.CbtcLockMismatch.selector);
+        pool.attestBitcoinStateProven(abi.encode(spent), "");
+
+        ConfidentialPool.BitcoinRelayPublicValues memory redeemed = _lockAttestPvWithRedeemed(
+            pool.knownReflectionDigest(), bytes32(0), V_BTC, bytes32(0), new bytes32[](0), _arr(unknown)
+        );
+        vm.roll(block.number + 1);
+        vm.expectRevert(ConfidentialPool.CbtcLockMismatch.selector);
+        pool.attestBitcoinStateProven(abi.encode(redeemed), "");
+    }
+
+    function test_attest_rejects_duplicate_cbtc_lock_fold() public {
+        _attestLock(lockOutpoint, V_BTC, _cbtcCommit(), new bytes32[](0));
+
+        ConfidentialPool.BitcoinRelayPublicValues memory dup =
+            _lockAttestPv(pool.knownReflectionDigest(), lockOutpoint, V_BTC, _cbtcCommit(), new bytes32[](0));
+        vm.roll(block.number + 1);
+        vm.expectRevert(ConfidentialPool.CbtcLockMismatch.selector);
+        pool.attestBitcoinStateProven(abi.encode(dup), "");
+    }
+
+    function test_attest_rejects_zero_cbtc_lock_outpoint() public {
+        ConfidentialPool.BitcoinRelayPublicValues memory r =
+            _lockAttestPv(pool.knownReflectionDigest(), bytes32(0), V_BTC, bytes32(0), new bytes32[](0));
+        r.cbtcLocksFolded = new ConfidentialPool.CbtcLockFolded[](1);
+        r.cbtcLocksFolded[0] =
+            ConfidentialPool.CbtcLockFolded({outpoint: bytes32(0), vBtc: V_BTC, commitment: _cbtcCommit()});
+
+        vm.roll(block.number + 1);
+        vm.expectRevert(ConfidentialPool.CbtcLockMismatch.selector);
+        pool.attestBitcoinStateProven(abi.encode(r), "");
+    }
+
+    function test_attest_rejects_duplicate_spent_lock_delta() public {
+        _attestLock(lockOutpoint, V_BTC, _cbtcCommit(), new bytes32[](0));
+        bytes32[] memory spent = new bytes32[](2);
+        spent[0] = lockOutpoint;
+        spent[1] = lockOutpoint;
+
+        ConfidentialPool.BitcoinRelayPublicValues memory r = _lockAttestPvWithRedeemed(
+            pool.knownReflectionDigest(), bytes32(0), V_BTC, bytes32(0), spent, new bytes32[](0)
+        );
+        vm.roll(block.number + 1);
+        vm.expectRevert(ConfidentialPool.CbtcLockMismatch.selector);
+        pool.attestBitcoinStateProven(abi.encode(r), "");
+    }
+
     // ---- cBTC mint: gated on the recorded lock + commitment + escrow + one-shot ----
     function _cbtcMintPv() internal view returns (ConfidentialPool.PublicValues memory pv) {
         pv = _pv();
@@ -222,6 +321,18 @@ contract ConfidentialCdpCbtcSettleTest is Test {
         bytes32[] memory spent = new bytes32[](1);
         spent[0] = lockOutpoint;
         _attestLock(bytes32(0), V_BTC, bytes32(0), spent);
+
+        vm.expectRevert(ConfidentialPool.CbtcLockMismatch.selector);
+        _settle(_cbtcMintPv());
+    }
+
+    function test_cbtc_mint_rejects_redeemed_lock() public {
+        _attestLock(lockOutpoint, V_BTC, _cbtcCommit(), new bytes32[](0));
+        ConfidentialPool.BitcoinRelayPublicValues memory r = _lockAttestPvWithRedeemed(
+            pool.knownReflectionDigest(), bytes32(0), V_BTC, bytes32(0), new bytes32[](0), _arr(lockOutpoint)
+        );
+        vm.roll(block.number + 1);
+        pool.attestBitcoinStateProven(abi.encode(r), "");
 
         vm.expectRevert(ConfidentialPool.CbtcLockMismatch.selector);
         _settle(_cbtcMintPv());
@@ -271,7 +382,12 @@ contract ConfidentialCdpCbtcSettleTest is Test {
         CdpLeg[] memory legs = new CdpLeg[](1);
         legs[0] = CdpLeg({asset: CBTC, value: V_BTC});
         pv.cdpMints[0] = ConfidentialPool.CdpMint({
-            controller: ctrl, debtAsset: debtAsset, debtValue: 1000, positionLeaf: posLeaf, legs: legs
+            controller: ctrl,
+            debtAsset: debtAsset,
+            debtValue: 1000,
+            positionLeaf: posLeaf,
+            rateSnapshot: RAY,
+            legs: legs
         });
     }
 
@@ -291,6 +407,7 @@ contract ConfidentialCdpCbtcSettleTest is Test {
         pv.cdpTopups[0] = ConfidentialPool.CdpTopup({
             controller: ctrl,
             debtValue: 1000,
+            rateSnapshot: RAY,
             oldPositionNullifier: keccak256(abi.encodePacked("tacit-cdp-position-v1", oldPosLeaf, "spent")),
             newPositionLeaf: newPosLeaf,
             oldLegs: _legs(V_BTC),
@@ -335,7 +452,12 @@ contract ConfidentialCdpCbtcSettleTest is Test {
         CdpLeg[] memory legs = new CdpLeg[](1);
         legs[0] = CdpLeg({asset: CBTC, value: V_BTC});
         pv.cdpCloses[0] = ConfidentialPool.CdpClose({
-            controller: address(controller), debtValue: 1000, positionNullifier: posNu, legs: legs
+            controller: address(controller),
+            debtValue: 1000,
+            repaid: 1000,
+            rateSnapshot: RAY,
+            positionNullifier: posNu,
+            legs: legs
         });
         _settle(pv);
         assertEq(controller.closes(), 1);
@@ -362,6 +484,8 @@ contract ConfidentialCdpCbtcSettleTest is Test {
         closeOld.cdpCloses[0] = ConfidentialPool.CdpClose({
             controller: address(controller),
             debtValue: 1000,
+            repaid: 1000,
+            rateSnapshot: RAY,
             positionNullifier: topup.cdpTopups[0].oldPositionNullifier,
             legs: _legs(V_BTC)
         });
@@ -374,6 +498,8 @@ contract ConfidentialCdpCbtcSettleTest is Test {
         closeNew.cdpCloses[0] = ConfidentialPool.CdpClose({
             controller: address(controller),
             debtValue: 1000,
+            repaid: 1000,
+            rateSnapshot: RAY,
             positionNullifier: keccak256(abi.encodePacked("tacit-cdp-position-v1", newLeaf, "spent")),
             legs: _legs(uint256(V_BTC) + 1)
         });
@@ -404,6 +530,34 @@ contract ConfidentialCdpCbtcSettleTest is Test {
         assertEq(controller.topups(), 1);
     }
 
+    function test_cdp_topup_rejects_non_contract_controller_without_spending_position() public {
+        bytes32 oldLeaf = keccak256("pos-topup-eoa-old");
+        bytes32 newLeaf = keccak256("pos-topup-eoa-new");
+        _settle(_cdpMintPv(address(controller), _cdpDebtAsset(address(controller)), oldLeaf));
+
+        ConfidentialPool.PublicValues memory pv = _cdpTopupPv(address(0xC0FFEE), oldLeaf, newLeaf, pool.cdpRoot());
+        vm.expectRevert(ConfidentialPool.BadCdpController.selector);
+        _settle(pv);
+
+        pv.cdpTopups[0].controller = address(controller);
+        _settle(pv);
+        assertEq(controller.topups(), 1);
+    }
+
+    function test_cdp_topup_rejects_sentinel_new_leaf_without_spending_position() public {
+        bytes32 oldLeaf = keccak256("pos-topup-sentinel-old");
+        _settle(_cdpMintPv(address(controller), _cdpDebtAsset(address(controller)), oldLeaf));
+
+        ConfidentialPool.PublicValues memory pv =
+            _cdpTopupPv(address(controller), oldLeaf, bytes32(uint256(1)), pool.cdpRoot());
+        vm.expectRevert(ConfidentialPool.BadCdpController.selector);
+        _settle(pv);
+
+        pv.cdpTopups[0].newPositionLeaf = keccak256("pos-topup-sentinel-new");
+        _settle(pv);
+        assertEq(controller.topups(), 1);
+    }
+
     function test_cdp_close_rejects_non_contract_controller_without_spending_position() public {
         _settle(_cdpMintPv(address(controller), _cdpDebtAsset(address(controller)), keccak256("pos-close-eoa")));
         ConfidentialPool.PublicValues memory pv = _pv();
@@ -413,7 +567,12 @@ contract ConfidentialCdpCbtcSettleTest is Test {
         legs[0] = CdpLeg({asset: CBTC, value: V_BTC});
         bytes32 posNu = keccak256("pos-close-eoa-nu");
         pv.cdpCloses[0] = ConfidentialPool.CdpClose({
-            controller: address(0xC0FFEE), debtValue: 1000, positionNullifier: posNu, legs: legs
+            controller: address(0xC0FFEE),
+            debtValue: 1000,
+            repaid: 1000,
+            rateSnapshot: RAY,
+            positionNullifier: posNu,
+            legs: legs
         });
 
         vm.expectRevert(ConfidentialPool.BadCdpController.selector);
@@ -433,7 +592,12 @@ contract ConfidentialCdpCbtcSettleTest is Test {
         legs[0] = CdpLeg({asset: CBTC, value: V_BTC});
         bytes32 posNu = keccak256("pos-liq-eoa-nu");
         pv.cdpLiquidations[0] = ConfidentialPool.CdpLiquidate({
-            controller: address(0xC0FFEE), debtValue: 1000, positionNullifier: posNu, legs: legs
+            controller: address(0xC0FFEE),
+            debtValue: 1000,
+            repaid: 1000,
+            rateSnapshot: RAY,
+            positionNullifier: posNu,
+            legs: legs
         });
 
         vm.expectRevert(ConfidentialPool.BadCdpController.selector);
@@ -455,7 +619,12 @@ contract ConfidentialCdpCbtcSettleTest is Test {
         CdpLeg[] memory legs = new CdpLeg[](1);
         legs[0] = CdpLeg({asset: CBTC, value: V_BTC});
         pv.cdpLiquidations[0] = ConfidentialPool.CdpLiquidate({
-            controller: address(controller), debtValue: 1000, positionNullifier: keccak256("pos-seize-nu"), legs: legs
+            controller: address(controller),
+            debtValue: 1000,
+            repaid: 1000,
+            rateSnapshot: RAY,
+            positionNullifier: keccak256("pos-seize-nu"),
+            legs: legs
         });
         pv.withdrawals = new ConfidentialPool.Withdrawal[](1);
         pv.withdrawals[0] = ConfidentialPool.Withdrawal({assetId: CBTC, recipient: address(controller), value: V_BTC});

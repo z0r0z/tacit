@@ -111,6 +111,7 @@ contract CollateralEngineTest is Test {
     MockFeed ethBtc; // 1 ETH = 0.05 BTC → answer 0.05e8
     MockFeed btcUsd; // 1 BTC = 60000 USD → answer 60000e8
     bytes32 constant CBTC = keccak256("tacit-cbtc-zk-lock-v1");
+    uint256 constant RAY = 1e27;
     address admin = address(0xA11CE);
 
     function setUp() public {
@@ -125,6 +126,39 @@ contract CollateralEngineTest is Test {
     function _legs(uint256 v) internal pure returns (CdpLeg[] memory legs) {
         legs = new CdpLeg[](1);
         legs[0] = CdpLeg({asset: CBTC, value: v});
+    }
+
+    bytes32 constant RECEIPT = bytes32(uint256(1)); // the TSR savings receipt sentinel (positionLeaf == 1)
+
+    /// A TSR bond/harvest receipt op's legs = [shares (cUSD), rps_entry].
+    function _savingsLegs(bytes32 cusd, uint256 shares, uint256 rpsEntry)
+        internal
+        pure
+        returns (CdpLeg[] memory legs)
+    {
+        legs = new CdpLeg[](2);
+        legs[0] = CdpLeg({asset: cusd, value: shares});
+        legs[1] = CdpLeg({asset: bytes32(0), value: rpsEntry});
+    }
+
+    function _single(bytes32 asset, uint256 v) internal pure returns (CdpLeg[] memory legs) {
+        legs = new CdpLeg[](1);
+        legs[0] = CdpLeg({asset: asset, value: v});
+    }
+
+    /// Open a cUSD CDP, turn the fee on, accrue a year, and close it — collecting a stability fee that
+    /// `_accrueFee` splits to current TSR savers. Returns the fee collected.
+    function _feeFromCdp() internal returns (uint256 fee) {
+        vm.prank(address(pool));
+        eng.onCdpMint(_legs(1e8), 40000e8, keccak256("fee-cdp"), RAY);
+        vm.prank(admin);
+        eng.setStabilityFee(RAY + 1e19);
+        vm.warp(block.timestamp + 365 days);
+        btcUsd.setUpdatedAt(block.timestamp);
+        uint256 owed = eng.currentDebt(40000e8, RAY);
+        fee = owed - 40000e8;
+        vm.prank(address(pool));
+        eng.onCdpClose(40000e8, owed, RAY, _legs(1e8), keccak256("fee-cdp"));
     }
 
     function test_constructor_rejects_bad_config() public {
@@ -439,24 +473,26 @@ contract CollateralEngineTest is Test {
         // 1 BTC collateral = 60000 cUSD value; max debt at 1.5× = 40000 cUSD (40000e8).
         CdpLeg[] memory legs = _legs(1e8);
         vm.expectRevert(CollateralEngine.NotPool.selector);
-        eng.onCdpMint(legs, 40000e8, keccak256("p"));
+        eng.onCdpMint(legs, 40000e8, keccak256("p"), RAY);
         vm.prank(address(pool));
         vm.expectRevert(CollateralEngine.BadAmount.selector);
-        eng.onCdpMint(legs, 0, keccak256("p0"));
+        eng.onCdpMint(legs, 0, keccak256("p0"), RAY);
         vm.prank(address(pool));
         vm.expectRevert(CollateralEngine.BadPositionLeaf.selector);
-        eng.onCdpMint(legs, 40000e8, bytes32(0));
+        eng.onCdpMint(legs, 40000e8, bytes32(0), RAY); // positionLeaf == 0 (bare payout) still rejected
+        // positionLeaf == 1 is now the TSR savings receipt: a CDP-shaped (1-leg, non-cUSD) basket is a malformed
+        // savings op, not a CDP mint.
         vm.prank(address(pool));
-        vm.expectRevert(CollateralEngine.BadPositionLeaf.selector);
-        eng.onCdpMint(legs, 40000e8, bytes32(uint256(1)));
+        vm.expectRevert(CollateralEngine.BadSavingsShape.selector);
+        eng.onCdpMint(legs, 40000e8, bytes32(uint256(1)), RAY);
         // exactly at the floor: ok
         vm.prank(address(pool));
-        eng.onCdpMint(legs, 40000e8, keccak256("p1"));
+        eng.onCdpMint(legs, 40000e8, keccak256("p1"), RAY);
         assertEq(eng.outstandingCusd(), 40000e8);
         // a hair over the floor: undercollateralized
         vm.prank(address(pool));
         vm.expectRevert(CollateralEngine.Undercollateralized.selector);
-        eng.onCdpMint(legs, 40000e8 + 1, keccak256("p2"));
+        eng.onCdpMint(legs, 40000e8 + 1, keccak256("p2"), RAY);
     }
 
     function test_onCdpMint_rejects_invalid_collateral_baskets() public {
@@ -464,60 +500,61 @@ contract CollateralEngineTest is Test {
         legs[0] = CdpLeg({asset: keccak256("not-cbtc"), value: 1e8});
         vm.prank(address(pool));
         vm.expectRevert(CollateralEngine.NotCbtcCollateral.selector);
-        eng.onCdpMint(legs, 1, keccak256("p"));
+        eng.onCdpMint(legs, 1, keccak256("p"), RAY);
 
         CdpLeg[] memory empty = new CdpLeg[](0);
         vm.prank(address(pool));
         vm.expectRevert(CollateralEngine.Undercollateralized.selector);
-        eng.onCdpMint(empty, 1, keccak256("empty"));
+        eng.onCdpMint(empty, 1, keccak256("empty"), RAY);
 
         CdpLeg[] memory zero = _legs(0);
         vm.prank(address(pool));
         vm.expectRevert(CollateralEngine.Undercollateralized.selector);
-        eng.onCdpMint(zero, 1, keccak256("zero"));
+        eng.onCdpMint(zero, 1, keccak256("zero"), RAY);
     }
 
     function test_onCdpClose_decrements_and_reverts_on_accounting_underflow() public {
         CdpLeg[] memory legs = _legs(1e8); // 60000 USD collateral
         vm.prank(address(pool));
-        eng.onCdpMint(legs, 40000e8, keccak256("p"));
+        eng.onCdpMint(legs, 40000e8, keccak256("p"), RAY);
+
+        // principal == 0 is now a TSR unbond; a non-cUSD basket is a malformed unbond, not a CDP close.
+        vm.prank(address(pool));
+        vm.expectRevert(CollateralEngine.BadSavingsShape.selector);
+        eng.onCdpClose(0, 0, RAY, legs, keccak256("close-zero"));
 
         vm.prank(address(pool));
-        vm.expectRevert(CollateralEngine.BadAmount.selector);
-        eng.onCdpClose(0, legs, keccak256("close-zero"));
-
-        vm.prank(address(pool));
-        eng.onCdpClose(10000e8, legs, keccak256("close-1"));
+        eng.onCdpClose(10000e8, 10000e8, RAY, legs, keccak256("close-1"));
         assertEq(eng.outstandingCusd(), 30000e8);
 
         vm.prank(address(pool));
         vm.expectRevert(CollateralEngine.DebtAccountingUnderflow.selector);
-        eng.onCdpClose(30000e8 + 1, legs, keccak256("close-over"));
+        eng.onCdpClose(30000e8 + 1, 30000e8 + 1, RAY, legs, keccak256("close-over"));
     }
 
     function test_onCdpLiquidate_reverts_if_healthy_and_decrements_when_unhealthy() public {
         CdpLeg[] memory legs = _legs(1e8); // 60000 USD collateral
         vm.prank(address(pool));
-        eng.onCdpMint(legs, 40000e8, keccak256("p"));
+        eng.onCdpMint(legs, 40000e8, keccak256("p"), RAY);
 
         // healthy: debt small enough that collateral ≥ debt·liqRatio (1.25×). 40000 cUSD → 40000·1.25=50000 ≤ 60000 → healthy.
         vm.prank(address(pool));
         vm.expectRevert(CollateralEngine.PositionHealthy.selector);
-        eng.onCdpLiquidate(legs, 40000e8, keccak256("p"));
+        eng.onCdpLiquidate(legs, 40000e8, 40000e8, RAY, keccak256("p"));
 
         vm.prank(address(pool));
         vm.expectRevert(CollateralEngine.BadAmount.selector);
-        eng.onCdpLiquidate(legs, 0, keccak256("p-zero"));
+        eng.onCdpLiquidate(legs, 0, 0, RAY, keccak256("p-zero"));
 
         // Price moves down: 1 BTC collateral = 45000 cUSD, below the 50000 liquidation threshold.
         btcUsd.setAnswer(45000e8);
         vm.prank(address(pool));
-        eng.onCdpLiquidate(legs, 40000e8, keccak256("p"));
+        eng.onCdpLiquidate(legs, 40000e8, 40000e8, RAY, keccak256("p"));
         assertEq(eng.outstandingCusd(), 0);
 
         vm.prank(address(pool));
         vm.expectRevert(CollateralEngine.DebtAccountingUnderflow.selector);
-        eng.onCdpLiquidate(legs, 1, keccak256("p-over"));
+        eng.onCdpLiquidate(legs, 1, 1, RAY, keccak256("p-over"));
     }
 
     function test_onCdpTopup_requires_real_improvement_and_restores_mint_floor() public {
@@ -527,27 +564,327 @@ contract CollateralEngineTest is Test {
         CdpLeg[] memory topped = _legs(2e8); // 120000 USD collateral
 
         vm.expectRevert(CollateralEngine.NotPool.selector);
-        eng.onCdpTopup(oldLegs, topped, 50000e8, keccak256("old-nu"), keccak256("new-leaf"));
+        eng.onCdpTopup(oldLegs, topped, 50000e8, RAY, keccak256("old-nu"), keccak256("new-leaf"));
 
         vm.prank(address(pool));
         vm.expectRevert(CollateralEngine.BadAmount.selector);
-        eng.onCdpTopup(oldLegs, topped, 0, keccak256("old-nu"), keccak256("new-leaf"));
+        eng.onCdpTopup(oldLegs, topped, 0, RAY, keccak256("old-nu"), keccak256("new-leaf"));
 
         vm.prank(address(pool));
         vm.expectRevert(CollateralEngine.BadPositionLeaf.selector);
-        eng.onCdpTopup(oldLegs, topped, 50000e8, keccak256("old-nu"), bytes32(0));
+        eng.onCdpTopup(oldLegs, topped, 50000e8, RAY, keccak256("old-nu"), bytes32(0));
 
         vm.prank(address(pool));
         vm.expectRevert(CollateralEngine.Undercollateralized.selector);
-        eng.onCdpTopup(oldLegs, sameLegs, 50000e8, keccak256("old-nu"), keccak256("same-leaf"));
+        eng.onCdpTopup(oldLegs, sameLegs, 50000e8, RAY, keccak256("old-nu"), keccak256("same-leaf"));
 
         vm.prank(address(pool));
         vm.expectRevert(CollateralEngine.Undercollateralized.selector);
-        eng.onCdpTopup(oldLegs, tooSmall, 50000e8, keccak256("old-nu"), keccak256("small-leaf"));
+        eng.onCdpTopup(oldLegs, tooSmall, 50000e8, RAY, keccak256("old-nu"), keccak256("small-leaf"));
 
         vm.prank(address(pool));
-        eng.onCdpTopup(oldLegs, topped, 50000e8, keccak256("old-nu"), keccak256("new-leaf"));
+        eng.onCdpTopup(oldLegs, topped, 50000e8, RAY, keccak256("old-nu"), keccak256("new-leaf"));
         assertEq(eng.outstandingCusd(), 0);
+    }
+
+    // ─────────────────────── cUSD stability fee (TSR) ───────────────────────
+
+    function test_stabilityFee_dormant_by_default_is_interest_free() public {
+        // Ships dormant: rate == RAY, fee == 0. A position's debt is exactly its principal forever, even after
+        // time passes and drip() runs — provably identical to the interest-free path.
+        assertEq(eng.rate(), RAY, "rate starts at 1.0");
+        assertEq(eng.stabilityFeePerSecond(), 0, "fee dormant by default");
+        assertEq(eng.currentDebt(40000e8, RAY), 40000e8, "owed == principal at t0");
+        vm.warp(block.timestamp + 3650 days);
+        eng.drip();
+        assertEq(eng.rate(), RAY, "rate never moves while dormant");
+        assertEq(eng.currentDebt(40000e8, RAY), 40000e8, "owed still == principal after a decade");
+        btcUsd.setUpdatedAt(block.timestamp); // refresh the oracle past the long warp (it fail-closes on staleness)
+        // dormant: the floor is the principal (underpay reverts); a rational borrower burns exactly it, so no
+        // fee accrues. The 1% over-repay ceiling exists only to absorb active-fee drip drift.
+        CdpLeg[] memory legs = _legs(1e8);
+        vm.prank(address(pool));
+        eng.onCdpMint(legs, 40000e8, keccak256("p"), RAY);
+        vm.prank(address(pool));
+        vm.expectRevert(CollateralEngine.BadRepayment.selector);
+        eng.onCdpClose(40000e8, 40000e8 - 1, RAY, legs, keccak256("p")); // underpay the principal → revert
+        vm.prank(address(pool));
+        eng.onCdpClose(40000e8, 40000e8, RAY, legs, keccak256("p")); // exactly the principal → ok, fee 0
+        assertEq(eng.feesAccruedCusd(), 0, "no fee accrues while dormant");
+    }
+
+    function test_setStabilityFee_onlyOwner_and_bounded() public {
+        vm.expectRevert(); // not owner
+        eng.setStabilityFee(RAY);
+        // below 1.0 (but non-zero) and above the sanity ceiling are rejected; 0, RAY, and the cap are ok.
+        vm.startPrank(admin);
+        vm.expectRevert(CollateralEngine.BadParams.selector);
+        eng.setStabilityFee(RAY - 1);
+        vm.expectRevert(CollateralEngine.BadParams.selector);
+        eng.setStabilityFee(RAY + 1e20 + 1);
+        eng.setStabilityFee(0);
+        eng.setStabilityFee(RAY);
+        eng.setStabilityFee(RAY + 1e20); // exactly the cap
+        eng.setStabilityFee(RAY + 1e19);
+        vm.stopPrank();
+        assertEq(eng.stabilityFeePerSecond(), RAY + 1e19);
+    }
+
+    function test_drip_compounds_rate_only_when_active() public {
+        vm.prank(admin);
+        eng.setStabilityFee(RAY + 1e19); // ~37%/yr at this per-second factor
+        uint256 r0 = eng.rate();
+        vm.warp(block.timestamp + 365 days);
+        eng.drip();
+        uint256 r1 = eng.rate();
+        assertGt(r1, r0, "rate compounds forward under an active fee");
+        assertLt(r1, 2 * RAY, "and stays in a sane band over a year");
+        // idempotent within a block
+        eng.drip();
+        assertEq(eng.rate(), r1, "drip is a no-op at the same timestamp");
+    }
+
+    function test_active_fee_close_demands_accrued_repayment_and_funds_tsr() public {
+        CdpLeg[] memory legs = _legs(1e8); // 60000 cUSD collateral
+        vm.prank(address(pool));
+        eng.onCdpMint(legs, 40000e8, keccak256("p"), RAY); // snapshot == RAY (rate at mint)
+
+        vm.prank(admin);
+        eng.setStabilityFee(RAY + 1e19);
+        vm.warp(block.timestamp + 365 days);
+
+        uint256 owed = eng.currentDebt(40000e8, RAY);
+        assertGt(owed, 40000e8, "debt accrued past principal");
+
+        // repaying only the principal is now insufficient — the close demands the accrued debt.
+        vm.prank(address(pool));
+        vm.expectRevert(CollateralEngine.BadRepayment.selector);
+        eng.onCdpClose(40000e8, 40000e8, RAY, legs, keccak256("p"));
+
+        // repaying exactly the accrued debt closes it; the fee (= owed − principal) funds the TSR budget.
+        vm.prank(address(pool));
+        eng.onCdpClose(40000e8, owed, RAY, legs, keccak256("p"));
+        assertEq(eng.outstandingCusd(), 0, "principal cleared from outstanding");
+        assertEq(eng.feeBudgetCusd(), owed - 40000e8, "fee captured into the re-mint budget");
+        assertEq(eng.feesAccruedCusd(), owed - 40000e8, "cumulative fee tracked");
+    }
+
+    function test_active_fee_close_tolerates_prove_to_settle_drift() public {
+        // Once the fee is active, `rate` drips every second, so the prover cannot hit the settle-time `owed`
+        // exactly. The close accepts the accrued debt plus a small over-repay band, so a borrower burns a hair
+        // more (covering the prove→settle drift) and settles; the excess funds the savers.
+        CdpLeg[] memory legs = _legs(1e8);
+        vm.prank(address(pool));
+        eng.onCdpMint(legs, 40000e8, keccak256("p"), RAY);
+        vm.prank(admin);
+        eng.setStabilityFee(RAY + 1e19);
+        vm.warp(block.timestamp + 365 days);
+        btcUsd.setUpdatedAt(block.timestamp);
+        uint256 owed = eng.currentDebt(40000e8, RAY);
+
+        // below the accrued debt (a stale prove-time amount that didn't cover the drift) → reverts
+        vm.prank(address(pool));
+        vm.expectRevert(CollateralEngine.BadRepayment.selector);
+        eng.onCdpClose(40000e8, owed - 1, RAY, legs, keccak256("p"));
+        // above the 1% band (fat-finger over-burn) → reverts
+        vm.prank(address(pool));
+        vm.expectRevert(CollateralEngine.BadRepayment.selector);
+        eng.onCdpClose(40000e8, owed + owed / 100 + 1, RAY, legs, keccak256("p"));
+        // a small over-repay inside the band → settles; the whole excess (interest + buffer) funds savers
+        uint256 overRepay = owed + owed / 200; // +0.5%
+        vm.prank(address(pool));
+        eng.onCdpClose(40000e8, overRepay, RAY, legs, keccak256("p"));
+        assertEq(eng.outstandingCusd(), 0);
+        assertEq(eng.feeBudgetCusd(), overRepay - 40000e8, "interest + over-burn all fund the savings budget");
+    }
+
+    function test_active_fee_liquidate_tolerates_drift_band() public {
+        CdpLeg[] memory legs = _legs(1e8);
+        vm.prank(address(pool));
+        eng.onCdpMint(legs, 40000e8, keccak256("p"), RAY);
+        vm.prank(admin);
+        eng.setStabilityFee(RAY + 1e19);
+        vm.warp(block.timestamp + 365 days);
+        btcUsd.setUpdatedAt(block.timestamp);
+        uint256 owed = eng.currentDebt(40000e8, RAY);
+        // below the accrued debt → reverts; a small in-band over-repay seizes the basket
+        vm.prank(address(pool));
+        vm.expectRevert(CollateralEngine.BadRepayment.selector);
+        eng.onCdpLiquidate(legs, 40000e8, owed - 1, RAY, keccak256("p"));
+        vm.prank(address(pool));
+        eng.onCdpLiquidate(legs, 40000e8, owed + owed / 200, RAY, keccak256("p"));
+        assertEq(eng.outstandingCusd(), 0);
+    }
+
+    function test_active_fee_makes_a_flat_position_liquidatable() public {
+        CdpLeg[] memory legs = _legs(1e8); // 60000 cUSD collateral, flat
+        vm.prank(address(pool));
+        eng.onCdpMint(legs, 40000e8, keccak256("p"), RAY);
+
+        // Healthy at principal: 40000·1.25 = 50000 ≤ 60000.
+        vm.prank(address(pool));
+        vm.expectRevert(CollateralEngine.PositionHealthy.selector);
+        eng.onCdpLiquidate(legs, 40000e8, 40000e8, RAY, keccak256("p"));
+
+        // Same collateral, but the stability fee accrues the debt past the liquidation threshold.
+        vm.prank(admin);
+        eng.setStabilityFee(RAY + 1e19);
+        vm.warp(block.timestamp + 365 days);
+        btcUsd.setUpdatedAt(block.timestamp); // refresh oracle past the warp
+        uint256 owed = eng.currentDebt(40000e8, RAY);
+        assertGt(owed * 12500, 60000e8 * 10000, "accrued debt is now below the 1.25x liq ratio");
+
+        // a stale (principal) repayment is rejected; liquidating at the accrued debt seizes the basket.
+        vm.prank(address(pool));
+        vm.expectRevert(CollateralEngine.BadRepayment.selector);
+        eng.onCdpLiquidate(legs, 40000e8, 40000e8, RAY, keccak256("p"));
+        vm.prank(address(pool));
+        eng.onCdpLiquidate(legs, 40000e8, owed, RAY, keccak256("p"));
+        assertEq(eng.outstandingCusd(), 0);
+        assertEq(eng.feeBudgetCusd(), owed - 40000e8, "liquidation fee also funds the TSR");
+    }
+
+    function test_mint_rejects_future_or_subunit_snapshot() public {
+        CdpLeg[] memory legs = _legs(1e8);
+        // a FUTURE snapshot (> current rate) would let a borrower dodge accrued fees — barred.
+        vm.prank(address(pool));
+        vm.expectRevert(CollateralEngine.BadSnapshot.selector);
+        eng.onCdpMint(legs, 40000e8, keccak256("future"), RAY + 1);
+        // a snapshot below 1.0 is nonsensical (and would mis-scale owed) — barred.
+        vm.prank(address(pool));
+        vm.expectRevert(CollateralEngine.BadSnapshot.selector);
+        eng.onCdpMint(legs, 40000e8, keccak256("sub"), RAY - 1);
+        // a valid (stale-or-current) snapshot is accepted.
+        vm.prank(address(pool));
+        eng.onCdpMint(legs, 40000e8, keccak256("ok"), RAY);
+    }
+
+    function test_close_rejects_subunit_snapshot() public {
+        CdpLeg[] memory legs = _legs(1e8);
+        vm.prank(address(pool));
+        eng.onCdpMint(legs, 40000e8, keccak256("p"), RAY);
+        vm.prank(address(pool));
+        vm.expectRevert(CollateralEngine.BadSnapshot.selector);
+        eng.onCdpClose(40000e8, 40000e8, RAY - 1, legs, keccak256("p"));
+    }
+
+    function test_active_fee_topup_health_uses_accrued_debt() public {
+        CdpLeg[] memory oldLegs = _legs(1e8); // 60000 collateral
+        vm.prank(address(pool));
+        eng.onCdpMint(oldLegs, 40000e8, keccak256("p"), RAY);
+
+        vm.prank(admin);
+        eng.setStabilityFee(RAY + 1e19);
+        vm.warp(block.timestamp + 365 days);
+        btcUsd.setUpdatedAt(block.timestamp); // refresh oracle past the warp
+        uint256 owed = eng.currentDebt(40000e8, RAY);
+
+        // A top-up that adds collateral but does not cover the ACCRUED debt at 1.5x is rejected — a dust
+        // top-up cannot roll an interest-eroded position out of range.
+        uint256 needSats = (owed * 15000 / 10000) * 1e8 / 60000e8; // sats whose USD == owed·1.5
+        CdpLeg[] memory tooSmall = _legs(needSats - 1e6);
+        vm.prank(address(pool));
+        vm.expectRevert(CollateralEngine.Undercollateralized.selector);
+        eng.onCdpTopup(oldLegs, tooSmall, 40000e8, RAY, keccak256("p"), keccak256("new"));
+        // Enough collateral to cover the accrued debt at the mint floor is accepted.
+        CdpLeg[] memory enough = _legs(needSats + 1e7);
+        vm.prank(address(pool));
+        eng.onCdpTopup(oldLegs, enough, 40000e8, RAY, keccak256("p"), keccak256("new"));
+    }
+
+    // ─────────────────────── cUSD savings rate (TSR) ───────────────────────
+
+    function test_tsr_bond_fee_harvest_unbond_lifecycle() public {
+        bytes32 cusd = eng.CUSD_ASSET_ID();
+        // saver bonds 1000 cUSD at the live rps (0, dormant)
+        vm.prank(address(pool));
+        eng.onCdpMint(_savingsLegs(cusd, 1000e8, 0), 0, RECEIPT, RAY);
+        assertEq(eng.totalSavingsShares(), 1000e8, "shares staked");
+        assertEq(eng.savingsRps(), 0, "no rps before any fee");
+
+        uint256 fee = _feeFromCdp(); // a fee is collected and split to the sole saver
+        assertEq(eng.feeBudgetCusd(), fee, "fee captured into the budget");
+        assertGt(eng.savingsRps(), 0, "rps grew from the fee");
+
+        uint256 reward = eng.pendingSavingsReward(1000e8, 0);
+        assertApproxEqAbs(reward, fee, 1e8, "sole saver entitled to ~the whole fee");
+        assertLe(reward, fee, "entitlement never exceeds the fee");
+
+        // harvest mints `reward` cUSD (the guest pushed the note); the engine consumes the budget by exactly it
+        vm.prank(address(pool));
+        eng.onCdpMint(_savingsLegs(cusd, 1000e8, 0), reward, RECEIPT, RAY);
+        assertEq(eng.feeBudgetCusd(), fee - reward, "budget consumed by exactly the reward");
+        assertEq(eng.totalSavingsShares(), 1000e8, "harvest keeps principal staked");
+
+        // unbond releases the staked cUSD
+        vm.prank(address(pool));
+        eng.onCdpClose(0, 0, RAY, _single(cusd, 1000e8), keccak256("unbond"));
+        assertEq(eng.totalSavingsShares(), 0, "shares released");
+    }
+
+    function test_tsr_dormant_pays_nothing() public {
+        bytes32 cusd = eng.CUSD_ASSET_ID();
+        vm.prank(address(pool));
+        eng.onCdpMint(_savingsLegs(cusd, 1000e8, 0), 0, RECEIPT, RAY);
+        // dormant: open + close a CDP with NO fee → no savings reward accrues
+        vm.prank(address(pool));
+        eng.onCdpMint(_legs(1e8), 40000e8, keccak256("c"), RAY);
+        vm.prank(address(pool));
+        eng.onCdpClose(40000e8, 40000e8, RAY, _legs(1e8), keccak256("c"));
+        assertEq(eng.savingsRps(), 0, "no fee, no rps");
+        assertEq(eng.pendingSavingsReward(1000e8, 0), 0, "saver earns nothing while dormant");
+    }
+
+    function test_tsr_bond_binds_live_rps() public {
+        bytes32 cusd = eng.CUSD_ASSET_ID();
+        vm.prank(address(pool));
+        vm.expectRevert(CollateralEngine.SavingsEntryNotLive.selector);
+        eng.onCdpMint(_savingsLegs(cusd, 1000e8, 1), 0, RECEIPT, RAY); // rps_entry 1 != live rps 0 (no backdating)
+    }
+
+    function test_tsr_harvest_cannot_overclaim_entitlement() public {
+        bytes32 cusd = eng.CUSD_ASSET_ID();
+        vm.prank(address(pool));
+        eng.onCdpMint(_savingsLegs(cusd, 1000e8, 0), 0, RECEIPT, RAY);
+        _feeFromCdp();
+        uint256 reward = eng.pendingSavingsReward(1000e8, 0);
+        vm.prank(address(pool));
+        vm.expectRevert(CollateralEngine.SavingsOverClaim.selector);
+        eng.onCdpMint(_savingsLegs(cusd, 1000e8, 0), reward + 1, RECEIPT, RAY); // one over entitlement
+    }
+
+    function test_tsr_no_savers_fee_is_not_distributed() public {
+        uint256 fee = _feeFromCdp(); // no savers bonded
+        assertEq(eng.savingsRps(), 0, "no savers -> rps stays flat");
+        assertEq(eng.feeBudgetCusd(), fee, "fee still captured (un-attributed, never minted)");
+    }
+
+    function test_tsr_fee_splits_pro_rata() public {
+        bytes32 cusd = eng.CUSD_ASSET_ID();
+        // two savers staking 3:1
+        vm.prank(address(pool));
+        eng.onCdpMint(_savingsLegs(cusd, 750e8, 0), 0, RECEIPT, RAY);
+        vm.prank(address(pool));
+        eng.onCdpMint(_savingsLegs(cusd, 250e8, 0), 0, RECEIPT, RAY);
+        uint256 fee = _feeFromCdp();
+        uint256 r1 = eng.pendingSavingsReward(750e8, 0);
+        uint256 r2 = eng.pendingSavingsReward(250e8, 0);
+        assertApproxEqRel(r1, r2 * 3, 1e15, "rewards split with the stake (3:1)"); // within 0.1%
+        assertLe(r1 + r2, fee, "total saver entitlement never exceeds the fee collected");
+    }
+
+    function test_tsr_unbond_rejects_non_cusd_or_oversized() public {
+        bytes32 cusd = eng.CUSD_ASSET_ID();
+        vm.prank(address(pool));
+        eng.onCdpMint(_savingsLegs(cusd, 1000e8, 0), 0, RECEIPT, RAY);
+        // releasing a non-cUSD asset is a malformed unbond
+        vm.prank(address(pool));
+        vm.expectRevert(CollateralEngine.BadSavingsShape.selector);
+        eng.onCdpClose(0, 0, RAY, _single(CBTC, 1000e8), keccak256("u"));
+        // releasing more than staked is rejected
+        vm.prank(address(pool));
+        vm.expectRevert(CollateralEngine.BadSavingsShape.selector);
+        eng.onCdpClose(0, 0, RAY, _single(cusd, 1000e8 + 1), keccak256("u"));
     }
 
     function test_stale_feed_fails_closed() public {

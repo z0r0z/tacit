@@ -34,14 +34,14 @@ contract FarmControllerTest is Test {
     function _bond(uint256 shares, bytes32 leaf) internal {
         CdpLeg[] memory legs = new CdpLeg[](1);
         legs[0] = CdpLeg(STAKE, shares);
-        farm.onCdpMint(legs, 0, leaf);
+        farm.onCdpMint(legs, 0, leaf, 0);
     }
 
     function _harvest(uint256 shares, uint256 rpsEntry, uint256 reward) internal {
         CdpLeg[] memory legs = new CdpLeg[](2);
         legs[0] = CdpLeg(REWARD, shares);
         legs[1] = CdpLeg(bytes32(0), rpsEntry);
-        farm.onCdpMint(legs, reward, HARVEST);
+        farm.onCdpMint(legs, reward, HARVEST, 0);
     }
 
     // A receipt bond rides the SAME sentinel (positionLeaf == 1) with debtValue == 0; the guest appends the
@@ -50,7 +50,7 @@ contract FarmControllerTest is Test {
         CdpLeg[] memory legs = new CdpLeg[](2);
         legs[0] = CdpLeg(STAKE, shares);
         legs[1] = CdpLeg(bytes32(0), rpsEntry);
-        farm.onCdpMint(legs, 0, HARVEST); // debtValue == 0 ⇒ BOND
+        farm.onCdpMint(legs, 0, HARVEST, 0); // debtValue == 0 ⇒ BOND
     }
 
     /// The receipt bond binds rps_entry to the live rps (no backdating), and harvest keeps the principal staked.
@@ -105,7 +105,7 @@ contract FarmControllerTest is Test {
     function test_bare_payout_unsupported() public {
         CdpLeg[] memory none = new CdpLeg[](0);
         vm.expectRevert(FarmController.BarePayoutUnsupported.selector);
-        farm.onCdpMint(none, 100, bytes32(0));
+        farm.onCdpMint(none, 100, bytes32(0), 0);
     }
 
     function test_harvest_requires_pinned_reward_asset() public {
@@ -115,14 +115,14 @@ contract FarmControllerTest is Test {
         legs[0] = CdpLeg(keccak256("WRONG"), 100);
         legs[1] = CdpLeg(bytes32(0), 0);
         vm.expectRevert(FarmController.WrongRewardAsset.selector);
-        farm.onCdpMint(legs, 100, HARVEST);
+        farm.onCdpMint(legs, 100, HARVEST, 0);
     }
 
     function test_bare_bond_cannot_mint_debt() public {
         CdpLeg[] memory legs = new CdpLeg[](1);
         legs[0] = CdpLeg(STAKE, 100);
         vm.expectRevert(FarmController.BadFarmShape.selector);
-        farm.onCdpMint(legs, 1, keccak256("bare-position"));
+        farm.onCdpMint(legs, 1, keccak256("bare-position"), 0);
     }
 
     function test_bond_and_unbond_require_pinned_stake_asset() public {
@@ -130,16 +130,16 @@ contract FarmControllerTest is Test {
         receipt[0] = CdpLeg(keccak256("WRONG-LP"), 100);
         receipt[1] = CdpLeg(bytes32(0), 0);
         vm.expectRevert(FarmController.WrongStakeAsset.selector);
-        farm.onCdpMint(receipt, 0, HARVEST);
+        farm.onCdpMint(receipt, 0, HARVEST, 0);
 
         CdpLeg[] memory bare = new CdpLeg[](1);
         bare[0] = CdpLeg(keccak256("WRONG-LP"), 100);
         vm.expectRevert(FarmController.WrongStakeAsset.selector);
-        farm.onCdpMint(bare, 0, keccak256("bare-position"));
+        farm.onCdpMint(bare, 0, keccak256("bare-position"), 0);
 
         _bond(100, keccak256("p1"));
         vm.expectRevert(FarmController.WrongStakeAsset.selector);
-        farm.onCdpClose(0, bare, keccak256("n1"));
+        farm.onCdpClose(0, 0, 0, bare, keccak256("n1"));
     }
 
     function test_unbond_enforces_lockup() public {
@@ -147,14 +147,14 @@ contract FarmControllerTest is Test {
             new FarmController(address(this), STAKE, REWARD, false, false, address(this), block.timestamp + 7 days);
         CdpLeg[] memory bondLegs = new CdpLeg[](1);
         bondLegs[0] = CdpLeg(STAKE, 100);
-        lockedFarm.onCdpMint(bondLegs, 0, keccak256("p1"));
+        lockedFarm.onCdpMint(bondLegs, 0, keccak256("p1"), 0);
 
         CdpLeg[] memory legs = new CdpLeg[](1);
         legs[0] = CdpLeg(STAKE, 100);
         vm.expectRevert(FarmController.Locked.selector);
-        lockedFarm.onCdpClose(0, legs, keccak256("n1"));
+        lockedFarm.onCdpClose(0, 0, 0, legs, keccak256("n1"));
         skip(7 days);
-        lockedFarm.onCdpClose(0, legs, keccak256("n1"));
+        lockedFarm.onCdpClose(0, 0, 0, legs, keccak256("n1"));
         assertEq(lockedFarm.totalShares(), 0);
     }
 
@@ -181,26 +181,26 @@ contract FarmControllerTest is Test {
         CdpLeg[] memory legs = new CdpLeg[](1);
         legs[0] = CdpLeg(STAKE, 100);
         vm.expectRevert(FarmController.BadFarmShape.selector);
-        farm.onCdpClose(1, legs, keccak256("n1"));
+        farm.onCdpClose(1, 0, 0, legs, keccak256("n1"));
 
         legs[0] = CdpLeg(STAKE, 101);
         vm.expectRevert(FarmController.BadFarmShape.selector);
-        farm.onCdpClose(0, legs, keccak256("n2"));
+        farm.onCdpClose(0, 0, 0, legs, keccak256("n2"));
     }
 
     function test_liquidate_and_topup_unsupported() public {
         CdpLeg[] memory legs = new CdpLeg[](1);
         legs[0] = CdpLeg(STAKE, 1);
         vm.expectRevert(FarmController.NotSupported.selector);
-        farm.onCdpLiquidate(legs, 0, keccak256("n1"));
+        farm.onCdpLiquidate(legs, 0, 0, 0, keccak256("n1"));
         vm.expectRevert(FarmController.NotSupported.selector);
-        farm.onCdpTopup(legs, legs, 0, keccak256("n1"), keccak256("p2"));
+        farm.onCdpTopup(legs, legs, 0, 0, keccak256("n1"), keccak256("p2"));
     }
 
     function test_only_pool() public {
         FarmController other = new FarmController(address(0xBEEF), STAKE, REWARD, false, false, address(this), 0);
         vm.expectRevert(FarmController.NotPool.selector);
-        other.onCdpClose(0, new CdpLeg[](0), keccak256("n1"));
+        other.onCdpClose(0, 0, 0, new CdpLeg[](0), keccak256("n1"));
     }
 
     // ── v2: Synthetix notify + period clamp + recover ──
@@ -222,7 +222,7 @@ contract FarmControllerTest is Test {
         f.notifyRewardAmount(100, 10); // rate = 10, periodFinish = t0 + 10
         CdpLeg[] memory legs = new CdpLeg[](1);
         legs[0] = CdpLeg(STAKE, 100);
-        f.onCdpMint(legs, 0, keccak256("p1")); // bond 100 at t0
+        f.onCdpMint(legs, 0, keccak256("p1"), 0); // bond 100 at t0
         skip(20); // 20s, but the window closed at t0 + 10
         // accrual capped at 10s: rps = 10·10·PRECISION/100 = PRECISION (NOT 2·PRECISION)
         assertEq(f.currentRps(), f.PRECISION(), "accrual clamped to periodFinish");
@@ -260,12 +260,12 @@ contract FarmControllerTest is Test {
         CdpLeg[] memory bare = new CdpLeg[](1);
         bare[0] = CdpLeg(STAKE, 100);
         vm.expectRevert(FarmController.NotSupported.selector);
-        rf.onCdpMint(bare, 0, keccak256("bare-position")); // leaf > 1 rejected in receipt mode
+        rf.onCdpMint(bare, 0, keccak256("bare-position"), 0); // leaf > 1 rejected in receipt mode
 
         CdpLeg[] memory receipt = new CdpLeg[](2);
         receipt[0] = CdpLeg(STAKE, 100);
         receipt[1] = CdpLeg(bytes32(0), 0);
-        rf.onCdpMint(receipt, 0, HARVEST); // receipt bond (leaf == 1) still accepted
+        rf.onCdpMint(receipt, 0, HARVEST, 0); // receipt bond (leaf == 1) still accepted
         assertEq(rf.totalShares(), 100, "receipt bond tracked");
     }
 

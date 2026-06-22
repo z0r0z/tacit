@@ -4,7 +4,10 @@ out = "out"
 libs = ["lib"]
 via_ir = true
 optimizer = true
-optimizer_runs = 200
+# runs=1 maximizes codesize headroom (~63B under EIP-170 at the pre-fee baseline) so the cUSD stability-fee /
+# DSR rails fit the immutable pool. The launch freeze had chosen runs=200 for gas; this trades a little gas
+# for the bytecode the fee surface needs.
+optimizer_runs = 1
 bytecode_hash = "none"
 cbor_metadata = false
 fs_permissions = [{ access = "read", path = "./test/fixtures" }, { access = "read", path = "./sp1/elf-vkey-pin.json" }, { access = "read", path = "./sp1/confidential/elf-vkey-pin.json" }, { access = "read", path = "./sp1/confidential/fixtures" }]

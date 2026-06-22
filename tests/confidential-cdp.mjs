@@ -38,6 +38,16 @@ const controllerB = '0x' + 'c2'.repeat(20);
   const someLeaf = '0x' + '42'.repeat(32);
   const expNu = hx(keccak_256(cat(enc.encode('tacit-cdp-position-v1'), bytesN(someLeaf, 32), enc.encode('spent'))));
   assert.equal(cdp.positionNullifier(someLeaf), expNu, 'positionNullifier byte-parity');
+
+  // position leaf = keccak(domain ‖ controller[20] ‖ debtAsset[32] ‖ basketRoot[32] ‖ debtValue_be[32]
+  //                        ‖ rateSnapshot[32] ‖ owner[32] ‖ nonce[32]) — pins the rateSnapshot byte position.
+  const pBasket = cdp.basketRoot([cdp.basketLeg('0x' + 'aa'.repeat(32), 100n)]);
+  const pDebt = cdp.debtAssetId(controllerA);
+  const pOwn = '0x' + '71'.repeat(32), pNon = '0x' + '81'.repeat(32), pSnap = '0x' + '91'.repeat(32);
+  const expLeaf = hx(keccak_256(cat(enc.encode('tacit-cdp-position-v1'), bytesN(controllerA, 20), bytesN(pDebt, 32),
+    bytesN(pBasket, 32), beN(50n, 32), bytesN(pSnap, 32), bytesN(pOwn, 32), bytesN(pNon, 32))));
+  assert.equal(cdp.positionLeaf(controllerA, pDebt, pBasket, 50n, pSnap, pOwn, pNon), expLeaf, 'positionLeaf byte-parity (incl. rateSnapshot)');
+
   assert.equal(typeof cdp.cdpTopupCollateralSigma, 'function', 'top-up sigma helper exported');
   assert.equal(typeof cdp.cdpLiquidateDebtSigma, 'function', 'liquidation debt sigma helper exported');
 }
@@ -58,20 +68,21 @@ const controllerB = '0x' + 'c2'.repeat(20);
   assert.notEqual(cdp.basketLeg('0x' + 'aa'.repeat(32), 100n), cdp.basketLeg('0x' + 'aa'.repeat(32), 101n), 'leg binds value');
   assert.notEqual(cdp.basketLeg('0x' + 'aa'.repeat(32), 100n), cdp.basketLeg('0x' + 'ab'.repeat(32), 100n), 'leg binds asset');
 
-  // position leaf binds every field.
-  const owner = '0x' + '71'.repeat(32), nonce = '0x' + '81'.repeat(32);
-  const base = cdp.positionLeaf(controllerA, da, single, 50n, owner, nonce);
-  assert.equal(base, cdp.positionLeaf(controllerA, da, single, 50n, owner, nonce), 'position leaf deterministic');
-  assert.notEqual(base, cdp.positionLeaf(controllerB, da, single, 50n, owner, nonce), 'controller bound');
-  assert.notEqual(base, cdp.positionLeaf(controllerA, cdp.debtAssetId(controllerB), single, 50n, owner, nonce), 'debt asset bound');
-  assert.notEqual(base, cdp.positionLeaf(controllerA, da, multi, 50n, owner, nonce), 'basket root bound');
-  assert.notEqual(base, cdp.positionLeaf(controllerA, da, single, 51n, owner, nonce), 'debt value bound');
-  assert.notEqual(base, cdp.positionLeaf(controllerA, da, single, 50n, '0x' + '72'.repeat(32), nonce), 'owner bound');
-  assert.notEqual(base, cdp.positionLeaf(controllerA, da, single, 50n, owner, '0x' + '82'.repeat(32)), 'nonce bound');
+  // position leaf binds every field (incl. the rate snapshot).
+  const owner = '0x' + '71'.repeat(32), nonce = '0x' + '81'.repeat(32), snap = '0x' + '91'.repeat(32);
+  const base = cdp.positionLeaf(controllerA, da, single, 50n, snap, owner, nonce);
+  assert.equal(base, cdp.positionLeaf(controllerA, da, single, 50n, snap, owner, nonce), 'position leaf deterministic');
+  assert.notEqual(base, cdp.positionLeaf(controllerB, da, single, 50n, snap, owner, nonce), 'controller bound');
+  assert.notEqual(base, cdp.positionLeaf(controllerA, cdp.debtAssetId(controllerB), single, 50n, snap, owner, nonce), 'debt asset bound');
+  assert.notEqual(base, cdp.positionLeaf(controllerA, da, multi, 50n, snap, owner, nonce), 'basket root bound');
+  assert.notEqual(base, cdp.positionLeaf(controllerA, da, single, 51n, snap, owner, nonce), 'debt value bound');
+  assert.notEqual(base, cdp.positionLeaf(controllerA, da, single, 50n, '0x' + '92'.repeat(32), owner, nonce), 'rate snapshot bound');
+  assert.notEqual(base, cdp.positionLeaf(controllerA, da, single, 50n, snap, '0x' + '72'.repeat(32), nonce), 'owner bound');
+  assert.notEqual(base, cdp.positionLeaf(controllerA, da, single, 50n, snap, owner, '0x' + '82'.repeat(32)), 'nonce bound');
 
   // the position nullifier is one-to-one with the leaf.
   assert.equal(cdp.positionNullifier(base), cdp.positionNullifier(base), 'position ν deterministic');
-  assert.notEqual(cdp.positionNullifier(base), cdp.positionNullifier(cdp.positionLeaf(controllerA, da, single, 50n, owner, '0x' + '82'.repeat(32))), 'distinct positions ⇒ distinct ν');
+  assert.notEqual(cdp.positionNullifier(base), cdp.positionNullifier(cdp.positionLeaf(controllerA, da, single, 50n, snap, owner, '0x' + '82'.repeat(32))), 'distinct positions ⇒ distinct ν');
 }
 
 console.log('confidential-cdp: all assertions passed');

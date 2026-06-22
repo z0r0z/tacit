@@ -83,18 +83,22 @@ sol! {
     struct CdpLeg { bytes32 asset; uint256 value; }
     // OP_CDP_MINT: the contract appends `positionLeaf` to its position set + calls
     // controller.onCdpMint(legs, debtValue); it MUST check debtAsset == cdp_debt_asset_id(controller).
-    struct CdpMint { address controller; bytes32 debtAsset; uint256 debtValue; bytes32 positionLeaf; CdpLeg[] legs; }
-    // OP_CDP_CLOSE: the contract dedups `positionNullifier` + calls controller.onCdpClose(debtValue, legs).
-    struct CdpClose { address controller; uint256 debtValue; bytes32 positionNullifier; CdpLeg[] legs; }
-    // OP_CDP_LIQUIDATE: burn exact debt notes, then the contract dedups `positionNullifier` + calls
-    // controller.onCdpLiquidate(legs, debtValue) (reverts if healthy); seized legs ride `withdrawals` to
-    // the liquidator.
-    struct CdpLiquidate { address controller; uint256 debtValue; bytes32 positionNullifier; CdpLeg[] legs; }
+    // `rateSnapshot` = the controller debt accumulator captured at mint (the leaf commits it); `repaid` =
+    // cUSD burned at close (== the accrued debt the controller enforces). The guest carries these verbatim —
+    // all fee math is the controller's. Dormant (rate == RAY): rateSnapshot == rate so repaid == debtValue.
+    struct CdpMint { address controller; bytes32 debtAsset; uint256 debtValue; bytes32 positionLeaf; uint256 rateSnapshot; CdpLeg[] legs; }
+    // OP_CDP_CLOSE: the contract dedups `positionNullifier` + calls controller.onCdpClose(debtValue, repaid, ...).
+    struct CdpClose { address controller; uint256 debtValue; uint256 repaid; uint256 rateSnapshot; bytes32 positionNullifier; CdpLeg[] legs; }
+    // OP_CDP_LIQUIDATE: burn debt notes summing to the accrued debt, then the contract dedups
+    // `positionNullifier` + calls controller.onCdpLiquidate (reverts if healthy); seized legs ride `withdrawals`.
+    struct CdpLiquidate { address controller; uint256 debtValue; uint256 repaid; uint256 rateSnapshot; bytes32 positionNullifier; CdpLeg[] legs; }
     // OP_CDP_TOPUP: consume an existing position and append a same-debt replacement with a larger basket.
-    // The controller authorizes the replacement health; outstanding debt is unchanged.
+    // The controller authorizes the replacement health; outstanding debt is unchanged. The snapshot carries
+    // forward unchanged (accrual is uninterrupted).
     struct CdpTopup {
         address controller;
         uint256 debtValue;
+        uint256 rateSnapshot;
         bytes32 oldPositionNullifier;
         bytes32 newPositionLeaf;
         CdpLeg[] oldLegs;
@@ -1834,6 +1838,10 @@ pub fn main() {
                 let owner = r32();
                 let debt_value: u64 = io::read();
                 let nonce = r32();
+                // The controller's debt-accumulator snapshot at mint (RAY-scaled, 32B BE). Committed into the
+                // position leaf + surfaced; the controller checks it (cUSD CDP: snapshot ∈ [RAY, rate]). 0 for
+                // fee-free controllers (farms). The guest does NO rate math — it carries the value.
+                let rate_snapshot = r32();
                 let n_legs: u32 = io::read();
                 // SPEC-CONTROLLER-VAULT-AMENDMENT §§1-2: relax the two anti-bloat asserts so one op serves three
                 // shapes. `debt_value == 0` ⇒ a BOND (lock the basket into a controller position, mint NO debt
@@ -1924,7 +1932,7 @@ pub fn main() {
                 // or the `0` sentinel for a PAYOUT (n_legs == 0 ⇒ no position; the pool skips the insert).
                 let position_leaf = if n_legs > 0 {
                     let basket_root = cdp_basket_root(&leg_hashes);
-                    cdp_position_leaf(&controller, &debt_asset, &basket_root, debt_value, &owner, &nonce)
+                    cdp_position_leaf(&controller, &debt_asset, &basket_root, debt_value, &rate_snapshot, &owner, &nonce)
                 } else {
                     [0u8; 32]
                 };
@@ -1933,6 +1941,7 @@ pub fn main() {
                     debtAsset: debt_asset.into(),
                     debtValue: U256::from(debt_value),
                     positionLeaf: position_leaf.into(),
+                    rateSnapshot: U256::from_be_slice(&rate_snapshot),
                     legs: legs_pv,
                 });
             }
@@ -1946,6 +1955,7 @@ pub fn main() {
                 let owner = r32();
                 let debt_value: u64 = io::read();
                 let nonce = r32();
+                let rate_snapshot = r32(); // the position's mint-time accumulator snapshot (carried in the leaf)
                 let position_index: u64 = io::read();
                 let position_path = r_path();
                 let n_legs: u32 = io::read();
@@ -1981,6 +1991,7 @@ pub fn main() {
                     &debt_asset,
                     &basket_root,
                     debt_value,
+                    &rate_snapshot,
                     &owner,
                     &nonce,
                 );
@@ -2052,13 +2063,19 @@ pub fn main() {
                     nullifiers.push(nu);
                     repaid += value as u128;
                 }
+                // Floor only: the burn must cover at least the principal. The controller enforces the EXACT
+                // accrued debt (principal · rate / rate_snapshot ≥ principal) against `repaid` — keeping the
+                // fee arithmetic in the auditable engine, not the guest. Dormant: accrued == principal, so the
+                // engine pins repaid == debt_value (the original exact-debt close).
                 assert!(
-                    repaid == debt_value as u128,
-                    "cdp-close: must repay exactly the position debt"
+                    repaid >= debt_value as u128,
+                    "cdp-close: repayment below principal"
                 );
                 cdp_closes.push(CdpClose {
                     controller: Address::from(controller),
                     debtValue: U256::from(debt_value),
+                    repaid: U256::from(repaid),
+                    rateSnapshot: U256::from_be_slice(&rate_snapshot),
                     positionNullifier: cdp_position_nullifier(&position_leaf).into(),
                     legs: legs_pv,
                 });
@@ -2074,6 +2091,7 @@ pub fn main() {
                 let owner = r32();
                 let debt_value: u64 = io::read();
                 let nonce = r32();
+                let rate_snapshot = r32(); // the position's mint-time accumulator snapshot (carried in the leaf)
                 let liquidator = r20();
                 let position_index: u64 = io::read();
                 let position_path = r_path();
@@ -2109,6 +2127,7 @@ pub fn main() {
                     &debt_asset,
                     &basket_root,
                     debt_value,
+                    &rate_snapshot,
                     &owner,
                     &nonce,
                 );
@@ -2163,13 +2182,17 @@ pub fn main() {
                     nullifiers.push(nu);
                     repaid += value as u128;
                 }
+                // Floor only — the controller enforces the exact accrued debt against `repaid` and gates health
+                // against it (a fee-eroded position becomes seizable). Dormant: accrued == principal.
                 assert!(
-                    repaid == debt_value as u128,
-                    "cdp-liquidate: must repay exactly the position debt"
+                    repaid >= debt_value as u128,
+                    "cdp-liquidate: repayment below principal"
                 );
                 cdp_liquidations.push(CdpLiquidate {
                     controller: Address::from(controller),
                     debtValue: U256::from(debt_value),
+                    repaid: U256::from(repaid),
+                    rateSnapshot: U256::from_be_slice(&rate_snapshot),
                     positionNullifier: cdp_position_nullifier(&position_leaf).into(),
                     legs: legs_pv,
                 });
@@ -2187,6 +2210,9 @@ pub fn main() {
                 assert!(debt_value > 0, "cdp-topup: zero debt");
                 let old_nonce = r32();
                 let new_nonce = r32();
+                // Carried forward UNCHANGED into the replacement leaf: a top-up adds collateral, it does not
+                // settle accrued interest. Old-leaf membership pins it to the genuine mint snapshot.
+                let rate_snapshot = r32();
                 let position_index: u64 = io::read();
                 let position_path = r_path();
                 let n_old_legs: u32 = io::read();
@@ -2225,6 +2251,7 @@ pub fn main() {
                     &debt_asset,
                     &old_basket_root,
                     debt_value,
+                    &rate_snapshot,
                     &owner,
                     &old_nonce,
                 );
@@ -2316,12 +2343,14 @@ pub fn main() {
                     &debt_asset,
                     &new_basket_root,
                     debt_value,
+                    &rate_snapshot,
                     &owner,
                     &new_nonce,
                 );
                 cdp_topups.push(CdpTopup {
                     controller: Address::from(controller),
                     debtValue: U256::from(debt_value),
+                    rateSnapshot: U256::from_be_slice(&rate_snapshot),
                     oldPositionNullifier: cdp_position_nullifier(&old_position_leaf).into(),
                     newPositionLeaf: new_position_leaf.into(),
                     oldLegs: old_legs_pv,
@@ -2384,6 +2413,7 @@ pub fn main() {
                     debtAsset: debt_asset.into(),
                     debtValue: U256::from(0u64),
                     positionLeaf: sentinel.into(),
+                    rateSnapshot: U256::from(0u64), // inert: a farm controller has no stability fee
                     legs: vec![
                         CdpLeg { asset: lp_asset.into(), value: U256::from(shares) },
                         CdpLeg { asset: [0u8; 32].into(), value: U256::from(rps_entry) },
@@ -2445,8 +2475,9 @@ pub fn main() {
                     debtAsset: debt_asset.into(),
                     debtValue: U256::from(reward),
                     positionLeaf: sentinel.into(),
+                    rateSnapshot: U256::from(0u64), // inert: a farm controller has no stability fee
                     legs: vec![
-                        CdpLeg { asset: [0u8; 32].into(), value: U256::from(shares) },
+                        CdpLeg { asset: reward_asset.into(), value: U256::from(shares) },
                         CdpLeg { asset: [0u8; 32].into(), value: U256::from(rps_entry) },
                     ],
                 });
@@ -2492,6 +2523,8 @@ pub fn main() {
                 cdp_closes.push(CdpClose {
                     controller: Address::from(controller),
                     debtValue: U256::from(0u64),
+                    repaid: U256::from(0u64), // farm unbond: no debt, no repayment
+                    rateSnapshot: U256::from(0u64), // inert: a farm controller has no stability fee
                     positionNullifier: receipt_null.into(),
                     legs: vec![CdpLeg { asset: lp_asset.into(), value: U256::from(shares) }],
                 });

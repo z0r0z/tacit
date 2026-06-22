@@ -33,6 +33,7 @@ fn main() {
     s.write(&hexv(f["owner"].as_str().unwrap()));
     s.write(&f["debtValue"].as_u64().unwrap());
     s.write(&hexv(f["nonce"].as_str().unwrap()));
+    s.write(&hexv(f["rateSnapshot"].as_str().unwrap())); // rate_snapshot (r32, after nonce)
     s.write(&f["positionIndex"].as_u64().unwrap());
     for p in f["positionPath"].as_array().unwrap() { s.write(&hexv(p.as_str().unwrap())); }
     let legs = f["legs"].as_array().unwrap();

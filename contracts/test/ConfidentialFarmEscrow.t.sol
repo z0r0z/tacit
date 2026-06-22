@@ -10,10 +10,10 @@ contract MockVerifier is ISP1Verifier {
 
 /// Accepts every callback — the pool's escrow treasury bound is what's under test here, not the rps policy.
 contract MockController is ICdpController {
-    function onCdpMint(CdpLeg[] calldata, uint256, bytes32) external {}
-    function onCdpClose(uint256, CdpLeg[] calldata, bytes32) external {}
-    function onCdpLiquidate(CdpLeg[] calldata, uint256, bytes32) external {}
-    function onCdpTopup(CdpLeg[] calldata, CdpLeg[] calldata, uint256, bytes32, bytes32) external {}
+    function onCdpMint(CdpLeg[] calldata, uint256, bytes32, uint256) external {}
+    function onCdpClose(uint256, uint256, uint256, CdpLeg[] calldata, bytes32) external {}
+    function onCdpLiquidate(CdpLeg[] calldata, uint256, uint256, uint256, bytes32) external {}
+    function onCdpTopup(CdpLeg[] calldata, CdpLeg[] calldata, uint256, uint256, bytes32, bytes32) external {}
 }
 
 contract MockERC20 {
@@ -86,6 +86,7 @@ contract ConfidentialFarmEscrowTest is Test {
             debtAsset: keccak256(abi.encodePacked("tacit-cdp-debt-v1", address(controller))),
             debtValue: rewardAmt,
             positionLeaf: bytes32(uint256(1)),
+            rateSnapshot: 0,
             legs: legs
         });
         pool.settle(abi.encode(pv), "", new bytes[](1));
