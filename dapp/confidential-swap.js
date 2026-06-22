@@ -89,23 +89,35 @@ export function makeConfidentialSwap({ keccak256, pool }) {
   const intentCtx = (assetA, assetB, chainBinding, it) => intentContext(
     SWAP_TAG, chainBinding, assetA, assetB,
     [[it.in.cx, it.in.cy, it.in.owner], [it.out.cx, it.out.cy, it.out.owner]],
-    [BigInt(it.dirByte), it.amountIn, it.amountOut, it.minOut, BigInt(it.deadline ?? 0)],
+    [BigInt(it.dirByte), it.amountIn, it.amountOut, it.minOut, BigInt(it.deadline ?? 0), BigInt(it.fee ?? 0)],
   );
 
   // Build one intent. The secp blindings rInSecp/rOutSecp stay CLIENT-SIDE — they never enter the
   // witness; only the opening sigmas (R, z) do (generated in buildBatch once the batch context is
   // known). The sigma nonces are DERIVED per (note blinding, intent context) at sign time, so a
   // re-quote of the same note under a new price/min_out automatically uses a fresh nonce (no reuse).
-  function buildIntent({ direction, amountIn, priceNum, priceDen, minOut, rInSecp, rOutSecp, inNote, outOwner, deadline }) {
-    const { amountOut, rem } = clearOut(direction, amountIn, priceNum, priceDen);
-    const inC = commitXY(amountIn, rInSecp);     // C_in = amount_in·H + r_in·G
+  function buildIntent({ direction, amountIn, priceNum, priceDen, minOut, rInSecp, rOutSecp, inNote, outOwner, deadline, fee = 0n, assetA, assetB }) {
+    const feeBig = BigInt(fee);
+    if (!(feeBig < BigInt(amountIn))) throw new Error('swap: fee >= input');
+    const swapIn = BigInt(amountIn) - feeBig;    // only amountIn − fee swaps; `fee` is the relay fee in the input asset
+    const { amountOut, rem } = clearOut(direction, swapIn, priceNum, priceDen);
+    const inC = commitXY(amountIn, rInSecp);     // C_in commits to the GROSS amountIn (its opening binds that)
     const outC = commitXY(amountOut, rOutSecp);  // C_out = amount_out·H + r_out·G
+    // Optimistic-flow keys (for the pending-swap overlay/reconcile): `inNullifier` is the spent note's ν
+    // (note-bound, needs no asset) and shows up in the indexer's `spent` set at settle; `outLeaf` is the
+    // expected output note's leaf and shows up in `LeavesInserted`. outLeaf needs the OUTPUT asset, which
+    // depends on direction — computed here when the pair is supplied, else filled in by verifyBatch (which
+    // always has the pair). Both equal exactly what the guest emits, so reconcile keys line up.
+    const inNullifier = nullifier(inC.cx, inC.cy);
+    const outAsset = (assetA && assetB) ? (direction === 'A->B' ? assetB : assetA) : null;
+    const outLeaf = outAsset ? leaf(outAsset, outC.cx, outC.cy, outOwner) : null;
     return {
       direction, dirByte: direction === 'A->B' ? 0 : 1,
       in: { cx: inC.cx, cy: inC.cy, owner: inNote.owner, leafIndex: inNote.leafIndex, path: inNote.path },
-      amountIn: BigInt(amountIn), amountOut, rem,
+      amountIn: BigInt(amountIn), fee: feeBig, swapIn, amountOut, rem,
       minOut: BigInt(minOut ?? 0), deadline: BigInt(deadline ?? 0),
       out: { cx: outC.cx, cy: outC.cy, owner: outOwner },
+      inNullifier, outLeaf,
       _r: { rIn: BigInt(rInSecp), rOut: BigInt(rOutSecp) },
     };
   }
@@ -118,8 +130,8 @@ export function makeConfidentialSwap({ keccak256, pool }) {
       const ctx = intentCtx(assetA, assetB, chainBinding, it);
       it.inSig = openingSigma(it.amountIn, it._r.rIn, ctx, deriveOpeningNonce(it._r.rIn, ctx, 'swap-in'));
       it.outSig = openingSigma(it.amountOut, it._r.rOut, ctx, deriveOpeningNonce(it._r.rOut, ctx, 'swap-out'));
-      if (it.direction === 'A->B') { gAin += it.amountIn; gBout += it.amountOut; }
-      else { gBin += it.amountIn; gAout += it.amountOut; }
+      if (it.direction === 'A->B') { gAin += it.swapIn; gBout += it.amountOut; }
+      else { gBin += it.swapIn; gAout += it.amountOut; }
     }
     const aPre = BigInt(reserveAPre), bPre = BigInt(reserveBPre);
     return {
@@ -138,7 +150,7 @@ export function makeConfidentialSwap({ keccak256, pool }) {
     if (batch.spendRoot === ZERO32 || !batch.spendRoot) fail('membership requires a non-zero spend root');
 
     let gAin = 0n, gAout = 0n, gBin = 0n, gBout = 0n;
-    const nullifiers = [], leaves = [];
+    const nullifiers = [], leaves = [], fees = [];
     for (const it of batch.intents) {
       const inAsset = it.direction === 'A->B' ? batch.assetA : batch.assetB;
       const outAsset = it.direction === 'A->B' ? batch.assetB : batch.assetA;
@@ -152,15 +164,23 @@ export function makeConfidentialSwap({ keccak256, pool }) {
       if (!verifyOpeningSigma(it.in.cx, it.in.cy, it.amountIn, it.inSig.R, it.inSig.z, ctx)) fail('input opening');
       if (!verifyOpeningSigma(it.out.cx, it.out.cy, it.amountOut, it.outSig.R, it.outSig.z, ctx)) fail('output opening');
 
-      const { amountOut, rem } = clearOut(it.direction, it.amountIn, batch.priceNum, batch.priceDen);
+      const fee = BigInt(it.fee ?? 0n);
+      if (!(fee < it.amountIn)) fail('fee >= input');
+      const swapIn = it.amountIn - fee;
+      const { amountOut, rem } = clearOut(it.direction, swapIn, batch.priceNum, batch.priceDen);
       if (amountOut !== it.amountOut || rem !== it.rem) fail('clearing');
       if (it.amountOut < it.minOut) fail('min_out');
 
-      if (it.direction === 'A->B') { gAin += it.amountIn; gBout += it.amountOut; }
-      else { gBin += it.amountIn; gAout += it.amountOut; }
+      if (it.direction === 'A->B') { gAin += swapIn; gBout += it.amountOut; }
+      else { gBin += swapIn; gAout += it.amountOut; }
+      if (fee > 0n) fees.push({ assetId: inAsset, value: fee });
 
-      nullifiers.push(nullifier(it.in.cx, it.in.cy));
-      leaves.push(leaf(outAsset, it.out.cx, it.out.cy, it.out.owner));
+      const inNu = nullifier(it.in.cx, it.in.cy);
+      const outLf = leaf(outAsset, it.out.cx, it.out.cy, it.out.owner);
+      nullifiers.push(inNu);
+      leaves.push(outLf);
+      it.inNullifier = inNu; // attach the optimistic-flow keys (guaranteed once the batch pair is known)
+      it.outLeaf = outLf;
     }
 
     const aPre = batch.reserveAPre, bPre = batch.reserveBPre;
@@ -178,7 +198,7 @@ export function makeConfidentialSwap({ keccak256, pool }) {
 
     return {
       settlement: { poolId: batch.poolId, reserveAPre: aPre, reserveBPre: bPre, reserveAPost: aPost, reserveBPost: bPost },
-      nullifiers, leaves,
+      nullifiers, leaves, fees,
     };
   }
 
