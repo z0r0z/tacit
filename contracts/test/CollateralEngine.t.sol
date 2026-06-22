@@ -887,6 +887,61 @@ contract CollateralEngineTest is Test {
         eng.onCdpClose(0, 0, RAY, _single(cusd, 1000e8 + 1), keccak256("u"));
     }
 
+    // The core no-inflation invariant across many interleaved fee/harvest rounds: the savings vault never
+    // mints more cUSD than was collected as fees, and the budget always equals the un-harvested remainder.
+    function test_tsr_cumulative_harvest_never_exceeds_fees() public {
+        bytes32 cusd = eng.CUSD_ASSET_ID();
+        vm.prank(address(pool));
+        eng.onCdpMint(_savingsLegs(cusd, 600e8, 0), 0, RECEIPT, RAY); // saver A
+        vm.prank(address(pool));
+        eng.onCdpMint(_savingsLegs(cusd, 400e8, 0), 0, RECEIPT, RAY); // saver B (3:2)
+
+        uint256 totalFees;
+        uint256 totalHarvested;
+        uint256 entryA; // each saver's rps checkpoint, advanced on harvest like the guest's new receipt
+        uint256 entryB;
+        for (uint256 round = 0; round < 3; round++) {
+            totalFees += _feeFromCdp();
+            uint256 rps = eng.savingsRps();
+            uint256 rA = eng.pendingSavingsReward(600e8, entryA);
+            if (rA > 0) {
+                vm.prank(address(pool));
+                eng.onCdpMint(_savingsLegs(cusd, 600e8, entryA), rA, RECEIPT, RAY);
+                totalHarvested += rA;
+                entryA = rps;
+            }
+            uint256 rB = eng.pendingSavingsReward(400e8, entryB);
+            if (rB > 0) {
+                vm.prank(address(pool));
+                eng.onCdpMint(_savingsLegs(cusd, 400e8, entryB), rB, RECEIPT, RAY);
+                totalHarvested += rB;
+                entryB = rps;
+            }
+        }
+        assertLe(totalHarvested, totalFees, "cumulative harvest never exceeds cumulative fees");
+        assertEq(eng.feeBudgetCusd(), totalFees - totalHarvested, "budget == fees - harvested, exactly");
+    }
+
+    // A saver who bonds AFTER a fee was collected with no savers has no claim on that stranded budget: it was
+    // never attributed to any rps, and only fees arriving while they are bonded accrue to them.
+    function test_tsr_late_saver_cannot_claim_stranded_budget() public {
+        bytes32 cusd = eng.CUSD_ASSET_ID();
+        uint256 stranded = _feeFromCdp(); // collected with no savers
+        assertEq(eng.savingsRps(), 0, "no savers -> rps stays flat");
+        assertEq(eng.feeBudgetCusd(), stranded, "fee stranded, un-attributed");
+
+        vm.prank(address(pool));
+        eng.onCdpMint(_savingsLegs(cusd, 1000e8, 0), 0, RECEIPT, RAY); // bonds at the live rps (0)
+        assertEq(eng.pendingSavingsReward(1000e8, 0), 0, "no claim on the pre-existing stranded fee");
+        vm.prank(address(pool));
+        vm.expectRevert(CollateralEngine.SavingsOverClaim.selector);
+        eng.onCdpMint(_savingsLegs(cusd, 1000e8, 0), 1, RECEIPT, RAY); // even one base unit overclaims
+
+        uint256 fresh = _feeFromCdp(); // a new fee DOES accrue to the now-bonded saver
+        assertGt(eng.pendingSavingsReward(1000e8, 0), 0, "a fresh fee accrues to the bonded saver");
+        assertEq(eng.feeBudgetCusd(), stranded + fresh, "stranded fee remains, never attributed");
+    }
+
     function test_stale_feed_fails_closed() public {
         // advance time past staleness with a feed that never updates updatedAt beyond setUp's block.
         vm.warp(block.timestamp + 7200);
