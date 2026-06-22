@@ -53,6 +53,7 @@ node_suite() {
            confidential-bridge-mint confidential-bridge-burn confidential-btc-relay \
            confidential-canonical-asset-id confidential-evm-log confidential-note-binds-amm \
            confidential-swap-op confidential-lp-op confidential-otc-op confidential-bid-op \
+           confidential-stealth confidential-stealth-op confidential-airdrop \
            confidential-finality; do
     if ! node "tests/$t.mjs" >>"$TMP.node" 2>&1; then echo "FAIL $t"; rc=1; fi
   done
