@@ -11,7 +11,13 @@ import {FixedPointMathLib} from "solady/utils/FixedPointMathLib.sol";
 ///      narrow recovery/backstop actions — it can NEVER mint a confidential asset, move backing, or break a
 ///      peg (all of which are proof-enforced in the pool). See ops/DESIGN-confidential-defi-v1.md §§3,4,6.
 interface IConfidentialPoolCollateral {
-    /// Σ live self-custody cBTC.zk lock sats (reflection-attested, oracle-free).
+    /// Σ live self-custody cBTC.zk lock sats — the real-BTC backing behind cBTC (reflection-attested,
+    /// oracle-free; the pool advances it each attestation). RESERVED integration point, NOT a v1 dependency:
+    /// the cBTC peg is enforced by CONSERVATION in the proof (OP_CBTC_MINT mints exactly v_btc against a
+    /// recorded lock; redeem burns exactly v_btc — backing == supply per-lock), and the v1 rug deterrent is
+    /// the per-lock slashable native-ETH escrow + the reserve below. This aggregate is consumed only by the
+    /// (standalone, governable) peg-shortfall buffer — a post-v1 additive (DESIGN-confidential-defi-v1 §6);
+    /// it is declared here as that buffer's integration point so wiring it later needs no interface churn.
     function cbtcBackingSats() external view returns (uint256);
     /// True once the reflection surfaced this lock outpoint as SPENT (`cbtcLocksSpent`) — a bare spend (rug).
     function cbtcLockSpent(bytes32 outpoint) external view returns (bool);
@@ -123,8 +129,8 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
     // Shipped DORMANT: `stabilityFeePerSecond` defaults to 0 (treated as RAY = 0%), so `rate` never moves and
     // every position owes exactly its principal — provably identical to the interest-free path. Governance
     // turns the fee on later via `setStabilityFee`. `feesAccruedCusd` is the cumulative fee (over-repayment)
-    // collected from closes/liquidations; each fee is routed to `savingsController`'s reward treasury (the
-    // TSR) by the pool, in the same settlement that burned it — so the savings cUSD is always fee-backed.
+    // collected from closes/liquidations; each fee is credited into this engine's TSR budget/RPS in the same
+    // callback that accounts for the burn — so the savings cUSD is always fee-backed.
     uint256 public rate; // RAY-scaled debt accumulator (set to RAY in the ctor; monotonically non-decreasing)
     uint256 public stabilityFeePerSecond; // RAY-scaled per-second factor; 0 or RAY == dormant (0% APY)
     uint256 public lastDrip; // timestamp `rate` was last compounded
@@ -212,7 +218,7 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
     constructor(address pool, bytes32 cbtcAssetId, uint8 cbtcDec, uint8 cusdDec, address admin) {
         if (
             admin == address(0) || cbtcAssetId != CANONICAL_CBTC_ASSET_ID || cbtcDec != CANONICAL_CBTC_DECIMALS
-                || cusdDec > 18
+                || cusdDec != 8
         ) {
             revert BadParams();
         }
@@ -293,7 +299,7 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
     ///         the launch default. Drips first so the change applies only going forward (no retroactive
     ///         accrual). Bounded by `MAX_FEE_PER_SECOND` so a fat-finger can't explode `rate`. Turning this
     ///         above RAY activates the TSR: closes/liquidations then over-repay by the accrued interest,
-    ///         which the pool routes to `savingsController`'s reward treasury.
+    ///         which this engine credits into the TSR budget/RPS.
     function setStabilityFee(uint256 perSecondRay) external onlyOwner {
         if (perSecondRay != 0 && (perSecondRay < RAY || perSecondRay > MAX_FEE_PER_SECOND)) revert BadParams();
         drip();
@@ -322,7 +328,7 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
     ///      `rate` captured at mint (∈ [RAY, rate]); when it equals `rate` (dormant, or freshly minted) the
     ///      debt is exactly `principal`. Reads `rate` — callers drip() first so it is current.
     function _owed(uint256 principal, uint256 snap) internal view returns (uint256) {
-        if (snap < RAY) revert BadSnapshot();
+        if (snap < RAY || snap > rate) revert BadSnapshot();
         if (rate <= snap) return principal;
         return FixedPointMathLib.fullMulDivUp(principal, rate, snap);
     }
@@ -330,12 +336,12 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
     /// @notice The current accrued debt for a position of `principal` opened at `snapshot`, at the latest mark
     ///         (drips a pending interval in memory). UI/keeper helper.
     function currentDebt(uint256 principal, uint256 snapshot) external view returns (uint256) {
-        if (snapshot < RAY) revert BadSnapshot();
         uint256 r = rate;
         uint256 fee = stabilityFeePerSecond;
         if (fee > RAY && block.timestamp > lastDrip) {
             r = FixedPointMathLib.fullMulDiv(FixedPointMathLib.rpow(fee, block.timestamp - lastDrip, RAY), r, RAY);
         }
+        if (snapshot < RAY || snapshot > r) revert BadSnapshot();
         if (r <= snapshot) return principal;
         return FixedPointMathLib.fullMulDivUp(principal, r, snapshot);
     }
@@ -492,13 +498,17 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
     ///         the whole `repaid − principal` (the interest plus any over-burn) into the TSR budget — the
     ///         burned cUSD is a re-mint authorization the savings vault later draws on. Dormant: rate ==
     ///         snapshot ⇒ owed == principal, so a borrower burns exactly the principal (fee 0).
-    function onCdpClose(uint256 principal, uint256 repaid, uint256 rateSnapshot, CdpLeg[] calldata legs, bytes32 positionNullifier)
-        external
-        onlyPool
-    {
+    function onCdpClose(
+        uint256 principal,
+        uint256 repaid,
+        uint256 rateSnapshot,
+        CdpLeg[] calldata legs,
+        bytes32 positionNullifier
+    ) external onlyPool {
         // TSR unbond: a farm-receipt close (no debt) releasing staked cUSD. The proof re-mints the cUSD
         // principal to the saver; this just drops the savings shares. (Harvest first to collect accrual.)
         if (principal == 0) {
+            if (repaid != 0) revert BadSavingsShape();
             if (legs.length != 1 || legs[0].asset != CUSD_ASSET_ID || legs[0].value == 0) revert BadSavingsShape();
             if (legs[0].value > totalSavingsShares) revert BadSavingsShape();
             totalSavingsShares -= legs[0].value;
@@ -558,8 +568,8 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
     }
 
     /// @dev TSR receipt op (controller == this engine), routed by the pool's farm path. `legs = [shares (cUSD),
-    ///      rps_entry]`, `legs[1].asset == 0`. BOND (reward == 0): bind `rps_entry == savingsRps` (no
-    ///      backdating) and stake `shares` cUSD. HARVEST (reward > 0): bound the reward to the saver's rps
+    ///      rps_entry]`, `legs[1].asset == 0`. BOND (reward == 0): bind `rps_entry >= savingsRps` (no
+    ///      backdating; a future entry just waits) and stake `shares` cUSD. HARVEST (reward > 0): bound the reward to the saver's rps
     ///      entitlement AND to the realized-fee budget, then consume the budget (the pool mints the cUSD note
     ///      MINT-mode against this authorization). totalSavingsShares is untouched on harvest — the principal
     ///      stays staked. Mirrors FarmController's receipt accounting, funded by realized fees not an emission.
@@ -569,7 +579,7 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
         uint256 shares = legs[0].value;
         uint256 rpsEntry = legs[1].value;
         if (reward == 0) {
-            if (rpsEntry != savingsRps) revert SavingsEntryNotLive();
+            if (rpsEntry < savingsRps) revert SavingsEntryNotLive();
             totalSavingsShares += shares;
             emit SavingsSharesChanged(totalSavingsShares);
         } else {

@@ -7,6 +7,13 @@
 // status until it lands. The op JSON shape MUST match the box harness for that type (the same shape
 // the gen-confidential-*-fixture.mjs scripts emit) — that parity is what the on-chain proof enforces.
 //
+// RELAY-FEE PRIVACY POLICY: a relayed op pays the settler a public FeePayment in the op's asset, so the fee
+// VALUE lands on-chain. To avoid re-introducing a per-intent amount/size signal that batch-netting otherwise
+// hides, relay fees SHOULD be a FLAT, gas-denominated per-op amount (independent of the trade size), never a
+// proportional skim. `fee = 0` (self-settle / self-broadcast) is the privacy-maximal path and is always
+// supported (the guest suppresses the empty FeePayment). The fee is bound in the proof — the settler cannot
+// pad or redirect it — so this is a privacy posture, not a fund control.
+//
 // fetchImpl injected for Node tests / non-window contexts; defaults to global fetch.
 
 export function makeConfidentialRelay({ base, fetchImpl, guard } = {}) {

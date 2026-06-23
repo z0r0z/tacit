@@ -192,6 +192,12 @@ else
     bash contracts/sp1/confidential/verify-reflection-fixtures.sh
 fi
 
+# Generated-from-source: the eth-reflection *_SLOT_INDEX constants must equal the compiled ConfidentialPool
+# storage layout (a relayout that shifts a reflected slot, without updating the constant, makes the guest read
+# the wrong word). Pins the constants to `forge inspect storageLayout` so a relayout fails loudly here.
+run_gate "Reflection storage slots == compiled ConfidentialPool layout" BRIDGE \
+  bash contracts/sp1/confidential/verify-reflection-slots.sh
+
 # ── BRIDGE layer 9: reflection guest soundness (FAIL-CLOSED allowlist) ────
 # The gate verifies coherence + that a real Groth16 verifies — it CANNOT see an in-guest logic bug
 # (the contract sees only hashes), so a coherent, on-chain-verifying reflection vkey is NOT evidence

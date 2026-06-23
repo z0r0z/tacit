@@ -39,7 +39,7 @@ contract ConfidentialPoolReflectionSlotsTest is Test {
         bytes32 key = bytes32(uint256(0x1234));
         bytes32 sentinel = bytes32(uint256(0xC0FFEE));
         vm.store(address(pool), _mappingSlot(key, CROSSOUT_SLOT_INDEX), sentinel);
-        assertEq(pool.crossOutCommitment(key), sentinel, "crossOutCommitment moved off slot 76");
+        assertEq(vm.load(address(pool), keccak256(abi.encode(key, uint256(76)))), sentinel, "crossOutCommitment moved off slot 76");
     }
 
     function test_bitcoinConsumed_at_slot_119() public {
@@ -58,11 +58,16 @@ contract ConfidentialPoolReflectionSlotsTest is Test {
     function test_bitcoinConsumedAt_at_slot_163() public {
         uint256 idx = 7;
         bytes32 sentinel = bytes32(uint256(0xABCDEF));
+        // Write through the CONSTANT, read back at the LITERAL slot keccak(idx, 163) — so this is NOT the
+        // tautology of reading the same computed slot (which would pass for any CONSUMED_AT_SLOT_INDEX). If the
+        // constant is ever changed off 163 the two slots diverge and this fails (mirrors the crossOutCommitment
+        // test). The complementary "the variable is actually at 163" relayout guard is the live settle-write in
+        // ConfidentialPool.t.sol; bitcoinConsumedAt is internal so there is no public getter to read here.
         vm.store(address(pool), _mappingSlot(bytes32(idx), CONSUMED_AT_SLOT_INDEX), sentinel);
         assertEq(
-            bytes32(vm.load(address(pool), _mappingSlot(bytes32(idx), CONSUMED_AT_SLOT_INDEX))),
+            vm.load(address(pool), keccak256(abi.encode(bytes32(idx), uint256(163)))),
             sentinel,
-            "bitcoinConsumedAt moved off slot 163"
+            "bitcoinConsumedAt CONSUMED_AT_SLOT_INDEX changed off 163"
         );
     }
 }

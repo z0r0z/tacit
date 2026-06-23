@@ -31,16 +31,19 @@ use cxfer_core::{
     amm_canonical_pair, amm_derive_farm_id, amm_derive_pool_id_full, bitcoin, burn_deposit,
     commitment_hash, commitment_hash_compressed, compress, decompress, from_affine_xy, leaf,
     nullifier, outpoint_key, reflected_note_leaf, scan_tx_spends, verify_cxfer_conservation,
-    CbtcLockFold, FarmRewardSet, FarmRewardState, LiveUtxoSet, Point, PoolReserveSet, PoolReserveState,
-    ScanReflection, CBTC_ZK_ASSET_ID,
+    CbtcLockFold, FarmRewardSet, FarmRewardState, LiveUtxoSet, Point, PoolReserveSet,
+    PoolReserveState, ScanReflection, CBTC_ZK_ASSET_ID,
 };
 use sp1_zkvm::io;
 
 // The in-guest BN254 Groth16 verifier for T_SWAP_BATCH (reflection-only; pulls the SP1-precompile `bn`
-// crate into this ELF, not the settle one). `groth16_bn254_verify` is ready; the remaining `fold_swap_batch`
-// glue (parse the 0x2F envelope → re-derive the 123 public signals from it → verify against the baked
-// BATCH_VK → per-receipt witnessed-opening onboarding) needs the circuit's public-signal layout + the baked
-// vk. See ops/DESIGN-in-guest-groth16-verifier.md.
+// crate into this ELF, not the settle one). FULLY IMPLEMENTED + WIRED: `swap_batch::fold_swap_batch`
+// (swap_batch.rs) parses the 0x2F envelope, re-derives the 123 public signals (swap_batch_public_signals),
+// verifies them against the baked BATCH_VK via `groth16::groth16_bn254_verify`, checks the aggregate
+// Pedersen identity + distinct-real-spend matching + per-receipt cross-curve sigma, then onboards each
+// receipt's witnessed opening — invoked from the reflection fold below. Only end-to-end box validation
+// against a full real envelope+proof vector remains (see swap_batch.rs header). See
+// ops/DESIGN-in-guest-groth16-verifier.md.
 mod babyjubjub;
 #[allow(dead_code)]
 mod groth16;
@@ -195,11 +198,19 @@ fn read_scan_prior_state() -> ScanReflection {
             let total_shares: u64 = io::read();
             let rps: u128 = io::read();
             let last_height: u64 = io::read();
-            (farm_id, FarmRewardState { rate, total_shares, rps, last_height })
+            (
+                farm_id,
+                FarmRewardState {
+                    rate,
+                    total_shares,
+                    rps,
+                    last_height,
+                },
+            )
         })
         .collect();
-    let farm_rewards = FarmRewardSet::from_sorted(farm_entries)
-        .expect("handed farm reward set not sorted/unique");
+    let farm_rewards =
+        FarmRewardSet::from_sorted(farm_entries).expect("handed farm reward set not sorted/unique");
     ScanReflection {
         pool_root,
         note_count,
@@ -494,18 +505,35 @@ pub fn main() {
             // commitment + asset and nullified by scan_tx_spends. A bare lock spend with no matching in-tx burn
             // stays tracked and folds as a rug below — so a rugger can't spoof a redeem without truly burning
             // the matching cBTC (which IS the honest retirement).
-            if let Some(rd) = env.as_ref().and_then(|e| bitcoin::parse_cbtc_redeem_envelope(e)) {
-                let cbtc_ins: Vec<_> = spends.iter().filter(|s| s.asset == CBTC_ZK_ASSET_ID).collect();
-                let in_ops: Vec<([u8; 32], u32)> =
-                    cbtc_ins.iter().map(|s| (s.prev_txid, s.prev_vout)).collect();
+            if let Some(rd) = env
+                .as_ref()
+                .and_then(|e| bitcoin::parse_cbtc_redeem_envelope(e))
+            {
+                let cbtc_ins: Vec<_> = spends
+                    .iter()
+                    .filter(|s| s.asset == CBTC_ZK_ASSET_ID)
+                    .collect();
+                let in_ops: Vec<([u8; 32], u32)> = cbtc_ins
+                    .iter()
+                    .map(|s| (s.prev_txid, s.prev_vout))
+                    .collect();
                 if let (Some(in_pts), Some(tx_ins)) = (
-                    cbtc_ins.iter().map(|s| from_affine_xy(&s.cx, &s.cy)).collect::<Option<Vec<Point>>>(),
+                    cbtc_ins
+                        .iter()
+                        .map(|s| from_affine_xy(&s.cx, &s.cy))
+                        .collect::<Option<Vec<Point>>>(),
                     bitcoin::extract_inputs(tx),
                 ) {
                     // On a valid redeem, surface the retired outpoint so the engine's escrow-claim gate is
                     // proof-driven (`outpoint_key` — the same key the lock set / cbtcLocksSpent use).
                     if let Ok(redeemed_op) = state.fold_cbtc_redeem(
-                        &rd.lock_txid, rd.lock_vout, rd.v_btc, &tx_ins, &in_ops, &in_pts, &rd.kernel_sig,
+                        &rd.lock_txid,
+                        rd.lock_vout,
+                        rd.v_btc,
+                        &tx_ins,
+                        &in_ops,
+                        &in_pts,
+                        &rd.kernel_sig,
                     ) {
                         cbtc_redeemed.push(redeemed_op);
                     }
@@ -801,7 +829,8 @@ pub fn main() {
                             // (ticker, decimals, cid) are authentic — surface them once for attest to
                             // lazy-register the asset's canonical ERC20 (idempotent on the contract).
                             if !attested_metas.iter().any(|m| m.assetId.0 == *b_asset) {
-                                if let Some(meta_env) = bitcoin::extract_taproot_envelope(&etch_tx) {
+                                if let Some(meta_env) = bitcoin::extract_taproot_envelope(&etch_tx)
+                                {
                                     if let Some((ticker, tlen, decimals, cid)) =
                                         bitcoin::parse_etch_meta(&meta_env)
                                     {
@@ -851,7 +880,22 @@ pub fn main() {
                 // and carries no output witnesses — read none, skip (a SKIP, not a panic, so a griefed
                 // envelope can't wedge the prover). Conserving + asset-preserving cxfers read their
                 // witnesses and fold; a fold error there is a real witness bug (panics).
+                // Derive each output's REAL Bitcoin vout from the opcode's canonical tx layout (the single
+                // convention commitmentForUtxo resolves by) — NOT the output index. Identity for
+                // T_CXFER/T_CXFER_BPP/T_AXFER/T_AXFER_BPP, but the INTERLEAVED {0->0,1->2} for the
+                // variable-amount atomic settlement T_AXFER_VAR/T_AXFER_VAR_BPP (vout 1 is the maker BTC
+                // payment). Keying the maker-change note at the index (vout 1) instead of its true outpoint
+                // (vout 2) would drop it from the live set, so its later real Bitcoin spend goes UNDETECTED
+                // — a cross-lane double-spend. A witnessed vout is never trusted; only the note-tree append
+                // path stays witnessed. A malformed layout (canonical None for some index) is skip-not-panic
+                // (fold nothing, read no paths), exactly like the non-conserving case, so the JS assembler
+                // gating on the SAME predicate keeps the witness stream in sync.
+                let opcode = env.as_ref().map(|e| e[0]).unwrap_or(0);
+                let canon_vouts: Option<Vec<u32>> = (0..commitments.len())
+                    .map(|i| cxfer_core::canonical_output_vout(opcode, i, commitments.len()))
+                    .collect();
                 if asset_preserving
+                    && canon_vouts.is_some()
                     && verify_cxfer_conservation(
                         asset,
                         &in_outpoints,
@@ -861,16 +905,10 @@ pub fn main() {
                         kernel_sig,
                     )
                 {
-                    // Derive each output's vout from its index: the i-th envelope commitment is the
-                    // tx's i-th confidential output (the convention commitmentForUtxo resolves by). A
-                    // witnessed vout let a prover key a note at a bogus outpoint, so its later real
-                    // Bitcoin spend would miss the live set (an undetected spend). Only the note-tree
-                    // append path stays witnessed.
+                    let vouts = canon_vouts.expect("canon_vouts is_some checked");
                     let mut paths: Vec<Vec<[u8; 32]>> = Vec::with_capacity(commitments.len());
-                    let mut vouts: Vec<u32> = Vec::with_capacity(commitments.len());
-                    for i in 0..commitments.len() {
+                    for _ in 0..commitments.len() {
                         paths.push(r_path());
-                        vouts.push(i as u32);
                     }
                     state
                         .fold_cxfer(
@@ -975,7 +1013,21 @@ pub fn main() {
                     .collect();
                 let in_assets: Vec<[u8; 32]> = spends.iter().map(|s| s.asset).collect();
                 let asset_preserving = in_assets.iter().all(|a| a == &bid_asset);
+                // DERIVE each output's REAL Bitcoin vout from the bid opcode's canonical layout (the convention
+                // getParentEnvelopeData resolves by) — NOT a flat +1 offset, which mis-keyed BOTH the buyer
+                // filled note (true vout 0, not 1) and the seller change (true vout 3, or 4 with a buyer
+                // refund — never 2). A witnessed/wrong vout would key a note off its real outpoint, so a later
+                // spend misses the live set. Skip-not-panic on an unmapped index, like the conservation gate.
+                let bid_opcode = env.as_ref().map(|e| e[0]).unwrap_or(0);
+                let bid_has_refund = env
+                    .as_ref()
+                    .and_then(|e| bitcoin::preauth_bid_var_has_refund(e))
+                    .unwrap_or(false);
+                let bid_vouts: Option<Vec<u32>> = (0..bid_commitments.len())
+                    .map(|i| cxfer_core::canonical_bid_output_vout(bid_opcode, i, bid_commitments.len(), bid_has_refund))
+                    .collect();
                 if asset_preserving
+                    && bid_vouts.is_some()
                     && verify_cxfer_conservation(
                         &bid_asset,
                         &in_outpoints,
@@ -985,16 +1037,11 @@ pub fn main() {
                         &bid_kernel_sig,
                     )
                 {
-                    // Note-tree append paths are witnessed; vouts are DERIVED (a witnessed vout could key a
-                    // note at a bogus outpoint → its later real spend misses the live set). The bid tx carries
-                    // the envelope_hash at vout[0] (OP_RETURN), so its confidential output notes begin at
-                    // vout[1]; confirm the exact bid-tx output ordering on the box when wiring the assembler
-                    // (a wrong vout is fail-closed — the note onboards unspendable, never over-mints).
+                    // Note-tree append paths are witnessed; vouts are DERIVED from the canonical bid layout above.
+                    let vouts = bid_vouts.expect("bid_vouts is_some checked");
                     let mut paths: Vec<Vec<[u8; 32]>> = Vec::with_capacity(bid_commitments.len());
-                    let mut vouts: Vec<u32> = Vec::with_capacity(bid_commitments.len());
-                    for i in 0..bid_commitments.len() {
+                    for _ in 0..bid_commitments.len() {
                         paths.push(r_path());
-                        vouts.push(1 + i as u32);
                     }
                     state
                         .fold_cxfer(
@@ -1167,8 +1214,11 @@ pub fn main() {
                         let (a_ops, a_pts) = coll(&ca);
                         let (b_ops, b_pts) = coll(&cb);
                         let pre_shares = state.pools.get(&pid).map(|p| p.total_shares).unwrap_or(0);
-                        let pre_accrued =
-                            state.pools.get(&pid).map(|p| p.protocol_fee_accrued).unwrap_or(0);
+                        let pre_accrued = state
+                            .pools
+                            .get(&pid)
+                            .map(|p| p.protocol_fee_accrued)
+                            .unwrap_or(0);
                         // inputs_c0_backed: every contribution is a detected live (real) spend → C0-backed.
                         if state
                             .fold_lp_add(
@@ -1212,13 +1262,22 @@ pub fn main() {
                                         .saturating_sub(pre_shares)
                                         .saturating_sub(crystallized)
                                 };
+                                // T_LP_ADD (0x2D) carries its envelope in the Taproot WITNESS — NO OP_RETURN
+                                // at vout 0 — so the LP-share note is the FIRST output, at vout 0 (the
+                                // authoritative getParentEnvelopeData T_LP_ADD arm rejects any vout != 0).
+                                // Keying it at vout 1 dropped it from the live set, so a later real spend of
+                                // the share at (txid,0) went undetected → cross-lane double-spend.
                                 let _ = state.fold_lp_share_mint(
                                     &pid,
                                     lp_shares,
                                     &la.share_csecp,
                                     &la.share_r,
                                     &share_path,
-                                    &outpoint_key(&txid, 1),
+                                    &outpoint_key(
+                                        &txid,
+                                        cxfer_core::canonical_amm_output_vout(0x2D, 0)
+                                            .expect("lp_add share vout"),
+                                    ),
                                 );
                             }
                         }
@@ -1279,6 +1338,11 @@ pub fn main() {
                             &lp_pts,
                             &lr.kernel_sig,
                         ) {
+                            // T_LP_REMOVE (0x2E) carries its envelope in the Taproot WITNESS — NO OP_RETURN at
+                            // vout 0 — so the two withdrawn notes are the FIRST outputs: recvA @vout 0, recvB
+                            // @vout 1 (the authoritative getParentEnvelopeData T_LP_REMOVE arm maps exactly
+                            // {0->recvA, 1->recvB}). Keying them at vout 1/2 dropped them from the live set, so
+                            // a later real spend at (txid,0)/(txid,1) went undetected → cross-lane double-spend.
                             let _ = state.fold_lp_remove(
                                 &pid,
                                 lr.share_amount,
@@ -1292,9 +1356,15 @@ pub fn main() {
                                 &lp_pts,
                                 &lr.kernel_sig,
                                 &recv_a_path,
-                                &outpoint_key(&txid, 1),
+                                &outpoint_key(
+                                    &txid,
+                                    cxfer_core::canonical_amm_output_vout(0x2E, 0).expect("lp_remove recvA vout"),
+                                ),
                                 &recv_b_path,
-                                &outpoint_key(&txid, 2),
+                                &outpoint_key(
+                                    &txid,
+                                    cxfer_core::canonical_amm_output_vout(0x2E, 1).expect("lp_remove recvB vout"),
+                                ),
                             );
                             break;
                         }
@@ -1384,8 +1454,21 @@ pub fn main() {
                 let (lv, ln, li, lp, snp) = read_spent_insert(); // receipt nullifier IMT insert
                 let new_receipt_path = r_path(); // advanced-receipt append path
                 let _ = state.fold_lp_harvest(
-                    &farm_id, shares, rps_entry, &owner, &old_nonce, &new_nonce, reward_amount,
-                    old_index, &old_path, &lv, &ln, li, &lp, &snp, &new_receipt_path,
+                    &farm_id,
+                    shares,
+                    rps_entry,
+                    &owner,
+                    &old_nonce,
+                    &new_nonce,
+                    reward_amount,
+                    old_index,
+                    &old_path,
+                    &lv,
+                    &ln,
+                    li,
+                    &lp,
+                    &snp,
+                    &new_receipt_path,
                 );
                 let reward_path = r_path(); // the reward note's append path (vout[1])
                 let _ = state.fold_harvest(
@@ -1421,8 +1504,9 @@ pub fn main() {
             // refinement): re-minting the released LP-share notes is the bond's homomorphic kernel run in
             // reverse (AMM-kernel layer), not folded here — this branch is the receipt-retire + share bookkeeping
             // against the verified `fold_lp_unbond`.
-            if let Some((farm_id, _unbonder_pubkey, shares, _view_h)) =
-                env.as_ref().and_then(|e| bitcoin::parse_lp_unbond_fields(e))
+            if let Some((farm_id, _unbonder_pubkey, shares, _view_h)) = env
+                .as_ref()
+                .and_then(|e| bitcoin::parse_lp_unbond_fields(e))
             {
                 let owner = r32();
                 let nonce = r32();
@@ -1431,24 +1515,32 @@ pub fn main() {
                 let old_path = r_path(); // receipt membership path against pool_root
                 let (lv, ln, li, lp, snp) = read_spent_insert(); // receipt nullifier IMT insert
                 let _ = state.fold_lp_unbond(
-                    &farm_id, shares, rps_entry, &owner, &nonce, old_index, &old_path, &lv, &ln, li, &lp, &snp,
+                    &farm_id, shares, rps_entry, &owner, &nonce, old_index, &old_path, &lv, &ln,
+                    li, &lp, &snp,
                 );
             }
 
             // Track B: a T_PROTOCOL_FEE_CLAIM (0x31) — the pool's fee recipient claims the CREATOR-earned
             // protocol-fee LP-share skim as a real, bridgeable note. fold_protocol_fee_claim crystallizes the
-            // swap-driven accrual, requires claim == accrued (exact), and onboards the claim note (vout[1]).
+            // swap-driven accrual, requires claim == accrued (exact), and onboards the claim note. T_PROTOCOL_
+            // FEE_CLAIM (0x31) carries its envelope in the Taproot WITNESS — NO OP_RETURN at vout 0 — so the
+            // single claim note is at vout 0 (the authoritative getParentEnvelopeData arm rejects vout != 0).
+            // Keying it at vout 1 dropped it from the live set, so a later real spend at (txid,0) went
+            // undetected → cross-lane double-spend.
             if let Some((cl_pool_id, cl_amount, cl_c_secp, cl_blinding)) = env
                 .as_ref()
                 .and_then(|e| bitcoin::parse_protocol_fee_claim_envelope(e))
             {
-                let claim_path = r_path(); // witnessed per 0x31 (the claim note's append path; vout[1])
+                let claim_path = r_path(); // witnessed per 0x31 (the claim note's append path; vout 0)
                 let _ = state.fold_protocol_fee_claim(
                     &cl_pool_id,
                     cl_amount,
                     &cl_c_secp,
                     &cl_blinding,
-                    &outpoint_key(&txid, 1),
+                    &outpoint_key(
+                        &txid,
+                        cxfer_core::canonical_amm_output_vout(0x31, 0).expect("fee-claim note vout"),
+                    ),
                     &claim_path,
                 );
             }

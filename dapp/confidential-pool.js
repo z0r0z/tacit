@@ -1522,9 +1522,11 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
                         : { owner: ZH, nonce: ZH, rpsEntry: '0', oldIndex: 0, oldPath: state.notePathPeek(), spentInsert: { sLowValue: ZH, sLowNext: ZH, sLowIndex: 0, sLowPath: state.notePathPeek(), sNewPath: state.notePathPeek() } };
         } else if (tx.env && tx.env.type === 'protocol_fee_claim') {
           // Track-B protocol-fee claim (0x31): crystallize the pool's swap-driven fee accrual + onboard the
-          // claim note (vout 1) as an LP-share note. No input spend — the note is minted by decree. The guest
-          // reads the claim path for any parseable 0x31 before the fold — emit it even on a skip (peek).
-          const pw = state.foldProtocolFeeClaim(tx.env.poolId, tx.env.amount, tx.env.cSecp, tx.env.blinding, outpointKey(tx.txid, 1));
+          // claim note as an LP-share note. 0x31 carries its envelope in the Taproot WITNESS (no OP_RETURN at
+          // vout 0), so the claim note is at vout 0 — matching the guest (canonical_amm_output_vout) + the
+          // getParentEnvelopeData resolver. (Keying it at vout 1 left a later spend undetected = double-spend.)
+          // No input spend — the note is minted by decree. The guest reads the claim path before the fold.
+          const pw = state.foldProtocolFeeClaim(tx.env.poolId, tx.env.amount, tx.env.cSecp, tx.env.blinding, outpointKey(tx.txid, 0));
           protocolFee = { notePath: pw ? pw.notePath : state.notePathPeek() };
         } else if (tx.env && tx.env.type === 'farm_init') {
           // Track-B farm-init (0x34): the launcher's single detected reward-asset spend funds the treasury under
@@ -1538,18 +1540,24 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
           }
         } else if (tx.env && tx.env.type === 'lp_remove') {
           // Track-B lp_remove (0x2E): the LP's detected LP-share spends are burned; onboard the two withdrawn
-          // notes (vout 1, 2) + draw down reserves/shares. The two recv blindings r_recv_a/b are now ON-CHAIN
-          // (option a; the guest parses them) — so the only witnesses per 0x2E are the two recv append paths.
-          const lw = state.foldLpRemove(tx.env, inOutpoints, openings, outpointKey(tx.txid, 1), outpointKey(tx.txid, 2));
+          // notes + draw down reserves/shares. 0x2E carries its envelope in the Taproot WITNESS (no OP_RETURN
+          // at vout 0), so recvA is at vout 0 and recvB at vout 1 — matching the guest (canonical_amm_output_
+          // vout) + getParentEnvelopeData. (Keying them at vout 1/2 left later spends undetected = double-spend.)
+          // The two recv blindings r_recv_a/b are now ON-CHAIN (the guest parses them) — so the only witnesses
+          // per 0x2E are the two recv append paths.
+          const lw = state.foldLpRemove(tx.env, inOutpoints, openings, outpointKey(tx.txid, 0), outpointKey(tx.txid, 1));
           // The guest reads BOTH recv paths for any parseable 0x2E before the fold (e.g. an untracked-pool
           // lp_remove legitimately skips) — emit both even on a skip (discarded then) to keep the stream aligned.
           lpRemove = lw ? { recvAPath: lw.recvAPath, recvBPath: lw.recvBPath } : { recvAPath: state.notePathPeek(), recvBPath: state.notePathPeek() };
         } else if (tx.env && tx.env.type === 'lp_add') {
           // Track-B lp_add / POOL_INIT (0x2D): the LP's detected per-asset spends fund the pool (insert for
-          // POOL_INIT, grow for LP-add); onboard the minted LP-share note (vout 1). The share blinding share_r is
-          // now ON-CHAIN (option a; the guest parses it) — so the only witness per 0x2D is the share append path.
+          // POOL_INIT, grow for LP-add); onboard the minted LP-share note. 0x2D carries its envelope in the
+          // Taproot WITNESS (no OP_RETURN at vout 0), so the share note is at vout 0 — matching the guest
+          // (canonical_amm_output_vout) + getParentEnvelopeData. (Keying it at vout 1 left a later spend
+          // undetected = double-spend.) The share blinding share_r is ON-CHAIN (the guest parses it) — so the
+          // only witness per 0x2D is the share append path.
           const spends = openings.map((o, i) => ({ cx: o.cx, cy: o.cy, asset: inAssets[i], outpoint: inOutpoints[i] }));
-          const aw = state.foldLpAdd(tx.env, spends, tx.env.shareR, outpointKey(tx.txid, 1));
+          const aw = state.foldLpAdd(tx.env, spends, tx.env.shareR, outpointKey(tx.txid, 0));
           // The guest reads share_path for any parseable 0x2D before the fold; emit it even on a skip (discarded
           // then) so the witness stream stays aligned.
           lpAdd = { sharePath: aw ? aw.sharePath : state.notePathPeek() };

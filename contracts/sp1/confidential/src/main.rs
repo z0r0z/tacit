@@ -22,9 +22,7 @@ use cxfer_core::{
     farm_receipt_nullifier, from_affine_xy, get_amount_out, imt_non_membership, intent_context,
     isqrt, keccak_merkle_verify, leaf, lp_add_shares, lp_share_id, nullifier, pool_id,
     scalar_reduce_be, stealth_claim_msg, stealth_lock_leaf, utxo_leaf, verify_kernel,
-    verify_kernel_with_fee, verify_opening_sigma,
-    verify_range, Point,
-    CBTC_ZK_ASSET_ID,
+    verify_kernel_with_fee, verify_opening_sigma, verify_range, Point, CBTC_ZK_ASSET_ID,
 };
 use sp1_zkvm::io;
 
@@ -34,6 +32,7 @@ const OP_TRANSFER: u8 = 1;
 const OP_UNWRAP: u8 = 2;
 const OP_BRIDGE_BURN: u8 = 3; // Ethereum note → Bitcoin (emit crossOut)
 const OP_BRIDGE_MINT: u8 = 4; // Bitcoin burn → Ethereum note (verify Bitcoin burn)
+
 // 5 = RESERVED (was OP_ATTEST_META; asset metadata is now reflection-attested via attestBitcoinStateProven).
 // Wire value — do not renumber the ops below it; assign 5 to the next new op to fill the slot.
 const OP_SWAP: u8 = 6; // confidential AMM batch: hidden-amount swaps against public pool reserves
@@ -58,6 +57,7 @@ const OP_CDP_CLOSE: u8 = 16; // close: burn the exact debt → reclaim the colla
 const OP_CDP_LIQUIDATE: u8 = 17; // liquidate: burn exact debt, then seize basket (controller proves unhealthy)
 const OP_CBTC_MINT: u8 = 18; // mint cBTC against a reflection-recorded self-custody lock (contract gates lock + escrow)
 const OP_CDP_TOPUP: u8 = 19; // top-up: consume old position + append replacement with larger collateral basket
+
 // Fair farms (SPEC-CONTROLLER-VAULT-AMENDMENT §4) — the per-stake reward-per-share receipt, byte-identical to
 // the Bitcoin reflection (`farm_receipt_leaf` in the note tree, nullified via the spent set). bond/harvest/
 // unbond ride a positionLeaf == 1 sentinel CdpMint (debtValue discriminates bond=0 / harvest>0) + a CdpClose,
@@ -385,10 +385,7 @@ pub fn main() {
                 // An Ethereum re-home (dest_chain==2) has no consumer yet, so accepting it would let a user
                 // burn into a record nobody redeems (value sink). Re-enable 2 here once the Eth re-home
                 // consumer ships. Reject any unsupported destination outright.
-                assert!(
-                    dest_chain == 1,
-                    "bridge-burn: unsupported dest chain"
-                );
+                assert!(dest_chain == 1, "bridge-burn: unsupported dest chain");
                 let n_in: u32 = io::read();
                 let m_out: u32 = io::read();
                 assert!(
@@ -581,7 +578,8 @@ pub fn main() {
                 {
                     let mut owner_comp = [2u8; 33];
                     owner_comp[1..].copy_from_slice(&owner_pub);
-                    decompress(&owner_comp).expect("bridge_stealth_mint: owner_pub is not a valid x-only pubkey");
+                    decompress(&owner_comp)
+                        .expect("bridge_stealth_mint: owner_pub is not a valid x-only pubkey");
                 }
                 let amount: u64 = io::read();
                 assert!(amount > 0, "bridge_stealth_mint: zero amount");
@@ -596,7 +594,8 @@ pub fn main() {
 
                 // The burn pinned dest_leaf = stealth_lock_leaf(…); the bridge-burn set (ν → destCommitment)
                 // thus authorizes exactly this lock for ν, and only once.
-                let dest_leaf = stealth_lock_leaf(&asset, &l_cx, &l_cy, &owner_pub, amount, deadline, &locker);
+                let dest_leaf =
+                    stealth_lock_leaf(&asset, &l_cx, &l_cy, &owner_pub, amount, deadline, &locker);
                 assert!(
                     bitcoin_burn_root != [0u8; 32],
                     "bridge_stealth_mint: burn root required"
@@ -1447,10 +1446,16 @@ pub fn main() {
                     leaves.push(leaf(&asset_b, &cx, &cy, &taker_owner));
                 }
                 if fee_a != 0 {
-                    fees.push(FeePayment { assetId: asset_a.into(), value: U256::from(fee_a) });
+                    fees.push(FeePayment {
+                        assetId: asset_a.into(),
+                        value: U256::from(fee_a),
+                    });
                 }
                 if fee_b != 0 {
-                    fees.push(FeePayment { assetId: asset_b.into(), value: U256::from(fee_b) });
+                    fees.push(FeePayment {
+                        assetId: asset_b.into(),
+                        value: U256::from(fee_b),
+                    });
                 }
             }
             OP_BID => {
@@ -1646,7 +1651,13 @@ pub fn main() {
                     "bid: seller-in opening"
                 );
                 assert!(
-                    verify_opening_sigma(&s_rv_pt, pay - fee, &s_rv_sig_r, &s_rv_sig_z, &seller_ctx),
+                    verify_opening_sigma(
+                        &s_rv_pt,
+                        pay - fee,
+                        &s_rv_sig_r,
+                        &s_rv_sig_z,
+                        &seller_ctx
+                    ),
                     "bid: seller-recv opening (net of relay fee)"
                 );
                 if let Some((_, _, pt, sr, sz)) = s_change {
@@ -1678,7 +1689,10 @@ pub fn main() {
                     leaves.push(leaf(&asset_a, &cx, &cy, &s_owner));
                 } // seller change
                 if fee != 0 {
-                    fees.push(FeePayment { assetId: asset_b.into(), value: U256::from(fee) });
+                    fees.push(FeePayment {
+                        assetId: asset_b.into(),
+                        value: U256::from(fee),
+                    });
                 }
             }
             OP_SWAP_ROUTE => {
@@ -1789,7 +1803,14 @@ pub fn main() {
                     &asset_0,
                     &asset_final,
                     &[(in_cx, in_cy, in_owner), (out_cx, out_cy, out_owner)],
-                    &[amount_in, amount_out, min_out, n_hops as u64, op_deadline, fee],
+                    &[
+                        amount_in,
+                        amount_out,
+                        min_out,
+                        n_hops as u64,
+                        op_deadline,
+                        fee,
+                    ],
                 );
 
                 // Spend the input note (membership + ν + cross-lane + opening binds amount_in).
@@ -1929,8 +1950,9 @@ pub fn main() {
                 // Lock-set membership reconstructs the EXACT leaf — so asset/recipient/T/deadline/locker are
                 // pinned (neither a relayer nor the claimer can change them without breaking membership); the
                 // output note below is minted in that same membership-pinned `asset`.
-                let lock_lf =
-                    adaptor_lock_leaf(&asset, &l_cx, &l_cy, &tx, &ty, deadline, &recipient, &locker);
+                let lock_lf = adaptor_lock_leaf(
+                    &asset, &l_cx, &l_cy, &tx, &ty, deadline, &recipient, &locker,
+                );
                 assert!(
                     lock_set_root != [0u8; 32],
                     "adaptor-claim: membership requires a non-zero lock-set root"
@@ -2000,8 +2022,9 @@ pub fn main() {
                 let locker = r32();
                 let l_index: u64 = io::read();
                 let l_path = r_path();
-                let lock_lf =
-                    adaptor_lock_leaf(&asset, &l_cx, &l_cy, &tx, &ty, deadline, &recipient, &locker);
+                let lock_lf = adaptor_lock_leaf(
+                    &asset, &l_cx, &l_cy, &tx, &ty, deadline, &recipient, &locker,
+                );
                 assert!(
                     lock_set_root != [0u8; 32],
                     "adaptor-refund: membership requires a non-zero lock-set root"
@@ -2013,12 +2036,34 @@ pub fn main() {
                 let l_nu = nullifier(&l_cx, &l_cy);
 
                 let (o_cx, o_cy, o_pt) = r_commitment();
+                // Bind the locked value before carving the relay fee. The adaptor lock leaf hides `amount`
+                // (unlike the stealth lock leaf), so re-open L to its locked u64 value: verify_opening_sigma
+                // forces `amount` to equal L's true value, and the u64 type bounds it below 2^64. Without this
+                // the fee-bearing kernel (value(L) = value(O) + fee mod n) accepts ANY fee for a freely chosen
+                // O — the locker knows r_O — paying out an unbacked `fee` at the public boundary. The opening
+                // also re-proves the refunder knows L's blinding (only the locker can refund).
+                let amount: u64 = io::read();
+                let l_sig_r = decompress(&r33()).expect("adaptor-refund: L-open R");
+                let l_sig_z = scalar_reduce_be(&r32());
+                let refund_ctx = intent_context(
+                    b"tacit-adaptor-refund-v1",
+                    &chain_binding,
+                    &asset,
+                    &asset,
+                    &[(l_cx, l_cy, locker), (o_cx, o_cy, locker)],
+                    &[amount, deadline],
+                );
+                assert!(
+                    verify_opening_sigma(&l_pt, amount, &l_sig_r, &l_sig_z, &refund_ctx),
+                    "adaptor-refund: L opening (locked-value bind)"
+                );
                 // Relay fee (gasless privacy): the locker reclaims its locked note net of a fee paid to the
                 // settler (msg.sender) — safe here because REFUND reveals no `s` (no t-reveal), so the kernel
                 // is plain conservation L = O + fee. fee = 0 ⇒ the fee-free refund. (CLAIM cannot do this: its
                 // kernel IS the t-reveal channel and must stay zero-value, so a claim is relayed fee-less and
                 // the recipient pays via the funded follow-up spend of the claimed note.)
                 let fee: u64 = io::read();
+                assert!(fee < amount, "adaptor-refund: fee >= locked amount");
                 let kernel_r = decompress(&r33()).expect("adaptor-refund: kernel R");
                 let kernel_z = scalar_reduce_be(&r32());
                 assert!(
@@ -2060,7 +2105,10 @@ pub fn main() {
                 // note — for farms/staking/vesting). `n_legs == 0` ⇒ a PAYOUT (mint the controller token to a
                 // recipient, no collateral, no position — positionLeaf = 0). The normal CDP (both > 0) is
                 // unchanged. Both zero is an empty op — rejected.
-                assert!(debt_value > 0 || n_legs > 0, "cdp-mint: empty op (zero debt and empty basket)");
+                assert!(
+                    debt_value > 0 || n_legs > 0,
+                    "cdp-mint: empty op (zero debt and empty basket)"
+                );
                 assert!(n_legs <= MAX_ITEMS_PER_OP, "cdp-mint: basket over cap");
                 if n_legs > 0 {
                     assert!(
@@ -2141,7 +2189,13 @@ pub fn main() {
                         &[debt_value, fee],
                     );
                     assert!(
-                        verify_opening_sigma(&d_pt, debt_value - fee, &d_sig_r, &d_sig_z, &debt_ctx),
+                        verify_opening_sigma(
+                            &d_pt,
+                            debt_value - fee,
+                            &d_sig_r,
+                            &d_sig_z,
+                            &debt_ctx
+                        ),
                         "cdp-mint: debt opening sigma (net of relay fee)"
                     );
                     leaves.push(leaf(&debt_asset, &d_cx, &d_cy, &owner));
@@ -2158,7 +2212,15 @@ pub fn main() {
                 // or the `0` sentinel for a PAYOUT (n_legs == 0 ⇒ no position; the pool skips the insert).
                 let position_leaf = if n_legs > 0 {
                     let basket_root = cdp_basket_root(&leg_hashes);
-                    cdp_position_leaf(&controller, &debt_asset, &basket_root, debt_value, &rate_snapshot, &owner, &nonce)
+                    cdp_position_leaf(
+                        &controller,
+                        &debt_asset,
+                        &basket_root,
+                        debt_value,
+                        &rate_snapshot,
+                        &owner,
+                        &nonce,
+                    )
                 } else {
                     [0u8; 32]
                 };
@@ -2238,12 +2300,17 @@ pub fn main() {
                     ),
                     "cdp-close: position membership"
                 );
-                for (i, (asset, value, cx, cy, pt, sig_r, sig_z)) in released.into_iter().enumerate() {
+                for (i, (asset, value, cx, cy, pt, sig_r, sig_z)) in
+                    released.into_iter().enumerate()
+                {
                     let sig_z = scalar_reduce_be(&sig_z);
                     // The first leg carries the op's relay fee: it opens to value − fee (the others open to
                     // their full value). The fee is bound in this leg's context so the box can't pad it.
                     let leg_fee = if i == 0 { fee } else { 0 };
-                    assert!(leg_fee == 0 || leg_fee < value, "cdp-close: fee >= leg value");
+                    assert!(
+                        leg_fee == 0 || leg_fee < value,
+                        "cdp-close: fee >= leg value"
+                    );
                     let ctx = intent_context(
                         b"tacit-cdp-close-release-v1",
                         &chain_binding,
@@ -2612,8 +2679,14 @@ pub fn main() {
                 let mut controller32 = [0u8; 32];
                 controller32[12..].copy_from_slice(&controller);
                 let n_legs: u32 = io::read();
-                assert!(n_legs > 0 && n_legs <= MAX_ITEMS_PER_OP, "farm-bond: basket count");
-                assert!(spend_root != [0u8; 32], "farm-bond: membership requires a non-zero spend root");
+                assert!(
+                    n_legs > 0 && n_legs <= MAX_ITEMS_PER_OP,
+                    "farm-bond: basket count"
+                );
+                assert!(
+                    spend_root != [0u8; 32],
+                    "farm-bond: membership requires a non-zero spend root"
+                );
                 let mut shares: u64 = 0;
                 for _ in 0..n_legs {
                     let (cx, cy, pt) = r_commitment();
@@ -2624,7 +2697,10 @@ pub fn main() {
                     let sig_r = decompress(&r33()).expect("farm-bond: leg sigma R");
                     let sig_z = scalar_reduce_be(&r32());
                     let lf = leaf(&lp_asset, &cx, &cy, &owner);
-                    assert!(keccak_merkle_verify(&lf, index, &path, &spend_root), "farm-bond: leg membership");
+                    assert!(
+                        keccak_merkle_verify(&lf, index, &path, &spend_root),
+                        "farm-bond: leg membership"
+                    );
                     let ctx = intent_context(
                         b"tacit-farm-bond-leg-v1",
                         &chain_binding,
@@ -2642,9 +2718,17 @@ pub fn main() {
                         check_btc_nonmembership(&nu, &bitcoin_spent_root);
                     }
                     nullifiers.push(nu);
-                    shares += value;
+                    shares = shares
+                        .checked_add(value)
+                        .expect("farm-bond: share overflow");
                 }
-                leaves.push(farm_receipt_leaf(&controller32, shares, rps_entry, &owner, &nonce));
+                leaves.push(farm_receipt_leaf(
+                    &controller32,
+                    shares,
+                    rps_entry,
+                    &owner,
+                    &nonce,
+                ));
                 let debt_asset = cdp_debt_asset_id(&controller);
                 let mut sentinel = [0u8; 32];
                 sentinel[31] = 1; // positionLeaf == 1 (fair-farm sentinel); debtValue == 0 ⇒ BOND
@@ -2655,8 +2739,14 @@ pub fn main() {
                     positionLeaf: sentinel.into(),
                     rateSnapshot: U256::from(0u64), // inert: a farm controller has no stability fee
                     legs: vec![
-                        CdpLeg { asset: lp_asset.into(), value: U256::from(shares) },
-                        CdpLeg { asset: [0u8; 32].into(), value: U256::from(rps_entry) },
+                        CdpLeg {
+                            asset: lp_asset.into(),
+                            value: U256::from(shares),
+                        },
+                        CdpLeg {
+                            asset: [0u8; 32].into(),
+                            value: U256::from(rps_entry),
+                        },
                     ],
                 });
             }
@@ -2669,6 +2759,7 @@ pub fn main() {
                 let controller = r20();
                 let owner = r32();
                 let shares: u64 = io::read();
+                assert!(shares > 0, "farm-harvest: zero shares");
                 let rps_entry: u128 = io::read();
                 let old_nonce = r32();
                 let new_nonce = r32();
@@ -2683,15 +2774,25 @@ pub fn main() {
                 controller32[12..].copy_from_slice(&controller);
                 let old_index: u64 = io::read();
                 let old_path = r_path();
-                let old_leaf = farm_receipt_leaf(&controller32, shares, rps_entry, &owner, &old_nonce);
-                assert!(spend_root != [0u8; 32], "farm-harvest: membership requires a non-zero spend root");
+                let old_leaf =
+                    farm_receipt_leaf(&controller32, shares, rps_entry, &owner, &old_nonce);
+                assert!(
+                    spend_root != [0u8; 32],
+                    "farm-harvest: membership requires a non-zero spend root"
+                );
                 assert!(
                     keccak_merkle_verify(&old_leaf, old_index, &old_path, &spend_root),
                     "farm-harvest: receipt membership"
                 );
                 nullifiers.push(farm_receipt_nullifier(&old_leaf));
                 let new_entry = farm_harvest_new_entry(shares, rps_entry, reward);
-                leaves.push(farm_receipt_leaf(&controller32, shares, new_entry, &owner, &new_nonce));
+                leaves.push(farm_receipt_leaf(
+                    &controller32,
+                    shares,
+                    new_entry,
+                    &owner,
+                    &new_nonce,
+                ));
                 let debt_asset = cdp_debt_asset_id(&controller);
                 // The reward note's asset: an escrow-backed reward asset (ESCROW mode, the pool's farmTreasury
                 // backs it) or the controller's pool-minted debt asset (MINT mode, == debt_asset). Witnessed so
@@ -2728,8 +2829,14 @@ pub fn main() {
                     positionLeaf: sentinel.into(),
                     rateSnapshot: U256::from(0u64), // inert: a farm controller has no stability fee
                     legs: vec![
-                        CdpLeg { asset: reward_asset.into(), value: U256::from(shares) },
-                        CdpLeg { asset: [0u8; 32].into(), value: U256::from(rps_entry) },
+                        CdpLeg {
+                            asset: reward_asset.into(),
+                            value: U256::from(shares),
+                        },
+                        CdpLeg {
+                            asset: [0u8; 32].into(),
+                            value: U256::from(rps_entry),
+                        },
                     ],
                 });
             }
@@ -2753,7 +2860,10 @@ pub fn main() {
                 let old_index: u64 = io::read();
                 let old_path = r_path();
                 let receipt = farm_receipt_leaf(&controller32, shares, rps_entry, &owner, &nonce);
-                assert!(spend_root != [0u8; 32], "farm-unbond: membership requires a non-zero spend root");
+                assert!(
+                    spend_root != [0u8; 32],
+                    "farm-unbond: membership requires a non-zero spend root"
+                );
                 assert!(
                     keccak_merkle_verify(&receipt, old_index, &old_path, &spend_root),
                     "farm-unbond: receipt membership"
@@ -2788,7 +2898,10 @@ pub fn main() {
                     repaid: U256::from(0u64), // farm unbond: no debt, no repayment
                     rateSnapshot: U256::from(0u64), // inert: a farm controller has no stability fee
                     positionNullifier: receipt_null.into(),
-                    legs: vec![CdpLeg { asset: lp_asset.into(), value: U256::from(shares) }],
+                    legs: vec![CdpLeg {
+                        asset: lp_asset.into(),
+                        value: U256::from(shares),
+                    }],
                 });
             }
             OP_CBTC_MINT => {
@@ -2839,13 +2952,14 @@ pub fn main() {
                 let asset = r32();
                 let locker = r32(); // == N's owner (authorizes the spend by opening N)
                 let owner_pub = r32(); // recipient one-time stealth x-only pubkey (the claim signs under it)
-                // Reject a non-curve owner_pub at lock time (a typo'd / garbage stealth address) so it can't
-                // create an unclaimable lock — an honest one-time pubkey O = B + s·G is always a valid
-                // x-coordinate. (The locker can still refund either way; this just fails fast.)
+                                       // Reject a non-curve owner_pub at lock time (a typo'd / garbage stealth address) so it can't
+                                       // create an unclaimable lock — an honest one-time pubkey O = B + s·G is always a valid
+                                       // x-coordinate. (The locker can still refund either way; this just fails fast.)
                 {
                     let mut owner_comp = [2u8; 33];
                     owner_comp[1..].copy_from_slice(&owner_pub);
-                    decompress(&owner_comp).expect("stealth-lock: owner_pub is not a valid x-only pubkey");
+                    decompress(&owner_comp)
+                        .expect("stealth-lock: owner_pub is not a valid x-only pubkey");
                 }
                 let amount: u64 = io::read();
                 assert!(amount > 0, "stealth-lock: zero amount");
@@ -2856,8 +2970,14 @@ pub fn main() {
                 let n_index: u64 = io::read();
                 let n_path = r_path();
                 let n_lf = leaf(&asset, &n_cx, &n_cy, &locker);
-                assert!(spend_root != [0u8; 32], "stealth-lock: membership requires a non-zero spend root");
-                assert!(keccak_merkle_verify(&n_lf, n_index, &n_path, &spend_root), "stealth-lock: N membership");
+                assert!(
+                    spend_root != [0u8; 32],
+                    "stealth-lock: membership requires a non-zero spend root"
+                );
+                assert!(
+                    keccak_merkle_verify(&n_lf, n_index, &n_path, &spend_root),
+                    "stealth-lock: N membership"
+                );
                 let n_nu = nullifier(&n_cx, &n_cy);
                 if bitcoin_spent_root != [0u8; 32] {
                     check_btc_nonmembership(&n_nu, &bitcoin_spent_root);
@@ -2886,7 +3006,9 @@ pub fn main() {
                 );
 
                 nullifiers.push(n_nu);
-                lock_leaves.push(stealth_lock_leaf(&asset, &l_cx, &l_cy, &owner_pub, amount, deadline, &locker));
+                lock_leaves.push(stealth_lock_leaf(
+                    &asset, &l_cx, &l_cy, &owner_pub, amount, deadline, &locker,
+                ));
             }
             OP_STEALTH_CLAIM => {
                 // Stealth-receive CLAIM: the recipient proves L ∈ the lock-set (reconstructing its leaf pins
@@ -2902,8 +3024,12 @@ pub fn main() {
                 let locker = r32();
                 let l_index: u64 = io::read();
                 let l_path = r_path();
-                let lock_lf = stealth_lock_leaf(&asset, &l_cx, &l_cy, &owner_pub, amount, deadline, &locker);
-                assert!(lock_set_root != [0u8; 32], "stealth-claim: membership requires a non-zero lock-set root");
+                let lock_lf =
+                    stealth_lock_leaf(&asset, &l_cx, &l_cy, &owner_pub, amount, deadline, &locker);
+                assert!(
+                    lock_set_root != [0u8; 32],
+                    "stealth-claim: membership requires a non-zero lock-set root"
+                );
                 assert!(
                     keccak_merkle_verify(&lock_lf, l_index, &l_path, &lock_set_root),
                     "stealth-claim: L lock-set membership"
@@ -2913,7 +3039,10 @@ pub fn main() {
                 let (m_cx, m_cy, m_pt) = r_commitment();
                 let m_owner = r32();
                 let fee: u64 = io::read();
-                assert!(fee < amount, "stealth-claim: fee must be < the locked amount");
+                assert!(
+                    fee < amount,
+                    "stealth-claim: fee must be < the locked amount"
+                );
                 let net = amount - fee;
                 let m_sig_r = decompress(&r33()).expect("stealth-claim: M-open R");
                 let m_sig_z = scalar_reduce_be(&r32());
@@ -2933,18 +3062,33 @@ pub fn main() {
                 let mut owner_sig = [0u8; 64];
                 owner_sig[..32].copy_from_slice(&r32());
                 owner_sig[32..].copy_from_slice(&r32());
-                let claim_msg = stealth_claim_msg(&chain_binding, &lock_lf, &m_cx, &m_cy, &m_owner, amount, fee);
+                let claim_msg = stealth_claim_msg(
+                    &chain_binding,
+                    &lock_lf,
+                    &m_cx,
+                    &m_cy,
+                    &m_owner,
+                    amount,
+                    fee,
+                );
                 assert!(
                     bip340_verify(&owner_sig, &claim_msg, &owner_pub),
                     "stealth-claim: one-time-key signature (only the recipient can claim)"
                 );
 
-                min_deadline = if min_deadline == 0 { deadline } else { min_deadline.min(deadline) };
+                min_deadline = if min_deadline == 0 {
+                    deadline
+                } else {
+                    min_deadline.min(deadline)
+                };
 
                 lock_nullifiers.push(l_nu);
                 leaves.push(leaf(&asset, &m_cx, &m_cy, &m_owner));
                 if fee != 0 {
-                    fees.push(FeePayment { assetId: asset.into(), value: U256::from(fee) });
+                    fees.push(FeePayment {
+                        assetId: asset.into(),
+                        value: U256::from(fee),
+                    });
                 }
             }
             OP_STEALTH_REFUND => {
@@ -2960,8 +3104,12 @@ pub fn main() {
                 let locker = r32();
                 let l_index: u64 = io::read();
                 let l_path = r_path();
-                let lock_lf = stealth_lock_leaf(&asset, &l_cx, &l_cy, &owner_pub, amount, deadline, &locker);
-                assert!(lock_set_root != [0u8; 32], "stealth-refund: membership requires a non-zero lock-set root");
+                let lock_lf =
+                    stealth_lock_leaf(&asset, &l_cx, &l_cy, &owner_pub, amount, deadline, &locker);
+                assert!(
+                    lock_set_root != [0u8; 32],
+                    "stealth-refund: membership requires a non-zero lock-set root"
+                );
                 assert!(
                     keccak_merkle_verify(&lock_lf, l_index, &l_path, &lock_set_root),
                     "stealth-refund: L lock-set membership"
@@ -2970,6 +3118,11 @@ pub fn main() {
 
                 let (o_cx, o_cy, o_pt) = r_commitment();
                 let fee: u64 = io::read();
+                // Bound the relay fee by the locked value: `amount` is leaf-pinned (membership reconstructs
+                // stealth_lock_leaf with it) and was bound to L's value by the lock-time opening sigma, so it
+                // IS L's true u64 value. Without this the fee-bearing kernel (value(L) = value(O) + fee mod n)
+                // accepts ANY fee for a freely chosen O, paying out an unbacked `fee` at the public boundary.
+                assert!(fee < amount, "stealth-refund: fee >= locked amount");
                 let kernel_r = decompress(&r33()).expect("stealth-refund: kernel R");
                 let kernel_z = scalar_reduce_be(&r32());
                 assert!(
@@ -2983,7 +3136,10 @@ pub fn main() {
                 lock_nullifiers.push(l_nu);
                 leaves.push(leaf(&asset, &o_cx, &o_cy, &locker));
                 if fee != 0 {
-                    fees.push(FeePayment { assetId: asset.into(), value: U256::from(fee) });
+                    fees.push(FeePayment {
+                        assetId: asset.into(),
+                        value: U256::from(fee),
+                    });
                 }
             }
             _ => panic!("unknown op type"),

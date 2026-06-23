@@ -109,9 +109,12 @@ export function makeScanReflectionIndexer({ secp, keccak256, sha256, ownerTag, b
         rangeProof: tx.decode.rangeProof,   // BP+ range proof over the output commitments
         outputs: tx.decode.commitments.map((comm, j) => {
           const { cx, cy } = pool.decompressCommitment(comm);
-          // Notes are keyed at vout (j + voutBase): a regular cxfer's notes start at vout 0, a preauth-bid
-          // fill's at vout 1 (after the envelope-hash OP_RETURN) — voutBase carries that, matching the guest.
-          return { cx, cy, compressed: comm, commitmentHash: pool.commitmentHash(cx, cy), noteLeaf: pool.leaf(tx.decode.assetId, cx, cy, OWNER), vout: j + (tx.decode.voutBase || 0) };
+          // Notes are keyed at their REAL Bitcoin vout, supplied per-opcode by classifyConfidentialTx
+          // (canonicalOutputVout / canonicalBidOutputVout — identity for plain cxfers, the {0->0,1->2}
+          // interleave for AXFER_VAR, the bid layout for 0x5B/0x5C), so the indexer's live set matches the
+          // guest's fold and a later spend is detected at the right outpoint. Legacy decode w/o vouts → j.
+          const vout = (tx.decode.vouts && tx.decode.vouts[j] != null) ? tx.decode.vouts[j] : (j + (tx.decode.voutBase || 0));
+          return { cx, cy, compressed: comm, commitmentHash: pool.commitmentHash(cx, cy), noteLeaf: pool.leaf(tx.decode.assetId, cx, cy, OWNER), vout };
         }),
       };
     } else if (tx.decode && tx.decode.type === 'burn') {

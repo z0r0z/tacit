@@ -466,6 +466,33 @@ function parseCrossoutMintEnvelope(envHex) {
   return { type: 'crossout_mint', asset: _h(e, 1, 33), claimId: _h(e, 33, 65), cx: _h(e, 65, 97), cy: _h(e, 97, 129), owner: _h(e, 129, 161) };
 }
 
+// Mirror of cxfer_core::canonical_output_vout — the REAL Bitcoin vout of a cxfer-family envelope's i-th
+// confidential output. Identity for 0x22/0x23/0x26/0x3C; the INTERLEAVE {0->0,1->2} for the variable-amount
+// atomic settlement 0x37/0x3D (vout 1 is the maker BTC payment). null = no canonical tacit vout (skip).
+function canonicalOutputVout(opcode, i, n) {
+  if (opcode === 0x22 || opcode === 0x23 || opcode === 0x26 || opcode === 0x3c) return i;
+  if (opcode === 0x37 || opcode === 0x3d) { if (i === 0) return 0; if (i === 1 && n >= 2) return 2; return null; }
+  return null;
+}
+// Mirror of cxfer_core::canonical_bid_output_vout — buyer filled note @vout0; seller change @vout3 (0x5B), or
+// @vout4 with a buyer refund (fill_amount<max_fill) else @vout3 (0x5C).
+function canonicalBidOutputVout(opcode, i, n, hasRefund) {
+  if ((opcode === 0x5b || opcode === 0x5c) && i === 0) return 0;
+  if (opcode === 0x5b && i === 1 && n >= 2) return 3;
+  if (opcode === 0x5c && i === 1 && n >= 2) return hasRefund ? 4 : 3;
+  return null;
+}
+// Mirror of cxfer_core::preauth_bid_var_has_refund — fill_amount < max_fill (both u64 LE inside the inline).
+function preauthBidVarHasRefund(envHex) {
+  const env = hexToBytes(envHex);
+  if (env[0] !== 0x5c) return false;
+  const maxOff = 1 + 32 + 1 + 16 + 33 + 8; // 91
+  const fillOff = maxOff + 8 + 8; // 107 (skip max_fill + fill_increment)
+  if (env.length < fillOff + 8) return false;
+  const rd = (o) => new DataView(env.buffer, env.byteOffset + o, 8).getBigUint64(0, true);
+  return rd(fillOff) < rd(maxOff);
+}
+
 // classifyConfidentialTx(rawTxHex) → the reflection scan's per-tx classification, MIRRORING the guest's
 // reflect.rs (extract_taproot_envelope → parse_burn_envelope / parse_cxfer_envelope_full): a confidential
 // bridge-burn → {type:'burn', assetId, nullifier, dest}; a confidential transfer → {type:'cxfer', assetId, commitments,
@@ -477,11 +504,25 @@ function classifyConfidentialTx(rawTxHex) {
   if (!envHex) return null;
   const burn = parseBurnEnvelope(envHex);
   if (burn) return { type: 'burn', assetId: burn.asset, nullifier: burn.nullifier, dest: burn.dest };
+  const opcode = parseInt(envHex.slice(0, 2), 16);
   const cx = parseCxferEnvelopeFull(envHex);
-  if (cx) return { type: 'cxfer', assetId: cx.asset, commitments: cx.commitments, kernelSig: cx.kernelSig, rangeProof: cx.rangeProof };
-  // A preauth-bid fill (0x5B/0x5C) folds via the SAME cxfer fold; its notes start at vout[1] (voutBase 1).
+  if (cx) {
+    // Per-opcode REAL Bitcoin vouts (mirrors the guest cxfer fold + commitmentForUtxo) — NOT the output index;
+    // AXFER_VAR (0x37/0x3D) interleaves, so the maker-change note keys at vout 2, not vout 1. A malformed layout
+    // (any null) is skipped, matching the guest's skip-not-fold (keeps the witness/spent-set stream in sync).
+    const vouts = cx.commitments.map((_, i) => canonicalOutputVout(opcode, i, cx.commitments.length));
+    if (vouts.some((v) => v === null)) return null;
+    return { type: 'cxfer', assetId: cx.asset, commitments: cx.commitments, kernelSig: cx.kernelSig, rangeProof: cx.rangeProof, vouts };
+  }
+  // A preauth-bid fill (0x5B/0x5C) folds via the SAME cxfer fold; its notes key at the bid's canonical vouts
+  // (buyer filled @0, seller change @3 or @4-with-refund) — NOT a flat vout[1] offset.
   const bid = parsePreauthBidEnvelope(envHex);
-  if (bid) return { type: 'cxfer', assetId: bid.asset, commitments: bid.commitments, kernelSig: bid.kernelSig, rangeProof: bid.rangeProof, voutBase: 1 };
+  if (bid) {
+    const hasRefund = preauthBidVarHasRefund(envHex);
+    const vouts = bid.commitments.map((_, i) => canonicalBidOutputVout(opcode, i, bid.commitments.length, hasRefund));
+    if (vouts.some((v) => v === null)) return null;
+    return { type: 'cxfer', assetId: bid.asset, commitments: bid.commitments, kernelSig: bid.kernelSig, rangeProof: bid.rangeProof, vouts };
+  }
   // Track-B AMM ops whose fold data is FULLY on-chain (the indexer derives only the note paths) → route them
   // to their fold; the assembler advances the pool registry / onboards the receipt. Decode == the assembler's env.
   const amm = parseSwapVarEnvelope(envHex) || parseSwapRouteEnvelope(envHex) || parseHarvestEnvelope(envHex)
@@ -510,7 +551,15 @@ function classifyConfidentialTx(rawTxHex) {
   // skips (fold_crossout is a no-op in a forward batch — crossout_set_root=0), instead of refusing the block.
   const co = parseCrossoutMintEnvelope(envHex);
   if (co) return co;
-  // Anything that reaches here is either a created-not-folded envelope (cetch/cmint), an unknown opcode, or a
+  // T_LP_BOND (0x35) / T_LP_UNBOND (0x36): the guest reflection DOES fold these (reflect.rs:1425/1506) and
+  // reads a per-op receipt witness path, but this scan has no parser for them yet. Returning null here would
+  // make the assembler treat the tx as plain traffic and emit NO receipt path, desyncing the guest's io::read
+  // (a wedge, or worse a wrong-but-self-consistent attested root). Fail closed: flag them `unsupported` so the
+  // assembler surfaces it and the attester REFUSES the batch (the indexer's unsupported branch) until a proper
+  // parser+vout (canonical_amm_output_vout has no 0x35/0x36 arm — add one with the receipt vout) is wired.
+  const op0 = parseInt(envHex.slice(0, 2), 16);
+  if (op0 === 0x35 || op0 === 0x36) return { type: 'unsupported', opcode: op0 };
+  // Anything else reaching here is a created-not-folded envelope (cetch/cmint), an unknown opcode, or a
   // malformed/truncated instance of a known opcode. The Rust guest also parses no fold in all of those cases and
   // reads no per-op witnesses, so mirror it as plain traffic. `unsupported` is reserved for explicit callers /
   // missing fold hooks that know a parseable guest-folded envelope would desync the stream.

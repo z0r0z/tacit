@@ -26,7 +26,12 @@ pub mod bjj;
 /// provenance to the etch supply note. See ops/DESIGN-trustless-asset-onboarding.md.
 pub mod burn_deposit;
 pub mod eth_reflection;
-pub mod sigma;
+// `sigma` is a TEST-ONLY reference mirror of the cross-curve (secp↔BabyJubJub) sigma verifier. The LIVE,
+// VKEY-pinned verifier is `babyjubjub::verify_xcurve` (the sole production caller is swap_batch.rs); this
+// num_bigint reimplementation is kept only for its independent KAT vectors and is gated `#[cfg(test)]` so it
+// can never be wired into the proving build and silently diverge from the verifier the proof commits to.
+#[cfg(test)]
+mod sigma;
 
 pub const KERNEL_DOMAIN: &[u8] = b"tacit-evm-cxfer-kernel-v1";
 const BPP_DOMAIN: &[u8] = b"tacit-bpp-v1";
@@ -75,6 +80,22 @@ pub fn verify_kernel(
     r: &ProjectivePoint,
     z: &Scalar,
 ) -> bool {
+    verify_kernel_with_fee(in_c, out_c, 0, r, z)
+}
+
+/// Conservation kernel with a PUBLIC fee leg: proves Σ value_in = Σ value_out + `fee`, where `fee`
+/// leaves the shielded set as a public FeePayment (the relay fee for a gasless transfer). Identical
+/// to `verify_kernel` but removes the public `fee·H` from the excess before the Schnorr check —
+/// x = Σ Cin − Σ Cout − fee·H must equal excess·G. With fee = 0 this is byte-identical to
+/// `verify_kernel` (fee·H = identity). The fee needs no separate binding: shifting it leaves an
+/// H-component in x the Schnorr can't satisfy without the (secret) blinding excess.
+pub fn verify_kernel_with_fee(
+    in_c: &[ProjectivePoint],
+    out_c: &[ProjectivePoint],
+    fee: u64,
+    r: &ProjectivePoint,
+    z: &Scalar,
+) -> bool {
     let mut k = Keccak::v256();
     k.update(KERNEL_DOMAIN);
     for p in in_c { k.update(&compress(p)); }
@@ -84,8 +105,119 @@ pub fn verify_kernel(
     k.finalize(&mut h);
     let e = scalar_reduce_be(&h);
 
-    let x = sum_points(in_c) - sum_points(out_c);
+    let x = sum_points(in_c) - sum_points(out_c) - gen_h() * Scalar::from(fee);
     ProjectivePoint::generator() * z == *r + x * e
+}
+
+#[cfg(test)]
+mod relay_fee_kernel_tests {
+    use super::*;
+
+    fn commit(v: u64, r: Scalar) -> ProjectivePoint {
+        gen_h() * Scalar::from(v) + ProjectivePoint::generator() * r
+    }
+    fn challenge(in_c: &[ProjectivePoint], out_c: &[ProjectivePoint], rr: &ProjectivePoint) -> Scalar {
+        let mut k = Keccak::v256();
+        k.update(KERNEL_DOMAIN);
+        for p in in_c { k.update(&compress(p)); }
+        for p in out_c { k.update(&compress(p)); }
+        k.update(&compress(rr));
+        let mut h = [0u8; 32];
+        k.finalize(&mut h);
+        scalar_reduce_be(&h)
+    }
+    // Honest prover for Σin = Σout + fee: (R, z) over the blinding excess, as confidential-transfer.js.
+    fn prove(in_c: &[ProjectivePoint], out_c: &[ProjectivePoint], excess: Scalar, nonce: &[u8; 32]) -> (ProjectivePoint, Scalar) {
+        let kk = scalar_reduce_be(nonce);
+        let rr = ProjectivePoint::generator() * kk;
+        let e = challenge(in_c, out_c, &rr);
+        (rr, kk + e * excess)
+    }
+
+    #[test]
+    fn fee_leg_conserves_and_binds() {
+        let r_in = scalar_reduce_be(&[7u8; 32]);
+        let r_out = scalar_reduce_be(&[9u8; 32]);
+        let in_c = [commit(100, r_in)];
+        let out_c = [commit(70, r_out)]; // Σin = Σout + 30
+        let (rr, z) = prove(&in_c, &out_c, r_in - r_out, &[3u8; 32]);
+        assert!(verify_kernel_with_fee(&in_c, &out_c, 30, &rr, &z), "honest fee accepted");
+        assert!(!verify_kernel_with_fee(&in_c, &out_c, 31, &rr, &z), "padded fee rejected");
+        assert!(!verify_kernel_with_fee(&in_c, &out_c, 29, &rr, &z), "understated fee rejected");
+        assert!(!verify_kernel_with_fee(&in_c, &out_c, 0, &rr, &z), "fee-free read of a fee'd transfer rejected");
+    }
+
+    #[test]
+    fn fee_zero_equals_verify_kernel() {
+        let r_in = scalar_reduce_be(&[11u8; 32]);
+        let r_out = scalar_reduce_be(&[13u8; 32]);
+        let in_c = [commit(50, r_in)];
+        let out_c = [commit(50, r_out)]; // balanced
+        let (rr, z) = prove(&in_c, &out_c, r_in - r_out, &[5u8; 32]);
+        assert!(verify_kernel(&in_c, &out_c, &rr, &z));
+        assert!(verify_kernel_with_fee(&in_c, &out_c, 0, &rr, &z));
+        assert!(!verify_kernel_with_fee(&in_c, &out_c, 1, &rr, &z), "a fee on a balanced transfer is rejected");
+    }
+
+    // A valid opening sigma (PoK of the blinding r for a PUBLIC u64 amount), mirroring verify_opening_sigma.
+    fn open_sigma(c: &ProjectivePoint, amount: u64, r: Scalar, context: &[u8; 32], nonce: &[u8; 32])
+        -> (ProjectivePoint, Scalar)
+    {
+        let kk = scalar_reduce_be(nonce);
+        let rr = ProjectivePoint::generator() * kk;
+        let mut k = Keccak::v256();
+        k.update(OPENING_DOMAIN);
+        k.update(&amount.to_be_bytes());
+        k.update(context);
+        k.update(&compress(c));
+        k.update(&compress(&rr));
+        let mut h = [0u8; 32];
+        k.finalize(&mut h);
+        let e = scalar_reduce_be(&h);
+        (rr, kk + e * r)
+    }
+
+    // OP_ADAPTOR_REFUND / OP_STEALTH_REFUND fee-bound regression. The refund kernel proves only
+    // value(L) = value(O) + fee (mod n); the scalar field has no ordering, so for a freely chosen O the
+    // kernel passes for ANY fee — an over-large fee then pays out unbacked value at the public boundary
+    // (FeePayment to the settler). The guard is: re-open L (adaptor) / read the leaf-pinned amount (stealth)
+    // to L's TRUE u64 value, then assert fee < amount. This pins both ends so no wraparound fee survives.
+    #[test]
+    fn refund_fee_must_be_bounded_by_the_locked_value() {
+        let r_l = scalar_reduce_be(&[21u8; 32]);
+        let amount: u64 = 100; // L's true locked value (u64)
+        let l = commit(amount, r_l);
+        let r_o = scalar_reduce_be(&[22u8; 32]);
+
+        // THE GAP: a huge fee with O chosen so value(O) == amount - fee (mod n) — a valid curve point the
+        // locker can open. The fee-bearing kernel alone ACCEPTS it (this is the vulnerability the fix closes).
+        let big_fee: u64 = u64::MAX;
+        let o_bad = gen_h() * (Scalar::from(amount) - Scalar::from(big_fee))
+            + ProjectivePoint::generator() * r_o;
+        let (rr_bad, z_bad) = prove(&[l], &[o_bad], r_l - r_o, &[23u8; 32]);
+        assert!(
+            verify_kernel_with_fee(&[l], &[o_bad], big_fee, &rr_bad, &z_bad),
+            "kernel alone accepts an over-large fee — the gap the guard must close"
+        );
+
+        // THE GUARD: the opening sigma binds L to its TRUE u64 value; it cannot be opened to any other value,
+        // and `amount` is a u64 (< 2^64). The guest then rejects fee >= amount.
+        let ctx = [7u8; 32];
+        let (osig_r, osig_z) = open_sigma(&l, amount, r_l, &ctx, &[24u8; 32]);
+        assert!(verify_opening_sigma(&l, amount, &osig_r, &osig_z, &ctx), "L opens to its true value");
+        assert!(
+            !verify_opening_sigma(&l, amount.wrapping_add(1), &osig_r, &osig_z, &ctx),
+            "L cannot be opened to a different value (so `amount` is forced to L's real value)"
+        );
+        assert!(!(big_fee < amount), "the guest-level `fee < amount` check rejects the over-large fee");
+
+        // An honest fee passes the bound AND conservation.
+        let honest_fee: u64 = 30;
+        let o_ok = commit(amount - honest_fee, r_o);
+        let (rr_ok, z_ok) = prove(&[l], &[o_ok], r_l - r_o, &[25u8; 32]);
+        assert!(honest_fee < amount);
+        assert!(verify_kernel_with_fee(&[l], &[o_ok], honest_fee, &rr_ok, &z_ok));
+    }
 }
 
 // ──────────────────── opening proof-of-knowledge (swap / LP) ────────────────────
@@ -865,6 +997,63 @@ fn kn(parts: &[&[u8]]) -> [u8; 32] {
     let mut o = [0u8; 32]; k.finalize(&mut o); o
 }
 
+/// The CANONICAL Bitcoin vout of a CXFER-family envelope's `i`-th confidential output (of `n_outputs`),
+/// mirroring the worker/dapp `commitmentForUtxo` (`getParentEnvelopeData`) — the single convention that
+/// DEFINES where a note's commitment sits on-chain. SINGLE SOURCE OF TRUTH for both the live reflection
+/// fold (reflect.rs) and the scan-free burn-deposit DAG (burn_deposit::verify_cxfers); a divergence between
+/// them is exactly how an AXFER_VAR maker-change note got keyed at the wrong outpoint (undetected spend).
+///  - T_CXFER (0x23) / T_CXFER_BPP (0x22) / T_AXFER (0x26) / T_AXFER_BPP (0x3C): IDENTITY — output `i` is at
+///    vout `i` (any vout ≥ N is an aux non-tacit BTC output, not a pool UTXO);
+///  - T_AXFER_VAR (0x37) / T_AXFER_VAR_BPP (0x3D): the INTERLEAVED variable-amount atomic-settlement layout
+///    (SPEC §5.7.9) — output 0 → vout 0 (recipient), output 1 → vout 2 (maker change); vout 1 is the maker
+///    BTC payment, vout 3 the OP_RETURN. N ∈ {1, 2}.
+/// `None` for an index with no canonical tacit vout under the opcode's layout (caller fails closed / skips).
+pub fn canonical_output_vout(opcode: u8, i: usize, n_outputs: usize) -> Option<u32> {
+    match opcode {
+        0x23 | 0x22 | 0x26 | 0x3C => Some(i as u32), // identity
+        0x37 | 0x3D => match i {                     // interleaved (recipient @0, maker change @2)
+            0 => Some(0),
+            1 if n_outputs >= 2 => Some(2),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// The CANONICAL Bitcoin vout of a preauth-bid envelope's `i`-th confidential output, mirroring the dapp
+/// `getParentEnvelopeData` bid arms (tacit.js): the bid tx carries the envelope-hash OP_RETURN at vout 0
+/// is NOT used here — for bids the buyer FILLED note is at vout 0 and the seller CHANGE at a fixed later
+/// vout. T_PREAUTH_BID (0x5B, exact-fill): output 0 → vout 0, output 1 (seller change) → vout 3.
+/// T_PREAUTH_BID_VAR (0x5C): output 0 → vout 0, output 1 → vout 4 when the bid has a buyer refund
+/// (fill_amount < max_fill) else vout 3. `None` for an unmapped index.
+pub fn canonical_bid_output_vout(opcode: u8, i: usize, n_outputs: usize, has_refund: bool) -> Option<u32> {
+    match (opcode, i) {
+        (0x5B, 0) | (0x5C, 0) => Some(0),
+        (0x5B, 1) if n_outputs >= 2 => Some(3),
+        (0x5C, 1) if n_outputs >= 2 => Some(if has_refund { 4 } else { 3 }),
+        _ => None,
+    }
+}
+
+/// The CANONICAL Bitcoin vout of a WITNESS-ENVELOPE AMM op's `i`-th onboarded confidential note. These ops
+/// (T_LP_ADD/POOL_INIT 0x2D, T_LP_REMOVE 0x2E, T_PROTOCOL_FEE_CLAIM 0x31) carry the Tacit envelope in the
+/// Taproot script-path WITNESS with NO OP_RETURN at vout 0, so their tacit notes begin at vout 0 — mirroring
+/// the worker/dapp `getParentEnvelopeData` (T_LP_ADD: vout 0 only; T_LP_REMOVE: recvA vout 0 / recvB vout 1;
+/// T_PROTOCOL_FEE_CLAIM: vout 0 only). This is DISTINCT from the OP_RETURN-prefixed AMM/farm reveals
+/// (T_SWAP_VAR / T_SWAP_ROUTE / T_LP_UNBOND / T_LP_HARVEST / T_FARM_REFUND), whose envelope-hash sits at vout
+/// 0 so their notes start at vout 1 — those key in their own reflect.rs branches. Keying a witness-envelope
+/// note one vout too high drops it from the live UTXO set, so its later real Bitcoin spend (at vout 0) goes
+/// UNDETECTED — a cross-lane double-spend. `None` for an unmapped (opcode, index).
+pub fn canonical_amm_output_vout(opcode: u8, i: usize) -> Option<u32> {
+    match (opcode, i) {
+        (0x2D, 0) => Some(0), // T_LP_ADD / POOL_INIT: the minted LP-share note
+        (0x2E, 0) => Some(0), // T_LP_REMOVE: recvA (asset A withdrawal)
+        (0x2E, 1) => Some(1), // T_LP_REMOVE: recvB (asset B withdrawal)
+        (0x31, 0) => Some(0), // T_PROTOCOL_FEE_CLAIM: the crystallized claim note
+        _ => None,
+    }
+}
+
 /// leaf = keccak(asset_id ‖ Cx ‖ Cy ‖ owner) — matches ConfidentialPool + the dapp.
 pub fn leaf(asset_id: &[u8; 32], cx: &[u8; 32], cy: &[u8; 32], owner: &[u8; 32]) -> [u8; 32] {
     kn(&[asset_id, cx, cy, owner])
@@ -933,6 +1122,52 @@ pub fn adaptor_lock_leaf(
     recipient: &[u8; 32], locker: &[u8; 32],
 ) -> [u8; 32] {
     kn(&[ADAPTOR_LOCK_DOMAIN, asset, cx, cy, tx, ty, &deadline.to_be_bytes(), recipient, locker])
+}
+
+// ──────────────────── stealth-receive (ops/DESIGN-confidential-stealth-receive.md) ────────────────────
+// Non-interactive send-to-address: lock a note under the recipient's one-time stealth pubkey in the SAME
+// lock-set as adaptor (disjoint domain ⇒ a stealth claim and an adaptor claim can never spend each other's
+// locks), and gate the claim with a BIP-340 signature under that pubkey. The sender knows the lock's blinding
+// but not the recipient's one-time key, and the locked note is unreachable by transfer/swap — so only the
+// recipient can claim. `amount` is bound in the leaf so the claim's output cannot inflate.
+
+/// Stealth-lock leaf domain — disjoint from `ADAPTOR_LOCK_DOMAIN` though both ride the shared lock-set.
+pub const STEALTH_LOCK_DOMAIN: &[u8] = b"tacit-stealth-lock-v1";
+/// Domain of the message the recipient signs (BIP-340 under their one-time pubkey) to claim a stealth lock.
+pub const STEALTH_CLAIM_DOMAIN: &[u8] = b"tacit-stealth-claim-v1";
+
+/// Lock-set leaf for a stealth lock: note `L=commit(amount,r_L)` locked under the recipient one-time x-only
+/// pubkey `owner_pub`. `amount` is bound (membership pins the locked value ⇒ the claim cannot over-mint);
+/// `deadline`/`locker` carry the refund path (the locker reclaims after the deadline if never claimed).
+#[allow(clippy::too_many_arguments)]
+pub fn stealth_lock_leaf(
+    asset: &[u8; 32],
+    cx: &[u8; 32], cy: &[u8; 32],
+    owner_pub: &[u8; 32],
+    amount: u64,
+    deadline: u64,
+    locker: &[u8; 32],
+) -> [u8; 32] {
+    kn(&[
+        STEALTH_LOCK_DOMAIN, asset, cx, cy, owner_pub,
+        &amount.to_be_bytes(), &deadline.to_be_bytes(), locker,
+    ])
+}
+
+/// The message the recipient signs (BIP-340 under `owner_pub`) to CLAIM a stealth lock — binds the exact lock
+/// leaf and the exact output note `M` + relay `fee`. Only the holder of `owner_pub`'s one-time key can sign,
+/// and only for THIS output: neither the sender (who knows the lock) nor a relayer can claim or redirect it.
+pub fn stealth_claim_msg(
+    chain_binding: &[u8; 32],
+    lock_leaf: &[u8; 32],
+    m_cx: &[u8; 32], m_cy: &[u8; 32], m_owner: &[u8; 32],
+    amount: u64,
+    fee: u64,
+) -> [u8; 32] {
+    kn(&[
+        STEALTH_CLAIM_DOMAIN, chain_binding, lock_leaf, m_cx, m_cy, m_owner,
+        &amount.to_be_bytes(), &fee.to_be_bytes(),
+    ])
 }
 
 // ──────────────────── generic confidential CDP (ops/DESIGN-confidential-defi-v1.md §4) ────────────────────
@@ -3646,9 +3881,12 @@ impl FarmRewardState {
         if height > self.last_height {
             if self.total_shares != 0 {
                 let dh = (height - self.last_height) as u128;
-                let inc = (self.rate as u128).saturating_mul(dh).saturating_mul(FARM_RPS_PRECISION)
+                let inc = (self.rate as u128)
+                    .checked_mul(dh)
+                    .and_then(|x| x.checked_mul(FARM_RPS_PRECISION))
+                    .expect("farm accrue overflow")
                     / self.total_shares as u128;
-                self.rps = self.rps.saturating_add(inc);
+                self.rps = self.rps.checked_add(inc).expect("farm rps overflow");
             }
             self.last_height = height;
         }
@@ -3656,8 +3894,9 @@ impl FarmRewardState {
 
     /// BOND: accrue, add shares, return the `rps_entry` the receipt must commit (== live rps; no backdating).
     pub fn bond(&mut self, shares: u64, height: u64) -> u128 {
+        assert!(shares > 0, "farm bond zero shares");
         self.accrue(height);
-        self.total_shares = self.total_shares.saturating_add(shares);
+        self.total_shares = self.total_shares.checked_add(shares).expect("farm total shares overflow");
         self.rps
     }
 
@@ -3678,17 +3917,22 @@ impl FarmRewardState {
 
     /// UNBOND: accrue, remove shares.
     pub fn unbond(&mut self, shares: u64, height: u64) {
+        assert!(shares > 0, "farm unbond zero shares");
         self.accrue(height);
-        self.total_shares = self.total_shares.saturating_sub(shares);
+        self.total_shares = self.total_shares.checked_sub(shares).expect("farm total shares underflow");
     }
 }
 
 /// The checkpoint the NEW receipt must commit after a harvest: advance by exactly the claim, so any
-/// `reward ≥ 1` moves it (PRECISION ≥ shares) — closing the sub-share re-claim. Saturating: a rare overflow
-/// over-advances, costing only the staker, never the protocol.
+/// `reward ≥ 1` moves it (PRECISION ≥ shares) — closing the sub-share re-claim. Overflow is rejected so a
+/// malformed witness cannot silently over-advance or wrap the receipt checkpoint.
 pub fn farm_harvest_new_entry(shares: u64, rps_entry: u128, reward: u64) -> u128 {
-    let delta = (reward as u128).saturating_mul(FARM_RPS_PRECISION) / shares as u128;
-    rps_entry.saturating_add(delta)
+    assert!(shares > 0, "farm harvest zero shares");
+    let delta = (reward as u128)
+        .checked_mul(FARM_RPS_PRECISION)
+        .expect("farm harvest checkpoint overflow")
+        / shares as u128;
+    rps_entry.checked_add(delta).expect("farm harvest rps entry overflow")
 }
 
 /// Domain-separated leaf for a farm RECEIPT (SPEC-CONTROLLER-VAULT-AMENDMENT §4): a stake checkpoint
@@ -4283,6 +4527,51 @@ mod tests {
         assert_ne!(base, adaptor_lock_leaf(&asset, &cx, &cy, &tx, &ty, deadline, &recipient, &bump(&locker)), "locker bound");
         // domain-separated from the note-tree leaf (same bytes, different domain → different leaf)
         assert_ne!(base, leaf(&cx, &cy, &tx, &ty), "lock leaf disjoint from a normal note leaf");
+    }
+
+    /// Stealth lock leaf: deterministic, binds every field (incl. `amount`, so a claim cannot over-mint),
+    /// and is domain-separated from the adaptor lock leaf — so a stealth claim and an adaptor claim can never
+    /// reproduce each other's leaf in the shared lock-set.
+    #[test]
+    fn stealth_lock_leaf_binds_every_field_and_is_domain_separated() {
+        let asset = [0x51u8; 32];
+        let cx = [0x11u8; 32]; let cy = [0x12u8; 32];
+        let owner_pub = [0x61u8; 32];
+        let amount = 1_000_000u64;
+        let deadline = 1_700_000_000u64;
+        let locker = [0x41u8; 32];
+        let base = stealth_lock_leaf(&asset, &cx, &cy, &owner_pub, amount, deadline, &locker);
+        assert_eq!(base, stealth_lock_leaf(&asset, &cx, &cy, &owner_pub, amount, deadline, &locker), "deterministic");
+        let bump = |b: &[u8; 32]| { let mut x = *b; x[0] ^= 1; x };
+        assert_ne!(base, stealth_lock_leaf(&bump(&asset), &cx, &cy, &owner_pub, amount, deadline, &locker), "asset bound");
+        assert_ne!(base, stealth_lock_leaf(&asset, &bump(&cx), &cy, &owner_pub, amount, deadline, &locker), "Cx bound");
+        assert_ne!(base, stealth_lock_leaf(&asset, &cx, &bump(&cy), &owner_pub, amount, deadline, &locker), "Cy bound");
+        assert_ne!(base, stealth_lock_leaf(&asset, &cx, &cy, &bump(&owner_pub), amount, deadline, &locker), "owner_pub bound");
+        assert_ne!(base, stealth_lock_leaf(&asset, &cx, &cy, &owner_pub, amount + 1, deadline, &locker), "amount bound (no over-mint)");
+        assert_ne!(base, stealth_lock_leaf(&asset, &cx, &cy, &owner_pub, amount, deadline + 1, &locker), "deadline bound");
+        assert_ne!(base, stealth_lock_leaf(&asset, &cx, &cy, &owner_pub, amount, deadline, &bump(&locker)), "locker bound");
+        // disjoint from the adaptor lock leaf even with overlapping inputs (shared lock-set, different domain)
+        assert_ne!(base, adaptor_lock_leaf(&asset, &cx, &cy, &owner_pub, &locker, deadline, &owner_pub, &locker), "domain-separated from adaptor lock");
+    }
+
+    /// The stealth claim message binds the lock leaf + the exact output note + fee, so the recipient's
+    /// signature authorizes ONE output at ONE fee: a relayer can neither redirect the note nor pad the fee.
+    #[test]
+    fn stealth_claim_msg_binds_output_and_fee() {
+        let cb = [0x71u8; 32];
+        let lock_leaf = [0x72u8; 32];
+        let m_cx = [0x11u8; 32]; let m_cy = [0x12u8; 32]; let m_owner = [0x13u8; 32];
+        let amount = 500_000u64; let fee = 1_000u64;
+        let base = stealth_claim_msg(&cb, &lock_leaf, &m_cx, &m_cy, &m_owner, amount, fee);
+        assert_eq!(base, stealth_claim_msg(&cb, &lock_leaf, &m_cx, &m_cy, &m_owner, amount, fee), "deterministic");
+        let bump = |b: &[u8; 32]| { let mut x = *b; x[0] ^= 1; x };
+        assert_ne!(base, stealth_claim_msg(&bump(&cb), &lock_leaf, &m_cx, &m_cy, &m_owner, amount, fee), "chain binding bound");
+        assert_ne!(base, stealth_claim_msg(&cb, &bump(&lock_leaf), &m_cx, &m_cy, &m_owner, amount, fee), "lock leaf bound");
+        assert_ne!(base, stealth_claim_msg(&cb, &lock_leaf, &bump(&m_cx), &m_cy, &m_owner, amount, fee), "output Cx bound (no redirect)");
+        assert_ne!(base, stealth_claim_msg(&cb, &lock_leaf, &m_cx, &bump(&m_cy), &m_owner, amount, fee), "output Cy bound (no redirect)");
+        assert_ne!(base, stealth_claim_msg(&cb, &lock_leaf, &m_cx, &m_cy, &bump(&m_owner), amount, fee), "output owner bound (no redirect)");
+        assert_ne!(base, stealth_claim_msg(&cb, &lock_leaf, &m_cx, &m_cy, &m_owner, amount + 1, fee), "amount bound");
+        assert_ne!(base, stealth_claim_msg(&cb, &lock_leaf, &m_cx, &m_cy, &m_owner, amount, fee + 1), "fee bound (no pad)");
     }
 
     /// Regression: the adaptor lock leaf pins the `asset` id, so a CLAIM/REFUND that declares a different

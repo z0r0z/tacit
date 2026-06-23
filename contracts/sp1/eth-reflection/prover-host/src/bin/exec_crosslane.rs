@@ -57,6 +57,7 @@ fn main() {
     let pk = client.setup(Elf::Static(ELF)).expect("setup failed");
     println!("VKEY={}", pk.verifying_key().bytes32());
     println!("proving groth16 (cuda)...");
+    prover_host::assert_vkey(&pk.verifying_key().bytes32(), "program_vkey"); // fail-closed: abort on vkey drift BEFORE the GPU spend
     let proof = client.prove(&pk, stdin).groth16().run().expect("groth16 proof failed");
     client.verify(&proof, pk.verifying_key(), None).expect("local verify failed");
     println!("LOCAL_VERIFY_OK groth16 pv_bytes={}", proof.public_values.as_slice().len());

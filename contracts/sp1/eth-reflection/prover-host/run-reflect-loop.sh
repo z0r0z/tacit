@@ -68,11 +68,16 @@ while true; do
 
   PV="$(cat "$OUT/bitcoin_pv.hex")"
   PB="$(cat "$OUT/bitcoin_proof_bytes.hex")"
-  NEWDIGEST="0x${PV:320:64}"
+  # Telemetry only (last_digest.txt + the health heartbeat); the SUBMITTED payload is the full $PV, so this
+  # never gates a consensus step. BitcoinReflectionPublicValues is a DYNAMIC tuple, so abi_encode prepends a
+  # 0x20 offset word (reflect-exec/main.rs strips it): in the raw stream field `newDigest` (index 5) is at
+  # word 6 = char 384, NOT char 320 (= word 5 = the bitcoinHeight uint64). Read 384.
+  NEWDIGEST="0x${PV:384:64}"
 
   if [ -n "${SUBMIT_URL:-}" ]; then
     if curl -fsS -X POST "$SUBMIT_URL" -H 'content-type: application/json' \
          -d "{\"publicValues\":\"0x$PV\",\"proofBytes\":\"0x$PB\"}" >>"$LOG" 2>&1; then
+      mv "$OUT/eth_set_state.pending.json" "$OUT/eth_set_state.json"
       echo "$NEWDIGEST" > "$STATE/last_digest.txt"; log "cycle $cycle: SUBMITTED newDigest=$NEWDIGEST"; heartbeat "$cycle" submit ok "$NEWDIGEST"
     else
       log "cycle $cycle: SUBMIT FAILED"; heartbeat "$cycle" submit error "$NEWDIGEST"

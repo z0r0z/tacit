@@ -692,6 +692,22 @@ pub fn parse_preauth_bid_var_envelope(env: &[u8]) -> Option<([u8; 32], [u8; 64],
     parse_preauth_bid_common(env, 0x5C, PREAUTH_BID_VAR_INLINE)
 }
 
+/// True iff a `T_PREAUTH_BID_VAR` (0x5C) envelope carries a BUYER REFUND (`fill_amount < max_fill`). A refund
+/// adds the buyer's sats-refund output, shifting the seller-CHANGE tacit note from vout 3 (full fill) to
+/// vout 4 — `canonical_bid_output_vout` consumes this to key the change note at its REAL outpoint. Mirrors
+/// the dapp `decodePreauthBidVarPayload` (max_fill + fill_amount are u64 LE inside the 134-byte inline) and
+/// `getParentEnvelopeData`'s `changeVout = hasRefund ? 4 : 3`. `None` if not a well-formed 0x5C envelope.
+pub fn preauth_bid_var_has_refund(env: &[u8]) -> Option<bool> {
+    if env.first().copied()? != 0x5C { return None; }
+    // opcode(1) ‖ asset_id(32) ‖ asset_input_count(1) ‖ INLINE[ bid_id(16) ‖ recipient_pubkey(33) ‖
+    // price_per_unit(8) ‖ max_fill(8) ‖ fill_increment(8) ‖ fill_amount(8) ‖ … ].
+    let max_fill_off = 1 + 32 + 1 + 16 + 33 + 8; // 91
+    let fill_amount_off = max_fill_off + 8 + 8; // 107 (skip max_fill + fill_increment)
+    let max_fill = u64::from_le_bytes(env.get(max_fill_off..max_fill_off + 8)?.try_into().ok()?);
+    let fill_amount = u64::from_le_bytes(env.get(fill_amount_off..fill_amount_off + 8)?.try_into().ok()?);
+    Some(fill_amount < max_fill)
+}
+
 /// The `T_PREAUTH_BID` (0x5B) exact-fill inline section (SPEC §5.7.11): `bid_id(16) ‖ recipient_pubkey(33) ‖
 /// amount(8) ‖ recipient_blinding(32) ‖ price_sats(8)` — no variable-fill params (so 97 vs the var bid's 134).
 pub const PREAUTH_BID_INLINE: usize = 16 + 33 + 8 + 32 + 8; // 97

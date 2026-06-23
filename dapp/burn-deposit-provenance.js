@@ -160,6 +160,10 @@ export function makeBurnDepositProvenance({
         prevVout,
         commitmentHashCompressed(cx.inputCommitments[i]),
       ]);
+      // Output vouts carry each note's real Bitcoin position (per-opcode canonical: identity for the CXFER/
+      // AXFER family, the {0→0,1→2} interleave for the variable-amount atomic settlement). This client mirror
+      // is a defensive pre-flight; the AUTHORITATIVE canonical-vout bind that blocks a re-keyed (value-swapping)
+      // witness lives in the guest (cxfer-core burn_deposit::verify_cxfers), which rejects any non-canonical vout.
       const outputs = cx.outputCommitments.map((c, i) => [cx.outputVouts[i], commitmentHashCompressed(c)]);
       verified.push({ txid: cx.txid, inputs, outputs });
     }

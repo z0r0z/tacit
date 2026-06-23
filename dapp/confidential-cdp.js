@@ -104,11 +104,21 @@ export function makeConfidentialCdp({ keccak256, pool }) {
   const cdpMintCollateralSigma = ({ chainBinding, controller, nonce, owner, asset, note, debtValue, index }) =>
     sigma('tacit-cdp-mint-collateral-v1', chainBinding, asset, nonce, note,
       [note.value, debtValue, index], 'cdp-mint-collateral', [[controllerWord(controller), nonce, owner]]);
-  const cdpMintDebtSigma = ({ chainBinding, controller, nonce, owner, note }) =>
+  // The debt note opens to the NET (debtValue − fee); the gross debtValue + the relay fee are bound in the
+  // context (mirroring the guest's OP_CDP_MINT). The caller MUST build `note` committing to debtValue − fee
+  // and pass the gross `debtValue` + `fee` (fee = 0 ⇒ the note opens to the full debtValue). The settler is
+  // paid `fee` in the debt asset; the position still records the gross debtValue, so the controller's health
+  // check is on the gross debt.
+  const cdpMintDebtSigma = ({ chainBinding, controller, nonce, owner, note, debtValue, fee = 0n }) =>
     sigma('tacit-cdp-mint-debt-v1', chainBinding, debtAssetId(controller), nonce, note,
-      [note.value], 'cdp-mint-debt', [[controllerWord(controller), nonce, owner]]);
-  const cdpCloseReleaseSigma = ({ chainBinding, positionLeaf: position, asset, note }) =>
-    sigma('tacit-cdp-close-release-v1', chainBinding, asset, position, note, [note.value], 'cdp-close-release');
+      [debtValue != null ? BigInt(debtValue) : BigInt(note.value), BigInt(fee)], 'cdp-mint-debt',
+      [[controllerWord(controller), nonce, owner]]);
+  // The released leg note opens to the NET (value − fee) for the FIRST (fee-carrying) leg; the gross value +
+  // the relay fee are bound in the context (mirroring OP_CDP_CLOSE). Other legs pass fee = 0 (note opens to
+  // the full value). The caller MUST commit the first released note to value − fee.
+  const cdpCloseReleaseSigma = ({ chainBinding, positionLeaf: position, asset, note, value, fee = 0n }) =>
+    sigma('tacit-cdp-close-release-v1', chainBinding, asset, position, note,
+      [value != null ? BigInt(value) : BigInt(note.value), BigInt(fee)], 'cdp-close-release');
   const cdpCloseDebtSigma = ({ chainBinding, positionLeaf: position, debtAsset, debtValue, index, note }) =>
     sigma('tacit-cdp-close-debt-v1', chainBinding, debtAsset, position, note,
       [note.value, debtValue, index], 'cdp-close-debt');
@@ -124,9 +134,98 @@ export function makeConfidentialCdp({ keccak256, pool }) {
       [note.value], 'cbtc-mint');
   };
 
+  // OP_CDP_MINT op-assembler — open a CDP (lock a collateral basket → mint a debt note net of an optional relay
+  // fee), in the guest's io::read order (main.rs OP_CDP_MINT) + the exec-cdpmint.rs witness field names. The
+  // basket is canonicalized strictly asset-sorted (the guest rejects unsorted / duplicate-asset baskets). A
+  // bond (debtValue = 0) locks the basket with no debt note (fee must be 0); a payout (no collateral) mints the
+  // controller token. Requires the injected `pool` (commit + opening sigma). The caller supplies each collateral
+  // note's live merkle witness (leafIndex + path) and blindings; `debtBlinding` is the new debt note's blinding.
+  const buildCdpMintOp = ({ chainBinding, controller, owner, debtValue, nonce, rateSnapshot, fee = 0n, collateral = [], spendRoot, debtBlinding }) => {
+    if (!pool) throw new Error('buildCdpMintOp requires the confidential-pool helper');
+    const legsSorted = [...collateral].sort((a, b) => (BigInt(a.asset) < BigInt(b.asset) ? -1 : (BigInt(a.asset) > BigInt(b.asset) ? 1 : 0)));
+    const legs = legsSorted.map((leg) => {
+      const note = { cx: leg.cx, cy: leg.cy, value: leg.value, owner, blinding: leg.blinding };
+      const sig = cdpMintCollateralSigma({ chainBinding, controller, nonce, owner, asset: leg.asset, note, debtValue, index: leg.leafIndex });
+      return { asset: leg.asset, cx: leg.cx, cy: leg.cy, value: String(BigInt(leg.value)), index: Number(leg.leafIndex), path: leg.path, sigR: sig.sigR, sigZ: sig.sigZ };
+    });
+    const op = { chainBinding, spendRoot, controller, owner, debtValue: String(BigInt(debtValue)), nonce, rateSnapshot, legs, fee: String(BigInt(fee)) };
+    if (BigInt(debtValue) > 0n) {
+      // the debt note opens to the NET (debtValue − fee); the position records the GROSS (the health check)
+      const net = BigInt(debtValue) - BigInt(fee);
+      const { cx, cy } = pool.commitXY(net, debtBlinding);
+      const note = { cx, cy, value: net, owner, blinding: debtBlinding };
+      const sig = cdpMintDebtSigma({ chainBinding, controller, nonce, owner, note, debtValue, fee });
+      op.debt = { cx, cy, sigR: sig.sigR, sigZ: sig.sigZ };
+    }
+    return op;
+  };
+
+  // OP_CDP_CLOSE op-assembler — close a CDP: burn the exact debt notes and re-mint the collateral basket to the
+  // owner, carving an OPTIONAL relay fee from the FIRST released leg (it opens to value − fee; the basket
+  // membership + the controller use the GROSS value). The released legs reproduce the position's canonical
+  // (asset-sorted) basket so the reconstructed `basketRoot` → `positionLeaf` matches membership. `Σ debtNotes =
+  // debtValue` (the gross debt repaid). Requires the injected `pool`. The caller supplies the position's
+  // merkle witness (positionIndex/Path), the basket it locked, fresh `releaseBlindings`, and the debt notes
+  // (cUSD) being repaid with their live merkle witnesses.
+  const buildCdpCloseOp = ({ chainBinding, controller, owner, debtValue, nonce, rateSnapshot, basket = [], positionIndex, positionPath, spendRoot, cdpPositionRoot, fee = 0n, releaseBlindings = [], debtNotes = [] }) => {
+    if (!pool) throw new Error('buildCdpCloseOp requires the confidential-pool helper');
+    const debtAsset = debtAssetId(controller);
+    const sortedBasket = [...basket].sort((a, b) => (BigInt(a.asset) < BigInt(b.asset) ? -1 : (BigInt(a.asset) > BigInt(b.asset) ? 1 : 0)));
+    const basketRootHex = basketRoot(sortedBasket.map((leg) => basketLeg(leg.asset, leg.value)));
+    const position = positionLeaf(controller, debtAsset, basketRootHex, debtValue, rateSnapshot, owner, nonce);
+    const legs = sortedBasket.map((leg, i) => {
+      const legFee = i === 0 ? BigInt(fee) : 0n; // only the first released leg carries the relay fee
+      const net = BigInt(leg.value) - legFee;
+      const { cx, cy } = pool.commitXY(net, releaseBlindings[i]);
+      const note = { cx, cy, value: net, owner, blinding: releaseBlindings[i] };
+      const sig = cdpCloseReleaseSigma({ chainBinding, positionLeaf: position, asset: leg.asset, note, value: leg.value, fee: legFee });
+      return { asset: leg.asset, value: String(BigInt(leg.value)), cx, cy, sigR: sig.sigR, sigZ: sig.sigZ };
+    });
+    const debts = debtNotes.map((d) => {
+      const dOwner = d.owner ?? owner;
+      const note = { cx: d.cx, cy: d.cy, value: d.value, owner: dOwner, blinding: d.blinding };
+      const sig = cdpCloseDebtSigma({ chainBinding, positionLeaf: position, debtAsset, debtValue, index: d.leafIndex, note });
+      return { cx: d.cx, cy: d.cy, owner: dOwner, value: String(BigInt(d.value)), index: Number(d.leafIndex), path: d.path, sigR: sig.sigR, sigZ: sig.sigZ };
+    });
+    return { chainBinding, spendRoot, cdpPositionRoot, controller, owner, debtValue: String(BigInt(debtValue)), nonce, rateSnapshot, positionIndex: Number(positionIndex), positionPath, legs, fee: String(BigInt(fee)), debts };
+  };
+
+  // OP_CBTC_MINT op-assembler — mint a cBTC.zk bearer note against a reflection-recorded self-custody Bitcoin
+  // lock (the contract gates cbtcLock[outpoint].vBtc == vBtc + escrow sufficiency). FEE-LESS by necessity: the
+  // note is pinned to the lock's value (1:1 peg), owner-free (control is the blinding `r`). Requires `pool`
+  // (commit + opening sigma + the pinned CBTC_ZK_ASSET_ID). The caller supplies the lock `outpoint`, `vBtc`,
+  // and the note `blinding` (its own secret).
+  const buildCbtcMintOp = ({ chainBinding, outpoint, vBtc, blinding }) => {
+    if (!pool) throw new Error('buildCbtcMintOp requires the confidential-pool helper');
+    const { cx, cy } = pool.commitXY(vBtc, blinding);
+    const sig = cbtcMintSigma({ chainBinding, cbtcAssetId: pool.CBTC_ZK_ASSET_ID, outpoint, note: { cx, cy, value: vBtc, blinding } });
+    return { chainBinding, outpoint, vBtc: String(BigInt(vBtc)), cx, cy, sigR: sig.sigR, sigZ: sig.sigZ };
+  };
+
+  // OP_CDP_TOPUP op-assembler — add collateral to a CDP without changing its debt. FEE-LESS (adds value, no
+  // spendable output; the relay is recouped on a later spend). Re-derives the OLD position leaf from the old
+  // basket (asset + value only) for membership, spends the ADDED collateral notes, and appends a new position
+  // (combined basket, `newNonce`). Requires `pool`. The caller supplies the old basket, the added collateral
+  // notes with their live merkle witnesses, and the old position's merkle witness.
+  const byAsset = (a, b) => (BigInt(a.asset) < BigInt(b.asset) ? -1 : (BigInt(a.asset) > BigInt(b.asset) ? 1 : 0));
+  const buildCdpTopupOp = ({ chainBinding, controller, owner, debtValue, oldNonce, newNonce, rateSnapshot, oldBasket = [], addedCollateral = [], positionIndex, positionPath, spendRoot, cdpPositionRoot }) => {
+    if (!pool) throw new Error('buildCdpTopupOp requires the confidential-pool helper');
+    const debtAsset = debtAssetId(controller);
+    const sortedOld = [...oldBasket].sort(byAsset);
+    const oldBasketRootHex = basketRoot(sortedOld.map((leg) => basketLeg(leg.asset, leg.value)));
+    const oldPosition = positionLeaf(controller, debtAsset, oldBasketRootHex, debtValue, rateSnapshot, owner, oldNonce);
+    const addedLegs = [...addedCollateral].sort(byAsset).map((leg) => {
+      const note = { cx: leg.cx, cy: leg.cy, value: leg.value, owner, blinding: leg.blinding };
+      const sig = cdpTopupCollateralSigma({ chainBinding, oldPositionLeaf: oldPosition, controller, newNonce, owner, asset: leg.asset, note, debtValue, index: leg.leafIndex });
+      return { asset: leg.asset, cx: leg.cx, cy: leg.cy, value: String(BigInt(leg.value)), index: Number(leg.leafIndex), path: leg.path, sigR: sig.sigR, sigZ: sig.sigZ };
+    });
+    return { chainBinding, spendRoot, cdpPositionRoot, controller, owner, debtValue: String(BigInt(debtValue)), oldNonce, newNonce, rateSnapshot, positionIndex: Number(positionIndex), positionPath, oldLegs: sortedOld.map((leg) => ({ asset: leg.asset, value: String(BigInt(leg.value)) })), addedLegs };
+  };
+
   return {
     debtAssetId, basketLeg, basketRoot, positionLeaf, positionNullifier, cbtcMintCommitment,
     cdpMintCollateralSigma, cdpMintDebtSigma, cdpCloseReleaseSigma, cdpCloseDebtSigma,
     cdpLiquidateDebtSigma, cdpTopupCollateralSigma, cbtcMintSigma,
+    buildCdpMintOp, buildCdpCloseOp, buildCbtcMintOp, buildCdpTopupOp,
   };
 }

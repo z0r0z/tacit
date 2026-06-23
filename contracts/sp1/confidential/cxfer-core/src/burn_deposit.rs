@@ -14,8 +14,8 @@
 
 use crate::bitcoin::{self, verify_merkle_path};
 use crate::{
-    bip340_verify, commitment_hash_compressed, decompress, outpoint_key, verify_cxfer_conservation_burned,
-    verify_range, Point,
+    bip340_verify, canonical_output_vout, commitment_hash_compressed, decompress, outpoint_key,
+    verify_cxfer_conservation_burned, verify_range, Point,
 };
 
 /// One provenance CXFER whose crypto the caller has ALREADY verified (inclusion + conservation, see module
@@ -279,10 +279,24 @@ fn verify_cxfers(asset: &[u8; 32], cxfers: &[ProvenanceWitness]) -> Result<Vec<V
                 .ok_or("burn-deposit: input commitment not a curve point")?;
             inputs.push((*ptxid, *pvout, ch));
         }
+        // Bind each output's Bitcoin vout to the CANONICAL value the opcode's tx layout dictates — NOT the
+        // freely WITNESSED `cx.output_vouts`. A free vout lets a prover re-key which output commitment the
+        // burned outpoint resolves to (e.g. a recipient+change producer → resolve the burn to the HIGH-value
+        // output while only the LOW-value note was actually retired on Bitcoin → unbacked cross-chain mint).
+        // The canonical map mirrors the worker/dapp `commitmentForUtxo` (the single defining-hop resolver):
+        // identity for T_CXFER/T_CXFER_BPP/T_AXFER/T_AXFER_BPP, the interleave {0→0, 1→2} for the
+        // variable-amount atomic-settlement T_AXFER_VAR/T_AXFER_VAR_BPP. The witnessed value must equal it
+        // (fail-closed on assembler drift); a mismatch or an unmapped index is rejected.
+        let opcode = env[0];
         let mut outputs = Vec::with_capacity(output_commitments.len());
         for (i, c) in output_commitments.iter().enumerate() {
             let ch = commitment_hash_compressed(c).ok_or("burn-deposit: output commitment not a curve point")?;
-            outputs.push((cx.output_vouts[i], ch));
+            let canonical = canonical_output_vout(opcode, i, output_commitments.len())
+                .ok_or("burn-deposit: output index has no canonical vout for this opcode")?;
+            if cx.output_vouts[i] != canonical {
+                return Err("burn-deposit: non-canonical output vout (must match the opcode's tx layout)");
+            }
+            outputs.push((canonical, ch));
         }
         verified.push(VerifiedCxfer { txid, inputs, outputs });
     }
@@ -649,6 +663,74 @@ mod tests {
         // a real conserving cxfer, but its input does not match the declared C_0 commitment → not a
         // C_0 descendant → the linkage rejects (no fabricating the supply anchor).
         assert!(verify_provenance(&asset, &c0_op, &[0x00; 32], &b_op, &b_ch, &[w]).is_err());
+    }
+
+    #[test]
+    fn verify_provenance_rejects_noncanonical_output_vout() {
+        // A witnessed vout that disagrees with the opcode's canonical layout would let a prover re-key which
+        // output commitment the burned outpoint resolves to (the multi-output recipient+change case → resolve
+        // the burn to the high-value note while retiring the low-value one). The canonical-vout bind rejects
+        // it — the build_valid fixture is a single-output T_CXFER (canonical vout 0), so claiming vout 1 fails
+        // closed (no value-swapping seam).
+        let (asset, c0_op, c0_ch, b_op, b_ch, mut w) = build_valid();
+        w.output_vouts = vec![1]; // canonical is [0]; a permuted/forged vout
+        assert!(verify_provenance(&asset, &c0_op, &c0_ch, &b_op, &b_ch, &[w]).is_err());
+    }
+
+    #[test]
+    fn canonical_output_vout_matches_commitment_for_utxo() {
+        // Locks the per-opcode vout convention to the worker/dapp `commitmentForUtxo` resolver, so the
+        // burn-deposit DAG keys producer outputs at their REAL Bitcoin vout for every accepted opcode.
+        // Identity family: confidential output i is at vout i.
+        for op in [0x23u8, 0x22, 0x26, 0x3C] {
+            assert_eq!(canonical_output_vout(op, 0, 2), Some(0));
+            assert_eq!(canonical_output_vout(op, 1, 2), Some(1));
+            assert_eq!(canonical_output_vout(op, 7, 8), Some(7));
+        }
+        // Variable-amount atomic settlement (interleaved): output 0 → vout 0, output 1 → vout 2 (vout 1 is
+        // the BTC payment, vout 3 the OP_RETURN); a 3rd tacit output has no canonical vout.
+        for op in [0x37u8, 0x3D] {
+            assert_eq!(canonical_output_vout(op, 0, 2), Some(0));
+            assert_eq!(canonical_output_vout(op, 1, 2), Some(2));
+            assert_eq!(canonical_output_vout(op, 0, 1), Some(0)); // no-change variant
+            assert_eq!(canonical_output_vout(op, 1, 1), None);    // index 1 absent when N==1
+            assert_eq!(canonical_output_vout(op, 2, 4), None);    // unmapped beyond the 2 tacit vouts
+        }
+        // A non-cxfer-family opcode is never a valid producer here.
+        assert_eq!(canonical_output_vout(0x5C, 0, 2), None);
+    }
+
+    #[test]
+    fn canonical_bid_output_vout_matches_commitment_for_utxo() {
+        use crate::canonical_bid_output_vout;
+        // T_PREAUTH_BID (0x5B, exact-fill): buyer filled note @vout0, seller change @vout3 (no refund branch).
+        assert_eq!(canonical_bid_output_vout(0x5B, 0, 2, false), Some(0));
+        assert_eq!(canonical_bid_output_vout(0x5B, 1, 2, false), Some(3));
+        assert_eq!(canonical_bid_output_vout(0x5B, 1, 2, true), Some(3)); // refund flag irrelevant for 0x5B
+        assert_eq!(canonical_bid_output_vout(0x5B, 1, 1, false), None);   // no change output
+        // T_PREAUTH_BID_VAR (0x5C): filled note @vout0; seller change @vout4 with a buyer refund, else @vout3.
+        assert_eq!(canonical_bid_output_vout(0x5C, 0, 2, false), Some(0));
+        assert_eq!(canonical_bid_output_vout(0x5C, 1, 2, false), Some(3)); // full fill, no buyer refund
+        assert_eq!(canonical_bid_output_vout(0x5C, 1, 2, true), Some(4));  // partial fill, buyer refund output
+        assert_eq!(canonical_bid_output_vout(0x5C, 2, 4, true), None);     // only 2 tacit outputs
+        // A cxfer-family opcode is not a bid.
+        assert_eq!(canonical_bid_output_vout(0x37, 0, 2, false), None);
+    }
+
+    #[test]
+    fn canonical_amm_output_vout_matches_commitment_for_utxo() {
+        use crate::canonical_amm_output_vout;
+        // WITNESS-ENVELOPE AMM ops (no OP_RETURN at vout 0) → tacit notes start at vout 0, matching
+        // getParentEnvelopeData (T_LP_ADD vout 0; T_LP_REMOVE recvA 0 / recvB 1; T_PROTOCOL_FEE_CLAIM vout 0).
+        assert_eq!(canonical_amm_output_vout(0x2D, 0), Some(0)); // LP_ADD / POOL_INIT share note
+        assert_eq!(canonical_amm_output_vout(0x2E, 0), Some(0)); // LP_REMOVE recvA
+        assert_eq!(canonical_amm_output_vout(0x2E, 1), Some(1)); // LP_REMOVE recvB
+        assert_eq!(canonical_amm_output_vout(0x31, 0), Some(0)); // PROTOCOL_FEE_CLAIM claim note
+        assert_eq!(canonical_amm_output_vout(0x2D, 1), None);    // LP_ADD has only one note
+        // OP_RETURN-prefixed AMM/farm ops (notes at vout 1+) are NOT in this helper — they key in their own
+        // reflect.rs branches (swap_var receipt@1/change@2, swap_route@1, harvest/farm_refund@1, unbond@1/2).
+        assert_eq!(canonical_amm_output_vout(0x32, 0), None);    // T_SWAP_VAR not handled here
+        assert_eq!(canonical_amm_output_vout(0x3B, 0), None);    // T_LP_HARVEST not handled here
     }
 
     #[test]
