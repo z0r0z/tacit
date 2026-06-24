@@ -9,14 +9,14 @@ import {FixedPointMathLib} from "solady/utils/FixedPointMathLib.sol";
 /// @dev The immutable ConfidentialPool surface this engine reads/serves. The pool is the authority for
 ///      all proven Bitcoin/CDP state; the engine only sizes escrows, prices collateral, and routes
 ///      narrow recovery/backstop actions — it can NEVER mint a confidential asset, move backing, or break a
-///      peg (all of which are proof-enforced in the pool). See ops/DESIGN-confidential-defi-v1.md §§3,4,6.
+///      peg (all of which are proof-enforced in the pool).
 interface IConfidentialPoolCollateral {
     /// Σ live self-custody cBTC.zk lock sats — the real-BTC backing behind cBTC (reflection-attested,
     /// oracle-free; the pool advances it each attestation). RESERVED integration point, NOT a v1 dependency:
     /// the cBTC peg is enforced by CONSERVATION in the proof (OP_CBTC_MINT mints exactly v_btc against a
     /// recorded lock; redeem burns exactly v_btc — backing == supply per-lock), and the v1 rug deterrent is
     /// the per-lock slashable native-ETH escrow + the reserve below. This aggregate is consumed only by the
-    /// (standalone, governable) peg-shortfall buffer — a post-v1 additive (DESIGN-confidential-defi-v1 §6);
+    /// (standalone, governable) peg-shortfall buffer — a post-v1 additive;
     /// it is declared here as that buffer's integration point so wiring it later needs no interface churn.
     function cbtcBackingSats() external view returns (uint256);
     /// True once the reflection surfaced this lock outpoint as SPENT (`cbtcLocksSpent`) — a bare spend (rug).
@@ -127,8 +127,7 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
     // generational migration of all escrow + cUSD state. Same dormant-then-governance-activate pattern as the
     // cUSD stability fee above — the storage, view, and module-gated entrypoints ship now but do NOTHING until
     // the owner sets BOTH a maintenance ratio AND an enforcement module. The peg is never involved: this only
-    // sizes/acts on the rug insurance, never cBTC's conservation backing. Activation trust model + the richer
-    // forced-exit remedy are in ops/DESIGN-cbtc-escrow-health-module.md.
+    // sizes/acts on the rug insurance, never cBTC's conservation backing.
     uint256 public escrowMaintenanceBps; // 0 = dormant; else the health floor in [10000, escrowRatioBps) below
         // which a live lock's escrow is enforceable (a margin call), denominated like escrowRatioBps
     uint256 public escrowGraceWindow; // seconds an outpoint must stay flagged-unhealthy before it can be enforced
@@ -298,7 +297,7 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
 
     /// @notice Set the Chainlink↔AMM-TWAP deviation bound (bps). 0 disables it (single-source Chainlink) —
     ///         the launch posture until the cUSD / cBTC pool deepens enough to be a trustworthy 2nd source;
-    ///         the design (DESIGN-confidential-defi-v1.md §6) wants it active for the BTC/USD (cUSD-peg) feed.
+    ///         the design wants it active for the BTC/USD (cUSD-peg) feed.
     function setDeviationBound(uint256 bps) external onlyOwner {
         if (bps > 10_000) revert BadParams();
         maxDeviationBps = bps;
@@ -334,8 +333,7 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
     ///         (enforcing below 1× is pointless) and strictly below the mint ratio (else a fresh mint is
     ///         instantly enforceable). Enforcement ALSO requires an enforcement module; setting only this
     ///         still leaves the system inert. Recommended to enable only once the BTC/USD deviation guard
-    ///         (`setDeviationBound`) is active. `graceWindow` capped at 30 days. See
-    ///         ops/DESIGN-cbtc-escrow-health-module.md.
+    ///         (`setDeviationBound`) is active. `graceWindow` capped at 30 days.
     function setEscrowHealthParams(uint256 maintenanceBps, uint256 graceWindow) external onlyOwner {
         if (
             maintenanceBps != 0
@@ -353,7 +351,7 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
     ///         DORMANT launch default). The module judges health off its own view of the lock's vBtc; the
     ///         engine bounds a buggy/compromised module's damage: enforcement only ever moves a live lock's
     ///         escrow to the protocol reserve (never to an external address), capped, one-shot, health
-    ///         re-checked on-chain. See ops/DESIGN-cbtc-escrow-health-module.md.
+    ///         re-checked on-chain.
     function setEscrowEnforcementModule(address module) external onlyOwner {
         if (module != address(0) && module.code.length == 0) revert BadPool();
         escrowEnforcementModule = module;
@@ -588,9 +586,7 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
     /// @notice Margin-call remedy: slash a flagged, grace-elapsed, STILL-unhealthy live lock's escrow to the
     ///         reserve. Module-gated and DORMANT until armed. Bounded exactly like `slash` (reserve-only,
     ///         capped, one-shot) and re-checks health on-chain so a cured escrow can't be enforced on a stale
-    ///         flag. The locker's recourse throughout the grace window is to top up. See
-    ///         ops/DESIGN-cbtc-escrow-health-module.md for the activation trust model and the richer
-    ///         forced-exit remedy a future pool capability would enable.
+    ///         flag. The locker's recourse throughout the grace window is to top up.
     function enforceEscrowToReserve(bytes32 outpoint, uint256 vBtc) external onlyEnforcementModule {
         if (escrowMaintenanceBps == 0) revert EnforcementDisabled();
         if (address(POOL) == address(0)) revert BadPool();
