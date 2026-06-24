@@ -36,9 +36,9 @@ export function makeConfidentialSettler({ storage, hash, now, feeGate }) {
   //   'prove'            — the box GPU-proves but does NOT submit; it acks { publicValues, proof } which the
   //                        dapp embeds into a USER-SENT ConfidentialRouter tx (wrapAndSettle* / zapETHToPayment /
   //                        farm bond). The router pulls from msg.sender, so only the user can send it.
-  async function submitJob({ type, op, memos, mode = 'settle' }) {
+  async function submitJob({ type, op, memos, mode = 'settle', feeAsset = null }) {
     if (!type || !op) throw new Error('submitJob: type + op required');
-    if (!['wrap', 'unwrap', 'transfer', 'swap', 'route', 'lp', 'otc', 'bid', 'bridgeburn', 'cdpmint', 'farmbond', 'farmharvest', 'farmunbond', 'adaptorlock', 'adaptorclaim', 'adaptorrefund', 'cdpclose', 'cdptopup', 'bridgemint', 'cbtcmint', 'stealthlock', 'stealthlockbatch', 'stealthclaim', 'stealthrefund', 'bridgestealthmint'].includes(type)) throw new Error(`submitJob: unknown type ${type}`);
+    if (!['wrap', 'unwrap', 'transfer', 'swap', 'route', 'lp', 'otc', 'bid', 'bridgeburn', 'cdpmint', 'farmbond', 'farmharvest', 'farmunbond', 'adaptorlock', 'adaptorclaim', 'adaptorrefund', 'cdpclose', 'cdpliquidate', 'cdptopup', 'bridgemint', 'cbtcmint', 'stealthlock', 'stealthlockbatch', 'stealthclaim', 'stealthrefund', 'bridgestealthmint'].includes(type)) throw new Error(`submitJob: unknown type ${type}`);
     if (!['settle', 'prove'].includes(mode)) throw new Error(`submitJob: unknown mode ${mode}`);
     // Profitability gate (relayed flow only): a fee below the current gas-priced floor is rejected BEFORE it
     // burns a GPU prove cycle. `prove` jobs are user-sent (the user pays gas), so they're never gated.
@@ -57,6 +57,10 @@ export function makeConfidentialSettler({ storage, hash, now, feeGate }) {
     }
     const job = {
       id, type, op, mode, memos: memos || [],
+      // feeAsset: the public ERC20/ETH address of this op's relay FeePayment (native ETH = the zero
+      // address / null). The box needs it for the relaySettle path so TacitRelayer forwards the right
+      // token to the ops fee recipient; the direct-settle path ignores it (fee → msg.sender in-kind).
+      feeAsset: feeAsset || null,
       status: 'pending', createdAt: clock(), claimedAt: 0, txHash: null, error: null,
       publicValues: null, proof: null,
     };
@@ -77,7 +81,7 @@ export function makeConfidentialSettler({ storage, hash, now, feeGate }) {
         j.status = 'proving'; j.claimedAt = clock();
         await storage.putJob(id, j);
         // `mode` tells the box whether to submit on-chain ('settle') or just return the proof ('prove').
-        return { jobId: id, type: j.type, op: j.op, memos: j.memos, mode: j.mode || 'settle' };
+        return { jobId: id, type: j.type, op: j.op, memos: j.memos, mode: j.mode || 'settle', feeAsset: j.feeAsset || null };
       }
     }
     return null;

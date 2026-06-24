@@ -793,7 +793,7 @@ async function handleConfidentialSubmit(req, env, cors) {
   let body;
   try { body = await req.json(); } catch { return jsonResponse({ ok: false, error: 'bad json' }, 400, cors); }
   try {
-    const r = await q.submitJob({ type: body.type, op: body.op, memos: body.memos, mode: body.mode });
+    const r = await q.submitJob({ type: body.type, op: body.op, memos: body.memos, mode: body.mode, feeAsset: body.feeAsset });
     return jsonResponse({ ok: true, ...r }, 200, { ...cors, 'Cache-Control': 'no-store' });
   } catch (e) { return jsonResponse({ ok: false, error: String(e && e.message || e) }, 400, cors); }
 }

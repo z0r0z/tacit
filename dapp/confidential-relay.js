@@ -34,7 +34,7 @@ export function makeConfidentialRelay({ base, fetchImpl, guard } = {}) {
   // one memo per output through the guard and runs the assertOutputsRecoverable tripwire BEFORE queuing, so no
   // op can ship a seed-only-unrecoverable leaf. A leaf-less op (unwrap) passes `memos: []`. (Back-compat: a
   // relay constructed without a guard passes raw `memos` through unchecked — for non-leaf-bearing tests.)
-  async function submitOp({ type, op, leaves = [], outputs = null, ephRand, memos = null, mode } = {}) {
+  async function submitOp({ type, op, leaves = [], outputs = null, ephRand, memos = null, mode, feeAsset = null } = {}) {
     let sealedMemos;
     if (outputs != null) {
       if (!guard) throw new Error('confidential-relay: `outputs` given but no recovery guard wired (pass `guard` to makeConfidentialRelay)');
@@ -51,7 +51,7 @@ export function makeConfidentialRelay({ base, fetchImpl, guard } = {}) {
     }
     const res = await f(`${root}/confidential/submit`, {
       method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ type, op, memos: sealedMemos, ...(mode ? { mode } : {}) }),
+      body: JSON.stringify({ type, op, memos: sealedMemos, ...(mode ? { mode } : {}), ...(feeAsset ? { feeAsset } : {}) }),
     });
     return asJson(res);
   }

@@ -1343,6 +1343,9 @@ pub fn get_amount_out(amount_in: u64, reserve_in: u64, reserve_out: u64, fee_bps
 /// (`k_pre`). BigUint intermediates: the numerator reaches ~2^142 (`S·bps·Δroot`), which a u128 would overflow
 /// + diverge from the Bitcoin/JS reference. Returns 0 on no growth / disabled fee (bps 0) / zero supply
 /// (fail-safe). `fee_bps ≤ AMM_PROTOCOL_FEE_BPS_MAX` is enforced upstream (the pool's stored config).
+/// This is the Bitcoin lane's realization of the protocol fee; the EVM lane charges the SAME φ =
+/// bps/10000 of the LP fee but as a per-swap carve (guest `main.rs` OP_SWAP, `protocol_fee_cut`) rather
+/// than √k mintFee — same aggregate split, different realization. See the OP_SWAP carve comment.
 pub fn protocol_fee_shares(s_pre: u64, k_pre: u128, k_now: u128, fee_bps: u16) -> u64 {
     if fee_bps == 0 || s_pre == 0 || k_now <= k_pre {
         return 0;
